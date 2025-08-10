@@ -1,19 +1,94 @@
 <!DOCTYPE html>
 <html lang="pl">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Mini Miner</title>
-  <link rel="stylesheet" href="src/style.css" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Mini Miner – styl Diamonds Explorer</title>
+  <style>
+    :root{ --cell:64px; --btn:48px; --mine:76px; }
+    @media (max-height:700px),(max-width:420px){ :root{ --cell:56px; --btn:42px; --mine:64px; } }
+    html,body{ margin:0; padding:0; height:100%; background:#0b0f16; color:#e8e8e8; font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,'Helvetica Neue',Arial,'Noto Sans',sans-serif; touch-action:none; user-select:none; overscroll-behavior:none; }
+    canvas{ display:block; width:100vw; height:100vh; }
+    #ui{ position:fixed; inset:0; pointer-events:none; }
+    #hud{ position:absolute; left:8px; right:8px; top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:space-between; }
+    #hud .panel{ pointer-events:auto; background:rgba(0,0,0,.45); backdrop-filter:blur(6px); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:6px 10px; display:inline-flex; align-items:center; gap:10px; font-size:12px; }
+    #inv{ gap:14px; }
+    #inv .item{ display:inline-flex; align-items:center; gap:6px; }
+    #inv .dot{ width:12px; height:12px; border-radius:3px; border:1px solid rgba(255,255,255,.35); display:inline-block; }
+    #fps{ min-width:56px; text-align:right; opacity:.85; }
+    #seedPanel input{ pointer-events:auto; background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 8px; font-size:12px; width:130px; }
+    #seedPanel button, .topbtn, .craftBtn{ pointer-events:auto; background:#2c7ef8; color:#fff; border:none; border-radius:10px; padding:6px 10px; font-weight:600; font-size:12px; box-shadow:0 2px 6px rgba(44,126,248,.35); cursor:pointer; }
+    .topbtn.toggled{ background:#21a366; box-shadow:0 2px 10px rgba(33,163,102,.45); }
+    #topButtons{ position:absolute; right:8px; top:8px; display:flex; gap:8px; pointer-events:auto; flex-wrap:wrap; justify-content:flex-end; }
+    #craft{ position:absolute; left:8px; top:54px; pointer-events:auto; display:flex; flex-direction:column; gap:6px; background:rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:8px; max-width:min(55vw,340px); font-size:12px; }
+    #craft .req{ font-size:11px; opacity:.9; }
+    #help{ position:absolute; left:8px; right:8px; top:140px; background:rgba(0,0,0,.65); border:1px solid rgba(255,255,255,.18); border-radius:12px; padding:10px 12px; font-size:12px; line-height:1.4; display:none; pointer-events:auto; }
+    #controls{ position:absolute; left:0; right:0; bottom:0; padding:12px; display:flex; justify-content:space-between; gap:12px; pointer-events:none; }
+    .pad{ pointer-events:auto; display:grid; gap:8px; grid-template-columns:var(--cell) var(--cell) var(--cell); grid-template-rows:var(--cell) var(--cell) var(--cell); }
+    .btn{ width:var(--btn); height:var(--btn); border-radius:16px; background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.25); box-shadow:inset 0 1px 4px rgba(0,0,0,.6), 0 4px 16px rgba(0,0,0,.35); display:flex; align-items:center; justify-content:center; font-size:18px; color:#fff; }
+    .btn.on, .btn:active{ background:rgba(255,255,255,.25); }
+    #dirRing{ position:absolute; right:8px; bottom:8px; pointer-events:auto; display:grid; grid-template-columns:repeat(3,var(--cell)); grid-template-rows:repeat(3,var(--cell)); }
+    .dircell{ display:flex; align-items:center; justify-content:center; }
+    .dirbtn{ width:var(--btn); height:var(--btn); border-radius:12px; border:1px solid rgba(255,255,255,.25); background:rgba(255,255,255,.10); color:#fff; font-size:16px; box-shadow:inset 0 1px 4px rgba(0,0,0,.6),0 2px 12px rgba(0,0,0,.25); }
+    .dirbtn.sel{ outline:2px solid #2c7ef8; }
+    #mineBtn{ width:var(--mine); height:var(--mine); border-radius:18px; font-size:24px; border:1px solid rgba(255,255,255,.3); background:linear-gradient(180deg,rgba(44,126,248,.95),rgba(29,92,204,.95)); box-shadow:0 8px 24px rgba(44,126,248,.35), inset 0 1px 3px rgba(255,255,255,.3); pointer-events:auto; }
+    #mineBtn.on, #mineBtn:active{ filter:brightness(1.1); }
+    #radarBtn{ position:absolute; right:8px; bottom:calc(8px + 3*var(--cell) + 10px); width:52px; height:52px; border-radius:14px; border:1px solid rgba(255,255,255,.3); background:rgba(255,255,255,.10); color:#fff; font-weight:700; box-shadow:inset 0 1px 4px rgba(0,0,0,.6),0 2px 12px rgba(0,0,0,.25); pointer-events:auto; }
+    #radarBtn.pulse{ animation:radarPulse .9s infinite alternate; border-color:#4dd0ff; }
+    @keyframes radarPulse{0%{ background:rgba(77,208,255,.15); box-shadow:0 0 0 rgba(77,208,255,0),0 0 16px rgba(77,208,255,.25);}100%{ background:rgba(77,208,255,.35); box-shadow:0 0 18px rgba(77,208,255,.45),0 0 28px rgba(77,208,255,.35);} }
+    .pill{ background:rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.12); border-radius:999px; padding:6px 10px; font-size:12px; }
+    #errorBox{ position:absolute; left:8px; right:8px; top:50%; transform:translateY(-50%); background:#2b1e1e; color:#ffd7d7; border:1px solid #402b2b; border-radius:10px; padding:10px 12px; display:none; white-space:pre-wrap; font-family:ui-monospace,monospace; }
+    #messages{ position:absolute; left:50%; top:8px; transform:translateX(-50%); font-size:12px; background:rgba(0,0,0,.5); padding:4px 10px; border-radius:999px; pointer-events:none; }
+  </style>
 </head>
 <body>
+  <canvas id="game" aria-label="Mini Miner"></canvas>
   <div id="ui">
-    <div id="inventory"></div>
-    <div id="crafting"></div>
+    <div id="hud">
+      <div id="inv" class="panel" aria-label="Ekwipunek" aria-live="polite">
+        <span class="item"><span class="dot" style="background:#2e8b2e"></span> trawa: <b id="grass">0</b></span>
+        <span class="item"><span class="dot" style="background:#c2b280"></span> piach: <b id="sand">0</b></span>
+        <span class="item"><span class="dot" style="background:#777"></span> kamień: <b id="stone">0</b></span>
+        <span class="item"><span class="dot" style="background:#3ef"></span> diamenty: <b id="diamond">0</b></span>
+        <span class="item"><span class="dot" style="background:#8b5a2b"></span> drewno: <b id="wood">0</b></span>
+        <span class="item pill">kilof: <b id="pick">podstawowy</b></span>
+      </div>
+      <div class="panel"><span id="fps">— FPS</span></div>
+      <div id="seedPanel" class="panel"><label for="seedInput">Ziarno:</label><input id="seedInput" value="auto" /><button id="regenBtn">Nowy świat</button></div>
+    </div>
+    <div id="topButtons">
+      <button id="helpBtn" class="topbtn" aria-controls="help" aria-expanded="false">?</button>
+      <button id="mapBtn" class="topbtn" title="Pokaż całą mapę">Mapa: OFF</button>
+      <button id="centerBtn" class="topbtn" title="Wyśrodkuj kamerę">Centruj</button>
+    </div>
+    <div id="craft">
+      <strong>Rzemiosło</strong>
+      <button class="craftBtn" id="craftStone">Kilof kamienny</button><div class="req">10 × kamień</div>
+      <button class="craftBtn" id="craftDiamond">Kilof diamentowy</button><div class="req">5 × diament</div>
+    </div>
+    <div id="help">Sterowanie: A/D lub ←/→ ruch, W / ↑ / Spacja skok, ⛏️ lub klik kopanie. 1/2/3 wybór kilofa po craftingu. „Mapa” usuwa mgłę wojny.</div>
+    <div id="controls">
+      <div class="pad" id="pad">
+        <div></div><div data-key="ArrowUp" class="btn">↑</div><div></div>
+        <div data-key="ArrowLeft" class="btn">←</div><div class="btn" style="opacity:.25"></div><div data-key="ArrowRight" class="btn">→</div>
+        <div></div><div data-key="ArrowDown" class="btn">↓</div><div></div>
+      </div>
+    </div>
+    <div id="dirRing">
+      <div class="dircell"><button class="dirbtn" data-dx="-1" data-dy="-1">↖</button></div>
+      <div class="dircell"><button class="dirbtn" data-dx="0" data-dy="-1">↑</button></div>
+      <div class="dircell"><button class="dirbtn" data-dx="1" data-dy="-1">↗</button></div>
+      <div class="dircell"><button class="dirbtn" data-dx="-1" data-dy="0">←</button></div>
+      <div class="dircell"><button id="mineBtn">⛏️</button></div>
+      <div class="dircell"><button class="dirbtn" data-dx="1" data-dy="0">→</button></div>
+      <div class="dircell"><button class="dirbtn" data-dx="-1" data-dy="1">↙</button></div>
+      <div class="dircell"><button class="dirbtn" data-dx="0" data-dy="1">↓</button></div>
+      <div class="dircell"><button class="dirbtn" data-dx="1" data-dy="1">↘</button></div>
+    </div>
+    <button id="radarBtn" title="Radar diamentów (10×10)">💎</button>
     <div id="messages"></div>
+    <div id="errorBox" role="alert"></div>
   </div>
-  <canvas id="game" width="960" height="540"></canvas>
-  <!-- Usunięto type="module" aby uniknąć potencjalnych ograniczeń przy otwieraniu z file:// -->
   <script src="src/main.js"></script>
 </body>
 </html>

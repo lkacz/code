@@ -1,446 +1,56 @@
-// Mini Miner - prosty prototyp 2D side-view mining
-console.log('[MiniMiner] Script start');
-window.addEventListener('error', e=>{
-  try {
-    const m=document.getElementById('messages');
-    if(m) m.textContent = 'Błąd: '+e.message;
-  } catch(_){}
-  console.error('Global error', e.error||e.message);
-});
-// Założenia: proceduralny świat, warstwy: roślinność, piach, kamień, diamenty w kamieniu
-// Fog-of-war: tylko odkryte kafelki są wyświetlane
-// Crafting kilofów: basic (infinite), stone, diamond
-
+// Nowy styl / pełny ekran inspirowany Diamonds Explorer
+console.log('[MiniMiner] start styled');
 const canvas = document.getElementById('game');
-const ctx = canvas.getContext('2d');
+const ctx = canvas.getContext('2d', {alpha:false});
+let W=0,H=0,DPR=1; function resize(){ DPR=Math.max(1,Math.min(2,window.devicePixelRatio||1)); canvas.width=Math.floor(window.innerWidth*DPR); canvas.height=Math.floor(window.innerHeight*DPR); canvas.style.width=window.innerWidth+'px'; canvas.style.height=window.innerHeight+'px'; ctx.setTransform(DPR,0,0,DPR,0,0); W=window.innerWidth; H=window.innerHeight; } window.addEventListener('resize',resize,{passive:true}); resize();
 
-// Rozmiary świata w chunkach (póki co ograniczony, można rozszerzać generację on-demand)
-const CHUNK_WIDTH = 64; // kafelki szerokości chunku
-const WORLD_HEIGHT = 96; // wysokość w kafelkach
-const TILE_SIZE = 16; // px
+// --- Świat ---
+const CHUNK_W=64; const WORLD_H=100; const TILE=20; const SURFACE_GRASS_DEPTH=1; const SAND_DEPTH=8; const STONE_START=SURFACE_GRASS_DEPTH+SAND_DEPTH; function diamondChance(y){ const d=y-STONE_START; if(d<0) return 0; return Math.min(0.002 + d*0.0009, 0.05);} const T={AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6}; const INFO={0:{hp:0,color:null,drop:null},1:{hp:2,color:'#2e8b2e',drop:'grass'},2:{hp:2,color:'#c2b280',drop:'sand'},3:{hp:6,color:'#777',drop:'stone'},4:{hp:10,color:'#3ef',drop:'diamond'},5:{hp:4,color:'#8b5a2b',drop:'wood'},6:{hp:1,color:'#2faa2f',drop:'leaf'}}; const world=new Map(); function ck(x){return 'c'+x;} function tileIndex(x,y){return y*CHUNK_W+x;} function randSeed(n){ let x=Math.sin(n*127.1)*43758.5453; return x-Math.floor(x);} function ensureChunk(cx){ const k=ck(cx); if(world.has(k)) return world.get(k); const arr=new Uint8Array(CHUNK_W*WORLD_H); for(let lx=0; lx<CHUNK_W; lx++){ const wx=cx*CHUNK_W+lx; const hNoise=randSeed(wx*0.08); const surfaceY=Math.floor(18 + hNoise*6); for(let y=0;y<WORLD_H;y++){ let t=T.AIR; if(y>=surfaceY){ const depth=y-surfaceY; if(depth<SURFACE_GRASS_DEPTH) t=T.GRASS; else if(depth<SURFACE_GRASS_DEPTH+SAND_DEPTH) t=T.SAND; else t=(Math.random()<diamondChance(y)?T.DIAMOND:T.STONE);} arr[tileIndex(lx,y)]=t; } if(randSeed(wx) < 0.07){ const base=surfaceY; const h=3+Math.floor(randSeed(wx+50)*3); for(let i=0;i<h;i++){ const ty=base+i; if(ty<WORLD_H) arr[tileIndex(lx,ty)]=T.WOOD; } for(let dx=-2; dx<=2; dx++){ for(let dy=h-2; dy<=h+1; dy++){ const tx=lx+dx; const ty=base+dy; if(tx>=0&&tx<CHUNK_W&&ty>=0&&ty<WORLD_H&&arr[tileIndex(tx,ty)]===T.AIR) arr[tileIndex(tx,ty)]=T.LEAF; } } } } world.set(k,arr); return arr; } function getTile(x,y){ if(y<0||y>=WORLD_H) return T.AIR; const cx=Math.floor(x/CHUNK_W); const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W; const ch=ensureChunk(cx); return ch[tileIndex(lx,y)]; } function setTile(x,y,v){ if(y<0||y>=WORLD_H) return; const cx=Math.floor(x/CHUNK_W); const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W; const ch=ensureChunk(cx); ch[tileIndex(lx,y)]=v; }
 
-// Warstwy y: 0 (góra) -> WORLD_HEIGHT-1 (dół)
-const SURFACE_GRASS_DEPTH = 1;
-const SAND_DEPTH = 8; // pod trawą
-const STONE_START = SURFACE_GRASS_DEPTH + SAND_DEPTH;
-
-// Szanse na diament w kamieniu (głębiej większa)
-function diamondChance(y){
-  const depth = y - STONE_START;
-  if (depth < 0) return 0;
-  return Math.min(0.002 + depth * 0.0008, 0.05); // do 5%
-}
-
-// Typy kafelków
-const TILE = {
-  AIR: 0,
-  GRASS: 1,
-  SAND: 2,
-  STONE: 3,
-  DIAMOND: 4,
-  TREE_TRUNK: 5,
-  LEAF: 6,
-};
-
-const TILE_INFO = {
-  [TILE.AIR]:   { hp:0, color:'#00000000', drop:null },
-  [TILE.GRASS]: { hp:2, color:'#2e8b2e', drop:'grass' },
-  [TILE.SAND]:  { hp:2, color:'#c2b280', drop:'sand' },
-  [TILE.STONE]: { hp:6, color:'#777', drop:'stone' },
-  [TILE.DIAMOND]: { hp:10, color:'#3ef', drop:'diamond' },
-  [TILE.TREE_TRUNK]: { hp:4, color:'#8b5a2b', drop:'wood' },
-  [TILE.LEAF]: { hp:1, color:'#2faa2f', drop:'leaf' },
-};
-
-// Świat przechowujemy w mapie chunków => {chunkX: Int16Array}
-const world = new Map();
-const discovered = new Map(); // boolean maska visibility
-
-function keyChunk(x){ return x|0; }
-function chunkKey(cx){ return 'c'+cx; }
-
-function getChunk(cx){
-  const k = chunkKey(cx);
-  if(!world.has(k)) generateChunk(cx);
-  return world.get(k);
-}
-function getDiscoverChunk(cx){
-  const k = chunkKey(cx);
-  if(!discovered.has(k)) discovered.set(k,new Uint8Array(CHUNK_WIDTH*WORLD_HEIGHT));
-  return discovered.get(k);
-}
-
-function tileIndex(localX,y){ return y*CHUNK_WIDTH + localX; }
-
-function getTile(x,y){
-  if(y<0||y>=WORLD_HEIGHT) return TILE.AIR;
-  const cx = Math.floor(x/CHUNK_WIDTH);
-  const lx = ((x%CHUNK_WIDTH)+CHUNK_WIDTH)%CHUNK_WIDTH;
-  const chunk = getChunk(cx);
-  return chunk[tileIndex(lx,y)];
-}
-function setTile(x,y,val){
-  if(y<0||y>=WORLD_HEIGHT) return;
-  const cx = Math.floor(x/CHUNK_WIDTH);
-  const lx = ((x%CHUNK_WIDTH)+CHUNK_WIDTH)%CHUNK_WIDTH;
-  const chunk = getChunk(cx);
-  chunk[tileIndex(lx,y)] = val;
-}
-function discover(x,y){
-  if(y<0||y>=WORLD_HEIGHT) return;
-  const cx = Math.floor(x/CHUNK_WIDTH);
-  const lx = ((x%CHUNK_WIDTH)+CHUNK_WIDTH)%CHUNK_WIDTH;
-  const dchunk = getDiscoverChunk(cx);
-  dchunk[tileIndex(lx,y)] = 1;
-}
-function isDiscovered(x,y){
-  if(y<0||y>=WORLD_HEIGHT) return false;
-  const cx = Math.floor(x/CHUNK_WIDTH);
-  const lx = ((x%CHUNK_WIDTH)+CHUNK_WIDTH)%CHUNK_WIDTH;
-  const dchunk = getDiscoverChunk(cx);
-  return !!dchunk[tileIndex(lx,y)];
-}
-
-// Siew losowości deterministyczny na bazie x
-function randSeed(n){
-  // prosta funkcja hashująca
-  let x = Math.sin(n*127.1)*43758.5453;
-  return x - Math.floor(x);
-}
-
-function generateChunk(cx){
-  const arr = new Uint8Array(CHUNK_WIDTH*WORLD_HEIGHT);
-  // prosty "heightmap" teren
-  for(let lx=0; lx<CHUNK_WIDTH; lx++){
-    const wx = cx*CHUNK_WIDTH + lx;
-    const hNoise = randSeed(wx*0.1);
-    const surfaceY = Math.floor(20 + hNoise*5); // 20..25
-    for(let y=0;y<WORLD_HEIGHT;y++){
-      let tile = TILE.AIR;
-      if(y>=surfaceY){
-        const depth = y - surfaceY;
-        if(depth < SURFACE_GRASS_DEPTH) tile = TILE.GRASS;
-        else if(depth < SURFACE_GRASS_DEPTH + SAND_DEPTH) tile = TILE.SAND;
-        else {
-          // stone / diamond chance
-          tile = Math.random() < diamondChance(y) ? TILE.DIAMOND : TILE.STONE;
-        }
-      }
-      arr[tileIndex(lx,y)] = tile;
-    }
-    // Drzewo szansa
-    if(randSeed(wx) < 0.08){
-      const treeBaseY = surfaceY;
-      const height = 3 + Math.floor(randSeed(wx+99)*3); // 3..5
-      for(let t=0;t<height;t++){
-        const ty = treeBaseY + t;
-        if(ty<WORLD_HEIGHT) arr[tileIndex(lx,ty)] = TILE.TREE_TRUNK;
-      }
-      // liście prosty kwadrat
-      const spread = 2;
-      for(let dx=-spread; dx<=spread; dx++){
-        for(let dy=height-2; dy<=height+1; dy++){
-          if(Math.abs(dx)+Math.abs(dy-(height))>spread+1) continue;
-          const ly = treeBaseY + dy;
-            const lx2 = lx+dx;
-            if(lx2>=0 && lx2<CHUNK_WIDTH && ly>=0 && ly<WORLD_HEIGHT){
-              if(arr[tileIndex(lx2,ly)]===TILE.AIR) arr[tileIndex(lx2,ly)] = TILE.LEAF;
-            }
-        }
-      }
-    }
-  }
-  world.set(chunkKey(cx),arr);
-}
-
-// Player – początkowo ustawimy tylko podstawowe współrzędne; po wygenerowaniu chunku ustawimy go na powierzchni
-const player = {
-  x: 0,
-  y: 0, // tymczasowo; zostanie zmienione przez placePlayerAtSurface()
-  vx: 0,
-  vy: 0,
-  w: 0.6,
-  h: 0.9,
-  onGround: false,
-  facing: 1,
-  tool: 'basic',
-};
-
-const inventory = {
-  grass:0, sand:0, stone:0, diamond:0, wood:0, leaf:0,
-  tools: { stone:false, diamond:false }
-};
-
-const toolPower = { basic:1, stone:2, diamond:4 };
-
-// Crafting przepisy
-function canCraftStonePick(){ return inventory.stone >= 10; }
-function craftStonePick(){ if(canCraftStonePick()){ inventory.stone -= 10; inventory.tools.stone = true; msg('Zrobiono kamienny kilof! (klawisz 2)'); updateUI(); }}
-function canCraftDiamondPick(){ return inventory.diamond >= 5; }
-function craftDiamondPick(){ if(canCraftDiamondPick()){ inventory.diamond -=5; inventory.tools.diamond = true; msg('Zrobiono diamentowy kilof! (klawisz 3)'); updateUI(); }}
+// --- Gracz / inwentarz ---
+const player={x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,facing:1,tool:'basic'}; const tools={basic:1,stone:2,diamond:4}; const inv={grass:0,sand:0,stone:0,diamond:0,wood:0,leaf:0,tools:{stone:false,diamond:false}}; function canCraftStone(){return inv.stone>=10;} function craftStone(){ if(canCraftStone()){ inv.stone-=10; inv.tools.stone=true; msg('Kilof kamienny (2)'); updateInventory(); }} function canCraftDiamond(){return inv.diamond>=5;} function craftDiamond(){ if(canCraftDiamond()){ inv.diamond-=5; inv.tools.diamond=true; msg('Kilof diamentowy (3)'); updateInventory(); }}
 
 // Input
-const keys = {};
-window.addEventListener('keydown',e=>{ keys[e.key.toLowerCase()] = true; if(['1','2','3'].includes(e.key)) selectTool(e.key); });
-window.addEventListener('keyup',e=>{ keys[e.key.toLowerCase()] = false; });
+const keys={}; window.addEventListener('keydown',e=>{ const k=e.key.toLowerCase(); keys[k]=true; if(['1','2','3'].includes(e.key)){ if(e.key==='1') player.tool='basic'; if(e.key==='2'&&inv.tools.stone) player.tool='stone'; if(e.key==='3'&&inv.tools.diamond) player.tool='diamond'; updateInventory(); } if(['arrowup','w',' '].includes(k)) e.preventDefault(); }); window.addEventListener('keyup',e=>{ keys[e.key.toLowerCase()]=false; });
 
-function selectTool(num){
-  if(num==='1') player.tool='basic';
-  else if(num==='2' && inventory.tools.stone) player.tool='stone';
-  else if(num==='3' && inventory.tools.diamond) player.tool='diamond';
-  updateUI();
-}
+// Kierunek kopania
+let mineDir={dx:1,dy:0}; document.querySelectorAll('.dirbtn').forEach(b=>{ b.addEventListener('click',()=>{ mineDir.dx=+b.getAttribute('data-dx'); mineDir.dy=+b.getAttribute('data-dy'); document.querySelectorAll('.dirbtn').forEach(o=>o.classList.remove('sel')); b.classList.add('sel'); }); }); document.querySelector('.dirbtn[data-dx="1"][data-dy="0"]').classList.add('sel');
+
+// Pad dotykowy
+function bindPad(){ document.querySelectorAll('#pad .btn').forEach(btn=>{ const code=btn.getAttribute('data-key'); if(!code) return; btn.addEventListener('pointerdown',ev=>{ ev.preventDefault(); keys[code.toLowerCase()]=true; btn.classList.add('on'); if(code==='ArrowUp') keys['w']=true; }); ['pointerup','pointerleave','pointercancel'].forEach(evName=> btn.addEventListener(evName,()=>{ keys[code.toLowerCase()]=false; btn.classList.remove('on'); if(code==='ArrowUp') keys['w']=false; })); }); } bindPad();
 
 // Kamera
-let cameraX = 0;
-let cameraY = 0;
-let cameraSmoothX = 0;
-let cameraSmoothY = 0;
+let camX=0,camY=0,camSX=0,camSY=0; let zoom=1; function ensureChunks(){ const pcx=Math.floor(player.x/CHUNK_W); for(let d=-2; d<=2; d++) ensureChunk(pcx+d); }
 
-// Parametry płynnego ruchu
-const MOVE = {
-  MAX_SPEED: 6,
-  ACCEL: 32,
-  FRICTION: 28,
-  JUMP_VELOCITY: -9,
-};
+// Fizyka
+const MOVE={ACC:32,FRICTION:28,MAX:6,JUMP:-9,GRAV:20}; function physics(dt){ let input=0; if(keys['a']||keys['arrowleft']) input-=1; if(keys['d']||keys['arrowright']) input+=1; if(input!==0) player.facing=input; const target=input*MOVE.MAX; const diff=target-player.vx; const accel=MOVE.ACC*dt*Math.sign(diff); if(target!==0){ if(Math.abs(accel)>Math.abs(diff)) player.vx=target; else player.vx+=accel; } else { const fr=MOVE.FRICTION*dt; if(Math.abs(player.vx)<=fr) player.vx=0; else player.vx-=fr*Math.sign(player.vx); } if((keys['w']||keys['arrowup']||keys[' ']) && player.onGround){ player.vy=MOVE.JUMP; player.onGround=false; } player.vy+=MOVE.GRAV*dt; if(player.vy>20) player.vy=20; player.x += player.vx*dt; collide('x'); player.y += player.vy*dt; collide('y'); const tX=player.x - (W/(TILE*zoom))/2 + player.w/2; const tY=player.y - (H/(TILE*zoom))/2 + player.h/2; camSX += (tX-camSX)*Math.min(1,dt*8); camSY += (tY-camSY)*Math.min(1,dt*8); camX=camSX; camY=camSY; ensureChunks(); revealAround(); }
+function collide(axis){ const w=player.w/2,h=player.h/2; if(axis==='x'){ const minX=Math.floor(player.x-w), maxX=Math.floor(player.x+w), minY=Math.floor(player.y-h), maxY=Math.floor(player.y+h); for(let y=minY;y<=maxY;y++){ for(let x=minX;x<=maxX;x++){ const t=getTile(x,y); if(t!==T.AIR){ if(player.vx>0) player.x = x - w - 0.001; if(player.vx<0) player.x = x + 1 + w + 0.001; } } } } else { const minX=Math.floor(player.x-w), maxX=Math.floor(player.x+w), minY=Math.floor(player.y-h), maxY=Math.floor(player.y+h); player.onGround=false; for(let y=minY;y<=maxY;y++){ for(let x=minX;x<=maxX;x++){ const t=getTile(x,y); if(t!==T.AIR){ if(player.vy>0){ player.y = y - h - 0.001; player.vy=0; player.onGround=true; } if(player.vy<0){ player.y = y + 1 + h + 0.001; player.vy=0; } } } } } }
 
-function ensureNearbyChunks(){
-  const pcx = Math.floor(player.x/CHUNK_WIDTH);
-  for(let dx=-2; dx<=2; dx++) getChunk(pcx+dx); // wstępne generowanie by uniknąć mikro-stopów
-}
+// Mgła / widoczność
+let revealAll=false; const seen=new Set(); function key(x,y){ return x+','+y; } function revealAround(){ const r=10; for(let dx=-r; dx<=r; dx++){ for(let dy=-r; dy<=r; dy++){ if(dx*dx+dy*dy<=r*r) seen.add(key(Math.floor(player.x+dx),Math.floor(player.y+dy))); } } }
 
-function physics(dt){
-  // Wejście sterowania horyzontalnego
-  let input = 0;
-  if(keys['a']||keys['arrowleft']) input -= 1;
-  if(keys['d']||keys['arrowright']) input += 1;
-  if(input!==0) player.facing = input;
+// Kopanie (kierunkowe)
+let mining=false,mineTimer=0,mineTx=0,mineTy=0; const mineBtn=document.getElementById('mineBtn'); mineBtn.addEventListener('pointerdown',e=>{ e.preventDefault(); startMine(); }); window.addEventListener('pointerup',()=>{ mining=false; mineBtn.classList.remove('on'); }); function startMine(){ const tx=Math.floor(player.x + mineDir.dx + (mineDir.dx>0?player.w/2:mineDir.dx<0?-player.w/2:0)); const ty=Math.floor(player.y + mineDir.dy); const t=getTile(tx,ty); if(t===T.AIR) return; mining=true; mineTimer=0; mineTx=tx; mineTy=ty; mineBtn.classList.add('on'); }
+function updateMining(dt){ if(!mining) return; if(getTile(mineTx,mineTy)===T.AIR){ mining=false; mineBtn.classList.remove('on'); return; } mineTimer += dt * tools[player.tool]; const info=INFO[getTile(mineTx,mineTy)]; const need=Math.max(0.1, info.hp/6); if(mineTimer>=need){ const drop=info.drop; setTile(mineTx,mineTy,T.AIR); if(drop) inv[drop]=(inv[drop]||0)+1; mining=false; mineBtn.classList.remove('on'); updateInventory(); } }
 
-  // Przyspieszanie / hamowanie
-  const targetVx = input * MOVE.MAX_SPEED;
-  if(targetVx !== 0){
-    const diff = targetVx - player.vx;
-    const accel = MOVE.ACCEL * dt * Math.sign(diff);
-    if(Math.abs(accel) > Math.abs(diff)) player.vx = targetVx; else player.vx += accel;
-  } else {
-    // FRICTION
-    const fr = MOVE.FRICTION * dt;
-    if(Math.abs(player.vx) <= fr) player.vx = 0; else player.vx -= fr * Math.sign(player.vx);
-  }
+// Render
+function draw(){ ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camX)-1; const sy=Math.floor(camY)-1; ctx.save(); ctx.scale(zoom,zoom); ctx.translate(-camX*TILE,-camY*TILE); for(let y=sy; y<sy+viewY+2; y++){ for(let x=sx; x<sx+viewX+2; x++){ const t=getTile(x,y); if(t===T.AIR) continue; if(!revealAll && !seen.has(key(x,y))){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); continue; } ctx.fillStyle=INFO[t].color; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); } } const px=(player.x-player.w/2)*TILE; const py=(player.y-player.h/2)*TILE; ctx.fillStyle='#ffd37f'; ctx.fillRect(px,py,player.w*TILE,player.h*TILE); if(mining){ ctx.strokeStyle='#fff'; ctx.strokeRect(mineTx*TILE+1,mineTy*TILE+1,TILE-2,TILE-2); const info=INFO[getTile(mineTx,mineTy)]||{hp:1}; const need=Math.max(0.1,info.hp/6); const p=mineTimer/need; ctx.fillStyle='rgba(255,255,255,.3)'; ctx.fillRect(mineTx*TILE, mineTy*TILE + (1-p)*TILE, TILE, p*TILE); } ctx.restore(); }
 
-  // Skok (pojedynczy)
-  if((keys['w']||keys['arrowup']||keys[' ']) && player.onGround){ player.vy = MOVE.JUMP_VELOCITY; player.onGround=false; }
+// UI aktualizacja
+const el={grass:document.getElementById('grass'),sand:document.getElementById('sand'),stone:document.getElementById('stone'),diamond:document.getElementById('diamond'),wood:document.getElementById('wood'),pick:document.getElementById('pick'),fps:document.getElementById('fps'),msg:document.getElementById('messages')}; function updateInventory(){ el.grass.textContent=inv.grass; el.sand.textContent=inv.sand; el.stone.textContent=inv.stone; el.diamond.textContent=inv.diamond; el.wood.textContent=inv.wood; el.pick.textContent=player.tool; document.getElementById('craftStone').disabled=!canCraftStone(); document.getElementById('craftDiamond').disabled=!canCraftDiamond(); }
+document.getElementById('craftStone').addEventListener('click', craftStone); document.getElementById('craftDiamond').addEventListener('click', craftDiamond);
+document.getElementById('mapBtn').addEventListener('click',()=>{ revealAll=!revealAll; const b=document.getElementById('mapBtn'); b.classList.toggle('toggled', revealAll); b.textContent='Mapa: '+(revealAll?'ON':'OFF'); });
+document.getElementById('centerBtn').addEventListener('click',()=>{ camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; });
+document.getElementById('helpBtn').addEventListener('click',()=>{ const h=document.getElementById('help'); const show=h.style.display!=='block'; h.style.display=show?'block':'none'; document.getElementById('helpBtn').setAttribute('aria-expanded', String(show)); });
+const radarBtn=document.getElementById('radarBtn'); radarBtn.addEventListener('click',()=>{ radarFlash=performance.now()+1500; }); let radarFlash=0;
+function msg(t){ el.msg.textContent=t; clearTimeout(msg._t); msg._t=setTimeout(()=>{ el.msg.textContent=''; },4000); }
 
-  // grawitacja
-  player.vy += 20*dt;
-  if(player.vy>20) player.vy=20;
+// FPS
+let frames=0,lastFps=performance.now(); function updateFps(now){ frames++; if(now-lastFps>1000){ el.fps.textContent=frames+' FPS'; frames=0; lastFps=now; }}
 
-  // ruch X
-  player.x += player.vx*dt;
-  collideAxis('x');
-  // ruch Y
-  player.y += player.vy*dt;
-  collideAxis('y');
+// Spawn
+function placePlayer(){ const x=0; ensureChunk(0); let y=0; while(y<WORLD_H-1 && getTile(x,y)===T.AIR) y++; player.x=x+0.5; player.y=y-1; revealAround(); camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; }
+placePlayer(); updateInventory(); msg('Sterowanie: A/D/W + ⛏️ / klik.');
 
-  // odkrywanie w zasięgu
-  const rad = 9;
-  for(let dx=-rad; dx<=rad; dx++){
-    for(let dy=-rad; dy<=rad; dy++){
-      if(dx*dx+dy*dy <= rad*rad){
-        discover(Math.floor(player.x+dx), Math.floor(player.y+dy));
-      }
-    }
-  }
-
-  // Płynna kamera (lerp)
-  const targetCamX = player.x - (canvas.width/TILE_SIZE)/2 + player.w/2;
-  const targetCamY = player.y - (canvas.height/TILE_SIZE)/2 + player.h/2;
-  cameraSmoothX += (targetCamX - cameraSmoothX) * Math.min(1, dt*8);
-  cameraSmoothY += (targetCamY - cameraSmoothY) * Math.min(1, dt*8);
-  cameraX = cameraSmoothX;
-  cameraY = cameraSmoothY;
-
-  ensureNearbyChunks();
-}
-
-function collideAxis(axis){
-  if(axis==='x'){
-    const minX = Math.floor(player.x - player.w/2);
-    const maxX = Math.floor(player.x + player.w/2);
-    const minY = Math.floor(player.y - player.h/2);
-    const maxY = Math.floor(player.y + player.h/2);
-    for(let y=minY; y<=maxY; y++){
-      for(let x=minX; x<=maxX; x++){
-        const t = getTile(x,y);
-        if(t!==TILE.AIR){
-          if(player.vx>0) player.x = x - player.w/2 - 0.001;
-          if(player.vx<0) player.x = x + 1 + player.w/2 + 0.001;
-        }
-      }
-    }
-  } else {
-    const minX = Math.floor(player.x - player.w/2);
-    const maxX = Math.floor(player.x + player.w/2);
-    const minY = Math.floor(player.y - player.h/2);
-    const maxY = Math.floor(player.y + player.h/2);
-    player.onGround = false;
-    for(let y=minY; y<=maxY; y++){
-      for(let x=minX; x<=maxX; x++){
-        const t = getTile(x,y);
-        if(t!==TILE.AIR){
-          if(player.vy>0){ player.y = y - player.h/2 - 0.001; player.vy=0; player.onGround=true; }
-          if(player.vy<0){ player.y = y + 1 + player.h/2 + 0.001; player.vy=0; }
-        }
-      }
-    }
-  }
-}
-
-// Kopanie
-let mining = false;
-let mineTarget = null;
-let mineProgress = 0;
-let mineTimeRequired = 1; // sekundy (modyfikowane przez narzędzie i twardość)
-
-canvas.addEventListener('mousedown', e=>{ startMining(e); });
-canvas.addEventListener('touchstart', e=>{ startMining(e.touches[0]); });
-window.addEventListener('mouseup', ()=> mining=false );
-window.addEventListener('touchend', ()=> mining=false );
-
-function startMining(e){
-  const rect = canvas.getBoundingClientRect();
-  const mx = (e.clientX - rect.left)/TILE_SIZE + cameraX;
-  const my = (e.clientY - rect.top)/TILE_SIZE + cameraY;
-  const tx = Math.floor(mx);
-  const ty = Math.floor(my);
-  const t = getTile(tx,ty);
-  if(t!==TILE.AIR){
-    mining = true;
-    mineTarget = {x:tx,y:ty,type:t, hp: TILE_INFO[t].hp};
-    const power = toolPower[player.tool];
-    mineTimeRequired = Math.max(0.15, TILE_INFO[t].hp / (power*4));
-    mineProgress = 0;
-  }
-}
-
-function updateMining(dt){
-  if(!mining || !mineTarget) return;
-  // jeśli tile się zmienił - przerwij
-  if(getTile(mineTarget.x, mineTarget.y)!==mineTarget.type){ mining=false; mineTarget=null; return; }
-  mineProgress += dt;
-  if(mineProgress >= mineTimeRequired){
-    // zbierz
-    const info = TILE_INFO[mineTarget.type];
-    setTile(mineTarget.x, mineTarget.y, TILE.AIR);
-    if(info.drop){ inventory[info.drop] = (inventory[info.drop]||0)+1; }
-    mining=false; mineTarget=null; mineProgress=0; updateUI();
-  }
-}
-
-// Rysowanie
-function render(){
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  const tilesX = Math.ceil(canvas.width / TILE_SIZE);
-  const tilesY = Math.ceil(canvas.height / TILE_SIZE);
-  for(let sx=0; sx<=tilesX; sx++){
-    for(let sy=0; sy<=tilesY; sy++){
-      const wx = Math.floor(cameraX + sx);
-      const wy = Math.floor(cameraY + sy);
-      if(!isDiscovered(wx,wy)) continue;
-      const t = getTile(wx,wy);
-      if(t===TILE.AIR) continue;
-      ctx.fillStyle = TILE_INFO[t].color;
-      ctx.fillRect(sx*TILE_SIZE, sy*TILE_SIZE, TILE_SIZE, TILE_SIZE);
-    }
-  }
-  // player
-  const px = (player.x - cameraX - player.w/2)*TILE_SIZE;
-  const py = (player.y - cameraY - player.h/2)*TILE_SIZE;
-  ctx.fillStyle = '#ffd37f';
-  ctx.fillRect(px,py,player.w*TILE_SIZE,player.h*TILE_SIZE);
-
-  // mining overlay
-  if(mining && mineTarget){
-    const sx = (mineTarget.x - cameraX)*TILE_SIZE;
-    const sy = (mineTarget.y - cameraY)*TILE_SIZE;
-    ctx.strokeStyle = '#fff';
-    ctx.strokeRect(sx+1,sy+1,TILE_SIZE-2,TILE_SIZE-2);
-    const p = mineProgress / mineTimeRequired;
-    ctx.fillStyle = 'rgba(255,255,255,0.3)';
-    ctx.fillRect(sx, sy + (1-p)*TILE_SIZE, TILE_SIZE, p*TILE_SIZE);
-  }
-}
-
-let last=0;
-let frames=0;
-function loop(ts){
-  const dt = Math.min(0.05,(ts-last)/1000);
-  last=ts;
-  physics(dt);
-  updateMining(dt);
-  render();
-  frames++;
-  // Awaryjne odkrycie jeśli po paru klatkach nadal brak widocznych kafelków (np. coś poszło nie tak z placePlayerAtSurface)
-  if(frames===30){
-    const x0 = Math.floor(player.x)-40;
-    for(let x=x0; x<x0+80; x++){
-      for(let y=0; y<60; y++) discover(x,y);
-    }
-  }
-  requestAnimationFrame(loop);
-}
-
-function updateUI(){
-  const invDiv = document.getElementById('inventory');
-  invDiv.innerHTML = '<b>Inwentarz</b><br>' +
-    ['grass','sand','stone','diamond','wood','leaf'].map(k=>`${k}: ${inventory[k]}`).join('<br>') +
-    `<br>Narzędzie: ${player.tool}`;
-  const craftDiv = document.getElementById('crafting');
-  craftDiv.innerHTML = '<b>Crafting</b><br>' +
-    `<button ${canCraftStonePick()?'':'disabled'} id="cStone">Kamienny kilof (10 stone)</button><br>`+
-    `<button ${canCraftDiamondPick()?'':'disabled'} id="cDia">Diamentowy kilof (5 diamond)</button>`;
-  document.getElementById('cStone')?.addEventListener('click', craftStonePick);
-  document.getElementById('cDia')?.addEventListener('click', craftDiamondPick);
-}
-
-function msg(t){
-  const m = document.getElementById('messages');
-  m.textContent = t;
-  clearTimeout(msg._t);
-  msg._t = setTimeout(()=>{ m.textContent=''; }, 4000);
-}
-
-// Ustaw gracza przy powierzchni i odkryj początkowy obszar, żeby nie było czarnego ekranu.
-function placePlayerAtSurface(){
-  const x = Math.floor(player.x);
-  // Upewnij się, że chunk istnieje
-  getChunk(Math.floor(x/CHUNK_WIDTH));
-  let y=0;
-  while(y < WORLD_HEIGHT-1 && getTile(x,y) === TILE.AIR) y++;
-  player.y = y - 1; // tuż nad pierwszym blokiem
-  // Odkryj większy obszar startowy
-  const rad = 20;
-  for(let dx=-rad; dx<=rad; dx++){
-    for(let dy=-rad; dy<=rad; dy++){
-      if(dx*dx + dy*dy <= rad*rad*1.2){
-        discover(x+dx, player.y+dy);
-      }
-    }
-  }
-}
-placePlayerAtSurface();
-
-updateUI();
-msg('Sterowanie: A/D lewo/prawo, W lub Spacja skok, mysz/tap kopie, 1/2/3 wybór kilofa. Wykop kamień by zrobić lepszy kilof.');
-
-// Uruchom pętlę dopiero po ustawieniu gracza
-requestAnimationFrame(loop);
-
-// Adaptacja do rozmiaru okna
-function resize(){
-  canvas.width = Math.min(window.innerWidth, 1280);
-  canvas.height = Math.min(window.innerHeight, 720);
-}
-window.addEventListener('resize', resize);
-resize();
+// Pętla
+let last=performance.now(); function loop(ts){ const dt=Math.min(0.05,(ts-last)/1000); last=ts; physics(dt); updateMining(dt); draw(); if(ts<radarFlash){ radarBtn.classList.add('pulse'); } else radarBtn.classList.remove('pulse'); updateFps(ts); requestAnimationFrame(loop); } requestAnimationFrame(loop);
