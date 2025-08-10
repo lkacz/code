@@ -128,7 +128,10 @@ function drawFallingBlocks(){ TREES.drawFallingBlocks(ctx,TILE,INFO); }
 function updateMining(dt){ if(!mining) return; if(getTile(mineTx,mineTy)===T.AIR){ mining=false; mineBtn.classList.remove('on'); return; } if(godMode){ instantBreak(); return; } mineTimer += dt * tools[player.tool]; const curId=getTile(mineTx,mineTy); const info=INFO[curId]; const need=Math.max(0.1, info.hp/6); if(mineTimer>=need){ if(curId===T.WOOD && isTreeBase(mineTx,mineTy)){ if(startTreeFall(mineTx,mineTy)){ mining=false; mineBtn.classList.remove('on'); return; } } const drop=info.drop; setTile(mineTx,mineTy,T.AIR); if(drop) inv[drop]=(inv[drop]||0)+1; mining=false; mineBtn.classList.remove('on'); updateInventory(); } }
 
 // Render
-function draw(){ ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camX)-1; const sy=Math.floor(camY)-1; ctx.save(); ctx.scale(zoom,zoom); ctx.translate(-camX*TILE,-camY*TILE);
+function draw(){ ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camX)-1; const sy=Math.floor(camY)-1; ctx.save(); ctx.scale(zoom,zoom); // pixel snapping to avoid seams
+	const camRenderX = Math.round(camX*TILE*zoom)/ (TILE*zoom);
+	const camRenderY = Math.round(camY*TILE*zoom)/ (TILE*zoom);
+	ctx.translate(-camRenderX*TILE,-camRenderY*TILE);
 	ctx.imageSmoothingEnabled=false; // avoid anti-alias gaps
 	// draw cape FIRST so any solid / passable tiles will occlude it
 	drawCape();
