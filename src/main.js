@@ -4,11 +4,81 @@ const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d', {alpha:false});
 let W=0,H=0,DPR=1; function resize(){ DPR=Math.max(1,Math.min(2,window.devicePixelRatio||1)); canvas.width=Math.floor(window.innerWidth*DPR); canvas.height=Math.floor(window.innerHeight*DPR); canvas.style.width=window.innerWidth+'px'; canvas.style.height=window.innerHeight+'px'; ctx.setTransform(DPR,0,0,DPR,0,0); W=window.innerWidth; H=window.innerHeight; } window.addEventListener('resize',resize,{passive:true}); resize();
 
-// --- Świat ---
-const CHUNK_W=64; const WORLD_H=100; const TILE=20; const SURFACE_GRASS_DEPTH=1; const SAND_DEPTH=8; const STONE_START=SURFACE_GRASS_DEPTH+SAND_DEPTH; function diamondChance(y){ const d=y-STONE_START; if(d<0) return 0; return Math.min(0.002 + d*0.0009, 0.05);} const T={AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6}; const INFO={0:{hp:0,color:null,drop:null},1:{hp:2,color:'#2e8b2e',drop:'grass'},2:{hp:2,color:'#c2b280',drop:'sand'},3:{hp:6,color:'#777',drop:'stone'},4:{hp:10,color:'#3ef',drop:'diamond'},5:{hp:4,color:'#8b5a2b',drop:'wood'},6:{hp:1,color:'#2faa2f',drop:'leaf'}}; const world=new Map(); function ck(x){return 'c'+x;} function tileIndex(x,y){return y*CHUNK_W+x;} function randSeed(n){ let x=Math.sin(n*127.1)*43758.5453; return x-Math.floor(x);} function ensureChunk(cx){ const k=ck(cx); if(world.has(k)) return world.get(k); const arr=new Uint8Array(CHUNK_W*WORLD_H); for(let lx=0; lx<CHUNK_W; lx++){ const wx=cx*CHUNK_W+lx; const hNoise=randSeed(wx*0.08); const surfaceY=Math.floor(18 + hNoise*6); for(let y=0;y<WORLD_H;y++){ let t=T.AIR; if(y>=surfaceY){ const depth=y-surfaceY; if(depth<SURFACE_GRASS_DEPTH) t=T.GRASS; else if(depth<SURFACE_GRASS_DEPTH+SAND_DEPTH) t=T.SAND; else t=(Math.random()<diamondChance(y)?T.DIAMOND:T.STONE);} arr[tileIndex(lx,y)]=t; } if(randSeed(wx) < 0.07){ const base=surfaceY; const h=3+Math.floor(randSeed(wx+50)*3); for(let i=0;i<h;i++){ const ty=base+i; if(ty<WORLD_H) arr[tileIndex(lx,ty)]=T.WOOD; } for(let dx=-2; dx<=2; dx++){ for(let dy=h-2; dy<=h+1; dy++){ const tx=lx+dx; const ty=base+dy; if(tx>=0&&tx<CHUNK_W&&ty>=0&&ty<WORLD_H&&arr[tileIndex(tx,ty)]===T.AIR) arr[tileIndex(tx,ty)]=T.LEAF; } } } } world.set(k,arr); return arr; } function getTile(x,y){ if(y<0||y>=WORLD_H) return T.AIR; const cx=Math.floor(x/CHUNK_W); const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W; const ch=ensureChunk(cx); return ch[tileIndex(lx,y)]; } function setTile(x,y,v){ if(y<0||y>=WORLD_H) return; const cx=Math.floor(x/CHUNK_W); const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W; const ch=ensureChunk(cx); ch[tileIndex(lx,y)]=v; }
+// --- Świat (góry + śnieg + drzewa) ---
+const CHUNK_W=64; const WORLD_H=140; const TILE=20; const SURFACE_GRASS_DEPTH=1; const SAND_DEPTH=8; // niższe rejony
+// Id bloków
+const T={AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7};
+const INFO={0:{hp:0,color:null,drop:null},1:{hp:2,color:'#2e8b2e',drop:'grass'},2:{hp:2,color:'#c2b280',drop:'sand'},3:{hp:6,color:'#777',drop:'stone'},4:{hp:10,color:'#3ef',drop:'diamond'},5:{hp:4,color:'#8b5a2b',drop:'wood'},6:{hp:1,color:'#2faa2f',drop:'leaf'},7:{hp:2,color:'#eee',drop:'snow'}};
+// granica śniegu: wszystko co ma surfaceY < SNOW_LINE będzie z czapami śniegu
+const SNOW_LINE=11; // mniejsze y = wyżej
+function diamondChance(y){ const d=y-(SURFACE_GRASS_DEPTH+SAND_DEPTH); if(d<0) return 0; return Math.min(0.002 + d*0.0009, 0.05);} 
+const world=new Map(); function ck(x){return 'c'+x;} function tileIndex(x,y){return y*CHUNK_W+x;} function randSeed(n){ let x=Math.sin(n*127.1)*43758.5453; return x-Math.floor(x);} 
+function mountainSurface(wx){
+	// Połączenie dwóch szumów dla fal i rzadkich szczytów
+	const n1=randSeed(wx*0.05); // fale średnie
+	const n2=randSeed(wx*0.007); // długie pasma gór
+	const peak=Math.pow(n2,3); // silnie podbija najwyższe wartości
+	// bazowa wysokość + fale - wyniesione szczyty (zmniejszamy surfaceY = wyżej)
+	let surface=20 + n1*10 - peak*32; // przedział orientacyjny  -12 .. 30
+	if(surface<4) surface=4; if(surface>34) surface=34; // clamp
+	return Math.floor(surface);
+}
+function ensureChunk(cx){ const k=ck(cx); if(world.has(k)) return world.get(k); const arr=new Uint8Array(CHUNK_W*WORLD_H);
+	for(let lx=0; lx<CHUNK_W; lx++){
+		const wx=cx*CHUNK_W+lx;
+		const surfaceY=mountainSurface(wx);
+		// wypełnienie kolumny
+		for(let y=0;y<WORLD_H;y++){
+			let t=T.AIR;
+			if(y>=surfaceY){
+				const depth=y-surfaceY;
+				const high=surfaceY < SNOW_LINE;
+				if(depth<SURFACE_GRASS_DEPTH){ t = high?T.SNOW:T.GRASS; }
+				else if(!high && depth<SURFACE_GRASS_DEPTH+SAND_DEPTH && surfaceY>18){ t=T.SAND; }
+				else t=(Math.random()<diamondChance(y)?T.DIAMOND:T.STONE);
+			}
+			arr[tileIndex(lx,y)]=t;
+		}
+		// Drzewa: inne dla wysokich (iglaste) i niskich (rozłożyste)
+		if(surfaceY>=4){
+			const treeChance = surfaceY < SNOW_LINE ? 0.05 : 0.09; // mniej drzew bardzo wysoko
+			if(randSeed(wx*1.13) < treeChance){
+				if(surfaceY < SNOW_LINE){
+					// iglaste wysokogórskie (choinka)
+						const base=surfaceY; const trunkH=5+Math.floor(randSeed(wx+70)*4); // 5..8
+						for(let i=0;i<trunkH;i++){ const ty=base+i; if(ty<WORLD_H) arr[tileIndex(lx,ty)]=T.WOOD; }
+						const crownH=trunkH; // stożek
+						for(let dy=0; dy<crownH; dy++){
+							const radius = Math.max(0, Math.floor((crownH-dy)/2));
+							for(let dx=-radius; dx<=radius; dx++){
+								const tx=lx+dx; const ty=base+trunkH-1-dy; if(tx>=0&&tx<CHUNK_W&&ty>=0&&ty<WORLD_H){ if(arr[tileIndex(tx,ty)]===T.AIR) arr[tileIndex(tx,ty)]=T.LEAF; }
+							}
+						}
+						// czapka śniegu
+						if(base+trunkH-1 < WORLD_H) arr[tileIndex(lx,base+trunkH-1)]=T.SNOW;
+				} else {
+					// szerokie drzewo liściaste
+					const base=surfaceY; const h=3+Math.floor(randSeed(wx+50)*4); // 3..6
+					for(let i=0;i<h;i++){ const ty=base+i; if(ty<WORLD_H) arr[tileIndex(lx,ty)]=T.WOOD; }
+					const spread=2+Math.floor(randSeed(wx+90)*1); // 2 lub 3
+					for(let dx=-spread; dx<=spread; dx++){
+						for(let dy=h-2; dy<=h+1; dy++){
+							const tx=lx+dx; const ty=base+dy; if(tx>=0&&tx<CHUNK_W&&ty>=0&&ty<WORLD_H && arr[tileIndex(tx,ty)]===T.AIR){
+								// górne liście z lekką szansą na śnieg jeśli bardzo wysoko
+								arr[tileIndex(tx,ty)] = (surfaceY < SNOW_LINE+1 && dy>=h)? T.SNOW : T.LEAF;
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	world.set(k,arr); return arr; }
+function getTile(x,y){ if(y<0||y>=WORLD_H) return T.AIR; const cx=Math.floor(x/CHUNK_W); const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W; const ch=ensureChunk(cx); return ch[tileIndex(lx,y)]; }
+function setTile(x,y,v){ if(y<0||y>=WORLD_H) return; const cx=Math.floor(x/CHUNK_W); const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W; const ch=ensureChunk(cx); ch[tileIndex(lx,y)]=v; }
 
 // --- Gracz / inwentarz ---
-const player={x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,facing:1,tool:'basic'}; const tools={basic:1,stone:2,diamond:4}; const inv={grass:0,sand:0,stone:0,diamond:0,wood:0,leaf:0,tools:{stone:false,diamond:false}}; function canCraftStone(){return inv.stone>=10;} function craftStone(){ if(canCraftStone()){ inv.stone-=10; inv.tools.stone=true; msg('Kilof kamienny (2)'); updateInventory(); }} function canCraftDiamond(){return inv.diamond>=5;} function craftDiamond(){ if(canCraftDiamond()){ inv.diamond-=5; inv.tools.diamond=true; msg('Kilof diamentowy (3)'); updateInventory(); }}
+const player={x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,facing:1,tool:'basic'}; const tools={basic:1,stone:2,diamond:4}; const inv={grass:0,sand:0,stone:0,diamond:0,wood:0,leaf:0,snow:0,tools:{stone:false,diamond:false}}; function canCraftStone(){return inv.stone>=10;} function craftStone(){ if(canCraftStone()){ inv.stone-=10; inv.tools.stone=true; msg('Kilof kamienny (2)'); updateInventory(); }} function canCraftDiamond(){return inv.diamond>=5;} function craftDiamond(){ if(canCraftDiamond()){ inv.diamond-=5; inv.tools.diamond=true; msg('Kilof diamentowy (3)'); updateInventory(); }}
 
 // Input + tryby specjalne
 const keys={}; let godMode=false; const keysOnce=new Set();
@@ -50,7 +120,7 @@ function updateMining(dt){ if(!mining) return; if(getTile(mineTx,mineTy)===T.AIR
 function draw(){ ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camX)-1; const sy=Math.floor(camY)-1; ctx.save(); ctx.scale(zoom,zoom); ctx.translate(-camX*TILE,-camY*TILE); for(let y=sy; y<sy+viewY+2; y++){ for(let x=sx; x<sx+viewX+2; x++){ const t=getTile(x,y); if(t===T.AIR) continue; if(!revealAll && !seen.has(key(x,y))){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); continue; } ctx.fillStyle=INFO[t].color; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); } } const px=(player.x-player.w/2)*TILE; const py=(player.y-player.h/2)*TILE; ctx.fillStyle='#ffd37f'; ctx.fillRect(px,py,player.w*TILE,player.h*TILE); if(mining){ ctx.strokeStyle='#fff'; ctx.strokeRect(mineTx*TILE+1,mineTy*TILE+1,TILE-2,TILE-2); const info=INFO[getTile(mineTx,mineTy)]||{hp:1}; const need=Math.max(0.1,info.hp/6); const p=mineTimer/need; ctx.fillStyle='rgba(255,255,255,.3)'; ctx.fillRect(mineTx*TILE, mineTy*TILE + (1-p)*TILE, TILE, p*TILE); } ctx.restore(); }
 
 // UI aktualizacja
-const el={grass:document.getElementById('grass'),sand:document.getElementById('sand'),stone:document.getElementById('stone'),diamond:document.getElementById('diamond'),wood:document.getElementById('wood'),pick:document.getElementById('pick'),fps:document.getElementById('fps'),msg:document.getElementById('messages')}; function updateInventory(){ el.grass.textContent=inv.grass; el.sand.textContent=inv.sand; el.stone.textContent=inv.stone; el.diamond.textContent=inv.diamond; el.wood.textContent=inv.wood; el.pick.textContent=player.tool; document.getElementById('craftStone').disabled=!canCraftStone(); document.getElementById('craftDiamond').disabled=!canCraftDiamond(); }
+const el={grass:document.getElementById('grass'),sand:document.getElementById('sand'),stone:document.getElementById('stone'),diamond:document.getElementById('diamond'),wood:document.getElementById('wood'),snow:document.getElementById('snow'),pick:document.getElementById('pick'),fps:document.getElementById('fps'),msg:document.getElementById('messages')}; function updateInventory(){ el.grass.textContent=inv.grass; el.sand.textContent=inv.sand; el.stone.textContent=inv.stone; el.diamond.textContent=inv.diamond; el.wood.textContent=inv.wood; if(el.snow) el.snow.textContent=inv.snow; el.pick.textContent=player.tool; document.getElementById('craftStone').disabled=!canCraftStone(); document.getElementById('craftDiamond').disabled=!canCraftDiamond(); }
 document.getElementById('craftStone').addEventListener('click', craftStone); document.getElementById('craftDiamond').addEventListener('click', craftDiamond);
 // Menu / przyciski
 document.getElementById('mapBtn')?.addEventListener('click',toggleMap);
