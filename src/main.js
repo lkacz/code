@@ -52,18 +52,17 @@ function drawPlayer(){ drawCape(); const bodyX=(player.x-player.w/2)*TILE; const
 const chunkCanvases = new Map(); // key: chunkX -> {canvas,ctx,version}
 function drawChunkToCache(cx){ const key=cx; const k='c'+cx; const arr=WORLD._world.get(k); if(!arr) return; let entry=chunkCanvases.get(key); if(!entry){ const c=document.createElement('canvas'); c.width=CHUNK_W*TILE; c.height=WORLD_H*TILE; const cctx=c.getContext('2d'); entry={canvas:c,ctx:cctx,version:-1}; chunkCanvases.set(key,entry); }
 	const currentVersion=WORLD.chunkVersion(cx); if(entry.version===currentVersion) return; const cctx=entry.ctx; cctx.clearRect(0,0,cctx.canvas.width,cctx.canvas.height); for(let lx=0; lx<CHUNK_W; lx++){ for(let y=0;y<WORLD_H;y++){ const t=arr[y*CHUNK_W+lx]; if(t===T.AIR) continue; cctx.fillStyle=INFO[t].color; cctx.fillRect(lx*TILE,y*TILE,TILE,TILE); } } entry.version=currentVersion; }
-function drawWorldVisible(sx,sy,viewX,viewY){ const minChunk=Math.floor(sx/CHUNK_W)-1; const maxChunk=Math.floor((sx+viewX+2)/CHUNK_W)+1; for(let cx=minChunk; cx<=maxChunk; cx++){ WORLD.ensureChunk(cx); drawChunkToCache(cx); }
-	// Blit visible region chunk by chunk; still apply fog overlay per tile (cheap loop) or future: separate mask
-	for(let y=sy; y<sy+viewY+2; y++){
-		if(y<0||y>=WORLD_H) continue;
-		for(let x=sx; x<sx+viewX+2; x++){
-			const t=getTile(x,y); if(t===T.AIR) continue;
-			const cx=Math.floor(x/CHUNK_W); const entry=chunkCanvases.get(cx); if(!entry) continue; const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W;
-			// Draw from cached chunk
-			ctx.drawImage(entry.canvas, lx*TILE, y*TILE, TILE, TILE, x*TILE, y*TILE, TILE, TILE);
-			if(!revealAll && !hasSeen(x,y)){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); }
-		}
+function drawWorldVisible(sx,sy,viewX,viewY){ const minChunk=Math.floor(sx/CHUNK_W)-1; const maxChunk=Math.floor((sx+viewX+2)/CHUNK_W)+1; // prepare caches
+	for(let cx=minChunk; cx<=maxChunk; cx++){ WORLD.ensureChunk(cx); drawChunkToCache(cx); }
+	// Draw whole chunks that intersect view (avoids per-tile seams)
+	const viewPX0 = sx*TILE, viewPX1=(sx+viewX+2)*TILE;
+	for(let cx=minChunk; cx<=maxChunk; cx++){
+		const entry=chunkCanvases.get(cx); if(!entry) continue; const chunkXpx = cx*CHUNK_W*TILE;
+		const chunkRight = chunkXpx + CHUNK_W*TILE; if(chunkRight < viewPX0-CHUNK_W*TILE || chunkXpx > viewPX1+CHUNK_W*TILE) continue;
+		ctx.drawImage(entry.canvas, chunkXpx, 0);
 	}
+	// Apply fog overlay only for unseen tiles (still per-tile but solid overlay so no seams)
+	if(!revealAll){ for(let y=sy; y<sy+viewY+2; y++){ if(y<0||y>=WORLD_H) continue; for(let x=sx; x<sx+viewX+2; x++){ if(!hasSeen(x,y)){ const t=getTile(x,y); if(t!==T.AIR){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); } } } } }
 }
 
 // Input + tryby specjalne
@@ -130,6 +129,7 @@ function updateMining(dt){ if(!mining) return; if(getTile(mineTx,mineTy)===T.AIR
 
 // Render
 function draw(){ ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camX)-1; const sy=Math.floor(camY)-1; ctx.save(); ctx.scale(zoom,zoom); ctx.translate(-camX*TILE,-camY*TILE);
+	ctx.imageSmoothingEnabled=false; // avoid anti-alias gaps
 	// draw cape FIRST so any solid / passable tiles will occlude it
 	drawCape();
 	// render tiles (solids + passables)
