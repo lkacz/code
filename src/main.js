@@ -40,49 +40,45 @@ function surfaceHeight(x){
 function diamondChance(y){ const d=y-(SURFACE_GRASS_DEPTH+SAND_DEPTH); if(d<0) return 0; return Math.min(0.002 + d*0.0009, 0.05);} 
 const world=new Map(); function ck(x){return 'c'+x;} function tileIndex(x,y){return y*CHUNK_W+x;}
 function ensureChunk(cx){ const k=ck(cx); if(world.has(k)) return world.get(k); const arr=new Uint8Array(CHUNK_W*WORLD_H);
+	// wypełnienie gruntu
 	for(let lx=0; lx<CHUNK_W; lx++){
-		const wx=cx*CHUNK_W+lx;
-		const s=surfaceHeight(wx);
+		const wx=cx*CHUNK_W+lx; const s=surfaceHeight(wx);
 		for(let y=0;y<WORLD_H;y++){
-			let t=T.AIR;
-			if(y>=s){
-				const depth=y-s;
-				const snowy = s < SNOW_LINE;
-				if(depth<SURFACE_GRASS_DEPTH){ t=snowy?T.SNOW:T.GRASS; }
-				else if(!snowy && depth<SURFACE_GRASS_DEPTH+SAND_DEPTH && s>20){ t=T.SAND; }
-				else t=(randSeed(wx*13.37 + y*0.7) < diamondChance(y)?T.DIAMOND:T.STONE);
-			}
+			let t=T.AIR; if(y>=s){ const depth=y-s; const snowy=s<SNOW_LINE; if(depth<SURFACE_GRASS_DEPTH) t=snowy?T.SNOW:T.GRASS; else if(!snowy && depth<SURFACE_GRASS_DEPTH+SAND_DEPTH && s>20) t=T.SAND; else t=(randSeed(wx*13.37 + y*0.7) < diamondChance(y)?T.DIAMOND:T.STONE); }
 			arr[tileIndex(lx,y)]=t;
 		}
-		// drzewa tylko jeśli nie ekstremalne góry
-		if(s>=8 && s>surfaceHeight(wx-3)-12){
-			const biome=biomeType(wx);
-			const base=s; const r=randSeed(wx*1.77);
-			const treeChance = (biome===2?0.04:(biome===1?0.07:0.11));
-			if(r<treeChance){
-				if(biome===2){ // iglaste krótsze
-					const trunkH=4+Math.floor(randSeed(wx+70)*3);
-					for(let i=0;i<trunkH;i++){ const ty=base+i; if(ty<WORLD_H) arr[tileIndex(lx,ty)]=T.WOOD; }
-					for(let dy=0; dy<trunkH; dy++){
-						const radius=Math.max(0,Math.floor((trunkH-dy)/2));
-						for(let dx=-radius; dx<=radius; dx++){
-							const tx=lx+dx; const ty=base+trunkH-1-dy; if(tx>=0&&tx<CHUNK_W&&ty>=0&&ty<WORLD_H && arr[tileIndex(tx,ty)]===T.AIR){ arr[tileIndex(tx,ty)]= (dy<2 && s<SNOW_LINE)?T.SNOW:T.LEAF; }
-						}
-					}
-				} else { // liściaste
-					const h=3+Math.floor(randSeed(wx+50)*3);
-					for(let i=0;i<h;i++){ const ty=base+i; if(ty<WORLD_H) arr[tileIndex(lx,ty)]=T.WOOD; }
-					const spread=2+Math.floor(randSeed(wx+90)*1);
-					for(let dx=-spread; dx<=spread; dx++){
-						for(let dy=h-2; dy<=h+1; dy++){
-							const tx=lx+dx; const ty=base+dy; if(tx>=0&&tx<CHUNK_W&&ty>=0&&ty<WORLD_H && arr[tileIndex(tx,ty)]===T.AIR){ arr[tileIndex(tx,ty)]=T.LEAF; }
-						}
-					}
-				}
-			}
-		}
+	}
+	// drzewa po wypełnieniu (aby nie nadpisywać później)
+	for(let lx=0; lx<CHUNK_W; lx++){
+		const wx=cx*CHUNK_W+lx; const s=surfaceHeight(wx); if(s<2) continue; const biome=biomeType(wx);
+		const chance = (biome===0?0.12:biome===1?0.08:0.05); if(randSeed(wx*1.777) > chance) continue;
+		// nie stawiaj jeśli tuż obok duże zróżnicowanie wysokości (krawędź klifu)
+		const sL=surfaceHeight(wx-1), sR=surfaceHeight(wx+1); if(Math.abs(s-sL)>6 || Math.abs(s-sR)>6) continue;
+		const variant = (biome===2?'conifer': biome===1? (randSeed(wx+300)>0.5?'oak':'tallOak') : (randSeed(wx+500)<0.15?'megaOak':'oak'));
+		buildTree(arr,lx,s,variant,wx);
 	}
 	world.set(k,arr); return arr; }
+
+function buildTree(arr,lx,s,variant,wx){
+	// s = y top ground block; trunk goes upward (towards smaller y)
+	function put(localX,y,t){ if(y>=0 && y<WORLD_H && localX>=0 && localX<CHUNK_W){ if(arr[tileIndex(localX,y)]===T.AIR) arr[tileIndex(localX,y)]=t; }}
+	const snowy = s < SNOW_LINE;
+	if(variant==='conifer'){
+		const trunkH=5+Math.floor(randSeed(wx+10)*4); // 5..8
+		for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,T.WOOD); }
+		const crownH=trunkH+1; for(let dy=0; dy<crownH; dy++){ const radius=Math.max(0, Math.floor((crownH-dy)/3)); const cy=s-1-trunkH+1 - dy; if(cy<0) break; for(let dx=-radius; dx<=radius; dx++){ if(randSeed(wx*3.1 + dy*7 + dx*11) < 0.85){ put(lx+dx,cy, (snowy && dy<2)?T.SNOW:T.LEAF); } } }
+		if(snowy) put(lx, s-1-trunkH, T.SNOW);
+	} else if(variant==='megaOak'){
+		const trunkH=6+Math.floor(randSeed(wx+20)*5); for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,T.WOOD); }
+		const spread=3+Math.floor(randSeed(wx+40)*2); const top=s-1-trunkH; for(let dy=-spread; dy<=spread; dy++){ for(let dx=-spread; dx<=spread; dx++){ const dist=Math.abs(dx)+Math.abs(dy)*0.7; if(dist<=spread+ (randSeed(wx+dx*13+dy*17)-0.5)){ put(lx+dx, top+dy, T.LEAF); } } }
+	} else if(variant==='tallOak'){
+		const trunkH=7+Math.floor(randSeed(wx+60)*4); for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,T.WOOD); }
+		const top=s-1-trunkH; const spread=2; for(let dy=-2; dy<=2; dy++){ for(let dx=-spread; dx<=spread; dx++){ if(Math.abs(dx)+Math.abs(dy)*0.9<=spread+0.3){ put(lx+dx, top+dy, T.LEAF); } } }
+	} else { // oak
+		const trunkH=4+Math.floor(randSeed(wx+80)*3); for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,T.WOOD); }
+		const top=s-1-trunkH; const spread=2; for(let dy=-2; dy<=2; dy++){ for(let dx=-spread; dx<=spread; dx++){ if(Math.abs(dx)+Math.abs(dy)*0.8<=spread+ (randSeed(wx+dx*31+dy*19)-0.4)){ put(lx+dx, top+dy, T.LEAF); } } }
+	}
+}
 function getTile(x,y){ if(y<0||y>=WORLD_H) return T.AIR; const cx=Math.floor(x/CHUNK_W); const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W; const ch=ensureChunk(cx); return ch[tileIndex(lx,y)]; }
 function setTile(x,y,v){ if(y<0||y>=WORLD_H) return; const cx=Math.floor(x/CHUNK_W); const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W; const ch=ensureChunk(cx); ch[tileIndex(lx,y)]=v; }
 
