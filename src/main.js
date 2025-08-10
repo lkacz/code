@@ -94,12 +94,35 @@ function setTile(x,y,v){ if(y<0||y>=WORLD_H) return; const cx=Math.floor(x/CHUNK
 
 // --- Gracz / inwentarz ---
 const player={x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,facing:1,tool:'basic'}; const tools={basic:1,stone:2,diamond:4}; const inv={grass:0,sand:0,stone:0,diamond:0,wood:0,leaf:0,snow:0,tools:{stone:false,diamond:false}}; function canCraftStone(){return inv.stone>=10;} function craftStone(){ if(canCraftStone()){ inv.stone-=10; inv.tools.stone=true; msg('Kilof kamienny (2)'); updateInventory(); }} function canCraftDiamond(){return inv.diamond>=5;} function craftDiamond(){ if(canCraftDiamond()){ inv.diamond-=5; inv.tools.diamond=true; msg('Kilof diamentowy (3)'); updateInventory(); }}
-// Blink + scarf
+// Blink + cape
 let blinkStart=0, blinking=false, nextBlink=performance.now()+2000+Math.random()*3000; const BLINK_DUR=160; function updateBlink(now){ if(!blinking && now>nextBlink){ blinking=true; blinkStart=now; } if(blinking && now>blinkStart+BLINK_DUR){ blinking=false; nextBlink=now+2000+Math.random()*4000; } }
-const SCARF_SEGMENTS=10; const scarf=[]; function initScarf(){ scarf.length=0; for(let i=0;i<SCARF_SEGMENTS;i++) scarf.push({x:player.x,y:player.y}); }
-function updateScarf(dt){ if(!scarf.length) return; const neckX=player.x; const neckY=player.y - player.h/2 + 0.25; scarf[0].x=neckX; scarf[0].y=neckY; for(let i=1;i<SCARF_SEGMENTS;i++){ const prev=scarf[i-1]; const seg=scarf[i]; const idealX=prev.x - player.vx*0.05 - player.facing*0.12; const idealY=prev.y - player.vy*0.05 - 0.03 + Math.sin((performance.now()/240)+(i*0.55))*0.01; seg.x += (idealX - seg.x)*0.25; seg.y += (idealY - seg.y)*0.25; const dx=seg.x-prev.x, dy=seg.y-prev.y; const dist=Math.hypot(dx,dy); const maxD=0.28; if(dist>maxD){ const k=maxD/dist; seg.x=prev.x+dx*k; seg.y=prev.y+dy*k; } } }
-function drawScarf(){ if(!scarf.length) return; ctx.lineWidth=2; ctx.lineJoin='round'; ctx.lineCap='round'; ctx.strokeStyle='#c72222'; ctx.beginPath(); ctx.moveTo(scarf[0].x*TILE, scarf[0].y*TILE); for(let i=1;i<SCARF_SEGMENTS;i++) ctx.lineTo(scarf[i].x*TILE, scarf[i].y*TILE); ctx.stroke(); const tail=scarf[SCARF_SEGMENTS-1]; ctx.fillStyle='#d53030'; ctx.beginPath(); ctx.moveTo(tail.x*TILE, tail.y*TILE); ctx.lineTo(tail.x*TILE-4, tail.y*TILE+6); ctx.lineTo(tail.x*TILE+2, tail.y*TILE+4); ctx.closePath(); ctx.fill(); }
-function drawPlayer(){ drawScarf(); const bodyX=(player.x-player.w/2)*TILE; const bodyY=(player.y-player.h/2)*TILE; const bw=player.w*TILE, bh=player.h*TILE; ctx.fillStyle='#f4c05a'; ctx.fillRect(bodyX,bodyY,bw,bh); ctx.strokeStyle='#4b3212'; ctx.lineWidth=2; ctx.strokeRect(bodyX,bodyY,bw,bh); const eyeW=6, eyeHOpen=6; let eyeH=eyeHOpen; if(blinking){ const p=(performance.now()-blinkStart)/BLINK_DUR; const tri=p<0.5? (p*2) : (1-(p-0.5)*2); eyeH = Math.max(1, eyeHOpen * (1-tri)); } const eyeY=bodyY + bh*0.35; const eyeOffsetX=bw*0.18; const pupilW=2; const pupilShift=player.facing*1.5; function eye(cx){ ctx.fillStyle='#fff'; ctx.fillRect(cx-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); if(eyeH>2){ ctx.fillStyle='#111'; ctx.fillRect(cx - pupilW/2 + pupilShift, eyeY - Math.min(eyeH/2-1,2), pupilW, Math.min(eyeH-2,4)); } } eye(bodyX+bw/2-eyeOffsetX); eye(bodyX+bw/2+eyeOffsetX); ctx.fillStyle='rgba(0,0,0,0.25)'; const shw=bw*0.6; ctx.beginPath(); ctx.ellipse(player.x*TILE, (player.y+player.h/2)*TILE+2, shw/2, 4,0,0,Math.PI*2); ctx.fill(); }
+// Cape physics: chain with gravity that droops when idle and streams when moving
+const CAPE_SEGMENTS=12; const cape=[]; function initScarf(){ // keep name used elsewhere
+	cape.length=0; for(let i=0;i<CAPE_SEGMENTS;i++) cape.push({x:player.x,y:player.y,vx:0,vy:0}); }
+function updateCape(dt){ if(!cape.length) return; const anchorX=player.x; const anchorY=player.y - player.h/2 + 0.05; cape[0].x=anchorX; cape[0].y=anchorY; cape[0].vx=0; cape[0].vy=0; const speed=Math.abs(player.vx); const time=performance.now(); for(let i=1;i<CAPE_SEGMENTS;i++){ const seg=cape[i]; // forces
+		// gravity
+		seg.vy += 22*dt;
+		// air drag
+		seg.vx *= (1- dt*4); seg.vy *= (1- dt*2);
+		// wind / movement influence
+		const wind = (Math.sin((time/500)+(i*0.7))*0.5 + Math.sin((time/1300)+(i))*0.3) * (0.3 + 0.7*Math.min(1,speed/4));
+		seg.vx += (-player.vx*0.6 + wind) * dt;
+		// integrate
+		seg.x += seg.vx*dt; seg.y += seg.vy*dt;
+	}
+	// distance constraints (keep length + droop)
+	const segLen=0.17; for(let iter=0; iter<2; iter++){ for(let i=1;i<CAPE_SEGMENTS;i++){ const prev=cape[i-1]; const seg=cape[i]; let dx=seg.x-prev.x; let dy=seg.y-prev.y; let d=Math.hypot(dx,dy); if(d===0){ dx=0.001; dy=0; d=0.001; } const diff=(d-segLen); if(Math.abs(diff)>0.0001){ const k=diff/d; // move only current (prev anchored earlier segments propagate pass)
+				seg.x -= dx*k; seg.y -= dy*k; }
+		} }
+	// ground clip not needed; just limit extremely high rise (keep below anchor + some slack)
+	for(let i=1;i<CAPE_SEGMENTS;i++){ if(cape[i].y < anchorY - 0.05) cape[i].y = anchorY - 0.05; }
+}
+function drawCape(){ if(!cape.length) return; // build polygon ribbon
+	const wTop=0.10, wBot=0.22; const leftPts=[]; const rightPts=[]; for(let i=0;i<CAPE_SEGMENTS;i++){ const cur=cape[i]; const next=cape[Math.min(CAPE_SEGMENTS-1,i+1)]; let dx=next.x-cur.x; let dy=next.y-cur.y; const d=Math.hypot(dx,dy)||1; dx/=d; dy/=d; // perpendicular
+		const t=i/(CAPE_SEGMENTS-1); const w=wTop + (wBot-wTop)*t; const px=-dy*w; const py=dx*w; leftPts.push({x:cur.x+px,y:cur.y+py}); rightPts.push({x:cur.x-px,y:cur.y-py}); }
+	ctx.fillStyle='#b91818'; ctx.beginPath(); ctx.moveTo(leftPts[0].x*TILE,leftPts[0].y*TILE); for(let i=1;i<leftPts.length;i++) ctx.lineTo(leftPts[i].x*TILE,leftPts[i].y*TILE); for(let i=rightPts.length-1;i>=0;i--) ctx.lineTo(rightPts[i].x*TILE,rightPts[i].y*TILE); ctx.closePath(); ctx.fill(); // highlight edge
+	ctx.strokeStyle='rgba(255,255,255,0.15)'; ctx.lineWidth=1; ctx.beginPath(); for(let i=0;i<leftPts.length;i++) ctx.lineTo(leftPts[i].x*TILE,leftPts[i].y*TILE); ctx.stroke(); }
+function drawPlayer(){ drawCape(); const bodyX=(player.x-player.w/2)*TILE; const bodyY=(player.y-player.h/2)*TILE; const bw=player.w*TILE, bh=player.h*TILE; ctx.fillStyle='#f4c05a'; ctx.fillRect(bodyX,bodyY,bw,bh); ctx.strokeStyle='#4b3212'; ctx.lineWidth=2; ctx.strokeRect(bodyX,bodyY,bw,bh); const eyeW=6, eyeHOpen=6; let eyeH=eyeHOpen; if(blinking){ const p=(performance.now()-blinkStart)/BLINK_DUR; const tri=p<0.5? (p*2) : (1-(p-0.5)*2); eyeH = Math.max(1, eyeHOpen * (1-tri)); } const eyeY=bodyY + bh*0.35; const eyeOffsetX=bw*0.18; const pupilW=2; const pupilShift=player.facing*1.5; function eye(cx){ ctx.fillStyle='#fff'; ctx.fillRect(cx-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); if(eyeH>2){ ctx.fillStyle='#111'; ctx.fillRect(cx - pupilW/2 + pupilShift, eyeY - Math.min(eyeH/2-1,2), pupilW, Math.min(eyeH-2,4)); } } eye(bodyX+bw/2-eyeOffsetX); eye(bodyX+bw/2+eyeOffsetX); ctx.fillStyle='rgba(0,0,0,0.25)'; const shw=bw*0.6; ctx.beginPath(); ctx.ellipse(player.x*TILE, (player.y+player.h/2)*TILE+2, shw/2, 4,0,0,Math.PI*2); ctx.fill(); }
 
 // Input + tryby specjalne
 const keys={}; let godMode=false; const keysOnce=new Set();
@@ -199,4 +222,4 @@ function placePlayer(skipMsg){ const x=0; ensureChunk(0); let y=0; while(y<WORLD
 placePlayer(); updateInventory(); updateGodBtn(); msg('Sterowanie: A/D/W + ⛏️ / klik. G=Bóg (nieskończone skoki), M=Mapa, C=Centrum, H=Pomoc');
 
 // Pętla
-let last=performance.now(); function loop(ts){ const dt=Math.min(0.05,(ts-last)/1000); last=ts; physics(dt); updateMining(dt); updateFallingBlocks(dt); updateScarf(dt); updateBlink(ts); draw(); if(ts<radarFlash){ radarBtn.classList.add('pulse'); } else radarBtn.classList.remove('pulse'); updateFps(ts); requestAnimationFrame(loop); } requestAnimationFrame(loop);
+let last=performance.now(); function loop(ts){ const dt=Math.min(0.05,(ts-last)/1000); last=ts; physics(dt); updateMining(dt); updateFallingBlocks(dt); updateCape(dt); updateBlink(ts); draw(); if(ts<radarFlash){ radarBtn.classList.add('pulse'); } else radarBtn.classList.remove('pulse'); updateFps(ts); requestAnimationFrame(loop); } requestAnimationFrame(loop);
