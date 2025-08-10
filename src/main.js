@@ -282,8 +282,16 @@ function consumeFor(tileId){ if(godMode) return; if(tileId===T.GRASS) inv.grass-
 function tryPlace(tx,ty){ if(getTile(tx,ty)!==T.AIR) return; // not empty
  // prevent placing inside player bbox
  if(tx+0.001 > player.x - player.w/2 && tx < player.x + player.w/2 && ty+1 > player.y - player.h/2 && ty < player.y + player.h/2){ return; }
- const below=getTile(tx,ty+1); if(below===T.AIR && !godMode) return; const id=selectedTileId(); if(!haveBlocksFor(id)){ msg('Brak bloków'); return; } setTile(tx,ty,id); consumeFor(id); updateInventory(); updateHotbarCounts(); saveState(); if(MM.fallingSolids){ // placement can remove an AIR support (filling gap) or create overhang changes nearby
- 	MM.fallingSolids.recheckNeighborhood(tx,ty-1); }
+ const below=getTile(tx,ty+1); const id=selectedTileId();
+ // Allow unsupported placement only for sand (it will start falling); others need support unless godMode
+ if(below===T.AIR && !godMode && id!==T.SAND) return;
+ if(!haveBlocksFor(id)){ msg('Brak bloków'); return; }
+ setTile(tx,ty,id); consumeFor(id); updateInventory(); updateHotbarCounts(); saveState();
+ if(MM.fallingSolids){
+ 	// If we placed unsupported sand, convert it to falling instantly
+ 	if(id===T.SAND && below===T.AIR) MM.fallingSolids.maybeStart(tx,ty);
+ 	MM.fallingSolids.recheckNeighborhood(tx,ty-1); MM.fallingSolids.afterPlacement(tx,ty);
+ }
 }
 function updateHotbarCounts(){ const map={GRASS:'grass',SAND:'sand',STONE:'stone',WOOD:'wood',LEAF:'leaf',SNOW:'snow'}; for(const k in map){ const el=document.getElementById('hotCnt'+k); if(el) el.textContent=inv[map[k]]; } }
 function updateHotbarSel(){ document.querySelectorAll('.hotSlot').forEach((el,i)=>{ if(i===hotbarIndex) el.classList.add('sel'); else el.classList.remove('sel'); }); }
