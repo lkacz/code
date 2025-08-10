@@ -145,10 +145,10 @@ function generateChunk(cx){
   world.set(chunkKey(cx),arr);
 }
 
-// Player
+// Player – początkowo ustawimy tylko podstawowe współrzędne; po wygenerowaniu chunku ustawimy go na powierzchni
 const player = {
   x: 0,
-  y: 10,
+  y: 0, // tymczasowo; zostanie zmienione przez placePlayerAtSurface()
   vx: 0,
   vy: 0,
   w: 0.6,
@@ -360,8 +360,28 @@ function msg(t){
   msg._t = setTimeout(()=>{ m.textContent=''; }, 4000);
 }
 
+// Ustaw gracza przy powierzchni i odkryj początkowy obszar, żeby nie było czarnego ekranu.
+function placePlayerAtSurface(){
+  const x = Math.floor(player.x);
+  // Upewnij się, że chunk istnieje
+  getChunk(Math.floor(x/CHUNK_WIDTH));
+  let y=0;
+  while(y < WORLD_HEIGHT-1 && getTile(x,y) === TILE.AIR) y++;
+  player.y = y - 1; // tuż nad pierwszym blokiem
+  // Odkryj większy obszar startowy
+  const rad = 20;
+  for(let dx=-rad; dx<=rad; dx++){
+    for(let dy=-rad; dy<=rad; dy++){
+      if(dx*dx + dy*dy <= rad*rad*1.2){
+        discover(x+dx, player.y+dy);
+      }
+    }
+  }
+}
+placePlayerAtSurface();
+
 updateUI();
-msg('Sterowanie: A/D lewo/prawo, W lub Spacja skok, mysz kopie, 1/2/3 wybór kilofa');
+msg('Sterowanie: A/D lewo/prawo, W lub Spacja skok, mysz/tap kopie, 1/2/3 wybór kilofa. Wykop kamień by zrobić lepszy kilof.');
 
 // Adaptacja do rozmiaru okna
 function resize(){
