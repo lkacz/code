@@ -97,12 +97,14 @@ const player={x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,facing:1,tool:'basic
 // Blink + cape
 let blinkStart=0, blinking=false, nextBlink=performance.now()+2000+Math.random()*3000; const BLINK_DUR=160; function updateBlink(now){ if(!blinking && now>nextBlink){ blinking=true; blinkStart=now; } if(blinking && now>blinkStart+BLINK_DUR){ blinking=false; nextBlink=now+2000+Math.random()*4000; } }
 // Cape physics: chain with gravity that droops when idle and streams when moving
-const CAPE_SEGMENTS=12; const cape=[]; function initScarf(){ // keep name used elsewhere
+const CAPE_SEGMENTS=12; 
+const CAPE_ANCHOR_FRAC=0.5; // 0 = top of body, 1 = bottom. Middle requested.
+const cape=[]; function initScarf(){ // keep name used elsewhere
 	cape.length=0; for(let i=0;i<CAPE_SEGMENTS;i++) cape.push({x:player.x,y:player.y,vx:0,vy:0}); }
 function updateCape(dt){
 	if(!cape.length) return;
 	const anchorX=player.x;
-		const anchorY=player.y - player.h/2 + 0.14; // lowered to eye/neck level
+		const anchorY=player.y - player.h/2 + player.h * CAPE_ANCHOR_FRAC; // middle of character
 	const speed=Math.min(1, Math.abs(player.vx)/MOVE.MAX);
 	const time=performance.now();
 	const targetFlare = 0.2 + 0.55*speed; // horizontal spread cap (meters)
