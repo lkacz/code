@@ -6,35 +6,9 @@ let W=0,H=0,DPR=1; function resize(){ DPR=Math.max(1,Math.min(2,window.devicePix
 
 // --- Świat (łagodniejsze biomy: równiny / wzgórza / góry) ---
 const {CHUNK_W,WORLD_H,TILE,SURFACE_GRASS_DEPTH,SAND_DEPTH,T,INFO,SNOW_LINE,isSolid} = MM;
-let worldSeed = 12345; // aktualne ziarno
-function setSeedFromInput(){ const inp=document.getElementById('seedInput'); if(!inp) return; let v=inp.value.trim(); if(!v||v==='auto'){ worldSeed = Math.floor(Math.random()*1e9); inp.value=String(worldSeed); } else { // hash tekstu
-	let h=0; for(let i=0;i<v.length;i++){ h=(h*131 + v.charCodeAt(i))>>>0; } worldSeed = h||1; }
-}
-setSeedFromInput();
-function randSeed(n){ // deterministyczny hash z ziarnem świata
-	const x=Math.sin(n*127.1 + worldSeed*0.000123)*43758.5453; return x-Math.floor(x);
-}
-function valueNoise(x, wavelength, off){ const p=x/wavelength; const i=Math.floor(p); const f=p-i; const a=randSeed(i+off); const b=randSeed(i+1+off); // smoothstep
-	const u=f*f*(3-2*f); return a + (b-a)*u; }
-function biomeType(x){ // 0 równiny 1 wzgórza 2 góry
-	const v=valueNoise(x,220,900); if(v<0.35) return 0; if(v<0.7) return 1; return 2; }
-function surfaceHeight(x){
-	const biome=biomeType(x);
-	const base = 24
-		+ valueNoise(x,80,200)*4
-		+ valueNoise(x,30,300)*3
-		+ valueNoise(x,12,400)*2;
-	let h=base;
-	if(biome===0){ // równiny – wyrównuj
-		h = 26 + valueNoise(x,100,500)*2 + valueNoise(x,40,600);
-	} else if(biome===1){ // wzgórza
-		h = base - 2 - valueNoise(x,60,700)*2;
-	} else { // góry
-		h = base - 6 - valueNoise(x,120,800)*4 - valueNoise(x,50,900)*3; // niższe y => wyżej
-	}
-	if(h<6) h=6; if(h>40) h=40; return Math.floor(h);
-}
-function diamondChance(y){ const d=y-(SURFACE_GRASS_DEPTH+SAND_DEPTH); if(d<0) return 0; return Math.min(0.002 + d*0.0009, 0.05);} 
+const {worldGen:WG} = MM; const {surfaceHeight, biomeType, randSeed, diamondChance} = WG;
+let worldSeed = WG.worldSeed;
+function setSeedFromInput(){ WG.setSeedFromInput(); worldSeed=WG.worldSeed; }
 const world=new Map(); function ck(x){return 'c'+x;} function tileIndex(x,y){return y*CHUNK_W+x;}
 function ensureChunk(cx){ const k=ck(cx); if(world.has(k)) return world.get(k); const arr=new Uint8Array(CHUNK_W*WORLD_H);
 	// wypełnienie gruntu
