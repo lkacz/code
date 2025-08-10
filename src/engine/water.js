@@ -7,8 +7,8 @@ window.MM = window.MM || {};
   const active=new Set(); // keys 'x,y'
   function k(x,y){return x+','+y;}
   function mark(x,y){ active.add(k(x,y)); }
-  function isEmpty(t){ return t===T.AIR; }
-  function isDisplaceable(t){ return t===T.AIR || t===T.SAND || t===T.LEAF; } // leaves allow seep
+  function isAir(t){ return t===T.AIR; }
+  function canFill(t){ return t===T.AIR || t===T.LEAF; } // allow passing through leaves (foliage)
   function update(getTile,setTile,dt){
     if(active.size===0) return;
     // Adaptive cap: more active cells processed when set small; clamp upper bound.
@@ -20,29 +20,29 @@ window.MM = window.MM || {};
       const [sx,sy]=key.split(',').map(Number);
       if(getTile(sx,sy)!==T.WATER) continue;
       // 1. Gravity straight down
-      if(sy+1 < WORLD_H && isEmpty(getTile(sx,sy+1))){
+  if(sy+1 < WORLD_H && canFill(getTile(sx,sy+1))){
         setTile(sx,sy,T.AIR); setTile(sx,sy+1,T.WATER); next.add(k(sx,sy+1)); markNeighbors(next,sx,sy+1); continue;
       }
       // 2. Edge spill diagonals (waterfall off ledges)
       let moved=false;
-      const leftBelowAir = sy+1<WORLD_H && isEmpty(getTile(sx-1,sy+1));
-      const rightBelowAir = sy+1<WORLD_H && isEmpty(getTile(sx+1,sy+1));
+  const leftBelowAir = sy+1<WORLD_H && canFill(getTile(sx-1,sy+1));
+  const rightBelowAir = sy+1<WORLD_H && canFill(getTile(sx+1,sy+1));
       // Prioritize the side with deeper vertical drop (scan up to 4)
-      function dropDepth(x){ let d=0; let yy=sy+1; while(yy<WORLD_H && isEmpty(getTile(x,yy)) && d<6){ d++; yy++; } return d; }
+  function dropDepth(x){ let d=0; let yy=sy+1; while(yy<WORLD_H && canFill(getTile(x,yy)) && d<8){ d++; yy++; } return d; }
       if(leftBelowAir || rightBelowAir){
         let order=[];
         if(leftBelowAir && rightBelowAir){ const dl=dropDepth(sx-1); const dr=dropDepth(sx+1); order = dl>dr? [-1,1] : dr>dl? [1,-1] : ( ( (sx+sy)&1) ? [-1,1]:[1,-1] ); }
         else order = leftBelowAir? [-1]:[1];
-        for(const dx of order){ if(isEmpty(getTile(sx+dx,sy+1))){ setTile(sx,sy,T.AIR); setTile(sx+dx,sy+1,T.WATER); next.add(k(sx+dx,sy+1)); markNeighbors(next,sx+dx,sy+1); moved=true; break; } }
+  for(const dx of order){ if(canFill(getTile(sx+dx,sy+1))){ setTile(sx,sy,T.AIR); setTile(sx+dx,sy+1,T.WATER); next.add(k(sx+dx,sy+1)); markNeighbors(next,sx+dx,sy+1); moved=true; break; } }
         if(moved) continue;
       }
       // 3. Lateral leveling: flow sideways into supported or water-backed air.
       // Evaluate both sides for potential (support present under target or diagonal fall option)
-      const candidates=[]; for(const dx of [-1,1]){ const nx=sx+dx; if(isEmpty(getTile(nx,sy))){ const under=getTile(nx,sy+1); if(under!==T.AIR || isEmpty(getTile(sx,sy+1))===false){ // support or current has support
+  const candidates=[]; for(const dx of [-1,1]){ const nx=sx+dx; if(isAir(getTile(nx,sy))){ const under=getTile(nx,sy+1); if(under!==T.AIR || isAir(getTile(sx,sy+1))===false){ // support or current has support
             // measure basin depth outward to limit runaway spread
             let depth=0; for(let dd=1; dd<=6; dd++){ const tx=nx+dx*dd; if(!isEmpty(getTile(tx,sy))) break; depth++; }
             candidates.push({dx,score:depth}); }
-          else if(isEmpty(getTile(nx,sy+1)) && sy+1<WORLD_H){ // diagonal slide already handled earlier; treat as lower priority
+          else if(isAir(getTile(nx,sy+1)) && sy+1<WORLD_H){ // diagonal slide already handled earlier; treat as lower priority
             candidates.push({dx,score:0}); }
         } }
       if(candidates.length){
@@ -53,7 +53,7 @@ window.MM = window.MM || {};
         setTile(sx,sy,T.AIR); setTile(sx+pick.dx,sy,T.WATER); next.add(k(sx+pick.dx,sy)); markNeighbors(next,sx+pick.dx,sy); moved=true;
       }
       if(!moved){ // stable this frame; keep it active if any neighbor air (potential future flow)
-        if(isEmpty(getTile(sx-1,sy)) || isEmpty(getTile(sx+1,sy)) || isEmpty(getTile(sx,sy+1))){ next.add(key); }
+  if(isAir(getTile(sx-1,sy)) || isAir(getTile(sx+1,sy)) || isAir(getTile(sx,sy+1))){ next.add(key); }
       }
     }
     active.clear(); for(const kk of next) active.add(kk);
