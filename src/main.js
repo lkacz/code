@@ -14,6 +14,10 @@ const CAPE = MM.cape;
 const VISUAL={animations:true};
 let grassDensityScalar = 1; // user adjustable (exponential scaling)
 let grassHeightScalar = 1; // user adjustable linear multiplier
+// Grass performance management
+let grassThinningFactor = 1; // 0..1 multiplier applied to density for perf control
+let grassBudgetInfo = '';
+const GRASS_ITER_BUDGET = 30000; // soft cap on total blade draws (both passes combined)
 function initGrassControls(){
 	const rngD=document.getElementById('grassDensity');
 	const labD=document.getElementById('grassDensityLabel');
@@ -100,6 +104,29 @@ function drawWorldVisible(sx,sy,viewX,viewY){ const minChunk=Math.floor(sx/CHUNK
 }
 
 function drawAnimatedOverlays(sx,sy,viewX,viewY,pass){ const now=performance.now(); const wind = Math.sin(now*0.0003)*1.2 + Math.sin(now*0.0011)*0.8; const diamondPulse = (Math.sin(now*0.005)+1)/2; // 0..1
+	// Dynamic grass thinning computed only on back pass (once per frame region)
+	if(pass==='back'){
+		// Count potential grass tiles in view
+		let grassTiles=0;
+		for(let y=sy; y<sy+viewY+2; y++){
+			if(y<0||y>=WORLD_H) continue;
+			for(let x=sx; x<sx+viewX+2; x++){
+				if(getTile(x,y)===T.GRASS && getTile(x,y-1)===T.AIR) grassTiles++;
+			}
+		}
+		const basePerTile = Math.min(120, Math.max(1, Math.round(3 * grassDensityScalar)));
+		// Zoom level LOD reduction (when zoomed out, fewer blades needed visually)
+		const zoomLod = zoom < 1 ? (0.35 + 0.65*zoom) : 1; // at 0.5 zoom -> 0.675 multiplier
+		const estimatedIterations = grassTiles * basePerTile * 2 * zoomLod; // both passes
+		if(estimatedIterations > GRASS_ITER_BUDGET){
+			grassThinningFactor = GRASS_ITER_BUDGET / estimatedIterations;
+			if(grassThinningFactor < 0.05) grassThinningFactor = 0.05; // hard lower bound
+			grassBudgetInfo = ' grass:'+ (grassThinningFactor*100|0)+'%';
+		} else {
+			grassThinningFactor = 1;
+			grassBudgetInfo = '';
+		}
+	}
 	for(let y=sy; y<sy+viewY+2; y++){
 		if(y<0||y>=WORLD_H) continue;
 		for(let x=sx; x<sx+viewX+2; x++){
@@ -108,7 +135,7 @@ function drawAnimatedOverlays(sx,sy,viewX,viewY,pass){ const now=performance.now
 			if(t===T.GRASS && getTile(x,y-1)===T.AIR){
 				const seed=hash32(x,y);
 				const base = 3;
-				let bladeCount = Math.min(120, Math.max(1, Math.round(base * grassDensityScalar)));
+				let bladeCount = Math.min(120, Math.max(1, Math.round(base * grassDensityScalar * grassThinningFactor * (zoom<1? (0.35 + 0.65*zoom):1))));
 				for(let b=0;b<bladeCount;b++){
 					const bSeed = seed ^ (b*1103515245);
 					// Individual randomized attributes
@@ -254,7 +281,7 @@ const radarBtn=document.getElementById('radarBtn'); radarBtn.addEventListener('c
 function msg(t){ el.msg.textContent=t; clearTimeout(msg._t); msg._t=setTimeout(()=>{ el.msg.textContent=''; },4000); }
 
 // FPS
-let frames=0,lastFps=performance.now(); function updateFps(now){ frames++; if(now-lastFps>1000){ el.fps.textContent=frames+' FPS'; frames=0; lastFps=now; }}
+let frames=0,lastFps=performance.now(); function updateFps(now){ frames++; if(now-lastFps>1000){ el.fps.textContent=frames+' FPS'+ (grassBudgetInfo? (' '+grassBudgetInfo):''); frames=0; lastFps=now; }}
 
 // Spawn
 function placePlayer(skipMsg){ const x=0; ensureChunk(0); let y=0; while(y<WORLD_H-1 && getTile(x,y)===T.AIR) y++; player.x=x+0.5; player.y=y-1; revealAround(); camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; initScarf(); if(!skipMsg) msg('Seed '+worldSeed); }
