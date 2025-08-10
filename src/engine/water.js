@@ -19,9 +19,13 @@ window.MM = window.MM || {};
     for(const key of keys){ if(processed++>MAX) { next.add(key); continue; }
       const [sx,sy]=key.split(',').map(Number);
       if(getTile(sx,sy)!==T.WATER) continue;
-      // 1. Gravity straight down
-  if(sy+1 < WORLD_H && canFill(getTile(sx,sy+1))){
-        setTile(sx,sy,T.AIR); setTile(sx,sy+1,T.WATER); next.add(k(sx,sy+1)); markNeighbors(next,sx,sy+1); continue;
+      // 1. Gravity straight down (accelerated): drop multiple cells in one step through open air
+      if(sy+1 < WORLD_H && canFill(getTile(sx,sy+1))){
+        let ny = sy+1; const MAX_FALL=12; // limit to avoid tunneling entire world in one frame
+        while(ny+1 < WORLD_H && canFill(getTile(sx,ny+1)) && (ny - sy) < MAX_FALL){ ny++; }
+        setTile(sx,sy,T.AIR); setTile(sx,ny,T.WATER);
+        next.add(k(sx,ny)); markNeighbors(next,sx,ny);
+        continue;
       }
       // 2. Edge spill diagonals (waterfall off ledges)
       let moved=false;
