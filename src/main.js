@@ -5,20 +5,7 @@ const ctx = canvas.getContext('2d', {alpha:false});
 let W=0,H=0,DPR=1; function resize(){ DPR=Math.max(1,Math.min(2,window.devicePixelRatio||1)); canvas.width=Math.floor(window.innerWidth*DPR); canvas.height=Math.floor(window.innerHeight*DPR); canvas.style.width=window.innerWidth+'px'; canvas.style.height=window.innerHeight+'px'; ctx.setTransform(DPR,0,0,DPR,0,0); W=window.innerWidth; H=window.innerHeight; } window.addEventListener('resize',resize,{passive:true}); resize();
 
 // --- Świat (łagodniejsze biomy: równiny / wzgórza / góry) ---
-const CHUNK_W=64; const WORLD_H=140; const TILE=20; const SURFACE_GRASS_DEPTH=1; const SAND_DEPTH=8;
-const T={AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7};
-const INFO={
-	0:{hp:0,color:null,drop:null,passable:true},
-	1:{hp:2,color:'#2e8b2e',drop:'grass',passable:false},
-	2:{hp:2,color:'#c2b280',drop:'sand',passable:false},
-	3:{hp:6,color:'#777',drop:'stone',passable:false},
-	4:{hp:10,color:'#3ef',drop:'diamond',passable:false},
-	5:{hp:4,color:'#8b5a2b',drop:'wood',passable:true}, // trunk pass-through
-	6:{hp:1,color:'#2faa2f',drop:'leaf',passable:true}, // leaves pass-through
-	7:{hp:2,color:'#eee',drop:'snow',passable:false} // ground snow remains solid
-};
-function isSolid(t){ return t!==T.AIR && !INFO[t].passable; }
-const SNOW_LINE=14; // wysokość (im mniejsze y tym wyżej) dla śniegu na wierzchu
+const {CHUNK_W,WORLD_H,TILE,SURFACE_GRASS_DEPTH,SAND_DEPTH,T,INFO,SNOW_LINE,isSolid} = MM;
 let worldSeed = 12345; // aktualne ziarno
 function setSeedFromInput(){ const inp=document.getElementById('seedInput'); if(!inp) return; let v=inp.value.trim(); if(!v||v==='auto'){ worldSeed = Math.floor(Math.random()*1e9); inp.value=String(worldSeed); } else { // hash tekstu
 	let h=0; for(let i=0;i<v.length;i++){ h=(h*131 + v.charCodeAt(i))>>>0; } worldSeed = h||1; }
@@ -97,8 +84,8 @@ const player={x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,facing:1,tool:'basic
 // Blink + cape
 let blinkStart=0, blinking=false, nextBlink=performance.now()+2000+Math.random()*3000; const BLINK_DUR=160; function updateBlink(now){ if(!blinking && now>nextBlink){ blinking=true; blinkStart=now; } if(blinking && now>blinkStart+BLINK_DUR){ blinking=false; nextBlink=now+2000+Math.random()*4000; } }
 // Cape physics: chain with gravity that droops when idle and streams when moving
-const CAPE_SEGMENTS=12; 
-const CAPE_ANCHOR_FRAC=0.5; // 0 = top of body, 1 = bottom. Middle requested.
+const CAPE_SEGMENTS=MM.CAPE.SEGMENTS; 
+const CAPE_ANCHOR_FRAC=MM.CAPE.ANCHOR_FRAC; // 0 = top of body, 1 = bottom. Middle requested.
 const cape=[]; function initScarf(){ // keep name used elsewhere
 	cape.length=0; for(let i=0;i<CAPE_SEGMENTS;i++) cape.push({x:player.x,y:player.y,vx:0,vy:0}); }
 function updateCape(dt){
