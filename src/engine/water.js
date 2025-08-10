@@ -40,7 +40,7 @@ window.MM = window.MM || {};
       // Evaluate both sides for potential (support present under target or diagonal fall option)
   const candidates=[]; for(const dx of [-1,1]){ const nx=sx+dx; if(isAir(getTile(nx,sy))){ const under=getTile(nx,sy+1); if(under!==T.AIR || isAir(getTile(sx,sy+1))===false){ // support or current has support
             // measure basin depth outward to limit runaway spread
-            let depth=0; for(let dd=1; dd<=6; dd++){ const tx=nx+dx*dd; if(!isEmpty(getTile(tx,sy))) break; depth++; }
+            let depth=0; for(let dd=1; dd<=6; dd++){ const tx=nx+dx*dd; if(!isAir(getTile(tx,sy))) break; depth++; }
             candidates.push({dx,score:depth}); }
           else if(isAir(getTile(nx,sy+1)) && sy+1<WORLD_H){ // diagonal slide already handled earlier; treat as lower priority
             candidates.push({dx,score:0}); }
