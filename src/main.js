@@ -1,5 +1,5 @@
 // Nowy styl / pełny ekran inspirowany Diamonds Explorer
-console.log('[MiniMiner] start styled');
+// Game init
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d', {alpha:false});
 let W=0,H=0,DPR=1; function resize(){ DPR=Math.max(1,Math.min(2,window.devicePixelRatio||1)); canvas.width=Math.floor(window.innerWidth*DPR); canvas.height=Math.floor(window.innerHeight*DPR); canvas.style.width=window.innerWidth+'px'; canvas.style.height=window.innerHeight+'px'; ctx.setTransform(DPR,0,0,DPR,0,0); W=window.innerWidth; H=window.innerHeight; } window.addEventListener('resize',resize,{passive:true}); resize();
@@ -95,7 +95,6 @@ function updateMining(dt){ if(!mining) return; if(getTile(mineTx,mineTy)===T.AIR
 
 // Render
 function draw(){ ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camX)-1; const sy=Math.floor(camY)-1; ctx.save(); ctx.scale(zoom,zoom); ctx.translate(-camX*TILE,-camY*TILE);
-	if(!draw._logged){ draw._logged=true; console.log('[FirstDraw] cam',camX,camY,'sx',sx,'sy',sy,'tile(0,0)',getTile(0,0),'tile(0,30)',getTile(0,30)); }
 	// draw cape FIRST so any solid / passable tiles will occlude it
 	drawCape();
 	// render tiles (solids + passables)
@@ -137,7 +136,6 @@ let frames=0,lastFps=performance.now(); function updateFps(now){ frames++; if(no
 // Spawn
 function placePlayer(skipMsg){ const x=0; ensureChunk(0); let y=0; while(y<WORLD_H-1 && getTile(x,y)===T.AIR) y++; player.x=x+0.5; player.y=y-1; revealAround(); camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; initScarf(); if(!skipMsg) msg('Seed '+worldSeed); }
 placePlayer(); updateInventory(); updateGodBtn(); msg('Sterowanie: A/D/W + ⛏️ / klik. G=Bóg (nieskończone skoki), M=Mapa, C=Centrum, H=Pomoc');
-console.log('[PostPlace] player',player.x,player.y,'firstNonAirY', (function(){let y=0; while(y<WORLD_H && getTile(0,y)===T.AIR) y++; return y;})(), 'tileBelowPlayer', getTile(Math.floor(player.x), Math.floor(player.y+player.h/2)) );
 
 // Pętla
 let last=performance.now(); function loop(ts){ const dt=Math.min(0.05,(ts-last)/1000); last=ts; physics(dt); updateMining(dt); updateFallingBlocks(dt); updateCape(dt); updateBlink(ts); draw(); if(ts<radarFlash){ radarBtn.classList.add('pulse'); } else radarBtn.classList.remove('pulse'); updateFps(ts); requestAnimationFrame(loop); } requestAnimationFrame(loop);

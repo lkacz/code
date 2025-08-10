@@ -2,7 +2,7 @@
 <html lang="pl">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Mini Miner – styl Diamonds Explorer</title>
   <style>
     :root{ --cell:64px; --btn:48px; --mine:76px; }
@@ -62,14 +62,14 @@
       </div>
       <div class="panel"><span id="fps">— FPS</span></div>
       <div id="menuWrap">
-        <button id="menuBtn" class="topbtn" aria-haspopup="true" aria-expanded="false" title="Menu">≡</button>
+  <button id="menuBtn" class="topbtn" aria-haspopup="true" aria-expanded="false" title="Menu" aria-label="Menu główne">≡</button>
         <div id="menuPanel" role="menu" aria-label="Menu" hidden>
           <div class="group">
-            <button id="mapBtn" class="topbtn" title="Pokaż całą mapę">Mapa: OFF</button>
-            <button id="godBtn" class="topbtn" title="Tryb boga (G)">Bóg: OFF</button>
-            <button id="centerBtn" class="topbtn" title="Wyśrodkuj kamerę">Centruj</button>
-            <button id="helpBtn" class="topbtn" aria-controls="help" aria-expanded="false">Pomoc</button>
-            <button id="radarMenuBtn" class="topbtn" title="Radar diamentów">Radar 💎</button>
+            <button id="mapBtn" class="topbtn" role="menuitem" title="Pokaż całą mapę">Mapa: OFF</button>
+            <button id="godBtn" class="topbtn" role="menuitem" title="Tryb boga (G)">Bóg: OFF</button>
+            <button id="centerBtn" class="topbtn" role="menuitem" title="Wyśrodkuj kamerę">Centruj</button>
+            <button id="helpBtn" class="topbtn" role="menuitem" aria-controls="help" aria-expanded="false">Pomoc</button>
+            <button id="radarMenuBtn" class="topbtn" role="menuitem" title="Radar diamentów">Radar 💎</button>
           </div>
           <div class="group seedRow"><label for="seedInput">Ziarno:</label><input id="seedInput" value="auto" /><button id="regenBtn">Nowy świat</button></div>
           <div class="hint">Skróty: G=Bóg, M=Mapa, C=Centrum, H=Pomoc</div>
