@@ -41,6 +41,17 @@ window.MM = window.MM || {};
   function drawFallingBlocks(ctx,TILE,INFO){ if(!fallingBlocks.length) return; fallingBlocks.forEach(b=>{ const col=INFO[b.t].color; if(!col) return; ctx.fillStyle=col; ctx.fillRect(b.x*TILE,b.y*TILE,TILE,TILE); }); }
 
   trees.buildTree = buildTree;
+  // Populate trees for a freshly generated terrain chunk array
+  trees.populateChunk = function(arr,cx){
+    const {CHUNK_W} = MM; const WG = MM.worldGen; if(!WG) return;
+    for(let lx=0; lx<CHUNK_W; lx++){
+      const wx=cx*CHUNK_W+lx; const s=WG.surfaceHeight(wx); if(s<2) continue; const biome=WG.biomeType(wx);
+      const chance = (biome===0?0.12:biome===1?0.08:0.05); if(WG.randSeed(wx*1.777) > chance) continue;
+      const sL=WG.surfaceHeight(wx-1), sR=WG.surfaceHeight(wx+1); if(Math.abs(s-sL)>6 || Math.abs(s-sR)>6) continue; // cliff edge skip
+      const variant = (biome===2?'conifer': biome===1? (WG.randSeed(wx+300)>0.5?'oak':'tallOak') : (WG.randSeed(wx+500)<0.15?'megaOak':'oak'));
+      buildTree(arr,lx,s,variant,wx);
+    }
+  };
   trees.isTreeBase = isTreeBase;
   trees.startTreeFall = startTreeFall;
   trees.updateFallingBlocks = updateFallingBlocks;
