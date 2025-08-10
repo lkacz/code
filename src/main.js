@@ -102,7 +102,7 @@ const CAPE_SEGMENTS=12; const cape=[]; function initScarf(){ // keep name used e
 function updateCape(dt){
 	if(!cape.length) return;
 	const anchorX=player.x;
-	const anchorY=player.y - player.h/2 + 0.05;
+		const anchorY=player.y - player.h/2 + 0.14; // lowered to eye/neck level
 	const speed=Math.min(1, Math.abs(player.vx)/MOVE.MAX);
 	const time=performance.now();
 	const targetFlare = 0.2 + 0.55*speed; // horizontal spread cap (meters)
