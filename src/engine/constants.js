@@ -6,7 +6,7 @@ Object.assign(MM, {
   TILE:20,
   SURFACE_GRASS_DEPTH:1,
   SAND_DEPTH:8,
-  T:{AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7},
+  T:{AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8},
   INFO:null, // filled below
   SNOW_LINE:14,
   MOVE:{ACC:32,FRICTION:28,MAX:6,JUMP:-9,GRAV:20},
@@ -22,6 +22,7 @@ MM.INFO={
   4:{hp:10,color:'#3ef',drop:'diamond',passable:false},
   5:{hp:4,color:'#8b5a2b',drop:'wood',passable:true},
   6:{hp:1,color:'#2faa2f',drop:'leaf',passable:true},
-  7:{hp:2,color:'#eee',drop:'snow',passable:false}
+  7:{hp:2,color:'#eee',drop:'snow',passable:false},
+  8:{hp:0,color:'#2477ff',drop:null,passable:true} // water (non-solid, fluid simulated separately)
 };
 MM.isSolid = t => t!==MM.T.AIR && !MM.INFO[t].passable;
