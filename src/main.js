@@ -13,7 +13,17 @@ const CAPE = MM.cape;
 // Visual enhancement config
 const VISUAL={animations:true};
 let grassDensityScalar = 1; // user adjustable (exponential scaling)
-function initGrassDensityControl(){ const rng=document.getElementById('grassDensity'); const lab=document.getElementById('grassDensityLabel'); if(!rng||!lab) return; function upd(){ grassDensityScalar = Math.pow(3, parseFloat(rng.value)); const approx = Math.round( (4 * grassDensityScalar) ); lab.textContent=approx+ 'x'; } rng.addEventListener('input',upd); upd(); }
+let grassHeightScalar = 1; // user adjustable linear multiplier
+function initGrassControls(){
+	const rngD=document.getElementById('grassDensity');
+	const labD=document.getElementById('grassDensityLabel');
+	const rngH=document.getElementById('grassHeight');
+	const labH=document.getElementById('grassHeightLabel');
+	function updDensity(){ if(!rngD||!labD) return; grassDensityScalar = Math.pow(3, parseFloat(rngD.value)); const approx = Math.round( (4 * grassDensityScalar) ); labD.textContent=approx+'x'; }
+	function updHeight(){ if(!rngH||!labH) return; grassHeightScalar = parseFloat(rngH.value); labH.textContent=grassHeightScalar.toFixed(2)+'x'; }
+	if(rngD) rngD.addEventListener('input',updDensity); if(rngH) rngH.addEventListener('input',updHeight);
+	updDensity(); updHeight();
+}
 let surfaceHeight, biomeType, randSeed, diamondChance, worldSeed;
 try {
 	if(!WORLDGEN) throw new Error('MM.worldGen missing (worldgen.js not loaded)');
@@ -105,7 +115,9 @@ function drawAnimatedOverlays(sx,sy,viewX,viewY,pass){ const now=performance.now
 					const randA = ((bSeed>>>1)&1023)/1023; // general random
 					const randB = ((bSeed>>>11)&1023)/1023; // secondary
 					const randC = ((bSeed>>>21)&1023)/1023; // tertiary
-					const heightFactor = 0.10 + randA*0.40; // 0.10..0.50 tile (wider variance)
+					let heightFactor = 0.10 + randA*0.40; // 0.10..0.50 tile base
+					heightFactor *= grassHeightScalar; // apply global user multiplier
+					if(heightFactor>0.8) heightFactor=0.8; // clamp to avoid excessively tall blades
 					const freq = 0.0025 + randB*0.0035; // per-blade sway frequency
 					const amp = 2.0 + randC*3.0; // sway pixel amplitude base
 					const phase = ((bSeed>>>6)&1023)/1023 * Math.PI*2;
@@ -247,7 +259,7 @@ let frames=0,lastFps=performance.now(); function updateFps(now){ frames++; if(no
 // Spawn
 function placePlayer(skipMsg){ const x=0; ensureChunk(0); let y=0; while(y<WORLD_H-1 && getTile(x,y)===T.AIR) y++; player.x=x+0.5; player.y=y-1; revealAround(); camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; initScarf(); if(!skipMsg) msg('Seed '+worldSeed); }
 placePlayer(); updateInventory(); updateGodBtn(); msg('Sterowanie: A/D/W + ⛏️ / klik. G=Bóg (nieskończone skoki), M=Mapa, C=Centrum, H=Pomoc');
-initGrassDensityControl();
+initGrassControls();
 
 // Pętla
 let last=performance.now(); function loop(ts){ const dt=Math.min(0.05,(ts-last)/1000); last=ts; // smooth zoom interpolation
