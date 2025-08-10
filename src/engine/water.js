@@ -11,30 +11,54 @@ window.MM = window.MM || {};
   function isDisplaceable(t){ return t===T.AIR || t===T.SAND || t===T.LEAF; } // leaves allow seep
   function update(getTile,setTile,dt){
     if(active.size===0) return;
-    // Process a bounded number per frame to avoid spikes
-    const MAX=800; let c=0; const next=new Set();
-    for(const key of active){ if(c++>MAX) { next.add(key); continue; }
+    // Adaptive cap: more active cells processed when set small; clamp upper bound.
+    const size=active.size; const MAX = Math.min(2000, 300 + Math.floor(size*0.35));
+    let processed=0; const next=new Set();
+    // Deterministic iteration order (avoid directional bias flicker): sort keys by hash.
+    const keys=[...active]; keys.sort();
+    for(const key of keys){ if(processed++>MAX) { next.add(key); continue; }
       const [sx,sy]=key.split(',').map(Number);
-      const t=getTile(sx,sy); if(t!==T.WATER) continue;
-      // Try flow downward first (gravity). Allow replacing air / leaf.
-      const below=getTile(sx,sy+1);
-      if(sy+1<WORLD_H && isEmpty(below)){
-        setTile(sx,sy,T.AIR); setTile(sx,sy+1,T.WATER); next.add(k(sx,sy+1)); markNeighbors(next,sx,sy+1); continue; }
-      // Lateral spread if blocked below
-      let flowed=false;
-      // Randomize order for natural look
-      const dirs = Math.random()<0.5? [-1,1] : [1,-1];
-      for(const dx of dirs){ const nx=sx+dx; const nt=getTile(nx,sy); if(isEmpty(nt) && getTile(nx,sy+1)!==T.AIR){ setTile(nx,sy,T.WATER); next.add(k(nx,sy)); markNeighbors(next,nx,sy); flowed=true; }
-        else if(isEmpty(nt) && getTile(nx,sy+1)===T.AIR){ // diagonal preference downward if opening
-          setTile(sx,sy,T.AIR); setTile(nx,sy+1,T.WATER); next.add(k(nx,sy+1)); markNeighbors(next,nx,sy+1); flowed=true; break; }
+      if(getTile(sx,sy)!==T.WATER) continue;
+      // 1. Gravity straight down
+      if(sy+1 < WORLD_H && isEmpty(getTile(sx,sy+1))){
+        setTile(sx,sy,T.AIR); setTile(sx,sy+1,T.WATER); next.add(k(sx,sy+1)); markNeighbors(next,sx,sy+1); continue;
       }
-      if(!flowed){ // small evaporation chance to remove stray single tiles
-        // nothing
-      } else { markNeighbors(next,sx,sy); }
+      // 2. Edge spill diagonals (waterfall off ledges)
+      let moved=false;
+      const leftBelowAir = sy+1<WORLD_H && isEmpty(getTile(sx-1,sy+1));
+      const rightBelowAir = sy+1<WORLD_H && isEmpty(getTile(sx+1,sy+1));
+      // Prioritize the side with deeper vertical drop (scan up to 4)
+      function dropDepth(x){ let d=0; let yy=sy+1; while(yy<WORLD_H && isEmpty(getTile(x,yy)) && d<6){ d++; yy++; } return d; }
+      if(leftBelowAir || rightBelowAir){
+        let order=[];
+        if(leftBelowAir && rightBelowAir){ const dl=dropDepth(sx-1); const dr=dropDepth(sx+1); order = dl>dr? [-1,1] : dr>dl? [1,-1] : ( ( (sx+sy)&1) ? [-1,1]:[1,-1] ); }
+        else order = leftBelowAir? [-1]:[1];
+        for(const dx of order){ if(isEmpty(getTile(sx+dx,sy+1))){ setTile(sx,sy,T.AIR); setTile(sx+dx,sy+1,T.WATER); next.add(k(sx+dx,sy+1)); markNeighbors(next,sx+dx,sy+1); moved=true; break; } }
+        if(moved) continue;
+      }
+      // 3. Lateral leveling: flow sideways into supported or water-backed air.
+      // Evaluate both sides for potential (support present under target or diagonal fall option)
+      const candidates=[]; for(const dx of [-1,1]){ const nx=sx+dx; if(isEmpty(getTile(nx,sy))){ const under=getTile(nx,sy+1); if(under!==T.AIR || isEmpty(getTile(sx,sy+1))===false){ // support or current has support
+            // measure basin depth outward to limit runaway spread
+            let depth=0; for(let dd=1; dd<=6; dd++){ const tx=nx+dx*dd; if(!isEmpty(getTile(tx,sy))) break; depth++; }
+            candidates.push({dx,score:depth}); }
+          else if(isEmpty(getTile(nx,sy+1)) && sy+1<WORLD_H){ // diagonal slide already handled earlier; treat as lower priority
+            candidates.push({dx,score:0}); }
+        } }
+      if(candidates.length){
+        // Prefer higher score (wider empty stretch) to encourage pool filling
+        candidates.sort((a,b)=> b.score - a.score || ((sx+sy)&1? b.dx - a.dx : a.dx - b.dx));
+        const pick=candidates[0];
+        // Move sideways (do not duplicate)
+        setTile(sx,sy,T.AIR); setTile(sx+pick.dx,sy,T.WATER); next.add(k(sx+pick.dx,sy)); markNeighbors(next,sx+pick.dx,sy); moved=true;
+      }
+      if(!moved){ // stable this frame; keep it active if any neighbor air (potential future flow)
+        if(isEmpty(getTile(sx-1,sy)) || isEmpty(getTile(sx+1,sy)) || isEmpty(getTile(sx,sy+1))){ next.add(key); }
+      }
     }
-    active.clear(); for(const k2 of next) active.add(k2);
-    // Limit size (older entries trimmed) for perf
-    if(active.size>4000){ let i=0; for(const kk of active){ if(i++>4000){ active.delete(kk); } }
+    active.clear(); for(const kk of next) active.add(kk);
+    if(active.size>6000){ // trim overflow
+      let i=0; for(const kk of active){ if(i++>6000){ active.delete(kk); } }
     }
   }
   function markNeighbors(set,x,y){ set.add(k(x-1,y)); set.add(k(x+1,y)); set.add(k(x,y-1)); set.add(k(x,y+1)); }
