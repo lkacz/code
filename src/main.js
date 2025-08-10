@@ -13,7 +13,7 @@ const CAPE = MM.cape;
 // Visual enhancement config
 const VISUAL={animations:true};
 let grassDensityScalar = 1; // user adjustable (exponential scaling)
-function initGrassDensityControl(){ const rng=document.getElementById('grassDensity'); const lab=document.getElementById('grassDensityLabel'); if(!rng||!lab) return; function upd(){ grassDensityScalar = Math.pow(3, parseFloat(rng.value)); lab.textContent=grassDensityScalar.toFixed(2); } rng.addEventListener('input',upd); upd(); }
+function initGrassDensityControl(){ const rng=document.getElementById('grassDensity'); const lab=document.getElementById('grassDensityLabel'); if(!rng||!lab) return; function upd(){ grassDensityScalar = Math.pow(3, parseFloat(rng.value)); const approx = Math.round( (4 * grassDensityScalar) ); lab.textContent=approx+ 'x'; } rng.addEventListener('input',upd); upd(); }
 let surfaceHeight, biomeType, randSeed, diamondChance, worldSeed;
 try {
 	if(!WORLDGEN) throw new Error('MM.worldGen missing (worldgen.js not loaded)');
@@ -97,26 +97,26 @@ function drawAnimatedOverlays(sx,sy,viewX,viewY,pass){ const now=performance.now
 			// Grass blades (only surface grass). Split front/back layering.
 			if(t===T.GRASS && getTile(x,y-1)===T.AIR){
 				const seed=hash32(x,y);
-				const front = ((seed>>5)&1)===1; if((pass==='back' && front) || (pass==='front' && !front)){} else {
-					const base = 2 + (seed & 1); // 2-3
-					let bladeCount = Math.min(60, Math.max(1, Math.round(base * grassDensityScalar)));
-					for(let b=0;b<bladeCount;b++){
-						const bSeed = seed + b*977;
-						const phase = ((bSeed>>10)&1023)/1023;
-						const heightFactor = 0.15 + ((bSeed>>16)&15)/15 * 0.20; // 0.15..0.35 (shorter)
-						const swayBase = Math.sin(now*0.0035 + phase*6.283 + wind*0.55) * 3.2;
-						const sway = swayBase * (0.65 + heightFactor*0.55);
-						const xOff = ((bSeed>>20)&63)/63 * (TILE*0.9) - TILE*0.45;
-						const baseX = x*TILE + TILE/2 + xOff*0.55;
-						const baseY = y*TILE;
-						const shadeMod = 0.7 + ((bSeed>>24)&7)/14;
-						ctx.strokeStyle = (bSeed&1)? 'rgba(38,145,38,'+(front? (0.85*shadeMod).toFixed(2):(0.70*shadeMod).toFixed(2))+')' : 'rgba(32,120,32,'+(front? (0.80*shadeMod).toFixed(2):(0.60*shadeMod).toFixed(2))+')';
-						ctx.lineWidth = 1;
-						ctx.beginPath();
-						ctx.moveTo(baseX, baseY);
-						ctx.lineTo(baseX + sway*0.25, baseY - TILE*heightFactor);
-						ctx.stroke();
-					}
+				const base = 3; // baseline blades
+				let bladeCount = Math.min(100, Math.max(1, Math.round(base * grassDensityScalar)));
+				for(let b=0;b<bladeCount;b++){
+					const bSeed = seed + b*911;
+					const phase = ((bSeed>>9)&1023)/1023;
+					const heightFactor = 0.12 + ((bSeed>>16)&255)/255 * 0.25; // 0.12..0.37 tile
+					const swayBase = Math.sin(now*0.0032 + phase*6.283 + wind*0.55) * 2.8;
+					const sway = swayBase * (0.55 + heightFactor*0.7);
+					// Distribute roots evenly with jitter across full tile width
+					const jitter = ((bSeed>>22)&255)/255; const frac = (b + jitter)/bladeCount; // 0..1
+					const baseX = x*TILE + (frac - 0.5)*TILE*0.95 + TILE/2;
+					const baseY = y*TILE;
+					const shadeMod = 0.65 + ((bSeed>>24)&15)/30; // 0.65..1.15
+					const frontBlade = ((bSeed>>5)&1)===1; if((pass==='front' && !frontBlade) || (pass==='back' && frontBlade)) continue;
+					ctx.strokeStyle = (bSeed&2)? 'rgba(44,160,44,'+(frontBlade? (0.85*shadeMod).toFixed(2):(0.55*shadeMod).toFixed(2))+')' : 'rgba(34,130,34,'+(frontBlade? (0.80*shadeMod).toFixed(2):(0.50*shadeMod).toFixed(2))+')';
+					ctx.lineWidth = 1;
+					ctx.beginPath();
+					ctx.moveTo(baseX, baseY);
+					ctx.lineTo(baseX + sway*0.30, baseY - TILE*heightFactor);
+					ctx.stroke();
 				}
 			}
 			// Leaf shimmer
