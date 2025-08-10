@@ -5,6 +5,7 @@ window.MM = window.MM || {};
   const WG = MM.worldGen;
   const worldAPI = {};
   const world = new Map();
+  const versions = new Map(); // chunk key -> version number for render cache invalidation
   // Cache of surface heights per world column to avoid recomputing noise repeatedly
   const heightCache = new Map();
   function colHeight(x){ let v=heightCache.get(x); if(v===undefined){ v=WG.surfaceHeight(x); heightCache.set(x,v); } return v; }
@@ -16,11 +17,11 @@ window.MM = window.MM || {};
     // Trees are populated after base terrain; tree code uses deterministic RNG so caching heights is safe
     // After base terrain, populate trees
     if(MM.trees && MM.trees.populateChunk){ MM.trees.populateChunk(arr,cx); }
-    world.set(k,arr); return arr; }
+    world.set(k,arr); versions.set(k,0); return arr; }
 
   function getTile(x,y){ if(y<0||y>=WORLD_H) return T.AIR; const cx=Math.floor(x/CHUNK_W); const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W; const arr=ensureChunk(cx); return getTileRaw(arr,lx,y); }
-  function setTile(x,y,v){ if(y<0||y>=WORLD_H) return; const cx=Math.floor(x/CHUNK_W); const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W; const arr=ensureChunk(cx); arr[tileIndex(lx,y)]=v; }
-  function clearWorld(){ world.clear(); heightCache.clear(); }
+  function setTile(x,y,v){ if(y<0||y>=WORLD_H) return; const cx=Math.floor(x/CHUNK_W); const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W; const arr=ensureChunk(cx); const idx=tileIndex(lx,y); if(arr[idx]===v) return; arr[idx]=v; const k=ck(cx); versions.set(k,(versions.get(k)||0)+1); }
+  function clearWorld(){ world.clear(); versions.clear(); heightCache.clear(); }
 
   worldAPI.ensureChunk = ensureChunk;
   worldAPI.getTile = getTile;
@@ -28,6 +29,8 @@ window.MM = window.MM || {};
   worldAPI.clear = clearWorld;
   worldAPI.clearHeights = ()=>heightCache.clear();
   worldAPI._world = world;
+  worldAPI._versions = versions;
+  worldAPI.chunkVersion = function(cx){ return versions.get(ck(cx))||0; };
 
   MM.world = worldAPI;
 })();

@@ -48,6 +48,24 @@ function updateCape(dt){ CAPE.update(player,dt,getTile,isSolid); }
 function drawCape(){ CAPE.draw(ctx,TILE); }
 function drawPlayer(){ drawCape(); const bodyX=(player.x-player.w/2)*TILE; const bodyY=(player.y-player.h/2)*TILE; const bw=player.w*TILE, bh=player.h*TILE; ctx.fillStyle='#f4c05a'; ctx.fillRect(bodyX,bodyY,bw,bh); ctx.strokeStyle='#4b3212'; ctx.lineWidth=2; ctx.strokeRect(bodyX,bodyY,bw,bh); const eyeW=6, eyeHOpen=6; let eyeH=eyeHOpen; if(blinking){ const p=(performance.now()-blinkStart)/BLINK_DUR; const tri=p<0.5? (p*2) : (1-(p-0.5)*2); eyeH = Math.max(1, eyeHOpen * (1-tri)); } const eyeY=bodyY + bh*0.35; const eyeOffsetX=bw*0.18; const pupilW=2; const pupilShift=player.facing*1.5; function eye(cx){ ctx.fillStyle='#fff'; ctx.fillRect(cx-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); if(eyeH>2){ ctx.fillStyle='#111'; ctx.fillRect(cx - pupilW/2 + pupilShift, eyeY - Math.min(eyeH/2-1,2), pupilW, Math.min(eyeH-2,4)); } } eye(bodyX+bw/2-eyeOffsetX); eye(bodyX+bw/2+eyeOffsetX); ctx.fillStyle='rgba(0,0,0,0.25)'; const shw=bw*0.6; ctx.beginPath(); ctx.ellipse(player.x*TILE, (player.y+player.h/2)*TILE+2, shw/2, 4,0,0,Math.PI*2); ctx.fill(); }
 
+// Chunk render cache (offscreen canvas per chunk)
+const chunkCanvases = new Map(); // key: chunkX -> {canvas,ctx,version}
+function drawChunkToCache(cx){ const key=cx; const k='c'+cx; const arr=WORLD._world.get(k); if(!arr) return; let entry=chunkCanvases.get(key); if(!entry){ const c=document.createElement('canvas'); c.width=CHUNK_W*TILE; c.height=WORLD_H*TILE; const cctx=c.getContext('2d'); entry={canvas:c,ctx:cctx,version:-1}; chunkCanvases.set(key,entry); }
+	const currentVersion=WORLD.chunkVersion(cx); if(entry.version===currentVersion) return; const cctx=entry.ctx; cctx.clearRect(0,0,cctx.canvas.width,cctx.canvas.height); for(let lx=0; lx<CHUNK_W; lx++){ for(let y=0;y<WORLD_H;y++){ const t=arr[y*CHUNK_W+lx]; if(t===T.AIR) continue; cctx.fillStyle=INFO[t].color; cctx.fillRect(lx*TILE,y*TILE,TILE,TILE); } } entry.version=currentVersion; }
+function drawWorldVisible(sx,sy,viewX,viewY){ const minChunk=Math.floor(sx/CHUNK_W)-1; const maxChunk=Math.floor((sx+viewX+2)/CHUNK_W)+1; for(let cx=minChunk; cx<=maxChunk; cx++){ WORLD.ensureChunk(cx); drawChunkToCache(cx); }
+	// Blit visible region chunk by chunk; still apply fog overlay per tile (cheap loop) or future: separate mask
+	for(let y=sy; y<sy+viewY+2; y++){
+		if(y<0||y>=WORLD_H) continue;
+		for(let x=sx; x<sx+viewX+2; x++){
+			const t=getTile(x,y); if(t===T.AIR) continue;
+			const cx=Math.floor(x/CHUNK_W); const entry=chunkCanvases.get(cx); if(!entry) continue; const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W;
+			// Draw from cached chunk
+			ctx.drawImage(entry.canvas, lx*TILE, y*TILE, TILE, TILE, x*TILE, y*TILE, TILE, TILE);
+			if(!revealAll && !hasSeen(x,y)){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); }
+		}
+	}
+}
+
 // Input + tryby specjalne
 const keys={}; let godMode=false; const keysOnce=new Set();
 function updateGodBtn(){ const b=document.getElementById('godBtn'); if(!b) return; b.classList.toggle('toggled',godMode); b.textContent='Bóg: '+(godMode?'ON':'OFF'); }
@@ -105,12 +123,7 @@ function draw(){ ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Mat
 	// draw cape FIRST so any solid / passable tiles will occlude it
 	drawCape();
 	// render tiles (solids + passables)
-	for(let y=sy; y<sy+viewY+2; y++){
-		for(let x=sx; x<sx+viewX+2; x++){
-			const t=getTile(x,y); if(t===T.AIR) continue; if(!revealAll && !hasSeen(x,y)){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); continue; }
-			ctx.fillStyle=INFO[t].color; ctx.fillRect(x*TILE,y*TILE,TILE,TILE);
-		}
-	}
+	drawWorldVisible(sx,sy,viewX,viewY);
 	drawFallingBlocks();
 	// player + overlays
 	drawPlayer();
