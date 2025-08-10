@@ -94,10 +94,10 @@ function drawChunkToCache(cx){ const key=cx; const k='c'+cx; const arr=WORLD._wo
 			for(let y=0;y<WORLD_H;y++){
 				const t=arr[y*CHUNK_W+lx]; if(t===T.AIR) continue; let base=INFO[t].color; if(!base) continue;
 				const h = hash32(wx,y);
-				// Per-type amplitude (diamond fixed, stone subtle, grass medium, others default)
-				let amp=22; if(t===T.STONE) amp=10; else if(t===T.DIAMOND) amp=0; else if(t===T.WOOD) amp=16; else if(t===T.GRASS) amp=18;
+				// Per-type amplitude (diamond fixed, stone extra subtle, grass medium, others default)
+				let amp=22; if(t===T.STONE) amp=6; else if(t===T.DIAMOND) amp=0; else if(t===T.WOOD) amp=16; else if(t===T.GRASS) amp=18;
 				const delta = ((h & 0xFF)/255 - 0.5)*amp; // symmetrical
-				const col = amp? shadeColor(base, delta|0) : base;
+				const col = amp? shadeColor(base, delta|0) : base; // stone uses low amp so should not drift green
 				cctx.fillStyle=col; cctx.fillRect(lx*TILE,y*TILE,TILE,TILE);
 				if(t===T.STONE || t===T.WOOD){ cctx.fillStyle='rgba(0,0,0,0.05)'; cctx.fillRect(lx*TILE + ((h>>8)&3), y*TILE, 2, TILE); }
 			}

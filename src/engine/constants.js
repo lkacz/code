@@ -17,7 +17,8 @@ MM.INFO={
   0:{hp:0,color:null,drop:null,passable:true},
   1:{hp:2,color:'#2e8b2e',drop:'grass',passable:false},
   2:{hp:2,color:'#c2b280',drop:'sand',passable:false},
-  3:{hp:6,color:'#777',drop:'stone',passable:false},
+  // Stone color lightened for contrast (#777 was too close to sky fill)
+  3:{hp:6,color:'#888a90',drop:'stone',passable:false},
   4:{hp:10,color:'#3ef',drop:'diamond',passable:false},
   5:{hp:4,color:'#8b5a2b',drop:'wood',passable:true},
   6:{hp:1,color:'#2faa2f',drop:'leaf',passable:true},
