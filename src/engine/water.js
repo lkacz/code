@@ -6,7 +6,7 @@ window.MM = window.MM || {};
   // Active water fronts tracked to limit scanning.
   const active=new Set(); // keys 'x,y'
   let passiveScanOffset = 0; // incremental column scan to catch dormant floating water
-  const waveState = new Map(); // key: segStart+":"+segEnd+":"+y -> {offset}
+  // Wave effect now purely visual; no state caching needed to avoid altering simulation tiles.
   // Lateral spread pacing (seconds between lateral propagation attempts)
   const LATERAL_INTERVAL = 0.18; // increase to slow more (e.g., 0.3)
   let lateralAcc = 0; // accumulator
@@ -57,16 +57,41 @@ window.MM = window.MM || {};
           for(const dx of order){ if(canFill(getTile(sx+dx,sy+1))){ setTile(sx,sy,T.AIR); setTile(sx+dx,sy+1,T.WATER); next.add(k(sx+dx,sy+1)); markNeighbors(next,sx+dx,sy+1); moved=true; break; } }
           if(moved) continue;
         }
-        // 3. Lateral leveling - time gated
-        const candidates=[]; for(const dx of [-1,1]){ const nx=sx+dx; if(isAir(getTile(nx,sy))){ const under=getTile(nx,sy+1); if(under!==T.AIR || isAir(getTile(sx,sy+1))===false){
-              let depth=0; for(let dd=1; dd<=6; dd++){ const tx=nx+dx*dd; if(!isAir(getTile(tx,sy))) break; depth++; }
-              candidates.push({dx,score:depth}); }
-            else if(isAir(getTile(nx,sy+1)) && sy+1<WORLD_H){ candidates.push({dx,score:0}); }
-          } }
-        if(candidates.length){
-          candidates.sort((a,b)=> b.score - a.score || ((sx+sy)&1? b.dx - a.dx : a.dx - b.dx));
-          const pick=candidates[0];
-          setTile(sx,sy,T.AIR); setTile(sx+pick.dx,sy,T.WATER); next.add(k(sx+pick.dx,sy)); markNeighbors(next,sx+pick.dx,sy); moved=true;
+        // 3. Lateral leveling / downhill seeking - time gated
+        if(lateralStep){
+          const RANGE=6; // how far to scan horizontally for better spot
+          const candidates=[];
+          for(const dx of [-1,1]){
+            const nx = sx+dx;
+            if(!isAir(getTile(nx,sy))) continue; // must be empty target cell
+            // If immediate drop exists, prefer strongly
+            if(sy+1 < WORLD_H && canFill(getTile(nx,sy+1))){
+              // measure drop depth
+              let drop=0; let yy=sy+1; while(yy < WORLD_H && canFill(getTile(nx,yy)) && drop<8){ drop++; yy++; }
+              candidates.push({dx,score: 100 - drop}); // lower drop depth slightly better (settle sooner)
+              continue;
+            }
+            // Otherwise, scan outward contiguous air cells with solid floor beneath to approximate lateral pressure.
+            let width=0; let blockedAhead=false; let foundLower=false; let floorConsistency=0;
+            for(let step=1; step<=RANGE; step++){
+              const tx = sx + dx*step;
+              if(!isAir(getTile(tx,sy))) { blockedAhead=true; break; }
+              const floor = getTile(tx,sy+1);
+              if(floor!==T.AIR) floorConsistency++;
+              // check if two steps ahead there's a drop
+              if(!foundLower && sy+1 < WORLD_H && canFill(getTile(tx,sy+1))){ foundLower=true; }
+              width++;
+            }
+            let score = width + floorConsistency*0.3 + (foundLower? 6:0) - (blockedAhead?0.2:0);
+            candidates.push({dx,score});
+          }
+          if(candidates.length){
+            candidates.sort((a,b)=> b.score - a.score || ((sx+sy)&1? b.dx - a.dx : a.dx - b.dx));
+            const best = candidates[0];
+            if(best.score>0){
+              setTile(sx,sy,T.AIR); setTile(sx+best.dx,sy,T.WATER); next.add(k(sx+best.dx,sy)); markNeighbors(next,sx+best.dx,sy); moved=true;
+            }
+          }
         }
       }
       if(!moved){
@@ -92,53 +117,35 @@ window.MM = window.MM || {};
   function drawOverlay(ctx,TILE,getTile,sx,sy,vx,vy){
     // Wave redistribution for partially filled surface basins (visual + logical oscillation)
     const now=performance.now();
-  if(active.size < 500){ // only attempt waves when system mostly idle
-      const freq = 0.00045; // oscillation base frequency
+    if(active.size < 500){
+      // Visual-only sloshing highlight: compute oscillation and draw translucent overlay shifting across surface gaps.
+      const freq = 0.00045;
+      ctx.save();
       for(let y=sy; y<sy+vy+2; y++){
         if(y<0||y>=WORLD_H) continue;
-        // Build segments across view (slightly extended)
-        let x = sx-2;
-        const xEnd = sx+vx+2;
-        while(x <= xEnd){
-          // Segment starts where cell qualifies (supported floor) and cell is water surface or dry floor
+        let x = sx-2; const xEnd = sx+vx+2;
+        while(x<=xEnd){
           const t=getTile(x,y); const below=getTile(x,y+1);
-          const supported = below!==T.AIR; // floor
-            const surfaceCandidate = supported && (t===T.WATER || (t===T.AIR));
+          const surfaceCandidate = below!==T.AIR && (t===T.WATER || t===T.AIR);
           if(!surfaceCandidate){ x++; continue; }
-          // Collect segment
-          let segStart=x; let seg=[]; let hasWater=false; let hasAir=false;
-          while(x<=xEnd){ const tt=getTile(x,y); const bb=getTile(x,y+1); const ok = (bb!==T.AIR) && (tt===T.WATER || tt===T.AIR); if(!ok) break; const waterHere = (tt===T.WATER && getTile(x,y-1)===T.AIR); // only count surface water
-            const airHere = (tt===T.AIR);
-            seg.push({x,water:waterHere}); if(waterHere) hasWater=true; if(airHere) hasAir=true; x++; }
-          const segEnd = x-1;
-          if(hasWater && hasAir && seg.length>1){
-            // Determine walls: simple check of neighbors outside segment
+          const segStart = x; let seg=[]; let waterCount=0; let total=0; let hasAir=false; let hasWater=false;
+          while(x<=xEnd){ const tt=getTile(x,y); const bb=getTile(x,y+1); const ok = (bb!==T.AIR) && (tt===T.WATER || tt===T.AIR); if(!ok) break; const surfaceWater = (tt===T.WATER && getTile(x,y-1)===T.AIR); seg.push({x,surfaceWater}); if(surfaceWater){ waterCount++; hasWater=true; } else { hasAir=true; } total++; x++; }
+          const segEnd=x-1;
+          if(hasWater && hasAir && total>1){
             const leftWall = (getTile(segStart-1,y)!==T.AIR && getTile(segStart-1,y)!==T.WATER) || getTile(segStart-1,y+1)===T.AIR;
             const rightWall = (getTile(segEnd+1,y)!==T.AIR && getTile(segEnd+1,y)!==T.WATER) || getTile(segEnd+1,y+1)===T.AIR;
             if(leftWall && rightWall){
-              const W = seg.length; const waterCount = seg.filter(c=>c.water).length;
-              if(waterCount>0 && waterCount<W){
-                // Phase based on y (row) to diversify
-                const phase = y*57.17;
-                const oscill = (Math.sin(now*freq + phase)+1)/2; // 0..1
-                const offset = Math.floor(oscill * (W - waterCount));
-                const key = segStart+":"+segEnd+":"+y+":"+waterCount;
-                const prev = waveState.get(key);
-                if(!prev || prev.offset!==offset){
-                  // Reassign distribution only when offset changed
-                  for(let i=0;i<W;i++){ const targetWater = i>=offset && i<offset+waterCount; const cell=seg[i]; const curT=getTile(cell.x,y); const isSurfaceWater = (curT===T.WATER && getTile(cell.x,y-1)===T.AIR);
-                    if(targetWater){ if(curT===T.AIR){ setTile(cell.x,y,T.WATER); } }
-                    else { if(isSurfaceWater){ setTile(cell.x,y,T.AIR); } }
-                  }
-                  waveState.set(key,{offset});
-                }
-              }
+              const phase=y*57.17; const oscill=(Math.sin(now*freq + phase)+1)/2; const offset=Math.floor(oscill * (total - waterCount));
+              // Draw moving overlay representing where water would visually occupy
+              ctx.fillStyle='rgba(36,119,255,0.22)';
+              for(let i=0;i<waterCount;i++){ const cell=seg[offset+i]; if(cell){ ctx.fillRect(cell.x*TILE, y*TILE, TILE, TILE); } }
             }
           }
         }
       }
+      ctx.restore();
     }
-    // Subtle animated surface shimmer (single pass over visible water)
+    // Base water surface shimmer
     for(let y=sy; y<sy+vy+2; y++){
       if(y<0||y>=WORLD_H) continue;
       for(let x=sx; x<sx+vx+2; x++){
