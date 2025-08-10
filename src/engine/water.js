@@ -5,12 +5,20 @@ window.MM = window.MM || {};
   const {T, WORLD_H, CHUNK_W} = MM;
   // Active water fronts tracked to limit scanning.
   const active=new Set(); // keys 'x,y'
+  let passiveScanOffset = 0; // incremental column scan to catch dormant floating water
   function k(x,y){return x+','+y;}
   function mark(x,y){ active.add(k(x,y)); }
   function isAir(t){ return t===T.AIR; }
   function canFill(t){ return t===T.AIR || t===T.LEAF; } // allow passing through leaves (foliage)
   function update(getTile,setTile,dt){
-    if(active.size===0) return;
+    // Passive activation: each frame scan a small slice of columns near player or global offset (simplified global).
+    if(active.size===0){
+      // scan 40 columns per frame (wrap around). Use world height constraints.
+      const SCAN_COLS=40; for(let i=0;i<SCAN_COLS;i++){ const wx=passiveScanOffset + i; passiveScanOffset = (passiveScanOffset + 1) % 2048; // arbitrary wrap
+        for(let y=0; y<WORLD_H-1; y++){ if(getTile(wx,y)===T.WATER && canFill(getTile(wx,y+1))){ mark(wx,y); break; } }
+      }
+      if(active.size===0) return; // nothing activated
+    }
     // Adaptive cap: more active cells processed when set small; clamp upper bound.
     const size=active.size; const MAX = Math.min(2000, 300 + Math.floor(size*0.35));
     let processed=0; const next=new Set();
@@ -66,7 +74,12 @@ window.MM = window.MM || {};
     }
   }
   function markNeighbors(set,x,y){ set.add(k(x-1,y)); set.add(k(x+1,y)); set.add(k(x,y-1)); set.add(k(x,y+1)); }
-  function addSource(x,y,getTile,setTile){ if(getTile(x,y)!==T.AIR) return false; setTile(x,y,T.WATER); mark(x,y); return true; }
+  function addSource(x,y,getTile,setTile){
+    const cur=getTile(x,y);
+    if(cur===T.AIR){ setTile(x,y,T.WATER); mark(x,y); return true; }
+    if(cur===T.WATER){ mark(x,y); return true; } // already water, just ensure activation
+    return false;
+  }
   function onTileChanged(x,y,getTile){ // if water lost support, mark
     for(let dy=-1; dy<=1; dy++) for(let dx=-1; dx<=1; dx++){ if(getTile(x+dx,y+dy)===T.WATER) mark(x+dx,y+dy); }
   }
