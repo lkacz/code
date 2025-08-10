@@ -97,25 +97,38 @@ function drawAnimatedOverlays(sx,sy,viewX,viewY,pass){ const now=performance.now
 			// Grass blades (only surface grass). Split front/back layering.
 			if(t===T.GRASS && getTile(x,y-1)===T.AIR){
 				const seed=hash32(x,y);
-				const base = 3; // baseline blades
-				let bladeCount = Math.min(100, Math.max(1, Math.round(base * grassDensityScalar)));
+				const base = 3;
+				let bladeCount = Math.min(120, Math.max(1, Math.round(base * grassDensityScalar)));
 				for(let b=0;b<bladeCount;b++){
-					const bSeed = seed + b*911;
-					const phase = ((bSeed>>9)&1023)/1023;
-					const heightFactor = 0.12 + ((bSeed>>16)&255)/255 * 0.25; // 0.12..0.37 tile
-					const swayBase = Math.sin(now*0.0032 + phase*6.283 + wind*0.55) * 2.8;
-					const sway = swayBase * (0.55 + heightFactor*0.7);
-					// Distribute roots evenly with jitter across full tile width
-					const jitter = ((bSeed>>22)&255)/255; const frac = (b + jitter)/bladeCount; // 0..1
-					const baseX = x*TILE + (frac - 0.5)*TILE*0.95 + TILE/2;
+					const bSeed = seed ^ (b*1103515245);
+					// Individual randomized attributes
+					const randA = ((bSeed>>>1)&1023)/1023; // general random
+					const randB = ((bSeed>>>11)&1023)/1023; // secondary
+					const randC = ((bSeed>>>21)&1023)/1023; // tertiary
+					const heightFactor = 0.10 + randA*0.40; // 0.10..0.50 tile (wider variance)
+					const freq = 0.0025 + randB*0.0035; // per-blade sway frequency
+					const amp = 2.0 + randC*3.0; // sway pixel amplitude base
+					const phase = ((bSeed>>>6)&1023)/1023 * Math.PI*2;
+					const timeTerm = now*freq + phase + wind*0.4;
+					const sway = Math.sin(timeTerm) * amp;
+					// Root distribution across tile width with deterministic jitter
+					const jitter = ((bSeed>>>26)&63)/63; const frac = (b + jitter)/bladeCount; // 0..1
+					const baseX = x*TILE + (frac - 0.5)*TILE*0.98 + TILE/2;
 					const baseY = y*TILE;
-					const shadeMod = 0.65 + ((bSeed>>24)&15)/30; // 0.65..1.15
+					// Curvature: mid control point offset sideways & upward for natural bend
+					const bendDir = Math.sin(phase + wind*0.2); // -1..1
+					const curvature = 0.2 + randB*0.4; // magnitude of lateral mid bend
+					const topX = baseX + sway*0.45;
+					const topY = baseY - TILE*heightFactor;
+					const midX = baseX + (sway*0.25) + bendDir*curvature*4;
+					const midY = baseY - TILE*heightFactor*0.55;
+					const shadeMod = 0.65 + randC*0.5; // 0.65..1.15
 					const frontBlade = ((bSeed>>5)&1)===1; if((pass==='front' && !frontBlade) || (pass==='back' && frontBlade)) continue;
-					ctx.strokeStyle = (bSeed&2)? 'rgba(44,160,44,'+(frontBlade? (0.85*shadeMod).toFixed(2):(0.55*shadeMod).toFixed(2))+')' : 'rgba(34,130,34,'+(frontBlade? (0.80*shadeMod).toFixed(2):(0.50*shadeMod).toFixed(2))+')';
+					ctx.strokeStyle = (bSeed&2)? 'rgba(46,165,46,'+(frontBlade? (0.85*shadeMod).toFixed(2):(0.55*shadeMod).toFixed(2))+')' : 'rgba(34,125,34,'+(frontBlade? (0.80*shadeMod).toFixed(2):(0.50*shadeMod).toFixed(2))+')';
 					ctx.lineWidth = 1;
 					ctx.beginPath();
 					ctx.moveTo(baseX, baseY);
-					ctx.lineTo(baseX + sway*0.30, baseY - TILE*heightFactor);
+					ctx.quadraticCurveTo(midX, midY, topX, topY);
 					ctx.stroke();
 				}
 			}
