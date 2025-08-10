@@ -6,14 +6,29 @@ let W=0,H=0,DPR=1; function resize(){ DPR=Math.max(1,Math.min(2,window.devicePix
 
 // --- Świat (łagodniejsze biomy: równiny / wzgórza / góry) ---
 const {CHUNK_W,WORLD_H,TILE,SURFACE_GRASS_DEPTH,SAND_DEPTH,T,INFO,SNOW_LINE,isSolid} = MM;
-const {worldGen:WG} = MM; const {surfaceHeight, biomeType, randSeed, diamondChance} = WG;
-let worldSeed = WG.worldSeed;
-function setSeedFromInput(){ WG.setSeedFromInput(); worldSeed=WG.worldSeed; }
+const WORLDGEN = MM.worldGen; // avoid name clash with worldgen.js internal const WG
+let surfaceHeight, biomeType, randSeed, diamondChance, worldSeed;
+try {
+	if(!WORLDGEN) throw new Error('MM.worldGen missing (worldgen.js not loaded)');
+	surfaceHeight = WORLDGEN.surfaceHeight;
+	biomeType = WORLDGEN.biomeType;
+	randSeed = WORLDGEN.randSeed;
+	diamondChance = WORLDGEN.diamondChance;
+	worldSeed = WORLDGEN.worldSeed;
+} catch(e){
+	const box=document.getElementById('errorBox');
+	if(box){ box.textContent='Init error: '+e.message; box.style.display='block'; }
+	console.error('[InitFailure]', e);
+	// abort further setup to avoid cascading issues
+	throw e;
+}
+function setSeedFromInput(){ WORLDGEN.setSeedFromInput(); worldSeed=WORLDGEN.worldSeed; }
 const world=new Map(); function ck(x){return 'c'+x;} function tileIndex(x,y){return y*CHUNK_W+x;}
 function ensureChunk(cx){ const k=ck(cx); if(world.has(k)) return world.get(k); const arr=new Uint8Array(CHUNK_W*WORLD_H);
 	// wypełnienie gruntu
 	for(let lx=0; lx<CHUNK_W; lx++){
 		const wx=cx*CHUNK_W+lx; const s=surfaceHeight(wx);
+		if(cx===0 && lx<3){ console.log('[ensureChunk] wx',wx,'surfaceHeight',s,'typeof surfaceHeight',typeof surfaceHeight); if(s>100||s<0) console.warn('Suspicious surfaceHeight',s,'at x',wx); }
 		for(let y=0;y<WORLD_H;y++){
 			let t=T.AIR; if(y>=s){ const depth=y-s; const snowy=s<SNOW_LINE; if(depth<SURFACE_GRASS_DEPTH) t=snowy?T.SNOW:T.GRASS; else if(!snowy && depth<SURFACE_GRASS_DEPTH+SAND_DEPTH && s>20) t=T.SAND; else t=(randSeed(wx*13.37 + y*0.7) < diamondChance(y)?T.DIAMOND:T.STONE); }
 			arr[tileIndex(lx,y)]=t;
@@ -29,6 +44,15 @@ function ensureChunk(cx){ const k=ck(cx); if(world.has(k)) return world.get(k); 
 		buildTree(arr,lx,s,variant,wx);
 	}
 	world.set(k,arr); return arr; }
+	// Debug: log first chunk solidity
+	if(!world.has('c0')){ const test=ensureChunk(0); let solids=0; for(let i=0;i<test.length;i++){ if(test[i]!==T.AIR) solids++; } console.log('[ChunkGen] c0 solids', solids); }
+
+	// --- Error capture overlay ---
+	(function(){ const box=document.getElementById('errorBox'); if(!box) return; function show(msg){ box.textContent=msg; box.style.display='block'; }
+		window.addEventListener('error',e=>{ show('[Error] '+e.message+'\n'+(e.filename||'')+':'+e.lineno); console.error(e.error||e.message); });
+		window.addEventListener('unhandledrejection',e=>{ show('[Promise] '+e.reason); console.error(e.reason); });
+		console.log('[Diag] surfaceHeight fn?', typeof surfaceHeight, 'biomeType?', typeof biomeType, 'randSeed?', typeof randSeed);
+	})();
 
 function buildTree(arr,lx,s,variant,wx){
 	// s = y top ground block; trunk goes upward (towards smaller y)
@@ -187,6 +211,7 @@ function updateMining(dt){ if(!mining) return; if(getTile(mineTx,mineTy)===T.AIR
 
 // Render
 function draw(){ ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camX)-1; const sy=Math.floor(camY)-1; ctx.save(); ctx.scale(zoom,zoom); ctx.translate(-camX*TILE,-camY*TILE);
+	if(!draw._logged){ draw._logged=true; console.log('[FirstDraw] cam',camX,camY,'sx',sx,'sy',sy,'tile(0,0)',getTile(0,0),'tile(0,30)',getTile(0,30)); }
 	// draw cape FIRST so any solid / passable tiles will occlude it
 	drawCape();
 	// render tiles (solids + passables)
@@ -228,6 +253,7 @@ let frames=0,lastFps=performance.now(); function updateFps(now){ frames++; if(no
 // Spawn
 function placePlayer(skipMsg){ const x=0; ensureChunk(0); let y=0; while(y<WORLD_H-1 && getTile(x,y)===T.AIR) y++; player.x=x+0.5; player.y=y-1; revealAround(); camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; initScarf(); if(!skipMsg) msg('Seed '+worldSeed); }
 placePlayer(); updateInventory(); updateGodBtn(); msg('Sterowanie: A/D/W + ⛏️ / klik. G=Bóg (nieskończone skoki), M=Mapa, C=Centrum, H=Pomoc');
+console.log('[PostPlace] player',player.x,player.y,'firstNonAirY', (function(){let y=0; while(y<WORLD_H && getTile(0,y)===T.AIR) y++; return y;})(), 'tileBelowPlayer', getTile(Math.floor(player.x), Math.floor(player.y+player.h/2)) );
 
 // Pętla
 let last=performance.now(); function loop(ts){ const dt=Math.min(0.05,(ts-last)/1000); last=ts; physics(dt); updateMining(dt); updateFallingBlocks(dt); updateCape(dt); updateBlink(ts); draw(); if(ts<radarFlash){ radarBtn.classList.add('pulse'); } else radarBtn.classList.remove('pulse'); updateFps(ts); requestAnimationFrame(loop); } requestAnimationFrame(loop);
