@@ -45,6 +45,11 @@
     .pill{ background:rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.12); border-radius:999px; padding:6px 10px; font-size:12px; }
     #errorBox{ position:absolute; left:8px; right:8px; top:50%; transform:translateY(-50%); background:#2b1e1e; color:#ffd7d7; border:1px solid #402b2b; border-radius:10px; padding:10px 12px; display:none; white-space:pre-wrap; font-family:ui-monospace,monospace; }
     #messages{ position:absolute; left:50%; top:8px; transform:translateX(-50%); font-size:12px; background:rgba(0,0,0,.5); padding:4px 10px; border-radius:999px; pointer-events:none; }
+  #hotbarWrap{ position:absolute; left:50%; bottom:10px; transform:translateX(-50%); display:flex; gap:6px; pointer-events:auto; }
+  .hotSlot{ width:46px; height:46px; border:1px solid rgba(255,255,255,.25); background:rgba(0,0,0,.45); border-radius:10px; display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:11px; position:relative; box-shadow:0 2px 8px rgba(0,0,0,.5); }
+  .hotSlot.sel{ outline:2px solid #2c7ef8; }
+  .hotSlot .count{ font-weight:600; }
+  .hotSlot .key{ position:absolute; top:2px; right:4px; font-size:10px; opacity:.7; }
   </style>
 </head>
 <body>
@@ -113,6 +118,14 @@
     </div>
     <button id="radarBtn" title="Radar diamentów (10×10)">💎</button>
     <div id="messages"></div>
+    <div id="hotbarWrap" aria-label="Pasek szybkiego wyboru bloków">
+      <div class="hotSlot" data-key="4" data-type="GRASS"><span class="key">4</span><span>trawa</span><span class="count" id="hotCntGRASS">0</span></div>
+      <div class="hotSlot" data-key="5" data-type="SAND"><span class="key">5</span><span>piasek</span><span class="count" id="hotCntSAND">0</span></div>
+      <div class="hotSlot" data-key="6" data-type="STONE"><span class="key">6</span><span>kamień</span><span class="count" id="hotCntSTONE">0</span></div>
+      <div class="hotSlot" data-key="7" data-type="WOOD"><span class="key">7</span><span>drewno</span><span class="count" id="hotCntWOOD">0</span></div>
+      <div class="hotSlot" data-key="8" data-type="LEAF"><span class="key">8</span><span>liść</span><span class="count" id="hotCntLEAF">0</span></div>
+      <div class="hotSlot" data-key="9" data-type="SNOW"><span class="key">9</span><span>śnieg</span><span class="count" id="hotCntSNOW">0</span></div>
+    </div>
     <div id="errorBox" role="alert"></div>
   </div>
   <script src="src/engine/constants.js"></script>
