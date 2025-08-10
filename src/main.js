@@ -99,15 +99,41 @@ let blinkStart=0, blinking=false, nextBlink=performance.now()+2000+Math.random()
 // Cape physics: chain with gravity that droops when idle and streams when moving
 const CAPE_SEGMENTS=12; const cape=[]; function initScarf(){ // keep name used elsewhere
 	cape.length=0; for(let i=0;i<CAPE_SEGMENTS;i++) cape.push({x:player.x,y:player.y,vx:0,vy:0}); }
-function updateCape(dt){ if(!cape.length) return; const anchorX=player.x; const anchorY=player.y - player.h/2 + 0.05; cape[0].x=anchorX; cape[0].y=anchorY; const speed=Math.min(1, Math.abs(player.vx)/MOVE.MAX); const flare = 1 + speed*5; const time=performance.now(); const baseLen=0.19; const inertia=Math.max(0.05, 0.25 - speed*0.15); for(let i=1;i<CAPE_SEGMENTS;i++){ const seg=cape[i]; const t=i/(CAPE_SEGMENTS-1); const horiz=i*baseLen*flare*player.facing; const droop = (1-speed)*(0.55*t*t) + 0.05; // more droop when idle
-		const wind = (Math.sin(time/260 + i*0.8)*0.5 + Math.sin(time/1300 + i))*0.02 * (0.3 + 0.7*speed);
-		const targetX = anchorX - horiz + wind;
-		const targetY = anchorY + droop + wind*0.3;
-		seg.x += (targetX - seg.x)*(1 - Math.pow(1-inertia, dt*60));
-		seg.y += (targetY - seg.y)*(1 - Math.pow(1-inertia, dt*60));
+function updateCape(dt){
+	if(!cape.length) return;
+	const anchorX=player.x;
+	const anchorY=player.y - player.h/2 + 0.05;
+	const speed=Math.min(1, Math.abs(player.vx)/MOVE.MAX);
+	const time=performance.now();
+	const targetFlare = 0.2 + 0.55*speed; // horizontal spread cap (meters)
+	const segLen=0.16; // desired base link length
+	cape[0].x=anchorX; cape[0].y=anchorY;
+	// Predict target positions via simple semi-rigid chain, then relax with springs
+	for(let i=1;i<CAPE_SEGMENTS;i++){
+		const prev=cape[i-1]; const seg=cape[i];
+		// base desired direction: backward relative to facing and slightly downward
+		const backDirX = -player.facing; // -1 or 1
+		const flareFactor = (i/(CAPE_SEGMENTS-1))*targetFlare;
+		const wind = Math.sin(time/400 + i*0.7)*0.02 + Math.sin(time/1300 + i)*0.01; // subtle
+		const idleSway = (1-speed)*Math.sin(time/700 + i)*0.015;
+		const desiredX = prev.x + backDirX*flareFactor + wind;
+		const desiredY = prev.y + 0.05 + (i/(CAPE_SEGMENTS-1))*0.15 + idleSway; // droop increases with depth
+		// integrate toward desired with damping
+		seg.x += (desiredX - seg.x)*Math.min(1, dt*6);
+		seg.y += (desiredY - seg.y)*Math.min(1, dt*6);
 	}
-	// ensure monotonic chain roughly (prevent fold-over)
-	for(let i=1;i<CAPE_SEGMENTS;i++){ const prev=cape[i-1]; const seg=cape[i]; if((player.facing>0 && seg.x>prev.x) || (player.facing<0 && seg.x<prev.x)){ seg.x = prev.x; } }
+	// Length constraint (2 iterations)
+	for(let it=0; it<2; it++){
+		for(let i=1;i<CAPE_SEGMENTS;i++){
+			const prev=cape[i-1]; const seg=cape[i];
+			let dx=seg.x-prev.x, dy=seg.y-prev.y; let d=Math.hypot(dx,dy); if(d===0){ d=0.0001; dx=0.0001; }
+			const excess = d - segLen; if(Math.abs(excess)>0.0005){ const k=excess/d; seg.x -= dx*k; seg.y -= dy*k; }
+		}
+	}
+	// Prevent forward flip: ensure chain x does not pass anchor direction
+	for(let i=1;i<CAPE_SEGMENTS;i++){ const prev=cape[i-1]; const seg=cape[i]; if(player.facing>0 && seg.x>prev.x) seg.x=prev.x; if(player.facing<0 && seg.x<prev.x) seg.x=prev.x; }
+	// Gentle settling when almost idle: extra downward pull
+	if(speed<0.1){ for(let i=1;i<CAPE_SEGMENTS;i++){ cape[i].y += dt*0.4*(i/(CAPE_SEGMENTS-1)); } }
 }
 function drawCape(){ if(!cape.length) return; const wTop=0.10, wBot=0.24; const leftPts=[], rightPts=[]; for(let i=0;i<CAPE_SEGMENTS;i++){ const cur=cape[i]; const next=cape[Math.min(CAPE_SEGMENTS-1,i+1)]; let dx=next.x-cur.x, dy=next.y-cur.y; const d=Math.hypot(dx,dy)||1; dx/=d; dy/=d; const t=i/(CAPE_SEGMENTS-1); const w=wTop + (wBot-wTop)*t; const px=-dy*w; const py=dx*w; leftPts.push({x:cur.x+px,y:cur.y+py}); rightPts.push({x:cur.x-px,y:cur.y-py}); }
 	// Build path
