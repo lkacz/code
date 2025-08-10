@@ -1,4 +1,12 @@
 // Mini Miner - prosty prototyp 2D side-view mining
+console.log('[MiniMiner] Script start');
+window.addEventListener('error', e=>{
+  try {
+    const m=document.getElementById('messages');
+    if(m) m.textContent = 'Błąd: '+e.message;
+  } catch(_){}
+  console.error('Global error', e.error||e.message);
+});
 // Założenia: proceduralny świat, warstwy: roślinność, piach, kamień, diamenty w kamieniu
 // Fog-of-war: tylko odkryte kafelki są wyświetlane
 // Crafting kilofów: basic (infinite), stone, diamond
