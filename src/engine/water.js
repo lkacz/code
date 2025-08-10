@@ -84,8 +84,50 @@ window.MM = window.MM || {};
     for(let dy=-1; dy<=1; dy++) for(let dx=-1; dx<=1; dx++){ if(getTile(x+dx,y+dy)===T.WATER) mark(x+dx,y+dy); }
   }
   function drawOverlay(ctx,TILE,getTile,sx,sy,vx,vy){
-    // subtle animated surface shimmer (single pass over visible water)
+    // Wave redistribution for partially filled surface basins (visual + logical oscillation)
     const now=performance.now();
+    if(active.size < 500){ // only attempt waves when system mostly idle
+      const freq = 0.00045; // oscillation base frequency
+      for(let y=sy; y<sy+vy+2; y++){
+        if(y<0||y>=WORLD_H) continue;
+        // Build segments across view (slightly extended)
+        let x = sx-2;
+        const xEnd = sx+vx+2;
+        while(x <= xEnd){
+          // Segment starts where cell qualifies (supported floor) and cell is water surface or dry floor
+          const t=getTile(x,y); const below=getTile(x,y+1);
+          const supported = below!==T.AIR; // floor
+            const surfaceCandidate = supported && (t===T.WATER || (t===T.AIR));
+          if(!surfaceCandidate){ x++; continue; }
+          // Collect segment
+          let segStart=x; let seg=[]; let hasWater=false; let hasAir=false;
+          while(x<=xEnd){ const tt=getTile(x,y); const bb=getTile(x,y+1); const ok = (bb!==T.AIR) && (tt===T.WATER || tt===T.AIR); if(!ok) break; const waterHere = (tt===T.WATER && getTile(x,y-1)===T.AIR); // only count surface water
+            const airHere = (tt===T.AIR);
+            seg.push({x,water:waterHere}); if(waterHere) hasWater=true; if(airHere) hasAir=true; x++; }
+          const segEnd = x-1;
+          if(hasWater && hasAir && seg.length>1){
+            // Determine walls: simple check of neighbors outside segment
+            const leftWall = (getTile(segStart-1,y)!==T.AIR && getTile(segStart-1,y)!==T.WATER) || getTile(segStart-1,y+1)===T.AIR;
+            const rightWall = (getTile(segEnd+1,y)!==T.AIR && getTile(segEnd+1,y)!==T.WATER) || getTile(segEnd+1,y+1)===T.AIR;
+            if(leftWall && rightWall){
+              const W = seg.length; const waterCount = seg.filter(c=>c.water).length;
+              if(waterCount>0 && waterCount<W){
+                // Phase based on y (row) to diversify
+                const phase = y*57.17;
+                const oscill = (Math.sin(now*freq + phase)+1)/2; // 0..1
+                const offset = Math.floor(oscill * (W - waterCount));
+                // Reassign distribution
+                for(let i=0;i<W;i++){ const targetWater = i>=offset && i<offset+waterCount; const cell=seg[i]; const curT=getTile(cell.x,y); const isSurfaceWater = (curT===T.WATER && getTile(cell.x,y-1)===T.AIR);
+                  if(targetWater){ if(curT===T.AIR){ setTile(cell.x,y,T.WATER); } }
+                  else { if(isSurfaceWater){ setTile(cell.x,y,T.AIR); } }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    // Subtle animated surface shimmer (single pass over visible water)
     for(let y=sy; y<sy+vy+2; y++){
       if(y<0||y>=WORLD_H) continue;
       for(let x=sx; x<sx+vx+2; x++){
