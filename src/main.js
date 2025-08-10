@@ -99,29 +99,20 @@ let blinkStart=0, blinking=false, nextBlink=performance.now()+2000+Math.random()
 // Cape physics: chain with gravity that droops when idle and streams when moving
 const CAPE_SEGMENTS=12; const cape=[]; function initScarf(){ // keep name used elsewhere
 	cape.length=0; for(let i=0;i<CAPE_SEGMENTS;i++) cape.push({x:player.x,y:player.y,vx:0,vy:0}); }
-function updateCape(dt){ if(!cape.length) return; const anchorX=player.x; const anchorY=player.y - player.h/2 + 0.05; cape[0].x=anchorX; cape[0].y=anchorY; cape[0].vx=0; cape[0].vy=0; const speed=Math.abs(player.vx); const time=performance.now(); for(let i=1;i<CAPE_SEGMENTS;i++){ const seg=cape[i]; // forces
-		// gravity
-		seg.vy += 22*dt;
-		// air drag
-		seg.vx *= (1- dt*4); seg.vy *= (1- dt*2);
-		// wind / movement influence
-		const wind = (Math.sin((time/500)+(i*0.7))*0.5 + Math.sin((time/1300)+(i))*0.3) * (0.3 + 0.7*Math.min(1,speed/4));
-		seg.vx += (-player.vx*0.6 + wind) * dt;
-		// integrate
-		seg.x += seg.vx*dt; seg.y += seg.vy*dt;
+function updateCape(dt){ if(!cape.length) return; const anchorX=player.x; const anchorY=player.y - player.h/2 + 0.05; cape[0].x=anchorX; cape[0].y=anchorY; const speed=Math.min(1, Math.abs(player.vx)/MOVE.MAX); const flare = 1 + speed*5; const time=performance.now(); const baseLen=0.19; const inertia=Math.max(0.05, 0.25 - speed*0.15); for(let i=1;i<CAPE_SEGMENTS;i++){ const seg=cape[i]; const t=i/(CAPE_SEGMENTS-1); const horiz=i*baseLen*flare*player.facing; const droop = (1-speed)*(0.55*t*t) + 0.05; // more droop when idle
+		const wind = (Math.sin(time/260 + i*0.8)*0.5 + Math.sin(time/1300 + i))*0.02 * (0.3 + 0.7*speed);
+		const targetX = anchorX - horiz + wind;
+		const targetY = anchorY + droop + wind*0.3;
+		seg.x += (targetX - seg.x)*(1 - Math.pow(1-inertia, dt*60));
+		seg.y += (targetY - seg.y)*(1 - Math.pow(1-inertia, dt*60));
 	}
-	// distance constraints (keep length + droop)
-	const segLen=0.17; for(let iter=0; iter<2; iter++){ for(let i=1;i<CAPE_SEGMENTS;i++){ const prev=cape[i-1]; const seg=cape[i]; let dx=seg.x-prev.x; let dy=seg.y-prev.y; let d=Math.hypot(dx,dy); if(d===0){ dx=0.001; dy=0; d=0.001; } const diff=(d-segLen); if(Math.abs(diff)>0.0001){ const k=diff/d; // move only current (prev anchored earlier segments propagate pass)
-				seg.x -= dx*k; seg.y -= dy*k; }
-		} }
-	// ground clip not needed; just limit extremely high rise (keep below anchor + some slack)
-	for(let i=1;i<CAPE_SEGMENTS;i++){ if(cape[i].y < anchorY - 0.05) cape[i].y = anchorY - 0.05; }
+	// ensure monotonic chain roughly (prevent fold-over)
+	for(let i=1;i<CAPE_SEGMENTS;i++){ const prev=cape[i-1]; const seg=cape[i]; if((player.facing>0 && seg.x>prev.x) || (player.facing<0 && seg.x<prev.x)){ seg.x = prev.x; } }
 }
-function drawCape(){ if(!cape.length) return; // build polygon ribbon
-	const wTop=0.10, wBot=0.22; const leftPts=[]; const rightPts=[]; for(let i=0;i<CAPE_SEGMENTS;i++){ const cur=cape[i]; const next=cape[Math.min(CAPE_SEGMENTS-1,i+1)]; let dx=next.x-cur.x; let dy=next.y-cur.y; const d=Math.hypot(dx,dy)||1; dx/=d; dy/=d; // perpendicular
-		const t=i/(CAPE_SEGMENTS-1); const w=wTop + (wBot-wTop)*t; const px=-dy*w; const py=dx*w; leftPts.push({x:cur.x+px,y:cur.y+py}); rightPts.push({x:cur.x-px,y:cur.y-py}); }
-	ctx.fillStyle='#b91818'; ctx.beginPath(); ctx.moveTo(leftPts[0].x*TILE,leftPts[0].y*TILE); for(let i=1;i<leftPts.length;i++) ctx.lineTo(leftPts[i].x*TILE,leftPts[i].y*TILE); for(let i=rightPts.length-1;i>=0;i--) ctx.lineTo(rightPts[i].x*TILE,rightPts[i].y*TILE); ctx.closePath(); ctx.fill(); // highlight edge
-	ctx.strokeStyle='rgba(255,255,255,0.15)'; ctx.lineWidth=1; ctx.beginPath(); for(let i=0;i<leftPts.length;i++) ctx.lineTo(leftPts[i].x*TILE,leftPts[i].y*TILE); ctx.stroke(); }
+function drawCape(){ if(!cape.length) return; const wTop=0.10, wBot=0.24; const leftPts=[], rightPts=[]; for(let i=0;i<CAPE_SEGMENTS;i++){ const cur=cape[i]; const next=cape[Math.min(CAPE_SEGMENTS-1,i+1)]; let dx=next.x-cur.x, dy=next.y-cur.y; const d=Math.hypot(dx,dy)||1; dx/=d; dy/=d; const t=i/(CAPE_SEGMENTS-1); const w=wTop + (wBot-wTop)*t; const px=-dy*w; const py=dx*w; leftPts.push({x:cur.x+px,y:cur.y+py}); rightPts.push({x:cur.x-px,y:cur.y-py}); }
+	// Build path
+	ctx.fillStyle='#b91818'; ctx.beginPath(); ctx.moveTo(leftPts[0].x*TILE,leftPts[0].y*TILE); for(let i=1;i<leftPts.length;i++) ctx.lineTo(leftPts[i].x*TILE,leftPts[i].y*TILE); for(let i=rightPts.length-1;i>=0;i--) ctx.lineTo(rightPts[i].x*TILE,rightPts[i].y*TILE); ctx.closePath();
+	ctx.fill(); ctx.strokeStyle='rgba(255,255,255,0.18)'; ctx.lineWidth=1; ctx.beginPath(); for(let i=0;i<leftPts.length;i++) ctx.lineTo(leftPts[i].x*TILE,leftPts[i].y*TILE); ctx.stroke(); }
 function drawPlayer(){ drawCape(); const bodyX=(player.x-player.w/2)*TILE; const bodyY=(player.y-player.h/2)*TILE; const bw=player.w*TILE, bh=player.h*TILE; ctx.fillStyle='#f4c05a'; ctx.fillRect(bodyX,bodyY,bw,bh); ctx.strokeStyle='#4b3212'; ctx.lineWidth=2; ctx.strokeRect(bodyX,bodyY,bw,bh); const eyeW=6, eyeHOpen=6; let eyeH=eyeHOpen; if(blinking){ const p=(performance.now()-blinkStart)/BLINK_DUR; const tri=p<0.5? (p*2) : (1-(p-0.5)*2); eyeH = Math.max(1, eyeHOpen * (1-tri)); } const eyeY=bodyY + bh*0.35; const eyeOffsetX=bw*0.18; const pupilW=2; const pupilShift=player.facing*1.5; function eye(cx){ ctx.fillStyle='#fff'; ctx.fillRect(cx-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); if(eyeH>2){ ctx.fillStyle='#111'; ctx.fillRect(cx - pupilW/2 + pupilShift, eyeY - Math.min(eyeH/2-1,2), pupilW, Math.min(eyeH-2,4)); } } eye(bodyX+bw/2-eyeOffsetX); eye(bodyX+bw/2+eyeOffsetX); ctx.fillStyle='rgba(0,0,0,0.25)'; const shw=bw*0.6; ctx.beginPath(); ctx.ellipse(player.x*TILE, (player.y+player.h/2)*TILE+2, shw/2, 4,0,0,Math.PI*2); ctx.fill(); }
 
 // Input + tryby specjalne
@@ -192,7 +183,19 @@ function drawFallingBlocks(){ if(!fallingBlocks.length) return; fallingBlocks.fo
 function updateMining(dt){ if(!mining) return; if(getTile(mineTx,mineTy)===T.AIR){ mining=false; mineBtn.classList.remove('on'); return; } if(godMode){ instantBreak(); return; } mineTimer += dt * tools[player.tool]; const curId=getTile(mineTx,mineTy); const info=INFO[curId]; const need=Math.max(0.1, info.hp/6); if(mineTimer>=need){ if(curId===T.WOOD && isTreeBase(mineTx,mineTy)){ if(startTreeFall(mineTx,mineTy)){ mining=false; mineBtn.classList.remove('on'); return; } } const drop=info.drop; setTile(mineTx,mineTy,T.AIR); if(drop) inv[drop]=(inv[drop]||0)+1; mining=false; mineBtn.classList.remove('on'); updateInventory(); } }
 
 // Render
-function draw(){ ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camX)-1; const sy=Math.floor(camY)-1; ctx.save(); ctx.scale(zoom,zoom); ctx.translate(-camX*TILE,-camY*TILE); for(let y=sy; y<sy+viewY+2; y++){ for(let x=sx; x<sx+viewX+2; x++){ const t=getTile(x,y); if(t===T.AIR) continue; if(!revealAll && !seen.has(key(x,y))){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); continue; } ctx.fillStyle=INFO[t].color; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); } } drawFallingBlocks(); drawPlayer(); if(mining){ ctx.strokeStyle='#fff'; ctx.strokeRect(mineTx*TILE+1,mineTy*TILE+1,TILE-2,TILE-2); const info=INFO[getTile(mineTx,mineTy)]||{hp:1}; const need=Math.max(0.1,info.hp/6); const p=mineTimer/need; ctx.fillStyle='rgba(255,255,255,.3)'; ctx.fillRect(mineTx*TILE, mineTy*TILE + (1-p)*TILE, TILE, p*TILE); } ctx.restore(); }
+function draw(){ ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camX)-1; const sy=Math.floor(camY)-1; ctx.save(); ctx.scale(zoom,zoom); ctx.translate(-camX*TILE,-camY*TILE);
+	// pass 1: solid tiles
+	for(let y=sy; y<sy+viewY+2; y++){ for(let x=sx; x<sx+viewX+2; x++){ const t=getTile(x,y); if(t===T.AIR||INFO[t].passable) continue; if(!revealAll && !seen.has(key(x,y))){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); continue; } ctx.fillStyle=INFO[t].color; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); } }
+	drawFallingBlocks();
+	// cape behind passable foliage
+	drawCape();
+	// pass 2: passable tiles (leaves / trunk) so they appear in front of cape but behind player body outline
+	for(let y=sy; y<sy+viewY+2; y++){ for(let x=sx; x<sx+viewX+2; x++){ const t=getTile(x,y); if(t===T.AIR||!INFO[t].passable) continue; if(!revealAll && !seen.has(key(x,y))){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); continue; } ctx.fillStyle=INFO[t].color; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); } }
+	// player + mining overlay
+	const px=(player.x-player.w/2)*TILE; const py=(player.y-player.h/2)*TILE; ctx.fillStyle='#f4c05a'; ctx.fillRect(px,py,player.w*TILE,player.h*TILE); ctx.strokeStyle='#4b3212'; ctx.lineWidth=2; ctx.strokeRect(px,py,player.w*TILE,player.h*TILE); // eyes & shadow already in drawPlayer, reuse for consistency
+	drawPlayer();
+	if(mining){ ctx.strokeStyle='#fff'; ctx.strokeRect(mineTx*TILE+1,mineTy*TILE+1,TILE-2,TILE-2); const info=INFO[getTile(mineTx,mineTy)]||{hp:1}; const need=Math.max(0.1,info.hp/6); const p=mineTimer/need; ctx.fillStyle='rgba(255,255,255,.3)'; ctx.fillRect(mineTx*TILE, mineTy*TILE + (1-p)*TILE, TILE, p*TILE); }
+	ctx.restore(); }
 
 // UI aktualizacja
 const el={grass:document.getElementById('grass'),sand:document.getElementById('sand'),stone:document.getElementById('stone'),diamond:document.getElementById('diamond'),wood:document.getElementById('wood'),snow:document.getElementById('snow'),pick:document.getElementById('pick'),fps:document.getElementById('fps'),msg:document.getElementById('messages')}; function updateInventory(){ el.grass.textContent=inv.grass; el.sand.textContent=inv.sand; el.stone.textContent=inv.stone; el.diamond.textContent=inv.diamond; el.wood.textContent=inv.wood; if(el.snow) el.snow.textContent=inv.snow; el.pick.textContent=player.tool; document.getElementById('craftStone').disabled=!canCraftStone(); document.getElementById('craftDiamond').disabled=!canCraftDiamond(); }
