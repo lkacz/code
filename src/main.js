@@ -12,6 +12,8 @@ const TREES = MM.trees;
 const CAPE = MM.cape;
 // Visual enhancement config
 const VISUAL={animations:true};
+let grassDensityScalar = 1; // user adjustable (exponential scaling)
+function initGrassDensityControl(){ const rng=document.getElementById('grassDensity'); const lab=document.getElementById('grassDensityLabel'); if(!rng||!lab) return; function upd(){ grassDensityScalar = Math.pow(3, parseFloat(rng.value)); lab.textContent=grassDensityScalar.toFixed(2); } rng.addEventListener('input',upd); upd(); }
 let surfaceHeight, biomeType, randSeed, diamondChance, worldSeed;
 try {
 	if(!WORLDGEN) throw new Error('MM.worldGen missing (worldgen.js not loaded)');
@@ -96,21 +98,23 @@ function drawAnimatedOverlays(sx,sy,viewX,viewY,pass){ const now=performance.now
 			if(t===T.GRASS && getTile(x,y-1)===T.AIR){
 				const seed=hash32(x,y);
 				const front = ((seed>>5)&1)===1; if((pass==='back' && front) || (pass==='front' && !front)){} else {
-					const bladeCount = 2 + (seed & 1); // 2..3 visible to ensure density
+					const base = 2 + (seed & 1); // 2-3
+					let bladeCount = Math.min(60, Math.max(1, Math.round(base * grassDensityScalar)));
 					for(let b=0;b<bladeCount;b++){
 						const bSeed = seed + b*977;
 						const phase = ((bSeed>>10)&1023)/1023;
-						const heightFactor = 0.30 + ((bSeed>>16)&15)/15 * 0.35; // 0.30 .. 0.65 shorter
-						const swayBase = Math.sin(now*0.0035 + phase*6.283 + wind*0.55) * 3.5;
-						const sway = swayBase * (0.7 + heightFactor*0.5);
-						const xOff = ((bSeed>>20)&31)/31 * (TILE*0.8) - TILE*0.4; // spread across tile
-						const baseX = x*TILE + TILE/2 + xOff*0.6;
+						const heightFactor = 0.15 + ((bSeed>>16)&15)/15 * 0.20; // 0.15..0.35 (shorter)
+						const swayBase = Math.sin(now*0.0035 + phase*6.283 + wind*0.55) * 3.2;
+						const sway = swayBase * (0.65 + heightFactor*0.55);
+						const xOff = ((bSeed>>20)&63)/63 * (TILE*0.9) - TILE*0.45;
+						const baseX = x*TILE + TILE/2 + xOff*0.55;
 						const baseY = y*TILE;
-						ctx.strokeStyle = b===0? 'rgba(40,150,40,'+(front?0.95:0.85)+')' : 'rgba(30,115,30,'+(front?0.9:0.75)+')';
+						const shadeMod = 0.7 + ((bSeed>>24)&7)/14;
+						ctx.strokeStyle = (bSeed&1)? 'rgba(38,145,38,'+(front? (0.85*shadeMod).toFixed(2):(0.70*shadeMod).toFixed(2))+')' : 'rgba(32,120,32,'+(front? (0.80*shadeMod).toFixed(2):(0.60*shadeMod).toFixed(2))+')';
 						ctx.lineWidth = 1;
 						ctx.beginPath();
 						ctx.moveTo(baseX, baseY);
-						ctx.lineTo(baseX + sway*0.22, baseY - TILE*heightFactor);
+						ctx.lineTo(baseX + sway*0.25, baseY - TILE*heightFactor);
 						ctx.stroke();
 					}
 				}
@@ -230,6 +234,7 @@ let frames=0,lastFps=performance.now(); function updateFps(now){ frames++; if(no
 // Spawn
 function placePlayer(skipMsg){ const x=0; ensureChunk(0); let y=0; while(y<WORLD_H-1 && getTile(x,y)===T.AIR) y++; player.x=x+0.5; player.y=y-1; revealAround(); camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; initScarf(); if(!skipMsg) msg('Seed '+worldSeed); }
 placePlayer(); updateInventory(); updateGodBtn(); msg('Sterowanie: A/D/W + ⛏️ / klik. G=Bóg (nieskończone skoki), M=Mapa, C=Centrum, H=Pomoc');
+initGrassDensityControl();
 
 // Pętla
 let last=performance.now(); function loop(ts){ const dt=Math.min(0.05,(ts-last)/1000); last=ts; // smooth zoom interpolation

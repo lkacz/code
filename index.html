@@ -73,6 +73,11 @@
           </div>
           <div class="group seedRow"><label for="seedInput">Ziarno:</label><input id="seedInput" value="auto" /><button id="regenBtn">Nowy świat</button></div>
           <div class="hint">Skróty: G=Bóg, M=Mapa, C=Centrum, H=Pomoc</div>
+          <div class="group" style="flex-direction:column; align-items:stretch; margin-top:4px;">
+            <label style="font-size:12px; display:flex; justify-content:space-between; gap:8px; align-items:center;">Gęstość trawy <span id="grassDensityLabel">1.0</span></label>
+            <input id="grassDensity" type="range" min="0" max="4" step="0.01" value="1" style="width:100%;" />
+            <div class="hint">Reguluje liczbę źdźbeł / tile (skala logarytmiczna).</div>
+          </div>
         </div>
       </div>
     </div>
