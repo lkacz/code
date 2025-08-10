@@ -7,6 +7,9 @@ window.MM = window.MM || {};
   const active=new Set(); // keys 'x,y'
   let passiveScanOffset = 0; // incremental column scan to catch dormant floating water
   const waveState = new Map(); // key: segStart+":"+segEnd+":"+y -> {offset}
+  // Lateral spread pacing (seconds between lateral propagation attempts)
+  const LATERAL_INTERVAL = 0.18; // increase to slow more (e.g., 0.3)
+  let lateralAcc = 0; // accumulator
   function k(x,y){return x+','+y;}
   function mark(x,y){ active.add(k(x,y)); }
   function isAir(t){ return t===T.AIR; }
@@ -22,11 +25,14 @@ window.MM = window.MM || {};
       }
       if(active.size===0) return; // nothing activated
     }
-    // Adaptive cap: more active cells processed when set small; clamp upper bound.
+  // Adaptive cap: more active cells processed when set small; clamp upper bound.
     const size=active.size; const MAX = Math.min(2000, 300 + Math.floor(size*0.35));
     let processed=0; const next=new Set();
     // Deterministic iteration order (avoid directional bias flicker): sort keys by hash.
     const keys=[...active]; keys.sort();
+  lateralAcc += dt;
+  const lateralStep = lateralAcc >= LATERAL_INTERVAL; // only allow lateral / spill once interval passes
+  if(lateralStep) lateralAcc = 0;
     for(const key of keys){ if(processed++>MAX) { next.add(key); continue; }
       const [sx,sy]=key.split(',').map(Number);
       if(getTile(sx,sy)!==T.WATER) continue;
@@ -38,37 +44,34 @@ window.MM = window.MM || {};
         next.add(k(sx,ny)); markNeighbors(next,sx,ny);
         continue;
       }
-      // 2. Edge spill diagonals (waterfall off ledges)
       let moved=false;
-  const leftBelowAir = sy+1<WORLD_H && canFill(getTile(sx-1,sy+1));
-  const rightBelowAir = sy+1<WORLD_H && canFill(getTile(sx+1,sy+1));
-      // Prioritize the side with deeper vertical drop (scan up to 4)
-  function dropDepth(x){ let d=0; let yy=sy+1; while(yy<WORLD_H && canFill(getTile(x,yy)) && d<8){ d++; yy++; } return d; }
-      if(leftBelowAir || rightBelowAir){
-        let order=[];
-        if(leftBelowAir && rightBelowAir){ const dl=dropDepth(sx-1); const dr=dropDepth(sx+1); order = dl>dr? [-1,1] : dr>dl? [1,-1] : ( ( (sx+sy)&1) ? [-1,1]:[1,-1] ); }
-        else order = leftBelowAir? [-1]:[1];
-  for(const dx of order){ if(canFill(getTile(sx+dx,sy+1))){ setTile(sx,sy,T.AIR); setTile(sx+dx,sy+1,T.WATER); next.add(k(sx+dx,sy+1)); markNeighbors(next,sx+dx,sy+1); moved=true; break; } }
-        if(moved) continue;
+      if(lateralStep){
+        // 2. Edge spill diagonals (waterfall off ledges) - time gated
+        const leftBelowAir = sy+1<WORLD_H && canFill(getTile(sx-1,sy+1));
+        const rightBelowAir = sy+1<WORLD_H && canFill(getTile(sx+1,sy+1));
+        function dropDepth(x){ let d=0; let yy=sy+1; while(yy<WORLD_H && canFill(getTile(x,yy)) && d<8){ d++; yy++; } return d; }
+        if(leftBelowAir || rightBelowAir){
+          let order=[];
+          if(leftBelowAir && rightBelowAir){ const dl=dropDepth(sx-1); const dr=dropDepth(sx+1); order = dl>dr? [-1,1] : dr>dl? [1,-1] : ( ( (sx+sy)&1) ? [-1,1]:[1,-1] ); }
+          else order = leftBelowAir? [-1]:[1];
+          for(const dx of order){ if(canFill(getTile(sx+dx,sy+1))){ setTile(sx,sy,T.AIR); setTile(sx+dx,sy+1,T.WATER); next.add(k(sx+dx,sy+1)); markNeighbors(next,sx+dx,sy+1); moved=true; break; } }
+          if(moved) continue;
+        }
+        // 3. Lateral leveling - time gated
+        const candidates=[]; for(const dx of [-1,1]){ const nx=sx+dx; if(isAir(getTile(nx,sy))){ const under=getTile(nx,sy+1); if(under!==T.AIR || isAir(getTile(sx,sy+1))===false){
+              let depth=0; for(let dd=1; dd<=6; dd++){ const tx=nx+dx*dd; if(!isAir(getTile(tx,sy))) break; depth++; }
+              candidates.push({dx,score:depth}); }
+            else if(isAir(getTile(nx,sy+1)) && sy+1<WORLD_H){ candidates.push({dx,score:0}); }
+          } }
+        if(candidates.length){
+          candidates.sort((a,b)=> b.score - a.score || ((sx+sy)&1? b.dx - a.dx : a.dx - b.dx));
+          const pick=candidates[0];
+          setTile(sx,sy,T.AIR); setTile(sx+pick.dx,sy,T.WATER); next.add(k(sx+pick.dx,sy)); markNeighbors(next,sx+pick.dx,sy); moved=true;
+        }
       }
-      // 3. Lateral leveling: flow sideways into supported or water-backed air.
-      // Evaluate both sides for potential (support present under target or diagonal fall option)
-  const candidates=[]; for(const dx of [-1,1]){ const nx=sx+dx; if(isAir(getTile(nx,sy))){ const under=getTile(nx,sy+1); if(under!==T.AIR || isAir(getTile(sx,sy+1))===false){ // support or current has support
-            // measure basin depth outward to limit runaway spread
-            let depth=0; for(let dd=1; dd<=6; dd++){ const tx=nx+dx*dd; if(!isAir(getTile(tx,sy))) break; depth++; }
-            candidates.push({dx,score:depth}); }
-          else if(isAir(getTile(nx,sy+1)) && sy+1<WORLD_H){ // diagonal slide already handled earlier; treat as lower priority
-            candidates.push({dx,score:0}); }
-        } }
-      if(candidates.length){
-        // Prefer higher score (wider empty stretch) to encourage pool filling
-        candidates.sort((a,b)=> b.score - a.score || ((sx+sy)&1? b.dx - a.dx : a.dx - b.dx));
-        const pick=candidates[0];
-        // Move sideways (do not duplicate)
-        setTile(sx,sy,T.AIR); setTile(sx+pick.dx,sy,T.WATER); next.add(k(sx+pick.dx,sy)); markNeighbors(next,sx+pick.dx,sy); moved=true;
-      }
-      if(!moved){ // stable this frame; keep it active if any neighbor air (potential future flow)
-  if(isAir(getTile(sx-1,sy)) || isAir(getTile(sx+1,sy)) || isAir(getTile(sx,sy+1))){ next.add(key); }
+      if(!moved){
+        // stable this frame; keep it active if any neighbor open so it can move in a future lateral step
+        if(isAir(getTile(sx-1,sy)) || isAir(getTile(sx+1,sy)) || isAir(getTile(sx,sy+1))){ next.add(key); }
       }
     }
     active.clear(); for(const kk of next) active.add(kk);
