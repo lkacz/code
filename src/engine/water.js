@@ -100,6 +100,12 @@ window.MM = window.MM || {};
       }
     }
     active.clear(); for(const kk of next) active.add(kk);
+    // Periodic pressure leveling across wider basins (volume smoothing)
+    pressureAcc += dt;
+    if(pressureAcc >= PRESSURE_INTERVAL && active.size < 1200){
+      pressureAcc = 0;
+      runPressureLeveling(getTile,setTile);
+    }
     if(active.size>6000){ // trim overflow
       let i=0; for(const kk of active){ if(i++>6000){ active.delete(kk); } }
     }
@@ -161,5 +167,137 @@ window.MM = window.MM || {};
     }
   }
   function reset(){ active.clear(); }
+  // --- Pressure leveling support ---
+  const PRESSURE_INTERVAL = 0.65; // seconds between smoothing passes
+  let pressureAcc = 0;
+  const MAX_SEG_WIDTH = 64; // cap scanning width
+  const MAX_VERTICAL_SCAN = 48;
+  function runPressureLeveling(getTile,setTile){
+    // Sample up to N seeds from active set to attempt smoothing.
+    const seeds = [...active];
+    if(!seeds.length) return;
+    // Shuffle lightly by sorting with hash parity to vary over time
+    seeds.sort();
+    let attempts = 0; const MAX_ATTEMPTS = 24;
+    const visitedSegments = new Set();
+    for(const key of seeds){
+      if(attempts>=MAX_ATTEMPTS) break;
+      const [sx,sy] = key.split(',').map(Number);
+      if(getTile(sx,sy)!==T.WATER) continue;
+      // Find surface for this column (top-most water with air above) within vertical window
+      let topY = findSurfaceY(sx,sy,getTile);
+      if(topY==null) continue;
+      // Build horizontal segment of contiguous water-bearing columns (allow varying surface) up to width cap
+      let L=sx, R=sx;
+      while(R - L + 1 < MAX_SEG_WIDTH){
+        // try extend left
+        const nx = L-1; if(!columnHasWater(nx, topY, getTile)) break; L = nx;
+      }
+      while(R - L + 1 < MAX_SEG_WIDTH){
+        const nx = R+1; if(!columnHasWater(nx, topY, getTile)) break; R = nx;
+      }
+      if(R-L+1 < 4) continue; // need a reasonable width
+      const segKey = L+":"+R+":"+topY;
+      if(visitedSegments.has(segKey)) continue;
+      visitedSegments.add(segKey);
+      // Collect column depths
+      const cols=[]; let totalVolume=0; let minD=Infinity, maxD=0;
+      for(let x=L; x<=R; x++){
+        const col = measureColumn(x, topY, getTile);
+        if(!col) { minD=0; continue; } // missing counts as zero depth
+        cols.push(col);
+        totalVolume += col.depth;
+        if(col.depth < minD) minD = col.depth;
+        if(col.depth > maxD) maxD = col.depth;
+      }
+      if(cols.length < (R-L+1)*0.5) continue; // too sparse
+      if(maxD - minD < 2) continue; // already near level
+      const width = (R-L+1);
+      const targetBase = Math.floor(totalVolume / width);
+      let remainder = totalVolume - targetBase*width;
+      // Determine desired depth per x
+      const desired = new Map();
+      for(let x=L; x<=R; x++){
+        let want = targetBase + (remainder>0?1:0);
+        if(remainder>0) remainder--;
+        desired.set(x, want);
+      }
+      // Perform a bounded number of transfers to move toward desired distribution
+      let transfers=0, MAX_TRANSFERS=8;
+      // Build depth map for quick updates
+      const depthMap = new Map();
+      for(let x=L; x<=R; x++) depthMap.set(x, measureDepthOnly(x, topY, getTile));
+      while(transfers < MAX_TRANSFERS){
+        // Find donor (depth > desired+1) and recipient (depth < desired)
+        let donor=null, recipient=null, donorSurY=null, recipientSurY=null;
+        for(let x=L; x<=R; x++){
+          const d = depthMap.get(x)||0; const want = desired.get(x);
+          if(d > want){ donor = x; donorSurY = findSurfaceY(x, topY, getTile); break; }
+        }
+        if(donor==null) break;
+        for(let x=R; x>=L; x--){
+          const d = depthMap.get(x)||0; const want = desired.get(x);
+          if(d < want){ recipient = x; recipientSurY = findSurfaceY(x, topY, getTile); break; }
+        }
+        if(recipient==null) break;
+        // Remove top water from donor
+        if(donorSurY==null) break;
+        setTile(donor, donorSurY, T.AIR);
+        // Add water to recipient (above its surface or on floor)
+        let addY;
+        if(recipientSurY==null){
+          // find floor within vertical scan
+            let ySearch = topY; let lastSolid = null; let limit=MAX_VERTICAL_SCAN; while(limit-- >0 && ySearch < WORLD_H){
+              const t = getTile(recipient, ySearch);
+              if(t!==T.AIR && t!==T.WATER){ lastSolid = ySearch; break; }
+              ySearch++;
+            }
+            if(lastSolid==null) { transfers++; continue; }
+            addY = lastSolid -1; // just above floor
+        } else {
+          addY = recipientSurY -1; // one above current surface top
+        }
+        if(addY >=0 && addY < WORLD_H && getTile(recipient, addY)===T.AIR){
+          setTile(recipient, addY, T.WATER);
+          depthMap.set(donor, (depthMap.get(donor)||1)-1);
+          depthMap.set(recipient, (depthMap.get(recipient)||0)+1);
+          markNeighbors(active, donor, donorSurY); markNeighbors(active, recipient, addY);
+          transfers++;
+        } else {
+          // failed placement; revert donor removal to avoid volume loss
+          setTile(donor, donorSurY, T.WATER);
+          break;
+        }
+      }
+      attempts++;
+    }
+  }
+  function measureColumn(x, topHintY, getTile){
+    const surf = findSurfaceY(x, topHintY, getTile);
+    if(surf==null) return null;
+    let y=surf; let depth=0; while(y < WORLD_H && getTile(x,y)===T.WATER && depth < MAX_VERTICAL_SCAN){ depth++; y++; }
+    return {x, surface: surf, depth};
+  }
+  function measureDepthOnly(x, topHintY, getTile){
+    const surf = findSurfaceY(x, topHintY, getTile); if(surf==null) return 0; let y=surf; let d=0; while(y < WORLD_H && getTile(x,y)===T.WATER && d < MAX_VERTICAL_SCAN){ d++; y++; } return d; }
+  function findSurfaceY(x, yStart, getTile){
+    // ascend to find top-most water with air above within bounds
+    let y=yStart; let steps=0; // first ensure we are inside water column or near it
+    if(getTile(x,y)!==T.WATER){
+      // search downward to find water
+      while(steps<MAX_VERTICAL_SCAN && y < WORLD_H && getTile(x,y)!==T.WATER){ y++; steps++; }
+      if(getTile(x,y)!==T.WATER) return null;
+    }
+    // ascend to top
+    while(y>0 && getTile(x,y-1)===T.WATER && steps<MAX_VERTICAL_SCAN){ y--; steps++; }
+    // confirm air above
+    if(getTile(x,y-1)!==T.AIR && y>0) return null;
+    return y;
+  }
+  function columnHasWater(x, topY, getTile){
+    // quick check: search small vertical window for water
+    for(let dy=-4; dy<=4; dy++){ const yy=topY+dy; if(yy>=0 && yy<WORLD_H && getTile(x,yy)===T.WATER) return true; }
+    return false;
+  }
   MM.water={update,addSource,drawOverlay,onTileChanged,reset};
 })();
