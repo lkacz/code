@@ -6,6 +6,7 @@ window.MM = window.MM || {};
   // Active water fronts tracked to limit scanning.
   const active=new Set(); // keys 'x,y'
   let passiveScanOffset = 0; // incremental column scan to catch dormant floating water
+  const waveState = new Map(); // key: segStart+":"+segEnd+":"+y -> {offset}
   function k(x,y){return x+','+y;}
   function mark(x,y){ active.add(k(x,y)); }
   function isAir(t){ return t===T.AIR; }
@@ -13,8 +14,10 @@ window.MM = window.MM || {};
   function update(getTile,setTile,dt){
     // Passive activation: each frame scan a small slice of columns near player or global offset (simplified global).
     if(active.size===0){
-      // scan 40 columns per frame (wrap around). Use world height constraints.
-      const SCAN_COLS=40; for(let i=0;i<SCAN_COLS;i++){ const wx=passiveScanOffset + i; passiveScanOffset = (passiveScanOffset + 1) % 2048; // arbitrary wrap
+      // scan 40 columns per frame (monotonic). If columns not generated yet, getTile will trigger gen lazily.
+      const SCAN_COLS=40; for(let i=0;i<SCAN_COLS;i++){ const wx=passiveScanOffset + i; passiveScanOffset += 1;
+        // simple guard: skip extremely large indices to avoid unbounded exploration far from play area
+        if(passiveScanOffset>5_000_000){ passiveScanOffset=0; }
         for(let y=0; y<WORLD_H-1; y++){ if(getTile(wx,y)===T.WATER && canFill(getTile(wx,y+1))){ mark(wx,y); break; } }
       }
       if(active.size===0) return; // nothing activated
@@ -86,7 +89,7 @@ window.MM = window.MM || {};
   function drawOverlay(ctx,TILE,getTile,sx,sy,vx,vy){
     // Wave redistribution for partially filled surface basins (visual + logical oscillation)
     const now=performance.now();
-    if(active.size < 500){ // only attempt waves when system mostly idle
+  if(active.size < 500){ // only attempt waves when system mostly idle
       const freq = 0.00045; // oscillation base frequency
       for(let y=sy; y<sy+vy+2; y++){
         if(y<0||y>=WORLD_H) continue;
@@ -116,10 +119,15 @@ window.MM = window.MM || {};
                 const phase = y*57.17;
                 const oscill = (Math.sin(now*freq + phase)+1)/2; // 0..1
                 const offset = Math.floor(oscill * (W - waterCount));
-                // Reassign distribution
-                for(let i=0;i<W;i++){ const targetWater = i>=offset && i<offset+waterCount; const cell=seg[i]; const curT=getTile(cell.x,y); const isSurfaceWater = (curT===T.WATER && getTile(cell.x,y-1)===T.AIR);
-                  if(targetWater){ if(curT===T.AIR){ setTile(cell.x,y,T.WATER); } }
-                  else { if(isSurfaceWater){ setTile(cell.x,y,T.AIR); } }
+                const key = segStart+":"+segEnd+":"+y+":"+waterCount;
+                const prev = waveState.get(key);
+                if(!prev || prev.offset!==offset){
+                  // Reassign distribution only when offset changed
+                  for(let i=0;i<W;i++){ const targetWater = i>=offset && i<offset+waterCount; const cell=seg[i]; const curT=getTile(cell.x,y); const isSurfaceWater = (curT===T.WATER && getTile(cell.x,y-1)===T.AIR);
+                    if(targetWater){ if(curT===T.AIR){ setTile(cell.x,y,T.WATER); } }
+                    else { if(isSurfaceWater){ setTile(cell.x,y,T.AIR); } }
+                  }
+                  waveState.set(key,{offset});
                 }
               }
             }
