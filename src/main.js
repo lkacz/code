@@ -330,15 +330,23 @@ function render(){
 }
 
 let last=0;
+let frames=0;
 function loop(ts){
   const dt = Math.min(0.05,(ts-last)/1000);
   last=ts;
   physics(dt);
   updateMining(dt);
   render();
+  frames++;
+  // Awaryjne odkrycie jeśli po paru klatkach nadal brak widocznych kafelków (np. coś poszło nie tak z placePlayerAtSurface)
+  if(frames===30){
+    const x0 = Math.floor(player.x)-40;
+    for(let x=x0; x<x0+80; x++){
+      for(let y=0; y<60; y++) discover(x,y);
+    }
+  }
   requestAnimationFrame(loop);
 }
-requestAnimationFrame(loop);
 
 function updateUI(){
   const invDiv = document.getElementById('inventory');
@@ -382,6 +390,9 @@ placePlayerAtSurface();
 
 updateUI();
 msg('Sterowanie: A/D lewo/prawo, W lub Spacja skok, mysz/tap kopie, 1/2/3 wybór kilofa. Wykop kamień by zrobić lepszy kilof.');
+
+// Uruchom pętlę dopiero po ustawieniu gracza
+requestAnimationFrame(loop);
 
 // Adaptacja do rozmiaru okna
 function resize(){
