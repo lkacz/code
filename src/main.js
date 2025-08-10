@@ -84,39 +84,41 @@ function drawWorldVisible(sx,sy,viewX,viewY){ const minChunk=Math.floor(sx/CHUNK
 	}
 	// Apply fog overlay only for unseen tiles (still per-tile but solid overlay so no seams)
 	if(!revealAll){ for(let y=sy; y<sy+viewY+2; y++){ if(y<0||y>=WORLD_H) continue; for(let x=sx; x<sx+viewX+2; x++){ if(!hasSeen(x,y)){ const t=getTile(x,y); if(t!==T.AIR){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); } } } } }
-	if(VISUAL.animations){ drawAnimatedOverlays(sx,sy,viewX,viewY); }
+	if(VISUAL.animations){ drawAnimatedOverlays(sx,sy,viewX,viewY,'back'); }
 }
 
-function drawAnimatedOverlays(sx,sy,viewX,viewY){ const now=performance.now(); const wind = Math.sin(now*0.0003)*1.2 + Math.sin(now*0.0011)*0.8; const diamondPulse = (Math.sin(now*0.005)+1)/2; // 0..1
+function drawAnimatedOverlays(sx,sy,viewX,viewY,pass){ const now=performance.now(); const wind = Math.sin(now*0.0003)*1.2 + Math.sin(now*0.0011)*0.8; const diamondPulse = (Math.sin(now*0.005)+1)/2; // 0..1
 	for(let y=sy; y<sy+viewY+2; y++){
 		if(y<0||y>=WORLD_H) continue;
 		for(let x=sx; x<sx+viewX+2; x++){
 			const t=getTile(x,y); if(t===T.AIR) continue; // only animate visible tiles (fog already applied earlier)
-			// Grass blades (only surface grass)
-					if(t===T.GRASS && getTile(x,y-1)===T.AIR){
-						const seed=hash32(x,y); const bladeCount = 1 + (seed & 2); // 1..3
-						for(let b=0;b<bladeCount;b++){
-							const bSeed = seed + b*1013;
-							const phase = ((bSeed>>10)&1023)/1023;
-							const heightFactor = 0.45 + ((bSeed>>16)&7)/7 * 0.35; // 0.45 .. 0.8
-							const swayBase = Math.sin(now*0.003 + phase*6.283 + wind*0.5) * 4;
-							const sway = swayBase * (0.6 + heightFactor*0.4);
-							const xOff = ((bSeed>>20)&15)/15 * (TILE*0.6) - TILE*0.3 + sway*0.15;
-							const baseX = x*TILE + TILE/2 + xOff*0.5;
-							const baseY = y*TILE;
-							ctx.strokeStyle = b===0? 'rgba(36,130,36,0.95)' : 'rgba(30,110,30,0.8)';
-							ctx.lineWidth = 1.5;
-							ctx.beginPath();
-							ctx.moveTo(baseX, baseY);
-							ctx.lineTo(baseX + sway*0.18, baseY - TILE*heightFactor);
-							ctx.stroke();
-						}
+			// Grass blades (only surface grass). Split front/back layering.
+			if(t===T.GRASS && getTile(x,y-1)===T.AIR){
+				const seed=hash32(x,y);
+				const front = ((seed>>5)&1)===1; if((pass==='back' && front) || (pass==='front' && !front)){} else {
+					const bladeCount = 2 + (seed & 1); // 2..3 visible to ensure density
+					for(let b=0;b<bladeCount;b++){
+						const bSeed = seed + b*977;
+						const phase = ((bSeed>>10)&1023)/1023;
+						const heightFactor = 0.30 + ((bSeed>>16)&15)/15 * 0.35; // 0.30 .. 0.65 shorter
+						const swayBase = Math.sin(now*0.0035 + phase*6.283 + wind*0.55) * 3.5;
+						const sway = swayBase * (0.7 + heightFactor*0.5);
+						const xOff = ((bSeed>>20)&31)/31 * (TILE*0.8) - TILE*0.4; // spread across tile
+						const baseX = x*TILE + TILE/2 + xOff*0.6;
+						const baseY = y*TILE;
+						ctx.strokeStyle = b===0? 'rgba(40,150,40,'+(front?0.95:0.85)+')' : 'rgba(30,115,30,'+(front?0.9:0.75)+')';
+						ctx.lineWidth = 1;
+						ctx.beginPath();
+						ctx.moveTo(baseX, baseY);
+						ctx.lineTo(baseX + sway*0.22, baseY - TILE*heightFactor);
+						ctx.stroke();
 					}
+				}
+			}
 			// Leaf shimmer
-			if(t===T.LEAF){ const h=hash32(x,y); const phase=(h&255)/255; const offset = Math.sin(now*0.0025 + phase*6.283)*3; ctx.fillStyle='rgba(255,255,255,0.07)'; ctx.fillRect(x*TILE + TILE/2 + offset - TILE*0.25, y*TILE+2, TILE*0.5, TILE*0.5); }
+			if(t===T.LEAF){ const h=hash32(x,y); const frontLeaf = ((h>>7)&1)===1; if((pass==='back' && frontLeaf) || (pass==='front' && !frontLeaf)){} else { const phase=(h&255)/255; const offset = Math.sin(now*0.0025 + phase*6.283)*2.5; ctx.fillStyle='rgba(255,255,255,'+(frontLeaf?0.10:0.06)+')'; ctx.fillRect(x*TILE + TILE/2 + offset - TILE*0.22, y*TILE+3, TILE*0.44, TILE*0.44); } }
 			// Diamond glitter
-			if(t===T.DIAMOND){ const h=hash32(x,y); const flash = Math.sin(now*0.006 + (h&1023))*0.5 + 0.5; if(flash>0.8){ const alpha=(flash-0.8)/0.2; ctx.fillStyle='rgba(255,255,255,'+(0.3*alpha)+')'; const cxp=x*TILE+TILE/2, cyp=y*TILE+TILE/2; ctx.fillRect(cxp-1,cyp-1,2,2); ctx.fillRect(cxp-3,cyp,6,1); ctx.fillRect(cxp,cyp-3,1,6); }
-				// subtle breathing color overlay
+			if(pass==='back' && t===T.DIAMOND){ const h=hash32(x,y); const flash = Math.sin(now*0.006 + (h&1023))*0.5 + 0.5; if(flash>0.8){ const alpha=(flash-0.8)/0.2; ctx.fillStyle='rgba(255,255,255,'+(0.3*alpha)+')'; const cxp=x*TILE+TILE/2, cyp=y*TILE+TILE/2; ctx.fillRect(cxp-1,cyp-1,2,2); ctx.fillRect(cxp-3,cyp,6,1); ctx.fillRect(cxp,cyp-3,1,6); }
 				ctx.fillStyle='rgba(255,255,255,'+(0.05+diamondPulse*0.07)+')'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); }
 		}
 	}
@@ -195,8 +197,10 @@ function draw(){ ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Mat
 	// render tiles (solids + passables)
 	drawWorldVisible(sx,sy,viewX,viewY);
 	drawFallingBlocks();
-	// player + overlays
+	// player + overlays (back pass for vegetation done earlier)
 	drawPlayer();
+	// front vegetation pass (blades/leaves that should appear in front)
+	if(VISUAL.animations){ drawAnimatedOverlays(sx,sy,viewX,viewY,'front'); }
 	if(mining){ ctx.strokeStyle='#fff'; ctx.strokeRect(mineTx*TILE+1,mineTy*TILE+1,TILE-2,TILE-2); const info=INFO[getTile(mineTx,mineTy)]||{hp:1}; const need=Math.max(0.1,info.hp/6); const p=mineTimer/need; ctx.fillStyle='rgba(255,255,255,.3)'; ctx.fillRect(mineTx*TILE, mineTy*TILE + (1-p)*TILE, TILE, p*TILE); }
 	ctx.restore(); }
 
