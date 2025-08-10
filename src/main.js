@@ -7,7 +7,17 @@ let W=0,H=0,DPR=1; function resize(){ DPR=Math.max(1,Math.min(2,window.devicePix
 // --- Świat (łagodniejsze biomy: równiny / wzgórza / góry) ---
 const CHUNK_W=64; const WORLD_H=140; const TILE=20; const SURFACE_GRASS_DEPTH=1; const SAND_DEPTH=8;
 const T={AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7};
-const INFO={0:{hp:0,color:null,drop:null},1:{hp:2,color:'#2e8b2e',drop:'grass'},2:{hp:2,color:'#c2b280',drop:'sand'},3:{hp:6,color:'#777',drop:'stone'},4:{hp:10,color:'#3ef',drop:'diamond'},5:{hp:4,color:'#8b5a2b',drop:'wood'},6:{hp:1,color:'#2faa2f',drop:'leaf'},7:{hp:2,color:'#eee',drop:'snow'}};
+const INFO={
+	0:{hp:0,color:null,drop:null,passable:true},
+	1:{hp:2,color:'#2e8b2e',drop:'grass',passable:false},
+	2:{hp:2,color:'#c2b280',drop:'sand',passable:false},
+	3:{hp:6,color:'#777',drop:'stone',passable:false},
+	4:{hp:10,color:'#3ef',drop:'diamond',passable:false},
+	5:{hp:4,color:'#8b5a2b',drop:'wood',passable:true}, // trunk pass-through
+	6:{hp:1,color:'#2faa2f',drop:'leaf',passable:true}, // leaves pass-through
+	7:{hp:2,color:'#eee',drop:'snow',passable:false} // ground snow remains solid
+};
+function isSolid(t){ return t!==T.AIR && !INFO[t].passable; }
 const SNOW_LINE=14; // wysokość (im mniejsze y tym wyżej) dla śniegu na wierzchu
 let worldSeed = 12345; // aktualne ziarno
 function setSeedFromInput(){ const inp=document.getElementById('seedInput'); if(!inp) return; let v=inp.value.trim(); if(!v||v==='auto'){ worldSeed = Math.floor(Math.random()*1e9); inp.value=String(worldSeed); } else { // hash tekstu
@@ -111,7 +121,7 @@ let camX=0,camY=0,camSX=0,camSY=0; let zoom=1; function ensureChunks(){ const pc
 
 // Fizyka
 const MOVE={ACC:32,FRICTION:28,MAX:6,JUMP:-9,GRAV:20}; let jumpPrev=false; function physics(dt){ let input=0; if(keys['a']||keys['arrowleft']) input-=1; if(keys['d']||keys['arrowright']) input+=1; if(input!==0) player.facing=input; const target=input*MOVE.MAX; const diff=target-player.vx; const accel=MOVE.ACC*dt*Math.sign(diff); if(target!==0){ if(Math.abs(accel)>Math.abs(diff)) player.vx=target; else player.vx+=accel; } else { const fr=MOVE.FRICTION*dt; if(Math.abs(player.vx)<=fr) player.vx=0; else player.vx-=fr*Math.sign(player.vx); } const jumpNow=(keys['w']||keys['arrowup']||keys[' ']); if(jumpNow && !jumpPrev && (player.onGround || godMode)){ player.vy=MOVE.JUMP; player.onGround=false; } jumpPrev=jumpNow; player.vy+=MOVE.GRAV*dt; if(player.vy>20) player.vy=20; player.x += player.vx*dt; collide('x'); player.y += player.vy*dt; collide('y'); const tX=player.x - (W/(TILE*zoom))/2 + player.w/2; const tY=player.y - (H/(TILE*zoom))/2 + player.h/2; camSX += (tX-camSX)*Math.min(1,dt*8); camSY += (tY-camSY)*Math.min(1,dt*8); camX=camSX; camY=camSY; ensureChunks(); revealAround(); }
-function collide(axis){ const w=player.w/2,h=player.h/2; if(axis==='x'){ const minX=Math.floor(player.x-w), maxX=Math.floor(player.x+w), minY=Math.floor(player.y-h), maxY=Math.floor(player.y+h); for(let y=minY;y<=maxY;y++){ for(let x=minX;x<=maxX;x++){ const t=getTile(x,y); if(t!==T.AIR){ if(player.vx>0) player.x = x - w - 0.001; if(player.vx<0) player.x = x + 1 + w + 0.001; } } } } else { const minX=Math.floor(player.x-w), maxX=Math.floor(player.x+w), minY=Math.floor(player.y-h), maxY=Math.floor(player.y+h); player.onGround=false; for(let y=minY;y<=maxY;y++){ for(let x=minX;x<=maxX;x++){ const t=getTile(x,y); if(t!==T.AIR){ if(player.vy>0){ player.y = y - h - 0.001; player.vy=0; player.onGround=true; } if(player.vy<0){ player.y = y + 1 + h + 0.001; player.vy=0; } } } } } }
+function collide(axis){ const w=player.w/2,h=player.h/2; if(axis==='x'){ const minX=Math.floor(player.x-w), maxX=Math.floor(player.x+w), minY=Math.floor(player.y-h), maxY=Math.floor(player.y+h); for(let y=minY;y<=maxY;y++){ for(let x=minX;x<=maxX;x++){ const t=getTile(x,y); if(isSolid(t)){ if(player.vx>0) player.x = x - w - 0.001; if(player.vx<0) player.x = x + 1 + w + 0.001; } } } } else { const minX=Math.floor(player.x-w), maxX=Math.floor(player.x+w), minY=Math.floor(player.y-h), maxY=Math.floor(player.y+h); player.onGround=false; for(let y=minY;y<=maxY;y++){ for(let x=minX;x<=maxX;x++){ const t=getTile(x,y); if(isSolid(t)){ if(player.vy>0){ player.y = y - h - 0.001; player.vy=0; player.onGround=true; } if(player.vy<0){ player.y = y + 1 + h + 0.001; player.vy=0; } } } } } }
 
 // Mgła / widoczność
 let revealAll=false; const seen=new Set(); function key(x,y){ return x+','+y; } function revealAround(){ const r=10; for(let dx=-r; dx<=r; dx++){ for(let dy=-r; dy<=r; dy++){ if(dx*dx+dy*dy<=r*r) seen.add(key(Math.floor(player.x+dx),Math.floor(player.y+dy))); } } }
@@ -123,20 +133,37 @@ mineBtn.addEventListener('pointerdown',e=>{ e.preventDefault(); startMine(); });
 window.addEventListener('pointerup',()=>{ mining=false; mineBtn.classList.remove('on'); });
 function startMine(){ const tx=Math.floor(player.x + mineDir.dx + (mineDir.dx>0?player.w/2:mineDir.dx<0?-player.w/2:0)); const ty=Math.floor(player.y + mineDir.dy); const t=getTile(tx,ty); if(t===T.AIR) return; mining=true; mineTimer=0; mineTx=tx; mineTy=ty; mineBtn.classList.add('on'); if(godMode) instantBreak(); }
 function instantBreak(){ if(getTile(mineTx,mineTy)===T.AIR){ mining=false; mineBtn.classList.remove('on'); return; } const tId=getTile(mineTx,mineTy); if(tId===T.WOOD && isTreeBase(mineTx,mineTy)){ if(startTreeFall(mineTx,mineTy)){ mining=false; mineBtn.classList.remove('on'); return; } } const info=INFO[tId]; const drop=info.drop; setTile(mineTx,mineTy,T.AIR); if(drop) inv[drop]=(inv[drop]||0)+1; mining=false; mineBtn.classList.remove('on'); updateInventory(); }
-// Falling tree system
-const fallingTrees=[]; // {baseX,baseY,tiles:[{rx,ry,t}],start,duration,dir,awarded}
-function isTreeBase(x,y){ // base when wood and above is wood, below not wood (ground) and side leaves/wood optional
-	if(getTile(x,y)!==T.WOOD) return false; if(getTile(x,y-1)!==T.WOOD) return false; const below=getTile(x,y+1); return (below!==T.WOOD); }
+// Falling tree system (per-block physics)
+const fallingBlocks=[]; // {x,y,t,dir,hBudget}
+let fallStepAccum=0;
+function isTreeBase(x,y){ if(getTile(x,y)!==T.WOOD) return false; if(getTile(x,y-1)!==T.WOOD) return false; const below=getTile(x,y+1); return below!==T.WOOD; }
 function collectTreeTiles(x,y){ const stack=[[x,y]]; const vis=new Set(); const out=[]; let guard=0; while(stack.length){ const [cx,cy]=stack.pop(); const k=cx+','+cy; if(vis.has(k)) continue; const tt=getTile(cx,cy); if(!(tt===T.WOOD||tt===T.LEAF||tt===T.SNOW)) continue; vis.add(k); out.push({x:cx,y:cy,t:tt}); setTile(cx,cy,T.AIR); if(++guard>600) break; stack.push([cx+1,cy]); stack.push([cx-1,cy]); stack.push([cx,cy+1]); stack.push([cx,cy-1]); stack.push([cx,cy-2]); }
-	return out.map(o=>({rx:o.x-x, ry:o.y-y, t:o.t})); }
-function startTreeFall(bx,by){ const tiles=collectTreeTiles(bx,by); if(!tiles.length) return false; fallingTrees.push({baseX:bx,baseY:by,tiles,start:performance.now(),duration:1000,dir:player.facing||1,awarded:false}); return true; }
-function awardTree(tr){ if(tr.awarded) return; tr.awarded=true; let wood=0,leaf=0,snow=0; tr.tiles.forEach(t=>{ if(t.t===T.WOOD) wood++; else if(t.t===T.LEAF) leaf++; else if(t.t===T.SNOW) snow++; }); inv.wood+=wood; inv.leaf+=leaf; inv.snow+=snow; updateInventory(); }
-function updateFallingTrees(now){ for(let i=fallingTrees.length-1;i>=0;i--){ const tr=fallingTrees[i]; const p=(now-tr.start)/tr.duration; if(p>=1){ awardTree(tr); fallingTrees.splice(i,1); } } }
-function drawFallingTrees(now){ fallingTrees.forEach(tr=>{ const p=Math.min(1,(now-tr.start)/tr.duration); const angle=p*Math.PI/2*tr.dir; ctx.save(); ctx.translate((tr.baseX+0.5)*TILE,(tr.baseY+0.5)*TILE); ctx.rotate(angle); tr.tiles.forEach(tk=>{ const col=INFO[tk.t].color; if(!col) return; ctx.fillStyle=col; const x=(tk.rx-0.5)*TILE; const y=(tk.ry-0.5)*TILE; ctx.fillRect(x,y,TILE,TILE); }); ctx.restore(); }); }
+	return out; }
+function startTreeFall(bx,by){ const tiles=collectTreeTiles(bx,by); if(!tiles.length) return false; const dir=player.facing||1; let maxY=-Infinity; tiles.forEach(t=>{ if(t.y>maxY) maxY=t.y; }); tiles.forEach(tile=>{ const heightFactor=maxY - tile.y; const hBudget=Math.max(0, Math.min(8, Math.round(heightFactor*0.6 + randSeed(tile.x*31+tile.y*17)*2))); fallingBlocks.push({x:tile.x, y:tile.y, t:tile.t, dir, hBudget}); }); return true; }
+function updateFallingBlocks(dt){ if(!fallingBlocks.length) return; fallStepAccum += dt; const STEP=0.05; if(fallStepAccum < STEP) return; // process discrete step(s)
+	while(fallStepAccum >= STEP){ fallStepAccum -= STEP; if(!fallingBlocks.length) break; const occ=new Set(); fallingBlocks.forEach(b=>occ.add(b.x+','+b.y));
+		// sort bottom-up so lower settles first (prevents mid-air support glitches)
+		const order=[...fallingBlocks.keys()].sort((a,b)=>fallingBlocks[b].y - fallingBlocks[a].y);
+		const toRemove=[];
+		for(const idx of order){ const b=fallingBlocks[idx]; const belowY=b.y+1; if(belowY>=WORLD_H){ setTile(b.x,b.y,b.t); toRemove.push(idx); continue; }
+			const belowKey=b.x+','+belowY; const belowTile=getTile(b.x,belowY);
+			if(belowTile===T.AIR && !occ.has(belowKey)){ // straight fall
+				occ.delete(b.x+','+b.y); b.y++; occ.add(b.x+','+b.y); continue; }
+			// attempt diagonal slide in tilt direction if budget and space
+			if(b.hBudget>0){ const nx=b.x + b.dir; const ny=b.y + 1; if(nx>-10000 && nx<10000){ // broad bounds implicit
+					const nBelow=getTile(nx,ny); const horizFree=!occ.has(nx+','+b.y) && getTile(nx,b.y)===T.AIR; const diagFree= nBelow===T.AIR && !occ.has(nx+','+ny);
+					if(horizFree && diagFree){ // move diagonally (simulate lean/rotation)
+						occ.delete(b.x+','+b.y); b.x=nx; b.y=ny; occ.add(b.x+','+b.y); b.hBudget--; continue; }
+				} }
+			// settle
+			setTile(b.x,b.y,b.t); toRemove.push(idx); }
+		if(toRemove.length){ toRemove.sort((a,b)=>b-a).forEach(i=>fallingBlocks.splice(i,1)); }
+	} }
+function drawFallingBlocks(){ if(!fallingBlocks.length) return; fallingBlocks.forEach(b=>{ const col=INFO[b.t].color; if(!col) return; ctx.fillStyle=col; ctx.fillRect(b.x*TILE, b.y*TILE, TILE, TILE); }); }
 function updateMining(dt){ if(!mining) return; if(getTile(mineTx,mineTy)===T.AIR){ mining=false; mineBtn.classList.remove('on'); return; } if(godMode){ instantBreak(); return; } mineTimer += dt * tools[player.tool]; const curId=getTile(mineTx,mineTy); const info=INFO[curId]; const need=Math.max(0.1, info.hp/6); if(mineTimer>=need){ if(curId===T.WOOD && isTreeBase(mineTx,mineTy)){ if(startTreeFall(mineTx,mineTy)){ mining=false; mineBtn.classList.remove('on'); return; } } const drop=info.drop; setTile(mineTx,mineTy,T.AIR); if(drop) inv[drop]=(inv[drop]||0)+1; mining=false; mineBtn.classList.remove('on'); updateInventory(); } }
 
 // Render
-function draw(){ const now=performance.now(); ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camX)-1; const sy=Math.floor(camY)-1; ctx.save(); ctx.scale(zoom,zoom); ctx.translate(-camX*TILE,-camY*TILE); for(let y=sy; y<sy+viewY+2; y++){ for(let x=sx; x<sx+viewX+2; x++){ const t=getTile(x,y); if(t===T.AIR) continue; if(!revealAll && !seen.has(key(x,y))){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); continue; } ctx.fillStyle=INFO[t].color; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); } } drawFallingTrees(now); const px=(player.x-player.w/2)*TILE; const py=(player.y-player.h/2)*TILE; ctx.fillStyle='#ffd37f'; ctx.fillRect(px,py,player.w*TILE,player.h*TILE); if(mining){ ctx.strokeStyle='#fff'; ctx.strokeRect(mineTx*TILE+1,mineTy*TILE+1,TILE-2,TILE-2); const info=INFO[getTile(mineTx,mineTy)]||{hp:1}; const need=Math.max(0.1,info.hp/6); const p=mineTimer/need; ctx.fillStyle='rgba(255,255,255,.3)'; ctx.fillRect(mineTx*TILE, mineTy*TILE + (1-p)*TILE, TILE, p*TILE); } ctx.restore(); updateFallingTrees(now); }
+function draw(){ ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camX)-1; const sy=Math.floor(camY)-1; ctx.save(); ctx.scale(zoom,zoom); ctx.translate(-camX*TILE,-camY*TILE); for(let y=sy; y<sy+viewY+2; y++){ for(let x=sx; x<sx+viewX+2; x++){ const t=getTile(x,y); if(t===T.AIR) continue; if(!revealAll && !seen.has(key(x,y))){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); continue; } ctx.fillStyle=INFO[t].color; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); } } drawFallingBlocks(); const px=(player.x-player.w/2)*TILE; const py=(player.y-player.h/2)*TILE; ctx.fillStyle='#ffd37f'; ctx.fillRect(px,py,player.w*TILE,player.h*TILE); if(mining){ ctx.strokeStyle='#fff'; ctx.strokeRect(mineTx*TILE+1,mineTy*TILE+1,TILE-2,TILE-2); const info=INFO[getTile(mineTx,mineTy)]||{hp:1}; const need=Math.max(0.1,info.hp/6); const p=mineTimer/need; ctx.fillStyle='rgba(255,255,255,.3)'; ctx.fillRect(mineTx*TILE, mineTy*TILE + (1-p)*TILE, TILE, p*TILE); } ctx.restore(); }
 
 // UI aktualizacja
 const el={grass:document.getElementById('grass'),sand:document.getElementById('sand'),stone:document.getElementById('stone'),diamond:document.getElementById('diamond'),wood:document.getElementById('wood'),snow:document.getElementById('snow'),pick:document.getElementById('pick'),fps:document.getElementById('fps'),msg:document.getElementById('messages')}; function updateInventory(){ el.grass.textContent=inv.grass; el.sand.textContent=inv.sand; el.stone.textContent=inv.stone; el.diamond.textContent=inv.diamond; el.wood.textContent=inv.wood; if(el.snow) el.snow.textContent=inv.snow; el.pick.textContent=player.tool; document.getElementById('craftStone').disabled=!canCraftStone(); document.getElementById('craftDiamond').disabled=!canCraftDiamond(); }
@@ -166,4 +193,4 @@ function placePlayer(skipMsg){ const x=0; ensureChunk(0); let y=0; while(y<WORLD
 placePlayer(); updateInventory(); updateGodBtn(); msg('Sterowanie: A/D/W + ⛏️ / klik. G=Bóg (nieskończone skoki), M=Mapa, C=Centrum, H=Pomoc');
 
 // Pętla
-let last=performance.now(); function loop(ts){ const dt=Math.min(0.05,(ts-last)/1000); last=ts; physics(dt); updateMining(dt); draw(); if(ts<radarFlash){ radarBtn.classList.add('pulse'); } else radarBtn.classList.remove('pulse'); updateFps(ts); requestAnimationFrame(loop); } requestAnimationFrame(loop);
+let last=performance.now(); function loop(ts){ const dt=Math.min(0.05,(ts-last)/1000); last=ts; physics(dt); updateMining(dt); updateFallingBlocks(dt); draw(); if(ts<radarFlash){ radarBtn.classList.add('pulse'); } else radarBtn.classList.remove('pulse'); updateFps(ts); requestAnimationFrame(loop); } requestAnimationFrame(loop);
