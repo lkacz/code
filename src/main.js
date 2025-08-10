@@ -130,6 +130,20 @@ function updateCape(dt){
 			const excess = d - segLen; if(Math.abs(excess)>0.0005){ const k=excess/d; seg.x -= dx*k; seg.y -= dy*k; }
 		}
 	}
+	// Collision with solid tiles: push segments above ground so cape doesn't appear over solid surfaces
+	for(let i=1;i<CAPE_SEGMENTS;i++){
+		const seg=cape[i]; const tx=Math.floor(seg.x); const ty=Math.floor(seg.y);
+		if(isSolid(getTile(tx,ty))){
+			// push upward just above tile top
+			seg.y = ty - 0.02; // slight gap
+			// optional horizontal nudge away from entering block face
+			const blockCenter=tx+0.5; if(seg.x>blockCenter) seg.x=Math.min(seg.x, tx+1.02); else seg.x=Math.max(seg.x, tx-0.02);
+		}
+	}
+	// Re-tighten after collision adjustments (1 pass)
+	for(let i=1;i<CAPE_SEGMENTS;i++){
+		const prev=cape[i-1]; const seg=cape[i]; let dx=seg.x-prev.x, dy=seg.y-prev.y; let d=Math.hypot(dx,dy); if(d===0) d=0.0001; const excess=d-segLen; if(excess>0){ const k=excess/d; seg.x -= dx*k; seg.y -= dy*k; }
+	}
 	// Prevent forward flip: ensure chain x does not pass anchor direction
 	for(let i=1;i<CAPE_SEGMENTS;i++){ const prev=cape[i-1]; const seg=cape[i]; if(player.facing>0 && seg.x>prev.x) seg.x=prev.x; if(player.facing<0 && seg.x<prev.x) seg.x=prev.x; }
 	// Gentle settling when almost idle: extra downward pull
@@ -210,15 +224,17 @@ function updateMining(dt){ if(!mining) return; if(getTile(mineTx,mineTy)===T.AIR
 
 // Render
 function draw(){ ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camX)-1; const sy=Math.floor(camY)-1; ctx.save(); ctx.scale(zoom,zoom); ctx.translate(-camX*TILE,-camY*TILE);
-	// pass 1: solid tiles
-	for(let y=sy; y<sy+viewY+2; y++){ for(let x=sx; x<sx+viewX+2; x++){ const t=getTile(x,y); if(t===T.AIR||INFO[t].passable) continue; if(!revealAll && !seen.has(key(x,y))){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); continue; } ctx.fillStyle=INFO[t].color; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); } }
-	drawFallingBlocks();
-	// cape behind passable foliage
+	// draw cape FIRST so any solid / passable tiles will occlude it
 	drawCape();
-	// pass 2: passable tiles (leaves / trunk) so they appear in front of cape but behind player body outline
-	for(let y=sy; y<sy+viewY+2; y++){ for(let x=sx; x<sx+viewX+2; x++){ const t=getTile(x,y); if(t===T.AIR||!INFO[t].passable) continue; if(!revealAll && !seen.has(key(x,y))){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); continue; } ctx.fillStyle=INFO[t].color; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); } }
-	// player + mining overlay
-	const px=(player.x-player.w/2)*TILE; const py=(player.y-player.h/2)*TILE; ctx.fillStyle='#f4c05a'; ctx.fillRect(px,py,player.w*TILE,player.h*TILE); ctx.strokeStyle='#4b3212'; ctx.lineWidth=2; ctx.strokeRect(px,py,player.w*TILE,player.h*TILE); // eyes & shadow already in drawPlayer, reuse for consistency
+	// render tiles (solids + passables)
+	for(let y=sy; y<sy+viewY+2; y++){
+		for(let x=sx; x<sx+viewX+2; x++){
+			const t=getTile(x,y); if(t===T.AIR) continue; if(!revealAll && !seen.has(key(x,y))){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); continue; }
+			ctx.fillStyle=INFO[t].color; ctx.fillRect(x*TILE,y*TILE,TILE,TILE);
+		}
+	}
+	drawFallingBlocks();
+	// player + overlays
 	drawPlayer();
 	if(mining){ ctx.strokeStyle='#fff'; ctx.strokeRect(mineTx*TILE+1,mineTy*TILE+1,TILE-2,TILE-2); const info=INFO[getTile(mineTx,mineTy)]||{hp:1}; const need=Math.max(0.1,info.hp/6); const p=mineTimer/need; ctx.fillStyle='rgba(255,255,255,.3)'; ctx.fillRect(mineTx*TILE, mineTy*TILE + (1-p)*TILE, TILE, p*TILE); }
 	ctx.restore(); }
