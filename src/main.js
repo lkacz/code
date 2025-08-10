@@ -10,6 +10,8 @@ const WORLDGEN = MM.worldGen;
 const WORLD = MM.world;
 const TREES = MM.trees;
 const CAPE = MM.cape;
+// Visual enhancement config
+const VISUAL={animations:true};
 let surfaceHeight, biomeType, randSeed, diamondChance, worldSeed;
 try {
 	if(!WORLDGEN) throw new Error('MM.worldGen missing (worldgen.js not loaded)');
@@ -50,8 +52,26 @@ function drawPlayer(){ drawCape(); const bodyX=(player.x-player.w/2)*TILE; const
 
 // Chunk render cache (offscreen canvas per chunk)
 const chunkCanvases = new Map(); // key: chunkX -> {canvas,ctx,version}
-function drawChunkToCache(cx){ const key=cx; const k='c'+cx; const arr=WORLD._world.get(k); if(!arr) return; let entry=chunkCanvases.get(key); if(!entry){ const c=document.createElement('canvas'); c.width=CHUNK_W*TILE; c.height=WORLD_H*TILE; const cctx=c.getContext('2d'); entry={canvas:c,ctx:cctx,version:-1}; chunkCanvases.set(key,entry); }
-	const currentVersion=WORLD.chunkVersion(cx); if(entry.version===currentVersion) return; const cctx=entry.ctx; cctx.clearRect(0,0,cctx.canvas.width,cctx.canvas.height); for(let lx=0; lx<CHUNK_W; lx++){ for(let y=0;y<WORLD_H;y++){ const t=arr[y*CHUNK_W+lx]; if(t===T.AIR) continue; cctx.fillStyle=INFO[t].color; cctx.fillRect(lx*TILE,y*TILE,TILE,TILE); } } entry.version=currentVersion; }
+function hash32(x,y){ let h = (x|0)*374761393 + (y|0)*668265263; h = (h^(h>>>13))*1274126177; h = h^(h>>>16); return h>>>0; }
+function shadeColor(hex,delta){ // hex like #rgb or #rrggbb (we use rrggbb)
+	const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
+	const clamp=v=>v<0?0:v>255?255:v; const nr=clamp(r+delta), ng=clamp(g+delta), nb=clamp(b+delta);
+	return '#'+nr.toString(16).padStart(2,'0')+ng.toString(16).padStart(2,'0')+nb.toString(16).padStart(2,'0'); }
+function drawChunkToCache(cx){ const key=cx; const k='c'+cx; const arr=WORLD._world.get(k); if(!arr) return; let entry=chunkCanvases.get(key); if(!entry){ const c=document.createElement('canvas'); c.width=CHUNK_W*TILE; c.height=WORLD_H*TILE; const cctx=c.getContext('2d'); cctx.imageSmoothingEnabled=false; entry={canvas:c,ctx:cctx,version:-1}; chunkCanvases.set(key,entry); }
+	const currentVersion=WORLD.chunkVersion(cx); if(entry.version===currentVersion) return; const cctx=entry.ctx; cctx.clearRect(0,0,cctx.canvas.width,cctx.canvas.height);
+	for(let lx=0; lx<CHUNK_W; lx++){
+		const wx=cx*CHUNK_W+lx;
+		for(let y=0;y<WORLD_H;y++){
+			const t=arr[y*CHUNK_W+lx]; if(t===T.AIR) continue; let base=INFO[t].color; if(!base) continue;
+			// Static per-tile slight brightness variation
+			const h = hash32(wx,y); const delta = ((h & 0xFF)/255 - 0.5)*22; // range about -11..+11
+			const col = shadeColor(base, delta|0);
+			cctx.fillStyle=col; cctx.fillRect(lx*TILE,y*TILE,TILE,TILE);
+			// Optional simple texture: vertical gradient line for stone / wood
+			if(t===T.STONE || t===T.WOOD){ cctx.fillStyle='rgba(0,0,0,0.06)'; cctx.fillRect(lx*TILE + ((h>>8)&3), y*TILE, 2, TILE); }
+		}
+	}
+	entry.version=currentVersion; }
 function drawWorldVisible(sx,sy,viewX,viewY){ const minChunk=Math.floor(sx/CHUNK_W)-1; const maxChunk=Math.floor((sx+viewX+2)/CHUNK_W)+1; // prepare caches
 	for(let cx=minChunk; cx<=maxChunk; cx++){ WORLD.ensureChunk(cx); drawChunkToCache(cx); }
 	// Draw whole chunks that intersect view (avoids per-tile seams)
@@ -63,6 +83,24 @@ function drawWorldVisible(sx,sy,viewX,viewY){ const minChunk=Math.floor(sx/CHUNK
 	}
 	// Apply fog overlay only for unseen tiles (still per-tile but solid overlay so no seams)
 	if(!revealAll){ for(let y=sy; y<sy+viewY+2; y++){ if(y<0||y>=WORLD_H) continue; for(let x=sx; x<sx+viewX+2; x++){ if(!hasSeen(x,y)){ const t=getTile(x,y); if(t!==T.AIR){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); } } } } }
+	if(VISUAL.animations){ drawAnimatedOverlays(sx,sy,viewX,viewY); }
+}
+
+function drawAnimatedOverlays(sx,sy,viewX,viewY){ const now=performance.now(); const wind = Math.sin(now*0.0003)*1.2 + Math.sin(now*0.0011)*0.8; const diamondPulse = (Math.sin(now*0.005)+1)/2; // 0..1
+	for(let y=sy; y<sy+viewY+2; y++){
+		if(y<0||y>=WORLD_H) continue;
+		for(let x=sx; x<sx+viewX+2; x++){
+			const t=getTile(x,y); if(t===T.AIR) continue; // only animate visible tiles (fog already applied earlier)
+			// Grass blades (only surface grass)
+			if(t===T.GRASS && getTile(x,y-1)===T.AIR){ const h=hash32(x,y); const phase=(h&1023)/1023; const sway = Math.sin(now*0.003 + phase*6.283 + wind*0.4)*4; const baseX=x*TILE + TILE/2 + sway*0.3; const baseY=y*TILE; ctx.strokeStyle='rgba(34,120,34,0.9)'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(baseX, baseY); ctx.lineTo(baseX + sway*0.2, baseY - TILE*0.6); ctx.stroke(); }
+			// Leaf shimmer
+			if(t===T.LEAF){ const h=hash32(x,y); const phase=(h&255)/255; const offset = Math.sin(now*0.0025 + phase*6.283)*3; ctx.fillStyle='rgba(255,255,255,0.07)'; ctx.fillRect(x*TILE + TILE/2 + offset - TILE*0.25, y*TILE+2, TILE*0.5, TILE*0.5); }
+			// Diamond glitter
+			if(t===T.DIAMOND){ const h=hash32(x,y); const flash = Math.sin(now*0.006 + (h&1023))*0.5 + 0.5; if(flash>0.8){ const alpha=(flash-0.8)/0.2; ctx.fillStyle='rgba(255,255,255,'+(0.3*alpha)+')'; const cxp=x*TILE+TILE/2, cyp=y*TILE+TILE/2; ctx.fillRect(cxp-1,cyp-1,2,2); ctx.fillRect(cxp-3,cyp,6,1); ctx.fillRect(cxp,cyp-3,1,6); }
+				// subtle breathing color overlay
+				ctx.fillStyle='rgba(255,255,255,'+(0.05+diamondPulse*0.07)+')'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); }
+		}
+	}
 }
 
 // Input + tryby specjalne
