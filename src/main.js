@@ -194,14 +194,43 @@ function selectTool(num){
 // Kamera
 let cameraX = 0;
 let cameraY = 0;
+let cameraSmoothX = 0;
+let cameraSmoothY = 0;
+
+// Parametry płynnego ruchu
+const MOVE = {
+  MAX_SPEED: 6,
+  ACCEL: 32,
+  FRICTION: 28,
+  JUMP_VELOCITY: -9,
+};
+
+function ensureNearbyChunks(){
+  const pcx = Math.floor(player.x/CHUNK_WIDTH);
+  for(let dx=-2; dx<=2; dx++) getChunk(pcx+dx); // wstępne generowanie by uniknąć mikro-stopów
+}
 
 function physics(dt){
-  const speed = 5;
-  if(keys['a']||keys['arrowleft']){ player.vx = -speed; player.facing=-1; }
-  else if(keys['d']||keys['arrowright']){ player.vx = speed; player.facing=1; }
-  else player.vx = 0;
+  // Wejście sterowania horyzontalnego
+  let input = 0;
+  if(keys['a']||keys['arrowleft']) input -= 1;
+  if(keys['d']||keys['arrowright']) input += 1;
+  if(input!==0) player.facing = input;
 
-  if((keys['w']||keys['arrowup']||keys[' ']) && player.onGround){ player.vy = -9; player.onGround=false; }
+  // Przyspieszanie / hamowanie
+  const targetVx = input * MOVE.MAX_SPEED;
+  if(targetVx !== 0){
+    const diff = targetVx - player.vx;
+    const accel = MOVE.ACCEL * dt * Math.sign(diff);
+    if(Math.abs(accel) > Math.abs(diff)) player.vx = targetVx; else player.vx += accel;
+  } else {
+    // FRICTION
+    const fr = MOVE.FRICTION * dt;
+    if(Math.abs(player.vx) <= fr) player.vx = 0; else player.vx -= fr * Math.sign(player.vx);
+  }
+
+  // Skok (pojedynczy)
+  if((keys['w']||keys['arrowup']||keys[' ']) && player.onGround){ player.vy = MOVE.JUMP_VELOCITY; player.onGround=false; }
 
   // grawitacja
   player.vy += 20*dt;
@@ -209,14 +238,13 @@ function physics(dt){
 
   // ruch X
   player.x += player.vx*dt;
-  // kolizje X poprzez sprawdzenie tile pod nogami i na wysokości
   collideAxis('x');
   // ruch Y
   player.y += player.vy*dt;
   collideAxis('y');
 
   // odkrywanie w zasięgu
-  const rad = 8;
+  const rad = 9;
   for(let dx=-rad; dx<=rad; dx++){
     for(let dy=-rad; dy<=rad; dy++){
       if(dx*dx+dy*dy <= rad*rad){
@@ -225,8 +253,15 @@ function physics(dt){
     }
   }
 
-  cameraX = player.x - (canvas.width/TILE_SIZE)/2 + 0.5;
-  cameraY = player.y - (canvas.height/TILE_SIZE)/2 + 0.5;
+  // Płynna kamera (lerp)
+  const targetCamX = player.x - (canvas.width/TILE_SIZE)/2 + player.w/2;
+  const targetCamY = player.y - (canvas.height/TILE_SIZE)/2 + player.h/2;
+  cameraSmoothX += (targetCamX - cameraSmoothX) * Math.min(1, dt*8);
+  cameraSmoothY += (targetCamY - cameraSmoothY) * Math.min(1, dt*8);
+  cameraX = cameraSmoothX;
+  cameraY = cameraSmoothY;
+
+  ensureNearbyChunks();
 }
 
 function collideAxis(axis){
