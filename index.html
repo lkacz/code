@@ -19,7 +19,13 @@
     #seedPanel input{ pointer-events:auto; background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 8px; font-size:12px; width:130px; }
     #seedPanel button, .topbtn, .craftBtn{ pointer-events:auto; background:#2c7ef8; color:#fff; border:none; border-radius:10px; padding:6px 10px; font-weight:600; font-size:12px; box-shadow:0 2px 6px rgba(44,126,248,.35); cursor:pointer; }
     .topbtn.toggled{ background:#21a366; box-shadow:0 2px 10px rgba(33,163,102,.45); }
-    #topButtons{ position:absolute; right:8px; top:8px; display:flex; gap:8px; pointer-events:auto; flex-wrap:wrap; justify-content:flex-end; }
+  #menuWrap{ position:relative; pointer-events:auto; }
+  #menuBtn{ pointer-events:auto; background:#2c7ef8; color:#fff; border:none; border-radius:10px; padding:6px 12px; font-weight:600; font-size:14px; box-shadow:0 2px 6px rgba(44,126,248,.35); cursor:pointer; }
+  #menuPanel{ position:absolute; right:0; top:110%; min-width:230px; background:rgba(15,18,26,.92); border:1px solid rgba(255,255,255,.15); border-radius:14px; padding:10px 10px 12px; display:flex; flex-direction:column; gap:10px; box-shadow:0 8px 28px -6px rgba(0,0,0,.6); backdrop-filter:blur(8px); }
+  #menuPanel .group{ display:flex; flex-wrap:wrap; gap:6px; }
+  #menuPanel .seedRow{ align-items:center; gap:6px; font-size:12px; }
+  #menuPanel input{ background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 6px; font-size:12px; width:110px; }
+  #menuPanel .hint{ font-size:11px; opacity:.75; }
     #craft{ position:absolute; left:8px; top:54px; pointer-events:auto; display:flex; flex-direction:column; gap:6px; background:rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:8px; max-width:min(55vw,340px); font-size:12px; }
     #craft .req{ font-size:11px; opacity:.9; }
     #help{ position:absolute; left:8px; right:8px; top:140px; background:rgba(0,0,0,.65); border:1px solid rgba(255,255,255,.18); border-radius:12px; padding:10px 12px; font-size:12px; line-height:1.4; display:none; pointer-events:auto; }
@@ -54,14 +60,22 @@
         <span class="item pill">kilof: <b id="pick">podstawowy</b></span>
       </div>
       <div class="panel"><span id="fps">— FPS</span></div>
-      <div id="seedPanel" class="panel"><label for="seedInput">Ziarno:</label><input id="seedInput" value="auto" /><button id="regenBtn">Nowy świat</button></div>
+      <div id="menuWrap">
+        <button id="menuBtn" class="topbtn" aria-haspopup="true" aria-expanded="false" title="Menu">≡</button>
+        <div id="menuPanel" role="menu" aria-label="Menu" hidden>
+          <div class="group">
+            <button id="mapBtn" class="topbtn" title="Pokaż całą mapę">Mapa: OFF</button>
+            <button id="godBtn" class="topbtn" title="Tryb boga (G)">Bóg: OFF</button>
+            <button id="centerBtn" class="topbtn" title="Wyśrodkuj kamerę">Centruj</button>
+            <button id="helpBtn" class="topbtn" aria-controls="help" aria-expanded="false">Pomoc</button>
+            <button id="radarMenuBtn" class="topbtn" title="Radar diamentów">Radar 💎</button>
+          </div>
+          <div class="group seedRow"><label for="seedInput">Ziarno:</label><input id="seedInput" value="auto" /><button id="regenBtn">Nowy świat</button></div>
+          <div class="hint">Skróty: G=Bóg, M=Mapa, C=Centrum, H=Pomoc</div>
+        </div>
+      </div>
     </div>
-    <div id="topButtons">
-      <button id="helpBtn" class="topbtn" aria-controls="help" aria-expanded="false">?</button>
-  <button id="godBtn" class="topbtn" title="Tryb boga (G)">Bóg: OFF</button>
-      <button id="mapBtn" class="topbtn" title="Pokaż całą mapę">Mapa: OFF</button>
-      <button id="centerBtn" class="topbtn" title="Wyśrodkuj kamerę">Centruj</button>
-    </div>
+  <!-- topButtons replaced by dropdown menu; old markup removed -->
     <div id="craft">
       <strong>Rzemiosło</strong>
       <button class="craftBtn" id="craftStone">Kilof kamienny</button><div class="req">10 × kamień</div>
