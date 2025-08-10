@@ -4,69 +4,78 @@ const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d', {alpha:false});
 let W=0,H=0,DPR=1; function resize(){ DPR=Math.max(1,Math.min(2,window.devicePixelRatio||1)); canvas.width=Math.floor(window.innerWidth*DPR); canvas.height=Math.floor(window.innerHeight*DPR); canvas.style.width=window.innerWidth+'px'; canvas.style.height=window.innerHeight+'px'; ctx.setTransform(DPR,0,0,DPR,0,0); W=window.innerWidth; H=window.innerHeight; } window.addEventListener('resize',resize,{passive:true}); resize();
 
-// --- Świat (góry + śnieg + drzewa) ---
-const CHUNK_W=64; const WORLD_H=140; const TILE=20; const SURFACE_GRASS_DEPTH=1; const SAND_DEPTH=8; // niższe rejony
-// Id bloków
+// --- Świat (łagodniejsze biomy: równiny / wzgórza / góry) ---
+const CHUNK_W=64; const WORLD_H=140; const TILE=20; const SURFACE_GRASS_DEPTH=1; const SAND_DEPTH=8;
 const T={AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7};
 const INFO={0:{hp:0,color:null,drop:null},1:{hp:2,color:'#2e8b2e',drop:'grass'},2:{hp:2,color:'#c2b280',drop:'sand'},3:{hp:6,color:'#777',drop:'stone'},4:{hp:10,color:'#3ef',drop:'diamond'},5:{hp:4,color:'#8b5a2b',drop:'wood'},6:{hp:1,color:'#2faa2f',drop:'leaf'},7:{hp:2,color:'#eee',drop:'snow'}};
-// granica śniegu: wszystko co ma surfaceY < SNOW_LINE będzie z czapami śniegu
-const SNOW_LINE=11; // mniejsze y = wyżej
-function diamondChance(y){ const d=y-(SURFACE_GRASS_DEPTH+SAND_DEPTH); if(d<0) return 0; return Math.min(0.002 + d*0.0009, 0.05);} 
-const world=new Map(); function ck(x){return 'c'+x;} function tileIndex(x,y){return y*CHUNK_W+x;} function randSeed(n){ let x=Math.sin(n*127.1)*43758.5453; return x-Math.floor(x);} 
-function mountainSurface(wx){
-	// Połączenie dwóch szumów dla fal i rzadkich szczytów
-	const n1=randSeed(wx*0.05); // fale średnie
-	const n2=randSeed(wx*0.007); // długie pasma gór
-	const peak=Math.pow(n2,3); // silnie podbija najwyższe wartości
-	// bazowa wysokość + fale - wyniesione szczyty (zmniejszamy surfaceY = wyżej)
-	let surface=20 + n1*10 - peak*32; // przedział orientacyjny  -12 .. 30
-	if(surface<4) surface=4; if(surface>34) surface=34; // clamp
-	return Math.floor(surface);
+const SNOW_LINE=14; // wysokość (im mniejsze y tym wyżej) dla śniegu na wierzchu
+let worldSeed = 12345; // aktualne ziarno
+function setSeedFromInput(){ const inp=document.getElementById('seedInput'); if(!inp) return; let v=inp.value.trim(); if(!v||v==='auto'){ worldSeed = Math.floor(Math.random()*1e9); inp.value=String(worldSeed); } else { // hash tekstu
+	let h=0; for(let i=0;i<v.length;i++){ h=(h*131 + v.charCodeAt(i))>>>0; } worldSeed = h||1; }
 }
+setSeedFromInput();
+function randSeed(n){ // deterministyczny hash z ziarnem świata
+	const x=Math.sin(n*127.1 + worldSeed*0.000123)*43758.5453; return x-Math.floor(x);
+}
+function valueNoise(x, wavelength, off){ const p=x/wavelength; const i=Math.floor(p); const f=p-i; const a=randSeed(i+off); const b=randSeed(i+1+off); // smoothstep
+	const u=f*f*(3-2*f); return a + (b-a)*u; }
+function biomeType(x){ // 0 równiny 1 wzgórza 2 góry
+	const v=valueNoise(x,220,900); if(v<0.35) return 0; if(v<0.7) return 1; return 2; }
+function surfaceHeight(x){
+	const biome=biomeType(x);
+	const base = 24
+		+ valueNoise(x,80,200)*4
+		+ valueNoise(x,30,300)*3
+		+ valueNoise(x,12,400)*2;
+	let h=base;
+	if(biome===0){ // równiny – wyrównuj
+		h = 26 + valueNoise(x,100,500)*2 + valueNoise(x,40,600);
+	} else if(biome===1){ // wzgórza
+		h = base - 2 - valueNoise(x,60,700)*2;
+	} else { // góry
+		h = base - 6 - valueNoise(x,120,800)*4 - valueNoise(x,50,900)*3; // niższe y => wyżej
+	}
+	if(h<6) h=6; if(h>40) h=40; return Math.floor(h);
+}
+function diamondChance(y){ const d=y-(SURFACE_GRASS_DEPTH+SAND_DEPTH); if(d<0) return 0; return Math.min(0.002 + d*0.0009, 0.05);} 
+const world=new Map(); function ck(x){return 'c'+x;} function tileIndex(x,y){return y*CHUNK_W+x;}
 function ensureChunk(cx){ const k=ck(cx); if(world.has(k)) return world.get(k); const arr=new Uint8Array(CHUNK_W*WORLD_H);
 	for(let lx=0; lx<CHUNK_W; lx++){
 		const wx=cx*CHUNK_W+lx;
-		const surfaceY=mountainSurface(wx);
-		// wypełnienie kolumny
+		const s=surfaceHeight(wx);
 		for(let y=0;y<WORLD_H;y++){
 			let t=T.AIR;
-			if(y>=surfaceY){
-				const depth=y-surfaceY;
-				const high=surfaceY < SNOW_LINE;
-				if(depth<SURFACE_GRASS_DEPTH){ t = high?T.SNOW:T.GRASS; }
-				else if(!high && depth<SURFACE_GRASS_DEPTH+SAND_DEPTH && surfaceY>18){ t=T.SAND; }
-				else t=(Math.random()<diamondChance(y)?T.DIAMOND:T.STONE);
+			if(y>=s){
+				const depth=y-s;
+				const snowy = s < SNOW_LINE;
+				if(depth<SURFACE_GRASS_DEPTH){ t=snowy?T.SNOW:T.GRASS; }
+				else if(!snowy && depth<SURFACE_GRASS_DEPTH+SAND_DEPTH && s>20){ t=T.SAND; }
+				else t=(randSeed(wx*13.37 + y*0.7) < diamondChance(y)?T.DIAMOND:T.STONE);
 			}
 			arr[tileIndex(lx,y)]=t;
 		}
-		// Drzewa: inne dla wysokich (iglaste) i niskich (rozłożyste)
-		if(surfaceY>=4){
-			const treeChance = surfaceY < SNOW_LINE ? 0.05 : 0.09; // mniej drzew bardzo wysoko
-			if(randSeed(wx*1.13) < treeChance){
-				if(surfaceY < SNOW_LINE){
-					// iglaste wysokogórskie (choinka)
-						const base=surfaceY; const trunkH=5+Math.floor(randSeed(wx+70)*4); // 5..8
-						for(let i=0;i<trunkH;i++){ const ty=base+i; if(ty<WORLD_H) arr[tileIndex(lx,ty)]=T.WOOD; }
-						const crownH=trunkH; // stożek
-						for(let dy=0; dy<crownH; dy++){
-							const radius = Math.max(0, Math.floor((crownH-dy)/2));
-							for(let dx=-radius; dx<=radius; dx++){
-								const tx=lx+dx; const ty=base+trunkH-1-dy; if(tx>=0&&tx<CHUNK_W&&ty>=0&&ty<WORLD_H){ if(arr[tileIndex(tx,ty)]===T.AIR) arr[tileIndex(tx,ty)]=T.LEAF; }
-							}
+		// drzewa tylko jeśli nie ekstremalne góry
+		if(s>=8 && s>surfaceHeight(wx-3)-12){
+			const biome=biomeType(wx);
+			const base=s; const r=randSeed(wx*1.77);
+			const treeChance = (biome===2?0.04:(biome===1?0.07:0.11));
+			if(r<treeChance){
+				if(biome===2){ // iglaste krótsze
+					const trunkH=4+Math.floor(randSeed(wx+70)*3);
+					for(let i=0;i<trunkH;i++){ const ty=base+i; if(ty<WORLD_H) arr[tileIndex(lx,ty)]=T.WOOD; }
+					for(let dy=0; dy<trunkH; dy++){
+						const radius=Math.max(0,Math.floor((trunkH-dy)/2));
+						for(let dx=-radius; dx<=radius; dx++){
+							const tx=lx+dx; const ty=base+trunkH-1-dy; if(tx>=0&&tx<CHUNK_W&&ty>=0&&ty<WORLD_H && arr[tileIndex(tx,ty)]===T.AIR){ arr[tileIndex(tx,ty)]= (dy<2 && s<SNOW_LINE)?T.SNOW:T.LEAF; }
 						}
-						// czapka śniegu
-						if(base+trunkH-1 < WORLD_H) arr[tileIndex(lx,base+trunkH-1)]=T.SNOW;
-				} else {
-					// szerokie drzewo liściaste
-					const base=surfaceY; const h=3+Math.floor(randSeed(wx+50)*4); // 3..6
+					}
+				} else { // liściaste
+					const h=3+Math.floor(randSeed(wx+50)*3);
 					for(let i=0;i<h;i++){ const ty=base+i; if(ty<WORLD_H) arr[tileIndex(lx,ty)]=T.WOOD; }
-					const spread=2+Math.floor(randSeed(wx+90)*1); // 2 lub 3
+					const spread=2+Math.floor(randSeed(wx+90)*1);
 					for(let dx=-spread; dx<=spread; dx++){
 						for(let dy=h-2; dy<=h+1; dy++){
-							const tx=lx+dx; const ty=base+dy; if(tx>=0&&tx<CHUNK_W&&ty>=0&&ty<WORLD_H && arr[tileIndex(tx,ty)]===T.AIR){
-								// górne liście z lekką szansą na śnieg jeśli bardzo wysoko
-								arr[tileIndex(tx,ty)] = (surfaceY < SNOW_LINE+1 && dy>=h)? T.SNOW : T.LEAF;
-							}
+							const tx=lx+dx; const ty=base+dy; if(tx>=0&&tx<CHUNK_W&&ty>=0&&ty<WORLD_H && arr[tileIndex(tx,ty)]===T.AIR){ arr[tileIndex(tx,ty)]=T.LEAF; }
 						}
 					}
 				}
@@ -131,6 +140,9 @@ function closeMenu(){ menuPanel.hidden=true; menuBtn.setAttribute('aria-expanded
 menuBtn?.addEventListener('click',()=>{ const vis=menuPanel.hidden; menuPanel.hidden=!vis; menuBtn.setAttribute('aria-expanded', String(vis)); });
 document.addEventListener('click',e=>{ if(!menuPanel || menuPanel.hidden) return; if(menuPanel.contains(e.target)||menuBtn.contains(e.target)) return; closeMenu(); });
 document.getElementById('radarMenuBtn')?.addEventListener('click',()=>{ radarFlash=performance.now()+1500; closeMenu(); });
+// Regeneracja świata z nowym ziarnem
+document.getElementById('regenBtn')?.addEventListener('click',()=>{ setSeedFromInput(); regenWorld(); closeMenu(); });
+function regenWorld(){ world.clear(); seen.clear(); mining=false; inv.grass=inv.sand=inv.stone=inv.diamond=inv.wood=inv.leaf=inv.snow=0; inv.tools.stone=inv.tools.diamond=false; player.tool='basic'; updateInventory(); placePlayer(true); msg('Nowy świat seed '+worldSeed); }
 document.getElementById('centerBtn').addEventListener('click',()=>{ camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; });
 document.getElementById('helpBtn').addEventListener('click',()=>{ const h=document.getElementById('help'); const show=h.style.display!=='block'; h.style.display=show?'block':'none'; document.getElementById('helpBtn').setAttribute('aria-expanded', String(show)); });
 const radarBtn=document.getElementById('radarBtn'); radarBtn.addEventListener('click',()=>{ radarFlash=performance.now()+1500; }); let radarFlash=0;
@@ -140,7 +152,7 @@ function msg(t){ el.msg.textContent=t; clearTimeout(msg._t); msg._t=setTimeout((
 let frames=0,lastFps=performance.now(); function updateFps(now){ frames++; if(now-lastFps>1000){ el.fps.textContent=frames+' FPS'; frames=0; lastFps=now; }}
 
 // Spawn
-function placePlayer(){ const x=0; ensureChunk(0); let y=0; while(y<WORLD_H-1 && getTile(x,y)===T.AIR) y++; player.x=x+0.5; player.y=y-1; revealAround(); camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; }
+function placePlayer(skipMsg){ const x=0; ensureChunk(0); let y=0; while(y<WORLD_H-1 && getTile(x,y)===T.AIR) y++; player.x=x+0.5; player.y=y-1; revealAround(); camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; if(!skipMsg) msg('Seed '+worldSeed); }
 placePlayer(); updateInventory(); updateGodBtn(); msg('Sterowanie: A/D/W + ⛏️ / klik. G=Bóg, M=Mapa, C=Centrum, H=Pomoc');
 
 // Pętla
