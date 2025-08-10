@@ -1,0 +1,8 @@
+html,body { margin:0; padding:0; background:#111; color:#eee; font-family: system-ui, sans-serif; }
+#game { background:#000; display:block; margin:0 auto; image-rendering: pixelated; }
+#ui { position:fixed; top:0; left:0; padding:6px; display:flex; gap:12px; font-size:14px; }
+#inventory, #crafting { background:#222; padding:6px 8px; border:1px solid #444; min-width:140px; }
+.slot { display:flex; align-items:center; gap:4px; }
+button { background:#333; color:#eee; border:1px solid #555; cursor:pointer; }
+button:hover { background:#444; }
+#messages { position:fixed; left:50%; top:8px; transform:translateX(-50%); background:rgba(0,0,0,0.4); padding:4px 10px; border-radius:4px; pointer-events:none; font-size:13px; }
