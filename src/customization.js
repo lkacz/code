@@ -93,16 +93,19 @@
   // Keyboard shortcuts while open: Ctrl+ArrowLeft/Right to switch tabs
   window.addEventListener('keydown',e=>{ if(overlay.style.display!=='block') return; if(e.ctrlKey && (e.key==='ArrowRight' || e.key==='ArrowLeft')){ e.preventDefault(); const idx=categories.indexOf(activeCat); let ni=idx + (e.key==='ArrowRight'?1:-1); if(ni<0) ni=categories.length-1; if(ni>=categories.length) ni=0; setActive(categories[ni]); const firstItem=grid.querySelector('.custItem'); if(firstItem) firstItem.focus(); }});
 
-  function drawPlayerPreview(ctx){ ctx.save(); ctx.clearRect(0,0,previewCanvas.width,previewCanvas.height); ctx.scale(2.5,2.5); ctx.translate(20,30); // base pos
-    // mimic player body using current customization
-    const c=MM.customization;
-    const bw=14, bh=20; ctx.fillStyle=c.outfitStyle==='default'? '#f4c05a': (c.outfitStyle==='miner'?'#c89b50': c.outfitStyle==='mystic'? '#6b42c7':'#f4c05a'); ctx.fillRect(0,0,bw,bh); ctx.strokeStyle='#4b3212'; ctx.lineWidth=1; ctx.strokeRect(0,0,bw,bh);
-    // eyes
-    const eyeY=bh*0.35; const eyeW=4; const eyeH=4; const off=4.5; if(c.eyeStyle==='glow'){ ctx.fillStyle='#8bf9ff'; ctx.fillRect(bw/2-off-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); ctx.fillRect(bw/2+off-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); }
+  function drawPlayerPreview(ctx){ ctx.save(); ctx.clearRect(0,0,previewCanvas.width,previewCanvas.height); ctx.scale(2.5,2.5); ctx.translate(40,34); // centered with extra left space for cape swing
+    const c=MM.customization; const bw=14, bh=20;
+    // Draw cape first (behind body)
+    drawCapeMiniAnimated(ctx, c.capeStyle, bw, bh);
+    // Body
+    ctx.fillStyle=c.outfitStyle==='default'? '#f4c05a': (c.outfitStyle==='miner'?'#c89b50': c.outfitStyle==='mystic'? '#6b42c7':'#f4c05a');
+    ctx.fillRect(0,0,bw,bh);
+    ctx.strokeStyle='#4b3212'; ctx.lineWidth=1; ctx.strokeRect(0,0,bw,bh);
+    // Eyes
+    const eyeY=bh*0.35; const eyeW=4; const eyeH=4; const off=4.5;
+    if(c.eyeStyle==='glow'){ ctx.fillStyle='#8bf9ff'; ctx.fillRect(bw/2-off-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); ctx.fillRect(bw/2+off-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); }
     else if(c.eyeStyle==='sleepy'){ ctx.fillStyle='#fff'; ctx.fillRect(bw/2-off-eyeW/2, eyeY-1, eyeW, 2); ctx.fillRect(bw/2+off-eyeW/2, eyeY-1, eyeW, 2); }
     else { ctx.fillStyle='#fff'; ctx.fillRect(bw/2-off-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); ctx.fillRect(bw/2+off-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); ctx.fillStyle='#111'; ctx.fillRect(bw/2-off-eyeW/2+1, eyeY-1,2,2); ctx.fillRect(bw/2+off-eyeW/2+1, eyeY-1,2,2); }
-  // animated mini cape behind
-  drawCapeMiniAnimated(ctx, c.capeStyle);
     ctx.restore(); }
 
   // Animated mini cape simulation (lightweight)
@@ -116,10 +119,17 @@
     // length constraint
     for(let it=0; it<2; it++){ for(let i=1;i<MINI_SEGS;i++){ const a=miniCape[i-1], b=miniCape[i]; let dx=b.x-a.x, dy=b.y-a.y; let d=Math.hypot(dx,dy)||0.0001; const excess=d-segLen; if(Math.abs(excess)>0.001){ const k=excess/d; b.x -= dx*k; b.y -= dy*k; } } }
   }
-  function drawCapeMiniAnimated(ctx, styleId){ const now=performance.now(); const dt=Math.min(0.05,(now-lastTime)/1000); lastTime=now; stepMiniCape(styleId,dt); ctx.save(); ctx.translate(-2,2); // anchor left of body
-    // build width profile path
-    const st=(MM.cape && MM.cape.getStyle)? MM.cape.getStyle(styleId): {wTop:0.1,wBot:0.24}; ctx.beginPath(); const wTop=st.wTop*10, wBot=st.wBot*10; for(let i=0;i<MINI_SEGS;i++){ const seg=miniCape[i]; const t=i/(MINI_SEGS-1); const w=wTop+(wBot-wTop)*t; const nx=seg.x; const ny=seg.y; if(i===0){ ctx.moveTo(nx - w, ny); } ctx.lineTo(nx - w, ny); }
-    for(let i=MINI_SEGS-1;i>=0;i--){ const seg=miniCape[i]; const t=i/(MINI_SEGS-1); const w=wTop+(wBot-wTop)*t; ctx.lineTo(seg.x + w, seg.y); }
+  function drawCapeMiniAnimated(ctx, styleId, bw, bh){ const now=performance.now(); const dt=Math.min(0.05,(now-lastTime)/1000); lastTime=now; stepMiniCape(styleId,dt); ctx.save();
+    // Anchor at mid-back depending on facing
+    const anchorX = miniFacing===1 ? 1.5 : bw-1.5; // attach near edge
+    const anchorY = bh*0.30; // mid upper back
+    ctx.translate(anchorX, anchorY);
+    const st=(MM.cape && MM.cape.getStyle)? MM.cape.getStyle(styleId): {wTop:0.1,wBot:0.24};
+    const WIDTH_SCALE=40; // bigger visual
+    const wTop=st.wTop*WIDTH_SCALE, wBot=st.wBot*WIDTH_SCALE;
+    ctx.beginPath();
+    for(let i=0;i<MINI_SEGS;i++){ const seg=miniCape[i]; const t=i/(MINI_SEGS-1); const w=wTop+(wBot-wTop)*t; const nx= (miniFacing===1? -seg.x: seg.x); const ny=seg.y; if(i===0){ ctx.moveTo(nx - w, ny); } ctx.lineTo(nx - w, ny); }
+    for(let i=MINI_SEGS-1;i>=0;i--){ const seg=miniCape[i]; const t=i/(MINI_SEGS-1); const w=wTop+(wBot-wTop)*t; const nx= (miniFacing===1? -seg.x: seg.x); const ny=seg.y; ctx.lineTo(nx + w, ny); }
     ctx.closePath(); ctx.fillStyle='#b91818'; ctx.fill(); ctx.restore(); requestAnimationFrame(()=>{ if(overlay.style.display==='block') updatePreview(); }); }
 
   function updatePreview(){ drawPlayerPreview(pctx); }
