@@ -41,7 +41,37 @@
   function rand(a,b){ return a + Math.random()*(b-a); }
   function choose(arr){ return arr[(Math.random()*arr.length)|0]; }
 
-  function create(spec, x,y){ const m={ id: spec.id, x, y, vx:0, vy:0, hp: spec.hp, state:'idle', tNext: performance.now() + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000, facing:1, spawnT: performance.now(), attackCd:0, hitFlashUntil:0, shake:0 }; addToGrid(m); return m; }
+  function create(spec, x,y){
+    const m={ id: spec.id, x, y, vx:0, vy:0, hp: spec.hp, state:'idle', tNext: performance.now() + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000, facing:1, spawnT: performance.now(), attackCd:0, hitFlashUntil:0, shake:0 };
+    // Aquatic anchoring data for fish: maintain preferred depth below surface
+    if(spec.aquatic){
+      initWaterAnchor(m);
+    }
+    addToGrid(m); return m; }
+
+  function initWaterAnchor(m){
+    // Determine the top water tile in this column (scan upward until not water)
+    let ty = Math.floor(m.y);
+    const tx = Math.floor(m.x);
+    let topY = ty;
+    for(let scan=0; scan<24; scan++){ // safety cap
+      const t = MM.world.getTile ? MM.world.getTile(tx, topY-1) : null; // if API exists
+      if(t!==T.WATER) break; else topY--;
+    }
+    m.waterTopY = topY; // y of first water tile at surface (there is air or non-water above waterTopY-1)
+    // pick desired depth (1-3 tiles below surface) but ensure within existing water column
+    let depth = 1 + (Math.random()*2)|0; // 1 or 2 or maybe 2? adjust range
+    // Validate depth: ensure tile exists below; if shallow adjust
+    let maxDepth=depth;
+    for(let d=1; d<=depth; d++){
+      const t = MM.world.getTile ? MM.world.getTile(tx, topY + d) : null;
+      if(t!==T.WATER){ maxDepth = d-1; break; }
+    }
+    if(maxDepth<1) maxDepth=1;
+    m.desiredDepth = maxDepth;
+    m.nextWaterScan = performance.now() + 4000 + Math.random()*4000;
+    m.strandedTime = 0;
+  }
 
   function forceSpawn(specId, player, getTile){ const spec=SPECIES[specId]; if(!spec) return false; // try valid spawn positions first
     for(let tries=0; tries<20; tries++){ const dx=(Math.random()*10 -5); const dy=(Math.random()*6 -3); const tx=Math.floor(player.x+dx); const ty=Math.floor(player.y+dy); if(spec.spawnTest(tx,ty,getTile)){ mobs.push(create(spec, tx+0.5, ty+0.5)); return true; } }
@@ -98,11 +128,11 @@
       const maxS = spec.speed * (aggressive?1.4:1); const sp=Math.hypot(m.vx,m.vy); if(sp>maxS){ const s=maxS/sp; m.vx*=s; m.vy*=s; }
       // Integrate
       m.x += m.vx*dt; m.y += m.vy*dt;
-      // Habitat constraints
-      if(spec.aquatic){ const tileBelow = getTile(Math.floor(m.x), Math.floor(m.y)); if(tileBelow!==T.WATER){ // swim back toward nearest water surface line
-          m.vy -= 0.4; m.vx *=0.6; }
+      // Habitat constraints & advanced aquatic enforcement
+      if(spec.aquatic){
+        enforceAquatic(m, spec, getTile, dt);
       } else { // birds keep above ground slightly
-        const groundTile = getTile(Math.floor(m.x), Math.floor(m.y)+1); if(groundTile!==T.AIR && !spec.aquatic){ m.vy -= 0.8; }
+        const groundTile = getTile(Math.floor(m.x), Math.floor(m.y)+1); if(groundTile!==T.AIR){ m.vy -= 0.8; }
       }
       updateGridCell(m);
       if(m.shake>0) m.shake=Math.max(0,m.shake-dt*10);
@@ -159,9 +189,9 @@
 
   const AGGRO_SKEW_GRACE_MS = 30000; // accept up to 30s negative skew
   function serialize(){ const now=Date.now(); const rel={}; for(const k in speciesAggro){ const rem = speciesAggro[k]-now; if(rem>0) rel[k]=rem; }
-    return { list: mobs.map(m=>({id:m.id,x:m.x,y:m.y,vx:m.vx,vy:m.vy,hp:m.hp,state:m.state,facing:m.facing,spawnT:m.spawnT,attackCd:m.attackCd})), aggro:{mode:'rel', m:rel} }; }
+    return { list: mobs.map(m=>({id:m.id,x:m.x,y:m.y,vx:m.vx,vy:m.vy,hp:m.hp,state:m.state,facing:m.facing,spawnT:m.spawnT,attackCd:m.attackCd,waterTopY:m.waterTopY,desiredDepth:m.desiredDepth})), aggro:{mode:'rel', m:rel} }; }
   function deserialize(data){ // clear
-    for(const m of mobs) removeFromGrid(m); mobs.length=0; if(data && Array.isArray(data.list)){ for(const r of data.list){ if(!SPECIES[r.id]) continue; const m=create(SPECIES[r.id], r.x, r.y); m.vx=r.vx||0; m.vy=r.vy||0; m.hp=r.hp||SPECIES[r.id].hp; m.state=r.state||'idle'; m.facing=r.facing||1; m.spawnT=r.spawnT||performance.now(); m.attackCd=r.attackCd||0; mobs.push(m); } }
+    for(const m of mobs) removeFromGrid(m); mobs.length=0; if(data && Array.isArray(data.list)){ for(const r of data.list){ if(!SPECIES[r.id]) continue; const m=create(SPECIES[r.id], r.x, r.y); m.vx=r.vx||0; m.vy=r.vy||0; m.hp=r.hp||SPECIES[r.id].hp; m.state=r.state||'idle'; m.facing=r.facing||1; m.spawnT=r.spawnT||performance.now(); m.attackCd=r.attackCd||0; if(m.id==='FISH'){ if(typeof r.waterTopY==='number') m.waterTopY=r.waterTopY; if(typeof r.desiredDepth==='number') m.desiredDepth=r.desiredDepth; m.nextWaterScan = performance.now() + 3000; m.strandedTime=0; } mobs.push(m); } }
     for(const k in speciesAggro) delete speciesAggro[k];
     if(data && data.aggro){ const now=Date.now(); if(data.aggro.mode==='rel' && data.aggro.m){ for(const k in data.aggro.m){ const rem=data.aggro.m[k]; if(typeof rem==='number' && rem>0){ speciesAggro[k]= now + Math.min(rem, 5*60*1000); } }
       } else { // legacy absolute timestamps
@@ -174,3 +204,67 @@
   MM.mobs = { update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro, forceSpawn, species: Object.keys(SPECIES) };
   try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
 })();
+
+// --- Aquatic enforcement helpers (placed after IIFE to avoid clutter inside) ---
+function enforceAquatic(m, spec, getTile, dt){
+  // Re-scan water anchor periodically
+  if(!m.waterTopY || performance.now()>m.nextWaterScan){ initWaterAnchor(m); }
+  const tx = Math.floor(m.x); const ty=Math.floor(m.y);
+  const here = getTile(tx,ty);
+  // Rescue if outside water
+  if(here!==T.WATER){
+    m.strandedTime += dt;
+    // search radius for nearest water
+    let best=null, bestD=1e9;
+    for(let dy=-3; dy<=3; dy++){
+      for(let dx=-5; dx<=5; dx++){
+        const nx=tx+dx, ny=ty+dy; const t=getTile(nx,ny); if(t===T.WATER){ const d=dx*dx+dy*dy; if(d<bestD){ bestD=d; best={x:nx+0.5,y:ny+0.5}; } }
+      }
+    }
+    if(best){
+      // strong steering toward water
+      m.vx += (best.x - m.x)*3*dt; m.vy += (best.y - m.y)*3*dt;
+      // if far, snap to water to avoid flopping
+      if(bestD>25){ m.x=best.x; m.y=best.y; m.vx*=0.3; m.vy*=0.3; }
+      m.strandedTime = 0;
+    } else {
+      // no water nearby: damp and slowly fall
+      m.vx *= 0.6; m.vy += 0.15; if(m.strandedTime>6){ m.hp=0; }
+    }
+    return; // skip rest until back in water
+  } else {
+    m.strandedTime = 0;
+  }
+  // Surface clamping: encourage staying below surface
+  if(typeof m.waterTopY==='number'){
+    // ensure waterTopY still valid (tile above is not water, itself water)
+    const topTile = getTile(Math.floor(m.x), m.waterTopY);
+    if(topTile!==T.WATER){ // re-anchor if column changed
+      initWaterAnchor(m);
+    }
+    const targetY = m.waterTopY + (m.desiredDepth||1) + Math.sin(performance.now()*0.001 + m.spawnT*0.0003)*0.2; // gentle oscillation
+    const dy = targetY - m.y; m.vy += dy * Math.min(1, dt*2.2); // proportional steering
+    // Do not allow exiting into air above top
+    const above = getTile(Math.floor(m.x), Math.floor(m.y-0.6));
+    if(above!==T.WATER){ // near or above surface
+      if(m.vy < 0) m.vy *= 0.2; // throttle upward
+      m.vy += 0.04; // nudge down
+    }
+  }
+  // Bank avoidance: predict next horizontal tile; if non-water reflect & seek interior
+  if(Math.abs(m.vx)>0.01){
+    const aheadX = Math.floor(m.x + Math.sign(m.vx)*0.7);
+    const aheadY = Math.floor(m.y);
+    const ahead = getTile(aheadX, aheadY);
+    if(ahead!==T.WATER){
+      // reflect with damping and small vertical jiggle to simulate turn
+      m.vx *= -0.55; m.vy += (Math.random()*0.6 -0.3);
+      // center bias: move slightly toward interior (opposite of attempted direction)
+      const inwardX = Math.floor(m.x - Math.sign(m.vx)*1);
+      if(getTile(inwardX, aheadY)===T.WATER){ m.vx += (inwardX + 0.5 - m.x)*0.4; }
+    }
+  }
+  // Speed clamp aquatic after adjustments
+  const maxS = spec.speed * 1.2; const sp=Math.hypot(m.vx,m.vy); if(sp>maxS){ const s=maxS/sp; m.vx*=s; m.vy*=s; }
+}
+
