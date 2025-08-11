@@ -11,19 +11,19 @@ const WORLD = MM.world;
 const TREES = MM.trees;
 const CAPE = MM.cape;
 // Visual enhancement config
-const VISUAL={animations:true};
+const VISUAL={animations:true, atmoTint:true};
 // --- Dynamic Background (parallax + day/night + biome palettes) ---
 const DAY_DURATION=300000; // 5 min
 const NIGHT_DURATION=300000; // 5 min
 const CYCLE_DURATION=DAY_DURATION+NIGHT_DURATION; let cycleStart=performance.now();
-// Palettes per biome (0 plains,1 hills,2 mountains)
+// Palettes per biome (0 plains,1 hills,2 mountains) – base keys; we dynamically crossfade near biome borders
 const SKY_PALETTES={
 	0:{ dayTop:'#5da9ff', dayBot:'#cfe9ff', duskTop:'#ff8c3a', duskBot:'#ffd5a1', nightTop:'#091a2e', nightBot:'#0d2238', mount:['#5d7ba0','#4e6889','#3a516d'] },
 	1:{ dayTop:'#4b8fdc', dayBot:'#c2ddf5', duskTop:'#ff7a3a', duskBot:'#ffc68a', nightTop:'#081627', nightBot:'#0b1d30', mount:['#557094','#465d78','#334556'] },
 	2:{ dayTop:'#3b6fae', dayBot:'#b4d3ec', duskTop:'#ff6c36', duskBot:'#ffb778', nightTop:'#071320', nightBot:'#0a1928', mount:['#4a5f73','#3c4d5d','#2c3843'] }
 };
-// Stars + clouds
-const STAR_COUNT=220; const stars=[]; function initStars(){ for(let i=0;i<STAR_COUNT;i++){ stars.push({x:Math.random(), y:Math.random(), r:Math.random()*1.2+0.3, a:Math.random()*0.6+0.4}); } }
+// Stars + clouds (two parallax layers for depth)
+const STAR_COUNT=140; const starsFar=[], starsNear=[]; function initStars(){ for(let i=0;i<STAR_COUNT;i++){ starsFar.push({x:Math.random(), y:Math.random(), r:Math.random()*1.0+0.25, a:Math.random()*0.5+0.35}); } for(let i=0;i<STAR_COUNT*0.55;i++){ starsNear.push({x:Math.random(), y:Math.random(), r:Math.random()*1.6+0.5, a:Math.random()*0.6+0.4}); } }
 initStars();
 const clouds=[]; function spawnCloud(){ const speed=0.002+Math.random()*0.003; const scale=0.6+Math.random()*1.4; const y=0.12+Math.random()*0.35; clouds.push({x:1+Math.random()*0.3,y,speed,scale,pts:genCloudShape()}); }
 function genCloudShape(){ const pts=[]; const blobs=4+Math.floor(Math.random()*4); for(let i=0;i<blobs;i++){ pts.push({x:(i/(blobs-1))*1, r:0.22+Math.random()*0.18}); } return pts; }
@@ -34,7 +34,7 @@ const mountainCache=new Map();
 function getMountainLayer(biome,layer){ const key=biome+'_'+layer; if(mountainCache.has(key)) return mountainCache.get(key); const pal=SKY_PALETTES[biome]||SKY_PALETTES[0]; const col=pal.mount[Math.min(layer,pal.mount.length-1)]; const c=document.createElement('canvas'); c.width=1600; c.height=300; const g=c.getContext('2d'); g.fillStyle=col; const peaks=12; const hBase= c.height*(0.25+0.18*layer); const amp= 80 + layer*40; g.beginPath(); g.moveTo(0,c.height); for(let i=0;i<=peaks;i++){ const x=i/peaks*c.width; const y=hBase - Math.sin(i*1.3 + biome*0.8)*(amp*0.35) - Math.random()*amp*0.2; g.lineTo(x,y); } g.lineTo(c.width,c.height); g.closePath(); g.fill(); mountainCache.set(key,c); return c; }
 function lerp(a,b,t){ return a + (b-a)*t; }
 function lerpColor(c1,c2,t){ const p1=parseInt(c1.slice(1),16); const p2=parseInt(c2.slice(1),16); const r=lerp((p1>>16)&255,(p2>>16)&255,t)|0; const g=lerp((p1>>8)&255,(p2>>8)&255,t)|0; const b=lerp(p1&255,p2&255,t)|0; return '#'+r.toString(16).padStart(2,'0')+g.toString(16).padStart(2,'0')+b.toString(16).padStart(2,'0'); }
-function skyGradientColors(biome,cycleT){ const pal=SKY_PALETTES[biome]||SKY_PALETTES[0]; // cycleT 0..1 over full 10min
+function skyGradientColors(biome,cycleT){ const pal=SKY_PALETTES[biome]||SKY_PALETTES[0]; // legacy helper (discrete) – still used for some fallbacks
 	const dayFrac = DAY_DURATION/CYCLE_DURATION; const nightFrac=NIGHT_DURATION/CYCLE_DURATION; // equal halves
 	if(cycleT < dayFrac){ // day segment (0..dayFrac)
 		const t=cycleT/dayFrac; // 0 sunrise -> 1 sunset
@@ -47,25 +47,66 @@ function skyGradientColors(biome,cycleT){ const pal=SKY_PALETTES[biome]||SKY_PAL
 		// small dusk warm at start and pre-dawn warm at end handled in day branch so here keep night gradient w/ subtle breathing
 		const breathe = 0.04*Math.sin(t*Math.PI*2*2); return {top:pal.nightTop, bottom:pal.nightBot, breathe}; }
 }
+// Smooth biome crossfade: blend palettes when underlying noise near thresholds
+function smoothstep(a,b,x){ const t=Math.min(1,Math.max(0,(x-a)/(b-a))); return t*t*(3-2*t); }
+function blendColor(c1,c2,t){ return lerpColor(c1,c2,t); }
+function blendPalette(p1,p2,t){ if(!p2||t<=0) return p1; if(t>=1) return p2; return {
+ dayTop:blendColor(p1.dayTop,p2.dayTop,t), dayBot:blendColor(p1.dayBot,p2.dayBot,t),
+ duskTop:blendColor(p1.duskTop,p2.duskTop,t), duskBot:blendColor(p1.duskBot,p2.duskBot,t),
+ nightTop:blendColor(p1.nightTop,p2.nightTop,t), nightBot:blendColor(p1.nightBot,p2.nightBot,t),
+ mount:[0,1,2].map(i=>blendColor(p1.mount[i],p2.mount[i],t)) };
+}
+function computeBiomeBlend(x){ if(!WORLDGEN.valueNoise) return {pal:SKY_PALETTES[WORLDGEN.biomeType?WORLDGEN.biomeType(Math.floor(x)):0], a:0,b:0,t:0}; const v=WORLDGEN.valueNoise(x,220,900); const t1=0.35, t2=0.7, w=0.05; if(v < t1-w){ return {pal:SKY_PALETTES[0], a:0,b:0,t:0}; } if(v>t2+w){ return {pal:SKY_PALETTES[2], a:2,b:2,t:0}; } if(v>=t1-w && v<=t1+w){ const t=smoothstep(t1-w,t1+w,v); return {pal:blendPalette(SKY_PALETTES[0],SKY_PALETTES[1],t), a:0,b:1,t}; } if(v>=t2-w && v<=t2+w){ const t=smoothstep(t2-w,t2+w,v); return {pal:blendPalette(SKY_PALETTES[1],SKY_PALETTES[2],t), a:1,b:2,t}; } if(v<t2){ return {pal:SKY_PALETTES[1], a:1,b:1,t:0}; } return {pal:SKY_PALETTES[2], a:2,b:2,t:0}; }
+function skyGradientFromPalette(pal,cycleT){ const dayFrac=DAY_DURATION/CYCLE_DURATION; const nightFrac=NIGHT_DURATION/CYCLE_DURATION; if(cycleT < dayFrac){ const t=cycleT/dayFrac; const twilightBand=0.12; if(t<twilightBand){ const k=t/twilightBand; return {top:lerpColor(pal.nightTop,pal.duskTop,k), bottom:lerpColor(pal.nightBot,pal.duskBot,k)}; } else if(t>1-twilightBand){ const k=(t-(1-twilightBand))/twilightBand; return {top:lerpColor(pal.duskTop,pal.nightTop,k), bottom:lerpColor(pal.duskBot,pal.nightBot,k)}; } else { return {top:pal.dayTop,bottom:pal.dayBot}; } } else { const t=(cycleT-dayFrac)/nightFrac; return {top:pal.nightTop,bottom:pal.nightBot}; } }
+let lastCycleInfo={cycleT:0,isDay:true,tDay:0,twilightBand:0.12}; let moonPhaseIndex=0, lastPhaseCycle=-1; const MOON_PHASES=8; // 0 new, 4 full
 function drawBackground(){
-	const now=performance.now(); const cycleT=((now-cycleStart)%CYCLE_DURATION)/CYCLE_DURATION; const biome = WORLDGEN.biomeType? WORLDGEN.biomeType(Math.floor(player.x)) : 0; const cols=skyGradientColors(biome,cycleT);
+	const now=performance.now(); const cycleT=((now-cycleStart)%CYCLE_DURATION)/CYCLE_DURATION; // blended palette at player x
+	const blend=computeBiomeBlend(player.x); const cols=skyGradientFromPalette(blend.pal,cycleT);
 	// Sky gradient (full opaque to avoid trail / ghosting)
 	ctx.save();
 	ctx.globalAlpha=1; const grd=ctx.createLinearGradient(0,0,0,H); grd.addColorStop(0,cols.top); grd.addColorStop(1,cols.bottom); ctx.fillStyle=grd; ctx.fillRect(0,0,W,H);
-	const dayFrac=DAY_DURATION/CYCLE_DURATION; const isDay=cycleT<dayFrac; const tDay=isDay? (cycleT/dayFrac) : ((cycleT-dayFrac)/(1-dayFrac)); const twilightBand=0.12;
+	const dayFrac=DAY_DURATION/CYCLE_DURATION; const isDay=cycleT<dayFrac; const tDay=isDay? (cycleT/dayFrac) : ((cycleT-dayFrac)/(1-dayFrac)); const twilightBand=0.12; lastCycleInfo={cycleT,isDay,tDay,twilightBand};
 	// Stars first (placed behind sun/moon glow)
-	const starAlpha = isDay? (tDay<twilightBand? (1 - (tDay/twilightBand))*0.9 : (tDay>1-twilightBand? ((tDay-(1-twilightBand))/twilightBand)*0.9 : 0)) : 1; if(starAlpha>0.01){ ctx.save(); ctx.globalAlpha=starAlpha; ctx.fillStyle='#ffffff'; stars.forEach(s=>{ const x=s.x*W; const y=s.y*H*0.6; const tw=0.5+0.5*Math.sin(now*0.001 + s.x*20 + s.y*40); const a = Math.min(1, starAlpha*(0.35+0.65*tw)*s.a*1.4); ctx.globalAlpha=a; ctx.fillRect(x,y,s.r,s.r); }); ctx.restore(); }
+	const starAlpha = isDay? (tDay<twilightBand? (1 - (tDay/twilightBand))*0.9 : (tDay>1-twilightBand? ((tDay-(1-twilightBand))/twilightBand)*0.9 : 0)) : 1;
+	if(starAlpha>0.01){
+		// Far layer (slower drift)
+		ctx.save(); ctx.globalAlpha=starAlpha*0.85; starsFar.forEach(s=>{ const driftX = (now*0.000005); const x = ((s.x + driftX) % 1)*W; const y=(s.y*0.55)*H; const tw=0.5+0.5*Math.sin(now*0.0009 + s.x*40); const a = Math.min(1, (0.25+0.75*tw)*s.a); ctx.fillStyle='rgba(255,255,255,'+a+')'; ctx.fillRect(x,y,s.r,s.r); }); ctx.restore();
+		// Near layer (parallax with player position + slightly larger)
+		ctx.save(); ctx.globalAlpha=starAlpha; const pxFactor=(player.x*TILE*0.00008); starsNear.forEach(s=>{ const x = ((s.x + pxFactor + now*0.00001) % 1)*W; const y=(s.y*0.5 + 0.02*Math.sin(now*0.0006 + s.x*60))*H; const tw=0.5+0.5*Math.sin(now*0.0013 + s.x*55); const a = Math.min(1, (0.35+0.65*tw)*s.a); ctx.fillStyle='rgba(255,255,255,'+a+')'; ctx.fillRect(x,y,s.r,s.r); }); ctx.restore();
+	}
 	// Sun
 	function drawBody(frac,radius,color,glowCol){ const ang=lerp(Math.PI*1.05, Math.PI*-0.05, frac); const cx=W*0.5 + Math.cos(ang)*W*0.45; const cy=H*0.82 + Math.sin(ang)*H*0.65; const grd2=ctx.createRadialGradient(cx,cy,radius*0.15,cx,cy,radius); grd2.addColorStop(0,glowCol); grd2.addColorStop(1,'rgba(0,0,0,0)'); ctx.fillStyle=grd2; ctx.beginPath(); ctx.arc(cx,cy,radius,0,Math.PI*2); ctx.fill(); ctx.fillStyle=color; ctx.beginPath(); ctx.arc(cx,cy,radius*0.55,0,Math.PI*2); ctx.fill(); }
 	const dayCore = isDay && tDay>=twilightBand && tDay<=1-twilightBand; if(isDay){ const sunGlow=dayCore? 'rgba(255,255,255,0.55)':'rgba(255,180,120,0.55)'; drawBody(tDay, 140, '#fff8d2', sunGlow); }
-	// Moon (separate save/restore so composite ops don't leak)
-	const moonFrac=(cycleT+0.5)%1; const moonPhase=(Math.sin(now*0.00002)+1)/2; const moonAlpha=isDay? 0.06:0.9; const mAng=lerp(Math.PI*1.15, Math.PI*-0.15, moonFrac); const mcx=W*0.5 + Math.cos(mAng)*W*0.48; const mcy=H*0.88 + Math.sin(mAng)*H*0.68; const mr=70; ctx.save(); ctx.globalAlpha=moonAlpha; ctx.fillStyle='rgba(255,255,255,0.6)'; ctx.beginPath(); ctx.arc(mcx,mcy,mr,0,Math.PI*2); ctx.fill(); ctx.globalCompositeOperation='destination-out'; ctx.beginPath(); const phaseOffset=(moonPhase-0.5)*mr*1.6; ctx.ellipse(mcx+phaseOffset,mcy,mr*0.9,mr*1.05,0,0,Math.PI*2); ctx.fill(); ctx.restore();
+	// Moon (discrete 8-phase cycle; advances each full day/night cycle)
+	const currentCycleIndex = Math.floor((performance.now()-cycleStart)/CYCLE_DURATION);
+	if(currentCycleIndex !== lastPhaseCycle){ lastPhaseCycle=currentCycleIndex; moonPhaseIndex = (moonPhaseIndex + 1) % MOON_PHASES; }
+	const moonFrac=(cycleT+0.5)%1; const moonAlpha=isDay? 0.05:0.9; const mAng=lerp(Math.PI*1.15, Math.PI*-0.15, moonFrac); const mcx=W*0.5 + Math.cos(mAng)*W*0.48; const mcy=H*0.88 + Math.sin(mAng)*H*0.68; const mr=70; ctx.save(); ctx.globalAlpha=moonAlpha; ctx.fillStyle='rgba(255,255,255,0.65)'; ctx.beginPath(); ctx.arc(mcx,mcy,mr,0,Math.PI*2); ctx.fill(); // phase mask
+	const phaseT = moonPhaseIndex / (MOON_PHASES-1); // 0 new .. 1 full
+	ctx.globalCompositeOperation='destination-out'; if(moonPhaseIndex!==MOON_PHASES-1){ // cut crescent / gibbous
+		const cut = (0.5 - phaseT/2); // shrink mask as phase grows
+		ctx.beginPath(); const off = cut*mr*1.9; ctx.ellipse(mcx+off,mcy,mr*0.95,mr*1.05,0,0,Math.PI*2); ctx.fill(); if(moonPhaseIndex>0){ // two-sided for gibbous waxing/waning
+			ctx.beginPath(); const off2 = (cut+0.15)*mr*1.2; ctx.ellipse(mcx-off2,mcy,mr*0.75,mr*0.95,0,0,Math.PI*2); ctx.fill(); }
+	}
+	ctx.restore();
 	// Clouds (day and twilight). Ensure they sit above stars but below mountains silhouettes? stylistic: keep below mountains for depth => draw before mountains.
 	const cloudVis = isDay? 1 : (tDay<twilightBand? (tDay/twilightBand) : ( (tDay>1-twilightBand)? ((1-tDay)/twilightBand) : 0)); if(cloudVis>0.01){ ctx.save(); ctx.globalAlpha=cloudVis*0.85; clouds.forEach(c=>{ const cxp=c.x*W; const cyp=c.y*H*0.55; ctx.fillStyle='rgba(255,255,255,0.92)'; c.pts.forEach(p=>{ ctx.beginPath(); ctx.ellipse(cxp + (p.x-0.5)*c.scale*260, cyp + Math.sin((p.x+now*0.00012))*c.scale*16, p.r*c.scale*95, p.r*c.scale*60,0,0,Math.PI*2); ctx.fill(); }); }); ctx.restore(); }
-	// Mountains (parallax). Use save/restore and reset alpha each layer to avoid leaking to world.
-	const baseY=H*0.60; const heightAdjust=-H*0.12; ctx.save(); for(let layer=0; layer<3; layer++){ ctx.save(); const img=getMountainLayer(biome,layer); const par=0.12 + layer*0.10; const y=baseY + layer*90 + heightAdjust; const scroll = -((player.x*TILE)*par) % img.width; ctx.globalAlpha=0.85 - layer*0.22; for(let k=-1;k<=1;k++){ ctx.drawImage(img, scroll + k*img.width, y); } ctx.restore(); } ctx.restore();
+	// Mountains (parallax) – if crossfading between two biomes draw both silhouette sets weighted
+	const baseY=H*0.60; const heightAdjust=-H*0.12; ctx.save(); for(let layer=0; layer<3; layer++){ const par=0.12 + layer*0.10; const y=baseY + layer*90 + heightAdjust; const alphaBase=0.85 - layer*0.22; ctx.save(); const scrollA = -((player.x*TILE)*par) % 1600; // use cache width
+		const imgA=getMountainLayer(blend.a,layer); ctx.globalAlpha=alphaBase * (blend.t>0? (1-blend.t):1); for(let k=-1;k<=1;k++){ ctx.drawImage(imgA, scrollA + k*imgA.width, y); }
+		if(blend.t>0){ const imgB=getMountainLayer(blend.b,layer); const scrollB = scrollA; ctx.globalAlpha=alphaBase * blend.t; for(let k=-1;k<=1;k++){ ctx.drawImage(imgB, scrollB + k*imgB.width, y); } }
+		ctx.restore(); }
+	ctx.restore();
 	ctx.restore(); // end background
 }
+function applyAtmosphericTint(){ if(!VISUAL.atmoTint) return; const info=lastCycleInfo; const dayFrac=DAY_DURATION/CYCLE_DURATION; const twilight=info.twilightBand; let a=0, col='#000'; if(info.isDay){ // warm twilight glow only
+	if(info.tDay<twilight){ a = (1 - (info.tDay/twilight)) * 0.10; col='#ff9a4a'; }
+	else if(info.tDay>1-twilight){ a = ((info.tDay-(1-twilight))/twilight) * 0.10; col='#ff8240'; }
+} else { // night cooling overlay
+	const nightT = (info.cycleT - dayFrac)/(1-dayFrac); // 0..1
+	a = 0.12 + 0.13 * Math.sin(nightT*Math.PI); // peak near midnight
+	col = '#061425';
+}
+if(a>0.001){ ctx.save(); ctx.globalAlpha=a; ctx.fillStyle=col; ctx.fillRect(0,0,W,H); ctx.restore(); } }
 let grassDensityScalar = 1; // user adjustable (exponential scaling)
 let grassHeightScalar = 1; // user adjustable linear multiplier
 // Grass performance management
@@ -599,7 +640,9 @@ function draw(){ // Background first
 		ctx.strokeRect(ghostX*TILE+0.5, ghostY*TILE+0.5, TILE-1, TILE-1);
 	}
 	if(mining){ ctx.strokeStyle='#fff'; ctx.strokeRect(mineTx*TILE+1,mineTy*TILE+1,TILE-2,TILE-2); const info=INFO[getTile(mineTx,mineTy)]||{hp:1}; const need=Math.max(0.1,info.hp/6); const p=mineTimer/need; ctx.fillStyle='rgba(255,255,255,.3)'; ctx.fillRect(mineTx*TILE, mineTy*TILE + (1-p)*TILE, TILE, p*TILE); }
-	ctx.restore(); }
+	ctx.restore();
+	// Screen-space atmospheric tint (after world scaling restore)
+	applyAtmosphericTint(); }
 
 // UI aktualizacja
 const el={grass:document.getElementById('grass'),sand:document.getElementById('sand'),stone:document.getElementById('stone'),diamond:document.getElementById('diamond'),wood:document.getElementById('wood'),snow:document.getElementById('snow'),water:document.getElementById('water'),pick:document.getElementById('pick'),fps:document.getElementById('fps'),msg:document.getElementById('messages')}; function updateInventory(){ el.grass.textContent=inv.grass; el.sand.textContent=inv.sand; el.stone.textContent=inv.stone; el.diamond.textContent=inv.diamond; el.wood.textContent=inv.wood; if(el.snow) el.snow.textContent=inv.snow; if(el.water) el.water.textContent=inv.water; el.pick.textContent=player.tool; document.getElementById('craftStone').disabled=!canCraftStone(); document.getElementById('craftDiamond').disabled=!canCraftDiamond(); updateHotbarCounts(); saveState(); }
@@ -676,9 +719,9 @@ if(!window.__lootPopupInit){
 			const btns=document.createElement('div'); btns.style.display='flex'; btns.style.flexDirection='column'; btns.style.gap='6px';
 			const equip=document.createElement('button'); equip.textContent='Wyposaż'; const keep=document.createElement('button'); keep.textContent='Zachowaj'; keep.className='sec'; const discard=document.createElement('button'); discard.textContent='Odrzuć'; discard.className='danger';
 			function disable(){ equip.disabled=keep.disabled=discard.disabled=true; row.style.opacity='.45'; }
-			equip.addEventListener('click',()=>{ if(it.kind==='cape') MM.customization.capeStyle=it.id; else if(it.kind==='eyes') MM.customization.eyeStyle=it.id; else MM.customization.outfitStyle=it.id; if(MM.recomputeModifiers) MM.recomputeModifiers(); window.dispatchEvent(new CustomEvent('mm-customization-change')); disable(); });
-			keep.addEventListener('click',disable);
-			discard.addEventListener('click',()=>{ if(MM.dynamicLoot){ const arr = it.kind==='cape'? MM.dynamicLoot.capes : it.kind==='eyes'? MM.dynamicLoot.eyes : MM.dynamicLoot.outfits; const idx=arr.indexOf(it); if(idx>=0) arr.splice(idx,1); } if(MM.addDiscardedLoot) MM.addDiscardedLoot(it.id); if(MM.chests && MM.chests.saveDynamicLoot) MM.chests.saveDynamicLoot(); disable(); updateLootInboxIndicator(); });
+				equip.addEventListener('click',()=>{ if(it.kind==='cape') MM.customization.capeStyle=it.id; else if(it.kind==='eyes') MM.customization.eyeStyle=it.id; else MM.customization.outfitStyle=it.id; if(MM.recomputeModifiers) MM.recomputeModifiers(); window.dispatchEvent(new CustomEvent('mm-customization-change')); disable(); persistInbox(); });
+				keep.addEventListener('click',()=>{ disable(); persistInbox(); });
+				discard.addEventListener('click',()=>{ if(MM.dynamicLoot){ const arr = it.kind==='cape'? MM.dynamicLoot.capes : it.kind==='eyes'? MM.dynamicLoot.eyes : MM.dynamicLoot.outfits; const idx=arr.indexOf(it); if(idx>=0) arr.splice(idx,1); } if(MM.addDiscardedLoot) MM.addDiscardedLoot(it.id); if(MM.chests && MM.chests.saveDynamicLoot) MM.chests.saveDynamicLoot(); disable(); updateLootInboxIndicator(); persistInbox(); });
 			btns.appendChild(equip); btns.appendChild(keep); btns.appendChild(discard); row.appendChild(btns); lootItemsBox.appendChild(row); row.__item=it; });
 	}
 	function openInbox(){ if(!window.lootInbox.length){ msg('Brak przedmiotów'); return; } buildRows(window.lootInbox); lootInboxUnread=0; updateLootInboxIndicator(); persistInbox(); lootPopup.classList.add('show'); lootDim.style.display='block'; lootPrevFocus=document.activeElement; installTrap(); const first=lootPopup.querySelector('button'); if(first) first.focus(); }
