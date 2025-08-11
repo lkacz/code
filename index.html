@@ -76,6 +76,11 @@
   #lootPopup button.sec{ background:rgba(255,255,255,.14); box-shadow:none; }
   #lootPopup button.danger{ background:#c43232; }
   #lootDim{ position:fixed; inset:0; background:rgba(0,0,0,.55); backdrop-filter:blur(4px); display:none; z-index:110; }
+  /* Loot inbox indicator */
+  #lootInboxBtn{ pointer-events:auto; background:#e0b341; color:#111; border:none; border-radius:12px; padding:6px 12px; font-weight:700; font-size:14px; box-shadow:0 2px 10px rgba(224,179,65,.45); cursor:pointer; display:none; }
+  #lootInboxBtn.pulseNew{ animation:lootPulse 1.05s ease-in-out infinite; }
+  #lootInboxBtn span{ margin-left:4px; }
+  @keyframes lootPulse{0%{transform:scale(1); box-shadow:0 0 0 0 rgba(224,179,65,0.4);}50%{transform:scale(1.12); box-shadow:0 0 16px 4px rgba(224,179,65,0.55);}100%{transform:scale(1); box-shadow:0 0 0 0 rgba(224,179,65,0.4);} }
   </style>
 </head>
 <body>
@@ -121,6 +126,7 @@
           </div>
         </div>
       </div>
+  <button id="lootInboxBtn" title="Nowe przedmioty (I)" aria-label="Nowe przedmioty">! <span id="lootInboxCount"></span></button>
     </div>
   <!-- topButtons replaced by dropdown menu; old markup removed -->
     <div id="craft">
