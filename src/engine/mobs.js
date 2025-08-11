@@ -345,39 +345,48 @@
       let topY=screenY; // track highest pixel for HP bar positioning
       function hpTop(y){ if(y<topY) topY=y; }
       const faceDir = m.facing>0?1:-1;
+      // Small per-entity phase for anim variety
+      const phase = (now*0.005 + m.spawnT*0.37) % (Math.PI*2);
+      const phase2 = (now*0.003 + m.spawnT*0.19) % (Math.PI*2);
       // Helper to draw outline rectangle
       function box(x,y,w,h,fill,stroke){ ctx.fillStyle=fill; ctx.fillRect(x,y,w,h); if(stroke){ ctx.strokeStyle=stroke; ctx.lineWidth=1; ctx.strokeRect(x+0.5,y+0.5,w-1,h-1);} hpTop(y); }
+      function shade(x,y,w,h,col,alpha){ ctx.fillStyle=col; ctx.globalAlpha=alpha; ctx.fillRect(x,y,w,h); ctx.globalAlpha=1; }
+      function variant(num,a,b){ // simple variant color shift
+        const t = ((m.spawnT>>>num)&7)/7; const ca=parseInt(a.slice(1),16), cb=parseInt(b.slice(1),16); const r=((ca>>16)&255)+(((cb>>16)&255)-((ca>>16)&255))*t; const g=((ca>>8)&255)+(((cb>>8)&255)-((ca>>8)&255))*t; const b2=(ca&255)+((cb&255)-(ca&255))*t; return '#'+((r|0).toString(16).padStart(2,'0'))+((g|0).toString(16).padStart(2,'0'))+((b2|0).toString(16).padStart(2,'0')); }
       switch(m.id){
         case 'BIRD': { // enlarged with wings + beak + eye
-          const bodyCol = flashing? '#ffffff' : '#ffe07a';
-          box(screenX-5, screenY-7,10,8, bodyCol,'#d49600'); // body
-          // wing (simple darker stripe)
-          ctx.fillStyle='#f3c552'; ctx.fillRect(screenX-5, screenY-3,10,2);
-          // tail
-          ctx.fillStyle='#d49600'; ctx.fillRect(screenX+(faceDir>0?3:-5), screenY-5,2,3);
+          const flap = Math.sin(phase)*2; // wing flap
+          const bodyCol = flashing? '#ffffff' : variant(1,'#f5d16a','#ffe07a');
+          box(screenX-5, screenY-7,10,8, bodyCol,'#bc8a00'); // body
+          // wings (two rectangles that move vertically)
+          ctx.fillStyle='#f3c552'; ctx.fillRect(screenX-7, screenY-5+flap,4,6); ctx.fillRect(screenX+3, screenY-5-flap,4,6);
+          // tail (fan)
+          ctx.fillStyle='#d49600'; ctx.fillRect(screenX+(faceDir>0?3:-5), screenY-4,2,3);
           // head & beak
           ctx.fillStyle=bodyCol; ctx.fillRect(screenX+(faceDir>0?2:-4), screenY-8,4,4); hpTop(screenY-8);
           ctx.fillStyle='#ff9b00'; ctx.fillRect(screenX+(faceDir>0?6:-6), screenY-6,3,2);
           ctx.fillStyle='#222'; ctx.fillRect(screenX+(faceDir>0?4:-4), screenY-7,2,2);
           break; }
         case 'FISH': { // add dorsal/ventral fins + tail pattern
-          const body = flashing? '#bcecff' : '#5bc0ff';
-          box(screenX-7, screenY-4,14,8, body,'#1d6b9c');
-            ctx.fillStyle='#1d6b9c'; ctx.fillRect(screenX-3, screenY-4,6,1); // dorsal ridge
-            ctx.fillRect(screenX-3, screenY+3,6,1); // ventral
-          // tail
-          ctx.fillStyle='#1d6b9c'; ctx.fillRect(screenX+(faceDir>0?7:-9), screenY-3,2,6);
+          const wag = Math.sin(phase)*2*faceDir;
+          const body = flashing? '#bcecff' : variant(2,'#4eb2f1','#63c6ff');
+          box(screenX-9, screenY-4,18,8, body,'#1d6b9c');
+          ctx.fillStyle='#1d6b9c'; ctx.fillRect(screenX-4, screenY-5,8,1); // dorsal ridge
+          ctx.fillRect(screenX-4, screenY+4,8,1); // ventral
+          // tail (wag)
+          ctx.fillStyle='#1d6b9c'; ctx.save(); ctx.translate(wag,0); ctx.fillRect(screenX+(faceDir>0?9:-11), screenY-3,3,6); ctx.restore();
           // eye & gill
           ctx.fillStyle='#fff'; ctx.fillRect(screenX+(faceDir>0?1:-3), screenY-2,2,2); ctx.fillStyle='#000'; ctx.fillRect(screenX+(faceDir>0?1:-3), screenY-2,1,1);
           ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fillRect(screenX+(faceDir>0?-1:1), screenY-1,1,2); // gill slit
           break; }
         case 'BEAR': { // large hulking (approx 2x1.2 tiles)
-          const body = flashing? '#e8d5c0':'#6b4a30';
+          const body = flashing? '#e8d5c0': variant(3,'#6b4a30','#7d573b');
+          const breathe = 1 + Math.sin(phase2)*0.1;
           box(screenX-14, screenY-12,28,14, body,'#3e2918'); // torso
-          // back + shading
-          ctx.fillStyle='rgba(0,0,0,0.15)'; ctx.fillRect(screenX-14, screenY+0,28,2);
+          // back shading gradient bars
+          shade(screenX-14, screenY+1,28,3,'#000',0.10); shade(screenX-14, screenY+4,28,2,'#000',0.05);
           // head
-          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?5:-11), screenY-16,12,10); hpTop(screenY-16);
+          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?5:-11), screenY-16,12,10*breathe); hpTop(screenY-16);
           // snout
           ctx.fillStyle='#c4ad97'; ctx.fillRect(screenX+(faceDir>0?14:-11), screenY-10,4,4);
           ctx.fillStyle='#000'; ctx.fillRect(screenX+(faceDir>0?16:-11), screenY-9,2,2);
@@ -393,9 +402,12 @@
           ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?2:-6), screenY-10,6,5); hpTop(screenY-10);
           // ear
           ctx.fillStyle='#d19050'; ctx.fillRect(screenX+(faceDir>0?3:-5), screenY-11,2,2);
-          // tail (arched)
+          // tail (arched sway)
+          const sway = Math.sin(phase)*2;
+          ctx.save(); ctx.translate(-sway*faceDir,0);
           ctx.fillStyle='#d19050'; ctx.fillRect(screenX-(faceDir>0?10:-2), screenY-14,6,12);
           ctx.fillRect(screenX-(faceDir>0?8:0), screenY-14,4,4);
+          ctx.restore();
           break; }
         case 'DEER': {
           const body = flashing? '#fff2e0':'#9c6a39';
@@ -408,17 +420,22 @@
           // antlers
           ctx.fillStyle='#ccb28a'; const ax=screenX+(faceDir>0?9:-5); const baseY=screenY-13; ctx.fillRect(ax, baseY-5,2,5); ctx.fillRect(ax+4*faceDir, baseY-4,2,5);
           ctx.fillRect(ax+2*faceDir, baseY-8,2,3); ctx.fillRect(ax+6*faceDir, baseY-7,2,3);
+          // spots
+          ctx.fillStyle='rgba(255,255,255,0.6)'; for(let i=-6;i<=6;i+=4){ ctx.fillRect(screenX+i, screenY-2,2,2); }
           break; }
         case 'WOLF': {
-          const body = flashing? '#f5f5f5':'#bcbcbc';
-          box(screenX-12, screenY-7,24,9, body,'#666');
+          const body = flashing? '#f5f5f5': variant(4,'#bcbcbc','#d6d6d6');
+          box(screenX-12, screenY-7,24,9, body,'#555');
           // head + ears
           ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?8:-14), screenY-11,10,8); hpTop(screenY-11);
           ctx.fillStyle='#888'; ctx.fillRect(screenX+(faceDir>0?8:-14), screenY-11,3,3); ctx.fillRect(screenX+(faceDir>0?15:-7), screenY-11,3,3);
           // snout
           ctx.fillStyle='#ddd'; ctx.fillRect(screenX+(faceDir>0?16:-10), screenY-7,4,3); ctx.fillStyle='#222'; ctx.fillRect(screenX+(faceDir>0?18:-10), screenY-6,2,2);
           // tail
-          ctx.fillStyle='#ddd'; ctx.fillRect(screenX-(faceDir>0?16:-0), screenY-5,6,3);
+          const wag = Math.sin(phase*1.5)*2;
+          ctx.save(); ctx.translate(wag*faceDir,0); ctx.fillStyle='#ddd'; ctx.fillRect(screenX-(faceDir>0?16:-0), screenY-5,6,3); ctx.restore();
+          // darker back stripe
+          shade(screenX-12, screenY-6,24,2,'#000',0.15);
           break; }
         case 'RABBIT': {
           const body = flashing? '#ffffff':'#dddddd';
@@ -426,7 +443,8 @@
           // head
           ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?4:-6), screenY-7,6,5); hpTop(screenY-7);
           // ears
-          ctx.fillStyle='#bbb'; ctx.fillRect(screenX+(faceDir>0?5:-5), screenY-11,2,6); ctx.fillRect(screenX+(faceDir>0?8:-2), screenY-11,2,6);
+          const earBob = Math.sin(phase2)*1.2;
+          ctx.fillStyle='#bbb'; ctx.fillRect(screenX+(faceDir>0?5:-5), screenY-11-earBob,2,6+earBob); ctx.fillRect(screenX+(faceDir>0?8:-2), screenY-11+earBob,2,6-earBob);
           break; }
         case 'OWL': {
           const body = flashing? '#ffffff':'#c8a860';
@@ -437,6 +455,8 @@
           ctx.fillStyle='#000'; ctx.fillRect(screenX-2, screenY-7,2,2); ctx.fillRect(screenX+0, screenY-7,2,2);
           // beak
           ctx.fillStyle='#ffb94d'; ctx.fillRect(screenX-1, screenY-5,2,2);
+          // wing flutter
+          const f = Math.sin(phase)*2; ctx.fillStyle='#b99738'; ctx.fillRect(screenX-6, screenY-4+f,12,2);
           break; }
         case 'CRAB': {
           const body = flashing? '#ffdddd':'#c23a2e';
@@ -444,20 +464,25 @@
           // legs
           ctx.fillStyle='#8a1f17'; for(let i=-6;i<=6;i+=4){ ctx.fillRect(screenX+i, screenY+2,2,3); }
           // claws
-          ctx.fillStyle='#8a1f17'; ctx.fillRect(screenX-12, screenY-2,4,4); ctx.fillRect(screenX+8, screenY-2,4,4);
+          const pinch = Math.sin(phase)*1.5;
+          ctx.fillStyle='#8a1f17'; ctx.fillRect(screenX-12-pinch, screenY-2,4,4); ctx.fillRect(screenX+8+pinch, screenY-2,4,4);
           break; }
         case 'SHARK': {
-          const body = flashing? '#d0f4ff':'#507c94';
-          box(screenX-24, screenY-6,48,12, body,'#2a4a5a'); // long body (3 tiles)
+          const body = flashing? '#d0f4ff': variant(5,'#4d7690','#5c87a2');
+          const sway = Math.sin(phase*0.8)*3*faceDir;
+          ctx.save(); ctx.translate(sway,0);
+          box(screenX-24, screenY-6,48,12, body,'#223b48'); // body
+          // white belly stripe
+          ctx.fillStyle='#e9f6fa'; ctx.fillRect(screenX-24, screenY+2,48,4);
           // dorsal fin
           ctx.fillStyle='#2a4a5a'; ctx.fillRect(screenX-4, screenY-12,6,6); hpTop(screenY-12);
-          // tail (fork)
+          // tail
           ctx.fillRect(screenX+(faceDir>0?24:-30), screenY-4,6,8);
           ctx.fillRect(screenX+(faceDir>0?28:-34), screenY-8,4,6);
           ctx.fillRect(screenX+(faceDir>0?28:-34), screenY+2,4,6);
           // mouth & eye
-          ctx.fillStyle='#000'; ctx.fillRect(screenX+(faceDir>0?18:-22), screenY-1,6,2);
-          ctx.fillRect(screenX+(faceDir>0?12:-16), screenY-2,2,2);
+          ctx.fillStyle='#000'; ctx.fillRect(screenX+(faceDir>0?18:-22), screenY-1,6,2); ctx.fillRect(screenX+(faceDir>0?12:-16), screenY-2,2,2);
+          ctx.restore();
           break; }
         case 'EEL': {
           const body = flashing? '#e0ffe0':'#2f8a4a';
@@ -481,6 +506,8 @@
           const glowA = 0.55+0.45*pulse;
           ctx.fillStyle=`rgba(255,224,102,${glowA})`; ctx.fillRect(screenX-2, screenY-2,4,4); hpTop(screenY-2);
           ctx.fillStyle=`rgba(255,213,0,${0.4+0.4*pulse})`; ctx.fillRect(screenX-1, screenY-1,2,2);
+          // outer halo
+          ctx.globalAlpha=0.25*glowA; ctx.fillStyle='#ffe068'; ctx.beginPath(); ctx.arc(screenX, screenY, 6,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1;
           break; }
         default: {
           // fallback: small box
