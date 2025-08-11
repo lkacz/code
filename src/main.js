@@ -22,46 +22,10 @@ const SKY_PALETTES={
 	1:{ dayTop:'#4b8fdc', dayBot:'#c2ddf5', duskTop:'#ff7a3a', duskBot:'#ffc68a', nightTop:'#081627', nightBot:'#0b1d30', mount:['#557094','#465d78','#334556'] },
 	2:{ dayTop:'#3b6fae', dayBot:'#b4d3ec', duskTop:'#ff6c36', duskBot:'#ffb778', nightTop:'#071320', nightBot:'#0a1928', mount:['#4a5f73','#3c4d5d','#2c3843'] }
 };
-// Stars + cube clouds (two star layers, two cloud layers)
+// Stars only (cloud system removed per request)
 const STAR_COUNT=140; const starsFar=[], starsNear=[]; function initStars(){ for(let i=0;i<STAR_COUNT;i++){ starsFar.push({x:Math.random(), y:Math.random(), r:Math.random()*1.0+0.25, a:Math.random()*0.5+0.35}); } for(let i=0;i<STAR_COUNT*0.55;i++){ starsNear.push({x:Math.random(), y:Math.random(), r:Math.random()*1.6+0.5, a:Math.random()*0.6+0.4}); } }
 initStars();
-
-// --- Cube Cloud System ---
-// Each cloud is pre‑rendered into an offscreen canvas composed of square "voxels" with subtle shading.
-// Layers: 0 (far) slower & higher, 1 (near) faster & slightly lower.
-const clouds=[]; const CLOUD_LAYERS=2; const MAX_CLOUDS_PER_LAYER=6; const CLOUD_CELL=34; // base cell size in offscreen
-function buildCloudPattern(){ const cols = 5 + Math.floor(Math.random()*8); const maxH = 2 + Math.floor(Math.random()*2); const heights=[]; for(let i=0;i<cols;i++){ // Smooth-ish heights using neighbor influence
-	const prev=heights[i-1]|| (1+Math.floor(Math.random()*maxH));
-	const delta = (Math.random()<0.5?0: (Math.random()<0.5?1:-1));
-	let h = prev + delta; if(h<1) h=1; if(h>maxH+1) h=maxH+1; heights.push(h);
- }
- return heights; }
-function prerenderCloud(pattern){ const cols=pattern.length; const rows=Math.max(...pattern); const c=document.createElement('canvas'); c.width=cols*CLOUD_CELL; c.height=(rows+1)*CLOUD_CELL; const g=c.getContext('2d'); g.imageSmoothingEnabled=false; const lightDir={x:-0.6,y:0.9}; // simple shading
- for(let x=0;x<cols;x++){
-	const h=pattern[x];
-	for(let y=0;y<h;y++){
-		const gx=x*CLOUD_CELL, gy=(rows - y)*CLOUD_CELL; // draw from bottom
-		// base cube body
-		const shade=0.92 - y*0.04 - Math.random()*0.03; const baseCol='hsl(0 0% '+(shade*100).toFixed(1)+'%)';
-		g.fillStyle=baseCol; g.fillRect(gx,gy,CLOUD_CELL,CLOUD_CELL);
-		// outline / separation lines (soft)
-		g.fillStyle='rgba(255,255,255,0.18)'; g.fillRect(gx,gy,CLOUD_CELL,2);
-		g.fillStyle='rgba(0,0,0,0.08)'; g.fillRect(gx,gy+CLOUD_CELL-2,CLOUD_CELL,2);
-		g.fillStyle='rgba(0,0,0,0.06)'; g.fillRect(gx+CLOUD_CELL-2,gy,2,CLOUD_CELL);
-		// subtle inner light gradient
-		const grad=g.createLinearGradient(gx,gy,gx,gy+CLOUD_CELL);
-		grad.addColorStop(0,'rgba(255,255,255,0.25)'); grad.addColorStop(1,'rgba(255,255,255,0)');
-		g.fillStyle=grad; g.fillRect(gx+1,gy+1,CLOUD_CELL-2,CLOUD_CELL-2);
-	}
- }
- return {canvas:c,w:c.width,h:c.height}; }
-function spawnCloud(layer){ const pattern=buildCloudPattern(); const rend=prerenderCloud(pattern); const speedBase = layer===0? 0.0035:0.006; const speedVar= layer===0?0.0015:0.0025; const yBase= layer===0? 0.14:0.22; const yVar= layer===0?0.08:0.10; clouds.push({layer,x:1+Math.random()*0.4,y:yBase+Math.random()*yVar,speed:speedBase+Math.random()*speedVar,pattern,asset:rend,scale: (layer===0? 0.45:0.6) + Math.random()*0.4}); }
-function ensureClouds(){ for(let layer=0; layer<CLOUD_LAYERS; layer++){ const count=clouds.filter(c=>c.layer===layer).length; for(let i=count;i<MAX_CLOUDS_PER_LAYER;i++) spawnCloud(layer); } }
-ensureClouds();
-function updateClouds(dt){ const speedScale = DAY_DURATION/60000; for(let i=clouds.length-1;i>=0;i--){ const c=clouds[i]; c.x -= c.speed*dt*speedScale; if(c.x < -1 - (c.asset.w/W)){ // off screen
-		clouds.splice(i,1); spawnCloud(c.layer);
-	} }
-}
+function updateClouds(){ /* no-op */ }
 // Mountain layer cache per biome/layer
 const mountainCache=new Map();
 function getMountainLayer(biome,layer){ const key=biome+'_'+layer; if(mountainCache.has(key)) return mountainCache.get(key); const pal=SKY_PALETTES[biome]||SKY_PALETTES[0]; const col=pal.mount[Math.min(layer,pal.mount.length-1)]; const c=document.createElement('canvas'); c.width=1600; c.height=300; const g=c.getContext('2d'); g.fillStyle=col; const peaks=12; const hBase= c.height*(0.25+0.18*layer); const amp= 80 + layer*40; g.beginPath(); g.moveTo(0,c.height); for(let i=0;i<=peaks;i++){ const x=i/peaks*c.width; const y=hBase - Math.sin(i*1.3 + biome*0.8)*(amp*0.35) - Math.random()*amp*0.2; g.lineTo(x,y); } g.lineTo(c.width,c.height); g.closePath(); g.fill(); mountainCache.set(key,c); return c; }
@@ -173,31 +137,7 @@ function drawBackground(){
 			ctx.beginPath(); const off2 = (cut+0.15)*mr*1.2; ctx.ellipse(mcx-off2,mcy,mr*0.75,mr*0.95,0,0,Math.PI*2); ctx.fill(); }
 	}
 	ctx.restore();
-	// Cube Clouds (production style). Draw between celestial bodies and mountains for parallax depth.
-	const cloudVis = isDay? 1 : (tDay<twilightBand? (tDay/twilightBand) : ( (tDay>1-twilightBand)? ((1-tDay)/twilightBand) : 0));
-	if(cloudVis>0.01){
-		ctx.save();
-		// Time-of-day tint (warm near sunrise/sunset, cool at night)
-		let tint='rgba(255,255,255,1)';
-		if(!isDay){ tint='rgba(215,225,255,0.85)'; }
-		else if(tDay<twilightBand){ const k=tDay/twilightBand; tint='rgba('+(220+35*k|0)+','+(220-20*k|0)+','+(220-60*k|0)+',1)'; }
-		else if(tDay>1-twilightBand){ const k=(tDay-(1-twilightBand))/twilightBand; tint='rgba('+(255|0)+','+(230-40*k|0)+','+(190-90*k|0)+',1)'; }
-		const parsed=/rgba\((\d+),(\d+),(\d+),(\d+(?:\.\d+)?)\)/.exec(tint); let tr=255,tg=255,tb=255,ta=1; if(parsed){ tr=+parsed[1]; tg=+parsed[2]; tb=+parsed[3]; ta=+parsed[4]; }
-		// Draw per layer (far first)
-		clouds.sort((a,b)=>a.layer-b.layer);
-		for(const c of clouds){ const p = (c.layer===0?0.35:0.55); const parallaxOffset = -player.x*TILE* (0.02 + c.layer*0.025); const baseX = c.x*W + parallaxOffset; const baseY = c.y*H * p + H*0.05; const sc = c.scale; const w = c.asset.w*sc; const h = c.asset.h*sc; if(baseX + w < -50 || baseX > W+50) continue; ctx.globalAlpha = cloudVis * (c.layer===0?0.55:0.78) * (ta); // base alpha
-			// Apply tint via composite layering
-			ctx.drawImage(c.asset.canvas, baseX, baseY, w, h);
-			ctx.globalCompositeOperation='source-atop'; ctx.fillStyle='rgba('+tr+','+tg+','+tb+','+ (0.22 + (c.layer===0?0.05:0.12)) +')'; ctx.fillRect(baseX, baseY, w, h);
-			ctx.globalCompositeOperation='lighter'; // soft glow top edge
-			ctx.fillStyle='rgba(255,255,255,'+(c.layer===0?0.05:0.08)+')'; ctx.fillRect(baseX, baseY, w, h*0.35);
-			ctx.globalCompositeOperation='source-over';
-			// Ambient occlusion pseudo shadow below
-			const shH = h*0.18; const grad=ctx.createLinearGradient(baseX, baseY+h, baseX, baseY+h+shH);
-			grad.addColorStop(0,'rgba(0,0,0,'+(c.layer===0?0.10:0.14)+')'); grad.addColorStop(1,'rgba(0,0,0,0)'); ctx.fillStyle=grad; ctx.fillRect(baseX, baseY+h, w, shH);
-		}
-		ctx.restore();
-	}
+	// Clouds removed – intentionally vacant gap for potential future atmospheric layers
 	// Mountains (parallax) – if crossfading between two biomes draw both silhouette sets weighted
 	const baseY=H*0.60; const heightAdjust=-H*0.12; ctx.save(); for(let layer=0; layer<3; layer++){ const par=0.12 + layer*0.10; const y=baseY + layer*90 + heightAdjust; const alphaBase=0.85 - layer*0.22; ctx.save(); const scrollA = -((player.x*TILE)*par) % 1600; // use cache width
 		const imgA=getMountainLayer(blend.a,layer); ctx.globalAlpha=alphaBase * (blend.t>0? (1-blend.t):1); for(let k=-1;k<=1;k++){ ctx.drawImage(imgA, scrollA + k*imgA.width, y); }
