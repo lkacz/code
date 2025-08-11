@@ -56,7 +56,13 @@
   const grid=document.getElementById('custGrid');
   const previewCanvas=document.getElementById('custPreview');
   const selInfo=document.getElementById('custSelInfo');
-  if(!openBtn||!overlay||!closeBtn||!tabsEl||!grid||!previewCanvas) return; // fail safe
+  if(!openBtn||!overlay||!closeBtn||!tabsEl||!grid||!previewCanvas){
+    // Defer until DOM fully parsed (in case script loads before injected markup)
+    if(document.readyState!=='complete' && document.readyState!=='interactive'){
+      document.addEventListener('DOMContentLoaded',()=>{ if(!window.MM.__custRetry){ window.MM.__custRetry=true; const s=document.createElement('script'); s.src='src/customization.js?retry'; document.head.appendChild(s); } });
+    }
+    return;
+  }
   const pctx=previewCanvas.getContext('2d');
 
   const categories=[
