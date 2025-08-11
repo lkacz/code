@@ -58,13 +58,16 @@ function setTile(x,y,v){ WORLD.setTile(x,y,v); }
 const player={x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,facing:1,tool:'basic'};
 // Global customization state (persist later) – 5 options each (cape, eyes, outfit)
 window.MM = window.MM || {};
-MM.customization = MM.customization || {
-	capeStyle:'classic', // classic, triangle, royal, tattered, winged
-	capeColor:'#b91818', // can extend palette
-	eyeStyle:'bright',   // bright, narrow, glow, sleepy, curious
-	outfitStyle:'default', // default, miner, mystic, ranger, arcane
-	outfitColor:'#f4c05a'
-};
+const CUST_KEY='mm_simplecust_v1';
+const DEFAULT_CUST={ capeStyle:'classic', capeColor:'#b91818', eyeStyle:'bright', outfitStyle:'default', outfitColor:'#f4c05a' };
+function loadCustomization(){ try{ const raw=localStorage.getItem(CUST_KEY); if(raw){ const data=JSON.parse(raw); MM.customization=Object.assign({},DEFAULT_CUST,data); } else { MM.customization=Object.assign({},DEFAULT_CUST); } }catch(e){ MM.customization=Object.assign({},DEFAULT_CUST); } }
+function saveCustomization(){ try{ localStorage.setItem(CUST_KEY, JSON.stringify(MM.customization)); }catch(e){} }
+loadCustomization();
+// Init select UI once DOM is ready (script at end so elements exist)
+(function initSimpleCust(){ const capeSel=document.getElementById('selCapeStyle'); const eyeSel=document.getElementById('selEyeStyle'); const outfitSel=document.getElementById('selOutfitStyle'); if(!capeSel||!eyeSel||!outfitSel) return; capeSel.value=MM.customization.capeStyle; eyeSel.value=MM.customization.eyeStyle; outfitSel.value=MM.customization.outfitStyle; function upd(){ saveCustomization(); }
+	capeSel.addEventListener('change',()=>{ MM.customization.capeStyle=capeSel.value; upd(); });
+	eyeSel.addEventListener('change',()=>{ MM.customization.eyeStyle=eyeSel.value; upd(); });
+	outfitSel.addEventListener('change',()=>{ MM.customization.outfitStyle=outfitSel.value; upd(); });})();
 const tools={basic:1,stone:2,diamond:4};
 // Inventory counts for placeable tiles
 const inv={grass:0,sand:0,stone:0,diamond:0,wood:0,leaf:0,snow:0,water:0,tools:{stone:false,diamond:false}};
@@ -87,7 +90,22 @@ const CAPE_ANCHOR_FRAC=MM.CAPE.ANCHOR_FRAC; // 0 = top of body, 1 = bottom. Midd
 function initScarf(){ CAPE.init(player); }
 function updateCape(dt){ CAPE.update(player,dt,getTile,isSolid); }
 function drawCape(){ CAPE.draw(ctx,TILE); }
-function drawPlayer(){ drawCape(); const bodyX=(player.x-player.w/2)*TILE; const bodyY=(player.y-player.h/2)*TILE; const bw=player.w*TILE, bh=player.h*TILE; ctx.fillStyle='#f4c05a'; ctx.fillRect(bodyX,bodyY,bw,bh); ctx.strokeStyle='#4b3212'; ctx.lineWidth=2; ctx.strokeRect(bodyX,bodyY,bw,bh); const eyeW=6, eyeHOpen=6; let eyeH=eyeHOpen; if(blinking){ const p=(performance.now()-blinkStart)/BLINK_DUR; const tri=p<0.5? (p*2) : (1-(p-0.5)*2); eyeH = Math.max(1, eyeHOpen * (1-tri)); } const eyeY=bodyY + bh*0.35; const eyeOffsetX=bw*0.18; const pupilW=2; const pupilShift=player.facing*1.5; function eye(cx){ ctx.fillStyle='#fff'; ctx.fillRect(cx-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); if(eyeH>2){ ctx.fillStyle='#111'; ctx.fillRect(cx - pupilW/2 + pupilShift, eyeY - Math.min(eyeH/2-1,2), pupilW, Math.min(eyeH-2,4)); } } eye(bodyX+bw/2-eyeOffsetX); eye(bodyX+bw/2+eyeOffsetX); ctx.fillStyle='rgba(0,0,0,0.25)'; const shw=bw*0.6; ctx.beginPath(); ctx.ellipse(player.x*TILE, (player.y+player.h/2)*TILE+2, shw/2, 4,0,0,Math.PI*2); ctx.fill(); }
+function drawPlayer(){ drawCape(); const c=MM.customization||DEFAULT_CUST; const bodyX=(player.x-player.w/2)*TILE; const bodyY=(player.y-player.h/2)*TILE; const bw=player.w*TILE, bh=player.h*TILE; // body base color by outfit
+	if(c.outfitStyle==='default') ctx.fillStyle=c.outfitColor||'#f4c05a';
+	else if(c.outfitStyle==='miner') ctx.fillStyle='#c89b50';
+	else if(c.outfitStyle==='mystic') ctx.fillStyle='#6b42c7';
+	else ctx.fillStyle='#f4c05a';
+	ctx.fillRect(bodyX,bodyY,bw,bh);
+	if(c.outfitStyle==='miner'){ ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fillRect(bodyX,bodyY+bh*0.55,bw,bh*0.12); }
+	if(c.outfitStyle==='mystic'){ ctx.fillStyle='rgba(255,255,255,0.18)'; ctx.fillRect(bodyX,bodyY+bh*0.15,bw,bh*0.15); }
+	ctx.strokeStyle='#4b3212'; ctx.lineWidth=2; ctx.strokeRect(bodyX,bodyY,bw,bh);
+	const eyeW=6, eyeHOpen=6; let eyeH=eyeHOpen; if(blinking && c.eyeStyle!=='glow'){ const p=(performance.now()-blinkStart)/BLINK_DUR; const tri=p<0.5? (p*2) : (1-(p-0.5)*2); eyeH = Math.max(1, eyeHOpen * (1-tri)); }
+	const eyeY=bodyY + bh*0.35; const eyeOffsetX=bw*0.18; const pupilW=2; const pupilShift=player.facing*1.5;
+	function eye(cx){ if(c.eyeStyle==='glow'){ ctx.fillStyle='rgba(255,255,255,0.08)'; ctx.fillRect(cx-eyeW/2-2, eyeY-eyeHOpen/2-2, eyeW+4, eyeHOpen+4); ctx.fillStyle='#8bf9ff'; ctx.fillRect(cx-eyeW/2, eyeY-eyeHOpen/2, eyeW, eyeHOpen); }
+		else if(c.eyeStyle==='sleepy'){ const h=Math.max(2, eyeHOpen-3); ctx.fillStyle='#fff'; ctx.fillRect(cx-eyeW/2, eyeY-h/2, eyeW, h); if(h>2){ ctx.fillStyle='#111'; ctx.fillRect(cx - pupilW/2 + pupilShift, eyeY - Math.min(h/2-1,2), pupilW, Math.min(h-2,4)); } }
+		else { ctx.fillStyle='#fff'; ctx.fillRect(cx-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); if(eyeH>2){ ctx.fillStyle='#111'; ctx.fillRect(cx - pupilW/2 + pupilShift, eyeY - Math.min(eyeH/2-1,2), pupilW, Math.min(eyeH-2,4)); } } }
+	eye(bodyX+bw/2-eyeOffsetX); eye(bodyX+bw/2+eyeOffsetX);
+	ctx.fillStyle='rgba(0,0,0,0.25)'; const shw=bw*0.6; ctx.beginPath(); ctx.ellipse(player.x*TILE, (player.y+player.h/2)*TILE+2, shw/2, 4,0,0,Math.PI*2); ctx.fill(); }
 
 // Chunk render cache (offscreen canvas per chunk)
 const chunkCanvases = new Map(); // key: chunkX -> {canvas,ctx,version}

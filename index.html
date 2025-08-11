@@ -89,6 +89,31 @@
             <input id="grassHeight" type="range" min="0" max="2" step="0.01" value="1" style="width:100%;" />
             <div class="hint">Mnożnik wysokości pojedynczych źdźbeł.</div>
           </div>
+          <div class="group" style="flex-direction:column; align-items:stretch; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;">
+            <label style="font-size:12px; font-weight:600;">Styl postaci</label>
+            <label style="font-size:11px; display:flex; flex-direction:column; gap:2px;">Peleryna
+              <select id="selCapeStyle" style="background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:6px; padding:4px 6px; font-size:12px;">
+                <option value="classic">klasyczna</option>
+                <option value="triangle">trójkątna</option>
+                <option value="royal">królewska</option>
+              </select>
+            </label>
+            <label style="font-size:11px; display:flex; flex-direction:column; gap:2px;">Oczy
+              <select id="selEyeStyle" style="background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:6px; padding:4px 6px; font-size:12px;">
+                <option value="bright">jasne</option>
+                <option value="glow">świetliste</option>
+                <option value="sleepy">śpiące</option>
+              </select>
+            </label>
+            <label style="font-size:11px; display:flex; flex-direction:column; gap:2px;">Strój
+              <select id="selOutfitStyle" style="background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:6px; padding:4px 6px; font-size:12px;">
+                <option value="default">podstawowy</option>
+                <option value="miner">górnik</option>
+                <option value="mystic">mistyk</option>
+              </select>
+            </label>
+            <div class="hint">3 proste warianty każdego elementu. Zapis w pamięci przeglądarki.</div>
+          </div>
         </div>
       </div>
     </div>
