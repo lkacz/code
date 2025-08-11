@@ -47,28 +47,24 @@ function skyGradientColors(biome,cycleT){ const pal=SKY_PALETTES[biome]||SKY_PAL
 		// small dusk warm at start and pre-dawn warm at end handled in day branch so here keep night gradient w/ subtle breathing
 		const breathe = 0.04*Math.sin(t*Math.PI*2*2); return {top:pal.nightTop, bottom:pal.nightBot, breathe}; }
 }
-function drawBackground(){ const now=performance.now(); const cycleT=((now-cycleStart)%CYCLE_DURATION)/CYCLE_DURATION; const biome = WORLDGEN.biomeType? WORLDGEN.biomeType(Math.floor(player.x)) : 0; const cols=skyGradientColors(biome,cycleT); const grd=ctx.createLinearGradient(0,0,0,H); grd.addColorStop(0,cols.top); grd.addColorStop(1,cols.bottom); ctx.fillStyle=grd; ctx.fillRect(0,0,W,H);
-	// Sun & Moon
-	const dayFrac=DAY_DURATION/CYCLE_DURATION; const isDay=cycleT<dayFrac; const tDay=isDay? (cycleT/dayFrac) : ((cycleT-dayFrac)/(1-dayFrac));
-	const skyArc=Math.PI; // 180° arc
-	// Sun path over day, moon path over night opposite side
-	function drawBody(frac,radius,color,glowCol){ const ang=lerp(Math.PI*1.05, Math.PI*-0.05, frac); const cx=W*0.5 + Math.cos(ang)*W*0.45; const cy=H*0.82 + Math.sin(ang)*H*0.65; const grd2=ctx.createRadialGradient(cx,cy,radius*0.2,cx,cy,radius); grd2.addColorStop(0,glowCol); grd2.addColorStop(1,'rgba(0,0,0,0)'); ctx.fillStyle=grd2; ctx.beginPath(); ctx.arc(cx,cy,radius,0,Math.PI*2); ctx.fill(); ctx.fillStyle=color; ctx.beginPath(); ctx.arc(cx,cy,radius*0.55,0,Math.PI*2); ctx.fill(); }
-	const twilightBand=0.12; // same as gradient
-	const dayCore = isDay && tDay>=twilightBand && tDay<=1-twilightBand;
-	if(isDay){ const sunGlow=dayCore? 'rgba(255,255,255,0.55)':'rgba(255,180,120,0.55)'; drawBody(tDay, 140, '#fff8d2', sunGlow); }
-	// Moon: show always but fade during day for subtle realism
-	const moonFrac = (cycleT+0.5)%1; // shifted
-	const moonPhase = (Math.sin(now*0.00002) + 1)/2; // slow subtle change (placeholder cycle)
-	const moonAlpha = isDay? 0.08 : 0.85; // fade day
-	// Use same path but with offset
-	const mAng=lerp(Math.PI*1.15, Math.PI*-0.15, moonFrac); const mcx=W*0.5 + Math.cos(mAng)*W*0.48; const mcy=H*0.88 + Math.sin(mAng)*H*0.68; const mr=70; ctx.save(); ctx.globalAlpha=moonAlpha; ctx.fillStyle='rgba(255,255,255,0.6)'; ctx.beginPath(); ctx.arc(mcx,mcy,mr,0,Math.PI*2); ctx.fill(); // phase mask
-	ctx.globalCompositeOperation='destination-out'; ctx.beginPath(); const phaseOffset=(moonPhase-0.5)*mr*1.6; ctx.ellipse(mcx+phaseOffset,mcy,mr*0.9, mr*1.05,0,0,Math.PI*2); ctx.fill(); ctx.restore();
-	// Stars (fade with day)
-	const starAlpha = isDay? Math.max(0,1 - (tDay/twilightBand))*(tDay<twilightBand?1:0) : 1; if(starAlpha>0){ ctx.save(); ctx.globalAlpha=0.85*starAlpha; ctx.fillStyle='#ffffff'; stars.forEach(s=>{ const x=s.x*W; const y=s.y*H*0.6; ctx.globalAlpha = starAlpha * (0.3+0.7*Math.sin(now*0.001 + s.x*20 + s.y*40)*0.5 + s.a*0.5); ctx.fillRect(x,y,s.r,s.r); }); ctx.restore(); }
-	// Clouds (day + twilight)
-	const cloudVis = isDay? 1 : (tDay<twilightBand? (tDay/twilightBand) : ( (tDay>1-twilightBand)? ((1-tDay)/twilightBand) : 0)); if(cloudVis>0){ ctx.save(); ctx.globalAlpha=cloudVis*0.85; clouds.forEach(c=>{ const cx=(c.x*W); const cy=c.y*H*0.6; ctx.fillStyle='rgba(255,255,255,0.9)'; c.pts.forEach(p=>{ ctx.beginPath(); ctx.ellipse(cx + (p.x-0.5)*c.scale*240, cy + Math.sin((p.x+performance.now()*0.0001))*c.scale*14, p.r*c.scale*90, p.r*c.scale*58, 0,0,Math.PI*2); ctx.fill(); }); }); ctx.restore(); }
-	// Mountains parallax layers (draw far to near)
-	const baseY=H*0.72; for(let layer=0; layer<3; layer++){ const img=getMountainLayer(biome,layer); const par=0.15 + layer*0.12; const y=baseY + layer*70; const scroll = -((player.x*TILE)*par) % img.width; ctx.globalAlpha=0.65 - layer*0.15; for(let k=-1;k<=1;k++){ ctx.drawImage(img, scroll + k*img.width, y); } }
+function drawBackground(){
+	const now=performance.now(); const cycleT=((now-cycleStart)%CYCLE_DURATION)/CYCLE_DURATION; const biome = WORLDGEN.biomeType? WORLDGEN.biomeType(Math.floor(player.x)) : 0; const cols=skyGradientColors(biome,cycleT);
+	// Sky gradient (full opaque to avoid trail / ghosting)
+	ctx.save();
+	ctx.globalAlpha=1; const grd=ctx.createLinearGradient(0,0,0,H); grd.addColorStop(0,cols.top); grd.addColorStop(1,cols.bottom); ctx.fillStyle=grd; ctx.fillRect(0,0,W,H);
+	const dayFrac=DAY_DURATION/CYCLE_DURATION; const isDay=cycleT<dayFrac; const tDay=isDay? (cycleT/dayFrac) : ((cycleT-dayFrac)/(1-dayFrac)); const twilightBand=0.12;
+	// Stars first (placed behind sun/moon glow)
+	const starAlpha = isDay? (tDay<twilightBand? (1 - (tDay/twilightBand))*0.9 : (tDay>1-twilightBand? ((tDay-(1-twilightBand))/twilightBand)*0.9 : 0)) : 1; if(starAlpha>0.01){ ctx.save(); ctx.globalAlpha=starAlpha; ctx.fillStyle='#ffffff'; stars.forEach(s=>{ const x=s.x*W; const y=s.y*H*0.6; const tw=0.5+0.5*Math.sin(now*0.001 + s.x*20 + s.y*40); const a = Math.min(1, starAlpha*(0.35+0.65*tw)*s.a*1.4); ctx.globalAlpha=a; ctx.fillRect(x,y,s.r,s.r); }); ctx.restore(); }
+	// Sun
+	function drawBody(frac,radius,color,glowCol){ const ang=lerp(Math.PI*1.05, Math.PI*-0.05, frac); const cx=W*0.5 + Math.cos(ang)*W*0.45; const cy=H*0.82 + Math.sin(ang)*H*0.65; const grd2=ctx.createRadialGradient(cx,cy,radius*0.15,cx,cy,radius); grd2.addColorStop(0,glowCol); grd2.addColorStop(1,'rgba(0,0,0,0)'); ctx.fillStyle=grd2; ctx.beginPath(); ctx.arc(cx,cy,radius,0,Math.PI*2); ctx.fill(); ctx.fillStyle=color; ctx.beginPath(); ctx.arc(cx,cy,radius*0.55,0,Math.PI*2); ctx.fill(); }
+	const dayCore = isDay && tDay>=twilightBand && tDay<=1-twilightBand; if(isDay){ const sunGlow=dayCore? 'rgba(255,255,255,0.55)':'rgba(255,180,120,0.55)'; drawBody(tDay, 140, '#fff8d2', sunGlow); }
+	// Moon (separate save/restore so composite ops don't leak)
+	const moonFrac=(cycleT+0.5)%1; const moonPhase=(Math.sin(now*0.00002)+1)/2; const moonAlpha=isDay? 0.06:0.9; const mAng=lerp(Math.PI*1.15, Math.PI*-0.15, moonFrac); const mcx=W*0.5 + Math.cos(mAng)*W*0.48; const mcy=H*0.88 + Math.sin(mAng)*H*0.68; const mr=70; ctx.save(); ctx.globalAlpha=moonAlpha; ctx.fillStyle='rgba(255,255,255,0.6)'; ctx.beginPath(); ctx.arc(mcx,mcy,mr,0,Math.PI*2); ctx.fill(); ctx.globalCompositeOperation='destination-out'; ctx.beginPath(); const phaseOffset=(moonPhase-0.5)*mr*1.6; ctx.ellipse(mcx+phaseOffset,mcy,mr*0.9,mr*1.05,0,0,Math.PI*2); ctx.fill(); ctx.restore();
+	// Clouds (day and twilight). Ensure they sit above stars but below mountains silhouettes? stylistic: keep below mountains for depth => draw before mountains.
+	const cloudVis = isDay? 1 : (tDay<twilightBand? (tDay/twilightBand) : ( (tDay>1-twilightBand)? ((1-tDay)/twilightBand) : 0)); if(cloudVis>0.01){ ctx.save(); ctx.globalAlpha=cloudVis*0.85; clouds.forEach(c=>{ const cxp=c.x*W; const cyp=c.y*H*0.55; ctx.fillStyle='rgba(255,255,255,0.92)'; c.pts.forEach(p=>{ ctx.beginPath(); ctx.ellipse(cxp + (p.x-0.5)*c.scale*260, cyp + Math.sin((p.x+now*0.00012))*c.scale*16, p.r*c.scale*95, p.r*c.scale*60,0,0,Math.PI*2); ctx.fill(); }); }); ctx.restore(); }
+	// Mountains (parallax). Use save/restore and reset alpha each layer to avoid leaking to world.
+	const baseY=H*0.60; const heightAdjust=-H*0.12; ctx.save(); for(let layer=0; layer<3; layer++){ ctx.save(); const img=getMountainLayer(biome,layer); const par=0.12 + layer*0.10; const y=baseY + layer*90 + heightAdjust; const scroll = -((player.x*TILE)*par) % img.width; ctx.globalAlpha=0.85 - layer*0.22; for(let k=-1;k<=1;k++){ ctx.drawImage(img, scroll + k*img.width, y); } ctx.restore(); } ctx.restore();
+	ctx.restore(); // end background
 }
 let grassDensityScalar = 1; // user adjustable (exponential scaling)
 let grassHeightScalar = 1; // user adjustable linear multiplier
