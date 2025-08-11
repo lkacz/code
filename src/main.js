@@ -492,7 +492,20 @@ const particles=[]; const PARTICLE_CAP=800; function spawnBurst(x,y,tier){ const
 function updateParticles(dt){ for(let i=particles.length-1;i>=0;i--){ const p=particles[i]; p.life+=dt; p.x+=p.vx*dt*TILE; p.y+=p.vy*dt*TILE; p.vy+=8*dt; if(p.life>p.max) particles.splice(i,1); } if(particles.length>PARTICLE_CAP){ particles.splice(0, particles.length-PARTICLE_CAP); } }
 function drawParticles(){ particles.forEach(p=>{ const alpha = 1 - p.life/p.max; ctx.fillStyle = p.tier==='epic'? 'rgba(224,179,65,'+alpha+')' : (p.tier==='rare'? 'rgba(167,76,201,'+alpha+')' : 'rgba(176,127,44,'+alpha+')'); ctx.fillRect(p.x -2, p.y -2, 4,4); }); }
 let audioCtx=null; function playChestSound(tier){ try{ if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)(); const o=audioCtx.createOscillator(); const g=audioCtx.createGain(); o.type='triangle'; let base=tier==='epic'?660: tier==='rare'?520:420; o.frequency.setValueAtTime(base,audioCtx.currentTime); o.frequency.linearRampToValueAtTime(base+ (tier==='epic'?240: tier==='rare'?160:80), audioCtx.currentTime+0.25); g.gain.setValueAtTime(0.001,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.3,audioCtx.currentTime+0.03); g.gain.exponentialRampToValueAtTime(0.0001,audioCtx.currentTime+0.5); o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.52); }catch(e){} }
-canvas.addEventListener('pointerdown',e=>{ const rect=canvas.getBoundingClientRect(); const mx=(e.clientX-rect.left)/zoom/DPR + camX*TILE; const my=(e.clientY-rect.top)/zoom/DPR + camY*TILE; const tx=Math.floor(mx/TILE); const ty=Math.floor(my/TILE); if(e.button===0){ const dx=tx - Math.floor(player.x); const dy=ty - Math.floor(player.y); if(Math.abs(dx)<=2 && Math.abs(dy)<=2){ mineDir.dx = Math.sign(dx)||0; mineDir.dy = Math.sign(dy)||0; startMine(); } } else if(e.button===2){ const t=getTile(tx,ty); const info=MM.INFO[t]; if(info && info.chestTier && MM.chests){ const res=MM.chests.openChestAt(tx,ty); if(res){ lastChestOpen={t:performance.now(),x:tx,y:ty}; msg('Skrzynia '+info.chestTier+': +'+res.items.length+' przedm.'); spawnBurst((tx+0.5)*TILE,(ty+0.5)*TILE, info.chestTier); if(window.updateDynamicCustomization) updateDynamicCustomization(); if(typeof showLootPopup==='function'){ showLootPopup(res.items); } } } }});
+canvas.addEventListener('pointerdown',e=>{ const rect=canvas.getBoundingClientRect(); const mx=(e.clientX-rect.left)/zoom/DPR + camX*TILE; const my=(e.clientY-rect.top)/zoom/DPR + camY*TILE; const tx=Math.floor(mx/TILE); const ty=Math.floor(my/TILE); const tileId=getTile(tx,ty); const info=MM.INFO[tileId];
+	if(e.button===0){
+		// Left click: open chest if clicked; else mining
+		if(info && info.chestTier && MM.chests){
+			const res=MM.chests.openChestAt(tx,ty);
+			if(res){ lastChestOpen={t:performance.now(),x:tx,y:ty}; msg('Skrzynia '+info.chestTier+': +'+res.items.length+' przedm.'); spawnBurst((tx+0.5)*TILE,(ty+0.5)*TILE, info.chestTier); if(window.updateDynamicCustomization) updateDynamicCustomization(); if(typeof showLootPopup==='function'){ showLootPopup(res.items); } }
+			return; // do not treat as mining
+		}
+		const dx=tx - Math.floor(player.x); const dy=ty - Math.floor(player.y); if(Math.abs(dx)<=2 && Math.abs(dy)<=2){ mineDir.dx = Math.sign(dx)||0; mineDir.dy = Math.sign(dy)||0; startMine(); }
+	} else if(e.button===2){
+		// Right click now reserved for placement only (opening moved to left)
+		// (Placement handled in contextmenu / tryPlaceFromEvent)
+	}
+});
 
 // Render
 function draw(){ ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camX)-1; const sy=Math.floor(camY)-1; ctx.save(); ctx.scale(zoom,zoom); // pixel snapping to avoid seams
