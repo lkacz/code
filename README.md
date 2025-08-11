@@ -34,3 +34,17 @@ System design allows future items to contribute fields (e.g., mineSpeed, swimSpe
 
 ## Dev Notes
 All water surface smoothing preserves volume. Visual wave effects are strictly cosmetic and do not alter tile data, ensuring determinism and preventing column artifacts.
+
+## Linear workflow (solo dev)
+To keep history simple and add one feature at a time:
+- Work on branch `main` or make short-lived branches like `feat/<name>` and fast-forward merge only.
+- Pull is set to rebase; merges are fast-forward only; fetch prunes stale branches.
+- If you paused work with local changes, rebasing will auto-stash to avoid conflicts.
+
+Configured locally:
+- merge.ff = only
+- pull.rebase = true
+- rebase.autostash = true
+- rebase.updateRefs = true
+- fetch.prune = true
+- rerere.enabled = true
