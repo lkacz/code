@@ -10,18 +10,37 @@ WG.valueNoise = function(x, wavelength, off){ const p=x/wavelength; const i=Math
 // 0: Forest, 1: Plains, 2: Snow / Ice, 3: Desert, 4: Swamp, 5: Sea (ocean), 6: Lake (inland water), 7: Mountain
 WG.temperature = function(x){ return WG.valueNoise(x,320,123) * 0.6 + WG.valueNoise(x,90,321)*0.3 + WG.valueNoise(x,25,654)*0.1; }; // 0..1
 WG.moisture    = function(x){ return WG.valueNoise(x,280,777) * 0.55 + WG.valueNoise(x,70,888)*0.35 + WG.valueNoise(x,18,999)*0.10; };
-WG.macroElev   = function(x){ return WG.valueNoise(x,600,432)*0.6 + WG.valueNoise(x,180,987)*0.3 + WG.valueNoise(x,60,246)*0.1; }; // 0..1
+// Macro elevation with additional very-low-frequency component to guarantee larger oceans and tall ranges
+WG.macroElev   = function(x){
+	const base = WG.valueNoise(x,600,432)*0.6 + WG.valueNoise(x,180,987)*0.3 + WG.valueNoise(x,60,246)*0.1;
+	const veryLow = WG.valueNoise(x,2400,13579); // extra-slow band to form continental-scale features
+	let e = base*0.8 + veryLow*0.2; // blend in to ensure extremes appear
+	if(e<0) e=0; if(e>1) e=1; return e;
+}; // 0..1
+
+// Ocean mask (0..1): lower values favor land, higher values favor oceans
+WG.oceanMask = function(x){ return WG.valueNoise(x,2200,27182); };
+// Ridged noise for mountains (0..1), creates sharper peaks
+WG.ridge = function(x, wl, off){ const v=WG.valueNoise(x, wl||120, off||7777); return 1 - Math.abs(2*v - 1); };
+// Valley mask (0..1): higher => deeper, narrower valleys
+WG.valleyMask = function(x){
+	const v1 = WG.ridge(x, 900, 3111);
+	const v2 = WG.ridge(x, 360, 3222);
+	return Math.min(1, v1*0.7 + v2*0.5);
+};
 
 WG.biomeType = function(x){
 	const t = WG.temperature(x); // warmth
 	const m = WG.moisture(x);    // wetness
-	const e = WG.macroElev(x);   // large elevation trend
+	const e0 = WG.macroElev(x);  // large elevation trend
+	// Adjust elevation with ocean mask to guarantee seas; also allow very high ridges to push mountains
+	const e = Math.max(0, Math.min(1, e0 - 0.18*WG.oceanMask(x) + 0.08*WG.ridge(x, 1400, 9911)));
 	// Sea / ocean bands (very low macro elevation)
-	if(e < 0.18) return 5; // sea
+	if(e < 0.16) return 5; // sea
 	// Lake pockets: moderate elevation dips with high moisture
 	if(e < 0.32 && m > 0.65) return 6; // lakes
 	// Mountains (high macro elevation)
-	if(e > 0.78){ return 7; }
+	if(e > 0.8 || WG.ridge(x, 500, 9912) > 0.82){ return 7; }
 	// Snow / Ice (cold & mid/high elev)
 	if(t < 0.28 && e > 0.55) return 2;
 	// Desert (hot & dry)
@@ -44,11 +63,16 @@ WG._rawSurfaceHeight = function rawSurfaceHeight(x){
 	let h = baseMacro + detail*0.6;
 	switch(biome){
 		case 5: // Sea: flatten downward
-			h = 10 + WG.valueNoise(x,140,500)*2; break;
+			h = 9 + WG.valueNoise(x,180,500)*2; break;
 		case 6: // Lake: local depression
-			h = h - 6 - WG.valueNoise(x,120,520)*4; break;
-		case 7: // Mountain: amplify
-			h = h + 8 + WG.valueNoise(x,160,530)*10 + WG.valueNoise(x,55,540)*6; break;
+			h = h - 7 - WG.valueNoise(x,120,520)*4; break;
+		case 7: // Mountain: amplify & steepen with ridged noise
+			h = h + 12
+			  + WG.valueNoise(x,160,530)*10
+			  + WG.valueNoise(x,55,540)*6
+			  + WG.ridge(x,90,550)*12
+			  - WG.valleyMask(x)*2; // carve some sharp cuts
+			break;
 		case 3: // Desert: gentle dunes
 			h = h - 2 + WG.valueNoise(x,150,550)*3 + WG.valueNoise(x,50,560)*2; break;
 		case 4: // Swamp: very flat, slightly below neighbors
@@ -59,6 +83,12 @@ WG._rawSurfaceHeight = function rawSurfaceHeight(x){
 			h = h - 1 + WG.valueNoise(x,100,590)*2; break;
 		default: // Forest (0): moderate variability
 			h = h + WG.valueNoise(x,115,600)*3; break;
+	}
+	// Global valleys: carve steep V-shaped valleys outside seas/lakes using valley mask
+	if(biome!==5 && biome!==6){
+		const v = WG.valleyMask(x);
+		const valleyStrength = (v>0.6? (v-0.6)*18 : 0); // strong only on peaks of mask
+		h -= valleyStrength;
 	}
 	return h;
 }
@@ -82,14 +112,15 @@ WG.surfaceHeight = function(x){
 	const nSlope = Math.min(1, maxSlope/3.0);    // steeper than ~3 tiles/x taps out
 	const nRough = Math.min(1, std/7.0);         // very rough (>7 tiles stdev) taps out
 	const nMacro = Math.min(1, gMacro*1.6);
-	// Mountain/snow presence biases to narrower smoothing
+	// Mountain/snow presence biases to narrower smoothing; valleys too
 	const bf = (WG.biomeFrac? WG.biomeFrac(x,4): null);
 	const mountainBias = bf? (bf[7]*0.6 + bf[2]*0.3) : 0; // mountains and some snow
+	const valleyBias = Math.max(0, WG.valleyMask(x) - 0.55) * 0.7;
 	// Tightness in [0,1]: higher => narrower kernel
-	let tight = 0.45*nSlope + 0.35*nRough + 0.20*nMacro + mountainBias*0.25;
+	let tight = 0.45*nSlope + 0.30*nRough + 0.15*nMacro + mountainBias*0.28 + valleyBias;
 	if(tight<0) tight=0; if(tight>1) tight=1;
 	// Map tightness to Gaussian sigma between wide and narrow
-	const sigmaWide = 4.8, sigmaNarrow = 1.6;
+	const sigmaWide = 4.8, sigmaNarrow = 1.3;
 	const sigma = sigmaWide*(1-tight) + sigmaNarrow*tight;
 	// Build Gaussian weights and normalize
 	let wSum=0; const W = new Array(count);

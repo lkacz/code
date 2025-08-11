@@ -49,13 +49,25 @@ window.MM = window.MM || {};
       // Skip non-tree biomes: sea(5), lake(6), desert(3) (rare cactus could be future), swamp(4) sparse, mountain(7) sparse near peaks
       if(biome===5 || biome===6 || biome===3) continue;
       let chance = 0.08;
-      if(biome===0) chance=0.13; // forest
+      if(biome===0) chance=0.18; // forest denser base
       else if(biome===1) chance=0.07; // plains
       else if(biome===2) chance=0.05; // snow
       else if(biome===4) chance=0.04; // swamp (few trees, maybe future mangroves)
       else if(biome===7) chance= (s<MM.SNOW_LINE?0.04:0.015); // fewer at high elevation
+      // Cluster patches in forests: use a low-frequency patch mask to boost chance locally
+      if(biome===0){
+        const patch = WG.valueNoise(wx, 180, 7771);
+        if(patch>0.62) chance += 0.20; else if(patch>0.52) chance += 0.10;
+      }
+      // Adjacency boost: more likely to grow next to existing trees in this chunk
+      const leftHas = (lx>0 && arr[(s-1)*CHUNK_W + (lx-1)]===T.WOOD);
+      const left2Has = (lx>1 && arr[(s-1)*CHUNK_W + (lx-2)]===T.WOOD);
+      if(leftHas) chance += 0.12; else if(left2Has) chance += 0.06;
       if(WG.randSeed(wx*1.777) > chance) continue;
-      const sL=WG.surfaceHeight(wx-1), sR=WG.surfaceHeight(wx+1); if(Math.abs(s-sL)>6 || Math.abs(s-sR)>6) continue; // cliff edge skip
+      const sL=WG.surfaceHeight(wx-1), sR=WG.surfaceHeight(wx+1);
+      const slopeL=Math.abs(s-sL), slopeR=Math.abs(s-sR);
+      if(slopeL>7 || slopeR>7) continue; // steeper cliffs skip
+      // Slightly relax valley steepness
       const variant = (biome===2?'conifer': biome===1? (WG.randSeed(wx+300)>0.5?'oak':'tallOak') : (WG.randSeed(wx+500)<0.15?'megaOak':'oak'));
       buildTree(arr,lx,s,variant,wx);
     }
