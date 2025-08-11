@@ -43,7 +43,17 @@ window.MM = window.MM || {};
       } else {
         pSandHoriz = (biome===3||biome===5||biome===6)? 0.85 : 0.15;
       }
-      for(let y=0;y<WORLD_H;y++){
+  // Neighbor surface heights for depression analysis
+  const sL1 = colHeight(wx-1), sR1 = colHeight(wx+1);
+  const sL2 = colHeight(wx-2), sR2 = colHeight(wx+2);
+  const sL3 = colHeight(wx-3), sR3 = colHeight(wx+3);
+  const neighHeights = [sL1,sR1,sL2,sR2,sL3,sR3];
+  const neighMin = Math.min.apply(null, neighHeights);
+  const neighAvg = (neighHeights.reduce((a,b)=>a+b,0))/neighHeights.length;
+  const depressionDepth = Math.max(0, Math.floor(neighAvg - s));
+  const SEA_LEVEL = 18;
+
+  for(let y=0;y<WORLD_H;y++){
         let t=T.AIR; if(y>=s){
           const depth=y-s;
           const snowy = (biome===2 || biome===7) && s < SNOW_LINE+4; // extend snow in high biomes
@@ -106,10 +116,16 @@ window.MM = window.MM || {};
   // Carve sea / lake water down to target level
         if(t===T.AIR){
           if(WG){
-            if(biome===5){ // sea: fill below a fixed waterline
-              const waterLine = 18; if(y>=waterLine) t=T.WATER;
-            } else if(biome===6){ // lake: shallow bowl around surface
-              const bowlDepth = 4 + Math.floor(WG.randSeed(wx*3.1)*2); if(y>=s- (bowlDepth)) t=T.WATER;
+            if(biome===5){ // sea: fill only if this column is at/below sea level (avoid water perched on high ground)
+              if(s <= SEA_LEVEL + 1){ if(y>=SEA_LEVEL) t=T.WATER; }
+            } else if(biome===6){ // lake: fill only in depressions; set a local water level based on neighbor rim
+              const rim = Math.min(neighMin, s + 12); // upper bound to avoid massive lakes
+              const hasBasin = (s + 1 < rim); // current column is below rim
+              if(hasBasin){
+                const maxDepth = 5; // cap lake depth
+                const waterLevel = Math.min(rim - 1, s + maxDepth);
+                if(y>=waterLevel) t=T.WATER;
+              }
             } else if(biome===4){ // swamp: pockets of shallow water just below surface
               const swampDepth = 2; if(y>=s-1 && WG.randSeed(wx*11.7 + y*0.3) < 0.35) t=T.WATER;
             }
