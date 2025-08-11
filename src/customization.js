@@ -119,6 +119,11 @@
     return;
   }
   const pctx=previewCanvas.getContext('2d');
+  // Persistent discarded loot IDs so they aren't re-added
+  const DISCARD_KEY='mm_discarded_loot_v1';
+  try{ const raw=localStorage.getItem(DISCARD_KEY); if(raw){ const arr=JSON.parse(raw); if(Array.isArray(arr)){ MM.discardedLoot=new Set(arr); } } }catch(e){}
+  if(!MM.discardedLoot) MM.discardedLoot=new Set();
+  MM.addDiscardedLoot=function(id){ if(!id) return; MM.discardedLoot.add(id); try{ localStorage.setItem(DISCARD_KEY, JSON.stringify([...MM.discardedLoot])); }catch(e){} };
 
   const categories=[
     {key:'capeStyle', label:'Peleryny', list:ITEMS.capes},
@@ -242,7 +247,7 @@
   window.updateDynamicCustomization = function(){
     if(!MM.dynamicLoot) return;
     // Merge new items (avoid id collisions)
-    function merge(list,newOnes){ newOnes.forEach(it=>{ if(!list.find(e=>e.id===it.id)){ list.push(it); } }); }
+  function merge(list,newOnes){ newOnes.forEach(it=>{ if(MM.discardedLoot && MM.discardedLoot.has(it.id)) return; if(!list.find(e=>e.id===it.id)){ list.push(it); } }); }
     merge(ITEMS.capes, MM.dynamicLoot.capes||[]);
     merge(ITEMS.eyes, MM.dynamicLoot.eyes||[]);
     merge(ITEMS.outfits, MM.dynamicLoot.outfits||[]);
