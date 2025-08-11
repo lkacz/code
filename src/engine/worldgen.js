@@ -63,33 +63,42 @@ WG._rawSurfaceHeight = function rawSurfaceHeight(x){
 	return h;
 }
 
-// Smoothed surface height: blends neighboring columns adaptively to avoid hard biome seams
+// Smoothed surface height: adaptive Gaussian kernel over ±10 to avoid seams while preserving steep terrain
 WG.surfaceHeight = function(x){
-	// Sample raw heights in neighborhood ±3
-	const hM3 = WG._rawSurfaceHeight(x-3), hM2 = WG._rawSurfaceHeight(x-2), hM1 = WG._rawSurfaceHeight(x-1);
-	const h0  = WG._rawSurfaceHeight(x);
-	const hP1 = WG._rawSurfaceHeight(x+1), hP2 = WG._rawSurfaceHeight(x+2), hP3 = WG._rawSurfaceHeight(x+3);
-	// Adaptive tightness from macro elevation gradient and local slope of raw heights
-	const gMacro = Math.abs(WG.macroElev(x+3) - WG.macroElev(x-3));
-	const slope = Math.abs(hP3 - hM3) / 6; // tiles per x
-	const tSlope = Math.min(1, Math.max(0, slope/2.0));
-	const tMacro = Math.min(1, Math.max(0, gMacro*1.3));
-	const tight = Math.min(1, Math.max(0, 0.5*tSlope + 0.5*tMacro)); // higher -> narrower kernel
-	// Two 7-tap kernels (sum to 1): wide (softer) and narrow (sharper)
-	const wide   = [0.06, 0.12, 0.20, 0.24, 0.20, 0.12, 0.06]; // [-3..+3]
-	const narrow = [0.00, 0.12, 0.18, 0.40, 0.18, 0.12, 0.00];
-	const mix = (a,b,t)=> a*(1-t)+b*t;
-	const w = [
-	  mix(wide[0], narrow[0], tight),
-	  mix(wide[1], narrow[1], tight),
-	  mix(wide[2], narrow[2], tight),
-	  mix(wide[3], narrow[3], tight),
-	  mix(wide[4], narrow[4], tight),
-	  mix(wide[5], narrow[5], tight),
-	  mix(wide[6], narrow[6], tight)
-	];
-	let h = hM3*w[0] + hM2*w[1] + hM1*w[2] + h0*w[3] + hP1*w[4] + hP2*w[5] + hP3*w[6];
-	// Clamp overall range and discretize to tiles
+	const R = 10; // neighborhood radius
+	const count = R*2+1;
+	// Sample raw heights across window
+	const H = new Array(count);
+	for(let i=-R, idx=0; i<=R; i++, idx++) H[idx] = WG._rawSurfaceHeight(x+i);
+	// Metrics: macro-elevation gradient, local slope, roughness
+	let maxSlope = 0; let sum=0; for(let i=1;i<count;i++){ const s=Math.abs(H[i]-H[i-1]); if(s>maxSlope) maxSlope=s; }
+	for(let i=0;i<count;i++) sum += H[i];
+	const mean = sum / count;
+	let varSum=0; for(let i=0;i<count;i++){ const d=H[i]-mean; varSum += d*d; }
+	const std = Math.sqrt(varSum / count);
+	// Macro-elevation gradient using ends of window
+	const gMacro = Math.abs(WG.macroElev(x+R) - WG.macroElev(x-R));
+	// Normalize metrics to [0,1]
+	const nSlope = Math.min(1, maxSlope/3.0);    // steeper than ~3 tiles/x taps out
+	const nRough = Math.min(1, std/7.0);         // very rough (>7 tiles stdev) taps out
+	const nMacro = Math.min(1, gMacro*1.6);
+	// Mountain/snow presence biases to narrower smoothing
+	const bf = (WG.biomeFrac? WG.biomeFrac(x,4): null);
+	const mountainBias = bf? (bf[7]*0.6 + bf[2]*0.3) : 0; // mountains and some snow
+	// Tightness in [0,1]: higher => narrower kernel
+	let tight = 0.45*nSlope + 0.35*nRough + 0.20*nMacro + mountainBias*0.25;
+	if(tight<0) tight=0; if(tight>1) tight=1;
+	// Map tightness to Gaussian sigma between wide and narrow
+	const sigmaWide = 4.8, sigmaNarrow = 1.6;
+	const sigma = sigmaWide*(1-tight) + sigmaNarrow*tight;
+	// Build Gaussian weights and normalize
+	let wSum=0; const W = new Array(count);
+	const inv2s2 = 1/(2*sigma*sigma);
+	for(let i=-R, idx=0; i<=R; i++, idx++){ const w=Math.exp(-(i*i)*inv2s2); W[idx]=w; wSum+=w; }
+	for(let i=0;i<count;i++) W[i]/=wSum;
+	// Weighted sum
+	let h=0; for(let i=0;i<count;i++) h += H[i]*W[i];
+	// Clamp and discretize
 	if(h<4) h=4; if(h>70) h=70; return Math.floor(h);
 };
 
