@@ -7,6 +7,19 @@
   const WORLD = MM.world;
   const INFO = MM.INFO;
   const isSolid = MM.isSolid;
+  // Helper predicates
+  const isWater = t => t===T.WATER;
+  function isSolidGround(t){ return isSolid(t) && t!==T.LEAF; }
+
+  // Precomputed color variant helper (once per mob instead of per-frame string math)
+  function variantColor(spawnT, shiftBits, a, b){
+    const t = ((spawnT>>>shiftBits)&7)/7; // 0..1 discrete steps
+    const ca=parseInt(a.slice(1),16), cb=parseInt(b.slice(1),16);
+    const r=((ca>>16)&255)+(((cb>>16)&255)-((ca>>16)&255))*t;
+    const g=((ca>>8)&255)+(((cb>>8)&255)-((ca>>8)&255))*t;
+    const b2=(ca&255)+((cb&255)-(ca&255))*t;
+    return '#'+((r|0).toString(16).padStart(2,'0'))+((g|0).toString(16).padStart(2,'0'))+((b2|0).toString(16).padStart(2,'0'));
+  }
 
   const mobs = []; // entities
   const speciesAggro = {}; // speciesId -> expiry timestamp (ms)
@@ -25,7 +38,8 @@
   // --- Species registry (extensible) ---
   const SPECIES = {
     BIRD: {
-  id: 'BIRD', max: 18, hp: 6, dmg: 4, speed: 3.2, wanderInterval: [2,6], xp:4,
+  id: 'BIRD', max: 18, hp: 6, dmg: 4, speed: 3.2, wanderInterval: [2,6], xp:4, flying:true,
+      variant:{shift:1, from:'#f5d16a', to:'#ffe07a'},
       spawnTest(x,y,getTile){ // spawn perched above leaves (air above leaf)
         const below = getTile(x,y+1); const here = getTile(x,y);
         return here===T.AIR && below===T.LEAF; },
@@ -36,6 +50,7 @@
     },
     FISH: {
   id: 'FISH', max: 24, hp: 4, dmg: 3, speed: 2.2, wanderInterval:[1,4], xp:3,
+      variant:{shift:2, from:'#4eb2f1', to:'#63c6ff'},
       spawnTest(x,y,getTile){ // inside water with air or water above
         const here = getTile(x,y); const above = getTile(x,y-1);
         return here===T.WATER && (above===T.WATER || above===T.AIR); },
@@ -51,22 +66,25 @@
   function biomeAt(x){ try{ return WG && WG.biomeType ? WG.biomeType(x) : 1; }catch(e){ return 1; } }
 
   registerSpecies({ // Large forest predator near trees
-    id:'BEAR', max:6, hp:30, dmg:10, speed:2.0, wanderInterval:[3,7], xp:25,
+  id:'BEAR', max:6, hp:30, dmg:10, speed:2.0, wanderInterval:[3,7], xp:25, ground:true,
+  move:{jumpVel:-2.6, maxClimb:1, avoidWater:true},
+  variant:{shift:3, from:'#6b4a30', to:'#7d573b'},
+  body:{w:1.6,h:1.2},
     loot:[{item:'wood', min:1, max:2, chance:0.4}],
     spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); if(!(below===T.GRASS||below===T.WOOD||below===T.LEAF)) return false; // require trunk or leaf adjacency
       const trunk = getTile(x-1,y+1)===T.WOOD || getTile(x+1,y+1)===T.WOOD; return trunk && biomeAt(x)===0; },
     biome:'forest',
-    onUpdate(m,spec,{dt,player,aggressive}){ // slow patrol, lunge when close
-      const dx=player.x-m.x; const dy=player.y-m.y; const dist=Math.hypot(dx,dy)||1;
+    onUpdate(m,spec,{dt,player,aggressive}){ // slow patrol, lunge when close (horizontal only, grounded)
+      const dx=player.x-m.x; const dist=Math.abs(dx)||1;
       if(dist<6){ m.vx += (dx/dist)*spec.speed*0.4*dt*30; m.facing = dx>=0?1:-1; if(dist<1.7){ m.vx += (dx/dist)*spec.speed*0.9; } }
       else if(Math.random()<0.005){ m.vx += (Math.random()*2-1)*0.6; }
-      // keep near ground
-      if(Math.random()<0.01) m.vy -= 0.2;
     }
   });
 
   registerSpecies({ // Tree-dwelling small mammal on leaves
-    id:'SQUIRREL', max:20, hp:4, dmg:1, speed:3.0, wanderInterval:[1.2,3.5], xp:5,
+  id:'SQUIRREL', max:20, hp:4, dmg:1, speed:3.0, wanderInterval:[1.2,3.5], xp:5, ground:true,
+  move:{jumpVel:-3.2, maxClimb:2, avoidWater:true, preferLeaf:true},
+  body:{w:0.8,h:0.7},
     loot:[{item:'leaf', min:1, max:2, chance:0.5}],
     spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); return here===T.AIR && below===T.LEAF; },
     biome:'forest',
@@ -74,42 +92,62 @@
       if(Math.random()<0.02){ m.vx = (Math.random()<0.5?-1:1)*spec.speed*(0.6+Math.random()*0.4); m.vy *=0.3; }
       // constrain to leaf layer: if below leaves, nudge up
       const underLeaf = MM.world.getTile(Math.floor(m.x), Math.floor(m.y)+1)===T.LEAF;
-      if(!underLeaf){ m.vy -= 0.15; }
+      if(!underLeaf){ // treat like ground animal: ensure downward grav not cancelled so it stands
+        if(m.onGround){ m.vy=0; }
+      }
     }
   });
 
   registerSpecies({ // Fast herbivore on open grass
-    id:'DEER', max:14, hp:12, dmg:3, speed:3.8, wanderInterval:[2,5], xp:12,
+  id:'DEER', max:14, hp:12, dmg:3, speed:3.8, wanderInterval:[2,5], xp:12, ground:true,
+  move:{jumpVel:-3.6, maxClimb:1, avoidWater:true},
+  body:{w:1.4,h:1.1},
     loot:[{item:'leaf', min:1, max:1, chance:0.3}],
     spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); if(here!==T.AIR || below!==T.GRASS) return false; const above=getTile(x,y-1); return above===T.AIR && biomeAt(x)!==2; },
     biome:'plains',
-    onUpdate(m,spec,{player,dt,now,aggressive}){ const dx=player.x-m.x; const adx=Math.abs(dx); if(!aggressive && adx<8){ // flee
-        const dir = dx>0?-1:1; m.vx += dir*spec.speed*0.6; m.facing = m.vx>=0?1:-1; }
-      if(Math.random()<0.01) m.vy -= 0.3; }
+  onUpdate(m,spec,{player,dt,now,aggressive}){ const dx=player.x-m.x; const adx=Math.abs(dx); if(!aggressive && adx<8){ // flee
+    const dir = dx>0?-1:1; m.vx += dir*spec.speed*0.6; m.facing = m.vx>=0?1:-1; } }
   });
 
   registerSpecies({ // Snow biome predator (pack)
-    id:'WOLF', max:10, hp:16, dmg:6, speed:3.4, wanderInterval:[2,5], xp:15,
+  id:'WOLF', max:10, hp:16, dmg:6, speed:3.4, wanderInterval:[2,5], xp:15, ground:true,
+  move:{jumpVel:-4.0, maxClimb:1, avoidWater:true},
+  variant:{shift:4, from:'#bcbcbc', to:'#d6d6d6'},
+  body:{w:1.4,h:1.0},
     loot:[{item:'snow', min:1, max:2, chance:0.5}],
     spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); return below===T.SNOW || (below===T.GRASS && biomeAt(x)===2); },
     biome:'snow',
-    onUpdate(m,spec,{player,aggressive,dt}){ const dx=player.x-m.x; const dy=player.y-m.y; const dist=Math.hypot(dx,dy)||1; if(aggressive || dist<7){ // pack engage
-        m.vx += (dx/dist)*spec.speed*0.9*dt*30; m.vy += (dy/dist)*spec.speed*0.3*dt*20; m.facing=dx>=0?1:-1; if(dist<3) window.MM && MM.mobs && MM.mobs.setAggro('WOLF'); }
-      else if(Math.random()<0.01){ m.vx += (Math.random()*2-1)*0.5; }
+    onUpdate(m,spec,{player,aggressive,dt}){ const dx=player.x-m.x; const adx=Math.abs(dx)||1; const biteGap=0.9; // stop at ~1 tile distance
+      if(aggressive || adx<8){
+        // Desired stand-off: approach until at bite gap, then hover
+        if(adx > biteGap){
+          const dir = dx>0?1:-1; m.vx = dir * spec.speed * 0.9; m.facing = dir; }
+        else {
+          // within bite distance: slow / minor circling damp
+          m.vx *= 0.6; if(Math.abs(m.vx)<0.05) m.vx = 0; m.facing = dx>=0?1:-1; }
+        if(adx<3) window.MM && MM.mobs && MM.mobs.setAggro('WOLF');
+      } else if(Math.random()<0.01){ m.vx += (Math.random()*2-1)*0.4; }
     }
   });
 
   registerSpecies({ // Small fast jumper on grass (skittish)
-    id:'RABBIT', max:22, hp:5, dmg:2, speed:4.0, wanderInterval:[0.8,2.2], xp:6,
+  id:'RABBIT', max:22, hp:5, dmg:2, speed:4.0, wanderInterval:[0.8,2.2], xp:6, ground:true,
+  move:{jumpVel:-5.0, maxClimb:1, avoidWater:true},
+  body:{w:0.8,h:0.7},
     loot:[{item:'grass', min:1, max:1, chance:0.4}],
     spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); return here===T.AIR && below===T.GRASS && biomeAt(x)!==2; },
     biome:'plains',
-    onUpdate(m,spec,{player,aggressive,dt}){ const dx=player.x-m.x; const dist=Math.abs(dx); if(!aggressive && dist<6){ m.vx += (dx>0?-1:1)*spec.speed; m.vy -= 0.4; m.facing = m.vx>=0?1:-1; }
-      if(Math.random()<0.02) m.vy -= 0.25; }
+    onUpdate(m,spec,{player,aggressive,dt}){ const dx=player.x-m.x; const adx=Math.abs(dx); const jumpVel = (spec.move && spec.move.jumpVel) || -4; const now=performance.now();
+      if(!m._nextJumpAt) m._nextJumpAt = 0;
+      if(!aggressive && adx<6 && m.onGround && now>m._nextJumpAt){ // flee hop
+        const dir = dx>0?-1:1; m.vx = dir * spec.speed * 0.9; m.vy = jumpVel; m.facing = dir; m._nextJumpAt = now + 400 + Math.random()*300; return; }
+      // Occasional idle hop (rarer)
+      if(m.onGround && now>m._nextJumpAt && Math.random()<0.01){ m.vy = jumpVel*0.55; m._nextJumpAt = now + 500 + Math.random()*600; }
+    }
   });
 
   registerSpecies({ // Night bird perched in trees
-    id:'OWL', max:8, hp:8, dmg:5, speed:3.0, wanderInterval:[3,8], xp:9,
+  id:'OWL', max:8, hp:8, dmg:5, speed:3.0, wanderInterval:[3,8], xp:9, flying:true,
     loot:[{item:'leaf', min:1, max:1, chance:0.25}],
     spawnTest(x,y,getTile){ const below=getTile(x,y+1); const here=getTile(x,y); return here===T.AIR && below===T.WOOD; },
     biome:'forest',
@@ -120,14 +158,18 @@
   });
 
   registerSpecies({ // Sand-edge crustacean
-    id:'CRAB', max:18, hp:6, dmg:3, speed:2.2, wanderInterval:[1.5,4.5], xp:5,
+    id:'CRAB', max:18, hp:6, dmg:3, speed:2.2, wanderInterval:[1.5,4.5], xp:5, ground:true,
+  move:{jumpVel:-2.0, maxClimb:0.5, avoidWater:false},
+  body:{w:1.0,h:0.6},
     loot:[{item:'sand', min:1, max:2, chance:0.6}],
     spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); if(here!==T.AIR || below!==T.SAND) return false; return getTile(x-1,y+1)===T.WATER || getTile(x+1,y+1)===T.WATER; },
     biome:'shore'
+      // end update
   });
 
   registerSpecies({ // Deep water predator
-    id:'SHARK', max:4, hp:40, dmg:14, speed:3.5, wanderInterval:[2,5], aquatic:true, xp:40,
+  id:'SHARK', max:4, hp:40, dmg:14, speed:3.5, wanderInterval:[2,5], aquatic:true, xp:40,
+  variant:{shift:5, from:'#4d7690', to:'#5c87a2'},
     loot:[{item:'diamond', min:1, max:1, chance:0.15}],
     spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.WATER) return false; for(let d=1; d<=3; d++){ if(getTile(x,y+d)!==T.WATER) return false; } return getTile(x-2,y)===T.WATER && getTile(x+2,y)===T.WATER; },
     onCreate(m){ initWaterAnchor(m); m.desiredDepth = 2 + (Math.random()*2)|0; },
@@ -148,14 +190,16 @@
   });
 
   registerSpecies({ // Mountain goat: high elevation
-    id:'GOAT', max:12, hp:14, dmg:4, speed:3.3, wanderInterval:[1.8,4.2], xp:13,
+    id:'GOAT', max:12, hp:14, dmg:4, speed:3.3, wanderInterval:[1.8,4.2], xp:13, ground:true,
+  move:{jumpVel:-5.2, maxClimb:2.2, avoidWater:true},
+  body:{w:1.2,h:1.0},
     loot:[{item:'snow', min:1, max:1, chance:0.3}],
     spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); if(!(below===T.STONE||below===T.SNOW)) return false; return y < 18; },
     biome:'mountain'
   });
 
   registerSpecies({ // Firefly – ambience (low HP) over grass, pulsating
-    id:'FIREFLY', max:26, hp:2, dmg:0, speed:2.0, wanderInterval:[0.6,1.6], xp:2,
+    id:'FIREFLY', max:26, hp:2, dmg:0, speed:2.0, wanderInterval:[0.6,1.6], xp:2, flying:true,
     spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); return here===T.AIR && (below===T.GRASS || below===T.LEAF); },
     biome:'plains',
     onUpdate(m,spec,{dt,now}){ if(Math.random()<0.03){ m.vx += (Math.random()*2-1)*0.4; m.vy += (Math.random()*2-1)*0.2; } }
@@ -174,7 +218,8 @@
 
   function create(spec, x,y){
     const now = performance.now();
-    const m={ id: spec.id, x, y, vx:0, vy:0, hp: spec.hp, state:'idle', tNext: now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000, facing:1, spawnT: now, attackCd:0, hitFlashUntil:0, shake:0, tickMod: (Math.random()<0.5?1:0), sleepUntil:0 };
+  const m={ id: spec.id, x, y, vx:0, vy:0, hp: spec.hp, state:'idle', tNext: now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000, facing:1, spawnT: now, attackCd:0, hitFlashUntil:0, shake:0, tickMod: (Math.random()<0.5?1:0), sleepUntil:0 };
+  if(spec.variant){ m.baseColor = variantColor(m.spawnT, spec.variant.shift, spec.variant.from, spec.variant.to); }
     if(typeof spec.onCreate==='function') spec.onCreate(m, spec);
     addToGrid(m); speciesCounts[spec.id]=(speciesCounts[spec.id]||0)+1; return m; }
 
@@ -205,7 +250,8 @@
 
   // Aquatic enforcement (moved earlier so it's definitely defined before any habitatUpdate calls)
   function enforceAquatic(m, spec, getTile, dt){
-    if(!m.waterTopY || performance.now()>m.nextWaterScan){ initWaterAnchor(m); }
+    const nowP = performance.now();
+    if(!m.waterTopY || nowP>m.nextWaterScan){ initWaterAnchor(m); }
     const tx = Math.floor(m.x); const ty=Math.floor(m.y);
     const here = getTile(tx,ty);
     if(here!==T.WATER){
@@ -228,7 +274,7 @@
     if(typeof m.waterTopY==='number'){
       const topTile = getTile(Math.floor(m.x), m.waterTopY);
       if(topTile!==T.WATER){ initWaterAnchor(m); }
-      const targetY = m.waterTopY + (m.desiredDepth||1) + Math.sin(performance.now()*0.001 + m.spawnT*0.0003)*0.2;
+  const targetY = m.waterTopY + (m.desiredDepth||1) + Math.sin(nowP*0.001 + m.spawnT*0.0003)*0.2;
       const dy = targetY - m.y; m.vy += dy * Math.min(1, dt*2.2);
       const above = getTile(Math.floor(m.x), Math.floor(m.y-0.6));
       if(above!==T.WATER){ if(m.vy < 0) m.vy *= 0.2; m.vy += 0.04; }
@@ -290,11 +336,84 @@
     metrics.count = mobs.length; let active=0;
     for(let i=0;i<mobs.length;i++){
       const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue; const aggressive=isAggro(m.id);
+      // Prepare player-like physics state for ground mobs
+      const isGroundMob = !!spec.ground && !spec.aquatic && !spec.flying;
+      let preVX=m.vx, preVY=m.vy, prevOnGround = m.onGround||false;
+      m._wantJump=false;
+      // Run species AI / behavior first
       updateMob(m, spec, {dt, now, aggressive, player, getTile});
-  // Separation using spatial grid neighbors (same species only)
-  applySeparation(m, i);
-      // Friction / damping
-      const damp = aggressive? 0.9 : 0.92; m.vx*=damp; m.vy*= (spec.aquatic? 0.95 : 0.92);
+      if(isGroundMob){
+        // Interpret AI changes: any upward impulse (vy<-1) becomes a jump intent
+        if(m.vy < -1){ m._wantJump=true; }
+        // Desired horizontal velocity coming from AI modifications (mutable for heuristics)
+        let desired = m.vx;
+        m.vx = preVX; // restore actual velocity; desired used for acceleration targeting
+        const MOVE = MM.MOVE || {ACC:32,FRICTION:28,MAX:6,JUMP:-9,GRAV:20};
+        const maxSpeed = spec.speed || MOVE.MAX;
+        const speedRatio = maxSpeed / (MOVE.MAX||6);
+        // Environmental heuristics (water avoidance / obstacle climb) prior to acceleration
+        if(spec.move){
+          // Water avoidance: if about to step into water, turn/slow
+            if(spec.move.avoidWater){
+              const dir = desired>0?1: (desired<0?-1:0);
+              if(dir!==0){
+                const aheadX = Math.floor(m.x + dir*0.6);
+                const footY = Math.floor(m.y+0.5);
+                const belowAhead = getTile(aheadX, footY+1);
+                if(belowAhead===T.WATER){
+                  // Try opposite side if it's not water; else just stop
+                  const oppBelow = getTile(Math.floor(m.x - dir*0.6), footY+1);
+                  if(oppBelow!==T.WATER) desired = -desired*0.8; else desired *=0.2;
+                }
+              }
+            }
+          // Obstacle climb: detect low barrier and request jump if climbable
+            if(prevOnGround && Math.abs(desired)>0.15 && spec.move.maxClimb>0){
+              const dir = desired>0?1:-1;
+              const baseX = Math.floor(m.x + dir*0.6);
+              const footY = Math.floor(m.y+0.5);
+              const barrier = getTile(baseX, footY); // tile at body level ahead
+              if(isSolidGround(barrier)){
+                const maxH = Math.ceil(spec.move.maxClimb);
+                for(let h=1; h<=maxH; h++){
+                  const space = getTile(baseX, footY - h);
+                  if(space===T.AIR || space===T.LEAF){
+                    // Found climbable gap within maxClimb
+                    m._wantJump = true; // mark jump intent
+                    break;
+                  }
+                  if(isSolidGround(space) && h===maxH){
+                    // Fully blocked; stop desired to avoid pushing
+                    desired = 0;
+                  }
+                }
+              }
+            }
+        }
+        const diff = desired - m.vx;
+        if(Math.abs(desired) > 0.05){
+          const accel = MOVE.ACC * speedRatio * dt * Math.sign(diff);
+            if(Math.abs(accel) > Math.abs(diff)) m.vx = desired; else m.vx += accel;
+        } else { // friction when no desired input
+          const fr = MOVE.FRICTION * dt;
+          if(Math.abs(m.vx) <= fr) m.vx=0; else m.vx -= fr * Math.sign(m.vx);
+        }
+        // Cap horizontal speed
+        if(Math.abs(m.vx) > maxSpeed) m.vx = maxSpeed * Math.sign(m.vx);
+        // Jump execution (uses spec.move.jumpVel or MOVE.JUMP)
+        if(m._wantJump && prevOnGround){
+          const jv = (spec.move && spec.move.jumpVel) ? spec.move.jumpVel : (MM.MOVE ? MM.MOVE.JUMP : -9) * (0.7 + 0.3*speedRatio);
+          m.vy = jv;
+        } else {
+          m.vy = preVY; // restore pre-AI vertical velocity (jump not triggered)
+        }
+      }
+      // Separation using spatial grid neighbors (same species only)
+      applySeparation(m, i);
+      // Damping: only for non-ground flight/aquatic (ground handled via friction earlier)
+      if(spec.aquatic || spec.flying){
+        const damp = aggressive? 0.9 : 0.92; m.vx*=damp; m.vy*= (spec.aquatic? 0.95 : 0.92);
+      }
       // Clamp speeds
       const maxS = spec.speed * (aggressive?1.4:1); const sp=Math.hypot(m.vx,m.vy); if(sp>maxS){ const s=maxS/sp; m.vx*=s; m.vy*=s; }
       // Sleep logic for far, non-aggro mobs: update position only sparsely
@@ -303,9 +422,64 @@
         if(distP > 140 && (frame & 3)!== (m.tickMod||0)){ continue; } // skip this frame
       }
       active++;
-      m.x += m.vx*dt; m.y += m.vy*dt;
-  // Habitat constraints via species hook
-  if(typeof spec.habitatUpdate==='function') spec.habitatUpdate(m, spec, getTile, dt);
+  // Ground / gravity integration + AABB collision for ground mobs
+  if(!spec.aquatic && !spec.flying){
+        const MOVE = MM.MOVE || {GRAV:20}; m.vy += MOVE.GRAV * dt; if(m.vy>24) m.vy=24;
+        const body = spec.body || {w:1,h:1}; const halfW = (body.w||1)*0.5, halfH=(body.h||1)*0.5;
+        // Integrate horizontal then resolve X collisions
+        m.x += m.vx*dt;
+        let minX = Math.floor(m.x - halfW), maxX = Math.floor(m.x + halfW);
+        let minY = Math.floor(m.y - halfH), maxY = Math.floor(m.y + halfH);
+        for(let y=minY; y<=maxY; y++){
+          for(let x=minX; x<=maxX; x++){
+            const t = getTile(x,y); if(isSolid && isSolid(t)){
+              if(m.vx>0) m.x = x - halfW - 0.001; else if(m.vx<0) m.x = x + 1 + halfW + 0.001; m.vx=0;
+              minX = Math.floor(m.x - halfW); maxX = Math.floor(m.x + halfW); // recalc
+            }
+          }
+        }
+        // Integrate vertical then resolve Y collisions
+        m.y += m.vy*dt; minX = Math.floor(m.x - halfW); maxX = Math.floor(m.x + halfW); minY = Math.floor(m.y - halfH); maxY = Math.floor(m.y + halfH);
+        const wasGround = m.onGround; m.onGround=false;
+        for(let y=minY; y<=maxY; y++){
+          for(let x=minX; x<=maxX; x++){
+            const t=getTile(x,y); if(isSolid && isSolid(t)){
+              if(m.vy>0){ m.y = y - halfH - 0.001; m.vy=0; m.onGround=true; }
+              else if(m.vy<0){ m.y = y + 1 + halfH + 0.001; m.vy=0; }
+              minY = Math.floor(m.y - halfH); maxY = Math.floor(m.y + halfH);
+            }
+          }
+        }
+        if(m.onGround){
+          // Stand friction
+          if(Math.abs(m.vx)<0.02) m.vx=0; else m.vx*=0.86;
+          // Obstacle check for small step up using maxClimb
+          if(spec.move && spec.move.maxClimb>0 && Math.abs(m.vx)>0.15){
+            const dir = m.vx>0?1:-1; const stepX = Math.floor(m.x + dir*halfW + dir*0.2);
+            // scan up to maxClimb blocks above feet to see if we can jump
+            const maxClimb = Math.ceil(spec.move.maxClimb);
+            let blocked=false, spaceFound=false;
+            for(let h=0; h<=maxClimb; h++){
+              const testY = Math.floor(m.y + halfH - h - 0.01);
+              const t = getTile(stepX, testY);
+              if(isSolid && isSolid(t)) blocked=true; else if(blocked){ spaceFound=true; break; }
+            }
+            if(spaceFound && Math.random()<0.12){ m.vy = (spec.move.jumpVel|| -4); m.onGround=false; }
+            else if(blocked && !spaceFound){ // wall too high: halt
+              m.vx=0;
+            }
+          }
+        } else if(!m.onGround){
+          // airborne horizontal damping slight
+          m.vx *= 0.995;
+        }
+        if(m.onGround && !wasGround){ /* landing hook placeholder */ }
+      } else {
+        // Non-ground integrate simple
+        m.x += m.vx*dt; m.y += m.vy*dt;
+      }
+      // Habitat constraints via species hook
+      if(typeof spec.habitatUpdate==='function') spec.habitatUpdate(m, spec, getTile, dt);
       updateGridCell(m);
       if(m.shake>0) m.shake=Math.max(0,m.shake-dt*10);
       // Contact damage + bounce (touch) independent of attack cooldown
@@ -315,10 +489,10 @@
         player.vx += nx*3*dt; player.vy += ny*2*dt; // gentle continuous push
         if(isAggro(m.id)){ if(m.attackCd>0) m.attackCd-=dt; if(m.attackCd<=0){ damagePlayer(spec.dmg, m.x, m.y); m.attackCd=0.8 + Math.random()*0.5; } }
       }
-  }
-  metrics.active = active;
-  if(now - lastMetricsSample > 1000){ metrics.dtAvg = (metrics.dtAvg*0.7 + dt*0.3); lastMetricsSample = now; if(window.__mobDebug){ window.__mobMetrics = {...metrics, frame}; } }
-  }
+    }
+    metrics.active = active;
+    if(now - lastMetricsSample > 1000){ metrics.dtAvg = (metrics.dtAvg*0.7 + dt*0.3); lastMetricsSample = now; if(window.__mobDebug){ window.__mobMetrics = {...metrics, frame}; } }
+  } // end update()
   function updateMob(m, spec, ctx){
     if(typeof spec.onUpdate==='function'){ spec.onUpdate(m, spec, ctx); return; }
     const {dt, now, aggressive, player} = ctx; const toPlayerX=player.x - m.x; const toPlayerY=player.y - m.y; const distP=Math.hypot(toPlayerX,toPlayerY)||1;
@@ -332,16 +506,44 @@
         m.tNext = now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000;
         if(Math.random()<0.65){ const ang = Math.random()*Math.PI*2; const speed = spec.speed*(0.3+Math.random()*0.7); m.vx = Math.cos(ang)*speed; m.vy = Math.sin(ang)*speed* (spec.aquatic?0.6:0.35); m.facing = m.vx>=0?1:-1; } else { m.vx*=0.4; m.vy*=0.4; }
       }
-      const baseBob = spec.aquatic? Math.sin(now*0.002 + m.spawnT*0.0007)*0.4 : Math.sin(now*0.003 + m.spawnT*0.001)*0.25;
-      m.vy += (baseBob - m.vy)*Math.min(1, dt*0.8);
+      if(spec.aquatic){
+        const baseBob = Math.sin(now*0.002 + m.spawnT*0.0007)*0.4;
+        m.vy += (baseBob - m.vy)*Math.min(1, dt*0.8);
+      } else if(spec.flying){
+        const baseBob = Math.sin(now*0.003 + m.spawnT*0.001)*0.25;
+        m.vy += (baseBob - m.vy)*Math.min(1, dt*0.8);
+      } // grounded: no vertical bob
     }
   }
 
   function draw(ctx, TILE, camX,camY, zoom){
-    ctx.save(); ctx.imageSmoothingEnabled=false;
-    for(const m of mobs){ const screenX = (m.x*TILE); const screenY=(m.y*TILE); ctx.save();
+    ctx.save(); ctx.imageSmoothingEnabled=false; const now=performance.now();
+  // View bounds expressed in tile coordinates (camX/camY already in tiles)
+  const viewL = camX - 2; const viewR = camX + (ctx.canvas.width/zoom)/TILE + 2; const viewT = camY - 2; const viewB = camY + (ctx.canvas.height/zoom)/TILE + 2;
+  const disableCull = !!window.__mobDisableCull;
+  for(const m of mobs){ if(!disableCull && (m.x < viewL || m.x > viewR || m.y < viewT || m.y > viewB)) continue; const spec=SPECIES[m.id]; const screenX = (m.x*TILE); let screenY=(m.y*TILE);
+      // Anchor adjustment: center position to feet baseline so sprites don't float
+      if(spec && spec.ground && spec.body){
+        const halfHpx = (spec.body.h||1)*0.5*TILE;
+        const currentBottom = (spec.body.h>1.05)? 2 : 1; // empirically: tall sprites drawn to +2px, small to +1px
+        screenY += halfHpx - currentBottom;
+      }
+      ctx.save();
+      // Simple shadow ellipse for ground mobs to reinforce contact
+      if(spec && spec.ground){
+        ctx.fillStyle='rgba(0,0,0,0.18)'; const shW = (spec.body? (spec.body.w||1)*TILE*0.6 : TILE*0.6); const shH=Math.max(2, shW*0.22); ctx.beginPath(); ctx.ellipse(screenX, screenY+ (spec.body? (spec.body.h||1)*0.5*TILE -2 : 6), shW*0.5, shH*0.5, 0, 0, Math.PI*2); ctx.fill();
+      }
+      if(window.__mobDebug){ // simple origin marker
+        ctx.fillStyle='rgba(255,0,0,0.4)'; ctx.fillRect(screenX-1, screenY-1,2,2);
+      }
+      if(window.__mobShowAABB && spec && spec.body){
+        const halfW = (spec.body.w||1)*0.5*TILE; const halfH=(spec.body.h||1)*0.5*TILE;
+        ctx.strokeStyle='rgba(0,255,255,0.5)'; ctx.lineWidth=1; ctx.strokeRect((m.x-halfW/TILE)*TILE, (m.y-halfH/TILE)*TILE, (halfW*2), (halfH*2));
+        // ground / feet line (bottom of AABB)
+        ctx.strokeStyle='rgba(255,255,0,0.6)'; ctx.beginPath(); ctx.moveTo((m.x-halfW/TILE)*TILE, (m.y+halfH/TILE)*TILE); ctx.lineTo((m.x+halfW/TILE)*TILE, (m.y+halfH/TILE)*TILE); ctx.stroke();
+      }
       if(m.shake>0){ const ang=Math.random()*Math.PI*2; const mag=m.shake*1.5; ctx.translate(Math.cos(ang)*mag, Math.sin(ang)*mag); }
-      const now=performance.now(); const flashing= now < m.hitFlashUntil;
+      const flashing= now < m.hitFlashUntil;
       let topY=screenY; // track highest pixel for HP bar positioning
       function hpTop(y){ if(y<topY) topY=y; }
       const faceDir = m.facing>0?1:-1;
@@ -351,12 +553,10 @@
       // Helper to draw outline rectangle
       function box(x,y,w,h,fill,stroke){ ctx.fillStyle=fill; ctx.fillRect(x,y,w,h); if(stroke){ ctx.strokeStyle=stroke; ctx.lineWidth=1; ctx.strokeRect(x+0.5,y+0.5,w-1,h-1);} hpTop(y); }
       function shade(x,y,w,h,col,alpha){ ctx.fillStyle=col; ctx.globalAlpha=alpha; ctx.fillRect(x,y,w,h); ctx.globalAlpha=1; }
-      function variant(num,a,b){ // simple variant color shift
-        const t = ((m.spawnT>>>num)&7)/7; const ca=parseInt(a.slice(1),16), cb=parseInt(b.slice(1),16); const r=((ca>>16)&255)+(((cb>>16)&255)-((ca>>16)&255))*t; const g=((ca>>8)&255)+(((cb>>8)&255)-((ca>>8)&255))*t; const b2=(ca&255)+((cb&255)-(ca&255))*t; return '#'+((r|0).toString(16).padStart(2,'0'))+((g|0).toString(16).padStart(2,'0'))+((b2|0).toString(16).padStart(2,'0')); }
       switch(m.id){
         case 'BIRD': { // enlarged with wings + beak + eye
           const flap = Math.sin(phase)*2; // wing flap
-          const bodyCol = flashing? '#ffffff' : variant(1,'#f5d16a','#ffe07a');
+          const bodyCol = flashing? '#ffffff' : (m.baseColor||'#f5d16a');
           box(screenX-5, screenY-7,10,8, bodyCol,'#bc8a00'); // body
           // wings (two rectangles that move vertically)
           ctx.fillStyle='#f3c552'; ctx.fillRect(screenX-7, screenY-5+flap,4,6); ctx.fillRect(screenX+3, screenY-5-flap,4,6);
@@ -369,7 +569,7 @@
           break; }
         case 'FISH': { // add dorsal/ventral fins + tail pattern
           const wag = Math.sin(phase)*2*faceDir;
-          const body = flashing? '#bcecff' : variant(2,'#4eb2f1','#63c6ff');
+          const body = flashing? '#bcecff' : (m.baseColor||'#4eb2f1');
           box(screenX-9, screenY-4,18,8, body,'#1d6b9c');
           ctx.fillStyle='#1d6b9c'; ctx.fillRect(screenX-4, screenY-5,8,1); // dorsal ridge
           ctx.fillRect(screenX-4, screenY+4,8,1); // ventral
@@ -380,7 +580,7 @@
           ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fillRect(screenX+(faceDir>0?-1:1), screenY-1,1,2); // gill slit
           break; }
         case 'BEAR': { // large hulking (approx 2x1.2 tiles)
-          const body = flashing? '#e8d5c0': variant(3,'#6b4a30','#7d573b');
+          const body = flashing? '#e8d5c0': (m.baseColor||'#6b4a30');
           const breathe = 1 + Math.sin(phase2)*0.1;
           box(screenX-14, screenY-12,28,14, body,'#3e2918'); // torso
           // back shading gradient bars
@@ -424,7 +624,7 @@
           ctx.fillStyle='rgba(255,255,255,0.6)'; for(let i=-6;i<=6;i+=4){ ctx.fillRect(screenX+i, screenY-2,2,2); }
           break; }
         case 'WOLF': {
-          const body = flashing? '#f5f5f5': variant(4,'#bcbcbc','#d6d6d6');
+          const body = flashing? '#f5f5f5': (m.baseColor||'#bcbcbc');
           box(screenX-12, screenY-7,24,9, body,'#555');
           // head + ears
           ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?8:-14), screenY-11,10,8); hpTop(screenY-11);
@@ -468,7 +668,7 @@
           ctx.fillStyle='#8a1f17'; ctx.fillRect(screenX-12-pinch, screenY-2,4,4); ctx.fillRect(screenX+8+pinch, screenY-2,4,4);
           break; }
         case 'SHARK': {
-          const body = flashing? '#d0f4ff': variant(5,'#4d7690','#5c87a2');
+          const body = flashing? '#d0f4ff': (m.baseColor||'#4d7690');
           const sway = Math.sin(phase*0.8)*3*faceDir;
           ctx.save(); ctx.translate(sway,0);
           box(screenX-24, screenY-6,48,12, body,'#223b48'); // body
@@ -572,12 +772,26 @@
         for(const k in data.aggro){ const exp=data.aggro[k]; if(typeof exp==='number'){ if(exp>now) speciesAggro[k]=exp; else if(now-exp < AGGRO_SKEW_GRACE_MS){ speciesAggro[k]= now + 5000; } }
         }
       }
+    }
   }
 
-  }
-
-  MM.mobs = { update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro, forceSpawn, species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics };
-  try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
-})();
+    function diagnose(getTile){
+      const report={total:mobs.length, species:{}, groundHoverIssues:[], overlaps:0};
+      for(const m of mobs){ report.species[m.id]=(report.species[m.id]||0)+1; const spec=SPECIES[m.id]; if(spec && spec.ground && spec.body){
+          const halfH=(spec.body.h||1)*0.5; const tileBelow = getTile? getTile(Math.floor(m.x), Math.floor(m.y+halfH)) : null;
+          if(tileBelow===MM.T.AIR){ report.groundHoverIssues.push({id:m.id,x:m.x,y:m.y}); }
+        }
+      }
+      // naive overlap detect (same tile center proximity)
+      for(let i=0;i<mobs.length;i++){
+        for(let j=i+1;j<mobs.length;j++){
+          const a=mobs[i], b=mobs[j]; const dx=a.x-b.x, dy=a.y-b.y; if(dx*dx+dy*dy < 0.16) report.overlaps++; }
+      }
+      report.metrics={...metrics};
+      return report;
+    }
+    MM.mobs = { update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro, forceSpawn, species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose };
+    try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
+  })(); // end IIFE
 // (File end)
 
