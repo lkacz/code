@@ -30,7 +30,7 @@
     outfits:[
       {id:'default', name:'Podstawowy', desc:'Brak bonusów'},
       {id:'miner', name:'Górnik', mineSpeedMult:1.5, moveSpeedMult:0.90, jumpPowerMult:0.90, desc:'Kopanie +50% kosztem mobilności (-10% ruch/skok)'},
-      {id:'mystic', name:'Mistyk', moveSpeedMult:1.15, jumpPowerMult:1.08, desc:'Ruch +15%, skok +8%'}
+      {id:'mystic', name:'Mistyk', moveSpeedMult:10.15, jumpPowerMult:1.08, desc:'Ruch +15%, skok +8%'}
     ]
   };
 
@@ -76,7 +76,7 @@
   if(mods.mineSpeedMult==null) mods.mineSpeedMult=1;
   if(mods.jumpPowerMult==null) mods.jumpPowerMult=1;
   // Safety clamps (future-proof against extreme stacking)
-  mods.moveSpeedMult = clampRange(mods.moveSpeedMult, 0.3, 3);
+  mods.moveSpeedMult = clampRange(mods.moveSpeedMult, 0.3, 30);
   mods.jumpPowerMult = clampRange(mods.jumpPowerMult, 0.3, 3);
     MM.activeModifiers = mods;
   MM.getModifiers = ()=>Object.assign({},mods);

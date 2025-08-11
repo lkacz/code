@@ -28,6 +28,21 @@ window.MM = window.MM || {};
       if(bf){ // deeper sand near deserts/coasts
         sandTh += Math.round(bf[5]*2 + bf[6]*1.5 + bf[3]*2);
       }
+      // Left-to-right sand influence around biome borders
+      let pSandHoriz = 0;
+      if(WG.biomeFrac){
+        const bfL = WG.biomeFrac(wx-8, 6);
+        const bfM = WG.biomeFrac(wx, 4);
+        const bfR = WG.biomeFrac(wx+8, 6);
+        const dL = (bfL? (bfL[3] + bfL[5]*0.6 + bfL[6]*0.4) : (0));
+        const dM = (bfM? (bfM[3] + bfM[5]*0.6 + bfM[6]*0.4) : ((biome===3||biome===5||biome===6)?1:0));
+        const dR = (bfR? (bfR[3] + bfR[5]*0.6 + bfR[6]*0.4) : (0));
+        const sandLR = Math.max(0, Math.min(1, 0.25*dL + 0.5*dM + 0.25*dR));
+        // Probability to choose sand in mid-layer, fades left->right across border
+        pSandHoriz = Math.max(0, Math.min(1, 0.08 + 0.9*sandLR));
+      } else {
+        pSandHoriz = (biome===3||biome===5||biome===6)? 0.85 : 0.15;
+      }
       for(let y=0;y<WORLD_H;y++){
         let t=T.AIR; if(y>=s){
           const depth=y-s;
@@ -58,7 +73,18 @@ window.MM = window.MM || {};
               else t=T.GRASS;
             }
           } else if(depth < sandTh){
-            if(desert) t=T.SAND; else if(sea||lake) t=T.SAND; else if(swamp) t=(colRand<0.3?T.SAND:T.STONE); else t=(snowy?T.SNOW:T.STONE);
+            if(snowy) {
+              t = T.SNOW;
+            } else if(swamp){
+              const n = WG.randSeed(wx*3.77 + y*0.11);
+              t = (n < Math.min(0.7, 0.25 + 0.6*pSandHoriz)) ? T.SAND : T.STONE;
+            } else if(desert || sea || lake){
+              t = T.SAND;
+            } else {
+              // Lateral blend from sand to stone across biome border
+              const n = WG.randSeed(wx*9.71 + y*0.23);
+              t = (n < pSandHoriz) ? T.SAND : T.STONE;
+            }
           } else {
             // Deep layers: chance of diamond
             t = (WG.randSeed(wx*13.37 + y*0.7) < WG.diamondChance(y)?T.DIAMOND:T.STONE);
