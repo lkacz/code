@@ -28,21 +28,28 @@ window.MM = window.MM || {};
     for(let i=0;i<segs;i++){ const cur=cape[i]; const next=cape[Math.min(segs-1,i+1)]; let dx=next.x-cur.x, dy=next.y-cur.y; const d=Math.hypot(dx,dy)||1; dx/=d; dy/=d; const t=i/(segs-1); let w=style.wTop+(style.wBot-style.wTop)*t; if(style.edge==='wave'){ w *= (1 + 0.15*Math.sin(t*6+performance.now()*0.002)); } const px=-dy*w, py=dx*w; leftPts[i] = leftPts[i]||{}; rightPts[i] = rightPts[i]||{}; leftPts[i].x=cur.x+px; leftPts[i].y=cur.y+py; rightPts[i].x=cur.x-px; rightPts[i].y=cur.y-py; }
     const cust=getCurrentCustomization(); let baseColor=cust.capeColor||'#b91818';
     // Build path
-    ctx.beginPath(); ctx.moveTo(leftPts[0].x*TILE,leftPts[0].y*TILE); for(let i=1;i<segs;i++) ctx.lineTo(leftPts[i].x*TILE,leftPts[i].y*TILE);
-    // bottom decoration
-    if(style.edge==='scallop' || style.edge==='ragged' || style.edge==='point'){
-      // close left -> right bottom with decoration using rightPts reversed
+    ctx.beginPath();
+    ctx.moveTo(leftPts[0].x*TILE,leftPts[0].y*TILE);
+    for(let i=1;i<segs;i++) ctx.lineTo(leftPts[i].x*TILE,leftPts[i].y*TILE);
+    if(style.edge==='point'){
+      // Custom clean centered tip: connect last left/right via a single extended middle point
+      const lp=leftPts[segs-1], rp=rightPts[segs-1];
+      const tipX=(lp.x+rp.x)/2; // centered between ends
+      const tipY=(lp.y+rp.y)/2 + 8/ TILE; // extend downward 8px
+      ctx.lineTo(tipX*TILE, tipY*TILE);
+      ctx.lineTo(rp.x*TILE, rp.y*TILE);
+      for(let i=segs-2;i>=0;i--) ctx.lineTo(rightPts[i].x*TILE,rightPts[i].y*TILE);
+    } else if(style.edge==='scallop' || style.edge==='ragged'){
+      // Decorative edges built while traversing right side reversed
       for(let i=segs-1;i>=0;i--){ const p=rightPts[i]; if(i===segs-1) ctx.lineTo(p.x*TILE,p.y*TILE); else {
           if(style.edge==='scallop'){
             const prev=rightPts[Math.min(segs-1,i+1)]; const cx=(p.x+prev.x)/2*TILE; const cy=(p.y+prev.y)/2*TILE + 4; ctx.quadraticCurveTo(cx, cy, p.x*TILE, p.y*TILE);
-          } else if(style.edge==='ragged'){
+          } else { // ragged
             const jitter=( (i*928371)%7 -3 ) * 0.8; ctx.lineTo(p.x*TILE + jitter, p.y*TILE + (i%2?4:-2));
-          } else if(style.edge==='point'){
-            if(i===Math.floor(segs/2)) ctx.lineTo(p.x*TILE, p.y*TILE+8);
-            ctx.lineTo(p.x*TILE,p.y*TILE);
           }
         } }
     } else {
+      // straight / wave
       for(let i=segs-1;i>=0;i--) ctx.lineTo(rightPts[i].x*TILE,rightPts[i].y*TILE);
     }
     ctx.closePath();
