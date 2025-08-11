@@ -29,7 +29,22 @@
     ]
   };
 
-  function load(){ try{ const raw=localStorage.getItem(STORAGE_KEY); if(raw){ const d=JSON.parse(raw); if(d && typeof d==='object'){ Object.assign(MM.customization,d); } } }catch(e){} }
+  function migrateLegacy(){
+    // Migrate once from older simple key if new storage absent
+    if(localStorage.getItem(STORAGE_KEY)) return; // already using new
+    try{
+      const legacy=localStorage.getItem('mm_simplecust_v1');
+      if(!legacy) return; const d=JSON.parse(legacy);
+      if(d && typeof d==='object'){
+        const m={};
+        if(d.capeStyle) m.capeStyle=d.capeStyle;
+        if(d.eyeStyle) m.eyeStyle=d.eyeStyle;
+        if(d.outfitStyle) m.outfitStyle=d.outfitStyle;
+        Object.assign(MM.customization,m);
+      }
+    }catch(e){}
+  }
+  function load(){ migrateLegacy(); try{ const raw=localStorage.getItem(STORAGE_KEY); if(raw){ const d=JSON.parse(raw); if(d && typeof d==='object'){ Object.assign(MM.customization,d); } } }catch(e){} }
   function save(){ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify({capeStyle:MM.customization.capeStyle, eyeStyle:MM.customization.eyeStyle, outfitStyle:MM.customization.outfitStyle})); }catch(e){} }
   load();
 
@@ -55,14 +70,22 @@
 
   function buildTabs(){ tabsEl.innerHTML=''; categories.forEach(cat=>{ const b=document.createElement('button'); b.className='custTabBtn'; b.textContent=cat.label; b.dataset.key=cat.key; b.addEventListener('click',()=>setActive(cat)); tabsEl.appendChild(b); }); setActive(activeCat); }
 
-  function buildGrid(){ grid.innerHTML=''; const list=activeCat.list; list.forEach(item=>{ const div=document.createElement('div'); div.className='custItem'; div.dataset.id=item.id; if(MM.customization[activeCat.key]===item.id) div.classList.add('sel'); const c=document.createElement('canvas'); c.width=80; c.height=80; const g=c.getContext('2d'); drawItemPreview(g, item, activeCat.key); div.appendChild(c); const nm=document.createElement('div'); nm.className='nm'; nm.textContent=item.name; div.appendChild(nm); div.addEventListener('click',()=>{ if(div.classList.contains('locked')) return; MM.customization[activeCat.key]=item.id; save(); buildGrid(); updatePreview(); updateSelInfo(); }); grid.appendChild(div); }); }
+  function buildGrid(){ grid.innerHTML=''; const list=activeCat.list; list.forEach((item,idx)=>{ const div=document.createElement('div'); div.className='custItem'; div.dataset.id=item.id; div.tabIndex=0; if(MM.customization[activeCat.key]===item.id) div.classList.add('sel'); const c=document.createElement('canvas'); c.width=80; c.height=80; const g=c.getContext('2d'); drawItemPreview(g, item, activeCat.key); div.appendChild(c); const nm=document.createElement('div'); nm.className='nm'; nm.textContent=item.name; div.appendChild(nm); function choose(){ if(div.classList.contains('locked')) return; if(MM.customization[activeCat.key]===item.id) return; MM.customization[activeCat.key]=item.id; save(); window.dispatchEvent(new CustomEvent('mm-customization-change',{detail:{key:activeCat.key,value:item.id}})); buildGrid(); updatePreview(); updateSelInfo(); }
+        div.addEventListener('click',choose);
+        div.addEventListener('keydown',e=>{ if(e.key==='Enter' || e.key===' ') { e.preventDefault(); choose(); } });
+        grid.appendChild(div); }); }
 
   function updateSelInfo(){ selInfo.textContent='Peleryna: '+MM.customization.capeStyle+' | Oczy: '+MM.customization.eyeStyle+' | Strój: '+MM.customization.outfitStyle; }
 
-  function open(){ overlay.style.display='block'; updatePreview(); updateSelInfo(); }
-  function close(){ overlay.style.display='none'; }
+  let lastFocus=null;
+  function trapFocus(e){ if(overlay.style.display!=='block') return; if(e.key!=='Tab') return; const focusables=[...overlay.querySelectorAll('button,[tabindex]')].filter(el=>!el.disabled); if(!focusables.length) return; const first=focusables[0], last=focusables[focusables.length-1]; if(e.shiftKey){ if(document.activeElement===first){ e.preventDefault(); last.focus(); } } else { if(document.activeElement===last){ e.preventDefault(); first.focus(); } } }
+  function open(){ overlay.style.display='block'; lastFocus=document.activeElement; updatePreview(); updateSelInfo(); // focus first tab
+    const firstTab=tabsEl.querySelector('.custTabBtn'); if(firstTab) firstTab.focus(); document.addEventListener('keydown',trapFocus); }
+  function close(){ overlay.style.display='none'; document.removeEventListener('keydown',trapFocus); if(lastFocus && lastFocus.focus) lastFocus.focus(); }
   openBtn.addEventListener('click',open); closeBtn.addEventListener('click',close); overlay.addEventListener('click',e=>{ if(e.target===overlay) close(); });
   window.addEventListener('keydown',e=>{ if(e.key==='Escape' && overlay.style.display==='block') close(); });
+  // Keyboard shortcuts while open: Ctrl+ArrowLeft/Right to switch tabs
+  window.addEventListener('keydown',e=>{ if(overlay.style.display!=='block') return; if(e.ctrlKey && (e.key==='ArrowRight' || e.key==='ArrowLeft')){ e.preventDefault(); const idx=categories.indexOf(activeCat); let ni=idx + (e.key==='ArrowRight'?1:-1); if(ni<0) ni=categories.length-1; if(ni>=categories.length) ni=0; setActive(categories[ni]); const firstItem=grid.querySelector('.custItem'); if(firstItem) firstItem.focus(); }});
 
   function drawPlayerPreview(ctx){ ctx.save(); ctx.clearRect(0,0,previewCanvas.width,previewCanvas.height); ctx.scale(2.5,2.5); ctx.translate(20,30); // base pos
     // mimic player body using current customization
