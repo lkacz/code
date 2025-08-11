@@ -220,6 +220,18 @@
     }
   }
 
+  // --- Steering Helpers (must be defined before update uses it) ---
+  function applySeparation(m){
+    // Look in neighboring grid cells only (same-species simple avoidance)
+    const baseKey = m._cellKey; if(!baseKey) return; const [cxStr, cyStr] = baseKey.split(','); const cx=+cxStr, cy=+cyStr;
+    for(let gx=cx-1; gx<=cx+1; gx++){
+      for(let gy=cy-1; gy<=cy+1; gy++){
+        const set = grid.get(gx+','+gy); if(!set) continue; for(const o of set){ if(o===m) continue; if(o.id!==m.id) continue; const dx=m.x-o.x; const dy=m.y-o.y; const d2=dx*dx+dy*dy; const minDist=0.6; if(d2>0 && d2 < minDist*minDist){ const d=Math.sqrt(d2); const push=(minDist-d)/d*0.5; m.vx += dx*push; m.vy += dy*push*0.2; o.vx -= dx*push; o.vy -= dy*push*0.2; }
+        }
+      }
+    }
+  }
+
   function isAggro(specId){ const exp=speciesAggro[specId]; return exp && exp> Date.now(); }
 
   function setAggro(specId){ speciesAggro[specId] = Date.now() + 5*60*1000; }
@@ -373,18 +385,6 @@
         for(const k in data.aggro){ const exp=data.aggro[k]; if(typeof exp==='number'){ if(exp>now) speciesAggro[k]=exp; else if(now-exp < AGGRO_SKEW_GRACE_MS){ speciesAggro[k]= now + 5000; } }
         }
       }
-  }
-
-  // --- Steering Helpers ---
-  function applySeparation(m){
-    // Look in neighboring grid cells only
-    const baseKey = m._cellKey; if(!baseKey) return; const [cxStr, cyStr] = baseKey.split(','); const cx=+cxStr, cy=+cyStr;
-    for(let gx=cx-1; gx<=cx+1; gx++){
-      for(let gy=cy-1; gy<=cy+1; gy++){
-        const set = grid.get(gx+','+gy); if(!set) continue; for(const o of set){ if(o===m) continue; if(o.id!==m.id) continue; const dx=m.x-o.x; const dy=m.y-o.y; const d2=dx*dx+dy*dy; const minDist=0.6; if(d2>0 && d2 < minDist*minDist){ const d=Math.sqrt(d2); const push=(minDist-d)/d*0.5; m.vx += dx*push; m.vy += dy*push*0.2; o.vx -= dx*push; o.vy -= dy*push*0.2; }
-        }
-      }
-    }
   }
 
   function enforceAquatic(m, spec, getTile, dt){
