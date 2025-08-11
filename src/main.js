@@ -79,9 +79,11 @@ const tools={basic:1,stone:2,diamond:4};
 // Inventory counts for placeable tiles
 const inv={grass:0,sand:0,stone:0,diamond:0,wood:0,leaf:0,snow:0,water:0,tools:{stone:false,diamond:false}};
 // Hotbar (slots triggered by keys 4..9)
+// HOTBAR_ORDER now mutable and can include CHEST_* pseudo entries (only placeable in god mode)
 const HOTBAR_ORDER=['GRASS','SAND','STONE','WOOD','LEAF','SNOW','WATER'];
 let hotbarIndex=0; // 0..length-1
 function selectedTileId(){ const name=HOTBAR_ORDER[hotbarIndex]; return T[name]; }
+function isChestSelection(name){ return name==='CHEST_COMMON'||name==='CHEST_RARE'||name==='CHEST_EPIC'; }
 function cycleHotbar(idx){ if(idx<0||idx>=HOTBAR_ORDER.length) return; hotbarIndex=idx; updateHotbarSel(); saveState(); }
 // Persistence key
 const SAVE_KEY='mm_inv_v1';
@@ -416,6 +418,13 @@ function tryPlace(tx,ty){ if(getTile(tx,ty)!==T.AIR) return; // not empty
  // prevent placing inside player bbox
  if(tx+0.001 > player.x - player.w/2 && tx < player.x + player.w/2 && ty+1 > player.y - player.h/2 && ty < player.y + player.h/2){ return; }
  const below=getTile(tx,ty+1); const id=selectedTileId();
+ // Chest placement (only god mode). Allow floating for convenience.
+ const selName=HOTBAR_ORDER[hotbarIndex];
+ if(isChestSelection(selName)){
+	 if(!godMode) { msg('Tylko w trybie Boga'); return; }
+	 setTile(tx,ty, T[selName]);
+	 return;
+ }
  // Allow unsupported placement only for sand & water (fluids fall/spread); others need support unless godMode
  if(below===T.AIR && !godMode && id!==T.SAND && id!==T.WATER) return;
  if(!haveBlocksFor(id)){ msg('Brak bloków'); return; }
@@ -431,7 +440,21 @@ function updateHotbarCounts(){ const map={GRASS:'grass',SAND:'sand',STONE:'stone
 function updateHotbarSel(){ document.querySelectorAll('.hotSlot').forEach((el,i)=>{ if(i===hotbarIndex) el.classList.add('sel'); else el.classList.remove('sel'); }); }
 function saveState(){ try{ const data={inv,hotbarIndex,tool:player.tool}; localStorage.setItem(SAVE_KEY, JSON.stringify(data)); }catch(e){} }
 function loadState(){ try{ const raw=localStorage.getItem(SAVE_KEY); if(!raw) return; const data=JSON.parse(raw); if(data && data.inv){ for(const k in inv){ if(k==='tools') continue; if(typeof data.inv[k]==='number') inv[k]=data.inv[k]; } if(data.inv.tools){ inv.tools.stone=!!data.inv.tools.stone; inv.tools.diamond=!!data.inv.tools.diamond; } } if(typeof data.hotbarIndex==='number') hotbarIndex=Math.min(HOTBAR_ORDER.length-1, Math.max(0,data.hotbarIndex)); if(data.tool && ['basic','stone','diamond'].includes(data.tool)) player.tool=data.tool; }catch(e){} }
-document.querySelectorAll('.hotSlot').forEach((el,i)=>{ el.addEventListener('click',()=>{ cycleHotbar(i); }); });
+// Hotbar slot click: select OR (Shift/click again) open type remap popup
+const hotSelectMenu=document.getElementById('hotSelectMenu');
+const hotSelectOptions=document.getElementById('hotSelectOptions');
+let hotSelectSlotIndex=-1;
+function closeHotSelect(){ if(hotSelectMenu){ hotSelectMenu.style.display='none'; hotSelectSlotIndex=-1; } }
+function openHotSelect(slot,anchorEl){ if(!hotSelectMenu) return; hotSelectSlotIndex=slot; hotSelectOptions.innerHTML='';
+	const baseTypes=[
+		{k:'GRASS',label:'Trawa'}, {k:'SAND',label:'Piasek'}, {k:'STONE',label:'Kamień'}, {k:'WOOD',label:'Drewno'}, {k:'LEAF',label:'Liść'}, {k:'SNOW',label:'Śnieg'}, {k:'WATER',label:'Woda'}
+	];
+	let types=[...baseTypes];
+	if(godMode){ types.push({k:'CHEST_COMMON',label:'Skrzynia zwykła'}); types.push({k:'CHEST_RARE',label:'Skrzynia rzadka'}); types.push({k:'CHEST_EPIC',label:'Skrzynia epicka'}); }
+	types.forEach(t=>{ const b=document.createElement('button'); b.textContent=t.label; b.style.cssText='text-align:left; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.15); color:#fff; border-radius:8px; padding:4px 8px; cursor:pointer; font-size:12px;'; if(HOTBAR_ORDER[slot]===t.k) b.style.outline='2px solid #2c7ef8'; b.addEventListener('click',()=>{ HOTBAR_ORDER[slot]=t.k; closeHotSelect(); cycleHotbar(slot); msg('Slot '+(slot+4)+' -> '+t.label); }); hotSelectOptions.appendChild(b); });
+	const rect=anchorEl.getBoundingClientRect(); hotSelectMenu.style.display='block'; hotSelectMenu.style.left=(rect.left + rect.width/2)+'px'; hotSelectMenu.style.top=(rect.top - 8)+'px'; hotSelectMenu.style.transform='translate(-50%,-100%)'; }
+document.addEventListener('click',e=>{ if(hotSelectMenu && hotSelectMenu.style.display==='block'){ if(!hotSelectMenu.contains(e.target) && !(e.target.closest && e.target.closest('.hotSlot'))){ closeHotSelect(); } }});
+document.querySelectorAll('.hotSlot').forEach((el,i)=>{ el.addEventListener('click',e=>{ if(e.shiftKey || (hotbarIndex===i && !isChestSelection(HOTBAR_ORDER[i]) && !isChestSelection(HOTBAR_ORDER[hotbarIndex]) && godMode)) { openHotSelect(i,el); } else { cycleHotbar(i); } }); });
 // Left click mining convenience
 canvas.addEventListener('pointerdown',e=>{ const rect=canvas.getBoundingClientRect(); const mx=(e.clientX-rect.left)/zoom/DPR + camX*TILE; const my=(e.clientY-rect.top)/zoom/DPR + camY*TILE; const tx=Math.floor(mx/TILE); const ty=Math.floor(my/TILE); if(e.button===0){ const dx=tx - Math.floor(player.x); const dy=ty - Math.floor(player.y); if(Math.abs(dx)<=2 && Math.abs(dy)<=2){ mineDir.dx = Math.sign(dx)||0; mineDir.dy = Math.sign(dy)||0; startMine(); } } else if(e.button===2){ const t=getTile(tx,ty); const info=MM.INFO[t]; if(info && info.chestTier && MM.chests){ const res=MM.chests.openChestAt(tx,ty); if(res){ msg('Skrzynia '+info.chestTier+': +'+res.items.length+' przedm.'); if(window.updateDynamicCustomization) updateDynamicCustomization(); } } }});
 

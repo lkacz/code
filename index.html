@@ -132,6 +132,12 @@
   <div class="hotSlot" data-key="9" data-type="SNOW"><span class="key">9</span><span>śnieg</span><span class="count" id="hotCntSNOW">0</span></div>
   <div class="hotSlot" data-key="0" data-type="WATER"><span class="key">0</span><span>woda</span><span class="count" id="hotCntWATER">0</span></div>
     </div>
+      <!-- Dynamic selection popover for remapping slot resource (includes chests in God mode) -->
+      <div id="hotSelectMenu" style="position:absolute; display:none; z-index:1000; background:rgba(15,18,26,.96); border:1px solid rgba(255,255,255,.18); border-radius:12px; padding:6px 8px; box-shadow:0 8px 24px -4px rgba(0,0,0,.55); font-size:12px; min-width:170px; max-width:240px;">
+        <div style="font-weight:600; margin:2px 0 6px; opacity:.9">Wybierz typ</div>
+        <div id="hotSelectOptions" style="display:flex; flex-direction:column; gap:4px;"></div>
+        <div style="margin-top:6px; font-size:10px; opacity:.6;">Skrzynie dostępne tylko w trybie Boga.</div>
+      </div>
     <div id="errorBox" role="alert"></div>
   </div>
   <script src="src/engine/constants.js"></script>
@@ -141,6 +147,7 @@
   <script src="src/engine/falling.js"></script>
   <script src="src/engine/water.js"></script>
   <script src="src/engine/cape.js"></script>
+  <script src="src/engine/chests.js"></script>
   <script src="src/customization.js"></script>
   <script src="src/main.js"></script>
 
