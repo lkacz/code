@@ -56,18 +56,10 @@ function setTile(x,y,v){ WORLD.setTile(x,y,v); }
 
 // --- Gracz / inwentarz ---
 const player={x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,facing:1,tool:'basic'};
-// Global customization state (persist later) – 5 options each (cape, eyes, outfit)
+// Global customization state comes from customization.js (advanced system)
 window.MM = window.MM || {};
-const CUST_KEY='mm_simplecust_v1';
 const DEFAULT_CUST={ capeStyle:'classic', capeColor:'#b91818', eyeStyle:'bright', outfitStyle:'default', outfitColor:'#f4c05a' };
-function loadCustomization(){ try{ const raw=localStorage.getItem(CUST_KEY); if(raw){ const data=JSON.parse(raw); MM.customization=Object.assign({},DEFAULT_CUST,data); } else { MM.customization=Object.assign({},DEFAULT_CUST); } }catch(e){ MM.customization=Object.assign({},DEFAULT_CUST); } }
-function saveCustomization(){ try{ localStorage.setItem(CUST_KEY, JSON.stringify(MM.customization)); }catch(e){} }
-loadCustomization();
-// Init select UI once DOM is ready (script at end so elements exist)
-(function initSimpleCust(){ const capeSel=document.getElementById('selCapeStyle'); const eyeSel=document.getElementById('selEyeStyle'); const outfitSel=document.getElementById('selOutfitStyle'); if(!capeSel||!eyeSel||!outfitSel) return; capeSel.value=MM.customization.capeStyle; eyeSel.value=MM.customization.eyeStyle; outfitSel.value=MM.customization.outfitStyle; function upd(){ saveCustomization(); }
-	capeSel.addEventListener('change',()=>{ MM.customization.capeStyle=capeSel.value; upd(); });
-	eyeSel.addEventListener('change',()=>{ MM.customization.eyeStyle=eyeSel.value; upd(); });
-	outfitSel.addEventListener('change',()=>{ MM.customization.outfitStyle=outfitSel.value; upd(); });})();
+MM.customization = Object.assign({}, DEFAULT_CUST, MM.customization||{});
 const tools={basic:1,stone:2,diamond:4};
 // Inventory counts for placeable tiles
 const inv={grass:0,sand:0,stone:0,diamond:0,wood:0,leaf:0,snow:0,water:0,tools:{stone:false,diamond:false}};

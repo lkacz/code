@@ -90,29 +90,8 @@
             <div class="hint">Mnożnik wysokości pojedynczych źdźbeł.</div>
           </div>
           <div class="group" style="flex-direction:column; align-items:stretch; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;">
-            <label style="font-size:12px; font-weight:600;">Styl postaci</label>
-            <label style="font-size:11px; display:flex; flex-direction:column; gap:2px;">Peleryna
-              <select id="selCapeStyle" style="background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:6px; padding:4px 6px; font-size:12px;">
-                <option value="classic">klasyczna</option>
-                <option value="triangle">trójkątna</option>
-                <option value="royal">królewska</option>
-              </select>
-            </label>
-            <label style="font-size:11px; display:flex; flex-direction:column; gap:2px;">Oczy
-              <select id="selEyeStyle" style="background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:6px; padding:4px 6px; font-size:12px;">
-                <option value="bright">jasne</option>
-                <option value="glow">świetliste</option>
-                <option value="sleepy">śpiące</option>
-              </select>
-            </label>
-            <label style="font-size:11px; display:flex; flex-direction:column; gap:2px;">Strój
-              <select id="selOutfitStyle" style="background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:6px; padding:4px 6px; font-size:12px;">
-                <option value="default">podstawowy</option>
-                <option value="miner">górnik</option>
-                <option value="mystic">mistyk</option>
-              </select>
-            </label>
-            <div class="hint">3 proste warianty każdego elementu. Zapis w pamięci przeglądarki.</div>
+            <button id="openCust" class="topbtn" role="menuitem" title="Stylizacja postaci">Stylizacja…</button>
+            <div class="hint">Otwórz zaawansowaną stylizację (peleryny, oczy, stroje).</div>
           </div>
         </div>
       </div>
@@ -162,6 +141,42 @@
   <script src="src/engine/falling.js"></script>
   <script src="src/engine/water.js"></script>
   <script src="src/engine/cape.js"></script>
+  <script src="src/customization.js"></script>
   <script src="src/main.js"></script>
+
+  <!-- Customization overlay -->
+  <style>
+    #custOverlay{ position:fixed; inset:0; background:rgba(5,8,14,.70); backdrop-filter:blur(10px); display:none; z-index:60; color:#eee; font-size:13px; }
+    #custDialog{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:min(1000px,92vw); max-height:84vh; background:rgba(18,22,30,.95); border:1px solid rgba(255,255,255,.12); border-radius:18px; display:flex; gap:18px; padding:18px 20px 20px; box-shadow:0 12px 48px -8px rgba(0,0,0,.65); }
+    #custLeft{ width:260px; display:flex; flex-direction:column; gap:14px; }
+    #custPreviewWrap{ position:relative; background:linear-gradient(180deg,#0d131c,#1b2532); border:1px solid rgba(255,255,255,.12); border-radius:14px; padding:12px; display:flex; align-items:center; justify-content:center; }
+    #custPreview{ width:220px; height:220px; image-rendering:pixelated; }
+    #custTabs{ display:flex; gap:8px; }
+    .custTabBtn{ background:#2c7ef8; color:#fff; border:none; border-radius:999px; padding:6px 14px; font-weight:600; cursor:pointer; font-size:12px; }
+    .custTabBtn.sel{ background:#21a366; }
+    #custRight{ flex:1; display:flex; flex-direction:column; min-width:0; }
+    #custGrid{ flex:1; display:grid; grid-template-columns:repeat(auto-fill,minmax(110px,1fr)); gap:10px; overflow:auto; padding-right:4px; }
+    .custItem{ position:relative; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.18); border-radius:12px; padding:6px 6px 10px; display:flex; flex-direction:column; gap:4px; cursor:pointer; align-items:center; }
+    .custItem.sel{ outline:2px solid #2c7ef8; }
+    .custItem.locked{ filter:grayscale(.8) brightness(.6); cursor:not-allowed; }
+    .custItem canvas{ width:80px; height:80px; image-rendering:pixelated; }
+    .custItem .nm{ font-size:11px; font-weight:600; text-align:center; line-height:1.1; }
+    #custHeader{ display:flex; align-items:center; justify-content:space-between; }
+    #custClose{ background:rgba(255,255,255,.18); border:none; color:#fff; width:40px; height:40px; border-radius:12px; font-size:18px; cursor:pointer; }
+    #custFooter{ margin-top:12px; display:flex; justify-content:space-between; font-size:11px; opacity:.8; }
+  </style>
+  <div id="custOverlay" role="dialog" aria-modal="true" aria-labelledby="custTitle">
+    <div id="custDialog">
+      <div id="custLeft">
+        <div id="custHeader"><h2 id="custTitle" style="margin:0;font-size:18px;">Stylizacja</h2><button id="custClose" aria-label="Zamknij">×</button></div>
+        <div id="custPreviewWrap"><canvas id="custPreview" width="220" height="220"></canvas></div>
+        <div id="custTabs" role="tablist"></div>
+        <div id="custFooter"><span id="custSelInfo">—</span><span>Auto‑zapis</span></div>
+      </div>
+      <div id="custRight">
+        <div id="custGrid" aria-label="Lista elementów"></div>
+      </div>
+    </div>
+  </div>
 </body>
 </html>
