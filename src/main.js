@@ -16,6 +16,8 @@ const VISUAL={animations:true, atmoTint:true};
 const DAY_DURATION=300000; // 5 min
 const NIGHT_DURATION=300000; // 5 min
 const CYCLE_DURATION=DAY_DURATION+NIGHT_DURATION; let cycleStart=performance.now();
+const DAY_FRAC = DAY_DURATION / CYCLE_DURATION; // currently 0.5
+const TWILIGHT_BAND = 0.12; // normalized portion at each boundary for transitions
 // Palettes per biome (0 plains,1 hills,2 mountains) – base keys; we dynamically crossfade near biome borders
 const SKY_PALETTES={
 	0:{ dayTop:'#5da9ff', dayBot:'#cfe9ff', duskTop:'#ff8c3a', duskBot:'#ffd5a1', nightTop:'#091a2e', nightBot:'#0d2238', mount:['#5d7ba0','#4e6889','#3a516d'] },
@@ -42,7 +44,7 @@ function lerp(a,b,t){ return a + (b-a)*t; }
 function lerpColor(c1,c2,t){ const p1=parseInt(c1.slice(1),16); const p2=parseInt(c2.slice(1),16); const r=lerp((p1>>16)&255,(p2>>16)&255,t)|0; const g=lerp((p1>>8)&255,(p2>>8)&255,t)|0; const b=lerp(p1&255,p2&255,t)|0; return '#'+r.toString(16).padStart(2,'0')+g.toString(16).padStart(2,'0')+b.toString(16).padStart(2,'0'); }
 function hexToRgba(hex,a){ const p=parseInt(hex.slice(1),16); const r=(p>>16)&255,g=(p>>8)&255,b=p&255; return `rgba(${r},${g},${b},${a})`; }
 function skyGradientColors(biome,cycleT){ const pal=SKY_PALETTES[biome]||SKY_PALETTES[0]; // legacy helper (discrete) – still used for some fallbacks
-	const dayFrac = DAY_DURATION/CYCLE_DURATION; const nightFrac=NIGHT_DURATION/CYCLE_DURATION; // equal halves
+	const dayFrac = DAY_FRAC; const nightFrac=NIGHT_DURATION/CYCLE_DURATION; // equal halves
 	if(cycleT < dayFrac){ // day segment (0..dayFrac)
 		const t=cycleT/dayFrac; // 0 sunrise -> 1 sunset
 		const twilightBand=0.12; // fraction at each end
@@ -66,8 +68,8 @@ function blendPalette(p1,p2,t){ if(!p2||t<=0) return p1; if(t>=1) return p2; ret
 function computeBiomeBlend(x){ if(!WORLDGEN.valueNoise) return {pal:SKY_PALETTES[WORLDGEN.biomeType?WORLDGEN.biomeType(Math.floor(x)):0], a:0,b:0,t:0}; const v=WORLDGEN.valueNoise(x,220,900); const t1=0.35, t2=0.7, w=0.05; if(v < t1-w){ return {pal:SKY_PALETTES[0], a:0,b:0,t:0}; } if(v>t2+w){ return {pal:SKY_PALETTES[2], a:2,b:2,t:0}; } if(v>=t1-w && v<=t1+w){ const t=smoothstep(t1-w,t1+w,v); return {pal:blendPalette(SKY_PALETTES[0],SKY_PALETTES[1],t), a:0,b:1,t}; } if(v>=t2-w && v<=t2+w){ const t=smoothstep(t2-w,t2+w,v); return {pal:blendPalette(SKY_PALETTES[1],SKY_PALETTES[2],t), a:1,b:2,t}; } if(v<t2){ return {pal:SKY_PALETTES[1], a:1,b:1,t:0}; } return {pal:SKY_PALETTES[2], a:2,b:2,t:0}; }
 function skyGradientFromPalette(pal,cycleT){
 	// Continuous multi-key interpolation for seamless transitions.
-	const dayFrac=DAY_DURATION/CYCLE_DURATION; // 0.5
-	const twilightBand=0.12; // base band for stars/cloud logic
+	const dayFrac=DAY_FRAC; // 0.5
+	const twilightBand=TWILIGHT_BAND; // base band for stars/cloud logic
 	const extend = twilightBand*2; // extended transition width for color blending
 	let top, bottom;
 	if(cycleT < dayFrac){
@@ -113,7 +115,7 @@ function skyGradientFromPalette(pal,cycleT){
 		const breathe = Math.sin(nt*Math.PI*2)*0.04; function mod(col,amt){ const p=parseInt(col.slice(1),16); let r=(p>>16)&255,g=(p>>8)&255,b=p&255; r=Math.round(Math.min(255,Math.max(0,r+amt*10))); g=Math.round(Math.min(255,Math.max(0,g+amt*14))); b=Math.round(Math.min(255,Math.max(0,b+amt*20))); return '#'+r.toString(16).padStart(2,'0')+g.toString(16).padStart(2,'0')+b.toString(16).padStart(2,'0'); } top=mod(top,breathe); bottom=mod(bottom,breathe*0.5); return {top,bottom};
 	}
 }
-let lastCycleInfo={cycleT:0,isDay:true,tDay:0,twilightBand:0.12}; let moonPhaseIndex=0, lastPhaseCycle=-1; const MOON_PHASES=8; // 0 new, 4 full
+let lastCycleInfo={cycleT:0,isDay:true,tDay:0,twilightBand:TWILIGHT_BAND}; let moonPhaseIndex=0, lastPhaseCycle=-1; const MOON_PHASES=8; // 0 new, 4 full
 function drawBackground(){
 	const now=performance.now();
 	// Allow manual debug override of time-of-day if enabled
@@ -130,7 +132,7 @@ function drawBackground(){
 	ctx.globalAlpha=1; const grd=ctx.createLinearGradient(0,0,0,H); grd.addColorStop(0,cols.top); grd.addColorStop(1,cols.bottom); ctx.fillStyle=grd; ctx.fillRect(0,0,W,H);
 	// Subtle low horizon haze band (behind mountains; adds depth). Warmer at sunrise/sunset, cooler at night.
 	(function(){
-		const dayFrac=DAY_DURATION/CYCLE_DURATION; const isDay=cycleT<dayFrac; const tDay=isDay? (cycleT/dayFrac) : ((cycleT-dayFrac)/(1-dayFrac));
+		const dayFrac=DAY_FRAC; const isDay=cycleT<dayFrac; const tDay=isDay? (cycleT/dayFrac) : ((cycleT-dayFrac)/(1-dayFrac));
 		let hueCol;
 		if(isDay){ // blend between dusk warm and day bottom based on distance from twilight
 			const twilight=0.12; const edge=Math.min(1, Math.min(tDay/twilight, (1-tDay)/twilight)); // 1 at midday, 0 near twilight edges
@@ -148,18 +150,19 @@ function drawBackground(){
 		g2.addColorStop(1, hexToRgba(hueCol, isDay?0.12:0.16));
 		ctx.fillStyle=g2; ctx.fillRect(0,hazeTopY,W,hazeBotY-hazeTopY);
 	})();
-	const dayFrac=DAY_DURATION/CYCLE_DURATION; const isDay=cycleT<dayFrac; const tDay=isDay? (cycleT/dayFrac) : ((cycleT-dayFrac)/(1-dayFrac)); const twilightBand=0.12; lastCycleInfo={cycleT,isDay,tDay,twilightBand};
+	const dayFrac=DAY_FRAC; const isDay=cycleT<dayFrac; const tDay=isDay? (cycleT/dayFrac) : ((cycleT-dayFrac)/(1-dayFrac)); const twilightBand=TWILIGHT_BAND; lastCycleInfo={cycleT,isDay,tDay,twilightBand};
 	// Stars first (placed behind sun/moon glow)
 	// Smooth star fade using dual smoothstep edges instead of sharp piecewise
-	function smoothEdge(x,band){ return x<=0?0: x>=band?1: (x/band)*(x/band)*(3-2*(x/band)); }
-	const edgeIn = smoothEdge(tDay, twilightBand*1.4); // how far past sunrise transitions
-	const edgeOut = smoothEdge(1 - tDay, twilightBand*1.4); // how far before sunset transitions
+	function smoothEdge(x,band){ if(x<=0) return 0; if(x>=band) return 1; const n=x/band; return n*n*(3-2*n); }
+	const smoothBand = twilightBand*1.4;
+	const edgeIn = smoothEdge(tDay, smoothBand); // how far past sunrise transitions
+	const edgeOut = smoothEdge(1 - tDay, smoothBand); // how far before sunset transitions
 	let starAlpha = 1 - edgeIn*edgeOut; if(isDay) starAlpha *= 0.9; else starAlpha=1; // day reduces
 	if(starAlpha>0.01){
 		// Far layer (slower drift) — minimize fillStyle churn by grouping colors
-		ctx.save(); const driftX = now*0.000005; const timeFar = now*0.0009; let lastC=null; starsFar.forEach(s=>{ const x = ((s.x + driftX) % 1)*W; const y=(s.y*0.55)*H; const tw=0.5+0.5*Math.sin(timeFar + s.x*40); const a = starAlpha*0.85 * Math.min(1,(0.25+0.75*tw)*s.a); if(a>0.01){ if(s.c!==lastC){ ctx.fillStyle=s.c; lastC=s.c; } ctx.globalAlpha=a; ctx.fillRect(x,y,s.r,s.r); } }); ctx.restore();
+		ctx.save(); const driftX = now*0.000005; const timeFar = now*0.0009; let lastC=null; const sinBaseFar = timeFar; starsFar.forEach(s=>{ const x = ((s.x + driftX) % 1)*W; const y=(s.y*0.55)*H; const tw=0.5+0.5*Math.sin(sinBaseFar + s.x*40); const a = starAlpha*0.85 * Math.min(1,(0.25+0.75*tw)*s.a); if(a>0.01){ if(s.c!==lastC){ ctx.fillStyle=s.c; lastC=s.c; } ctx.globalAlpha=a; ctx.fillRect(x,y,s.r,s.r); } }); ctx.restore();
 		// Near layer (parallax & subtle vertical shimmer) — also color grouped
-		ctx.save(); const pxFactor=(player.x*TILE*0.00008); const timeNear1=now*0.0013; const timeNear2=now*0.0006; let lastC2=null; starsNear.forEach(s=>{ const x = ((s.x + pxFactor + now*0.00001) % 1)*W; const y=(s.y*0.5 + 0.02*Math.sin(timeNear2 + s.x*60))*H; const tw=0.5+0.5*Math.sin(timeNear1 + s.x*55); const a = starAlpha * Math.min(1,(0.35+0.65*tw)*s.a); if(a>0.01){ if(s.c!==lastC2){ ctx.fillStyle=s.c; lastC2=s.c; } ctx.globalAlpha=a; ctx.fillRect(x,y,s.r,s.r); } }); ctx.restore();
+		ctx.save(); const pxFactor=(player.x*TILE*0.00008); const timeNear1=now*0.0013; const timeNear2=now*0.0006; let lastC2=null; const sinBaseNear1=timeNear1, sinBaseNear2=timeNear2; starsNear.forEach(s=>{ const x = ((s.x + pxFactor + now*0.00001) % 1)*W; const y=(s.y*0.5 + 0.02*Math.sin(sinBaseNear2 + s.x*60))*H; const tw=0.5+0.5*Math.sin(sinBaseNear1 + s.x*55); const a = starAlpha * Math.min(1,(0.35+0.65*tw)*s.a); if(a>0.01){ if(s.c!==lastC2){ ctx.fillStyle=s.c; lastC2=s.c; } ctx.globalAlpha=a; ctx.fillRect(x,y,s.r,s.r); } }); ctx.restore();
 	}
 	// Sun
 	function drawBody(frac,radius,color,glowCol){ const ang=lerp(Math.PI*1.05, Math.PI*-0.05, frac); const cx=W*0.5 + Math.cos(ang)*W*0.45; const cy=H*0.82 + Math.sin(ang)*H*0.65; const grd2=ctx.createRadialGradient(cx,cy,radius*0.15,cx,cy,radius); grd2.addColorStop(0,glowCol); grd2.addColorStop(1,'rgba(0,0,0,0)'); ctx.fillStyle=grd2; ctx.beginPath(); ctx.arc(cx,cy,radius,0,Math.PI*2); ctx.fill(); ctx.fillStyle=color; ctx.beginPath(); ctx.arc(cx,cy,radius*0.55,0,Math.PI*2); ctx.fill(); }
@@ -184,7 +187,7 @@ function drawBackground(){
 	ctx.restore();
 	ctx.restore(); // end background
 }
-function applyAtmosphericTint(){ if(!VISUAL.atmoTint) return; const info=lastCycleInfo; const dayFrac=DAY_DURATION/CYCLE_DURATION; const twilight=info.twilightBand; let a=0, col='#000'; if(info.isDay){ // warm twilight glow only
+function applyAtmosphericTint(){ if(!VISUAL.atmoTint) return; const info=lastCycleInfo; const dayFrac=DAY_FRAC; const twilight=info.twilightBand; let a=0, col='#000'; if(info.isDay){ // warm twilight glow only
 	if(info.tDay<twilight){ a = (1 - (info.tDay/twilight)) * 0.10; col='#ff9a4a'; }
 	else if(info.tDay>1-twilight){ a = ((info.tDay-(1-twilight))/twilight) * 0.10; col='#ff8240'; }
 } else { // night cooling overlay
@@ -267,7 +270,96 @@ function selectedTileId(){ const name=HOTBAR_ORDER[hotbarIndex]; return T[name];
 function isChestSelection(name){ return name==='CHEST_COMMON'||name==='CHEST_RARE'||name==='CHEST_EPIC'; }
 function cycleHotbar(idx){ if(idx<0||idx>=HOTBAR_ORDER.length) return; hotbarIndex=idx; updateHotbarSel(); saveState(); }
 // Persistence key
-const SAVE_KEY='mm_inv_v1';
+// --- Persistent Save System (expanded from simple inventory save) ---
+// Versioned schema to allow future migrations
+const SAVE_KEY='mm_save_v3';
+const OLD_SAVE_KEYS=['mm_save_v2'];
+// We keep old key for one-time migration
+const LEGACY_INV_KEY='mm_inv_v1';
+// --- Compression helpers (RLE + base64) ---
+function _b64FromBytes(bytes){ let bin=''; for(let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]); return btoa(bin); }
+function _bytesFromB64(b64){ const bin=atob(b64); const out=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) out[i]=bin.charCodeAt(i); return out; }
+function encodeRLE(arr){ const out=[]; for(let i=0;i<arr.length;){ const v=arr[i]; let run=1; while(i+run<arr.length && arr[i+run]===v && run<65535) run++; let remain=run; while(remain>0){ const take=Math.min(255,remain); out.push(v,take); remain-=take; } i+=run; } return _b64FromBytes(Uint8Array.from(out)); }
+function decodeRLE(b64,totalLen){ const bytes=_bytesFromB64(b64); const out=new Uint8Array(totalLen); let oi=0; for(let i=0;i<bytes.length; i+=2){ const v=bytes[i]; const count=bytes[i+1]; for(let r=0;r<count;r++) out[oi++]=v; } return out; }
+function encodeRaw(arr){ return _b64FromBytes(arr); }
+function decodeRaw(b64){ return _bytesFromB64(b64); }
+function gatherModifiedChunks(){ const out=[]; const worldMap=WORLD._world; if(!worldMap) return out; for(const [k,arr] of worldMap.entries()){ const cx=parseInt(k.slice(1)); const ver=WORLD._versions.get(k)||0; if(ver===0) continue; out.push({cx,data:encodeRLE(arr),rle:true}); } return out; }
+function restoreModifiedChunks(list){ if(!Array.isArray(list)) return; for(const ch of list){ if(typeof ch.cx!=='number'||!ch.data) continue; const arr = ch.rle? decodeRLE(ch.data, CHUNK_W*WORLD_H): decodeRaw(ch.data); WORLD._world.set('c'+ch.cx, arr); WORLD._versions.set('c'+ch.cx,1); } }
+function exportSeen(){ const out=[]; for(const [cx,buf] of seenChunks.entries()){ out.push({cx,data:encodeRLE(buf),rle:true}); } return out; }
+function importSeen(list){ if(!Array.isArray(list)) return; seenChunks.clear(); for(const row of list){ if(typeof row.cx!=='number'||!row.data) continue; const arr=row.rle? decodeRLE(row.data, SEEN_BYTES): decodeRaw(row.data); seenChunks.set(row.cx, arr); } }
+function exportWater(){ if(MM.water && MM.water.snapshot) return MM.water.snapshot(); }
+function exportFalling(){ if(MM.fallingSolids && MM.fallingSolids.snapshot) return MM.fallingSolids.snapshot(); }
+function importWater(s){ if(MM.water && MM.water.restore) MM.water.restore(s); }
+function importFalling(s){ if(MM.fallingSolids && MM.fallingSolids.restore) MM.fallingSolids.restore(s); }
+function exportPlayer(){ return {x:player.x,y:player.y,vx:player.vx||0,vy:player.vy||0,tool:player.tool,facing:player.facing||1,jumps:player.jumps||0}; }
+function importPlayer(p){ if(!p) return; if(typeof p.x==='number') player.x=p.x; if(typeof p.y==='number') player.y=p.y; if(typeof p.vx==='number') player.vx=p.vx; if(typeof p.vy==='number') player.vy=p.vy; if(['basic','stone','diamond'].includes(p.tool)) player.tool=p.tool; if(p.facing===1||p.facing===-1) player.facing=p.facing; if(typeof p.jumps==='number') player.jumps=p.jumps; }
+function exportCamera(){ return {camX,camY,zoom:zoomTarget}; }
+function importCamera(c){ if(!c) return; if(typeof c.camX==='number') camX=camSX=c.camX; if(typeof c.camY==='number') camY=camSY=c.camY; if(typeof c.zoom==='number'){ zoom=zoomTarget=Math.min(4,Math.max(0.25,c.zoom)); } }
+function exportInventory(){ return JSON.parse(JSON.stringify(inv)); }
+function importInventory(src){ if(!src) return; for(const k in inv){ if(k==='tools') continue; if(typeof src[k]==='number') inv[k]=src[k]; }
+	if(src.tools){ inv.tools.stone=!!src.tools.stone; inv.tools.diamond=!!src.tools.diamond; }
+}
+function exportHotbar(){ return {order:[...HOTBAR_ORDER], index:hotbarIndex}; }
+function importHotbar(h){ if(!h) return; if(Array.isArray(h.order) && h.order.length===HOTBAR_ORDER.length){ for(let i=0;i<HOTBAR_ORDER.length;i++){ if(typeof h.order[i]==='string') HOTBAR_ORDER[i]=h.order[i]; } }
+	if(typeof h.index==='number') hotbarIndex=Math.min(HOTBAR_ORDER.length-1, Math.max(0,h.index)); }
+function exportTime(){ // store absolute cycle fraction + moon phase index + cycle start ref shift
+	const now=performance.now(); const cycleT=((now-cycleStart)%CYCLE_DURATION)/CYCLE_DURATION; return {cycleT, moonPhaseIndex, lastPhaseCycle}; }
+function importTime(t){ if(!t) return; if(typeof t.cycleT==='number'){ const now=performance.now(); cycleStart = now - t.cycleT*CYCLE_DURATION; }
+	if(typeof t.moonPhaseIndex==='number') moonPhaseIndex=t.moonPhaseIndex%8; if(typeof t.lastPhaseCycle==='number') lastPhaseCycle=t.lastPhaseCycle; }
+function exportCustomization(){ return MM && MM.customization ? JSON.parse(JSON.stringify(MM.customization)):null; }
+function importCustomization(c){ if(!c||!MM||!MM.customization) return; // merge only known keys
+	['capeStyle','eyeStyle','outfitStyle','unlocked','dynamicLoot','discarded'].forEach(k=>{ if(c[k]!=null) MM.customization[k]=c[k]; }); if(MM.computeActiveModifiers) MM.activeModifiers=MM.computeActiveModifiers(MM.customization); if(window.updateDynamicCustomization) updateDynamicCustomization(); }
+function exportGod(){ return {godMode, revealAll}; }
+function importGod(g){ if(!g) return; if(typeof g.godMode==='boolean'){ godMode=g.godMode; updateGodBtn(); } if(typeof g.revealAll==='boolean') revealAll=g.revealAll; }
+function exportLootInbox(){ if(!window.lootInbox) return null; const unread=(window.updateLootInboxIndicator && document.getElementById('lootInboxCount'))? (parseInt(document.getElementById('lootInboxCount').textContent)||0):0; return {items:window.lootInbox, unread}; }
+function importLootInbox(data){ if(!data||!window.lootInbox) return; if(Array.isArray(data.items)) window.lootInbox=data.items; if(typeof data.unread==='number'){ // set indicator
+		if(window.updateLootInboxIndicator){ // hack: store unread count in closure variable by simulating save
+			// direct localStorage already handled by existing system, so just trigger indicator update afterwards
+			// (we can't easily set internal variable; rely on existing load in that system)
+		}
+	} if(window.updateLootInboxIndicator) updateLootInboxIndicator(); }
+function buildSaveObject(){ return {
+	v:3,
+	seed: WORLDGEN.worldSeed,
+	world:{ modified: gatherModifiedChunks() },
+	player: exportPlayer(),
+	camera: exportCamera(),
+	inv: exportInventory(),
+	hotbar: exportHotbar(),
+	time: exportTime(),
+	seen: exportSeen(),
+	customization: exportCustomization(),
+	god: exportGod(),
+	lootInbox: exportLootInbox(),
+	systems:{ water:exportWater(), falling:exportFalling() },
+	savedAt: Date.now()
+}; }
+function saveGame(manual){ try{ const data=buildSaveObject(); const json=JSON.stringify(data); localStorage.setItem(SAVE_KEY,json); if(manual) msg('Zapisano grę ('+((json.length/1024)|0)+' KB)'); }catch(e){ console.warn('Save failed',e); if(manual) msg('Błąd zapisu'); } }
+function loadGame(){ try{ let raw=localStorage.getItem(SAVE_KEY); if(!raw){ for(const k of OLD_SAVE_KEYS){ raw=localStorage.getItem(k); if(raw) break; } }
+	if(!raw){ const leg=localStorage.getItem(LEGACY_INV_KEY); if(leg){ try{ const li=JSON.parse(leg); if(li){ importInventory(li.inv); if(li.tool) player.tool=li.tool; if(typeof li.hotbarIndex==='number') hotbarIndex=li.hotbarIndex; } }catch(e){} } return false; }
+	const data=JSON.parse(raw); if(!data|| typeof data!=='object') return false; const ver=data.v||2;
+	if(data.seed!=null && data.seed!==WORLDGEN.worldSeed){ if(WORLDGEN.setSeedFromInput){ WORLDGEN.worldSeed=data.seed; if(WORLD.clearHeights) WORLD.clearHeights(); } WORLD.clear(); }
+	if(data.world && Array.isArray(data.world.modified)) restoreModifiedChunks(data.world.modified);
+	importPlayer(data.player);
+	if(ver>=3 && data.camera) importCamera(data.camera); else if(data.camera) importCamera(data.camera); // camera existed in v2 here already
+	importInventory(data.inv);
+	importHotbar(data.hotbar);
+	importTime(data.time);
+	importSeen(data.seen);
+	importCustomization(data.customization);
+	importGod(data.god);
+	importLootInbox(data.lootInbox);
+	if(data.systems){ importWater(data.systems.water); importFalling(data.systems.falling); }
+	updateInventory(); updateHotbarSel(); placePlayer(true);
+	return true;
+}catch(e){ console.warn('Load failed',e); return false; }}
+// Auto-save interval (60s)
+setInterval(()=>{ saveGame(false); },60000);
+// Expose manual save/load via menu buttons (injected later if menu exists)
+window.__injectSaveButtons = function(){ const menuPanel=document.getElementById('menuPanel'); if(!menuPanel || document.getElementById('saveGameBtn')) return; const group=document.createElement('div'); group.className='group'; group.style.cssText='display:flex; gap:6px; flex-wrap:wrap;'; const saveBtn=document.createElement('button'); saveBtn.id='saveGameBtn'; saveBtn.textContent='Zapisz'; const loadBtn=document.createElement('button'); loadBtn.id='loadGameBtn'; loadBtn.textContent='Wczytaj'; [saveBtn,loadBtn].forEach(b=>{ b.style.minWidth='72px'; b.style.flex='1'; }); saveBtn.addEventListener('click',()=>{ saveGame(true); }); loadBtn.addEventListener('click',()=>{ const ok=loadGame(); msg(ok?'Wczytano zapis':'Brak zapisu'); }); group.appendChild(saveBtn); group.appendChild(loadBtn); menuPanel.appendChild(group); };
+document.addEventListener('DOMContentLoaded',()=>{ setTimeout(()=>window.__injectSaveButtons(),200); });
+// Override lightweight saveState() calls to point at full save for backwards compatibility
+function saveState(){ saveGame(false); }
 function canCraftStone(){return inv.stone>=10;}
 function craftStone(){ if(canCraftStone()){ inv.stone-=10; inv.tools.stone=true; msg('Kilof kamienny (2)'); updateInventory(); }}
 function canCraftDiamond(){return inv.diamond>=5;}
@@ -650,8 +742,7 @@ function tryPlace(tx,ty){ if(getTile(tx,ty)!==T.AIR) return; // not empty
 }
 function updateHotbarCounts(){ const map={GRASS:'grass',SAND:'sand',STONE:'stone',WOOD:'wood',LEAF:'leaf',SNOW:'snow',WATER:'water'}; for(const k in map){ const el=document.getElementById('hotCnt'+k); if(el) el.textContent=inv[map[k]]; } }
 function updateHotbarSel(){ document.querySelectorAll('.hotSlot').forEach((el,i)=>{ if(i===hotbarIndex) el.classList.add('sel'); else el.classList.remove('sel'); }); }
-function saveState(){ try{ const data={inv,hotbarIndex,tool:player.tool}; localStorage.setItem(SAVE_KEY, JSON.stringify(data)); }catch(e){} }
-function loadState(){ try{ const raw=localStorage.getItem(SAVE_KEY); if(!raw) return; const data=JSON.parse(raw); if(data && data.inv){ for(const k in inv){ if(k==='tools') continue; if(typeof data.inv[k]==='number') inv[k]=data.inv[k]; } if(data.inv.tools){ inv.tools.stone=!!data.inv.tools.stone; inv.tools.diamond=!!data.inv.tools.diamond; } } if(typeof data.hotbarIndex==='number') hotbarIndex=Math.min(HOTBAR_ORDER.length-1, Math.max(0,data.hotbarIndex)); if(data.tool && ['basic','stone','diamond'].includes(data.tool)) player.tool=data.tool; }catch(e){} }
+// (legacy saveState/loadState removed – unified saveGame/loadGame used everywhere)
 // Hotbar slot click: select OR (Shift/click again) open type remap popup
 const hotSelectMenu=document.getElementById('hotSelectMenu');
 const hotSelectOptions=document.getElementById('hotSelectOptions');
@@ -777,8 +868,9 @@ let frames=0,lastFps=performance.now(); function updateFps(now){ frames++; if(no
 
 // Spawn
 function placePlayer(skipMsg){ const x=0; ensureChunk(0); let y=0; while(y<WORLD_H-1 && getTile(x,y)===T.AIR) y++; player.x=x+0.5; player.y=y-1; revealAround(); camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; initScarf(); if(!skipMsg) msg('Seed '+worldSeed); }
-loadState();
-placePlayer(); updateInventory(); updateGodBtn(); updateHotbarSel(); msg('Sterowanie: A/D/W + LPM kopie, PPM stawia (4-9 wybór). G=Bóg (nieskończone skoki), M=Mapa, C=Centrum, H=Pomoc');
+const loaded=loadGame();
+if(!loaded){ placePlayer(); }
+updateInventory(); updateGodBtn(); updateHotbarSel(); if(!loaded) msg('Sterowanie: A/D/W + LPM kopie, PPM stawia (4-9 wybór). G=Bóg (nieskończone skoki), M=Mapa, C=Centrum, H=Pomoc'); else msg('Wczytano zapis – miłej gry!');
 // Ghost preview placement
 let ghostTile=null, ghostX=0, ghostY=0;
 canvas.addEventListener('pointermove',e=>{ const rect=canvas.getBoundingClientRect(); const mx=(e.clientX-rect.left)/zoom/DPR + camX*TILE; const my=(e.clientY-rect.top)/zoom/DPR + camY*TILE; const tx=Math.floor(mx/TILE); const ty=Math.floor(my/TILE); if(getTile(tx,ty)===T.AIR){ ghostX=tx; ghostY=ty; ghostTile=selectedTileId(); } else ghostTile=null; });

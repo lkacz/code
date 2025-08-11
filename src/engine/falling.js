@@ -79,6 +79,8 @@ window.MM = window.MM || {};
       if(t===T.STONE){ processStoneAt(x+dx,yy,processed); }
       break; } } }
   function reset(){ active.length=0; sandActive.length=0; }
+  function snapshot(){ try{ return {v:1, active:active.map(b=>({x:b.x,y:b.yFloat,type:b.type,vy:b.vy})), sand:sandActive.map(s=>({x:s.x,y:s.yFloat,vy:s.vy}))}; }catch(e){ return null; } }
+  function restore(s){ reset(); if(!s||typeof s!=='object') return; try{ if(Array.isArray(s.active)) for(const b of s.active){ if(b&&typeof b.x==='number'){ active.push({x:b.x,yFloat:b.y||0,type:b.type,vy:b.vy||0}); } } if(Array.isArray(s.sand)) for(const g of s.sand){ if(g&&typeof g.x==='number'){ sandActive.push({x:g.x,yFloat:g.y||0,vy:g.vy||0}); } } }catch(e){} }
   function recheckNeighborhood(x,y){ const processed=new Set(); for(let dx=-1; dx<=1; dx++){ for(let yy=y; yy>=0; yy--){ const t=getTile(x+dx,yy); if(t===T.AIR) continue; if(t===T.DIAMOND){ if(getTile(x+dx,yy+1)===T.AIR){ setTile(x+dx,yy,T.AIR); spawn(x+dx,yy,T.DIAMOND); continue; } } if(t===T.SAND){ if(getTile(x+dx,yy+1)===T.AIR){ setTile(x+dx,yy,T.AIR); spawnSand(x+dx,yy); continue; } } if(t===T.STONE){ processStoneAt(x+dx,yy,processed); } break; } } }
   // --- Sand relaxation after placement (handles tall vertical lines becoming piles) ---
   function afterPlacement(x,y){ // x,y tile placed (any type)
@@ -125,5 +127,5 @@ window.MM = window.MM || {};
       }
     }
   }
-  MM.fallingSolids={update,draw,onTileRemoved,maybeStart,reset,recheckNeighborhood,afterPlacement};
+  MM.fallingSolids={update,draw,onTileRemoved,maybeStart,reset,recheckNeighborhood,afterPlacement,snapshot,restore};
 })();

@@ -182,6 +182,10 @@ window.MM = window.MM || {};
   }
 
   function reset(){ active.clear(); ripples.length=0; lateralCooldown.clear(); }
+  function snapshot(){
+    try{ return {v:1, active:[...active].map(k=>k.split(',').map(Number)), ripples:ripples.map(r=>({L:r.L,R:r.R,y:r.y,ttl:r.ttl,orig:r.originalTTL})), lateral:[...lateralCooldown.entries()], passiveScanOffset, pressureIntervalCurrent, pressureAcc, lateralAcc}; }catch(e){ return null; }
+  }
+  function restore(s){ if(!s||typeof s!=='object') return; reset(); try{ if(Array.isArray(s.active)) for(const a of s.active){ if(Array.isArray(a)&&a.length===2){ active.add(a[0]+","+a[1]); } } if(Array.isArray(s.ripples)) for(const r of s.ripples){ ripples.push({L:r.L|0,R:r.R|0,y:r.y|0,ttl:r.ttl|0,originalTTL:r.orig||r.ttl}); } if(Array.isArray(s.lateral)) for(const [x,val] of s.lateral){ if(typeof x==='number'&&typeof val==='number') lateralCooldown.set(x,val); } if(typeof s.passiveScanOffset==='number') passiveScanOffset=s.passiveScanOffset; if(typeof s.pressureIntervalCurrent==='number') pressureIntervalCurrent=s.pressureIntervalCurrent; if(typeof s.pressureAcc==='number') pressureAcc=s.pressureAcc; if(typeof s.lateralAcc==='number') lateralAcc=s.lateralAcc; }catch(e){} }
 
   function runPressureLeveling(getTile,setTile){
     const seeds=[...active]; if(!seeds.length) return null; seeds.sort();
@@ -248,5 +252,5 @@ window.MM = window.MM || {};
   function columnHasWater(x, topY, getTile){ for(let dy=-4; dy<=4; dy++){ const yy=topY+dy; if(yy>=0 && yy<WORLD_H && getTile(x,yy)===T.WATER) return true; } return false; }
 
   // (duplicate reset removed; single reset keeps state consistent)
-  MM.water = {update, addSource, drawOverlay, onTileChanged, reset};
+  MM.water = {update, addSource, drawOverlay, onTileChanged, reset, snapshot, restore};
 })();
