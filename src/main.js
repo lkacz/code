@@ -589,6 +589,9 @@ let last=performance.now(); function loop(ts){ const dt=Math.min(0.05,(ts-last)/
 if(!window.__lootPopupInit){
 	window.__lootPopupInit=true;
 	window.lootInbox = window.lootInbox || [];
+	let lootInboxUnread = 0; // separate unread counter so viewing doesn't erase items
+	const LOOT_INBOX_KEY='mm_loot_inbox_v1';
+	try{ const saved=localStorage.getItem(LOOT_INBOX_KEY); if(saved){ const parsed=JSON.parse(saved); if(Array.isArray(parsed.items)){ window.lootInbox = parsed.items; lootInboxUnread = parsed.unread|0; } } }catch(e){}
 	const lootInboxBtn=document.getElementById('lootInboxBtn');
 	const lootInboxCount=document.getElementById('lootInboxCount');
 	const lootPopup=document.getElementById('lootPopup');
@@ -598,7 +601,8 @@ if(!window.__lootPopupInit){
 	const lootKeepAllBtn=document.getElementById('lootKeepAll');
 	const lootCloseBtn=document.getElementById('lootClose');
 	let lootPrevFocus=null;
-	function updateLootInboxIndicator(){ const count=window.lootInbox.length; if(!lootInboxBtn) return; if(count>0){ lootInboxBtn.style.display='inline-block'; lootInboxCount.textContent=''+count; lootInboxBtn.classList.add('pulseNew'); } else { lootInboxBtn.style.display='none'; lootInboxCount.textContent=''; lootInboxBtn.classList.remove('pulseNew'); } }
+	function persistInbox(){ try{ localStorage.setItem(LOOT_INBOX_KEY, JSON.stringify({items:window.lootInbox, unread:lootInboxUnread})); }catch(e){} }
+	function updateLootInboxIndicator(){ const count=lootInboxUnread; if(!lootInboxBtn) return; if(count>0){ lootInboxBtn.style.display='inline-block'; lootInboxCount.textContent=''+count; lootInboxBtn.classList.add('pulseNew'); } else { lootInboxBtn.style.display='none'; lootInboxCount.textContent=''; lootInboxBtn.classList.remove('pulseNew'); } }
 	window.updateLootInboxIndicator=updateLootInboxIndicator;
 	function buildRows(items){ lootItemsBox.innerHTML=''; const all=MM.getCustomizationItems? MM.getCustomizationItems():null; const curSel={cape:MM.customization.capeStyle, eyes:MM.customization.eyeStyle, outfit:MM.customization.outfitStyle}; function cur(kind){ if(!all) return null; const list=kind==='cape'? all.capes: kind==='eyes'? all.eyes: all.outfits; return list.find(i=>i.id===curSel[kind]); }
 		function fmtMult(v){ return (v||1).toFixed(2)+'x'; }
@@ -619,14 +623,16 @@ if(!window.__lootPopupInit){
 			discard.addEventListener('click',()=>{ if(MM.dynamicLoot){ const arr = it.kind==='cape'? MM.dynamicLoot.capes : it.kind==='eyes'? MM.dynamicLoot.eyes : MM.dynamicLoot.outfits; const idx=arr.indexOf(it); if(idx>=0) arr.splice(idx,1); } if(MM.addDiscardedLoot) MM.addDiscardedLoot(it.id); if(MM.chests && MM.chests.saveDynamicLoot) MM.chests.saveDynamicLoot(); disable(); updateLootInboxIndicator(); });
 			btns.appendChild(equip); btns.appendChild(keep); btns.appendChild(discard); row.appendChild(btns); lootItemsBox.appendChild(row); row.__item=it; });
 	}
-	function openInbox(){ if(!window.lootInbox.length){ msg('Brak nowych przedmiotów'); return; } buildRows(window.lootInbox); window.lootInbox.length=0; updateLootInboxIndicator(); lootPopup.classList.add('show'); lootDim.style.display='block'; lootPrevFocus=document.activeElement; installTrap(); const first=lootPopup.querySelector('button'); if(first) first.focus(); }
+	function openInbox(){ if(!window.lootInbox.length){ msg('Brak przedmiotów'); return; } buildRows(window.lootInbox); lootInboxUnread=0; updateLootInboxIndicator(); persistInbox(); lootPopup.classList.add('show'); lootDim.style.display='block'; lootPrevFocus=document.activeElement; installTrap(); const first=lootPopup.querySelector('button'); if(first) first.focus(); }
 	function closeInbox(){ lootPopup.classList.remove('show'); lootDim.style.display='none'; removeTrap(); if(lootPrevFocus && lootPrevFocus.focus) lootPrevFocus.focus(); }
 	function installTrap(){ function handler(e){ if(lootPopup.style.display!=='flex') return; if(e.key==='Escape'){ closeInbox(); return; } if(e.key==='Tab'){ const f=[...lootPopup.querySelectorAll('button')].filter(b=>!b.disabled); if(!f.length) return; const first=f[0], last=f[f.length-1]; if(e.shiftKey){ if(document.activeElement===first){ e.preventDefault(); last.focus(); } } else { if(document.activeElement===last){ e.preventDefault(); first.focus(); } } } } window.addEventListener('keydown',handler); lootPopup.__trapHandler=handler; }
 	function removeTrap(){ if(lootPopup.__trapHandler){ window.removeEventListener('keydown', lootPopup.__trapHandler); lootPopup.__trapHandler=null; } }
 	lootInboxBtn?.addEventListener('click',openInbox);
 	lootCloseBtn?.addEventListener('click',closeInbox); lootDim?.addEventListener('click',closeInbox);
-	lootEquipAllBtn?.addEventListener('click',()=>{ const rows=[...lootItemsBox.querySelectorAll('.lootRow')]; const latest={}; rows.forEach(r=>{ const it=r.__item; if(it) latest[it.kind]=it; }); Object.values(latest).forEach(it=>{ if(it.kind==='cape') MM.customization.capeStyle=it.id; else if(it.kind==='eyes') MM.customization.eyeStyle=it.id; else MM.customization.outfitStyle=it.id; }); if(MM.recomputeModifiers) MM.recomputeModifiers(); window.dispatchEvent(new CustomEvent('mm-customization-change')); closeInbox(); });
+	lootEquipAllBtn?.addEventListener('click',()=>{ const rows=[...lootItemsBox.querySelectorAll('.lootRow')]; const latest={}; rows.forEach(r=>{ const it=r.__item; if(it) latest[it.kind]=it; }); Object.values(latest).forEach(it=>{ if(it.kind==='cape') MM.customization.capeStyle=it.id; else if(it.kind==='eyes') MM.customization.eyeStyle=it.id; else MM.customization.outfitStyle=it.id; }); if(MM.recomputeModifiers) MM.recomputeModifiers(); window.dispatchEvent(new CustomEvent('mm-customization-change')); persistInbox(); closeInbox(); });
 	lootKeepAllBtn?.addEventListener('click',closeInbox);
 	window.addEventListener('keydown',e=>{ if(e.key.toLowerCase()==='i'){ if(lootPopup.classList.contains('show')) closeInbox(); else openInbox(); } });
-	MM.onLootGained = function(items){ if(window.updateDynamicCustomization) updateDynamicCustomization(); if(window.lootInbox){ window.lootInbox.push(...items); updateLootInboxIndicator(); } };
+	MM.onLootGained = function(items){ if(window.updateDynamicCustomization) updateDynamicCustomization(); if(window.lootInbox){ window.lootInbox.push(...items); lootInboxUnread += items.length; updateLootInboxIndicator(); persistInbox(); } };
+	// Initial indicator on load (if persisted)
+	updateLootInboxIndicator();
 }
