@@ -110,6 +110,7 @@
   const grid=document.getElementById('custGrid');
   const previewCanvas=document.getElementById('custPreview');
   const selInfo=document.getElementById('custSelInfo');
+  const statsBox=document.getElementById('custStatsBody');
   if(!openBtn||!overlay||!closeBtn||!tabsEl||!grid||!previewCanvas){
     // Defer until DOM fully parsed (in case script loads before injected markup)
     if(document.readyState!=='complete' && document.readyState!=='interactive'){
@@ -136,7 +137,33 @@
         div.addEventListener('keydown',e=>{ if(e.key==='Enter' || e.key===' ') { e.preventDefault(); choose(); } });
         grid.appendChild(div); }); }
 
-  function updateSelInfo(){ const m=MM.activeModifiers||{}; const mine=(m.mineSpeedMult && m.mineSpeedMult!==1? (' kop:'+(m.mineSpeedMult.toFixed(2)+'x')):''); const mv=(m.moveSpeedMult && m.moveSpeedMult!==1? (' ruch:'+(m.moveSpeedMult.toFixed(2)+'x')):''); const jp=(m.jumpPowerMult && m.jumpPowerMult!==1? (' skokMoc:'+(m.jumpPowerMult.toFixed(2)+'x')):''); selInfo.textContent='Peleryna: '+MM.customization.capeStyle+' (skoki:'+( (m.maxAirJumps||0)+1 )+') | Oczy: '+MM.customization.eyeStyle+' (zasięg:'+(m.visionRadius||10)+') | Strój: '+MM.customization.outfitStyle+mine+mv+jp; }
+  function updateSelInfo(){ const m=MM.activeModifiers||{}; const mine=(m.mineSpeedMult && m.mineSpeedMult!==1? (' kop:'+(m.mineSpeedMult.toFixed(2)+'x')):''); const mv=(m.moveSpeedMult && m.moveSpeedMult!==1? (' ruch:'+(m.moveSpeedMult.toFixed(2)+'x')):''); const jp=(m.jumpPowerMult && m.jumpPowerMult!==1? (' skokMoc:'+(m.jumpPowerMult.toFixed(2)+'x')):''); selInfo.textContent='Peleryna: '+MM.customization.capeStyle+' (skoki:'+( (m.maxAirJumps||0)+1 )+') | Oczy: '+MM.customization.eyeStyle+' (zasięg:'+(m.visionRadius||10)+') | Strój: '+MM.customization.outfitStyle+mine+mv+jp; updateStatsBreakdown(); }
+
+  function statRow(label,total,lines){
+    const wrap=document.createElement('div');
+    const head=document.createElement('div'); head.style.marginTop='4px'; head.innerHTML='<span style="color:#fff">'+label+':</span> <strong>'+total+'</strong>';
+    wrap.appendChild(head);
+    if(lines && lines.length){ const ul=document.createElement('ul'); ul.style.margin='2px 0 4px 12px'; ul.style.padding='0'; lines.forEach(l=>{ const li=document.createElement('li'); li.style.listStyle='disc'; li.textContent=l; ul.appendChild(li); }); wrap.appendChild(ul); }
+    return wrap;
+  }
+  function fmtMult(v){ return (v).toFixed(2)+'x'; }
+  function updateStatsBreakdown(){ if(!statsBox) return; statsBox.innerHTML=''; const sel={
+      cape:ITEMS.capes.find(c=>c.id===MM.customization.capeStyle),
+      eyes:ITEMS.eyes.find(e=>e.id===MM.customization.eyeStyle),
+      outfit:ITEMS.outfits.find(o=>o.id===MM.customization.outfitStyle)
+    };
+    const m=MM.activeModifiers||{};
+    // Vision radius (max rule)
+    const visionLines=[]; Object.values(sel).forEach(it=>{ if(it && typeof it.visionRadius==='number') visionLines.push(it.name+': '+it.visionRadius); }); statsBox.appendChild(statRow('Zasięg widzenia', m.visionRadius||10, visionLines));
+    // Total jumps (1 base + sum air)
+    const jumpLines=[]; Object.values(sel).forEach(it=>{ if(it && typeof it.airJumps==='number' && it.airJumps!==0) jumpLines.push(it.name+': +'+it.airJumps+' powietrzny'); }); statsBox.appendChild(statRow('Całkowite skoki', 1 + (m.maxAirJumps||0), jumpLines));
+    // Move speed multiplier (mul rule)
+    const moveLines=[]; Object.values(sel).forEach(it=>{ if(it && typeof it.moveSpeedMult==='number' && it.moveSpeedMult!==1) moveLines.push(it.name+': '+fmtMult(it.moveSpeedMult)); }); statsBox.appendChild(statRow('Prędkość ruchu', fmtMult(m.moveSpeedMult||1), moveLines));
+    // Jump power multiplier
+    const jumpPowLines=[]; Object.values(sel).forEach(it=>{ if(it && typeof it.jumpPowerMult==='number' && it.jumpPowerMult!==1) jumpPowLines.push(it.name+': '+fmtMult(it.jumpPowerMult)); }); statsBox.appendChild(statRow('Moc skoku', fmtMult(m.jumpPowerMult||1), jumpPowLines));
+    // Mining speed multiplier
+    const mineLines=[]; Object.values(sel).forEach(it=>{ if(it && typeof it.mineSpeedMult==='number' && it.mineSpeedMult!==1) mineLines.push(it.name+': '+fmtMult(it.mineSpeedMult)); }); statsBox.appendChild(statRow('Szybkość kopania', fmtMult(m.mineSpeedMult||1), mineLines));
+  }
 
   let lastFocus=null;
   function trapFocus(e){ if(overlay.style.display!=='block') return; if(e.key!=='Tab') return; const focusables=[...overlay.querySelectorAll('button,[tabindex]')].filter(el=>!el.disabled); if(!focusables.length) return; const first=focusables[0], last=focusables[focusables.length-1]; if(e.shiftKey){ if(document.activeElement===first){ e.preventDefault(); last.focus(); } } else { if(document.activeElement===last){ e.preventDefault(); first.focus(); } } }
