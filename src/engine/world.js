@@ -13,7 +13,54 @@ window.MM = window.MM || {};
   function tileIndex(x,y){ return y*CHUNK_W+x; }
   function getTileRaw(arr,lx,y){ return arr[tileIndex(lx,y)]; }
 
-  function ensureChunk(cx){ const k=ck(cx); if(world.has(k)) return world.get(k); const arr=new Uint8Array(CHUNK_W*WORLD_H); for(let lx=0; lx<CHUNK_W; lx++){ const wx=cx*CHUNK_W+lx; const s=colHeight(wx); for(let y=0;y<WORLD_H;y++){ let t=T.AIR; if(y>=s){ const depth=y-s; const snowy=s<SNOW_LINE; if(depth<SURFACE_GRASS_DEPTH) t=snowy?T.SNOW:T.GRASS; else if(!snowy && depth<SURFACE_GRASS_DEPTH+SAND_DEPTH && s>20) t=T.SAND; else t=(WG.randSeed(wx*13.37 + y*0.7) < WG.diamondChance(y)?T.DIAMOND:T.STONE); } arr[tileIndex(lx,y)]=t; } }
+  function ensureChunk(cx){ const k=ck(cx); if(world.has(k)) return world.get(k); const arr=new Uint8Array(CHUNK_W*WORLD_H);
+    for(let lx=0; lx<CHUNK_W; lx++){
+      const wx=cx*CHUNK_W+lx; const s=colHeight(wx); const biome=WG.biomeType(wx);
+      // Precompute some noise for variation per column
+      const colRand = WG.randSeed(wx*7.13);
+      for(let y=0;y<WORLD_H;y++){
+        let t=T.AIR; if(y>=s){
+          const depth=y-s;
+          const snowy = (biome===2 || biome===7) && s < SNOW_LINE+4; // extend snow in high biomes
+          const desert = biome===3;
+          const swamp = biome===4;
+          const sea   = biome===5;
+          const lake  = biome===6;
+          const mountain = biome===7;
+          // Determine surface material rules per biome
+          if(depth < SURFACE_GRASS_DEPTH){
+            if(sea || lake){ t=T.SAND; }
+            else if(desert){ t=T.SAND; }
+            else if(swamp){ t = (colRand<0.4)?T.SAND:T.GRASS; }
+            else if(snowy){ t=T.SNOW; }
+            else { t=T.GRASS; }
+          } else if(depth < SURFACE_GRASS_DEPTH + SAND_DEPTH){
+            if(desert) t=T.SAND; else if(sea||lake) t=T.SAND; else if(swamp) t=(colRand<0.3?T.SAND:T.STONE); else t=(snowy?T.SNOW:T.STONE);
+          } else {
+            // Deep layers: chance of diamond
+            t = (WG.randSeed(wx*13.37 + y*0.7) < WG.diamondChance(y)?T.DIAMOND:T.STONE);
+          }
+        }
+        // Carve sea / lake water down to target level
+        if(t===T.AIR){
+          if(WG){
+            if(biome===5){ // sea: fill below a fixed waterline
+              const waterLine = 18; if(y>=waterLine) t=T.WATER;
+            } else if(biome===6){ // lake: shallow bowl around surface
+              const bowlDepth = 4 + Math.floor(WG.randSeed(wx*3.1)*2); if(y>=s- (bowlDepth)) t=T.WATER;
+            } else if(biome===4){ // swamp: pockets of shallow water just below surface
+              const swampDepth = 2; if(y>=s-1 && WG.randSeed(wx*11.7 + y*0.3) < 0.35) t=T.WATER;
+            }
+            // Mountain snowcaps icing: replace exposed shallow water with ice (rare lakes up high)
+            if(biome===7 && t===T.WATER){ if(WG.randSeed(wx*17.7 + y*0.91) < 0.85) t=T.ICE; }
+            if(biome===2 && t===T.WATER){ // cold biome freeze
+              if(WG.randSeed(wx*5.5 + y*0.4) < 0.9) t=T.ICE;
+            }
+          }
+        }
+        arr[tileIndex(lx,y)]=t;
+      }
+    }
     // Chest placement on surface blocks (above ground) using chestPlace probability
     if(MM.chests){ for(let lx=0; lx<CHUNK_W; lx++){ const wx=cx*CHUNK_W+lx; if(WG.chestPlace && WG.chestPlace(wx)){ const surface=colHeight(wx); const placeY=surface-1; if(placeY>=0){ // decide tier by secondary noise
           const r=WG.chestNoise(wx); let chestT=T.CHEST_COMMON; if(r>0.985) chestT=T.CHEST_EPIC; else if(r>0.955) chestT=T.CHEST_RARE; // stacked thresholds

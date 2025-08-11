@@ -46,7 +46,15 @@ window.MM = window.MM || {};
     const {CHUNK_W} = MM; const WG = MM.worldGen; if(!WG) return;
     for(let lx=0; lx<CHUNK_W; lx++){
       const wx=cx*CHUNK_W+lx; const s=WG.surfaceHeight(wx); if(s<2) continue; const biome=WG.biomeType(wx);
-      const chance = (biome===0?0.12:biome===1?0.08:0.05); if(WG.randSeed(wx*1.777) > chance) continue;
+      // Skip non-tree biomes: sea(5), lake(6), desert(3) (rare cactus could be future), swamp(4) sparse, mountain(7) sparse near peaks
+      if(biome===5 || biome===6 || biome===3) continue;
+      let chance = 0.08;
+      if(biome===0) chance=0.13; // forest
+      else if(biome===1) chance=0.07; // plains
+      else if(biome===2) chance=0.05; // snow
+      else if(biome===4) chance=0.04; // swamp (few trees, maybe future mangroves)
+      else if(biome===7) chance= (s<MM.SNOW_LINE?0.04:0.015); // fewer at high elevation
+      if(WG.randSeed(wx*1.777) > chance) continue;
       const sL=WG.surfaceHeight(wx-1), sR=WG.surfaceHeight(wx+1); if(Math.abs(s-sL)>6 || Math.abs(s-sR)>6) continue; // cliff edge skip
       const variant = (biome===2?'conifer': biome===1? (WG.randSeed(wx+300)>0.5?'oak':'tallOak') : (WG.randSeed(wx+500)<0.15?'megaOak':'oak'));
       buildTree(arr,lx,s,variant,wx);

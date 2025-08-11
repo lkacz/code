@@ -63,6 +63,7 @@
   // Additional biome-aware species
   const WG = MM.worldGen;
   // Helper biome query (0,1,2) fallback to 1 if missing
+  // biomeAt returns extended biome ids now: 0 forest,1 plains,2 snow,3 desert,4 swamp,5 sea,6 lake,7 mountain
   function biomeAt(x){ try{ return WG && WG.biomeType ? WG.biomeType(x) : 1; }catch(e){ return 1; } }
 
   registerSpecies({ // Large forest predator near trees
