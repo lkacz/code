@@ -45,6 +45,89 @@
     }
   };
 
+  // Additional biome-aware species
+  const WG = MM.worldGen;
+  // Helper biome query (0,1,2) fallback to 1 if missing
+  function biomeAt(x){ try{ return WG && WG.biomeType ? WG.biomeType(x) : 1; }catch(e){ return 1; } }
+
+  registerSpecies({ // Large forest predator near trees
+    id:'BEAR', max:6, hp:30, dmg:10, speed:2.0, wanderInterval:[3,7],
+    spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); if(here!==T.AIR) return false; if(!(below===T.GRASS||below===T.DIRT||below===T.SAND||below===T.WOOD||below===T.LEAF)){}; // fallback
+      // require at least one trunk adjacent
+      const trunk = getTile(x-1,y+1)===T.WOOD || getTile(x+1,y+1)===T.WOOD;
+      return (below===T.GRASS || below===T.WOOD) && trunk && biomeAt(x)===0; },
+    biome:'forest'
+  });
+
+  registerSpecies({ // Tree-dwelling small mammal on leaves
+    id:'SQUIRREL', max:20, hp:4, dmg:1, speed:3.0, wanderInterval:[1.2,3.5],
+    spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); return here===T.AIR && below===T.LEAF; },
+    biome:'forest'
+  });
+
+  registerSpecies({ // Fast herbivore on open grass
+    id:'DEER', max:14, hp:12, dmg:3, speed:3.8, wanderInterval:[2,5],
+    spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); if(here!==T.AIR || below!==T.GRASS) return false; // avoid dense leaves overhead
+      const above=getTile(x,y-1); return above===T.AIR && biomeAt(x)!==2; }, // avoid mountains
+    biome:'plains'
+  });
+
+  registerSpecies({ // Snow biome predator
+    id:'WOLF', max:10, hp:16, dmg:6, speed:3.4, wanderInterval:[2,5],
+    spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); if(here!==T.AIR) return false; return below===T.SNOW || (below===T.GRASS && biomeAt(x)===2); },
+    biome:'snow'
+  });
+
+  registerSpecies({ // Small fast jumper on grass
+    id:'RABBIT', max:22, hp:5, dmg:2, speed:4.0, wanderInterval:[0.8,2.2],
+    spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); return here===T.AIR && below===T.GRASS && biomeAt(x)!==2; },
+    biome:'plains'
+  });
+
+  registerSpecies({ // Night bird perched in trees (spawn regardless, behavior might adjust later)
+    id:'OWL', max:8, hp:8, dmg:5, speed:3.0, wanderInterval:[3,8],
+    spawnTest(x,y,getTile){ const below=getTile(x,y+1); const here=getTile(x,y); return here===T.AIR && below===T.WOOD; },
+    biome:'forest'
+  });
+
+  registerSpecies({ // Sand-edge crustacean
+    id:'CRAB', max:18, hp:6, dmg:3, speed:2.2, wanderInterval:[1.5,4.5],
+    spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); if(here!==T.AIR || below!==T.SAND) return false; // require water nearby horizontally
+      return getTile(x-1,y+1)===T.WATER || getTile(x+1,y+1)===T.WATER; },
+    biome:'shore'
+  });
+
+  registerSpecies({ // Deep water predator
+    id:'SHARK', max:4, hp:40, dmg:14, speed:3.5, wanderInterval:[2,5], aquatic:true,
+    spawnTest(x,y,getTile){ // need at least 3 tiles depth of water and width
+      const here=getTile(x,y); if(here!==T.WATER) return false; for(let d=1; d<=3; d++){ if(getTile(x,y+d)!==T.WATER) return false; }
+      // width
+      return getTile(x-2,y)===T.WATER && getTile(x+2,y)===T.WATER; },
+    onCreate(m){ initWaterAnchor(m); m.desiredDepth = 2 + (Math.random()*2)|0; },
+    habitatUpdate(m, spec, getTile, dt){ enforceAquatic(m, spec, getTile, dt); }
+  });
+
+  registerSpecies({ // Deep eel: slower but agile vertical
+    id:'EEL', max:10, hp:10, dmg:5, speed:2.6, wanderInterval:[1.5,4], aquatic:true,
+    spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.WATER) return false; // require stone below within 5 tiles
+      let stone=false; for(let d=2; d<=5; d++){ const t=getTile(x,y+d); if(t===T.STONE) { stone=true; break; } if(t!==T.WATER) break; } if(!stone) return false; return true; },
+    onCreate(m){ initWaterAnchor(m); m.desiredDepth = 3; },
+    habitatUpdate(m,spec,getTile,dt){ enforceAquatic(m,spec,getTile,dt); }
+  });
+
+  registerSpecies({ // Mountain goat: high elevation
+    id:'GOAT', max:12, hp:14, dmg:4, speed:3.3, wanderInterval:[1.8,4.2],
+    spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); if(here!==T.AIR) return false; if(!(below===T.STONE||below===T.SNOW)) return false; return y < 18; },
+    biome:'mountain'
+  });
+
+  registerSpecies({ // Firefly – ambience (low HP) over grass
+    id:'FIREFLY', max:26, hp:2, dmg:0, speed:2.0, wanderInterval:[0.6,1.6],
+    spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); return here===T.AIR && (below===T.GRASS || below===T.LEAF); },
+    biome:'plains'
+  });
+
+
   function registerSpecies(def){
     if(!def || !def.id) return false; if(SPECIES[def.id]) return false; // already exists
     // Fill defaults
@@ -178,6 +261,31 @@
       } else if(m.id==='FISH'){
         ctx.fillStyle= flashing? '#bcecff' : '#5bc0ff'; ctx.fillRect(screenX-5, screenY-3,10,6); ctx.fillStyle='#1d6b9c'; ctx.fillRect(screenX+(m.facing>0?4:-6), screenY-2,2,4);
         ctx.fillStyle='#fff'; ctx.fillRect(screenX+(m.facing>0?2:-4), screenY-2,2,2); ctx.fillStyle='#000'; ctx.fillRect(screenX+(m.facing>0?2:-4), screenY-2,1,1);
+      } else if(m.id==='BEAR'){
+        ctx.fillStyle= flashing? '#e8d5c0':'#7b5135'; ctx.fillRect(screenX-7, screenY-8,14,10); ctx.fillRect(screenX-5, screenY-10,10,4); // head hump
+        ctx.fillStyle='#000'; ctx.fillRect(screenX+(m.facing>0?2:-3), screenY-6,2,2);
+      } else if(m.id==='SQUIRREL'){
+        ctx.fillStyle= flashing? '#ffe3b5':'#b07040'; ctx.fillRect(screenX-3, screenY-5,6,5); ctx.fillRect(screenX+(m.facing>0?2:-4), screenY-6,3,3); // head
+        ctx.fillStyle='#d19050'; ctx.fillRect(screenX-(m.facing>0?5:-1), screenY-6,4,4); // tail
+      } else if(m.id==='DEER'){
+        ctx.fillStyle= flashing? '#fff2e0':'#996633'; ctx.fillRect(screenX-5, screenY-7,10,8); ctx.fillStyle='#664422'; ctx.fillRect(screenX+(m.facing>0?2:-4), screenY-8,3,3); // head
+        ctx.fillStyle='#ccb28a'; ctx.fillRect(screenX+(m.facing>0?1:-3), screenY-9,1,2); ctx.fillRect(screenX+(m.facing>0?3:-5), screenY-9,1,2); // antlers
+      } else if(m.id==='WOLF'){
+        ctx.fillStyle= flashing? '#f5f5f5':'#bcbcbc'; ctx.fillRect(screenX-5, screenY-6,10,7); ctx.fillStyle='#888'; ctx.fillRect(screenX+(m.facing>0?2:-4), screenY-5,3,3); // head
+      } else if(m.id==='RABBIT'){
+        ctx.fillStyle= flashing? '#ffffff':'#dddddd'; ctx.fillRect(screenX-3, screenY-4,6,4); ctx.fillStyle='#bbb'; ctx.fillRect(screenX+(m.facing>0?1:-3), screenY-6,2,3); // ears
+      } else if(m.id==='OWL'){
+        ctx.fillStyle= flashing? '#ffffff':'#c8a860'; ctx.fillRect(screenX-4, screenY-7,8,7); ctx.fillStyle='#704c10'; ctx.fillRect(screenX+(m.facing>0?1:-3), screenY-6,3,3);
+      } else if(m.id==='CRAB'){
+        ctx.fillStyle= flashing? '#ffdddd':'#c23a2e'; ctx.fillRect(screenX-4, screenY-3,8,4); ctx.fillStyle='#8a1f17'; ctx.fillRect(screenX-6, screenY-2,2,2); ctx.fillRect(screenX+4, screenY-2,2,2); // claws
+      } else if(m.id==='SHARK'){
+        ctx.fillStyle= flashing? '#d0f4ff':'#507c94'; ctx.fillRect(screenX-8, screenY-4,16,8); ctx.fillStyle='#2a4a5a'; ctx.fillRect(screenX+(m.facing>0?6:-8), screenY-2,2,4); // tail
+      } else if(m.id==='EEL'){
+        ctx.fillStyle= flashing? '#e0ffe0':'#2f8a4a'; ctx.fillRect(screenX-6, screenY-2,12,4);
+      } else if(m.id==='GOAT'){
+        ctx.fillStyle= flashing? '#fafafa':'#c9c4b5'; ctx.fillRect(screenX-5, screenY-6,10,6); ctx.fillStyle='#9b968a'; ctx.fillRect(screenX+(m.facing>0?2:-4), screenY-5,3,3);
+      } else if(m.id==='FIREFLY'){
+        ctx.fillStyle= flashing? '#fffbb0':'#ffe066'; ctx.fillRect(screenX-2, screenY-2,4,3); ctx.fillStyle='#ffd500'; ctx.fillRect(screenX-1, screenY-1,2,2);
       }
       // HP bar small
       if(m.hp < (SPECIES[m.id]?.hp||1)){
