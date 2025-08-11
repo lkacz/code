@@ -239,7 +239,7 @@ function getTile(x,y){ return WORLD.getTile(x,y); }
 function setTile(x,y,v){ WORLD.setTile(x,y,v); }
 
 // --- Gracz / inwentarz ---
-const player={x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,facing:1,tool:'basic',jumpCount:0};
+const player={x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,facing:1,tool:'basic',jumpCount:0,maxHp:100,hp:100,hpInvul:0};
 // Global customization state comes from customization.js (advanced system)
 window.MM = window.MM || {};
 const DEFAULT_CUST={ capeStyle:'classic', capeColor:'#b91818', eyeStyle:'bright', outfitStyle:'default', outfitColor:'#f4c05a' };
@@ -298,7 +298,7 @@ function exportFalling(){ if(MM.fallingSolids && MM.fallingSolids.snapshot) retu
 function importWater(s){ if(MM.water && MM.water.restore) MM.water.restore(s); }
 function importFalling(s){ if(MM.fallingSolids && MM.fallingSolids.restore) MM.fallingSolids.restore(s); }
 function exportPlayer(){ return {x:player.x,y:player.y,vx:player.vx||0,vy:player.vy||0,tool:player.tool,facing:player.facing||1,jumps:player.jumps||0}; }
-function importPlayer(p){ if(!p) return; if(typeof p.x==='number') player.x=p.x; if(typeof p.y==='number') player.y=p.y; if(typeof p.vx==='number') player.vx=p.vx; if(typeof p.vy==='number') player.vy=p.vy; if(['basic','stone','diamond'].includes(p.tool)) player.tool=p.tool; if(p.facing===1||p.facing===-1) player.facing=p.facing; if(typeof p.jumps==='number') player.jumps=p.jumps; }
+function importPlayer(p){ if(!p) return; if(typeof p.x==='number') player.x=p.x; if(typeof p.y==='number') player.y=p.y; if(typeof p.vx==='number') player.vx=p.vx; if(typeof p.vy==='number') player.vy=p.vy; if(['basic','stone','diamond'].includes(p.tool)) player.tool=p.tool; if(p.facing===1||p.facing===-1) player.facing=p.facing; if(typeof p.jumps==='number') player.jumps=p.jumps; if(typeof p.hp==='number') player.hp=Math.max(0,Math.min(player.maxHp,p.hp)); }
 function exportCamera(){ return {camX,camY,zoom:zoomTarget}; }
 function importCamera(c){ if(!c) return; if(typeof c.camX==='number') camX=camSX=c.camX; if(typeof c.camY==='number') camY=camSY=c.camY; if(typeof c.zoom==='number'){ zoom=zoomTarget=Math.min(4,Math.max(0.25,c.zoom)); } }
 function exportInventory(){ return JSON.parse(JSON.stringify(inv)); }
@@ -325,7 +325,7 @@ function importLootInbox(data){ if(!data||!window.lootInbox) return; if(Array.is
 		}
 	} if(window.updateLootInboxIndicator) updateLootInboxIndicator(); }
 function buildSaveObject(){ return {
-	v:3,
+	v:4,
 	seed: WORLDGEN.worldSeed,
 	world:{ modified: gatherModifiedChunks() },
 	player: exportPlayer(),
@@ -337,6 +337,7 @@ function buildSaveObject(){ return {
 	customization: exportCustomization(),
 	god: exportGod(),
 	lootInbox: exportLootInbox(),
+	mobs: (MM.mobs && MM.mobs.serialize)? MM.mobs.serialize(): null,
 	systems:{ water:exportWater(), falling:exportFalling() },
 	savedAt: Date.now()
 }; }
@@ -361,6 +362,7 @@ function loadGame(){ try{ let raw=localStorage.getItem(SAVE_KEY); if(!raw){ for(
 	importCustomization(data.customization);
 	importGod(data.god);
 	importLootInbox(data.lootInbox);
+	if(ver>=4 && data.mobs && MM.mobs && MM.mobs.deserialize) MM.mobs.deserialize(data.mobs);
 	if(data.systems){ importWater(data.systems.water); importFalling(data.systems.falling); }
 	updateInventory(); updateHotbarSel();
 	if(data.player && typeof data.player.x==='number' && typeof data.player.y==='number') { centerOnPlayer(); } else { placePlayer(true); }
@@ -854,7 +856,8 @@ function drawParticles(){ particles.forEach(p=>{ const alpha = 1 - p.life/p.max;
 let audioCtx=null; function playChestSound(tier){ try{ if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)(); const o=audioCtx.createOscillator(); const g=audioCtx.createGain(); o.type='triangle'; let base=tier==='epic'?660: tier==='rare'?520:420; o.frequency.setValueAtTime(base,audioCtx.currentTime); o.frequency.linearRampToValueAtTime(base+ (tier==='epic'?240: tier==='rare'?160:80), audioCtx.currentTime+0.25); g.gain.setValueAtTime(0.001,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.3,audioCtx.currentTime+0.03); g.gain.exponentialRampToValueAtTime(0.0001,audioCtx.currentTime+0.5); o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.52); }catch(e){} }
 canvas.addEventListener('pointerdown',e=>{ const rect=canvas.getBoundingClientRect(); const mx=(e.clientX-rect.left)/zoom/DPR + camX*TILE; const my=(e.clientY-rect.top)/zoom/DPR + camY*TILE; const tx=Math.floor(mx/TILE); const ty=Math.floor(my/TILE); const tileId=getTile(tx,ty); const info=MM.INFO[tileId];
 	if(e.button===0){
-		// Left click: open chest if clicked; else mining
+		// Left click: attack mob first, else open chest, else mining
+		if(MM.mobs && MM.mobs.attackAt && MM.mobs.attackAt(tx,ty)) return;
 		if(info && info.chestTier && MM.chests){
 			const res=MM.chests.openChestAt(tx,ty);
 			if(res){
@@ -890,6 +893,8 @@ function draw(){ // Background first
 	drawCape();
 	// player body + overlays (back pass for vegetation done earlier)
 	drawPlayer();
+	// mobs
+	if(MM.mobs && MM.mobs.draw) MM.mobs.draw(ctx,TILE,camX,camY,zoom);
 	// particles (screen-space in world coords)
 	drawParticles();
 	// front vegetation pass (blades/leaves that should appear in front)
@@ -907,7 +912,9 @@ function draw(){ // Background first
 	if(mining){ ctx.strokeStyle='#fff'; ctx.strokeRect(mineTx*TILE+1,mineTy*TILE+1,TILE-2,TILE-2); const info=INFO[getTile(mineTx,mineTy)]||{hp:1}; const need=Math.max(0.1,info.hp/6); const p=mineTimer/need; ctx.fillStyle='rgba(255,255,255,.3)'; ctx.fillRect(mineTx*TILE, mineTy*TILE + (1-p)*TILE, TILE, p*TILE); }
 	ctx.restore();
 	// Screen-space atmospheric tint (after world scaling restore)
-	applyAtmosphericTint(); }
+	applyAtmosphericTint();
+	// HUD: health bar
+	ctx.save(); const barW=200, barH=18; const pad=12; const x=pad, y=H - barH - pad; ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(x,y,barW,barH); const frac=player.hp/player.maxHp; const g=ctx.createLinearGradient(x,y,x+barW,y); g.addColorStop(0,'#ff3636'); g.addColorStop(1,'#ff9a3d'); ctx.fillStyle=g; ctx.fillRect(x,y,Math.max(0,barW*frac),barH); ctx.strokeStyle='rgba(255,255,255,0.3)'; ctx.lineWidth=2; ctx.strokeRect(x,y,barW,barH); ctx.fillStyle='#fff'; ctx.font='12px system-ui'; ctx.fillText('HP '+player.hp+' / '+player.maxHp, x+8, y-4); ctx.restore(); }
 
 // UI aktualizacja
 const el={grass:document.getElementById('grass'),sand:document.getElementById('sand'),stone:document.getElementById('stone'),diamond:document.getElementById('diamond'),wood:document.getElementById('wood'),snow:document.getElementById('snow'),water:document.getElementById('water'),pick:document.getElementById('pick'),fps:document.getElementById('fps'),msg:document.getElementById('messages')}; function updateInventory(){ el.grass.textContent=inv.grass; el.sand.textContent=inv.sand; el.stone.textContent=inv.stone; el.diamond.textContent=inv.diamond; el.wood.textContent=inv.wood; if(el.snow) el.snow.textContent=inv.snow; if(el.water) el.water.textContent=inv.water; el.pick.textContent=player.tool; document.getElementById('craftStone').disabled=!canCraftStone(); document.getElementById('craftDiamond').disabled=!canCraftDiamond(); updateHotbarCounts(); saveState(); }
@@ -968,7 +975,7 @@ initGrassControls();
 // Pętla
 let last=performance.now(); function loop(ts){ const dt=Math.min(0.05,(ts-last)/1000); last=ts; // smooth zoom interpolation
 	if(Math.abs(zoomTarget-zoom)>0.0001){ zoom += (zoomTarget-zoom)*Math.min(1, dt*8); }
-	physics(dt); updateMining(dt); updateFallingBlocks(dt); if(MM.fallingSolids){ MM.fallingSolids.update(getTile,setTile,dt); } if(MM.water){ MM.water.update(getTile,setTile,dt); } updateParticles(dt); updateCape(dt); updateBlink(ts); draw(); if(ts<radarFlash){ radarBtn.classList.add('pulse'); } else radarBtn.classList.remove('pulse'); updateFps(ts); requestAnimationFrame(loop); } requestAnimationFrame(loop);
+	physics(dt); updateMining(dt); updateFallingBlocks(dt); if(MM.fallingSolids){ MM.fallingSolids.update(getTile,setTile,dt); } if(MM.water){ MM.water.update(getTile,setTile,dt); } if(MM.mobs && MM.mobs.update) MM.mobs.update(dt, player, getTile); updateParticles(dt); updateCape(dt); updateBlink(ts); draw(); if(ts<radarFlash){ radarBtn.classList.add('pulse'); } else radarBtn.classList.remove('pulse'); updateFps(ts); requestAnimationFrame(loop); } requestAnimationFrame(loop);
 // Update background time-based elements
 setInterval(()=>{ /* keep cycleStart anchored; could adjust for pause logic later */ },60000);
 
