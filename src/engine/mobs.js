@@ -21,6 +21,13 @@
     return '#'+((r|0).toString(16).padStart(2,'0'))+((g|0).toString(16).padStart(2,'0'))+((b2|0).toString(16).padStart(2,'0'));
   }
 
+  // Color jitter helpers to produce richer per-mob palette variation
+  function hexToRgb(hex){ const n=parseInt(hex.slice(1),16); return {r:(n>>16)&255,g:(n>>8)&255,b:n&255}; }
+  function rgbToHex(r,g,b){ return '#'+[r,g,b].map(v=>Math.max(0,Math.min(255,v|0)).toString(16).padStart(2,'0')).join(''); }
+  function rgbToHsl(r,g,b){ r/=255; g/=255; b/=255; const max=Math.max(r,g,b), min=Math.min(r,g,b); let h,s,l=(max+min)/2; if(max===min){ h=s=0; } else { const d=max-min; s=l>0.5? d/(2-max-min): d/(max+min); switch(max){ case r: h=(g-b)/d+(g<b?6:0); break; case g: h=(b-r)/d+2; break; default: h=(r-g)/d+4; } h/=6; } return {h,s,l}; }
+  function hslToRgb(h,s,l){ let r,g,b; if(s===0){ r=g=b=l; } else { const hue2rgb=(p,q,t)=>{ if(t<0) t+=1; if(t>1) t-=1; if(t<1/6) return p+(q-p)*6*t; if(t<1/2) return q; if(t<2/3) return p+(q-p)*(2/3-t)*6; return p; }; const q=l<0.5? l*(1+s): l+s-l*s; const p=2*l-q; r=hue2rgb(p,q,h+1/3); g=hue2rgb(p,q,h); b=hue2rgb(p,q,h-1/3); } return {r:(r*255)|0,g:(g*255)|0,b:(b*255)|0}; }
+  function jitterColor(baseHex, opts){ const {h=12, s=0.12, l=0.10} = opts||{}; try{ const {r,g,b}=hexToRgb(baseHex); let {h:hh,s:ss,l:ll}=rgbToHsl(r,g,b); const dh=((Math.random()*2-1)*h)/360; const ds=1+ (Math.random()*2-1)*s; const dl=1+ (Math.random()*2-1)*l; hh=(hh+dh+1)%1; ss=Math.max(0,Math.min(1, ss*ds)); ll=Math.max(0,Math.min(1, ll*dl)); const {r:rr,g:gg,b:bb}=hslToRgb(hh,ss,ll); return rgbToHex(rr,gg,bb); }catch(e){ return baseHex; } }
+
   const mobs = []; // entities
   const speciesAggro = {}; // speciesId -> expiry timestamp (ms)
   const speciesCounts = {}; // live counts for quick spawn capping
@@ -75,9 +82,10 @@
     spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); if(!(below===T.GRASS||below===T.WOOD||below===T.LEAF)) return false; // require trunk or leaf adjacency
       const trunk = getTile(x-1,y+1)===T.WOOD || getTile(x+1,y+1)===T.WOOD; return trunk && biomeAt(x)===0; },
     biome:'forest',
-    onUpdate(m,spec,{dt,player,aggressive}){ // slow patrol, lunge when close (horizontal only, grounded)
+    onUpdate(m,spec,{dt,player,aggressive,speed}){ // slow patrol, lunge when close (horizontal only, grounded)
+      const sp = (speed||spec.speed||2);
       const dx=player.x-m.x; const dist=Math.abs(dx)||1;
-      if(dist<6){ m.vx += (dx/dist)*spec.speed*0.4*dt*30; m.facing = dx>=0?1:-1; if(dist<1.7){ m.vx += (dx/dist)*spec.speed*0.9; } }
+      if(dist<6){ m.vx += (dx/dist)*sp*0.4*dt*30; m.facing = dx>=0?1:-1; if(dist<1.7){ m.vx += (dx/dist)*sp*0.9; } }
       else if(Math.random()<0.005){ m.vx += (Math.random()*2-1)*0.6; }
     }
   });
@@ -89,12 +97,15 @@
     loot:[{item:'leaf', min:1, max:2, chance:0.5}],
     spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); return here===T.AIR && below===T.LEAF; },
     biome:'forest',
-    onUpdate(m,spec,{now,dt,player}){ // quick horizontal dashes along canopy
-      if(Math.random()<0.02){ m.vx = (Math.random()<0.5?-1:1)*spec.speed*(0.6+Math.random()*0.4); m.vy *=0.3; }
+    onUpdate(m,spec,{now,dt,player,speed}){ // quick horizontal dashes along canopy
+      if(Math.random()<0.02){ m.vx = (Math.random()<0.5?-1:1)*(speed||spec.speed)*(0.6+Math.random()*0.4); m.vy *=0.3; }
       // constrain to leaf layer: if below leaves, nudge up
       const underLeaf = MM.world.getTile(Math.floor(m.x), Math.floor(m.y)+1)===T.LEAF;
       if(!underLeaf){ // treat like ground animal: ensure downward grav not cancelled so it stands
-        if(m.onGround){ m.vy=0; }
+        if(m.onGround){ // occasional hop with varied height
+          if(Math.random()<0.04){ m.vy = (spec.move.jumpVel||-3.2) * (m.jumpMul||1) * (0.85 + Math.random()*0.3); }
+          else m.vy=0;
+        }
       }
     }
   });
@@ -106,8 +117,9 @@
     loot:[{item:'leaf', min:1, max:1, chance:0.3}],
     spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); if(here!==T.AIR || below!==T.GRASS) return false; const above=getTile(x,y-1); return above===T.AIR && biomeAt(x)!==2; },
     biome:'plains',
-  onUpdate(m,spec,{player,dt,now,aggressive}){ const dx=player.x-m.x; const adx=Math.abs(dx); if(!aggressive && adx<8){ // flee
-    const dir = dx>0?-1:1; m.vx += dir*spec.speed*0.6; m.facing = m.vx>=0?1:-1; } }
+  onUpdate(m,spec,{player,dt,now,aggressive,speed}){ const dx=player.x-m.x; const adx=Math.abs(dx); if(!aggressive && adx<8){ // flee
+    const sp = (speed||spec.speed||2);
+    const dir = dx>0?-1:1; m.vx += dir*sp*0.6; m.facing = m.vx>=0?1:-1; } }
   });
 
   registerSpecies({ // Snow biome predator (pack)
@@ -118,16 +130,16 @@
     loot:[{item:'snow', min:1, max:2, chance:0.5}],
     spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); return below===T.SNOW || (below===T.GRASS && biomeAt(x)===2); },
     biome:'snow',
-    onUpdate(m,spec,{player,aggressive,dt}){ const dx=player.x-m.x; const adx=Math.abs(dx)||1; const biteGap=0.9; // stop at ~1 tile distance
+    onUpdate(m,spec,{player,aggressive,dt,speed}){ const spd=(speed||spec.speed||2); const dx=player.x-m.x; const adx=Math.abs(dx)||1; const biteGap=0.9; // stop at ~1 tile distance
       if(aggressive || adx<8){
         // Desired stand-off: approach until at bite gap, then hover
         if(adx > biteGap){
-          const dir = dx>0?1:-1; m.vx = dir * spec.speed * 0.9; m.facing = dir; }
+          const dir = dx>0?1:-1; m.vx = dir * spd * 0.9; m.facing = dir; }
         else {
           // within bite distance: slow / minor circling damp
           m.vx *= 0.6; if(Math.abs(m.vx)<0.05) m.vx = 0; m.facing = dx>=0?1:-1; }
         if(adx<3) window.MM && MM.mobs && MM.mobs.setAggro('WOLF');
-      } else if(Math.random()<0.01){ m.vx += (Math.random()*2-1)*0.4; }
+      } else if(Math.random()<0.01){ m.vx += (Math.random()*2-1)*0.4 * (spd/ (spec.speed||1)); }
     }
   });
 
@@ -140,10 +152,10 @@
     biome:'plains',
     onUpdate(m,spec,{player,aggressive,dt}){ const dx=player.x-m.x; const adx=Math.abs(dx); const jumpVel = (spec.move && spec.move.jumpVel) || -4; const now=performance.now();
       if(!m._nextJumpAt) m._nextJumpAt = 0;
-      if(!aggressive && adx<6 && m.onGround && now>m._nextJumpAt){ // flee hop
-        const dir = dx>0?-1:1; m.vx = dir * spec.speed * 0.9; m.vy = jumpVel; m.facing = dir; m._nextJumpAt = now + 400 + Math.random()*300; return; }
+      if(!aggressive && adx<6 && m.onGround && now>m._nextJumpAt){ // flee hop with randomness
+        const dir = dx>0?-1:1; m.vx = dir * (spec.speed*(m.speedMul||1)) * (0.8+Math.random()*0.4); m.vy = jumpVel * (m.jumpMul||1) * (0.85 + Math.random()*0.3); m.facing = dir; m._nextJumpAt = now + 400 + Math.random()*300; return; }
       // Occasional idle hop (rarer)
-      if(m.onGround && now>m._nextJumpAt && Math.random()<0.01){ m.vy = jumpVel*0.55; m._nextJumpAt = now + 500 + Math.random()*600; }
+      if(m.onGround && now>m._nextJumpAt && Math.random()<0.01){ m.vy = jumpVel * (m.jumpMul||1) * (0.45 + Math.random()*0.25); m._nextJumpAt = now + 500 + Math.random()*600; }
     }
   });
 
@@ -220,7 +232,25 @@
   function create(spec, x,y){
     const now = performance.now();
   const m={ id: spec.id, x, y, vx:0, vy:0, hp: spec.hp, state:'idle', tNext: now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000, facing:1, spawnT: now, attackCd:0, hitFlashUntil:0, shake:0, tickMod: (Math.random()<0.5?1:0), sleepUntil:0 };
-  if(spec.variant){ m.baseColor = variantColor(m.spawnT, spec.variant.shift, spec.variant.from, spec.variant.to); }
+  // Per-entity variability
+  m.scale = 0.75 + Math.random()*0.25; // 0.75..1.0 visual & collider scaling
+  m.speedMul = 0.75 + Math.random()*0.25; // 0.75..1.0 movement speed
+  m.jumpMul = 0.75 + Math.random()*0.25; // 0.75..1.0 jump strength
+  // Natural lifespan to avoid overpopulation: base span per species or default, scaled 0.5..1.5
+  const BASE_LIFE_SEC = (spec.lifeSpanSec && spec.lifeSpanSec>0) ? spec.lifeSpanSec : 120; // default 2 minutes
+  const lifeFactor = 0.5 + Math.random()*1.0; // 0.5..1.5
+  m.lifeEndAt = now + BASE_LIFE_SEC * lifeFactor * 1000;
+  const decayWindow = (4 + Math.random()*8) * 1000; // 4..12s fadeout
+  m.decayStartAt = Math.max(now + 2000, m.lifeEndAt - decayWindow);
+  if(spec.variant){
+    const col = variantColor(m.spawnT, spec.variant.shift, spec.variant.from, spec.variant.to);
+    m.baseColor = jitterColor(col, {h:16, s:0.20, l:0.16});
+  }
+  if(!m.baseColor){
+    const BASE = { SQUIRREL:'#b07040', DEER:'#9c6a39', RABBIT:'#dddddd', OWL:'#c8a860', CRAB:'#c23a2e', EEL:'#2f8a4a', GOAT:'#c9c4b5', BEAR:'#6b4a30', WOLF:'#bcbcbc', FISH:'#4eb2f1', BIRD:'#f5d16a' };
+    const base = BASE[spec.id] || '#a8a8a8';
+    m.baseColor = jitterColor(base, {h:12, s:0.14, l:0.10});
+  }
     if(typeof spec.onCreate==='function') spec.onCreate(m, spec);
     addToGrid(m); speciesCounts[spec.id]=(speciesCounts[spec.id]||0)+1; return m; }
 
@@ -290,7 +320,7 @@
         if(getTile(inwardX, aheadY)===T.WATER){ m.vx += (inwardX + 0.5 - m.x)*0.4; }
       }
     }
-    const maxS = spec.speed * 1.2; const sp=Math.hypot(m.vx,m.vy); if(sp>maxS){ const s=maxS/sp; m.vx*=s; m.vy*=s; }
+  const maxS = (spec.speed * (m.speedMul||1)) * 1.2; const sp=Math.hypot(m.vx,m.vy); if(sp>maxS){ const s=maxS/sp; m.vx*=s; m.vy*=s; }
   }
 
   function forceSpawn(specId, player, getTile){ const spec=SPECIES[specId]; if(!spec) return false; if((speciesCounts[specId]||0) >= spec.max) return false; // cap
@@ -337,6 +367,12 @@
     metrics.count = mobs.length; let active=0;
     for(let i=0;i<mobs.length;i++){
       const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue; const aggressive=isAggro(m.id);
+      // Natural lifespan: apply health decay when past decayStartAt; ensure it runs before far-sleep skip
+      if(m.decayStartAt && now >= m.decayStartAt){
+        const total = Math.max(0.5, ((m.lifeEndAt||now) - m.decayStartAt)/1000); // seconds window
+        const rate = (spec.hp||5) / total; // hp per second to reach 0 by lifeEndAt
+        m.hp -= rate * dt; if(m.hp <= 0){ m.hp = 0; m._naturalDeath = true; }
+      }
       // Prepare player-like physics state for ground mobs
       const isGroundMob = !!spec.ground && !spec.aquatic && !spec.flying;
       let preVX=m.vx, preVY=m.vy, prevOnGround = m.onGround||false;
@@ -349,9 +385,9 @@
         // Desired horizontal velocity coming from AI modifications (mutable for heuristics)
         let desired = m.vx;
         m.vx = preVX; // restore actual velocity; desired used for acceleration targeting
-        const MOVE = MM.MOVE || {ACC:32,FRICTION:28,MAX:6,JUMP:-9,GRAV:20};
-        const maxSpeed = spec.speed || MOVE.MAX;
-        const speedRatio = maxSpeed / (MOVE.MAX||6);
+  const MOVE = MM.MOVE || {ACC:32,FRICTION:28,MAX:6,JUMP:-9,GRAV:20};
+  const maxSpeed = (spec.speed || MOVE.MAX) * (m.speedMul||1);
+  const speedRatio = maxSpeed / (MOVE.MAX||6);
         // Environmental heuristics (water avoidance / obstacle climb) prior to acceleration
         if(spec.move){
           // Water avoidance: if about to step into water, turn/slow
@@ -403,7 +439,9 @@
         if(Math.abs(m.vx) > maxSpeed) m.vx = maxSpeed * Math.sign(m.vx);
         // Jump execution (uses spec.move.jumpVel or MOVE.JUMP)
         if(m._wantJump && prevOnGround){
-          const jv = (spec.move && spec.move.jumpVel) ? spec.move.jumpVel : (MM.MOVE ? MM.MOVE.JUMP : -9) * (0.7 + 0.3*speedRatio);
+          let jv = (spec.move && spec.move.jumpVel) ? spec.move.jumpVel : (MM.MOVE ? MM.MOVE.JUMP : -9) * (0.7 + 0.3*speedRatio);
+          jv *= (m.jumpMul||1);
+          if(m.id==='RABBIT' || m.id==='SQUIRREL'){ jv *= (0.85 + Math.random()*0.3); }
           m.vy = jv;
         } else {
           m.vy = preVY; // restore pre-AI vertical velocity (jump not triggered)
@@ -416,9 +454,9 @@
         const damp = aggressive? 0.9 : 0.92; m.vx*=damp; m.vy*= (spec.aquatic? 0.95 : 0.92);
       }
       // Clamp speeds
-      const maxS = spec.speed * (aggressive?1.4:1); const sp=Math.hypot(m.vx,m.vy); if(sp>maxS){ const s=maxS/sp; m.vx*=s; m.vy*=s; }
+  const maxS = (spec.speed * (m.speedMul||1)) * (aggressive?1.4:1); const sp=Math.hypot(m.vx,m.vy); if(sp>maxS){ const s=maxS/sp; m.vx*=s; m.vy*=s; }
       // Sleep logic for far, non-aggro mobs: update position only sparsely
-      if(!aggressive){
+  if(!aggressive){
         const distP = Math.abs(m.x - player.x) + Math.abs(m.y - player.y);
         if(distP > 140 && (frame & 3)!== (m.tickMod||0)){ continue; } // skip this frame
       }
@@ -426,7 +464,7 @@
   // Ground / gravity integration + AABB collision for ground mobs
   if(!spec.aquatic && !spec.flying){
         const MOVE = MM.MOVE || {GRAV:20}; m.vy += MOVE.GRAV * dt; if(m.vy>24) m.vy=24;
-        const body = spec.body || {w:1,h:1}; const halfW = (body.w||1)*0.5, halfH=(body.h||1)*0.5;
+        const body = spec.body || {w:1,h:1}; const sc=(m.scale||1); const halfW = (body.w||1)*0.5*sc, halfH=(body.h||1)*0.5*sc;
         // Integrate horizontal then resolve X collisions
         m.x += m.vx*dt;
         let minX = Math.floor(m.x - halfW), maxX = Math.floor(m.x + halfW);
@@ -495,17 +533,18 @@
     if(now - lastMetricsSample > 1000){ metrics.dtAvg = (metrics.dtAvg*0.7 + dt*0.3); lastMetricsSample = now; if(window.__mobDebug){ window.__mobMetrics = {...metrics, frame}; } }
   } // end update()
   function updateMob(m, spec, ctx){
+    ctx.speed = (spec.speed||1) * (m.speedMul||1);
     if(typeof spec.onUpdate==='function'){ spec.onUpdate(m, spec, ctx); return; }
     const {dt, now, aggressive, player} = ctx; const toPlayerX=player.x - m.x; const toPlayerY=player.y - m.y; const distP=Math.hypot(toPlayerX,toPlayerY)||1;
     if(aggressive){
-      const desiredVx = (toPlayerX/distP)*spec.speed*0.9; m.vx += (desiredVx - m.vx)*Math.min(1, dt*4);
+      const desiredVx = (toPlayerX/distP)*((spec.speed||1)*(m.speedMul||1))*0.9; m.vx += (desiredVx - m.vx)*Math.min(1, dt*4);
       const desiredVy = spec.aquatic? ((toPlayerY)*0.8) : (toPlayerY*0.6);
       m.vy += (desiredVy - m.vy)*Math.min(1, dt*2.5);
       m.facing = toPlayerX>=0?1:-1;
     } else {
       if(now>m.tNext){
         m.tNext = now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000;
-        if(Math.random()<0.65){ const ang = Math.random()*Math.PI*2; const speed = spec.speed*(0.3+Math.random()*0.7); m.vx = Math.cos(ang)*speed; m.vy = Math.sin(ang)*speed* (spec.aquatic?0.6:0.35); m.facing = m.vx>=0?1:-1; } else { m.vx*=0.4; m.vy*=0.4; }
+        if(Math.random()<0.65){ const ang = Math.random()*Math.PI*2; const speed = (spec.speed*(m.speedMul||1))*(0.3+Math.random()*0.7); m.vx = Math.cos(ang)*speed; m.vy = Math.sin(ang)*speed* (spec.aquatic?0.6:0.35); m.facing = m.vx>=0?1:-1; } else { m.vx*=0.4; m.vy*=0.4; }
       }
       if(spec.aquatic){
         const baseBob = Math.sin(now*0.002 + m.spawnT*0.0007)*0.4;
@@ -525,11 +564,13 @@
   for(const m of mobs){ if(!disableCull && (m.x < viewL || m.x > viewR || m.y < viewT || m.y > viewB)) continue; const spec=SPECIES[m.id]; const screenX = (m.x*TILE); let screenY=(m.y*TILE);
       // Anchor adjustment: center position to feet baseline so sprites don't float
       if(spec && spec.ground && spec.body){
-        const halfHpx = (spec.body.h||1)*0.5*TILE;
+        const halfHpx = (spec.body.h||1)*0.5*TILE*(m.scale||1);
         const currentBottom = (spec.body.h>1.05)? 2 : 1; // empirically: tall sprites drawn to +2px, small to +1px
         screenY += halfHpx - currentBottom;
       }
       ctx.save();
+      // Apply visual scale per entity
+      if((m.scale||1)!==1){ ctx.translate(screenX, screenY); ctx.scale(m.scale, m.scale); ctx.translate(-screenX, -screenY); }
       // Simple shadow ellipse for ground mobs to reinforce contact
       if(spec && spec.ground){
         ctx.fillStyle='rgba(0,0,0,0.18)'; const shW = (spec.body? (spec.body.w||1)*TILE*0.6 : TILE*0.6); const shH=Math.max(2, shW*0.22); ctx.beginPath(); ctx.ellipse(screenX, screenY+ (spec.body? (spec.body.h||1)*0.5*TILE -2 : 6), shW*0.5, shH*0.5, 0, 0, Math.PI*2); ctx.fill();
@@ -538,15 +579,15 @@
         ctx.fillStyle='rgba(255,0,0,0.4)'; ctx.fillRect(screenX-1, screenY-1,2,2);
       }
       if(window.__mobShowAABB && spec && spec.body){
-        const halfW = (spec.body.w||1)*0.5*TILE; const halfH=(spec.body.h||1)*0.5*TILE;
+        const halfW = (spec.body.w||1)*0.5*TILE*(m.scale||1); const halfH=(spec.body.h||1)*0.5*TILE*(m.scale||1);
         ctx.strokeStyle='rgba(0,255,255,0.5)'; ctx.lineWidth=1; ctx.strokeRect((m.x-halfW/TILE)*TILE, (m.y-halfH/TILE)*TILE, (halfW*2), (halfH*2));
         // ground / feet line (bottom of AABB)
         ctx.strokeStyle='rgba(255,255,0,0.6)'; ctx.beginPath(); ctx.moveTo((m.x-halfW/TILE)*TILE, (m.y+halfH/TILE)*TILE); ctx.lineTo((m.x+halfW/TILE)*TILE, (m.y+halfH/TILE)*TILE); ctx.stroke();
       }
       if(m.shake>0){ const ang=Math.random()*Math.PI*2; const mag=m.shake*1.5; ctx.translate(Math.cos(ang)*mag, Math.sin(ang)*mag); }
       const flashing= now < m.hitFlashUntil;
-      let topY=screenY; // track highest pixel for HP bar positioning
-      function hpTop(y){ if(y<topY) topY=y; }
+  let topY=screenY; // track highest pixel for HP bar positioning after scaling
+  function hpTop(y){ const yy = screenY + (y - screenY) * (m.scale||1); if(yy<topY) topY=yy; }
       const faceDir = m.facing>0?1:-1;
       // Small per-entity phase for anim variety
       const phase = (now*0.005 + m.spawnT*0.37) % (Math.PI*2);
@@ -597,7 +638,7 @@
           ctx.fillStyle='#4d3421'; const legY=screenY+2; ctx.fillRect(screenX-12, legY,5,6); ctx.fillRect(screenX-2, legY,5,6); ctx.fillRect(screenX+6, legY,5,6); ctx.fillRect(screenX+12-4, legY,5,6);
           break; }
         case 'SQUIRREL': {
-          const body = flashing? '#ffe3b5':'#b07040';
+          const body = flashing? '#ffe3b5':(m.baseColor||'#b07040');
           box(screenX-6, screenY-7,12,8, body,'#6a3d18');
           // head
           ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?2:-6), screenY-10,6,5); hpTop(screenY-10);
@@ -611,7 +652,7 @@
           ctx.restore();
           break; }
         case 'DEER': {
-          const body = flashing? '#fff2e0':'#9c6a39';
+          const body = flashing? '#fff2e0':(m.baseColor||'#9c6a39');
           box(screenX-10, screenY-9,20,10, body,'#664422');
           // head
           ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?8:-12), screenY-13,8,6); hpTop(screenY-13);
@@ -639,7 +680,7 @@
           shade(screenX-12, screenY-6,24,2,'#000',0.15);
           break; }
         case 'RABBIT': {
-          const body = flashing? '#ffffff':'#dddddd';
+          const body = flashing? '#ffffff':(m.baseColor||'#dddddd');
           box(screenX-5, screenY-5,10,6, body,'#999');
           // head
           ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?4:-6), screenY-7,6,5); hpTop(screenY-7);
@@ -648,7 +689,7 @@
           ctx.fillStyle='#bbb'; ctx.fillRect(screenX+(faceDir>0?5:-5), screenY-11-earBob,2,6+earBob); ctx.fillRect(screenX+(faceDir>0?8:-2), screenY-11+earBob,2,6-earBob);
           break; }
         case 'OWL': {
-          const body = flashing? '#ffffff':'#c8a860';
+          const body = flashing? '#ffffff':(m.baseColor||'#c8a860');
           box(screenX-6, screenY-10,12,12, body,'#6a551e');
           // facial disk
           ctx.fillStyle='#ead5a0'; ctx.fillRect(screenX-4, screenY-8,8,6); hpTop(screenY-10);
@@ -660,7 +701,7 @@
           const f = Math.sin(phase)*2; ctx.fillStyle='#b99738'; ctx.fillRect(screenX-6, screenY-4+f,12,2);
           break; }
         case 'CRAB': {
-          const body = flashing? '#ffdddd':'#c23a2e';
+          const body = flashing? '#ffdddd':(m.baseColor||'#c23a2e');
           box(screenX-8, screenY-4,16,6, body,'#8a1f17');
           // legs
           ctx.fillStyle='#8a1f17'; for(let i=-6;i<=6;i+=4){ ctx.fillRect(screenX+i, screenY+2,2,3); }
@@ -686,14 +727,14 @@
           ctx.restore();
           break; }
         case 'EEL': {
-          const body = flashing? '#e0ffe0':'#2f8a4a';
+          const body = flashing? '#e0ffe0':(m.baseColor||'#2f8a4a');
           // segmented body
           for(let i=-10;i<=10;i+=4){ ctx.fillStyle= (i%8===0)? body : '#256d38'; ctx.fillRect(screenX+i, screenY-2,4,4); hpTop(screenY-2); }
           // head
           ctx.fillStyle=body; ctx.fillRect(screenX+10, screenY-3,5,6); ctx.fillStyle='#fff'; ctx.fillRect(screenX+13, screenY-2,2,2); ctx.fillStyle='#000'; ctx.fillRect(screenX+13, screenY-2,1,1);
           break; }
         case 'GOAT': {
-          const body = flashing? '#fafafa':'#c9c4b5';
+          const body = flashing? '#fafafa':(m.baseColor||'#c9c4b5');
           box(screenX-10, screenY-8,20,9, body,'#8d8779');
           // head
           ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?8:-12), screenY-12,8,6); hpTop(screenY-12);
@@ -717,7 +758,11 @@
       }
       // HP bar (position above highest drawn pixel)
       if(m.hp < (SPECIES[m.id]?.hp||1)){
+        // draw HP bar in screen space (unscaled)
+        const saved = ctx.getTransform ? ctx.getTransform() : null;
+        ctx.setTransform(1,0,0,1,0,0);
         const maxHp = SPECIES[m.id].hp; const w= Math.max(12, Math.min(36, (SPECIES[m.id].hp||10))); const frac=m.hp/maxHp; const barY = topY - 6; ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(screenX-w/2, barY, w,3); ctx.fillStyle='#ff5252'; ctx.fillRect(screenX-w/2, barY, w*frac,3);
+        if(saved && ctx.setTransform) ctx.setTransform(saved);
       }
       ctx.restore(); }
     ctx.restore();
@@ -733,9 +778,11 @@
 
   function onMobDeath(m){
     const spec = SPECIES[m.id]; if(!spec) return;
+    // Natural death: no loot or XP, just silently despawn
+    if(m._naturalDeath){ return; }
     // XP gain
     if(window.player && typeof player.xp==='number'){ player.xp += spec.xp||1; }
-    // Loot: push into lootInbox (if present) else directly inventory if matches tile drops
+    // Loot
     if(spec.loot && Array.isArray(spec.loot)){
       const drops=[]; for(const entry of spec.loot){ if(Math.random() <= (entry.chance||1)){ const count = entry.min + ((entry.max && entry.max>entry.min)? (Math.random()*(entry.max-entry.min+1))|0 : 0); drops.push({item:entry.item, qty: count||entry.min||1}); } }
       if(drops.length){
@@ -757,12 +804,12 @@
 
   const AGGRO_SKEW_GRACE_MS = 30000; // accept up to 30s negative skew
   function serialize(){ const now=Date.now(); const rel={}; for(const k in speciesAggro){ const rem = speciesAggro[k]-now; if(rem>0) rel[k]=rem; }
-    return { v:1, list: mobs.map(m=>({id:m.id,x:m.x,y:m.y,vx:m.vx,vy:m.vy,hp:m.hp,state:m.state,facing:m.facing,spawnT:m.spawnT,attackCd:m.attackCd,waterTopY:m.waterTopY,desiredDepth:m.desiredDepth})), aggro:{mode:'rel', m:rel} }; }
+    return { v:3, list: mobs.map(m=>({id:m.id,x:m.x,y:m.y,vx:m.vx,vy:m.vy,hp:m.hp,state:m.state,facing:m.facing,spawnT:m.spawnT,attackCd:m.attackCd,waterTopY:m.waterTopY,desiredDepth:m.desiredDepth,scale:m.scale,speedMul:m.speedMul,jumpMul:m.jumpMul,baseColor:m.baseColor,lifeEndAt:m.lifeEndAt,decayStartAt:m.decayStartAt})), aggro:{mode:'rel', m:rel} }; }
   function deserialize(data){ // clear
     for(const m of mobs) removeFromGrid(m); mobs.length=0; // reset live counts before rebuild
     for(const k in speciesCounts) delete speciesCounts[k];
     if(data && Array.isArray(data.list)){
-      for(const r of data.list){ if(!SPECIES[r.id]) continue; const spec=SPECIES[r.id]; const m=create(spec, r.x, r.y); m.vx=r.vx||0; m.vy=r.vy||0; m.hp=r.hp||spec.hp; m.state=r.state||'idle'; m.facing=r.facing||1; m.spawnT=r.spawnT||performance.now(); m.attackCd=r.attackCd||0;
+  for(const r of data.list){ if(!SPECIES[r.id]) continue; const spec=SPECIES[r.id]; const m=create(spec, r.x, r.y); m.vx=r.vx||0; m.vy=r.vy||0; m.hp=r.hp||spec.hp; m.state=r.state||'idle'; m.facing=r.facing||1; m.spawnT=r.spawnT||performance.now(); m.attackCd=r.attackCd||0; if(typeof r.scale==='number') m.scale=r.scale; if(typeof r.speedMul==='number') m.speedMul=r.speedMul; if(typeof r.jumpMul==='number') m.jumpMul=r.jumpMul; if(typeof r.baseColor==='string') m.baseColor=r.baseColor; if(typeof r.lifeEndAt==='number') m.lifeEndAt=r.lifeEndAt; if(typeof r.decayStartAt==='number') m.decayStartAt=r.decayStartAt;
         if(spec.aquatic){ if(typeof r.waterTopY==='number') m.waterTopY=r.waterTopY; if(typeof r.desiredDepth==='number') m.desiredDepth=r.desiredDepth; m.nextWaterScan = performance.now() + 3000; m.strandedTime=0; }
         mobs.push(m);
       }
