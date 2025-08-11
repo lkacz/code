@@ -106,8 +106,13 @@
     ctx.restore(); }
 
   // Animated mini cape simulation (lightweight)
-  const miniCape=[]; const MINI_SEGS=10; for(let i=0;i<MINI_SEGS;i++) miniCape.push({x:0,y:0}); let miniFacing= -1; let lastTime=performance.now();
-  function stepMiniCape(styleId,dt){ const st=(MM.cape && MM.cape.getStyle)? MM.cape.getStyle(styleId): {wTop:0.1,wBot:0.24,flare:1}; const speed=Math.sin(performance.now()*0.0012)*0.5+0.5; const targetFlare=(0.18+0.55*speed)*st.flare; const segLen=0.5; miniCape[0].x=0; miniCape[0].y=0; for(let i=1;i<MINI_SEGS;i++){ const prev=miniCape[i-1]; const seg=miniCape[i]; const t=i/(MINI_SEGS-1); const backDirX=-miniFacing; const wind=Math.sin(performance.now()/400 + i*0.7)*0.05; const desiredX=prev.x + backDirX*t*targetFlare + wind*(st.wind||1); const desiredY=prev.y + 0.2 + t*0.6; seg.x += (desiredX - seg.x)*Math.min(1,dt*8); seg.y += (desiredY - seg.y)*Math.min(1,dt*8); }
+  const miniCape=[]; const MINI_SEGS=10; for(let i=0;i<MINI_SEGS;i++) miniCape.push({x:0,y:0}); let miniFacing=1; let lastTime=performance.now(); let faceTimer=0; let faceDir=1;
+  function stepMiniCape(styleId,dt){ const st=(MM.cape && MM.cape.getStyle)? MM.cape.getStyle(styleId): {wTop:0.1,wBot:0.24,flare:1};
+    // Force full-speed flare (speed=1) for "full swing" preview; alternate direction every 2.2s to show both extremes.
+    faceTimer += dt; if(faceTimer>2.2){ faceTimer=0; faceDir*=-1; }
+    miniFacing=faceDir; // player facing (1 right, -1 left)
+    const targetFlare=(0.18+0.55*1)*st.flare; // max speed
+    const segLen=0.5; miniCape[0].x=0; miniCape[0].y=0; for(let i=1;i<MINI_SEGS;i++){ const prev=miniCape[i-1]; const seg=miniCape[i]; const t=i/(MINI_SEGS-1); const backDirX=-miniFacing; const wind=Math.sin(performance.now()/300 + i*0.8)*0.04 + Math.sin(performance.now()/1200 + i)*0.02; const desiredX=prev.x + backDirX*t*targetFlare + wind*(st.wind||1); const desiredY=prev.y + 0.18 + t*0.62; seg.x += (desiredX - seg.x)*Math.min(1,dt*9); seg.y += (desiredY - seg.y)*Math.min(1,dt*9); }
     // length constraint
     for(let it=0; it<2; it++){ for(let i=1;i<MINI_SEGS;i++){ const a=miniCape[i-1], b=miniCape[i]; let dx=b.x-a.x, dy=b.y-a.y; let d=Math.hypot(dx,dy)||0.0001; const excess=d-segLen; if(Math.abs(excess)>0.001){ const k=excess/d; b.x -= dx*k; b.y -= dy*k; } } }
   }
