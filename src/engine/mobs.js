@@ -43,6 +43,11 @@
 
   function create(spec, x,y){ const m={ id: spec.id, x, y, vx:0, vy:0, hp: spec.hp, state:'idle', tNext: performance.now() + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000, facing:1, spawnT: performance.now(), attackCd:0, hitFlashUntil:0, shake:0 }; addToGrid(m); return m; }
 
+  function forceSpawn(specId, player, getTile){ const spec=SPECIES[specId]; if(!spec) return false; // try valid spawn positions first
+    for(let tries=0; tries<20; tries++){ const dx=(Math.random()*10 -5); const dy=(Math.random()*6 -3); const tx=Math.floor(player.x+dx); const ty=Math.floor(player.y+dy); if(spec.spawnTest(tx,ty,getTile)){ mobs.push(create(spec, tx+0.5, ty+0.5)); return true; } }
+    // fallback: drop directly near player even if test fails
+    mobs.push(create(spec, player.x + (Math.random()*2-1), player.y - 0.5)); return true; }
+
   function countSpecies(id){ let c=0; for(const m of mobs) if(m.id===id) c++; return c; }
 
   function trySpawnNearPlayer(player, getTile){
@@ -146,5 +151,5 @@
   }
   }
 
-  MM.mobs = { update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro };
+  MM.mobs = { update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro, forceSpawn, species: Object.keys(SPECIES) };
 })();
