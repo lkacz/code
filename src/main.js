@@ -254,6 +254,8 @@ window.addEventListener('keydown',e=>{ const k=e.key.toLowerCase(); keys[k]=true
 	 const slot=parseInt(e.key,10)-4; cycleHotbar(slot);
  }
 	if(k==='g'&&!keysOnce.has('g')){ toggleGod(); keysOnce.add('g'); }
+	// Debug chest placement (L)
+	if(k==='l'&&!keysOnce.has('l')){ keysOnce.add('l'); const px=Math.floor(player.x); const py=Math.floor(player.y); const below=py; if(getTile(px,below)===T.AIR){ const r=Math.random(); let cid=T.CHEST_COMMON; if(r>0.9) cid=T.CHEST_RARE; if(r>0.97) cid=T.CHEST_EPIC; setTile(px,below,cid); msg('Postawiono skrzynię ('+(cid===T.CHEST_EPIC?'epicka':cid===T.CHEST_RARE?'rzadka':'zwykła')+')'); } }
 	if(k==='m'&&!keysOnce.has('m')){ toggleMap(); keysOnce.add('m'); }
 	if(k==='c'&&!keysOnce.has('c')){ centerCam(); keysOnce.add('c'); }
 	if(k==='h'&&!keysOnce.has('h')){ toggleHelp(); keysOnce.add('h'); }
@@ -431,7 +433,7 @@ function saveState(){ try{ const data={inv,hotbarIndex,tool:player.tool}; localS
 function loadState(){ try{ const raw=localStorage.getItem(SAVE_KEY); if(!raw) return; const data=JSON.parse(raw); if(data && data.inv){ for(const k in inv){ if(k==='tools') continue; if(typeof data.inv[k]==='number') inv[k]=data.inv[k]; } if(data.inv.tools){ inv.tools.stone=!!data.inv.tools.stone; inv.tools.diamond=!!data.inv.tools.diamond; } } if(typeof data.hotbarIndex==='number') hotbarIndex=Math.min(HOTBAR_ORDER.length-1, Math.max(0,data.hotbarIndex)); if(data.tool && ['basic','stone','diamond'].includes(data.tool)) player.tool=data.tool; }catch(e){} }
 document.querySelectorAll('.hotSlot').forEach((el,i)=>{ el.addEventListener('click',()=>{ cycleHotbar(i); }); });
 // Left click mining convenience
-canvas.addEventListener('pointerdown',e=>{ if(e.button===0){ const rect=canvas.getBoundingClientRect(); const mx=(e.clientX-rect.left)/zoom/DPR + camX*TILE; const my=(e.clientY-rect.top)/zoom/DPR + camY*TILE; const tx=Math.floor(mx/TILE); const ty=Math.floor(my/TILE); const dx=tx - Math.floor(player.x); const dy=ty - Math.floor(player.y); if(Math.abs(dx)<=2 && Math.abs(dy)<=2){ mineDir.dx = Math.sign(dx)||0; mineDir.dy = Math.sign(dy)||0; startMine(); } }});
+canvas.addEventListener('pointerdown',e=>{ const rect=canvas.getBoundingClientRect(); const mx=(e.clientX-rect.left)/zoom/DPR + camX*TILE; const my=(e.clientY-rect.top)/zoom/DPR + camY*TILE; const tx=Math.floor(mx/TILE); const ty=Math.floor(my/TILE); if(e.button===0){ const dx=tx - Math.floor(player.x); const dy=ty - Math.floor(player.y); if(Math.abs(dx)<=2 && Math.abs(dy)<=2){ mineDir.dx = Math.sign(dx)||0; mineDir.dy = Math.sign(dy)||0; startMine(); } } else if(e.button===2){ const t=getTile(tx,ty); const info=MM.INFO[t]; if(info && info.chestTier && MM.chests){ const res=MM.chests.openChestAt(tx,ty); if(res){ msg('Skrzynia '+info.chestTier+': +'+res.items.length+' przedm.'); if(window.updateDynamicCustomization) updateDynamicCustomization(); } } }});
 
 // Render
 function draw(){ ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camX)-1; const sy=Math.floor(camY)-1; ctx.save(); ctx.scale(zoom,zoom); // pixel snapping to avoid seams

@@ -233,4 +233,18 @@
   computeActiveModifiers();
   updatePreview();
   updateSelInfo();
+
+  // Hook for dynamic loot integration
+  window.updateDynamicCustomization = function(){
+    if(!MM.dynamicLoot) return;
+    // Merge new items (avoid id collisions)
+    function merge(list,newOnes){ newOnes.forEach(it=>{ if(!list.find(e=>e.id===it.id)){ list.push(it); } }); }
+    merge(ITEMS.capes, MM.dynamicLoot.capes||[]);
+    merge(ITEMS.eyes, MM.dynamicLoot.eyes||[]);
+    merge(ITEMS.outfits, MM.dynamicLoot.outfits||[]);
+    // Rebuild UI if overlay open
+    if(overlay.style.display==='block'){
+      buildGrid(); updateSelInfo();
+    }
+  };
 })();
