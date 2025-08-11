@@ -284,34 +284,50 @@ const MOVE={ACC:32,FRICTION:28,MAX:6,JUMP:-9,GRAV:20}; let jumpPrev=false; let s
 	jumpPrev=jumpNow;
 
 	if(inWater){
-		// Compute a gentle buoyancy force target; near-neutral at 55% submerged.
-		const neutralPoint=0.55; const excess = subFrac - neutralPoint; // negative when under neutral
-		// Base upward accel (reduced) plus tiny time/space variation
+		// Enhanced buoyancy: aim for a target immersion so player "floats" at surface.
 		const time=performance.now();
-		const varA = Math.sin(time*0.0009 + player.x*0.33)*0.6;
-		const varB = Math.sin(time*0.0017 + player.y*0.21 + player.x*0.1)*0.4;
-		const variation = (varA+varB)*0.5; // -0.5..0.5 approx
+		const targetFloatSub = 0.64; // desired average submersion ( ~64% of body in water )
+		const neutralPoint   = 0.52; // where gravity becomes largely countered
+		const excessNeutral  = subFrac - neutralPoint;
+		const immersionError = targetFloatSub - subFrac; // positive if too shallow (need to sink slightly)
+		// Wave-based subtle variation (two frequencies + spatial terms)
+		const varA = Math.sin(time*0.0010 + player.x*0.32)*0.7;
+		const varB = Math.sin(time*0.00055 + player.y*0.27 + player.x*0.08)*0.5;
+		const variation = (varA+varB)*0.45; // ~ -0.54 .. 0.54
+		// Base buoyancy stronger than previous version for pronounced float
 		let buoyAccel = 0;
-		if(excess>0){ buoyAccel = -excess * 10; } // much gentler than before
-		else { buoyAccel = -excess * 4; } // slight sinking resistance when below neutral
-		buoyAccel += variation; // add micro undulation
-		if(diveInput){ buoyAccel *= 0.35; } // suppress buoyancy when diving
-		// Gravity scaled by immersion (less effective deeper)
-		const gravScale = 1 - subFrac*0.75; player.vy += MOVE.GRAV * gravScale * dt;
-		// Low-pass filter buoyancy to avoid jitter
-		swimBuoySmooth += (buoyAccel - swimBuoySmooth) * Math.min(1, dt*4);
+		if(excessNeutral>0){ // above neutral (more submerged than neutral) -> strong lift
+			buoyAccel = -excessNeutral * 18;
+		} else { // below neutral -> gentle downward encouragement (prevents levitating above water)
+			buoyAccel = -excessNeutral * 6;
+		}
+		// Add proportional correction toward target float immersion for surface lock
+		buoyAccel += immersionError * 22;
+		// Micro undulation
+		buoyAccel += variation;
+		if(diveInput){ buoyAccel *= 0.35; }
+		// Scaled gravity (reduced when deeper)
+		const gravScale = 1 - subFrac*0.78; player.vy += MOVE.GRAV * gravScale * dt;
+		// Low-pass filter for stability
+		swimBuoySmooth += (buoyAccel - swimBuoySmooth) * Math.min(1, dt*5);
 		player.vy += swimBuoySmooth * dt;
-		if(diveInput){ player.vy += 4*dt; } // gentle descent assist
-		// Clamp speeds (tighter for delicacy)
-		const maxDown=4.5, maxUp=7; if(player.vy>maxDown) player.vy=maxDown; if(player.vy<-maxUp) player.vy=-maxUp;
-		// Surface stabilization: much softer hold with gentle bob
+		if(diveInput){ player.vy += 4*dt; }
+		// Velocity clamps (allow slightly faster upward for popping to surface)
+		const maxDown=4.0, maxUp=8.5; if(player.vy>maxDown) player.vy=maxDown; if(player.vy<-maxUp) player.vy=-maxUp;
+		// Surface lock & bob: when head tile water and above is air, add gentle wave riding
 		const headTile = getTile(tileX, Math.floor(headY));
 		const aboveHead = getTile(tileX, Math.floor(headY)-1);
 		if(headTile===T.WATER && aboveHead===T.AIR && !diveInput){
-			player.vy -= 6*dt * (0.4 + subFrac*0.6); // softer surface attraction
-			player.vx -= player.vx * 0.25 * dt; // mild extra damp
-			const bob = Math.sin(time*0.0035 + player.x*0.45)*0.35 + Math.sin(time*0.0012 + player.x*0.2)*0.15;
-			player.y += bob/(TILE*80);
+			// stronger but smooth upward damping if sinking
+			if(player.vy>0) player.vy -= Math.min(player.vy, 10*dt*(0.4+subFrac*0.6));
+			// very light upward bias keeps head exposed
+			player.vy -= 3.5*dt*(0.3 + (subFrac>targetFloatSub?0.7:subFrac/targetFloatSub*0.7));
+			// horizontal slight damping
+			player.vx -= player.vx * 0.18 * dt;
+			// Layered bob (two low freq waves) -> positional offset (very small to avoid tunneling)
+			const wave1 = Math.sin(time*0.0022 + player.x*0.35)*0.45;
+			const wave2 = Math.sin(time*0.0009 + player.x*0.15 + player.y*0.05)*0.25;
+			player.y += (wave1+wave2)/(TILE*85);
 		}
 	} else {
 		// Normal gravity when not in water
