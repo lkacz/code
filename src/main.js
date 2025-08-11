@@ -325,7 +325,8 @@ function importLootInbox(data){ if(!data||!window.lootInbox) return; if(Array.is
 			// (we can't easily set internal variable; rely on existing load in that system)
 		}
 	} if(window.updateLootInboxIndicator) updateLootInboxIndicator(); }
-function buildSaveObject(){ return {
+function buildSaveObject(){ // v4: mobs serialization now stores relative aggro timers (see mobs.js)
+ return {
 	v:4,
 	seed: WORLDGEN.worldSeed,
 	world:{ modified: gatherModifiedChunks() },
