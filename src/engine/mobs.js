@@ -226,7 +226,8 @@
     const baseKey = m._cellKey; if(!baseKey) return; const [cxStr, cyStr] = baseKey.split(','); const cx=+cxStr, cy=+cyStr;
     for(let gx=cx-1; gx<=cx+1; gx++){
       for(let gy=cy-1; gy<=cy+1; gy++){
-        const set = grid.get(gx+','+gy); if(!set) continue; for(const o of set){ if(o===m) continue; if(o.id!==m.id) continue; const dx=m.x-o.x; const dy=m.y-o.y; const d2=dx*dx+dy*dy; const minDist=0.6; if(d2>0 && d2 < minDist*minDist){ const d=Math.sqrt(d2); const push=(minDist-d)/d*0.5; m.vx += dx*push; m.vy += dy*push*0.2; o.vx -= dx*push; o.vy -= dy*push*0.2; }
+        const set = grid.get(gx+','+gy); if(!set) continue; for(const o of set){ if(o===m) continue; if(o.id!==m.id) continue; const dx=m.x-o.x; const dy=m.y-o.y; const d2=dx*dx+dy*dy; const minDist=0.6; if(d2>0 && d2 < minDist*minDist){ const d=Math.sqrt(d2); const push=(minDist-d)/d*0.5; // apply only to m to avoid double-count when o processed later
+          m.vx += dx*push; m.vy += dy*push*0.2; }
         }
       }
     }
@@ -378,7 +379,14 @@
   function serialize(){ const now=Date.now(); const rel={}; for(const k in speciesAggro){ const rem = speciesAggro[k]-now; if(rem>0) rel[k]=rem; }
     return { v:1, list: mobs.map(m=>({id:m.id,x:m.x,y:m.y,vx:m.vx,vy:m.vy,hp:m.hp,state:m.state,facing:m.facing,spawnT:m.spawnT,attackCd:m.attackCd,waterTopY:m.waterTopY,desiredDepth:m.desiredDepth})), aggro:{mode:'rel', m:rel} }; }
   function deserialize(data){ // clear
-    for(const m of mobs) removeFromGrid(m); mobs.length=0; if(data && Array.isArray(data.list)){ for(const r of data.list){ if(!SPECIES[r.id]) continue; const m=create(SPECIES[r.id], r.x, r.y); m.vx=r.vx||0; m.vy=r.vy||0; m.hp=r.hp||SPECIES[r.id].hp; m.state=r.state||'idle'; m.facing=r.facing||1; m.spawnT=r.spawnT||performance.now(); m.attackCd=r.attackCd||0; if(m.id==='FISH'){ if(typeof r.waterTopY==='number') m.waterTopY=r.waterTopY; if(typeof r.desiredDepth==='number') m.desiredDepth=r.desiredDepth; m.nextWaterScan = performance.now() + 3000; m.strandedTime=0; } mobs.push(m); } }
+    for(const m of mobs) removeFromGrid(m); mobs.length=0; // reset live counts before rebuild
+    for(const k in speciesCounts) delete speciesCounts[k];
+    if(data && Array.isArray(data.list)){
+      for(const r of data.list){ if(!SPECIES[r.id]) continue; const spec=SPECIES[r.id]; const m=create(spec, r.x, r.y); m.vx=r.vx||0; m.vy=r.vy||0; m.hp=r.hp||spec.hp; m.state=r.state||'idle'; m.facing=r.facing||1; m.spawnT=r.spawnT||performance.now(); m.attackCd=r.attackCd||0;
+        if(spec.aquatic){ if(typeof r.waterTopY==='number') m.waterTopY=r.waterTopY; if(typeof r.desiredDepth==='number') m.desiredDepth=r.desiredDepth; m.nextWaterScan = performance.now() + 3000; m.strandedTime=0; }
+        mobs.push(m);
+      }
+    }
     for(const k in speciesAggro) delete speciesAggro[k];
     if(data && data.aggro){ const now=Date.now(); if(data.aggro.mode==='rel' && data.aggro.m){ for(const k in data.aggro.m){ const rem=data.aggro.m[k]; if(typeof rem==='number' && rem>0){ speciesAggro[k]= now + Math.min(rem, 5*60*1000); } }
       } else { // legacy absolute timestamps
