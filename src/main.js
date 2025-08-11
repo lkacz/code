@@ -246,7 +246,84 @@ window.addEventListener('keydown',e=>{ if(e.key==='+'||e.key==='='||e.key===']')
 });
 
 // Fizyka
-const MOVE={ACC:32,FRICTION:28,MAX:6,JUMP:-9,GRAV:20}; let jumpPrev=false; function physics(dt){ let input=0; if(keys['a']||keys['arrowleft']) input-=1; if(keys['d']||keys['arrowright']) input+=1; if(input!==0) player.facing=input; const target=input*MOVE.MAX; const diff=target-player.vx; const accel=MOVE.ACC*dt*Math.sign(diff); if(target!==0){ if(Math.abs(accel)>Math.abs(diff)) player.vx=target; else player.vx+=accel; } else { const fr=MOVE.FRICTION*dt; if(Math.abs(player.vx)<=fr) player.vx=0; else player.vx-=fr*Math.sign(player.vx); } const jumpNow=(keys['w']||keys['arrowup']||keys[' ']); if(jumpNow && !jumpPrev && (player.onGround || godMode)){ player.vy=MOVE.JUMP; player.onGround=false; } jumpPrev=jumpNow; player.vy+=MOVE.GRAV*dt; if(player.vy>20) player.vy=20; player.x += player.vx*dt; collide('x'); player.y += player.vy*dt; collide('y'); const tX=player.x - (W/(TILE*zoom))/2 + player.w/2; const tY=player.y - (H/(TILE*zoom))/2 + player.h/2; camSX += (tX-camSX)*Math.min(1,dt*8); camSY += (tY-camSY)*Math.min(1,dt*8); camX=camSX; camY=camSY; ensureChunks(); revealAround(); }
+const MOVE={ACC:32,FRICTION:28,MAX:6,JUMP:-9,GRAV:20}; let jumpPrev=false; let swimBuoySmooth=0; function physics(dt){
+	// Horizontal input
+	let input=0; if(keys['a']||keys['arrowleft']) input-=1; if(keys['d']||keys['arrowright']) input+=1; if(input!==0) player.facing=input;
+	const target=input*MOVE.MAX; const diff=target-player.vx; const accel=MOVE.ACC*dt*Math.sign(diff);
+	if(target!==0){ if(Math.abs(accel)>Math.abs(diff)) player.vx=target; else player.vx+=accel; } else { const fr=MOVE.FRICTION*dt; if(Math.abs(player.vx)<=fr) player.vx=0; else player.vx-=fr*Math.sign(player.vx); }
+
+	// Submersion sampling (5 points along body) with fractional sampling for smoother transitions
+	const samples=5; let submerged=0; const headY=player.y - player.h/2; const footY=player.y + player.h/2; const step=(footY-headY)/(samples-1); const tileX=Math.floor(player.x);
+	for(let i=0;i<samples;i++){
+		const sy=headY + step*i; const ty=Math.floor(sy); const tId=getTile(tileX,ty); if(tId===T.WATER){
+			// weight sample by how deep inside tile (reduces jumpiness when crossing boundary)
+			const fracInside = 1 - (sy - ty); submerged += 0.5 + 0.5*fracInside; // 0.5..1 weighting
+		}
+	}
+	const subFracRaw = submerged / samples; // can exceed 1 slightly; clamp below
+	const subFrac = Math.min(1, subFracRaw);
+	const inWater = subFrac>0.05; // tiny contact ignored
+	const diveInput = keys['s']||keys['arrowdown'];
+	const jumpNow=(keys['w']||keys['arrowup']||keys[' ']);
+
+	if(inWater){
+		// Water drag scales with immersion and adds subtle variation
+		const time=performance.now();
+		const micro = Math.sin(time*0.0012 + player.x*0.37) * 0.15 + Math.sin(time*0.00047 + player.y*0.52)*0.1;
+		const dragBase=2.2 + micro; // softer than before
+		const drag = dragBase * (0.35 + subFrac*0.65); // more drag when fully submerged
+		player.vx -= player.vx * Math.min(1, drag*dt);
+	}
+	if(jumpNow && !jumpPrev){
+		if(player.onGround || godMode){ player.vy=MOVE.JUMP; player.onGround=false; }
+		else if(inWater){ // gentle swim kick
+			player.vy = Math.min(player.vy,0);
+			player.vy += MOVE.JUMP * 0.32 * (0.6 + 0.4*subFrac); // scaled by immersion
+		}
+	}
+	jumpPrev=jumpNow;
+
+	if(inWater){
+		// Compute a gentle buoyancy force target; near-neutral at 55% submerged.
+		const neutralPoint=0.55; const excess = subFrac - neutralPoint; // negative when under neutral
+		// Base upward accel (reduced) plus tiny time/space variation
+		const time=performance.now();
+		const varA = Math.sin(time*0.0009 + player.x*0.33)*0.6;
+		const varB = Math.sin(time*0.0017 + player.y*0.21 + player.x*0.1)*0.4;
+		const variation = (varA+varB)*0.5; // -0.5..0.5 approx
+		let buoyAccel = 0;
+		if(excess>0){ buoyAccel = -excess * 10; } // much gentler than before
+		else { buoyAccel = -excess * 4; } // slight sinking resistance when below neutral
+		buoyAccel += variation; // add micro undulation
+		if(diveInput){ buoyAccel *= 0.35; } // suppress buoyancy when diving
+		// Gravity scaled by immersion (less effective deeper)
+		const gravScale = 1 - subFrac*0.75; player.vy += MOVE.GRAV * gravScale * dt;
+		// Low-pass filter buoyancy to avoid jitter
+		swimBuoySmooth += (buoyAccel - swimBuoySmooth) * Math.min(1, dt*4);
+		player.vy += swimBuoySmooth * dt;
+		if(diveInput){ player.vy += 4*dt; } // gentle descent assist
+		// Clamp speeds (tighter for delicacy)
+		const maxDown=4.5, maxUp=7; if(player.vy>maxDown) player.vy=maxDown; if(player.vy<-maxUp) player.vy=-maxUp;
+		// Surface stabilization: much softer hold with gentle bob
+		const headTile = getTile(tileX, Math.floor(headY));
+		const aboveHead = getTile(tileX, Math.floor(headY)-1);
+		if(headTile===T.WATER && aboveHead===T.AIR && !diveInput){
+			player.vy -= 6*dt * (0.4 + subFrac*0.6); // softer surface attraction
+			player.vx -= player.vx * 0.25 * dt; // mild extra damp
+			const bob = Math.sin(time*0.0035 + player.x*0.45)*0.35 + Math.sin(time*0.0012 + player.x*0.2)*0.15;
+			player.y += bob/(TILE*80);
+		}
+	} else {
+		// Normal gravity when not in water
+		player.vy += MOVE.GRAV*dt; if(player.vy>20) player.vy=20; swimBuoySmooth=0; // reset filter
+	}
+
+	// Integrate & collisions
+	player.x += player.vx*dt; collide('x');
+	player.y += player.vy*dt; collide('y');
+
+	// Camera follow
+	const tX=player.x - (W/(TILE*zoom))/2 + player.w/2; const tY=player.y - (H/(TILE*zoom))/2 + player.h/2; camSX += (tX-camSX)*Math.min(1,dt*8); camSY += (tY-camSY)*Math.min(1,dt*8); camX=camSX; camY=camSY; ensureChunks(); revealAround(); }
 function collide(axis){ const w=player.w/2,h=player.h/2; if(axis==='x'){ const minX=Math.floor(player.x-w), maxX=Math.floor(player.x+w), minY=Math.floor(player.y-h), maxY=Math.floor(player.y+h); for(let y=minY;y<=maxY;y++){ for(let x=minX;x<=maxX;x++){ const t=getTile(x,y); if(isSolid(t)){ if(player.vx>0) player.x = x - w - 0.001; if(player.vx<0) player.x = x + 1 + w + 0.001; } } } } else { const minX=Math.floor(player.x-w), maxX=Math.floor(player.x+w), minY=Math.floor(player.y-h), maxY=Math.floor(player.y+h); player.onGround=false; for(let y=minY;y<=maxY;y++){ for(let x=minX;x<=maxX;x++){ const t=getTile(x,y); if(isSolid(t)){ if(player.vy>0){ player.y = y - h - 0.001; player.vy=0; player.onGround=true; } if(player.vy<0){ player.y = y + 1 + h + 0.001; player.vy=0; } } } } } }
 
 // Mgła / widoczność (optimized bitset per chunk instead of Set<string>)
