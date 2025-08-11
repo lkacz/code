@@ -182,27 +182,56 @@ window.MM = window.MM || {};
   function runPressureLeveling(getTile,setTile){
     const seeds=[...active]; if(!seeds.length) return null; seeds.sort();
     const visitedSegments=new Set(); const touchedXs=new Set(); let variance=null; let hadTransfers=false; let attempts=0; const MAX_ATTEMPTS=24;
-    for(const key of seeds){ if(attempts>=MAX_ATTEMPTS) break; const [sx,sy]=key.split(',').map(Number); if(getTile(sx,sy)!==T.WATER) continue; let topY=findSurfaceY(sx,sy,getTile); if(topY==null) continue; let L=sx,R=sx; while(R-L+1<MAX_SEG_WIDTH){ const nx=L-1; if(!columnHasWater(nx,topY,getTile)) break; L=nx; } while(R-L+1<MAX_SEG_WIDTH){ const nx=R+1; if(!columnHasWater(nx,topY,getTile)) break; R=nx; } if(R-L+1<4) continue; const segKey=L+":"+R+":"+topY; if(visitedSegments.has(segKey)) continue; visitedSegments.add(segKey);
-      const cols=[]; let totalVolume=0; let minD=Infinity,maxD=0; for(let x=L;x<=R;x++){ const col=measureColumn(x,topY,getTile); if(!col){ minD=0; continue;} cols.push(col); totalVolume+=col.depth; if(col.depth<minD) minD=col.depth; if(col.depth>maxD) maxD=col.depth; }
-      if(cols.length < (R-L+1)*0.5) continue; if(maxD-minD<2) continue; const width=R-L+1; const targetBase=Math.floor(totalVolume/width); let remainder=totalVolume-targetBase*width; const desired=new Map(); for(let x=L;x<=R;x++){ let want=targetBase + (remainder>0?1:0); if(remainder>0) remainder--; desired.set(x,want); }
-      const depthMap=new Map(); for(let x=L;x<=R;x++) depthMap.set(x, measureDepthOnly(x,topY,getTile)); let transfers=0; const MAX_TRANSFERS=8; while(transfers<MAX_TRANSFERS){ let donor=null, recipient=null, donorSurY=null, recipientSurY=null; for(let x=L;x<=R;x++){ const d=depthMap.get(x)||0; const want=desired.get(x); if(d>want){ donor=x; donorSurY=findSurfaceY(x,topY,getTile); break; } } if(donor==null) break; for(let x=R;x>=L;x--){ const d=depthMap.get(x)||0; const want=desired.get(x); if(d<want){ recipient=x; recipientSurY=findSurfaceY(x,topY,getTile); break; } } if(recipient==null) break; if(donorSurY==null) break; setTile(donor,donorSurY,T.AIR); let addY; if(recipientSurY==null){ let ySearch=topY,lastSolid=null,limit=MAX_VERTICAL_SCAN; while(limit-- >0 && ySearch<WORLD_H){ const tt=getTile(recipient,ySearch); if(tt!==T.AIR && tt!==T.WATER){ lastSolid=ySearch; break;} ySearch++; } if(lastSolid==null){ transfers++; continue; } addY=lastSolid-1; } else { addY=recipientSurY-1; }
-        if(addY>=0 && addY<WORLD_H && getTile(recipient,addY)===T.AIR){
-          // Successful transfer
-          setTile(recipient,addY,T.WATER);
-          depthMap.set(donor,(depthMap.get(donor)||1)-1);
-          depthMap.set(recipient,(depthMap.get(recipient)||0)+1);
-          markNeighbors(active,donor,donorSurY);
-          markNeighbors(active,recipient,addY);
-          touchedXs.add(donor); touchedXs.add(recipient);
-          transfers++;
-        } else {
-          // Failed to place: restore donor to avoid volume loss
-          setTile(donor,donorSurY,T.WATER);
-          break;
-        }
+    for(const key of seeds){
+      if(attempts>=MAX_ATTEMPTS) break;
+      const [sx,sy]=key.split(',').map(Number);
+      if(getTile(sx,sy)!==T.WATER) continue;
+      const seedSurface = findSurfaceY(sx,sy,getTile); if(seedSurface==null) continue;
+      // Expand horizontally for contiguous water-bearing columns
+      let L=sx,R=sx;
+      while(R-L+1<MAX_SEG_WIDTH){ const nx=L-1; if(!columnHasWater(nx,seedSurface,getTile)) break; L=nx; }
+      while(R-L+1<MAX_SEG_WIDTH){ const nx=R+1; if(!columnHasWater(nx,seedSurface,getTile)) break; R=nx; }
+      if(R-L+1<4) continue;
+      const segKey=L+":"+R+":"+seedSurface; if(visitedSegments.has(segKey)) continue; visitedSegments.add(segKey);
+      // Collect column info
+      const cols=[]; let totalVolume=0; let minSurface=Infinity,maxSurface=-Infinity; let sealed=true; let sumFloors=0; let minFloor=Infinity;
+      for(let x=L;x<=R;x++){
+        const col=measureColumn(x,seedSurface,getTile); if(!col){ sealed=false; break; }
+        const floor = col.surface + col.depth; // y just below water
+        const bottomY = floor -1;
+        if(bottomY+1 < WORLD_H && canFill(getTile(x,bottomY+1))){ sealed=false; break; }
+        cols.push({x, surface: col.surface, depth: col.depth, floor});
+        totalVolume += col.depth;
+        if(col.surface < minSurface) minSurface=col.surface; if(col.surface > maxSurface) maxSurface=col.surface;
+        sumFloors += floor; if(floor < minFloor) minFloor=floor;
       }
-      if(transfers>0){ hadTransfers=true; ripples.push({L,R,y:topY,ttl:600,originalTTL:600}); }
-      const diff=maxD-minD; if(variance==null || diff>variance) variance=diff; attempts++;
+      if(!sealed) continue;
+      if(cols.length < (R-L+1)*0.5) continue;
+      if(maxSurface - minSurface <= 1) continue; // already nearly level
+      const n=cols.length;
+      const S_float = (sumFloors - totalVolume)/n;
+      let S_low = Math.floor(S_float);
+      if(S_low >= minFloor) S_low = minFloor - 1;
+      // Compute how many columns must be one deeper (surface lowered by 1) to match volume
+      let V_low=0; for(const c of cols){ V_low += (c.floor - S_low); }
+      const excess = V_low - totalVolume; // columns to raise surface by +1 (shallower)
+      const shallowSorted = [...cols].sort((a,b)=> (a.floor - S_low) - (b.floor - S_low));
+      let need=excess; const surfaceMap=new Map();
+      for(const c of shallowSorted){ let targetSurface=S_low; if(need>0 && (c.floor - S_low) > 1){ targetSurface = S_low+1; need--; } surfaceMap.set(c.x,targetSurface); }
+      // Rewrite columns
+      for(const c of cols){
+        const targetSurface = surfaceMap.get(c.x);
+        const targetDepth = c.floor - targetSurface;
+        if(targetDepth === c.depth && targetSurface === c.surface) continue;
+        // Clear old water column
+        for(let y=c.surface; y<c.surface + c.depth; y++){ setTile(c.x,y,T.AIR); }
+        // Fill new
+        for(let d=0; d<targetDepth; d++){ const y = c.floor -1 - d; if(y>=0 && y<WORLD_H) setTile(c.x,y,T.WATER); }
+        touchedXs.add(c.x);
+      }
+      if(touchedXs.size){ hadTransfers=true; ripples.push({L,R,y:S_low,ttl:600,originalTTL:600}); }
+      const diff=maxSurface - minSurface; if(variance==null || diff>variance) variance=diff;
+      attempts++;
     }
     return {touchedXs, variance, hadTransfers};
   }
