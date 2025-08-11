@@ -90,7 +90,7 @@ const CAPE_ANCHOR_FRAC=MM.CAPE.ANCHOR_FRAC; // 0 = top of body, 1 = bottom. Midd
 function initScarf(){ CAPE.init(player); }
 function updateCape(dt){ CAPE.update(player,dt,getTile,isSolid); }
 function drawCape(){ CAPE.draw(ctx,TILE); }
-function drawPlayer(){ drawCape(); const c=MM.customization||DEFAULT_CUST; const bodyX=(player.x-player.w/2)*TILE; const bodyY=(player.y-player.h/2)*TILE; const bw=player.w*TILE, bh=player.h*TILE; // body base color by outfit
+function drawPlayer(){ const c=MM.customization||DEFAULT_CUST; const bodyX=(player.x-player.w/2)*TILE; const bodyY=(player.y-player.h/2)*TILE; const bw=player.w*TILE, bh=player.h*TILE; // body base color by outfit
 	if(c.outfitStyle==='default') ctx.fillStyle=c.outfitColor||'#f4c05a';
 	else if(c.outfitStyle==='miner') ctx.fillStyle='#c89b50';
 	else if(c.outfitStyle==='mystic') ctx.fillStyle='#6b42c7';
@@ -273,7 +273,10 @@ window.addEventListener('keydown',e=>{ if(e.key==='+'||e.key==='='||e.key===']')
 });
 
 // Fizyka
-const MOVE={ACC:32,FRICTION:28,MAX:6,JUMP:-9,GRAV:20}; let jumpPrev=false; let swimBuoySmooth=0; function physics(dt){
+const MOVE={ACC:32,FRICTION:28,MAX:6,JUMP:-9,GRAV:20};
+// Expose for other engine modules (cape uses MAX for flare)
+window.MM.MOVE = MOVE;
+let jumpPrev=false; let swimBuoySmooth=0; function physics(dt){
 	// Horizontal input
 	let input=0; if(keys['a']||keys['arrowleft']) input-=1; if(keys['d']||keys['arrowright']) input+=1; if(input!==0) player.facing=input;
 	const target=input*MOVE.MAX; const diff=target-player.vx; const accel=MOVE.ACC*dt*Math.sign(diff);
@@ -418,12 +421,12 @@ function draw(){ ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Mat
 	const camRenderY = Math.round(camY*TILE*zoom)/ (TILE*zoom);
 	ctx.translate(-camRenderX*TILE,-camRenderY*TILE);
 	ctx.imageSmoothingEnabled=false; // avoid anti-alias gaps
-	// draw cape FIRST so any solid / passable tiles will occlude it
-	drawCape();
-	// render tiles (solids + passables)
+	// render tiles (solids + passables) first
 	drawWorldVisible(sx,sy,viewX,viewY);
 	drawFallingBlocks();
-	// player + overlays (back pass for vegetation done earlier)
+	// cape behind player body but above tiles
+	drawCape();
+	// player body + overlays (back pass for vegetation done earlier)
 	drawPlayer();
 	// front vegetation pass (blades/leaves that should appear in front)
 	if(VISUAL.animations){ drawAnimatedOverlays(sx,sy,viewX,viewY,'front'); }
