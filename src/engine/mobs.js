@@ -340,47 +340,156 @@
   function draw(ctx, TILE, camX,camY, zoom){
     ctx.save(); ctx.imageSmoothingEnabled=false;
     for(const m of mobs){ const screenX = (m.x*TILE); const screenY=(m.y*TILE); ctx.save();
-      // shake offset
       if(m.shake>0){ const ang=Math.random()*Math.PI*2; const mag=m.shake*1.5; ctx.translate(Math.cos(ang)*mag, Math.sin(ang)*mag); }
-      // flash: if hit recently, overlay lighten
-      const now=performance.now(); const flashing= now < m.hitFlashUntil; // basic sprite
-      if(m.id==='BIRD'){
-        ctx.fillStyle= flashing? '#ffffff' : '#ffe07a'; ctx.fillRect(screenX-4, screenY-6,8,6); // body
-        ctx.fillStyle='#ff9b00'; ctx.fillRect(screenX+(m.facing>0?2:-4), screenY-4,3,2); // beak
-        ctx.fillStyle='#222'; ctx.fillRect(screenX+(m.facing>0?1:-2), screenY-5,2,2);
-      } else if(m.id==='FISH'){
-        ctx.fillStyle= flashing? '#bcecff' : '#5bc0ff'; ctx.fillRect(screenX-5, screenY-3,10,6); ctx.fillStyle='#1d6b9c'; ctx.fillRect(screenX+(m.facing>0?4:-6), screenY-2,2,4);
-        ctx.fillStyle='#fff'; ctx.fillRect(screenX+(m.facing>0?2:-4), screenY-2,2,2); ctx.fillStyle='#000'; ctx.fillRect(screenX+(m.facing>0?2:-4), screenY-2,1,1);
-      } else if(m.id==='BEAR'){
-        ctx.fillStyle= flashing? '#e8d5c0':'#7b5135'; ctx.fillRect(screenX-7, screenY-8,14,10); ctx.fillRect(screenX-5, screenY-10,10,4); // head hump
-        ctx.fillStyle='#000'; ctx.fillRect(screenX+(m.facing>0?2:-3), screenY-6,2,2);
-      } else if(m.id==='SQUIRREL'){
-        ctx.fillStyle= flashing? '#ffe3b5':'#b07040'; ctx.fillRect(screenX-3, screenY-5,6,5); ctx.fillRect(screenX+(m.facing>0?2:-4), screenY-6,3,3); // head
-        ctx.fillStyle='#d19050'; ctx.fillRect(screenX-(m.facing>0?5:-1), screenY-6,4,4); // tail
-      } else if(m.id==='DEER'){
-        ctx.fillStyle= flashing? '#fff2e0':'#996633'; ctx.fillRect(screenX-5, screenY-7,10,8); ctx.fillStyle='#664422'; ctx.fillRect(screenX+(m.facing>0?2:-4), screenY-8,3,3); // head
-        ctx.fillStyle='#ccb28a'; ctx.fillRect(screenX+(m.facing>0?1:-3), screenY-9,1,2); ctx.fillRect(screenX+(m.facing>0?3:-5), screenY-9,1,2); // antlers
-      } else if(m.id==='WOLF'){
-        ctx.fillStyle= flashing? '#f5f5f5':'#bcbcbc'; ctx.fillRect(screenX-5, screenY-6,10,7); ctx.fillStyle='#888'; ctx.fillRect(screenX+(m.facing>0?2:-4), screenY-5,3,3); // head
-      } else if(m.id==='RABBIT'){
-        ctx.fillStyle= flashing? '#ffffff':'#dddddd'; ctx.fillRect(screenX-3, screenY-4,6,4); ctx.fillStyle='#bbb'; ctx.fillRect(screenX+(m.facing>0?1:-3), screenY-6,2,3); // ears
-      } else if(m.id==='OWL'){
-        ctx.fillStyle= flashing? '#ffffff':'#c8a860'; ctx.fillRect(screenX-4, screenY-7,8,7); ctx.fillStyle='#704c10'; ctx.fillRect(screenX+(m.facing>0?1:-3), screenY-6,3,3);
-      } else if(m.id==='CRAB'){
-        ctx.fillStyle= flashing? '#ffdddd':'#c23a2e'; ctx.fillRect(screenX-4, screenY-3,8,4); ctx.fillStyle='#8a1f17'; ctx.fillRect(screenX-6, screenY-2,2,2); ctx.fillRect(screenX+4, screenY-2,2,2); // claws
-      } else if(m.id==='SHARK'){
-        ctx.fillStyle= flashing? '#d0f4ff':'#507c94'; ctx.fillRect(screenX-8, screenY-4,16,8); ctx.fillStyle='#2a4a5a'; ctx.fillRect(screenX+(m.facing>0?6:-8), screenY-2,2,4); // tail
-      } else if(m.id==='EEL'){
-        ctx.fillStyle= flashing? '#e0ffe0':'#2f8a4a'; ctx.fillRect(screenX-6, screenY-2,12,4);
-      } else if(m.id==='GOAT'){
-        ctx.fillStyle= flashing? '#fafafa':'#c9c4b5'; ctx.fillRect(screenX-5, screenY-6,10,6); ctx.fillStyle='#9b968a'; ctx.fillRect(screenX+(m.facing>0?2:-4), screenY-5,3,3);
-      } else if(m.id==='FIREFLY'){
-  const pulse = (Math.sin(performance.now()*0.01 + m.spawnT*0.005)*0.5+0.5);
-  ctx.fillStyle= flashing? '#fffbb0': `rgba(255,224,102,${0.5+0.5*pulse})`; ctx.fillRect(screenX-2, screenY-2,4,3); ctx.fillStyle=`rgba(255,213,0,${0.6+0.4*pulse})`; ctx.fillRect(screenX-1, screenY-1,2,2);
+      const now=performance.now(); const flashing= now < m.hitFlashUntil;
+      let topY=screenY; // track highest pixel for HP bar positioning
+      function hpTop(y){ if(y<topY) topY=y; }
+      const faceDir = m.facing>0?1:-1;
+      // Helper to draw outline rectangle
+      function box(x,y,w,h,fill,stroke){ ctx.fillStyle=fill; ctx.fillRect(x,y,w,h); if(stroke){ ctx.strokeStyle=stroke; ctx.lineWidth=1; ctx.strokeRect(x+0.5,y+0.5,w-1,h-1);} hpTop(y); }
+      switch(m.id){
+        case 'BIRD': { // enlarged with wings + beak + eye
+          const bodyCol = flashing? '#ffffff' : '#ffe07a';
+          box(screenX-5, screenY-7,10,8, bodyCol,'#d49600'); // body
+          // wing (simple darker stripe)
+          ctx.fillStyle='#f3c552'; ctx.fillRect(screenX-5, screenY-3,10,2);
+          // tail
+          ctx.fillStyle='#d49600'; ctx.fillRect(screenX+(faceDir>0?3:-5), screenY-5,2,3);
+          // head & beak
+          ctx.fillStyle=bodyCol; ctx.fillRect(screenX+(faceDir>0?2:-4), screenY-8,4,4); hpTop(screenY-8);
+          ctx.fillStyle='#ff9b00'; ctx.fillRect(screenX+(faceDir>0?6:-6), screenY-6,3,2);
+          ctx.fillStyle='#222'; ctx.fillRect(screenX+(faceDir>0?4:-4), screenY-7,2,2);
+          break; }
+        case 'FISH': { // add dorsal/ventral fins + tail pattern
+          const body = flashing? '#bcecff' : '#5bc0ff';
+          box(screenX-7, screenY-4,14,8, body,'#1d6b9c');
+            ctx.fillStyle='#1d6b9c'; ctx.fillRect(screenX-3, screenY-4,6,1); // dorsal ridge
+            ctx.fillRect(screenX-3, screenY+3,6,1); // ventral
+          // tail
+          ctx.fillStyle='#1d6b9c'; ctx.fillRect(screenX+(faceDir>0?7:-9), screenY-3,2,6);
+          // eye & gill
+          ctx.fillStyle='#fff'; ctx.fillRect(screenX+(faceDir>0?1:-3), screenY-2,2,2); ctx.fillStyle='#000'; ctx.fillRect(screenX+(faceDir>0?1:-3), screenY-2,1,1);
+          ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fillRect(screenX+(faceDir>0?-1:1), screenY-1,1,2); // gill slit
+          break; }
+        case 'BEAR': { // large hulking (approx 2x1.2 tiles)
+          const body = flashing? '#e8d5c0':'#6b4a30';
+          box(screenX-14, screenY-12,28,14, body,'#3e2918'); // torso
+          // back + shading
+          ctx.fillStyle='rgba(0,0,0,0.15)'; ctx.fillRect(screenX-14, screenY+0,28,2);
+          // head
+          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?5:-11), screenY-16,12,10); hpTop(screenY-16);
+          // snout
+          ctx.fillStyle='#c4ad97'; ctx.fillRect(screenX+(faceDir>0?14:-11), screenY-10,4,4);
+          ctx.fillStyle='#000'; ctx.fillRect(screenX+(faceDir>0?16:-11), screenY-9,2,2);
+          // ears
+          ctx.fillStyle='#3e2918'; ctx.fillRect(screenX+(faceDir>0?6:-9), screenY-16,3,3); ctx.fillRect(screenX+(faceDir>0?12:-3), screenY-16,3,3);
+          // legs (front/back)
+          ctx.fillStyle='#4d3421'; const legY=screenY+2; ctx.fillRect(screenX-12, legY,5,6); ctx.fillRect(screenX-2, legY,5,6); ctx.fillRect(screenX+6, legY,5,6); ctx.fillRect(screenX+12-4, legY,5,6);
+          break; }
+        case 'SQUIRREL': {
+          const body = flashing? '#ffe3b5':'#b07040';
+          box(screenX-6, screenY-7,12,8, body,'#6a3d18');
+          // head
+          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?2:-6), screenY-10,6,5); hpTop(screenY-10);
+          // ear
+          ctx.fillStyle='#d19050'; ctx.fillRect(screenX+(faceDir>0?3:-5), screenY-11,2,2);
+          // tail (arched)
+          ctx.fillStyle='#d19050'; ctx.fillRect(screenX-(faceDir>0?10:-2), screenY-14,6,12);
+          ctx.fillRect(screenX-(faceDir>0?8:0), screenY-14,4,4);
+          break; }
+        case 'DEER': {
+          const body = flashing? '#fff2e0':'#9c6a39';
+          box(screenX-10, screenY-9,20,10, body,'#664422');
+          // head
+          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?8:-12), screenY-13,8,6); hpTop(screenY-13);
+          // muzzle
+          ctx.fillStyle='#d9c3a5'; ctx.fillRect(screenX+(faceDir>0?15:-12), screenY-10,3,3);
+          ctx.fillStyle='#000'; ctx.fillRect(screenX+(faceDir>0?16:-11), screenY-9,1,1);
+          // antlers
+          ctx.fillStyle='#ccb28a'; const ax=screenX+(faceDir>0?9:-5); const baseY=screenY-13; ctx.fillRect(ax, baseY-5,2,5); ctx.fillRect(ax+4*faceDir, baseY-4,2,5);
+          ctx.fillRect(ax+2*faceDir, baseY-8,2,3); ctx.fillRect(ax+6*faceDir, baseY-7,2,3);
+          break; }
+        case 'WOLF': {
+          const body = flashing? '#f5f5f5':'#bcbcbc';
+          box(screenX-12, screenY-7,24,9, body,'#666');
+          // head + ears
+          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?8:-14), screenY-11,10,8); hpTop(screenY-11);
+          ctx.fillStyle='#888'; ctx.fillRect(screenX+(faceDir>0?8:-14), screenY-11,3,3); ctx.fillRect(screenX+(faceDir>0?15:-7), screenY-11,3,3);
+          // snout
+          ctx.fillStyle='#ddd'; ctx.fillRect(screenX+(faceDir>0?16:-10), screenY-7,4,3); ctx.fillStyle='#222'; ctx.fillRect(screenX+(faceDir>0?18:-10), screenY-6,2,2);
+          // tail
+          ctx.fillStyle='#ddd'; ctx.fillRect(screenX-(faceDir>0?16:-0), screenY-5,6,3);
+          break; }
+        case 'RABBIT': {
+          const body = flashing? '#ffffff':'#dddddd';
+          box(screenX-5, screenY-5,10,6, body,'#999');
+          // head
+          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?4:-6), screenY-7,6,5); hpTop(screenY-7);
+          // ears
+          ctx.fillStyle='#bbb'; ctx.fillRect(screenX+(faceDir>0?5:-5), screenY-11,2,6); ctx.fillRect(screenX+(faceDir>0?8:-2), screenY-11,2,6);
+          break; }
+        case 'OWL': {
+          const body = flashing? '#ffffff':'#c8a860';
+          box(screenX-6, screenY-10,12,12, body,'#6a551e');
+          // facial disk
+          ctx.fillStyle='#ead5a0'; ctx.fillRect(screenX-4, screenY-8,8,6); hpTop(screenY-10);
+          // eyes
+          ctx.fillStyle='#000'; ctx.fillRect(screenX-2, screenY-7,2,2); ctx.fillRect(screenX+0, screenY-7,2,2);
+          // beak
+          ctx.fillStyle='#ffb94d'; ctx.fillRect(screenX-1, screenY-5,2,2);
+          break; }
+        case 'CRAB': {
+          const body = flashing? '#ffdddd':'#c23a2e';
+          box(screenX-8, screenY-4,16,6, body,'#8a1f17');
+          // legs
+          ctx.fillStyle='#8a1f17'; for(let i=-6;i<=6;i+=4){ ctx.fillRect(screenX+i, screenY+2,2,3); }
+          // claws
+          ctx.fillStyle='#8a1f17'; ctx.fillRect(screenX-12, screenY-2,4,4); ctx.fillRect(screenX+8, screenY-2,4,4);
+          break; }
+        case 'SHARK': {
+          const body = flashing? '#d0f4ff':'#507c94';
+          box(screenX-24, screenY-6,48,12, body,'#2a4a5a'); // long body (3 tiles)
+          // dorsal fin
+          ctx.fillStyle='#2a4a5a'; ctx.fillRect(screenX-4, screenY-12,6,6); hpTop(screenY-12);
+          // tail (fork)
+          ctx.fillRect(screenX+(faceDir>0?24:-30), screenY-4,6,8);
+          ctx.fillRect(screenX+(faceDir>0?28:-34), screenY-8,4,6);
+          ctx.fillRect(screenX+(faceDir>0?28:-34), screenY+2,4,6);
+          // mouth & eye
+          ctx.fillStyle='#000'; ctx.fillRect(screenX+(faceDir>0?18:-22), screenY-1,6,2);
+          ctx.fillRect(screenX+(faceDir>0?12:-16), screenY-2,2,2);
+          break; }
+        case 'EEL': {
+          const body = flashing? '#e0ffe0':'#2f8a4a';
+          // segmented body
+          for(let i=-10;i<=10;i+=4){ ctx.fillStyle= (i%8===0)? body : '#256d38'; ctx.fillRect(screenX+i, screenY-2,4,4); hpTop(screenY-2); }
+          // head
+          ctx.fillStyle=body; ctx.fillRect(screenX+10, screenY-3,5,6); ctx.fillStyle='#fff'; ctx.fillRect(screenX+13, screenY-2,2,2); ctx.fillStyle='#000'; ctx.fillRect(screenX+13, screenY-2,1,1);
+          break; }
+        case 'GOAT': {
+          const body = flashing? '#fafafa':'#c9c4b5';
+          box(screenX-10, screenY-8,20,9, body,'#8d8779');
+          // head
+          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?8:-12), screenY-12,8,6); hpTop(screenY-12);
+          // horns
+          ctx.fillStyle='#9b968a'; ctx.fillRect(screenX+(faceDir>0?8:-12), screenY-14,2,4); ctx.fillRect(screenX+(faceDir>0?14:-6), screenY-14,2,4);
+          // beard
+          ctx.fillStyle='#9b968a'; ctx.fillRect(screenX+(faceDir>0?14:-6), screenY-7,2,2);
+          break; }
+        case 'FIREFLY': {
+          const pulse = (Math.sin(now*0.01 + m.spawnT*0.005)*0.5+0.5);
+          const glowA = 0.55+0.45*pulse;
+          ctx.fillStyle=`rgba(255,224,102,${glowA})`; ctx.fillRect(screenX-2, screenY-2,4,4); hpTop(screenY-2);
+          ctx.fillStyle=`rgba(255,213,0,${0.4+0.4*pulse})`; ctx.fillRect(screenX-1, screenY-1,2,2);
+          break; }
+        default: {
+          // fallback: small box
+          box(screenX-4, screenY-4,8,8, flashing? '#ffffff':'#888', '#444');
+        }
       }
-      // HP bar small
+      // HP bar (position above highest drawn pixel)
       if(m.hp < (SPECIES[m.id]?.hp||1)){
-        const maxHp = SPECIES[m.id].hp; const w=12; const frac=m.hp/maxHp; ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(screenX-w/2, screenY-10, w,3); ctx.fillStyle='#ff5252'; ctx.fillRect(screenX-w/2, screenY-10, w*frac,3);
+        const maxHp = SPECIES[m.id].hp; const w= Math.max(12, Math.min(36, (SPECIES[m.id].hp||10))); const frac=m.hp/maxHp; const barY = topY - 6; ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(screenX-w/2, barY, w,3); ctx.fillStyle='#ff5252'; ctx.fillRect(screenX-w/2, barY, w*frac,3);
       }
       ctx.restore(); }
     ctx.restore();
