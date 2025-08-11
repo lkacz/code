@@ -119,6 +119,12 @@
 
   function updatePreview(){ drawPlayerPreview(pctx); }
 
+  // Static cape icon (grid thumbnails) – previously removed causing ReferenceError
+  function drawCapeMini(ctx, styleId){
+    const map={ classic:[4,10], triangle:[3,7], royal:[5,14], tattered:[4,11], winged:[3,12] };
+    const dims=map[styleId]||map.classic; ctx.save(); ctx.fillStyle='#b91818'; ctx.fillRect(-dims[0]/2,0,dims[0],dims[1]); ctx.restore();
+  }
+
   function drawItemPreview(ctx,item,catKey){ ctx.clearRect(0,0,80,80); if(catKey==='capeStyle'){ ctx.save(); ctx.translate(40,15); ctx.scale(4,4); drawCapeMini(ctx,item.id); ctx.restore(); } else if(catKey==='eyeStyle'){ ctx.fillStyle='#222'; ctx.fillRect(10,22,60,36); ctx.fillStyle='#f4c05a'; ctx.fillRect(25,28,30,30); // head
       if(item.id==='glow'){ ctx.fillStyle='#8bf9ff'; ctx.fillRect(30,40,8,8); ctx.fillRect(42,40,8,8); }
       else if(item.id==='sleepy'){ ctx.fillStyle='#fff'; ctx.fillRect(30,42,8,4); ctx.fillRect(42,42,8,4); }
