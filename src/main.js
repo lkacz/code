@@ -965,6 +965,7 @@ document.getElementById('radarMenuBtn')?.addEventListener('click',()=>{ radarFla
 		MM.mobs.species.forEach(id=>{ const b=document.createElement('button'); b.textContent=id; b.style.cssText='flex:1 1 70px; font-size:11px; padding:3px 6px;'; b.addEventListener('click',()=>{ if(MM.mobs.forceSpawn){ const ok=MM.mobs.forceSpawn(id, player, getTile); if(ok) msg('Spawn '+id); } }); box.appendChild(b); });
 	};
 	setTimeout(()=>{ if(window.__populateMobSpawnButtons) window.__populateMobSpawnButtons(); },300);
+	window.addEventListener('mm-mobs-ready',()=>{ if(window.__populateMobSpawnButtons) window.__populateMobSpawnButtons(); });
 })();
 // Regeneracja świata z nowym ziarnem
 document.getElementById('regenBtn')?.addEventListener('click',()=>{ setSeedFromInput(); regenWorld(); closeMenu(); });

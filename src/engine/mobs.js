@@ -152,4 +152,5 @@
   }
 
   MM.mobs = { update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro, forceSpawn, species: Object.keys(SPECIES) };
+  try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
 })();
