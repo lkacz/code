@@ -89,5 +89,6 @@ window.MM = window.MM || {};
   capeAPI.draw = draw;
   capeAPI._segments = cape;
   capeAPI.styles = Object.keys(CAPE_STYLES);
+  capeAPI.getStyle = function(id){ return Object.assign({}, CAPE_STYLES[id]||CAPE_STYLES.classic); };
   MM.cape = capeAPI;
 })();

@@ -95,11 +95,21 @@
     const eyeY=bh*0.35; const eyeW=4; const eyeH=4; const off=4.5; if(c.eyeStyle==='glow'){ ctx.fillStyle='#8bf9ff'; ctx.fillRect(bw/2-off-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); ctx.fillRect(bw/2+off-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); }
     else if(c.eyeStyle==='sleepy'){ ctx.fillStyle='#fff'; ctx.fillRect(bw/2-off-eyeW/2, eyeY-1, eyeW, 2); ctx.fillRect(bw/2+off-eyeW/2, eyeY-1, eyeW, 2); }
     else { ctx.fillStyle='#fff'; ctx.fillRect(bw/2-off-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); ctx.fillRect(bw/2+off-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); ctx.fillStyle='#111'; ctx.fillRect(bw/2-off-eyeW/2+1, eyeY-1,2,2); ctx.fillRect(bw/2+off-eyeW/2+1, eyeY-1,2,2); }
-    // simple cape silhouette behind
-    drawCapeMini(ctx, c.capeStyle);
+  // animated mini cape behind
+  drawCapeMiniAnimated(ctx, c.capeStyle);
     ctx.restore(); }
 
-  function drawCapeMini(ctx, styleId){ const styles={ classic:[4,10], triangle:[3,7], royal:[5,14], tattered:[4,11], winged:[3,12] }; const dims=styles[styleId]||styles.classic; ctx.save(); ctx.fillStyle='#b91818'; ctx.fillRect(-2,2,dims[0],dims[1]); ctx.restore(); }
+  // Animated mini cape simulation (lightweight)
+  const miniCape=[]; const MINI_SEGS=10; for(let i=0;i<MINI_SEGS;i++) miniCape.push({x:0,y:0}); let miniFacing= -1; let lastTime=performance.now();
+  function stepMiniCape(styleId,dt){ const st=(MM.cape && MM.cape.getStyle)? MM.cape.getStyle(styleId): {wTop:0.1,wBot:0.24,flare:1}; const speed=Math.sin(performance.now()*0.0012)*0.5+0.5; const targetFlare=(0.18+0.55*speed)*st.flare; const segLen=0.5; miniCape[0].x=0; miniCape[0].y=0; for(let i=1;i<MINI_SEGS;i++){ const prev=miniCape[i-1]; const seg=miniCape[i]; const t=i/(MINI_SEGS-1); const backDirX=-miniFacing; const wind=Math.sin(performance.now()/400 + i*0.7)*0.05; const desiredX=prev.x + backDirX*t*targetFlare + wind*(st.wind||1); const desiredY=prev.y + 0.2 + t*0.6; seg.x += (desiredX - seg.x)*Math.min(1,dt*8); seg.y += (desiredY - seg.y)*Math.min(1,dt*8); }
+    // length constraint
+    for(let it=0; it<2; it++){ for(let i=1;i<MINI_SEGS;i++){ const a=miniCape[i-1], b=miniCape[i]; let dx=b.x-a.x, dy=b.y-a.y; let d=Math.hypot(dx,dy)||0.0001; const excess=d-segLen; if(Math.abs(excess)>0.001){ const k=excess/d; b.x -= dx*k; b.y -= dy*k; } } }
+  }
+  function drawCapeMiniAnimated(ctx, styleId){ const now=performance.now(); const dt=Math.min(0.05,(now-lastTime)/1000); lastTime=now; stepMiniCape(styleId,dt); ctx.save(); ctx.translate(-2,2); // anchor left of body
+    // build width profile path
+    const st=(MM.cape && MM.cape.getStyle)? MM.cape.getStyle(styleId): {wTop:0.1,wBot:0.24}; ctx.beginPath(); const wTop=st.wTop*10, wBot=st.wBot*10; for(let i=0;i<MINI_SEGS;i++){ const seg=miniCape[i]; const t=i/(MINI_SEGS-1); const w=wTop+(wBot-wTop)*t; const nx=seg.x; const ny=seg.y; if(i===0){ ctx.moveTo(nx - w, ny); } ctx.lineTo(nx - w, ny); }
+    for(let i=MINI_SEGS-1;i>=0;i--){ const seg=miniCape[i]; const t=i/(MINI_SEGS-1); const w=wTop+(wBot-wTop)*t; ctx.lineTo(seg.x + w, seg.y); }
+    ctx.closePath(); ctx.fillStyle='#b91818'; ctx.fill(); ctx.restore(); requestAnimationFrame(()=>{ if(overlay.style.display==='block') updatePreview(); }); }
 
   function updatePreview(){ drawPlayerPreview(pctx); }
 
