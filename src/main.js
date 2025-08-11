@@ -55,11 +55,26 @@ function getTile(x,y){ return WORLD.getTile(x,y); }
 function setTile(x,y,v){ WORLD.setTile(x,y,v); }
 
 // --- Gracz / inwentarz ---
-const player={x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,facing:1,tool:'basic'};
+const player={x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,facing:1,tool:'basic',jumpCount:0};
 // Global customization state comes from customization.js (advanced system)
 window.MM = window.MM || {};
 const DEFAULT_CUST={ capeStyle:'classic', capeColor:'#b91818', eyeStyle:'bright', outfitStyle:'default', outfitColor:'#f4c05a' };
 MM.customization = Object.assign({}, DEFAULT_CUST, MM.customization||{});
+MM.activeModifiers = MM.activeModifiers || {}; // ensure present
+window.addEventListener('mm-customization-change',()=>{
+	// customization.js already recomputed MM.activeModifiers.
+	// Adjust vision immediately.
+	revealAround();
+	// Clamp jumpCount if cape downgraded mid‑air.
+	const maxAir = (MM.activeModifiers && typeof MM.activeModifiers.maxAirJumps==='number')? MM.activeModifiers.maxAirJumps : 0;
+	const totalAllowed = 1 + maxAir;
+	if(player.jumpCount > totalAllowed) player.jumpCount = totalAllowed;
+});
+// If customization script already provided computeActiveModifiers, call it indirectly by dispatching a synthetic event if empty.
+if(!('maxAirJumps' in MM.activeModifiers) || !('visionRadius' in MM.activeModifiers)){
+	// Attempt to trigger computation (customization.js runs its own compute on load)
+	if(typeof MM.activeModifiers !== 'object') MM.activeModifiers={};
+}
 const tools={basic:1,stone:2,diamond:4};
 // Inventory counts for placeable tiles
 const inv={grass:0,sand:0,stone:0,diamond:0,wood:0,leaf:0,snow:0,water:0,tools:{stone:false,diamond:false}};
@@ -297,10 +312,18 @@ let jumpPrev=false; let swimBuoySmooth=0; function physics(dt){
 		player.vx -= player.vx * Math.min(1, drag*dt);
 	}
 	if(jumpNow && !jumpPrev){
-		if(player.onGround || godMode){ player.vy=MOVE.JUMP; player.onGround=false; }
-		else if(inWater){ // gentle swim kick
+		const maxAir = (MM.activeModifiers && typeof MM.activeModifiers.maxAirJumps==='number')? MM.activeModifiers.maxAirJumps : 0; // additional beyond ground jump
+		const totalAllowed = 1 + maxAir; // total sequential presses allowed while airborne
+		if(player.onGround || godMode){ // primary jump
+			player.vy=MOVE.JUMP; player.onGround=false; player.jumpCount=1;
+		}
+		else if(!inWater && player.jumpCount>0 && player.jumpCount < totalAllowed){
+			// mid-air extra jump
+			player.vy=MOVE.JUMP; player.jumpCount++;
+		}
+		else if(inWater){ // gentle swim kick (does not consume jump charges)
 			player.vy = Math.min(player.vy,0);
-			player.vy += MOVE.JUMP * 0.32 * (0.6 + 0.4*subFrac); // scaled by immersion
+			player.vy += MOVE.JUMP * 0.32 * (0.6 + 0.4*subFrac);
 		}
 	}
 	jumpPrev=jumpNow;
@@ -352,7 +375,7 @@ let jumpPrev=false; let swimBuoySmooth=0; function physics(dt){
 
 	// Camera follow
 	const tX=player.x - (W/(TILE*zoom))/2 + player.w/2; const tY=player.y - (H/(TILE*zoom))/2 + player.h/2; camSX += (tX-camSX)*Math.min(1,dt*8); camSY += (tY-camSY)*Math.min(1,dt*8); camX=camSX; camY=camSY; ensureChunks(); revealAround(); }
-function collide(axis){ const w=player.w/2,h=player.h/2; if(axis==='x'){ const minX=Math.floor(player.x-w), maxX=Math.floor(player.x+w), minY=Math.floor(player.y-h), maxY=Math.floor(player.y+h); for(let y=minY;y<=maxY;y++){ for(let x=minX;x<=maxX;x++){ const t=getTile(x,y); if(isSolid(t)){ if(player.vx>0) player.x = x - w - 0.001; if(player.vx<0) player.x = x + 1 + w + 0.001; } } } } else { const minX=Math.floor(player.x-w), maxX=Math.floor(player.x+w), minY=Math.floor(player.y-h), maxY=Math.floor(player.y+h); player.onGround=false; for(let y=minY;y<=maxY;y++){ for(let x=minX;x<=maxX;x++){ const t=getTile(x,y); if(isSolid(t)){ if(player.vy>0){ player.y = y - h - 0.001; player.vy=0; player.onGround=true; } if(player.vy<0){ player.y = y + 1 + h + 0.001; player.vy=0; } } } } } }
+function collide(axis){ const w=player.w/2,h=player.h/2; if(axis==='x'){ const minX=Math.floor(player.x-w), maxX=Math.floor(player.x+w), minY=Math.floor(player.y-h), maxY=Math.floor(player.y+h); for(let y=minY;y<=maxY;y++){ for(let x=minX;x<=maxX;x++){ const t=getTile(x,y); if(isSolid(t)){ if(player.vx>0) player.x = x - w - 0.001; if(player.vx<0) player.x = x + 1 + w + 0.001; } } } } else { const minX=Math.floor(player.x-w), maxX=Math.floor(player.x+w), minY=Math.floor(player.y-h), maxY=Math.floor(player.y+h); const wasGround=player.onGround; player.onGround=false; for(let y=minY;y<=maxY;y++){ for(let x=minX;x<=maxX;x++){ const t=getTile(x,y); if(isSolid(t)){ if(player.vy>0){ player.y = y - h - 0.001; player.vy=0; player.onGround=true; } if(player.vy<0){ player.y = y + 1 + h + 0.001; player.vy=0; } } } } if(player.onGround && !wasGround){ player.jumpCount=0; } } }
 
 // Mgła / widoczność (optimized bitset per chunk instead of Set<string>)
 let revealAll=false;
@@ -362,7 +385,7 @@ const SEEN_BYTES = Math.ceil(SEEN_STRIDE/8);
 function ensureSeenChunk(cx){ let arr=seenChunks.get(cx); if(!arr){ arr=new Uint8Array(SEEN_BYTES); seenChunks.set(cx,arr);} return arr; }
 function markSeen(x,y){ if(y<0||y>=WORLD_H) return; const cx=Math.floor(x/CHUNK_W); let lx=x - cx*CHUNK_W; if(lx<0||lx>=CHUNK_W) return; const idx=y*CHUNK_W + lx; const arr=ensureSeenChunk(cx); arr[idx>>3] |= (1 << (idx & 7)); }
 function hasSeen(x,y){ if(y<0||y>=WORLD_H) return false; const cx=Math.floor(x/CHUNK_W); const arr=seenChunks.get(cx); if(!arr) return false; const lx=x - cx*CHUNK_W; if(lx<0||lx>=CHUNK_W) return false; const idx=y*CHUNK_W + lx; return (arr[idx>>3] & (1 << (idx & 7)))!==0; }
-function revealAround(){ const r=10; const px=player.x, py=player.y; for(let dx=-r; dx<=r; dx++){ const wx=Math.floor(px+dx); for(let dy=-r; dy<=r; dy++){ if(dx*dx+dy*dy<=r*r){ markSeen(wx, Math.floor(py+dy)); } } } }
+function revealAround(){ const m=MM.activeModifiers||{}; const r = (typeof m.visionRadius==='number')? m.visionRadius : 10; const px=player.x, py=player.y; for(let dx=-r; dx<=r; dx++){ const wx=Math.floor(px+dx); for(let dy=-r; dy<=r; dy++){ if(dx*dx+dy*dy<=r*r){ markSeen(wx, Math.floor(py+dy)); } } } }
 
 // Kopanie (kierunkowe)
 // Kopanie + upadek drzew

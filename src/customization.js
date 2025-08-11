@@ -10,24 +10,38 @@
 
   // Data model (future scalable): each category has items {id,name,kind,locked?,data?}
   const ITEMS={
+    // airJumps: additional mid-air jumps allowed (0 => only ground jump)
     capes:[
-      {id:'classic', name:'Klasyczna'},
-      {id:'triangle', name:'Trójkątna'},
-      {id:'royal', name:'Królewska', shiny:true},
-      {id:'tattered', name:'Postrzępiona'},
-      {id:'winged', name:'Skrzydlata'}
+      {id:'classic', name:'Klasyczna', airJumps:0, desc:'Tylko skok z ziemi'},
+      {id:'triangle', name:'Trójkątna', airJumps:1, desc:'Podwójny skok (2)'},
+      {id:'royal', name:'Królewska', shiny:true, airJumps:3, desc:'Cztery skoki (4)'},
+      {id:'tattered', name:'Postrzępiona', airJumps:1, desc:'Podwójny skok (2)'},
+      {id:'winged', name:'Skrzydlata', shiny:true, airJumps:3, desc:'Cztery skoki (4)'}
     ],
+    // visionRadius influences fog reveal; base previously 10
     eyes:[
-      {id:'bright', name:'Jasne'},
-      {id:'glow', name:'Świetliste'},
-      {id:'sleepy', name:'Śpiące'}
+      {id:'sleepy', name:'Wąskie', visionRadius:7, desc:'Mały zasięg widzenia'},
+      {id:'bright', name:'Szerokie', visionRadius:11, desc:'Duży zasięg widzenia'},
+      {id:'glow', name:'Przełomowe', visionRadius:15, desc:'Bardzo duży zasięg'}
     ],
+    // Placeholder for future outfit effects (scalable)
     outfits:[
-      {id:'default', name:'Podstawowy'},
-      {id:'miner', name:'Górnik'},
-      {id:'mystic', name:'Mistyk'}
+      {id:'default', name:'Podstawowy', desc:'Brak bonusów'},
+      {id:'miner', name:'Górnik', desc:'(Rezerwa: szybsze kopanie)'},
+      {id:'mystic', name:'Mistyk', desc:'(Rezerwa: bonus many)'}
     ]
   };
+
+  function computeActiveModifiers(){
+    const mods={};
+    const cape=ITEMS.capes.find(c=>c.id===MM.customization.capeStyle);
+    const eyes=ITEMS.eyes.find(e=>e.id===MM.customization.eyeStyle);
+    const outfit=ITEMS.outfits.find(o=>o.id===MM.customization.outfitStyle);
+    if(cape && typeof cape.airJumps==='number') mods.maxAirJumps = cape.airJumps;
+    if(eyes && typeof eyes.visionRadius==='number') mods.visionRadius = eyes.visionRadius;
+    // Future: aggregate outfit effects (placeholders)
+    MM.activeModifiers = mods;
+  }
 
   function migrateLegacy(){
     // Migrate once from older simple key if new storage absent
@@ -76,17 +90,18 @@
 
   function buildTabs(){ tabsEl.innerHTML=''; categories.forEach(cat=>{ const b=document.createElement('button'); b.className='custTabBtn'; b.textContent=cat.label; b.dataset.key=cat.key; b.addEventListener('click',()=>setActive(cat)); tabsEl.appendChild(b); }); setActive(activeCat); }
 
-  function buildGrid(){ grid.innerHTML=''; const list=activeCat.list; list.forEach((item,idx)=>{ const div=document.createElement('div'); div.className='custItem'; div.dataset.id=item.id; div.tabIndex=0; if(MM.customization[activeCat.key]===item.id) div.classList.add('sel'); const c=document.createElement('canvas'); c.width=80; c.height=80; const g=c.getContext('2d'); drawItemPreview(g, item, activeCat.key); div.appendChild(c); const nm=document.createElement('div'); nm.className='nm'; nm.textContent=item.name; div.appendChild(nm); function choose(){ if(div.classList.contains('locked')) return; if(MM.customization[activeCat.key]===item.id) return; MM.customization[activeCat.key]=item.id; save(); window.dispatchEvent(new CustomEvent('mm-customization-change',{detail:{key:activeCat.key,value:item.id}})); buildGrid(); updatePreview(); updateSelInfo(); }
+  function buildGrid(){ grid.innerHTML=''; const list=activeCat.list; list.forEach((item,idx)=>{ const div=document.createElement('div'); div.className='custItem'; div.dataset.id=item.id; div.tabIndex=0; if(MM.customization[activeCat.key]===item.id) div.classList.add('sel'); const c=document.createElement('canvas'); c.width=80; c.height=80; const g=c.getContext('2d'); drawItemPreview(g, item, activeCat.key); div.appendChild(c); const nm=document.createElement('div'); nm.className='nm'; nm.textContent=item.name; div.appendChild(nm); if(item.desc){ const d=document.createElement('div'); d.style.fontSize='9px'; d.style.opacity='0.7'; d.textContent=item.desc; div.appendChild(d); }
+      function choose(){ if(div.classList.contains('locked')) return; if(MM.customization[activeCat.key]===item.id) return; MM.customization[activeCat.key]=item.id; computeActiveModifiers(); save(); window.dispatchEvent(new CustomEvent('mm-customization-change',{detail:{key:activeCat.key,value:item.id}})); buildGrid(); updatePreview(); updateSelInfo(); }
         div.addEventListener('click',choose);
         div.addEventListener('keydown',e=>{ if(e.key==='Enter' || e.key===' ') { e.preventDefault(); choose(); } });
         grid.appendChild(div); }); }
 
-  function updateSelInfo(){ selInfo.textContent='Peleryna: '+MM.customization.capeStyle+' | Oczy: '+MM.customization.eyeStyle+' | Strój: '+MM.customization.outfitStyle; }
+  function updateSelInfo(){ const m=MM.activeModifiers||{}; selInfo.textContent='Peleryna: '+MM.customization.capeStyle+' (skoki:'+( (m.maxAirJumps||0)+1 )+') | Oczy: '+MM.customization.eyeStyle+' (zasięg:'+(m.visionRadius||10)+') | Strój: '+MM.customization.outfitStyle; }
 
   let lastFocus=null;
   function trapFocus(e){ if(overlay.style.display!=='block') return; if(e.key!=='Tab') return; const focusables=[...overlay.querySelectorAll('button,[tabindex]')].filter(el=>!el.disabled); if(!focusables.length) return; const first=focusables[0], last=focusables[focusables.length-1]; if(e.shiftKey){ if(document.activeElement===first){ e.preventDefault(); last.focus(); } } else { if(document.activeElement===last){ e.preventDefault(); first.focus(); } } }
   function open(){ overlay.style.display='block'; lastFocus=document.activeElement; updatePreview(); updateSelInfo(); // focus first tab
-    const firstTab=tabsEl.querySelector('.custTabBtn'); if(firstTab) firstTab.focus(); document.addEventListener('keydown',trapFocus); }
+  const firstTab=tabsEl.querySelector('.custTabBtn'); if(firstTab) firstTab.focus(); document.addEventListener('keydown',trapFocus); }
   function close(){ overlay.style.display='none'; document.removeEventListener('keydown',trapFocus); if(lastFocus && lastFocus.focus) lastFocus.focus(); }
   openBtn.addEventListener('click',open); closeBtn.addEventListener('click',close); overlay.addEventListener('click',e=>{ if(e.target===overlay) close(); });
   window.addEventListener('keydown',e=>{ if(e.key==='Escape' && overlay.style.display==='block') close(); });
@@ -141,12 +156,14 @@
   }
 
   function drawItemPreview(ctx,item,catKey){ ctx.clearRect(0,0,80,80); if(catKey==='capeStyle'){ ctx.save(); ctx.translate(40,15); ctx.scale(4,4); drawCapeMini(ctx,item.id); ctx.restore(); } else if(catKey==='eyeStyle'){ ctx.fillStyle='#222'; ctx.fillRect(10,22,60,36); ctx.fillStyle='#f4c05a'; ctx.fillRect(25,28,30,30); // head
-      if(item.id==='glow'){ ctx.fillStyle='#8bf9ff'; ctx.fillRect(30,40,8,8); ctx.fillRect(42,40,8,8); }
-      else if(item.id==='sleepy'){ ctx.fillStyle='#fff'; ctx.fillRect(30,42,8,4); ctx.fillRect(42,42,8,4); }
+    if(item.id==='glow'){ ctx.fillStyle='#8bf9ff'; ctx.fillRect(30,40,8,8); ctx.fillRect(42,40,8,8); }
+    else if(item.id==='sleepy'){ ctx.fillStyle='#fff'; ctx.fillRect(30,42,8,4); ctx.fillRect(42,42,8,4); }
       else { ctx.fillStyle='#fff'; ctx.fillRect(30,38,8,12); ctx.fillRect(42,38,8,12); ctx.fillStyle='#111'; ctx.fillRect(32,42,4,4); ctx.fillRect(44,42,4,4); }
     } else if(catKey==='outfitStyle'){ ctx.fillStyle=item.id==='miner'? '#c89b50': item.id==='mystic'? '#6b42c7':'#f4c05a'; ctx.fillRect(18,16,44,48); ctx.strokeStyle='#4b3212'; ctx.strokeRect(18,16,44,48); }
   }
 
   buildTabs();
+  computeActiveModifiers();
   updatePreview();
+  updateSelInfo();
 })();
