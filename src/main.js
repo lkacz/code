@@ -22,15 +22,25 @@ const SKY_PALETTES={
 	1:{ dayTop:'#4b8fdc', dayBot:'#c2ddf5', duskTop:'#ff7a3a', duskBot:'#ffc68a', nightTop:'#081627', nightBot:'#0b1d30', mount:['#557094','#465d78','#334556'] },
 	2:{ dayTop:'#3b6fae', dayBot:'#b4d3ec', duskTop:'#ff6c36', duskBot:'#ffb778', nightTop:'#071320', nightBot:'#0a1928', mount:['#4a5f73','#3c4d5d','#2c3843'] }
 };
-// Stars only (cloud system removed per request)
-const STAR_COUNT=140; const starsFar=[], starsNear=[]; function initStars(){ for(let i=0;i<STAR_COUNT;i++){ starsFar.push({x:Math.random(), y:Math.random(), r:Math.random()*1.0+0.25, a:Math.random()*0.5+0.35}); } for(let i=0;i<STAR_COUNT*0.55;i++){ starsNear.push({x:Math.random(), y:Math.random(), r:Math.random()*1.6+0.5, a:Math.random()*0.6+0.4}); } }
+// Stars only (cloud system removed per request) + slight color / size variance
+const STAR_COUNT=140; const starsFar=[], starsNear=[]; const STAR_COLORS=['#ffffff','#ffdcb8','#cfe8ff','#ffeedd','#d5f2ff'];
+function pickStarColor(){ const r=Math.random(); if(r<0.55) return STAR_COLORS[0]; if(r<0.70) return STAR_COLORS[1]; if(r<0.85) return STAR_COLORS[2]; if(r<0.93) return STAR_COLORS[3]; return STAR_COLORS[4]; }
+function initStars(){
+	for(let i=0;i<STAR_COUNT;i++){
+		starsFar.push({x:Math.random(), y:Math.random(), r:Math.random()*1.05+0.25, a:Math.random()*0.5+0.35, c:pickStarColor()});
+	}
+	for(let i=0;i<STAR_COUNT*0.55;i++){
+		starsNear.push({x:Math.random(), y:Math.random(), r:Math.random()*1.8+0.45, a:Math.random()*0.6+0.4, c:pickStarColor()});
+	}
+}
 initStars();
-function updateClouds(){ /* no-op */ }
+// Removed updateClouds(); fully cleaned
 // Mountain layer cache per biome/layer
 const mountainCache=new Map();
 function getMountainLayer(biome,layer){ const key=biome+'_'+layer; if(mountainCache.has(key)) return mountainCache.get(key); const pal=SKY_PALETTES[biome]||SKY_PALETTES[0]; const col=pal.mount[Math.min(layer,pal.mount.length-1)]; const c=document.createElement('canvas'); c.width=1600; c.height=300; const g=c.getContext('2d'); g.fillStyle=col; const peaks=12; const hBase= c.height*(0.25+0.18*layer); const amp= 80 + layer*40; g.beginPath(); g.moveTo(0,c.height); for(let i=0;i<=peaks;i++){ const x=i/peaks*c.width; const y=hBase - Math.sin(i*1.3 + biome*0.8)*(amp*0.35) - Math.random()*amp*0.2; g.lineTo(x,y); } g.lineTo(c.width,c.height); g.closePath(); g.fill(); mountainCache.set(key,c); return c; }
 function lerp(a,b,t){ return a + (b-a)*t; }
 function lerpColor(c1,c2,t){ const p1=parseInt(c1.slice(1),16); const p2=parseInt(c2.slice(1),16); const r=lerp((p1>>16)&255,(p2>>16)&255,t)|0; const g=lerp((p1>>8)&255,(p2>>8)&255,t)|0; const b=lerp(p1&255,p2&255,t)|0; return '#'+r.toString(16).padStart(2,'0')+g.toString(16).padStart(2,'0')+b.toString(16).padStart(2,'0'); }
+function hexToRgba(hex,a){ const p=parseInt(hex.slice(1),16); const r=(p>>16)&255,g=(p>>8)&255,b=p&255; return `rgba(${r},${g},${b},${a})`; }
 function skyGradientColors(biome,cycleT){ const pal=SKY_PALETTES[biome]||SKY_PALETTES[0]; // legacy helper (discrete) – still used for some fallbacks
 	const dayFrac = DAY_DURATION/CYCLE_DURATION; const nightFrac=NIGHT_DURATION/CYCLE_DURATION; // equal halves
 	if(cycleT < dayFrac){ // day segment (0..dayFrac)
@@ -105,11 +115,39 @@ function skyGradientFromPalette(pal,cycleT){
 }
 let lastCycleInfo={cycleT:0,isDay:true,tDay:0,twilightBand:0.12}; let moonPhaseIndex=0, lastPhaseCycle=-1; const MOON_PHASES=8; // 0 new, 4 full
 function drawBackground(){
-	const now=performance.now(); const cycleT=((now-cycleStart)%CYCLE_DURATION)/CYCLE_DURATION; // blended palette at player x
+	const now=performance.now();
+	// Allow manual debug override of time-of-day if enabled
+	const debugEnabled = window.__timeOverrideActive===true;
+	const manualT = debugEnabled? (window.__timeOverrideValue||0): null;
+	const rawCycleT = ((now-cycleStart)%CYCLE_DURATION)/CYCLE_DURATION;
+	const cycleT = debugEnabled? manualT : rawCycleT;
+	if(!debugEnabled && window.__timeSliderEl && !window.__timeSliderLocked){ // live reflect current time
+	  window.__timeSliderEl.value = cycleT.toFixed(4);
+	}
 	const blend=computeBiomeBlend(player.x); const cols=skyGradientFromPalette(blend.pal,cycleT);
 	// Sky gradient (full opaque to avoid trail / ghosting)
 	ctx.save();
 	ctx.globalAlpha=1; const grd=ctx.createLinearGradient(0,0,0,H); grd.addColorStop(0,cols.top); grd.addColorStop(1,cols.bottom); ctx.fillStyle=grd; ctx.fillRect(0,0,W,H);
+	// Subtle low horizon haze band (behind mountains; adds depth). Warmer at sunrise/sunset, cooler at night.
+	(function(){
+		const dayFrac=DAY_DURATION/CYCLE_DURATION; const isDay=cycleT<dayFrac; const tDay=isDay? (cycleT/dayFrac) : ((cycleT-dayFrac)/(1-dayFrac));
+		let hueCol;
+		if(isDay){ // blend between dusk warm and day bottom based on distance from twilight
+			const twilight=0.12; const edge=Math.min(1, Math.min(tDay/twilight, (1-tDay)/twilight)); // 1 at midday, 0 near twilight edges
+			// simple lerp between warm (#ffb070) near twilight and cooler day bottom color
+			hueCol = lerpColor('#ffb070', blend.pal.dayBot, edge);
+		} else {
+			// Night: cool bluish with slight pulse
+			const nt=(cycleT - dayFrac)/(1-dayFrac); const pulse = 0.4 + 0.6*Math.sin(nt*Math.PI*2);
+			hueCol = lerpColor('#0b1d30', '#142b44', pulse*0.5);
+		}
+		const hazeTopY = H*0.52; const hazeBotY = H*0.80; // vertical span
+		const g2 = ctx.createLinearGradient(0,hazeTopY,0,hazeBotY);
+		g2.addColorStop(0, 'rgba(0,0,0,0)');
+		g2.addColorStop(0.65, hexToRgba(hueCol, isDay?0.06:0.08));
+		g2.addColorStop(1, hexToRgba(hueCol, isDay?0.12:0.16));
+		ctx.fillStyle=g2; ctx.fillRect(0,hazeTopY,W,hazeBotY-hazeTopY);
+	})();
 	const dayFrac=DAY_DURATION/CYCLE_DURATION; const isDay=cycleT<dayFrac; const tDay=isDay? (cycleT/dayFrac) : ((cycleT-dayFrac)/(1-dayFrac)); const twilightBand=0.12; lastCycleInfo={cycleT,isDay,tDay,twilightBand};
 	// Stars first (placed behind sun/moon glow)
 	// Smooth star fade using dual smoothstep edges instead of sharp piecewise
@@ -118,10 +156,10 @@ function drawBackground(){
 	const edgeOut = smoothEdge(1 - tDay, twilightBand*1.4); // how far before sunset transitions
 	let starAlpha = 1 - edgeIn*edgeOut; if(isDay) starAlpha *= 0.9; else starAlpha=1; // day reduces
 	if(starAlpha>0.01){
-		// Far layer (slower drift) — minimize fillStyle churn by using globalAlpha per star
-		ctx.save(); const driftX = now*0.000005; const timeFar = now*0.0009; ctx.fillStyle='#ffffff'; starsFar.forEach(s=>{ const x = ((s.x + driftX) % 1)*W; const y=(s.y*0.55)*H; const tw=0.5+0.5*Math.sin(timeFar + s.x*40); const a = starAlpha*0.85 * Math.min(1,(0.25+0.75*tw)*s.a); if(a>0.01){ ctx.globalAlpha=a; ctx.fillRect(x,y,s.r,s.r); } }); ctx.restore();
-		// Near layer (parallax & subtle vertical shimmer)
-		ctx.save(); const pxFactor=(player.x*TILE*0.00008); const timeNear1=now*0.0013; const timeNear2=now*0.0006; ctx.fillStyle='#ffffff'; starsNear.forEach(s=>{ const x = ((s.x + pxFactor + now*0.00001) % 1)*W; const y=(s.y*0.5 + 0.02*Math.sin(timeNear2 + s.x*60))*H; const tw=0.5+0.5*Math.sin(timeNear1 + s.x*55); const a = starAlpha * Math.min(1,(0.35+0.65*tw)*s.a); if(a>0.01){ ctx.globalAlpha=a; ctx.fillRect(x,y,s.r,s.r); } }); ctx.restore();
+		// Far layer (slower drift) — minimize fillStyle churn by grouping colors
+		ctx.save(); const driftX = now*0.000005; const timeFar = now*0.0009; let lastC=null; starsFar.forEach(s=>{ const x = ((s.x + driftX) % 1)*W; const y=(s.y*0.55)*H; const tw=0.5+0.5*Math.sin(timeFar + s.x*40); const a = starAlpha*0.85 * Math.min(1,(0.25+0.75*tw)*s.a); if(a>0.01){ if(s.c!==lastC){ ctx.fillStyle=s.c; lastC=s.c; } ctx.globalAlpha=a; ctx.fillRect(x,y,s.r,s.r); } }); ctx.restore();
+		// Near layer (parallax & subtle vertical shimmer) — also color grouped
+		ctx.save(); const pxFactor=(player.x*TILE*0.00008); const timeNear1=now*0.0013; const timeNear2=now*0.0006; let lastC2=null; starsNear.forEach(s=>{ const x = ((s.x + pxFactor + now*0.00001) % 1)*W; const y=(s.y*0.5 + 0.02*Math.sin(timeNear2 + s.x*60))*H; const tw=0.5+0.5*Math.sin(timeNear1 + s.x*55); const a = starAlpha * Math.min(1,(0.35+0.65*tw)*s.a); if(a>0.01){ if(s.c!==lastC2){ ctx.fillStyle=s.c; lastC2=s.c; } ctx.globalAlpha=a; ctx.fillRect(x,y,s.r,s.r); } }); ctx.restore();
 	}
 	// Sun
 	function drawBody(frac,radius,color,glowCol){ const ang=lerp(Math.PI*1.05, Math.PI*-0.05, frac); const cx=W*0.5 + Math.cos(ang)*W*0.45; const cy=H*0.82 + Math.sin(ang)*H*0.65; const grd2=ctx.createRadialGradient(cx,cy,radius*0.15,cx,cy,radius); grd2.addColorStop(0,glowCol); grd2.addColorStop(1,'rgba(0,0,0,0)'); ctx.fillStyle=grd2; ctx.beginPath(); ctx.arc(cx,cy,radius,0,Math.PI*2); ctx.fill(); ctx.fillStyle=color; ctx.beginPath(); ctx.arc(cx,cy,radius*0.55,0,Math.PI*2); ctx.fill(); }
@@ -704,6 +742,26 @@ function closeMenu(){ menuPanel.hidden=true; menuBtn.setAttribute('aria-expanded
 menuBtn?.addEventListener('click',()=>{ const vis=menuPanel.hidden; menuPanel.hidden=!vis; menuBtn.setAttribute('aria-expanded', String(vis)); });
 document.addEventListener('click',e=>{ if(!menuPanel || menuPanel.hidden) return; if(menuPanel.contains(e.target)||menuBtn.contains(e.target)) return; closeMenu(); });
 document.getElementById('radarMenuBtn')?.addEventListener('click',()=>{ radarFlash=performance.now()+1500; closeMenu(); });
+// Inject debug time-of-day slider (non-intrusive) at end of menu only once
+(function(){
+	if(window.__timeSliderInjected) return; window.__timeSliderInjected=true;
+	if(!menuPanel) return;
+	const wrap=document.createElement('div'); wrap.className='group'; wrap.style.cssText='flex-direction:column; align-items:stretch; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;';
+	const label=document.createElement('label'); label.style.cssText='font-size:12px; display:flex; justify-content:space-between; gap:8px; align-items:center;'; label.textContent='Czas doby';
+	const span=document.createElement('span'); span.style.fontSize='11px'; span.style.opacity='0.7'; span.textContent='—'; label.appendChild(span);
+	const range=document.createElement('input'); range.type='range'; range.min='0'; range.max='1'; range.step='0.0001'; range.value='0'; range.style.width='100%';
+	const chkWrap=document.createElement('div'); chkWrap.style.cssText='display:flex; align-items:center; gap:6px; font-size:11px; margin-top:4px;';
+	const chk=document.createElement('input'); chk.type='checkbox'; chk.id='timeOverrideChk';
+	const chkLab=document.createElement('label'); chkLab.htmlFor='timeOverrideChk'; chkLab.textContent='Steruj ręcznie';
+	chkWrap.appendChild(chk); chkWrap.appendChild(chkLab);
+	wrap.appendChild(label); wrap.appendChild(range); wrap.appendChild(chkWrap);
+	menuPanel.appendChild(wrap);
+	window.__timeSliderEl=range;
+	function upd(){ span.textContent=(parseFloat(range.value)*100).toFixed(2)+'%'; }
+	range.addEventListener('input',()=>{ upd(); if(window.__timeOverrideActive){ window.__timeOverrideValue=parseFloat(range.value); }});
+	chk.addEventListener('change',()=>{ window.__timeOverrideActive=chk.checked; if(chk.checked){ window.__timeOverrideValue=parseFloat(range.value); window.__timeSliderLocked=true; } else { window.__timeSliderLocked=false; } });
+	upd();
+})();
 // Regeneracja świata z nowym ziarnem
 document.getElementById('regenBtn')?.addEventListener('click',()=>{ setSeedFromInput(); regenWorld(); closeMenu(); });
 function regenWorld(){ WORLD.clear(); seenChunks.clear(); mining=false; if(MM.fallingSolids) MM.fallingSolids.reset(); if(MM.water) MM.water.reset(); inv.grass=inv.sand=inv.stone=inv.diamond=inv.wood=inv.leaf=inv.snow=inv.water=0; inv.tools.stone=inv.tools.diamond=false; player.tool='basic'; hotbarIndex=0; // if god mode active, restore 100 stack after reset
@@ -729,7 +787,7 @@ initGrassControls();
 // Pętla
 let last=performance.now(); function loop(ts){ const dt=Math.min(0.05,(ts-last)/1000); last=ts; // smooth zoom interpolation
 	if(Math.abs(zoomTarget-zoom)>0.0001){ zoom += (zoomTarget-zoom)*Math.min(1, dt*8); }
-	physics(dt); updateMining(dt); updateFallingBlocks(dt); if(MM.fallingSolids){ MM.fallingSolids.update(getTile,setTile,dt); } if(MM.water){ MM.water.update(getTile,setTile,dt); } updateClouds(dt); updateParticles(dt); updateCape(dt); updateBlink(ts); draw(); if(ts<radarFlash){ radarBtn.classList.add('pulse'); } else radarBtn.classList.remove('pulse'); updateFps(ts); requestAnimationFrame(loop); } requestAnimationFrame(loop);
+	physics(dt); updateMining(dt); updateFallingBlocks(dt); if(MM.fallingSolids){ MM.fallingSolids.update(getTile,setTile,dt); } if(MM.water){ MM.water.update(getTile,setTile,dt); } updateParticles(dt); updateCape(dt); updateBlink(ts); draw(); if(ts<radarFlash){ radarBtn.classList.add('pulse'); } else radarBtn.classList.remove('pulse'); updateFps(ts); requestAnimationFrame(loop); } requestAnimationFrame(loop);
 // Update background time-based elements
 setInterval(()=>{ /* keep cycleStart anchored; could adjust for pause logic later */ },60000);
 
