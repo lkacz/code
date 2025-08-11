@@ -163,16 +163,17 @@
       outfit:ITEMS.outfits.find(o=>o.id===MM.customization.outfitStyle)
     };
     const m=MM.activeModifiers||{};
+  function itemLabel(it){ return (it && (it.name||it.id))? (it.name||it.id) : '—'; }
     // Vision radius (max rule)
-    const visionLines=[]; Object.values(sel).forEach(it=>{ if(it && typeof it.visionRadius==='number') visionLines.push(it.name+': '+it.visionRadius); }); statsBox.appendChild(statRow('Zasięg widzenia', m.visionRadius||10, visionLines));
+  const visionLines=[]; Object.values(sel).forEach(it=>{ if(it && typeof it.visionRadius==='number') visionLines.push(itemLabel(it)+': '+it.visionRadius); }); statsBox.appendChild(statRow('Zasięg widzenia', m.visionRadius||10, visionLines));
     // Total jumps (1 base + sum air)
-    const jumpLines=[]; Object.values(sel).forEach(it=>{ if(it && typeof it.airJumps==='number' && it.airJumps!==0) jumpLines.push(it.name+': +'+it.airJumps+' powietrzny'); }); statsBox.appendChild(statRow('Całkowite skoki', 1 + (m.maxAirJumps||0), jumpLines));
+  const jumpLines=[]; Object.values(sel).forEach(it=>{ if(it && typeof it.airJumps==='number' && it.airJumps!==0) jumpLines.push(itemLabel(it)+': +'+it.airJumps+' powietrzny'); }); statsBox.appendChild(statRow('Całkowite skoki', 1 + (m.maxAirJumps||0), jumpLines));
     // Move speed multiplier (mul rule)
-    const moveLines=[]; Object.values(sel).forEach(it=>{ if(it && typeof it.moveSpeedMult==='number' && it.moveSpeedMult!==1) moveLines.push(it.name+': '+fmtMult(it.moveSpeedMult)); }); statsBox.appendChild(statRow('Prędkość ruchu', fmtMult(m.moveSpeedMult||1), moveLines));
+  const moveLines=[]; Object.values(sel).forEach(it=>{ if(it && typeof it.moveSpeedMult==='number' && it.moveSpeedMult!==1) moveLines.push(itemLabel(it)+': '+fmtMult(it.moveSpeedMult)); }); statsBox.appendChild(statRow('Prędkość ruchu', fmtMult(m.moveSpeedMult||1), moveLines));
     // Jump power multiplier
-    const jumpPowLines=[]; Object.values(sel).forEach(it=>{ if(it && typeof it.jumpPowerMult==='number' && it.jumpPowerMult!==1) jumpPowLines.push(it.name+': '+fmtMult(it.jumpPowerMult)); }); statsBox.appendChild(statRow('Moc skoku', fmtMult(m.jumpPowerMult||1), jumpPowLines));
+  const jumpPowLines=[]; Object.values(sel).forEach(it=>{ if(it && typeof it.jumpPowerMult==='number' && it.jumpPowerMult!==1) jumpPowLines.push(itemLabel(it)+': '+fmtMult(it.jumpPowerMult)); }); statsBox.appendChild(statRow('Moc skoku', fmtMult(m.jumpPowerMult||1), jumpPowLines));
     // Mining speed multiplier
-    const mineLines=[]; Object.values(sel).forEach(it=>{ if(it && typeof it.mineSpeedMult==='number' && it.mineSpeedMult!==1) mineLines.push(it.name+': '+fmtMult(it.mineSpeedMult)); }); statsBox.appendChild(statRow('Szybkość kopania', fmtMult(m.mineSpeedMult||1), mineLines));
+  const mineLines=[]; Object.values(sel).forEach(it=>{ if(it && typeof it.mineSpeedMult==='number' && it.mineSpeedMult!==1) mineLines.push(itemLabel(it)+': '+fmtMult(it.mineSpeedMult)); }); statsBox.appendChild(statRow('Szybkość kopania', fmtMult(m.mineSpeedMult||1), mineLines));
   }
 
   let lastFocus=null;
