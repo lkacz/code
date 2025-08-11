@@ -148,7 +148,25 @@ window.MM = window.MM || {};
     }
     // Ripples
     if(ripples.length){
-      for(let i=ripples.length-1;i>=0;i--){ const r=ripples[i]; r.ttl -= 16; if(r.ttl<=0){ ripples.splice(i,1); continue; } if(r.y>=sy-1 && r.y<=sy+vy+2){ const life=r.ttl/(r.originalTTL||600); const alpha=0.05+0.08*life; const phase=now*0.004; for(let x=r.L;x<=r.R;x++){ if(x<sx-2||x>sx+vx+2) continue; const h=Math.sin(phase + x*0.9 + r.y*0.3)*0.5 + 0.5; const a2=alpha*0.6*h; ctx.fillStyle='rgba(180,200,255,'+a2.toFixed(3)+')'; ctx.fillRect(x*TILE,r.y*TILE,TILE,2); } } }
+      const frameDt = 16; // fallback ms if we had no stored previous timestamp
+      for(let i=ripples.length-1;i>=0;i--){
+        const r=ripples[i];
+        // Use proportional fade based on elapsed real time since creation if available
+        r.ttl -= frameDt; // simple approximation; could store lastNow for precision
+        if(r.ttl<=0){ ripples.splice(i,1); continue; }
+        if(r.y>=sy-1 && r.y<=sy+vy+2){
+          const life=r.ttl/(r.originalTTL||600);
+          const alpha=0.05+0.08*life;
+          const phase=now*0.004;
+          for(let x=r.L;x<=r.R;x++){
+            if(x<sx-2||x>sx+vx+2) continue;
+            const h=Math.sin(phase + x*0.9 + r.y*0.3)*0.5 + 0.5;
+            const a2=alpha*0.6*h;
+            ctx.fillStyle='rgba(180,200,255,'+a2.toFixed(3)+')';
+            ctx.fillRect(x*TILE,r.y*TILE,TILE,2);
+          }
+        }
+      }
     }
     // Base shimmer
     for(let y=sy; y<sy+vy+2; y++){
@@ -168,7 +186,20 @@ window.MM = window.MM || {};
       const cols=[]; let totalVolume=0; let minD=Infinity,maxD=0; for(let x=L;x<=R;x++){ const col=measureColumn(x,topY,getTile); if(!col){ minD=0; continue;} cols.push(col); totalVolume+=col.depth; if(col.depth<minD) minD=col.depth; if(col.depth>maxD) maxD=col.depth; }
       if(cols.length < (R-L+1)*0.5) continue; if(maxD-minD<2) continue; const width=R-L+1; const targetBase=Math.floor(totalVolume/width); let remainder=totalVolume-targetBase*width; const desired=new Map(); for(let x=L;x<=R;x++){ let want=targetBase + (remainder>0?1:0); if(remainder>0) remainder--; desired.set(x,want); }
       const depthMap=new Map(); for(let x=L;x<=R;x++) depthMap.set(x, measureDepthOnly(x,topY,getTile)); let transfers=0; const MAX_TRANSFERS=8; while(transfers<MAX_TRANSFERS){ let donor=null, recipient=null, donorSurY=null, recipientSurY=null; for(let x=L;x<=R;x++){ const d=depthMap.get(x)||0; const want=desired.get(x); if(d>want){ donor=x; donorSurY=findSurfaceY(x,topY,getTile); break; } } if(donor==null) break; for(let x=R;x>=L;x--){ const d=depthMap.get(x)||0; const want=desired.get(x); if(d<want){ recipient=x; recipientSurY=findSurfaceY(x,topY,getTile); break; } } if(recipient==null) break; if(donorSurY==null) break; setTile(donor,donorSurY,T.AIR); let addY; if(recipientSurY==null){ let ySearch=topY,lastSolid=null,limit=MAX_VERTICAL_SCAN; while(limit-- >0 && ySearch<WORLD_H){ const tt=getTile(recipient,ySearch); if(tt!==T.AIR && tt!==T.WATER){ lastSolid=ySearch; break;} ySearch++; } if(lastSolid==null){ transfers++; continue; } addY=lastSolid-1; } else { addY=recipientSurY-1; }
-        if(addY>=0 && addY<WORLD_H && getTile(recipient,addY)===T.AIR){ setTile(recipient,addY,T.WATER); depthMap.set(donor,(depthMap.get(donor)||1)-1); depthMap.set(recipient,(depthMap.get(recipient)||0)+1); markNeighbors(active,donor,donorSurY); markNeighbors(active,recipient,addY); touchedXs.add(donor); touchedXs.add(recipient); transfers++; } else { setTile(donor,donorSurY,T.WATER); break; }
+        if(addY>=0 && addY<WORLD_H && getTile(recipient,addY)===T.AIR){
+          // Successful transfer
+          setTile(recipient,addY,T.WATER);
+          depthMap.set(donor,(depthMap.get(donor)||1)-1);
+          depthMap.set(recipient,(depthMap.get(recipient)||0)+1);
+          markNeighbors(active,donor,donorSurY);
+          markNeighbors(active,recipient,addY);
+          touchedXs.add(donor); touchedXs.add(recipient);
+          transfers++;
+        } else {
+          // Failed to place: restore donor to avoid volume loss
+          setTile(donor,donorSurY,T.WATER);
+          break;
+        }
       }
       if(transfers>0){ hadTransfers=true; ripples.push({L,R,y:topY,ttl:600,originalTTL:600}); }
       const diff=maxD-minD; if(variance==null || diff>variance) variance=diff; attempts++;
