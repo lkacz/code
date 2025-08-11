@@ -56,6 +56,15 @@ function setTile(x,y,v){ WORLD.setTile(x,y,v); }
 
 // --- Gracz / inwentarz ---
 const player={x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,facing:1,tool:'basic'};
+// Global customization state (persist later) – 5 options each (cape, eyes, outfit)
+window.MM = window.MM || {};
+MM.customization = MM.customization || {
+	capeStyle:'classic', // classic, triangle, royal, tattered, winged
+	capeColor:'#b91818', // can extend palette
+	eyeStyle:'bright',   // bright, narrow, glow, sleepy, curious
+	outfitStyle:'default', // default, miner, mystic, ranger, arcane
+	outfitColor:'#f4c05a'
+};
 const tools={basic:1,stone:2,diamond:4};
 // Inventory counts for placeable tiles
 const inv={grass:0,sand:0,stone:0,diamond:0,wood:0,leaf:0,snow:0,water:0,tools:{stone:false,diamond:false}};
