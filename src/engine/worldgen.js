@@ -35,7 +35,8 @@ WG.biomeType = function(x){
 };
 
 // Surface height influenced by macro elevation + biome-specific modulation
-WG.surfaceHeight = function(x){
+// Internal: compute raw, unsmoothed terrain height at x using current biome rules
+WG._rawSurfaceHeight = function rawSurfaceHeight(x){
 	const biome = WG.biomeType(x);
 	const baseMacro = 20 + WG.macroElev(x)*26; // 20..46 pre clamp
 	// Finer detail layers (apply across biomes)
@@ -59,6 +60,30 @@ WG.surfaceHeight = function(x){
 		default: // Forest (0): moderate variability
 			h = h + WG.valueNoise(x,115,600)*3; break;
 	}
+	return h;
+}
+
+// Smoothed surface height: blends neighboring columns adaptively to avoid hard biome seams
+WG.surfaceHeight = function(x){
+	// Sample raw heights at neighborhood
+	const h0 = rawSurfaceHeight(x);
+	const hL1 = rawSurfaceHeight(x-1), hR1 = rawSurfaceHeight(x+1);
+	const hL2 = rawSurfaceHeight(x-2), hR2 = rawSurfaceHeight(x+2);
+	// Use macro elevation gradient to adapt smoothing width (steeper -> less smoothing)
+	const g = Math.abs(WG.macroElev(x+2) - WG.macroElev(x-2)); // 0..1-ish
+	const tight = Math.min(1, Math.max(0, g*1.4)); // 0 flat -> 1 very steep region
+	// Two kernels: wide and narrow; interpolate by tightness
+	const wide = [0.10, 0.20, 0.40, 0.20, 0.10]; // [-2,-1,0,1,2]
+	const narrow = [0.00, 0.25, 0.50, 0.25, 0.00];
+	// Interpolated weights
+	function mix(a,b,t){ return a*(1-t) + b*t; }
+	const wL2 = mix(wide[0], narrow[0], tight);
+	const wL1 = mix(wide[1], narrow[1], tight);
+	const w0  = mix(wide[2], narrow[2], tight);
+	const wR1 = mix(wide[3], narrow[3], tight);
+	const wR2 = mix(wide[4], narrow[4], tight);
+	let h = h0*w0 + hL1*wL1 + hR1*wR1 + hL2*wL2 + hR2*wR2;
+	// Clamp overall range and discretize to tiles
 	if(h<4) h=4; if(h>70) h=70; return Math.floor(h);
 };
 // Chest rarity noise helpers
