@@ -69,10 +69,10 @@ function drawBackground(){
 	// Stars first (placed behind sun/moon glow)
 	const starAlpha = isDay? (tDay<twilightBand? (1 - (tDay/twilightBand))*0.9 : (tDay>1-twilightBand? ((tDay-(1-twilightBand))/twilightBand)*0.9 : 0)) : 1;
 	if(starAlpha>0.01){
-		// Far layer (slower drift)
-		ctx.save(); ctx.globalAlpha=starAlpha*0.85; starsFar.forEach(s=>{ const driftX = (now*0.000005); const x = ((s.x + driftX) % 1)*W; const y=(s.y*0.55)*H; const tw=0.5+0.5*Math.sin(now*0.0009 + s.x*40); const a = Math.min(1, (0.25+0.75*tw)*s.a); ctx.fillStyle='rgba(255,255,255,'+a+')'; ctx.fillRect(x,y,s.r,s.r); }); ctx.restore();
-		// Near layer (parallax with player position + slightly larger)
-		ctx.save(); ctx.globalAlpha=starAlpha; const pxFactor=(player.x*TILE*0.00008); starsNear.forEach(s=>{ const x = ((s.x + pxFactor + now*0.00001) % 1)*W; const y=(s.y*0.5 + 0.02*Math.sin(now*0.0006 + s.x*60))*H; const tw=0.5+0.5*Math.sin(now*0.0013 + s.x*55); const a = Math.min(1, (0.35+0.65*tw)*s.a); ctx.fillStyle='rgba(255,255,255,'+a+')'; ctx.fillRect(x,y,s.r,s.r); }); ctx.restore();
+		// Far layer (slower drift) — minimize fillStyle churn by using globalAlpha per star
+		ctx.save(); const driftX = now*0.000005; const timeFar = now*0.0009; ctx.fillStyle='#ffffff'; starsFar.forEach(s=>{ const x = ((s.x + driftX) % 1)*W; const y=(s.y*0.55)*H; const tw=0.5+0.5*Math.sin(timeFar + s.x*40); const a = starAlpha*0.85 * Math.min(1,(0.25+0.75*tw)*s.a); if(a>0.01){ ctx.globalAlpha=a; ctx.fillRect(x,y,s.r,s.r); } }); ctx.restore();
+		// Near layer (parallax & subtle vertical shimmer)
+		ctx.save(); const pxFactor=(player.x*TILE*0.00008); const timeNear1=now*0.0013; const timeNear2=now*0.0006; ctx.fillStyle='#ffffff'; starsNear.forEach(s=>{ const x = ((s.x + pxFactor + now*0.00001) % 1)*W; const y=(s.y*0.5 + 0.02*Math.sin(timeNear2 + s.x*60))*H; const tw=0.5+0.5*Math.sin(timeNear1 + s.x*55); const a = starAlpha * Math.min(1,(0.35+0.65*tw)*s.a); if(a>0.01){ ctx.globalAlpha=a; ctx.fillRect(x,y,s.r,s.r); } }); ctx.restore();
 	}
 	// Sun
 	function drawBody(frac,radius,color,glowCol){ const ang=lerp(Math.PI*1.05, Math.PI*-0.05, frac); const cx=W*0.5 + Math.cos(ang)*W*0.45; const cy=H*0.82 + Math.sin(ang)*H*0.65; const grd2=ctx.createRadialGradient(cx,cy,radius*0.15,cx,cy,radius); grd2.addColorStop(0,glowCol); grd2.addColorStop(1,'rgba(0,0,0,0)'); ctx.fillStyle=grd2; ctx.beginPath(); ctx.arc(cx,cy,radius,0,Math.PI*2); ctx.fill(); ctx.fillStyle=color; ctx.beginPath(); ctx.arc(cx,cy,radius*0.55,0,Math.PI*2); ctx.fill(); }
