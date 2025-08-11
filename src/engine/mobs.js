@@ -10,6 +10,7 @@
 
   const mobs = []; // entities
   const speciesAggro = {}; // speciesId -> expiry timestamp (ms)
+  const speciesCounts = {}; // live counts for quick spawn capping
   // Spatial partitioning (uniform grid) to speed up point queries (attackAt)
   const CELL=16; // tiles per cell both axes
   const grid = new Map(); // key "cx,cy" -> Set of mob refs
@@ -19,7 +20,7 @@
     if(m._cellKey){ const prev=grid.get(m._cellKey); if(prev){ prev.delete(m); if(!prev.size) grid.delete(m._cellKey); } }
     let set=grid.get(k); if(!set){ set=new Set(); grid.set(k,set); } set.add(m); m._cellKey=k; }
   }
-  function removeFromGrid(m){ if(m._cellKey){ const set=grid.get(m._cellKey); if(set){ set.delete(m); if(!set.size) grid.delete(m._cellKey); } m._cellKey=null; } }
+  function removeFromGrid(m){ if(m._cellKey){ const set=grid.get(m._cellKey); if(set){ set.delete(m); if(!set.size) grid.delete(m._cellKey); } m._cellKey=null; } if(m && m.id){ speciesCounts[m.id] = (speciesCounts[m.id]||1)-1; if(speciesCounts[m.id]<0) speciesCounts[m.id]=0; } }
 
   // --- Species registry (extensible) ---
   const SPECIES = {
@@ -55,9 +56,10 @@
   function choose(arr){ return arr[(Math.random()*arr.length)|0]; }
 
   function create(spec, x,y){
-    const m={ id: spec.id, x, y, vx:0, vy:0, hp: spec.hp, state:'idle', tNext: performance.now() + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000, facing:1, spawnT: performance.now(), attackCd:0, hitFlashUntil:0, shake:0 };
+    const now = performance.now();
+    const m={ id: spec.id, x, y, vx:0, vy:0, hp: spec.hp, state:'idle', tNext: now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000, facing:1, spawnT: now, attackCd:0, hitFlashUntil:0, shake:0, tickMod: (Math.random()<0.5?1:0), sleepUntil:0 };
     if(typeof spec.onCreate==='function') spec.onCreate(m, spec);
-    addToGrid(m); return m; }
+    addToGrid(m); speciesCounts[spec.id]=(speciesCounts[spec.id]||0)+1; return m; }
 
   // --- Aquatic helpers (fish) ---
   function initWaterAnchor(m){
@@ -84,18 +86,20 @@
     m.strandedTime = 0;
   }
 
-  function forceSpawn(specId, player, getTile){ const spec=SPECIES[specId]; if(!spec) return false; // try valid spawn positions first
+  function forceSpawn(specId, player, getTile){ const spec=SPECIES[specId]; if(!spec) return false; if((speciesCounts[specId]||0) >= spec.max) return false; // cap
+    // try valid spawn positions first
     for(let tries=0; tries<20; tries++){ const dx=(Math.random()*10 -5); const dy=(Math.random()*6 -3); const tx=Math.floor(player.x+dx); const ty=Math.floor(player.y+dy); if(spec.spawnTest(tx,ty,getTile)){ mobs.push(create(spec, tx+0.5, ty+0.5)); return true; } }
     // fallback: drop directly near player even if test fails
     mobs.push(create(spec, player.x + (Math.random()*2-1), player.y - 0.5)); return true; }
 
-  function countSpecies(id){ let c=0; for(const m of mobs) if(m.id===id) c++; return c; }
+  function countSpecies(id){ return speciesCounts[id]||0; }
 
-  function trySpawnNearPlayer(player, getTile){
-    const now = performance.now();
-    for(const key in SPECIES){ const spec=SPECIES[key]; if(countSpecies(spec.id) >= spec.max) continue; // cap
-      if(Math.random()<0.5) continue; // throttle variety
-  for(let a=0;a<6;a++){ const dx = (Math.random()<0.5?-1:1)*(8+Math.random()*32); const dy = -6 + Math.random()*12; const tx = Math.floor(player.x + dx); const ty = Math.floor(player.y + dy); if(spec.spawnTest(tx,ty,getTile)){ mobs.push(create(spec, tx+0.5, ty+0.5)); break; } }
+  let nextSpawnCheck = 0;
+  function trySpawnNearPlayer(player, getTile, now){
+    if(now < nextSpawnCheck) return; // throttle globally
+    nextSpawnCheck = now + 1200 + Math.random()*800; // 1.2-2s
+    for(const key in SPECIES){ const spec=SPECIES[key]; if(countSpecies(spec.id) >= spec.max) continue; if(Math.random()<0.55) continue; // variety
+      for(let a=0;a<6;a++){ const dx = (Math.random()<0.5?-1:1)*(8+Math.random()*32); const dy = -6 + Math.random()*12; const tx = Math.floor(player.x + dx); const ty = Math.floor(player.y + dy); if(spec.spawnTest(tx,ty,getTile)){ mobs.push(create(spec, tx+0.5, ty+0.5)); break; } }
     }
   }
 
@@ -103,12 +107,14 @@
 
   function setAggro(specId){ speciesAggro[specId] = Date.now() + 5*60*1000; }
 
-  function update(dt, player, getTile){ const now = performance.now();
+  let frame=0; let lastMetricsSample=0; let metrics={count:0, active:0, dtAvg:0};
+  function update(dt, player, getTile){ const now = performance.now(); frame++;
     // Despawn far / off-screen old passive mobs (not aggro)
     for(let i=mobs.length-1;i>=0;i--){ const m=mobs[i]; if(m.hp<=0){ removeFromGrid(m); mobs.splice(i,1); continue; } const dist = Math.abs(m.x-player.x); if(dist>220 && !isAggro(m.id)) { removeFromGrid(m); mobs.splice(i,1); continue; } }
     // Spawn attempt occasionally
-    if(Math.random()<0.02) trySpawnNearPlayer(player,getTile);
+    trySpawnNearPlayer(player,getTile, now);
     // Precompute separation: basic O(n^2) for small counts (opt: grid neighbor query)
+    metrics.count = mobs.length; let active=0;
     for(let i=0;i<mobs.length;i++){
       const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue; const aggressive=isAggro(m.id);
       updateMob(m, spec, {dt, now, aggressive, player, getTile});
@@ -118,7 +124,12 @@
       const damp = aggressive? 0.9 : 0.92; m.vx*=damp; m.vy*= (spec.aquatic? 0.95 : 0.92);
       // Clamp speeds
       const maxS = spec.speed * (aggressive?1.4:1); const sp=Math.hypot(m.vx,m.vy); if(sp>maxS){ const s=maxS/sp; m.vx*=s; m.vy*=s; }
-      // Integrate
+      // Sleep logic for far, non-aggro mobs: update position only sparsely
+      if(!aggressive){
+        const distP = Math.abs(m.x - player.x) + Math.abs(m.y - player.y);
+        if(distP > 140 && (frame & 3)!== (m.tickMod||0)){ continue; } // skip this frame
+      }
+      active++;
       m.x += m.vx*dt; m.y += m.vy*dt;
   // Habitat constraints via species hook
   if(typeof spec.habitatUpdate==='function') spec.habitatUpdate(m, spec, getTile, dt);
@@ -131,7 +142,9 @@
         player.vx += nx*3*dt; player.vy += ny*2*dt; // gentle continuous push
         if(isAggro(m.id)){ if(m.attackCd>0) m.attackCd-=dt; if(m.attackCd<=0){ damagePlayer(spec.dmg, m.x, m.y); m.attackCd=0.8 + Math.random()*0.5; } }
       }
-    }
+  }
+  metrics.active = active;
+  if(now - lastMetricsSample > 1000){ metrics.dtAvg = (metrics.dtAvg*0.7 + dt*0.3); lastMetricsSample = now; if(window.__mobDebug){ window.__mobMetrics = {...metrics, frame}; } }
   }
   function updateMob(m, spec, ctx){
     if(typeof spec.onUpdate==='function'){ spec.onUpdate(m, spec, ctx); return; }
@@ -265,7 +278,7 @@
   }
   }
 
-  MM.mobs = { update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro, forceSpawn, species: Object.keys(SPECIES), registerSpecies };
+  MM.mobs = { update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro, forceSpawn, species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics };
   try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
 })();
 // (File end)
