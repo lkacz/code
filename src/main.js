@@ -240,6 +240,8 @@ function setTile(x,y,v){ WORLD.setTile(x,y,v); }
 
 // --- Gracz / inwentarz ---
 const player={x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,facing:1,tool:'basic',jumpCount:0,maxHp:100,hp:100,hpInvul:0,atkCd:0};
+// Expose player globally so mobs module (loaded separately) can reference and damage the player
+window.player = player;
 // Global customization state comes from customization.js (advanced system)
 window.MM = window.MM || {};
 const DEFAULT_CUST={ capeStyle:'classic', capeColor:'#b91818', eyeStyle:'bright', outfitStyle:'default', outfitColor:'#f4c05a' };

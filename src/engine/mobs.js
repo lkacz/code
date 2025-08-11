@@ -67,31 +67,51 @@
     for(let i=mobs.length-1;i>=0;i--){ const m=mobs[i]; if(m.hp<=0){ removeFromGrid(m); mobs.splice(i,1); continue; } const dist = Math.abs(m.x-player.x); if(dist>220 && !isAggro(m.id)) { removeFromGrid(m); mobs.splice(i,1); continue; } }
     // Spawn attempt occasionally
     if(Math.random()<0.02) trySpawnNearPlayer(player,getTile);
-    for(const m of mobs){ const spec=SPECIES[m.id]; if(!spec) continue; // wander or chase
-      const aggressive = isAggro(m.id);
-      if(aggressive){ // move toward player horizontal simple
-        const dx=player.x - m.x; m.vx += Math.sign(dx)*spec.speed*0.6*dt; if(Math.abs(dx)<0.3) m.vx*=0.5; m.facing = dx>=0?1:-1; }
-      else if(now>m.tNext){ // pick new wander velocity
-        m.tNext = now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000;
-        if(Math.random()<0.65){ m.vx = (Math.random()*2-1)*spec.speed; m.facing = m.vx>=0?1:-1; } else { m.vx = 0; }
+    // Precompute separation: basic O(n^2) for small counts (opt: grid neighbor query)
+    for(let i=0;i<mobs.length;i++){
+      const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue; const aggressive=isAggro(m.id);
+      const toPlayerX=player.x - m.x; const toPlayerY=player.y - m.y; const distP=Math.hypot(toPlayerX,toPlayerY)||1;
+      // Behavior state machine: idle, wander, chase, attack
+      if(aggressive){
+        // steering toward player both axes with damped vertical ease
+        const desiredVx = (toPlayerX/distP)*spec.speed*0.9; m.vx += (desiredVx - m.vx)*Math.min(1, dt*4);
+        // vertical pursuit: birds dive, fish swim level seeking player's y (clamped)
+        const desiredVy = spec.aquatic? ((toPlayerY)*0.8) : (toPlayerY*0.6); // proportional vertical chase
+        m.vy += (desiredVy - m.vy)*Math.min(1, dt*2.5);
+        m.facing = toPlayerX>=0?1:-1;
+      } else {
+        if(now>m.tNext){ // choose new wander vector including slight vertical drift
+          m.tNext = now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000;
+          if(Math.random()<0.65){ const ang = Math.random()*Math.PI*2; const speed = spec.speed*(0.3+Math.random()*0.7); m.vx = Math.cos(ang)*speed; m.vy = Math.sin(ang)*speed* (spec.aquatic?0.6:0.35); m.facing = m.vx>=0?1:-1; } else { m.vx*=0.4; m.vy*=0.4; }
+        }
+        // Gentle return to bobbing baseline when not aggro
+        const baseBob = spec.aquatic? Math.sin(now*0.002 + m.spawnT*0.0007)*0.4 : Math.sin(now*0.003 + m.spawnT*0.001)*0.25;
+        m.vy += (baseBob - m.vy)*Math.min(1, dt*0.8);
       }
-      // friction
-      m.vx += -m.vx * Math.min(1, dt*2.5);
-      if(Math.abs(m.vx)<0.02) m.vx=0;
-      // vertical simple (fish float, birds bob)
-      if(spec.aquatic){ // fish vertical sine drift
-        m.vy = Math.sin(now*0.002 + m.spawnT*0.0007)*0.4;
-      } else { m.vy = Math.sin(now*0.003 + m.spawnT*0.001)*0.25; }
-      // integrate
+      // Separation: push apart if too close horizontally
+      for(let j=i+1;j<mobs.length;j++){
+        const o=mobs[j]; if(o.id!==m.id) continue; const dx=m.x-o.x; const dy=m.y-o.y; const d2=dx*dx+dy*dy; const minDist=0.6; if(d2 < minDist*minDist && d2>0){ const d=Math.sqrt(d2); const push=(minDist-d)/d*0.5; m.vx += dx*push; o.vx -= dx*push; m.vy += dy*push*0.2; o.vy -= dy*push*0.2; }
+      }
+      // Friction / damping
+      const damp = aggressive? 0.9 : 0.92; m.vx*=damp; m.vy*= (spec.aquatic? 0.95 : 0.92);
+      // Clamp speeds
+      const maxS = spec.speed * (aggressive?1.4:1); const sp=Math.hypot(m.vx,m.vy); if(sp>maxS){ const s=maxS/sp; m.vx*=s; m.vy*=s; }
+      // Integrate
       m.x += m.vx*dt; m.y += m.vy*dt;
-      // keep inside water for fish
-      if(spec.aquatic){ const under = getTile(Math.floor(m.x), Math.floor(m.y)); if(under!==T.WATER){ m.vx*=0.2; m.y+=0.2; }
+      // Habitat constraints
+      if(spec.aquatic){ const tileBelow = getTile(Math.floor(m.x), Math.floor(m.y)); if(tileBelow!==T.WATER){ // swim back toward nearest water surface line
+          m.vy -= 0.4; m.vx *=0.6; }
+      } else { // birds keep above ground slightly
+        const groundTile = getTile(Math.floor(m.x), Math.floor(m.y)+1); if(groundTile!==T.AIR && !spec.aquatic){ m.vy -= 0.8; }
       }
       updateGridCell(m);
-      // decay shake
-      if(m.shake>0){ m.shake=Math.max(0, m.shake - dt*10); }
-      // attack if aggressive & close
-      if(aggressive){ if(m.attackCd>0) m.attackCd-=dt; const dx=player.x-m.x; const dy=player.y-m.y; const d = Math.hypot(dx,dy); if(d<1.6 && m.attackCd<=0){ damagePlayer(spec.dmg, m.x, m.y); m.attackCd=1 + Math.random()*0.6; }
+      if(m.shake>0) m.shake=Math.max(0,m.shake-dt*10);
+      // Contact damage + bounce (touch) independent of attack cooldown
+      const dxP = player.x - m.x; const dyP = player.y - m.y; const distTouch = Math.hypot(dxP,dyP);
+      if(distTouch < 0.9){ // bounce push
+        const nx=dxP/(distTouch||1); const ny=dyP/(distTouch||1);
+        player.vx += nx*3*dt; player.vy += ny*2*dt; // gentle continuous push
+        if(isAggro(m.id)){ if(m.attackCd>0) m.attackCd-=dt; if(m.attackCd<=0){ damagePlayer(spec.dmg, m.x, m.y); m.attackCd=0.8 + Math.random()*0.5; } }
       }
     }
   }
