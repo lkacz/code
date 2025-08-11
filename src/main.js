@@ -953,13 +953,18 @@ document.getElementById('radarMenuBtn')?.addEventListener('click',()=>{ radarFla
 	range.addEventListener('input',()=>{ upd(); if(window.__timeOverrideActive){ window.__timeOverrideValue=parseFloat(range.value); }});
 	chk.addEventListener('change',()=>{ window.__timeOverrideActive=chk.checked; if(chk.checked){ window.__timeOverrideValue=parseFloat(range.value); window.__timeSliderLocked=true; } else { window.__timeSliderLocked=false; } });
 	upd();
-	// Mob spawn debug buttons
-	if(window.MM && MM.mobs && MM.mobs.species){
-		const mobBox=document.createElement('div'); mobBox.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;';
-		const label2=document.createElement('div'); label2.textContent='Spawn Moby:'; label2.style.cssText='width:100%; font-size:11px; opacity:.7;'; mobBox.appendChild(label2);
-		MM.mobs.species.forEach(id=>{ const b=document.createElement('button'); b.textContent=id; b.style.cssText='flex:1 1 70px; font-size:11px; padding:3px 6px;'; b.addEventListener('click',()=>{ if(MM.mobs.forceSpawn){ const ok=MM.mobs.forceSpawn(id, player, getTile); if(ok) msg('Spawn '+id); } }); mobBox.appendChild(b); });
-		wrap.appendChild(mobBox);
-	}
+	// Placeholder for mob spawn buttons (populated after mobs.js loads)
+	const mobBox=document.createElement('div'); mobBox.id='mobSpawnBox'; mobBox.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;';
+	const label2=document.createElement('div'); label2.textContent='Spawn Moby:'; label2.style.cssText='width:100%; font-size:11px; opacity:.7;'; mobBox.appendChild(label2);
+	const placeholder=document.createElement('div'); placeholder.textContent='(Ładowanie...)'; placeholder.style.cssText='font-size:11px; opacity:.5;'; mobBox.appendChild(placeholder);
+	wrap.appendChild(mobBox);
+	// Expose population helper
+	window.__populateMobSpawnButtons = function(){ const box=document.getElementById('mobSpawnBox'); if(!box) return; // clear existing buttons except label
+		while(box.children.length>1) box.removeChild(box.lastChild);
+		if(!(window.MM && MM.mobs && MM.mobs.species)) { const p=document.createElement('div'); p.textContent='(Brak systemu mobów)'; p.style.cssText='font-size:11px; opacity:.5;'; box.appendChild(p); return; }
+		MM.mobs.species.forEach(id=>{ const b=document.createElement('button'); b.textContent=id; b.style.cssText='flex:1 1 70px; font-size:11px; padding:3px 6px;'; b.addEventListener('click',()=>{ if(MM.mobs.forceSpawn){ const ok=MM.mobs.forceSpawn(id, player, getTile); if(ok) msg('Spawn '+id); } }); box.appendChild(b); });
+	};
+	setTimeout(()=>{ if(window.__populateMobSpawnButtons) window.__populateMobSpawnButtons(); },300);
 })();
 // Regeneracja świata z nowym ziarnem
 document.getElementById('regenBtn')?.addEventListener('click',()=>{ setSeedFromInput(); regenWorld(); closeMenu(); });
