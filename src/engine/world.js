@@ -15,7 +15,9 @@ window.MM = window.MM || {};
 
   function ensureChunk(cx){ const k=ck(cx); if(world.has(k)) return world.get(k); const arr=new Uint8Array(CHUNK_W*WORLD_H);
     for(let lx=0; lx<CHUNK_W; lx++){
-      const wx=cx*CHUNK_W+lx; const s=colHeight(wx); const biome=WG.biomeType(wx);
+  const wx=cx*CHUNK_W+lx; const s=colHeight(wx); const biome=WG.biomeType(wx);
+  // Biome fractions around this column for visual blending
+  const bf = (WG.biomeFrac? WG.biomeFrac(wx,2): null);
       // Precompute some noise for variation per column
       const colRand = WG.randSeed(wx*7.13);
       for(let y=0;y<WORLD_H;y++){
@@ -29,11 +31,24 @@ window.MM = window.MM || {};
           const mountain = biome===7;
           // Determine surface material rules per biome
           if(depth < SURFACE_GRASS_DEPTH){
+            // Top soil blend near borders: bias to sand if desert/sea/lake presence, snow if cold
             if(sea || lake){ t=T.SAND; }
-            else if(desert){ t=T.SAND; }
+            else if(desert){
+              let sandBias = bf? (bf[3] + bf[5]*0.6 + bf[6]*0.4) : 1; // desert + nearby sea/lake
+              sandBias += WG.randSeed(wx*0.77)*0.25; // small noise
+              t = sandBias>0.45? T.SAND : T.GRASS;
+            }
             else if(swamp){ t = (colRand<0.4)?T.SAND:T.GRASS; }
-            else if(snowy){ t=T.SNOW; }
-            else { t=T.GRASS; }
+            else if(snowy){
+              let snowBias = bf? (bf[2] + bf[7]*0.5) : 1; // snow + mountain
+              snowBias += WG.randSeed(wx*1.13)*0.2;
+              t = snowBias>0.5? T.SNOW : T.GRASS;
+            }
+            else {
+              // Plains/forest edge to desert: slight sand mix
+              if(bf && bf[3]>0.25){ t = (WG.randSeed(wx*2.31) < Math.min(0.5, bf[3]*0.8))? T.SAND : T.GRASS; }
+              else t=T.GRASS;
+            }
           } else if(depth < SURFACE_GRASS_DEPTH + SAND_DEPTH){
             if(desert) t=T.SAND; else if(sea||lake) t=T.SAND; else if(swamp) t=(colRand<0.3?T.SAND:T.STONE); else t=(snowy?T.SNOW:T.STONE);
           } else {
@@ -41,7 +56,7 @@ window.MM = window.MM || {};
             t = (WG.randSeed(wx*13.37 + y*0.7) < WG.diamondChance(y)?T.DIAMOND:T.STONE);
           }
         }
-        // Carve sea / lake water down to target level
+  // Carve sea / lake water down to target level
         if(t===T.AIR){
           if(WG){
             if(biome===5){ // sea: fill below a fixed waterline
