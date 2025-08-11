@@ -3,6 +3,29 @@
   window.MM = window.MM || {};
   const {T, INFO} = MM;
   const RNG = (seed)=>{ let s=seed>>>0; return ()=>{ s = (s*1664525 + 1013904223)>>>0; return (s>>>8)/0xFFFFFF; } };
+  const DYN_KEY='mm_dynamic_loot_v1';
+  const DYN_VERSION=1;
+  // Load previously saved dynamic loot (items from opened chests)
+  try{
+    const raw=localStorage.getItem(DYN_KEY);
+    if(raw){
+      const d=JSON.parse(raw);
+      if(d && typeof d==='object'){
+        // Support legacy (no version) structure where arrays are at root
+        const legacy = !('version' in d) && (Array.isArray(d.capes)||Array.isArray(d.eyes)||Array.isArray(d.outfits));
+        const payload = legacy? d : d;
+        MM.dynamicLoot = MM.dynamicLoot || {capes:[],eyes:[],outfits:[]};
+        ['capes','eyes','outfits'].forEach(k=>{
+          if(Array.isArray(payload[k])){
+            payload[k].forEach(it=>{
+              if(!MM.dynamicLoot[k].find(e=>e.id===it.id)) MM.dynamicLoot[k].push(it);
+            });
+          }
+        });
+      }
+    }
+  }catch(e){}
+  function saveDynamicLoot(){ try{ if(MM.dynamicLoot) localStorage.setItem(DYN_KEY, JSON.stringify({version:DYN_VERSION, ...MM.dynamicLoot})); }catch(e){} }
 
   const TIERS={
     common:{weight:70, rolls:[1,1], attribBudget:[1,2], multRange:{move:[0.02,0.05], jump:[0.02,0.05], mine:[0.05,0.15], vision:[0,1]}, uniqueChance:0.02},
@@ -57,9 +80,10 @@
     // Add to player's unlock pools -> push into customization categories
     if(!MM.dynamicLoot){ MM.dynamicLoot={capes:[],eyes:[],outfits:[]}; }
     items.forEach(it=>{ if(it.kind==='cape') MM.dynamicLoot.capes.push(it); else if(it.kind==='eyes') MM.dynamicLoot.eyes.push(it); else if(it.kind==='outfit') MM.dynamicLoot.outfits.push(it); });
+    saveDynamicLoot();
     if(MM.onLootGained) MM.onLootGained(items,tier);
     return {tier,items};
   }
 
-  MM.chests={openChestAt,TIERS,genItem};
+  MM.chests={openChestAt,TIERS,genItem,saveDynamicLoot};
 })();

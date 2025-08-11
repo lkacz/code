@@ -130,6 +130,11 @@
     {key:'eyeStyle', label:'Oczy', list:ITEMS.eyes},
     {key:'outfitStyle', label:'Stroje', list:ITEMS.outfits}
   ];
+  // Ensure stored selection IDs still exist (dynamic loot not persisted or removed)
+  function ensureValid(){
+    categories.forEach(cat=>{ const arr=cat.list; if(!arr.find(i=>i.id===MM.customization[cat.key])){ MM.customization[cat.key]=arr[0].id; } });
+  }
+  ensureValid();
   let activeCat=categories[0];
 
   function setActive(cat){ activeCat=cat; tabsEl.querySelectorAll('.custTabBtn').forEach(b=>{ b.classList.toggle('sel', b.dataset.key===cat.key); }); buildGrid(); }

@@ -19,19 +19,19 @@ window.MM = window.MM || {};
     }
     for(let i=sandActive.length-1;i>=0;i--){
       const s=sandActive[i]; s.vy += g*dt; if(s.vy>70) s.vy=70; s.yFloat += s.vy*dt; let yi=Math.floor(s.yFloat);
-      if(yi>=WORLD_H-1){ yi=WORLD_H-1; settleSand(i,s.x,yi,setTile); continue; }
+  if(yi>=WORLD_H-1){ yi=WORLD_H-1; settleSand(i,s.x,yi,getTile,setTile); continue; }
       const below=getTile(s.x,yi+1);
       if(below!==T.AIR){
         const canL = getTile(s.x-1,yi)===T.AIR && getTile(s.x-1,yi+1)===T.AIR;
         const canR = getTile(s.x+1,yi)===T.AIR && getTile(s.x+1,yi+1)===T.AIR;
         if(canL||canR){ let dir=0; if(canL&&canR) dir=(Math.random()<0.5?-1:1); else dir=canL?-1:1; s.x+=dir; s.yFloat=yi+0.05; continue; }
-        settleSand(i,s.x,yi,setTile); continue;
+  settleSand(i,s.x,yi,getTile,setTile); continue;
       }
     }
   }
 
-  function settleSand(idx,x,y,setTile){ setTile(x,y,T.SAND); sandActive.splice(idx,1); relaxSand(x,y,setTile); }
-  function relaxSand(x,y,setTile){
+  function settleSand(idx,x,y,getTile,setTile){ setTile(x,y,T.SAND); sandActive.splice(idx,1); relaxSand(x,y,getTile,setTile); }
+  function relaxSand(x,y,getTile,setTile){
     // Optimized avalanche: fewer iterations, cached tops, narrower range.
     const RANGE=4; // reduced from 5 (optimization 5)
     let noMoveStreak=0;

@@ -20,7 +20,8 @@ MM.INFO={
   // Stone color lightened for contrast (#777 was too close to sky fill)
   3:{hp:6,color:'#888a90',drop:'stone',passable:false},
   4:{hp:10,color:'#3ef',drop:'diamond',passable:false},
-  5:{hp:4,color:'#8b5a2b',drop:'wood',passable:true},
+  // Wood previously passable (true) which allowed walking through trunks; now solid for proper collision
+  5:{hp:4,color:'#8b5a2b',drop:'wood',passable:false},
   6:{hp:1,color:'#2faa2f',drop:'leaf',passable:true},
   7:{hp:2,color:'#eee',drop:'snow',passable:false},
   8:{hp:0,color:'#2477ff',drop:null,passable:true}, // water (non-solid, fluid simulated separately)

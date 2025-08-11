@@ -164,9 +164,10 @@ function drawWorldVisible(sx,sy,viewX,viewY){ const minChunk=Math.floor(sx/CHUNK
 		const nowA=performance.now();
 		for(let cx2=minChunk; cx2<=maxChunk; cx2++){
 			for(let lx=0; lx<CHUNK_W; lx++){
-				const wx=cx2*CHUNK_W+lx; for(let y=sy; y<sy+viewY+2; y++){ const t=getTile(wx,y); if(t===T.CHEST_COMMON||t===T.CHEST_RARE||t===T.CHEST_EPIC){ const pulse=Math.sin(nowA*0.004 + wx*0.7 + y*0.3)*0.5+0.5; const rad=TILE*0.6 + pulse*TILE*0.25; const cxp=wx*TILE+TILE/2; const cyp=y*TILE+TILE/2; const g=ctx.createRadialGradient(cxp,cyp,rad*0.2,cxp,cyp,rad); const col = t===T.CHEST_EPIC? 'rgba(224,179,65,' : (t===T.CHEST_RARE? 'rgba(167,76,201,' : 'rgba(176,127,44,'); g.addColorStop(0,col+(0.35+0.25*pulse)+')'); g.addColorStop(1,col+'0)'); ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cxp,cyp,rad,0,Math.PI*2); ctx.fill(); } }
+				const wx=cx2*CHUNK_W+lx; for(let y=sy; y<sy+viewY+2; y++){ const t=getTile(wx,y); if(t===T.CHEST_COMMON||t===T.CHEST_RARE||t===T.CHEST_EPIC){ const pulse=Math.sin(nowA*0.004 + wx*0.7 + y*0.3)*0.5+0.5; const rad=TILE*0.6 + pulse*TILE*0.25; const cxp=wx*TILE+TILE/2; const cyp=y*TILE+TILE/2; const g=ctx.createRadialGradient(cxp,cyp,rad*0.2,cxp,cyp,rad); const col = t===T.CHEST_EPIC? 'rgba(224,179,65,' : (t===T.CHEST_RARE? 'rgba(167,76,201,' : 'rgba(176,127,44,'); g.addColorStop(0,col+(0.45+0.35*pulse)+(chestDebug?0.15:0)+')'); g.addColorStop(1,col+'0)'); ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cxp,cyp,rad*(chestDebug?1.15:1),0,Math.PI*2); ctx.fill(); if(chestDebug){ ctx.strokeStyle='#fff'; ctx.lineWidth=1; ctx.strokeRect(wx*TILE+1,y*TILE+1,TILE-2,TILE-2); } } }
 			}
 		}
+		if(chestDebug){ const pcx=Math.floor(player.x/CHUNK_W); const cnt=countChestsAround(pcx,4); ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(sx*TILE+6, sy*TILE+6, 140,24); ctx.fillStyle='#fff'; ctx.font='14px system-ui'; ctx.fillText('Skrzynie ±4: '+cnt, sx*TILE+12, sy*TILE+24); }
 	// Apply fog overlay only for unseen tiles (still per-tile but solid overlay so no seams)
 	if(!revealAll){ for(let y=sy; y<sy+viewY+2; y++){ if(y<0||y>=WORLD_H) continue; for(let x=sx; x<sx+viewX+2; x++){ if(!hasSeen(x,y)){ const t=getTile(x,y); if(t!==T.AIR){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); } } } } }
 	if(VISUAL.animations){ drawAnimatedOverlays(sx,sy,viewX,viewY,'back'); }
@@ -251,6 +252,10 @@ function drawAnimatedOverlays(sx,sy,viewX,viewY,pass){ const now=performance.now
 
 // Input + tryby specjalne
 const keys={}; let godMode=false; const keysOnce=new Set();
+// Chest debug helpers
+let chestDebug=false; // toggled to highlight chests strongly
+function countChestsInChunk(cx){ const k='c'+cx; const arr=WORLD._world.get(k); if(!arr) return 0; let c=0; for(let i=0;i<arr.length;i++){ const t=arr[i]; if(t===T.CHEST_COMMON||t===T.CHEST_RARE||t===T.CHEST_EPIC) c++; } return c; }
+function countChestsAround(centerCx,r){ let total=0; for(let d=-r; d<=r; d++){ total+=countChestsInChunk(centerCx+d); } return total; }
 let _preGodInventory=null; // store inventory snapshot before granting resources
 function updateGodBtn(){ const b=document.getElementById('godBtn'); if(!b) return; b.classList.toggle('toggled',godMode); b.textContent='Bóg: '+(godMode?'ON':'OFF'); }
 function toggleGod(){
@@ -275,6 +280,10 @@ window.addEventListener('keydown',e=>{ const k=e.key.toLowerCase(); keys[k]=true
 	 const slot=parseInt(e.key,10)-4; cycleHotbar(slot);
  }
 	if(k==='g'&&!keysOnce.has('g')){ toggleGod(); keysOnce.add('g'); }
+	if(k==='p'&&!keysOnce.has('p')){ chestDebug=!chestDebug; msg('Chest debug '+(chestDebug?'ON':'OFF')); keysOnce.add('p'); }
+	if(k==='j'&&!keysOnce.has('j')){ keysOnce.add('j'); const pcx=Math.floor(player.x/CHUNK_W); msg('Skrzynie w pobliżu: '+countChestsAround(pcx,4)); }
+	if(k==='k'&&!keysOnce.has('k')){ // force spawn a chest at feet (cycle tiers)
+		keysOnce.add('k'); const px=Math.floor(player.x); const py=Math.floor(player.y)-1; const tiers=[T.CHEST_COMMON,T.CHEST_RARE,T.CHEST_EPIC]; const cur=getTile(px,py); if(cur===T.AIR){ const idx=Math.floor(performance.now()/1000)%tiers.length; setTile(px,py,tiers[idx]); msg('Debug: wstawiono skrzynię '+(idx===2?'epicką':idx===1?'rzadką':'zwykłą')); } }
 	// Debug chest placement (L)
 	if(k==='l'&&!keysOnce.has('l')){ keysOnce.add('l'); const px=Math.floor(player.x); const py=Math.floor(player.y); const below=py; if(getTile(px,below)===T.AIR){ const r=Math.random(); let cid=T.CHEST_COMMON; if(r>0.9) cid=T.CHEST_RARE; if(r>0.97) cid=T.CHEST_EPIC; setTile(px,below,cid); msg('Postawiono skrzynię ('+(cid===T.CHEST_EPIC?'epicka':cid===T.CHEST_RARE?'rzadka':'zwykła')+')'); } }
 	if(k==='m'&&!keysOnce.has('m')){ toggleMap(); keysOnce.add('m'); }
@@ -428,7 +437,10 @@ function drawFallingBlocks(){ TREES.drawFallingBlocks(ctx,TILE,INFO); }
 function updateMining(dt){ if(!mining) return; if(getTile(mineTx,mineTy)===T.AIR){ mining=false; mineBtn.classList.remove('on'); return; } if(godMode){ instantBreak(); return; } const mineMult=(MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1; mineTimer += dt * tools[player.tool] * mineMult; const curId=getTile(mineTx,mineTy); const info=INFO[curId]; const need=Math.max(0.1, info.hp/6); if(mineTimer>=need){ if(curId===T.WOOD && isTreeBase(mineTx,mineTy)){ if(startTreeFall(mineTx,mineTy)){ mining=false; mineBtn.classList.remove('on'); return; } } const drop=info.drop; setTile(mineTx,mineTy,T.AIR); if(drop) inv[drop]=(inv[drop]||0)+1; if(MM.fallingSolids) MM.fallingSolids.onTileRemoved(mineTx,mineTy); if(MM.water) MM.water.onTileChanged(mineTx,mineTy,getTile); mining=false; mineBtn.classList.remove('on'); updateInventory(); } }
 
 // --- Placement ---
-canvas.addEventListener('contextmenu',e=>{ e.preventDefault(); tryPlaceFromEvent(e); });
+// Suppress accidental placement immediately after opening a chest with right-click
+let lastChestOpen={t:0,x:0,y:0};
+const CHEST_PLACE_SUPPRESS_MS=250; // extended to reduce accidental placements
+canvas.addEventListener('contextmenu',e=>{ e.preventDefault(); const now=performance.now(); if(now-lastChestOpen.t<CHEST_PLACE_SUPPRESS_MS) return; tryPlaceFromEvent(e); });
 canvas.addEventListener('pointerdown',e=>{ if(e.button===2){ e.preventDefault(); tryPlaceFromEvent(e); } });
 function tryPlaceFromEvent(e){ const rect=canvas.getBoundingClientRect(); const mx=(e.clientX-rect.left)/zoom/DPR + camX*TILE; const my=(e.clientY-rect.top)/zoom/DPR + camY*TILE; const tx=Math.floor(mx/ TILE); const ty=Math.floor(my/ TILE); tryPlace(tx,ty); }
 function haveBlocksFor(tileId){ switch(tileId){ case T.GRASS: return inv.grass>0; case T.SAND: return inv.sand>0; case T.STONE: return inv.stone>0; case T.WOOD: return inv.wood>0; case T.LEAF: return inv.leaf>0; case T.SNOW: return inv.snow>0; case T.WATER: return inv.water>0; default: return false; }}
@@ -476,11 +488,11 @@ document.addEventListener('click',e=>{ if(hotSelectMenu && hotSelectMenu.style.d
 document.querySelectorAll('.hotSlot').forEach((el,i)=>{ el.addEventListener('click',e=>{ if(e.shiftKey || (hotbarIndex===i && !isChestSelection(HOTBAR_ORDER[i]) && !isChestSelection(HOTBAR_ORDER[hotbarIndex]) && godMode)) { openHotSelect(i,el); } else { cycleHotbar(i); } }); });
 // Left click mining convenience
 // Simple particle + sound system for chest open
-const particles=[]; function spawnBurst(x,y,tier){ const count=24 + (tier==='epic'?24:tier==='rare'?12:0); for(let i=0;i<count;i++){ const ang=Math.random()*Math.PI*2; const sp= (Math.random()*2 + 1.5) * (tier==='epic'?1.6:tier==='rare'?1.3:1); particles.push({x,y, vx:Math.cos(ang)*sp, vy:Math.sin(ang)*sp*0.6-1, life:0, max:0.9+Math.random()*0.5, tier}); } playChestSound(tier); }
-function updateParticles(dt){ for(let i=particles.length-1;i>=0;i--){ const p=particles[i]; p.life+=dt; p.x+=p.vx*dt*TILE; p.y+=p.vy*dt*TILE; p.vy+=8*dt; if(p.life>p.max) particles.splice(i,1); } }
+const particles=[]; const PARTICLE_CAP=800; function spawnBurst(x,y,tier){ const count=24 + (tier==='epic'?24:tier==='rare'?12:0); for(let i=0;i<count;i++){ if(particles.length>=PARTICLE_CAP) break; const ang=Math.random()*Math.PI*2; const sp= (Math.random()*2 + 1.5) * (tier==='epic'?1.6:tier==='rare'?1.3:1); particles.push({x,y, vx:Math.cos(ang)*sp, vy:Math.sin(ang)*sp*0.6-1, life:0, max:0.9+Math.random()*0.5, tier}); } playChestSound(tier); }
+function updateParticles(dt){ for(let i=particles.length-1;i>=0;i--){ const p=particles[i]; p.life+=dt; p.x+=p.vx*dt*TILE; p.y+=p.vy*dt*TILE; p.vy+=8*dt; if(p.life>p.max) particles.splice(i,1); } if(particles.length>PARTICLE_CAP){ particles.splice(0, particles.length-PARTICLE_CAP); } }
 function drawParticles(){ particles.forEach(p=>{ const alpha = 1 - p.life/p.max; ctx.fillStyle = p.tier==='epic'? 'rgba(224,179,65,'+alpha+')' : (p.tier==='rare'? 'rgba(167,76,201,'+alpha+')' : 'rgba(176,127,44,'+alpha+')'); ctx.fillRect(p.x -2, p.y -2, 4,4); }); }
 let audioCtx=null; function playChestSound(tier){ try{ if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)(); const o=audioCtx.createOscillator(); const g=audioCtx.createGain(); o.type='triangle'; let base=tier==='epic'?660: tier==='rare'?520:420; o.frequency.setValueAtTime(base,audioCtx.currentTime); o.frequency.linearRampToValueAtTime(base+ (tier==='epic'?240: tier==='rare'?160:80), audioCtx.currentTime+0.25); g.gain.setValueAtTime(0.001,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.3,audioCtx.currentTime+0.03); g.gain.exponentialRampToValueAtTime(0.0001,audioCtx.currentTime+0.5); o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.52); }catch(e){} }
-canvas.addEventListener('pointerdown',e=>{ const rect=canvas.getBoundingClientRect(); const mx=(e.clientX-rect.left)/zoom/DPR + camX*TILE; const my=(e.clientY-rect.top)/zoom/DPR + camY*TILE; const tx=Math.floor(mx/TILE); const ty=Math.floor(my/TILE); if(e.button===0){ const dx=tx - Math.floor(player.x); const dy=ty - Math.floor(player.y); if(Math.abs(dx)<=2 && Math.abs(dy)<=2){ mineDir.dx = Math.sign(dx)||0; mineDir.dy = Math.sign(dy)||0; startMine(); } } else if(e.button===2){ const t=getTile(tx,ty); const info=MM.INFO[t]; if(info && info.chestTier && MM.chests){ const res=MM.chests.openChestAt(tx,ty); if(res){ msg('Skrzynia '+info.chestTier+': +'+res.items.length+' przedm.'); spawnBurst((tx+0.5)*TILE,(ty+0.5)*TILE, info.chestTier); if(window.updateDynamicCustomization) updateDynamicCustomization(); if(typeof showLootPopup==='function'){ showLootPopup(res.items); } } } }});
+canvas.addEventListener('pointerdown',e=>{ const rect=canvas.getBoundingClientRect(); const mx=(e.clientX-rect.left)/zoom/DPR + camX*TILE; const my=(e.clientY-rect.top)/zoom/DPR + camY*TILE; const tx=Math.floor(mx/TILE); const ty=Math.floor(my/TILE); if(e.button===0){ const dx=tx - Math.floor(player.x); const dy=ty - Math.floor(player.y); if(Math.abs(dx)<=2 && Math.abs(dy)<=2){ mineDir.dx = Math.sign(dx)||0; mineDir.dy = Math.sign(dy)||0; startMine(); } } else if(e.button===2){ const t=getTile(tx,ty); const info=MM.INFO[t]; if(info && info.chestTier && MM.chests){ const res=MM.chests.openChestAt(tx,ty); if(res){ lastChestOpen={t:performance.now(),x:tx,y:ty}; msg('Skrzynia '+info.chestTier+': +'+res.items.length+' przedm.'); spawnBurst((tx+0.5)*TILE,(ty+0.5)*TILE, info.chestTier); if(window.updateDynamicCustomization) updateDynamicCustomization(); if(typeof showLootPopup==='function'){ showLootPopup(res.items); } } } }});
 
 // Render
 function draw(){ ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camX)-1; const sy=Math.floor(camY)-1; ctx.save(); ctx.scale(zoom,zoom); // pixel snapping to avoid seams
@@ -577,10 +589,15 @@ if(!window.__lootPopupInit){
 			function disable(){ equip.disabled=keep.disabled=discard.disabled=true; row.style.opacity='.45'; }
 			equip.addEventListener('click',()=>{ if(it.kind==='cape') MM.customization.capeStyle=it.id; else if(it.kind==='eyes') MM.customization.eyeStyle=it.id; else MM.customization.outfitStyle=it.id; if(MM.recomputeModifiers) MM.recomputeModifiers(); window.dispatchEvent(new CustomEvent('mm-customization-change')); disable(); });
 			keep.addEventListener('click',disable);
-			discard.addEventListener('click',()=>{ if(MM.dynamicLoot){ const arr = it.kind==='cape'? MM.dynamicLoot.capes : it.kind==='eyes'? MM.dynamicLoot.eyes : MM.dynamicLoot.outfits; const idx=arr.indexOf(it); if(idx>=0) arr.splice(idx,1); } if(MM.addDiscardedLoot) MM.addDiscardedLoot(it.id); disable(); });
+			discard.addEventListener('click',()=>{ if(MM.dynamicLoot){ const arr = it.kind==='cape'? MM.dynamicLoot.capes : it.kind==='eyes'? MM.dynamicLoot.eyes : MM.dynamicLoot.outfits; const idx=arr.indexOf(it); if(idx>=0) arr.splice(idx,1); } if(MM.addDiscardedLoot) MM.addDiscardedLoot(it.id); if(MM.chests && MM.chests.saveDynamicLoot) MM.chests.saveDynamicLoot(); disable(); });
 			btns.appendChild(equip); btns.appendChild(keep); btns.appendChild(discard); row.appendChild(btns); lootItemsBox.appendChild(row); });
-		lootPopup.classList.add('show'); lootDim.style.display='block'; };
+		// Accessibility: trap focus & ESC close
+		let lootPrevFocus=null; function installFocusTrap(){ function handler(e){ if(lootPopup.style.display!=='flex') return; if(e.key==='Escape'){ hide(); return; } if(e.key==='Tab'){ const focusables=[...lootPopup.querySelectorAll('button')].filter(b=>!b.disabled); if(!focusables.length) return; const first=focusables[0], last=focusables[focusables.length-1]; if(e.shiftKey){ if(document.activeElement===first){ e.preventDefault(); last.focus(); } } else { if(document.activeElement===last){ e.preventDefault(); first.focus(); } } } } window.addEventListener('keydown',handler); lootPopup.__trapHandler=handler; }
+		function removeFocusTrap(){ if(lootPopup.__trapHandler){ window.removeEventListener('keydown', lootPopup.__trapHandler); lootPopup.__trapHandler=null; } }
+		lootPopup.classList.add('show'); lootDim.style.display='block'; lootPrevFocus=document.activeElement; installFocusTrap(); const firstBtn=lootPopup.querySelector('button'); if(firstBtn) firstBtn.focus(); };
 	function hide(){ lootPopup.classList.remove('show'); lootDim.style.display='none'; }
+		// Enhanced hide to restore focus and remove trap
+		const _origHide=hide; hide=function(){ removeFocusTrap(); _origHide(); if(lootPrevFocus && lootPrevFocus.focus) lootPrevFocus.focus(); };
 	lootCloseBtn?.addEventListener('click',hide); lootDim?.addEventListener('click',hide);
 	lootEquipAllBtn?.addEventListener('click',()=>{ pendingLoot.forEach(it=>{ if(it.kind==='cape') MM.customization.capeStyle=it.id; else if(it.kind==='eyes') MM.customization.eyeStyle=it.id; else MM.customization.outfitStyle=it.id; }); if(MM.recomputeModifiers) MM.recomputeModifiers(); window.dispatchEvent(new CustomEvent('mm-customization-change')); hide(); });
 	lootKeepAllBtn?.addEventListener('click',hide);
