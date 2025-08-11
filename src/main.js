@@ -81,8 +81,8 @@ function skyGradientFromPalette(pal,cycleT){
 		if(!top){ top=pal.dayTop; bottom=pal.dayBot; }
 		// Midday slight breathing to avoid static plateau
 		const mid = Math.sin((t-0.5)*Math.PI*2)*0.015; // -1..1 -> subtle shift
-		if(mid!==0){
-			function mod(col,amt){ const p=parseInt(col.slice(1),16); let r=(p>>16)&255,g=(p>>8)&255,b=p&255; r=Math.min(255,Math.max(0,r+amt*12)); g=Math.min(255,Math.max(0,g+amt*10)); b=Math.min(255,Math.max(0,b+amt*16)); return '#'+r.toString(16).padStart(2,'0')+g.toString(16).padStart(2,'0')+b.toString(16).padStart(2,'0'); }
+			if(mid!==0){
+				function mod(col,amt){ const p=parseInt(col.slice(1),16); let r=(p>>16)&255,g=(p>>8)&255,b=p&255; r=Math.round(Math.min(255,Math.max(0,r+amt*12))); g=Math.round(Math.min(255,Math.max(0,g+amt*10))); b=Math.round(Math.min(255,Math.max(0,b+amt*16))); return '#'+r.toString(16).padStart(2,'0')+g.toString(16).padStart(2,'0')+b.toString(16).padStart(2,'0'); }
 			top=mod(top,mid); bottom=mod(bottom,mid*0.6);
 		}
 		return {top,bottom};
@@ -100,7 +100,7 @@ function skyGradientFromPalette(pal,cycleT){
 		}
 		if(!top){ top=pal.nightTop; bottom=pal.nightBot; }
 		// Subtle breathing at night
-		const breathe = Math.sin(nt*Math.PI*2)*0.04; function mod(col,amt){ const p=parseInt(col.slice(1),16); let r=(p>>16)&255,g=(p>>8)&255,b=p&255; r=Math.min(255,Math.max(0,r+amt*10)); g=Math.min(255,Math.max(0,g+amt*14)); b=Math.min(255,Math.max(0,b+amt*20)); return '#'+r.toString(16).padStart(2,'0')+g.toString(16).padStart(2,'0')+b.toString(16).padStart(2,'0'); } top=mod(top,breathe); bottom=mod(bottom,breathe*0.5); return {top,bottom};
+		const breathe = Math.sin(nt*Math.PI*2)*0.04; function mod(col,amt){ const p=parseInt(col.slice(1),16); let r=(p>>16)&255,g=(p>>8)&255,b=p&255; r=Math.round(Math.min(255,Math.max(0,r+amt*10))); g=Math.round(Math.min(255,Math.max(0,g+amt*14))); b=Math.round(Math.min(255,Math.max(0,b+amt*20))); return '#'+r.toString(16).padStart(2,'0')+g.toString(16).padStart(2,'0')+b.toString(16).padStart(2,'0'); } top=mod(top,breathe); bottom=mod(bottom,breathe*0.5); return {top,bottom};
 	}
 }
 let lastCycleInfo={cycleT:0,isDay:true,tDay:0,twilightBand:0.12}; let moonPhaseIndex=0, lastPhaseCycle=-1; const MOON_PHASES=8; // 0 new, 4 full
