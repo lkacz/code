@@ -26,8 +26,14 @@ MM.ui = (function(){
     b.classList.toggle('toggled', !!on);
     b.textContent = 'Mapa: ' + (on?'ON':'OFF');
   }
+  // Radar pulse helper (adds/removes pulse class on #radarBtn)
+  function setRadarPulsing(active){
+    const b = document.getElementById('radarBtn');
+    if(!b) return;
+    if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
+  }
   // public API
-  const api = { msg, updateGodButton, updateMapButton };
+  const api = { msg, updateGodButton, updateMapButton, setRadarPulsing };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;
