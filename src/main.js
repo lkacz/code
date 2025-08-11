@@ -642,7 +642,7 @@ initGrassControls();
 // Pętla
 let last=performance.now(); function loop(ts){ const dt=Math.min(0.05,(ts-last)/1000); last=ts; // smooth zoom interpolation
 	if(Math.abs(zoomTarget-zoom)>0.0001){ zoom += (zoomTarget-zoom)*Math.min(1, dt*8); }
-	physics(dt); updateMining(dt); updateFallingBlocks(dt); if(MM.fallingSolids){ MM.fallingSolids.update(getTile,setTile,dt); } if(MM.water){ MM.water.update(getTile,setTile,dt); } updateParticles(dt); updateCape(dt); updateBlink(ts); draw(); if(ts<radarFlash){ radarBtn.classList.add('pulse'); } else radarBtn.classList.remove('pulse'); updateFps(ts); requestAnimationFrame(loop); } requestAnimationFrame(loop);
+	physics(dt); updateMining(dt); updateFallingBlocks(dt); if(MM.fallingSolids){ MM.fallingSolids.update(getTile,setTile,dt); } if(MM.water){ MM.water.update(getTile,setTile,dt); } updateClouds(dt); updateParticles(dt); updateCape(dt); updateBlink(ts); draw(); if(ts<radarFlash){ radarBtn.classList.add('pulse'); } else radarBtn.classList.remove('pulse'); updateFps(ts); requestAnimationFrame(loop); } requestAnimationFrame(loop);
 // Update background time-based elements
 setInterval(()=>{ /* keep cycleStart anchored; could adjust for pause logic later */ },60000);
 
