@@ -203,6 +203,49 @@
     m.strandedTime = 0;
   }
 
+  // Aquatic enforcement (moved earlier so it's definitely defined before any habitatUpdate calls)
+  function enforceAquatic(m, spec, getTile, dt){
+    if(!m.waterTopY || performance.now()>m.nextWaterScan){ initWaterAnchor(m); }
+    const tx = Math.floor(m.x); const ty=Math.floor(m.y);
+    const here = getTile(tx,ty);
+    if(here!==T.WATER){
+      m.strandedTime += dt;
+      let best=null, bestD=1e9;
+      for(let dy=-3; dy<=3; dy++){
+        for(let dx=-5; dx<=5; dx++){
+          const nx=tx+dx, ny=ty+dy; const t=getTile(nx,ny); if(t===T.WATER){ const d=dx*dx+dy*dy; if(d<bestD){ bestD=d; best={x:nx+0.5,y:ny+0.5}; } }
+        }
+      }
+      if(best){
+        m.vx += (best.x - m.x)*3*dt; m.vy += (best.y - m.y)*3*dt;
+        if(bestD>25){ m.x=best.x; m.y=best.y; m.vx*=0.3; m.vy*=0.3; }
+        m.strandedTime = 0;
+      } else {
+        m.vx *= 0.6; m.vy += 0.15; if(m.strandedTime>6){ m.hp=0; }
+      }
+      return;
+    } else { m.strandedTime = 0; }
+    if(typeof m.waterTopY==='number'){
+      const topTile = getTile(Math.floor(m.x), m.waterTopY);
+      if(topTile!==T.WATER){ initWaterAnchor(m); }
+      const targetY = m.waterTopY + (m.desiredDepth||1) + Math.sin(performance.now()*0.001 + m.spawnT*0.0003)*0.2;
+      const dy = targetY - m.y; m.vy += dy * Math.min(1, dt*2.2);
+      const above = getTile(Math.floor(m.x), Math.floor(m.y-0.6));
+      if(above!==T.WATER){ if(m.vy < 0) m.vy *= 0.2; m.vy += 0.04; }
+    }
+    if(Math.abs(m.vx)>0.01){
+      const aheadX = Math.floor(m.x + Math.sign(m.vx)*0.7);
+      const aheadY = Math.floor(m.y);
+      const ahead = getTile(aheadX, aheadY);
+      if(ahead!==T.WATER){
+        m.vx *= -0.55; m.vy += (Math.random()*0.6 -0.3);
+        const inwardX = Math.floor(m.x - Math.sign(m.vx)*1);
+        if(getTile(inwardX, aheadY)===T.WATER){ m.vx += (inwardX + 0.5 - m.x)*0.4; }
+      }
+    }
+    const maxS = spec.speed * 1.2; const sp=Math.hypot(m.vx,m.vy); if(sp>maxS){ const s=maxS/sp; m.vx*=s; m.vy*=s; }
+  }
+
   function forceSpawn(specId, player, getTile){ const spec=SPECIES[specId]; if(!spec) return false; if((speciesCounts[specId]||0) >= spec.max) return false; // cap
     // try valid spawn positions first
     for(let tries=0; tries<20; tries++){ const dx=(Math.random()*10 -5); const dy=(Math.random()*6 -3); const tx=Math.floor(player.x+dx); const ty=Math.floor(player.y+dy); if(spec.spawnTest(tx,ty,getTile)){ mobs.push(create(spec, tx+0.5, ty+0.5)); return true; } }
@@ -395,47 +438,6 @@
       }
   }
 
-  function enforceAquatic(m, spec, getTile, dt){
-    if(!m.waterTopY || performance.now()>m.nextWaterScan){ initWaterAnchor(m); }
-    const tx = Math.floor(m.x); const ty=Math.floor(m.y);
-    const here = getTile(tx,ty);
-    if(here!==T.WATER){
-      m.strandedTime += dt;
-      let best=null, bestD=1e9;
-      for(let dy=-3; dy<=3; dy++){
-        for(let dx=-5; dx<=5; dx++){
-          const nx=tx+dx, ny=ty+dy; const t=getTile(nx,ny); if(t===T.WATER){ const d=dx*dx+dy*dy; if(d<bestD){ bestD=d; best={x:nx+0.5,y:ny+0.5}; } }
-        }
-      }
-      if(best){
-        m.vx += (best.x - m.x)*3*dt; m.vy += (best.y - m.y)*3*dt;
-        if(bestD>25){ m.x=best.x; m.y=best.y; m.vx*=0.3; m.vy*=0.3; }
-        m.strandedTime = 0;
-      } else {
-        m.vx *= 0.6; m.vy += 0.15; if(m.strandedTime>6){ m.hp=0; }
-      }
-      return;
-    } else { m.strandedTime = 0; }
-    if(typeof m.waterTopY==='number'){
-      const topTile = getTile(Math.floor(m.x), m.waterTopY);
-      if(topTile!==T.WATER){ initWaterAnchor(m); }
-      const targetY = m.waterTopY + (m.desiredDepth||1) + Math.sin(performance.now()*0.001 + m.spawnT*0.0003)*0.2;
-      const dy = targetY - m.y; m.vy += dy * Math.min(1, dt*2.2);
-      const above = getTile(Math.floor(m.x), Math.floor(m.y-0.6));
-      if(above!==T.WATER){ if(m.vy < 0) m.vy *= 0.2; m.vy += 0.04; }
-    }
-    if(Math.abs(m.vx)>0.01){
-      const aheadX = Math.floor(m.x + Math.sign(m.vx)*0.7);
-      const aheadY = Math.floor(m.y);
-      const ahead = getTile(aheadX, aheadY);
-      if(ahead!==T.WATER){
-        m.vx *= -0.55; m.vy += (Math.random()*0.6 -0.3);
-        const inwardX = Math.floor(m.x - Math.sign(m.vx)*1);
-        if(getTile(inwardX, aheadY)===T.WATER){ m.vx += (inwardX + 0.5 - m.x)*0.4; }
-      }
-    }
-    const maxS = spec.speed * 1.2; const sp=Math.hypot(m.vx,m.vy); if(sp>maxS){ const s=maxS/sp; m.vx*=s; m.vy*=s; }
-  }
   }
 
   MM.mobs = { update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro, forceSpawn, species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics };
