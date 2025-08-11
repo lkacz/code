@@ -20,6 +20,14 @@ window.MM = window.MM || {};
   const bf = (WG.biomeFrac? WG.biomeFrac(wx,2): null);
       // Precompute some noise for variation per column
       const colRand = WG.randSeed(wx*7.13);
+      // Transitional thresholds: jitter sand/stone boundary to avoid straight lines
+      const baseSurf = SURFACE_GRASS_DEPTH;
+      let sandTh = SURFACE_GRASS_DEPTH + SAND_DEPTH;
+      const sandJ = Math.floor((((WG.valueNoise? WG.valueNoise(wx,45,1717):0) - 0.5) * 5)); // [-2..+2]
+      sandTh += sandJ;
+      if(bf){ // deeper sand near deserts/coasts
+        sandTh += Math.round(bf[5]*2 + bf[6]*1.5 + bf[3]*2);
+      }
       for(let y=0;y<WORLD_H;y++){
         let t=T.AIR; if(y>=s){
           const depth=y-s;
@@ -30,7 +38,7 @@ window.MM = window.MM || {};
           const lake  = biome===6;
           const mountain = biome===7;
           // Determine surface material rules per biome
-          if(depth < SURFACE_GRASS_DEPTH){
+          if(depth < baseSurf){
             // Top soil blend near borders: bias to sand if desert/sea/lake presence, snow if cold
             if(sea || lake){ t=T.SAND; }
             else if(desert){
@@ -49,11 +57,24 @@ window.MM = window.MM || {};
               if(bf && bf[3]>0.25){ t = (WG.randSeed(wx*2.31) < Math.min(0.5, bf[3]*0.8))? T.SAND : T.GRASS; }
               else t=T.GRASS;
             }
-          } else if(depth < SURFACE_GRASS_DEPTH + SAND_DEPTH){
+          } else if(depth < sandTh){
             if(desert) t=T.SAND; else if(sea||lake) t=T.SAND; else if(swamp) t=(colRand<0.3?T.SAND:T.STONE); else t=(snowy?T.SNOW:T.STONE);
           } else {
             // Deep layers: chance of diamond
             t = (WG.randSeed(wx*13.37 + y*0.7) < WG.diamondChance(y)?T.DIAMOND:T.STONE);
+          }
+          // Transitional mixing band around sandTh to avoid sharp sand↔stone lines
+          if(t!==T.AIR){
+            const band = 2; // apply within ±2 tiles of sandTh
+            if(depth >= sandTh - band && depth < sandTh + band){
+              const n = WG.randSeed(wx*9.71 + y*0.23);
+              const desertFrac = bf? bf[3] : (desert?1:0);
+              const coastFrac = bf? (bf[5]*0.7 + bf[6]*0.5) : ((sea||lake)?1:0);
+              const sandFavor = Math.min(0.7, 0.15 + 0.6*(desertFrac + coastFrac));
+              const stoneFavor = Math.min(0.6, 0.10 + 0.4*(1 - (desertFrac + coastFrac)));
+              if(t===T.STONE && (n < sandFavor)) t=T.SAND; // sprinkle sand into stone just below boundary
+              else if(t===T.SAND && (n < stoneFavor*0.4)) t=T.STONE; // some stone specks inside sand band
+            }
           }
         }
   // Carve sea / lake water down to target level
