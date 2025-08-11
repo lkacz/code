@@ -284,51 +284,41 @@ const MOVE={ACC:32,FRICTION:28,MAX:6,JUMP:-9,GRAV:20}; let jumpPrev=false; let s
 	jumpPrev=jumpNow;
 
 	if(inWater){
-		// Enhanced buoyancy: aim for a target immersion so player "floats" at surface.
+		// Stronger buoyancy with PD control so player reliably floats at surface.
 		const time=performance.now();
-		const targetFloatSub = 0.64; // desired average submersion ( ~64% of body in water )
-		const neutralPoint   = 0.52; // where gravity becomes largely countered
-		const excessNeutral  = subFrac - neutralPoint;
-		const immersionError = targetFloatSub - subFrac; // positive if too shallow (need to sink slightly)
-		// Wave-based subtle variation (two frequencies + spatial terms)
-		const varA = Math.sin(time*0.0010 + player.x*0.32)*0.7;
-		const varB = Math.sin(time*0.00055 + player.y*0.27 + player.x*0.08)*0.5;
-		const variation = (varA+varB)*0.45; // ~ -0.54 .. 0.54
-		// Base buoyancy stronger than previous version for pronounced float
-		let buoyAccel = 0;
-		if(excessNeutral>0){ // above neutral (more submerged than neutral) -> strong lift
-			buoyAccel = -excessNeutral * 18;
-		} else { // below neutral -> gentle downward encouragement (prevents levitating above water)
-			buoyAccel = -excessNeutral * 6;
-		}
-		// Add proportional correction toward target float immersion for surface lock
-		buoyAccel += immersionError * 22;
-		// Micro undulation
-		buoyAccel += variation;
-		if(diveInput){ buoyAccel *= 0.35; }
-		// Scaled gravity (reduced when deeper)
-		const gravScale = 1 - subFrac*0.78; player.vy += MOVE.GRAV * gravScale * dt;
-		// Low-pass filter for stability
-		swimBuoySmooth += (buoyAccel - swimBuoySmooth) * Math.min(1, dt*5);
+		const desiredSub = diveInput? 0.88 : 0.66; // target fraction of body submerged
+		const neutralPoint = 0.50; // submersion where gravity mostly neutralizes
+		const gravScale = 1 - subFrac*0.82; // deeper -> less gravity
+		player.vy += MOVE.GRAV * gravScale * dt;
+		// PD controller: proportional on immersion error, derivative on vertical velocity
+		const error = desiredSub - subFrac; // positive -> need to sink more, negative -> need to rise
+		const Kp = diveInput? 55 : 70; // strong proportional for crisp float
+		const Kd = diveInput? 7 : 9;  // damping
+		let buoyAccel = (error * Kp) - (player.vy * Kd);
+		// Additional lift when past neutral and not diving (prevents creeping downward)
+		const excess = subFrac - neutralPoint; if(excess>0 && !diveInput) buoyAccel -= excess * 30;
+		// Micro wave variation
+		const wave = Math.sin(time*0.0012 + player.x*0.3)*0.6 + Math.sin(time*0.00047 + player.x*0.07 + player.y*0.11)*0.4;
+		buoyAccel += wave * 0.8; // ~ -0.8..0.8
+		if(diveInput) buoyAccel *= 0.5; // still allow descent when diving
+		// Low-pass filter final buoyancy for smoothness
+		swimBuoySmooth += (buoyAccel - swimBuoySmooth) * Math.min(1, dt*6);
 		player.vy += swimBuoySmooth * dt;
-		if(diveInput){ player.vy += 4*dt; }
-		// Velocity clamps (allow slightly faster upward for popping to surface)
-		const maxDown=4.0, maxUp=8.5; if(player.vy>maxDown) player.vy=maxDown; if(player.vy<-maxUp) player.vy=-maxUp;
-		// Surface lock & bob: when head tile water and above is air, add gentle wave riding
+		if(diveInput){ player.vy += 5*dt; }
+		// Hard surface assist: if head is near surface & not diving, clamp downward motion strongly
 		const headTile = getTile(tileX, Math.floor(headY));
 		const aboveHead = getTile(tileX, Math.floor(headY)-1);
-		if(headTile===T.WATER && aboveHead===T.AIR && !diveInput){
-			// stronger but smooth upward damping if sinking
-			if(player.vy>0) player.vy -= Math.min(player.vy, 10*dt*(0.4+subFrac*0.6));
-			// very light upward bias keeps head exposed
-			player.vy -= 3.5*dt*(0.3 + (subFrac>targetFloatSub?0.7:subFrac/targetFloatSub*0.7));
-			// horizontal slight damping
-			player.vx -= player.vx * 0.18 * dt;
-			// Layered bob (two low freq waves) -> positional offset (very small to avoid tunneling)
-			const wave1 = Math.sin(time*0.0022 + player.x*0.35)*0.45;
-			const wave2 = Math.sin(time*0.0009 + player.x*0.15 + player.y*0.05)*0.25;
-			player.y += (wave1+wave2)/(TILE*85);
+		if(!diveInput && headTile===T.WATER && aboveHead===T.AIR){
+			if(player.vy>0.4) player.vy -= Math.min(player.vy, 16*dt); // fast stop sinking
+			// slight upward bias to keep head clear
+			player.vy -= 4.5*dt;
+			player.vx -= player.vx * 0.15 * dt;
+			// Gentle positional bob (two layered waves)
+			const bob = Math.sin(time*0.002 + player.x*0.42)*0.55 + Math.sin(time*0.00085 + player.x*0.18)*0.28;
+			player.y += bob/(TILE*75);
 		}
+		// Clamp speeds (tighter downward, allow brisk upward correction)
+		const maxDown=2.8, maxUp=9.0; if(player.vy>maxDown) player.vy=maxDown; if(player.vy<-maxUp) player.vy=-maxUp;
 	} else {
 		// Normal gravity when not in water
 		player.vy += MOVE.GRAV*dt; if(player.vy>20) player.vy=20; swimBuoySmooth=0; // reset filter
