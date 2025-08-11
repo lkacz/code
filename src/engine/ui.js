@@ -72,6 +72,31 @@ MM.ui = (function(){
     chk.addEventListener('change',()=>{ window.__timeOverrideActive=chk.checked; if(chk.checked){ window.__timeOverrideValue=parseFloat(range.value); window.__timeSliderLocked=true; } else { window.__timeSliderLocked=false; } });
     upd();
   }
+  function injectMobSpawnPanel(spawnCb, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel) return;
+    const mobBox=document.createElement('div'); mobBox.id='mobSpawnBox'; mobBox.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;';
+    const label2=document.createElement('div'); label2.textContent='Spawn Moby:'; label2.style.cssText='width:100%; font-size:11px; opacity:.7;'; mobBox.appendChild(label2);
+    const placeholder=document.createElement('div'); placeholder.textContent='(Ładowanie...)'; placeholder.style.cssText='font-size:11px; opacity:.5;'; mobBox.appendChild(placeholder);
+    panel.appendChild(mobBox);
+    function populate(){
+      const box=document.getElementById('mobSpawnBox'); if(!box) return;
+      while(box.children.length>1) box.removeChild(box.lastChild);
+      if(!(window.MM && MM.mobs && MM.mobs.species)){
+        const p=document.createElement('div'); p.textContent='(Brak systemu mobów)'; p.style.cssText='font-size:11px; opacity:.5;'; box.appendChild(p); return;
+      }
+      MM.mobs.species.forEach(id=>{
+        const b=document.createElement('button'); b.textContent=id; b.style.cssText='flex:1 1 70px; font-size:11px; padding:3px 6px;';
+        b.addEventListener('click',()=>{ try{ if(typeof spawnCb==='function') spawnCb(id); }catch(e){} });
+        box.appendChild(b);
+      });
+    }
+    // Expose populate for any external triggers (keeps backward compatibility)
+    api.populateMobSpawnButtons = populate;
+    try{ window.__populateMobSpawnButtons = populate; }catch(e){}
+    setTimeout(()=>{ populate(); },300);
+    window.addEventListener('mm-mobs-ready',()=>{ populate(); });
+  }
   // Radar pulse helper (adds/removes pulse class on #radarBtn)
   function setRadarPulsing(active){
     const b = document.getElementById('radarBtn');
@@ -79,7 +104,7 @@ MM.ui = (function(){
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, setRadarPulsing, closeMenu: ()=>{} };
+  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, injectMobSpawnPanel, setRadarPulsing, closeMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;
