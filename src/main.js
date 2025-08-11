@@ -264,6 +264,8 @@ if(!('maxAirJumps' in MM.activeModifiers) || !('visionRadius' in MM.activeModifi
 const tools={basic:1,stone:2,diamond:4};
 // Inventory counts for placeable tiles
 const inv={grass:0,sand:0,stone:0,diamond:0,wood:0,leaf:0,snow:0,water:0,tools:{stone:false,diamond:false}};
+// Expose inventory for cross-module loot insertion
+window.inv = inv;
 // Hotbar (slots triggered by keys 4..9)
 // HOTBAR_ORDER now mutable and can include CHEST_* pseudo entries (only placeable in god mode)
 const HOTBAR_ORDER=['GRASS','SAND','STONE','WOOD','LEAF','SNOW','WATER'];
