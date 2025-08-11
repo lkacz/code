@@ -90,7 +90,55 @@ function blendPalette(p1,p2,t){ if(!p2||t<=0) return p1; if(t>=1) return p2; ret
  mount:[0,1,2].map(i=>blendColor(p1.mount[i],p2.mount[i],t)) };
 }
 function computeBiomeBlend(x){ if(!WORLDGEN.valueNoise) return {pal:SKY_PALETTES[WORLDGEN.biomeType?WORLDGEN.biomeType(Math.floor(x)):0], a:0,b:0,t:0}; const v=WORLDGEN.valueNoise(x,220,900); const t1=0.35, t2=0.7, w=0.05; if(v < t1-w){ return {pal:SKY_PALETTES[0], a:0,b:0,t:0}; } if(v>t2+w){ return {pal:SKY_PALETTES[2], a:2,b:2,t:0}; } if(v>=t1-w && v<=t1+w){ const t=smoothstep(t1-w,t1+w,v); return {pal:blendPalette(SKY_PALETTES[0],SKY_PALETTES[1],t), a:0,b:1,t}; } if(v>=t2-w && v<=t2+w){ const t=smoothstep(t2-w,t2+w,v); return {pal:blendPalette(SKY_PALETTES[1],SKY_PALETTES[2],t), a:1,b:2,t}; } if(v<t2){ return {pal:SKY_PALETTES[1], a:1,b:1,t:0}; } return {pal:SKY_PALETTES[2], a:2,b:2,t:0}; }
-function skyGradientFromPalette(pal,cycleT){ const dayFrac=DAY_DURATION/CYCLE_DURATION; const nightFrac=NIGHT_DURATION/CYCLE_DURATION; if(cycleT < dayFrac){ const t=cycleT/dayFrac; const twilightBand=0.12; if(t<twilightBand){ const k=t/twilightBand; return {top:lerpColor(pal.nightTop,pal.duskTop,k), bottom:lerpColor(pal.nightBot,pal.duskBot,k)}; } else if(t>1-twilightBand){ const k=(t-(1-twilightBand))/twilightBand; return {top:lerpColor(pal.duskTop,pal.nightTop,k), bottom:lerpColor(pal.duskBot,pal.nightBot,k)}; } else { return {top:pal.dayTop,bottom:pal.dayBot}; } } else { const t=(cycleT-dayFrac)/nightFrac; return {top:pal.nightTop,bottom:pal.nightBot}; } }
+function skyGradientFromPalette(pal,cycleT){
+	// Continuous multi-key interpolation for seamless transitions.
+	const dayFrac=DAY_DURATION/CYCLE_DURATION; // 0.5
+	const twilightBand=0.12; // base band for stars/cloud logic
+	const extend = twilightBand*2; // extended transition width for color blending
+	let top, bottom;
+	if(cycleT < dayFrac){
+		const t=cycleT/dayFrac; // 0 sunrise -> 1 sunset
+		// Key frames within day segment
+		const k0={t:0, top:pal.nightTop, bot:pal.nightBot};
+		const k1={t:twilightBand, top:pal.duskTop, bot:pal.duskBot};
+		const k2={t:Math.min(extend,0.45), top:pal.dayTop, bot:pal.dayBot};
+		const k3={t:Math.max(1-extend,0.55), top:pal.dayTop, bot:pal.dayBot};
+		const k4={t:1-twilightBand, top:pal.duskTop, bot:pal.duskBot};
+		const k5={t:1, top:pal.nightTop, bot:pal.nightBot};
+		const keys=[k0,k1,k2,k3,k4,k5];
+		for(let i=0;i<keys.length-1;i++){
+			const a=keys[i], b=keys[i+1];
+			if(t>=a.t && t<=b.t){
+				const span=b.t-a.t || 1; let u=(t-a.t)/span; // smoothstep for easing
+				u=u*u*(3-2*u);
+				top=lerpColor(a.top,b.top,u); bottom=lerpColor(a.bot,b.bot,u); break;
+			}
+		}
+		if(!top){ top=pal.dayTop; bottom=pal.dayBot; }
+		// Midday slight breathing to avoid static plateau
+		const mid = Math.sin((t-0.5)*Math.PI*2)*0.015; // -1..1 -> subtle shift
+		if(mid!==0){
+			function mod(col,amt){ const p=parseInt(col.slice(1),16); let r=(p>>16)&255,g=(p>>8)&255,b=p&255; r=Math.min(255,Math.max(0,r+amt*12)); g=Math.min(255,Math.max(0,g+amt*10)); b=Math.min(255,Math.max(0,b+amt*16)); return '#'+r.toString(16).padStart(2,'0')+g.toString(16).padStart(2,'0')+b.toString(16).padStart(2,'0'); }
+			top=mod(top,mid); bottom=mod(bottom,mid*0.6);
+		}
+		return {top,bottom};
+	} else {
+		// Night half: fade from dusk->night (early), stable deep night (middle), night->dusk (late pre-dawn)
+		const nt=(cycleT - dayFrac)/(1-dayFrac); // 0 start of night ->1 end
+		const k0={t:0, top:pal.nightTop, bot:pal.nightBot}; // already at night after sunset
+		const k1={t:0.25, top:pal.nightTop, bot:pal.nightBot};
+		const k2={t:0.5, top:pal.nightTop, bot:pal.nightBot};
+		const k3={t:0.75, top:pal.nightTop, bot:pal.nightBot};
+		const k4={t:1, top:pal.nightTop, bot:pal.nightBot};
+		const keys=[k0,k1,k2,k3,k4];
+		for(let i=0;i<keys.length-1;i++){
+			const a=keys[i], b=keys[i+1]; if(nt>=a.t && nt<=b.t){ const span=b.t-a.t||1; let u=(nt-a.t)/span; u=u*u*(3-2*u); top=lerpColor(a.top,b.top,u); bottom=lerpColor(a.bot,b.bot,u); break; }
+		}
+		if(!top){ top=pal.nightTop; bottom=pal.nightBot; }
+		// Subtle breathing at night
+		const breathe = Math.sin(nt*Math.PI*2)*0.04; function mod(col,amt){ const p=parseInt(col.slice(1),16); let r=(p>>16)&255,g=(p>>8)&255,b=p&255; r=Math.min(255,Math.max(0,r+amt*10)); g=Math.min(255,Math.max(0,g+amt*14)); b=Math.min(255,Math.max(0,b+amt*20)); return '#'+r.toString(16).padStart(2,'0')+g.toString(16).padStart(2,'0')+b.toString(16).padStart(2,'0'); } top=mod(top,breathe); bottom=mod(bottom,breathe*0.5); return {top,bottom};
+	}
+}
 let lastCycleInfo={cycleT:0,isDay:true,tDay:0,twilightBand:0.12}; let moonPhaseIndex=0, lastPhaseCycle=-1; const MOON_PHASES=8; // 0 new, 4 full
 function drawBackground(){
 	const now=performance.now(); const cycleT=((now-cycleStart)%CYCLE_DURATION)/CYCLE_DURATION; // blended palette at player x
@@ -100,7 +148,11 @@ function drawBackground(){
 	ctx.globalAlpha=1; const grd=ctx.createLinearGradient(0,0,0,H); grd.addColorStop(0,cols.top); grd.addColorStop(1,cols.bottom); ctx.fillStyle=grd; ctx.fillRect(0,0,W,H);
 	const dayFrac=DAY_DURATION/CYCLE_DURATION; const isDay=cycleT<dayFrac; const tDay=isDay? (cycleT/dayFrac) : ((cycleT-dayFrac)/(1-dayFrac)); const twilightBand=0.12; lastCycleInfo={cycleT,isDay,tDay,twilightBand};
 	// Stars first (placed behind sun/moon glow)
-	const starAlpha = isDay? (tDay<twilightBand? (1 - (tDay/twilightBand))*0.9 : (tDay>1-twilightBand? ((tDay-(1-twilightBand))/twilightBand)*0.9 : 0)) : 1;
+	// Smooth star fade using dual smoothstep edges instead of sharp piecewise
+	function smoothEdge(x,band){ return x<=0?0: x>=band?1: (x/band)*(x/band)*(3-2*(x/band)); }
+	const edgeIn = smoothEdge(tDay, twilightBand*1.4); // how far past sunrise transitions
+	const edgeOut = smoothEdge(1 - tDay, twilightBand*1.4); // how far before sunset transitions
+	let starAlpha = 1 - edgeIn*edgeOut; if(isDay) starAlpha *= 0.9; else starAlpha=1; // day reduces
 	if(starAlpha>0.01){
 		// Far layer (slower drift) — minimize fillStyle churn by using globalAlpha per star
 		ctx.save(); const driftX = now*0.000005; const timeFar = now*0.0009; ctx.fillStyle='#ffffff'; starsFar.forEach(s=>{ const x = ((s.x + driftX) % 1)*W; const y=(s.y*0.55)*H; const tw=0.5+0.5*Math.sin(timeFar + s.x*40); const a = starAlpha*0.85 * Math.min(1,(0.25+0.75*tw)*s.a); if(a>0.01){ ctx.globalAlpha=a; ctx.fillRect(x,y,s.r,s.r); } }); ctx.restore();
