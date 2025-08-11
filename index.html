@@ -50,6 +50,32 @@
   .hotSlot.sel{ outline:2px solid #2c7ef8; }
   .hotSlot .count{ font-weight:600; }
   .hotSlot .key{ position:absolute; top:2px; right:4px; font-size:10px; opacity:.7; }
+  /* Chest excitement animations */
+  @keyframes chestPulseC{0%{box-shadow:0 0 0 0 rgba(176,127,44,.0);}70%{box-shadow:0 0 14px 4px rgba(176,127,44,.45);}100%{box-shadow:0 0 0 0 rgba(176,127,44,0);} }
+  @keyframes chestPulseR{0%{box-shadow:0 0 0 0 rgba(167,76,201,0);}70%{box-shadow:0 0 18px 6px rgba(167,76,201,.55);}100%{box-shadow:0 0 0 0 rgba(167,76,201,0);} }
+  @keyframes chestPulseE{0%{box-shadow:0 0 0 0 rgba(224,179,65,0);}70%{box-shadow:0 0 26px 9px rgba(224,179,65,.65);}100%{box-shadow:0 0 0 0 rgba(224,179,65,0);} }
+  .chest-pulse-common{ animation:chestPulseC 2.8s ease-in-out infinite; }
+  .chest-pulse-rare{ animation:chestPulseR 2.8s ease-in-out infinite; }
+  .chest-pulse-epic{ animation:chestPulseE 2.8s ease-in-out infinite; }
+  /* Loot popup */
+  #lootPopup{ position:fixed; left:50%; top:50%; transform:translate(-50%,-50%) scale(.9); background:rgba(15,18,26,.96); border:1px solid rgba(255,255,255,.18); border-radius:18px; padding:18px 22px 20px; width:min(540px,90vw); max-height:80vh; display:none; flex-direction:column; gap:14px; box-shadow:0 18px 60px -10px rgba(0,0,0,.7); z-index:120; color:#e8e8e8; font-size:13px; }
+  #lootPopup.show{ display:flex; animation:lootIn .35s cubic-bezier(.22,.9,.3,1.1); }
+  @keyframes lootIn{0%{opacity:0; transform:translate(-50%,-50%) scale(.75);}100%{opacity:1; transform:translate(-50%,-50%) scale(1);} }
+  #lootPopup h3{ margin:0 0 4px; font-size:18px; }
+  #lootPopup .items{ display:flex; flex-direction:column; gap:10px; overflow:auto; max-height:40vh; }
+  #lootPopup .lootRow{ display:grid; grid-template-columns:1fr auto; gap:12px; padding:10px 12px; background:linear-gradient(140deg,rgba(255,255,255,.08),rgba(255,255,255,.04)); border:1px solid rgba(255,255,255,.12); border-radius:14px; position:relative; }
+  #lootPopup .lootRow.epic{ border-color:rgba(224,179,65,.6); box-shadow:0 0 0 1px rgba(224,179,65,.4),0 0 26px -4px rgba(224,179,65,.5); }
+  #lootPopup .lootRow.rare{ border-color:rgba(167,76,201,.55); box-shadow:0 0 0 1px rgba(167,76,201,.38),0 0 18px -4px rgba(167,76,201,.45); }
+  #lootPopup .lootRow.common{ border-color:rgba(176,127,44,.45); }
+  #lootPopup .lootStats{ font-size:11px; line-height:1.35; opacity:.9; }
+  #lootPopup .curTag{ font-size:10px; background:rgba(255,255,255,.14); border-radius:6px; padding:2px 6px; margin-left:6px; }
+  #lootPopup .diffPlus{ color:#4ade80; font-weight:600; }
+  #lootPopup .diffMinus{ color:#ef4444; font-weight:600; }
+  #lootPopup .btnBar{ display:flex; gap:10px; flex-wrap:wrap; }
+  #lootPopup button{ background:#2c7ef8; color:#fff; border:none; border-radius:10px; padding:8px 14px; font-weight:600; cursor:pointer; font-size:12px; box-shadow:0 3px 12px rgba(44,126,248,.4); }
+  #lootPopup button.sec{ background:rgba(255,255,255,.14); box-shadow:none; }
+  #lootPopup button.danger{ background:#c43232; }
+  #lootDim{ position:fixed; inset:0; background:rgba(0,0,0,.55); backdrop-filter:blur(4px); display:none; z-index:110; }
   </style>
 </head>
 <body>
@@ -139,6 +165,12 @@
         <div style="margin-top:6px; font-size:10px; opacity:.6;">Skrzynie dostępne tylko w trybie Boga.</div>
       </div>
     <div id="errorBox" role="alert"></div>
+  </div>
+  <div id="lootDim"></div>
+  <div id="lootPopup" role="dialog" aria-modal="true" aria-labelledby="lootTitle">
+    <h3 id="lootTitle">Nowe przedmioty</h3>
+    <div class="items" id="lootPopupItems"></div>
+    <div class="btnBar"><button id="lootEquipAll" class="sec">Wyposaż najlepsze</button><button id="lootKeepAll" class="sec">Zachowaj wszystko</button><button id="lootClose" class="sec">Zamknij</button></div>
   </div>
   <script src="src/engine/constants.js"></script>
   <script src="src/engine/worldgen.js"></script>

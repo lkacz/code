@@ -135,6 +135,18 @@ function drawChunkToCache(cx){ const key=cx; const k='c'+cx; const arr=WORLD._wo
 				const delta = ((h & 0xFF)/255 - 0.5)*amp; // symmetrical
 				const col = amp? shadeColor(base, delta|0) : base; // stone uses low amp so should not drift green
 				cctx.fillStyle=col; cctx.fillRect(lx*TILE,y*TILE,TILE,TILE);
+				// Chest highlight & tier flair
+				if(t===T.CHEST_COMMON||t===T.CHEST_RARE||t===T.CHEST_EPIC){
+					cctx.save();
+					const stroke = t===T.CHEST_EPIC? '#e0b341' : (t===T.CHEST_RARE? '#a74cc9':'#b07f2c');
+					cctx.strokeStyle=stroke; cctx.lineWidth=2; cctx.strokeRect(lx*TILE+1,y*TILE+1,TILE-2,TILE-2);
+					// inner gradient sheen using simple vertical fade
+					const g=cctx.createLinearGradient(lx*TILE,y*TILE,lx*TILE,y*TILE+TILE);
+					g.addColorStop(0,'rgba(255,255,255,0.25)'); g.addColorStop(0.5,'rgba(255,255,255,0)'); g.addColorStop(1,'rgba(0,0,0,0.25)');
+					cctx.fillStyle=g; cctx.fillRect(lx*TILE+2,y*TILE+2,TILE-4,TILE-4);
+					if(((h>>11)&15)<2){ cctx.fillStyle='rgba(255,255,255,0.65)'; cctx.fillRect(lx*TILE+6 + (h&3), y*TILE+6 + ((h>>4)&3),2,2); }
+					cctx.restore();
+				}
 				if(t===T.STONE || t===T.WOOD){ cctx.fillStyle='rgba(0,0,0,0.05)'; cctx.fillRect(lx*TILE + ((h>>8)&3), y*TILE, 2, TILE); }
 			}
 		}
@@ -456,7 +468,7 @@ function openHotSelect(slot,anchorEl){ if(!hotSelectMenu) return; hotSelectSlotI
 document.addEventListener('click',e=>{ if(hotSelectMenu && hotSelectMenu.style.display==='block'){ if(!hotSelectMenu.contains(e.target) && !(e.target.closest && e.target.closest('.hotSlot'))){ closeHotSelect(); } }});
 document.querySelectorAll('.hotSlot').forEach((el,i)=>{ el.addEventListener('click',e=>{ if(e.shiftKey || (hotbarIndex===i && !isChestSelection(HOTBAR_ORDER[i]) && !isChestSelection(HOTBAR_ORDER[hotbarIndex]) && godMode)) { openHotSelect(i,el); } else { cycleHotbar(i); } }); });
 // Left click mining convenience
-canvas.addEventListener('pointerdown',e=>{ const rect=canvas.getBoundingClientRect(); const mx=(e.clientX-rect.left)/zoom/DPR + camX*TILE; const my=(e.clientY-rect.top)/zoom/DPR + camY*TILE; const tx=Math.floor(mx/TILE); const ty=Math.floor(my/TILE); if(e.button===0){ const dx=tx - Math.floor(player.x); const dy=ty - Math.floor(player.y); if(Math.abs(dx)<=2 && Math.abs(dy)<=2){ mineDir.dx = Math.sign(dx)||0; mineDir.dy = Math.sign(dy)||0; startMine(); } } else if(e.button===2){ const t=getTile(tx,ty); const info=MM.INFO[t]; if(info && info.chestTier && MM.chests){ const res=MM.chests.openChestAt(tx,ty); if(res){ msg('Skrzynia '+info.chestTier+': +'+res.items.length+' przedm.'); if(window.updateDynamicCustomization) updateDynamicCustomization(); } } }});
+canvas.addEventListener('pointerdown',e=>{ const rect=canvas.getBoundingClientRect(); const mx=(e.clientX-rect.left)/zoom/DPR + camX*TILE; const my=(e.clientY-rect.top)/zoom/DPR + camY*TILE; const tx=Math.floor(mx/TILE); const ty=Math.floor(my/TILE); if(e.button===0){ const dx=tx - Math.floor(player.x); const dy=ty - Math.floor(player.y); if(Math.abs(dx)<=2 && Math.abs(dy)<=2){ mineDir.dx = Math.sign(dx)||0; mineDir.dy = Math.sign(dy)||0; startMine(); } } else if(e.button===2){ const t=getTile(tx,ty); const info=MM.INFO[t]; if(info && info.chestTier && MM.chests){ const res=MM.chests.openChestAt(tx,ty); if(res){ msg('Skrzynia '+info.chestTier+': +'+res.items.length+' przedm.'); if(window.updateDynamicCustomization) updateDynamicCustomization(); if(typeof showLootPopup==='function'){ showLootPopup(res.items); } } } }});
 
 // Render
 function draw(){ ctx.fillStyle='#0b0f16'; ctx.fillRect(0,0,W,H); const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camX)-1; const sy=Math.floor(camY)-1; ctx.save(); ctx.scale(zoom,zoom); // pixel snapping to avoid seams
@@ -524,3 +536,39 @@ initGrassControls();
 let last=performance.now(); function loop(ts){ const dt=Math.min(0.05,(ts-last)/1000); last=ts; // smooth zoom interpolation
 	if(Math.abs(zoomTarget-zoom)>0.0001){ zoom += (zoomTarget-zoom)*Math.min(1, dt*8); }
 	physics(dt); updateMining(dt); updateFallingBlocks(dt); if(MM.fallingSolids){ MM.fallingSolids.update(getTile,setTile,dt); } if(MM.water){ MM.water.update(getTile,setTile,dt); } updateCape(dt); updateBlink(ts); draw(); if(ts<radarFlash){ radarBtn.classList.add('pulse'); } else radarBtn.classList.remove('pulse'); updateFps(ts); requestAnimationFrame(loop); } requestAnimationFrame(loop);
+
+// (Re)define loot popup helpers if not already present (guard for reloads)
+if(!window.__lootPopupInit){
+	window.__lootPopupInit=true;
+	const lootPopup=document.getElementById('lootPopup');
+	const lootDim=document.getElementById('lootDim');
+	const lootItemsBox=document.getElementById('lootPopupItems');
+	const lootEquipAllBtn=document.getElementById('lootEquipAll');
+	const lootKeepAllBtn=document.getElementById('lootKeepAll');
+	const lootCloseBtn=document.getElementById('lootClose');
+	let pendingLoot=[];
+	window.showLootPopup = function(newItems){ if(!lootPopup) return; pendingLoot=newItems.slice(); lootItemsBox.innerHTML=''; const all=MM.getCustomizationItems? MM.getCustomizationItems():null; const curSel={cape:MM.customization.capeStyle, eyes:MM.customization.eyeStyle, outfit:MM.customization.outfitStyle}; function cur(kind){ if(!all) return null; const list=kind==='cape'? all.capes: kind==='eyes'? all.eyes: all.outfits; return list.find(i=>i.id===curSel[kind]); }
+		function fmtMult(v){ return (v||1).toFixed(2)+'x'; }
+		newItems.forEach(it=>{ const row=document.createElement('div'); row.className='lootRow '+it.tier; const left=document.createElement('div'); const title=document.createElement('div'); title.style.fontWeight='600'; title.textContent=(it.name||it.id)+' ['+it.kind+']'; if(it.unique){ const b=document.createElement('span'); b.textContent='★ '+it.unique; b.style.marginLeft='6px'; b.style.fontSize='10px'; b.style.color='#ffd54a'; title.appendChild(b); }
+			left.appendChild(title); const stats=document.createElement('div'); stats.className='lootStats'; const current=cur(it.kind);
+			function diff(label, curV, newV, betterHigh=true, fmt=v=>v){ if(newV==null) return; const base=curV==null? (label==='move'||label==='jump'||label==='mine'?1: (label==='air'?0: (label==='vision'?10:null))):curV; const better = betterHigh? newV>base : newV<base; const worse = betterHigh? newV<base : newV>base; const cls=better?'diffPlus': worse?'diffMinus':''; stats.innerHTML+= label+': <span class="'+cls+'">'+fmt(newV)+(newV!==base? (' ('+fmt(base)+')'):'')+'</span><br>'; }
+			diff('air', current&&current.airJumps, it.airJumps, true, v=>'+'+v);
+			diff('vision', current&&current.visionRadius, it.visionRadius, true, v=>v);
+			diff('move', current&&current.moveSpeedMult, it.moveSpeedMult, true, fmtMult);
+			diff('jump', current&&current.jumpPowerMult, it.jumpPowerMult, true, fmtMult);
+			diff('mine', current&&current.mineSpeedMult, it.mineSpeedMult, true, fmtMult);
+			left.appendChild(stats); row.appendChild(left);
+			const btns=document.createElement('div'); btns.style.display='flex'; btns.style.flexDirection='column'; btns.style.gap='6px';
+			const equip=document.createElement('button'); equip.textContent='Wyposaż'; const keep=document.createElement('button'); keep.textContent='Zachowaj'; keep.className='sec'; const discard=document.createElement('button'); discard.textContent='Odrzuć'; discard.className='danger';
+			function disable(){ equip.disabled=keep.disabled=discard.disabled=true; row.style.opacity='.45'; }
+			equip.addEventListener('click',()=>{ if(it.kind==='cape') MM.customization.capeStyle=it.id; else if(it.kind==='eyes') MM.customization.eyeStyle=it.id; else MM.customization.outfitStyle=it.id; if(MM.recomputeModifiers) MM.recomputeModifiers(); window.dispatchEvent(new CustomEvent('mm-customization-change')); disable(); });
+			keep.addEventListener('click',disable);
+			discard.addEventListener('click',()=>{ if(MM.dynamicLoot){ const arr = it.kind==='cape'? MM.dynamicLoot.capes : it.kind==='eyes'? MM.dynamicLoot.eyes : MM.dynamicLoot.outfits; const idx=arr.indexOf(it); if(idx>=0) arr.splice(idx,1); } disable(); });
+			btns.appendChild(equip); btns.appendChild(keep); btns.appendChild(discard); row.appendChild(btns); lootItemsBox.appendChild(row); });
+		lootPopup.classList.add('show'); lootDim.style.display='block'; };
+	function hide(){ lootPopup.classList.remove('show'); lootDim.style.display='none'; }
+	lootCloseBtn?.addEventListener('click',hide); lootDim?.addEventListener('click',hide);
+	lootEquipAllBtn?.addEventListener('click',()=>{ pendingLoot.forEach(it=>{ if(it.kind==='cape') MM.customization.capeStyle=it.id; else if(it.kind==='eyes') MM.customization.eyeStyle=it.id; else MM.customization.outfitStyle=it.id; }); if(MM.recomputeModifiers) MM.recomputeModifiers(); window.dispatchEvent(new CustomEvent('mm-customization-change')); hide(); });
+	lootKeepAllBtn?.addEventListener('click',hide);
+	MM.onLootGained = function(items){ if(window.updateDynamicCustomization) updateDynamicCustomization(); window.showLootPopup(items); };
+}

@@ -234,6 +234,10 @@
   updatePreview();
   updateSelInfo();
 
+  // Expose internal data & recompute for other systems (loot comparison popup)
+  MM.getCustomizationItems = ()=>ITEMS;
+  MM.recomputeModifiers = computeActiveModifiers;
+
   // Hook for dynamic loot integration
   window.updateDynamicCustomization = function(){
     if(!MM.dynamicLoot) return;
