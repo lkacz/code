@@ -286,7 +286,7 @@ window.MM.MOVE = MOVE;
 let jumpPrev=false; let swimBuoySmooth=0; function physics(dt){
 	// Horizontal input
 	let input=0; if(keys['a']||keys['arrowleft']) input-=1; if(keys['d']||keys['arrowright']) input+=1; if(input!==0) player.facing=input;
-	// Movement speed multiplier from outfit
+	// Movement speed multiplier (combined from all customization sources)
 	const moveMult = (MM.activeModifiers && MM.activeModifiers.moveSpeedMult)||1;
 	const target=input*MOVE.MAX*moveMult; const diff=target-player.vx; const accel=MOVE.ACC*dt*Math.sign(diff)*moveMult;
 	if(target!==0){ if(Math.abs(accel)>Math.abs(diff)) player.vx=target; else player.vx+=accel; } else { const fr=MOVE.FRICTION*dt; if(Math.abs(player.vx)<=fr) player.vx=0; else player.vx-=fr*Math.sign(player.vx); }
@@ -316,16 +316,17 @@ let jumpPrev=false; let swimBuoySmooth=0; function physics(dt){
 	if(jumpNow && !jumpPrev){
 		const maxAir = (MM.activeModifiers && typeof MM.activeModifiers.maxAirJumps==='number')? MM.activeModifiers.maxAirJumps : 0; // additional beyond ground jump
 		const totalAllowed = 1 + maxAir; // total sequential presses allowed while airborne
+		const jumpMult = (MM.activeModifiers && MM.activeModifiers.jumpPowerMult)||1;
 		if(player.onGround || godMode){ // primary jump
-			player.vy=MOVE.JUMP; player.onGround=false; player.jumpCount=1;
+			player.vy=MOVE.JUMP * jumpMult; player.onGround=false; player.jumpCount=1;
 		}
 		else if(!inWater && player.jumpCount>0 && player.jumpCount < totalAllowed){
 			// mid-air extra jump
-			player.vy=MOVE.JUMP; player.jumpCount++;
+			player.vy=MOVE.JUMP * jumpMult; player.jumpCount++;
 		}
 		else if(inWater){ // gentle swim kick (does not consume jump charges)
 			player.vy = Math.min(player.vy,0);
-			player.vy += MOVE.JUMP * 0.32 * (0.6 + 0.4*subFrac);
+			player.vy += MOVE.JUMP * 0.32 * (0.6 + 0.4*subFrac) * jumpMult;
 		}
 	}
 	jumpPrev=jumpNow;

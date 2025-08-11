@@ -11,38 +11,69 @@
   // Data model (future scalable): each category has items {id,name,kind,locked?,data?}
   const ITEMS={
     // airJumps: additional mid-air jumps allowed (0 => only ground jump)
+    // moveSpeedMult & jumpPowerMult now also optionally contributed by capes
     capes:[
       {id:'classic', name:'Klasyczna', airJumps:0, desc:'Tylko skok z ziemi'},
-      {id:'triangle', name:'Trójkątna', airJumps:1, desc:'Podwójny skok (2)'},
-      {id:'royal', name:'Królewska', shiny:true, airJumps:3, desc:'Cztery skoki (4)'},
-      {id:'tattered', name:'Postrzępiona', airJumps:1, desc:'Podwójny skok (2)'},
-      {id:'winged', name:'Skrzydlata', shiny:true, airJumps:3, desc:'Cztery skoki (4)'}
+      {id:'triangle', name:'Trójkątna', airJumps:1, moveSpeedMult:1.02, jumpPowerMult:1.03, desc:'Podwójny skok (2) + lekka mobilność'},
+      {id:'royal', name:'Królewska', shiny:true, airJumps:3, moveSpeedMult:1.08, jumpPowerMult:1.10, desc:'Cztery skoki (4) + szybkość'},
+      {id:'tattered', name:'Postrzępiona', airJumps:1, moveSpeedMult:1.00, jumpPowerMult:1.00, desc:'Podwójny skok (2)'},
+      {id:'winged', name:'Skrzydlata', shiny:true, airJumps:3, moveSpeedMult:1.10, jumpPowerMult:1.12, desc:'Cztery skoki (4) + duża mobilność'}
     ],
     // visionRadius influences fog reveal; base previously 10
+    // Eyes can also give minor speed / jump adjustments (sleepy penalizes)
     eyes:[
-      {id:'sleepy', name:'Wąskie', visionRadius:7, desc:'Mały zasięg widzenia'},
-      {id:'bright', name:'Szerokie', visionRadius:11, desc:'Duży zasięg widzenia'},
-      {id:'glow', name:'Przełomowe', visionRadius:15, desc:'Bardzo duży zasięg'}
+      {id:'sleepy', name:'Wąskie', visionRadius:7, moveSpeedMult:0.95, jumpPowerMult:0.95, desc:'Mały zasięg, spowolnienie'},
+      {id:'bright', name:'Szerokie', visionRadius:11, moveSpeedMult:1.03, jumpPowerMult:1.00, desc:'Duży zasięg + lekka szybkość'},
+      {id:'glow', name:'Przełomowe', visionRadius:15, moveSpeedMult:1.05, jumpPowerMult:1.04, desc:'Bardzo duży zasięg + mobilność'}
     ],
-    // Placeholder for future outfit effects (scalable)
+    // Outfits: miner trades mobility for mining; mystic boosts mobility
     outfits:[
       {id:'default', name:'Podstawowy', desc:'Brak bonusów'},
-      {id:'miner', name:'Górnik', mineSpeedMult:1.5, desc:'Kopanie +50%'},
-      {id:'mystic', name:'Mistyk', moveSpeedMult:1.15, desc:'Ruch +15%'}
+      {id:'miner', name:'Górnik', mineSpeedMult:1.5, moveSpeedMult:0.90, jumpPowerMult:0.90, desc:'Kopanie +50% kosztem mobilności'},
+      {id:'mystic', name:'Mistyk', moveSpeedMult:1.15, jumpPowerMult:1.08, desc:'Ruch +15%, skok +' }
     ]
   };
 
+  // Generic combination rules for extensibility
+  // sum: additive, mul: multiplicative (default 1), max: maximum value, set: last write wins
+  const STAT_RULES={
+    maxAirJumps:'sum',
+    visionRadius:'max',
+    mineSpeedMult:'mul',
+    moveSpeedMult:'mul',
+    jumpPowerMult:'mul'
+  };
+  function applyStat(mods,key,val){
+    if(val==null) return;
+    const rule=STAT_RULES[key];
+    if(!rule){ // unknown -> set
+      mods[key]=val; return;
+    }
+    if(rule==='sum'){ mods[key]=(mods[key]||0)+val; }
+    else if(rule==='mul'){ mods[key]=(mods[key]==null?1:mods[key])*val; }
+    else if(rule==='max'){ mods[key]=Math.max(mods[key]||0,val); }
+    else { mods[key]=val; }
+  }
   function computeActiveModifiers(){
     const mods={};
-    const cape=ITEMS.capes.find(c=>c.id===MM.customization.capeStyle);
-    const eyes=ITEMS.eyes.find(e=>e.id===MM.customization.eyeStyle);
-    const outfit=ITEMS.outfits.find(o=>o.id===MM.customization.outfitStyle);
-    if(cape && typeof cape.airJumps==='number') mods.maxAirJumps = cape.airJumps;
-    if(eyes && typeof eyes.visionRadius==='number') mods.visionRadius = eyes.visionRadius;
-    if(outfit){
-      if(typeof outfit.mineSpeedMult==='number') mods.mineSpeedMult=outfit.mineSpeedMult;
-      if(typeof outfit.moveSpeedMult==='number') mods.moveSpeedMult=outfit.moveSpeedMult;
-    }
+    const selected=[
+      ITEMS.capes.find(c=>c.id===MM.customization.capeStyle),
+      ITEMS.eyes.find(e=>e.id===MM.customization.eyeStyle),
+      ITEMS.outfits.find(o=>o.id===MM.customization.outfitStyle)
+    ];
+    selected.forEach(it=>{
+      if(!it) return;
+      // Map item raw stats to canonical modifier keys
+      if(typeof it.airJumps==='number') applyStat(mods,'maxAirJumps', it.airJumps);
+      if(typeof it.visionRadius==='number') applyStat(mods,'visionRadius', it.visionRadius);
+      if(typeof it.mineSpeedMult==='number') applyStat(mods,'mineSpeedMult', it.mineSpeedMult);
+      if(typeof it.moveSpeedMult==='number') applyStat(mods,'moveSpeedMult', it.moveSpeedMult);
+      if(typeof it.jumpPowerMult==='number') applyStat(mods,'jumpPowerMult', it.jumpPowerMult);
+    });
+    // Defaults to keep engine stable
+    if(mods.moveSpeedMult==null) mods.moveSpeedMult=1;
+    if(mods.mineSpeedMult==null) mods.mineSpeedMult=1;
+    if(mods.jumpPowerMult==null) mods.jumpPowerMult=1;
     MM.activeModifiers = mods;
   }
 
@@ -99,7 +130,7 @@
         div.addEventListener('keydown',e=>{ if(e.key==='Enter' || e.key===' ') { e.preventDefault(); choose(); } });
         grid.appendChild(div); }); }
 
-  function updateSelInfo(){ const m=MM.activeModifiers||{}; const mine=(m.mineSpeedMult? (' kop:'+(m.mineSpeedMult.toFixed(2)+'x')):''); const mv=(m.moveSpeedMult? (' ruch:'+(m.moveSpeedMult.toFixed(2)+'x')):''); selInfo.textContent='Peleryna: '+MM.customization.capeStyle+' (skoki:'+( (m.maxAirJumps||0)+1 )+') | Oczy: '+MM.customization.eyeStyle+' (zasięg:'+(m.visionRadius||10)+') | Strój: '+MM.customization.outfitStyle+mine+mv; }
+  function updateSelInfo(){ const m=MM.activeModifiers||{}; const mine=(m.mineSpeedMult && m.mineSpeedMult!==1? (' kop:'+(m.mineSpeedMult.toFixed(2)+'x')):''); const mv=(m.moveSpeedMult && m.moveSpeedMult!==1? (' ruch:'+(m.moveSpeedMult.toFixed(2)+'x')):''); const jp=(m.jumpPowerMult && m.jumpPowerMult!==1? (' skokMoc:'+(m.jumpPowerMult.toFixed(2)+'x')):''); selInfo.textContent='Peleryna: '+MM.customization.capeStyle+' (skoki:'+( (m.maxAirJumps||0)+1 )+') | Oczy: '+MM.customization.eyeStyle+' (zasięg:'+(m.visionRadius||10)+') | Strój: '+MM.customization.outfitStyle+mine+mv+jp; }
 
   let lastFocus=null;
   function trapFocus(e){ if(overlay.style.display!=='block') return; if(e.key!=='Tab') return; const focusables=[...overlay.querySelectorAll('button,[tabindex]')].filter(el=>!el.disabled); if(!focusables.length) return; const first=focusables[0], last=focusables[focusables.length-1]; if(e.shiftKey){ if(document.activeElement===first){ e.preventDefault(); last.focus(); } } else { if(document.activeElement===last){ e.preventDefault(); first.focus(); } } }
