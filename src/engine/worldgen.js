@@ -2,6 +2,28 @@
 window.MM = window.MM || {};
 const WG = {};
 WG.worldSeed = 12345;
+// Persistent world generation settings (tunable via UI)
+WG.settings = (function(){
+	const DEF = {
+		seaThreshold: 0.16,
+		oceanMaskFactor: 0.18,
+		ridgeElevBoost: 0.08,
+		mountainElevThreshold: 0.80,
+		mountainRidgeThreshold: 0.82,
+		ridgeHeightGain: 12,
+		valleyCutoff: 0.60,
+		valleyGain: 18,
+		seaLevel: 18,
+		lakeMaxDepth: 5,
+		smoothingSigmaWide: 4.8,
+		smoothingSigmaNarrow: 1.3,
+		forestDensityMul: 1.0
+	};
+	try{ const raw=localStorage.getItem('mm_world_settings_v1'); if(raw){ const obj=JSON.parse(raw); return Object.assign({}, DEF, obj); } }catch(e){}
+	return Object.assign({}, DEF);
+})();
+WG.getSettings = function(){ return Object.assign({}, WG.settings); };
+WG.setSettings = function(p){ if(!p||typeof p!=='object') return; Object.assign(WG.settings,p); try{ localStorage.setItem('mm_world_settings_v1', JSON.stringify(WG.settings)); }catch(e){} if(window.MM && MM.world && MM.world.clearHeights) MM.world.clearHeights(); };
 WG.setSeedFromInput = function(){ const inp=document.getElementById('seedInput'); if(!inp) return; let v=inp.value.trim(); if(!v||v==='auto'){ WG.worldSeed = Math.floor(Math.random()*1e9); inp.value=String(WG.worldSeed); } else { let h=0; for(let i=0;i<v.length;i++){ h=(h*131 + v.charCodeAt(i))>>>0; } WG.worldSeed = h||1; } if(window.MM && MM.world && MM.world.clearHeights) MM.world.clearHeights(); };
 WG.randSeed = function(n){ const x=Math.sin(n*127.1 + WG.worldSeed*0.000123)*43758.5453; return x-Math.floor(x); };
 WG.valueNoise = function(x, wavelength, off){ const p=x/wavelength; const i=Math.floor(p); const f=p-i; const a=WG.randSeed(i+off); const b=WG.randSeed(i+1+off); const u=f*f*(3-2*f); return a + (b-a)*u; };
@@ -34,13 +56,14 @@ WG.biomeType = function(x){
 	const m = WG.moisture(x);    // wetness
 	const e0 = WG.macroElev(x);  // large elevation trend
 	// Adjust elevation with ocean mask to guarantee seas; also allow very high ridges to push mountains
-	const e = Math.max(0, Math.min(1, e0 - 0.18*WG.oceanMask(x) + 0.08*WG.ridge(x, 1400, 9911)));
+	const S = WG.settings;
+	const e = Math.max(0, Math.min(1, e0 - (S.oceanMaskFactor||0.18)*WG.oceanMask(x) + (S.ridgeElevBoost||0.08)*WG.ridge(x, 1400, 9911)));
 	// Sea / ocean bands (very low macro elevation)
-	if(e < 0.16) return 5; // sea
+	if(e < (S.seaThreshold||0.16)) return 5; // sea
 	// Lake pockets: moderate elevation dips with high moisture
 	if(e < 0.32 && m > 0.65) return 6; // lakes
 	// Mountains (high macro elevation)
-	if(e > 0.8 || WG.ridge(x, 500, 9912) > 0.82){ return 7; }
+	if(e > (S.mountainElevThreshold||0.8) || WG.ridge(x, 500, 9912) > (S.mountainRidgeThreshold||0.82)){ return 7; }
 	// Snow / Ice (cold & mid/high elev)
 	if(t < 0.28 && e > 0.55) return 2;
 	// Desert (hot & dry)
@@ -67,7 +90,7 @@ WG._rawSurfaceHeight = function rawSurfaceHeight(x){
 		case 6: // Lake: local depression
 			h = h - 7 - WG.valueNoise(x,120,520)*4; break;
 		case 7: // Mountain: amplify & steepen with ridged noise
-			h = h + 12
+			h = h + (WG.settings.ridgeHeightGain||12)
 			  + WG.valueNoise(x,160,530)*10
 			  + WG.valueNoise(x,55,540)*6
 			  + WG.ridge(x,90,550)*12
@@ -87,7 +110,9 @@ WG._rawSurfaceHeight = function rawSurfaceHeight(x){
 	// Global valleys: carve steep V-shaped valleys outside seas/lakes using valley mask
 	if(biome!==5 && biome!==6){
 		const v = WG.valleyMask(x);
-		const valleyStrength = (v>0.6? (v-0.6)*18 : 0); // strong only on peaks of mask
+		const cut = (WG.settings.valleyCutoff||0.6);
+		const gain = (WG.settings.valleyGain||18);
+		const valleyStrength = (v>cut? (v-cut)*gain : 0); // strong only on peaks of mask
 		h -= valleyStrength;
 	}
 	return h;
@@ -120,7 +145,8 @@ WG.surfaceHeight = function(x){
 	let tight = 0.45*nSlope + 0.30*nRough + 0.15*nMacro + mountainBias*0.28 + valleyBias;
 	if(tight<0) tight=0; if(tight>1) tight=1;
 	// Map tightness to Gaussian sigma between wide and narrow
-	const sigmaWide = 4.8, sigmaNarrow = 1.3;
+	const sigmaWide = WG.settings.smoothingSigmaWide||4.8;
+	const sigmaNarrow = WG.settings.smoothingSigmaNarrow||1.3;
 	const sigma = sigmaWide*(1-tight) + sigmaNarrow*tight;
 	// Build Gaussian weights and normalize
 	let wSum=0; const W = new Array(count);

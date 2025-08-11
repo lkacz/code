@@ -63,7 +63,8 @@ window.MM = window.MM || {};
       const leftHas = (lx>0 && arr[(s-1)*CHUNK_W + (lx-1)]===T.WOOD);
       const left2Has = (lx>1 && arr[(s-1)*CHUNK_W + (lx-2)]===T.WOOD);
       if(leftHas) chance += 0.12; else if(left2Has) chance += 0.06;
-      if(WG.randSeed(wx*1.777) > chance) continue;
+  const densityMul = (WG.settings && WG.settings.forestDensityMul) || 1;
+  if(WG.randSeed(wx*1.777) > Math.min(0.95, chance * densityMul)) continue;
       const sL=WG.surfaceHeight(wx-1), sR=WG.surfaceHeight(wx+1);
       const slopeL=Math.abs(s-sL), slopeR=Math.abs(s-sR);
       if(slopeL>7 || slopeR>7) continue; // steeper cliffs skip

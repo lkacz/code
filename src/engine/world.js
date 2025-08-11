@@ -51,7 +51,7 @@ window.MM = window.MM || {};
   const neighMin = Math.min.apply(null, neighHeights);
   const neighAvg = (neighHeights.reduce((a,b)=>a+b,0))/neighHeights.length;
   const depressionDepth = Math.max(0, Math.floor(neighAvg - s));
-  const SEA_LEVEL = 18;
+  const SEA_LEVEL = (WG.settings && WG.settings.seaLevel) || 18;
 
   for(let y=0;y<WORLD_H;y++){
         let t=T.AIR; if(y>=s){
@@ -116,13 +116,13 @@ window.MM = window.MM || {};
   // Carve sea / lake water down to target level
         if(t===T.AIR){
           if(WG){
-            if(biome===5){ // sea: fill only if this column is at/below sea level (avoid water perched on high ground)
+      if(biome===5){ // sea: fill only if this column is at/below sea level (avoid water perched on high ground)
               if(s <= SEA_LEVEL + 1){ if(y>=SEA_LEVEL) t=T.WATER; }
             } else if(biome===6){ // lake: fill only in depressions; set a local water level based on neighbor rim
               const rim = Math.min(neighMin, s + 12); // upper bound to avoid massive lakes
               const hasBasin = (s + 1 < rim); // current column is below rim
               if(hasBasin){
-                const maxDepth = 5; // cap lake depth
+        const maxDepth = (WG.settings && WG.settings.lakeMaxDepth) || 5; // cap lake depth
                 const waterLevel = Math.min(rim - 1, s + maxDepth);
                 if(y>=waterLevel) t=T.WATER;
               }
