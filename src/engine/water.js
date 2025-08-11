@@ -7,6 +7,7 @@ window.MM = window.MM || {};
   let passiveScanOffset = 0;
   // Visual effects
   const ripples = []; // {L,R,y,ttl,originalTTL}
+  let lastOverlayTime = performance.now(); // for ripple timing based on real elapsed ms
   // Lateral energy cooldown after pressure smoothing
   const lateralCooldown = new Map(); // x -> seconds remaining
   const LATERAL_INTERVAL = 0.18;
@@ -119,7 +120,12 @@ window.MM = window.MM || {};
         }
       }
     }
-    if(active.size>6000){ let i=0; for(const kk of active){ if(i++>6000){ active.delete(kk); } } }
+    if(active.size>6000){
+      // Hard cap active set deterministically (already sorted earlier); avoids O(n^2) deletes mid-iteration
+      const limited = [...active].slice(0,6000);
+      active.clear();
+      for(const id of limited) active.add(id);
+    }
   }
 
   function markNeighbors(set,x,y){ set.add(k(x-1,y)); set.add(k(x+1,y)); set.add(k(x,y-1)); set.add(k(x,y+1)); }
@@ -128,6 +134,8 @@ window.MM = window.MM || {};
 
   function drawOverlay(ctx,TILE,getTile,sx,sy,vx,vy){
     const now=performance.now();
+    const frameDt = Math.min(200, Math.max(5, now - lastOverlayTime)); // clamp dt (ms)
+    lastOverlayTime = now;
     if(active.size < 500){
       const freq=0.00045; ctx.save();
       for(let y=sy; y<sy+vy+2; y++){
@@ -148,23 +156,19 @@ window.MM = window.MM || {};
     }
     // Ripples
     if(ripples.length){
-      const frameDt = 16; // fallback ms if we had no stored previous timestamp
       for(let i=ripples.length-1;i>=0;i--){
-        const r=ripples[i];
-        // Use proportional fade based on elapsed real time since creation if available
-        r.ttl -= frameDt; // simple approximation; could store lastNow for precision
-        if(r.ttl<=0){ ripples.splice(i,1); continue; }
+        const r=ripples[i]; r.ttl -= frameDt; if(r.ttl<=0){ ripples.splice(i,1); continue; }
         if(r.y>=sy-1 && r.y<=sy+vy+2){
           const life=r.ttl/(r.originalTTL||600);
-          const alpha=0.05+0.08*life;
-          const phase=now*0.004;
-          for(let x=r.L;x<=r.R;x++){
-            if(x<sx-2||x>sx+vx+2) continue;
-            const h=Math.sin(phase + x*0.9 + r.y*0.3)*0.5 + 0.5;
-            const a2=alpha*0.6*h;
-            ctx.fillStyle='rgba(180,200,255,'+a2.toFixed(3)+')';
-            ctx.fillRect(x*TILE,r.y*TILE,TILE,2);
-          }
+            const alpha=0.05+0.08*life;
+            const phase=now*0.004;
+            for(let x=r.L;x<=r.R;x++){
+              if(x<sx-2||x>sx+vx+2) continue;
+              const h=Math.sin(phase + x*0.9 + r.y*0.3)*0.5 + 0.5;
+              const a2=alpha*0.6*h;
+              ctx.fillStyle='rgba(180,200,255,'+a2.toFixed(3)+')';
+              ctx.fillRect(x*TILE,r.y*TILE,TILE,2);
+            }
         }
       }
     }
@@ -177,7 +181,7 @@ window.MM = window.MM || {};
     }
   }
 
-  function reset(){ active.clear(); }
+  function reset(){ active.clear(); ripples.length=0; lateralCooldown.clear(); }
 
   function runPressureLeveling(getTile,setTile){
     const seeds=[...active]; if(!seeds.length) return null; seeds.sort();
@@ -243,6 +247,6 @@ window.MM = window.MM || {};
     if(getTile(x,y-1)!==T.AIR && y>0) return null; return y; }
   function columnHasWater(x, topY, getTile){ for(let dy=-4; dy<=4; dy++){ const yy=topY+dy; if(yy>=0 && yy<WORLD_H && getTile(x,yy)===T.WATER) return true; } return false; }
 
-  function reset(){ active.clear(); }
+  // (duplicate reset removed; single reset keeps state consistent)
   MM.water = {update, addSource, drawOverlay, onTileChanged, reset};
 })();
