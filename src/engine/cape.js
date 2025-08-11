@@ -7,21 +7,28 @@ window.MM = window.MM || {};
   let rightPts = [];
   // Style definitions (id -> parameters)
   const CAPE_STYLES = {
-    classic: { wTop:0.10,wBot:0.24, edge:'straight', flare:1, shiny:false },
-    triangle:{ wTop:0.12,wBot:0.15, edge:'point', flare:0.9, shiny:false },
-    royal:   { wTop:0.14,wBot:0.34, edge:'scallop', flare:1.15, shiny:true },
-    tattered:{ wTop:0.10,wBot:0.26, edge:'ragged', flare:1, shiny:false },
-    winged:  { wTop:0.08,wBot:0.30, edge:'wave', flare:1.25, shiny:true }
+    // Added physical params: mass (droop/inertia), stiffness (responsiveness), wind (multiplier), scallopDepth (px)
+    classic: { wTop:0.10,wBot:0.24, edge:'straight', flare:1, shiny:false, mass:1, stiffness:6, wind:1 },
+    triangle:{ wTop:0.12,wBot:0.15, edge:'point', flare:0.9, shiny:false, mass:0.9, stiffness:6.5, wind:1.1 },
+    royal:   { wTop:0.14,wBot:0.36, edge:'scallop', flare:1.20, shiny:true, mass:1.6, stiffness:4.5, wind:0.7, scallopDepth:6 },
+    tattered:{ wTop:0.10,wBot:0.26, edge:'ragged', flare:1, shiny:false, mass:1, stiffness:5.5, wind:1.2 },
+    winged:  { wTop:0.08,wBot:0.30, edge:'wave', flare:1.25, shiny:true, mass:0.8, stiffness:7, wind:1.3 }
   };
   function getCurrentCustomization(){ return (window.MM && MM.customization) || {capeStyle:'classic',capeColor:'#b91818'}; }
   function currentStyle(){ const c=getCurrentCustomization(); return CAPE_STYLES[c.capeStyle]||CAPE_STYLES.classic; }
   function init(player){ const segs=MM.CAPE.SEGMENTS; cape.length=0; for(let i=0;i<segs;i++) cape.push({x:player.x,y:player.y}); }
-  function update(player,dt,getTile,isSolid){ if(!cape.length) return; const segs=MM.CAPE.SEGMENTS; const st=currentStyle(); const anchorX=player.x; const anchorY=player.y - player.h/2 + player.h*MM.CAPE.ANCHOR_FRAC; const speed=Math.min(1,Math.abs(player.vx)/MM.MOVE.MAX); const time=performance.now(); const targetFlare=(0.18+0.55*speed)*st.flare; const segLen=0.16; cape[0].x=anchorX; cape[0].y=anchorY; for(let i=1;i<segs;i++){ const prev=cape[i-1]; const seg=cape[i]; const backDirX=-player.facing; const flareFactor = (i/(segs-1))*targetFlare; const wind=Math.sin(time/400 + i*0.7)*0.02 + Math.sin(time/1300 + i)*0.01; const idleSway=(1-speed)*Math.sin(time/700 + i)*0.015; const desiredX=prev.x + backDirX*flareFactor + wind; const desiredY=prev.y + 0.05 + (i/(segs-1))*0.15 + idleSway; seg.x += (desiredX - seg.x)*Math.min(1,dt*6); seg.y += (desiredY - seg.y)*Math.min(1,dt*6); }
+  function update(player,dt,getTile,isSolid){ if(!cape.length) return; const segs=MM.CAPE.SEGMENTS; const st=currentStyle(); const mass=st.mass||1; const stiffness=st.stiffness||6; const windMul=st.wind||1; const anchorX=player.x; const anchorY=player.y - player.h/2 + player.h*MM.CAPE.ANCHOR_FRAC; const speed=Math.min(1,Math.abs(player.vx)/MM.MOVE.MAX); const time=performance.now(); const targetFlare=(0.18+0.55*speed)*st.flare; const segLen=0.16; cape[0].x=anchorX; cape[0].y=anchorY; for(let i=1;i<segs;i++){ const prev=cape[i-1]; const seg=cape[i]; const backDirX=-player.facing; const t=i/(segs-1); const flareFactor = t*targetFlare; const wind=(Math.sin(time/400 + i*0.7)*0.02 + Math.sin(time/1300 + i)*0.01) * windMul; let idleSway=(1-speed)*Math.sin(time/700 + i)*0.015; idleSway/=mass; const desiredX=prev.x + backDirX*flareFactor + wind; // heavier = more droop
+      const baseDrop=0.05 + t*0.15 + t*0.06*(mass-1); // extra drop scales with mass
+      const desiredY=prev.y + baseDrop + idleSway;
+      const k=Math.min(1, dt*stiffness);
+      seg.x += (desiredX - seg.x)*k;
+      seg.y += (desiredY - seg.y)*k;
+    }
     for(let it=0; it<2; it++){ for(let i=1;i<segs;i++){ const a=cape[i-1], b=cape[i]; let dx=b.x-a.x, dy=b.y-a.y; let d=Math.hypot(dx,dy)||0.0001; const excess=d-segLen; if(Math.abs(excess)>0.0005){ const k=excess/d; b.x -= dx*k; b.y -= dy*k; } } }
     for(let i=1;i<segs;i++){ const seg=cape[i]; const tx=Math.floor(seg.x); const ty=Math.floor(seg.y); if(isSolid(getTile(tx,ty))){ seg.y=ty-0.02; const bc=tx+0.5; if(seg.x>bc) seg.x=Math.min(seg.x, tx+1.02); else seg.x=Math.max(seg.x, tx-0.02); } }
     for(let i=1;i<segs;i++){ const a=cape[i-1], b=cape[i]; let dx=b.x-a.x, dy=b.y-a.y; let d=Math.hypot(dx,dy)||0.0001; const excess=d-segLen; if(excess>0){ const k=excess/d; b.x -= dx*k; b.y -= dy*k; } }
     for(let i=1;i<segs;i++){ const a=cape[i-1], b=cape[i]; if(player.facing>0 && b.x>a.x) b.x=a.x; if(player.facing<0 && b.x<a.x) b.x=a.x; }
-    if(speed<0.1){ for(let i=1;i<segs;i++) cape[i].y += dt*0.4*(i/(segs-1)); }
+    if(speed<0.1){ for(let i=1;i<segs;i++) cape[i].y += dt*0.4*mass*(i/(segs-1)); }
   }
   function draw(ctx,TILE){ if(!cape.length) return; const segs=MM.CAPE.SEGMENTS; const style=currentStyle(); if(leftPts.length!==segs) { leftPts = new Array(segs); rightPts = new Array(segs); }
     // compute width profile possibly style-specific waveform
@@ -43,7 +50,7 @@ window.MM = window.MM || {};
       // Decorative edges built while traversing right side reversed
       for(let i=segs-1;i>=0;i--){ const p=rightPts[i]; if(i===segs-1) ctx.lineTo(p.x*TILE,p.y*TILE); else {
           if(style.edge==='scallop'){
-            const prev=rightPts[Math.min(segs-1,i+1)]; const cx=(p.x+prev.x)/2*TILE; const cy=(p.y+prev.y)/2*TILE + 4; ctx.quadraticCurveTo(cx, cy, p.x*TILE, p.y*TILE);
+            const prev=rightPts[Math.min(segs-1,i+1)]; const cx=(p.x+prev.x)/2*TILE; const depth=(style.scallopDepth||4); const cy=(p.y+prev.y)/2*TILE + depth; ctx.quadraticCurveTo(cx, cy, p.x*TILE, p.y*TILE);
           } else { // ragged
             const jitter=( (i*928371)%7 -3 ) * 0.8; ctx.lineTo(p.x*TILE + jitter, p.y*TILE + (i%2?4:-2));
           }
