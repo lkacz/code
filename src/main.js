@@ -782,13 +782,13 @@ let mining=false,mineTimer=0,mineTx=0,mineTy=0; const mineBtn=document.getElemen
 mineBtn.addEventListener('pointerdown',e=>{ e.preventDefault(); startMine(); });
 window.addEventListener('pointerup',()=>{ mining=false; mineBtn.classList.remove('on'); });
 function startMine(){ const tx=Math.floor(player.x + mineDir.dx + (mineDir.dx>0?player.w/2:mineDir.dx<0?-player.w/2:0)); const ty=Math.floor(player.y + mineDir.dy); const t=getTile(tx,ty); if(t===T.AIR) return; mining=true; mineTimer=0; mineTx=tx; mineTy=ty; mineBtn.classList.add('on'); if(godMode) instantBreak(); }
-function instantBreak(){ if(getTile(mineTx,mineTy)===T.AIR){ mining=false; mineBtn.classList.remove('on'); return; } const tId=getTile(mineTx,mineTy); if(tId===T.WOOD && isTreeBase(mineTx,mineTy)){ if(startTreeFall(mineTx,mineTy)){ mining=false; mineBtn.classList.remove('on'); return; } } const info=INFO[tId]; const drop=info.drop; setTile(mineTx,mineTy,T.AIR); if(drop) inv[drop]=(inv[drop]||0)+1; if(MM.fallingSolids) MM.fallingSolids.onTileRemoved(mineTx,mineTy); if(MM.water) MM.water.onTileChanged(mineTx,mineTy,getTile); mining=false; mineBtn.classList.remove('on'); updateInventory(); }
+function instantBreak(){ if(getTile(mineTx,mineTy)===T.AIR){ mining=false; mineBtn.classList.remove('on'); return; } const tId=getTile(mineTx,mineTy); if(tId===T.WOOD && isTreeBase(mineTx,mineTy)){ if(startTreeFall(mineTx,mineTy)){ mining=false; mineBtn.classList.remove('on'); return; } } const info=INFO[tId]; const drop=info.drop; setTile(mineTx,mineTy,T.AIR); if(drop) inv[drop]=(inv[drop]||0)+1; if(MM.fallingSolids) MM.fallingSolids.onTileRemoved(mineTx,mineTy); if(MM.water) MM.water.onTileChanged(mineTx,mineTy,getTile); pushUndo(mineTx,mineTy,tId,T.AIR,'break'); mining=false; mineBtn.classList.remove('on'); updateInventory(); }
 // Falling tree system (per-block physics)
 function isTreeBase(x,y){ return TREES.isTreeBase(getTile,x,y); }
 function startTreeFall(bx,by){ return TREES.startTreeFall(getTile,setTile,player.facing,bx,by); }
 function updateFallingBlocks(dt){ TREES.updateFallingBlocks(getTile,setTile,dt); }
 function drawFallingBlocks(){ TREES.drawFallingBlocks(ctx,TILE,INFO); }
-function updateMining(dt){ if(!mining) return; if(getTile(mineTx,mineTy)===T.AIR){ mining=false; mineBtn.classList.remove('on'); return; } if(godMode){ instantBreak(); return; } const mineMult=(MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1; mineTimer += dt * tools[player.tool] * mineMult; const curId=getTile(mineTx,mineTy); const info=INFO[curId]; const need=Math.max(0.1, info.hp/6); if(mineTimer>=need){ if(curId===T.WOOD && isTreeBase(mineTx,mineTy)){ if(startTreeFall(mineTx,mineTy)){ mining=false; mineBtn.classList.remove('on'); return; } } const drop=info.drop; setTile(mineTx,mineTy,T.AIR); if(drop) inv[drop]=(inv[drop]||0)+1; if(MM.fallingSolids) MM.fallingSolids.onTileRemoved(mineTx,mineTy); if(MM.water) MM.water.onTileChanged(mineTx,mineTy,getTile); mining=false; mineBtn.classList.remove('on'); updateInventory(); } }
+function updateMining(dt){ if(!mining) return; if(getTile(mineTx,mineTy)===T.AIR){ mining=false; mineBtn.classList.remove('on'); return; } if(godMode){ instantBreak(); return; } const mineMult=(MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1; mineTimer += dt * tools[player.tool] * mineMult; const curId=getTile(mineTx,mineTy); const info=INFO[curId]; const need=Math.max(0.1, info.hp/6); if(mineTimer>=need){ if(curId===T.WOOD && isTreeBase(mineTx,mineTy)){ if(startTreeFall(mineTx,mineTy)){ mining=false; mineBtn.classList.remove('on'); return; } } const drop=info.drop; setTile(mineTx,mineTy,T.AIR); if(drop) inv[drop]=(inv[drop]||0)+1; if(MM.fallingSolids) MM.fallingSolids.onTileRemoved(mineTx,mineTy); if(MM.water) MM.water.onTileChanged(mineTx,mineTy,getTile); pushUndo(mineTx,mineTy,curId,T.AIR,'break'); mining=false; mineBtn.classList.remove('on'); updateInventory(); } }
 
 // --- Placement ---
 // Suppress accidental placement immediately after opening a chest with right-click
@@ -813,6 +813,7 @@ function tryPlace(tx,ty){ if(getTile(tx,ty)!==T.AIR) return; // not empty
  // Allow unsupported placement only for sand & water (fluids fall/spread); others need support unless godMode
  if(below===T.AIR && !godMode && id!==T.SAND && id!==T.WATER) return;
  if(!haveBlocksFor(id)){ msg('Brak bloków'); return; }
+ pushUndo(tx,ty,T.AIR,id,'place');
  setTile(tx,ty,id); consumeFor(id); updateInventory(); updateHotbarCounts(); saveState();
  if(id===T.WATER && MM.water){ MM.water.addSource(tx,ty,getTile,setTile); }
  if(MM.fallingSolids){
@@ -823,6 +824,12 @@ function tryPlace(tx,ty){ if(getTile(tx,ty)!==T.AIR) return; // not empty
 }
 function updateHotbarCounts(){ const map={GRASS:'grass',SAND:'sand',STONE:'stone',WOOD:'wood',LEAF:'leaf',SNOW:'snow',WATER:'water'}; for(const k in map){ const el=document.getElementById('hotCnt'+k); if(el) el.textContent=inv[map[k]]; } }
 function updateHotbarSel(){ document.querySelectorAll('.hotSlot').forEach((el,i)=>{ if(i===hotbarIndex) el.classList.add('sel'); else el.classList.remove('sel'); }); }
+// --- Undo system for tile edits ---
+const UNDO_LIMIT=200; const undoStack=[]; // {x,y,oldId,newId,kind}
+function invKeyForTile(id){ if(id===T.GRASS) return 'grass'; if(id===T.SAND) return 'sand'; if(id===T.STONE) return 'stone'; if(id===T.DIAMOND) return 'diamond'; if(id===T.WOOD) return 'wood'; if(id===T.LEAF) return 'leaf'; if(id===T.SNOW) return 'snow'; if(id===T.WATER) return 'water'; return null; }
+function pushUndo(x,y,oldId,newId,kind){ if(oldId===newId) return; undoStack.push({x,y,oldId,newId,kind}); if(undoStack.length>UNDO_LIMIT) undoStack.shift(); }
+function undoLastChange(){ const e=undoStack.pop(); if(!e){ msg('Brak zmian'); return; } const cur=getTile(e.x,e.y); if(cur!==e.newId){ msg('Nie można cofnąć'); return; } if(e.kind==='place'){ setTile(e.x,e.y,e.oldId); const k=invKeyForTile(e.newId); if(k && !godMode) inv[k] = (inv[k]||0)+1; } else if(e.kind==='break'){ setTile(e.x,e.y,e.oldId); const info=INFO[e.oldId]; if(info && info.drop && inv[info.drop]>0 && !godMode) inv[info.drop]--; } if(MM.fallingSolids) MM.fallingSolids.recheckNeighborhood(e.x,e.y); if(MM.water) MM.water.onTileChanged(e.x,e.y,getTile); updateInventory(); updateHotbarCounts(); saveState(); msg('Cofnięto'); }
+window.addEventListener('keydown',ev=>{ if(ev.key==='z' && !ev.ctrlKey && !ev.metaKey){ undoLastChange(); } });
 // (legacy saveState/loadState removed – unified saveGame/loadGame used everywhere)
 // Hotbar slot click: select OR (Shift/click again) open type remap popup
 const hotSelectMenu=document.getElementById('hotSelectMenu');
