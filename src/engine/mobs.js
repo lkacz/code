@@ -44,6 +44,13 @@
     }
   };
 
+  function registerSpecies(def){
+    if(!def || !def.id) return false; if(SPECIES[def.id]) return false; // already exists
+    // Fill defaults
+    def.max = def.max||10; def.hp = def.hp||5; def.dmg= def.dmg||1; def.speed=def.speed||2.5; def.wanderInterval = def.wanderInterval||[2,5];
+    SPECIES[def.id]=def; return true;
+  }
+
   function rand(a,b){ return a + Math.random()*(b-a); }
   function choose(arr){ return arr[(Math.random()*arr.length)|0]; }
 
@@ -104,24 +111,7 @@
     // Precompute separation: basic O(n^2) for small counts (opt: grid neighbor query)
     for(let i=0;i<mobs.length;i++){
       const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue; const aggressive=isAggro(m.id);
-      const toPlayerX=player.x - m.x; const toPlayerY=player.y - m.y; const distP=Math.hypot(toPlayerX,toPlayerY)||1;
-      // Behavior state machine: idle, wander, chase, attack
-      if(aggressive){
-        // steering toward player both axes with damped vertical ease
-        const desiredVx = (toPlayerX/distP)*spec.speed*0.9; m.vx += (desiredVx - m.vx)*Math.min(1, dt*4);
-        // vertical pursuit: birds dive, fish swim level seeking player's y (clamped)
-        const desiredVy = spec.aquatic? ((toPlayerY)*0.8) : (toPlayerY*0.6); // proportional vertical chase
-        m.vy += (desiredVy - m.vy)*Math.min(1, dt*2.5);
-        m.facing = toPlayerX>=0?1:-1;
-      } else {
-        if(now>m.tNext){ // choose new wander vector including slight vertical drift
-          m.tNext = now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000;
-          if(Math.random()<0.65){ const ang = Math.random()*Math.PI*2; const speed = spec.speed*(0.3+Math.random()*0.7); m.vx = Math.cos(ang)*speed; m.vy = Math.sin(ang)*speed* (spec.aquatic?0.6:0.35); m.facing = m.vx>=0?1:-1; } else { m.vx*=0.4; m.vy*=0.4; }
-        }
-        // Gentle return to bobbing baseline when not aggro
-        const baseBob = spec.aquatic? Math.sin(now*0.002 + m.spawnT*0.0007)*0.4 : Math.sin(now*0.003 + m.spawnT*0.001)*0.25;
-        m.vy += (baseBob - m.vy)*Math.min(1, dt*0.8);
-      }
+      updateMob(m, spec, {dt, now, aggressive, player, getTile});
   // Separation using spatial grid neighbors (same species only)
   applySeparation(m, i);
       // Friction / damping
@@ -141,6 +131,23 @@
         player.vx += nx*3*dt; player.vy += ny*2*dt; // gentle continuous push
         if(isAggro(m.id)){ if(m.attackCd>0) m.attackCd-=dt; if(m.attackCd<=0){ damagePlayer(spec.dmg, m.x, m.y); m.attackCd=0.8 + Math.random()*0.5; } }
       }
+    }
+  }
+  function updateMob(m, spec, ctx){
+    if(typeof spec.onUpdate==='function'){ spec.onUpdate(m, spec, ctx); return; }
+    const {dt, now, aggressive, player} = ctx; const toPlayerX=player.x - m.x; const toPlayerY=player.y - m.y; const distP=Math.hypot(toPlayerX,toPlayerY)||1;
+    if(aggressive){
+      const desiredVx = (toPlayerX/distP)*spec.speed*0.9; m.vx += (desiredVx - m.vx)*Math.min(1, dt*4);
+      const desiredVy = spec.aquatic? ((toPlayerY)*0.8) : (toPlayerY*0.6);
+      m.vy += (desiredVy - m.vy)*Math.min(1, dt*2.5);
+      m.facing = toPlayerX>=0?1:-1;
+    } else {
+      if(now>m.tNext){
+        m.tNext = now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000;
+        if(Math.random()<0.65){ const ang = Math.random()*Math.PI*2; const speed = spec.speed*(0.3+Math.random()*0.7); m.vx = Math.cos(ang)*speed; m.vy = Math.sin(ang)*speed* (spec.aquatic?0.6:0.35); m.facing = m.vx>=0?1:-1; } else { m.vx*=0.4; m.vy*=0.4; }
+      }
+      const baseBob = spec.aquatic? Math.sin(now*0.002 + m.spawnT*0.0007)*0.4 : Math.sin(now*0.003 + m.spawnT*0.001)*0.25;
+      m.vy += (baseBob - m.vy)*Math.min(1, dt*0.8);
     }
   }
 
@@ -258,7 +265,7 @@
   }
   }
 
-  MM.mobs = { update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro, forceSpawn, species: Object.keys(SPECIES) };
+  MM.mobs = { update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro, forceSpawn, species: Object.keys(SPECIES), registerSpecies };
   try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
 })();
 // (File end)
