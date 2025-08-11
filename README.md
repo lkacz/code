@@ -6,7 +6,7 @@ Procedural 2D tile world with advanced water simulation and emerging gameplay fe
 Cosmetic selections now influence mechanics via a scalable modifier system:
 * Capes define additional mid‑air jumps (classic: 1 jump, triangle/tattered: 2 total, royal/winged: 4 total)
 * Eyes control fog reveal radius (sleepy: small, bright: large, glow: very large)
-* Outfits currently cosmetic but structured for future bonuses (e.g., mining speed, resource buffs)
+* Outfits now grant effects: Miner (+50% mining speed), Mystic (+15% move speed). Defaults have no bonus.
 
 System design allows future items to contribute fields (e.g., mineSpeed, swimSpeed, mana) aggregated into `MM.activeModifiers`.
 

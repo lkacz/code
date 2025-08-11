@@ -27,8 +27,8 @@
     // Placeholder for future outfit effects (scalable)
     outfits:[
       {id:'default', name:'Podstawowy', desc:'Brak bonusów'},
-      {id:'miner', name:'Górnik', desc:'(Rezerwa: szybsze kopanie)'},
-      {id:'mystic', name:'Mistyk', desc:'(Rezerwa: bonus many)'}
+      {id:'miner', name:'Górnik', mineSpeedMult:1.5, desc:'Kopanie +50%'},
+      {id:'mystic', name:'Mistyk', moveSpeedMult:1.15, desc:'Ruch +15%'}
     ]
   };
 
@@ -39,7 +39,10 @@
     const outfit=ITEMS.outfits.find(o=>o.id===MM.customization.outfitStyle);
     if(cape && typeof cape.airJumps==='number') mods.maxAirJumps = cape.airJumps;
     if(eyes && typeof eyes.visionRadius==='number') mods.visionRadius = eyes.visionRadius;
-    // Future: aggregate outfit effects (placeholders)
+    if(outfit){
+      if(typeof outfit.mineSpeedMult==='number') mods.mineSpeedMult=outfit.mineSpeedMult;
+      if(typeof outfit.moveSpeedMult==='number') mods.moveSpeedMult=outfit.moveSpeedMult;
+    }
     MM.activeModifiers = mods;
   }
 
@@ -96,7 +99,7 @@
         div.addEventListener('keydown',e=>{ if(e.key==='Enter' || e.key===' ') { e.preventDefault(); choose(); } });
         grid.appendChild(div); }); }
 
-  function updateSelInfo(){ const m=MM.activeModifiers||{}; selInfo.textContent='Peleryna: '+MM.customization.capeStyle+' (skoki:'+( (m.maxAirJumps||0)+1 )+') | Oczy: '+MM.customization.eyeStyle+' (zasięg:'+(m.visionRadius||10)+') | Strój: '+MM.customization.outfitStyle; }
+  function updateSelInfo(){ const m=MM.activeModifiers||{}; const mine=(m.mineSpeedMult? (' kop:'+(m.mineSpeedMult.toFixed(2)+'x')):''); const mv=(m.moveSpeedMult? (' ruch:'+(m.moveSpeedMult.toFixed(2)+'x')):''); selInfo.textContent='Peleryna: '+MM.customization.capeStyle+' (skoki:'+( (m.maxAirJumps||0)+1 )+') | Oczy: '+MM.customization.eyeStyle+' (zasięg:'+(m.visionRadius||10)+') | Strój: '+MM.customization.outfitStyle+mine+mv; }
 
   let lastFocus=null;
   function trapFocus(e){ if(overlay.style.display!=='block') return; if(e.key!=='Tab') return; const focusables=[...overlay.querySelectorAll('button,[tabindex]')].filter(el=>!el.disabled); if(!focusables.length) return; const first=focusables[0], last=focusables[focusables.length-1]; if(e.shiftKey){ if(document.activeElement===first){ e.preventDefault(); last.focus(); } } else { if(document.activeElement===last){ e.preventDefault(); first.focus(); } } }
