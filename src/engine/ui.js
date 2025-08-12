@@ -66,24 +66,26 @@ MM.ui = (function(){
       lab.textContent=label+" "; lab.appendChild(span);
       const input=document.createElement('input'); input.type='range'; input.min=String(min); input.max=String(max); input.step=String(step); input.value=String(value);
       input.id=id; input.style.width='100%';
+      input.addEventListener('input',()=>{ span.textContent = fmt? fmt(input.value): String(input.value); });
       wrap.appendChild(lab); wrap.appendChild(input); box.appendChild(wrap);
       return {input,span};
     }
     const r1=row('Poziom morza', 'setSeaLevel', 6, 40, 1, s.seaLevel||18);
     const r2=row('Próg oceanu', 'setSeaThresh', 0.05, 0.40, 0.005, s.seaThreshold||0.16, v=>''+Number(v).toFixed(3));
     const r3=row('Maska oceanu', 'setOceanMask', 0.0, 0.5, 0.01, s.oceanMaskFactor||0.18, v=>Number(v).toFixed(2));
-    const r4=row('Wzmocnienie grzbietów', 'setRidgeBoost', 0.0, 0.3, 0.005, s.ridgeElevBoost||0.08, v=>Number(v).toFixed(3));
-    const r5=row('Próg gór', 'setMtnElev', 0.60, 0.95, 0.005, s.mountainElevThreshold||0.8, v=>Number(v).toFixed(3));
-    const r6=row('Próg grzbietów gór', 'setMtnRidge', 0.60, 0.98, 0.005, s.mountainRidgeThreshold||0.82, v=>Number(v).toFixed(3));
-    const r7=row('Siła dolin', 'setValleyGain', 0, 40, 1, s.valleyGain||18);
-    const r8=row('Próg dolin', 'setValleyCut', 0.3, 0.95, 0.01, s.valleyCutoff||0.6, v=>Number(v).toFixed(2));
-    const r9=row('Gładzenie (szer.)', 'setSigmaWide', 2.5, 8.0, 0.1, s.smoothingSigmaWide||4.8, v=>Number(v).toFixed(2));
-    const r10=row('Gładzenie (wą.)', 'setSigmaNarrow', 0.6, 3.0, 0.05, s.smoothingSigmaNarrow||1.3, v=>Number(v).toFixed(2));
-    const r11=row('Gęstość lasu', 'setForestMul', 0.2, 3.0, 0.05, s.forestDensityMul||1.0, v=>Number(v).toFixed(2));
-    const r12=row('Głębokość jeziora', 'setLakeDepth', 1, 12, 1, s.lakeMaxDepth||5);
+  const r4=row('Wzmocnienie grzbietów', 'setRidgeBoost', 0.0, 0.3, 0.005, (s.ridgeElevBoost===undefined?0.08:s.ridgeElevBoost), v=>Number(v).toFixed(3));
+  const r5=row('Próg gór', 'setMtnElev', 0.60, 0.95, 0.005, (s.mountainElevThreshold===undefined?0.8:s.mountainElevThreshold), v=>Number(v).toFixed(3));
+  const r6=row('Próg grzbietów gór', 'setMtnRidge', 0.60, 0.98, 0.005, (s.mountainRidgeThreshold===undefined?0.82:s.mountainRidgeThreshold), v=>Number(v).toFixed(3));
+  const r7=row('Siła dolin', 'setValleyGain', 0, 40, 1, (s.valleyGain===undefined?18:s.valleyGain));
+  const r8=row('Próg dolin', 'setValleyCut', 0.3, 0.95, 0.01, (s.valleyCutoff===undefined?0.6:s.valleyCutoff), v=>Number(v).toFixed(2));
+  const r9=row('Gładzenie (szer.)', 'setSigmaWide', 2.5, 8.0, 0.1, (s.smoothingSigmaWide===undefined?4.8:s.smoothingSigmaWide), v=>Number(v).toFixed(2));
+  const r10=row('Gładzenie (wą.)', 'setSigmaNarrow', 0.6, 3.0, 0.05, (s.smoothingSigmaNarrow===undefined?1.3:s.smoothingSigmaNarrow), v=>Number(v).toFixed(2));
+  const r11=row('Gęstość lasu', 'setForestMul', 0.2, 3.0, 0.05, (s.forestDensityMul===undefined?1.0:s.forestDensityMul), v=>Number(v).toFixed(2));
+  const r12=row('Głębokość jeziora', 'setLakeDepth', 1, 12, 1, (s.lakeMaxDepth===undefined?5:s.lakeMaxDepth));
+  const r13=row('Wysokość grzbietów', 'setRidgeHeightGain', 0, 30, 1, (s.ridgeHeightGain===undefined?12:s.ridgeHeightGain));
     const applyRow=document.createElement('div'); applyRow.style.cssText='display:flex; gap:6px;';
     const apply=document.createElement('button'); apply.className='topbtn'; apply.textContent='Zastosuj i odśwież';
-    apply.addEventListener('click',()=>{
+  apply.addEventListener('click',()=>{
       try{
         const ns={
           seaLevel: parseInt(r1.input.value,10),
@@ -97,9 +99,11 @@ MM.ui = (function(){
           smoothingSigmaWide: parseFloat(r9.input.value),
           smoothingSigmaNarrow: parseFloat(r10.input.value),
           forestDensityMul: parseFloat(r11.input.value),
-          lakeMaxDepth: parseInt(r12.input.value,10)
+          lakeMaxDepth: parseInt(r12.input.value,10),
+          ridgeHeightGain: parseInt(r13.input.value,10)
         };
         if(MM.worldGen && MM.worldGen.setSettings) MM.worldGen.setSettings(ns);
+    if(MM.ui && MM.ui.msg) MM.ui.msg('Zastosowano ustawienia świata');
         // Regenerate world with the SAME seed
         if(window.regenWorldSameSeed){ window.regenWorldSameSeed(); }
         else { window.dispatchEvent(new CustomEvent('mm-regen-same-seed')); }

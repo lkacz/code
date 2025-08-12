@@ -57,13 +57,19 @@ WG.biomeType = function(x){
 	const e0 = WG.macroElev(x);  // large elevation trend
 	// Adjust elevation with ocean mask to guarantee seas; also allow very high ridges to push mountains
 	const S = WG.settings;
-	const e = Math.max(0, Math.min(1, e0 - (S.oceanMaskFactor||0.18)*WG.oceanMask(x) + (S.ridgeElevBoost||0.08)*WG.ridge(x, 1400, 9911)));
+	// Use explicit undefined checks so that 0 values are respected (avoid || which treats 0 as falsy)
+	const oceanMaskFactor = (S.oceanMaskFactor===undefined)?0.18:S.oceanMaskFactor;
+	const ridgeElevBoost  = (S.ridgeElevBoost===undefined)?0.08:S.ridgeElevBoost;
+	const e = Math.max(0, Math.min(1, e0 - oceanMaskFactor*WG.oceanMask(x) + ridgeElevBoost*WG.ridge(x, 1400, 9911)));
 	// Sea / ocean bands (very low macro elevation)
-	if(e < (S.seaThreshold||0.16)) return 5; // sea
+	const seaThreshold = (S.seaThreshold===undefined)?0.16:S.seaThreshold;
+	if(e < seaThreshold) return 5; // sea
 	// Lake pockets: moderate elevation dips with high moisture
 	if(e < 0.32 && m > 0.65) return 6; // lakes
 	// Mountains (high macro elevation)
-	if(e > (S.mountainElevThreshold||0.8) || WG.ridge(x, 500, 9912) > (S.mountainRidgeThreshold||0.82)){ return 7; }
+	const mtnElevTh = (S.mountainElevThreshold===undefined)?0.8:S.mountainElevThreshold;
+	const mtnRidgeTh = (S.mountainRidgeThreshold===undefined)?0.82:S.mountainRidgeThreshold;
+	if(e > mtnElevTh || WG.ridge(x, 500, 9912) > mtnRidgeTh){ return 7; }
 	// Snow / Ice (cold & mid/high elev)
 	if(t < 0.28 && e > 0.55) return 2;
 	// Desert (hot & dry)
@@ -90,7 +96,8 @@ WG._rawSurfaceHeight = function rawSurfaceHeight(x){
 		case 6: // Lake: local depression
 			h = h - 7 - WG.valueNoise(x,120,520)*4; break;
 		case 7: // Mountain: amplify & steepen with ridged noise
-			h = h + (WG.settings.ridgeHeightGain||12)
+			const ridgeHeightGain = (WG.settings.ridgeHeightGain===undefined)?12:WG.settings.ridgeHeightGain;
+			h = h + ridgeHeightGain
 			  + WG.valueNoise(x,160,530)*10
 			  + WG.valueNoise(x,55,540)*6
 			  + WG.ridge(x,90,550)*12
@@ -110,8 +117,8 @@ WG._rawSurfaceHeight = function rawSurfaceHeight(x){
 	// Global valleys: carve steep V-shaped valleys outside seas/lakes using valley mask
 	if(biome!==5 && biome!==6){
 		const v = WG.valleyMask(x);
-		const cut = (WG.settings.valleyCutoff||0.6);
-		const gain = (WG.settings.valleyGain||18);
+		const cut = (WG.settings.valleyCutoff===undefined)?0.6:WG.settings.valleyCutoff;
+		const gain = (WG.settings.valleyGain===undefined)?18:WG.settings.valleyGain;
 		const valleyStrength = (v>cut? (v-cut)*gain : 0); // strong only on peaks of mask
 		h -= valleyStrength;
 	}
@@ -145,8 +152,8 @@ WG.surfaceHeight = function(x){
 	let tight = 0.45*nSlope + 0.30*nRough + 0.15*nMacro + mountainBias*0.28 + valleyBias;
 	if(tight<0) tight=0; if(tight>1) tight=1;
 	// Map tightness to Gaussian sigma between wide and narrow
-	const sigmaWide = WG.settings.smoothingSigmaWide||4.8;
-	const sigmaNarrow = WG.settings.smoothingSigmaNarrow||1.3;
+	const sigmaWide = (WG.settings.smoothingSigmaWide===undefined)?4.8:WG.settings.smoothingSigmaWide;
+	const sigmaNarrow = (WG.settings.smoothingSigmaNarrow===undefined)?1.3:WG.settings.smoothingSigmaNarrow;
 	const sigma = sigmaWide*(1-tight) + sigmaNarrow*tight;
 	// Build Gaussian weights and normalize
 	let wSum=0; const W = new Array(count);
