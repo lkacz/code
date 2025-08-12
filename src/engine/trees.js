@@ -1,8 +1,9 @@
 // Tree generation + falling system
+import { CHUNK_W, WORLD_H, T, SNOW_LINE, INFO, SURFACE_GRASS_DEPTH, SAND_DEPTH } from '../constants.js';
+import { worldGen as WORLDGEN } from './worldgen.js';
 window.MM = window.MM || {};
 (function(){
-  const {CHUNK_W,WORLD_H,T,SNOW_LINE,INFO,SURFACE_GRASS_DEPTH,SAND_DEPTH} = MM;
-  const WG = MM.worldGen;
+  const WG = WORLDGEN;
   const trees = {};
   // Falling blocks from tree collapse
   const fallingBlocks = []; // {x,y,t,dir,hBudget}
@@ -43,7 +44,7 @@ window.MM = window.MM || {};
   trees.buildTree = buildTree;
   // Populate trees for a freshly generated terrain chunk array
   trees.populateChunk = function(arr,cx){
-    const {CHUNK_W} = MM; const WG = MM.worldGen; if(!WG) return;
+    const {CHUNK_W} = MM; const WG = WORLDGEN; if(!WG) return;
     for(let lx=0; lx<CHUNK_W; lx++){
       const wx=cx*CHUNK_W+lx; const s=WG.surfaceHeight(wx); if(s<2) continue; const biome=WG.biomeType(wx);
       // Skip non-tree biomes: sea(5), lake(6), desert(3) (rare cactus could be future), swamp(4) sparse, mountain(7) sparse near peaks
@@ -81,3 +82,6 @@ window.MM = window.MM || {};
 
   MM.trees = trees;
 })();
+// ESM export (progressive migration)
+export const trees = (typeof window!=='undefined' && window.MM) ? window.MM.trees : undefined;
+export default trees;

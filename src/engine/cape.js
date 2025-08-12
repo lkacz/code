@@ -1,4 +1,5 @@
 // Cape physics extracted
+import { MOVE, CAPE } from '../constants.js';
 window.MM = window.MM || {};
 (function(){
   const capeAPI = {};
@@ -16,8 +17,8 @@ window.MM = window.MM || {};
   };
   function getCurrentCustomization(){ return (window.MM && MM.customization) || {capeStyle:'classic',capeColor:'#b91818'}; }
   function currentStyle(){ const c=getCurrentCustomization(); return CAPE_STYLES[c.capeStyle]||CAPE_STYLES.classic; }
-  function init(player){ const segs=MM.CAPE.SEGMENTS; cape.length=0; for(let i=0;i<segs;i++) cape.push({x:player.x,y:player.y}); }
-  function update(player,dt,getTile,isSolid){ if(!cape.length) return; const segs=MM.CAPE.SEGMENTS; const st=currentStyle(); const mass=st.mass||1; const stiffness=st.stiffness||6; const windMul=st.wind||1; const anchorX=player.x; const anchorY=player.y - player.h/2 + player.h*MM.CAPE.ANCHOR_FRAC; const speed=Math.min(1,Math.abs(player.vx)/MM.MOVE.MAX); const time=performance.now(); const targetFlare=(0.18+0.55*speed)*st.flare; const segLen=0.16; cape[0].x=anchorX; cape[0].y=anchorY; for(let i=1;i<segs;i++){ const prev=cape[i-1]; const seg=cape[i]; const backDirX=-player.facing; const t=i/(segs-1); const flareFactor = t*targetFlare; const wind=(Math.sin(time/400 + i*0.7)*0.02 + Math.sin(time/1300 + i)*0.01) * windMul; let idleSway=(1-speed)*Math.sin(time/700 + i)*0.015; idleSway/=mass; const desiredX=prev.x + backDirX*flareFactor + wind; // heavier = more droop
+  function init(player){ const segs=CAPE.SEGMENTS; cape.length=0; for(let i=0;i<segs;i++) cape.push({x:player.x,y:player.y}); }
+  function update(player,dt,getTile,isSolid){ if(!cape.length) return; const segs=CAPE.SEGMENTS; const st=currentStyle(); const mass=st.mass||1; const stiffness=st.stiffness||6; const windMul=st.wind||1; const anchorX=player.x; const anchorY=player.y - player.h/2 + player.h*CAPE.ANCHOR_FRAC; const speed=Math.min(1,Math.abs(player.vx)/MOVE.MAX); const time=performance.now(); const targetFlare=(0.18+0.55*speed)*st.flare; const segLen=0.16; cape[0].x=anchorX; cape[0].y=anchorY; for(let i=1;i<segs;i++){ const prev=cape[i-1]; const seg=cape[i]; const backDirX=-player.facing; const t=i/(segs-1); const flareFactor = t*targetFlare; const wind=(Math.sin(time/400 + i*0.7)*0.02 + Math.sin(time/1300 + i)*0.01) * windMul; let idleSway=(1-speed)*Math.sin(time/700 + i)*0.015; idleSway/=mass; const desiredX=prev.x + backDirX*flareFactor + wind; // heavier = more droop
       const baseDrop=0.05 + t*0.15 + t*0.06*(mass-1); // extra drop scales with mass
       const desiredY=prev.y + baseDrop + idleSway;
       const k=Math.min(1, dt*stiffness);
@@ -30,7 +31,7 @@ window.MM = window.MM || {};
     for(let i=1;i<segs;i++){ const a=cape[i-1], b=cape[i]; if(player.facing>0 && b.x>a.x) b.x=a.x; if(player.facing<0 && b.x<a.x) b.x=a.x; }
     if(speed<0.1){ for(let i=1;i<segs;i++) cape[i].y += dt*0.4*mass*(i/(segs-1)); }
   }
-  function draw(ctx,TILE){ if(!cape.length) return; const segs=MM.CAPE.SEGMENTS; const style=currentStyle(); if(leftPts.length!==segs) { leftPts = new Array(segs); rightPts = new Array(segs); }
+  function draw(ctx,TILE){ if(!cape.length) return; const segs=CAPE.SEGMENTS; const style=currentStyle(); if(leftPts.length!==segs) { leftPts = new Array(segs); rightPts = new Array(segs); }
     // compute width profile possibly style-specific waveform
     for(let i=0;i<segs;i++){ const cur=cape[i]; const next=cape[Math.min(segs-1,i+1)]; let dx=next.x-cur.x, dy=next.y-cur.y; const d=Math.hypot(dx,dy)||1; dx/=d; dy/=d; const t=i/(segs-1); let w=style.wTop+(style.wBot-style.wTop)*t; if(style.edge==='wave'){ w *= (1 + 0.15*Math.sin(t*6+performance.now()*0.002)); } const px=-dy*w, py=dx*w; leftPts[i] = leftPts[i]||{}; rightPts[i] = rightPts[i]||{}; leftPts[i].x=cur.x+px; leftPts[i].y=cur.y+py; rightPts[i].x=cur.x-px; rightPts[i].y=cur.y-py; }
     const cust=getCurrentCustomization(); let baseColor=cust.capeColor||'#b91818';
@@ -92,3 +93,6 @@ window.MM = window.MM || {};
   capeAPI.getStyle = function(id){ return Object.assign({}, CAPE_STYLES[id]||CAPE_STYLES.classic); };
   MM.cape = capeAPI;
 })();
+// ESM export (progressive migration)
+export const cape = (typeof window!=='undefined' && window.MM) ? window.MM.cape : undefined;
+export default cape;

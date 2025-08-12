@@ -1,4 +1,5 @@
-// World generation (seed, noise, biome, height) - global friendly
+// World generation (seed, noise, biome, height) - progressive ESM + global
+import { SURFACE_GRASS_DEPTH, SAND_DEPTH } from '../constants.js';
 window.MM = window.MM || {};
 const WG = {};
 WG.worldSeed = 12345;
@@ -185,6 +186,9 @@ WG.biomeFrac = function(x, radius){
 WG.chestNoise = function(x){ return WG.valueNoise(x,55,1333); };
 WG.chestPlace = function(x){ // dense for testing: ~6% columns get a chest
 	return WG.chestNoise(x) > 0.94; };
-WG.diamondChance = function(y){ const {SURFACE_GRASS_DEPTH,SAND_DEPTH} = MM; const d=y-(SURFACE_GRASS_DEPTH+SAND_DEPTH); if(d<0) return 0; return Math.min(0.002 + d*0.0009, 0.05); };
+WG.diamondChance = function(y){ const d=y-(SURFACE_GRASS_DEPTH+SAND_DEPTH); if(d<0) return 0; return Math.min(0.002 + d*0.0009, 0.05); };
 WG.setSeedFromInput();
 MM.worldGen = WG;
+// ES module exports (progressive migration): allow importing as a module
+export const worldGen = WG;
+export default WG;

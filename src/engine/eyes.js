@@ -1,12 +1,12 @@
 // Eyes/blink module: handles autonomous blinking timing
 // API: MM.eyes.update(nowMs); MM.eyes.getEyeHeight(openHeight, eyeStyle)
+import { BLINK_DUR } from '../constants.js';
 (function(){
   window.MM = window.MM || {};
   const E = {};
   let blinkStart = 0;
   let blinking = false;
   let nextBlink = performance.now() + 2000 + Math.random()*3000;
-  const BLINK_DUR = 160; // ms
 
   E.update = function(now){
     if(!blinking && now>nextBlink){ blinking=true; blinkStart=now; }
@@ -25,3 +25,6 @@
 
   MM.eyes = E;
 })();
+// ESM export (progressive migration)
+export const eyes = (typeof window!=='undefined' && window.MM) ? window.MM.eyes : undefined;
+export default eyes;

@@ -1,7 +1,7 @@
 // Enhanced falling system with granular sand piles
+import { T, INFO, WORLD_H } from '../constants.js';
 window.MM = window.MM || {};
 (function(){
-  const {T, INFO, WORLD_H} = MM;
   const FALL_TYPES = new Set([T.STONE, T.DIAMOND, T.SAND]);
   const g = 60; // gravity
   const active = []; // rigid blocks (stone pieces, diamonds)
@@ -129,3 +129,6 @@ window.MM = window.MM || {};
   }
   MM.fallingSolids={update,draw,onTileRemoved,maybeStart,reset,recheckNeighborhood,afterPlacement,snapshot,restore};
 })();
+// ESM export (progressive migration)
+export const fallingSolids = (typeof window!=='undefined' && window.MM) ? window.MM.fallingSolids : undefined;
+export default fallingSolids;

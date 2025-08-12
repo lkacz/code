@@ -111,6 +111,17 @@
           <div class="group seedRow"><label for="seedInput">Ziarno:</label><input id="seedInput" value="auto" /><button id="regenBtn">Nowy świat</button><button id="openWorldSettingsBtn" class="topbtn">Ustawienia świata…</button></div>
           <div class="hint">Skróty: G=Bóg, M=Mapa, C=Centrum, H=Pomoc</div>
           <div class="group" style="flex-direction:column; align-items:stretch; margin-top:4px;">
+            <label style="font-size:12px; display:flex; justify-content:space-between; gap:8px; align-items:center;">Szybkość gracza <span id="playerSpeedLabel">x2</span></label>
+            <select id="playerSpeedDropdown" style="width:100%; background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 6px; font-size:12px;">
+              <option value="2">x2</option>
+              <option value="3">x3</option>
+              <option value="4">x4</option>
+              <option value="5">x5</option>
+              <option value="6">x6</option>
+            </select>
+            <div class="hint">Mnożnik wpływa na ruch, skok, grawitację i tarcie.</div>
+          </div>
+          <div class="group" style="flex-direction:column; align-items:stretch; margin-top:4px;">
             <label style="font-size:12px; display:flex; justify-content:space-between; gap:8px; align-items:center;">Gęstość trawy <span id="grassDensityLabel">1.0</span></label>
             <input id="grassDensity" type="range" min="0" max="4" step="0.01" value="1" style="width:100%;" />
             <div class="hint">Reguluje liczbę źdźbeł / tile (skala logarytmiczna).</div>
@@ -178,23 +189,7 @@
     <div class="items" id="lootPopupItems"></div>
     <div class="btnBar"><button id="lootEquipAll" class="sec">Wyposaż najlepsze</button><button id="lootKeepAll" class="sec">Zachowaj wszystko</button><button id="lootClose" class="sec">Zamknij</button></div>
   </div>
-  <script src="src/engine/constants.js"></script>
-  <script src="src/engine/worldgen.js"></script>
-  <script src="src/engine/world.js"></script>
-  <script src="src/engine/trees.js"></script>
-  <script src="src/engine/falling.js"></script>
-  <script src="src/engine/water.js"></script>
-  <script src="src/engine/cape.js"></script>
-  <script src="src/engine/chests.js"></script>
-  <script src="src/customization.js"></script>
-  <script src="src/engine/mobs.js"></script>
-  <script src="src/engine/background.js"></script>
-  <script src="src/engine/fog.js"></script>
-  <script src="src/engine/eyes.js"></script>
-  <script src="src/engine/particles.js"></script>
-  <script src="src/engine/grass.js"></script>
-  <script src="src/engine/ui.js"></script>
-  <script src="src/main.js"></script>
+  <script type="module" src="src/main.js"></script>
 
   <!-- Customization overlay -->
   <style>

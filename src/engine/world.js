@@ -1,8 +1,10 @@
 // World storage & chunk generation
+import { CHUNK_W, WORLD_H, T, SNOW_LINE, SURFACE_GRASS_DEPTH, SAND_DEPTH } from '../constants.js';
+import { worldGen as WORLDGEN } from './worldgen.js';
 window.MM = window.MM || {};
 (function(){
-  const {CHUNK_W,WORLD_H,T,SNOW_LINE,SURFACE_GRASS_DEPTH,SAND_DEPTH} = MM;
-  const WG = MM.worldGen;
+  // constants are imported from ESM; keep names identical
+  const WG = WORLDGEN;
   const worldAPI = {};
   const world = new Map();
   const versions = new Map(); // chunk key -> version number for render cache invalidation
@@ -164,3 +166,6 @@ window.MM = window.MM || {};
 
   MM.world = worldAPI;
 })();
+// ESM export (progressive migration)
+export const world = (typeof window!== 'undefined' && window.MM) ? window.MM.world : undefined;
+export default world;

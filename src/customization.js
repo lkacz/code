@@ -30,7 +30,7 @@
     outfits:[
       {id:'default', name:'Podstawowy', desc:'Brak bonusów'},
       {id:'miner', name:'Górnik', mineSpeedMult:1.5, moveSpeedMult:0.90, jumpPowerMult:0.90, desc:'Kopanie +50% kosztem mobilności (-10% ruch/skok)'},
-      {id:'mystic', name:'Mistyk', moveSpeedMult:10.15, jumpPowerMult:1.08, desc:'Ruch +15%, skok +8%'}
+  {id:'mystic', name:'Mistyk', moveSpeedMult:1.15, jumpPowerMult:1.08, desc:'Ruch +15%, skok +8%'}
     ]
   };
 

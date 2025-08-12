@@ -99,3 +99,6 @@
 
   MM.grass = grass;
 })();
+// ESM export (progressive migration)
+export const grass = (typeof window!=='undefined' && window.MM) ? window.MM.grass : undefined;
+export default grass;

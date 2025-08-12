@@ -63,3 +63,6 @@
 
   MM.particles = mod;
 })();
+// ESM export (progressive migration)
+export const particles = (typeof window!=='undefined' && window.MM) ? window.MM.particles : undefined;
+export default particles;

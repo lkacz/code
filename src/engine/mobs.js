@@ -1,12 +1,12 @@
+import { T, TILE, INFO, MOVE, isSolid } from '../constants.js';
+import WORLD from './world.js';
+import { worldGen as WORLDGEN } from './worldgen.js';
+
 // Basic mob / animal system (birds, fish) with aggression propagation.
-// Exposes MM.mobs API: {update, draw, serialize, deserialize, attackAt, damagePlayer}
-(function(){
+// Exposes MM.mobs API (legacy) and ESM exports.
+const mobs = (function(){
   const MM = window.MM = window.MM || {};
-  const TILE = MM.TILE;
-  const T = MM.T;
-  const WORLD = MM.world;
-  const INFO = MM.INFO;
-  const isSolid = MM.isSolid;
+  // Using ESM imports for TILE/T/INFO/MOVE/isSolid/WORLD/WORLDGEN
   // Helper predicates
   const isWater = t => t===T.WATER;
   function isSolidGround(t){ return isSolid(t) && t!==T.LEAF; }
@@ -72,10 +72,9 @@
   };
 
   // Additional biome-aware species
-  const WG = MM.worldGen;
   // Helper biome query (0,1,2) fallback to 1 if missing
   // biomeAt returns extended biome ids now: 0 forest,1 plains,2 snow,3 desert,4 swamp,5 sea,6 lake,7 mountain
-  function biomeAt(x){ try{ return WG && WG.biomeType ? WG.biomeType(x) : 1; }catch(e){ return 1; } }
+  function biomeAt(x){ try{ return WORLDGEN && WORLDGEN.biomeType ? WORLDGEN.biomeType(x) : 1; }catch(e){ return 1; } }
 
   registerSpecies({ // Large forest predator near trees
   id:'BEAR', max:6, hp:30, dmg:10, speed:2.0, wanderInterval:[3,7], xp:25, ground:true,
@@ -106,7 +105,7 @@
     onUpdate(m,spec,{now,dt,player,speed}){ // quick horizontal dashes along canopy
       if(Math.random()<0.02){ m.vx = (Math.random()<0.5?-1:1)*(speed||spec.speed)*(0.6+Math.random()*0.4); m.vy *=0.3; }
       // constrain to leaf layer: if below leaves, nudge up
-      const underLeaf = MM.world.getTile(Math.floor(m.x), Math.floor(m.y)+1)===T.LEAF;
+  const underLeaf = WORLD && WORLD.getTile ? WORLD.getTile(Math.floor(m.x), Math.floor(m.y)+1)===T.LEAF : false;
       if(!underLeaf){ // treat like ground animal: ensure downward grav not cancelled so it stands
         if(m.onGround){ // occasional hop with varied height
           if(Math.random()<0.04){ m.vy = (spec.move.jumpVel||-3.2) * (m.jumpMul||1) * (0.85 + Math.random()*0.3); }
@@ -146,7 +145,7 @@
         else {
           // within bite distance: slow / minor circling damp
           m.vx *= 0.6; if(Math.abs(m.vx)<0.05) m.vx = 0; m.facing = dx>=0?1:-1; }
-        if(adx<3) window.MM && MM.mobs && MM.mobs.setAggro('WOLF');
+  if(adx<3) setAggro('WOLF');
       } else if(Math.random()<0.01){ m.vx += (Math.random()*2-1)*0.4 * (spd/ (spec.speed||1)); }
     }
   });
@@ -276,7 +275,7 @@
     const tx = Math.floor(m.x);
     let topY = ty;
     for(let scan=0; scan<24; scan++){ // safety cap
-      const t = MM.world.getTile ? MM.world.getTile(tx, topY-1) : null; // if API exists
+  const t = WORLD && WORLD.getTile ? WORLD.getTile(tx, topY-1) : null; // if API exists
       if(t!==T.WATER) break; else topY--;
     }
     m.waterTopY = topY; // y of first water tile at surface (there is air or non-water above waterTopY-1)
@@ -285,7 +284,7 @@
     // Validate depth: ensure tile exists below; if shallow adjust
     let maxDepth=depth;
     for(let d=1; d<=depth; d++){
-      const t = MM.world.getTile ? MM.world.getTile(tx, topY + d) : null;
+  const t = WORLD && WORLD.getTile ? WORLD.getTile(tx, topY + d) : null;
       if(t!==T.WATER){ maxDepth = d-1; break; }
     }
     if(maxDepth<1) maxDepth=1;
@@ -408,7 +407,6 @@
         // Desired horizontal velocity coming from AI modifications (mutable for heuristics)
         let desired = m.vx;
         m.vx = preVX; // restore actual velocity; desired used for acceleration targeting
-  const MOVE = MM.MOVE || {ACC:32,FRICTION:28,MAX:6,JUMP:-9,GRAV:20};
   const maxSpeed = (spec.speed || MOVE.MAX) * (m.speedMul||1);
   const speedRatio = maxSpeed / (MOVE.MAX||6);
         // Environmental heuristics (water avoidance / obstacle climb) prior to acceleration
@@ -462,7 +460,7 @@
         if(Math.abs(m.vx) > maxSpeed) m.vx = maxSpeed * Math.sign(m.vx);
         // Jump execution (uses spec.move.jumpVel or MOVE.JUMP)
         if(m._wantJump && prevOnGround){
-          let jv = (spec.move && spec.move.jumpVel) ? spec.move.jumpVel : (MM.MOVE ? MM.MOVE.JUMP : -9) * (0.7 + 0.3*speedRatio);
+          let jv = (spec.move && spec.move.jumpVel) ? spec.move.jumpVel : (MOVE && MOVE.JUMP ? MOVE.JUMP : -9) * (0.7 + 0.3*speedRatio);
           jv *= (m.jumpMul||1);
           if(m.id==='RABBIT' || m.id==='SQUIRREL'){ jv *= (0.85 + Math.random()*0.3); }
           m.vy = jv;
@@ -486,7 +484,7 @@
       active++;
   // Ground / gravity integration + AABB collision for ground mobs
   if(!spec.aquatic && !spec.flying){
-        const MOVE = MM.MOVE || {GRAV:20}; m.vy += MOVE.GRAV * dt; if(m.vy>24) m.vy=24;
+  m.vy += MOVE.GRAV * dt; if(m.vy>24) m.vy=24;
         const body = spec.body || {w:1,h:1}; const sc=(m.scale||1); const halfW = (body.w||1)*0.5*sc, halfH=(body.h||1)*0.5*sc;
         // Integrate horizontal then resolve X collisions
         m.x += m.vx*dt;
@@ -886,7 +884,7 @@
       const report={total:mobs.length, species:{}, groundHoverIssues:[], overlaps:0};
       for(const m of mobs){ report.species[m.id]=(report.species[m.id]||0)+1; const spec=SPECIES[m.id]; if(spec && spec.ground && spec.body){
           const halfH=(spec.body.h||1)*0.5; const tileBelow = getTile? getTile(Math.floor(m.x), Math.floor(m.y+halfH)) : null;
-          if(tileBelow===MM.T.AIR){ report.groundHoverIssues.push({id:m.id,x:m.x,y:m.y}); }
+          if(tileBelow===T.AIR){ report.groundHoverIssues.push({id:m.id,x:m.x,y:m.y}); }
         }
       }
       // naive overlap detect (same tile center proximity)
@@ -897,8 +895,13 @@
       report.metrics={...metrics};
       return report;
     }
-  MM.mobs = { update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro, forceSpawn, species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll };
-    try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
-  })(); // end IIFE
+  const api = { update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro, forceSpawn, species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll };
+  MM.mobs = api;
+  try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
+  return api;
+})(); // end IIFE
+
+export { mobs };
+export default mobs;
 // (File end)
 

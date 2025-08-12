@@ -1,7 +1,10 @@
 // Chest / Loot system with rarity tiers and procedural modifier items
+import { T, INFO } from '../constants.js';
+import world from './world.js';
+import { worldGen as WORLDGEN } from './worldgen.js';
 (function(){
   window.MM = window.MM || {};
-  const {T, INFO} = MM;
+  const WORLD = world || (window.MM && MM.world);
   const RNG = (seed)=>{ let s=seed>>>0; return ()=>{ s = (s*1664525 + 1013904223)>>>0; return (s>>>8)/0xFFFFFF; } };
   const DYN_KEY='mm_dynamic_loot_v1';
   const DYN_VERSION=1;
@@ -69,10 +72,10 @@
     return item;
   }
 
-  function openChestAt(x,y){ const t=MM.world.getTile(x,y); const info=INFO[t]; if(!info || !info.chestTier) return null; // not chest
+  function openChestAt(x,y){ const t=WORLD.getTile(x,y); const info=INFO[t]; if(!info || !info.chestTier) return null; // not chest
     // remove chest tile
-    MM.world.setTile(x,y,MM.T.AIR);
-    const r=RNG( (x*73856093) ^ (y*19349663) ^ MM.worldGen.worldSeed );
+    WORLD.setTile(x,y,T.AIR);
+    const r=RNG( (x*73856093) ^ (y*19349663) ^ WORLDGEN.worldSeed );
     const tier=info.chestTier;
     const tierDef=TIERS[tier];
     const rolls=randInt(r,tierDef.rolls[0], tierDef.rolls[1]);
@@ -87,3 +90,6 @@
 
   MM.chests={openChestAt,TIERS,genItem,saveDynamicLoot};
 })();
+// ESM export (progressive migration)
+export const chests = (typeof window!=='undefined' && window.MM) ? window.MM.chests : undefined;
+export default chests;

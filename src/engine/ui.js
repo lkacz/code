@@ -1,4 +1,6 @@
-// Simple UI utilities: message toast and top button label helpers
+// Simple UI utilities: message toast and top button label helpers (ESM + global)
+import { worldGen as WORLDGEN } from './worldgen.js';
+import { mobs as MOBS } from './mobs.js';
 window.MM = window.MM || {};
 MM.ui = (function(){
   let msgEl = null;
@@ -70,7 +72,8 @@ MM.ui = (function(){
   function injectWorldSettings(menuPanel){
     const panel = menuPanel || document.getElementById('menuPanel'); if(!panel) return;
     if(document.getElementById('worldSettingsBox')) return;
-    const s = (MM.worldGen && MM.worldGen.getSettings)? MM.worldGen.getSettings(): {};
+    const WG = WORLDGEN || (MM.worldGen||null);
+    const s = (WG && WG.getSettings)? WG.getSettings(): {};
     const box=document.createElement('div'); box.id='worldSettingsBox'; box.className='group'; box.style.cssText='flex-direction:column; align-items:stretch; gap:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:8px;';
     const h=document.createElement('div'); h.textContent='Ustawienia świata'; h.style.cssText='font-size:12px; font-weight:700; opacity:.85;'; box.appendChild(h);
     function row(label, id, min, max, step, value, fmt){
@@ -98,7 +101,7 @@ MM.ui = (function(){
   const r12=row('Głębokość jeziora', 'setLakeDepth', 1, 12, 1, (s.lakeMaxDepth===undefined?5:s.lakeMaxDepth));
   const r13=row('Wysokość grzbietów', 'setRidgeHeightGain', 0, 30, 1, (s.ridgeHeightGain===undefined?12:s.ridgeHeightGain));
     const applyRow=document.createElement('div'); applyRow.style.cssText='display:flex; gap:6px;';
-    const apply=document.createElement('button'); apply.className='topbtn'; apply.textContent='Zastosuj i odśwież';
+  const apply=document.createElement('button'); apply.className='topbtn'; apply.textContent='Zastosuj i odśwież';
   apply.addEventListener('click',()=>{
       try{
         const ns={
@@ -116,7 +119,8 @@ MM.ui = (function(){
           lakeMaxDepth: parseInt(r12.input.value,10),
           ridgeHeightGain: parseInt(r13.input.value,10)
         };
-        if(MM.worldGen && MM.worldGen.setSettings) MM.worldGen.setSettings(ns);
+  const WG2 = WORLDGEN || (MM.worldGen||null);
+  if(WG2 && WG2.setSettings) WG2.setSettings(ns);
     if(MM.ui && MM.ui.msg) MM.ui.msg('Zastosowano ustawienia świata');
         // Regenerate world with the SAME seed
         if(window.regenWorldSameSeed){ window.regenWorldSameSeed(); }
@@ -156,10 +160,12 @@ MM.ui = (function(){
     function populate(){
       const box=document.getElementById('mobSpawnBox'); if(!box) return;
       while(box.children.length>1) box.removeChild(box.lastChild);
-      if(!(window.MM && MM.mobs && MM.mobs.species)){
+      // Prefer ESM mobs registry, fallback to legacy global
+      const speciesList = (MOBS && MOBS.species) ? MOBS.species : ((window.MM && MM.mobs && MM.mobs.species) ? MM.mobs.species : null);
+      if(!speciesList){
         const p=document.createElement('div'); p.textContent='(Brak systemu mobów)'; p.style.cssText='font-size:11px; opacity:.5;'; box.appendChild(p); return;
       }
-      MM.mobs.species.forEach(id=>{
+      speciesList.forEach(id=>{
         const b=document.createElement('button'); b.textContent=id; b.style.cssText='flex:1 1 70px; font-size:11px; padding:3px 6px;';
         b.addEventListener('click',()=>{ try{ if(typeof spawnCb==='function') spawnCb(id); }catch(e){} });
         box.appendChild(b);
@@ -183,3 +189,7 @@ MM.ui = (function(){
   try{ window.msg = msg; }catch(e){}
   return api;
 })();
+
+// ESM export (progressive migration)
+export const ui = (typeof window!=='undefined' && window.MM) ? window.MM.ui : undefined;
+export default ui;

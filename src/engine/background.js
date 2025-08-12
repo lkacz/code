@@ -147,3 +147,6 @@
 
   MM.background = background;
 })();
+// ESM export (progressive migration)
+export const background = (typeof window!=='undefined' && window.MM) ? window.MM.background : undefined;
+export default background;
