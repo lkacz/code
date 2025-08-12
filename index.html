@@ -108,7 +108,7 @@
             <button id="helpBtn" class="topbtn" role="menuitem" aria-controls="help" aria-expanded="false">Pomoc</button>
             <button id="radarMenuBtn" class="topbtn" role="menuitem" title="Radar diamentów">Radar 💎</button>
           </div>
-          <div class="group seedRow"><label for="seedInput">Ziarno:</label><input id="seedInput" value="auto" /><button id="regenBtn">Nowy świat</button></div>
+          <div class="group seedRow"><label for="seedInput">Ziarno:</label><input id="seedInput" value="auto" /><button id="regenBtn">Nowy świat</button><button id="openWorldSettingsBtn" class="topbtn">Ustawienia świata…</button></div>
           <div class="hint">Skróty: G=Bóg, M=Mapa, C=Centrum, H=Pomoc</div>
           <div class="group" style="flex-direction:column; align-items:stretch; margin-top:4px;">
             <label style="font-size:12px; display:flex; justify-content:space-between; gap:8px; align-items:center;">Gęstość trawy <span id="grassDensityLabel">1.0</span></label>
@@ -216,6 +216,12 @@
     #custHeader{ display:flex; align-items:center; justify-content:space-between; }
     #custClose{ background:rgba(255,255,255,.18); border:none; color:#fff; width:40px; height:40px; border-radius:12px; font-size:18px; cursor:pointer; }
     #custFooter{ margin-top:12px; display:flex; justify-content:space-between; font-size:11px; opacity:.8; }
+  /* World settings overlay (modal) */
+  #worldSettingsOverlay{ position:fixed; inset:0; background:rgba(5,8,14,.70); backdrop-filter:blur(10px); display:none; z-index:70; color:#eee; font-size:13px; }
+  #worldSettingsDialog{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:min(560px,92vw); max-height:84vh; background:rgba(18,22,30,.95); border:1px solid rgba(255,255,255,.12); border-radius:18px; display:flex; flex-direction:column; gap:12px; padding:16px 18px 18px; box-shadow:0 12px 48px -8px rgba(0,0,0,.65); }
+  #worldSettingsHeader{ display:flex; align-items:center; justify-content:space-between; }
+  #worldSettingsClose{ background:rgba(255,255,255,.18); border:none; color:#fff; width:40px; height:40px; border-radius:12px; font-size:18px; cursor:pointer; }
+  #worldSettingsBody{ overflow:auto; max-height:60vh; display:flex; flex-direction:column; gap:10px; }
   </style>
   <div id="custOverlay" role="dialog" aria-modal="true" aria-labelledby="custTitle">
     <div id="custDialog">
@@ -232,6 +238,14 @@
       <div id="custRight">
         <div id="custGrid" aria-label="Lista elementów"></div>
       </div>
+    </div>
+  </div>
+  <!-- World settings overlay -->
+  <div id="worldSettingsOverlay" role="dialog" aria-modal="true" aria-labelledby="worldSettingsTitle">
+    <div id="worldSettingsDialog">
+      <div id="worldSettingsHeader"><h2 id="worldSettingsTitle" style="margin:0;font-size:18px;">Ustawienia świata</h2><button id="worldSettingsClose" aria-label="Zamknij">×</button></div>
+      <div id="worldSettingsBody" aria-label="Ustawienia"></div>
+      <div style="font-size:11px; opacity:.75;">Zmiany działają po kliknięciu „Zastosuj i odśwież”.</div>
     </div>
   </div>
 </body>
