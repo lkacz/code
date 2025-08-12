@@ -51,22 +51,14 @@ MM.ui = (function(){
       try{ window.dispatchEvent(new CustomEvent('mm-radar-pulse')); }catch(e){}
       close();
     });
-    // Keep legacy injection in menu (hidden pathway), but primary access will be a modal button.
-    injectWorldSettings(menuPanel);
+  // Do not inject world settings into the dropdown menu anymore; use the dedicated modal instead.
     // Hook world settings modal open/close
     const openWS = document.getElementById('openWorldSettingsBtn');
     const wsOverlay = document.getElementById('worldSettingsOverlay');
     const wsBody = document.getElementById('worldSettingsBody');
     const wsClose = document.getElementById('worldSettingsClose');
     function openWorldSettings(){ if(!wsOverlay||!wsBody) return; // lazy inject content the first time
-      if(!wsBody.__injected){
-        // Create a temporary container and let injectWorldSettings append into it
-        const tempPanel = document.createElement('div');
-        // Reuse builder to keep single source of truth
-        injectWorldSettings(tempPanel);
-        const box = tempPanel.querySelector('#worldSettingsBox');
-        if(box){ wsBody.appendChild(box); wsBody.__injected=true; }
-      }
+      if(!wsBody.__injected){ injectWorldSettings(wsBody); wsBody.__injected=true; }
       wsOverlay.style.display='block';
       try{ api.closeMenu(); }catch(e){}
     }
