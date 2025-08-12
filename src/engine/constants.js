@@ -23,11 +23,13 @@ MM.INFO={
   // Wood previously passable (true) which allowed walking through trunks; now solid for proper collision
   5:{hp:4,color:'#8b5a2b',drop:'wood',passable:false},
   6:{hp:1,color:'#2faa2f',drop:'leaf',passable:true},
-  7:{hp:2,color:'#eee',drop:'snow',passable:false},
+  // Snow: slightly bluish to contrast against bright backgrounds
+  7:{hp:2,color:'#e6f1ff',drop:'snow',passable:false},
   8:{hp:0,color:'#2477ff',drop:null,passable:true}, // water (non-solid, fluid simulated separately)
   9:{hp:4,color:'#b07f2c',drop:null,passable:false, chestTier:'common'},
  10:{hp:5,color:'#a74cc9',drop:null,passable:false, chestTier:'rare'},
  11:{hp:6,color:'#e0b341',drop:null,passable:false, chestTier:'epic'},
- 12:{hp:3,color:'#aeeaff',drop:'snow',passable:false}
+  // Ice: cooler, more saturated blue for better separation from snow
+ 12:{hp:3,color:'#8fd6ff',drop:'snow',passable:false}
 };
 MM.isSolid = t => t!==MM.T.AIR && !MM.INFO[t].passable;
