@@ -31,6 +31,8 @@
   const mobs = []; // entities
   const speciesAggro = {}; // speciesId -> expiry timestamp (ms)
   const speciesCounts = {}; // live counts for quick spawn capping
+  // Spawn throttle/freeze (used after world regeneration)
+  let spawnFreezeUntil = 0; // timestamp (ms). While now < this, no new spawns are attempted.
   // Spatial partitioning (uniform grid) to speed up point queries (attackAt)
   const CELL=16; // tiles per cell both axes
   const grid = new Map(); // key "cx,cy" -> Set of mob refs
@@ -46,6 +48,7 @@
   const SPECIES = {
     BIRD: {
   id: 'BIRD', max: 18, hp: 6, dmg: 4, speed: 3.2, wanderInterval: [2,6], xp:4, flying:true,
+      sightRange: 18, pursueRange: 26,
       variant:{shift:1, from:'#f5d16a', to:'#ffe07a'},
       spawnTest(x,y,getTile){ // spawn perched above leaves (air above leaf)
         const below = getTile(x,y+1); const here = getTile(x,y);
@@ -57,6 +60,7 @@
     },
     FISH: {
   id: 'FISH', max: 24, hp: 4, dmg: 3, speed: 2.2, wanderInterval:[1,4], xp:3,
+      sightRange: 14, pursueRange: 20,
       variant:{shift:2, from:'#4eb2f1', to:'#63c6ff'},
       spawnTest(x,y,getTile){ // inside water with air or water above
         const here = getTile(x,y); const above = getTile(x,y-1);
@@ -75,6 +79,7 @@
 
   registerSpecies({ // Large forest predator near trees
   id:'BEAR', max:6, hp:30, dmg:10, speed:2.0, wanderInterval:[3,7], xp:25, ground:true,
+  sightRange: 16, pursueRange: 22,
   move:{jumpVel:-2.6, maxClimb:1, avoidWater:true},
   variant:{shift:3, from:'#6b4a30', to:'#7d573b'},
   body:{w:1.6,h:1.2},
@@ -92,6 +97,7 @@
 
   registerSpecies({ // Tree-dwelling small mammal on leaves
   id:'SQUIRREL', max:20, hp:4, dmg:1, speed:3.0, wanderInterval:[1.2,3.5], xp:5, ground:true,
+  sightRange: 10, pursueRange: 14,
   move:{jumpVel:-3.2, maxClimb:2, avoidWater:true, preferLeaf:true},
   body:{w:0.8,h:0.7},
     loot:[{item:'leaf', min:1, max:2, chance:0.5}],
@@ -112,6 +118,7 @@
 
   registerSpecies({ // Fast herbivore on open grass
   id:'DEER', max:14, hp:12, dmg:3, speed:3.8, wanderInterval:[2,5], xp:12, ground:true,
+  sightRange: 18, pursueRange: 24,
   move:{jumpVel:-3.6, maxClimb:1, avoidWater:true},
   body:{w:1.4,h:1.1},
     loot:[{item:'leaf', min:1, max:1, chance:0.3}],
@@ -124,6 +131,7 @@
 
   registerSpecies({ // Snow biome predator (pack)
   id:'WOLF', max:10, hp:16, dmg:6, speed:3.4, wanderInterval:[2,5], xp:15, ground:true,
+  sightRange: 20, pursueRange: 28,
   move:{jumpVel:-4.0, maxClimb:1, avoidWater:true},
   variant:{shift:4, from:'#bcbcbc', to:'#d6d6d6'},
   body:{w:1.4,h:1.0},
@@ -145,6 +153,7 @@
 
   registerSpecies({ // Small fast jumper on grass (skittish)
   id:'RABBIT', max:22, hp:5, dmg:2, speed:4.0, wanderInterval:[0.8,2.2], xp:6, ground:true,
+  sightRange: 12, pursueRange: 16,
   move:{jumpVel:-5.0, maxClimb:1, avoidWater:true},
   body:{w:0.8,h:0.7},
     loot:[{item:'grass', min:1, max:1, chance:0.4}],
@@ -161,6 +170,7 @@
 
   registerSpecies({ // Night bird perched in trees
   id:'OWL', max:8, hp:8, dmg:5, speed:3.0, wanderInterval:[3,8], xp:9, flying:true,
+  sightRange: 18, pursueRange: 26,
     loot:[{item:'leaf', min:1, max:1, chance:0.25}],
     spawnTest(x,y,getTile){ const below=getTile(x,y+1); const here=getTile(x,y); return here===T.AIR && below===T.WOOD; },
     biome:'forest',
@@ -172,6 +182,7 @@
 
   registerSpecies({ // Sand-edge crustacean
     id:'CRAB', max:18, hp:6, dmg:3, speed:2.2, wanderInterval:[1.5,4.5], xp:5, ground:true,
+  sightRange: 8, pursueRange: 10,
   move:{jumpVel:-2.0, maxClimb:0.5, avoidWater:false},
   body:{w:1.0,h:0.6},
     loot:[{item:'sand', min:1, max:2, chance:0.6}],
@@ -182,6 +193,7 @@
 
   registerSpecies({ // Deep water predator
   id:'SHARK', max:4, hp:40, dmg:14, speed:3.5, wanderInterval:[2,5], aquatic:true, xp:40,
+  sightRange: 26, pursueRange: 34,
   variant:{shift:5, from:'#4d7690', to:'#5c87a2'},
     loot:[{item:'diamond', min:1, max:1, chance:0.15}],
     spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.WATER) return false; for(let d=1; d<=3; d++){ if(getTile(x,y+d)!==T.WATER) return false; } return getTile(x-2,y)===T.WATER && getTile(x+2,y)===T.WATER; },
@@ -194,6 +206,7 @@
 
   registerSpecies({ // Deep eel: slower but agile vertical
     id:'EEL', max:10, hp:10, dmg:5, speed:2.6, wanderInterval:[1.5,4], aquatic:true, xp:11,
+  sightRange: 14, pursueRange: 18,
     loot:[{item:'stone', min:1, max:1, chance:0.4}],
     spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.WATER) return false; let stone=false; for(let d=2; d<=5; d++){ const t=getTile(x,y+d); if(t===T.STONE){ stone=true; break; } if(t!==T.WATER) break; } if(!stone) return false; return true; },
     onCreate(m){ initWaterAnchor(m); m.desiredDepth = 3; },
@@ -204,6 +217,7 @@
 
   registerSpecies({ // Mountain goat: high elevation
     id:'GOAT', max:12, hp:14, dmg:4, speed:3.3, wanderInterval:[1.8,4.2], xp:13, ground:true,
+  sightRange: 16, pursueRange: 20,
   move:{jumpVel:-5.2, maxClimb:2.2, avoidWater:true},
   body:{w:1.2,h:1.0},
     loot:[{item:'snow', min:1, max:1, chance:0.3}],
@@ -213,6 +227,7 @@
 
   registerSpecies({ // Firefly – ambience (low HP) over grass, pulsating
     id:'FIREFLY', max:26, hp:2, dmg:0, speed:2.0, wanderInterval:[0.6,1.6], xp:2, flying:true,
+  sightRange: 10, pursueRange: 12,
     spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); return here===T.AIR && (below===T.GRASS || below===T.LEAF); },
     biome:'plains',
     onUpdate(m,spec,{dt,now}){ if(Math.random()<0.03){ m.vx += (Math.random()*2-1)*0.4; m.vy += (Math.random()*2-1)*0.2; } }
@@ -333,7 +348,8 @@
 
   let nextSpawnCheck = 0;
   function trySpawnNearPlayer(player, getTile, now){
-    if(now < nextSpawnCheck) return; // throttle globally
+  if(now < nextSpawnCheck) return; // throttle globally
+  if(now < spawnFreezeUntil) { nextSpawnCheck = now + 500; return; }
     nextSpawnCheck = now + 1200 + Math.random()*800; // 1.2-2s
     for(const key in SPECIES){ const spec=SPECIES[key]; if(countSpecies(spec.id) >= spec.max) continue; if(Math.random()<0.55) continue; // variety
       for(let a=0;a<6;a++){ const dx = (Math.random()<0.5?-1:1)*(8+Math.random()*32); const dy = -6 + Math.random()*12; const tx = Math.floor(player.x + dx); const ty = Math.floor(player.y + dy); if(spec.spawnTest(tx,ty,getTile)){ mobs.push(create(spec, tx+0.5, ty+0.5)); break; } }
@@ -378,7 +394,14 @@
       let preVX=m.vx, preVY=m.vy, prevOnGround = m.onGround||false;
       m._wantJump=false;
       // Run species AI / behavior first
-      updateMob(m, spec, {dt, now, aggressive, player, getTile});
+  // Distance gating for aggression and pursuit
+  const dxP0 = player.x - m.x; const dyP0 = player.y - m.y; const distToPlayer = Math.hypot(dxP0, dyP0);
+  const sight = (typeof spec.sightRange==='number'? spec.sightRange : 16);
+  const pursue = (typeof spec.pursueRange==='number'? spec.pursueRange : (sight+6));
+  const canSee = distToPlayer <= sight;
+  const shouldPursue = distToPlayer <= pursue;
+  const aggroNow = aggressive && (canSee || shouldPursue);
+  updateMob(m, spec, {dt, now, aggressive: aggroNow, player, getTile, distToPlayer});
       if(isGroundMob){
         // Interpret AI changes: any upward impulse (vy<-1) becomes a jump intent
         if(m.vy < -1){ m._wantJump=true; }
@@ -522,7 +545,7 @@
       updateGridCell(m);
       if(m.shake>0) m.shake=Math.max(0,m.shake-dt*10);
       // Contact damage + bounce (touch) independent of attack cooldown
-      const dxP = player.x - m.x; const dyP = player.y - m.y; const distTouch = Math.hypot(dxP,dyP);
+  const dxP = player.x - m.x; const dyP = player.y - m.y; const distTouch = Math.hypot(dxP,dyP);
       if(distTouch < 0.9){ // bounce push
         const nx=dxP/(distTouch||1); const ny=dyP/(distTouch||1);
         player.vx += nx*3*dt; player.vy += ny*2*dt; // gentle continuous push
@@ -535,8 +558,10 @@
   function updateMob(m, spec, ctx){
     ctx.speed = (spec.speed||1) * (m.speedMul||1);
     if(typeof spec.onUpdate==='function'){ spec.onUpdate(m, spec, ctx); return; }
-    const {dt, now, aggressive, player} = ctx; const toPlayerX=player.x - m.x; const toPlayerY=player.y - m.y; const distP=Math.hypot(toPlayerX,toPlayerY)||1;
-    if(aggressive){
+    const {dt, now, aggressive, player} = ctx; const toPlayerX=player.x - m.x; const toPlayerY=player.y - m.y; const distP=(typeof ctx.distToPlayer==='number' && ctx.distToPlayer>0)? ctx.distToPlayer : (Math.hypot(toPlayerX,toPlayerY)||1);
+    // Only aggressive if within species sight range; otherwise idle/wander
+    const sight = (typeof spec.sightRange==='number'? spec.sightRange : 16);
+    if(aggressive && distP <= sight){
       const desiredVx = (toPlayerX/distP)*((spec.speed||1)*(m.speedMul||1))*0.9; m.vx += (desiredVx - m.vx)*Math.min(1, dt*4);
       const desiredVy = spec.aquatic? ((toPlayerY)*0.8) : (toPlayerY*0.6);
       m.vy += (desiredVy - m.vy)*Math.min(1, dt*2.5);
@@ -758,11 +783,23 @@
       }
       // HP bar (position above highest drawn pixel)
       if(m.hp < (SPECIES[m.id]?.hp||1)){
-        // draw HP bar in screen space (unscaled)
-        const saved = ctx.getTransform ? ctx.getTransform() : null;
-        ctx.setTransform(1,0,0,1,0,0);
-        const maxHp = SPECIES[m.id].hp; const w= Math.max(12, Math.min(36, (SPECIES[m.id].hp||10))); const frac=m.hp/maxHp; const barY = topY - 6; ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(screenX-w/2, barY, w,3); ctx.fillStyle='#ff5252'; ctx.fillRect(screenX-w/2, barY, w*frac,3);
-        if(saved && ctx.setTransform) ctx.setTransform(saved);
+        // Transform anchor point to screen space, then draw with identity transform
+        const cur = ctx.getTransform ? ctx.getTransform() : null;
+        let px = screenX, py = topY;
+        if(cur){
+          // DOMMatrix: [ a c e; b d f; 0 0 1 ]
+          const tx = cur.a * screenX + cur.c * topY + cur.e;
+          const ty = cur.b * screenX + cur.d * topY + cur.f;
+          px = tx; py = ty;
+        }
+        if(ctx.setTransform) ctx.setTransform(1,0,0,1,0,0);
+        const maxHp = SPECIES[m.id].hp;
+        const w = Math.max(12, Math.min(36, (SPECIES[m.id].hp||10)));
+        const frac = Math.max(0, Math.min(1, m.hp/maxHp));
+        const barY = py - 6;
+        ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(px - w/2, barY, w, 3);
+        ctx.fillStyle='#ff5252'; ctx.fillRect(px - w/2, barY, w * frac, 3);
+        if(cur && ctx.setTransform) ctx.setTransform(cur);
       }
       ctx.restore(); }
     ctx.restore();
@@ -823,6 +860,28 @@
     }
   }
 
+  // External helpers to control spawns and clearing
+  function freezeSpawns(ms){ const base = performance.now(); spawnFreezeUntil = Math.max(spawnFreezeUntil, base + (ms||0)); }
+  function clearAll(){
+    try{
+      // Remove all live mobs and detach from spatial grid
+      for(const m of mobs){ removeFromGrid(m); }
+      mobs.length = 0;
+      // Reset species counts
+      for(const k in speciesCounts){ delete speciesCounts[k]; }
+      // Clear spatial partition completely
+      grid.clear();
+      // Reset global aggro
+      for(const k in speciesAggro){ delete speciesAggro[k]; }
+      // Push out next spawn check and freeze spawns for a short time
+      nextSpawnCheck = performance.now() + 2000;
+      spawnFreezeUntil = performance.now() + 4000;
+    }catch(e){
+      // Fallback to deserialize empty if anything goes wrong
+      try{ deserialize({v:3, list:[], aggro:{mode:'rel', m:{}}}); }catch(_e){}
+    }
+  }
+
     function diagnose(getTile){
       const report={total:mobs.length, species:{}, groundHoverIssues:[], overlaps:0};
       for(const m of mobs){ report.species[m.id]=(report.species[m.id]||0)+1; const spec=SPECIES[m.id]; if(spec && spec.ground && spec.body){
@@ -838,7 +897,7 @@
       report.metrics={...metrics};
       return report;
     }
-    MM.mobs = { update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro, forceSpawn, species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose };
+  MM.mobs = { update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro, forceSpawn, species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll };
     try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
   })(); // end IIFE
 // (File end)

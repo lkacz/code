@@ -58,5 +58,8 @@
     });
   };
 
+  // Clear particles (world regen / fresh start)
+  mod.reset = function(){ particles.length = 0; };
+
   MM.particles = mod;
 })();

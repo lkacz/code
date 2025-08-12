@@ -14,6 +14,12 @@
 
   grass.getBudgetInfo = function(){ return grassBudgetInfo; };
 
+  // Reset any internal dynamic state (called on world regen)
+  grass.reset = function(){
+    grassThinningFactor = 1;
+    grassBudgetInfo = '';
+  };
+
   grass.drawOverlays = function(ctx, pass, sx, sy, viewX, viewY, TILE, WORLD_H, getTile, T, zoom, densityScalar, heightScalar){
     const now=performance.now();
     const wind = Math.sin(now*0.0003)*1.2 + Math.sin(now*0.0011)*0.8;
