@@ -1098,50 +1098,131 @@ setInterval(()=>{ /* keep cycleStart anchored; could adjust for pause logic late
 if(!window.__lootPopupInit){
 	window.__lootPopupInit=true;
 	window.lootInbox = window.lootInbox || [];
+	window.lootStash = window.lootStash || [];
 	let lootInboxUnread = 0; // separate unread counter so viewing doesn't erase items
 	const LOOT_INBOX_KEY='mm_loot_inbox_v1';
+	const LOOT_STASH_KEY='mm_loot_stash_v1';
+	const LOOT_UI_KEY='mm_loot_ui_v1';
 	try{ const saved=localStorage.getItem(LOOT_INBOX_KEY); if(saved){ const parsed=JSON.parse(saved); if(Array.isArray(parsed.items)){ window.lootInbox = parsed.items; lootInboxUnread = parsed.unread|0; } } }catch(e){}
+	try{ const savedS=localStorage.getItem(LOOT_STASH_KEY); if(savedS){ const parsed=JSON.parse(savedS); if(Array.isArray(parsed)){ window.lootStash = parsed; } } }catch(e){}
 	const lootInboxBtn=document.getElementById('lootInboxBtn');
 	const lootInboxCount=document.getElementById('lootInboxCount');
 	const lootPopup=document.getElementById('lootPopup');
 	const lootDim=document.getElementById('lootDim');
 	const lootItemsBox=document.getElementById('lootPopupItems');
+	const tabInbox=document.getElementById('lootTabInbox');
+	const tabStash=document.getElementById('lootTabStash');
+	const sortSel=document.getElementById('lootSort');
+	const filtersWrap=document.getElementById('lootFilters');
 	const lootEquipAllBtn=document.getElementById('lootEquipAll');
 	const lootKeepAllBtn=document.getElementById('lootKeepAll');
 	const lootCloseBtn=document.getElementById('lootClose');
+	const lootApplySelBtn=document.getElementById('lootApplySel');
+	const lootStashSelBtn=document.getElementById('lootStashSel');
+	const lootUnstashSelBtn=document.getElementById('lootUnstashSel');
+	const lootDiscardSelBtn=document.getElementById('lootDiscardSel');
 	let lootPrevFocus=null;
 	function persistInbox(){ try{ localStorage.setItem(LOOT_INBOX_KEY, JSON.stringify({items:window.lootInbox, unread:lootInboxUnread})); }catch(e){} }
+	function persistStash(){ try{ localStorage.setItem(LOOT_STASH_KEY, JSON.stringify(window.lootStash||[])); }catch(e){} }
 	function updateLootInboxIndicator(){ const count=lootInboxUnread; if(!lootInboxBtn) return; if(count>0){ lootInboxBtn.style.display='inline-block'; lootInboxCount.textContent=''+count; lootInboxBtn.classList.add('pulseNew'); } else { lootInboxBtn.style.display='none'; lootInboxCount.textContent=''; lootInboxBtn.classList.remove('pulseNew'); } }
 	window.updateLootInboxIndicator=updateLootInboxIndicator;
-	function buildRows(items){ lootItemsBox.innerHTML=''; const all=MM.getCustomizationItems? MM.getCustomizationItems():null; const curSel={cape:MM.customization.capeStyle, eyes:MM.customization.eyeStyle, outfit:MM.customization.outfitStyle}; function cur(kind){ if(!all) return null; const list=kind==='cape'? all.capes: kind==='eyes'? all.eyes: all.outfits; return list.find(i=>i.id===curSel[kind]); }
-		function fmtMult(v){ return (v||1).toFixed(2)+'x'; }
-		items.forEach(it=>{ const row=document.createElement('div'); row.className='lootRow '+it.tier; const left=document.createElement('div'); const title=document.createElement('div'); title.style.fontWeight='600'; title.textContent=(it.name||it.id)+' ['+it.kind+']'; if(it.unique){ const b=document.createElement('span'); b.textContent='★ '+it.unique; b.style.marginLeft='6px'; b.style.fontSize='10px'; b.style.color='#ffd54a'; title.appendChild(b); }
-			left.appendChild(title); const stats=document.createElement('div'); stats.className='lootStats'; const current=cur(it.kind);
+	// Utilities and state
+	function ensureKey(it){ if(!it) return; if(!it.time) it.time=Date.now(); if(!it._key){ it._key = [it.kind||'?', it.id||'unknown', it.unique||'', it.time].join('|'); }
+	}
+	function tierWeight(t){ return t==='epic'?3 : t==='rare'?2 : t==='common'?1 : 0; }
+	function currentOf(kind, all){ if(!all) return null; const curId = kind==='cape'? MM.customization.capeStyle : kind==='eyes'? MM.customization.eyeStyle : MM.customization.outfitStyle; const list = kind==='cape'? all.capes : kind==='eyes'? all.eyes : all.outfits; return list ? list.find(i=>i.id===curId) : null; }
+	function fmtMult(v){ return (v||1).toFixed(2)+'x'; }
+	function computeScore(it, cur){ if(!it) return 0; let s=0; // Relative improvements vs current
+		const c=cur||{}; if(typeof it.airJumps==='number') s += (it.airJumps - (c.airJumps||0)) * 2.0;
+		if(typeof it.visionRadius==='number') s += (it.visionRadius - (c.visionRadius||0)) * 0.2;
+		if(typeof it.moveSpeedMult==='number') s += ((it.moveSpeedMult||1) - (c.moveSpeedMult||1)) * 1.0;
+		if(typeof it.jumpPowerMult==='number') s += ((it.jumpPowerMult||1) - (c.jumpPowerMult||1)) * 0.8;
+		if(typeof it.mineSpeedMult==='number') s += ((it.mineSpeedMult||1) - (c.mineSpeedMult||1)) * 0.8;
+		s += tierWeight(it.tier)*0.1; return s; }
+	let currentTab='inbox';
+	let activeKinds = new Set(['cape','eyes','outfit']);
+	let selectedKeys = new Set();
+	// Load UI state
+	(function initLootUIState(){ try{ const raw=localStorage.getItem(LOOT_UI_KEY); if(raw){ const st=JSON.parse(raw); if(st && (st.tab==='inbox'||st.tab==='stash')) currentTab=st.tab; if(st && st.sort && sortSel){ sortSel.value=st.sort; }
+		if(st && Array.isArray(st.kinds)){ activeKinds = new Set(st.kinds.filter(k=>k==='cape'||k==='eyes'||k==='outfit')); if(filtersWrap){ filtersWrap.querySelectorAll('.chip').forEach(ch=>{ const k=ch.getAttribute('data-kind'); if(k && activeKinds.has(k)) ch.classList.add('on'); else ch.classList.remove('on'); }); } }
+	} }catch(e){} })();
+	function persistLootUI(){ try{ const kinds=[...activeKinds]; const sort=sortSel?sortSel.value:'recommend'; const tab=currentTab; localStorage.setItem(LOOT_UI_KEY, JSON.stringify({tab,sort,kinds})); }catch(e){} }
+	function getActiveList(){ return currentTab==='inbox' ? window.lootInbox : window.lootStash; }
+	function setTab(tab){ currentTab=tab; if(tab==='inbox'){ tabInbox.classList.add('sel'); tabStash.classList.remove('sel'); lootUnstashSelBtn.style.display='none'; lootStashSelBtn.style.display=''; } else { tabStash.classList.add('sel'); tabInbox.classList.remove('sel'); lootUnstashSelBtn.style.display=''; lootStashSelBtn.style.display='none'; } selectedKeys.clear(); rebuildList(); }
+	function applyFiltersAndSort(items){ const all=MM.getCustomizationItems? MM.getCustomizationItems():null; const curByKind={ cape: currentOf('cape',all), eyes: currentOf('eyes',all), outfit: currentOf('outfit',all) }; const filtered = items.filter(it=>{ ensureKey(it); return activeKinds.has(it.kind); }); const mode=sortSel?.value||'recommend'; filtered.sort((a,b)=>{ const ca=curByKind[a.kind], cb=curByKind[b.kind]; if(mode==='tier'){ const d=tierWeight(b.tier)-tierWeight(a.tier); if(d!==0) return d; return (b.time||0)-(a.time||0); }
+		if(mode==='newest'){ return (b.time||0)-(a.time||0); }
+		if(mode==='kind'){ return (a.kind||'').localeCompare(b.kind||'') || ((a.name||a.id||'').localeCompare(b.name||b.id||'')); }
+		if(mode==='name'){ return (a.name||a.id||'').localeCompare(b.name||b.id||''); }
+		// recommend (default)
+		const sa=computeScore(a,ca), sb=computeScore(b,cb); if(sb!==sa) return sb-sa; return (b.time||0)-(a.time||0);
+	}); return {list:filtered, curByKind}; }
+	function buildRows(){ lootItemsBox.innerHTML=''; const src=getActiveList(); const {list,curByKind} = applyFiltersAndSort(src);
+		list.forEach(it=>{ const row=document.createElement('div'); row.className='lootRow '+(it.tier||''); row.__item=it; const left=document.createElement('div'); const title=document.createElement('div'); title.style.fontWeight='600'; title.textContent=(it.name||it.id)+' ['+(it.kind||'?')+']'; if(it.unique){ const b=document.createElement('span'); b.textContent='★ '+it.unique; b.style.marginLeft='6px'; b.style.fontSize='10px'; b.style.color='#ffd54a'; title.appendChild(b); }
+			// Delta badge
+			const cur=curByKind[it.kind]; const sc=computeScore(it,cur); const badge=document.createElement('span'); badge.className='deltaBadge'+(sc<0?' worse':''); badge.textContent = (sc>0? '+':'')+sc.toFixed(2);
+			title.appendChild(badge);
+			left.appendChild(title);
+			const stats=document.createElement('div'); stats.className='lootStats';
 			function diff(label, curV, newV, betterHigh=true, fmt=v=>v){ if(newV==null) return; const base=curV==null? (label==='move'||label==='jump'||label==='mine'?1: (label==='air'?0: (label==='vision'?10:null))):curV; const better = betterHigh? newV>base : newV<base; const worse = betterHigh? newV<base : newV>base; const cls=better?'diffPlus': worse?'diffMinus':''; stats.innerHTML+= label+': <span class="'+cls+'">'+fmt(newV)+(newV!==base? (' ('+fmt(base)+')'):'')+'</span><br>'; }
-			diff('air', current&&current.airJumps, it.airJumps, true, v=>'+'+v);
-			diff('vision', current&&current.visionRadius, it.visionRadius, true, v=>v);
-			diff('move', current&&current.moveSpeedMult, it.moveSpeedMult, true, fmtMult);
-			diff('jump', current&&current.jumpPowerMult, it.jumpPowerMult, true, fmtMult);
-			diff('mine', current&&current.mineSpeedMult, it.mineSpeedMult, true, fmtMult);
+			diff('air', cur&&cur.airJumps, it.airJumps, true, v=>'+'+v);
+			diff('vision', cur&&cur.visionRadius, it.visionRadius, true, v=>v);
+			diff('move', cur&&cur.moveSpeedMult, it.moveSpeedMult, true, fmtMult);
+			diff('jump', cur&&cur.jumpPowerMult, it.jumpPowerMult, true, fmtMult);
+			diff('mine', cur&&cur.mineSpeedMult, it.mineSpeedMult, true, fmtMult);
 			left.appendChild(stats); row.appendChild(left);
 			const btns=document.createElement('div'); btns.style.display='flex'; btns.style.flexDirection='column'; btns.style.gap='6px';
-			const equip=document.createElement('button'); equip.textContent='Wyposaż'; const keep=document.createElement('button'); keep.textContent='Zachowaj'; keep.className='sec'; const discard=document.createElement('button'); discard.textContent='Odrzuć'; discard.className='danger';
-			function disable(){ equip.disabled=keep.disabled=discard.disabled=true; row.style.opacity='.45'; }
-				equip.addEventListener('click',()=>{ if(it.kind==='cape') MM.customization.capeStyle=it.id; else if(it.kind==='eyes') MM.customization.eyeStyle=it.id; else MM.customization.outfitStyle=it.id; if(MM.recomputeModifiers) MM.recomputeModifiers(); window.dispatchEvent(new CustomEvent('mm-customization-change')); disable(); persistInbox(); });
-				keep.addEventListener('click',()=>{ disable(); persistInbox(); });
-				discard.addEventListener('click',()=>{ if(MM.dynamicLoot){ const arr = it.kind==='cape'? MM.dynamicLoot.capes : it.kind==='eyes'? MM.dynamicLoot.eyes : MM.dynamicLoot.outfits; const idx=arr.indexOf(it); if(idx>=0) arr.splice(idx,1); } if(MM.addDiscardedLoot) MM.addDiscardedLoot(it.id); if(MM.chests && MM.chests.saveDynamicLoot) MM.chests.saveDynamicLoot(); disable(); updateLootInboxIndicator(); persistInbox(); });
-			btns.appendChild(equip); btns.appendChild(keep); btns.appendChild(discard); row.appendChild(btns); lootItemsBox.appendChild(row); row.__item=it; });
+			const equip=document.createElement('button'); equip.textContent='Wyposaż'; const keep=document.createElement('button'); keep.textContent= currentTab==='inbox'? 'Schowaj' : 'Do skrzynki'; keep.className='sec'; const discard=document.createElement('button'); discard.textContent='Odrzuć'; discard.className='danger';
+			function removeFromSource(){ const arr=getActiveList(); const idx=arr.indexOf(it); if(idx>=0){ arr.splice(idx,1); } }
+			function perDisable(){ equip.disabled=keep.disabled=discard.disabled=true; row.style.opacity='.45'; }
+			equip.addEventListener('click',()=>{ if(it.kind==='cape') MM.customization.capeStyle=it.id; else if(it.kind==='eyes') MM.customization.eyeStyle=it.id; else MM.customization.outfitStyle=it.id; if(MM.recomputeModifiers) MM.recomputeModifiers(); window.dispatchEvent(new CustomEvent('mm-customization-change')); perDisable(); persistInbox(); persistStash(); });
+			keep.addEventListener('click',()=>{ if(currentTab==='inbox'){ window.lootStash.push(it); removeFromSource(); persistStash(); persistInbox(); rebuildList(); } else { window.lootInbox.push(it); removeFromSource(); persistInbox(); persistStash(); rebuildList(); }});
+			discard.addEventListener('click',()=>{ if(MM.dynamicLoot){ const pool = it.kind==='cape'? MM.dynamicLoot.capes : it.kind==='eyes'? MM.dynamicLoot.eyes : MM.dynamicLoot.outfits; const idx=pool? pool.indexOf(it):-1; if(idx>=0) pool.splice(idx,1); } if(MM.addDiscardedLoot) MM.addDiscardedLoot(it.id); if(MM.chests && MM.chests.saveDynamicLoot) MM.chests.saveDynamicLoot(); removeFromSource(); persistInbox(); persistStash(); rebuildList(); });
+			btns.appendChild(equip); btns.appendChild(keep); btns.appendChild(discard); row.appendChild(btns);
+			// Selection toggle
+			const sel=document.createElement('div'); sel.className='selMark'; sel.textContent = selectedKeys.has(it._key)? '✓' : '';
+			row.appendChild(sel);
+			if(selectedKeys.has(it._key)) row.classList.add('sel');
+			row.addEventListener('click',e=>{ if(e.target===equip || e.target===keep || e.target===discard) return; if(selectedKeys.has(it._key)){ selectedKeys.delete(it._key); row.classList.remove('sel'); sel.textContent=''; } else { selectedKeys.add(it._key); row.classList.add('sel'); sel.textContent='✓'; } });
+			lootItemsBox.appendChild(row);
+		});
 	}
-	function openInbox(){ if(!window.lootInbox.length){ msg('Brak przedmiotów'); return; } buildRows(window.lootInbox); lootInboxUnread=0; updateLootInboxIndicator(); persistInbox(); lootPopup.classList.add('show'); lootDim.style.display='block'; lootPrevFocus=document.activeElement; installTrap(); const first=lootPopup.querySelector('button'); if(first) first.focus(); }
+	function sweepNonCosmetic(arr){ if(!Array.isArray(arr)) return arr; const keep=[]; let moved=0; for(const it of arr){ if(it && (it.kind==='cape'||it.kind==='eyes'||it.kind==='outfit')){ keep.push(it); continue; } // treat as resource drop: {item, qty}
+		if(it && it.item){ const k=it.item; const q=Math.max(1, it.qty|0); if(inv && typeof inv[k]==='number'){ inv[k]+=q; moved+=q; } }
+	}
+	if(moved>0){ try{ updateInventory&&updateInventory(); saveState&&saveState(); }catch(e){} }
+	return keep; }
+	function rebuildList(){ // Ensure keys and clean incompatible entries
+		if(currentTab==='inbox'){ window.lootInbox = sweepNonCosmetic(window.lootInbox||[]); persistInbox(); }
+		if(currentTab==='stash'){ window.lootStash = sweepNonCosmetic(window.lootStash||[]); persistStash(); }
+		(getActiveList()||[]).forEach(ensureKey); buildRows(); }
+	function openInbox(){ // honor saved tab if stash chosen and has items
+		const preferTab = (function(){ try{ const st=JSON.parse(localStorage.getItem(LOOT_UI_KEY)||'null'); return st&&st.tab; }catch(e){ return null; } })();
+		const tab = (preferTab==='stash' && (window.lootStash&&window.lootStash.length))? 'stash' : 'inbox';
+		setTab(tab); lootInboxUnread=0; updateLootInboxIndicator(); persistInbox(); lootPopup.classList.add('show'); lootDim.style.display='block'; lootPrevFocus=document.activeElement; installTrap(); const first=lootPopup.querySelector('button'); if(first) first.focus(); rebuildList(); }
 	function closeInbox(){ lootPopup.classList.remove('show'); lootDim.style.display='none'; removeTrap(); if(lootPrevFocus && lootPrevFocus.focus) lootPrevFocus.focus(); }
-	function installTrap(){ function handler(e){ if(lootPopup.style.display!=='flex') return; if(e.key==='Escape'){ closeInbox(); return; } if(e.key==='Tab'){ const f=[...lootPopup.querySelectorAll('button')].filter(b=>!b.disabled); if(!f.length) return; const first=f[0], last=f[f.length-1]; if(e.shiftKey){ if(document.activeElement===first){ e.preventDefault(); last.focus(); } } else { if(document.activeElement===last){ e.preventDefault(); first.focus(); } } } } window.addEventListener('keydown',handler); lootPopup.__trapHandler=handler; }
+	function installTrap(){ function handler(e){ if(!lootPopup.classList.contains('show')) return; if(e.key==='Escape'){ closeInbox(); return; } if(e.key==='Tab'){ const f=[...lootPopup.querySelectorAll('button')].filter(b=>!b.disabled); if(!f.length) return; const first=f[0], last=f[f.length-1]; if(e.shiftKey){ if(document.activeElement===first){ e.preventDefault(); last.focus(); } } else { if(document.activeElement===last){ e.preventDefault(); first.focus(); } } } } window.addEventListener('keydown',handler); lootPopup.__trapHandler=handler; }
 	function removeTrap(){ if(lootPopup.__trapHandler){ window.removeEventListener('keydown', lootPopup.__trapHandler); lootPopup.__trapHandler=null; } }
 	lootInboxBtn?.addEventListener('click',openInbox);
 	lootCloseBtn?.addEventListener('click',closeInbox); lootDim?.addEventListener('click',closeInbox);
-	lootEquipAllBtn?.addEventListener('click',()=>{ const rows=[...lootItemsBox.querySelectorAll('.lootRow')]; const latest={}; rows.forEach(r=>{ const it=r.__item; if(it) latest[it.kind]=it; }); Object.values(latest).forEach(it=>{ if(it.kind==='cape') MM.customization.capeStyle=it.id; else if(it.kind==='eyes') MM.customization.eyeStyle=it.id; else MM.customization.outfitStyle=it.id; }); if(MM.recomputeModifiers) MM.recomputeModifiers(); window.dispatchEvent(new CustomEvent('mm-customization-change')); persistInbox(); closeInbox(); });
+	lootEquipAllBtn?.addEventListener('click',()=>{ // Equip best across visible by score
+		const all=MM.getCustomizationItems? MM.getCustomizationItems():null; const curByKind={ cape: currentOf('cape',all), eyes: currentOf('eyes',all), outfit: currentOf('outfit',all) };
+		const rows=[...lootItemsBox.querySelectorAll('.lootRow')]; const best={}; rows.forEach(r=>{ const it=r.__item; if(!it) return; const sc=computeScore(it,curByKind[it.kind]); if(!best[it.kind] || sc>best[it.kind].sc){ best[it.kind]={it,sc}; } });
+		Object.values(best).forEach(v=>{ const it=v.it; if(it.kind==='cape') MM.customization.capeStyle=it.id; else if(it.kind==='eyes') MM.customization.eyeStyle=it.id; else MM.customization.outfitStyle=it.id; }); if(MM.recomputeModifiers) MM.recomputeModifiers(); window.dispatchEvent(new CustomEvent('mm-customization-change')); persistInbox(); });
 	lootKeepAllBtn?.addEventListener('click',closeInbox);
+	// Selection actions
+	lootApplySelBtn?.addEventListener('click',()=>{ const chosen={}; (getActiveList()||[]).forEach(ensureKey); (getActiveList()||[]).forEach(it=>{ if(!selectedKeys.has(it._key)) return; const all=MM.getCustomizationItems? MM.getCustomizationItems():null; const cur=currentOf(it.kind,all); const sc=computeScore(it,cur); if(!chosen[it.kind] || sc>chosen[it.kind].sc){ chosen[it.kind]={it,sc}; } }); Object.values(chosen).forEach(v=>{ const it=v.it; if(it.kind==='cape') MM.customization.capeStyle=it.id; else if(it.kind==='eyes') MM.customization.eyeStyle=it.id; else MM.customization.outfitStyle=it.id; }); if(MM.recomputeModifiers) MM.recomputeModifiers(); window.dispatchEvent(new CustomEvent('mm-customization-change')); selectedKeys.clear(); rebuildList(); });
+	lootStashSelBtn?.addEventListener('click',()=>{ if(currentTab!=='inbox') return; const keep=[]; (window.lootInbox||[]).forEach(it=>{ ensureKey(it); if(selectedKeys.has(it._key)){ window.lootStash.push(it); } else { keep.push(it); } }); window.lootInbox=keep; persistInbox(); persistStash(); selectedKeys.clear(); rebuildList(); });
+	lootUnstashSelBtn?.addEventListener('click',()=>{ if(currentTab!=='stash') return; const keep=[]; (window.lootStash||[]).forEach(it=>{ ensureKey(it); if(selectedKeys.has(it._key)){ window.lootInbox.push(it); } else { keep.push(it); } }); window.lootStash=keep; persistInbox(); persistStash(); selectedKeys.clear(); rebuildList(); });
+	lootDiscardSelBtn?.addEventListener('click',()=>{ const src = getActiveList(); const keep=[]; (src||[]).forEach(it=>{ ensureKey(it); if(!selectedKeys.has(it._key)){ keep.push(it); return; } if(MM.dynamicLoot){ const pool = it.kind==='cape'? MM.dynamicLoot.capes : it.kind==='eyes'? MM.dynamicLoot.eyes : MM.dynamicLoot.outfits; const idx=pool? pool.indexOf(it):-1; if(idx>=0) pool.splice(idx,1); } if(MM.addDiscardedLoot) MM.addDiscardedLoot(it.id); }); if(MM.chests && MM.chests.saveDynamicLoot) MM.chests.saveDynamicLoot(); if(currentTab==='inbox'){ window.lootInbox=keep; persistInbox(); } else { window.lootStash=keep; persistStash(); } selectedKeys.clear(); rebuildList(); });
+	// Tabs, sort, filters
+	tabInbox?.addEventListener('click',()=>{ setTab('inbox'); persistLootUI(); });
+	tabStash?.addEventListener('click',()=>{ setTab('stash'); persistLootUI(); });
+	sortSel?.addEventListener('change',()=>{ rebuildList(); persistLootUI(); });
+	filtersWrap?.addEventListener('click',e=>{ const chip=e.target.closest('.chip'); if(!chip) return; const k=chip.getAttribute('data-kind'); if(!k) return; if(activeKinds.has(k)){ activeKinds.delete(k); chip.classList.remove('on'); } else { activeKinds.add(k); chip.classList.add('on'); } rebuildList(); persistLootUI(); });
 	window.addEventListener('keydown',e=>{ if(e.key.toLowerCase()==='i'){ if(lootPopup.classList.contains('show')) closeInbox(); else openInbox(); } });
-	MM.onLootGained = function(items){ if(window.updateDynamicCustomization) updateDynamicCustomization(); if(window.lootInbox){ window.lootInbox.push(...items); lootInboxUnread += items.length; updateLootInboxIndicator(); persistInbox(); } };
+	MM.onLootGained = function(items){ if(window.updateDynamicCustomization) updateDynamicCustomization(); if(window.lootInbox){ items.forEach(it=>{ it.time=Date.now(); ensureKey(it); }); window.lootInbox.push(...items); lootInboxUnread += items.length; updateLootInboxIndicator(); persistInbox(); } };
 	// Initial indicator on load (if persisted)
 	updateLootInboxIndicator();
+	// Prepare first render state
+	(window.lootInbox||[]).forEach(ensureKey); (window.lootStash||[]).forEach(ensureKey);
 }

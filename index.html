@@ -79,6 +79,15 @@
   #lootPopup.show{ display:flex; animation:lootIn .35s cubic-bezier(.22,.9,.3,1.1); }
   @keyframes lootIn{0%{opacity:0; transform:translate(-50%,-50%) scale(.75);}100%{opacity:1; transform:translate(-50%,-50%) scale(1);} }
   #lootPopup h3{ margin:0 0 4px; font-size:18px; }
+  #lootPopup .hdrbar{ display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+  #lootPopup .tabs{ display:flex; gap:8px; }
+  #lootPopup .tabBtn{ background:rgba(255,255,255,.14); border:none; color:#fff; border-radius:999px; padding:6px 10px; font-weight:600; cursor:pointer; font-size:12px; }
+  #lootPopup .tabBtn.sel{ background:#2c7ef8; }
+  #lootPopup .filters{ display:flex; gap:6px; flex-wrap:wrap; }
+  #lootPopup .chip{ background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.15); border-radius:999px; padding:4px 8px; font-size:11px; cursor:pointer; }
+  #lootPopup .chip.on{ background:#21a366; border-color:#21a366; }
+  #lootPopup .sortWrap{ display:flex; align-items:center; gap:6px; font-size:11px; opacity:.85; }
+  #lootPopup select{ background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.15); color:#fff; border-radius:8px; padding:4px 6px; font-size:12px; }
   #lootPopup .items{ display:flex; flex-direction:column; gap:10px; overflow:auto; max-height:40vh; }
   #lootPopup .lootRow{ display:grid; grid-template-columns:1fr auto; gap:12px; padding:10px 12px; background:linear-gradient(140deg,rgba(255,255,255,.08),rgba(255,255,255,.04)); border:1px solid rgba(255,255,255,.12); border-radius:14px; position:relative; }
   #lootPopup .lootRow.epic{ border-color:rgba(224,179,65,.6); box-shadow:0 0 0 1px rgba(224,179,65,.4),0 0 26px -4px rgba(224,179,65,.5); }
@@ -88,6 +97,10 @@
   #lootPopup .curTag{ font-size:10px; background:rgba(255,255,255,.14); border-radius:6px; padding:2px 6px; margin-left:6px; }
   #lootPopup .diffPlus{ color:#4ade80; font-weight:600; }
   #lootPopup .diffMinus{ color:#ef4444; font-weight:600; }
+  #lootPopup .deltaBadge{ font-size:10px; padding:2px 6px; border-radius:6px; margin-left:6px; background:rgba(33,163,102,.25); border:1px solid rgba(33,163,102,.45); }
+  #lootPopup .deltaBadge.worse{ background:rgba(196,50,50,.25); border-color:rgba(196,50,50,.45); }
+  #lootPopup .selMark{ position:absolute; left:8px; top:8px; width:16px; height:16px; border-radius:4px; border:1px solid rgba(255,255,255,.3); background:rgba(255,255,255,.08); display:flex; align-items:center; justify-content:center; font-size:12px; }
+  #lootPopup .lootRow.sel{ outline:2px solid #2c7ef8; }
   #lootPopup .btnBar{ display:flex; gap:10px; flex-wrap:wrap; }
   #lootPopup button{ background:#2c7ef8; color:#fff; border:none; border-radius:10px; padding:8px 14px; font-weight:600; cursor:pointer; font-size:12px; box-shadow:0 3px 12px rgba(44,126,248,.4); }
   #lootPopup button.sec{ background:rgba(255,255,255,.14); box-shadow:none; }
@@ -186,8 +199,38 @@
   <div id="lootDim"></div>
   <div id="lootPopup" role="dialog" aria-modal="true" aria-labelledby="lootTitle">
     <h3 id="lootTitle">Nowe przedmioty</h3>
+    <div class="hdrbar">
+      <div class="tabs">
+        <button id="lootTabInbox" class="tabBtn sel" aria-controls="lootPopupItems">Skrzynka</button>
+        <button id="lootTabStash" class="tabBtn" aria-controls="lootPopupItems">Skarbiec</button>
+      </div>
+      <div class="sortWrap">
+        <label for="lootSort">Sortuj:</label>
+        <select id="lootSort">
+          <option value="recommend">Polecane</option>
+          <option value="tier">Po tierze</option>
+          <option value="newest">Najnowsze</option>
+          <option value="kind">Rodzaj</option>
+          <option value="name">Nazwa</option>
+        </select>
+      </div>
+    </div>
+    <div class="filters" id="lootFilters">
+      <div class="chip on" data-kind="cape">Peleryny</div>
+      <div class="chip on" data-kind="eyes">Oczy</div>
+      <div class="chip on" data-kind="outfit">Stroje</div>
+    </div>
     <div class="items" id="lootPopupItems"></div>
-    <div class="btnBar"><button id="lootEquipAll" class="sec">Wyposaż najlepsze</button><button id="lootKeepAll" class="sec">Zachowaj wszystko</button><button id="lootClose" class="sec">Zamknij</button></div>
+    <div class="btnBar">
+      <button id="lootApplySel">Wyposaż zaznaczone</button>
+      <button id="lootStashSel" class="sec">Schowaj zaznaczone</button>
+      <button id="lootUnstashSel" class="sec" style="display:none">Przenieś do skrzynki</button>
+      <button id="lootDiscardSel" class="danger">Odrzuć zaznaczone</button>
+      <span style="flex:1"></span>
+      <button id="lootEquipAll" class="sec">Wyposaż najlepsze</button>
+      <button id="lootKeepAll" class="sec">Zachowaj wszystko</button>
+      <button id="lootClose" class="sec">Zamknij</button>
+    </div>
   </div>
   <script src="src/engine/constants.js"></script>
   <script src="src/engine/worldgen.js"></script>
