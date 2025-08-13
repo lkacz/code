@@ -472,16 +472,6 @@ const ASYNC_JSON_PROCESSOR = {
 	}
 };
 
-// Initialize the async JSON processor
-ASYNC_JSON_PROCESSOR.init();
-
-// Add cleanup to timer manager
-const originalCleanup = TIMER_MANAGER.cleanup;
-TIMER_MANAGER.cleanup = function() {
-	originalCleanup.call(this);
-	ASYNC_JSON_PROCESSOR.cleanup();
-};
-
 // --- Updated synchronous functions to maintain compatibility ---
 function stableStringify(v){ 
 	return ASYNC_JSON_PROCESSOR.stableStringifySync(v);
@@ -970,6 +960,17 @@ window.__getTimerDiagnostics = () => {
 	console.log('Timer Diagnostics:', diag);
 	return diag;
 };
+
+// Initialize the async JSON processor after TIMER_MANAGER is defined
+ASYNC_JSON_PROCESSOR.init();
+
+// Add cleanup to timer manager
+const originalCleanup = TIMER_MANAGER.cleanup;
+TIMER_MANAGER.cleanup = function() {
+	originalCleanup.call(this);
+	ASYNC_JSON_PROCESSOR.cleanup();
+};
+
 // Expose manual save/load via menu buttons (injected later if menu exists)
 window.__injectSaveButtons = function(){ const menuPanel=document.getElementById('menuPanel'); if(!menuPanel || document.getElementById('saveGameBtn')) return; const group=document.createElement('div'); group.className='group'; group.style.cssText='display:flex; flex-direction:column; gap:6px;';
 	const row=document.createElement('div'); row.style.cssText='display:flex; gap:6px; flex-wrap:wrap;';
