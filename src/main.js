@@ -2924,6 +2924,18 @@ document.addEventListener('keydown', (e)=>{ if(e.key==='Escape'){ closeMenu(); }
 })();
 // Regeneracja świata z nowym ziarnem
 document.getElementById('regenBtn')?.addEventListener('click',()=>{ setSeedFromInput(); regenWorld(); closeMenu(); });
+// Random world button: generate a fresh random seed irrespective of input field value
+document.getElementById('randomWorldBtn')?.addEventListener('click',()=>{
+	try {
+		const newSeed = Math.floor(Math.random()*0xFFFFFFFF);
+		const inp = document.getElementById('seedInput');
+		if(inp) inp.value = String(newSeed);
+		if(typeof WORLDGEN !== 'undefined'){ WORLDGEN.worldSeed = newSeed; }
+		if(window.MM && MM.worldGen){ MM.worldGen.worldSeed = newSeed; if(MM.world && MM.world.clearHeights) MM.world.clearHeights(); }
+		regenWorld();
+		closeMenu();
+	} catch(e){ console.warn('Random world generation failed', e); }
+});
 function regenWorld(){
 	// 1. Increment regen counter early so any hashes computed DURING regen use new salt
 	__worldRegenCounter++;
