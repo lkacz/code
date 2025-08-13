@@ -976,6 +976,45 @@ document.addEventListener('keydown', (e)=>{ if(e.key==='Escape'){ closeMenu(); }
 (function(){
 	if(window.__timeSliderInjected) return; window.__timeSliderInjected=true;
 	if(!menuPanel) return;
+	// --- UI preferences (scale + visibility) ---
+	const PREF_KEY='mm_ui_prefs_v1';
+	function loadUIPrefs(){ try{ const raw=localStorage.getItem(PREF_KEY); if(!raw) return null; const o=JSON.parse(raw); return o&&typeof o==='object'?o:null; }catch(e){ return null; } }
+	function saveUIPrefs(p){ try{ localStorage.setItem(PREF_KEY, JSON.stringify(p)); }catch(e){} }
+	// capture base sizes once so scaling is consistent
+	const root=document.documentElement; const cs=getComputedStyle(root);
+	const BASE={ cell: parseFloat(cs.getPropertyValue('--cell'))||64, btn: parseFloat(cs.getPropertyValue('--btn'))||48, mine: parseFloat(cs.getPropertyValue('--mine'))||76 };
+	function applyUIPrefs(p){ if(!p) return; const scale=Math.max(0.7, Math.min(1.6, Number(p.scale)||1)); root.style.setProperty('--cell', (BASE.cell*scale)+'px'); root.style.setProperty('--btn', (BASE.btn*scale)+'px'); root.style.setProperty('--mine', (BASE.mine*scale)+'px');
+		function vis(id,on){ const el=document.getElementById(id); if(!el) return; el.style.display = on? '' : 'none'; }
+		const show=p.show||{}; vis('inv', show.inv!==false); vis('hotbarWrap', show.hotbar!==false); vis('controls', !!show.controls); vis('dirRing', !!show.controls); vis('radarBtn', show.radar!==false); vis('craft', !!show.craft); const fpsEl=document.getElementById('fps'); if(fpsEl) fpsEl.parentElement.style.display = (show.fps===false)?'none':''; vis('messages', show.messages!==false);
+	}
+	const defaultPrefs={ scale:1, show:{ inv:true, hotbar:true, controls:false, radar:true, craft:true, fps:true, messages:true } };
+	let uiPrefs = Object.assign({}, defaultPrefs, loadUIPrefs()||{});
+	applyUIPrefs(uiPrefs);
+	// Settings section UI
+	const uiWrap=document.createElement('div'); uiWrap.className='group'; uiWrap.style.cssText='flex-direction:column; align-items:stretch; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;';
+	const uiTitle=document.createElement('div'); uiTitle.textContent='Interfejs'; uiTitle.style.cssText='font-weight:600; opacity:.9; margin-bottom:4px;'; uiWrap.appendChild(uiTitle);
+	// scale
+	const scaleRow=document.createElement('label'); scaleRow.style.cssText='font-size:12px; display:flex; justify-content:space-between; gap:8px; align-items:center;'; scaleRow.textContent='Skala UI';
+	const scaleVal=document.createElement('span'); scaleVal.style.cssText='font-size:11px; opacity:.7;'; scaleRow.appendChild(scaleVal);
+	const scaleRange=document.createElement('input'); scaleRange.type='range'; scaleRange.min='0.8'; scaleRange.max='1.4'; scaleRange.step='0.01'; scaleRange.value=String(uiPrefs.scale||1);
+	function updScale(){ scaleVal.textContent=(Number(scaleRange.value)*100).toFixed(0)+'%'; }
+	updScale();
+	uiWrap.appendChild(scaleRow); uiWrap.appendChild(scaleRange);
+	scaleRange.addEventListener('input',()=>{ uiPrefs.scale=Number(scaleRange.value)||1; applyUIPrefs(uiPrefs); saveUIPrefs(uiPrefs); updScale(); });
+	// toggles
+	const toggles=[
+		{ id:'inv', key:'inv', label:'Ekwipunek (góra)' },
+		{ id:'hotbarWrap', key:'hotbar', label:'Pasek szybkiego wyboru' },
+		{ id:'controls', key:'controls', label:'Sterowanie ekranowe (mobilne)' },
+		{ id:'radarBtn', key:'radar', label:'Przycisk radaru' },
+		{ id:'craft', key:'craft', label:'Panel rzemiosła' },
+		{ id:'fpsPanel', key:'fps', label:'FPS' },
+		{ id:'messages', key:'messages', label:'Komunikaty na górze' }
+	];
+	const grid=document.createElement('div'); grid.style.cssText='display:grid; grid-template-columns:repeat(2,minmax(120px,1fr)); gap:6px;';
+	toggles.forEach(t=>{ const row=document.createElement('label'); row.style.cssText='display:flex; gap:8px; align-items:center; font-size:12px;'; const cb=document.createElement('input'); cb.type='checkbox'; const cur=(uiPrefs.show&&t.key in uiPrefs.show)? !!uiPrefs.show[t.key] : (defaultPrefs.show[t.key]); cb.checked = cur; const span=document.createElement('span'); span.textContent=t.label; row.appendChild(cb); row.appendChild(span); grid.appendChild(row); cb.addEventListener('change',()=>{ uiPrefs.show = uiPrefs.show||{}; uiPrefs.show[t.key]=cb.checked; applyUIPrefs(uiPrefs); saveUIPrefs(uiPrefs); }); });
+	uiWrap.appendChild(grid);
+	menuPanel.appendChild(uiWrap);
 	const wrap=document.createElement('div'); wrap.className='group'; wrap.style.cssText='flex-direction:column; align-items:stretch; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;';
 	const label=document.createElement('label'); label.style.cssText='font-size:12px; display:flex; justify-content:space-between; gap:8px; align-items:center;'; label.textContent='Czas doby';
 	const span=document.createElement('span'); span.style.fontSize='11px'; span.style.opacity='0.7'; span.textContent='—'; label.appendChild(span);
