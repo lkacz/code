@@ -289,7 +289,203 @@ function decodeRLE(b64,totalLen){ const bytes=_bytesFromB64(b64); const out=new 
 function encodeRaw(arr){ return _b64FromBytes(arr); }
 function decodeRaw(b64){ return _bytesFromB64(b64); }
 // --- Integrity helpers (stable stringify + FNV1a hash) ---
-function stableStringify(v){ if(v===null||typeof v!=='object') return JSON.stringify(v); if(Array.isArray(v)) return '['+v.map(stableStringify).join(',')+']'; const keys=Object.keys(v).sort(); return '{'+keys.map(k=>JSON.stringify(k)+':'+stableStringify(v[k])).join(',')+'}'; }
+// --- Asynchronous JSON Processing System ---
+const ASYNC_JSON_PROCESSOR = {
+	worker: null,
+	processingQueue: new Map(), // id -> {resolve, reject, operation}
+	nextId: 1,
+	
+	// Threshold for async processing (15KB+ operations use worker)
+	ASYNC_THRESHOLD: 15 * 1024,
+	
+	// Initialize the JSON worker
+	init() {
+		if (this.worker) return;
+		
+		try {
+			// Create worker inline for JSON processing
+			const workerCode = `
+				self.onmessage = function(e) {
+					const { id, operation, data } = e.data;
+					
+					try {
+						let result;
+						
+						if (operation === 'stringify') {
+							result = JSON.stringify(data);
+						} else if (operation === 'parse') {
+							result = JSON.parse(data);
+						} else if (operation === 'stableStringify') {
+							function stableStringify(v) {
+								if (v === null || typeof v !== 'object') return JSON.stringify(v);
+								if (Array.isArray(v)) return '[' + v.map(stableStringify).join(',') + ']';
+								const keys = Object.keys(v).sort();
+								return '{' + keys.map(k => JSON.stringify(k) + ':' + stableStringify(v[k])).join(',') + '}';
+							}
+							result = stableStringify(data);
+						} else {
+							throw new Error('Unknown operation: ' + operation);
+						}
+						
+						self.postMessage({ id, success: true, result });
+					} catch (error) {
+						self.postMessage({ id, success: false, error: error.message });
+					}
+				};
+			`;
+			
+			const blob = new Blob([workerCode], { type: 'application/javascript' });
+			this.worker = new Worker(URL.createObjectURL(blob));
+			
+			this.worker.onmessage = (e) => {
+				const { id, success, result, error } = e.data;
+				const pending = this.processingQueue.get(id);
+				
+				if (pending) {
+					this.processingQueue.delete(id);
+					if (success) {
+						pending.resolve(result);
+					} else {
+						pending.reject(new Error(error));
+					}
+				}
+			};
+			
+			this.worker.onerror = (error) => {
+				console.warn('JSON Worker error:', error);
+				// Fallback to synchronous processing for pending operations
+				for (const [id, pending] of this.processingQueue) {
+					pending.reject(new Error('Worker failed'));
+				}
+				this.processingQueue.clear();
+				this.worker = null;
+			};
+			
+		} catch (e) {
+			console.warn('Failed to create JSON worker, using synchronous processing:', e);
+			this.worker = null;
+		}
+	},
+	
+	// Async JSON.stringify with automatic worker decision
+	async stringify(data) {
+		const estimated = this.estimateSize(data);
+		
+		if (estimated < this.ASYNC_THRESHOLD || !this.worker) {
+			// Use synchronous for small data
+			return JSON.stringify(data);
+		}
+		
+		// Use worker for large data
+		return this.processWithWorker('stringify', data);
+	},
+	
+	// Async JSON.parse with automatic worker decision
+	async parse(jsonString) {
+		if (jsonString.length < this.ASYNC_THRESHOLD || !this.worker) {
+			// Use synchronous for small strings
+			return JSON.parse(jsonString);
+		}
+		
+		// Use worker for large strings
+		return this.processWithWorker('parse', jsonString);
+	},
+	
+	// Async stable stringify
+	async stableStringify(data) {
+		const estimated = this.estimateSize(data);
+		
+		if (estimated < this.ASYNC_THRESHOLD || !this.worker) {
+			// Use synchronous for small data
+			return this.stableStringifySync(data);
+		}
+		
+		// Use worker for large data
+		return this.processWithWorker('stableStringify', data);
+	},
+	
+	// Process operation with worker
+	processWithWorker(operation, data) {
+		return new Promise((resolve, reject) => {
+			const id = this.nextId++;
+			this.processingQueue.set(id, { resolve, reject, operation });
+			
+			// Set timeout for worker operations
+			setTimeout(() => {
+				if (this.processingQueue.has(id)) {
+					this.processingQueue.delete(id);
+					reject(new Error('JSON processing timeout'));
+				}
+			}, 10000); // 10 second timeout
+			
+			this.worker.postMessage({ id, operation, data });
+		});
+	},
+	
+	// Synchronous fallback for stable stringify
+	stableStringifySync(v) {
+		if (v === null || typeof v !== 'object') return JSON.stringify(v);
+		if (Array.isArray(v)) return '[' + v.map(this.stableStringifySync.bind(this)).join(',') + ']';
+		const keys = Object.keys(v).sort();
+		return '{' + keys.map(k => JSON.stringify(k) + ':' + this.stableStringifySync(v[k])).join(',') + '}';
+	},
+	
+	// Estimate data size for async decision
+	estimateSize(data) {
+		if (typeof data === 'string') return data.length;
+		
+		// Quick estimation based on object structure
+		let estimate = 0;
+		
+		function estimateRecursive(obj, depth = 0) {
+			if (depth > 10) return 100; // Prevent deep recursion
+			
+			if (obj === null || obj === undefined) return 4;
+			if (typeof obj === 'boolean') return 5;
+			if (typeof obj === 'number') return 10;
+			if (typeof obj === 'string') return obj.length + 2;
+			
+			if (Array.isArray(obj)) {
+				return 2 + obj.slice(0, 100).reduce((sum, item) => sum + estimateRecursive(item, depth + 1), 0);
+			}
+			
+			if (typeof obj === 'object') {
+				const keys = Object.keys(obj).slice(0, 100);
+				return 2 + keys.reduce((sum, key) => {
+					return sum + key.length + 3 + estimateRecursive(obj[key], depth + 1);
+				}, 0);
+			}
+			
+			return 10;
+		}
+		
+		return estimateRecursive(data);
+	},
+	
+	// Cleanup worker
+	cleanup() {
+		if (this.worker) {
+			this.worker.terminate();
+			this.worker = null;
+		}
+		this.processingQueue.clear();
+	}
+};
+
+// Initialize the async JSON processor
+ASYNC_JSON_PROCESSOR.init();
+
+// Add cleanup to timer manager
+const originalCleanup = TIMER_MANAGER.cleanup;
+TIMER_MANAGER.cleanup = function() {
+	originalCleanup.call(this);
+	ASYNC_JSON_PROCESSOR.cleanup();
+};
+
+// --- Updated synchronous functions to maintain compatibility ---
+function stableStringify(v){ 
+	return ASYNC_JSON_PROCESSOR.stableStringifySync(v);
+}
 function computeHash(str){ // FNV-1a 32-bit
  let h=0x811c9dc5; for(let i=0;i<str.length;i++){ h^=str.charCodeAt(i); h = (h>>>0) * 0x01000193; h>>>0; } return ('00000000'+(h>>>0).toString(16)).slice(-8); }
 function attachHash(obj){ const clone=JSON.parse(JSON.stringify(obj)); const core=stableStringify(clone); const hash=computeHash(core); clone.h=hash; return {object:clone, hash}; }
@@ -490,11 +686,19 @@ const STORAGE_QUOTA_MANAGER = {
 	}
 };
 
-function saveGame(manual){ 
+async function saveGame(manual){ 
 	try{ 
 		const data = buildSaveObject(); 
-		const {object:withHash} = attachHash(data); 
-		const json = JSON.stringify(withHash);
+		
+		// Show processing indicator for manual saves
+		if (manual) {
+			msg('Przetwarzanie zapisu...');
+		}
+		
+		// Use async processing for hash attachment and stringification
+		const withHashPromise = attachHashAsync(data);
+		const {object: withHash} = await withHashPromise;
+		const json = await ASYNC_JSON_PROCESSOR.stringify(withHash);
 		
 		// Use quota-aware storage for manual saves, allow cleanup for auto-saves
 		STORAGE_QUOTA_MANAGER.safeSetItem(SAVE_KEY, json, { 
@@ -520,11 +724,23 @@ function saveGame(manual){
 				msg('Błąd: Storage pełny, brak zapisów do usunięcia.');
 			} else if (e.message === 'QUOTA_EXCEEDED_AFTER_CLEANUP') {
 				msg('Błąd: Storage nadal pełny mimo oczyszczenia.');
+			} else if (e.message === 'JSON processing timeout') {
+				msg('Błąd: Timeout podczas przetwarzania danych.');
 			} else {
 				msg('Błąd zapisu: ' + (e.message || 'Nieznany'));
 			}
 		}
 	} 
+}
+
+// Async version of attachHash
+async function attachHashAsync(obj) {
+	const cloneJson = await ASYNC_JSON_PROCESSOR.stringify(obj);
+	const clone = await ASYNC_JSON_PROCESSOR.parse(cloneJson);
+	const core = await ASYNC_JSON_PROCESSOR.stableStringify(clone);
+	const hash = computeHash(core);
+	clone.h = hash;
+	return {object: clone, hash};
 }
 
 // Lightweight autosave indicator (created lazily)
@@ -567,9 +783,9 @@ function showAutoSaveHint(sizeKB){
 }
 // Monkey-patch original saveGame to attach autosave hints (wrap)
 const _origSaveGame = saveGame; saveGame = function(manual){ const before=performance.now(); _origSaveGame(manual); if(!manual){ try{ const raw=localStorage.getItem(SAVE_KEY); if(raw) showAutoSaveHint((raw.length/1024)|0); }catch(e){} } };
-function loadGame(){ try{ let raw=localStorage.getItem(SAVE_KEY); if(!raw){ for(const k of OLD_SAVE_KEYS){ raw=localStorage.getItem(k); if(raw) break; } }
-	if(!raw){ const leg=localStorage.getItem(LEGACY_INV_KEY); if(leg){ try{ const li=JSON.parse(leg); if(li){ importInventory(li.inv); if(li.tool) player.tool=li.tool; if(typeof li.hotbarIndex==='number') hotbarIndex=li.hotbarIndex; } }catch(e){} } return false; }
-	const data=JSON.parse(raw); if(!data|| typeof data!=='object') return false; const hashInfo=verifyHash(data); if(!hashInfo.ok){ msg('UWAGA: uszkodzony zapis (hash)'); console.warn('Hash mismatch',hashInfo); }
+async function loadGame(){ try{ let raw=localStorage.getItem(SAVE_KEY); if(!raw){ for(const k of OLD_SAVE_KEYS){ raw=localStorage.getItem(k); if(raw) break; } }
+	if(!raw){ const leg=localStorage.getItem(LEGACY_INV_KEY); if(leg){ try{ const li=await ASYNC_JSON_PROCESSOR.parse(leg); if(li){ importInventory(li.inv); if(li.tool) player.tool=li.tool; if(typeof li.hotbarIndex==='number') hotbarIndex=li.hotbarIndex; } }catch(e){} } return false; }
+	const data=await ASYNC_JSON_PROCESSOR.parse(raw); if(!data|| typeof data!=='object') return false; const hashInfo=verifyHash(data); if(!hashInfo.ok){ msg('UWAGA: uszkodzony zapis (hash)'); console.warn('Hash mismatch',hashInfo); }
 	const ver=data.v||2; // proceed even if hash mismatch
 	if(data.seed!=null && data.seed!==WORLDGEN.worldSeed){ if(WORLDGEN.setSeedFromInput){ WORLDGEN.worldSeed=data.seed; if(WORLD.clearHeights) WORLD.clearHeights(); } WORLD.clear(); }
 	if(data.world && Array.isArray(data.world.modified)) restoreModifiedChunks(data.world.modified);
@@ -780,7 +996,7 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 	function loadSlots(){ try{ const raw=localStorage.getItem(SAVE_LIST_KEY); if(!raw) return []; const arr=JSON.parse(raw); return Array.isArray(arr)?arr:[]; }catch(e){ return []; } }
 	function storeSlots(slots){ try{ localStorage.setItem(SAVE_LIST_KEY, JSON.stringify(slots)); }catch(e){} }
 	function slotKey(id){ return 'mm_slot_'+id; }
-	function serializeCurrent(){ return JSON.stringify(buildSaveObject()); }
+	async function serializeCurrent(){ return await ASYNC_JSON_PROCESSOR.stringify(buildSaveObject()); }
 	function refreshList(){ 
 		list.innerHTML = ''; 
 		const slots = loadSlots().sort((a,b) => b.time - a.time); 
@@ -845,7 +1061,7 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 				} 
 			}
 			const nameDisp=(s.name||'Bez nazwy'); info.innerHTML='<b>'+ nameDisp + (isCur?' *':'') +'</b><br><span style="font-size:10px; opacity:.65;">'+ new Date(s.time).toLocaleString() +' • '+sizeKB+' KB • '+hashState+' • seed '+ (s.seed??'-') +'</span>';
-			const loadB=document.createElement('button'); loadB.textContent='Wczytaj'; loadB.style.fontSize='11px'; loadB.addEventListener('click',()=>{ const raw=localStorage.getItem(slotKey(s.id)); if(raw){ try{ localStorage.setItem(SAVE_KEY,raw); const ok=loadGame(); if(ok){ currentSlotId=s.id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Wczytano '+nameDisp); refreshList(); } else msg('Błąd wczyt.'); }catch(e){ msg('Błąd wczyt.'); } } });
+			const loadB=document.createElement('button'); loadB.textContent='Wczytaj'; loadB.style.fontSize='11px'; loadB.addEventListener('click',async ()=>{ const raw=localStorage.getItem(slotKey(s.id)); if(raw){ try{ localStorage.setItem(SAVE_KEY,raw); const ok=await loadGame(); if(ok){ currentSlotId=s.id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Wczytano '+nameDisp); refreshList(); } else msg('Błąd wczyt.'); }catch(e){ msg('Błąd wczyt.'); } } });
 			const exportB=document.createElement('button'); exportB.textContent='Eksport'; exportB.style.fontSize='11px'; exportB.addEventListener('click',()=>{ const raw=localStorage.getItem(slotKey(s.id)); if(!raw){ msg('Brak danych'); return; } try{ const blob=new Blob([raw],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); const safe=nameDisp.replace(/[^a-z0-9_-]+/gi,'_'); a.download='save_'+safe+'.json'; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },0); msg('Wyeksportowano'); }catch(e){ msg('Błąd eksportu'); } });
 			const renameB=document.createElement('button'); renameB.textContent='Nazwa'; renameB.style.fontSize='11px'; renameB.addEventListener('click',()=>{ const nn=prompt('Nowa nazwa zapisu:', s.name||''); if(nn!=null){ s.name=nn.trim(); storeSlots(slots); refreshList(); }});
 			const delB=document.createElement('button'); delB.textContent='Usuń'; delB.style.fontSize='11px'; delB.addEventListener('click',()=>{ if(confirm('Usunąć zapis '+(s.name||s.id)+'?')){ localStorage.removeItem(slotKey(s.id)); const idx=slots.findIndex(x=>x.id===s.id); if(idx>=0){ slots.splice(idx,1); storeSlots(slots); if(currentSlotId===s.id) currentSlotId=null; refreshList(); } } });
@@ -939,7 +1155,7 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 	}
 
 	// Continue button logic
-	continueBtn.addEventListener('click',() => {
+	continueBtn.addEventListener('click',async () => {
 		const slots = loadSlots(); 
 		if (!slots.length) { 
 			msg('Brak zapisów'); 
@@ -959,7 +1175,7 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 		
 		try { 
 			STORAGE_QUOTA_MANAGER.safeSetItem(SAVE_KEY, raw, { allowCleanup: true });
-			const ok = loadGame(); 
+			const ok = await loadGame(); 
 			if (ok) { 
 				currentSlotId = targetId; 
 				
@@ -1000,10 +1216,10 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 		if (!f) return; 
 		
 		const reader = new FileReader(); 
-		reader.onload = () => { 
+		reader.onload = async () => { 
 			try { 
 				const txt = String(reader.result); 
-				const obj = JSON.parse(txt); 
+				const obj = await ASYNC_JSON_PROCESSOR.parse(txt); 
 				
 				if (!obj || typeof obj !== 'object' || !obj.v) { 
 					msg('Niepoprawny plik'); 
@@ -1045,7 +1261,7 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 	importBtn.addEventListener('click',()=>fileInput.click());
 	group.appendChild(importBtn); group.appendChild(fileInput);
 	saveBtn.addEventListener('click',()=>{ performNamedSave(false); });
-	loadBtn.addEventListener('click',()=>{ const ok=loadGame(); msg(ok?'Wczytano zapis główny':'Brak głównego zapisu'); });
+	loadBtn.addEventListener('click',async ()=>{ const ok=await loadGame(); msg(ok?'Wczytano zapis główny':'Brak głównego zapisu'); });
 	saveAsBtn.addEventListener('click',()=>{ performNamedSave(true); });
 	const openBrowserBtn=document.createElement('button'); openBrowserBtn.textContent='Lista zapisów'; openBrowserBtn.style.cssText='margin-top:4px;'; openBrowserBtn.addEventListener('click',()=>{ browser.style.display= browser.style.display==='flex' ? 'none':'flex'; if(browser.style.display==='flex') refreshList(); });
 	group.appendChild(openBrowserBtn); group.appendChild(browser);
@@ -1862,9 +2078,11 @@ let frames=0,lastFps=performance.now(); function updateFps(now){ frames++; if(no
 // Spawn
 function placePlayer(skipMsg){ const x=0; ensureChunk(0); let y=0; while(y<WORLD_H-1 && getTile(x,y)===T.AIR) y++; player.x=x+0.5; player.y=y-1; centerOnPlayer(); if(!skipMsg) msg('Seed '+worldSeed); }
 function centerOnPlayer(){ revealAround(); camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; initScarf(); }
-const loaded=loadGame();
+(async function() {
+const loaded=await loadGame();
 if(!loaded){ placePlayer(); } else { centerOnPlayer(); }
 updateInventory(); updateGodBtn(); updateHotbarSel(); if(!loaded) msg('Sterowanie: A/D/W + LPM kopie, PPM stawia (4-9 wybór). G=Bóg (nieskończone skoki), M=Mapa, C=Centrum, H=Pomoc'); else msg('Wczytano zapis – miłej gry!');
+})();
 // Ghost preview placement
 let ghostTile=null, ghostX=0, ghostY=0;
 canvas.addEventListener('pointermove',e=>{ if(isBlockingOverlayOpen()) return; const {tx,ty}=eventToTile(e); if(getTile(tx,ty)===T.AIR){ ghostX=tx; ghostY=ty; ghostTile=selectedTileId(); } else ghostTile=null; });
