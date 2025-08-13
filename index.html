@@ -22,6 +22,8 @@
   #menuWrap{ position:relative; pointer-events:auto; }
   #menuBtn{ pointer-events:auto; background:#2c7ef8; color:#fff; border:none; border-radius:10px; padding:6px 12px; font-weight:600; font-size:14px; box-shadow:0 2px 6px rgba(44,126,248,.35); cursor:pointer; }
   #menuPanel{ position:absolute; right:0; top:110%; min-width:230px; background:rgba(15,18,26,.92); border:1px solid rgba(255,255,255,.15); border-radius:14px; padding:10px 10px 12px; display:flex; flex-direction:column; gap:10px; box-shadow:0 8px 28px -6px rgba(0,0,0,.6); backdrop-filter:blur(8px); }
+  /* Ensure the hidden attribute actually hides the panel regardless of the default display */
+  #menuPanel[hidden]{ display:none !important; }
   #menuPanel .group{ display:flex; flex-wrap:wrap; gap:6px; }
   #menuPanel .seedRow{ align-items:center; gap:6px; font-size:12px; }
   #menuPanel input{ background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 6px; font-size:12px; width:110px; }

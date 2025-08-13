@@ -942,9 +942,27 @@ document.getElementById('mapBtn')?.addEventListener('click',toggleMap);
 const godBtn=document.getElementById('godBtn'); if(godBtn) godBtn.addEventListener('click',toggleGod);
 updateGodBtn();
 const menuBtn=document.getElementById('menuBtn'); const menuPanel=document.getElementById('menuPanel');
-function closeMenu(){ menuPanel.hidden=true; menuBtn.setAttribute('aria-expanded','false'); }
-menuBtn?.addEventListener('click',()=>{ const vis=menuPanel.hidden; menuPanel.hidden=!vis; menuBtn.setAttribute('aria-expanded', String(vis)); });
-document.addEventListener('click',e=>{ if(!menuPanel || menuPanel.hidden) return; if(menuPanel.contains(e.target)||menuBtn.contains(e.target)) return; closeMenu(); });
+// Robust menu visibility control (handles cases where CSS forces display:flex)
+function setMenuVisible(on){
+	if(!menuPanel || !menuBtn) return;
+	if(on){
+		menuPanel.hidden = false;
+		menuPanel.style.display = 'flex';
+		menuBtn.setAttribute('aria-expanded','true');
+	} else {
+		menuPanel.hidden = true;
+		menuPanel.style.display = 'none';
+		menuBtn.setAttribute('aria-expanded','false');
+	}
+}
+function closeMenu(){ setMenuVisible(false); }
+// Ensure starts hidden even if the hidden attribute is ignored/removed
+if(menuPanel){ setMenuVisible(false); }
+menuBtn?.addEventListener('click',()=>{
+	const willShow = menuPanel.hidden || menuPanel.style.display === 'none';
+	setMenuVisible(willShow);
+});
+document.addEventListener('click',e=>{ if(!menuPanel || menuPanel.hidden || menuPanel.style.display==='none') return; if(menuPanel.contains(e.target)||menuBtn.contains(e.target)) return; closeMenu(); });
 document.getElementById('radarMenuBtn')?.addEventListener('click',()=>{ radarFlash=performance.now()+1500; closeMenu(); });
 // Inject debug time-of-day slider (non-intrusive) at end of menu only once
 (function(){
