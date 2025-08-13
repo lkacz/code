@@ -2946,6 +2946,8 @@ function regenWorld(){
 
 	// 5. Reset runtime subsystem state
 	mining=false; if(MM.fallingSolids) MM.fallingSolids.reset(); if(MM.water) MM.water.reset();
+	// Clear mobs from previous world (prevent carryover / falling from old positions)
+	if(MM.mobs && typeof MM.mobs.clear==='function'){ try{ MM.mobs.clear(); }catch(e){ console.warn('Mob clear failed', e); } }
 
 	// 6. Reset inventory & tools
 	inv.grass=inv.sand=inv.stone=inv.diamond=inv.wood=inv.leaf=inv.snow=inv.water=0; inv.tools.stone=inv.tools.diamond=false; player.tool='basic'; hotbarIndex=0; // if god mode active, restore 100 stack after reset

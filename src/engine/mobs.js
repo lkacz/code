@@ -1071,9 +1071,20 @@
       };
     }
     
+    // Full reset helper for world regeneration: removes all live mobs & clears caches
+    function clearAll(){
+      for(const m of mobs) removeFromGrid(m); mobs.length=0; // empty list
+      for(const k in speciesCounts) delete speciesCounts[k];
+      for(const k in speciesAggro) delete speciesAggro[k];
+      separationCache.clear();
+      grid.clear();
+      gridUpdateQueue.clear();
+      nextMobId = 1; // restart id sequencing to avoid unbounded growth
+    }
+
     MM.mobs = { 
       update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro, 
-      forceSpawn, species: Object.keys(SPECIES), registerSpecies, 
+      forceSpawn, species: Object.keys(SPECIES), registerSpecies, clear: clearAll,
       metrics: () => metrics, diagnose, getPerformanceDiagnostics 
     };
     try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
