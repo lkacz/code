@@ -124,6 +124,7 @@
   <div id="topRightBar">
     <button id="craftToggleBtn" class="topbtn" aria-controls="craft" aria-expanded="true" title="Rzemiosło">🛠️</button>
     <button id="lootInboxBtn" title="Nowe przedmioty (I)" aria-label="Nowe przedmioty">! <span id="lootInboxCount"></span></button>
+    <button id="worldGenPanelBtn" class="topbtn" title="Konfiguracja generowania świata">WG</button>
     <div id="menuWrap">
       <button id="menuBtn" class="topbtn" aria-haspopup="true" aria-expanded="false" title="Menu" aria-label="Menu główne">≡</button>
       <div id="menuPanel" role="menu" aria-label="Menu" hidden tabindex="-1">
@@ -197,6 +198,27 @@
         <div style="margin-top:6px; font-size:10px; opacity:.6;">Skrzynie dostępne tylko w trybie Boga.</div>
       </div>
     <div id="errorBox" role="alert"></div>
+  </div>
+  <!-- World Generation Config Panel -->
+  <div id="worldGenPanel" hidden style="position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); width:min(1100px,94vw); max-height:86vh; background:rgba(18,22,30,.96); border:1px solid rgba(255,255,255,.18); border-radius:20px; padding:16px 18px 20px; box-shadow:0 18px 60px -10px rgba(0,0,0,.65); display:flex; flex-direction:column; gap:12px; z-index:200; font-size:12px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+      <h2 style="margin:0;font-size:18px;">Konfiguracja generowania świata</h2>
+      <div style="display:flex; gap:8px;">
+        <button id="wgPreviewBtn" class="topbtn" style="background:#415877;">Podgląd</button>
+        <button id="wgApplyBtn" class="topbtn" style="background:#21a366;">Zastosuj</button>
+        <button id="wgRegenerateBtn" class="topbtn" style="background:#2c7ef8;">Zastosuj + Nowy</button>
+        <button id="wgResetBtn" class="topbtn" style="background:#a33434;">Domyślne</button>
+        <button id="wgCloseBtn" class="topbtn" style="background:rgba(255,255,255,.15);">×</button>
+      </div>
+    </div>
+    <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start;">
+      <div style="flex:1 1 340px; min-width:320px; display:flex; flex-direction:column; gap:10px;" id="wgParams"></div>
+      <div style="flex:2 1 520px; min-width:300px; display:flex; flex-direction:column; gap:8px;">
+        <canvas id="wgPreviewCanvas" width="900" height="220" style="width:100%; border:1px solid rgba(255,255,255,.15); background:#05080e; border-radius:12px; image-rendering:pixelated;"></canvas>
+        <div id="wgStatus" style="min-height:18px; opacity:.85; font-size:11px;">—</div>
+        <div style="font-size:11px; opacity:.65; line-height:1.4;">Zmiana parametrów wpływa na przyszłe generowane chunki. Aby wymusić pełną regenerację istniejącego świata użyj „Zastosuj + Nowy”. Podgląd to tylko 1D przekrój wysokości + kolor biomu.</div>
+      </div>
+    </div>
   </div>
   <div id="lootDim"></div>
   <div id="lootPopup" role="dialog" aria-modal="true" aria-labelledby="lootTitle">
