@@ -987,7 +987,9 @@ document.addEventListener('keydown', (e)=>{ if(e.key==='Escape'){ closeMenu(); }
 		function vis(id,on){ const el=document.getElementById(id); if(!el) return; el.style.display = on? '' : 'none'; }
 		const show=p.show||{}; vis('inv', show.inv!==false); vis('hotbarWrap', show.hotbar!==false); vis('controls', !!show.controls); vis('dirRing', !!show.controls); vis('radarBtn', show.radar!==false); vis('craft', !!show.craft); const fpsEl=document.getElementById('fps'); if(fpsEl) fpsEl.parentElement.style.display = (show.fps===false)?'none':''; vis('messages', show.messages!==false);
 	}
-	const defaultPrefs={ scale:1, show:{ inv:true, hotbar:true, controls:false, radar:true, craft:true, fps:true, messages:true } };
+	// Smarter defaults: mobile shows on‑screen controls by default and slightly larger UI
+	const isMobile = matchMedia('(pointer:coarse)').matches || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent||'');
+	const defaultPrefs={ scale:isMobile?1.1:1, show:{ inv:true, hotbar:true, controls:isMobile, radar:true, craft:!isMobile, fps:true, messages:true } };
 	let uiPrefs = Object.assign({}, defaultPrefs, loadUIPrefs()||{});
 	applyUIPrefs(uiPrefs);
 	// Settings section UI
@@ -1014,6 +1016,9 @@ document.addEventListener('keydown', (e)=>{ if(e.key==='Escape'){ closeMenu(); }
 	const grid=document.createElement('div'); grid.style.cssText='display:grid; grid-template-columns:repeat(2,minmax(120px,1fr)); gap:6px;';
 	toggles.forEach(t=>{ const row=document.createElement('label'); row.style.cssText='display:flex; gap:8px; align-items:center; font-size:12px;'; const cb=document.createElement('input'); cb.type='checkbox'; const cur=(uiPrefs.show&&t.key in uiPrefs.show)? !!uiPrefs.show[t.key] : (defaultPrefs.show[t.key]); cb.checked = cur; const span=document.createElement('span'); span.textContent=t.label; row.appendChild(cb); row.appendChild(span); grid.appendChild(row); cb.addEventListener('change',()=>{ uiPrefs.show = uiPrefs.show||{}; uiPrefs.show[t.key]=cb.checked; applyUIPrefs(uiPrefs); saveUIPrefs(uiPrefs); }); });
 	uiWrap.appendChild(grid);
+	// Reset to defaults
+	const resetRow=document.createElement('div'); resetRow.style.cssText='display:flex; justify-content:flex-end; margin-top:8px;'; const resetBtn=document.createElement('button'); resetBtn.textContent='Resetuj UI'; resetBtn.className='topbtn'; resetBtn.style.cssText='padding:6px 10px;'; resetRow.appendChild(resetBtn); uiWrap.appendChild(resetRow);
+	resetBtn.addEventListener('click',()=>{ uiPrefs = JSON.parse(JSON.stringify(defaultPrefs)); applyUIPrefs(uiPrefs); saveUIPrefs(uiPrefs); scaleRange.value=String(uiPrefs.scale); updScale(); grid.querySelectorAll('input[type="checkbox"]').forEach((cb,i)=>{ const t = [ 'inv','hotbar','controls','radar','craft','fps','messages' ][i]; cb.checked = !!uiPrefs.show[t]; }); });
 	menuPanel.appendChild(uiWrap);
 	const wrap=document.createElement('div'); wrap.className='group'; wrap.style.cssText='flex-direction:column; align-items:stretch; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;';
 	const label=document.createElement('label'); label.style.cssText='font-size:12px; display:flex; justify-content:space-between; gap:8px; align-items:center;'; label.textContent='Czas doby';

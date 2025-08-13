@@ -10,7 +10,7 @@
     html,body{ margin:0; padding:0; height:100%; background:#0b0f16; color:#e8e8e8; font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,'Helvetica Neue',Arial,'Noto Sans',sans-serif; touch-action:none; user-select:none; overscroll-behavior:none; }
     canvas{ display:block; width:100vw; height:100vh; }
     #ui{ position:fixed; inset:0; pointer-events:none; }
-    #hud{ position:absolute; left:8px; right:8px; top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:space-between; }
+  #hud{ position:absolute; left:calc(8px + env(safe-area-inset-left)); right:calc(8px + env(safe-area-inset-right)); top:calc(8px + env(safe-area-inset-top)); display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:space-between; }
     #hud .panel{ pointer-events:auto; background:rgba(0,0,0,.45); backdrop-filter:blur(6px); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:6px 10px; display:inline-flex; align-items:center; gap:10px; font-size:12px; }
     #inv{ gap:14px; }
     #inv .item{ display:inline-flex; align-items:center; gap:6px; }
@@ -45,19 +45,24 @@
     .pad{ pointer-events:auto; display:grid; gap:8px; grid-template-columns:var(--cell) var(--cell) var(--cell); grid-template-rows:var(--cell) var(--cell) var(--cell); }
     .btn{ width:var(--btn); height:var(--btn); border-radius:16px; background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.25); box-shadow:inset 0 1px 4px rgba(0,0,0,.6), 0 4px 16px rgba(0,0,0,.35); display:flex; align-items:center; justify-content:center; font-size:18px; color:#fff; }
     .btn.on, .btn:active{ background:rgba(255,255,255,.25); }
-    #dirRing{ position:absolute; right:8px; bottom:8px; pointer-events:auto; display:grid; grid-template-columns:repeat(3,var(--cell)); grid-template-rows:repeat(3,var(--cell)); }
+  #dirRing{ position:absolute; right:calc(8px + env(safe-area-inset-right)); bottom:calc(8px + env(safe-area-inset-bottom)); pointer-events:auto; display:grid; grid-template-columns:repeat(3,var(--cell)); grid-template-rows:repeat(3,var(--cell)); }
     .dircell{ display:flex; align-items:center; justify-content:center; }
     .dirbtn{ width:var(--btn); height:var(--btn); border-radius:12px; border:1px solid rgba(255,255,255,.25); background:rgba(255,255,255,.10); color:#fff; font-size:16px; box-shadow:inset 0 1px 4px rgba(0,0,0,.6),0 2px 12px rgba(0,0,0,.25); }
     .dirbtn.sel{ outline:2px solid #2c7ef8; }
     #mineBtn{ width:var(--mine); height:var(--mine); border-radius:18px; font-size:24px; border:1px solid rgba(255,255,255,.3); background:linear-gradient(180deg,rgba(44,126,248,.95),rgba(29,92,204,.95)); box-shadow:0 8px 24px rgba(44,126,248,.35), inset 0 1px 3px rgba(255,255,255,.3); pointer-events:auto; }
     #mineBtn.on, #mineBtn:active{ filter:brightness(1.1); }
-    #radarBtn{ position:absolute; right:8px; bottom:calc(8px + 3*var(--cell) + 10px); width:52px; height:52px; border-radius:14px; border:1px solid rgba(255,255,255,.3); background:rgba(255,255,255,.10); color:#fff; font-weight:700; box-shadow:inset 0 1px 4px rgba(0,0,0,.6),0 2px 12px rgba(0,0,0,.25); pointer-events:auto; }
+  #radarBtn{ position:absolute; right:calc(8px + env(safe-area-inset-right)); bottom:calc(env(safe-area-inset-bottom) + 8px + 3*var(--cell) + 10px); width:52px; height:52px; border-radius:14px; border:1px solid rgba(255,255,255,.3); background:rgba(255,255,255,.10); color:#fff; font-weight:700; box-shadow:inset 0 1px 4px rgba(0,0,0,.6),0 2px 12px rgba(0,0,0,.25); pointer-events:auto; }
     #radarBtn.pulse{ animation:radarPulse .9s infinite alternate; border-color:#4dd0ff; }
     @keyframes radarPulse{0%{ background:rgba(77,208,255,.15); box-shadow:0 0 0 rgba(77,208,255,0),0 0 16px rgba(77,208,255,.25);}100%{ background:rgba(77,208,255,.35); box-shadow:0 0 18px rgba(77,208,255,.45),0 0 28px rgba(77,208,255,.35);} }
     .pill{ background:rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.12); border-radius:999px; padding:6px 10px; font-size:12px; }
     #errorBox{ position:absolute; left:8px; right:8px; top:50%; transform:translateY(-50%); background:#2b1e1e; color:#ffd7d7; border:1px solid #402b2b; border-radius:10px; padding:10px 12px; display:none; white-space:pre-wrap; font-family:ui-monospace,monospace; }
-    #messages{ position:absolute; left:50%; top:8px; transform:translateX(-50%); font-size:12px; background:rgba(0,0,0,.5); padding:4px 10px; border-radius:999px; pointer-events:none; }
-  #hotbarWrap{ position:absolute; left:50%; bottom:10px; transform:translateX(-50%); display:flex; gap:6px; pointer-events:auto; }
+  #messages{ position:absolute; left:50%; top:calc(8px + env(safe-area-inset-top)); transform:translateX(-50%); font-size:12px; background:rgba(0,0,0,.5); padding:4px 10px; border-radius:999px; pointer-events:none; }
+  #hotbarWrap{ position:absolute; left:50%; bottom:calc(10px + env(safe-area-inset-bottom)); transform:translateX(-50%); display:flex; gap:6px; pointer-events:auto; }
+  /* Larger tap targets on touch devices */
+  @media (pointer:coarse) {
+    #menuBtn, .topbtn, .craftBtn, .dirbtn, #mineBtn, #radarBtn { padding:10px 14px; }
+    .dirbtn, #mineBtn { border-radius:16px; }
+  }
   .hotSlot{ width:46px; height:46px; border:1px solid rgba(255,255,255,.25); background:rgba(0,0,0,.45); border-radius:10px; display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:11px; position:relative; box-shadow:0 2px 8px rgba(0,0,0,.5); }
   .hotSlot.sel{ outline:2px solid #2c7ef8; }
   .hotSlot .count{ font-weight:600; }
