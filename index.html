@@ -12,9 +12,6 @@
     #ui{ position:fixed; inset:0; pointer-events:none; }
   #hud{ position:absolute; left:calc(8px + env(safe-area-inset-left)); right:calc(8px + env(safe-area-inset-right)); top:calc(8px + env(safe-area-inset-top)); display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:space-between; }
     #hud .panel{ pointer-events:auto; background:rgba(0,0,0,.45); backdrop-filter:blur(6px); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:6px 10px; display:inline-flex; align-items:center; gap:10px; font-size:12px; }
-    #inv{ gap:14px; }
-    #inv .item{ display:inline-flex; align-items:center; gap:6px; }
-    #inv .dot{ width:12px; height:12px; border-radius:3px; border:1px solid rgba(255,255,255,.35); display:inline-block; }
     #fps{ min-width:56px; text-align:right; opacity:.85; }
     #seedPanel input{ pointer-events:auto; background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 8px; font-size:12px; width:130px; }
     #seedPanel button, .topbtn, .craftBtn{ pointer-events:auto; background:#2c7ef8; color:#fff; border:none; border-radius:10px; padding:6px 10px; font-weight:600; font-size:12px; box-shadow:0 2px 6px rgba(44,126,248,.35); cursor:pointer; }
@@ -104,16 +101,7 @@
   <canvas id="game" aria-label="Mini Miner"></canvas>
   <div id="ui">
     <div id="hud">
-  <div id="inv" class="panel" aria-label="Ekwipunek" aria-live="polite" style="display:none;">
-        <span class="item"><span class="dot" style="background:#2e8b2e"></span> trawa: <b id="grass">0</b></span>
-        <span class="item"><span class="dot" style="background:#c2b280"></span> piach: <b id="sand">0</b></span>
-  <span class="item"><span class="dot" style="background:#888a90"></span> kamień: <b id="stone">0</b></span>
-        <span class="item"><span class="dot" style="background:#3ef"></span> diamenty: <b id="diamond">0</b></span>
-  <span class="item"><span class="dot" style="background:#8b5a2b"></span> drewno: <b id="wood">0</b></span>
-  <span class="item"><span class="dot" style="background:#2477ff"></span> woda: <b id="water">0</b></span>
-  <span class="item"><span class="dot" style="background:#eee"></span> śnieg: <b id="snow">0</b></span>
-        <span class="item pill">kilof: <b id="pick">podstawowy</b></span>
-      </div>
+      
   <div class="panel" id="fpsPanel"><span id="fps">— FPS</span></div>
   <div id="menuWrap">
   <button id="menuBtn" class="topbtn" aria-haspopup="true" aria-expanded="false" title="Menu" aria-label="Menu główne">≡</button>

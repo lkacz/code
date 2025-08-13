@@ -934,8 +934,14 @@ function draw(){ // Background first
 	if(player.hpInvul && performance.now()<player.hpInvul){ const alpha = (player.hpInvul - performance.now())/600; ctx.fillStyle='rgba(255,0,0,'+(0.25*alpha)+')'; ctx.fillRect(0,0,W,H); }
 	ctx.restore(); }
 
-// UI aktualizacja
-const el={grass:document.getElementById('grass'),sand:document.getElementById('sand'),stone:document.getElementById('stone'),diamond:document.getElementById('diamond'),wood:document.getElementById('wood'),snow:document.getElementById('snow'),water:document.getElementById('water'),pick:document.getElementById('pick'),fps:document.getElementById('fps'),msg:document.getElementById('messages')}; function updateInventory(){ el.grass.textContent=inv.grass; el.sand.textContent=inv.sand; el.stone.textContent=inv.stone; el.diamond.textContent=inv.diamond; el.wood.textContent=inv.wood; if(el.snow) el.snow.textContent=inv.snow; if(el.water) el.water.textContent=inv.water; el.pick.textContent=player.tool; document.getElementById('craftStone').disabled=!canCraftStone(); document.getElementById('craftDiamond').disabled=!canCraftDiamond(); updateHotbarCounts(); saveState(); }
+// UI aktualizacja (inventory HUD removed)
+const el={fps:document.getElementById('fps'),msg:document.getElementById('messages')};
+function updateInventory(){
+	// Keep only craft buttons enabled state and hotbar counts
+	const cs=document.getElementById('craftStone'); if(cs) cs.disabled=!canCraftStone();
+	const cd=document.getElementById('craftDiamond'); if(cd) cd.disabled=!canCraftDiamond();
+	updateHotbarCounts(); saveState();
+}
 document.getElementById('craftStone').addEventListener('click', craftStone); document.getElementById('craftDiamond').addEventListener('click', craftDiamond);
 // Menu / przyciski
 document.getElementById('mapBtn')?.addEventListener('click',toggleMap);
@@ -985,12 +991,12 @@ document.addEventListener('keydown', (e)=>{ if(e.key==='Escape'){ closeMenu(); }
 	const BASE={ cell: parseFloat(cs.getPropertyValue('--cell'))||64, btn: parseFloat(cs.getPropertyValue('--btn'))||48, mine: parseFloat(cs.getPropertyValue('--mine'))||76 };
 	function applyUIPrefs(p){ if(!p) return; const scale=Math.max(0.7, Math.min(1.6, Number(p.scale)||1)); root.style.setProperty('--cell', (BASE.cell*scale)+'px'); root.style.setProperty('--btn', (BASE.btn*scale)+'px'); root.style.setProperty('--mine', (BASE.mine*scale)+'px');
 		function vis(id,on){ const el=document.getElementById(id); if(!el) return; el.style.display = on? '' : 'none'; }
-		const show=p.show||{}; vis('inv', show.inv!==false); vis('hotbarWrap', show.hotbar!==false); vis('controls', !!show.controls); vis('dirRing', !!show.controls); vis('radarBtn', show.radar!==false); vis('craft', !!show.craft); const fpsEl=document.getElementById('fps'); if(fpsEl) fpsEl.parentElement.style.display = (show.fps===false)?'none':''; vis('messages', show.messages!==false);
+		const show=p.show||{}; vis('hotbarWrap', show.hotbar!==false); vis('controls', !!show.controls); vis('dirRing', !!show.controls); vis('radarBtn', show.radar!==false); vis('craft', !!show.craft); const fpsEl=document.getElementById('fps'); if(fpsEl) fpsEl.parentElement.style.display = (show.fps===false)?'none':''; vis('messages', show.messages!==false);
 		const cbtn=document.getElementById('craftToggleBtn'); if(cbtn){ cbtn.setAttribute('aria-expanded', String(!!show.craft)); cbtn.classList.toggle('toggled', !!show.craft); }
 	}
 	// Smarter defaults: mobile shows on‑screen controls by default and slightly larger UI
 	const isMobile = matchMedia('(pointer:coarse)').matches || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent||'');
-	const defaultPrefs={ scale:isMobile?1.1:1, show:{ inv:false, hotbar:true, controls:isMobile, radar:true, craft:!isMobile, fps:true, messages:true } };
+	const defaultPrefs={ scale:isMobile?1.1:1, show:{ hotbar:true, controls:isMobile, radar:true, craft:!isMobile, fps:true, messages:true } };
 	let uiPrefs = Object.assign({}, defaultPrefs, loadUIPrefs()||{});
 	applyUIPrefs(uiPrefs);
 	// Settings section UI
@@ -1006,7 +1012,6 @@ document.addEventListener('keydown', (e)=>{ if(e.key==='Escape'){ closeMenu(); }
 	scaleRange.addEventListener('input',()=>{ uiPrefs.scale=Number(scaleRange.value)||1; applyUIPrefs(uiPrefs); saveUIPrefs(uiPrefs); updScale(); });
 	// toggles
 	const toggles=[
-		{ id:'inv', key:'inv', label:'Ekwipunek (góra)' },
 		{ id:'hotbarWrap', key:'hotbar', label:'Pasek szybkiego wyboru' },
 		{ id:'controls', key:'controls', label:'Sterowanie ekranowe (mobilne)' },
 		{ id:'radarBtn', key:'radar', label:'Przycisk radaru' },
@@ -1014,12 +1019,13 @@ document.addEventListener('keydown', (e)=>{ if(e.key==='Escape'){ closeMenu(); }
 		{ id:'fpsPanel', key:'fps', label:'FPS' },
 		{ id:'messages', key:'messages', label:'Komunikaty na górze' }
 	];
+	const keysOrder = toggles.map(t=>t.key);
 	const grid=document.createElement('div'); grid.style.cssText='display:grid; grid-template-columns:repeat(2,minmax(120px,1fr)); gap:6px;';
 	toggles.forEach(t=>{ const row=document.createElement('label'); row.style.cssText='display:flex; gap:8px; align-items:center; font-size:12px;'; const cb=document.createElement('input'); cb.type='checkbox'; const cur=(uiPrefs.show&&t.key in uiPrefs.show)? !!uiPrefs.show[t.key] : (defaultPrefs.show[t.key]); cb.checked = cur; const span=document.createElement('span'); span.textContent=t.label; row.appendChild(cb); row.appendChild(span); grid.appendChild(row); cb.addEventListener('change',()=>{ uiPrefs.show = uiPrefs.show||{}; uiPrefs.show[t.key]=cb.checked; applyUIPrefs(uiPrefs); saveUIPrefs(uiPrefs); }); });
 	uiWrap.appendChild(grid);
 	// Reset to defaults
 	const resetRow=document.createElement('div'); resetRow.style.cssText='display:flex; justify-content:flex-end; margin-top:8px;'; const resetBtn=document.createElement('button'); resetBtn.textContent='Resetuj UI'; resetBtn.className='topbtn'; resetBtn.style.cssText='padding:6px 10px;'; resetRow.appendChild(resetBtn); uiWrap.appendChild(resetRow);
-	resetBtn.addEventListener('click',()=>{ uiPrefs = JSON.parse(JSON.stringify(defaultPrefs)); applyUIPrefs(uiPrefs); saveUIPrefs(uiPrefs); scaleRange.value=String(uiPrefs.scale); updScale(); grid.querySelectorAll('input[type="checkbox"]').forEach((cb,i)=>{ const t = [ 'inv','hotbar','controls','radar','craft','fps','messages' ][i]; cb.checked = !!uiPrefs.show[t]; }); });
+	resetBtn.addEventListener('click',()=>{ uiPrefs = JSON.parse(JSON.stringify(defaultPrefs)); applyUIPrefs(uiPrefs); saveUIPrefs(uiPrefs); scaleRange.value=String(uiPrefs.scale); updScale(); const boxes=[...grid.querySelectorAll('input[type="checkbox"]')]; boxes.forEach((cb,i)=>{ const key = keysOrder[i]; cb.checked = !!uiPrefs.show[key]; }); });
 	menuPanel.appendChild(uiWrap);
 
 	// Header Craft toggle button wiring
