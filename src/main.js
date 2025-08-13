@@ -3455,17 +3455,74 @@ if(!window.__lootPopupInit){
 			const statusEl = document.getElementById('wgStatus');
 			const WG = MM.worldGen;
 			const DEFAULTS = (function(){ try{ return WG ? JSON.parse(JSON.stringify(WG.config)) : {}; }catch(e){ return {}; } })();
-			function show(){ panel.hidden=false; btn.classList.add('toggled'); buildParams(); drawPreview(); }
-			function hide(){ panel.hidden=true; btn.classList.remove('toggled'); }
-			btn.addEventListener('click', ()=>{ panel.hidden? show(): hide(); });
-			closeBtn && closeBtn.addEventListener('click', hide);
+			function show(){ 
+				panel.hidden=false; 
+				panel.style.pointerEvents='auto';
+				btn.classList.add('toggled'); 
+				buildParams(); 
+				drawPreview(); 
+				// Ensure focus works
+				setTimeout(()=> {
+					const firstInput = panel.querySelector('input, textarea');
+					if(firstInput) firstInput.focus();
+				}, 100);
+			}
+			function hide(){ 
+				panel.hidden=true; 
+				btn.classList.remove('toggled'); 
+			}
+			btn.addEventListener('click', (e)=>{ 
+				e.preventDefault(); 
+				e.stopPropagation(); 
+				panel.hidden? show(): hide(); 
+			});
+			closeBtn && closeBtn.addEventListener('click', (e)=>{ 
+				e.preventDefault(); 
+				e.stopPropagation(); 
+				hide(); 
+			});
 			let pendingChanges = {};
 			function inputRow(label, key, type, opts={}){
-				const wrap=document.createElement('div'); wrap.style.display='flex'; wrap.style.flexDirection='column'; wrap.style.gap='2px';
-				const id='wg_'+key; const lab=document.createElement('label'); lab.htmlFor=id; lab.textContent=label; lab.style.fontSize='11px'; lab.style.opacity='.85';
-				let inp; if(type==='number'){ inp=document.createElement('input'); inp.type='number'; inp.value=WG.config[key]; ['min','max','step'].forEach(p=>{ if(opts[p]!==undefined) inp[p]=opts[p]; }); inp.style.width='120px'; }
-				else if(type==='json'){ inp=document.createElement('textarea'); inp.value=JSON.stringify(WG.config[key]); inp.rows=3; inp.style.fontFamily='monospace'; inp.style.fontSize='11px'; inp.style.background='rgba(255,255,255,.05)'; inp.style.color='#eee'; inp.style.border='1px solid rgba(255,255,255,.15)'; inp.style.borderRadius='8px'; }
-				inp.id=id; wrap.appendChild(lab); wrap.appendChild(inp); const hint=document.createElement('div'); hint.style.fontSize='10px'; hint.style.opacity='.55'; if(opts.hint) hint.textContent=opts.hint; wrap.appendChild(hint); inp.addEventListener('change',()=>{ pendingChanges[key]=inp.value; autoStatus(); }); return wrap; }
+				const wrap=document.createElement('div'); 
+				wrap.style.display='flex'; wrap.style.flexDirection='column'; wrap.style.gap='4px'; wrap.style.marginBottom='8px';
+				
+				const id='wg_'+key; 
+				const lab=document.createElement('label'); 
+				lab.htmlFor=id; lab.textContent=label; 
+				lab.style.fontSize='11px'; lab.style.opacity='.85'; lab.style.fontWeight='600'; lab.style.color='#eee';
+				
+				let inp; 
+				if(type==='number'){ 
+					inp=document.createElement('input'); 
+					inp.type='number'; 
+					inp.value=WG.config[key]; 
+					['min','max','step'].forEach(p=>{ if(opts[p]!==undefined) inp[p]=opts[p]; }); 
+					inp.style.cssText = 'width:140px; padding:6px 8px; background:rgba(255,255,255,.08); color:#eee; border:1px solid rgba(255,255,255,.25); border-radius:6px; font-size:12px; pointer-events:auto; cursor:text;';
+				}
+				else if(type==='json'){ 
+					inp=document.createElement('textarea'); 
+					inp.value=JSON.stringify(WG.config[key]); 
+					inp.rows=3; 
+					inp.style.cssText = 'width:100%; padding:6px 8px; font-family:monospace; font-size:11px; background:rgba(255,255,255,.08); color:#eee; border:1px solid rgba(255,255,255,.25); border-radius:6px; resize:vertical; pointer-events:auto; cursor:text;';
+				}
+				
+				inp.id=id; 
+				// Add focus/blur styles for better interaction feedback
+				inp.addEventListener('focus', ()=> inp.style.borderColor='#2c7ef8');
+				inp.addEventListener('blur', ()=> inp.style.borderColor='rgba(255,255,255,.25)');
+				
+				wrap.appendChild(lab); wrap.appendChild(inp); 
+				
+				const hint=document.createElement('div'); 
+				hint.style.fontSize='10px'; hint.style.opacity='.55'; hint.style.color='#aaa'; 
+				if(opts.hint) hint.textContent=opts.hint; 
+				wrap.appendChild(hint); 
+				
+				inp.addEventListener('change',()=>{ pendingChanges[key]=inp.value; autoStatus(); }); 
+				inp.addEventListener('input',()=>{ pendingChanges[key]=inp.value; autoStatus(); }); // Also listen to input for real-time feedback
+				
+				return wrap; 
+			}
 			function buildParams(){ paramsDiv.innerHTML=''; pendingChanges={}; const groups=[
 				{title:'Progi biomów', items:[['Poziom morza','seaLevel'],['Max jezior (wys)','lakeElevMax'],['Min jezior (wilg)','lakeMoistMin'],['Góry (wys)','mountainElev'],['Śnieg temp max','snowTempMax'],['Śnieg wys min','snowElevMin'],['Pustynia temp min','desertTempMin'],['Pustynia wilg max','desertMoistMax'],['Bagno wilg min','swampMoistMin'],['Bagno wys max','swampElevMax']]},
 				{title:'Wysokość bazowa', items:[['Base min','surfaceBaseMin'],['Base range','surfaceBaseRange'],['Detail factor','detailFactor']]},
@@ -3474,15 +3531,45 @@ if(!window.__lootPopupInit){
 				{title:'Skarby', items:[['Próg skrzyni','chestThreshold']]},
 				{title:'Octavy (JSON)', items:[['Temp octaves','temperatureOctaves','json',{hint:'[{w,weight,off},…]'}],['Moist octaves','moistureOctaves','json',{}],['Macro elev','macroElevOctaves','json',{}],['Detail octaves','detailOctaves','json',{hint:'[{w,amp,off},…]'}]]},
 			];
-			groups.forEach(g=>{ const fs=document.createElement('fieldset'); fs.style.border='1px solid rgba(255,255,255,.15)'; fs.style.borderRadius='12px'; fs.style.padding='8px 10px 10px'; fs.style.display='flex'; fs.style.flexDirection='column'; fs.style.gap='6px'; const lg=document.createElement('legend'); lg.textContent=g.title; lg.style.padding='0 4px'; lg.style.fontSize='12px'; lg.style.opacity='.9'; fs.appendChild(lg); g.items.forEach(it=>{ const type=it[2]||'number'; const opts=it[3]||{min: type==='number'? (it[1].includes('Threshold')?0: (it[1].includes('Adjust')?-50:0)):undefined, max: type==='number'? (it[1].includes('Threshold')?1: (it[1].includes('Factor')?3: (it[1].includes('Amp')?80:1))):undefined, step: type==='number'? (it[1].includes('Threshold')?0.001:0.01):undefined }; fs.appendChild(inputRow(it[0], it[1], type, opts)); }); paramsDiv.appendChild(fs); }); }
+			groups.forEach(g=>{ 
+				const fs=document.createElement('fieldset'); 
+				fs.style.cssText = 'border:1px solid rgba(255,255,255,.25); border-radius:12px; padding:12px 14px 16px; display:flex; flex-direction:column; gap:8px; margin-bottom:12px; background:rgba(255,255,255,.02); pointer-events:auto;';
+				
+				const lg=document.createElement('legend'); 
+				lg.textContent=g.title; 
+				lg.style.cssText = 'padding:0 6px; font-size:13px; opacity:.9; font-weight:600; color:#eee; background:rgba(18,22,30,.9);';
+				
+				fs.appendChild(lg); 
+				
+				g.items.forEach(it=>{ 
+					const type=it[2]||'number'; 
+					const opts=it[3]||{
+						min: type==='number'? (it[1].includes('Threshold')?0: (it[1].includes('Adjust')?-50:0)):undefined, 
+						max: type==='number'? (it[1].includes('Threshold')?1: (it[1].includes('Factor')?3: (it[1].includes('Amp')?80:1))):undefined, 
+						step: type==='number'? (it[1].includes('Threshold')?0.001:0.01):undefined 
+					}; 
+					fs.appendChild(inputRow(it[0], it[1], type, opts)); 
+				}); 
+				
+				paramsDiv.appendChild(fs); 
+			}); }
 			function applyChanges(regen){ const cfg={}; for(const k in pendingChanges){ let v=pendingChanges[k]; if(k.endsWith('Octaves')){ try{ v=JSON.parse(v); }catch(e){ return status('Błąd JSON w '+k); } } else if(!isNaN(+v)) v=+v; cfg[k]=v; } if(Object.keys(cfg).length){ WG.applyConfig(cfg); pendingChanges={}; status('Zapisano. '+(regen?'Regeneracja…':'')); if(regen && typeof window.regenWorld==='function') window.regenWorld(); drawPreview(); } else status('Brak zmian'); }
 			function drawPreview(){ if(!previewCanvas) return; const ctx=previewCanvas.getContext('2d'); const W=previewCanvas.width; const H=previewCanvas.height; ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H); const startX = (window.PLAYER? Math.floor(PLAYER.x)-Math.floor(W/2) : 0); const data = WG.previewRange(startX, W); const biomeColors={0:'#2f6c2f',1:'#6ca437',2:'#d8dfe8',3:'#d7c27a',4:'#3f5b3a',5:'#1a3358',6:'#264c7a',7:'#666'}; data.forEach((d,i)=>{ ctx.fillStyle=biomeColors[d.biome]||'#888'; ctx.fillRect(i,H-d.h,1,d.h); }); status('Podgląd x≈'+startX+'…'+(startX+W)); }
 			function status(t){ if(statusEl) statusEl.textContent=t; }
 			function autoStatus(){ status('Niezapisane zmiany…'); }
-			applyBtn && applyBtn.addEventListener('click',()=>applyChanges(false));
-			regenBtn && regenBtn.addEventListener('click',()=>applyChanges(true));
-			resetBtn && resetBtn.addEventListener('click',()=>{ if(confirm('Przywrócić parametry panelu do wartości początkowych (pierwsze uruchomienie)?')){ WG.applyConfig(DEFAULTS); buildParams(); status('Przywrócono domyślne (ze startu gry).'); drawPreview(); } });
-			previewBtn && previewBtn.addEventListener('click', drawPreview);
+			applyBtn && applyBtn.addEventListener('click',(e)=>{ e.preventDefault(); e.stopPropagation(); applyChanges(false); });
+			regenBtn && regenBtn.addEventListener('click',(e)=>{ e.preventDefault(); e.stopPropagation(); applyChanges(true); });
+			resetBtn && resetBtn.addEventListener('click',(e)=>{ 
+				e.preventDefault(); 
+				e.stopPropagation(); 
+				if(confirm('Przywrócić parametry panelu do wartości początkowych (pierwsze uruchomienie)?')){ 
+					WG.applyConfig(DEFAULTS); 
+					buildParams(); 
+					status('Przywrócono domyślne (ze startu gry).'); 
+					drawPreview(); 
+				} 
+			});
+			previewBtn && previewBtn.addEventListener('click', (e)=>{ e.preventDefault(); e.stopPropagation(); drawPreview(); });
 			document.addEventListener('keydown', e=>{ if(panel.hidden) return; if(e.key==='Escape'){ hide(); } if(['ArrowLeft','ArrowRight','a','d'].includes(e.key)) requestAnimationFrame(drawPreview); });
 		}
 		if(document.readyState==='complete' || document.readyState==='interactive'){ setTimeout(setupWorldGenPanel,0); } else { window.addEventListener('DOMContentLoaded', setupWorldGenPanel); }

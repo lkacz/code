@@ -113,6 +113,22 @@
   #lootInboxBtn.pulseNew{ animation:lootPulse 1.05s ease-in-out infinite; }
   #lootInboxBtn span{ margin-left:4px; }
   @keyframes lootPulse{0%{transform:scale(1); box-shadow:0 0 0 0 rgba(224,179,65,0.4);}50%{transform:scale(1.12); box-shadow:0 0 16px 4px rgba(224,179,65,0.55);}100%{transform:scale(1); box-shadow:0 0 0 0 rgba(224,179,65,0.4);} }
+  
+  /* World Generation Panel Styles */
+  #worldGenPanel { pointer-events: auto !important; }
+  #worldGenPanel * { pointer-events: auto !important; }
+  #worldGenPanel input, #worldGenPanel textarea, #worldGenPanel button, #worldGenPanel fieldset, #worldGenPanel legend {
+    pointer-events: auto !important;
+    cursor: text !important;
+  }
+  #worldGenPanel button {
+    cursor: pointer !important;
+  }
+  #worldGenPanel input:focus, #worldGenPanel textarea:focus {
+    outline: 2px solid #2c7ef8;
+    outline-offset: 1px;
+  }
+  
   </style>
 </head>
 <body>
