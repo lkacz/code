@@ -941,40 +941,6 @@ window.addEventListener('beforeunload', () => {
 	TIMER_MANAGER.cleanup();
 });
 
-// Expose timer manager for debugging and add performance monitoring
-window.__timerManager = TIMER_MANAGER;
-window.__renderCache = RENDER_CACHE;
-
-// Add performance diagnostics
-window.__getPerformanceDiagnostics = () => {
-	const frameSkipPercent = skipFrames > 0 ? ((skipFrames / 60) * 100).toFixed(1) + '%' : '0%';
-	const renderCacheHits = RENDER_CACHE.frameCount || 0;
-	
-	const diagnostics = {
-		frameSkipping: {
-			currentSkip: skipFrames,
-			skipPercentage: frameSkipPercent
-		},
-		renderCache: {
-			totalFrames: renderCacheHits,
-			lastUpdate: RENDER_CACHE.lastScreenSize,
-			cacheValid: !!RENDER_CACHE.cachedViewBounds
-		},
-		timers: TIMER_MANAGER.getDiagnostics(),
-		chunkCache: {
-			cached: chunkCanvases.size,
-			maxCached: MAX_CACHED_CHUNKS
-		}
-	};
-	
-	// Add mob system diagnostics if available
-	if (MM && MM.mobs && MM.mobs.getPerformanceDiagnostics) {
-		diagnostics.mobSystem = MM.mobs.getPerformanceDiagnostics();
-	}
-	
-	return diagnostics;
-};
-
 // Expose timer manager for debugging
 window.__timerManager = TIMER_MANAGER;
 
@@ -1768,7 +1734,173 @@ let jumpPrev=false; let swimBuoySmooth=0; function physics(dt){
 
 	// Camera follow
 	const tX=player.x - (W/(TILE*zoom))/2 + player.w/2; const tY=player.y - (H/(TILE*zoom))/2 + player.h/2; camSX += (tX-camSX)*Math.min(1,dt*8); camSY += (tY-camSY)*Math.min(1,dt*8); camX=camSX; camY=camSY; ensureChunks(); revealAround(); }
-function collide(axis){ const w=player.w/2,h=player.h/2; if(axis==='x'){ const minX=Math.floor(player.x-w), maxX=Math.floor(player.x+w), minY=Math.floor(player.y-h), maxY=Math.floor(player.y+h); for(let y=minY;y<=maxY;y++){ for(let x=minX;x<=maxX;x++){ const t=getTile(x,y); if(isSolid(t)){ if(player.vx>0) player.x = x - w - 0.001; if(player.vx<0) player.x = x + 1 + w + 0.001; } } } } else { const minX=Math.floor(player.x-w), maxX=Math.floor(player.x+w), minY=Math.floor(player.y-h), maxY=Math.floor(player.y+h); const wasGround=player.onGround; player.onGround=false; for(let y=minY;y<=maxY;y++){ for(let x=minX;x<=maxX;x++){ const t=getTile(x,y); if(isSolid(t)){ if(player.vy>0){ player.y = y - h - 0.001; player.vy=0; player.onGround=true; } if(player.vy<0){ player.y = y + 1 + h + 0.001; player.vy=0; } } } } if(player.onGround && !wasGround){ player.jumpCount=0; } } }
+// Advanced Collision Detection System with Spatial Optimization
+const COLLISION_SYSTEM = {
+	// Cache for recently checked tiles to avoid redundant getTile calls
+	tileCache: new Map(), // key: "x,y" -> {tile, timestamp}
+	CACHE_TTL: 100, // 100ms cache lifetime
+	
+	// Performance metrics
+	metrics: {
+		cacheHits: 0,
+		cacheMisses: 0,
+		collisionChecks: 0,
+		earlyExits: 0
+	},
+	
+	// Get tile with caching
+	getCachedTile(x, y) {
+		const key = `${x},${y}`;
+		const now = performance.now();
+		const cached = this.tileCache.get(key);
+		
+		if (cached && (now - cached.timestamp) < this.CACHE_TTL) {
+			this.metrics.cacheHits++;
+			return cached.tile;
+		}
+		
+		const tile = getTile(x, y);
+		this.tileCache.set(key, { tile, timestamp: now });
+		this.metrics.cacheMisses++;
+		
+		// Limit cache size to prevent memory leaks
+		if (this.tileCache.size > 1000) {
+			const cutoff = now - this.CACHE_TTL * 2;
+			for (const [cacheKey, entry] of this.tileCache.entries()) {
+				if (entry.timestamp < cutoff) {
+					this.tileCache.delete(cacheKey);
+				}
+			}
+		}
+		
+		return tile;
+	},
+	
+	// Optimized collision detection with early exits and directional scanning
+	checkCollision(axis, player) {
+		this.metrics.collisionChecks++;
+		const w = player.w / 2;
+		const h = player.h / 2;
+		
+		if (axis === 'x') {
+			const minX = Math.floor(player.x - w);
+			const maxX = Math.floor(player.x + w);
+			const minY = Math.floor(player.y - h);
+			const maxY = Math.floor(player.y + h);
+			
+			// Directional optimization: check in movement direction first
+			if (player.vx > 0) {
+				// Moving right - check right edge first
+				for (let y = minY; y <= maxY; y++) {
+					if (isSolid(this.getCachedTile(maxX, y))) {
+						player.x = maxX - w - 0.001;
+						this.metrics.earlyExits++;
+						return;
+					}
+				}
+			} else if (player.vx < 0) {
+				// Moving left - check left edge first
+				for (let y = minY; y <= maxY; y++) {
+					if (isSolid(this.getCachedTile(minX, y))) {
+						player.x = minX + 1 + w + 0.001;
+						this.metrics.earlyExits++;
+						return;
+					}
+				}
+			}
+			
+			// If no collision found in primary direction, check full area
+			for (let y = minY; y <= maxY; y++) {
+				for (let x = minX; x <= maxX; x++) {
+					if (isSolid(this.getCachedTile(x, y))) {
+						if (player.vx > 0) player.x = x - w - 0.001;
+						else if (player.vx < 0) player.x = x + 1 + w + 0.001;
+						return;
+					}
+				}
+			}
+		} else {
+			// Y-axis collision with ground detection optimization
+			const minX = Math.floor(player.x - w);
+			const maxX = Math.floor(player.x + w);
+			const minY = Math.floor(player.y - h);
+			const maxY = Math.floor(player.y + h);
+			const wasGround = player.onGround;
+			player.onGround = false;
+			
+			// Directional optimization: check in movement direction first
+			if (player.vy > 0) {
+				// Falling down - check bottom edge first for ground detection
+				for (let x = minX; x <= maxX; x++) {
+					if (isSolid(this.getCachedTile(x, maxY))) {
+						player.y = maxY - h - 0.001;
+						player.vy = 0;
+						player.onGround = true;
+						this.metrics.earlyExits++;
+						if (player.onGround && !wasGround) {
+							player.jumpCount = 0;
+						}
+						return;
+					}
+				}
+			} else if (player.vy < 0) {
+				// Moving up - check top edge first
+				for (let x = minX; x <= maxX; x++) {
+					if (isSolid(this.getCachedTile(x, minY))) {
+						player.y = minY + 1 + h + 0.001;
+						player.vy = 0;
+						this.metrics.earlyExits++;
+						return;
+					}
+				}
+			}
+			
+			// If no collision found in primary direction, check full area
+			for (let y = minY; y <= maxY; y++) {
+				for (let x = minX; x <= maxX; x++) {
+					if (isSolid(this.getCachedTile(x, y))) {
+						if (player.vy > 0) {
+							player.y = y - h - 0.001;
+							player.vy = 0;
+							player.onGround = true;
+						} else if (player.vy < 0) {
+							player.y = y + 1 + h + 0.001;
+							player.vy = 0;
+						}
+						if (player.onGround && !wasGround) {
+							player.jumpCount = 0;
+						}
+						return;
+					}
+				}
+			}
+			
+			if (player.onGround && !wasGround) {
+				player.jumpCount = 0;
+			}
+		}
+	},
+	
+	// Get performance diagnostics
+	getDiagnostics() {
+		const totalCacheOps = this.metrics.cacheHits + this.metrics.cacheMisses;
+		return {
+			cacheHitRate: totalCacheOps > 0 ? (this.metrics.cacheHits / totalCacheOps * 100).toFixed(1) + '%' : '0%',
+			cacheSize: this.tileCache.size,
+			collisionChecks: this.metrics.collisionChecks,
+			earlyExits: this.metrics.earlyExits,
+			earlyExitRate: this.metrics.collisionChecks > 0 ? 
+				(this.metrics.earlyExits / this.metrics.collisionChecks * 100).toFixed(1) + '%' : '0%'
+		};
+	}
+};
+
+function collide(axis) {
+	COLLISION_SYSTEM.checkCollision(axis, player);
+}
+
+// Expose collision system for debugging
+window.__collisionSystem = COLLISION_SYSTEM;
 
 // Mgła / widoczność (optimized bitset per chunk instead of Set<string>)
 let revealAll=false;
@@ -1951,6 +2083,40 @@ const RENDER_CACHE = {
 	getTransforms() {
 		return this.cachedTransforms;
 	}
+};
+
+// Expose render cache for debugging and add performance monitoring
+window.__renderCache = RENDER_CACHE;
+
+// Add performance diagnostics
+window.__getPerformanceDiagnostics = () => {
+	const frameSkipPercent = skipFrames > 0 ? ((skipFrames / 60) * 100).toFixed(1) + '%' : '0%';
+	const renderCacheHits = RENDER_CACHE.frameCount || 0;
+	
+	const diagnostics = {
+		frameSkipping: {
+			currentSkip: skipFrames,
+			skipPercentage: frameSkipPercent
+		},
+		renderCache: {
+			totalFrames: renderCacheHits,
+			lastUpdate: RENDER_CACHE.lastScreenSize,
+			cacheValid: !!RENDER_CACHE.cachedViewBounds
+		},
+		collisionSystem: COLLISION_SYSTEM.getDiagnostics(),
+		timers: TIMER_MANAGER.getDiagnostics(),
+		chunkCache: {
+			cached: chunkCanvases.size,
+			maxCached: MAX_CACHED_CHUNKS
+		}
+	};
+	
+	// Add mob system diagnostics if available
+	if (MM && MM.mobs && MM.mobs.getPerformanceDiagnostics) {
+		diagnostics.mobSystem = MM.mobs.getPerformanceDiagnostics();
+	}
+	
+	return diagnostics;
 };
 
 // Render
