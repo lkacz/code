@@ -347,10 +347,218 @@ function buildSaveObject(){ // v4: mobs serialization now stores relative aggro 
 	systems:{ water:exportWater(), falling:exportFalling() },
 	savedAt: Date.now()
 }; }
-function saveGame(manual){ try{ const data=buildSaveObject(); const {object:withHash} = attachHash(data); const json=JSON.stringify(withHash); localStorage.setItem(SAVE_KEY,json); if(manual){ const mods=(data.world && data.world.modified)? data.world.modified.length:0; msg('Zapisano ('+((json.length/1024)|0)+' KB, modyf.chunks:'+mods+')'); } }catch(e){ console.warn('Save failed',e); if(manual) msg('Błąd zapisu'); } }
+// --- Storage Quota Management System ---
+const STORAGE_QUOTA_MANAGER = {
+	// Estimated 5MB localStorage limit (conservative for cross-browser compatibility)
+	ESTIMATED_QUOTA: 5 * 1024 * 1024,
+	WARNING_THRESHOLD: 0.80, // 80% usage warning
+	CRITICAL_THRESHOLD: 0.90, // 90% usage critical
+	AUTO_CLEANUP_THRESHOLD: 0.85, // 85% triggers auto-cleanup
+	
+	// Get current storage usage for mm_ prefixed keys
+	getCurrentUsage() {
+		let used = 0;
+		try {
+			for (let i = 0; i < localStorage.length; i++) {
+				const key = localStorage.key(i);
+				if (key && key.startsWith('mm_')) {
+					const value = localStorage.getItem(key);
+					if (value) used += key.length + value.length;
+				}
+			}
+		} catch (e) {
+			console.warn('Storage usage calculation failed:', e);
+		}
+		return used;
+	},
+	
+	// Get usage percentage
+	getUsagePercent() {
+		return this.getCurrentUsage() / this.ESTIMATED_QUOTA;
+	},
+	
+	// Check if storage operation is likely to succeed
+	canStore(additionalBytes) {
+		const current = this.getCurrentUsage();
+		const projected = (current + additionalBytes) / this.ESTIMATED_QUOTA;
+		return projected < this.CRITICAL_THRESHOLD;
+	},
+	
+	// Attempt to free space by removing old saves
+	freeSpace(targetBytes = 0) {
+		const slots = this.loadSlots();
+		if (!slots.length) return false;
+		
+		// Sort by time (oldest first), exclude current slot
+		const oldSlots = slots
+			.filter(s => s.id !== currentSlotId)
+			.sort((a, b) => a.time - b.time);
+		
+		let freedBytes = 0;
+		const removed = [];
+		
+		for (const slot of oldSlots) {
+			if (targetBytes > 0 && freedBytes >= targetBytes) break;
+			
+			try {
+				const slotData = localStorage.getItem(this.slotKey(slot.id));
+				if (slotData) {
+					localStorage.removeItem(this.slotKey(slot.id));
+					freedBytes += this.slotKey(slot.id).length + slotData.length;
+					removed.push(slot.name || slot.id);
+				}
+				
+				// Remove from slots list
+				const index = slots.indexOf(slot);
+				if (index >= 0) slots.splice(index, 1);
+			} catch (e) {
+				console.warn('Failed to remove slot:', slot.id, e);
+			}
+		}
+		
+		if (removed.length > 0) {
+			this.storeSlots(slots);
+			console.log('Auto-cleanup: Removed', removed.length, 'old saves:', removed);
+			return true;
+		}
+		
+		return false;
+	},
+	
+	// Safe localStorage.setItem with quota management
+	safeSetItem(key, value, options = {}) {
+		const { isAutoSave = false, allowCleanup = true } = options;
+		const dataSize = key.length + value.length;
+		
+		// Check if operation likely to succeed
+		if (!this.canStore(dataSize)) {
+			if (allowCleanup) {
+				// Attempt cleanup
+				const cleaned = this.freeSpace(dataSize * 2); // Free 2x the needed space for buffer
+				if (!cleaned && !isAutoSave) {
+					throw new Error('QUOTA_EXCEEDED_NO_CLEANUP');
+				}
+			} else if (!isAutoSave) {
+				throw new Error('QUOTA_EXCEEDED');
+			}
+		}
+		
+		try {
+			localStorage.setItem(key, value);
+			return true;
+		} catch (e) {
+			// Handle specific quota exceeded errors
+			if (e.name === 'QuotaExceededError' || e.code === 22) {
+				if (allowCleanup && !isAutoSave) {
+					// Try emergency cleanup
+					this.freeSpace(dataSize * 3);
+					try {
+						localStorage.setItem(key, value);
+						return true;
+					} catch (e2) {
+						throw new Error('QUOTA_EXCEEDED_AFTER_CLEANUP');
+					}
+				}
+				throw new Error('QUOTA_EXCEEDED');
+			}
+			throw e;
+		}
+	},
+	
+	// Helper methods to access slot management functions
+	loadSlots() {
+		try {
+			const raw = localStorage.getItem(SAVE_LIST_KEY);
+			if (!raw) return [];
+			const arr = JSON.parse(raw);
+			return Array.isArray(arr) ? arr : [];
+		} catch (e) {
+			return [];
+		}
+	},
+	
+	storeSlots(slots) {
+		try {
+			this.safeSetItem(SAVE_LIST_KEY, JSON.stringify(slots), { allowCleanup: false });
+		} catch (e) {
+			console.warn('Failed to store slots list:', e);
+		}
+	},
+	
+	slotKey(id) {
+		return 'mm_slot_' + id;
+	}
+};
+
+function saveGame(manual){ 
+	try{ 
+		const data = buildSaveObject(); 
+		const {object:withHash} = attachHash(data); 
+		const json = JSON.stringify(withHash);
+		
+		// Use quota-aware storage for manual saves, allow cleanup for auto-saves
+		STORAGE_QUOTA_MANAGER.safeSetItem(SAVE_KEY, json, { 
+			isAutoSave: !manual, 
+			allowCleanup: true 
+		});
+		
+		if(manual){ 
+			const mods = (data.world && data.world.modified) ? data.world.modified.length : 0; 
+			const usage = STORAGE_QUOTA_MANAGER.getUsagePercent();
+			const usageText = usage > STORAGE_QUOTA_MANAGER.WARNING_THRESHOLD ? 
+				` [${(usage * 100).toFixed(0)}% storage]` : '';
+			msg('Zapisano (' + ((json.length/1024)|0) + ' KB, modyf.chunks:' + mods + ')' + usageText); 
+		} 
+	} catch(e) { 
+		console.warn('Save failed', e);
+		
+		// Provide user-friendly error messages
+		if (manual) {
+			if (e.message === 'QUOTA_EXCEEDED') {
+				msg('Błąd: Brak miejsca w storage. Usuń stare zapisy.');
+			} else if (e.message === 'QUOTA_EXCEEDED_NO_CLEANUP') {
+				msg('Błąd: Storage pełny, brak zapisów do usunięcia.');
+			} else if (e.message === 'QUOTA_EXCEEDED_AFTER_CLEANUP') {
+				msg('Błąd: Storage nadal pełny mimo oczyszczenia.');
+			} else {
+				msg('Błąd zapisu: ' + (e.message || 'Nieznany'));
+			}
+		}
+	} 
+}
+
 // Lightweight autosave indicator (created lazily)
-function showAutoSaveHint(sizeKB){ try{ let el=document.getElementById('autoSaveHint'); if(!el){ el=document.createElement('div'); el.id='autoSaveHint'; el.style.cssText='position:fixed; left:8px; bottom:8px; background:rgba(0,0,0,0.55); color:#fff; font:11px system-ui; padding:4px 8px; border-radius:6px; pointer-events:none; opacity:0; transition:opacity .4s; z-index:5000;'; document.body.appendChild(el); }
- const now=new Date(); const t=now.toLocaleTimeString(); el.textContent='Auto-zapis '+t+' ('+sizeKB+' KB)'; el.style.opacity='1'; clearTimeout(showAutoSaveHint._t); showAutoSaveHint._t=setTimeout(()=>{ el.style.opacity='0'; },2800); }catch(e){} }
+function showAutoSaveHint(sizeKB){ 
+	try{ 
+		let el = document.getElementById('autoSaveHint'); 
+		if(!el){ 
+			el = document.createElement('div'); 
+			el.id = 'autoSaveHint'; 
+			el.style.cssText = 'position:fixed; left:8px; bottom:8px; background:rgba(0,0,0,0.55); color:#fff; font:11px system-ui; padding:4px 8px; border-radius:6px; pointer-events:none; opacity:0; transition:opacity .4s; z-index:5000;'; 
+			document.body.appendChild(el); 
+		}
+		
+		const now = new Date(); 
+		const t = now.toLocaleTimeString(); 
+		const usage = STORAGE_QUOTA_MANAGER.getUsagePercent();
+		let storageWarning = '';
+		
+		// Add storage warnings to autosave hint
+		if (usage > STORAGE_QUOTA_MANAGER.CRITICAL_THRESHOLD) {
+			storageWarning = ' ⚠️ STORAGE KRYTYCZNY';
+		} else if (usage > STORAGE_QUOTA_MANAGER.WARNING_THRESHOLD) {
+			storageWarning = ' ⚠️ Storage: ' + (usage * 100).toFixed(0) + '%';
+		}
+		
+		el.textContent = 'Auto-zapis ' + t + ' (' + sizeKB + ' KB)' + storageWarning; 
+		el.style.opacity = '1'; 
+		
+		// Keep warning visible longer if storage is critical
+		const hideDelay = usage > STORAGE_QUOTA_MANAGER.WARNING_THRESHOLD ? 5000 : 2800;
+		clearTimeout(showAutoSaveHint._t); 
+		showAutoSaveHint._t = setTimeout(() => { el.style.opacity = '0'; }, hideDelay); 
+	} catch(e) {} 
+}
 // Monkey-patch original saveGame to attach autosave hints (wrap)
 const _origSaveGame = saveGame; saveGame = function(manual){ const before=performance.now(); _origSaveGame(manual); if(!manual){ try{ const raw=localStorage.getItem(SAVE_KEY); if(raw) showAutoSaveHint((raw.length/1024)|0); }catch(e){} } };
 function loadGame(){ try{ let raw=localStorage.getItem(SAVE_KEY); if(!raw){ for(const k of OLD_SAVE_KEYS){ raw=localStorage.getItem(k); if(raw) break; } }
@@ -403,13 +611,69 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 	function storeSlots(slots){ try{ localStorage.setItem(SAVE_LIST_KEY, JSON.stringify(slots)); }catch(e){} }
 	function slotKey(id){ return 'mm_slot_'+id; }
 	function serializeCurrent(){ return JSON.stringify(buildSaveObject()); }
-	function refreshList(){ list.innerHTML=''; const slots=loadSlots().sort((a,b)=> b.time-a.time); if(!slots.length){ const empty=document.createElement('div'); empty.textContent='(brak zapisów)'; empty.style.fontSize='11px'; empty.style.opacity='0.6'; list.appendChild(empty); }
-		// Recompute storage usage (approx) for keys starting with mm_
-		let used=0; try{ for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k && k.startsWith('mm_')){ const v=localStorage.getItem(k); if(v) used += k.length + v.length; } } }catch(e){}
-		const totalCap = 5*1024*1024; const pct=((used/totalCap)*100).toFixed(1);
-		usageLine.textContent='Użycie storage: '+((used/1024)|0)+' KB (~'+pct+'% z 5MB)'; if(used/totalCap>0.85) usageLine.style.color='#ff8080'; else usageLine.style.color='';
-		slots.forEach(s=>{ const row=document.createElement('div'); const isCur=currentSlotId===s.id; row.style.cssText='display:flex; gap:6px; align-items:center; background:'+(isCur?'rgba(60,130,255,0.25)':'rgba(255,255,255,0.05)')+'; padding:4px 6px; border-radius:6px;'+(isCur?'outline:1px solid #2d7bff;':'');
-			const info=document.createElement('div'); info.style.flex='1'; info.style.minWidth='0'; const raw=localStorage.getItem(slotKey(s.id)); const sizeKB=raw? ((raw.length/1024)|0):0; let hashState=''; if(raw){ try{ const obj=JSON.parse(raw); const v=verifyHash(obj); if(obj && obj.h){ hashState = v.ok? ('#'+obj.h.slice(0,6)) : '(USZKODZONY)'; if(!v.ok) row.style.background='rgba(255,60,60,0.25)'; } }catch(e){ hashState='(BŁĄD)'; row.style.background='rgba(255,60,60,0.25)'; } }
+	function refreshList(){ 
+		list.innerHTML = ''; 
+		const slots = loadSlots().sort((a,b) => b.time - a.time); 
+		
+		if (!slots.length) { 
+			const empty = document.createElement('div'); 
+			empty.textContent = '(brak zapisów)'; 
+			empty.style.fontSize = '11px'; 
+			empty.style.opacity = '0.6'; 
+			list.appendChild(empty); 
+		}
+		
+		// Use quota manager for storage usage calculation
+		const used = STORAGE_QUOTA_MANAGER.getCurrentUsage();
+		const usagePercent = STORAGE_QUOTA_MANAGER.getUsagePercent();
+		const pct = (usagePercent * 100).toFixed(1);
+		
+		// Enhanced storage usage display with warnings
+		usageLine.textContent = 'Użycie storage: ' + ((used/1024)|0) + ' KB (~' + pct + '% z 5MB)';
+		
+		if (usagePercent > STORAGE_QUOTA_MANAGER.CRITICAL_THRESHOLD) {
+			usageLine.style.color = '#ff4444';
+			usageLine.textContent += ' ⚠️ KRYTYCZNY';
+		} else if (usagePercent > STORAGE_QUOTA_MANAGER.WARNING_THRESHOLD) {
+			usageLine.style.color = '#ff8080';
+			usageLine.textContent += ' ⚠️ UWAGA';
+		} else {
+			usageLine.style.color = '';
+		}
+		
+		// Auto-cleanup suggestion if approaching limits
+		if (usagePercent > STORAGE_QUOTA_MANAGER.AUTO_CLEANUP_THRESHOLD && slots.length > 3) {
+			const oldSaveCount = slots.filter(s => s.id !== currentSlotId).length;
+			if (oldSaveCount > 0) {
+				usageLine.textContent += ' (sugerowany cleanup: ' + oldSaveCount + ' starych zapisów)';
+			}
+		}
+		
+		slots.forEach(s => { 
+			const row = document.createElement('div'); 
+			const isCur = currentSlotId === s.id; 
+			row.style.cssText = 'display:flex; gap:6px; align-items:center; background:' + (isCur ? 'rgba(60,130,255,0.25)' : 'rgba(255,255,255,0.05)') + '; padding:4px 6px; border-radius:6px;' + (isCur ? 'outline:1px solid #2d7bff;' : '');
+			
+			const info = document.createElement('div'); 
+			info.style.flex = '1'; 
+			info.style.minWidth = '0'; 
+			const raw = localStorage.getItem(slotKey(s.id)); 
+			const sizeKB = raw ? ((raw.length/1024)|0) : 0; 
+			let hashState = ''; 
+			
+			if (raw) { 
+				try { 
+					const obj = JSON.parse(raw); 
+					const v = verifyHash(obj); 
+					if (obj && obj.h) { 
+						hashState = v.ok ? ('#' + obj.h.slice(0,6)) : '(USZKODZONY)'; 
+						if (!v.ok) row.style.background = 'rgba(255,60,60,0.25)'; 
+					} 
+				} catch (e) { 
+					hashState = '(BŁĄD)'; 
+					row.style.background = 'rgba(255,60,60,0.25)'; 
+				} 
+			}
 			const nameDisp=(s.name||'Bez nazwy'); info.innerHTML='<b>'+ nameDisp + (isCur?' *':'') +'</b><br><span style="font-size:10px; opacity:.65;">'+ new Date(s.time).toLocaleString() +' • '+sizeKB+' KB • '+hashState+' • seed '+ (s.seed??'-') +'</span>';
 			const loadB=document.createElement('button'); loadB.textContent='Wczytaj'; loadB.style.fontSize='11px'; loadB.addEventListener('click',()=>{ const raw=localStorage.getItem(slotKey(s.id)); if(raw){ try{ localStorage.setItem(SAVE_KEY,raw); const ok=loadGame(); if(ok){ currentSlotId=s.id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Wczytano '+nameDisp); refreshList(); } else msg('Błąd wczyt.'); }catch(e){ msg('Błąd wczyt.'); } } });
 			const exportB=document.createElement('button'); exportB.textContent='Eksport'; exportB.style.fontSize='11px'; exportB.addEventListener('click',()=>{ const raw=localStorage.getItem(slotKey(s.id)); if(!raw){ msg('Brak danych'); return; } try{ const blob=new Blob([raw],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); const safe=nameDisp.replace(/[^a-z0-9_-]+/gi,'_'); a.download='save_'+safe+'.json'; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },0); msg('Wyeksportowano'); }catch(e){ msg('Błąd eksportu'); } });
@@ -421,22 +685,193 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 		// Enable/disable Continue button visibility
 		continueBtn.style.display = slots.length? 'block':'none';
 	}
-	function performNamedSave(forcePrompt){ const slots=loadSlots(); let initial=''; if(!forcePrompt && currentSlotId){ const cur=slots.find(s=>s.id===currentSlotId); if(cur) initial=cur.name||''; } const name=prompt('Nazwa zapisu:', initial); if(name==null) return; const trimmed=name.trim(); let target=null; if(currentSlotId) target=slots.find(s=>s.id===currentSlotId && (trimmed==='' || s.name===trimmed)); if(!target && trimmed) target=slots.find(s=>s.name===trimmed); const rawCore=buildSaveObject(); const {object:withHash} = attachHash(rawCore); const data=JSON.stringify(withHash); if(target){ try{ localStorage.setItem(slotKey(target.id), data); target.time=Date.now(); if(trimmed) target.name=trimmed; target.seed=WORLDGEN.worldSeed; storeSlots(slots); currentSlotId=target.id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Nadpisano '+(target.name||target.id)); refreshList(); }catch(e){ msg('Błąd zapisu'); } } else { const id=Date.now().toString(36)+Math.random().toString(36).slice(2,6); try{ localStorage.setItem(slotKey(id), data); slots.push({id,name:trimmed||null,time:Date.now(),seed:WORLDGEN.worldSeed}); storeSlots(slots); currentSlotId=id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Zapisano '+(trimmed||id)); browser.style.display='flex'; refreshList(); }catch(e){ msg('Błąd – brak miejsca?'); } } }
+	function performNamedSave(forcePrompt){ 
+		const slots = loadSlots(); 
+		let initial = ''; 
+		if (!forcePrompt && currentSlotId) { 
+			const cur = slots.find(s => s.id === currentSlotId); 
+			if (cur) initial = cur.name || ''; 
+		} 
+		
+		const name = prompt('Nazwa zapisu:', initial); 
+		if (name == null) return; 
+		
+		const trimmed = name.trim(); 
+		let target = null; 
+		if (currentSlotId) target = slots.find(s => s.id === currentSlotId && (trimmed === '' || s.name === trimmed)); 
+		if (!target && trimmed) target = slots.find(s => s.name === trimmed); 
+		
+		const rawCore = buildSaveObject(); 
+		const {object:withHash} = attachHash(rawCore); 
+		const data = JSON.stringify(withHash); 
+		
+		if (target) { 
+			try { 
+				STORAGE_QUOTA_MANAGER.safeSetItem(slotKey(target.id), data, { allowCleanup: true });
+				target.time = Date.now(); 
+				if (trimmed) target.name = trimmed; 
+				target.seed = WORLDGEN.worldSeed; 
+				storeSlots(slots); 
+				currentSlotId = target.id; 
+				
+				// Use quota-safe storage for metadata
+				try {
+					STORAGE_QUOTA_MANAGER.safeSetItem(LAST_SLOT_KEY, currentSlotId, { allowCleanup: false });
+				} catch (e) {
+					console.warn('Failed to save slot metadata:', e);
+				}
+				
+				msg('Nadpisano ' + (target.name || target.id)); 
+				refreshList(); 
+			} catch (e) { 
+				console.warn('Named save failed:', e);
+				if (e.message === 'QUOTA_EXCEEDED') {
+					msg('Błąd: Brak miejsca. Usuń stare zapisy.');
+				} else if (e.message === 'QUOTA_EXCEEDED_NO_CLEANUP') {
+					msg('Błąd: Storage pełny, brak zapisów do usunięcia.');
+				} else if (e.message === 'QUOTA_EXCEEDED_AFTER_CLEANUP') {
+					msg('Błąd: Storage nadal pełny mimo oczyszczenia.');
+				} else {
+					msg('Błąd zapisu: ' + (e.message || 'Nieznany'));
+				}
+			} 
+		} else { 
+			const id = Date.now().toString(36) + Math.random().toString(36).slice(2,6); 
+			try { 
+				STORAGE_QUOTA_MANAGER.safeSetItem(slotKey(id), data, { allowCleanup: true });
+				slots.push({id, name: trimmed || null, time: Date.now(), seed: WORLDGEN.worldSeed}); 
+				storeSlots(slots); 
+				currentSlotId = id; 
+				
+				// Use quota-safe storage for metadata
+				try {
+					STORAGE_QUOTA_MANAGER.safeSetItem(LAST_SLOT_KEY, currentSlotId, { allowCleanup: false });
+				} catch (e) {
+					console.warn('Failed to save slot metadata:', e);
+				}
+				
+				msg('Zapisano ' + (trimmed || id)); 
+				browser.style.display = 'flex'; 
+				refreshList(); 
+			} catch (e) { 
+				console.warn('New save failed:', e);
+				if (e.message === 'QUOTA_EXCEEDED') {
+					msg('Błąd: Brak miejsca. Usuń stare zapisy.');
+				} else if (e.message === 'QUOTA_EXCEEDED_NO_CLEANUP') {
+					msg('Błąd: Storage pełny, brak zapisów do usunięcia.');
+				} else if (e.message === 'QUOTA_EXCEEDED_AFTER_CLEANUP') {
+					msg('Błąd: Storage nadal pełny mimo oczyszczenia.');
+				} else {
+					msg('Błąd zapisu: ' + (e.message || 'Nieznany'));
+				}
+			} 
+		} 
+	}
 
 	// Continue button logic
-	continueBtn.addEventListener('click',()=>{
-		const slots=loadSlots(); if(!slots.length){ msg('Brak zapisów'); return; }
-		let targetId=currentSlotId || localStorage.getItem(LAST_SLOT_KEY);
-		if(!targetId){ targetId = slots.sort((a,b)=>b.time-a.time)[0].id; }
-		const raw=localStorage.getItem(slotKey(targetId)); if(!raw){ msg('Brak danych'); return; }
-		try{ localStorage.setItem(SAVE_KEY,raw); const ok=loadGame(); if(ok){ currentSlotId=targetId; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Kontynuowano'); refreshList(); } else msg('Błąd'); }catch(e){ msg('Błąd'); }
+	continueBtn.addEventListener('click',() => {
+		const slots = loadSlots(); 
+		if (!slots.length) { 
+			msg('Brak zapisów'); 
+			return; 
+		}
+		
+		let targetId = currentSlotId || localStorage.getItem(LAST_SLOT_KEY);
+		if (!targetId) { 
+			targetId = slots.sort((a,b) => b.time - a.time)[0].id; 
+		}
+		
+		const raw = localStorage.getItem(slotKey(targetId)); 
+		if (!raw) { 
+			msg('Brak danych'); 
+			return; 
+		}
+		
+		try { 
+			STORAGE_QUOTA_MANAGER.safeSetItem(SAVE_KEY, raw, { allowCleanup: true });
+			const ok = loadGame(); 
+			if (ok) { 
+				currentSlotId = targetId; 
+				
+				// Use quota-safe storage for metadata
+				try {
+					STORAGE_QUOTA_MANAGER.safeSetItem(LAST_SLOT_KEY, currentSlotId, { allowCleanup: false });
+				} catch (e) {
+					console.warn('Failed to save slot metadata:', e);
+				}
+				
+				msg('Kontynuowano'); 
+				refreshList(); 
+			} else {
+				msg('Błąd'); 
+			}
+		} catch (e) { 
+			console.warn('Continue failed:', e);
+			if (e.message === 'QUOTA_EXCEEDED') {
+				msg('Błąd: Brak miejsca w storage.');
+			} else {
+				msg('Błąd: ' + (e.message || 'Nieznany'));
+			}
+		}
 	});
 
 	// Global import (adds as new slot)
-	const importBtn=document.createElement('button'); importBtn.textContent='Importuj plik'; importBtn.style.cssText='margin-top:4px;';
-	const fileInput=document.createElement('input'); fileInput.type='file'; fileInput.accept='.json,application/json'; fileInput.style.display='none';
-	fileInput.addEventListener('change',e=>{ const f=fileInput.files&&fileInput.files[0]; if(!f){ return; } const reader=new FileReader(); reader.onload=()=>{ try{ const txt=String(reader.result); const obj=JSON.parse(txt); if(!obj || typeof obj!=='object' || !obj.v){ msg('Niepoprawny plik'); return; } const slots=loadSlots(); const id=Date.now().toString(36)+Math.random().toString(36).slice(2,6); localStorage.setItem(slotKey(id), txt); slots.push({id,name:(f.name||'import').replace(/\.json$/i,'')||null,time:Date.now(),seed:obj.seed}); storeSlots(slots); msg('Zaimportowano'); refreshList(); }catch(err){ msg('Błąd importu'); } fileInput.value=''; };
-	reader.readAsText(f); });
+	const importBtn=document.createElement('button'); 
+	importBtn.textContent='Importuj plik'; 
+	importBtn.style.cssText='margin-top:4px;';
+	
+	const fileInput=document.createElement('input'); 
+	fileInput.type='file'; 
+	fileInput.accept='.json,application/json'; 
+	fileInput.style.display='none';
+	
+	fileInput.addEventListener('change', e => { 
+		const f = fileInput.files && fileInput.files[0]; 
+		if (!f) return; 
+		
+		const reader = new FileReader(); 
+		reader.onload = () => { 
+			try { 
+				const txt = String(reader.result); 
+				const obj = JSON.parse(txt); 
+				
+				if (!obj || typeof obj !== 'object' || !obj.v) { 
+					msg('Niepoprawny plik'); 
+					return; 
+				} 
+				
+				const slots = loadSlots(); 
+				const id = Date.now().toString(36) + Math.random().toString(36).slice(2,6); 
+				
+				// Use quota-aware storage for import
+				STORAGE_QUOTA_MANAGER.safeSetItem(slotKey(id), txt, { allowCleanup: true });
+				
+				slots.push({
+					id, 
+					name: (f.name || 'import').replace(/\.json$/i, '') || null, 
+					time: Date.now(), 
+					seed: obj.seed
+				}); 
+				
+				storeSlots(slots); 
+				msg('Zaimportowano'); 
+				refreshList(); 
+			} catch (err) { 
+				console.warn('Import failed:', err);
+				if (err.message === 'QUOTA_EXCEEDED') {
+					msg('Błąd: Brak miejsca. Usuń stare zapisy.');
+				} else if (err.message === 'QUOTA_EXCEEDED_NO_CLEANUP') {
+					msg('Błąd: Storage pełny, brak zapisów do usunięcia.');
+				} else if (err.message === 'QUOTA_EXCEEDED_AFTER_CLEANUP') {
+					msg('Błąd: Storage nadal pełny mimo oczyszczenia.');
+				} else {
+					msg('Błąd importu: ' + (err.message || 'Nieznany'));
+				}
+			} 
+			fileInput.value = ''; 
+		};
+		reader.readAsText(f); 
+	});
 	importBtn.addEventListener('click',()=>fileInput.click());
 	group.appendChild(importBtn); group.appendChild(fileInput);
 	saveBtn.addEventListener('click',()=>{ performNamedSave(false); });
@@ -646,6 +1081,11 @@ function drawAnimatedOverlays(sx,sy,viewX,viewY,pass){ const now=performance.now
 				const seed=hash32(x,y);
 				const base = 3;
 				let bladeCount = Math.min(120, Math.max(1, Math.round(base * grassDensityScalar * grassThinningFactor * (zoom<1? (0.35 + 0.65*zoom):1))));
+				
+				// Pre-calculate blade data to batch by color/style for efficient rendering
+				const frontBlades = [];
+				const backBlades = [];
+				
 				for(let b=0;b<bladeCount;b++){
 					const bSeed = seed ^ (b*1103515245);
 					// Individual randomized attributes
@@ -672,14 +1112,54 @@ function drawAnimatedOverlays(sx,sy,viewX,viewY,pass){ const now=performance.now
 					const midX = baseX + (sway*0.25) + bendDir*curvature*4;
 					const midY = baseY - TILE*heightFactor*0.55;
 					const shadeMod = 0.65 + randC*0.5; // 0.65..1.15
-					const frontBlade = ((bSeed>>5)&1)===1; if((pass==='front' && !frontBlade) || (pass==='back' && frontBlade)) continue;
-					ctx.strokeStyle = (bSeed&2)? 'rgba(46,165,46,'+(frontBlade? (0.85*shadeMod).toFixed(2):(0.55*shadeMod).toFixed(2))+')' : 'rgba(34,125,34,'+(frontBlade? (0.80*shadeMod).toFixed(2):(0.50*shadeMod).toFixed(2))+')';
-					ctx.lineWidth = 1;
-					ctx.beginPath();
-					ctx.moveTo(baseX, baseY);
-					ctx.quadraticCurveTo(midX, midY, topX, topY);
-					ctx.stroke();
+					const frontBlade = ((bSeed>>5)&1)===1;
+					const colorVariant = (bSeed&2) ? 0 : 1; // Two color variants
+					
+					const bladeData = {
+						baseX, baseY, midX, midY, topX, topY,
+						shadeMod, colorVariant
+					};
+					
+					if(frontBlade) {
+						frontBlades.push(bladeData);
+					} else {
+						backBlades.push(bladeData);
+					}
 				}
+				
+				// Render blades in batches by pass to minimize context switches
+				const bladesToRender = (pass === 'front') ? frontBlades : backBlades;
+				if(bladesToRender.length === 0) continue;
+				
+				// Group by color variant for batch rendering
+				const colorGroups = [[], []]; // [variant0, variant1]
+				bladesToRender.forEach(blade => {
+					colorGroups[blade.colorVariant].push(blade);
+				});
+				
+				// Render each color group in one batch
+				colorGroups.forEach((group, colorIdx) => {
+					if(group.length === 0) return;
+					
+					// Set context state once per color group
+					ctx.lineWidth = 1;
+					const isFront = pass === 'front';
+					const baseAlpha = isFront ? 0.85 : 0.55;
+					const colorBase = colorIdx ? [46,165,46] : [34,125,34];
+					
+					// Begin path for entire group
+					ctx.beginPath();
+					group.forEach(blade => {
+						const alpha = (baseAlpha * blade.shadeMod).toFixed(2);
+						// Can't batch different alphas easily, so we still need individual strokes
+						// But we minimize the other state changes
+						ctx.strokeStyle = `rgba(${colorBase[0]},${colorBase[1]},${colorBase[2]},${alpha})`;
+						ctx.moveTo(blade.baseX, blade.baseY);
+						ctx.quadraticCurveTo(blade.midX, blade.midY, blade.topX, blade.topY);
+						ctx.stroke();
+						ctx.beginPath(); // Reset for next blade
+					});
+				});
 			}
 			// Leaf shimmer
 			if(t===T.LEAF){ const h=hash32(x,y); const frontLeaf = ((h>>7)&1)===1; if((pass==='back' && frontLeaf) || (pass==='front' && !frontLeaf)){} else { const phase=(h&255)/255; const offset = Math.sin(now*0.0025 + phase*6.283)*2.5; ctx.fillStyle='rgba(255,255,255,'+(frontLeaf?0.10:0.06)+')'; ctx.fillRect(x*TILE + TILE/2 + offset - TILE*0.22, y*TILE+3, TILE*0.44, TILE*0.44); } }
@@ -1285,8 +1765,23 @@ if(!window.__lootPopupInit){
 	const lootUnstashSelBtn=document.getElementById('lootUnstashSel');
 	const lootDiscardSelBtn=document.getElementById('lootDiscardSel');
 	let lootPrevFocus=null;
-	function persistInbox(){ try{ localStorage.setItem(LOOT_INBOX_KEY, JSON.stringify({items:window.lootInbox, unread:lootInboxUnread})); }catch(e){} }
-	function persistStash(){ try{ localStorage.setItem(LOOT_STASH_KEY, JSON.stringify(window.lootStash||[])); }catch(e){} }
+	function persistInbox(){ 
+		try { 
+			const data = JSON.stringify({items: window.lootInbox, unread: lootInboxUnread});
+			STORAGE_QUOTA_MANAGER.safeSetItem(LOOT_INBOX_KEY, data, { allowCleanup: false });
+		} catch (e) {
+			console.warn('Failed to persist inbox:', e);
+		} 
+	}
+	
+	function persistStash(){ 
+		try { 
+			const data = JSON.stringify(window.lootStash || []);
+			STORAGE_QUOTA_MANAGER.safeSetItem(LOOT_STASH_KEY, data, { allowCleanup: false });
+		} catch (e) {
+			console.warn('Failed to persist stash:', e);
+		} 
+	}
 	function updateLootInboxIndicator(){ const count=lootInboxUnread; if(!lootInboxBtn) return; if(count>0){ lootInboxBtn.style.display='inline-block'; lootInboxCount.textContent=''+count; lootInboxBtn.classList.add('pulseNew'); } else { lootInboxBtn.style.display='none'; lootInboxCount.textContent=''; lootInboxBtn.classList.remove('pulseNew'); } }
 	window.updateLootInboxIndicator=updateLootInboxIndicator;
 	// Utilities and state
@@ -1309,7 +1804,17 @@ if(!window.__lootPopupInit){
 	(function initLootUIState(){ try{ const raw=localStorage.getItem(LOOT_UI_KEY); if(raw){ const st=JSON.parse(raw); if(st && (st.tab==='inbox'||st.tab==='stash')) currentTab=st.tab; if(st && st.sort && sortSel){ sortSel.value=st.sort; }
 		if(st && Array.isArray(st.kinds)){ activeKinds = new Set(st.kinds.filter(k=>k==='cape'||k==='eyes'||k==='outfit')); if(filtersWrap){ filtersWrap.querySelectorAll('.chip').forEach(ch=>{ const k=ch.getAttribute('data-kind'); if(k && activeKinds.has(k)) ch.classList.add('on'); else ch.classList.remove('on'); }); } }
 	} }catch(e){} })();
-	function persistLootUI(){ try{ const kinds=[...activeKinds]; const sort=sortSel?sortSel.value:'recommend'; const tab=currentTab; localStorage.setItem(LOOT_UI_KEY, JSON.stringify({tab,sort,kinds})); }catch(e){} }
+	function persistLootUI(){ 
+		try { 
+			const kinds = [...activeKinds]; 
+			const sort = sortSel ? sortSel.value : 'recommend'; 
+			const tab = currentTab; 
+			const data = JSON.stringify({tab, sort, kinds});
+			STORAGE_QUOTA_MANAGER.safeSetItem(LOOT_UI_KEY, data, { allowCleanup: false });
+		} catch (e) {
+			console.warn('Failed to persist loot UI state:', e);
+		} 
+	}
 	function getActiveList(){ return currentTab==='inbox' ? window.lootInbox : window.lootStash; }
 	function setTab(tab){ currentTab=tab; if(tab==='inbox'){ tabInbox.classList.add('sel'); tabStash.classList.remove('sel'); lootUnstashSelBtn.style.display='none'; lootStashSelBtn.style.display=''; } else { tabStash.classList.add('sel'); tabInbox.classList.remove('sel'); lootUnstashSelBtn.style.display=''; lootStashSelBtn.style.display='none'; } selectedKeys.clear(); rebuildList(); }
 	function applyFiltersAndSort(items){ const all=MM.getCustomizationItems? MM.getCustomizationItems():null; const curByKind={ cape: currentOf('cape',all), eyes: currentOf('eyes',all), outfit: currentOf('outfit',all) }; const filtered = items.filter(it=>{ ensureKey(it); return activeKinds.has(it.kind); }); const mode=sortSel?.value||'recommend'; filtered.sort((a,b)=>{ const ca=curByKind[a.kind], cb=curByKind[b.kind]; if(mode==='tier'){ const d=tierWeight(b.tier)-tierWeight(a.tier); if(d!==0) return d; return (b.time||0)-(a.time||0); }
@@ -1319,33 +1824,174 @@ if(!window.__lootPopupInit){
 		// recommend (default)
 		const sa=computeScore(a,ca), sb=computeScore(b,cb); if(sb!==sa) return sb-sa; return (b.time||0)-(a.time||0);
 	}); return {list:filtered, curByKind}; }
-	function buildRows(){ lootItemsBox.innerHTML=''; const src=getActiveList(); const {list,curByKind} = applyFiltersAndSort(src);
-		list.forEach(it=>{ const row=document.createElement('div'); row.className='lootRow '+(it.tier||''); row.__item=it; const left=document.createElement('div'); const title=document.createElement('div'); title.style.fontWeight='600'; title.textContent=(it.name||it.id)+' ['+(it.kind||'?')+']'; if(it.unique){ const b=document.createElement('span'); b.textContent='★ '+it.unique; b.style.marginLeft='6px'; b.style.fontSize='10px'; b.style.color='#ffd54a'; title.appendChild(b); }
+	function buildRows(){ 
+		// Clear existing content and any event listeners
+		while (lootItemsBox.firstChild) {
+			lootItemsBox.removeChild(lootItemsBox.firstChild);
+		}
+		
+		const src=getActiveList(); 
+		const {list,curByKind} = applyFiltersAndSort(src);
+		
+		// Use event delegation instead of attaching listeners to each element
+		function handleRowClick(e) {
+			const row = e.target.closest('.lootRow');
+			if (!row || !row.__item) return;
+			
+			const it = row.__item;
+			const equip = e.target.closest('button[data-action="equip"]');
+			const keep = e.target.closest('button[data-action="keep"]');
+			const discard = e.target.closest('button[data-action="discard"]');
+			
+			if (equip) {
+				if(it.kind==='cape') MM.customization.capeStyle=it.id; 
+				else if(it.kind==='eyes') MM.customization.eyeStyle=it.id; 
+				else MM.customization.outfitStyle=it.id; 
+				if(MM.recomputeModifiers) MM.recomputeModifiers(); 
+				window.dispatchEvent(new CustomEvent('mm-customization-change')); 
+				
+				// Disable buttons and dim row
+				row.querySelectorAll('button').forEach(btn => btn.disabled = true);
+				row.style.opacity = '.45';
+				persistInbox(); persistStash();
+				return;
+			}
+			
+			if (keep) {
+				const arr = getActiveList();
+				const idx = arr.indexOf(it);
+				if (idx >= 0) arr.splice(idx, 1);
+				
+				if(currentTab==='inbox'){ 
+					window.lootStash.push(it); 
+					persistStash(); persistInbox(); 
+				} else { 
+					window.lootInbox.push(it); 
+					persistInbox(); persistStash(); 
+				}
+				rebuildList();
+				return;
+			}
+			
+			if (discard) {
+				if(MM.dynamicLoot){ 
+					const pool = it.kind==='cape'? MM.dynamicLoot.capes : it.kind==='eyes'? MM.dynamicLoot.eyes : MM.dynamicLoot.outfits; 
+					const idx=pool? pool.indexOf(it):-1; 
+					if(idx>=0) pool.splice(idx,1); 
+				} 
+				if(MM.addDiscardedLoot) MM.addDiscardedLoot(it.id); 
+				if(MM.chests && MM.chests.saveDynamicLoot) MM.chests.saveDynamicLoot(); 
+				
+				const arr = getActiveList();
+				const idx = arr.indexOf(it);
+				if (idx >= 0) arr.splice(idx, 1);
+				
+				persistInbox(); persistStash(); rebuildList();
+				return;
+			}
+			
+			// Selection toggle (only if not clicking a button)
+			if (!e.target.closest('button')) {
+				const sel = row.querySelector('.selMark');
+				if(selectedKeys.has(it._key)){ 
+					selectedKeys.delete(it._key); 
+					row.classList.remove('sel'); 
+					if (sel) sel.textContent=''; 
+				} else { 
+					selectedKeys.add(it._key); 
+					row.classList.add('sel'); 
+					if (sel) sel.textContent='✓'; 
+				}
+			}
+		}
+		
+		// Remove existing event listener to prevent duplicates
+		if (lootItemsBox.__clickHandler) {
+			lootItemsBox.removeEventListener('click', lootItemsBox.__clickHandler);
+		}
+		
+		// Add single delegated event listener
+		lootItemsBox.__clickHandler = handleRowClick;
+		lootItemsBox.addEventListener('click', handleRowClick);
+		
+		list.forEach(it=>{ 
+			const row=document.createElement('div'); 
+			row.className='lootRow '+(it.tier||''); 
+			row.__item=it; 
+			
+			const left=document.createElement('div'); 
+			const title=document.createElement('div'); 
+			title.style.fontWeight='600'; 
+			title.textContent=(it.name||it.id)+' ['+(it.kind||'?')+']'; 
+			
+			if(it.unique){ 
+				const b=document.createElement('span'); 
+				b.textContent='★ '+it.unique; 
+				b.style.marginLeft='6px'; 
+				b.style.fontSize='10px'; 
+				b.style.color='#ffd54a'; 
+				title.appendChild(b); 
+			}
+			
 			// Delta badge
-			const cur=curByKind[it.kind]; const sc=computeScore(it,cur); const badge=document.createElement('span'); badge.className='deltaBadge'+(sc<0?' worse':''); badge.textContent = (sc>0? '+':'')+sc.toFixed(2);
+			const cur=curByKind[it.kind]; 
+			const sc=computeScore(it,cur); 
+			const badge=document.createElement('span'); 
+			badge.className='deltaBadge'+(sc<0?' worse':''); 
+			badge.textContent = (sc>0? '+':'')+sc.toFixed(2);
 			title.appendChild(badge);
 			left.appendChild(title);
-			const stats=document.createElement('div'); stats.className='lootStats';
-			function diff(label, curV, newV, betterHigh=true, fmt=v=>v){ if(newV==null) return; const base=curV==null? (label==='move'||label==='jump'||label==='mine'?1: (label==='air'?0: (label==='vision'?10:null))):curV; const better = betterHigh? newV>base : newV<base; const worse = betterHigh? newV<base : newV>base; const cls=better?'diffPlus': worse?'diffMinus':''; stats.innerHTML+= label+': <span class="'+cls+'">'+fmt(newV)+(newV!==base? (' ('+fmt(base)+')'):'')+'</span><br>'; }
+			
+			const stats=document.createElement('div'); 
+			stats.className='lootStats';
+			function diff(label, curV, newV, betterHigh=true, fmt=v=>v){ 
+				if(newV==null) return; 
+				const base=curV==null? (label==='move'||label==='jump'||label==='mine'?1: (label==='air'?0: (label==='vision'?10:null))):curV; 
+				const better = betterHigh? newV>base : newV<base; 
+				const worse = betterHigh? newV<base : newV>base; 
+				const cls=better?'diffPlus': worse?'diffMinus':''; 
+				stats.innerHTML+= label+': <span class="'+cls+'">'+fmt(newV)+(newV!==base? (' ('+fmt(base)+')'):'')+'</span><br>'; 
+			}
 			diff('air', cur&&cur.airJumps, it.airJumps, true, v=>'+'+v);
 			diff('vision', cur&&cur.visionRadius, it.visionRadius, true, v=>v);
 			diff('move', cur&&cur.moveSpeedMult, it.moveSpeedMult, true, fmtMult);
 			diff('jump', cur&&cur.jumpPowerMult, it.jumpPowerMult, true, fmtMult);
 			diff('mine', cur&&cur.mineSpeedMult, it.mineSpeedMult, true, fmtMult);
-			left.appendChild(stats); row.appendChild(left);
-			const btns=document.createElement('div'); btns.style.display='flex'; btns.style.flexDirection='column'; btns.style.gap='6px';
-			const equip=document.createElement('button'); equip.textContent='Wyposaż'; const keep=document.createElement('button'); keep.textContent= currentTab==='inbox'? 'Schowaj' : 'Do skrzynki'; keep.className='sec'; const discard=document.createElement('button'); discard.textContent='Odrzuć'; discard.className='danger';
-			function removeFromSource(){ const arr=getActiveList(); const idx=arr.indexOf(it); if(idx>=0){ arr.splice(idx,1); } }
-			function perDisable(){ equip.disabled=keep.disabled=discard.disabled=true; row.style.opacity='.45'; }
-			equip.addEventListener('click',()=>{ if(it.kind==='cape') MM.customization.capeStyle=it.id; else if(it.kind==='eyes') MM.customization.eyeStyle=it.id; else MM.customization.outfitStyle=it.id; if(MM.recomputeModifiers) MM.recomputeModifiers(); window.dispatchEvent(new CustomEvent('mm-customization-change')); perDisable(); persistInbox(); persistStash(); });
-			keep.addEventListener('click',()=>{ if(currentTab==='inbox'){ window.lootStash.push(it); removeFromSource(); persistStash(); persistInbox(); rebuildList(); } else { window.lootInbox.push(it); removeFromSource(); persistInbox(); persistStash(); rebuildList(); }});
-			discard.addEventListener('click',()=>{ if(MM.dynamicLoot){ const pool = it.kind==='cape'? MM.dynamicLoot.capes : it.kind==='eyes'? MM.dynamicLoot.eyes : MM.dynamicLoot.outfits; const idx=pool? pool.indexOf(it):-1; if(idx>=0) pool.splice(idx,1); } if(MM.addDiscardedLoot) MM.addDiscardedLoot(it.id); if(MM.chests && MM.chests.saveDynamicLoot) MM.chests.saveDynamicLoot(); removeFromSource(); persistInbox(); persistStash(); rebuildList(); });
-			btns.appendChild(equip); btns.appendChild(keep); btns.appendChild(discard); row.appendChild(btns);
+			left.appendChild(stats); 
+			row.appendChild(left);
+			
+			const btns=document.createElement('div'); 
+			btns.style.display='flex'; 
+			btns.style.flexDirection='column'; 
+			btns.style.gap='6px';
+			
+			// Use data attributes instead of event listeners for delegation
+			const equip=document.createElement('button'); 
+			equip.textContent='Wyposaż'; 
+			equip.setAttribute('data-action', 'equip');
+			
+			const keep=document.createElement('button'); 
+			keep.textContent= currentTab==='inbox'? 'Schowaj' : 'Do skrzynki'; 
+			keep.className='sec'; 
+			keep.setAttribute('data-action', 'keep');
+			
+			const discard=document.createElement('button'); 
+			discard.textContent='Odrzuć'; 
+			discard.className='danger';
+			discard.setAttribute('data-action', 'discard');
+			
+			btns.appendChild(equip); 
+			btns.appendChild(keep); 
+			btns.appendChild(discard); 
+			row.appendChild(btns);
+			
 			// Selection toggle
-			const sel=document.createElement('div'); sel.className='selMark'; sel.textContent = selectedKeys.has(it._key)? '✓' : '';
+			const sel=document.createElement('div'); 
+			sel.className='selMark'; 
+			sel.textContent = selectedKeys.has(it._key)? '✓' : '';
 			row.appendChild(sel);
 			if(selectedKeys.has(it._key)) row.classList.add('sel');
-			row.addEventListener('click',e=>{ if(e.target===equip || e.target===keep || e.target===discard) return; if(selectedKeys.has(it._key)){ selectedKeys.delete(it._key); row.classList.remove('sel'); sel.textContent=''; } else { selectedKeys.add(it._key); row.classList.add('sel'); sel.textContent='✓'; } });
+			
 			lootItemsBox.appendChild(row);
 		});
 	}
