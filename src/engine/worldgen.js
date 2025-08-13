@@ -1,8 +1,16 @@
 // World generation (seed, noise, biome, height) - global friendly
 window.MM = window.MM || {};
 const WG = {};
-WG.worldSeed = 12345;
-WG.setSeedFromInput = function(){ const inp=document.getElementById('seedInput'); if(!inp) return; let v=inp.value.trim(); if(!v||v==='auto'){ WG.worldSeed = Math.floor(Math.random()*1e9); inp.value=String(WG.worldSeed); } else { let h=0; for(let i=0;i<v.length;i++){ h=(h*131 + v.charCodeAt(i))>>>0; } WG.worldSeed = h||1; } if(window.MM && MM.world && MM.world.clearHeights) MM.world.clearHeights(); };
+// Persisted world seed handling
+const SEED_STORAGE_KEY = 'mm_world_seed_v1';
+function loadPersistedSeed(){
+	try{ const raw = localStorage.getItem(SEED_STORAGE_KEY); if(raw){ const n=Number(raw); if(Number.isFinite(n) && n>0){ return n>>>0; } } }catch(e){}
+	return null;
+}
+function persistSeed(seed){ try{ localStorage.setItem(SEED_STORAGE_KEY, String(seed>>>0)); }catch(e){} }
+
+WG.worldSeed = loadPersistedSeed() || 12345;
+WG.setSeedFromInput = function(){ const inp=document.getElementById('seedInput'); if(!inp) return; let v=inp.value.trim(); if(!v||v==='auto'){ WG.worldSeed = Math.floor(Math.random()*1e9); inp.value=String(WG.worldSeed); } else { let h=0; for(let i=0;i<v.length;i++){ h=(h*131 + v.charCodeAt(i))>>>0; } WG.worldSeed = h||1; } persistSeed(WG.worldSeed); if(window.MM && MM.world && MM.world.clearHeights) MM.world.clearHeights(); };
 WG.randSeed = function(n){ const x=Math.sin(n*127.1 + WG.worldSeed*0.000123)*43758.5453; return x-Math.floor(x); };
 WG.valueNoise = function(x, wavelength, off){ const p=x/wavelength; const i=Math.floor(p); const f=p-i; const a=WG.randSeed(i+off); const b=WG.randSeed(i+1+off); const u=f*f*(3-2*f); return a + (b-a)*u; };
 // --- Multi-axis biome noise (temperature + moisture + macro elevation) ---
@@ -66,5 +74,6 @@ WG.chestNoise = function(x){ return WG.valueNoise(x,55,1333); };
 WG.chestPlace = function(x){ // dense for testing: ~6% columns get a chest
 	return WG.chestNoise(x) > 0.94; };
 WG.diamondChance = function(y){ const {SURFACE_GRASS_DEPTH,SAND_DEPTH} = MM; const d=y-(SURFACE_GRASS_DEPTH+SAND_DEPTH); if(d<0) return 0; return Math.min(0.002 + d*0.0009, 0.05); };
-WG.setSeedFromInput();
+// If there is an existing input element and no persisted seed was found, generate one
+if(!loadPersistedSeed()) WG.setSeedFromInput(); else { const inp=document.getElementById('seedInput'); if(inp) inp.value=String(WG.worldSeed); }
 MM.worldGen = WG;

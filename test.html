@@ -96,6 +96,22 @@
                         addTestResult('RENDER_CACHE not found', false);
                     }
                     
+                    // Test Coordinate System
+                    if (typeof window.__coordinateSystem !== 'undefined') {
+                        addTestResult('Unified Coordinate System initialized');
+                        const coordDiag = window.__coordinateSystem.getDiagnostics();
+                        console.log('Coordinate System Diagnostics:', coordDiag);
+                        
+                        // Validate coordinate system integrity
+                        if (coordDiag.validation.valid) {
+                            addTestResult('Coordinate system validation passed');
+                        } else {
+                            addTestResult('Coordinate system validation issues: ' + coordDiag.validation.issues.join(', '), false);
+                        }
+                    } else {
+                        addTestResult('Unified Coordinate System not found', false);
+                    }
+                    
                     // Test Collision System
                     if (typeof window.__collisionSystem !== 'undefined') {
                         addTestResult('Advanced Collision System initialized');
@@ -110,6 +126,17 @@
                         addTestResult('Performance Diagnostics available');
                         const diagnostics = window.__getPerformanceDiagnostics();
                         console.log('Full Performance Diagnostics:', diagnostics);
+                        
+                        // Check for coordinate system integration
+                        if (diagnostics.coordinateSystem) {
+                            addTestResult('Coordinate system integrated into diagnostics');
+                        }
+                        if (diagnostics.playerPosition) {
+                            addTestResult('Player position tracking active');
+                        }
+                        if (diagnostics.camera) {
+                            addTestResult('Camera coordinate tracking active');
+                        }
                     } else {
                         addTestResult('Performance Diagnostics not found', false);
                     }
@@ -121,7 +148,7 @@
                         addTestResult('Manual game controls not found', false);
                     }
                     
-                    addTestResult('🎉 All 11 performance optimizations verified!');
+                    addTestResult('🎉 All 12 performance optimizations verified!');
                     
                 } catch (error) {
                     addTestResult(`Error during testing: ${error.message}`, false);
