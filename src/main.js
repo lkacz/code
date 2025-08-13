@@ -990,7 +990,7 @@ document.addEventListener('keydown', (e)=>{ if(e.key==='Escape'){ closeMenu(); }
 	}
 	// Smarter defaults: mobile shows on‑screen controls by default and slightly larger UI
 	const isMobile = matchMedia('(pointer:coarse)').matches || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent||'');
-	const defaultPrefs={ scale:isMobile?1.1:1, show:{ inv:true, hotbar:true, controls:isMobile, radar:true, craft:!isMobile, fps:true, messages:true } };
+	const defaultPrefs={ scale:isMobile?1.1:1, show:{ inv:false, hotbar:true, controls:isMobile, radar:true, craft:!isMobile, fps:true, messages:true } };
 	let uiPrefs = Object.assign({}, defaultPrefs, loadUIPrefs()||{});
 	applyUIPrefs(uiPrefs);
 	// Settings section UI
