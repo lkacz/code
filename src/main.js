@@ -1725,13 +1725,16 @@ function drawPlayer(){
 	ctx.fillStyle='rgba(0,0,0,0.25)'; const shw=bw*0.6; ctx.beginPath(); ctx.ellipse(player.x*TILE, (player.y+player.h/2)*TILE+2, shw/2, 4,0,0,Math.PI*2); ctx.fill(); }
 
 // Chunk render cache (offscreen canvas per chunk) with memory management
+// IMPORTANT: This must be fully cleared (Map cleared AND canvases dereferenced) on world regeneration
 const chunkCanvases = new Map(); // key: chunkX -> {canvas,ctx,version,lastUsed}
+let __worldRegenCounter = 0; // increments every full regeneration to bust any residual caches
 const MAX_CACHED_CHUNKS = 50; // Limit cached chunks to prevent memory leaks
 const CHUNK_CACHE_TIMEOUT = 30000; // 30 seconds before unused chunks are cleaned up
 
 function hash32(x,y){
-	// Salt with current world seed so decorative layout (grass blades etc.) matches terrain seed
-	const seed = (typeof WORLDGEN!=='undefined' && WORLDGEN.worldSeed)|0;
+	// Salt with current world seed and regeneration counter so decorative layout (grass blades etc.) matches terrain seed
+	// Adding regen counter ensures absolutely no reuse of stale per-chunk color variation between worlds
+	const seed = ((typeof WORLDGEN!=='undefined' && WORLDGEN.worldSeed)|0) ^ (__worldRegenCounter*0x9e3779b1);
 	let h = ((x|0)+seed)*374761393 ^ ((y|0)-seed)*668265263;
 	h = (h^(h>>>13))*1274126177; h = h^(h>>>16); return h>>>0;
 }
@@ -2921,9 +2924,34 @@ document.addEventListener('keydown', (e)=>{ if(e.key==='Escape'){ closeMenu(); }
 })();
 // Regeneracja świata z nowym ziarnem
 document.getElementById('regenBtn')?.addEventListener('click',()=>{ setSeedFromInput(); regenWorld(); closeMenu(); });
-function regenWorld(){ WORLD.clear(); seenChunks.clear(); mining=false; if(MM.fallingSolids) MM.fallingSolids.reset(); if(MM.water) MM.water.reset(); inv.grass=inv.sand=inv.stone=inv.diamond=inv.wood=inv.leaf=inv.snow=inv.water=0; inv.tools.stone=inv.tools.diamond=false; player.tool='basic'; hotbarIndex=0; // if god mode active, restore 100 stack after reset
+function regenWorld(){
+	// 1. Increment regen counter early so any hashes computed DURING regen use new salt
+	__worldRegenCounter++;
+
+	// 2. Fully clear world storage (tiles + versions + height cache) via WORLD.clear()
+	WORLD.clear();
+	if(WORLD.clearHeights) WORLD.clearHeights();
+
+	// 3. Clear visibility / fog data structures
+	seenChunks.clear();
+
+	// 4. Hard reset chunk render canvases (Map + canvas objects) BEFORE new chunks are generated
+	if(chunkCanvases.size){
+		for(const [cx,entry] of chunkCanvases.entries()){
+			try{ entry.ctx && entry.ctx.clearRect(0,0,entry.canvas.width, entry.canvas.height); }catch(_e){}
+			entry.canvas.width = 1; entry.canvas.height = 1; // release GPU memory
+		}
+		chunkCanvases.clear();
+	}
+
+	// 5. Reset runtime subsystem state
+	mining=false; if(MM.fallingSolids) MM.fallingSolids.reset(); if(MM.water) MM.water.reset();
+
+	// 6. Reset inventory & tools
+	inv.grass=inv.sand=inv.stone=inv.diamond=inv.wood=inv.leaf=inv.snow=inv.water=0; inv.tools.stone=inv.tools.diamond=false; player.tool='basic'; hotbarIndex=0; // if god mode active, restore 100 stack after reset
 	if(godMode){ if(!_preGodInventory) _preGodInventory={grass:0,sand:0,stone:0,diamond:0,wood:0,leaf:0,snow:0,water:0}; inv.grass=inv.sand=inv.stone=inv.diamond=inv.wood=inv.leaf=inv.snow=inv.water=100; }
-	// Reset render cache so first frame after regeneration uses fresh camera transforms
+
+	// 7. Reset render cache so first frame after regeneration uses fresh camera transforms
 	if(typeof RENDER_CACHE !== 'undefined'){
 		RENDER_CACHE.lastCamX = null;
 		RENDER_CACHE.lastCamY = null;
@@ -2932,12 +2960,18 @@ function regenWorld(){ WORLD.clear(); seenChunks.clear(); mining=false; if(MM.fa
 		RENDER_CACHE.cachedViewBounds = null;
 		RENDER_CACHE.cachedTransforms = null;
 	}
+
+	// 8. Re-place player (will ensure initial chunk generated AFTER clear) & center camera
 	updateInventory(); updateHotbarSel(); placePlayer(true);
-	// Force an immediate transform cache update so no misalignment flicker occurs
+
+	// 9. Force an immediate transform cache update so no misalignment flicker occurs
 	if(typeof RENDER_CACHE !== 'undefined'){
 		try{ RENDER_CACHE.updateCache(camX, camY, zoom, W, H); }catch(e){ console.warn('Render cache update after regen failed', e); }
 	}
-	saveState(); msg('Nowy świat seed '+worldSeed); }
+
+	// 10. Persist and notify
+	saveState(); msg('Nowy świat seed '+worldSeed+' (#'+__worldRegenCounter+')');
+}
 document.getElementById('centerBtn').addEventListener('click',()=>{ camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; });
 document.getElementById('helpBtn').addEventListener('click',()=>{ const h=document.getElementById('help'); const show=h.style.display!=='block'; h.style.display=show?'block':'none'; document.getElementById('helpBtn').setAttribute('aria-expanded', String(show)); });
 const radarBtn=document.getElementById('radarBtn'); radarBtn.addEventListener('click',()=>{ radarFlash=performance.now()+1500; }); let radarFlash=0;
