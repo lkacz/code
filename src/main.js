@@ -555,8 +555,14 @@ function showAutoSaveHint(sizeKB){
 		
 		// Keep warning visible longer if storage is critical
 		const hideDelay = usage > STORAGE_QUOTA_MANAGER.WARNING_THRESHOLD ? 5000 : 2800;
-		clearTimeout(showAutoSaveHint._t); 
-		showAutoSaveHint._t = setTimeout(() => { el.style.opacity = '0'; }, hideDelay); 
+		
+		// Use managed timeout for autosave hint
+		if (showAutoSaveHint._managedId) {
+			TIMER_MANAGER.clearTimeout(showAutoSaveHint._managedId);
+		}
+		showAutoSaveHint._managedId = TIMER_MANAGER.setTimeout(() => { 
+			el.style.opacity = '0'; 
+		}, hideDelay, 'autosave_hint'); 
 	} catch(e) {} 
 }
 // Monkey-patch original saveGame to attach autosave hints (wrap)
@@ -582,8 +588,172 @@ function loadGame(){ try{ let raw=localStorage.getItem(SAVE_KEY); if(!raw){ for(
 	if(data.player && typeof data.player.x==='number' && typeof data.player.y==='number') { centerOnPlayer(); } else { placePlayer(true); }
 	return true;
 }catch(e){ console.warn('Load failed',e); return false; }}
-// Auto-save interval (60s)
-setInterval(()=>{ saveGame(false); },60000);
+// --- Timer and Resource Management System ---
+const TIMER_MANAGER = {
+	intervals: new Map(), // id -> {intervalId, callback, delay, active}
+	timeouts: new Map(),  // id -> {timeoutId, callback, delay, startTime, active}
+	animationFrame: null,
+	isGamePaused: false,
+	isPageVisible: true,
+	
+	// Register a managed interval
+	setInterval(callback, delay, id = null) {
+		const managedId = id || 'interval_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+		
+		// Clear existing if re-registering
+		if (this.intervals.has(managedId)) {
+			this.clearInterval(managedId);
+		}
+		
+		const intervalId = setInterval(() => {
+			if (!this.isGamePaused && this.isPageVisible) {
+				callback();
+			}
+		}, delay);
+		
+		this.intervals.set(managedId, {
+			intervalId,
+			callback,
+			delay,
+			active: true
+		});
+		
+		return managedId;
+	},
+	
+	// Register a managed timeout
+	setTimeout(callback, delay, id = null) {
+		const managedId = id || 'timeout_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+		
+		// Clear existing if re-registering
+		if (this.timeouts.has(managedId)) {
+			this.clearTimeout(managedId);
+		}
+		
+		const timeoutId = setTimeout(() => {
+			if (!this.isGamePaused && this.isPageVisible) {
+				callback();
+			}
+			this.timeouts.delete(managedId);
+		}, delay);
+		
+		this.timeouts.set(managedId, {
+			timeoutId,
+			callback,
+			delay,
+			startTime: performance.now(),
+			active: true
+		});
+		
+		return managedId;
+	},
+	
+	// Clear managed interval
+	clearInterval(id) {
+		const entry = this.intervals.get(id);
+		if (entry) {
+			clearInterval(entry.intervalId);
+			this.intervals.delete(id);
+		}
+	},
+	
+	// Clear managed timeout
+	clearTimeout(id) {
+		const entry = this.timeouts.get(id);
+		if (entry) {
+			clearTimeout(entry.timeoutId);
+			this.timeouts.delete(id);
+		}
+	},
+	
+	// Pause all managed timers
+	pauseAll() {
+		this.isGamePaused = true;
+		console.log('Timer Manager: Paused all timers');
+	},
+	
+	// Resume all managed timers
+	resumeAll() {
+		this.isGamePaused = false;
+		console.log('Timer Manager: Resumed all timers');
+	},
+	
+	// Handle page visibility changes
+	handleVisibilityChange() {
+		this.isPageVisible = !document.hidden;
+		
+		if (this.isPageVisible) {
+			console.log('Timer Manager: Page visible - timers active');
+		} else {
+			console.log('Timer Manager: Page hidden - timers paused');
+		}
+	},
+	
+	// Clean up all timers (for shutdown/cleanup)
+	cleanup() {
+		// Clear all intervals
+		for (const [id, entry] of this.intervals) {
+			clearInterval(entry.intervalId);
+		}
+		this.intervals.clear();
+		
+		// Clear all timeouts
+		for (const [id, entry] of this.timeouts) {
+			clearTimeout(entry.timeoutId);
+		}
+		this.timeouts.clear();
+		
+		// Cancel animation frame
+		if (this.animationFrame) {
+			cancelAnimationFrame(this.animationFrame);
+			this.animationFrame = null;
+		}
+		
+		console.log('Timer Manager: All timers cleaned up');
+	},
+	
+	// Get diagnostics
+	getDiagnostics() {
+		return {
+			activeIntervals: this.intervals.size,
+			activeTimeouts: this.timeouts.size,
+			isPaused: this.isGamePaused,
+			isVisible: this.isPageVisible,
+			intervals: Array.from(this.intervals.keys()),
+			timeouts: Array.from(this.timeouts.keys())
+		};
+	}
+};
+
+// Set up page visibility monitoring
+document.addEventListener('visibilitychange', () => {
+	TIMER_MANAGER.handleVisibilityChange();
+});
+
+// Set up beforeunload cleanup
+window.addEventListener('beforeunload', () => {
+	TIMER_MANAGER.cleanup();
+});
+
+// Expose timer manager for debugging
+window.__timerManager = TIMER_MANAGER;
+
+// Add manual pause/resume controls for debugging or performance tuning
+window.__pauseGame = () => {
+	TIMER_MANAGER.pauseAll();
+	console.log('Game manually paused');
+};
+
+window.__resumeGame = () => {
+	TIMER_MANAGER.resumeAll();
+	console.log('Game manually resumed');
+};
+
+window.__getTimerDiagnostics = () => {
+	const diag = TIMER_MANAGER.getDiagnostics();
+	console.log('Timer Diagnostics:', diag);
+	return diag;
+};
 // Expose manual save/load via menu buttons (injected later if menu exists)
 window.__injectSaveButtons = function(){ const menuPanel=document.getElementById('menuPanel'); if(!menuPanel || document.getElementById('saveGameBtn')) return; const group=document.createElement('div'); group.className='group'; group.style.cssText='display:flex; flex-direction:column; gap:6px;';
 	const row=document.createElement('div'); row.style.cssText='display:flex; gap:6px; flex-wrap:wrap;';
@@ -881,7 +1051,9 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 	group.appendChild(openBrowserBtn); group.appendChild(browser);
 	menuPanel.appendChild(group);
 };
-document.addEventListener('DOMContentLoaded',()=>{ setTimeout(()=>window.__injectSaveButtons(),200); });
+document.addEventListener('DOMContentLoaded', () => { 
+	TIMER_MANAGER.setTimeout(() => window.__injectSaveButtons(), 200, 'init_save_buttons'); 
+});
 // Override lightweight saveState() calls to point at full save for backwards compatibility
 function saveState(){ saveGame(false); }
 function canCraftStone(){return inv.stone>=10;}
@@ -1657,8 +1829,12 @@ document.addEventListener('keydown', (e)=>{ if(e.key==='Escape'){ closeMenu(); }
 		if(!(window.MM && MM.mobs && MM.mobs.species)) { const p=document.createElement('div'); p.textContent='(Brak systemu mobów)'; p.style.cssText='font-size:11px; opacity:.5;'; box.appendChild(p); return; }
 		MM.mobs.species.forEach(id=>{ const b=document.createElement('button'); b.textContent=id; b.style.cssText='flex:1 1 70px; font-size:11px; padding:3px 6px;'; b.addEventListener('click',()=>{ if(MM.mobs.forceSpawn){ const ok=MM.mobs.forceSpawn(id, player, getTile); if(ok) msg('Spawn '+id); } }); box.appendChild(b); });
 	};
-	setTimeout(()=>{ if(window.__populateMobSpawnButtons) window.__populateMobSpawnButtons(); },300);
-	window.addEventListener('mm-mobs-ready',()=>{ if(window.__populateMobSpawnButtons) window.__populateMobSpawnButtons(); });
+	TIMER_MANAGER.setTimeout(() => { 
+		if(window.__populateMobSpawnButtons) window.__populateMobSpawnButtons(); 
+	}, 300, 'init_mob_buttons');
+	window.addEventListener('mm-mobs-ready', () => { 
+		if(window.__populateMobSpawnButtons) window.__populateMobSpawnButtons(); 
+	});
 })();
 // Regeneracja świata z nowym ziarnem
 document.getElementById('regenBtn')?.addEventListener('click',()=>{ setSeedFromInput(); regenWorld(); closeMenu(); });
@@ -1668,7 +1844,17 @@ function regenWorld(){ WORLD.clear(); seenChunks.clear(); mining=false; if(MM.fa
 document.getElementById('centerBtn').addEventListener('click',()=>{ camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; });
 document.getElementById('helpBtn').addEventListener('click',()=>{ const h=document.getElementById('help'); const show=h.style.display!=='block'; h.style.display=show?'block':'none'; document.getElementById('helpBtn').setAttribute('aria-expanded', String(show)); });
 const radarBtn=document.getElementById('radarBtn'); radarBtn.addEventListener('click',()=>{ radarFlash=performance.now()+1500; }); let radarFlash=0;
-function msg(t){ el.msg.textContent=t; clearTimeout(msg._t); msg._t=setTimeout(()=>{ el.msg.textContent=''; },4000); }
+function msg(t){ 
+	el.msg.textContent = t; 
+	
+	// Use managed timeout for message clearing
+	if (msg._managedId) {
+		TIMER_MANAGER.clearTimeout(msg._managedId);
+	}
+	msg._managedId = TIMER_MANAGER.setTimeout(() => { 
+		el.msg.textContent = ''; 
+	}, 4000, 'msg_clear'); 
+}
 
 // FPS
 let frames=0,lastFps=performance.now(); function updateFps(now){ frames++; if(now-lastFps>1000){ el.fps.textContent=frames+' FPS'+ (grassBudgetInfo? (' '+grassBudgetInfo):''); frames=0; lastFps=now; }}
@@ -1690,6 +1876,14 @@ let isLoopRunning = false;
 
 function loop(ts){ 
 	if(isLoopRunning) return; // Prevent duplicate loops
+	
+	// Respect timer manager pause state
+	if (TIMER_MANAGER.isGamePaused || !TIMER_MANAGER.isPageVisible) {
+		// Schedule next frame but don't process game logic
+		TIMER_MANAGER.animationFrame = requestAnimationFrame(loop);
+		return;
+	}
+	
 	isLoopRunning = true;
 	
 	const dt=Math.min(0.05,(ts-last)/1000); 
@@ -1729,12 +1923,25 @@ function loop(ts){
 	updateFps(ts); 
 	
 	isLoopRunning = false;
-	requestAnimationFrame(loop); 
+	TIMER_MANAGER.animationFrame = requestAnimationFrame(loop); 
 } 
 
-requestAnimationFrame(loop);
-// Update background time-based elements
-setInterval(()=>{ /* keep cycleStart anchored; could adjust for pause logic later */ },60000);
+// Initialize managed timers after timer system is set up
+TIMER_MANAGER.setInterval(() => { 
+	saveGame(false); 
+}, 60000, 'autosave');
+
+TIMER_MANAGER.setInterval(() => { 
+	/* keep cycleStart anchored; could adjust for pause logic later */ 
+}, 60000, 'background_cycle');
+
+// Automatic chunk cache cleanup to prevent memory leaks
+TIMER_MANAGER.setInterval(() => {
+	cleanupChunkCache();
+}, 30000, 'chunk_cache_cleanup');
+
+// Start the main game loop with managed animation frame
+TIMER_MANAGER.animationFrame = requestAnimationFrame(loop);
 
 // (Re)define loot popup helpers if not already present (guard for reloads)
 // Deferred loot inbox system
