@@ -2636,6 +2636,10 @@ const RENDER_CACHE = {
 	
 	// Get cached transform values
 	getTransforms() {
+		if(!this.cachedTransforms){
+			// Lazy initialize with current camera if available
+			this.updateCache(camX, camY, zoom, W, H);
+		}
 		return this.cachedTransforms;
 	}
 };
@@ -2919,7 +2923,21 @@ document.addEventListener('keydown', (e)=>{ if(e.key==='Escape'){ closeMenu(); }
 document.getElementById('regenBtn')?.addEventListener('click',()=>{ setSeedFromInput(); regenWorld(); closeMenu(); });
 function regenWorld(){ WORLD.clear(); seenChunks.clear(); mining=false; if(MM.fallingSolids) MM.fallingSolids.reset(); if(MM.water) MM.water.reset(); inv.grass=inv.sand=inv.stone=inv.diamond=inv.wood=inv.leaf=inv.snow=inv.water=0; inv.tools.stone=inv.tools.diamond=false; player.tool='basic'; hotbarIndex=0; // if god mode active, restore 100 stack after reset
 	if(godMode){ if(!_preGodInventory) _preGodInventory={grass:0,sand:0,stone:0,diamond:0,wood:0,leaf:0,snow:0,water:0}; inv.grass=inv.sand=inv.stone=inv.diamond=inv.wood=inv.leaf=inv.snow=inv.water=100; }
-	updateInventory(); updateHotbarSel(); placePlayer(true); saveState(); msg('Nowy świat seed '+worldSeed); }
+	// Reset render cache so first frame after regeneration uses fresh camera transforms
+	if(typeof RENDER_CACHE !== 'undefined'){
+		RENDER_CACHE.lastCamX = null;
+		RENDER_CACHE.lastCamY = null;
+		RENDER_CACHE.lastZoom = null;
+		RENDER_CACHE.lastScreenSize = null;
+		RENDER_CACHE.cachedViewBounds = null;
+		RENDER_CACHE.cachedTransforms = null;
+	}
+	updateInventory(); updateHotbarSel(); placePlayer(true);
+	// Force an immediate transform cache update so no misalignment flicker occurs
+	if(typeof RENDER_CACHE !== 'undefined'){
+		try{ RENDER_CACHE.updateCache(camX, camY, zoom, W, H); }catch(e){ console.warn('Render cache update after regen failed', e); }
+	}
+	saveState(); msg('Nowy świat seed '+worldSeed); }
 document.getElementById('centerBtn').addEventListener('click',()=>{ camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; });
 document.getElementById('helpBtn').addEventListener('click',()=>{ const h=document.getElementById('help'); const show=h.style.display!=='block'; h.style.display=show?'block':'none'; document.getElementById('helpBtn').setAttribute('aria-expanded', String(show)); });
 const radarBtn=document.getElementById('radarBtn'); radarBtn.addEventListener('click',()=>{ radarFlash=performance.now()+1500; }); let radarFlash=0;
@@ -2950,11 +2968,15 @@ function placePlayer(skipMsg){
 	player.x = COORDINATE_SYSTEM.roundPosition(x + 0.5); 
 	player.y = COORDINATE_SYSTEM.roundPosition(y - player.h/2); // Player center at proper height above ground
 	player.onGround = true; // Ensure player starts on ground
-	
+
 	// Normalize the initial position
 	COORDINATE_SYSTEM.normalizePosition(player);
-	
-	centerOnPlayer(); 
+
+	centerOnPlayer();
+	// After centering, force render cache update so first frame uses snapped transform
+	if(typeof RENDER_CACHE !== 'undefined'){
+		try{ RENDER_CACHE.updateCache(camX, camY, zoom, W, H); }catch(e){}
+	}
 	if(!skipMsg) msg('Seed '+worldSeed); 
 }
 function centerOnPlayer(){ 
