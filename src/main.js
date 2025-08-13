@@ -637,14 +637,13 @@ function toggleMap(){ revealAll=!revealAll; const b=document.getElementById('map
 function centerCam(){ camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; msg('Wyśrodkowano'); }
 function toggleHelp(){ const h=document.getElementById('help'); const show=h.style.display!=='block'; h.style.display=show?'block':'none'; document.getElementById('helpBtn').setAttribute('aria-expanded', String(show)); }
 function isBlockingOverlayOpen(){
-	// Any modal/overlay that should suppress gameplay input
-	const loot=document.getElementById('lootPopup'); if(loot && loot.classList.contains('show')) return true;
-	const cust=document.getElementById('custOverlay'); if(cust && cust.style.display==='block') return true;
-	const menu=document.getElementById('menuPanel'); if(menu && !menu.hasAttribute('hidden')) return true;
-	return false;
-}
-
-window.addEventListener('keydown',e=>{ if(isBlockingOverlayOpen()) return; const k=e.key.toLowerCase(); keys[k]=true; if(['1','2','3'].includes(e.key)){ if(e.key==='1') player.tool='basic'; if(e.key==='2'&&inv.tools.stone) player.tool='stone'; if(e.key==='3'&&inv.tools.diamond) player.tool='diamond'; updateInventory(); }
+    // Any modal/overlay that should suppress gameplay input
+    const loot=document.getElementById('lootPopup'); if(loot && loot.classList.contains('show')) return true;
+    const cust=document.getElementById('custOverlay'); if(cust && cust.style.display==='block') return true;
+    const menu=document.getElementById('menuPanel'); if(menu && !menu.hasAttribute('hidden')) return true;
+    const craft=document.getElementById('craft'); if(craft && craft.style.display!=='none') return true;
+    return false;
+}window.addEventListener('keydown',e=>{ if(isBlockingOverlayOpen()) return; const k=e.key.toLowerCase(); keys[k]=true; if(['1','2','3'].includes(e.key)){ if(e.key==='1') player.tool='basic'; if(e.key==='2'&&inv.tools.stone) player.tool='stone'; if(e.key==='3'&&inv.tools.diamond) player.tool='diamond'; updateInventory(); }
  // Hotbar numeric (4..9) -> slots 0..5
  if(['4','5','6','7','8','9'].includes(e.key)){
 	 const slot=parseInt(e.key,10)-4; cycleHotbar(slot);
@@ -958,6 +957,31 @@ updateGodBtn();
 const menuBtn=document.getElementById('menuBtn'); const menuPanel=document.getElementById('menuPanel');
 // Robust menu visibility control (handles cases where CSS forces display:flex)
 let __menuScrollTop = 0; // remember scroll when closing
+let __menuFocusTrapHandler = null; // focus trap for menu
+
+function menuFocusTrap(e) {
+	if (!menuPanel || menuPanel.hidden || menuPanel.style.display === 'none') return;
+	if (e.key !== 'Tab') return;
+	
+	const focusables = [...menuPanel.querySelectorAll('button, input, select, [tabindex]:not([tabindex="-1"])')].filter(el => !el.disabled);
+	if (!focusables.length) return;
+	
+	const first = focusables[0];
+	const last = focusables[focusables.length - 1];
+	
+	if (e.shiftKey) {
+		if (document.activeElement === first) {
+			e.preventDefault();
+			last.focus();
+		}
+	} else {
+		if (document.activeElement === last) {
+			e.preventDefault();
+			first.focus();
+		}
+	}
+}
+
 function setMenuVisible(on){
 	if(!menuPanel || !menuBtn) return;
 	if(on){
@@ -966,12 +990,20 @@ function setMenuVisible(on){
 	// restore scroll and focus for accessibility
 	menuPanel.scrollTop = __menuScrollTop || 0;
 		menuBtn.setAttribute('aria-expanded','true');
-	try{ menuPanel.focus({preventScroll:true}); }catch(e){}
+	// Install focus trap
+	document.addEventListener('keydown', menuFocusTrap);
+	__menuFocusTrapHandler = menuFocusTrap;
+	try{ const firstBtn = menuPanel.querySelector('button'); if(firstBtn) firstBtn.focus(); }catch(e){}
 	} else {
 	__menuScrollTop = menuPanel.scrollTop || 0;
 		menuPanel.hidden = true;
 		menuPanel.style.display = 'none';
 		menuBtn.setAttribute('aria-expanded','false');
+	// Remove focus trap
+	if (__menuFocusTrapHandler) {
+		document.removeEventListener('keydown', __menuFocusTrapHandler);
+		__menuFocusTrapHandler = null;
+	}
 	}
 }
 function closeMenu(){ setMenuVisible(false); }
@@ -1091,7 +1123,7 @@ if(!loaded){ placePlayer(); } else { centerOnPlayer(); }
 updateInventory(); updateGodBtn(); updateHotbarSel(); if(!loaded) msg('Sterowanie: A/D/W + LPM kopie, PPM stawia (4-9 wybór). G=Bóg (nieskończone skoki), M=Mapa, C=Centrum, H=Pomoc'); else msg('Wczytano zapis – miłej gry!');
 // Ghost preview placement
 let ghostTile=null, ghostX=0, ghostY=0;
-canvas.addEventListener('pointermove',e=>{ const {tx,ty}=eventToTile(e); if(getTile(tx,ty)===T.AIR){ ghostX=tx; ghostY=ty; ghostTile=selectedTileId(); } else ghostTile=null; });
+canvas.addEventListener('pointermove',e=>{ if(isBlockingOverlayOpen()) return; const {tx,ty}=eventToTile(e); if(getTile(tx,ty)===T.AIR){ ghostX=tx; ghostY=ty; ghostTile=selectedTileId(); } else ghostTile=null; });
 initGrassControls();
 
 // Pętla
@@ -1210,12 +1242,8 @@ if(!window.__lootPopupInit){
 	// Clear any stuck movement keys so player stops when panel opens
 	['a','d','arrowleft','arrowright','w','arrowup',' ','arrowdown','s'].forEach(k=>{ keys[k]=false; keysOnce.delete(k); });
 	lootPopup.classList.add('show'); lootDim.style.display='block';
-	// Ensure overlay receives input
-	lootPopup.style.pointerEvents='auto'; lootDim.style.pointerEvents='auto';
 	lootPrevFocus=document.activeElement; installTrap(); const first=lootPopup.querySelector('button'); if(first) first.focus(); rebuildList(); }
 	function closeInbox(){ lootPopup.classList.remove('show'); lootDim.style.display='none';
-		// Restore default pointer-events (inherit CSS)
-		lootPopup.style.pointerEvents=''; lootDim.style.pointerEvents='';
 		removeTrap(); if(lootPrevFocus && lootPrevFocus.focus) lootPrevFocus.focus(); }
 	function installTrap(){ function handler(e){ if(!lootPopup.classList.contains('show')) return; if(e.key==='Escape'){ closeInbox(); return; } if(e.key==='Tab'){ const f=[...lootPopup.querySelectorAll('button,select,.chip')].filter(el=>!el.disabled); if(!f.length) return; const first=f[0], last=f[f.length-1]; if(e.shiftKey){ if(document.activeElement===first){ e.preventDefault(); last.focus(); } } else { if(document.activeElement===last){ e.preventDefault(); first.focus(); } } } } window.addEventListener('keydown',handler); lootPopup.__trapHandler=handler; }
 	function removeTrap(){ if(lootPopup.__trapHandler){ window.removeEventListener('keydown', lootPopup.__trapHandler); lootPopup.__trapHandler=null; } }
