@@ -986,6 +986,7 @@ document.addEventListener('keydown', (e)=>{ if(e.key==='Escape'){ closeMenu(); }
 	function applyUIPrefs(p){ if(!p) return; const scale=Math.max(0.7, Math.min(1.6, Number(p.scale)||1)); root.style.setProperty('--cell', (BASE.cell*scale)+'px'); root.style.setProperty('--btn', (BASE.btn*scale)+'px'); root.style.setProperty('--mine', (BASE.mine*scale)+'px');
 		function vis(id,on){ const el=document.getElementById(id); if(!el) return; el.style.display = on? '' : 'none'; }
 		const show=p.show||{}; vis('inv', show.inv!==false); vis('hotbarWrap', show.hotbar!==false); vis('controls', !!show.controls); vis('dirRing', !!show.controls); vis('radarBtn', show.radar!==false); vis('craft', !!show.craft); const fpsEl=document.getElementById('fps'); if(fpsEl) fpsEl.parentElement.style.display = (show.fps===false)?'none':''; vis('messages', show.messages!==false);
+		const cbtn=document.getElementById('craftToggleBtn'); if(cbtn){ cbtn.setAttribute('aria-expanded', String(!!show.craft)); cbtn.classList.toggle('toggled', !!show.craft); }
 	}
 	// Smarter defaults: mobile shows on‑screen controls by default and slightly larger UI
 	const isMobile = matchMedia('(pointer:coarse)').matches || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent||'');
@@ -1020,6 +1021,12 @@ document.addEventListener('keydown', (e)=>{ if(e.key==='Escape'){ closeMenu(); }
 	const resetRow=document.createElement('div'); resetRow.style.cssText='display:flex; justify-content:flex-end; margin-top:8px;'; const resetBtn=document.createElement('button'); resetBtn.textContent='Resetuj UI'; resetBtn.className='topbtn'; resetBtn.style.cssText='padding:6px 10px;'; resetRow.appendChild(resetBtn); uiWrap.appendChild(resetRow);
 	resetBtn.addEventListener('click',()=>{ uiPrefs = JSON.parse(JSON.stringify(defaultPrefs)); applyUIPrefs(uiPrefs); saveUIPrefs(uiPrefs); scaleRange.value=String(uiPrefs.scale); updScale(); grid.querySelectorAll('input[type="checkbox"]').forEach((cb,i)=>{ const t = [ 'inv','hotbar','controls','radar','craft','fps','messages' ][i]; cb.checked = !!uiPrefs.show[t]; }); });
 	menuPanel.appendChild(uiWrap);
+
+	// Header Craft toggle button wiring
+	const craftBtnTop=document.getElementById('craftToggleBtn');
+	craftBtnTop?.addEventListener('click',()=>{
+		uiPrefs.show = uiPrefs.show||{}; uiPrefs.show.craft = !uiPrefs.show.craft; applyUIPrefs(uiPrefs); saveUIPrefs(uiPrefs);
+	});
 	const wrap=document.createElement('div'); wrap.className='group'; wrap.style.cssText='flex-direction:column; align-items:stretch; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;';
 	const label=document.createElement('label'); label.style.cssText='font-size:12px; display:flex; justify-content:space-between; gap:8px; align-items:center;'; label.textContent='Czas doby';
 	const span=document.createElement('span'); span.style.fontSize='11px'; span.style.opacity='0.7'; span.textContent='—'; label.appendChild(span);
