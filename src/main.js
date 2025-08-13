@@ -950,7 +950,7 @@ window.__getPerformanceDiagnostics = () => {
 	const frameSkipPercent = skipFrames > 0 ? ((skipFrames / 60) * 100).toFixed(1) + '%' : '0%';
 	const renderCacheHits = RENDER_CACHE.frameCount || 0;
 	
-	return {
+	const diagnostics = {
 		frameSkipping: {
 			currentSkip: skipFrames,
 			skipPercentage: frameSkipPercent
@@ -966,6 +966,13 @@ window.__getPerformanceDiagnostics = () => {
 			maxCached: MAX_CACHED_CHUNKS
 		}
 	};
+	
+	// Add mob system diagnostics if available
+	if (MM && MM.mobs && MM.mobs.getPerformanceDiagnostics) {
+		diagnostics.mobSystem = MM.mobs.getPerformanceDiagnostics();
+	}
+	
+	return diagnostics;
 };
 
 // Expose timer manager for debugging

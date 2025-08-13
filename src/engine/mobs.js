@@ -31,16 +31,142 @@
   const mobs = []; // entities
   const speciesAggro = {}; // speciesId -> expiry timestamp (ms)
   const speciesCounts = {}; // live counts for quick spawn capping
-  // Spatial partitioning (uniform grid) to speed up point queries (attackAt)
-  const CELL=16; // tiles per cell both axes
+  
+  // --- Enhanced Spatial Partitioning System ---
+  const CELL = 8; // Reduced cell size for better granularity (was 16)
   const grid = new Map(); // key "cx,cy" -> Set of mob refs
-  function cellKey(x,y){ return ((x/CELL)|0)+','+((y/CELL)|0); }
-  function addToGrid(m){ const k=cellKey(m.x,m.y); let set=grid.get(k); if(!set){ set=new Set(); grid.set(k,set); } set.add(m); m._cellKey=k; }
-  function updateGridCell(m){ const k=cellKey(m.x,m.y); if(k!==m._cellKey){ // move
-    if(m._cellKey){ const prev=grid.get(m._cellKey); if(prev){ prev.delete(m); if(!prev.size) grid.delete(m._cellKey); } }
-    let set=grid.get(k); if(!set){ set=new Set(); grid.set(k,set); } set.add(m); m._cellKey=k; }
+  const gridUpdateQueue = new Set(); // Mobs that need grid position updates
+  let lastGridCleanup = 0;
+  
+  // Grid performance tracking
+  const GRID_METRICS = {
+    queriesPerFrame: 0,
+    avgCellSize: 0,
+    maxCellSize: 0,
+    gridCleanups: 0,
+    frameCount: 0
+  };
+  
+  function cellKey(x, y) { 
+    return ((x / CELL) | 0) + ',' + ((y / CELL) | 0); 
   }
-  function removeFromGrid(m){ if(m._cellKey){ const set=grid.get(m._cellKey); if(set){ set.delete(m); if(!set.size) grid.delete(m._cellKey); } m._cellKey=null; } if(m && m.id){ speciesCounts[m.id] = (speciesCounts[m.id]||1)-1; if(speciesCounts[m.id]<0) speciesCounts[m.id]=0; } }
+  
+  function addToGrid(m) { 
+    const k = cellKey(m.x, m.y); 
+    let set = grid.get(k); 
+    if (!set) { 
+      set = new Set(); 
+      grid.set(k, set); 
+    } 
+    set.add(m); 
+    m._cellKey = k; 
+  }
+  
+  function updateGridCell(m) { 
+    const k = cellKey(m.x, m.y); 
+    if (k !== m._cellKey) { // Position changed
+      // Remove from old cell
+      if (m._cellKey) { 
+        const prev = grid.get(m._cellKey); 
+        if (prev) { 
+          prev.delete(m); 
+          if (!prev.size) grid.delete(m._cellKey); 
+        } 
+      }
+      // Add to new cell
+      addToGrid(m); 
+    } 
+  }
+  
+  function removeFromGrid(m) { 
+    if (m._cellKey) { 
+      const set = grid.get(m._cellKey); 
+      if (set) { 
+        set.delete(m); 
+        if (!set.size) grid.delete(m._cellKey); 
+      } 
+      m._cellKey = null;
+    } 
+    if (m && m.id) { 
+      speciesCounts[m.id] = (speciesCounts[m.id] || 1) - 1; 
+      if (speciesCounts[m.id] < 0) speciesCounts[m.id] = 0; 
+    } 
+  }
+  
+  // Optimized grid cleanup (removes empty cells and defragments)
+  function cleanupGrid() {
+    const now = performance.now();
+    if (now - lastGridCleanup < 5000) return; // Cleanup every 5 seconds
+    
+    let emptyCells = 0;
+    let totalCells = 0;
+    let totalMobs = 0;
+    let maxCellSize = 0;
+    
+    for (const [key, set] of grid.entries()) {
+      totalCells++;
+      if (set.size === 0) {
+        grid.delete(key);
+        emptyCells++;
+      } else {
+        totalMobs += set.size;
+        maxCellSize = Math.max(maxCellSize, set.size);
+      }
+    }
+    
+    GRID_METRICS.avgCellSize = totalCells > 0 ? totalMobs / totalCells : 0;
+    GRID_METRICS.maxCellSize = maxCellSize;
+    GRID_METRICS.gridCleanups++;
+    
+    lastGridCleanup = now;
+    
+    if (emptyCells > 10) {
+      console.log(`Grid cleanup: Removed ${emptyCells} empty cells, avg cell size: ${GRID_METRICS.avgCellSize.toFixed(1)}`);
+    }
+  }
+  
+  // Enhanced neighbor query with caching for separation calculations
+  const separationCache = new Map(); // mobId -> {neighbors: Set, lastUpdate: timestamp}
+  const SEPARATION_CACHE_TTL = 100; // 100ms cache lifetime
+  
+  function getCachedNeighbors(m) {
+    const now = performance.now();
+    const cached = separationCache.get(m._id);
+    
+    if (cached && (now - cached.lastUpdate) < SEPARATION_CACHE_TTL) {
+      return cached.neighbors;
+    }
+    
+    // Compute neighbors
+    const neighbors = new Set();
+    const baseKey = m._cellKey; 
+    if (!baseKey) return neighbors;
+    
+    const [cxStr, cyStr] = baseKey.split(','); 
+    const cx = +cxStr, cy = +cyStr;
+    
+    GRID_METRICS.queriesPerFrame++;
+    
+    for (let gx = cx - 1; gx <= cx + 1; gx++) {
+      for (let gy = cy - 1; gy <= cy + 1; gy++) {
+        const set = grid.get(gx + ',' + gy); 
+        if (!set) continue; 
+        for (const other of set) {
+          if (other !== m && other.id === m.id) {
+            neighbors.add(other);
+          }
+        }
+      }
+    }
+    
+    // Cache the result
+    separationCache.set(m._id, {
+      neighbors,
+      lastUpdate: now
+    });
+    
+    return neighbors;
+  }
 
   // --- Species registry (extensible) ---
   const SPECIES = {
@@ -229,9 +355,22 @@
   function rand(a,b){ return a + Math.random()*(b-a); }
   function choose(arr){ return arr[(Math.random()*arr.length)|0]; }
 
+  // Unique ID generation for mobs
+  let nextMobId = 1;
+  function generateMobId() {
+    return nextMobId++;
+  }
+
   function create(spec, x,y){
     const now = performance.now();
-  const m={ id: spec.id, x, y, vx:0, vy:0, hp: spec.hp, state:'idle', tNext: now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000, facing:1, spawnT: now, attackCd:0, hitFlashUntil:0, shake:0, tickMod: (Math.random()<0.5?1:0), sleepUntil:0 };
+  const m={ 
+    id: spec.id, 
+    _id: generateMobId(), // Unique identifier for caching
+    x, y, vx:0, vy:0, hp: spec.hp, state:'idle', 
+    tNext: now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000, 
+    facing:1, spawnT: now, attackCd:0, hitFlashUntil:0, shake:0, 
+    tickMod: (Math.random()<0.5?1:0), sleepUntil:0 
+  };
   // Per-entity variability
   m.scale = 0.75 + Math.random()*0.25; // 0.75..1.0 visual & collider scaling
   m.speedMul = 0.75 + Math.random()*0.25; // 0.75..1.0 movement speed
@@ -340,15 +479,26 @@
     }
   }
 
-  // --- Steering Helpers (must be defined before update uses it) ---
-  function applySeparation(m){
-    // Look in neighboring grid cells only (same-species simple avoidance)
-    const baseKey = m._cellKey; if(!baseKey) return; const [cxStr, cyStr] = baseKey.split(','); const cx=+cxStr, cy=+cyStr;
-    for(let gx=cx-1; gx<=cx+1; gx++){
-      for(let gy=cy-1; gy<=cy+1; gy++){
-        const set = grid.get(gx+','+gy); if(!set) continue; for(const o of set){ if(o===m) continue; if(o.id!==m.id) continue; const dx=m.x-o.x; const dy=m.y-o.y; const d2=dx*dx+dy*dy; const minDist=0.6; if(d2>0 && d2 < minDist*minDist){ const d=Math.sqrt(d2); const push=(minDist-d)/d*0.5; // apply only to m to avoid double-count when o processed later
-          m.vx += dx*push; m.vy += dy*push*0.2; }
-        }
+  // --- Steering Helpers (Optimized) ---
+  function applySeparation(m) {
+    // Use cached neighbor lookup for better performance
+    const neighbors = getCachedNeighbors(m);
+    if (neighbors.size === 0) return;
+    
+    const minDist = 0.6;
+    const minDistSq = minDist * minDist;
+    
+    for (const other of neighbors) {
+      const dx = m.x - other.x;
+      const dy = m.y - other.y;
+      const d2 = dx * dx + dy * dy;
+      
+      if (d2 > 0 && d2 < minDistSq) {
+        const d = Math.sqrt(d2);
+        const push = (minDist - d) / d * 0.5;
+        // Apply separation force only to current mob to avoid double-counting
+        m.vx += dx * push;
+        m.vy += dy * push * 0.2; // Reduced vertical separation
       }
     }
   }
@@ -358,13 +508,52 @@
   function setAggro(specId){ speciesAggro[specId] = Date.now() + 5*60*1000; }
 
   let frame=0; let lastMetricsSample=0; let metrics={count:0, active:0, dtAvg:0};
-  function update(dt, player, getTile){ const now = performance.now(); frame++;
+  function update(dt, player, getTile){ 
+    const now = performance.now(); 
+    frame++;
+    
+    // Reset frame counters for grid metrics
+    GRID_METRICS.queriesPerFrame = 0;
+    GRID_METRICS.frameCount++;
+    
+    // Periodic grid cleanup and cache management
+    if (frame % 300 === 0) { // Every 5 seconds at 60fps
+      cleanupGrid();
+      
+      // Clear old separation cache entries
+      const cutoff = now - SEPARATION_CACHE_TTL * 10; // 10x TTL
+      for (const [mobId, entry] of separationCache.entries()) {
+        if (entry.lastUpdate < cutoff) {
+          separationCache.delete(mobId);
+        }
+      }
+    }
+    
     // Despawn far / off-screen old passive mobs (not aggro)
-    for(let i=mobs.length-1;i>=0;i--){ const m=mobs[i]; if(m.hp<=0){ removeFromGrid(m); mobs.splice(i,1); continue; } const dist = Math.abs(m.x-player.x); if(dist>220 && !isAggro(m.id)) { removeFromGrid(m); mobs.splice(i,1); continue; } }
+    for(let i=mobs.length-1;i>=0;i--){ 
+      const m=mobs[i]; 
+      if(m.hp<=0){ 
+        // Clean up caches when mob dies
+        separationCache.delete(m._id);
+        removeFromGrid(m); 
+        mobs.splice(i,1); 
+        continue; 
+      } 
+      const dist = Math.abs(m.x-player.x); 
+      if(dist>220 && !isAggro(m.id)) { 
+        separationCache.delete(m._id);
+        removeFromGrid(m); 
+        mobs.splice(i,1); 
+        continue; 
+      } 
+    }
+    
     // Spawn attempt occasionally
     trySpawnNearPlayer(player,getTile, now);
-    // Precompute separation: basic O(n^2) for small counts (opt: grid neighbor query)
-    metrics.count = mobs.length; let active=0;
+    
+    // Optimized mob processing with spatial grid
+    metrics.count = mobs.length; 
+    let active=0;
     for(let i=0;i<mobs.length;i++){
       const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue; const aggressive=isAggro(m.id);
       // Natural lifespan: apply health decay when past decayStartAt; ensure it runs before far-sleep skip
@@ -850,7 +1039,43 @@
       report.metrics={...metrics};
       return report;
     }
-    MM.mobs = { update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro, forceSpawn, species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose };
+    
+    // Enhanced performance diagnostics
+    function getPerformanceDiagnostics() {
+      return {
+        mobs: {
+          total: mobs.length,
+          active: metrics.active,
+          dtAvg: metrics.dtAvg
+        },
+        spatialGrid: {
+          cellCount: grid.size,
+          avgCellSize: GRID_METRICS.avgCellSize,
+          maxCellSize: GRID_METRICS.maxCellSize,
+          queriesPerFrame: GRID_METRICS.queriesPerFrame,
+          cleanups: GRID_METRICS.gridCleanups,
+          cellSize: CELL
+        },
+        separationCache: {
+          entries: separationCache.size,
+          ttl: SEPARATION_CACHE_TTL,
+          hitRateEstimate: separationCache.size > 0 ? 
+            (GRID_METRICS.queriesPerFrame / separationCache.size).toFixed(2) : '0'
+        },
+        species: Object.keys(speciesCounts).map(id => ({
+          id,
+          count: speciesCounts[id] || 0,
+          max: SPECIES[id]?.max || 0,
+          aggro: isAggro(id)
+        }))
+      };
+    }
+    
+    MM.mobs = { 
+      update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro, 
+      forceSpawn, species: Object.keys(SPECIES), registerSpecies, 
+      metrics: () => metrics, diagnose, getPerformanceDiagnostics 
+    };
     try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
   })(); // end IIFE
 // (File end)
