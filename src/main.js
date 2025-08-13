@@ -478,15 +478,73 @@ function drawPlayer(){ const c=MM.customization||DEFAULT_CUST; const bodyX=(play
 	eye(bodyX+bw/2-eyeOffsetX); eye(bodyX+bw/2+eyeOffsetX);
 	ctx.fillStyle='rgba(0,0,0,0.25)'; const shw=bw*0.6; ctx.beginPath(); ctx.ellipse(player.x*TILE, (player.y+player.h/2)*TILE+2, shw/2, 4,0,0,Math.PI*2); ctx.fill(); }
 
-// Chunk render cache (offscreen canvas per chunk)
-const chunkCanvases = new Map(); // key: chunkX -> {canvas,ctx,version}
+// Chunk render cache (offscreen canvas per chunk) with memory management
+const chunkCanvases = new Map(); // key: chunkX -> {canvas,ctx,version,lastUsed}
+const MAX_CACHED_CHUNKS = 50; // Limit cached chunks to prevent memory leaks
+const CHUNK_CACHE_TIMEOUT = 30000; // 30 seconds before unused chunks are cleaned up
+
 function hash32(x,y){ let h = (x|0)*374761393 + (y|0)*668265263; h = (h^(h>>>13))*1274126177; h = h^(h>>>16); return h>>>0; }
+
+// Clean up old chunk canvases to prevent memory leaks
+function cleanupChunkCache() {
+	const now = performance.now();
+	const entries = Array.from(chunkCanvases.entries());
+	
+	// Sort by last used time (oldest first)
+	entries.sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+	
+	// Remove entries that exceed cache limit or are too old
+	const toRemove = [];
+	for (let i = 0; i < entries.length; i++) {
+		const [chunkX, entry] = entries[i];
+		const shouldRemove = i < entries.length - MAX_CACHED_CHUNKS || 
+		                    (now - entry.lastUsed) > CHUNK_CACHE_TIMEOUT;
+		if (shouldRemove) {
+			toRemove.push(chunkX);
+		}
+	}
+	
+	// Actually remove the entries
+	toRemove.forEach(chunkX => {
+		const entry = chunkCanvases.get(chunkX);
+		if (entry) {
+			// Clean up the canvas context to free memory
+			entry.ctx.clearRect(0, 0, entry.canvas.width, entry.canvas.height);
+			entry.canvas.width = 1;
+			entry.canvas.height = 1;
+			chunkCanvases.delete(chunkX);
+		}
+	});
+}
 function shadeColor(hex,delta){ // hex like #rgb or #rrggbb (we use rrggbb)
 	const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
 	const clamp=v=>v<0?0:v>255?255:v; const nr=clamp(r+delta), ng=clamp(g+delta), nb=clamp(b+delta);
 	return '#'+nr.toString(16).padStart(2,'0')+ng.toString(16).padStart(2,'0')+nb.toString(16).padStart(2,'0'); }
-function drawChunkToCache(cx){ const key=cx; const k='c'+cx; const arr=WORLD._world.get(k); if(!arr) return; let entry=chunkCanvases.get(key); if(!entry){ const c=document.createElement('canvas'); c.width=CHUNK_W*TILE; c.height=WORLD_H*TILE; const cctx=c.getContext('2d'); cctx.imageSmoothingEnabled=false; entry={canvas:c,ctx:cctx,version:-1}; chunkCanvases.set(key,entry); }
-	const currentVersion=WORLD.chunkVersion(cx); if(entry.version===currentVersion) return; const cctx=entry.ctx; cctx.clearRect(0,0,cctx.canvas.width,cctx.canvas.height);
+function drawChunkToCache(cx){ 
+	const key=cx; 
+	const k='c'+cx; 
+	const arr=WORLD._world.get(k); 
+	if(!arr) return; 
+	
+	let entry=chunkCanvases.get(key); 
+	if(!entry){ 
+		const c=document.createElement('canvas'); 
+		c.width=CHUNK_W*TILE; 
+		c.height=WORLD_H*TILE; 
+		const cctx=c.getContext('2d'); 
+		cctx.imageSmoothingEnabled=false; 
+		entry={canvas:c,ctx:cctx,version:-1,lastUsed:performance.now()}; 
+		chunkCanvases.set(key,entry); 
+	}
+	
+	// Update last used time
+	entry.lastUsed = performance.now();
+	
+	const currentVersion=WORLD.chunkVersion(cx); 
+	if(entry.version===currentVersion) return; 
+	
+	const cctx=entry.ctx; 
+	cctx.clearRect(0,0,cctx.canvas.width,cctx.canvas.height);
 		for(let lx=0; lx<CHUNK_W; lx++){
 			const wx=cx*CHUNK_W+lx;
 			for(let y=0;y<WORLD_H;y++){
@@ -513,13 +571,33 @@ function drawChunkToCache(cx){ const key=cx; const k='c'+cx; const arr=WORLD._wo
 			}
 		}
 	entry.version=currentVersion; }
-function drawWorldVisible(sx,sy,viewX,viewY){ const minChunk=Math.floor(sx/CHUNK_W)-1; const maxChunk=Math.floor((sx+viewX+2)/CHUNK_W)+1; // prepare caches
-	for(let cx=minChunk; cx<=maxChunk; cx++){ WORLD.ensureChunk(cx); drawChunkToCache(cx); }
+function drawWorldVisible(sx,sy,viewX,viewY){ 
+	const minChunk=Math.floor(sx/CHUNK_W)-1; 
+	const maxChunk=Math.floor((sx+viewX+2)/CHUNK_W)+1; 
+	
+	// Clean up chunk cache periodically (every ~2 seconds when drawing)
+	if (Math.random() < 0.01) { // ~1% chance per frame ≈ every 2 seconds at 60fps
+		cleanupChunkCache();
+	}
+	
+	// prepare caches
+	for(let cx=minChunk; cx<=maxChunk; cx++){ 
+		WORLD.ensureChunk(cx); 
+		drawChunkToCache(cx); 
+	}
+	
 	// Draw whole chunks that intersect view (avoids per-tile seams)
 	const viewPX0 = sx*TILE, viewPX1=(sx+viewX+2)*TILE;
 	for(let cx=minChunk; cx<=maxChunk; cx++){
-		const entry=chunkCanvases.get(cx); if(!entry) continue; const chunkXpx = cx*CHUNK_W*TILE;
-		const chunkRight = chunkXpx + CHUNK_W*TILE; if(chunkRight < viewPX0-CHUNK_W*TILE || chunkXpx > viewPX1+CHUNK_W*TILE) continue;
+		const entry=chunkCanvases.get(cx); 
+		if(!entry) continue; 
+		
+		// Update last used time when actually drawing
+		entry.lastUsed = performance.now();
+		
+		const chunkXpx = cx*CHUNK_W*TILE;
+		const chunkRight = chunkXpx + CHUNK_W*TILE; 
+		if(chunkRight < viewPX0-CHUNK_W*TILE || chunkXpx > viewPX1+CHUNK_W*TILE) continue;
 		ctx.drawImage(entry.canvas, chunkXpx, 0);
 	}
 		// Chest aura second pass (not cached) for pulsing glow
@@ -1127,9 +1205,54 @@ canvas.addEventListener('pointermove',e=>{ if(isBlockingOverlayOpen()) return; c
 initGrassControls();
 
 // Pętla
-let last=performance.now(); function loop(ts){ const dt=Math.min(0.05,(ts-last)/1000); last=ts; // smooth zoom interpolation
-	if(Math.abs(zoomTarget-zoom)>0.0001){ zoom += (zoomTarget-zoom)*Math.min(1, dt*8); }
-	physics(dt); if(player.atkCd>0) player.atkCd-=dt; updateMining(dt); updateFallingBlocks(dt); if(MM.fallingSolids){ MM.fallingSolids.update(getTile,setTile,dt); } if(MM.water){ MM.water.update(getTile,setTile,dt); } if(MM.mobs && MM.mobs.update) MM.mobs.update(dt, player, getTile); updateParticles(dt); updateCape(dt); updateBlink(ts); draw(); if(ts<radarFlash){ radarBtn.classList.add('pulse'); } else radarBtn.classList.remove('pulse'); updateFps(ts); requestAnimationFrame(loop); } requestAnimationFrame(loop);
+let last=performance.now(); 
+let isLoopRunning = false;
+
+function loop(ts){ 
+	if(isLoopRunning) return; // Prevent duplicate loops
+	isLoopRunning = true;
+	
+	const dt=Math.min(0.05,(ts-last)/1000); 
+	last=ts; 
+	
+	// smooth zoom interpolation
+	if(Math.abs(zoomTarget-zoom)>0.0001){ 
+		zoom += (zoomTarget-zoom)*Math.min(1, dt*8); 
+	}
+	
+	physics(dt); 
+	if(player.atkCd>0) player.atkCd-=dt; 
+	updateMining(dt); 
+	updateFallingBlocks(dt); 
+	
+	if(MM.fallingSolids){ 
+		MM.fallingSolids.update(getTile,setTile,dt); 
+	} 
+	if(MM.water){ 
+		MM.water.update(getTile,setTile,dt); 
+	} 
+	if(MM.mobs && MM.mobs.update) {
+		MM.mobs.update(dt, player, getTile); 
+	}
+	
+	updateParticles(dt); 
+	updateCape(dt); 
+	updateBlink(ts); 
+	draw(); 
+	
+	if(ts<radarFlash){ 
+		radarBtn.classList.add('pulse'); 
+	} else {
+		radarBtn.classList.remove('pulse'); 
+	}
+	
+	updateFps(ts); 
+	
+	isLoopRunning = false;
+	requestAnimationFrame(loop); 
+} 
+
+requestAnimationFrame(loop);
 // Update background time-based elements
 setInterval(()=>{ /* keep cycleStart anchored; could adjust for pause logic later */ },60000);
 
