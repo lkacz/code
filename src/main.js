@@ -636,7 +636,15 @@ function toggleGod(){
 function toggleMap(){ revealAll=!revealAll; const b=document.getElementById('mapBtn'); if(b){ b.classList.toggle('toggled',revealAll); b.textContent='Mapa: '+(revealAll?'ON':'OFF'); } msg('Mapa '+(revealAll?'ON':'OFF')); }
 function centerCam(){ camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; msg('Wyśrodkowano'); }
 function toggleHelp(){ const h=document.getElementById('help'); const show=h.style.display!=='block'; h.style.display=show?'block':'none'; document.getElementById('helpBtn').setAttribute('aria-expanded', String(show)); }
-window.addEventListener('keydown',e=>{ const k=e.key.toLowerCase(); keys[k]=true; if(['1','2','3'].includes(e.key)){ if(e.key==='1') player.tool='basic'; if(e.key==='2'&&inv.tools.stone) player.tool='stone'; if(e.key==='3'&&inv.tools.diamond) player.tool='diamond'; updateInventory(); }
+function isBlockingOverlayOpen(){
+	// Any modal/overlay that should suppress gameplay input
+	const loot=document.getElementById('lootPopup'); if(loot && loot.classList.contains('show')) return true;
+	const cust=document.getElementById('custOverlay'); if(cust && cust.style.display==='block') return true;
+	const menu=document.getElementById('menuPanel'); if(menu && !menu.hasAttribute('hidden')) return true;
+	return false;
+}
+
+window.addEventListener('keydown',e=>{ if(isBlockingOverlayOpen()) return; const k=e.key.toLowerCase(); keys[k]=true; if(['1','2','3'].includes(e.key)){ if(e.key==='1') player.tool='basic'; if(e.key==='2'&&inv.tools.stone) player.tool='stone'; if(e.key==='3'&&inv.tools.diamond) player.tool='diamond'; updateInventory(); }
  // Hotbar numeric (4..9) -> slots 0..5
  if(['4','5','6','7','8','9'].includes(e.key)){
 	 const slot=parseInt(e.key,10)-4; cycleHotbar(slot);
@@ -653,7 +661,7 @@ window.addEventListener('keydown',e=>{ const k=e.key.toLowerCase(); keys[k]=true
 	if(k==='h'&&!keysOnce.has('h')){ toggleHelp(); keysOnce.add('h'); }
 	if(k==='v'&&!keysOnce.has('v')){ window.__mobDebug = !window.__mobDebug; msg('Mob debug '+(window.__mobDebug?'ON':'OFF')); keysOnce.add('v'); }
 	if(['arrowup','w',' '].includes(k)) e.preventDefault(); });
-window.addEventListener('keyup',e=>{ const k=e.key.toLowerCase(); keys[k]=false; keysOnce.delete(k); });
+window.addEventListener('keyup',e=>{ if(isBlockingOverlayOpen()) return; const k=e.key.toLowerCase(); keys[k]=false; keysOnce.delete(k); });
 
 // Kierunek kopania
 let mineDir={dx:1,dy:0}; document.querySelectorAll('.dirbtn').forEach(b=>{ b.addEventListener('click',()=>{ mineDir.dx=+b.getAttribute('data-dx'); mineDir.dy=+b.getAttribute('data-dy'); document.querySelectorAll('.dirbtn').forEach(o=>o.classList.remove('sel')); b.classList.add('sel'); }); }); document.querySelector('.dirbtn[data-dx="1"][data-dy="0"]').classList.add('sel');
@@ -666,11 +674,11 @@ let camX=0,camY=0,camSX=0,camSY=0; let zoom=1, zoomTarget=1; function ensureChun
 function clampZoom(z){ return Math.min(3, Math.max(0.5, z)); }
 function setZoom(z){ zoomTarget = clampZoom(z); }
 function nudgeZoom(f){ setZoom(zoomTarget * f); }
-canvas.addEventListener('wheel',e=>{ if(e.ctrlKey){ // let browser zoom work
+canvas.addEventListener('wheel',e=>{ if(isBlockingOverlayOpen()) return; if(e.ctrlKey){ // let browser zoom work
 	return; }
 	e.preventDefault(); const dir = e.deltaY>0?1:-1; const factor = dir>0? 1/1.1 : 1.1; nudgeZoom(factor);
 },{passive:false});
-window.addEventListener('keydown',e=>{ if(e.key==='+'||e.key==='='||e.key===']'){ nudgeZoom(1.1); }
+window.addEventListener('keydown',e=>{ if(isBlockingOverlayOpen()) return; if(e.key==='+'||e.key==='='||e.key===']'){ nudgeZoom(1.1); }
 	if(e.key==='-'||e.key==='['){ nudgeZoom(1/1.1); }
 });
 
@@ -803,8 +811,8 @@ function updateMining(dt){ if(!mining) return; if(getTile(mineTx,mineTy)===T.AIR
 // Suppress accidental placement immediately after opening a chest with right-click
 let lastChestOpen={t:0,x:0,y:0};
 const CHEST_PLACE_SUPPRESS_MS=250; // extended to reduce accidental placements
-canvas.addEventListener('contextmenu',e=>{ e.preventDefault(); const now=performance.now(); if(now-lastChestOpen.t<CHEST_PLACE_SUPPRESS_MS) return; tryPlaceFromEvent(e); });
-canvas.addEventListener('pointerdown',e=>{ if(e.button===2){ e.preventDefault(); tryPlaceFromEvent(e); } });
+canvas.addEventListener('contextmenu',e=>{ if(isBlockingOverlayOpen()) return; e.preventDefault(); const now=performance.now(); if(now-lastChestOpen.t<CHEST_PLACE_SUPPRESS_MS) return; tryPlaceFromEvent(e); });
+canvas.addEventListener('pointerdown',e=>{ if(isBlockingOverlayOpen()) return; if(e.button===2){ e.preventDefault(); tryPlaceFromEvent(e); } });
 // Pointer mapping helpers (CSS px -> world/tile), note: DPR already handled by base transform
 function cssToWorldPx(cssX, cssY){
 	const wxPx = cssX/zoom + camX*TILE;
@@ -1198,9 +1206,18 @@ if(!window.__lootPopupInit){
 	function openInbox(){ // honor saved tab if stash chosen and has items
 		const preferTab = (function(){ try{ const st=JSON.parse(localStorage.getItem(LOOT_UI_KEY)||'null'); return st&&st.tab; }catch(e){ return null; } })();
 		const tab = (preferTab==='stash' && (window.lootStash&&window.lootStash.length))? 'stash' : 'inbox';
-		setTab(tab); lootInboxUnread=0; updateLootInboxIndicator(); persistInbox(); lootPopup.classList.add('show'); lootDim.style.display='block'; lootPrevFocus=document.activeElement; installTrap(); const first=lootPopup.querySelector('button'); if(first) first.focus(); rebuildList(); }
-	function closeInbox(){ lootPopup.classList.remove('show'); lootDim.style.display='none'; removeTrap(); if(lootPrevFocus && lootPrevFocus.focus) lootPrevFocus.focus(); }
-	function installTrap(){ function handler(e){ if(!lootPopup.classList.contains('show')) return; if(e.key==='Escape'){ closeInbox(); return; } if(e.key==='Tab'){ const f=[...lootPopup.querySelectorAll('button')].filter(b=>!b.disabled); if(!f.length) return; const first=f[0], last=f[f.length-1]; if(e.shiftKey){ if(document.activeElement===first){ e.preventDefault(); last.focus(); } } else { if(document.activeElement===last){ e.preventDefault(); first.focus(); } } } } window.addEventListener('keydown',handler); lootPopup.__trapHandler=handler; }
+	setTab(tab); lootInboxUnread=0; updateLootInboxIndicator(); persistInbox();
+	// Clear any stuck movement keys so player stops when panel opens
+	['a','d','arrowleft','arrowright','w','arrowup',' ','arrowdown','s'].forEach(k=>{ keys[k]=false; keysOnce.delete(k); });
+	lootPopup.classList.add('show'); lootDim.style.display='block';
+	// Ensure overlay receives input
+	lootPopup.style.pointerEvents='auto'; lootDim.style.pointerEvents='auto';
+	lootPrevFocus=document.activeElement; installTrap(); const first=lootPopup.querySelector('button'); if(first) first.focus(); rebuildList(); }
+	function closeInbox(){ lootPopup.classList.remove('show'); lootDim.style.display='none';
+		// Restore default pointer-events (inherit CSS)
+		lootPopup.style.pointerEvents=''; lootDim.style.pointerEvents='';
+		removeTrap(); if(lootPrevFocus && lootPrevFocus.focus) lootPrevFocus.focus(); }
+	function installTrap(){ function handler(e){ if(!lootPopup.classList.contains('show')) return; if(e.key==='Escape'){ closeInbox(); return; } if(e.key==='Tab'){ const f=[...lootPopup.querySelectorAll('button,select,.chip')].filter(el=>!el.disabled); if(!f.length) return; const first=f[0], last=f[f.length-1]; if(e.shiftKey){ if(document.activeElement===first){ e.preventDefault(); last.focus(); } } else { if(document.activeElement===last){ e.preventDefault(); first.focus(); } } } } window.addEventListener('keydown',handler); lootPopup.__trapHandler=handler; }
 	function removeTrap(){ if(lootPopup.__trapHandler){ window.removeEventListener('keydown', lootPopup.__trapHandler); lootPopup.__trapHandler=null; } }
 	lootInboxBtn?.addEventListener('click',openInbox);
 	lootCloseBtn?.addEventListener('click',closeInbox); lootDim?.addEventListener('click',closeInbox);
@@ -1218,7 +1235,9 @@ if(!window.__lootPopupInit){
 	tabInbox?.addEventListener('click',()=>{ setTab('inbox'); persistLootUI(); });
 	tabStash?.addEventListener('click',()=>{ setTab('stash'); persistLootUI(); });
 	sortSel?.addEventListener('change',()=>{ rebuildList(); persistLootUI(); });
-	filtersWrap?.addEventListener('click',e=>{ const chip=e.target.closest('.chip'); if(!chip) return; const k=chip.getAttribute('data-kind'); if(!k) return; if(activeKinds.has(k)){ activeKinds.delete(k); chip.classList.remove('on'); } else { activeKinds.add(k); chip.classList.add('on'); } rebuildList(); persistLootUI(); });
+	function toggleChip(chip){ const k=chip.getAttribute('data-kind'); if(!k) return; const on=activeKinds.has(k); if(on){ activeKinds.delete(k); chip.classList.remove('on'); chip.setAttribute('aria-pressed','false'); } else { activeKinds.add(k); chip.classList.add('on'); chip.setAttribute('aria-pressed','true'); } rebuildList(); persistLootUI(); }
+	filtersWrap?.addEventListener('click',e=>{ const chip=e.target.closest('.chip'); if(!chip) return; toggleChip(chip); });
+	filtersWrap?.addEventListener('keydown',e=>{ const chip=e.target.closest('.chip'); if(!chip) return; if(e.key==='Enter'||e.key===' '){ e.preventDefault(); toggleChip(chip); }});
 	window.addEventListener('keydown',e=>{ if(e.key.toLowerCase()==='i'){ if(lootPopup.classList.contains('show')) closeInbox(); else openInbox(); } });
 	MM.onLootGained = function(items){ if(window.updateDynamicCustomization) updateDynamicCustomization(); if(window.lootInbox){ items.forEach(it=>{ it.time=Date.now(); ensureKey(it); }); window.lootInbox.push(...items); lootInboxUnread += items.length; updateLootInboxIndicator(); persistInbox(); } };
 	// Initial indicator on load (if persisted)

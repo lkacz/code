@@ -75,7 +75,7 @@
   .chest-pulse-rare{ animation:chestPulseR 2.8s ease-in-out infinite; }
   .chest-pulse-epic{ animation:chestPulseE 2.8s ease-in-out infinite; }
   /* Loot popup */
-  #lootPopup{ position:fixed; left:50%; top:50%; transform:translate(-50%,-50%) scale(.9); background:rgba(15,18,26,.96); border:1px solid rgba(255,255,255,.18); border-radius:18px; padding:18px 22px 20px; width:min(540px,90vw); max-height:80vh; display:none; flex-direction:column; gap:14px; box-shadow:0 18px 60px -10px rgba(0,0,0,.7); z-index:120; color:#e8e8e8; font-size:13px; }
+  #lootPopup{ position:fixed; left:50%; top:50%; transform:translate(-50%,-50%) scale(.9); background:rgba(15,18,26,.96); border:1px solid rgba(255,255,255,.18); border-radius:18px; padding:18px 22px 20px; width:min(540px,90vw); max-height:80vh; display:none; flex-direction:column; gap:14px; box-shadow:0 18px 60px -10px rgba(0,0,0,.7); z-index:120; color:#e8e8e8; font-size:13px; pointer-events:auto; }
   #lootPopup.show{ display:flex; animation:lootIn .35s cubic-bezier(.22,.9,.3,1.1); }
   @keyframes lootIn{0%{opacity:0; transform:translate(-50%,-50%) scale(.75);}100%{opacity:1; transform:translate(-50%,-50%) scale(1);} }
   #lootPopup h3{ margin:0 0 4px; font-size:18px; }
@@ -105,7 +105,9 @@
   #lootPopup button{ background:#2c7ef8; color:#fff; border:none; border-radius:10px; padding:8px 14px; font-weight:600; cursor:pointer; font-size:12px; box-shadow:0 3px 12px rgba(44,126,248,.4); }
   #lootPopup button.sec{ background:rgba(255,255,255,.14); box-shadow:none; }
   #lootPopup button.danger{ background:#c43232; }
-  #lootDim{ position:fixed; inset:0; background:rgba(0,0,0,.55); backdrop-filter:blur(4px); display:none; z-index:110; }
+  #lootDim{ position:fixed; inset:0; background:rgba(0,0,0,.55); backdrop-filter:blur(4px); display:none; z-index:110; pointer-events:auto; }
+  /* When loot modal is open, disable HUD hit-testing to avoid leaking clicks */
+  #lootPopup.show ~ #ui #hud{ pointer-events:none; }
   /* Loot inbox indicator */
   #lootInboxBtn{ pointer-events:auto; background:#e0b341; color:#111; border:none; border-radius:12px; padding:6px 12px; font-weight:700; font-size:14px; box-shadow:0 2px 10px rgba(224,179,65,.45); cursor:pointer; display:none; }
   #lootInboxBtn.pulseNew{ animation:lootPulse 1.05s ease-in-out infinite; }
@@ -201,8 +203,8 @@
     <h3 id="lootTitle">Nowe przedmioty</h3>
     <div class="hdrbar">
       <div class="tabs">
-        <button id="lootTabInbox" class="tabBtn sel" aria-controls="lootPopupItems">Skrzynka</button>
-        <button id="lootTabStash" class="tabBtn" aria-controls="lootPopupItems">Skarbiec</button>
+  <button id="lootTabInbox" class="tabBtn sel" aria-controls="lootPopupItems">Skrzynka</button>
+  <button id="lootTabStash" class="tabBtn" aria-controls="lootPopupItems">Skarbiec</button>
       </div>
       <div class="sortWrap">
         <label for="lootSort">Sortuj:</label>
@@ -216,9 +218,9 @@
       </div>
     </div>
     <div class="filters" id="lootFilters">
-      <div class="chip on" data-kind="cape">Peleryny</div>
-      <div class="chip on" data-kind="eyes">Oczy</div>
-      <div class="chip on" data-kind="outfit">Stroje</div>
+      <div class="chip on" data-kind="cape" tabindex="0" role="button" aria-pressed="true">Peleryny</div>
+      <div class="chip on" data-kind="eyes" tabindex="0" role="button" aria-pressed="true">Oczy</div>
+      <div class="chip on" data-kind="outfit" tabindex="0" role="button" aria-pressed="true">Stroje</div>
     </div>
     <div class="items" id="lootPopupItems"></div>
     <div class="btnBar">
