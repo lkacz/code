@@ -5,7 +5,23 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Mini Miner – styl Diamonds Explorer</title>
   <style>
-    :root{ --cell:64px; --btn:48px; --mine:76px; }
+    :root{ --cell:64px; --btn:4      <div style="flex:2 1 520px; min-width:300px; display:flex; flex-direction:column; gap:8px;">
+        <!-- Scale Control -->
+        <div style="display:flex; align-items:center; gap:8px; padding:6px 12px; background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08); border-radius:8px;">
+          <span style="font-size:10px; opacity:.8;">Scale:</span>
+          <input id="wgScaleSlider" type="range" min="0" max="1" step="0.01" value="0.5" style="flex:1; height:4px;"/>
+          <span id="wgScaleDisplay" style="font-size:10px; color:#40a2f8;">316 chunks</span>
+        </div>
+        
+        <div style="position:relative;">
+          <canvas id="wgPreviewCanvas" width="900" height="220" style="width:100%; border:1px solid rgba(255,255,255,.15); background:#05080e; border-radius:12px; image-rendering:pixelated;"></canvas>
+          <!-- Overlay Elements -->
+          <div id="wgPreviewOverlay" style="position:absolute; bottom:8px; left:8px; background:rgba(0,0,0,.8); border:1px solid rgba(255,255,255,.15); border-radius:4px; padding:4px 6px; font-size:9px; color:#ccc;">Range: Loading...</div>
+          <div id="wgPreviewInfo" style="position:absolute; top:8px; right:8px; background:rgba(0,0,0,.8); border:1px solid rgba(255,255,255,.15); border-radius:4px; padding:4px 6px; font-size:9px; color:#40a2f8;">— chunks</div>
+        </div>
+        
+        <div id="wgStatus" style="min-height:18px; opacity:.85; font-size:11px;">Ready</div>
+        <div style="font-size:11px; opacity:.65; line-height:1.4;">Enhanced world generation panel with tooltips, real-time preview, seed testing, and scalable visualization.</div> --mine:76px; }
     @media (max-height:700px),(max-width:420px){ :root{ --cell:56px; --btn:42px; --mine:64px; } }
     html,body{ margin:0; padding:0; height:100%; background:#0b0f16; color:#e8e8e8; font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,'Helvetica Neue',Arial,'Noto Sans',sans-serif; touch-action:none; user-select:none; overscroll-behavior:none; }
     canvas{ display:block; width:100vw; height:100vh; }
@@ -216,10 +232,17 @@
     <div id="errorBox" role="alert"></div>
   </div>
   <!-- World Generation Config Panel -->
-  <div id="worldGenPanel" hidden style="position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); width:min(1100px,94vw); max-height:86vh; background:rgba(18,22,30,.96); border:1px solid rgba(255,255,255,.18); border-radius:20px; padding:16px 18px 20px; box-shadow:0 18px 60px -10px rgba(0,0,0,.65); display:flex; flex-direction:column; gap:12px; z-index:200; font-size:12px;">
+  <div id="worldGenPanel" hidden style="position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); width:min(1100px,94vw); max-height:calc(100vh - 40px); background:rgba(18,22,30,.96); border:1px solid rgba(255,255,255,.18); border-radius:20px; padding:16px 18px 20px; box-shadow:0 18px 60px -10px rgba(0,0,0,.65); display:flex; flex-direction:column; gap:12px; z-index:200; font-size:12px; overflow:hidden;">
     <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
       <h2 style="margin:0;font-size:18px;">Konfiguracja generowania świata</h2>
       <div style="display:flex; gap:8px;">
+        <!-- Missing Elements for Enhanced JavaScript -->
+        <input id="wgCurrentSeed" readonly placeholder="Current seed..." style="background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.1); color:#ccc; padding:6px 8px; border-radius:6px; font-size:10px; width:100px;"/>
+        <input id="wgPreviewSeed" placeholder="Test seed..." style="background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.15); color:#eee; padding:6px 8px; border-radius:6px; font-size:10px; width:100px;"/>
+        <button id="wgUseSeedBtn" style="background:#40a2f8; border:none; color:#fff; padding:6px 10px; border-radius:6px; font-size:10px; cursor:pointer;">Use</button>
+        <button id="wgAutoPreviewBtn" style="background:#1a7a42; border:none; color:#fff; padding:6px 10px; border-radius:6px; font-size:10px; cursor:pointer;">Auto</button>
+        <button id="wg2DToggle" style="background:#5d4a7a; border:none; color:#fff; padding:6px 10px; border-radius:6px; font-size:10px; cursor:pointer;">2D</button>
+        <span id="wgStats" style="font-size:9px; opacity:.6; align-self:center;">0 changes</span>
         <button id="wgPreviewBtn" class="topbtn" style="background:#415877;">Podgląd</button>
         <button id="wgApplyBtn" class="topbtn" style="background:#21a366;">Zastosuj</button>
         <button id="wgRegenerateBtn" class="topbtn" style="background:#2c7ef8;">Zastosuj + Nowy</button>
@@ -227,15 +250,29 @@
         <button id="wgCloseBtn" class="topbtn" style="background:rgba(255,255,255,.15);">×</button>
       </div>
     </div>
-    <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start;">
-      <div style="flex:1 1 340px; min-width:320px; display:flex; flex-direction:column; gap:10px;" id="wgParams"></div>
-      <div style="flex:2 1 520px; min-width:300px; display:flex; flex-direction:column; gap:8px;">
+  <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; flex:1; min-height:0; overflow:auto; padding-right:4px; scrollbar-gutter:stable;">
+  <div style="flex:1 1 340px; min-width:320px; display:flex; flex-direction:column; gap:10px; max-height:100%; overflow:auto; padding-right:4px;" id="wgParams"></div>
+  <div style="flex:2 1 520px; min-width:300px; display:flex; flex-direction:column; gap:8px; max-height:100%; overflow:auto; padding-right:4px;">
+        <!-- Scale control (preview size in chunks/blocks) -->
+        <div style="display:flex; align-items:center; gap:10px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.15); padding:8px 10px; border-radius:10px; position:sticky; top:0; z-index:5; backdrop-filter:blur(6px);">
+          <label for="wgScaleSlider" style="font-size:11px; font-weight:600; letter-spacing:.3px;">Scale</label>
+          <input id="wgScaleSlider" type="range" min="0" max="1" step="0.01" value="0.50" style="flex:1; height:4px; accent-color:#2c7ef8; cursor:pointer;" />
+          <span id="wgScaleDisplay" style="font-size:10px; font-weight:600; color:#2c7ef8; white-space:nowrap;">—</span>
+        </div>
         <canvas id="wgPreviewCanvas" width="900" height="220" style="width:100%; border:1px solid rgba(255,255,255,.15); background:#05080e; border-radius:12px; image-rendering:pixelated;"></canvas>
         <div id="wgStatus" style="min-height:18px; opacity:.85; font-size:11px;">—</div>
         <div style="font-size:11px; opacity:.65; line-height:1.4;">Zmiana parametrów wpływa na przyszłe generowane chunki. Aby wymusić pełną regenerację istniejącego świata użyj „Zastosuj + Nowy”. Podgląd to tylko 1D przekrój wysokości + kolor biomu.</div>
       </div>
     </div>
   </div>
+  
+  <!-- Enhanced Tooltip for World Generation Panel -->
+  <div id="wgTooltip" style="position:absolute; display:none; background:rgba(12,16,26,.96); backdrop-filter:blur(8px); border:1px solid rgba(255,255,255,.2); border-radius:8px; padding:10px 12px; max-width:280px; z-index:250; box-shadow:0 6px 24px -6px rgba(0,0,0,.6); font-size:11px; line-height:1.3;">
+    <div id="wgTooltipTitle" style="font-weight:600; font-size:12px; margin-bottom:4px; color:#40a2f8;"></div>
+    <div id="wgTooltipDesc" style="margin-bottom:6px; color:#ddd;"></div>
+    <div id="wgTooltipEffect" style="font-size:10px; opacity:.8; color:#bbb; font-style:italic;"></div>
+  </div>
+  
   <div id="lootDim"></div>
   <div id="lootPopup" role="dialog" aria-modal="true" aria-labelledby="lootTitle">
     <h3 id="lootTitle">Nowe przedmioty</h3>

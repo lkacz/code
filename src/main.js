@@ -3441,136 +3441,898 @@ if(!window.__lootPopupInit){
 
 	// === World Generation Config Panel Integration ===
 	;(function(){
+		// Provide a string hash helper if not present (used for seed preview)
+		if(!String.prototype.hashCode){
+			Object.defineProperty(String.prototype,'hashCode',{enumerable:false,value:function(){
+				let h=0; for(let i=0;i<this.length;i++){ h=( (h<<5)-h) + this.charCodeAt(i); h|=0; } return Math.abs(h);
+			}});
+		}
+
 		function setupWorldGenPanel(){
 			const btn = document.getElementById('worldGenPanelBtn');
 			const panel = document.getElementById('worldGenPanel');
-			if(!btn || !panel || !window.MM || !MM.worldGen) return;
+			// Retry until DOM elements AND worldGen are ready
+			if(!btn || !panel){
+				return setTimeout(setupWorldGenPanel, 200);
+			}
+			if(!window.MM || !MM.worldGen){
+				// Avoid spamming retries forever if something is wrong
+				panel.dataset.wgRetries = (+(panel.dataset.wgRetries||0) + 1)+'';
+				if(+panel.dataset.wgRetries < 50){
+					return setTimeout(setupWorldGenPanel, 200);
+				} else {
+					console.warn('[WG Panel] MM.worldGen not available after multiple retries.');
+					return; 
+				}
+			}
+			// Prevent double‑initialization
+			if(panel.dataset.wgInit) return;
+			panel.dataset.wgInit = '1';
+			
 			const closeBtn = document.getElementById('wgCloseBtn');
+			if(closeBtn) closeBtn.style.pointerEvents = 'auto';
 			const paramsDiv = document.getElementById('wgParams');
 			const applyBtn = document.getElementById('wgApplyBtn');
 			const regenBtn = document.getElementById('wgRegenerateBtn');
 			const resetBtn = document.getElementById('wgResetBtn');
-			const previewBtn = document.getElementById('wgPreviewBtn');
 			const previewCanvas = document.getElementById('wgPreviewCanvas');
 			const statusEl = document.getElementById('wgStatus');
 			const WG = MM.worldGen;
-			const DEFAULTS = (function(){ try{ return WG ? JSON.parse(JSON.stringify(WG.config)) : {}; }catch(e){ return {}; } })();
-			function show(){ 
-				panel.hidden=false; 
-				panel.style.pointerEvents='auto';
-				btn.classList.add('toggled'); 
-				buildParams(); 
-				drawPreview(); 
-				// Ensure focus works
-				setTimeout(()=> {
+			
+			// Enhanced state management
+			let pendingChanges = {};
+			let autoPreview = true;
+			let previewSeed = null;
+			let previewScale = 100; // chunks
+			let is2DView = false;
+			let parameterDatabase = {};
+			
+			// Initialize parameter database with detailed tooltips
+			function initParameterDatabase() {
+				parameterDatabase = {
+					// Biome thresholds
+					seaLevel: {
+						icon: '🌊',
+						title: 'Sea Level',
+						description: 'Controls the elevation threshold below which ocean biomes generate.',
+						effect: 'Lower values = more ocean coverage. Higher values = less ocean, more land.',
+						category: 'biomes',
+						type: 'threshold'
+					},
+					lakeElevMax: {
+						icon: '🏞️',
+						title: 'Lake Elevation Max',
+						description: 'Maximum elevation for lake generation in wet areas.',
+						effect: 'Higher values allow lakes at higher elevations.',
+						category: 'biomes',
+						type: 'threshold'
+					},
+					lakeMoistMin: {
+						icon: '💧',
+						title: 'Lake Moisture Min',
+						description: 'Minimum moisture level required for lake formation.',
+						effect: 'Lower values = lakes in drier areas. Higher values = only in wettest regions.',
+						category: 'biomes',
+						type: 'threshold'
+					},
+					mountainElev: {
+						icon: '⛰️',
+						title: 'Mountain Elevation',
+						description: 'Elevation threshold above which mountain biomes generate.',
+						effect: 'Lower values = more mountains. Higher values = fewer, taller mountains.',
+						category: 'biomes',
+						type: 'threshold'
+					},
+					snowTempMax: {
+						icon: '🌨️',
+						title: 'Snow Temperature Max',
+						description: 'Maximum temperature for snow biome generation.',
+						effect: 'Higher values = snow in warmer areas. Lower values = only coldest regions.',
+						category: 'biomes',
+						type: 'threshold'
+					},
+					snowElevMin: {
+						icon: '🏔️',
+						title: 'Snow Elevation Min',
+						description: 'Minimum elevation required for snow biomes.',
+						effect: 'Lower values = snow at sea level. Higher values = only mountain peaks.',
+						category: 'biomes',
+						type: 'threshold'
+					},
+					desertTempMin: {
+						icon: '🏜️',
+						title: 'Desert Temperature Min',
+						description: 'Minimum temperature for desert biome generation.',
+						effect: 'Lower values = deserts in cooler areas. Higher values = only hottest regions.',
+						category: 'biomes',
+						type: 'threshold'
+					},
+					desertMoistMax: {
+						icon: '🌵',
+						title: 'Desert Moisture Max',
+						description: 'Maximum moisture level for desert formation.',
+						effect: 'Higher values = deserts in wetter areas. Lower values = only driest regions.',
+						category: 'biomes',
+						type: 'threshold'
+					},
+					swampMoistMin: {
+						icon: '🐸',
+						title: 'Swamp Moisture Min',
+						description: 'Minimum moisture level for swamp biome generation.',
+						effect: 'Lower values = swamps in drier areas. Higher values = only wettest regions.',
+						category: 'biomes',
+						type: 'threshold'
+					},
+					swampElevMax: {
+						icon: '🌿',
+						title: 'Swamp Elevation Max',
+						description: 'Maximum elevation for swamp formation.',
+						effect: 'Higher values = swamps on hills. Lower values = only lowlands.',
+						category: 'biomes',
+						type: 'threshold'
+					},
+					
+					// Surface height parameters
+					surfaceBaseMin: {
+						icon: '📏',
+						title: 'Surface Base Minimum',
+						description: 'Minimum base height for terrain generation.',
+						effect: 'Higher values raise the entire world. Lower values create deeper valleys.',
+						category: 'height',
+						type: 'number'
+					},
+					surfaceBaseRange: {
+						icon: '📊',
+						title: 'Surface Base Range',
+						description: 'Range of height variation from base minimum.',
+						effect: 'Higher values = more dramatic height differences.',
+						category: 'height',
+						type: 'number'
+					},
+					detailFactor: {
+						icon: '🔍',
+						title: 'Detail Factor',
+						description: 'Multiplier for small-scale terrain detail noise.',
+						effect: 'Higher values = more rough, detailed terrain. Lower = smoother.',
+						category: 'height',
+						type: 'number'
+					},
+					
+					// Biome height modifiers
+					seaBase: {
+						icon: '🌊',
+						title: 'Sea Base Height',
+						description: 'Base height level for ocean floors.',
+						effect: 'Higher values = shallower oceans. Lower = deeper seas.',
+						category: 'modifiers',
+						type: 'number'
+					},
+					lakeDepress: {
+						icon: '🏞️',
+						title: 'Lake Depression',
+						description: 'How much lower lakes are than surrounding terrain.',
+						effect: 'Higher values = deeper lakes. Lower = shallow lakes.',
+						category: 'modifiers',
+						type: 'number'
+					},
+					mountainAdd: {
+						icon: '⛰️',
+						title: 'Mountain Base Add',
+						description: 'Base height addition for mountain biomes.',
+						effect: 'Higher values = taller mountains. Lower = shorter peaks.',
+						category: 'modifiers',
+						type: 'number'
+					},
+					mountainLargeAmp: {
+						icon: '🏔️',
+						title: 'Mountain Large Amplitude',
+						description: 'Amplitude of large-scale mountain variation.',
+						effect: 'Higher values = more dramatic mountain peaks and valleys.',
+						category: 'modifiers',
+						type: 'number'
+					},
+					mountainMedAmp: {
+						icon: '⛰️',
+						title: 'Mountain Medium Amplitude',
+						description: 'Amplitude of medium-scale mountain detail.',
+						effect: 'Higher values = more rugged mountain terrain.',
+						category: 'modifiers',
+						type: 'number'
+					},
+					desertAdjust: {
+						icon: '🏜️',
+						title: 'Desert Height Adjust',
+						description: 'Height adjustment for desert biomes.',
+						effect: 'Positive = higher deserts. Negative = lower, basin-like deserts.',
+						category: 'modifiers',
+						type: 'number'
+					},
+					swampAdjust: {
+						icon: '🐸',
+						title: 'Swamp Height Adjust',
+						description: 'Height adjustment for swamp biomes.',
+						effect: 'Negative values create low-lying wetlands. Positive = elevated swamps.',
+						category: 'modifiers',
+						type: 'number'
+					},
+					snowAdjust: {
+						icon: '🌨️',
+						title: 'Snow Height Adjust',
+						description: 'Height adjustment for snow biomes.',
+						effect: 'Positive values create elevated snowfields. Negative = lower snow areas.',
+						category: 'modifiers',
+						type: 'number'
+					},
+					plainsAdjust: {
+						icon: '🌾',
+						title: 'Plains Height Adjust',
+						description: 'Height adjustment for plains biomes.',
+						effect: 'Positive = elevated plateaus. Negative = low grasslands.',
+						category: 'modifiers',
+						type: 'number'
+					},
+					
+					// Limits
+					minClamp: {
+						icon: '⬇️',
+						title: 'Minimum Height Clamp',
+						description: 'Absolute minimum height for any terrain.',
+						effect: 'Prevents terrain from going below this level.',
+						category: 'limits',
+						type: 'number'
+					},
+					maxClamp: {
+						icon: '⬆️',
+						title: 'Maximum Height Clamp',
+						description: 'Absolute maximum height for any terrain.',
+						effect: 'Prevents terrain from going above this level.',
+						category: 'limits',
+						type: 'number'
+					},
+					
+					// Resources
+					chestThreshold: {
+						icon: '🎁',
+						title: 'Chest Spawn Threshold',
+						description: 'Noise threshold for chest generation.',
+						effect: 'Lower values = more chests. Higher values = fewer, rarer chests.',
+						category: 'resources',
+						type: 'threshold'
+					},
+					
+					// Octaves (complex)
+					temperatureOctaves: {
+						icon: '🌡️',
+						title: 'Temperature Noise Octaves',
+						description: 'Multi-scale noise layers that generate temperature patterns.',
+						effect: 'More octaves = more complex temperature variations.',
+						category: 'octaves',
+						type: 'json'
+					},
+					moistureOctaves: {
+						icon: '💧',
+						title: 'Moisture Noise Octaves',
+						description: 'Multi-scale noise layers that generate moisture patterns.',
+						effect: 'More octaves = more complex rainfall/humidity variations.',
+						category: 'octaves',
+						type: 'json'
+					},
+					macroElevOctaves: {
+						icon: '🗺️',
+						title: 'Macro Elevation Octaves',
+						description: 'Large-scale noise layers that create continental elevation patterns.',
+						effect: 'Controls continent vs ocean distribution and major landform shapes.',
+						category: 'octaves',
+						type: 'json'
+					},
+					detailOctaves: {
+						icon: '🔍',
+						title: 'Detail Height Octaves',
+						description: 'Small-scale noise layers that add surface detail to terrain.',
+						effect: 'More octaves = more detailed, rough terrain surfaces.',
+						category: 'octaves',
+						type: 'json'
+					}
+				};
+			}
+			
+			// Enhanced input creation with tooltips and real-time preview
+			function createParameterInput(label, key, type, opts = {}) {
+				const param = parameterDatabase[key];
+				const wrap = document.createElement('div');
+				wrap.className = 'wg-param-row';
+				wrap.style.cssText = 'display:flex; flex-direction:column; gap:6px; margin-bottom:12px; padding:8px; background:rgba(255,255,255,.02); border:1px solid rgba(255,255,255,.08); border-radius:8px; transition:all 0.2s ease; cursor:help;';
+				
+				// Header with icon and label
+				const header = document.createElement('div');
+				header.style.cssText = 'display:flex; align-items:center; gap:8px;';
+				
+				const icon = document.createElement('span');
+				icon.textContent = param?.icon || '⚙️';
+				icon.style.cssText = 'font-size:16px; width:20px; text-align:center;';
+				
+				const labelEl = document.createElement('label');
+				labelEl.htmlFor = 'wg_' + key;
+				labelEl.textContent = param?.title || label;
+				labelEl.style.cssText = 'flex:1; font-size:12px; font-weight:600; color:#eee; cursor:pointer;';
+				
+				const helpIcon = document.createElement('span');
+				helpIcon.textContent = '?';
+				helpIcon.style.cssText = 'width:16px; height:16px; border-radius:50%; background:rgba(64,162,248,.2); color:#40a2f8; font-size:10px; display:flex; align-items:center; justify-content:center; cursor:help; font-weight:700;';
+				
+				header.appendChild(icon);
+				header.appendChild(labelEl);
+				header.appendChild(helpIcon);
+				
+				// Input element
+				let input;
+				const inputId = 'wg_' + key;
+				
+				if (type === 'number') {
+					input = document.createElement('input');
+					input.type = 'number';
+					const rawVal = WG.config ? WG.config[key] : undefined;
+					input.value = (rawVal === undefined || rawVal === null || isNaN(rawVal)) ? 0 : rawVal;
+					if (opts.min !== undefined) input.min = opts.min;
+					if (opts.max !== undefined) input.max = opts.max;
+					if (opts.step !== undefined) input.step = opts.step;
+					input.style.cssText = 'padding:6px 10px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.15); border-radius:6px; color:#eee; font-size:12px; pointer-events:auto; transition:all 0.2s ease;';
+				} else if (type === 'json') {
+					input = document.createElement('textarea');
+					let jsonVal = WG.config ? WG.config[key] : undefined;
+					if(!Array.isArray(jsonVal) && typeof jsonVal !== 'object') jsonVal = [];
+					try { input.value = JSON.stringify(jsonVal, null, 2); } catch { input.value = '[]'; }
+					input.rows = 4;
+					input.style.cssText = 'padding:8px; font-family:monospace; font-size:11px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.15); border-radius:6px; color:#eee; resize:vertical; pointer-events:auto; transition:all 0.2s ease;';
+				}
+				
+				input.id = inputId;
+				
+				// Enhanced hover and focus effects
+				input.addEventListener('focus', () => {
+					input.style.borderColor = '#40a2f8';
+					input.style.background = 'rgba(64,162,248,.1)';
+					wrap.style.background = 'rgba(64,162,248,.05)';
+					wrap.style.borderColor = 'rgba(64,162,248,.2)';
+				});
+				
+				input.addEventListener('blur', () => {
+					input.style.borderColor = 'rgba(255,255,255,.15)';
+					input.style.background = 'rgba(255,255,255,.08)';
+					wrap.style.background = 'rgba(255,255,255,.02)';
+					wrap.style.borderColor = 'rgba(255,255,255,.08)';
+				});
+				
+				// Real-time change handling
+				const handleChange = () => {
+					pendingChanges[key] = input.value;
+					updateStats();
+					if (autoPreview) {
+						requestAnimationFrame(drawPreview);
+					}
+				};
+				
+				input.addEventListener('input', handleChange);
+				input.addEventListener('change', handleChange);
+				
+				// Tooltip functionality
+				const showTooltip = (e) => {
+					if (!param) return;
+					const tooltip = document.getElementById('wgTooltip');
+					if (!tooltip) return;
+					
+					document.getElementById('wgTooltipTitle').textContent = param.title;
+					document.getElementById('wgTooltipDesc').textContent = param.description;
+					document.getElementById('wgTooltipEffect').textContent = param.effect;
+					
+					tooltip.style.display = 'block';
+					tooltip.style.left = e.pageX + 10 + 'px';
+					tooltip.style.top = e.pageY + 10 + 'px';
+				};
+				
+				const hideTooltip = () => {
+					const tooltip = document.getElementById('wgTooltip');
+					if (tooltip) tooltip.style.display = 'none';
+				};
+				
+				wrap.addEventListener('mouseenter', showTooltip);
+				wrap.addEventListener('mouseleave', hideTooltip);
+				helpIcon.addEventListener('mouseenter', showTooltip);
+				
+				wrap.appendChild(header);
+				wrap.appendChild(input);
+				
+				return wrap;
+			}
+			
+			// Enhanced preview with scale support and 2D view
+			function drawPreview() {
+				if (!previewCanvas) return;
+				
+				// Update canvas size if needed
+				const rect = previewCanvas.getBoundingClientRect();
+				const dpr = window.devicePixelRatio || 1;
+				const width = Math.floor(rect.width * dpr);
+				const height = Math.floor(rect.height * dpr);
+				
+				if (previewCanvas.width !== width || previewCanvas.height !== height) {
+					previewCanvas.width = width;
+					previewCanvas.height = height;
+				}
+				
+				const ctx = previewCanvas.getContext('2d');
+				ctx.clearRect(0, 0, width, height);
+				
+				// Calculate preview parameters
+				const chunks = Math.pow(10, previewScale / 100 * 3 + 1); // 10 to 10,000 chunks
+				const samplesX = Math.min(width, chunks * 16); // 16 tiles per chunk
+				const samplesY = is2DView ? Math.min(height, 200) : 1;
+				
+				const startX = previewSeed !== null ? 0 : (window.PLAYER ? Math.floor(PLAYER.x) - Math.floor(samplesX / 2) : 0);
+				
+				// Apply pending changes temporarily for preview
+				const originalConfig = { ...WG.config };
+				if (Object.keys(pendingChanges).length > 0) {
+					const tempConfig = { ...WG.config };
+					for (const key in pendingChanges) {
+						let value = pendingChanges[key];
+						if (key.endsWith('Octaves')) {
+							try {
+								value = JSON.parse(value);
+							} catch (e) {
+								continue; // Skip invalid JSON
+							}
+						} else if (!isNaN(+value)) {
+							value = +value;
+						}
+						tempConfig[key] = value;
+					}
+					WG.applyConfig(tempConfig);
+				}
+				
+				// Enhanced biome colors with better contrast
+				const biomeColors = {
+					0: '#2d5a2d', // forest - darker green
+					1: '#7ab547', // plains - bright green
+					2: '#e8f0f8', // snow - light blue-white
+					3: '#d4b366', // desert - sandy yellow
+					4: '#4a6b4a', // swamp - dark olive
+					5: '#1e4471', // sea - deep blue
+					6: '#2d5f8f', // lake - medium blue
+					7: '#707070', // mountain - gray
+				};
+				
+				if (is2DView) {
+					// 2D heatmap view
+					for (let y = 0; y < samplesY; y++) {
+						for (let x = 0; x < samplesX; x++) {
+							const worldX = startX + (x / samplesX) * chunks * 16;
+							const worldY = y * 2; // Arbitrary Y sampling
+							
+							const temp = WG.temperature(worldX);
+							const moisture = WG.moisture(worldX);
+							const elev = WG.macroElev(worldX);
+							const biome = WG.biomeType(worldX);
+							
+							// Create heatmap visualization
+							const r = Math.floor(temp * 255);
+							const g = Math.floor(moisture * 255);
+							const b = Math.floor(elev * 255);
+							
+							ctx.fillStyle = `rgb(${r},${g},${b})`;
+							ctx.fillRect(
+								Math.floor((x / samplesX) * width),
+								Math.floor((y / samplesY) * height),
+								Math.ceil(width / samplesX) + 1,
+								Math.ceil(height / samplesY) + 1
+							);
+						}
+					}
+				} else {
+					// 1D terrain profile view (enhanced)
+					const points = [];
+					for (let x = 0; x < samplesX; x++) {
+						const worldX = startX + (x / samplesX) * chunks * 16;
+						const biome = WG.biomeType(worldX);
+						const h = WG.surfaceHeight(worldX);
+						points.push({ x: worldX, biome, h });
+					}
+					
+					// Draw terrain profile
+					const maxHeight = Math.max(...points.map(p => p.h));
+					const minHeight = Math.min(...points.map(p => p.h));
+					const heightRange = maxHeight - minHeight || 1;
+					
+					// Background gradient
+					const gradient = ctx.createLinearGradient(0, 0, 0, height);
+					gradient.addColorStop(0, '#0a0e16');
+					gradient.addColorStop(0.5, '#1a1e2e');
+					gradient.addColorStop(1, '#0a0e16');
+					ctx.fillStyle = gradient;
+					ctx.fillRect(0, 0, width, height);
+					
+					// Draw biome background
+					for (let i = 0; i < points.length; i++) {
+						const point = points[i];
+						const x = (i / (points.length - 1)) * width;
+						const normalizedHeight = (point.h - minHeight) / heightRange;
+						const y = height - (normalizedHeight * height * 0.8) - height * 0.1;
+						
+						ctx.fillStyle = biomeColors[point.biome] || '#888';
+						ctx.fillRect(x, y, Math.ceil(width / points.length) + 1, height - y);
+					}
+					
+					// Draw height contour line
+					ctx.strokeStyle = '#40a2f8';
+					ctx.lineWidth = 2;
+					ctx.beginPath();
+					for (let i = 0; i < points.length; i++) {
+						const point = points[i];
+						const x = (i / (points.length - 1)) * width;
+						const normalizedHeight = (point.h - minHeight) / heightRange;
+						const y = height - (normalizedHeight * height * 0.8) - height * 0.1;
+						
+						if (i === 0) ctx.moveTo(x, y);
+						else ctx.lineTo(x, y);
+					}
+					ctx.stroke();
+					
+					// Draw biome boundaries
+					ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+					ctx.lineWidth = 1;
+					let lastBiome = points[0]?.biome;
+					for (let i = 1; i < points.length; i++) {
+						if (points[i].biome !== lastBiome) {
+							const x = (i / (points.length - 1)) * width;
+							ctx.beginPath();
+							ctx.moveTo(x, 0);
+							ctx.lineTo(x, height);
+							ctx.stroke();
+							lastBiome = points[i].biome;
+						}
+					}
+				}
+				
+				// Restore original config
+				WG.applyConfig(originalConfig);
+				
+				// Update info
+				updatePreviewInfo(chunks, samplesX, startX);
+			}
+			
+			function updatePreviewInfo(chunks, samples, startX) {
+				const infoEl = document.getElementById('wgPreviewInfo');
+				const overlayEl = document.getElementById('wgPreviewOverlay');
+				
+				if (infoEl) {
+					infoEl.textContent = `${chunks.toFixed(0)} chunks • ${samples} samples`;
+				}
+				
+				if (overlayEl) {
+					const biomeCounts = {};
+					for (let i = 0; i < samples; i += 10) {
+						const worldX = startX + (i / samples) * chunks * 16;
+						const biome = WG.biomeType(worldX);
+						biomeCounts[biome] = (biomeCounts[biome] || 0) + 1;
+					}
+					
+					const biomeNames = ['Forest', 'Plains', 'Snow', 'Desert', 'Swamp', 'Sea', 'Lake', 'Mountain'];
+					const biomeStats = Object.entries(biomeCounts)
+						.map(([biome, count]) => `${biomeNames[biome] || 'Unknown'}: ${Math.round(count / Object.values(biomeCounts).reduce((a, b) => a + b, 0) * 100)}%`)
+						.join(' • ');
+					
+					overlayEl.innerHTML = `
+						Range: X ${startX} to ${startX + chunks * 16}<br>
+						Biomes: ${biomeStats}
+					`;
+				}
+			}
+			
+			function updateStats() {
+				const statsEl = document.getElementById('wgStats');
+				if (statsEl) {
+					const changeCount = Object.keys(pendingChanges).length;
+					statsEl.textContent = `${changeCount} param${changeCount !== 1 ? 's' : ''} changed`;
+				}
+			}
+			
+			function show() {
+				panel.hidden = false;
+				panel.style.pointerEvents = 'auto';
+				btn.classList.add('toggled');
+				buildParams();
+				updateCurrentSeed();
+				drawPreview();
+				adjustPanelSize();
+				
+				// Focus management
+				setTimeout(() => {
 					const firstInput = panel.querySelector('input, textarea');
-					if(firstInput) firstInput.focus();
+					if (firstInput) firstInput.focus();
 				}, 100);
 			}
-			function hide(){ 
-				panel.hidden=true; 
-				btn.classList.remove('toggled'); 
+			
+			function hide() {
+				panel.hidden = true;
+				btn.classList.remove('toggled');
 			}
-			btn.addEventListener('click', (e)=>{ 
-				e.preventDefault(); 
-				e.stopPropagation(); 
-				panel.hidden? show(): hide(); 
-			});
-			closeBtn && closeBtn.addEventListener('click', (e)=>{ 
-				e.preventDefault(); 
-				e.stopPropagation(); 
-				hide(); 
-			});
-			let pendingChanges = {};
-			function inputRow(label, key, type, opts={}){
-				const wrap=document.createElement('div'); 
-				wrap.style.display='flex'; wrap.style.flexDirection='column'; wrap.style.gap='4px'; wrap.style.marginBottom='8px';
-				
-				const id='wg_'+key; 
-				const lab=document.createElement('label'); 
-				lab.htmlFor=id; lab.textContent=label; 
-				lab.style.fontSize='11px'; lab.style.opacity='.85'; lab.style.fontWeight='600'; lab.style.color='#eee';
-				
-				let inp; 
-				if(type==='number'){ 
-					inp=document.createElement('input'); 
-					inp.type='number'; 
-					inp.value=WG.config[key]; 
-					['min','max','step'].forEach(p=>{ if(opts[p]!==undefined) inp[p]=opts[p]; }); 
-					inp.style.cssText = 'width:140px; padding:6px 8px; background:rgba(255,255,255,.08); color:#eee; border:1px solid rgba(255,255,255,.25); border-radius:6px; font-size:12px; pointer-events:auto; cursor:text;';
-				}
-				else if(type==='json'){ 
-					inp=document.createElement('textarea'); 
-					inp.value=JSON.stringify(WG.config[key]); 
-					inp.rows=3; 
-					inp.style.cssText = 'width:100%; padding:6px 8px; font-family:monospace; font-size:11px; background:rgba(255,255,255,.08); color:#eee; border:1px solid rgba(255,255,255,.25); border-radius:6px; resize:vertical; pointer-events:auto; cursor:text;';
-				}
-				
-				inp.id=id; 
-				// Add focus/blur styles for better interaction feedback
-				inp.addEventListener('focus', ()=> inp.style.borderColor='#2c7ef8');
-				inp.addEventListener('blur', ()=> inp.style.borderColor='rgba(255,255,255,.25)');
-				
-				wrap.appendChild(lab); wrap.appendChild(inp); 
-				
-				const hint=document.createElement('div'); 
-				hint.style.fontSize='10px'; hint.style.opacity='.55'; hint.style.color='#aaa'; 
-				if(opts.hint) hint.textContent=opts.hint; 
-				wrap.appendChild(hint); 
-				
-				inp.addEventListener('change',()=>{ pendingChanges[key]=inp.value; autoStatus(); }); 
-				inp.addEventListener('input',()=>{ pendingChanges[key]=inp.value; autoStatus(); }); // Also listen to input for real-time feedback
-				
-				return wrap; 
+
+			function adjustPanelSize(){
+				if(panel.hidden) return;
+				const margin = 20;
+				const vw = window.innerWidth; const vh = window.innerHeight;
+				panel.style.maxHeight = (vh - margin*2) + 'px';
+				panel.style.maxWidth = Math.min(1100, vw - margin*2) + 'px';
+				// If panel would overflow (because of transform centering) ensure scroll inside works
+				// Already set overflow hidden on outer; internal container scrolls.
 			}
-			function buildParams(){ paramsDiv.innerHTML=''; pendingChanges={}; const groups=[
-				{title:'Progi biomów', items:[['Poziom morza','seaLevel'],['Max jezior (wys)','lakeElevMax'],['Min jezior (wilg)','lakeMoistMin'],['Góry (wys)','mountainElev'],['Śnieg temp max','snowTempMax'],['Śnieg wys min','snowElevMin'],['Pustynia temp min','desertTempMin'],['Pustynia wilg max','desertMoistMax'],['Bagno wilg min','swampMoistMin'],['Bagno wys max','swampElevMax']]},
-				{title:'Wysokość bazowa', items:[['Base min','surfaceBaseMin'],['Base range','surfaceBaseRange'],['Detail factor','detailFactor']]},
-				{title:'Modyfikatory biome', items:[['Sea base','seaBase'],['Lake depresja','lakeDepress'],['Góry dodaj','mountainAdd'],['Góry duże amp','mountainLargeAmp'],['Góry śr amp','mountainMedAmp'],['Pustynia adj','desertAdjust'],['Bagno adj','swampAdjust'],['Śnieg adj','snowAdjust'],['Równina adj','plainsAdjust']]},
-				{title:'Limity', items:[['Min clamp','minClamp'],['Max clamp','maxClamp']]},
-				{title:'Skarby', items:[['Próg skrzyni','chestThreshold']]},
-				{title:'Octavy (JSON)', items:[['Temp octaves','temperatureOctaves','json',{hint:'[{w,weight,off},…]'}],['Moist octaves','moistureOctaves','json',{}],['Macro elev','macroElevOctaves','json',{}],['Detail octaves','detailOctaves','json',{hint:'[{w,amp,off},…]'}]]},
-			];
-			groups.forEach(g=>{ 
-				const fs=document.createElement('fieldset'); 
-				fs.style.cssText = 'border:1px solid rgba(255,255,255,.25); border-radius:12px; padding:12px 14px 16px; display:flex; flex-direction:column; gap:8px; margin-bottom:12px; background:rgba(255,255,255,.02); pointer-events:auto;';
+			
+			function updateCurrentSeed() {
+				const currentSeedEl = document.getElementById('wgCurrentSeed');
+				if (currentSeedEl && WG.worldSeed) {
+					currentSeedEl.value = WG.worldSeed;
+				}
+			}
+			
+			function buildParams() {
+				if (!paramsDiv) return;
+				paramsDiv.innerHTML = '';
+				pendingChanges = {};
 				
-				const lg=document.createElement('legend'); 
-				lg.textContent=g.title; 
-				lg.style.cssText = 'padding:0 6px; font-size:13px; opacity:.9; font-weight:600; color:#eee; background:rgba(18,22,30,.9);';
+				// Add search and filter controls
+				const searchDiv = document.createElement('div');
+				searchDiv.style.cssText = 'margin-bottom:16px; padding:12px; background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.12); border-radius:12px;';
 				
-				fs.appendChild(lg); 
+				const searchInput = document.createElement('input');
+				searchInput.placeholder = 'Search parameters...';
+				searchInput.style.cssText = 'width:100%; padding:8px 12px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.15); border-radius:6px; color:#eee; font-size:12px; margin-bottom:8px;';
 				
-				g.items.forEach(it=>{ 
-					const type=it[2]||'number'; 
-					const opts=it[3]||{
-						min: type==='number'? (it[1].includes('Threshold')?0: (it[1].includes('Adjust')?-50:0)):undefined, 
-						max: type==='number'? (it[1].includes('Threshold')?1: (it[1].includes('Factor')?3: (it[1].includes('Amp')?80:1))):undefined, 
-						step: type==='number'? (it[1].includes('Threshold')?0.001:0.01):undefined 
-					}; 
-					fs.appendChild(inputRow(it[0], it[1], type, opts)); 
-				}); 
+				const categoryButtons = document.createElement('div');
+				categoryButtons.style.cssText = 'display:flex; gap:6px; flex-wrap:wrap;';
 				
-				paramsDiv.appendChild(fs); 
-			}); }
-			function applyChanges(regen){ const cfg={}; for(const k in pendingChanges){ let v=pendingChanges[k]; if(k.endsWith('Octaves')){ try{ v=JSON.parse(v); }catch(e){ return status('Błąd JSON w '+k); } } else if(!isNaN(+v)) v=+v; cfg[k]=v; } if(Object.keys(cfg).length){ WG.applyConfig(cfg); pendingChanges={}; status('Zapisano. '+(regen?'Regeneracja…':'')); if(regen && typeof window.regenWorld==='function') window.regenWorld(); drawPreview(); } else status('Brak zmian'); }
-			function drawPreview(){ if(!previewCanvas) return; const ctx=previewCanvas.getContext('2d'); const W=previewCanvas.width; const H=previewCanvas.height; ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H); const startX = (window.PLAYER? Math.floor(PLAYER.x)-Math.floor(W/2) : 0); const data = WG.previewRange(startX, W); const biomeColors={0:'#2f6c2f',1:'#6ca437',2:'#d8dfe8',3:'#d7c27a',4:'#3f5b3a',5:'#1a3358',6:'#264c7a',7:'#666'}; data.forEach((d,i)=>{ ctx.fillStyle=biomeColors[d.biome]||'#888'; ctx.fillRect(i,H-d.h,1,d.h); }); status('Podgląd x≈'+startX+'…'+(startX+W)); }
-			function status(t){ if(statusEl) statusEl.textContent=t; }
-			function autoStatus(){ status('Niezapisane zmiany…'); }
-			applyBtn && applyBtn.addEventListener('click',(e)=>{ e.preventDefault(); e.stopPropagation(); applyChanges(false); });
-			regenBtn && regenBtn.addEventListener('click',(e)=>{ e.preventDefault(); e.stopPropagation(); applyChanges(true); });
-			resetBtn && resetBtn.addEventListener('click',(e)=>{ 
-				e.preventDefault(); 
-				e.stopPropagation(); 
-				if(confirm('Przywrócić parametry panelu do wartości początkowych (pierwsze uruchomienie)?')){ 
-					WG.applyConfig(DEFAULTS); 
-					buildParams(); 
-					status('Przywrócono domyślne (ze startu gry).'); 
-					drawPreview(); 
-				} 
+				const categories = ['all', 'biomes', 'height', 'modifiers', 'limits', 'resources', 'octaves'];
+				let activeCategory = 'all';
+				
+				categories.forEach(cat => {
+					const btn = document.createElement('button');
+					btn.textContent = cat.charAt(0).toUpperCase() + cat.slice(1);
+					btn.style.cssText = `padding:4px 8px; font-size:10px; border:1px solid rgba(255,255,255,.2); border-radius:4px; background:${cat === 'all' ? '#40a2f8' : 'rgba(255,255,255,.1)'}; color:#eee; cursor:pointer;`;
+					btn.addEventListener('click', () => {
+						activeCategory = cat;
+						categoryButtons.querySelectorAll('button').forEach(b => {
+							b.style.background = 'rgba(255,255,255,.1)';
+						});
+						btn.style.background = '#40a2f8';
+						buildParameterList();
+					});
+					categoryButtons.appendChild(btn);
+				});
+				
+				searchDiv.appendChild(searchInput);
+				searchDiv.appendChild(categoryButtons);
+				paramsDiv.appendChild(searchDiv);
+				
+				const paramsList = document.createElement('div');
+				paramsList.id = 'wgParamsList';
+				paramsDiv.appendChild(paramsList);
+				
+				function buildParameterList() {
+					const searchTerm = searchInput.value.toLowerCase();
+					const list = document.getElementById('wgParamsList');
+					if (!list) return;
+					
+					list.innerHTML = '';
+					
+					// Group parameters by category
+					const groups = {
+						biomes: [],
+						height: [],
+						modifiers: [],
+						limits: [],
+						resources: [],
+						octaves: []
+					};
+					
+					for (const [key, param] of Object.entries(parameterDatabase)) {
+						if (activeCategory !== 'all' && param.category !== activeCategory) continue;
+						if (searchTerm && !param.title.toLowerCase().includes(searchTerm) && !key.toLowerCase().includes(searchTerm)) continue;
+						
+						groups[param.category].push([key, param]);
+					}
+					
+					for (const [category, items] of Object.entries(groups)) {
+						if (items.length === 0) continue;
+						
+						const categoryDiv = document.createElement('div');
+						categoryDiv.style.cssText = 'margin-bottom:16px;';
+						
+						const categoryHeader = document.createElement('h4');
+						categoryHeader.textContent = category.charAt(0).toUpperCase() + category.slice(1);
+						categoryHeader.style.cssText = 'margin:0 0 8px 0; font-size:13px; color:#40a2f8; font-weight:700;';
+						categoryDiv.appendChild(categoryHeader);
+						
+						for (const [key, param] of items) {
+							const type = param.type === 'threshold' ? 'number' : param.type;
+							const opts = {};
+							
+							if (type === 'number') {
+								if (param.type === 'threshold') {
+									opts.min = 0;
+									opts.max = 1;
+									opts.step = 0.001;
+								} else {
+									opts.min = key.includes('Adjust') ? -50 : 0;
+									opts.max = key.includes('Amp') ? 80 : (key.includes('Factor') ? 3 : 200);
+									opts.step = param.type === 'threshold' ? 0.001 : 0.01;
+								}
+							}
+							
+							categoryDiv.appendChild(createParameterInput(param.title, key, type, opts));
+						}
+						
+						list.appendChild(categoryDiv);
+					}
+				}
+				
+				searchInput.addEventListener('input', buildParameterList);
+				buildParameterList();
+			}
+			
+			// Initialize everything
+			initParameterDatabase();
+			// Pre-build parameter list so it's ready on first open
+			try { if(!document.getElementById('wgParams')?.dataset.initialBuilt){ buildParams(); document.getElementById('wgParams').dataset.initialBuilt='1'; } } catch(e){ console.warn('[WG Panel] initial build error', e); }
+			
+			// Event handlers
+			btn.addEventListener('click', (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				panel.hidden ? show() : hide();
 			});
-			previewBtn && previewBtn.addEventListener('click', (e)=>{ e.preventDefault(); e.stopPropagation(); drawPreview(); });
-			document.addEventListener('keydown', e=>{ if(panel.hidden) return; if(e.key==='Escape'){ hide(); } if(['ArrowLeft','ArrowRight','a','d'].includes(e.key)) requestAnimationFrame(drawPreview); });
+			window.addEventListener('resize', ()=> adjustPanelSize());
+			
+			closeBtn && closeBtn.addEventListener('click', (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				hide();
+			});
+			
+			// Enhanced button handlers
+			const autoPreviewBtn = document.getElementById('wgAutoPreviewBtn');
+			if (autoPreviewBtn) {
+				autoPreviewBtn.addEventListener('click', (e) => {
+					e.preventDefault();
+					autoPreview = !autoPreview;
+					autoPreviewBtn.style.background = autoPreview ? '#1a7a42' : '#7a4242';
+					autoPreviewBtn.textContent = autoPreview ? '🔄 Auto' : '⏸️ Manual';
+				});
+			}
+			
+			const useSeedBtn = document.getElementById('wgUseSeedBtn');
+			const previewSeedInput = document.getElementById('wgPreviewSeed');
+			if (useSeedBtn && previewSeedInput) {
+				useSeedBtn.addEventListener('click', () => {
+					const seedValue = previewSeedInput.value.trim();
+					previewSeed = seedValue ? parseInt(seedValue) || seedValue.hashCode() : null;
+					drawPreview();
+				});
+				
+				previewSeedInput.addEventListener('keydown', (e) => {
+					if (e.key === 'Enter') {
+						useSeedBtn.click();
+					}
+				});
+			}
+			
+			const scaleSlider = document.getElementById('wgScaleSlider');
+			const scaleDisplay = document.getElementById('wgScaleDisplay');
+			if (scaleSlider && scaleDisplay) {
+				// Map slider (0-1) -> chunks (10 - 10,000) using exponential progression for intuitive control
+				const updateScaleDisplay = () => {
+					previewScale = parseFloat(scaleSlider.value) * 100; // retain existing variable semantics
+					const chunks = Math.pow(10, (previewScale / 100) * 3 + 1); // 0 -> 10^1=10, 100 -> 10^4=10000
+					const blocks = chunks * 16; // assuming 16x16 chunk width reference for horizontal preview span
+					scaleDisplay.textContent = `${Math.round(chunks).toLocaleString()} chunks (~${Math.round(blocks).toLocaleString()} blocks)`;
+					if (autoPreview) drawPreview();
+				};
+				scaleSlider.addEventListener('input', updateScaleDisplay);
+				// Initialize display
+				updateScaleDisplay();
+			}
+			
+			const toggle2D = document.getElementById('wg2DToggle');
+			if (toggle2D) {
+				toggle2D.addEventListener('click', () => {
+					is2DView = !is2DView;
+					toggle2D.style.background = is2DView ? '#7a5d42' : '#5d4a7a';
+					toggle2D.textContent = is2DView ? '1D View' : '2D View';
+					drawPreview();
+				});
+			}
+			
+			// Apply/Reset handlers (improved)
+			applyBtn && applyBtn.addEventListener('click', (e) => {
+				e.preventDefault();
+				applyChanges(false);
+			});
+			
+			regenBtn && regenBtn.addEventListener('click', (e) => {
+				e.preventDefault();
+				applyChanges(true);
+			});
+			
+			resetBtn && resetBtn.addEventListener('click', (e) => {
+				e.preventDefault();
+				if (confirm('Reset all parameters to defaults? This will lose any unsaved changes.')) {
+					WG.applyConfig(WG.DEFAULT_CONFIG || {});
+					buildParams();
+					status('Parameters reset to defaults');
+					drawPreview();
+				}
+			});
+			
+			function applyChanges(regenerate) {
+				const cfg = {};
+				for (const key in pendingChanges) {
+					let value = pendingChanges[key];
+					if (key.endsWith('Octaves')) {
+						try {
+							value = JSON.parse(value);
+						} catch (e) {
+							status(`JSON error in ${key}: ${e.message}`);
+							return;
+						}
+					} else if (!isNaN(+value)) {
+						value = +value;
+					}
+					cfg[key] = value;
+				}
+				
+				if (Object.keys(cfg).length) {
+					WG.applyConfig(cfg);
+					pendingChanges = {};
+					updateStats();
+					status(`Applied ${Object.keys(cfg).length} changes${regenerate ? ' and regenerating world...' : ''}`);
+					
+					if (regenerate && typeof window.regenWorld === 'function') {
+						window.regenWorld();
+					}
+					
+					drawPreview();
+				} else {
+					status('No changes to apply');
+				}
+			}
+			
+			function status(message) {
+				if (statusEl) statusEl.textContent = message;
+				setTimeout(() => {
+					if (statusEl) statusEl.textContent = 'Ready';
+				}, 3000);
+			}
+			
+			// Keyboard shortcuts
+			document.addEventListener('keydown', (e) => {
+				if (panel.hidden) return;
+				
+				if (e.key === 'Escape') {
+					hide();
+				} else if (e.ctrlKey && e.key === 's') {
+					e.preventDefault();
+					applyChanges(false);
+				} else if (e.ctrlKey && e.shiftKey && e.key === 'S') {
+					e.preventDefault();
+					applyChanges(true);
+				} else if (['ArrowLeft', 'ArrowRight', 'a', 'd'].includes(e.key)) {
+					requestAnimationFrame(drawPreview);
+				}
+			});
 		}
-		if(document.readyState==='complete' || document.readyState==='interactive'){ setTimeout(setupWorldGenPanel,0); } else { window.addEventListener('DOMContentLoaded', setupWorldGenPanel); }
+		
+		// Initialize when ready
+		if (document.readyState === 'complete' || document.readyState === 'interactive') {
+			setTimeout(setupWorldGenPanel, 0);
+		} else {
+			window.addEventListener('DOMContentLoaded', setupWorldGenPanel);
+		}
 	})();
