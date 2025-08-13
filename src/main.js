@@ -4,8 +4,373 @@ const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d', {alpha:false});
 let W=0,H=0,DPR=1; function resize(){ DPR=Math.max(1,Math.min(2,window.devicePixelRatio||1)); canvas.width=Math.floor(window.innerWidth*DPR); canvas.height=Math.floor(window.innerHeight*DPR); canvas.style.width=window.innerWidth+'px'; canvas.style.height=window.innerHeight+'px'; ctx.setTransform(DPR,0,0,DPR,0,0); W=window.innerWidth; H=window.innerHeight; } window.addEventListener('resize',resize,{passive:true}); resize();
 
-// --- Świat (łagodniejsze biomy: równiny / wzgórza / góry) ---
+// First, get the constants from MM
 const {CHUNK_W,WORLD_H,TILE,SURFACE_GRASS_DEPTH,SAND_DEPTH,T,INFO,SNOW_LINE,isSolid} = MM;
+
+// === UNIFIED COORDINATE SYSTEM ARCHITECTURE ===
+// This system ensures perfect alignment between all game elements:
+// - World tiles, player position, mobs, particles, UI, camera, save/load
+// - Prevents misalignment issues during save/load, zoom, and rendering
+
+const COORDINATE_SYSTEM = {
+	// Core constants - all coordinate calculations must use these exact values
+	TILE_SIZE: TILE,
+	WORLD_WIDTH_CHUNKS: null, // Will be set dynamically
+	WORLD_HEIGHT_TILES: WORLD_H,
+	CHUNK_WIDTH_TILES: CHUNK_W,
+	
+	// Precision constants for consistent floating-point operations
+	POSITION_PRECISION: 1000000, // 6 decimal places for sub-pixel precision
+	COLLISION_EPSILON: 0.001,    // Collision boundary safety margin
+	
+	// Coordinate space definitions
+	SPACES: {
+		WORLD_TILES: 'world_tiles',     // Integer tile coordinates (10, 15)
+		WORLD_PIXELS: 'world_pixels',   // World space in pixels (640, 960)
+		SCREEN_PIXELS: 'screen_pixels', // Screen/canvas coordinates
+		CHUNK_LOCAL: 'chunk_local'      // Local coordinates within chunk (0-15, 0-199)
+	},
+	
+	// === Core Conversion Functions ===
+	
+	// World tiles ↔ World pixels
+	tilesToPixels(tileX, tileY) {
+		return {
+			x: this.roundPosition(tileX * this.TILE_SIZE),
+			y: this.roundPosition(tileY * this.TILE_SIZE)
+		};
+	},
+	
+	pixelsToTiles(pixelX, pixelY) {
+		return {
+			x: Math.floor(pixelX / this.TILE_SIZE),
+			y: Math.floor(pixelY / this.TILE_SIZE)
+		};
+	},
+	
+	// World pixels ↔ Screen pixels (with camera and zoom)
+	worldToScreen(worldX, worldY, camera, zoom) {
+		const screenX = (worldX - camera.x * this.TILE_SIZE) * zoom;
+		const screenY = (worldY - camera.y * this.TILE_SIZE) * zoom;
+		return { x: screenX, y: screenY };
+	},
+	
+	screenToWorld(screenX, screenY, camera, zoom) {
+		const worldX = (screenX / zoom) + (camera.x * this.TILE_SIZE);
+		const worldY = (screenY / zoom) + (camera.y * this.TILE_SIZE);
+		return { x: worldX, y: worldY };
+	},
+	
+	// Chunk coordinate conversions
+	worldTileToChunk(worldTileX) {
+		return {
+			chunkX: Math.floor(worldTileX / this.CHUNK_WIDTH_TILES),
+			localX: ((worldTileX % this.CHUNK_WIDTH_TILES) + this.CHUNK_WIDTH_TILES) % this.CHUNK_WIDTH_TILES
+		};
+	},
+	
+	chunkToWorldTile(chunkX, localX) {
+		return chunkX * this.CHUNK_WIDTH_TILES + localX;
+	},
+	
+	// === Position Standardization ===
+	
+	// Round position to prevent floating-point drift
+	roundPosition(value) {
+		return Math.round(value * this.POSITION_PRECISION) / this.POSITION_PRECISION;
+	},
+	
+	// Normalize entity position to prevent coordinate drift
+	normalizePosition(entity) {
+		entity.x = this.roundPosition(entity.x);
+		entity.y = this.roundPosition(entity.y);
+		if (entity.vx !== undefined) entity.vx = this.roundPosition(entity.vx);
+		if (entity.vy !== undefined) entity.vy = this.roundPosition(entity.vy);
+	},
+	
+	// === Entity-Specific Coordinate Helpers ===
+	
+	// Get entity bounding box in world pixels
+	getEntityBounds(entity) {
+		const halfW = (entity.w || 0.7) / 2;
+		const halfH = (entity.h || 0.95) / 2;
+		return {
+			left: this.roundPosition((entity.x - halfW) * this.TILE_SIZE),
+			right: this.roundPosition((entity.x + halfW) * this.TILE_SIZE),
+			top: this.roundPosition((entity.y - halfH) * this.TILE_SIZE),
+			bottom: this.roundPosition((entity.y + halfH) * this.TILE_SIZE)
+		};
+	},
+	
+	// Get tiles that entity overlaps
+	// CRITICAL FIX: Use precise tile coordinate calculation for proper collision alignment
+	getEntityTileOverlap(entity) {
+		const halfW = (entity.w || 0.7) / 2;
+		const halfH = (entity.h || 0.95) / 2;
+		
+		// Use small epsilon to prevent edge-case floating point errors
+		const epsilon = this.COLLISION_EPSILON / this.TILE_SIZE; // Convert to tile space
+		
+		// Calculate exact tile boundaries the entity occupies
+		const leftEdge = entity.x - halfW + epsilon;
+		const rightEdge = entity.x + halfW - epsilon;
+		const topEdge = entity.y - halfH + epsilon;
+		const bottomEdge = entity.y + halfH - epsilon;
+		
+		return {
+			minX: Math.floor(leftEdge),
+			maxX: Math.floor(rightEdge),
+			minY: Math.floor(topEdge),
+			maxY: Math.floor(bottomEdge)
+		};
+	},
+	
+	// Get precise ground level for entity at given X position
+	// Ensures player lands exactly on visible terrain surface
+	getGroundLevel(worldX) {
+		const tileX = Math.floor(worldX);
+		const playerHeight = (player.h || 0.95);
+		
+		// Scan downward from current position to find first solid tile
+		for (let tileY = Math.floor(player.y); tileY < WORLD_H; tileY++) {
+			if (isSolid(getTile(tileX, tileY))) {
+				// Return exact Y coordinate where player's center should be
+				// to rest perfectly on top of this tile
+				return this.roundPosition(tileY - playerHeight / 2);
+			}
+		}
+		
+		// No ground found - return bottom of world
+		return WORLD_H - 1;
+	},
+	
+	// === Diagnostic and Validation Functions ===
+	
+	// Get comprehensive diagnostics about coordinate system health
+	getDiagnostics() {
+		const playerAlignment = this.validatePlayerGroundAlignment();
+		const cameraAlignment = this.validateCameraAlignment();
+		const renderingConsistency = this.validateRenderingConsistency();
+
+		return {
+			playerAlignment,
+			cameraAlignment,
+			renderingConsistency
+		};
+	},
+
+	// Validate that player is properly aligned with ground
+	validatePlayerGroundAlignment() {
+		if (!player.onGround) return { status: 'airborne', aligned: true };
+
+		const playerTileX = Math.floor(player.x);
+		const playerBottomY = player.y + player.h / 2;
+		const groundTileY = Math.floor(playerBottomY);
+
+		// Check if there's solid ground under player
+		const groundTile = getTile(playerTileX, groundTileY);
+		const airAbove = getTile(playerTileX, groundTileY - 1);
+
+		const isProperlyAligned = isSolid(groundTile) && airAbove === T.AIR;
+		const heightDifference = Math.abs(playerBottomY - groundTileY);
+
+		return {
+			status: 'grounded',
+			aligned: isProperlyAligned,
+			groundTile: groundTile,
+			heightDifference: this.roundPosition(heightDifference),
+			expectedY: this.roundPosition(groundTileY - player.h / 2),
+			actualY: this.roundPosition(player.y)
+		};
+	},
+
+	// Validate camera-to-world alignment
+	validateCameraAlignment() {
+		const transforms = RENDER_CACHE.getTransforms();
+		if (!transforms) {
+			return { transformDeltaX: null, transformDeltaY: null, aligned: false, pending: true };
+		}
+		const expectedTransformX = -this.roundPosition(camX) * this.TILE_SIZE;
+		const expectedTransformY = -this.roundPosition(camY) * this.TILE_SIZE;
+		return {
+			transformDeltaX: Math.abs(transforms.translateX - expectedTransformX),
+			transformDeltaY: Math.abs(transforms.translateY - expectedTransformY),
+			aligned: Math.abs(transforms.translateX - expectedTransformX) < this.COLLISION_EPSILON &&
+				Math.abs(transforms.translateY - expectedTransformY) < this.COLLISION_EPSILON,
+			pending: false
+		};
+	},
+
+	// Validate overall rendering consistency
+	validateRenderingConsistency() {
+		const issues = [];
+		const transforms = RENDER_CACHE.getTransforms();
+		if (!transforms) {
+			return { issueCount: 0, issues: ['pending-initialization'], healthy: false, pending: true };
+		}
+
+		// Check player position precision
+		if (Math.abs(player.x - this.roundPosition(player.x)) > this.COLLISION_EPSILON) {
+			issues.push('Player X position has floating-point drift');
+		}
+		if (Math.abs(player.y - this.roundPosition(player.y)) > this.COLLISION_EPSILON) {
+			issues.push('Player Y position has floating-point drift');
+		}
+
+		// Check camera position precision
+		if (Math.abs(camX - this.roundPosition(camX)) > this.COLLISION_EPSILON) {
+			issues.push('Camera X position has floating-point drift');
+		}
+		if (Math.abs(camY - this.roundPosition(camY)) > this.COLLISION_EPSILON) {
+			issues.push('Camera Y position has floating-point drift');
+		}
+
+		return {
+			issueCount: issues.length,
+			issues: issues,
+			healthy: issues.length === 0,
+			pending: false
+		};
+	},
+	
+	// === Save/Load Coordinate Integrity ===
+	
+	// Export entity with coordinate validation
+	exportEntity(entity) {
+		this.normalizePosition(entity);
+		return {
+			x: entity.x,
+			y: entity.y,
+			vx: entity.vx || 0,
+			vy: entity.vy || 0,
+			w: entity.w || 0.7,
+			h: entity.h || 0.95,
+			facing: entity.facing || 1,
+			// Add coordinate system validation
+			_coordinateVersion: '1.0',
+			_tileSize: this.TILE_SIZE,
+			_precision: this.POSITION_PRECISION
+		};
+	},
+	
+	// Import entity with coordinate validation
+	importEntity(data, entity) {
+		if (!data) return false;
+		
+		// Validate coordinate system compatibility
+		if (data._tileSize && data._tileSize !== this.TILE_SIZE) {
+			console.warn('Coordinate system mismatch: saved tile size', data._tileSize, 'vs current', this.TILE_SIZE);
+			// Could implement coordinate conversion here if needed
+		}
+		
+		// Import with normalization
+		if (typeof data.x === 'number') entity.x = this.roundPosition(data.x);
+		if (typeof data.y === 'number') entity.y = this.roundPosition(data.y);
+		if (typeof data.vx === 'number') entity.vx = this.roundPosition(data.vx);
+		if (typeof data.vy === 'number') entity.vy = this.roundPosition(data.vy);
+		if (typeof data.w === 'number') entity.w = data.w;
+		if (typeof data.h === 'number') entity.h = data.h;
+		if (data.facing === 1 || data.facing === -1) entity.facing = data.facing;
+		
+		return true;
+	},
+	
+	// === Camera System Integration ===
+	
+	// Standardized camera positioning
+	updateCamera(camera, targetX, targetY, screenWidth, screenHeight, zoom, dt) {
+		// Calculate target camera position in world tiles
+		const targetCamX = targetX - (screenWidth / (this.TILE_SIZE * zoom)) / 2;
+		const targetCamY = targetY - (screenHeight / (this.TILE_SIZE * zoom)) / 2;
+		
+		// Smooth interpolation with coordinate normalization
+		const lerpFactor = Math.min(1, dt * 8);
+		camera.targetX = this.roundPosition(targetCamX);
+		camera.targetY = this.roundPosition(targetCamY);
+		camera.x = this.roundPosition(camera.x + (camera.targetX - camera.x) * lerpFactor);
+		camera.y = this.roundPosition(camera.y + (camera.targetY - camera.y) * lerpFactor);
+	},
+	
+	// === Rendering Coordinate Helpers ===
+	
+	// Get standardized view bounds for rendering
+	getViewBounds(camera, zoom, screenWidth, screenHeight) {
+		const viewWidthTiles = Math.ceil(screenWidth / (this.TILE_SIZE * zoom)) + 2;
+		const viewHeightTiles = Math.ceil(screenHeight / (this.TILE_SIZE * zoom)) + 2;
+		const startX = Math.floor(camera.x);
+		const startY = Math.floor(camera.y);
+		
+		return {
+			startTileX: startX,
+			startTileY: startY,
+			widthTiles: viewWidthTiles,
+			heightTiles: viewHeightTiles,
+			// Pixel bounds for optimization
+			startPixelX: startX * this.TILE_SIZE,
+			startPixelY: startY * this.TILE_SIZE,
+			endPixelX: (startX + viewWidthTiles) * this.TILE_SIZE,
+			endPixelY: (startY + viewHeightTiles) * this.TILE_SIZE
+		};
+	},
+	
+	// === Diagnostic and Validation ===
+	
+	// Validate coordinate system integrity
+	validateSystem() {
+		const issues = [];
+		
+		if (this.TILE_SIZE !== TILE) {
+			issues.push(`TILE_SIZE mismatch: ${this.TILE_SIZE} vs ${TILE}`);
+		}
+		
+		if (this.WORLD_HEIGHT_TILES !== WORLD_H) {
+			issues.push(`WORLD_HEIGHT mismatch: ${this.WORLD_HEIGHT_TILES} vs ${WORLD_H}`);
+		}
+		
+		if (this.CHUNK_WIDTH_TILES !== CHUNK_W) {
+			issues.push(`CHUNK_WIDTH mismatch: ${this.CHUNK_WIDTH_TILES} vs ${CHUNK_W}`);
+		}
+		
+		return {
+			valid: issues.length === 0,
+			issues: issues
+		};
+	},
+	
+	// Get coordinate system diagnostics
+	getDiagnostics() {
+		const validation = this.validateSystem();
+		return {
+			tileSize: this.TILE_SIZE,
+			worldDimensions: {
+				widthChunks: this.WORLD_WIDTH_CHUNKS,
+				heightTiles: this.WORLD_HEIGHT_TILES,
+				chunkWidthTiles: this.CHUNK_WIDTH_TILES
+			},
+			precision: this.POSITION_PRECISION,
+			epsilon: this.COLLISION_EPSILON,
+			validation: validation,
+			spaces: Object.keys(this.SPACES)
+		};
+	}
+};
+
+// Initialize coordinate system
+COORDINATE_SYSTEM.validateSystem();
+
+// Initialize coordinate system with proper constants (constants already loaded at top)
+COORDINATE_SYSTEM.TILE_SIZE = TILE;
+COORDINATE_SYSTEM.WORLD_HEIGHT_TILES = WORLD_H;
+COORDINATE_SYSTEM.CHUNK_WIDTH_TILES = CHUNK_W;
+
+// Validate system after initialization
+const validation = COORDINATE_SYSTEM.validateSystem();
+if (!validation.valid) {
+	console.warn('Coordinate system validation failed:', validation.issues);
+}
+
+// Expose for debugging and external modules
+window.__coordinateSystem = COORDINATE_SYSTEM;
 const WORLDGEN = MM.worldGen;
 const WORLD = MM.world;
 const TREES = MM.trees;
@@ -488,10 +853,51 @@ function exportWater(){ if(MM.water && MM.water.snapshot) return MM.water.snapsh
 function exportFalling(){ if(MM.fallingSolids && MM.fallingSolids.snapshot) return MM.fallingSolids.snapshot(); }
 function importWater(s){ if(MM.water && MM.water.restore) MM.water.restore(s); }
 function importFalling(s){ if(MM.fallingSolids && MM.fallingSolids.restore) MM.fallingSolids.restore(s); }
-function exportPlayer(){ return {x:player.x,y:player.y,vx:player.vx||0,vy:player.vy||0,tool:player.tool,facing:player.facing||1,jumps:player.jumps||0,hp:player.hp,maxHp:player.maxHp,xp:player.xp||0}; }
-function importPlayer(p){ if(!p) return; if(typeof p.x==='number') player.x=p.x; if(typeof p.y==='number') player.y=p.y; if(typeof p.vx==='number') player.vx=p.vx; if(typeof p.vy==='number') player.vy=p.vy; if(['basic','stone','diamond'].includes(p.tool)) player.tool=p.tool; if(p.facing===1||p.facing===-1) player.facing=p.facing; if(typeof p.jumps==='number') player.jumps=p.jumps; if(typeof p.maxHp==='number' && p.maxHp>0) player.maxHp=p.maxHp|0; if(typeof p.hp==='number') player.hp=Math.max(0,Math.min(player.maxHp,p.hp)); if(typeof p.xp==='number') player.xp=p.xp|0; }
-function exportCamera(){ return {camX,camY,zoom:zoomTarget}; }
-function importCamera(c){ if(!c) return; if(typeof c.camX==='number') camX=camSX=c.camX; if(typeof c.camY==='number') camY=camSY=c.camY; if(typeof c.zoom==='number'){ zoom=zoomTarget=Math.min(4,Math.max(0.25,c.zoom)); } }
+// === UPDATED COORDINATE-AWARE SAVE/LOAD FUNCTIONS ===
+
+function exportPlayer() { 
+	return COORDINATE_SYSTEM.exportEntity(player);
+}
+
+function importPlayer(data) { 
+	if (!COORDINATE_SYSTEM.importEntity(data, player)) return;
+	
+	// Import additional player-specific fields with validation
+	if (['basic','stone','diamond'].includes(data.tool)) player.tool = data.tool;
+	if (typeof data.jumps === 'number') player.jumps = data.jumps;
+	if (typeof data.maxHp === 'number' && data.maxHp > 0) player.maxHp = data.maxHp | 0;
+	if (typeof data.hp === 'number') player.hp = Math.max(0, Math.min(player.maxHp, data.hp | 0));
+	if (typeof data.xp === 'number') player.xp = Math.max(0, data.xp | 0);
+	
+	// Ensure player position is within world bounds after import
+	const {CHUNK_W, WORLD_H, TILE} = MM;
+	player.y = Math.max(0, Math.min(WORLD_H - 1, player.y));
+	
+	// Normalize position after import to prevent drift
+	COORDINATE_SYSTEM.normalizePosition(player);
+}
+function exportCamera() { 
+	return {
+		camX: COORDINATE_SYSTEM.roundPosition(camX),
+		camY: COORDINATE_SYSTEM.roundPosition(camY),
+		zoom: zoomTarget,
+		_coordinateVersion: '1.0'
+	}; 
+}
+
+function importCamera(data) { 
+	if (!data) return; 
+	
+	if (typeof data.camX === 'number') {
+		camX = camSX = COORDINATE_SYSTEM.roundPosition(data.camX);
+	}
+	if (typeof data.camY === 'number') {
+		camY = camSY = COORDINATE_SYSTEM.roundPosition(data.camY);
+	}
+	if (typeof data.zoom === 'number') { 
+		zoom = zoomTarget = Math.min(4, Math.max(0.25, data.zoom)); 
+	} 
+}
 function exportInventory(){ return JSON.parse(JSON.stringify(inv)); }
 function importInventory(src){ if(!src) return; for(const k in inv){ if(k==='tools') continue; if(typeof src[k]==='number') inv[k]=src[k]; }
 	if(src.tools){ inv.tools.stone=!!src.tools.stone; inv.tools.diamond=!!src.tools.diamond; }
@@ -1292,7 +1698,16 @@ const CAPE_ANCHOR_FRAC=MM.CAPE.ANCHOR_FRAC; // 0 = top of body, 1 = bottom. Midd
 function initScarf(){ CAPE.init(player); }
 function updateCape(dt){ CAPE.update(player,dt,getTile,isSolid); }
 function drawCape(){ CAPE.draw(ctx,TILE); }
-function drawPlayer(){ const c=MM.customization||DEFAULT_CUST; const bodyX=(player.x-player.w/2)*TILE; const bodyY=(player.y-player.h/2)*TILE; const bw=player.w*TILE, bh=player.h*TILE; // body base color by outfit
+function drawPlayer(){ 
+	// Normalize player position before rendering
+	COORDINATE_SYSTEM.normalizePosition(player);
+	
+	const c=MM.customization||DEFAULT_CUST; 
+	const bodyX = COORDINATE_SYSTEM.roundPosition((player.x-player.w/2)*TILE); 
+	const bodyY = COORDINATE_SYSTEM.roundPosition((player.y-player.h/2)*TILE); 
+	const bw=player.w*TILE, bh=player.h*TILE; 
+	
+	// body base color by outfit
 	if(c.outfitStyle==='default') ctx.fillStyle=c.outfitColor||'#f4c05a';
 	else if(c.outfitStyle==='miner') ctx.fillStyle='#c89b50';
 	else if(c.outfitStyle==='mystic') ctx.fillStyle='#6b42c7';
@@ -1314,7 +1729,12 @@ const chunkCanvases = new Map(); // key: chunkX -> {canvas,ctx,version,lastUsed}
 const MAX_CACHED_CHUNKS = 50; // Limit cached chunks to prevent memory leaks
 const CHUNK_CACHE_TIMEOUT = 30000; // 30 seconds before unused chunks are cleaned up
 
-function hash32(x,y){ let h = (x|0)*374761393 + (y|0)*668265263; h = (h^(h>>>13))*1274126177; h = h^(h>>>16); return h>>>0; }
+function hash32(x,y){
+	// Salt with current world seed so decorative layout (grass blades etc.) matches terrain seed
+	const seed = (typeof WORLDGEN!=='undefined' && WORLDGEN.worldSeed)|0;
+	let h = ((x|0)+seed)*374761393 ^ ((y|0)-seed)*668265263;
+	h = (h^(h>>>13))*1274126177; h = h^(h>>>16); return h>>>0;
+}
 
 // Clean up old chunk canvases to prevent memory leaks
 function cleanupChunkCache() {
@@ -1597,7 +2017,37 @@ function isBlockingOverlayOpen(){
     const menu=document.getElementById('menuPanel'); if(menu && !menu.hasAttribute('hidden')) return true;
     const craft=document.getElementById('craft'); if(craft && craft.style.display!=='none') return true;
     return false;
-}window.addEventListener('keydown',e=>{ if(isBlockingOverlayOpen()) return; const k=e.key.toLowerCase(); keys[k]=true; if(['1','2','3'].includes(e.key)){ if(e.key==='1') player.tool='basic'; if(e.key==='2'&&inv.tools.stone) player.tool='stone'; if(e.key==='3'&&inv.tools.diamond) player.tool='diamond'; updateInventory(); }
+}
+window.addEventListener('keydown',e=>{ 
+	const k=e.key.toLowerCase(); 
+	// Always allow diagnostic keys, even if overlays are open
+	if ((e.key === '.' || e.key === '/') && e.ctrlKey) {
+		// handled by separate listener, but we stop propagation here
+		// to prevent it from being processed as a game command.
+		return;
+	}
+
+	// Ensure canvas focus so keys are captured (once)
+	if(!window.__canvasFocusedOnce){ try{ canvas.focus({preventScroll:true}); }catch(_){} window.__canvasFocusedOnce=true; }
+
+	// Allow movement keys even if minor overlay is open, but still block when a major modal
+	if(isBlockingOverlayOpen()){
+		// Only bail for non-movement/gameplay keys
+		if(!['a','d','w','s','arrowleft','arrowright','arrowup','arrowdown',' '].includes(k)) return;
+	}
+
+	keys[k]=true;
+	if((k==='a'||k==='d'||k==='arrowleft'||k==='arrowright') && !window.__loggedFirstMove){
+		console.log('[Input] Movement keydown captured:', k, 'state=', {a:keys['a'],d:keys['d'],al:keys['arrowleft'],ar:keys['arrowright']});
+		window.__loggedFirstMove=true;
+	}
+	
+	if(['1','2','3'].includes(e.key)){ 
+		if(e.key==='1') player.tool='basic'; 
+		if(e.key==='2'&&inv.tools.stone) player.tool='stone'; 
+		if(e.key==='3'&&inv.tools.diamond) player.tool='diamond'; 
+		updateInventory(); 
+	}
  // Hotbar numeric (4..9) -> slots 0..5
  if(['4','5','6','7','8','9'].includes(e.key)){
 	 const slot=parseInt(e.key,10)-4; cycleHotbar(slot);
@@ -1613,8 +2063,26 @@ function isBlockingOverlayOpen(){
 	if(k==='c'&&!keysOnce.has('c')){ centerCam(); keysOnce.add('c'); }
 	if(k==='h'&&!keysOnce.has('h')){ toggleHelp(); keysOnce.add('h'); }
 	if(k==='v'&&!keysOnce.has('v')){ window.__mobDebug = !window.__mobDebug; msg('Mob debug '+(window.__mobDebug?'ON':'OFF')); keysOnce.add('v'); }
-	if(['arrowup','w',' '].includes(k)) e.preventDefault(); });
-window.addEventListener('keyup',e=>{ if(isBlockingOverlayOpen()) return; const k=e.key.toLowerCase(); keys[k]=false; keysOnce.delete(k); });
+	if(['arrowup','w',' '].includes(k)) e.preventDefault(); 
+});
+window.addEventListener('keyup',e=>{ 
+	const k=e.key.toLowerCase();
+	// Always release movement / jump keys even if an overlay is open so they don't get stuck
+	if(isBlockingOverlayOpen() && !['a','d','w','s','arrowleft','arrowright','arrowup','arrowdown',' '].includes(k)){
+		// Non‑movement key while overlay open: ignore
+		return;
+	}
+	keys[k]=false; 
+	keysOnce.delete(k);
+	if((k==='a'||k==='d'||k==='arrowleft'||k==='arrowright')){
+		// Optional debug once per release
+		if(!window.__loggedFirstRelease){ console.log('[Input] Movement keyup:', k); window.__loggedFirstRelease=true; }
+	}
+});
+// Safety: clear movement keys on window blur to avoid stuck motion when alt-tabbing
+window.addEventListener('blur', ()=>{
+	['a','d','w','s','arrowleft','arrowright','arrowup','arrowdown',' '].forEach(k=>{ keys[k]=false; });
+});
 
 // Kierunek kopania
 let mineDir={dx:1,dy:0}; document.querySelectorAll('.dirbtn').forEach(b=>{ b.addEventListener('click',()=>{ mineDir.dx=+b.getAttribute('data-dx'); mineDir.dy=+b.getAttribute('data-dy'); document.querySelectorAll('.dirbtn').forEach(o=>o.classList.remove('sel')); b.classList.add('sel'); }); }); document.querySelector('.dirbtn[data-dx="1"][data-dy="0"]').classList.add('sel');
@@ -1728,12 +2196,39 @@ let jumpPrev=false; let swimBuoySmooth=0; function physics(dt){
 		player.vy += MOVE.GRAV*dt; if(player.vy>20) player.vy=20; swimBuoySmooth=0; // reset filter
 	}
 
-	// Integrate & collisions
-	player.x += player.vx*dt; collide('x');
-	player.y += player.vy*dt; collide('y');
+	// Integrate & collisions with coordinate normalization
+	player.x = COORDINATE_SYSTEM.roundPosition(player.x + player.vx*dt); 
+	collide('x');
+	player.y = COORDINATE_SYSTEM.roundPosition(player.y + player.vy*dt); 
+	collide('y');
+	
+	// Normalize final position to prevent coordinate drift
+	COORDINATE_SYSTEM.normalizePosition(player);
 
-	// Camera follow
-	const tX=player.x - (W/(TILE*zoom))/2 + player.w/2; const tY=player.y - (H/(TILE*zoom))/2 + player.h/2; camSX += (tX-camSX)*Math.min(1,dt*8); camSY += (tY-camSY)*Math.min(1,dt*8); camX=camSX; camY=camSY; ensureChunks(); revealAround(); }
+	// --- Ground alignment auto-correction (prevents subtle float gaps) ---
+	// If player reports onGround, force exact baseline alignment to tile top below.
+	if(player.onGround){
+		const halfH = player.h/2;
+		const bottom = player.y + halfH;
+		const tileBelowY = Math.floor(bottom + 0.0001); // tile occupied under feet
+		const tileIdBelow = getTile(Math.floor(player.x), tileBelowY);
+		if(isSolid(tileIdBelow)){
+			const desiredY = tileBelowY - halfH; // exact rest position
+			if(Math.abs(player.y - desiredY) > COORDINATE_SYSTEM.COLLISION_EPSILON){
+				player.y = COORDINATE_SYSTEM.roundPosition(desiredY);
+			}
+		} else {
+			// If flagged onGround but actually no solid directly below, clear state (prevents mid‑air sticking)
+			player.onGround = false;
+		}
+	}
+
+	// Camera follow with coordinate system precision
+	const tX = COORDINATE_SYSTEM.roundPosition(player.x - (W/(TILE*zoom))/2 + player.w/2); 
+	const tY = COORDINATE_SYSTEM.roundPosition(player.y - (H/(TILE*zoom))/2 + player.h/2); 
+	camSX = COORDINATE_SYSTEM.roundPosition(camSX + (tX-camSX)*Math.min(1,dt*8)); 
+	camSY = COORDINATE_SYSTEM.roundPosition(camSY + (tY-camSY)*Math.min(1,dt*8)); 
+	camX=camSX; camY=camSY; ensureChunks(); revealAround(); }
 // Advanced Collision Detection System with Spatial Optimization
 const COLLISION_SYSTEM = {
 	// Cache for recently checked tiles to avoid redundant getTile calls
@@ -1779,30 +2274,26 @@ const COLLISION_SYSTEM = {
 	// Optimized collision detection with early exits and directional scanning
 	checkCollision(axis, player) {
 		this.metrics.collisionChecks++;
-		const w = player.w / 2;
-		const h = player.h / 2;
+		
+		// Use coordinate system for precise bounding box calculation
+		const overlap = COORDINATE_SYSTEM.getEntityTileOverlap(player);
 		
 		if (axis === 'x') {
-			const minX = Math.floor(player.x - w);
-			const maxX = Math.floor(player.x + w);
-			const minY = Math.floor(player.y - h);
-			const maxY = Math.floor(player.y + h);
-			
 			// Directional optimization: check in movement direction first
 			if (player.vx > 0) {
 				// Moving right - check right edge first
-				for (let y = minY; y <= maxY; y++) {
-					if (isSolid(this.getCachedTile(maxX, y))) {
-						player.x = maxX - w - 0.001;
+				for (let y = overlap.minY; y <= overlap.maxY; y++) {
+					if (isSolid(this.getCachedTile(overlap.maxX, y))) {
+						player.x = COORDINATE_SYSTEM.roundPosition(overlap.maxX - player.w/2 - COORDINATE_SYSTEM.COLLISION_EPSILON);
 						this.metrics.earlyExits++;
 						return;
 					}
 				}
 			} else if (player.vx < 0) {
 				// Moving left - check left edge first
-				for (let y = minY; y <= maxY; y++) {
-					if (isSolid(this.getCachedTile(minX, y))) {
-						player.x = minX + 1 + w + 0.001;
+				for (let y = overlap.minY; y <= overlap.maxY; y++) {
+					if (isSolid(this.getCachedTile(overlap.minX, y))) {
+						player.x = COORDINATE_SYSTEM.roundPosition(overlap.minX + 1 + player.w/2 + COORDINATE_SYSTEM.COLLISION_EPSILON);
 						this.metrics.earlyExits++;
 						return;
 					}
@@ -1810,30 +2301,34 @@ const COLLISION_SYSTEM = {
 			}
 			
 			// If no collision found in primary direction, check full area
-			for (let y = minY; y <= maxY; y++) {
-				for (let x = minX; x <= maxX; x++) {
+			for (let y = overlap.minY; y <= overlap.maxY; y++) {
+				for (let x = overlap.minX; x <= overlap.maxX; x++) {
 					if (isSolid(this.getCachedTile(x, y))) {
-						if (player.vx > 0) player.x = x - w - 0.001;
-						else if (player.vx < 0) player.x = x + 1 + w + 0.001;
+						if (player.vx > 0) {
+							player.x = COORDINATE_SYSTEM.roundPosition(x - player.w/2 - COORDINATE_SYSTEM.COLLISION_EPSILON);
+						} else if (player.vx < 0) {
+							player.x = COORDINATE_SYSTEM.roundPosition(x + 1 + player.w/2 + COORDINATE_SYSTEM.COLLISION_EPSILON);
+						}
 						return;
 					}
 				}
 			}
 		} else {
 			// Y-axis collision with ground detection optimization
-			const minX = Math.floor(player.x - w);
-			const maxX = Math.floor(player.x + w);
-			const minY = Math.floor(player.y - h);
-			const maxY = Math.floor(player.y + h);
 			const wasGround = player.onGround;
 			player.onGround = false;
 			
 			// Directional optimization: check in movement direction first
 			if (player.vy > 0) {
 				// Falling down - check bottom edge first for ground detection
-				for (let x = minX; x <= maxX; x++) {
-					if (isSolid(this.getCachedTile(x, maxY))) {
-						player.y = maxY - h - 0.001;
+				for (let x = overlap.minX; x <= overlap.maxX; x++) {
+					if (isSolid(this.getCachedTile(x, overlap.maxY))) {
+						// CRITICAL FIX: Use precise ground landing calculation
+						// Instead of using overlap.maxY, calculate exact landing position
+						const groundTileY = overlap.maxY;
+						const preciseY = COORDINATE_SYSTEM.roundPosition(groundTileY - player.h/2);
+						
+						player.y = preciseY;
 						player.vy = 0;
 						player.onGround = true;
 						this.metrics.earlyExits++;
@@ -1845,9 +2340,9 @@ const COLLISION_SYSTEM = {
 				}
 			} else if (player.vy < 0) {
 				// Moving up - check top edge first
-				for (let x = minX; x <= maxX; x++) {
-					if (isSolid(this.getCachedTile(x, minY))) {
-						player.y = minY + 1 + h + 0.001;
+				for (let x = overlap.minX; x <= overlap.maxX; x++) {
+					if (isSolid(this.getCachedTile(x, overlap.minY))) {
+						player.y = COORDINATE_SYSTEM.roundPosition(overlap.minY + 1 + player.h/2 + COORDINATE_SYSTEM.COLLISION_EPSILON);
 						player.vy = 0;
 						this.metrics.earlyExits++;
 						return;
@@ -1856,15 +2351,18 @@ const COLLISION_SYSTEM = {
 			}
 			
 			// If no collision found in primary direction, check full area
-			for (let y = minY; y <= maxY; y++) {
-				for (let x = minX; x <= maxX; x++) {
+			for (let y = overlap.minY; y <= overlap.maxY; y++) {
+				for (let x = overlap.minX; x <= overlap.maxX; x++) {
 					if (isSolid(this.getCachedTile(x, y))) {
 						if (player.vy > 0) {
-							player.y = y - h - 0.001;
+							// CRITICAL FIX: Landing - use precise ground level calculation
+							const preciseY = COORDINATE_SYSTEM.roundPosition(y - player.h/2);
+							player.y = preciseY;
 							player.vy = 0;
 							player.onGround = true;
 						} else if (player.vy < 0) {
-							player.y = y + 1 + h + 0.001;
+							// Hitting ceiling - use precise calculation
+							player.y = COORDINATE_SYSTEM.roundPosition(y + 1 + player.h/2 + COORDINATE_SYSTEM.COLLISION_EPSILON);
 							player.vy = 0;
 						}
 						if (player.onGround && !wasGround) {
@@ -1879,6 +2377,9 @@ const COLLISION_SYSTEM = {
 				player.jumpCount = 0;
 			}
 		}
+		
+		// Normalize position after collision resolution
+		COORDINATE_SYSTEM.normalizePosition(player);
 	},
 	
 	// Get performance diagnostics
@@ -1973,20 +2474,73 @@ function invKeyForTile(id){ if(id===T.GRASS) return 'grass'; if(id===T.SAND) ret
 function pushUndo(x,y,oldId,newId,kind){ if(oldId===newId) return; undoStack.push({x,y,oldId,newId,kind}); if(undoStack.length>UNDO_LIMIT) undoStack.shift(); }
 function undoLastChange(){ const e=undoStack.pop(); if(!e){ msg('Brak zmian'); return; } const cur=getTile(e.x,e.y); if(cur!==e.newId){ msg('Nie można cofnąć'); return; } if(e.kind==='place'){ setTile(e.x,e.y,e.oldId); const k=invKeyForTile(e.newId); if(k && !godMode) inv[k] = (inv[k]||0)+1; } else if(e.kind==='break'){ setTile(e.x,e.y,e.oldId); const info=INFO[e.oldId]; if(info && info.drop && inv[info.drop]>0 && !godMode) inv[info.drop]--; } if(MM.fallingSolids) MM.fallingSolids.recheckNeighborhood(e.x,e.y); if(MM.water) MM.water.onTileChanged(e.x,e.y,getTile); updateInventory(); updateHotbarCounts(); saveState(); msg('Cofnięto'); }
 window.addEventListener('keydown',ev=>{ if(ev.key==='z' && !ev.ctrlKey && !ev.metaKey){ undoLastChange(); } });
-// (legacy saveState/loadState removed – unified saveGame/loadGame used everywhere)
-// Hotbar slot click: select OR (Shift/click again) open type remap popup
-const hotSelectMenu=document.getElementById('hotSelectMenu');
-const hotSelectOptions=document.getElementById('hotSelectOptions');
-let hotSelectSlotIndex=-1;
-function closeHotSelect(){ if(hotSelectMenu){ hotSelectMenu.style.display='none'; hotSelectSlotIndex=-1; } }
-function openHotSelect(slot,anchorEl){ if(!hotSelectMenu) return; hotSelectSlotIndex=slot; hotSelectOptions.innerHTML='';
-	const baseTypes=[
-		{k:'GRASS',label:'Trawa'}, {k:'SAND',label:'Piasek'}, {k:'STONE',label:'Kamień'}, {k:'WOOD',label:'Drewno'}, {k:'LEAF',label:'Liść'}, {k:'SNOW',label:'Śnieg'}, {k:'WATER',label:'Woda'}
-	];
-	let types=[...baseTypes];
-	if(godMode){ types.push({k:'CHEST_COMMON',label:'Skrzynia zwykła',col:'#b07f2c'}); types.push({k:'CHEST_RARE',label:'Skrzynia rzadka',col:'#a74cc9'}); types.push({k:'CHEST_EPIC',label:'Skrzynia epicka',col:'#e0b341'}); }
-	types.forEach(t=>{ const b=document.createElement('button'); b.textContent=t.label; const baseBg='rgba(255,255,255,.08)'; const rareBg=t.col? t.col+'33': baseBg; const border=t.col? t.col+'88':'rgba(255,255,255,.15)'; b.style.cssText='text-align:left; background:'+rareBg+'; border:1px solid '+border+'; color:#fff; border-radius:8px; padding:4px 8px; cursor:pointer; font-size:12px;'; if(HOTBAR_ORDER[slot]===t.k) b.style.outline='2px solid #2c7ef8'; b.addEventListener('click',()=>{ HOTBAR_ORDER[slot]=t.k; closeHotSelect(); cycleHotbar(slot); msg('Slot '+(slot+4)+' -> '+t.label); }); hotSelectOptions.appendChild(b); });
-	const rect=anchorEl.getBoundingClientRect(); hotSelectMenu.style.display='block'; hotSelectMenu.style.left=(rect.left + rect.width/2)+'px'; hotSelectMenu.style.top=(rect.top - 8)+'px'; hotSelectMenu.style.transform='translate(-50%,-100%)'; }
+
+// Debug hotkey for coordinate system diagnostics
+window.addEventListener('keydown', ev => {
+	// Use Ctrl+. for diagnostics to avoid browser conflict with F3
+	if (ev.key === '.' && ev.ctrlKey && !ev.metaKey) {
+		const diagnostics = COORDINATE_SYSTEM.getDiagnostics();
+		console.log('🎯 COORDINATE SYSTEM DIAGNOSTICS:', diagnostics);
+
+		if (diagnostics.renderingConsistency && !diagnostics.renderingConsistency.pending && !diagnostics.renderingConsistency.healthy) {
+			console.warn('⚠️ COORDINATE ALIGNMENT ISSUES DETECTED:', diagnostics.renderingConsistency.issues);
+		}
+
+		if (diagnostics.playerAlignment && diagnostics.playerAlignment.groundCheck && !diagnostics.playerAlignment.groundCheck.aligned && player.onGround) {
+			console.warn('⚠️ PLAYER GROUND ALIGNMENT ISSUE:', diagnostics.playerAlignment.groundCheck);
+		}
+
+		msg('Diagnostyka (Ctrl+.) - sprawdź konsolę');
+		ev.preventDefault();
+	}
+	// Use Ctrl+/ for overlay to avoid browser conflict with F4
+	if (ev.key === '/' && ev.ctrlKey && !ev.metaKey) {
+		window.__showAlignmentDebug = !window.__showAlignmentDebug;
+		msg('Overlay (Ctrl+/): ' + (window.__showAlignmentDebug ? 'ON' : 'OFF'));
+		ev.preventDefault();
+	}
+});
+// (moved out of key handler due to earlier malformed patch)
+const baseTypes=[
+	{k:'GRASS',label:'Trawa'}, {k:'SAND',label:'Piasek'}, {k:'STONE',label:'Kamień'}, {k:'WOOD',label:'Drewno'}, {k:'LEAF',label:'Liść'}, {k:'SNOW',label:'Śnieg'}, {k:'WATER',label:'Woda'}
+];
+// (baseTypes constant kept for any other UI referencing it elsewhere)
+function openHotSelect(slot, anchorEl) {
+	const hotSelectMenu = document.getElementById('hotSelectMenu');
+	const hotSelectOptions = document.getElementById('hotSelectOptions');
+	hotSelectOptions.innerHTML = ''; // Clear previous options
+	let types = [...baseTypes];
+	if (godMode) {
+		types.push({ k: 'CHEST_COMMON', label: 'Skrzynia zwykła', col: '#b07f2c' });
+		types.push({ k: 'CHEST_RARE', label: 'Skrzynia rzadka', col: '#a74cc9' });
+		types.push({ k: 'CHEST_EPIC', label: 'Skrzynia epicka', col: '#e0b341' });
+	}
+	types.forEach(t => {
+		const b = document.createElement('button');
+		b.textContent = t.label;
+		const baseBg = 'rgba(255,255,255,.08)';
+		const rareBg = t.col ? t.col + '33' : baseBg;
+		const border = t.col ? t.col + '88' : 'rgba(255,255,255,.15)';
+		b.style.cssText = 'text-align:left; background:' + rareBg + '; border:1px solid ' + border + '; color:#fff; border-radius:8px; padding:4px 8px; cursor:pointer; font-size:12px;';
+		if (HOTBAR_ORDER[slot] === t.k) b.style.outline = '2px solid #2c7ef8';
+		b.addEventListener('click', () => {
+			HOTBAR_ORDER[slot] = t.k;
+			closeHotSelect();
+			cycleHotbar(slot);
+			msg('Slot ' + (slot + 4) + ' -> ' + t.label);
+		});
+		hotSelectOptions.appendChild(b);
+	});
+	const rect = anchorEl.getBoundingClientRect();
+	hotSelectMenu.style.display = 'block';
+	hotSelectMenu.style.left = (rect.left + rect.width / 2) + 'px';
+	hotSelectMenu.style.top = (rect.top - 8) + 'px';
+	hotSelectMenu.style.transform = 'translate(-50%,-100%)';
+}
+function closeHotSelect() {
+	const hotSelectMenu = document.getElementById('hotSelectMenu');
+	if (hotSelectMenu) hotSelectMenu.style.display = 'none';
+}
 document.addEventListener('click',e=>{ if(hotSelectMenu && hotSelectMenu.style.display==='block'){ if(!hotSelectMenu.contains(e.target) && !(e.target.closest && e.target.closest('.hotSlot'))){ closeHotSelect(); } }});
 document.querySelectorAll('.hotSlot').forEach((el,i)=>{ el.addEventListener('click',e=>{ if(e.shiftKey || (hotbarIndex===i && !isChestSelection(HOTBAR_ORDER[i]) && !isChestSelection(HOTBAR_ORDER[hotbarIndex]) && godMode)) { openHotSelect(i,el); } else { cycleHotbar(i); } }); });
 // Left click mining convenience
@@ -2049,7 +2603,7 @@ const RENDER_CACHE = {
 		this.lastZoom = zoom;
 		this.lastScreenSize = `${W}x${H}`;
 		
-		// Cache frequently used calculations
+		// Cache frequently used calculations with COORDINATE_SYSTEM precision
 		this.cachedViewBounds = {
 			viewX: Math.ceil(W/(TILE*zoom)),
 			viewY: Math.ceil(H/(TILE*zoom)),
@@ -2057,18 +2611,19 @@ const RENDER_CACHE = {
 			sy: Math.floor(camY)-1
 		};
 		
+		// CRITICAL FIX: Use COORDINATE_SYSTEM for precise transform calculations
+		// This ensures perfect pixel alignment between camera and world grid
+		const preciseRenderX = COORDINATE_SYSTEM.roundPosition(camX);
+		const preciseRenderY = COORDINATE_SYSTEM.roundPosition(camY);
+		
 		this.cachedTransforms = {
-			camRenderX: Math.round(camX*TILE*zoom)/(TILE*zoom),
-			camRenderY: Math.round(camY*TILE*zoom)/(TILE*zoom),
+			camRenderX: preciseRenderX,
+			camRenderY: preciseRenderY,
 			scaleX: zoom,
 			scaleY: zoom,
-			translateX: -this.cachedTransforms?.camRenderX * TILE || 0,
-			translateY: -this.cachedTransforms?.camRenderY * TILE || 0
+			translateX: -preciseRenderX * TILE,
+			translateY: -preciseRenderY * TILE
 		};
-		
-		// Update translate values after camRender is calculated
-		this.cachedTransforms.translateX = -this.cachedTransforms.camRenderX * TILE;
-		this.cachedTransforms.translateY = -this.cachedTransforms.camRenderY * TILE;
 	},
 	
 	// Get cached view bounds (recalculate if needed)
@@ -2103,11 +2658,25 @@ window.__getPerformanceDiagnostics = () => {
 			lastUpdate: RENDER_CACHE.lastScreenSize,
 			cacheValid: !!RENDER_CACHE.cachedViewBounds
 		},
+		coordinateSystem: COORDINATE_SYSTEM.getDiagnostics(),
 		collisionSystem: COLLISION_SYSTEM.getDiagnostics(),
 		timers: TIMER_MANAGER.getDiagnostics(),
 		chunkCache: {
 			cached: chunkCanvases.size,
 			maxCached: MAX_CACHED_CHUNKS
+		},
+		playerPosition: {
+			x: COORDINATE_SYSTEM.roundPosition(player.x),
+			y: COORDINATE_SYSTEM.roundPosition(player.y),
+			vx: COORDINATE_SYSTEM.roundPosition(player.vx),
+			vy: COORDINATE_SYSTEM.roundPosition(player.vy),
+			onGround: player.onGround,
+			facing: player.facing
+		},
+		camera: {
+			x: COORDINATE_SYSTEM.roundPosition(camX),
+			y: COORDINATE_SYSTEM.roundPosition(camY),
+			zoom: zoom
 		}
 	};
 	
@@ -2139,6 +2708,23 @@ function draw(){ // Background first
 	drawCape();
 	// player body + overlays (back pass for vegetation done earlier)
 	drawPlayer();
+	// Optional alignment debug overlay
+	if(window.__showAlignmentDebug){
+		ctx.save();
+		ctx.strokeStyle='rgba(255,0,0,0.8)'; ctx.lineWidth=1;
+		const halfW=player.w/2, halfH=player.h/2;
+		ctx.strokeRect((player.x-halfW)*TILE+0.5,(player.y-halfH)*TILE+0.5,player.w*TILE-1,player.h*TILE-1);
+		// Feet baseline
+		ctx.strokeStyle='rgba(255,255,0,0.7)';
+		const feetY = (player.y+halfH)*TILE+0.5; ctx.beginPath(); ctx.moveTo((player.x-halfW)*TILE, feetY); ctx.lineTo((player.x+halfW)*TILE, feetY); ctx.stroke();
+		// Ground tile top (if solid)
+		const groundTy = Math.floor(player.y + halfH + 0.0001);
+		if(isSolid(getTile(Math.floor(player.x), groundTy))){
+			const groundYpx = groundTy*TILE + 0.5;
+			ctx.strokeStyle='rgba(0,200,255,0.7)'; ctx.beginPath(); ctx.moveTo((player.x-halfW-0.3)*TILE, groundYpx); ctx.lineTo((player.x+halfW+0.3)*TILE, groundYpx); ctx.stroke();
+		}
+		ctx.restore();
+	}
 	// mobs
 	if(MM.mobs && MM.mobs.draw) MM.mobs.draw(ctx,TILE,camX,camY,zoom);
 	// particles (screen-space in world coords)
@@ -2353,8 +2939,32 @@ function msg(t){
 let frames=0,lastFps=performance.now(); function updateFps(now){ frames++; if(now-lastFps>1000){ el.fps.textContent=frames+' FPS'+ (grassBudgetInfo? (' '+grassBudgetInfo):''); frames=0; lastFps=now; }}
 
 // Spawn
-function placePlayer(skipMsg){ const x=0; ensureChunk(0); let y=0; while(y<WORLD_H-1 && getTile(x,y)===T.AIR) y++; player.x=x+0.5; player.y=y-1; centerOnPlayer(); if(!skipMsg) msg('Seed '+worldSeed); }
-function centerOnPlayer(){ revealAround(); camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; initScarf(); }
+function placePlayer(skipMsg){ 
+	const x=0; 
+	ensureChunk(0); 
+	let y=0; 
+	while(y<WORLD_H-1 && getTile(x,y)===T.AIR) y++; 
+	
+	// CRITICAL FIX: Use coordinate system for precise player placement
+	// Place player exactly on the ground surface with proper alignment
+	player.x = COORDINATE_SYSTEM.roundPosition(x + 0.5); 
+	player.y = COORDINATE_SYSTEM.roundPosition(y - player.h/2); // Player center at proper height above ground
+	player.onGround = true; // Ensure player starts on ground
+	
+	// Normalize the initial position
+	COORDINATE_SYSTEM.normalizePosition(player);
+	
+	centerOnPlayer(); 
+	if(!skipMsg) msg('Seed '+worldSeed); 
+}
+function centerOnPlayer(){ 
+	revealAround(); 
+	camSX = COORDINATE_SYSTEM.roundPosition(player.x - (W/(TILE*zoom))/2); 
+	camSY = COORDINATE_SYSTEM.roundPosition(player.y - (H/(TILE*zoom))/2); 
+	camX = camSX; 
+	camY = camSY; 
+	initScarf(); 
+}
 (async function() {
 const loaded=await loadGame();
 if(!loaded){ placePlayer(); } else { centerOnPlayer(); }
