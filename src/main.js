@@ -943,13 +943,18 @@ const godBtn=document.getElementById('godBtn'); if(godBtn) godBtn.addEventListen
 updateGodBtn();
 const menuBtn=document.getElementById('menuBtn'); const menuPanel=document.getElementById('menuPanel');
 // Robust menu visibility control (handles cases where CSS forces display:flex)
+let __menuScrollTop = 0; // remember scroll when closing
 function setMenuVisible(on){
 	if(!menuPanel || !menuBtn) return;
 	if(on){
 		menuPanel.hidden = false;
 		menuPanel.style.display = 'flex';
+	// restore scroll and focus for accessibility
+	menuPanel.scrollTop = __menuScrollTop || 0;
 		menuBtn.setAttribute('aria-expanded','true');
+	try{ menuPanel.focus({preventScroll:true}); }catch(e){}
 	} else {
+	__menuScrollTop = menuPanel.scrollTop || 0;
 		menuPanel.hidden = true;
 		menuPanel.style.display = 'none';
 		menuBtn.setAttribute('aria-expanded','false');
@@ -964,6 +969,9 @@ menuBtn?.addEventListener('click',()=>{
 });
 document.addEventListener('click',e=>{ if(!menuPanel || menuPanel.hidden || menuPanel.style.display==='none') return; if(menuPanel.contains(e.target)||menuBtn.contains(e.target)) return; closeMenu(); });
 document.getElementById('radarMenuBtn')?.addEventListener('click',()=>{ radarFlash=performance.now()+1500; closeMenu(); });
+// Close button & Escape support
+document.getElementById('menuCloseBtn')?.addEventListener('click', closeMenu);
+document.addEventListener('keydown', (e)=>{ if(e.key==='Escape'){ closeMenu(); }});
 // Inject debug time-of-day slider (non-intrusive) at end of menu only once
 (function(){
 	if(window.__timeSliderInjected) return; window.__timeSliderInjected=true;
