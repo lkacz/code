@@ -805,7 +805,14 @@ let lastChestOpen={t:0,x:0,y:0};
 const CHEST_PLACE_SUPPRESS_MS=250; // extended to reduce accidental placements
 canvas.addEventListener('contextmenu',e=>{ e.preventDefault(); const now=performance.now(); if(now-lastChestOpen.t<CHEST_PLACE_SUPPRESS_MS) return; tryPlaceFromEvent(e); });
 canvas.addEventListener('pointerdown',e=>{ if(e.button===2){ e.preventDefault(); tryPlaceFromEvent(e); } });
-function tryPlaceFromEvent(e){ const rect=canvas.getBoundingClientRect(); const mx=(e.clientX-rect.left)/zoom/DPR + camX*TILE; const my=(e.clientY-rect.top)/zoom/DPR + camY*TILE; const tx=Math.floor(mx/ TILE); const ty=Math.floor(my/ TILE); tryPlace(tx,ty); }
+// Pointer mapping helpers (CSS px -> world/tile), note: DPR already handled by base transform
+function cssToWorldPx(cssX, cssY){
+	const wxPx = cssX/zoom + camX*TILE;
+	const wyPx = cssY/zoom + camY*TILE;
+	return {wxPx, wyPx};
+}
+function eventToTile(e){ const rect=canvas.getBoundingClientRect(); const cssX=(e.clientX-rect.left); const cssY=(e.clientY-rect.top); const {wxPx,wyPx}=cssToWorldPx(cssX,cssY); return {tx:Math.floor(wxPx/TILE), ty:Math.floor(wyPx/TILE)}; }
+function tryPlaceFromEvent(e){ const {tx,ty}=eventToTile(e); tryPlace(tx,ty); }
 function haveBlocksFor(tileId){ switch(tileId){ case T.GRASS: return inv.grass>0; case T.SAND: return inv.sand>0; case T.STONE: return inv.stone>0; case T.WOOD: return inv.wood>0; case T.LEAF: return inv.leaf>0; case T.SNOW: return inv.snow>0; case T.WATER: return inv.water>0; default: return false; }}
 function consumeFor(tileId){ if(godMode) return; if(tileId===T.GRASS) inv.grass--; else if(tileId===T.SAND) inv.sand--; else if(tileId===T.STONE) inv.stone--; else if(tileId===T.WOOD) inv.wood--; else if(tileId===T.LEAF) inv.leaf--; else if(tileId===T.SNOW) inv.snow--; else if(tileId===T.WATER) inv.water--; }
 function tryPlace(tx,ty){ if(getTile(tx,ty)!==T.AIR) return; // not empty
@@ -862,7 +869,7 @@ function updateParticles(dt){ for(let i=particles.length-1;i>=0;i--){ const p=pa
 function drawParticles(){ particles.forEach(p=>{ const alpha = 1 - p.life/p.max; ctx.fillStyle = p.tier==='epic'? 'rgba(224,179,65,'+alpha+')' : (p.tier==='rare'? 'rgba(167,76,201,'+alpha+')' : 'rgba(176,127,44,'+alpha+')'); ctx.fillRect(p.x -2, p.y -2, 4,4); }); }
 let audioCtx=null; function playChestSound(tier){ try{ if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)(); const o=audioCtx.createOscillator(); const g=audioCtx.createGain(); o.type='triangle'; let base=tier==='epic'?660: tier==='rare'?520:420; o.frequency.setValueAtTime(base,audioCtx.currentTime); o.frequency.linearRampToValueAtTime(base+ (tier==='epic'?240: tier==='rare'?160:80), audioCtx.currentTime+0.25); g.gain.setValueAtTime(0.001,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.3,audioCtx.currentTime+0.03); g.gain.exponentialRampToValueAtTime(0.0001,audioCtx.currentTime+0.5); o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.52); }catch(e){} }
 
-canvas.addEventListener('pointerdown',e=>{ const rect=canvas.getBoundingClientRect(); const mx=(e.clientX-rect.left)/zoom/DPR + camX*TILE; const my=(e.clientY-rect.top)/zoom/DPR + camY*TILE; const tx=Math.floor(mx/TILE); const ty=Math.floor(my/TILE); const tileId=getTile(tx,ty); const info=MM.INFO[tileId];
+canvas.addEventListener('pointerdown',e=>{ const {tx,ty}=eventToTile(e); const tileId=getTile(tx,ty); const info=MM.INFO[tileId];
 	if(e.button===0){
 		// Left click: attack mob (range + cooldown) first, else open chest, else mining
 		const dxRange = Math.abs(tx - Math.floor(player.x)); const dyRange=Math.abs(ty - Math.floor(player.y));
@@ -993,7 +1000,7 @@ if(!loaded){ placePlayer(); } else { centerOnPlayer(); }
 updateInventory(); updateGodBtn(); updateHotbarSel(); if(!loaded) msg('Sterowanie: A/D/W + LPM kopie, PPM stawia (4-9 wybór). G=Bóg (nieskończone skoki), M=Mapa, C=Centrum, H=Pomoc'); else msg('Wczytano zapis – miłej gry!');
 // Ghost preview placement
 let ghostTile=null, ghostX=0, ghostY=0;
-canvas.addEventListener('pointermove',e=>{ const rect=canvas.getBoundingClientRect(); const mx=(e.clientX-rect.left)/zoom/DPR + camX*TILE; const my=(e.clientY-rect.top)/zoom/DPR + camY*TILE; const tx=Math.floor(mx/TILE); const ty=Math.floor(my/TILE); if(getTile(tx,ty)===T.AIR){ ghostX=tx; ghostY=ty; ghostTile=selectedTileId(); } else ghostTile=null; });
+canvas.addEventListener('pointermove',e=>{ const {tx,ty}=eventToTile(e); if(getTile(tx,ty)===T.AIR){ ghostX=tx; ghostY=ty; ghostTile=selectedTileId(); } else ghostTile=null; });
 initGrassControls();
 
 // Pętla

@@ -558,6 +558,8 @@
 
   function draw(ctx, TILE, camX,camY, zoom){
     ctx.save(); ctx.imageSmoothingEnabled=false; const now=performance.now();
+    // Capture world transform (DPR * zoom * camera) for screen-space overlays
+    const worldTf = ctx.getTransform ? ctx.getTransform() : null;
   // View bounds expressed in tile coordinates (camX/camY already in tiles)
   const viewL = camX - 2; const viewR = camX + (ctx.canvas.width/zoom)/TILE + 2; const viewT = camY - 2; const viewB = camY + (ctx.canvas.height/zoom)/TILE + 2;
   const disableCull = !!window.__mobDisableCull;
@@ -758,11 +760,21 @@
       }
       // HP bar (position above highest drawn pixel)
       if(m.hp < (SPECIES[m.id]?.hp||1)){
-        // draw HP bar in screen space (unscaled)
-        const saved = ctx.getTransform ? ctx.getTransform() : null;
-        ctx.setTransform(1,0,0,1,0,0);
-        const maxHp = SPECIES[m.id].hp; const w= Math.max(12, Math.min(36, (SPECIES[m.id].hp||10))); const frac=m.hp/maxHp; const barY = topY - 6; ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(screenX-w/2, barY, w,3); ctx.fillStyle='#ff5252'; ctx.fillRect(screenX-w/2, barY, w*frac,3);
-        if(saved && ctx.setTransform) ctx.setTransform(saved);
+        // Map world coords (pre-entity-scale) to screen/device px using world transform, then draw at identity
+        const tf = worldTf;
+        if(tf && ctx.setTransform){
+          const worldX = screenX; // world px
+          const worldTopY = topY; // world px (already accounts for entity scale in value)
+          const px = tf.a*worldX + tf.c*worldTopY + tf.e;
+          const py = tf.b*worldX + tf.d*worldTopY + tf.f;
+          const maxHp = SPECIES[m.id].hp; const w= Math.max(12, Math.min(36, (SPECIES[m.id].hp||10)));
+          const frac=Math.max(0, Math.min(1, m.hp/maxHp));
+          const barY = Math.round(py) - 6; const barX = Math.round(px - w/2);
+          ctx.setTransform(1,0,0,1,0,0);
+          ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(barX, barY, w,3);
+          ctx.fillStyle='#ff5252'; ctx.fillRect(barX, barY, Math.round(w*frac),3);
+          ctx.setTransform(tf);
+        }
       }
       ctx.restore(); }
     ctx.restore();
