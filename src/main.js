@@ -410,13 +410,13 @@ const ASYNC_JSON_PROCESSOR = {
 			const id = this.nextId++;
 			this.processingQueue.set(id, { resolve, reject, operation });
 			
-			// Set timeout for worker operations
-			setTimeout(() => {
+			// Set timeout for worker operations using TIMER_MANAGER
+			TIMER_MANAGER.setTimeout(() => {
 				if (this.processingQueue.has(id)) {
 					this.processingQueue.delete(id);
 					reject(new Error('JSON processing timeout'));
 				}
-			}, 10000); // 10 second timeout
+			}, 10000, `json_timeout_${id}`); // 10 second timeout
 			
 			this.worker.postMessage({ id, operation, data });
 		});
@@ -941,6 +941,33 @@ window.addEventListener('beforeunload', () => {
 	TIMER_MANAGER.cleanup();
 });
 
+// Expose timer manager for debugging and add performance monitoring
+window.__timerManager = TIMER_MANAGER;
+window.__renderCache = RENDER_CACHE;
+
+// Add performance diagnostics
+window.__getPerformanceDiagnostics = () => {
+	const frameSkipPercent = skipFrames > 0 ? ((skipFrames / 60) * 100).toFixed(1) + '%' : '0%';
+	const renderCacheHits = RENDER_CACHE.frameCount || 0;
+	
+	return {
+		frameSkipping: {
+			currentSkip: skipFrames,
+			skipPercentage: frameSkipPercent
+		},
+		renderCache: {
+			totalFrames: renderCacheHits,
+			lastUpdate: RENDER_CACHE.lastScreenSize,
+			cacheValid: !!RENDER_CACHE.cachedViewBounds
+		},
+		timers: TIMER_MANAGER.getDiagnostics(),
+		chunkCache: {
+			cached: chunkCanvases.size,
+			maxCached: MAX_CACHED_CHUNKS
+		}
+	};
+};
+
 // Expose timer manager for debugging
 window.__timerManager = TIMER_MANAGER;
 
@@ -969,6 +996,13 @@ const originalCleanup = TIMER_MANAGER.cleanup;
 TIMER_MANAGER.cleanup = function() {
 	originalCleanup.call(this);
 	ASYNC_JSON_PROCESSOR.cleanup();
+	// Clear render cache
+	RENDER_CACHE.lastCamX = null;
+	RENDER_CACHE.lastCamY = null;
+	RENDER_CACHE.lastZoom = null;
+	RENDER_CACHE.lastScreenSize = null;
+	RENDER_CACHE.cachedViewBounds = null;
+	RENDER_CACHE.cachedTransforms = null;
 };
 
 // Expose manual save/load via menu buttons (injected later if menu exists)
@@ -1063,7 +1097,7 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 			}
 			const nameDisp=(s.name||'Bez nazwy'); info.innerHTML='<b>'+ nameDisp + (isCur?' *':'') +'</b><br><span style="font-size:10px; opacity:.65;">'+ new Date(s.time).toLocaleString() +' • '+sizeKB+' KB • '+hashState+' • seed '+ (s.seed??'-') +'</span>';
 			const loadB=document.createElement('button'); loadB.textContent='Wczytaj'; loadB.style.fontSize='11px'; loadB.addEventListener('click',async ()=>{ const raw=localStorage.getItem(slotKey(s.id)); if(raw){ try{ localStorage.setItem(SAVE_KEY,raw); const ok=await loadGame(); if(ok){ currentSlotId=s.id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Wczytano '+nameDisp); refreshList(); } else msg('Błąd wczyt.'); }catch(e){ msg('Błąd wczyt.'); } } });
-			const exportB=document.createElement('button'); exportB.textContent='Eksport'; exportB.style.fontSize='11px'; exportB.addEventListener('click',()=>{ const raw=localStorage.getItem(slotKey(s.id)); if(!raw){ msg('Brak danych'); return; } try{ const blob=new Blob([raw],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); const safe=nameDisp.replace(/[^a-z0-9_-]+/gi,'_'); a.download='save_'+safe+'.json'; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },0); msg('Wyeksportowano'); }catch(e){ msg('Błąd eksportu'); } });
+			const exportB=document.createElement('button'); exportB.textContent='Eksport'; exportB.style.fontSize='11px'; exportB.addEventListener('click',()=>{ const raw=localStorage.getItem(slotKey(s.id)); if(!raw){ msg('Brak danych'); return; } try{ const blob=new Blob([raw],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); const safe=nameDisp.replace(/[^a-z0-9_-]+/gi,'_'); a.download='save_'+safe+'.json'; document.body.appendChild(a); a.click(); TIMER_MANAGER.setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },0, 'export_cleanup'); msg('Wyeksportowano'); }catch(e){ msg('Błąd eksportu'); } });
 			const renameB=document.createElement('button'); renameB.textContent='Nazwa'; renameB.style.fontSize='11px'; renameB.addEventListener('click',()=>{ const nn=prompt('Nowa nazwa zapisu:', s.name||''); if(nn!=null){ s.name=nn.trim(); storeSlots(slots); refreshList(); }});
 			const delB=document.createElement('button'); delB.textContent='Usuń'; delB.style.fontSize='11px'; delB.addEventListener('click',()=>{ if(confirm('Usunąć zapis '+(s.name||s.id)+'?')){ localStorage.removeItem(slotKey(s.id)); const idx=slots.findIndex(x=>x.id===s.id); if(idx>=0){ slots.splice(idx,1); storeSlots(slots); if(currentSlotId===s.id) currentSlotId=null; refreshList(); } } });
 			[loadB,exportB,renameB,delB].forEach(b=>{ b.style.padding='2px 6px'; });
@@ -1848,16 +1882,85 @@ canvas.addEventListener('pointerdown',e=>{ const {tx,ty}=eventToTile(e); const t
 	}
 });
 
+// --- Render Pipeline Optimization System ---
+const RENDER_CACHE = {
+	lastCamX: null,
+	lastCamY: null,
+	lastZoom: null,
+	lastScreenSize: null,
+	cachedViewBounds: null,
+	cachedTransforms: null,
+	frameCount: 0,
+	
+	// Check if view parameters have changed significantly
+	hasViewChanged(camX, camY, zoom, W, H) {
+		const threshold = 0.1; // Pixel threshold for camera movement
+		const sizeChanged = this.lastScreenSize !== `${W}x${H}`;
+		const zoomChanged = Math.abs((this.lastZoom || 0) - zoom) > 0.001;
+		const camChanged = Math.abs((this.lastCamX || 0) - camX) > threshold || 
+		                  Math.abs((this.lastCamY || 0) - camY) > threshold;
+		
+		return sizeChanged || zoomChanged || camChanged;
+	},
+	
+	// Update cached values
+	updateCache(camX, camY, zoom, W, H) {
+		this.lastCamX = camX;
+		this.lastCamY = camY;
+		this.lastZoom = zoom;
+		this.lastScreenSize = `${W}x${H}`;
+		
+		// Cache frequently used calculations
+		this.cachedViewBounds = {
+			viewX: Math.ceil(W/(TILE*zoom)),
+			viewY: Math.ceil(H/(TILE*zoom)),
+			sx: Math.floor(camX)-1,
+			sy: Math.floor(camY)-1
+		};
+		
+		this.cachedTransforms = {
+			camRenderX: Math.round(camX*TILE*zoom)/(TILE*zoom),
+			camRenderY: Math.round(camY*TILE*zoom)/(TILE*zoom),
+			scaleX: zoom,
+			scaleY: zoom,
+			translateX: -this.cachedTransforms?.camRenderX * TILE || 0,
+			translateY: -this.cachedTransforms?.camRenderY * TILE || 0
+		};
+		
+		// Update translate values after camRender is calculated
+		this.cachedTransforms.translateX = -this.cachedTransforms.camRenderX * TILE;
+		this.cachedTransforms.translateY = -this.cachedTransforms.camRenderY * TILE;
+	},
+	
+	// Get cached view bounds (recalculate if needed)
+	getViewBounds(camX, camY, zoom, W, H) {
+		if (this.hasViewChanged(camX, camY, zoom, W, H)) {
+			this.updateCache(camX, camY, zoom, W, H);
+		}
+		return this.cachedViewBounds;
+	},
+	
+	// Get cached transform values
+	getTransforms() {
+		return this.cachedTransforms;
+	}
+};
+
 // Render
 function draw(){ // Background first
  drawBackground();
- const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camX)-1; const sy=Math.floor(camY)-1; ctx.save(); ctx.scale(zoom,zoom); // pixel snapping to avoid seams
-	const camRenderX = Math.round(camX*TILE*zoom)/ (TILE*zoom);
-	const camRenderY = Math.round(camY*TILE*zoom)/ (TILE*zoom);
-	ctx.translate(-camRenderX*TILE,-camRenderY*TILE);
-	ctx.imageSmoothingEnabled=false; // avoid anti-alias gaps
-	// render tiles (solids + passables) first
-	drawWorldVisible(sx,sy,viewX,viewY);
+ 
+ // Use cached view calculations for better performance
+ const bounds = RENDER_CACHE.getViewBounds(camX, camY, zoom, W, H);
+ const transforms = RENDER_CACHE.getTransforms();
+ 
+ ctx.save(); 
+ ctx.scale(transforms.scaleX, transforms.scaleY); 
+ ctx.translate(transforms.translateX, transforms.translateY);
+ ctx.imageSmoothingEnabled=false; // avoid anti-alias gaps
+ 
+ // render tiles (solids + passables) first
+ drawWorldVisible(bounds.sx, bounds.sy, bounds.viewX, bounds.viewY);
 	drawFallingBlocks();
 	// cape behind player body but above tiles
 	drawCape();
@@ -1868,9 +1971,9 @@ function draw(){ // Background first
 	// particles (screen-space in world coords)
 	drawParticles();
 	// front vegetation pass (blades/leaves that should appear in front)
-	if(VISUAL.animations){ drawAnimatedOverlays(sx,sy,viewX,viewY,'front'); }
+	if(VISUAL.animations){ drawAnimatedOverlays(bounds.sx, bounds.sy, bounds.viewX, bounds.viewY, 'front'); }
 	// Water overlay shimmer (after vegetation front to avoid overdraw? place before falling solids for clarity)
-	if(MM.water){ MM.water.drawOverlay(ctx,TILE,getTile,sx,sy,viewX,viewY); }
+	if(MM.water){ MM.water.drawOverlay(ctx,TILE,getTile,bounds.sx, bounds.sy, bounds.viewX, bounds.viewY); }
 	// Draw falling solids after terrain so they appear on top
 	if(MM.fallingSolids){ MM.fallingSolids.draw(ctx,TILE); }
 	// Ghost block preview
@@ -2092,6 +2195,7 @@ initGrassControls();
 // Pętla
 let last=performance.now(); 
 let isLoopRunning = false;
+let skipFrames = 0; // Frame skipping for performance optimization
 
 function loop(ts){ 
 	if(isLoopRunning) return; // Prevent duplicate loops
@@ -2107,6 +2211,14 @@ function loop(ts){
 	
 	const dt=Math.min(0.05,(ts-last)/1000); 
 	last=ts; 
+	
+	// Performance-based frame skipping (when FPS drops below 30)
+	const frameTime = ts - (last || ts);
+	if (frameTime > 33.33) { // More than 33ms = below 30 FPS
+		skipFrames = Math.min(skipFrames + 1, 2); // Skip max 2 frames
+	} else {
+		skipFrames = Math.max(skipFrames - 1, 0); // Gradually reduce skipping
+	}
 	
 	// smooth zoom interpolation
 	if(Math.abs(zoomTarget-zoom)>0.0001){ 
@@ -2131,7 +2243,12 @@ function loop(ts){
 	updateParticles(dt); 
 	updateCape(dt); 
 	updateBlink(ts); 
-	draw(); 
+	
+	// Conditional rendering based on performance
+	if (skipFrames <= 0) {
+		draw(); 
+		RENDER_CACHE.frameCount++;
+	}
 	
 	if(ts<radarFlash){ 
 		radarBtn.classList.add('pulse'); 
