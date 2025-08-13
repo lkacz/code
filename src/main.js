@@ -614,6 +614,159 @@ function drawAnimatedOverlays(sx,sy,viewX,viewY,pass){ const now=performance.now
 
 // Input + tryby specjalne
 const keys={}; let godMode=false; const keysOnce=new Set();
+
+// Virtual Joystick System for Mobile
+let joystickState = { active: false, x: 0, y: 0, angle: 0, distance: 0 };
+const JOYSTICK_DEAD_ZONE = 0.2; // Minimum distance to register input
+const JOYSTICK_MAX_DISTANCE = 50; // Maximum knob distance from center
+
+function initVirtualJoystick() {
+    const joystick = document.getElementById('virtualJoystick');
+    const knob = document.getElementById('joystickKnob');
+    if (!joystick || !knob) return;
+    
+    let isDragging = false;
+    let startX = 0, startY = 0;
+    let centerX = 0, centerY = 0;
+    
+    function updateJoystickPosition() {
+        const rect = joystick.getBoundingClientRect();
+        centerX = rect.left + rect.width / 2;
+        centerY = rect.top + rect.height / 2;
+    }
+    
+    function processJoystickInput(clientX, clientY) {
+        updateJoystickPosition();
+        
+        const deltaX = clientX - centerX;
+        const deltaY = clientY - centerY;
+        const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+        const maxDist = JOYSTICK_MAX_DISTANCE;
+        
+        // Clamp to circle
+        const clampedDistance = Math.min(distance, maxDist);
+        const normalizedDistance = clampedDistance / maxDist;
+        
+        let finalX = deltaX;
+        let finalY = deltaY;
+        
+        if (distance > maxDist) {
+            finalX = (deltaX / distance) * maxDist;
+            finalY = (deltaY / distance) * maxDist;
+        }
+        
+        // Update knob position
+        knob.style.transform = `translate(calc(-50% + ${finalX}px), calc(-50% + ${finalY}px))`;
+        
+        // Calculate angle (0 = right, 90 = up, 180 = left, 270 = down)
+        let angle = Math.atan2(-finalY, finalX) * (180 / Math.PI);
+        if (angle < 0) angle += 360;
+        
+        // Update joystick state
+        joystickState.active = normalizedDistance > JOYSTICK_DEAD_ZONE;
+        joystickState.x = finalX / maxDist;
+        joystickState.y = -finalY / maxDist; // Invert Y for game coordinates
+        joystickState.angle = angle;
+        joystickState.distance = normalizedDistance;
+        
+        // Apply joystick input to game controls
+        updateGameInputFromJoystick();
+    }
+    
+    function resetJoystick() {
+        knob.style.transform = 'translate(-50%, -50%)';
+        knob.classList.remove('active');
+        joystickState.active = false;
+        joystickState.x = joystickState.y = 0;
+        joystickState.angle = joystickState.distance = 0;
+        
+        // Clear movement keys when joystick is released
+        keys['a'] = keys['d'] = keys['arrowleft'] = keys['arrowright'] = false;
+        keys['w'] = keys['arrowup'] = keys[' '] = false;
+    }
+    
+    // Touch events
+    joystick.addEventListener('touchstart', (e) => {
+        if (isBlockingOverlayOpen()) return;
+        e.preventDefault();
+        isDragging = true;
+        knob.classList.add('active');
+        updateJoystickPosition();
+        const touch = e.touches[0];
+        processJoystickInput(touch.clientX, touch.clientY);
+    });
+    
+    joystick.addEventListener('touchmove', (e) => {
+        if (!isDragging || isBlockingOverlayOpen()) return;
+        e.preventDefault();
+        const touch = e.touches[0];
+        processJoystickInput(touch.clientX, touch.clientY);
+    });
+    
+    joystick.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        isDragging = false;
+        resetJoystick();
+    });
+    
+    // Mouse events for testing on desktop
+    joystick.addEventListener('mousedown', (e) => {
+        if (isBlockingOverlayOpen()) return;
+        e.preventDefault();
+        isDragging = true;
+        knob.classList.add('active');
+        updateJoystickPosition();
+        processJoystickInput(e.clientX, e.clientY);
+    });
+    
+    document.addEventListener('mousemove', (e) => {
+        if (!isDragging || isBlockingOverlayOpen()) return;
+        e.preventDefault();
+        processJoystickInput(e.clientX, e.clientY);
+    });
+    
+    document.addEventListener('mouseup', (e) => {
+        if (isDragging) {
+            e.preventDefault();
+            isDragging = false;
+            resetJoystick();
+        }
+    });
+}
+
+function updateGameInputFromJoystick() {
+    if (!joystickState.active) return;
+    
+    const { x, y, angle, distance } = joystickState;
+    
+    // Clear previous joystick-driven keys
+    keys['a'] = keys['d'] = keys['arrowleft'] = keys['arrowright'] = false;
+    keys['w'] = keys['arrowup'] = keys[' '] = false;
+    
+    // Horizontal movement (left/right)
+    if (Math.abs(x) > JOYSTICK_DEAD_ZONE) {
+        if (x < 0) {
+            keys['a'] = keys['arrowleft'] = true; // Move left
+        } else {
+            keys['d'] = keys['arrowright'] = true; // Move right
+        }
+    }
+    
+    // Jumping (up or diagonal)
+    if (y > JOYSTICK_DEAD_ZONE) {
+        keys['w'] = keys['arrowup'] = keys[' '] = true; // Jump
+    }
+    
+    // Diagonal jumping with direction
+    if (y > JOYSTICK_DEAD_ZONE && Math.abs(x) > JOYSTICK_DEAD_ZONE) {
+        // Diagonal jump - both movement and jump are active
+        if (x < 0) {
+            player.facing = -1; // Face left while jumping
+        } else {
+            player.facing = 1; // Face right while jumping
+        }
+    }
+}
 // Chest debug helpers
 let chestDebug=false; // toggled to highlight chests strongly
 function countChestsInChunk(cx){ const k='c'+cx; const arr=WORLD._world.get(k); if(!arr) return 0; let c=0; for(let i=0;i<arr.length;i++){ const t=arr[i]; if(t===T.CHEST_COMMON||t===T.CHEST_RARE||t===T.CHEST_EPIC) c++; } return c; }
@@ -798,6 +951,21 @@ let mining=false,mineTimer=0,mineTx=0,mineTy=0; const mineBtn=document.getElemen
 mineBtn.addEventListener('pointerdown',e=>{ e.preventDefault(); startMine(); });
 window.addEventListener('pointerup',()=>{ mining=false; mineBtn.classList.remove('on'); });
 function startMine(){ const tx=Math.floor(player.x + mineDir.dx + (mineDir.dx>0?player.w/2:mineDir.dx<0?-player.w/2:0)); const ty=Math.floor(player.y + mineDir.dy); const t=getTile(tx,ty); if(t===T.AIR) return; mining=true; mineTimer=0; mineTx=tx; mineTy=ty; mineBtn.classList.add('on'); if(godMode) instantBreak(); }
+
+function tryMineFromEvent(e) {
+    const {tx, ty} = eventToTile(e);
+    const t = getTile(tx, ty);
+    if (t === T.AIR) return;
+    
+    // Start mining at the touched/clicked location
+    mining = true;
+    mineTimer = 0;
+    mineTx = tx;
+    mineTy = ty;
+    mineBtn.classList.add('on');
+    if (godMode) instantBreak();
+}
+
 function instantBreak(){ if(getTile(mineTx,mineTy)===T.AIR){ mining=false; mineBtn.classList.remove('on'); return; } const tId=getTile(mineTx,mineTy); if(tId===T.WOOD && isTreeBase(mineTx,mineTy)){ if(startTreeFall(mineTx,mineTy)){ mining=false; mineBtn.classList.remove('on'); return; } } const info=INFO[tId]; const drop=info.drop; setTile(mineTx,mineTy,T.AIR); if(drop) inv[drop]=(inv[drop]||0)+1; if(MM.fallingSolids) MM.fallingSolids.onTileRemoved(mineTx,mineTy); if(MM.water) MM.water.onTileChanged(mineTx,mineTy,getTile); pushUndo(mineTx,mineTy,tId,T.AIR,'break'); mining=false; mineBtn.classList.remove('on'); updateInventory(); }
 // Falling tree system (per-block physics)
 function isTreeBase(x,y){ return TREES.isTreeBase(getTile,x,y); }
@@ -812,6 +980,71 @@ let lastChestOpen={t:0,x:0,y:0};
 const CHEST_PLACE_SUPPRESS_MS=250; // extended to reduce accidental placements
 canvas.addEventListener('contextmenu',e=>{ if(isBlockingOverlayOpen()) return; e.preventDefault(); const now=performance.now(); if(now-lastChestOpen.t<CHEST_PLACE_SUPPRESS_MS) return; tryPlaceFromEvent(e); });
 canvas.addEventListener('pointerdown',e=>{ if(isBlockingOverlayOpen()) return; if(e.button===2){ e.preventDefault(); tryPlaceFromEvent(e); } });
+
+// Mobile long-press support for block placement
+let longPressTimer = null;
+let longPressActive = false;
+const LONG_PRESS_DURATION = 500; // 500ms for long press
+
+canvas.addEventListener('touchstart', (e) => {
+    if (isBlockingOverlayOpen()) return;
+    
+    // Clear any existing timer
+    if (longPressTimer) {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+    }
+    
+    longPressActive = false;
+    
+    // Start long press timer
+    longPressTimer = setTimeout(() => {
+        longPressActive = true;
+        // Trigger block placement on long press
+        const touch = e.touches[0];
+        if (touch) {
+            const syntheticEvent = {
+                clientX: touch.clientX,
+                clientY: touch.clientY,
+                preventDefault: () => {}
+            };
+            const now = performance.now();
+            if (now - lastChestOpen.t >= CHEST_PLACE_SUPPRESS_MS) {
+                tryPlaceFromEvent(syntheticEvent);
+            }
+        }
+    }, LONG_PRESS_DURATION);
+});
+
+canvas.addEventListener('touchend', (e) => {
+    if (longPressTimer) {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+    }
+    
+    if (!longPressActive) {
+        // Short tap - mining
+        const touch = e.changedTouches[0];
+        if (touch && !isBlockingOverlayOpen()) {
+            const syntheticEvent = {
+                clientX: touch.clientX,
+                clientY: touch.clientY,
+                preventDefault: () => {}
+            };
+            tryMineFromEvent(syntheticEvent);
+        }
+    }
+    
+    longPressActive = false;
+});
+
+canvas.addEventListener('touchmove', (e) => {
+    // Cancel long press if finger moves too much
+    if (longPressTimer) {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+    }
+});
 // Pointer mapping helpers (CSS px -> world/tile), note: DPR already handled by base transform
 function cssToWorldPx(cssX, cssY){
 	const wxPx = cssX/zoom + camX*TILE;
@@ -1120,7 +1353,16 @@ function placePlayer(skipMsg){ const x=0; ensureChunk(0); let y=0; while(y<WORLD
 function centerOnPlayer(){ revealAround(); camSX=player.x - (W/(TILE*zoom))/2; camSY=player.y - (H/(TILE*zoom))/2; camX=camSX; camY=camSY; initScarf(); }
 const loaded=loadGame();
 if(!loaded){ placePlayer(); } else { centerOnPlayer(); }
-updateInventory(); updateGodBtn(); updateHotbarSel(); if(!loaded) msg('Sterowanie: A/D/W + LPM kopie, PPM stawia (4-9 wybór). G=Bóg (nieskończone skoki), M=Mapa, C=Centrum, H=Pomoc'); else msg('Wczytano zapis – miłej gry!');
+updateInventory(); updateGodBtn(); updateHotbarSel(); 
+initVirtualJoystick(); // Initialize mobile joystick controls
+
+// Adaptive welcome message based on device type
+const isMobile = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+const welcomeMsg = isMobile 
+    ? 'Sterowanie: Joystick ruch/skok, ⛏️ kopie, długie dotknięcie stawia. G=Bóg, M=Mapa'
+    : 'Sterowanie: A/D/W + LPM kopie, PPM stawia (4-9 wybór). G=Bóg (nieskończone skoki), M=Mapa, C=Centrum, H=Pomoc';
+
+if(!loaded) msg(welcomeMsg); else msg('Wczytano zapis – miłej gry!');
 // Ghost preview placement
 let ghostTile=null, ghostX=0, ghostY=0;
 canvas.addEventListener('pointermove',e=>{ if(isBlockingOverlayOpen()) return; const {tx,ty}=eventToTile(e); if(getTile(tx,ty)===T.AIR){ ghostX=tx; ghostY=ty; ghostTile=selectedTileId(); } else ghostTile=null; });
