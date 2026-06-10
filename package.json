@@ -1,0 +1,25 @@
+{
+  "name": "sandbox-world-simulation",
+  "version": "1.0.0",
+  "description": "Procedural 2D tile world with advanced water simulation (vanilla JS, no build step)",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "npx -y http-server -p 8123 -c-1 .",
+    "lint": "eslint src",
+    "check:modules": "node tools/modcheck.mjs . src/main.js",
+    "test:water": "node tools/water-sim.test.mjs",
+    "test:clouds": "node tools/clouds-sim.test.mjs",
+    "test:bosses": "node tools/boss-sim.test.mjs",
+    "check": "npm run lint && npm run check:modules && npm run test:water && npm run test:clouds && npm run test:bosses"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lkacz/code.git"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "eslint": "^10.4.1",
+    "globals": "^16.0.0"
+  }
+}

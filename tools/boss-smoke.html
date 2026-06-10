@@ -1,0 +1,63 @@
+<!doctype html>
+<!-- Headless smoke harness for the procedural boss monsters.
+     Loads the game in a same-origin iframe, records runtime errors, then force-spawns
+     a monster right beside the hero (and detonates a second one) so a headless
+     screenshot captures the body, the heart glow, part damage and the blast crater.
+     Run: msedge/chrome --headless --screenshot=out.png --virtual-time-budget=16000 \
+          http://localhost:8123/tools/boss-smoke.html -->
+<html>
+<body style="margin:0;background:#000">
+<iframe id="f" src="../index.html" style="width:1400px;height:900px;border:0"></iframe>
+<div id="status" style="color:#0f0;font:14px monospace;padding:4px">pending</div>
+<script>
+const frame=document.getElementById('f');
+const statusEl=document.getElementById('status');
+const errs=[];
+frame.addEventListener('load',()=>{
+  const w=frame.contentWindow;
+  w.addEventListener('error',e=>{ errs.push(String(e.message||e)); });
+  setTimeout(()=>{
+    try{
+      const doc=w.document;
+      w.__timeOverrideActive=true; w.__timeOverrideValue=0.35; // daylight
+      for(const id of ['menuPanel','craft']){ const el=doc.getElementById(id); if(el) el.style.display='none'; }
+      const M=w.MM, p=w.player;
+      const px=Math.floor(p? p.x : 0);
+      // showcase beast right beside the hero, chewed up a little
+      const m=M.bosses.forceSpawn(null, {x:px+12, seed:1234, archetype:'walker'});
+      if(m){
+        const bx=Math.round(m.x), by=Math.round(m.y);
+        let chipped=0;
+        for(const part of [...m.parts]){
+          if(part!==m.core && chipped<3 && part.dy<-1){ M.bosses.attackAt(bx+part.dx, by+part.dy, 999); chipped++; }
+        }
+      }
+      // second beast farther out: blow its heart after a beat → crater + ring
+      const m2=M.bosses.forceSpawn(null, {x:px-18, seed:777, archetype:'walker', freeze:true});
+      setTimeout(()=>{
+        try{
+          if(m2 && !m2.dead){
+            const cb=[Math.round(m2.x)+m2.core.dx, Math.round(m2.y)+m2.core.dy];
+            M.bosses.attackAt(cb[0]+1, cb[1], 999); // breach the plating sealing the heart
+            M.bosses.attackAt(cb[0], cb[1], 99999);
+          }
+        }catch(e){ errs.push('detonate: '+(e&&e.message)); }
+      },1200);
+      statusEl.textContent='spawned bosses at px='+px;
+    }catch(e){ errs.push('harness: '+(e&&e.message)); }
+  },1500);
+  const timeline=[];
+  const pollTimer=setInterval(()=>{
+    try{
+      const m=frame.contentWindow.MM.bosses.metrics();
+      timeline.push('t'+(timeline.length)+': alive='+m.alive+' parts='+m.parts+' debris='+m.debris+' killed='+m.killed);
+    }catch(e){ timeline.push('poll-fail '+(e&&e.message)); }
+  },1000);
+  setTimeout(()=>{
+    clearInterval(pollTimer);
+    statusEl.innerHTML=(errs.length? 'ERRORS: '+errs.join(' || ') : 'OK: no runtime errors')+' | '+statusEl.textContent+'<br>'+timeline.join('<br>');
+  },12000);
+});
+</script>
+</body>
+</html>

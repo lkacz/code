@@ -1,0 +1,58 @@
+<!doctype html>
+<!-- Headless smoke harness for the weather / cloud system.
+     Loads the game in a same-origin iframe, records runtime errors, then force-spawns
+     a cloud bank over the player — including one oversized storm cloud — so a headless
+     screenshot captures sprites, ground shadows, rain streaks and (often) lightning.
+     Run: msedge/chrome --headless --screenshot=out.png --virtual-time-budget=16000 \
+          http://localhost:8123/tools/clouds-smoke.html -->
+<html>
+<body style="margin:0;background:#000">
+<iframe id="f" src="../index.html" style="width:1400px;height:900px;border:0"></iframe>
+<div id="status" style="color:#0f0;font:14px monospace;padding:4px">pending</div>
+<script>
+const frame=document.getElementById('f');
+const statusEl=document.getElementById('status');
+const errs=[];
+frame.addEventListener('load',()=>{
+  const w=frame.contentWindow;
+  w.addEventListener('error',e=>{ errs.push(String(e.message||e)); });
+  setTimeout(()=>{
+    try{
+      const doc=w.document;
+      // time of day via ?t=0..1 (0.35 midday, 0.75 night); default daylight
+      const tod=parseFloat(new URLSearchParams(location.search).get('t')||'0.35');
+      w.__timeOverrideActive=true; w.__timeOverrideValue=isFinite(tod)? tod : 0.35;
+      for(const id of ['menuPanel','craft']){ const el=doc.getElementById(id); if(el) el.style.display='none'; }
+      const M=w.MM, p=w.player;
+      const px=Math.floor(p? p.x : 0);
+      M.clouds.setWindOverride(0.4);
+      // a fluffy fair-weather bank plus one saturated storm cell overhead
+      M.clouds.addCloud(px-34, null, 6);
+      M.clouds.addCloud(px-12, null, 11);
+      M.clouds.addCloud(px+6,  null, 36); // storms immediately: rain + shadows (+ lightning)
+      M.clouds.addCloud(px+30, null, 8);
+      // ?storm=1: full storm front + repeated forced strikes so a screenshot lands on a bolt
+      if(new URLSearchParams(location.search).get('storm')){
+        M.clouds.startStorm(120, 1);
+        setInterval(()=>{
+          try{ M.clouds.strike(Math.floor(w.player.x)+Math.round(Math.random()*40-20), M.world.getTile, M.world.setTile); }catch(e){ errs.push('strike: '+(e&&e.message)); }
+        },350);
+      }
+      statusEl.textContent='spawned 4 clouds at px='+px;
+    }catch(e){ errs.push('harness: '+(e&&e.message)); }
+  },1500);
+  const timeline=[];
+  const pollTimer=setInterval(()=>{
+    try{
+      const m=frame.contentWindow.MM.clouds.metrics();
+      timeline.push('t'+(timeline.length)+': clouds='+m.clouds+' mass='+m.cloudMass.toFixed(1)+' vapor='+m.vapor.toFixed(2)+' drops='+m.drops+' rain='+m.rainMass.toFixed(2));
+    }catch(e){ timeline.push('poll-fail '+(e&&e.message)); }
+  },1000);
+  setTimeout(()=>{
+    clearInterval(pollTimer);
+    statusEl.innerHTML=(errs.length? 'ERRORS: '+errs.join(' || ') : 'OK: no runtime errors')+' | '+statusEl.textContent+'<br>'+timeline.join('<br>');
+  },12000);
+});
+</script>
+</body>
+</html>

@@ -30,7 +30,9 @@ import { CHUNK_W, WORLD_H } from '../constants.js';
 
   F.revealAround = function(px,py,r){ px=+px; py=+py; r=+r; const rr=r*r; for(let dx=-r; dx<=r; dx++){ const wx=Math.floor(px+dx); for(let dy=-r; dy<=r; dy++){ if(dx*dx+dy*dy<=rr){ markSeen(wx, Math.floor(py+dy)); } } } };
 
-  F.applyOverlay = function(ctx, sx, sy, viewX, viewY, TILE, getTile, T){ if(revealAll) return; for(let y=sy; y<sy+viewY+2; y++){ if(y<0||y>=WORLD_H) continue; for(let x=sx; x<sx+viewX+2; x++){ if(!hasSeen(x,y)){ const t=getTile(x,y); if(t!==T.AIR){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); } } } } };
+  // Fog covers unseen solid tiles AND unseen underground air, so undiscovered caves
+  // stay hidden instead of reading as silhouettes against the cave backdrop
+  F.applyOverlay = function(ctx, sx, sy, viewX, viewY, TILE, getTile, T){ if(revealAll) return; const WGen=(window.MM && MM.worldGen && MM.worldGen.surfaceHeight)? MM.worldGen : null; for(let y=sy; y<sy+viewY+2; y++){ if(y<0||y>=WORLD_H) continue; for(let x=sx; x<sx+viewX+2; x++){ if(!hasSeen(x,y)){ const t=getTile(x,y); const underground = WGen? (y>WGen.surfaceHeight(x)) : false; if(t!==T.AIR || underground){ ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); } } } } };
 
   F.getRevealAll = function(){ return revealAll; };
   F.setRevealAll = function(v){ revealAll = !!v; };

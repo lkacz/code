@@ -13,7 +13,8 @@ window.MM = window.MM || {};
     triangle:{ wTop:0.12,wBot:0.15, edge:'point', flare:0.9, shiny:false, mass:0.9, stiffness:6.5, wind:1.1 },
     royal:   { wTop:0.14,wBot:0.36, edge:'scallop', flare:1.20, shiny:true, mass:1.6, stiffness:4.5, wind:0.7, scallopDepth:6 },
     tattered:{ wTop:0.10,wBot:0.26, edge:'ragged', flare:1, shiny:false, mass:1, stiffness:5.5, wind:1.2 },
-    winged:  { wTop:0.08,wBot:0.30, edge:'wave', flare:1.25, shiny:true, mass:0.8, stiffness:7, wind:1.3 }
+    winged:  { wTop:0.08,wBot:0.30, edge:'wave', flare:1.25, shiny:true, mass:0.8, stiffness:7, wind:1.3 },
+    shadow:  { wTop:0.09,wBot:0.28, edge:'ragged', flare:1.15, shiny:false, mass:0.7, stiffness:7.5, wind:1.5 }
   };
   function getCurrentCustomization(){ return (window.MM && MM.customization) || {capeStyle:'classic',capeColor:'#b91818'}; }
   function currentStyle(){ const c=getCurrentCustomization(); return CAPE_STYLES[c.capeStyle]||CAPE_STYLES.classic; }

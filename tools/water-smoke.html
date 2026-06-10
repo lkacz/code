@@ -1,0 +1,70 @@
+<!doctype html>
+<!-- Headless smoke harness for the dynamic water system.
+     Loads the game in a same-origin iframe, records runtime errors, teleports the player
+     to the widest visible lake, pours a waterfall and stirs the surface so a headless
+     screenshot captures waves, streams, caustics and foam mid-action.
+     Run: msedge/chrome --headless --screenshot=out.png --virtual-time-budget=16000 \
+          http://localhost:8123/tools/water-smoke.html -->
+<html>
+<body style="margin:0;background:#000">
+<iframe id="f" src="../index.html" style="width:1400px;height:900px;border:0"></iframe>
+<div id="status" style="color:#0f0;font:14px monospace;padding:4px">pending</div>
+<script>
+const frame=document.getElementById('f');
+const statusEl=document.getElementById('status');
+const errs=[];
+frame.addEventListener('load',()=>{
+  const w=frame.contentWindow;
+  w.addEventListener('error',e=>{ errs.push(String(e.message||e)); });
+  setTimeout(()=>{
+    try{
+      const doc=w.document;
+      w.__timeOverrideActive=true; w.__timeOverrideValue=0.35; // daylight
+      for(const id of ['menuPanel','craft']){ const el=doc.getElementById(id); if(el) el.style.display='none'; }
+      const M=w.MM, p=w.player;
+      const getTile=M.world.getTile, setTile=M.world.setTile, WATER=M.T.WATER, AIR=M.T.AIR;
+      // find the widest surface-water run near sea level
+      let best={x:0,w:0,y:62};
+      for(let x=-3000;x<3000;){
+        let y=-1;
+        for(let yy=50; yy<85; yy++){ if(getTile(x,yy)===WATER && getTile(x,yy-1)===AIR){ y=yy; break; } }
+        if(y<0){ x+=3; continue; }
+        let run=0; while(run<200 && getTile(x+run,y)===WATER) run++;
+        if(run>best.w) best={x:x, w:run, y:y};
+        x+=Math.max(run,3);
+      }
+      if(best.w>3 && p){
+        const cx=best.x + Math.floor(best.w/2);
+        p.x=cx+0.5; p.y=best.y-2; p.vx=0; p.vy=8;
+        // pour a waterfall just to the right of the player (stays on-screen)
+        const px=cx+9;
+        let pours=0;
+        const pourTimer=setInterval(()=>{
+          try{ M.water.addSource(px, best.y-8, getTile, setTile); }catch(e){}
+          if(++pours>80) clearInterval(pourTimer);
+        },150);
+        // keep the nearby surface lively so the screenshot lands mid-wave
+        let kicks=0;
+        const kickTimer=setInterval(()=>{
+          try{ M.water.disturb(cx + ((kicks*7)%30) - 18, (kicks&1? -1:1)*320); }catch(e){}
+          if(++kicks>80) clearInterval(kickTimer);
+        },180);
+      }
+      statusEl.textContent='lake '+JSON.stringify(best);
+    }catch(e){ errs.push('harness: '+(e&&e.message)); }
+  },1500);
+  const timeline=[];
+  const pollTimer=setInterval(()=>{
+    try{
+      const w2=frame.contentWindow, mm=w2.MM.water.metrics(), p=w2.player;
+      timeline.push('t'+(timeline.length)+': act='+mm.active+' spr='+mm.springs+' str='+mm.streams+' px='+(p? p.x.toFixed(0):'?')+' py='+(p? p.y.toFixed(1):'?'));
+    }catch(e){ timeline.push('poll-fail '+(e&&e.message)); }
+  },1000);
+  setTimeout(()=>{
+    clearInterval(pollTimer);
+    statusEl.innerHTML=(errs.length? 'ERRORS: '+errs.join(' || ') : 'OK: no runtime errors')+' | '+statusEl.textContent+'<br>'+timeline.join('<br>');
+  },12000);
+});
+</script>
+</body>
+</html>

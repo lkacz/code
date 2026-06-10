@@ -68,6 +68,7 @@ MM.ui = (function(){
     openWS?.addEventListener('click', openWorldSettings);
     wsClose?.addEventListener('click', closeWorldSettings);
     wsOverlay?.addEventListener('click', (e)=>{ if(e.target===wsOverlay) closeWorldSettings(); });
+    window.addEventListener('keydown', (e)=>{ if(e.key==='Escape' && wsOverlay && wsOverlay.style.display!=='none' && wsOverlay.style.display!==''){ closeWorldSettings(); e.stopPropagation(); } });
   }
   function injectWorldSettings(menuPanel){
     const panel = menuPanel || document.getElementById('menuPanel'); if(!panel) return;
@@ -87,37 +88,37 @@ MM.ui = (function(){
       wrap.appendChild(lab); wrap.appendChild(input); box.appendChild(wrap);
       return {input,span};
     }
-    const r1=row('Poziom morza', 'setSeaLevel', 6, 40, 1, s.seaLevel||18);
-    const r2=row('Próg oceanu', 'setSeaThresh', 0.05, 0.40, 0.005, s.seaThreshold||0.16, v=>''+Number(v).toFixed(3));
-    const r3=row('Maska oceanu', 'setOceanMask', 0.0, 0.5, 0.01, s.oceanMaskFactor||0.18, v=>Number(v).toFixed(2));
-  const r4=row('Wzmocnienie grzbietów', 'setRidgeBoost', 0.0, 0.3, 0.005, (s.ridgeElevBoost===undefined?0.08:s.ridgeElevBoost), v=>Number(v).toFixed(3));
-  const r5=row('Próg gór', 'setMtnElev', 0.60, 0.95, 0.005, (s.mountainElevThreshold===undefined?0.8:s.mountainElevThreshold), v=>Number(v).toFixed(3));
-  const r6=row('Próg grzbietów gór', 'setMtnRidge', 0.60, 0.98, 0.005, (s.mountainRidgeThreshold===undefined?0.82:s.mountainRidgeThreshold), v=>Number(v).toFixed(3));
-  const r7=row('Siła dolin', 'setValleyGain', 0, 40, 1, (s.valleyGain===undefined?18:s.valleyGain));
-  const r8=row('Próg dolin', 'setValleyCut', 0.3, 0.95, 0.01, (s.valleyCutoff===undefined?0.6:s.valleyCutoff), v=>Number(v).toFixed(2));
-  const r9=row('Gładzenie (szer.)', 'setSigmaWide', 2.5, 8.0, 0.1, (s.smoothingSigmaWide===undefined?4.8:s.smoothingSigmaWide), v=>Number(v).toFixed(2));
-  const r10=row('Gładzenie (wą.)', 'setSigmaNarrow', 0.6, 3.0, 0.05, (s.smoothingSigmaNarrow===undefined?1.3:s.smoothingSigmaNarrow), v=>Number(v).toFixed(2));
-  const r11=row('Gęstość lasu', 'setForestMul', 0.2, 3.0, 0.05, (s.forestDensityMul===undefined?1.0:s.forestDensityMul), v=>Number(v).toFixed(2));
-  const r12=row('Głębokość jeziora', 'setLakeDepth', 1, 12, 1, (s.lakeMaxDepth===undefined?5:s.lakeMaxDepth));
-  const r13=row('Wysokość grzbietów', 'setRidgeHeightGain', 0, 30, 1, (s.ridgeHeightGain===undefined?12:s.ridgeHeightGain));
+    const r1=row('Poziom morza', 'setSeaLevel', 45, 80, 1, (s.seaLevel===undefined?62:s.seaLevel));
+    const r2=row('Ilość oceanów', 'setOceanFrac', 0.15, 0.50, 0.01, (s.oceanFrac===undefined?0.32:s.oceanFrac), v=>Number(v).toFixed(2));
+  const r3=row('Wysokość gór', 'setMountainAmp', 10, 54, 1, (s.mountainAmp===undefined?38:s.mountainAmp));
+  const r4=row('Próg gór', 'setMountainTh', 0.30, 0.70, 0.01, (s.mountainThreshold===undefined?0.46:s.mountainThreshold), v=>Number(v).toFixed(2));
+  const r5=row('Głębokość dolin', 'setValleyGain', 0, 50, 1, (s.valleyGain===undefined?30:s.valleyGain));
+  const r6=row('Próg dolin', 'setValleyCut', 0.40, 0.90, 0.01, (s.valleyCutoff===undefined?0.58:s.valleyCutoff), v=>Number(v).toFixed(2));
+  const r7=row('Szczegóły terenu', 'setDetailAmp', 0, 2, 0.05, (s.detailAmp===undefined?1:s.detailAmp), v=>Number(v).toFixed(2));
+  const r8=row('Gęstość jaskiń', 'setCaveDensity', 0, 2, 0.05, (s.caveDensity===undefined?1:s.caveDensity), v=>Number(v).toFixed(2));
+  const r9=row('Gęstość tuneli', 'setTunnelDensity', 0, 2, 0.05, (s.tunnelDensity===undefined?1:s.tunnelDensity), v=>Number(v).toFixed(2));
+  const r10=row('Wąwozy', 'setRavineFreq', 0, 3, 0.1, (s.ravineFreq===undefined?1:s.ravineFreq), v=>Number(v).toFixed(1));
+  const r11=row('Wody podziemne (rząd)', 'setAquifer', 75, 130, 1, (s.aquiferLevel===undefined?112:s.aquiferLevel));
+  const r12=row('Głębokość jezior', 'setLakeDepth', 3, 20, 1, (s.lakeMaxDepth===undefined?12:s.lakeMaxDepth));
+  const r13=row('Gęstość lasu', 'setForestMul', 0.2, 3.0, 0.05, (s.forestDensityMul===undefined?1.0:s.forestDensityMul), v=>Number(v).toFixed(2));
     const applyRow=document.createElement('div'); applyRow.style.cssText='display:flex; gap:6px;';
   const apply=document.createElement('button'); apply.className='topbtn'; apply.textContent='Zastosuj i odśwież';
   apply.addEventListener('click',()=>{
       try{
         const ns={
           seaLevel: parseInt(r1.input.value,10),
-          seaThreshold: parseFloat(r2.input.value),
-          oceanMaskFactor: parseFloat(r3.input.value),
-          ridgeElevBoost: parseFloat(r4.input.value),
-          mountainElevThreshold: parseFloat(r5.input.value),
-          mountainRidgeThreshold: parseFloat(r6.input.value),
-          valleyGain: parseInt(r7.input.value,10),
-          valleyCutoff: parseFloat(r8.input.value),
-          smoothingSigmaWide: parseFloat(r9.input.value),
-          smoothingSigmaNarrow: parseFloat(r10.input.value),
-          forestDensityMul: parseFloat(r11.input.value),
+          oceanFrac: parseFloat(r2.input.value),
+          mountainAmp: parseInt(r3.input.value,10),
+          mountainThreshold: parseFloat(r4.input.value),
+          valleyGain: parseInt(r5.input.value,10),
+          valleyCutoff: parseFloat(r6.input.value),
+          detailAmp: parseFloat(r7.input.value),
+          caveDensity: parseFloat(r8.input.value),
+          tunnelDensity: parseFloat(r9.input.value),
+          ravineFreq: parseFloat(r10.input.value),
+          aquiferLevel: parseInt(r11.input.value,10),
           lakeMaxDepth: parseInt(r12.input.value,10),
-          ridgeHeightGain: parseInt(r13.input.value,10)
+          forestDensityMul: parseFloat(r13.input.value)
         };
   const WG2 = WORLDGEN || (MM.worldGen||null);
   if(WG2 && WG2.setSettings) WG2.setSettings(ns);
@@ -170,6 +171,35 @@ MM.ui = (function(){
         b.addEventListener('click',()=>{ try{ if(typeof spawnCb==='function') spawnCb(id); }catch(e){} });
         box.appendChild(b);
       });
+      // Boss debug controls: summon one beside the hero / detonate the nearest heart
+      const bossLab=document.createElement('div'); bossLab.textContent='Boss (debug):'; bossLab.style.cssText='width:100%; font-size:11px; opacity:.7; margin-top:4px;';
+      box.appendChild(bossLab);
+      const bossBtn=document.createElement('button'); bossBtn.textContent='👹 Boss'; bossBtn.style.cssText='flex:1 1 70px; font-size:11px; padding:3px 6px; border:1px solid rgba(255,80,100,.55);';
+      bossBtn.addEventListener('click',()=>{
+        try{
+          const B=window.MM && MM.bosses; const pl=window.player;
+          if(!B || !B.forceSpawn || !pl) return;
+          // try both sides at growing offsets so a lake beside the hero can't block the button
+          let m=null;
+          const side=Math.random()<0.5?-1:1;
+          for(const off of [side*14, -side*14, side*22, -side*22, side*30]){
+            m=B.forceSpawn(null,{x:Math.round(pl.x+off)});
+            if(m) break;
+          }
+          msg(m? ('Przyzwano bossa '+m.name+' ('+m.archetype+')') : 'Boss: nie udało się przyzwać (limit?)');
+        }catch(e){}
+      });
+      box.appendChild(bossBtn);
+      const killBtn=document.createElement('button'); killBtn.textContent='💀 Kill boss'; killBtn.style.cssText='flex:1 1 70px; font-size:11px; padding:3px 6px; border:1px solid rgba(255,80,100,.55);';
+      killBtn.addEventListener('click',()=>{
+        try{
+          const B=window.MM && MM.bosses;
+          if(!B || !B.killNearest) return;
+          const name=B.killNearest();
+          msg(name? ('Serce bossa '+name+' zdetonowane') : 'Brak bossów do zabicia');
+        }catch(e){}
+      });
+      box.appendChild(killBtn);
     }
     // Expose populate for any external triggers (keeps backward compatibility)
     api.populateMobSpawnButtons = populate;

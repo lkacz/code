@@ -37,7 +37,18 @@ window.MM = window.MM || {};
 
   function startTreeFall(getTile,setTile,playerFacing,x,y){ const tiles=collectTreeTiles(getTile,setTile,x,y); if(!tiles.length) return false; const randSeed=WG.randSeed; const dir=playerFacing||1; let maxY=-Infinity; tiles.forEach(t=>{ if(t.y>maxY) maxY=t.y; }); tiles.forEach(tile=>{ const heightFactor=maxY - tile.y; const hBudget=Math.max(0, Math.min(8, Math.round(heightFactor*0.6 + randSeed(tile.x*31+tile.y*17)*2))); fallingBlocks.push({x:tile.x,y:tile.y,t:tile.t,dir,hBudget}); }); return true; }
 
-  function updateFallingBlocks(getTile,setTile,dt){ if(!fallingBlocks.length) return; fallStepAccum += dt; const STEP=0.05; if(fallStepAccum < STEP) return; while(fallStepAccum >= STEP){ fallStepAccum -= STEP; if(!fallingBlocks.length) break; const occ=new Set(); fallingBlocks.forEach(b=>occ.add(b.x+','+b.y)); const order=[...fallingBlocks.keys()].sort((a,b)=>fallingBlocks[b].y - fallingBlocks[a].y); const toRemove=[]; for(const idx of order){ const b=fallingBlocks[idx]; const belowY=b.y+1; if(belowY>=WORLD_H){ setTile(b.x,b.y,b.t); toRemove.push(idx); continue; } const belowKey=b.x+','+belowY; const belowTile=getTile(b.x,belowY); if(belowTile===T.AIR && !occ.has(belowKey)){ occ.delete(b.x+','+b.y); b.y++; occ.add(b.x+','+b.y); continue; } if(b.hBudget>0){ const nx=b.x+b.dir; const ny=b.y+1; const nBelow=getTile(nx,ny); const horizFree=!occ.has(nx+','+b.y) && getTile(nx,b.y)===T.AIR; const diagFree=nBelow===T.AIR && !occ.has(nx+','+ny); if(horizFree && diagFree){ occ.delete(b.x+','+b.y); b.x=nx; b.y=ny; occ.add(b.x+','+b.y); b.hBudget--; continue; } } setTile(b.x,b.y,b.t); toRemove.push(idx); } if(toRemove.length){ toRemove.sort((a,b)=>b-a).forEach(i=>fallingBlocks.splice(i,1)); } } }
+  // Felled blocks pass through air AND water (sinking), like the rigid falling solids
+  function passThrough(t){ return t===T.AIR || t===T.WATER; }
+  // Settle a felled block into the world without destroying terrain or water:
+  // bump up out of any cell claimed meanwhile, displace water instead of deleting it.
+  function settleTreeBlock(getTile,setTile,b){
+    let y=b.y; while(y>0 && !passThrough(getTile(b.x,y))) y--;
+    const was=getTile(b.x,y);
+    if(was===T.WATER){ try{ if(MM.water && MM.water.displaceAt) MM.water.displaceAt(b.x,y,getTile,setTile); }catch(e){} }
+    setTile(b.x,y,b.t);
+    if(was===T.WATER){ try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(b.x,y,getTile); }catch(e){} }
+  }
+  function updateFallingBlocks(getTile,setTile,dt){ if(!fallingBlocks.length) return; fallStepAccum += dt; const STEP=0.05; if(fallStepAccum < STEP) return; while(fallStepAccum >= STEP){ fallStepAccum -= STEP; if(!fallingBlocks.length) break; const occ=new Set(); fallingBlocks.forEach(b=>occ.add(b.x+','+b.y)); const order=[...fallingBlocks.keys()].sort((a,b)=>fallingBlocks[b].y - fallingBlocks[a].y); const toRemove=[]; for(const idx of order){ const b=fallingBlocks[idx]; const belowY=b.y+1; if(belowY>=WORLD_H){ settleTreeBlock(getTile,setTile,b); toRemove.push(idx); continue; } const belowKey=b.x+','+belowY; const belowTile=getTile(b.x,belowY); if(passThrough(belowTile) && !occ.has(belowKey)){ occ.delete(b.x+','+b.y); b.y++; occ.add(b.x+','+b.y); continue; } if(b.hBudget>0){ const nx=b.x+b.dir; const ny=b.y+1; const nBelow=getTile(nx,ny); const horizFree=!occ.has(nx+','+b.y) && passThrough(getTile(nx,b.y)); const diagFree=passThrough(nBelow) && !occ.has(nx+','+ny); if(horizFree && diagFree){ occ.delete(b.x+','+b.y); b.x=nx; b.y=ny; occ.add(b.x+','+b.y); b.hBudget--; continue; } } settleTreeBlock(getTile,setTile,b); toRemove.push(idx); } if(toRemove.length){ toRemove.sort((a,b)=>b-a).forEach(i=>fallingBlocks.splice(i,1)); } } }
 
   function drawFallingBlocks(ctx,TILE,INFO){ if(!fallingBlocks.length) return; fallingBlocks.forEach(b=>{ const col=INFO[b.t].color; if(!col) return; ctx.fillStyle=col; ctx.fillRect(b.x*TILE,b.y*TILE,TILE,TILE); }); }
 
@@ -69,6 +80,10 @@ window.MM = window.MM || {};
       const sL=WG.surfaceHeight(wx-1), sR=WG.surfaceHeight(wx+1);
       const slopeL=Math.abs(s-sL), slopeR=Math.abs(s-sR);
       if(slopeL>7 || slopeR>7) continue; // steeper cliffs skip
+      // Require solid footing: the surface tile may be water (swamp pool), a carved
+      // cave mouth or a ravine — never float a tree over those
+      const baseT=arr[s*CHUNK_W+lx];
+      if(baseT!==T.GRASS && baseT!==T.SNOW && baseT!==T.SAND && baseT!==T.STONE) continue;
       // Slightly relax valley steepness
       const variant = (biome===2?'conifer': biome===1? (WG.randSeed(wx+300)>0.5?'oak':'tallOak') : (WG.randSeed(wx+500)<0.15?'megaOak':'oak'));
       buildTree(arr,lx,s,variant,wx);

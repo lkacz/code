@@ -323,6 +323,8 @@ const mobs = (function(){
       const dy = targetY - m.y; m.vy += dy * Math.min(1, dt*2.2);
       const above = getTile(Math.floor(m.x), Math.floor(m.y-0.6));
       if(above!==T.WATER){ if(m.vy < 0) m.vy *= 0.2; m.vy += 0.04; }
+      // Swimmers cruising near the surface stir up small wake ripples
+      if(Math.random()<0.02 && Math.abs(m.y-(m.waterTopY+0.8))<1.0){ try{ if(MM.water && MM.water.disturb) MM.water.disturb(Math.floor(m.x), (Math.random()-0.5)*90); }catch(e){} }
     }
     if(Math.abs(m.vx)>0.01){
       const aheadX = Math.floor(m.x + Math.sign(m.vx)*0.7);
@@ -804,7 +806,17 @@ const mobs = (function(){
   }
 
   function findAt(x,y){ // tile space coords using spatial grid
-    const wx = x+0.5, wy = y+0.5; const k=cellKey(wx,wy); const set=grid.get(k); if(!set) return null; for(const m of set){ if(Math.abs(m.x-wx)<0.8 && Math.abs(m.y-wy)<0.8) return m; } return null; }
+    // Mobs within hit range can live in a neighbouring cell when the click lands near a
+    // cell border, so scan the full 3×3 neighbourhood (cells are CELL tiles wide — cheap).
+    const wx = x+0.5, wy = y+0.5;
+    let best=null, bestD=Infinity;
+    for(let gx=-1; gx<=1; gx++){
+      for(let gy=-1; gy<=1; gy++){
+        const set=grid.get(cellKey(wx+gx*CELL, wy+gy*CELL)); if(!set) continue;
+        for(const m of set){ const dx=Math.abs(m.x-wx), dy=Math.abs(m.y-wy); if(dx<0.9 && dy<0.9){ const d=dx+dy; if(d<bestD){ best=m; bestD=d; } } }
+      }
+    }
+    return best; }
 
   function attackAt(tileX,tileY){ const m=findAt(tileX,tileY); if(!m) return false; damageMob(m, 3); setAggro(m.id); return true; }
 
@@ -815,27 +827,30 @@ const mobs = (function(){
     const spec = SPECIES[m.id]; if(!spec) return;
     // Natural death: no loot or XP, just silently despawn
     if(m._naturalDeath){ return; }
+    // main.js state is reached via explicit window bridges (player/inv/lootInbox)
+    const player = window.player;
     // XP gain
-    if(window.player && typeof player.xp==='number'){ player.xp += spec.xp||1; }
+    if(player && typeof player.xp==='number'){ player.xp += spec.xp||1; }
     // Loot
     if(spec.loot && Array.isArray(spec.loot)){
       const drops=[]; for(const entry of spec.loot){ if(Math.random() <= (entry.chance||1)){ const count = entry.min + ((entry.max && entry.max>entry.min)? (Math.random()*(entry.max-entry.min+1))|0 : 0); drops.push({item:entry.item, qty: count||entry.min||1}); } }
       if(drops.length){
-        if(window.lootInbox){ for(const d of drops) window.lootInbox.push(d); if(window.updateLootInboxIndicator) updateLootInboxIndicator(); }
-        else if(window.inv){ for(const d of drops){ if(typeof inv[d.item]==='number') inv[d.item]+=d.qty; } if(window.updateInventory) updateInventory(); }
+        if(window.lootInbox){ for(const d of drops) window.lootInbox.push(d); if(window.updateLootInboxIndicator) window.updateLootInboxIndicator(); }
+        else if(window.inv){ const inv=window.inv; for(const d of drops){ if(typeof inv[d.item]==='number') inv[d.item]+=d.qty; } if(window.updateInventory) window.updateInventory(); }
       }
     }
   }
 
-  function damagePlayer(amount, srcX, srcY){ if(typeof window.player!=='object') return; if(player.hpInvul && performance.now()<player.hpInvul) return; player.hp -= amount; player.hpInvul = performance.now()+600; // knockback
+  function damagePlayer(amount, srcX, srcY){ const player = window.player; if(typeof player!=='object' || !player) return; if(player.hpInvul && performance.now()<player.hpInvul) return; player.hp -= amount; player.hpInvul = performance.now()+600; // knockback
     if(typeof srcX==='number' && typeof srcY==='number'){ const dx = (player.x - srcX); const dy=(player.y - srcY); const d = Math.hypot(dx,dy)||1; player.vx += (dx/d)*4; player.vy -= 2.5; }
     if(player.hp<=0){ player.hp=0; playerDead(); }
   }
 
   function playerDead(){ // simple respawn
+    const player = window.player; if(!player) return;
     const msg = window.msg || function(){}; msg('Zginąłeś – respawn'); player.hp = player.maxHp; // drop nothing for now
     // relocate
-    if(window.placePlayer) placePlayer(true); }
+    if(window.placePlayer) window.placePlayer(true); }
 
   const AGGRO_SKEW_GRACE_MS = 30000; // accept up to 30s negative skew
   function serialize(){ const now=Date.now(); const rel={}; for(const k in speciesAggro){ const rem = speciesAggro[k]-now; if(rem>0) rel[k]=rem; }

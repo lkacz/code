@@ -16,14 +16,16 @@ export const INFO = {
   6:{hp:1,color:'#2faa2f',drop:'leaf',passable:true},
   // Snow: slightly bluish to contrast against bright backgrounds
   7:{hp:2,color:'#e6f1ff',drop:'snow',passable:false},
-  8:{hp:0,color:'#2477ff',drop:null,passable:true}, // water (non-solid, fluid simulated separately)
+  8:{hp:0,color:'#2477ff',drop:'water',passable:true}, // water (non-solid, fluid simulated separately; mining collects it)
   9:{hp:4,color:'#b07f2c',drop:null,passable:false, chestTier:'common'},
  10:{hp:5,color:'#a74cc9',drop:null,passable:false, chestTier:'rare'},
  11:{hp:6,color:'#e0b341',drop:null,passable:false, chestTier:'epic'},
   // Ice: cooler, more saturated blue for better separation from snow
  12:{hp:3,color:'#8fd6ff',drop:'snow',passable:false}
 };
-export const SNOW_LINE = 14;
+// Rows above (i.e. numerically below) this line get snow cover; tuned for the v2
+// terrain where sea level sits at row ~62 and peaks reach row ~10
+export const SNOW_LINE = 30;
 export const MOVE = {ACC:32,FRICTION:28,MAX:6,JUMP:-9,GRAV:20};
 export const CAPE = {SEGMENTS:12,ANCHOR_FRAC:0.5};
 export const BLINK_DUR = 160;

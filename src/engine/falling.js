@@ -1,133 +1,218 @@
-// Enhanced falling system with granular sand piles
+// Falling-solid physics: rigid bodies (stone clusters, diamonds) + granular sand.
+// Event-driven design: tile edits queue "instability checks" (a Set of cells); the
+// per-frame processor releases unstable tiles into moving entities. Sand obeys an
+// angle-of-repose rule (a grain topples when a side and the cell below it are open),
+// so piles relax into natural 45° slopes and avalanches propagate frame by frame.
 import { T, INFO, WORLD_H } from '../constants.js';
 window.MM = window.MM || {};
 (function(){
-  const FALL_TYPES = new Set([T.STONE, T.DIAMOND, T.SAND]);
-  const g = 60; // gravity
-  const active = []; // rigid blocks (stone pieces, diamonds)
-  const sandActive = []; // flowing sand grains
+  const G_AIR = 60,  G_WATER = 25;            // gravity (tiles/s^2); buoyancy reduces it in water
+  const VMAX_AIR = 55, VMAX_WATER = 9;        // terminal velocity for rigid blocks
+  const SAND_VMAX_AIR = 70, SAND_VMAX_WATER = 7; // sand drifts down slowly through water
+  const QUEUE_BUDGET = 600;                   // instability checks per frame (cascades span frames)
+  const CLUSTER_CAP = 4000;                   // larger stone clusters are treated as bedrock-stable
 
-  function spawn(x,y,t){ active.push({x,yFloat:y,type:t,vy:0}); }
-  function spawnSand(x,y){ sandActive.push({x,yFloat:y,vy:0}); }
+  const active = [];          // rigid blocks {x,yFloat,type,vy,wet}
+  const sandActive = [];      // flowing sand grains {x,yFloat,vy,wet}
+  const unstable = new Set(); // 'x,y' cells awaiting a stability check
+  // Tile accessors supplied by main.js; update() refreshes them so event-driven
+  // helpers (onTileRemoved etc.) always see the live world.
+  let getTile = null, setTile = null;
+  function init(gt, st){ getTile = gt; setTile = st; }
+  const key = (x,y)=>x+','+y;
 
-  // --- Rigid update (stone/diamond) + sand grains ---
-  function update(getTile,setTile,dt){
+  // Falling solids sink through water instead of resting on its surface
+  function passable(t){ return t===T.AIR || t===T.WATER; }
+  function spawn(x,y,t){ active.push({x,yFloat:y,type:t,vy:0,wet:false}); }
+  function spawnSand(x,y){ sandActive.push({x,yFloat:y,vy:0,wet:false}); }
+
+  function notifyWater(x,y){ try{ const w=window.MM && MM.water; if(w && w.onTileChanged && getTile) w.onTileChanged(x,y,getTile); }catch(e){} }
+  // A solid settling into a water cell pushes the water out (up or sideways) instead of deleting it
+  function displaceWater(x,y){ try{ const w=window.MM && MM.water; if(w && w.displaceAt) w.displaceAt(x,y,getTile,setTile); }catch(e){} }
+  function splash(x,yFloat,vy){ try{ const p=window.MM && MM.particles; if(p && p.spawnSplash){ const TILE=MM.TILE||20; p.spawnSplash((x+0.5)*TILE, Math.floor(yFloat)*TILE, Math.min(1, Math.abs(vy)/20)); } const w=window.MM && MM.water; if(w && w.disturb) w.disturb(x, Math.min(300, Math.abs(vy)*14)); }catch(e){} }
+
+  // Never solidify a tile inside the player — the entity rests on them until they move
+  function playerBlocks(x,y){ const p=window.player; if(!p) return false; return x+1 > p.x-p.w/2 && x < p.x+p.w/2 && y+1 > p.y-p.h/2 && y < p.y+p.h/2; }
+
+  // Write a settled solid into the world, displacing (not destroying) any water there
+  function occupy(x,y,type){
+    let yy=y; while(yy>0 && !passable(getTile(x,yy))) yy--; // cell may have been claimed this frame — stack upward
+    const was=getTile(x,yy);
+    if(was===T.WATER) displaceWater(x,yy);
+    setTile(x,yy,type);
+    if(was===T.WATER) notifyWater(x,yy);
+    return yy;
+  }
+
+  // --- Instability queue ---
+  function queueCheck(x,y){ if(y>=0 && y<WORLD_H) unstable.add(key(x,y)); }
+  // Removing (x,y) can destabilize: the cell above (straight fall), the sides and
+  // upper diagonals (sand toppling into the new gap), and the cell below — it is the
+  // freshly exposed pile top and may already violate the repose angle.
+  function queueAroundRemoval(x,y){
+    queueCheck(x,y-1); queueCheck(x,y+1);
+    queueCheck(x-1,y); queueCheck(x+1,y);
+    queueCheck(x-1,y-1); queueCheck(x+1,y-1);
+  }
+
+  function release(x,y){ setTile(x,y,T.AIR); spawnSand(x,y); queueAroundRemoval(x,y); }
+
+  function checkCell(x,y,processed){
+    const t=getTile(x,y);
+    if(t===T.SAND){
+      if(y+1>=WORLD_H) return; // bottom row is bedrock-stable
+      if(passable(getTile(x,y+1))){ release(x,y); return; }
+      // Static repose: undisturbed sand holds slopes up to 2 tiles per column, so
+      // worldgen dunes (commonly slope 2) stay put and dig-triggered cascades die out
+      // at natural terrain instead of sweeping the whole biome flat. Only genuinely
+      // oversteep faces (drop >= 3 beside the grain) slide. In-flight grains in
+      // update() still roll to gentler 45° piles, keeping poured sand granular.
+      const L = passable(getTile(x-1,y)) && passable(getTile(x-1,y+1)) && passable(getTile(x-1,y+2));
+      const R = passable(getTile(x+1,y)) && passable(getTile(x+1,y+1)) && passable(getTile(x+1,y+2));
+      if(L||R) release(x,y);
+    } else if(t===T.DIAMOND){
+      if(y+1<WORLD_H && passable(getTile(x,y+1))){ setTile(x,y,T.AIR); spawn(x,y,T.DIAMOND); queueAroundRemoval(x,y); }
+    } else if(t===T.STONE){
+      processStoneAt(x,y,processed);
+    }
+  }
+
+  function processQueue(){
+    if(!unstable.size) return;
+    let budget=QUEUE_BUDGET;
+    const processed=new Set(); // per-frame stone-cluster dedupe
+    for(const k of unstable){
+      if(budget--<=0) break; // leftovers (big avalanches) continue next frame
+      unstable.delete(k);
+      const ix=k.indexOf(','); checkCell(+k.slice(0,ix), +k.slice(ix+1), processed);
+    }
+  }
+
+  // --- Stone cluster stability ---
+  // Flood-fills connected stone, aborting as soon as any member rests on a supporting
+  // tile (non-passable, non-stone) — the common "still supported" case stays cheap.
+  function processStoneAt(sx,sy,processed){
+    if(getTile(sx,sy)!==T.STONE || processed.has(key(sx,sy))) return;
+    if(sy+1>=WORLD_H || !passable(getTile(sx,sy+1))){ processed.add(key(sx,sy)); return; } // directly supported
+    const stack=[[sx,sy]]; const seen=new Set(); const cluster=[];
+    let supported=false;
+    while(stack.length){
+      const [x,y]=stack.pop(); const k=key(x,y);
+      if(seen.has(k)) continue;
+      if(getTile(x,y)!==T.STONE) continue;
+      seen.add(k); cluster.push([x,y]);
+      if(cluster.length>CLUSTER_CAP){ supported=true; break; }
+      if(y+1>=WORLD_H){ supported=true; break; }
+      const below=getTile(x,y+1);
+      if(below!==T.STONE && !passable(below)){ supported=true; break; }
+      stack.push([x+1,y],[x-1,y],[x,y+1],[x,y-1]);
+    }
+    for(const [x,y] of cluster) processed.add(key(x,y));
+    if(supported) return;
+    for(const [x,y] of cluster){ if(getTile(x,y)===T.STONE){ setTile(x,y,T.AIR); spawn(x,y,T.STONE); } }
+    // Anything that sat on the cluster (sand, diamonds) is now unsupported
+    for(const [x,y] of cluster) queueAroundRemoval(x,y);
+  }
+
+  // Drop a grain/block straight to its landing cell and write it immediately (no roll).
+  // Used to freeze in-flight material into tiles so it can never be lost.
+  function dropToRest(x, fromY, type){
+    let y=Math.max(0, Math.min(WORLD_H-1, Math.floor(fromY)));
+    while(y<WORLD_H-1 && passable(getTile(x,y+1))) y++;
+    const restY=occupy(x,y,type);
+    queueCheck(x,restY);
+    return restY;
+  }
+  // The v5 save persists tiles only — airborne entities would vanish on reload.
+  // buildSaveObject() calls this right before serializing chunks.
+  function settleAll(){
+    if(!getTile) return;
+    for(const b of active) dropToRest(b.x, b.yFloat, b.type);
+    active.length=0;
+    for(const s of sandActive) dropToRest(s.x, s.yFloat, T.SAND);
+    sandActive.length=0;
+  }
+
+  // --- Entity integration (swept, cell-by-cell — large dt cannot tunnel through floors) ---
+  function update(gt,st,dt){
+    init(gt,st);
+    processQueue();
+    // Overload guard: a pathological cascade can't accumulate unbounded entities
+    if(sandActive.length>3000){ const excess=sandActive.splice(0, sandActive.length-3000); for(const s of excess) dropToRest(s.x, s.yFloat, T.SAND); }
+
     for(let i=active.length-1;i>=0;i--){
-      const b=active[i]; b.vy += g*dt; if(b.vy>55) b.vy=55; b.yFloat += b.vy*dt; let yi=Math.floor(b.yFloat);
-      if(yi>=WORLD_H-1){ yi=WORLD_H-1; setTile(b.x,yi,b.type); active.splice(i,1); continue; }
-      const below=getTile(b.x,yi+1); if(below!==T.AIR){ setTile(b.x,yi,b.type); active.splice(i,1); }
-    }
-    for(let i=sandActive.length-1;i>=0;i--){
-      const s=sandActive[i]; s.vy += g*dt; if(s.vy>70) s.vy=70; s.yFloat += s.vy*dt; let yi=Math.floor(s.yFloat);
-  if(yi>=WORLD_H-1){ yi=WORLD_H-1; settleSand(i,s.x,yi,getTile,setTile); continue; }
-      const below=getTile(s.x,yi+1);
-      if(below!==T.AIR){
-        const canL = getTile(s.x-1,yi)===T.AIR && getTile(s.x-1,yi+1)===T.AIR;
-        const canR = getTile(s.x+1,yi)===T.AIR && getTile(s.x+1,yi+1)===T.AIR;
-        if(canL||canR){ let dir=0; if(canL&&canR) dir=(Math.random()<0.5?-1:1); else dir=canL?-1:1; s.x+=dir; s.yFloat=yi+0.05; continue; }
-  settleSand(i,s.x,yi,getTile,setTile); continue;
+      const b=active[i];
+      const inWater = getTile(b.x, Math.floor(b.yFloat))===T.WATER;
+      if(inWater && !b.wet){ b.wet=true; splash(b.x,b.yFloat,b.vy); notifyWater(b.x,Math.floor(b.yFloat)); if(b.vy>VMAX_WATER*1.6) b.vy=VMAX_WATER*1.6; }
+      else if(!inWater) b.wet=false;
+      b.vy += (inWater?G_WATER:G_AIR)*dt;
+      const cap=inWater?VMAX_WATER:VMAX_AIR; if(b.vy>cap) b.vy=cap;
+      let remaining=b.vy*dt, settledAt=-1;
+      while(remaining>0){
+        const yi=Math.floor(b.yFloat);
+        if(yi>=WORLD_H-1){ b.yFloat=WORLD_H-1; settledAt=WORLD_H-1; break; }
+        if(!passable(getTile(b.x,yi+1))){ settledAt=yi; break; }
+        const dist=(yi+1)-b.yFloat;
+        if(remaining<dist){ b.yFloat+=remaining; remaining=0; }
+        else { b.yFloat=yi+1; remaining-=dist; }
+      }
+      if(settledAt>=0){
+        if(playerBlocks(b.x,settledAt)){ b.vy=0; b.yFloat=settledAt; continue; } // rest on the player until they move
+        occupy(b.x,settledAt,b.type);
+        active.splice(i,1);
       }
     }
-  }
 
-  function settleSand(idx,x,y,getTile,setTile){ setTile(x,y,T.SAND); sandActive.splice(idx,1); relaxSand(x,y,getTile,setTile); }
-  function relaxSand(x,y,getTile,setTile){
-    // Optimized avalanche: fewer iterations, cached tops, narrower range.
-    const RANGE=4; // reduced from 5 (optimization 5)
-    let noMoveStreak=0;
-    // up to 20 iterations (optimization 1)
-    for(let iter=0; iter<20; iter++){
-      // cache column tops once
-      const tops=[]; let moved=false;
-      for(let dx=-RANGE; dx<=RANGE; dx++){
-        const wx=x+dx; let top=-1;
-        for(let yy=Math.max(0,y-12); yy<=y+2 && yy<WORLD_H; yy++){ if(getTile(wx,yy)===T.SAND) top=yy; }
-        tops.push({wx,top});
+    for(let i=sandActive.length-1;i>=0;i--){
+      const s=sandActive[i];
+      const inWater = getTile(s.x, Math.floor(s.yFloat))===T.WATER;
+      if(inWater && !s.wet){ s.wet=true; splash(s.x,s.yFloat,s.vy); if(s.vy>SAND_VMAX_WATER*1.6) s.vy=SAND_VMAX_WATER*1.6; }
+      else if(!inWater) s.wet=false;
+      s.vy += (inWater?G_WATER:G_AIR)*dt;
+      const cap=inWater?SAND_VMAX_WATER:SAND_VMAX_AIR; if(s.vy>cap) s.vy=cap;
+      let remaining=s.vy*dt, blockedAt=-1;
+      while(remaining>0){
+        const yi=Math.floor(s.yFloat);
+        if(yi>=WORLD_H-1){ s.yFloat=WORLD_H-1; blockedAt=WORLD_H-1; break; }
+        if(!passable(getTile(s.x,yi+1))){ blockedAt=yi; break; }
+        const dist=(yi+1)-s.yFloat;
+        if(remaining<dist){ s.yFloat+=remaining; remaining=0; }
+        else { s.yFloat=yi+1; remaining-=dist; }
       }
-      for(const {wx,top} of tops){
-        if(top<0) continue;
-        const leftDrop=diagFallDepth(wx,top,-1); const rightDrop=diagFallDepth(wx,top,1);
-        if(leftDrop>=2 || rightDrop>=2){
-          const dir= leftDrop>rightDrop? -1 : rightDrop>leftDrop? 1 : (Math.random()<0.5?-1:1);
-          if(getTile(wx+dir,top)===T.AIR && getTile(wx+dir,top+1)===T.AIR){ setTile(wx,top,T.AIR); spawnSand(wx+dir,top); moved=true; }
-        }
+      if(blockedAt<0) continue;
+      const yi=blockedAt;
+      if(yi<WORLD_H-1){ // grain rolls down slopes (also under water)
+        const canL = passable(getTile(s.x-1,yi)) && passable(getTile(s.x-1,yi+1));
+        const canR = passable(getTile(s.x+1,yi)) && passable(getTile(s.x+1,yi+1));
+        if(canL||canR){ const dir=(canL&&canR)?(Math.random()<0.5?-1:1):(canL?-1:1); s.x+=dir; s.yFloat=yi+0.05; if(s.vy>8) s.vy=8; continue; }
       }
-      if(!moved){ if(++noMoveStreak>=2) break; } else noMoveStreak=0;
+      if(playerBlocks(s.x,yi)){ s.vy=0; s.yFloat=yi; continue; }
+      const restY=occupy(s.x,yi,T.SAND);
+      sandActive.splice(i,1);
+      queueCheck(s.x,restY); // the settled grain may itself sit on a peak
     }
   }
-  function diagFallDepth(x,y,dir){ let steps=0; let cx=x, cy=y; while(steps<6){ if(getTile(cx+dir,cy)!==T.AIR || getTile(cx+dir,cy+1)!==T.AIR) break; cx+=dir; cy++; steps++; if(steps>=2) break; } return steps; }
 
   function draw(ctx,TILE){
     for(const b of active){ ctx.fillStyle=INFO[b.type].color; ctx.fillRect(b.x*TILE,b.yFloat*TILE,TILE,TILE); }
     if(sandActive.length){ ctx.fillStyle=INFO[T.SAND].color; for(const s of sandActive){ ctx.fillRect(s.x*TILE,s.yFloat*TILE,TILE,TILE); } }
   }
 
-  function maybeStart(x,y){
-    const t=getTile(x,y); if(!FALL_TYPES.has(t)) return;
-    if(t===T.DIAMOND){ if(getTile(x,y+1)===T.AIR){ setTile(x,y,T.AIR); spawn(x,y,t); } return; }
-    if(t===T.SAND){ if(getTile(x,y+1)===T.AIR){ setTile(x,y,T.AIR); spawnSand(x,y); } return; }
-    // stone handled via cluster
-  }
+  // --- Public event API (names kept stable for main.js / undo) ---
+  function onTileRemoved(x,y){ queueAroundRemoval(x,y); }
+  function recheckNeighborhood(x,y){ queueCheck(x,y); queueAroundRemoval(x,y); } // undo can both add and remove tiles
+  function afterPlacement(x,y){ queueCheck(x,y); queueCheck(x,y-1); }
+  function maybeStart(x,y){ queueCheck(x,y); }
 
-  // Stone cluster stability (same as earlier implementation)
-  function gatherStoneCluster(sx,sy,visited){ const stack=[[sx,sy]]; const cluster=[]; const key=(x,y)=>x+','+y; while(stack.length){ const [x,y]=stack.pop(); const k=key(x,y); if(visited.has(k)) continue; const t=getTile(x,y); if(t!==T.STONE) continue; visited.add(k); cluster.push({x,y}); stack.push([x+1,y]); stack.push([x-1,y]); stack.push([x,y+1]); stack.push([x,y-1]); } return cluster; }
-  function clusterHasSupport(cluster){ const inC=new Set(cluster.map(n=>n.x+','+n.y)); for(const n of cluster){ if(n.y+1>=WORLD_H) return true; const below=getTile(n.x,n.y+1); if(below!==T.AIR){ if(!(below===T.STONE && inC.has(n.x+','+(n.y+1)))) return true; } } return false; }
-  function processStoneAt(x,y,processed){ const t=getTile(x,y); if(t!==T.STONE) return; if(getTile(x,y+1)!==T.AIR) return; const key=(x,y)=>x+','+y; if(processed.has(key(x,y))) return; const visited=new Set(); const cluster=gatherStoneCluster(x,y,visited); cluster.forEach(n=>processed.add(key(n.x,n.y))); if(cluster.length>4000) return; if(clusterHasSupport(cluster)) return; for(const n of cluster){ if(getTile(n.x,n.y)===T.STONE){ setTile(n.x,n.y,T.AIR); spawn(n.x,n.y,T.STONE); } } }
+  function reset(){ active.length=0; sandActive.length=0; unstable.clear(); }
+  function snapshot(){ try{ return {v:2, active:active.map(b=>({x:b.x,y:b.yFloat,type:b.type,vy:b.vy})), sand:sandActive.map(s=>({x:s.x,y:s.yFloat,vy:s.vy})), queue:[...unstable]}; }catch(e){ return null; } }
+  function restore(s){ reset(); if(!s||typeof s!=='object') return; try{
+    if(Array.isArray(s.active)) for(const b of s.active){ if(b&&typeof b.x==='number') active.push({x:b.x,yFloat:b.y||0,type:b.type,vy:b.vy||0,wet:false}); }
+    if(Array.isArray(s.sand)) for(const g of s.sand){ if(g&&typeof g.x==='number') sandActive.push({x:g.x,yFloat:g.y||0,vy:g.vy||0,wet:false}); }
+    if(Array.isArray(s.queue)) for(const k of s.queue){ if(typeof k==='string') unstable.add(k); }
+  }catch(e){} }
 
-  function onTileRemoved(x,y){ const processed=new Set(); for(let dx=-1; dx<=1; dx++){ for(let yy=y; yy>=0; yy--){ const t=getTile(x+dx,yy); if(t===T.AIR) continue; if(t===T.DIAMOND){ if(getTile(x+dx,yy+1)===T.AIR){ setTile(x+dx,yy,T.AIR); spawn(x+dx,yy,T.DIAMOND); continue; } }
-      if(t===T.SAND){ if(getTile(x+dx,yy+1)===T.AIR){ setTile(x+dx,yy,T.AIR); spawnSand(x+dx,yy); continue; } }
-      if(t===T.STONE){ processStoneAt(x+dx,yy,processed); }
-      break; } } }
-  function reset(){ active.length=0; sandActive.length=0; }
-  function snapshot(){ try{ return {v:1, active:active.map(b=>({x:b.x,y:b.yFloat,type:b.type,vy:b.vy})), sand:sandActive.map(s=>({x:s.x,y:s.yFloat,vy:s.vy}))}; }catch(e){ return null; } }
-  function restore(s){ reset(); if(!s||typeof s!=='object') return; try{ if(Array.isArray(s.active)) for(const b of s.active){ if(b&&typeof b.x==='number'){ active.push({x:b.x,yFloat:b.y||0,type:b.type,vy:b.vy||0}); } } if(Array.isArray(s.sand)) for(const g of s.sand){ if(g&&typeof g.x==='number'){ sandActive.push({x:g.x,yFloat:g.y||0,vy:g.vy||0}); } } }catch(e){} }
-  function recheckNeighborhood(x,y){ const processed=new Set(); for(let dx=-1; dx<=1; dx++){ for(let yy=y; yy>=0; yy--){ const t=getTile(x+dx,yy); if(t===T.AIR) continue; if(t===T.DIAMOND){ if(getTile(x+dx,yy+1)===T.AIR){ setTile(x+dx,yy,T.AIR); spawn(x+dx,yy,T.DIAMOND); continue; } } if(t===T.SAND){ if(getTile(x+dx,yy+1)===T.AIR){ setTile(x+dx,yy,T.AIR); spawnSand(x+dx,yy); continue; } } if(t===T.STONE){ processStoneAt(x+dx,yy,processed); } break; } } }
-  // --- Sand relaxation after placement (handles tall vertical lines becoming piles) ---
-  function afterPlacement(x,y){ // x,y tile placed (any type)
-    const MAX_ITER=8; const RANGE=4; let changed=false; // fewer iterations & narrower window
-    function topSandAt(cx){ for(let yy=0; yy<WORLD_H; yy++){ /* scan upward later? we need highest */ } return findTopSand(cx); }
-    function findTopSand(cx){ let top=-1; // scan downward from a reasonable max (y or y+20) for performance
-      const start=Math.min(WORLD_H-1, Math.max(0,y+25));
-      for(let yy=start; yy>=0; yy--){ const t=getTile(cx,yy); if(t===T.SAND){ top=yy; break; } }
-      return top; }
-  for(let iter=0; iter<MAX_ITER; iter++){
-      let moved=false;
-      // compute heights
-      const heights=[]; let minH=Infinity, maxH=-Infinity;
-      for(let dx=-RANGE; dx<=RANGE; dx++){ const cx=x+dx; const top=findTopSand(cx); heights.push({cx,top}); if(top>=0){ if(top<minH) minH=top; if(top>maxH) maxH=top; } }
-      if(maxH - minH <= 1) break; // tighten: diff 2 triggers smoothing
-      // pick the highest columns that meet or exceed minH+2 (forbid 3-high stacks)
-      for(const h of heights){ if(h.top>=0 && h.top >= minH+2){ // release top grain
-          if(getTile(h.cx,h.top)===T.SAND){ setTile(h.cx,h.top,T.AIR); spawnSand(h.cx,h.top-0.01); moved=true; }
-        }
-      }
-      if(!moved) break; else changed=true;
-    }
-    if(changed){ // let spawned grains process in update; optionally small extra relaxation
-      // no-op placeholder
-    }
-    // Phase 2: enforce side-support rule. Any isolated vertical sand column (no neighbors left/right at any level) taller than 1 collapses (all but base released)
-  for(let dx=-RANGE; dx<=RANGE; dx++){
-      const cx=x+dx;
-      // find top and base of contiguous sand column intersecting y region
-  let top=-1; for(let yy=Math.min(WORLD_H-1,y+30); yy>=0; yy--){ if(getTile(cx,yy)===T.SAND){ top=yy; break; } }
-      if(top<0) continue;
-      // find base by descending
-      let base=top; while(base>0 && getTile(cx,base-1)===T.SAND) base--;
-      const height=top-base+1; if(height<=1) continue;
-      // check isolation: for every level no side tiles
-      let isolated=true; for(let yy=base; yy<=top && isolated; yy++){
-        if(getTile(cx-1,yy)!==T.AIR || getTile(cx+1,yy)!==T.AIR){ isolated=false; }
-      }
-      if(isolated){
-        // release all but bottom into falling grains
-        for(let yy=base+1; yy<=top; yy++){
-          if(getTile(cx,yy)===T.SAND){ setTile(cx,yy,T.AIR); spawnSand(cx,yy-0.05); }
-        }
-      }
-    }
-  }
-  MM.fallingSolids={update,draw,onTileRemoved,maybeStart,reset,recheckNeighborhood,afterPlacement,snapshot,restore};
+  MM.fallingSolids={init,update,draw,onTileRemoved,maybeStart,reset,recheckNeighborhood,afterPlacement,settleAll,snapshot,restore};
 })();
 // ESM export (progressive migration)
 export const fallingSolids = (typeof window!=='undefined' && window.MM) ? window.MM.fallingSolids : undefined;

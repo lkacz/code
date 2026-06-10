@@ -126,6 +126,10 @@
     const info=lastCycleInfo; const dayFrac=DAY_FRAC; const twilight=info.twilightBand; let a=0, col='#000'; if(info.isDay){ if(info.tDay<twilight){ a = (1 - (info.tDay/twilight)) * 0.10; col='#ff9a4a'; } else if(info.tDay>1-twilight){ a = ((info.tDay-(1-twilight))/twilight) * 0.10; col='#ff8240'; } } else { const nightT = (info.cycleT - dayFrac)/(1-dayFrac); a = 0.12 + 0.13 * Math.sin(nightT*Math.PI); col = '#061425'; } if(a>0.001){ ctx.save(); ctx.globalAlpha=a; ctx.fillStyle=col; ctx.fillRect(0,0,W,H); ctx.restore(); }
   };
 
+  // Live day/night info for other systems (weather/clouds). Reflects the debug time
+  // override because it is captured from the same cycleT used to render the sky.
+  background.getCycleInfo = function(){ return lastCycleInfo; };
+
   // Save/load support for time-of-day and moon phase
   background.exportState = function(){
     const now=performance.now();
