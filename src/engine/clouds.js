@@ -114,6 +114,15 @@ window.MM = window.MM || {};
   }
   function regionOf(x){ return Math.floor(x/CFG.REGION_W); }
   function addVapor(r,m){ vapor.set(r,(vapor.get(r)||0)+m); }
+  // Public vapor injection at a world column (steam from boiled-off water tiles —
+  // keeps the cycle volume-true: 1.0 mass == one water tile)
+  function injectVapor(x,m){ if(typeof x!=='number'||!isFinite(x)||!(m>0)) return; addVapor(regionOf(x), Math.min(m,5)); }
+  // Is liquid rain falling over column x right now? (plants drink from it)
+  function isRainingAt(x){
+    if(typeof x!=='number'||!isFinite(x)) return false;
+    for(const c of clouds){ if(c.raining && !c.snowing && Math.abs(c.x-x)<=c.r*1.15) return true; }
+    return false;
+  }
 
   // ---------------- Clouds ----------------
   function makePuffs(seed){
@@ -777,7 +786,7 @@ window.MM = window.MM || {};
     return {clouds, vapor, evapAcc, depFrac, farBudget, simT, bolts, storm};
   }
 
-  MM.clouds={update, draw, reset, addCloud, metrics, setWindOverride, setCycleOverride,
+  MM.clouds={update, draw, reset, addCloud, injectVapor, isRainingAt, metrics, setWindOverride, setCycleOverride,
              startStorm, strike, config:CFG, _debug};
 })();
 // ESM export (progressive migration)

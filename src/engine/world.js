@@ -1,6 +1,7 @@
 // World storage & chunk generation
 import { CHUNK_W, WORLD_H, T, SNOW_LINE, SURFACE_GRASS_DEPTH, SAND_DEPTH } from '../constants.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
+import { ruins as RUINS } from './ruins.js';
 window.MM = window.MM || {};
 (function(){
   const WG = WORLDGEN;
@@ -152,12 +153,54 @@ window.MM = window.MM || {};
         } } } }
     // Trees are populated after base terrain; tree code uses deterministic RNG so caching heights is safe
     if(MM.trees && MM.trees.populateChunk){ MM.trees.populateChunk(arr,cx); }
+    placeStructures(arr,cx);
+    // Buried ruin complexes are anchor-based (they may span chunk borders) and
+    // applied last: carved interiors and masonry win over terrain/trees/chests
+    if(RUINS && RUINS.applyToChunk) RUINS.applyToChunk(arr,cx);
     world.set(k,arr); versions.set(k,0);
     if(world.size>CHUNK_CAP) evictFarChunks();
     // A new chunk may carve caves right beside existing dormant water (or bring its own
     // water beside existing caves) — queue a boundary wake so the fluid sim reacts.
     try{ if(MM.water && MM.water.noteChunkGenerated) MM.water.noteChunkGenerated(cx*CHUNK_W, cx*CHUNK_W+CHUNK_W-1); }catch(e){}
     return arr; }
+
+  // --- Procedural structures: rare deterministic ruins (land) and shipwrecks
+  // (sea floor), each sheltering a loot chest. One structure per eligible chunk,
+  // anchored away from the chunk edges so it never spans a boundary.
+  function placeStructures(arr,cx){
+    const WG=MM.worldGen; if(!WG || !WG.column) return;
+    const gate=WG.randSeed(cx*13.37+5.1);
+    if(gate>=0.10) return;                       // ~10% of chunks roll a structure
+    const lx0=8+Math.floor(WG.randSeed(cx*7.77+2.2)*(CHUNK_W-24));
+    const wx0=cx*CHUNK_W+lx0;
+    const col=WG.column(wx0);
+    const put=(lx,y,t)=>{ if(lx>=0&&lx<CHUNK_W&&y>=0&&y<WORLD_H){ const i=tileIndex(lx,y); if(arr[i]===T.AIR||arr[i]===T.WATER||t===T.AIR) arr[i]=t; } };
+    if(col.biome===5){
+      // shipwreck: a broken wooden hull resting on the seabed with an epic chest
+      const s=col.row;
+      if(s<((WG.settings&&WG.settings.seaLevel)||62)+4) return;  // needs real depth
+      for(let dx=-4;dx<=4;dx++){
+        const yy=s-1-Math.max(0,2-Math.abs(Math.abs(dx)-2));     // shallow hull curve
+        for(let y=yy;y<s;y++) if(Math.abs(dx)>=3||y===yy) put(lx0+dx,y,T.WOOD);
+      }
+      put(lx0-1,s-2,T.AIR); put(lx0,s-2,T.AIR); put(lx0+1,s-2,T.AIR); // cargo hold
+      put(lx0,s-2,T.CHEST_EPIC);
+      put(lx0+2,s-5,T.WOOD); put(lx0+2,s-4,T.WOOD); put(lx0+2,s-3,T.WOOD); // broken mast
+      return;
+    }
+    if(col.biome===5||col.biome===6||col.beach||col.ravine>0) return;
+    // ruin: broken stone pillars + a partial wall around a rare chest
+    const s=col.row;
+    const sL=WG.column(wx0-3).row, sR=WG.column(wx0+3).row;
+    if(Math.abs(sL-s)>2 || Math.abs(sR-s)>2) return;            // flat ground only
+    const h1=2+Math.floor(WG.randSeed(wx0*1.3)*3), h2=2+Math.floor(WG.randSeed(wx0*2.7)*3);
+    for(let i=1;i<=h1;i++) put(lx0-3,s-i,T.STONE);
+    for(let i=1;i<=h2;i++) put(lx0+3,s-i,T.STONE);
+    put(lx0-2,s-1,T.STONE); put(lx0+2,s-1,T.STONE);             // crumbled wall stubs
+    if(WG.randSeed(wx0*3.9)<0.5) put(lx0-3,s-h1-1,T.STONE);     // surviving lintel piece
+    const r=WG.randSeed(wx0*5.5);
+    put(lx0,s-1, r>0.7? T.CHEST_EPIC : T.CHEST_RARE);
+  }
 
   // NaN/Infinity coordinates slip past `y<0||y>=WORLD_H` (NaN compares false) and
   // runaway x used to mint chunks without bound — both are treated as void here.

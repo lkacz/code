@@ -17,7 +17,8 @@ WG.worldSeed = 12345;
 WG.settings = (function(){
 	const DEF = {
 		seaLevel: 62,            // row of the global water line
-		oceanFrac: 0.32,         // continental threshold: higher => more/larger oceans
+		oceanFrac: 0.26,         // continental threshold: higher => more/larger oceans
+		                         // (0.26 ≈ mostly seas, with the occasional wide ocean)
 		mountainAmp: 38,         // max ridged lift above highlands (tiles)
 		mountainThreshold: 0.46, // mountain mask gate (lower => more ranges)
 		valleyGain: 30,          // max valley carve depth (tiles)
@@ -30,7 +31,10 @@ WG.settings = (function(){
 		lakeMaxDepth: 12,        // depth cap for perched valley lakes
 		forestDensityMul: 1.0
 	};
-	try{ const raw=localStorage.getItem('mm_world_settings_v2'); if(raw){ const obj=JSON.parse(raw); return Object.assign({}, DEF, obj); } }catch(e){}
+	try{ const raw=localStorage.getItem('mm_world_settings_v2'); if(raw){ const obj=JSON.parse(raw);
+		// migrate the old 0.32 default (oceans dominated the map) to the new sea-sized default
+		if(obj.oceanFrac===0.32) delete obj.oceanFrac;
+		return Object.assign({}, DEF, obj); } }catch(e){}
 	return Object.assign({}, DEF);
 })();
 WG.getSettings = function(){ return Object.assign({}, WG.settings); };
@@ -103,11 +107,24 @@ WG.column = function(x){
 		valleyDepth = Math.pow(tv,1.6)*S.valleyGain*(0.45+0.75*mountainMask+0.3*(1-ero));
 		elev = Math.max(elev-valleyDepth, Math.min(elev,-4)); // never trench inland below -4
 	}
+	// Desert islands: rare ridged shoals lift the sea bed into a sandy islet with a
+	// shallow shelf around it. A slow gate keeps most water open, so a sea usually
+	// stays clear and a long ocean crossing is broken by the occasional palm island.
+	let island=false;
+	if(elev<-2 && WG.valueNoise(xw,1500,951)>0.58){
+		const isl=ridgeSharp(xw,300,952,2.0);
+		if(isl>0.72){
+			const t01=(isl-0.72)/0.28;          // 0 = shelf edge → 1 = island crest
+			const islandElev=-5+t01*9;          // -5 shoal rising to ~+4 dune top
+			if(islandElev>elev){ elev=islandElev; island = islandElev>-1.5; }
+		}
+	}
 	const t = WG.temperature(x), m = WG.moisture(x);
 	// Erosion-scaled roughness: alpine terrain is jagged, plains stay calm
 	let rough = (fbm1(x,64,3,501)-0.5)*(2.5+9*(1-ero)+7*mountainMask)*S.detailAmp;
 	if(valleyDepth>4) rough *= clamp(1-(valleyDepth-4)*0.06,0.25,1); // calm valley floors
-	if(elev<-3) rough *= 0.55; // calm sea beds
+	if(island) rough *= 0.4;   // islets stay gentle dunes
+	else if(elev<-3) rough *= 0.55; // calm sea beds
 	elev += rough;
 	let row = Math.round(sea-elev);
 	row = clamp(row, 8, Math.min(sea+31, WORLD_H-34));
@@ -124,15 +141,17 @@ WG.column = function(x){
 	else if(m>0.72 && elevF<8 && ero>0.45) biome=4;
 	else if(m<0.46) biome=1;
 	else biome=0;
+	// Islets above the waterline are sandy desert isles regardless of climate
+	if(island && elevF>-2.5) biome=3;
 	const beach = (elevF>=-3 && elevF<=2.5 && cont<S.oceanFrac+0.12);
 	// Cave control fields
 	const entrance = WG.valueNoise(x,230,701)>0.80;               // hillside cave mouths
 	const rv = WG.ridge(xw,1300,801);
 	const rvGate = 1-0.035*Math.max(0.0001,S.ravineFreq);
 	let ravine=0, ravineDepth=0;
-	if(S.ravineFreq>0 && rv>rvGate && elevF>2 && !beach){ ravine=(rv-rvGate)/(1-rvGate); ravineDepth=16+48*ravine; }
+	if(S.ravineFreq>0 && rv>rvGate && elevF>2 && !beach && !island){ ravine=(rv-rvGate)/(1-rvGate); ravineDepth=16+48*ravine; }
 	const aquifer = Math.round(S.aquiferLevel + (fbm1(x,820,2,811)-0.5)*40);
-	c = {row,biome,elev:elevF,cont,ero,pv,mountainMask,valleyDepth,t,m,beach,entrance,ravine,ravineDepth,aquifer};
+	c = {row,biome,elev:elevF,cont,ero,pv,mountainMask,valleyDepth,t,m,beach,island,entrance,ravine,ravineDepth,aquifer};
 	colCache.set(x,c); return c;
 };
 WG.surfaceHeight = function(x){ return WG.column(x).row; };
@@ -203,7 +222,8 @@ WG.chestPlace = function(x){ return WG.chestNoise(x) > 0.94; };
 // Diamond odds scale with absolute depth; world.js triples this beside cave walls
 WG.diamondChance = function(y){ const d=clamp((y-58)/80,0,1); return 0.0006 + d*d*0.038; };
 
-WG.setSeedFromInput();
+// Node sims import this module without a DOM; the seed input only exists in the browser
+if(typeof document!=='undefined') WG.setSeedFromInput();
 MM.worldGen = WG;
 // ES module exports (progressive migration): allow importing as a module
 export const worldGen = WG;

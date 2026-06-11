@@ -134,11 +134,16 @@ window.MM = window.MM || {};
   function solidT(t){ return t!==T.AIR && t!==T.WATER && t!==T.LEAF; }
   function playerRef(){ return (typeof window!=='undefined' && window.player) || null; }
   function say(t){ try{ if(typeof window!=='undefined' && window.msg) window.msg(t); }catch(e){} }
-  // Same contract as mobs.damagePlayer: i-frames, knockback, respawn at zero
+  // Hero damage is centralized in main.js (window.damageHero); the inline body
+  // below is the fallback for the DOM-less Node sims, which stub neither handler.
   function damageHero(amount, srcX){
     if(!(amount>0) || !isFinite(amount)) return;
     const p=playerRef();
     if(!p || typeof p.hp!=='number') return;
+    if(typeof window!=='undefined' && typeof window.damageHero==='function'){
+      window.damageHero(amount,{srcX, kb:4, kbY:-4.5, cause:'boss'});
+      return;
+    }
     const now=(typeof performance!=='undefined')? performance.now() : 0;
     if(p.hpInvul && now<p.hpInvul) return;
     p.hp-=amount; p.hpInvul=now+600;
@@ -156,12 +161,17 @@ window.MM = window.MM || {};
 
   // Build a seeded monster: mirrored blob silhouette, guaranteed-connected, with a
   // buried heart, armor shell, legs (for grounded archetypes) and a front eye.
-  function generateMonster(seed,x,y){
+  // opts.aquatic → a 'swimmer' (tentacled, icy palette, lives in oceans);
+  // opts.scale  → silhouette dimensions multiplier (3 = gargantuan).
+  function generateMonster(seed,x,y,opts){
     const rng=mulberry(seed);
+    const scale=Math.max(1,(opts && opts.scale)||1);
+    const aquatic=!!(opts && opts.aquatic);
     const roll=rng();
-    const archetype = roll<0.5? 'walker' : roll<0.8? 'hopper' : 'floater';
-    const hw=2+Math.floor(rng()*3);             // half-width 2..4 → body 5..9 wide
-    const bodyH=4+Math.floor(rng()*4);          // body 4..7 tall
+    const archetype = aquatic? 'swimmer' : (roll<0.5? 'walker' : roll<0.8? 'hopper' : 'floater');
+    const legless = archetype==='floater' || archetype==='swimmer';
+    const hw=(2+Math.floor(rng()*3))*scale;     // half-width 2..4 (×scale) → body 5..9 wide
+    const bodyH=(4+Math.floor(rng()*4))*scale;  // body 4..7 tall (×scale)
     const cells=new Map();                      // "dx,dy" -> role placeholder
     const put=(dx,dy)=>cells.set(dx+','+dy,1);
     for(let dy=-(bodyH-1); dy<=0; dy++){
@@ -174,8 +184,8 @@ window.MM = window.MM || {};
     const coreDx=0, coreDy=-Math.floor(bodyH/2);
     for(let ddy=-1; ddy<=1; ddy++) for(let ddx=-1; ddx<=1; ddx++) put(coreDx+ddx, coreDy+ddy);
     // legs below the body for grounded archetypes
-    if(archetype!=='floater'){
-      const legLen=1+Math.floor(rng()*2);
+    if(!legless){
+      const legLen=(1+Math.floor(rng()*2))*scale;
       const legXs=[-(hw-1), hw-1]; if(rng()<0.5) legXs.push(0);
       for(const lx of legXs){ if(!cells.has(lx+',0')) put(lx,0); for(let l=1;l<=legLen;l++) put(lx,l); }
     }
@@ -193,10 +203,12 @@ window.MM = window.MM || {};
     const hue=rng()*360;
     const size=reach.size;
     // a body is built from one or two of the game's own block types, so it reads
-    // as made of tiles; the heart stays a glowing organ and armor is always stone
-    const primary=BODY_BLOCKS[Math.floor(rng()*BODY_BLOCKS.length)];
-    let accent=BODY_BLOCKS[Math.floor(rng()*BODY_BLOCKS.length)];
-    if(accent===primary) accent=BODY_BLOCKS[(BODY_BLOCKS.indexOf(primary)+1)%BODY_BLOCKS.length];
+    // as made of tiles; the heart stays a glowing organ and armor is always stone.
+    // Sea beasts wear an icy/sandy palette so they read as creatures of the deep.
+    const palette = aquatic? [T.ICE, T.SAND, T.STONE] : BODY_BLOCKS;
+    const primary=palette[Math.floor(rng()*palette.length)];
+    let accent=palette[Math.floor(rng()*palette.length)];
+    if(accent===primary) accent=palette[(palette.indexOf(primary)+1)%palette.length];
     const bodyBlocks=[primary, accent];
     const legBlock = (primary===T.WOOD||accent===T.WOOD)? T.WOOD : T.STONE;
     function paintColor(blockType, isCore, nearCore){
@@ -235,16 +247,16 @@ window.MM = window.MM || {};
       if(p.role!=='flesh') continue;
       const midRow = p.dy<0 && p.dy>topDy;
       if(midRow && (p.dx===minDx || p.dx===maxDx) && Math.abs(p.dx)>=2) p.role='arm';
-      else if(archetype==='floater' && p.dy===0) p.role='tentacle';
+      else if(legless && p.dy===0) p.role='tentacle';
     }
-    if(archetype!=='floater'){ /* keep feet as legs */ }
     const name=NAME_A[Math.floor(rng()*NAME_A.length)]+NAME_B[Math.floor(rng()*NAME_B.length)];
+    const gargantuan=scale>1;
     const m={
       id:monsterSeq++, seed, name, archetype, parts, core, hue, bodyBlocks,
       x, y, vx:0, vy:0, dir:facing, onGround:false,
-      baseParts:reach.size,
-      speed:1.2+rng()*1.4, sense:18+rng()*14,
-      jump:7+rng()*3, hopT:0, contactDmg:Math.round(6+rng()*6),
+      baseParts:reach.size, aquatic, gargantuan,
+      speed:(1.2+rng()*1.4)*(gargantuan?0.75:1), sense:18+rng()*14+(gargantuan?10:0),
+      jump:7+rng()*3, hopT:0, contactDmg:Math.round((6+rng()*6)*(gargantuan?2:1)),
       state:'roam', flipT:2+rng()*4, frozen:false, bobP:rng()*6.28,
       hunger:rng()*0.4, feed:null, biteT:0, mealBites:0, grown:0, forageCd:0,
       tilt:0, tiltV:0, gait:rng()*6.28, airFrom:null,
@@ -277,6 +289,9 @@ window.MM = window.MM || {};
     const px=(p && isFinite(p.x))? p.x : 0;
     const wg=MM.worldGen;
     const seed=(opts && typeof opts.seed==='number')? (opts.seed>>>0) : ((Math.random()*0x7fffffff)|0);
+    // 10% of natural spawns are gargantuan: 3× silhouette, double trample damage,
+    // an epic-chest hoard on death. Forced/test spawns stay normal unless asked.
+    const scale=(opts && opts.scale) || ((!opts || !opts.force) && Math.random()<0.10? 3 : 1);
     for(let attempt=0; attempt<40; attempt++){
       let x;
       if(opts && typeof opts.x==='number'){
@@ -286,21 +301,41 @@ window.MM = window.MM || {};
         const side=Math.random()<0.5?-1:1;
         x=Math.round(px + side*(CFG.SPAWN_MIN + Math.random()*(CFG.SPAWN_MAX-CFG.SPAWN_MIN)));
       }
-      // reachable land only: skip open sea / lake columns
       const biome=(wg && wg.biomeType)? wg.biomeType(x) : 0;
-      if((biome===5 || biome===6) && !(opts && typeof opts.x==='number')) continue;
       const surf=(wg && wg.surfaceHeight)? wg.surfaceHeight(x) : 90;
-      if(getTile(x, surf-1)===T.WATER) continue;
-      const m=generateMonster(seed, x, surf-1);
+      // Submerged column → spawn a sea beast swimming in the water. Keyed off the
+      // actual water (not the biome) so the debug button / forced spawns work from
+      // a boat too — previously explicit-x spawns skipped this path and all 40
+      // attempts failed on the water check ("nie udało się przyzwać").
+      if(getTile(x, surf-1)===T.WATER){
+        // natural spawns leave lakes empty; explicit summons may use them if deep enough
+        if(biome===6 && !(opts && typeof opts.x==='number')) continue;
+        const m=generateMonster(seed, x, 0, {aquatic:true, scale});
+        // find the local water surface (perched lakes sit above the global sea level)
+        let waterTop=surf-1, scan=0;
+        while(scan<40 && getTile(x, waterTop-1)===T.WATER){ waterTop--; scan++; }
+        m.y=waterTop + m.height + 1;            // fully submerged below the surface
+        if(m.y>surf-2) continue;                // too shallow for this body
+        if(collides(m,getTile)) continue;
+        monsters.push(m); spawnedTotal++;
+        const dirTxt=(m.x>=px)? 'na wschodzie':'na zachodzie';
+        say((m.gargantuan? '⚠ GARGANTUICZNY wodny potwór ':'🌊 Wodny potwór ')+m.name+' wynurzył się '+dirTxt+'!');
+        try{ if(MM.audio && MM.audio.play) MM.audio.play('roar'); }catch(e){}
+        return m;
+      }
+      if(biome===6 && !(opts && typeof opts.x==='number')) continue;
+      const m=generateMonster(seed, x, surf-1, {aquatic:!!(opts && opts.aquatic), scale});
       if(opts && opts.archetype) m.archetype=opts.archetype;
       if(opts && opts.freeze) m.frozen=true;
       // lift out of hillsides so no part starts buried; if the column is sealed
       // under solid rock even after lifting, reject it and try another spot
-      let lift=0; while(lift<12 && collides(m,getTile)){ m.y-=1; lift++; }
+      let lift=0; const liftMax=12*Math.max(1,scale);
+      while(lift<liftMax && collides(m,getTile)){ m.y-=1; lift++; }
       if(collides(m,getTile)) continue;
       monsters.push(m); spawnedTotal++;
       const dirTxt=(m.x>=px)? 'na wschodzie':'na zachodzie';
-      say('⚠ Potwór '+m.name+' pojawił się '+dirTxt+'!');
+      say((m.gargantuan? '⚠ GARGANTUICZNY potwór ':'⚠ Potwór ')+m.name+' pojawił się '+dirTxt+'!');
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('roar'); }catch(e){}
       return m;
     }
     return null;
@@ -393,6 +428,20 @@ window.MM = window.MM || {};
     }
   }
   function stepPhysics(m,getTile,dt){
+    if(m.archetype==='swimmer'){
+      // Buoyant in water: free 2-axis swimming. Out of water (beached or breaching
+      // the surface) it sinks back under reduced gravity instead of hovering.
+      const cx=Math.floor(m.x);
+      const submerged = getTile(cx, Math.floor(m.y-m.height/2))===T.WATER || getTile(cx, Math.floor(m.y))===T.WATER;
+      if(!submerged){ m.vy+=CFG.GRAV*0.6*dt; if(m.vy>CFG.MAX_FALL*0.6) m.vy=CFG.MAX_FALL*0.6; m.vx*=Math.max(0,1-dt*0.8); }
+      const oldX=m.x, oldY=m.y;
+      m.y+=m.vy*dt;
+      if(collides(m,getTile)){ m.y=oldY; m.vy = submerged? -Math.abs(m.vy)*0.3 : 0; }
+      m.x+=m.vx*dt;
+      if(collides(m,getTile)){ m.x=oldX; m.dir*=-1; m.vx*=-0.3; }
+      m.onGround=false;
+      return;
+    }
     if(m.archetype==='floater'){
       const oldX=m.x, oldY=m.y;
       m.x+=m.vx*dt; m.y+=m.vy*dt;
@@ -503,7 +552,7 @@ window.MM = window.MM || {};
     return {left,right,total:left+right};
   }
   function updateBalance(m,dt){
-    if(m.archetype==='floater'){ m.tilt*=Math.max(0,1-dt*3); return; }
+    if(m.archetype==='floater' || m.archetype==='swimmer'){ m.tilt*=Math.max(0,1-dt*3); return; }
     const s=legSupport(m);
     // target lean: imbalance between sides pulls the body toward the weak side;
     // a near-legless beast can't hold any pose and topples toward TILT_MAX
@@ -616,12 +665,13 @@ window.MM = window.MM || {};
     }
     m.state='feed';
     const bx=Math.round(m.x);
-    if(m.archetype==='floater') m.vy=clamp((m.feed.ty-1-m.y)*1.1,-4,4); // sink/rise to the morsel
+    const drifts = m.archetype==='floater' || m.archetype==='swimmer';
+    if(drifts) m.vy=clamp((m.feed.ty-1-m.y)*1.1,-4,4); // sink/rise to the morsel
     const reach=Math.abs(m.feed.tx-bx);
     if(reach>1){
       m.dir=m.feed.tx>=bx?1:-1;                          // shuffle over to the food
       const want=m.dir*m.speed*0.7;
-      if(m.archetype==='floater') m.vx+=(want*1.2-m.vx)*Math.min(1,dt*2);
+      if(drifts) m.vx+=(want*1.2-m.vx)*Math.min(1,dt*2);
       else m.vx+=(want-m.vx)*Math.min(1,dt*4);
       return true;
     }
@@ -722,6 +772,11 @@ window.MM = window.MM || {};
       if(m.flipT<=0){ m.dir=Math.random()<0.5?-1:1; m.flipT=3+Math.random()*5; }
       want=m.dir*m.speed*0.45;
     }
+    // mud bogs grounded beasts down to half pace (floaters/swimmers don't touch it)
+    if(m.archetype!=='floater' && m.archetype!=='swimmer'){
+      const fx=Math.floor(m.x), fy=Math.floor(m.y);
+      if(getTile(fx,fy+1)===T.MUD || getTile(fx,fy)===T.MUD) want*=0.5;
+    }
     if(m.archetype==='hopper'){
       // hops carry the momentum; between hops it crouches in place
       if(m.onGround){
@@ -737,6 +792,21 @@ window.MM = window.MM || {};
       if(m.state==='hunt' && p) targetY=Math.max(targetY-2, p.y-2);   // swoop at prey
       m.bobP+=dt*2; if(m.bobP>1e3) m.bobP%=(Math.PI*2);
       m.vy=clamp((targetY-m.y)*1.1, -4, 4)+Math.sin(m.bobP)*0.8;
+    } else if(m.archetype==='swimmer'){
+      m.vx+=(want*1.1-m.vx)*Math.min(1,dt*2);
+      // patrol just under the surface; while hunting, dive/rise toward the prey
+      // but never above the waterline (the surface clamp keeps it submerged)
+      const tx=Math.floor(m.x);
+      let waterTop=Math.floor(m.y); let scan=0;
+      while(scan<48 && getTile(tx,waterTop-1)===T.WATER){ waterTop--; scan++; }
+      let targetY=waterTop + m.height + 1;
+      if(m.state==='hunt' && p) targetY=Math.max(targetY, Math.min(p.y+1, m.y+12));
+      m.bobP+=dt*1.6; if(m.bobP>1e3) m.bobP%=(Math.PI*2);
+      m.vy=clamp((targetY-m.y)*1.1, -4, 4)+Math.sin(m.bobP)*0.6;
+      // don't swim into the beach: water must continue at mid-body depth ahead
+      const aheadX=Math.floor(m.x)+(m.vx>=0? m.maxDx+1 : m.minDx-1);
+      const midY=Math.floor(m.y-m.height/2);
+      if(getTile(aheadX,midY)!==T.WATER && getTile(aheadX,Math.floor(m.y))!==T.WATER){ m.dir*=-1; m.vx*=-0.5; }
     } else {
       m.vx+=(want-m.vx)*Math.min(1,dt*4);
     }
@@ -812,20 +882,55 @@ window.MM = window.MM || {};
       }
     }catch(e){}
     for(const p of m.parts) spawnDebris(m,p,2);
+    // The felled beast leaves its hoard: chests settle onto the crater floor
+    // (a gargantuan drops a pile of epic chests; a normal beast one weighted chest)
+    const chestN = m.gargantuan? 3 : 1;
+    for(let c=0;c<chestN;c++){
+      const tx=bx + (c===0?0: c===1?-2:2) + Math.round((Math.random()-0.5)*2);
+      const tier = m.gargantuan? T.CHEST_EPIC
+                 : (Math.random()<0.15? T.CHEST_EPIC : Math.random()<0.65? T.CHEST_RARE : T.CHEST_COMMON);
+      let placed=false;
+      for(let ty=Math.max(2,by-2); ty<WORLD_H-3; ty++){
+        const tt=getTile(tx,ty);
+        // air or water column with solid floor below — works on land and seabed
+        if((tt===T.AIR||tt===T.WATER) && solidT(getTile(tx,ty+1))){
+          setTile(tx,ty,tier);
+          if(tt===T.WATER){ try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(tx,ty,getTile); }catch(e){} }
+          placed=true; break;
+        }
+      }
+      if(!placed){ const tt=getTile(tx,by); if(tt===T.AIR||tt===T.WATER) setTile(tx,by,tier); }
+    }
     const TILE=MM.TILE||20;
     blasts.push({x:(bx+0.5)*TILE, y:(by+0.5)*TILE, R:R*TILE, t:0, max:0.7});
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((bx+0.5)*TILE,(by+0.5)*TILE,'epic'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('explosion'); }catch(e){}
     const p=playerRef();
     if(p && isFinite(p.x) && isFinite(p.y)){
       const d=Math.max(Math.abs(p.x-bx), Math.abs(p.y-by));
       if(d<R+4) damageHero(Math.round(40*(1-d/(R+5))+6), bx);
     }
     if(p && typeof p.xp==='number') p.xp+=40+m.parts.length*2;
-    say('💥 Serce potwora '+m.name+' zniszczone! +'+(40+m.parts.length*2)+' XP');
+    say('💥 Serce potwora '+m.name+' zniszczone! +'+(40+m.parts.length*2)+' XP'+(m.gargantuan? ' — zostawił stos epickich skrzyń!':' — zostawił skrzynię!'));
     killedTotal++;
+    try{ if(typeof window!=='undefined' && window.dispatchEvent) window.dispatchEvent(new CustomEvent('mm-boss-killed',{detail:{name:m.name, gargantuan:!!m.gargantuan}})); }catch(e){}
     m.dead=true;
     const i=monsters.indexOf(m); if(i>=0) monsters.splice(i,1); // gone the moment it bursts
   }
+  // --- Abduction support (UFO): the saucer dematerializes a whole beast — no
+  // detonation, no crater, no chest, no kill credit; it was taken, not slain ---
+  function nearestForAbduction(wx,range){
+    let best=null, bd=Infinity;
+    for(const m of monsters){ if(m.dead) continue; const d=Math.abs(m.x-wx); if(d<=range && d<bd){ bd=d; best=m; } }
+    return best;
+  }
+  function abduct(m){
+    const i=monsters.indexOf(m); if(i<0) return false;
+    for(const p of m.parts) spawnDebris(m,p,1); // body crumbles upward into the beam
+    m.dead=true; monsters.splice(i,1);
+    return true;
+  }
+
   // The heart is unassailable while body blocks seal it on all four sides — the
   // hero has to carve a path through the plating before the heart can be struck.
   function coreProtected(m){
@@ -833,14 +938,20 @@ window.MM = window.MM || {};
     return m.occ.has((c.dx+1)+','+c.dy) && m.occ.has((c.dx-1)+','+c.dy)
         && m.occ.has(c.dx+','+(c.dy+1)) && m.occ.has(c.dx+','+(c.dy-1));
   }
-  // Attack the part occupying world tile (tx,ty). Damage defaults to the hero's tool.
-  function attackAt(tx,ty,dmgOpt){
+  // Attack the part occupying world tile (tx,ty). Damage = hero's tool + optional
+  // equipped-weapon bonus passed by main.js (MM.activeModifiers.attackDamage).
+  function attackAt(tx,ty,dmgBonus){
+    const p=playerRef();
+    let dmg=CFG.TOOL_DMG[(p && p.tool)||'basic']||2;
+    if(typeof dmgBonus==='number' && isFinite(dmgBonus) && dmgBonus>0) dmg+=dmgBonus;
+    return strikeAt(tx,ty,dmg);
+  }
+  // Absolute-damage strike (arrows / flame): bypasses tool scaling
+  function damageAt(tx,ty,dmg){
+    return strikeAt(tx,ty, Math.max(0.5,(typeof dmg==='number' && isFinite(dmg))? dmg:1));
+  }
+  function strikeAt(tx,ty,dmg){
     if(typeof tx!=='number' || typeof ty!=='number' || !isFinite(tx) || !isFinite(ty)) return false;
-    let dmg=dmgOpt;
-    if(typeof dmg!=='number' || !(dmg>0)){
-      const p=playerRef();
-      dmg=CFG.TOOL_DMG[(p && p.tool)||'basic']||2;
-    }
     const w=MM.world;
     const getTile=(w && w.getTile)||(()=>T.AIR), setTile=(w && w.setTile)||(()=>{});
     for(const m of monsters){
@@ -999,7 +1110,7 @@ window.MM = window.MM || {};
       // hop a full tile at a time even though the physics moves continuously.
       // A shaking beast judders sideways to telegraph "get off my back".
       const bx=m.x + (m.shakeT>0? Math.sin(now*0.055)*0.18 : 0), by=m.y;
-      const wob=m.archetype==='floater'? Math.sin(now*0.002+m.bobP)*2 : 0;
+      const wob=(m.archetype==='floater'||m.archetype==='swimmer')? Math.sin(now*0.002+m.bobP)*2 : 0;
       const enraged=m.core.hp<m.core.maxHp*0.5;
       const occ=m.occ;   // occupancy lattice kept fresh by refreshStructure()
       // feeding cue: pulse the morsel being eaten (world space, untilted)
@@ -1132,8 +1243,8 @@ window.MM = window.MM || {};
   }
   function _debug(){ return {monsters, debris, blasts, projectiles, spawnTimer, lastIsDay}; }
 
-  MM.bosses={update, draw, drawHUD, attackAt, forceSpawn, killNearest, collideHero, clearAll, reset, metrics,
-             setCycleOverride, config:CFG, _debug};
+  MM.bosses={update, draw, drawHUD, attackAt, damageAt, forceSpawn, killNearest, collideHero, clearAll, reset, metrics,
+             nearestForAbduction, abduct, setCycleOverride, config:CFG, _debug};
 })();
 // ESM export (progressive migration)
 export const bosses = (typeof window!=='undefined' && window.MM) ? window.MM.bosses : undefined;

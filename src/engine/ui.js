@@ -166,9 +166,66 @@ MM.ui = (function(){
       if(!speciesList){
         const p=document.createElement('div'); p.textContent='(Brak systemu mobów)'; p.style.cssText='font-size:11px; opacity:.5;'; box.appendChild(p); return;
       }
-      speciesList.forEach(id=>{
+      // ZLOTY has its own dedicated buttons below (forceSpawn would skip its form setup)
+      speciesList.filter(id=>id!=='ZLOTY').forEach(id=>{
         const b=document.createElement('button'); b.textContent=id; b.style.cssText='flex:1 1 70px; font-size:11px; padding:3px 6px;';
         b.addEventListener('click',()=>{ try{ if(typeof spawnCb==='function') spawnCb(id); }catch(e){} });
+        box.appendChild(b);
+      });
+      // Golden sprinter debug: summon a chosen form on demand (normally it
+      // visits on its own once every ~7 in-game days)
+      const goldLab=document.createElement('div'); goldLab.textContent='✨ Złoty sprinter (debug):'; goldLab.style.cssText='width:100%; font-size:11px; opacity:.7; margin-top:4px;';
+      box.appendChild(goldLab);
+      [['bird','🐦 Ptak'],['runner','🦌 Biegacz'],['mole','🐹 Kret'],[null,'✨ Losowy']].forEach(([form,label])=>{
+        const b=document.createElement('button'); b.textContent=label; b.style.cssText='flex:1 1 70px; font-size:11px; padding:3px 6px; border:1px solid rgba(255,200,60,.6);';
+        b.addEventListener('click',()=>{
+          try{
+            const M=(MOBS && MOBS.spawnGolden)? MOBS : (window.MM && MM.mobs);
+            const ok=(M && M.spawnGolden)? M.spawnGolden(form): null;
+            if(!ok) msg('Złoty sprinter już tu jest (limit 1)');
+          }catch(e){}
+        });
+        box.appendChild(b);
+      });
+      // Ruin teleports: hop to the nearest ruin of a class, left or right
+      const ruinLab=document.createElement('div'); ruinLab.textContent='🏛️ Ruiny — skocz do (debug):'; ruinLab.style.cssText='width:100%; font-size:11px; opacity:.7; margin-top:4px;';
+      box.appendChild(ruinLab);
+      const RUIN_KINDS=[[null,'Ruina'],['small','Krypta'],['medium','Piwnice'],['large','Świątynia'],['mega','Miasto 1%']];
+      function tpRuin(dir,size,label){
+        try{
+          const R=window.MM && MM.ruins, WGl=window.MM && MM.worldGen, pl=window.player;
+          if(!R || !R.nearest || !pl) return;
+          const hit=R.nearest(pl.x, dir, size);
+          if(!hit){ msg('Brak: '+label+' w tym kierunku (zasięg skanu)'); return; }
+          pl.x=hit.x+0.5;
+          pl.y=(WGl && WGl.surfaceHeight? WGl.surfaceHeight(Math.round(hit.x)) : pl.y)-2;
+          pl.vx=0; pl.vy=0;
+          msg('🏛️ '+label+' ('+hit.size+(hit.variant?'/'+hit.variant:'')+') @ x='+hit.x+' — kop pod znakami!');
+        }catch(e){}
+      }
+      RUIN_KINDS.forEach(([size,label])=>{
+        const row=document.createElement('div'); row.style.cssText='display:flex; gap:4px; flex:1 1 100%;';
+        const bl=document.createElement('button'); bl.textContent='◀'; bl.title='Najbliższa w lewo: '+label;
+        const mid=document.createElement('span'); mid.textContent=label; mid.style.cssText='flex:1; font-size:11px; text-align:center; align-self:center; opacity:.85;';
+        const br=document.createElement('button'); br.textContent='▶'; br.title='Najbliższa w prawo: '+label;
+        [bl,br].forEach(b=>{ b.style.cssText='flex:0 0 34px; font-size:11px; padding:3px 6px; border:1px solid rgba(200,180,140,.55);'; });
+        bl.addEventListener('click',()=>tpRuin(-1,size,label));
+        br.addEventListener('click',()=>tpRuin(1,size,label));
+        row.appendChild(bl); row.appendChild(mid); row.appendChild(br);
+        box.appendChild(row);
+      });
+      // UFO debug: summon the saucer on demand (normally it visits every 2-3 in-game days)
+      const ufoLab=document.createElement('div'); ufoLab.textContent='🛸 UFO (debug):'; ufoLab.style.cssText='width:100%; font-size:11px; opacity:.7; margin-top:4px;';
+      box.appendChild(ufoLab);
+      [[null,'🛸 UFO'],['mob','🛸 na zwierzę'],['hero','🛸 na CIEBIE'],['boss','🛸 na bossa']].forEach(([prefer,label])=>{
+        const b=document.createElement('button'); b.textContent=label; b.style.cssText='flex:1 1 70px; font-size:11px; padding:3px 6px; border:1px solid rgba(120,220,255,.6);';
+        b.addEventListener('click',()=>{
+          try{
+            const U=window.MM && MM.ufo;
+            const c=(U && U.forceSpawn)? U.forceSpawn(prefer? {prefer}: undefined) : null;
+            if(!c) msg('Spodek już krąży nad światem (limit 1)');
+          }catch(e){}
+        });
         box.appendChild(b);
       });
       // Boss debug controls: summon one beside the hero / detonate the nearest heart

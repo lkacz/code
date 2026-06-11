@@ -1,4 +1,4 @@
-import { T, TILE, INFO, MOVE, isSolid } from '../constants.js';
+import { T, MOVE, isSolid } from '../constants.js';
 import WORLD from './world.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
 
@@ -6,9 +6,8 @@ import { worldGen as WORLDGEN } from './worldgen.js';
 // Exposes MM.mobs API (legacy) and ESM exports.
 const mobs = (function(){
   const MM = window.MM = window.MM || {};
-  // Using ESM imports for TILE/T/INFO/MOVE/isSolid/WORLD/WORLDGEN
+  // Using ESM imports for T/MOVE/isSolid/WORLD/WORLDGEN
   // Helper predicates
-  const isWater = t => t===T.WATER;
   function isSolidGround(t){ return isSolid(t) && t!==T.LEAF; }
 
   // Precomputed color variant helper (once per mob instead of per-frame string math)
@@ -232,6 +231,212 @@ const mobs = (function(){
     onUpdate(m,spec,{dt,now}){ if(Math.random()<0.03){ m.vx += (Math.random()*2-1)*0.4; m.vy += (Math.random()*2-1)*0.2; } }
   });
 
+  // --- Nocturnal hostiles: spawn only after dark, inherently aggressive, and the
+  // sunrise sets them alight (burning DoT) so the day stays safe ---
+  function isNight(){ try{ const c=MM.background && MM.background.getCycleInfo && MM.background.getCycleInfo(); return !!(c && c.isDay===false); }catch(e){ return false; } }
+  registerSpecies({ // Ghoul: shambling night stalker
+    id:'GHOUL', max:8, hp:16, dmg:8, speed:2.6, wanderInterval:[1.5,3.5], xp:20, ground:true,
+    sightRange:22, pursueRange:30, alwaysAggro:true,
+    move:{jumpVel:-4.6, maxClimb:2, avoidWater:true},
+    body:{w:0.9,h:1.6},
+    spawnTest(x,y,getTile){ if(!isNight()) return false; const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); return below===T.GRASS||below===T.SAND||below===T.SNOW||below===T.STONE||below===T.MUD; },
+    biome:'any',
+    // habitatUpdate runs AFTER the default chase AI (onUpdate would replace it)
+    habitatUpdate(m){ if(!isNight()) applyStatus(m,'burn',{dur:2.5,dps:4}); }
+  });
+  registerSpecies({ // Night bat: erratic flying biter
+    id:'BAT', max:10, hp:6, dmg:5, speed:3.6, wanderInterval:[0.8,2.0], xp:10, flying:true,
+    sightRange:20, pursueRange:26, alwaysAggro:true,
+    spawnTest(x,y,getTile){ if(!isNight()) return false; const here=getTile(x,y); const above=getTile(x,y-1); return here===T.AIR && above===T.AIR; },
+    biome:'any',
+    habitatUpdate(m){ if(Math.random()<0.06){ m.vx+=(Math.random()*2-1)*1.5; m.vy+=(Math.random()*2-1)*1.0; } if(!isNight()) applyStatus(m,'burn',{dur:2,dps:4}); }
+  });
+
+  // --- Mob projectiles: lobbed shards that arc, shatter on terrain, hurt the hero ---
+  const mobProjectiles=[]; const MOB_PROJ_CAP=40;
+  function shootAt(m, target, speed, dmg){
+    if(mobProjectiles.length>=MOB_PROJ_CAP) return false;
+    const dx=target.x-m.x, dy=(target.y-0.3)-m.y;
+    const d=Math.hypot(dx,dy)||1;
+    mobProjectiles.push({x:m.x, y:m.y-0.4, vx:dx/d*speed, vy:dy/d*speed-1.4, dmg, t:0, spin:Math.random()*6.28});
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
+    return true;
+  }
+  function updateProjectiles(dt, player, getTile){
+    for(let i=mobProjectiles.length-1;i>=0;i--){
+      const pr=mobProjectiles[i];
+      pr.t+=dt; pr.vy+=9*dt; pr.x+=pr.vx*dt; pr.y+=pr.vy*dt; pr.spin+=dt*8;
+      let dead=pr.t>4;
+      if(!dead && player && Math.abs(player.x-pr.x)<0.6 && Math.abs(player.y-pr.y)<0.8){
+        damagePlayer(pr.dmg, pr.x, pr.y); dead=true;
+      }
+      if(!dead && getTile){ const tt=getTile(Math.floor(pr.x),Math.floor(pr.y)); if(tt!==T.AIR && tt!==T.WATER && !(MM.INFO && MM.INFO[tt] && MM.INFO[tt].passable)) dead=true; }
+      if(dead) mobProjectiles.splice(i,1);
+    }
+  }
+
+  registerSpecies({ // Skeleton archer: keeps its distance, lobs bone shards; haunts the night and the deep
+    id:'SZKIELET', max:6, hp:12, dmg:7, speed:2.2, wanderInterval:[2,4], xp:18, ground:true, alwaysAggro:true,
+    sightRange:16, pursueRange:22,
+    move:{jumpVel:-4.4, maxClimb:2, avoidWater:true},
+    body:{w:0.8,h:1.6},
+    spawnTest(x,y,getTile){
+      const here=getTile(x,y); if(here!==T.AIR) return false;
+      const below=getTile(x,y+1);
+      if(!(below===T.GRASS||below===T.SAND||below===T.SNOW||below===T.STONE||below===T.MUD)) return false;
+      if(isNight()) return true;
+      try{ const wg=MM.worldGen; if(wg && wg.surfaceHeight) return y>wg.surfaceHeight(x)+8; }catch(e){} // daylight: underground only
+      return false;
+    },
+    biome:'any',
+    habitatUpdate(m,spec,getTile,dt){
+      const p=(typeof window!=='undefined' && window.player)||null; if(!p) return;
+      const dx=p.x-m.x, dy=p.y-m.y, d=Math.hypot(dx,dy);
+      m.shootCd=(m.shootCd==null?1.2:m.shootCd)-dt;
+      if(d<14 && d>2.5 && m.shootCd<=0 && Math.abs(dy)<8){ shootAt(m,p,9,spec.dmg); m.shootCd=1.6+Math.random()*0.8; }
+      if(d<4) m.vx-=Math.sign(dx)*0.2; // archers back off from melee range
+    }
+  });
+  registerSpecies({ // Cave crawler: fast skittering ambusher of the deep
+    id:'PELZACZ', max:8, hp:10, dmg:6, speed:4.2, wanderInterval:[0.8,2.0], xp:14, ground:true, alwaysAggro:true,
+    sightRange:12, pursueRange:18,
+    move:{jumpVel:-5.0, maxClimb:2.4, avoidWater:true},
+    body:{w:1.0,h:0.7},
+    spawnTest(x,y,getTile){
+      const here=getTile(x,y); if(here!==T.AIR) return false;
+      const below=getTile(x,y+1); if(!(below===T.STONE||below===T.SAND)) return false;
+      try{ const wg=MM.worldGen; if(wg && wg.surfaceHeight) return y>wg.surfaceHeight(x)+10; }catch(e){} // caves only
+      return false;
+    },
+    biome:'any'
+  });
+
+  // --- Golden sprinter: a legendary visitor that races across the world every
+  // ~7 in-game days (1 day = 10 real minutes; the first visit arrives at half
+  // that wait). Three forms — bird, runner, mole — all blindingly fast and gone
+  // in ~half a minute; slaying one yields an epic chest plus diamonds. Schedule
+  // progress persists in mm_golden_v1; the creature itself is transient (never
+  // serialized), so a reload simply ends the visit.
+  const GOLDEN={ PERIOD_DAYS:7, DAY_SEC:600, LIFETIME:34, acc:0, saveAcc:0, visits:0 };
+  (function goldenLoad(){ try{ const raw=localStorage.getItem('mm_golden_v1'); if(!raw) return; const d=JSON.parse(raw); if(d && typeof d.acc==='number' && isFinite(d.acc)) GOLDEN.acc=Math.max(0,d.acc); if(d && typeof d.visits==='number') GOLDEN.visits=Math.max(0,d.visits|0); }catch(e){} })();
+  function goldenSave(){ try{ localStorage.setItem('mm_golden_v1', JSON.stringify({acc:Math.round(GOLDEN.acc), visits:GOLDEN.visits})); }catch(e){} }
+  function goldenSurfaceY(x, fallback){ try{ const wg=MM.worldGen; if(wg && wg.surfaceHeight) return wg.surfaceHeight(Math.round(x)); }catch(e){} return (typeof fallback==='number'? fallback : 60); }
+  function goldenSay(t){ try{ if(typeof window!=='undefined' && window.msg) window.msg(t); }catch(e){} }
+  const GOLDEN_FORMS=['bird','runner','mole'];
+  function spawnGolden(form, playerOpt){
+    const pl = playerOpt || (typeof window!=='undefined' && window.player) || null; if(!pl) return null;
+    const spec=SPECIES.ZLOTY; if(!spec || countSpecies('ZLOTY')>=spec.max) return null;
+    const f = GOLDEN_FORMS.includes(form)? form : GOLDEN_FORMS[(Math.random()*GOLDEN_FORMS.length)|0];
+    const dir = Math.random()<0.5?-1:1; // enters from one side and streaks past the hero
+    const sx = pl.x - dir*28;
+    const surf = goldenSurfaceY(sx, pl.y);
+    const m = create(spec, sx, f==='bird'? surf-7 : f==='mole'? surf+3.5 : surf-1.2);
+    m._g = { form:f, dir, t:GOLDEN.LIFETIME, ph:Math.random()*6.28, flipCd:0, trail:[], trailAcc:0 };
+    m.facing = dir; m.speedMul=1; m.scale=1;
+    mobs.push(m);
+    const NAME={bird:'Złoty ptak', runner:'Złoty biegacz', mole:'Złoty kret'};
+    goldenSay('✨ '+(NAME[f]||'Złoty sprinter')+' przemierza okolicę! Złap go, zanim umknie!');
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('golden'); }catch(e){}
+    return m;
+  }
+  function goldenTick(dt, player){
+    GOLDEN.acc+=dt; GOLDEN.saveAcc+=dt;
+    if(GOLDEN.saveAcc>=10){ GOLDEN.saveAcc=0; goldenSave(); }
+    const period = GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC*(GOLDEN.visits===0?0.5:1);
+    if(GOLDEN.acc>=period && countSpecies('ZLOTY')===0){
+      GOLDEN.acc=0; GOLDEN.visits++; goldenSave();
+      spawnGolden(null, player);
+    }
+  }
+  registerSpecies({
+    id:'ZLOTY', max:1, hp:90, dmg:0, speed:9.5, wanderInterval:[9,9], xp:150,
+    flying:true, organic:false, lifeSpanSec:600,
+    sightRange:0, pursueRange:0,
+    loot:[{item:'diamond', min:3, max:5, chance:1}],
+    spawnTest(){ return false; }, // only the scheduler / debug buttons summon it
+    biome:'any',
+    onCreate(m){ if(!m._g) m._g={ form:GOLDEN_FORMS[(Math.random()*3)|0], dir:(Math.random()<0.5?-1:1), t:GOLDEN.LIFETIME, ph:Math.random()*6.28, flipCd:0, trail:[], trailAcc:0 }; m.speedMul=1; m.scale=1; },
+    onUpdate(m,spec,{dt,player,getTile}){
+      const g=m._g; if(!g) return;
+      g.t-=dt; g.ph+=dt*7;
+      if(g.flipCd>0) g.flipCd-=dt;
+      // escaped: time is up or it outran the hero — dissolve in a flash, no loot
+      if(g.t<=0 || Math.abs(m.x-player.x)>110){
+        m._naturalDeath=true; m.hp=0;
+        try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20), m.y*(MM.TILE||20),'epic'); }catch(e){}
+        goldenSay('✨ Złoty sprinter umknął i rozpłynął się w blasku...');
+        return;
+      }
+      // wounded panic: sprints half again as fast for a moment
+      const hurt = performance.now() < (m.hitFlashUntil||0)+1500;
+      const sp = spec.speed*(hurt?1.5:1);
+      const gen = goldenSurfaceY(m.x, m.y);
+      let targetY, vCap=12;
+      if(g.form==='bird'){
+        // hug the sky but clear REAL obstacles (player towers, tree canopies)
+        // in the flight corridor ahead — not just the generated terrain
+        let top=gen;
+        if(getTile){
+          for(let c=0;c<=9;c++){
+            const cx=Math.floor(m.x)+g.dir*c;
+            const colSurf=goldenSurfaceY(cx,gen);
+            let firstSolid=colSurf;
+            for(let y=Math.max(1,colSurf-24); y<=colSurf+1; y++){ if(isSolid(getTile(cx,y))){ firstSolid=y; break; } }
+            if(firstSolid<top) top=firstSolid;
+          }
+        }
+        targetY = top - 5 + Math.sin(g.ph*0.45)*1.2; vCap=18;
+      } else if(g.form==='mole'){
+        // deep tunneling: meanders in a band well below the surface, phasing
+        // through rock without breaking a single block; only open galleries
+        // (caves, player tunnels) reveal it — see the draw case
+        targetY = gen + 9 + Math.sin(g.ph*0.35)*3.5;
+      } else {
+        // runner: gallop on the real terrain — stand on actual tiles (water
+        // counts: it sprints across the surface), pre-lift into climbable
+        // steps, wheel around at walls too tall to leap (so it can be trapped!)
+        const standAt=(cx)=>{
+          if(!getTile) return gen;
+          const col=Math.floor(cx);
+          const from=Math.max(1, Math.floor(m.y)-6);
+          for(let y=from; y<from+24; y++){ const t=getTile(col,y); if(isSolidGround(t) || t===T.WATER) return y; }
+          return gen;
+        };
+        const here=standAt(m.x);
+        const ahead=Math.min(standAt(m.x+g.dir*2), standAt(m.x+g.dir*4));
+        if(here-ahead>4 && g.flipCd<=0){
+          g.flipCd=0.8; g.dir*=-1; m.facing=g.dir; // too tall — wheel around in a spray of sparks
+          try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20), m.y*(MM.TILE||20),'common'); }catch(e){}
+        }
+        let stand=Math.min(here, ahead);
+        if(stand>gen+3) stand=gen; // glide over dug pits/caverns instead of diving in
+        targetY = stand - 0.9 - Math.abs(Math.sin(g.ph))*1.3; vCap=16;
+      }
+      m.vx = g.dir*sp; m.facing=g.dir;
+      m.vy = Math.max(-vCap, Math.min(vCap,(targetY-m.y)*6));
+      // breadcrumb positions feed the light-streak rendering
+      g.trailAcc+=dt;
+      if(g.trailAcc>=0.03){ g.trailAcc=0; g.trail.push({x:m.x,y:m.y}); if(g.trail.length>26) g.trail.shift(); }
+    },
+    onDeath(m){
+      // the exceptional prize: an epic chest materializes where it fell (a mole
+      // dies inside rock, so the scan starts above the surface and walks down)
+      try{
+        const W=MM.world, TT=MM.T||T;
+        if(W && W.getTile && W.setTile){
+          const bx=Math.round(m.x);
+          let ty=Math.max(1, Math.min(Math.round(m.y), Math.round(goldenSurfaceY(m.x,m.y)))-5);
+          for(let i=0;i<18;i++,ty++){
+            const t=W.getTile(bx,ty), below=W.getTile(bx,ty+1);
+            if(t===TT.AIR && below!==TT.AIR && below!==TT.WATER){ W.setTile(bx,ty,TT.CHEST_EPIC); break; }
+          }
+        }
+      }catch(e){}
+      try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20), m.y*(MM.TILE||20),'epic'); }catch(e){}
+      goldenSay('🏆 Złoty sprinter pokonany! Zostawił epicką skrzynię.');
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('milestone'); }catch(e){}
+    }
+  });
 
   function registerSpecies(def){
     if(!def || !def.id) return false; if(SPECIES[def.id]) return false; // already exists
@@ -241,7 +446,6 @@ const mobs = (function(){
   }
 
   function rand(a,b){ return a + Math.random()*(b-a); }
-  function choose(arr){ return arr[(Math.random()*arr.length)|0]; }
 
   function create(spec, x,y){
     const now = performance.now();
@@ -380,10 +584,12 @@ const mobs = (function(){
     for(let i=mobs.length-1;i>=0;i--){ const m=mobs[i]; if(m.hp<=0){ removeFromGrid(m); mobs.splice(i,1); continue; } const dist = Math.abs(m.x-player.x); if(dist>220 && !isAggro(m.id)) { removeFromGrid(m); mobs.splice(i,1); continue; } }
     // Spawn attempt occasionally
     trySpawnNearPlayer(player,getTile, now);
+    // Golden sprinter visit clock (counts played time, persists across reloads)
+    goldenTick(dt, player);
     // Precompute separation: basic O(n^2) for small counts (opt: grid neighbor query)
     metrics.count = mobs.length; let active=0;
     for(let i=0;i<mobs.length;i++){
-      const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue; const aggressive=isAggro(m.id);
+      const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue; const aggressive=isAggro(m.id)||!!spec.alwaysAggro;
       // Natural lifespan: apply health decay when past decayStartAt; ensure it runs before far-sleep skip
       if(m.decayStartAt && now >= m.decayStartAt){
         const total = Math.max(0.5, ((m.lifeEndAt||now) - m.decayStartAt)/1000); // seconds window
@@ -409,7 +615,9 @@ const mobs = (function(){
         // Desired horizontal velocity coming from AI modifications (mutable for heuristics)
         let desired = m.vx;
         m.vx = preVX; // restore actual velocity; desired used for acceleration targeting
-  const maxSpeed = (spec.speed || MOVE.MAX) * (m.speedMul||1);
+  // Mud bogs everything down: standing on (or wading through) mud halves speed
+  const mudHere = getTile(Math.floor(m.x), Math.floor(m.y+0.6))===T.MUD || getTile(Math.floor(m.x), Math.floor(m.y)+1)===T.MUD;
+  const maxSpeed = (spec.speed || MOVE.MAX) * (m.speedMul||1) * (mudHere?0.5:1);
   const speedRatio = maxSpeed / (MOVE.MAX||6);
         // Environmental heuristics (water avoidance / obstacle climb) prior to acceleration
         if(spec.move){
@@ -544,14 +752,30 @@ const mobs = (function(){
       if(typeof spec.habitatUpdate==='function') spec.habitatUpdate(m, spec, getTile, dt);
       updateGridCell(m);
       if(m.shake>0) m.shake=Math.max(0,m.shake-dt*10);
+      // Standing in tile fire or lava ignites (sparse check; isBurning is a Map
+      // lookup, so this is O(mobs) instead of fire.js scanning all mobs per tile)
+      m.fireAcc=(m.fireAcc||0)+dt;
+      if(m.fireAcc>=0.3){
+        m.fireAcc=0;
+        const F=MM.fire;
+        const cx=Math.floor(m.x), cy=Math.floor(m.y), fy=Math.floor(m.y+0.5);
+        const inLava = getTile && (getTile(cx,cy)===T.LAVA || getTile(cx,fy)===T.LAVA);
+        if(inLava){ applyStatus(m,'burn',{dur:3,dps:4}); }
+        else if(F && F.isBurning && (F.isBurning(cx,cy) || F.isBurning(cx,fy))){
+          applyStatus(m,'burn',{dur:3,dps:2});
+        }
+      }
+      // Status effects: DoT, cures and movement side-effects, table-driven
+      tickStatuses(m,getTile,dt);
       // Contact damage + bounce (touch) independent of attack cooldown
   const dxP = player.x - m.x; const dyP = player.y - m.y; const distTouch = Math.hypot(dxP,dyP);
       if(distTouch < 0.9){ // bounce push
         const nx=dxP/(distTouch||1); const ny=dyP/(distTouch||1);
         player.vx += nx*3*dt; player.vy += ny*2*dt; // gentle continuous push
-        if(isAggro(m.id)){ if(m.attackCd>0) m.attackCd-=dt; if(m.attackCd<=0){ damagePlayer(spec.dmg, m.x, m.y); m.attackCd=0.8 + Math.random()*0.5; } }
+        if(isAggro(m.id)||spec.alwaysAggro){ if(m.attackCd>0) m.attackCd-=dt; if(m.attackCd<=0){ damagePlayer(spec.dmg, m.x, m.y); m.attackCd=0.8 + Math.random()*0.5; } }
       }
     }
+    updateProjectiles(dt, player, getTile);
     metrics.active = active;
     if(now - lastMetricsSample > 1000){ metrics.dtAvg = (metrics.dtAvg*0.7 + dt*0.3); lastMetricsSample = now; if(window.__mobDebug){ window.__mobMetrics = {...metrics, frame}; } }
   } // end update()
@@ -579,6 +803,23 @@ const mobs = (function(){
         m.vy += (baseBob - m.vy)*Math.min(1, dt*0.8);
       } // grounded: no vertical bob
     }
+  }
+
+  // Pre-baked radial glow for the golden sprinter (per-frame gradients are costly)
+  let _goldGlow=null;
+  function goldGlowSprite(){
+    if(_goldGlow!==null) return _goldGlow;
+    try{
+      const c=document.createElement('canvas'); c.width=c.height=96;
+      const g=c.getContext('2d');
+      const grad=g.createRadialGradient(48,48,2,48,48,46);
+      grad.addColorStop(0,'rgba(255,242,180,0.9)');
+      grad.addColorStop(0.35,'rgba(255,206,84,0.40)');
+      grad.addColorStop(1,'rgba(255,180,40,0)');
+      g.fillStyle=grad; g.beginPath(); g.arc(48,48,46,0,Math.PI*2); g.fill();
+      _goldGlow=c;
+    }catch(e){ _goldGlow=false; }
+    return _goldGlow;
   }
 
   function draw(ctx, TILE, camX,camY, zoom){
@@ -776,13 +1017,170 @@ const mobs = (function(){
           // outer halo
           ctx.globalAlpha=0.25*glowA; ctx.fillStyle='#ffe068'; ctx.beginPath(); ctx.arc(screenX, screenY, 6,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1;
           break; }
+        case 'GHOUL': { // gaunt hunched night stalker with glowing eyes
+          const body = flashing? '#e8ffe8' : (m.baseColor||'#4a5d49');
+          const lurch=Math.sin(phase)*1.5;
+          box(screenX-6, screenY-22+lurch*0.4, 12, 18, body, '#222d22');           // torso (hunched)
+          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?2:-8), screenY-28+lurch*0.6, 7, 7); hpTop(screenY-28);
+          ctx.fillStyle='#0c100c'; ctx.fillRect(screenX-6, screenY-16, 12, 2);     // rags
+          // dangling arms swing with the shamble
+          ctx.fillStyle=body;
+          ctx.fillRect(screenX-8, screenY-18+lurch, 3, 12);
+          ctx.fillRect(screenX+5, screenY-18-lurch, 3, 12);
+          // legs
+          ctx.fillRect(screenX-4, screenY-4, 3, 5); ctx.fillRect(screenX+1, screenY-4, 3, 5);
+          // glowing eyes
+          ctx.fillStyle='#d8ff9a';
+          ctx.fillRect(screenX+(faceDir>0?4:-6), screenY-26+lurch*0.6, 2, 2);
+          ctx.fillRect(screenX+(faceDir>0?7:-3), screenY-26+lurch*0.6, 2, 2);
+          break; }
+        case 'BAT': { // small flapping silhouette with red eyes
+          const body = flashing? '#fff' : (m.baseColor||'#2b2533');
+          const flap=Math.sin(phase*2.2)*4;
+          box(screenX-3, screenY-3, 6, 6, body, '#15101c');
+          ctx.fillStyle=body;
+          ctx.beginPath(); ctx.moveTo(screenX-3,screenY); ctx.lineTo(screenX-11,screenY-2+flap); ctx.lineTo(screenX-4,screenY+3); ctx.closePath(); ctx.fill();
+          ctx.beginPath(); ctx.moveTo(screenX+3,screenY); ctx.lineTo(screenX+11,screenY-2-flap); ctx.lineTo(screenX+4,screenY+3); ctx.closePath(); ctx.fill();
+          hpTop(screenY-6);
+          ctx.fillStyle='#ff5a5a';
+          ctx.fillRect(screenX+(faceDir>0?0:-2), screenY-2, 1.6, 1.6);
+          ctx.fillRect(screenX+(faceDir>0?2:-4), screenY-2, 1.6, 1.6);
+          break; }
+        case 'SZKIELET': { // bony archer: ribcage, skull, a short bow held forward
+          const bone = flashing? '#ffffff' : (m.baseColor||'#dcd6c4');
+          const sway=Math.sin(phase)*1.2;
+          box(screenX-5, screenY-20, 10, 14, bone, '#8c8674');             // ribcage
+          ctx.fillStyle='#8c8674'; for(let r=0;r<3;r++) ctx.fillRect(screenX-5, screenY-18+r*4, 10, 1.4); // ribs
+          ctx.fillStyle=bone; ctx.fillRect(screenX-4, screenY-27, 8, 7); hpTop(screenY-27); // skull
+          ctx.fillStyle='#1c1c22'; ctx.fillRect(screenX+(faceDir>0?-1:-3), screenY-25, 2, 2); ctx.fillRect(screenX+(faceDir>0?2:0), screenY-25, 2, 2);
+          ctx.fillStyle=bone; ctx.fillRect(screenX-3, screenY-6, 2.4, 6); ctx.fillRect(screenX+1, screenY-6, 2.4, 6); // legs
+          // bow arm
+          ctx.strokeStyle='#9a6a32'; ctx.lineWidth=1.6; ctx.lineCap='round';
+          const bx2=screenX+faceDir*8;
+          ctx.beginPath(); ctx.arc(bx2, screenY-14+sway, 5, faceDir>0?-1.1:Math.PI-1.1, faceDir>0?1.1:Math.PI+1.1); ctx.stroke();
+          ctx.strokeStyle='#e8e2d2'; ctx.lineWidth=0.8;
+          ctx.beginPath(); ctx.moveTo(bx2+faceDir*2, screenY-18+sway); ctx.lineTo(bx2+faceDir*2, screenY-10+sway); ctx.stroke();
+          break; }
+        case 'ZLOTY': { // legendary golden sprinter: streak of light, halo, sparkles
+          const g=m._g||{form:'runner',dir:m.facing,trail:[]};
+          m._hideBar=true; // the generic bar is replaced by the golden one below
+          const gtl=(MM.world && MM.world.getTile)? MM.world.getTile : ((WORLD && WORLD.getTile)||null);
+          const tileSolid=(wx,wy)=>{ try{ return gtl? isSolidGround(gtl(Math.floor(wx),Math.floor(wy))) : false; }catch(e){ return false; } };
+          // a tunneling mole phases through rock without breaking it: it is only
+          // visible while its continuous path crosses open galleries (caves,
+          // player tunnels) — inside solid rock it vanishes entirely
+          const inRock = g.form==='mole' && tileSolid(m.x, m.y);
+          const prevComp=ctx.globalCompositeOperation;
+          ctx.globalCompositeOperation='lighter';
+          // light streak along the recent path (open-space segments only)
+          if(g.trail && g.trail.length>1){
+            for(let i=0;i<g.trail.length;i++){
+              const tp=g.trail[i];
+              if(g.form==='mole' && tileSolid(tp.x,tp.y)) continue;
+              const s=1.5+i*0.22; const a=i/g.trail.length;
+              ctx.globalAlpha=a*0.75; ctx.fillStyle='#ffd24a';
+              ctx.fillRect(tp.x*TILE-s/2, tp.y*TILE-s/2, s, s);
+              ctx.globalAlpha=a*0.5; ctx.fillStyle='#fff6c8'; // hot core
+              ctx.fillRect(tp.x*TILE-s/4, tp.y*TILE-s/4, s/2, s/2);
+            }
+            ctx.globalAlpha=1;
+          }
+          if(inRock){ ctx.globalCompositeOperation=prevComp; break; }
+          // pulsing halo
+          const glowS=goldGlowSprite();
+          if(glowS){ const pul=1+Math.sin(now*0.006+m.spawnT)*0.12; const gs=TILE*2.6*pul; ctx.globalAlpha=0.9; ctx.drawImage(glowS, screenX-gs/2, screenY-gs/2, gs, gs); ctx.globalAlpha=1; }
+          ctx.globalCompositeOperation=prevComp;
+          // twinkling 4-point stars orbiting the body
+          for(let i=0;i<5;i++){
+            const sph=now*0.004 + i*1.7 + m.spawnT*0.01;
+            const tw=Math.sin(sph*3.1)*0.5+0.5; if(tw<0.25) continue;
+            const sx2=screenX+Math.cos(sph)*TILE*(0.7+0.22*i);
+            const sy2=screenY+Math.sin(sph*1.3)*TILE*0.6 - 2;
+            const r=1.5+tw*2.5;
+            ctx.globalAlpha=0.5+0.5*tw; ctx.fillStyle='#fff6c8';
+            ctx.fillRect(sx2-r, sy2-0.7, r*2, 1.4); ctx.fillRect(sx2-0.7, sy2-r, 1.4, r*2);
+          }
+          ctx.globalAlpha=1;
+          const gold = flashing? '#ffffff' : '#ffd24a';
+          const goldDark='#b8860b', goldLight='#fff1b0';
+          if(g.form==='bird'){
+            const flap=Math.sin(phase*2.6)*4;
+            // ribbon tail streaming behind
+            ctx.strokeStyle='rgba(255,210,90,0.85)'; ctx.lineWidth=2; ctx.lineCap='round';
+            for(let r3=0;r3<3;r3++){
+              ctx.beginPath(); ctx.moveTo(screenX-faceDir*4, screenY+(r3-1)*2);
+              ctx.quadraticCurveTo(screenX-faceDir*14, screenY+(r3-1)*4+Math.sin(phase+r3)*3, screenX-faceDir*22, screenY+(r3-1)*5+Math.sin(phase*1.3+r3)*4);
+              ctx.stroke();
+            }
+            box(screenX-6, screenY-5,12,9, gold, goldDark); // body
+            ctx.fillStyle=goldLight; ctx.fillRect(screenX-7, screenY-3+flap,5,7); ctx.fillRect(screenX+2, screenY-3-flap,5,7); // wings
+            ctx.fillStyle=gold; ctx.fillRect(screenX+(faceDir>0?4:-9), screenY-8,5,5); hpTop(screenY-11); // head
+            ctx.fillStyle='#fff'; ctx.fillRect(screenX+(faceDir>0?6:-7), screenY-7,2,2); ctx.fillStyle='#7a4a00'; ctx.fillRect(screenX+(faceDir>0?7:-6), screenY-7,1,1);
+            ctx.fillStyle='#ffae00'; ctx.fillRect(screenX+(faceDir>0?9:-12), screenY-6,3,2); // beak
+            ctx.fillStyle=goldLight; ctx.fillRect(screenX+(faceDir>0?4:-6), screenY-10,2,2); ctx.fillRect(screenX+(faceDir>0?6:-8), screenY-11,2,3); // crest
+          } else if(g.form==='mole'){
+            // caught crossing a gallery: full golden glory, claws churning
+            box(screenX-8, screenY-6,16,10, gold, goldDark); // stocky body
+            ctx.fillStyle=goldLight; ctx.fillRect(screenX-8, screenY-6,16,3); // sheen
+            ctx.fillStyle=gold; ctx.fillRect(screenX+(faceDir>0?6:-11), screenY-4,5,6); // snout
+            ctx.fillStyle='#ffae9b'; ctx.fillRect(screenX+(faceDir>0?10:-12), screenY-2,2,2); // nose
+            ctx.fillStyle='#3a2a10'; ctx.fillRect(screenX+(faceDir>0?5:-7), screenY-5,2,2); // eye
+            const dig=Math.sin(phase*4)*2;
+            ctx.fillStyle='#e8e2d2'; // huge digging claws churning as it swims through earth
+            ctx.fillRect(screenX+(faceDir>0?8:-12), screenY+3+dig,4,3); ctx.fillRect(screenX+(faceDir>0?12:-15), screenY+1-dig,3,4);
+            hpTop(screenY-6);
+          } else { // runner: galloping golden stag
+            const gal=Math.sin(phase*3);
+            box(screenX-11, screenY-12,22,9, gold, goldDark); // torso
+            ctx.fillStyle=goldLight; ctx.fillRect(screenX-11, screenY-12,22,3); // back sheen
+            ctx.fillStyle=gold; ctx.fillRect(screenX+(faceDir>0?9:-15), screenY-18,6,8); // neck+head
+            hpTop(screenY-26);
+            ctx.fillStyle='#fff'; ctx.fillRect(screenX+(faceDir>0?12:-13), screenY-17,2,2); ctx.fillStyle='#7a4a00'; ctx.fillRect(screenX+(faceDir>0?13:-12), screenY-17,1,1);
+            // radiant antlers
+            ctx.fillStyle=goldLight;
+            const ax2=screenX+(faceDir>0?10:-13);
+            ctx.fillRect(ax2, screenY-23,2,5); ctx.fillRect(ax2+3*faceDir, screenY-22,2,4);
+            ctx.fillRect(ax2+1*faceDir, screenY-25,2,3); ctx.fillRect(ax2+5*faceDir, screenY-24,2,2);
+            // flowing mane sparks
+            ctx.fillStyle='rgba(255,236,150,0.9)';
+            for(let i2=0;i2<3;i2++){ ctx.fillRect(screenX-faceDir*(2+i2*4), screenY-14-((gal+1)*1.5+i2), 3,3); }
+            // galloping legs
+            ctx.fillStyle=goldDark;
+            ctx.fillRect(screenX-9+gal*2, screenY-3,3,7); ctx.fillRect(screenX-3-gal*2, screenY-3,3,7);
+            ctx.fillRect(screenX+3+gal*2, screenY-3,3,7); ctx.fillRect(screenX+8-gal*2, screenY-3,3,7);
+          }
+          // prominent golden HP bar once wounded (the chase needs readable feedback)
+          if(m.hp < spec.hp){
+            const w=46, frac=Math.max(0,Math.min(1,m.hp/spec.hp));
+            const byy=topY-13;
+            ctx.fillStyle='rgba(0,0,0,0.65)'; ctx.fillRect(screenX-w/2-1, byy-1, w+2, 7);
+            ctx.fillStyle='#5a1a1a'; ctx.fillRect(screenX-w/2, byy, w, 5);
+            ctx.fillStyle='#ffd24a'; ctx.fillRect(screenX-w/2, byy, w*frac, 5);
+            ctx.strokeStyle='#fff1b0'; ctx.lineWidth=1; ctx.strokeRect(screenX-w/2-1.5, byy-1.5, w+3, 8);
+          }
+          break; }
+        case 'PELZACZ': { // low skittering cave crawler: flat body, many legs, pale eyes
+          const body = flashing? '#e8e8ff' : (m.baseColor||'#4a4458');
+          const skit=Math.sin(phase*3);
+          box(screenX-9, screenY-7, 18, 7, body, '#262233');
+          ctx.strokeStyle=body; ctx.lineWidth=1.6;
+          for(let l=0;l<4;l++){
+            const lx=screenX-7+l*4.6, lift=(l%2? skit:-skit)*2;
+            ctx.beginPath(); ctx.moveTo(lx, screenY-2); ctx.lineTo(lx-2, screenY+2+lift); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(lx+1, screenY-2); ctx.lineTo(lx+3, screenY+2-lift); ctx.stroke();
+          }
+          ctx.fillStyle='#cfe8a8';
+          ctx.fillRect(screenX+(faceDir>0?5:-7), screenY-6, 2, 2); ctx.fillRect(screenX+(faceDir>0?8:-10), screenY-6, 2, 2);
+          hpTop(screenY-7);
+          break; }
         default: {
           // fallback: small box
           box(screenX-4, screenY-4,8,8, flashing? '#ffffff':'#888', '#444');
         }
       }
-      // HP bar (position above highest drawn pixel)
-      if(m.hp < (SPECIES[m.id]?.hp||1)){
+      // HP bar (position above highest drawn pixel); species with bespoke bars
+      // (golden sprinter) or hidden bodies (mole in rock) set m._hideBar
+      if(!m._hideBar && m.hp < (SPECIES[m.id]?.hp||1)){
         // Transform anchor point to screen space, then draw with identity transform
         const cur = ctx.getTransform ? ctx.getTransform() : null;
         let px = screenX, py = topY;
@@ -802,7 +1200,62 @@ const mobs = (function(){
         if(cur && ctx.setTransform) ctx.setTransform(cur);
       }
       ctx.restore(); }
+    // Burning mobs: flame overlay drawn after bodies so fire reads on top
+    for(const m of mobs){
+      if(!hasStatus(m,'burn')) continue;
+      if(!disableCull && (m.x < viewL || m.x > viewR || m.y < viewT || m.y > viewB)) continue;
+      const px=m.x*TILE, py=m.y*TILE;
+      const flick=Math.sin(now*0.025 + m.spawnT*0.01)*0.5+0.5;
+      const h=TILE*(0.7+0.5*flick)*(m.scale||1);
+      const baseY=py+TILE*0.3;
+      const g=ctx.createLinearGradient(px,baseY,px,baseY-h);
+      g.addColorStop(0,'rgba(255,120,20,0.8)'); g.addColorStop(0.7,'rgba(255,210,80,0.55)'); g.addColorStop(1,'rgba(255,255,180,0)');
+      ctx.fillStyle=g;
+      ctx.beginPath();
+      ctx.moveTo(px-TILE*0.3, baseY);
+      ctx.quadraticCurveTo(px + Math.sin(now*0.02+m.spawnT)*3, baseY-h*1.15, px+TILE*0.3, baseY);
+      ctx.closePath(); ctx.fill();
+      if(Math.random()<0.3){ ctx.fillStyle='rgba(255,230,140,0.9)'; ctx.fillRect(px+(Math.random()*2-1)*6, baseY-h-Math.random()*4, 2,2); }
+    }
+    // Mob projectiles: spinning bone shards
+    for(const pr of mobProjectiles){
+      ctx.save();
+      ctx.translate(pr.x*TILE, pr.y*TILE); ctx.rotate(pr.spin);
+      ctx.fillStyle='#e8e4d8'; ctx.fillRect(-5,-1.5,10,3);
+      ctx.fillStyle='#c9c2b0'; ctx.fillRect(-6,-2.5,3,5); ctx.fillRect(3,-2.5,3,5);
+      ctx.restore();
+    }
+    // Poisoned mobs: rising green wisps
+    for(const m of mobs){
+      if(!hasStatus(m,'poison')) continue;
+      if(!disableCull && (m.x < viewL || m.x > viewR || m.y < viewT || m.y > viewB)) continue;
+      const px=m.x*TILE, py=m.y*TILE;
+      for(let i=0;i<3;i++){
+        const ph=(now*0.0035 + m.spawnT*0.01 + i*2.1)%(Math.PI*2);
+        const wy=py - 4 - ((now*0.02 + i*37 + m.spawnT)%18);
+        const wx=px + Math.sin(ph+i)*5;
+        ctx.fillStyle='rgba(120,220,80,'+(0.55-0.025*((wy-py+22)|0)).toFixed(2)+')';
+        ctx.fillRect(wx, wy, 3, 3);
+      }
+    }
     ctx.restore();
+  }
+
+  // --- Abduction support (UFO): pick a live victim, then detach it silently ---
+  function nearestLiving(wx,wy,r,opts){
+    const ex=(opts && opts.exclude)||[];
+    let best=null, bd=Infinity; const r2=r*r;
+    for(const m of mobs){
+      if(m.hp<=0 || ex.includes(m.id)) continue;
+      const dx=m.x-wx, dy=m.y-wy, d2=dx*dx+dy*dy;
+      if(d2<=r2 && d2<bd){ bd=d2; best=m; }
+    }
+    return best;
+  }
+  function abduct(m){ // removal without loot/XP — the creature is gone, not slain
+    const i=mobs.indexOf(m); if(i<0) return false;
+    removeFromGrid(m); mobs.splice(i,1);
+    return true;
   }
 
   function findAt(x,y){ // tile space coords using spatial grid
@@ -818,7 +1271,66 @@ const mobs = (function(){
     }
     return best; }
 
-  function attackAt(tileX,tileY){ const m=findAt(tileX,tileY); if(!m) return false; damageMob(m, 3); setAggro(m.id); return true; }
+  function attackAt(tileX,tileY,dmgBonus){ const m=findAt(tileX,tileY); if(!m) return false; const bonus=(typeof dmgBonus==='number' && isFinite(dmgBonus) && dmgBonus>0)? dmgBonus:0; damageMob(m, 3 + bonus); setAggro(m.id); return true; }
+
+  // Absolute-damage strike (projectiles): no base melee added
+  function damageAt(tileX,tileY,dmg){ const m=findAt(tileX,tileY); if(!m) return false; damageMob(m, Math.max(0.5, (typeof dmg==='number' && isFinite(dmg))? dmg:1)); setAggro(m.id); return true; }
+
+  // --- Status effects (data-driven). Each entry declares cadence, gating, cures
+  // and movement side-effects; a new effect ("freeze", "stun") is one table row
+  // plus an optional draw branch — not another set of m.* field pairs copied
+  // through update/draw/API. Only organic creatures are affected (species may
+  // opt out with organic:false, e.g. future golems).
+  const STATUS={
+    burn:  { tickEvery:0.5, organicOnly:true, curedByWater:true,  panic:2.5 },
+    poison:{ tickEvery:0.6, organicOnly:true, curedByWater:false, slowRate:0.5 },
+  };
+  function applyStatus(m,id,opts){
+    const def=STATUS[id]; if(!def) return false;
+    const spec=SPECIES[m.id];
+    if(def.organicOnly && (!spec || spec.organic===false)) return false;
+    const st=m.status || (m.status={});
+    const s=st[id] || (st[id]={t:0,dps:0,acc:0});
+    s.t=Math.max(s.t, (opts && opts.dur)||3);
+    s.dps=Math.max(s.dps, (opts && opts.dps)||2);
+    setAggro(m.id);
+    return true;
+  }
+  function hasStatus(m,id){ return !!(m.status && m.status[id] && m.status[id].t>0); }
+  function clearStatus(m,id){ if(m.status && m.status[id]) delete m.status[id]; }
+  function tickStatuses(m,getTile,dt){
+    const st=m.status; if(!st) return;
+    for(const id in st){
+      const s=st[id], def=STATUS[id];
+      if(!def || !(s.t>0)){ delete st[id]; continue; }
+      if(def.curedByWater && getTile && getTile(Math.floor(m.x),Math.floor(m.y))===T.WATER){ delete st[id]; continue; }
+      s.t-=dt; s.acc+=dt;
+      if(s.acc>=def.tickEvery){ s.acc-=def.tickEvery; damageMob(m, s.dps*def.tickEvery); }
+      if(def.panic && Math.random()<0.08){ m.vx+=(Math.random()*2-1)*def.panic; m.facing=m.vx>=0?1:-1; }
+      if(def.slowRate) m.vx*=Math.max(0,1-dt*def.slowRate);
+    }
+  }
+  // Public point/area applicators (weapons & tile fire use these)
+  function igniteAt(tileX,tileY,opts){ const m=findAt(tileX,tileY); if(!m) return false; return applyStatus(m,'burn',opts); }
+  function igniteRadius(wx,wy,r,opts){ let n=0; const r2=r*r; for(const m of mobs){ const dx=m.x-wx, dy=m.y-wy; if(dx*dx+dy*dy<=r2 && applyStatus(m,'burn',opts)) n++; } return n; }
+  function poisonAt(tileX,tileY,opts){ const m=findAt(tileX,tileY); if(!m) return false; return applyStatus(m,'poison',opts); }
+  function poisonRadius(wx,wy,r,opts){ let n=0; const r2=r*r; for(const m of mobs){ const dx=m.x-wx, dy=m.y-wy; if(dx*dx+dy*dy<=r2 && applyStatus(m,'poison',opts)) n++; } return n; }
+  // Water hose: put out burning creatures in an area
+  function douseRadius(wx,wy,r){ let n=0; const r2=r*r; for(const m of mobs){ if(!hasStatus(m,'burn')) continue; const dx=m.x-wx, dy=m.y-wy; if(dx*dx+dy*dy<=r2){ clearStatus(m,'burn'); n++; } } return n; }
+  // Explosion: distance-scaled area damage with knockback away from the center
+  function blastRadius(wx,wy,r,dmg){
+    let n=0; const r2=r*r;
+    for(const m of mobs){
+      const dx=m.x-wx, dy=m.y-wy; const d2=dx*dx+dy*dy;
+      if(d2>r2) continue;
+      const d=Math.sqrt(d2);
+      damageMob(m, Math.max(2, Math.round((dmg||10)*(1-d/(r+0.5)))));
+      const k=6*(1-d/(r+1));
+      m.vx+=(dx/(d||1))*k; m.vy+=(dy/(d||1))*k-2;
+      setAggro(m.id); n++;
+    }
+    return n;
+  }
 
   function damageMob(m,amount){ if(m.hp<=0) return; m.hp-=amount; m.hitFlashUntil = performance.now()+120; m.shake = 0.6; if(m.hp<=0){ m.hp=0; m.shake=1; onMobDeath(m); }
   }
@@ -831,30 +1343,44 @@ const mobs = (function(){
     const player = window.player;
     // XP gain
     if(player && typeof player.xp==='number'){ player.xp += spec.xp||1; }
-    // Loot
+    // Loot: resource drops go straight into the block inventory — the loot inbox
+    // is for gear items ({id,kind,...}) and renders {item,qty} entries as garbage
     if(spec.loot && Array.isArray(spec.loot)){
       const drops=[]; for(const entry of spec.loot){ if(Math.random() <= (entry.chance||1)){ const count = entry.min + ((entry.max && entry.max>entry.min)? (Math.random()*(entry.max-entry.min+1))|0 : 0); drops.push({item:entry.item, qty: count||entry.min||1}); } }
-      if(drops.length){
-        if(window.lootInbox){ for(const d of drops) window.lootInbox.push(d); if(window.updateLootInboxIndicator) window.updateLootInboxIndicator(); }
-        else if(window.inv){ const inv=window.inv; for(const d of drops){ if(typeof inv[d.item]==='number') inv[d.item]+=d.qty; } if(window.updateInventory) window.updateInventory(); }
+      if(drops.length && window.inv){
+        const inv=window.inv; let gained=[];
+        for(const d of drops){ if(typeof inv[d.item]==='number'){ inv[d.item]+=d.qty; gained.push(d.item+' ×'+d.qty); } }
+        if(gained.length){
+          if(window.updateInventoryHud) window.updateInventoryHud();
+          if(window.msg) window.msg('Łup: '+gained.join(', '));
+        }
       }
     }
+    // Species-specific death ceremony (golden sprinter's chest, future rares)
+    if(typeof spec.onDeath==='function'){ try{ spec.onDeath(m); }catch(e){} }
   }
 
-  function damagePlayer(amount, srcX, srcY){ const player = window.player; if(typeof player!=='object' || !player) return; if(player.hpInvul && performance.now()<player.hpInvul) return; player.hp -= amount; player.hpInvul = performance.now()+600; // knockback
+  function damagePlayer(amount, srcX, srcY){
+    const player = window.player; if(typeof player!=='object' || !player) return;
+    // hero damage is centralized in main.js (i-frames, knockback, audio, death);
+    // the inline fallback exists only for the DOM-less Node sims
+    if(typeof window.damageHero==='function'){ window.damageHero(amount,{srcX,srcY,cause:'mob'}); return; }
+    if(player.hpInvul && performance.now()<player.hpInvul) return; player.hp -= amount; player.hpInvul = performance.now()+600;
     if(typeof srcX==='number' && typeof srcY==='number'){ const dx = (player.x - srcX); const dy=(player.y - srcY); const d = Math.hypot(dx,dy)||1; player.vx += (dx/d)*4; player.vy -= 2.5; }
     if(player.hp<=0){ player.hp=0; playerDead(); }
   }
 
-  function playerDead(){ // simple respawn
+  function playerDead(){ // death is centralized in main.js (gravestone drop + respawn)
     const player = window.player; if(!player) return;
-    const msg = window.msg || function(){}; msg('Zginąłeś – respawn'); player.hp = player.maxHp; // drop nothing for now
-    // relocate
+    if(typeof window.heroDied==='function'){ window.heroDied('mob'); return; }
+    const msg = window.msg || function(){}; msg('Zginąłeś – respawn'); player.hp = player.maxHp;
     if(window.placePlayer) window.placePlayer(true); }
 
   const AGGRO_SKEW_GRACE_MS = 30000; // accept up to 30s negative skew
   function serialize(){ const now=Date.now(); const rel={}; for(const k in speciesAggro){ const rem = speciesAggro[k]-now; if(rem>0) rel[k]=rem; }
-    return { v:3, list: mobs.map(m=>({id:m.id,x:m.x,y:m.y,vx:m.vx,vy:m.vy,hp:m.hp,state:m.state,facing:m.facing,spawnT:m.spawnT,attackCd:m.attackCd,waterTopY:m.waterTopY,desiredDepth:m.desiredDepth,scale:m.scale,speedMul:m.speedMul,jumpMul:m.jumpMul,baseColor:m.baseColor,lifeEndAt:m.lifeEndAt,decayStartAt:m.decayStartAt})), aggro:{mode:'rel', m:rel} }; }
+    // the golden sprinter is a transient event creature: its _g state isn't saved,
+    // so restoring it would produce a broken husk — the visit just ends instead
+    return { v:3, list: mobs.filter(m=>m.id!=='ZLOTY').map(m=>({id:m.id,x:m.x,y:m.y,vx:m.vx,vy:m.vy,hp:m.hp,state:m.state,facing:m.facing,spawnT:m.spawnT,attackCd:m.attackCd,waterTopY:m.waterTopY,desiredDepth:m.desiredDepth,scale:m.scale,speedMul:m.speedMul,jumpMul:m.jumpMul,baseColor:m.baseColor,lifeEndAt:m.lifeEndAt,decayStartAt:m.decayStartAt})), aggro:{mode:'rel', m:rel} }; }
   function deserialize(data){ // clear
     for(const m of mobs) removeFromGrid(m); mobs.length=0; // reset live counts before rebuild
     for(const k in speciesCounts) delete speciesCounts[k];
@@ -910,7 +1436,7 @@ const mobs = (function(){
       report.metrics={...metrics};
       return report;
     }
-  const api = { update, draw, attackAt, serialize, deserialize, setAggro, speciesAggro, forceSpawn, species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll };
+  const api = { update, draw, attackAt, damageAt, igniteAt, igniteRadius, poisonAt, poisonRadius, douseRadius, blastRadius, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, forceSpawn, spawnGolden, nearestLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll };
   MM.mobs = api;
   try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
   return api;

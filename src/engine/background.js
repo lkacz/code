@@ -146,9 +146,6 @@
     if(typeof s.lastPhaseCycle==='number') lastPhaseCycle = s.lastPhaseCycle;
   };
 
-  // Optional: keep cycleStart roughly anchored for very long sessions (no-op placeholder)
-  setInterval(()=>{ /* reserved for future pause logic */ },60000);
-
   MM.background = background;
 })();
 // ESM export (progressive migration)

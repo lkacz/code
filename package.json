@@ -6,12 +6,19 @@
   "private": true,
   "scripts": {
     "start": "npx -y http-server -p 8123 -c-1 .",
-    "lint": "eslint src",
+    "lint": "eslint src --max-warnings 0",
     "check:modules": "node tools/modcheck.mjs . src/main.js",
     "test:water": "node tools/water-sim.test.mjs",
     "test:clouds": "node tools/clouds-sim.test.mjs",
     "test:bosses": "node tools/boss-sim.test.mjs",
-    "check": "npm run lint && npm run check:modules && npm run test:water && npm run test:clouds && npm run test:bosses"
+    "test:streams": "node tools/stream-sim.test.mjs",
+    "test:plants": "node tools/plants-sim.test.mjs",
+    "test:golden": "node tools/golden-sim.test.mjs",
+    "test:ufo": "node tools/ufo-sim.test.mjs",
+    "test:ruins": "node tools/ruins-sim.test.mjs",
+    "test:traps": "node tools/traps-sim.test.mjs",
+    "test:inventory": "node tools/inventory-sim.test.mjs",
+    "check": "npm run lint && npm run check:modules && npm run test:water && npm run test:clouds && npm run test:bosses && npm run test:streams && npm run test:plants && npm run test:golden && npm run test:ufo && npm run test:ruins && npm run test:traps && npm run test:inventory"
   },
   "repository": {
     "type": "git",

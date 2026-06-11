@@ -11,7 +11,7 @@ npm install          # dev tooling only (ESLint)
 npm start            # serve the game at http://localhost:8123
 npm run lint         # correctness-focused ESLint pass over src/
 npm run check:modules # static ES-module graph check (catches missing exports)
-npm run check        # lint + module graph
+npm run check        # lint + module graph + water/clouds/bosses sim tests
 ```
 
 `npm run check` runs in CI on every push/PR (see `.github/workflows/ci.yml`).
@@ -19,15 +19,99 @@ The module-graph check exists because a single missing ESM export silently
 blanks the whole game — exactly what happened during the 2025 ESM migration
 (`water.js` published to `MM.water` but exported nothing, killing `main.js`).
 
-## Customization & Gameplay Modifiers
-Cosmetic selections now influence mechanics via a scalable modifier system:
+## Inventory, Equipment & Gameplay Modifiers
+The Ekwipunek panel (menu button or `E`) is a scalable inventory: equipment slots (cape /
+eyes / outfit / weapon / charm), a bag of loot collected from chests, and a resources tab
+managing mined blocks (drop amounts, assign a block type to the active hotbar slot).
+Core model lives in `src/inventory.js` (registry, slots, bag, persistence under
+`mm_inventory_v1` with migration from the legacy `mm_custom_inv_v1`), DOM layer in
+`src/inventory_ui.js`. Equipped items influence mechanics via the modifier system:
 * Capes define additional mid‑air jumps (classic: 1 jump, triangle/tattered: 2 total, shadow: 3 total, royal/winged: 4 total)
 * Eyes control fog reveal radius (sleepy: small, bright: large, gold: large+, glow: very large)
 * Outfits grant effects: Miner (+50% mining speed), Mystic (+15% move speed), Ninja (+20% move, +15% jump), Iron (+25% mining, +5% mobility). Default has no bonus.
-* Cape & default-outfit colors are user-selectable (swatches + free color picker) and persist across sessions.
-* The Stylizacja panel offers a live animated preview, per-style cape thumbnails matching engine physics shapes, stat breakdowns, and randomize/reset buttons. Outfit bodies render through a shared `MM.drawOutfit` used by both the game and the preview.
+* Weapons come in five classes (`weaponType`): **melee** strikes the aimed tile with a visible blade swing + slash arc, **bow** shoots arrow projectiles (gravity arc, stick into terrain, absolute damage via `mobs.damageAt`/`bosses.damageAt`), and three stream weapons — **flame** ignites organic creatures (burning DoT, water extinguishes) and flammable tiles, **hose** sprays water that extinguishes tile fire and burning creatures and occasionally condenses into a real WATER tile, **gas** emits a lingering toxic cloud that poisons living (organic) creatures (slow DoT, not washed off by water). Fire with `F` or the touch ⚔️/🏹/🔥 button (`engine/weapons.js`); melee also works with plain clicks, and the equipped weapon renders in the hero's hand. Number-key shortcuts switch the held item by category: `1` = pickaxe/build mode (holsters the weapon; pressed again cycles owned pickaxe tiers), `2` = melee, `3` = bows, `4` = stream throwers (flame/hose/gas) — repeated presses cycle through the category's weapons, and each weapon's "Skrót" toggle in the inventory decides whether it joins the cycle (`WEAPON_CATEGORIES` in `src/inventory.js`, persisted opt-outs). A weapon bar above the block hotbar (which now sits on keys `5`–`9`, `0`) mirrors the active mode. Charms add passive stats; chests drop procedurally named weapons of all classes alongside gear.
+* Tile fire (`engine/fire.js`): grass / wood / leaves carry `flammable` + `burnTime` in `INFO`; burning tiles spread to flammable neighbours (preferring upward, so trees torch dramatically), ignite creatures standing in them, are extinguished by adjacent water and finally burn away to AIR with falling/water notifications — capped at 240 simultaneous flames so a forest fire stays bounded.
+* Elemental interactions (`engine/weapons.js` + tiles LAVA/MUD/OBSIDIAN in `constants.js`): flame **boils water** away into steam whose mass joins the cloud/vapor cycle (`clouds.injectVapor`, volume-true), **melts stone into lava** and **thaws snow/ice into water** (tile fire melts adjacent snow too); the hose **quenches lava into obsidian** (hard, mineable, placeable — a real resource with HUD/hotbar/inventory plumbing) and **soaks sand into mud**, which halves the movement speed of the hero, animals and grounded bosses; **arrows ignite** when they fly through fire or over lava, setting targets and terrain alight — and a burning arrow shot into a gas cloud detonates it.
+* Lava is a **viscous fluid** (`fire.js` lava registry, re-hydrated by the viewport scan after reloads): far slower than water, it falls, pours over edges, and levels out only under the pressure of lava above (so puddles rest instead of smearing thin). It sears the hero and mobs, ignites adjacent flammables, **hardens instantly against water**, and — left settled and **exposed to open air** — slowly crusts into obsidian (40–80 s).
+* Toxic gas **explodes on contact with open flame or lava** (TNT effect): the surrounding cloud is consumed into the blast (bigger cloud → bigger boom, with a short cooldown so streams produce rhythmic booms), soft terrain craters while chests/obsidian/diamond survive, creatures take distance-scaled blast damage with knockback (`mobs.blastRadius`), bosses and plants are hit, a careless hero is hurled, and the rim catches fire.
+* Living plants (`engine/plants.js`, tested by `npm run test:plants`): five species (sunflower, berry bush, reed, fern, cactus) sprout naturally on watered soil near the hero — one per column, capped, persisted in `mm_plants_v1`. Each plant has hydration, health, age and a lifespan: it drinks from adjacent water (absorbing the whole tile every third sip), from rain (`clouds.isRainingAt`) and from the player's hose (`plants.waterAt` — a watering can); wet mud keeps roots damp; cacti barely need water. Hydrated plants grow through stages; thirsty ones yellow, wilt and crumble; even watered plants degrade and die of old age. Fire, lava, the flamethrower and mined-out soil destroy them. Clicking a ripe berry bush harvests it (+6 HP, the bush regrows); clearing other plants returns a leaf.
+* Item readability: the player never sees a raw multiplier — every stat displays as a clean signed percent snapped to a 5%-step ladder (5/10/15…50, then 10-steps to 100, then 25-steps, cap 200%; vision converts against its 10-tile baseline). Chest loot **rolls discrete clean steps natively** (`pctSteps` in `chests.js`), legacy items are normalized once on ingest (`sanitizeLootItem`). Each item gets one comparable **"Moc" power score** (`itemScore`, shared weights in `inventory.js`) shown with a bar relative to the strongest owned item of its group plus a ▲/▼ delta vs the equipped item; grids sort strongest-first, the weapons tab groups by shortcut category (a bow is never judged against a sword), the loot popup uses the identical chip/score presentation, and a 🧹 action discards looted items strictly weaker than what's equipped (built-ins and upgrades always stay).
+* The panel offers a live animated preview, per-style cape thumbnails matching engine physics shapes, stat breakdowns with per-item contributions, and randomize/reset buttons. Outfit bodies render through a shared `MM.drawOutfit` used by both the game and the preview.
 
-System design allows future items to contribute fields (e.g., mineSpeed, swimSpeed, mana) aggregated into `MM.activeModifiers`.
+Stats combine by declared rules (`sum` / `mul` / `max` in `STAT_RULES`), so future items
+can contribute new fields (e.g., swimSpeed, mana) aggregated into `MM.activeModifiers`.
+
+## Progression, Audio & Survival Loop
+* **Levels** (`engine/progress.js`): XP (persisted in the world save) maps to levels via
+  super-linear thresholds; each level grants a skill point spent in the Ekwipunek
+  "Rozwój" panel on Witalność (+10 max HP), Siła (+1 damage) or Zwinność (+2% move/jump) —
+  bonuses merge into the same `STAT_RULES` engine as gear. Six persistent **milestones**
+  (depth, travel, boss kills, berries, obsidian) reward XP and epic chests. The HUD shows
+  a level/XP bar under the health bar.
+* **Crafting** is a data-driven `RECIPES` table: pickaxes, torches ×4 (2 wood), an
+  obsidian sword (+6 dmg, flows through the loot pipeline so it persists and equips),
+  a diamond charm, and a **Totem odrodzenia** that sets the respawn point (flag marker).
+* **Audio** (`engine/audio.js`): every effect is synthesized with WebAudio — zero asset
+  files, CSP-safe; context unlocks on first gesture. Digging, breaking, placing, bows,
+  swings, streams, explosions, chests, level-ups, boss roars, plus a looping rain bed
+  whose gain follows the weather. 🔊 menu button mutes; volume persists.
+* **Torches** (tile 16): crafted light sources; the fire.js viewport pass draws their
+  flame and a radial glow that strengthens after dark.
+* **Night hostiles**: GHOUL (shambling, tough) and BAT (erratic flyer) spawn only after
+  dark, are inherently aggressive, and **catch fire at sunrise**.
+* **Death stakes**: all death paths route through `window.heroDied` — half of every
+  resource is left in a GRAVE tile at the death spot; click it to recover the loss.
+* **QoL**: surface **minimap** (N) rebuilt twice a second from worldgen columns,
+  **pause** (B, simulation freezes while the scene keeps rendering), respawn totem.
+* **Structures** (`world.js placeStructures`): ~10% of chunks deterministically roll a
+  ruined stone gateway with a rare/epic chest (flat land) or a wooden **shipwreck** with
+  an epic chest resting on the sea floor.
+* **Buried ruins** (`engine/ruins.js`): subtle surface traces (pillar stubs, rubble, an
+  arch, a well ring) mark dig sites; below waits a crypt, a cellar complex, or a deep
+  temple with one of three treasure rooms (obsidian vault / lava altar / flooded
+  reliquary). Variety stacks three seeded layers: biome material themes, per-class
+  architecture variants, and per-ruin decay. 1% of ruins are a **Buried City** just
+  above the bedrock — torch-lit cavern, towers, bridge, lava moat, crystal garden and
+  an obsidian ziggurat with twin epic chests — marked only by an obsidian monolith on
+  the surface. Anchor-based — layouts are a pure function of (worldSeed, cell), so
+  ruins may span chunk borders and every chunk reconstructs its slice identically
+  (see the architecture note atop the module).
+* **Ruin traps** split pure data from runtime: definitions live in ruin layouts
+  (`L.traps`), `engine/traps.js` arms instances near the hero, watches triggers
+  (tripwire, pressure plate, proximity, mined keystone — every trap also springs
+  when its watched tiles are disturbed) and draws the telltales careful players
+  can spot. Five kinds: dart volley, grave gas, rune blast (`weapons.explodeAt`),
+  sealed lava/water keystones (the fluid sims do the flooding), collapsing floor
+  over a lava-or-treasure pit. Fired traps stay dead for the session.
+
+## Extension Points (architecture)
+* **Mob status effects** are table-driven (`mobs.js STATUS`): an effect declares tick
+  cadence, organic gating, water-curability and movement side-effects; applied via
+  `mobs.applyStatus(m,id,{dur,dps})` / `igniteRadius` / `poisonRadius`. A new effect
+  ("freeze", "stun") is one table row plus an optional overlay branch.
+* **Stat modifier sources** are pluggable (`inventory.registerModifierSource(name,fn)`):
+  equipment and trained skill points both merge through `STAT_RULES`; buffs/potions/world
+  boons register one provider function returning canonical stat keys.
+* **Hero damage** has a single entry — `window.damageHero(amount,{srcX,srcY,kb,kbY,launch,
+  invulMs,cause})` in main.js owns i-frames, knockback, hurt audio and death routing
+  (`heroDied` → gravestone). Mobs/bosses/explosions/lava all delegate; the engine modules
+  keep tiny inline fallbacks only for the DOM-less Node sims.
+* **Species are a registry** (`mobs.registerSpecies(def)`): a species declares stats,
+  spawn rules and optional hooks — `onCreate`, `onUpdate` (replaces chase AI),
+  `habitatUpdate` (runs after it), and `onDeath` (death ceremony; the golden sprinter
+  uses it to materialize its epic chest). Rare timed visitors follow the golden
+  sprinter pattern: a persisted clock in `update()` + `spawnGolden()`-style summoner.
+  The UFO (`engine/ufo.js`) is the second such visitor and adds the abduction seam:
+  `mobs.nearestLiving/abduct` and `bosses.nearestForAbduction/abduct` detach a live
+  creature without loot/XP/kill credit; weapons route hits through `MM.ufo.damageAt`
+  beside the boss checks.
+* **Resources are a registry** (`MM.inventory.RESOURCES` → main.js `RESOURCE_DEFS`):
+  adding a collectable/placeable resource is one registry entry + an `INFO` tile —
+  inv counts, HUD counters, hotbar remap, god-mode stacks, world-reset zeroing,
+  placement/consumption, undo refunds, crafting labels and death drops all derive.
+* **Lava stays out of water.js by design** — see the architecture note atop
+  `engine/fire.js` (sparse viscous thermal automaton vs high-volume wave sim; the
+  only seam is the LAVA+WATER→OBSIDIAN conversion rule).
 
 ## Interaction Model (mining / building / pointing)
 * Screen→world conversion goes through a single `screenToWorldTile()` (zoom + camera only —
@@ -161,7 +245,13 @@ direction hint and tracked by a pulsing off-screen HUD arrow until you find them
 * The heart: armored deep inside — expose it by destroying the plating, strike it,
   and the monster detonates: a crater is blasted into the terrain (bedrock and chests
   survive; the fluid sim is woken so water pours in), a hero standing close is hurt,
-  and the kill pays out XP
+  and the kill pays out XP **and a loot chest** settled on the crater floor (weighted
+  common/rare/epic; works on the seabed too)
+* Variants: 10% of natural spawns are **gargantuan** — 3× silhouette, double trample
+  damage, slower, drops a pile of epic chests. Open-sea columns spawn **aquatic
+  'swimmer' beasts** (tentacled, icy palette): buoyant 2-axis swimming under the
+  waterline, patrols beneath the surface, dives at prey, beaches helplessly if it
+  leaves the water
 * Debug: menu panel buttons "👹 Boss" (summons one beside the hero, trying both sides
   so water can't block it) and "💀 Kill boss" (detonates the nearest heart through the
   real death path); console: `MM.bosses.forceSpawn(null,{x,seed,archetype,freeze})`,

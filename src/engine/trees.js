@@ -1,5 +1,5 @@
 // Tree generation + falling system
-import { CHUNK_W, WORLD_H, T, SNOW_LINE, INFO, SURFACE_GRASS_DEPTH, SAND_DEPTH } from '../constants.js';
+import { CHUNK_W, WORLD_H, T, SNOW_LINE } from '../constants.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
 window.MM = window.MM || {};
 (function(){
@@ -25,6 +25,19 @@ window.MM = window.MM || {};
     } else if(variant==='tallOak'){
       const trunkH=7+Math.floor(randSeed(wx+60)*4); for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,T.WOOD); }
       const top=s-1-trunkH; const spread=2; for(let dy=-2; dy<=2; dy++){ for(let dx=-spread; dx<=spread; dx++){ if(Math.abs(dx)+Math.abs(dy)*0.9<=spread+0.3){ put(lx+dx, top+dy, T.LEAF); } } }
+    } else if(variant==='palm'){
+      // Desert-island palm: tall bare trunk, a fan of fronds arcing from the crown
+      // with drooping tips (kept 4-connected so felling collects the whole canopy)
+      const trunkH=6+Math.floor(randSeed(wx+91)*3);
+      for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,T.WOOD); }
+      const top=s-1-trunkH;
+      put(lx,top,T.LEAF); put(lx,top-1,T.LEAF);
+      for(const d of [-1,1]){
+        put(lx+d,top,T.LEAF);
+        put(lx+2*d,top,T.LEAF);
+        put(lx+2*d,top+1,T.LEAF); // drooping frond tip
+        put(lx+d,top-1,T.LEAF);   // upward arc near the crown
+      }
     } else { // oak
       const trunkH=4+Math.floor(randSeed(wx+80)*3); for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,T.WOOD); }
       const top=s-1-trunkH; const spread=2; for(let dy=-2; dy<=2; dy++){ for(let dx=-spread; dx<=spread; dx++){ if(Math.abs(dx)+Math.abs(dy)*0.8<=spread+ (randSeed(wx+dx*31+dy*19)-0.4)){ put(lx+dx, top+dy, T.LEAF); } } }
@@ -58,10 +71,12 @@ window.MM = window.MM || {};
     const {CHUNK_W} = MM; const WG = WORLDGEN; if(!WG) return;
     for(let lx=0; lx<CHUNK_W; lx++){
       const wx=cx*CHUNK_W+lx; const s=WG.surfaceHeight(wx); if(s<2) continue; const biome=WG.biomeType(wx);
-      // Skip non-tree biomes: sea(5), lake(6), desert(3) (rare cactus could be future), swamp(4) sparse, mountain(7) sparse near peaks
-      if(biome===5 || biome===6 || biome===3) continue;
+      const island=!!(WG.column && WG.column(wx).island);
+      // Skip non-tree biomes: sea(5), lake(6), desert(3) — except desert islands, which grow palms
+      if((biome===5 || biome===6 || biome===3) && !island) continue;
       let chance = 0.08;
-      if(biome===0) chance=0.18; // forest denser base
+      if(island) chance=0.16; // palms cluster on the islet
+      else if(biome===0) chance=0.18; // forest denser base
       else if(biome===1) chance=0.07; // plains
       else if(biome===2) chance=0.05; // snow
       else if(biome===4) chance=0.04; // swamp (few trees, maybe future mangroves)
@@ -85,7 +100,7 @@ window.MM = window.MM || {};
       const baseT=arr[s*CHUNK_W+lx];
       if(baseT!==T.GRASS && baseT!==T.SNOW && baseT!==T.SAND && baseT!==T.STONE) continue;
       // Slightly relax valley steepness
-      const variant = (biome===2?'conifer': biome===1? (WG.randSeed(wx+300)>0.5?'oak':'tallOak') : (WG.randSeed(wx+500)<0.15?'megaOak':'oak'));
+      const variant = island? 'palm' : (biome===2?'conifer': biome===1? (WG.randSeed(wx+300)>0.5?'oak':'tallOak') : (WG.randSeed(wx+500)<0.15?'megaOak':'oak'));
       buildTree(arr,lx,s,variant,wx);
     }
   };
