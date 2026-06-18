@@ -14,6 +14,7 @@ import { T, WORLD_H } from '../constants.js';
 
   const recipes = [];
   const byStimulus = new Map();
+  const byId = new Map();
 
   function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H; }
   function getSafe(getTile,x,y,fallback){
@@ -39,6 +40,7 @@ import { T, WORLD_H } from '../constants.js';
         out.push({x,y,t:id,symbol:ch});
       }
     }
+    if(!out.length) throw new Error('Reaction recipe pattern cannot be empty');
     return {cells:out,width,height:(rows||[]).length};
   }
   function mirrorPattern(parsed){
@@ -73,11 +75,37 @@ import { T, WORLD_H } from '../constants.js';
   }
   function register(recipe){
     const r=normalizeRecipe(recipe);
+    const existing=byId.get(r.id);
+    if(existing){
+      if(!recipe.replace) return existing;
+      const oldList=byStimulus.get(existing.stimulus);
+      if(oldList){
+        const idx=oldList.indexOf(existing);
+        if(idx>=0) oldList.splice(idx,1);
+      }
+      const allIdx=recipes.indexOf(existing);
+      if(allIdx>=0) recipes.splice(allIdx,1);
+    }
     recipes.push(r);
+    byId.set(r.id,r);
     if(!byStimulus.has(r.stimulus)) byStimulus.set(r.stimulus,[]);
     byStimulus.get(r.stimulus).push(r);
     byStimulus.get(r.stimulus).sort((a,b)=>b.priority-a.priority);
     return r;
+  }
+  function unregister(id){
+    const r=byId.get(String(id||''));
+    if(!r) return false;
+    byId.delete(r.id);
+    const allIdx=recipes.indexOf(r);
+    if(allIdx>=0) recipes.splice(allIdx,1);
+    const list=byStimulus.get(r.stimulus);
+    if(list){
+      const idx=list.indexOf(r);
+      if(idx>=0) list.splice(idx,1);
+      if(!list.length) byStimulus.delete(r.stimulus);
+    }
+    return true;
   }
   function matchVariantAt(tx,ty,variant,getTile){
     for(const touched of variant.cells){
@@ -182,12 +210,13 @@ import { T, WORLD_H } from '../constants.js';
 
   const api={
     register,
+    unregister,
     apply,
     recipesFor,
     canStimulus,
     reset,
     isSolarRecipeTile,
-    _debug:{recipes,byStimulus,parsePattern,mirrorPattern,matchRecipe}
+    _debug:{recipes,byStimulus,byId,parsePattern,mirrorPattern,matchRecipe}
   };
   MM.reactions=api;
 })();

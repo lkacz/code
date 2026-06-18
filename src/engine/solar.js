@@ -19,6 +19,8 @@ import { T, INFO, WORLD_H } from '../constants.js';
   const SCAN_RY = 46;
   const CLUSTER_LIMIT = 80;
   let scanT = 0;
+  let visibleScanAt = 0;
+  let visibleScanKey = '';
 
   function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
   function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H; }
@@ -186,6 +188,13 @@ import { T, INFO, WORLD_H } from '../constants.js';
   }
   function ensureVisible(sx,sy,viewX,viewY,getTile){
     if(typeof getTile!=='function') return;
+    const bx=Math.floor(Number(sx)||0);
+    const by=Math.floor(Number(sy)||0);
+    const keyStr=Math.floor(bx/8)+','+Math.floor(by/8)+','+Math.ceil(Number(viewX)||0)+','+Math.ceil(Number(viewY)||0);
+    const now=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+    if(keyStr===visibleScanKey && now<visibleScanAt) return;
+    visibleScanKey=keyStr;
+    visibleScanAt=now+350;
     const x0=Math.floor(sx)-2, x1=Math.ceil(sx+viewX)+2;
     const y0=Math.max(0,Math.floor(sy)-2), y1=Math.min(WORLD_H-1,Math.ceil(sy+viewY)+2);
     for(let y=y0; y<=y1; y++){
@@ -266,6 +275,8 @@ import { T, INFO, WORLD_H } from '../constants.js';
   function reset(){
     cells.clear();
     scanT=0;
+    visibleScanAt=0;
+    visibleScanKey='';
   }
   function metrics(){
     let storedEnergy=0, active=0, storageCells=0, currentPower=0;
@@ -292,7 +303,7 @@ import { T, INFO, WORLD_H } from '../constants.js';
     restore,
     reset,
     metrics,
-    _debug:{cells,PANEL_CAPACITY,STORAGE_CAPACITY,PANEL_RATE,STORAGE_RATE,clusterCells,daylight}
+    _debug:{cells,PANEL_CAPACITY,STORAGE_CAPACITY,PANEL_RATE,STORAGE_RATE,clusterCells,daylight,ensureVisible}
   };
   MM.solar=api;
 })();

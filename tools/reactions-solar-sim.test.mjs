@@ -113,10 +113,27 @@ assert.equal(INFO[T.SOLAR_BATTERY].energyCapacity,120,'storage solar panel adver
 // without adding more branches to weapons, fire, or world code.
 {
   reset();
+  assert.throws(
+    ()=>reactions.register({id:'test_empty_pattern',stimulus:'water',pattern:[],resultTile:'MUD'}),
+    /pattern cannot be empty/,
+    'recipe registry rejects empty patterns'
+  );
   reactions.register({id:'test_water_sand_to_mud',stimulus:'water',pattern:['S'],map:{S:'SAND'},resultTile:'MUD',mirror:false});
   setTile(60,10,T.SAND);
   assert.ok(reactions.apply('water',60,10,getTile,setTile),'custom water recipe applies');
   assert.equal(getTile(60,10),T.MUD,'custom water recipe changes terrain');
+
+  const first=reactions.register({id:'test_duplicate_guard',stimulus:'water',pattern:['R'],map:{R:'STONE'},resultTile:'MUD',mirror:false});
+  const duplicate=reactions.register({id:'test_duplicate_guard',stimulus:'water',pattern:['R'],map:{R:'STONE'},resultTile:'GRASS',mirror:false});
+  assert.equal(duplicate,first,'duplicate recipe ids return the existing recipe unless replacement is explicit');
+  assert.equal(reactions.recipesFor('water').filter(r=>r.id==='test_duplicate_guard').length,1,'duplicate recipe ids do not stack');
+  const replaced=reactions.register({id:'test_duplicate_guard',stimulus:'water',pattern:['R'],map:{R:'STONE'},resultTile:'GRASS',mirror:false,replace:true});
+  assert.notEqual(replaced,first,'replace:true swaps the recipe definition');
+  setTile(62,10,T.STONE);
+  assert.ok(reactions.apply('water',62,10,getTile,setTile),'replaced recipe applies');
+  assert.equal(getTile(62,10),T.GRASS,'replacement recipe result is active');
+  assert.equal(reactions.unregister('test_duplicate_guard'),true,'registry can unregister dynamic recipes');
+  assert.equal(reactions.recipesFor('water').some(r=>r.id==='test_duplicate_guard'),false,'unregistered recipe disappears from its stimulus list');
 
   reactions.register({id:'test_electric_wire_to_copper',stimulus:'electric',pattern:['W'],map:{W:'WIRE'},resultTile:'COPPER_WIRE',mirror:false});
   setTile(61,10,T.WIRE);
