@@ -15,12 +15,14 @@ globalThis.MM = {};
 const SURF = 90;
 const messages = [];
 globalThis.msg = (t)=>messages.push(String(t));
-globalThis.player = { x:0, y:SURF-1, hp:100, maxHp:100, xp:0, vx:0, vy:0, hpInvul:0 };
+globalThis.player = { x:0, y:SURF-1, hp:100, maxHp:100, xp:0, vx:0, vy:0, hpInvul:0, energy:0, maxEnergy:100 };
 globalThis.inv = { antimatter:0 };
 
 MM.worldGen = { surfaceHeight: ()=>SURF };
 let fakeMob = null, abductedMob = null;
 MM.mobs = { nearestLiving: ()=>fakeMob, abduct: (m)=>{ abductedMob=m; fakeMob=null; return true; } };
+let drainedByUfo=0;
+MM.heroEnergy = { drain(){ const p=globalThis.player; const n=Math.max(0, Number(p.energy)||0); p.energy=0; drainedByUfo+=n; return n; } };
 
 const { ufo } = await import('../src/engine/ufo.js');
 assert.ok(ufo && ufo.forceSpawn, 'ufo module exports');
@@ -72,7 +74,7 @@ assert.equal(ufo.current(), null, 'saucer left the area');
 ufo.reset();
 
 // --- 4. Hero abduction: pulled up, carried far, released with a souvenir ---
-player.x=0; player.y=SURF-1; player.vx=player.vy=0; player.hp=100;
+player.x=0; player.y=SURF-1; player.vx=player.vy=0; player.hp=100; player.energy=80; drainedByUfo=0;
 fakeMob=null;
 c=ufo.forceSpawn({seed:2, prefer:'hero'});
 let carried=false;
@@ -86,6 +88,8 @@ for(let i=0;i<60*60;i++){
 }
 assert.ok(carried, 'hero was hauled into the saucer');
 assert.ok(Math.abs(player.x-0) >= 60, 'hero deported far away ('+Math.abs(player.x).toFixed(0)+' tiles)');
+assert.equal(player.energy, 0, 'hero energy is drained by UFO capture');
+assert.equal(drainedByUfo, 80, 'UFO capture drains the stored hero energy exactly once');
 assert.equal(inv.antimatter, 1, 'souvenir antimatter crumb');
 assert.ok(messages.some(t=>t.includes('wyrzucili')), 'release is announced');
 step(60, 0.1);

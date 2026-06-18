@@ -1,26 +1,32 @@
 // Grass and overlay animations module (grass blades, leaf shimmer, diamond glow)
-// API: MM.grass.drawOverlays(ctx, pass, sx, sy, viewX, viewY, TILE, WORLD_H, getTile, T, zoom, densityScalar, heightScalar)
+// API: MM.grass.drawOverlays(ctx, pass, sx, sy, viewX, viewY, TILE, WORLD_H, getTile, T, zoom, densityScalar, heightScalar, canDrawTile)
 //      MM.grass.getBudgetInfo() -> string for FPS HUD suffix
 (function(){
   window.MM = window.MM || {};
   const grass = {};
 
   // Internal perf controls
-  const GRASS_ITER_BUDGET = 30000; // soft cap total blade draws per frame (both passes)
+  const GRASS_STROKE_BUDGET = 6500; // soft cap total blade strokes per frame (both passes)
+  const GRASS_CRITICAL_BUDGET = 1800;
+  const GRASS_MAX_BLADES_PER_TILE = 56;
   let grassThinningFactor = 1; // dynamic 0..1
+  let grassBladeTarget = 3;
   let grassBudgetInfo = '';
 
   function hash32(x,y){ let h = (x|0)*374761393 + (y|0)*668265263; h = (h^(h>>>13))*1274126177; h = h^(h>>>16); return h>>>0; }
+  function openAbove(t,T){ return t===T.AIR || !!(MM.INFO && MM.INFO[t] && MM.INFO[t].gas); }
 
   grass.getBudgetInfo = function(){ return grassBudgetInfo; };
 
   // Reset any internal dynamic state (called on world regen)
   grass.reset = function(){
     grassThinningFactor = 1;
+    grassBladeTarget = 3;
     grassBudgetInfo = '';
   };
 
-  grass.drawOverlays = function(ctx, pass, sx, sy, viewX, viewY, TILE, WORLD_H, getTile, T, zoom, densityScalar, heightScalar){
+  grass.drawOverlays = function(ctx, pass, sx, sy, viewX, viewY, TILE, WORLD_H, getTile, T, zoom, densityScalar, heightScalar, canDrawTile){
+    const visibleTile = typeof canDrawTile === 'function' ? canDrawTile : null;
     const now=performance.now();
     const wind = Math.sin(now*0.0003)*1.2 + Math.sin(now*0.0011)*0.8;
     const diamondPulse = (Math.sin(now*0.005)+1)/2;
@@ -31,18 +37,23 @@
       for(let y=sy; y<sy+viewY+2; y++){
         if(y<0||y>=WORLD_H) continue;
         for(let x=sx; x<sx+viewX+2; x++){
-          if(getTile(x,y)===T.GRASS && getTile(x,y-1)===T.AIR) grassTiles++;
+          if(getTile(x,y)===T.GRASS && openAbove(getTile(x,y-1),T) && (!visibleTile || visibleTile(x,y))) grassTiles++;
         }
       }
-      const basePerTile = Math.min(120, Math.max(1, Math.round(3 * densityScalar)));
+      const basePerTile = Math.min(GRASS_MAX_BLADES_PER_TILE, Math.max(1, Math.round(3 * densityScalar)));
       const zoomLod = zoom < 1 ? (0.35 + 0.65*zoom) : 1;
-      const estimatedIterations = grassTiles * basePerTile * 2 * zoomLod;
-      if(estimatedIterations > GRASS_ITER_BUDGET){
-        grassThinningFactor = GRASS_ITER_BUDGET / estimatedIterations;
-        if(grassThinningFactor < 0.05) grassThinningFactor = 0.05;
-        grassBudgetInfo = ' grass:'+(grassThinningFactor*100|0)+'%';
+      const desiredBlades = Math.max(1, Math.round(basePerTile * zoomLod));
+      const frameMs = (typeof window!=='undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
+      const budget = frameMs>40 ? GRASS_CRITICAL_BUDGET : (frameMs>24 ? 3400 : GRASS_STROKE_BUDGET);
+      const estimatedStrokes = grassTiles * desiredBlades;
+      if(estimatedStrokes > budget){
+        grassThinningFactor = budget / estimatedStrokes;
+        if(grassThinningFactor < 0.03) grassThinningFactor = 0.03;
+        grassBladeTarget = Math.max(1, Math.min(GRASS_MAX_BLADES_PER_TILE, Math.round(desiredBlades * grassThinningFactor)));
+        grassBudgetInfo = ' grass:'+grassBladeTarget+'/tile';
       } else {
         grassThinningFactor = 1;
+        grassBladeTarget = desiredBlades;
         grassBudgetInfo = '';
       }
     }
@@ -52,11 +63,11 @@
       for(let x=sx; x<sx+viewX+2; x++){
         const t=getTile(x,y); if(t===T.AIR) continue;
         // Grass blades (surface)
-        if(t===T.GRASS && getTile(x,y-1)===T.AIR){
+        if(t===T.GRASS && openAbove(getTile(x,y-1),T) && (!visibleTile || visibleTile(x,y))){
           const seed=hash32(x,y);
-          const base = 3;
-          let bladeCount = Math.min(120, Math.max(1, Math.round(base * densityScalar * grassThinningFactor * (zoom<1? (0.35 + 0.65*zoom):1))));
-          for(let b=0;b<bladeCount;b++){
+          const bladeCount = grassBladeTarget;
+          const start = pass==='front' ? 1 : 0;
+          for(let b=start;b<bladeCount;b+=2){
             const bSeed = seed ^ (b*1103515245);
             const randA = ((bSeed>>>1)&1023)/1023;
             const randB = ((bSeed>>>11)&1023)/1023;
@@ -79,7 +90,7 @@
             const midX = baseX + (sway*0.25) + bendDir*curvature*4;
             const midY = baseY - TILE*heightFactor*0.55;
             const shadeMod = 0.65 + randC*0.5;
-            const frontBlade = ((bSeed>>5)&1)===1; if((pass==='front' && !frontBlade) || (pass==='back' && frontBlade)) continue;
+            const frontBlade = pass==='front';
             ctx.strokeStyle = (bSeed&2)? 'rgba(46,165,46,'+(frontBlade? (0.85*shadeMod).toFixed(2):(0.55*shadeMod).toFixed(2))+')' : 'rgba(34,125,34,'+(frontBlade? (0.80*shadeMod).toFixed(2):(0.50*shadeMod).toFixed(2))+')';
             ctx.lineWidth = 1;
             ctx.beginPath();
@@ -89,9 +100,9 @@
           }
         }
         // Leaf shimmer
-        if(t===T.LEAF){ const h=hash32(x,y); const frontLeaf = ((h>>7)&1)===1; if((pass==='back' && frontLeaf) || (pass==='front' && !frontLeaf)){} else { const phase=(h&255)/255; const offset = Math.sin(now*0.0025 + phase*6.283)*2.5; ctx.fillStyle='rgba(255,255,255,'+(frontLeaf?0.10:0.06)+')'; ctx.fillRect(x*TILE + TILE/2 + offset - TILE*0.22, y*TILE+3, TILE*0.44, TILE*0.44); } }
+        if(t===T.LEAF && (!visibleTile || visibleTile(x,y))){ const h=hash32(x,y); const frontLeaf = ((h>>7)&1)===1; if((pass==='back' && frontLeaf) || (pass==='front' && !frontLeaf)){} else { const phase=(h&255)/255; const offset = Math.sin(now*0.0025 + phase*6.283)*2.5; ctx.fillStyle='rgba(255,255,255,'+(frontLeaf?0.10:0.06)+')'; ctx.fillRect(x*TILE + TILE/2 + offset - TILE*0.22, y*TILE+3, TILE*0.44, TILE*0.44); } }
         // Diamond shimmer + flash (back pass)
-        if(pass==='back' && t===T.DIAMOND){ const h=hash32(x,y); const flash = Math.sin(now*0.006 + (h&1023))*0.5 + 0.5; if(flash>0.8){ const alpha=(flash-0.8)/0.2; ctx.fillStyle='rgba(255,255,255,'+(0.3*alpha)+')'; const cxp=x*TILE+TILE/2, cyp=y*TILE+TILE/2; ctx.fillRect(cxp-1,cyp-1,2,2); ctx.fillRect(cxp-3,cyp,6,1); ctx.fillRect(cxp,cyp-3,1,6); }
+        if(pass==='back' && t===T.DIAMOND && (!visibleTile || visibleTile(x,y))){ const h=hash32(x,y); const flash = Math.sin(now*0.006 + (h&1023))*0.5 + 0.5; if(flash>0.8){ const alpha=(flash-0.8)/0.2; ctx.fillStyle='rgba(255,255,255,'+(0.3*alpha)+')'; const cxp=x*TILE+TILE/2, cyp=y*TILE+TILE/2; ctx.fillRect(cxp-1,cyp-1,2,2); ctx.fillRect(cxp-3,cyp,6,1); ctx.fillRect(cxp,cyp-3,1,6); }
           ctx.fillStyle='rgba(255,255,255,'+(0.05+diamondPulse*0.07)+')'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); }
       }
     }

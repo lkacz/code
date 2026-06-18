@@ -34,19 +34,29 @@ MM.ui = (function(){
     const menuPanel = document.getElementById('menuPanel');
     if(!menuBtn || !menuPanel) return;
     _menu.btn = menuBtn; _menu.panel = menuPanel;
-    function close(){ menuPanel.hidden = true; menuBtn.setAttribute('aria-expanded','false'); }
-    // expose
+    function setOpen(open){
+      menuPanel.hidden = !open;
+      menuBtn.setAttribute('aria-expanded', String(!!open));
+      menuBtn.classList.toggle('toggled', !!open);
+    }
+    function close(){ setOpen(false); }
     api.closeMenu = close;
-    menuBtn.addEventListener('click',()=>{
-      const vis = menuPanel.hidden;
-      menuPanel.hidden = !vis;
-      menuBtn.setAttribute('aria-expanded', String(vis));
+    api.openMenu = ()=>setOpen(true);
+    api.toggleMenu = ()=>setOpen(menuPanel.hidden);
+    setOpen(!menuPanel.hidden);
+    if(menuBtn.__mmMenuToggleBound) return;
+    menuBtn.__mmMenuToggleBound = true;
+    menuBtn.addEventListener('click',(e)=>{
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(menuPanel.hidden);
     });
     document.addEventListener('click',(e)=>{
       if(menuPanel.hidden) return;
       if(menuPanel.contains(e.target) || menuBtn.contains(e.target)) return;
       close();
     });
+    window.addEventListener('keydown',(e)=>{ if(e.key==='Escape' && !menuPanel.hidden) close(); });
     // Radar menu button triggers a custom event so game can respond without tight coupling
     const radarMenuBtn = document.getElementById('radarMenuBtn');
     radarMenuBtn?.addEventListener('click',()=>{
@@ -89,7 +99,7 @@ MM.ui = (function(){
       return {input,span};
     }
     const r1=row('Poziom morza', 'setSeaLevel', 45, 80, 1, (s.seaLevel===undefined?62:s.seaLevel));
-    const r2=row('Ilość oceanów', 'setOceanFrac', 0.15, 0.50, 0.01, (s.oceanFrac===undefined?0.32:s.oceanFrac), v=>Number(v).toFixed(2));
+    const r2=row('Ilość oceanów', 'setOceanFrac', 0.15, 0.50, 0.01, (s.oceanFrac===undefined?0.22:s.oceanFrac), v=>Number(v).toFixed(2));
   const r3=row('Wysokość gór', 'setMountainAmp', 10, 54, 1, (s.mountainAmp===undefined?38:s.mountainAmp));
   const r4=row('Próg gór', 'setMountainTh', 0.30, 0.70, 0.01, (s.mountainThreshold===undefined?0.46:s.mountainThreshold), v=>Number(v).toFixed(2));
   const r5=row('Głębokość dolin', 'setValleyGain', 0, 50, 1, (s.valleyGain===undefined?30:s.valleyGain));
@@ -214,6 +224,43 @@ MM.ui = (function(){
         row.appendChild(bl); row.appendChild(mid); row.appendChild(br);
         box.appendChild(row);
       });
+      // Volcano debug: jump to the next seeded volcano without landing inside lava
+      const volcanoLab=document.createElement('div'); volcanoLab.textContent='Wulkan - skocz do (debug):'; volcanoLab.style.cssText='width:100%; font-size:11px; opacity:.7; margin-top:4px;';
+      box.appendChild(volcanoLab);
+      const volcanoBtn=document.createElement('button'); volcanoBtn.id='nextVolcanoBtn'; volcanoBtn.textContent='Następny wulkan'; volcanoBtn.title='Teleportuj do następnego wulkanu po prawej';
+      volcanoBtn.style.cssText='flex:1 1 100%; font-size:11px; padding:3px 6px; border:1px solid rgba(255,120,40,.65);';
+      volcanoBtn.addEventListener('click',()=>{
+        try{
+          const hit=(typeof window.teleportHeroToNextVolcano==='function') ? window.teleportHeroToNextVolcano(1) : null;
+          if(!hit) msg('Nie udało się znaleźć wulkanu');
+        }catch(e){}
+      });
+      box.appendChild(volcanoBtn);
+      const masterBtn=document.createElement('button'); masterBtn.id='volcanoMasterBtn'; masterBtn.textContent='Kamien mistrza (O)'; masterBtn.title='Debug: wyrzuc kamien mistrza z najblizszego wulkanu';
+      masterBtn.style.cssText='flex:1 1 100%; font-size:11px; padding:3px 6px; border:1px solid rgba(90,255,240,.7);';
+      masterBtn.addEventListener('click',()=>{
+        try{
+          const ok=(typeof window.forceVolcanoMasterStone==='function') ? window.forceVolcanoMasterStone() : null;
+          if(!ok) msg('Nie udalo sie znalezc wulkanu');
+        }catch(e){}
+      });
+      box.appendChild(masterBtn);
+      const biomeLab=document.createElement('div'); biomeLab.textContent='Biom - skocz do (debug):'; biomeLab.style.cssText='width:100%; font-size:11px; opacity:.7; margin-top:4px;';
+      box.appendChild(biomeLab);
+      const BIOME_DEBUG_BUTTONS=[[0,'Las'],[1,'Rowniny'],[2,'Snieg'],[3,'Pustynia'],[4,'Bagno'],[5,'Morze'],[6,'Jezioro'],[7,'Gory'],[8,'Miasto']];
+      BIOME_DEBUG_BUTTONS.forEach(([id,label])=>{
+        const b=document.createElement('button');
+        b.textContent=label;
+        b.title='Teleportuj do najblizszego biomu: '+label;
+        b.style.cssText='flex:1 1 72px; font-size:11px; padding:3px 6px; border:1px solid rgba(90,180,255,.55);';
+        b.addEventListener('click',()=>{
+          try{
+            const hit=(typeof window.teleportHeroToNearestBiome==='function') ? window.teleportHeroToNearestBiome(id,0) : null;
+            if(!hit) msg('Nie znaleziono biomu: '+label);
+          }catch(e){}
+        });
+        box.appendChild(b);
+      });
       // UFO debug: summon the saucer on demand (normally it visits every 2-3 in-game days)
       const ufoLab=document.createElement('div'); ufoLab.textContent='🛸 UFO (debug):'; ufoLab.style.cssText='width:100%; font-size:11px; opacity:.7; margin-top:4px;';
       box.appendChild(ufoLab);
@@ -264,6 +311,327 @@ MM.ui = (function(){
     setTimeout(()=>{ populate(); },300);
     window.addEventListener('mm-mobs-ready',()=>{ populate(); });
   }
+  function injectGasDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('gasDebugBox')) return;
+    actions = actions || {};
+    const box=document.createElement('div');
+    box.id='gasDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='Gazy (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+
+    const powerRow=document.createElement('label');
+    powerRow.style.cssText='width:100%; display:flex; align-items:center; gap:8px; font-size:11px; opacity:.85;';
+    const powerText=document.createElement('span');
+    powerText.textContent='Moc';
+    const powerVal=document.createElement('span');
+    powerVal.style.cssText='min-width:30px; text-align:right; opacity:.7;';
+    const power=document.createElement('input');
+    power.id='gasDebugPower';
+    power.type='range';
+    power.min='0.5';
+    power.max='5';
+    power.step='0.5';
+    power.value='2';
+    power.style.cssText='flex:1; min-width:90px;';
+    function readPower(){
+      const n=parseFloat(power.value);
+      return Number.isFinite(n) ? Math.max(0.5, Math.min(5, n)) : 2;
+    }
+    function refreshPower(){ powerVal.textContent=readPower().toFixed(1); }
+    power.addEventListener('input',refreshPower);
+    powerRow.appendChild(powerText);
+    powerRow.appendChild(power);
+    powerRow.appendChild(powerVal);
+    box.appendChild(powerRow);
+
+    const metrics=document.createElement('div');
+    metrics.id='gasDebugMetrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    function refreshMetrics(){
+      const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+      metrics.textContent=m ? ('aktywne '+m.active+' | hot '+m.hot+' | para '+m.steam+' | trucizna '+m.poison+' | paliwo '+m.fuel) : 'brak metryk gazu';
+    }
+    const GAS_DEBUG_BUTTONS=[
+      ['hot','Gorace','#f4b65e'],
+      ['steam','Para','#dfe8ee'],
+      ['poison','Trujacy','#82d45b'],
+      ['fuel','Palny','#b1a36c']
+    ];
+    GAS_DEBUG_BUTTONS.forEach(([kind,txt,color])=>{
+      const b=document.createElement('button');
+      b.textContent=txt;
+      b.title='Wygeneruj gaz: '+txt;
+      b.style.cssText='flex:1 1 72px; font-size:11px; padding:3px 6px; border:1px solid '+color+'99;';
+      b.addEventListener('click',()=>{
+        try{
+          const placed=(typeof actions.spawn==='function') ? actions.spawn(kind, readPower()) : 0;
+          msg(placed ? ('Gaz '+txt+': +'+placed) : ('Gaz '+txt+': brak miejsca'));
+          refreshMetrics();
+        }catch(e){ msg('Debug gazu: blad'); }
+      });
+      box.appendChild(b);
+    });
+    const ignite=document.createElement('button');
+    ignite.textContent='Podpal paliwo';
+    ignite.title='Detonuje najblizszy gaz palny przy miejscu testu';
+    ignite.style.cssText='flex:1 1 100%; font-size:11px; padding:3px 6px; border:1px solid rgba(255,110,40,.75);';
+    ignite.addEventListener('click',()=>{
+      try{
+        const ok=(typeof actions.ignite==='function') ? actions.ignite(readPower()) : false;
+        msg(ok ? 'Gaz palny: detonacja' : 'Brak gazu palnego w zasiegu');
+        refreshMetrics();
+      }catch(e){ msg('Debug gazu: blad detonacji'); }
+    });
+    box.appendChild(ignite);
+
+    const clear=document.createElement('button');
+    clear.textContent='Wyczysc gazy';
+    clear.title='Usuwa aktywne gazy z widocznego swiata testowego';
+    clear.style.cssText='flex:1 1 100%; font-size:11px; padding:3px 6px; border:1px solid rgba(180,220,255,.55);';
+    clear.addEventListener('click',()=>{
+      try{
+        const n=(typeof actions.clear==='function') ? actions.clear() : 0;
+        msg(n ? ('Usunieto gaz: '+n+' komorek') : 'Brak aktywnych gazow');
+        refreshMetrics();
+      }catch(e){ msg('Debug gazu: blad czyszczenia'); }
+    });
+    box.appendChild(clear);
+    box.appendChild(metrics);
+    refreshPower();
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1500);
+    panel.appendChild(box);
+  }
+  function injectWindDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('windDebugBox')) return;
+    actions = actions || {};
+    const box=document.createElement('div');
+    box.id='windDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(210,235,255,.12); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='Wiatr (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+    const metrics=document.createElement('div');
+    metrics.id='windDebugMetrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    function refreshMetrics(){
+      const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+      if(!m){ metrics.textContent='brak metryk wiatru'; return; }
+      const ov=m.override==null ? 'naturalny' : ('wymuszony '+m.override);
+      const prof=m.weatherProfile ? (' | profil '+m.weatherProfile) : '';
+      const sq=m.squall && m.squall.active ? (' | szkwal '+m.squall.tLeft+'s') : '';
+      metrics.textContent='v '+m.speed+' | '+ov+prof+' | sila '+m.intensity+' | czastki '+m.particles+'/'+m.particleCap+' | noc '+m.night+' | termika '+m.thermal+' | burza '+m.storm+sq;
+    }
+    const speedRow=document.createElement('label');
+    speedRow.style.cssText='width:100%; display:flex; align-items:center; gap:8px; font-size:11px; opacity:.85;';
+    const speedText=document.createElement('span');
+    speedText.textContent='Moc/kier.';
+    const speed=document.createElement('input');
+    speed.id='windDebugSpeed';
+    speed.type='range';
+    speed.min='-5.2';
+    speed.max='5.2';
+    speed.step='0.1';
+    speed.value='0';
+    speed.style.cssText='flex:1; min-width:92px;';
+    const speedVal=document.createElement('span');
+    speedVal.style.cssText='min-width:36px; text-align:right; opacity:.7;';
+    function readSpeed(){
+      const n=parseFloat(speed.value);
+      return Number.isFinite(n) ? Math.max(-5.2, Math.min(5.2, n)) : 0;
+    }
+    function refreshSpeed(){ speedVal.textContent=readSpeed().toFixed(1); }
+    speed.addEventListener('input',refreshSpeed);
+    speedRow.appendChild(speedText);
+    speedRow.appendChild(speed);
+    speedRow.appendChild(speedVal);
+    box.appendChild(speedRow);
+    const buttons=[
+      ['calm','Cisza','Wymusza zerowy wiatr',()=>actions.calm && actions.calm(),'Wiatr: cisza'],
+      ['exact','Ustaw','Wymusza dokladna moc i kierunek z suwaka',()=>actions.exact && actions.exact(readSpeed()),'Wiatr: ustawiony '+readSpeed().toFixed(1)],
+      ['breezeLeft','Bryza <-','Lekka bryza w lewo',()=>actions.breeze && actions.breeze(-1),'Wiatr: bryza w lewo'],
+      ['breezeRight','Bryza ->','Lekka bryza w prawo',()=>actions.breeze && actions.breeze(1),'Wiatr: bryza w prawo'],
+      ['galeLeft','Wichura <-','Silny wiatr w lewo',()=>actions.gale && actions.gale(-1),'Wiatr: wichura w lewo'],
+      ['galeRight','Wichura ->','Silny wiatr w prawo',()=>actions.gale && actions.gale(1),'Wiatr: wichura w prawo'],
+      ['squallLeft','Szkwal <-','Jednorazowy poryw w lewo',()=>actions.squall && actions.squall(-1),'Wiatr: szkwal w lewo'],
+      ['squallRight','Szkwal ->','Jednorazowy poryw w prawo',()=>actions.squall && actions.squall(1),'Wiatr: szkwal w prawo'],
+      ['storm','Burza + szkwal','Uruchamia burze i mocny poryw',()=>{ const p=actions.profile && actions.profile('storm'); const s=actions.storm && actions.storm(); return !!(p||s); },'Wiatr: burza i szkwal'],
+      ['natural','Naturalnie','Wraca do modelu pogody',()=>actions.natural && actions.natural(),'Wiatr: tryb naturalny']
+    ];
+    buttons.forEach(([id,txt,title,fn,okMsg])=>{
+      const b=document.createElement('button');
+      b.id='windDebug_'+id;
+      b.textContent=txt;
+      b.title=title;
+      b.style.cssText='flex:1 1 78px; font-size:11px; padding:3px 6px; border:1px solid rgba(210,235,255,.58);';
+      b.addEventListener('click',()=>{
+        try{
+          const ok=(typeof fn==='function') ? fn() : false;
+          msg(ok ? okMsg : 'Debug wiatru: brak akcji');
+          refreshMetrics();
+        }catch(e){ msg('Debug wiatru: blad'); }
+      });
+      box.appendChild(b);
+    });
+    const profileLab=document.createElement('div');
+    profileLab.textContent='Profile pogody:';
+    profileLab.style.cssText='width:100%; font-size:11px; opacity:.7; margin-top:2px;';
+    box.appendChild(profileLab);
+    const profiles=[
+      ['dayClear','Dzien czysty','Czyste poludnie: bazowy wiatr dzienny'],
+      ['thermal','Termika','Slonce plus chmury: test termiki i porywow'],
+      ['night','Noc','Noc: mocniejszy naturalny wiatr'],
+      ['storm','Burza profil','Burza bez dodatkowego recznego szkwalu']
+    ];
+    profiles.forEach(([id,txt,title])=>{
+      const b=document.createElement('button');
+      b.id='windDebugProfile_'+id;
+      b.textContent=txt;
+      b.title=title;
+      b.style.cssText='flex:1 1 88px; font-size:11px; padding:3px 6px; border:1px solid rgba(145,205,255,.58);';
+      b.addEventListener('click',()=>{
+        try{
+          const ok=(typeof actions.profile==='function') ? actions.profile(id) : false;
+          msg(ok ? ('Wiatr: profil '+txt) : 'Debug wiatru: brak profilu');
+          refreshMetrics();
+        }catch(e){ msg('Debug wiatru: blad profilu'); }
+      });
+      box.appendChild(b);
+    });
+    box.appendChild(metrics);
+    refreshSpeed();
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1500);
+    panel.appendChild(box);
+  }
+  function injectDynamoDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('dynamoDebugBox')) return;
+    actions = actions || {};
+    const box=document.createElement('div');
+    box.id='dynamoDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='Dynamo (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+    const metrics=document.createElement('div');
+    metrics.id='dynamoDebugMetrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    function refreshMetrics(){
+      const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+      const h=(typeof actions.hero==='function') ? actions.hero() : null;
+      const heroText=h ? (' | hero '+Math.round(h.energy)+'/'+Math.round(h.max)+' E') : '';
+      metrics.textContent=m ? ('maszyny '+m.machines+' | aktywne '+m.active+' | '+m.currentPower+' E/s | suma '+m.storedEnergy+' E'+heroText) : 'brak metryk dynama';
+    }
+    const buttons=[
+      ['give','Dynamo +1','Dodaje jedno dynamo do zasobow'],
+      ['place','Postaw testowe','Stawia pelna 3-blokowa strukture przy bohaterze'],
+      ['pulse','Impuls','Zasila najblizsze poprawne dynamo krotkim impulsem'],
+      ['charge','Laduj dynamo','Dodaje duzy zapas energii do najblizszego dynama'],
+      ['fillHero','Hero pelny','Laduje baterie bohatera do maksimum'],
+      ['emptyHero','Hero pusty','Rozladowuje baterie bohatera']
+    ];
+    buttons.forEach(([id,txt,title])=>{
+      const b=document.createElement('button');
+      b.textContent=txt;
+      b.title=title;
+      b.style.cssText='flex:1 1 92px; font-size:11px; padding:3px 6px; border:1px solid rgba(255,210,74,.65);';
+      b.addEventListener('click',()=>{
+        try{
+          const fn=actions[id];
+          const ok=(typeof fn==='function') ? fn() : false;
+          if(id==='give') msg(ok ? ('Dynamo +'+ok) : 'Nie dodano dynama');
+          else if(id==='place') msg(ok ? 'Dynamo testowe postawione' : 'Brak miejsca na dynamo');
+          else if(id==='charge') msg(ok ? 'Dynamo naladowane' : 'Brak dynama w poblizu');
+          else if(id==='fillHero') msg(ok ? 'Hero naladowany' : 'Brak baterii bohatera');
+          else if(id==='emptyHero') msg(ok ? 'Hero rozladowany' : 'Brak baterii bohatera');
+          else msg(ok ? 'Dynamo: impuls energii' : 'Brak dynama w poblizu');
+          refreshMetrics();
+        }catch(e){ msg('Debug dynama: blad'); }
+      });
+      box.appendChild(b);
+    });
+    box.appendChild(metrics);
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1500);
+    panel.appendChild(box);
+  }
+  function injectTeleporterDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('teleporterDebugBox')) return;
+    actions = actions || {};
+    const box=document.createElement('div');
+    box.id='teleporterDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(124,247,255,.12); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='Teleportery (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+    const metrics=document.createElement('div');
+    metrics.id='teleporterDebugMetrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    function refreshMetrics(){
+      const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+      const h=(typeof actions.hero==='function') ? actions.hero() : null;
+      const heroText=h ? (' | hero '+Math.round(h.energy)+'/'+Math.round(h.max)+' E') : '';
+      metrics.textContent=m ? ('maszyny '+m.machines+' | naladowane '+m.charged+' | suma '+m.storedEnergy+' E'+heroText) : 'brak metryk teleportera';
+    }
+    const buttons=[
+      ['giveTeleporter','Teleporter +1','Dodaje jeden teleporter do zasobow'],
+      ['giveCable','Przewod +20','Dodaje miedziane przewody zasilania'],
+      ['placeOne','Postaw jeden','Stawia pojedynczy teleporter obok bohatera'],
+      ['placePair','Postaw pare','Stawia dwa naladowane teleportery po bokach bohatera'],
+      ['jumpLeft','Skocz w lewo','Przenosi bohatera do najblizszego teleportera po lewej'],
+      ['jumpRight','Skocz w prawo','Przenosi bohatera do najblizszego teleportera po prawej'],
+      ['charge','Laduj najblizszy','Laduje najblizszy teleporter'],
+      ['empty','Rozladuj najblizszy','Rozladowuje najblizszy teleporter']
+    ];
+    buttons.forEach(([id,txt,title])=>{
+      const b=document.createElement('button');
+      b.textContent=txt;
+      b.title=title;
+      b.style.cssText='flex:1 1 102px; font-size:11px; padding:3px 6px; border:1px solid rgba(124,247,255,.65);';
+      b.addEventListener('click',()=>{
+        try{
+          const fn=actions[id];
+          const ok=(typeof fn==='function') ? fn() : false;
+          if(id==='giveTeleporter') msg(ok ? ('Teleporter +'+ok) : 'Nie dodano teleportera');
+          else if(id==='giveCable') msg(ok ? ('Przewod +'+ok) : 'Nie dodano przewodu');
+          else if(id==='placeOne') msg(ok ? 'Teleporter postawiony' : 'Brak miejsca na teleporter');
+          else if(id==='placePair') msg(ok ? 'Para teleporterow postawiona' : 'Brak miejsca na pare teleporterow');
+          else if(id==='jumpLeft') msg(ok ? 'Skok do teleportera po lewej' : 'Brak teleportera po lewej');
+          else if(id==='jumpRight') msg(ok ? 'Skok do teleportera po prawej' : 'Brak teleportera po prawej');
+          else if(id==='charge') msg(ok ? 'Teleporter naladowany' : 'Brak teleportera w poblizu');
+          else if(id==='empty') msg(ok ? 'Teleporter rozladowany' : 'Brak teleportera w poblizu');
+          refreshMetrics();
+        }catch(e){ msg('Debug teleportera: blad'); }
+      });
+      box.appendChild(b);
+    });
+    box.appendChild(metrics);
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1500);
+    panel.appendChild(box);
+  }
   // Radar pulse helper (adds/removes pulse class on #radarBtn)
   function setRadarPulsing(active){
     const b = document.getElementById('radarBtn');
@@ -271,7 +639,7 @@ MM.ui = (function(){
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, injectMobSpawnPanel, setRadarPulsing, closeMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
+  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, injectMobSpawnPanel, injectGasDebugPanel, injectWindDebugPanel, injectDynamoDebugPanel, injectTeleporterDebugPanel, setRadarPulsing, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;

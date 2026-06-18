@@ -1,19 +1,19 @@
-// Progression spine: XP → levels → skill points spent on three trainable stats
-// (Witalność/Siła/Zwinność), plus persistent milestones with rewards. Bonuses
+// Progression spine: XP → levels → skill points spent on trainable stats
+// (Witalność/Siła/Zwinność/Pojemność), plus persistent milestones with rewards. Bonuses
 // flow into the existing modifier engine (inventory.js merges MM.progress.bonuses()
 // into MM.activeModifiers); max-HP changes are applied by main.js listening to
 // the mm-progress-change event. State persists in mm_progress_v1.
 window.MM = window.MM || {};
 (function(){
   const SAVE_KEY='mm_progress_v1';
-  const state={ vit:0, str:0, agi:0, lastLevel:1, bossKills:0, done:{} };
+  const state={ vit:0, str:0, agi:0, cap:0, lastLevel:1, bossKills:0, done:{} };
 
   function save(){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(state)); }catch(e){} }
   (function load(){
     try{
       const raw=localStorage.getItem(SAVE_KEY); if(!raw) return;
       const d=JSON.parse(raw); if(!d||typeof d!=='object') return;
-      ['vit','str','agi','lastLevel','bossKills'].forEach(k=>{ if(typeof d[k]==='number') state[k]=Math.max(0,d[k]|0); });
+      ['vit','str','agi','cap','lastLevel','bossKills'].forEach(k=>{ if(typeof d[k]==='number') state[k]=Math.max(0,d[k]|0); });
       if(state.lastLevel<1) state.lastLevel=1;
       if(d.done && typeof d.done==='object') state.done=d.done;
     }catch(e){}
@@ -36,11 +36,12 @@ window.MM = window.MM || {};
     return {level:lvl, into:xp-acc, need:needFor(lvl)};
   }
   function level(){ const p=playerRef(); return levelFor((p&&p.xp)||0); }
-  function points(){ const L=level().level; return Math.max(0,(L-1)-(state.vit+state.str+state.agi)); }
+  function points(){ const L=level().level; return Math.max(0,(L-1)-(state.vit+state.str+state.agi+state.cap)); }
   function spend(stat){
-    if(points()<=0 || !(stat in {vit:1,str:1,agi:1})) return false;
-    state[stat]++; save(); notify();
+    if(points()<=0 || !(stat in {vit:1,str:1,agi:1,cap:1})) return false;
+    state[stat]++; save();
     try{ if(MM.recomputeModifiers) MM.recomputeModifiers(); }catch(e){}
+    notify();
     return true;
   }
   // Merged by inventory.computeModifiers into MM.activeModifiers
@@ -50,6 +51,7 @@ window.MM = window.MM || {};
       moveSpeedMult: 1+state.agi*0.02,         // +2% move per Zwinność
       jumpPowerMult: 1+state.agi*0.02,         // +2% jump per Zwinność
       maxHpBonus: state.vit*10,                // +10 HP per Witalność (applied in main)
+      energyCapacityBonus: state.cap*25,       // +25 energy capacity per Pojemność
     };
   }
 
@@ -142,11 +144,11 @@ window.MM = window.MM || {};
     }
   }
 
-  function reset(){ state.vit=state.str=state.agi=0; state.lastLevel=1; state.bossKills=0; state.done={}; berries=0; save(); notify(); }
+  function reset(){ state.vit=state.str=state.agi=state.cap=0; state.lastLevel=1; state.bossKills=0; state.done={}; berries=0; save(); try{ if(MM.recomputeModifiers) MM.recomputeModifiers(); }catch(e){} notify(); }
 
   MM.progress={ update, level, points, spend, bonuses, reset, addBuff,
     getBuffs:()=>buffs.map(b=>({name:b.name,icon:b.icon,t:b.t})),
-    stats:()=>({vit:state.vit,str:state.str,agi:state.agi}),
+    stats:()=>({vit:state.vit,str:state.str,agi:state.agi,cap:state.cap}),
     milestones:()=>MILESTONES.map(m=>({id:m.id,desc:m.desc,done:!!state.done[m.id]})) };
   // Register as a stat provider: skill-point bonuses merge through the same
   // STAT_RULES engine as gear. Registration recomputes modifiers, which also
@@ -155,7 +157,7 @@ window.MM = window.MM || {};
     if(MM.inventory && MM.inventory.registerModifierSource){
       MM.inventory.registerModifierSource('progress', ()=>{
         const b=bonuses();
-        return { attackDamage:b.attackDamage, moveSpeedMult:b.moveSpeedMult, jumpPowerMult:b.jumpPowerMult };
+        return { attackDamage:b.attackDamage, moveSpeedMult:b.moveSpeedMult, jumpPowerMult:b.jumpPowerMult, energyCapacityBonus:b.energyCapacityBonus };
       });
       MM.inventory.registerModifierSource('buffs', buffBundle);
     } else if(MM.recomputeModifiers) MM.recomputeModifiers();

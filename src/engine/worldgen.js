@@ -17,7 +17,7 @@ WG.worldSeed = 12345;
 WG.settings = (function(){
 	const DEF = {
 		seaLevel: 62,            // row of the global water line
-		oceanFrac: 0.26,         // continental threshold: higher => more/larger oceans
+		oceanFrac: 0.22,         // continental threshold: higher => more/larger oceans
 		                         // (0.26 ≈ mostly seas, with the occasional wide ocean)
 		mountainAmp: 38,         // max ridged lift above highlands (tiles)
 		mountainThreshold: 0.46, // mountain mask gate (lower => more ranges)
@@ -32,8 +32,8 @@ WG.settings = (function(){
 		forestDensityMul: 1.0
 	};
 	try{ const raw=localStorage.getItem('mm_world_settings_v2'); if(raw){ const obj=JSON.parse(raw);
-		// migrate the old 0.32 default (oceans dominated the map) to the new sea-sized default
-		if(obj.oceanFrac===0.32) delete obj.oceanFrac;
+		// migrate old defaults that made oceans dominate long travel corridors
+		if(obj.oceanFrac===0.32 || obj.oceanFrac===0.26) delete obj.oceanFrac;
 		return Object.assign({}, DEF, obj); } }catch(e){}
 	return Object.assign({}, DEF);
 })();
@@ -62,6 +62,90 @@ function spread(v,k){ return clamp(0.5+(v-0.5)*k,0,1); }
 // at 0.5; spreading before the fold yields rarer, sharper crests
 function ridgeSharp(x, wl, off, k){ const v=spread(WG.valueNoise(x,wl,off), k||1.8); return 1-Math.abs(2*v-1); }
 
+// Rare seeded volcano candidates. The column model later decides whether the
+// candidate actually emerges above dry land; oceans/lakes ignore it.
+const VOLCANO_CELL_W = 440;
+const VOLCANO_SPAWN_SAFE_RADIUS = 220;
+const volcanoCellCache = new Map();
+function volcanoCandidateForCell(cell){
+	let v = volcanoCellCache.get(cell);
+	if(v!==undefined) return v;
+	const gate = ih(cell, 9101);
+	if(gate<0.78){ volcanoCellCache.set(cell,null); return null; }
+	const center = Math.round((cell+0.5)*VOLCANO_CELL_W + (ih(cell,9102)-0.5)*VOLCANO_CELL_W*0.58);
+	if(Math.abs(center)<VOLCANO_SPAWN_SAFE_RADIUS){ volcanoCellCache.set(cell,null); return null; }
+	const radius = 18 + Math.floor(ih(cell,9103)*13);
+	const height = 24 + Math.floor(ih(cell,9104)*16);
+	const crater = 2 + Math.floor(ih(cell,9105)*2);
+	const pipe = 1 + Math.floor(ih(cell,9106)*2);
+	const reservoir = Math.max(5, Math.floor(radius*0.34));
+	v = {center,radius,height,crater,pipe,reservoir,cell};
+	volcanoCellCache.set(cell,v);
+	return v;
+}
+function rawVolcanoAt(x){
+	const cell = Math.floor(x/VOLCANO_CELL_W);
+	let best = null;
+	for(let dc=-1; dc<=1; dc++){
+		const v = volcanoCandidateForCell(cell+dc);
+		if(!v) continue;
+		const d = Math.abs(x-v.center);
+		if(d<=v.radius && (!best || d<best.d)) best = Object.assign({d}, v);
+	}
+	return best;
+}
+WG.volcanoAt = function(x){ const c=WG.column(Math.round(x)); return c && c.volcano ? c.volcano : null; };
+WG.nearestVolcano = function(x, dir, maxCells){
+	dir = dir<0 ? -1 : 1;
+	maxCells = (typeof maxCells==='number' && maxCells>0) ? Math.floor(maxCells) : 420;
+	const startCell = Math.floor(Math.round(x)/VOLCANO_CELL_W);
+	let best = null;
+	for(let step=0; step<=maxCells; step++){
+		const v = volcanoCandidateForCell(startCell + step*dir);
+		if(!v) continue;
+		if(dir>0 && v.center<=x+1) continue;
+		if(dir<0 && v.center>=x-1) continue;
+		const c = WG.column(v.center);
+		if(!c.volcano || c.volcano.center!==v.center) continue;
+		const dist = Math.abs(v.center-x);
+		if(!best || dist<best.distance) best = Object.assign({distance:dist}, c.volcano);
+	}
+	return best;
+};
+
+// Rare devastated-city districts: finite urban biomes with terraced footing and
+// dense above-ground structures generated later by world.js.
+const CITY_CELL_W = 1700;
+const CITY_SPAWN_SAFE_RADIUS = 520;
+const cityCellCache = new Map();
+function cityCandidateForCell(cell){
+	let v = cityCellCache.get(cell);
+	if(v!==undefined) return v;
+	const gate = ih(cell, 9301);
+	if(gate<0.58){ cityCellCache.set(cell,null); return null; }
+	const center = Math.round((cell+0.5)*CITY_CELL_W + (ih(cell,9302)-0.5)*CITY_CELL_W*0.46);
+	if(Math.abs(center)<CITY_SPAWN_SAFE_RADIUS){ cityCellCache.set(cell,null); return null; }
+	const radius = 150 + Math.floor(ih(cell,9303)*170);
+	const floorElev = 4 + Math.floor(ih(cell,9304)*9);
+	const density = 0.62 + ih(cell,9305)*0.28;
+	const decay = 0.35 + ih(cell,9306)*0.55;
+	const skyline = ih(cell,9307);
+	v = {center,radius,floorElev,density,decay,skyline,cell};
+	cityCellCache.set(cell,v);
+	return v;
+}
+function rawCityAt(x){
+	const cell = Math.floor(x/CITY_CELL_W);
+	let best = null;
+	for(let dc=-1; dc<=1; dc++){
+		const v = cityCandidateForCell(cell+dc);
+		if(!v) continue;
+		const d = Math.abs(x-v.center);
+		if(d<=v.radius && (!best || d<best.d)) best = Object.assign({d}, v);
+	}
+	return best;
+}
+
 // --- Climate -------------------------------------------------------------------
 // 2 octaves + strong spread so cold/hot and wet/dry extremes actually occur
 WG.temperature = function(x){ return spread(fbm1(x,2600,2,5001),2.2); };
@@ -81,10 +165,28 @@ function contSpline(c, oc){
 	return pts[pts.length-1][1];
 }
 
+// Long continental lows can otherwise form multi-thousand-block oceans. These
+// deterministic shoal bands raise occasional archipelagos inside deep basins,
+// breaking crossings without removing seas altogether.
+const OCEAN_BREAKERS=[
+	{maxElev:-1.0, gateW:1050, gateOff:1951, gate:0.44, ridgeW:520, ridgeOff:1952, spread:2.0, th:0.58, base:-2.2, lift:8.2, islandAt:0},
+	{maxElev:-0.6, gateW:640, gateOff:2051, gate:0.42, ridgeW:310, ridgeOff:2052, spread:2.0, th:0.60, base:-1.4, lift:7.6, islandAt:0}
+];
+function applyOceanBreaker(elev,island,xw,cfg){
+	if(elev>=cfg.maxElev) return {elev,island};
+	if(WG.valueNoise(xw,cfg.gateW,cfg.gateOff)<=cfg.gate) return {elev,island};
+	const shoal=ridgeSharp(xw,cfg.ridgeW,cfg.ridgeOff,cfg.spread);
+	if(shoal<=cfg.th) return {elev,island};
+	const t01=(shoal-cfg.th)/(1-cfg.th);
+	const archElev=cfg.base+t01*cfg.lift;
+	if(archElev<=elev) return {elev,island};
+	return {elev:archElev,island:island || archElev>cfg.islandAt};
+}
+
 // --- Column model -----------------------------------------------------------------
 // Everything derived from x is computed once per column and cached.
 const colCache = new Map();
-WG.clearCaches = function(){ colCache.clear(); };
+WG.clearCaches = function(){ colCache.clear(); volcanoCellCache.clear(); cityCellCache.clear(); };
 WG.column = function(x){
 	let c = colCache.get(x); if(c) return c;
 	if(colCache.size>80000) colCache.clear();
@@ -119,6 +221,10 @@ WG.column = function(x){
 			if(islandElev>elev){ elev=islandElev; island = islandElev>-1.5; }
 		}
 	}
+	for(const breaker of OCEAN_BREAKERS){
+		const shaped=applyOceanBreaker(elev,island,xw,breaker);
+		elev=shaped.elev; island=shaped.island;
+	}
 	const t = WG.temperature(x), m = WG.moisture(x);
 	// Erosion-scaled roughness: alpine terrain is jagged, plains stay calm
 	let rough = (fbm1(x,64,3,501)-0.5)*(2.5+9*(1-ero)+7*mountainMask)*S.detailAmp;
@@ -128,11 +234,23 @@ WG.column = function(x){
 	elev += rough;
 	let row = Math.round(sea-elev);
 	row = clamp(row, 8, Math.min(sea+31, WORLD_H-34));
-	const elevF = sea-row;
-	// Biome classification (ids kept from v1: 0 Forest, 1 Plains, 2 Snow/Ice, 3 Desert,
-	// 4 Swamp, 5 Sea, 6 Lake, 7 Mountain)
+	let elevF = sea-row;
+	let city = null;
+	const cityCand = rawCityAt(x);
+	if(cityCand && !island && cont>S.oceanFrac+0.08 && elevF>-5){
+		const edge = 1-cityCand.d/cityCand.radius;
+		const core = smoothstep(0.08,0.55,edge);
+		const cityRow = Math.round(sea-cityCand.floorElev);
+		const scar = Math.round((WG.valueNoise(x,52,9308)-0.5)*2*(1-core));
+		row = Math.round(row*(1-core*0.86) + cityRow*(core*0.86)) + scar;
+		row = clamp(row, 8, Math.min(sea-3, WORLD_H-34));
+		elevF = sea-row;
+		city = Object.assign({edge,core}, cityCand);
+	}
+	// Biome classification (ids kept from v1, plus 8 Devastated City)
 	let biome;
-	if(elevF<-2.5) biome = (cont<S.oceanFrac+0.08)?5:6;            // open sea vs flooded inland valley
+	if(city) biome = 8;
+	else if(elevF<-2.5) biome = (cont<S.oceanFrac+0.08)?5:6;            // open sea vs flooded inland valley
 	else if(valleyDepth>10 && elevF>2 && m>0.42) biome=6;          // perched valley lake basin
 	else if(mountainMask>0.55 && (pv>0.55||elevF>22)) biome=7;
 	else if(elevF>26) biome=7;
@@ -144,18 +262,75 @@ WG.column = function(x){
 	// Islets above the waterline are sandy desert isles regardless of climate
 	if(island && elevF>-2.5) biome=3;
 	const beach = (elevF>=-3 && elevF<=2.5 && cont<S.oceanFrac+0.12);
+	let volcano = null;
+	const vCand = rawVolcanoAt(x);
+	if(vCand && biome!==5 && biome!==6 && biome!==8 && row<sea-4 && !island){
+		const cone = clamp(1-vCand.d/vCand.radius,0,1);
+		const lift = vCand.height*Math.pow(cone,0.82);
+		const craterBite = Math.pow(clamp(1-vCand.d/Math.max(1,vCand.crater+2),0,1),1.5)*6;
+		row = Math.round(clamp(row-lift+craterBite, 8, Math.min(sea+31, WORLD_H-34)));
+		biome = 7;
+		volcano = vCand;
+	}
 	// Cave control fields
 	const entrance = WG.valueNoise(x,230,701)>0.80;               // hillside cave mouths
 	const rv = WG.ridge(xw,1300,801);
 	const rvGate = 1-0.035*Math.max(0.0001,S.ravineFreq);
 	let ravine=0, ravineDepth=0;
-	if(S.ravineFreq>0 && rv>rvGate && elevF>2 && !beach && !island){ ravine=(rv-rvGate)/(1-rvGate); ravineDepth=16+48*ravine; }
+	if(S.ravineFreq>0 && rv>rvGate && elevF>2 && !beach && !island && biome!==8){ ravine=(rv-rvGate)/(1-rvGate); ravineDepth=16+48*ravine; }
 	const aquifer = Math.round(S.aquiferLevel + (fbm1(x,820,2,811)-0.5)*40);
-	c = {row,biome,elev:elevF,cont,ero,pv,mountainMask,valleyDepth,t,m,beach,island,entrance,ravine,ravineDepth,aquifer};
+	c = {row,biome,elev:sea-row,cont,ero,pv,mountainMask,valleyDepth,t,m,beach,island,entrance,ravine,ravineDepth,aquifer,volcano,city};
 	colCache.set(x,c); return c;
 };
 WG.surfaceHeight = function(x){ return WG.column(x).row; };
 WG.biomeType = function(x){ return WG.column(x).biome; };
+WG.cityAt = function(x){ const c=WG.column(Math.round(x)); return c && c.city ? c.city : null; };
+function biomeRunAt(x,biome,origin,limit){
+	x=Math.round(x); biome=biome|0;
+	const runLimit=Math.max(1,Math.floor(Number.isFinite(limit)?limit:4096));
+	let L=x, R=x, guard=0;
+	while(guard++<runLimit && WG.biomeType(L-1)===biome) L--;
+	guard=0;
+	while(guard++<runLimit && WG.biomeType(R+1)===biome) R++;
+	const center=Math.round((L+R)/2);
+	const reference=Number.isFinite(origin)?Math.round(origin):x;
+	const nearest=reference<L ? L : (reference>R ? R : x);
+	return {left:L,right:R,center,entry:x,nearest,biome,distance:Math.abs(nearest-reference),surface:WG.surfaceHeight(nearest)};
+}
+WG.nearestBiome = function(x,biome,dir,maxDistance){
+	if(typeof biome!=='number' || biome<0 || biome>8) return null;
+	x=Math.round(Number.isFinite(x)?x:0); biome=biome|0;
+	dir = dir<0 ? -1 : (dir>0 ? 1 : 0);
+	maxDistance = (typeof maxDistance==='number' && maxDistance>0) ? Math.floor(maxDistance) : 60000;
+	const minX=x-maxDistance, maxX=x+maxDistance;
+	const currentIsTarget = WG.biomeType(x)===biome;
+	const currentRun = currentIsTarget ? biomeRunAt(x,biome,x,maxDistance+1) : null;
+	const hitAt=(wx,direction)=>{
+		const run=biomeRunAt(wx,biome,x,4096);
+		run.dir=direction;
+		return run;
+	};
+	if(dir<0){
+		const start=currentRun ? currentRun.left-1 : x;
+		for(let wx=start; wx>=minX; wx--){
+			if(WG.biomeType(wx)===biome) return hitAt(wx,-1);
+		}
+		return null;
+	}
+	if(dir>0){
+		const start=currentRun ? currentRun.right+1 : x;
+		for(let wx=start; wx<=maxX; wx++){
+			if(WG.biomeType(wx)===biome) return hitAt(wx,1);
+		}
+		return null;
+	}
+	for(let d=0; d<=maxDistance; d++){
+		const lx=x-d, rx=x+d;
+		if(lx>=minX && (!currentRun || lx<currentRun.left || lx>currentRun.right) && WG.biomeType(lx)===biome) return hitAt(lx,-1);
+		if(d!==0 && rx<=maxX && (!currentRun || rx<currentRun.left || rx>currentRun.right) && WG.biomeType(rx)===biome) return hitAt(rx,1);
+	}
+	return null;
+};
 // Compat shims for older callers
 WG.macroElev = function(x){ return clamp(0.5+WG.column(x).elev/64,0,1); };
 WG.oceanMask = function(x){ return 1-WG.column(x).cont; };
@@ -212,13 +387,29 @@ WG.biomeFrac = function(x, radius){
 	}
 	const fr = {};
 	counts.forEach((v,k)=>{ fr[k] = v/total; });
-	for(let id=0; id<=7; id++){ if(fr[id]===undefined) fr[id]=0; }
+	for(let id=0; id<=8; id++){ if(fr[id]===undefined) fr[id]=0; }
 	return fr;
 };
 
 // --- Loot / ore helpers ------------------------------------------------------------
 WG.chestNoise = function(x){ return WG.valueNoise(x,55,1333); };
 WG.chestPlace = function(x){ return WG.chestNoise(x) > 0.94; };
+// Coal forms in compact seams through ordinary underground rock. It starts below
+// the shallow crust, is most common in mid-depth strata, and gets a mild boost
+// beside cave walls where exposed seams are fun to spot while tunneling.
+WG.coalChance = function(y, nearCave){
+	const d=clamp((y-36)/88,0,1);
+	const mid=clamp(1-Math.abs(d-0.46)*1.9,0,1);
+	return (0.030 + mid*0.080 + d*0.018) * (nearCave?1.25:1);
+};
+WG.coalVeinAt = function(x,y,nearCave){
+	const chance=WG.coalChance(y,!!nearCave);
+	if(chance<=0) return false;
+	const seam=Math.abs(fbm2(x,y,92,19,3,1701)-0.5) < chance*0.34;
+	if(!seam) return false;
+	const body=fbm2(x,y,24,17,2,1801);
+	return body>0.57 || WG.randSeed(x*7.73+y*0.37)<chance*0.42;
+};
 // Diamond odds scale with absolute depth; world.js triples this beside cave walls
 WG.diamondChance = function(y){ const d=clamp((y-58)/80,0,1); return 0.0006 + d*d*0.038; };
 

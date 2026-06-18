@@ -69,6 +69,7 @@ const traps = (function(){
       say('🏹 Trach — linka! Strzałki ze ściany!'); sfx('bow');
     } else if(d.kind==='gas'){
       clouds.push({x:cx, y:cy, t:6, r:d.r||2.6, acc:0});
+      try{ if(MM.gases && MM.gases.add) MM.gases.add('poison',cx,cy,{power:1.3,cells:6,getTile,setTile}); }catch(e){}
       try{ if(MM.mobs && MM.mobs.poisonRadius) MM.mobs.poisonRadius(cx,cy,d.r||2.6,{dur:3,dps:2}); }catch(e){}
       say('☠️ Grobowy gaz! Wstrzymaj oddech i uciekaj!'); sfx('gas');
     } else if(d.kind==='boom'){
@@ -124,12 +125,13 @@ const traps = (function(){
   }
 
   // Telltales for armed traps + live effects (world-space, same transform as mobs)
-  function draw(ctx,TILE){
+  function draw(ctx,TILE,canDrawTile){
     if(typeof document==='undefined') return;
     const now=performance.now();
     ctx.save();
     for(const it of inst.values()){
       const d=it.d; const px=(d.x+0.5)*TILE, py=(d.y+0.5)*TILE;
+      if(typeof canDrawTile==='function' && !canDrawTile(d.x,d.y)) continue;
       if(d.kind==='dart'){
         ctx.strokeStyle='rgba(220,225,235,'+(0.16+0.1*Math.sin(now*0.003+d.x)).toFixed(2)+')';
         ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(d.x*TILE, py+3); ctx.lineTo((d.x+1)*TILE, py-3); ctx.stroke();
@@ -146,6 +148,7 @@ const traps = (function(){
         ctx.fillRect(px-2+Math.sin(now*0.005+d.x)*3, d.y*TILE-k, 3, 3);
       } else if(d.kind==='keystone'){
         for(const w of it.watch){
+          if(typeof canDrawTile==='function' && !canDrawTile(w.x,w.y)) continue;
           const wx=w.x*TILE, wy=w.y*TILE;
           if(d.fluid==='water'){ const k=(now*0.025+w.x*37)%(TILE*1.4); ctx.fillStyle='rgba(90,170,255,0.5)'; ctx.fillRect(wx+TILE/2-1, wy+TILE+k*0.4, 2, 4); }
           else { ctx.fillStyle='rgba(255,120,30,'+(0.18+0.12*Math.sin(now*0.006+w.x)).toFixed(2)+')'; ctx.fillRect(wx, wy+1, TILE, 2); }
@@ -160,10 +163,12 @@ const traps = (function(){
       }
     }
     for(const a of darts){
+      if(typeof canDrawTile==='function' && !canDrawTile(Math.floor(a.x),Math.floor(a.y))) continue;
       ctx.fillStyle='#caa45a'; ctx.fillRect(a.x*TILE-4, a.y*TILE-1.5, 8, 3);
       ctx.fillStyle='#3a3f48'; ctx.fillRect(a.x*TILE+(a.vx>0?2:-4), a.y*TILE-1.5, 2, 3);
     }
     for(const c of clouds){
+      if(typeof canDrawTile==='function' && !canDrawTile(Math.floor(c.x),Math.floor(c.y))) continue;
       for(let i=0;i<6;i++){
         const ph=now*0.001+i*1.9;
         ctx.fillStyle='rgba(110,210,80,'+(0.10+0.10*Math.min(1,c.t/2)).toFixed(2)+')';

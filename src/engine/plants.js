@@ -5,7 +5,7 @@
 // One plant per world column; entities are persisted to localStorage so a garden
 // survives reloads. The sim core is DOM-free (Node-testable); only draw() touches
 // canvas. Hooks used: MM.water, MM.clouds.isRainingAt, MM.fire.isBurning.
-import { T, WORLD_H } from '../constants.js';
+import { T, INFO, WORLD_H } from '../constants.js';
 (function(){
   window.MM = window.MM || {};
 
@@ -32,6 +32,9 @@ import { T, WORLD_H } from '../constants.js';
   let rng=Math.random;        // swappable for deterministic tests
 
   function rand(a,b){ return a + rng()*(b-a); }
+  function isGasTile(t){ return !!(INFO[t] && INFO[t].gas); }
+  function openAir(t){ return t===T.AIR || isGasTile(t); }
+  function plantSpace(t){ return t===T.AIR || t===T.WATER || isGasTile(t); }
 
   // --- Lifecycle ----------------------------------------------------------------
   // Surface lookup: prefer the worldgen column cache; fall back to a tile scan
@@ -42,7 +45,7 @@ import { T, WORLD_H } from '../constants.js';
       const wg=MM.worldGen;
       if(wg && wg.surfaceHeight){ y=Math.max(2, wg.surfaceHeight(x)-6); } // start near the cached surface
     }catch(e){}
-    while(y<WORLD_H-2 && getTile(x,y)===T.AIR) y++;
+    while(y<WORLD_H-2 && openAir(getTile(x,y))) y++;
     return y;
   }
   // Anchor: plant.y is the AIR row just above its soil tile (soil at y+1).
@@ -52,7 +55,7 @@ import { T, WORLD_H } from '../constants.js';
     const y=surfaceAt(x,getTile);
     if(y<=2 || y>=WORLD_H-2) return null;
     if(!spec.soil.includes(getTile(x,y))) return null;
-    if(getTile(x,y-1)!==T.AIR) return null;
+    if(!openAir(getTile(x,y-1))) return null;
     const p={
       type, x, y:y-1,
       stage:1, hyd:0.6, health:1, age:0,
@@ -69,7 +72,7 @@ import { T, WORLD_H } from '../constants.js';
   function envCheck(p,getTile,setTile){
     const spec=SPECIES[p.type];
     // soil gone or anchor blocked → the plant is destroyed outright
-    if(!spec.soil.includes(getTile(p.x,p.y+1)) || (getTile(p.x,p.y)!==T.AIR && getTile(p.x,p.y)!==T.WATER)){
+    if(!spec.soil.includes(getTile(p.x,p.y+1)) || !plantSpace(getTile(p.x,p.y))){
       plants.delete(p.x); dirty=true; return;
     }
     // fire / lava nearby chars it instantly (plants are the most organic thing there is)
@@ -232,11 +235,13 @@ import { T, WORLD_H } from '../constants.js';
     if(p.hyd<0.22) return {a:'#9aa44e',b:'#7c8440',c:'#c9b25a'};
     return null; // healthy → species colors
   }
-  function draw(ctx,TILE,sx,sy,viewX,viewY){
+  function draw(ctx,TILE,sx,sy,viewX,viewY,canDrawTile){
+    const visibleTile = typeof canDrawTile === 'function' ? canDrawTile : null;
     if(!plants.size) return;
     const now=(typeof performance!=='undefined')? performance.now():0;
     for(const p of plants.values()){
       if(p.x<sx-2||p.x>sx+viewX+2||p.y<sy-4||p.y>sy+viewY+4) continue;
+      if(visibleTile && !visibleTile(p.x,p.y)) continue;
       const baseX=(p.x+0.5)*TILE, baseY=(p.y+1)*TILE; // soil line under the anchor tile
       const sw=Math.sin(now*0.0016+p.sway)*1.6;       // gentle sway at the tips
       const o=pal(p);

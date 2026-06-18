@@ -47,8 +47,14 @@ window.MM = window.MM || {};
     WIND_MAX: 2.5,        // wind amplitude (tiles/sec)
     DROP_CAP: 420,        // visual raindrop budget
     WISP_CAP: 70,         // evaporation mist budget
+    CLOUD_VISUAL_X: 4,    // horizontal cloud footprint multiplier (visual/weather spread)
+    CLOUD_SHADOWS: false, // terrain shadows read like fake water films in tile view
     LIGHTNING_MIN: 20,    // cloud mass required for lightning (relaxed during storms)
     LIGHTNING_BASE: 0.05, // per-second strike chance per eligible cloud
+    LIGHTNING_TELEPORT_CHANCE: 0.10, // rare lightning curse: fling the hero far away
+    LIGHTNING_TELEPORT_MIN: 500,
+    LIGHTNING_TELEPORT_MAX: 1500,
+    LIGHTNING_ENERGY_CHARGE: 50,
     STORMS: true,         // random storm fronts (the startStorm API works regardless)
     STORM_CHANCE: 0.028,  // per-10s chance a front rolls in (~1 storm / 6 min average)
     STORM_FEED: 0.6,      // mass/sec a storm pumps into clouds overhead
@@ -107,6 +113,8 @@ window.MM = window.MM || {};
   function capacity(t){ return CFG.CAP_MIN + (CFG.CAP_MAX-CFG.CAP_MIN)*clamp((t-0.05)/0.75,0,1); }
   function windAt(){
     if(windOverride!=null) return windOverride;
+    const shared=MM.wind;
+    if(shared && typeof shared.speed === 'function') return shared.speed();
     const sd=((MM.worldGen && MM.worldGen.worldSeed)||1)%97;
     let w=Math.sin(simT*0.013+sd)*1.5 + Math.sin(simT*0.0031+sd*0.7)*1.0;
     if(storm.active) w=w*(1+0.8*storm.intensity)+Math.sin(simT*1.7)*0.6*storm.intensity; // gusts
@@ -120,14 +128,14 @@ window.MM = window.MM || {};
   // Is liquid rain falling over column x right now? (plants drink from it)
   function isRainingAt(x){
     if(typeof x!=='number'||!isFinite(x)) return false;
-    for(const c of clouds){ if(c.raining && !c.snowing && Math.abs(c.x-x)<=c.r*1.15) return true; }
+    for(const c of clouds){ if(c.raining && !c.snowing && Math.abs(c.x-x)<=c.r*1.15*cloudVisualScaleX()) return true; }
     return false;
   }
 
   // ---------------- Clouds ----------------
   function makePuffs(seed){
     const rng=mulberry(seed);
-    const n=8+Math.floor(rng()*5);
+    const n=Math.round((8+Math.floor(rng()*5))*Math.sqrt(cloudVisualScaleX()));
     const puffs=[];
     for(let i=0;i<n;i++){
       const ox=(rng()*2-1)*0.95;
@@ -187,7 +195,7 @@ window.MM = window.MM || {};
       let yTop=-1;
       for(let y=y0;y<Math.min(WORLD_H-1,surf+CFG.EVAP_SCAN_ABOVE);y++){
         const t=getTile(wx,y);
-        if(t===T.AIR || t===T.LEAF) continue;   // light filters through leaves
+        if(skyOpenTile(t)) continue;            // light filters through leaves and thin gases
         if(t===T.WATER) yTop=y;
         break;                                   // anything else shades the column
       }
@@ -287,6 +295,9 @@ window.MM = window.MM || {};
   function damageHero(amount, srcX){
     const p=(typeof window!=='undefined' && window.player);
     if(!p || typeof p.hp!=='number') return 0;
+    if(typeof window.damageHero==='function'){
+      return window.damageHero(amount,{srcX, kb:3.5, kbY:-4, cause:'lightning', invulMs:600}) ? amount : 0;
+    }
     const now=(typeof performance!=='undefined')? performance.now() : 0;
     if(p.hpInvul && now<p.hpInvul) return 0;
     p.hp-=amount; p.hpInvul=now+600;
@@ -300,6 +311,89 @@ window.MM = window.MM || {};
       }catch(e){}
     }
     return amount;
+  }
+  function tileIs(t,id){
+    return typeof id==='number' && t===id;
+  }
+  function tileInfo(t){
+    return MM.INFO && MM.INFO[t];
+  }
+  function isGasTile(t){
+    const info=tileInfo(t);
+    return !!(info && info.gas);
+  }
+  function skyOpenTile(t){
+    return t===T.AIR || t===T.LEAF || isGasTile(t);
+  }
+  function dryTeleportAir(t){
+    return skyOpenTile(t) || tileIs(t,T.TORCH) || tileIs(t,T.GRAVE);
+  }
+  function dryTeleportSupport(t){
+    return typeof t==='number' && !skyOpenTile(t) && t!==T.WATER && !tileIs(t,T.LAVA) && !tileIs(t,T.TORCH) && !tileIs(t,T.GRAVE);
+  }
+  function dryLandingAt(x,getTile){
+    for(let y=2;y<WORLD_H-2;y++){
+      const t=getTile(x,y);
+      if(skyOpenTile(t)) continue;
+      if(dryTeleportSupport(t) && dryTeleportAir(getTile(x,y-1)) && dryTeleportAir(getTile(x,y-2))){
+        return {x:x+0.5, y:y-1};
+      }
+      return null;
+    }
+    return null;
+  }
+  function findLightningTeleportSpot(originX,getTile){
+    const min=Math.max(1, CFG.LIGHTNING_TELEPORT_MIN||500);
+    const max=Math.max(min, CFG.LIGHTNING_TELEPORT_MAX||1500);
+    const dir=Math.random()<0.5 ? -1 : 1;
+    const target=Math.round(originX + dir*(min + Math.random()*(max-min)));
+    for(let r=0;r<=96;r++){
+      const candidates = r===0 ? [target] : [target+r, target-r];
+      for(const x of candidates){
+        const d=Math.abs((x+0.5)-originX);
+        if(d<min || d>max) continue;
+        const spot=dryLandingAt(x,getTile);
+        if(spot) return {x:spot.x, y:spot.y, distance:d};
+      }
+    }
+    return null;
+  }
+  function maybeTeleportLightningHero(getTile,amount){
+    const p=(typeof window!=='undefined' && window.player);
+    if(!p || typeof p.x!=='number' || typeof p.y!=='number' || !(amount>0)) return null;
+    const chance=CFG.LIGHTNING_TELEPORT_CHANCE;
+    if(!(chance>0) || Math.random()>=chance) return null;
+    const spot=findLightningTeleportSpot(p.x,getTile);
+    if(!spot) return null;
+    const fromX=p.x, fromY=p.y;
+    if(typeof window.teleportHeroTo==='function'){
+      window.teleportHeroTo(spot.x,spot.y,{message:'Piorun wyrzucił cię '+Math.round(spot.distance)+' bloków dalej!', center:true});
+    } else {
+      p.x=spot.x; p.y=spot.y; p.vx=0; p.vy=0;
+      try{ (window.msg||function(){})('Piorun wyrzucił cię '+Math.round(spot.distance)+' bloków dalej!'); }catch(e){}
+    }
+    return {fromX, fromY, x:p.x, y:p.y, distance:Math.abs(p.x-fromX)};
+  }
+  function chargeLightningHero(x,y){
+    const p=(typeof window!=='undefined' && window.player);
+    const amount=Math.max(0, Number(CFG.LIGHTNING_ENERGY_CHARGE)||0);
+    if(!p || !(amount>0)) return 0;
+    try{
+      const energy=MM.heroEnergy;
+      if(energy && typeof energy.chargeExternal==='function'){
+        return Math.max(0, Number(energy.chargeExternal(amount,{cause:'lightning',source:{x,y},intensity:1.65}))||0);
+      }
+      if(energy && typeof energy.add==='function'){
+        return Math.max(0, Number(energy.add(amount))||0);
+      }
+    }catch(e){}
+    if(typeof p.energy==='number' || typeof p.maxEnergy==='number'){
+      const before=Math.max(0, Number(p.energy)||0);
+      const max=(typeof p.maxEnergy==='number' && isFinite(p.maxEnergy) && p.maxEnergy>0) ? p.maxEnergy : before+amount;
+      p.energy=Math.min(max,before+amount);
+      return Math.max(0,p.energy-before);
+    }
+    return 0;
   }
   // Jagged main channel from (x0,y0) to the impact, plus a few side forks (tile coords).
   function makeBolt(x0,y0,ix,iy){
@@ -332,12 +426,12 @@ window.MM = window.MM || {};
     let ty=-1, tile=T.AIR;
     for(let y=Math.max(1,Math.floor(fromRow));y<WORLD_H;y++){
       const t=getTile(xi,y);
-      if(t===T.AIR || t===T.LEAF) continue;
+      if(skyOpenTile(t)) continue;
       ty=y; tile=t; break;
     }
     if(ty<0) return null;
     strikes++;
-    const res={x:xi, y:ty, chest:false, tier:null, dmg:0};
+    const res={x:xi, y:ty, chest:false, tier:null, dmg:0, energy:0, teleport:null};
     const TILE=MM.TILE||20;
     const isChest=(tile===T.CHEST_COMMON||tile===T.CHEST_RARE||tile===T.CHEST_EPIC);
     if(tile===T.WATER){
@@ -355,11 +449,19 @@ window.MM = window.MM || {};
     }
     const p=(typeof window!=='undefined' && window.player);
     if(p && isFinite(p.x) && isFinite(p.y)){
+      const pxBefore=p.x, hpBefore=typeof p.hp==='number' ? p.hp : 0;
       const inWater=(tile===T.WATER);
       const radius=inWater? 7 : 4;
       const d=Math.max(Math.abs(p.x-(xi+0.5)), Math.abs(p.y-ty));
-      if(d<=radius) res.dmg=damageHero(Math.round((inWater?24:32)*(1-d/(radius+1))+4), xi+0.5);
-      playThunder(Math.abs(p.x-xi));
+      if(d<=radius){
+        const amount=Math.round((inWater?24:32)*(1-d/(radius+1))+4);
+        res.dmg=damageHero(amount, xi+0.5);
+        if(res.dmg>0){
+          res.energy=chargeLightningHero(xi+0.5,ty);
+          if(hpBefore>amount) res.teleport=maybeTeleportLightningHero(getTile,res.dmg);
+        }
+      }
+      playThunder(Math.abs(pxBefore-xi));
     } else playThunder(0);
     return res;
   }
@@ -424,14 +526,15 @@ window.MM = window.MM || {};
     let ty=-1;
     for(let y=Math.max(1,Math.floor(fromRow));y<WORLD_H;y++){
       const t=getTile(cx,y);
-      if(t===T.AIR || t===T.LEAF) continue;
+      if(skyOpenTile(t)) continue;
       ty=y; break;
     }
     if(ty<1) return false;                         // fell out of the world
     let py=ty-1;
     while(py>1 && getTile(cx,py)===T.LEAF) py--;   // surface under a canopy: climb to air
     try{
-      if(MM.water && MM.water.addSource && getTile(cx,py)===T.AIR){
+      const pt=getTile(cx,py);
+      if(MM.water && MM.water.addSource && (pt===T.AIR || isGasTile(pt))){
         return !!MM.water.addSource(cx,py,getTile,setTile);
       }
     }catch(e){}
@@ -469,7 +572,7 @@ window.MM = window.MM || {};
         c.depAcc+=amt;
         while(c.depAcc>=1){
           c.depAcc-=1;
-          const cx=Math.round(c.x+(Math.random()+Math.random()-1)*c.r*0.8);
+          const cx=Math.round(c.x+(Math.random()+Math.random()-1)*c.r*0.8*cloudVisualScaleX());
           if(Math.abs(cx-px)>CFG.DEPOSIT_RADIUS || !depositUnit(cx,c.alt,getTile,setTile)){
             farBudget=Math.min(200, farBudget+1);  // off-band / blocked rain rejoins the reserve
           }
@@ -482,7 +585,7 @@ window.MM = window.MM || {};
         let n=amt*350; if(c.snowing) n*=0.6;
         for(; n>0 && drops.length<dropCap; n--){
           if(n<1 && Math.random()>n) break;
-          const dx=(Math.random()+Math.random()-1)*c.r*0.85;
+          const dx=(Math.random()+Math.random()-1)*c.r*0.85*cloudVisualScaleX();
           drops.push({
             x:(c.x+dx)*TILE, y:(c.alt+c.r*0.22)*TILE,
             vx:wind*TILE*0.6+(Math.random()-0.5)*8,
@@ -498,10 +601,10 @@ window.MM = window.MM || {};
       const lightP=CFG.LIGHTNING_BASE*(storm.active? (2+3*storm.intensity) : 1);
       if(!c.snowing && c.mass>lMin && Math.random()<dt*lightP){
         c.flash=0.6; viewFlash=Math.max(viewFlash,0.30);
-        const sx2=c.x+(Math.random()-0.5)*c.r*1.2;
+        const sx2=c.x+(Math.random()-0.5)*c.r*1.2*cloudVisualScaleX();
         if(Math.abs(sx2-px)<=CFG.STRIKE_RADIUS){
           const res=strikeAt(sx2,c.alt,getTile,setTile);
-          if(res) makeBolt(c.x+(Math.random()-0.5)*c.r*0.4, c.alt+c.r*0.18, res.x, res.y);
+          if(res) makeBolt(c.x+(Math.random()-0.5)*c.r*0.4*cloudVisualScaleX(), c.alt+c.r*0.18, res.x, res.y);
         }
       }
     }
@@ -594,7 +697,7 @@ window.MM = window.MM || {};
       const tx=Math.floor(d.x/TILE), ty=Math.floor(d.y/TILE);
       if(ty>=WORLD_H || d.life>9){ drops.splice(i,1); continue; }
       const t=getTile(tx,ty);
-      if(t!==T.AIR && t!==T.LEAF){
+      if(!skyOpenTile(t)){
         if(t===T.WATER){
           try{
             if(MM.water && MM.water.disturb && Math.random()<0.25) MM.water.disturb(tx, 10+Math.random()*14);
@@ -614,6 +717,30 @@ window.MM = window.MM || {};
 
   // ---------------- Rendering ----------------
   let spriteBudget=0;
+  function cloudVisualScaleX(){ return Math.max(0.5, CFG.CLOUD_VISUAL_X || 1); }
+  function cloudSpriteWidth(c,TILE){ return c.r*2.8*TILE*cloudVisualScaleX(); }
+  function cloudShadowRadius(c){ return c.r*cloudVisualScaleX(); }
+  function drawSoftCloudShadow(ctx,TILE,c,dark,x0px,x1px,y0px,y1px){
+    const shR=cloudShadowRadius(c);
+    if(!(shR>0)) return;
+    const cx=c.x*TILE;
+    const cy=effSurf(c.x)*TILE + TILE*0.34;
+    const rx=Math.max(TILE*5, Math.min(TILE*54, shR*TILE*0.95));
+    const ry=Math.max(TILE*0.24, Math.min(TILE*0.95, TILE*(0.34+dark*0.26)));
+    if(cx+rx<x0px || cx-rx>x1px || cy+ry<y0px || cy-ry>y1px) return;
+    const alpha=(0.010+0.022*dark)*(c.raining?1.25:1);
+    if(alpha<=0.004) return;
+    ctx.save();
+    const g=ctx.createRadialGradient(cx,cy,Math.max(1,rx*0.08),cx,cy,rx);
+    g.addColorStop(0,'rgba(10,16,30,'+alpha.toFixed(3)+')');
+    g.addColorStop(0.64,'rgba(10,16,30,'+(alpha*0.42).toFixed(3)+')');
+    g.addColorStop(1,'rgba(10,16,30,0)');
+    ctx.fillStyle=g;
+    ctx.beginPath();
+    ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
   function skyTint(){
     const c=cycleInfo();
     if(c.isDay){
@@ -625,20 +752,31 @@ window.MM = window.MM || {};
   }
   function buildSprite(c,TILE,dark,tint){
     const r=c.r;
-    const w=Math.max(8,Math.ceil(r*2.8*TILE)), h=Math.max(8,Math.ceil(r*1.7*TILE));
+    const xScale=cloudVisualScaleX();
+    const w=Math.max(8,Math.ceil(r*2.8*TILE*xScale)), h=Math.max(8,Math.ceil(r*1.7*TILE));
     if(!c.sprite) c.sprite=document.createElement('canvas');
     const cv=c.sprite; cv.width=w; cv.height=h;
     const g=cv.getContext('2d');
     const cx=w/2, cy=h*0.60;
     const base=[Math.round(255-(255-92)*dark), Math.round(255-(255-100)*dark), Math.round(255-(255-116)*dark)];
     for(const pf of c.puffs){
-      const pxp=cx+pf.ox*r*TILE, pyp=cy+pf.oy*r*TILE, pr=Math.max(2,pf.s*r*TILE);
+      const pxp=cx+pf.ox*r*TILE*xScale, pyp=cy+pf.oy*r*TILE, pr=Math.max(2,pf.s*r*TILE);
       const gr=g.createRadialGradient(pxp,pyp,pr*0.12,pxp,pyp,pr);
       gr.addColorStop(0,'rgba('+base[0]+','+base[1]+','+base[2]+',0.95)');
       gr.addColorStop(0.62,'rgba('+base[0]+','+base[1]+','+base[2]+',0.55)');
       gr.addColorStop(1,'rgba('+base[0]+','+base[1]+','+base[2]+',0)');
       g.fillStyle=gr; g.beginPath(); g.arc(pxp,pyp,pr,0,Math.PI*2); g.fill();
     }
+    g.save();
+    g.translate(cx,cy-r*TILE*0.02);
+    g.scale(Math.max(1,xScale*1.1),0.36);
+    const bridge=g.createRadialGradient(0,0,r*TILE*0.16,0,0,r*TILE*1.2);
+    bridge.addColorStop(0,'rgba('+base[0]+','+base[1]+','+base[2]+',0.58)');
+    bridge.addColorStop(0.72,'rgba('+base[0]+','+base[1]+','+base[2]+',0.34)');
+    bridge.addColorStop(1,'rgba('+base[0]+','+base[1]+','+base[2]+',0)');
+    g.fillStyle=bridge;
+    g.beginPath(); g.arc(0,0,r*TILE*1.2,0,Math.PI*2); g.fill();
+    g.restore();
     g.globalCompositeOperation='source-atop';
     const sh=g.createLinearGradient(0,cy,0,h);                 // heavy flat base
     sh.addColorStop(0,'rgba(70,82,104,0)');
@@ -663,20 +801,13 @@ window.MM = window.MM || {};
       ctx.fillRect(x0px,y0px,x1px-x0px,y1px-y0px);
     }
     for(const c of clouds){
-      const w=c.r*2.8*TILE, h=c.r*1.7*TILE;
+      const w=cloudSpriteWidth(c,TILE), h=c.r*1.7*TILE;
       const cxp=c.x*TILE, cyp=c.alt*TILE+Math.sin(now*0.00045+c.seed*0.0001)*3;
       if(cxp+w/2<x0px || cxp-w/2>x1px || cyp+h<y0px || cyp-h>y1px) continue;
       const satur=c.mass/Math.max(1,capacity(airTemp(c.x,c.alt)));
       const dark=clamp(0.12+0.5*clamp(satur-0.4,0,1.2)+(c.raining?0.18:0),0,1);
-      // ground shadow strips under heavy cover
-      const shA=0.045+0.10*dark;
-      for(let wxs=Math.floor(c.x-c.r); wxs<=Math.ceil(c.x+c.r); wxs+=2){
-        const cov=1-Math.pow((wxs-c.x)/c.r,2);
-        if(cov<=0.05) continue;
-        ctx.fillStyle='rgba(10,16,30,'+(shA*cov).toFixed(3)+')';
-        ctx.fillRect(wxs*TILE, effSurf(wxs)*TILE, TILE*2, TILE*0.85);
-      }
-      const key=Math.round(c.r*2)+'|'+Math.round(dark*6)+'|'+tintB;
+      if(CFG.CLOUD_SHADOWS) drawSoftCloudShadow(ctx,TILE,c,dark,x0px,x1px,y0px,y1px);
+      const key=Math.round(c.r*2)+'|'+Math.round(dark*6)+'|'+tintB+'|'+Math.round(cloudVisualScaleX()*10);
       if(c.spriteKey!==key && (spriteBudget>0 || !c.sprite)){
         buildSprite(c,TILE,Math.round(dark*6)/6,tint);
         c.spriteKey=key; spriteBudget--;

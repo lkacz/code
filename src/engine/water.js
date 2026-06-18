@@ -50,8 +50,90 @@ window.MM = window.MM || {};
 
   function k(x,y){ return x+","+y; }
   function mark(x,y){ active.add(k(x,y)); }
-  function isAir(t){ return t===T.AIR; }
-  function canFill(t){ return t===T.AIR || t===T.LEAF; }
+  function isGas(t){ return !!(MM.INFO && MM.INFO[t] && MM.INFO[t].gas); }
+  function isAir(t){ return t===T.AIR || isGas(t); }
+  function canFill(t){ return t===T.AIR || t===T.LEAF || isGas(t); }
+  function validDynamoSlot(x,y,getTile,orientation){
+    try{ return !!(MM.dynamo && MM.dynamo.isValidSlot && MM.dynamo.isValidSlot(x,y,getTile,orientation)); }catch(e){ return false; }
+  }
+  function canDropThroughDynamo(x,y,getTile){
+    return y+2<WORLD_H && validDynamoSlot(x,y+1,getTile,'horizontal') && canFill(getTile(x,y+2));
+  }
+  function sideDynamoFlowTarget(x,y,dx,getTile){
+    if(getTile(x,y-1)!==T.WATER) return null;
+    const slotX=x+dx, outX=x+dx*2;
+    if(!validDynamoSlot(slotX,y,getTile,'vertical')) return null;
+    if(!canFill(getTile(outX,y))) return null;
+    return {slotX,slotY:y,outX,outY:y};
+  }
+  function canSideFlowThroughDynamo(x,y,getTile){
+    return !!(sideDynamoFlowTarget(x,y,-1,getTile) || sideDynamoFlowTarget(x,y,1,getTile));
+  }
+  function waterDepthFrom(x,y,getTile,maxDepth){
+    let d=0;
+    const lim=Math.max(1, maxDepth||32);
+    while(y+d<WORLD_H && d<lim && getTile(x,y+d)===T.WATER) d++;
+    return d;
+  }
+  function surfaceVoidCanLevel(x,y,getTile){
+    if(y<=0 || y+1>=WORLD_H || !canFill(getTile(x,y))) return false;
+    const above=getTile(x,y-1);
+    const below=getTile(x,y+1);
+    return below===T.WATER || (!isAir(above) && above!==T.WATER);
+  }
+  function surfaceLevelTarget(x,y,dx,getTile){
+    if(getTile(x,y)!==T.WATER || getTile(x,y-1)===T.WATER) return null;
+    const nx=x+dx;
+    if(!surfaceVoidCanLevel(nx,y,getTile)) return null;
+    const covered=!isAir(getTile(nx,y-1)) && getTile(nx,y-1)!==T.WATER;
+    const srcDepth=waterDepthFrom(x,y,getTile,32);
+    if(covered){
+      if(srcDepth<2) return null;
+    } else {
+      const dstDepth=waterDepthFrom(nx,y+1,getTile,32);
+      if(srcDepth<=dstDepth+1) return null;
+    }
+    return {x:nx,y,covered};
+  }
+  function canSurfaceLevel(x,y,getTile){
+    return !!(surfaceLevelTarget(x,y,-1,getTile) || surfaceLevelTarget(x,y,1,getTile));
+  }
+  function waterFallTarget(x,y,getTile){
+    const MAX_FALL=12;
+    let ny=y, steps=0, slotY=null;
+    while(ny+1<WORLD_H && steps<MAX_FALL){
+      const belowY=ny+1;
+      if(canFill(getTile(x,belowY))){
+        ny=belowY;
+        steps++;
+        continue;
+      }
+      if(belowY+1<WORLD_H && validDynamoSlot(x,belowY,getTile,'horizontal') && canFill(getTile(x,belowY+1))){
+        if(slotY==null) slotY=belowY;
+        ny=belowY+1;
+        steps+=2;
+        continue;
+      }
+      break;
+    }
+    return ny>y ? {y:ny, slotY} : null;
+  }
+  function recordDynamoWater(x,slotY,getTile){
+    if(slotY==null) return;
+    try{ if(MM.dynamo && MM.dynamo.recordFlow) MM.dynamo.recordFlow(x,slotY,T.WATER,1,getTile); }catch(e){}
+  }
+  function recordDynamoSideWater(slotX,slotY,getTile){
+    try{ if(MM.dynamo && MM.dynamo.recordFlow) MM.dynamo.recordFlow(slotX,slotY,T.WATER,1.35,getTile); }catch(e){}
+  }
+  function notifyGasChange(x,y,oldTile,newTile){
+    if(oldTile===newTile || (!isGas(oldTile) && !isGas(newTile))) return;
+    try{ if(MM.gases && MM.gases.onTileChanged) MM.gases.onTileChanged(x,y,oldTile,newTile); }catch(e){}
+  }
+  function writeExternalTile(x,y,v,getTile,setTile){
+    const old=typeof getTile==='function' ? getTile(x,y) : undefined;
+    setTile(x,y,v);
+    notifyGasChange(x,y,old,v);
+  }
   function hash32(x,y){ let h=(x|0)*374761393+(y|0)*668265263; h=(h^(h>>>13))*1274126177; return (h^(h>>>16))>>>0; }
 
   // Public wave kick: positive impulse pushes the surface down (entry), negative lifts it.
@@ -91,10 +173,14 @@ window.MM = window.MM || {};
       for(let n=0;n<2 && chunkWakes.length;n++){
         const {x0,x1}=chunkWakes.shift();
         let woke=false;
+        const world = (typeof window!=='undefined' && window.MM && MM.world) ? MM.world : null;
+        const peek = world && typeof world.peekTile==='function'
+          ? (x,y,fallback)=>world.peekTile(x,y,fallback)
+          : (x,y)=>getTile(x,y);
         for(const wx of [x0-1,x0,x1,x1+1]){
           for(let y=1;y<WORLD_H-1;y++){
-            if(getTile(wx,y)!==T.WATER) continue;
-            if(canFill(getTile(wx,y+1)) || isAir(getTile(wx-1,y)) || isAir(getTile(wx+1,y))){ mark(wx,y); woke=true; }
+            if(peek(wx,y,T.AIR)!==T.WATER) continue;
+            if(canFill(peek(wx,y+1,T.STONE)) || isAir(peek(wx-1,y,T.STONE)) || isAir(peek(wx+1,y,T.STONE))){ mark(wx,y); woke=true; }
           }
         }
         if(woke) pressureAcc=Math.max(pressureAcc, pressureIntervalCurrent*0.5);
@@ -114,7 +200,7 @@ window.MM = window.MM || {};
         const wx = cx - SCAN_RADIUS + ((passiveScanOffset+i)%span);
         for(let y=1;y<WORLD_H-1;y++){
           if(getTile(wx,y)!==T.WATER) continue;
-          if(canFill(getTile(wx,y+1))){ mark(wx,y); break; }                 // can fall
+          if(canFill(getTile(wx,y+1)) || canDropThroughDynamo(wx,y,getTile) || canSideFlowThroughDynamo(wx,y,getTile) || canSurfaceLevel(wx,y,getTile)){ mark(wx,y); break; }                 // can fall
           const lA=isAir(getTile(wx-1,y)), rA=isAir(getTile(wx+1,y));
           if(!lA && !rA) continue;
           if(getTile(wx,y-1)===T.WATER){ mark(wx,y); break; }                // can push (head)
@@ -149,15 +235,59 @@ window.MM = window.MM || {};
       const [sx,sy] = key.split(',').map(Number);
       if(getTile(sx,sy)!==T.WATER) continue;
       // Gravity (multi-cell drop)
-      if(sy+1 < WORLD_H && canFill(getTile(sx,sy+1))){
-        let ny=sy+1; const MAX_FALL=12; while(ny+1<WORLD_H && canFill(getTile(sx,ny+1)) && (ny-sy)<MAX_FALL){ ny++; }
-        setTile(sx,sy,T.AIR); setTile(sx,ny,T.WATER); next.add(k(sx,ny)); markNeighbors(next,sx,ny);
+      const fall=waterFallTarget(sx,sy,getTile);
+      if(fall){
+        const ny=fall.y;
+        setTile(sx,sy,T.AIR); writeExternalTile(sx,ny,T.WATER,getTile,setTile); next.add(k(sx,ny)); markNeighbors(next,sx,ny);
+        recordDynamoWater(sx,fall.slotY,getTile);
         if(ny-sy>=2) noteFall(sx,sy,ny);
         continue;
       }
       let moved=false;
       const lateralEvaluated = lateralStep && !(lateralCooldown.get(sx)>0);
       if(lateralEvaluated){
+        const dynOrder=((sx+sy)&1)?[-1,1]:[1,-1];
+        for(const dx of dynOrder){
+          const flow=sideDynamoFlowTarget(sx,sy,dx,getTile);
+          if(!flow) continue;
+          setTile(sx,sy,T.AIR);
+          writeExternalTile(flow.outX,flow.outY,T.WATER,getTile,setTile);
+          next.add(k(flow.outX,flow.outY));
+          markNeighbors(next,flow.outX,flow.outY);
+          markNeighbors(next,sx,sy);
+          recordDynamoSideWater(flow.slotX,flow.slotY,getTile);
+          if(pressureSeeds.size<2000) pressureSeeds.add(k(flow.outX,flow.outY));
+          pressureAcc=Math.max(pressureAcc, pressureIntervalCurrent*0.6);
+          disturb(flow.outX, 52);
+          moved=true;
+          break;
+        }
+        if(moved) continue;
+        for(const dx of (((sx+sy)&1)?[-1,1]:[1,-1])){
+          const flow=surfaceLevelTarget(sx,sy,dx,getTile);
+          if(!flow) continue;
+          if(flow.covered){
+            // A roofed surface mouth must be filled by the pressure solver while the
+            // edge cell stays connected to the source body. Moving this tile directly
+            // can strand a one-cell droplet in the mouth and stall the rest of the fill.
+            next.add(key);
+            if(pressureSeeds.size<2000) pressureSeeds.add(key);
+            pressureAcc=Math.max(pressureAcc, pressureIntervalCurrent*0.9);
+            moved=true;
+            break;
+          }
+          setTile(sx,sy,T.AIR);
+          writeExternalTile(flow.x,flow.y,T.WATER,getTile,setTile);
+          next.add(k(flow.x,flow.y));
+          markNeighbors(next,flow.x,flow.y);
+          markNeighbors(next,sx,sy);
+          if(pressureSeeds.size<2000) pressureSeeds.add(k(flow.x,flow.y));
+          pressureAcc=Math.max(pressureAcc, pressureIntervalCurrent*0.6);
+          disturb(flow.x, 26);
+          moved=true;
+          break;
+        }
+        if(moved) continue;
         // Edge spills — the same-row side cell must be passable too: a diagonal-only
         // check lets water clip through solid wall corners into sealed pockets
         const leftBelowAir = sy+1<WORLD_H && canFill(getTile(sx-1,sy)) && canFill(getTile(sx-1,sy+1));
@@ -167,7 +297,7 @@ window.MM = window.MM || {};
           let order=[];
             if(leftBelowAir && rightBelowAir){ const dl=dropDepth(sx-1); const dr=dropDepth(sx+1); order = dl>dr?[-1,1]:dr>dl?[1,-1]:(((sx+sy)&1)?[-1,1]:[1,-1]); }
             else order = leftBelowAir?[-1]:[1];
-          for(const dx of order){ if(canFill(getTile(sx+dx,sy)) && canFill(getTile(sx+dx,sy+1))){ setTile(sx,sy,T.AIR); setTile(sx+dx,sy+1,T.WATER); next.add(k(sx+dx,sy+1)); markNeighbors(next,sx+dx,sy+1); disturb(sx+dx,46); moved=true; break; } }
+          for(const dx of order){ if(canFill(getTile(sx+dx,sy)) && canFill(getTile(sx+dx,sy+1))){ setTile(sx,sy,T.AIR); writeExternalTile(sx+dx,sy+1,T.WATER,getTile,setTile); next.add(k(sx+dx,sy+1)); markNeighbors(next,sx+dx,sy+1); disturb(sx+dx,46); moved=true; break; } }
           if(moved) continue;
         }
         // Lateral downhill seeking: only move sideways when a drop exists within range —
@@ -190,7 +320,7 @@ window.MM = window.MM || {};
         }
         if(candidates.length){
           candidates.sort((a,b)=> b.score - a.score || (((sx+sy)&1)? b.dx - a.dx : a.dx - b.dx));
-          const best=candidates[0]; if(best.score>0){ setTile(sx,sy,T.AIR); setTile(sx+best.dx,sy,T.WATER); next.add(k(sx+best.dx,sy)); markNeighbors(next,sx+best.dx,sy); moved=true; }
+          const best=candidates[0]; if(best.score>0){ setTile(sx,sy,T.AIR); writeExternalTile(sx+best.dx,sy,T.WATER,getTile,setTile); next.add(k(sx+best.dx,sy)); markNeighbors(next,sx+best.dx,sy); moved=true; }
         }
         // Pressurized sideways push: a cell with hydraulic head (water directly above)
         // seeps into a same-level opening even with no drop in range — quick local
@@ -203,7 +333,7 @@ window.MM = window.MM || {};
             const nx=sx+dx;
             if(!isAir(getTile(nx,sy))) continue;
             if(!(sy+1<WORLD_H) || canFill(getTile(nx,sy+1))) continue; // a drop: spill logic owns it
-            setTile(sx,sy,T.AIR); setTile(nx,sy,T.WATER);
+            setTile(sx,sy,T.AIR); writeExternalTile(nx,sy,T.WATER,getTile,setTile);
             next.add(k(nx,sy)); markNeighbors(next,sx,sy); markNeighbors(next,nx,sy);
             if(pressureSeeds.size<2000) pressureSeeds.add(k(nx,sy));
             // bring the next leveling pass forward so the new column rises promptly
@@ -226,7 +356,7 @@ window.MM = window.MM || {};
             if(pushable) next.add(key);
             else if(pressureSeeds.size<2000) pressureSeeds.add(key);
           }
-        } else if(isAir(getTile(sx-1,sy)) || isAir(getTile(sx+1,sy)) || isAir(getTile(sx,sy+1))) next.add(key);
+        } else if(isAir(getTile(sx-1,sy)) || isAir(getTile(sx+1,sy)) || isAir(getTile(sx,sy+1)) || canDropThroughDynamo(sx,sy,getTile) || canSideFlowThroughDynamo(sx,sy,getTile) || canSurfaceLevel(sx,sy,getTile)) next.add(key);
         else if(pressureSeeds.size<2000) pressureSeeds.add(key); // skipped under cooldown: stay visible to leveling
       }
     }
@@ -268,7 +398,7 @@ window.MM = window.MM || {};
   }
 
   function markNeighbors(set,x,y){ set.add(k(x-1,y)); set.add(k(x+1,y)); set.add(k(x,y-1)); set.add(k(x,y+1)); }
-  function addSource(x,y,getTile,setTile){ const cur=getTile(x,y); if(cur===T.AIR){ setTile(x,y,T.WATER); mark(x,y); disturb(x,140); return true; } if(cur===T.WATER){ mark(x,y); return true; } return false; }
+  function addSource(x,y,getTile,setTile){ const cur=getTile(x,y); if(cur===T.AIR || isGas(cur)){ writeExternalTile(x,y,T.WATER,getTile,setTile); mark(x,y); disturb(x,140); return true; } if(cur===T.WATER){ mark(x,y); return true; } return false; }
   function onTileChanged(x,y,getTile){
     let woke=false;
     for(let dy=-1; dy<=1; dy++) for(let dx=-1; dx<=1; dx++){ if(getTile(x+dx,y+dy)===T.WATER){ mark(x+dx,y+dy); woke=true; } }
@@ -281,13 +411,15 @@ window.MM = window.MM || {};
   function displaceAt(x,y,getTile,setTile){
     let ty=y-1, steps=0;
     while(ty>=0 && getTile(x,ty)===T.WATER && steps<MAX_VERTICAL_SCAN){ ty--; steps++; }
-    if(ty>=0 && getTile(x,ty)===T.AIR){ setTile(x,ty,T.WATER); mark(x,ty); markNeighbors(active,x,ty); disturb(x,90); return true; }
-    for(const dx of [-1,1]){ if(getTile(x+dx,y)===T.AIR){ setTile(x+dx,y,T.WATER); mark(x+dx,y); markNeighbors(active,x+dx,y); disturb(x+dx,70); return true; } }
+    if(ty>=0 && isAir(getTile(x,ty))){ writeExternalTile(x,ty,T.WATER,getTile,setTile); mark(x,ty); markNeighbors(active,x,ty); disturb(x,90); return true; }
+    for(const dx of [-1,1]){ if(isAir(getTile(x+dx,y))){ writeExternalTile(x+dx,y,T.WATER,getTile,setTile); mark(x+dx,y); markNeighbors(active,x+dx,y); disturb(x+dx,70); return true; } }
     return false; // fully sealed pocket — the unit is lost
   }
 
   // ---------------- Rendering ----------------
-  function drawOverlay(ctx,TILE,getTile,sx,sy,vx,vy){
+  function drawOverlay(ctx,TILE,getTile,sx,sy,vx,vy,canDrawTile){
+    const visibleTile = typeof canDrawTile === 'function' ? canDrawTile : null;
+    const tileVisible = (x,y)=> !visibleTile || visibleTile(x,y);
     const now=performance.now();
     const dtMs=Math.min(50, Math.max(4, now-lastOverlayTime)); lastOverlayTime=now;
     const dt=dtMs/1000, tSec=now/1000;
@@ -302,9 +434,9 @@ window.MM = window.MM || {};
     for(let xi=0; xi<n; xi++){
       const wx=x0+xi; let segs=null; let y=yTop;
       while(y<=yBot){
-        if(getTile(wx,y)===T.WATER){
-          const top=y; while(y<=yBot && getTile(wx,y)===T.WATER) y++;
-          (segs||(segs=[])).push({top, bot:y-1, open: top>0 && getTile(wx,top-1)===T.AIR, surf:0, yl:0, yr:0});
+        if(getTile(wx,y)===T.WATER && tileVisible(wx,y)){
+          const top=y; while(y<=yBot && getTile(wx,y)===T.WATER && tileVisible(wx,y)) y++;
+          (segs||(segs=[])).push({top, bot:y-1, open: top>0 && isAir(getTile(wx,top-1)), surf:0, yl:0, yr:0});
         } else y++;
       }
       if(segs){ anyWater=true; cols[xi]=segs; }
@@ -425,6 +557,11 @@ window.MM = window.MM || {};
         const st=streams[i]; st.ttl-=dt;
         if(st.ttl<=0){ streams.splice(i,1); continue; }
         if(st.x<x0-1 || st.x>x1+1) continue;
+        let streamVisible=false;
+        for(let yy=Math.max(yTop,st.y0|0); yy<=Math.min(yBot,st.y1|0); yy++){
+          if(tileVisible(st.x,yy)){ streamVisible=true; break; }
+        }
+        if(!streamVisible) continue;
         const fade=Math.min(1, st.ttl/0.18);
         const xc=st.x*TILE+TILE/2;
         const yA=Math.max(oy, st.y0*TILE), yB=Math.min(oy+hpx, (st.y1+1)*TILE);
@@ -517,7 +654,7 @@ window.MM = window.MM || {};
           }
           // shoreline foam wisps
           const lT=getTile(wx-1,s0.top), rT=getTile(wx+1,s0.top);
-          const lShore=lT!==T.AIR && lT!==T.WATER, rShore=rT!==T.AIR && rT!==T.WATER;
+          const lShore=!isAir(lT) && lT!==T.WATER, rShore=!isAir(rT) && rT!==T.WATER;
           if(lShore||rShore){
             const bob=Math.sin(tSec*3.1+wx*1.3)*1.4;
             g.fillStyle='rgba(255,255,255,'+(0.16+0.08*Math.sin(tSec*4+wx)).toFixed(3)+')';
@@ -556,23 +693,75 @@ window.MM = window.MM || {};
   }catch(e){} }
 
   // ---- Hydrostatic equalization (true communicating vessels) ----
-  // For each seeded body: flood-fill the connected water (window-bounded around the
-  // seed), flood-fill the void container it can reach WITHOUT crossing above its own
-  // highest surface, then move volume toward the bottom-up equilibrium fill of that
-  // container. Pressure emerges naturally: water joined through any passage — U-bends,
-  // risers, galleries, mined bores — rises and drains until the joined regions sit
-  // within one tile of a common level, and reachable drops below keep pulling the body
-  // down. Strictly-below-the-surface traversal means a body can never creep along its
-  // own surface row (lips hold; films are left to the local spill/seek dynamics).
-  // Volume is conserved exactly; moves are rate-limited so large equalizations read as
-  // flow over a second or two rather than teleports.
-  const EQ_WINDOW=40;       // half-width (columns) of the equalization window
-  const EQ_BODY_CAP=4200;   // safety caps for the two flood fills
-  const EQ_VOID_CAP=6500;
+  // For each seeded body: flood-fill the connected loaded water body (or a bounded
+  // window for oversized/spilling bodies), flood-fill the reachable void container
+  // without crossing above its own highest surface, then move volume toward the
+  // bottom-up equilibrium fill of that container. Pressure emerges naturally through
+  // U-bends, risers, galleries, and mined bores. Open-air shore lips still hold, but
+  // covered surface mouths and one-tile-low water columns participate so lakes can
+  // flood caves without leaving dry notches. Volume is conserved exactly; moves are
+  // rate-limited so large equalizations read as flow over a second or two.
+  const EQ_WINDOW=40;       // half-width for the oversized-body fallback window
+  const EQ_BODY_CAP=6500;   // safety caps for the two flood fills
+  const EQ_VOID_CAP=9000;
   const EQ_RATE=48;         // max units moved per body per pass
   const EQ_BODIES=3;        // bodies equalized per pass
 
   function runPressureLeveling(getTile,setTile){
+    const world = (typeof window!=='undefined' && window.MM && MM.world) ? MM.world : null;
+    const readTile = world && typeof world.peekTile==='function'
+      ? (x,y)=>world.peekTile(x,y,T.STONE)
+      : getTile;
+    const isPressureSillCell=(x,y)=>{
+      if(readTile(x,y)!==T.WATER) return false;
+      const above=readTile(x,y-1);
+      if(above===T.WATER) return false;
+      if(!isAir(above) && above!==T.LEAF) return false;
+      const below=readTile(x,y+1);
+      return below!==T.WATER && !canFill(below);
+    };
+    const pressureConnected=(x,y,nx,ny)=>{
+      // Surface water crossing the top of a solid lip/tree trunk is overflow, not
+      // a submerged pipe. Let local flow spill it across, but do not let the
+      // pressure solver equalize both basins below the lip.
+      if(ny===y){
+        const aSill=isPressureSillCell(x,y), bSill=isPressureSillCell(nx,ny);
+        const aDeep=readTile(x,y+1)===T.WATER, bDeep=readTile(nx,ny+1)===T.WATER;
+        if((aSill && bDeep) || (bSill && aDeep)) return false;
+      }
+      return true;
+    };
+    const collectBody = (sx,sy,windowLimit)=>{
+      const seedKey=sx+','+sy;
+      const bodySet=new Set([seedKey]);
+      const stack=[seedKey];
+      let minSurf=WORLD_H, overflow=false;
+      while(stack.length){
+        const ck=stack.pop(); const ci=ck.indexOf(','); const cx=+ck.slice(0,ci), cy=+ck.slice(ci+1);
+        if(cy<minSurf) minSurf=cy;
+        for(let d=0;d<4;d++){
+          const nx=cx+(d===0?-1:d===1?1:0), ny=cy+(d===2?-1:d===3?1:0);
+          if(windowLimit!=null && Math.abs(nx-sx)>windowLimit) continue;
+          if(ny<0 || ny>=WORLD_H) continue;
+          const nk=nx+','+ny;
+          if(bodySet.has(nk) || readTile(nx,ny)!==T.WATER) continue;
+          if(!pressureConnected(cx,cy,nx,ny)) continue;
+          bodySet.add(nk); stack.push(nk);
+          if(bodySet.size>EQ_BODY_CAP){ overflow=true; stack.length=0; break; }
+        }
+      }
+      return {bodySet,minSurf,overflow,windowLimit};
+    };
+    const bodyHasOpenSpill = (bodySet)=>{
+      for(const ck of bodySet){
+        const ci=ck.indexOf(','); const x=+ck.slice(0,ci), y=+ck.slice(ci+1);
+        if(y+1<WORLD_H && canFill(readTile(x,y+1))) return true;
+        for(const dx of [-1,1]){
+          if(y+1<WORLD_H && canFill(readTile(x+dx,y)) && canFill(readTile(x+dx,y+1))) return true;
+        }
+      }
+      return false;
+    };
     const seedSet=new Set(active); for(const kk of pressureSeeds) seedSet.add(kk); pressureSeeds.clear();
     const seeds=[...seedSet]; if(!seeds.length) return null; seeds.sort();
     const processed=new Set(); // cells of bodies already handled this pass
@@ -581,36 +770,31 @@ window.MM = window.MM || {};
       if(bodies>=EQ_BODIES) break;
       if(processed.has(key)) continue;
       const ci0=key.indexOf(','); const sx=+key.slice(0,ci0), sy=+key.slice(ci0+1);
-      if(getTile(sx,sy)!==T.WATER) continue;
-      // 1. connected water body (4-neighbor flood fill)
-      const bodySet=new Set([key]); const stack=[key];
-      let minSurf=WORLD_H; let overflow=false;
-      while(stack.length){
-        const ck=stack.pop(); const ci=ck.indexOf(','); const cx=+ck.slice(0,ci), cy=+ck.slice(ci+1);
-        if(cy<minSurf) minSurf=cy;
-        for(let d=0;d<4;d++){
-          const nx=cx+(d===0?-1:d===1?1:0), ny=cy+(d===2?-1:d===3?1:0);
-          if(Math.abs(nx-sx)>EQ_WINDOW || ny<0 || ny>=WORLD_H) continue;
-          const nk=nx+','+ny;
-          if(bodySet.has(nk) || getTile(nx,ny)!==T.WATER) continue;
-          bodySet.add(nk); stack.push(nk);
-          if(bodySet.size>EQ_BODY_CAP){ overflow=true; stack.length=0; break; }
-        }
-      }
+      if(readTile(sx,sy)!==T.WATER) continue;
+      // 1. connected water body (4-neighbor flood fill). Try the whole loaded body
+      // first so wide lakes truly level; if it is too large, fall back to the old
+      // local window so oceans and mega-caverns still get bounded incremental work.
+      let bodyInfo=collectBody(sx,sy,null);
+      if(bodyInfo.overflow || bodyHasOpenSpill(bodyInfo.bodySet)) bodyInfo=collectBody(sx,sy,EQ_WINDOW);
+      const {bodySet,minSurf,overflow,windowLimit}=bodyInfo;
       for(const bk of bodySet) processed.add(bk);
       bodies++;
       if(overflow || bodySet.size<2) continue;
-      // 2. container: void reachable strictly below the body's highest surface (water
-      // cannot flow at or above its own level; window-edge water acts as a fixed wall)
+      // 2. container: void reachable below the body's highest surface. At the surface
+      // row itself, only covered mouths / existing lower water columns are admitted:
+      // open dry shore remains a wall, while cave lips and one-tile-low water notches
+      // can level.
       const floorRow=minSurf+1;
       const contSet=new Set(bodySet); const q=[...bodySet]; let voidOver=false;
       while(q.length){
         const ck=q.pop(); const ci=ck.indexOf(','); const cx=+ck.slice(0,ci), cy=+ck.slice(ci+1);
         for(let d=0;d<4;d++){
           const nx=cx+(d===0?-1:d===1?1:0), ny=cy+(d===2?-1:d===3?1:0);
-          if(Math.abs(nx-sx)>EQ_WINDOW || ny<floorRow || ny>=WORLD_H) continue;
+          if(windowLimit!=null && Math.abs(nx-sx)>windowLimit) continue;
+          if(ny<minSurf || ny>=WORLD_H) continue;
           const nk=nx+','+ny;
-          if(contSet.has(nk) || !canFill(getTile(nx,ny))) continue;
+          if(contSet.has(nk) || !canFill(readTile(nx,ny))) continue;
+          if(ny<floorRow && !surfaceVoidCanLevel(nx,ny,readTile)) continue;
           contSet.add(nk); q.push(nk);
           if(contSet.size>EQ_VOID_CAP){ voidOver=true; q.length=0; break; }
         }
@@ -627,8 +811,15 @@ window.MM = window.MM || {};
         const xs=byRow.get(y);
         if(xs.length<=vol){ for(const x of xs) target.add(x+','+y); vol-=xs.length; }
         else {
-          // partial surface row: keep cells that already hold water (stability), then x order
-          xs.sort((a,b)=>{ const aw=bodySet.has(a+','+y)?0:1, bw=bodySet.has(b+','+y)?0:1; return aw-bw || a-b; });
+          // Partial surface row: covered mouths are preferred so caves flood instead
+          // of leaving a dry notch; otherwise keep existing cells for stability.
+          xs.sort((a,b)=>{
+            const ak=a+','+y, bk=b+','+y;
+            const ac=surfaceVoidCanLevel(a,y,readTile) && !isAir(readTile(a,y-1)) ? 0 : 1;
+            const bc=surfaceVoidCanLevel(b,y,readTile) && !isAir(readTile(b,y-1)) ? 0 : 1;
+            const aw=bodySet.has(ak)?0:1, bw=bodySet.has(bk)?0:1;
+            return ac-bc || aw-bw || a-b;
+          });
           for(let i=0;i<vol;i++) target.add(xs[i]+','+y);
           vol=0;
         }
@@ -636,11 +827,19 @@ window.MM = window.MM || {};
       // 4. rate-limited move: drain the highest surplus cells into the deepest deficits.
       // Sources clear top-down and destinations fill bottom-up, so every intermediate
       // state is gravity-consistent and each unit moved conserves volume exactly.
+      let spillFloor=WORLD_H;
+      for(const bk of bodySet){
+        const ci=bk.indexOf(','); const bx=+bk.slice(0,ci), by=+bk.slice(ci+1);
+        for(const dx of [-1,1]){
+          const nx=bx+dx;
+          if(isPressureSillCell(nx,by) && readTile(bx,by+1)===T.WATER) spillFloor=Math.min(spillFloor,by+1);
+        }
+      }
       const sources=[]; const dests=[];
-      for(const bk of bodySet){ if(!target.has(bk)) sources.push(bk); }
+      const rowOf=(s)=>+s.slice(s.indexOf(',')+1);
+      for(const bk of bodySet){ if(!target.has(bk) && rowOf(bk)<spillFloor) sources.push(bk); }
       for(const tk of target){ if(!bodySet.has(tk)) dests.push(tk); }
       if(!sources.length || !dests.length) continue; // already at equilibrium
-      const rowOf=(s)=>+s.slice(s.indexOf(',')+1);
       sources.sort((a,b)=> rowOf(a)-rowOf(b) || a.localeCompare(b)); // highest first
       dests.sort((a,b)=> rowOf(b)-rowOf(a) || a.localeCompare(b));   // deepest first
       const K=Math.min(EQ_RATE, sources.length, dests.length);
@@ -648,7 +847,7 @@ window.MM = window.MM || {};
         const sk=sources[i], dk=dests[i];
         const sci=sk.indexOf(','); const sxx=+sk.slice(0,sci), syy=+sk.slice(sci+1);
         const dci=dk.indexOf(','); const dxx=+dk.slice(0,dci), dyy=+dk.slice(dci+1);
-        setTile(sxx,syy,T.AIR); setTile(dxx,dyy,T.WATER);
+        setTile(sxx,syy,T.AIR); writeExternalTile(dxx,dyy,T.WATER,getTile,setTile);
         mark(dxx,dyy); markNeighbors(active,dxx,dyy); markNeighbors(active,sxx,syy);
         touchedXs.add(sxx); touchedXs.add(dxx);
       }

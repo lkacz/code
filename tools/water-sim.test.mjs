@@ -137,6 +137,25 @@ const tops=[];
 for(let x=80;x<=120;x++){ let t=-1; for(let y=90;y<100;y++) if(getTile(x,y)===T.WATER){ t=y; break; } if(t>=0) tops.push(t); }
 assert.ok(Math.max(...tops)-Math.min(...tops)<=1, `combined body level within 1 (tops ${Math.min(...tops)}..${Math.max(...tops)})`);
 
+// --- 9b. Chunk seam wake must not generate further chunks while probing seams ---
+// The browser regression was a self-propagating chain: noteChunkGenerated(cx)
+// scanned x0-1 / x1+1 with the normal generating getTile(), which created the
+// neighboring chunk, which queued another wake, and so on.
+resetWorld();
+const seamGetCalls=[];
+const seamPeekCalls=[];
+globalThis.MM.world = {
+  peekTile(x,y,fallback){
+    seamPeekCalls.push(x);
+    return fallback===undefined ? T.AIR : fallback;
+  }
+};
+water.noteChunkGenerated(100,163);
+water.update((x,y)=>{ seamGetCalls.push(x); return getTile(x,y); }, setTile, 1/60);
+assert.ok(seamPeekCalls.includes(99) && seamPeekCalls.includes(164), 'chunk wake probes seam columns with peekTile');
+assert.equal(seamGetCalls.some(x=>x>=99 && x<=164), false, 'chunk wake does not force-load neighbor seam chunks');
+delete globalThis.MM.world;
+
 // --- 10. Suspended water layer over air self-heals with no notification at all ---
 resetWorld();
 globalThis.player = { x: 90 };
@@ -208,6 +227,62 @@ for(let x=81;x<=102;x++) assert.equal(getTile(x,90), T.WATER, `gallery floor cel
 // the riser must carry water upward — well above the gallery ceiling
 let riserTop=-1; for(let y=78;y<=90;y++) if(getTile(103,y)===T.WATER){ riserTop=y; break; }
 assert.ok(riserTop>=0 && riserTop<=87, `water rose in the riser (top ${riserTop})`);
+
+// --- 14b. Surface-level cave mouth: a lake floods under an overhang, but not over open shore ---
+resetWorld();
+for(let x=40;x<=80;x++) for(let y=94;y<100;y++) setTile(x,y,T.WATER);   // broad reservoir
+for(let y=94;y<100;y++) setTile(39,y,T.STONE);                          // closed left bank
+for(let x=81;x<=86;x++) setTile(x,93,T.STONE);                          // roofed cave mouth at waterline
+for(let x=81;x<=87;x++) for(let y=95;y<100;y++) setTile(x,y,T.STONE);    // one-tile-high mouth, not a drain
+setTile(87,94,T.STONE);
+const roofedVol=countWater();
+water.onTileChanged(81,94,getTile);
+step(8000);
+assert.equal(countWater(), roofedVol, 'surface-mouth equalization conserves volume');
+for(let x=81;x<=86;x++) assert.equal(getTile(x,94), T.WATER, `covered mouth surface x=${x} flooded`);
+
+resetWorld();
+for(let x=40;x<=80;x++) for(let y=94;y<100;y++) setTile(x,y,T.WATER);   // same reservoir
+for(let y=94;y<100;y++) setTile(39,y,T.STONE);
+for(let y=95;y<100;y++) setTile(81,y,T.STONE);                          // dry open shore shelf
+const shoreVol=countWater();
+water.onTileChanged(81,94,getTile);
+step(3000);
+assert.equal(countWater(), shoreVol, 'open shore guard conserves volume');
+assert.equal(getTile(81,94), T.AIR, 'surface equalization does not crawl over an open dry shore');
+
+// --- 14c. Wide enclosed lakes level globally, not as separate local pressure windows ---
+resetWorld();
+const wideL=50, wideR=140, wideSplit=81;
+for(let y=80;y<115;y++){ setTile(wideL-1,y,T.STONE); setTile(wideR+1,y,T.STONE); }
+for(let x=wideL;x<=wideSplit;x++) for(let y=84;y<115;y++) setTile(x,y,T.WATER);      // deep left half
+for(let x=wideSplit+1;x<=wideR;x++) for(let y=107;y<115;y++) setTile(x,y,T.WATER);   // shallow right half
+const wideVol=countWater();
+for(let x=wideL;x<=wideR;x+=8) water.onTileChanged(x,100,getTile);
+step(6000);
+assert.equal(countWater(), wideVol, 'wide basin leveling conserves volume');
+const wideTops=[];
+for(let x=wideL;x<=wideR;x++){ const t=topOf(x); if(t>=0) wideTops.push(t); }
+assert.ok(Math.max(...wideTops)-Math.min(...wideTops)<=1, `wide basin level within 1 (tops ${Math.min(...wideTops)}..${Math.max(...wideTops)})`);
+
+// --- 14d. Overflow over a tree-trunk lip is not a submerged communicating pipe ---
+resetWorld();
+for(let x=44;x<=106;x++) setTile(x,100,T.STONE);
+for(let y=88;y<=100;y++){ setTile(44,y,T.STONE); setTile(106,y,T.STONE); }
+for(let y=94;y<=99;y++) setTile(60,y,T.WOOD); // trunk/lip separating the basins
+for(let x=45;x<60;x++) for(let y=91;y<100;y++) setTile(x,y,T.WATER);    // narrow high basin
+setTile(60,93,T.WATER);                                                 // the overflow tile above the trunk
+for(let x=61;x<106;x++) for(let y=97;y<100;y++) setTile(x,y,T.WATER);   // wider lower basin
+const lipVol=countWater();
+water.onTileChanged(60,93,getTile);
+step(7000);
+assert.equal(countWater(), lipVol, 'tree-lip overflow conserves volume');
+let leftMinDepth=Infinity;
+for(let x=45;x<60;x++) leftMinDepth=Math.min(leftMinDepth, depthAt(x,88,100));
+let rightMaxDepth=0;
+for(let x=61;x<106;x++) rightMaxDepth=Math.max(rightMaxDepth, depthAt(x,88,100));
+assert.ok(leftMinDepth>=6, `source basin remains at/above the trunk lip (min depth ${leftMinDepth})`);
+assert.ok(rightMaxDepth<=5, `wide receiving basin only gets overflow above the lip (max depth ${rightMaxDepth})`);
 
 // --- 15. Wave API safety: disturb/snapshot/restore never throw, reject junk ---
 water.disturb(85, 200); water.disturb(85.7, -300); water.disturb(NaN, 50); water.disturb(10, Infinity);

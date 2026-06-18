@@ -1,0 +1,87 @@
+// Deterministic regression for bat movement through terrain.
+// Verifies BAT can fly through open air but cannot phase through solid tiles.
+// Run: node tools/bat-collision-sim.test.mjs
+import assert from 'node:assert/strict';
+
+globalThis.window = globalThis;
+globalThis.MM = {
+  background:{ getCycleInfo(){ return {isDay:false}; } }
+};
+globalThis.localStorage = {
+  getItem(){ return null; },
+  setItem(){},
+  removeItem(){}
+};
+
+const originalRandom = Math.random;
+Math.random = ()=>0.99;
+
+const { T } = await import('../src/constants.js');
+const { mobs } = await import('../src/engine/mobs.js');
+
+const key = (x,y)=>x+','+y;
+const tiles = new Map();
+function setTile(x,y,t){
+  const k=key(x,y);
+  if(t===T.AIR) tiles.delete(k);
+  else tiles.set(k,t);
+}
+function getTile(x,y){
+  return tiles.get(key(x,y)) ?? T.AIR;
+}
+function reset(){
+  tiles.clear();
+  mobs.clearAll();
+  mobs.freezeSpawns(10000);
+  globalThis.player = {x:100,y:100,vx:0,vy:0,hp:100,maxHp:100};
+}
+function spawnBat(x,y,vx,vy){
+  mobs.deserialize({
+    v:3,
+    list:[{id:'BAT',x,y,vx,vy,hp:6,state:'idle',facing:vx>=0?1:-1,scale:1,speedMul:1,jumpMul:1}],
+    aggro:{mode:'rel',m:{}}
+  });
+  mobs.freezeSpawns(10000);
+}
+function bat(){
+  return mobs.serialize().list.find(m=>m.id==='BAT');
+}
+function step(dt=1/6){
+  mobs.update(dt, player, getTile);
+}
+
+reset();
+spawnBat(3,10,6,0);
+step();
+let b = bat();
+assert.ok(b.x > 3.8, 'bat travels through open air');
+assert.ok(Math.abs(b.vy) < 0.02, 'open-air horizontal flight only keeps the normal tiny bat bob');
+
+reset();
+for(let y=8; y<=12; y++) setTile(5,y,T.STONE);
+spawnBat(4,10,6,0);
+step();
+b = bat();
+assert.ok(b.x < 4.66, 'bat stops before a stone wall');
+assert.equal(b.vx, 0, 'bat horizontal velocity is cancelled by a stone wall');
+assert.notEqual(Math.floor(b.x), 5, 'bat center never enters the stone wall column');
+
+reset();
+for(let y=8; y<=12; y++) setTile(5,y,T.STONE);
+spawnBat(4,10,24,0);
+step(1.5);
+b = bat();
+assert.ok(b.x < 4.66, 'bat cannot tunnel across a wall during a long frame');
+assert.equal(b.vx, 0, 'bat long-frame wall collision cancels horizontal velocity');
+
+reset();
+for(let x=1; x<=6; x++) setTile(x,8,T.STONE);
+spawnBat(3,9.4,0,-8);
+step();
+b = bat();
+assert.ok(b.y > 9.22, 'bat stops below a stone ceiling');
+assert.equal(b.vy, 0, 'bat vertical velocity is cancelled by a stone ceiling');
+assert.notEqual(Math.floor(b.y), 8, 'bat center never enters the stone ceiling row');
+
+Math.random = originalRandom;
+console.log('bat-collision-sim: all assertions passed');

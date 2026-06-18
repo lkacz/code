@@ -70,10 +70,12 @@ window.MM = window.MM || {};
     gas:    ()=>{ if(throttled('gas',200)) return; noise(0.2,0.045,600,1600,'lowpass'); },
     chest:  ()=>{ tone('triangle',520,780,0.12,0.14); tone('triangle',780,1170,0.18,0.12); },
     craft:  ()=>{ noise(0.06,0.14,1500,4200); tone('square',330,330,0.08,0.08); },
+    charge: ()=>{ if(throttled('charge',240)) return; tone('sine',660,1320,0.18,0.055,0.11); tone('triangle',1480,940,0.22,0.035,0.18); noise(0.10,0.022,4200,9000,'highpass'); },
     harvest:()=>{ tone('sine',520,650,0.10,0.12); },
     levelup:()=>{ [392,494,587,784].forEach((f,i)=>setTimeout(()=>tone('triangle',f,f,0.18,0.16),i*90)); },
     milestone:()=>{ [523,659,784].forEach((f,i)=>setTimeout(()=>tone('sine',f,f,0.22,0.14),i*110)); },
     golden: ()=>{ [880,1175,1568,2093,2637].forEach((f,i)=>setTimeout(()=>tone('sine',f,f*1.02,0.45,0.07),i*65)); noise(0.5,0.025,3800,9000,'highpass'); },
+    masterstone:()=>{ [1760,2349,3136,4186].forEach((f,i)=>setTimeout(()=>tone(i%2?'triangle':'sine',f,f*1.08,0.34,0.09),i*45)); setTimeout(()=>tone('square',3520,1408,0.22,0.045,0.18),80); noise(0.28,0.028,5200,11000,'highpass'); },
     ufo:    ()=>{ tone('sine',520,820,0.9,0.09,0.45); setTimeout(()=>tone('sine',820,470,0.9,0.08,0.5),450); }, // theremin wobble
     beam:   ()=>{ if(throttled('beam',450)) return; tone('sawtooth',95,110,0.5,0.05,0.4); noise(0.45,0.03,1800,4200); },
     roar:   ()=>{ tone('sawtooth',90,45,0.8,0.22,0.6); noise(0.7,0.12,80,400,'lowpass'); },

@@ -46,7 +46,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   };
   // Procedural display names: "<base> <suffix>" (tier shown separately in the UI)
   const NAME_BASES={cape:'Peleryna', eyes:'Oczy', outfit:'Strój', weapon:'Ostrze', charm:'Talizman'};
-  const WEAPON_NAME_BASES={melee:'Ostrze', bow:'Łuk', flame:'Miotacz', hose:'Sikawka', gas:'Emiter'};
+  const WEAPON_NAME_BASES={melee:'Ostrze', bow:'Łuk', flame:'Miotacz', hose:'Sikawka', gas:'Emiter', electric:'Elektromiotacz'};
   const NAME_SUFFIXES=['wiatru','cienia','głębin','świtu','gór','burzy','lasu','żaru','echa','mrozu','otchłani','słońca'];
 
   // Unique affixes add clean percent steps (additive, so totals stay on the ladder)
@@ -78,16 +78,20 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       else if(stat==='dmg'){ item.attackDamage = (item.attackDamage||0) + Math.max(1, Math.round(randInt(r,tierDef.dmg[0],tierDef.dmg[1])/2)); }
     });
     // Weapons roll a class: melee strike, bow (arrows), or a stream weapon
-    // (flamethrower ignites, water hose extinguishes, gas emitter poisons)
+    // (flame/hose/gas terrain streams, electric energy beam)
     if(baseKind==='weapon'){
       const wRoll=r();
       if(wRoll<0.40){ item.weaponType='melee'; item.attackDamage=(item.attackDamage||0) + randInt(r, tierDef.dmg[0], tierDef.dmg[1]); }
       else if(wRoll<0.65){ item.weaponType='bow'; item.attackDamage=(item.attackDamage||0) + randInt(r, tierDef.dmg[0], tierDef.dmg[1]) + 1; item.fireCooldown=Math.max(0.3, +(0.6 - 0.05*randInt(r,0,3)).toFixed(2)); }
       else {
-        item.weaponType= wRoll<0.80? 'flame' : wRoll<0.90? 'hose' : 'gas';
+        item.weaponType= wRoll<0.78? 'flame' : wRoll<0.87? 'hose' : wRoll<0.95? 'gas' : 'electric';
         const dps=randInt(r, tierDef.flameDps[0], tierDef.flameDps[1]);
-        item.fireDps= item.weaponType==='hose'? Math.max(1,Math.round(dps/2)) : dps;
+        item.fireDps= item.weaponType==='hose'? Math.max(1,Math.round(dps/2)) : item.weaponType==='electric'? dps+2 : dps;
         item.fireRange=Math.round(randRange(r, tierDef.flameRange[0], tierDef.flameRange[1])*2)/2; // 0.5-tile steps
+        if(item.weaponType==='electric'){
+          item.fireRange=Math.min(10, item.fireRange+1);
+          item.energyCost=randInt(r, tier==='epic'?9:10, tier==='common'?14:12);
+        }
       }
     }
     const nameBase = baseKind==='weapon'? (WEAPON_NAME_BASES[item.weaponType]||'Ostrze') : (NAME_BASES[baseKind]||'Przedmiot');

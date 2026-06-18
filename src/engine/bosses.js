@@ -130,8 +130,11 @@ window.MM = window.MM || {};
     if(bg && bg.getCycleInfo) return bg.getCycleInfo();
     return {isDay:true, tDay:0.5};
   }
-  // Monsters pass through air, water and leaves; everything else is wall/floor
-  function solidT(t){ return t!==T.AIR && t!==T.WATER && t!==T.LEAF; }
+  function tileInfo(t){ return MM.INFO && MM.INFO[t]; }
+  function isGasTile(t){ const info=tileInfo(t); return !!(info && info.gas); }
+  function openT(t){ return t===T.AIR || t===T.WATER || t===T.LEAF || isGasTile(t); }
+  // Monsters pass through air, water, leaves and transient gases; everything else is wall/floor.
+  function solidT(t){ return !openT(t); }
   function playerRef(){ return (typeof window!=='undefined' && window.player) || null; }
   function say(t){ try{ if(typeof window!=='undefined' && window.msg) window.msg(t); }catch(e){} }
   // Hero damage is centralized in main.js (window.damageHero); the inline body
@@ -893,13 +896,13 @@ window.MM = window.MM || {};
       for(let ty=Math.max(2,by-2); ty<WORLD_H-3; ty++){
         const tt=getTile(tx,ty);
         // air or water column with solid floor below — works on land and seabed
-        if((tt===T.AIR||tt===T.WATER) && solidT(getTile(tx,ty+1))){
+        if(openT(tt) && solidT(getTile(tx,ty+1))){
           setTile(tx,ty,tier);
           if(tt===T.WATER){ try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(tx,ty,getTile); }catch(e){} }
           placed=true; break;
         }
       }
-      if(!placed){ const tt=getTile(tx,by); if(tt===T.AIR||tt===T.WATER) setTile(tx,by,tier); }
+      if(!placed){ const tt=getTile(tx,by); if(openT(tt)) setTile(tx,by,tier); }
     }
     const TILE=MM.TILE||20;
     blasts.push({x:(bx+0.5)*TILE, y:(by+0.5)*TILE, R:R*TILE, t:0, max:0.7});
@@ -1102,10 +1105,17 @@ window.MM = window.MM || {};
     }
     return o;
   }
-  function draw(ctx,TILE){
+  function tileVisible(canDrawTile,x,y){ return typeof canDrawTile !== 'function' || canDrawTile(Math.floor(x),Math.floor(y)); }
+  function monsterVisible(canDrawTile,m){
+    if(typeof canDrawTile !== 'function') return true;
+    for(const p of m.parts){ if(tileVisible(canDrawTile,m.x+p.dx,m.y+p.dy)) return true; }
+    return false;
+  }
+  function draw(ctx,TILE,canDrawTile){
     if(!monsters.length && !debris.length && !blasts.length && !projectiles.length) return;
     const now=(typeof performance!=='undefined')? performance.now() : 0;
     for(const m of monsters){
+      if(!monsterVisible(canDrawTile,m)) continue;
       // true fractional position — rendering at Math.round() made the whole beast
       // hop a full tile at a time even though the physics moves continuously.
       // A shaking beast judders sideways to telegraph "get off my back".
@@ -1114,7 +1124,7 @@ window.MM = window.MM || {};
       const enraged=m.core.hp<m.core.maxHp*0.5;
       const occ=m.occ;   // occupancy lattice kept fresh by refreshStructure()
       // feeding cue: pulse the morsel being eaten (world space, untilted)
-      if(m.state==='feed' && m.feed){
+      if(m.state==='feed' && m.feed && tileVisible(canDrawTile,m.feed.tx,m.feed.ty)){
         const fx=m.feed.tx*TILE, fy=m.feed.ty*TILE, pul=0.4+0.3*Math.sin(now*0.012);
         ctx.strokeStyle='rgba(255,255,255,'+pul.toFixed(2)+')'; ctx.lineWidth=2;
         ctx.strokeRect(fx+1,fy+1,TILE-2,TILE-2);
@@ -1177,6 +1187,7 @@ window.MM = window.MM || {};
     }
     // hurled blocks: spinning tiles of the material that was ripped out
     for(const pr of projectiles){
+      if(!tileVisible(canDrawTile,pr.x,pr.y)) continue;
       ctx.save();
       ctx.translate(pr.x*TILE, pr.y*TILE); ctx.rotate(pr.spin);
       const s=TILE*0.7;
@@ -1185,11 +1196,13 @@ window.MM = window.MM || {};
       ctx.restore();
     }
     for(const d of debris){
+      if(!tileVisible(canDrawTile,d.x/TILE,d.y/TILE)) continue;
       ctx.fillStyle=d.c; ctx.globalAlpha=clamp(1-d.t/d.max,0,1);
       ctx.fillRect(d.x-d.s/2,d.y-d.s/2,d.s,d.s);
       ctx.globalAlpha=1;
     }
     for(const b of blasts){
+      if(!tileVisible(canDrawTile,b.x/TILE,b.y/TILE)) continue;
       const f=b.t/b.max;
       const r=b.R*(0.3+f*0.9);
       ctx.strokeStyle='rgba(255,200,120,'+(0.8*(1-f)).toFixed(2)+')'; ctx.lineWidth=4*(1-f)+1;
@@ -1201,11 +1214,11 @@ window.MM = window.MM || {};
   }
   // Screen-space hint: an edge arrow pointing at the nearest off-screen monster,
   // so "a monster appeared" is always findable without a minimap.
-  function drawHUD(ctx,W,H,camX,camY,zoom,TILE){
+  function drawHUD(ctx,W,H,camX,camY,zoom,TILE,canDrawTile){
     if(!monsters.length) return;
     const p=playerRef(); if(!p) return;
     let best=null,bd=1e9;
-    for(const m of monsters){ const d=Math.abs(m.x-p.x); if(d<bd){ bd=d; best=m; } }
+    for(const m of monsters){ if(!monsterVisible(canDrawTile,m)) continue; const d=Math.abs(m.x-p.x); if(d<bd){ bd=d; best=m; } }
     if(!best) return;
     const sxp=(best.x-camX)*TILE*zoom, syp=(best.y-best.height/2-camY)*TILE*zoom;
     if(sxp>40 && sxp<W-40 && syp>40 && syp<H-40) return; // on screen: no arrow needed

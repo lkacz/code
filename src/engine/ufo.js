@@ -53,6 +53,19 @@ const ufo = (function(){
   function sfx(n){ try{ if(MM.audio && MM.audio.play) MM.audio.play(n); }catch(e){} }
   function surfaceY(x, fallback){ try{ const wg=MM.worldGen; if(wg && wg.surfaceHeight) return wg.surfaceHeight(Math.round(x)); }catch(e){} return (typeof fallback==='number'? fallback : 60); }
   function burst(x,y,tier){ try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(x*(MM.TILE||20), y*(MM.TILE||20), tier||'epic'); }catch(e){} }
+  function drainHeroEnergy(pl){
+    let drained=0;
+    try{
+      if(MM.heroEnergy && typeof MM.heroEnergy.drain==='function'){
+        drained=Number(MM.heroEnergy.drain({cause:'ufo'}))||0;
+      }
+    }catch(e){}
+    if(!(drained>0) && pl && typeof pl.energy==='number' && pl.energy>0){
+      drained=pl.energy;
+      pl.energy=0;
+    }
+    return drained;
+  }
 
   // --- Procedural saucer: same seed → same craft ---
   const HULLS=['#9fb2c8','#7d8aa0','#b8a06a','#6f7d8f','#8a7da6'];
@@ -272,6 +285,7 @@ const ufo = (function(){
               c.carryDir=Math.random()<0.5?-1:1;
               c.carryDist=CFG.CARRY_MIN+Math.random()*(CFG.CARRY_MAX-CFG.CARRY_MIN);
               c.carried=0;
+              drainHeroEnergy(pl);
               say('🛸 PORWANY! Obcy zabierają cię na badania...');
             }
           }
@@ -325,8 +339,9 @@ const ufo = (function(){
   }
 
   // --- Rendering (browser only; world-space, same transform as mobs.draw) ---
-  function draw(ctx, TILE){
+  function draw(ctx, TILE, canDrawTile){
     const c=craft; if(!c || typeof document==='undefined') return;
+    if(typeof canDrawTile === 'function' && !canDrawTile(Math.floor(c.x), Math.floor(c.y))) return;
     const L=c.look, now=performance.now();
     const px=c.x*TILE, py=(c.y+Math.sin(c.t*2)*0.15)*TILE;
     const hw=L.hullW*0.5*TILE, hh=L.hullH*0.5*TILE;

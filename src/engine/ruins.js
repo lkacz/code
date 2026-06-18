@@ -37,7 +37,7 @@ const ruins = (function(){
     if(WG.randSeed(n*17.93+8.41) >= CFG.GATE) return null;
     const span = CFG.SPACING - CFG.MARGIN*2;
     const ax = Math.round(n*CFG.SPACING + CFG.MARGIN + WG.randSeed(n*9.47+3.31)*span);
-    try{ const b = WG.biomeType? WG.biomeType(ax) : 1; if(b===5 || b===6) return null; }catch(e){} // not under seas/lakes
+    try{ const b = WG.biomeType? WG.biomeType(ax) : 1; if(b===5 || b===6 || b===8) return null; }catch(e){} // not under seas/lakes/cities
     return ax;
   }
 
@@ -343,7 +343,7 @@ const ruins = (function(){
   // a softly pulsing etched rune (with halo) on the topmost stone — violet on
   // the deep city's obsidian monolith, gold everywhere else. Mined-away hint
   // blocks lose their dressing automatically (the world tile is gone).
-  function drawHints(ctx, TILE){
+  function drawHints(ctx, TILE, canDrawTile){
     if(typeof document==='undefined') return;
     const pl=(typeof window!=='undefined' && window.player)||null; if(!pl) return;
     const W=MM.world; if(!W || !W.getTile) return;
@@ -356,6 +356,7 @@ const ruins = (function(){
       for(let i=1;i<L.hints.length;i++){ const h=L.hints[i], t=L.hints[top]; if(h.y<t.y || (h.y===t.y && h.x<t.x)) top=i; }
       for(let i=0;i<L.hints.length;i++){
         const h=L.hints[i];
+        if(typeof canDrawTile==='function' && !canDrawTile(h.x,h.y)) continue;
         const t=W.getTile(h.x,h.y);
         if(t===T.AIR || t===T.WATER) continue;
         const px=h.x*TILE, py=h.y*TILE;

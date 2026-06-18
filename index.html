@@ -13,23 +13,31 @@
     html,body{ margin:0; padding:0; height:100%; background:#0b0f16; color:#e8e8e8; font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,'Helvetica Neue',Arial,'Noto Sans',sans-serif; touch-action:none; user-select:none; overscroll-behavior:none; }
     canvas{ display:block; width:100vw; height:100vh; }
     #ui{ position:fixed; inset:0; pointer-events:none; }
-    #hud{ position:absolute; left:8px; right:8px; top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:space-between; }
-    #hud .panel{ pointer-events:auto; background:rgba(0,0,0,.45); backdrop-filter:blur(6px); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:6px 10px; display:inline-flex; align-items:center; gap:10px; font-size:12px; }
-    #inv{ gap:14px; }
+    #hud{ position:absolute; left:8px; right:8px; top:8px; display:grid; grid-template-columns:minmax(0,1fr) auto auto auto; gap:8px; align-items:start; }
+    #hud .panel{ pointer-events:auto; background:rgba(0,0,0,.48); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:6px 10px; display:inline-flex; align-items:center; gap:10px; font-size:12px; contain:layout paint; }
+    #inv{ gap:14px; min-width:0; max-width:100%; overflow-x:auto; overflow-y:hidden; white-space:nowrap; flex-wrap:nowrap; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.28) transparent; }
+    #inv::-webkit-scrollbar{ height:4px; }
+    #inv::-webkit-scrollbar-thumb{ background:rgba(255,255,255,.28); border-radius:999px; }
     #inv .item{ display:inline-flex; align-items:center; gap:6px; }
     #inv .dot{ width:12px; height:12px; border-radius:3px; border:1px solid rgba(255,255,255,.35); display:inline-block; }
     #fps{ min-width:56px; text-align:right; opacity:.85; }
     #seedPanel input{ pointer-events:auto; background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 8px; font-size:12px; width:130px; }
     #seedPanel button, .topbtn, .craftBtn{ pointer-events:auto; background:#2c7ef8; color:#fff; border:none; border-radius:10px; padding:6px 10px; font-weight:600; font-size:12px; box-shadow:0 2px 6px rgba(44,126,248,.35); cursor:pointer; }
     .topbtn.toggled{ background:#21a366; box-shadow:0 2px 10px rgba(33,163,102,.45); }
-  #menuWrap{ position:relative; pointer-events:auto; }
-  #menuBtn{ pointer-events:auto; background:#2c7ef8; color:#fff; border:none; border-radius:10px; padding:6px 12px; font-weight:600; font-size:14px; box-shadow:0 2px 6px rgba(44,126,248,.35); cursor:pointer; }
-  #menuPanel{ position:absolute; right:0; top:110%; min-width:230px; z-index:50; max-height:calc(100vh - 70px); overflow-y:auto; background:rgba(15,18,26,.92); border:1px solid rgba(255,255,255,.15); border-radius:14px; padding:10px 10px 12px; display:flex; flex-direction:column; gap:10px; box-shadow:0 8px 28px -6px rgba(0,0,0,.6); backdrop-filter:blur(8px); }
+  #menuWrap{ position:relative; pointer-events:auto; z-index:80; }
+  #menuBtn{ pointer-events:auto; background:#2c7ef8; color:#fff; border:none; border-radius:10px; padding:6px 12px; min-width:40px; min-height:32px; font-weight:600; font-size:14px; box-shadow:0 2px 6px rgba(44,126,248,.35); cursor:pointer; }
+  #menuPanel{ position:absolute; right:0; top:110%; min-width:230px; z-index:50; max-height:calc(100vh - 70px); overflow-y:auto; overscroll-behavior:contain; background:rgba(15,18,26,.92); border:1px solid rgba(255,255,255,.15); border-radius:14px; padding:10px 10px 12px; display:flex; flex-direction:column; gap:10px; box-shadow:0 8px 28px -6px rgba(0,0,0,.6); backdrop-filter:blur(8px); }
+  #menuPanel[hidden]{ display:none !important; }
   #menuPanel .group{ display:flex; flex-wrap:wrap; gap:6px; }
   #menuPanel .seedRow{ align-items:center; gap:6px; font-size:12px; }
   #menuPanel input{ background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 6px; font-size:12px; width:110px; }
   #menuPanel .hint{ font-size:11px; opacity:.75; }
-    #craft{ position:absolute; left:8px; top:54px; pointer-events:auto; display:flex; flex-direction:column; gap:6px; background:rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:8px; max-width:min(55vw,340px); font-size:12px; }
+    #craft{ position:absolute; left:8px; top:54px; pointer-events:auto; display:flex; flex-direction:column; gap:6px; background:rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:8px; max-width:min(55vw,340px); max-height:calc(100vh - 92px); overflow-y:auto; overscroll-behavior:contain; font-size:12px; }
+    #craft .craftHeader{ display:flex; align-items:center; justify-content:space-between; gap:8px; position:sticky; top:-8px; margin:-8px -8px 0; padding:8px 8px 4px; background:rgba(0,0,0,.55); border-radius:12px 12px 0 0; z-index:1; }
+    #craft .craftBody{ display:flex; flex-direction:column; gap:6px; }
+    #craftToggle{ min-width:32px; padding:3px 8px; line-height:1.1; }
+    #craft[data-collapsed="true"]{ overflow:hidden; }
+    #craft[data-collapsed="true"] .craftBody{ display:none; }
     #craft .req{ font-size:11px; opacity:.9; }
     #help{ position:absolute; left:8px; right:8px; top:140px; background:rgba(0,0,0,.65); border:1px solid rgba(255,255,255,.18); border-radius:12px; padding:10px 12px; font-size:12px; line-height:1.4; display:none; pointer-events:auto; }
     #controls{ position:absolute; left:0; right:0; bottom:0; padding:12px; display:flex; justify-content:space-between; gap:12px; pointer-events:none; }
@@ -50,6 +58,9 @@
     .pill{ background:rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.12); border-radius:999px; padding:6px 10px; font-size:12px; }
     #errorBox{ position:absolute; left:8px; right:8px; top:50%; transform:translateY(-50%); background:#2b1e1e; color:#ffd7d7; border:1px solid #402b2b; border-radius:10px; padding:10px 12px; display:none; white-space:pre-wrap; font-family:ui-monospace,monospace; }
     #messages{ position:absolute; left:50%; top:8px; transform:translateX(-50%); font-size:12px; background:rgba(0,0,0,.5); padding:4px 10px; border-radius:999px; pointer-events:none; }
+  #hoverInfo{ position:absolute; left:50%; bottom:112px; transform:translateX(-50%); pointer-events:none; opacity:0; transition:opacity .12s ease; display:flex; align-items:center; gap:6px; max-width:min(280px,70vw); padding:4px 9px; border-radius:999px; border:1px solid rgba(255,255,255,.16); background:rgba(4,9,16,.62); color:#f4f8ff; box-shadow:0 2px 10px rgba(0,0,0,.35); backdrop-filter:blur(4px); font-size:11px; line-height:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #hoverInfo::before{ content:""; width:8px; height:8px; flex:none; border-radius:2px; background:var(--hover-color,#9fb8d1); border:1px solid rgba(255,255,255,.35); box-shadow:0 0 8px var(--hover-glow,rgba(159,184,209,.35)); }
+  #hoverInfo.show{ opacity:.92; }
   #hotbarWrap{ position:absolute; left:50%; bottom:10px; transform:translateX(-50%); display:flex; gap:6px; pointer-events:auto; }
   .hotSlot{ width:46px; height:46px; border:1px solid rgba(255,255,255,.25); background:rgba(0,0,0,.45); border-radius:10px; display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:11px; position:relative; box-shadow:0 2px 8px rgba(0,0,0,.5); }
   .hotSlot.sel{ outline:2px solid #2c7ef8; }
@@ -98,17 +109,10 @@
   <canvas id="game" aria-label="Mini Miner"></canvas>
   <div id="ui">
     <div id="hud">
+      <!-- Resource counters are generated from the resource registry (MM.inventory.RESOURCES)
+           by buildResourceHud() in main.js — single source for labels and swatch colors. -->
       <div id="inv" class="panel" aria-label="Ekwipunek" aria-live="polite">
-        <span class="item"><span class="dot" style="background:#2e8b2e"></span> trawa: <b id="grass">0</b></span>
-        <span class="item"><span class="dot" style="background:#c2b280"></span> piach: <b id="sand">0</b></span>
-  <span class="item"><span class="dot" style="background:#888a90"></span> kamień: <b id="stone">0</b></span>
-        <span class="item"><span class="dot" style="background:#3ef"></span> diamenty: <b id="diamond">0</b></span>
-  <span class="item"><span class="dot" style="background:#8b5a2b"></span> drewno: <b id="wood">0</b></span>
-  <span class="item"><span class="dot" style="background:#2477ff"></span> woda: <b id="water">0</b></span>
-  <span class="item"><span class="dot" style="background:#eee"></span> śnieg: <b id="snow">0</b></span>
-  <span class="item"><span class="dot" style="background:#7a5cc1"></span> obsydian: <b id="obsidian">0</b></span>
-  <span class="item"><span class="dot" style="background:#ffb84a"></span> pochodnie: <b id="torch">0</b></span>
-  <span class="item"><span class="dot" style="background:#c46bff"></span> antymateria: <b id="antimatter">0</b></span>
+        <span class="item pill">🌍 <b id="biome">—</b></span>
         <span class="item pill">kilof: <b id="pick">podstawowy</b></span>
       </div>
       <div class="panel"><span id="fps">— FPS</span></div>
@@ -157,7 +161,7 @@
   <!-- topButtons replaced by dropdown menu; old markup removed -->
     <!-- Crafting panel is built dynamically from the RECIPES table in main.js -->
     <div id="craft"><strong>Rzemiosło</strong></div>
-  <div id="help">Sterowanie: A/D lub ←/→ ruch, W / ↑ / Spacja skok. LPM kopie klikniętą kratkę (zasięg 3) – przytrzymaj i przeciągaj, aby kopać dalej. Przycisk ⛏️ kopie w wybranym kierunku (przytrzymaj = kopanie ciągłe). PPM stawia blok (zasięg 5; wybór 5–9, 0 lub klik w pasek; drugi klik w wybrany slot zmienia typ). Kopanie wody zbiera ją do ekwipunku. Skróty broni: 1 = kilof/budowanie (kolejne wciśnięcia przełączają kilofy po craftingu), 2 = broń biała, 3 = łuki, 4 = miotacze (ogień/woda/gaz) — kolejne wciśnięcia przełączają bronie w kategorii; w Ekwipunku przyciskiem „Skrót" wybierasz, które bronie biorą udział w przełączaniu. Z cofa zmianę. E otwiera Ekwipunek (sprzęt, bronie, talizmany, surowce), I skrzynkę łupów. F (lub przycisk ⚔️/🏹/🔥) używa założonej broni w kierunku kursora: broń biała tnie, łuk strzela strzałami (strzała przelatująca przez ogień płonie!), miotacz ognia podpala stwory i roślinność (ogień rozprzestrzenia się po trawie, drewnie i liściach; woda gasi). Żywioły: ogień gotuje wodę w parę zasilającą chmury, topi kamień w lawę i roztapia śnieg/lód w wodę; lawa PŁYNIE (wolniej niż woda, wyrównuje poziom), parzy i podpala, a osiadła na wolnym powietrzu z czasem zastyga w obsydian; wąż wodny gasi pożary, hartuje lawę w obsydian, rozmiękcza piasek w błoto (błoto spowalnia wszystkich o połowę) i podlewa rośliny; trujący gaz zabija organizmy, a w kontakcie z ogniem lub lawą EKSPLODUJE jak TNT (płonąca strzała też detonuje chmurę). Rośliny (słoneczniki, krzewy jagodowe, trzciny, paprocie, kaktusy) kiełkują przy wodzie, piją z sąsiednich kafli wody (czasem wchłaniając cały kafel!), z deszczu i z węża; rosną etapami, usychają bez wody i obumierają ze starości. Klik na dojrzały krzew jagodowy = +6 HP. M (Mapa) odsłania mgłę, N przełącza minimapę, B pauzuje. G (Bóg) natychmiastowe kopanie. C centruje kamerę. H pomoc. Zdobywasz XP i poziomy — punkty umiejętności wydasz w Ekwipunku (Rozwój); osiągnięcia nagradzają XP i skrzyniami. Rzemiosło: kilofy, pochodnie (światło nocą), miecz obsydianowy, talizman, totem odrodzenia (punkt respawnu), eliksiry (życie natychmiast; szybkość/siła to buffy 60 s widoczne przy pasku XP) i Róg przyzwania (wzywa bossa — drogo!). Nocą i w głębi czyhają też szkielety-łucznicy (kościane pociski!), a w jaskiniach pełzacze. Po śmierci połowa zasobów zostaje w nagrobku — kliknij go, by odzyskać. Nocą wychodzą upiory i nietoperze (o świcie płoną); szukaj też ruin na lądzie i wraków na dnie mórz. Drobne kamienne rumowiska, pieńki filarów lub resztki łuku na powierzchni zdradzają ZAKOPANE RUINY — kop pod nimi! Czasem to ciasna krypta ze skrzynią (albo sarkofag czy zawalisko), czasem piwnice, otwarta studnia lub bliźniacze komory, a czasem głęboka świątynia z krętym szybem, galeriami i jednym z trzech skarbców: obsydianowym sejfem, ołtarzem nad fosą lawy albo zatopionym relikwiarzem. Ruiny przejmują materiał biomu (lodowe ściany, piaskowiec, zalane podłogi). UWAGA: starożytni zostawili PUŁAPKI — uważny gracz wypatrzy lśniącą linkę w korytarzu (strzałki!), pulsujący runiczny krąg na płycie (mina!), zielone smużki nad skrzynią (grobowy gaz!), żar lub kapiącą wodę między blokami (zbrojony zwornik — wykop go, a lawa zaleje skarbiec!) i włosowate pęknięcia podłogi (zapadnia — na dnie lawa… albo bonusowa skrzynia). A jeśli znajdziesz samotny OBSYDIANOWY MONOLIT — kop wytrwale: głęboko przy dnie świata (1% ruin) czeka ZAKOPANE MIASTO — rozświetlona pochodniami kawerna z wieżami, mostem, fosą lawy, ogrodem kryształów i obsydianowym ziguratem kryjącym dwie epickie skrzynie. Mniej więcej co 7 dni gry świat przemierza ZŁOTY SPRINTER (ptak, biegacz albo ryjący kret) — lśniący, błyskawiczny i trudny do ubicia; znika po pół minuty, ale pokonany zostawia epicką skrzynię i diamenty. Co 2–3 dni nadlatuje też UFO: skanuje okolicę i próbuje porwać wiązką coś żywego — zwierzę, CIEBIE, a nawet bossa! Tarcza spodka pochłania ciosy, ale opada, gdy wiązka jest włączona — to moment na atak (łuk!). Zestrzelony zostawia ANTYMATERIĘ (receptura: Mikstura antygrawitacji) i czasem artefakt Obcych; porwany bohater zostaje wywieziony i wyrzucony daleko — chyba że w locie sam zestrzeli spodek. Zielony duch bloku = można postawić, czerwony = nie można. Na ekranie dotykowym szczypnięcie zmienia zoom. Ekwipunek i pasek szybkiego wyboru są zapisywane automatycznie.</div>
+  <div id="help">Sterowanie: A/D lub ←/→ ruch, W / ↑ / Spacja skok. LPM kopie klikniętą kratkę (zasięg 3) – przytrzymaj i przeciągaj, aby kopać dalej. Przycisk ⛏️ kopie w wybranym kierunku (przytrzymaj = kopanie ciągłe). PPM stawia blok (zasięg 5; wybór 5–9, 0 lub klik w pasek; drugi klik w wybrany slot zmienia typ). Kopanie wody zbiera ją do ekwipunku. Skróty broni: 1 = kilof/budowanie (kolejne wciśnięcia przełączają kilofy po craftingu), 2 = broń biała, 3 = łuki, 4 = miotacze (ogień/woda/gaz) — kolejne wciśnięcia przełączają bronie w kategorii; w Ekwipunku przyciskiem „Skrót" wybierasz, które bronie biorą udział w przełączaniu. Z cofa zmianę. E otwiera Ekwipunek (sprzęt, bronie, talizmany, surowce), I skrzynkę łupów. Po wybraniu broni (2/3/4) LPM używa jej w kierunku kursora, a PPM odpala naładowany ult: broń biała tnie, łuk strzela strzałami (strzała przelatująca przez ogień płonie!), miotacz ognia podpala stwory i roślinność (ogień rozprzestrzenia się po trawie, drewnie i liściach; woda gasi). Żywioły: ogień gotuje wodę w parę zasilającą chmury, topi kamień w lawę i roztapia śnieg/lód w wodę; lawa PŁYNIE (wolniej niż woda, wyrównuje poziom), parzy i podpala, a osiadła na wolnym powietrzu z czasem zastyga w obsydian; wąż wodny gasi pożary, hartuje lawę w obsydian, rozmiękcza piasek w błoto (błoto spowalnia wszystkich o połowę) i podlewa rośliny; trujący gaz zabija organizmy, a w kontakcie z ogniem lub lawą EKSPLODUJE jak TNT (płonąca strzała też detonuje chmurę). Rośliny (słoneczniki, krzewy jagodowe, trzciny, paprocie, kaktusy) kiełkują przy wodzie, piją z sąsiednich kafli wody (czasem wchłaniając cały kafel!), z deszczu i z węża; rosną etapami, usychają bez wody i obumierają ze starości. Klik na dojrzały krzew jagodowy = +6 HP. M (Mapa) odsłania mgłę, N przełącza minimapę, B pauzuje. G (Bóg) natychmiastowe kopanie. C centruje kamerę. H pomoc. Zdobywasz XP i poziomy — punkty umiejętności wydasz w Ekwipunku (Rozwój); osiągnięcia nagradzają XP i skrzyniami. Rzemiosło: kilofy, pochodnie (światło nocą), miecz obsydianowy, talizman, totem odrodzenia (punkt respawnu), eliksiry (życie natychmiast; szybkość/siła to buffy 60 s widoczne przy pasku XP) i Róg przyzwania (wzywa bossa — drogo!). Nocą i w głębi czyhają też szkielety-łucznicy (kościane pociski!), a w jaskiniach pełzacze. Po śmierci połowa zasobów zostaje w nagrobku — kliknij go, by odzyskać. Nocą wychodzą upiory i nietoperze (o świcie płoną); szukaj też ruin na lądzie i wraków na dnie mórz. Drobne kamienne rumowiska, pieńki filarów lub resztki łuku na powierzchni zdradzają ZAKOPANE RUINY — kop pod nimi! Czasem to ciasna krypta ze skrzynią (albo sarkofag czy zawalisko), czasem piwnice, otwarta studnia lub bliźniacze komory, a czasem głęboka świątynia z krętym szybem, galeriami i jednym z trzech skarbców: obsydianowym sejfem, ołtarzem nad fosą lawy albo zatopionym relikwiarzem. Ruiny przejmują materiał biomu (lodowe ściany, piaskowiec, zalane podłogi). UWAGA: starożytni zostawili PUŁAPKI — uważny gracz wypatrzy lśniącą linkę w korytarzu (strzałki!), pulsujący runiczny krąg na płycie (mina!), zielone smużki nad skrzynią (grobowy gaz!), żar lub kapiącą wodę między blokami (zbrojony zwornik — wykop go, a lawa zaleje skarbiec!) i włosowate pęknięcia podłogi (zapadnia — na dnie lawa… albo bonusowa skrzynia). A jeśli znajdziesz samotny OBSYDIANOWY MONOLIT — kop wytrwale: głęboko przy dnie świata (1% ruin) czeka ZAKOPANE MIASTO — rozświetlona pochodniami kawerna z wieżami, mostem, fosą lawy, ogrodem kryształów i obsydianowym ziguratem kryjącym dwie epickie skrzynie. Mniej więcej co 7 dni gry świat przemierza ZŁOTY SPRINTER (ptak, biegacz albo ryjący kret) — lśniący, błyskawiczny i trudny do ubicia; znika po pół minuty, ale pokonany zostawia epicką skrzynię i diamenty. Co 2–3 dni nadlatuje też UFO: skanuje okolicę i próbuje porwać wiązką coś żywego — zwierzę, CIEBIE, a nawet bossa! Tarcza spodka pochłania ciosy, ale opada, gdy wiązka jest włączona — to moment na atak (łuk!). Zestrzelony zostawia ANTYMATERIĘ (receptura: Mikstura antygrawitacji) i czasem artefakt Obcych; porwany bohater zostaje wywieziony i wyrzucony daleko — chyba że w locie sam zestrzeli spodek. Zielony duch bloku = można postawić, czerwony = nie można. Na ekranie dotykowym szczypnięcie zmienia zoom. Ekwipunek i pasek szybkiego wyboru są zapisywane automatycznie.</div>
     <div id="controls">
       <div class="pad" id="pad">
         <div></div><div data-key="ArrowUp" class="btn">↑</div><div></div>
@@ -176,22 +180,25 @@
   <div class="dircell"><button class="dirbtn" data-dx="0" data-dy="1">↓</button></div>
       <div class="dircell"><button class="dirbtn" data-dx="1" data-dy="1">↘</button></div>
     </div>
-    <button id="fireBtn" title="Użyj broni (F)">⚔️</button>
+    <button id="fireBtn" title="Użyj broni">⚔️</button>
     <button id="radarBtn" title="Radar diamentów (10×10)">💎</button>
     <div id="messages"></div>
+    <div id="hoverInfo" aria-hidden="true"></div>
     <div id="weaponBar" aria-label="Skróty broni (klawisze 1–4)">
       <div class="wepSlot" data-wkey="1" title="Kilof — budowanie/niszczenie (1, kolejne wciśnięcia zmieniają kilof)"><span class="key">1</span><span class="wicon">⛏️</span><span class="wname"></span></div>
       <div class="wepSlot" data-wkey="2" title="Broń biała (2, kolejne wciśnięcia przełączają)"><span class="key">2</span><span class="wicon">⚔️</span><span class="wname"></span></div>
       <div class="wepSlot" data-wkey="3" title="Łuki i pociski (3, kolejne wciśnięcia przełączają)"><span class="key">3</span><span class="wicon">🏹</span><span class="wname"></span></div>
       <div class="wepSlot" data-wkey="4" title="Miotacze: ogień/woda/gaz (4, kolejne wciśnięcia przełączają)"><span class="key">4</span><span class="wicon">🔥</span><span class="wname"></span></div>
     </div>
+    <!-- Slot labels/colors/counts are synced from HOTBAR_ORDER by refreshHotbarDom()
+         in main.js (slots are remappable, so static labels would go stale). -->
     <div id="hotbarWrap" aria-label="Pasek szybkiego wyboru bloków">
-      <div class="hotSlot" data-key="5" data-type="GRASS"><span class="key">5</span><span>trawa</span><span class="count" id="hotCntGRASS">0</span></div>
-      <div class="hotSlot" data-key="6" data-type="SAND"><span class="key">6</span><span>piasek</span><span class="count" id="hotCntSAND">0</span></div>
-      <div class="hotSlot" data-key="7" data-type="STONE"><span class="key">7</span><span>kamień</span><span class="count" id="hotCntSTONE">0</span></div>
-      <div class="hotSlot" data-key="8" data-type="WOOD"><span class="key">8</span><span>drewno</span><span class="count" id="hotCntWOOD">0</span></div>
-      <div class="hotSlot" data-key="9" data-type="LEAF"><span class="key">9</span><span>liść</span><span class="count" id="hotCntLEAF">0</span></div>
-  <div class="hotSlot" data-key="0" data-type="WATER"><span class="key">0</span><span>woda</span><span class="count" id="hotCntWATER">0</span></div>
+      <div class="hotSlot" data-key="5"><span class="key">5</span><span>trawa</span><span class="count">0</span></div>
+      <div class="hotSlot" data-key="6"><span class="key">6</span><span>piasek</span><span class="count">0</span></div>
+      <div class="hotSlot" data-key="7"><span class="key">7</span><span>kamień</span><span class="count">0</span></div>
+      <div class="hotSlot" data-key="8"><span class="key">8</span><span>drewno</span><span class="count">0</span></div>
+      <div class="hotSlot" data-key="9"><span class="key">9</span><span>liść</span><span class="count">0</span></div>
+      <div class="hotSlot" data-key="0"><span class="key">0</span><span>woda</span><span class="count">0</span></div>
     </div>
       <!-- Dynamic selection popover for remapping slot resource (includes chests in God mode) -->
     <div id="hotSelectMenu" style="position:absolute; display:none; z-index:1000; background:rgba(15,18,26,.96); border:1px solid rgba(255,255,255,.18); border-radius:12px; padding:6px 8px; box-shadow:0 8px 24px -4px rgba(0,0,0,.55); font-size:12px; min-width:170px; max-width:240px; pointer-events:auto;">

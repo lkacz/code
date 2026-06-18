@@ -9,6 +9,7 @@ const mobs = (function(){
   // Using ESM imports for T/MOVE/isSolid/WORLD/WORLDGEN
   // Helper predicates
   function isSolidGround(t){ return isSolid(t) && t!==T.LEAF; }
+  function isRockFloor(t){ return t===T.STONE || t===T.COAL; }
 
   // Precomputed color variant helper (once per mob instead of per-frame string math)
   function variantColor(spawnT, shiftBits, a, b){
@@ -30,6 +31,12 @@ const mobs = (function(){
   const mobs = []; // entities
   const speciesAggro = {}; // speciesId -> expiry timestamp (ms)
   const speciesCounts = {}; // live counts for quick spawn capping
+  const ECO_LOCAL_RADIUS = 92;
+  const ECO_INNER_RADIUS = 18;
+  const ECO_TOTAL_LOCAL_CAP = 34;
+  const ECO_MAX_BIRTHS_PER_PASS = 2;
+  const ECO_SPAWN_MIN_MS = 4200;
+  const ECO_SPAWN_JITTER_MS = 2600;
   // Spawn throttle/freeze (used after world regeneration)
   let spawnFreezeUntil = 0; // timestamp (ms). While now < this, no new spawns are attempted.
   // Spatial partitioning (uniform grid) to speed up point queries (attackAt)
@@ -61,11 +68,9 @@ const mobs = (function(){
   id: 'FISH', max: 24, hp: 4, dmg: 3, speed: 2.2, wanderInterval:[1,4], xp:3,
       sightRange: 14, pursueRange: 20,
       variant:{shift:2, from:'#4eb2f1', to:'#63c6ff'},
-      spawnTest(x,y,getTile){ // inside water with air or water above
-        const here = getTile(x,y); const above = getTile(x,y-1);
-        return here===T.WATER && (above===T.WATER || above===T.AIR); },
+      spawnTest(x,y,getTile){ return canHostFishSpawn(x,y,getTile); },
       biome: 'any', aquatic:true,
-      onCreate(m){ initWaterAnchor(m); },
+      onCreate(m, spec, getTile){ initWaterAnchor(m,getTile); },
       habitatUpdate(m, spec, getTile, dt){ enforceAquatic(m, spec, getTile, dt); }
     }
   };
@@ -195,7 +200,7 @@ const mobs = (function(){
   variant:{shift:5, from:'#4d7690', to:'#5c87a2'},
     loot:[{item:'diamond', min:1, max:1, chance:0.15}],
     spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.WATER) return false; for(let d=1; d<=3; d++){ if(getTile(x,y+d)!==T.WATER) return false; } return getTile(x-2,y)===T.WATER && getTile(x+2,y)===T.WATER; },
-    onCreate(m){ initWaterAnchor(m); m.desiredDepth = 2 + (Math.random()*2)|0; },
+    onCreate(m, spec, getTile){ initWaterAnchor(m,getTile); m.desiredDepth = 2 + (Math.random()*2)|0; },
     habitatUpdate(m, spec, getTile, dt){ enforceAquatic(m, spec, getTile, dt); },
     onUpdate(m,spec,{player,dt}){ // strong pursuit if player in water column horizontally
       const py=Math.floor(player.y); const my=Math.floor(m.y); if(Math.abs(player.x-m.x)<10 && Math.abs(py-my)<3){ const dx=player.x-m.x; const dist=Math.abs(dx)||1; m.vx += (dx/dist)*spec.speed*0.5; m.facing=dx>=0?1:-1; }
@@ -206,8 +211,8 @@ const mobs = (function(){
     id:'EEL', max:10, hp:10, dmg:5, speed:2.6, wanderInterval:[1.5,4], aquatic:true, xp:11,
   sightRange: 14, pursueRange: 18,
     loot:[{item:'stone', min:1, max:1, chance:0.4}],
-    spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.WATER) return false; let stone=false; for(let d=2; d<=5; d++){ const t=getTile(x,y+d); if(t===T.STONE){ stone=true; break; } if(t!==T.WATER) break; } if(!stone) return false; return true; },
-    onCreate(m){ initWaterAnchor(m); m.desiredDepth = 3; },
+    spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.WATER) return false; let stone=false; for(let d=2; d<=5; d++){ const t=getTile(x,y+d); if(isRockFloor(t)){ stone=true; break; } if(t!==T.WATER) break; } if(!stone) return false; return true; },
+    onCreate(m, spec, getTile){ initWaterAnchor(m,getTile); m.desiredDepth = 3; },
     habitatUpdate(m,spec,getTile,dt){ enforceAquatic(m,spec,getTile,dt); },
     onUpdate(m,spec,{dt}){ // gentle sinusoidal slither
       m.vy += Math.sin(performance.now()*0.004 + m.spawnT*0.002)*0.02; }
@@ -219,7 +224,7 @@ const mobs = (function(){
   move:{jumpVel:-5.2, maxClimb:2.2, avoidWater:true},
   body:{w:1.2,h:1.0},
     loot:[{item:'snow', min:1, max:1, chance:0.3}],
-    spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); if(!(below===T.STONE||below===T.SNOW)) return false; return y < 18; },
+    spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); if(!(isRockFloor(below)||below===T.SNOW)) return false; return y < 18; },
     biome:'mountain'
   });
 
@@ -231,6 +236,58 @@ const mobs = (function(){
     onUpdate(m,spec,{dt,now}){ if(Math.random()<0.03){ m.vx += (Math.random()*2-1)*0.4; m.vy += (Math.random()*2-1)*0.2; } }
   });
 
+  registerSpecies({
+    id:'JASZCZUR', max:16, hp:6, dmg:2, speed:4.4, wanderInterval:[0.7,2.2], xp:7, ground:true,
+    sightRange:10, pursueRange:14,
+    move:{jumpVel:-3.2, maxClimb:1, avoidWater:true},
+    body:{w:1.0,h:0.45},
+    variant:{shift:2, from:'#b98a3a', to:'#d3ad58'},
+    loot:[{item:'sand', min:1, max:1, chance:0.5}],
+    meatDropChance:0.3,
+    spawnTest(x,y,getTile){
+      if(biomeAt(x)!==3) return false;
+      if(getTile(x,y)!==T.AIR || getTile(x,y-1)!==T.AIR) return false;
+      return getTile(x,y+1)===T.SAND;
+    },
+    biome:'desert',
+    onUpdate(m,spec,{player,speed}){
+      if(Math.random()<0.018) m.vx += (Math.random()<0.5?-1:1)*(speed||spec.speed)*0.55;
+      const dx=player.x-m.x;
+      if(Math.abs(dx)<5) m.vx += (dx>0?-1:1)*(speed||spec.speed)*0.35;
+    }
+  });
+
+  registerSpecies({
+    id:'ZABA', max:18, hp:5, dmg:1, speed:3.0, wanderInterval:[0.8,2.0], xp:6, ground:true,
+    sightRange:10, pursueRange:14,
+    move:{jumpVel:-5.4, maxClimb:1, avoidWater:false},
+    body:{w:0.8,h:0.55},
+    variant:{shift:3, from:'#3f8f3f', to:'#6bb35a'},
+    loot:[{item:'leaf', min:1, max:1, chance:0.35}],
+    meatDropChance:0.25,
+    spawnTest(x,y,getTile){
+      if(biomeAt(x)!==4) return false;
+      if(getTile(x,y)!==T.AIR || getTile(x,y-1)!==T.AIR) return false;
+      const below=getTile(x,y+1);
+      if(below!==T.MUD && below!==T.GRASS && below!==T.SAND) return false;
+      for(let dx=-3; dx<=3; dx++){
+        if(getTile(x+dx,y+1)===T.WATER || getTile(x+dx,y)===T.WATER) return true;
+      }
+      return false;
+    },
+    biome:'swamp',
+    onUpdate(m,spec,{now,player,speed}){
+      if(!m._nextJumpAt) m._nextJumpAt=0;
+      const dx=player.x-m.x;
+      if(now>m._nextJumpAt && m.onGround){
+        const flee=Math.abs(dx)<5;
+        m.vx=(flee ? (dx>0?-1:1) : (Math.random()<0.5?-1:1))*(speed||spec.speed)*(0.45+Math.random()*0.45);
+        m.vy=(spec.move.jumpVel||-5)*(0.75+Math.random()*0.35);
+        m._nextJumpAt=now+700+Math.random()*900;
+      }
+    }
+  });
+
   // --- Nocturnal hostiles: spawn only after dark, inherently aggressive, and the
   // sunrise sets them alight (burning DoT) so the day stays safe ---
   function isNight(){ try{ const c=MM.background && MM.background.getCycleInfo && MM.background.getCycleInfo(); return !!(c && c.isDay===false); }catch(e){ return false; } }
@@ -239,7 +296,7 @@ const mobs = (function(){
     sightRange:22, pursueRange:30, alwaysAggro:true,
     move:{jumpVel:-4.6, maxClimb:2, avoidWater:true},
     body:{w:0.9,h:1.6},
-    spawnTest(x,y,getTile){ if(!isNight()) return false; const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); return below===T.GRASS||below===T.SAND||below===T.SNOW||below===T.STONE||below===T.MUD; },
+    spawnTest(x,y,getTile){ if(!isNight()) return false; const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); return below===T.GRASS||below===T.SAND||below===T.SNOW||isRockFloor(below)||below===T.MUD; },
     biome:'any',
     // habitatUpdate runs AFTER the default chase AI (onUpdate would replace it)
     habitatUpdate(m){ if(!isNight()) applyStatus(m,'burn',{dur:2.5,dps:4}); }
@@ -247,6 +304,7 @@ const mobs = (function(){
   registerSpecies({ // Night bat: erratic flying biter
     id:'BAT', max:10, hp:6, dmg:5, speed:3.6, wanderInterval:[0.8,2.0], xp:10, flying:true,
     sightRange:20, pursueRange:26, alwaysAggro:true,
+    body:{w:0.7,h:0.45}, collideTerrain:true,
     spawnTest(x,y,getTile){ if(!isNight()) return false; const here=getTile(x,y); const above=getTile(x,y-1); return here===T.AIR && above===T.AIR; },
     biome:'any',
     habitatUpdate(m){ if(Math.random()<0.06){ m.vx+=(Math.random()*2-1)*1.5; m.vy+=(Math.random()*2-1)*1.0; } if(!isNight()) applyStatus(m,'burn',{dur:2,dps:4}); }
@@ -254,12 +312,133 @@ const mobs = (function(){
 
   // --- Mob projectiles: lobbed shards that arc, shatter on terrain, hurt the hero ---
   const mobProjectiles=[]; const MOB_PROJ_CAP=40;
+  const mobLasers=[]; const MOB_LASER_CAP=18;
+  const SENTINEL_VOLLEY_WINDOW_MS=450;
+  const SENTINEL_VOLLEY_SHOT_CAP=3;
+  let laserTraceCalls=0, laserTileChecks=0;
+  let sentinelVolleyStart=0, sentinelVolleyShots=0;
+  let sentinelShotsThisFrame=0, sentinelDeferredThisFrame=0;
   function shootAt(m, target, speed, dmg){
     if(mobProjectiles.length>=MOB_PROJ_CAP) return false;
     const dx=target.x-m.x, dy=(target.y-0.3)-m.y;
     const d=Math.hypot(dx,dy)||1;
     mobProjectiles.push({x:m.x, y:m.y-0.4, vx:dx/d*speed, vy:dy/d*speed-1.4, dmg, t:0, spin:Math.random()*6.28});
     try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
+    return true;
+  }
+  function laserBlocked(t){ return t!==T.AIR && t!==T.WATER && isSolid(t); }
+  function sentinelEyeOrigins(m, dirOverride){
+    const dir=(typeof dirOverride==='number' ? dirOverride : m.facing)>=0?1:-1;
+    const headX=m.x+dir*0.22;
+    const y=m.y-0.62;
+    return [
+      {x:headX, y:y-0.045},
+      {x:headX-dir*0.16, y:y+0.045}
+    ];
+  }
+  function sentinelAimPoint(target){
+    return {x:target.x, y:target.y-0.42};
+  }
+  function traceLaser(sx,sy,tx,ty,getTile,maxDist){
+    laserTraceCalls++;
+    const dx=tx-sx, dy=ty-sy;
+    const len=Math.hypot(dx,dy)||1;
+    const dist=Math.min(maxDist||16, len);
+    const nx=dx/len, ny=dy/len;
+    let endX=sx+nx*dist, endY=sy+ny*dist, blocked=false;
+    if(getTile){
+      for(let d=0.35; d<=dist; d+=0.22){
+        const x=sx+nx*d, y=sy+ny*d;
+        laserTileChecks++;
+        if(laserBlocked(getTile(Math.floor(x),Math.floor(y)))){
+          endX=sx+nx*Math.max(0,d-0.08);
+          endY=sy+ny*Math.max(0,d-0.08);
+          blocked=true;
+          break;
+        }
+      }
+    }
+    return {x:endX,y:endY,blocked,clear:!blocked && Math.hypot(tx-endX,ty-endY)<0.8};
+  }
+  function sentinelShotLines(m,target,getTile,maxDist,dirOverride){
+    if(!m || !target) return [];
+    const aim=sentinelAimPoint(target);
+    return sentinelEyeOrigins(m,dirOverride).map(o=>({
+      origin:o,
+      end:traceLaser(o.x,o.y,aim.x,aim.y,getTile,maxDist||16)
+    }));
+  }
+  function sentinelVisionLines(m,target,getTile,maxDist,now,dirOverride){
+    if(!m || !target || typeof getTile!=='function') return [];
+    const aim=sentinelAimPoint(target);
+    const dir=(typeof dirOverride==='number' ? dirOverride : m.facing)>=0?1:-1;
+    const t=(typeof now==='number' && isFinite(now)) ? now : performance.now();
+    const fresh = m._sentinelLosAt && (t-m._sentinelLosAt)<110
+      && m._sentinelLosDir===dir
+      && Math.abs((m._sentinelLosX||0)-m.x)<0.12
+      && Math.abs((m._sentinelLosY||0)-m.y)<0.12
+      && Math.abs((m._sentinelLosAimX||0)-aim.x)<0.25
+      && Math.abs((m._sentinelLosAimY||0)-aim.y)<0.25
+      && Math.abs((m._sentinelLosMax||0)-(maxDist||16))<0.1;
+    if(fresh && Array.isArray(m._sentinelLosLines)){
+      m._sentinelLosFresh = false;
+      return m._sentinelLosLines;
+    }
+    const lines=sentinelShotLines(m,target,getTile,maxDist,dir);
+    m._sentinelLosAt=t;
+    m._sentinelLosAimX=aim.x;
+    m._sentinelLosAimY=aim.y;
+    m._sentinelLosX=m.x;
+    m._sentinelLosY=m.y;
+    m._sentinelLosDir=dir;
+    m._sentinelLosMax=maxDist||16;
+    m._sentinelLosLines=lines;
+    m._sentinelLosClear=lines.some(l=>l.end && l.end.clear);
+    m._sentinelLosFresh=true;
+    return lines;
+  }
+  function sentinelLaserAt(m,target,dmg,getTile,lines){
+    if(!m || !target || mobLasers.length>=MOB_LASER_CAP-1) return false;
+    const shotLines=Array.isArray(lines) ? lines : sentinelShotLines(m,target,getTile,16);
+    const clearLines=shotLines.filter(l=>l && l.end && l.end.clear);
+    if(!clearLines.length) return false;
+    const impacts=[];
+    for(const line of clearLines){
+      const o=line.origin, end=line.end;
+      if(!o || !end) continue;
+      impacts.push(end);
+      mobLasers.push({
+        x1:o.x, y1:o.y, x2:end.x, y2:end.y,
+        t:0, life:0.18, hit:end.clear, blocked:end.blocked,
+        phase:Math.random()*Math.PI*2
+      });
+    }
+    damagePlayer(dmg, m.x, m.y-0.6);
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('beam'); }catch(e){}
+    try{
+      const p=MM.particles;
+      if(p){
+        const TILE=MM.TILE||20;
+        for(const end of impacts){
+          if(p.spawnSparks) p.spawnSparks(end.x*TILE, end.y*TILE, end.clear?'rare':'common', end.clear?9:5);
+          else if(p.spawnBurst) p.spawnBurst(end.x*TILE, end.y*TILE, end.clear?'rare':'common');
+        }
+      }
+    }catch(e){}
+    return true;
+  }
+  function reserveSentinelLaserShot(now){
+    const t=(typeof now==='number' && isFinite(now)) ? now : performance.now();
+    if(!sentinelVolleyStart || t-sentinelVolleyStart>=SENTINEL_VOLLEY_WINDOW_MS){
+      sentinelVolleyStart=t;
+      sentinelVolleyShots=0;
+    }
+    if(sentinelShotsThisFrame>=SENTINEL_VOLLEY_SHOT_CAP || sentinelVolleyShots>=SENTINEL_VOLLEY_SHOT_CAP){
+      sentinelDeferredThisFrame++;
+      return false;
+    }
+    sentinelShotsThisFrame++;
+    sentinelVolleyShots++;
     return true;
   }
   function updateProjectiles(dt, player, getTile){
@@ -274,6 +453,13 @@ const mobs = (function(){
       if(dead) mobProjectiles.splice(i,1);
     }
   }
+  function updateLasers(dt){
+    for(let i=mobLasers.length-1;i>=0;i--){
+      const l=mobLasers[i];
+      l.t+=dt;
+      if(l.t>=l.life) mobLasers.splice(i,1);
+    }
+  }
 
   registerSpecies({ // Skeleton archer: keeps its distance, lobs bone shards; haunts the night and the deep
     id:'SZKIELET', max:6, hp:12, dmg:7, speed:2.2, wanderInterval:[2,4], xp:18, ground:true, alwaysAggro:true,
@@ -283,7 +469,7 @@ const mobs = (function(){
     spawnTest(x,y,getTile){
       const here=getTile(x,y); if(here!==T.AIR) return false;
       const below=getTile(x,y+1);
-      if(!(below===T.GRASS||below===T.SAND||below===T.SNOW||below===T.STONE||below===T.MUD)) return false;
+      if(!(below===T.GRASS||below===T.SAND||below===T.SNOW||isRockFloor(below)||below===T.MUD)) return false;
       if(isNight()) return true;
       try{ const wg=MM.worldGen; if(wg && wg.surfaceHeight) return y>wg.surfaceHeight(x)+8; }catch(e){} // daylight: underground only
       return false;
@@ -304,11 +490,52 @@ const mobs = (function(){
     body:{w:1.0,h:0.7},
     spawnTest(x,y,getTile){
       const here=getTile(x,y); if(here!==T.AIR) return false;
-      const below=getTile(x,y+1); if(!(below===T.STONE||below===T.SAND)) return false;
+      const below=getTile(x,y+1); if(!(isRockFloor(below)||below===T.SAND)) return false;
       try{ const wg=MM.worldGen; if(wg && wg.surfaceHeight) return y>wg.surfaceHeight(x)+10; }catch(e){} // caves only
       return false;
     },
     biome:'any'
+  });
+
+  registerSpecies({ // Rusted city sentinel: steel automaton still guarding the ruins
+    id:'STRAZNIK', max:32, localMax:16, spawnChance:1, spawnBatch:4, hp:28, dmg:9, speed:2.4, wanderInterval:[1.4,3.2], xp:28, ground:true, alwaysAggro:true, organic:false,
+    sightRange:18, pursueRange:24,
+    move:{jumpVel:-4.2, maxClimb:2, avoidWater:true},
+    body:{w:0.95,h:1.55},
+    loot:[{item:'steel', min:1, max:3, chance:1}, {item:'obsidian', min:1, max:1, chance:0.18}],
+    spawnTest(x,y,getTile){
+      if(biomeAt(x)!==8) return false;
+      if(getTile(x,y)!==T.AIR || getTile(x,y-1)!==T.AIR) return false;
+      const below=getTile(x,y+1);
+      return below===T.STEEL || below===T.STONE || below===T.OBSIDIAN;
+    },
+    biome:'city',
+    onUpdate(m,spec,{player,dt,distToPlayer,getTile,now}){
+      const dx=player.x-m.x, dy=player.y-m.y, adx=Math.abs(dx)||1;
+      const dir=dx>=0?1:-1;
+      const inView = distToPlayer < spec.sightRange && Math.abs(dy) < 7.5;
+      const losRange = Math.min(16, spec.sightRange||16);
+      const lines = inView ? sentinelVisionLines(m,player,getTile,losRange,now,dir) : [];
+      const canSeePlayer = lines.some(l=>l.end && l.end.clear);
+      if(canSeePlayer){
+        m.facing=dir;
+        if(adx>1.8 && distToPlayer<spec.pursueRange) m.vx += dir*spec.speed*0.42*dt*30;
+        else m.vx *= 0.78;
+        m.shootCd=(m.shootCd==null?0.9:m.shootCd)-dt;
+        if(distToPlayer<13 && distToPlayer>3 && m.shootCd<=0){
+          const shotLines = m._sentinelLosFresh ? lines : null;
+          if(!reserveSentinelLaserShot(now)){
+            m.shootCd=0.18+Math.random()*0.22;
+          } else if(sentinelLaserAt(m,player,spec.dmg,getTile,shotLines)) m.shootCd=1.55+Math.random()*0.75;
+          else m.shootCd=0.25;
+        }
+      } else {
+        m.vx *= 0.82;
+        m.shootCd=Math.max(m.shootCd==null?0.45:m.shootCd, 0.25);
+        if(Math.random()<0.003) m.vx += (Math.random()*2-1)*0.25;
+      }
+      if(Math.random()<0.006) m.vx += (Math.random()*2-1)*0.35;
+    }
   });
 
   // --- Golden sprinter: a legendary visitor that races across the world every
@@ -447,7 +674,7 @@ const mobs = (function(){
 
   function rand(a,b){ return a + Math.random()*(b-a); }
 
-  function create(spec, x,y){
+  function create(spec, x,y,getTile){
     const now = performance.now();
   const m={ id: spec.id, x, y, vx:0, vy:0, hp: spec.hp, state:'idle', tNext: now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000, facing:1, spawnT: now, attackCd:0, hitFlashUntil:0, shake:0, tickMod: (Math.random()<0.5?1:0), sleepUntil:0 };
   // Per-entity variability
@@ -465,65 +692,133 @@ const mobs = (function(){
     m.baseColor = jitterColor(col, {h:16, s:0.20, l:0.16});
   }
   if(!m.baseColor){
-    const BASE = { SQUIRREL:'#b07040', DEER:'#9c6a39', RABBIT:'#dddddd', OWL:'#c8a860', CRAB:'#c23a2e', EEL:'#2f8a4a', GOAT:'#c9c4b5', BEAR:'#6b4a30', WOLF:'#bcbcbc', FISH:'#4eb2f1', BIRD:'#f5d16a' };
+    const BASE = { SQUIRREL:'#b07040', DEER:'#9c6a39', RABBIT:'#dddddd', OWL:'#c8a860', CRAB:'#c23a2e', EEL:'#2f8a4a', GOAT:'#c9c4b5', BEAR:'#6b4a30', WOLF:'#bcbcbc', FISH:'#4eb2f1', BIRD:'#f5d16a', STRAZNIK:'#8f9aa6' };
     const base = BASE[spec.id] || '#a8a8a8';
     m.baseColor = jitterColor(base, {h:12, s:0.14, l:0.10});
   }
-    if(typeof spec.onCreate==='function') spec.onCreate(m, spec);
+    if(typeof spec.onCreate==='function') spec.onCreate(m, spec, getTile);
     addToGrid(m); speciesCounts[spec.id]=(speciesCounts[spec.id]||0)+1; return m; }
 
   // --- Aquatic helpers (fish) ---
-  function initWaterAnchor(m){
+  function readMobTile(getTile,x,y){
+    try{ return typeof getTile==='function' ? getTile(x,y) : (WORLD && WORLD.getTile ? WORLD.getTile(x,y) : T.AIR); }catch(e){ return T.AIR; }
+  }
+  const WATER_BODY_NEIGHBORS=[[1,0],[-1,0],[0,1],[0,-1]];
+  function waterPocketShape(tx,ty,getTile){
+    if(readMobTile(getTile,tx,ty)!==T.WATER) return {count:0,width:0,depth:0};
+    const minLimitX=tx-6, maxLimitX=tx+6;
+    const minLimitY=ty-5, maxLimitY=ty+5;
+    const seen=new Set([tx+','+ty]);
+    const queue=[{x:tx,y:ty}];
+    let minX=tx, maxX=tx, minY=ty, maxY=ty, count=0;
+    for(let qi=0; qi<queue.length && count<80; qi++){
+      const p=queue[qi];
+      count++;
+      if(p.x<minX) minX=p.x; if(p.x>maxX) maxX=p.x;
+      if(p.y<minY) minY=p.y; if(p.y>maxY) maxY=p.y;
+      for(const [dx,dy] of WATER_BODY_NEIGHBORS){
+        const nx=p.x+dx, ny=p.y+dy;
+        if(nx<minLimitX || nx>maxLimitX || ny<minLimitY || ny>maxLimitY) continue;
+        const k=nx+','+ny;
+        if(seen.has(k) || readMobTile(getTile,nx,ny)!==T.WATER) continue;
+        seen.add(k);
+        queue.push({x:nx,y:ny});
+      }
+    }
+    return {count,width:maxX-minX+1,depth:maxY-minY+1};
+  }
+  function canHostFishSpawn(x,y,getTile){
+    x|=0; y|=0;
+    if(readMobTile(getTile,x,y)!==T.WATER) return false;
+    const above=readMobTile(getTile,x,y-1);
+    if(above!==T.WATER && above!==T.AIR) return false;
+    const pocket=waterPocketShape(x,y,getTile);
+    return pocket.count>=8 && pocket.width>=3 && pocket.depth>=2;
+  }
+  function waterColumnAt(tx,ty,getTile){
+    if(readMobTile(getTile,tx,ty)!==T.WATER) return null;
+    let top=ty, bottom=ty;
+    for(let scan=0; scan<32 && readMobTile(getTile,tx,top-1)===T.WATER; scan++) top--;
+    for(let scan=0; scan<32 && readMobTile(getTile,tx,bottom+1)===T.WATER; scan++) bottom++;
+    return {top,bottom,depth:bottom-top+1};
+  }
+  function nearestWaterCell(tx,ty,getTile,rx,ry){
+    let best=null, bestD=Infinity;
+    const maxR=Math.max(rx||7,ry||7);
+    for(let r=0; r<=maxR; r++){
+      for(let dy=-Math.min(ry||7,r); dy<=Math.min(ry||7,r); dy++){
+        for(let dx=-Math.min(rx||7,r); dx<=Math.min(rx||7,r); dx++){
+          if(Math.max(Math.abs(dx),Math.abs(dy))!==r) continue;
+          const nx=tx+dx, ny=ty+dy;
+          if(readMobTile(getTile,nx,ny)!==T.WATER) continue;
+          const d=dx*dx+dy*dy;
+          if(d<bestD){ bestD=d; best={x:nx+0.5,y:ny+0.5,tileX:nx,tileY:ny,d2:d}; }
+        }
+      }
+      if(best) break;
+    }
+    return best;
+  }
+  function initWaterAnchor(m,getTile){
     // Determine the top water tile in this column (scan upward until not water)
     let ty = Math.floor(m.y);
     const tx = Math.floor(m.x);
-    let topY = ty;
-    for(let scan=0; scan<24; scan++){ // safety cap
-  const t = WORLD && WORLD.getTile ? WORLD.getTile(tx, topY-1) : null; // if API exists
-      if(t!==T.WATER) break; else topY--;
+    let col=waterColumnAt(tx,ty,getTile);
+    if(!col){
+      const best=nearestWaterCell(tx,ty,getTile,8,8);
+      if(best){
+        m.x=best.x; m.y=best.y; m.vx*=0.25; m.vy*=0.25;
+        col=waterColumnAt(best.tileX,best.tileY,getTile);
+      }
     }
-    m.waterTopY = topY; // y of first water tile at surface (there is air or non-water above waterTopY-1)
+    if(!col){
+      const stranded=(typeof m.strandedTime==='number' && isFinite(m.strandedTime)) ? m.strandedTime : 0;
+      m.waterTopY=ty;
+      m.waterBottomY=ty;
+      m.desiredDepth=0;
+      m.nextWaterScan = performance.now() + 1000;
+      m.strandedTime = stranded;
+      return false;
+    }
+    m.waterTopY = col.top; // y of first water tile at surface (there is air or non-water above waterTopY-1)
+    m.waterBottomY = col.bottom;
     // pick desired depth (1-3 tiles below surface) but ensure within existing water column
-    let depth = 1 + (Math.random()*2)|0; // 1 or 2 or maybe 2? adjust range
-    // Validate depth: ensure tile exists below; if shallow adjust
-    let maxDepth=depth;
-    for(let d=1; d<=depth; d++){
-  const t = WORLD && WORLD.getTile ? WORLD.getTile(tx, topY + d) : null;
-      if(t!==T.WATER){ maxDepth = d-1; break; }
-    }
-    if(maxDepth<1) maxDepth=1;
-    m.desiredDepth = maxDepth;
+    const maxDepth=Math.max(0,col.depth-1);
+    const preferred=Math.min(maxDepth, 1 + ((Math.random()*2)|0));
+    m.desiredDepth = Math.max(0, preferred);
     m.nextWaterScan = performance.now() + 4000 + Math.random()*4000;
     m.strandedTime = 0;
+    return true;
   }
 
   // Aquatic enforcement (moved earlier so it's definitely defined before any habitatUpdate calls)
   function enforceAquatic(m, spec, getTile, dt){
     const nowP = performance.now();
-    if(!m.waterTopY || nowP>m.nextWaterScan){ initWaterAnchor(m); }
+    if(typeof m.waterTopY!=='number' || typeof m.nextWaterScan!=='number' || nowP>m.nextWaterScan){ initWaterAnchor(m,getTile); }
     const tx = Math.floor(m.x); const ty=Math.floor(m.y);
     const here = getTile(tx,ty);
     if(here!==T.WATER){
-      m.strandedTime += dt;
-      let best=null, bestD=1e9;
-      for(let dy=-3; dy<=3; dy++){
-        for(let dx=-5; dx<=5; dx++){
-          const nx=tx+dx, ny=ty+dy; const t=getTile(nx,ny); if(t===T.WATER){ const d=dx*dx+dy*dy; if(d<bestD){ bestD=d; best={x:nx+0.5,y:ny+0.5}; } }
-        }
-      }
+      m.strandedTime = ((typeof m.strandedTime==='number' && isFinite(m.strandedTime)) ? m.strandedTime : 0) + dt;
+      const best=nearestWaterCell(tx,ty,getTile,8,8);
       if(best){
         m.vx += (best.x - m.x)*3*dt; m.vy += (best.y - m.y)*3*dt;
-        if(bestD>25){ m.x=best.x; m.y=best.y; m.vx*=0.3; m.vy*=0.3; }
+        if(best.d2>9 || m.strandedTime>0.35){ m.x=best.x; m.y=best.y; m.vx*=0.25; m.vy*=0.25; initWaterAnchor(m,getTile); }
         m.strandedTime = 0;
       } else {
-        m.vx *= 0.6; m.vy += 0.15; if(m.strandedTime>6){ m.hp=0; }
+        m.vx *= 0.6; m.vy += 0.15; if(m.strandedTime>1.6){ m.hp=0; m._naturalDeath=true; }
       }
       return;
     } else { m.strandedTime = 0; }
     if(typeof m.waterTopY==='number'){
-      const topTile = getTile(Math.floor(m.x), m.waterTopY);
-      if(topTile!==T.WATER){ initWaterAnchor(m); }
-  const targetY = m.waterTopY + (m.desiredDepth||1) + Math.sin(nowP*0.001 + m.spawnT*0.0003)*0.2;
+      let col=waterColumnAt(Math.floor(m.x), Math.floor(m.y), getTile);
+      if(!col || getTile(Math.floor(m.x), m.waterTopY)!==T.WATER){ initWaterAnchor(m,getTile); col=waterColumnAt(Math.floor(m.x), Math.floor(m.y), getTile); }
+      if(col){
+        m.waterTopY=col.top; m.waterBottomY=col.bottom;
+        m.desiredDepth=Math.max(0, Math.min(m.desiredDepth||0, col.depth-1));
+        if(m.y<col.top+0.18){ m.y=col.top+0.18; if(m.vy<0) m.vy=0; }
+        if(m.y>col.bottom+0.82){ m.y=col.bottom+0.55; if(m.vy>0) m.vy=0; }
+      }
+  const targetY = m.waterTopY + (m.desiredDepth||0) + 0.45 + Math.sin(nowP*0.001 + m.spawnT*0.0003)*0.18;
       const dy = targetY - m.y; m.vy += dy * Math.min(1, dt*2.2);
       const above = getTile(Math.floor(m.x), Math.floor(m.y-0.6));
       if(above!==T.WATER){ if(m.vy < 0) m.vy *= 0.2; m.vy += 0.04; }
@@ -545,19 +840,98 @@ const mobs = (function(){
 
   function forceSpawn(specId, player, getTile){ const spec=SPECIES[specId]; if(!spec) return false; if((speciesCounts[specId]||0) >= spec.max) return false; // cap
     // try valid spawn positions first
-    for(let tries=0; tries<20; tries++){ const dx=(Math.random()*10 -5); const dy=(Math.random()*6 -3); const tx=Math.floor(player.x+dx); const ty=Math.floor(player.y+dy); if(spec.spawnTest(tx,ty,getTile)){ mobs.push(create(spec, tx+0.5, ty+0.5)); return true; } }
+    for(let tries=0; tries<20; tries++){ const dx=(Math.random()*10 -5); const dy=(Math.random()*6 -3); const tx=Math.floor(player.x+dx); const ty=Math.floor(player.y+dy); if(spec.spawnTest(tx,ty,getTile)){ mobs.push(create(spec, tx+0.5, ty+0.5, getTile)); return true; } }
+    if(spec.aquatic) return false;
     // fallback: drop directly near player even if test fails
-    mobs.push(create(spec, player.x + (Math.random()*2-1), player.y - 0.5)); return true; }
+    mobs.push(create(spec, player.x + (Math.random()*2-1), player.y - 0.5, getTile)); return true; }
 
   function countSpecies(id){ return speciesCounts[id]||0; }
+  function localMobCounts(player,radius){
+    const r2=radius*radius;
+    const out={total:0, bySpecies:{}};
+    for(const m of mobs){
+      const dx=m.x-player.x, dy=m.y-player.y;
+      if(dx*dx+dy*dy>r2) continue;
+      out.total++;
+      out.bySpecies[m.id]=(out.bySpecies[m.id]||0)+1;
+    }
+    return out;
+  }
+  function localCapFor(spec){
+    if(typeof spec.localMax==='number') return Math.max(0, spec.localMax|0);
+    const scale = spec.aquatic ? 0.28 : (spec.flying ? 0.22 : 0.24);
+    return Math.max(1, Math.min(spec.max||8, Math.ceil((spec.max||8)*scale)));
+  }
+  function biomeAffinity(spec, biome){
+    if(spec.alwaysAggro && spec.biome==null) return 0.35;
+    const b=spec.biome;
+    if(b==='any') return 0.85;
+    if(b==='forest') return biome===0?1:0.08;
+    if(b==='plains') return biome===1?1:0.10;
+    if(b==='snow') return biome===2?1:0.08;
+    if(b==='desert') return biome===3?1:0.08;
+    if(b==='swamp') return biome===4?1:0.08;
+    if(b==='shore') return (biome===5 || biome===6 || biome===3)?0.75:0.04;
+    if(b==='mountain') return biome===7?1:0.08;
+    if(b==='city') return biome===8?1:0.03;
+    if(spec.aquatic) return (biome===5 || biome===6 || biome===4)?0.85:0.18;
+    return 0.35;
+  }
+  function findEcologicalSpawn(spec,player,getTile){
+    const tries=spec.aquatic?22:16;
+    for(let a=0;a<tries;a++){
+      const side=Math.random()<0.5?-1:1;
+      const dx=side*(ECO_INNER_RADIUS + Math.random()*(ECO_LOCAL_RADIUS-ECO_INNER_RADIUS));
+      const dy=(spec.aquatic?(-12+Math.random()*28):(-10+Math.random()*18));
+      const tx=Math.floor(player.x+dx), ty=Math.floor(player.y+dy);
+      if(Math.abs(tx-player.x)<ECO_INNER_RADIUS && Math.abs(ty-player.y)<10) continue;
+      if(spec.spawnTest(tx,ty,getTile)) return {x:tx+0.5,y:ty+0.5};
+    }
+    return null;
+  }
 
   let nextSpawnCheck = 0;
   function trySpawnNearPlayer(player, getTile, now){
   if(now < nextSpawnCheck) return; // throttle globally
   if(now < spawnFreezeUntil) { nextSpawnCheck = now + 500; return; }
-    nextSpawnCheck = now + 1200 + Math.random()*800; // 1.2-2s
-    for(const key in SPECIES){ const spec=SPECIES[key]; if(countSpecies(spec.id) >= spec.max) continue; if(Math.random()<0.55) continue; // variety
-      for(let a=0;a<6;a++){ const dx = (Math.random()<0.5?-1:1)*(8+Math.random()*32); const dy = -6 + Math.random()*12; const tx = Math.floor(player.x + dx); const ty = Math.floor(player.y + dy); if(spec.spawnTest(tx,ty,getTile)){ mobs.push(create(spec, tx+0.5, ty+0.5)); break; } }
+    nextSpawnCheck = now + ECO_SPAWN_MIN_MS + Math.random()*ECO_SPAWN_JITTER_MS;
+    const local=localMobCounts(player,ECO_LOCAL_RADIUS);
+    if(local.total>=ECO_TOTAL_LOCAL_CAP) return;
+    const biome=biomeAt(Math.floor(player.x));
+    const candidates=[];
+    for(const key in SPECIES){
+      const spec=SPECIES[key];
+      if(countSpecies(spec.id) >= spec.max) continue;
+      const localCap=localCapFor(spec);
+      const localCount=local.bySpecies[spec.id]||0;
+      if(localCount>=localCap) continue;
+      const affinity=biomeAffinity(spec,biome);
+      if(affinity<=0.02) continue;
+      const spawnChance=(typeof spec.spawnChance==='number' && isFinite(spec.spawnChance)) ? Math.max(0,Math.min(1,spec.spawnChance)) : 0.38;
+      const deficit=Math.max(0,localCap-localCount);
+      const weight=affinity*spawnChance*(0.6+deficit/localCap);
+      if(weight>0) candidates.push({spec,weight});
+    }
+    candidates.sort((a,b)=>b.weight-a.weight);
+    let born=0;
+    while(born<ECO_MAX_BIRTHS_PER_PASS && local.total+born<ECO_TOTAL_LOCAL_CAP && candidates.length){
+      const totalWeight=candidates.reduce((s,c)=>s+c.weight,0);
+      let pick=Math.random()*totalWeight, idx=0;
+      for(; idx<candidates.length; idx++){ pick-=candidates[idx].weight; if(pick<=0) break; }
+      const cand=candidates[Math.min(idx,candidates.length-1)];
+      candidates.splice(Math.min(idx,candidates.length-1),1);
+      const batch=(typeof cand.spec.spawnBatch==='number' && isFinite(cand.spec.spawnBatch)) ? Math.max(1,cand.spec.spawnBatch|0) : 1;
+      const passCapForCandidate=Math.max(ECO_MAX_BIRTHS_PER_PASS,batch);
+      for(let n=0; n<batch && born<passCapForCandidate && local.total+born<ECO_TOTAL_LOCAL_CAP; n++){
+        const localCap=localCapFor(cand.spec);
+        const localCount=local.bySpecies[cand.spec.id]||0;
+        if(localCount>=localCap || countSpecies(cand.spec.id)>=cand.spec.max) break;
+        const spot=findEcologicalSpawn(cand.spec,player,getTile);
+        if(!spot) break;
+        mobs.push(create(cand.spec, spot.x, spot.y, getTile));
+        local.bySpecies[cand.spec.id]=localCount+1;
+        born++;
+      }
     }
   }
 
@@ -579,7 +953,53 @@ const mobs = (function(){
   function setAggro(specId){ speciesAggro[specId] = Date.now() + 5*60*1000; }
 
   let frame=0; let lastMetricsSample=0; let metrics={count:0, active:0, dtAvg:0};
+  function bodyHalfExtents(m,spec){
+    const body = spec.body || {w:1,h:1};
+    const sc = m.scale || 1;
+    return {halfW:(body.w||1)*0.5*sc, halfH:(body.h||1)*0.5*sc};
+  }
+  function integrateFloatingTerrainStep(m,spec,getTile,dt){
+    const {halfW,halfH}=bodyHalfExtents(m,spec);
+    if(m.vx) m.x += m.vx*dt;
+    let minX = Math.floor(m.x - halfW), maxX = Math.floor(m.x + halfW);
+    let minY = Math.floor(m.y - halfH), maxY = Math.floor(m.y + halfH);
+    for(let y=minY; y<=maxY; y++){
+      for(let x=minX; x<=maxX; x++){
+        const t=getTile(x,y);
+        if(isSolid && isSolid(t)){
+          if(m.vx>0) m.x = x - halfW - 0.001;
+          else if(m.vx<0) m.x = x + 1 + halfW + 0.001;
+          m.vx = 0;
+          minX = Math.floor(m.x - halfW);
+          maxX = Math.floor(m.x + halfW);
+        }
+      }
+    }
+    if(m.vy) m.y += m.vy*dt;
+    minX = Math.floor(m.x - halfW); maxX = Math.floor(m.x + halfW);
+    minY = Math.floor(m.y - halfH); maxY = Math.floor(m.y + halfH);
+    for(let y=minY; y<=maxY; y++){
+      for(let x=minX; x<=maxX; x++){
+        const t=getTile(x,y);
+        if(isSolid && isSolid(t)){
+          if(m.vy>0) m.y = y - halfH - 0.001;
+          else if(m.vy<0) m.y = y + 1 + halfH + 0.001;
+          m.vy = 0;
+          minY = Math.floor(m.y - halfH);
+          maxY = Math.floor(m.y + halfH);
+        }
+      }
+    }
+  }
+  function integrateFloatingWithTerrain(m,spec,getTile,dt){
+    const maxMove = Math.max(Math.abs(m.vx*dt), Math.abs(m.vy*dt));
+    const steps = Math.max(1, Math.ceil(maxMove/0.45));
+    const stepDt = dt / steps;
+    for(let s=0; s<steps; s++) integrateFloatingTerrainStep(m,spec,getTile,stepDt);
+  }
   function update(dt, player, getTile){ const now = performance.now(); frame++;
+    laserTraceCalls=0; laserTileChecks=0;
+    sentinelShotsThisFrame=0; sentinelDeferredThisFrame=0;
     // Despawn far / off-screen old passive mobs (not aggro)
     for(let i=mobs.length-1;i>=0;i--){ const m=mobs[i]; if(m.hp<=0){ removeFromGrid(m); mobs.splice(i,1); continue; } const dist = Math.abs(m.x-player.x); if(dist>220 && !isAggro(m.id)) { removeFromGrid(m); mobs.splice(i,1); continue; } }
     // Spawn attempt occasionally
@@ -695,7 +1115,7 @@ const mobs = (function(){
   // Ground / gravity integration + AABB collision for ground mobs
   if(!spec.aquatic && !spec.flying){
   m.vy += MOVE.GRAV * dt; if(m.vy>24) m.vy=24;
-        const body = spec.body || {w:1,h:1}; const sc=(m.scale||1); const halfW = (body.w||1)*0.5*sc, halfH=(body.h||1)*0.5*sc;
+        const {halfW,halfH}=bodyHalfExtents(m,spec);
         // Integrate horizontal then resolve X collisions
         m.x += m.vx*dt;
         let minX = Math.floor(m.x - halfW), maxX = Math.floor(m.x + halfW);
@@ -744,8 +1164,10 @@ const mobs = (function(){
           m.vx *= 0.995;
         }
         if(m.onGround && !wasGround){ /* landing hook placeholder */ }
+      } else if(spec.collideTerrain){
+        integrateFloatingWithTerrain(m,spec,getTile,dt);
       } else {
-        // Non-ground integrate simple
+        // Non-ground ambient movement for pass-through creatures (fish, birds, fireflies).
         m.x += m.vx*dt; m.y += m.vy*dt;
       }
       // Habitat constraints via species hook
@@ -776,6 +1198,13 @@ const mobs = (function(){
       }
     }
     updateProjectiles(dt, player, getTile);
+    updateLasers(dt);
+    metrics.projectiles = mobProjectiles.length;
+    metrics.lasers = mobLasers.length;
+    metrics.laserTraceCalls = laserTraceCalls;
+    metrics.laserTileChecks = laserTileChecks;
+    metrics.sentinelShots = sentinelShotsThisFrame;
+    metrics.sentinelDeferred = sentinelDeferredThisFrame;
     metrics.active = active;
     if(now - lastMetricsSample > 1000){ metrics.dtAvg = (metrics.dtAvg*0.7 + dt*0.3); lastMetricsSample = now; if(window.__mobDebug){ window.__mobMetrics = {...metrics, frame}; } }
   } // end update()
@@ -822,12 +1251,14 @@ const mobs = (function(){
     return _goldGlow;
   }
 
-  function draw(ctx, TILE, camX,camY, zoom){
+  function draw(ctx, TILE, camX,camY, zoom, canDrawTile){
+    const visibleTile = typeof canDrawTile === 'function' ? canDrawTile : null;
+    const mobVisible = (m)=> !visibleTile || visibleTile(Math.floor(m.x), Math.floor(m.y));
     ctx.save(); ctx.imageSmoothingEnabled=false; const now=performance.now();
   // View bounds expressed in tile coordinates (camX/camY already in tiles)
   const viewL = camX - 2; const viewR = camX + (ctx.canvas.width/zoom)/TILE + 2; const viewT = camY - 2; const viewB = camY + (ctx.canvas.height/zoom)/TILE + 2;
   const disableCull = !!window.__mobDisableCull;
-  for(const m of mobs){ if(!disableCull && (m.x < viewL || m.x > viewR || m.y < viewT || m.y > viewB)) continue; const spec=SPECIES[m.id]; const screenX = (m.x*TILE); let screenY=(m.y*TILE);
+  for(const m of mobs){ if(!disableCull && (m.x < viewL || m.x > viewR || m.y < viewT || m.y > viewB)) continue; if(!mobVisible(m)) continue; const spec=SPECIES[m.id]; const screenX = (m.x*TILE); let screenY=(m.y*TILE);
       // Anchor adjustment: center position to feet baseline so sprites don't float
       if(spec && spec.ground && spec.body){
         const halfHpx = (spec.body.h||1)*0.5*TILE*(m.scale||1);
@@ -1009,6 +1440,33 @@ const mobs = (function(){
           // beard
           ctx.fillStyle='#9b968a'; ctx.fillRect(screenX+(faceDir>0?14:-6), screenY-7,2,2);
           break; }
+        case 'JASZCZUR': {
+          const body = flashing? '#fff1c8':(m.baseColor||'#c79a45');
+          const wiggle=Math.sin(phase*1.7)*2;
+          box(screenX-9, screenY-4,18,5, body,'#6d4f22');
+          ctx.fillStyle=body;
+          ctx.fillRect(screenX+(faceDir>0?7:-12), screenY-6,6,5); hpTop(screenY-6);
+          ctx.fillStyle='#6d4f22';
+          ctx.fillRect(screenX-(faceDir>0?13:-9)-wiggle*faceDir, screenY-2,6,2);
+          for(let i=-6;i<=6;i+=4) ctx.fillRect(screenX+i, screenY+1,2,3);
+          ctx.fillStyle='#111'; ctx.fillRect(screenX+(faceDir>0?10:-10), screenY-5,1,1);
+          break; }
+        case 'ZABA': {
+          const body = flashing? '#e8ffd8':(m.baseColor||'#4c9a3f');
+          const squat=1+Math.sin(phase)*0.8;
+          box(screenX-6, screenY-5+squat,12,7, body,'#2f5e2c');
+          ctx.fillStyle=body;
+          ctx.fillRect(screenX-5, screenY-9+squat,10,5); hpTop(screenY-9);
+          ctx.fillStyle='#f4ffe8';
+          ctx.fillRect(screenX-4, screenY-8+squat,3,2);
+          ctx.fillRect(screenX+1, screenY-8+squat,3,2);
+          ctx.fillStyle='#111';
+          ctx.fillRect(screenX-3, screenY-8+squat,1,1);
+          ctx.fillRect(screenX+2, screenY-8+squat,1,1);
+          ctx.fillStyle='#2f5e2c';
+          ctx.fillRect(screenX-9, screenY+1,5,2);
+          ctx.fillRect(screenX+4, screenY+1,5,2);
+          break; }
         case 'FIREFLY': {
           const pulse = (Math.sin(now*0.01 + m.spawnT*0.005)*0.5+0.5);
           const glowA = 0.55+0.45*pulse;
@@ -1173,6 +1631,41 @@ const mobs = (function(){
           ctx.fillRect(screenX+(faceDir>0?5:-7), screenY-6, 2, 2); ctx.fillRect(screenX+(faceDir>0?8:-10), screenY-6, 2, 2);
           hpTop(screenY-7);
           break; }
+        case 'STRAZNIK': { // steel city automaton: riveted body, cyan sensor, cable limbs
+          const body = flashing? '#f5fbff' : (m.baseColor||'#8f9aa6');
+          const pulse=(Math.sin(now*0.008+m.spawnT*0.003)*0.5+0.5);
+          const laserHot = mobLasers.some(l=>Math.abs(l.x1-m.x)<0.7 && Math.abs(l.y1-(m.y-0.62))<0.35);
+          box(screenX-7, screenY-22,14,17,body,'#3f4852');
+          shade(screenX-7,screenY-22,14,4,'#fff',0.14);
+          shade(screenX-7,screenY-9,14,4,'#000',0.15);
+          ctx.fillStyle='#5f6872';
+          ctx.fillRect(screenX-4,screenY-28,8,7); hpTop(screenY-28);
+          const eyeGlow = laserHot ? 1 : (0.45+0.35*pulse);
+          ctx.fillStyle=laserHot?'#f8ffff':'#42e7ff';
+          const eyeA=screenX+(faceDir>0?2:-4);
+          const eyeB=screenX+(faceDir>0?-2:2);
+          ctx.fillRect(eyeA,screenY-26,3,2);
+          ctx.fillRect(eyeB,screenY-25,3,2);
+          ctx.globalAlpha=eyeGlow*0.45;
+          ctx.fillStyle='#42e7ff';
+          ctx.fillRect(screenX-7,screenY-28,14,5);
+          ctx.globalAlpha=1;
+          ctx.strokeStyle='#3f4852'; ctx.lineWidth=2;
+          const armSwing=Math.sin(phase)*2;
+          ctx.beginPath(); ctx.moveTo(screenX-7,screenY-17); ctx.lineTo(screenX-12,screenY-11+armSwing); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(screenX+7,screenY-17); ctx.lineTo(screenX+12,screenY-11-armSwing); ctx.stroke();
+          ctx.fillStyle='#2d333b';
+          ctx.fillRect(screenX-14,screenY-11+armSwing,4,4);
+          ctx.fillRect(screenX+10,screenY-11-armSwing,4,4);
+          ctx.fillStyle='#4b545e';
+          ctx.fillRect(screenX-5,screenY-5,3,7);
+          ctx.fillRect(screenX+2,screenY-5,3,7);
+          ctx.fillStyle='#252b31';
+          ctx.fillRect(screenX-6,screenY+1,5,3);
+          ctx.fillRect(screenX+1,screenY+1,5,3);
+          ctx.fillStyle='#303842';
+          for(let yy=screenY-18; yy<=screenY-10; yy+=4){ ctx.fillRect(screenX-4,yy,2,2); ctx.fillRect(screenX+2,yy,2,2); }
+          break; }
         default: {
           // fallback: small box
           box(screenX-4, screenY-4,8,8, flashing? '#ffffff':'#888', '#444');
@@ -1204,6 +1697,7 @@ const mobs = (function(){
     for(const m of mobs){
       if(!hasStatus(m,'burn')) continue;
       if(!disableCull && (m.x < viewL || m.x > viewR || m.y < viewT || m.y > viewB)) continue;
+      if(!mobVisible(m)) continue;
       const px=m.x*TILE, py=m.y*TILE;
       const flick=Math.sin(now*0.025 + m.spawnT*0.01)*0.5+0.5;
       const h=TILE*(0.7+0.5*flick)*(m.scale||1);
@@ -1217,8 +1711,48 @@ const mobs = (function(){
       ctx.closePath(); ctx.fill();
       if(Math.random()<0.3){ ctx.fillStyle='rgba(255,230,140,0.9)'; ctx.fillRect(px+(Math.random()*2-1)*6, baseY-h-Math.random()*4, 2,2); }
     }
+    // City sentinel eye lasers: short-lived dual beams with a hot core.
+    if(mobLasers.length){
+      const prevComp=ctx.globalCompositeOperation;
+      ctx.globalCompositeOperation='lighter';
+      const frameMs=(typeof window!=='undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
+      const cheapLasers=frameMs>24 || mobLasers.length>8;
+      for(const l of mobLasers){
+        if(visibleTile && !visibleTile(Math.floor(l.x1),Math.floor(l.y1)) && !visibleTile(Math.floor(l.x2),Math.floor(l.y2))) continue;
+        const age=Math.max(0,Math.min(1,l.t/l.life));
+        const a=(1-age);
+        const wob=Math.sin(now*0.06+l.phase)*1.2;
+        const x1=l.x1*TILE, y1=l.y1*TILE, x2=l.x2*TILE, y2=l.y2*TILE;
+        ctx.lineCap='round';
+        ctx.strokeStyle='rgba(40,220,255,'+(0.22*a)+')';
+        ctx.lineWidth=cheapLasers?7:9+5*a;
+        ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+        if(cheapLasers){
+          ctx.strokeStyle='rgba(130,245,255,'+(0.82*a)+')';
+        } else {
+          const grad=ctx.createLinearGradient(x1,y1,x2,y2);
+          grad.addColorStop(0,'rgba(120,255,255,'+(0.95*a)+')');
+          grad.addColorStop(0.45,'rgba(255,70,255,'+(0.65*a)+')');
+          grad.addColorStop(1,(l.hit?'rgba(255,255,255,':'rgba(80,190,255,')+(0.85*a)+')');
+          ctx.strokeStyle=grad;
+        }
+        ctx.lineWidth=cheapLasers?3.2:4+2*a;
+        ctx.beginPath(); ctx.moveTo(x1,y1+wob); ctx.lineTo(x2,y2-wob); ctx.stroke();
+        ctx.strokeStyle='rgba(255,255,255,'+(0.95*a)+')';
+        ctx.lineWidth=1.2+1.2*a;
+        ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+        const r=(l.hit?7:5)*(0.7+a);
+        ctx.fillStyle=(l.hit?'rgba(255,255,255,':'rgba(80,220,255,')+(0.45*a)+')';
+        ctx.beginPath(); ctx.arc(x2,y2,r,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='rgba(255,80,255,'+(0.35*a)+')';
+        ctx.fillRect(x2-r*0.55,y2-1,r*1.1,2);
+        ctx.fillRect(x2-1,y2-r*0.55,2,r*1.1);
+      }
+      ctx.globalCompositeOperation=prevComp;
+    }
     // Mob projectiles: spinning bone shards
     for(const pr of mobProjectiles){
+      if(visibleTile && !visibleTile(Math.floor(pr.x), Math.floor(pr.y))) continue;
       ctx.save();
       ctx.translate(pr.x*TILE, pr.y*TILE); ctx.rotate(pr.spin);
       ctx.fillStyle='#e8e4d8'; ctx.fillRect(-5,-1.5,10,3);
@@ -1229,6 +1763,7 @@ const mobs = (function(){
     for(const m of mobs){
       if(!hasStatus(m,'poison')) continue;
       if(!disableCull && (m.x < viewL || m.x > viewR || m.y < viewT || m.y > viewB)) continue;
+      if(!mobVisible(m)) continue;
       const px=m.x*TILE, py=m.y*TILE;
       for(let i=0;i<3;i++){
         const ph=(now*0.0035 + m.spawnT*0.01 + i*2.1)%(Math.PI*2);
@@ -1332,6 +1867,43 @@ const mobs = (function(){
     return n;
   }
 
+  const NO_MEAT_DROP = { FIREFLY:true, GHOUL:true, SZKIELET:true, PELZACZ:true, STRAZNIK:true, ZLOTY:true };
+  const MEAT_DROP_CHANCE = {
+    BEAR:1, SHARK:1,
+    DEER:0.75, WOLF:0.75, GOAT:0.65,
+    EEL:0.45, FISH:0.4, CRAB:0.35,
+    RABBIT:0.3, JASZCZUR:0.3, ZABA:0.25,
+    BIRD:0.25, OWL:0.25,
+    SQUIRREL:0.1, BAT:0.1
+  };
+  function inferredMeatDropChance(spec){
+    const hp=(typeof spec.hp==='number' && isFinite(spec.hp)) ? spec.hp : 5;
+    const body=spec.body || {w:1,h:1};
+    const w=(typeof body.w==='number' && isFinite(body.w)) ? body.w : 1;
+    const h=(typeof body.h==='number' && isFinite(body.h)) ? body.h : 1;
+    const area=Math.max(0.05,w*h);
+    if(hp>=28 || area>=1.8) return 1;
+    if(hp>=14 || area>=1.25) return 0.65;
+    if(hp>=8 || area>=0.8) return 0.35;
+    return 0.1;
+  }
+  function meatDropChanceFor(m,spec){
+    if(typeof spec.meatDropChance==='number' && isFinite(spec.meatDropChance)) return spec.meatDropChance;
+    if(Object.prototype.hasOwnProperty.call(MEAT_DROP_CHANCE,m.id)) return MEAT_DROP_CHANCE[m.id];
+    return inferredMeatDropChance(spec);
+  }
+  function shouldDropMeat(m,spec){
+    if(!m || !spec) return false;
+    if(spec.organic===false || spec.meat===false || NO_MEAT_DROP[m.id]) return false;
+    const chance = Math.max(0,Math.min(1,meatDropChanceFor(m,spec)));
+    return chance>=1 || Math.random()<=chance;
+  }
+  function dropMeatForMob(m,spec){
+    if(!shouldDropMeat(m,spec)) return false;
+    try{ if(MM.meat && MM.meat.dropFromMob) return !!MM.meat.dropFromMob(m,WORLD.getTile,WORLD.setTile); }catch(e){}
+    return false;
+  }
+
   function damageMob(m,amount){ if(m.hp<=0) return; m.hp-=amount; m.hitFlashUntil = performance.now()+120; m.shake = 0.6; if(m.hp<=0){ m.hp=0; m.shake=1; onMobDeath(m); }
   }
 
@@ -1341,6 +1913,7 @@ const mobs = (function(){
     if(m._naturalDeath){ return; }
     // main.js state is reached via explicit window bridges (player/inv/lootInbox)
     const player = window.player;
+    dropMeatForMob(m,spec);
     // XP gain
     if(player && typeof player.xp==='number'){ player.xp += spec.xp||1; }
     // Loot: resource drops go straight into the block inventory — the loot inbox
@@ -1410,6 +1983,12 @@ const mobs = (function(){
       for(const k in speciesCounts){ delete speciesCounts[k]; }
       // Clear spatial partition completely
       grid.clear();
+      mobProjectiles.length = 0;
+      mobLasers.length = 0;
+      sentinelVolleyStart = 0;
+      sentinelVolleyShots = 0;
+      sentinelShotsThisFrame = 0;
+      sentinelDeferredThisFrame = 0;
       // Reset global aggro
       for(const k in speciesAggro){ delete speciesAggro[k]; }
       // Push out next spawn check and freeze spawns for a short time
@@ -1436,7 +2015,7 @@ const mobs = (function(){
       report.metrics={...metrics};
       return report;
     }
-  const api = { update, draw, attackAt, damageAt, igniteAt, igniteRadius, poisonAt, poisonRadius, douseRadius, blastRadius, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, forceSpawn, spawnGolden, nearestLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll };
+  const api = { update, draw, attackAt, damageAt, igniteAt, igniteRadius, poisonAt, poisonRadius, douseRadius, blastRadius, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, forceSpawn, spawnGolden, nearestLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES };
   MM.mobs = api;
   try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
   return api;

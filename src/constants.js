@@ -3,7 +3,7 @@ export const WORLD_H = 140;
 export const TILE = 20;
 export const SURFACE_GRASS_DEPTH = 1;
 export const SAND_DEPTH = 8;
-export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,LAVA:13,MUD:14,OBSIDIAN:15,TORCH:16,GRAVE:17};
+export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,LAVA:13,MUD:14,OBSIDIAN:15,TORCH:16,GRAVE:17,VOLCANO_MASTER_STONE:18,STEEL:19,MEAT:20,ROTTEN_MEAT:21,GLASS:22,WIRE:23,ELECTRONICS:24,COAL:25,HOT_AIR:26,STEAM:27,POISON_GAS:28,FUEL_GAS:29,DYNAMO:30,DYNAMO_SLOT:31,BAKED_MEAT:32,COPPER_WIRE:33,TELEPORTER:34};
 export const INFO = {
   0:{hp:0,color:null,drop:null,passable:true},
   // flammable/burnTime drive the fire system (engine/fire.js): seconds a tile burns
@@ -14,7 +14,7 @@ export const INFO = {
   3:{hp:6,color:'#888a90',drop:'stone',passable:false},
   4:{hp:10,color:'#3ef',drop:'diamond',passable:false},
   // Wood previously passable (true) which allowed walking through trunks; now solid for proper collision
-  5:{hp:4,color:'#8b5a2b',drop:'wood',passable:false, flammable:true, burnTime:3.5},
+  5:{hp:4,color:'#8b5a2b',drop:'wood',passable:false, flammable:true, burnTime:60},
   6:{hp:1,color:'#2faa2f',drop:'leaf',passable:true, flammable:true, burnTime:1.1},
   // Snow: slightly bluish to contrast against bright backgrounds
   7:{hp:2,color:'#e6f1ff',drop:'snow',passable:false},
@@ -35,7 +35,26 @@ export const INFO = {
   // Torch — crafted light source (engine/fire.js renders its flame + night glow)
  16:{hp:1,color:'#caa45a',drop:'torch',passable:true},
   // Gravestone — death marker holding the hero's dropped resources (click to recover)
- 17:{hp:2,color:'#9aa0ab',drop:null,passable:true}
+ 17:{hp:2,color:'#9aa0ab',drop:null,passable:true},
+ 18:{hp:12,color:'#71fff1',drop:'masterStone',passable:false, story:true},
+ 19:{hp:9,color:'#8f9aa6',drop:'steel',passable:false},
+ 20:{hp:1,color:'#bd5145',drop:'meat',passable:false, flammable:true, burnTime:1.4},
+ 21:{hp:1,color:'#647136',drop:null,passable:false, flammable:true, burnTime:1.0, rotten:true},
+ 22:{hp:1,color:'#9deeff',drop:null,passable:false, fragileFall:true},
+ 23:{hp:1,color:'#c56f32',drop:null,passable:true, drops:[{item:'plastic',min:1,max:1},{item:'copper',min:1,max:2}]},
+ 24:{hp:3,color:'#243946',drop:null,passable:false, drops:[{item:'wire',min:1,max:2},{item:'transistor',min:1,max:1,chance:0.82},{item:'copper',min:1,max:1,chance:0.35}]},
+ 25:{hp:5,color:'#25272b',drop:'coal',passable:false, flammable:true, burnTime:180},
+ // World-backed gases (engine/gases.js). They are passable and rendered dynamically
+ // so they can rise, react, power future machines and remain hidden by fog-of-war.
+ 26:{hp:0,color:'#f4b65e',drop:null,passable:true, gas:true, gasKind:'hot'},
+ 27:{hp:0,color:'#dce8ef',drop:null,passable:true, gas:true, gasKind:'steam'},
+ 28:{hp:0,color:'#82d45b',drop:null,passable:true, gas:true, gasKind:'poison'},
+ 29:{hp:0,color:'#a79a64',drop:null,passable:true, gas:true, gasKind:'fuel'},
+ 30:{hp:7,color:'#697685',drop:null,passable:false, machine:'dynamo', powerSource:true},
+ 31:{hp:4,color:'#1f2937',drop:null,passable:true, machine:'dynamoSlot', powerSource:true},
+ 32:{hp:1,color:'#9b5a2e',drop:'meat',passable:false, cooked:true},
+ 33:{hp:1,color:'#d68535',drop:'copperWire',passable:true, machine:'copperWire', conductor:true},
+ 34:{hp:8,color:'#24435a',drop:'teleporter',passable:true, machine:'teleporter', powerDevice:true, energyCapacity:160}
 };
 // Rows above (i.e. numerically below) this line get snow cover; tuned for the v2
 // terrain where sea level sits at row ~62 and peaks reach row ~10

@@ -313,7 +313,7 @@ import './inventory.js';
   function drawWeaponMini(ctx,item){
     const type=item.weaponType||'melee';
     if(type==='bow'){ drawBowMini(ctx,item); return; }
-    if(type==='flame'||type==='hose'||type==='gas'){ drawStreamMini(ctx,item,type); return; }
+    if(type==='flame'||type==='hose'||type==='gas'||type==='electric'){ drawStreamMini(ctx,item,type); return; }
     const col=TIER_COLORS[item.tier]||'#cfd6e4';
     ctx.save();
     ctx.translate(40,40); ctx.rotate(-Math.PI/4);
@@ -353,9 +353,10 @@ import './inventory.js';
   const STREAM_CONES={
     flame:[['rgba(255,245,200,0.95)',0],['rgba(255,170,50,0.8)',0.5],['rgba(255,80,20,0)',1]],
     hose: [['rgba(230,245,255,0.95)',0],['rgba(120,185,255,0.8)',0.5],['rgba(50,110,230,0)',1]],
-    gas:  [['rgba(225,255,180,0.9)',0],['rgba(140,220,80,0.75)',0.5],['rgba(70,150,40,0)',1]]
+    gas:  [['rgba(225,255,180,0.9)',0],['rgba(140,220,80,0.75)',0.5],['rgba(70,150,40,0)',1]],
+    electric:[['rgba(255,255,255,0.98)',0],['rgba(80,238,255,0.95)',0.45],['rgba(70,130,255,0)',1]]
   };
-  const STREAM_BODY={flame:'#8a4a1f', hose:'#1f5fb0', gas:'#3f7a2b'};
+  const STREAM_BODY={flame:'#8a4a1f', hose:'#1f5fb0', gas:'#3f7a2b', electric:'#1797a8'};
   function drawStreamMini(ctx,item,kind){
     const col=TIER_COLORS[item.tier]||STREAM_BODY[kind]||'#8a4a1f';
     ctx.save();
@@ -368,6 +369,18 @@ import './inventory.js';
     ctx.fillStyle='#6e4a22'; ctx.fillRect(-6,3,5,10);
     // nozzle
     ctx.fillStyle=col; ctx.fillRect(12,-5,8,7);
+    if(kind==='electric'){
+      ctx.lineCap='round';
+      ctx.globalCompositeOperation='lighter';
+      ctx.strokeStyle='rgba(70,238,255,0.38)'; ctx.lineWidth=9;
+      ctx.beginPath(); ctx.moveTo(20,-1); ctx.lineTo(46,-4); ctx.stroke();
+      ctx.strokeStyle='rgba(145,250,255,0.95)'; ctx.lineWidth=3.5;
+      ctx.beginPath(); ctx.moveTo(20,-1); ctx.lineTo(29,2); ctx.lineTo(37,-5); ctx.lineTo(46,-3); ctx.stroke();
+      ctx.strokeStyle='rgba(255,255,255,0.98)'; ctx.lineWidth=1.3;
+      ctx.beginPath(); ctx.moveTo(20,-1); ctx.lineTo(46,-3); ctx.stroke();
+      ctx.restore();
+      return;
+    }
     // spray cone
     const g=ctx.createLinearGradient(20,0,46,0);
     (STREAM_CONES[kind]||STREAM_CONES.flame).forEach(([c,t])=>g.addColorStop(t,c));
@@ -478,9 +491,10 @@ import './inventory.js';
       ctx.strokeStyle='#e8e2d2'; ctx.lineWidth=0.6;
       const ex=Math.cos(1.2)*5*dir, ey=Math.sin(1.2)*5;
       ctx.beginPath(); ctx.moveTo(ex,-2-ey); ctx.lineTo(ex,-2+ey); ctx.stroke();
-    } else if(type==='flame'||type==='hose'||type==='gas'){
+    } else if(type==='flame'||type==='hose'||type==='gas'||type==='electric'){
       const sprayCol= type==='flame'? ['rgba(255,240,180,0.9)','rgba(255,90,20,0)']
                     : type==='hose'? ['rgba(220,240,255,0.9)','rgba(60,120,230,0)']
+                    : type==='electric'? ['rgba(255,255,255,0.95)','rgba(45,230,255,0)']
                     : ['rgba(220,255,170,0.9)','rgba(70,150,40,0)'];
       ctx.fillStyle='#3c414d'; ctx.fillRect(miniFacing===1?-1:-4.5, -3.5, 5.5, 2.6);
       ctx.fillStyle=col==='#cfd6e4'?(STREAM_BODY[type]||'#8a4a1f'):col; ctx.fillRect(miniFacing===1?4.5:-6.5, -3.2, 2, 2);
@@ -551,6 +565,16 @@ import './inventory.js';
     statsBox.appendChild(statRow('Moc skoku', fmtMult(m.jumpPowerMult||1), jpLines));
     const mineLines=[]; sel.forEach(it=>{ if(typeof it.mineSpeedMult==='number' && it.mineSpeedMult!==1) mineLines.push(label(it)+': '+fmtMult(it.mineSpeedMult)); });
     statsBox.appendChild(statRow('Szybkość kopania', fmtMult(m.mineSpeedMult||1), mineLines));
+    const energyInfo=(MM.heroEnergy && typeof MM.heroEnergy.info==='function') ? MM.heroEnergy.info() : null;
+    if(energyInfo){
+      const energyLines=[];
+      sel.forEach(it=>{ if(typeof it.energyCapacityBonus==='number' && it.energyCapacityBonus) energyLines.push(label(it)+': +'+it.energyCapacityBonus+'E'); });
+      if(MM.progress && MM.progress.stats){
+        const st=MM.progress.stats();
+        if(st && st.cap) energyLines.push('Pojemność: +'+(st.cap*25)+'E');
+      }
+      statsBox.appendChild(statRow('Energia', Math.round(energyInfo.energy)+' / '+Math.round(energyInfo.max), energyLines));
+    }
   }
   function updateSelInfo(){
     if(!selInfo) return;
@@ -604,6 +628,7 @@ import './inventory.js';
       ['vit','Witalność', '+10 HP', st.vit],
       ['str','Siła', '+1 obrażeń', st.str],
       ['agi','Zwinność', '+2% ruch/skok', st.agi],
+      ['cap','Pojemność', '+25 energii', st.cap||0],
     ];
     rows.forEach(([key,label,effect,val])=>{
       const row=document.createElement('div');
@@ -621,7 +646,7 @@ import './inventory.js';
     mhead.textContent='Osiągnięcia: '+done+'/'+ms.length;
     host.appendChild(mhead);
   }
-  window.addEventListener('mm-progress-change',()=>{ if(isOpen()) buildProgress(); });
+  window.addEventListener('mm-progress-change',()=>{ if(isOpen()){ buildProgress(); updateStats(); } });
 
   // --- Actions ---
   function buildActions(){

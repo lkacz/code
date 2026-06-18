@@ -11,7 +11,7 @@
 // Run: node tools/boss-sim.test.mjs
 import { strict as assert } from 'assert';
 
-const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12};
+const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,POISON_GAS:28,FUEL_GAS:29};
 globalThis.window = globalThis; // bosses.js attaches to window.MM
 
 // Sparse world: bedrock from y=90 down, open sky above; supports negative x.
@@ -22,6 +22,13 @@ const setTile = (x,y,v)=>{ if(y>=0&&y<H) tiles.set(x+','+y,v); };
 
 globalThis.MM = {
   T, WORLD_H:140, TILE:20,
+  INFO: {
+    [T.AIR]: {passable:true},
+    [T.LEAF]: {passable:true},
+    [T.WATER]: {passable:true},
+    [T.POISON_GAS]: {passable:true, gas:true},
+    [T.FUEL_GAS]: {passable:true, gas:true},
+  },
   worldGen: { surfaceHeight: ()=>90, biomeType: ()=>0, settings:{seaLevel:95} },
   world: { getTile, setTile },          // attackAt reaches the world through MM.world
   water: { onTileChanged(){}, disturb(){} },
@@ -101,6 +108,14 @@ assert.ok(Math.abs(mf.y-89) <= 1, `gravity landed the beast on the surface (y=${
 let feetSolid=false;
 for(const p of mf.parts){ if(p.dy===0 && getTile(Math.round(mf.x)+p.dx, Math.round(mf.y)+1)===T.STONE) feetSolid=true; }
 assert.ok(feetSolid, 'feet rest on solid ground');
+
+resetWorld();
+for(let x=294; x<=306; x++) setTile(x,82,T.POISON_GAS);
+const mgas = bosses.forceSpawn(getTile, {x:300, seed:4242, freeze:true, archetype:'walker'});
+mgas.y = 70; mgas.vy = 0;
+step(30*4);
+assert.ok(Math.abs(mgas.y-89) <= 1, `monster falls through gas and lands on terrain (y=${mgas.y.toFixed(1)})`);
+assert.equal(getTile(300,82), T.POISON_GAS, 'gas is not consumed by boss collision');
 
 // --- 4. Behavior: it roams on its own and hunts the hero when close ---
 resetWorld();

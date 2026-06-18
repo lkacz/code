@@ -7,7 +7,7 @@
 // Run: node tools/clouds-sim.test.mjs
 import { strict as assert } from 'assert';
 
-const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12};
+const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,POISON_GAS:28,FUEL_GAS:29};
 const CHEST_IDS = [T.CHEST_COMMON,T.CHEST_RARE,T.CHEST_EPIC];
 globalThis.window = globalThis; // clouds.js attaches to window.MM
 
@@ -15,6 +15,13 @@ globalThis.window = globalThis; // clouds.js attaches to window.MM
 let TEMP = 0.7;
 globalThis.MM = {
   T, WORLD_H:140, TILE:20,
+  INFO: {
+    [T.AIR]: {passable:true},
+    [T.LEAF]: {passable:true},
+    [T.WATER]: {passable:true},
+    [T.POISON_GAS]: {passable:true, gas:true},
+    [T.FUEL_GAS]: {passable:true, gas:true},
+  },
   worldGen: {
     temperature: ()=>TEMP,
     surfaceHeight: ()=>90,
@@ -22,7 +29,7 @@ globalThis.MM = {
     worldSeed: 12345,
   },
   water: {
-    addSource(x,y,gt,st){ if(gt(x,y)===T.AIR){ st(x,y,T.WATER); return true; } return false; },
+    addSource(x,y,gt,st){ const t=gt(x,y); if(t===T.AIR || t===T.POISON_GAS || t===T.FUEL_GAS){ st(x,y,T.WATER); return true; } return false; },
     onTileChanged(){}, disturb(){},
   },
   particles: { spawnSplash(){}, spawnBubble(){} },
@@ -47,6 +54,7 @@ function resetWorld(){
   // keep untracked moisture out of the books by default; tests opt back in
   CFG.BORDER_SPAWN = false;
   CFG.STORMS = false;
+  CFG.LIGHTNING_TELEPORT_CHANCE = 0;
   TEMP = 0.7;
   globalThis.player = {x:0};
   clouds.setWindOverride(null);
@@ -107,6 +115,20 @@ assert.ok(Math.abs(m.rainMass - (deposited + d4.depFrac)) < 1e-3,
   `rain mass accounted for (shed=${m.rainMass.toFixed(3)} tiles=${deposited} frac=${d4.depFrac.toFixed(3)})`);
 assert.ok(d4.clouds[0].mass < 40, 'cloud lost the rained mass');
 
+resetWorld();
+CFG.BORDER_SPAWN = false; CFG.EVAP_BASE = 0; CFG.LIGHTNING_BASE = 0;
+for(let x=-120; x<=120; x++) setTile(x,89,T.POISON_GAS);
+clouds.addCloud(0,70,40);
+{
+  const oldRandom = Math.random;
+  Math.random = ()=>0.5;
+  try{ step(30*60); }
+  finally{ Math.random = oldRandom; }
+}
+let rainReplacedGas = false;
+for(let x=-120; x<=120; x++){ if(getTile(x,89)===T.WATER){ rainReplacedGas = true; break; } }
+assert.equal(rainReplacedGas, true, 'rain can occupy a gas cell directly above real ground');
+
 // --- 5. Temperature drop triggers rain: stable by day, raining at night ---
 resetWorld();
 CFG.BORDER_SPAWN = false; CFG.EVAP_BASE = 0;
@@ -151,22 +173,98 @@ assert.ok(clouds.metrics().clouds >= 1, 'cloud drifted in from another region');
 // --- 9. Lightning strike: transmutes the hit tile into a chest, hurts a close hero ---
 resetWorld();
 CFG.EVAP_BASE = 0;
-globalThis.player = {x:0, y:89, hp:100, maxHp:100};
+let chargedByLightning=0;
+MM.heroEnergy = {
+  chargeExternal(amount,opts){
+    assert.equal(opts && opts.cause, 'lightning', 'lightning charge is tagged with its cause');
+    const p=globalThis.player;
+    const before=p.energy||0;
+    p.energy=Math.min(p.maxEnergy,before+amount);
+    chargedByLightning += p.energy-before;
+    return p.energy-before;
+  }
+};
+globalThis.player = {x:0, y:89, hp:100, maxHp:100, energy:10, maxEnergy:100};
 const sres = clouds.strike(0, getTile, setTile);
 assert.ok(sres && sres.chest, 'strike transmuted the impact tile');
 assert.ok(CHEST_IDS.includes(getTile(sres.x,sres.y)), 'impact tile is now a chest');
 assert.ok(globalThis.player.hp < 100, `hero at ground zero was electrocuted (hp=${globalThis.player.hp})`);
+assert.equal(sres.energy, 50, 'lightning hit reports the hero energy charge');
+assert.equal(chargedByLightning, 50, 'lightning charges the hero by +50 energy');
+assert.equal(globalThis.player.energy, 60, 'hero energy meter increases by the lightning charge');
 assert.equal(clouds.metrics().chests, 1, 'strike counter tracks the chest');
 const hpAfter = globalThis.player.hp;
 globalThis.player.hpInvul = 0; // drop i-frames so only distance protects the hero
 const far = clouds.strike(40, getTile, setTile);
 assert.ok(far && far.chest, 'distant strike still makes a chest');
 assert.equal(globalThis.player.hp, hpAfter, 'distant strike cannot hurt the hero');
+assert.equal(chargedByLightning, 50, 'distant lightning does not grant free energy');
 // water strike: no chest — the surface erupts instead
 for(let x=58;x<66;x++) setTile(x,89,T.WATER);
 const wres = clouds.strike(61, getTile, setTile);
 assert.ok(wres && !wres.chest, 'water strike does not create a chest');
 assert.equal(getTile(61,89), T.WATER, 'water tile is unchanged');
+delete MM.heroEnergy;
+
+resetWorld();
+CFG.EVAP_BASE = 0;
+setTile(0,50,T.POISON_GAS);
+const gasStrike = clouds.strike(0, getTile, setTile);
+assert.ok(gasStrike && gasStrike.chest, 'lightning ignores gas and still hits the first real surface');
+assert.equal(gasStrike.y, 90, 'gas is not treated as a roof or strike target');
+assert.equal(getTile(0,50), T.POISON_GAS, 'lightning passing through gas leaves it in place');
+
+// --- 9b. Rare lightning curse: a hit can teleport the hero 500-1500 blocks away ---
+resetWorld();
+CFG.EVAP_BASE = 0;
+CFG.LIGHTNING_TELEPORT_CHANCE = 1;
+globalThis.player = {x:0, y:89, vx:2, vy:3, hp:100, maxHp:100};
+const oldRandom = Math.random;
+let randomI = 0;
+const randomVals = [0.1, 0.0, 0.75, 0.5]; // chest, chance, direction, distance
+Math.random = ()=> randomVals[randomI++] ?? 0.5;
+try{
+  const tres = clouds.strike(0, getTile, setTile);
+  assert.ok(tres && tres.teleport, 'lightning hit reported a teleport');
+  assert.ok(tres.teleport.distance>=500 && tres.teleport.distance<=1500,
+    `teleport distance in range (${tres.teleport.distance})`);
+  assert.ok(globalThis.player.x>=500 && globalThis.player.x<=1501, `player moved far away (x=${globalThis.player.x})`);
+  assert.equal(globalThis.player.y, 89, 'player landed on the dry surface');
+  assert.equal(globalThis.player.vx, 0, 'teleport clears horizontal velocity');
+  assert.equal(globalThis.player.vy, 0, 'teleport clears vertical velocity');
+} finally {
+  Math.random = oldRandom;
+}
+
+resetWorld();
+CFG.EVAP_BASE = 0;
+CFG.LIGHTNING_TELEPORT_CHANCE = 1;
+globalThis.player = {x:0, y:89, vx:2, vy:3, hp:5, maxHp:100};
+Math.random = ()=>0.1;
+try{
+  const fatal = clouds.strike(0, getTile, setTile);
+  assert.ok(fatal && fatal.dmg>0, 'fatal lightning still applies damage');
+  assert.equal(fatal.teleport, null, 'fatal lightning does not teleport after respawn');
+  assert.equal(globalThis.player.hp, 100, 'fatal lightning uses the existing respawn path');
+} finally {
+  Math.random = oldRandom;
+}
+
+resetWorld();
+CFG.EVAP_BASE = 0;
+CFG.LIGHTNING_TELEPORT_CHANCE = 1;
+setTile(1000,90,T.WATER);
+globalThis.player = {x:0, y:89, vx:2, vy:3, hp:100, maxHp:100};
+randomI = 0;
+Math.random = ()=> randomVals[randomI++] ?? 0.5;
+try{
+  const waterTarget = clouds.strike(0, getTile, setTile);
+  assert.ok(waterTarget && waterTarget.teleport, 'water-target strike still finds a teleport spot');
+  assert.notEqual(Math.floor(globalThis.player.x), 1000, 'teleport skips the water landing column');
+  assert.equal(getTile(Math.floor(globalThis.player.x),90), T.STONE, 'teleport lands over dry support');
+} finally {
+  Math.random = oldRandom;
+}
 
 // --- 10. Storm front: heavy rain, frequent lightning chests, then calm again ---
 resetWorld();

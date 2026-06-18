@@ -34,7 +34,7 @@
   const WEAPON_CATEGORIES=[
     {id:'melee',  key:'2', label:'Broń biała', icon:'⚔️', types:['melee']},
     {id:'bow',    key:'3', label:'Łuki',       icon:'🏹', types:['bow']},
-    {id:'stream', key:'4', label:'Miotacze',   icon:'🔥', types:['flame','hose','gas']}
+    {id:'stream', key:'4', label:'Miotacze',   icon:'🔥', types:['flame','hose','gas','electric']}
   ];
 
   // --- Player-facing stat presentation (single source for ALL item stat display) ---
@@ -65,10 +65,17 @@
       chips.push({icon:'⚔️', label:item.weaponType==='bow'?'Strzała':'Obrażenia', text:'+'+item.attackDamage, good:item.attackDamage>0});
     if(item.weaponType==='bow' && typeof item.fireCooldown==='number' && item.fireCooldown>0)
       chips.push({icon:'🏹', label:'Tempo', text:(1/item.fireCooldown).toFixed(1)+'/s', good:true});
-    if(typeof item.fireDps==='number')
-      chips.push({icon:item.weaponType==='hose'?'💧':item.weaponType==='gas'?'☠️':'🔥', label:'Strumień', text:item.fireDps+'/s', good:true});
+    if(typeof item.fireDps==='number'){
+      const streamIcon=item.weaponType==='hose'?'💧':item.weaponType==='gas'?'☠️':item.weaponType==='electric'?'⚡':'🔥';
+      const streamLabel=item.weaponType==='electric'?'Wiązka':'Strumień';
+      chips.push({icon:streamIcon, label:streamLabel, text:item.fireDps+'/s', good:true});
+    }
     if(typeof item.fireRange==='number')
       chips.push({icon:'↔️', label:'Zasięg', text:String(item.fireRange), good:true});
+    if(typeof item.energyCost==='number' && item.energyCost>0)
+      chips.push({icon:'⚡', label:'Zużycie energii', text:item.energyCost+'/s', good:false});
+    if(typeof item.energyCapacityBonus==='number' && item.energyCapacityBonus)
+      chips.push({icon:'⚡', label:'Pojemność energii', text:(item.energyCapacityBonus>0?'+':'')+item.energyCapacityBonus+'E', good:item.energyCapacityBonus>0});
     if(typeof item.airJumps==='number' && item.airJumps)
       chips.push({icon:'🪽', label:'Skoki', text:'+'+item.airJumps, good:item.airJumps>0});
     if(typeof item.visionRadius==='number'){
@@ -89,6 +96,8 @@
     if(typeof item.attackDamage==='number') s+=item.attackDamage*6;
     if(typeof item.fireDps==='number') s+=item.fireDps*5;
     if(typeof item.fireRange==='number') s+=item.fireRange*2;
+    if(typeof item.energyCost==='number') s-=item.energyCost*0.45;
+    if(typeof item.energyCapacityBonus==='number') s+=item.energyCapacityBonus*0.55;
     if(item.weaponType==='bow' && typeof item.fireCooldown==='number') s+=(0.6-item.fireCooldown)*40; // faster bow = stronger
     if(typeof item.airJumps==='number') s+=item.airJumps*12;
     if(typeof item.visionRadius==='number') s+=(item.visionRadius-VISION_BASE)*3;
@@ -106,7 +115,8 @@
     mineSpeedMult:'mul',
     moveSpeedMult:'mul',
     jumpPowerMult:'mul',
-    attackDamage:'sum'
+    attackDamage:'sum',
+    energyCapacityBonus:'sum'
   };
   const STAT_LABELS={
     maxAirJumps:'Skoki dodatkowe',
@@ -114,7 +124,8 @@
     moveSpeedMult:'Prędkość ruchu',
     jumpPowerMult:'Moc skoku',
     mineSpeedMult:'Szybkość kopania',
-    attackDamage:'Obrażenia'
+    attackDamage:'Obrażenia',
+    energyCapacityBonus:'Pojemność energii'
   };
   const BASE_ATTACK=3; // bare-handed melee damage
 
@@ -142,14 +153,15 @@
     {id:'ironperson', kind:'outfit', name:'Iron',    mineSpeedMult:1.25, moveSpeedMult:1.05, jumpPowerMult:1.05, desc:'Pancerz z servo-wspomaganiem'},
     // Weapons (starter set; better ones drop from chests).
     // weaponType: 'melee' (default) strikes the aimed tile, 'bow' shoots arrows,
-    // 'flame' streams fire that ignites organic creatures and flammable tiles.
+    // 'flame'/'hose'/'gas' streams terrain effects; 'electric' fires an energy beam.
     {id:'stick',        kind:'weapon', weaponType:'melee', name:'Kij',             attackDamage:1, desc:'Prosty kij na początek'},
     {id:'stone_blade',  kind:'weapon', weaponType:'melee', name:'Ostrze kamienne', attackDamage:3, moveSpeedMult:0.95, desc:'Ciężkie, ale skuteczne'},
     {id:'spear',        kind:'weapon', weaponType:'melee', name:'Włócznia',        attackDamage:2, jumpPowerMult:1.05, desc:'Lekka i poręczna'},
-    {id:'bow_wood',     kind:'weapon', weaponType:'bow',   name:'Łuk myśliwski',   attackDamage:4, fireCooldown:0.55, desc:'Strzela strzałami (F)'},
-    {id:'flamethrower', kind:'weapon', weaponType:'flame', name:'Miotacz ognia',   fireDps:6, fireRange:6.5, desc:'Strumień ognia (przytrzymaj F): podpala wrogów, trawę i drzewa'},
-    {id:'water_hose',   kind:'weapon', weaponType:'hose',  name:'Wąż wodny',       fireDps:2, fireRange:6,   desc:'Strumień wody (przytrzymaj F): gasi ogień, czasem zostawia wodę'},
-    {id:'gas_emitter',  kind:'weapon', weaponType:'gas',   name:'Emiter gazu',     fireDps:5, fireRange:5.5, desc:'Trujący obłok (przytrzymaj F): zatruwa żywe stworzenia'},
+    {id:'bow_wood',     kind:'weapon', weaponType:'bow',   name:'Łuk myśliwski',   attackDamage:4, fireCooldown:0.55, desc:'LPM strzela strzałami; PPM odpala naładowany ult'},
+    {id:'flamethrower', kind:'weapon', weaponType:'flame', name:'Miotacz ognia',   fireDps:6, fireRange:6.5, desc:'Strumień ognia (przytrzymaj LPM): podpala wrogów, trawę i drzewa; PPM = ult'},
+    {id:'water_hose',   kind:'weapon', weaponType:'hose',  name:'Wąż wodny',       fireDps:2, fireRange:6,   desc:'Strumień wody (przytrzymaj LPM): gasi ogień, czasem zostawia wodę; PPM = ult'},
+    {id:'gas_emitter',  kind:'weapon', weaponType:'gas',   name:'Emiter gazu',     fireDps:5, fireRange:5.5, desc:'Trujący obłok (przytrzymaj LPM): zatruwa żywe stworzenia; PPM = ult'},
+    {id:'electric_gun',  kind:'weapon', weaponType:'electric', name:'Karabin elektryczny', fireDps:12, fireRange:8.5, energyCost:10, tier:'rare', desc:'Wiązka elektryczna (przytrzymaj LPM): zużywa energię i razi linią jak roboty; PPM = ult'},
     // Charms (passive trinkets; more drop from chests)
     {id:'lucky_pebble', kind:'charm', name:'Kamyk szczęścia', mineSpeedMult:1.05, desc:'Podobno przynosi szczęście'}
   ];
@@ -159,13 +171,24 @@
     {key:'grass',   label:'Trawa',   color:'#2e8b2e', tile:'GRASS'},
     {key:'sand',    label:'Piasek',  color:'#c2b280', tile:'SAND'},
     {key:'stone',   label:'Kamień',  color:'#888a90', tile:'STONE'},
-    {key:'diamond', label:'Diament', color:'#3ef',    tile:null},
+    {key:'coal',    label:'Węgiel',  color:'#25272b', tile:'COAL'},
+    {key:'diamond', label:'Diament', color:'#3ef',    tile:'DIAMOND'},
     {key:'wood',    label:'Drewno',  color:'#8b5a2b', tile:'WOOD'},
     {key:'leaf',    label:'Liść',    color:'#2faa2f', tile:'LEAF'},
     {key:'snow',    label:'Śnieg',   color:'#e6f1ff', tile:'SNOW'},
     {key:'water',   label:'Woda',    color:'#2477ff', tile:'WATER'},
     {key:'obsidian',label:'Obsydian',color:'#7a5cc1', tile:'OBSIDIAN'},
+    {key:'steel',   label:'Stal',    color:'#8f9aa6', tile:'STEEL'},
+    {key:'meat',    label:'Mieso',   color:'#bd5145', tile:'MEAT'},
+    {key:'wire',    label:'Przewody',color:'#c56f32', tile:'WIRE'},
+    {key:'plastic', label:'Plastik', color:'#d7dbe3', tile:null},
+    {key:'copper',  label:'Miedz',   color:'#cc7a36', tile:null},
+    {key:'copperWire', label:'Przewod miedziany', color:'#d68535', tile:'COPPER_WIRE'},
+    {key:'transistor', label:'Tranzystor', color:'#47d18c', tile:null},
+    {key:'dynamo',  label:'Dynamo',  color:'#ffd24a', tile:'DYNAMO'},
+    {key:'teleporter', label:'Teleporter', color:'#7cf7ff', tile:'TELEPORTER'},
     {key:'torch',   label:'Pochodnia',color:'#ffb84a', tile:'TORCH'},
+    {key:'masterStone', label:'Kamien mistrza', color:'#71fff1', tile:'VOLCANO_MASTER_STONE'},
     {key:'antimatter', label:'Antymateria', color:'#c46bff', tile:null} // dropped by downed UFOs; not placeable
   ];
 
@@ -183,7 +206,7 @@
   // Loot items come from localStorage (bag + dynamic-loot keys) — whitelist their
   // fields on ingest so tampered/corrupt entries can't smuggle objects or markup
   // into stat math and innerHTML-based displays downstream.
-  const ITEM_NUM_FIELDS=['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','attackDamage','fireDps','fireRange','fireCooldown'];
+  const ITEM_NUM_FIELDS=['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost'];
   const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType'];
   const ITEM_KINDS=new Set(['cape','eyes','outfit','weapon','charm']);
   function sanitizeLootItem(raw,fallbackKind){
@@ -300,6 +323,7 @@
     if(typeof item.moveSpeedMult==='number') fn('moveSpeedMult', item.moveSpeedMult);
     if(typeof item.jumpPowerMult==='number') fn('jumpPowerMult', item.jumpPowerMult);
     if(typeof item.attackDamage==='number') fn('attackDamage', item.attackDamage);
+    if(typeof item.energyCapacityBonus==='number') fn('energyCapacityBonus', item.energyCapacityBonus);
   }
   function computeModifiers(){
     adoptCustomizationWrites();
@@ -319,10 +343,12 @@
     if(mods.mineSpeedMult==null) mods.mineSpeedMult=1;
     if(mods.jumpPowerMult==null) mods.jumpPowerMult=1;
     if(mods.attackDamage==null) mods.attackDamage=0;
+    if(mods.energyCapacityBonus==null) mods.energyCapacityBonus=0;
     // Safety clamps (future-proof against extreme stacking)
     mods.moveSpeedMult=clampRange(mods.moveSpeedMult, 0.3, 30);
     mods.jumpPowerMult=clampRange(mods.jumpPowerMult, 0.3, 3);
     mods.attackDamage=clampRange(mods.attackDamage, 0, 97);
+    mods.energyCapacityBonus=clampRange(mods.energyCapacityBonus, 0, 10000);
     MM.activeModifiers=mods;
     return mods;
   }
@@ -336,16 +362,56 @@
   }
 
   // --- Persistence ---
+  function snapshot(){
+    return {
+      v:1,
+      equipped:Object.assign({}, state.equipped),
+      colors:Object.assign({}, state.colors),
+      bag:state.bag.map(i=>Object.assign({}, i)),
+      discarded:[...state.discarded],
+      shortcutOff:[...state.shortcutOff]
+    };
+  }
+  function restoreSnapshot(src, opts){
+    opts=opts||{};
+    if(!src || typeof src!=='object') return false;
+    const defaults={cape:'classic', eyes:'bright', outfit:'default', weapon:null, charm:null};
+    Object.assign(state.equipped, defaults);
+    if(src.equipped && typeof src.equipped==='object'){
+      SLOTS.forEach(s=>{
+        const v=src.equipped[s.id];
+        state.equipped[s.id]=(typeof v==='string' && v.length<=64) ? v : (s.required? s.def : null);
+      });
+    }
+    state.colors.cape='#b91818';
+    state.colors.outfit='#f4c05a';
+    if(src.colors && typeof src.colors==='object'){
+      if(typeof src.colors.cape==='string' && src.colors.cape.length<=32) state.colors.cape=src.colors.cape;
+      if(typeof src.colors.outfit==='string' && src.colors.outfit.length<=32) state.colors.outfit=src.colors.outfit;
+    }
+    state.bag=Array.isArray(src.bag) ? src.bag.map(i=>sanitizeLootItem(i)).filter(Boolean).slice(0,MAX_BAG) : [];
+    state.discarded=new Set();
+    if(Array.isArray(src.discarded)){
+      src.discarded.slice(0,MAX_DISCARDED).forEach(id=>{ if(typeof id==='string' && id.length<=96) state.discarded.add(id); });
+    }
+    state.shortcutOff=new Set();
+    if(Array.isArray(src.shortcutOff)){
+      src.shortcutOff.slice(0,MAX_DISCARDED).forEach(id=>{ if(typeof id==='string' && id.length<=96) state.shortcutOff.add(id); });
+    }
+    ensureValid();
+    syncCustomization();
+    computeModifiers();
+    if(opts.persist!==false) save();
+    if(!opts.silent){
+      const detail={key:'restore'};
+      try{ window.dispatchEvent(new CustomEvent('mm-customization-change',{detail})); }catch(e){ /* no-op */ }
+      try{ window.dispatchEvent(new CustomEvent('mm-inventory-change',{detail})); }catch(e){ /* no-op */ }
+    }
+    return true;
+  }
   function save(){
     try{
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        v:1,
-        equipped:state.equipped,
-        colors:state.colors,
-        bag:state.bag,
-        discarded:[...state.discarded],
-        shortcutOff:[...state.shortcutOff]
-      }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot()));
     }catch(e){ /* storage full / unavailable — keep playing with session state */ }
   }
   function migrateLegacy(){
@@ -532,6 +598,8 @@
     attackBonus:()=>((MM.activeModifiers && MM.activeModifiers.attackDamage)||0),
     resources:resourceList,
     dropResource,
+    snapshot,
+    restore:restoreSnapshot,
     save
   };
 })();
