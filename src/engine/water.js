@@ -35,6 +35,8 @@ window.MM = window.MM || {};
   let pressureAcc = 0;
   // Vertical scan bound (displacement search)
   const MAX_VERTICAL_SCAN = 48;
+  const WATER_REACTION_BUDGET_BASE = 48;
+  let reactionBudget = 0;
 
   // ---------------- FX state ----------------
   const springs = new Map();        // x -> {o:px offset, v:px/s, y:surface tile row, seen:frame}
@@ -129,10 +131,37 @@ window.MM = window.MM || {};
     if(oldTile===newTile || (!isGas(oldTile) && !isGas(newTile))) return;
     try{ if(MM.gases && MM.gases.onTileChanged) MM.gases.onTileChanged(x,y,oldTile,newTile); }catch(e){}
   }
+  function reactionApi(){
+    try{ return MM.reactions || null; }catch(e){ return null; }
+  }
+  function hasWaterRecipes(){
+    const api=reactionApi();
+    try{ return !!(api && api.canStimulus && api.canStimulus('water')); }catch(e){ return false; }
+  }
+  function applyWaterReactionAt(x,y,getTile,setTile){
+    if(reactionBudget<=0 || typeof getTile!=='function' || typeof setTile!=='function') return false;
+    if(!hasWaterRecipes()) return false;
+    const t=getTile(x,y);
+    if(t===T.AIR || t===T.WATER || isGas(t)) return false;
+    reactionBudget--;
+    const api=reactionApi();
+    try{ return !!(api && api.apply && api.apply('water',x,y,getTile,setTile,{source:'water'})); }catch(e){ return false; }
+  }
+  function applyWaterReactionsNear(x,y,getTile,setTile){
+    if(!hasWaterRecipes()) return false;
+    let changed=false;
+    const dirs=[[0,1],[1,0],[-1,0],[0,-1]];
+    for(const d of dirs){
+      if(reactionBudget<=0) break;
+      changed = applyWaterReactionAt(x+d[0],y+d[1],getTile,setTile) || changed;
+    }
+    return changed;
+  }
   function writeExternalTile(x,y,v,getTile,setTile){
     const old=typeof getTile==='function' ? getTile(x,y) : undefined;
     setTile(x,y,v);
     notifyGasChange(x,y,old,v);
+    if(v===T.WATER) applyWaterReactionsNear(x,y,getTile,setTile);
   }
   function hash32(x,y){ let h=(x|0)*374761393+(y|0)*668265263; h=(h^(h>>>13))*1274126177; return (h^(h>>>16))>>>0; }
 
@@ -166,6 +195,9 @@ window.MM = window.MM || {};
   }
 
   function update(getTile,setTile,dt){
+    reactionBudget = hasWaterRecipes()
+      ? Math.min(160, WATER_REACTION_BUDGET_BASE + Math.floor(active.size*0.03))
+      : 0;
     // Newly generated chunks: wake water along their boundary columns. World generation
     // can place caves right beside dormant water (or water beside old caves) and nothing
     // else notifies the sim about that seam.
@@ -398,7 +430,21 @@ window.MM = window.MM || {};
   }
 
   function markNeighbors(set,x,y){ set.add(k(x-1,y)); set.add(k(x+1,y)); set.add(k(x,y-1)); set.add(k(x,y+1)); }
-  function addSource(x,y,getTile,setTile){ const cur=getTile(x,y); if(cur===T.AIR || isGas(cur)){ writeExternalTile(x,y,T.WATER,getTile,setTile); mark(x,y); disturb(x,140); return true; } if(cur===T.WATER){ mark(x,y); return true; } return false; }
+  function addSource(x,y,getTile,setTile){
+    if(hasWaterRecipes()) reactionBudget=Math.max(reactionBudget,4);
+    const cur=getTile(x,y);
+    if(cur===T.AIR || isGas(cur)){
+      writeExternalTile(x,y,T.WATER,getTile,setTile);
+      mark(x,y); disturb(x,140);
+      return true;
+    }
+    if(cur===T.WATER){
+      mark(x,y);
+      applyWaterReactionsNear(x,y,getTile,setTile);
+      return true;
+    }
+    return applyWaterReactionAt(x,y,getTile,setTile);
+  }
   function onTileChanged(x,y,getTile){
     let woke=false;
     for(let dy=-1; dy<=1; dy++) for(let dx=-1; dx<=1; dx++){ if(getTile(x+dx,y+dy)===T.WATER){ mark(x+dx,y+dy); woke=true; } }

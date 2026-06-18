@@ -395,6 +395,12 @@ window.MM = window.MM || {};
     }
     return 0;
   }
+  function applyElectricReaction(x,y,getTile,setTile){
+    try{
+      const api=MM.reactions;
+      return !!(api && api.apply && api.apply('electric',x,y,getTile,setTile,{source:'lightning'}));
+    }catch(e){ return false; }
+  }
   // Jagged main channel from (x0,y0) to the impact, plus a few side forks (tile coords).
   function makeBolt(x0,y0,ix,iy){
     const segs=9+Math.floor(Math.random()*4);
@@ -439,6 +445,8 @@ window.MM = window.MM || {};
         if(MM.water && MM.water.disturb){ MM.water.disturb(xi,280); MM.water.disturb(xi-1,180); MM.water.disturb(xi+1,180); }
         if(MM.particles && MM.particles.spawnSplash) MM.particles.spawnSplash((xi+0.5)*TILE, ty*TILE, 1);
       }catch(e){}
+    } else if(!isChest && ty<WORLD_H-3 && applyElectricReaction(xi,ty,getTile,setTile)){
+      res.reaction=true;
     } else if(!isChest && ty<WORLD_H-3){ // never transmute the bedrock shelf
       const r=Math.random();
       const id=r<0.70? T.CHEST_COMMON : (r<0.92? T.CHEST_RARE : T.CHEST_EPIC);

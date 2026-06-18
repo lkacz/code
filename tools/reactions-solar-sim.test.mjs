@@ -16,6 +16,8 @@ const { solar } = await import('../src/engine/solar.js');
 const { dynamo } = await import('../src/engine/dynamo.js');
 const { teleporters } = await import('../src/engine/teleporters.js');
 const { fire } = await import('../src/engine/fire.js');
+const { water } = await import('../src/engine/water.js');
+const { clouds } = await import('../src/engine/clouds.js');
 
 const tiles = new Map();
 const key = (x,y)=>Math.floor(x)+','+Math.floor(y);
@@ -42,10 +44,14 @@ function reset(){
   solar.reset();
   dynamo.reset();
   teleporters.reset();
+  water.reset();
+  clouds.reset();
   MM.world={getTile,setTile};
-  MM.water={onTileChanged(){}};
+  MM.water=water;
+  MM.worldGen={temperature:()=>0.7,surfaceHeight:()=>80,settings:{seaLevel:95},worldSeed:12345};
+  MM.background={getCycleInfo:()=>({isDay:true,tDay:0.5})};
   MM.fallingSolids={recheckNeighborhood(){},afterPlacement(){},onTileRemoved(){}};
-  MM.particles={spawnSparks(){},spawnBurst(){}};
+  MM.particles={spawnSparks(){},spawnBurst(){},spawnSplash(){}};
   MM.audio={play(){}};
 }
 function patternCells(ax,ay,storage=false,mirrored=false){
@@ -139,6 +145,26 @@ assert.equal(INFO[T.SOLAR_BATTERY].energyCapacity,120,'storage solar panel adver
   setTile(61,10,T.WIRE);
   assert.ok(reactions.apply('electric',61,10,getTile,setTile),'custom electric recipe applies');
   assert.equal(getTile(61,10),T.COPPER_WIRE,'custom electric recipe changes terrain');
+
+  reactions.register({id:'test_env_water_source_sand',stimulus:'water',pattern:['S'],map:{S:'SAND'},resultTile:'MUD',mirror:false});
+  setTile(80,10,T.SAND);
+  assert.equal(water.addSource(80,10,getTile,setTile),true,'water source on a reactive solid applies water recipes');
+  assert.equal(getTile(80,10),T.MUD,'environmental water source can complete a water recipe');
+  reactions.unregister('test_env_water_source_sand');
+
+  reactions.register({id:'test_env_water_touch_sand',stimulus:'water',pattern:['S'],map:{S:'SAND'},resultTile:'MUD',mirror:false});
+  setTile(82,10,T.SAND);
+  assert.equal(water.addSource(82,9,getTile,setTile),true,'placed water checks neighboring reactive terrain');
+  assert.equal(getTile(82,10),T.MUD,'water contact can complete a water recipe');
+  reactions.unregister('test_env_water_touch_sand');
+
+  reactions.register({id:'test_lightning_stone_to_obsidian',stimulus:'electric',pattern:['R'],map:{R:'STONE'},resultTile:'OBSIDIAN',mirror:false});
+  setTile(90,12,T.STONE);
+  const bolt=clouds.strike(90,getTile,setTile);
+  assert.ok(bolt && bolt.reaction,'lightning applies electric reactions before chest fallback');
+  assert.equal(getTile(90,12),T.OBSIDIAN,'electric lightning recipe changes the struck tile');
+  assert.equal(bolt.chest,false,'reaction strikes do not also transmute the block into a chest');
+  reactions.unregister('test_lightning_stone_to_obsidian');
 }
 
 {
