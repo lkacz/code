@@ -28,7 +28,7 @@ assert.ok(Array.isArray(INFO[T.ELECTRONICS].drops) && INFO[T.ELECTRONICS].drops.
 assert.ok(MM.inventory.RESOURCES.some(r=>r.key==='wire' && r.tile==='WIRE'), 'wire resource can place wire blocks');
 assert.ok(MM.inventory.RESOURCES.some(r=>r.key==='plastic' && !r.tile), 'plastic is tracked as a dismantled component');
 assert.ok(MM.inventory.RESOURCES.some(r=>r.key==='copper' && !r.tile), 'copper is tracked as a dismantled component');
-assert.ok(MM.inventory.RESOURCES.some(r=>r.key==='transistor' && !r.tile), 'transistor is tracked as a dismantled component');
+assert.ok(MM.inventory.RESOURCES.some(r=>r.key==='transistor' && r.tile==='TRANSISTOR'), 'transistor can be placed for solar block-reaction assemblies');
 assert.equal(INFO[T.DYNAMO].machine, 'dynamo', 'dynamo casing is a machine tile');
 assert.ok(MM.inventory.RESOURCES.some(r=>r.key==='dynamo' && r.tile==='DYNAMO'), 'dynamo is a collectable/placeable resource');
 

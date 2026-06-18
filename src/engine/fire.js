@@ -15,6 +15,7 @@
 // cell because it is not T.AIR), so the seam is one conversion rule, not a
 // shared engine. Revisit only if lava ever needs waves/pressure of its own.
 import { T, INFO, WORLD_H, TILE as TILE_PX } from '../constants.js';
+import { reactions as REACTIONS } from './reactions.js';
 (function(){
   window.MM = window.MM || {};
   const burning=new Map(); // key "x,y" -> {x,y,left,total,spreadAcc,mobAcc}
@@ -60,6 +61,11 @@ import { T, INFO, WORLD_H, TILE as TILE_PX } from '../constants.js';
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((x+0.5)*TILE_PX,(y+0.5)*TILE_PX,'common'); }catch(e){}
     return true;
   }
+  function applyHeatReaction(x,y,getTile,setTile){
+    try{
+      return !!(REACTIONS && REACTIONS.apply && REACTIONS.apply('heat',x,y,getTile,setTile));
+    }catch(e){ return false; }
+  }
   function heatAround(x,y,getTile,setTile,opts){
     opts=opts||{};
     let changed=0;
@@ -67,7 +73,7 @@ import { T, INFO, WORLD_H, TILE as TILE_PX } from '../constants.js';
     for(const [dx,dy] of HEAT_NEIGHBORS){
       if(!includeCenter && dx===0 && dy===0) continue;
       const hx=(x|0)+dx, hy=(y|0)+dy;
-      if(thawAt(hx,hy,getTile,setTile) || cookAt(hx,hy,getTile,setTile)) changed++;
+      if(applyHeatReaction(hx,hy,getTile,setTile) || thawAt(hx,hy,getTile,setTile) || cookAt(hx,hy,getTile,setTile)) changed++;
     }
     return changed;
   }

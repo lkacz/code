@@ -19,7 +19,7 @@ assert.equal(res('wire')?.tile, 'WIRE', 'wire is a placeable salvaged resource')
 assert.equal(res('plastic')?.tile, null, 'plastic is tracked as a non-placeable component');
 assert.equal(res('copper')?.tile, null, 'copper is tracked as a non-placeable component');
 assert.equal(res('copperWire')?.tile, 'COPPER_WIRE', 'copper wire is a placeable power cable resource');
-assert.equal(res('transistor')?.tile, null, 'transistor is tracked as a non-placeable component');
+assert.equal(res('transistor')?.tile, 'TRANSISTOR', 'transistor is placeable for block-reaction assemblies');
 assert.equal(res('dynamo')?.tile, 'DYNAMO', 'dynamo is a craftable placeable machine resource');
 assert.equal(res('teleporter')?.tile, 'TELEPORTER', 'teleporter is a placeable machine resource');
 assert.equal(INFO[T.DYNAMO_SLOT].passable, true, 'dynamo slot is passable for the hero and machine flow');
@@ -28,6 +28,8 @@ assert.equal(INFO[T.COPPER_WIRE].conductor, true, 'copper wire is marked as an e
 assert.equal(INFO[T.TELEPORTER].machine, 'teleporter', 'teleporter tile is marked as a machine');
 assert.equal(INFO[T.TELEPORTER].powerDevice, true, 'teleporter is marked as a powered device');
 assert.equal(INFO[T.DYNAMO].powerSource, true, 'dynamo casing is marked as a power source');
+assert.equal(INFO[T.SOLAR_PANEL].powerSource, true, 'solar panel is marked as a power source');
+assert.equal(INFO[T.SOLAR_BATTERY].energyCapacity, 120, 'storage solar panel advertises its battery capacity');
 
 // --- percent ladder snapping ---------------------------------------------
 assert.equal(INV.snapPct(1), 0, 'noise under 2.5% disappears');

@@ -17,6 +17,7 @@ assert.match(src, /equipment:\s*snapshotEquipment\(\)/, 'save payload includes e
 assert.match(src, /gases:\s*\(GASES && GASES\.snapshot\)/, 'save payload includes active gas state');
 assert.match(src, /wind:\s*\(WIND && WIND\.snapshot\)/, 'save payload includes weather wind state');
 assert.match(src, /dynamo:\s*\(DYNAMO && DYNAMO\.snapshot\)/, 'save payload includes dynamo machine state');
+assert.match(src, /solar:\s*\(SOLAR && SOLAR\.snapshot\)/, 'save payload includes solar panel battery state');
 assert.match(src, /teleporters:\s*\(TELEPORTERS && TELEPORTERS\.snapshot\)/, 'save payload includes teleporter machine state');
 assert.match(src, /tool:\s*player\.tool/, 'save payload includes the active pickaxe');
 assert.match(src, /energy:\+\(player\.energy\|\|0\)\.toFixed\(2\)/, 'save payload includes stored hero energy');
@@ -27,6 +28,7 @@ assert.match(src, /GASES\.restore\(data\.gases,getTile,setTile\)/, 'load path re
 assert.match(src, /GASES\.auditChunks\(restoredChunks,getTile\)/, 'load path re-audits saved gas tiles from chunks');
 assert.match(src, /WIND\.restore\(data\.wind\)/, 'load path restores weather wind state');
 assert.match(src, /DYNAMO\.restore\(data\.dynamo,getTile\)/, 'load path restores dynamo machine state after terrain');
+assert.match(src, /SOLAR\.restore\(data\.solar,getTile\)/, 'load path restores solar panel battery state after terrain');
 assert.match(src, /TELEPORTERS\.restore\(data\.teleporters,getTile\)/, 'load path restores teleporter batteries after terrain');
 assert.match(src, /player\.energy = \(data\.player && typeof data\.player\.energy==='number'\) \? data\.player\.energy : 0/, 'load path restores stored hero energy');
 assert.match(src, /function chunkForTerrainSave\(arr\)/, 'save path strips transient world layers from terrain chunks');

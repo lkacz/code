@@ -184,7 +184,7 @@
     {key:'plastic', label:'Plastik', color:'#d7dbe3', tile:null},
     {key:'copper',  label:'Miedz',   color:'#cc7a36', tile:null},
     {key:'copperWire', label:'Przewod miedziany', color:'#d68535', tile:'COPPER_WIRE'},
-    {key:'transistor', label:'Tranzystor', color:'#47d18c', tile:null},
+    {key:'transistor', label:'Tranzystor', color:'#47d18c', tile:'TRANSISTOR'},
     {key:'dynamo',  label:'Dynamo',  color:'#ffd24a', tile:'DYNAMO'},
     {key:'teleporter', label:'Teleporter', color:'#7cf7ff', tile:'TELEPORTER'},
     {key:'torch',   label:'Pochodnia',color:'#ffb84a', tile:'TORCH'},

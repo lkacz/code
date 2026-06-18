@@ -9,6 +9,7 @@
 // The equipped weapon comes from MM.inventory.
 import { T, INFO, isSolid, WORLD_H } from '../constants.js';
 import { fire as FIRE } from './fire.js';
+import { reactions as REACTIONS } from './reactions.js';
 (function(){
   window.MM = window.MM || {};
 
@@ -66,6 +67,11 @@ import { fire as FIRE } from './fire.js';
   }
   function igniteWorldGas(x,y,getTile,setTile,radius){
     try{ return !!(MM.gases && MM.gases.igniteAt && MM.gases.igniteAt(x,y,getTile,setTile,radius||1.5)); }catch(e){ return false; }
+  }
+  function applyBlockReaction(stimulus,tx,ty,getTile,setTile){
+    try{
+      return !!(REACTIONS && REACTIONS.apply && REACTIONS.apply(stimulus,tx,ty,getTile,setTile));
+    }catch(e){ return false; }
   }
 
   function notifyMeleeSwing(tx,ty,player){
@@ -245,6 +251,12 @@ import { fire as FIRE } from './fire.js';
       const x=sx+v.dx*d, y=sy+v.dy*d;
       const tx=Math.floor(x), ty=Math.floor(y);
       const t=tileGetter ? tileGetter(tx,ty) : null;
+      if(tileGetter && tileSetter && applyBlockReaction('electric',tx,ty,tileGetter,tileSetter)){
+        ex=sx+v.dx*Math.max(0,d-step*0.5);
+        ey=sy+v.dy*Math.max(0,d-step*0.5);
+        blocked=true;
+        break;
+      }
       if(t===T.GLASS && tileSetter && shatterGlassAt(tx,ty,tileSetter,tileGetter)){
         ex=sx+v.dx*Math.max(0,d-step*0.5);
         ey=sy+v.dy*Math.max(0,d-step*0.5);
@@ -732,6 +744,12 @@ import { fire as FIRE } from './fire.js';
       const t=getTile(tx,ty);
       const info=INFO[t];
       const hitWall=info && !info.passable && t!==T.AIR;
+      if(p.kind==='flame' && applyBlockReaction('heat',tx,ty,getTile,setTile)){
+        puffs.splice(i,1); continue;
+      }
+      if(p.kind==='hose' && applyBlockReaction('water',tx,ty,getTile,setTile)){
+        puffs.splice(i,1); continue;
+      }
       if(t===T.GLASS && shatterGlassAt(tx,ty,setTile,getTile,{respectHeatForged:p.kind==='flame'})){
         puffs.splice(i,1); continue;
       }

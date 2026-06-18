@@ -27,6 +27,7 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
   function isTeleporter(t){ return t===T.TELEPORTER; }
   function isCable(t){ return t===T.COPPER_WIRE; }
   function isDynamoTile(t){ return t===T.DYNAMO || t===T.DYNAMO_SLOT; }
+  function isSolarTile(t){ return !!(MM.solar && MM.solar.isSourceTile && MM.solar.isSourceTile(t)); }
   function isPowerDeviceTile(t){ return !!(INFO[t] && INFO[t].powerDevice); }
   function isPowerSourceTile(t){ return isDynamoTile(t) || !!(INFO[t] && INFO[t].powerSource); }
   function isMachineNetworkTile(t){ return isCable(t) || isPowerDeviceTile(t) || isPowerSourceTile(t); }
@@ -123,12 +124,34 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
     slots.seen.add(k);
     slots.list.push(slot);
   }
+  function addSource(sources,source){
+    if(!source) return;
+    const k=(source.kind||'source')+':'+key(source.x,source.y);
+    if(sources.seen.has(k)) return;
+    sources.seen.add(k);
+    sources.list.push(source);
+  }
+  function sourceNodeAt(x,y,getTile){
+    const t=getSafe(getTile,x,y,T.AIR);
+    if(isDynamoTile(t)){
+      const d=dynamoSlotAt(x,y,getTile);
+      return d ? {kind:'dynamo',x:d.x,y:d.y} : null;
+    }
+    if(isSolarTile(t)){
+      try{
+        const s=MM.solar.sourceAt(x,y,getTile);
+        return s ? {kind:'solar',x:s.x,y:s.y,cells:s.cells||1} : null;
+      }catch(e){ return null; }
+    }
+    return null;
+  }
   function networkFor(tx,ty,getTile){
     tx=Math.floor(tx); ty=Math.floor(ty);
     const tk=key(tx,ty);
     const cached=networkCache.get(tk);
     if(cached && cached.rev===networkRev) return cached;
     const dynamos={seen:new Set(),list:[]};
+    const sources={seen:new Set(),list:[]};
     const seen=new Set();
     const q=[];
     const pushCable=(x,y)=>{
@@ -143,7 +166,11 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
       const nx=tx+dx, ny=ty+dy;
       const t=getSafe(getTile,nx,ny,T.AIR);
       if(isCable(t)) pushCable(nx,ny);
-      else if(isDynamoTile(t)) addDynamoSlot(dynamos,dynamoSlotAt(nx,ny,getTile));
+      else {
+        const src=sourceNodeAt(nx,ny,getTile);
+        addSource(sources,src);
+        if(src && src.kind==='dynamo') addDynamoSlot(dynamos,{x:src.x,y:src.y});
+      }
     });
     for(let qi=0; qi<q.length && qi<NETWORK_CAP; qi++){
       const c=q[qi];
@@ -151,40 +178,71 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
         const nx=c.x+dx, ny=c.y+dy;
         const t=getSafe(getTile,nx,ny,T.AIR);
         if(isCable(t)) pushCable(nx,ny);
-        else if(isDynamoTile(t)) addDynamoSlot(dynamos,dynamoSlotAt(nx,ny,getTile));
+        else {
+          const src=sourceNodeAt(nx,ny,getTile);
+          addSource(sources,src);
+          if(src && src.kind==='dynamo') addDynamoSlot(dynamos,{x:src.x,y:src.y});
+        }
       });
     }
-    const net={rev:networkRev,dynamos:dynamos.list,cableCount:seen.size};
+    const net={rev:networkRev,dynamos:dynamos.list,sources:sources.list,cableCount:seen.size};
     networkCache.set(tk,net);
     return net;
   }
+  function sourceEnergy(source,getTile,dynamo){
+    if(!source) return 0;
+    if(source.kind==='dynamo'){
+      const D=dynamo || MM.dynamo;
+      return (D && D.energyAt) ? Math.max(0,D.energyAt(source.x,source.y,getTile)||0) : 0;
+    }
+    if(source.kind==='solar'){
+      const S=MM.solar;
+      return (S && S.energyAt) ? Math.max(0,S.energyAt(source.x,source.y,getTile)||0) : 0;
+    }
+    return 0;
+  }
+  function drainSource(source,amount,getTile,dynamo){
+    if(!source) return 0;
+    const want=Math.max(0,Number(amount)||0);
+    if(want<=0) return 0;
+    if(source.kind==='dynamo'){
+      const D=dynamo || MM.dynamo;
+      const got=(D && D.drainAt) ? D.drainAt(source.x,source.y,want,getTile) : null;
+      return got && got.amount>0 ? got.amount : 0;
+    }
+    if(source.kind==='solar'){
+      const S=MM.solar;
+      const got=(S && S.drainAt) ? S.drainAt(source.x,source.y,want,getTile) : null;
+      return got && got.amount>0 ? got.amount : 0;
+    }
+    return 0;
+  }
   function connectedDynamoEnergy(m,getTile,dynamo){
-    const D=dynamo || MM.dynamo;
-    if(!D || !D.energyAt) return 0;
     const net=networkFor(m.x,m.y,getTile);
     let total=0;
-    for(const d of net.dynamos) total+=Math.max(0,D.energyAt(d.x,d.y,getTile)||0);
+    const sources=Array.isArray(net.sources) && net.sources.length ? net.sources : net.dynamos.map(d=>({kind:'dynamo',x:d.x,y:d.y}));
+    for(const s of sources) total+=sourceEnergy(s,getTile,dynamo);
     return total;
   }
   function connectedDynamosAt(x,y,getTile){
     return networkFor(x,y,getTile).dynamos.slice();
   }
   function availableNetworkEnergyAt(x,y,getTile,dynamo){
-    const D=dynamo || MM.dynamo;
-    if(!D || !D.energyAt) return 0;
     let total=0;
-    for(const d of networkFor(x,y,getTile).dynamos) total+=Math.max(0,D.energyAt(d.x,d.y,getTile)||0);
+    const net=networkFor(x,y,getTile);
+    const sources=Array.isArray(net.sources) && net.sources.length ? net.sources : net.dynamos.map(d=>({kind:'dynamo',x:d.x,y:d.y}));
+    for(const s of sources) total+=sourceEnergy(s,getTile,dynamo);
     return total;
   }
   function drainNetworkEnergyAt(x,y,amount,getTile,dynamo){
-    const D=dynamo || MM.dynamo;
     const maxTake=Math.max(0,Number(amount)||0);
-    if(!D || !D.drainAt || maxTake<=0) return 0;
+    if(maxTake<=0) return 0;
     let drained=0;
-    for(const d of networkFor(x,y,getTile).dynamos){
+    const net=networkFor(x,y,getTile);
+    const sources=Array.isArray(net.sources) && net.sources.length ? net.sources : net.dynamos.map(d=>({kind:'dynamo',x:d.x,y:d.y}));
+    for(const source of sources){
       if(drained>=maxTake) break;
-      const got=D.drainAt(d.x,d.y,maxTake-drained,getTile);
-      if(got && got.amount>0) drained+=got.amount;
+      drained+=drainSource(source,maxTake-drained,getTile,dynamo);
     }
     return drained;
   }

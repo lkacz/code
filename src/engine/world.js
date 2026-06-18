@@ -689,6 +689,7 @@ window.MM = window.MM || {};
     try{ if(MM.meat && MM.meat.onTileChanged) MM.meat.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.gases && MM.gases.onTileChanged) MM.gases.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.dynamo && MM.dynamo.onTileChanged) MM.dynamo.onTileChanged(x,y,old,v); }catch(e){}
+    try{ if(MM.solar && MM.solar.onTileChanged) MM.solar.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.teleporters && MM.teleporters.onTileChanged) MM.teleporters.onTileChanged(x,y,old,v); }catch(e){}
   }
   function setTileInternal(x,y,v,transient){
