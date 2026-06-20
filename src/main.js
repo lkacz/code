@@ -3139,11 +3139,12 @@ function draw(){ // Background first
  resetFrameCanvasState();
  const renderCam=currentRenderCamera();
  drawBackground();
+ const meteorShake=(METEORITES && METEORITES.screenShakeOffset) ? METEORITES.screenShakeOffset(performance.now()) : null;
  // Keep simulation camera continuous, but render on the device-pixel grid. This
  // removes subpixel shimmer without snapping the camera to whole tile pixels.
  const camRenderX = renderCam.x;
  const camRenderY = renderCam.y;
- const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camRenderX)-1; const sy=Math.floor(camRenderY)-1; ctx.save(); ctx.scale(zoom,zoom);
+ const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const sx=Math.floor(camRenderX)-1; const sy=Math.floor(camRenderY)-1; ctx.save(); if(meteorShake && (meteorShake.x || meteorShake.y)) ctx.translate(meteorShake.x,meteorShake.y); ctx.scale(zoom,zoom);
  ctx.translate(-camRenderX*TILE,-camRenderY*TILE);
  ctx.imageSmoothingEnabled=false; // avoid anti-alias gaps
  try {
@@ -3948,7 +3949,7 @@ if(MM.ui && MM.ui.injectSeasonDebugPanel) MM.ui.injectSeasonDebugPanel({
 }, menuPanel);
 if(MM.ui && MM.ui.injectMeteorDebugPanel) MM.ui.injectMeteorDebugPanel({
 	setEnabled:(enabled)=>{ if(!METEORITES || !METEORITES.setEnabled) return false; const ok=!!METEORITES.setEnabled(enabled); if(ok){ noteSaveActivity(); saveState(); } return ok; },
-	spawn:()=>{ if(!METEORITES || !METEORITES.forceSpawn) return false; const ok=!!METEORITES.forceSpawn({nearHero:true,intensity:1.25},player,getTile); if(ok){ noteSaveActivity(); saveState(); } return ok; },
+	spawn:()=>{ if(!METEORITES || !METEORITES.forceSpawn) return false; const ok=!!METEORITES.forceSpawn({nearHero:true,intensity:1.65},player,getTile); if(ok){ noteSaveActivity(); saveState(); } return ok; },
 	roll:()=>{ if(!METEORITES || !METEORITES.rollSchedule) return false; const ok=!!METEORITES.rollSchedule(); if(ok){ noteSaveActivity(); saveState(); } return ok; },
 	clear:()=>{ if(!METEORITES || !METEORITES.clearActive) return false; METEORITES.clearActive(); return true; },
 	metrics:()=> (METEORITES && METEORITES.metrics) ? METEORITES.metrics() : null
@@ -4017,7 +4018,7 @@ function msg(t){ if(MM.ui && MM.ui.msg) MM.ui.msg(t); else { el.msg.textContent=
 // Engine modules (mobs death, lightning electrocution) reach messages via window.msg
 window.msg = msg;
 window.forceVolcanoMasterStone = function(){ return !!(VOLCANO && VOLCANO.forceMasterEruption && VOLCANO.forceMasterEruption()); };
-window.forceMeteor = function(){ return !!(METEORITES && METEORITES.forceSpawn && METEORITES.forceSpawn({nearHero:true,intensity:1.25},player,getTile)); };
+window.forceMeteor = function(){ return !!(METEORITES && METEORITES.forceSpawn && METEORITES.forceSpawn({nearHero:true,intensity:1.65},player,getTile)); };
 
 // FPS
 let frames=0,lastFps=performance.now(), currentFps=0; function updateFps(now){ frames++; if(now-lastFps>1000){ currentFps=frames; const budget = (GRASS && GRASS.getBudgetInfo)? GRASS.getBudgetInfo():''; el.fps.textContent=currentFps+' FPS'+ (budget? (' '+budget):''); frames=0; lastFps=now; }}

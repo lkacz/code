@@ -49,13 +49,19 @@ const offBefore=meteorites.metrics();
 meteorites.update(30,player,getTile,setTile);
 assert.equal(meteorites.metrics().spawned, offBefore.spawned, 'disabled scheduler does not spawn meteors');
 
-const spawned = meteorites.forceSpawn({x:0,y:SURF,intensity:1.25,side:-1}, player, getTile);
+const spawned = meteorites.forceSpawn({x:0,y:SURF,intensity:1.65,side:-1}, player, getTile);
 assert.ok(spawned, 'forced debug meteor spawns');
 assert.equal(meteorites.metrics().meteors, 1, 'active meteor is tracked');
 
+let sawUndergroundImpact=false;
+let sawShake=false;
 for(let i=0;i<900;i++){
   meteorites.update(1/60, player, getTile, setTile);
   const m=meteorites.metrics();
+  if(m.impacts>0){
+    if(m.lastImpact && m.lastImpact.y>=SURF+4) sawUndergroundImpact=true;
+    if(m.shake>0) sawShake=true;
+  }
   if(m.meteors===0 && m.queuedOps===0 && m.terrainJobs===0) break;
 }
 
@@ -63,6 +69,8 @@ const metricsAfter=meteorites.metrics();
 assert.equal(metricsAfter.meteors, 0, 'meteor resolves after impact');
 assert.equal(metricsAfter.terrainJobs, 0, 'budgeted crater job drains');
 assert.ok(metricsAfter.impacts>=1, 'impact counter increments');
+assert.ok(sawUndergroundImpact, 'meteor penetrates and explodes below the surface');
+assert.ok(sawShake, 'impact starts screen shake');
 assert.ok(marked>=1, 'impact marks the world dirty for save');
 assert.ok(waterWake>0, 'terrain edits wake water');
 assert.ok(removed>0, 'carved cells wake falling solids');
@@ -74,6 +82,7 @@ assert.ok(hotGas>0, 'impact injects hot air gas');
 
 const changed=[...tiles.entries()].map(([key,t])=>({key,t,y:Number(key.split(',')[1])}));
 assert.ok(changed.some(c=>c.y>=SURF && c.t===T.AIR), 'crater carves solid ground into air');
+assert.ok(changed.some(c=>c.y>=SURF+5 && c.t===T.AIR), 'underground blast hollows out deeper ground');
 assert.ok(changed.some(c=>c.t===T.LAVA || c.t===T.OBSIDIAN || c.t===T.GLASS), 'crater leaves a heated floor/rim');
 
 meteorites.restore({enabled:true,nextIn:12.5,spawned:3,impacts:4});

@@ -6,11 +6,11 @@ const meteorites = (function(){
   const MIN_WAIT = 135;
   const MAX_WAIT = 260;
   const MAX_METEORS = 2;
-  const MAX_EMBERS = 96;
-  const MAX_DEBRIS = 42;
-  const MAX_PLUMES = 24;
-  const MAX_SHOCKWAVES = 5;
-  const MAX_SCORCHES = 6;
+  const MAX_EMBERS = 140;
+  const MAX_DEBRIS = 60;
+  const MAX_PLUMES = 34;
+  const MAX_SHOCKWAVES = 7;
+  const MAX_SCORCHES = 8;
   const GRAVITY = 7.5;
   const BASE_TERRAIN_BUDGET = 8;
   const STRESSED_TERRAIN_BUDGET = 4;
@@ -29,11 +29,18 @@ const meteorites = (function(){
   let impacts = 0;
   let screenFlash = 0;
   let lastImpact = null;
+  let shakeT = 0;
+  let shakeMax = 0;
+  let shakeAmp = 0;
+  let shakeSeed = 0;
 
   function clamp(n,a,b){ return Math.max(a, Math.min(b,n)); }
   function rand(a,b){ return a + Math.random()*(b-a); }
   function frameMs(){
     return (typeof window !== 'undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
+  }
+  function penetrationDepth(intensity){
+    return clamp(4.8+intensity*3.35,5.2,11.8);
   }
   function rollNext(){ nextIn = rand(MIN_WAIT, MAX_WAIT); }
   function saveSettings(){
@@ -219,6 +226,78 @@ const meteorites = (function(){
   function markWorldChanged(){
     try{ if(typeof window.__mmMarkWorldChanged==='function') window.__mmMarkWorldChanged('meteorite'); }catch(e){}
   }
+  function startShake(duration,amp){
+    const d=clamp(Number(duration)||0,0,2.2);
+    const a=clamp(Number(amp)||0,0,26);
+    if(!(d>0 && a>0)) return;
+    const current=shakeT>0 && shakeMax>0 ? shakeAmp*(shakeT/shakeMax) : 0;
+    if(a>=current){
+      shakeT=d;
+      shakeMax=d;
+      shakeAmp=a;
+      shakeSeed=Math.random()*Math.PI*2;
+    } else {
+      shakeT=Math.max(shakeT,d*0.55);
+      shakeMax=Math.max(shakeMax,d);
+    }
+  }
+  function screenShakeOffset(now){
+    if(!(shakeT>0 && shakeMax>0 && shakeAmp>0)) return {x:0,y:0};
+    const k=clamp(shakeT/shakeMax,0,1);
+    const amp=shakeAmp*k*k;
+    const t=((Number.isFinite(now)?now:((typeof performance!=='undefined' && performance.now)?performance.now():Date.now()))||0)*0.055;
+    return {
+      x:(Math.sin(t*1.73+shakeSeed)+Math.sin(t*3.91+shakeSeed*0.47)*0.45)*amp,
+      y:(Math.cos(t*2.11+shakeSeed*1.37)+Math.sin(t*5.03+shakeSeed)*0.35)*amp*0.72
+    };
+  }
+  function emitEntryFx(cx,cy,intensity){
+    screenFlash=Math.max(screenFlash,0.28);
+    startShake(0.24+intensity*0.04,3.5+intensity*2.2);
+    pushCapped(shockwaves,{x:cx,y:cy,r:0,max:3.4+intensity*1.2,life:0,ttl:0.36+intensity*0.04,dust:true},MAX_SHOCKWAVES);
+    const stress=frameMs()>30;
+    const n=stress ? 5 : 11;
+    for(let i=0;i<n;i++){
+      const a=rand(-Math.PI*0.95,-Math.PI*0.05);
+      const sp=rand(3.2,8.8);
+      pushCapped(debris,{
+        x:cx+rand(-0.35,0.35),
+        y:cy+rand(-0.25,0.25),
+        vx:Math.cos(a)*sp,
+        vy:Math.sin(a)*sp-rand(0,1.4),
+        life:0,
+        max:rand(0.45,0.95),
+        rot:Math.random()*Math.PI,
+        spin:rand(-8,8),
+        hot:Math.random()<0.35
+      },MAX_DEBRIS);
+    }
+    for(let i=0;i<(stress?1:2);i++) smokeAt(cx+rand(-0.8,0.8),cy+rand(-0.4,0.2),1.2+intensity*0.25);
+    burstAt(cx,cy,'rare',10);
+  }
+  function carveEntryShaft(cx,cy,intensity,getTile,setTile){
+    if(typeof getTile!=='function' || typeof setTile!=='function') return;
+    const radius=clamp(0.95+intensity*0.22,1.05,1.55);
+    const y0=Math.max(1,Math.floor(cy-1));
+    const y1=Math.min(WORLD_H-4,Math.ceil(cy+1));
+    const x0=Math.floor(cx-radius-1);
+    const x1=Math.ceil(cx+radius+1);
+    for(let y=y0; y<=y1; y++){
+      for(let x=x0; x<=x1; x++){
+        const dx=Math.abs((x+0.5)-cx);
+        const dy=Math.abs((y+0.5)-cy);
+        let nt=null;
+        if(dx<=radius && dy<=1.25) nt=T.AIR;
+        else if(dx<=radius+0.72 && dy<=1.15 && Math.random()<0.38) nt=Math.random()<0.78?T.OBSIDIAN:T.STONE;
+        if(nt==null) continue;
+        const old=readTile(getTile,x,y);
+        if(old===nt || protectedTile(old)) continue;
+        if(nt===T.AIR && old===T.AIR) continue;
+        setTile(x,y,nt);
+        notifyTerrainChange(x,y,old,nt,getTile,setTile);
+      }
+    }
+  }
   function notifyTerrainChange(x,y,oldTile,newTile,getTile,setTile){
     if(oldTile===newTile) return;
     try{
@@ -235,39 +314,86 @@ const meteorites = (function(){
     if(oldTile===T.WATER || oldTile===T.ICE) splashAt(x+0.5,y+0.5,0.8);
     if(tileInfo(oldTile).flammable && newTile===T.AIR) smokeAt(x+0.5,y+0.4,0.8);
   }
-  function buildCraterOps(cx,cy,intensity,getTile){
-    const rx=clamp(4.8+intensity*1.8,4.5,8.5);
-    const ry=clamp(2.4+intensity*1.15,2.2,4.6);
+  function buildCraterOps(cx,cy,intensity,getTile,opts){
+    opts=opts||{};
+    const surfaceY=clamp(Math.round(Number.isFinite(opts.surfaceY)?opts.surfaceY:cy),2,WORLD_H-6);
+    const detonationY=clamp(Number.isFinite(opts.detonationY)?opts.detonationY:(surfaceY+penetrationDepth(intensity)),surfaceY+4,WORLD_H-6);
+    const rx=clamp(6.0+intensity*2.25,6.0,10.7);
+    const ry=clamp(3.5+intensity*1.55,3.8,6.4);
+    const blastRx=clamp(5.2+intensity*2.45,5.8,10.8);
+    const blastRy=clamp(3.2+intensity*1.85,3.8,7.2);
+    const shaftRadius=clamp(1.05+intensity*0.28,1.15,1.8);
     const ops=[];
-    const left=Math.floor(cx-rx-1);
-    const right=Math.ceil(cx+rx+1);
-    for(let x=left; x<=right; x++){
+    function addOp(phase,x,y,t,d,place){
+      if(y<1 || y>=WORLD_H-3 || !Number.isFinite(x)) return;
+      ops.push({phase,x,y,t,d,place:!!place});
+    }
+    const left=Math.floor(cx-Math.max(rx,blastRx)-2);
+    const right=Math.ceil(cx+Math.max(rx,blastRx)+2);
+    for(let x=Math.floor(cx-rx-1); x<=Math.ceil(cx+rx+1); x++){
       const dx=x-cx;
       const edge=Math.abs(dx)/Math.max(0.1,rx);
       if(edge>1.12) continue;
-      const surface=craterSurfaceNear(x,cy,getTile);
+      const surface=craterSurfaceNear(x,surfaceY,getTile);
       if(surface==null) continue;
       const curve=Math.max(0,1-edge*edge);
-      const depth=Math.max(1,Math.floor(1+curve*ry+Math.random()*0.85));
-      const startY=Math.max(1,Math.floor(surface-2-curve*0.7));
+      const depth=Math.max(2,Math.floor(2+curve*ry+Math.random()*1.05));
+      const startY=Math.max(1,Math.floor(surface-2-curve*0.9));
       const floorY=Math.min(WORLD_H-4,Math.floor(surface+depth));
       for(let y=startY; y<=floorY; y++){
-        const ny=(y-(surface+depth*0.30))/Math.max(1,ry+2.2);
-        if(edge*edge*0.92+ny*ny>1.15) continue;
-        ops.push({phase:0,x,y,t:T.AIR,d:Math.abs(dx)+(y-surface)*0.25});
+        const ny=(y-(surface+depth*0.38))/Math.max(1,ry+2.8);
+        if(edge*edge*0.86+ny*ny>1.12) continue;
+        addOp(0,x,y,T.AIR,Math.abs(dx)+(y-surface)*0.2,false);
       }
       const old=readTile(getTile,x,floorY);
       const central=Math.abs(dx)<=1 && intensity>0.8;
-      ops.push({phase:1,x,y:floorY,t:hotTileForFloor(old,central),d:Math.abs(dx),place:true});
+      addOp(1,x,floorY,hotTileForFloor(old,central),Math.abs(dx),true);
       if(Math.abs(dx)<=Math.max(1,rx*0.28) && floorY+1<WORLD_H-3){
         const coreRoll=Math.random();
         const t=coreRoll<0.10 ? T.DIAMOND : (coreRoll<0.48 ? T.COAL : T.OBSIDIAN);
-        ops.push({phase:1,x,y:floorY+1,t,d:Math.abs(dx)+0.7,place:true});
+        addOp(1,x,floorY+1,t,Math.abs(dx)+0.7,true);
       }
       if(edge>0.72 && edge<1.08){
         const rimY=Math.max(1,surface-1-(Math.random()<0.45?1:0));
-        ops.push({phase:1,x,y:rimY,t:Math.random()<0.64?T.STONE:T.OBSIDIAN,d:Math.abs(dx)+2,place:true});
+        addOp(1,x,rimY,Math.random()<0.58?T.STONE:T.OBSIDIAN,Math.abs(dx)+2,true);
       }
+    }
+    const shaftTop=Math.max(1,Math.floor(surfaceY-1));
+    const shaftBottom=Math.min(WORLD_H-4,Math.ceil(detonationY+1));
+    for(let y=shaftTop; y<=shaftBottom; y++){
+      const wobble=Math.sin(y*0.73+cx*0.41)*0.22;
+      const sx=cx+wobble;
+      for(let x=Math.floor(sx-shaftRadius-1); x<=Math.ceil(sx+shaftRadius+1); x++){
+        const dx=Math.abs((x+0.5)-sx);
+        const d=Math.abs(y-surfaceY)*0.22+dx;
+        if(dx<=shaftRadius){
+          addOp(0,x,y,T.AIR,d,false);
+        } else if(dx<=shaftRadius+0.74 && y>surfaceY+1){
+          addOp(1,x,y,Math.random()<0.78?T.OBSIDIAN:T.STONE,d+4,true);
+        }
+      }
+    }
+    for(let x=left; x<=right; x++){
+      for(let y=Math.floor(detonationY-blastRy-1); y<=Math.ceil(detonationY+blastRy+2); y++){
+        const dx=((x+0.5)-cx)/Math.max(0.1,blastRx);
+        const dy=(y-detonationY)/Math.max(0.1,blastRy);
+        const shape=dx*dx + dy*dy*(dy>0?0.72:1.08);
+        const d=Math.sqrt(dx*dx+dy*dy)*12;
+        if(shape<=0.98){
+          addOp(0,x,y,T.AIR,d,false);
+        } else if(shape<=1.22){
+          const hot=Math.random()<0.72 || dy>0.35;
+          addOp(1,x,y,hot?T.OBSIDIAN:T.STONE,d+8,true);
+        }
+      }
+    }
+    const floorY=Math.min(WORLD_H-4,Math.round(detonationY+blastRy*0.70));
+    for(let x=Math.floor(cx-blastRx*0.48); x<=Math.ceil(cx+blastRx*0.48); x++){
+      const dx=Math.abs((x+0.5)-cx)/Math.max(1,blastRx*0.5);
+      if(dx>1.08) continue;
+      const central=dx<0.34;
+      addOp(1,x,floorY,central?T.LAVA:(Math.random()<0.72?T.OBSIDIAN:T.STONE),dx*2,true);
+      if(central && floorY+1<WORLD_H-3) addOp(1,x,floorY+1,Math.random()<0.40?T.COAL:T.OBSIDIAN,dx*2+1,true);
     }
     ops.sort((a,b)=>a.phase-b.phase || a.d-b.d);
     return ops;
@@ -305,13 +431,15 @@ const meteorites = (function(){
   function emitImpactFx(cx,cy,intensity,waterHit){
     impacts++;
     lastImpact={x:cx,y:cy,t:0};
-    screenFlash=Math.max(screenFlash,0.95);
-    pushCapped(shockwaves,{x:cx,y:cy,r:0,max:5.6+intensity*2.6,life:0,ttl:0.62+intensity*0.16},MAX_SHOCKWAVES);
-    pushCapped(shockwaves,{x:cx,y:cy+0.35,r:0,max:8.5+intensity*3.2,life:0,ttl:1.05+intensity*0.22,dust:true},MAX_SHOCKWAVES);
-    pushCapped(scorches,{x:cx,y:cy,rx:5.2+intensity*1.9,ry:2.5+intensity*1.2,life:0,ttl:5.2+intensity*1.4},MAX_SCORCHES);
+    screenFlash=Math.max(screenFlash,1.28);
+    startShake(0.78+intensity*0.18,9.5+intensity*5.2);
+    pushCapped(shockwaves,{x:cx,y:cy,r:0,max:7.2+intensity*3.4,life:0,ttl:0.58+intensity*0.16},MAX_SHOCKWAVES);
+    pushCapped(shockwaves,{x:cx,y:cy+0.35,r:0,max:12.0+intensity*4.3,life:0,ttl:1.05+intensity*0.24,dust:true},MAX_SHOCKWAVES);
+    pushCapped(shockwaves,{x:cx,y:cy-1.2,r:0,max:5.0+intensity*2.6,life:0,ttl:0.42+intensity*0.10},MAX_SHOCKWAVES);
+    pushCapped(scorches,{x:cx,y:cy,rx:7.2+intensity*2.6,ry:3.4+intensity*1.55,life:0,ttl:6.2+intensity*1.6},MAX_SCORCHES);
     const stress=frameMs()>30;
-    const debrisCount=stress ? 7 : 14;
-    const emberCount=stress ? 12 : 28;
+    const debrisCount=stress ? 11 : 24;
+    const emberCount=stress ? 18 : 44;
     for(let i=0;i<debrisCount;i++){
       const a=rand(-Math.PI*0.95,-Math.PI*0.05);
       const sp=rand(4.0,11.5)*(0.75+intensity*0.18);
@@ -321,7 +449,7 @@ const meteorites = (function(){
         vx:Math.cos(a)*sp,
         vy:Math.sin(a)*sp-rand(0,2.4),
         life:0,
-        max:rand(0.75,1.45),
+        max:rand(0.85,1.75),
         rot:Math.random()*Math.PI,
         spin:rand(-8,8),
         hot:Math.random()<0.58
@@ -336,12 +464,12 @@ const meteorites = (function(){
         vx:Math.cos(a)*sp,
         vy:Math.sin(a)*sp-rand(1.5,5.5),
         life:0,
-        max:rand(0.45,1.15),
-        size:rand(0.07,0.17),
+        max:rand(0.55,1.35),
+        size:rand(0.08,0.20),
         hue:Math.random()<0.16?'white':(Math.random()<0.54?'gold':'orange')
       },MAX_EMBERS);
     }
-    const plumeCount=stress ? 4 : 8;
+    const plumeCount=stress ? 7 : 14;
     for(let i=0;i<plumeCount;i++){
       pushCapped(plumes,{
         x:cx+rand(-3.8,3.8),
@@ -349,38 +477,38 @@ const meteorites = (function(){
         vx:rand(-0.48,0.48),
         vy:rand(-1.25,-0.35),
         life:0,
-        max:rand(2.2,4.4),
-        r:rand(0.35,0.9)*(1+intensity*0.12),
+        max:rand(2.6,5.2),
+        r:rand(0.44,1.05)*(1+intensity*0.16),
         shade:Math.floor(rand(38,82))
       },MAX_PLUMES);
     }
     if(waterHit) splashAt(cx,cy,1.3);
-    for(let i=0;i<2;i++) smokeAt(cx+rand(-2.5,2.5),cy+rand(-0.3,1.0),1.8+intensity*0.4);
-    burstAt(cx,cy,'epic',18);
-    try{ if(MM.gases && MM.gases.add) MM.gases.add('hot',cx,cy-0.6,{power:1.9+intensity*0.4,cells:8}); }catch(e){}
+    for(let i=0;i<4;i++) smokeAt(cx+rand(-3.4,3.4),cy+rand(-1.4,1.4),2.1+intensity*0.55);
+    burstAt(cx,cy,'epic',28);
+    try{ if(MM.gases && MM.gases.add) MM.gases.add('hot',cx,cy-0.6,{power:2.6+intensity*0.55,cells:12}); }catch(e){}
     playReadyAudio('meteor');
     playReadyAudio('explosion');
-    try{ if(typeof window.msg==='function') window.msg('Meteoryt uderzyl w ziemie. Krater @ x='+Math.round(cx)); }catch(e){}
+    try{ if(typeof window.msg==='function') window.msg('Krater @ x='+Math.round(cx)); }catch(e){}
   }
   function hurtActors(cx,cy,intensity){
-    const radius=6.2+intensity*1.6;
-    try{ if(MM.mobs && MM.mobs.blastRadius) MM.mobs.blastRadius(cx,cy,radius,26+intensity*7); }catch(e){}
+    const radius=8.0+intensity*2.3;
+    try{ if(MM.mobs && MM.mobs.blastRadius) MM.mobs.blastRadius(cx,cy,radius,34+intensity*10); }catch(e){}
     try{
       if(MM.bosses && MM.bosses.damageAt){
-        const d=24+intensity*8;
+        const d=34+intensity*11;
         MM.bosses.damageAt(Math.round(cx),Math.round(cy),d);
         MM.bosses.damageAt(Math.round(cx)+1,Math.round(cy),d*0.6);
         MM.bosses.damageAt(Math.round(cx)-1,Math.round(cy),d*0.6);
       }
     }catch(e){}
-    try{ if(MM.ufo && MM.ufo.damageAt) MM.ufo.damageAt(Math.round(cx),Math.round(cy),34+intensity*10); }catch(e){}
+    try{ if(MM.ufo && MM.ufo.damageAt) MM.ufo.damageAt(Math.round(cx),Math.round(cy),48+intensity*13); }catch(e){}
     try{ if(MM.plants && MM.plants.scorchAt) MM.plants.scorchAt(cx,cy,radius); }catch(e){}
     const pl=(typeof window!=='undefined' && window.player) || null;
     if(pl && typeof window.damageHero==='function'){
       const d=Math.hypot(pl.x-cx,pl.y-cy);
       if(d<radius+1.6){
         const k=1-Math.min(1,d/(radius+1.6));
-        window.damageHero(18+Math.round(k*(52+intensity*16)),{srcX:cx,srcY:cy,kb:6+k*8,kbY:-4.5-k*4,launch:-6.2-k*4.5,invulMs:950,cause:'meteor'});
+        window.damageHero(24+Math.round(k*(68+intensity*20)),{srcX:cx,srcY:cy,kb:7+k*10,kbY:-5.5-k*5,launch:-7.5-k*5.2,invulMs:1050,cause:'meteor'});
       }
     }
   }
@@ -400,26 +528,34 @@ const meteorites = (function(){
     if(meteors.length>=MAX_METEORS) return null;
     const target=pickTarget(player,getTile,opts);
     if(!target || !Number.isFinite(target.x) || !Number.isFinite(target.y)) return null;
+    const intensity=clamp(Number(opts.intensity)||rand(1.12,1.58),0.85,2.2);
+    const surfaceY=clamp(craterSurfaceNear(target.x,target.y,getTile)||target.y,2,WORLD_H-6);
+    const detonationY=clamp(surfaceY+penetrationDepth(intensity)+rand(-0.7,0.9),surfaceY+4,WORLD_H-6);
     const side=opts.side || (Math.random()<0.5 ? -1 : 1);
     const fallTime=rand(2.05,2.72);
     const distance=rand(54,82);
     const startX=target.x - side*distance;
-    const startY=Math.max(-42,target.y-rand(58,82));
+    const startY=Math.max(-42,surfaceY-rand(58,82));
     const aimX=target.x+0.5+rand(-0.55,0.55);
-    const aimY=target.y-0.2;
+    const aimY=surfaceY-0.2;
     const vx=(aimX-startX)/fallTime;
     const vy=(aimY-startY-0.5*GRAVITY*fallTime*fallTime)/fallTime;
     const m={
       x:startX,y:startY,vx,vy,
-      target:{x:target.x,y:target.y},
-      life:fallTime+1.25,
+      target:{x:target.x,y:surfaceY},
+      detonation:{x:target.x+0.5,y:detonationY},
+      life:fallTime+2.05,
       t:0,
       trail:[],
-      intensity:clamp(Number(opts.intensity)||rand(0.9,1.35),0.7,1.8),
+      intensity,
       rot:Math.random()*Math.PI*2,
-      spin:rand(-5.5,5.5)
+      spin:rand(-5.5,5.5),
+      burrowing:false,
+      burrowT:0,
+      lastCarveX:null,
+      lastCarveY:null
     };
-    m.preparedOps=buildCraterOps(target.x+0.5,target.y,m.intensity,getTile);
+    m.preparedOps=buildCraterOps(target.x+0.5,surfaceY,m.intensity,getTile,{surfaceY,detonationY});
     meteors.push(m);
     spawned++;
     try{ if(typeof window.msg==='function') window.msg('Niebo przecina meteoryt...'); }catch(e){}
@@ -443,7 +579,32 @@ const meteorites = (function(){
       if(Math.random()<0.22) emitTrailEmber(m);
       const tx=Math.floor(m.x), ty=Math.floor(m.y);
       const t=readTile(getTile,tx,ty);
-      if(ty>=WORLD_H-3 || (!passableDebris(t) && ty>=1) || m.y>=m.target.y+0.7 || m.life<=0){
+      const solidHit=ty>=WORLD_H-3 || (!passableDebris(t) && ty>=1) || m.y>=m.target.y+0.35;
+      if(!m.burrowing && solidHit){
+        m.burrowing=true;
+        m.burrowT=0;
+        m.vx*=0.22;
+        m.vy=Math.max(10.5+m.intensity*2.2,Math.min(m.vy*0.55,16+m.intensity*2.4));
+        emitEntryFx(m.x,m.target.y,m.intensity);
+      }
+      if(m.burrowing){
+        m.burrowT+=sdt;
+        const desiredX=(m.detonation && Number.isFinite(m.detonation.x)) ? m.detonation.x : m.x;
+        m.vx+=(desiredX-m.x)*sdt*2.4;
+        m.vx*=1-Math.min(0.28,sdt*1.8);
+        m.vy=Math.min(18+m.intensity*3.2,Math.max(m.vy,8+m.intensity*2.1));
+        const cx=Math.floor(m.x), cy=Math.floor(m.y);
+        if(cx!==m.lastCarveX || cy!==m.lastCarveY){
+          m.lastCarveX=cx;
+          m.lastCarveY=cy;
+          carveEntryShaft(m.x,m.y,m.intensity,getTile,setTile);
+        }
+        const dy=(m.detonation && Number.isFinite(m.detonation.y)) ? m.detonation.y : (m.target.y+penetrationDepth(m.intensity));
+        if(m.y>=dy || m.burrowT>0.86 || ty>=WORLD_H-4 || m.life<=0){
+          impactAt(desiredX,Math.max(m.y,dy),getTile,setTile,m.intensity,m.preparedOps);
+          return true;
+        }
+      } else if(m.life<=0){
         impactAt(m.x,m.y,getTile,setTile,m.intensity,m.preparedOps);
         return true;
       }
@@ -457,6 +618,7 @@ const meteorites = (function(){
   }
   function updateFx(dt){
     if(screenFlash>0) screenFlash=Math.max(0,screenFlash-dt*1.85);
+    if(shakeT>0) shakeT=Math.max(0,shakeT-dt);
     if(lastImpact){
       lastImpact.t+=dt;
       if(lastImpact.t>7) lastImpact=null;
@@ -523,6 +685,7 @@ const meteorites = (function(){
   }
   function drawMeteor(ctx,TILE,m){
     const ang=Math.atan2(m.vy,m.vx);
+    const burrow=!!m.burrowing;
     ctx.save();
     ctx.globalCompositeOperation='lighter';
     for(let i=m.trail.length-1;i>0;i--){
@@ -542,19 +705,20 @@ const meteorites = (function(){
       ctx.stroke();
     }
     const px=m.x*TILE, py=m.y*TILE;
-    const glow=ctx.createRadialGradient(px,py,1,px,py,TILE*2.4);
-    glow.addColorStop(0,'rgba(255,255,236,0.95)');
-    glow.addColorStop(0.18,'rgba(255,216,91,0.86)');
-    glow.addColorStop(0.48,'rgba(255,78,22,0.42)');
+    const glowR=TILE*(burrow?1.65:2.4);
+    const glow=ctx.createRadialGradient(px,py,1,px,py,glowR);
+    glow.addColorStop(0,'rgba(255,255,236,'+(burrow?0.78:0.95)+')');
+    glow.addColorStop(0.18,'rgba(255,216,91,'+(burrow?0.74:0.86)+')');
+    glow.addColorStop(0.48,'rgba(255,78,22,'+(burrow?0.30:0.42)+')');
     glow.addColorStop(1,'rgba(255,24,0,0)');
     ctx.fillStyle=glow;
-    ctx.beginPath(); ctx.arc(px,py,TILE*2.4,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(px,py,glowR,0,Math.PI*2); ctx.fill();
     ctx.translate(px,py);
     ctx.rotate(ang);
     ctx.fillStyle='#fff7c9';
-    ctx.beginPath(); ctx.ellipse(0,0,TILE*0.42,TILE*0.30,0,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(0,0,TILE*(burrow?0.32:0.42),TILE*(burrow?0.24:0.30),0,0,Math.PI*2); ctx.fill();
     ctx.fillStyle='#ff6a21';
-    ctx.beginPath(); ctx.ellipse(-TILE*0.08,TILE*0.04,TILE*0.34,TILE*0.22,0,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(-TILE*0.08,TILE*0.04,TILE*(burrow?0.26:0.34),TILE*(burrow?0.18:0.22),0,0,Math.PI*2); ctx.fill();
     ctx.strokeStyle='rgba(60,22,14,0.68)';
     ctx.lineWidth=2;
     ctx.stroke();
@@ -656,7 +820,7 @@ const meteorites = (function(){
   }
   function drawScreen(ctx,W,H){
     if(!(screenFlash>0)) return;
-    const a=Math.min(0.42,screenFlash*0.35);
+    const a=Math.min(0.54,screenFlash*0.38);
     ctx.save();
     ctx.globalCompositeOperation='screen';
     const g=ctx.createRadialGradient(W*0.5,H*0.36,1,W*0.5,H*0.36,Math.max(W,H)*0.78);
@@ -676,6 +840,9 @@ const meteorites = (function(){
     scorches.length=0;
     screenFlash=0;
     lastImpact=null;
+    shakeT=0;
+    shakeMax=0;
+    shakeAmp=0;
   }
   function setEnabled(value){
     enabled=value===true;
@@ -725,6 +892,7 @@ const meteorites = (function(){
       plumes:plumes.length,
       impacts,
       spawned,
+      shake:+Math.max(0,shakeT).toFixed(2),
       lastImpact
     };
   }
@@ -740,6 +908,7 @@ const meteorites = (function(){
     update,
     draw,
     drawScreen,
+    screenShakeOffset,
     forceSpawn,
     setEnabled,
     rollSchedule,
