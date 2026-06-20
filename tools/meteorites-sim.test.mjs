@@ -35,7 +35,7 @@ function dirOf(vx,vy){
 }
 function dotDir(a,b){ return a.x*b.x + a.y*b.y; }
 
-let waterWake=0, removed=0, placed=0, marked=0, smoke=0, sparks=0, audio=0, hotGas=0;
+let waterWake=0, removed=0, placed=0, marked=0, smoke=0, sparks=0, splashes=0, audio=0, hotGas=0, steamGas=0;
 globalThis.__mmMarkWorldChanged = ()=>{ marked++; };
 globalThis.player = {x:0,y:SURF-1,w:0.7,h:0.95,vx:0,vy:0,hp:100,maxHp:100,hpInvul:0,facing:1};
 MM.worldGen = { surfaceHeight:()=>SURF };
@@ -44,10 +44,10 @@ MM.fallingSolids = { onTileRemoved(){ removed++; }, afterPlacement(){ placed++; 
 MM.particles = {
   spawnSmoke(){ smoke++; },
   spawnSparks(){ sparks++; },
-  spawnSplash(){ sparks++; }
+  spawnSplash(){ sparks++; splashes++; }
 };
 MM.audio = { play(){ audio++; }, isReady:()=>true };
-MM.gases = { add(kind){ if(kind==='hot') hotGas++; } };
+MM.gases = { add(kind){ if(kind==='hot') hotGas++; if(kind==='steam') steamGas++; } };
 
 meteorites.restore({enabled:false,nextIn:60,spawned:0,impacts:0});
 const offBefore=meteorites.metrics();
@@ -60,6 +60,7 @@ assert.equal(meteorites.metrics().meteors, 1, 'active meteor is tracked');
 
 let sawUndergroundImpact=false;
 let sawShake=false;
+let sawInstantCrater=false;
 let lastAirDir=null;
 let lastBurrowDir=null;
 let checkedStraightEntry=false;
@@ -87,6 +88,7 @@ for(let i=0;i<900;i++){
   if(m.impacts>0){
     if(m.lastImpact && m.lastImpact.y>=SURF+4) sawUndergroundImpact=true;
     if(m.shake>0) sawShake=true;
+    if(m.queuedOps===0 && m.terrainJobs===0) sawInstantCrater=true;
   }
   if(m.meteors===0 && m.queuedOps===0 && m.terrainJobs===0) break;
 }
@@ -96,6 +98,7 @@ assert.equal(metricsAfter.meteors, 0, 'meteor resolves after impact');
 assert.equal(metricsAfter.terrainJobs, 0, 'budgeted crater job drains');
 assert.ok(metricsAfter.impacts>=1, 'impact counter increments');
 assert.ok(sawUndergroundImpact, 'meteor penetrates and explodes below the surface');
+assert.ok(sawInstantCrater, 'visible crater terrain is applied immediately on impact');
 assert.ok(checkedStraightEntry, 'meteor direction is checked at ground entry');
 assert.ok(checkedBurrowNoSteer, 'meteor direction stays fixed underground');
 assert.equal(meteorites._debug.shockwaves.length, 0, 'meteor does not render planar shockwave rings');
@@ -111,10 +114,32 @@ assert.ok(audio>0, 'impact requests audio');
 assert.ok(hotGas>0, 'impact injects hot air gas');
 
 const changed=[...tiles.entries()].map(([key,t])=>({key,t,y:Number(key.split(',')[1])}));
+const changedXs=changed.filter(c=>c.t===T.AIR && c.y>=SURF-1 && c.y<=SURF+9).map(c=>Number(c.key.split(',')[0]));
+const craterWidth=changedXs.length ? Math.max(...changedXs)-Math.min(...changedXs)+1 : 0;
+const stoneRubble=changed.filter(c=>c.t===T.STONE).length;
 assert.ok(changed.some(c=>c.y>=SURF && c.t===T.AIR), 'crater carves solid ground into air');
 assert.ok(changed.some(c=>c.y>=SURF+5 && c.t===T.AIR), 'underground blast hollows out deeper ground');
 assert.ok(changed.some(c=>c.t===T.LAVA || c.t===T.OBSIDIAN || c.t===T.GLASS), 'crater leaves a heated floor/rim');
 assert.ok(changed.some(c=>c.t===T.IRIDIUM), 'meteorite leaves rare iridium deposits');
+assert.ok(changed.some(c=>c.t===T.METEORIC_IRON), 'meteorite leaves meteoric iron deposits');
+assert.ok(changed.some(c=>c.t===T.COAL), 'meteorite leaves carbon-rich deposits');
+assert.ok(craterWidth>=20, 'meteor creates a broad visible bowl crater (width '+craterWidth+')');
+assert.ok(stoneRubble<=24, 'meteor does not overfill the crater with ordinary stone rubble (got '+stoneRubble+')');
+
+const waterTiles = new Map();
+function getWaterTile(x,y){
+  x=Math.floor(x); y=Math.floor(y);
+  const k=kxy(x,y);
+  if(waterTiles.has(k)) return waterTiles.get(k);
+  if(y>=SURF-7 && y<SURF) return T.WATER;
+  return y>=SURF ? T.STONE : T.AIR;
+}
+function setWaterTile(x,y,t){ waterTiles.set(kxy(x,y),t); }
+const beforeWaterSplash=splashes;
+const beforeSteam=steamGas;
+meteorites._debug.impactAt(9,SURF-4,getWaterTile,setWaterTile,1.65,null,{waterHit:true});
+assert.ok(splashes-beforeWaterSplash>=6, 'water impact throws a broad water splash');
+assert.ok(steamGas>beforeSteam, 'water impact emits steam');
 
 meteorites.restore({enabled:true,nextIn:12.5,spawned:3,impacts:4});
 let restored=meteorites.metrics();

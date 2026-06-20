@@ -1589,6 +1589,14 @@ function _drawMaterialTile(g,t,px,py,h){
 		strokePath(g,'rgba(119,173,220,0.38)',1,[[px+3,py+5],[px+7,py+6],[px+10,py+3]]);
 		dot(g,px,py,6,6,2,2,'rgba(255,255,255,0.78)');
 		dot(g,px,py,14,13,2,2,'rgba(210,236,255,0.62)');
+	} else if(t===T.METEORIC_IRON){
+		drawBlockBevel(g,px,py,'rgba(216,222,226,0.22)','rgba(12,14,16,0.34)');
+		dot(g,px,py,2,2,TILE-4,TILE-4,'rgba(37,42,46,0.40)');
+		dot(g,px,py,5+rx,4,5,3,'rgba(147,156,163,0.34)');
+		dot(g,px,py,11,10+ry,5,4,'rgba(34,38,42,0.30)');
+		dot(g,px,py,4,13,3,2,'rgba(185,122,68,0.28)');
+		strokePath(g,'rgba(219,229,236,0.28)',1,[[px+4,py+6],[px+9,py+7],[px+14,py+5]]);
+		dot(g,px,py,13,5,2,2,'rgba(235,241,245,0.42)');
 	} else if(t===T.LAVA){
 		drawBlockBevel(g,px,py,'rgba(255,225,98,0.25)','rgba(66,13,3,0.30)');
 		dot(g,px,py,0,0,TILE,3,'rgba(255,190,46,0.33)');
@@ -1763,7 +1771,7 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 				let base=INFO[t].color; if(!base) continue;
 				const h = hash32(wx,y);
 				// Per-type amplitude (diamond fixed, stone/ice extra subtle, grass medium, others default)
-				let amp=22; if(t===T.STONE) amp=6; else if(t===T.SAND) amp=5; else if(t===T.COAL) amp=5; else if(t===T.STEEL) amp=8; else if(t===T.IRIDIUM) amp=4; else if(t===T.DIAMOND) amp=0; else if(t===T.WOOD) amp=16; else if(t===T.GRASS) amp=18; else if(t===T.SNOW) amp=8; else if(t===T.ICE) amp=6; else if(t===T.OBSIDIAN) amp=10; else if(t===T.GLASS) amp=3; else if(t===T.ELECTRONICS || t===T.TRANSISTOR) amp=7; else if(t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY) amp=3; else if(t===T.TELEPORTER) amp=5; else if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) amp=12; else if(INFO[t].chestTier) amp=4;
+				let amp=22; if(t===T.STONE) amp=6; else if(t===T.SAND) amp=5; else if(t===T.COAL) amp=5; else if(t===T.STEEL) amp=8; else if(t===T.METEORIC_IRON) amp=6; else if(t===T.IRIDIUM) amp=4; else if(t===T.DIAMOND) amp=0; else if(t===T.WOOD) amp=16; else if(t===T.GRASS) amp=18; else if(t===T.SNOW) amp=8; else if(t===T.ICE) amp=6; else if(t===T.OBSIDIAN) amp=10; else if(t===T.GLASS) amp=3; else if(t===T.ELECTRONICS || t===T.TRANSISTOR) amp=7; else if(t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY) amp=3; else if(t===T.TELEPORTER) amp=5; else if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) amp=12; else if(INFO[t].chestTier) amp=4;
 				const delta = ((h & 0xFF)/255 - 0.5)*amp; // symmetrical
 				const col = amp? shadeColor(base, delta|0) : base; // stone uses low amp so should not drift green
 				cctx.fillStyle=col; cctx.fillRect(lx*TILE,y*TILE,TILE,TILE);
@@ -1967,6 +1975,20 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 					if((h&3)===0){
 						cctx.fillStyle='rgba(255,255,255,0.68)';
 						cctx.fillRect(lx*TILE+4+((h>>7)&10), y*TILE+4+((h>>11)&9), 2, 2);
+					}
+				}
+				if(t===T.METEORIC_IRON){
+					cctx.fillStyle='rgba(235,240,244,0.16)';
+					cctx.fillRect(lx*TILE, y*TILE, TILE, 2);
+					cctx.fillStyle='rgba(8,11,14,0.18)';
+					cctx.fillRect(lx*TILE, y*TILE+TILE-3, TILE, 3);
+					cctx.fillStyle='rgba(26,31,35,0.26)';
+					cctx.fillRect(lx*TILE+4+((h>>7)&4), y*TILE+5, 4, 3);
+					cctx.fillStyle='rgba(179,113,58,0.24)';
+					cctx.fillRect(lx*TILE+11, y*TILE+11+((h>>5)&3), 3, 2);
+					if((h&5)===0){
+						cctx.fillStyle='rgba(230,238,244,0.40)';
+						cctx.fillRect(lx*TILE+5+((h>>9)&9), y*TILE+4+((h>>12)&7), 2, 2);
 					}
 				}
 				// Chest highlight & tier flair
@@ -3402,6 +3424,7 @@ function minimapTileColor(t){
 	if(t===T.LAVA) return '#e25822';
 	if(t===T.DIAMOND) return '#3ef';
 	if(t===T.IRIDIUM) return '#b8d7ff';
+	if(t===T.METEORIC_IRON) return '#7f878d';
 	if(t===T.COAL) return '#25272b';
 	if(t===T.VOLCANO_MASTER_STONE) return '#ff6a21';
 	if(t===T.SERVANT_STONE) return '#8b2d17';
@@ -3438,7 +3461,7 @@ function minimapTileColor(t){
 	return '#686d78';
 }
 function minimapConcealsUndiscovered(t){
-	return t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.OBSIDIAN || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || (INFO[t] && INFO[t].gas) || t===T.GRAVE || t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC;
+	return t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.OBSIDIAN || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || (INFO[t] && INFO[t].gas) || t===T.GRAVE || t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC;
 }
 function drawMinimap(){
 	if(!showMinimap) return;
@@ -3488,7 +3511,7 @@ function drawMinimap(){
 							continue;
 						}
 						const c=minimapTileColor(t);
-						if(t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || (INFO[t] && INFO[t].gas) || INFO[t].chestTier){ color=c; priority=true; wx=wx1+1; break; }
+						if(t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || (INFO[t] && INFO[t].gas) || INFO[t].chestTier){ color=c; priority=true; wx=wx1+1; break; }
 						if(!color) color=c;
 					}
 				}

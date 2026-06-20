@@ -95,11 +95,19 @@ const meteorites = (function(){
     const info=tileInfo(t);
     return t!==T.AIR && t!==T.WATER && !isGas(t) && !(info && info.passable);
   }
-  function hotTileForFloor(old,central){
+  function hotTileForFloor(old,edge,central){
     if(central) return T.LAVA;
     if(old===T.SAND) return T.GLASS;
-    if(old===T.STONE || old===T.COAL || old===T.STEEL || old===T.OBSIDIAN) return T.OBSIDIAN;
-    return Math.random()<0.55 ? T.OBSIDIAN : T.STONE;
+    if(edge<0.46) return Math.random()<0.72 ? T.OBSIDIAN : T.METEORIC_IRON;
+    if(old===T.STONE || old===T.COAL || old===T.STEEL || old===T.METEORIC_IRON || old===T.OBSIDIAN) return Math.random()<0.90 ? T.OBSIDIAN : T.STONE;
+    return Math.random()<0.82 ? T.OBSIDIAN : T.STONE;
+  }
+  function meteorCoreTile(){
+    const r=Math.random();
+    if(r<0.13) return T.IRIDIUM;
+    if(r<0.52) return T.METEORIC_IRON;
+    if(r<0.76) return T.COAL;
+    return T.OBSIDIAN;
   }
   function readTile(getTile,x,y){
     if(typeof getTile!=='function') return T.AIR;
@@ -244,6 +252,26 @@ const meteorites = (function(){
   function splashAt(x,y,intensity){
     try{ if(MM.particles && MM.particles.spawnSplash) MM.particles.spawnSplash(x*(MM.TILE||20),y*(MM.TILE||20),intensity||1); }catch(e){}
   }
+  function emitWaterImpactFx(cx,cy,intensity){
+    const stress=frameMs()>30;
+    const n=stress ? 6 : 18;
+    for(let i=0;i<n;i++){
+      const ox=rand(-3.4,3.4)*(0.45+intensity*0.12);
+      const oy=rand(-0.8,0.6);
+      splashAt(cx+ox,cy+oy,1.0+intensity*0.34);
+      pushCapped(plumes,{
+        x:cx+ox*0.28,
+        y:cy+oy,
+        vx:rand(-0.42,0.42),
+        vy:rand(-1.45,-0.42),
+        life:0,
+        max:rand(1.3,2.8),
+        r:rand(0.32,0.78)*(1+intensity*0.10),
+        shade:Math.floor(rand(122,188))
+      },MAX_PLUMES);
+    }
+    try{ if(MM.gases && MM.gases.add) MM.gases.add('steam',cx,cy-0.4,{power:1.3+intensity*0.45,cells:8}); }catch(e){}
+  }
   function markWorldChanged(){
     try{ if(typeof window.__mmMarkWorldChanged==='function') window.__mmMarkWorldChanged('meteorite'); }catch(e){}
   }
@@ -308,7 +336,7 @@ const meteorites = (function(){
         const dy=Math.abs((y+0.5)-cy);
         let nt=null;
         if(dx<=radius && dy<=1.25) nt=T.AIR;
-        else if(dx<=radius+0.72 && dy<=1.15 && Math.random()<0.38) nt=Math.random()<0.78?T.OBSIDIAN:T.STONE;
+        else if(dx<=radius+0.48 && dy<=1.15 && Math.random()<0.14) nt=T.OBSIDIAN;
         if(nt==null) continue;
         const old=readTile(getTile,x,y);
         if(old===nt || protectedTile(old)) continue;
@@ -339,11 +367,11 @@ const meteorites = (function(){
     const surfaceX=Number.isFinite(opts.surfaceX) ? opts.surfaceX : cx;
     const surfaceY=clamp(Math.round(Number.isFinite(opts.surfaceY)?opts.surfaceY:cy),2,WORLD_H-6);
     const detonationY=clamp(Number.isFinite(opts.detonationY)?opts.detonationY:(surfaceY+penetrationDepth(intensity)),surfaceY+4,WORLD_H-6);
-    const rx=clamp(6.0+intensity*2.25,6.0,10.7);
-    const ry=clamp(3.5+intensity*1.55,3.8,6.4);
-    const blastRx=clamp(5.2+intensity*2.45,5.8,10.8);
-    const blastRy=clamp(3.2+intensity*1.85,3.8,7.2);
-    const shaftRadius=clamp(1.05+intensity*0.28,1.15,1.8);
+    const rx=clamp(8.8+intensity*4.25,9.5,17.2);
+    const ry=clamp(4.0+intensity*2.15,4.8,8.3);
+    const pocketRx=clamp(2.1+intensity*0.82,2.4,3.9);
+    const pocketRy=clamp(1.35+intensity*0.52,1.55,2.45);
+    const shaftRadius=clamp(0.82+intensity*0.18,0.92,1.26);
     const ops=[];
     function addOp(phase,x,y,t,d,place){
       if(y<1 || y>=WORLD_H-3 || !Number.isFinite(x)) return;
@@ -353,34 +381,33 @@ const meteorites = (function(){
       const k=clamp((y-surfaceY)/Math.max(1,detonationY-surfaceY),0,1);
       return surfaceX + (cx-surfaceX)*k;
     };
-    const left=Math.floor(cx-blastRx-2);
-    const right=Math.ceil(cx+blastRx+2);
-    for(let x=Math.floor(surfaceX-rx-1); x<=Math.ceil(surfaceX+rx+1); x++){
+    const left=Math.floor(Math.min(surfaceX-rx,cx-pocketRx)-2);
+    const right=Math.ceil(Math.max(surfaceX+rx,cx+pocketRx)+2);
+    for(let x=Math.floor(surfaceX-rx-2); x<=Math.ceil(surfaceX+rx+2); x++){
       const dx=x-surfaceX;
       const edge=Math.abs(dx)/Math.max(0.1,rx);
-      if(edge>1.12) continue;
+      if(edge>1.16) continue;
       const surface=craterSurfaceNear(x,surfaceY,getTile);
       if(surface==null) continue;
-      const curve=Math.max(0,1-edge*edge);
-      const depth=Math.max(2,Math.floor(2+curve*ry+Math.random()*1.05));
-      const startY=Math.max(1,Math.floor(surface-2-curve*0.9));
-      const floorY=Math.min(WORLD_H-4,Math.floor(surface+depth));
-      for(let y=startY; y<=floorY; y++){
-        const ny=(y-(surface+depth*0.38))/Math.max(1,ry+2.8);
-        if(edge*edge*0.86+ny*ny>1.12) continue;
-        addOp(0,x,y,T.AIR,Math.abs(dx)+(y-surface)*0.2,false);
+      if(edge<=1.0){
+        const curve=Math.max(0,1-edge*edge);
+        const depth=Math.max(1,Math.floor(1.15+curve*ry+Math.random()*0.35));
+        const startY=Math.max(1,Math.floor(surface-1));
+        const floorY=Math.min(WORLD_H-4,Math.floor(surface+depth));
+        for(let y=startY; y<=floorY; y++){
+          addOp(0,x,y,T.AIR,Math.abs(dx)+(y-surface)*0.18,false);
+        }
+        const old=readTile(getTile,x,floorY);
+        const central=edge<0.20 && intensity>0.8;
+        addOp(1,x,floorY,hotTileForFloor(old,edge,central),Math.abs(dx),true);
+        if(edge<0.52 && floorY+1<WORLD_H-3){
+          const t=edge<0.24 ? meteorCoreTile() : (Math.random()<0.44 ? T.METEORIC_IRON : (Math.random()<0.64 ? T.COAL : T.OBSIDIAN));
+          addOp(1,x,floorY+1,t,Math.abs(dx)+0.7,true);
+        }
       }
-      const old=readTile(getTile,x,floorY);
-      const central=Math.abs(dx)<=1 && intensity>0.8;
-      addOp(1,x,floorY,hotTileForFloor(old,central),Math.abs(dx),true);
-      if(Math.abs(dx)<=Math.max(1,rx*0.28) && floorY+1<WORLD_H-3){
-        const coreRoll=Math.random();
-        const t=coreRoll<0.08 ? T.IRIDIUM : (coreRoll<0.18 ? T.DIAMOND : (coreRoll<0.52 ? T.COAL : T.OBSIDIAN));
-        addOp(1,x,floorY+1,t,Math.abs(dx)+0.7,true);
-      }
-      if(edge>0.72 && edge<1.08){
-        const rimY=Math.max(1,surface-1-(Math.random()<0.45?1:0));
-        addOp(1,x,rimY,Math.random()<0.58?T.STONE:T.OBSIDIAN,Math.abs(dx)+2,true);
+      if(edge>0.92 && edge<1.15){
+        const rimY=Math.max(1,surface-1-(edge<1.02 && Math.random()<0.28?1:0));
+        addOp(1,x,rimY,Math.random()<0.68?T.OBSIDIAN:T.STONE,Math.abs(dx)+2,true);
       }
     }
     const shaftTop=Math.max(1,Math.floor(surfaceY-1));
@@ -392,44 +419,60 @@ const meteorites = (function(){
         const d=Math.abs(y-surfaceY)*0.22+dx;
         if(dx<=shaftRadius){
           addOp(0,x,y,T.AIR,d,false);
-        } else if(dx<=shaftRadius+0.74 && y>surfaceY+1){
-          addOp(1,x,y,Math.random()<0.78?T.OBSIDIAN:T.STONE,d+4,true);
+        } else if(dx<=shaftRadius+0.44 && y>surfaceY+1 && Math.random()<0.16){
+          addOp(1,x,y,T.OBSIDIAN,d+4,true);
         }
       }
     }
     for(let x=left; x<=right; x++){
-      for(let y=Math.floor(detonationY-blastRy-1); y<=Math.ceil(detonationY+blastRy+2); y++){
-        const dx=((x+0.5)-cx)/Math.max(0.1,blastRx);
-        const dy=(y-detonationY)/Math.max(0.1,blastRy);
-        const shape=dx*dx + dy*dy*(dy>0?0.72:1.08);
+      for(let y=Math.floor(detonationY-pocketRy-1); y<=Math.ceil(detonationY+pocketRy+2); y++){
+        const dx=((x+0.5)-cx)/Math.max(0.1,pocketRx);
+        const dy=(y-detonationY)/Math.max(0.1,pocketRy);
+        const shape=dx*dx + dy*dy*(dy>0?0.82:1.10);
         const d=Math.sqrt(dx*dx+dy*dy)*12;
-        if(shape<=0.98){
+        if(shape<=0.62){
           addOp(0,x,y,T.AIR,d,false);
-        } else if(shape<=1.22){
-          const hot=Math.random()<0.72 || dy>0.35;
-          addOp(1,x,y,hot?T.OBSIDIAN:T.STONE,d+8,true);
+        } else if(shape<=0.96){
+          addOp(1,x,y,Math.random()<0.82?T.OBSIDIAN:T.METEORIC_IRON,d+8,true);
         }
       }
     }
-    const floorY=Math.min(WORLD_H-4,Math.round(detonationY+blastRy*0.70));
+    const floorY=Math.min(WORLD_H-4,Math.round(detonationY+pocketRy*0.74));
     const coreX=Math.floor(cx);
-    for(let x=Math.floor(cx-blastRx*0.48); x<=Math.ceil(cx+blastRx*0.48); x++){
-      const dx=Math.abs((x+0.5)-cx)/Math.max(1,blastRx*0.5);
+    for(let x=Math.floor(cx-pocketRx*0.95); x<=Math.ceil(cx+pocketRx*0.95); x++){
+      const dx=Math.abs((x+0.5)-cx)/Math.max(1,pocketRx);
       if(dx>1.08) continue;
-      const central=dx<0.34;
-      addOp(1,x,floorY,central?T.LAVA:(Math.random()<0.72?T.OBSIDIAN:T.STONE),dx*2,true);
+      const central=dx<0.46;
+      addOp(1,x,floorY,central?T.LAVA:(Math.random()<0.66?T.OBSIDIAN:T.METEORIC_IRON),dx*2,true);
       if(central && floorY+1<WORLD_H-3){
-        const coreRoll=Math.random();
-        addOp(1,x,floorY+1,coreRoll<0.38?T.IRIDIUM:(coreRoll<0.68?T.COAL:T.OBSIDIAN),dx*2+1,true);
+        addOp(1,x,floorY+1,meteorCoreTile(),dx*2+1,true);
       }
     }
     if(floorY+1<WORLD_H-3) addOp(1,coreX,floorY+1,T.IRIDIUM,0.05,true);
+    if(floorY+2<WORLD_H-3) addOp(1,coreX+(Math.random()<0.5?-1:1),floorY+2,T.METEORIC_IRON,0.30,true);
+    if(floorY+2<WORLD_H-3) addOp(1,coreX+(Math.random()<0.5?-2:2),floorY+2,T.COAL,0.32,true);
     if(intensity>1.2 && floorY+2<WORLD_H-3) addOp(1,coreX+(Math.random()<0.5?-1:1),floorY+2,T.IRIDIUM,0.35,true);
     ops.sort((a,b)=>a.phase-b.phase || a.d-b.d);
     return ops;
   }
-  function queueCrater(cx,cy,intensity,getTile,preparedOps){
+  function applyCraterOp(op,getTile,setTile){
+    if(!op || op.y<1 || op.y>=WORLD_H-3 || !Number.isFinite(op.x)) return false;
+    const old=readTile(getTile,op.x,op.y);
+    if(old===op.t) return false;
+    if(protectedTile(old)) return false;
+    if(op.phase===0 && old===T.AIR) return false;
+    if(op.phase===1 && !op.place && op.t!==T.LAVA && old===T.AIR && Math.random()<0.72) return false;
+    setTile(op.x,op.y,op.t);
+    notifyTerrainChange(op.x,op.y,old,op.t,getTile,setTile);
+    return true;
+  }
+  function queueCrater(cx,cy,intensity,getTile,preparedOps,setTile,opts){
+    opts=opts||{};
     const ops=Array.isArray(preparedOps) ? preparedOps : buildCraterOps(cx,cy,intensity,getTile);
+    if(opts.instant && typeof setTile==='function'){
+      for(const op of ops) applyCraterOp(op,getTile,setTile);
+      return ops.length;
+    }
     if(ops.length){
       const chunks=new Set();
       for(const op of ops) if(op && Number.isFinite(op.x)) chunks.add(Math.floor(op.x/CHUNK_W));
@@ -445,14 +488,7 @@ const meteorites = (function(){
       while(budget>0 && job.i<job.ops.length){
         const op=job.ops[job.i++];
         budget--;
-        if(!op || op.y<1 || op.y>=WORLD_H-3 || !Number.isFinite(op.x)) continue;
-        const old=readTile(getTile,op.x,op.y);
-        if(old===op.t) continue;
-        if(protectedTile(old)) continue;
-        if(op.phase===0 && old===T.AIR) continue;
-        if(op.phase===1 && !op.place && op.t!==T.LAVA && old===T.AIR && Math.random()<0.72) continue;
-        setTile(op.x,op.y,op.t);
-        notifyTerrainChange(op.x,op.y,old,op.t,getTile,setTile);
+        applyCraterOp(op,getTile,setTile);
       }
       if(job.i>=job.ops.length){ terrainJobs.shift(); markWorldChanged(); }
       else break;
@@ -464,7 +500,7 @@ const meteorites = (function(){
     screenFlash=Math.max(screenFlash,1.28);
     startShake(0.78+intensity*0.18,9.5+intensity*5.2);
     const stress=frameMs()>30;
-    const debrisCount=stress ? 11 : 24;
+    const debrisCount=stress ? 5 : 12;
     const emberCount=stress ? 18 : 44;
     for(let i=0;i<debrisCount;i++){
       const a=rand(-Math.PI*0.95,-Math.PI*0.05);
@@ -508,7 +544,7 @@ const meteorites = (function(){
         shade:Math.floor(rand(38,82))
       },MAX_PLUMES);
     }
-    if(waterHit) splashAt(cx,cy,1.3);
+    if(waterHit) emitWaterImpactFx(cx,cy,1.15+intensity*0.25);
     for(let i=0;i<4;i++) smokeAt(cx+rand(-3.4,3.4),cy+rand(-1.4,1.4),2.1+intensity*0.55);
     burstAt(cx,cy,'epic',28);
     try{ if(MM.gases && MM.gases.add) MM.gases.add('hot',cx,cy-0.6,{power:2.6+intensity*0.55,cells:12}); }catch(e){}
@@ -538,12 +574,13 @@ const meteorites = (function(){
       }
     }
   }
-  function impactAt(wx,wy,getTile,setTile,intensity,preparedOps){
+  function impactAt(wx,wy,getTile,setTile,intensity,preparedOps,opts){
+    opts=opts||{};
     const cx=Math.floor(wx)+0.5;
     const cy=clamp(Math.floor(wy),2,WORLD_H-5);
     const hit=readTile(getTile,Math.floor(cx),Math.floor(cy));
-    const waterHit=hit===T.WATER || hit===T.ICE;
-    queueCrater(cx,cy,intensity||1,getTile,preparedOps);
+    const waterHit=!!opts.waterHit || hit===T.WATER || hit===T.ICE;
+    queueCrater(cx,cy,intensity||1,getTile,preparedOps,setTile,{instant:true});
     markWorldChanged();
     emitImpactFx(cx,cy,intensity||1,waterHit);
     hurtActors(cx,cy,intensity||1);
@@ -607,6 +644,11 @@ const meteorites = (function(){
       if(Math.random()<0.22) emitTrailEmber(m);
       const tx=Math.floor(m.x), ty=Math.floor(m.y);
       const t=readTile(getTile,tx,ty);
+      if(!m.waterEntryFx && (t===T.WATER || t===T.ICE)){
+        m.waterEntryFx=true;
+        m.waterHit=true;
+        emitWaterImpactFx(m.x,m.y,m.intensity);
+      }
       const solidHit=ty>=WORLD_H-3 || (!passableDebris(t) && ty>=1) || m.y>=m.target.y+0.35;
       if(!m.burrowing && solidHit){
         m.burrowing=true;
@@ -633,11 +675,11 @@ const meteorites = (function(){
         }
         const dy=(m.detonation && Number.isFinite(m.detonation.y)) ? m.detonation.y : (m.target.y+penetrationDepth(m.intensity));
         if(m.y>=dy || m.burrowT>0.86 || ty>=WORLD_H-4 || m.life<=0){
-          impactAt(m.x,Math.max(m.y,dy),getTile,setTile,m.intensity,m.preparedOps);
+          impactAt(m.x,Math.max(m.y,dy),getTile,setTile,m.intensity,m.preparedOps,{waterHit:m.waterHit});
           return true;
         }
       } else if(m.life<=0){
-        impactAt(m.x,m.y,getTile,setTile,m.intensity,m.preparedOps);
+        impactAt(m.x,m.y,getTile,setTile,m.intensity,m.preparedOps,{waterHit:m.waterHit});
         return true;
       }
       const pl=player || (typeof window!=='undefined' ? window.player : null);
