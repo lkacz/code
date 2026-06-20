@@ -37,6 +37,7 @@ const meteorites = (function(){
   const beaconWaves = [];
   const gravityBursts = [];
   const plumeSprites = new Map();
+  const beaconIndex = new Map();
   let enabled = false;
   let nextIn = 0;
   let spawned = 0;
@@ -120,11 +121,54 @@ const meteorites = (function(){
     const y=Number.isFinite(b.ty) ? b.ty : Math.floor(b.y);
     return x+','+y;
   }
+  function beaconAtTile(x,y){
+    x=Math.floor(x); y=Math.floor(y);
+    return {x:x+0.5,y:y+0.5,tx:x,ty:y};
+  }
+  function onTileChanged(x,y,oldTile,newTile){
+    x=Math.floor(x); y=Math.floor(y);
+    if(!Number.isFinite(x) || !Number.isFinite(y)) return false;
+    const k=x+','+y;
+    if(newTile===T.ANTIGRAVITY_BEACON){
+      beaconIndex.set(k,beaconAtTile(x,y));
+      return true;
+    }
+    if(oldTile===T.ANTIGRAVITY_BEACON || beaconIndex.has(k)){
+      beaconIndex.delete(k);
+      return true;
+    }
+    return false;
+  }
+  function nearestIndexedBeacon(cx,cy,getTile,radius,excluded){
+    if(!beaconIndex.size || typeof getTile!=='function') return null;
+    const r2=radius*radius;
+    let best=null;
+    let bestD2=r2+1;
+    const stale=[];
+    for(const [k,b] of beaconIndex){
+      if(excluded && excluded.has(k)) continue;
+      if(readTile(getTile,b.tx,b.ty)!==T.ANTIGRAVITY_BEACON){
+        stale.push(k);
+        continue;
+      }
+      const dx=b.x-cx, dy=b.y-cy;
+      const d2=dx*dx+dy*dy;
+      if(d2<bestD2){
+        bestD2=d2;
+        best=b;
+      }
+    }
+    for(const k of stale) beaconIndex.delete(k);
+    if(!best) return null;
+    return {x:best.x,y:best.y,tx:best.tx,ty:best.ty,d2:bestD2,d:Math.sqrt(bestD2)};
+  }
   function nearestBeacon(cx,cy,getTile,radius,opts){
     if(typeof getTile!=='function' || !Number.isFinite(cx) || !Number.isFinite(cy)) return null;
     opts=opts||{};
     const excluded=opts.exclude ? new Set(opts.exclude) : null;
     const r=clamp(Number(radius)||BEACON_SCAN_RADIUS,1,BEACON_SCAN_RADIUS);
+    const indexed=nearestIndexedBeacon(cx,cy,getTile,r,excluded);
+    if(indexed) return indexed;
     const minX=Math.floor(cx-r);
     const maxX=Math.ceil(cx+r);
     const minY=Math.max(1,Math.floor(cy-r));
@@ -142,6 +186,7 @@ const meteorites = (function(){
           bestD2=d2;
           best={x:bx,y:by,tx:x,ty:y,d2,d:Math.sqrt(d2)};
         }
+        onTileChanged(x,y,T.AIR,T.ANTIGRAVITY_BEACON);
       }
     }
     return best;
@@ -1237,6 +1282,7 @@ const meteorites = (function(){
   function restore(data){
     clearActive();
     terrainJobs.length=0;
+    beaconIndex.clear();
     if(data && typeof data==='object'){
       enabled=data.enabled===true;
       nextIn=loadedNextIn(data);
@@ -1251,6 +1297,7 @@ const meteorites = (function(){
   function reset(){
     clearActive();
     terrainJobs.length=0;
+    beaconIndex.clear();
     rollNext();
     saveSettings();
   }
@@ -1271,6 +1318,7 @@ const meteorites = (function(){
       plumes:plumes.length,
       beaconWaves:beaconWaves.length,
       gravityBursts:gravityBursts.length,
+      beacons:beaconIndex.size,
       impacts,
       deflections,
       spawned,
@@ -1294,6 +1342,7 @@ const meteorites = (function(){
     screenShakeOffset,
     forceSpawn,
     setEnabled,
+    onTileChanged,
     rollSchedule,
     reset,
     clearActive,
@@ -1301,7 +1350,7 @@ const meteorites = (function(){
     restore,
     metrics,
     isChunkBusy,
-    _debug:{impactAt,queueCrater,applyTerrainJobs,pickTarget,nearestBeacon,meteors,terrainJobs,embers,debris,plumes,beaconWaves,gravityBursts,shockwaves,scorches}
+    _debug:{impactAt,queueCrater,applyTerrainJobs,pickTarget,nearestBeacon,beaconIndex,meteors,terrainJobs,embers,debris,plumes,beaconWaves,gravityBursts,shockwaves,scorches}
   };
   MM.meteorites=api;
   return api;

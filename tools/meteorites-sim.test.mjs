@@ -3,6 +3,7 @@
 // terrain edits, subsystem wakeups, persistence snapshot/restore and no-op cost when off.
 // Run: node tools/meteorites-sim.test.mjs
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 
 globalThis.window = globalThis;
 globalThis.MM = {};
@@ -16,9 +17,12 @@ globalThis.msg = ()=>{};
 
 const { T, INFO } = await import('../src/constants.js');
 const { meteorites } = await import('../src/engine/meteorites.js');
+const worldSrc = await readFile(new URL('../src/engine/world.js', import.meta.url), 'utf8');
 
 assert.ok(meteorites && meteorites.forceSpawn && meteorites.update, 'meteorites module exports');
+assert.equal(typeof meteorites.onTileChanged, 'function', 'meteorites expose a beacon tile-change index hook');
 assert.equal(INFO[T.ANTIGRAVITY_BEACON].meteorShield, true, 'antigravity beacon is registered as a meteor shield tile');
+assert.match(worldSrc, /MM\.meteorites && MM\.meteorites\.onTileChanged/, 'world lifecycle keeps the meteor beacon index synchronized');
 
 const SURF = 82;
 const DAY_SECONDS = 600;
@@ -47,6 +51,31 @@ MM.audio = { play(){ audio++; }, isReady:()=>true };
 MM.gases = { add(kind){ if(kind==='hot') hotGas++; if(kind==='steam') steamGas++; } };
 
 meteorites.restore({enabled:false,nextIn:60,spawned:0,impacts:0});
+assert.equal(meteorites.metrics().beacons, 0, 'restore clears the antigravity beacon lookup index');
+meteorites.onTileChanged(7,SURF-1,T.AIR,T.ANTIGRAVITY_BEACON);
+assert.equal(meteorites.metrics().beacons, 1, 'antigravity beacon placement registers in the lookup index');
+meteorites.onTileChanged(7,SURF-1,T.ANTIGRAVITY_BEACON,T.AIR);
+assert.equal(meteorites.metrics().beacons, 0, 'antigravity beacon removal prunes the lookup index');
+let indexedReads=0;
+function getIndexedBeaconTile(x,y){
+  indexedReads++;
+  return Math.floor(x)===9 && Math.floor(y)===SURF-1 ? T.ANTIGRAVITY_BEACON : T.AIR;
+}
+meteorites.onTileChanged(9,SURF-1,T.AIR,T.ANTIGRAVITY_BEACON);
+const indexedBeacon=meteorites._debug.nearestBeacon(9.5,SURF-0.5,getIndexedBeaconTile,44);
+assert.equal(indexedBeacon && indexedBeacon.tx, 9, 'indexed beacon lookup finds the registered beacon');
+assert.ok(indexedReads<=2, 'indexed beacon lookup avoids a broad tile scan');
+meteorites.onTileChanged(9,SURF-1,T.ANTIGRAVITY_BEACON,T.AIR);
+let fallbackReads=0;
+function getFallbackBeaconTile(x,y){
+  fallbackReads++;
+  return Math.floor(x)===11 && Math.floor(y)===SURF-1 ? T.ANTIGRAVITY_BEACON : T.AIR;
+}
+const fallbackBeacon=meteorites._debug.nearestBeacon(11.5,SURF-0.5,getFallbackBeaconTile,44);
+assert.equal(fallbackBeacon && fallbackBeacon.tx, 11, 'fallback tile scan discovers unindexed beacons');
+assert.equal(meteorites.metrics().beacons, 1, 'fallback discovery registers the beacon for later indexed lookup');
+assert.ok(fallbackReads>100, 'legacy fallback performs the broad scan only when needed');
+meteorites.onTileChanged(11,SURF-1,T.ANTIGRAVITY_BEACON,T.AIR);
 const offBefore=meteorites.metrics();
 meteorites.update(30,player,getTile,setTile);
 assert.equal(meteorites.metrics().spawned, offBefore.spawned, 'disabled scheduler does not spawn meteors');
@@ -178,6 +207,8 @@ function getBeaconTile(x,y){
 }
 function setBeaconTile(x,y,t){ beaconTiles.set(kxy(x,y),t); }
 setBeaconTile(0,SURF-1,T.ANTIGRAVITY_BEACON);
+meteorites.onTileChanged(0,SURF-1,T.AIR,T.ANTIGRAVITY_BEACON);
+assert.equal(meteorites.metrics().beacons, 1, 'debug-placed beacon is available through the fast lookup index');
 player.x=0.5;
 player.y=SURF-1;
 player.vx=0;
@@ -232,6 +263,7 @@ function getChainTile(x,y){
 function setChainTile(x,y,t){ chainTiles.set(kxy(x,y),t); }
 setChainTile(0,SURF-1,T.ANTIGRAVITY_BEACON);
 setChainTile(-60,SURF-1,T.ANTIGRAVITY_BEACON);
+meteorites.onTileChanged(-60,SURF-1,T.AIR,T.ANTIGRAVITY_BEACON);
 player.x=0.5;
 player.y=SURF-1;
 player.vx=0;
