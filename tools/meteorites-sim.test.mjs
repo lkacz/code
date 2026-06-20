@@ -202,11 +202,12 @@ for(let i=0;i<900;i++){
 const beaconAfter=meteorites.metrics();
 assert.ok(sawDeflection, 'antigravity beacon deflects the incoming meteor');
 assert.ok(beaconAfter.lastDeflection && beaconAfter.lastDeflection.d<=22, 'beacon waits until the meteor is close before deflecting (d='+((beaconAfter.lastDeflection&&beaconAfter.lastDeflection.d)||'?')+')');
+assert.ok(beaconAfter.lastDeflection && Number.isFinite(beaconAfter.lastDeflection.targetX) && Math.abs(beaconAfter.lastDeflection.targetX-0.5)>=52, 'deflection chooses a redirected landing with crater clearance');
 assert.ok(sawWave, 'beacon emits an antigravity wave toward the meteor');
 assert.ok(sawBurst, 'beacon leaves a timed inverse-gravity burst after firing');
 assert.ok(sawInverseLift, 'inverse-gravity burst applies upward lift near the beacon');
 assert.equal(beaconAfter.impacts, beforeBeaconImpacts+1, 'deflected meteor still creates a crater impact after bouncing away');
-assert.ok(beaconAfter.lastImpact && Math.abs(beaconAfter.lastImpact.x-0.5)>=34, 'bounced meteor impacts at a useful distance from the protected beacon');
+assert.ok(beaconAfter.lastImpact && Math.abs(beaconAfter.lastImpact.x-0.5)>=52, 'bounced meteor impacts at a useful distance from the protected beacon');
 assert.equal(getBeaconTile(0,SURF-1), T.ANTIGRAVITY_BEACON, 'antigravity beacon survives the deflection');
 const protectedBeaconEdits=[...beaconTiles.entries()].filter(([key,t])=>{
   const [x,y]=key.split(',').map(Number);

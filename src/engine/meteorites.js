@@ -20,8 +20,9 @@ const meteorites = (function(){
   const BEACON_DEFLECT_RADIUS = 18;
   const BEACON_HARD_DEFLECT_RADIUS = 10;
   const BEACON_SCAN_INTERVAL = 0.12;
-  const BEACON_BOUNCE_MIN_DISTANCE = 42;
-  const BEACON_BOUNCE_MAX_DISTANCE = 78;
+  const BEACON_BOUNCE_MIN_DISTANCE = 60;
+  const BEACON_BOUNCE_MAX_DISTANCE = 96;
+  const BEACON_BOUNCE_CLEARANCE = 48;
   const MAX_BEACON_DEFLECTIONS_PER_METEOR = 4;
   const BASE_TERRAIN_BUDGET = 8;
   const STRESSED_TERRAIN_BUDGET = 4;
@@ -400,10 +401,42 @@ const meteorites = (function(){
     try{ if(typeof window.msg==='function') window.msg('Beacon antygrawitacyjny odchylil meteoryt'); }catch(e){}
     playReadyAudio('charge');
   }
+  function bounceDirection(m,b){
+    const vx=Number(m && m.vx)||0;
+    if(Math.abs(vx)>0.1) return vx>=0 ? 1 : -1;
+    const mx=Number(m && m.x);
+    if(Number.isFinite(mx) && Number.isFinite(b && b.x) && Math.abs(mx-b.x)>0.2) return mx<b.x ? 1 : -1;
+    return Math.random()<0.5 ? -1 : 1;
+  }
+  function validBounceLanding(tx,originalX,originalY,b,getTile){
+    if(Math.abs(tx-b.x)<BEACON_BOUNCE_CLEARANCE) return null;
+    if(Math.abs(tx-originalX)<BEACON_BOUNCE_CLEARANCE) return null;
+    const sy=craterSurfaceNear(tx,originalY,getTile);
+    if(sy==null) return null;
+    const t=readTile(getTile,tx,sy);
+    if(protectedTile(t)) return null;
+    if(goodTargetTile(t) || t===T.LAVA || t===T.WATER || t===T.ICE) return {x:tx,y:sy};
+    return null;
+  }
+  function chainedBeaconBounceTarget(b,originalX,originalY,awaySide,getTile,exclude){
+    for(let d=BEACON_BOUNCE_MIN_DISTANCE; d<=BEACON_BOUNCE_MAX_DISTANCE; d+=8){
+      const probeX=b.x+awaySide*d;
+      const probeY=craterSurfaceNear(Math.round(probeX),originalY,getTile);
+      const next=nearestBeacon(probeX,probeY==null ? originalY : probeY,getTile,BEACON_DEFLECT_RADIUS+6,{exclude});
+      if(!next) continue;
+      const tx=Math.round(next.x+awaySide*7);
+      const target=validBounceLanding(tx,originalX,originalY,b,getTile);
+      if(target) return target;
+    }
+    return null;
+  }
   function chooseBounceTarget(m,b,getTile){
-    const incomingSide=(Number(m && m.vx)||0)>=0 ? 1 : -1;
-    const awaySide=incomingSide || ((m && m.x)<b.x ? -1 : 1);
+    const awaySide=bounceDirection(m,b);
     const original=m && m.target ? m.target : {x:b.x,y:b.y};
+    const originalX=Number.isFinite(original && original.x) ? original.x : b.x;
+    const originalY=Number.isFinite(original && original.y) ? original.y : b.y;
+    const chained=chainedBeaconBounceTarget(b,originalX,originalY,awaySide,getTile,m && m.usedBeaconKeys ? m.usedBeaconKeys : []);
+    if(chained) return chained;
     const candidates=[];
     for(let i=0;i<8;i++){
       const side=i<5 ? awaySide : -awaySide;
@@ -413,16 +446,11 @@ const meteorites = (function(){
     }
     for(const off of candidates){
       const tx=Math.round(b.x+off);
-      if(Math.abs(tx-b.x)<BEACON_BOUNCE_MIN_DISTANCE-2) continue;
-      if(original && Math.abs(tx-original.x)<BEACON_BOUNCE_MIN_DISTANCE*0.62) continue;
-      const sy=craterSurfaceNear(tx,Number.isFinite(original.y)?original.y:b.y,getTile);
-      if(sy==null) continue;
-      const t=readTile(getTile,tx,sy);
-      if(protectedTile(t)) continue;
-      if(goodTargetTile(t) || t===T.LAVA || t===T.WATER || t===T.ICE) return {x:tx,y:sy};
+      const target=validBounceLanding(tx,originalX,originalY,b,getTile);
+      if(target) return target;
     }
     const fallbackX=Math.round(b.x+awaySide*((BEACON_BOUNCE_MIN_DISTANCE+BEACON_BOUNCE_MAX_DISTANCE)*0.5));
-    const fallbackY=craterSurfaceNear(fallbackX,Number.isFinite(original.y)?original.y:b.y,getTile);
+    const fallbackY=craterSurfaceNear(fallbackX,originalY,getTile);
     return {x:fallbackX,y:clamp(fallbackY==null ? Math.round(b.y) : fallbackY,2,WORLD_H-6)};
   }
   function retargetMeteorForBounce(m,b,getTile){
@@ -557,8 +585,8 @@ const meteorites = (function(){
     const seed=Number.isFinite(opts.seed) ? +opts.seed : rand(1,1000000);
     const scale=clamp(Number(opts.scale)||rand(0.68,1.42),0.62,1.55);
     const baseRx=8.8+intensity*4.25;
-    const leftRx=clamp(baseRx*scale*rand(0.76,1.28),7.8,23.0);
-    const rightRx=clamp(baseRx*scale*rand(0.76,1.28),7.8,23.0);
+    const leftRx=clamp(baseRx*scale*rand(0.82,1.30),10.5,24.5);
+    const rightRx=clamp(baseRx*scale*rand(0.82,1.30),10.5,24.5);
     const ry=clamp((4.0+intensity*2.15)*rand(0.70,1.40),3.6,10.8);
     const basinShift=rand(-0.16,0.16)*(leftRx+rightRx)*0.5;
     const bowlPower=rand(0.52,1.04);
@@ -619,7 +647,18 @@ const meteorites = (function(){
     const coreX=core.x;
     const floorY=core.floorY;
     for(let x=coreX-lavaSpan; x<=coreX+lavaSpan; x++) addOp(1,x,floorY,T.LAVA,0.01+Math.abs(x-coreX)*0.04,true);
-    const depositCells=floorCells.filter(c=>c.edge<0.62).sort((a,b)=>{
+    const depositCells=floorCells.filter(c=>c.edge<0.62);
+    if(depositCells.length<4){
+      const seen=new Set(depositCells.map(c=>c.x+','+c.floorY));
+      for(const c of floorCells){
+        const key=c.x+','+c.floorY;
+        if(seen.has(key)) continue;
+        seen.add(key);
+        depositCells.push(c);
+        if(depositCells.length>=4) break;
+      }
+    }
+    depositCells.sort((a,b)=>{
       const ah=hashUnit(seed+59.1,a.x*2.11+a.floorY*0.19);
       const bh=hashUnit(seed+59.1,b.x*2.11+b.floorY*0.19);
       return ah-bh;
