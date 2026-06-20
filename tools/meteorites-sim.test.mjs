@@ -14,10 +14,11 @@ globalThis.localStorage = {
 };
 globalThis.msg = ()=>{};
 
-const { T } = await import('../src/constants.js');
+const { T, INFO } = await import('../src/constants.js');
 const { meteorites } = await import('../src/engine/meteorites.js');
 
 assert.ok(meteorites && meteorites.forceSpawn && meteorites.update, 'meteorites module exports');
+assert.equal(INFO[T.ANTIGRAVITY_BEACON].meteorShield, true, 'antigravity beacon is registered as a meteor shield tile');
 
 const SURF = 82;
 const DAY_SECONDS = 600;
@@ -166,6 +167,33 @@ const beforeSteam=steamGas;
 meteorites._debug.impactAt(9,SURF-4,getWaterTile,setWaterTile,1.65,null,{waterHit:true});
 assert.ok(splashes-beforeWaterSplash>=6, 'water impact throws a broad water splash');
 assert.ok(steamGas>beforeSteam, 'water impact emits steam');
+
+meteorites.clearActive();
+const beaconTiles = new Map();
+function getBeaconTile(x,y){
+  x=Math.floor(x); y=Math.floor(y);
+  const k=kxy(x,y);
+  if(beaconTiles.has(k)) return beaconTiles.get(k);
+  return y>=SURF ? T.STONE : T.AIR;
+}
+function setBeaconTile(x,y,t){ beaconTiles.set(kxy(x,y),t); }
+setBeaconTile(0,SURF-1,T.ANTIGRAVITY_BEACON);
+const beforeBeaconImpacts=meteorites.metrics().impacts;
+const beforeDeflections=meteorites.metrics().deflections;
+const shielded = meteorites.forceSpawn({x:0,y:SURF,intensity:1.65,side:-1}, player, getBeaconTile);
+assert.ok(shielded, 'forced debug meteor spawns against an antigravity beacon');
+let sawDeflection=false;
+for(let i=0;i<900;i++){
+  meteorites.update(1/60, player, getBeaconTile, setBeaconTile);
+  const m=meteorites.metrics();
+  if(m.deflections>beforeDeflections) sawDeflection=true;
+  if(m.meteors===0) break;
+}
+const beaconAfter=meteorites.metrics();
+assert.ok(sawDeflection, 'antigravity beacon deflects the incoming meteor');
+assert.equal(beaconAfter.impacts, beforeBeaconImpacts, 'deflected meteor does not create a crater impact');
+assert.equal(getBeaconTile(0,SURF-1), T.ANTIGRAVITY_BEACON, 'antigravity beacon survives the deflection');
+assert.equal([...beaconTiles.values()].some(t=>t===T.AIR || t===T.LAVA || t===T.OBSIDIAN), false, 'deflected meteor does not carve nearby terrain');
 
 meteorites.restore({v:1,enabled:true,nextIn:12.5,spawned:3,impacts:4});
 let migrated=meteorites.metrics();

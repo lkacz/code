@@ -387,6 +387,7 @@ Object.assign(TILE_LABELS,{
 	[T.DYNAMO_SLOT]:'Szczelina dynama',
 	[T.COPPER_WIRE]:'Przewod miedziany',
 	[T.TELEPORTER]:'Teleporter',
+	[T.ANTIGRAVITY_BEACON]:'Beacon antygrawitacyjny',
 	[T.SOLAR_PANEL]:'Panel sloneczny',
 	[T.SOLAR_BATTERY]:'Panel sloneczny z bateria'
 });
@@ -1143,6 +1144,7 @@ const RECIPES=[
 	{id:'dynamo', name:'Dynamo', cost:{steel:4, wire:2, copper:2, transistor:1}, make(){ inv.dynamo+=1; msg('Dynamo +1 - R obraca; pionowe dziala w zaporach wodnych'); }},
 	{id:'copper_wire', name:'Przewod miedziany x4', cost:{copper:2, plastic:1}, make(){ inv.copperWire+=4; msg('Przewod miedziany +4 - laczy dynama z maszynami'); }},
 	{id:'teleporter', name:'Teleporter', cost:{steel:6, copperWire:6, transistor:2, diamond:1, dynamo:1}, make(){ inv.teleporter+=1; msg('Teleporter +1 - wejdz w lewo/prawo, aby skoczyc do kolejnego'); }},
+	{id:'antigravity_beacon', name:'Beacon antygrawitacyjny', cost:{antimatter:1, iridium:2, meteoricIron:4, copperWire:4, transistor:1}, make(){ inv.antigravityBeacon+=1; msg('Beacon antygrawitacyjny +1 - odchyla nadlatujace meteoryty'); }},
 	// Consumables: brewed and drunk on the spot (timed buffs ride the modifier-source registry)
 	{id:'potion_heal', name:'Eliksir życia', cost:{water:2, leaf:3}, make(){ player.hp=Math.min(player.maxHp, player.hp+40); msg('🧪 Eliksir życia: +40 HP'); try{ if(MM.audio && MM.audio.play) MM.audio.play('heal'); }catch(e){} }},
 	{id:'potion_speed', name:'Mikstura szybkości', cost:{water:1, leaf:2, diamond:1}, make(){ if(MM.progress && MM.progress.addBuff) MM.progress.addBuff({name:'Szybkość', icon:'💨', dur:60, stats:{moveSpeedMult:1.3, jumpPowerMult:1.15}}); msg('💨 Szybkość +30%, skok +15% (60 s)'); try{ if(MM.audio && MM.audio.play) MM.audio.play('heal'); }catch(e){} }},
@@ -1689,6 +1691,18 @@ function _drawMaterialTile(g,t,px,py,h){
 		g.strokeStyle='rgba(255,226,120,0.45)';
 		g.beginPath(); g.arc(px+TILE/2,py+TILE/2,3,0,Math.PI*2); g.stroke();
 		strokePath(g,'rgba(124,247,255,0.30)',1,[[px+TILE/2,py+3],[px+TILE/2,py+TILE-3]]);
+	} else if(t===T.ANTIGRAVITY_BEACON){
+		drawBlockBevel(g,px,py,'rgba(229,170,255,0.24)','rgba(8,3,18,0.42)');
+		dot(g,px,py,2,2,TILE-4,TILE-4,'rgba(14,6,30,0.62)');
+		g.strokeStyle='rgba(196,107,255,0.76)';
+		g.lineWidth=1.4;
+		g.beginPath(); g.arc(px+TILE/2,py+TILE/2,6.5,0,Math.PI*2); g.stroke();
+		g.strokeStyle='rgba(124,247,255,0.54)';
+		g.beginPath(); g.ellipse(px+TILE/2,py+TILE/2,7.5,3.2,-0.35,0,Math.PI*2); g.stroke();
+		g.beginPath(); g.ellipse(px+TILE/2,py+TILE/2,3.2,7.2,0.28,0,Math.PI*2); g.stroke();
+		dot(g,px,py,8,8,4,4,'rgba(244,218,255,0.88)');
+		dot(g,px,py,9,4,2,3,'rgba(124,247,255,0.62)');
+		dot(g,px,py,9,13,2,3,'rgba(124,247,255,0.42)');
 	} else if(t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE){
 		const master=t===T.VOLCANO_MASTER_STONE;
 		drawBlockBevel(g,px,py,master?'rgba(255,224,111,0.28)':'rgba(255,130,85,0.17)','rgba(45,9,3,0.36)');
@@ -1771,7 +1785,7 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 				let base=INFO[t].color; if(!base) continue;
 				const h = hash32(wx,y);
 				// Per-type amplitude (diamond fixed, stone/ice extra subtle, grass medium, others default)
-				let amp=22; if(t===T.STONE) amp=6; else if(t===T.SAND) amp=5; else if(t===T.COAL) amp=5; else if(t===T.STEEL) amp=8; else if(t===T.METEORIC_IRON) amp=6; else if(t===T.IRIDIUM) amp=4; else if(t===T.DIAMOND) amp=0; else if(t===T.WOOD) amp=16; else if(t===T.GRASS) amp=18; else if(t===T.SNOW) amp=8; else if(t===T.ICE) amp=6; else if(t===T.OBSIDIAN) amp=10; else if(t===T.GLASS) amp=3; else if(t===T.ELECTRONICS || t===T.TRANSISTOR) amp=7; else if(t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY) amp=3; else if(t===T.TELEPORTER) amp=5; else if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) amp=12; else if(INFO[t].chestTier) amp=4;
+				let amp=22; if(t===T.STONE) amp=6; else if(t===T.SAND) amp=5; else if(t===T.COAL) amp=5; else if(t===T.STEEL) amp=8; else if(t===T.METEORIC_IRON) amp=6; else if(t===T.IRIDIUM) amp=4; else if(t===T.DIAMOND) amp=0; else if(t===T.WOOD) amp=16; else if(t===T.GRASS) amp=18; else if(t===T.SNOW) amp=8; else if(t===T.ICE) amp=6; else if(t===T.OBSIDIAN) amp=10; else if(t===T.GLASS) amp=3; else if(t===T.ELECTRONICS || t===T.TRANSISTOR) amp=7; else if(t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY) amp=3; else if(t===T.TELEPORTER) amp=5; else if(t===T.ANTIGRAVITY_BEACON) amp=3; else if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) amp=12; else if(INFO[t].chestTier) amp=4;
 				const delta = ((h & 0xFF)/255 - 0.5)*amp; // symmetrical
 				const col = amp? shadeColor(base, delta|0) : base; // stone uses low amp so should not drift green
 				cctx.fillStyle=col; cctx.fillRect(lx*TILE,y*TILE,TILE,TILE);
@@ -1900,6 +1914,29 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 					cctx.stroke();
 					cctx.fillStyle='rgba(124,247,255,0.22)';
 					cctx.fillRect(px+TILE*0.30,py+TILE*0.18,TILE*0.40,TILE*0.64);
+				}
+				if(t===T.ANTIGRAVITY_BEACON){
+					const px=lx*TILE, py=y*TILE;
+					cctx.fillStyle='rgba(13,5,28,0.84)';
+					cctx.fillRect(px+2,py+2,TILE-4,TILE-4);
+					cctx.strokeStyle='rgba(196,107,255,0.86)';
+					cctx.lineWidth=2;
+					cctx.beginPath();
+					cctx.arc(px+TILE*0.5,py+TILE*0.5,TILE*0.28,0,Math.PI*2);
+					cctx.stroke();
+					cctx.strokeStyle='rgba(124,247,255,0.62)';
+					cctx.lineWidth=1.2;
+					cctx.beginPath();
+					cctx.ellipse(px+TILE*0.5,py+TILE*0.5,TILE*0.39,TILE*0.15,-0.32,0,Math.PI*2);
+					cctx.stroke();
+					cctx.beginPath();
+					cctx.ellipse(px+TILE*0.5,py+TILE*0.5,TILE*0.16,TILE*0.36,0.22,0,Math.PI*2);
+					cctx.stroke();
+					cctx.fillStyle='rgba(244,218,255,0.92)';
+					cctx.fillRect(px+8,py+8,4,4);
+					cctx.fillStyle='rgba(124,247,255,0.62)';
+					cctx.fillRect(px+9,py+4,2,3);
+					cctx.fillRect(px+9,py+13,2,3);
 				}
 				// Snow-specific styling: soft top highlight and subtle dark rim for separation
 				if(t===T.SNOW){
@@ -3441,6 +3478,7 @@ function minimapTileColor(t){
 	if(t===T.DYNAMO) return '#ffd24a';
 	if(t===T.DYNAMO_SLOT) return '#54ccff';
 	if(t===T.TELEPORTER) return '#7cf7ff';
+	if(t===T.ANTIGRAVITY_BEACON) return '#c46bff';
 	if(t===T.SOLAR_PANEL) return '#2290b2';
 	if(t===T.SOLAR_BATTERY) return '#19b3a8';
 	if(t===T.MEAT) return '#bd5145';
@@ -3462,7 +3500,7 @@ function minimapTileColor(t){
 	return '#686d78';
 }
 function minimapConcealsUndiscovered(t){
-	return t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.OBSIDIAN || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || (INFO[t] && INFO[t].gas) || t===T.GRAVE || t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC;
+	return t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.OBSIDIAN || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || (INFO[t] && INFO[t].gas) || t===T.GRAVE || t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC;
 }
 function drawMinimap(){
 	if(!showMinimap) return;
@@ -3512,7 +3550,7 @@ function drawMinimap(){
 							continue;
 						}
 						const c=minimapTileColor(t);
-						if(t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || (INFO[t] && INFO[t].gas) || INFO[t].chestTier){ color=c; priority=true; wx=wx1+1; break; }
+						if(t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || (INFO[t] && INFO[t].gas) || INFO[t].chestTier){ color=c; priority=true; wx=wx1+1; break; }
 						if(!color) color=c;
 					}
 				}
@@ -3798,6 +3836,31 @@ function placeDebugSolarBattery(){
 	if(p && SOLAR && SOLAR._debug && SOLAR._debug.debugChargeAt) SOLAR._debug.debugChargeAt(p.x,p.y,80,getTile);
 	return !!p;
 }
+function placeDebugAntigravityBeacon(){
+	const facing=player.facing<0 ? -1 : 1;
+	const baseX=Math.floor(player.x + facing*5);
+	const xs=[0,facing,-facing,facing*2,-facing*2,facing*3,-facing*3].map(dx=>baseX+dx);
+	for(const x of xs){
+		ensureChunk(Math.floor(x/CHUNK_W));
+		let y=null;
+		try{ y=Math.floor(WORLDGEN.surfaceHeight(x))-1; }catch(e){ y=null; }
+		const candidates=[];
+		if(Number.isFinite(y)) candidates.push(y,y-1,y+1,y-2,y+2);
+		const py=Math.floor(player.y);
+		for(let dy=-3; dy<=5; dy++) candidates.push(py+dy);
+		for(const cyRaw of candidates){
+			const cy=Math.floor(cyRaw);
+			if(cy<1 || cy>=WORLD_H-2) continue;
+			const cells=[{x,y:cy,t:T.ANTIGRAVITY_BEACON}];
+			if(!debugRigCellsClear(cells)) continue;
+			if(!isStableMachineSupport(getTile(x,cy+1)) && !isStableMachineSupport(getTile(x-1,cy)) && !isStableMachineSupport(getTile(x+1,cy))) continue;
+			setTile(x,cy,T.ANTIGRAVITY_BEACON);
+			finalizeDebugPlacedCells(cells,'place');
+			return true;
+		}
+	}
+	return false;
+}
 function nearestDebugSolar(){
 	const cx=Math.floor(player.x), cy=Math.floor(player.y);
 	let best=null, bestD=Infinity;
@@ -4002,6 +4065,7 @@ if(MM.ui && MM.ui.injectSeasonDebugPanel) MM.ui.injectSeasonDebugPanel({
 if(MM.ui && MM.ui.injectMeteorDebugPanel) MM.ui.injectMeteorDebugPanel({
 	setEnabled:(enabled)=>{ if(!METEORITES || !METEORITES.setEnabled) return false; const ok=!!METEORITES.setEnabled(enabled); if(ok){ noteSaveActivity(); saveState(); } return ok; },
 	spawn:()=>{ if(!METEORITES || !METEORITES.forceSpawn) return false; const ok=!!METEORITES.forceSpawn({nearHero:true,intensity:1.65},player,getTile); if(ok){ noteSaveActivity(); saveState(); } return ok; },
+	beacon:()=> placeDebugAntigravityBeacon(),
 	roll:()=>{ if(!METEORITES || !METEORITES.rollSchedule) return false; const ok=!!METEORITES.rollSchedule(); if(ok){ noteSaveActivity(); saveState(); } return ok; },
 	clear:()=>{ if(!METEORITES || !METEORITES.clearActive) return false; METEORITES.clearActive(); return true; },
 	metrics:()=> (METEORITES && METEORITES.metrics) ? METEORITES.metrics() : null

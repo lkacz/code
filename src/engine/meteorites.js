@@ -13,6 +13,10 @@ const meteorites = (function(){
   const MAX_DEBRIS = 60;
   const MAX_PLUMES = 34;
   const GRAVITY = 7.5;
+  const BEACON_SCAN_RADIUS = 44;
+  const BEACON_DEFLECT_RADIUS = 34;
+  const BEACON_HARD_DEFLECT_RADIUS = 12;
+  const BEACON_SCAN_INTERVAL = 0.12;
   const BASE_TERRAIN_BUDGET = 8;
   const STRESSED_TERRAIN_BUDGET = 4;
 
@@ -28,6 +32,7 @@ const meteorites = (function(){
   let nextIn = 0;
   let spawned = 0;
   let impacts = 0;
+  let deflections = 0;
   let screenFlash = 0;
   let lastImpact = null;
   let shakeT = 0;
@@ -73,7 +78,8 @@ const meteorites = (function(){
   }
   function protectedTile(t){
     return t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC ||
-      t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE;
+      t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE ||
+      t===T.ANTIGRAVITY_BEACON;
   }
   function meteorShattersTile(t){
     if(t===T.AIR || t===T.WATER || t===T.LAVA || isGas(t)) return false;
@@ -97,6 +103,29 @@ const meteorites = (function(){
   function readTile(getTile,x,y){
     if(typeof getTile!=='function') return T.AIR;
     try{ return getTile(x,y); }catch(e){ return T.AIR; }
+  }
+  function nearestBeacon(cx,cy,getTile,radius){
+    if(typeof getTile!=='function' || !Number.isFinite(cx) || !Number.isFinite(cy)) return null;
+    const r=clamp(Number(radius)||BEACON_SCAN_RADIUS,1,BEACON_SCAN_RADIUS);
+    const minX=Math.floor(cx-r);
+    const maxX=Math.ceil(cx+r);
+    const minY=Math.max(1,Math.floor(cy-r));
+    const maxY=Math.min(WORLD_H-4,Math.ceil(cy+r));
+    let best=null;
+    let bestD2=r*r+1;
+    for(let y=minY; y<=maxY; y++){
+      for(let x=minX; x<=maxX; x++){
+        if(readTile(getTile,x,y)!==T.ANTIGRAVITY_BEACON) continue;
+        const bx=x+0.5, by=y+0.5;
+        const dx=bx-cx, dy=by-cy;
+        const d2=dx*dx+dy*dy;
+        if(d2<bestD2){
+          bestD2=d2;
+          best={x:bx,y:by,tx:x,ty:y,d2,d:Math.sqrt(d2)};
+        }
+      }
+    }
+    return best;
   }
   function surfaceNear(x,guessY,getTile){
     const wg=MM.worldGen;
@@ -256,6 +285,90 @@ const meteorites = (function(){
       },MAX_PLUMES);
     }
     try{ if(MM.gases && MM.gases.add) MM.gases.add('steam',cx,cy-0.4,{power:1.3+intensity*0.45,cells:8}); }catch(e){}
+  }
+  function emitBeaconDeflectFx(m,b){
+    deflections++;
+    const stress=frameMs()>30;
+    const emberCount=stress ? 12 : 28;
+    for(let i=0;i<emberCount;i++){
+      const a=Math.random()*Math.PI*2;
+      const sp=rand(1.5,6.8)*(1+(m.intensity||1)*0.08);
+      pushCapped(embers,{
+        x:b.x+rand(-0.18,0.18),
+        y:b.y+rand(-0.18,0.18),
+        vx:Math.cos(a)*sp,
+        vy:Math.sin(a)*sp-rand(0.5,2.4),
+        life:0,
+        max:rand(0.35,0.95),
+        size:rand(0.05,0.13),
+        hue:Math.random()<0.55?'white':'gold'
+      },MAX_EMBERS);
+    }
+    const plumeCount=stress ? 3 : 7;
+    for(let i=0;i<plumeCount;i++){
+      pushCapped(plumes,{
+        x:b.x+rand(-0.65,0.65),
+        y:b.y+rand(-0.45,0.45),
+        vx:rand(-0.28,0.28),
+        vy:rand(-0.75,-0.15),
+        life:0,
+        max:rand(0.7,1.6),
+        r:rand(0.18,0.42),
+        shade:Math.floor(rand(92,148))
+      },MAX_PLUMES);
+    }
+    screenFlash=Math.max(screenFlash,0.34);
+    startShake(0.22,3.2);
+    burstAt(b.x,b.y,'epic',14);
+    try{ if(typeof window.msg==='function') window.msg('Beacon antygrawitacyjny odchylil meteoryt'); }catch(e){}
+    playReadyAudio('charge');
+  }
+  function deflectMeteorFromBeacon(m,b){
+    if(!m || !b || m.deflected) return false;
+    const dx=m.x-b.x;
+    const dy=m.y-b.y;
+    const d=Math.hypot(dx,dy)||1;
+    const nx=dx/d;
+    const speed=Math.max(18,Math.hypot(m.vx,m.vy)*0.92);
+    const side=nx>=0 ? 1 : -1;
+    m.vx=nx*speed + side*rand(7,14);
+    m.vy=Math.min(-18-(m.intensity||1)*2.5,-Math.abs(m.vy)*0.45-10);
+    m.life=Math.max(m.life,2.2);
+    m.deflected=true;
+    m.deflectedBy={x:b.x,y:b.y};
+    m.target={x:m.x+side*88,y:Math.max(2,m.y-34)};
+    emitBeaconDeflectFx(m,b);
+    return true;
+  }
+  function applyBeaconField(m,dt,getTile){
+    if(!m || m.deflected) return false;
+    m.beaconScanT=(Number.isFinite(m.beaconScanT)?m.beaconScanT:0)-dt;
+    let b=m.cachedBeacon || null;
+    if(!b || m.beaconScanT<=0){
+      m.beaconScanT=BEACON_SCAN_INTERVAL;
+      const target=m.target || {x:m.x,y:m.y};
+      const targetBeacon=nearestBeacon(target.x,target.y,getTile,BEACON_SCAN_RADIUS);
+      const currentBeacon=nearestBeacon(m.x,m.y,getTile,BEACON_DEFLECT_RADIUS);
+      b=currentBeacon || targetBeacon;
+      m.cachedBeacon=b;
+    }
+    if(!b) return false;
+    const d=Math.hypot(m.x-b.x,m.y-b.y);
+    const target=m.target || {x:m.x,y:m.y};
+    const targetD=Math.hypot(target.x-b.x,target.y-b.y);
+    const protectedTarget=targetD<BEACON_DEFLECT_RADIUS;
+    const fieldRadius=protectedTarget ? BEACON_DEFLECT_RADIUS*1.7 : BEACON_DEFLECT_RADIUS*1.25;
+    if(d<BEACON_HARD_DEFLECT_RADIUS || d<BEACON_DEFLECT_RADIUS || (protectedTarget && d<BEACON_DEFLECT_RADIUS*1.45)){
+      return deflectMeteorFromBeacon(m,b);
+    }
+    if(d<fieldRadius){
+      const dx=m.x-b.x, dy=m.y-b.y;
+      const len=Math.hypot(dx,dy)||1;
+      const strength=(1-d/fieldRadius)*(protectedTarget ? 30 : 24);
+      m.vx+=(dx/len)*strength*dt;
+      m.vy-=Math.max(0.2,(1-Math.abs(dy/len)))*strength*0.38*dt;
+    }
+    return false;
   }
   function markWorldChanged(){
     try{ if(typeof window.__mmMarkWorldChanged==='function') window.__mmMarkWorldChanged('meteorite'); }catch(e){}
@@ -558,6 +671,7 @@ const meteorites = (function(){
     const aimY=surfaceY-0.2;
     const vx=(aimX-startX)/fallTime;
     const vy=(aimY-startY-0.5*GRAVITY*fallTime*fallTime)/fallTime;
+    const cachedBeacon=nearestBeacon(target.x,surfaceY,getTile,BEACON_SCAN_RADIUS);
     const m={
       x:startX,y:startY,vx,vy,
       target:{x:target.x,y:surfaceY},
@@ -568,7 +682,9 @@ const meteorites = (function(){
       rot:Math.random()*Math.PI*2,
       spin:rand(-5.5,5.5),
       waterEntryFx:false,
-      waterHit:false
+      waterHit:false,
+      beaconScanT:0,
+      cachedBeacon
     };
     meteors.push(m);
     spawned++;
@@ -599,6 +715,8 @@ const meteorites = (function(){
         if(m.trail.length>28) m.trail.shift();
       }
       if(Math.random()<0.22) emitTrailEmber(m);
+      if(applyBeaconField(m,sdt,getTile)) continue;
+      if(m.deflected && (m.y<-70 || Math.abs(m.x-(m.deflectedBy ? m.deflectedBy.x : m.x))>128 || m.life<=0)) return true;
       const tx=Math.floor(m.x), ty=Math.floor(m.y);
       const t=readTile(getTile,tx,ty);
       if(!m.waterEntryFx && (t===T.WATER || t===T.ICE)){
@@ -607,11 +725,13 @@ const meteorites = (function(){
         emitWaterImpactFx(m.x,m.y,m.intensity);
       }
       if(ty>=WORLD_H-3 || (ty>=1 && meteorGroundTile(t))){
+        if(m.deflected) return true;
         impactAt(m.x,m.y,getTile,setTile,m.intensity,null,{waterHit:m.waterHit});
         return true;
       }
       destroyFlyThroughTile(tx,ty,t,getTile,setTile,m.intensity);
       if(m.life<=0){
+        if(m.deflected) return true;
         impactAt(m.x,m.y,getTile,setTile,m.intensity,null,{waterHit:m.waterHit});
         return true;
       }
@@ -863,7 +983,7 @@ const meteorites = (function(){
     return true;
   }
   function snapshot(){
-    return {v:2,enabled,nextIn:+Math.max(0,nextIn).toFixed(2),spawned,impacts};
+    return {v:2,enabled,nextIn:+Math.max(0,nextIn).toFixed(2),spawned,impacts,deflections};
   }
   function restore(data){
     clearActive();
@@ -873,6 +993,7 @@ const meteorites = (function(){
       nextIn=loadedNextIn(data);
       spawned=Math.max(0,(data.spawned|0)||0);
       impacts=Math.max(0,(data.impacts|0)||0);
+      deflections=Math.max(0,(data.deflections|0)||0);
     }
     if(!(nextIn>0)) rollNext();
     saveSettings();
@@ -900,6 +1021,7 @@ const meteorites = (function(){
       debris:debris.length,
       plumes:plumes.length,
       impacts,
+      deflections,
       spawned,
       shake:+Math.max(0,shakeT).toFixed(2),
       lastImpact
@@ -927,7 +1049,7 @@ const meteorites = (function(){
     restore,
     metrics,
     isChunkBusy,
-    _debug:{impactAt,queueCrater,applyTerrainJobs,pickTarget,meteors,terrainJobs,embers,debris,plumes,shockwaves,scorches}
+    _debug:{impactAt,queueCrater,applyTerrainJobs,pickTarget,nearestBeacon,meteors,terrainJobs,embers,debris,plumes,shockwaves,scorches}
   };
   MM.meteorites=api;
   return api;

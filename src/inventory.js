@@ -191,6 +191,7 @@
     {key:'transistor', label:'Tranzystor', color:'#47d18c', tile:'TRANSISTOR'},
     {key:'dynamo',  label:'Dynamo',  color:'#ffd24a', tile:'DYNAMO'},
     {key:'teleporter', label:'Teleporter', color:'#7cf7ff', tile:'TELEPORTER'},
+    {key:'antigravityBeacon', label:'Beacon antygrawitacyjny', color:'#c46bff', tile:'ANTIGRAVITY_BEACON'},
     {key:'torch',   label:'Pochodnia',color:'#ffb84a', tile:'TORCH'},
     {key:'masterStone', label:'Kamien mistrza', color:'#ff6a21', tile:'VOLCANO_MASTER_STONE'},
     {key:'servantStone', label:'Kamien slugi', color:'#8b2d17', tile:'SERVANT_STONE'},

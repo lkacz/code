@@ -703,7 +703,7 @@ MM.ui = (function(){
       if(!m){ metrics.textContent='brak metryk meteorytow'; return; }
       const fx=(m.embers||0)+(m.debris||0)+(m.plumes||0);
       const days=Number.isFinite(m.nextInDays) ? Number(m.nextInDays).toFixed(2)+'d' : Number(m.nextIn||0).toFixed(0)+'s';
-      metrics.textContent=(m.enabled?'ON':'OFF')+' | next '+days+' | lot '+(m.meteors||0)+' | krater job '+(m.terrainJobs||0)+' q'+(m.queuedOps||0)+' | fx '+fx+' | impakty '+(m.impacts||0);
+      metrics.textContent=(m.enabled?'ON':'OFF')+' | next '+days+' | lot '+(m.meteors||0)+' | krater job '+(m.terrainJobs||0)+' q'+(m.queuedOps||0)+' | fx '+fx+' | impakty '+(m.impacts||0)+' | odchylenia '+(m.deflections||0);
     }
     toggle.addEventListener('click',()=>{
       try{
@@ -717,6 +717,7 @@ MM.ui = (function(){
     box.appendChild(toggle);
     const buttons=[
       ['spawn','Meteoryt teraz','Natychmiast spuszcza meteoryt niedaleko bohatera'],
+      ['beacon','Postaw beacon','Stawia beacon antygrawitacyjny do testowania odchylania meteorytow'],
       ['natural','Reset licznika','Losuje nowy czas do nastepnego naturalnego spadku'],
       ['clear','Wyczysc FX','Usuwa aktywne meteory i efekty bez cofania juz zrobionego krateru']
     ];
@@ -730,6 +731,7 @@ MM.ui = (function(){
         try{
           let ok=false;
           if(id==='spawn') ok=(typeof actions.spawn==='function') ? actions.spawn() : false;
+          else if(id==='beacon') ok=(typeof actions.beacon==='function') ? actions.beacon() : false;
           else if(id==='natural') ok=(typeof actions.roll==='function') ? actions.roll() : false;
           else if(id==='clear') ok=(typeof actions.clear==='function') ? actions.clear() : false;
           msg(ok ? ('Meteoryty: '+txt) : 'Debug meteorytow: brak akcji');
