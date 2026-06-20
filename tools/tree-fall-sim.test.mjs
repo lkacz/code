@@ -1046,4 +1046,49 @@ worldGen.randSeed = ()=>0;
   assert.equal(trees._tileTreeIds.has('10,19'), false, 'raw chunk overwrites prune stale tree identity');
 }
 
+{
+  resetTiles();
+  resetTreeSystem();
+  const original={
+    surfaceHeight:worldGen.surfaceHeight,
+    biomeType:worldGen.biomeType,
+    column:worldGen.column,
+    valueNoise:worldGen.valueNoise,
+    randSeed:worldGen.randSeed,
+    settings:worldGen.settings
+  };
+  const surf=32;
+  const arr=new Uint8Array(CHUNK_W*WORLD_H);
+  for(let x=0;x<CHUNK_W;x++){
+    arr[surf*CHUNK_W+x]=T.GRASS;
+    for(let y=surf+1;y<WORLD_H;y++) arr[y*CHUNK_W+x]=T.STONE;
+  }
+  worldGen.surfaceHeight=()=>surf;
+  worldGen.biomeType=()=>0;
+  worldGen.column=()=>({row:surf,biome:0});
+  worldGen.valueNoise=()=>0.95;
+  worldGen.randSeed=()=>0;
+  worldGen.settings=Object.assign({}, original.settings, {forestDensityMul:8});
+  trees.populateChunk(arr,0);
+  const bases=[];
+  for(let x=0;x<CHUNK_W;x++){
+    if(arr[(surf-1)*CHUNK_W+x]===T.WOOD) bases.push(x);
+    else {
+      for(let y=Math.max(0,surf-14); y<surf-1; y++){
+        assert.notEqual(arr[y*CHUNK_W+x], T.WOOD, 'max density does not create upper trunks without a grounded base');
+      }
+    }
+  }
+  assert.ok(bases.length>=4, 'max density still creates a visible forest');
+  for(let i=1;i<bases.length;i++){
+    assert.ok(bases[i]-bases[i-1]>=4, 'max density keeps generated tree trunks separated');
+  }
+  worldGen.surfaceHeight=original.surfaceHeight;
+  worldGen.biomeType=original.biomeType;
+  worldGen.column=original.column;
+  worldGen.valueNoise=original.valueNoise;
+  worldGen.randSeed=original.randSeed;
+  worldGen.settings=original.settings;
+}
+
 console.log('tree-fall-sim: all assertions passed');

@@ -132,6 +132,42 @@ window.MM = window.MM || {};
     }
   }
 
+  function treeSpacingFor(variant){
+    if(variant==='megaOak') return 5;
+    if(variant==='mangrove') return 3;
+    if(variant==='palm') return 3;
+    return 3;
+  }
+  function treeMinTrunkFor(variant){
+    if(variant==='tallOak') return 7;
+    if(variant==='megaOak' || variant==='palm') return 6;
+    if(variant==='conifer') return 5;
+    if(variant==='mangrove') return 3;
+    return 4;
+  }
+  function rawTile(arr,x,y){ return (x>=0 && x<CHUNK_W && y>=0 && y<WORLD_H) ? arr[y*CHUNK_W+x] : T.AIR; }
+  function rawTreeBase(arr,x,y){ return rawTile(arr,x,y)===T.WOOD && rawTile(arr,x,y+1)!==T.WOOD; }
+  function canGrowTreeAt(arr,lx,s,variant){
+    if(!arr) return false;
+    const minTrunk=treeMinTrunkFor(variant);
+    for(let i=1;i<=minTrunk;i++){
+      const y=s-i;
+      if(y<0) return false;
+      if(arr[y*CHUNK_W+lx]!==T.AIR) return false;
+    }
+    const spacing=treeSpacingFor(variant);
+    const x0=Math.max(0,lx-spacing);
+    const x1=Math.min(CHUNK_W-1,lx+spacing);
+    const y0=Math.max(0,s-4);
+    const y1=Math.min(WORLD_H-2,s+2);
+    for(let x=x0;x<=x1;x++){
+      for(let y=y0;y<=y1;y++){
+        if(rawTreeBase(arr,x,y)) return false;
+      }
+    }
+    return true;
+  }
+
   function buildTree(arr,lx,s,variant,wx){
     function tileIndex(x,y){ return y*CHUNK_W+x; }
     const id=generatedTreeId(wx,s,variant);
@@ -1024,22 +1060,18 @@ window.MM = window.MM || {};
       if((biome===5 || biome===6 || biome===8 || biome===3) && !island) continue;
       let chance = 0.08;
       if(island) chance=0.16; // palms cluster on the islet
-      else if(biome===0) chance=0.18; // forest denser base
+      else if(biome===0) chance=0.18; // forest, with patch mask below
       else if(biome===1) chance=0.07; // plains
       else if(biome===2) chance=0.05; // snow
-      else if(biome===4) chance=0.055; // swamp: sparse mangrove pockets on mud banks
+      else if(biome===4) chance=0.12; // swamp: sparse mangrove pockets on mud banks
       else if(biome===7) chance= (s<MM.SNOW_LINE?0.04:0.015); // fewer at high elevation
       // Cluster patches in forests: use a low-frequency patch mask to boost chance locally
       if(biome===0){
         const patch = WG.valueNoise(wx, 180, 7771);
         if(patch>0.62) chance += 0.20; else if(patch>0.52) chance += 0.10;
       }
-      // Adjacency boost: more likely to grow next to existing trees in this chunk
-      const leftHas = (lx>0 && arr[(s-1)*CHUNK_W + (lx-1)]===T.WOOD);
-      const left2Has = (lx>1 && arr[(s-1)*CHUNK_W + (lx-2)]===T.WOOD);
-      if(leftHas) chance += 0.12; else if(left2Has) chance += 0.06;
-  const densityMul = (WG.settings && WG.settings.forestDensityMul) || 1;
-  if(WG.randSeed(wx*1.777) > Math.min(0.95, chance * densityMul)) continue;
+      const densityMul = (WG.settings && WG.settings.forestDensityMul) || 1;
+      if(WG.randSeed(wx*1.777) > Math.min(0.95, chance * densityMul)) continue;
       const sL=WG.surfaceHeight(wx-1), sR=WG.surfaceHeight(wx+1);
       const slopeL=Math.abs(s-sL), slopeR=Math.abs(s-sR);
       if(slopeL>7 || slopeR>7) continue; // steeper cliffs skip
@@ -1048,7 +1080,8 @@ window.MM = window.MM || {};
       const baseT=arr[s*CHUNK_W+lx];
       if(baseT!==T.GRASS && baseT!==T.SNOW && baseT!==T.SAND && baseT!==T.STONE && baseT!==T.MUD) continue;
       // Slightly relax valley steepness
-      const variant = island? 'palm' : (biome===2?'conifer': biome===4?'mangrove': biome===1? (WG.randSeed(wx+300)>0.5?'oak':'tallOak') : (WG.randSeed(wx+500)<0.15?'megaOak':'oak'));
+      const variant = island? 'palm' : (biome===2?'conifer': biome===4?'mangrove': biome===1? (WG.randSeed(wx+300)>0.5?'oak':'tallOak') : (WG.randSeed(wx+500)<0.80?'megaOak':'oak'));
+      if(!canGrowTreeAt(arr,lx,s,variant)) continue;
       buildTree(arr,lx,s,variant,wx);
     }
   };
