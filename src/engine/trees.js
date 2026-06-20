@@ -241,6 +241,7 @@ window.MM = window.MM || {};
 
   function isTreeMaterial(t,x,y){ return t===T.WOOD || isFoliage(t,x,y); }
   function isFallenTreeMaterial(t){ return t===T.WOOD || isLeaf(t) || t===T.SNOW; }
+  function fallsAsTreeDebris(t){ return t===T.WOOD || t===T.SNOW; }
 
   function collectRegisteredTreeTiles(getTile,setTile,id,stem){
     const set=treeTiles.get(id);
@@ -371,11 +372,11 @@ window.MM = window.MM || {};
       dir:dir<0?-1:1,
       angle:0,
       omega:0,
-      tiles:tiles.map(tile=>({rx:tile.x+0.5-pivotX, ry:tile.y+0.5-pivotY, ox:tile.x, oy:tile.y, t:tile.t}))
+      tiles:tiles.filter(tile=>fallsAsTreeDebris(tile.t)).map(tile=>({rx:tile.x+0.5-pivotX, ry:tile.y+0.5-pivotY, ox:tile.x, oy:tile.y, t:tile.t}))
     };
   }
 
-  function startTreeFall(getTile,setTile,playerFacing,x,y){ const collected=collectTreeTiles(getTile,setTile,x,y); const tiles=collected.tiles; if(!tiles.length) return false; tiles.forEach(tile=>notifyRemoved(getTile,tile.x,tile.y)); if(!collected.stem){ const dir=normalizeDir(playerFacing||1); tiles.forEach(tile=>fallingBlocks.push(makeFallingPiece(tile.x,tile.y,tile.t,dir))); return true; } fallingTrees.push(makeRotatingTree(tiles,collected.stem,playerFacing||1)); while(fallingTrees.length>MAX_FALLING_TREES){ const old=fallingTrees.shift(); landTree(getTile,setTile,old,landedAngle(old)); } return true; }
+  function startTreeFall(getTile,setTile,playerFacing,x,y){ const collected=collectTreeTiles(getTile,setTile,x,y); const tiles=collected.tiles; if(!tiles.length) return false; tiles.forEach(tile=>notifyRemoved(getTile,tile.x,tile.y)); if(!collected.stem){ const dir=normalizeDir(playerFacing||1); tiles.forEach(tile=>{ if(fallsAsTreeDebris(tile.t)) fallingBlocks.push(makeFallingPiece(tile.x,tile.y,tile.t,dir)); }); return true; } const tree=makeRotatingTree(tiles,collected.stem,playerFacing||1); if(tree.tiles.length) fallingTrees.push(tree); while(fallingTrees.length>MAX_FALLING_TREES){ const old=fallingTrees.shift(); landTree(getTile,setTile,old,landedAngle(old)); } return true; }
 
   function isGasTile(t){ const info=MM.INFO && MM.INFO[t]; return !!(info && info.gas); }
   // Felled blocks pass through air, water and transient gases, like rigid falling solids.
@@ -535,21 +536,8 @@ window.MM = window.MM || {};
     if(was===T.WATER){ try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(x,y,getTile); }catch(e){} }
     return y;
   }
-  function dropSeasonalLeaf(x,y,t,getTile,setTile){
-    if(typeof getTile!=='function' || typeof setTile!=='function') return false;
-    const tx=Math.floor(x), ty=Math.floor(y);
-    if(ty<0 || ty>=WORLD_H) return false;
-    const tile=t==null ? getTile(tx,ty) : t;
-    if(!isAutumnLeaf(tile) || getTile(tx,ty)!==tile) return false;
-    unmarkTreeTile(tx,ty);
-    unmarkFallenTreeTile(tx,ty);
-    setTile(tx,ty,T.AIR);
-    const dir=((tx*31 + ty*17 + tile*13)&1) ? 1 : -1;
-    fallingBlocks.push(makeFallingPiece(tx,ty,tile,dir,2));
-    queueStandingTreeAroundChange(tx,ty);
-    queueFallenTreeAroundRemoval(tx,ty);
-    notifyRemoved(getTile,tx,ty);
-    return true;
+  function dropSeasonalLeaf(){
+    return false;
   }
   function dropToRest(getTile,setTile,b){
     const piece=makeFallingPiece(b.x,b.y,b.t,b.dir,b.hBudget);
@@ -578,6 +566,7 @@ window.MM = window.MM || {};
   function clampToLanded(tree,next){ const target=landedAngle(tree); if(tree.dir>0 && next>target) return target; if(tree.dir<0 && next<target) return target; return next; }
   function tileBlocked(getTile,x,y){ return y>=WORLD_H || (y>=0 && !passThrough(getTile(x,y))); }
   function detachAt(tree,tile,pos){
+    if(!fallsAsTreeDebris(tile.t)) return;
     const y=Math.max(0, Math.min(WORLD_H-1, pos.y));
     fallingBlocks.push(makeFallingPiece(pos.x,Math.max(0,y-1),tile.t,tree.dir));
   }
@@ -631,7 +620,7 @@ window.MM = window.MM || {};
   function releaseFallenTreeTile(getTile,setTile,x,y,t,dir){
     unmarkFallenTreeTile(x,y);
     setTile(x,y,T.AIR);
-    fallingBlocks.push(makeFallingPiece(x,y,t,dir||0));
+    if(fallsAsTreeDebris(t)) fallingBlocks.push(makeFallingPiece(x,y,t,dir||0));
     queueFallenTreeAroundRemoval(x,y);
     notifyRemoved(getTile,x,y);
   }
@@ -789,6 +778,7 @@ window.MM = window.MM || {};
       notifyRemoved(getTile,tile.x,tile.y);
     });
     component.forEach(tile=>{
+      if(!fallsAsTreeDebris(tile.t)) return;
       const dir=normalizeDir(tile.x-avgX);
       fallingBlocks.push(makeFallingPiece(tile.x,tile.y,tile.t,dir));
     });

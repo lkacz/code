@@ -1,7 +1,7 @@
 // Shared wind system.
 // Wind is sampled weather state, not a per-tile simulation: it pushes exposed
 // airborne actors, biases sparse gas motion, bends smoke/particles and draws a
-// tiny bounded dust/leaf layer so even light wind is readable.
+// tiny bounded dust/snow layer so even light wind is readable.
 import { T, INFO, WORLD_H, MOVE } from '../constants.js';
 
 (function(){
@@ -222,14 +222,8 @@ import { T, INFO, WORLD_H, MOVE } from '../constants.js';
     if(t===T.SNOW || t===T.ICE) return {kind:'snow', color:'#f4fbff', size:0.045+Math.min(0.05,mag*0.008), lift:0.11, line:0.18};
     if(t===T.SAND) return {kind:'sand', color:'#d9c38e', size:0.055+Math.min(0.05,mag*0.009), lift:0.08, line:0.32};
     if(t===T.MUD) return {kind:'sand', color:'#8a744c', size:0.055, lift:0.045, line:0.24};
-    if(t===T.GRASS || isLeafTile(t)){
-      const autumn=t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED;
-      const color=autumn
-        ? (t===T.AUTUMN_LEAF_RED ? (Math.random()<0.5?'#c9573e':'#94302f') : (Math.random()<0.5?'#e09a38':'#b96528'))
-        : (Math.random()<0.6?'#8fcf4f':'#6fb35f');
-      return {kind:'leaf', color, size:0.11+Math.min(0.08,mag*0.012), lift:0.05, line:0.26};
-    }
-    if(t===T.WOOD) return {kind:Math.random()<0.45?'leaf':'grit', color:Math.random()<0.5?'#a8783d':'#7f552e', size:0.075, lift:0.045, line:0.28};
+    if(t===T.GRASS || isLeafTile(t)) return {kind:'dust', color:t===T.GRASS?'#7fa65a':'#9a7a52', size:0.055+Math.min(0.04,mag*0.007), lift:0.035, line:0.22};
+    if(t===T.WOOD) return {kind:'grit', color:Math.random()<0.5?'#a8783d':'#7f552e', size:0.075, lift:0.045, line:0.28};
     if(t===T.COAL || t===T.OBSIDIAN) return {kind:'grit', color:'#2b2b31', size:0.062, lift:0.035, line:0.22};
     if(t===T.STONE || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT) return {kind:'grit', color:t===T.GLASS?'#bff7ff':'#a4aab2', size:0.055, lift:0.035, line:0.24};
     return {kind:'dust', color:'#d8c7a2', size:0.06+Math.min(0.04,mag*0.008), lift:0.04, line:0.26};
@@ -290,7 +284,7 @@ import { T, INFO, WORLD_H, MOVE } from '../constants.js';
     const mag=Math.abs(sp);
     const mat=materialDescriptor(materialTile,mag);
     const gust=mag>3.0 && Math.random()<clamp((mag-3.0)*0.16,0,0.36);
-    const leafy=mat.kind==='leaf' || (materialTile===T.AIR && Math.random()<clamp(0.16+mag*0.05,0.16,0.44));
+    const leafy=false;
     particles.push({
       kind:gust?'gust':(leafy?'leaf':mat.kind),
       x:tx+Math.random(),

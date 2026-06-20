@@ -12,7 +12,7 @@ globalThis.MM = {
 };
 
 let waterWakes = 0;
-const { T, isAutumnLeaf } = await import('../src/constants.js');
+const { T } = await import('../src/constants.js');
 const { seasons } = await import('../src/engine/seasons.js');
 
 assert.ok(seasons, 'seasons module exports');
@@ -21,7 +21,7 @@ assert.equal(seasons.constants.TRANSITION_DAYS, 2, 'season effects blend over a 
 
 const springStart = seasons._debug.stateAtDays(0);
 assert.equal(springStart.season, 'spring', 'new worlds start in spring');
-assert.equal(springStart.profile.leafGrowStrength, 1, 'new-world spring is not back-blended from winter');
+assert.equal(springStart.profile.leafGrowStrength, 0, 'seasonal leaf growth is disabled');
 assert.equal(Object.isFrozen(seasons.profile()), true, 'public season profile is immutable');
 
 const justBeforeSummer = seasons._debug.stateAtDays(10 - 1e-6);
@@ -161,7 +161,7 @@ setTile(0, 12, T.WOOD);
 setTile(0, 13, T.STONE);
 seasons.forceSeason('spring');
 seasons.update(0.25, getTile, setTile, {x:96, y:12});
-assert.ok([...tiles.values()].includes(T.LEAF), 'spring grows leaves around exposed trunks');
+assert.equal([...tiles.values()].includes(T.LEAF), false, 'spring no longer grows extra leaves around exposed trunks');
 
 resetTiles();
 setTile(0, 10, T.LEAF);
@@ -169,11 +169,11 @@ setTile(0, 12, T.WOOD);
 setTile(0, 13, T.STONE);
 seasons.forceSeason('autumn');
 seasons.update(0.25, getTile, setTile, {x:96, y:12});
-assert.equal(isAutumnLeaf(getTile(0, 10)), true, 'autumn first turns exposed leaves orange or red');
+assert.equal(getTile(0, 10), T.LEAF, 'autumn no longer recolors exposed leaves');
 seasons.reset();
 seasons.forceSeason('autumn');
 seasons.scanNow(getTile, setTile, {x:96, y:12});
-assert.equal(getTile(0, 10), T.AIR, 'autumn later detaches exposed colored leaves');
+assert.equal(getTile(0, 10), T.LEAF, 'autumn scan-now also leaves tree foliage untouched');
 
 {
   const savedCfg = Object.assign({}, seasons.config);
@@ -196,11 +196,11 @@ assert.equal(getTile(0, 10), T.AIR, 'autumn later detaches exposed colored leave
   seasons.update(0.05, getTile, setTile, {x:0, y:12});
   assert.equal(getTile(40, 10), T.LEAF, 'distant leaves are not changed before the player relocates there');
   seasons.update(0.05, getTile, setTile, {x:40, y:12});
-  assert.equal(isAutumnLeaf(getTile(40, 10)), true, 'relocation burst starts autumn leaf catch-up without waiting for the slow periodic scan');
-  for(let i = 0; i < 4 && getTile(40, 10) !== T.AIR; i++){
+  assert.equal(getTile(40, 10), T.LEAF, 'relocation burst does not recolor leaves');
+  for(let i = 0; i < 4; i++){
     seasons.update(0.05, getTile, setTile, {x:40, y:12});
   }
-  assert.equal(getTile(40, 10), T.AIR, 'relocation burst finishes autumn color-and-drop across bounded follow-up ticks');
+  assert.equal(getTile(40, 10), T.LEAF, 'relocation burst keeps leaves untouched across follow-up ticks');
   assert.equal(seasons.metrics().scan.relocation, true, 'season metrics mark the catch-up scan as relocation-driven');
   Object.assign(seasons.config, savedCfg);
 }
@@ -231,8 +231,8 @@ assert.equal(getTile(0, 10), T.AIR, 'autumn later detaches exposed colored leave
   seasons.update(0.02, getTile, setTile, {x:34, y:12});
   const relocationScan = seasons.metrics().scan;
   assert.equal(relocationScan.relocation, true, 'travel catch-up scan is marked as relocation work');
-  assert.ok(relocationScan.leafOps <= 3, 'travel catch-up caps autumn leaf mutations per frame');
-  assert.ok(relocationScan.changed.leafDrop <= 3, 'relocation does not recolor or drop a whole crown at once');
+  assert.equal(relocationScan.leafOps, 0, 'travel catch-up does not perform seasonal leaf mutations');
+  assert.equal(relocationScan.changed.leafDrop, 0, 'relocation does not recolor or drop foliage');
   Object.assign(seasons.config, savedCfg);
 }
 

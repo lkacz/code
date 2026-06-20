@@ -117,6 +117,7 @@ for(let i=0;i<60*12;i++) wind.update(1/60,player,openTile);
 let wm = wind.metrics();
 assert.ok(wm.particles <= wm.particleCap, `wind particles stay capped (${wm.particles}/${wm.particleCap})`);
 assert.ok(wm.particles > 0, 'visible wind particles spawned in open air');
+assert.equal(wind._debug.particles.some(p=>p.kind==='leaf'), false, 'visible wind no longer spawns leaf particles');
 
 const snowTile = (x,y)=> (y===90 ? T.SNOW : (y>90 ? T.STONE : T.AIR));
 const sandTile = (x,y)=> (y===90 ? T.SAND : (y>90 ? T.STONE : T.AIR));

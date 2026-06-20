@@ -138,14 +138,10 @@ worldGen.randSeed = ()=>0;
 
   setTile(0,5,T.STONE);
   setTileWithTreeHook(0,2,T.AUTUMN_LEAF_ORANGE);
-  assert.equal(trees.dropSeasonalLeaf(0,2,T.AUTUMN_LEAF_ORANGE,getTile,setTileWithTreeHook), true, 'seasonal autumn leaves detach through the tree falling system');
-  assert.equal(getTile(0,2), T.AIR, 'detached autumn leaf leaves its tree cell immediately');
-  for(let i=0;i<20;i++) trees.updateFallingBlocks(getTile,setTileWithTreeHook,0.05);
-  assert.equal(getTile(0,4), T.AUTUMN_LEAF_ORANGE, 'detached autumn leaf settles as visible leaf litter');
-  assert.equal(trees._seasonalLeafLitter.has('0,4'), true, 'settled autumn leaf litter is tracked for timed cleanup');
-  for(let i=0;i<285;i++) trees.updateFallingBlocks(getTile,setTileWithTreeHook,0.25);
-  assert.equal(getTile(0,4), T.AIR, 'autumn leaf litter vanishes after about one minute');
-  assert.equal(trees._seasonalLeafLitter.has('0,4'), false, 'expired autumn leaf litter is removed from tracking');
+  assert.equal(trees.dropSeasonalLeaf(0,2,T.AUTUMN_LEAF_ORANGE,getTile,setTileWithTreeHook), false, 'seasonal autumn leaves no longer detach through the tree falling system');
+  assert.equal(getTile(0,2), T.AUTUMN_LEAF_ORANGE, 'autumn leaf stays attached instead of becoming falling debris');
+  assert.equal(trees._fallingBlocks.length, 0, 'seasonal leaf drop does not create falling leaf blocks');
+  assert.equal(trees._seasonalLeafLitter.size, 0, 'seasonal leaf drop does not create timed leaf litter');
 }
 
 {
@@ -352,13 +348,13 @@ worldGen.randSeed = ()=>0;
   setTile(1,5,T.LEAF);
   setTile(0,9,T.STONE);
   setTile(1,9,T.STONE);
-  assert.equal(trees.startTreeFall(getTile,setTile,1,0,5), true, 'loose crown starts falling even without a trunk seed');
-  assert.equal(getTile(0,5), T.AIR, 'loose crown seed is released into falling debris');
-  assert.equal(getTile(1,5), T.AIR, 'connected loose crown is released into falling debris');
-  assert.equal(trees._fallingBlocks.length, 2, 'loose crown falls as debris pieces rather than a rotating trunk');
+  assert.equal(trees.startTreeFall(getTile,setTile,1,0,5), true, 'loose crown can be cleared even without a trunk seed');
+  assert.equal(getTile(0,5), T.AIR, 'loose crown seed is cleared from the world');
+  assert.equal(getTile(1,5), T.AIR, 'connected loose crown is cleared from the world');
+  assert.equal(trees._fallingBlocks.length, 0, 'loose crown leaves vanish instead of becoming falling debris');
   for(let i=0;i<40;i++) trees.updateFallingBlocks(getTile,setTile,1/60);
-  assert.equal(getTile(0,8), T.LEAF, 'loose crown debris settles on support');
-  assert.equal(getTile(1,8), T.LEAF, 'connected loose crown debris settles on support');
+  assert.equal(getTile(0,8), T.AIR, 'loose crown debris does not settle as leaf litter');
+  assert.equal(getTile(1,8), T.AIR, 'connected loose crown debris does not settle as leaf litter');
 }
 
 {
@@ -590,7 +586,7 @@ worldGen.randSeed = ()=>0;
   assert.equal(trees.startTreeFall(getTile,setTile,1,10,15), true, 'generated crown above a top cut starts falling');
   assert.equal(getTile(10,17), T.WOOD, 'trunk below top cut remains standing');
   assert.equal(getTile(10,15), T.AIR, 'generated crown seed is released');
-  assert.ok(trees._fallingBlocks.length>0, 'generated crown-only fall becomes falling debris');
+  assert.equal(trees._fallingBlocks.length, 0, 'generated crown-only leaves do not become falling debris');
   assert.equal(trees._fallingTrees.length, 0, 'crown-only fall does not create a trunk rotation body');
 }
 
@@ -635,7 +631,7 @@ worldGen.randSeed = ()=>0;
   assert.equal(getTile(10,17), T.WOOD, 'trunk below a burned top remains standing');
   assert.equal(getTile(10,16), T.AIR, 'burned top trunk tile is removed');
   assert.equal(getTile(10,15), T.AIR, 'crown above the burned top is released');
-  assert.ok(trees._fallingBlocks.length>0, 'burned top trunk releases the crown as falling debris');
+  assert.equal(trees._fallingBlocks.length, 0, 'burned top trunk clears crown leaves without falling debris');
   assert.equal(trees._fallingTrees.length, 0, 'burned top trunk does not create a trunk rotation body');
 }
 

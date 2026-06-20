@@ -35,7 +35,7 @@ const BASE_PROFILES = {
     thawStrength: 1,
     snowStrength: 0,
     snowMeltStrength: 0.75,
-    leafGrowStrength: 1,
+    leafGrowStrength: 0,
     leafDropStrength: 0,
   },
   summer: {
@@ -52,7 +52,7 @@ const BASE_PROFILES = {
     thawStrength: 1,
     snowStrength: 0,
     snowMeltStrength: 1,
-    leafGrowStrength: 0.35,
+    leafGrowStrength: 0,
     leafDropStrength: 0,
   },
   autumn: {
@@ -70,7 +70,7 @@ const BASE_PROFILES = {
     snowStrength: 0.18,
     snowMeltStrength: 0.18,
     leafGrowStrength: 0,
-    leafDropStrength: 1,
+    leafDropStrength: 0,
   },
   winter: {
     id: 'winter', label: 'Zima',
@@ -87,7 +87,7 @@ const BASE_PROFILES = {
     snowStrength: 1,
     snowMeltStrength: 0,
     leafGrowStrength: 0,
-    leafDropStrength: 0.20,
+    leafDropStrength: 0,
   },
 };
 
@@ -599,14 +599,6 @@ function autumnLeafColor(x, y){
   return hash01(x, y, 719 ^ worldSeed()) < 0.58 ? T.AUTUMN_LEAF_ORANGE : T.AUTUMN_LEAF_RED;
 }
 
-function dropAutumnLeaf(x, y, tile, getTile, setTile){
-  const trees = root.MM && root.MM.trees;
-  if(trees && typeof trees.dropSeasonalLeaf === 'function'){
-    try{ if(trees.dropSeasonalLeaf(x, y, tile, getTile, setTile)) return true; }catch(e){}
-  }
-  return replaceTile(x, y, T.AIR, getTile, setTile);
-}
-
 function applyAutumnLeavesColumn(x, getTile, setTile, prof, ctx, epochSeconds){
   prof = prof || profile();
   const strength = clamp(finiteNumber(prof.leafDropStrength, 0), 0, 1);
@@ -622,10 +614,7 @@ function applyAutumnLeavesColumn(x, getTile, setTile, prof, ctx, epochSeconds){
       if(!seasonalPass(strength, x, y, 397, 0.08, 0.42, epochSeconds)) return false;
       return replaceTile(x, y, autumnLeafColor(x, y), getTile, setTile);
     }
-    if(!isAutumnLeaf(tile)) continue;
-    if(!skyExposed(x, y, getTile, 28)) continue;
-    if(!seasonalPass(strength, x, y, 401, 0.04, 0.34, epochSeconds)) return false;
-    return dropAutumnLeaf(x, y, tile, getTile, setTile);
+    if(isAutumnLeaf(tile)) continue;
   }
   return false;
 }

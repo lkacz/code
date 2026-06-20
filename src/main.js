@@ -2141,7 +2141,7 @@ function bindPad(){ document.querySelectorAll('#pad .btn').forEach(btn=>{ const 
 // Kamera
 let camX=0,camY=0,camSX=0,camSY=0; let zoom=1, zoomTarget=1; function ensureChunks(){ const pcx=Math.floor(player.x/CHUNK_W); for(let d=-2; d<=2; d++) ensureChunk(pcx+d); }
 const CAMERA_FOLLOW_RATE=8;
-const CAMERA_MAX_DT=1/60;
+const CAMERA_MAX_DT=0.05;
 let lastFrameMs=0;
 const frameClock={last:(typeof performance!=='undefined' && performance.now)?performance.now():Date.now(), resetFrames:0};
 function cameraTargetForPlayer(){
@@ -3105,7 +3105,7 @@ function draw(){ // Background first
  if(VOLCANO && VOLCANO.draw) VOLCANO.draw(ctx,TILE,worldFxVisible,getTile);
  // world gases (steam, poison, fuel, hot air) drift over terrain and obey fog
  if(GASES && GASES.draw) GASES.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible);
- // visible wind: bounded dust streaks and windblown leaves, hidden by fog
+ // visible wind: bounded dust/snow streaks, hidden by fog
  if(WIND && WIND.draw) WIND.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible);
  // ruin surface markers dressed as worked masonry (mortar, moss, etched rune)
  if(RUINS && RUINS.drawHints) RUINS.drawHints(ctx,TILE,worldFxVisible);
@@ -4121,9 +4121,7 @@ if (document.readyState === 'loading') {
 
 // Pętla
 let volcanoLeakWakeT=0;
-const MAX_FRAME_DT=0.08;
-const MAX_SIM_STEP=1/60;
-const MAX_SIM_STEPS=5;
+const MAX_FRAME_DT=0.05;
 function runGameStep(dt,ts){
 	physics(dt); if(player.atkCd>0) player.atkCd-=dt;
 	// Weapon use: selected weapon slots fire from LPM; the touch button aims forward.
@@ -4160,14 +4158,7 @@ let lastLoopErrAt=0; function loop(ts){
 	try{
 		if(Math.abs(zoomTarget-zoom)>0.0001){ zoom += (zoomTarget-zoom)*Math.min(1, frameDt*8); }
 		if(!paused){
-			let remaining=frameDt;
-			let steps=0;
-			while(remaining>0.000001 && steps<MAX_SIM_STEPS){
-				const stepDt=Math.min(MAX_SIM_STEP,remaining);
-				runGameStep(stepDt,ts);
-				remaining-=stepDt;
-				steps++;
-			}
+			runGameStep(frameDt,ts);
 			updateCameraFollow(frameDt);
 			revealAround();
 		}
