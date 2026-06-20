@@ -860,6 +860,62 @@ MM.ui = (function(){
     },1500);
     panel.appendChild(box);
   }
+  function injectTurretDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('turretDebugBox')) return;
+    actions = actions || {};
+    const box=document.createElement('div');
+    box.id='turretDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(160,190,230,.13); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='Wiezyczki (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+    const metrics=document.createElement('div');
+    metrics.id='turretDebugMetrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    function refreshMetrics(){
+      const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+      metrics.textContent=m ? ('maszyny '+m.machines+' | aktywne '+m.active+' | naladowane '+m.charged+' | suma '+m.storedEnergy+' E | strzaly '+m.shots+' | fx '+m.effects) : 'brak metryk wiezyczek';
+    }
+    const buttons=[
+      ['give','Wiezyczki +3','Dodaje zwykla, ogniowa i wodna wiezyczke do zasobow'],
+      ['place','Postaw zwykla','Stawia naladowana zwykla wiezyczke obok bohatera'],
+      ['placeFire','Postaw ogniowa','Stawia naladowana wiezyczke ogniowa obok bohatera'],
+      ['placeWater','Postaw wodna','Stawia naladowana wiezyczke wodna obok bohatera'],
+      ['placeRig','Uklad testowy','Stawia dynamo, przewody i naladowana wiezyczke'],
+      ['charge','Laduj najblizsza','Laduje najblizsza wiezyczke'],
+      ['empty','Rozladuj najblizsza','Rozladowuje najblizsza wiezyczke']
+    ];
+    buttons.forEach(([id,txt,title])=>{
+      const b=document.createElement('button');
+      b.textContent=txt;
+      b.title=title;
+      b.style.cssText='flex:1 1 104px; font-size:11px; padding:3px 6px; border:1px solid rgba(160,190,230,.65);';
+      b.addEventListener('click',()=>{
+        try{
+          const fn=actions[id];
+          const ok=(typeof fn==='function') ? fn() : false;
+          if(id==='give') msg(ok ? 'Wiezyczki +3' : 'Nie dodano wiezyczek');
+          else if(id==='place') msg(ok ? 'Wiezyczka postawiona' : 'Brak miejsca na wiezyczke');
+          else if(id==='placeFire') msg(ok ? 'Wiezyczka ogniowa postawiona' : 'Brak miejsca na wiezyczke');
+          else if(id==='placeWater') msg(ok ? 'Wiezyczka wodna postawiona' : 'Brak miejsca na wiezyczke');
+          else if(id==='placeRig') msg(ok ? 'Uklad wiezyczki postawiony' : 'Brak miejsca na uklad');
+          else if(id==='charge') msg(ok ? 'Wiezyczka naladowana' : 'Brak wiezyczki w poblizu');
+          else if(id==='empty') msg(ok ? 'Wiezyczka rozladowana' : 'Brak wiezyczki w poblizu');
+          refreshMetrics();
+        }catch(e){ msg('Debug wiezyczek: blad'); }
+      });
+      box.appendChild(b);
+    });
+    box.appendChild(metrics);
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1200);
+    panel.appendChild(box);
+  }
   // Radar pulse helper (adds/removes pulse class on #radarBtn)
   function setRadarPulsing(active){
     const b = document.getElementById('radarBtn');
@@ -867,7 +923,7 @@ MM.ui = (function(){
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, injectMobSpawnPanel, injectGasDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, setRadarPulsing, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
+  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, injectMobSpawnPanel, injectGasDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, setRadarPulsing, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;

@@ -691,6 +691,7 @@ window.MM = window.MM || {};
     try{ if(MM.dynamo && MM.dynamo.onTileChanged) MM.dynamo.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.solar && MM.solar.onTileChanged) MM.solar.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.teleporters && MM.teleporters.onTileChanged) MM.teleporters.onTileChanged(x,y,old,v); }catch(e){}
+    try{ if(MM.turrets && MM.turrets.onTileChanged) MM.turrets.onTileChanged(x,y,old,v); }catch(e){}
   }
   function setTileInternal(x,y,v,transient){
     if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return;

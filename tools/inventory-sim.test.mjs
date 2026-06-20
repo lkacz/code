@@ -28,6 +28,9 @@ assert.equal(res('transistor')?.tile, 'TRANSISTOR', 'transistor is placeable for
 assert.equal(res('dynamo')?.tile, 'DYNAMO', 'dynamo is a craftable placeable machine resource');
 assert.equal(res('teleporter')?.tile, 'TELEPORTER', 'teleporter is a placeable machine resource');
 assert.equal(res('antigravityBeacon')?.tile, 'ANTIGRAVITY_BEACON', 'antigravity beacon is a placeable machine resource');
+assert.equal(res('turret')?.tile, 'TURRET', 'basic turret is a placeable defensive machine resource');
+assert.equal(res('fireTurret')?.tile, 'FIRE_TURRET', 'fire turret is a placeable defensive machine resource');
+assert.equal(res('waterTurret')?.tile, 'WATER_TURRET', 'water turret is a placeable defensive machine resource');
 assert.equal(res('springAntler')?.tile, null, 'spring hallmark antlers are tracked as a non-placeable trophy');
 assert.equal(res('summerHorn')?.tile, null, 'summer hallmark horn is tracked as a non-placeable trophy');
 assert.equal(res('autumnHeartwood')?.tile, null, 'autumn hallmark heartwood is tracked as a non-placeable trophy');
@@ -38,6 +41,9 @@ assert.equal(INFO[T.COPPER_WIRE].conductor, true, 'copper wire is marked as an e
 assert.equal(INFO[T.TELEPORTER].machine, 'teleporter', 'teleporter tile is marked as a machine');
 assert.equal(INFO[T.TELEPORTER].powerDevice, true, 'teleporter is marked as a powered device');
 assert.equal(INFO[T.ANTIGRAVITY_BEACON].meteorShield, true, 'antigravity beacon is marked as a meteor shield');
+assert.equal(INFO[T.TURRET].powerDevice, true, 'basic turret is marked as a powered device');
+assert.equal(INFO[T.FIRE_TURRET].powerDevice, true, 'fire turret is marked as a powered device');
+assert.equal(INFO[T.WATER_TURRET].powerDevice, true, 'water turret is marked as a powered device');
 assert.equal(INFO[T.DYNAMO].powerSource, true, 'dynamo casing is marked as a power source');
 assert.equal(INFO[T.SOLAR_PANEL].powerSource, true, 'solar panel is marked as a power source');
 assert.equal(INFO[T.SOLAR_BATTERY].energyCapacity, 120, 'storage solar panel advertises its battery capacity');

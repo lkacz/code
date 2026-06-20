@@ -20,6 +20,7 @@ assert.match(src, /clouds:\s*timedSavePart\('clouds',[^\n]*CLOUDS && CLOUDS\.sna
 assert.match(src, /dynamo:\s*timedSavePart\('dynamo',[^\n]*DYNAMO && DYNAMO\.snapshot/, 'save payload includes dynamo machine state');
 assert.match(src, /solar:\s*timedSavePart\('solar',[^\n]*SOLAR && SOLAR\.snapshot/, 'save payload includes solar panel battery state');
 assert.match(src, /teleporters:\s*timedSavePart\('teleporters',[^\n]*TELEPORTERS && TELEPORTERS\.snapshot/, 'save payload includes teleporter machine state');
+assert.match(src, /turrets:\s*timedSavePart\('turrets',[^\n]*TURRETS && TURRETS\.snapshot/, 'save payload includes turret battery state');
 assert.match(src, /volcano:\s*timedSavePart\('volcano',[^\n]*VOLCANO && VOLCANO\.snapshot/, 'save payload includes volcano story-item and hazard state');
 assert.match(src, /meteorites:\s*timedSavePart\('meteorites',[^\n]*METEORITES && METEORITES\.snapshot/, 'save payload includes meteorite schedule state');
 assert.match(src, /mobs:\s*timedSavePart\('mobs',[^\n]*MOBS && MOBS\.serialize/, 'save payload includes live mob ecology state');
@@ -43,6 +44,7 @@ assert.match(src, /CLOUDS\.restore\(data\.clouds\)/, 'load path restores cloud a
 assert.match(src, /DYNAMO\.restore\(data\.dynamo,getTile\)/, 'load path restores dynamo machine state after terrain');
 assert.match(src, /SOLAR\.restore\(data\.solar,getTile\)/, 'load path restores solar panel battery state after terrain');
 assert.match(src, /TELEPORTERS\.restore\(data\.teleporters,getTile\)/, 'load path restores teleporter batteries after terrain');
+assert.match(src, /TURRETS\.restore\(data\.turrets,getTile\)/, 'load path restores turret batteries after terrain');
 assert.match(src, /VOLCANO\.restore\(data\.volcano,getTile\)/, 'load path restores volcano story-item timers after terrain');
 assert.match(src, /METEORITES\.restore\(data\.meteorites\)/, 'load path restores meteorite schedule state');
 assert.match(src, /MOBS\.deserialize\(data\.mobs\)/, 'load path restores live mob ecology after terrain');
@@ -85,6 +87,9 @@ assert.match(src, /id:'winter_fur_cape'/, 'crafting exposes a winter trophy cape
 assert.match(src, /cost:\{winterFur:1,\s*snow:8,\s*leaf:2\}/, 'winter trophy recipe consumes winter fur');
 assert.match(src, /id:'copper_wire'/, 'crafting exposes copper power cable');
 assert.match(src, /id:'teleporter'/, 'crafting exposes teleporters');
+assert.match(src, /id:'turret'/, 'crafting exposes basic turrets');
+assert.match(src, /id:'fire_turret'/, 'crafting exposes fire turrets');
+assert.match(src, /id:'water_turret'/, 'crafting exposes water turrets');
 
 const sameSeedRegen = src.match(/window\.regenWorldSameSeed = function\(\)\{ try\{([\s\S]*?)window\.addEventListener\('mm-regen-same-seed'/)?.[1] || '';
 assert.match(sameSeedRegen, /player\.xp=0/, 'same-seed regeneration resets hero XP');
