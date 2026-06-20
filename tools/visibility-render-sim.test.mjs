@@ -162,6 +162,18 @@ assert.ok(sandBranchStart > 0 && sandBranchEnd > sandBranchStart, 'sand material
 const sandBranch = mainSource.slice(sandBranchStart, sandBranchEnd);
 assert.ok(!sandBranch.includes('drawBlockBevel'), 'sand does not draw explicit tile-grid bevels');
 assert.match(sandBranch, /drawSandGrains\(g,px,py,h\)/, 'sand branch uses dense grain detail');
-assert.match(mainSource, /else if\(t===T\.SAND\) amp=5;/, 'sand per-tile shade variance is low enough to avoid block grid patches');
+assert.match(mainSource, /function smoothTerrainNoise\(wx,y,scale\)/, 'continuous terrain uses smooth low-frequency shade noise');
+assert.match(mainSource, /function isContinuousTerrainTile\(t\)/, 'renderer can classify terrain that should not show per-tile borders');
+assert.match(mainSource, /if\(isContinuousTerrainTile\(t\)\)/, 'terrain shade avoids per-cell random jitter for natural masses');
+assert.match(mainSource, /if\(t===T\.SAND\) return 4;/, 'sand shade variance stays low enough to avoid block grid patches');
+const snowBranchStart = mainSource.indexOf('if(t===T.SNOW){');
+const snowBranchEnd = mainSource.indexOf('// Ice reads glossy', snowBranchStart);
+assert.ok(snowBranchStart > 0 && snowBranchEnd > snowBranchStart, 'snow chunk styling branch is present');
+const snowBranch = mainSource.slice(snowBranchStart, snowBranchEnd);
+assert.match(snowBranch, /above!==T\.SNOW/, 'snow top highlight only draws on exposed snow edges');
+assert.match(snowBranch, /below!==T\.SNOW/, 'snow bottom shade only draws on exposed snow edges');
+assert.ok(!snowBranch.includes('fillRect(lx*TILE, y*TILE, 1, TILE)'), 'snow no longer draws a left tile border');
+assert.ok(!snowBranch.includes('fillRect(lx*TILE + TILE-1, y*TILE, 1, TILE)'), 'snow no longer draws a right tile border');
+assert.doesNotMatch(mainSource, /t===T\.STONE \|\| t===T\.WOOD\)\{ cctx\.fillStyle='rgba\(0,0,0,0\.05\)'; cctx\.fillRect\(lx\*TILE \+ \(\(h>>8\)&3\), y\*TILE, 2, TILE\); \}/, 'stone no longer uses full-height per-tile streaks');
 
 console.log('visibility-render-sim: all assertions passed');

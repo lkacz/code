@@ -1354,6 +1354,56 @@ function shadeColor(hex,delta){ // hex like #rgb or #rrggbb (we use rrggbb)
 	const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
 	const clamp=v=>v<0?0:v>255?255:v; const nr=clamp(r+delta), ng=clamp(g+delta), nb=clamp(b+delta);
 	return '#'+nr.toString(16).padStart(2,'0')+ng.toString(16).padStart(2,'0')+nb.toString(16).padStart(2,'0'); }
+function smoothstep(t){ return t*t*(3-2*t); }
+function lerp(a,b,t){ return a+(b-a)*t; }
+function latticeShade(ix,iy){
+	return ((hash32(ix,iy)&0xFF)/255)-0.5;
+}
+function smoothTerrainNoise(wx,y,scale){
+	const fx=wx/scale;
+	const fy=y/scale;
+	const ix=Math.floor(fx);
+	const iy=Math.floor(fy);
+	const tx=smoothstep(fx-ix);
+	const ty=smoothstep(fy-iy);
+	const a=lerp(latticeShade(ix,iy), latticeShade(ix+1,iy), tx);
+	const b=lerp(latticeShade(ix,iy+1), latticeShade(ix+1,iy+1), tx);
+	return lerp(a,b,ty);
+}
+function isContinuousTerrainTile(t){
+	return t===T.GRASS || t===T.SAND || t===T.STONE || t===T.COAL || t===T.SNOW || t===T.ICE || t===T.MUD || t===T.OBSIDIAN || t===T.WOOD || t===T.STEEL || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.GLASS;
+}
+function tileShadeAmp(t){
+	if(t===T.STONE) return 5;
+	if(t===T.SAND) return 4;
+	if(t===T.COAL) return 4;
+	if(t===T.STEEL) return 8;
+	if(t===T.METEORIC_IRON) return 6;
+	if(t===T.IRIDIUM) return 4;
+	if(t===T.DIAMOND) return 0;
+	if(t===T.WOOD) return 8;
+	if(t===T.GRASS) return 8;
+	if(t===T.SNOW) return 3;
+	if(t===T.ICE) return 4;
+	if(t===T.OBSIDIAN) return 5;
+	if(t===T.GLASS) return 3;
+	if(t===T.ELECTRONICS || t===T.TRANSISTOR) return 7;
+	if(t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY) return 3;
+	if(t===T.TELEPORTER) return 5;
+	if(t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET) return 4;
+	if(t===T.ANTIGRAVITY_BEACON) return 3;
+	if(INFO[t] && INFO[t].chestTier) return 4;
+	return 22;
+}
+function terrainShadeDelta(t,wx,y,h){
+	const amp=tileShadeAmp(t);
+	if(!amp) return 0;
+	if(isContinuousTerrainTile(t)){
+		const scale = t===T.SNOW || t===T.ICE ? 9 : (t===T.COAL || t===T.OBSIDIAN ? 6 : 7);
+		return Math.round(smoothTerrainNoise(wx,y,scale)*amp);
+	}
+	return Math.round(((h & 0xFF)/255 - 0.5)*amp);
+}
 function drawUndergroundBackdrop(g,px,py,wx,y,surf){
 	if(y<=surf) return;
 	const dd=Math.min(1,(y-surf)/45);
@@ -1362,6 +1412,11 @@ function drawUndergroundBackdrop(g,px,py,wx,y,surf){
 	const L=Math.max(6, 34-18*dd+jitter);
 	g.fillStyle='rgb('+Math.round(L*0.92)+','+Math.round(L*0.86)+','+Math.round(L*1.18)+')';
 	g.fillRect(px,py,TILE,TILE);
+}
+function chunkTileAt(arr,cx,lx,y){
+	if(y<0 || y>=WORLD_H) return T.AIR;
+	if(lx>=0 && lx<CHUNK_W) return arr[y*CHUNK_W+lx];
+	return getTile(cx*CHUNK_W+lx,y);
 }
 // Gravestone marker: a rounded headstone with an etched cross instead of the old
 // anonymous gray block (players kept reading their death marker as plain stone)
@@ -1821,10 +1876,8 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 					continue;
 				}
 				let base=INFO[t].color; if(!base) continue;
-				// Per-type amplitude (diamond fixed, stone/ice extra subtle, grass medium, others default)
-				let amp=22; if(t===T.STONE) amp=6; else if(t===T.SAND) amp=5; else if(t===T.COAL) amp=5; else if(t===T.STEEL) amp=8; else if(t===T.METEORIC_IRON) amp=6; else if(t===T.IRIDIUM) amp=4; else if(t===T.DIAMOND) amp=0; else if(t===T.WOOD) amp=16; else if(t===T.GRASS) amp=18; else if(t===T.SNOW) amp=8; else if(t===T.ICE) amp=6; else if(t===T.OBSIDIAN) amp=10; else if(t===T.GLASS) amp=3; else if(t===T.ELECTRONICS || t===T.TRANSISTOR) amp=7; else if(t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY) amp=3; else if(t===T.TELEPORTER) amp=5; else if(t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET) amp=4; else if(t===T.ANTIGRAVITY_BEACON) amp=3; else if(INFO[t].chestTier) amp=4;
-				const delta = ((h & 0xFF)/255 - 0.5)*amp; // symmetrical
-				const col = amp? shadeColor(base, delta|0) : base; // stone uses low amp so should not drift green
+				const delta = terrainShadeDelta(t,wx,y,h);
+				const col = delta? shadeColor(base, delta) : base;
 				cctx.fillStyle=col; cctx.fillRect(lx*TILE,y*TILE,TILE,TILE);
 				// Keep chunk-cache rebuilds cheap; special tiles below carry the high-detail pass.
 				if(t===T.GLASS){
@@ -1995,24 +2048,35 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 				}
 				// Snow-specific styling: soft top highlight and subtle dark rim for separation
 				if(t===T.SNOW){
-					// Top highlight band
-					cctx.fillStyle='rgba(255,255,255,0.35)';
-					cctx.fillRect(lx*TILE, y*TILE, TILE, Math.max(2, Math.floor(TILE*0.25)));
-					// Bottom shadow for depth
-					cctx.fillStyle='rgba(0,0,0,0.07)';
-					cctx.fillRect(lx*TILE, y*TILE + TILE-2, TILE, 2);
-					// Thin outline on left/right to separate from sky/ice
-					cctx.fillStyle='rgba(0,0,0,0.08)';
-					cctx.fillRect(lx*TILE, y*TILE, 1, TILE);
-					cctx.fillRect(lx*TILE + TILE-1, y*TILE, 1, TILE);
+					const px=lx*TILE, py=y*TILE;
+					const above=chunkTileAt(arr,cx,lx,y-1);
+					const below=chunkTileAt(arr,cx,lx,y+1);
+					if(above!==T.SNOW){
+						cctx.fillStyle='rgba(255,255,255,0.30)';
+						cctx.fillRect(px, py, TILE, Math.max(2, Math.floor(TILE*0.22)));
+					}
+					if(below!==T.SNOW){
+						cctx.fillStyle='rgba(0,0,0,0.06)';
+						cctx.fillRect(px, py + TILE-2, TILE, 2);
+					}
+					if((h&7)===0){
+						cctx.fillStyle='rgba(255,255,255,0.18)';
+						cctx.fillRect(px+4+((h>>5)&8), py+6+((h>>10)&6), 3, 1);
+					}
 				}
 				// Ice reads glossy, not grainy: cool depth shade below, bright crown,
 				// and a deterministic diagonal glint pair (snow stays matte for contrast)
 				if(t===T.ICE){
-					cctx.fillStyle='rgba(40,90,160,0.16)';
-					cctx.fillRect(lx*TILE, y*TILE+TILE-3, TILE, 3);
-					cctx.fillStyle='rgba(255,255,255,0.30)';
-					cctx.fillRect(lx*TILE, y*TILE, TILE, 2);
+					const above=chunkTileAt(arr,cx,lx,y-1);
+					const below=chunkTileAt(arr,cx,lx,y+1);
+					if(below!==T.ICE){
+						cctx.fillStyle='rgba(40,90,160,0.16)';
+						cctx.fillRect(lx*TILE, y*TILE+TILE-3, TILE, 3);
+					}
+					if(above!==T.ICE){
+						cctx.fillStyle='rgba(255,255,255,0.30)';
+						cctx.fillRect(lx*TILE, y*TILE, TILE, 2);
+					}
 					const gx=lx*TILE+3+((h>>5)&7), gy=y*TILE+4;
 					cctx.strokeStyle='rgba(255,255,255,0.30)'; cctx.lineWidth=1.5;
 					cctx.beginPath(); cctx.moveTo(gx, gy+9); cctx.lineTo(gx+8, gy); cctx.stroke();
@@ -2029,8 +2093,10 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 					}
 				}
 				if(t===T.COAL){
-					cctx.fillStyle='rgba(0,0,0,0.28)';
-					cctx.fillRect(lx*TILE, y*TILE+TILE-4, TILE, 4);
+					if(chunkTileAt(arr,cx,lx,y+1)!==T.COAL){
+						cctx.fillStyle='rgba(0,0,0,0.22)';
+						cctx.fillRect(lx*TILE, y*TILE+TILE-4, TILE, 4);
+					}
 					cctx.fillStyle='rgba(255,255,255,0.10)';
 					cctx.fillRect(lx*TILE+2+((h>>3)&5), y*TILE+3+((h>>8)&4), 3, 2);
 					if((h&3)===0){
@@ -2088,7 +2154,16 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 					entry.chests.push({x:wx,y,t});
 					drawChestTile(cctx,lx*TILE,y*TILE,t,h);
 				}
-				if(t===T.STONE || t===T.WOOD){ cctx.fillStyle='rgba(0,0,0,0.05)'; cctx.fillRect(lx*TILE + ((h>>8)&3), y*TILE, 2, TILE); }
+				if(t===T.STONE){
+					const px=lx*TILE, py=y*TILE;
+					cctx.fillStyle='rgba(34,38,46,0.09)';
+					cctx.fillRect(px+4+((h>>8)&7), py+6+((h>>12)&5), 5, 1);
+					if((h&5)===0){
+						cctx.fillStyle='rgba(225,230,238,0.10)';
+						cctx.fillRect(px+6+((h>>5)&6), py+12+((h>>10)&3), 4, 1);
+					}
+				}
+				if(t===T.WOOD){ cctx.fillStyle='rgba(0,0,0,0.05)'; cctx.fillRect(lx*TILE + ((h>>8)&3), y*TILE, 2, TILE); }
 			}
 		}
 	entry.version=currentVersion; }
