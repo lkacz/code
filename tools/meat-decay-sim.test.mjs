@@ -2,11 +2,12 @@
 // Verifies animal death drops, 60s decay, snow preservation, and rotten gas.
 // Run: node tools/meat-decay-sim.test.mjs
 import { strict as assert } from 'assert';
+import { readFile } from 'node:fs/promises';
 
 globalThis.window = globalThis;
 globalThis.MM = {};
 
-const { T, WORLD_H } = await import('../src/constants.js');
+const { T, INFO, WORLD_H } = await import('../src/constants.js');
 let gasUnits = 0;
 MM.gases = { add(kind,x,y,opts){ gasUnits += opts && opts.cells ? opts.cells : 1; return opts && opts.cells ? opts.cells : 1; } };
 
@@ -17,6 +18,20 @@ const { food } = await import('../src/engine/food.js');
 assert.equal(food.effectForTile(T.MEAT)?.key, 'meat', 'fresh meat is edible as raw meat');
 assert.equal(food.effectForTile(T.ROTTEN_MEAT)?.key, 'rottenMeat', 'rotten meat has its own edible inventory item');
 assert.equal(food.effectForTile(T.BAKED_MEAT)?.key, 'bakedMeat', 'baked meat has its own edible inventory item');
+assert.equal(INFO[T.MEAT].looseItem, true, 'fresh meat is marked as a loose item for cutout rendering');
+assert.equal(INFO[T.ROTTEN_MEAT].looseItem, true, 'rotten meat is marked as a loose item for cutout rendering');
+assert.equal(INFO[T.BAKED_MEAT].looseItem, true, 'baked meat is marked as a loose item for cutout rendering');
+
+const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+const looseItemBranch = mainSrc.indexOf('if(isLooseItemTile(t)){');
+const baseFillBranch = mainSrc.indexOf('let base=INFO[t].color', looseItemBranch);
+assert.ok(looseItemBranch >= 0 && baseFillBranch > looseItemBranch, 'chunk renderer handles loose items before full-tile base fill');
+const looseItemSrc = mainSrc.slice(looseItemBranch, baseFillBranch);
+assert.match(looseItemSrc, /drawUndergroundBackdrop\(cctx,lx\*TILE,y\*TILE,wx,y,surf\)/, 'loose items keep cave backdrops underground');
+assert.match(looseItemSrc, /drawMeatTile/, 'loose meat renders through the cutout meat sprite');
+assert.match(looseItemSrc, /continue;/, 'loose item branch exits before block-color fill');
+const meatRendererSrc = mainSrc.slice(mainSrc.indexOf('function drawMeatTile'), mainSrc.indexOf('function drawChestTile'));
+assert.doesNotMatch(meatRendererSrc, /fillRect\(px\+4,py\+TILE-4,TILE-8,2\)/, 'meat sprite does not paint an artificial rectangular backing');
 
 {
   const eater = { hp: 50, maxHp: 100 };

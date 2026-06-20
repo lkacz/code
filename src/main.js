@@ -398,6 +398,7 @@ Object.assign(TILE_LABELS,{
 function tileLabel(t){ return TILE_LABELS[t] || 'Nieznany blok'; }
 function tileHoverColor(t){ return t===T.AIR ? '#9fb8d1' : ((INFO[t]&&INFO[t].color) || '#9fb8d1'); }
 function isGasTileId(t){ return !!(INFO[t] && INFO[t].gas); }
+function isLooseItemTile(t){ return !!(INFO[t] && INFO[t].looseItem); }
 function gasSkyExposedTile(x,y){
 	if(GASES && typeof GASES.skyExposed==='function') return GASES.skyExposed(x,y,getTile);
 	for(let yy=Math.floor(y)-1; yy>=0; yy--){
@@ -1353,6 +1354,15 @@ function shadeColor(hex,delta){ // hex like #rgb or #rrggbb (we use rrggbb)
 	const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
 	const clamp=v=>v<0?0:v>255?255:v; const nr=clamp(r+delta), ng=clamp(g+delta), nb=clamp(b+delta);
 	return '#'+nr.toString(16).padStart(2,'0')+ng.toString(16).padStart(2,'0')+nb.toString(16).padStart(2,'0'); }
+function drawUndergroundBackdrop(g,px,py,wx,y,surf){
+	if(y<=surf) return;
+	const dd=Math.min(1,(y-surf)/45);
+	const hv=hash32(wx,y);
+	const jitter=((hv&15)-8)*0.6;
+	const L=Math.max(6, 34-18*dd+jitter);
+	g.fillStyle='rgb('+Math.round(L*0.92)+','+Math.round(L*0.86)+','+Math.round(L*1.18)+')';
+	g.fillRect(px,py,TILE,TILE);
+}
 // Gravestone marker: a rounded headstone with an etched cross instead of the old
 // anonymous gray block (players kept reading their death marker as plain stone)
 function drawGraveTile(g,px,py){
@@ -1394,8 +1404,6 @@ function drawMeatTile(g,px,py,state,h){
 	const dark = baked ? 'rgba(83,39,17,0.32)' : rotten ? 'rgba(26,39,19,0.28)' : 'rgba(86,24,26,0.28)';
 	const marble = baked ? 'rgba(246,173,91,0.62)' : rotten ? 'rgba(202,214,126,0.72)' : 'rgba(255,222,190,0.76)';
 	const shine = baked ? 'rgba(255,188,104,0.24)' : rotten ? 'rgba(218,232,148,0.28)' : 'rgba(255,238,208,0.28)';
-	g.fillStyle=baked?'rgba(54,26,12,0.25)':rotten?'rgba(23,29,18,0.28)':'rgba(48,16,14,0.24)';
-	g.fillRect(px+4,py+TILE-4,TILE-8,2);
 	meatPath(g,px,py,2);
 	g.fillStyle=edge; g.fill();
 	meatPath(g,px,py,3);
@@ -1759,11 +1767,7 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 					// baked here — only its backdrop is. Underground air or water = carved cave /
 					// aquifer: paint a dark rock backdrop so the sky parallax never shows through
 					if(y>surf && !(gasTile && gasSkyExposedTile(wx,y))){
-						const dd=Math.min(1,(y-surf)/45);
-						const hv=hash32(wx,y); const jitter=((hv&15)-8)*0.6;
-						const L=Math.max(6, 34-18*dd+jitter);
-						cctx.fillStyle='rgb('+Math.round(L*0.92)+','+Math.round(L*0.86)+','+Math.round(L*1.18)+')';
-						cctx.fillRect(lx*TILE,y*TILE,TILE,TILE);
+						drawUndergroundBackdrop(cctx,lx*TILE,y*TILE,wx,y,surf);
 					}
 					if(t===T.GRAVE) drawGraveTile(cctx, lx*TILE, y*TILE);
 					if(t===T.WIRE){
@@ -1808,17 +1812,21 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 					}
 					continue;
 				}
-				let base=INFO[t].color; if(!base) continue;
 				const h = hash32(wx,y);
+				if(isLooseItemTile(t)){
+					drawUndergroundBackdrop(cctx,lx*TILE,y*TILE,wx,y,surf);
+					if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT){
+						drawMeatTile(cctx,lx*TILE,y*TILE,t===T.ROTTEN_MEAT?'rotten':(t===T.BAKED_MEAT?'baked':'fresh'),h);
+					}
+					continue;
+				}
+				let base=INFO[t].color; if(!base) continue;
 				// Per-type amplitude (diamond fixed, stone/ice extra subtle, grass medium, others default)
-				let amp=22; if(t===T.STONE) amp=6; else if(t===T.SAND) amp=5; else if(t===T.COAL) amp=5; else if(t===T.STEEL) amp=8; else if(t===T.METEORIC_IRON) amp=6; else if(t===T.IRIDIUM) amp=4; else if(t===T.DIAMOND) amp=0; else if(t===T.WOOD) amp=16; else if(t===T.GRASS) amp=18; else if(t===T.SNOW) amp=8; else if(t===T.ICE) amp=6; else if(t===T.OBSIDIAN) amp=10; else if(t===T.GLASS) amp=3; else if(t===T.ELECTRONICS || t===T.TRANSISTOR) amp=7; else if(t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY) amp=3; else if(t===T.TELEPORTER) amp=5; else if(t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET) amp=4; else if(t===T.ANTIGRAVITY_BEACON) amp=3; else if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) amp=12; else if(INFO[t].chestTier) amp=4;
+				let amp=22; if(t===T.STONE) amp=6; else if(t===T.SAND) amp=5; else if(t===T.COAL) amp=5; else if(t===T.STEEL) amp=8; else if(t===T.METEORIC_IRON) amp=6; else if(t===T.IRIDIUM) amp=4; else if(t===T.DIAMOND) amp=0; else if(t===T.WOOD) amp=16; else if(t===T.GRASS) amp=18; else if(t===T.SNOW) amp=8; else if(t===T.ICE) amp=6; else if(t===T.OBSIDIAN) amp=10; else if(t===T.GLASS) amp=3; else if(t===T.ELECTRONICS || t===T.TRANSISTOR) amp=7; else if(t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY) amp=3; else if(t===T.TELEPORTER) amp=5; else if(t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET) amp=4; else if(t===T.ANTIGRAVITY_BEACON) amp=3; else if(INFO[t].chestTier) amp=4;
 				const delta = ((h & 0xFF)/255 - 0.5)*amp; // symmetrical
 				const col = amp? shadeColor(base, delta|0) : base; // stone uses low amp so should not drift green
 				cctx.fillStyle=col; cctx.fillRect(lx*TILE,y*TILE,TILE,TILE);
 				// Keep chunk-cache rebuilds cheap; special tiles below carry the high-detail pass.
-				if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT){
-					drawMeatTile(cctx,lx*TILE,y*TILE,t===T.ROTTEN_MEAT?'rotten':(t===T.BAKED_MEAT?'baked':'fresh'),h);
-				}
 				if(t===T.GLASS){
 					const px=lx*TILE, py=y*TILE;
 					cctx.fillStyle='rgba(255,255,255,0.38)';
