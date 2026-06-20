@@ -23,6 +23,7 @@ const springStart = seasons._debug.stateAtDays(0);
 assert.equal(springStart.season, 'spring', 'new worlds start in spring');
 assert.equal(springStart.profile.leafGrowStrength, 0, 'seasonal leaf growth is disabled');
 assert.equal(Object.isFrozen(seasons.profile()), true, 'public season profile is immutable');
+assert.equal(seasons.metrics().terrainEffectsEnabled, false, 'automatic seasonal terrain mutations stay off by default for frame stability');
 
 const justBeforeSummer = seasons._debug.stateAtDays(10 - 1e-6);
 const atSummerBoundary = seasons._debug.stateAtDays(10);
@@ -85,7 +86,9 @@ assert.equal(seasons.forceSeasonEvent('winter', {player:{x:12, y:8, facing:1}}),
 assert.equal(seasons.setEnabled(true), true, 'debug can re-enable the seasonal system');
 assert.equal(seasons.isEnabled(), true, 're-enabled seasonal system reports active state');
 seasons.update(0.25, getTile, setTile, {x:96, y:9});
-assert.equal(getTile(0, 10), T.ICE, 're-enabled seasonal system resumes terrain scanner mutations');
+assert.equal(getTile(0, 10), T.WATER, 're-enabled seasonal clock does not auto-mutate terrain by default');
+assert.equal(seasons.scanNow(getTile, setTile, {x:96, y:9}).changed.freeze, 1, 'debug scan-now can still apply bounded terrain effects');
+assert.equal(getTile(0, 10), T.ICE, 'manual seasonal scan can freeze exposed water');
 
 resetTiles();
 setTile(0, 10, T.WATER);
@@ -95,7 +98,7 @@ assert.equal(seasons.metrics().season, 'winter', 'Polish debug alias maps to win
 assert.equal(seasons.forceSeason('jesie\u0144'), true, 'debug forcing normalizes accented Polish season names');
 assert.equal(seasons.metrics().season, 'autumn', 'accented Polish debug alias maps to autumn');
 seasons.forceSeason('winter');
-seasons.update(0.25, getTile, setTile, {x:96, y:9});
+seasons.scanNow(getTile, setTile, {x:96, y:9});
 assert.equal(getTile(0, 10), T.ICE, 'winter freezes exposed water near the active world');
 assert.ok(waterWakes > 0, 'freezing wakes adjacent water simulation');
 
@@ -120,7 +123,7 @@ MM.worldGen.surfaceHeight = () => { surfaceCalls++; return 12; };
 MM.worldGen.temperature = () => { tempCalls++; return 0.55; };
 try{
   seasons.forceSeason('winter');
-  seasons.update(0.25, getTile, setTile, {x:96, y:9});
+  seasons.scanNow(getTile, setTile, {x:96, y:9});
   assert.ok(surfaceCalls <= 25, 'season scanner reuses one surface lookup per scanned column');
   assert.ok(tempCalls <= 25, 'season scanner reuses one temperature lookup per scanned column');
 } finally {
@@ -132,28 +135,28 @@ resetTiles();
 setTile(0, 10, T.ICE);
 setTile(0, 11, T.STONE);
 seasons.forceSeason('spring');
-seasons.update(0.25, getTile, setTile, {x:96, y:9});
+seasons.scanNow(getTile, setTile, {x:96, y:9});
 assert.equal(getTile(0, 10), T.WATER, 'spring thaws exposed lake ice back into water where the basin can hold it');
 
 resetTiles();
 setTile(0, 10, T.ICE);
 setTile(0, 11, T.STONE);
 seasons.forceSeason('summer');
-seasons.update(0.25, getTile, setTile, {x:96, y:9});
+seasons.scanNow(getTile, setTile, {x:96, y:9});
 assert.equal(getTile(0, 10), T.WATER, 'warm seasons thaw exposed ice back into water');
 
 resetTiles();
 setTile(0, 12, T.GRASS);
 setTile(0, 13, T.STONE);
 seasons.forceSeason('winter');
-seasons.update(0.25, getTile, setTile, {x:96, y:9});
+seasons.scanNow(getTile, setTile, {x:96, y:9});
 assert.equal(getTile(0, 12), T.SNOW, 'winter lays exposed snow over grass near the active world');
 
 resetTiles();
 setTile(0, 12, T.SNOW);
 setTile(0, 13, T.STONE);
 seasons.forceSeason('summer');
-seasons.update(0.25, getTile, setTile, {x:96, y:9});
+seasons.scanNow(getTile, setTile, {x:96, y:9});
 assert.equal(getTile(0, 12), T.GRASS, 'warm seasons melt exposed seasonal snow back to grass');
 
 resetTiles();
@@ -179,6 +182,7 @@ assert.equal(getTile(0, 10), T.LEAF, 'autumn scan-now also leaves tree foliage u
   const savedCfg = Object.assign({}, seasons.config);
   resetTiles();
   Object.assign(seasons.config, {
+    autoTerrainEffects: true,
     scanRadius: 4,
     scanCols: 1,
     scanInterval: 10,
@@ -209,6 +213,7 @@ assert.equal(getTile(0, 10), T.LEAF, 'autumn scan-now also leaves tree foliage u
   const savedCfg = Object.assign({}, seasons.config);
   resetTiles();
   Object.assign(seasons.config, {
+    autoTerrainEffects: true,
     scanRadius: 12,
     scanCols: 25,
     scanInterval: 0.01,

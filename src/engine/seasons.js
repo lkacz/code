@@ -148,6 +148,7 @@ Object.freeze(BASE_PROFILES);
 Object.freeze(SEASON_ORDER);
 
 const CFG = {
+  autoTerrainEffects: false,
   scanRadius: 96,
   scanCols: 20,
   scanInterval: 0.22,
@@ -231,6 +232,7 @@ function scanConfig(){
     relocationMaxLeafOps: safeInt(CFG.relocationMaxLeafOpsPerTick, 3, 0, 8),
     slowFrameSkipMs: safeInt(CFG.slowFrameSkipMs, 34, 0, 250),
     epochSeconds: clamp(finiteNumber(CFG.effectEpochSeconds, 5), 0.5, 60),
+    autoTerrainEffects: CFG.autoTerrainEffects === true,
   };
 }
 
@@ -714,6 +716,13 @@ function update(dt, getTile, setTile, player){
     passes = Math.max(passes, Math.min(sc.relocationPassesPerTick, relocationBurstRemaining));
   }
   if(passes <= 0) return;
+  if(!sc.autoTerrainEffects){
+    const m = emptyScanMetrics();
+    m.deferred = true;
+    m.deferReason = 'terrain-off';
+    lastScan = m;
+    return;
+  }
   if(deferSeasonScan(sc)){
     scanAcc = Math.min(scanAcc, sc.interval * 0.75);
     markDeferredScan('frame');
@@ -827,6 +836,7 @@ function metrics(){
       snowMeltStrength: 0,
       leafGrowStrength: 0,
       leafDropStrength: 0,
+      terrainEffectsEnabled: false,
       scan: scanMetricsSnapshot(null, 0),
       events: recentEvents.slice(-6),
       forced: !!s.forced,
@@ -856,6 +866,7 @@ function metrics(){
     snowMeltStrength: +finiteNumber(p.snowMeltStrength, 0).toFixed(3),
     leafGrowStrength: +finiteNumber(p.leafGrowStrength, 0).toFixed(3),
     leafDropStrength: +finiteNumber(p.leafDropStrength, 0).toFixed(3),
+    terrainEffectsEnabled: CFG.autoTerrainEffects === true,
     scan: scanMetricsSnapshot(lastScan, relocationBurstRemaining),
     events: recentEvents.slice(-6),
     forced: !!s.forced,

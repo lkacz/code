@@ -46,9 +46,8 @@ assert.match(mainSource, /function renderCameraCoord\(v\)/, 'render camera has a
 assert.match(mainSource, /return Math\.round\(v\*scale\)\/scale;/, 'render camera snaps only to device pixels, not whole tiles');
 assert.match(mainSource, /const renderCam=currentRenderCamera\(\);/, 'draw loop computes one stable render camera per frame');
 assert.match(mainSource, /const camRenderX = renderCam\.x;\s+const camRenderY = renderCam\.y;/, 'world render uses the pixel-stable render camera');
-assert.match(mainSource, /function backgroundCameraX\(cameraLeft\)/, 'background parallax has a smoothed camera-space source');
-assert.match(mainSource, /BACKGROUND\.draw\(ctx, W, H, backgroundCameraX\(cameraLeft\), TILE, WORLDGEN\)/, 'background draws from the same render camera position');
-assert.ok(!mainSource.includes('BACKGROUND.draw(ctx, W, H, player.x, TILE, WORLDGEN)'), 'background parallax is not driven by raw player.x');
+assert.match(mainSource, /function drawBackground\(\)\{ if\(BACKGROUND && BACKGROUND\.draw\) BACKGROUND\.draw\(ctx, W, H, player\.x, TILE, WORLDGEN\); \}/, 'background parallax follows the stable player position used before the regression');
+assert.ok(!mainSource.includes('backgroundCameraX('), 'background parallax does not use the snapped render camera');
 assert.match(mainSource, /const CAMERA_MAX_DT=0\.05;/, 'camera follow delta matches the capped per-frame simulation delta');
 assert.match(mainSource, /function runGameStep\(dt,ts\)/, 'game simulation is extracted into one rendered-frame step');
 assert.match(mainSource, /const MAX_FRAME_DT=0\.05;/, 'long frames are capped to the stable single-step budget');
@@ -59,7 +58,8 @@ assert.match(mainSource, /updateCameraFollow\(frameDt\)/, 'camera follow is appl
 assert.match(mainSource, /function resetFrameTiming\(reason\)/, 'load/teleport recentering can reset animation timing');
 assert.match(mainSource, /if\(frameClock\.resetFrames>0\)/, 'frame loop skips catch-up dt after a synchronous world load or recenter');
 assert.match(mainSource, /function centerOnPlayer\(\)\{ revealAround\(\); snapCameraToPlayer\(\); initScarf\(\); resetFrameTiming\('center'\); \}/, 'centering resets frame timing after load/teleport');
-assert.match(mainSource, /resetFrameCanvasState\(\);\s+const renderCam=currentRenderCamera\(\);\s+drawBackground\(renderCam\.x\)/, 'each rendered frame resets canvas transform before parallax/background draw');
+assert.match(mainSource, /resetFrameCanvasState\(\);\s+const renderCam=currentRenderCamera\(\);\s+drawBackground\(\)/, 'each rendered frame resets canvas transform before parallax/background draw');
+assert.ok(!mainSource.includes('drawMaterialTile(cctx,t,lx*TILE,y*TILE,h)'), 'chunk-cache rebuilds avoid expensive per-tile decoration');
 assert.match(mainSource, /try \{\s+\/\/ render tiles[\s\S]*finally \{\s+ctx\.restore\(\);/, 'world transform is restored even if a draw subsystem fails');
 assert.ok(!mainSource.includes('player.y += bob'), 'surface-water bob must stay visual/velocity based and not mutate hero position directly');
 assert.match(mainSource, /const TURBO_SPEED_MULT=1\.5;/, 'turbo speed multiplier is 1.5x');

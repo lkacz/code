@@ -85,15 +85,7 @@ function updateBiomeLabel(){
 	if(el) el.textContent=(BIOME_NAMES[id]||'---')+seasonLabel;
 }
 // --- Dynamic Background delegated to engine/background.js ---
-function backgroundCameraX(cameraLeft){
-	const cx=(typeof cameraLeft==='number' && Number.isFinite(cameraLeft)) ? cameraLeft : camX;
-	const viewTiles=(TILE>0 && zoom>0) ? W/(TILE*zoom) : 0;
-	if(Number.isFinite(cx) && Number.isFinite(viewTiles) && viewTiles>0){
-		return cx + viewTiles*0.5 - player.w*0.5;
-	}
-	return player.x;
-}
-function drawBackground(cameraLeft){ if(BACKGROUND && BACKGROUND.draw) BACKGROUND.draw(ctx, W, H, backgroundCameraX(cameraLeft), TILE, WORLDGEN); }
+function drawBackground(){ if(BACKGROUND && BACKGROUND.draw) BACKGROUND.draw(ctx, W, H, player.x, TILE, WORLDGEN); }
 function applyAtmosphericTint(){ if(!VISUAL.atmoTint) return; if(BACKGROUND && BACKGROUND.applyTint) BACKGROUND.applyTint(ctx, W, H); }
 let grassDensityScalar = 1; // user adjustable (exponential scaling)
 let grassHeightScalar = 1; // user adjustable linear multiplier
@@ -1490,7 +1482,7 @@ function drawSandGrains(g,px,py,h){
 		g.fillRect(px+2+((r>>>5)%15),py+4+((r>>>10)%12),2,1);
 	}
 }
-function drawMaterialTile(g,t,px,py,h){
+function _drawMaterialTile(g,t,px,py,h){
 	const rx=(h>>>5)&7, ry=(h>>>9)&7;
 	if(t===T.GRASS){
 		drawBlockBevel(g,px,py,'rgba(130,220,92,0.22)','rgba(10,55,18,0.20)');
@@ -1707,7 +1699,7 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 				const delta = ((h & 0xFF)/255 - 0.5)*amp; // symmetrical
 				const col = amp? shadeColor(base, delta|0) : base; // stone uses low amp so should not drift green
 				cctx.fillStyle=col; cctx.fillRect(lx*TILE,y*TILE,TILE,TILE);
-				drawMaterialTile(cctx,t,lx*TILE,y*TILE,h);
+				// Keep chunk-cache rebuilds cheap; special tiles below carry the high-detail pass.
 				if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT){
 					drawMeatTile(cctx,lx*TILE,y*TILE,t===T.ROTTEN_MEAT?'rotten':(t===T.BAKED_MEAT?'baked':'fresh'),h);
 				}
@@ -3071,7 +3063,7 @@ canvas.addEventListener('pointerleave',()=>{ lastPointer.has=false; });
 function draw(){ // Background first
  resetFrameCanvasState();
  const renderCam=currentRenderCamera();
- drawBackground(renderCam.x);
+ drawBackground();
  // Keep simulation camera continuous, but render on the device-pixel grid. This
  // removes subpixel shimmer without snapping the camera to whole tile pixels.
  const camRenderX = renderCam.x;
