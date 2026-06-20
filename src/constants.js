@@ -7,7 +7,7 @@ export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WA
 export const INFO = {
   0:{hp:0,color:null,drop:null,passable:true},
   // flammable/burnTime drive the fire system (engine/fire.js): seconds a tile burns
-  // before turning to AIR; spread chance also scales with burnTime
+  // before turning to AIR; spreadInMult scales how readily neighbours ignite this tile
   1:{hp:2,color:'#2e8b2e',drop:'grass',passable:false, flammable:true, burnTime:2.2},
   2:{hp:2,color:'#c2b280',drop:'sand',passable:false},
   // Stone color lightened for contrast (#777 was too close to sky fill)
@@ -43,7 +43,7 @@ export const INFO = {
  22:{hp:1,color:'#9deeff',drop:null,passable:false, fragileFall:true},
  23:{hp:1,color:'#c56f32',drop:null,passable:true, drops:[{item:'plastic',min:1,max:1},{item:'copper',min:1,max:2}]},
  24:{hp:3,color:'#243946',drop:null,passable:false, drops:[{item:'wire',min:1,max:2},{item:'transistor',min:1,max:1,chance:0.82},{item:'copper',min:1,max:1,chance:0.35}]},
- 25:{hp:5,color:'#25272b',drop:'coal',passable:false, flammable:true, burnTime:180},
+ 25:{hp:5,color:'#25272b',drop:'coal',passable:false, flammable:true, burnTime:720, spreadInMult:0.1},
  // World-backed gases (engine/gases.js). They are passable and rendered dynamically
  // so they can rise, react, power future machines and remain hidden by fog-of-war.
  26:{hp:0,color:'#f4b65e',drop:null,passable:true, gas:true, gasKind:'hot'},

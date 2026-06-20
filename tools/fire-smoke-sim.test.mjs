@@ -51,6 +51,22 @@ MM.worldGen = {
 const realRandom = Math.random;
 Math.random = ()=>0;
 try{
+  function burnsAfterSingleSpreadStep(targetTile, finalSpreadRoll){
+    fire.reset();
+    const spreadTiles=new Map();
+    const spreadKey=(x,y)=>x+','+y;
+    const getSpreadTile=(x,y)=>spreadTiles.get(spreadKey(x,y)) ?? T.AIR;
+    const setSpreadTile=(x,y,t)=>spreadTiles.set(spreadKey(x,y),t);
+    setSpreadTile(0,0,T.WOOD);
+    setSpreadTile(1,0,targetTile);
+    const rolls=[0,0,0, 0, 0.375, finalSpreadRoll];
+    let idx=0;
+    Math.random=()=>idx<rolls.length ? rolls[idx++] : 0;
+    assert.ok(fire.ignite(0,0,getSpreadTile,setSpreadTile), 'source fire ignites for spread check');
+    fire.update(getSpreadTile,setSpreadTile,0.46);
+    return fire.isBurning(1,0);
+  }
+
   const tiles=new Map();
   const key=(x,y)=>x+','+y;
   const getTile=(x,y)=>tiles.get(key(x,y)) ?? T.AIR;
@@ -60,7 +76,8 @@ try{
   setTile(4,3,T.LAVA);
   assert.equal(INFO[T.COAL].flammable, true, 'coal is a burnable fuel block');
   assert.equal(INFO[T.WOOD].burnTime, 60, 'wood burns for one minute');
-  assert.equal(INFO[T.COAL].burnTime, 180, 'coal burns for three minutes');
+  assert.equal(INFO[T.COAL].burnTime, 720, 'coal burns for twelve minutes');
+  assert.equal(INFO[T.COAL].spreadInMult, 0.1, 'coal catches spreading fire at one tenth the normal rate');
   assert.ok(fire.ignite(1,3,getTile), 'wood ignites');
   assert.ok(fire.ignite(2,3,getTile), 'coal ignites');
   fire.noteLava(4,3);
@@ -74,10 +91,14 @@ try{
   fire.update(getTile,setTile,1.2);
   assert.equal(getTile(1,3), T.AIR, 'wood block burns away after about one minute');
   assert.equal(getTile(2,3), T.COAL, 'coal block keeps burning after wood is gone');
-  fire.update(getTile,setTile,118);
-  assert.equal(getTile(2,3), T.COAL, 'coal block is still present after almost three minutes of burning');
-  fire.update(getTile,setTile,2);
-  assert.equal(getTile(2,3), T.AIR, 'coal block burns away after about three minutes');
+  fire.update(getTile,setTile,658);
+  assert.equal(getTile(2,3), T.COAL, 'coal block is still present after almost twelve minutes of burning');
+  fire.update(getTile,setTile,3);
+  assert.equal(getTile(2,3), T.AIR, 'coal block burns away after about twelve minutes');
+
+  assert.equal(burnsAfterSingleSpreadStep(T.WOOD,0.07), true, 'normal solid fuel catches this lateral spread roll');
+  assert.equal(burnsAfterSingleSpreadStep(T.COAL,0.07), false, 'coal rejects the same lateral spread roll after the 0.1 multiplier');
+  Math.random = ()=>0;
 
   fire.reset();
   gasAdds=[];

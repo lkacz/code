@@ -41,6 +41,10 @@ import { reactions as REACTIONS } from './reactions.js';
     if(getTile(x,y)===T.WATER) return true;
     return [[0,-1],[1,0],[-1,0],[0,1]].some(([dx,dy])=>getTile(x+dx,y+dy)===T.WATER);
   }
+  function spreadInMultiplier(info){
+    const v=info && Number.isFinite(info.spreadInMult) ? info.spreadInMult : 1;
+    return Math.max(0,v);
+  }
   function thawAt(x,y,getTile,setTile){
     if(typeof getTile!=='function' || typeof setTile!=='function') return false;
     x|=0; y|=0;
@@ -166,6 +170,7 @@ import { reactions as REACTIONS } from './reactions.js';
           if(nInfo && nInfo.flammable){
             let p = dy<0? 0.95 : (dy===0? 0.6 : 0.35);
             if(nt===T.GRASS) p*=0.3; // grass chains reluctantly — fire favours trees
+            p*=spreadInMultiplier(nInfo);
             if(Math.random()<p) ignite(nx,ny,getTile,setTile);
           } else if((nt===T.SNOW || nt===T.ICE) && Math.random()<0.5) thawAt(nx,ny,getTile,setTile);
         }
@@ -364,7 +369,7 @@ import { reactions as REACTIONS } from './reactions.js';
         if(ignitionRoll){
           for(const [dx,dy] of [[0,-1],[1,0],[-1,0],[0,1]]){
             const nInfo=INFO[getTile(x+dx,y+dy)];
-            if(nInfo && nInfo.flammable && Math.random()<0.5){ ignite(x+dx,y+dy,getTile); break; }
+            if(nInfo && nInfo.flammable && Math.random()<0.5*spreadInMultiplier(nInfo)){ ignite(x+dx,y+dy,getTile); break; }
           }
         }
     }
