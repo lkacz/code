@@ -21,6 +21,15 @@ window.MM = window.MM || {};
   // Cells that settled laterally but may still need pressure leveling (consumed per pass)
   const pressureSeeds = new Set();
   let passiveScanOffset = 0;
+  const PASSIVE_SCAN_RADIUS = 240;
+  const PASSIVE_SCAN_SPAN = PASSIVE_SCAN_RADIUS*2+1;
+  const PASSIVE_SCAN_INTERVAL = 0.12;
+  const PASSIVE_SCAN_BURST_LIMIT = 3;
+  const PASSIVE_SCAN_COLS_IDLE = 48;
+  const PASSIVE_SCAN_COLS_ACTIVE = 18;
+  let passiveScanAcc = 0;
+  let passiveScanLastColumns = 0;
+  let passiveScanTotalColumns = 0;
   // Boundaries of freshly generated chunks awaiting a water wake (drained in update)
   const chunkWakes = [];
   // Lateral energy cooldown after pressure smoothing
@@ -33,6 +42,8 @@ window.MM = window.MM || {};
   const PRESSURE_INTERVAL_MAX = 1.20;
   let pressureIntervalCurrent = PRESSURE_INTERVAL_BASE;
   let pressureAcc = 0;
+  let pressureLastMs = 0;
+  let pressureMaxMs = 0;
   // Vertical scan bound (displacement search)
   const MAX_VERTICAL_SCAN = 48;
   const WATER_REACTION_BUDGET_BASE = 48;
@@ -195,8 +206,43 @@ window.MM = window.MM || {};
     disturb(x, 120);
   }
 
+  function runPassiveActivationScan(getTile, columns){
+    const cols=Math.max(0, Math.floor(columns)||0);
+    if(cols<=0) return false;
+    const p=(typeof window!=='undefined' && window.player);
+    const cx=(p && isFinite(p.x))? Math.floor(p.x) : 0;
+    let woke=false;
+    for(let i=0;i<cols;i++){
+      const wx = cx - PASSIVE_SCAN_RADIUS + ((passiveScanOffset+i)%PASSIVE_SCAN_SPAN);
+      for(let y=1;y<WORLD_H-1;y++){
+        if(getTile(wx,y)!==T.WATER) continue;
+        if(canFill(getTile(wx,y+1)) || canDropThroughDynamo(wx,y,getTile) || canSideFlowThroughDynamo(wx,y,getTile) || canSurfaceLevel(wx,y,getTile)){ mark(wx,y); woke=true; break; }                 // can fall
+        const lA=isAir(getTile(wx-1,y)), rA=isAir(getTile(wx+1,y));
+        if(!lA && !rA) continue;
+        if(getTile(wx,y-1)===T.WATER){ mark(wx,y); woke=true; break; }                // can push (head)
+        // can spill or seek: a drop somewhere along an open same-row path
+        let drop=false;
+        for(const dx of [-1,1]){
+          if((dx<0 && !lA) || (dx>0 && !rA)) continue;
+          for(let s2=1;s2<=6 && !drop;s2++){
+            const tx=wx+dx*s2;
+            if(!isAir(getTile(tx,y))) break;
+            if(canFill(getTile(tx,y+1))) drop=true;
+          }
+          if(drop) break;
+        }
+        if(drop){ mark(wx,y); woke=true; break; }
+      }
+    }
+    passiveScanOffset=(passiveScanOffset+cols)%PASSIVE_SCAN_SPAN;
+    passiveScanLastColumns+=cols;
+    passiveScanTotalColumns+=cols;
+    return woke;
+  }
+
   function update(getTile,setTile,dt){
     if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function' || typeof setTile!=='function') return;
+    passiveScanLastColumns=0;
     reactionBudget = hasWaterRecipes()
       ? Math.min(160, WATER_REACTION_BUDGET_BASE + Math.floor(active.size*0.03))
       : 0;
@@ -226,34 +272,18 @@ window.MM = window.MM || {};
     // not just fall candidates — so dormant anomalies (suspended layers, chunk seams)
     // self-heal instead of hanging forever.
     if(active.size<32){
-      const SCAN_COLS=40, SCAN_RADIUS=240;
-      const span=SCAN_RADIUS*2+1;
-      const p=(typeof window!=='undefined' && window.player);
-      const cx=(p && isFinite(p.x))? Math.floor(p.x) : 0;
-      for(let i=0;i<SCAN_COLS;i++){
-        const wx = cx - SCAN_RADIUS + ((passiveScanOffset+i)%span);
-        for(let y=1;y<WORLD_H-1;y++){
-          if(getTile(wx,y)!==T.WATER) continue;
-          if(canFill(getTile(wx,y+1)) || canDropThroughDynamo(wx,y,getTile) || canSideFlowThroughDynamo(wx,y,getTile) || canSurfaceLevel(wx,y,getTile)){ mark(wx,y); break; }                 // can fall
-          const lA=isAir(getTile(wx-1,y)), rA=isAir(getTile(wx+1,y));
-          if(!lA && !rA) continue;
-          if(getTile(wx,y-1)===T.WATER){ mark(wx,y); break; }                // can push (head)
-          // can spill or seek: a drop somewhere along an open same-row path
-          let drop=false;
-          for(const dx of [-1,1]){
-            if((dx<0 && !lA) || (dx>0 && !rA)) continue;
-            for(let s2=1;s2<=6 && !drop;s2++){
-              const tx=wx+dx*s2;
-              if(!isAir(getTile(tx,y))) break;
-              if(canFill(getTile(tx,y+1))) drop=true;
-            }
-            if(drop) break;
-          }
-          if(drop){ mark(wx,y); break; }
+      passiveScanAcc=Math.min(passiveScanAcc+dt, PASSIVE_SCAN_INTERVAL*PASSIVE_SCAN_BURST_LIMIT);
+      const passes=Math.min(PASSIVE_SCAN_BURST_LIMIT, Math.floor(passiveScanAcc/PASSIVE_SCAN_INTERVAL));
+      if(passes>0){
+        passiveScanAcc-=passes*PASSIVE_SCAN_INTERVAL;
+        for(let pass=0; pass<passes && active.size<32; pass++){
+          const idle=(active.size===0 && pressureSeeds.size===0);
+          runPassiveActivationScan(getTile, idle ? PASSIVE_SCAN_COLS_IDLE : PASSIVE_SCAN_COLS_ACTIVE);
         }
       }
-      passiveScanOffset=(passiveScanOffset+SCAN_COLS)%span;
       if(active.size===0 && pressureSeeds.size===0) return;
+    } else {
+      passiveScanAcc=0;
     }
     const size = active.size;
     const MAX = Math.min(2000, 300 + Math.floor(size*0.35));
@@ -398,7 +428,13 @@ window.MM = window.MM || {};
     // Pressure leveling scheduling
     pressureAcc += dt;
     if(pressureAcc >= pressureIntervalCurrent && active.size < 1200){
-      pressureAcc=0; const result=runPressureLeveling(getTile,setTile);
+      pressureAcc=0;
+      const pressureT0=(typeof performance!=='undefined' && performance.now) ? performance.now() : 0;
+      const result=runPressureLeveling(getTile,setTile);
+      if(pressureT0){
+        pressureLastMs=performance.now()-pressureT0;
+        if(pressureLastMs>pressureMaxMs) pressureMaxMs=pressureLastMs;
+      }
       if(result){
         const {touchedXs, variance, hadTransfers} = result;
         if(hadTransfers){
@@ -753,9 +789,14 @@ window.MM = window.MM || {};
     streams.length=0;
     chunkWakes.length=0;
     passiveScanOffset=0;
+    passiveScanAcc=0;
+    passiveScanLastColumns=0;
+    passiveScanTotalColumns=0;
     lateralAcc=0;
     pressureIntervalCurrent=PRESSURE_INTERVAL_BASE;
     pressureAcc=0;
+    pressureLastMs=0;
+    pressureMaxMs=0;
     reactionBudget=0;
   }
   function snapshot(){
@@ -779,6 +820,7 @@ window.MM = window.MM || {};
         active:activeList,
         lateral,
         passiveScanOffset:Number.isFinite(passiveScanOffset)?Math.floor(passiveScanOffset):0,
+        passiveScanAcc:clampFinite(passiveScanAcc,0,PASSIVE_SCAN_INTERVAL*PASSIVE_SCAN_BURST_LIMIT,0),
         pressureIntervalCurrent:clampFinite(pressureIntervalCurrent,PRESSURE_INTERVAL_MIN,PRESSURE_INTERVAL_MAX,PRESSURE_INTERVAL_BASE),
         pressureAcc:clampFinite(pressureAcc,0,10,0),
         lateralAcc:clampFinite(lateralAcc,0,5,0)
@@ -802,6 +844,7 @@ window.MM = window.MM || {};
       }
     }
     if(Number.isFinite(s.passiveScanOffset)) passiveScanOffset=Math.max(0,Math.floor(s.passiveScanOffset));
+    if(Number.isFinite(s.passiveScanAcc)) passiveScanAcc=clampFinite(s.passiveScanAcc,0,PASSIVE_SCAN_INTERVAL*PASSIVE_SCAN_BURST_LIMIT,0);
     if(Number.isFinite(s.pressureIntervalCurrent)) pressureIntervalCurrent=clampFinite(s.pressureIntervalCurrent,PRESSURE_INTERVAL_MIN,PRESSURE_INTERVAL_MAX,PRESSURE_INTERVAL_BASE);
     if(Number.isFinite(s.pressureAcc)) pressureAcc=clampFinite(s.pressureAcc,0,10,0);
     if(Number.isFinite(s.lateralAcc)) lateralAcc=clampFinite(s.lateralAcc,0,5,0);
@@ -817,6 +860,7 @@ window.MM = window.MM || {};
   // flood caves without leaving dry notches. Volume is conserved exactly; moves are
   // rate-limited so large equalizations read as flow over a second or two.
   const EQ_WINDOW=40;       // half-width for the oversized-body fallback window
+  const EQ_GLOBAL_BODY_SOFT_CAP=2400; // larger bodies use the bounded window path
   const EQ_BODY_CAP=6500;   // safety caps for the two flood fills
   const EQ_VOID_CAP=9000;
   const EQ_RATE=48;         // max units moved per body per pass
@@ -858,7 +902,7 @@ window.MM = window.MM || {};
       }
       return true;
     };
-    const collectBody = (sx,sy,windowLimit)=>{
+    const collectBody = (sx,sy,windowLimit,softCap)=>{
       const seedKey=sx+','+sy;
       const bodySet=new Set([seedKey]);
       const stack=[seedKey];
@@ -874,7 +918,7 @@ window.MM = window.MM || {};
           if(bodySet.has(nk) || readTile(nx,ny)!==T.WATER) continue;
           if(!pressureConnected(cx,cy,nx,ny)) continue;
           bodySet.add(nk); stack.push(nk);
-          if(bodySet.size>EQ_BODY_CAP){ overflow=true; stack.length=0; break; }
+          if(bodySet.size>EQ_BODY_CAP || (softCap && bodySet.size>softCap)){ overflow=true; stack.length=0; break; }
         }
       }
       return {bodySet,minSurf,overflow,windowLimit};
@@ -901,7 +945,7 @@ window.MM = window.MM || {};
       // 1. connected water body (4-neighbor flood fill). Try the whole loaded body
       // first so wide lakes truly level; if it is too large, fall back to the old
       // local window so oceans and mega-caverns still get bounded incremental work.
-      let bodyInfo=collectBody(sx,sy,null);
+      let bodyInfo=collectBody(sx,sy,null,EQ_GLOBAL_BODY_SOFT_CAP);
       if(bodyInfo.overflow || bodyHasOpenSpill(bodyInfo.bodySet)) bodyInfo=collectBody(sx,sy,EQ_WINDOW);
       const {bodySet,minSurf,overflow,windowLimit}=bodyInfo;
       for(const bk of bodySet) processed.add(bk);
@@ -987,9 +1031,9 @@ window.MM = window.MM || {};
     return {touchedXs, variance, hadTransfers};
   }
 
-  function metrics(){ return {active:active.size, springs:springs.size, streams:streams.length}; }
+  function metrics(){ return {active:active.size, springs:springs.size, streams:streams.length, passiveScanColumns:passiveScanLastColumns, pressureMs:+pressureLastMs.toFixed(3)}; }
   // Test/debug introspection (not used by the game loop)
-  function _debug(){ return {active:[...active], seeds:[...pressureSeeds], cooldown:[...lateralCooldown.entries()], pressureAcc, pressureIntervalCurrent}; }
+  function _debug(){ return {active:[...active], seeds:[...pressureSeeds], cooldown:[...lateralCooldown.entries()], pressureAcc, pressureIntervalCurrent, pressureLastMs, pressureMaxMs, passiveScanAcc, passiveScanOffset, passiveScanLastColumns, passiveScanTotalColumns}; }
 
   MM.water = {update, addSource, drawOverlay, onTileChanged, displaceAt, disturb, noteChunkGenerated, reset, snapshot, restore, metrics, _debug};
 })();

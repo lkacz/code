@@ -12,6 +12,7 @@
   let grassThinningFactor = 1; // dynamic 0..1
   let grassBladeTarget = 3;
   let grassBudgetInfo = '';
+  let overlayCache = {key:'', tiles:[], grassTiles:0};
 
   function hash32(x,y){ let h = (x|0)*374761393 + (y|0)*668265263; h = (h^(h>>>13))*1274126177; h = h^(h>>>16); return h>>>0; }
   function openAbove(t,T){ return t===T.AIR || !!(MM.INFO && MM.INFO[t] && MM.INFO[t].gas); }
@@ -23,29 +24,55 @@
     grassThinningFactor = 1;
     grassBladeTarget = 3;
     grassBudgetInfo = '';
+    overlayCache = {key:'', tiles:[], grassTiles:0};
   };
+
+  function leafTile(t,T){ return t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED; }
+  function overlayKey(sx,sy,viewX,viewY,WORLD_H,visibleTile){
+    return sx+'|'+sy+'|'+viewX+'|'+viewY+'|'+WORLD_H+'|'+(visibleTile?1:0);
+  }
+  function buildOverlayCandidates(sx,sy,viewX,viewY,WORLD_H,getTile,T,visibleTile){
+    const tiles=[];
+    let grassTiles=0;
+    for(let y=sy; y<sy+viewY+2; y++){
+      if(y<0||y>=WORLD_H) continue;
+      for(let x=sx; x<sx+viewX+2; x++){
+        const t=getTile(x,y);
+        if(t===T.AIR) continue;
+        const visible=!visibleTile || visibleTile(x,y);
+        if(t===T.GRASS){
+          if(visible && openAbove(getTile(x,y-1),T)){
+            grassTiles++;
+            tiles.push([x,y,t]);
+          }
+        } else if(visible && (leafTile(t,T) || t===T.DIAMOND)){
+          tiles.push([x,y,t]);
+        }
+      }
+    }
+    return {tiles, grassTiles};
+  }
 
   grass.drawOverlays = function(ctx, pass, sx, sy, viewX, viewY, TILE, WORLD_H, getTile, T, zoom, densityScalar, heightScalar, canDrawTile){
     const visibleTile = typeof canDrawTile === 'function' ? canDrawTile : null;
     const now=performance.now();
     const wind = Math.sin(now*0.0003)*1.2 + Math.sin(now*0.0011)*0.8;
     const diamondPulse = (Math.sin(now*0.005)+1)/2;
+    const key=overlayKey(sx,sy,viewX,viewY,WORLD_H,visibleTile);
+    if(pass==='back' || overlayCache.key!==key){
+      const next=buildOverlayCandidates(sx,sy,viewX,viewY,WORLD_H,getTile,T,visibleTile);
+      overlayCache={key, tiles:next.tiles, grassTiles:next.grassTiles};
+    }
+    const candidates=overlayCache.tiles;
 
     if(pass==='back'){
       // Estimate cost and set thinning factor once per frame region
-      let grassTiles=0;
-      for(let y=sy; y<sy+viewY+2; y++){
-        if(y<0||y>=WORLD_H) continue;
-        for(let x=sx; x<sx+viewX+2; x++){
-          if(getTile(x,y)===T.GRASS && openAbove(getTile(x,y-1),T) && (!visibleTile || visibleTile(x,y))) grassTiles++;
-        }
-      }
       const basePerTile = Math.min(GRASS_MAX_BLADES_PER_TILE, Math.max(1, Math.round(3 * densityScalar)));
       const zoomLod = zoom < 1 ? (0.35 + 0.65*zoom) : 1;
       const desiredBlades = Math.max(1, Math.round(basePerTile * zoomLod));
       const frameMs = (typeof window!=='undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
       const budget = frameMs>40 ? GRASS_CRITICAL_BUDGET : (frameMs>24 ? 3400 : GRASS_STROKE_BUDGET);
-      const estimatedStrokes = grassTiles * desiredBlades;
+      const estimatedStrokes = overlayCache.grassTiles * desiredBlades;
       if(estimatedStrokes > budget){
         grassThinningFactor = budget / estimatedStrokes;
         if(grassThinningFactor < 0.03) grassThinningFactor = 0.03;
@@ -58,12 +85,10 @@
       }
     }
 
-    for(let y=sy; y<sy+viewY+2; y++){
-      if(y<0||y>=WORLD_H) continue;
-      for(let x=sx; x<sx+viewX+2; x++){
-        const t=getTile(x,y); if(t===T.AIR) continue;
+    for(const item of candidates){
+        const x=item[0], y=item[1], t=item[2];
         // Grass blades (surface)
-        if(t===T.GRASS && openAbove(getTile(x,y-1),T) && (!visibleTile || visibleTile(x,y))){
+        if(t===T.GRASS){
           const seed=hash32(x,y);
           const bladeCount = grassBladeTarget;
           const start = pass==='front' ? 1 : 0;
@@ -100,11 +125,10 @@
           }
         }
         // Leaf shimmer
-        if((t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED) && (!visibleTile || visibleTile(x,y))){ const h=hash32(x,y); const frontLeaf = ((h>>7)&1)===1; if((pass==='back' && frontLeaf) || (pass==='front' && !frontLeaf)){} else { const phase=(h&255)/255; const offset = Math.sin(now*0.0025 + phase*6.283)*2.5; ctx.fillStyle='rgba(255,255,255,'+(frontLeaf?0.10:0.06)+')'; ctx.fillRect(x*TILE + TILE/2 + offset - TILE*0.22, y*TILE+3, TILE*0.44, TILE*0.44); } }
+        if(leafTile(t,T)){ const h=hash32(x,y); const frontLeaf = ((h>>7)&1)===1; if((pass==='back' && frontLeaf) || (pass==='front' && !frontLeaf)){} else { const phase=(h&255)/255; const offset = Math.sin(now*0.0025 + phase*6.283)*2.5; ctx.fillStyle='rgba(255,255,255,'+(frontLeaf?0.10:0.06)+')'; ctx.fillRect(x*TILE + TILE/2 + offset - TILE*0.22, y*TILE+3, TILE*0.44, TILE*0.44); } }
         // Diamond shimmer + flash (back pass)
-        if(pass==='back' && t===T.DIAMOND && (!visibleTile || visibleTile(x,y))){ const h=hash32(x,y); const flash = Math.sin(now*0.006 + (h&1023))*0.5 + 0.5; if(flash>0.8){ const alpha=(flash-0.8)/0.2; ctx.fillStyle='rgba(255,255,255,'+(0.3*alpha)+')'; const cxp=x*TILE+TILE/2, cyp=y*TILE+TILE/2; ctx.fillRect(cxp-1,cyp-1,2,2); ctx.fillRect(cxp-3,cyp,6,1); ctx.fillRect(cxp,cyp-3,1,6); }
+        if(pass==='back' && t===T.DIAMOND){ const h=hash32(x,y); const flash = Math.sin(now*0.006 + (h&1023))*0.5 + 0.5; if(flash>0.8){ const alpha=(flash-0.8)/0.2; ctx.fillStyle='rgba(255,255,255,'+(0.3*alpha)+')'; const cxp=x*TILE+TILE/2, cyp=y*TILE+TILE/2; ctx.fillRect(cxp-1,cyp-1,2,2); ctx.fillRect(cxp-3,cyp,6,1); ctx.fillRect(cxp,cyp-3,1,6); }
           ctx.fillStyle='rgba(255,255,255,'+(0.05+diamondPulse*0.07)+')'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); }
-      }
     }
   };
 

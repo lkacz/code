@@ -108,6 +108,17 @@ const caveSurf=[];
 for(let x=80;x<100;x++) caveSurf.push(depthAt(x,94,100));
 assert.ok(Math.max(...caveSurf)-Math.min(...caveSurf)<=1, `whole cave pocket leveled (got ${caveSurf.join(',')})`);
 
+// --- 8a. Passive scans are time-cadenced, not tied to every render tick ---
+resetWorld();
+globalThis.player = { x: 0 };
+water.update(getTile, setTile, 1/60);
+assert.equal(water.metrics().passiveScanColumns, 0, 'short idle frame does not run passive scan');
+for(let i=0;i<7;i++) water.update(getTile, setTile, 1/60);
+assert.ok(water._debug().passiveScanTotalColumns > 0, 'passive scan still runs on its simulation cadence');
+water.update(getTile, setTile, 2);
+assert.ok(water._debug().passiveScanLastColumns <= 48*3, 'large dt catch-up is bounded');
+delete globalThis.player;
+
 // --- 8. Passive wake-up works at negative world x ---
 resetWorld();
 globalThis.player = { x: -150 };          // passive scan sweeps around the player

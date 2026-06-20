@@ -285,7 +285,36 @@ window.MM = window.MM || {};
   // Distant low rumble: one shared noise tail (generated lazily, pitch-varied per
   // strike), delayed and attenuated by distance. Throttled so storm volleys can't
   // stack dozens of sources or re-allocate buffers every strike.
-  let thunderBuf=null, lastThunderMs=-1e9;
+  let thunderBuf=null, thunderBuild=null, lastThunderMs=-1e9;
+  function queueThunderBuildStep(fn){
+    if(typeof window!=='undefined' && typeof window.requestIdleCallback==='function') window.requestIdleCallback(fn,{timeout:500});
+    else if(typeof window!=='undefined') window.setTimeout(()=>fn(null),0);
+  }
+  function ensureThunderBuffer(){
+    if(thunderBuf || thunderBuild || !audioCtx) return;
+    const sampleRate=audioCtx.sampleRate||44100;
+    const len=Math.floor(sampleRate*2.0);
+    const buf=audioCtx.createBuffer(1, len, sampleRate);
+    thunderBuild={buf, data:buf.getChannelData(0), i:0, len};
+    const step=(deadline)=>{
+      const b=thunderBuild;
+      if(!b || b.buf!==buf) return;
+      const start=(typeof performance!=='undefined') ? performance.now() : Date.now();
+      while(b.i<b.len){
+        const f=b.i/b.len;
+        b.data[b.i]=(Math.random()*2-1)*Math.pow(1-f,1.6);
+        b.i++;
+        if((b.i&511)===0){
+          const elapsed=((typeof performance!=='undefined') ? performance.now() : Date.now())-start;
+          const idleLeft=deadline && typeof deadline.timeRemaining==='function' ? deadline.timeRemaining() : 0;
+          if(elapsed>2 || (idleLeft>0 && idleLeft<1)) break;
+        }
+      }
+      if(b.i>=b.len){ thunderBuf=b.buf; thunderBuild=null; }
+      else queueThunderBuildStep(step);
+    };
+    queueThunderBuildStep(step);
+  }
   function playThunder(distTiles){
     try{
       if(typeof window==='undefined' || !(window.AudioContext||window.webkitAudioContext)) return;
@@ -294,11 +323,7 @@ window.MM = window.MM || {};
       lastThunderMs=nowMs;
       if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)();
       if(audioCtx.state==='suspended'){ try{ audioCtx.resume(); }catch(e){} }
-      if(!thunderBuf){
-        thunderBuf=audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate*2.0), audioCtx.sampleRate);
-        const d=thunderBuf.getChannelData(0);
-        for(let i=0;i<d.length;i++){ const f=i/d.length; d[i]=(Math.random()*2-1)*Math.pow(1-f,1.6); }
-      }
+      if(!thunderBuf){ ensureThunderBuffer(); return; }
       const t0=audioCtx.currentTime + Math.min(2.5, distTiles*0.012); // sound lags the flash
       const dur=thunderBuf.duration;
       const src=audioCtx.createBufferSource(); src.buffer=thunderBuf;
