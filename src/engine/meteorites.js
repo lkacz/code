@@ -9,8 +9,6 @@ const meteorites = (function(){
   const MAX_EMBERS = 140;
   const MAX_DEBRIS = 60;
   const MAX_PLUMES = 34;
-  const MAX_SHOCKWAVES = 7;
-  const MAX_SCORCHES = 8;
   const GRAVITY = 7.5;
   const BASE_TERRAIN_BUDGET = 8;
   const STRESSED_TERRAIN_BUDGET = 4;
@@ -41,6 +39,29 @@ const meteorites = (function(){
   }
   function penetrationDepth(intensity){
     return clamp(4.8+intensity*3.35,5.2,11.8);
+  }
+  function normalizeVelocity(vx,vy,fallbackX,fallbackY){
+    const len=Math.hypot(vx,vy);
+    if(len>0.0001) return {x:vx/len,y:vy/len};
+    const fl=Math.hypot(fallbackX||0,fallbackY||1) || 1;
+    return {x:(fallbackX||0)/fl,y:(fallbackY||1)/fl};
+  }
+  function timeToY(startY,vy,targetY){
+    const d=targetY-startY;
+    const disc=vy*vy + 2*GRAVITY*d;
+    if(!(disc>=0)) return null;
+    const t=(-vy + Math.sqrt(disc))/GRAVITY;
+    return t>0 ? t : null;
+  }
+  function planStraightBurrow(startX,startY,vx,vy,surfaceY,detonationY){
+    const entryY=surfaceY+0.35;
+    const t=timeToY(startY,vy,entryY);
+    const entryX=Number.isFinite(t) ? startX+vx*t : startX;
+    const entryVy=Number.isFinite(t) ? vy+GRAVITY*t : vy;
+    const dir=normalizeVelocity(vx,entryVy,0,1);
+    const depth=Math.max(0,detonationY-entryY);
+    const detonationX=entryX + (dir.x/Math.max(0.18,dir.y))*depth;
+    return {entryX,entryY,dirX:dir.x,dirY:dir.y,detonationX};
   }
   function rollNext(){ nextIn = rand(MIN_WAIT, MAX_WAIT); }
   function saveSettings(){
@@ -254,7 +275,6 @@ const meteorites = (function(){
   function emitEntryFx(cx,cy,intensity){
     screenFlash=Math.max(screenFlash,0.28);
     startShake(0.24+intensity*0.04,3.5+intensity*2.2);
-    pushCapped(shockwaves,{x:cx,y:cy,r:0,max:3.4+intensity*1.2,life:0,ttl:0.36+intensity*0.04,dust:true},MAX_SHOCKWAVES);
     const stress=frameMs()>30;
     const n=stress ? 5 : 11;
     for(let i=0;i<n;i++){
@@ -316,6 +336,7 @@ const meteorites = (function(){
   }
   function buildCraterOps(cx,cy,intensity,getTile,opts){
     opts=opts||{};
+    const surfaceX=Number.isFinite(opts.surfaceX) ? opts.surfaceX : cx;
     const surfaceY=clamp(Math.round(Number.isFinite(opts.surfaceY)?opts.surfaceY:cy),2,WORLD_H-6);
     const detonationY=clamp(Number.isFinite(opts.detonationY)?opts.detonationY:(surfaceY+penetrationDepth(intensity)),surfaceY+4,WORLD_H-6);
     const rx=clamp(6.0+intensity*2.25,6.0,10.7);
@@ -328,10 +349,14 @@ const meteorites = (function(){
       if(y<1 || y>=WORLD_H-3 || !Number.isFinite(x)) return;
       ops.push({phase,x,y,t,d,place:!!place});
     }
-    const left=Math.floor(cx-Math.max(rx,blastRx)-2);
-    const right=Math.ceil(cx+Math.max(rx,blastRx)+2);
-    for(let x=Math.floor(cx-rx-1); x<=Math.ceil(cx+rx+1); x++){
-      const dx=x-cx;
+    const shaftLineX=(y)=>{
+      const k=clamp((y-surfaceY)/Math.max(1,detonationY-surfaceY),0,1);
+      return surfaceX + (cx-surfaceX)*k;
+    };
+    const left=Math.floor(cx-blastRx-2);
+    const right=Math.ceil(cx+blastRx+2);
+    for(let x=Math.floor(surfaceX-rx-1); x<=Math.ceil(surfaceX+rx+1); x++){
+      const dx=x-surfaceX;
       const edge=Math.abs(dx)/Math.max(0.1,rx);
       if(edge>1.12) continue;
       const surface=craterSurfaceNear(x,surfaceY,getTile);
@@ -361,8 +386,7 @@ const meteorites = (function(){
     const shaftTop=Math.max(1,Math.floor(surfaceY-1));
     const shaftBottom=Math.min(WORLD_H-4,Math.ceil(detonationY+1));
     for(let y=shaftTop; y<=shaftBottom; y++){
-      const wobble=Math.sin(y*0.73+cx*0.41)*0.22;
-      const sx=cx+wobble;
+      const sx=shaftLineX(y);
       for(let x=Math.floor(sx-shaftRadius-1); x<=Math.ceil(sx+shaftRadius+1); x++){
         const dx=Math.abs((x+0.5)-sx);
         const d=Math.abs(y-surfaceY)*0.22+dx;
@@ -439,10 +463,6 @@ const meteorites = (function(){
     lastImpact={x:cx,y:cy,t:0};
     screenFlash=Math.max(screenFlash,1.28);
     startShake(0.78+intensity*0.18,9.5+intensity*5.2);
-    pushCapped(shockwaves,{x:cx,y:cy,r:0,max:7.2+intensity*3.4,life:0,ttl:0.58+intensity*0.16},MAX_SHOCKWAVES);
-    pushCapped(shockwaves,{x:cx,y:cy+0.35,r:0,max:12.0+intensity*4.3,life:0,ttl:1.05+intensity*0.24,dust:true},MAX_SHOCKWAVES);
-    pushCapped(shockwaves,{x:cx,y:cy-1.2,r:0,max:5.0+intensity*2.6,life:0,ttl:0.42+intensity*0.10},MAX_SHOCKWAVES);
-    pushCapped(scorches,{x:cx,y:cy,rx:7.2+intensity*2.6,ry:3.4+intensity*1.55,life:0,ttl:6.2+intensity*1.6},MAX_SCORCHES);
     const stress=frameMs()>30;
     const debrisCount=stress ? 11 : 24;
     const emberCount=stress ? 18 : 44;
@@ -546,10 +566,12 @@ const meteorites = (function(){
     const aimY=surfaceY-0.2;
     const vx=(aimX-startX)/fallTime;
     const vy=(aimY-startY-0.5*GRAVITY*fallTime*fallTime)/fallTime;
+    const plan=planStraightBurrow(startX,startY,vx,vy,surfaceY,detonationY);
     const m={
       x:startX,y:startY,vx,vy,
       target:{x:target.x,y:surfaceY},
-      detonation:{x:target.x+0.5,y:detonationY},
+      entry:{x:plan.entryX,y:plan.entryY,dirX:plan.dirX,dirY:plan.dirY},
+      detonation:{x:plan.detonationX,y:detonationY},
       life:fallTime+2.05,
       t:0,
       trail:[],
@@ -561,7 +583,7 @@ const meteorites = (function(){
       lastCarveX:null,
       lastCarveY:null
     };
-    m.preparedOps=buildCraterOps(target.x+0.5,surfaceY,m.intensity,getTile,{surfaceY,detonationY});
+    m.preparedOps=buildCraterOps(plan.detonationX,surfaceY,m.intensity,getTile,{surfaceX:plan.entryX,surfaceY,detonationY});
     meteors.push(m);
     spawned++;
     try{ if(typeof window.msg==='function') window.msg('Niebo przecina meteoryt...'); }catch(e){}
@@ -574,7 +596,7 @@ const meteorites = (function(){
     for(let i=0;i<steps;i++){
       m.life-=sdt;
       m.t+=sdt;
-      m.vy+=GRAVITY*sdt;
+      if(!m.burrowing) m.vy+=GRAVITY*sdt;
       m.x+=m.vx*sdt;
       m.y+=m.vy*sdt;
       m.rot+=m.spin*sdt;
@@ -589,16 +611,20 @@ const meteorites = (function(){
       if(!m.burrowing && solidHit){
         m.burrowing=true;
         m.burrowT=0;
-        m.vx*=0.22;
-        m.vy=Math.max(10.5+m.intensity*2.2,Math.min(m.vy*0.55,16+m.intensity*2.4));
+        const dir=normalizeVelocity(m.vx,m.vy,m.entry&&m.entry.dirX,m.entry&&m.entry.dirY);
+        const burrowSpeed=clamp(Math.hypot(m.vx,m.vy)*0.52,12+m.intensity*2.4,20+m.intensity*4.2);
+        m.burrowDir={x:dir.x,y:dir.y};
+        m.burrowSpeed=burrowSpeed;
+        m.vx=dir.x*burrowSpeed;
+        m.vy=dir.y*burrowSpeed;
         emitEntryFx(m.x,m.target.y,m.intensity);
       }
       if(m.burrowing){
         m.burrowT+=sdt;
-        const desiredX=(m.detonation && Number.isFinite(m.detonation.x)) ? m.detonation.x : m.x;
-        m.vx+=(desiredX-m.x)*sdt*2.4;
-        m.vx*=1-Math.min(0.28,sdt*1.8);
-        m.vy=Math.min(18+m.intensity*3.2,Math.max(m.vy,8+m.intensity*2.1));
+        const dir=m.burrowDir || normalizeVelocity(m.vx,m.vy,m.entry&&m.entry.dirX,m.entry&&m.entry.dirY);
+        const burrowSpeed=m.burrowSpeed || Math.hypot(m.vx,m.vy) || (12+m.intensity*2.4);
+        m.vx=dir.x*burrowSpeed;
+        m.vy=dir.y*burrowSpeed;
         const cx=Math.floor(m.x), cy=Math.floor(m.y);
         if(cx!==m.lastCarveX || cy!==m.lastCarveY){
           m.lastCarveX=cx;
@@ -607,7 +633,7 @@ const meteorites = (function(){
         }
         const dy=(m.detonation && Number.isFinite(m.detonation.y)) ? m.detonation.y : (m.target.y+penetrationDepth(m.intensity));
         if(m.y>=dy || m.burrowT>0.86 || ty>=WORLD_H-4 || m.life<=0){
-          impactAt(desiredX,Math.max(m.y,dy),getTile,setTile,m.intensity,m.preparedOps);
+          impactAt(m.x,Math.max(m.y,dy),getTile,setTile,m.intensity,m.preparedOps);
           return true;
         }
       } else if(m.life<=0){

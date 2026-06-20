@@ -29,6 +29,11 @@ function getTile(x,y){
   return y>=SURF ? T.STONE : T.AIR;
 }
 function setTile(x,y,t){ tiles.set(kxy(x,y),t); }
+function dirOf(vx,vy){
+  const len=Math.hypot(vx,vy) || 1;
+  return {x:vx/len,y:vy/len};
+}
+function dotDir(a,b){ return a.x*b.x + a.y*b.y; }
 
 let waterWake=0, removed=0, placed=0, marked=0, smoke=0, sparks=0, audio=0, hotGas=0;
 globalThis.__mmMarkWorldChanged = ()=>{ marked++; };
@@ -55,8 +60,29 @@ assert.equal(meteorites.metrics().meteors, 1, 'active meteor is tracked');
 
 let sawUndergroundImpact=false;
 let sawShake=false;
+let lastAirDir=null;
+let lastBurrowDir=null;
+let checkedStraightEntry=false;
+let checkedBurrowNoSteer=false;
 for(let i=0;i<900;i++){
   meteorites.update(1/60, player, getTile, setTile);
+  const active=meteorites._debug.meteors[0];
+  if(active){
+    const dir=dirOf(active.vx,active.vy);
+    if(active.burrowing){
+      if(lastAirDir && !checkedStraightEntry){
+        assert.ok(dotDir(lastAirDir,dir)>0.995, 'meteor keeps its incoming direction after ground entry');
+        checkedStraightEntry=true;
+      }
+      if(lastBurrowDir){
+        assert.ok(dotDir(lastBurrowDir,dir)>0.9999, 'meteor does not steer while burrowing');
+        checkedBurrowNoSteer=true;
+      }
+      lastBurrowDir=dir;
+    } else {
+      lastAirDir=dir;
+    }
+  }
   const m=meteorites.metrics();
   if(m.impacts>0){
     if(m.lastImpact && m.lastImpact.y>=SURF+4) sawUndergroundImpact=true;
@@ -70,6 +96,10 @@ assert.equal(metricsAfter.meteors, 0, 'meteor resolves after impact');
 assert.equal(metricsAfter.terrainJobs, 0, 'budgeted crater job drains');
 assert.ok(metricsAfter.impacts>=1, 'impact counter increments');
 assert.ok(sawUndergroundImpact, 'meteor penetrates and explodes below the surface');
+assert.ok(checkedStraightEntry, 'meteor direction is checked at ground entry');
+assert.ok(checkedBurrowNoSteer, 'meteor direction stays fixed underground');
+assert.equal(meteorites._debug.shockwaves.length, 0, 'meteor does not render planar shockwave rings');
+assert.equal(meteorites._debug.scorches.length, 0, 'meteor does not render scorch-plane guide marks');
 assert.ok(sawShake, 'impact starts screen shake');
 assert.ok(marked>=1, 'impact marks the world dirty for save');
 assert.ok(waterWake>0, 'terrain edits wake water');
