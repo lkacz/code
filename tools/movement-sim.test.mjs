@@ -42,6 +42,7 @@ assert.ok(iceAfter > snowAfter + 5, 'ice keeps substantially more glide than sno
 assert.ok(accelerate(T.ICE, 0.25) < accelerate(T.SNOW, 0.25), 'ice starts/turns more slowly than snow');
 
 const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+const indexSource = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 assert.match(mainSource, /function renderCameraCoord\(v\)/, 'render camera has a device-pixel snap helper');
 assert.match(mainSource, /return Math\.round\(v\*scale\)\/scale;/, 'render camera snaps only to device pixels, not whole tiles');
 assert.match(mainSource, /const renderCam=currentRenderCamera\(\);/, 'draw loop computes one stable render camera per frame');
@@ -57,6 +58,12 @@ assert.ok(!mainSource.includes('while(remaining>'), 'frame loop avoids catch-up 
 assert.match(mainSource, /updateCameraFollow\(frameDt\)/, 'camera follow is applied once per rendered frame, not once per physics substep');
 assert.match(mainSource, /function resetFrameTiming\(reason\)/, 'load/teleport recentering can reset animation timing');
 assert.match(mainSource, /if\(frameClock\.resetFrames>0\)/, 'frame loop skips catch-up dt after a synchronous world load or recenter');
+assert.match(mainSource, /const FRAME_CAP_FPS=120;/, 'game loop defaults to a 120 FPS cap');
+assert.match(mainSource, /function shouldSkipFrameForCap\(ts\)/, 'game loop has a frame-cap scheduler');
+assert.match(mainSource, /if\(shouldSkipFrameForCap\(ts\)\)\{ requestAnimationFrame\(loop\); return; \}/, 'frame cap skips before simulation and rendering work');
+assert.match(mainSource, /localStorage\.setItem\(FRAME_CAP_STORAGE_KEY/, 'FPS cap menu setting is persisted');
+assert.match(indexSource, /id="fpsUnlockCheckbox"/, 'menu exposes an FPS unlock checkbox');
+assert.match(indexSource, /id="fpsCapLabel"/, 'menu exposes the current FPS cap state');
 assert.match(mainSource, /function centerOnPlayer\(\)\{ revealAround\(\); snapCameraToPlayer\(\); initScarf\(\); resetFrameTiming\('center'\); \}/, 'centering resets frame timing after load/teleport');
 assert.match(mainSource, /resetFrameCanvasState\(\);\s+const renderCam=currentRenderCamera\(\);\s+drawBackground\(\)/, 'each rendered frame resets canvas transform before parallax/background draw');
 assert.ok(!mainSource.includes('drawMaterialTile(cctx,t,lx*TILE,y*TILE,h)'), 'chunk-cache rebuilds avoid expensive per-tile decoration');

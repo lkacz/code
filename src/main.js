@@ -91,6 +91,57 @@ let grassDensityScalar = 1; // user adjustable (exponential scaling)
 let grassHeightScalar = 1; // user adjustable linear multiplier
 const GRASS_DENSITY_CAP = 18; // prevents saved extreme UI values from flooding the renderer
 // Grass performance management
+const FRAME_CAP_FPS=120;
+const FRAME_CAP_MS=1000/FRAME_CAP_FPS;
+const FRAME_CAP_EPS_MS=0.35;
+const FRAME_CAP_STORAGE_KEY='mm_fps_unlocked';
+let frameCapUnlocked=false;
+let frameCapRafLast=0;
+let frameCapAccMs=0;
+
+function publishFrameCapState(){
+	try{ window.__mmFrameCap={fps:frameCapUnlocked?0:FRAME_CAP_FPS, unlocked:frameCapUnlocked}; }catch(e){}
+}
+function setFrameCapUnlocked(value){
+	frameCapUnlocked=value===true;
+	const chk=document.getElementById('fpsUnlockCheckbox');
+	const label=document.getElementById('fpsCapLabel');
+	if(chk) chk.checked=frameCapUnlocked;
+	if(label) label.textContent=frameCapUnlocked?'bez limitu':(FRAME_CAP_FPS+' FPS');
+	try{ localStorage.setItem(FRAME_CAP_STORAGE_KEY, frameCapUnlocked?'1':'0'); }catch(e){}
+	publishFrameCapState();
+}
+function initFrameCapControls(){
+	const chk=document.getElementById('fpsUnlockCheckbox');
+	let saved=false;
+	try{ saved=localStorage.getItem(FRAME_CAP_STORAGE_KEY)==='1'; }catch(e){ saved=false; }
+	setFrameCapUnlocked(saved);
+	if(chk) chk.addEventListener('change',()=>{ setFrameCapUnlocked(chk.checked); resetFrameTiming('fps-cap'); });
+}
+function shouldSkipFrameForCap(ts){
+	if(frameCapUnlocked){
+		frameCapRafLast=ts;
+		frameCapAccMs=0;
+		return false;
+	}
+	if(frameClock.resetFrames>0){
+		frameCapRafLast=ts;
+		frameCapAccMs=0;
+		return false;
+	}
+	if(!(ts>=0) || !Number.isFinite(ts)) return false;
+	if(!(frameCapRafLast>0)){
+		frameCapRafLast=ts;
+		frameCapAccMs=0;
+		return false;
+	}
+	const delta=Math.max(0, Math.min(1000, ts-frameCapRafLast));
+	frameCapRafLast=ts;
+	frameCapAccMs+=delta;
+	if(frameCapAccMs + FRAME_CAP_EPS_MS < FRAME_CAP_MS) return true;
+	frameCapAccMs=frameCapAccMs%FRAME_CAP_MS;
+	return false;
+}
 
 // --- Player Speed Slider Controls ---
 function initPlayerSpeedControls() {
@@ -2192,6 +2243,8 @@ function resetFrameTiming(reason){
 	const now=(typeof performance!=='undefined' && performance.now)?performance.now():Date.now();
 	frameClock.last=now;
 	frameClock.resetFrames=2;
+	frameCapRafLast=0;
+	frameCapAccMs=0;
 	lastFrameMs=0;
 	try{ window.__mmFrameMs=0; window.__mmFrameResetReason=reason||'reset'; }catch(e){}
 }
@@ -4120,6 +4173,7 @@ updateInventory(); updateGodBtn(); if(MM.ui && MM.ui.updateMapButton && FOG && F
 function initAllMenuControls() {
 	initGrassControls();
 	initPlayerSpeedControls();
+	initFrameCapControls();
 }
 if (document.readyState === 'loading') {
 	document.addEventListener('DOMContentLoaded', initAllMenuControls);
@@ -4155,6 +4209,7 @@ function runGameStep(dt,ts){
 	updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); updateHeroEnergy(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); updateParticles(dt); updateCape(dt); updateBlink(ts);
 }
 let lastLoopErrAt=0; function loop(ts){
+	if(shouldSkipFrameForCap(ts)){ requestAnimationFrame(loop); return; }
 	if(frameClock.resetFrames>0){ frameClock.last=ts; frameClock.resetFrames--; }
 	const rawDt=Math.max(0,(ts-frameClock.last)/1000);
 	const frameDt=Math.min(MAX_FRAME_DT,rawDt);
