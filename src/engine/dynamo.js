@@ -9,7 +9,7 @@ import { T, INFO, WORLD_H } from '../constants.js';
 (function(){
   window.MM = window.MM || {};
 
-  const machines = new Map(); // "x,y" slot center -> {x,y,power,energy,pulse,lastKind}
+  const machines = new Map(); // "x,y" slot center -> {x,y,power,energy,pulse,rotorAngle,rotorSpeed,lastKind}
   const MAX_POWER = 120;
   const ENERGY_CAPACITY = 100;
   const POWER_DECAY = 42;
@@ -124,8 +124,15 @@ import { T, INFO, WORLD_H } from '../constants.js';
     m.power=Math.max(0,Math.min(MAX_POWER,Number(m.power)||0));
     m.energy=Math.max(0,Math.min(ENERGY_CAPACITY,Number(m.energy)||0));
     m.pulse=Math.max(0,Math.min(1,Number(m.pulse)||0));
+    m.rotorAngle=Number.isFinite(m.rotorAngle) ? m.rotorAngle : 0;
+    m.rotorSpeed=Math.max(0,Math.min(42,Number(m.rotorSpeed)||0));
     if(typeof m.lastKind!=='string') m.lastKind='';
     return m;
+  }
+  function kickRotor(m,amount){
+    if(!m) return;
+    const a=Math.max(0.04,Math.min(1.8,Number(amount)||0.2));
+    m.rotorSpeed=Math.min(42,Math.max(Number(m.rotorSpeed)||0,4+a*10));
   }
   function ensureMachine(x,y,getTile,kind){
     x=Math.floor(x); y=Math.floor(y);
@@ -133,7 +140,7 @@ import { T, INFO, WORLD_H } from '../constants.js';
     const k=key(x,y);
     let m=machines.get(k);
     if(!m){
-      m={x,y,power:0,energy:0,pulse:0,lastKind:kind||''};
+      m={x,y,power:0,energy:0,pulse:0,rotorAngle:0,rotorSpeed:0,lastKind:kind||''};
       machines.set(k,m);
     } else {
       m.x=x; m.y=y;
@@ -153,6 +160,7 @@ import { T, INFO, WORLD_H } from '../constants.js';
     m.energy=Math.min(ENERGY_CAPACITY, Math.max(0, (m.energy||0)+gain));
     m.pulse=1;
     m.lastKind=src.kind;
+    kickRotor(m,gain);
     return true;
   }
   function windSpeedForSlot(m,getTile){
@@ -176,6 +184,7 @@ import { T, INFO, WORLD_H } from '../constants.js';
     m.energy=Math.min(ENERGY_CAPACITY, Math.max(0, (m.energy||0)+energyPerSec*dt));
     m.pulse=Math.max(m.pulse||0, Math.min(0.72, 0.22+k*0.38));
     m.lastKind='wind';
+    kickRotor(m,0.12+k*0.75);
     return true;
   }
   function absorbNear(px,py,amount,getTile,radius){
@@ -208,6 +217,7 @@ import { T, INFO, WORLD_H } from '../constants.js';
     best.energy=Math.max(0,(best.energy||0)-take);
     best.power=Math.min(MAX_POWER, Math.max(best.power||0, 24 + take*20));
     best.pulse=1;
+    kickRotor(best,0.2+take*0.8);
     return {
       amount:take,
       x:best.x,
@@ -237,6 +247,7 @@ import { T, INFO, WORLD_H } from '../constants.js';
     m.energy=Math.max(0,(m.energy||0)-take);
     m.power=Math.min(MAX_POWER,Math.max(m.power||0,18+take*8));
     m.pulse=1;
+    kickRotor(m,0.18+take*0.42);
     return {
       amount:take,
       x:m.x,
@@ -267,6 +278,10 @@ import { T, INFO, WORLD_H } from '../constants.js';
       }
       normalizeMachine(m);
       recordWindPower(m,dt,getTile);
+      const work=Math.max(0,Math.min(1,(m.power||0)/MAX_POWER));
+      const targetSpeed=work>0.001 ? 5+work*26 : 0;
+      m.rotorSpeed+=(targetSpeed-(m.rotorSpeed||0))*Math.min(1,dt*(targetSpeed>0 ? 6.5 : 2.3));
+      m.rotorAngle=((m.rotorAngle||0)+(m.rotorSpeed||0)*dt)%(Math.PI*2);
       m.power=Math.max(0, (m.power||0)-POWER_DECAY*dt);
       m.pulse=Math.max(0, (m.pulse||0)-PULSE_DECAY*dt);
     }
@@ -294,25 +309,59 @@ import { T, INFO, WORLD_H } from '../constants.js';
     }
   }
   function drawBatteryLines(ctx,TILE,px,py,charge,pulse){
-    const lineW=TILE*0.46;
-    const x=px+TILE*0.27;
-    const baseY=py+TILE*0.72;
-    const gap=TILE*0.13;
-    const h=Math.max(1,TILE*0.035);
+    const railW=Math.max(1.4,TILE*0.085);
+    const railH=Math.max(2,TILE*0.105);
+    const gap=TILE*0.038;
+    const leftX=px+TILE*0.08;
+    const rightX=px+TILE*0.835;
+    const baseY=py+TILE*0.70;
     const fillBase=pulse>0 ? '#fff07c' : '#67d7ff';
     for(let i=0; i<4; i++){
-      const y=baseY-i*gap;
+      const y=baseY-i*(railH+gap);
       ctx.fillStyle='rgba(4,8,14,0.72)';
-      ctx.fillRect(x,y,lineW,h);
+      ctx.fillRect(leftX,y,railW,railH);
+      ctx.fillRect(rightX,y,railW,railH);
       const f=Math.max(0,Math.min(1,charge*4-i));
       if(f>0){
         const alpha=0.55+0.35*f+0.10*Math.max(0,Math.min(1,pulse||0));
         ctx.fillStyle=fillBase;
         ctx.globalAlpha=Math.min(1,alpha);
-        ctx.fillRect(x,y,Math.max(1,lineW*f),h);
+        const fillH=Math.max(1,railH*f);
+        ctx.fillRect(leftX,y+railH-fillH,railW,fillH);
+        ctx.fillRect(rightX,y+railH-fillH,railW,fillH);
         ctx.globalAlpha=1;
       }
     }
+  }
+  function drawRotorFan(ctx,TILE,px,py,angle,work,pulse){
+    const cx=px+TILE*0.5;
+    const cy=py+TILE*0.5;
+    const r=TILE*(0.22+0.05*Math.max(0,Math.min(1,work)));
+    const bladeL=TILE*(0.31+0.07*Math.max(0,Math.min(1,work)));
+    ctx.save();
+    ctx.translate(cx,cy);
+    ctx.rotate(angle||0);
+    ctx.globalCompositeOperation='lighter';
+    ctx.strokeStyle='rgba(122,235,255,'+(0.38+0.42*work+0.12*Math.max(0,Math.min(1,pulse||0))).toFixed(3)+')';
+    ctx.lineWidth=Math.max(1,TILE*0.06);
+    ctx.beginPath();
+    for(let i=0; i<4; i++){
+      const a=i*Math.PI*0.5;
+      const x1=Math.cos(a)*r*0.32, y1=Math.sin(a)*r*0.32;
+      const x2=Math.cos(a)*bladeL, y2=Math.sin(a)*bladeL;
+      ctx.moveTo(x1,y1);
+      ctx.lineTo(x2,y2);
+    }
+    ctx.stroke();
+    ctx.globalCompositeOperation='source-over';
+    ctx.fillStyle='rgba(3,8,15,0.78)';
+    ctx.beginPath();
+    ctx.arc(0,0,Math.max(2,TILE*0.10),0,Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle='rgba(255,229,92,0.78)';
+    ctx.lineWidth=Math.max(1,TILE*0.035);
+    ctx.stroke();
+    ctx.restore();
   }
   function draw(ctx,TILE,sx,sy,viewX,viewY,canDrawTile,getTile){
     if(!ctx) return;
@@ -329,13 +378,15 @@ import { T, INFO, WORLD_H } from '../constants.js';
       if(getTile && !isValidSlot(m.x,m.y,getTile)) continue;
       const p=Math.max(0, Math.min(1, (m.power||0)/MAX_POWER));
       const charge=Math.max(0, Math.min(1, (m.energy||0)/ENERGY_CAPACITY));
+      const spin=Math.max(p,Math.min(1,(m.rotorSpeed||0)/34));
       const px=m.x*TILE, py=m.y*TILE;
-      const glow=0.18+0.35*p+0.20*(m.pulse||0);
+      const glow=0.18+0.35*spin+0.20*(m.pulse||0);
       ctx.fillStyle='rgba(84, 204, 255, '+glow.toFixed(3)+')';
       ctx.fillRect(px+TILE*0.18,py+TILE*0.20,TILE*0.64,TILE*0.60);
-      ctx.strokeStyle='rgba(255,230,92,'+(0.45+0.45*p).toFixed(3)+')';
+      ctx.strokeStyle='rgba(255,230,92,'+(0.45+0.45*spin).toFixed(3)+')';
       ctx.lineWidth=Math.max(1,TILE*0.08);
       ctx.strokeRect(px+TILE*0.16,py+TILE*0.16,TILE*0.68,TILE*0.68);
+      drawRotorFan(ctx,TILE,px,py,m.rotorAngle||0,spin,m.pulse||0);
       drawBatteryLines(ctx,TILE,px,py,charge,m.pulse||0);
       const bw=TILE*2.2, bh=Math.max(4,TILE*0.18);
       const bx=px+TILE*0.5-bw*0.5, by=py-TILE*0.42;
@@ -372,19 +423,22 @@ import { T, INFO, WORLD_H } from '../constants.js';
         power:Math.max(0,Math.min(MAX_POWER,Number(raw.power)||0)),
         energy:Math.max(0,Math.min(ENERGY_CAPACITY,Number(raw.energy)||0)),
         pulse:0,
+        rotorAngle:0,
+        rotorSpeed:0,
         lastKind:typeof raw.lastKind==='string'?raw.lastKind:''
       });
     }
   }
   function reset(){ machines.clear(); visibleScanKey=''; visibleScanAt=0; }
   function metrics(){
-    let currentPower=0, storedEnergy=0, active=0;
+    let currentPower=0, storedEnergy=0, active=0, rotorSpeed=0;
     for(const m of machines.values()){
       currentPower+=Math.max(0,m.power||0);
       storedEnergy+=Math.max(0,m.energy||0);
+      rotorSpeed+=Math.max(0,m.rotorSpeed||0);
       if((m.power||0)>0.05) active++;
     }
-    return {machines:machines.size, active, currentPower:+currentPower.toFixed(2), storedEnergy:+storedEnergy.toFixed(2)};
+    return {machines:machines.size, active, currentPower:+currentPower.toFixed(2), storedEnergy:+storedEnergy.toFixed(2), rotorSpeed:+rotorSpeed.toFixed(2)};
   }
 
   const api={isCasing,isSlot,isValidSlot,slotOrientation,plannedCells,structureCellsAt,recordFlow,absorbNear,energyAt,drainAt,onTileChanged,update,draw,snapshot,restore,reset,metrics,_debug:{machines,MAX_POWER,ENERGY_CAPACITY,MACHINE_CAP,windSpeedForSlot,WIND_MIN_SPEED,WIND_RATED_SPEED,WIND_MAX_ENERGY_PER_SEC}};
