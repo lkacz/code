@@ -586,8 +586,28 @@ MM.ui = (function(){
     const metrics=document.createElement('div');
     metrics.id='seasonDebugMetrics';
     metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    const toggle=document.createElement('button');
+    toggle.id='seasonDebugToggle';
+    toggle.title='Wlacza lub wylacza sezonowe modyfikatory, skan terenu i zdarzenia';
+    toggle.style.cssText='flex:1 1 100%; font-size:11px; padding:4px 6px; border:1px solid rgba(255,225,140,.7);';
+    function updateToggle(m){
+      const on = !m || m.enabled !== false;
+      toggle.textContent = on ? 'Sezony: ON' : 'Sezony: OFF';
+      toggle.style.background = on ? '' : 'rgba(255,210,110,.14)';
+    }
+    toggle.addEventListener('click',()=>{
+      try{
+        const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+        const on=!m || m.enabled !== false;
+        const ok=(typeof actions.setEnabled==='function') ? actions.setEnabled(!on) : false;
+        msg(ok ? ('Pory roku: '+(!on?'ON':'OFF')) : 'Debug sezonow: brak przelacznika');
+        refreshMetrics();
+      }catch(e){ msg('Debug sezonow: blad przelacznika'); }
+    });
+    box.appendChild(toggle);
     function refreshMetrics(){
       const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+      updateToggle(m);
       if(!m){ metrics.textContent='brak metryk sezonow'; return; }
       const scan=m.scan || {};
       const changed=scan.changed || {};

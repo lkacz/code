@@ -107,6 +107,24 @@ const NUMERIC_KEYS = [
   'leafGrowStrength',
   'leafDropStrength',
 ];
+const DISABLED_PROFILE = Object.freeze({
+  id: 'off',
+  label: 'Sezony OFF',
+  temperatureDelta: 0,
+  animalSpawnMult: 1,
+  windMult: 1,
+  squallChanceMult: 1,
+  stormChanceMult: 1,
+  stormFeedMult: 1,
+  rainRateMult: 1,
+  borderMoistureMult: 1,
+  freezeStrength: 0,
+  thawStrength: 0,
+  snowStrength: 0,
+  snowMeltStrength: 0,
+  leafGrowStrength: 0,
+  leafDropStrength: 0,
+});
 
 const PROFILE_RANGES = {
   temperatureDelta: [-0.65, 0.35],
@@ -155,6 +173,7 @@ let elapsedSeconds = 0;
 let scanAcc = 0;
 let scanCursor = 0;
 let forcedSeason = null;
+let enabled = true;
 let cachedState = null;
 let cachedAt = -1;
 let lastScan = emptyScanMetrics();
@@ -309,7 +328,7 @@ function currentState(){
   return cachedState;
 }
 
-function profile(){ return currentState().profile; }
+function profile(){ return enabled ? currentState().profile : DISABLED_PROFILE; }
 
 function emit(type, payload){
   const ev = Object.freeze(Object.assign({
@@ -685,6 +704,7 @@ function runScan(getTile, setTile, player, opts){
 }
 
 function update(dt, getTile, setTile, player){
+  if(!enabled) return;
   if(!(dt > 0) || !Number.isFinite(dt)) return;
   const prevState = currentState();
   elapsedSeconds += Math.min(dt, 0.2);
@@ -723,10 +743,25 @@ function update(dt, getTile, setTile, player){
 }
 
 function scanNow(getTile, setTile, player){
+  if(!enabled) return null;
   const m = runScan(getTile, setTile, player);
   if(m) emit('scanDebug', {columns: m.columns, ops: m.ops, changed: Object.assign({}, m.changed)});
   return m || null;
 }
+
+function setEnabled(value){
+  const next = value !== false;
+  if(enabled === next) return true;
+  enabled = next;
+  scanAcc = 0;
+  lastScan = emptyScanMetrics();
+  cachedState = null;
+  cachedAt = -1;
+  emit(next ? 'seasonEnabled' : 'seasonDisabled', {enabled: next});
+  return true;
+}
+
+function isEnabled(){ return enabled; }
 
 function reset(){
   elapsedSeconds = 0;
@@ -735,6 +770,7 @@ function reset(){
   lastScanCenterX = null;
   relocationBurstRemaining = 0;
   forcedSeason = null;
+  enabled = true;
   cachedState = null;
   cachedAt = -1;
   lastScan = emptyScanMetrics();
@@ -757,9 +793,57 @@ function restore(data){
   return true;
 }
 
+function scanMetricsSnapshot(scan, relocationRemaining){
+  const s = scan || emptyScanMetrics();
+  return {
+    columns: s.columns | 0,
+    ops: s.ops | 0,
+    leafOps: s.leafOps | 0,
+    surfaceLookups: s.surfaceLookups | 0,
+    tempLookups: s.tempLookups | 0,
+    cursor: s.cursor | 0,
+    ms: +finiteNumber(s.ms, 0).toFixed(3),
+    relocation: !!s.relocation,
+    deferred: !!s.deferred,
+    deferReason: String(s.deferReason || ''),
+    relocationRemaining: relocationRemaining | 0,
+    changed: Object.assign({}, s.changed),
+  };
+}
+
 function metrics(){
   const s = currentState();
   const p = s.profile;
+  if(!enabled){
+    return {
+      day: s.day,
+      dayFloat: +s.dayFloat.toFixed(2),
+      seasonDay: +s.seasonDay.toFixed(2),
+      season: 'off',
+      label: DISABLED_PROFILE.label,
+      transition: false,
+      from: s.season,
+      to: s.season,
+      blend: 1,
+      nextInDays: 0,
+      temperatureDelta: 0,
+      diurnalTemperatureDelta: 0,
+      animalSpawnMult: 1,
+      windMult: 1,
+      stormChanceMult: 1,
+      rainRateMult: 1,
+      freezeStrength: 0,
+      thawStrength: 0,
+      snowStrength: 0,
+      snowMeltStrength: 0,
+      leafGrowStrength: 0,
+      leafDropStrength: 0,
+      scan: scanMetricsSnapshot(null, 0),
+      events: recentEvents.slice(-6),
+      forced: !!s.forced,
+      enabled: false,
+    };
+  }
   return {
     day: s.day,
     dayFloat: +s.dayFloat.toFixed(2),
@@ -783,22 +867,10 @@ function metrics(){
     snowMeltStrength: +finiteNumber(p.snowMeltStrength, 0).toFixed(3),
     leafGrowStrength: +finiteNumber(p.leafGrowStrength, 0).toFixed(3),
     leafDropStrength: +finiteNumber(p.leafDropStrength, 0).toFixed(3),
-    scan: {
-      columns: lastScan.columns | 0,
-      ops: lastScan.ops | 0,
-      leafOps: lastScan.leafOps | 0,
-      surfaceLookups: lastScan.surfaceLookups | 0,
-      tempLookups: lastScan.tempLookups | 0,
-      cursor: lastScan.cursor | 0,
-      ms: +finiteNumber(lastScan.ms, 0).toFixed(3),
-      relocation: !!lastScan.relocation,
-      deferred: !!lastScan.deferred,
-      deferReason: String(lastScan.deferReason || ''),
-      relocationRemaining: relocationBurstRemaining | 0,
-      changed: Object.assign({}, lastScan.changed),
-    },
+    scan: scanMetricsSnapshot(lastScan, relocationBurstRemaining),
     events: recentEvents.slice(-6),
     forced: !!s.forced,
+    enabled: true,
   };
 }
 
@@ -884,6 +956,7 @@ function addEventClouds(px, count, mass, spread){
   return made;
 }
 function forceSeasonEvent(id, opts){
+  if(!enabled) return false;
   const key = normalizeSeasonId(id || currentState().season);
   if(!BASE_PROFILES[key]) return false;
   const p = eventPlayer(opts || {});
@@ -926,6 +999,8 @@ const api = {
   metrics,
   temperatureAt,
   forceSeason,
+  setEnabled,
+  isEnabled,
   setDay,
   advanceDays,
   jumpToNextTransition,

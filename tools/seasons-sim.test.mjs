@@ -67,6 +67,29 @@ function resetTiles(){
 resetTiles();
 setTile(0, 10, T.WATER);
 setTile(0, 11, T.STONE);
+seasons.forceSeason('winter');
+const beforeDisabledDay = seasons.metrics().dayFloat;
+assert.equal(seasons.setEnabled(false), true, 'debug can disable the seasonal system');
+assert.equal(seasons.isEnabled(), false, 'disabled seasonal system reports its toggle state');
+assert.equal(seasons.metrics().enabled, false, 'season metrics expose disabled state');
+assert.equal(seasons.metrics().season, 'off', 'disabled season metrics hide active season from consumers');
+assert.equal(seasons.profile().id, 'off', 'disabled season profile is neutral');
+assert.equal(Object.isFrozen(seasons.profile()), true, 'disabled season profile is immutable');
+assert.equal(seasons.profile().windMult, 1, 'disabled season profile neutralizes wind multiplier');
+assert.equal(seasons.profile().freezeStrength, 0, 'disabled season profile neutralizes terrain effects');
+seasons.update(0.25, getTile, setTile, {x:96, y:9});
+assert.equal(getTile(0, 10), T.WATER, 'disabled seasonal system skips terrain scanner mutations');
+assert.equal(seasons.metrics().dayFloat, beforeDisabledDay, 'disabled seasonal system pauses its calendar clock');
+assert.equal(seasons.scanNow(getTile, setTile, {x:96, y:9}), null, 'disabled seasonal scan-now is a no-op');
+assert.equal(seasons.forceSeasonEvent('winter', {player:{x:12, y:8, facing:1}}), false, 'disabled seasonal system blocks forced seasonal events');
+assert.equal(seasons.setEnabled(true), true, 'debug can re-enable the seasonal system');
+assert.equal(seasons.isEnabled(), true, 're-enabled seasonal system reports active state');
+seasons.update(0.25, getTile, setTile, {x:96, y:9});
+assert.equal(getTile(0, 10), T.ICE, 're-enabled seasonal system resumes terrain scanner mutations');
+
+resetTiles();
+setTile(0, 10, T.WATER);
+setTile(0, 11, T.STONE);
 assert.equal(seasons.forceSeason('zima'), true, 'debug forcing accepts Polish season names');
 assert.equal(seasons.metrics().season, 'winter', 'Polish debug alias maps to winter');
 assert.equal(seasons.forceSeason('jesie\u0144'), true, 'debug forcing normalizes accented Polish season names');
@@ -284,6 +307,8 @@ assert.match(mainSrc, /SEASONS\.scanNow\(getTile,setTile,player\)/, 'season debu
 assert.match(mainSrc, /SEASONS\.jumpToNextTransition\(\)/, 'season debug panel can jump to a smooth transition');
 assert.match(mainSrc, /MOBS\.spawnSeasonalHallmark/, 'season debug panel can spawn hallmark animals');
 assert.match(mainSrc, /SEASONS\.forceSeasonEvent/, 'season debug panel can force seasonal danger events');
+assert.match(mainSrc, /setEnabled:\(enabled\)=>/, 'main wires the seasonal debug on/off toggle');
+assert.match(seasonSrc, /function setEnabled/, 'season engine exposes a debug enable toggle');
 assert.match(seasonSrc, /diurnalTemperatureDelta/, 'season terrain scanner reads the day/night temperature swing');
 assert.match(seasonSrc, /dayTempDelta/, 'season scanner caches the daily temperature offset per scan');
 assert.match(seasonSrc, /spring-rain/, 'season engine names the spring rain event');
@@ -301,5 +326,6 @@ assert.match(uiSrc, /injectSeasonDebugPanel/, 'UI exposes season debug controls'
 assert.match(uiSrc, /Przejscie/, 'season debug panel exposes a transition test button');
 assert.match(uiSrc, /Zwierze sezonu/, 'season debug panel exposes hallmark animal spawning');
 assert.match(uiSrc, /Zdarzenie sezonu/, 'season debug panel exposes current seasonal events');
+assert.match(uiSrc, /seasonDebugToggle/, 'season debug panel exposes a system on-off toggle');
 
 console.log('seasons-sim: all assertions passed');

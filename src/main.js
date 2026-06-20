@@ -3869,6 +3869,7 @@ if(MM.ui && MM.ui.injectSeasonDebugPanel) MM.ui.injectSeasonDebugPanel({
 	hallmark:()=>{ if(!MOBS || !MOBS.spawnSeasonalHallmark) return false; const ok=!!MOBS.spawnSeasonalHallmark(null,player,getTile); if(ok){ noteSaveActivity(); saveState(); } return ok; },
 	event:(id)=>{ if(!SEASONS || !SEASONS.forceSeasonEvent) return false; const ok=!!SEASONS.forceSeasonEvent(id,{player}); if(ok){ noteSaveActivity(); saveState(); } return ok; },
 	scan:()=>{ if(!SEASONS || !SEASONS.scanNow) return false; const m=SEASONS.scanNow(getTile,setTile,player); if(m && m.ops>0){ noteSaveActivity(); saveState(); } return !!m; },
+	setEnabled:(enabled)=>{ if(!SEASONS || !SEASONS.setEnabled) return false; const ok=!!SEASONS.setEnabled(enabled); if(ok) updateBiomeLabel(); return ok; },
 	advance:(days)=>{ if(!SEASONS || !SEASONS.advanceDays) return false; const ok=!!SEASONS.advanceDays(days); if(ok){ updateBiomeLabel(); noteSaveActivity(); saveState(); } return ok; },
 	metrics:()=> (SEASONS && SEASONS.metrics) ? SEASONS.metrics() : null
 }, menuPanel);
