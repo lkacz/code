@@ -292,58 +292,113 @@ const meteorites = (function(){
     if(oldTile===T.WATER || oldTile===T.ICE) splashAt(x+0.5,y+0.5,0.8);
     if(tileInfo(oldTile).flammable && newTile===T.AIR) smokeAt(x+0.5,y+0.4,0.8);
   }
+  function hashUnit(seed,n){
+    const v=Math.sin(seed*12.9898 + n*78.233)*43758.5453;
+    return v-Math.floor(v);
+  }
+  function smoothUnit(seed,n){
+    const i=Math.floor(n);
+    const f=n-i;
+    const a=hashUnit(seed,i);
+    const b=hashUnit(seed,i+1);
+    const t=f*f*(3-f*2);
+    return a+(b-a)*t;
+  }
+  function craterColumnNoise(seed,x){
+    return (smoothUnit(seed,x*0.18)-0.5)*0.72 +
+      (smoothUnit(seed+17.13,x*0.47)-0.5)*0.34 +
+      (hashUnit(seed+31.7,x*1.91)-0.5)*0.18;
+  }
   function buildCraterOps(cx,cy,intensity,getTile,opts){
     opts=opts||{};
     const impactY=clamp(Math.round(Number.isFinite(opts.surfaceY)?opts.surfaceY:cy),2,WORLD_H-6);
-    const scale=clamp(Number(opts.scale)||rand(0.88,1.18),0.75,1.35);
-    const rx=clamp((8.8+intensity*4.25)*scale,8.5,19.5);
-    const ry=clamp((4.0+intensity*2.15)*scale,4.2,9.2);
+    const seed=Number.isFinite(opts.seed) ? +opts.seed : rand(1,1000000);
+    const scale=clamp(Number(opts.scale)||rand(0.68,1.42),0.62,1.55);
+    const baseRx=8.8+intensity*4.25;
+    const leftRx=clamp(baseRx*scale*rand(0.76,1.28),7.8,23.0);
+    const rightRx=clamp(baseRx*scale*rand(0.76,1.28),7.8,23.0);
+    const ry=clamp((4.0+intensity*2.15)*rand(0.70,1.40),3.6,10.8);
+    const basinShift=rand(-0.16,0.16)*(leftRx+rightRx)*0.5;
+    const bowlPower=rand(0.52,1.04);
+    const roughness=rand(0.08,0.24);
+    const terraceStrength=Math.random()<0.42 ? rand(0.20,0.62) : 0;
+    const terraceAt=rand(0.38,0.72);
+    const rimRaiseChance=rand(0.16,0.46);
+    const lavaSpan=hashUnit(seed+9.5,0)>0.58 ? 1 : 0;
     const ops=[];
     const floorCells=[];
     function addOp(phase,x,y,t,d,place){
       if(y<1 || y>=WORLD_H-3 || !Number.isFinite(x)) return;
       ops.push({phase,x,y,t,d,place:!!place});
     }
-    for(let x=Math.floor(cx-rx-2); x<=Math.ceil(cx+rx+2); x++){
-      const dx=(x+0.5)-cx;
-      const edge=Math.abs(dx)/Math.max(0.1,rx);
-      if(edge>1.16) continue;
+    for(let x=Math.floor(cx-leftRx-3); x<=Math.ceil(cx+rightRx+3); x++){
+      const dx=(x+0.5)-(cx+basinShift);
+      const localRx=dx<0 ? leftRx : rightRx;
+      const colNoise=craterColumnNoise(seed,x);
+      const noisyRx=localRx*clamp(1+colNoise*roughness,0.78,1.24);
+      const edge=Math.abs(dx)/Math.max(0.1,noisyRx);
+      if(edge>1.18) continue;
       const surface=craterSurfaceNear(x,impactY,getTile);
       if(surface==null) continue;
       if(edge<=1.0){
         const curve=Math.max(0,1-edge*edge);
-        const depth=Math.max(1,Math.floor(1.10+Math.pow(curve,0.72)*ry+Math.random()*0.35));
+        let depth=1.05+Math.pow(curve,bowlPower)*ry;
+        depth+=colNoise*ry*0.16;
+        if(terraceStrength && edge>terraceAt && edge<terraceAt+0.22) depth-=terraceStrength*ry;
+        if(edge>0.70 && hashUnit(seed+23.4,x)>0.84) depth-=1.1+hashUnit(seed+24.1,x)*1.2;
+        if(edge<0.18 && hashUnit(seed+29.9,x)>0.72) depth+=0.8+hashUnit(seed+30.6,x)*1.0;
+        depth=clamp(Math.floor(depth),1,12);
         const startY=Math.max(1,Math.floor(surface-1));
         const floorY=Math.min(WORLD_H-4,Math.floor(surface+depth));
         for(let y=startY; y<=floorY; y++){
           addOp(0,x,y,T.AIR,Math.abs(dx)+(y-surface)*0.18,false);
         }
         const old=readTile(getTile,x,floorY);
-        const central=edge<0.20 && intensity>0.8;
+        const central=edge<(0.14+hashUnit(seed+2.2,x)*0.10) && intensity>0.8;
         addOp(1,x,floorY,hotTileForFloor(old,edge,central),Math.abs(dx),true);
         floorCells.push({x,floorY,edge,d:Math.abs(dx)});
         if(edge<0.52 && floorY+1<WORLD_H-3){
-          const t=edge<0.24 ? meteorCoreTile() : (Math.random()<0.44 ? T.METEORIC_IRON : (Math.random()<0.64 ? T.COAL : T.OBSIDIAN));
+          const mineral=hashUnit(seed+37.2,x*1.73+floorY*0.37);
+          const t=edge<0.24 ? meteorCoreTile() : (mineral<0.42 ? T.METEORIC_IRON : (mineral<0.68 ? T.COAL : T.OBSIDIAN));
           addOp(1,x,floorY+1,t,Math.abs(dx)+0.7,true);
         }
       }
-      if(edge>0.92 && edge<1.15){
-        const rimY=Math.max(1,surface-1-(edge<1.02 && Math.random()<0.32?1:0));
-        addOp(1,x,rimY,Math.random()<0.78?T.OBSIDIAN:T.STONE,Math.abs(dx)+2,true);
-        if(edge<1.04 && Math.random()<0.22){
-          addOp(1,x,Math.min(WORLD_H-4,rimY+1),Math.random()<0.70?T.STONE:T.OBSIDIAN,Math.abs(dx)+2.4,true);
+      if(edge>0.88 && edge<1.18){
+        const rimRoll=hashUnit(seed+43.5,x*0.91);
+        const rimY=Math.max(1,surface-1-(edge<1.04 && rimRoll<rimRaiseChance?1:0)+(rimRoll>0.90?1:0));
+        addOp(1,x,rimY,rimRoll<0.74?T.OBSIDIAN:T.STONE,Math.abs(dx)+2,true);
+        if(edge<1.07 && hashUnit(seed+47.8,x)>0.72){
+          addOp(1,x,Math.min(WORLD_H-4,rimY+1),hashUnit(seed+48.5,x)<0.62?T.STONE:T.OBSIDIAN,Math.abs(dx)+2.4,true);
         }
       }
     }
     floorCells.sort((a,b)=>a.d-b.d || a.floorY-b.floorY);
     const core=floorCells[0] || {x:Math.floor(cx),floorY:clamp(impactY+Math.round(ry),2,WORLD_H-4),d:0};
-    const coreX=Math.floor(cx);
+    const coreX=core.x;
     const floorY=core.floorY;
-    addOp(1,coreX,floorY,T.LAVA,0.01,true);
-    if(floorY+1<WORLD_H-3) addOp(1,coreX,floorY+1,T.IRIDIUM,0.05,true);
-    if(floorY+2<WORLD_H-3) addOp(1,coreX+(Math.random()<0.5?-1:1),floorY+2,T.METEORIC_IRON,0.30,true);
-    if(floorY+2<WORLD_H-3) addOp(1,coreX+(Math.random()<0.5?-2:2),floorY+2,T.COAL,0.32,true);
-    if(intensity>1.2 && floorY+2<WORLD_H-3) addOp(1,coreX+(Math.random()<0.5?-1:1),floorY+2,T.IRIDIUM,0.35,true);
+    for(let x=coreX-lavaSpan; x<=coreX+lavaSpan; x++) addOp(1,x,floorY,T.LAVA,0.01+Math.abs(x-coreX)*0.04,true);
+    const depositCells=floorCells.filter(c=>c.edge<0.62).sort((a,b)=>{
+      const ah=hashUnit(seed+59.1,a.x*2.11+a.floorY*0.19);
+      const bh=hashUnit(seed+59.1,b.x*2.11+b.floorY*0.19);
+      return ah-bh;
+    });
+    const usedDeposits=new Set();
+    function addDeposit(tile,offsetY,dBase){
+      for(const c of depositCells){
+        const y=c.floorY+offsetY;
+        if(y>=WORLD_H-3) continue;
+        const key=c.x+','+y;
+        if(usedDeposits.has(key)) continue;
+        usedDeposits.add(key);
+        addOp(1,c.x,y,tile,dBase+c.edge,true);
+        return true;
+      }
+      return false;
+    }
+    addDeposit(T.IRIDIUM,1,0.05);
+    addDeposit(T.METEORIC_IRON,1+Math.round(hashUnit(seed+64.4,1)),0.30);
+    addDeposit(T.COAL,1+Math.round(hashUnit(seed+65.2,2)),0.32);
+    if(intensity>1.2) addDeposit(T.IRIDIUM,2,0.35);
     ops.sort((a,b)=>a.phase-b.phase || a.d-b.d);
     return ops;
   }

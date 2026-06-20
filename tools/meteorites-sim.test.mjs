@@ -115,6 +115,42 @@ assert.ok(changed.some(c=>c.t===T.COAL), 'meteorite leaves carbon-rich deposits'
 assert.ok(craterWidth>=20, 'meteor creates a broad visible bowl crater (width '+craterWidth+')');
 assert.ok(stoneRubble<=24, 'meteor does not overfill the crater with ordinary stone rubble (got '+stoneRubble+')');
 
+function analyzeProceduralCrater(x0){
+  const localTiles = new Map();
+  function getLocal(x,y){
+    x=Math.floor(x); y=Math.floor(y);
+    const k=kxy(x,y);
+    if(localTiles.has(k)) return localTiles.get(k);
+    return y>=SURF ? T.STONE : T.AIR;
+  }
+  function setLocal(x,y,t){ localTiles.set(kxy(x,y),t); }
+  meteorites._debug.impactAt(x0,SURF,getLocal,setLocal,1.65,null,{});
+  const profile=[];
+  const relChanged=[...localTiles.entries()].map(([key,t])=>{
+    const [x,y]=key.split(',').map(Number);
+    return {x:x-x0,y,t};
+  });
+  for(let x=-28; x<=28; x++){
+    const air=relChanged.filter(c=>c.x===x && c.t===T.AIR && c.y>=SURF-1 && c.y<=SURF+12).map(c=>c.y-SURF);
+    profile.push(air.length ? Math.max(...air) : -1);
+  }
+  const carved=relChanged.filter(c=>c.t===T.AIR && c.y>=SURF-1 && c.y<=SURF+12);
+  const xs=carved.map(c=>c.x);
+  const width=xs.length ? Math.max(...xs)-Math.min(...xs)+1 : 0;
+  const depth=carved.length ? Math.max(...carved.map(c=>c.y-SURF)) : 0;
+  return {signature:profile.join(','), width, depth};
+}
+const proceduralCraters=[0,1,2,3,4].map(i=>analyzeProceduralCrater(200+i*90));
+const craterSignatures=new Set(proceduralCraters.map(c=>c.signature));
+const craterWidths=proceduralCraters.map(c=>c.width);
+const craterDepths=proceduralCraters.map(c=>c.depth);
+assert.equal(craterSignatures.size, proceduralCraters.length, 'repeated meteor impacts generate unique crater profiles');
+assert.ok(
+  Math.max(...craterWidths)-Math.min(...craterWidths)>=4 ||
+  Math.max(...craterDepths)-Math.min(...craterDepths)>=2,
+  'procedural crater sizes vary in width or depth'
+);
+
 const waterTiles = new Map();
 function getWaterTile(x,y){
   x=Math.floor(x); y=Math.floor(y);
