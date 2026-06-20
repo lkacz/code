@@ -218,7 +218,10 @@ import { T, INFO, WORLD_H, MOVE } from '../constants.js';
     const accel=sp*CFG.HERO_AIR_ACCEL*factor*exposure;
     const before=player.vx||0;
     player.vx=before+accel*dt;
-    const max = airborne ? MOVE.MAX*3.25 : MOVE.MAX*1.35;
+    const groundSpeedCap = Number.isFinite(opts.groundSpeedCap) && opts.groundSpeedCap>0
+      ? opts.groundSpeedCap
+      : MOVE.MAX;
+    const max = airborne ? MOVE.MAX*3.25 : Math.max(MOVE.MAX*1.35, groundSpeedCap*1.35);
     if(Math.sign(player.vx)===Math.sign(sp) && Math.abs(player.vx)>max) player.vx=Math.sign(sp)*max;
     return {applied:true, delta:player.vx-before, exposure, speed:sp};
   }

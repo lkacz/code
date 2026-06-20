@@ -11,7 +11,7 @@ import { gases as GASES } from './engine/gases.js';
 import { dynamo as DYNAMO } from './engine/dynamo.js';
 import { solar as SOLAR } from './engine/solar.js';
 import { teleporters as TELEPORTERS } from './engine/teleporters.js';
-import { applyHorizontalMovement } from './engine/movement.js';
+import { applyHorizontalMovement, surfaceTraction } from './engine/movement.js';
 import { cape as CAPE } from './engine/cape.js';
 import { chests as CHESTS } from './engine/chests.js';
 import './inventory.js';
@@ -2558,7 +2558,9 @@ function physics(dt){
 	// Combine all movement multipliers, including dropdown.
 	// Ground material affects traction: mud slows, snow slides, ice slides hard.
 	const moveMult = ((MM.activeModifiers && MM.activeModifiers.moveSpeedMult)||1) * (window.playerSpeedMultiplier || 2) * turboSpeedMult;
-	player.vx = applyHorizontalMovement(player.vx, input, dt, moveMult, MOVE, groundTileUnderPlayer());
+	const groundTile = groundTileUnderPlayer();
+	const groundTraction = surfaceTraction(groundTile);
+	player.vx = applyHorizontalMovement(player.vx, input, dt, moveMult, MOVE, groundTile);
 
 	// Submersion sampling (5 points along body) with fractional sampling for smoother transitions
 	const samples=5; let submerged=0; const headY=player.y - player.h/2; const footY=player.y + player.h/2; const step=(footY-headY)/(samples-1); const tileX=Math.floor(player.x);
@@ -2663,7 +2665,7 @@ function physics(dt){
 		// otherwise: keep the press buffered — landing within the window fires the jump
 	}
 	jumpPrev=jumpNow;
-	if(WIND && WIND.applyToHero) WIND.applyToHero(player,dt,getTile,{inWater,godMode});
+	if(WIND && WIND.applyToHero) WIND.applyToHero(player,dt,getTile,{inWater,godMode,groundSpeedCap:MOVE.MAX*moveMult*(groundTraction.speed||1)});
 
 	if(inWater){
 		// Stronger buoyancy with PD control so player reliably floats at surface.

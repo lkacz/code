@@ -8,7 +8,8 @@ globalThis.MM = {
   background: {getCycleInfo:()=>({cycleT:0.25, isDay:true, tDay:0.5})},
 };
 
-const { T } = await import('../src/constants.js');
+const { T, MOVE } = await import('../src/constants.js');
+const { applyHorizontalMovement } = await import('../src/engine/movement.js');
 const { wind } = await import('../src/engine/wind.js');
 
 assert.ok(wind, 'wind module exports');
@@ -20,6 +21,19 @@ const roofTile = (x,y)=> {
   return T.AIR;
 };
 const player = {x:0,y:50,vx:0,vy:0,onGround:false,w:0.7,h:0.95};
+
+function runGroundedIntoWind(windSpeed, input=1, moveMult=2){
+  wind.reset();
+  wind.setOverride(windSpeed);
+  const p = {x:0,y:88,vx:0,vy:0,onGround:true,w:0.7,h:0.95};
+  const dt = 1/60;
+  for(let i=0; i<60*4; i++){
+    p.vx = applyHorizontalMovement(p.vx,input,dt,moveMult,MOVE,T.GRASS);
+    wind.applyToHero(p,dt,openTile,{inWater:false,groundSpeedCap:MOVE.MAX*moveMult});
+    p.x += p.vx*dt;
+  }
+  return p;
+}
 
 // Debug overrides are explicit and reset with world transitions.
 wind.reset();
@@ -87,6 +101,12 @@ wind.setOverride(5.0);
 player.vx=0; player.onGround=true;
 applied = wind.applyToHero(player,1,openTile,{inWater:false});
 assert.ok(applied.applied && player.vx>0.2, `severe gust can shove a grounded hero (vx=${player.vx.toFixed(2)})`);
+
+const runWithWind = runGroundedIntoWind(5.0);
+const runAgainstWind = runGroundedIntoWind(-5.0);
+const runCalm = runGroundedIntoWind(0);
+assert.ok(runWithWind.vx >= runCalm.vx, `running with wind must not be slower than calm (${runWithWind.vx.toFixed(2)} vs ${runCalm.vx.toFixed(2)})`);
+assert.ok(runWithWind.vx > runAgainstWind.vx + 0.05, `running with wind must be faster than against it (${runWithWind.vx.toFixed(2)} vs ${runAgainstWind.vx.toFixed(2)})`);
 
 // Roofs and tunnels attenuate wind strongly.
 wind.setOverride(4.0);
@@ -210,6 +230,8 @@ assert.match(mainSrc, /wind:\s*timedSavePart\('wind',[^\n]*WIND && WIND\.snapsho
 assert.match(mainSrc, /WIND\.restore\(data\.wind\)/, 'load path restores wind state');
 assert.match(mainSrc, /injectWindDebugPanel/, 'main menu injects the wind debug panel');
 assert.match(mainSrc, /exact:\(value\)=>/, 'main wind debug actions support exact speed overrides');
+assert.match(mainSrc, /surfaceTraction\(groundTile\)/, 'main reuses ground traction when reporting the current run cap to wind');
+assert.match(mainSrc, /groundSpeedCap:MOVE\.MAX\*moveMult\*\(groundTraction\.speed\|\|1\)/, 'main passes the real grounded run cap into wind physics');
 assert.match(mainSrc, /profile:\(id\)=>/, 'main wind debug actions support named weather profiles');
 assert.match(uiSrc, /function injectWindDebugPanel/, 'UI exposes a wind debug panel');
 assert.match(uiSrc, /windDebugBox/, 'wind debug panel has a stable DOM id');
