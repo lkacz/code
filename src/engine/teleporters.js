@@ -21,11 +21,14 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
   const WIRE_TTL = 0.62;
   const TELEPORT_COOLDOWN = 0.72;
   const PLAYER_SCAN_INTERVAL = 0.45;
+  const VISIBLE_SCAN_INTERVAL_MS = 250;
 
   let networkRev = 1;
   let scanT = 0;
   let teleporterListStamp = '';
   let teleporterListCache = [];
+  let visibleScanKey = '';
+  let visibleScanAt = 0;
 
   function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
   function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H; }
@@ -733,6 +736,11 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
   function ensureVisibleMachines(sx,sy,viewX,viewY,getTile){
     const x0=Math.floor(sx)-2, x1=Math.ceil(sx+viewX)+2;
     const y0=Math.max(0,Math.floor(sy)-2), y1=Math.min(WORLD_H-1,Math.ceil(sy+viewY)+2);
+    const now=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+    const scanKey=x0+','+x1+','+y0+','+y1;
+    if(scanKey===visibleScanKey && now-visibleScanAt<VISIBLE_SCAN_INTERVAL_MS) return;
+    visibleScanKey=scanKey;
+    visibleScanAt=now;
     for(let y=y0; y<=y1; y++){
       for(let x=x0; x<=x1; x++){
         if(getSafe(getTile,x,y,T.AIR)===T.TELEPORTER) ensureMachine(x,y,getTile);
@@ -806,6 +814,8 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
     networkRev++;
     invalidateTeleporterSearch();
     scanT=0;
+    visibleScanKey='';
+    visibleScanAt=0;
   }
   function metrics(){
     let storedEnergy=0, charged=0;

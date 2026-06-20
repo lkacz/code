@@ -252,6 +252,23 @@ import { reactions as REACTIONS } from './reactions.js';
     }catch(e){}
     return 1;
   }
+  const DRAW_SCAN_INTERVAL_MS = 120;
+  let drawScanCache = {key:'', at:0, tiles:[]};
+  function drawLavaCandidates(sx,sy,viewX,viewY,getTile,now){
+    const x0=Math.floor(sx), x1=Math.ceil(sx+viewX+2);
+    const y0=Math.max(0,Math.floor(sy)), y1=Math.min(WORLD_H-1,Math.ceil(sy+viewY+2));
+    const scanKey=x0+','+x1+','+y0+','+y1;
+    if(drawScanCache.key===scanKey && now-drawScanCache.at<DRAW_SCAN_INTERVAL_MS) return {tiles:drawScanCache.tiles, reused:true};
+    const tiles=[];
+    for(let x=x0; x<=x1; x++){
+      for(let y=y0; y<=y1; y++){
+        const t=getTile(x,y);
+        if(t===T.TORCH || t===T.LAVA) tiles.push([x,y,t]);
+      }
+    }
+    drawScanCache={key:scanKey, at:now, tiles};
+    return {tiles, reused:false};
+  }
   function drawLava(ctx,TILE,sx,sy,viewX,viewY,getTile,now,visibility,smokeTick){
     const GS=glowSprite.width, FH=flameFrames[0].height;
     const igniteTick = now-lastLavaTick>500;
@@ -275,9 +292,9 @@ import { reactions as REACTIONS } from './reactions.js';
     // torch glow strengthens after dark so light sources matter at night
     let night=0.35;
     try{ const cy=MM.background && MM.background.getCycleInfo && MM.background.getCycleInfo(); if(cy) night=cy.isDay? 0.25:0.85; }catch(e){}
-    for(let x=sx; x<=sx+viewX+2; x++){
-      for(let y=sy; y<=sy+viewY+2; y++){
-        const tt=getTile(x,y);
+    const candidateScan=drawLavaCandidates(sx,sy,viewX,viewY,getTile,now);
+    for(const cell of candidateScan.tiles){
+        const x=cell[0], y=cell[1], tt=candidateScan.reused ? getTile(x,y) : cell[2];
         if(tt===T.TORCH){
           if(!rememberedTile(x,y)) continue;
           noteTorch(x,y);
@@ -350,7 +367,6 @@ import { reactions as REACTIONS } from './reactions.js';
             if(nInfo && nInfo.flammable && Math.random()<0.5){ ignite(x+dx,y+dy,getTile); break; }
           }
         }
-      }
     }
   }
   function draw(ctx,TILE,sx,sy,viewX,viewY,getTile,visibility){
@@ -672,7 +688,7 @@ import { reactions as REACTIONS } from './reactions.js';
     }
   }
 
-  function reset(){ burning.clear(); lavaSet.clear(); torchHeat.clear(); torchHeatAcc=0; lastSmokeTick=-Infinity; smokeEmissionBuckets.clear(); }
+  function reset(){ burning.clear(); lavaSet.clear(); torchHeat.clear(); torchHeatAcc=0; lastSmokeTick=-Infinity; smokeEmissionBuckets.clear(); drawScanCache={key:'', at:0, tiles:[]}; }
   function isBurning(x,y){ return burning.has(key(x|0,y|0)); }
   // Put out a single tile (water hose, rain, …) — the tile keeps whatever charring it had
   function extinguish(x,y){ return burning.delete(key(x|0,y|0)); }

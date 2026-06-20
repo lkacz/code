@@ -60,6 +60,11 @@ window.MM = window.MM || {};
   let frameNo = 0;
   let lastOverlayTime = performance.now();
   let offCanvas = null, offCtx = null;
+  const OVERLAY_CACHE_INTERVAL_MS = 1000/120;
+  let lastOverlayRefresh = 0;
+  let overlayCache = {valid:false};
+  let overlayCacheHits = 0;
+  let overlayFullRenders = 0;
 
   function k(x,y){ return x+","+y; }
   function mark(x,y){ active.add(k(x,y)); }
@@ -505,12 +510,27 @@ window.MM = window.MM || {};
     const visibleTile = typeof canDrawTile === 'function' ? canDrawTile : null;
     const tileVisible = (x,y)=> !visibleTile || visibleTile(x,y);
     const now=performance.now();
-    const dtMs=Math.min(50, Math.max(4, now-lastOverlayTime)); lastOverlayTime=now;
-    const dt=dtMs/1000, tSec=now/1000;
-    frameNo++;
     const x0=sx-2, x1=sx+vx+2, n=x1-x0+1;
     const yTop=Math.max(0, sy-6), yBot=Math.min(WORLD_H-1, sy+vy+6);
     if(n<=0 || yBot<yTop) return;
+    const ox=x0*TILE, oy=yTop*TILE;
+    const wpx=n*TILE, hpx=(yBot-yTop+1)*TILE;
+    const cap=(typeof window!=='undefined') ? window.__mmFrameCap : null;
+    const canReuse=!!(cap && cap.unlocked && offCanvas && overlayCache.valid &&
+      now-lastOverlayRefresh<OVERLAY_CACHE_INTERVAL_MS &&
+      overlayCache.x0===x0 && overlayCache.yTop===yTop && overlayCache.n===n && overlayCache.yBot===yBot &&
+      overlayCache.wpx===wpx && overlayCache.hpx===hpx);
+    if(canReuse){
+      overlayCacheHits++;
+      ctx.save();
+      ctx.imageSmoothingEnabled=true;
+      ctx.drawImage(offCanvas, 0,0, wpx,hpx, ox,oy, wpx,hpx);
+      ctx.restore();
+      return;
+    }
+    const dtMs=Math.min(50, Math.max(4, now-lastOverlayTime)); lastOverlayTime=now;
+    const dt=dtMs/1000, tSec=now/1000;
+    frameNo++;
     const SIMPLE = n>220; // zoomed far out: keep waves + body, drop the expensive garnish
 
     // 1. Scan visible columns into contiguous water segments
@@ -587,11 +607,9 @@ window.MM = window.MM || {};
       }
     }
 
-    if(!anyWater && !streams.length) return;
+    if(!anyWater && !streams.length){ overlayCache.valid=false; return; }
 
     // 4. Offscreen layer (world-pixel space) — base shape, then clipped effects
-    const ox=x0*TILE, oy=yTop*TILE;
-    const wpx=n*TILE, hpx=(yBot-yTop+1)*TILE;
     if(!offCanvas){ offCanvas=document.createElement('canvas'); offCtx=offCanvas.getContext('2d'); }
     if(offCanvas.width<wpx) offCanvas.width=wpx;
     if(offCanvas.height<hpx) offCanvas.height=hpx;
@@ -759,6 +777,9 @@ window.MM = window.MM || {};
     ctx.imageSmoothingEnabled=true;
     ctx.drawImage(offCanvas, 0,0, wpx,hpx, ox,oy, wpx,hpx);
     ctx.restore();
+    lastOverlayRefresh=now;
+    overlayFullRenders++;
+    overlayCache={valid:true,x0,yTop,n,yBot,wpx,hpx};
   }
 
   const RESTORE_ACTIVE_CAP = 4000;
@@ -788,6 +809,10 @@ window.MM = window.MM || {};
     pendingImpulse.clear();
     streams.length=0;
     chunkWakes.length=0;
+    overlayCache={valid:false};
+    overlayCacheHits=0;
+    overlayFullRenders=0;
+    lastOverlayRefresh=0;
     passiveScanOffset=0;
     passiveScanAcc=0;
     passiveScanLastColumns=0;
@@ -860,11 +885,11 @@ window.MM = window.MM || {};
   // flood caves without leaving dry notches. Volume is conserved exactly; moves are
   // rate-limited so large equalizations read as flow over a second or two.
   const EQ_WINDOW=40;       // half-width for the oversized-body fallback window
-  const EQ_GLOBAL_BODY_SOFT_CAP=2400; // larger bodies use the bounded window path
+  const EQ_GLOBAL_BODY_SOFT_CAP=1600; // larger bodies use the bounded window path
   const EQ_BODY_CAP=6500;   // safety caps for the two flood fills
   const EQ_VOID_CAP=9000;
   const EQ_RATE=48;         // max units moved per body per pass
-  const EQ_BODIES=3;        // bodies equalized per pass
+  const EQ_BODIES=2;        // bodies equalized per pass
 
   function runPressureLeveling(getTile,setTile){
     const world = (typeof window!=='undefined' && window.MM && MM.world) ? MM.world : null;
@@ -1031,7 +1056,7 @@ window.MM = window.MM || {};
     return {touchedXs, variance, hadTransfers};
   }
 
-  function metrics(){ return {active:active.size, springs:springs.size, streams:streams.length, passiveScanColumns:passiveScanLastColumns, pressureMs:+pressureLastMs.toFixed(3)}; }
+  function metrics(){ return {active:active.size, springs:springs.size, streams:streams.length, passiveScanColumns:passiveScanLastColumns, pressureMs:+pressureLastMs.toFixed(3), overlayCacheHits, overlayFullRenders}; }
   // Test/debug introspection (not used by the game loop)
   function _debug(){ return {active:[...active], seeds:[...pressureSeeds], cooldown:[...lateralCooldown.entries()], pressureAcc, pressureIntervalCurrent, pressureLastMs, pressureMaxMs, passiveScanAcc, passiveScanOffset, passiveScanLastColumns, passiveScanTotalColumns}; }
 
