@@ -1,6 +1,6 @@
 // Deterministic-ish Node test for the meteorite hazard.
-// Verifies: debug toggle/scheduler, forced bolide flight, budgeted crater terrain
-// edits, subsystem wakeups, persistence snapshot/restore and no-op cost when off.
+// Verifies: debug toggle/scheduler, forced bolide flight, instant surface crater
+// terrain edits, subsystem wakeups, persistence snapshot/restore and no-op cost when off.
 // Run: node tools/meteorites-sim.test.mjs
 import assert from 'node:assert/strict';
 
@@ -29,11 +29,6 @@ function getTile(x,y){
   return y>=SURF ? T.STONE : T.AIR;
 }
 function setTile(x,y,t){ tiles.set(kxy(x,y),t); }
-function dirOf(vx,vy){
-  const len=Math.hypot(vx,vy) || 1;
-  return {x:vx/len,y:vy/len};
-}
-function dotDir(a,b){ return a.x*b.x + a.y*b.y; }
 
 let waterWake=0, removed=0, placed=0, marked=0, smoke=0, sparks=0, splashes=0, audio=0, hotGas=0, steamGas=0;
 globalThis.__mmMarkWorldChanged = ()=>{ marked++; };
@@ -54,39 +49,33 @@ const offBefore=meteorites.metrics();
 meteorites.update(30,player,getTile,setTile);
 assert.equal(meteorites.metrics().spawned, offBefore.spawned, 'disabled scheduler does not spawn meteors');
 
+const treeKeys=[];
+for(let x=-4; x<=6; x++){
+  for(let y=SURF-13; y<SURF; y++){
+    const t=y<SURF-10 ? T.LEAF : T.WOOD;
+    setTile(x,y,t);
+    treeKeys.push(kxy(x,y));
+  }
+}
+
 const spawned = meteorites.forceSpawn({x:0,y:SURF,intensity:1.65,side:-1}, player, getTile);
 assert.ok(spawned, 'forced debug meteor spawns');
 assert.equal(meteorites.metrics().meteors, 1, 'active meteor is tracked');
 
-let sawUndergroundImpact=false;
+let sawSurfaceImpact=false;
 let sawShake=false;
 let sawInstantCrater=false;
-let lastAirDir=null;
-let lastBurrowDir=null;
-let checkedStraightEntry=false;
-let checkedBurrowNoSteer=false;
+let treeClearedBeforeImpact=false;
 for(let i=0;i<900;i++){
   meteorites.update(1/60, player, getTile, setTile);
   const active=meteorites._debug.meteors[0];
   if(active){
-    const dir=dirOf(active.vx,active.vy);
-    if(active.burrowing){
-      if(lastAirDir && !checkedStraightEntry){
-        assert.ok(dotDir(lastAirDir,dir)>0.995, 'meteor keeps its incoming direction after ground entry');
-        checkedStraightEntry=true;
-      }
-      if(lastBurrowDir){
-        assert.ok(dotDir(lastBurrowDir,dir)>0.9999, 'meteor does not steer while burrowing');
-        checkedBurrowNoSteer=true;
-      }
-      lastBurrowDir=dir;
-    } else {
-      lastAirDir=dir;
-    }
+    assert.equal(active.burrowing, undefined, 'meteor has no underground burrowing mode');
   }
   const m=meteorites.metrics();
+  if(m.impacts===0 && treeKeys.some(k=>tiles.get(k)===T.AIR)) treeClearedBeforeImpact=true;
   if(m.impacts>0){
-    if(m.lastImpact && m.lastImpact.y>=SURF+4) sawUndergroundImpact=true;
+    if(m.lastImpact && m.lastImpact.y>=SURF-1 && m.lastImpact.y<=SURF+2) sawSurfaceImpact=true;
     if(m.shake>0) sawShake=true;
     if(m.queuedOps===0 && m.terrainJobs===0) sawInstantCrater=true;
   }
@@ -95,12 +84,11 @@ for(let i=0;i<900;i++){
 
 const metricsAfter=meteorites.metrics();
 assert.equal(metricsAfter.meteors, 0, 'meteor resolves after impact');
-assert.equal(metricsAfter.terrainJobs, 0, 'budgeted crater job drains');
+assert.equal(metricsAfter.terrainJobs, 0, 'surface crater does not leave queued terrain jobs');
 assert.ok(metricsAfter.impacts>=1, 'impact counter increments');
-assert.ok(sawUndergroundImpact, 'meteor penetrates and explodes below the surface');
+assert.ok(sawSurfaceImpact, 'meteor explodes on first ground contact at the surface');
 assert.ok(sawInstantCrater, 'visible crater terrain is applied immediately on impact');
-assert.ok(checkedStraightEntry, 'meteor direction is checked at ground entry');
-assert.ok(checkedBurrowNoSteer, 'meteor direction stays fixed underground');
+assert.ok(treeClearedBeforeImpact || treeKeys.some(k=>tiles.get(k)===T.AIR), 'meteor destroys fly-through obstacles before ground impact');
 assert.equal(meteorites._debug.shockwaves.length, 0, 'meteor does not render planar shockwave rings');
 assert.equal(meteorites._debug.scorches.length, 0, 'meteor does not render scorch-plane guide marks');
 assert.ok(sawShake, 'impact starts screen shake');
@@ -118,7 +106,8 @@ const changedXs=changed.filter(c=>c.t===T.AIR && c.y>=SURF-1 && c.y<=SURF+9).map
 const craterWidth=changedXs.length ? Math.max(...changedXs)-Math.min(...changedXs)+1 : 0;
 const stoneRubble=changed.filter(c=>c.t===T.STONE).length;
 assert.ok(changed.some(c=>c.y>=SURF && c.t===T.AIR), 'crater carves solid ground into air');
-assert.ok(changed.some(c=>c.y>=SURF+5 && c.t===T.AIR), 'underground blast hollows out deeper ground');
+assert.ok(changed.some(c=>c.y>=SURF+4 && c.t===T.AIR), 'surface blast cuts a deep visible bowl');
+assert.equal(changed.some(c=>c.y>=SURF+14 && c.t===T.AIR), false, 'meteor does not carve a hidden underground blast chamber');
 assert.ok(changed.some(c=>c.t===T.LAVA || c.t===T.OBSIDIAN || c.t===T.GLASS), 'crater leaves a heated floor/rim');
 assert.ok(changed.some(c=>c.t===T.IRIDIUM), 'meteorite leaves rare iridium deposits');
 assert.ok(changed.some(c=>c.t===T.METEORIC_IRON), 'meteorite leaves meteoric iron deposits');
