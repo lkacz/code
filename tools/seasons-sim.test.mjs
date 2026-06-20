@@ -289,6 +289,86 @@ assert.equal(getTile(0, 10), T.LEAF, 'autumn scan-now also leaves tree foliage u
   Object.assign(seasons.config, savedCfg);
 }
 
+{
+  const savedCfg = Object.assign({}, seasons.config);
+  const savedSurfaceHeight = MM.worldGen.surfaceHeight;
+  const savedTemperature = MM.worldGen.temperature;
+  resetTiles();
+  Object.assign(seasons.config, {
+    autoTerrainEffects: true,
+    terrainPlanRadius: 16,
+    terrainPlanColsPerTick: 25,
+    terrainPlanMaxCandidatesPerTick: 8,
+    terrainApplyInterval: 0.01,
+    terrainApplyOpsPerTick: 1,
+  });
+  MM.worldGen.surfaceHeight = () => 62;
+  MM.worldGen.temperature = () => 0.66;
+  setTile(0, 62, T.WATER);
+  setTile(0, 63, T.STONE);
+  seasons.forceSeason('winter');
+  seasons.update(0.25, getTile, setTile, {x:4, y:40});
+  assert.equal(getTile(0, 62), T.ICE, 'full winter freezes exposed surface water in warmer terrain through the safe terrain job');
+  MM.worldGen.surfaceHeight = savedSurfaceHeight;
+  MM.worldGen.temperature = savedTemperature;
+  Object.assign(seasons.config, savedCfg);
+}
+
+{
+  const savedCfg = Object.assign({}, seasons.config);
+  const savedSurfaceHeight = MM.worldGen.surfaceHeight;
+  const savedTemperature = MM.worldGen.temperature;
+  resetTiles();
+  Object.assign(seasons.config, {
+    autoTerrainEffects: true,
+    effectEpochSeconds: 0.5,
+    terrainPlanRadius: 16,
+    terrainPlanColsPerTick: 25,
+    terrainPlanMaxCandidatesPerTick: 8,
+    terrainApplyInterval: 0.01,
+    terrainApplyOpsPerTick: 1,
+  });
+  MM.worldGen.surfaceHeight = () => 62;
+  setTile(0, 62, T.WATER);
+  setTile(0, 63, T.STONE);
+  MM.worldGen.temperature = () => 0.92;
+  seasons.forceSeason('winter');
+  seasons.update(0.25, getTile, setTile, {x:4, y:40});
+  assert.equal(getTile(0, 62), T.WATER, 'terrain planner can initially reject water that is still too warm');
+  MM.worldGen.temperature = () => 0.55;
+  seasons.update(0.25, getTile, setTile, {x:4, y:40});
+  seasons.update(0.25, getTile, setTile, {x:4, y:40});
+  seasons.update(0.25, getTile, setTile, {x:4, y:40});
+  assert.equal(getTile(0, 62), T.ICE, 'terrain planner retries climate-dependent misses instead of ignoring a column for the whole season');
+  MM.worldGen.surfaceHeight = savedSurfaceHeight;
+  MM.worldGen.temperature = savedTemperature;
+  Object.assign(seasons.config, savedCfg);
+}
+
+{
+  const savedCfg = Object.assign({}, seasons.config);
+  resetTiles();
+  Object.assign(seasons.config, {
+    autoTerrainEffects: true,
+    terrainPlanRadius: 16,
+    terrainPlanColsPerTick: 25,
+    terrainPlanMaxCandidatesPerTick: 16,
+    terrainApplyInterval: 0.01,
+    terrainApplyOpsPerTick: 1,
+  });
+  for(let x = -4; x <= 4; x++){
+    setTile(x, 12, T.GRASS);
+    setTile(x, 13, T.STONE);
+  }
+  setTile(4, 10, T.WATER);
+  setTile(4, 11, T.STONE);
+  seasons.forceSeason('winter');
+  seasons.update(0.25, getTile, setTile, {x:0, y:30});
+  assert.equal(getTile(4, 10), T.ICE, 'freeze terrain work is prioritized ahead of snow work so visible water is not starved');
+  assert.equal(seasons.metrics().terrain.changed.freeze, 1, 'terrain metrics record the prioritized freeze operation');
+  Object.assign(seasons.config, savedCfg);
+}
+
 seasons.reset();
 seasons.setDay(26);
 let m = seasons.metrics();

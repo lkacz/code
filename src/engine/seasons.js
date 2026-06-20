@@ -160,6 +160,7 @@ const CFG = {
   surfaceAbove: 24,
   surfaceBelow: 42,
   freezeTemp: 0.28,
+  freezeTempBoost: 0.12,
   thawTemp: 0.43,
   snowTemp: 0.30,
   snowMeltTemp: 0.46,
@@ -520,6 +521,11 @@ function columnTemp(x, y, prof, ctx){
   );
 }
 
+function freezeTemperatureLimit(strength){
+  const s = clamp(finiteNumber(strength, 0), 0, 1);
+  return CFG.freezeTemp + s * finiteNumber(CFG.freezeTempBoost, 0.12) + (1 - s) * 0.08;
+}
+
 function scanBounds(surf, above, below){
   return {
     y0: Math.max(1, Math.floor(surf - above)),
@@ -538,8 +544,7 @@ function applyFreezeColumn(x, getTile, setTile, prof, ctx, epochSeconds){
     if(getTile(x, y - 1) === T.WATER) continue;
     const above = getTile(x, y - 1);
     if(!skyOpenTile(above) && above !== T.SNOW) continue;
-    if(columnTemp(x, y, prof, ctx) > CFG.freezeTemp + (1 - strength) * 0.08) return false;
-    if(!seasonalPass(strength, x, y, 101, 0.10, 0.58, epochSeconds)) return false;
+    if(columnTemp(x, y, prof, ctx) > freezeTemperatureLimit(strength)) return false;
     return replaceTile(x, y, T.ICE, getTile, setTile);
   }
   return false;
@@ -657,6 +662,7 @@ function applyAutumnLeavesColumn(x, getTile, setTile, prof, ctx, epochSeconds){
 function emptyTerrainPlan(){
   return {
     epoch: '',
+    scanEpoch: '',
     target: '',
     cursor: 0,
     center: 0,
@@ -730,6 +736,12 @@ function terrainCandidate(type, x, y, from, to){
   return {type, x:Math.floor(x), y:Math.floor(y), from, to, chunk:Math.floor(x / CHUNK_W)};
 }
 
+function terrainScanEpoch(sc, dayTempDelta){
+  const passEpoch = Math.floor(elapsedSeconds / Math.max(0.5, finiteNumber(sc && sc.epochSeconds, CFG.effectEpochSeconds)));
+  const tempBucket = Math.round(finiteNumber(dayTempDelta, 0) * 20);
+  return passEpoch + ':' + tempBucket;
+}
+
 function planFreezeColumn(x, getTile, prof, ctx, epochSeconds){
   const strength = clamp(finiteNumber(prof.freezeStrength, 0), 0, 1);
   if(strength <= 0.04) return null;
@@ -740,8 +752,7 @@ function planFreezeColumn(x, getTile, prof, ctx, epochSeconds){
     if(getTile(x, y - 1) === T.WATER) continue;
     const above = getTile(x, y - 1);
     if(!skyOpenTile(above) && above !== T.SNOW) continue;
-    if(columnTemp(x, y, prof, ctx) > CFG.freezeTemp + (1 - strength) * 0.08) return null;
-    if(!seasonalPass(strength, x, y, 101, 0.10, 0.58, epochSeconds)) return null;
+    if(columnTemp(x, y, prof, ctx) > freezeTemperatureLimit(strength)) return null;
     return terrainCandidate('freeze', x, y, T.WATER, T.ICE);
   }
   return null;
@@ -809,6 +820,15 @@ function terrainOpKey(op){
   return op.x + ',' + op.y + ':' + op.from + '>' + op.to;
 }
 
+function terrainOpPriority(op){
+  if(!op) return 99;
+  if(op.type === 'freeze') return 0;
+  if(op.type === 'thaw') return 1;
+  if(op.type === 'snowMelt') return 2;
+  if(op.type === 'snow') return 3;
+  return 4;
+}
+
 function queueTerrainCandidate(op, sc){
   if(!op || terrainPlan.queue.length >= sc.terrainQueueCap) return false;
   const key = terrainOpKey(op);
@@ -850,6 +870,11 @@ function prepareTerrainPlan(getTile, player, s, sc, opts){
   const cols = relocated ? sc.terrainPlanRelocationCols : sc.terrainPlanCols;
   const prof = terrainProfileForTarget(plan.target);
   const dayTempDelta = currentDiurnalTemperatureDelta();
+  const scanEpoch = terrainScanEpoch(sc, dayTempDelta);
+  if(plan.scanEpoch !== scanEpoch){
+    plan.scanEpoch = scanEpoch;
+    plan.seenColumns.clear();
+  }
   let made = 0;
   let visited = 0;
   plan.center = center;
@@ -915,6 +940,10 @@ function takeTerrainCandidate(player, opts, sc, allowVisible){
   const limit = Math.min(sc.terrainApplySearchLimit, terrainPlan.queue.length);
   let skippedVisible = 0;
   let skippedPlayer = 0;
+  let bestIndex = -1;
+  let bestVisible = false;
+  let bestPriority = Infinity;
+  let bestVisibleRank = Infinity;
   for(let i = 0; i < limit; i++){
     const op = terrainPlan.queue[i];
     const visible = terrainOpVisible(op, opts, sc);
@@ -927,9 +956,24 @@ function takeTerrainCandidate(player, opts, sc, allowVisible){
       skippedVisible++;
       continue;
     }
-    terrainPlan.queue.splice(i, 1);
+    const priority = terrainOpPriority(op);
+    const visibleRank = visible ? 0 : 1;
+    if(
+      bestIndex < 0 ||
+      priority < bestPriority ||
+      (priority === bestPriority && visibleRank < bestVisibleRank)
+    ){
+      bestIndex = i;
+      bestVisible = visible;
+      bestPriority = priority;
+      bestVisibleRank = visibleRank;
+      if(priority === 0 && visibleRank === 0) break;
+    }
+  }
+  if(bestIndex >= 0){
+    const op = terrainPlan.queue.splice(bestIndex, 1)[0];
     terrainPlan.queuedKeys.delete(terrainOpKey(op));
-    return {op, visible, skippedVisible, skippedPlayer};
+    return {op, visible: bestVisible, skippedVisible, skippedPlayer};
   }
   return {op: null, visible: false, skippedVisible, skippedPlayer};
 }
