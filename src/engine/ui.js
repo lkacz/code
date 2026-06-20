@@ -674,6 +674,77 @@ MM.ui = (function(){
     },1500);
     panel.appendChild(box);
   }
+  function injectMeteorDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('meteorDebugBox')) return;
+    actions = actions || {};
+    const box=document.createElement('div');
+    box.id='meteorDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(255,130,80,.16); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='Meteoryty (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+    const metrics=document.createElement('div');
+    metrics.id='meteorDebugMetrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    const toggle=document.createElement('button');
+    toggle.id='meteorDebugToggle';
+    toggle.title='Wlacza lub wylacza naturalne losowe spadki meteorytow';
+    toggle.style.cssText='flex:1 1 100%; font-size:11px; padding:4px 6px; border:1px solid rgba(255,154,92,.72);';
+    function updateToggle(m){
+      const on=!!(m && m.enabled);
+      toggle.textContent=on ? 'Meteoryty: ON' : 'Meteoryty: OFF';
+      toggle.style.background=on ? 'rgba(255,120,45,.18)' : '';
+    }
+    function refreshMetrics(){
+      const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+      updateToggle(m);
+      if(!m){ metrics.textContent='brak metryk meteorytow'; return; }
+      const fx=(m.embers||0)+(m.debris||0)+(m.plumes||0);
+      metrics.textContent=(m.enabled?'ON':'OFF')+' | next '+Number(m.nextIn||0).toFixed(1)+'s | lot '+(m.meteors||0)+' | krater job '+(m.terrainJobs||0)+' q'+(m.queuedOps||0)+' | fx '+fx+' | impakty '+(m.impacts||0);
+    }
+    toggle.addEventListener('click',()=>{
+      try{
+        const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+        const on=!!(m && m.enabled);
+        const ok=(typeof actions.setEnabled==='function') ? actions.setEnabled(!on) : false;
+        msg(ok ? ('Meteoryty: '+(!on?'ON':'OFF')) : 'Debug meteorytow: brak przelacznika');
+        refreshMetrics();
+      }catch(e){ msg('Debug meteorytow: blad przelacznika'); }
+    });
+    box.appendChild(toggle);
+    const buttons=[
+      ['spawn','Meteoryt teraz','Natychmiast spuszcza meteoryt niedaleko bohatera'],
+      ['natural','Reset licznika','Losuje nowy czas do nastepnego naturalnego spadku'],
+      ['clear','Wyczysc FX','Usuwa aktywne meteory i efekty bez cofania juz zrobionego krateru']
+    ];
+    buttons.forEach(([id,txt,title])=>{
+      const b=document.createElement('button');
+      b.id='meteorDebug_'+id;
+      b.textContent=txt;
+      b.title=title;
+      b.style.cssText='flex:1 1 86px; font-size:11px; padding:3px 6px; border:1px solid rgba(255,154,92,.62);';
+      b.addEventListener('click',()=>{
+        try{
+          let ok=false;
+          if(id==='spawn') ok=(typeof actions.spawn==='function') ? actions.spawn() : false;
+          else if(id==='natural') ok=(typeof actions.roll==='function') ? actions.roll() : false;
+          else if(id==='clear') ok=(typeof actions.clear==='function') ? actions.clear() : false;
+          msg(ok ? ('Meteoryty: '+txt) : 'Debug meteorytow: brak akcji');
+          refreshMetrics();
+        }catch(e){ msg('Debug meteorytow: blad'); }
+      });
+      box.appendChild(b);
+    });
+    box.appendChild(metrics);
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1200);
+    panel.appendChild(box);
+  }
   function injectSolarDebugPanel(actions, menuPanel){
     const panel = menuPanel || document.getElementById('menuPanel');
     if(!panel || document.getElementById('solarDebugBox')) return;
@@ -793,7 +864,7 @@ MM.ui = (function(){
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, injectMobSpawnPanel, injectGasDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, setRadarPulsing, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
+  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, injectMobSpawnPanel, injectGasDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, setRadarPulsing, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;

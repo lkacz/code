@@ -80,6 +80,7 @@ window.MM = window.MM || {};
     beam:   ()=>{ if(throttled('beam',450)) return; tone('sawtooth',95,110,0.5,0.05,0.4); noise(0.45,0.03,1800,4200); },
     roar:   ()=>{ tone('sawtooth',90,45,0.8,0.22,0.6); noise(0.7,0.12,80,400,'lowpass'); },
     explosion:()=>{ noise(0.5,0.5,60,900,'lowpass'); tone('sine',120,32,0.6,0.4,0.45); },
+    meteor: ()=>{ if(throttled('meteor',900)) return; noise(0.75,0.36,55,620,'lowpass'); tone('sawtooth',95,28,0.9,0.26,0.65); setTimeout(()=>noise(0.22,0.14,1600,6200,'bandpass'),80); },
     splash: ()=>{ if(throttled('splash',250)) return; noise(0.18,0.16,400,2400); },
     grave:  ()=>{ tone('sine',196,98,0.5,0.2,0.4); },
   };
@@ -100,7 +101,7 @@ window.MM = window.MM || {};
   function setMute(m){ settings.mute=!!m; if(master) master.gain.value=settings.mute?0:settings.vol; saveSettings(); }
 
   MM.audio={ play, update, setVolume, setMute,
-    getVolume:()=>settings.vol, isMuted:()=>settings.mute };
+    getVolume:()=>settings.vol, isMuted:()=>settings.mute, isReady:()=>!!(ctx && ctx.state==='running') };
 })();
 // ESM export (progressive migration)
 export const audio = (typeof window!=='undefined' && window.MM) ? window.MM.audio : undefined;

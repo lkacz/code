@@ -21,6 +21,7 @@ assert.match(src, /dynamo:\s*timedSavePart\('dynamo',[^\n]*DYNAMO && DYNAMO\.sna
 assert.match(src, /solar:\s*timedSavePart\('solar',[^\n]*SOLAR && SOLAR\.snapshot/, 'save payload includes solar panel battery state');
 assert.match(src, /teleporters:\s*timedSavePart\('teleporters',[^\n]*TELEPORTERS && TELEPORTERS\.snapshot/, 'save payload includes teleporter machine state');
 assert.match(src, /volcano:\s*timedSavePart\('volcano',[^\n]*VOLCANO && VOLCANO\.snapshot/, 'save payload includes volcano story-item and hazard state');
+assert.match(src, /meteorites:\s*timedSavePart\('meteorites',[^\n]*METEORITES && METEORITES\.snapshot/, 'save payload includes meteorite schedule state');
 assert.match(src, /mobs:\s*timedSavePart\('mobs',[^\n]*MOBS && MOBS\.serialize/, 'save payload includes live mob ecology state');
 assert.match(src, /ufo:\s*timedSavePart\('ufo',[^\n]*UFO && UFO\.snapshot/, 'save payload includes UFO visitor schedule state');
 assert.match(src, /progress:\s*timedSavePart\('progress',[^\n]*PROGRESS && PROGRESS\.snapshot/, 'save payload includes trained progression state');
@@ -43,6 +44,7 @@ assert.match(src, /DYNAMO\.restore\(data\.dynamo,getTile\)/, 'load path restores
 assert.match(src, /SOLAR\.restore\(data\.solar,getTile\)/, 'load path restores solar panel battery state after terrain');
 assert.match(src, /TELEPORTERS\.restore\(data\.teleporters,getTile\)/, 'load path restores teleporter batteries after terrain');
 assert.match(src, /VOLCANO\.restore\(data\.volcano,getTile\)/, 'load path restores volcano story-item timers after terrain');
+assert.match(src, /METEORITES\.restore\(data\.meteorites\)/, 'load path restores meteorite schedule state');
 assert.match(src, /MOBS\.deserialize\(data\.mobs\)/, 'load path restores live mob ecology after terrain');
 assert.match(src, /UFO\.restore\(data\.ufo\)/, 'load path restores UFO visitor schedule');
 assert.match(src, /PROGRESS\.restore\(data\.progress\)/, 'load path restores trained progression state');

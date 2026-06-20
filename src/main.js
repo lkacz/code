@@ -37,6 +37,7 @@ import { audio as AUDIO } from './engine/audio.js';
 import { ufo as UFO } from './engine/ufo.js';
 import { traps as TRAPS } from './engine/traps.js';
 import { ruins as RUINS } from './engine/ruins.js';
+import { meteorites as METEORITES } from './engine/meteorites.js';
 import './engine/ui.js';
 import './inventory_ui.js';
 // Bind global MM into a module-scoped constant for convenience
@@ -746,6 +747,7 @@ function buildSaveObject(opts){
 	solar: timedSavePart('solar',()=>((SOLAR && SOLAR.snapshot) ? SOLAR.snapshot() : null),perf),
 	teleporters: timedSavePart('teleporters',()=>((TELEPORTERS && TELEPORTERS.snapshot) ? TELEPORTERS.snapshot() : null),perf),
 	volcano: timedSavePart('volcano',()=>((VOLCANO && VOLCANO.snapshot) ? VOLCANO.snapshot() : null),perf),
+	meteorites: timedSavePart('meteorites',()=>((METEORITES && METEORITES.snapshot) ? METEORITES.snapshot() : null),perf),
 	mobs: timedSavePart('mobs',()=>((MOBS && MOBS.serialize) ? MOBS.serialize() : null),perf),
 	ufo: timedSavePart('ufo',()=>((UFO && UFO.snapshot) ? UFO.snapshot() : null),perf),
 	progress: timedSavePart('progress',()=>((PROGRESS && PROGRESS.snapshot) ? PROGRESS.snapshot() : null),perf),
@@ -820,6 +822,7 @@ function loadGame(){
 	try{ if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); }catch(e){}
 	try{ if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); }catch(e){}
 	try{ if(UFO && UFO.clearActive) UFO.clearActive(); }catch(e){}
+	try{ if(METEORITES && METEORITES.clearActive) METEORITES.clearActive(); }catch(e){}
 	// Plants/progress restore from the save snapshot below; old saves still fall
 	// back to their historical mm_* side stores for compatibility.
 
@@ -852,6 +855,7 @@ function loadGame(){
 	try{ if(SOLAR && SOLAR.restore) SOLAR.restore(data.solar,getTile); }catch(e){}
 	try{ if(TELEPORTERS && TELEPORTERS.restore) TELEPORTERS.restore(data.teleporters,getTile); }catch(e){}
 	try{ if(VOLCANO && VOLCANO.restore) VOLCANO.restore(data.volcano,getTile); }catch(e){}
+	try{ if(METEORITES && METEORITES.restore) METEORITES.restore(data.meteorites); }catch(e){}
 	try{ if(MOBS && MOBS.deserialize && data.mobs) MOBS.deserialize(data.mobs); }catch(e){}
 	try{ if(UFO && UFO.restore && data.ufo) UFO.restore(data.ufo); }catch(e){}
 	try{ if(PROGRESS && PROGRESS.restore && data.progress) PROGRESS.restore(data.progress); }catch(e){}
@@ -1095,6 +1099,10 @@ function saveState(){
 	_saveRevision++;
 	scheduleDirtySave();
 }
+window.__mmMarkWorldChanged = function(){
+	noteSaveActivity();
+	saveState();
+};
 function flushPendingSave(){
 	if(_saveStateT){ clearTimeout(_saveStateT); _saveStateT=null; }
 	if(_autoSaveWorkT){ clearTimeout(_autoSaveWorkT); _autoSaveWorkT=null; }
@@ -1680,7 +1688,7 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 		// chunks farthest from the current view so a long trek can't accumulate them forever
 		trimChunkCanvasCache(Number.isFinite(centerCx)?centerCx:cx, CHUNK_CANVAS_MAX_KEEP-1);
 		const c=document.createElement('canvas'); c.width=CHUNK_W*TILE; c.height=WORLD_H*TILE; const cctx=c.getContext('2d'); cctx.imageSmoothingEnabled=false; entry={canvas:c,ctx:cctx,version:-1,chests:[]}; chunkCanvases.set(key,entry); }
-	const currentVersion=WORLD.chunkVersion(cx); if(entry.version===currentVersion) return; const cctx=entry.ctx; cctx.clearRect(0,0,cctx.canvas.width,cctx.canvas.height); entry.chests=[];
+	const currentVersion=WORLD.chunkVersion(cx); if(entry.version===currentVersion) return; if(entry.version>=0 && METEORITES && METEORITES.isChunkBusy && METEORITES.isChunkBusy(cx)) return; const cctx=entry.ctx; cctx.clearRect(0,0,cctx.canvas.width,cctx.canvas.height); entry.chests=[];
 		for(let lx=0; lx<CHUNK_W; lx++){
 			const wx=cx*CHUNK_W+lx;
 			const surf=WORLDGEN.surfaceHeight(wx);
@@ -3178,6 +3186,8 @@ function draw(){ // Background first
  if(UFO && UFO.draw) UFO.draw(ctx,TILE,worldFxVisible);
  // weapon projectiles: arrows + flamethrower stream (above creatures)
  if(WEAPONS && WEAPONS.draw) WEAPONS.draw(ctx,TILE,worldFxVisible);
+ // meteors, impact shockwaves and hot crater smoke
+ if(METEORITES && METEORITES.draw) METEORITES.draw(ctx,TILE,worldFxVisible);
  // particles (screen-space in world coords)
  drawParticles();
  // front vegetation pass (blades/leaves that should appear in front)
@@ -3228,6 +3238,7 @@ function draw(){ // Background first
 	// added no information and players found it distracting.)
 	// Screen-space atmospheric tint (after world scaling restore)
 	applyAtmosphericTint();
+	if(METEORITES && METEORITES.drawScreen) METEORITES.drawScreen(ctx,W,H);
 	// Off-screen monster pointer (screen space, after the world transform is gone)
 	if(BOSSES && BOSSES.drawHUD) BOSSES.drawHUD(ctx,W,H,camRenderX,camRenderY,zoom,TILE,worldFxVisible);
 	// HUD: energy + health bars
@@ -3311,10 +3322,11 @@ function draw(){ // Background first
 		try{
 			const pm = (PARTICLES && PARTICLES.metrics)? PARTICLES.metrics() : null;
 			const vm = (VOLCANO && VOLCANO.metrics)? VOLCANO.metrics() : null;
+			const mt = (METEORITES && METEORITES.metrics)? METEORITES.metrics() : null;
 			const gm = (GASES && GASES.metrics)? GASES.metrics() : null;
 			const wm = (WIND && WIND.metrics)? WIND.metrics() : null;
 			const lava = (FIRE && FIRE.lavaCount)? FIRE.lavaCount() : 0;
-			if(pm || vm || gm || wm || lava){ lines.push('FX: particles '+(pm?pm.particles:0)+' smoke '+(pm?pm.smoke:0)+'/'+(pm?pm.smokeCap:0)+' windFx '+(wm?wm.particles:0)+'/'+(wm?wm.particleCap:0)+' lava '+lava+' gas '+(gm?gm.active:0)+' (s '+(gm?gm.steam:0)+', p '+(gm?gm.poison:0)+', f '+(gm?gm.fuel:0)+')  volcanoes '+(vm?vm.activeVolcanoes:0)+' rocks '+(vm?vm.rocks:0)+' master '+(vm?vm.masterShots:0)); }
+			if(pm || vm || mt || gm || wm || lava){ lines.push('FX: particles '+(pm?pm.particles:0)+' smoke '+(pm?pm.smoke:0)+'/'+(pm?pm.smokeCap:0)+' windFx '+(wm?wm.particles:0)+'/'+(wm?wm.particleCap:0)+' lava '+lava+' gas '+(gm?gm.active:0)+' (s '+(gm?gm.steam:0)+', p '+(gm?gm.poison:0)+', f '+(gm?gm.fuel:0)+')  volcanoes '+(vm?vm.activeVolcanoes:0)+' rocks '+(vm?vm.rocks:0)+' master '+(vm?vm.masterShots:0)+' meteor '+(mt?(mt.enabled?'ON ':'OFF ')+mt.meteors+' fall q'+mt.queuedOps+' next '+mt.nextIn+'s':'-')); }
 		}catch(e){}
 		try{
 			const dm = (DYNAMO && DYNAMO.metrics)? DYNAMO.metrics() : null;
@@ -3934,6 +3946,13 @@ if(MM.ui && MM.ui.injectSeasonDebugPanel) MM.ui.injectSeasonDebugPanel({
 	advance:(days)=>{ if(!SEASONS || !SEASONS.advanceDays) return false; const ok=!!SEASONS.advanceDays(days); if(ok){ updateBiomeLabel(); noteSaveActivity(); saveState(); } return ok; },
 	metrics:()=> (SEASONS && SEASONS.metrics) ? SEASONS.metrics() : null
 }, menuPanel);
+if(MM.ui && MM.ui.injectMeteorDebugPanel) MM.ui.injectMeteorDebugPanel({
+	setEnabled:(enabled)=>{ if(!METEORITES || !METEORITES.setEnabled) return false; const ok=!!METEORITES.setEnabled(enabled); if(ok){ noteSaveActivity(); saveState(); } return ok; },
+	spawn:()=>{ if(!METEORITES || !METEORITES.forceSpawn) return false; const ok=!!METEORITES.forceSpawn({nearHero:true,intensity:1.25},player,getTile); if(ok){ noteSaveActivity(); saveState(); } return ok; },
+	roll:()=>{ if(!METEORITES || !METEORITES.rollSchedule) return false; const ok=!!METEORITES.rollSchedule(); if(ok){ noteSaveActivity(); saveState(); } return ok; },
+	clear:()=>{ if(!METEORITES || !METEORITES.clearActive) return false; METEORITES.clearActive(); return true; },
+	metrics:()=> (METEORITES && METEORITES.metrics) ? METEORITES.metrics() : null
+}, menuPanel);
 if(MM.ui && MM.ui.injectDynamoDebugPanel) MM.ui.injectDynamoDebugPanel({
 	give:giveDebugDynamo,
 	place:placeDebugDynamo,
@@ -3979,7 +3998,7 @@ function regenWorld(){
 	try{ if(FOG && FOG.importSeen) FOG.importSeen([]); if(FOG && FOG.setRevealAll) FOG.setRevealAll(false); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); }catch(e){}
 
 	// Reset transient systems
-	mining=false; if(FALLING && FALLING.reset) FALLING.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(UFO && UFO.reset) UFO.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
+	mining=false; if(FALLING && FALLING.reset) FALLING.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(UFO && UFO.reset) UFO.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
 
 	// Reset inventory/tools/hotbar
 	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.diamond=false; player.tool='basic'; hotbarIndex=0; // if god mode active, restore 100 stack after reset
@@ -3998,6 +4017,7 @@ function msg(t){ if(MM.ui && MM.ui.msg) MM.ui.msg(t); else { el.msg.textContent=
 // Engine modules (mobs death, lightning electrocution) reach messages via window.msg
 window.msg = msg;
 window.forceVolcanoMasterStone = function(){ return !!(VOLCANO && VOLCANO.forceMasterEruption && VOLCANO.forceMasterEruption()); };
+window.forceMeteor = function(){ return !!(METEORITES && METEORITES.forceSpawn && METEORITES.forceSpawn({nearHero:true,intensity:1.25},player,getTile)); };
 
 // FPS
 let frames=0,lastFps=performance.now(), currentFps=0; function updateFps(now){ frames++; if(now-lastFps>1000){ currentFps=frames; const budget = (GRASS && GRASS.getBudgetInfo)? GRASS.getBudgetInfo():''; el.fps.textContent=currentFps+' FPS'+ (budget? (' '+budget):''); frames=0; lastFps=now; }}
@@ -4206,7 +4226,7 @@ function runGameStep(dt,ts){
 	if(GASES && GASES.update) GASES.update(dt, getTile, setTile, player);
 	if(PLANTS && PLANTS.update) PLANTS.update(getTile, setTile, dt);
 	if(PROGRESS && PROGRESS.update) PROGRESS.update(dt);
-	updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); updateHeroEnergy(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); updateParticles(dt); updateCape(dt); updateBlink(ts);
+	updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); updateHeroEnergy(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCape(dt); updateBlink(ts);
 }
 let lastLoopErrAt=0; function loop(ts){
 	if(shouldSkipFrameForCap(ts)){ requestAnimationFrame(loop); return; }
@@ -4354,7 +4374,7 @@ if(!window.__lootPopupInit){
 }
 
 // Regenerate world using the CURRENT seed (do not change WG.worldSeed)
-window.regenWorldSameSeed = function(){ try{ if(MOBS && MOBS.clearAll) try{ MOBS.clearAll(); }catch(e){} if(WORLD && WORLD.clear) WORLD.clear(); if(typeof chunkCanvases!=='undefined') chunkCanvases.clear(); if(WORLD && WORLD.clearHeights) WORLD.clearHeights(); if(FALLING && FALLING.reset) FALLING.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(UFO && UFO.reset) UFO.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
+window.regenWorldSameSeed = function(){ try{ if(MOBS && MOBS.clearAll) try{ MOBS.clearAll(); }catch(e){} if(WORLD && WORLD.clear) WORLD.clear(); if(typeof chunkCanvases!=='undefined') chunkCanvases.clear(); if(WORLD && WORLD.clearHeights) WORLD.clearHeights(); if(FALLING && FALLING.reset) FALLING.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(UFO && UFO.reset) UFO.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
 	// Reset fog-of-war as well
 	try{ if(FOG && FOG.importSeen) FOG.importSeen([]); if(FOG && FOG.setRevealAll) FOG.setRevealAll(false); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); }catch(e){}
 	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.diamond=false; player.tool='basic'; hotbarIndex=0; player.xp=0; player.energy=0; if(PROGRESS && PROGRESS.reset) PROGRESS.reset(); applyProgressHp(); applyHeroEnergyCapacity(); respawnPoint=null; saveRespawnPoint(); grave=null; saveGrave();
