@@ -33,6 +33,7 @@ function reset(){
   tiles.clear();
   mobs.clearAll();
   mobs.freezeSpawns(10000);
+  delete MM.wind;
   globalThis.player = {x:100,y:100,vx:0,vy:0,hp:100,maxHp:100};
 }
 function spawnBat(x,y,vx,vy){
@@ -82,6 +83,24 @@ b = bat();
 assert.ok(b.y > 9.22, 'bat stops below a stone ceiling');
 assert.equal(b.vy, 0, 'bat vertical velocity is cancelled by a stone ceiling');
 assert.notEqual(Math.floor(b.y), 8, 'bat center never enters the stone ceiling row');
+
+reset();
+MM.wind = { speedAt(){ return 5; } };
+spawnBat(3,10,0,0);
+step(1/3);
+b = bat();
+assert.ok(b.x > 3.15, 'strong exposed wind carries a bat sideways');
+assert.ok(b.vx > 0.35, 'bat keeps wind-driven velocity after the gust');
+
+reset();
+MM.wind = { speedAt(){ return 5; } };
+for(let y=8; y<=12; y++) setTile(5,y,T.STONE);
+spawnBat(4,10,0,0);
+step(1.5);
+b = bat();
+assert.ok(b.x < 4.66, 'wind cannot push a bat through a stone wall');
+assert.equal(b.vx, 0, 'bat wind velocity is cancelled by wall collision');
+delete MM.wind;
 
 Math.random = originalRandom;
 console.log('bat-collision-sim: all assertions passed');

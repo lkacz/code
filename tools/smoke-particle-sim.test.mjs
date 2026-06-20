@@ -107,12 +107,38 @@ try{
   assert.ok(particles.metrics().smokeAlphaScale<1, 'stress still soft-throttles smoke opacity');
 
   particles.reset();
+  globalThis.__mmFrameMs=16;
+  globalThis.MM.wind = { speedAt(){ return 5; }, speed(){ return 5; } };
+  particles.spawnSmoke(100,100,4,{tileSize:20,tileX:5,tileY:5});
+  let windBefore=particles._debugSnapshot().find(p=>p.kind==='smoke');
+  particles.update(1.0,20,()=>0);
+  let windAfter=particles._debugSnapshot().find(p=>p.kind==='smoke');
+  assert.ok(windAfter.x > windBefore.x + 10, 'smoke plume drifts clearly with exposed positive wind');
+
+  particles.reset();
+  particles.spawnSplash(100,100,1);
+  windBefore=particles._debugSnapshot().find(p=>p.kind==='splash');
+  particles.update(0.45,20,()=>0);
+  windAfter=particles._debugSnapshot().find(p=>p.kind==='splash');
+  assert.ok(windAfter.x > windBefore.x + 2, 'water splash droplets are lightly carried by wind');
+  delete globalThis.MM.wind;
+
+  particles.reset();
   particles.spawnEnergyAbsorb(20,20,60,30,1);
   assert.ok(particles.count()>0, 'energy absorption emits a small particle batch');
   particles.update(0.08,20);
   const energyCtx=makeCtx();
   particles.draw(energyCtx,()=>true,20);
   assert.ok(energyCtx.calls.includes('lineTo') && energyCtx.calls.includes('stroke'), 'energy absorption draws electric streaks');
+
+  particles.reset();
+  particles.spawnTurboSparks(80,90,1,1);
+  const turboSparks=particles._debugSnapshot().filter(p=>p.kind==='spark');
+  assert.ok(turboSparks.length>=3, 'turbo mode emits a compact electric spark batch');
+  particles.update(0.03,20);
+  const turboCtx=makeCtx();
+  particles.draw(turboCtx,()=>true,20);
+  assert.ok(turboCtx.calls.includes('fillRect'), 'turbo sparks draw as lightweight electric pixels');
 } finally {
   Math.random=realRandom;
   delete globalThis.__mmFrameMs;

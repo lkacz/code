@@ -92,14 +92,16 @@ window.MM = window.MM || {};
   const EAT_GROW = {
     [T.WATER]: T.ICE, [T.SAND]: T.SAND, [T.GRASS]: T.GRASS,
     [T.LEAF]: T.LEAF, [T.SNOW]: T.SNOW, [T.WOOD]: T.WOOD,
+    [T.AUTUMN_LEAF_ORANGE]: T.LEAF, [T.AUTUMN_LEAF_RED]: T.LEAF,
   };
   const EDIBLE = new Set(Object.keys(EAT_GROW).map(Number));
   // Inverse map for curative feeding: a damaged body part of type X is healed by
   // eating the world block that grows X (icy flesh ← water, sandy flesh ← sand, …)
   const HEAL_EAT = {};
   for(const k of Object.keys(EAT_GROW)) HEAL_EAT[EAT_GROW[k]] = +k;
+  HEAL_EAT[T.LEAF] = T.LEAF;
   // Loose surface blocks a beast can rip out of the terrain and hurl at the hero
-  const THROWABLE = new Set([T.SAND, T.GRASS, T.SNOW, T.WOOD, T.LEAF, T.STONE, T.ICE]);
+  const THROWABLE = new Set([T.SAND, T.GRASS, T.SNOW, T.WOOD, T.LEAF, T.AUTUMN_LEAF_ORANGE, T.AUTUMN_LEAF_RED, T.STONE, T.ICE]);
   // Block palette a body is built from, so beasts read as made of the game's own tiles
   const BODY_BLOCKS = [T.STONE, T.SAND, T.GRASS, T.SNOW, T.WOOD];
   function infoColor(t){ try{ const I=MM.INFO; if(I && I[t] && I[t].color) return I[t].color; }catch(e){} return null; }
@@ -132,7 +134,8 @@ window.MM = window.MM || {};
   }
   function tileInfo(t){ return MM.INFO && MM.INFO[t]; }
   function isGasTile(t){ const info=tileInfo(t); return !!(info && info.gas); }
-  function openT(t){ return t===T.AIR || t===T.WATER || t===T.LEAF || isGasTile(t); }
+  function isLeafTile(t){ return t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED; }
+  function openT(t){ return t===T.AIR || t===T.WATER || isLeafTile(t) || isGasTile(t); }
   // Monsters pass through air, water, leaves and transient gases; everything else is wall/floor.
   function solidT(t){ return !openT(t); }
   function playerRef(){ return (typeof window!=='undefined' && window.player) || null; }
@@ -387,6 +390,61 @@ window.MM = window.MM || {};
     m.vx*=0.3; m.tiltV+=(Math.random()-0.5)*2;      // the impact staggers it
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((m.x+0.5)*(MM.TILE||20),(m.y+1)*(MM.TILE||20),'common'); }catch(e){}
     say('💢 '+m.name+' runęło z wysokości!');
+  }
+  function windSpeedAt(x,y,getTile){
+    try{
+      const W=MM.wind;
+      if(W && typeof W.speedAt==='function') return W.speedAt(x,y,getTile);
+    }catch(e){}
+    return 0;
+  }
+  function windResponseForMonster(m){
+    if(!m || m.aquatic || m.archetype==='swimmer') return 0;
+    const size=Math.max(12, m.parts ? m.parts.length : 24);
+    const massScale=clamp(28/size,0.18,0.9);
+    if(m.archetype==='floater') return 0.12*massScale;
+    if(m.archetype==='hopper' && !m.onGround) return 0.07*massScale;
+    if(!m.onGround) return 0.035*massScale;
+    return 0;
+  }
+  function applyWindToMonster(m,getTile,dt){
+    const response=windResponseForMonster(m);
+    if(response<=0) return false;
+    const sp=windSpeedAt(m.x+(m.minDx+m.maxDx+1)/2, m.y-m.height*0.45, getTile);
+    if(Math.abs(sp)<0.06) return false;
+    const before=m.vx||0;
+    const cap=Math.max(0.45,(m.speed||1.2)*(m.archetype==='floater'?1.35:1.12));
+    m.vx = before + sp*response*dt;
+    if(Math.sign(m.vx)===Math.sign(sp) && Math.abs(m.vx)>cap) m.vx=Math.sign(sp)*cap;
+    m.tiltV += sp*response*0.014*dt;
+    return m.vx!==before;
+  }
+  function thrownWindResponse(tile){
+    if(isLeafTile(tile) || tile===T.SNOW) return 0.18;
+    if(tile===T.WOOD || tile===T.SAND || tile===T.GRASS) return 0.10;
+    if(tile===T.ICE) return 0.07;
+    if(tile===T.STONE) return 0.035;
+    return 0.055;
+  }
+  function applyWindToProjectile(pr,getTile,dt){
+    if(!pr) return false;
+    const sp=windSpeedAt(pr.x,pr.y,getTile);
+    if(Math.abs(sp)<0.05) return false;
+    const before=pr.vx||0;
+    pr.vx = before + sp*thrownWindResponse(pr.tile)*dt;
+    if(Math.abs(pr.vx)>18) pr.vx=Math.sign(pr.vx)*18;
+    return pr.vx!==before;
+  }
+  function applyWindToDebris(d,getTile,dt,TILE){
+    if(!d) return false;
+    const wx=d.x/TILE, wy=d.y/TILE;
+    const sp=windSpeedAt(wx,wy,getTile);
+    if(Math.abs(sp)<0.06) return false;
+    const size=Math.max(1,Number(d.s)||4);
+    const response=0.12*Math.max(0.35,Math.min(1.4,5/size));
+    d.vx += sp*response*TILE*dt;
+    if(Math.abs(d.vx)>160) d.vx=Math.sign(d.vx)*160;
+    return true;
   }
   function moveOnce(m,getTile,dt){
     // vertical
@@ -702,7 +760,7 @@ window.MM = window.MM || {};
     }
     return true;
   }
-  function foodWord(t){ return t===T.WATER?'wodą': t===T.SAND?'piaskiem': t===T.GRASS?'trawą': t===T.LEAF?'liśćmi': t===T.SNOW?'śniegiem': t===T.WOOD?'drewnem':'kamieniem'; }
+  function foodWord(t){ return t===T.WATER?'wodą': t===T.SAND?'piaskiem': t===T.GRASS?'trawą': isLeafTile(t)?'liśćmi': t===T.SNOW?'śniegiem': t===T.WOOD?'drewnem':'kamieniem'; }
 
   // ---------------- Behavior ----------------
   // A hunting beast rips a loose block out of the nearby terrain to hurl at the hero.
@@ -1029,6 +1087,7 @@ window.MM = window.MM || {};
       const m=monsters[i];
       if(!isFinite(m.x) || !isFinite(m.y)){ monsters.splice(i,1); continue; } // corrupted: drop
       if(!m.frozen) stepBehavior(m,getTile,dt);
+      if(!m.frozen) applyWindToMonster(m,getTile,dt);
       stepPhysics(m,getTile,dt);
       // a ridden beast throws a fit: it shakes, and a hero still standing on its
       // back through the fit is hurt and hurled off (knockback via damageHero)
@@ -1057,7 +1116,7 @@ window.MM = window.MM || {};
     // hurled blocks: ballistic arcs that shatter on terrain or strike the hero
     for(let i=projectiles.length-1;i>=0;i--){
       const pr=projectiles[i];
-      pr.t+=dt; pr.vy+=CFG.GRAV*0.55*dt; pr.x+=pr.vx*dt; pr.y+=pr.vy*dt; pr.spin+=dt*9;
+      pr.t+=dt; pr.vy+=CFG.GRAV*0.55*dt; applyWindToProjectile(pr,getTile,dt); pr.x+=pr.vx*dt; pr.y+=pr.vy*dt; pr.spin+=dt*9;
       let dead=pr.t>pr.max || pr.y>WORLD_H+5;
       if(!dead && hasPlayer && Math.abs(p.x-pr.x)<0.75 && Math.abs(p.y-pr.y)<0.95){
         damageHero(pr.dmg, pr.x - pr.vx*0.1);   // knock the hero along the block's flight
@@ -1076,7 +1135,7 @@ window.MM = window.MM || {};
     const TILE=MM.TILE||20;
     for(let i=debris.length-1;i>=0;i--){
       const d=debris[i];
-      d.t+=dt; d.vy+=CFG.GRAV*TILE*0.55*dt; d.x+=d.vx*dt; d.y+=d.vy*dt;
+      d.t+=dt; d.vy+=CFG.GRAV*TILE*0.55*dt; applyWindToDebris(d,getTile,dt,TILE); d.x+=d.vx*dt; d.y+=d.vy*dt;
       if(d.t>d.max || d.y>WORLD_H*TILE) debris.splice(i,1);
     }
     for(let i=blasts.length-1;i>=0;i--){ blasts[i].t+=dt; if(blasts[i].t>blasts[i].max) blasts.splice(i,1); }

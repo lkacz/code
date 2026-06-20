@@ -7,12 +7,14 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   const ACTIVE_RANGE = 760;
   const MASTER_INTERVAL = 600; // about ten minutes while the volcano is active
   const MASTER_FLOOR_SECONDS = 10;
+  const SERVANT_FLOOR_SECONDS = 10;
+  const MASTER_EJECTION_FORCE = 3;
   const MAX_ROCKS = 56;
   const MAX_MASTER_SHOTS = 8;
   const ROCK_DYNAMO_DESTROY_CHANCE = 0.20;
   const rocks = [];
   const masterShots = [];
-  const masterTiles = new Map(); // "x,y" -> {x,y,t}
+  const masterTiles = new Map(); // "x,y" -> {x,y,t,stage}
   const volcanoState = new Map();
   let scanT = 0;
   let masterScanT = 0;
@@ -21,6 +23,9 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   function wg(){ return (window.MM && MM.worldGen) || WORLDGEN; }
   function key(x,y){ return (x|0)+','+(y|0); }
   function tileInfo(t){ return INFO[t] || INFO[T.AIR]; }
+  function finiteNumber(n){ return Number.isFinite(n); }
+  function finiteTile(x,y){ return finiteNumber(x) && finiteNumber(y) && y>=0 && y<WORLD_H && Math.abs(x)<100000000; }
+  function clamp(n,a,b){ return Math.max(a, Math.min(b,n)); }
   function projectileOpen(t){ return t===T.AIR || t===T.WATER || t===T.LAVA || t===T.TORCH || t===T.GRAVE || !!(tileInfo(t) && tileInfo(t).gas); }
   function supportSolid(t){ return t!==T.AIR && t!==T.WATER && !(tileInfo(t) && tileInfo(t).passable); }
   function volcanoId(v){ return v && v.cell!=null ? 'c'+v.cell : 'x'+Math.round(v ? v.center : 0); }
@@ -132,8 +137,8 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     masterShots.push({
       x:c.x+0.5,
       y:c.y-1.5,
-      vx:side*randomRange(5.0,8.0),
-      vy:-randomRange(12.5,16.5),
+      vx:side*randomRange(5.0,8.0)*MASTER_EJECTION_FORCE,
+      vy:-randomRange(12.5,16.5)*MASTER_EJECTION_FORCE,
       life:13,
       rot:Math.random()*Math.PI*2,
       spin:side*randomRange(7,12),
@@ -210,8 +215,9 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       }
     }
   }
-  function trackMasterStone(x,y,age){
-    masterTiles.set(key(x,y),{x:x|0,y:y|0,t:Math.max(0,age||0)});
+  function trackMasterStone(x,y,age,stage){
+    const s=stage==='servant' ? 'servant' : 'master';
+    masterTiles.set(key(x,y),{x:x|0,y:y|0,t:Math.max(0,age||0),stage:s});
   }
   function settleMasterShot(m,getTile,setTile){
     const tx=Math.floor(m.x), ty=Math.floor(m.y);
@@ -228,6 +234,50 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     sparkBurst(rest.x+0.5,rest.y+0.5,'epic');
     smokeAt(rest.x+0.5,rest.y+0.4,2.8);
     return true;
+  }
+  function notifyTileChanged(x,y,oldTile,newTile,getTile){
+    if(oldTile===newTile) return;
+    try{ if(MM.fallingSolids && MM.fallingSolids.onTileRemoved && oldTile!==T.AIR && newTile===T.AIR) MM.fallingSolids.onTileRemoved(x,y); }catch(e){}
+    try{ if(MM.fallingSolids && MM.fallingSolids.afterPlacement && newTile!==T.AIR) MM.fallingSolids.afterPlacement(x,y); }catch(e){}
+    try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(x,y,getTile); }catch(e){}
+  }
+  function fallbackServantExplosion(x,y,getTile,setTile){
+    if(typeof getTile!=='function' || typeof setTile!=='function') return false;
+    const R=3.1;
+    const ri=Math.ceil(R);
+    for(let dy=-ri; dy<=ri; dy++){
+      for(let dx=-ri; dx<=ri; dx++){
+        if(dx*dx+dy*dy>R*R) continue;
+        const tx=x+dx, ty=y+dy;
+        if(ty<1 || ty>=WORLD_H-3) continue;
+        const t=getTile(tx,ty);
+        if(t===T.AIR || t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC || t===T.OBSIDIAN || t===T.DIAMOND) continue;
+        setTile(tx,ty,T.AIR);
+        notifyTileChanged(tx,ty,t,T.AIR,getTile);
+      }
+    }
+    sparkBurst(x+0.5,y+0.5,'epic');
+    smokeAt(x+0.5,y+0.4,4.0);
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('explosion'); }catch(e){}
+    return true;
+  }
+  function explodeServantStone(m,getTile,setTile){
+    const x=m.x|0, y=m.y|0;
+    const old=getTile(x,y);
+    if(old===T.SERVANT_STONE || old===T.VOLCANO_MASTER_STONE){
+      setTile(x,y,T.AIR);
+      notifyTileChanged(x,y,old,T.AIR,getTile);
+    }
+    let ok=false;
+    try{
+      if(MM.weapons && MM.weapons.explodeAt){
+        ok=!!MM.weapons.explodeAt(x+0.5,y+0.5,getTile,setTile,{force:true,extraConsumed:18});
+      }
+    }catch(e){ ok=false; }
+    if(!ok) ok=fallbackServantExplosion(x,y,getTile,setTile);
+    sparkBurst(x+0.5,y+0.5,'epic');
+    smokeAt(x+0.5,y+0.4,3.5);
+    return ok;
   }
   function hurtHeroFromProjectile(obj,damage){
     const pl=(typeof window!=='undefined' && window.player) || null;
@@ -281,15 +331,22 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   }
   function updateMasterTiles(dt,getTile,setTile){
     for(const [k,m] of [...masterTiles.entries()]){
-      if(getTile(m.x,m.y)!==T.VOLCANO_MASTER_STONE){ masterTiles.delete(k); continue; }
+      const tile=getTile(m.x,m.y);
+      if(tile!==T.VOLCANO_MASTER_STONE && tile!==T.SERVANT_STONE){ masterTiles.delete(k); continue; }
+      const stage=tile===T.SERVANT_STONE ? 'servant' : (m.stage==='servant' ? 'servant' : 'master');
+      m.stage=stage;
       if(!supportSolid(getTile(m.x,m.y+1))){ m.t=0; continue; }
       m.t+=dt;
-      if(m.t>=MASTER_FLOOR_SECONDS){
-        setTile(m.x,m.y,T.LAVA);
-        masterTiles.delete(k);
-        try{ if(MM.fire && MM.fire.noteLava) MM.fire.noteLava(m.x,m.y); }catch(e){}
+      if(stage==='master' && m.t>=MASTER_FLOOR_SECONDS){
+        setTile(m.x,m.y,T.SERVANT_STONE);
+        notifyTileChanged(m.x,m.y,T.VOLCANO_MASTER_STONE,T.SERVANT_STONE,getTile);
+        m.t=0;
+        m.stage='servant';
         sparkBurst(m.x+0.5,m.y+0.5,'epic');
         smokeAt(m.x+0.5,m.y+0.4,2.5);
+      } else if(stage==='servant' && m.t>=SERVANT_FLOOR_SECONDS){
+        explodeServantStone(m,getTile,setTile);
+        masterTiles.delete(k);
       }
     }
   }
@@ -303,7 +360,8 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     const sx=px-90, ex=px+90;
     for(let x=sx; x<=ex; x++){
       for(let y=0; y<WORLD_H; y++){
-        if(readTile(x,y)===T.VOLCANO_MASTER_STONE && !masterTiles.has(key(x,y))) trackMasterStone(x,y,0);
+        const t=readTile(x,y);
+        if((t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) && !masterTiles.has(key(x,y))) trackMasterStone(x,y,0,t===T.SERVANT_STONE?'servant':'master');
       }
     }
   }
@@ -335,7 +393,8 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     return false;
   }
   function onTileChanged(x,y,t,getTile,setTile){
-    if(t===T.VOLCANO_MASTER_STONE) trackMasterStone(x,y,0);
+    if(t===T.VOLCANO_MASTER_STONE) trackMasterStone(x,y,0,'master');
+    if(t===T.SERVANT_STONE) trackMasterStone(x,y,0,'servant');
     if(t!==T.DIAMOND) return false;
     const W=wg();
     let v=null;
@@ -346,7 +405,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     return false;
   }
   function update(dt,player,getTile,setTile){
-    if(typeof getTile!=='function') return;
+    if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function' || typeof setTile!=='function') return;
     scanT-=dt;
     if(scanT<=0){
       scanT=1.0;
@@ -370,18 +429,19 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       scanMasterTilesNear(player,getTile);
     }
   }
-  function drawMasterGlyph(ctx,cx,cy,size,pulse,rot){
+  function drawMasterGlyph(ctx,cx,cy,size,pulse,rot,stage){
+    const servant=stage==='servant';
     const r=size*(0.72+0.12*pulse);
     const g=ctx.createRadialGradient(cx,cy,2,cx,cy,r*2.6);
-    g.addColorStop(0,'rgba(175,255,246,0.75)');
-    g.addColorStop(0.38,'rgba(64,230,255,0.22)');
-    g.addColorStop(1,'rgba(255,90,40,0)');
+    g.addColorStop(0,servant?'rgba(255,230,100,0.68)':'rgba(255,226,92,0.82)');
+    g.addColorStop(0.38,servant?'rgba(255,72,32,0.28)':'rgba(255,106,33,0.36)');
+    g.addColorStop(1,'rgba(255,40,0,0)');
     ctx.fillStyle=g;
     ctx.beginPath(); ctx.arc(cx,cy,r*2.6,0,Math.PI*2); ctx.fill();
     ctx.save();
     ctx.translate(cx,cy);
     ctx.rotate(rot||0);
-    ctx.fillStyle='#71fff1';
+    ctx.fillStyle=servant?'#7a2417':'#ff6a21';
     ctx.beginPath();
     ctx.moveTo(0,-r);
     ctx.lineTo(r*0.8,0);
@@ -389,10 +449,10 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     ctx.lineTo(-r*0.8,0);
     ctx.closePath();
     ctx.fill();
-    ctx.strokeStyle='rgba(255,238,124,0.95)';
+    ctx.strokeStyle=servant?'rgba(255,190,56,0.98)':'rgba(255,238,124,0.95)';
     ctx.lineWidth=Math.max(1.5,size*0.12);
     ctx.stroke();
-    ctx.strokeStyle='rgba(255,83,55,0.85)';
+    ctx.strokeStyle=servant?'rgba(255,64,32,0.95)':'rgba(255,83,55,0.85)';
     ctx.lineWidth=Math.max(1,size*0.07);
     ctx.beginPath();
     ctx.moveTo(-r*0.45,0); ctx.lineTo(r*0.45,0);
@@ -403,7 +463,9 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       const a=(i/6)*Math.PI*2 + (rot||0)*0.7;
       const sx=cx+Math.cos(a)*r*(1.55+0.25*pulse);
       const sy=cy+Math.sin(a)*r*(1.05+0.2*pulse);
-      ctx.fillStyle=i%2?'rgba(255,214,83,0.9)':'rgba(120,255,244,0.9)';
+      ctx.fillStyle=servant
+        ? (i%2?'rgba(255,58,32,0.94)':'rgba(255,214,83,0.9)')
+        : (i%2?'rgba(255,214,83,0.95)':'rgba(255,120,32,0.92)');
       ctx.fillRect(sx-1.5,sy-1.5,3,3);
     }
   }
@@ -431,17 +493,20 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     for(const m of masterShots){
       if(!tileVisible(m.x,m.y)) continue;
       const pulse=Math.sin(now*0.012 + m.x)*0.5+0.5;
-      drawMasterGlyph(ctx,m.x*TILE,m.y*TILE,TILE*0.46,pulse,m.rot||0);
+      drawMasterGlyph(ctx,m.x*TILE,m.y*TILE,TILE*0.46,pulse,m.rot||0,'master');
     }
     for(const mt of masterTiles.values()){
-      if(getTile && getTile(mt.x,mt.y)!==T.VOLCANO_MASTER_STONE) continue;
+      const tile=getTile ? getTile(mt.x,mt.y) : (mt.stage==='servant'?T.SERVANT_STONE:T.VOLCANO_MASTER_STONE);
+      if(tile!==T.VOLCANO_MASTER_STONE && tile!==T.SERVANT_STONE) continue;
       if(!tileVisible(mt.x,mt.y)) continue;
+      const stage=tile===T.SERVANT_STONE?'servant':'master';
       const cx=(mt.x+0.5)*TILE, cy=(mt.y+0.5)*TILE;
-      const pulse=Math.sin(now*0.006 + mt.x*0.9 + mt.y*0.4)*0.5+0.5;
-      drawMasterGlyph(ctx,cx,cy,TILE*0.42,pulse,now*0.0015);
-      const left=Math.max(0,1-mt.t/MASTER_FLOOR_SECONDS);
+      const pulse=Math.sin(now*(stage==='servant'?0.012:0.006) + mt.x*0.9 + mt.y*0.4)*0.5+0.5;
+      drawMasterGlyph(ctx,cx,cy,TILE*0.42,pulse,now*(stage==='servant'?0.0035:0.0015),stage);
+      const limit=stage==='servant'?SERVANT_FLOOR_SECONDS:MASTER_FLOOR_SECONDS;
+      const left=Math.max(0,1-mt.t/limit);
       ctx.globalCompositeOperation='source-over';
-      ctx.fillStyle='rgba(255,80,40,0.7)';
+      ctx.fillStyle=stage==='servant'?'rgba(255,28,24,0.86)':'rgba(255,80,40,0.7)';
       ctx.fillRect(mt.x*TILE+3, mt.y*TILE+TILE-4, (TILE-6)*left, 2);
       ctx.globalCompositeOperation='lighter';
     }
@@ -456,16 +521,97 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     scanT=0;
     masterScanT=0;
   }
+  function snapshotProjectile(p){
+    return {
+      x:+(p.x||0).toFixed(3),
+      y:+(p.y||0).toFixed(3),
+      vx:+(p.vx||0).toFixed(3),
+      vy:+(p.vy||0).toFixed(3),
+      life:+Math.max(0,p.life||0).toFixed(3),
+      rot:+(p.rot||0).toFixed(3),
+      spin:+(p.spin||0).toFixed(3),
+      reason:typeof p.reason==='string' ? p.reason : undefined
+    };
+  }
+  function restoreProjectile(raw,maxLife,maxSpeed){
+    if(!raw || !finiteNumber(raw.x) || !finiteNumber(raw.y) || !finiteNumber(raw.vx) || !finiteNumber(raw.vy)) return null;
+    if(raw.y<0 || raw.y>=WORLD_H) return null;
+    const life=Number.isFinite(raw.life) ? clamp(raw.life,0,maxLife) : maxLife;
+    if(life<=0) return null;
+    return {
+      x:+raw.x,
+      y:+raw.y,
+      vx:clamp(+raw.vx,-maxSpeed,maxSpeed),
+      vy:clamp(+raw.vy,-maxSpeed,maxSpeed),
+      life,
+      rot:Number.isFinite(raw.rot) ? +raw.rot : 0,
+      spin:Number.isFinite(raw.spin) ? clamp(+raw.spin,-maxSpeed,maxSpeed) : 0,
+      reason:typeof raw.reason==='string' ? raw.reason.slice(0,24) : undefined
+    };
+  }
+  function snapshot(){
+    const masterList=[...masterTiles.values()]
+      .filter(m=>m && finiteTile(m.x,m.y))
+      .sort((a,b)=>(a.x-b.x)||(a.y-b.y))
+      .slice(0,64)
+      .map(m=>({
+        x:m.x|0,
+        y:m.y|0,
+        t:+Math.max(0,Number.isFinite(m.t)?m.t:0).toFixed(3),
+        stage:m.stage==='servant' ? 'servant' : 'master'
+      }));
+    const shotList=masterShots
+      .filter(p=>p && finiteNumber(p.x) && finiteNumber(p.y) && (p.life||0)>0)
+      .slice(-MAX_MASTER_SHOTS)
+      .map(snapshotProjectile);
+    const rockList=rocks
+      .filter(p=>p && finiteNumber(p.x) && finiteNumber(p.y) && (p.life||0)>0)
+      .slice(-MAX_ROCKS)
+      .map(snapshotProjectile);
+    return {v:1,masterTiles:masterList,masterShots:shotList,rocks:rockList};
+  }
+  function restore(data,getTile){
+    reset();
+    if(!data || typeof data!=='object') return;
+    if(Array.isArray(data.masterTiles)){
+      for(const raw of data.masterTiles){
+        if(masterTiles.size>=64) break;
+        if(!raw || !finiteTile(raw.x,raw.y)) continue;
+        const x=Math.floor(raw.x), y=Math.floor(raw.y);
+        const tile=typeof getTile==='function' ? getTile(x,y) : (raw.stage==='servant'?T.SERVANT_STONE:T.VOLCANO_MASTER_STONE);
+        if(tile!==T.VOLCANO_MASTER_STONE && tile!==T.SERVANT_STONE) continue;
+        const stage=tile===T.SERVANT_STONE ? 'servant' : 'master';
+        const limit=stage==='servant' ? SERVANT_FLOOR_SECONDS : MASTER_FLOOR_SECONDS;
+        trackMasterStone(x,y,clamp(Number(raw.t)||0,0,limit+0.5),stage);
+      }
+    }
+    if(Array.isArray(data.masterShots)){
+      for(const raw of data.masterShots){
+        if(masterShots.length>=MAX_MASTER_SHOTS) break;
+        const p=restoreProjectile(raw,13,70);
+        if(p) masterShots.push(p);
+      }
+    }
+    if(Array.isArray(data.rocks)){
+      for(const raw of data.rocks){
+        if(rocks.length>=MAX_ROCKS) break;
+        const p=restoreProjectile(raw,9,34);
+        if(p) rocks.push(p);
+      }
+    }
+  }
 
   const api={
     update,
     draw,
     reset,
+    snapshot,
+    restore,
     forceMasterEruption,
     onTileChanged,
     trackMasterStone,
     metrics:()=>({rocks:rocks.length, masterShots:masterShots.length, masterTiles:masterTiles.size, activeVolcanoes:activeVolcanoes.length}),
-    _debug:{emitGas,spawnRock,spawnMaster,consumeDiamondTriggers,updateMasterTiles,collectActiveVolcanoes,rocks,masterShots,masterTiles,maybeDestroyDynamoAt}
+    _debug:{emitGas,spawnRock,spawnMaster,consumeDiamondTriggers,updateMasterTiles,collectActiveVolcanoes,rocks,masterShots,masterTiles,maybeDestroyDynamoAt,explodeServantStone,MASTER_EJECTION_FORCE,SERVANT_FLOOR_SECONDS}
   };
   MM.volcano = api;
 })();

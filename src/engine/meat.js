@@ -283,9 +283,20 @@ const meat = (function(){
   }
 
   function snapshot(){
+    const list=[...records.values()]
+      .filter(r=>r && finiteTile(r.x,r.y))
+      .sort((a,b)=>(a.x-b.x)||(a.y-b.y))
+      .slice(0,MAX_RECORDS)
+      .map(r=>({
+        x:Math.floor(r.x),
+        y:Math.floor(r.y),
+        age:+Math.max(0,Math.min(DECAY_SEC,Number.isFinite(r.age)?r.age:0)).toFixed(3),
+        rotAge:+Math.max(0,Math.min(ROTTEN_VANISH_SEC,Number.isFinite(r.rotAge)?r.rotAge:0)).toFixed(3),
+        gasT:+Math.max(0,Number.isFinite(r.gasT)?r.gasT:nextGasDelay()).toFixed(3)
+      }));
     return {
       v:1,
-      list:[...records.values()].map(r=>({x:r.x,y:r.y,age:+(r.age||0).toFixed(3),rotAge:+(r.rotAge||0).toFixed(3),gasT:+(r.gasT||0).toFixed(3)}))
+      list
     };
   }
 
@@ -293,6 +304,7 @@ const meat = (function(){
     reset();
     if(!data || !Array.isArray(data.list)) return;
     for(const r of data.list){
+      if(records.size>=MAX_RECORDS) break;
       if(!r || !finiteTile(r.x,r.y)) continue;
       const t=getSafe(getTile,Math.floor(r.x),Math.floor(r.y));
       if(!isMeatTile(t)) continue;

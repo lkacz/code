@@ -8,15 +8,24 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
 
   const machines = new Map(); // "x,y" -> {x,y,energy,pulse,cooldown,lastUse}
   const networkCache = new Map(); // teleporter key -> {rev,dynamos:[{x,y}]}
+  const wireActivity = new Map(); // "x,y" -> {x,y,ttl,level}
+  const wireMarkThrottle = new Map(); // device key -> ms of last cable pulse paint
   const TELEPORTER_CAPACITY = 160;
+  const MACHINE_CAP = 1200;
   const TRAVEL_COST = 35;
   const CHARGE_RATE = 28;
   const NETWORK_CAP = 900;
+  const NETWORK_CACHE_CAP = 420;
+  const FLOW_DRAW_CAP = 260;
+  const FLOW_MARK_INTERVAL_MS = 90;
+  const WIRE_TTL = 0.62;
   const TELEPORT_COOLDOWN = 0.72;
   const PLAYER_SCAN_INTERVAL = 0.45;
 
   let networkRev = 1;
   let scanT = 0;
+  let teleporterListStamp = '';
+  let teleporterListCache = [];
 
   function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
   function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H; }
@@ -31,6 +40,10 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
   function isPowerDeviceTile(t){ return !!(INFO[t] && INFO[t].powerDevice); }
   function isPowerSourceTile(t){ return isDynamoTile(t) || !!(INFO[t] && INFO[t].powerSource); }
   function isMachineNetworkTile(t){ return isCable(t) || isPowerDeviceTile(t) || isPowerSourceTile(t); }
+  function invalidateTeleporterSearch(){
+    teleporterListStamp='';
+    teleporterListCache=[];
+  }
   function ensureMachine(x,y,getTile){
     x=Math.floor(x); y=Math.floor(y);
     if(!finiteTile(x,y) || getSafe(getTile,x,y,T.AIR)!==T.TELEPORTER) return null;
@@ -97,6 +110,112 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
     }
     ctx.restore();
   }
+  function nowMs(){
+    return (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+  }
+  function markWire(x,y,level){
+    const k=key(x,y);
+    const cur=wireActivity.get(k) || {x:Math.floor(x),y:Math.floor(y),ttl:0,level:0};
+    cur.ttl=Math.max(cur.ttl,WIRE_TTL);
+    cur.level=Math.min(1,Math.max(cur.level*0.72,level));
+    wireActivity.set(k,cur);
+  }
+  function markNetworkActivity(net,amount,deviceKey){
+    if(!net || !Array.isArray(net.cables) || !net.cables.length) return;
+    const dk=String(deviceKey||'network');
+    const now=nowMs();
+    if(now-(wireMarkThrottle.get(dk)||0)<FLOW_MARK_INTERVAL_MS){
+      let stillLit=false;
+      for(let i=0; i<net.cables.length && i<16; i++){
+        const c=net.cables[i];
+        const a=wireActivity.get(key(c.x,c.y));
+        if(a && (a.ttl||0)>0.08){ stillLit=true; break; }
+      }
+      if(stillLit) return;
+    }
+    wireMarkThrottle.set(dk,now);
+    const level=Math.max(0.22,Math.min(1,0.18+(Number(amount)||0)/18));
+    const cap=Math.min(FLOW_DRAW_CAP,net.cables.length);
+    if(net.cables.length<=cap){
+      for(const c of net.cables) markWire(c.x,c.y,level);
+      return;
+    }
+    const stride=Math.max(1,Math.floor(net.cables.length/cap));
+    for(let i=0,count=0; i<net.cables.length && count<cap; i+=stride,count++){
+      const c=net.cables[i];
+      markWire(c.x,c.y,level);
+    }
+  }
+  function decayWireActivity(dt,getTile){
+    if(!wireActivity.size) return;
+    for(const [k,a] of wireActivity){
+      if(!a){ wireActivity.delete(k); continue; }
+      a.ttl-=dt;
+      a.level=Math.max(0,(a.level||0)-dt*0.75);
+      if(a.ttl<=0 || a.level<=0.015 || getSafe(getTile,a.x,a.y,T.AIR)!==T.COPPER_WIRE) wireActivity.delete(k);
+    }
+    if(wireMarkThrottle.size>120){
+      const cutoff=nowMs()-2000;
+      for(const [k,t] of wireMarkThrottle) if(t<cutoff) wireMarkThrottle.delete(k);
+    }
+  }
+  function drawCableEnergy(ctx,TILE,px,py,conn,level,ttl,h,phase){
+    const fade=Math.max(0,Math.min(1,ttl/WIRE_TTL));
+    const a=Math.max(0,Math.min(1,level))*fade;
+    if(a<=0.01) return;
+    const c=conn || {left:true,right:true,up:false,down:false};
+    const any=c.left||c.right||c.up||c.down;
+    const cx=px+TILE*0.5, cy=py+TILE*0.5;
+    ctx.save();
+    ctx.lineCap='round';
+    ctx.lineJoin='round';
+    ctx.globalCompositeOperation='lighter';
+    ctx.strokeStyle='rgba(96,238,255,'+(0.18+0.40*a).toFixed(3)+')';
+    ctx.lineWidth=Math.max(1,TILE*(0.10+0.10*a));
+    ctx.beginPath();
+    if(c.left || !any){ ctx.moveTo(cx,cy); ctx.lineTo(px+2,cy); }
+    if(c.right || !any){ ctx.moveTo(cx,cy); ctx.lineTo(px+TILE-2,cy); }
+    if(c.up){ ctx.moveTo(cx,cy); ctx.lineTo(cx,py+2); }
+    if(c.down){ ctx.moveTo(cx,cy); ctx.lineTo(cx,py+TILE-2); }
+    ctx.stroke();
+    ctx.strokeStyle='rgba(255,244,145,'+(0.16+0.58*a).toFixed(3)+')';
+    ctx.lineWidth=Math.max(1,TILE*0.045);
+    ctx.beginPath();
+    if(c.left || !any){ ctx.moveTo(cx,cy); ctx.lineTo(px+3,cy); }
+    if(c.right || !any){ ctx.moveTo(cx,cy); ctx.lineTo(px+TILE-3,cy); }
+    if(c.up){ ctx.moveTo(cx,cy); ctx.lineTo(cx,py+3); }
+    if(c.down){ ctx.moveTo(cx,cy); ctx.lineTo(cx,py+TILE-3); }
+    ctx.stroke();
+    const dirs=[];
+    if(c.left || !any) dirs.push([-1,0]);
+    if(c.right || !any) dirs.push([1,0]);
+    if(c.up) dirs.push([0,-1]);
+    if(c.down) dirs.push([0,1]);
+    const sparks=Math.min(2,Math.max(1,Math.round(a*2)));
+    for(let i=0;i<sparks;i++){
+      const idx=((h>>>((i*7)&15)) % Math.max(1,dirs.length));
+      const d=dirs[idx] || [1,0];
+      const seed=((h>>>((i*5+3)&15))&255)/255;
+      const travel=(phase*0.9+seed+i*0.37)%1;
+      const dist=(0.13+0.72*travel)*TILE*(d[0]||d[1]);
+      const sx=cx + (d[0]?dist:((seed-0.5)*TILE*0.08));
+      const sy=cy + (d[1]?dist:((seed-0.5)*TILE*0.08));
+      const r=Math.max(1,TILE*(0.045+0.045*a));
+      ctx.fillStyle='rgba(255,250,183,'+(0.45+0.50*a).toFixed(3)+')';
+      ctx.beginPath();
+      ctx.arc(sx,sy,r,0,Math.PI*2);
+      ctx.fill();
+      if(a>0.45){
+        ctx.strokeStyle='rgba(118,241,255,'+(0.25+0.45*a).toFixed(3)+')';
+        ctx.lineWidth=Math.max(1,TILE*0.035);
+        ctx.beginPath();
+        ctx.moveTo(sx-d[0]*TILE*0.12-(d[1]*TILE*0.05),sy-d[1]*TILE*0.12-(d[0]*TILE*0.05));
+        ctx.lineTo(sx+d[0]*TILE*0.12+(d[1]*TILE*0.05),sy+d[1]*TILE*0.12+(d[0]*TILE*0.05));
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
   function dynamoSlotAt(x,y,getTile){
     const D=MM.dynamo;
     if(!D) return null;
@@ -145,11 +264,70 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
     }
     return null;
   }
+  function sourceCacheKey(source){
+    if(!source) return '';
+    return (source.kind||'source')+':'+key(source.x,source.y);
+  }
+  function cachedSourceList(cached){
+    if(cached && Array.isArray(cached.sources) && cached.sources.length) return cached.sources;
+    if(cached && Array.isArray(cached.dynamos)) return cached.dynamos.map(d=>({kind:'dynamo',x:d.x,y:d.y}));
+    return [];
+  }
+  function networkCacheEntryValid(tx,ty,cached,getTile){
+    if(!cached || cached.rev!==networkRev || typeof getTile!=='function') return false;
+    const cableKeys=new Set();
+    const cables=Array.isArray(cached.cables) ? cached.cables : [];
+    if(cables.length !== (Number(cached.cableCount)||0)) return false;
+    for(const c of cables){
+      if(!c || !finiteTile(c.x,c.y) || getSafe(getTile,c.x,c.y,T.AIR)!==T.COPPER_WIRE) return false;
+      cableKeys.add(key(c.x,c.y));
+    }
+    const sourceKeys=new Set(cachedSourceList(cached).map(sourceCacheKey).filter(Boolean));
+    const seenSources=new Set();
+    const inspectNeighbor=(nx,ny)=>{
+      const t=getSafe(getTile,nx,ny,T.AIR);
+      if(isCable(t)) return cableKeys.has(key(nx,ny));
+      const src=sourceNodeAt(nx,ny,getTile);
+      if(src){
+        const sk=sourceCacheKey(src);
+        if(!sourceKeys.has(sk)) return false;
+        seenSources.add(sk);
+      }
+      return true;
+    };
+    for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      if(!inspectNeighbor(tx+dx,ty+dy)) return false;
+    }
+    for(const c of cables){
+      for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+        if(!inspectNeighbor(c.x+dx,c.y+dy)) return false;
+      }
+    }
+    for(const sk of sourceKeys) if(!seenSources.has(sk)) return false;
+    return true;
+  }
+  function pruneNetworkCache(getTile){
+    if(networkCache.size<=NETWORK_CACHE_CAP) return;
+    for(const [k,net] of networkCache){
+      const comma=k.indexOf(',');
+      const tx=+k.slice(0,comma), ty=+k.slice(comma+1);
+      if(!networkCacheEntryValid(tx,ty,net,getTile)) networkCache.delete(k);
+      if(networkCache.size<=NETWORK_CACHE_CAP) return;
+    }
+    while(networkCache.size>Math.floor(NETWORK_CACHE_CAP*0.82)){
+      const first=networkCache.keys().next();
+      if(first.done) break;
+      networkCache.delete(first.value);
+    }
+  }
   function networkFor(tx,ty,getTile){
     tx=Math.floor(tx); ty=Math.floor(ty);
     const tk=key(tx,ty);
     const cached=networkCache.get(tk);
-    if(cached && cached.rev===networkRev) return cached;
+    if(cached){
+      if(networkCacheEntryValid(tx,ty,cached,getTile)) return cached;
+      networkCache.delete(tk);
+    }
     const dynamos={seen:new Set(),list:[]};
     const sources={seen:new Set(),list:[]};
     const seen=new Set();
@@ -185,8 +363,13 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
         }
       });
     }
-    const net={rev:networkRev,dynamos:dynamos.list,sources:sources.list,cableCount:seen.size};
+    const cables=[...seen].map(id=>{
+      const comma=id.indexOf(',');
+      return {x:+id.slice(0,comma),y:+id.slice(comma+1)};
+    });
+    const net={rev:networkRev,dynamos:dynamos.list,sources:sources.list,cableCount:seen.size,cables};
     networkCache.set(tk,net);
+    pruneNetworkCache(getTile);
     return net;
   }
   function sourceEnergy(source,getTile,dynamo){
@@ -244,6 +427,7 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
       if(drained>=maxTake) break;
       drained+=drainSource(source,maxTake-drained,getTile,dynamo);
     }
+    if(drained>0) markNetworkActivity(net,drained,key(x,y));
     return drained;
   }
   function chargeBatteryAt(x,y,battery,dt,getTile,dynamo,opts){
@@ -319,6 +503,11 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
     const out=[];
     const seen=new Set();
     const world=MM.world && MM.world._world;
+    const cx=Math.floor(Number(originX)||0);
+    const stamp = world && typeof world.forEach==='function'
+      ? 'world:'+networkRev+':'+(Number(world.size)||0)
+      : 'scan:'+networkRev+':'+cx;
+    if(stamp===teleporterListStamp) return teleporterListCache.map(p=>({x:p.x,y:p.y}));
     if(world && typeof world.forEach==='function'){
       world.forEach((arr,id)=>{
         if(!arr || typeof arr.length!=='number') return;
@@ -336,9 +525,10 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
           out.push({x,y});
         }
       });
+      teleporterListStamp=stamp;
+      teleporterListCache=out.slice(0,4096).map(p=>({x:p.x,y:p.y}));
+      return out;
     }
-    if(out.length) return out;
-    const cx=Math.floor(Number(originX)||0);
     for(let x=cx-1800; x<=cx+1800; x++){
       for(let y=0; y<WORLD_H; y++){
         if(getSafe(getTile,x,y,T.AIR)!==T.TELEPORTER) continue;
@@ -349,6 +539,8 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
         out.push({x,y});
       }
     }
+    teleporterListStamp=stamp;
+    teleporterListCache=out.slice(0,4096).map(p=>({x:p.x,y:p.y}));
     return out;
   }
   function nearestTeleporter(tx,ty,dir,getTile){
@@ -358,6 +550,7 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
       if(p.x===tx && p.y===ty) continue;
       const dx=p.x-tx;
       if(dir>0 ? dx<=0 : dx>=0) continue;
+      if(getSafe(getTile,p.x,p.y,T.AIR)!==T.TELEPORTER) continue;
       const score=Math.abs(dx)*1000+Math.abs(p.y-ty);
       if(score<bestScore){ bestScore=score; best=p; }
     }
@@ -462,7 +655,8 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
     return true;
   }
   function update(dt,player,getTile,_setTile,opts){
-    if(!(dt>0) || !isFinite(dt)) return;
+    if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function') return;
+    decayWireActivity(dt,getTile);
     scanT-=dt;
     if(scanT<=0){
       scanT=PLAYER_SCAN_INTERVAL;
@@ -478,6 +672,18 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
       m.cooldown=Math.max(0,(m.cooldown||0)-dt);
       m.pulse=Math.max(0,(m.pulse||0)-dt*2.6);
       chargeFromNetwork(m,dt,getTile,opts && opts.dynamo);
+    }
+    if(machines.size>MACHINE_CAP){
+      const px=player && Number.isFinite(player.x) ? player.x : 0;
+      const py=player && Number.isFinite(player.y) ? player.y : 0;
+      const idle=[...machines.entries()]
+        .filter(([,m])=>m && (m.energy||0)<=0.001 && (m.pulse||0)<=0.001 && (m.cooldown||0)<=0.001)
+        .map(([k,m])=>({k,d:Math.abs((m.x||0)-px)+Math.abs((m.y||0)-py)}))
+        .sort((a,b)=>b.d-a.d);
+      for(let i=0; i<idle.length && machines.size>Math.floor(MACHINE_CAP*0.85); i++){
+        machines.delete(idle[i].k);
+        networkCache.delete(idle[i].k);
+      }
     }
     tryTeleport(player,getTile,opts||{});
   }
@@ -536,13 +742,25 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
   function draw(ctx,TILE,sx,sy,viewX,viewY,canDrawTile,getTile){
     if(!ctx) return;
     ensureVisibleMachines(sx,sy,viewX,viewY,getTile);
-    if(!machines.size) return;
+    if(!machines.size && !wireActivity.size) return;
     const now=((typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now())*0.006;
+    const visible=typeof canDrawTile==='function' ? canDrawTile : null;
+    if(wireActivity.size){
+      ctx.save();
+      for(const a of wireActivity.values()){
+        if(!a || a.x<sx-2 || a.x>sx+viewX+2 || a.y<sy-2 || a.y>sy+viewY+2) continue;
+        if(visible && !visible(a.x,a.y)) continue;
+        if(getSafe(getTile,a.x,a.y,T.AIR)!==T.COPPER_WIRE) continue;
+        const conn=cableConnections(a.x,a.y,getTile);
+        drawCableEnergy(ctx,TILE,a.x*TILE,a.y*TILE,conn,a.level||0,a.ttl||0,((a.x*73856093)^(a.y*19349663))>>>0,now+a.x*0.19+a.y*0.11);
+      }
+      ctx.restore();
+    }
     ctx.save();
     ctx.globalCompositeOperation='lighter';
     for(const m of machines.values()){
       if(!m || m.x<sx-2 || m.x>sx+viewX+2 || m.y<sy-2 || m.y>sy+viewY+2) continue;
-      if(canDrawTile && !canDrawTile(m.x,m.y)) continue;
+      if(visible && !visible(m.x,m.y)) continue;
       if(getSafe(getTile,m.x,m.y,T.AIR)!==T.TELEPORTER) continue;
       const px=m.x*TILE, py=m.y*TILE;
       const charge=Math.max(0,Math.min(1,(m.energy||0)/TELEPORTER_CAPACITY));
@@ -555,6 +773,7 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
     if(!isMachineNetworkTile(oldTile) && !isMachineNetworkTile(newTile)) return;
     networkRev++;
     networkCache.clear();
+    invalidateTeleporterSearch();
     const tx=Math.floor(x), ty=Math.floor(y);
     if(oldTile===T.TELEPORTER && newTile!==T.TELEPORTER) machines.delete(key(tx,ty));
     if(newTile===T.TELEPORTER) ensureMachine(tx,ty,MM.world && MM.world.getTile);
@@ -563,6 +782,7 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
     const list=[...machines.values()]
       .filter(m=>m && finiteTile(m.x,m.y) && (m.energy||0)>0.001)
       .sort((a,b)=>(a.x-b.x)||(a.y-b.y))
+      .slice(0,MACHINE_CAP)
       .map(m=>({x:m.x,y:m.y,energy:+(m.energy||0).toFixed(3)}));
     return {v:1,list};
   }
@@ -570,6 +790,7 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
     reset();
     if(!data || !Array.isArray(data.list)) return;
     for(const raw of data.list){
+      if(machines.size>=MACHINE_CAP) break;
       if(!raw || !finiteTile(raw.x,raw.y)) continue;
       const x=Math.floor(raw.x), y=Math.floor(raw.y);
       if(getTile && getSafe(getTile,x,y,T.AIR)!==T.TELEPORTER) continue;
@@ -580,7 +801,10 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
   function reset(){
     machines.clear();
     networkCache.clear();
+    wireActivity.clear();
+    wireMarkThrottle.clear();
     networkRev++;
+    invalidateTeleporterSearch();
     scanT=0;
   }
   function metrics(){
@@ -589,7 +813,7 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
       storedEnergy+=Math.max(0,m.energy||0);
       if((m.energy||0)>0.001) charged++;
     }
-    return {machines:machines.size, charged, storedEnergy:+storedEnergy.toFixed(2), networkRev};
+    return {machines:machines.size, charged, storedEnergy:+storedEnergy.toFixed(2), poweredWires:wireActivity.size, networkRev};
   }
   function debugCharge(x,y,amount,getTile){
     const m=ensureMachine(x,y,getTile || (MM.world && MM.world.getTile));
@@ -627,7 +851,7 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
     restore,
     reset,
     metrics,
-    _debug:{machines,networkCache,TELEPORTER_CAPACITY,TRAVEL_COST,CHARGE_RATE,debugCharge,debugSetEnergy,ensureMachine,networkFor}
+    _debug:{machines,networkCache,wireActivity,TELEPORTER_CAPACITY,MACHINE_CAP,TRAVEL_COST,CHARGE_RATE,debugCharge,debugSetEnergy,ensureMachine,networkFor}
   };
   MM.teleporters=api;
 })();

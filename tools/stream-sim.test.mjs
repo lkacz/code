@@ -72,6 +72,13 @@ const weaponItems={ flame:{weaponType:'flame', fireDps:6, fireRange:6.5},
 let equipped=null;
 MM.inventory={ equippedItem:()=>equipped, TIER_COLORS:{} };
 
+tiles=new Map(); weapons.reset(); fire.reset();
+weapons.update(NaN,getTile,setTile);
+weapons.update(-1,getTile,setTile);
+fire.update(getTile,setTile,NaN);
+assert.equal(weapons.metrics().puffs, 0, 'invalid stream ticks do not create or corrupt puffs');
+assert.equal(weapons.metrics().arrows, 0, 'invalid stream ticks do not create or corrupt arrows');
+
 function withHeroDamageProbe(fn){
   let damage=0, cause=null;
   const oldWindowPlayer=globalThis.player;
@@ -109,6 +116,33 @@ for(let i=0;i<30;i++) weapons.update(1/60, getTile, setTile);
 assert.equal(getTile(4,0), T.AIR, 'arrow shatters fragile glass into air');
 assert.equal(weapons.metrics().arrows, 0, 'arrow is consumed by shattering glass');
 assert.ok(glassShards>=1, 'arrow impact spawns broken glass shards');
+
+tiles=new Map(); weapons.reset(); fire.reset();
+MM.wind={ speedAt(){ return 5; } };
+equipped=weaponItems.bow;
+weapons.fireHeld(player, 8, 0.5, 1/60);
+let arrow=weapons._debug.arrows[0];
+const arrowVx0=arrow.vx;
+weapons.update(0.5, getTile, setTile);
+arrow=weapons._debug.arrows[0];
+assert.ok(arrow && arrow.vx>arrowVx0, 'wind bends flying arrows without touching electric beams');
+delete MM.wind;
+
+function flamePuffXAfter(windSpeed){
+  tiles=new Map(); weapons.reset(); fire.reset();
+  randomSeed=0xabcddcba;
+  if(windSpeed) MM.wind={ speedAt(){ return windSpeed; } };
+  else delete MM.wind;
+  equipped=weaponItems.flame;
+  weapons.fireHeld(player, 8, 0.5, 1/60);
+  weapons.update(0.35, getTile, setTile);
+  const puff=weapons._debug.puffs.find(p=>p.kind==='flame');
+  return puff ? puff.x : -Infinity;
+}
+const calmFlameX=flamePuffXAfter(0);
+const windyFlameX=flamePuffXAfter(5);
+assert.ok(windyFlameX>calmFlameX+0.25, 'wind visibly carries stream puffs such as flame and gas');
+delete MM.wind;
 
 for(const kind of ['flame','hose','gas']){
   tiles=new Map(); weapons.reset(); fire.reset(); glassShards=0;

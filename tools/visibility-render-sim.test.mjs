@@ -3,6 +3,7 @@
 // draw. Once a tile has been discovered, remembered world contents may draw there;
 // the main fog overlay is responsible for dimming non-current memory.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 globalThis.window = globalThis;
 globalThis.MM = {};
@@ -152,5 +153,15 @@ assert.equal(undiscoveredMobCtx.calls.filter(c=>c==='fillRect').length, 0, 'undi
 const rememberedMobCtx = makeCtx();
 mobs.draw(rememberedMobCtx,20,0,0,1,(x,y)=>x===5 && y===5);
 assert.ok(rememberedMobCtx.calls.includes('fillRect'), 'remembered animals still draw');
+
+const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+assert.match(mainSource, /function drawSandGrains\(g,px,py,h\)/, 'sand has a dedicated grain renderer');
+const sandBranchStart = mainSource.indexOf('} else if(t===T.SAND){');
+const sandBranchEnd = mainSource.indexOf('} else if(t===T.STONE){', sandBranchStart);
+assert.ok(sandBranchStart > 0 && sandBranchEnd > sandBranchStart, 'sand material branch is present');
+const sandBranch = mainSource.slice(sandBranchStart, sandBranchEnd);
+assert.ok(!sandBranch.includes('drawBlockBevel'), 'sand does not draw explicit tile-grid bevels');
+assert.match(sandBranch, /drawSandGrains\(g,px,py,h\)/, 'sand branch uses dense grain detail');
+assert.match(mainSource, /else if\(t===T\.SAND\) amp=5;/, 'sand per-tile shade variance is low enough to avoid block grid patches');
 
 console.log('visibility-render-sim: all assertions passed');

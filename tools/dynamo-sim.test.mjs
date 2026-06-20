@@ -12,6 +12,7 @@ const { dynamo } = await import('../src/engine/dynamo.js');
 const { water } = await import('../src/engine/water.js');
 const { gases } = await import('../src/engine/gases.js');
 const { fire } = await import('../src/engine/fire.js');
+const { wind } = await import('../src/engine/wind.js');
 
 let tiles;
 function key(x,y){ return x+','+y; }
@@ -36,11 +37,13 @@ function resetWorld(){
   gases.reset();
   fire.reset();
   dynamo.reset();
+  wind.reset();
   MM.world={getTile,setTile,setTransientTile:setTile};
   MM.water=water;
   MM.gases=gases;
   MM.fire=fire;
   MM.dynamo=dynamo;
+  MM.wind=wind;
 }
 function placeDynamo(cx,y,orientation='horizontal'){
   const cells=dynamo.plannedCells(cx,y,orientation);
@@ -113,6 +116,44 @@ assert.equal(getTile(-1,5),T.WATER,'unpressurized surface water does not creep t
 assert.equal(getTile(1,5),T.AIR,'dry side of the dam stays dry without pressure');
 assert.equal(dynamo.metrics().storedEnergy,0,'unpressurized water produces no dam-turbine energy');
 
+// A vertical dynamo can also act as a small wind turbine. It only charges when
+// local exposed wind is substantial, so altitude matters and blocked intakes do
+// not produce free energy.
+resetWorld();
+placeDynamo(0,24,'vertical');
+wind.setOverride(2.4);
+for(let i=0; i<60*12; i++) dynamo.update(1/60,getTile);
+const highWindEnergy=dynamo.metrics().storedEnergy;
+assert.ok(highWindEnergy>0.012,'moderate wind barely charges a vertical dynamo high in the map');
+assert.ok(highWindEnergy<0.35,'wind turbine output stays deliberately inefficient');
+assert.equal(dynamo._debug.machines.get('0,24').lastKind,'wind','wind power is recorded as a distinct dynamo source');
+
+resetWorld();
+placeDynamo(0,104,'vertical');
+wind.setOverride(2.4);
+for(let i=0; i<60*12; i++) dynamo.update(1/60,getTile);
+assert.equal(dynamo.metrics().storedEnergy,0,'the same moderate wind is too weak near ground level');
+
+resetWorld();
+placeDynamo(0,104,'vertical');
+wind.setOverride(5.0);
+for(let i=0; i<60*4; i++) dynamo.update(1/60,getTile);
+assert.ok(dynamo.metrics().storedEnergy>0.035,'severe ground wind can charge a vertical dynamo a little');
+assert.ok(dynamo.metrics().storedEnergy<0.30,'severe wind turbine output remains nerfed');
+
+resetWorld();
+placeDynamo(0,24,'horizontal');
+wind.setOverride(5.0);
+for(let i=0; i<60*4; i++) dynamo.update(1/60,getTile);
+assert.equal(dynamo.metrics().storedEnergy,0,'horizontal dynamos do not harvest wind');
+
+resetWorld();
+placeDynamo(0,24,'vertical');
+setTile(-1,24,T.STONE);
+wind.setOverride(5.0);
+for(let i=0; i<60*4; i++) dynamo.update(1/60,getTile);
+assert.equal(dynamo.metrics().storedEnergy,0,'blocked vertical dynamo intake prevents wind charging');
+
 // An orphan slot is not pass-through and does not generate power.
 resetWorld();
 setTile(0,5,T.DYNAMO_SLOT);
@@ -143,6 +184,53 @@ assert.equal(getTile(0,4),T.HOT_AIR,'hot air exits above the slot');
 assert.ok(dynamo.metrics().storedEnergy>0,'hot air adds stored energy');
 assert.ok(dynamo.metrics().storedEnergy<steamEnergy,'hot air output is weaker than steam output');
 const snap=dynamo.snapshot();
+
+// Powered gas is lossy at turbines: about 10% is consumed so one source cannot
+// feed an arbitrarily long chain of dynamos forever.
+resetWorld();
+placeDynamo(0,5);
+let turbineGasLost=0, turbineGasPassed=0;
+for(let i=0; i<80; i++){
+  setTile(0,4,T.AIR);
+  setTile(0,6,T.STEAM);
+  const rec=gases._debug.active.get('0,6');
+  if(rec) rec.moveT=0;
+  gases.update(0.05,getTile,setTile,{x:20,y:20});
+  if(getTile(0,4)===T.STEAM){
+    turbineGasPassed++;
+    setTile(0,4,T.AIR);
+  } else {
+    turbineGasLost++;
+  }
+  setTile(0,6,T.AIR);
+}
+assert.ok(turbineGasLost>=4 && turbineGasLost<=14, 'powered steam sometimes vanishes at dynamos ('+turbineGasLost+'/80)');
+assert.ok(turbineGasPassed>turbineGasLost, 'most powered steam still passes through the turbine');
+assert.ok(dynamo.metrics().storedEnergy>0,'lossy turbine gas still charges the dynamo');
+
+resetWorld();
+for(const y of [15,13,11,9,7]) placeDynamo(0,y);
+let chainSurvivors=0;
+let chainLost=0;
+for(let i=0; i<120; i++){
+  for(let y=4; y<=16; y+=2) setTile(0,y,T.AIR);
+  setTile(0,16,T.STEAM);
+  const first=gases._debug.active.get('0,16');
+  if(first) first.moveT=0;
+  for(let step=0; step<8; step++){
+    for(const rec of gases._debug.active.values()){
+      if(rec && rec.t===T.STEAM) rec.moveT=0;
+    }
+    gases.update(0.05,getTile,setTile,{x:20,y:20});
+  }
+  let reachedTop=false;
+  for(let y=0; y<=6; y++) if(getTile(0,y)===T.STEAM) reachedTop=true;
+  if(reachedTop) chainSurvivors++;
+  else chainLost++;
+  for(let y=0; y<=16; y++) if(getTile(0,y)===T.STEAM) setTile(0,y,T.AIR);
+}
+assert.ok(chainLost>25, 'stacked dynamos attenuate a steam chain ('+chainLost+'/120 lost before the top)');
+assert.ok(chainSurvivors>35, 'stacked dynamos do not consume every steam cell ('+chainSurvivors+'/120 reached the top)');
 
 // Exposed lava emits hot air slowly; that hot air can charge a dynamo above it.
 resetWorld();
@@ -209,6 +297,14 @@ assert.match(mainSrc, /function canDynamoCellReplace\(cell,cur\)/, 'dynamo place
 assert.match(mainSrc, /cell\.role==='slot'[\s\S]*cur===T\.WATER/, 'dynamo slot may be placed into existing water');
 assert.match(mainSrc, /function dynamoCellLabel\(cell\)/, 'dynamo placement names the blocked structure cell');
 assert.match(mainSrc, /function notifyStructureTileChanged\(x,y,oldTile,newTile\)/, 'machine tile edits wake dependent simulations');
+assert.doesNotMatch(mainSrc, /\b(?:DYNAMO|SOLAR|TELEPORTERS|GASES)\.onTileChanged\b/, 'main delegates machine/gas lifecycle hooks to WORLD.setTile');
+{
+	const notifyBody = mainSrc.match(/function notifyStructureTileChanged\(x,y,oldTile,newTile\)\{([\s\S]*?)\n\}/)?.[1] || '';
+	assert.doesNotMatch(notifyBody, /DYNAMO\.onTileChanged|SOLAR\.onTileChanged|TELEPORTERS\.onTileChanged|GASES\.onTileChanged/, 'world.setTile owns machine/gas lifecycle notifications without duplicate main-layer calls');
+  assert.match(notifyBody, /VOLCANO\.onTileChanged/, 'main-layer edit notifications still wake volcano logic');
+  assert.match(notifyBody, /FALLING\.recheckNeighborhood/, 'main-layer edit notifications still wake falling-structure checks');
+  assert.match(notifyBody, /WATER\.onTileChanged/, 'main-layer edit notifications still wake water simulation');
+}
 assert.match(mainSrc, /notifyStructureTileChanged\(cell\.x,cell\.y,cell\.newId,cell\.oldId\)/, 'dynamo undo wakes dependent simulations');
 assert.match(mainSrc, /Dynamo wymaga podparcia obudowy/, 'dynamo placement explains casing support failures');
 assert.match(mainSrc, /ctx\.fillText\(text,lx\+2,ly-2\)/, 'placement preview renders the blocking reason beside the ghost');
@@ -223,6 +319,9 @@ assert.match(dynamoSrc, /function energyAt\(x,y,getTile\)/, 'dynamo exposes stor
 assert.match(dynamoSrc, /function drainAt\(x,y,amount,getTile\)/, 'dynamo exposes stored-energy drain access for powered devices');
 assert.match(dynamoSrc, /for\(let i=0; i<4; i\+\+\)/, 'dynamo battery indicator uses four charge lines');
 assert.match(dynamoSrc, /ensureVisibleMachines\(sx,sy,viewX,viewY,getTile\)/, 'visible dynamos materialize empty battery state for drawing');
+const gasesSrc = await readFile(new URL('../src/engine/gases.js', import.meta.url), 'utf8');
+assert.match(gasesSrc, /const DYNAMO_POWERED_GAS_LOSS_CHANCE = 0\.10/, 'powered gas has a 10% turbine loss chance');
+assert.match(gasesSrc, /maybeConsumePoweredGas\(g,nx,ny,nx,ty,getTile,setTile\)/, 'gas pass-through may consume steam or hot air after powering a dynamo');
 
 const uiSrc = await readFile(new URL('../src/engine/ui.js', import.meta.url), 'utf8');
 assert.match(uiSrc, /function injectDynamoDebugPanel\(actions, menuPanel\)/, 'ui exposes a dynamo debug panel injector');

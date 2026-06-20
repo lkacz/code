@@ -204,7 +204,10 @@
     ctx.globalAlpha=alpha;
     let x=scroll%img.width;
     if(x>0) x-=img.width;
-    for(; x<W; x+=img.width) ctx.drawImage(img,Math.round(x),Math.round(y));
+    const drawY=Math.round(y);
+    const dpr=(typeof window!=='undefined' && Number.isFinite(window.devicePixelRatio)) ? Math.max(1,Math.min(3,window.devicePixelRatio||1)) : 1;
+    const snap=(v)=>Math.round(v*dpr)/dpr;
+    for(; x<W; x+=img.width) ctx.drawImage(img,snap(x),drawY);
   }
 
   // Distant devastated-city silhouettes. Generated once per layer and repeated
@@ -318,6 +321,53 @@
     duskTop:blendColor(p1.duskTop,p2.duskTop,t), duskBot:blendColor(p1.duskBot,p2.duskBot,t),
     nightTop:blendColor(p1.nightTop,p2.nightTop,t), nightBot:blendColor(p1.nightBot,p2.nightBot,t),
     mount:[0,1,2].map(i=>blendColor(p1.mount[i],p2.mount[i],t)) };
+  }
+  const SEASON_TINTS={
+    spring:{color:'#7ecf8a',alpha:0.020},
+    summer:{color:'#ffd06a',alpha:0.018},
+    autumn:{color:'#d98942',alpha:0.034},
+    winter:{color:'#d9efff',alpha:0.046}
+  };
+  function finite(v,fallback){ return Number.isFinite(+v) ? +v : fallback; }
+  function currentSeasonMetrics(){
+    const seasons=window.MM && window.MM.seasons;
+    if(!seasons || typeof seasons.metrics!=='function') return null;
+    try{ return seasons.metrics() || null; }catch(e){ return null; }
+  }
+  function seasonTintSpec(id){ return SEASON_TINTS[id] || null; }
+  function blendSeasonTint(a,b,t){
+    if(!a) return b || null;
+    if(!b) return a || null;
+    const u=clamp(finite(t,0),0,1);
+    return {color:lerpColor(a.color,b.color,u),alpha:lerp(a.alpha,b.alpha,u)};
+  }
+  function seasonVisualTint(metrics){
+    const m=metrics || currentSeasonMetrics();
+    if(!m || !m.season) return null;
+    const current=seasonTintSpec(m.season) || seasonTintSpec(m.to) || seasonTintSpec(m.from);
+    if(!current) return null;
+    const transition = !!(m.transition && m.from && m.to && m.from!==m.to);
+    let spec=current;
+    if(transition){
+      spec=blendSeasonTint(seasonTintSpec(m.from),seasonTintSpec(m.to),m.blend) || current;
+    }
+    let alpha=finite(spec.alpha,0.02);
+    alpha += finite(m.snowStrength,0) * 0.014;
+    alpha += finite(m.leafDropStrength,0) * 0.005;
+    alpha += finite(m.leafGrowStrength,0) * 0.003;
+    alpha *= transition ? 0.92 : 1;
+    alpha *= (lastCycleInfo && lastCycleInfo.isDay) ? 1 : 0.68;
+    alpha=clamp(alpha,0,0.075);
+    if(alpha<=0.001) return null;
+    return {
+      color:spec.color,
+      alpha:+alpha.toFixed(4),
+      season:m.season,
+      from:m.from || m.season,
+      to:m.to || m.season,
+      blend:+clamp(finite(m.blend,1),0,1).toFixed(4),
+      transition
+    };
   }
   function computeCityInfluence(x,WORLDGEN){
     if(!WORLDGEN || !WORLDGEN.cityAt) return 0;
@@ -433,16 +483,54 @@
       s.detailAmp||0
     ].join('|');
   }
-  function cachedBiomeBlend(x,WORLDGEN){
-    if(!WORLDGEN || !WORLDGEN.biomeType) return computeBiomeBlend(x,WORLDGEN);
-    const qx=Math.round(x/4);
+  function cachedBiomeBlendAt(qx,WORLDGEN){
     const key=worldSignature(WORLDGEN)+'|'+qx;
     const hit=biomeBlendCache.get(key);
     if(hit) return hit;
     if(biomeBlendCache.size>BIOME_BLEND_CACHE_CAP) biomeBlendCache.clear();
-    const blend=computeBiomeBlend(qx*4,WORLDGEN);
+    const blend=computeBiomeBlend(qx,WORLDGEN);
     biomeBlendCache.set(key,blend);
     return blend;
+  }
+  function interpolateVolcanoCue(a,b,t){
+    a=a || {amount:0,center:null,distance:Infinity,radius:0};
+    b=b || {amount:0,center:null,distance:Infinity,radius:0};
+    const amount=lerp(a.amount||0,b.amount||0,t);
+    const ac=typeof a.center==='number', bc=typeof b.center==='number';
+    let center=null;
+    if(ac && bc) center=lerp(a.center,b.center,t);
+    else if(ac) center=a.center;
+    else if(bc) center=b.center;
+    const ad=Number.isFinite(a.distance)?a.distance:1e9;
+    const bd=Number.isFinite(b.distance)?b.distance:1e9;
+    return {
+      amount,
+      center,
+      distance:lerp(ad,bd,t),
+      radius:lerp(a.radius||0,b.radius||0,t)
+    };
+  }
+  function interpolateBiomeBlend(a,b,t){
+    if(!b || t<=0) return a;
+    if(t>=1) return b;
+    const u=smoothstep(0,1,t);
+    const base=u<0.5 ? a : b;
+    return Object.assign({}, base, {
+      pal:blendPalette(a.pal,b.pal,u),
+      city:lerp(a.city||0,b.city||0,u),
+      relief:lerp(a.relief||0.46,b.relief||0.46,u),
+      volcano:interpolateVolcanoCue(a.volcano,b.volcano,u)
+    });
+  }
+  function cachedBiomeBlend(x,WORLDGEN){
+    if(!WORLDGEN || !WORLDGEN.biomeType) return computeBiomeBlend(x,WORLDGEN);
+    const step=4;
+    const left=Math.floor(x/step)*step;
+    const t=(x-left)/step;
+    const a=cachedBiomeBlendAt(left,WORLDGEN);
+    if(t<=0.0001) return a;
+    const b=cachedBiomeBlendAt(left+step,WORLDGEN);
+    return interpolateBiomeBlend(a,b,t);
   }
   function skyGradientFromPalette(pal,cycleT){
     const dayFrac=DAY_FRAC; const twilightBand=TWILIGHT_BAND; const extend = twilightBand*2; let top, bottom;
@@ -479,6 +567,13 @@
 
   let lastCycleInfo={cycleT:0,isDay:true,tDay:0,twilightBand:TWILIGHT_BAND};
   let moonPhaseIndex=0, lastPhaseCycle=-1; const MOON_PHASES=8;
+  function setCachedCycleInfo(cycleT){
+    const t=((cycleT%1)+1)%1;
+    const isDay=t<DAY_FRAC;
+    const tDay=isDay? (t/DAY_FRAC) : ((t-DAY_FRAC)/(1-DAY_FRAC));
+    lastCycleInfo={cycleT:t,isDay,tDay,twilightBand:TWILIGHT_BAND};
+    return lastCycleInfo;
+  }
 
   background.draw = function(ctx,W,H,playerX,TILE,WORLDGEN){
     initStars();
@@ -499,7 +594,7 @@
       g2.addColorStop(0, 'rgba(0,0,0,0)'); g2.addColorStop(0.65, hexToRgba(hueCol, isDay?0.06:0.08)); g2.addColorStop(1, hexToRgba(hueCol, isDay?0.12:0.16));
       ctx.fillStyle=g2; ctx.fillRect(0,hazeTopY,W,hazeBotY-hazeTopY);
     })();
-    const isDay=cycleT<DAY_FRAC; const tDay=isDay? (cycleT/DAY_FRAC) : ((cycleT-DAY_FRAC)/(1-DAY_FRAC)); lastCycleInfo={cycleT,isDay,tDay,twilightBand:TWILIGHT_BAND};
+    const infoNow=setCachedCycleInfo(cycleT); const isDay=infoNow.isDay; const tDay=infoNow.tDay;
     // Stars
     function smoothEdge(x,band){ if(x<=0) return 0; if(x>=band) return 1; const n=x/band; return n*n*(3-2*n); }
     const smoothBand = TWILIGHT_BAND*1.4; const edgeIn = smoothEdge(tDay, smoothBand); const edgeOut = smoothEdge(1 - tDay, smoothBand); let starAlpha = 1 - edgeIn*edgeOut; if(isDay) starAlpha *= 0.9; else starAlpha=1;
@@ -537,7 +632,38 @@
   };
 
   background.applyTint = function(ctx,W,H){
-    const info=lastCycleInfo; const dayFrac=DAY_FRAC; const twilight=info.twilightBand; let a=0, col='#000'; if(info.isDay){ if(info.tDay<twilight){ a = (1 - (info.tDay/twilight)) * 0.10; col='#ff9a4a'; } else if(info.tDay>1-twilight){ a = ((info.tDay-(1-twilight))/twilight) * 0.10; col='#ff8240'; } } else { const nightT = (info.cycleT - dayFrac)/(1-dayFrac); a = 0.12 + 0.13 * Math.sin(nightT*Math.PI); col = '#061425'; } if(a>0.001){ ctx.save(); ctx.globalAlpha=a; ctx.fillStyle=col; ctx.fillRect(0,0,W,H); ctx.restore(); }
+    const info=lastCycleInfo;
+    const dayFrac=DAY_FRAC;
+    const twilight=info.twilightBand;
+    let a=0, col='#000';
+    if(info.isDay){
+      if(info.tDay<twilight){
+        a = (1 - (info.tDay/twilight)) * 0.10;
+        col='#ff9a4a';
+      } else if(info.tDay>1-twilight){
+        a = ((info.tDay-(1-twilight))/twilight) * 0.10;
+        col='#ff8240';
+      }
+    } else {
+      const nightT = (info.cycleT - dayFrac)/(1-dayFrac);
+      a = 0.12 + 0.13 * Math.sin(nightT*Math.PI);
+      col = '#061425';
+    }
+    if(a>0.001){
+      ctx.save();
+      ctx.globalAlpha=a;
+      ctx.fillStyle=col;
+      ctx.fillRect(0,0,W,H);
+      ctx.restore();
+    }
+    const seasonTint=seasonVisualTint();
+    if(seasonTint){
+      ctx.save();
+      ctx.globalAlpha=seasonTint.alpha;
+      ctx.fillStyle=seasonTint.color;
+      ctx.fillRect(0,0,W,H);
+      ctx.restore();
+    }
   };
 
   // Live day/night info for other systems (weather/clouds). Reflects the debug time
@@ -550,22 +676,27 @@
   background._debugSkyPalettes = SKY_PALETTES;
   background._debugStarPositions = starPositions;
   background._debugStarLayerCount = function(){ initStars(); return {dome:stars.length, near:0}; };
+  background._debugSeasonTint = seasonVisualTint;
 
   // Save/load support for time-of-day and moon phase
   background.exportState = function(){
     const now=performance.now();
-    const cycleT=((now-cycleStart)%CYCLE_DURATION)/CYCLE_DURATION;
+    const cycleT=(((now-cycleStart)%CYCLE_DURATION)+CYCLE_DURATION)%CYCLE_DURATION/CYCLE_DURATION;
     return { cycleT, moonPhaseIndex, lastPhaseCycle };
   };
   background.importState = function(s){
     if(!s) return;
     if(typeof s.cycleT==='number'){
       const now=performance.now();
-      cycleStart = now - s.cycleT*CYCLE_DURATION;
+      const cycleT=((s.cycleT%1)+1)%1;
+      cycleStart = now - cycleT*CYCLE_DURATION;
+      setCachedCycleInfo(cycleT);
     }
     if(typeof s.moonPhaseIndex==='number') moonPhaseIndex = s.moonPhaseIndex % MOON_PHASES;
     if(typeof s.lastPhaseCycle==='number') lastPhaseCycle = s.lastPhaseCycle;
   };
+  background.snapshot = background.exportState;
+  background.restore = background.importState;
 
   MM.background = background;
 })();

@@ -1,5 +1,5 @@
 // Cape physics extracted
-import { MOVE, CAPE } from '../constants.js';
+import { MOVE, CAPE, T } from '../constants.js';
 window.MM = window.MM || {};
 (function(){
   const capeAPI = {};
@@ -18,19 +18,128 @@ window.MM = window.MM || {};
   };
   function getCurrentCustomization(){ return (window.MM && MM.customization) || {capeStyle:'classic',capeColor:'#b91818'}; }
   function currentStyle(){ const c=getCurrentCustomization(); return CAPE_STYLES[c.capeStyle]||CAPE_STYLES.classic; }
-  function init(player){ const segs=CAPE.SEGMENTS; cape.length=0; for(let i=0;i<segs;i++) cape.push({x:player.x,y:player.y}); }
-  function update(player,dt,getTile,isSolid){ if(!cape.length) return; const segs=CAPE.SEGMENTS; const st=currentStyle(); const mass=st.mass||1; const stiffness=st.stiffness||6; const windMul=st.wind||1; const anchorX=player.x; const anchorY=player.y - player.h/2 + player.h*CAPE.ANCHOR_FRAC; const speed=Math.min(1,Math.abs(player.vx)/MOVE.MAX); const time=performance.now(); const targetFlare=(0.18+0.55*speed)*st.flare; const segLen=0.16; cape[0].x=anchorX; cape[0].y=anchorY; for(let i=1;i<segs;i++){ const prev=cape[i-1]; const seg=cape[i]; const backDirX=-player.facing; const t=i/(segs-1); const flareFactor = t*targetFlare; const wind=(Math.sin(time/400 + i*0.7)*0.02 + Math.sin(time/1300 + i)*0.01) * windMul; let idleSway=(1-speed)*Math.sin(time/700 + i)*0.015; idleSway/=mass; const desiredX=prev.x + backDirX*flareFactor + wind; // heavier = more droop
-      const baseDrop=0.05 + t*0.15 + t*0.06*(mass-1); // extra drop scales with mass
-      const desiredY=prev.y + baseDrop + idleSway;
-      const k=Math.min(1, dt*stiffness);
-      seg.x += (desiredX - seg.x)*k;
-      seg.y += (desiredY - seg.y)*k;
+  function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+  function sign(v){ return v<0?-1:(v>0?1:0); }
+  function getSafe(getTile,x,y,fallback){
+    try{ return typeof getTile==='function' ? getTile(x,y) : fallback; }catch(e){ return fallback; }
+  }
+  function isFluidAt(x,y,getTile){
+    const t=getSafe(getTile,Math.floor(x),Math.floor(y),T.AIR);
+    return t===T.WATER || t===T.LAVA;
+  }
+  function sampleWind(player,getTile){
+    try{
+      const W=window.MM && MM.wind;
+      if(!W || !player) return 0;
+      const y=player.y - player.h*0.35;
+      if(typeof W.speedAt==='function') return W.speedAt(player.x,y,getTile);
+      if(typeof W.speed==='function') return W.speed();
+    }catch(e){}
+    return 0;
+  }
+  function init(player){
+    const segs=CAPE.SEGMENTS;
+    cape.length=0;
+    for(let i=0;i<segs;i++) cape.push({x:player.x,y:player.y,vx:0,vy:0});
+  }
+  function constrainLength(segLen,passes){
+    const segs=CAPE.SEGMENTS;
+    for(let it=0; it<passes; it++){
+      for(let i=1;i<segs;i++){
+        const a=cape[i-1], b=cape[i];
+        let dx=b.x-a.x, dy=b.y-a.y;
+        const d=Math.hypot(dx,dy)||0.0001;
+        const excess=d-segLen;
+        if(Math.abs(excess)>0.0005){
+          const k=excess/d;
+          b.x -= dx*k;
+          b.y -= dy*k;
+        }
+      }
     }
-    for(let it=0; it<2; it++){ for(let i=1;i<segs;i++){ const a=cape[i-1], b=cape[i]; let dx=b.x-a.x, dy=b.y-a.y; let d=Math.hypot(dx,dy)||0.0001; const excess=d-segLen; if(Math.abs(excess)>0.0005){ const k=excess/d; b.x -= dx*k; b.y -= dy*k; } } }
-    for(let i=1;i<segs;i++){ const seg=cape[i]; const tx=Math.floor(seg.x); const ty=Math.floor(seg.y); if(isSolid(getTile(tx,ty))){ seg.y=ty-0.02; const bc=tx+0.5; if(seg.x>bc) seg.x=Math.min(seg.x, tx+1.02); else seg.x=Math.max(seg.x, tx-0.02); } }
-    for(let i=1;i<segs;i++){ const a=cape[i-1], b=cape[i]; let dx=b.x-a.x, dy=b.y-a.y; let d=Math.hypot(dx,dy)||0.0001; const excess=d-segLen; if(excess>0){ const k=excess/d; b.x -= dx*k; b.y -= dy*k; } }
-    for(let i=1;i<segs;i++){ const a=cape[i-1], b=cape[i]; if(player.facing>0 && b.x>a.x) b.x=a.x; if(player.facing<0 && b.x<a.x) b.x=a.x; }
-    if(speed<0.1){ for(let i=1;i<segs;i++) cape[i].y += dt*0.4*mass*(i/(segs-1)); }
+  }
+  function collideSegments(getTile,isSolid){
+    if(typeof getTile!=='function' || typeof isSolid!=='function') return;
+    for(let i=1;i<cape.length;i++){
+      const seg=cape[i];
+      const tx=Math.floor(seg.x), ty=Math.floor(seg.y);
+      const tile=getSafe(getTile,tx,ty,T.AIR);
+      if(tile===T.WATER || tile===T.LAVA || !isSolid(tile)) continue;
+      seg.y=ty-0.02;
+      seg.vy=Math.min(0,seg.vy||0);
+      const bc=tx+0.5;
+      if(seg.x>bc) seg.x=Math.min(seg.x, tx+1.02);
+      else seg.x=Math.max(seg.x, tx-0.02);
+      seg.vx*=0.35;
+    }
+  }
+  function update(player,dt,getTile,isSolid){
+    if(!cape.length || !player || !(dt>0) || !isFinite(dt)) return;
+    dt=clamp(dt,0.001,0.05);
+    const segs=CAPE.SEGMENTS;
+    const st=currentStyle();
+    const mass=st.mass||1;
+    const stiffness=st.stiffness||6;
+    const windMul=st.wind||1;
+    const anchorX=player.x;
+    const anchorY=player.y - player.h/2 + player.h*CAPE.ANCHOR_FRAC;
+    const speed=clamp(Math.abs(player.vx||0)/MOVE.MAX,0,1);
+    const verticalSpeed=clamp((player.vy||0)/12,-1.4,1.4);
+    const airborne=player.onGround===false;
+    const fluid=isFluidAt(anchorX,anchorY,getTile);
+    const time=performance.now();
+    const rawWind=sampleWind(player,getTile);
+    const windSpeed=rawWind*(fluid?0.18:1);
+    const windMag=clamp(Math.abs(windSpeed)/5.2,0,1);
+    const windDir=sign(windSpeed);
+    const motionTrailDir=Math.abs(player.vx||0)>0.18 ? -sign(player.vx) : -sign(player.facing||1);
+    const targetFlare=(0.18+0.56*speed+0.22*windMag+(airborne?0.08:0))*st.flare;
+    const segLen=0.16;
+    const damp=Math.pow(fluid?0.08:0.26,dt);
+    cape[0].x=anchorX;
+    cape[0].y=anchorY;
+    cape[0].vx=player.vx||0;
+    cape[0].vy=player.vy||0;
+    for(let i=1;i<segs;i++){
+      const prev=cape[i-1];
+      const seg=cape[i];
+      if(!Number.isFinite(seg.vx)) seg.vx=0;
+      if(!Number.isFinite(seg.vy)) seg.vy=0;
+      const t=i/(segs-1);
+      const flareFactor=t*targetFlare;
+      const naturalWave=(Math.sin(time/400 + i*0.7)*0.02 + Math.sin(time/1300 + i)*0.01) * windMul * (1+windMag*1.75) * (fluid?0.25:1);
+      const gustWave=windDir*Math.sin(time/170 + i*1.35)*0.035*windMag*windMul;
+      const windPush=windSpeed*0.105*windMul*(0.35+t*0.9);
+      const movementDrag=motionTrailDir*flareFactor;
+      let idleSway=(1-speed)*Math.sin(time/700 + i)*0.015;
+      idleSway/=mass;
+      const verticalTrail=-verticalSpeed*0.075*t*(airborne?1.25:0.55);
+      const baseDrop=0.05 + t*0.15 + t*0.06*(mass-1) + (fluid?0.04*t:0);
+      const lift=windMag*0.035*t*windMul*(fluid?0.2:1);
+      const desiredX=prev.x + movementDrag + naturalWave + gustWave + windPush;
+      const desiredY=prev.y + baseDrop + idleSway + verticalTrail - lift + Math.sin(time/230+i*0.9)*0.012*windMag*windMul*(fluid?0.25:1);
+      const k=clamp(dt*stiffness*(fluid?0.55:1),0,1);
+      const nx=seg.x + (desiredX - seg.x)*k;
+      const ny=seg.y + (desiredY - seg.y)*k;
+      seg.vx=(seg.vx*damp) + (nx-seg.x)/dt*0.12;
+      seg.vy=(seg.vy*damp) + (ny-seg.y)/dt*0.12;
+      seg.x=nx + seg.vx*dt*0.18;
+      seg.y=ny + seg.vy*dt*0.18;
+    }
+    constrainLength(segLen,3);
+    collideSegments(getTile,isSolid);
+    constrainLength(segLen,1);
+    const facing=sign(player.facing||1);
+    const forwardWind=(windDir===facing) ? windMag : 0;
+    const forwardSlack=0.015 + forwardWind*0.18 + speed*0.025;
+    for(let i=1;i<segs;i++){
+      const a=cape[i-1], b=cape[i];
+      if(facing>0 && b.x>a.x+forwardSlack) b.x=a.x+forwardSlack;
+      if(facing<0 && b.x<a.x-forwardSlack) b.x=a.x-forwardSlack;
+    }
+    if(speed<0.1 && !fluid){
+      for(let i=1;i<segs;i++) cape[i].y += dt*0.32*mass*(i/(segs-1));
+    }
   }
   function draw(ctx,TILE){ if(!cape.length) return; const segs=CAPE.SEGMENTS; const style=currentStyle(); if(leftPts.length!==segs) { leftPts = new Array(segs); rightPts = new Array(segs); }
     // compute width profile possibly style-specific waveform
@@ -92,6 +201,7 @@ window.MM = window.MM || {};
   capeAPI._segments = cape;
   capeAPI.styles = Object.keys(CAPE_STYLES);
   capeAPI.getStyle = function(id){ return Object.assign({}, CAPE_STYLES[id]||CAPE_STYLES.classic); };
+  capeAPI._debug = { sampleWind };
   MM.cape = capeAPI;
 })();
 // ESM export (progressive migration)

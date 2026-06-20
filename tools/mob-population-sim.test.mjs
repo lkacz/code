@@ -27,6 +27,20 @@ function getTile(x,y){
 }
 const player={x:0,y:29,hp:100,maxHp:100,vx:0,vy:0};
 globalThis.player=player;
+MM.seasons = {
+  _season: 'spring',
+  profile(){ return {id:this._season, animalSpawnMult:this._season==='winter'?0.34:1}; },
+  metrics(){ return {season:this._season}; }
+};
+const speciesDebug=mobs._debugSpecies();
+const ecologyDebug=mobs._debugEcology();
+assert.ok(ecologyDebug && ecologyDebug.hallmarks.spring === 'WIOSENNY_JELEN', 'mob ecology exposes spring hallmark mapping');
+MM.seasons._season='spring';
+assert.ok(ecologyDebug.factor(speciesDebug.RABBIT) > ecologyDebug.factor(speciesDebug.WOLF), 'spring favors small prey over wolves');
+MM.seasons._season='winter';
+assert.ok(ecologyDebug.factor(speciesDebug.WOLF) > ecologyDebug.factor(speciesDebug.RABBIT), 'winter favors wolves over rabbits');
+assert.equal(ecologyDebug.factor(speciesDebug.WIOSENNY_JELEN), 0, 'out-of-season hallmark animals have zero ecology factor');
+MM.seasons=null;
 const realRandom=Math.random;
 let seed=123456789;
 function seededRandom(){
@@ -35,6 +49,28 @@ function seededRandom(){
 }
 Math.random=seededRandom;
 try{
+  assert.equal(mobs.forceSpawn('RABBIT', null, getTile), false, 'debug force-spawn rejects missing player state');
+  mobs.deserialize({
+    v:3,
+    list:[
+      {id:'RABBIT',x:NaN,y:29,vx:0,vy:0,hp:5},
+      {id:'DEER',x:1,y:29,vx:Infinity,vy:-Infinity,hp:NaN,scale:99,speedMul:-3,jumpMul:NaN}
+    ],
+    aggro:{mode:'rel',m:{}}
+  });
+  let restored=mobs.serialize().list;
+  assert.equal(restored.length, 1, 'malformed restored mobs are dropped instead of persisted');
+  assert.equal(restored[0].id, 'DEER', 'valid restored mob survives sanitization');
+  assert.equal(restored[0].vx, 0, 'invalid restored velocity is sanitized');
+  assert.ok(Number.isFinite(restored[0].hp), 'invalid restored hp is sanitized');
+  mobs.update(NaN,player,getTile);
+  mobs.update(0.05,{x:NaN,y:29,hp:100,maxHp:100},getTile);
+  assert.equal(mobs.serialize().list.length, 1, 'invalid update ticks do not mutate mob population');
+  assert.equal(mobs.damageAt(NaN,29,999), false, 'invalid mob hit x is ignored');
+  assert.equal(mobs.attackAt(1,Infinity,999), false, 'invalid mob melee y is ignored');
+  assert.equal(mobs.serialize().list[0].hp, restored[0].hp, 'invalid hit coordinates cannot damage mobs');
+  mobs.clearAll();
+
   for(let i=0;i<60*5*20;i++){
     simNow += 50;
     mobs.update(0.05,player,getTile);

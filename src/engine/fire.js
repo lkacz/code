@@ -130,6 +130,7 @@ import { reactions as REACTIONS } from './reactions.js';
     }
   }
   function update(getTile,setTile,dt){
+    if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function' || typeof setTile!=='function') return;
     if(lavaSet.size) updateLava(getTile,setTile,dt);
     updateTorchHeat(getTile,setTile,dt);
     if(!burning.size) return;
@@ -372,7 +373,8 @@ import { reactions as REACTIONS } from './reactions.js';
       const stage=1-(b.left/b.total); // 0 fresh → 1 burnt
       if(smokeTick && Math.random()<0.42){
         const bt=getTile(b.x,b.y);
-        const power=bt===T.COAL ? 2.15 : (bt===T.WOOD ? 1.55 : (bt===T.LEAF ? 1.0 : 0.7));
+        const isLeafTile=bt===T.LEAF || bt===T.AUTUMN_LEAF_ORANGE || bt===T.AUTUMN_LEAF_RED;
+        const power=bt===T.COAL ? 2.15 : (bt===T.WOOD ? 1.55 : (isLeafTile ? 1.0 : 0.7));
         emitBlackSmoke(b.x,b.y,TILE,power,b.x,b.y);
       }
       // charring overlay

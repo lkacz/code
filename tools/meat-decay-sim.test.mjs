@@ -12,6 +12,40 @@ MM.gases = { add(kind,x,y,opts){ gasUnits += opts && opts.cells ? opts.cells : 1
 
 const { meat } = await import('../src/engine/meat.js');
 const { fire } = await import('../src/engine/fire.js');
+const { food } = await import('../src/engine/food.js');
+
+assert.equal(food.effectForTile(T.MEAT)?.key, 'meat', 'fresh meat is edible as raw meat');
+assert.equal(food.effectForTile(T.ROTTEN_MEAT)?.key, 'rottenMeat', 'rotten meat has its own edible inventory item');
+assert.equal(food.effectForTile(T.BAKED_MEAT)?.key, 'bakedMeat', 'baked meat has its own edible inventory item');
+
+{
+  const eater = { hp: 50, maxHp: 100 };
+  const inv = { meat: 2, rottenMeat: 1, bakedMeat: 1 };
+  let r = food.applyFoodEffect(eater, inv, T.MEAT);
+  assert.equal(r.ok, true, 'raw meat can be eaten');
+  assert.equal(eater.hp, 62, 'raw meat adds some health');
+  assert.equal(inv.meat, 1, 'raw meat is consumed from inventory');
+
+  r = food.applyFoodEffect(eater, inv, T.BAKED_MEAT);
+  assert.equal(r.ok, true, 'baked meat can be eaten');
+  assert.equal(eater.hp, 97, 'baked meat adds much health');
+  assert.equal(inv.bakedMeat, 0, 'baked meat is consumed from inventory');
+
+  r = food.applyFoodEffect(eater, inv, T.ROTTEN_MEAT);
+  assert.equal(r.ok, true, 'rotten meat can be eaten');
+  assert.equal(eater.hp, 77, 'rotten meat removes health');
+  assert.equal(inv.rottenMeat, 0, 'rotten meat is consumed from inventory');
+
+  r = food.applyFoodEffect({ hp: 100, maxHp: 100 }, inv, T.MEAT);
+  assert.equal(r.reason, 'full', 'healing food is not wasted at full HP');
+  assert.equal(inv.meat, 1, 'full HP does not consume healing food');
+
+  const doomed = { hp: 10, maxHp: 100 };
+  const badInv = { rottenMeat: 1 };
+  r = food.applyFoodEffect(doomed, badInv, T.ROTTEN_MEAT);
+  assert.equal(doomed.hp, 0, 'rotten meat can reduce HP to zero');
+  assert.equal(r.dead, true, 'rotten meat reports lethal damage');
+}
 
 let tiles = new Map();
 const key = (x,y)=>x+','+y;

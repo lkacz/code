@@ -4,8 +4,8 @@
 // (animal lifted and detached at the hatch, hero physically pulled then carried
 // far and released with a souvenir, boss dematerialized through bosses.abduct),
 // the shield (damped damage) vs the open-hatch window (amplified damage), the
-// destruction payout (antimatter + artifact through the loot pipeline) and the
-// single-saucer cap.
+// destruction payout (antimatter + alien scrap + artifact through the loot
+// pipeline) and the single-saucer cap.
 // Run: node tools/ufo-sim.test.mjs
 import { strict as assert } from 'assert';
 
@@ -16,7 +16,18 @@ const SURF = 90;
 const messages = [];
 globalThis.msg = (t)=>messages.push(String(t));
 globalThis.player = { x:0, y:SURF-1, hp:100, maxHp:100, xp:0, vx:0, vy:0, hpInvul:0, energy:0, maxEnergy:100 };
-globalThis.inv = { antimatter:0 };
+globalThis.inv = {
+  antimatter:0,
+  teleporter:0,
+  transistor:0,
+  copperWire:0,
+  wire:0,
+  copper:0,
+  plastic:0,
+  steel:0
+};
+
+const { T } = await import('../src/constants.js');
 
 MM.worldGen = { surfaceHeight: ()=>SURF };
 let fakeMob = null, abductedMob = null;
@@ -26,6 +37,19 @@ MM.heroEnergy = { drain(){ const p=globalThis.player; const n=Math.max(0, Number
 
 const { ufo } = await import('../src/engine/ufo.js');
 assert.ok(ufo && ufo.forceSpawn, 'ufo module exports');
+const scheduleBefore=ufo.state().acc;
+ufo.update(NaN, player);
+ufo.update(-1, player);
+assert.equal(ufo.state().acc, scheduleBefore, 'invalid UFO ticks do not advance the visit clock');
+ufo.reset();
+ufo.update(123, player);
+const ufoSnap = ufo.snapshot();
+assert.ok(ufo.forceSpawn({seed:42}), 'snapshot setup creates an active saucer');
+assert.equal(ufo.restore(ufoSnap), true, 'UFO schedule snapshot restores');
+assert.equal(ufo.current(), null, 'restore clears transient active saucer');
+assert.equal(ufo.state().acc, ufoSnap.acc, 'restore keeps UFO visit clock');
+assert.equal(Math.round(ufo.state().nextAt), ufoSnap.nextAt, 'restore keeps UFO next visit time');
+ufo.reset();
 
 // step with a tiny hero integrator (the game's physics() is not loaded here)
 function step(seconds, dt){
@@ -111,14 +135,20 @@ ufo.reset();
 
 // --- 6. Shield vs open hatch, destruction payout ---
 player.x=0; player.y=SURF-1; player.vx=player.vy=0; player.hp=100; player.xp=0;
-inv.antimatter=0; messages.length=0;
+Object.assign(inv,{antimatter:0, teleporter:0, transistor:0, copperWire:0, wire:0, copper:0, plastic:0, steel:0});
+messages.length=0;
 let looted=null; MM.onLootGained=(items)=>{ looted=items; };
-c=ufo.forceSpawn({seed:777, prefer:'hero'});
+c=ufo.forceSpawn({seed:1, prefer:'hero'});
 // shielded phase: 10 damage lands damped
 let cur=ufo.current();
 const hp0=cur.hp;
 assert.ok(ufo.damageAt(Math.floor(cur.x), Math.floor(cur.y), 10), 'hull hit registers');
 assert.ok(Math.abs((hp0-ufo.current().hp) - 3.5) < 0.01, 'shield damps damage to 35%');
+const hpAfterHit=ufo.current().hp;
+assert.equal(ufo.damageAt(NaN, Math.floor(cur.y), 999), false, 'invalid hit x is ignored');
+assert.equal(ufo.damageAt(Math.floor(cur.x), NaN, 999), false, 'invalid hit y is ignored');
+assert.equal(ufo.attackAt(Infinity, Math.floor(cur.y), 999), false, 'invalid melee x is ignored');
+assert.equal(ufo.current().hp, hpAfterHit, 'invalid hit coordinates cannot damage the saucer');
 assert.ok(!ufo.damageAt(Math.floor(cur.x)+20, Math.floor(cur.y), 10), 'misses beside the hull do nothing');
 // wait for the beam window: full vulnerability
 for(let i=0;i<60*30 && !(ufo.current() && ufo.current().phase==='beam');i++){
@@ -138,13 +168,55 @@ try{
 }finally{ Math.random=realRandom; }
 assert.equal(ufo.current(), null, 'saucer destroyed');
 assert.ok(inv.antimatter>=2, 'antimatter payout ('+inv.antimatter+')');
+assert.equal(inv.teleporter, 1, 'wreck drops a placeable teleporter');
+assert.ok(inv.transistor>=1, 'wreck drops transistor scrap');
+assert.ok(inv.copperWire>=4, 'wreck drops copper power cable');
+assert.ok(inv.wire+inv.copper+inv.plastic+inv.steel>=1, 'wreck has extra seeded salvage');
 assert.ok(player.xp>=120, 'XP prize');
 assert.ok(Array.isArray(looted) && looted.length===1 && looted[0].tier==='epic', 'alien artifact routed through the loot pipeline');
+assert.equal(looted[0].unique, 'alien_antigrav', 'deterministic UFO seed can drop antigravity tech');
+assert.equal(looted[0].energyCapacityBonus, 50, 'antigravity tech carries energy capacity');
 assert.ok(MM.dynamicLoot && Object.values(MM.dynamicLoot).some(arr=>Array.isArray(arr)&&arr.length), 'artifact persisted in dynamic loot');
 assert.ok(messages.some(t=>t.includes('zestrzelony')), 'kill is announced');
+assert.ok(messages.some(t=>t.includes('Technologia')), 'kill announcement lists alien scrap');
 assert.ok(ufo.state().acc < 1, 'visit clock restarted after the kill (acc='+ufo.state().acc.toFixed(2)+')');
 
-// --- 7. Single-saucer cap ---
+// --- 7. Physical wreck salvage: placeable tech lands in the world when possible ---
+ufo.reset();
+Object.assign(inv,{antimatter:0, teleporter:0, transistor:0, copperWire:0, wire:0, copper:0, plastic:0, steel:0});
+messages.length=0;
+const placedTiles = new Map();
+const particleBursts = [];
+const kxy=(x,y)=>Math.floor(x)+','+Math.floor(y);
+MM.world = {
+  getTile(x,y){
+    const k=kxy(x,y);
+    if(placedTiles.has(k)) return placedTiles.get(k);
+    return y>=SURF ? T.STONE : T.AIR;
+  },
+  setTile(x,y,t){ placedTiles.set(kxy(x,y),t); }
+};
+MM.particles = { spawnBurst(x,y,tier){ particleBursts.push({x,y,tier}); } };
+Math.random=()=>0.1;
+try{
+  c=ufo.forceSpawn({seed:1, prefer:'hero'});
+  for(let i=0;i<40 && ufo.current();i++){
+    const cc=ufo.current();
+    ufo.damageAt(Math.floor(cc.x), Math.floor(cc.y), 200);
+  }
+}finally{
+  Math.random=realRandom;
+  delete MM.world;
+  delete MM.particles;
+}
+const wreckTiles=[...placedTiles.values()];
+assert.ok(wreckTiles.includes(T.TELEPORTER), 'wreck drops a visible teleporter tile when ground is available');
+assert.ok(wreckTiles.includes(T.TRANSISTOR), 'wreck drops visible transistor salvage');
+assert.ok(wreckTiles.includes(T.COPPER_WIRE), 'wreck drops visible copper power cable salvage');
+assert.equal(inv.teleporter, 0, 'world-dropped teleporter is not duplicated into inventory');
+assert.ok(particleBursts.some(p=>p.y >= (SURF-2)*20), 'visible wreck salvage sparks where it lands');
+
+// --- 8. Single-saucer cap ---
 c=ufo.forceSpawn({seed:5});
 assert.ok(c, 'slot free again');
 assert.equal(ufo.forceSpawn({seed:6}), null, 'only one saucer at a time');

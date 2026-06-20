@@ -43,6 +43,7 @@ const step = (n,dt=1/30)=>{ for(let i=0;i<n;i++) bosses.update(getTile,setTile,d
 function resetWorld(){
   tiles = new Map();
   bosses.reset();
+  delete globalThis.MM.wind;
   bosses.setCycleOverride({isDay:true, tDay:0.5});
   globalThis.player = {x:0, y:88, hp:100, maxHp:100, xp:0, vx:0, vy:0, hpInvul:0, tool:'basic'};
 }
@@ -198,6 +199,15 @@ resetWorld();
 const mfl = bosses.forceSpawn(getTile, {x:300, seed:64, archetype:'floater'});
 step(30*8);
 assert.ok(mfl.y < 87 && mfl.y > 70, `floater hovers above the ground (y=${mfl.y.toFixed(1)})`);
+
+resetWorld();
+globalThis.MM.wind = { speedAt(){ return 5; } };
+const mwf = bosses.forceSpawn(getTile, {x:300, seed:64, archetype:'floater'});
+mwf.speed = 0;
+mwf.vx = 0;
+step(20);
+assert.ok(mwf.vx > 0.04, `strong wind pushes a floating boss body (vx=${mwf.vx.toFixed(3)})`);
+delete globalThis.MM.wind;
 
 // --- 10. Hopper archetype: travels in airborne hops ---
 resetWorld();
@@ -469,5 +479,16 @@ for(let s=0;s<30*25 && !blockHit;s++){
 }
 assert.ok(sawProjectile, 'the hunting beast hurled a block from the terrain');
 assert.ok(blockHit, `a thrown block struck the hero (hp=${globalThis.player.hp})`);
+
+// --- 29. Wind reaches boss-owned light objects too: hurled blocks and debris ---
+resetWorld();
+globalThis.MM.wind = { speedAt(){ return 5; } };
+const dbg = bosses._debug();
+dbg.projectiles.push({x:0,y:30,vx:0,vy:0,t:0,max:2,tile:T.LEAF,color:'#2faa2f',spin:0,dmg:1});
+dbg.debris.push({x:0,y:30*20,vx:0,vy:0,c:'#999',t:0,max:1,s:3});
+for(let i=0;i<10;i++) bosses.update(getTile,setTile,0.1);
+assert.ok(dbg.projectiles.length && dbg.projectiles[0].vx>0.5, 'wind bends boss-thrown light blocks');
+assert.ok(dbg.debris.length && dbg.debris[0].vx>0.5, 'wind carries boss debris particles');
+delete globalThis.MM.wind;
 
 console.log('OK: all boss monster simulation tests passed');

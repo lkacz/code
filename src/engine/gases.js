@@ -1,7 +1,9 @@
 // Sparse world gas simulation.
 // Gases are passable tiles with their own active registry: they rise like an
 // inverted, low-volume fluid, remain hidden by fog until discovered, and expose
-// a small API for later machine systems (consume/inspect/add).
+// a small API for later machine systems (consume/inspect/add). Steam and hot air
+// lose a little mass when turbines extract power, so stacked dynamos attenuate a
+// plume instead of multiplying one source forever.
 import { T, WORLD_H, CHUNK_W } from '../constants.js';
 
 (function(){
@@ -28,9 +30,12 @@ import { T, WORLD_H, CHUNK_W } from '../constants.js';
   const STEAM_TO_WATER = 5;
   const CONDENSATE_BUCKET = 3;
   const CONDENSATE_MERGE_RADIUS = 6;
+  const CONDENSATE_TTL = 75;
+  const CONDENSATE_CAP = 420;
   const SCAN_INTERVAL = 1.1;
   const SCAN_RX = 84;
   const SCAN_RY = 56;
+  const DYNAMO_POWERED_GAS_LOSS_CHANCE = 0.10;
   const SPAWN_OFFSETS = [
     [0,-1],[-1,-1],[1,-1],[0,0],[-2,-1],[2,-1],
     [0,-2],[-1,-2],[1,-2],[-1,0],[1,0],[-2,0],[2,0],
@@ -41,6 +46,7 @@ import { T, WORLD_H, CHUNK_W } from '../constants.js';
   const condensate = new Map(); // local steam mass buckets; five steam cells make one water cell
   let scanAcc = 0;
   let frameSeq = 0;
+  let turbineFlowSeq = 0;
   let heroPoisonCd = 0;
   let spriteTile = 0;
   let sprites = null;
@@ -179,7 +185,7 @@ import { T, WORLD_H, CHUNK_W } from '../constants.js';
     if(ty<0){ clearGasCell(g.x,g.y,getTile,setTile); return true; }
     const dst=getSafe(getTile,nx,ty,T.AIR);
     if(swapGasCells(g,nx,ty,dst,getTile,setTile)){
-      try{ if(D.recordFlow) D.recordFlow(nx,ny,g.t,1,getTile); }catch(e){}
+      try{ if(D.recordFlow && D.recordFlow(nx,ny,g.t,1,getTile)) maybeConsumePoweredGas(g,nx,ny,nx,ty,getTile,setTile); }catch(e){}
       return true;
     }
     if(!canReplaceWithGas(g.t,dst)) return false;
@@ -192,7 +198,14 @@ import { T, WORLD_H, CHUNK_W } from '../constants.js';
     active.delete(oldKey);
     g.x=nx; g.y=ty; g.moveT=moveDelay(g.t,nx,ty); g._frame=frameSeq;
     active.set(newKey,g);
-    try{ if(D.recordFlow) D.recordFlow(nx,ny,g.t,1,getTile); }catch(e){}
+    try{ if(D.recordFlow && D.recordFlow(nx,ny,g.t,1,getTile)) maybeConsumePoweredGas(g,nx,ny,nx,ty,getTile,setTile); }catch(e){}
+    return true;
+  }
+  function maybeConsumePoweredGas(g,slotX,slotY,outX,outY,getTile,setTile){
+    if(!g || (g.t!==T.STEAM && g.t!==T.HOT_AIR)) return false;
+    const roll=rand01((slotX|0)+Math.imul(outX|0,17), (slotY|0)+Math.imul(outY|0,31), 911+(turbineFlowSeq++));
+    if(roll>=DYNAMO_POWERED_GAS_LOSS_CHANCE) return false;
+    clearGasCell(outX,outY,getTile,setTile);
     return true;
   }
   function noteGas(x,y,t,opts){
@@ -252,6 +265,22 @@ import { T, WORLD_H, CHUNK_W } from '../constants.js';
     }
     return need<=0;
   }
+  function pruneCondensate(dt){
+    if(!condensate.size) return;
+    const step=Math.max(0,Number(dt)||0);
+    for(const [k,c] of condensate){
+      if(!c || !finiteTile(c.x,c.y) || !(c.n>0)){ condensate.delete(k); continue; }
+      c.age=Math.max(0,(Number(c.age)||0)+step);
+      if(c.age>CONDENSATE_TTL) condensate.delete(k);
+    }
+    if(condensate.size<=CONDENSATE_CAP) return;
+    const ordered=[...condensate.entries()].sort((a,b)=>{
+      const an=Number(a[1] && a[1].n)||0, bn=Number(b[1] && b[1].n)||0;
+      const aa=Number(a[1] && a[1].age)||0, ba=Number(b[1] && b[1].age)||0;
+      return an-bn || ba-aa;
+    });
+    for(let i=0; i<ordered.length && condensate.size>Math.floor(CONDENSATE_CAP*0.82); i++) condensate.delete(ordered[i][0]);
+  }
   function placeCondensedWaterAt(x,y,getTile,setTile){
     if(typeof setTile!=='function' || !finiteTile(x,y)) return false;
     const cur=getSafe(getTile,x,y,T.STONE);
@@ -280,11 +309,12 @@ import { T, WORLD_H, CHUNK_W } from '../constants.js';
     const existing=nearbyCondensate(x,y)[0];
     const k=existing ? existing.k : b.k;
     let c=existing ? existing.c : condensate.get(k);
-    if(!c){ c={x:b.x,y:b.y,n:0}; condensate.set(k,c); }
+    if(!c){ c={x:b.x,y:b.y,n:0,age:0}; condensate.set(k,c); }
     const oldN=Math.max(0,Math.floor(c.n||0));
     c.x=Math.round(((c.x||b.x)*oldN+Math.floor(x))/(oldN+1));
     c.y=Math.round(((c.y||b.y)*oldN+Math.floor(y))/(oldN+1));
     c.n=Math.min(50, oldN+1);
+    c.age=0;
     const nearby=nearbyCondensate(x,y);
     const total=nearby.reduce((sum,e)=>sum+Math.max(0,Math.floor(e.c.n||0)),0);
     if(total>=STEAM_TO_WATER && tryPlaceCondensedWater(x,y,getTile,setTile)){
@@ -480,9 +510,10 @@ import { T, WORLD_H, CHUNK_W } from '../constants.js';
     return isGasTile(t) ? gasKind(t) : null;
   }
   function update(dt,getTile,setTile,player){
-    if(!(dt>0) || !isFinite(dt)) return;
+    if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function' || typeof setTile!=='function') return;
     dt=Math.min(2,dt);
     frameSeq++;
+    pruneCondensate(dt);
     if(heroPoisonCd>0) heroPoisonCd=Math.max(0,heroPoisonCd-dt);
     scanAcc+=dt;
     if(scanAcc>=SCAN_INTERVAL){
@@ -572,22 +603,31 @@ import { T, WORLD_H, CHUNK_W } from '../constants.js';
   }
   function snapshot(){
     const list=[...active.values()]
+      .filter(g=>g && finiteTile(g.x,g.y) && isGasTile(g.t))
       .sort((a,b)=>(a.x-b.x)||(a.y-b.y))
-      .map(g=>({x:g.x,y:g.y,t:g.t,age:+(g.age||0).toFixed(3),moveT:+(g.moveT||0).toFixed(3)}));
+      .map(g=>({
+        x:Math.floor(g.x),
+        y:Math.floor(g.y),
+        t:g.t,
+        age:+Math.max(0,Number.isFinite(g.age)?g.age:0).toFixed(3),
+        moveT:+Math.max(0,Number.isFinite(g.moveT)?g.moveT:0).toFixed(3)
+      }));
     const condensateList=[...condensate.values()]
       .filter(c=>c && c.n>0 && finiteTile(c.x,c.y))
       .sort((a,b)=>(a.x-b.x)||(a.y-b.y))
-      .map(c=>({x:c.x,y:c.y,n:Math.max(1,Math.min(50,Math.floor(c.n||0)))}));
+      .map(c=>({x:c.x,y:c.y,n:Math.max(1,Math.min(50,Math.floor(c.n||0))),age:+Math.max(0,Number.isFinite(c.age)?c.age:0).toFixed(3)}));
     return {v:2,list,condensate:condensateList};
   }
   function restore(data,getTile,setTile){
     reset();
     if(data && Array.isArray(data.condensate)){
       for(const c of data.condensate){
+        if(condensate.size>=CONDENSATE_CAP) break;
         if(!c || !finiteTile(c.x,c.y) || !Number.isFinite(c.n)) continue;
         const b=condensateBucketFor(c.x,c.y);
         const n=Math.max(0,Math.min(50,Math.floor(c.n)));
-        if(n>0) condensate.set(b.k,{x:b.x,y:b.y,n});
+        const age=Number.isFinite(c.age) ? Math.max(0,Math.min(CONDENSATE_TTL,c.age)) : 0;
+        if(n>0) condensate.set(b.k,{x:b.x,y:b.y,n,age});
       }
     }
     if(!data || !Array.isArray(data.list)) return;
@@ -599,13 +639,18 @@ import { T, WORLD_H, CHUNK_W } from '../constants.js';
         if(!canReplaceWithGas(g.t,cur) || typeof setTile!=='function') continue;
         if(!setGasTile(x,y,g.t,setTile)) continue;
       }
-      noteGas(x,y,g.t,{age:g.age,moveT:g.moveT,setTile});
+      noteGas(x,y,g.t,{
+        age:Number.isFinite(g.age)?Math.max(0,g.age):0,
+        moveT:Number.isFinite(g.moveT)?Math.max(0,g.moveT):0,
+        setTile
+      });
     }
   }
   function reset(){
     active.clear();
     condensate.clear();
     scanAcc=0;
+    turbineFlowSeq=0;
     heroPoisonCd=0;
   }
   function metrics(){
@@ -621,7 +666,7 @@ import { T, WORLD_H, CHUNK_W } from '../constants.js';
     return {active:active.size, hot, steam, poison, fuel, steamCondensate};
   }
 
-  const api={update,draw,add,igniteAt,consumeRadius,gasAt,isGasTile,skyExposed,onTileChanged,auditChunks,snapshot,restore,reset,metrics,_debug:{active,condensate,GAS_DEF,KIND_TILE,STEAM_TO_WATER,skyExposed}};
+  const api={update,draw,add,igniteAt,consumeRadius,gasAt,isGasTile,skyExposed,onTileChanged,auditChunks,snapshot,restore,reset,metrics,_debug:{active,condensate,GAS_DEF,KIND_TILE,STEAM_TO_WATER,DYNAMO_POWERED_GAS_LOSS_CHANCE,skyExposed}};
   MM.gases=api;
 })();
 

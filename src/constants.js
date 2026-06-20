@@ -3,7 +3,7 @@ export const WORLD_H = 140;
 export const TILE = 20;
 export const SURFACE_GRASS_DEPTH = 1;
 export const SAND_DEPTH = 8;
-export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,LAVA:13,MUD:14,OBSIDIAN:15,TORCH:16,GRAVE:17,VOLCANO_MASTER_STONE:18,STEEL:19,MEAT:20,ROTTEN_MEAT:21,GLASS:22,WIRE:23,ELECTRONICS:24,COAL:25,HOT_AIR:26,STEAM:27,POISON_GAS:28,FUEL_GAS:29,DYNAMO:30,DYNAMO_SLOT:31,BAKED_MEAT:32,COPPER_WIRE:33,TELEPORTER:34,TRANSISTOR:35,SOLAR_PANEL:36,SOLAR_BATTERY:37};
+export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,LAVA:13,MUD:14,OBSIDIAN:15,TORCH:16,GRAVE:17,VOLCANO_MASTER_STONE:18,STEEL:19,MEAT:20,ROTTEN_MEAT:21,GLASS:22,WIRE:23,ELECTRONICS:24,COAL:25,HOT_AIR:26,STEAM:27,POISON_GAS:28,FUEL_GAS:29,DYNAMO:30,DYNAMO_SLOT:31,BAKED_MEAT:32,COPPER_WIRE:33,TELEPORTER:34,TRANSISTOR:35,SOLAR_PANEL:36,SOLAR_BATTERY:37,SERVANT_STONE:38,AUTUMN_LEAF_ORANGE:39,AUTUMN_LEAF_RED:40};
 export const INFO = {
   0:{hp:0,color:null,drop:null,passable:true},
   // flammable/burnTime drive the fire system (engine/fire.js): seconds a tile burns
@@ -36,10 +36,10 @@ export const INFO = {
  16:{hp:1,color:'#caa45a',drop:'torch',passable:true},
   // Gravestone — death marker holding the hero's dropped resources (click to recover)
  17:{hp:2,color:'#9aa0ab',drop:null,passable:true},
- 18:{hp:12,color:'#71fff1',drop:'masterStone',passable:false, story:true},
+ 18:{hp:12,color:'#ff6a21',drop:'masterStone',passable:false, story:true},
  19:{hp:9,color:'#8f9aa6',drop:'steel',passable:false},
  20:{hp:1,color:'#bd5145',drop:'meat',passable:false, flammable:true, burnTime:1.4},
- 21:{hp:1,color:'#647136',drop:null,passable:false, flammable:true, burnTime:1.0, rotten:true},
+ 21:{hp:1,color:'#647136',drop:'rottenMeat',passable:false, flammable:true, burnTime:1.0, rotten:true},
  22:{hp:1,color:'#9deeff',drop:null,passable:false, fragileFall:true},
  23:{hp:1,color:'#c56f32',drop:null,passable:true, drops:[{item:'plastic',min:1,max:1},{item:'copper',min:1,max:2}]},
  24:{hp:3,color:'#243946',drop:null,passable:false, drops:[{item:'wire',min:1,max:2},{item:'transistor',min:1,max:1,chance:0.82},{item:'copper',min:1,max:1,chance:0.35}]},
@@ -52,12 +52,15 @@ export const INFO = {
  29:{hp:0,color:'#a79a64',drop:null,passable:true, gas:true, gasKind:'fuel'},
  30:{hp:7,color:'#697685',drop:null,passable:false, machine:'dynamo', powerSource:true},
  31:{hp:4,color:'#1f2937',drop:null,passable:true, machine:'dynamoSlot', powerSource:true},
- 32:{hp:1,color:'#9b5a2e',drop:'meat',passable:false, cooked:true},
+ 32:{hp:1,color:'#9b5a2e',drop:'bakedMeat',passable:false, cooked:true},
  33:{hp:1,color:'#d68535',drop:'copperWire',passable:true, machine:'copperWire', conductor:true},
  34:{hp:8,color:'#24435a',drop:'teleporter',passable:true, machine:'teleporter', powerDevice:true, energyCapacity:160},
  35:{hp:1,color:'#47d18c',drop:'transistor',passable:false, machine:'transistor', drops:[{item:'transistor',min:1,max:1},{item:'copper',min:1,max:1,chance:0.25}]},
  36:{hp:3,color:'#17607a',drop:null,passable:false, machine:'solarPanel', powerSource:true, conductor:true, drops:[{item:'glass',min:1,max:1,chance:0.7},{item:'wire',min:1,max:1,chance:0.8}]},
- 37:{hp:4,color:'#0f6f78',drop:null,passable:false, machine:'solarBattery', powerSource:true, conductor:true, energyCapacity:120, drops:[{item:'glass',min:1,max:1,chance:0.7},{item:'wire',min:1,max:1,chance:0.8},{item:'transistor',min:1,max:1,chance:0.65}]}
+ 37:{hp:4,color:'#0f6f78',drop:null,passable:false, machine:'solarBattery', powerSource:true, conductor:true, energyCapacity:120, drops:[{item:'glass',min:1,max:1,chance:0.7},{item:'wire',min:1,max:1,chance:0.8},{item:'transistor',min:1,max:1,chance:0.65}]},
+ 38:{hp:8,color:'#8b2d17',drop:'servantStone',passable:false, volatile:true},
+ 39:{hp:1,color:'#d7832f',drop:'leaf',passable:true, flammable:true, burnTime:1.1, seasonalLeaf:true},
+ 40:{hp:1,color:'#b94432',drop:'leaf',passable:true, flammable:true, burnTime:1.1, seasonalLeaf:true}
 };
 // Rows above (i.e. numerically below) this line get snow cover; tuned for the v2
 // terrain where sea level sits at row ~62 and peaks reach row ~10
@@ -67,6 +70,8 @@ export const CAPE = {SEGMENTS:12,ANCHOR_FRAC:0.5};
 export const BLINK_DUR = 160;
 
 export const isSolid = t => t !== T.AIR && !INFO[t].passable;
+export const isAutumnLeaf = t => t === T.AUTUMN_LEAF_ORANGE || t === T.AUTUMN_LEAF_RED;
+export const isLeaf = t => t === T.LEAF || isAutumnLeaf(t);
 
 // Backward-compatibility shim: populate window.MM so legacy engine files keep working
 if (typeof window !== 'undefined') {
@@ -84,5 +89,7 @@ if (typeof window !== 'undefined') {
     CAPE,
     BLINK_DUR,
     isSolid,
+    isAutumnLeaf,
+    isLeaf,
   });
 }

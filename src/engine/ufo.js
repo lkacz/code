@@ -2,8 +2,9 @@
 // scans for a living victim — an animal, the hero, even a boss — locks a tractor
 // beam and flies away with the catch. The hull is heavily shielded (incoming
 // damage is dampened) but the shield must drop while the beam runs: that window
-// is the intended counterplay. Destroying it pays out antimatter and sometimes
-// a unique alien artifact routed through the regular loot inbox.
+// is the intended counterplay. Destroying it pays out antimatter, alien machine
+// scrap and sometimes a unique alien artifact routed through the regular loot
+// inbox.
 //
 // Architecture notes:
 // - A beamed MOB stays inside mobs.js physics during the lift (this module only
@@ -48,6 +49,18 @@ const ufo = (function(){
   })();
   if(!(nextAt>0)) rollNext();
   function save(){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify({acc:Math.round(acc), nextAt:Math.round(nextAt), visits})); }catch(e){} }
+  function snapshot(){ return {v:1, acc:Math.round(acc), nextAt:Math.round(nextAt), visits:Math.max(0,visits|0)}; }
+  function restore(data){
+    craft=null;
+    if(!data || typeof data!=='object') return false;
+    acc=(typeof data.acc==='number' && isFinite(data.acc)) ? Math.max(0,data.acc) : 0;
+    visits=(typeof data.visits==='number' && isFinite(data.visits)) ? Math.max(0,data.visits|0) : 0;
+    nextAt=(typeof data.nextAt==='number' && isFinite(data.nextAt) && data.nextAt>0) ? data.nextAt : 0;
+    if(!(nextAt>0)) rollNext();
+    save();
+    return true;
+  }
+  function clearActive(){ craft=null; }
 
   function say(t){ try{ if(typeof window!=='undefined' && window.msg) window.msg(t); }catch(e){} }
   function sfx(n){ try{ if(MM.audio && MM.audio.play) MM.audio.play(n); }catch(e){} }
@@ -65,6 +78,130 @@ const ufo = (function(){
       pl.energy=0;
     }
     return drained;
+  }
+
+  const SCRAP_NAMES={
+    teleporter:'teleporter',
+    transistor:'tranzystor',
+    copperWire:'przewod miedziany',
+    wire:'przewody',
+    copper:'miedz',
+    plastic:'plastik',
+    steel:'stal'
+  };
+  function addResource(inv,key,n){
+    const amount=Math.max(0, Math.floor(Number(n)||0));
+    if(!inv || !key || amount<=0) return 0;
+    inv[key]=Math.max(0, Number(inv[key])||0)+amount;
+    return amount;
+  }
+  function rollScrapDrops(seed){
+    const r=mulberry32((seed^0x71e7)>>>0);
+    const drops=[
+      {key:'teleporter', n:1},
+      {key:'transistor', n:1+((r()*2)|0)},
+      {key:'copperWire', n:4+((r()*5)|0)}
+    ];
+    if(r()<0.75) drops.push({key:'wire', n:2+((r()*3)|0)});
+    if(r()<0.55) drops.push({key:'copper', n:1+((r()*3)|0)});
+    if(r()<0.45) drops.push({key:'plastic', n:1+((r()*2)|0)});
+    if(r()<0.35) drops.push({key:'steel', n:1+((r()*2)|0)});
+    return drops;
+  }
+  function addScrapDrops(inv,drops){
+    const got=[];
+    for(const d of drops||[]){
+      const n=addResource(inv,d.key,d.n);
+      if(n>0) got.push({key:d.key,n});
+    }
+    return got;
+  }
+  function formatDrops(drops){
+    return (drops||[]).map(d=>(SCRAP_NAMES[d.key]||d.key)+' x'+d.n).join(', ');
+  }
+  function compactDrops(drops){
+    const sums=new Map();
+    for(const d of drops||[]){
+      if(!d || !d.key) continue;
+      sums.set(d.key,(sums.get(d.key)||0)+(Math.max(0,Math.floor(Number(d.n)||0))));
+    }
+    const out=[];
+    for(const [key,n] of sums) if(n>0) out.push({key,n});
+    return out;
+  }
+  function tileForScrap(key){
+    const TT=MM.T||{};
+    if(key==='teleporter') return TT.TELEPORTER;
+    if(key==='transistor') return TT.TRANSISTOR;
+    if(key==='copperWire') return TT.COPPER_WIRE;
+    if(key==='wire') return TT.WIRE;
+    if(key==='steel') return TT.STEEL;
+    return null;
+  }
+  function dropCellFree(t){
+    const TT=MM.T||{}, info=(MM.INFO||{})[t];
+    return t===TT.AIR || (info && info.gas);
+  }
+  function dropCellSupported(t){
+    const TT=MM.T||{}, info=(MM.INFO||{})[t];
+    return t!==TT.AIR && !(info && info.passable);
+  }
+  function findScrapLanding(x,y0,used,getTile){
+    const maxY=Math.max(0,(MM.WORLD_H||140)-4);
+    const start=Math.max(0,Math.min(maxY,Math.floor(y0)));
+    const tx=Math.floor(x);
+    for(let y=start; y<=maxY; y++){
+      const k=tx+','+y;
+      if(used.has(k)) continue;
+      if(dropCellFree(getTile(tx,y)) && dropCellSupported(getTile(tx,y+1))) return {x:tx,y};
+    }
+    return null;
+  }
+  function scatterScrapDrops(origin,drops){
+    const W=MM.world;
+    if(!origin || !W || typeof W.getTile!=='function' || typeof W.setTile!=='function'){
+      return {placed:[], remaining:compactDrops(drops)};
+    }
+    const offsets=[0,-1,1,-2,2,-3,3,-4,4,-5,5,-6,6,-7,7,-8,8,-9,9,-10,10];
+    const placed=[], remaining=[], used=new Set();
+    let idx=0;
+    for(const d of compactDrops(drops)){
+      const tile=tileForScrap(d.key);
+      let left=d.n;
+      while(tile!=null && left>0 && idx<offsets.length){
+        const spot=findScrapLanding(Math.floor(origin.x)+offsets[idx], origin.y, used, W.getTile);
+        idx++;
+        if(!spot) continue;
+        W.setTile(spot.x,spot.y,tile);
+        used.add(spot.x+','+spot.y);
+        placed.push({key:d.key,n:1});
+        left--;
+      }
+      if(left>0) remaining.push({key:d.key,n:left});
+    }
+    return {placed:compactDrops(placed), remaining:compactDrops(remaining)};
+  }
+  function sparkleScrap(origin,placed){
+    if(!placed || !placed.length) return;
+    const W=MM.world, TT=MM.T||{};
+    if(!W || typeof W.getTile!=='function') return;
+    const wanted=new Set();
+    for(const d of placed){
+      const tile=tileForScrap(d.key);
+      if(tile!=null) wanted.add(tile);
+    }
+    if(!wanted.size) return;
+    const ox=Math.floor(origin && origin.x || 0);
+    const oy=Math.floor(origin && origin.y || 0);
+    let flashes=0;
+    for(let dx=-10; dx<=10 && flashes<8; dx++){
+      for(let y=Math.max(0,oy); y<Math.min((MM.WORLD_H||140)-3,oy+40) && flashes<8; y++){
+        const t=W.getTile(ox+dx,y);
+        if(!wanted.has(t)) continue;
+        burst(ox+dx+0.5,y+0.5,t===TT.TELEPORTER?'epic':'rare');
+        flashes++;
+      }
+    }
   }
 
   // --- Procedural saucer: same seed → same craft ---
@@ -143,6 +280,7 @@ const ufo = (function(){
   // (the dome counts). Shield dampens damage except while the beam is running.
   function damageAt(tx,ty,dmg){
     if(!craft) return false;
+    if(!Number.isFinite(tx) || !Number.isFinite(ty)) return false;
     const hw=craft.look.hullW*0.5+0.6, hh=craft.look.hullH*0.5+1.0;
     if(Math.abs(tx+0.5-craft.x)>hw || Math.abs(ty+0.5-craft.y)>hh) return false;
     const mult = beaming()? CFG.BEAM_VULN : CFG.SHIELD_DR;
@@ -160,7 +298,7 @@ const ufo = (function(){
     if(craft) craft.victim=null;
   }
 
-  // The wreck pays out: antimatter always, an alien artifact often
+  // The wreck pays out: antimatter and machine scrap always, an alien artifact often
   function destroy(){
     const c=craft; if(!c) return;
     releaseVictim();
@@ -168,7 +306,12 @@ const ufo = (function(){
     if(c.phase==='carry' && pl){ pl.vy=-1.5; say('🛸 Uwolniony w locie — spodek runął!'); }
     const inv=(typeof window!=='undefined' && window.inv)||null;
     const n=2+((Math.random()*3)|0);
-    if(inv && typeof inv.antimatter==='number'){ inv.antimatter+=n; }
+    addResource(inv,'antimatter',n);
+    const scattered=scatterScrapDrops({x:c.x,y:c.y}, rollScrapDrops(c.look.seed));
+    sparkleScrap({x:c.x,y:c.y}, scattered.placed);
+    const scrap=addScrapDrops(inv, scattered.remaining);
+    const allScrap=compactDrops([...(scattered.placed||[]), ...scrap]);
+    const scrapMsg=allScrap.length? ' | Technologia: '+formatDrops(allScrap) : '';
     let artMsg='';
     if(Math.random()<0.65){
       const r=mulberry32(c.look.seed^0x5eed);
@@ -178,6 +321,7 @@ const ufo = (function(){
       else if(roll<0.75) item={id:'ufo_eyes_'+c.look.seed.toString(36), kind:'eyes', tier:'epic', name:'Oko Szaraka', unique:'alien_sight', visionRadius:15, mineSpeedMult:1.1, desc:'Widzi przez mrok kosmosu. Zasięg widzenia 15, kopanie +10%'};
       else item={id:'ufo_bow_'+c.look.seed.toString(36), kind:'weapon', weaponType:'bow', tier:'epic', name:'Dezintegrator', unique:'alien_tech', attackDamage:8, fireCooldown:0.3, desc:'Broń z rozbitego spodka. Strzały 8 obrażeń, szybkostrzelność x2'};
       try{
+        if(roll>=0.82) item={id:'ufo_antigrav_'+c.look.seed.toString(36), kind:'charm', tier:'epic', name:'Stabilizator antygrawitacji', unique:'alien_antigrav', airJumps:1, moveSpeedMult:1.1, energyCapacityBonus:50, desc:'Pole z rozbitego spodka. +1 skok, ruch +10%, energia +50E'};
         if(!MM.dynamicLoot) MM.dynamicLoot={capes:[],eyes:[],outfits:[],weapons:[],charms:[]};
         const key=item.kind==='eyes'?'eyes':item.kind==='weapon'?'weapons':'charms';
         if(!Array.isArray(MM.dynamicLoot[key])) MM.dynamicLoot[key]=[];
@@ -187,6 +331,7 @@ const ufo = (function(){
         artMsg=' i '+item.name+'!';
       }catch(e){}
     }
+    artMsg=scrapMsg+artMsg;
     if(pl && typeof pl.xp==='number') pl.xp+=120;
     burst(c.x,c.y,'epic'); burst(c.x-1.5,c.y+0.5,'epic'); burst(c.x+1.5,c.y+0.5,'epic');
     sfx('explosion');
@@ -202,6 +347,7 @@ const ufo = (function(){
   }
 
   function update(dt, player){
+    if(!(dt>0) || !isFinite(dt)) return;
     // visit clock (counts played time, persists across reloads)
     acc+=dt; saveAcc+=dt;
     if(saveAcc>=10){ saveAcc=0; save(); }
@@ -434,7 +580,7 @@ const ufo = (function(){
   }
 
   const api={
-    update, draw, damageAt, attackAt, forceSpawn,
+    update, draw, damageAt, attackAt, forceSpawn, snapshot, restore, clearActive,
     current:()=> craft? {name:craft.look.name, archetype:craft.look.archetype, phase:craft.phase, x:craft.x, y:craft.y, hp:craft.hp, maxHp:craft.maxHp, hullW:craft.look.hullW, seed:craft.look.seed} : null,
     state:()=>({acc, nextAt, visits}),
     beaming,

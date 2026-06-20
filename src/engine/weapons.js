@@ -65,6 +65,39 @@ import { reactions as REACTIONS } from './reactions.js';
     }catch(e){}
     return 0;
   }
+  function windSpeedAt(x,y,getTile){
+    try{
+      const W=MM.wind;
+      if(W && typeof W.speedAt==='function') return W.speedAt(x,y,getTile);
+    }catch(e){}
+    return 0;
+  }
+  function applyWindToArrow(a,dt,getTile){
+    if(!a || a.stuck) return false;
+    const sp=windSpeedAt(a.x,a.y,getTile);
+    if(Math.abs(sp)<0.05) return false;
+    const before=a.vx||0;
+    const response=a.power ? 0.12 : 0.16;
+    a.vx = before + sp*response*dt;
+    if(Math.abs(a.vx)>ARROW_SPEED*1.35) a.vx=Math.sign(a.vx)*ARROW_SPEED*1.35;
+    return a.vx!==before;
+  }
+  function puffWindResponse(kind){
+    if(kind==='steam') return 1.05;
+    if(kind==='flame') return 0.86;
+    if(kind==='gas') return 0.74;
+    if(kind==='hose') return 0.24;
+    return 0.50;
+  }
+  function applyWindToPuff(p,dt,getTile){
+    if(!p) return false;
+    const sp=windSpeedAt(p.x,p.y,getTile);
+    if(Math.abs(sp)<0.05) return false;
+    p.vx += sp*puffWindResponse(p.kind)*dt;
+    const cap = p.kind==='hose' ? 15 : (p.kind==='flame' ? 16 : 12);
+    if(Math.abs(p.vx)>cap) p.vx=Math.sign(p.vx)*cap;
+    return true;
+  }
   function igniteWorldGas(x,y,getTile,setTile,radius){
     try{ return !!(MM.gases && MM.gases.igniteAt && MM.gases.igniteAt(x,y,getTile,setTile,radius||1.5)); }catch(e){ return false; }
   }
@@ -666,6 +699,7 @@ import { reactions as REACTIONS } from './reactions.js';
   function update(dt, getTile, setTile){
     if(typeof getTile==='function') lastGetTile=getTile;
     if(typeof setTile==='function') lastSetTile=setTile;
+    if(!(dt>0) || !isFinite(dt)) return;
     ultCharge=Math.min(1, ultCharge + dt/ULT_CHARGE_TIME);
     if(bowCd>0) bowCd-=dt;
     if(meleeCd>0) meleeCd-=dt;
@@ -696,6 +730,7 @@ import { reactions as REACTIONS } from './reactions.js';
         igniteWorldGas(a.x,a.y,getTile,setTile,1.4);
       }
       a.vy+=ARROW_GRAV*dt;
+      applyWindToArrow(a,dt,getTile);
       const steps=Math.max(1, Math.ceil(Math.max(Math.abs(a.vx),Math.abs(a.vy))*dt/0.35));
       const sdt=dt/steps;
       for(let s=0;s<steps;s++){
@@ -737,6 +772,7 @@ import { reactions as REACTIONS } from './reactions.js';
       }
       const px0=p.x, py0=p.y;
       const cfg=STREAMS[p.kind]||STREAMS.flame;
+      applyWindToPuff(p,dt,getTile);
       p.x+=p.vx*dt; p.y+=p.vy*dt;
       p.vy+=cfg.grav*dt;
       p.vx*=1-Math.min(1,dt*0.9); p.vy*=1-Math.min(1,dt*(p.kind==='hose'?0.5:0.9));
@@ -1089,7 +1125,8 @@ import { reactions as REACTIONS } from './reactions.js';
 
   function reset(){ arrows.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); heatForgedGlass.clear(); bowCd=0; meleeCd=0; electricCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; }
   MM.weapons={fireHeld,fireUlt,update,draw,drawHeld,notifyMeleeSwing,reset,explodeAt,spawnGasCloud,
-    metrics:()=>({arrows:arrows.length,puffs:puffs.length,electricBeams:electricBeams.length,ultCharge,stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio()})};
+    metrics:()=>({arrows:arrows.length,puffs:puffs.length,electricBeams:electricBeams.length,ultCharge,stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio()}),
+    _debug:{arrows,puffs,electricBeams}};
 })();
 // ESM export (progressive migration)
 export const weapons = (typeof window!=='undefined' && window.MM) ? window.MM.weapons : undefined;

@@ -1,4 +1,4 @@
-import { T, MOVE, isSolid } from '../constants.js';
+import { T, MOVE, isLeaf, isSolid, WORLD_H } from '../constants.js';
 import WORLD from './world.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
 
@@ -8,7 +8,7 @@ const mobs = (function(){
   const MM = window.MM = window.MM || {};
   // Using ESM imports for T/MOVE/isSolid/WORLD/WORLDGEN
   // Helper predicates
-  function isSolidGround(t){ return isSolid(t) && t!==T.LEAF; }
+  function isSolidGround(t){ return isSolid(t) && !isLeaf(t); }
   function isRockFloor(t){ return t===T.STONE || t===T.COAL; }
 
   // Precomputed color variant helper (once per mob instead of per-frame string math)
@@ -58,7 +58,7 @@ const mobs = (function(){
       variant:{shift:1, from:'#f5d16a', to:'#ffe07a'},
       spawnTest(x,y,getTile){ // spawn perched above leaves (air above leaf)
         const below = getTile(x,y+1); const here = getTile(x,y);
-        return here===T.AIR && below===T.LEAF; },
+        return here===T.AIR && isLeaf(below); },
       biome: 'any',
       habitatUpdate(m, spec, getTile){ // keep slightly above ground
         const groundTile = getTile(Math.floor(m.x), Math.floor(m.y)+1); if(groundTile!==T.AIR){ m.vy -= 0.8; }
@@ -79,6 +79,128 @@ const mobs = (function(){
   // Helper biome query (0,1,2) fallback to 1 if missing
   // biomeAt returns extended biome ids now: 0 forest,1 plains,2 snow,3 desert,4 swamp,5 sea,6 lake,7 mountain
   function biomeAt(x){ try{ return WORLDGEN && WORLDGEN.biomeType ? WORLDGEN.biomeType(x) : 1; }catch(e){ return 1; } }
+  function currentSeasonId(){
+    try{
+      const seasons=MM.seasons;
+      if(seasons && typeof seasons.metrics==='function'){
+        const m=seasons.metrics();
+        if(m && typeof m.season==='string') return m.season;
+      }
+      if(seasons && typeof seasons.profile==='function'){
+        const p=seasons.profile();
+        if(p && typeof p.id==='string') return p.id;
+      }
+    }catch(e){}
+    return null;
+  }
+  function seasonActive(id){
+    if(!id) return true;
+    return currentSeasonId()===id;
+  }
+  function speciesSeasonActive(spec){
+    return !spec || !spec.season || seasonActive(spec.season);
+  }
+  const SEASON_HALLMARK_SPECIES = {
+    spring: 'WIOSENNY_JELEN',
+    summer: 'LETNI_ZUBR',
+    autumn: 'JESIENNY_LOS',
+    winter: 'ZIMOWY_NIEDZWIEDZ'
+  };
+  const SEASON_ECOLOGY = {
+    spring: {
+      BIRD:1.28, SQUIRREL:1.35, DEER:1.45, RABBIT:1.55, ZABA:1.25, FISH:1.12,
+      BEAR:0.82, WOLF:0.72, GHOUL:0.82
+    },
+    summer: {
+      FIREFLY:1.55, FISH:1.24, CRAB:1.30, JASZCZUR:1.42, ZABA:1.18, BIRD:1.10,
+      WOLF:0.70, OWL:0.82
+    },
+    autumn: {
+      BEAR:1.25, WOLF:1.20, OWL:1.18, GOAT:1.10, DEER:0.78, RABBIT:0.62,
+      SQUIRREL:0.72, FIREFLY:0.45
+    },
+    winter: {
+      WOLF:1.65, GOAT:1.35, OWL:1.20, BEAR:0.72, FISH:0.58, CRAB:0.28,
+      RABBIT:0.34, DEER:0.24, BIRD:0.42, SQUIRREL:0.30, FIREFLY:0.06, ZABA:0.05, JASZCZUR:0.12
+    }
+  };
+  function seasonHallmarkSpeciesId(id){
+    const key = id || currentSeasonId() || 'spring';
+    return SEASON_HALLMARK_SPECIES[key] || null;
+  }
+  function seasonalSpeciesFactor(spec){
+    if(!spec || spec.organic===false || spec.id==='ZLOTY') return 1;
+    const season = currentSeasonId();
+    if(!season) return 1;
+    if(spec.season) return spec.season===season ? 1.35 : 0;
+    const table = SEASON_ECOLOGY[season];
+    if(!table) return 1;
+    const v = table[spec.id];
+    return (typeof v==='number' && isFinite(v)) ? Math.max(0.02, Math.min(2.2, v)) : 1;
+  }
+  function bigAnimalSpawnCell(x,y,getTile,opts){
+    opts=opts||{};
+    const floor=opts.floor || function(t){ return t===T.GRASS || t===T.SNOW || t===T.MUD || t===T.SAND || isRockFloor(t); };
+    const half=opts.halfWidth==null ? 1 : Math.max(0, opts.halfWidth|0);
+    const height=opts.height==null ? 2 : Math.max(1, opts.height|0);
+    for(let dx=-half; dx<=half; dx++){
+      for(let dy=0; dy>-height; dy--){
+        if(getTile(x+dx,y+dy)!==T.AIR) return false;
+      }
+    }
+    let supports=0;
+    for(let dx=-half; dx<=half; dx++){
+      if(floor(getTile(x+dx,y+1))) supports++;
+    }
+    return supports>=Math.max(1, Math.min(2, half+1));
+  }
+  function safeSetMobTile(x,y,t,getTile){
+    if(!WORLD || typeof WORLD.setTile!=='function' || typeof getTile!=='function') return false;
+    x=Math.floor(x); y=Math.floor(y);
+    if(y<1 || y>=WORLD_H-1 || getTile(x,y)!==T.AIR) return false;
+    WORLD.setTile(x,y,t);
+    return getTile(x,y)===t;
+  }
+  function sparkleAtMob(m,tier){
+    try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20),m.y*(MM.TILE||20),tier||'common'); }catch(e){}
+  }
+  function springBlessNearbyGrowth(m,getTile){
+    const now=performance.now();
+    if(m._nextSeasonBless && now<m._nextSeasonBless) return false;
+    m._nextSeasonBless=now+3600+Math.random()*2800;
+    const bx=Math.floor(m.x), by=Math.floor(m.y);
+    for(let r=1; r<=4; r++){
+      for(let tries=0; tries<10; tries++){
+        const x=bx+((Math.random()*r*2-r)|0);
+        const y=by-1-((Math.random()*4)|0);
+        const nearWood = getTile(x-1,y)===T.WOOD || getTile(x+1,y)===T.WOOD || getTile(x,y+1)===T.WOOD || isLeaf(getTile(x,y+1));
+        if(nearWood && safeSetMobTile(x,y,T.LEAF,getTile)){ sparkleAtMob(m,'common'); return true; }
+      }
+    }
+    return false;
+  }
+  function nearestSameSpecies(m,radius){
+    const r2=radius*radius;
+    let best=null, bestD=r2;
+    for(const o of mobs){
+      if(o===m || o.id!==m.id || !validMobState(o)) continue;
+      const dx=o.x-m.x, dy=o.y-m.y, d2=dx*dx+dy*dy;
+      if(d2<bestD){ best=o; bestD=d2; }
+    }
+    return best;
+  }
+  function nearCaveMouth(m,getTile){
+    const x=Math.floor(m.x), y=Math.floor(m.y);
+    let rock=0, air=0;
+    for(let dx=-3; dx<=3; dx++){
+      for(let dy=-1; dy<=3; dy++){
+        const t=getTile(x+dx,y+dy);
+        if(isRockFloor(t) || t===T.SNOW || t===T.ICE) rock++;
+        else if(t===T.AIR || t===T.WATER) air++;
+      }
+    }
+    return rock>=10 && air>=6;
+  }
 
   registerSpecies({ // Large forest predator near trees
   id:'BEAR', max:6, hp:30, dmg:10, speed:2.0, wanderInterval:[3,7], xp:25, ground:true,
@@ -87,7 +209,7 @@ const mobs = (function(){
   variant:{shift:3, from:'#6b4a30', to:'#7d573b'},
   body:{w:1.6,h:1.2},
     loot:[{item:'wood', min:1, max:2, chance:0.4}],
-    spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); if(!(below===T.GRASS||below===T.WOOD||below===T.LEAF)) return false; // require trunk or leaf adjacency
+    spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); if(!(below===T.GRASS||below===T.WOOD||isLeaf(below))) return false; // require trunk or leaf adjacency
       const trunk = getTile(x-1,y+1)===T.WOOD || getTile(x+1,y+1)===T.WOOD; return trunk && biomeAt(x)===0; },
     biome:'forest',
     onUpdate(m,spec,{dt,player,aggressive,speed}){ // slow patrol, lunge when close (horizontal only, grounded)
@@ -104,12 +226,12 @@ const mobs = (function(){
   move:{jumpVel:-3.2, maxClimb:2, avoidWater:true, preferLeaf:true},
   body:{w:0.8,h:0.7},
     loot:[{item:'leaf', min:1, max:2, chance:0.5}],
-    spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); return here===T.AIR && below===T.LEAF; },
+    spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); return here===T.AIR && isLeaf(below); },
     biome:'forest',
     onUpdate(m,spec,{now,dt,player,speed}){ // quick horizontal dashes along canopy
       if(Math.random()<0.02){ m.vx = (Math.random()<0.5?-1:1)*(speed||spec.speed)*(0.6+Math.random()*0.4); m.vy *=0.3; }
       // constrain to leaf layer: if below leaves, nudge up
-  const underLeaf = WORLD && WORLD.getTile ? WORLD.getTile(Math.floor(m.x), Math.floor(m.y)+1)===T.LEAF : false;
+  const underLeaf = WORLD && WORLD.getTile ? isLeaf(WORLD.getTile(Math.floor(m.x), Math.floor(m.y)+1)) : false;
       if(!underLeaf){ // treat like ground animal: ensure downward grav not cancelled so it stands
         if(m.onGround){ // occasional hop with varied height
           if(Math.random()<0.04){ m.vy = (spec.move.jumpVel||-3.2) * (m.jumpMul||1) * (0.85 + Math.random()*0.3); }
@@ -231,7 +353,7 @@ const mobs = (function(){
   registerSpecies({ // Firefly – ambience (low HP) over grass, pulsating
     id:'FIREFLY', max:26, hp:2, dmg:0, speed:2.0, wanderInterval:[0.6,1.6], xp:2, flying:true,
   sightRange: 10, pursueRange: 12,
-    spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); return here===T.AIR && (below===T.GRASS || below===T.LEAF); },
+    spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); return here===T.AIR && (below===T.GRASS || isLeaf(below)); },
     biome:'plains',
     onUpdate(m,spec,{dt,now}){ if(Math.random()<0.03){ m.vx += (Math.random()*2-1)*0.4; m.vy += (Math.random()*2-1)*0.2; } }
   });
@@ -285,6 +407,129 @@ const mobs = (function(){
         m.vy=(spec.move.jumpVel||-5)*(0.75+Math.random()*0.35);
         m._nextJumpAt=now+700+Math.random()*900;
       }
+    }
+  });
+
+  registerSpecies({
+    id:'WIOSENNY_JELEN', displayName:'Wiosenny jelen', season:'spring',
+    max:3, localMax:1, spawnChance:0.72, hp:34, dmg:7, speed:3.55, wanderInterval:[1.8,4.2], xp:34, ground:true,
+    sightRange:18, pursueRange:26,
+    move:{jumpVel:-4.5, maxClimb:2, avoidWater:true},
+    body:{w:1.9,h:1.65},
+    variant:{shift:2, from:'#b88747', to:'#d19b58'},
+    loot:[{item:'springAntler', min:1, max:1, chance:1}, {item:'leaf', min:2, max:4, chance:1}, {item:'wood', min:1, max:2, chance:0.45}],
+    meatDropChance:0.75,
+    spawnTest(x,y,getTile){
+      if(!seasonActive('spring')) return false;
+      const b=biomeAt(x);
+      if(b!==0 && b!==1) return false;
+      return bigAnimalSpawnCell(x,y,getTile,{halfWidth:1,height:3,floor:t=>t===T.GRASS || isLeaf(t) || t===T.WOOD});
+    },
+    biome:'forest',
+    onCreate(m){ m.scale=1.03+Math.random()*0.16; m.speedMul=0.86+Math.random()*0.18; m.jumpMul=0.95+Math.random()*0.16; },
+    onUpdate(m,spec,{player,dt,speed,getTile}){
+      const dx=player.x-m.x, adx=Math.abs(dx);
+      if(getTile) springBlessNearbyGrowth(m,getTile);
+      if(adx<8){ const dir=dx>0?-1:1; m.vx += dir*(speed||spec.speed)*0.45*dt*30; m.facing=dir; if(m.onGround && Math.random()<0.03) m.vy=(spec.move.jumpVel||-4)*0.9; }
+      else if(Math.random()<0.008){ m.vx += (Math.random()<0.5?-1:1)*(speed||spec.speed)*0.28; }
+    }
+  });
+
+  registerSpecies({
+    id:'LETNI_ZUBR', displayName:'Letni zubr', season:'summer',
+    max:4, localMax:2, spawnBatch:2, spawnChance:0.78, hp:52, dmg:13, speed:2.85, wanderInterval:[2.2,5.4], xp:46, ground:true,
+    sightRange:16, pursueRange:24,
+    move:{jumpVel:-3.0, maxClimb:1, avoidWater:true},
+    body:{w:2.35,h:1.55},
+    variant:{shift:4, from:'#7d5430', to:'#a06a32'},
+    loot:[{item:'summerHorn', min:1, max:1, chance:1}, {item:'grass', min:2, max:5, chance:1}, {item:'wood', min:1, max:2, chance:0.25}],
+    meatDropChance:1,
+    spawnTest(x,y,getTile){
+      if(!seasonActive('summer')) return false;
+      const b=biomeAt(x);
+      if(b!==1 && b!==3) return false;
+      return bigAnimalSpawnCell(x,y,getTile,{halfWidth:1,height:3,floor:t=>t===T.GRASS || t===T.SAND});
+    },
+    biome:'plains',
+    onCreate(m){ m.scale=1.10+Math.random()*0.18; m.speedMul=0.78+Math.random()*0.16; m.jumpMul=0.72+Math.random()*0.12; },
+    onUpdate(m,spec,{player,dt,speed}){
+      const dx=player.x-m.x, adx=Math.abs(dx)||1;
+      const herd=nearestSameSpecies(m,10);
+      if(herd && adx>=8){
+        const gap=herd.x-m.x;
+        m.vx += Math.sign(gap||m.facing)*(speed||spec.speed)*0.08*dt*30;
+      }
+      if(adx<6){
+        const dir=dx>0?1:-1;
+        m.vx += dir*(speed||spec.speed)*0.55*dt*30;
+        m.facing=dir;
+        setAggro(m.id);
+      } else if(adx<13){
+        const dir=dx>0?-1:1;
+        m.vx += dir*(speed||spec.speed)*0.16*dt*30;
+        m.facing=dir;
+      }
+      if(Math.random()<0.004) m.vx += (Math.random()<0.5?-1:1)*0.5;
+    }
+  });
+
+  registerSpecies({
+    id:'JESIENNY_LOS', displayName:'Jesienny los', season:'autumn',
+    max:3, localMax:1, spawnChance:0.74, hp:44, dmg:11, speed:3.05, wanderInterval:[2.0,4.8], xp:42, ground:true,
+    sightRange:19, pursueRange:26,
+    move:{jumpVel:-3.7, maxClimb:1.6, avoidWater:false},
+    body:{w:2.05,h:1.85},
+    variant:{shift:3, from:'#855c35', to:'#b0783f'},
+    loot:[{item:'autumnHeartwood', min:1, max:1, chance:1}, {item:'leaf', min:3, max:6, chance:1}, {item:'wood', min:1, max:2, chance:0.35}],
+    meatDropChance:0.85,
+    spawnTest(x,y,getTile){
+      if(!seasonActive('autumn')) return false;
+      const b=biomeAt(x);
+      if(b!==0 && b!==4 && b!==1) return false;
+      return bigAnimalSpawnCell(x,y,getTile,{halfWidth:1,height:3,floor:t=>t===T.GRASS || t===T.MUD || isLeaf(t)});
+    },
+    biome:'forest',
+    onCreate(m){ m.scale=1.08+Math.random()*0.18; m.speedMul=0.82+Math.random()*0.18; m.jumpMul=0.82+Math.random()*0.14; },
+    onUpdate(m,spec,{player,dt,speed,getTile}){
+      const dx=player.x-m.x, adx=Math.abs(dx)||1;
+      const wind=getTile ? windSpeedAt(m.x,m.y-0.5,getTile) : 0;
+      const windCharge=Math.abs(wind)>1.1 && adx<13;
+      if(adx<5 || windCharge){
+        const dir=dx>0?1:-1;
+        m.vx += dir*(speed||spec.speed)*(windCharge?0.58:0.46)*dt*30;
+        m.facing=dir;
+        setAggro(m.id);
+      } else if(Math.random()<0.006) m.vx += (Math.random()<0.5?-1:1)*(speed||spec.speed)*0.24;
+    }
+  });
+
+  registerSpecies({
+    id:'ZIMOWY_NIEDZWIEDZ', displayName:'Zimowy niedzwiedz', season:'winter',
+    max:2, localMax:1, spawnChance:0.82, hp:58, dmg:15, speed:2.55, wanderInterval:[2.6,6.0], xp:58, ground:true,
+    sightRange:20, pursueRange:30,
+    move:{jumpVel:-3.2, maxClimb:1.4, avoidWater:true},
+    body:{w:2.2,h:1.55},
+    variant:{shift:1, from:'#dfeaf1', to:'#f7fbff'},
+    loot:[{item:'winterFur', min:1, max:1, chance:1}, {item:'snow', min:3, max:7, chance:1}],
+    meatDropChance:1,
+    spawnTest(x,y,getTile){
+      if(!seasonActive('winter')) return false;
+      const b=biomeAt(x);
+      if(b!==2 && b!==7) return false;
+      return bigAnimalSpawnCell(x,y,getTile,{halfWidth:1,height:3,floor:t=>t===T.SNOW || t===T.ICE || isRockFloor(t)});
+    },
+    biome:'snow',
+    onCreate(m){ m.scale=1.12+Math.random()*0.16; m.speedMul=0.82+Math.random()*0.15; m.jumpMul=0.78+Math.random()*0.12; },
+    onUpdate(m,spec,{player,dt,speed,aggressive,getTile}){
+      const dx=player.x-m.x, adx=Math.abs(dx)||1;
+      const guarding=getTile ? nearCaveMouth(m,getTile) : false;
+      if(guarding && adx<14 && player.y>m.y-3) setAggro(m.id);
+      if(aggressive || adx<10 || (guarding && adx<14)){
+        const dir=dx>0?1:-1;
+        m.vx += dir*(speed||spec.speed)*(guarding?0.40:0.34)*dt*30;
+        m.facing=dir;
+        if(adx<5) setAggro(m.id);
+      } else if(Math.random()<0.005) m.vx += (Math.random()<0.5?-1:1)*0.35;
     }
   });
 
@@ -444,7 +689,7 @@ const mobs = (function(){
   function updateProjectiles(dt, player, getTile){
     for(let i=mobProjectiles.length-1;i>=0;i--){
       const pr=mobProjectiles[i];
-      pr.t+=dt; pr.vy+=9*dt; pr.x+=pr.vx*dt; pr.y+=pr.vy*dt; pr.spin+=dt*8;
+      pr.t+=dt; pr.vy+=9*dt; applyWindToMobProjectile(pr,dt,getTile); pr.x+=pr.vx*dt; pr.y+=pr.vy*dt; pr.spin+=dt*8;
       let dead=pr.t>4;
       if(!dead && player && Math.abs(player.x-pr.x)<0.6 && Math.abs(player.y-pr.y)<0.8){
         damagePlayer(pr.dmg, pr.x, pr.y); dead=true;
@@ -575,6 +820,22 @@ const mobs = (function(){
       spawnGolden(null, player);
     }
   }
+  function goldenSnapshot(){
+    return {
+      acc: Math.max(0, Math.round(Number.isFinite(GOLDEN.acc)?GOLDEN.acc:0)),
+      visits: Math.max(0, Number.isFinite(GOLDEN.visits)?(GOLDEN.visits|0):0)
+    };
+  }
+  function goldenRestore(data){
+    const period=GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC;
+    GOLDEN.acc=0; GOLDEN.saveAcc=0; GOLDEN.visits=0;
+    if(data && typeof data==='object'){
+      if(Number.isFinite(data.visits)) GOLDEN.visits=Math.max(0, Math.min(1000000, data.visits|0));
+      if(Number.isFinite(data.acc)) GOLDEN.acc=Math.max(0, Math.min(period, data.acc));
+    }
+    goldenSave();
+  }
+  function goldenReset(){ goldenRestore(null); }
   registerSpecies({
     id:'ZLOTY', max:1, hp:90, dmg:0, speed:9.5, wanderInterval:[9,9], xp:150,
     flying:true, organic:false, lifeSpanSec:600,
@@ -673,8 +934,20 @@ const mobs = (function(){
   }
 
   function rand(a,b){ return a + Math.random()*(b-a); }
+  function finiteNum(v){ return typeof v==='number' && isFinite(v); }
+  function finiteCoord(v){ return finiteNum(v) && Math.abs(v)<10000000; }
+  function clampFinite(v,fallback,min,max){
+    if(!finiteNum(v)) return fallback;
+    if(typeof min==='number' && v<min) return min;
+    if(typeof max==='number' && v>max) return max;
+    return v;
+  }
+  function validMobState(m){
+    return !!m && finiteCoord(m.x) && finiteCoord(m.y) && finiteNum(m.vx) && finiteNum(m.vy) && finiteNum(m.hp);
+  }
 
   function create(spec, x,y,getTile){
+    x=finiteCoord(x)?x:0; y=finiteCoord(y)?y:0;
     const now = performance.now();
   const m={ id: spec.id, x, y, vx:0, vy:0, hp: spec.hp, state:'idle', tNext: now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000, facing:1, spawnT: now, attackCd:0, hitFlashUntil:0, shake:0, tickMod: (Math.random()<0.5?1:0), sleepUntil:0 };
   // Per-entity variability
@@ -692,7 +965,12 @@ const mobs = (function(){
     m.baseColor = jitterColor(col, {h:16, s:0.20, l:0.16});
   }
   if(!m.baseColor){
-    const BASE = { SQUIRREL:'#b07040', DEER:'#9c6a39', RABBIT:'#dddddd', OWL:'#c8a860', CRAB:'#c23a2e', EEL:'#2f8a4a', GOAT:'#c9c4b5', BEAR:'#6b4a30', WOLF:'#bcbcbc', FISH:'#4eb2f1', BIRD:'#f5d16a', STRAZNIK:'#8f9aa6' };
+    const BASE = {
+      SQUIRREL:'#b07040', DEER:'#9c6a39', RABBIT:'#dddddd', OWL:'#c8a860', CRAB:'#c23a2e',
+      EEL:'#2f8a4a', GOAT:'#c9c4b5', BEAR:'#6b4a30', WOLF:'#bcbcbc', FISH:'#4eb2f1',
+      BIRD:'#f5d16a', STRAZNIK:'#8f9aa6',
+      WIOSENNY_JELEN:'#bf8a4d', LETNI_ZUBR:'#8d5e32', JESIENNY_LOS:'#9a6737', ZIMOWY_NIEDZWIEDZ:'#e9f3f8'
+    };
     const base = BASE[spec.id] || '#a8a8a8';
     m.baseColor = jitterColor(base, {h:12, s:0.14, l:0.10});
   }
@@ -839,17 +1117,26 @@ const mobs = (function(){
   }
 
   function forceSpawn(specId, player, getTile){ const spec=SPECIES[specId]; if(!spec) return false; if((speciesCounts[specId]||0) >= spec.max) return false; // cap
+    if(!player || !finiteCoord(player.x) || !finiteCoord(player.y) || typeof getTile!=='function') return false;
     // try valid spawn positions first
     for(let tries=0; tries<20; tries++){ const dx=(Math.random()*10 -5); const dy=(Math.random()*6 -3); const tx=Math.floor(player.x+dx); const ty=Math.floor(player.y+dy); if(spec.spawnTest(tx,ty,getTile)){ mobs.push(create(spec, tx+0.5, ty+0.5, getTile)); return true; } }
     if(spec.aquatic) return false;
     // fallback: drop directly near player even if test fails
     mobs.push(create(spec, player.x + (Math.random()*2-1), player.y - 0.5, getTile)); return true; }
+  function spawnSeasonalHallmark(season, player, getTile){
+    const id=seasonHallmarkSpeciesId(season);
+    if(!id) return false;
+    const p=player || window.player;
+    const gt=(typeof getTile==='function') ? getTile : (WORLD && WORLD.getTile);
+    return forceSpawn(id,p,gt);
+  }
 
   function countSpecies(id){ return speciesCounts[id]||0; }
   function localMobCounts(player,radius){
     const r2=radius*radius;
     const out={total:0, bySpecies:{}};
     for(const m of mobs){
+      if(!validMobState(m)) continue;
       const dx=m.x-player.x, dy=m.y-player.y;
       if(dx*dx+dy*dy>r2) continue;
       out.total++;
@@ -861,6 +1148,22 @@ const mobs = (function(){
     if(typeof spec.localMax==='number') return Math.max(0, spec.localMax|0);
     const scale = spec.aquatic ? 0.28 : (spec.flying ? 0.22 : 0.24);
     return Math.max(1, Math.min(spec.max||8, Math.ceil((spec.max||8)*scale)));
+  }
+  function seasonAnimalMultiplier(spec){
+    if(!spec || spec.organic===false || spec.id==='ZLOTY') return 1;
+    try{
+      const seasons=MM.seasons;
+      const p=seasons && typeof seasons.profile==='function' ? seasons.profile() : null;
+      const v=p && p.animalSpawnMult;
+      const broad=(typeof v==='number' && isFinite(v)) ? Math.max(0.05, Math.min(3, v)) : 1;
+      return Math.max(0.02, Math.min(3.2, broad * seasonalSpeciesFactor(spec)));
+    }catch(e){ return 1; }
+  }
+  function seasonAdjustedLocalCap(spec){
+    const cap=localCapFor(spec);
+    const mult=seasonAnimalMultiplier(spec);
+    if(mult===1) return cap;
+    return Math.max(1, Math.round(cap * (0.35 + 0.65 * mult)));
   }
   function biomeAffinity(spec, biome){
     if(spec.alwaysAggro && spec.biome==null) return 0.35;
@@ -892,6 +1195,7 @@ const mobs = (function(){
 
   let nextSpawnCheck = 0;
   function trySpawnNearPlayer(player, getTile, now){
+  if(!player || !finiteCoord(player.x) || !finiteCoord(player.y) || typeof getTile!=='function') return;
   if(now < nextSpawnCheck) return; // throttle globally
   if(now < spawnFreezeUntil) { nextSpawnCheck = now + 500; return; }
     nextSpawnCheck = now + ECO_SPAWN_MIN_MS + Math.random()*ECO_SPAWN_JITTER_MS;
@@ -901,15 +1205,16 @@ const mobs = (function(){
     const candidates=[];
     for(const key in SPECIES){
       const spec=SPECIES[key];
+      if(!speciesSeasonActive(spec)) continue;
       if(countSpecies(spec.id) >= spec.max) continue;
-      const localCap=localCapFor(spec);
+      const localCap=seasonAdjustedLocalCap(spec);
       const localCount=local.bySpecies[spec.id]||0;
       if(localCount>=localCap) continue;
       const affinity=biomeAffinity(spec,biome);
       if(affinity<=0.02) continue;
       const spawnChance=(typeof spec.spawnChance==='number' && isFinite(spec.spawnChance)) ? Math.max(0,Math.min(1,spec.spawnChance)) : 0.38;
       const deficit=Math.max(0,localCap-localCount);
-      const weight=affinity*spawnChance*(0.6+deficit/localCap);
+      const weight=affinity*spawnChance*seasonAnimalMultiplier(spec)*(0.6+deficit/localCap);
       if(weight>0) candidates.push({spec,weight});
     }
     candidates.sort((a,b)=>b.weight-a.weight);
@@ -923,7 +1228,7 @@ const mobs = (function(){
       const batch=(typeof cand.spec.spawnBatch==='number' && isFinite(cand.spec.spawnBatch)) ? Math.max(1,cand.spec.spawnBatch|0) : 1;
       const passCapForCandidate=Math.max(ECO_MAX_BIRTHS_PER_PASS,batch);
       for(let n=0; n<batch && born<passCapForCandidate && local.total+born<ECO_TOTAL_LOCAL_CAP; n++){
-        const localCap=localCapFor(cand.spec);
+        const localCap=seasonAdjustedLocalCap(cand.spec);
         const localCount=local.bySpecies[cand.spec.id]||0;
         if(localCount>=localCap || countSpecies(cand.spec.id)>=cand.spec.max) break;
         const spot=findEcologicalSpawn(cand.spec,player,getTile);
@@ -997,17 +1302,69 @@ const mobs = (function(){
     const stepDt = dt / steps;
     for(let s=0; s<steps; s++) integrateFloatingTerrainStep(m,spec,getTile,stepDt);
   }
-  function update(dt, player, getTile){ const now = performance.now(); frame++;
+  function windSpeedAt(x,y,getTile){
+    try{
+      const W=MM.wind;
+      if(W && typeof W.speedAt==='function') return W.speedAt(x,y,getTile);
+    }catch(e){}
+    return 0;
+  }
+  function windMobResponse(m,spec){
+    if(!m || !spec || spec.aquatic) return 0;
+    if(m.id==='ZLOTY') return 0; // the legendary visitor follows its own scripted physics
+    if(spec.flying){
+      if(m.id==='FIREFLY') return 0.38;
+      if(m.id==='BAT') return 0.24;
+      if(m.id==='BIRD' || m.id==='OWL') return 0.18;
+      return 0.20;
+    }
+    const airborne = !m.onGround || (m._wantJump && m.vy<-0.35) || m.vy<-0.55;
+    if(!airborne) return 0;
+    if(spec.organic===false) return 0.015;
+    if(m.id==='RABBIT' || m.id==='SQUIRREL' || m.id==='ZABA') return 0.11;
+    if(m.id==='DEER' || m.id==='GOAT' || m.id==='JASZCZUR') return 0.055;
+    return 0.035;
+  }
+  function applyWindToMob(m,spec,getTile,dt){
+    const response=windMobResponse(m,spec);
+    if(response<=0) return false;
+    const sp=windSpeedAt(m.x,m.y-0.25,getTile);
+    if(Math.abs(sp)<0.05) return false;
+    const before=m.vx||0;
+    const accelScale=spec.flying ? 2.45 : 1.65;
+    m.vx = before + sp*response*accelScale*dt;
+    const cap=(spec.speed||MOVE.MAX)*(m.speedMul||1)*(spec.flying?1.35:1.12);
+    if(Math.sign(m.vx)===Math.sign(sp) && Math.abs(m.vx)>cap) m.vx=Math.sign(sp)*cap;
+    m._windPush = m.vx-before;
+    return true;
+  }
+  function applyWindToMobProjectile(pr,dt,getTile){
+    if(!pr || !(dt>0)) return false;
+    const sp=windSpeedAt(pr.x,pr.y,getTile);
+    if(Math.abs(sp)<0.05) return false;
+    const before=pr.vx||0;
+    pr.vx = before + sp*0.16*dt;
+    if(Math.abs(pr.vx)>13) pr.vx=Math.sign(pr.vx)*13;
+    return pr.vx!==before;
+  }
+  function update(dt, player, getTile){
+    if(!(dt>0) || !isFinite(dt) || !player || !finiteCoord(player.x) || !finiteCoord(player.y) || typeof getTile!=='function') return;
+    const now = performance.now(); frame++;
     laserTraceCalls=0; laserTileChecks=0;
     sentinelShotsThisFrame=0; sentinelDeferredThisFrame=0;
     // Despawn far / off-screen old passive mobs (not aggro)
-    for(let i=mobs.length-1;i>=0;i--){ const m=mobs[i]; if(m.hp<=0){ removeFromGrid(m); mobs.splice(i,1); continue; } const dist = Math.abs(m.x-player.x); if(dist>220 && !isAggro(m.id)) { removeFromGrid(m); mobs.splice(i,1); continue; } }
+    for(let i=mobs.length-1;i>=0;i--){ const m=mobs[i]; if(!validMobState(m) || m.hp<=0){ removeFromGrid(m); mobs.splice(i,1); continue; } const dist = Math.abs(m.x-player.x); if(dist>220 && !isAggro(m.id)) { removeFromGrid(m); mobs.splice(i,1); continue; } }
     // Spawn attempt occasionally
     trySpawnNearPlayer(player,getTile, now);
     // Golden sprinter visit clock (counts played time, persists across reloads)
     goldenTick(dt, player);
     // Precompute separation: basic O(n^2) for small counts (opt: grid neighbor query)
-    metrics.count = mobs.length; let active=0;
+    metrics.count = mobs.length;
+    try{
+      const p=MM.seasons && MM.seasons.profile ? MM.seasons.profile() : null;
+      metrics.seasonAnimalMult = p && typeof p.animalSpawnMult==='number' ? +p.animalSpawnMult.toFixed(3) : 1;
+    }catch(e){ metrics.seasonAnimalMult = 1; }
+    let active=0;
     for(let i=0;i<mobs.length;i++){
       const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue; const aggressive=isAggro(m.id)||!!spec.alwaysAggro;
       // Natural lifespan: apply health decay when past decayStartAt; ensure it runs before far-sleep skip
@@ -1065,7 +1422,7 @@ const mobs = (function(){
                 const maxH = Math.ceil(spec.move.maxClimb);
                 for(let h=1; h<=maxH; h++){
                   const space = getTile(baseX, footY - h);
-                  if(space===T.AIR || space===T.LEAF){
+                  if(space===T.AIR || isLeaf(space)){
                     // Found climbable gap within maxClimb
                     m._wantJump = true; // mark jump intent
                     break;
@@ -1104,6 +1461,7 @@ const mobs = (function(){
       if(spec.aquatic || spec.flying){
         const damp = aggressive? 0.9 : 0.92; m.vx*=damp; m.vy*= (spec.aquatic? 0.95 : 0.92);
       }
+      applyWindToMob(m,spec,getTile,dt);
       // Clamp speeds
   const maxS = (spec.speed * (m.speedMul||1)) * (aggressive?1.4:1); const sp=Math.hypot(m.vx,m.vy); if(sp>maxS){ const s=maxS/sp; m.vx*=s; m.vy*=s; }
       // Sleep logic for far, non-aggro mobs: update position only sparsely
@@ -1467,6 +1825,112 @@ const mobs = (function(){
           ctx.fillRect(screenX-9, screenY+1,5,2);
           ctx.fillRect(screenX+4, screenY+1,5,2);
           break; }
+        case 'WIOSENNY_JELEN': {
+          const body = flashing? '#fff7e8':(m.baseColor||'#bf8a4d');
+          const run=Math.sin(phase*1.6);
+          box(screenX-18, screenY-16,36,14, body,'#6b4726');
+          shade(screenX-18,screenY-5,36,3,'#000',0.10);
+          ctx.fillStyle='#f2c57a';
+          ctx.fillRect(screenX-16,screenY-15,22,3);
+          ctx.fillStyle=body;
+          ctx.fillRect(screenX+(faceDir>0?10:-19),screenY-23,10,9); hpTop(screenY-23);
+          ctx.fillStyle='#ead9b8';
+          ctx.fillRect(screenX+(faceDir>0?18:-22),screenY-18,5,4);
+          ctx.fillStyle='#1b1209';
+          ctx.fillRect(screenX+(faceDir>0?19:-21),screenY-17,2,2);
+          ctx.strokeStyle='#7a5b31'; ctx.lineWidth=2; ctx.lineCap='round';
+          const ax=screenX+(faceDir>0?13:-13);
+          ctx.beginPath(); ctx.moveTo(ax,screenY-23); ctx.lineTo(ax-faceDir*2,screenY-34); ctx.lineTo(ax-faceDir*7,screenY-38); ctx.moveTo(ax,screenY-29); ctx.lineTo(ax+faceDir*5,screenY-34); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(ax+faceDir*5,screenY-22); ctx.lineTo(ax+faceDir*7,screenY-33); ctx.lineTo(ax+faceDir*13,screenY-36); ctx.moveTo(ax+faceDir*7,screenY-29); ctx.lineTo(ax+faceDir*12,screenY-31); ctx.stroke();
+          hpTop(screenY-39);
+          ctx.fillStyle='#ff9ac8';
+          [[-7,-38],[-2,-34],[6,-35],[12,-31]].forEach(([ox,oy])=>{ ctx.fillRect(ax+faceDir*ox-1,screenY+oy-1,3,3); });
+          ctx.fillStyle='#5f3d20';
+          ctx.fillRect(screenX-14+run*2,screenY-2,4,11);
+          ctx.fillRect(screenX-5-run*2,screenY-2,4,11);
+          ctx.fillRect(screenX+5+run*2,screenY-2,4,11);
+          ctx.fillRect(screenX+14-run*2,screenY-2,4,11);
+          ctx.fillStyle='rgba(116,210,84,0.78)';
+          for(let i=0;i<5;i++) ctx.fillRect(screenX-14+i*7,screenY-18-(i%2),3,2);
+          break; }
+        case 'LETNI_ZUBR': {
+          const body = flashing? '#fff0d2':(m.baseColor||'#8d5e32');
+          const stomp=Math.sin(phase*1.2);
+          box(screenX-24, screenY-18,48,18, body,'#4d3118');
+          shade(screenX-24,screenY-18,24,8,'#2a170b',0.24);
+          ctx.fillStyle='#5d3a1e';
+          ctx.fillRect(screenX-21,screenY-25,24,13); hpTop(screenY-25);
+          ctx.fillStyle=body;
+          ctx.fillRect(screenX+(faceDir>0?14:-28),screenY-19,16,11);
+          ctx.fillStyle='#f1d5a0';
+          ctx.fillRect(screenX+(faceDir>0?26:-30),screenY-15,5,4);
+          ctx.fillStyle='#1b0f08';
+          ctx.fillRect(screenX+(faceDir>0?27:-29),screenY-14,2,2);
+          ctx.fillStyle='#efe1bd';
+          ctx.fillRect(screenX+(faceDir>0?11:-23),screenY-23,8,3);
+          ctx.fillRect(screenX+(faceDir>0?24:-32),screenY-23,8,3);
+          ctx.fillStyle='#4d3118';
+          ctx.fillRect(screenX-19+stomp*1.5,screenY-1,6,12);
+          ctx.fillRect(screenX-7-stomp*1.5,screenY-1,6,12);
+          ctx.fillRect(screenX+7+stomp*1.5,screenY-1,6,12);
+          ctx.fillRect(screenX+17-stomp*1.5,screenY-1,6,12);
+          ctx.fillStyle='rgba(255,210,94,0.65)';
+          ctx.fillRect(screenX-20,screenY-28,22,2);
+          ctx.fillRect(screenX-18,screenY-30,12,2);
+          break; }
+        case 'JESIENNY_LOS': {
+          const body = flashing? '#ffe6bf':(m.baseColor||'#9a6737');
+          const gait=Math.sin(phase*1.3);
+          box(screenX-20, screenY-17,40,15, body,'#5a3820');
+          shade(screenX-20,screenY-6,40,4,'#000',0.12);
+          ctx.fillStyle='#6b4326';
+          ctx.fillRect(screenX+(faceDir>0?11:-23),screenY-26,12,11); hpTop(screenY-31);
+          ctx.fillStyle='#d7b37a';
+          ctx.fillRect(screenX+(faceDir>0?21:-27),screenY-20,6,5);
+          ctx.fillStyle='#1d1208';
+          ctx.fillRect(screenX+(faceDir>0?22:-26),screenY-19,2,2);
+          ctx.strokeStyle='#8a6a3c'; ctx.lineWidth=3; ctx.lineCap='round';
+          const ax=screenX+(faceDir>0?13:-13);
+          ctx.beginPath();
+          ctx.moveTo(ax,screenY-27); ctx.lineTo(ax-faceDir*5,screenY-39); ctx.lineTo(ax-faceDir*18,screenY-41);
+          ctx.moveTo(ax-faceDir*9,screenY-39); ctx.lineTo(ax-faceDir*12,screenY-47);
+          ctx.moveTo(ax-faceDir*14,screenY-40); ctx.lineTo(ax-faceDir*20,screenY-47);
+          ctx.moveTo(ax+faceDir*5,screenY-27); ctx.lineTo(ax+faceDir*9,screenY-38); ctx.lineTo(ax+faceDir*23,screenY-39);
+          ctx.moveTo(ax+faceDir*13,screenY-38); ctx.lineTo(ax+faceDir*16,screenY-46);
+          ctx.moveTo(ax+faceDir*18,screenY-38); ctx.lineTo(ax+faceDir*24,screenY-45);
+          ctx.stroke();
+          hpTop(screenY-48);
+          ctx.fillStyle='#d37a2d';
+          [[-19,-42],[-12,-47],[15,-45],[23,-40],[-5,-37]].forEach(([ox,oy])=>ctx.fillRect(ax+faceDir*ox-2,screenY+oy-1,4,3));
+          ctx.fillStyle='#4f311d';
+          ctx.fillRect(screenX-15+gait*2,screenY-2,5,12);
+          ctx.fillRect(screenX-4-gait*2,screenY-2,5,12);
+          ctx.fillRect(screenX+7+gait*2,screenY-2,5,12);
+          ctx.fillRect(screenX+16-gait*2,screenY-2,5,12);
+          break; }
+        case 'ZIMOWY_NIEDZWIEDZ': {
+          const body = flashing? '#ffffff':(m.baseColor||'#e9f3f8');
+          const breathe=0.5+0.5*Math.sin(phase*1.4);
+          box(screenX-23, screenY-16,46,17, body,'#94aab8');
+          shade(screenX-23,screenY-2,46,4,'#5f7c8d',0.16);
+          ctx.fillStyle=body;
+          ctx.fillRect(screenX+(faceDir>0?12:-27),screenY-23,15,12); hpTop(screenY-23);
+          ctx.fillStyle='#c8d8e0';
+          ctx.fillRect(screenX+(faceDir>0?24:-29),screenY-18,6,5);
+          ctx.fillStyle='#0c1820';
+          ctx.fillRect(screenX+(faceDir>0?26:-29),screenY-16,2,2);
+          ctx.fillStyle='#dceaf0';
+          ctx.fillRect(screenX+(faceDir>0?14:-24),screenY-24,4,4);
+          ctx.fillRect(screenX+(faceDir>0?21:-17),screenY-24,4,4);
+          ctx.fillStyle='#8da6b4';
+          ctx.fillRect(screenX-18,screenY,6,10);
+          ctx.fillRect(screenX-6,screenY,6,10);
+          ctx.fillRect(screenX+6,screenY,6,10);
+          ctx.fillRect(screenX+16,screenY,6,10);
+          ctx.fillStyle='rgba(220,250,255,'+(0.26+0.20*breathe).toFixed(3)+')';
+          ctx.fillRect(screenX+(faceDir>0?31:-37),screenY-18,5+4*breathe,2);
+          ctx.fillRect(screenX+(faceDir>0?36:-43),screenY-21,3+3*breathe,2);
+          break; }
         case 'FIREFLY': {
           const pulse = (Math.sin(now*0.01 + m.spawnT*0.005)*0.5+0.5);
           const glowA = 0.55+0.45*pulse;
@@ -1683,14 +2147,20 @@ const mobs = (function(){
           const ty = cur.b * screenX + cur.d * topY + cur.f;
           px = tx; py = ty;
         }
-        if(ctx.setTransform) ctx.setTransform(1,0,0,1,0,0);
-        const maxHp = SPECIES[m.id].hp;
-        const w = Math.max(12, Math.min(36, (SPECIES[m.id].hp||10)));
-        const frac = Math.max(0, Math.min(1, m.hp/maxHp));
-        const barY = py - 6;
-        ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(px - w/2, barY, w, 3);
-        ctx.fillStyle='#ff5252'; ctx.fillRect(px - w/2, barY, w * frac, 3);
-        if(cur && ctx.setTransform) ctx.setTransform(cur);
+        const hpSpec = SPECIES[m.id] || {hp:1};
+        const screenSpace = !!ctx.setTransform;
+        if(screenSpace){ ctx.save(); ctx.setTransform(1,0,0,1,0,0); }
+        try{
+          const maxHp = hpSpec.hp || 1;
+          const w = Math.max(12, Math.min(36, maxHp||10));
+          const frac = Math.max(0, Math.min(1, m.hp/maxHp));
+          const barY = py - 6;
+          ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(px - w/2, barY, w, 3);
+          ctx.fillStyle='#ff5252'; ctx.fillRect(px - w/2, barY, w * frac, 3);
+        } finally {
+          if(screenSpace) ctx.restore();
+          else if(cur && ctx.setTransform) ctx.setTransform(cur);
+        }
       }
       ctx.restore(); }
     // Burning mobs: flame overlay drawn after bodies so fire reads on top
@@ -1794,6 +2264,7 @@ const mobs = (function(){
   }
 
   function findAt(x,y){ // tile space coords using spatial grid
+    if(!finiteCoord(x) || !finiteCoord(y)) return null;
     // Mobs within hit range can live in a neighbouring cell when the click lands near a
     // cell border, so scan the full 3×3 neighbourhood (cells are CELL tiles wide — cheap).
     const wx = x+0.5, wy = y+0.5;
@@ -1949,17 +2420,45 @@ const mobs = (function(){
     const msg = window.msg || function(){}; msg('Zginąłeś – respawn'); player.hp = player.maxHp;
     if(window.placePlayer) window.placePlayer(true); }
 
+  function serializeMob(m){
+    if(!validMobState(m) || m.id==='ZLOTY') return null;
+    const spec=SPECIES[m.id];
+    if(!spec) return null;
+    const out={
+      id:m.id,
+      x:+m.x.toFixed(4),
+      y:+m.y.toFixed(4),
+      vx:+clampFinite(m.vx,0,-80,80).toFixed(4),
+      vy:+clampFinite(m.vy,0,-80,80).toFixed(4),
+      hp:+Math.max(0,Math.min(spec.hp||m.hp,m.hp)).toFixed(3),
+      state:typeof m.state==='string'?m.state:'idle',
+      facing:m.facing<0?-1:1,
+      spawnT:clampFinite(m.spawnT,performance.now(),0,Number.MAX_SAFE_INTEGER),
+      attackCd:clampFinite(m.attackCd,0,0,60)
+    };
+    if(finiteNum(m.waterTopY)) out.waterTopY=m.waterTopY;
+    if(finiteNum(m.desiredDepth)) out.desiredDepth=m.desiredDepth;
+    if(finiteNum(m.scale)) out.scale=clampFinite(m.scale,1,0.35,3);
+    if(finiteNum(m.speedMul)) out.speedMul=clampFinite(m.speedMul,1,0.1,4);
+    if(finiteNum(m.jumpMul)) out.jumpMul=clampFinite(m.jumpMul,1,0.1,4);
+    if(typeof m.baseColor==='string') out.baseColor=m.baseColor;
+    if(finiteNum(m.lifeEndAt)) out.lifeEndAt=m.lifeEndAt;
+    if(finiteNum(m.decayStartAt)) out.decayStartAt=m.decayStartAt;
+    return out;
+  }
+
   const AGGRO_SKEW_GRACE_MS = 30000; // accept up to 30s negative skew
   function serialize(){ const now=Date.now(); const rel={}; for(const k in speciesAggro){ const rem = speciesAggro[k]-now; if(rem>0) rel[k]=rem; }
     // the golden sprinter is a transient event creature: its _g state isn't saved,
     // so restoring it would produce a broken husk — the visit just ends instead
-    return { v:3, list: mobs.filter(m=>m.id!=='ZLOTY').map(m=>({id:m.id,x:m.x,y:m.y,vx:m.vx,vy:m.vy,hp:m.hp,state:m.state,facing:m.facing,spawnT:m.spawnT,attackCd:m.attackCd,waterTopY:m.waterTopY,desiredDepth:m.desiredDepth,scale:m.scale,speedMul:m.speedMul,jumpMul:m.jumpMul,baseColor:m.baseColor,lifeEndAt:m.lifeEndAt,decayStartAt:m.decayStartAt})), aggro:{mode:'rel', m:rel} }; }
+    return { v:4, list: mobs.map(serializeMob).filter(Boolean), aggro:{mode:'rel', m:rel}, golden:goldenSnapshot() }; }
   function deserialize(data){ // clear
     for(const m of mobs) removeFromGrid(m); mobs.length=0; // reset live counts before rebuild
     for(const k in speciesCounts) delete speciesCounts[k];
+    goldenRestore(data && data.golden);
     if(data && Array.isArray(data.list)){
-  for(const r of data.list){ if(!SPECIES[r.id]) continue; const spec=SPECIES[r.id]; const m=create(spec, r.x, r.y); m.vx=r.vx||0; m.vy=r.vy||0; m.hp=r.hp||spec.hp; m.state=r.state||'idle'; m.facing=r.facing||1; m.spawnT=r.spawnT||performance.now(); m.attackCd=r.attackCd||0; if(typeof r.scale==='number') m.scale=r.scale; if(typeof r.speedMul==='number') m.speedMul=r.speedMul; if(typeof r.jumpMul==='number') m.jumpMul=r.jumpMul; if(typeof r.baseColor==='string') m.baseColor=r.baseColor; if(typeof r.lifeEndAt==='number') m.lifeEndAt=r.lifeEndAt; if(typeof r.decayStartAt==='number') m.decayStartAt=r.decayStartAt;
-        if(spec.aquatic){ if(typeof r.waterTopY==='number') m.waterTopY=r.waterTopY; if(typeof r.desiredDepth==='number') m.desiredDepth=r.desiredDepth; m.nextWaterScan = performance.now() + 3000; m.strandedTime=0; }
+  for(const r of data.list){ if(!r || !SPECIES[r.id] || !finiteCoord(r.x) || !finiteCoord(r.y)) continue; const spec=SPECIES[r.id]; const m=create(spec, r.x, r.y); m.vx=clampFinite(r.vx,0,-80,80); m.vy=clampFinite(r.vy,0,-80,80); m.hp=clampFinite(r.hp,spec.hp,0.1,spec.hp||999); m.state=typeof r.state==='string'?r.state:'idle'; m.facing=r.facing<0?-1:1; m.spawnT=clampFinite(r.spawnT,performance.now(),0,Number.MAX_SAFE_INTEGER); m.attackCd=clampFinite(r.attackCd,0,0,60); if(finiteNum(r.scale)) m.scale=clampFinite(r.scale,1,0.35,3); if(finiteNum(r.speedMul)) m.speedMul=clampFinite(r.speedMul,1,0.1,4); if(finiteNum(r.jumpMul)) m.jumpMul=clampFinite(r.jumpMul,1,0.1,4); if(typeof r.baseColor==='string') m.baseColor=r.baseColor; if(finiteNum(r.lifeEndAt)) m.lifeEndAt=r.lifeEndAt; if(finiteNum(r.decayStartAt)) m.decayStartAt=r.decayStartAt;
+        if(spec.aquatic){ if(finiteNum(r.waterTopY)) m.waterTopY=r.waterTopY; if(finiteNum(r.desiredDepth)) m.desiredDepth=r.desiredDepth; m.nextWaterScan = performance.now() + 3000; m.strandedTime=0; }
         mobs.push(m);
       }
     }
@@ -1973,7 +2472,7 @@ const mobs = (function(){
   }
 
   // External helpers to control spawns and clearing
-  function freezeSpawns(ms){ const base = performance.now(); spawnFreezeUntil = Math.max(spawnFreezeUntil, base + (ms||0)); }
+  function freezeSpawns(ms){ const base = performance.now(); const n=finiteNum(ms)?Math.max(0,ms):0; spawnFreezeUntil = Math.max(spawnFreezeUntil, base + n); }
   function clearAll(){
     try{
       // Remove all live mobs and detach from spatial grid
@@ -1991,6 +2490,7 @@ const mobs = (function(){
       sentinelDeferredThisFrame = 0;
       // Reset global aggro
       for(const k in speciesAggro){ delete speciesAggro[k]; }
+      goldenReset();
       // Push out next spawn check and freeze spawns for a short time
       nextSpawnCheck = performance.now() + 2000;
       spawnFreezeUntil = performance.now() + 4000;
@@ -2015,7 +2515,7 @@ const mobs = (function(){
       report.metrics={...metrics};
       return report;
     }
-  const api = { update, draw, attackAt, damageAt, igniteAt, igniteRadius, poisonAt, poisonRadius, douseRadius, blastRadius, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, forceSpawn, spawnGolden, nearestLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES };
+  const api = { update, draw, attackAt, damageAt, igniteAt, igniteRadius, poisonAt, poisonRadius, douseRadius, blastRadius, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}) };
   MM.mobs = api;
   try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
   return api;

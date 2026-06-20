@@ -291,5 +291,24 @@ assert.ok(snap && snap.v===2, 'snapshot v2');
 water.restore(snap);
 water.restore({v:1, active:[[1,2]], ripples:[{L:0,R:5,y:60,ttl:300}]}); // legacy save shape
 water.restore(null); water.restore('garbage');
+water.restore({
+  v:2,
+  active:[[1,2],[NaN,3],[4,Infinity],'bad','-3,5'],
+  lateral:[[1,2],[Infinity,1],[2,-5],[3,99]],
+  passiveScanOffset:-50,
+  pressureIntervalCurrent:999,
+  pressureAcc:Infinity,
+  lateralAcc:-4
+});
+const clean=water._debug();
+assert.deepEqual(new Set(clean.active), new Set(['1,2','-3,5']), 'water restore drops malformed active cells but keeps valid negative-x cells');
+assert.deepEqual(clean.cooldown, [[1,2],[3,5]], 'water restore sanitizes malformed and oversized lateral cooldowns');
+assert.equal(clean.pressureIntervalCurrent, 1.2, 'water restore clamps pressure interval');
+assert.equal(clean.pressureAcc, 0, 'water restore rejects invalid pressure accumulator');
+water.reset();
+const afterReset=water._debug();
+assert.equal(afterReset.pressureAcc, 0, 'water reset clears inherited pressure accumulator');
+assert.equal(afterReset.pressureIntervalCurrent, 0.65, 'water reset restores default pressure cadence');
+assert.deepEqual(afterReset.active, [], 'water reset clears active water cells');
 
 console.log('OK: all water simulation tests passed');

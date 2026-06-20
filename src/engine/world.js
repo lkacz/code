@@ -126,7 +126,7 @@ window.MM = window.MM || {};
   function isCityStructuralTile(t){ return t===T.STONE || t===T.STEEL || t===T.OBSIDIAN; }
   function isCityLoadBearingTile(t){
     if(t===T.AIR || t===T.WATER || (INFO[t] && INFO[t].passable) || t===T.GLASS || t===T.ELECTRONICS) return false;
-    if(t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC || t===T.VOLCANO_MASTER_STONE) return false;
+    if(t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return false;
     if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) return false;
     return true;
   }
@@ -208,7 +208,7 @@ window.MM = window.MM || {};
     const put=(wx,y,t,force)=>{
       if(wx<worldLeft || wx>worldRight || y<0 || y>=WORLD_H-3) return false;
       const lx=wx-worldLeft, idx=tileIndex(lx,y), cur=arr[idx];
-      if(force || cur===T.AIR || cur===T.WATER || cur===T.LEAF || cur===T.TORCH || cur===T.GRAVE){
+      if(force || cur===T.AIR || cur===T.WATER || cur===T.LEAF || cur===T.AUTUMN_LEAF_ORANGE || cur===T.AUTUMN_LEAF_RED || cur===T.TORCH || cur===T.GRAVE){
         arr[idx]=t;
         return true;
       }

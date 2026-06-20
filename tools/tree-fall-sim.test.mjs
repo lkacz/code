@@ -136,6 +136,43 @@ worldGen.randSeed = ()=>0;
   MM.fallingSolids={ onTileRemoved(){} };
   MM.water={};
 
+  setTile(0,5,T.STONE);
+  setTileWithTreeHook(0,2,T.AUTUMN_LEAF_ORANGE);
+  assert.equal(trees.dropSeasonalLeaf(0,2,T.AUTUMN_LEAF_ORANGE,getTile,setTileWithTreeHook), true, 'seasonal autumn leaves detach through the tree falling system');
+  assert.equal(getTile(0,2), T.AIR, 'detached autumn leaf leaves its tree cell immediately');
+  for(let i=0;i<20;i++) trees.updateFallingBlocks(getTile,setTileWithTreeHook,0.05);
+  assert.equal(getTile(0,4), T.AUTUMN_LEAF_ORANGE, 'detached autumn leaf settles as visible leaf litter');
+  assert.equal(trees._seasonalLeafLitter.has('0,4'), true, 'settled autumn leaf litter is tracked for timed cleanup');
+  for(let i=0;i<285;i++) trees.updateFallingBlocks(getTile,setTileWithTreeHook,0.25);
+  assert.equal(getTile(0,4), T.AIR, 'autumn leaf litter vanishes after about one minute');
+  assert.equal(trees._seasonalLeafLitter.has('0,4'), false, 'expired autumn leaf litter is removed from tracking');
+}
+
+{
+  resetTiles();
+  resetTreeSystem();
+  worldGen.surfaceHeight = ()=>20;
+  MM.fallingSolids={ onTileRemoved(){}, afterPlacement(){} };
+  MM.water={};
+
+  for(let x=0; x<30; x++){
+    setTile(x,4,T.AUTUMN_LEAF_ORANGE);
+    trees._seasonalLeafLitter.set(key(x,4), 0);
+    trees._fallenTreeTiles.add(key(x,4));
+  }
+  trees.updateFallingBlocks(getTile,setTileWithTreeHook,0.25);
+  const remaining=[...Array(30).keys()].filter(x=>getTile(x,4)===T.AUTUMN_LEAF_ORANGE).length;
+  assert.ok(remaining > 0, 'expired autumn leaf litter cleanup is sliced across frames');
+  assert.ok(remaining < 30, 'expired autumn leaf litter cleanup still makes progress');
+}
+
+{
+  resetTiles();
+  resetTreeSystem();
+  worldGen.surfaceHeight = ()=>20;
+  MM.fallingSolids={ onTileRemoved(){} };
+  MM.water={};
+
   setTile(0,9,T.WOOD);
   setTile(0,8,T.WOOD);
   setTile(0,7,T.WOOD);
@@ -914,6 +951,38 @@ worldGen.randSeed = ()=>0;
   trees.restore({v:2, debris:[], identities:[]}, getTile);
   assert.equal(trees._fallingTrees.length, 0, 'restore clears active rotating tree bodies');
   assert.equal(trees._fallingBlocks.length, 0, 'restore clears active loose tree debris');
+}
+
+{
+  resetTiles();
+  resetTreeSystem();
+  worldGen.surfaceHeight = ()=>100;
+  MM.fallingSolids={ onTileRemoved(){} };
+  MM.water={};
+  MM.wind={ speedAt(){ return 5; }, speed(){ return 5; } };
+  for(let x=-40; x<=40; x++) setTile(x,90,T.STONE);
+
+  trees._fallingBlocks.push({x:0,y:10,t:T.LEAF,dir:0,hBudget:0});
+  for(let i=0;i<90;i++) trees.updateFallingBlocks(getTile,setTile,1/60);
+  assert.equal(trees._fallingBlocks.length, 1, 'wind test keeps the leaf airborne before it reaches the floor');
+  assert.ok(trees._fallingBlocks[0].x>=3, 'strong exposed wind carries loose leaves sideways');
+  delete MM.wind;
+}
+
+{
+  resetTiles();
+  resetTreeSystem();
+  worldGen.surfaceHeight = ()=>100;
+  MM.fallingSolids={ onTileRemoved(){} };
+  MM.water={};
+  MM.wind={ speedAt(){ return 5; }, speed(){ return 5; } };
+  for(let x=-40; x<=40; x++) setTile(x,90,T.STONE);
+
+  trees._fallingBlocks.push({x:0,y:10,t:T.WOOD,dir:0,hBudget:0});
+  for(let i=0;i<90;i++) trees.updateFallingBlocks(getTile,setTile,1/60);
+  assert.equal(trees._fallingBlocks.length, 1, 'wind test keeps the wood airborne before it reaches the floor');
+  assert.ok(trees._fallingBlocks[0].x<=1, 'heavy wood debris catches far less wind than leaves');
+  delete MM.wind;
 }
 
 {

@@ -72,11 +72,11 @@ window.MM = window.MM || {};
     if(passable(t) || isStructural(t) || isFragileFalling(t) || isLooseRigid(t)) return false;
     if(t===T.DYNAMO_SLOT) return false;
     if(t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC) return false;
-    if(t===T.VOLCANO_MASTER_STONE || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) return false;
+    if(t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) return false;
     return true;
   }
-  function spawn(x,y,t,rubble){ active.push({x,yFloat:y,type:t,vy:0,wet:false,rubble:!!rubble}); }
-  function spawnSand(x,y){ sandActive.push({x,yFloat:y,vy:0,wet:false}); }
+  function spawn(x,y,t,rubble){ active.push({x,yFloat:y,type:t,vy:0,wet:false,rubble:!!rubble,windCarry:0}); }
+  function spawnSand(x,y){ sandActive.push({x,yFloat:y,vy:0,wet:false,windCarry:0}); }
   function isSettledRubble(x,y){
     const k=key(x,y);
     if(!settledRubble.has(k)) return false;
@@ -95,6 +95,51 @@ window.MM = window.MM || {};
   // A solid settling into a water cell pushes the water out (up or sideways) instead of deleting it
   function displaceWater(x,y){ try{ const w=window.MM && MM.water; if(w && w.displaceAt) w.displaceAt(x,y,getTile,setTile); }catch(e){} }
   function splash(x,yFloat,vy){ try{ const p=window.MM && MM.particles; if(p && p.spawnSplash){ const TILE=MM.TILE||20; p.spawnSplash((x+0.5)*TILE, Math.floor(yFloat)*TILE, Math.min(1, Math.abs(vy)/20)); } const w=window.MM && MM.water; if(w && w.disturb) w.disturb(x, Math.min(300, Math.abs(vy)*14)); }catch(e){} }
+
+  function windSpeedAt(x,y){
+    try{
+      const w=window.MM && MM.wind;
+      if(!w) return 0;
+      const v=typeof w.speedAt === 'function'
+        ? w.speedAt(x,y,getTile)
+        : (typeof w.speed === 'function' ? w.speed() : 0);
+      return Number.isFinite(v) ? Math.max(-6, Math.min(6, v)) : 0;
+    }catch(e){ return 0; }
+  }
+  function fallingWindResponse(type,rubble){
+    if(type===T.SAND) return 0.22;
+    if(type===T.GLASS) return 0.16;
+    if(type===T.DIAMOND || type===T.ELECTRONICS) return 0.09;
+    if(type===T.WOOD) return 0.06;
+    if(type===T.STONE) return rubble ? 0.022 : 0.014;
+    if(type===T.OBSIDIAN) return 0.010;
+    if(type===T.STEEL) return 0.006;
+    return 0.035;
+  }
+  function canWindShift(x,y,dir){
+    if(y<0 || y>=WORLD_H) return false;
+    if(!passable(getTile(x+dir,y))) return false;
+    if(playerBlocks(x+dir,y)) return false;
+    return true;
+  }
+  function applyWindToFalling(e,type,dt,inWater){
+    if(!e || !(dt>0)) return false;
+    const sp=windSpeedAt(e.x+0.5,e.yFloat);
+    if(Math.abs(sp)<0.08) return false;
+    const response=fallingWindResponse(type,!!e.rubble) * (inWater ? 0.18 : 1);
+    if(response<=0) return false;
+    e.windCarry=Math.max(-2.2, Math.min(2.2, (e.windCarry||0) + sp*response*dt));
+    let moved=false, guard=0;
+    while(Math.abs(e.windCarry)>=1 && guard++<2){
+      const dir=e.windCarry<0 ? -1 : 1;
+      const y=Math.floor(e.yFloat);
+      if(!canWindShift(e.x,y,dir)){ e.windCarry*=0.35; break; }
+      e.x+=dir;
+      e.windCarry-=dir;
+      moved=true;
+    }
+    return moved;
+  }
 
   // Never solidify a tile inside the player — the entity rests on them until they move
   function playerBlocks(x,y){ const p=window.player; if(!p) return false; return x+1 > p.x-p.w/2 && x < p.x+p.w/2 && y+1 > p.y-p.h/2 && y < p.y+p.h/2; }
@@ -124,6 +169,30 @@ window.MM = window.MM || {};
   function clampY(y){
     const yy=Math.floor(y);
     return Number.isFinite(yy) ? Math.max(0, Math.min(WORLD_H-1, yy)) : 0;
+  }
+  function finiteX(x){ return Number.isFinite(x) && Math.abs(x)<10000000; }
+  function validFallingType(t){ return Number.isInteger(t) && !!INFO[t]; }
+  function restoredRigid(raw){
+    if(!raw || !finiteX(raw.x) || !Number.isFinite(raw.y) || !validFallingType(raw.type)) return null;
+    return {
+      x:Math.floor(raw.x),
+      yFloat:Math.max(0,Math.min(WORLD_H-1,raw.y)),
+      type:raw.type,
+      vy:Number.isFinite(raw.vy)?Math.max(-120,Math.min(120,raw.vy)):0,
+      windCarry:Number.isFinite(raw.windCarry)?Math.max(-4,Math.min(4,raw.windCarry)):0,
+      wet:false,
+      rubble:!!raw.rubble
+    };
+  }
+  function restoredSand(raw){
+    if(!raw || !finiteX(raw.x) || !Number.isFinite(raw.y)) return null;
+    return {
+      x:Math.floor(raw.x),
+      yFloat:Math.max(0,Math.min(WORLD_H-1,raw.y)),
+      vy:Number.isFinite(raw.vy)?Math.max(-120,Math.min(120,raw.vy)):0,
+      windCarry:Number.isFinite(raw.windCarry)?Math.max(-4,Math.min(4,raw.windCarry)):0,
+      wet:false
+    };
   }
   function dropY(x,y){
     let yy=clampY(y);
@@ -188,7 +257,7 @@ window.MM = window.MM || {};
   function isBuiltPillarMaterial(t){
     const info=INFO[t];
     if(!info || !info.color || info.chestTier) return false;
-    if(t===T.AIR || t===T.WATER || t===T.LAVA || t===T.TORCH || t===T.WIRE || t===T.GRAVE || t===T.VOLCANO_MASTER_STONE) return false;
+    if(t===T.AIR || t===T.WATER || t===T.LAVA || t===T.TORCH || t===T.WIRE || t===T.GRAVE || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return false;
     if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || t===T.ELECTRONICS) return false;
     return true;
   }
@@ -790,6 +859,7 @@ window.MM = window.MM || {};
 
   // --- Entity integration (swept, cell-by-cell — large dt cannot tunnel through floors) ---
   function update(gt,st,dt){
+    if(!(dt>0) || !isFinite(dt)) return;
     init(gt,st);
     const frameMs=(typeof window!=='undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
     processAuditJobs(frameMs>40 ? 1 : (frameMs>24 ? 2 : 5));
@@ -806,6 +876,7 @@ window.MM = window.MM || {};
       const inWater = getTile(b.x, Math.floor(b.yFloat))===T.WATER;
       if(inWater && !b.wet){ b.wet=true; splash(b.x,b.yFloat,b.vy); notifyWater(b.x,Math.floor(b.yFloat)); if(b.vy>VMAX_WATER*1.6) b.vy=VMAX_WATER*1.6; }
       else if(!inWater) b.wet=false;
+      applyWindToFalling(b,b.type,dt,inWater);
       b.vy += (inWater?G_WATER:G_AIR)*dt;
       const cap=inWater?VMAX_WATER:VMAX_AIR; if(b.vy>cap) b.vy=cap;
       let remaining=b.vy*dt, settledAt=-1;
@@ -833,6 +904,7 @@ window.MM = window.MM || {};
       const inWater = getTile(s.x, Math.floor(s.yFloat))===T.WATER;
       if(inWater && !s.wet){ s.wet=true; splash(s.x,s.yFloat,s.vy); if(s.vy>SAND_VMAX_WATER*1.6) s.vy=SAND_VMAX_WATER*1.6; }
       else if(!inWater) s.wet=false;
+      applyWindToFalling(s,T.SAND,dt,inWater);
       s.vy += (inWater?G_WATER:G_AIR)*dt;
       const cap=inWater?SAND_VMAX_WATER:SAND_VMAX_AIR; if(s.vy>cap) s.vy=cap;
       let remaining=s.vy*dt, blockedAt=-1;
@@ -849,7 +921,14 @@ window.MM = window.MM || {};
       if(yi<WORLD_H-1){ // grain rolls down slopes (also under water)
         const canL = passable(getTile(s.x-1,yi)) && passable(getTile(s.x-1,yi+1));
         const canR = passable(getTile(s.x+1,yi)) && passable(getTile(s.x+1,yi+1));
-        if(canL||canR){ const dir=(canL&&canR)?(Math.random()<0.5?-1:1):(canL?-1:1); s.x+=dir; s.yFloat=yi+0.05; if(s.vy>8) s.vy=8; continue; }
+        if(canL||canR){
+          let dir=(canL&&canR)?(Math.random()<0.5?-1:1):(canL?-1:1);
+          if(canL && canR){
+            const ws=windSpeedAt(s.x+0.5,yi);
+            if(Math.abs(ws)>1.0) dir=ws<0?-1:1;
+          }
+          s.x+=dir; s.yFloat=yi+0.05; if(s.vy>8) s.vy=8; continue;
+        }
       }
       if(playerBlocks(s.x,yi)){ s.vy=0; s.yFloat=yi; continue; }
       settleSand(s.x,yi);
@@ -872,23 +951,48 @@ window.MM = window.MM || {};
 
   function reset(){ active.length=0; sandActive.length=0; unstable.clear(); quietStable.clear(); auditJobs.length=0; auditPending.clear(); auditLast.clear(); manualCityBuilt.clear(); settledRubble.clear(); }
   function metrics(){ return {queue:unstable.size, audit:auditJobs.length, active:active.length, sand:sandActive.length, debris:settledRubble.size}; }
+  function parseSavedKey(k){
+    if(typeof k!=='string' || k.length>=32) return null;
+    const ix=k.indexOf(',');
+    if(ix<=0 || ix!==k.lastIndexOf(',')) return null;
+    const x=+k.slice(0,ix), y=+k.slice(ix+1);
+    if(!finiteX(x) || !Number.isFinite(y) || y<0 || y>=WORLD_H) return null;
+    return Math.floor(x)+','+Math.floor(y);
+  }
+  function keyTile(k){
+    const kk=parseSavedKey(k);
+    if(!kk || !getTile) return null;
+    const ix=kk.indexOf(',');
+    return {k:kk,x:+kk.slice(0,ix),y:+kk.slice(ix+1),t:getTile(+kk.slice(0,ix),+kk.slice(ix+1))};
+  }
   function snapshot(){ try{
-    const built=[...manualCityBuilt].filter(k=>{
-      const ix=k.indexOf(',');
-      return ix>0 && isBuiltPillarMaterial(getTile(+k.slice(0,ix),+k.slice(ix+1)));
-    });
-    const debris=[...settledRubble].filter(k=>{
-      const ix=k.indexOf(',');
-      return ix>0 && isStructural(getTile(+k.slice(0,ix),+k.slice(ix+1)));
-    });
-    return {v:4, active:active.map(b=>({x:b.x,y:b.yFloat,type:b.type,vy:b.vy,rubble:!!b.rubble})), sand:sandActive.map(s=>({x:s.x,y:s.yFloat,vy:s.vy})), queue:[...unstable], built, debris};
+    const built=[];
+    for(const raw of manualCityBuilt){
+      const cell=keyTile(raw);
+      if(cell && isBuiltPillarMaterial(cell.t)) built.push(cell.k);
+      if(built.length>=20000) break;
+    }
+    const debris=[];
+    for(const raw of settledRubble){
+      const cell=keyTile(raw);
+      if(cell && isStructural(cell.t)) debris.push(cell.k);
+      if(debris.length>=22000) break;
+    }
+    return {
+      v:4,
+      active:active.map(b=>restoredRigid({x:b.x,y:b.yFloat,type:b.type,vy:b.vy,windCarry:b.windCarry||0,rubble:!!b.rubble})).filter(Boolean).map(b=>({x:b.x,y:b.yFloat,type:b.type,vy:b.vy,windCarry:b.windCarry||0,rubble:!!b.rubble})),
+      sand:sandActive.map(s=>restoredSand({x:s.x,y:s.yFloat,vy:s.vy,windCarry:s.windCarry||0})).filter(Boolean).map(s=>({x:s.x,y:s.yFloat,vy:s.vy,windCarry:s.windCarry||0})),
+      queue:[...unstable].map(parseSavedKey).filter(Boolean).slice(0,6000),
+      built,
+      debris
+    };
   }catch(e){ return null; } }
   function restore(s){ reset(); if(!s||typeof s!=='object') return; try{
-    if(Array.isArray(s.active)) for(const b of s.active){ if(b&&typeof b.x==='number') active.push({x:b.x,yFloat:b.y||0,type:b.type,vy:b.vy||0,wet:false,rubble:!!b.rubble}); }
-    if(Array.isArray(s.sand)) for(const g of s.sand){ if(g&&typeof g.x==='number') sandActive.push({x:g.x,yFloat:g.y||0,vy:g.vy||0,wet:false}); }
-    if(Array.isArray(s.queue)) for(const k of s.queue){ if(typeof k==='string') unstable.add(k); }
-    if(Array.isArray(s.built)) for(const k of s.built){ if(typeof k==='string' && k.length<32) manualCityBuilt.add(k); }
-    if(Array.isArray(s.debris)) for(const k of s.debris){ if(typeof k==='string' && k.length<32) settledRubble.add(k); }
+    if(Array.isArray(s.active)) for(const b of s.active){ const r=restoredRigid(b); if(r && active.length<ACTIVE_RIGID_CAP) active.push(r); }
+    if(Array.isArray(s.sand)) for(const g of s.sand){ const r=restoredSand(g); if(r && sandActive.length<3000) sandActive.push(r); }
+    if(Array.isArray(s.queue)) for(const k of s.queue){ const kk=parseSavedKey(k); if(kk && unstable.size<6000) unstable.add(kk); }
+    if(Array.isArray(s.built)) for(const k of s.built){ const kk=parseSavedKey(k); if(kk && manualCityBuilt.size<20000) manualCityBuilt.add(kk); }
+    if(Array.isArray(s.debris)) for(const k of s.debris){ const kk=parseSavedKey(k); if(kk && settledRubble.size<22000) settledRubble.add(kk); }
   }catch(e){} }
 
   MM.fallingSolids={init,update,draw,onTileRemoved,maybeStart,reset,recheckNeighborhood,afterPlacement,auditChunks,settleAll,snapshot,restore,metrics};

@@ -572,6 +572,140 @@ MM.ui = (function(){
     },1500);
     panel.appendChild(box);
   }
+  function injectSeasonDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('seasonDebugBox')) return;
+    actions = actions || {};
+    const box=document.createElement('div');
+    box.id='seasonDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(160,210,255,.14); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='Pory roku (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+    const metrics=document.createElement('div');
+    metrics.id='seasonDebugMetrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    function refreshMetrics(){
+      const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+      if(!m){ metrics.textContent='brak metryk sezonow'; return; }
+      const scan=m.scan || {};
+      const changed=scan.changed || {};
+      const changes=['freeze','thaw','snow','snowMelt','leafGrow','leafDrop']
+        .map(k=>changed[k]? (k+':'+changed[k]) : '')
+        .filter(Boolean)
+        .join(' ');
+      const next=Number(m.nextInDays||0).toFixed(1);
+      const blend=m.transition ? (' | blend '+Math.round(Number(m.blend||0)*100)+'%') : '';
+      const evs=Array.isArray(m.events) ? m.events : [];
+      const last=evs.length ? evs[evs.length-1].type : '';
+      const daily=Number(m.diurnalTemperatureDelta||0);
+      const scanState=scan.deferred ? (' odroczony'+(scan.deferReason?' '+scan.deferReason:'')) : '';
+      metrics.textContent=m.label+' | dzien '+Number(m.dayFloat||m.day||1).toFixed(1)+' | next '+next+'d'+blend+' | temp '+Number(m.temperatureDelta||0).toFixed(2)+' dob '+(daily>=0?'+':'')+daily.toFixed(2)+' | wiatr x'+Number(m.windMult||1).toFixed(2)+' | zwierz x'+Number(m.animalSpawnMult||1).toFixed(2)+' | skan '+(scan.columns||0)+' kol, '+(scan.ops||0)+' zmian, lisc '+(scan.leafOps||0)+scanState+(changes?' | '+changes:'')+(last?' | '+last:'');
+    }
+    const buttons=[
+      ['natural','Naturalnie','Wraca do naturalnego kalendarza'],
+      ['spring','Wiosna','Wymusza wiosne'],
+      ['summer','Lato','Wymusza lato'],
+      ['autumn','Jesien','Wymusza jesien'],
+      ['winter','Zima','Wymusza zime'],
+      ['transition','Przejscie','Skacze do najblizszego naturalnego przejscia miedzy porami roku'],
+      ['hallmark','Zwierze sezonu','Przywoluje duze zwierze-symbol aktualnej pory roku'],
+      ['event','Zdarzenie sezonu','Uruchamia pogode/niebezpieczenstwo aktualnej pory roku'],
+      ['springEvent','Wiosenny deszcz','Testuje wiosenny intensywny deszcz i lagodny wiatr'],
+      ['summerEvent','Letnia burza','Testuje letnia burze z silnymi chmurami'],
+      ['autumnEvent','Jesienny wichr','Testuje jesienna wichure'],
+      ['winterEvent','Zimowa zamiec','Testuje zimowa zamiec'],
+      ['scan','Skan teraz','Uruchamia natychmiastowy skan efektow sezonowych przy bohaterze'],
+      ['day','+1 dzien','Przesuwa kalendarz o jeden dzien'],
+      ['season','+sezon','Przesuwa kalendarz o pelne 10 dni']
+    ];
+    buttons.forEach(([id,txt,title])=>{
+      const b=document.createElement('button');
+      b.textContent=txt;
+      b.title=title;
+      b.style.cssText='flex:1 1 78px; font-size:11px; padding:3px 6px; border:1px solid rgba(160,210,255,.65);';
+      b.addEventListener('click',()=>{
+        try{
+          let ok=false;
+          if(id==='natural') ok=(typeof actions.natural==='function') ? actions.natural() : false;
+          else if(id==='transition') ok=(typeof actions.transition==='function') ? actions.transition() : false;
+          else if(id==='hallmark') ok=(typeof actions.hallmark==='function') ? actions.hallmark() : false;
+          else if(id==='event') ok=(typeof actions.event==='function') ? actions.event() : false;
+          else if(id==='springEvent') ok=(typeof actions.event==='function') ? actions.event('spring') : false;
+          else if(id==='summerEvent') ok=(typeof actions.event==='function') ? actions.event('summer') : false;
+          else if(id==='autumnEvent') ok=(typeof actions.event==='function') ? actions.event('autumn') : false;
+          else if(id==='winterEvent') ok=(typeof actions.event==='function') ? actions.event('winter') : false;
+          else if(id==='scan') ok=(typeof actions.scan==='function') ? actions.scan() : false;
+          else if(id==='day') ok=(typeof actions.advance==='function') ? actions.advance(1) : false;
+          else if(id==='season') ok=(typeof actions.advance==='function') ? actions.advance(10) : false;
+          else ok=(typeof actions.force==='function') ? actions.force(id) : false;
+          msg(ok ? ('Pora roku: '+txt) : 'Debug sezonow: brak akcji');
+          refreshMetrics();
+        }catch(e){ msg('Debug sezonow: blad'); }
+      });
+      box.appendChild(b);
+    });
+    box.appendChild(metrics);
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1500);
+    panel.appendChild(box);
+  }
+  function injectSolarDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('solarDebugBox')) return;
+    actions = actions || {};
+    const box=document.createElement('div');
+    box.id='solarDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(95,247,220,.12); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='Solar (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+    const metrics=document.createElement('div');
+    metrics.id='solarDebugMetrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    function refreshMetrics(){
+      const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+      metrics.textContent=m ? ('panele '+m.cells+' | aktywne '+m.active+' | '+m.currentPower+' E/s | suma '+m.storedEnergy+' E | slonce '+Math.round((m.sun||0)*100)+'%') : 'brak metryk solara';
+    }
+    const buttons=[
+      ['placePanel','Panel','Stawia zwykly panel sloneczny obok bohatera'],
+      ['placeBattery','Panel bateria','Stawia panel sloneczny z bateria obok bohatera'],
+      ['placeRig','Uklad testowy','Stawia panel z bateria, przewod i teleporter'],
+      ['charge','Laduj solar','Laduje najblizszy panel z bateria'],
+      ['empty','Rozladuj solar','Rozladowuje najblizszy panel solarny']
+    ];
+    buttons.forEach(([id,txt,title])=>{
+      const b=document.createElement('button');
+      b.textContent=txt;
+      b.title=title;
+      b.style.cssText='flex:1 1 96px; font-size:11px; padding:3px 6px; border:1px solid rgba(95,247,220,.65);';
+      b.addEventListener('click',()=>{
+        try{
+          const fn=actions[id];
+          const ok=(typeof fn==='function') ? fn() : false;
+          if(id==='placePanel') msg(ok ? 'Panel solarny postawiony' : 'Brak miejsca na panel');
+          else if(id==='placeBattery') msg(ok ? 'Panel z bateria postawiony' : 'Brak miejsca na panel');
+          else if(id==='placeRig') msg(ok ? 'Solar testowy postawiony' : 'Brak miejsca na uklad');
+          else if(id==='charge') msg(ok ? 'Solar naladowany' : 'Brak solara w poblizu');
+          else if(id==='empty') msg(ok ? 'Solar rozladowany' : 'Brak solara w poblizu');
+          refreshMetrics();
+        }catch(e){ msg('Debug solara: blad'); }
+      });
+      box.appendChild(b);
+    });
+    box.appendChild(metrics);
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1500);
+    panel.appendChild(box);
+  }
   function injectTeleporterDebugPanel(actions, menuPanel){
     const panel = menuPanel || document.getElementById('menuPanel');
     if(!panel || document.getElementById('teleporterDebugBox')) return;
@@ -639,7 +773,7 @@ MM.ui = (function(){
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, injectMobSpawnPanel, injectGasDebugPanel, injectWindDebugPanel, injectDynamoDebugPanel, injectTeleporterDebugPanel, setRadarPulsing, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
+  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, injectMobSpawnPanel, injectGasDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, setRadarPulsing, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;

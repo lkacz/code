@@ -92,7 +92,7 @@ const traps = (function(){
   }
 
   function update(dt, player, getTile, setTile){
-    if(!player || !getTile) return;
+    if(!(dt>0) || !isFinite(dt) || !player || typeof getTile!=='function') return;
     scanAcc+=dt; if(scanAcc>=1){ scanAcc=0; ensureInstances(player,getTile); }
     const feet=player.y+((player.h||1)/2);
     for(const it of [...inst.values()]){

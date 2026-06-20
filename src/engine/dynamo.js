@@ -4,7 +4,7 @@
 // rising up through a horizontal slot produce transient power plus accumulated
 // energy for future machine systems. Other gases may vent through slots, but
 // do not charge the machine.
-import { T, WORLD_H } from '../constants.js';
+import { T, INFO, WORLD_H } from '../constants.js';
 
 (function(){
   window.MM = window.MM || {};
@@ -14,6 +14,10 @@ import { T, WORLD_H } from '../constants.js';
   const ENERGY_CAPACITY = 100;
   const POWER_DECAY = 42;
   const PULSE_DECAY = 2.8;
+  const MACHINE_CAP = 1600;
+  const WIND_MIN_SPEED = 2.75;
+  const WIND_RATED_SPEED = 6.2;
+  const WIND_MAX_ENERGY_PER_SEC = 0.062;
 
   function key(x,y){ return (Math.floor(x))+','+(Math.floor(y)); }
   function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H; }
@@ -22,6 +26,12 @@ import { T, WORLD_H } from '../constants.js';
   }
   function isCasing(t){ return t===T.DYNAMO; }
   function isSlot(t){ return t===T.DYNAMO_SLOT; }
+  function canWindPass(t){
+    if(t===T.AIR) return true;
+    if(t===T.WATER || t===T.LAVA) return false;
+    const info=INFO[t];
+    return !!(info && (info.gas || (info.passable && t!==T.DYNAMO && t!==T.DYNAMO_SLOT)));
+  }
   function normalizeOrientation(orientation){
     return orientation==='vertical' || orientation==='v' ? 'vertical' : 'horizontal';
   }
@@ -142,6 +152,29 @@ import { T, WORLD_H } from '../constants.js';
     m.lastKind=src.kind;
     return true;
   }
+  function windSpeedForSlot(m,getTile){
+    const W=(typeof window!=='undefined' && window.MM) ? MM.wind : null;
+    if(!W || typeof W.speedAt!=='function') return 0;
+    if(slotOrientation(m.x,m.y,getTile)!=='vertical') return 0;
+    if(!canWindPass(getSafe(getTile,m.x-1,m.y,T.STONE))) return 0;
+    if(!canWindPass(getSafe(getTile,m.x+1,m.y,T.STONE))) return 0;
+    let left=0, right=0;
+    try{ left=W.speedAt(m.x-1,m.y,getTile); }catch(e){ left=0; }
+    try{ right=W.speedAt(m.x+1,m.y,getTile); }catch(e){ right=0; }
+    return (Math.abs(left)+Math.abs(right))*0.5;
+  }
+  function recordWindPower(m,dt,getTile){
+    const sp=windSpeedForSlot(m,getTile);
+    if(sp<WIND_MIN_SPEED) return false;
+    const k=Math.max(0,Math.min(1,(sp-WIND_MIN_SPEED)/(WIND_RATED_SPEED-WIND_MIN_SPEED)));
+    const energyPerSec=WIND_MAX_ENERGY_PER_SEC*k*k;
+    if(energyPerSec<=0.0001) return false;
+    m.power=Math.min(MAX_POWER, Math.max(m.power||0, energyPerSec*62));
+    m.energy=Math.min(ENERGY_CAPACITY, Math.max(0, (m.energy||0)+energyPerSec*dt));
+    m.pulse=Math.max(m.pulse||0, Math.min(0.72, 0.22+k*0.38));
+    m.lastKind='wind';
+    return true;
+  }
   function absorbNear(px,py,amount,getTile,radius){
     if(!machines.size) return null;
     if(!Number.isFinite(px) || !Number.isFinite(py)) return null;
@@ -223,15 +256,23 @@ import { T, WORLD_H } from '../constants.js';
     }
   }
   function update(dt,getTile){
-    if(!(dt>0) || !isFinite(dt)) return;
+    if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function') return;
     for(const [k,m] of machines){
       if(!m || !finiteTile(m.x,m.y) || !isValidSlot(m.x,m.y,getTile)){
         machines.delete(k);
         continue;
       }
       normalizeMachine(m);
+      recordWindPower(m,dt,getTile);
       m.power=Math.max(0, (m.power||0)-POWER_DECAY*dt);
       m.pulse=Math.max(0, (m.pulse||0)-PULSE_DECAY*dt);
+    }
+    if(machines.size>MACHINE_CAP){
+      const idle=[...machines.entries()]
+        .filter(([,m])=>m && (m.energy||0)<=0.001 && (m.power||0)<=0.001)
+        .map(([k,m])=>({k,y:m.y||0,x:m.x||0}));
+      idle.sort((a,b)=>(b.y-a.y)||(a.x-b.x));
+      for(let i=0; i<idle.length && machines.size>Math.floor(MACHINE_CAP*0.85); i++) machines.delete(idle[i].k);
     }
   }
   function ensureVisibleMachines(sx,sy,viewX,viewY,getTile){
@@ -293,7 +334,7 @@ import { T, WORLD_H } from '../constants.js';
       if((m.power||0)>0.05){
         ctx.fillStyle='rgba(6,10,16,0.72)';
         ctx.fillRect(bx,by,bw,bh);
-        ctx.fillStyle=m.lastKind==='water'?'#49a8ff':(m.lastKind==='steam'?'#dfe8ee':'#f4b65e');
+        ctx.fillStyle=m.lastKind==='water'?'#49a8ff':(m.lastKind==='steam'?'#dfe8ee':(m.lastKind==='wind'?'#b8f4ff':'#f4b65e'));
         ctx.fillRect(bx,by,Math.max(1,bw*p),bh);
         ctx.font='bold '+Math.max(8,Math.round(TILE*0.42))+'px system-ui';
         ctx.fillStyle='rgba(255,255,255,0.92)';
@@ -306,6 +347,7 @@ import { T, WORLD_H } from '../constants.js';
     const list=[...machines.values()]
       .filter(m=>m && finiteTile(m.x,m.y) && ((m.energy||0)>0 || (m.power||0)>0))
       .sort((a,b)=>(a.x-b.x)||(a.y-b.y))
+      .slice(0,MACHINE_CAP)
       .map(m=>({x:m.x,y:m.y,power:+(m.power||0).toFixed(2),energy:+(m.energy||0).toFixed(3),lastKind:m.lastKind||''}));
     return {v:1,list};
   }
@@ -313,6 +355,7 @@ import { T, WORLD_H } from '../constants.js';
     reset();
     if(!data || !Array.isArray(data.list)) return;
     for(const raw of data.list){
+      if(machines.size>=MACHINE_CAP) break;
       if(!raw || !finiteTile(raw.x,raw.y)) continue;
       const x=Math.floor(raw.x), y=Math.floor(raw.y);
       if(getTile && !isValidSlot(x,y,getTile)) continue;
@@ -336,7 +379,7 @@ import { T, WORLD_H } from '../constants.js';
     return {machines:machines.size, active, currentPower:+currentPower.toFixed(2), storedEnergy:+storedEnergy.toFixed(2)};
   }
 
-  const api={isCasing,isSlot,isValidSlot,slotOrientation,plannedCells,structureCellsAt,recordFlow,absorbNear,energyAt,drainAt,onTileChanged,update,draw,snapshot,restore,reset,metrics,_debug:{machines,MAX_POWER,ENERGY_CAPACITY}};
+  const api={isCasing,isSlot,isValidSlot,slotOrientation,plannedCells,structureCellsAt,recordFlow,absorbNear,energyAt,drainAt,onTileChanged,update,draw,snapshot,restore,reset,metrics,_debug:{machines,MAX_POWER,ENERGY_CAPACITY,MACHINE_CAP,windSpeedForSlot,WIND_MIN_SPEED,WIND_RATED_SPEED,WIND_MAX_ENERGY_PER_SEC}};
   MM.dynamo=api;
 })();
 

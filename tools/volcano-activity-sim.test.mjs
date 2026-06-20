@@ -1,4 +1,4 @@
-// Volcano activity test: gas, diamond offerings, and master-stone lava timeout.
+// Volcano activity test: gas, diamond offerings, and master/servant-stone timeout.
 // Run: node tools/volcano-activity-sim.test.mjs
 import { strict as assert } from 'assert';
 
@@ -12,9 +12,12 @@ assert.ok(dynamo, 'dynamo module exports for volcano impact tests');
 
 const volcanoDef = {center:0, radius:10, crater:2, pipe:1, reservoir:4, cell:0};
 
-let gasCalls=0, persistentGas=0, lavaNotes=0, bursts=0, smoke=0;
+let gasCalls=0, persistentGas=0, lavaNotes=0, bursts=0, smoke=0, explosions=0, lastExplosionOpts=null;
 const audioPlays=[];
-MM.weapons = { spawnGasCloud(){ gasCalls++; return 12; } };
+MM.weapons = {
+  spawnGasCloud(){ gasCalls++; return 12; },
+  explodeAt(wx,wy,getTile,setTile,opts){ explosions++; lastExplosionOpts=opts||{}; return true; }
+};
 MM.gases = { add(kind){ if(kind==='poison') persistentGas++; return 4; } };
 MM.fire = { noteLava(){ lavaNotes++; } };
 MM.particles = {
@@ -66,8 +69,15 @@ assert.equal(persistentGas, 1, 'volcano gas also enters the persistent world gas
   volcano.update(9.9,{x:0,y:6},w.getTile,w.setTile);
   assert.equal(w.getTile(3,9), T.VOLCANO_MASTER_STONE, 'master stone survives before ten seconds on floor');
   volcano.update(0.2,{x:0,y:6},w.getTile,w.setTile);
-  assert.equal(w.getTile(3,9), T.LAVA, 'master stone turns into lava after ten seconds on floor');
-  assert.equal(lavaNotes, 1, 'fresh lava is registered with the lava system');
+  assert.equal(w.getTile(3,9), T.SERVANT_STONE, 'master stone turns into a servant stone after ten seconds on floor');
+  assert.equal(lavaNotes, 0, 'master stone no longer turns into lava at the first timeout');
+  volcano.update(9.8,{x:0,y:6},w.getTile,w.setTile);
+  assert.equal(w.getTile(3,9), T.SERVANT_STONE, 'servant stone warns before exploding');
+  volcano.update(0.3,{x:0,y:6},w.getTile,w.setTile);
+  assert.equal(w.getTile(3,9), T.AIR, 'servant stone removes itself when it explodes');
+  assert.equal(explosions, 1, 'servant stone triggers a mid-size explosion');
+  assert.equal(lastExplosionOpts.force, true, 'servant stone explosion bypasses blast cooldown');
+  assert.ok(lastExplosionOpts.extraConsumed>=18, 'servant stone explosion is stronger than a tiny gas pop');
 }
 
 {
@@ -75,6 +85,9 @@ assert.equal(persistentGas, 1, 'volcano gas also enters the persistent world gas
   assert.ok(volcano.forceMasterEruption(volcanoDef), 'debug eruption can throw a master stone directly');
   assert.equal(volcano.metrics().masterShots, 1, 'debug eruption produced one master shot');
   assert.equal(audioPlays.at(-1), 'masterstone', 'debug master stone throw also plays the sound cue');
+  const shot=volcano._debug.masterShots.at(-1);
+  assert.ok(Math.abs(shot.vx)>=15 && Math.abs(shot.vx)<=24.5, 'master stone horizontal ejection force is tripled');
+  assert.ok(shot.vy<=-37.5 && shot.vy>=-49.5, 'master stone vertical ejection force is tripled');
 }
 
 {
@@ -150,6 +163,33 @@ assert.equal(persistentGas, 1, 'volcano gas also enters the persistent world gas
   volcano._debug.masterShots.push({x:2.5,y:8.1,vx:0,vy:0,life:0.01,rot:0,spin:0});
   volcano.update(0.02,{x:2000,y:6},w.getTile,w.setTile);
   assert.equal(w.getTile(2,8), T.VOLCANO_MASTER_STONE, 'master stone can settle into a gas-filled open cell');
+}
+
+{
+  volcano.reset();
+  const w=makeTiles();
+  w.setTile(4,9,T.VOLCANO_MASTER_STONE);
+  volcano.trackMasterStone(4,9,8.8,'master');
+  volcano._debug.masterShots.push({x:1.5,y:4.2,vx:6,vy:-18,life:5,rot:0.1,spin:0.2,reason:'test'});
+  volcano._debug.rocks.push({x:-1.5,y:4.2,vx:-3,vy:4,life:4,rot:0.3,spin:-0.2});
+  const snap=volcano.snapshot();
+  volcano.reset();
+  volcano.restore(snap,w.getTile);
+  assert.equal(volcano.metrics().masterTiles, 1, 'save/load restores tracked master stone floor timers');
+  assert.equal(volcano.metrics().masterShots, 1, 'save/load restores in-flight master stone shots');
+  assert.equal(volcano.metrics().rocks, 1, 'save/load restores in-flight volcano rocks');
+  volcano.update(1.3,{x:2000,y:6},w.getTile,w.setTile);
+  assert.equal(w.getTile(4,9), T.SERVANT_STONE, 'restored master stone continues from its saved timer');
+
+  w.setTile(5,9,T.SERVANT_STONE);
+  volcano.trackMasterStone(5,9,9.0,'servant');
+  const beforeExplosions=explosions;
+  const servantSnap=volcano.snapshot();
+  volcano.reset();
+  volcano.restore(servantSnap,w.getTile);
+  volcano.update(1.1,{x:2000,y:6},w.getTile,w.setTile);
+  assert.equal(w.getTile(5,9), T.AIR, 'restored servant stone keeps its countdown and explodes');
+  assert.equal(explosions, beforeExplosions+1, 'restored servant stone triggers its explosion once');
 }
 
 assert.ok(bursts>0, 'master stone activity creates visible bursts');

@@ -26,6 +26,22 @@ mobs.clearAll();
 const SPECIES = mobs._debugSpecies();
 assert.ok(SPECIES.JASZCZUR && mobs.species.includes('JASZCZUR'), 'desert lizard is registered');
 assert.ok(SPECIES.ZABA && mobs.species.includes('ZABA'), 'swamp frog is registered');
+assert.ok(SPECIES.WIOSENNY_JELEN && mobs.species.includes('WIOSENNY_JELEN'), 'spring hallmark stag is registered');
+assert.ok(SPECIES.LETNI_ZUBR && mobs.species.includes('LETNI_ZUBR'), 'summer hallmark bison is registered');
+assert.ok(SPECIES.JESIENNY_LOS && mobs.species.includes('JESIENNY_LOS'), 'autumn hallmark moose is registered');
+assert.ok(SPECIES.ZIMOWY_NIEDZWIEDZ && mobs.species.includes('ZIMOWY_NIEDZWIEDZ'), 'winter hallmark bear is registered');
+assert.equal(typeof mobs.spawnSeasonalHallmark, 'function', 'season debug can spawn the current hallmark animal');
+assert.ok(SPECIES.WIOSENNY_JELEN.loot.some(d=>d.item==='springAntler'), 'spring stag carries the spring trophy');
+assert.ok(SPECIES.LETNI_ZUBR.loot.some(d=>d.item==='summerHorn'), 'summer bison carries the summer trophy');
+assert.ok(SPECIES.JESIENNY_LOS.loot.some(d=>d.item==='autumnHeartwood'), 'autumn moose carries the autumn trophy');
+assert.ok(SPECIES.ZIMOWY_NIEDZWIEDZ.loot.some(d=>d.item==='winterFur'), 'winter bear carries the winter trophy');
+
+function setSeason(id){
+  MM.seasons = id ? {
+    metrics(){ return {season:id}; },
+    profile(){ return {id, animalSpawnMult:1}; }
+  } : null;
+}
 
 function biomeRuns(biome){
   const out=[];
@@ -82,6 +98,24 @@ for(const [id,biome] of cases){
   assert.equal(WG.biomeType(hit.x), biome, id+' spawn x stays in its biome');
   hits[id]=hit;
 }
+
+const seasonalCases = [
+  ['WIOSENNY_JELEN',0,'spring','summer'],
+  ['LETNI_ZUBR',1,'summer','winter'],
+  ['JESIENNY_LOS',0,'autumn','spring'],
+  ['ZIMOWY_NIEDZWIEDZ',2,'winter','summer']
+];
+for(const [id,biome,season,wrongSeason] of seasonalCases){
+  const spec=SPECIES[id];
+  setSeason(season);
+  const hit=findSpawn(spec,biome);
+  assert.ok(hit, id+' finds a legal large-body spawn during '+season);
+  assert.equal(WG.biomeType(hit.x), biome, id+' spawn x stays in its hallmark biome');
+  setSeason(wrongSeason);
+  assert.equal(spec.spawnTest(hit.x,hit.y,world.getTile), false, id+' rejects the same spawn outside '+season);
+  hits[id]=hit;
+}
+setSeason(null);
 
 assert.equal(SPECIES.JASZCZUR.spawnTest(hits.ZABA.x,hits.ZABA.y,world.getTile), false,
   'desert lizard rejects the swamp spawn cell');

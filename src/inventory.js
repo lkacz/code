@@ -180,6 +180,8 @@
     {key:'obsidian',label:'Obsydian',color:'#7a5cc1', tile:'OBSIDIAN'},
     {key:'steel',   label:'Stal',    color:'#8f9aa6', tile:'STEEL'},
     {key:'meat',    label:'Mieso',   color:'#bd5145', tile:'MEAT'},
+    {key:'rottenMeat', label:'Zepsute mieso', color:'#647136', tile:'ROTTEN_MEAT'},
+    {key:'bakedMeat', label:'Pieczone mieso', color:'#9b5a2e', tile:'BAKED_MEAT'},
     {key:'wire',    label:'Przewody',color:'#c56f32', tile:'WIRE'},
     {key:'plastic', label:'Plastik', color:'#d7dbe3', tile:null},
     {key:'copper',  label:'Miedz',   color:'#cc7a36', tile:null},
@@ -188,7 +190,12 @@
     {key:'dynamo',  label:'Dynamo',  color:'#ffd24a', tile:'DYNAMO'},
     {key:'teleporter', label:'Teleporter', color:'#7cf7ff', tile:'TELEPORTER'},
     {key:'torch',   label:'Pochodnia',color:'#ffb84a', tile:'TORCH'},
-    {key:'masterStone', label:'Kamien mistrza', color:'#71fff1', tile:'VOLCANO_MASTER_STONE'},
+    {key:'masterStone', label:'Kamien mistrza', color:'#ff6a21', tile:'VOLCANO_MASTER_STONE'},
+    {key:'servantStone', label:'Kamien slugi', color:'#8b2d17', tile:'SERVANT_STONE'},
+    {key:'springAntler', label:'Poroze wiosny', color:'#d8a96b', tile:null},
+    {key:'summerHorn', label:'Rog lata', color:'#9b6b38', tile:null},
+    {key:'autumnHeartwood', label:'Jesienne twardziel', color:'#b57936', tile:null},
+    {key:'winterFur', label:'Zimowe futro', color:'#e8f4ff', tile:null},
     {key:'antimatter', label:'Antymateria', color:'#c46bff', tile:null} // dropped by downed UFOs; not placeable
   ];
 
@@ -206,7 +213,7 @@
   // Loot items come from localStorage (bag + dynamic-loot keys) — whitelist their
   // fields on ingest so tampered/corrupt entries can't smuggle objects or markup
   // into stat math and innerHTML-based displays downstream.
-  const ITEM_NUM_FIELDS=['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost'];
+  const ITEM_NUM_FIELDS=['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus'];
   const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType'];
   const ITEM_KINDS=new Set(['cape','eyes','outfit','weapon','charm']);
   function sanitizeLootItem(raw,fallbackKind){

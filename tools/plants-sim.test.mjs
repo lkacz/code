@@ -27,6 +27,21 @@ MM.fire={ isBurning:()=>false };
 function fresh(seed){ tiles=new Map(); plants.reset(); plants._setRng(mulberry(seed||42)); raining=false; delete globalThis.player; }
 const step=(seconds)=>{ const dt=1/30; for(let i=0;i<seconds*30;i++) plants.update(getTile,setTile,dt); };
 
+// 0) snapshots restore the current garden without relying on side storage
+fresh(10);
+const savedFern = plants.sow('fern',0,getTile);
+savedFern.hyd = 0;
+savedFern.health = 0.2;
+assert.equal(plants.count(), 1, 'snapshot setup has one plant');
+const plantSnap = plants.snapshot();
+plants.reset();
+assert.equal(plants.count(), 0, 'reset clears live plants');
+assert.equal(plants.restore(plantSnap), true, 'plant snapshot restores');
+assert.equal(plants.count(), 1, 'restore brings back saved plants');
+assert.equal(plants._debug().get(0).type, 'fern', 'restored plant keeps species');
+assert.equal(plants._debug().get(0).hyd, 0, 'restored plant keeps zero hydration');
+assert.equal(plants._debug().get(0).health, 0.2, 'restored plant keeps low health');
+
 // 1) watered plant grows through stages and eventually drinks tiles away
 fresh(11);
 setTile(1,10,T.WATER); setTile(2,10,T.WATER); // pond beside the sprout
@@ -36,7 +51,6 @@ step(120);
 assert.ok(p1.stage>=3, 'watered sunflower grows (stage '+p1.stage+')');
 const pondLeft=[...tiles.values()].filter(v=>v===T.WATER).length;
 assert.ok(pondLeft<2, 'growing plants absorb water tiles over time (left '+pondLeft+')');
-
 // 2) dry plant wilts and dies; the hose keeps a twin alive
 fresh(22);
 const dry=plants.sow('fern',0,getTile);

@@ -61,7 +61,10 @@ assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source end
   tick(1.0,null);
   const tm=teleporters.metrics();
   assert.ok(tm.storedEnergy>=teleporters._debug.TRAVEL_COST,'teleporter battery charges from a linked dynamo through copper wires');
+  assert.ok(tm.poweredWires>0,'copper wires that carry energy are marked for powered sparkle rendering');
   assert.ok(dynamo.metrics().storedEnergy<beforeDynamo,'charging teleporter drains real stored dynamo energy');
+  const net=teleporters._debug.networkFor(0,10,getTile);
+  assert.equal(net.cables.length,2,'teleporter power networks retain cable cells for flow visuals');
 
   const player={x:0.5,y:10.5,w:0.7,h:0.95,vx:3,vy:0,energy:0,maxEnergy:80};
   tick(0.05,player);
@@ -86,8 +89,26 @@ assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source end
   const battery={energy:0};
   const gained=teleporters.chargeBatteryAt(0,10,battery,1,getTile,dynamo,{capacity:50,rate:20});
   assert.ok(gained>0 && battery.energy>0,'generic power devices can charge a local battery through copper wires');
+  assert.ok(teleporters.metrics().poweredWires>0,'generic network drains also animate powered wires');
   const drained=teleporters.drainNetworkEnergyAt(0,10,5,getTile,dynamo);
   assert.ok(drained>0,'generic power devices can drain network energy directly');
+  dynamo.reset();
+  tick(1.0,null);
+  assert.equal(teleporters.metrics().poweredWires,0,'powered wire sparkle state decays when energy stops flowing');
+}
+
+{
+  reset();
+  setTile(0,10,T.TELEPORTER);
+  placeDynamo(-4,10);
+  setTile(-2,10,T.COPPER_WIRE);
+  setTile(-1,10,T.COPPER_WIRE);
+  chargeDynamo(-4,10);
+  assert.ok(teleporters.availableNetworkEnergyAt(0,10,getTile,dynamo)>0,'test network starts powered before raw cable mutation');
+  tiles.delete(k(-1,10)); // simulate a low-level terrain load/restore mutation without onTileChanged hooks
+  assert.equal(teleporters.availableNetworkEnergyAt(0,10,getTile,dynamo),0,'teleporter network cache self-invalidates when a cached cable disappears');
+  const battery={energy:0};
+  assert.equal(teleporters.chargeBatteryAt(0,10,battery,1,getTile,dynamo,{capacity:50,rate:20}),0,'stale cached cable paths cannot charge devices after raw terrain changes');
 }
 
 {
@@ -130,6 +151,21 @@ assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source end
   teleporters.restore(snap,getTile);
   assert.equal(teleporters.metrics().machines,1,'restore rehydrates teleporter battery state');
   assert.equal(Math.round(teleporters.metrics().storedEnergy),77,'restore preserves stored teleporter energy');
+}
+
+{
+  reset();
+  setTile(0,10,T.TELEPORTER);
+  let reads=0;
+  const countingGetTile=(x,y)=>{ reads++; return getTile(x,y); };
+  assert.equal(teleporters.nearestTeleporter(0,10,1,countingGetTile), null, 'a lone teleporter has no travel target');
+  const firstReads=reads;
+  assert.ok(firstReads>100000, 'fallback nearest-teleporter discovery is broad enough to need caching');
+  assert.equal(teleporters.nearestTeleporter(0,10,1,countingGetTile), null, 'cached lone-teleporter search keeps the same result');
+  assert.ok(reads<firstReads+10, 'repeated nearest-teleporter search reuses the cached list');
+  setTile(20,10,T.TELEPORTER);
+  const target=teleporters.nearestTeleporter(0,10,1,countingGetTile);
+  assert.deepEqual(target,{x:20,y:10}, 'placing a teleporter invalidates the cached nearest-target list');
 }
 
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');

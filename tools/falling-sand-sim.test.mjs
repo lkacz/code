@@ -62,6 +62,14 @@ function assertSettledState(label){
   assert.equal(snap.sand.length, 0, label+' leaves no airborne sand');
   assert.equal(snap.queue.length, 0, label+' drains queued instability before save');
 }
+function stepFalling(seconds,dt=1/60){
+  let t=0;
+  while(t<seconds-1e-9){
+    const d=Math.min(dt,seconds-t);
+    fallingSolids.update(getTile,setTile,d);
+    t+=d;
+  }
+}
 
 {
   reset();
@@ -101,6 +109,40 @@ function assertSettledState(label){
   assert.equal(getTile(0,10),T.TELEPORTER,'falling rubble does not occupy or erase a teleporter machine');
   assert.equal(countRegionTile(T.STONE,-3,3,0,12),1,'falling rubble is preserved near the teleporter instead of vanishing or passing through it');
   assertSettledState('teleporter rubble guard');
+}
+
+{
+  reset();
+  fillFloor(120,-80,80);
+  MM.wind = { speedAt(){ return 5; }, speed(){ return 5; } };
+  fallingSolids.restore({
+    v:4,
+    active:[],
+    sand:[{x:0,y:10,vy:0}],
+    queue:[]
+  });
+  stepFalling(1.4);
+  const snap=fallingSolids.snapshot();
+  assert.equal(snap.sand.length, 1, 'wind test keeps the sand grain airborne before it reaches the floor');
+  assert.ok(snap.sand[0].x>=1, 'strong exposed wind drifts airborne sand sideways');
+  delete MM.wind;
+}
+
+{
+  reset();
+  fillFloor(120,-80,80);
+  MM.wind = { speedAt(){ return 5; }, speed(){ return 5; } };
+  fallingSolids.restore({
+    v:4,
+    active:[{x:0,y:10,type:T.STEEL,vy:0,rubble:true}],
+    sand:[],
+    queue:[]
+  });
+  stepFalling(1.4);
+  const snap=fallingSolids.snapshot();
+  assert.equal(snap.active.length, 1, 'wind test keeps the steel block airborne before it reaches the floor');
+  assert.ok(snap.active[0].x<=1, 'heavy steel rubble barely drifts in the same strong wind');
+  delete MM.wind;
 }
 
 {

@@ -45,6 +45,7 @@ assert.equal(mobs.goldenState().visits, 1, 'visit counted');
 
 // it is transient: never serialized into the save
 assert.ok(!mobs.serialize().list.some(r=>r.id==='ZLOTY'), 'golden sprinter is excluded from saves');
+assert.equal(mobs.serialize().golden.visits, 1, 'golden visit schedule is saved with the mob ecology state');
 
 // --- 2. Lifetime escape: it dissolves without leaving loot ---
 step(60, 10); // its 34s lifetime expires well within this window
@@ -154,5 +155,17 @@ assert.ok(messages.some(t=>t.includes('pokonany')), 'victory is announced');
 const a = mobs.spawnGolden('bird', player);
 assert.ok(a, 'slot free again after the kill');
 assert.equal(mobs.spawnGolden('mole', player), null, 'limit of one golden visitor at a time');
+
+// --- 7. Save ownership: the live visitor is transient, but the scheduler
+// belongs to the save blob rather than leaking globally between worlds.
+mobs.deserialize({v:4,list:[],aggro:{mode:'rel',m:{}},golden:{acc:1234,visits:3}});
+assert.equal(goldenCount(), 0, 'restoring mob ecology clears any transient live golden visitor');
+let restoredSchedule = mobs.goldenState();
+assert.equal(Math.round(restoredSchedule.acc), 1234, 'golden scheduler acc restores from the save blob');
+assert.equal(restoredSchedule.visits, 3, 'golden scheduler visit count restores from the save blob');
+mobs.deserialize({v:4,list:[],aggro:{mode:'rel',m:{}},golden:{acc:Infinity,visits:-5}});
+restoredSchedule = mobs.goldenState();
+assert.equal(restoredSchedule.acc, 0, 'invalid golden scheduler acc is sanitized on restore');
+assert.equal(restoredSchedule.visits, 0, 'invalid golden scheduler visits are sanitized on restore');
 
 console.log('golden-sim: all assertions passed');

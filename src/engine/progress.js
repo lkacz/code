@@ -6,16 +6,71 @@
 window.MM = window.MM || {};
 (function(){
   const SAVE_KEY='mm_progress_v1';
-  const state={ vit:0, str:0, agi:0, cap:0, lastLevel:1, bossKills:0, done:{} };
+  const state={ vit:0, str:0, agi:0, cap:0, lastLevel:1, bossKills:0, done:{}, trophies:{} };
+  let berries=0;
+  const SEASON_TROPHY_KEYS=['springAntler','summerHorn','autumnHeartwood','winterFur'];
 
-  function save(){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(state)); }catch(e){} }
+  function toInt(v,min,max){
+    const n=Number(v);
+    if(!isFinite(n)) return min;
+    let out=Math.floor(n);
+    if(out<min) out=min;
+    if(typeof max==='number' && out>max) out=max;
+    return out;
+  }
+  function cleanDone(src){
+    const out={};
+    if(src && typeof src==='object'){
+      Object.keys(src).forEach(k=>{ if(src[k]) out[String(k).slice(0,64)]=1; });
+    }
+    return out;
+  }
+  function cleanTrophies(src){
+    const out={};
+    if(src && typeof src==='object'){
+      for(const k of SEASON_TROPHY_KEYS) if(src[k]) out[k]=1;
+    }
+    return out;
+  }
+  function snapshot(){
+    return {
+      v:2,
+      vit:toInt(state.vit,0,999),
+      str:toInt(state.str,0,999),
+      agi:toInt(state.agi,0,999),
+      cap:toInt(state.cap,0,999),
+      lastLevel:toInt(state.lastLevel,1,99),
+      bossKills:toInt(state.bossKills,0),
+      done:cleanDone(state.done),
+      trophies:cleanTrophies(state.trophies),
+      berries:toInt(berries,0),
+    };
+  }
+  function applySnapshot(d){
+    if(!d || typeof d!=='object') return false;
+    state.vit=toInt(d.vit,0,999);
+    state.str=toInt(d.str,0,999);
+    state.agi=toInt(d.agi,0,999);
+    state.cap=toInt(d.cap,0,999);
+    state.lastLevel=toInt(d.lastLevel,1,99);
+    state.bossKills=toInt(d.bossKills,0);
+    state.done=cleanDone(d.done);
+    state.trophies=cleanTrophies(d.trophies);
+    berries=toInt(d.berries,0);
+    return true;
+  }
+  function save(){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(snapshot())); }catch(e){} }
+  function restore(data){
+    if(!applySnapshot(data)) return false;
+    save();
+    try{ if(MM.recomputeModifiers) MM.recomputeModifiers(); }catch(e){}
+    notify();
+    return true;
+  }
   (function load(){
     try{
       const raw=localStorage.getItem(SAVE_KEY); if(!raw) return;
-      const d=JSON.parse(raw); if(!d||typeof d!=='object') return;
-      ['vit','str','agi','cap','lastLevel','bossKills'].forEach(k=>{ if(typeof d[k]==='number') state[k]=Math.max(0,d[k]|0); });
-      if(state.lastLevel<1) state.lastLevel=1;
-      if(d.done && typeof d.done==='object') state.done=d.done;
+      applySnapshot(JSON.parse(raw));
     }catch(e){}
   })();
   // Boss kills must survive reloads (bosses.js's session counter resets with the
@@ -27,6 +82,24 @@ window.MM = window.MM || {};
   function playerRef(){ return (typeof window!=='undefined' && window.player)||null; }
   function notify(){ try{ window.dispatchEvent(new CustomEvent('mm-progress-change')); }catch(e){} }
   function say(t){ try{ if(window.msg) window.msg(t); }catch(e){} }
+  function markSeasonalTrophies(inv){
+    if(!inv || typeof inv!=='object') return false;
+    let changed=false;
+    for(const key of SEASON_TROPHY_KEYS){
+      if(!state.trophies[key] && (Number(inv[key])||0)>0){
+        state.trophies[key]=1;
+        changed=true;
+      }
+    }
+    if(changed) save();
+    return changed;
+  }
+  function hasSeasonalTrophy(ctx,key){
+    return !!(state.trophies[key] || (ctx && ctx.inv && (Number(ctx.inv[key])||0)>0));
+  }
+  if(typeof window!=='undefined' && window.addEventListener){
+    window.addEventListener('mm-resources-change',()=>{ markSeasonalTrophies((typeof window!=='undefined'&&window.inv)||null); });
+  }
 
   // --- Levels: cumulative XP thresholds, gently super-linear ---
   function needFor(level){ return Math.round(60*Math.pow(level,1.35)); } // XP from L → L+1
@@ -98,10 +171,19 @@ window.MM = window.MM || {};
     {id:'boss5',     desc:'Łowca tytanów: pokonaj 5 bossów', check:(c)=>c.bossKilled>=5, xp:500, chest:true},
     {id:'berry5',    desc:'Ogrodnik: zbierz 5 razy jagody', check:(c)=>c.berries>=5, xp:150},
     {id:'obsidian10',desc:'Obsydianowy magnat: zdobądź 10 obsydianu', check:(c)=>((c.inv&&c.inv.obsidian)||0)>=10, xp:200},
+    {id:'season_spring_trophy', desc:'Tropiciel wiosny: zdobadz poroze wiosny', check:(c)=>hasSeasonalTrophy(c,'springAntler'), xp:180},
+    {id:'season_summer_trophy', desc:'Tropiciel lata: zdobadz rog lata', check:(c)=>hasSeasonalTrophy(c,'summerHorn'), xp:180},
+    {id:'season_autumn_trophy', desc:'Tropiciel jesieni: zdobadz jesienna twardziel', check:(c)=>hasSeasonalTrophy(c,'autumnHeartwood'), xp:180},
+    {id:'season_winter_trophy', desc:'Tropiciel zimy: zdobadz zimowe futro', check:(c)=>hasSeasonalTrophy(c,'winterFur'), xp:180},
+    {id:'season_full_year', desc:'Kronikarz roku: zamknij cykl czterech sezonow', check:()=>(
+      (state.done.season_spring_trophy || state.trophies.springAntler) &&
+      (state.done.season_summer_trophy || state.trophies.summerHorn) &&
+      (state.done.season_autumn_trophy || state.trophies.autumnHeartwood) &&
+      (state.done.season_winter_trophy || state.trophies.winterFur)
+    ), xp:700, chest:true},
   ];
-  let berries=0;
   if(typeof window!=='undefined' && window.addEventListener){
-    window.addEventListener('mm-berry-harvest',()=>{ berries++; });
+    window.addEventListener('mm-berry-harvest',()=>{ berries=toInt(berries+1,0); save(); });
   }
   function rewardChest(p){
     try{
@@ -131,6 +213,7 @@ window.MM = window.MM || {};
     // milestones
     const ctx={ player:p, inv:(typeof window!=='undefined'&&window.inv)||{}, berries,
                 bossKilled:state.bossKills };
+    markSeasonalTrophies(ctx.inv);
     for(const m of MILESTONES){
       if(state.done[m.id]) continue;
       let ok=false; try{ ok=m.check(ctx); }catch(e){}
@@ -144,9 +227,9 @@ window.MM = window.MM || {};
     }
   }
 
-  function reset(){ state.vit=state.str=state.agi=state.cap=0; state.lastLevel=1; state.bossKills=0; state.done={}; berries=0; save(); try{ if(MM.recomputeModifiers) MM.recomputeModifiers(); }catch(e){} notify(); }
+  function reset(){ state.vit=state.str=state.agi=state.cap=0; state.lastLevel=1; state.bossKills=0; state.done={}; state.trophies={}; berries=0; save(); try{ if(MM.recomputeModifiers) MM.recomputeModifiers(); }catch(e){} notify(); }
 
-  MM.progress={ update, level, points, spend, bonuses, reset, addBuff,
+  MM.progress={ update, level, points, spend, bonuses, reset, addBuff, snapshot, restore,
     getBuffs:()=>buffs.map(b=>({name:b.name,icon:b.icon,t:b.t})),
     stats:()=>({vit:state.vit,str:state.str,agi:state.agi,cap:state.cap}),
     milestones:()=>MILESTONES.map(m=>({id:m.id,desc:m.desc,done:!!state.done[m.id]})) };

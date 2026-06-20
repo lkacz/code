@@ -199,13 +199,39 @@ assert.equal(INFO[T.SOLAR_BATTERY].energyCapacity,120,'storage solar panel adver
   assert.ok(solar.metrics().storedEnergy<solarBefore,'charging a device drains stored solar energy');
 }
 
+{
+  reset();
+  setTile(5,10,T.SOLAR_BATTERY);
+  const charged=solar._debug.debugChargeAt(5,10,60,getTile);
+  assert.ok(charged>0,'debug helper can charge a solar battery for menu testing');
+  assert.ok(solar.energyAt(5,10,getTile)>0,'debug-charged solar battery stores energy');
+  assert.equal(solar._debug.debugSetEnergyAt(5,10,0,getTile),true,'debug helper can drain a solar cluster');
+  assert.equal(solar.energyAt(5,10,getTile),0,'debug drain clears solar battery energy');
+}
+
+{
+  reset();
+  solar._debug.cells.set('999,10',{x:999,y:10,energy:90,power:0,pulse:0,storage:true});
+  solar.update(0.1,{x:0,y:10},getTile);
+  assert.equal(solar._debug.cells.has('999,10'),false,'solar update prunes stale cached cells whose terrain changed behind hooks');
+  for(let i=0; i<solar._debug.CELL_CAP+80; i++){
+    solar._debug.cells.set((2000+i)+',10',{x:2000+i,y:10,energy:0,power:0,pulse:0,storage:false});
+  }
+  solar.update(0.1,{x:0,y:10},getTile);
+  assert.equal(solar.metrics().cells,0,'solar registry prunes invalid runaway cache entries');
+}
+
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 assert.match(mainSrc, /import \{ solar as SOLAR \}/, 'main imports the solar engine');
-assert.match(mainSrc, /solar:\s*\(SOLAR && SOLAR\.snapshot\)/, 'save payload includes solar battery state');
+assert.match(mainSrc, /solar:\s*timedSavePart\('solar',[^\n]*SOLAR && SOLAR\.snapshot/, 'save payload includes solar battery state');
 assert.match(mainSrc, /SOLAR\.restore\(data\.solar,getTile\)/, 'load path restores solar battery state');
 assert.match(mainSrc, /SOLAR\.update\(dt,player,getTile\)/, 'main charges solar panels every frame');
 assert.match(mainSrc, /SOLAR\.draw\(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getTile\)/, 'main draws solar panel charge overlays');
 assert.match(mainSrc, /T\.SOLAR_PANEL \|\| t===T\.SOLAR_BATTERY/, 'main renders solar panel tile bodies');
+assert.match(mainSrc, /function placeDebugSolarPanel\(\)/, 'main exposes a debug action for placing a solar panel');
+assert.match(mainSrc, /function placeDebugSolarBattery\(\)/, 'main exposes a debug action for placing a solar battery panel');
+assert.match(mainSrc, /function placeDebugSolarRig\(\)/, 'main exposes a debug action for placing a solar-powered test rig');
+assert.match(mainSrc, /MM\.ui\.injectSolarDebugPanel/, 'main injects the solar debug panel');
 
 const fireSrc = await readFile(new URL('../src/engine/fire.js', import.meta.url), 'utf8');
 assert.match(fireSrc, /import \{ reactions as REACTIONS \}/, 'fire imports the reaction engine');
@@ -219,5 +245,12 @@ assert.match(weaponsSrc, /applyBlockReaction\('electric'/, 'electric beams apply
 
 const teleporterSrc = await readFile(new URL('../src/engine/teleporters.js', import.meta.url), 'utf8');
 assert.match(teleporterSrc, /source\.kind==='solar'/, 'power networks can drain solar sources');
+
+const uiSrc = await readFile(new URL('../src/engine/ui.js', import.meta.url), 'utf8');
+assert.match(uiSrc, /function injectSolarDebugPanel\(actions, menuPanel\)/, 'ui exposes a solar debug panel injector');
+assert.match(uiSrc, /box\.id='solarDebugBox'/, 'solar debug panel has a stable DOM id');
+assert.match(uiSrc, /Panel bateria/, 'solar debug panel includes a storage panel button');
+assert.match(uiSrc, /Uklad testowy/, 'solar debug panel includes a powered rig button');
+assert.match(uiSrc, /Laduj solar/, 'solar debug panel includes a solar charge button');
 
 console.log('reactions-solar-sim: all assertions passed');

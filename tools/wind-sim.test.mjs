@@ -70,6 +70,14 @@ let applied = wind.applyToHero(player,1,openTile,{inWater:false});
 assert.ok(applied.applied && player.vx>1, `airborne hero drifted with wind (vx=${player.vx.toFixed(2)})`);
 
 wind.setOverride(2.4);
+player.vx=0; player.vy=-9; player.onGround=false;
+const jumpingPush = wind.applyToHero(player,1,openTile,{inWater:false}).delta;
+wind.setOverride(2.4);
+player.vx=0; player.vy=5; player.onGround=false;
+const fallingPush = wind.applyToHero(player,1,openTile,{inWater:false}).delta;
+assert.ok(jumpingPush > fallingPush*1.35, `jumping catches stronger wind than falling (${jumpingPush.toFixed(2)} vs ${fallingPush.toFixed(2)})`);
+
+wind.setOverride(2.4);
 player.vx=0; player.onGround=true;
 applied = wind.applyToHero(player,1,openTile,{inWater:false});
 assert.equal(applied.applied, false, 'ordinary wind does not shove a grounded hero');
@@ -87,6 +95,19 @@ const roofExposure = wind.exposureAt(0,50,roofTile);
 assert.ok(openExposure > 0.9, 'open sky has full wind exposure');
 assert.ok(roofExposure < openExposure*0.35, `roofed exposure is reduced (${roofExposure.toFixed(2)})`);
 assert.ok(wind.gasDrift(0,50,T.STEAM,openTile) > wind.gasDrift(0,50,T.STEAM,roofTile)*2, 'gas drift also respects exposure');
+const highWind = wind.speedAt(0,18,openTile);
+const lowWind = wind.speedAt(0,84,openTile);
+assert.ok(highWind > lowWind*1.35, `open-air wind strengthens with altitude (${highWind.toFixed(2)} vs ${lowWind.toFixed(2)})`);
+assert.ok(wind._debug.altitudeMultiplier(18) > wind._debug.altitudeMultiplier(84), 'altitude multiplier increases toward the top of the map');
+assert.ok(wind.gasDrift(0,18,T.STEAM,openTile) > wind.gasDrift(0,84,T.STEAM,openTile)*1.35, 'gas drift also strengthens higher in the map');
+
+wind.setOverride(2.4);
+player.vx=0; player.y=18; player.vy=0; player.onGround=false;
+const highHeroPush = wind.applyToHero(player,1,openTile,{inWater:false}).delta;
+wind.setOverride(2.4);
+player.vx=0; player.y=84; player.vy=0; player.onGround=false;
+const lowHeroPush = wind.applyToHero(player,1,openTile,{inWater:false}).delta;
+assert.ok(highHeroPush > lowHeroPush*1.35, `hero catches stronger wind at altitude (${highHeroPush.toFixed(2)} vs ${lowHeroPush.toFixed(2)})`);
 
 // Visual particles are bounded even under a long high-wind run.
 wind.reset();
@@ -96,6 +117,22 @@ for(let i=0;i<60*12;i++) wind.update(1/60,player,openTile);
 let wm = wind.metrics();
 assert.ok(wm.particles <= wm.particleCap, `wind particles stay capped (${wm.particles}/${wm.particleCap})`);
 assert.ok(wm.particles > 0, 'visible wind particles spawned in open air');
+
+const snowTile = (x,y)=> (y===90 ? T.SNOW : (y>90 ? T.STONE : T.AIR));
+const sandTile = (x,y)=> (y===90 ? T.SAND : (y>90 ? T.STONE : T.AIR));
+wind.reset();
+wind.setOverride(5.0);
+player.onGround=true; player.x=0; player.y=88;
+for(let i=0;i<60*8;i++) wind.update(1/60,player,snowTile);
+wm = wind.metrics();
+assert.ok(wm.particles <= wm.particleCap, `snow gust particles stay capped (${wm.particles}/${wm.particleCap})`);
+assert.ok(wind._debug.particles.some(p=>p.material===T.SNOW && (p.kind==='snow' || p.kind==='gust')), 'strong wind lifts visible snow particles from snowy ground');
+
+wind.reset();
+wind.setOverride(5.0);
+player.onGround=true; player.x=0; player.y=88;
+for(let i=0;i<60*8;i++) wind.update(1/60,player,sandTile);
+assert.ok(wind._debug.particles.some(p=>p.material===T.SAND && (p.kind==='sand' || p.kind==='gust')), 'strong wind lifts visible sand particles from sandy ground');
 
 // Squalls can be forced for debug and persisted as weather state, not as a cheat override.
 wind.reset();
@@ -151,7 +188,10 @@ gases.reset();
 
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const uiSrc = await readFile(new URL('../src/engine/ui.js', import.meta.url), 'utf8');
-assert.match(mainSrc, /wind:\s*\(WIND && WIND\.snapshot\)/, 'save payload includes wind state');
+const jumpBlockIdx = mainSrc.indexOf('if(jumpBufferT>0){');
+const windApplyIdx = mainSrc.indexOf('if(WIND && WIND.applyToHero)');
+assert.ok(jumpBlockIdx >= 0 && windApplyIdx > jumpBlockIdx, 'main applies wind after jump impulse so new jumps catch gusts immediately');
+assert.match(mainSrc, /wind:\s*timedSavePart\('wind',[^\n]*WIND && WIND\.snapshot/, 'save payload includes wind state');
 assert.match(mainSrc, /WIND\.restore\(data\.wind\)/, 'load path restores wind state');
 assert.match(mainSrc, /injectWindDebugPanel/, 'main menu injects the wind debug panel');
 assert.match(mainSrc, /exact:\(value\)=>/, 'main wind debug actions support exact speed overrides');

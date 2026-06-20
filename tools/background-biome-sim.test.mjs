@@ -9,6 +9,7 @@ globalThis.MM = {};
 
 const { background } = await import('../src/engine/background.js');
 assert.ok(background && background._debugBiomeBlend, 'background exposes biome debug blend');
+assert.ok(background._debugSeasonTint, 'background exposes season tint debug hook');
 
 const palettes = background._debugSkyPalettes;
 const pure = (id)=>({
@@ -57,6 +58,20 @@ const volcano = background._debugBiomeBlend(0,realVolcano);
 assert.ok(volcano.volcano.amount>0.98, 'real volcano metadata enables volcano background cues');
 assert.ok(volcano.relief>0.9, 'real volcano keeps strong distant relief');
 
+const winterTint = background._debugSeasonTint({
+  season:'winter', from:'winter', to:'winter', transition:false, blend:1,
+  snowStrength:1, leafDropStrength:0, leafGrowStrength:0
+});
+assert.equal(winterTint.season,'winter', 'season tint reports the active season');
+assert.ok(winterTint.alpha>=0.055 && winterTint.alpha<=0.075, 'winter tint is visible but bounded');
+const autumnWinterTint = background._debugSeasonTint({
+  season:'winter', from:'autumn', to:'winter', transition:true, blend:0.5,
+  snowStrength:0.5, leafDropStrength:0.5, leafGrowStrength:0
+});
+assert.ok(autumnWinterTint.transition, 'season tint preserves transition state');
+assert.notEqual(autumnWinterTint.color, winterTint.color, 'transition tint blends between seasons');
+assert.ok(autumnWinterTint.alpha>0.035 && autumnWinterTint.alpha<winterTint.alpha, 'transition tint eases in smoothly');
+
 assert.ok(background._debugBiomeBlendCached && background._debugClearBiomeBlendCache, 'background exposes blend cache debug hooks');
 let biomeCalls=0, columnCalls=0, volcanoCalls=0;
 const cachedWorld = {
@@ -71,12 +86,12 @@ const cachedWorld = {
 background._debugClearBiomeBlendCache();
 background._debugBiomeBlendCached(10,cachedWorld);
 background._debugBiomeBlendCached(11.9,cachedWorld);
-assert.equal(background._debugBiomeBlendCacheSize(),1, 'nearby draw positions share one cached background blend');
-assert.equal(biomeCalls,9, 'cached background blend avoids repeated biome sampling at the same quantized x');
-assert.equal(volcanoCalls,9, 'cached background blend avoids repeated volcano sampling at the same quantized x');
-assert.equal(columnCalls,7, 'cached background blend avoids repeated relief sampling at the same quantized x');
+assert.equal(background._debugBiomeBlendCacheSize(),2, 'nearby draw positions share the same cached interpolation endpoints');
+assert.equal(biomeCalls,18, 'cached background blend samples each interpolation endpoint once');
+assert.equal(volcanoCalls,18, 'cached background blend avoids repeated volcano sampling for shared endpoints');
+assert.equal(columnCalls,14, 'cached background blend avoids repeated relief sampling for shared endpoints');
 background._debugBiomeBlendCached(30,cachedWorld);
-assert.equal(background._debugBiomeBlendCacheSize(),2, 'moving far enough computes a second cached blend');
+assert.equal(background._debugBiomeBlendCacheSize(),4, 'moving far enough computes a second endpoint pair');
 
 assert.ok(background._debugStarPositions && background._debugStarLayerCount, 'background exposes star debug hooks');
 const starLayers = background._debugStarLayerCount();
@@ -135,7 +150,7 @@ function makeBackgroundCtx(){
     save(){ state.push({fillStyle:this.fillStyle,strokeStyle:this.strokeStyle,lineWidth:this.lineWidth,globalAlpha:this.globalAlpha,globalCompositeOperation:this.globalCompositeOperation}); },
     restore(){ const s=state.pop(); if(!s) return; Object.assign(this,s); },
     fillRect(x,y,w,h){ calls.push(['fillRect',+x.toFixed(3),+y.toFixed(3),+w.toFixed(3),+h.toFixed(3),+this.globalAlpha.toFixed(3)]); },
-    drawImage(){ calls.push(['drawImage']); },
+    drawImage(img,x=0,y=0){ calls.push(['drawImage',+Number(x||0).toFixed(3),+Number(y||0).toFixed(3)]); },
     beginPath(){},
     closePath(){},
     moveTo(){},
@@ -150,6 +165,30 @@ function makeBackgroundCtx(){
   };
   return ctx;
 }
+
+const oldSeasonApi = globalThis.MM.seasons;
+const oldTintOverrideActive = globalThis.__timeOverrideActive;
+const oldTintOverrideValue = globalThis.__timeOverrideValue;
+const oldTintNow = globalThis.performance.now;
+globalThis.MM.seasons = {
+  metrics(){ return {
+    season:'winter', from:'winter', to:'winter', transition:false, blend:1,
+    snowStrength:1, leafDropStrength:0, leafGrowStrength:0
+  }; }
+};
+globalThis.__timeOverrideActive = true;
+globalThis.__timeOverrideValue = 0.25;
+globalThis.performance.now = ()=>2345678;
+background.draw(makeBackgroundCtx(),320,180,0,20,pure(1));
+const tintCtx = makeBackgroundCtx();
+background.applyTint(tintCtx,320,180);
+const seasonTintFills = tintCtx.calls.filter(c=>c[0]==='fillRect' && c[3]===320 && c[4]===180 && c[5]>=0.055 && c[5]<=0.075);
+assert.equal(seasonTintFills.length,1, 'applyTint adds one screen-space seasonal atmosphere fill');
+globalThis.MM.seasons = oldSeasonApi;
+globalThis.performance.now = oldTintNow;
+globalThis.__timeOverrideActive = oldTintOverrideActive;
+globalThis.__timeOverrideValue = oldTintOverrideValue;
+
 const oldTimeOverrideActive = globalThis.__timeOverrideActive;
 const oldTimeOverrideValue = globalThis.__timeOverrideValue;
 const oldNow = globalThis.performance.now;
@@ -164,6 +203,14 @@ const smallStarsA = drawCtxA.calls.filter(c=>c[0]==='fillRect' && c[3]<=2 && c[4
 const smallStarsB = drawCtxB.calls.filter(c=>c[0]==='fillRect' && c[3]<=2 && c[4]<=2);
 assert.ok(smallStarsA.length>60, 'actual draw emits visible sky-dome stars at night');
 assert.deepEqual(smallStarsA, smallStarsB, 'actual star draw does not shift with player position');
+const fractionalParallaxCtx = makeBackgroundCtx();
+const oldDpr = globalThis.devicePixelRatio;
+globalThis.devicePixelRatio = 2;
+background.draw(fractionalParallaxCtx,900,500,0.13,20,pure(7));
+globalThis.devicePixelRatio = oldDpr;
+const parallaxImages = fractionalParallaxCtx.calls.filter(c=>c[0]==='drawImage');
+assert.ok(parallaxImages.every(c=>Math.abs(c[1]*2-Math.round(c[1]*2))<0.001), 'mountain parallax repeats snap to device pixels');
+assert.ok(parallaxImages.some(c=>Math.abs(c[1]-Math.round(c[1]))>0.001), 'high-DPI mountain parallax can still move in sub-CSS-pixel increments');
 const volcanoDrawCtx = makeBackgroundCtx();
 background.draw(volcanoDrawCtx,900,500,0,20,realVolcano);
 const volcanoEllipses = volcanoDrawCtx.calls.filter(c=>c[0]==='ellipse');

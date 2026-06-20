@@ -33,6 +33,32 @@
       } else i++;
     }
   }
+  function fallbackGetTile(){
+    try{
+      const w=MM && MM.world;
+      return w && typeof w.getTile === 'function' ? w.getTile.bind(w) : null;
+    }catch(e){ return null; }
+  }
+  function windAtParticle(p,tileSize,getTile){
+    try{
+      const w=MM && MM.wind;
+      if(!w) return 0;
+      const x=(p.x||0)/tileSize, y=(p.y||0)/tileSize;
+      const tileFn=typeof getTile === 'function' ? getTile : fallbackGetTile();
+      const v=typeof w.speedAt === 'function'
+        ? w.speedAt(x,y,tileFn)
+        : (typeof w.speed === 'function' ? w.speed() : 0);
+      return Number.isFinite(v) ? Math.max(-6,Math.min(6,v)) : 0;
+    }catch(e){ return 0; }
+  }
+  function windResponse(kind){
+    if(kind==='splash') return 0.26;
+    if(kind==='spark') return 0.24;
+    if(kind==='glass') return 0.18;
+    if(kind==='smoke') return 0.16;
+    if(kind==='bubble' || kind==='energy') return 0;
+    return 0.22;
+  }
 
   function smokeSprite(shade,variant){
     if(typeof document==='undefined' || !document.createElement) return null;
@@ -112,6 +138,29 @@
       const ang=Math.random()*Math.PI*2;
       const sp=1.0+Math.random()*2.0;
       particles.push({ kind:'spark', x, y, vx:Math.cos(ang)*sp, vy:Math.sin(ang)*sp*0.55-0.55, life:0, max:0.22+Math.random()*0.22, tier });
+    }
+  };
+
+  mod.spawnTurboSparks = function(x,y,facing,intensity){
+    const k=Math.max(0.25, Math.min(1.5, Number(intensity)||0.7));
+    const n=Math.max(2, Math.min(9, Math.round(2+k*4)));
+    const dir=(Number(facing)||1)>=0 ? 1 : -1;
+    for(let i=0;i<n;i++){
+      if(particles.length>=PARTICLE_CAP) break;
+      const back=-dir;
+      const side=(Math.random()-0.5)*1.1;
+      const sp=(0.9+Math.random()*2.2)*k;
+      particles.push({
+        kind:'spark',
+        x:x + back*(4+Math.random()*8),
+        y:y + (Math.random()-0.5)*16,
+        vx:back*sp + side*0.45,
+        vy:(Math.random()-0.5)*1.2 - 0.25,
+        life:0,
+        max:0.16+Math.random()*0.18,
+        tier:'turbo',
+        size:1.8+Math.random()*2.2
+      });
     }
   };
 
@@ -220,23 +269,23 @@
     }
   };
 
-  mod.update = function(dt, TILE){
+  mod.update = function(dt, TILE, getTile){
+    const tileSize = TILE || 20;
     // Frame spikes should pause new smoke, not chop an existing plume in half.
     trimSmokeToCap(SMOKE_CAP);
     for(let i=particles.length-1;i>=0;i--){
       const p=particles[i];
       p.life += dt;
       if(p.kind==='bubble'){
-        p.x += Math.sin(p.life*7 + p.phase)*dt*TILE*0.18; // wobble
-        p.y += p.vy*dt*TILE;
+        p.x += Math.sin(p.life*7 + p.phase)*dt*tileSize*0.18; // wobble
+        p.y += p.vy*dt*tileSize;
         p.vy -= 0.8*dt; if(p.vy<-2.4) p.vy=-2.4; // gentle buoyant acceleration
       } else if(p.kind==='smoke'){
         const age=Math.min(1,p.life/p.max);
         p.vx += (p.shear||0)*dt;
-        let worldWind=0;
-        try{ if(MM.wind && typeof MM.wind.speed==='function') worldWind=MM.wind.speed()*0.10; }catch(e){}
-        p.x += (p.vx + worldWind + (p.wind||0)*p.life + Math.sin(p.life*2.6 + p.phase)*0.16*(1+age))*dt*TILE;
-        p.y += p.vy*dt*TILE;
+        const worldWind=windAtParticle(p,tileSize,getTile)*windResponse('smoke');
+        p.x += (p.vx + worldWind + (p.wind||0)*p.life + Math.sin(p.life*2.6 + p.phase)*0.16*(1+age))*dt*tileSize;
+        p.y += p.vy*dt*tileSize;
         p.vy -= (p.lift||0.18)*dt;
         if(p.vy<-3.2) p.vy=-3.2;
         p.r += p.grow*dt*(0.85+age*0.85);
@@ -247,11 +296,13 @@
         const pull=Math.min(1, dt*(7.5+age*14));
         const dx=(p.tx||p.x)-p.x, dy=(p.ty||p.y)-p.y;
         const side=Math.sin(p.life*26 + (p.phase||0))*(p.wobble||0.5)*(1-age);
-        p.x += dx*pull + side*dt*TILE;
-        p.y += dy*pull + Math.cos(p.life*22 + (p.phase||0))*side*0.35*dt*TILE;
+        p.x += dx*pull + side*dt*tileSize;
+        p.y += dy*pull + Math.cos(p.life*22 + (p.phase||0))*side*0.35*dt*tileSize;
       } else {
-        p.x += p.vx*dt*TILE;
-        p.y += p.vy*dt*TILE;
+        const worldWind=windAtParticle(p,tileSize,getTile);
+        p.vx += worldWind*windResponse(p.kind)*dt;
+        p.x += p.vx*dt*tileSize;
+        p.y += p.vy*dt*tileSize;
         p.vy += 8*dt;
       }
       if(p.life>p.max){
@@ -327,6 +378,22 @@
         ctx.fillStyle=cyan ? 'rgba(190,255,255,'+(alpha*0.92)+')' : 'rgba(255,244,180,'+(alpha*0.85)+')';
         const s=2.2+3.2*(1-age);
         ctx.fillRect(p.x-s*0.5,p.y-s*0.5,s,s);
+        ctx.restore();
+      } else if(p.kind==='spark'){
+        const electric = p.tier==='turbo' || p.tier==='electric';
+        const s=p.size||3;
+        ctx.save();
+        if(electric) ctx.globalCompositeOperation='lighter';
+        ctx.fillStyle = electric
+          ? 'rgba(155,248,255,'+(alpha*0.95)+')'
+          : (p.tier==='epic'? 'rgba(224,179,65,'+alpha+')' : (p.tier==='rare'? 'rgba(167,76,201,'+alpha+')' : 'rgba(176,127,44,'+alpha+')'));
+        ctx.fillRect(p.x - s*0.5, p.y - s*0.5, s, s);
+        if(electric){
+          ctx.fillStyle='rgba(255,255,255,'+(alpha*0.78)+')';
+          ctx.fillRect(p.x-0.5,p.y-s*0.75,1,s*1.5);
+          ctx.fillStyle='rgba(82,150,255,'+(alpha*0.45)+')';
+          ctx.fillRect(p.x-s*0.9,p.y-0.5,s*1.8,1);
+        }
         ctx.restore();
       } else {
         ctx.fillStyle = p.tier==='epic'? 'rgba(224,179,65,'+alpha+')' : (p.tier==='rare'? 'rgba(167,76,201,'+alpha+')' : 'rgba(176,127,44,'+alpha+')');

@@ -53,8 +53,9 @@ window.MM = window.MM || {};
   function k(x,y){ return x+","+y; }
   function mark(x,y){ active.add(k(x,y)); }
   function isGas(t){ return !!(MM.INFO && MM.INFO[t] && MM.INFO[t].gas); }
+  function isLeaf(t){ return t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED; }
   function isAir(t){ return t===T.AIR || isGas(t); }
-  function canFill(t){ return t===T.AIR || t===T.LEAF || isGas(t); }
+  function canFill(t){ return t===T.AIR || isLeaf(t) || isGas(t); }
   function validDynamoSlot(x,y,getTile,orientation){
     try{ return !!(MM.dynamo && MM.dynamo.isValidSlot && MM.dynamo.isValidSlot(x,y,getTile,orientation)); }catch(e){ return false; }
   }
@@ -195,6 +196,7 @@ window.MM = window.MM || {};
   }
 
   function update(getTile,setTile,dt){
+    if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function' || typeof setTile!=='function') return;
     reactionBudget = hasWaterRecipes()
       ? Math.min(160, WATER_REACTION_BUDGET_BASE + Math.floor(active.size*0.03))
       : 0;
@@ -723,19 +725,86 @@ window.MM = window.MM || {};
     ctx.restore();
   }
 
-  function reset(){ active.clear(); pressureSeeds.clear(); lateralCooldown.clear(); springs.clear(); pendingImpulse.clear(); streams.length=0; chunkWakes.length=0; }
+  const RESTORE_ACTIVE_CAP = 4000;
+  const RESTORE_LATERAL_CAP = 1200;
+  function validRestoreCoord(x,y){
+    return Number.isFinite(x) && Number.isFinite(y) && Math.abs(x)<10000000 && y>=0 && y<WORLD_H;
+  }
+  function parseRestoreKey(raw){
+    let x,y;
+    if(Array.isArray(raw) && raw.length===2){ x=raw[0]; y=raw[1]; }
+    else if(typeof raw==='string'){
+      const comma=raw.indexOf(',');
+      if(comma<=0) return null;
+      x=+raw.slice(0,comma); y=+raw.slice(comma+1);
+    } else return null;
+    if(!validRestoreCoord(x,y)) return null;
+    return Math.floor(x)+','+Math.floor(y);
+  }
+  function clampFinite(v,min,max,fallback){
+    return Number.isFinite(v) ? Math.max(min,Math.min(max,v)) : fallback;
+  }
+  function reset(){
+    active.clear();
+    pressureSeeds.clear();
+    lateralCooldown.clear();
+    springs.clear();
+    pendingImpulse.clear();
+    streams.length=0;
+    chunkWakes.length=0;
+    passiveScanOffset=0;
+    lateralAcc=0;
+    pressureIntervalCurrent=PRESSURE_INTERVAL_BASE;
+    pressureAcc=0;
+    reactionBudget=0;
+  }
   function snapshot(){
-    try{ return {v:2, active:[...active].map(k=>k.split(',').map(Number)), lateral:[...lateralCooldown.entries()], passiveScanOffset, pressureIntervalCurrent, pressureAcc, lateralAcc}; }catch(e){ return null; }
+    try{
+      const activeList=[];
+      for(const raw of active){
+        const kk=parseRestoreKey(raw);
+        if(!kk) continue;
+        const ix=kk.indexOf(',');
+        activeList.push([+kk.slice(0,ix),+kk.slice(ix+1)]);
+        if(activeList.length>=RESTORE_ACTIVE_CAP) break;
+      }
+      const lateral=[];
+      for(const [x,val] of lateralCooldown){
+        if(!Number.isFinite(x) || !Number.isFinite(val) || val<=0) continue;
+        lateral.push([Math.floor(x),Math.max(0,Math.min(5,val))]);
+        if(lateral.length>=RESTORE_LATERAL_CAP) break;
+      }
+      return {
+        v:2,
+        active:activeList,
+        lateral,
+        passiveScanOffset:Number.isFinite(passiveScanOffset)?Math.floor(passiveScanOffset):0,
+        pressureIntervalCurrent:clampFinite(pressureIntervalCurrent,PRESSURE_INTERVAL_MIN,PRESSURE_INTERVAL_MAX,PRESSURE_INTERVAL_BASE),
+        pressureAcc:clampFinite(pressureAcc,0,10,0),
+        lateralAcc:clampFinite(lateralAcc,0,5,0)
+      };
+    }catch(e){ return null; }
   }
   function restore(s){ if(!s||typeof s!=='object') return; reset(); try{
-    if(Array.isArray(s.active)) for(const a of s.active){ if(Array.isArray(a)&&a.length===2){ active.add(a[0]+","+a[1]); } }
+    if(Array.isArray(s.active)){
+      for(const a of s.active){
+        const kk=parseRestoreKey(a);
+        if(kk && active.size<RESTORE_ACTIVE_CAP) active.add(kk);
+      }
+    }
     // v1 saves carried ripple visuals; replay them as gentle wave kicks
-    if(Array.isArray(s.ripples)) for(const r of s.ripples){ if(r && typeof r.L==='number' && typeof r.R==='number') disturb(Math.floor((r.L+r.R)/2), 60); }
-    if(Array.isArray(s.lateral)) for(const [x,val] of s.lateral){ if(typeof x==='number'&&typeof val==='number') lateralCooldown.set(x,val); }
-    if(typeof s.passiveScanOffset==='number') passiveScanOffset=s.passiveScanOffset;
-    if(typeof s.pressureIntervalCurrent==='number') pressureIntervalCurrent=s.pressureIntervalCurrent;
-    if(typeof s.pressureAcc==='number') pressureAcc=s.pressureAcc;
-    if(typeof s.lateralAcc==='number') lateralAcc=s.lateralAcc;
+    if(Array.isArray(s.ripples)) for(const r of s.ripples){ if(r && Number.isFinite(r.L) && Number.isFinite(r.R)) disturb(Math.floor((r.L+r.R)/2), 60); }
+    if(Array.isArray(s.lateral)){
+      for(const row of s.lateral){
+        if(!Array.isArray(row) || row.length<2 || lateralCooldown.size>=RESTORE_LATERAL_CAP) continue;
+        const x=Number(row[0]), val=Number(row[1]);
+        if(Number.isFinite(x) && Math.abs(x)<10000000 && Number.isFinite(val) && val>0) lateralCooldown.set(Math.floor(x),Math.max(0,Math.min(5,val)));
+      }
+    }
+    if(Number.isFinite(s.passiveScanOffset)) passiveScanOffset=Math.max(0,Math.floor(s.passiveScanOffset));
+    if(Number.isFinite(s.pressureIntervalCurrent)) pressureIntervalCurrent=clampFinite(s.pressureIntervalCurrent,PRESSURE_INTERVAL_MIN,PRESSURE_INTERVAL_MAX,PRESSURE_INTERVAL_BASE);
+    if(Number.isFinite(s.pressureAcc)) pressureAcc=clampFinite(s.pressureAcc,0,10,0);
+    if(Number.isFinite(s.lateralAcc)) lateralAcc=clampFinite(s.lateralAcc,0,5,0);
   }catch(e){} }
 
   // ---- Hydrostatic equalization (true communicating vessels) ----
@@ -762,9 +831,21 @@ window.MM = window.MM || {};
       if(readTile(x,y)!==T.WATER) return false;
       const above=readTile(x,y-1);
       if(above===T.WATER) return false;
-      if(!isAir(above) && above!==T.LEAF) return false;
+      if(!isAir(above) && !isLeaf(above)) return false;
       const below=readTile(x,y+1);
       return below!==T.WATER && !canFill(below);
+    };
+    const isOpenLipWall=(x,y,dx)=>{
+      const wall=readTile(x+dx,y);
+      if(wall===T.WATER || canFill(wall)) return false;
+      const over=readTile(x+dx,y-1);
+      if(!isAir(over) && over!==T.WATER && !isLeaf(over)) return false;
+      let receivingWater=false;
+      for(let yy=y-1; yy<=Math.min(WORLD_H-1,y+6); yy++){
+        if(readTile(x+dx*2,yy)===T.WATER){ receivingWater=true; break; }
+      }
+      if(!receivingWater) return false;
+      return true;
     };
     const pressureConnected=(x,y,nx,ny)=>{
       // Surface water crossing the top of a solid lip/tree trunk is overflow, not
@@ -879,6 +960,7 @@ window.MM = window.MM || {};
         for(const dx of [-1,1]){
           const nx=bx+dx;
           if(isPressureSillCell(nx,by) && readTile(bx,by+1)===T.WATER) spillFloor=Math.min(spillFloor,by+1);
+          if(isOpenLipWall(bx,by,dx)) spillFloor=Math.min(spillFloor,by);
         }
       }
       const sources=[]; const dests=[];

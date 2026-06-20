@@ -55,6 +55,8 @@ window.MM = window.MM || {};
     LIGHTNING_TELEPORT_MIN: 500,
     LIGHTNING_TELEPORT_MAX: 1500,
     LIGHTNING_ENERGY_CHARGE: 50,
+    LIGHTNING_DYNAMO_ATTRACT_RADIUS: 7,
+    LIGHTNING_DYNAMO_ATTRACT_CHANCE: 0.42,
     STORMS: true,         // random storm fronts (the startStorm API works regardless)
     STORM_CHANCE: 0.028,  // per-10s chance a front rolls in (~1 storm / 6 min average)
     STORM_FEED: 0.6,      // mass/sec a storm pumps into clouds overhead
@@ -79,8 +81,18 @@ window.MM = window.MM || {};
   let viewFlash = 0;            // whole-screen lightning flash intensity
   const storm = {active:false, tLeft:0, intensity:0, cooldown:0};
   let audioCtx = null;
+  const SAVE_MAP_LIMIT = 192;
 
   function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+  function finiteNum(v,fallback){ return (typeof v==='number' && isFinite(v)) ? v : fallback; }
+  function roundSave(v,digits){
+    if(typeof v!=='number' || !isFinite(v)) return 0;
+    const m=Math.pow(10,digits||3);
+    return Math.round(v*m)/m;
+  }
+  function safeSeed(v,fallback){
+    return (typeof v==='number' && isFinite(v)) ? (v>>>0) : (fallback>>>0);
+  }
   function mulberry(seed){ let a=seed>>>0; return function(){ a|=0; a=(a+0x6D2B79F5)|0; let t=Math.imul(a^(a>>>15),1|a); t=(t+Math.imul(t^(t>>>7),61|t))^t; return ((t^(t>>>14))>>>0)/4294967296; }; }
 
   // ---------------- Environment sampling ----------------
@@ -91,6 +103,17 @@ window.MM = window.MM || {};
     return {cycleT:0.25, isDay:true, tDay:0.5};
   }
   function sunIntensity(){ const c=cycleInfo(); return c.isDay? Math.sin(clamp(c.tDay,0,1)*Math.PI) : 0; }
+  function seasonProfile(){
+    const s=MM.seasons;
+    if(s && typeof s.profile==='function'){
+      try{ return s.profile() || {}; }catch(e){}
+    }
+    return {};
+  }
+  function seasonNumber(key,fallback){
+    const v=seasonProfile()[key];
+    return (typeof v==='number' && isFinite(v)) ? v : fallback;
+  }
   function seaLevel(){ const wg=MM.worldGen; return (wg && wg.settings && wg.settings.seaLevel!=null)? wg.settings.seaLevel : 62; }
   // Terrain surface for weather purposes: oceans count from the waterline, not the seabed
   function effSurf(x){
@@ -107,7 +130,7 @@ window.MM = window.MM || {};
     const diurnal = c.isDay? (-0.04 + 0.22*Math.sin(clamp(c.tDay,0,1)*Math.PI))
                            : (-0.10 - 0.08*Math.sin(clamp(c.tDay,0,1)*Math.PI));
     const lapse = Math.max(0, seaLevel()-row)*0.005;
-    return clim + diurnal - lapse;
+    return clim + diurnal - lapse + seasonNumber('temperatureDelta',0);
   }
   // How much water vapor the air around a cloud can hold before it must rain
   function capacity(t){ return CFG.CAP_MIN + (CFG.CAP_MAX-CFG.CAP_MIN)*clamp((t-0.05)/0.75,0,1); }
@@ -322,8 +345,11 @@ window.MM = window.MM || {};
     const info=tileInfo(t);
     return !!(info && info.gas);
   }
+  function isLeafTile(t){
+    return t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED;
+  }
   function skyOpenTile(t){
-    return t===T.AIR || t===T.LEAF || isGasTile(t);
+    return t===T.AIR || isLeafTile(t) || isGasTile(t);
   }
   function dryTeleportAir(t){
     return skyOpenTile(t) || tileIs(t,T.TORCH) || tileIs(t,T.GRAVE);
@@ -401,6 +427,66 @@ window.MM = window.MM || {};
       return !!(api && api.apply && api.apply('electric',x,y,getTile,setTile,{source:'lightning'}));
     }catch(e){ return false; }
   }
+  function verticalDynamoSlotForCell(x,y,getTile){
+    if(T.DYNAMO==null || T.DYNAMO_SLOT==null || typeof getTile!=='function') return null;
+    const t=getTile(x,y);
+    if(t===T.DYNAMO_SLOT && getTile(x,y-1)===T.DYNAMO && getTile(x,y+1)===T.DYNAMO) return {x,y,hitRole:'slot'};
+    if(t===T.DYNAMO && getTile(x,y+1)===T.DYNAMO_SLOT && getTile(x,y+2)===T.DYNAMO) return {x,y:y+1,hitRole:'top'};
+    if(t===T.DYNAMO && getTile(x,y-1)===T.DYNAMO_SLOT && getTile(x,y-2)===T.DYNAMO) return {x,y:y-1,hitRole:'bottom'};
+    return null;
+  }
+  function firstBlockingTile(x,fromRow,getTile){
+    for(let y=Math.max(1,Math.floor(fromRow));y<WORLD_H;y++){
+      const t=getTile(x,y);
+      if(skyOpenTile(t)) continue;
+      return {x,y,t};
+    }
+    return null;
+  }
+  function findDynamoLightningTarget(x,fromRow,getTile){
+    const radius=Math.max(0,Math.min(16,Math.floor(CFG.LIGHTNING_DYNAMO_ATTRACT_RADIUS||0)));
+    if(radius<=0) return null;
+    const baseChance=Math.max(0,Math.min(1,Number(CFG.LIGHTNING_DYNAMO_ATTRACT_CHANCE)||0));
+    const chance=Math.max(0,Math.min(1,baseChance*(storm.active?1.55:1)));
+    if(chance<=0 || Math.random()>=chance) return null;
+    const xi=Math.round(x);
+    for(let d=0; d<=radius; d++){
+      const cols=d===0 ? [xi] : [xi-d,xi+d];
+      for(const tx of cols){
+        const hit=firstBlockingTile(tx,fromRow,getTile);
+        if(!hit) continue;
+        const slot=verticalDynamoSlotForCell(hit.x,hit.y,getTile);
+        if(slot && slot.hitRole==='top') return Object.assign(hit,{slot});
+      }
+    }
+    return null;
+  }
+  function strikeVerticalDynamo(x,y,getTile,setTile){
+    const slot=verticalDynamoSlotForCell(x,y,getTile);
+    if(!slot || !slot.hitRole) return null;
+    let drained=0;
+    try{
+      const dyn=MM.dynamo;
+      if(dyn && typeof dyn.drainAt==='function'){
+        const d=dyn.drainAt(slot.x,slot.y,999,getTile);
+        drained=d && d.amount ? d.amount : 0;
+      }
+    }catch(e){}
+    const old=getTile(x,y);
+    if(old===T.DYNAMO || old===T.DYNAMO_SLOT){
+      setTile(x,y,T.AIR);
+      try{ if(MM.dynamo && MM.dynamo.onTileChanged) MM.dynamo.onTileChanged(x,y,old,T.AIR); }catch(e){}
+      try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(x,y,getTile); }catch(e){}
+      try{ if(MM.fallingSolids && MM.fallingSolids.recheckNeighborhood) MM.fallingSolids.recheckNeighborhood(x,y); }catch(e){}
+    }
+    try{
+      const TILE=MM.TILE||20;
+      if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks((x+0.5)*TILE,(y+0.5)*TILE,'epic',34);
+      else if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((x+0.5)*TILE,(y+0.5)*TILE,'epic');
+      if(MM.audio && MM.audio.play) MM.audio.play('charge');
+    }catch(e){}
+    return {slotX:slot.x, slotY:slot.y, hitRole:slot.hitRole, drained};
+  }
   // Jagged main channel from (x0,y0) to the impact, plus a few side forks (tile coords).
   function makeBolt(x0,y0,ix,iy){
     const segs=9+Math.floor(Math.random()*4);
@@ -428,19 +514,22 @@ window.MM = window.MM || {};
   // (the bolt's gift), water just erupts — and a hero standing too close is
   // electrocuted (water conducts much further than ground).
   function strikeAt(x,fromRow,getTile,setTile){
-    const xi=Math.round(x);
-    let ty=-1, tile=T.AIR;
-    for(let y=Math.max(1,Math.floor(fromRow));y<WORLD_H;y++){
-      const t=getTile(xi,y);
-      if(skyOpenTile(t)) continue;
-      ty=y; tile=t; break;
-    }
-    if(ty<0) return null;
+    let xi=Math.round(x);
+    let hit=findDynamoLightningTarget(xi,fromRow,getTile) || firstBlockingTile(xi,fromRow,getTile);
+    if(!hit) return null;
+    let ty=hit.y, tile=hit.t;
     strikes++;
-    const res={x:xi, y:ty, chest:false, tier:null, dmg:0, energy:0, teleport:null};
+    const res={x:xi, y:ty, chest:false, tier:null, dmg:0, energy:0, teleport:null, dynamo:null};
+    if(hit.slot){
+      xi=hit.x; ty=hit.y; tile=hit.t;
+      res.x=xi; res.y=ty;
+    }
     const TILE=MM.TILE||20;
     const isChest=(tile===T.CHEST_COMMON||tile===T.CHEST_RARE||tile===T.CHEST_EPIC);
-    if(tile===T.WATER){
+    const dynamoHit=strikeVerticalDynamo(xi,ty,getTile,setTile);
+    if(dynamoHit){
+      res.dynamo=dynamoHit;
+    } else if(tile===T.WATER){
       try{
         if(MM.water && MM.water.disturb){ MM.water.disturb(xi,280); MM.water.disturb(xi-1,180); MM.water.disturb(xi+1,180); }
         if(MM.particles && MM.particles.spawnSplash) MM.particles.spawnSplash((xi+0.5)*TILE, ty*TILE, 1);
@@ -511,7 +600,7 @@ window.MM = window.MM || {};
       }
       if(clouds.length){
         const c=clouds[(Math.random()*clouds.length)|0];
-        const grow=Math.min(farBudget, CFG.STORM_FEED*storm.intensity*dt);
+        const grow=Math.min(farBudget, CFG.STORM_FEED*seasonNumber('stormFeedMult',1)*storm.intensity*dt);
         if(grow>0 && Math.abs(c.x-px)<CFG.ACTIVE_HALF){ c.mass+=grow; farBudget-=grow; }
       }
     } else if(storm.cooldown>0){ storm.cooldown-=dt; }
@@ -519,7 +608,7 @@ window.MM = window.MM || {};
       stormCheckAcc+=dt;
       if(stormCheckAcc>=10){
         stormCheckAcc=0;
-        if(Math.random()<CFG.STORM_CHANCE) startStorm();
+        if(Math.random()<CFG.STORM_CHANCE*seasonNumber('stormChanceMult',1)) startStorm();
       }
     }
   }
@@ -539,7 +628,7 @@ window.MM = window.MM || {};
     }
     if(ty<1) return false;                         // fell out of the world
     let py=ty-1;
-    while(py>1 && getTile(cx,py)===T.LEAF) py--;   // surface under a canopy: climb to air
+    while(py>1 && isLeafTile(getTile(cx,py))) py--;   // surface under a canopy: climb to air
     try{
       const pt=getTile(cx,py);
       if(MM.water && MM.water.addSource && (pt===T.AIR || isGasTile(pt))){
@@ -571,7 +660,8 @@ window.MM = window.MM || {};
     c.snowing = c.raining && airTemp(c.x, effSurf(c.x))<0.30;
     if(c.raining){
       const excess=Math.max(0,c.mass-capC*0.6);
-      const rate=Math.min(storm.active? 0.9 : 0.55, CFG.RAIN_RATE_BASE+excess*CFG.RAIN_RATE_GAIN);
+      const rateBase=(CFG.RAIN_RATE_BASE+excess*CFG.RAIN_RATE_GAIN)*seasonNumber('rainRateMult',1);
+      const rate=Math.min(storm.active? 0.9*seasonNumber('stormFeedMult',1) : 0.55*seasonNumber('rainRateMult',1), rateBase);
       const amt=Math.min(c.mass, rate*dt);
       c.mass-=amt; rainMass+=amt;
       if(c.snowing){
@@ -645,13 +735,14 @@ window.MM = window.MM || {};
   // drifts across the player's sky, funded by the off-band moisture reserve.
   function borderSpawn(px,dt){
     if(!CFG.BORDER_SPAWN) return;
-    farBudget=Math.min(80, farBudget+0.05*dt);
+    const moistureMult=seasonNumber('borderMoistureMult',1);
+    farBudget=Math.min(80, farBudget+0.05*moistureMult*dt);
     spawnAcc+=dt;
     if(spawnAcc<1) return;
     spawnAcc=0;
     if(clouds.length>=CFG.CLOUD_CAP*0.8 || farBudget<6) return;
     const wind=windAt();
-    const p=CFG.SPAWN_CHANCE*(1+Math.abs(wind)*0.4);
+    const p=CFG.SPAWN_CHANCE*moistureMult*(1+Math.abs(wind)*0.4);
     if(Math.random()>=p) return;
     const side=Math.abs(wind)>0.2? -Math.sign(wind) : (Math.random()<0.5?-1:1);
     const mass=Math.min(farBudget, 5+Math.random()*12);
@@ -920,13 +1011,145 @@ window.MM = window.MM || {};
     if(o===null || o===undefined){ cycleOverride=null; return; }
     if(typeof o==='object' && typeof o.isDay==='boolean' && typeof o.tDay==='number' && isFinite(o.tDay)) cycleOverride=o;
   }
+  function mapSnapshot(map,limit){
+    const rows=[];
+    for(const [k,v] of map.entries()){
+      if(typeof k!=='number' || !isFinite(k) || typeof v!=='number' || !isFinite(v) || Math.abs(v)<1e-6) continue;
+      rows.push([k|0, roundSave(v,4)]);
+    }
+    rows.sort((a,b)=>Math.abs(b[1])-Math.abs(a[1]));
+    return rows.slice(0, limit||SAVE_MAP_LIMIT);
+  }
+  function restoreMap(map,rows,limit,maxValue){
+    map.clear();
+    if(!Array.isArray(rows)) return;
+    const n=Math.min(rows.length, limit||SAVE_MAP_LIMIT);
+    for(let i=0;i<n;i++){
+      const r=rows[i];
+      if(!Array.isArray(r) || r.length<2) continue;
+      const k=finiteNum(r[0],NaN);
+      const v=finiteNum(r[1],NaN);
+      if(!isFinite(k) || !isFinite(v) || v<=0) continue;
+      map.set(k|0, clamp(v,0,maxValue||1000));
+    }
+  }
+  function cycleSnapshot(){
+    if(!cycleOverride || typeof cycleOverride!=='object') return null;
+    if(typeof cycleOverride.isDay!=='boolean' || typeof cycleOverride.tDay!=='number' || !isFinite(cycleOverride.tDay)) return null;
+    return {
+      cycleT: roundSave(finiteNum(cycleOverride.cycleT,0),4),
+      isDay: !!cycleOverride.isDay,
+      tDay: roundSave(clamp(cycleOverride.tDay,0,1),4),
+    };
+  }
+  function snapshotCloud(c){
+    return [
+      roundSave(c.x,2),
+      roundSave(c.alt,2),
+      roundSave(c.mass,3),
+      safeSeed(c.seed,1),
+      roundSave(c.vx,3),
+      roundSave(c.jitterV,3),
+      roundSave(c.depAcc,3),
+      c.raining?1:0,
+      c.snowing?1:0,
+      roundSave(c.jit,4),
+    ];
+  }
+  function restoreCloud(row){
+    const arr=Array.isArray(row);
+    const x=finiteNum(arr?row[0]:row && row.x,NaN);
+    const alt=finiteNum(arr?row[1]:row && row.alt,NaN);
+    const mass=clamp(finiteNum(arr?row[2]:row && row.mass,0),0.4,160);
+    if(!isFinite(x) || !isFinite(alt) || !(mass>0.39)) return null;
+    const seed=safeSeed(arr?row[3]:row && row.seed, (cloudSeq++*2654435761)>>>0);
+    const jit=clamp(finiteNum(arr?row[9]:row && row.jit,0.5),0,1);
+    return {
+      x, mass, seed, jit,
+      r: radiusFor(mass),
+      alt,
+      vx: finiteNum(arr?row[4]:row && row.vx,0),
+      jitterV: clamp(finiteNum(arr?row[5]:row && row.jitterV,0),-2,2),
+      raining: !!(arr?row[7]:row && row.raining),
+      snowing: !!(arr?row[8]:row && row.snowing),
+      depAcc: clamp(finiteNum(arr?row[6]:row && row.depAcc,0),0,8),
+      flash:0,
+      puffs: makePuffs(seed),
+      sprite:null,
+      spriteKey:'',
+    };
+  }
+  function snapshot(){
+    return {
+      v:1,
+      simT: roundSave(simT,3),
+      farBudget: roundSave(farBudget,3),
+      evapOffset: evapOffset|0,
+      regionAcc: roundSave(regionAcc,3),
+      mergeAcc: roundSave(mergeAcc,3),
+      spawnAcc: roundSave(spawnAcc,3),
+      stormCheckAcc: roundSave(stormCheckAcc,3),
+      evapMass: roundSave(evapMass,3),
+      rainMass: roundSave(rainMass,3),
+      strikes: strikes|0,
+      chestsMade: chestsMade|0,
+      cloudSeq: cloudSeq|0,
+      windOverride: (typeof windOverride==='number' && isFinite(windOverride)) ? roundSave(windOverride,3) : null,
+      cycleOverride: cycleSnapshot(),
+      storm: {
+        active: !!storm.active,
+        tLeft: roundSave(storm.tLeft,2),
+        intensity: roundSave(storm.intensity,3),
+        cooldown: roundSave(storm.cooldown,2),
+      },
+      vapor: mapSnapshot(vapor,SAVE_MAP_LIMIT),
+      evapAcc: mapSnapshot(evapAcc,SAVE_MAP_LIMIT),
+      clouds: clouds.slice(-CFG.CLOUD_CAP).map(snapshotCloud),
+    };
+  }
+  function restore(src){
+    reset();
+    if(!src || typeof src!=='object') return false;
+    simT = Math.max(0, finiteNum(src.simT,0));
+    farBudget = clamp(finiteNum(src.farBudget,24),0,200);
+    evapOffset = finiteNum(src.evapOffset,0)|0;
+    regionAcc = clamp(finiteNum(src.regionAcc,0),0,5);
+    mergeAcc = clamp(finiteNum(src.mergeAcc,0),0,5);
+    spawnAcc = clamp(finiteNum(src.spawnAcc,0),0,5);
+    stormCheckAcc = clamp(finiteNum(src.stormCheckAcc,0),0,20);
+    evapMass = Math.max(0, finiteNum(src.evapMass,0));
+    rainMass = Math.max(0, finiteNum(src.rainMass,0));
+    strikes = Math.max(0, finiteNum(src.strikes,0)|0);
+    chestsMade = Math.max(0, finiteNum(src.chestsMade,0)|0);
+    cloudSeq = Math.max(1, finiteNum(src.cloudSeq,1)|0);
+    windOverride = (typeof src.windOverride==='number' && isFinite(src.windOverride)) ? clamp(src.windOverride,-20,20) : null;
+    if(src.cycleOverride) setCycleOverride(src.cycleOverride);
+    if(src.storm && typeof src.storm==='object'){
+      storm.active=!!src.storm.active;
+      storm.tLeft=clamp(finiteNum(src.storm.tLeft,0),0,600);
+      storm.intensity=clamp(finiteNum(src.storm.intensity,0),0,3);
+      storm.cooldown=clamp(finiteNum(src.storm.cooldown,0),0,600);
+      if(storm.tLeft<=0) storm.active=false;
+    }
+    restoreMap(vapor,src.vapor,SAVE_MAP_LIMIT,500);
+    restoreMap(evapAcc,src.evapAcc,SAVE_MAP_LIMIT,8);
+    if(Array.isArray(src.clouds)){
+      const list=[];
+      for(let i=0;i<src.clouds.length && list.length<CFG.CLOUD_CAP;i++){
+        const c=restoreCloud(src.clouds[i]);
+        if(c) list.push(c);
+      }
+      clouds=list;
+    }
+    return true;
+  }
   function _debug(){
     let depFrac=0; for(const c of clouds) depFrac+=c.depAcc;
     return {clouds, vapor, evapAcc, depFrac, farBudget, simT, bolts, storm};
   }
 
   MM.clouds={update, draw, reset, addCloud, injectVapor, isRainingAt, metrics, setWindOverride, setCycleOverride,
-             startStorm, strike, config:CFG, _debug};
+             startStorm, strike, snapshot, restore, config:CFG, _debug};
 })();
 // ESM export (progressive migration)
 export const clouds = (typeof window!=='undefined' && window.MM) ? window.MM.clouds : undefined;

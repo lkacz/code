@@ -84,6 +84,17 @@ assert.equal(count(T.STEAM),0,'the final steam cell also expires');
 assert.equal(count(T.WATER),1,'five steam cells condense into one water tile');
 assert.equal(gases.metrics().steamCondensate,0,'a full condensation unit is consumed into water');
 
+resetWorld();
+sealSteamPocket();
+setTile(-1,13,T.STEAM);
+setTile(0,13,T.STEAM);
+setTile(1,13,T.STEAM);
+setTile(-1,12,T.STEAM);
+step(62,0.2);
+assert.equal(gases.metrics().steamCondensate,4,'partial steam condensate starts tracked before aging out');
+step(80,0.2);
+assert.equal(gases.metrics().steamCondensate,0,'partial steam condensate ages out instead of accumulating forever');
+
 // 3) Hot air bubbles through other gases instead of being absorbed, and
 // isolated hot air still expires into normal air.
 resetWorld();
@@ -143,6 +154,18 @@ gases.reset();
 assert.equal(gases.metrics().active,0,'reset clears active gases');
 gases.restore(snap,getTile,setTile);
 assert.equal(gases.metrics().active,2,'restore reactivates saved gases');
+gases._debug.active.set('bad',{x:NaN,y:30,t:T.STEAM,age:Infinity,moveT:Infinity});
+assert.equal(gases.snapshot().list.length,2,'gas snapshot drops malformed active records');
+gases.restore({
+  v:2,
+  list:[
+    {x:NaN,y:30,t:T.STEAM,age:1,moveT:1},
+    {x:8,y:30,t:T.STEAM,age:Infinity,moveT:-5}
+  ],
+  condensate:[{x:NaN,y:20,n:3},{x:8,y:29,n:Infinity}]
+},getTile,setTile);
+assert.equal(gases.metrics().active,1,'gas restore drops malformed cells and keeps valid cells');
+assert.equal(gases.snapshot().list[0].age,0,'gas restore sanitizes invalid saved ages');
 
 // 7) Sky-exposed gases are recognized as open-air FX, and old steam fades away
 // instead of being held at a dark visible floor.
@@ -301,6 +324,23 @@ fallingSolids.update(getTile,rawSetTile,0.25);
 assert.equal(getTile(90,41),T.STONE,'falling rigid block settled into the gas cell');
 assert.equal(gases.metrics().active,0,'falling rigid block removed the replaced gas record without world hooks');
 
+fallingSolids.restore({
+  v:4,
+  active:[{x:NaN,y:40,type:T.STONE,vy:0},{x:90,y:40,type:T.STONE,vy:Infinity,windCarry:Infinity}],
+  sand:[{x:91,y:NaN,vy:0},{x:91,y:40,vy:-Infinity,windCarry:-Infinity}],
+  queue:['90,41','bad','3,Infinity','not,a,real,coordinate,but-too-long-to-restore'],
+  built:['90,42','bad','3,Infinity'],
+  debris:['90,42','bad','3,Infinity']
+});
+let fallSnap=fallingSolids.snapshot();
+assert.equal(fallSnap.active.length,1,'falling restore rejects malformed rigid entities');
+assert.equal(fallSnap.sand.length,1,'falling restore rejects malformed sand entities');
+assert.equal(fallSnap.active[0].vy,0,'falling restore sanitizes invalid rigid velocity');
+assert.equal(fallSnap.sand[0].vy,0,'falling restore sanitizes invalid sand velocity');
+assert.deepEqual(fallSnap.queue,['90,41'],'falling restore rejects malformed instability queue keys');
+assert.deepEqual(fallSnap.built,['90,42'],'falling restore rejects malformed saved built keys');
+assert.deepEqual(fallSnap.debris,['90,42'],'falling restore rejects malformed saved debris keys');
+
 resetWorld();
 setTile(90,42,T.STONE);
 setTile(91,42,T.STONE);
@@ -347,7 +387,7 @@ const cloudSrc = await readFile(new URL('../src/engine/clouds.js', import.meta.u
 assert.match(cloudSrc, /function skyOpenTile\(t\)/, 'weather has a gas-aware sky-open predicate');
 assert.match(cloudSrc, /pt===T\.AIR \|\| isGasTile\(pt\)/, 'rain deposition can occupy gas cells');
 const bossSrc = await readFile(new URL('../src/engine/bosses.js', import.meta.url), 'utf8');
-assert.match(bossSrc, /function openT\(t\)\{ return t===T\.AIR \|\| t===T\.WATER \|\| t===T\.LEAF \|\| isGasTile\(t\); \}/, 'boss movement treats gas as open');
+assert.match(bossSrc, /function openT\(t\)\{ return t===T\.AIR \|\| t===T\.WATER \|\| isLeafTile\(t\) \|\| isGasTile\(t\); \}/, 'boss movement treats gas as open');
 const plantSrc = await readFile(new URL('../src/engine/plants.js', import.meta.url), 'utf8');
 assert.match(plantSrc, /function plantSpace\(t\)\{ return t===T\.AIR \|\| t===T\.WATER \|\| isGasTile\(t\); \}/, 'plants treat gas as open space');
 const weaponSrc = await readFile(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');

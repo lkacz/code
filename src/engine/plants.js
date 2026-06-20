@@ -197,31 +197,74 @@ import { T, INFO, WORLD_H } from '../constants.js';
   }
 
   // --- Persistence ------------------------------------------------------------------
+  function finite(v,fallback){ const n=Number(v); return isFinite(n)? n : fallback; }
+  function clamp(v,min,max){ return Math.min(max, Math.max(min, finite(v,min))); }
+  function clampOr(v,min,max,fallback){ return clamp(finite(v,fallback),min,max); }
+  function packPlants(){
+    const arr=[];
+    for(const p of plants.values()){
+      if(!p || !SPECIES[p.type]) continue;
+      arr.push({
+        t:p.type,
+        x:Math.round(finite(p.x,0)),
+        y:Math.round(finite(p.y,0)),
+        s:Math.max(1,p.stage|0),
+        h:+clamp(p.hyd,0,1).toFixed(2),
+        hp:+clamp(p.health,0,1).toFixed(2),
+        a:Math.round(Math.max(0,finite(p.age,0))),
+        L:Math.round(Math.max(60,finite(p.lifespan,60))),
+        w:p.withered?1:0,
+        wt:+Math.max(0,finite(p.witherT,0)).toFixed(2),
+      });
+      if(arr.length>=MAX_PLANTS) break;
+    }
+    return arr;
+  }
+  function snapshot(){ return {v:1, list:packPlants()}; }
+  function restoreList(data){
+    const arr=Array.isArray(data) ? data : (data && Array.isArray(data.list) ? data.list : null);
+    if(!arr) return false;
+    plants.clear();
+    arr.slice(0,MAX_PLANTS).forEach(d=>{
+      if(!d || !SPECIES[d.t]) return;
+      const x=Math.round(finite(d.x,NaN));
+      const y=Math.round(finite(d.y,NaN));
+      if(!isFinite(x) || !isFinite(y)) return;
+      const spec=SPECIES[d.t];
+      plants.set(x,{
+        type:d.t, x, y,
+        stage:Math.min(spec.stages, Math.max(1,d.s|0)),
+        hyd:clampOr(d.h,0,1,0.4),
+        health:Math.max(0.05, clampOr(d.hp,0,1,1)),
+        age:Math.max(0,finite(d.a,0)),
+        lifespan:Math.max(60,finite(d.L,spec.lifespan[0])),
+        growT:rand(spec.growEvery[0],spec.growEvery[1]),
+        envT:rng()*ENV_INTERVAL,
+        sips:0,
+        withered:!!d.w,
+        witherT:Math.max(0,finite(d.wt,0)),
+        sway:rng()*6.28,
+      });
+    });
+    return true;
+  }
   function save(){
     dirty=false;
-    try{
-      const arr=[...plants.values()].map(p=>({t:p.type,x:p.x,y:p.y,s:p.stage,h:+p.hyd.toFixed(2),hp:+p.health.toFixed(2),a:Math.round(p.age),L:Math.round(p.lifespan)}));
-      localStorage.setItem(SAVE_KEY, JSON.stringify(arr));
-    }catch(e){ /* storage unavailable — garden lives for the session */ }
+    try{ localStorage.setItem(SAVE_KEY, JSON.stringify(packPlants())); }
+    catch(e){ /* storage unavailable - garden lives for the session */ }
+  }
+  function restore(data){
+    if(!restoreList(data)) return false;
+    dirty=true;
+    save();
+    return true;
   }
   function load(){
     try{
       const raw=localStorage.getItem(SAVE_KEY); if(!raw) return;
-      const arr=JSON.parse(raw); if(!Array.isArray(arr)) return;
-      arr.slice(0,MAX_PLANTS).forEach(d=>{
-        if(!d || !SPECIES[d.t] || typeof d.x!=='number' || typeof d.y!=='number') return;
-        const spec=SPECIES[d.t];
-        plants.set(d.x,{
-          type:d.t, x:d.x, y:d.y,
-          stage:Math.min(spec.stages, Math.max(1,d.s|0)),
-          hyd:Math.min(1,Math.max(0,+d.h||0.4)),
-          health:Math.min(1,Math.max(0.05,+d.hp||1)),
-          age:Math.max(0,+d.a||0), lifespan:Math.max(60,+d.L||spec.lifespan[0]),
-          growT:rand(spec.growEvery[0],spec.growEvery[1]),
-          envT:rng()*ENV_INTERVAL, sips:0, withered:false, witherT:0, sway:rng()*6.28,
-        });
-      });
-    }catch(e){ /* corrupt save — start with bare soil */ }
+      restoreList(JSON.parse(raw));
+      dirty=false;
+    }catch(e){ /* corrupt save - start with bare soil */ }
   }
   function reset(){ plants.clear(); dirty=false; try{ localStorage.removeItem(SAVE_KEY); }catch(e){} }
   if(typeof window!=='undefined' && window.addEventListener){
@@ -305,7 +348,7 @@ import { T, INFO, WORLD_H } from '../constants.js';
 
   load();
   MM.plants={
-    update, draw, sow, waterAt, scorchAt, harvestAt, reset, save,
+    update, draw, sow, waterAt, scorchAt, harvestAt, reset, save, snapshot, restore,
     count:()=>plants.size,
     metrics:()=>({count:plants.size}),
     _setRng:(fn)=>{ rng=fn||Math.random; },     // deterministic tests

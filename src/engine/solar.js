@@ -18,9 +18,12 @@ import { T, INFO, WORLD_H } from '../constants.js';
   const SCAN_RX = 82;
   const SCAN_RY = 46;
   const CLUSTER_LIMIT = 80;
+  const CELL_CAP = 1600;
+  const FAR_IDLE_PRUNE_DIST = 260;
   let scanT = 0;
   let visibleScanAt = 0;
   let visibleScanKey = '';
+  let lastGetTile = null;
 
   function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
   function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H; }
@@ -32,7 +35,7 @@ import { T, INFO, WORLD_H } from '../constants.js';
   function capacityForTile(t){ return isStorageTile(t) ? STORAGE_CAPACITY : PANEL_CAPACITY; }
   function rateForTile(t){ return isStorageTile(t) ? STORAGE_RATE : PANEL_RATE; }
   function transparentForSun(t){
-    if(t===T.AIR || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.TORCH || t===T.LEAF) return true;
+    if(t===T.AIR || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.TORCH || t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED) return true;
     const info=INFO[t];
     return !!(info && (info.gas || info.passable));
   }
@@ -147,6 +150,37 @@ import { T, INFO, WORLD_H } from '../constants.js';
     if(drained<=0) return null;
     return {amount:drained,x:sx,y:sy,energy:energyAt(x,y,getTile),lastKind:'solar'};
   }
+  function debugChargeAt(x,y,amount,getTile){
+    const maxGain=Math.max(0,Number(amount)||0);
+    if(maxGain<=0) return 0;
+    const list=clusterStates(x,y,getTile);
+    let remaining=maxGain, gained=0;
+    for(const m of list){
+      if(remaining<=0) break;
+      const t=getSafe(getTile,m.x,m.y,T.AIR);
+      const cap=capacityForTile(t);
+      const add=Math.min(remaining,Math.max(0,cap-(m.energy||0)));
+      if(add<=0) continue;
+      m.energy=Math.min(cap,(m.energy||0)+add);
+      m.power=Math.max(m.power||0,STORAGE_RATE);
+      m.pulse=1;
+      remaining-=add;
+      gained+=add;
+    }
+    return gained;
+  }
+  function debugSetEnergyAt(x,y,amount,getTile){
+    const list=clusterStates(x,y,getTile);
+    if(!list.length) return false;
+    const per=Math.max(0,Number(amount)||0)/list.length;
+    for(const m of list){
+      const t=getSafe(getTile,m.x,m.y,T.AIR);
+      m.energy=Math.min(capacityForTile(t),per);
+      m.power=Math.max(m.power||0,STORAGE_RATE);
+      m.pulse=1;
+    }
+    return true;
+  }
   function updateCell(m,dt,getTile,sun){
     const t=getSafe(getTile,m.x,m.y,T.AIR);
     if(!isSourceTile(t)){ cells.delete(key(m.x,m.y)); return; }
@@ -165,6 +199,28 @@ import { T, INFO, WORLD_H } from '../constants.js';
     }
     m.pulse=Math.max(0,(m.pulse||0)-PULSE_DECAY*dt);
   }
+  function pruneCells(player,getTile){
+    if(typeof getTile!=='function') return;
+    const px=player && Number.isFinite(player.x) ? player.x : 0;
+    const py=player && Number.isFinite(player.y) ? player.y : 0;
+    const candidates=[];
+    for(const [k,m] of cells){
+      if(!m || !finiteTile(m.x,m.y)){ cells.delete(k); continue; }
+      const t=getSafe(getTile,m.x,m.y,T.AIR);
+      if(!isSourceTile(t)){ cells.delete(k); continue; }
+      const energy=Math.max(0,Number(m.energy)||0);
+      const power=Math.max(0,Number(m.power)||0);
+      const dist=Math.abs(m.x-px)+Math.abs(m.y-py);
+      const idle=energy<=0.001 && power<=0.001;
+      if(cells.size>CELL_CAP || (idle && dist>FAR_IDLE_PRUNE_DIST)){
+        candidates.push({k,score:(idle?100000:0)+dist-energy*12-(isStorageTile(t)?160:0)});
+      }
+    }
+    if(cells.size<=CELL_CAP) return;
+    candidates.sort((a,b)=>b.score-a.score);
+    const target=Math.floor(CELL_CAP*0.86);
+    for(let i=0; i<candidates.length && cells.size>target; i++) cells.delete(candidates[i].k);
+  }
   function scanAround(player,getTile){
     if(!player || typeof getTile!=='function') return;
     const cx=Math.floor(player.x), cy=Math.floor(player.y);
@@ -177,17 +233,20 @@ import { T, INFO, WORLD_H } from '../constants.js';
     }
   }
   function update(dt,player,getTile){
-    if(!(dt>0) || !isFinite(dt)) return;
+    if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function') return;
+    lastGetTile=getTile;
     scanT-=dt;
     if(scanT<=0){
       scanT=SCAN_INTERVAL;
       scanAround(player,getTile);
     }
+    pruneCells(player,getTile);
     const sun=daylight();
     for(const m of [...cells.values()]) updateCell(m,dt,getTile,sun);
   }
   function ensureVisible(sx,sy,viewX,viewY,getTile){
     if(typeof getTile!=='function') return;
+    lastGetTile=getTile;
     const bx=Math.floor(Number(sx)||0);
     const by=Math.floor(Number(sy)||0);
     const keyStr=Math.floor(bx/8)+','+Math.floor(by/8)+','+Math.ceil(Number(viewX)||0)+','+Math.ceil(Number(viewY)||0);
@@ -252,15 +311,18 @@ import { T, INFO, WORLD_H } from '../constants.js';
   }
   function snapshot(){
     const list=[...cells.values()]
-      .filter(m=>m && finiteTile(m.x,m.y) && (m.energy||0)>0.001)
+      .filter(m=>m && finiteTile(m.x,m.y) && (m.energy||0)>0.001 && (!lastGetTile || isSourceTile(getSafe(lastGetTile,m.x,m.y,T.AIR))))
       .sort((a,b)=>(a.x-b.x)||(a.y-b.y))
+      .slice(0,CELL_CAP)
       .map(m=>({x:m.x,y:m.y,energy:+(m.energy||0).toFixed(3),power:+(m.power||0).toFixed(2)}));
     return {v:1,list};
   }
   function restore(data,getTile){
     reset();
+    if(typeof getTile==='function') lastGetTile=getTile;
     if(!data || !Array.isArray(data.list)) return;
     for(const raw of data.list){
+      if(cells.size>=CELL_CAP) break;
       if(!raw || !finiteTile(raw.x,raw.y)) continue;
       const x=Math.floor(raw.x), y=Math.floor(raw.y);
       const t=getSafe(getTile,x,y,T.AIR);
@@ -277,6 +339,7 @@ import { T, INFO, WORLD_H } from '../constants.js';
     scanT=0;
     visibleScanAt=0;
     visibleScanKey='';
+    lastGetTile=null;
   }
   function metrics(){
     let storedEnergy=0, active=0, storageCells=0, currentPower=0;
@@ -303,7 +366,7 @@ import { T, INFO, WORLD_H } from '../constants.js';
     restore,
     reset,
     metrics,
-    _debug:{cells,PANEL_CAPACITY,STORAGE_CAPACITY,PANEL_RATE,STORAGE_RATE,clusterCells,daylight,ensureVisible}
+    _debug:{cells,PANEL_CAPACITY,STORAGE_CAPACITY,PANEL_RATE,STORAGE_RATE,CELL_CAP,clusterCells,daylight,ensureVisible,debugChargeAt,debugSetEnergyAt}
   };
   MM.solar=api;
 })();

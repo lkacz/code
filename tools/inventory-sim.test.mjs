@@ -14,7 +14,12 @@ const { chests } = await import('../src/engine/chests.js');
 // --- resource registry: city salvage materials are tracked and placeable where intended ---
 const res = key => INV.RESOURCES.find(r => r.key === key);
 assert.equal(INFO[T.COAL].drop, 'coal', 'coal blocks drop coal');
+assert.equal(INFO[T.ROTTEN_MEAT].drop, 'rottenMeat', 'rotten meat blocks drop rotten meat');
+assert.equal(INFO[T.BAKED_MEAT].drop, 'bakedMeat', 'baked meat blocks drop baked meat');
 assert.equal(res('coal')?.tile, 'COAL', 'coal is a placeable mined resource');
+assert.equal(res('meat')?.tile, 'MEAT', 'raw meat is tracked as a placeable/eatable block resource');
+assert.equal(res('rottenMeat')?.tile, 'ROTTEN_MEAT', 'rotten meat is tracked separately');
+assert.equal(res('bakedMeat')?.tile, 'BAKED_MEAT', 'baked meat is tracked separately');
 assert.equal(res('wire')?.tile, 'WIRE', 'wire is a placeable salvaged resource');
 assert.equal(res('plastic')?.tile, null, 'plastic is tracked as a non-placeable component');
 assert.equal(res('copper')?.tile, null, 'copper is tracked as a non-placeable component');
@@ -22,6 +27,10 @@ assert.equal(res('copperWire')?.tile, 'COPPER_WIRE', 'copper wire is a placeable
 assert.equal(res('transistor')?.tile, 'TRANSISTOR', 'transistor is placeable for block-reaction assemblies');
 assert.equal(res('dynamo')?.tile, 'DYNAMO', 'dynamo is a craftable placeable machine resource');
 assert.equal(res('teleporter')?.tile, 'TELEPORTER', 'teleporter is a placeable machine resource');
+assert.equal(res('springAntler')?.tile, null, 'spring hallmark antlers are tracked as a non-placeable trophy');
+assert.equal(res('summerHorn')?.tile, null, 'summer hallmark horn is tracked as a non-placeable trophy');
+assert.equal(res('autumnHeartwood')?.tile, null, 'autumn hallmark heartwood is tracked as a non-placeable trophy');
+assert.equal(res('winterFur')?.tile, null, 'winter hallmark fur is tracked as a non-placeable trophy');
 assert.equal(INFO[T.DYNAMO_SLOT].passable, true, 'dynamo slot is passable for the hero and machine flow');
 assert.equal(INFO[T.COPPER_WIRE].drop, 'copperWire', 'copper wire drops itself when dismantled');
 assert.equal(INFO[T.COPPER_WIRE].conductor, true, 'copper wire is marked as an energy conductor');
@@ -73,12 +82,15 @@ assert.ok(s('sleepy') < s('bright') && s('bright') < s('glow'), 'eyes ordered by
 globalThis.MM.dynamicLoot = { weapons: [
   { id: 'w_dirty', kind: 'weapon', weaponType: 'melee', name: 'Test', attackDamage: 4, moveSpeedMult: 1.0437, jumpPowerMult: 1.137, tier: 'rare' },
   { id: 'w_electric', kind: 'weapon', weaponType: 'electric', name: 'Beam', fireDps:10, fireRange:8, energyCost:11, tier:'rare' }
+], charms: [
+  { id: 'battery_dynamic', kind: 'charm', name: 'Alien Battery', energyCapacityBonus:75, tier:'epic' }
 ] };
 window.updateDynamicCustomization();
 const dirty = INV.getItem('w_dirty');
 assert.equal(dirty.moveSpeedMult, 1.05, '1.0437 snaps to +5%');
 assert.equal(dirty.jumpPowerMult, 1.15, '1.137 snaps to +15%');
 assert.equal(INV.getItem('w_electric').energyCost, 11, 'electric loot keeps energyCost through sanitization');
+assert.equal(INV.getItem('battery_dynamic').energyCapacityBonus, 75, 'dynamic loot keeps energy capacity through sanitization');
 
 // --- shortcut category cycling: strongest first, opt-out respected --------
 // melee by score: w_dirty(36) > stone_blade(15) >= spear(15) > stick(6)

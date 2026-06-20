@@ -7,7 +7,7 @@
 // Run: node tools/clouds-sim.test.mjs
 import { strict as assert } from 'assert';
 
-const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,POISON_GAS:28,FUEL_GAS:29};
+const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,POISON_GAS:28,FUEL_GAS:29,DYNAMO:30,DYNAMO_SLOT:31};
 const CHEST_IDS = [T.CHEST_COMMON,T.CHEST_RARE,T.CHEST_EPIC];
 globalThis.window = globalThis; // clouds.js attaches to window.MM
 
@@ -21,6 +21,8 @@ globalThis.MM = {
     [T.WATER]: {passable:true},
     [T.POISON_GAS]: {passable:true, gas:true},
     [T.FUEL_GAS]: {passable:true, gas:true},
+    [T.DYNAMO]: {passable:false},
+    [T.DYNAMO_SLOT]: {passable:true},
   },
   worldGen: {
     temperature: ()=>TEMP,
@@ -57,6 +59,7 @@ function resetWorld(){
   CFG.LIGHTNING_TELEPORT_CHANCE = 0;
   TEMP = 0.7;
   globalThis.player = {x:0};
+  delete MM.dynamo;
   clouds.setWindOverride(null);
   clouds.setCycleOverride({cycleT:0.25, isDay:true, tDay:0.5}); // midday by default
 }
@@ -214,6 +217,31 @@ assert.ok(gasStrike && gasStrike.chest, 'lightning ignores gas and still hits th
 assert.equal(gasStrike.y, 90, 'gas is not treated as a roof or strike target');
 assert.equal(getTile(0,50), T.POISON_GAS, 'lightning passing through gas leaves it in place');
 
+resetWorld();
+CFG.EVAP_BASE = 0;
+CFG.LIGHTNING_DYNAMO_ATTRACT_CHANCE = 1;
+CFG.LIGHTNING_DYNAMO_ATTRACT_RADIUS = 7;
+setTile(4,40,T.DYNAMO);
+setTile(4,41,T.DYNAMO_SLOT);
+setTile(4,42,T.DYNAMO);
+let drainedDynamo = null;
+MM.dynamo = {
+  drainAt(x,y,amount){
+    drainedDynamo = {x,y,amount};
+    return {amount:23};
+  },
+  onTileChanged(){},
+};
+const dynamoStrike = clouds.strike(0, getTile, setTile);
+assert.ok(dynamoStrike && dynamoStrike.dynamo, 'nearby exposed vertical dynamo attracts lightning');
+assert.equal(dynamoStrike.x, 4, 'lightning retargets to the vertical dynamo column');
+assert.equal(dynamoStrike.y, 40, 'lightning hits the exposed top casing');
+assert.equal(getTile(4,40), T.AIR, 'lightning destroys one vertical dynamo casing');
+assert.equal(getTile(4,41), T.DYNAMO_SLOT, 'remaining slot is left as damaged machine debris');
+assert.equal(dynamoStrike.chest, false, 'dynamo lightning hit does not become a loot chest');
+assert.deepEqual(drainedDynamo, {x:4,y:41,amount:999}, 'lightning drains the dynamo battery before destroying it');
+delete MM.dynamo;
+
 // --- 9b. Rare lightning curse: a hit can teleport the hero 500-1500 blocks away ---
 resetWorld();
 CFG.EVAP_BASE = 0;
@@ -323,7 +351,36 @@ const perfMs = Date.now()-tPerf;
 console.log('perf: 60 s of storm over water simulated in '+perfMs+' ms');
 assert.ok(perfMs < 5000, `storm update stays cheap (took ${perfMs} ms)`);
 
-// --- 14. API safety: junk input never throws ---
+// --- 14. Save/restore: weather simulation persists without cosmetic bloat ---
+resetWorld();
+CFG.EVAP_BASE = 0; CFG.BORDER_SPAWN = false;
+clouds.injectVapor(96, 3.25);
+const savedCloud = clouds.addCloud(8, 70, 12);
+savedCloud.depAcc = 0.6;
+savedCloud.raining = true;
+clouds.startStorm(45, 0.7);
+step(10);
+const snap = clouds.snapshot();
+assert.ok(snap && snap.v === 1, 'weather snapshot has a version');
+assert.ok(Array.isArray(snap.clouds) && snap.clouds.length >= 1, 'weather snapshot carries cloud parcels');
+assert.ok(Array.isArray(snap.vapor) && snap.vapor.length >= 1, 'weather snapshot carries regional vapor');
+assert.ok(snap.storm && snap.storm.active, 'weather snapshot carries active storm state');
+assert.equal(Object.hasOwn(snap, 'drops'), false, 'weather snapshot omits cosmetic raindrops');
+assert.equal(Object.hasOwn(snap, 'wisps'), false, 'weather snapshot omits cosmetic wisps');
+assert.equal(Object.hasOwn(snap, 'bolts'), false, 'weather snapshot omits cosmetic lightning bolts');
+clouds.reset();
+assert.equal(clouds.metrics().clouds, 0, 'reset clears clouds before restore');
+assert.equal(clouds.restore(snap), true, 'weather restore accepts a valid snapshot');
+const restored = clouds.metrics();
+assert.ok(restored.clouds >= 1, 'weather restore brings clouds back');
+assert.ok(restored.vapor > 3, `weather restore preserves vapor mass (${restored.vapor.toFixed(2)})`);
+assert.ok(restored.storm.active, 'weather restore resumes the active storm');
+const restoredCloud = clouds._debug().clouds[0];
+assert.ok(Array.isArray(restoredCloud.puffs) && restoredCloud.puffs.length > 0, 'weather restore rebuilds cloud puff art from seeds');
+assert.equal(restoredCloud.sprite, null, 'weather restore does not persist canvas sprite caches');
+assert.equal(clouds.restore(null), false, 'weather restore rejects missing payloads without throwing');
+
+// --- 15. API safety: junk input never throws ---
 clouds.setWindOverride('junk'); clouds.setWindOverride(null);
 clouds.setCycleOverride('junk'); clouds.setCycleOverride(null);
 assert.equal(clouds.addCloud(NaN, null, 10), null, 'addCloud rejects junk x');
