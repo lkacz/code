@@ -324,12 +324,15 @@ const dynamoSrc = await readFile(new URL('../src/engine/dynamo.js', import.meta.
 assert.match(dynamoSrc, /const ENERGY_CAPACITY = 100/, 'dynamo has a fixed battery capacity');
 assert.match(dynamoSrc, /function drawBatteryLines\(ctx,TILE,px,py,charge,pulse\)/, 'dynamo draws stored energy as battery lines');
 assert.match(dynamoSrc, /function drawRotorFan\(ctx,TILE,px,py,angle,work,pulse\)/, 'dynamo draws a visible rotating fan');
+assert.match(dynamoSrc, /function drawOutputReadout\(ctx,TILE,px,py,power,sourceKind,orientation,pulse\)/, 'dynamo draws output as an internal machine readout');
 assert.match(dynamoSrc, /function energyAt\(x,y,getTile\)/, 'dynamo exposes stored-energy read access for powered devices');
 assert.match(dynamoSrc, /function drainAt\(x,y,amount,getTile\)/, 'dynamo exposes stored-energy drain access for powered devices');
 assert.match(dynamoSrc, /for\(let i=0; i<4; i\+\+\)/, 'dynamo battery indicator uses four charge lines');
 assert.match(dynamoSrc, /const leftX=px\+TILE\*0\.08/, 'dynamo battery level is drawn on the left side');
 assert.match(dynamoSrc, /const rightX=px\+TILE\*0\.835/, 'dynamo battery level is drawn on the right side');
 assert.match(dynamoSrc, /drawRotorFan\(ctx,TILE,px,py,m\.rotorAngle\|\|0,spin,m\.pulse\|\|0\)/, 'dynamo fan draw follows rotor state and work pace');
+assert.match(dynamoSrc, /drawOutputReadout\(ctx,TILE,px,py,m\.power\|\|0,m\.lastKind\|\|'',orientation,m\.pulse\|\|0\)/, 'dynamo output rate is rendered on the structure itself');
+assert.doesNotMatch(dynamoSrc, /by=py-TILE\*0\.42/, 'dynamo output readout is no longer placed above the structure');
 assert.match(dynamoSrc, /rotorSpeed:\+rotorSpeed\.toFixed\(2\)/, 'dynamo metrics expose fan speed for regression tests');
 assert.match(dynamoSrc, /ensureVisibleMachines\(sx,sy,viewX,viewY,getTile\)/, 'visible dynamos materialize empty battery state for drawing');
 const gasesSrc = await readFile(new URL('../src/engine/gases.js', import.meta.url), 'utf8');

@@ -363,6 +363,36 @@ import { T, INFO, WORLD_H } from '../constants.js';
     ctx.stroke();
     ctx.restore();
   }
+  function drawOutputReadout(ctx,TILE,px,py,power,sourceKind,orientation,pulse){
+    const p=Math.max(0,Math.min(1,(power||0)/MAX_POWER));
+    const horizontal=orientation!=='vertical';
+    const bw=horizontal ? TILE*1.92 : TILE*0.66;
+    const bh=Math.max(5,TILE*0.24);
+    const bx=px+TILE*0.5-bw*0.5;
+    const by=horizontal ? py+TILE*0.66 : py+TILE*0.70;
+    const color=sourceKind==='water'?'#49a8ff':(sourceKind==='steam'?'#dfe8ee':(sourceKind==='wind'?'#b8f4ff':'#f4b65e'));
+    ctx.save();
+    ctx.fillStyle='rgba(3,7,12,0.82)';
+    ctx.fillRect(bx,by,bw,bh);
+    if(p>0.001){
+      ctx.fillStyle=color;
+      ctx.globalAlpha=Math.min(1,0.52+0.32*p+0.12*Math.max(0,Math.min(1,pulse||0)));
+      ctx.fillRect(bx,by,Math.max(1,bw*p),bh);
+      ctx.globalAlpha=1;
+    }
+    ctx.strokeStyle='rgba(178,239,255,'+(0.38+0.44*p).toFixed(3)+')';
+    ctx.lineWidth=Math.max(1,TILE*0.035);
+    ctx.strokeRect(bx,by,bw,bh);
+    ctx.font='bold '+Math.max(7,Math.round(TILE*0.28))+'px system-ui';
+    ctx.textAlign='center';
+    ctx.textBaseline='middle';
+    ctx.fillStyle='rgba(0,0,0,0.62)';
+    const text=Math.round(power||0)+' E/s';
+    ctx.fillText(text,bx+bw*0.5+1,by+bh*0.5+1);
+    ctx.fillStyle=p>0.001 ? 'rgba(255,255,255,0.94)' : 'rgba(210,233,242,0.66)';
+    ctx.fillText(text,bx+bw*0.5,by+bh*0.5);
+    ctx.restore();
+  }
   function draw(ctx,TILE,sx,sy,viewX,viewY,canDrawTile,getTile){
     if(!ctx) return;
     ensureVisibleMachines(sx,sy,viewX,viewY,getTile);
@@ -379,6 +409,7 @@ import { T, INFO, WORLD_H } from '../constants.js';
       const p=Math.max(0, Math.min(1, (m.power||0)/MAX_POWER));
       const charge=Math.max(0, Math.min(1, (m.energy||0)/ENERGY_CAPACITY));
       const spin=Math.max(p,Math.min(1,(m.rotorSpeed||0)/34));
+      const orientation=getTile ? slotOrientation(m.x,m.y,getTile) : 'horizontal';
       const px=m.x*TILE, py=m.y*TILE;
       const glow=0.18+0.35*spin+0.20*(m.pulse||0);
       ctx.fillStyle='rgba(84, 204, 255, '+glow.toFixed(3)+')';
@@ -388,17 +419,7 @@ import { T, INFO, WORLD_H } from '../constants.js';
       ctx.strokeRect(px+TILE*0.16,py+TILE*0.16,TILE*0.68,TILE*0.68);
       drawRotorFan(ctx,TILE,px,py,m.rotorAngle||0,spin,m.pulse||0);
       drawBatteryLines(ctx,TILE,px,py,charge,m.pulse||0);
-      const bw=TILE*2.2, bh=Math.max(4,TILE*0.18);
-      const bx=px+TILE*0.5-bw*0.5, by=py-TILE*0.42;
-      if((m.power||0)>0.05){
-        ctx.fillStyle='rgba(6,10,16,0.72)';
-        ctx.fillRect(bx,by,bw,bh);
-        ctx.fillStyle=m.lastKind==='water'?'#49a8ff':(m.lastKind==='steam'?'#dfe8ee':(m.lastKind==='wind'?'#b8f4ff':'#f4b65e'));
-        ctx.fillRect(bx,by,Math.max(1,bw*p),bh);
-        ctx.font='bold '+Math.max(8,Math.round(TILE*0.42))+'px system-ui';
-        ctx.fillStyle='rgba(255,255,255,0.92)';
-        ctx.fillText(Math.round(m.power||0)+' E/s', px+TILE*0.5, by-TILE*0.34);
-      }
+      drawOutputReadout(ctx,TILE,px,py,m.power||0,m.lastKind||'',orientation,m.pulse||0);
     }
     ctx.restore();
   }
