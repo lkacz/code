@@ -181,6 +181,7 @@ const CFG = {
   terrainApplySlowFrameMs: 24,
   terrainApplySearchLimit: 256,
   terrainVisibleMarginTiles: 3,
+  terrainPlayerMarginTiles: 1.25,
   terrainMovingSpeed: 0.18,
 };
 
@@ -263,6 +264,7 @@ function scanConfig(){
     terrainApplySlowFrameMs: safeInt(CFG.terrainApplySlowFrameMs, 24, 0, 250),
     terrainApplySearchLimit: safeInt(CFG.terrainApplySearchLimit, 256, 8, 4096),
     terrainVisibleMargin: safeInt(CFG.terrainVisibleMarginTiles, 3, 0, 32),
+    terrainPlayerMargin: clamp(finiteNumber(CFG.terrainPlayerMarginTiles, 1.25), 0, 8),
     terrainMovingSpeed: clamp(finiteNumber(CFG.terrainMovingSpeed, 0.18), 0, 20),
   };
 }
@@ -665,6 +667,8 @@ function emptyTerrainPlan(){
     applied: 0,
     dropped: 0,
     visibleApplied: 0,
+    visibleSkipped: 0,
+    playerProtected: 0,
     columns: 0,
     scanMs: 0,
     applyMs: 0,
@@ -890,6 +894,16 @@ function terrainOpVisible(op, opts, sc){
   return op.x >= v.x0 - m && op.x <= v.x1 + m && op.y >= v.y0 - m && op.y <= v.y1 + m;
 }
 
+function terrainOpNearPlayer(op, player, sc){
+  const p = player || root.player || {};
+  const px = finiteNumber(p.x, NaN);
+  const py = finiteNumber(p.y, NaN);
+  if(!Number.isFinite(px) || !Number.isFinite(py)) return false;
+  const halfW = Math.max(0.35, finiteNumber(p.w, 0.7) * 0.5) + sc.terrainPlayerMargin;
+  const halfH = Math.max(0.48, finiteNumber(p.h, 0.95) * 0.5) + sc.terrainPlayerMargin;
+  return op.x + 1 > px - halfW && op.x < px + halfW && op.y + 1 > py - halfH && op.y < py + halfH;
+}
+
 function terrainInputActive(player, opts, sc){
   if(opts && opts.inputActive) return true;
   const p = player || {};
@@ -897,17 +911,27 @@ function terrainInputActive(player, opts, sc){
   return speed > sc.terrainMovingSpeed;
 }
 
-function takeTerrainCandidate(opts, sc, allowVisible){
+function takeTerrainCandidate(player, opts, sc, allowVisible){
   const limit = Math.min(sc.terrainApplySearchLimit, terrainPlan.queue.length);
+  let skippedVisible = 0;
+  let skippedPlayer = 0;
   for(let i = 0; i < limit; i++){
     const op = terrainPlan.queue[i];
     const visible = terrainOpVisible(op, opts, sc);
-    if(visible && !allowVisible) continue;
+    const playerProtected = terrainOpNearPlayer(op, player, sc);
+    if(playerProtected){
+      skippedPlayer++;
+      continue;
+    }
+    if(visible && !allowVisible){
+      skippedVisible++;
+      continue;
+    }
     terrainPlan.queue.splice(i, 1);
     terrainPlan.queuedKeys.delete(terrainOpKey(op));
-    return {op, visible};
+    return {op, visible, skippedVisible, skippedPlayer};
   }
-  return null;
+  return {op: null, visible: false, skippedVisible, skippedPlayer};
 }
 
 function applyTerrainPlan(getTile, setTile, player, s, sc, opts){
@@ -927,10 +951,20 @@ function applyTerrainPlan(getTile, setTile, player, s, sc, opts){
   let applied = 0;
   let visibleApplied = 0;
   let dropped = 0;
+  let skippedVisible = 0;
+  let skippedPlayer = 0;
   const maxOps = sc.terrainApplyOps;
   for(let i = 0; i < maxOps; i++){
-    const picked = takeTerrainCandidate(opts, sc, allowVisible && visibleApplied === 0);
-    if(!picked) break;
+    const picked = takeTerrainCandidate(player, opts, sc, allowVisible && visibleApplied === 0);
+    if(!picked || !picked.op){
+      if(picked){
+        skippedVisible += picked.skippedVisible || 0;
+        skippedPlayer += picked.skippedPlayer || 0;
+      }
+      break;
+    }
+    skippedVisible += picked.skippedVisible || 0;
+    skippedPlayer += picked.skippedPlayer || 0;
     const {op, visible} = picked;
     if(getTile(op.x, op.y) !== op.from){
       dropped++;
@@ -954,9 +988,11 @@ function applyTerrainPlan(getTile, setTile, player, s, sc, opts){
     terrainPlan.lastAction = 'dropped';
     terrainPlan.deferReason = '';
   } else {
-    terrainPlan.deferReason = moving ? 'moving' : 'visible';
+    terrainPlan.deferReason = moving ? 'moving' : (skippedPlayer > 0 ? 'player' : 'visible');
   }
   terrainPlan.dropped += dropped;
+  terrainPlan.visibleSkipped += skippedVisible;
+  terrainPlan.playerProtected += skippedPlayer;
   if(started) terrainPlan.applyMs = +(terrainPlan.applyMs + Math.max(0, performance.now() - started)).toFixed(3);
   return applied;
 }
@@ -1178,6 +1214,8 @@ function terrainMetricsSnapshot(){
     applied: terrainPlan.applied | 0,
     dropped: terrainPlan.dropped | 0,
     visibleApplied: terrainPlan.visibleApplied | 0,
+    visibleSkipped: terrainPlan.visibleSkipped | 0,
+    playerProtected: terrainPlan.playerProtected | 0,
     columns: terrainPlan.columns | 0,
     scanMs: +finiteNumber(terrainPlan.scanMs, 0).toFixed(3),
     applyMs: +finiteNumber(terrainPlan.applyMs, 0).toFixed(3),

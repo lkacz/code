@@ -85,7 +85,7 @@ assert.equal(seasons.scanNow(getTile, setTile, {x:96, y:9}), null, 'disabled sea
 assert.equal(seasons.forceSeasonEvent('winter', {player:{x:12, y:8, facing:1}}), false, 'disabled seasonal system blocks forced seasonal events');
 assert.equal(seasons.setEnabled(true), true, 'debug can re-enable the seasonal system');
 assert.equal(seasons.isEnabled(), true, 're-enabled seasonal system reports active state');
-seasons.update(0.25, getTile, setTile, {x:0, y:9});
+seasons.update(0.25, getTile, setTile, {x:4, y:9});
 assert.equal(getTile(0, 10), T.ICE, 're-enabled seasonal system resumes terrain mutations through the safe terrain job');
 assert.ok(seasons.metrics().terrain.prepared >= 1, 'safe terrain job prepares candidates before applying them');
 assert.ok(seasons.metrics().terrain.applied >= 1, 'safe terrain job applies candidates through the bounded commit path');
@@ -256,13 +256,36 @@ assert.equal(getTile(0, 10), T.LEAF, 'autumn scan-now also leaves tree foliage u
   setTile(0, 10, T.WATER);
   setTile(0, 11, T.STONE);
   seasons.setDay(29);
-  seasons.update(0.25, getTile, setTile, {x:0, y:9});
+  seasons.update(0.25, getTile, setTile, {x:4, y:9});
   assert.equal(getTile(0, 10), T.WATER, 'winter terrain can be prepared before winter without applying early');
   assert.equal(seasons.metrics().terrain.target, 'winter', 'pre-season terrain plan targets the upcoming winter');
   assert.ok(seasons.metrics().terrain.queued >= 1, 'pre-season terrain plan queues future freeze work');
   seasons.setDay(31);
-  seasons.update(0.25, getTile, setTile, {x:0, y:9});
+  seasons.update(0.25, getTile, setTile, {x:4, y:9});
   assert.equal(getTile(0, 10), T.ICE, 'prepared winter terrain applies once winter is active');
+  Object.assign(seasons.config, savedCfg);
+}
+
+{
+  const savedCfg = Object.assign({}, seasons.config);
+  resetTiles();
+  Object.assign(seasons.config, {
+    autoTerrainEffects: true,
+    terrainPlanRadius: 12,
+    terrainPlanColsPerTick: 25,
+    terrainPlanMaxCandidatesPerTick: 8,
+    terrainApplyInterval: 0.01,
+    terrainApplyOpsPerTick: 1,
+    terrainPlayerMarginTiles: 1.25,
+  });
+  setTile(0, 10, T.WATER);
+  setTile(0, 11, T.STONE);
+  seasons.forceSeason('winter');
+  seasons.update(0.25, getTile, setTile, {x:0, y:10, w:0.7, h:0.95});
+  assert.equal(getTile(0, 10), T.WATER, 'safe terrain job never mutates tiles inside the player safety bubble');
+  assert.ok(seasons.metrics().terrain.playerProtected >= 1, 'terrain metrics expose player-protected skipped commits');
+  seasons.update(0.25, getTile, setTile, {x:4, y:10, w:0.7, h:0.95});
+  assert.equal(getTile(0, 10), T.ICE, 'player-protected terrain work applies after the player is clear');
   Object.assign(seasons.config, savedCfg);
 }
 
