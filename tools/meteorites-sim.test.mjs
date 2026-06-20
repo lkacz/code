@@ -178,19 +178,33 @@ function getBeaconTile(x,y){
 }
 function setBeaconTile(x,y,t){ beaconTiles.set(kxy(x,y),t); }
 setBeaconTile(0,SURF-1,T.ANTIGRAVITY_BEACON);
+player.x=0.5;
+player.y=SURF-1;
+player.vx=0;
+player.vy=0;
 const beforeBeaconImpacts=meteorites.metrics().impacts;
 const beforeDeflections=meteorites.metrics().deflections;
 const shielded = meteorites.forceSpawn({x:0,y:SURF,intensity:1.65,side:-1}, player, getBeaconTile);
 assert.ok(shielded, 'forced debug meteor spawns against an antigravity beacon');
 let sawDeflection=false;
+let sawWave=false;
+let sawBurst=false;
+let sawInverseLift=false;
 for(let i=0;i<900;i++){
   meteorites.update(1/60, player, getBeaconTile, setBeaconTile);
   const m=meteorites.metrics();
   if(m.deflections>beforeDeflections) sawDeflection=true;
+  if(m.beaconWaves>0) sawWave=true;
+  if(m.gravityBursts>0) sawBurst=true;
+  if(player.vy<-0.04) sawInverseLift=true;
   if(m.meteors===0) break;
 }
 const beaconAfter=meteorites.metrics();
 assert.ok(sawDeflection, 'antigravity beacon deflects the incoming meteor');
+assert.ok(beaconAfter.lastDeflection && beaconAfter.lastDeflection.d<=22, 'beacon waits until the meteor is close before deflecting (d='+((beaconAfter.lastDeflection&&beaconAfter.lastDeflection.d)||'?')+')');
+assert.ok(sawWave, 'beacon emits an antigravity wave toward the meteor');
+assert.ok(sawBurst, 'beacon leaves a timed inverse-gravity burst after firing');
+assert.ok(sawInverseLift, 'inverse-gravity burst applies upward lift near the beacon');
 assert.equal(beaconAfter.impacts, beforeBeaconImpacts, 'deflected meteor does not create a crater impact');
 assert.equal(getBeaconTile(0,SURF-1), T.ANTIGRAVITY_BEACON, 'antigravity beacon survives the deflection');
 assert.equal([...beaconTiles.values()].some(t=>t===T.AIR || t===T.LAVA || t===T.OBSIDIAN), false, 'deflected meteor does not carve nearby terrain');

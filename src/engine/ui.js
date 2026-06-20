@@ -701,7 +701,7 @@ MM.ui = (function(){
       const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
       updateToggle(m);
       if(!m){ metrics.textContent='brak metryk meteorytow'; return; }
-      const fx=(m.embers||0)+(m.debris||0)+(m.plumes||0);
+      const fx=(m.embers||0)+(m.debris||0)+(m.plumes||0)+(m.beaconWaves||0)+(m.gravityBursts||0);
       const days=Number.isFinite(m.nextInDays) ? Number(m.nextInDays).toFixed(2)+'d' : Number(m.nextIn||0).toFixed(0)+'s';
       metrics.textContent=(m.enabled?'ON':'OFF')+' | next '+days+' | lot '+(m.meteors||0)+' | krater job '+(m.terrainJobs||0)+' q'+(m.queuedOps||0)+' | fx '+fx+' | impakty '+(m.impacts||0)+' | odchylenia '+(m.deflections||0);
     }

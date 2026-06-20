@@ -12,10 +12,13 @@ const meteorites = (function(){
   const MAX_EMBERS = 140;
   const MAX_DEBRIS = 60;
   const MAX_PLUMES = 34;
+  const MAX_BEACON_WAVES = 8;
+  const MAX_GRAVITY_BURSTS = 6;
   const GRAVITY = 7.5;
   const BEACON_SCAN_RADIUS = 44;
-  const BEACON_DEFLECT_RADIUS = 34;
-  const BEACON_HARD_DEFLECT_RADIUS = 12;
+  const BEACON_FIELD_RADIUS = 34;
+  const BEACON_DEFLECT_RADIUS = 18;
+  const BEACON_HARD_DEFLECT_RADIUS = 10;
   const BEACON_SCAN_INTERVAL = 0.12;
   const BASE_TERRAIN_BUDGET = 8;
   const STRESSED_TERRAIN_BUDGET = 4;
@@ -27,12 +30,15 @@ const meteorites = (function(){
   const plumes = [];
   const shockwaves = [];
   const scorches = [];
+  const beaconWaves = [];
+  const gravityBursts = [];
   const plumeSprites = new Map();
   let enabled = false;
   let nextIn = 0;
   let spawned = 0;
   let impacts = 0;
   let deflections = 0;
+  let lastDeflection = null;
   let screenFlash = 0;
   let lastImpact = null;
   let shakeT = 0;
@@ -286,8 +292,57 @@ const meteorites = (function(){
     }
     try{ if(MM.gases && MM.gases.add) MM.gases.add('steam',cx,cy-0.4,{power:1.3+intensity*0.45,cells:8}); }catch(e){}
   }
+  function queueBeaconWave(b,m){
+    if(!b || !m) return;
+    pushCapped(beaconWaves,{
+      x0:b.x,
+      y0:b.y,
+      x1:m.x,
+      y1:m.y,
+      life:0,
+      max:0.58,
+      width:0.22+Math.min(0.18,(m.intensity||1)*0.05),
+      phase:Math.random()*Math.PI*2
+    },MAX_BEACON_WAVES);
+  }
+  function queueGravityBurst(b,m){
+    if(!b) return;
+    pushCapped(gravityBursts,{
+      x:b.x,
+      y:b.y,
+      life:0,
+      max:3.25,
+      radius:9.5+Math.min(4.5,(m && m.intensity ? m.intensity : 1)*2.1),
+      power:21+Math.min(10,(m && m.intensity ? m.intensity : 1)*4),
+      seed:Math.random()*Math.PI*2
+    },MAX_GRAVITY_BURSTS);
+  }
+  function inverseGravityAt(x,y){
+    let lift=0;
+    for(const b of gravityBursts){
+      const age=clamp(b.life/b.max,0,1);
+      const dx=x-b.x, dy=y-b.y;
+      const d=Math.hypot(dx,dy);
+      if(d>=b.radius) continue;
+      const spatial=1-d/b.radius;
+      const temporal=0.25+0.75*Math.sin(Math.PI*age);
+      lift+=b.power*spatial*temporal;
+    }
+    return lift;
+  }
+  function applyGravityBurstToPlayer(dt,player){
+    if(!player || !gravityBursts.length) return;
+    const lift=inverseGravityAt(player.x,player.y);
+    if(!(lift>0)) return;
+    player.vy-=lift*dt;
+    if(player.vy<-11) player.vy=-11;
+    player.onGround=false;
+  }
   function emitBeaconDeflectFx(m,b){
     deflections++;
+    lastDeflection={x:+m.x.toFixed(2),y:+m.y.toFixed(2),beaconX:+b.x.toFixed(2),beaconY:+b.y.toFixed(2),d:+Math.hypot(m.x-b.x,m.y-b.y).toFixed(2),t:0};
+    queueBeaconWave(b,m);
+    queueGravityBurst(b,m);
     const stress=frameMs()>30;
     const emberCount=stress ? 12 : 28;
     for(let i=0;i<emberCount;i++){
@@ -335,6 +390,7 @@ const meteorites = (function(){
     m.vy=Math.min(-18-(m.intensity||1)*2.5,-Math.abs(m.vy)*0.45-10);
     m.life=Math.max(m.life,2.2);
     m.deflected=true;
+    m.deflectedAt={x:m.x,y:m.y,d};
     m.deflectedBy={x:b.x,y:b.y};
     m.target={x:m.x+side*88,y:Math.max(2,m.y-34)};
     emitBeaconDeflectFx(m,b);
@@ -348,7 +404,7 @@ const meteorites = (function(){
       m.beaconScanT=BEACON_SCAN_INTERVAL;
       const target=m.target || {x:m.x,y:m.y};
       const targetBeacon=nearestBeacon(target.x,target.y,getTile,BEACON_SCAN_RADIUS);
-      const currentBeacon=nearestBeacon(m.x,m.y,getTile,BEACON_DEFLECT_RADIUS);
+      const currentBeacon=nearestBeacon(m.x,m.y,getTile,BEACON_FIELD_RADIUS);
       b=currentBeacon || targetBeacon;
       m.cachedBeacon=b;
     }
@@ -356,9 +412,10 @@ const meteorites = (function(){
     const d=Math.hypot(m.x-b.x,m.y-b.y);
     const target=m.target || {x:m.x,y:m.y};
     const targetD=Math.hypot(target.x-b.x,target.y-b.y);
-    const protectedTarget=targetD<BEACON_DEFLECT_RADIUS;
-    const fieldRadius=protectedTarget ? BEACON_DEFLECT_RADIUS*1.7 : BEACON_DEFLECT_RADIUS*1.25;
-    if(d<BEACON_HARD_DEFLECT_RADIUS || d<BEACON_DEFLECT_RADIUS || (protectedTarget && d<BEACON_DEFLECT_RADIUS*1.45)){
+    const protectedTarget=targetD<BEACON_FIELD_RADIUS;
+    const fieldRadius=protectedTarget ? BEACON_FIELD_RADIUS : BEACON_DEFLECT_RADIUS*1.35;
+    const triggerRadius=protectedTarget ? BEACON_DEFLECT_RADIUS : BEACON_HARD_DEFLECT_RADIUS;
+    if(d<triggerRadius || d<BEACON_HARD_DEFLECT_RADIUS){
       return deflectMeteorFromBeacon(m,b);
     }
     if(d<fieldRadius){
@@ -750,6 +807,20 @@ const meteorites = (function(){
       lastImpact.t+=dt;
       if(lastImpact.t>7) lastImpact=null;
     }
+    if(lastDeflection){
+      lastDeflection.t+=dt;
+      if(lastDeflection.t>7) lastDeflection=null;
+    }
+    for(let i=beaconWaves.length-1;i>=0;i--){
+      const w=beaconWaves[i];
+      w.life+=dt;
+      if(w.life>=w.max) beaconWaves.splice(i,1);
+    }
+    for(let i=gravityBursts.length-1;i>=0;i--){
+      const b=gravityBursts[i];
+      b.life+=dt;
+      if(b.life>=b.max) gravityBursts.splice(i,1);
+    }
     for(let i=shockwaves.length-1;i>=0;i--){
       const s=shockwaves[i];
       s.life+=dt;
@@ -768,6 +839,7 @@ const meteorites = (function(){
       p.y+=p.vy*dt;
       p.r+=dt*0.38;
       p.vy-=dt*0.15;
+      p.vy-=inverseGravityAt(p.x,p.y)*0.04*dt;
       if(p.life>=p.max) plumes.splice(i,1);
     }
     for(let i=debris.length-1;i>=0;i--){
@@ -775,7 +847,7 @@ const meteorites = (function(){
       d.life+=dt;
       d.x+=d.vx*dt;
       d.y+=d.vy*dt;
-      d.vy+=13.5*dt;
+      d.vy+=(13.5-inverseGravityAt(d.x,d.y))*dt;
       d.vx*=1-Math.min(0.16,dt*0.45);
       d.rot+=d.spin*dt;
       if(d.life>=d.max || d.y>=WORLD_H) debris.splice(i,1);
@@ -785,7 +857,7 @@ const meteorites = (function(){
       e.life+=dt;
       e.x+=e.vx*dt;
       e.y+=e.vy*dt;
-      e.vy+=5.5*dt;
+      e.vy+=(5.5-inverseGravityAt(e.x,e.y)*0.45)*dt;
       e.vx*=1-Math.min(0.12,dt*0.3);
       if(e.life>=e.max || e.y>=WORLD_H) embers.splice(i,1);
     }
@@ -803,6 +875,7 @@ const meteorites = (function(){
     for(let i=meteors.length-1;i>=0;i--){
       if(updateMeteor(meteors[i],dt,getTile,setTile,player)) meteors.splice(i,1);
     }
+    applyGravityBurstToPlayer(dt,player || (typeof window!=='undefined' ? window.player : null));
     applyTerrainJobs(getTile,setTile);
     updateFx(dt);
   }
@@ -875,11 +948,83 @@ const meteorites = (function(){
     }
     ctx.restore();
   }
+  function drawBeaconWave(ctx,TILE,w){
+    const age=clamp(w.life/w.max,0,1);
+    const alpha=Math.pow(1-age,1.15);
+    const x0=w.x0*TILE, y0=w.y0*TILE;
+    const x1=w.x1*TILE, y1=w.y1*TILE;
+    const dx=x1-x0, dy=y1-y0;
+    const len=Math.hypot(dx,dy)||1;
+    const nx=-dy/len, ny=dx/len;
+    const head=clamp(age*1.75,0,1);
+    const tail=clamp(head-0.42,0,1);
+    const segments=10;
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
+    for(let pass=0; pass<2; pass++){
+      ctx.strokeStyle=pass===0 ? 'rgba(196,107,255,'+(0.34*alpha)+')' : 'rgba(124,247,255,'+(0.78*alpha)+')';
+      ctx.lineWidth=TILE*(pass===0 ? (w.width*1.75) : w.width);
+      ctx.beginPath();
+      for(let i=0;i<=segments;i++){
+        const t=tail+(head-tail)*(i/segments);
+        const pulse=Math.sin(t*Math.PI*4+w.phase+age*10)*(1-Math.abs(t-head))*TILE*0.34;
+        const px=x0+dx*t+nx*pulse;
+        const py=y0+dy*t+ny*pulse;
+        if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+      }
+      ctx.stroke();
+    }
+    const hx=x0+dx*head, hy=y0+dy*head;
+    ctx.strokeStyle='rgba(238,220,255,'+(0.78*alpha)+')';
+    ctx.lineWidth=1.5;
+    ctx.beginPath();
+    ctx.arc(hx,hy,TILE*(0.35+age*0.35),0,Math.PI*2);
+    ctx.stroke();
+    ctx.restore();
+  }
+  function drawGravityBurst(ctx,TILE,b){
+    const age=clamp(b.life/b.max,0,1);
+    const alpha=Math.sin(Math.PI*age);
+    if(!(alpha>0)) return;
+    const cx=b.x*TILE, cy=b.y*TILE;
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
+    for(let i=0;i<3;i++){
+      const phase=(age+i*0.23)%1;
+      const r=b.radius*TILE*(0.22+phase*0.86);
+      const a=alpha*(1-phase)*0.42;
+      ctx.strokeStyle='rgba(196,107,255,'+a+')';
+      ctx.lineWidth=2.2-i*0.35;
+      ctx.beginPath();
+      ctx.ellipse(cx,cy,r,r*0.38,0,0,Math.PI*2);
+      ctx.stroke();
+    }
+    for(let i=0;i<9;i++){
+      const a=b.seed+i*0.698;
+      const rr=b.radius*TILE*(0.14+((i*17)%9)/18);
+      const x=cx+Math.cos(a)*rr;
+      const y=cy+Math.sin(a)*rr*0.36;
+      const lift=TILE*(0.65+age*2.4+((i*11)%7)*0.08);
+      ctx.strokeStyle='rgba(124,247,255,'+(alpha*0.32)+')';
+      ctx.lineWidth=1.1;
+      ctx.beginPath();
+      ctx.moveTo(x,y);
+      ctx.lineTo(x+Math.sin(age*8+i)*TILE*0.12,y-lift);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
   function draw(ctx,TILE,canDrawTile){
     const tileVisible=tileVisibleFn(canDrawTile);
     ctx.save();
     for(const s of scorches){
       if(tileVisible(s.x,s.y)) drawScorch(ctx,TILE,s);
+    }
+    for(const b of gravityBursts){
+      if(tileVisible(b.x,b.y)) drawGravityBurst(ctx,TILE,b);
+    }
+    for(const w of beaconWaves){
+      if(tileVisible(w.x0,w.y0) || tileVisible(w.x1,w.y1)) drawBeaconWave(ctx,TILE,w);
     }
     for(const sw of shockwaves){
       if(!tileVisible(sw.x,sw.y)) continue;
@@ -964,8 +1109,11 @@ const meteorites = (function(){
     plumes.length=0;
     shockwaves.length=0;
     scorches.length=0;
+    beaconWaves.length=0;
+    gravityBursts.length=0;
     screenFlash=0;
     lastImpact=null;
+    lastDeflection=null;
     shakeT=0;
     shakeMax=0;
     shakeAmp=0;
@@ -1020,11 +1168,14 @@ const meteorites = (function(){
       embers:embers.length,
       debris:debris.length,
       plumes:plumes.length,
+      beaconWaves:beaconWaves.length,
+      gravityBursts:gravityBursts.length,
       impacts,
       deflections,
       spawned,
       shake:+Math.max(0,shakeT).toFixed(2),
-      lastImpact
+      lastImpact,
+      lastDeflection
     };
   }
   function isChunkBusy(cx){
@@ -1049,7 +1200,7 @@ const meteorites = (function(){
     restore,
     metrics,
     isChunkBusy,
-    _debug:{impactAt,queueCrater,applyTerrainJobs,pickTarget,nearestBeacon,meteors,terrainJobs,embers,debris,plumes,shockwaves,scorches}
+    _debug:{impactAt,queueCrater,applyTerrainJobs,pickTarget,nearestBeacon,meteors,terrainJobs,embers,debris,plumes,beaconWaves,gravityBursts,shockwaves,scorches}
   };
   MM.meteorites=api;
   return api;
