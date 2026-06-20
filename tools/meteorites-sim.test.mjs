@@ -197,7 +197,7 @@ for(let i=0;i<900;i++){
   if(m.beaconWaves>0) sawWave=true;
   if(m.gravityBursts>0) sawBurst=true;
   if(player.vy<-0.04) sawInverseLift=true;
-  if(m.meteors===0) break;
+  if(m.meteors===0 && m.impacts>beforeBeaconImpacts) break;
 }
 const beaconAfter=meteorites.metrics();
 assert.ok(sawDeflection, 'antigravity beacon deflects the incoming meteor');
@@ -205,9 +205,50 @@ assert.ok(beaconAfter.lastDeflection && beaconAfter.lastDeflection.d<=22, 'beaco
 assert.ok(sawWave, 'beacon emits an antigravity wave toward the meteor');
 assert.ok(sawBurst, 'beacon leaves a timed inverse-gravity burst after firing');
 assert.ok(sawInverseLift, 'inverse-gravity burst applies upward lift near the beacon');
-assert.equal(beaconAfter.impacts, beforeBeaconImpacts, 'deflected meteor does not create a crater impact');
+assert.equal(beaconAfter.impacts, beforeBeaconImpacts+1, 'deflected meteor still creates a crater impact after bouncing away');
+assert.ok(beaconAfter.lastImpact && Math.abs(beaconAfter.lastImpact.x-0.5)>=34, 'bounced meteor impacts at a useful distance from the protected beacon');
 assert.equal(getBeaconTile(0,SURF-1), T.ANTIGRAVITY_BEACON, 'antigravity beacon survives the deflection');
-assert.equal([...beaconTiles.values()].some(t=>t===T.AIR || t===T.LAVA || t===T.OBSIDIAN), false, 'deflected meteor does not carve nearby terrain');
+const protectedBeaconEdits=[...beaconTiles.entries()].filter(([key,t])=>{
+  const [x,y]=key.split(',').map(Number);
+  if(x===0 && y===SURF-1) return false;
+  return Math.abs(x)<=28 && y>=SURF-3 && (t===T.AIR || t===T.LAVA || t===T.OBSIDIAN || t===T.GLASS || t===T.METEORIC_IRON || t===T.IRIDIUM || t===T.COAL);
+});
+assert.equal(protectedBeaconEdits.length,0,'deflection protects the beacon area from crater terrain edits');
+const remoteHeat=[...beaconTiles.entries()].filter(([key,t])=>{
+  const [x,y]=key.split(',').map(Number);
+  return Math.abs(x)>=34 && y>=SURF-3 && (t===T.LAVA || t===T.OBSIDIAN || t===T.GLASS || t===T.METEORIC_IRON || t===T.IRIDIUM || t===T.COAL);
+});
+assert.ok(remoteHeat.length>0,'bounced meteor leaves heat/mineral terrain at the redirected impact site');
+
+meteorites.clearActive();
+const chainTiles = new Map();
+function getChainTile(x,y){
+  x=Math.floor(x); y=Math.floor(y);
+  const k=kxy(x,y);
+  if(chainTiles.has(k)) return chainTiles.get(k);
+  return y>=SURF ? T.STONE : T.AIR;
+}
+function setChainTile(x,y,t){ chainTiles.set(kxy(x,y),t); }
+setChainTile(0,SURF-1,T.ANTIGRAVITY_BEACON);
+setChainTile(-60,SURF-1,T.ANTIGRAVITY_BEACON);
+player.x=0.5;
+player.y=SURF-1;
+player.vx=0;
+player.vy=0;
+const beforeChainImpacts=meteorites.metrics().impacts;
+const beforeChainDeflections=meteorites.metrics().deflections;
+assert.ok(meteorites.forceSpawn({x:0,y:SURF,intensity:1.65,side:-1}, player, getChainTile), 'forced meteor spawns for chained beacon deflection');
+for(let i=0;i<1300;i++){
+  meteorites.update(1/60, player, getChainTile, setChainTile);
+  const m=meteorites.metrics();
+  if(m.meteors===0 && m.impacts>beforeChainImpacts) break;
+}
+const chainAfter=meteorites.metrics();
+assert.ok(chainAfter.deflections>=beforeChainDeflections+2, 'a second antigravity beacon can bounce a redirected meteor again');
+assert.equal(chainAfter.impacts, beforeChainImpacts+1, 'chained deflections still resolve into one remote crater');
+assert.equal(getChainTile(0,SURF-1), T.ANTIGRAVITY_BEACON, 'first beacon survives chained deflection');
+assert.equal(getChainTile(-60,SURF-1), T.ANTIGRAVITY_BEACON, 'second beacon survives chained deflection');
+assert.ok(chainAfter.lastImpact && Math.abs(chainAfter.lastImpact.x-0.5)>34 && Math.abs(chainAfter.lastImpact.x+59.5)>34, 'chained deflection moves the crater away from both protected beacons');
 
 meteorites.restore({v:1,enabled:true,nextIn:12.5,spawned:3,impacts:4});
 let migrated=meteorites.metrics();
