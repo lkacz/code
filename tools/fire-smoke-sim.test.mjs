@@ -77,7 +77,7 @@ try{
   assert.equal(INFO[T.COAL].flammable, true, 'coal is a burnable fuel block');
   assert.equal(INFO[T.WOOD].burnTime, 60, 'wood burns for one minute');
   assert.equal(INFO[T.COAL].burnTime, 720, 'coal burns for twelve minutes');
-  assert.equal(INFO[T.COAL].spreadInMult, 0.1, 'coal catches spreading fire at one tenth the normal rate');
+  assert.equal(INFO[T.COAL].spreadInMult, 0.02, 'coal catches spreading fire at 0.02x the normal rate');
   assert.ok(fire.ignite(1,3,getTile), 'wood ignites');
   assert.ok(fire.ignite(2,3,getTile), 'coal ignites');
   fire.noteLava(4,3);
@@ -97,7 +97,7 @@ try{
   assert.equal(getTile(2,3), T.AIR, 'coal block burns away after about twelve minutes');
 
   assert.equal(burnsAfterSingleSpreadStep(T.WOOD,0.07), true, 'normal solid fuel catches this lateral spread roll');
-  assert.equal(burnsAfterSingleSpreadStep(T.COAL,0.07), false, 'coal rejects the same lateral spread roll after the 0.1 multiplier');
+  assert.equal(burnsAfterSingleSpreadStep(T.COAL,0.02), false, 'coal rejects a lateral spread roll after the 0.02 multiplier');
   Math.random = ()=>0;
 
   fire.reset();
