@@ -60,7 +60,7 @@ export const INFO = {
  37:{hp:4,color:'#0f6f78',drop:null,passable:false, machine:'solarBattery', powerSource:true, conductor:true, energyCapacity:120, drops:[{item:'glass',min:1,max:1,chance:0.7},{item:'wire',min:1,max:1,chance:0.8},{item:'transistor',min:1,max:1,chance:0.65}]},
  38:{hp:8,color:'#8b2d17',drop:'servantStone',passable:false, volatile:true},
  39:{hp:1,color:'#d7832f',drop:'leaf',passable:true, flammable:true, burnTime:1.1, seasonalLeaf:true},
- 40:{hp:1,color:'#b94432',drop:'leaf',passable:true, flammable:true, burnTime:1.1, seasonalLeaf:true},
+ 40:{hp:1,color:'#8f5a2a',drop:'leaf',passable:true, flammable:true, burnTime:1.1, seasonalLeaf:true},
  41:{hp:18,color:'#b8d7ff',drop:'iridium',passable:false, meteorite:true},
  42:{hp:12,color:'#7f878d',drop:'meteoricIron',passable:false, meteorite:true},
  43:{hp:10,color:'#3f214f',drop:'antigravityBeacon',passable:false, machine:'antigravityBeacon', meteorShield:true},

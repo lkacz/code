@@ -35,7 +35,7 @@ const BASE_PROFILES = {
     thawStrength: 1,
     snowStrength: 0,
     snowMeltStrength: 0.75,
-    leafGrowStrength: 0,
+    leafGrowStrength: 1,
     leafDropStrength: 0,
   },
   summer: {
@@ -52,7 +52,7 @@ const BASE_PROFILES = {
     thawStrength: 1,
     snowStrength: 0,
     snowMeltStrength: 1,
-    leafGrowStrength: 0,
+    leafGrowStrength: 1,
     leafDropStrength: 0,
   },
   autumn: {
@@ -70,7 +70,7 @@ const BASE_PROFILES = {
     snowStrength: 0.18,
     snowMeltStrength: 0.18,
     leafGrowStrength: 0,
-    leafDropStrength: 0,
+    leafDropStrength: 1,
   },
   winter: {
     id: 'winter', label: 'Zima',
@@ -87,7 +87,7 @@ const BASE_PROFILES = {
     snowStrength: 1,
     snowMeltStrength: 0,
     leafGrowStrength: 0,
-    leafDropStrength: 0,
+    leafDropStrength: 1,
   },
 };
 
@@ -598,39 +598,19 @@ function applySnowMeltColumn(x, getTile, setTile, prof, ctx, epochSeconds){
   return false;
 }
 
-function springLeafOffsets(){
-  return [
-    [0, -3], [-1, -2], [0, -2], [1, -2],
-    [-2, -1], [-1, -1], [0, -1], [1, -1], [2, -1],
-    [-1, 0], [1, 0], [0, 1],
-  ];
-}
-const LEAF_OFFSETS = springLeafOffsets();
-
 function applySpringLeavesColumn(x, getTile, setTile, prof, ctx, epochSeconds){
   prof = prof || profile();
   const strength = clamp(finiteNumber(prof.leafGrowStrength, 0), 0, 1);
   if(strength <= 0.05) return false;
   const surf = resolveSurface(x, getTile, ctx);
-  const y0 = Math.max(2, Math.floor(surf - 18));
-  const y1 = Math.min(WORLD_H - 3, Math.floor(surf + 4));
+  const y0 = Math.max(1, Math.floor(surf - 28));
+  const y1 = Math.min(WORLD_H - 2, Math.floor(surf + 8));
   for(let y = y0; y <= y1; y++){
-    if(getTile(x, y) !== T.WOOD) continue;
-    if(!skyExposed(x, y, getTile, 32)) continue;
-    if(columnTemp(x, y, prof, ctx) < 0.30) continue;
-    if(!seasonalPass(strength, x, y, 307, 0.04, 0.38, epochSeconds)) continue;
-    for(const [ox, oy] of LEAF_OFFSETS){
-      const tx = x + ox, ty = y + oy;
-      if(ty <= 1 || ty >= WORLD_H - 1) continue;
-      const cur = getTile(tx, ty);
-      if(isAutumnLeaf(cur)){
-        if(!skyExposed(tx, ty, getTile, 30)) continue;
-        return replaceTile(tx, ty, T.LEAF, getTile, setTile);
-      }
-      if(cur !== T.AIR) continue;
-      if(!skyExposed(tx, ty, getTile, 30)) continue;
-      return replaceTile(tx, ty, T.LEAF, getTile, setTile);
-    }
+    const tile = getTile(x, y);
+    if(!isAutumnLeaf(tile)) continue;
+    if(!skyExposed(x, y, getTile, 28)) continue;
+    if(!seasonalPass(strength, x, y, 307, 0.08, 0.42, epochSeconds)) return false;
+    return replaceTile(x, y, T.LEAF, getTile, setTile);
   }
   return false;
 }
@@ -803,6 +783,38 @@ function planSnowMeltColumn(x, getTile, prof, ctx, epochSeconds){
   return null;
 }
 
+function planSpringLeavesColumn(x, getTile, prof, ctx, epochSeconds){
+  const strength = clamp(finiteNumber(prof.leafGrowStrength, 0), 0, 1);
+  if(strength <= 0.05) return null;
+  const surf = resolveSurface(x, getTile, ctx);
+  const y0 = Math.max(1, Math.floor(surf - 28));
+  const y1 = Math.min(WORLD_H - 2, Math.floor(surf + 8));
+  for(let y = y0; y <= y1; y++){
+    const tile = getTile(x, y);
+    if(!isAutumnLeaf(tile)) continue;
+    if(!skyExposed(x, y, getTile, 28)) continue;
+    if(!seasonalPass(strength, x, y, 307, 0.08, 0.42, epochSeconds)) return null;
+    return terrainCandidate('leafGrow', x, y, tile, T.LEAF);
+  }
+  return null;
+}
+
+function planAutumnLeavesColumn(x, getTile, prof, ctx, epochSeconds){
+  const strength = clamp(finiteNumber(prof.leafDropStrength, 0), 0, 1);
+  if(strength <= 0.05) return null;
+  const surf = resolveSurface(x, getTile, ctx);
+  const y0 = Math.max(1, Math.floor(surf - 28));
+  const y1 = Math.min(WORLD_H - 2, Math.floor(surf + 8));
+  for(let y = y0; y <= y1; y++){
+    if(getTile(x, y) !== T.LEAF) continue;
+    if(strength < 0.45) continue;
+    if(!skyExposed(x, y, getTile, 28)) continue;
+    if(!seasonalPass(strength, x, y, 397, 0.08, 0.42, epochSeconds)) return null;
+    return terrainCandidate('leafDrop', x, y, T.LEAF, autumnLeafColor(x, y));
+  }
+  return null;
+}
+
 function terrainCandidatesForColumn(x, getTile, prof, ctx, epochSeconds){
   const out = [];
   const freeze = planFreezeColumn(x, getTile, prof, ctx, epochSeconds);
@@ -813,6 +825,10 @@ function terrainCandidatesForColumn(x, getTile, prof, ctx, epochSeconds){
   if(snow) out.push(snow);
   const snowMelt = planSnowMeltColumn(x, getTile, prof, ctx, epochSeconds);
   if(snowMelt) out.push(snowMelt);
+  const leafGrow = planSpringLeavesColumn(x, getTile, prof, ctx, epochSeconds);
+  if(leafGrow) out.push(leafGrow);
+  const leafDrop = planAutumnLeavesColumn(x, getTile, prof, ctx, epochSeconds);
+  if(leafDrop) out.push(leafDrop);
   return out;
 }
 
@@ -1045,6 +1061,7 @@ function terrainPlanScanMetrics(){
   const m = emptyScanMetrics();
   m.columns = terrainPlan.columns | 0;
   m.ops = terrainPlan.applied | 0;
+  m.leafOps = (terrainPlan.changed.leafGrow | 0) + (terrainPlan.changed.leafDrop | 0);
   m.cursor = terrainPlan.cursor | 0;
   m.ms = +(finiteNumber(terrainPlan.scanMs, 0) + finiteNumber(terrainPlan.applyMs, 0)).toFixed(3);
   m.relocation = !!terrainPlan.relocation;

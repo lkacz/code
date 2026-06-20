@@ -372,7 +372,7 @@ Object.assign(TILE_LABELS,{
 	[T.VOLCANO_MASTER_STONE]:'Kamien mistrza',
 	[T.SERVANT_STONE]:'Kamien slugi',
 	[T.AUTUMN_LEAF_ORANGE]:'Jesienny lisc',
-	[T.AUTUMN_LEAF_RED]:'Czerwony lisc',
+	[T.AUTUMN_LEAF_RED]:'Brazowy lisc',
 	[T.MEAT]:'Mieso',
 	[T.ROTTEN_MEAT]:'Zepsute mieso',
 	[T.BAKED_MEAT]:'Pieczone mieso',
@@ -1729,12 +1729,12 @@ function _drawMaterialTile(g,t,px,py,h){
 		dot(g,px,py,8,8,4,3,'rgba(73,39,16,0.23)');
 	} else if(isLeaf(t)){
 		const autumn=isAutumnLeaf(t);
-		const red=t===T.AUTUMN_LEAF_RED;
+		const brown=t===T.AUTUMN_LEAF_RED;
 		drawBlockBevel(g,px,py,autumn?'rgba(255,212,112,0.18)':'rgba(129,241,84,0.16)',autumn?'rgba(105,30,18,0.24)':'rgba(12,82,30,0.22)');
-		dot(g,px,py,2+rx,4,5,4,red?'rgba(195,67,49,0.36)':(autumn?'rgba(230,132,38,0.36)':'rgba(74,191,61,0.34)'));
-		dot(g,px,py,10,3+ry,5,5,red?'rgba(131,36,39,0.34)':(autumn?'rgba(176,82,29,0.34)':'rgba(31,132,50,0.34)'));
-		dot(g,px,py,5,12,6,4,red?'rgba(235,112,64,0.28)':(autumn?'rgba(245,172,57,0.30)':'rgba(87,205,70,0.28)'));
-		dot(g,px,py,14,14,2,2,red?'rgba(83,21,24,0.28)':(autumn?'rgba(100,47,18,0.26)':'rgba(10,78,27,0.26)'));
+		dot(g,px,py,2+rx,4,5,4,brown?'rgba(139,86,38,0.38)':(autumn?'rgba(230,132,38,0.36)':'rgba(74,191,61,0.34)'));
+		dot(g,px,py,10,3+ry,5,5,brown?'rgba(88,52,24,0.36)':(autumn?'rgba(176,82,29,0.34)':'rgba(31,132,50,0.34)'));
+		dot(g,px,py,5,12,6,4,brown?'rgba(188,124,55,0.28)':(autumn?'rgba(245,172,57,0.30)':'rgba(87,205,70,0.28)'));
+		dot(g,px,py,14,14,2,2,brown?'rgba(62,35,17,0.30)':(autumn?'rgba(100,47,18,0.26)':'rgba(10,78,27,0.26)'));
 	} else if(t===T.DIAMOND){
 		drawBlockBevel(g,px,py,'rgba(220,255,255,0.42)','rgba(0,75,125,0.22)');
 		g.fillStyle='rgba(8,79,120,0.36)';
@@ -3722,7 +3722,7 @@ function minimapTileColor(t){
 	if(t===T.SAND) return '#c8b772';
 	if(t===T.GRASS || t===T.MUD) return '#4a8f3a';
 	if(t===T.WOOD) return '#8b5a2b';
-	if(t===T.AUTUMN_LEAF_RED) return '#b94432';
+	if(t===T.AUTUMN_LEAF_RED) return '#8f5a2a';
 	if(t===T.AUTUMN_LEAF_ORANGE) return '#d7832f';
 	if(t===T.LEAF) return '#2faa2f';
 	if(t===T.GRAVE) return '#a8adb8';
