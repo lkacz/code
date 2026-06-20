@@ -13,19 +13,19 @@
 //   feeding    — between fights a beast grows hungry and grazes the world: it drinks
 //                water, eats sand, plants, snow or wood, and accretes a matching body
 //                block every few bites (water→ice, sand→sand, …). A feeding beast is
-//                peaceable — it will not hunt or trample until full, struck, or cornered
+//                peaceable — it will not hunt or attack until full, struck, or cornered
 //   balance    — legs hold the body upright; lose the legs on one side and it lurches
 //                and lists toward the gap, a near-legless beast stumbles and can't hold
 //                a pose. Limbs (legs, arms, tentacles) swing with the walk cycle
 //   wounds     — a fall deeper than twice its height bruises every part (lure one off
 //                a cliff!); losing the eye blinds it — a blind beast cannot track the
-//                hero and its trampling only hurts half as much. A wounded beast
+//                hero. A wounded beast
 //                grazes to mend: each damaged part is cured only by eating the world
 //                block of its own element, found within forage range
 //   rigidity   — monsters are solid to each other and to the hero: bodies shove each
 //                other apart, and the hero can land on and ride a beast's back. A
 //                ridden beast throws shaking fits — staying aboard through one hurts
-//   ranged     — a hunting beast out of trampling reach rips a loose block from the
+//   ranged     — a hunting beast out of close reach rips a loose block from the
 //                terrain (never its own footing) and hurls it in a ballistic arc;
 //                a block that connects hurts and knocks back the hero
 //   physics    — continuous (sub-tile) motion with gravity and fractional terrain
@@ -71,18 +71,17 @@ window.MM = window.MM || {};
     // --- wounds ---
     FALL_SAFE: 2,       // falls up to this many body-heights are harmless
     FALL_DMG: 0.8,      // hp every part loses per tile fallen beyond the safe drop
-    BLIND_DMG: 0.5,     // trample damage factor once the eye is destroyed
     HEAL_PER_BITE: 4,   // hp a curative bite restores to the matching body part
     // --- shake (hero riding the beast) ---
     SHAKE_TIME: 0.8,    // seconds one shake fit lasts
     SHAKE_CD: [3,7],    // seconds between fits
-    SHAKE_DMG: 0.5,     // ×contactDmg dealt to a hero riding through a shake
+    SHAKE_DMG: 0.5,     // x attackDmg dealt to a hero riding through a shake
     // --- block throwing ---
-    THROW_MIN: 5,       // closer than this it tramples instead of throwing
+    THROW_MIN: 5,       // closer than this it closes distance instead of throwing
     THROW_MAX: 30,      // farther than this the hero is out of throwing range
     THROW_CD: [2.2,4.5],// seconds between throws
     THROW_SPEED: 14,    // tiles/s horizontal pace used to time the ballistic arc
-    THROW_DMG: 0.7,     // ×contactDmg dealt by a block that hits the hero
+    THROW_DMG: 0.7,     // x attackDmg dealt by a block that hits the hero
     PROJ_CAP: 24,       // most blocks airborne at once across all monsters
   };
   // What a beast can consume from the world, and the body-block it grows in return
@@ -142,12 +141,12 @@ window.MM = window.MM || {};
   function say(t){ try{ if(typeof window!=='undefined' && window.msg) window.msg(t); }catch(e){} }
   // Hero damage is centralized in main.js (window.damageHero); the inline body
   // below is the fallback for the DOM-less Node sims, which stub neither handler.
-  function damageHero(amount, srcX){
+  function damageHero(amount, srcX, cause){
     if(!(amount>0) || !isFinite(amount)) return;
     const p=playerRef();
     if(!p || typeof p.hp!=='number') return;
     if(typeof window!=='undefined' && typeof window.damageHero==='function'){
-      window.damageHero(amount,{srcX, kb:4, kbY:-4.5, cause:'boss'});
+      window.damageHero(amount,{srcX, kb:4, kbY:-4.5, cause:cause||'boss'});
       return;
     }
     const now=(typeof performance!=='undefined')? performance.now() : 0;
@@ -262,7 +261,7 @@ window.MM = window.MM || {};
       x, y, vx:0, vy:0, dir:facing, onGround:false,
       baseParts:reach.size, aquatic, gargantuan,
       speed:(1.2+rng()*1.4)*(gargantuan?0.75:1), sense:18+rng()*14+(gargantuan?10:0),
-      jump:7+rng()*3, hopT:0, contactDmg:Math.round((6+rng()*6)*(gargantuan?2:1)),
+      jump:7+rng()*3, hopT:0, attackDmg:Math.round((6+rng()*6)*(gargantuan?2:1)),
       state:'roam', flipT:2+rng()*4, frozen:false, bobP:rng()*6.28,
       hunger:rng()*0.4, feed:null, biteT:0, mealBites:0, grown:0, forageCd:0,
       tilt:0, tiltV:0, gait:rng()*6.28, airFrom:null,
@@ -295,7 +294,7 @@ window.MM = window.MM || {};
     const px=(p && isFinite(p.x))? p.x : 0;
     const wg=MM.worldGen;
     const seed=(opts && typeof opts.seed==='number')? (opts.seed>>>0) : ((Math.random()*0x7fffffff)|0);
-    // 10% of natural spawns are gargantuan: 3× silhouette, double trample damage,
+    // 10% of natural spawns are gargantuan: 3x silhouette, double attack power,
     // an epic-chest hoard on death. Forced/test spawns stay normal unless asked.
     const scale=(opts && opts.scale) || ((!opts || !opts.force) && Math.random()<0.10? 3 : 1);
     for(let attempt=0; attempt<40; attempt++){
@@ -799,7 +798,7 @@ window.MM = window.MM || {};
       vx:(aimX-sx)/t + (Math.random()-0.5)*0.8,
       vy:(p.y-0.5-sy)/t - 0.5*g*t,
       t:0, max:4, tile:b.t, color:infoColor(b.t)||'#9a9a9a',
-      spin:Math.random()*6.28, dmg:Math.max(2, Math.round(m.contactDmg*CFG.THROW_DMG)),
+      spin:Math.random()*6.28, dmg:Math.max(2, Math.round(m.attackDmg*CFG.THROW_DMG)),
     });
     m.throwCd=CFG.THROW_CD[0]+Math.random()*(CFG.THROW_CD[1]-CFG.THROW_CD[0]);
   }
@@ -826,7 +825,7 @@ window.MM = window.MM || {};
     if(m.state==='hunt'){
       m.dir=pdx>=0?1:-1;
       want=m.dir*m.speed*(enraged?1.6:1.15);
-      // out of trampling reach: rip a block from the terrain and hurl it instead
+      // out of close reach: rip a block from the terrain and hurl it instead
       if(p) tryThrow(m,p,dist,getTile,setTile_global,dt);
     } else {
       m.flipT-=dt;
@@ -871,15 +870,9 @@ window.MM = window.MM || {};
     } else {
       m.vx+=(want-m.vx)*Math.min(1,dt*4);
     }
-    // trampling contact: the monster's bulk against the hero's body — a blind
-    // beast can't put its weight behind the blow and hurts only half as much.
-    // The crown row is exempt: a hero standing ON the beast rides it unharmed
-    // (until it shakes) — bumping its flanks or belly still tramples.
-    if(p && typeof p.hp==='number'){
-      const L=m.x+m.minDx-0.5, R=m.x+m.maxDx+1.5, Tp=m.y-m.height+1.05, B=m.y+1.5;
-      if(p.x>L && p.x<R && p.y>Tp && p.y<B)
-        damageHero(Math.round(m.contactDmg*(enraged?1.5:1)*(m.hasEye?1:CFG.BLIND_DMG)), m.x);
-    }
+    // Boss bodies are solid terrain, not passive damage volumes. The hero may be
+    // shoved by flanks or ride the crown through collideHero(); HP loss only comes
+    // from explicit attacks in update(): shaking fits and hurled blocks.
   }
 
   // ---------------- Damage / structure ----------------
@@ -969,7 +962,7 @@ window.MM = window.MM || {};
     const p=playerRef();
     if(p && isFinite(p.x) && isFinite(p.y)){
       const d=Math.max(Math.abs(p.x-bx), Math.abs(p.y-by));
-      if(d<R+4) damageHero(Math.round(40*(1-d/(R+5))+6), bx);
+      if(d<R+4) damageHero(Math.round(40*(1-d/(R+5))+6), bx, 'boss_blast');
     }
     if(p && typeof p.xp==='number') p.xp+=40+m.parts.length*2;
     say('💥 Serce potwora '+m.name+' zniszczone! +'+(40+m.parts.length*2)+' XP'+(m.gargantuan? ' — zostawił stos epickich skrzyń!':' — zostawił skrzynię!'));
@@ -1094,7 +1087,7 @@ window.MM = window.MM || {};
       if(m.shakeCd>0) m.shakeCd-=dt;
       if(m.shakeT>0){
         m.shakeT-=dt;
-        if(m.heroOnTop) damageHero(Math.max(2,Math.round(m.contactDmg*CFG.SHAKE_DMG)), m.x-m.dir);
+        if(m.heroOnTop) damageHero(Math.max(2,Math.round(m.attackDmg*CFG.SHAKE_DMG)), m.x-m.dir, 'boss_shake');
       } else if(m.heroOnTop && !m.frozen && m.shakeCd<=0 && Math.random()<dt*1.2){
         m.shakeT=CFG.SHAKE_TIME;
         m.shakeCd=CFG.SHAKE_CD[0]+Math.random()*(CFG.SHAKE_CD[1]-CFG.SHAKE_CD[0]);
@@ -1119,7 +1112,7 @@ window.MM = window.MM || {};
       pr.t+=dt; pr.vy+=CFG.GRAV*0.55*dt; applyWindToProjectile(pr,getTile,dt); pr.x+=pr.vx*dt; pr.y+=pr.vy*dt; pr.spin+=dt*9;
       let dead=pr.t>pr.max || pr.y>WORLD_H+5;
       if(!dead && hasPlayer && Math.abs(p.x-pr.x)<0.75 && Math.abs(p.y-pr.y)<0.95){
-        damageHero(pr.dmg, pr.x - pr.vx*0.1);   // knock the hero along the block's flight
+        damageHero(pr.dmg, pr.x - pr.vx*0.1, 'boss_projectile');   // knock the hero along the block's flight
         dead=true;
       }
       if(!dead && solidT(getTile(Math.floor(pr.x),Math.floor(pr.y)))) dead=true;

@@ -3,7 +3,7 @@
 // day/night spawn scheduling at findable-but-not-adjacent distances, gravity and
 // ground physics, roam/hunt behavior, part-level destruction with connectivity
 // pruning (severed chunks break off, the beast fights on), the heart-detonation
-// crater (bedrock/chests survive, hero hurt, XP paid), contact damage, API safety,
+// crater (bedrock/chests survive, hero hurt, XP paid), harmless body contact, API safety,
 // feeding/growth/balance, and the hardening regressions: growth never sinks below
 // the feet line (and grounding survives growth), floaters bounce off tall cliffs
 // instead of embedding, sealed-column spawns are rejected, hunger accrues even
@@ -180,13 +180,13 @@ assert.equal(bosses.metrics().killed, 1, 'kill recorded');
 assert.ok(globalThis.player.hp < 100, `nearby hero took blast damage (hp=${globalThis.player.hp})`);
 assert.ok(globalThis.player.xp > 0, `hero earned XP (+${globalThis.player.xp})`);
 
-// --- 7. Contact damage: standing inside the beast hurts ---
+// --- 7. Passive body contact: standing inside the beast is harmless ---
 resetWorld();
 const mc = bosses.forceSpawn(getTile, {x:300, seed:31, archetype:'walker'});
 step(30);
 globalThis.player.x = mc.x; globalThis.player.y = Math.round(mc.y)-1; globalThis.player.hpInvul = 0;
 step(30);
-assert.ok(globalThis.player.hp < 100, `trampled hero took contact damage (hp=${globalThis.player.hp})`);
+assert.equal(globalThis.player.hp, 100, 'standing inside boss bulk does not deal passive contact damage');
 
 // --- 8. Lag-spike physics: lands on a 1-tile-thick sky platform, never tunnels ---
 resetWorld();
@@ -389,7 +389,7 @@ assert.ok(hpSum(mfd) < hpB4, `a deep fall costs health (${hpB4} -> ${hpSum(mfd)}
 assert.equal(mfd.parts.length, partsB4, 'fall damage bruises but never severs parts');
 assert.ok(mfd.parts.every(p=>p.hp>=1), 'no part is destroyed outright by a fall');
 
-// --- 24. Blindness: losing the eye ends hero-tracking and halves trample damage ---
+// --- 24. Blindness: losing the eye ends hero-tracking; body overlap stays harmless ---
 resetWorld();
 const mbe = bosses.forceSpawn(getTile, {x:300, seed:77, freeze:true, archetype:'walker'});
 step(30); // settle
@@ -409,9 +409,7 @@ assert.ok(!hunted, 'a blind beast never picks up the hero trail');
 globalThis.player.hp=100; globalThis.player.hpInvul=0;
 globalThis.player.x = mbe.x; globalThis.player.y = mbe.y-1;  // stand inside its bulk
 bosses.update(getTile,setTile,1/30);
-const lost = 100-globalThis.player.hp;
-assert.ok(lost>0, 'a blind beast still tramples what it stumbles into');
-assert.equal(lost, Math.round(mbe.contactDmg*CFG.BLIND_DMG), `blind trample deals half damage (lost ${lost})`);
+assert.equal(globalThis.player.hp, 100, 'a blind boss body still does not deal passive contact damage');
 
 // --- 25. Rigid bodies: two overlapping beasts shove each other apart ---
 resetWorld();
