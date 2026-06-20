@@ -38,6 +38,8 @@ globalThis.MM = {
 const { bosses } = await import('../src/engine/bosses.js');
 assert.ok(bosses, 'bosses module exports');
 const CFG = bosses.config;
+assert.equal(CFG.SATIATE_BITES, 12, 'bosses eat twice as many blocks per meal');
+assert.equal(CFG.GROWTH_CAP, 28, 'bosses can grow twice as much over their starting size');
 
 const step = (n,dt=1/30)=>{ for(let i=0;i<n;i++) bosses.update(getTile,setTile,dt); };
 function resetWorld(){
@@ -267,12 +269,13 @@ const waterBefore = (()=>{ let c=0; for(let x=300;x<=320;x++) for(let y=85;y<90;
 mfe.hunger = 1.2;                                 // make it peckish right now
 const partsBeforeFeed = mfe.parts.length;
 let sawFeedState=false;
-for(let s=0;s<30*12;s++){ bosses.update(getTile,setTile,1/30); if(mfe.state==='feed') sawFeedState=true; if(mfe.dead) break; }
+for(let s=0;s<30*24;s++){ bosses.update(getTile,setTile,1/30); if(mfe.state==='feed') sawFeedState=true; if(mfe.dead) break; }
 const waterAfter = (()=>{ let c=0; for(let x=300;x<=320;x++) for(let y=85;y<90;y++) if(getTile(x,y)===T.WATER) c++; return c; })();
+const eatenDuringMeal = waterBefore - waterAfter;
 assert.ok(sawFeedState, 'a hungry beast entered the feeding state');
-assert.ok(waterAfter < waterBefore, `the beast consumed blocks (${waterBefore} -> ${waterAfter} water tiles)`);
+assert.ok(eatenDuringMeal >= CFG.SATIATE_BITES, `the beast consumed a larger meal (${eatenDuringMeal} blocks)`);
 assert.ok(mfe.parts.length > partsBeforeFeed, `feeding grew the body (${partsBeforeFeed} -> ${mfe.parts.length} parts)`);
-assert.ok(mfe.grown > 0, 'growth was recorded');
+assert.ok(mfe.grown >= Math.floor(CFG.SATIATE_BITES/CFG.GROW_PER_MEAL), `larger meal recorded larger growth (${mfe.grown})`);
 
 // --- 16. Eating is peaceable: a feeding beast ignores a hero in its sense range ---
 resetWorld();

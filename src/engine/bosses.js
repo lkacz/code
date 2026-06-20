@@ -62,8 +62,8 @@ window.MM = window.MM || {};
     FORAGE_RANGE: 7,    // columns scanned around the beast for edible blocks
     BITE_TIME: 0.55,    // seconds to chew through one block
     GROW_PER_MEAL: 3,   // blocks eaten per accreted body part
-    SATIATE_BITES: 6,   // blocks eaten before a meal ends and hunger resets
-    GROWTH_CAP: 14,     // most parts a beast may accrete over its starting size
+    SATIATE_BITES: 12,  // blocks eaten before a meal ends and hunger resets
+    GROWTH_CAP: 28,     // most parts a beast may accrete over its starting size
     FORAGE_RETRY: 0.6,  // seconds between food scans when the last one found nothing
     // --- balance / articulation ---
     TILT_MAX: 0.5,      // radians a fully off-balance beast leans before stumbling
