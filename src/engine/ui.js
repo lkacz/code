@@ -6,6 +6,63 @@ MM.ui = (function(){
   let msgEl = null;
   let msgTimer = null;
   let _menu = { btn: null, panel: null };
+  const DEBUG_SETTINGS_KEY='mm_debug_menu_settings_v1';
+  const DEBUG_DEFAULTS={
+    time:{active:false,value:0},
+    gas:{power:2},
+    wind:{speed:0,mode:'natural',profile:null},
+    seasons:{enabled:true,forced:null}
+  };
+  function debugStorageAvailable(){ return typeof localStorage!=='undefined'; }
+  function debugDefaultSection(section){ return Object.assign({}, DEBUG_DEFAULTS[section] || {}); }
+  function readDebugSettingsRaw(){
+    if(!debugStorageAvailable()) return null;
+    try{
+      const raw=localStorage.getItem(DEBUG_SETTINGS_KEY);
+      if(!raw) return null;
+      const data=JSON.parse(raw);
+      return data && typeof data==='object' ? data : null;
+    }catch(e){ return null; }
+  }
+  function readDebugSettings(){
+    const raw=readDebugSettingsRaw() || {};
+    const data=Object.assign({}, raw);
+    Object.keys(DEBUG_DEFAULTS).forEach(section=>{
+      const src=raw[section] && typeof raw[section]==='object' ? raw[section] : {};
+      data[section]=Object.assign(debugDefaultSection(section), src);
+    });
+    return data;
+  }
+  function writeDebugSettings(data){
+    if(!debugStorageAvailable()) return;
+    try{ localStorage.setItem(DEBUG_SETTINGS_KEY, JSON.stringify(data)); }catch(e){}
+  }
+  function debugSection(section){
+    const raw=readDebugSettingsRaw();
+    const src=raw && raw[section] && typeof raw[section]==='object' ? raw[section] : {};
+    return Object.assign(debugDefaultSection(section), src);
+  }
+  function debugHasSection(section){
+    const raw=readDebugSettingsRaw();
+    return !!(raw && raw[section] && typeof raw[section]==='object');
+  }
+  function debugHasKey(section,key){
+    const raw=readDebugSettingsRaw();
+    return !!(raw && raw[section] && typeof raw[section]==='object' && Object.prototype.hasOwnProperty.call(raw[section],key));
+  }
+  function debugSet(section,key,value){
+    const data=readDebugSettingsRaw() || {};
+    const src=data[section] && typeof data[section]==='object' ? data[section] : {};
+    data[section]=Object.assign(debugDefaultSection(section), src);
+    data[section][key]=value;
+    writeDebugSettings(data);
+  }
+  function debugNumber(section,key,fallback,min,max){
+    const raw=debugSection(section)[key];
+    const n=Number(raw);
+    if(!Number.isFinite(n)) return fallback;
+    return Math.max(min,Math.min(max,n));
+  }
   function ensureMsgEl(){
     if(!msgEl){ msgEl = document.getElementById('messages'); }
     return msgEl;
@@ -148,17 +205,35 @@ MM.ui = (function(){
     const wrap=document.createElement('div'); wrap.className='group'; wrap.style.cssText='flex-direction:column; align-items:stretch; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;';
     const label=document.createElement('label'); label.style.cssText='font-size:12px; display:flex; justify-content:space-between; gap:8px; align-items:center;'; label.textContent='Czas doby';
     const span=document.createElement('span'); span.style.fontSize='11px'; span.style.opacity='0.7'; span.textContent='—'; label.appendChild(span);
-    const range=document.createElement('input'); range.type='range'; range.min='0'; range.max='1'; range.step='0.0001'; range.value='0'; range.style.width='100%';
+    const timeSaved=debugSection('time');
+    const range=document.createElement('input'); range.type='range'; range.min='0'; range.max='1'; range.step='0.0001'; range.value=String(debugNumber('time','value',0,0,1)); range.style.width='100%';
     const chkWrap=document.createElement('div'); chkWrap.style.cssText='display:flex; align-items:center; gap:6px; font-size:11px; margin-top:4px;';
     const chk=document.createElement('input'); chk.type='checkbox'; chk.id='timeOverrideChk';
+    chk.checked=timeSaved.active===true;
     const chkLab=document.createElement('label'); chkLab.htmlFor='timeOverrideChk'; chkLab.textContent='Steruj ręcznie';
     chkWrap.appendChild(chk); chkWrap.appendChild(chkLab);
     wrap.appendChild(label); wrap.appendChild(range); wrap.appendChild(chkWrap);
     panel.appendChild(wrap);
     window.__timeSliderEl = range;
-    function upd(){ span.textContent=(parseFloat(range.value)*100).toFixed(2)+'%'; }
-    range.addEventListener('input',()=>{ upd(); if(window.__timeOverrideActive){ window.__timeOverrideValue=parseFloat(range.value); }});
-    chk.addEventListener('change',()=>{ window.__timeOverrideActive=chk.checked; if(chk.checked){ window.__timeOverrideValue=parseFloat(range.value); window.__timeSliderLocked=true; } else { window.__timeSliderLocked=false; } });
+    function readTimeValue(){ const n=parseFloat(range.value); return Number.isFinite(n) ? Math.max(0,Math.min(1,n)) : 0; }
+    function upd(){ span.textContent=(readTimeValue()*100).toFixed(2)+'%'; }
+    function applyTimeOverride(){
+      const val=readTimeValue();
+      window.__timeOverrideActive=chk.checked;
+      window.__timeOverrideValue=val;
+      window.__timeSliderLocked=chk.checked;
+    }
+    range.addEventListener('input',()=>{
+      upd();
+      debugSet('time','value',readTimeValue());
+      if(window.__timeOverrideActive) window.__timeOverrideValue=readTimeValue();
+    });
+    chk.addEventListener('change',()=>{
+      applyTimeOverride();
+      debugSet('time','active',chk.checked);
+      debugSet('time','value',readTimeValue());
+    });
+    applyTimeOverride();
     upd();
   }
   function injectMobSpawnPanel(spawnCb, menuPanel){
@@ -335,14 +410,14 @@ MM.ui = (function(){
     power.min='0.5';
     power.max='5';
     power.step='0.5';
-    power.value='2';
+    power.value=String(debugNumber('gas','power',2,0.5,5));
     power.style.cssText='flex:1; min-width:90px;';
     function readPower(){
       const n=parseFloat(power.value);
       return Number.isFinite(n) ? Math.max(0.5, Math.min(5, n)) : 2;
     }
     function refreshPower(){ powerVal.textContent=readPower().toFixed(1); }
-    power.addEventListener('input',refreshPower);
+    power.addEventListener('input',()=>{ refreshPower(); debugSet('gas','power',readPower()); });
     powerRow.appendChild(powerText);
     powerRow.appendChild(power);
     powerRow.appendChild(powerVal);
@@ -441,7 +516,7 @@ MM.ui = (function(){
     speed.min='-5.2';
     speed.max='5.2';
     speed.step='0.1';
-    speed.value='0';
+    speed.value=String(debugNumber('wind','speed',0,-5.2,5.2));
     speed.style.cssText='flex:1; min-width:92px;';
     const speedVal=document.createElement('span');
     speedVal.style.cssText='min-width:36px; text-align:right; opacity:.7;';
@@ -450,22 +525,54 @@ MM.ui = (function(){
       return Number.isFinite(n) ? Math.max(-5.2, Math.min(5.2, n)) : 0;
     }
     function refreshSpeed(){ speedVal.textContent=readSpeed().toFixed(1); }
-    speed.addEventListener('input',refreshSpeed);
+    speed.addEventListener('input',()=>{ refreshSpeed(); debugSet('wind','speed',readSpeed()); });
+    function persistWindOverride(value){
+      const v=Math.max(-5.2,Math.min(5.2,Number(value)||0));
+      speed.value=String(v);
+      refreshSpeed();
+      debugSet('wind','mode','override');
+      debugSet('wind','speed',readSpeed());
+      debugSet('wind','profile',null);
+    }
+    function persistWindNatural(){
+      debugSet('wind','mode','natural');
+      debugSet('wind','profile',null);
+    }
+    function persistWindProfile(id){
+      debugSet('wind','mode','profile');
+      debugSet('wind','profile',id);
+    }
+    function applyStoredWindDebugSettings(){
+      if(!debugHasSection('wind')) return;
+      const saved=debugSection('wind');
+      const mode=String(saved.mode||'natural');
+      if(!debugHasKey('wind','mode')) return;
+      if(mode==='override'){
+        const v=debugNumber('wind','speed',0,-5.2,5.2);
+        speed.value=String(v);
+        refreshSpeed();
+        if(actions.exact) actions.exact(v);
+      } else if(mode==='profile' && saved.profile){
+        if(actions.profile) actions.profile(saved.profile);
+      } else if(mode==='natural'){
+        if(actions.natural) actions.natural();
+      }
+    }
     speedRow.appendChild(speedText);
     speedRow.appendChild(speed);
     speedRow.appendChild(speedVal);
     box.appendChild(speedRow);
     const buttons=[
-      ['calm','Cisza','Wymusza zerowy wiatr',()=>actions.calm && actions.calm(),'Wiatr: cisza'],
-      ['exact','Ustaw','Wymusza dokladna moc i kierunek z suwaka',()=>actions.exact && actions.exact(readSpeed()),'Wiatr: ustawiony '+readSpeed().toFixed(1)],
-      ['breezeLeft','Bryza <-','Lekka bryza w lewo',()=>actions.breeze && actions.breeze(-1),'Wiatr: bryza w lewo'],
-      ['breezeRight','Bryza ->','Lekka bryza w prawo',()=>actions.breeze && actions.breeze(1),'Wiatr: bryza w prawo'],
-      ['galeLeft','Wichura <-','Silny wiatr w lewo',()=>actions.gale && actions.gale(-1),'Wiatr: wichura w lewo'],
-      ['galeRight','Wichura ->','Silny wiatr w prawo',()=>actions.gale && actions.gale(1),'Wiatr: wichura w prawo'],
+      ['calm','Cisza','Wymusza zerowy wiatr',()=>{ const ok=actions.calm && actions.calm(); if(ok) persistWindOverride(0); return ok; },'Wiatr: cisza'],
+      ['exact','Ustaw','Wymusza dokladna moc i kierunek z suwaka',()=>{ const ok=actions.exact && actions.exact(readSpeed()); if(ok) persistWindOverride(readSpeed()); return ok; },'Wiatr: ustawiony '+readSpeed().toFixed(1)],
+      ['breezeLeft','Bryza <-','Lekka bryza w lewo',()=>{ const ok=actions.breeze && actions.breeze(-1); if(ok) persistWindOverride(-1.35); return ok; },'Wiatr: bryza w lewo'],
+      ['breezeRight','Bryza ->','Lekka bryza w prawo',()=>{ const ok=actions.breeze && actions.breeze(1); if(ok) persistWindOverride(1.35); return ok; },'Wiatr: bryza w prawo'],
+      ['galeLeft','Wichura <-','Silny wiatr w lewo',()=>{ const ok=actions.gale && actions.gale(-1); if(ok) persistWindOverride(-4.65); return ok; },'Wiatr: wichura w lewo'],
+      ['galeRight','Wichura ->','Silny wiatr w prawo',()=>{ const ok=actions.gale && actions.gale(1); if(ok) persistWindOverride(4.65); return ok; },'Wiatr: wichura w prawo'],
       ['squallLeft','Szkwal <-','Jednorazowy poryw w lewo',()=>actions.squall && actions.squall(-1),'Wiatr: szkwal w lewo'],
       ['squallRight','Szkwal ->','Jednorazowy poryw w prawo',()=>actions.squall && actions.squall(1),'Wiatr: szkwal w prawo'],
-      ['storm','Burza + szkwal','Uruchamia burze i mocny poryw',()=>{ const p=actions.profile && actions.profile('storm'); const s=actions.storm && actions.storm(); return !!(p||s); },'Wiatr: burza i szkwal'],
-      ['natural','Naturalnie','Wraca do modelu pogody',()=>actions.natural && actions.natural(),'Wiatr: tryb naturalny']
+      ['storm','Burza + szkwal','Uruchamia burze i mocny poryw',()=>{ const p=actions.profile && actions.profile('storm'); const s=actions.storm && actions.storm(); if(p) persistWindProfile('storm'); return !!(p||s); },'Wiatr: burza i szkwal'],
+      ['natural','Naturalnie','Wraca do modelu pogody',()=>{ const ok=actions.natural && actions.natural(); if(ok) persistWindNatural(); return ok; },'Wiatr: tryb naturalny']
     ];
     buttons.forEach(([id,txt,title,fn,okMsg])=>{
       const b=document.createElement('button');
@@ -501,6 +608,7 @@ MM.ui = (function(){
       b.addEventListener('click',()=>{
         try{
           const ok=(typeof actions.profile==='function') ? actions.profile(id) : false;
+          if(ok) persistWindProfile(id);
           msg(ok ? ('Wiatr: profil '+txt) : 'Debug wiatru: brak profilu');
           refreshMetrics();
         }catch(e){ msg('Debug wiatru: blad profilu'); }
@@ -509,6 +617,7 @@ MM.ui = (function(){
     });
     box.appendChild(metrics);
     refreshSpeed();
+    applyStoredWindDebugSettings();
     refreshMetrics();
     const timer=setInterval(()=>{
       if(!document.body.contains(box)){ clearInterval(timer); return; }
@@ -590,6 +699,16 @@ MM.ui = (function(){
     toggle.id='seasonDebugToggle';
     toggle.title='Wlacza lub wylacza sezonowe modyfikatory, skan terenu i zdarzenia';
     toggle.style.cssText='flex:1 1 100%; font-size:11px; padding:4px 6px; border:1px solid rgba(255,225,140,.7);';
+    function applyStoredSeasonDebugSettings(){
+      if(!debugHasSection('seasons')) return;
+      const saved=debugSection('seasons');
+      if(debugHasKey('seasons','forced') && saved.forced && saved.forced!=='natural'){
+        if(actions.force) actions.force(saved.forced);
+      } else if(debugHasKey('seasons','forced') && saved.forced==null){
+        if(actions.natural) actions.natural();
+      }
+      if(debugHasKey('seasons','enabled') && typeof saved.enabled==='boolean' && actions.setEnabled) actions.setEnabled(saved.enabled);
+    }
     function updateToggle(m){
       const on = !m || m.enabled !== false;
       toggle.textContent = on ? 'Sezony: ON' : 'Sezony: OFF';
@@ -600,6 +719,7 @@ MM.ui = (function(){
         const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
         const on=!m || m.enabled !== false;
         const ok=(typeof actions.setEnabled==='function') ? actions.setEnabled(!on) : false;
+        if(ok) debugSet('seasons','enabled',!on);
         msg(ok ? ('Pory roku: '+(!on?'ON':'OFF')) : 'Debug sezonow: brak przelacznika');
         refreshMetrics();
       }catch(e){ msg('Debug sezonow: blad przelacznika'); }
@@ -648,7 +768,10 @@ MM.ui = (function(){
       b.addEventListener('click',()=>{
         try{
           let ok=false;
-          if(id==='natural') ok=(typeof actions.natural==='function') ? actions.natural() : false;
+          if(id==='natural'){
+            ok=(typeof actions.natural==='function') ? actions.natural() : false;
+            if(ok) debugSet('seasons','forced',null);
+          }
           else if(id==='transition') ok=(typeof actions.transition==='function') ? actions.transition() : false;
           else if(id==='hallmark') ok=(typeof actions.hallmark==='function') ? actions.hallmark() : false;
           else if(id==='event') ok=(typeof actions.event==='function') ? actions.event() : false;
@@ -659,7 +782,10 @@ MM.ui = (function(){
           else if(id==='scan') ok=(typeof actions.scan==='function') ? actions.scan() : false;
           else if(id==='day') ok=(typeof actions.advance==='function') ? actions.advance(1) : false;
           else if(id==='season') ok=(typeof actions.advance==='function') ? actions.advance(10) : false;
-          else ok=(typeof actions.force==='function') ? actions.force(id) : false;
+          else{
+            ok=(typeof actions.force==='function') ? actions.force(id) : false;
+            if(ok) debugSet('seasons','forced',id);
+          }
           msg(ok ? ('Pora roku: '+txt) : 'Debug sezonow: brak akcji');
           refreshMetrics();
         }catch(e){ msg('Debug sezonow: blad'); }
@@ -667,6 +793,7 @@ MM.ui = (function(){
       box.appendChild(b);
     });
     box.appendChild(metrics);
+    applyStoredSeasonDebugSettings();
     refreshMetrics();
     const timer=setInterval(()=>{
       if(!document.body.contains(box)){ clearInterval(timer); return; }
@@ -923,7 +1050,7 @@ MM.ui = (function(){
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, injectMobSpawnPanel, injectGasDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, setRadarPulsing, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
+  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, injectMobSpawnPanel, injectGasDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;
