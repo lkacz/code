@@ -173,6 +173,7 @@
     {key:'stone',   label:'Kamień',  color:'#888a90', tile:'STONE'},
     {key:'coal',    label:'Węgiel',  color:'#25272b', tile:'COAL'},
     {key:'diamond', label:'Diament', color:'#3ef',    tile:'DIAMOND'},
+    {key:'iridium', label:'Iryd',    color:'#b8d7ff', tile:'IRIDIUM'},
     {key:'wood',    label:'Drewno',  color:'#8b5a2b', tile:'WOOD'},
     {key:'leaf',    label:'Liść',    color:'#2faa2f', tile:'LEAF'},
     {key:'snow',    label:'Śnieg',   color:'#e6f1ff', tile:'SNOW'},

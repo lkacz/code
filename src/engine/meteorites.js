@@ -350,7 +350,7 @@ const meteorites = (function(){
       addOp(1,x,floorY,hotTileForFloor(old,central),Math.abs(dx),true);
       if(Math.abs(dx)<=Math.max(1,rx*0.28) && floorY+1<WORLD_H-3){
         const coreRoll=Math.random();
-        const t=coreRoll<0.10 ? T.DIAMOND : (coreRoll<0.48 ? T.COAL : T.OBSIDIAN);
+        const t=coreRoll<0.08 ? T.IRIDIUM : (coreRoll<0.18 ? T.DIAMOND : (coreRoll<0.52 ? T.COAL : T.OBSIDIAN));
         addOp(1,x,floorY+1,t,Math.abs(dx)+0.7,true);
       }
       if(edge>0.72 && edge<1.08){
@@ -388,13 +388,19 @@ const meteorites = (function(){
       }
     }
     const floorY=Math.min(WORLD_H-4,Math.round(detonationY+blastRy*0.70));
+    const coreX=Math.floor(cx);
     for(let x=Math.floor(cx-blastRx*0.48); x<=Math.ceil(cx+blastRx*0.48); x++){
       const dx=Math.abs((x+0.5)-cx)/Math.max(1,blastRx*0.5);
       if(dx>1.08) continue;
       const central=dx<0.34;
       addOp(1,x,floorY,central?T.LAVA:(Math.random()<0.72?T.OBSIDIAN:T.STONE),dx*2,true);
-      if(central && floorY+1<WORLD_H-3) addOp(1,x,floorY+1,Math.random()<0.40?T.COAL:T.OBSIDIAN,dx*2+1,true);
+      if(central && floorY+1<WORLD_H-3){
+        const coreRoll=Math.random();
+        addOp(1,x,floorY+1,coreRoll<0.38?T.IRIDIUM:(coreRoll<0.68?T.COAL:T.OBSIDIAN),dx*2+1,true);
+      }
     }
+    if(floorY+1<WORLD_H-3) addOp(1,coreX,floorY+1,T.IRIDIUM,0.05,true);
+    if(intensity>1.2 && floorY+2<WORLD_H-3) addOp(1,coreX+(Math.random()<0.5?-1:1),floorY+2,T.IRIDIUM,0.35,true);
     ops.sort((a,b)=>a.phase-b.phase || a.d-b.d);
     return ops;
   }

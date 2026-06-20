@@ -1580,6 +1580,15 @@ function _drawMaterialTile(g,t,px,py,h){
 		g.beginPath(); g.moveTo(px+TILE/2,py+4); g.lineTo(px+TILE-6,py+9); g.lineTo(px+TILE/2,py+TILE-6); g.lineTo(px+6,py+9); g.closePath(); g.fill();
 		strokePath(g,'rgba(255,255,255,0.72)',1,[[px+6,py+9],[px+TILE-6,py+9],[px+TILE/2,py+TILE-6],[px+TILE/2,py+4]]);
 		dot(g,px,py,7,6,3,2,'rgba(255,255,255,0.82)');
+	} else if(t===T.IRIDIUM){
+		drawBlockBevel(g,px,py,'rgba(225,242,255,0.34)','rgba(10,16,28,0.36)');
+		dot(g,px,py,2,2,TILE-4,TILE-4,'rgba(28,37,52,0.42)');
+		dot(g,px,py,4+rx,4,5,4,'rgba(185,215,245,0.36)');
+		dot(g,px,py,11,10+ry,5,3,'rgba(75,93,120,0.32)');
+		strokePath(g,'rgba(226,248,255,0.64)',1,[[px+4,py+13],[px+8,py+8],[px+13,py+9],[px+17,py+4]]);
+		strokePath(g,'rgba(119,173,220,0.38)',1,[[px+3,py+5],[px+7,py+6],[px+10,py+3]]);
+		dot(g,px,py,6,6,2,2,'rgba(255,255,255,0.78)');
+		dot(g,px,py,14,13,2,2,'rgba(210,236,255,0.62)');
 	} else if(t===T.LAVA){
 		drawBlockBevel(g,px,py,'rgba(255,225,98,0.25)','rgba(66,13,3,0.30)');
 		dot(g,px,py,0,0,TILE,3,'rgba(255,190,46,0.33)');
@@ -1754,7 +1763,7 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 				let base=INFO[t].color; if(!base) continue;
 				const h = hash32(wx,y);
 				// Per-type amplitude (diamond fixed, stone/ice extra subtle, grass medium, others default)
-				let amp=22; if(t===T.STONE) amp=6; else if(t===T.SAND) amp=5; else if(t===T.COAL) amp=5; else if(t===T.STEEL) amp=8; else if(t===T.DIAMOND) amp=0; else if(t===T.WOOD) amp=16; else if(t===T.GRASS) amp=18; else if(t===T.SNOW) amp=8; else if(t===T.ICE) amp=6; else if(t===T.OBSIDIAN) amp=10; else if(t===T.GLASS) amp=3; else if(t===T.ELECTRONICS || t===T.TRANSISTOR) amp=7; else if(t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY) amp=3; else if(t===T.TELEPORTER) amp=5; else if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) amp=12; else if(INFO[t].chestTier) amp=4;
+				let amp=22; if(t===T.STONE) amp=6; else if(t===T.SAND) amp=5; else if(t===T.COAL) amp=5; else if(t===T.STEEL) amp=8; else if(t===T.IRIDIUM) amp=4; else if(t===T.DIAMOND) amp=0; else if(t===T.WOOD) amp=16; else if(t===T.GRASS) amp=18; else if(t===T.SNOW) amp=8; else if(t===T.ICE) amp=6; else if(t===T.OBSIDIAN) amp=10; else if(t===T.GLASS) amp=3; else if(t===T.ELECTRONICS || t===T.TRANSISTOR) amp=7; else if(t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY) amp=3; else if(t===T.TELEPORTER) amp=5; else if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) amp=12; else if(INFO[t].chestTier) amp=4;
 				const delta = ((h & 0xFF)/255 - 0.5)*amp; // symmetrical
 				const col = amp? shadeColor(base, delta|0) : base; // stone uses low amp so should not drift green
 				cctx.fillStyle=col; cctx.fillRect(lx*TILE,y*TILE,TILE,TILE);
@@ -1941,6 +1950,24 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 					cctx.fillStyle='rgba(30,38,48,0.35)';
 					cctx.fillRect(lx*TILE+3, y*TILE+4, 2, 2);
 					cctx.fillRect(lx*TILE+TILE-5, y*TILE+TILE-6, 2, 2);
+				}
+				if(t===T.IRIDIUM){
+					cctx.fillStyle='rgba(255,255,255,0.24)';
+					cctx.fillRect(lx*TILE, y*TILE, TILE, 2);
+					cctx.fillStyle='rgba(12,18,29,0.22)';
+					cctx.fillRect(lx*TILE, y*TILE+TILE-4, TILE, 4);
+					cctx.strokeStyle='rgba(220,244,255,0.44)';
+					cctx.lineWidth=1;
+					cctx.beginPath();
+					cctx.moveTo(lx*TILE+3, y*TILE+13);
+					cctx.lineTo(lx*TILE+7+((h>>5)&3), y*TILE+8);
+					cctx.lineTo(lx*TILE+13, y*TILE+9);
+					cctx.lineTo(lx*TILE+17, y*TILE+4+((h>>9)&3));
+					cctx.stroke();
+					if((h&3)===0){
+						cctx.fillStyle='rgba(255,255,255,0.68)';
+						cctx.fillRect(lx*TILE+4+((h>>7)&10), y*TILE+4+((h>>11)&9), 2, 2);
+					}
 				}
 				// Chest highlight & tier flair
 				if(t===T.CHEST_COMMON||t===T.CHEST_RARE||t===T.CHEST_EPIC){
@@ -2841,7 +2868,7 @@ function cellOverlapsPlayer(tx,ty){
 function isStableMachineSupport(t){
 	if(t===T.AIR || t===T.WATER || t===T.LAVA || isLeaf(t) || t===T.DYNAMO || t===T.DYNAMO_SLOT) return false;
 	if(INFO[t] && INFO[t].gas) return false;
-	return isSolid(t) || t===T.GRASS || t===T.SAND || t===T.SNOW || t===T.ICE || t===T.MUD || t===T.WOOD || t===T.STEEL || t===T.OBSIDIAN || t===T.STONE;
+	return isSolid(t) || t===T.GRASS || t===T.SAND || t===T.SNOW || t===T.ICE || t===T.MUD || t===T.WOOD || t===T.STEEL || t===T.IRIDIUM || t===T.OBSIDIAN || t===T.STONE;
 }
 function canDynamoCellReplace(cell,cur){
 	if(cell && (cell.role==='slot' || cell.t===T.DYNAMO_SLOT)){
@@ -3374,6 +3401,7 @@ function minimapTileColor(t){
 	if(t===T.WATER) return '#2278de';
 	if(t===T.LAVA) return '#e25822';
 	if(t===T.DIAMOND) return '#3ef';
+	if(t===T.IRIDIUM) return '#b8d7ff';
 	if(t===T.COAL) return '#25272b';
 	if(t===T.VOLCANO_MASTER_STONE) return '#ff6a21';
 	if(t===T.SERVANT_STONE) return '#8b2d17';
@@ -3410,7 +3438,7 @@ function minimapTileColor(t){
 	return '#686d78';
 }
 function minimapConcealsUndiscovered(t){
-	return t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.OBSIDIAN || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || (INFO[t] && INFO[t].gas) || t===T.GRAVE || t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC;
+	return t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.OBSIDIAN || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || (INFO[t] && INFO[t].gas) || t===T.GRAVE || t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC;
 }
 function drawMinimap(){
 	if(!showMinimap) return;
@@ -3460,7 +3488,7 @@ function drawMinimap(){
 							continue;
 						}
 						const c=minimapTileColor(t);
-						if(t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || (INFO[t] && INFO[t].gas) || INFO[t].chestTier){ color=c; priority=true; wx=wx1+1; break; }
+						if(t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || (INFO[t] && INFO[t].gas) || INFO[t].chestTier){ color=c; priority=true; wx=wx1+1; break; }
 						if(!color) color=c;
 					}
 				}

@@ -84,6 +84,7 @@ const changed=[...tiles.entries()].map(([key,t])=>({key,t,y:Number(key.split(','
 assert.ok(changed.some(c=>c.y>=SURF && c.t===T.AIR), 'crater carves solid ground into air');
 assert.ok(changed.some(c=>c.y>=SURF+5 && c.t===T.AIR), 'underground blast hollows out deeper ground');
 assert.ok(changed.some(c=>c.t===T.LAVA || c.t===T.OBSIDIAN || c.t===T.GLASS), 'crater leaves a heated floor/rim');
+assert.ok(changed.some(c=>c.t===T.IRIDIUM), 'meteorite leaves rare iridium deposits');
 
 meteorites.restore({enabled:true,nextIn:12.5,spawned:3,impacts:4});
 let restored=meteorites.metrics();

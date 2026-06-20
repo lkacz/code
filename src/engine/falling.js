@@ -65,7 +65,7 @@ window.MM = window.MM || {};
     if(oldTile===newTile || (!isGas(oldTile) && !isGas(newTile))) return;
     try{ const g=window.MM && MM.gases; if(g && g.onTileChanged) g.onTileChanged(x,y,oldTile,newTile); }catch(e){}
   }
-  function isStructural(t){ return t===T.STONE || t===T.STEEL || t===T.OBSIDIAN; }
+  function isStructural(t){ return t===T.STONE || t===T.STEEL || t===T.IRIDIUM || t===T.OBSIDIAN; }
   function isFragileFalling(t){ return t===T.GLASS; }
   function isLooseRigid(t){ return t===T.DIAMOND || t===T.ELECTRONICS; }
   function isLoadBearingSupport(t){
@@ -113,6 +113,7 @@ window.MM = window.MM || {};
     if(type===T.WOOD) return 0.06;
     if(type===T.STONE) return rubble ? 0.022 : 0.014;
     if(type===T.OBSIDIAN) return 0.010;
+    if(type===T.IRIDIUM) return 0.008;
     if(type===T.STEEL) return 0.006;
     return 0.035;
   }
@@ -507,6 +508,7 @@ window.MM = window.MM || {};
   }
   function structuralRollLimit(type){
     if(type===T.STEEL) return 5;
+    if(type===T.IRIDIUM) return 4;
     if(type===T.OBSIDIAN) return 3;
     return 4;
   }
@@ -627,6 +629,7 @@ window.MM = window.MM || {};
   }
   function structuralSupportStrength(t){
     if(t===T.STEEL) return 18;
+    if(t===T.IRIDIUM) return 20;
     if(t===T.OBSIDIAN) return 13;
     return 11;
   }
@@ -669,7 +672,7 @@ window.MM = window.MM || {};
     try{ return wg.biomeType(x)===8; }catch(e){ return false; }
   }
   function shouldAuditTile(x,y,t){
-    if(t===T.GLASS || t===T.WIRE || t===T.ELECTRONICS || t===T.STEEL) return true;
+    if(t===T.GLASS || t===T.WIRE || t===T.ELECTRONICS || t===T.STEEL || t===T.IRIDIUM) return true;
     if(isStructural(t)) return isCityColumn(x) && !isStructuralAnchor(x,y,t);
     return false;
   }
