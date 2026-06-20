@@ -702,7 +702,8 @@ MM.ui = (function(){
       updateToggle(m);
       if(!m){ metrics.textContent='brak metryk meteorytow'; return; }
       const fx=(m.embers||0)+(m.debris||0)+(m.plumes||0);
-      metrics.textContent=(m.enabled?'ON':'OFF')+' | next '+Number(m.nextIn||0).toFixed(1)+'s | lot '+(m.meteors||0)+' | krater job '+(m.terrainJobs||0)+' q'+(m.queuedOps||0)+' | fx '+fx+' | impakty '+(m.impacts||0);
+      const days=Number.isFinite(m.nextInDays) ? Number(m.nextInDays).toFixed(2)+'d' : Number(m.nextIn||0).toFixed(0)+'s';
+      metrics.textContent=(m.enabled?'ON':'OFF')+' | next '+days+' | lot '+(m.meteors||0)+' | krater job '+(m.terrainJobs||0)+' q'+(m.queuedOps||0)+' | fx '+fx+' | impakty '+(m.impacts||0);
     }
     toggle.addEventListener('click',()=>{
       try{

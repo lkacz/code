@@ -3376,7 +3376,8 @@ function draw(){ // Background first
 			const gm = (GASES && GASES.metrics)? GASES.metrics() : null;
 			const wm = (WIND && WIND.metrics)? WIND.metrics() : null;
 			const lava = (FIRE && FIRE.lavaCount)? FIRE.lavaCount() : 0;
-			if(pm || vm || mt || gm || wm || lava){ lines.push('FX: particles '+(pm?pm.particles:0)+' smoke '+(pm?pm.smoke:0)+'/'+(pm?pm.smokeCap:0)+' windFx '+(wm?wm.particles:0)+'/'+(wm?wm.particleCap:0)+' lava '+lava+' gas '+(gm?gm.active:0)+' (s '+(gm?gm.steam:0)+', p '+(gm?gm.poison:0)+', f '+(gm?gm.fuel:0)+')  volcanoes '+(vm?vm.activeVolcanoes:0)+' rocks '+(vm?vm.rocks:0)+' master '+(vm?vm.masterShots:0)+' meteor '+(mt?(mt.enabled?'ON ':'OFF ')+mt.meteors+' fall q'+mt.queuedOps+' next '+mt.nextIn+'s':'-')); }
+			const meteorNext=mt ? (Number.isFinite(mt.nextInDays) ? mt.nextInDays+'d' : mt.nextIn+'s') : '';
+			if(pm || vm || mt || gm || wm || lava){ lines.push('FX: particles '+(pm?pm.particles:0)+' smoke '+(pm?pm.smoke:0)+'/'+(pm?pm.smokeCap:0)+' windFx '+(wm?wm.particles:0)+'/'+(wm?wm.particleCap:0)+' lava '+lava+' gas '+(gm?gm.active:0)+' (s '+(gm?gm.steam:0)+', p '+(gm?gm.poison:0)+', f '+(gm?gm.fuel:0)+')  volcanoes '+(vm?vm.activeVolcanoes:0)+' rocks '+(vm?vm.rocks:0)+' master '+(vm?vm.masterShots:0)+' meteor '+(mt?(mt.enabled?'ON ':'OFF ')+mt.meteors+' fall q'+mt.queuedOps+' next '+meteorNext:'-')); }
 		}catch(e){}
 		try{
 			const dm = (DYNAMO && DYNAMO.metrics)? DYNAMO.metrics() : null;

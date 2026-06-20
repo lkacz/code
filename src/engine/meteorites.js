@@ -3,8 +3,11 @@ import { CHUNK_W, T, INFO, WORLD_H } from '../constants.js';
 const meteorites = (function(){
   const MM = window.MM = window.MM || {};
   const STORE_KEY = 'mm_meteorites_v1';
-  const MIN_WAIT = 135;
-  const MAX_WAIT = 260;
+  const DAY_SECONDS = 600;
+  const MIN_WAIT_DAYS = 7;
+  const MAX_WAIT_DAYS = 10;
+  const MIN_WAIT = DAY_SECONDS * MIN_WAIT_DAYS;
+  const MAX_WAIT = DAY_SECONDS * MAX_WAIT_DAYS;
   const MAX_METEORS = 2;
   const MAX_EMBERS = 140;
   const MAX_DEBRIS = 60;
@@ -38,8 +41,14 @@ const meteorites = (function(){
     return (typeof window !== 'undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
   }
   function rollNext(){ nextIn = rand(MIN_WAIT, MAX_WAIT); }
+  function loadedNextIn(data){
+    if(!data || !Number.isFinite(data.nextIn) || !(data.nextIn>0)) return 0;
+    const raw=+data.nextIn;
+    if((data.v|0)>=2) return clamp(raw, 1, MAX_WAIT);
+    return raw>=MIN_WAIT ? clamp(raw, MIN_WAIT, MAX_WAIT) : 0;
+  }
   function saveSettings(){
-    try{ localStorage.setItem(STORE_KEY, JSON.stringify({enabled,nextIn:Math.round(nextIn)})); }catch(e){}
+    try{ localStorage.setItem(STORE_KEY, JSON.stringify({v:2,enabled,nextIn:Math.round(nextIn)})); }catch(e){}
   }
   function loadSettings(){
     try{
@@ -48,7 +57,7 @@ const meteorites = (function(){
       const d=JSON.parse(raw);
       if(!d || typeof d!=='object') return;
       enabled = d.enabled === true;
-      if(Number.isFinite(d.nextIn)) nextIn = clamp(+d.nextIn, 5, MAX_WAIT);
+      nextIn = loadedNextIn(d);
     }catch(e){}
   }
   loadSettings();
@@ -854,14 +863,14 @@ const meteorites = (function(){
     return true;
   }
   function snapshot(){
-    return {v:1,enabled,nextIn:+Math.max(0,nextIn).toFixed(2),spawned,impacts};
+    return {v:2,enabled,nextIn:+Math.max(0,nextIn).toFixed(2),spawned,impacts};
   }
   function restore(data){
     clearActive();
     terrainJobs.length=0;
     if(data && typeof data==='object'){
       enabled=data.enabled===true;
-      nextIn=Number.isFinite(data.nextIn) ? clamp(+data.nextIn,5,MAX_WAIT) : nextIn;
+      nextIn=loadedNextIn(data);
       spawned=Math.max(0,(data.spawned|0)||0);
       impacts=Math.max(0,(data.impacts|0)||0);
     }
@@ -881,6 +890,9 @@ const meteorites = (function(){
     return {
       enabled,
       nextIn:+Math.max(0,nextIn).toFixed(1),
+      nextInDays:+(Math.max(0,nextIn)/DAY_SECONDS).toFixed(2),
+      minWaitDays:MIN_WAIT_DAYS,
+      maxWaitDays:MAX_WAIT_DAYS,
       meteors:meteors.length,
       terrainJobs:terrainJobs.length,
       queuedOps:queued,

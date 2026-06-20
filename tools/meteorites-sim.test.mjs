@@ -20,6 +20,7 @@ const { meteorites } = await import('../src/engine/meteorites.js');
 assert.ok(meteorites && meteorites.forceSpawn && meteorites.update, 'meteorites module exports');
 
 const SURF = 82;
+const DAY_SECONDS = 600;
 const tiles = new Map();
 const kxy=(x,y)=>Math.floor(x)+','+Math.floor(y);
 function getTile(x,y){
@@ -166,21 +167,36 @@ meteorites._debug.impactAt(9,SURF-4,getWaterTile,setWaterTile,1.65,null,{waterHi
 assert.ok(splashes-beforeWaterSplash>=6, 'water impact throws a broad water splash');
 assert.ok(steamGas>beforeSteam, 'water impact emits steam');
 
-meteorites.restore({enabled:true,nextIn:12.5,spawned:3,impacts:4});
+meteorites.restore({v:1,enabled:true,nextIn:12.5,spawned:3,impacts:4});
+let migrated=meteorites.metrics();
+assert.ok(migrated.nextInDays>=7 && migrated.nextInDays<=10, 'legacy short meteor timers migrate to a weekly cadence');
+
+meteorites.restore({v:2,enabled:true,nextIn:12.5,spawned:3,impacts:4});
 let restored=meteorites.metrics();
 assert.equal(restored.enabled, true, 'restore keeps enabled state');
 assert.equal(restored.nextIn, 12.5, 'restore keeps next meteor clock');
 assert.equal(restored.spawned, 3, 'restore keeps spawned counter');
 assert.equal(restored.impacts, 4, 'restore keeps impact counter');
 const snap=meteorites.snapshot();
+assert.equal(snap.v, 2, 'snapshot uses the weekly meteor schedule format');
 assert.equal(snap.enabled, true, 'snapshot exposes enabled state');
 assert.equal(snap.nextIn, 12.5, 'snapshot exposes next clock');
+
+assert.equal(meteorites.rollSchedule(), true, 'debug can roll a natural meteor schedule');
+const weekly=meteorites.metrics();
+assert.ok(weekly.nextInDays>=7 && weekly.nextInDays<=10, 'natural meteor schedule waits at least seven in-game days');
+const beforeWeeklySpawned=weekly.spawned;
+meteorites.update(Math.max(0,weekly.nextIn-0.5),player,getTile,setTile);
+assert.equal(meteorites.metrics().spawned, beforeWeeklySpawned, 'natural meteor does not spawn before the weekly cooldown expires');
+meteorites.update(1,player,getTile,setTile);
+assert.ok(meteorites.metrics().spawned>beforeWeeklySpawned, 'natural meteor can spawn after the weekly cooldown expires');
+meteorites.clearActive();
 
 meteorites.setEnabled(false);
 restored=meteorites.metrics();
 assert.equal(restored.enabled, false, 'debug toggle disables natural meteors');
 const beforeSpawned=restored.spawned;
-meteorites.update(999,player,getTile,setTile);
+meteorites.update(DAY_SECONDS*20,player,getTile,setTile);
 assert.equal(meteorites.metrics().spawned, beforeSpawned, 'disabled state remains no-op over long ticks');
 
 console.log('meteorites-sim: all assertions passed');
