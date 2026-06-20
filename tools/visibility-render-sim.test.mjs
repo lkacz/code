@@ -156,6 +156,14 @@ assert.ok(rememberedMobCtx.calls.includes('fillRect'), 'remembered animals still
 
 const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 assert.match(mainSource, /function drawSandGrains\(g,px,py,h\)/, 'sand has a dedicated grain renderer');
+assert.match(mainSource, /const TERRAIN_PATTERN_VARIANTS = 6;/, 'terrain renderer has multiple deterministic texture variants');
+assert.match(mainSource, /function terrainTextureVariant\(t,wx,y,h\)/, 'terrain texture variants are chosen from world coordinates');
+assert.match(mainSource, /\(patch \^ \(h>>>7\) \^ \(t\*97\)\)>>>0/, 'terrain texture variant hashes stay unsigned');
+assert.match(mainSource, /function drawTerrainPattern\(g,t,px,py,wx,y,h\)/, 'chunk renderer has a cached terrain pattern pass');
+assert.match(mainSource, /if\(t===T\.STONE && \(h&1\)\) return;/, 'stone texture pass is budgeted for large underground masses');
+assert.match(mainSource, /return t===T\.SAND \|\| t===T\.STONE \|\| t===T\.COAL;/, 'sand, stone and coal opt into characteristic pattern textures');
+assert.match(mainSource, /drawTerrainPattern\(cctx,t,lx\*TILE,y\*TILE,wx,y,h\);/, 'visible chunk cache draws terrain patterns for real world tiles');
+assert.match(mainSource, /g\.drawImage\(terrainPatternCanvas\(t,variant\),px,py\);/, 'terrain patterns are blitted from a small cached atlas');
 const sandBranchStart = mainSource.indexOf('} else if(t===T.SAND){');
 const sandBranchEnd = mainSource.indexOf('} else if(t===T.STONE){', sandBranchStart);
 assert.ok(sandBranchStart > 0 && sandBranchEnd > sandBranchStart, 'sand material branch is present');

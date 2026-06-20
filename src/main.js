@@ -1616,6 +1616,94 @@ function drawSandGrains(g,px,py,h){
 		g.fillRect(px+2+((r>>>5)%15),py+4+((r>>>10)%12),2,1);
 	}
 }
+const terrainPatternCache = new Map();
+const TERRAIN_PATTERN_VARIANTS = 6;
+function hasTerrainPattern(t){
+	return t===T.SAND || t===T.STONE || t===T.COAL;
+}
+function terrainTextureVariant(t,wx,y,h){
+	const patch=hash32(Math.floor(wx/2),Math.floor(y/2));
+	return ((patch ^ (h>>>7) ^ (t*97))>>>0) % TERRAIN_PATTERN_VARIANTS;
+}
+function terrainPatternRng(seed){
+	let s=seed>>>0;
+	return function(){
+		s=(Math.imul(s,1664525)+1013904223)>>>0;
+		return s/4294967296;
+	};
+}
+function terrainPatternCanvas(t,variant){
+	const key=t+':'+variant;
+	let c=terrainPatternCache.get(key);
+	if(c) return c;
+	c=document.createElement('canvas');
+	c.width=TILE; c.height=TILE;
+	const g=c.getContext('2d');
+	if(!g) return c;
+	g.imageSmoothingEnabled=false;
+	const rnd=terrainPatternRng(hash32(t*131+variant*17,variant*241+7));
+	if(t===T.SAND){
+		const grain=['rgba(88,68,37,0.24)','rgba(138,107,57,0.20)','rgba(223,200,128,0.34)','rgba(255,245,184,0.28)'];
+		for(let i=0;i<18;i++){
+			g.fillStyle=grain[(rnd()*grain.length)|0];
+			const x=1+((rnd()*18)|0), y=2+((rnd()*16)|0);
+			g.fillRect(x,y,1+(rnd()<0.16?1:0),1);
+		}
+		for(let i=0;i<3;i++){
+			g.fillStyle=i===0?'rgba(255,246,186,0.18)':'rgba(107,82,43,0.13)';
+			const x=2+((rnd()*9)|0), y=4+((rnd()*12)|0);
+			g.fillRect(x,y,6+((rnd()*7)|0),1);
+		}
+	} else if(t===T.STONE){
+		const chips=['rgba(33,37,44,0.20)','rgba(102,107,116,0.18)','rgba(225,231,238,0.13)'];
+		for(let i=0;i<6;i++){
+			g.fillStyle=chips[(rnd()*chips.length)|0];
+			g.fillRect(2+((rnd()*14)|0),3+((rnd()*12)|0),2+((rnd()*4)|0),1+((rnd()*2)|0));
+		}
+		g.strokeStyle='rgba(35,39,48,0.30)';
+		g.lineWidth=1;
+		for(let i=0;i<2;i++){
+			const x=3+((rnd()*10)|0), y=4+((rnd()*9)|0);
+			g.beginPath();
+			g.moveTo(x,y);
+			g.lineTo(x+3+((rnd()*5)|0),y+1+((rnd()*4)|0));
+			g.lineTo(x+6+((rnd()*4)|0),y-1+((rnd()*5)|0));
+			g.stroke();
+		}
+		g.strokeStyle='rgba(235,240,246,0.12)';
+		g.beginPath();
+		g.moveTo(3+((rnd()*9)|0),3+((rnd()*5)|0));
+		g.lineTo(9+((rnd()*7)|0),3+((rnd()*5)|0));
+		g.stroke();
+	} else if(t===T.COAL){
+		const dark=['rgba(0,0,0,0.30)','rgba(5,6,9,0.38)','rgba(22,23,29,0.26)'];
+		for(let i=0;i<5;i++){
+			g.fillStyle=dark[(rnd()*dark.length)|0];
+			const x=2+((rnd()*13)|0), y=3+((rnd()*12)|0);
+			g.fillRect(x,y,3+((rnd()*4)|0),2+((rnd()*3)|0));
+		}
+		g.strokeStyle='rgba(0,0,0,0.30)';
+		g.lineWidth=1;
+		g.beginPath();
+		g.moveTo(3+((rnd()*4)|0),5+((rnd()*7)|0));
+		g.lineTo(9+((rnd()*4)|0),8+((rnd()*5)|0));
+		g.lineTo(15+((rnd()*2)|0),5+((rnd()*8)|0));
+		g.stroke();
+		const shine=rnd()<0.6?'rgba(230,238,245,0.28)':'rgba(120,132,145,0.26)';
+		g.fillStyle=shine;
+		g.fillRect(4+((rnd()*10)|0),4+((rnd()*10)|0),2,1);
+		g.fillStyle='rgba(255,255,255,0.12)';
+		g.fillRect(7+((rnd()*8)|0),10+((rnd()*5)|0),3,1);
+	}
+	terrainPatternCache.set(key,c);
+	return c;
+}
+function drawTerrainPattern(g,t,px,py,wx,y,h){
+	if(!hasTerrainPattern(t)) return;
+	if(t===T.STONE && (h&1)) return;
+	const variant=terrainTextureVariant(t,wx,y,h);
+	g.drawImage(terrainPatternCanvas(t,variant),px,py);
+}
 function _drawMaterialTile(g,t,px,py,h){
 	const rx=(h>>>5)&7, ry=(h>>>9)&7;
 	if(t===T.GRASS){
@@ -1879,6 +1967,7 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 				const delta = terrainShadeDelta(t,wx,y,h);
 				const col = delta? shadeColor(base, delta) : base;
 				cctx.fillStyle=col; cctx.fillRect(lx*TILE,y*TILE,TILE,TILE);
+				drawTerrainPattern(cctx,t,lx*TILE,y*TILE,wx,y,h);
 				// Keep chunk-cache rebuilds cheap; special tiles below carry the high-detail pass.
 				if(t===T.GLASS){
 					const px=lx*TILE, py=y*TILE;
