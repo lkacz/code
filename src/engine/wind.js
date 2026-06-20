@@ -161,6 +161,16 @@ import { T, INFO, WORLD_H, MOVE } from '../constants.js';
     squall.dir=d;
     return true;
   }
+  function squallFactor(){
+    if(!(squall.t>0) || !(squall.max>0)) return 0;
+    const age=clamp(1-squall.t/squall.max,0,1);
+    const crest=Math.sin(age*Math.PI);
+    const front=Math.max(0,1-age*1.75);
+    return clamp(Math.max(crest,front*0.95),0,1);
+  }
+  function squallSpeed(){
+    return squall.dir*squall.amp*squallFactor();
+  }
   function computeTarget(env){
     const seed=((root.MM && root.MM.worldGen && root.MM.worldGen.worldSeed) || 1) % 100000;
     const s=seed*0.00073;
@@ -168,14 +178,13 @@ import { T, INFO, WORLD_H, MOVE } from '../constants.js';
     const flicker=Math.sin(simT*0.53+s*11.3)*0.34 + Math.sin(simT*0.91+s*2.7)*0.18;
     const boost=0.82 + env.night*0.36 + env.thermal*0.72 + env.storm*0.85;
     let out=base*boost + flicker*(0.30+env.night*0.22+env.thermal*0.55+env.storm*0.72);
-    if(squall.t>0 && squall.max>0){
-      const k=Math.sin((1-squall.t/squall.max)*Math.PI);
-      out += squall.dir*squall.amp*k;
-    }
     out *= seasonNumber('windMult',1);
     return clamp(out,-CFG.MAX_SPEED,CFG.MAX_SPEED);
   }
-  function currentSpeed(){ return override!=null ? override : wind; }
+  function currentSpeed(){
+    const base=override!=null ? override : wind;
+    return clamp(base+squallSpeed(),-CFG.MAX_SPEED,CFG.MAX_SPEED);
+  }
   function altitudeMultiplier(y){
     if(typeof y !== 'number' || !isFinite(y)) return 1;
     const high=1-clamp(y/Math.max(1,WORLD_H-1),0,1);
@@ -519,7 +528,7 @@ import { T, INFO, WORLD_H, MOVE } from '../constants.js';
       thermal:+lastEnv.thermal.toFixed(3),
       storm:+lastEnv.storm.toFixed(3),
       seasonWindMult:+seasonNumber('windMult',1).toFixed(3),
-      squall:{active:squall.t>0, tLeft:+squall.t.toFixed(2), amp:+squall.amp.toFixed(3), dir:squall.dir<0?-1:1}
+      squall:{active:squall.t>0, tLeft:+squall.t.toFixed(2), amp:+squall.amp.toFixed(3), dir:squall.dir<0?-1:1, speed:+squallSpeed().toFixed(3)}
     };
   }
 
@@ -528,7 +537,7 @@ import { T, INFO, WORLD_H, MOVE } from '../constants.js';
     exposureAt, applyToHero, setOverride, setCycleOverride, setCloudMetricsOverride,
     setWeatherProfile, forceSquall,
     config:CFG,
-    _debug:{particles, squall, computeEnvironment, computeTarget, exposureAt, altitudeMultiplier}
+    _debug:{particles, squall, computeEnvironment, computeTarget, exposureAt, altitudeMultiplier, squallSpeed}
   };
   root.MM.wind=api;
 })();

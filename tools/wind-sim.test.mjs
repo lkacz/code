@@ -138,16 +138,29 @@ assert.ok(wind._debug.particles.some(p=>p.material===T.SAND && (p.kind==='sand' 
 // Squalls can be forced for debug and persisted as weather state, not as a cheat override.
 wind.reset();
 assert.equal(wind.forceSquall(-1,3.1,12), true, 'debug squall can be forced');
+assert.ok(wind.speed() < -2.8, `forced squall changes wind speed immediately (speed=${wind.speed().toFixed(2)})`);
 wind.update(1/30,player,openTile);
 let squallMetrics = wind.metrics();
 assert.ok(squallMetrics.squall.active, 'forced squall remains active after update');
 assert.equal(squallMetrics.squall.dir, -1, 'forced squall stores direction');
+assert.ok(squallMetrics.speed < -2.4, `forced squall remains visible after update smoothing (speed=${squallMetrics.speed})`);
+assert.ok(squallMetrics.squall.speed < -2.4, `forced squall exposes a nonzero transient speed (${squallMetrics.squall.speed})`);
+wind.reset();
+wind.setOverride(1.35);
+assert.equal(wind.forceSquall(1,2.4,10), true, 'debug squall can stack onto a fixed wind override');
+assert.ok(wind.speed() > 3.2, `squall stacks on override instead of being ignored (speed=${wind.speed().toFixed(2)})`);
+wind.setOverride(-4.65);
+assert.equal(wind.forceSquall(1,3.2,10), true, 'opposite squall can interrupt a gale override');
+assert.ok(wind.speed() > -2.2, `opposite squall affects a previous gale override (speed=${wind.speed().toFixed(2)})`);
+wind.reset();
+assert.equal(wind.forceSquall(-1,3.1,12), true, 'debug squall can be forced before snapshot');
 const windSnapshot = wind.snapshot();
 wind.reset();
 assert.equal(wind.metrics().squall.active, false, 'reset clears squall state');
 assert.equal(wind.restore(windSnapshot), true, 'wind snapshot restores');
 assert.equal(wind.metrics().squall.dir, -1, 'wind restore keeps squall direction');
 assert.equal(wind.metrics().override, null, 'wind restore does not persist debug override');
+wind.reset();
 
 // Clouds keep their old override API, but otherwise read the shared wind.
 const { clouds } = await import('../src/engine/clouds.js');
@@ -189,6 +202,7 @@ gases.reset();
 
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const uiSrc = await readFile(new URL('../src/engine/ui.js', import.meta.url), 'utf8');
+const windSrc = await readFile(new URL('../src/engine/wind.js', import.meta.url), 'utf8');
 const jumpBlockIdx = mainSrc.indexOf('if(jumpBufferT>0){');
 const windApplyIdx = mainSrc.indexOf('if(WIND && WIND.applyToHero)');
 assert.ok(jumpBlockIdx >= 0 && windApplyIdx > jumpBlockIdx, 'main applies wind after jump impulse so new jumps catch gusts immediately');
@@ -204,6 +218,8 @@ assert.match(uiSrc, /windDebugProfile_'\+id/, 'wind debug panel gives weather pr
 assert.match(uiSrc, /\['thermal','Termika'/, 'wind debug panel exposes a thermal profile button');
 assert.match(uiSrc, /Profile pogody/, 'wind debug panel groups named weather profiles');
 assert.match(uiSrc, /Naturalnie/, 'wind debug panel can return to natural weather');
+assert.match(windSrc, /function squallSpeed\(\)/, 'squalls are a transient speed layer, not only a smoothed target');
+assert.match(windSrc, /base\+squallSpeed\(\)/, 'current wind speed includes active squalls even with debug overrides');
 
 wind.reset();
 console.log('wind-sim: all assertions passed');
