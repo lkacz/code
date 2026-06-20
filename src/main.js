@@ -2174,6 +2174,20 @@ function renderCameraCoord(v){
 function currentRenderCamera(){
 	return {x:renderCameraCoord(camX), y:renderCameraCoord(camY)};
 }
+function seasonUpdateContext(){
+	const viewW=(TILE>0 && zoom>0) ? W/(TILE*zoom) : 0;
+	const viewH=(TILE>0 && zoom>0) ? H/(TILE*zoom) : 0;
+	const inputActive=!!(
+		keys['a'] || keys['d'] || keys['arrowleft'] || keys['arrowright'] ||
+		keys['w'] || keys['arrowup'] || keys[' '] || keys['s'] || keys['arrowdown'] ||
+		mining || mineBtnHeld || fireBtnHeld || minePointerId!=null || weaponPointerId!=null ||
+		(activePointers && activePointers.size)
+	);
+	return {
+		viewport:{x0:camX, y0:camY, x1:camX+viewW, y1:camY+viewH},
+		inputActive
+	};
+}
 function resetFrameTiming(reason){
 	const now=(typeof performance!=='undefined' && performance.now)?performance.now():Date.now();
 	frameClock.last=now;
@@ -3265,9 +3279,11 @@ function draw(){ // Background first
 			const sm = (SEASONS && SEASONS.metrics)? SEASONS.metrics() : null;
 			if(sm){
 				const scan=sm.scan||{};
+				const terrain=sm.terrain||{};
 				const daily=Number(sm.diurnalTemperatureDelta||0);
 				const scanState=scan.deferred ? (' deferred'+(scan.deferReason?' '+scan.deferReason:'')) : '';
-				lines.push('Season: '+sm.label+'  day '+sm.dayFloat.toFixed(1)+'  temp '+sm.temperatureDelta.toFixed(2)+' daily '+(daily>=0?'+':'')+daily.toFixed(2)+'  wind x'+sm.windMult.toFixed(2)+'  animals x'+sm.animalSpawnMult.toFixed(2)+'  rain x'+sm.rainRateMult.toFixed(2)+'  scan '+(scan.columns||0)+'c/'+(scan.ops||0)+'op leaf '+(scan.leafOps||0)+' '+Number(scan.ms||0).toFixed(2)+'ms'+scanState+(sm.transition?'  blend '+Math.round(sm.blend*100)+'%':''));
+				const terrainState=terrain.deferReason ? (' '+terrain.deferReason) : '';
+				lines.push('Season: '+sm.label+'  day '+sm.dayFloat.toFixed(1)+'  temp '+sm.temperatureDelta.toFixed(2)+' daily '+(daily>=0?'+':'')+daily.toFixed(2)+'  wind x'+sm.windMult.toFixed(2)+'  animals x'+sm.animalSpawnMult.toFixed(2)+'  rain x'+sm.rainRateMult.toFixed(2)+'  terrain '+(terrain.target||'-')+' q'+(terrain.queued||0)+' p'+(terrain.prepared||0)+' a'+(terrain.applied||0)+terrainState+'  scan '+(scan.columns||0)+'c/'+(scan.ops||0)+'op '+Number(scan.ms||0).toFixed(2)+'ms'+scanState+(sm.transition?'  blend '+Math.round(sm.blend*100)+'%':''));
 			}
 		}catch(e){}
 		try{
@@ -4129,7 +4145,7 @@ function runGameStep(dt,ts){
 		volcanoLeakWakeT=slowLavaWake?0.65:0.28;
 		if(FIRE && FIRE.wakeVolcanoLeaksNear) FIRE.wakeVolcanoLeaksNear(player.x, player.y, getTile, {rx:slowLavaWake?36:56, ry:slowLavaWake?28:38, peekTile:WORLD.peekTile});
 	}
-	if(SEASONS && SEASONS.update) SEASONS.update(dt, getTile, setTile, player);
+	if(SEASONS && SEASONS.update) SEASONS.update(dt, getTile, setTile, player, seasonUpdateContext());
 	if(FIRE && FIRE.update) FIRE.update(getTile, setTile, dt);
 	if(VOLCANO && VOLCANO.update) VOLCANO.update(dt, player, getTile, setTile);
 	if(WIND && WIND.update) WIND.update(dt, player, getTile, {clouds:CLOUDS, worldGen:WORLDGEN, background:BACKGROUND});

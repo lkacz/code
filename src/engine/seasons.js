@@ -1,4 +1,4 @@
-import { T, INFO, WORLD_H, isAutumnLeaf, isLeaf } from '../constants.js';
+import { CHUNK_W, T, INFO, WORLD_H, isAutumnLeaf, isLeaf } from '../constants.js';
 
 const root = typeof window !== 'undefined' ? window : globalThis;
 root.MM = root.MM || {};
@@ -148,7 +148,7 @@ Object.freeze(BASE_PROFILES);
 Object.freeze(SEASON_ORDER);
 
 const CFG = {
-  autoTerrainEffects: false,
+  autoTerrainEffects: true,
   scanRadius: 96,
   scanCols: 20,
   scanInterval: 0.22,
@@ -168,6 +168,20 @@ const CFG = {
   relocationMaxLeafOpsPerTick: 3,
   slowFrameSkipMs: 34,
   effectEpochSeconds: 5,
+  prepareAheadDays: 3,
+  terrainPlanRadius: 144,
+  terrainPlanColsPerTick: 10,
+  terrainPlanRelocationCols: 28,
+  terrainPlanMaxCandidatesPerTick: 8,
+  terrainPlanQueueCap: 1800,
+  terrainPlanSeenCap: 2600,
+  terrainApplyInterval: 0.14,
+  terrainApplyOpsPerTick: 1,
+  terrainApplyVisibleInterval: 0.75,
+  terrainApplySlowFrameMs: 24,
+  terrainApplySearchLimit: 256,
+  terrainVisibleMarginTiles: 3,
+  terrainMovingSpeed: 0.18,
 };
 
 let elapsedSeconds = 0;
@@ -180,6 +194,9 @@ let cachedAt = -1;
 let lastScan = emptyScanMetrics();
 let lastScanCenterX = null;
 let relocationBurstRemaining = 0;
+let terrainApplyAcc = 0;
+let terrainVisibleApplyAcc = 0;
+let terrainPlan = emptyTerrainPlan();
 const recentEvents = [];
 const listeners = new Set();
 
@@ -233,6 +250,20 @@ function scanConfig(){
     slowFrameSkipMs: safeInt(CFG.slowFrameSkipMs, 34, 0, 250),
     epochSeconds: clamp(finiteNumber(CFG.effectEpochSeconds, 5), 0.5, 60),
     autoTerrainEffects: CFG.autoTerrainEffects === true,
+    prepareAheadDays: clamp(finiteNumber(CFG.prepareAheadDays, 3), 0, DAYS_PER_SEASON),
+    terrainRadius: safeInt(CFG.terrainPlanRadius, 144, 16, 512),
+    terrainPlanCols: safeInt(CFG.terrainPlanColsPerTick, 10, 1, 96),
+    terrainPlanRelocationCols: safeInt(CFG.terrainPlanRelocationCols, 28, 1, 160),
+    terrainPlanMaxCandidates: safeInt(CFG.terrainPlanMaxCandidatesPerTick, 8, 1, 64),
+    terrainQueueCap: safeInt(CFG.terrainPlanQueueCap, 1800, 64, 12000),
+    terrainSeenCap: safeInt(CFG.terrainPlanSeenCap, 2600, 64, 20000),
+    terrainApplyInterval: clamp(finiteNumber(CFG.terrainApplyInterval, 0.14), 0.02, 2),
+    terrainApplyOps: safeInt(CFG.terrainApplyOpsPerTick, 1, 0, 8),
+    terrainVisibleInterval: clamp(finiteNumber(CFG.terrainApplyVisibleInterval, 0.75), 0.05, 6),
+    terrainApplySlowFrameMs: safeInt(CFG.terrainApplySlowFrameMs, 24, 0, 250),
+    terrainApplySearchLimit: safeInt(CFG.terrainApplySearchLimit, 256, 8, 4096),
+    terrainVisibleMargin: safeInt(CFG.terrainVisibleMarginTiles, 3, 0, 32),
+    terrainMovingSpeed: clamp(finiteNumber(CFG.terrainMovingSpeed, 0.18), 0, 20),
   };
 }
 
@@ -621,6 +652,328 @@ function applyAutumnLeavesColumn(x, getTile, setTile, prof, ctx, epochSeconds){
   return false;
 }
 
+function emptyTerrainPlan(){
+  return {
+    epoch: '',
+    target: '',
+    cursor: 0,
+    center: 0,
+    queue: [],
+    queuedKeys: new Set(),
+    seenColumns: new Set(),
+    prepared: 0,
+    applied: 0,
+    dropped: 0,
+    visibleApplied: 0,
+    columns: 0,
+    scanMs: 0,
+    applyMs: 0,
+    lastAction: 'idle',
+    deferReason: '',
+    relocation: false,
+    changed: {freeze: 0, thaw: 0, snow: 0, snowMelt: 0, leafGrow: 0, leafDrop: 0},
+  };
+}
+
+function resetTerrainPlan(reason){
+  terrainPlan = emptyTerrainPlan();
+  terrainApplyAcc = 0;
+  terrainVisibleApplyAcc = 0;
+  if(reason) terrainPlan.deferReason = reason;
+}
+
+function nextSeasonId(id){
+  const idx = SEASON_ORDER.indexOf(id);
+  return SEASON_ORDER[mod(idx < 0 ? 1 : idx + 1, SEASON_ORDER.length)];
+}
+
+function terrainTargetForState(s, sc){
+  if(!s) return 'spring';
+  if(s.forced) return s.season;
+  if(s.transition && s.to) return s.to;
+  if(finiteNumber(s.nextInDays, DAYS_PER_SEASON) <= finiteNumber(sc && sc.prepareAheadDays, 0)) return nextSeasonId(s.season);
+  return s.season;
+}
+
+function terrainSeasonNumberForTarget(s, target){
+  const totalDays = Math.max(0, elapsedSeconds / DAY_SECONDS);
+  let n = Math.floor(totalDays / DAYS_PER_SEASON);
+  if(s && !s.forced && target && target !== s.season){
+    const cur = SEASON_ORDER.indexOf(s.season);
+    const dst = SEASON_ORDER.indexOf(target);
+    if(cur >= 0 && dst >= 0 && mod(dst - cur, SEASON_ORDER.length) === 1) n++;
+  }
+  return n;
+}
+
+function terrainEpochForState(s, target){
+  const forced = s && s.forced ? 'forced' : 'natural';
+  return [worldSeed(), forced, target || 'spring', terrainSeasonNumberForTarget(s, target)].join('|');
+}
+
+function terrainProfileForTarget(target){
+  return cloneProfile(BASE_PROFILES[target] || BASE_PROFILES.spring);
+}
+
+function terrainTargetActive(s, target){
+  if(!s || !target) return false;
+  if(s.forced) return s.season === target;
+  if(s.season === target) return true;
+  return !!(s.transition && s.to === target && finiteNumber(s.blend, 0) >= 0.5);
+}
+
+function terrainCandidate(type, x, y, from, to){
+  return {type, x:Math.floor(x), y:Math.floor(y), from, to, chunk:Math.floor(x / CHUNK_W)};
+}
+
+function planFreezeColumn(x, getTile, prof, ctx, epochSeconds){
+  const strength = clamp(finiteNumber(prof.freezeStrength, 0), 0, 1);
+  if(strength <= 0.04) return null;
+  const surf = resolveSurface(x, getTile, ctx);
+  const {y0, y1} = scanBounds(surf, CFG.surfaceAbove, CFG.surfaceBelow);
+  for(let y = y0; y <= y1; y++){
+    if(getTile(x, y) !== T.WATER) continue;
+    if(getTile(x, y - 1) === T.WATER) continue;
+    const above = getTile(x, y - 1);
+    if(!skyOpenTile(above) && above !== T.SNOW) continue;
+    if(columnTemp(x, y, prof, ctx) > CFG.freezeTemp + (1 - strength) * 0.08) return null;
+    if(!seasonalPass(strength, x, y, 101, 0.10, 0.58, epochSeconds)) return null;
+    return terrainCandidate('freeze', x, y, T.WATER, T.ICE);
+  }
+  return null;
+}
+
+function planThawColumn(x, getTile, prof, ctx, epochSeconds){
+  const strength = clamp(finiteNumber(prof.thawStrength, 0), 0, 1);
+  if(strength <= 0.04) return null;
+  const surf = resolveSurface(x, getTile, ctx);
+  const {y0, y1} = scanBounds(surf, CFG.surfaceAbove, CFG.surfaceBelow);
+  for(let y = y0; y <= y1; y++){
+    if(getTile(x, y) !== T.ICE) continue;
+    if(columnTemp(x, y, prof, ctx) < CFG.thawTemp - strength * 0.05) continue;
+    if(!skyExposed(x, y, getTile, 40)) continue;
+    if(!seasonalPass(strength, x, y, 211, 0.08, 0.45, epochSeconds)) return null;
+    return terrainCandidate('thaw', x, y, T.ICE, T.WATER);
+  }
+  return null;
+}
+
+function planSnowColumn(x, getTile, prof, ctx, epochSeconds){
+  const strength = clamp(finiteNumber(prof.snowStrength, 0), 0, 1);
+  if(strength <= 0.05) return null;
+  const surf = resolveSurface(x, getTile, ctx);
+  const y = Math.max(1, Math.min(WORLD_H - 2, Math.floor(surf)));
+  const t = getTile(x, y);
+  if(t !== T.GRASS && t !== T.MUD) return null;
+  if(!skyExposed(x, y, getTile, 42)) return null;
+  if(columnTemp(x, y, prof, ctx) > CFG.snowTemp + (1 - strength) * 0.06) return null;
+  if(!seasonalPass(strength, x, y, 151, 0.05, 0.46, epochSeconds)) return null;
+  return terrainCandidate('snow', x, y, t, T.SNOW);
+}
+
+function planSnowMeltColumn(x, getTile, prof, ctx, epochSeconds){
+  const strength = clamp(finiteNumber(prof.snowMeltStrength, 0), 0, 1);
+  if(strength <= 0.05) return null;
+  const surf = resolveSurface(x, getTile, ctx);
+  const {y0, y1} = scanBounds(surf, 3, 5);
+  for(let y = y0; y <= y1; y++){
+    if(getTile(x, y) !== T.SNOW) continue;
+    if(!skyExposed(x, y, getTile, 40)) continue;
+    if(columnTemp(x, y, prof, ctx) < CFG.snowMeltTemp - strength * 0.06) continue;
+    if(!seasonalPass(strength, x, y, 251, 0.06, 0.44, epochSeconds)) return null;
+    const below = getTile(x, y + 1);
+    const next = below === T.WATER || below === T.ICE ? T.WATER : T.GRASS;
+    return terrainCandidate('snowMelt', x, y, T.SNOW, next);
+  }
+  return null;
+}
+
+function terrainCandidatesForColumn(x, getTile, prof, ctx, epochSeconds){
+  const out = [];
+  const freeze = planFreezeColumn(x, getTile, prof, ctx, epochSeconds);
+  if(freeze) out.push(freeze);
+  const thaw = planThawColumn(x, getTile, prof, ctx, epochSeconds);
+  if(thaw) out.push(thaw);
+  const snow = planSnowColumn(x, getTile, prof, ctx, epochSeconds);
+  if(snow) out.push(snow);
+  const snowMelt = planSnowMeltColumn(x, getTile, prof, ctx, epochSeconds);
+  if(snowMelt) out.push(snowMelt);
+  return out;
+}
+
+function terrainOpKey(op){
+  return op.x + ',' + op.y + ':' + op.from + '>' + op.to;
+}
+
+function queueTerrainCandidate(op, sc){
+  if(!op || terrainPlan.queue.length >= sc.terrainQueueCap) return false;
+  const key = terrainOpKey(op);
+  if(terrainPlan.queuedKeys.has(key)) return false;
+  terrainPlan.queuedKeys.add(key);
+  terrainPlan.queue.push(op);
+  terrainPlan.prepared++;
+  return true;
+}
+
+function ensureTerrainPlanForState(s, sc, player){
+  const target = terrainTargetForState(s, sc);
+  const epoch = terrainEpochForState(s, target);
+  if(terrainPlan.epoch !== epoch || terrainPlan.target !== target){
+    terrainPlan = emptyTerrainPlan();
+    terrainPlan.epoch = epoch;
+    terrainPlan.target = target;
+    terrainPlan.center = playerScanCenter(player);
+  }
+  return terrainPlan;
+}
+
+function terrainScanColumn(center, radius, cursor){
+  const span = radius * 2 + 1;
+  const n = mod(cursor, span);
+  if(n === 0) return center;
+  const step = Math.ceil(n / 2);
+  return center + (n % 2 === 1 ? step : -step);
+}
+
+function prepareTerrainPlan(getTile, player, s, sc, opts){
+  if(typeof getTile !== 'function') return 0;
+  const plan = ensureTerrainPlanForState(s, sc, player);
+  const started = typeof performance !== 'undefined' && performance.now ? performance.now() : 0;
+  const center = playerScanCenter(player);
+  const relocated = !!(opts && opts.relocation);
+  const radius = sc.terrainRadius;
+  const span = radius * 2 + 1;
+  const cols = relocated ? sc.terrainPlanRelocationCols : sc.terrainPlanCols;
+  const prof = terrainProfileForTarget(plan.target);
+  const dayTempDelta = currentDiurnalTemperatureDelta();
+  let made = 0;
+  let visited = 0;
+  plan.center = center;
+  plan.relocation = relocated;
+  for(let i = 0; i < cols; i++){
+    const wx = terrainScanColumn(center, radius, plan.cursor + i);
+    if(plan.seenColumns.has(wx)) continue;
+    plan.seenColumns.add(wx);
+    visited++;
+    const metrics = null;
+    const ctx = columnContext(wx, getTile, metrics, dayTempDelta);
+    const candidates = terrainCandidatesForColumn(wx, getTile, prof, ctx, sc.epochSeconds);
+    for(const op of candidates){
+      if(queueTerrainCandidate(op, sc)) made++;
+      if(made >= sc.terrainPlanMaxCandidates) break;
+    }
+    if(made >= sc.terrainPlanMaxCandidates) break;
+  }
+  plan.cursor = (plan.cursor + cols) % span;
+  plan.columns += visited;
+  if(plan.seenColumns.size > sc.terrainSeenCap) plan.seenColumns.clear();
+  if(started) plan.scanMs = +(plan.scanMs + Math.max(0, performance.now() - started)).toFixed(3);
+  if(made > 0) plan.lastAction = 'prepared';
+  return made;
+}
+
+function viewportFromOpts(opts){
+  const v = opts && opts.viewport;
+  if(!v) return null;
+  const x0 = Math.min(finiteNumber(v.x0, Infinity), finiteNumber(v.x1, -Infinity));
+  const x1 = Math.max(finiteNumber(v.x0, -Infinity), finiteNumber(v.x1, Infinity));
+  const y0 = Math.min(finiteNumber(v.y0, Infinity), finiteNumber(v.y1, -Infinity));
+  const y1 = Math.max(finiteNumber(v.y0, -Infinity), finiteNumber(v.y1, Infinity));
+  if(!Number.isFinite(x0) || !Number.isFinite(x1) || !Number.isFinite(y0) || !Number.isFinite(y1)) return null;
+  return {x0, x1, y0, y1};
+}
+
+function terrainOpVisible(op, opts, sc){
+  const v = viewportFromOpts(opts);
+  if(!v) return false;
+  const m = sc.terrainVisibleMargin;
+  return op.x >= v.x0 - m && op.x <= v.x1 + m && op.y >= v.y0 - m && op.y <= v.y1 + m;
+}
+
+function terrainInputActive(player, opts, sc){
+  if(opts && opts.inputActive) return true;
+  const p = player || {};
+  const speed = Math.max(Math.abs(finiteNumber(p.vx, 0)), Math.abs(finiteNumber(p.vy, 0)));
+  return speed > sc.terrainMovingSpeed;
+}
+
+function takeTerrainCandidate(opts, sc, allowVisible){
+  const limit = Math.min(sc.terrainApplySearchLimit, terrainPlan.queue.length);
+  for(let i = 0; i < limit; i++){
+    const op = terrainPlan.queue[i];
+    const visible = terrainOpVisible(op, opts, sc);
+    if(visible && !allowVisible) continue;
+    terrainPlan.queue.splice(i, 1);
+    terrainPlan.queuedKeys.delete(terrainOpKey(op));
+    return {op, visible};
+  }
+  return null;
+}
+
+function applyTerrainPlan(getTile, setTile, player, s, sc, opts){
+  if(typeof getTile !== 'function' || typeof setTile !== 'function') return 0;
+  if(!terrainPlan.queue.length) return 0;
+  if(!terrainTargetActive(s, terrainPlan.target)){
+    terrainPlan.deferReason = 'waiting';
+    return 0;
+  }
+  if(sc.terrainApplySlowFrameMs > 0 && recentFrameMs() > sc.terrainApplySlowFrameMs){
+    terrainPlan.deferReason = 'frame';
+    return 0;
+  }
+  const moving = terrainInputActive(player, opts, sc);
+  const allowVisible = !moving && terrainVisibleApplyAcc >= sc.terrainVisibleInterval;
+  const started = typeof performance !== 'undefined' && performance.now ? performance.now() : 0;
+  let applied = 0;
+  let visibleApplied = 0;
+  let dropped = 0;
+  const maxOps = sc.terrainApplyOps;
+  for(let i = 0; i < maxOps; i++){
+    const picked = takeTerrainCandidate(opts, sc, allowVisible && visibleApplied === 0);
+    if(!picked) break;
+    const {op, visible} = picked;
+    if(getTile(op.x, op.y) !== op.from){
+      dropped++;
+      continue;
+    }
+    if(replaceTile(op.x, op.y, op.to, getTile, setTile)){
+      applied++;
+      if(visible) visibleApplied++;
+      if(Object.prototype.hasOwnProperty.call(terrainPlan.changed, op.type)) terrainPlan.changed[op.type]++;
+    } else {
+      dropped++;
+    }
+  }
+  if(applied > 0){
+    terrainPlan.applied += applied;
+    terrainPlan.visibleApplied += visibleApplied;
+    terrainPlan.lastAction = 'applied';
+    terrainPlan.deferReason = '';
+    if(visibleApplied > 0) terrainVisibleApplyAcc = 0;
+  } else if(dropped > 0) {
+    terrainPlan.lastAction = 'dropped';
+    terrainPlan.deferReason = '';
+  } else {
+    terrainPlan.deferReason = moving ? 'moving' : 'visible';
+  }
+  terrainPlan.dropped += dropped;
+  if(started) terrainPlan.applyMs = +(terrainPlan.applyMs + Math.max(0, performance.now() - started)).toFixed(3);
+  return applied;
+}
+
+function terrainPlanScanMetrics(){
+  const m = emptyScanMetrics();
+  m.columns = terrainPlan.columns | 0;
+  m.ops = terrainPlan.applied | 0;
+  m.cursor = terrainPlan.cursor | 0;
+  m.ms = +(finiteNumber(terrainPlan.scanMs, 0) + finiteNumber(terrainPlan.applyMs, 0)).toFixed(3);
+  m.relocation = !!terrainPlan.relocation;
+  m.deferred = !!terrainPlan.deferReason;
+  m.deferReason = terrainPlan.deferReason || '';
+  m.changed = Object.assign({}, terrainPlan.changed);
+  return m;
+}
+
 function playerScanCenter(player){
   const p = player || root.player || {};
   return Math.floor(finiteNumber(p.x, 0));
@@ -694,7 +1047,7 @@ function runScan(getTile, setTile, player, opts){
   return metrics;
 }
 
-function update(dt, getTile, setTile, player){
+function update(dt, getTile, setTile, player, opts){
   if(!enabled) return;
   if(!(dt > 0) || !Number.isFinite(dt)) return;
   const prevState = currentState();
@@ -705,8 +1058,10 @@ function update(dt, getTile, setTile, player){
   checkSeasonEvents(prevState, nextState);
   if(typeof getTile !== 'function' || typeof setTile !== 'function') return;
   const sc = scanConfig();
-  queueRelocationBurst(player, sc);
+  const relocated = queueRelocationBurst(player, sc);
   scanAcc += dt;
+  terrainApplyAcc += dt;
+  terrainVisibleApplyAcc += dt;
   let passes = 0;
   if(scanAcc >= sc.interval){
     scanAcc = 0;
@@ -715,29 +1070,32 @@ function update(dt, getTile, setTile, player){
   if(relocationBurstRemaining > 0){
     passes = Math.max(passes, Math.min(sc.relocationPassesPerTick, relocationBurstRemaining));
   }
-  if(passes <= 0) return;
   if(!sc.autoTerrainEffects){
     const m = emptyScanMetrics();
     m.deferred = true;
     m.deferReason = 'terrain-off';
     lastScan = m;
+    terrainPlan.deferReason = 'terrain-off';
     return;
   }
   if(deferSeasonScan(sc)){
     scanAcc = Math.min(scanAcc, sc.interval * 0.75);
     markDeferredScan('frame');
+    terrainPlan.deferReason = 'frame';
     return;
   }
-  for(let i = 0; i < passes; i++){
-    const relocation = relocationBurstRemaining > 0;
-    runScan(getTile, setTile, player, relocation ? {
-      cols: sc.relocationCols,
-      maxOps: sc.relocationMaxOps,
-      maxLeafOps: sc.relocationMaxLeafOps,
-      relocation: true,
-    } : null);
-    if(relocation) relocationBurstRemaining = Math.max(0, relocationBurstRemaining - 1);
+  if(passes > 0){
+    for(let i = 0; i < passes; i++){
+      const relocation = relocated || relocationBurstRemaining > 0;
+      prepareTerrainPlan(getTile, player, nextState, sc, {relocation});
+      if(relocationBurstRemaining > 0) relocationBurstRemaining = Math.max(0, relocationBurstRemaining - 1);
+    }
   }
+  if(terrainApplyAcc >= sc.terrainApplyInterval){
+    terrainApplyAcc = 0;
+    applyTerrainPlan(getTile, setTile, player, nextState, sc, opts || null);
+  }
+  lastScan = terrainPlanScanMetrics();
 }
 
 function scanNow(getTile, setTile, player){
@@ -753,6 +1111,7 @@ function setEnabled(value){
   enabled = next;
   scanAcc = 0;
   lastScan = emptyScanMetrics();
+  resetTerrainPlan(next ? 'enabled' : 'disabled');
   cachedState = null;
   cachedAt = -1;
   emit(next ? 'seasonEnabled' : 'seasonDisabled', {enabled: next});
@@ -767,6 +1126,7 @@ function reset(){
   scanCursor = 0;
   lastScanCenterX = null;
   relocationBurstRemaining = 0;
+  resetTerrainPlan('reset');
   forcedSeason = null;
   enabled = true;
   cachedState = null;
@@ -809,6 +1169,25 @@ function scanMetricsSnapshot(scan, relocationRemaining){
   };
 }
 
+function terrainMetricsSnapshot(){
+  return {
+    target: terrainPlan.target || '',
+    epoch: terrainPlan.epoch || '',
+    queued: terrainPlan.queue ? terrainPlan.queue.length : 0,
+    prepared: terrainPlan.prepared | 0,
+    applied: terrainPlan.applied | 0,
+    dropped: terrainPlan.dropped | 0,
+    visibleApplied: terrainPlan.visibleApplied | 0,
+    columns: terrainPlan.columns | 0,
+    scanMs: +finiteNumber(terrainPlan.scanMs, 0).toFixed(3),
+    applyMs: +finiteNumber(terrainPlan.applyMs, 0).toFixed(3),
+    action: String(terrainPlan.lastAction || 'idle'),
+    deferReason: String(terrainPlan.deferReason || ''),
+    relocation: !!terrainPlan.relocation,
+    changed: Object.assign({}, terrainPlan.changed),
+  };
+}
+
 function metrics(){
   const s = currentState();
   const p = s.profile;
@@ -838,6 +1217,7 @@ function metrics(){
       leafDropStrength: 0,
       terrainEffectsEnabled: false,
       scan: scanMetricsSnapshot(null, 0),
+      terrain: terrainMetricsSnapshot(),
       events: recentEvents.slice(-6),
       forced: !!s.forced,
       enabled: false,
@@ -868,6 +1248,7 @@ function metrics(){
     leafDropStrength: +finiteNumber(p.leafDropStrength, 0).toFixed(3),
     terrainEffectsEnabled: CFG.autoTerrainEffects === true,
     scan: scanMetricsSnapshot(lastScan, relocationBurstRemaining),
+    terrain: terrainMetricsSnapshot(),
     events: recentEvents.slice(-6),
     forced: !!s.forced,
     enabled: true,

@@ -23,7 +23,7 @@ const springStart = seasons._debug.stateAtDays(0);
 assert.equal(springStart.season, 'spring', 'new worlds start in spring');
 assert.equal(springStart.profile.leafGrowStrength, 0, 'seasonal leaf growth is disabled');
 assert.equal(Object.isFrozen(seasons.profile()), true, 'public season profile is immutable');
-assert.equal(seasons.metrics().terrainEffectsEnabled, false, 'automatic seasonal terrain mutations stay off by default for frame stability');
+assert.equal(seasons.metrics().terrainEffectsEnabled, true, 'automatic seasonal terrain mutations use the safe terrain job by default');
 
 const justBeforeSummer = seasons._debug.stateAtDays(10 - 1e-6);
 const atSummerBoundary = seasons._debug.stateAtDays(10);
@@ -78,17 +78,17 @@ assert.equal(seasons.profile().id, 'off', 'disabled season profile is neutral');
 assert.equal(Object.isFrozen(seasons.profile()), true, 'disabled season profile is immutable');
 assert.equal(seasons.profile().windMult, 1, 'disabled season profile neutralizes wind multiplier');
 assert.equal(seasons.profile().freezeStrength, 0, 'disabled season profile neutralizes terrain effects');
-seasons.update(0.25, getTile, setTile, {x:96, y:9});
+seasons.update(0.25, getTile, setTile, {x:0, y:9});
 assert.equal(getTile(0, 10), T.WATER, 'disabled seasonal system skips terrain scanner mutations');
 assert.equal(seasons.metrics().dayFloat, beforeDisabledDay, 'disabled seasonal system pauses its calendar clock');
 assert.equal(seasons.scanNow(getTile, setTile, {x:96, y:9}), null, 'disabled seasonal scan-now is a no-op');
 assert.equal(seasons.forceSeasonEvent('winter', {player:{x:12, y:8, facing:1}}), false, 'disabled seasonal system blocks forced seasonal events');
 assert.equal(seasons.setEnabled(true), true, 'debug can re-enable the seasonal system');
 assert.equal(seasons.isEnabled(), true, 're-enabled seasonal system reports active state');
-seasons.update(0.25, getTile, setTile, {x:96, y:9});
-assert.equal(getTile(0, 10), T.WATER, 're-enabled seasonal clock does not auto-mutate terrain by default');
-assert.equal(seasons.scanNow(getTile, setTile, {x:96, y:9}).changed.freeze, 1, 'debug scan-now can still apply bounded terrain effects');
-assert.equal(getTile(0, 10), T.ICE, 'manual seasonal scan can freeze exposed water');
+seasons.update(0.25, getTile, setTile, {x:0, y:9});
+assert.equal(getTile(0, 10), T.ICE, 're-enabled seasonal system resumes terrain mutations through the safe terrain job');
+assert.ok(seasons.metrics().terrain.prepared >= 1, 'safe terrain job prepares candidates before applying them');
+assert.ok(seasons.metrics().terrain.applied >= 1, 'safe terrain job applies candidates through the bounded commit path');
 
 resetTiles();
 setTile(0, 10, T.WATER);
@@ -241,6 +241,31 @@ assert.equal(getTile(0, 10), T.LEAF, 'autumn scan-now also leaves tree foliage u
   Object.assign(seasons.config, savedCfg);
 }
 
+{
+  const savedCfg = Object.assign({}, seasons.config);
+  resetTiles();
+  Object.assign(seasons.config, {
+    autoTerrainEffects: true,
+    prepareAheadDays: 3,
+    terrainPlanRadius: 12,
+    terrainPlanColsPerTick: 25,
+    terrainPlanMaxCandidatesPerTick: 8,
+    terrainApplyInterval: 0.01,
+    terrainApplyOpsPerTick: 1,
+  });
+  setTile(0, 10, T.WATER);
+  setTile(0, 11, T.STONE);
+  seasons.setDay(29);
+  seasons.update(0.25, getTile, setTile, {x:0, y:9});
+  assert.equal(getTile(0, 10), T.WATER, 'winter terrain can be prepared before winter without applying early');
+  assert.equal(seasons.metrics().terrain.target, 'winter', 'pre-season terrain plan targets the upcoming winter');
+  assert.ok(seasons.metrics().terrain.queued >= 1, 'pre-season terrain plan queues future freeze work');
+  seasons.setDay(31);
+  seasons.update(0.25, getTile, setTile, {x:0, y:9});
+  assert.equal(getTile(0, 10), T.ICE, 'prepared winter terrain applies once winter is active');
+  Object.assign(seasons.config, savedCfg);
+}
+
 seasons.reset();
 seasons.setDay(26);
 let m = seasons.metrics();
@@ -306,7 +331,8 @@ const seasonSrc = await readFile(new URL('../src/engine/seasons.js', import.meta
 assert.match(mainSrc, /import \{ seasons as SEASONS \}/, 'main imports the seasons engine');
 assert.match(mainSrc, /seasons:\s*timedSavePart\('seasons',[^\n]*SEASONS && SEASONS\.snapshot/, 'save payload includes seasons');
 assert.match(mainSrc, /SEASONS\.restore\(data\.seasons\)/, 'load path restores seasons');
-assert.match(mainSrc, /SEASONS\.update\(dt, getTile, setTile, player\)/, 'main loop updates seasons before weather systems');
+assert.match(mainSrc, /SEASONS\.update\(dt, getTile, setTile, player, seasonUpdateContext\(\)\)/, 'main loop updates seasons with viewport safety context before weather systems');
+assert.match(mainSrc, /function seasonUpdateContext\(\)/, 'main exposes viewport/input context for safe seasonal terrain commits');
 assert.match(mainSrc, /injectSeasonDebugPanel/, 'main wires the season debug panel');
 assert.match(mainSrc, /SEASONS\.scanNow\(getTile,setTile,player\)/, 'season debug panel can trigger an immediate bounded scan');
 assert.match(mainSrc, /SEASONS\.jumpToNextTransition\(\)/, 'season debug panel can jump to a smooth transition');
