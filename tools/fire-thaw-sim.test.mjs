@@ -68,6 +68,7 @@ assert.equal(getTile(0,1), T.WATER, 'visible torch thaws adjacent ice into water
 assert.ok(waterWakes>=2, 'water simulation is woken for thawed tiles');
 
 reset();
+globalThis.inv={wood:10};
 MM.inventory={
   equippedItem(){ return {weaponType:'flame', fireDps:6, fireRange:7}; },
   TIER_COLORS:{}

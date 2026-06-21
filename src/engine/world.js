@@ -9,6 +9,7 @@ window.MM = window.MM || {};
   const world = new Map();
   const versions = new Map(); // chunk key -> version number for render cache invalidation
   const modifiedChunks = new Set();
+  const infrastructure = new Map(); // "x,y" -> overlay tile (wire / copper cable / water pipe)
   // Cache of surface heights per world column to avoid recomputing noise repeatedly
   const heightCache = new Map();
   // Cache of perched-lake water rows, computed per contiguous lake segment
@@ -35,8 +36,10 @@ window.MM = window.MM || {};
     for(let i=0;i<drop;i++){ try{ if(MM.trees && MM.trees.clearChunk) MM.trees.clearChunk(+cand[i][1].slice(1)); }catch(e){} world.delete(cand[i][1]); versions.delete(cand[i][1]); }
   }
   function ck(x){ return 'c'+x; }
+  function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
   function tileIndex(x,y){ return y*CHUNK_W+x; }
   function getTileRaw(arr,lx,y){ return arr[tileIndex(lx,y)]; }
+  function isInfrastructureTile(t){ return t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE; }
   function markModifiedChunk(cx,version){
     if(!isFinite(cx)) return;
     const k=ck(cx);
@@ -78,17 +81,51 @@ window.MM = window.MM || {};
     if(d<=v.pipe && y>=ground) return T.LAVA;
     if(d<=v.crater && y>=ground && y<=ground+1) return T.LAVA;
     if(d<=v.crater+1 && y===ground-1) return T.AIR;
-    if(d<=v.pipe+1 && y>=ground) return T.OBSIDIAN;
-    if(d<=v.crater+2 && y>=ground && y<=ground+4) return (d<=v.crater+1)?T.OBSIDIAN:T.STONE;
+    if(d<=v.pipe+1 && y>=ground) return WG.randSeed(wx*6.17+y*0.29)<0.34 ? T.OBSIDIAN : T.BASALT;
+    if(d<=v.crater+2 && y>=ground && y<=ground+4){
+      if(d<=v.crater+1) return T.OBSIDIAN;
+      return WG.randSeed(wx*4.37+y*0.41)<0.55 ? T.BASALT : T.STONE;
+    }
+    return undefined;
+  }
+  function volcanoDikeTile(v,wx,y,ground,depth){
+    if(depth<7 || depth>76) return undefined;
+    const dx=wx-v.center;
+    if(Math.abs(dx)>v.radius+10) return undefined;
+    const bend=(WG.valueNoise(wx+y*0.13,31,4521)-0.5)*2.2;
+    const left=Math.abs(dx + (depth-v.crater)*0.20 + bend);
+    const right=Math.abs(dx - (depth-v.crater)*0.23 - bend);
+    const ring=Math.abs(Math.abs(dx) - (v.pipe+2+depth*0.055+(WG.valueNoise(y,33,4522)-0.5)*2.6));
+    if(left<0.85 || right<0.85 || (depth>18 && ring<0.75)){
+      return WG.randSeed(wx*9.11+y*0.53)<0.18 ? T.OBSIDIAN : T.BASALT;
+    }
     return undefined;
   }
   function volcanoRockTile(col,wx,y,ground,depth){
     const v=col && col.volcano; if(!v || y<ground || y>=WORLD_H-3) return undefined;
     const d=Math.abs(wx-v.center);
-    if(d>v.radius) return undefined;
+    if(d>v.radius+8) return undefined;
+    const dike=volcanoDikeTile(v,wx,y,ground,depth);
+    if(dike!==undefined) return dike;
+    const r=WG.randSeed(wx*3.91+y*0.27);
+    if(d<=v.pipe+2) return r<0.30 ? T.OBSIDIAN : T.BASALT;
     if(depth<12){
       if(d<=v.crater+3 || WG.randSeed(wx*4.73+y*0.19)<0.16) return T.OBSIDIAN;
-      return T.STONE;
+      return r<0.58 ? T.BASALT : T.STONE;
+    }
+    const heat=1-Math.min(1,d/Math.max(1,v.radius+6));
+    const contact=d>v.radius*0.70 || Math.abs(d-(v.pipe+3))<2;
+    // Volcanic contact aureole: baked country rock, basalt intrusions and
+    // obsidian only where lava would quench quickly near vents.
+    if(depth<36){
+      if(d<=v.radius*0.55 || heat>0.38) return r<0.78 ? T.BASALT : T.OBSIDIAN;
+      if(contact && r<0.54) return T.GRANITE;
+      return r<0.42 ? T.BASALT : T.STONE;
+    }
+    if(depth<68){
+      if(d<=v.reservoir+4) return r<0.75 ? T.BASALT : T.OBSIDIAN;
+      if(contact) return r<0.58 ? T.GRANITE : T.STONE;
+      if(heat>0.25 && r<0.56) return T.BASALT;
     }
     return undefined;
   }
@@ -123,7 +160,7 @@ window.MM = window.MM || {};
       }
     }catch(e){}
   }
-  function isCityStructuralTile(t){ return t===T.STONE || t===T.STEEL || t===T.OBSIDIAN; }
+  function isCityStructuralTile(t){ return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.STEEL || t===T.OBSIDIAN; }
   function isCityLoadBearingTile(t){
     if(t===T.AIR || t===T.WATER || (INFO[t] && INFO[t].passable) || t===T.GLASS || t===T.ELECTRONICS) return false;
     if(t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return false;
@@ -196,10 +233,46 @@ window.MM = window.MM || {};
     const wet = poolDepth>0 || WG.valueNoise(wx,42,3302)>0.57 || WG.valueNoise(wx,15,3305)>0.78;
     if(depth===0) return wet ? T.MUD : T.GRASS;
     if(depth<4 && (wet || WG.randSeed(wx*8.17+depth*2.13)<0.62)) return T.MUD;
-    return T.SAND;
+    return depth<7 ? T.DIRT : T.SAND;
+  }
+  function dirtThickness(wx,biome,beach,desertF,waterF){
+    if(biome===8) return 0;
+    if(biome===3 || beach || biome===5 || biome===6) return 0;
+    if(biome===4) return 2 + Math.floor(WG.randSeed(wx*0.53)*2);
+    if(biome===7) return 1 + Math.floor(WG.randSeed(wx*0.61)*2);
+    return 3 + Math.floor(WG.randSeed(wx*0.67)*3) + (desertF>0.10 || waterF>0.10 ? 1 : 0);
+  }
+  function clamp01(v){ return v<0 ? 0 : (v>1 ? 1 : v); }
+  function geologyMix(wx,y,primary,secondary,seed,amount){
+    return WG.valueNoise(wx+y*0.23,18,seed)<clamp01(amount) ? primary : secondary;
+  }
+  function geologyLayerDepth(wx,y,depth,biome){
+    const long=(WG.valueNoise(wx,92,4607)-0.5)*18;
+    const fold=Math.sin(wx*0.021 + WG.valueNoise(wx,180,4608)*6.28318)*5;
+    const shear=(WG.valueNoise(wx+y*0.16,38,4609)-0.5)*8;
+    const mountain=biome===7 ? 7 : 0;
+    return depth + Math.max(0,y-72)*0.45 + long + fold + shear + mountain;
+  }
+  function geologyRockTile(wx,y,depth,biome){
+    if(y>=WORLD_H-4) return T.BEDROCK;
+    const deep=geologyLayerDepth(wx,y,depth,biome);
+    const band=WG.valueNoise(wx+y*0.11,64,4601);
+    const lens=WG.valueNoise(wx-y*0.18,27,4602);
+    const fleck=WG.randSeed(wx*5.13+y*0.41);
+    const graniteCut=27 + (band-0.5)*12 + (biome===7 ? -6 : 0);
+    const basaltCut=54 + (WG.valueNoise(wx+y*0.07,78,4603)-0.5)*16 + (lens>0.78 ? -8 : 0);
+    const bedrockCut=80 + (WG.valueNoise(wx-y*0.05,110,4604)-0.5)*12;
+    if(y>=WORLD_H-8 || deep>bedrockCut) return fleck<0.78 ? T.BEDROCK : T.BASALT;
+    if(deep>bedrockCut-6) return geologyMix(wx,y,T.BEDROCK,T.BASALT,4610,0.10 + ((deep-(bedrockCut-6))/6)*0.78);
+    if(deep>basaltCut) return (lens>0.68 || fleck<0.74) ? T.BASALT : T.GRANITE;
+    if(deep>basaltCut-7) return geologyMix(wx,y,T.BASALT,T.GRANITE,4611,0.12 + ((deep-(basaltCut-7))/7)*0.78);
+    if(deep>graniteCut) return lens>0.76 ? T.BASALT : (band>0.43 || fleck<0.58 ? T.GRANITE : T.STONE);
+    if(deep>graniteCut-5) return geologyMix(wx,y,T.GRANITE,T.STONE,4612,0.10 + ((deep-(graniteCut-5))/5)*0.76);
+    if(lens>0.82 && depth>16) return T.GRANITE;
+    return fleck<0.055 ? T.GRANITE : T.STONE;
   }
   function isCaveTreasureFloor(t){
-    return t===T.STONE || t===T.COAL;
+    return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL;
   }
 
   function applyDevastatedCity(arr,cx){
@@ -526,6 +599,7 @@ window.MM = window.MM || {};
       else if(biome===4) sandTh = 3 + Math.floor(WG.randSeed(wx*0.47)*2);
       else if(biome===8) sandTh = 4;
       else sandTh = (desertF>0.15 || waterF>0.15)? 2 : 0;
+      const dirtTh=dirtThickness(wx,biome,beach,desertF,waterF);
       // Perched valley lake (above sea level); flooded valleys below sea use the global fill
       let lakeRow=Infinity;
       if(biome===6 && col.elev>2) lakeRow=lakeLevelFor(wx);
@@ -544,7 +618,7 @@ window.MM = window.MM || {};
 
       for(let y=0;y<WORLD_H;y++){
         let t=T.AIR;
-        if(y>=WORLD_H-3){ arr[tileIndex(lx,y)]=T.STONE; continue; } // bedrock shelf
+        if(y>=WORLD_H-3){ arr[tileIndex(lx,y)]=T.BEDROCK; continue; }
         const forcedVolcano=volcanoForcedTile(col,wx,y,ground);
         if(forcedVolcano!==undefined){ arr[tileIndex(lx,y)]=forcedVolcano; continue; }
         if(y<ground){
@@ -579,6 +653,8 @@ window.MM = window.MM || {};
             } else if(depth<SURFACE_GRASS_DEPTH+sandTh){
             t=biome===8 ? citySurfaceTile(WG,wx,depth) : (biome===4 ? swampGroundTile(wx,depth,poolDepth) : ((cold && depth<3)? T.SNOW : T.SAND));
             if(t===T.SAND && depth>2 && WG.randSeed(wx*9.71+y*0.23)<0.18) t=T.STONE;
+            } else if(depth<SURFACE_GRASS_DEPTH+sandTh+dirtTh){
+            t=biome===8 ? citySurfaceTile(WG,wx,depth) : T.DIRT;
             } else {
             // Stone mass; diamonds stay rare/deep, coal forms more common seams
             // through ordinary underground rock and is richer beside cave walls.
@@ -586,7 +662,7 @@ window.MM = window.MM || {};
             const chance=WG.diamondChance(y)*(nearCave?3:1);
             if(WG.randSeed(wx*13.37+y*0.7)<chance) t=T.DIAMOND;
             else if(WG.coalVeinAt && WG.coalVeinAt(wx,y,nearCave)) t=T.COAL;
-            else t=T.STONE;
+            else t=geologyRockTile(wx,y,depth,biome);
             if(biome!==8 && t===T.STONE && depth<SURFACE_GRASS_DEPTH+sandTh+2 && WG.randSeed(wx*9.71+y*0.23)<(0.10+0.5*(desertF+waterF*0.5))) t=T.SAND;
             }
           }
@@ -676,6 +752,14 @@ window.MM = window.MM || {};
   // NaN/Infinity coordinates slip past `y<0||y>=WORLD_H` (NaN compares false) and
   // runaway x used to mint chunks without bound — both are treated as void here.
   function getTile(x,y){ if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return T.AIR; const cx=Math.floor(x/CHUNK_W); const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W; const arr=ensureChunk(cx); return getTileRaw(arr,lx,y); }
+  function getInfrastructure(x,y){
+    if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return T.AIR;
+    return infrastructure.get(key(x,y)) || T.AIR;
+  }
+  function getNetworkTile(x,y){
+    const over=getInfrastructure(x,y);
+    return over!==T.AIR ? over : getTile(x,y);
+  }
   function peekTile(x,y,fallback){
     if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return T.AIR;
     const cx=Math.floor(x/CHUNK_W);
@@ -684,6 +768,11 @@ window.MM = window.MM || {};
     const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W;
     return getTileRaw(arr,lx,y);
   }
+  function peekNetworkTile(x,y,fallback){
+    const over=getInfrastructure(x,y);
+    if(over!==T.AIR) return over;
+    return peekTile(x,y,fallback);
+  }
   function notifyTileChanged(x,y,old,v){
     try{ if(MM.trees && MM.trees.onTileChanged) MM.trees.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.meat && MM.meat.onTileChanged) MM.meat.onTileChanged(x,y,old,v); }catch(e){}
@@ -691,11 +780,32 @@ window.MM = window.MM || {};
     try{ if(MM.dynamo && MM.dynamo.onTileChanged) MM.dynamo.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.solar && MM.solar.onTileChanged) MM.solar.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.teleporters && MM.teleporters.onTileChanged) MM.teleporters.onTileChanged(x,y,old,v); }catch(e){}
+    try{ if(MM.pumps && MM.pumps.onTileChanged) MM.pumps.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.turrets && MM.turrets.onTileChanged) MM.turrets.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.meteorites && MM.meteorites.onTileChanged) MM.meteorites.onTileChanged(x,y,old,v); }catch(e){}
   }
+  function notifyInfrastructureChanged(x,y,old,v){
+    try{ if(MM.teleporters && MM.teleporters.onTileChanged) MM.teleporters.onTileChanged(x,y,old,v); }catch(e){}
+    try{ if(MM.pumps && MM.pumps.onTileChanged) MM.pumps.onTileChanged(x,y,old,v); }catch(e){}
+  }
+  function setInfrastructureInternal(x,y,v,transient){
+    if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return false;
+    x=Math.floor(x); y=Math.floor(y);
+    const next=isInfrastructureTile(v) ? v : T.AIR;
+    const k=key(x,y);
+    const old=infrastructure.get(k) || T.AIR;
+    if(old===next) return false;
+    if(next===T.AIR) infrastructure.delete(k);
+    else infrastructure.set(k,next);
+    notifyInfrastructureChanged(x,y,old,next);
+    if(!transient) markModifiedChunk(Math.floor(x/CHUNK_W));
+    return true;
+  }
+  function setInfrastructure(x,y,v){ return setInfrastructureInternal(x,y,v,false); }
+  function clearInfrastructure(x,y){ return setInfrastructureInternal(x,y,T.AIR,false); }
   function setTileInternal(x,y,v,transient){
     if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return;
+    if(isInfrastructureTile(v)){ setInfrastructureInternal(x,y,v,transient); return; }
     const cx=Math.floor(x/CHUNK_W);
     const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W;
     const arr=ensureChunk(cx);
@@ -710,13 +820,49 @@ window.MM = window.MM || {};
   // Transient world-backed layers (currently gases) need to be visible to getTile()
   // without turning every drift step into terrain-save churn or chunk-cache invalidation.
   function setTransientTile(x,y,v){ setTileInternal(x,y,v,true); }
-  function clearWorld(){ try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); versions.clear(); modifiedChunks.clear(); heightCache.clear(); lakeLevels.clear(); if(WG.clearCaches) WG.clearCaches(); }
+  function snapshotInfrastructure(){
+    const list=[...infrastructure.entries()]
+      .map(([k,t])=>{
+        const comma=k.indexOf(',');
+        return {x:+k.slice(0,comma),y:+k.slice(comma+1),t};
+      })
+      .filter(o=>isInfrastructureTile(o.t) && isFinite(o.x) && isFinite(o.y) && o.y>=0 && o.y<WORLD_H)
+      .sort((a,b)=>(a.x-b.x)||(a.y-b.y))
+      .slice(0,20000);
+    return {v:1,list};
+  }
+  function restoreInfrastructure(data){
+    infrastructure.clear();
+    if(!data || !Array.isArray(data.list)) return;
+    for(const raw of data.list){
+      if(!raw || !isInfrastructureTile(raw.t)) continue;
+      if(!isFinite(raw.x) || !isFinite(raw.y)) continue;
+      const x=Math.floor(raw.x), y=Math.floor(raw.y);
+      if(!(y>=0) || y>=WORLD_H || Math.abs(x)>MAX_COORD) continue;
+      infrastructure.set(key(x,y),raw.t);
+      markModifiedChunk(Math.floor(x/CHUNK_W));
+    }
+    try{ if(MM.teleporters && MM.teleporters.onTileChanged) MM.teleporters.onTileChanged(0,0,T.AIR,T.COPPER_WIRE); }catch(e){}
+    try{ if(MM.pumps && MM.pumps.onTileChanged) MM.pumps.onTileChanged(0,0,T.AIR,T.WATER_PIPE); }catch(e){}
+  }
+  function clearWorld(){ try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); versions.clear(); modifiedChunks.clear(); infrastructure.clear(); heightCache.clear(); lakeLevels.clear(); if(WG.clearCaches) WG.clearCaches(); }
 
   worldAPI.ensureChunk = ensureChunk;
   worldAPI.getTile = getTile;
+  worldAPI.getInfrastructure = getInfrastructure;
+  worldAPI.getOverlay = getInfrastructure;
+  worldAPI.getNetworkTile = getNetworkTile;
   worldAPI.peekTile = peekTile;
+  worldAPI.peekNetworkTile = peekNetworkTile;
   worldAPI.setTile = setTile;
+  worldAPI.setInfrastructure = setInfrastructure;
+  worldAPI.setOverlay = setInfrastructure;
+  worldAPI.clearInfrastructure = clearInfrastructure;
+  worldAPI.clearOverlay = clearInfrastructure;
   worldAPI.setTransientTile = setTransientTile;
+  worldAPI.snapshotInfrastructure = snapshotInfrastructure;
+  worldAPI.restoreInfrastructure = restoreInfrastructure;
+  worldAPI.isInfrastructureTile = isInfrastructureTile;
   worldAPI.clear = clearWorld;
   worldAPI.clearHeights = ()=>{ heightCache.clear(); lakeLevels.clear(); if(WG.clearCaches) WG.clearCaches(); };
   worldAPI.markModifiedChunk = markModifiedChunk;
@@ -726,7 +872,7 @@ window.MM = window.MM || {};
   worldAPI._modifiedChunks = modifiedChunks;
   worldAPI.chunkVersion = function(cx){ return versions.get(ck(cx))||0; };
   worldAPI.metrics = function(){
-    return {chunks:world.size, modified:modifiedChunks.size, heightCache:heightCache.size, lakeCache:lakeLevels.size};
+    return {chunks:world.size, modified:modifiedChunks.size, infrastructure:infrastructure.size, heightCache:heightCache.size, lakeCache:lakeLevels.size};
   };
 
   MM.world = worldAPI;

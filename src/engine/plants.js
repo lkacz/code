@@ -20,6 +20,7 @@ import { T, INFO, WORLD_H } from '../constants.js';
     reed:     { stages:3, growEvery:[6,10],  growCost:0.22, decay:0.008, lifespan:[130,230], soil:[T.SAND,T.MUD,T.GRASS] },
     fern:     { stages:3, growEvery:[8,14],  growCost:0.25, decay:0.014, lifespan:[110,200], soil:[T.GRASS,T.MUD] },
     cactus:   { stages:4, growEvery:[14,24], growCost:0.18, decay:0.003, lifespan:[320,520], soil:[T.SAND], dryTolerant:true },
+    alienbloom:{ stages:4, growEvery:[10,18], growCost:0.16, decay:0.006, lifespan:[420,720], soil:[T.ALIEN_BIOMASS,T.METEOR_DUST,T.GRASS,T.MUD], alien:true },
   };
   const TYPES=Object.keys(SPECIES);
   const MAX_PLANTS=160;
@@ -68,6 +69,26 @@ import { T, INFO, WORLD_H } from '../constants.js';
     return p;
   }
   function wither(p){ if(!p.withered){ p.withered=true; p.witherT=6; p.health=0; dirty=true; } }
+  function radioactiveNear(p,getTile){
+    if(!p || typeof getTile!=='function') return false;
+    for(let dx=-3;dx<=3;dx++) for(let dy=-2;dy<=2;dy++){
+      const t=getTile(p.x+dx,p.y+dy);
+      if(t===T.RADIOACTIVE_ORE || t===T.METEOR_DUST) return true;
+    }
+    return false;
+  }
+  function mutatePlant(p){
+    if(!p || p.withered || p.type==='alienbloom') return false;
+    const spec=SPECIES.alienbloom;
+    p.type='alienbloom';
+    p.stage=Math.max(1,Math.min(spec.stages,(p.stage|0)+1));
+    p.hyd=Math.min(1,Math.max(p.hyd||0,0.5));
+    p.health=Math.min(1,Math.max(p.health||0,0.75));
+    p.lifespan=Math.max(p.lifespan||0,rand(spec.lifespan[0],spec.lifespan[1]));
+    p.growT=rand(spec.growEvery[0],spec.growEvery[1]);
+    dirty=true;
+    return true;
+  }
 
   function envCheck(p,getTile,setTile){
     const spec=SPECIES[p.type];
@@ -80,6 +101,11 @@ import { T, INFO, WORLD_H } from '../constants.js';
     for(let dx=-1;dx<=1;dx++) for(let dy=-1;dy<=2;dy++){
       if(getTile(p.x+dx,p.y+dy)===T.LAVA || (F && F.isBurning && F.isBurning(p.x+dx,p.y+dy))){ wither(p); return; }
     }
+    if(p.type!=='alienbloom' && radioactiveNear(p,getTile)){
+      mutatePlant(p);
+      return;
+    }
+    if(p.type==='alienbloom' && radioactiveNear(p,getTile)) p.hyd=Math.min(1,p.hyd+0.18);
     // --- hydration intake ---
     // adjacent/below water: drink; every SIPS_PER_TILE sips the tile is absorbed
     let drank=false;
@@ -172,6 +198,26 @@ import { T, INFO, WORLD_H } from '../constants.js';
       const p=plants.get(x);
       if(p && !p.withered && Math.abs(p.y+0.5-wy)<=r+2) wither(p);
     }
+  }
+  function mutateAt(wx,wy,r,getTile,setTile){
+    r=Math.max(1,Number(r)||4);
+    let changed=0;
+    for(let x=Math.floor(wx-r); x<=Math.floor(wx+r); x++){
+      const p=plants.get(x);
+      if(!p || p.withered) continue;
+      if(Math.hypot((p.x+0.5)-wx,(p.y+0.5)-wy)>r+2) continue;
+      if(mutatePlant(p)) changed++;
+    }
+    if(!changed && plants.size<MAX_PLANTS && typeof getTile==='function'){
+      for(let tries=0; tries<5; tries++){
+        const x=Math.round(wx + (rng()*2-1)*r);
+        if(plants.has(x)) continue;
+        try{
+          if(sow('alienbloom',x,getTile)){ changed++; break; }
+        }catch(e){}
+      }
+    }
+    return changed;
   }
   // Click interaction: harvest ripe berries (heals), or clear the plant
   function harvestAt(tx,ty){
@@ -341,6 +387,20 @@ import { T, INFO, WORLD_H } from '../constants.js';
         if(st>=3){ ctx.fillStyle=body; ctx.fillRect(baseX-9,baseY-h*0.65,6,4); ctx.fillRect(baseX-9,baseY-h*0.65,4,h*0.3); }
         if(st>=4){ ctx.fillStyle=body; ctx.fillRect(baseX+3,baseY-h*0.8,6,4); ctx.fillRect(baseX+5,baseY-h*0.8,4,h*0.35);
           if(!p.withered){ ctx.fillStyle='#ff8fb3'; ctx.fillRect(baseX-2,baseY-h-3,4,3); } }
+      } else if(p.type==='alienbloom'){
+        const stalk=o?o.b:'#4aa85c', glow=o?o.c:'#b8ff72', vein=o?o.a:'#7a62ff';
+        const h=TILE*(0.45+st*0.38);
+        ctx.strokeStyle=stalk; ctx.lineWidth=2; ctx.lineCap='round';
+        ctx.beginPath(); ctx.moveTo(baseX,baseY); ctx.quadraticCurveTo(baseX+sw*0.25,baseY-h*0.62,baseX+sw,baseY-h); ctx.stroke();
+        ctx.strokeStyle=vein; ctx.lineWidth=1.2;
+        for(let i=0;i<st+1;i++){
+          const side=i%2?1:-1;
+          const yy=baseY-h*(0.22+i*0.16);
+          ctx.beginPath(); ctx.moveTo(baseX+sw*0.2,yy); ctx.quadraticCurveTo(baseX+side*TILE*0.18,yy-TILE*0.10,baseX+side*TILE*(0.28+st*0.04),yy-TILE*0.02); ctx.stroke();
+        }
+        ctx.fillStyle=glow;
+        ctx.globalAlpha*=0.82;
+        ctx.beginPath(); ctx.arc(baseX+sw,baseY-h,2.5+st*1.6,0,Math.PI*2); ctx.fill();
       }
       ctx.restore();
     }
@@ -348,7 +408,7 @@ import { T, INFO, WORLD_H } from '../constants.js';
 
   load();
   MM.plants={
-    update, draw, sow, waterAt, scorchAt, harvestAt, reset, save, snapshot, restore,
+    update, draw, sow, waterAt, scorchAt, mutateAt, harvestAt, reset, save, snapshot, restore,
     count:()=>plants.size,
     metrics:()=>({count:plants.size}),
     _setRng:(fn)=>{ rng=fn||Math.random; },     // deterministic tests

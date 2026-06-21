@@ -828,9 +828,11 @@ MM.ui = (function(){
       const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
       updateToggle(m);
       if(!m){ metrics.textContent='brak metryk meteorytow'; return; }
-      const fx=(m.embers||0)+(m.debris||0)+(m.plumes||0)+(m.beaconWaves||0)+(m.gravityBursts||0);
+      const fx=(m.embers||0)+(m.debris||0)+(m.plumes||0)+(m.beaconWaves||0)+(m.gravityBursts||0)+(m.sirenPulses||0);
       const days=Number.isFinite(m.nextInDays) ? Number(m.nextInDays).toFixed(2)+'d' : Number(m.nextIn||0).toFixed(0)+'s';
-      metrics.textContent=(m.enabled?'ON':'OFF')+' | next '+days+' | lot '+(m.meteors||0)+' | krater job '+(m.terrainJobs||0)+' q'+(m.queuedOps||0)+' | fx '+fx+' | impakty '+(m.impacts||0)+' | odchylenia '+(m.deflections||0);
+      const cls=(m.lastImpact && m.lastImpact.label) ? (' | last '+m.lastImpact.label) : '';
+      const cons=m.lastConsequence ? (' | skutki '+m.lastConsequence.site+':'+(m.lastConsequence.severity||1)) : '';
+      metrics.textContent=(m.enabled?'ON':'OFF')+' | next '+days+' | lot '+(m.meteors||0)+' | krater job '+(m.terrainJobs||0)+' q'+(m.queuedOps||0)+' | kr '+(m.craters||0)+' jez '+(m.lakeCraters||0)+' | syreny '+(m.sirens||0)+' | fx '+fx+' | impakty '+(m.impacts||0)+' | odchylenia '+(m.deflections||0)+cls+cons;
     }
     toggle.addEventListener('click',()=>{
       try{
@@ -844,7 +846,15 @@ MM.ui = (function(){
     box.appendChild(toggle);
     const buttons=[
       ['spawn','Meteoryt teraz','Natychmiast spuszcza meteoryt niedaleko bohatera'],
+      ['iron','Zelazny','Spuszcza meteoryt zelazny'],
+      ['iridium','Irydowy','Spuszcza meteoryt irydowy'],
+      ['ice','Lodowy','Spuszcza meteoryt lodowy'],
+      ['radioactive','Radioaktywny','Spuszcza meteoryt radioaktywny'],
+      ['antimatter','Antymateria','Spuszcza meteoryt antymaterialny'],
+      ['biological','Biologiczny','Spuszcza meteoryt biologiczny'],
       ['beacon','Postaw beacon','Stawia beacon antygrawitacyjny do testowania odchylania meteorytow'],
+      ['siren','Postaw syrene','Stawia syrene meteorytowa do testowania ostrzezen'],
+      ['scan','Skan krateru','Skanuje najblizszy znany krater meteorytowy'],
       ['natural','Reset licznika','Losuje nowy czas do nastepnego naturalnego spadku'],
       ['clear','Wyczysc FX','Usuwa aktywne meteory i efekty bez cofania juz zrobionego krateru']
     ];
@@ -858,7 +868,10 @@ MM.ui = (function(){
         try{
           let ok=false;
           if(id==='spawn') ok=(typeof actions.spawn==='function') ? actions.spawn() : false;
+          else if(['iron','iridium','ice','radioactive','antimatter','biological'].includes(id)) ok=(typeof actions.spawnClass==='function') ? actions.spawnClass(id) : false;
           else if(id==='beacon') ok=(typeof actions.beacon==='function') ? actions.beacon() : false;
+          else if(id==='siren') ok=(typeof actions.siren==='function') ? actions.siren() : false;
+          else if(id==='scan') ok=(typeof actions.scan==='function') ? actions.scan() : false;
           else if(id==='natural') ok=(typeof actions.roll==='function') ? actions.roll() : false;
           else if(id==='clear') ok=(typeof actions.clear==='function') ? actions.clear() : false;
           msg(ok ? ('Meteoryty: '+txt) : 'Debug meteorytow: brak akcji');
@@ -1043,6 +1056,58 @@ MM.ui = (function(){
     },1200);
     panel.appendChild(box);
   }
+  function injectPumpDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('pumpDebugBox')) return;
+    actions = actions || {};
+    const box=document.createElement('div');
+    box.id='pumpDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(84,216,255,.13); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='Pompy wodne (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+    const metrics=document.createElement('div');
+    metrics.id='pumpDebugMetrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    function refreshMetrics(){
+      const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+      metrics.textContent=m ? ('pompy '+m.machines+' | aktywne '+m.active+' | naladowane '+m.charged+' | suma '+m.storedEnergy+' E | woda '+m.moved+' | rury '+m.activePipes+' | cache '+(m.cacheSize||0)+' b'+(m.cacheBuilds||0)+'/h'+(m.cacheHits||0)+' inv '+(m.cacheInvalidations||0)+' cap '+(m.capHits||0)+' src '+(m.sourceChecks||0)) : 'brak metryk pomp';
+    }
+    const buttons=[
+      ['give','Hydraulika +','Dodaje rury wodne, pompe i wiezyczke wodna do zasobow'],
+      ['place','Postaw pompe','Stawia naladowana pompe w aktualnym kierunku R'],
+      ['placeRig','Uklad testowy','Stawia zrodlo wody, rury, pompe, zasilanie i wiezyczke wodna'],
+      ['charge','Laduj najblizsza','Laduje najblizsza pompe'],
+      ['empty','Rozladuj najblizsza','Rozladowuje najblizsza pompe']
+    ];
+    buttons.forEach(([id,txt,title])=>{
+      const b=document.createElement('button');
+      b.textContent=txt;
+      b.title=title;
+      b.style.cssText='flex:1 1 104px; font-size:11px; padding:3px 6px; border:1px solid rgba(84,216,255,.65);';
+      b.addEventListener('click',()=>{
+        try{
+          const fn=actions[id];
+          const ok=(typeof fn==='function') ? fn() : false;
+          if(id==='give') msg(ok ? 'Hydraulika dodana do zasobow' : 'Nie dodano hydrauliki');
+          else if(id==='place') msg(ok ? 'Pompa postawiona' : 'Brak miejsca na pompe');
+          else if(id==='placeRig') msg(ok ? 'Uklad pomp postawiony' : 'Brak miejsca na uklad pomp');
+          else if(id==='charge') msg(ok ? 'Pompa naladowana' : 'Brak pompy w poblizu');
+          else if(id==='empty') msg(ok ? 'Pompa rozladowana' : 'Brak pompy w poblizu');
+          refreshMetrics();
+        }catch(e){ msg('Debug pomp: blad'); }
+      });
+      box.appendChild(b);
+    });
+    box.appendChild(metrics);
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1200);
+    panel.appendChild(box);
+  }
   // Radar pulse helper (adds/removes pulse class on #radarBtn)
   function setRadarPulsing(active){
     const b = document.getElementById('radarBtn');
@@ -1050,7 +1115,7 @@ MM.ui = (function(){
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, injectMobSpawnPanel, injectGasDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
+  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, injectMobSpawnPanel, injectGasDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectPumpDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;

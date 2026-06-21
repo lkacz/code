@@ -65,7 +65,7 @@ window.MM = window.MM || {};
     if(oldTile===newTile || (!isGas(oldTile) && !isGas(newTile))) return;
     try{ const g=window.MM && MM.gases; if(g && g.onTileChanged) g.onTileChanged(x,y,oldTile,newTile); }catch(e){}
   }
-  function isStructural(t){ return t===T.STONE || t===T.STEEL || t===T.METEORIC_IRON || t===T.IRIDIUM || t===T.OBSIDIAN; }
+  function isStructural(t){ return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.STEEL || t===T.METEORIC_IRON || t===T.IRIDIUM || t===T.OBSIDIAN; }
   function isFragileFalling(t){ return t===T.GLASS; }
   function isLooseRigid(t){ return t===T.DIAMOND || t===T.ELECTRONICS; }
   function isLoadBearingSupport(t){
@@ -112,6 +112,8 @@ window.MM = window.MM || {};
     if(type===T.DIAMOND || type===T.ELECTRONICS) return 0.09;
     if(type===T.WOOD) return 0.06;
     if(type===T.STONE) return rubble ? 0.022 : 0.014;
+    if(type===T.GRANITE) return rubble ? 0.018 : 0.011;
+    if(type===T.BASALT || type===T.BEDROCK) return 0.009;
     if(type===T.OBSIDIAN) return 0.010;
     if(type===T.IRIDIUM) return 0.008;
     if(type===T.METEORIC_IRON) return 0.007;

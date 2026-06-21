@@ -11,6 +11,7 @@ import { gases as GASES } from './engine/gases.js';
 import { dynamo as DYNAMO } from './engine/dynamo.js';
 import { solar as SOLAR } from './engine/solar.js';
 import { teleporters as TELEPORTERS } from './engine/teleporters.js';
+import { pumps as PUMPS } from './engine/pumps.js';
 import { applyHorizontalMovement, surfaceTraction } from './engine/movement.js';
 import { cape as CAPE } from './engine/cape.js';
 import { chests as CHESTS } from './engine/chests.js';
@@ -205,6 +206,9 @@ function ensureChunk(cx){ return WORLD.ensureChunk(cx); }
 })();
 
 function getTile(x,y){ return WORLD.getTile(x,y); }
+function getInfrastructureTile(x,y){ return (WORLD && WORLD.getInfrastructure) ? WORLD.getInfrastructure(x,y) : T.AIR; }
+function getNetworkTile(x,y){ return (WORLD && WORLD.getNetworkTile) ? WORLD.getNetworkTile(x,y) : getTile(x,y); }
+function isInfrastructureTileId(t){ return !!(WORLD && WORLD.isInfrastructureTile && WORLD.isInfrastructureTile(t)); }
 function setTile(x,y,v){ WORLD.setTile(x,y,v); }
 setTile.transient = function(x,y,v){
 	if(WORLD && typeof WORLD.setTransientTile==='function') WORLD.setTransientTile(x,y,v);
@@ -348,7 +352,7 @@ function heroEnergyInfo(){
 MM.heroEnergy={capacity:heroEnergyCapacity, info:heroEnergyInfo, add:addHeroEnergy, chargeExternal:chargeHeroEnergy, spend:spendHeroEnergy, drain:drainHeroEnergy};
 window.addEventListener('mm-progress-change',applyHeroEnergyCapacity);
 applyHeroEnergyCapacity();
-const tools={basic:1,stone:2,diamond:4};
+const tools={basic:1,stone:2,meteor:3.3,diamond:4};
 // --- Resource registry: SINGLE source for collectable/placeable resources,
 // derived from MM.inventory.RESOURCES ({key,label,color,tile}). Adding a new
 // resource there (plus its INFO tile entry) automatically wires: inv counts,
@@ -356,12 +360,15 @@ const tools={basic:1,stone:2,diamond:4};
 // placement/consumption checks, undo refunds, crafting labels and death drops.
 const RESOURCE_DEFS=(MM.inventory && MM.inventory.RESOURCES)? MM.inventory.RESOURCES.slice() : [];
 const RESOURCE_KEYS=RESOURCE_DEFS.map(r=>r.key);
+const RESOURCE_KEY_SET=new Set(RESOURCE_KEYS);
 const TILE_TO_RES={}; RESOURCE_DEFS.forEach(r=>{ if(r.tile && T[r.tile]!=null) TILE_TO_RES[T[r.tile]]=r.key; });
 const RES_LABEL={}; RESOURCE_DEFS.forEach(r=>{ RES_LABEL[r.key]=r.label.toLowerCase(); });
 const TILE_LABELS={};
 RESOURCE_DEFS.forEach(r=>{ if(r.tile && T[r.tile]!=null) TILE_LABELS[T[r.tile]]=r.label; });
 Object.assign(TILE_LABELS,{
 	[T.AIR]:'Powietrze',
+	[T.STONE]:'Skala',
+	[T.BEDROCK]:'Skala macierzysta',
 	[T.CHEST_COMMON]:'Skrzynia zwykla',
 	[T.CHEST_RARE]:'Skrzynia rzadka',
 	[T.CHEST_EPIC]:'Skrzynia epicka',
@@ -393,7 +400,14 @@ Object.assign(TILE_LABELS,{
 	[T.SOLAR_BATTERY]:'Panel sloneczny z bateria',
 	[T.TURRET]:'Wiezyczka',
 	[T.FIRE_TURRET]:'Wiezyczka ogniowa',
-	[T.WATER_TURRET]:'Wiezyczka wodna'
+	[T.WATER_TURRET]:'Wiezyczka wodna',
+	[T.WATER_PIPE]:'Rura wodna',
+	[T.WATER_PUMP]:'Pompa wodna',
+	[T.METEOR_SIREN]:'Syrena meteorytowa',
+	[T.RADIOACTIVE_ORE]:'Ruda radioaktywna',
+	[T.ALIEN_BIOMASS]:'Biomasa obca',
+	[T.METEOR_DUST]:'Pyl meteorytowy',
+	[T.ANTIMATTER_CRYSTAL]:'Krysztal antymaterii'
 });
 function tileLabel(t){ return TILE_LABELS[t] || 'Nieznany blok'; }
 function tileHoverColor(t){ return t===T.AIR ? '#9fb8d1' : ((INFO[t]&&INFO[t].color) || '#9fb8d1'); }
@@ -409,7 +423,7 @@ function gasSkyExposedTile(x,y){
 	return true;
 }
 // Inventory counts for resources (+ tool unlock flags)
-const inv={tools:{stone:false,diamond:false}};
+const inv={tools:{stone:false,meteor:false,diamond:false}};
 RESOURCE_KEYS.forEach(k=>{ inv[k]=0; });
 // Expose inventory for cross-module loot insertion
 window.inv = inv;
@@ -422,16 +436,30 @@ function selectedTileId(){ const name=HOTBAR_ORDER[hotbarIndex]; return T[name];
 function isChestSelection(name){ return name==='CHEST_COMMON'||name==='CHEST_RARE'||name==='CHEST_EPIC'; }
 function cycleHotbar(idx){ if(idx<0||idx>=HOTBAR_ORDER.length) return; hotbarIndex=idx; updateHotbarSel(); refreshHotbarDom(); saveState(); }
 const DYNAMO_ORIENTATION_KEY='mm_dynamo_orientation_v1';
+const PUMP_ORIENTATION_KEY='mm_pump_orientation_v1';
 let dynamoOrientation='horizontal';
+let pumpOrientation='east';
 try{
 	const savedDynamoOrientation=localStorage.getItem(DYNAMO_ORIENTATION_KEY);
 	if(savedDynamoOrientation==='vertical') dynamoOrientation='vertical';
+	const savedPumpOrientation=localStorage.getItem(PUMP_ORIENTATION_KEY);
+	if(['east','south','west','north'].includes(savedPumpOrientation)) pumpOrientation=savedPumpOrientation;
 }catch(e){}
 function dynamoOrientationLabel(){ return dynamoOrientation==='vertical' ? 'pionowo' : 'poziomo'; }
 function toggleDynamoOrientation(){
 	dynamoOrientation=dynamoOrientation==='vertical' ? 'horizontal' : 'vertical';
 	try{ localStorage.setItem(DYNAMO_ORIENTATION_KEY,dynamoOrientation); }catch(e){}
 	msg('Dynamo: '+dynamoOrientationLabel()+' (R obraca)');
+}
+function pumpOrientationLabel(){
+	return pumpOrientation==='east' ? 'wyjscie w prawo'
+		: (pumpOrientation==='west' ? 'wyjscie w lewo'
+		: (pumpOrientation==='south' ? 'wyjscie w dol' : 'wyjscie w gore'));
+}
+function togglePumpOrientation(){
+	pumpOrientation=(PUMPS && PUMPS.rotateDir) ? PUMPS.rotateDir(pumpOrientation) : (pumpOrientation==='east'?'south':pumpOrientation==='south'?'west':pumpOrientation==='west'?'north':'east');
+	try{ localStorage.setItem(PUMP_ORIENTATION_KEY,pumpOrientation); }catch(e){}
+	msg('Pompa: '+pumpOrientationLabel()+' (R obraca)');
 }
 // --- Respawn point (Totem odrodzenia) + death with gravestone resource drop ---
 // Both are bound to the world seed: a totem from world A must not teleport the hero
@@ -674,13 +702,13 @@ function restoreReferencedChunks(refs){ const restored=[]; if(!Array.isArray(ref
 function restoreWorldChunks(worldData){ if(!worldData || typeof worldData!=='object') return []; if(Array.isArray(worldData.modified)) return restoreModifiedChunks(worldData.modified); if(Array.isArray(worldData.chunkRefs)) return restoreReferencedChunks(worldData.chunkRefs); return []; }
 // (legacy v4 export*/import* save helpers removed — v5 persists only blocks + player position)
 function snapshotInventory(){
-	const out={tools:{stone:!!inv.tools.stone, diamond:!!inv.tools.diamond}};
+	const out={tools:{stone:!!inv.tools.stone, meteor:!!inv.tools.meteor, diamond:!!inv.tools.diamond}};
 	RESOURCE_KEYS.forEach(k=>{ out[k]=Math.max(0, inv[k]|0); });
 	return out;
 }
 function restoreInventory(src){
 	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; });
-	inv.tools.stone=false; inv.tools.diamond=false;
+	inv.tools.stone=false; inv.tools.meteor=false; inv.tools.diamond=false;
 	if(!src || typeof src!=='object') return;
 	RESOURCE_KEYS.forEach(k=>{
 		const v=src[k];
@@ -688,6 +716,7 @@ function restoreInventory(src){
 	});
 	if(src.tools && typeof src.tools==='object'){
 		inv.tools.stone=!!src.tools.stone;
+		inv.tools.meteor=!!src.tools.meteor;
 		inv.tools.diamond=!!src.tools.diamond;
 	}
 }
@@ -741,17 +770,20 @@ function buildSaveObject(opts){
 	v:7,
 	seed: WORLDGEN.worldSeed,
 	world:worldData,
+	infrastructure: timedSavePart('infrastructure',()=>((WORLD && WORLD.snapshotInfrastructure) ? WORLD.snapshotInfrastructure() : null),perf),
 	background: timedSavePart('background',()=>((BACKGROUND && BACKGROUND.snapshot) ? BACKGROUND.snapshot() : ((BACKGROUND && BACKGROUND.exportState) ? BACKGROUND.exportState() : null)),perf),
 	trees: timedSavePart('trees',()=>((TREES && TREES.snapshot) ? TREES.snapshot() : null),perf),
 	falling: timedSavePart('falling',()=>((FALLING && FALLING.snapshot) ? FALLING.snapshot() : null),perf),
 	meat: timedSavePart('meat',()=>((MEAT && MEAT.snapshot) ? MEAT.snapshot() : null),perf),
 	gases: timedSavePart('gases',()=>((GASES && GASES.snapshot) ? GASES.snapshot() : null),perf),
+	fire: timedSavePart('fire',()=>((FIRE && FIRE.snapshot) ? FIRE.snapshot() : null),perf),
 	wind: timedSavePart('wind',()=>((WIND && WIND.snapshot) ? WIND.snapshot() : null),perf),
 	seasons: timedSavePart('seasons',()=>((SEASONS && SEASONS.snapshot) ? SEASONS.snapshot() : null),perf),
 	clouds: timedSavePart('clouds',()=>((CLOUDS && CLOUDS.snapshot) ? CLOUDS.snapshot() : null),perf),
 	dynamo: timedSavePart('dynamo',()=>((DYNAMO && DYNAMO.snapshot) ? DYNAMO.snapshot() : null),perf),
 	solar: timedSavePart('solar',()=>((SOLAR && SOLAR.snapshot) ? SOLAR.snapshot() : null),perf),
 	teleporters: timedSavePart('teleporters',()=>((TELEPORTERS && TELEPORTERS.snapshot) ? TELEPORTERS.snapshot() : null),perf),
+	pumps: timedSavePart('pumps',()=>((PUMPS && PUMPS.snapshot) ? PUMPS.snapshot() : null),perf),
 	turrets: timedSavePart('turrets',()=>((TURRETS && TURRETS.snapshot) ? TURRETS.snapshot() : null),perf),
 	volcano: timedSavePart('volcano',()=>((VOLCANO && VOLCANO.snapshot) ? VOLCANO.snapshot() : null),perf),
 	meteorites: timedSavePart('meteorites',()=>((METEORITES && METEORITES.snapshot) ? METEORITES.snapshot() : null),perf),
@@ -827,6 +859,7 @@ function loadGame(){
 	try{ if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); }catch(e){}
 	try{ if(SOLAR && SOLAR.reset) SOLAR.reset(); }catch(e){}
 	try{ if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); }catch(e){}
+	try{ if(PUMPS && PUMPS.reset) PUMPS.reset(); }catch(e){}
 	try{ if(TURRETS && TURRETS.reset) TURRETS.reset(); }catch(e){}
 	try{ if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); }catch(e){}
 	try{ if(UFO && UFO.clearActive) UFO.clearActive(); }catch(e){}
@@ -849,6 +882,7 @@ function loadGame(){
 	// Restore modified blocks and player position. v6 saves are self-contained;
 	// v7 autosaves may reference separately stored chunk blobs.
 	const restoredChunks=restoreWorldChunks(data.world);
+	try{ if(WORLD && WORLD.restoreInfrastructure) WORLD.restoreInfrastructure(data.infrastructure); }catch(e){}
 	try{ if(TREES && TREES.restore) TREES.restore(data.trees,getTile); }catch(e){}
 	try{ if(TREES && TREES.auditChunks) TREES.auditChunks(restoredChunks,getTile); }catch(e){}
 	try{ if(FALLING && FALLING.restore) FALLING.restore(data.falling); }catch(e){}
@@ -856,12 +890,14 @@ function loadGame(){
 	try{ if(MEAT && MEAT.restore) MEAT.restore(data.meat,getTile); }catch(e){}
 	try{ if(GASES && GASES.restore) GASES.restore(data.gases,getTile,setTile); }catch(e){}
 	try{ if(GASES && GASES.auditChunks) GASES.auditChunks(restoredChunks,getTile); }catch(e){}
+	try{ if(FIRE && FIRE.restore) FIRE.restore(data.fire,getTile); }catch(e){}
 	try{ if(WIND && WIND.restore) WIND.restore(data.wind); }catch(e){}
 	try{ if(SEASONS && SEASONS.restore) SEASONS.restore(data.seasons); }catch(e){}
 	try{ if(CLOUDS && CLOUDS.restore) CLOUDS.restore(data.clouds); }catch(e){}
 	try{ if(DYNAMO && DYNAMO.restore) DYNAMO.restore(data.dynamo,getTile); }catch(e){}
 	try{ if(SOLAR && SOLAR.restore) SOLAR.restore(data.solar,getTile); }catch(e){}
 	try{ if(TELEPORTERS && TELEPORTERS.restore) TELEPORTERS.restore(data.teleporters,getTile); }catch(e){}
+	try{ if(PUMPS && PUMPS.restore) PUMPS.restore(data.pumps,getTile); }catch(e){}
 	try{ if(TURRETS && TURRETS.restore) TURRETS.restore(data.turrets,getTile); }catch(e){}
 	try{ if(VOLCANO && VOLCANO.restore) VOLCANO.restore(data.volcano,getTile); }catch(e){}
 	try{ if(METEORITES && METEORITES.restore) METEORITES.restore(data.meteorites); }catch(e){}
@@ -1139,9 +1175,16 @@ function grantCraftedItem(def){
 }
 const RECIPES=[
 	{id:'pick_stone', name:'Kilof kamienny', cost:{stone:10}, done:()=>inv.tools.stone, make(){ inv.tools.stone=true; msg('Kilof kamienny (przełączaj klawiszem 1)'); }},
+	{id:'pick_meteoric_iron', name:'Kilof meteorytowy', cost:{meteoricIron:5, coal:2}, done:()=>inv.tools.meteor, make(){ inv.tools.meteor=true; msg('Kilof meteorytowy iskrzy na kamieniu (przelaczaj klawiszem 1)'); }},
 	{id:'pick_diamond', name:'Kilof diamentowy', cost:{diamond:5}, done:()=>inv.tools.diamond, make(){ inv.tools.diamond=true; msg('Kilof diamentowy (przełączaj klawiszem 1)'); }},
 	{id:'torches', name:'Pochodnie ×4', cost:{wood:2}, make(){ inv.torch+=4; msg('Pochodnie +4 — przypisz do paska i stawiaj (świecą nocą)'); }},
 	{id:'coal_torches', name:'Pochodnie z węgla ×8', cost:{wood:1, coal:1}, make(){ inv.torch+=8; msg('Pochodnie +8 — węgiel pali się długo'); }},
+	{id:'arrows_wood_small', name:'Strzaly drewniane x10', cost:{wood:1}, make(){ inv.arrowWood+=10; msg('Strzaly drewniane +10'); }},
+	{id:'arrows_wood_bulk', name:'Strzaly drewniane x100', cost:{wood:10}, make(){ inv.arrowWood+=100; msg('Strzaly drewniane +100'); }},
+	{id:'arrows_stone_bulk', name:'Strzaly kamienne x100', cost:{wood:10, stone:1}, make(){ inv.arrowStone+=100; msg('Strzaly kamienne +100'); }},
+	{id:'arrows_obsidian_bulk', name:'Strzaly obsydianowe x100', cost:{wood:10, obsidian:1}, make(){ inv.arrowObsidian+=100; msg('Strzaly obsydianowe +100'); }},
+	{id:'arrows_diamond_bulk', name:'Strzaly diamentowe x100', cost:{wood:10, diamond:1}, make(){ inv.arrowDiamond+=100; msg('Strzaly diamentowe +100'); }},
+	{id:'arrows_iridium_bulk', name:'Strzaly irydowe x100', cost:{wood:10, iridium:1}, make(){ inv.arrowIridium+=100; msg('Strzaly irydowe +100'); }},
 	{id:'obsidian_sword', name:'Miecz obsydianowy', cost:{obsidian:4, wood:2}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Miecz obsydianowy',attackDamage:6,tier:'rare',desc:'Wykuty z hartowanej lawy'}); }},
 	{id:'lucky_charm', name:'Talizman diamentowy', cost:{diamond:3}, make(){ grantCraftedItem({kind:'charm',name:'Talizman diamentowy',mineSpeedMult:1.15,visionRadius:12,tier:'rare',desc:'Diament oszlifowany w talizman'}); }},
 	{id:'spring_antler_charm', name:'Wieniec wiosny', cost:{springAntler:1, leaf:6, wood:2}, make(){ grantCraftedItem({kind:'charm',name:'Wieniec wiosny',moveSpeedMult:1.10,visionRadius:14,tier:'epic',desc:'Trofeum wiosennego jelenia; lekki krok i czujne oczy'}); }},
@@ -1151,8 +1194,12 @@ const RECIPES=[
 	{id:'respawn', name:'Totem odrodzenia', cost:{stone:5, wood:2}, make(){ setRespawnPoint(); }},
 	{id:'dynamo', name:'Dynamo', cost:{steel:4, wire:2, copper:2, transistor:1}, make(){ inv.dynamo+=1; msg('Dynamo +1 - R obraca; pionowe dziala w zaporach wodnych'); }},
 	{id:'copper_wire', name:'Przewod miedziany x4', cost:{copper:2, plastic:1}, make(){ inv.copperWire+=4; msg('Przewod miedziany +4 - laczy dynama z maszynami'); }},
+	{id:'water_pipe', name:'Rura wodna x6', cost:{steel:1, plastic:1}, make(){ inv.waterPipe+=6; msg('Rura wodna +6 - prowadzi wode od pompy do urzadzen'); }},
+	{id:'water_pump', name:'Pompa wodna', cost:{steel:3, copperWire:2, transistor:1}, make(){ inv.waterPump+=1; msg('Pompa wodna +1 - R obraca kierunek wejscia/wyjscia'); }},
 	{id:'teleporter', name:'Teleporter', cost:{steel:6, copperWire:6, transistor:2, diamond:1, dynamo:1}, make(){ inv.teleporter+=1; msg('Teleporter +1 - wejdz w lewo/prawo, aby skoczyc do kolejnego'); }},
 	{id:'antigravity_beacon', name:'Beacon antygrawitacyjny', cost:{antimatter:1, iridium:2, meteoricIron:4, copperWire:4, transistor:1}, make(){ inv.antigravityBeacon+=1; msg('Beacon antygrawitacyjny +1 - odchyla nadlatujace meteoryty'); }},
+	{id:'meteor_siren', name:'Syrena meteorytowa', cost:{meteoricIron:2, copperWire:3, transistor:1, coal:1}, make(){ inv.meteorSiren+=1; msg('Syrena meteorytowa +1 - ostrzega przed meteorytami w okolicy'); }},
+	{id:'crater_scanner', name:'Skaner kraterow', cost:{meteoricIron:2, copperWire:1, transistor:1, iridium:1}, make(){ inv.craterScanner+=1; msg('Skaner kraterow +1 - analizuje najblizszy krater meteorytowy'); }},
 	{id:'turret', name:'Wiezyczka', cost:{steel:4, copperWire:3, transistor:1}, make(){ inv.turret+=1; msg('Wiezyczka +1 - laduje sie z przewodow i strzela do wrogow'); }},
 	{id:'fire_turret', name:'Wiezyczka ogniowa', cost:{steel:4, copperWire:4, transistor:1, coal:3}, make(){ inv.fireTurret+=1; msg('Wiezyczka ogniowa +1 - podpala nadchodzacych wrogow'); }},
 	{id:'water_turret', name:'Wiezyczka wodna', cost:{steel:4, copperWire:4, transistor:1, water:4}, make(){ inv.waterTurret+=1; msg('Wiezyczka wodna +1 - gasi i odpycha cele strumieniem wody'); }},
@@ -1371,15 +1418,23 @@ function smoothTerrainNoise(wx,y,scale){
 	return lerp(a,b,ty);
 }
 function isContinuousTerrainTile(t){
-	return t===T.GRASS || t===T.SAND || t===T.STONE || t===T.COAL || t===T.SNOW || t===T.ICE || t===T.MUD || t===T.OBSIDIAN || t===T.WOOD || t===T.STEEL || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.GLASS;
+	return t===T.GRASS || t===T.SAND || t===T.DIRT || t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL || t===T.SNOW || t===T.ICE || t===T.MUD || t===T.OBSIDIAN || t===T.WOOD || t===T.STEEL || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.GLASS;
 }
 function tileShadeAmp(t){
+	if(t===T.DIRT) return 5;
 	if(t===T.STONE) return 5;
+	if(t===T.GRANITE) return 6;
+	if(t===T.BASALT) return 5;
+	if(t===T.BEDROCK) return 4;
 	if(t===T.SAND) return 4;
 	if(t===T.COAL) return 4;
 	if(t===T.STEEL) return 8;
 	if(t===T.METEORIC_IRON) return 6;
 	if(t===T.IRIDIUM) return 4;
+	if(t===T.RADIOACTIVE_ORE) return 5;
+	if(t===T.ALIEN_BIOMASS) return 8;
+	if(t===T.METEOR_DUST) return 3;
+	if(t===T.ANTIMATTER_CRYSTAL) return 4;
 	if(t===T.DIAMOND) return 0;
 	if(t===T.WOOD) return 8;
 	if(t===T.GRASS) return 8;
@@ -1392,6 +1447,7 @@ function tileShadeAmp(t){
 	if(t===T.TELEPORTER) return 5;
 	if(t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET) return 4;
 	if(t===T.ANTIGRAVITY_BEACON) return 3;
+	if(t===T.METEOR_SIREN) return 4;
 	if(INFO[t] && INFO[t].chestTier) return 4;
 	return 22;
 }
@@ -1399,7 +1455,7 @@ function terrainShadeDelta(t,wx,y,h){
 	const amp=tileShadeAmp(t);
 	if(!amp) return 0;
 	if(isContinuousTerrainTile(t)){
-		const scale = t===T.SNOW || t===T.ICE ? 9 : (t===T.COAL || t===T.OBSIDIAN ? 6 : 7);
+		const scale = t===T.SNOW || t===T.ICE ? 9 : (t===T.COAL || t===T.OBSIDIAN || t===T.BASALT || t===T.BEDROCK ? 6 : 7);
 		return Math.round(smoothTerrainNoise(wx,y,scale)*amp);
 	}
 	return Math.round(((h & 0xFF)/255 - 0.5)*amp);
@@ -1619,7 +1675,7 @@ function drawSandGrains(g,px,py,h){
 const terrainPatternCache = new Map();
 const TERRAIN_PATTERN_VARIANTS = 6;
 function hasTerrainPattern(t){
-	return t===T.SAND || t===T.STONE || t===T.COAL;
+	return t===T.SAND || t===T.DIRT || t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL;
 }
 function terrainTextureVariant(t,wx,y,h){
 	const patch=hash32(Math.floor(wx/2),Math.floor(y/2));
@@ -1654,6 +1710,18 @@ function terrainPatternCanvas(t,variant){
 			const x=2+((rnd()*9)|0), y=4+((rnd()*12)|0);
 			g.fillRect(x,y,6+((rnd()*7)|0),1);
 		}
+	} else if(t===T.DIRT){
+		const soil=['rgba(45,28,16,0.26)','rgba(93,63,38,0.24)','rgba(151,111,68,0.18)','rgba(34,58,28,0.12)'];
+		for(let i=0;i<14;i++){
+			g.fillStyle=soil[(rnd()*soil.length)|0];
+			const x=1+((rnd()*17)|0), y=2+((rnd()*16)|0);
+			g.fillRect(x,y,1+((rnd()*2)|0),1+((rnd()*2)|0));
+		}
+		for(let i=0;i<3;i++){
+			g.strokeStyle=i===0?'rgba(42,30,18,0.28)':'rgba(132,96,56,0.16)';
+			const x=2+((rnd()*12)|0), y=5+((rnd()*10)|0);
+			g.beginPath(); g.moveTo(x,y); g.lineTo(x+3+((rnd()*5)|0),y+((rnd()*3)|0)); g.stroke();
+		}
 	} else if(t===T.STONE){
 		const chips=['rgba(33,37,44,0.20)','rgba(102,107,116,0.18)','rgba(225,231,238,0.13)'];
 		for(let i=0;i<6;i++){
@@ -1674,6 +1742,41 @@ function terrainPatternCanvas(t,variant){
 		g.beginPath();
 		g.moveTo(3+((rnd()*9)|0),3+((rnd()*5)|0));
 		g.lineTo(9+((rnd()*7)|0),3+((rnd()*5)|0));
+		g.stroke();
+	} else if(t===T.GRANITE){
+		const grains=['rgba(32,34,39,0.20)','rgba(102,94,94,0.24)','rgba(190,178,172,0.18)','rgba(116,84,72,0.16)'];
+		for(let i=0;i<18;i++){
+			g.fillStyle=grains[(rnd()*grains.length)|0];
+			g.fillRect(1+((rnd()*17)|0),2+((rnd()*16)|0),1+((rnd()*2)|0),1);
+		}
+		g.strokeStyle='rgba(42,43,49,0.24)';
+		for(let i=0;i<2;i++){
+			const x=2+((rnd()*11)|0), y=4+((rnd()*10)|0);
+			g.beginPath(); g.moveTo(x,y); g.lineTo(x+5+((rnd()*5)|0),y+1+((rnd()*3)|0)); g.stroke();
+		}
+	} else if(t===T.BASALT){
+		const dark=['rgba(0,0,0,0.26)','rgba(16,18,22,0.32)','rgba(62,67,76,0.16)'];
+		for(let i=0;i<7;i++){
+			g.fillStyle=dark[(rnd()*dark.length)|0];
+			const x=2+((rnd()*13)|0), y=2+((rnd()*14)|0);
+			g.fillRect(x,y,2+((rnd()*5)|0),1+((rnd()*3)|0));
+		}
+		g.strokeStyle='rgba(105,111,124,0.18)';
+		for(let i=0;i<3;i++){
+			const x=3+((rnd()*10)|0), y=3+((rnd()*10)|0);
+			g.beginPath(); g.moveTo(x,y); g.lineTo(x+2+((rnd()*6)|0),y+5+((rnd()*4)|0)); g.stroke();
+		}
+	} else if(t===T.BEDROCK){
+		const plates=['rgba(0,0,0,0.34)','rgba(18,22,30,0.34)','rgba(88,96,112,0.13)'];
+		for(let i=0;i<8;i++){
+			g.fillStyle=plates[(rnd()*plates.length)|0];
+			const x=1+((rnd()*15)|0), y=2+((rnd()*14)|0);
+			g.fillRect(x,y,4+((rnd()*5)|0),1+((rnd()*2)|0));
+		}
+		g.strokeStyle='rgba(128,140,158,0.18)';
+		g.beginPath();
+		g.moveTo(2+((rnd()*6)|0),4+((rnd()*8)|0));
+		g.lineTo(10+((rnd()*5)|0),7+((rnd()*7)|0));
 		g.stroke();
 	} else if(t===T.COAL){
 		const dark=['rgba(0,0,0,0.30)','rgba(5,6,9,0.38)','rgba(22,23,29,0.26)'];
@@ -1700,7 +1803,7 @@ function terrainPatternCanvas(t,variant){
 }
 function drawTerrainPattern(g,t,px,py,wx,y,h){
 	if(!hasTerrainPattern(t)) return;
-	if(t===T.STONE && (h&1)) return;
+	if((t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK) && (h&1)) return;
 	const variant=terrainTextureVariant(t,wx,y,h);
 	g.drawImage(terrainPatternCanvas(t,variant),px,py);
 }
@@ -1715,12 +1818,38 @@ function _drawMaterialTile(g,t,px,py,h){
 		dot(g,px,py,13,10,2,6,'rgba(28,92,30,0.22)');
 	} else if(t===T.SAND){
 		drawSandGrains(g,px,py,h);
+	} else if(t===T.DIRT){
+		drawBlockBevel(g,px,py,'rgba(184,132,78,0.13)','rgba(31,20,11,0.28)');
+		dot(g,px,py,2+rx,4,5,3,'rgba(55,35,20,0.30)');
+		dot(g,px,py,10,9+ry,6,3,'rgba(119,80,45,0.24)');
+		dot(g,px,py,4,14,4,2,'rgba(35,55,28,0.18)');
+		strokePath(g,'rgba(33,24,16,0.22)',1,[[px+3,py+10],[px+8,py+9],[px+14,py+12]]);
 	} else if(t===T.STONE){
 		drawBlockBevel(g,px,py,'rgba(255,255,255,0.13)','rgba(23,25,31,0.20)');
 		strokePath(g,'rgba(51,55,64,0.32)',1,[[px+3,py+6+ry],[px+8,py+7+ry],[px+11,py+5+ry]]);
 		strokePath(g,'rgba(230,235,242,0.16)',1,[[px+4+rx,py+3],[px+9+rx,py+3]]);
 		dot(g,px,py,13,11,3,2,'rgba(52,55,63,0.16)');
 		dot(g,px,py,5,14,2,1,'rgba(235,238,244,0.15)');
+	} else if(t===T.GRANITE){
+		drawBlockBevel(g,px,py,'rgba(235,222,215,0.16)','rgba(31,31,38,0.24)');
+		dot(g,px,py,2,2,TILE-4,TILE-4,'rgba(96,88,88,0.22)');
+		dot(g,px,py,4+rx,5,4,3,'rgba(196,184,176,0.28)');
+		dot(g,px,py,12,10+ry,4,3,'rgba(92,68,62,0.22)');
+		strokePath(g,'rgba(45,47,54,0.30)',1,[[px+3,py+6],[px+9,py+8],[px+16,py+6]]);
+	} else if(t===T.BASALT){
+		drawBlockBevel(g,px,py,'rgba(132,142,156,0.10)','rgba(0,0,0,0.34)');
+		dot(g,px,py,2,2,TILE-4,TILE-4,'rgba(16,18,22,0.46)');
+		dot(g,px,py,4+rx,4,5,4,'rgba(63,69,78,0.28)');
+		dot(g,px,py,11,12,5,2,'rgba(0,0,0,0.24)');
+		strokePath(g,'rgba(105,114,128,0.22)',1,[[px+5,py+3],[px+8,py+9],[px+5,py+16]]);
+		strokePath(g,'rgba(16,18,22,0.40)',1,[[px+13,py+4],[px+11,py+10],[px+15,py+15]]);
+	} else if(t===T.BEDROCK){
+		drawBlockBevel(g,px,py,'rgba(112,123,142,0.10)','rgba(0,0,0,0.44)');
+		dot(g,px,py,1,2,TILE-2,TILE-4,'rgba(16,20,28,0.55)');
+		dot(g,px,py,3+rx,5,7,2,'rgba(92,101,119,0.18)');
+		dot(g,px,py,9,11+ry,8,3,'rgba(0,0,0,0.26)');
+		strokePath(g,'rgba(142,153,174,0.18)',1,[[px+3,py+13],[px+8,py+8],[px+16,py+9]]);
+		strokePath(g,'rgba(0,0,0,0.36)',1,[[px+2,py+5],[px+7,py+6],[px+13,py+3],[px+18,py+5]]);
 	} else if(t===T.WOOD){
 		drawBlockBevel(g,px,py,'rgba(255,211,124,0.12)','rgba(45,24,7,0.24)');
 		dot(g,px,py,3+((h>>>7)&2),0,2,TILE,'rgba(74,43,19,0.30)');
@@ -1760,6 +1889,35 @@ function _drawMaterialTile(g,t,px,py,h){
 		dot(g,px,py,4,13,3,2,'rgba(185,122,68,0.28)');
 		strokePath(g,'rgba(219,229,236,0.28)',1,[[px+4,py+6],[px+9,py+7],[px+14,py+5]]);
 		dot(g,px,py,13,5,2,2,'rgba(235,241,245,0.42)');
+	} else if(t===T.RADIOACTIVE_ORE){
+		drawBlockBevel(g,px,py,'rgba(190,255,120,0.25)','rgba(8,30,9,0.36)');
+		dot(g,px,py,2,2,TILE-4,TILE-4,'rgba(13,43,17,0.48)');
+		dot(g,px,py,4+rx,5,5,4,'rgba(138,255,79,0.38)');
+		dot(g,px,py,11,10+ry,5,3,'rgba(40,120,34,0.32)');
+		strokePath(g,'rgba(205,255,140,0.54)',1,[[px+4,py+13],[px+9,py+6],[px+15,py+10]]);
+		dot(g,px,py,8,8,3,3,'rgba(229,255,142,0.72)');
+	} else if(t===T.ALIEN_BIOMASS){
+		drawBlockBevel(g,px,py,'rgba(205,255,154,0.18)','rgba(45,8,28,0.30)');
+		dot(g,px,py,2,3,TILE-4,TILE-6,'rgba(42,86,45,0.52)');
+		dot(g,px,py,4+rx,5,6,5,'rgba(121,201,93,0.42)');
+		dot(g,px,py,10,10+ry,6,4,'rgba(190,76,118,0.28)');
+		g.strokeStyle='rgba(236,255,190,0.36)';
+		g.lineWidth=1;
+		g.beginPath(); g.arc(px+TILE*0.52,py+TILE*0.54,5.5,0,Math.PI*2); g.stroke();
+		dot(g,px,py,7,7,2,2,'rgba(255,207,142,0.65)');
+	} else if(t===T.METEOR_DUST){
+		drawBlockBevel(g,px,py,'rgba(236,215,255,0.18)','rgba(31,20,45,0.20)');
+		dot(g,px,py,2,12,TILE-4,4,'rgba(124,91,166,0.34)');
+		dot(g,px,py,3+rx,5,3,2,'rgba(200,166,255,0.44)');
+		dot(g,px,py,11,8+ry,4,2,'rgba(124,247,255,0.26)');
+		dot(g,px,py,6,14,8,1,'rgba(238,220,255,0.22)');
+	} else if(t===T.ANTIMATTER_CRYSTAL){
+		drawBlockBevel(g,px,py,'rgba(244,218,255,0.32)','rgba(4,4,18,0.42)');
+		dot(g,px,py,2,2,TILE-4,TILE-4,'rgba(14,6,30,0.58)');
+		g.fillStyle='rgba(211,107,255,0.78)';
+		g.beginPath(); g.moveTo(px+TILE/2,py+3); g.lineTo(px+TILE-5,py+TILE/2); g.lineTo(px+TILE/2,py+TILE-3); g.lineTo(px+5,py+TILE/2); g.closePath(); g.fill();
+		strokePath(g,'rgba(124,247,255,0.62)',1,[[px+5,py+TILE/2],[px+TILE/2,py+3],[px+TILE-5,py+TILE/2],[px+TILE/2,py+TILE-3],[px+5,py+TILE/2]]);
+		dot(g,px,py,9,8,2,3,'rgba(255,255,255,0.80)');
 	} else if(t===T.LAVA){
 		drawBlockBevel(g,px,py,'rgba(255,225,98,0.25)','rgba(66,13,3,0.30)');
 		dot(g,px,py,0,0,TILE,3,'rgba(255,190,46,0.33)');
@@ -1852,6 +2010,11 @@ function _drawMaterialTile(g,t,px,py,h){
 		g.strokeStyle='rgba(255,226,120,0.45)';
 		g.beginPath(); g.arc(px+TILE/2,py+TILE/2,3,0,Math.PI*2); g.stroke();
 		strokePath(g,'rgba(124,247,255,0.30)',1,[[px+TILE/2,py+3],[px+TILE/2,py+TILE-3]]);
+	} else if(t===T.WATER_PIPE){
+		const conn={left:true,right:true,up:false,down:false};
+		if(PUMPS && PUMPS.drawPipeTile) PUMPS.drawPipeTile(g,TILE,px,py,conn,h);
+	} else if(t===T.WATER_PUMP){
+		if(PUMPS && PUMPS.drawPumpTile) PUMPS.drawPumpTile(g,TILE,px,py,'east',0.15,0,0);
 	} else if(t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET){
 		const fire=t===T.FIRE_TURRET, water=t===T.WATER_TURRET;
 		const glow=fire?'rgba(255,112,36,0.72)':(water?'rgba(84,216,255,0.72)':'rgba(184,232,255,0.68)');
@@ -1880,6 +2043,20 @@ function _drawMaterialTile(g,t,px,py,h){
 		dot(g,px,py,8,8,4,4,'rgba(244,218,255,0.88)');
 		dot(g,px,py,9,4,2,3,'rgba(124,247,255,0.62)');
 		dot(g,px,py,9,13,2,3,'rgba(124,247,255,0.42)');
+	} else if(t===T.METEOR_SIREN){
+		drawBlockBevel(g,px,py,'rgba(255,210,120,0.24)','rgba(42,14,4,0.38)');
+		dot(g,px,py,2,4,TILE-4,TILE-6,'rgba(48,18,10,0.62)');
+		dot(g,px,py,5,11,TILE-10,4,'rgba(255,159,69,0.30)');
+		g.strokeStyle='rgba(255,201,86,0.86)';
+		g.lineWidth=1.5;
+		g.beginPath();
+		g.moveTo(px+TILE*0.50,py+5);
+		g.lineTo(px+TILE*0.78,py+11);
+		g.lineTo(px+TILE*0.22,py+11);
+		g.closePath();
+		g.stroke();
+		dot(g,px,py,9,6,2,8,'rgba(255,240,166,0.78)');
+		dot(g,px,py,6,15,8,2,'rgba(255,112,36,0.52)');
 	} else if(t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE){
 		const master=t===T.VOLCANO_MASTER_STONE;
 		drawBlockBevel(g,px,py,master?'rgba(255,224,111,0.28)':'rgba(255,130,85,0.17)','rgba(45,9,3,0.36)');
@@ -1905,7 +2082,7 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 				// TORCH renders as a sprite in the fire.js pass; GRAVE gets a headstone shape
 				// below — both bake only their backdrop here
 				const gasTile = isGasTileId(t);
-				if(t===T.AIR || t===T.WATER || t===T.TORCH || t===T.GRAVE || t===T.WIRE || t===T.COPPER_WIRE || gasTile){
+				if(t===T.AIR || t===T.WATER || t===T.TORCH || t===T.GRAVE || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || gasTile){
 					// Water is rendered by the dynamic fluid layer (springs/waves/caustics), not
 					// baked here — only its backdrop is. Underground air or water = carved cave /
 					// aquifer: paint a dark rock backdrop so the sky parallax never shows through
@@ -1952,6 +2129,12 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 						const peek=(qx,qy)=> (WORLD && WORLD.peekTile) ? WORLD.peekTile(qx,qy,T.AIR) : getTile(qx,qy);
 						const conn=(TELEPORTERS && TELEPORTERS.cableConnections) ? TELEPORTERS.cableConnections(wx,y,peek) : {left:true,right:true,up:false,down:false};
 						if(TELEPORTERS && TELEPORTERS.drawCableTile) TELEPORTERS.drawCableTile(cctx,TILE,px,py,conn,h);
+					}
+					if(t===T.WATER_PIPE){
+						const px=lx*TILE, py=y*TILE, h=hash32(wx,y);
+						const peek=(qx,qy)=> (WORLD && WORLD.peekTile) ? WORLD.peekTile(qx,qy,T.AIR) : getTile(qx,qy);
+						const conn=(PUMPS && PUMPS.pipeConnections) ? PUMPS.pipeConnections(wx,y,peek) : {left:true,right:true,up:false,down:false};
+						if(PUMPS && PUMPS.drawPipeTile) PUMPS.drawPipeTile(cctx,TILE,px,py,conn,h);
 					}
 					continue;
 				}
@@ -2090,6 +2273,11 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 					cctx.stroke();
 					cctx.fillStyle='rgba(124,247,255,0.22)';
 					cctx.fillRect(px+TILE*0.30,py+TILE*0.18,TILE*0.40,TILE*0.64);
+				}
+				if(t===T.WATER_PUMP){
+					const px=lx*TILE, py=y*TILE;
+					const dir=(PUMPS && PUMPS.orientationAt) ? PUMPS.orientationAt(wx,y,(qx,qy)=> (WORLD && WORLD.peekTile) ? WORLD.peekTile(qx,qy,T.AIR) : getTile(qx,qy)) : 'east';
+					if(PUMPS && PUMPS.drawPumpTile) PUMPS.drawPumpTile(cctx,TILE,px,py,dir,0.15,0,0);
 				}
 				if(t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET){
 					const px=lx*TILE, py=y*TILE;
@@ -2256,6 +2444,60 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 			}
 		}
 	entry.version=currentVersion; }
+function drawLooseWireOverlay(g,px,py,h){
+	const y1=py+9+((h>>4)&2);
+	const y2=py+5+((h>>7)&3);
+	const y3=py+13-((h>>10)&3);
+	const y4=py+9+((h>>13)&2);
+	g.save();
+	g.lineCap='round';
+	g.lineJoin='round';
+	g.strokeStyle='rgba(24,18,16,0.78)';
+	g.lineWidth=4;
+	g.beginPath();
+	g.moveTo(px+1,y1);
+	g.bezierCurveTo(px+6,y2,px+13,y3,px+TILE-1,y4);
+	g.stroke();
+	g.strokeStyle='rgba(219,126,51,0.96)';
+	g.lineWidth=2;
+	g.beginPath();
+	g.moveTo(px+2,y1);
+	g.bezierCurveTo(px+6,y2,px+13,y3,px+TILE-2,y4);
+	g.stroke();
+	g.strokeStyle='rgba(255,207,116,0.82)';
+	g.lineWidth=1;
+	g.beginPath();
+	g.moveTo(px+4,y1-1);
+	g.bezierCurveTo(px+8,y2-1,px+12,y3-1,px+TILE-4,y4-1);
+	g.stroke();
+	g.fillStyle='rgba(13,15,18,0.72)';
+	g.fillRect(px+2,py+12,4,2);
+	g.fillRect(px+TILE-6,py+6+((h>>9)&5),4,2);
+	g.fillStyle='rgba(255,202,110,0.85)';
+	if((h&3)===0) g.fillRect(px+4+((h>>6)&8),py+7+((h>>11)&3),2,2);
+	g.restore();
+}
+function drawInfrastructureOverlays(sx,sy,viewX,viewY){
+	if(!WORLD || !WORLD.getInfrastructure) return;
+	const x0=Math.floor(sx)-2, x1=Math.ceil(sx+viewX)+2;
+	const y0=Math.max(0,Math.floor(sy)-2), y1=Math.min(WORLD_H-1,Math.ceil(sy+viewY)+2);
+	for(let y=y0; y<=y1; y++){
+		for(let x=x0; x<=x1; x++){
+			const t=getInfrastructureTile(x,y);
+			if(t===T.AIR) continue;
+			if(!worldFxVisible(x,y)) continue;
+			const px=x*TILE, py=y*TILE, h=hash32(x,y);
+			if(t===T.WIRE) drawLooseWireOverlay(ctx,px,py,h);
+			else if(t===T.COPPER_WIRE && TELEPORTERS && TELEPORTERS.drawCableTile){
+				const conn=TELEPORTERS.cableConnections ? TELEPORTERS.cableConnections(x,y,getNetworkTile) : {left:true,right:true,up:false,down:false};
+				TELEPORTERS.drawCableTile(ctx,TILE,px,py,conn,h);
+			}else if(t===T.WATER_PIPE && PUMPS && PUMPS.drawPipeTile){
+				const conn=PUMPS.pipeConnections ? PUMPS.pipeConnections(x,y,getNetworkTile) : {left:true,right:true,up:false,down:false};
+				PUMPS.drawPipeTile(ctx,TILE,px,py,conn,h);
+			}
+		}
+	}
+}
 function drawWorldVisible(sx,sy,viewX,viewY){ const minChunk=Math.floor(sx/CHUNK_W)-1; const maxChunk=Math.floor((sx+viewX+2)/CHUNK_W)+1; const centerChunk=Math.floor((sx+viewX*0.5)/CHUNK_W); // prepare caches
 	const visibleChunkCount=maxChunk-minChunk+1;
 	const visibleChunks=[];
@@ -2409,8 +2651,8 @@ function isToolMode(){ return !activeWeaponItem(); }
 // 1: build/destroy mode — holsters the weapon; pressed again it cycles owned pickaxes.
 // 2/3/4: cycle the weapons of the matching MM.inventory.WEAPON_CATEGORIES entry
 // (which weapons take part is chosen per item in the inventory panel).
-const PICK_ORDER=['basic','stone','diamond'];
-const PICK_LABELS={basic:'podstawowy', stone:'kamienny', diamond:'diamentowy'};
+const PICK_ORDER=['basic','stone','meteor','diamond'];
+const PICK_LABELS={basic:'podstawowy', stone:'kamienny', meteor:'meteorytowy', diamond:'diamentowy'};
 function ownedPicks(){ return PICK_ORDER.filter(t=>t==='basic'||inv.tools[t]); }
 function selectWeaponKey(key){
 	const INV=MM.inventory;
@@ -2478,8 +2720,10 @@ window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; no
 	if(k==='m'&&!keysOnce.has('m')){ toggleMap(); keysOnce.add('m'); }
 	if(k==='c'&&!keysOnce.has('c')){ centerCam(); keysOnce.add('c'); }
 	if(k==='r'&&!keysOnce.has('r') && selectedTileId()===T.DYNAMO){ toggleDynamoOrientation(); keysOnce.add('r'); e.preventDefault(); }
+	if(k==='r'&&!keysOnce.has('r') && selectedTileId()===T.WATER_PUMP){ togglePumpOrientation(); keysOnce.add('r'); e.preventDefault(); }
 	if(k==='h'&&!keysOnce.has('h')){ toggleHelp(); keysOnce.add('h'); }
 	if(k==='v'&&!keysOnce.has('v')){ window.__mobDebug = !window.__mobDebug; msg('Mob debug '+(window.__mobDebug?'ON':'OFF')); keysOnce.add('v'); }
+	if(k==='x'&&!keysOnce.has('x')){ useCraterScanner(); keysOnce.add('x'); }
 	if(k==='o'&&!keysOnce.has('o')){ keysOnce.add('o'); if(VOLCANO && VOLCANO.forceMasterEruption) VOLCANO.forceMasterEruption(); }
 	if(k==='b'&&!keysOnce.has('b')){ paused=!paused; keysOnce.add('b'); }
 	if(k==='n'&&!keysOnce.has('n')){ showMinimap=!showMinimap; msg('Minimapa '+(showMinimap?'ON':'OFF')); keysOnce.add('n'); }
@@ -2901,9 +3145,11 @@ function hoverTargetInfo(){
 	if(p.ty<0) return {key:'sky:'+p.tx+','+p.ty,label:'Niebo',color:'#8bbff5'};
 	if(p.ty>=WORLD_H) return {key:'bottom:'+p.tx+','+p.ty,label:'Dno swiata',color:'#343944'};
 	const t=getTile(p.tx,p.ty);
+	const over=getInfrastructureTile(p.tx,p.ty);
 	const surface=(WORLDGEN && WORLDGEN.surfaceHeight)? WORLDGEN.surfaceHeight(p.tx) : -1;
 	const hidden=!fogRevealAll() && !worldTileDiscovered(p.tx,p.ty) && (t!==T.AIR || p.ty>surface);
 	if(hidden) return {key:'hidden:'+p.tx+','+p.ty,label:'Nieodkryte',color:'#2d3744'};
+	if(over!==T.AIR) return {key:p.tx+','+p.ty+':'+t+':'+over,label:tileLabel(over)+' / '+tileLabel(t),color:tileHoverColor(over)};
 	return {key:p.tx+','+p.ty+':'+t,label:tileLabel(t),color:tileHoverColor(t)};
 }
 function updateHoverInfo(){
@@ -2924,7 +3170,7 @@ const activePointers=new Map(); let pinch=null;
 
 // Kopanie (kierunkowe + wskazywane kursorem)
 const MINE_REACH=3; // Chebyshev tile distance for cursor mining (matches attack range)
-let mining=false,mineTimer=0,mineTx=0,mineTy=0; const mineBtn=document.getElementById('mineBtn');
+let mining=false,mineTimer=0,mineTx=0,mineTy=0,meteorPickSparkT=0; const mineBtn=document.getElementById('mineBtn');
 let minePointerId=null;   // pointer that initiated cursor mining (left button / touch on canvas)
 let weaponPointerId=null; // pointer that is holding normal weapon fire on the canvas
 let mineBtnHeld=false;    // dedicated ⛏️ button held → keep mining in selected direction
@@ -2947,13 +3193,20 @@ function tryOpenChestAt(tx,ty){
 	}
 	return !!res;
 }
+function mineTileIdAt(tx,ty){
+	const over=getInfrastructureTile(tx,ty);
+	return over!==T.AIR ? over : getTile(tx,ty);
+}
+function isUnmineableTile(t){ return !!(INFO[t] && INFO[t].unmineable); }
+function unmineableReason(t){ return tileLabel(t)+' jest nie do ruszenia'; }
 // Begin mining a specific tile (cursor-driven). Returns true when mining started.
 function startMineAt(tx,ty,opts){
 	const quiet=opts&&opts.quiet;
 	if(!isToolMode()) return false;
 	if(!withinReach(tx,ty,MINE_REACH)){ if(!quiet) msg('Za daleko'); return false; }
-	const t=getTile(tx,ty);
+	const t=mineTileIdAt(tx,ty);
 	if(t===T.AIR || isGasTileId(t)) return false;
+	if(isUnmineableTile(t)){ if(!quiet) msg(unmineableReason(t)); return false; }
 	const blocked=blockedTargetReason(tx,ty);
 	if(blocked){ if(!quiet) msg(blocked); return false; }
 	if(INFO[t] && INFO[t].chestTier){ if(quiet) return false; return tryOpenChestAt(tx,ty); }
@@ -2966,8 +3219,9 @@ function startMine(opts){
 	if(!isToolMode()){ if(!quiet) msg('Wybierz 1, aby kopać'); return; }
 	const tx=Math.floor(player.x + mineDir.dx + (mineDir.dx>0?player.w/2:mineDir.dx<0?-player.w/2:0));
 	const ty=Math.floor(player.y + mineDir.dy);
-	const t=getTile(tx,ty);
+	const t=mineTileIdAt(tx,ty);
 	if(t===T.AIR || isGasTileId(t)) return;
+	if(isUnmineableTile(t)){ if(!quiet) msg(unmineableReason(t)); return; }
 	const blocked=blockedTargetReason(tx,ty);
 	if(blocked){ if(!quiet) msg(blocked); return; }
 	if(INFO[t] && INFO[t].chestTier){ tryOpenChestAt(tx,ty); return; }
@@ -3000,6 +3254,7 @@ function awardTileDrops(info){
 	const add=(key,n)=>{
 		const amount=Math.max(0,n|0);
 		if(!key || amount<=0) return;
+		if(!RESOURCE_KEY_SET.has(key)){ try{ console.warn('unregistered drop skipped:', key); }catch(e){} return; }
 		inv[key]=(inv[key]||0)+amount;
 		awarded.push({key,n:amount});
 	};
@@ -3035,14 +3290,52 @@ function dismantleDynamoAt(tx,ty){
 	updateInventory();
 	return true;
 }
+function meteorPickSparkTile(t){
+	return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL || t===T.OBSIDIAN || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ANTIMATTER_CRYSTAL;
+}
+function emitMeteorPickSpark(tx,ty,count){
+	try{
+		if(PARTICLES && PARTICLES.spawnSparks) PARTICLES.spawnSparks((tx+0.5)*TILE,(ty+0.5)*TILE,'rare',count||4);
+	}catch(e){}
+}
+function updateMeteorPickMiningFx(dt,tId){
+	if(player.tool!=='meteor' || !meteorPickSparkTile(tId)){ meteorPickSparkT=0; return; }
+	meteorPickSparkT-=dt;
+	if(meteorPickSparkT>0) return;
+	emitMeteorPickSpark(mineTx,mineTy,3);
+	meteorPickSparkT=0.075+Math.random()*0.055;
+}
+function applyMaterialBreakPersonality(tId,tx,ty){
+	if(tId===T.ANTIMATTER_CRYSTAL){
+		try{ if(METEORITES && METEORITES.triggerAntimatterBurst) METEORITES.triggerAntimatterBurst(tx+0.5,ty+0.5,1.2); }catch(e){}
+		emitMeteorPickSpark(tx,ty,12);
+		return;
+	}
+	if(player.tool==='meteor' && meteorPickSparkTile(tId)){
+		emitMeteorPickSpark(tx,ty,(tId===T.STONE || tId===T.GRANITE || tId===T.BASALT || tId===T.BEDROCK)?7:5);
+		try{ if(MM.gases && MM.gases.add && tId===T.COAL) MM.gases.add('hot',tx+0.5,ty+0.5,{power:0.16,cells:1,getTile,setTile}); }catch(e){}
+	}
+}
 function breakMinedTile(){
 	if(!canPhysicallyTargetTile(mineTx,mineTy)) return false;
+	const overId=getInfrastructureTile(mineTx,mineTy);
+	if(overId!==T.AIR){
+		const info=INFO[overId];
+		if(!info) return false;
+		if(WORLD && WORLD.clearInfrastructure) WORLD.clearInfrastructure(mineTx,mineTy);
+		const drops=awardTileDrops(info);
+		pushUndo(mineTx,mineTy,overId,T.AIR,'breakOverlay',drops);
+		updateInventory();
+		return true;
+	}
 	const tId=getTile(mineTx,mineTy);
 	const info=INFO[tId];
 	if(!info) return false;
+	if(info.unmineable) return false;
 	if(info.gas) return false;
 	if(tId===T.DYNAMO || tId===T.DYNAMO_SLOT) return dismantleDynamoAt(mineTx,mineTy);
 	setTile(mineTx,mineTy,T.AIR);
+	applyMaterialBreakPersonality(tId,mineTx,mineTy);
 	if(FIRE && FIRE.wakeLavaAround) FIRE.wakeLavaAround(mineTx,mineTy,getTile,{radius:22});
 	const drops=awardTileDrops(info);
 	if(tId===T.WOOD) startTreeFall(mineTx,mineTy-1);
@@ -3052,7 +3345,11 @@ function breakMinedTile(){
 	updateInventory();
 	return true;
 }
-function instantBreak(){ if(getTile(mineTx,mineTy)===T.AIR){ mining=false; mineBtn.classList.remove('on'); return; } if(breakMinedTile()){ mining=false; mineBtn.classList.remove('on'); } }
+function instantBreak(){
+	const t=mineTileIdAt(mineTx,mineTy);
+	if(t===T.AIR || isUnmineableTile(t)){ mining=false; mineBtn.classList.remove('on'); return; }
+	if(breakMinedTile()){ mining=false; mineBtn.classList.remove('on'); }
+}
 // Falling tree system (per-block physics)
 function startTreeFall(bx,by){ return TREES.startTreeFall(getTile,setTile,player.facing,bx,by); }
 function updateFallingBlocks(dt){
@@ -3073,16 +3370,25 @@ function resumeHeldMining(){
 function updateMining(dt){
 	if(!isToolMode()){ if(mining) stopMining(); return; }
 	if(!mining){ resumeHeldMining(); if(!mining) return; }
-	if(getTile(mineTx,mineTy)===T.AIR || isGasTileId(getTile(mineTx,mineTy))){ stopMining(); resumeHeldMining(); if(!mining) return; }
+	const activeMineId=mineTileIdAt(mineTx,mineTy);
+	if(activeMineId===T.AIR || isGasTileId(activeMineId) || isUnmineableTile(activeMineId)){ stopMining(); resumeHeldMining(); if(!mining) return; }
 	if(!canPhysicallyTargetTile(mineTx,mineTy)){ stopMining(); resumeHeldMining(); if(!mining) return; }
 	if(godMode){ instantBreak(); return; }
 	try{ if(MM.audio && MM.audio.play) MM.audio.play('dig'); }catch(e){}
 	// Drag mining: if the held cursor moved to a different tile, re-target immediately
 	if(minePointerId!=null && !mineBtnHeld && lastPointer.has){
 		const p=screenToWorldTile(lastPointer.x,lastPointer.y);
-		if((p.tx!==mineTx||p.ty!==mineTy) && withinReach(p.tx,p.ty,MINE_REACH) && canPhysicallyTargetTile(p.tx,p.ty) && getTile(p.tx,p.ty)!==T.AIR && !isGasTileId(getTile(p.tx,p.ty)) && !(INFO[getTile(p.tx,p.ty)]&&INFO[getTile(p.tx,p.ty)].chestTier)){ mineTx=p.tx; mineTy=p.ty; mineTimer=0; }
+		const pt=mineTileIdAt(p.tx,p.ty);
+		if((p.tx!==mineTx||p.ty!==mineTy) && withinReach(p.tx,p.ty,MINE_REACH) && canPhysicallyTargetTile(p.tx,p.ty) && pt!==T.AIR && !isGasTileId(pt) && !isUnmineableTile(pt) && !(INFO[pt]&&INFO[pt].chestTier)){ mineTx=p.tx; mineTy=p.ty; mineTimer=0; }
 	}
-	const mineMult=(MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1; mineTimer += dt * tools[player.tool] * mineMult; const curId=getTile(mineTx,mineTy); const info=INFO[curId]; const need=Math.max(0.1, info.hp/6); if(mineTimer>=need && breakMinedTile()){ stopMining(); try{ if(MM.audio && MM.audio.play) MM.audio.play('break'); }catch(e){} resumeHeldMining(); } }
+	const mineMult=(MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1;
+	const curId=mineTileIdAt(mineTx,mineTy);
+	const info=INFO[curId];
+	if(!info || info.unmineable){ stopMining(); return; }
+	updateMeteorPickMiningFx(dt,curId);
+	mineTimer += dt * tools[player.tool] * mineMult;
+	const need=Math.max(0.1, info.hp/6);
+	if(mineTimer>=need && breakMinedTile()){ stopMining(); try{ if(MM.audio && MM.audio.play) MM.audio.play('break'); }catch(e){} resumeHeldMining(); } }
 
 // --- Placement ---
 // Suppress accidental placement immediately after opening a chest with right-click
@@ -3189,6 +3495,19 @@ function canPlaceDynamoAt(tx,ty){
 	}
 	return {ok:true, id:T.DYNAMO, structure:'dynamo', cells};
 }
+function canPlaceInfrastructureAt(tx,ty,id){
+	if(!isInfrastructureTileId(id)) return null;
+	const cur=getTile(tx,ty);
+	const over=getInfrastructureTile(tx,ty);
+	if(over!==T.AIR) return {ok:false, id, overlay:true, reason:'Juz jest instalacja'};
+	if(INFO[cur] && INFO[cur].chestTier) return {ok:false, id, overlay:true, reason:'Skrzynia blokuje instalacje'};
+	if(cur===T.DYNAMO || cur===T.DYNAMO_SLOT || cur===T.TELEPORTER || cur===T.WATER_PUMP || cur===T.TURRET || cur===T.FIRE_TURRET || cur===T.WATER_TURRET || cur===T.SOLAR_PANEL || cur===T.SOLAR_BATTERY || cur===T.ANTIGRAVITY_BEACON || cur===T.METEOR_SIREN) return {ok:false, id, overlay:true, reason:'Maszyna blokuje instalacje'};
+	if(!godMode && !withinReach(tx,ty,PLACE_REACH)) return {ok:false, id, overlay:true, reason:'Za daleko'};
+	const blocked=blockedTargetReason(tx,ty);
+	if(blocked) return {ok:false, id, overlay:true, reason:blocked};
+	if(!godMode && !haveBlocksFor(id)) return {ok:false, id, overlay:true, reason:'Brak blokow'};
+	return {ok:true, id, overlay:true};
+}
 function notifyStructureTileChanged(x,y,oldTile,newTile){
 	const tx=Math.floor(x), ty=Math.floor(y);
 	// WORLD.setTile() is the single source for tile lifecycle hooks
@@ -3225,7 +3544,10 @@ function canPlaceAt(tx,ty){
 	const selName=HOTBAR_ORDER[hotbarIndex];
 	const chest=isChestSelection(selName);
 	const id= chest? T[selName] : selectedTileId();
+	if(!chest && isUnmineableTile(id)) return {ok:false, reason:unmineableReason(id)};
 	if(!chest && id===T.DYNAMO) return canPlaceDynamoAt(tx,ty);
+	const overlay=canPlaceInfrastructureAt(tx,ty,id);
+	if(overlay) return overlay;
 	// Solid blocks may also replace water (building under water); water into water is a no-op
 	if(cur!==T.AIR && cur!==T.WATER && !(INFO[cur] && INFO[cur].gas)) return {ok:false};
 	if(cur===T.WATER && id===T.WATER) return {ok:false};
@@ -3253,8 +3575,18 @@ function tryPlace(tx,ty){
 	const id=v.id; const prevRaw=getTile(tx,ty); const prev=isGasTileId(prevRaw)?T.AIR:prevRaw;
 	if(v.chest){ setTile(tx,ty,id); return; }
 	if(v.structure==='dynamo'){ placeDynamoStructure(v); return; }
+	if(v.overlay){
+		const oldOver=getInfrastructureTile(tx,ty);
+		if(WORLD && WORLD.setInfrastructure) WORLD.setInfrastructure(tx,ty,id);
+		else setTile(tx,ty,id);
+		pushUndo(tx,ty,oldOver,id,'placeOverlay');
+		consumeFor(id); updateInventory(); updateHotbarCounts(); saveState();
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('place'); }catch(e){}
+		return;
+	}
 	pushUndo(tx,ty,prev,id,'place');
 	setTile(tx,ty,id); if(VOLCANO && VOLCANO.onTileChanged) VOLCANO.onTileChanged(tx,ty,id,getTile,setTile); consumeFor(id); updateInventory(); updateHotbarCounts(); saveState();
+	if(id===T.WATER_PUMP && PUMPS && PUMPS.setOrientationAt) PUMPS.setOrientationAt(tx,ty,pumpOrientation,getTile);
 	try{ if(MM.audio && MM.audio.play) MM.audio.play('place'); }catch(e){}
 	if(WATER){ if(id===T.WATER) WATER.addSource(tx,ty,getTile,setTile); else if(v.replacedWater && WATER.onTileChanged) WATER.onTileChanged(tx,ty,getTile); }
 	if(FIRE){
@@ -3334,6 +3666,23 @@ function undoLastChange(){
 		});
 		if(!godMode) inv.dynamo=Math.max(0,(inv.dynamo||0)-1);
 		updateInventory(); updateHotbarCounts(); saveState(); msg('CofniÄ™to'); return;
+	}
+	if(e.kind==='placeOverlay'){
+		if(getInfrastructureTile(e.x,e.y)!==e.newId){ msg('Nie mozna cofnac'); return; }
+		if(WORLD && WORLD.setInfrastructure) WORLD.setInfrastructure(e.x,e.y,e.oldId);
+		const k=invKeyForTile(e.newId);
+		if(k && !godMode) inv[k]=(inv[k]||0)+1;
+		updateInventory(); updateHotbarCounts(); saveState(); msg('Cofnieto'); return;
+	}
+	if(e.kind==='breakOverlay'){
+		if(getInfrastructureTile(e.x,e.y)!==T.AIR){ msg('Nie mozna cofnac'); return; }
+		if(WORLD && WORLD.setInfrastructure) WORLD.setInfrastructure(e.x,e.y,e.oldId);
+		if(Array.isArray(e.drops)){
+			e.drops.forEach(d=>{
+				if(d && d.key && !godMode) inv[d.key]=Math.max(0,(inv[d.key]||0)-((d.n|0)||1));
+			});
+		}
+		updateInventory(); updateHotbarCounts(); saveState(); msg('Cofnieto'); return;
 	}
 	const cur=getTile(e.x,e.y);
 	if(cur!==e.newId){ msg('Nie można cofnąć'); return; }
@@ -3502,11 +3851,13 @@ function draw(){ // Background first
  if(VISUAL.animations && GRASS && GRASS.drawOverlays){ GRASS.drawOverlays(ctx,'front', sx,sy,viewX,viewY,TILE,WORLD_H,getTile,T,zoom,grassDensityScalar,grassHeightScalar,worldFxVisible); }
  // Water overlay shimmer (after vegetation front to avoid overdraw? place before falling solids for clarity)
  if(WATER){ WATER.drawOverlay(ctx,TILE,getTile,sx,sy,viewX,viewY,worldFxVisible); }
+ drawInfrastructureOverlays(sx,sy,viewX,viewY);
  // Draw falling solids after terrain so they appear on top
  if(FALLING){ FALLING.draw(ctx,TILE,worldFxVisible); }
  if(SOLAR && SOLAR.draw) SOLAR.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getTile);
  if(DYNAMO && DYNAMO.draw) DYNAMO.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getTile);
- if(TELEPORTERS && TELEPORTERS.draw) TELEPORTERS.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getTile);
+ if(TELEPORTERS && TELEPORTERS.draw) TELEPORTERS.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getNetworkTile);
+ if(PUMPS && PUMPS.draw) PUMPS.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getNetworkTile);
  if(TURRETS && TURRETS.draw) TURRETS.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getTile);
  // Ghost block preview — recomputed each frame so camera motion can't leave it stale.
  // Green = placement allowed right now; red = blocked (reach/support/no blocks).
@@ -3514,7 +3865,8 @@ function draw(){ // Background first
 	 const gp=screenToWorldTile(lastPointer.x,lastPointer.y);
 	 const curT=getTile(gp.tx,gp.ty);
 	 const placingDynamo=selectedTileId()===T.DYNAMO;
-	 if(placingDynamo || curT===T.AIR || curT===T.WATER || (INFO[curT] && INFO[curT].gas)){
+	 const placingInfrastructure=isInfrastructureTileId(selectedTileId());
+	 if(placingInfrastructure || placingDynamo || curT===T.AIR || curT===T.WATER || (INFO[curT] && INFO[curT].gas)){
 		 const v=canPlaceAt(gp.tx,gp.ty);
 		 ctx.strokeStyle= v.ok? 'rgba(140,255,140,0.7)':'rgba(255,110,110,0.6)';
 		 ctx.lineWidth=1;
@@ -3536,7 +3888,7 @@ function draw(){ // Background first
 		 }
 	 }
  }
- if(mining){ ctx.strokeStyle='#fff'; ctx.strokeRect(mineTx*TILE+1,mineTy*TILE+1,TILE-2,TILE-2); const info=INFO[getTile(mineTx,mineTy)]||{hp:1}; const need=Math.max(0.1,info.hp/6); const p=mineTimer/need; ctx.fillStyle='rgba(255,255,255,.3)'; ctx.fillRect(mineTx*TILE, mineTy*TILE + (1-p)*TILE, TILE, p*TILE); }
+ if(mining){ ctx.strokeStyle='#fff'; ctx.strokeRect(mineTx*TILE+1,mineTy*TILE+1,TILE-2,TILE-2); const info=INFO[mineTileIdAt(mineTx,mineTy)]||{hp:1}; const need=Math.max(0.1,info.hp/6); const p=mineTimer/need; ctx.fillStyle='rgba(255,255,255,.3)'; ctx.fillRect(mineTx*TILE, mineTy*TILE + (1-p)*TILE, TILE, p*TILE); }
  // Final world-space occlusion. Keep this after late overlays (especially water)
  // so unexplored tiles cannot leak through the fog layer.
  drawFogOverlay(sx,sy,viewX,viewY);
@@ -3651,8 +4003,12 @@ function draw(){ // Background first
 			if(tm && tm.machines){ lines.push('Teleporters: '+tm.charged+'/'+tm.machines+' charged  stored '+tm.storedEnergy+' E'); }
 		}catch(e){}
 		try{
+			const pm = (PUMPS && PUMPS.metrics)? PUMPS.metrics() : null;
+			if(pm && pm.machines){ lines.push('Pumps: '+pm.active+'/'+pm.machines+' active  '+pm.charged+' charged  stored '+pm.storedEnergy+' E  moved '+pm.moved+' W  pipes '+pm.activePipes); }
+		}catch(e){}
+		try{
 			const trm = (TURRETS && TURRETS.metrics)? TURRETS.metrics() : null;
-			if(trm && trm.machines){ lines.push('Turrets: '+trm.active+'/'+trm.machines+' active  '+trm.charged+' charged  stored '+trm.storedEnergy+' E  shots '+trm.shots+' fx '+trm.effects); }
+			if(trm && trm.machines){ lines.push('Turrets: '+trm.active+'/'+trm.machines+' active  '+trm.charged+' charged  stored '+trm.storedEnergy+' E  water '+(trm.storedWater||0)+'  shots '+trm.shots+' fx '+trm.effects); }
 		}catch(e){}
 		try{
 			const sm = (SEASONS && SEASONS.metrics)? SEASONS.metrics() : null;
@@ -3689,6 +4045,10 @@ function minimapTileColor(t){
 	if(t===T.DIAMOND) return '#3ef';
 	if(t===T.IRIDIUM) return '#b8d7ff';
 	if(t===T.METEORIC_IRON) return '#7f878d';
+	if(t===T.RADIOACTIVE_ORE) return '#8aff4f';
+	if(t===T.ALIEN_BIOMASS) return '#79c95d';
+	if(t===T.METEOR_DUST) return '#c8a6ff';
+	if(t===T.ANTIMATTER_CRYSTAL) return '#d36bff';
 	if(t===T.COAL) return '#25272b';
 	if(t===T.VOLCANO_MASTER_STONE) return '#ff6a21';
 	if(t===T.SERVANT_STONE) return '#8b2d17';
@@ -3699,12 +4059,15 @@ function minimapTileColor(t){
 	if(t===T.GLASS) return '#9deeff';
 	if(t===T.WIRE) return '#c56f32';
 	if(t===T.COPPER_WIRE) return '#d68535';
+	if(t===T.WATER_PIPE) return '#2d8ec9';
+	if(t===T.WATER_PUMP) return '#58d4ff';
 	if(t===T.ELECTRONICS) return '#47d18c';
 	if(t===T.TRANSISTOR) return '#47d18c';
 	if(t===T.DYNAMO) return '#ffd24a';
 	if(t===T.DYNAMO_SLOT) return '#54ccff';
 	if(t===T.TELEPORTER) return '#7cf7ff';
 	if(t===T.ANTIGRAVITY_BEACON) return '#c46bff';
+	if(t===T.METEOR_SIREN) return '#ff9f45';
 	if(t===T.TURRET) return '#9fb0c8';
 	if(t===T.FIRE_TURRET) return '#ff6a21';
 	if(t===T.WATER_TURRET) return '#38a7ff';
@@ -3720,6 +4083,10 @@ function minimapTileColor(t){
 	if(t===T.ICE) return '#a9e4ff';
 	if(t===T.SNOW) return '#dceeff';
 	if(t===T.SAND) return '#c8b772';
+	if(t===T.DIRT) return '#73543a';
+	if(t===T.GRANITE) return '#7d7f87';
+	if(t===T.BASALT) return '#30333a';
+	if(t===T.BEDROCK) return '#1c2028';
 	if(t===T.GRASS || t===T.MUD) return '#4a8f3a';
 	if(t===T.WOOD) return '#8b5a2b';
 	if(t===T.AUTUMN_LEAF_RED) return '#8f5a2a';
@@ -3729,7 +4096,7 @@ function minimapTileColor(t){
 	return '#686d78';
 }
 function minimapConcealsUndiscovered(t){
-	return t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.OBSIDIAN || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || (INFO[t] && INFO[t].gas) || t===T.GRAVE || t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC;
+	return t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.OBSIDIAN || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || (INFO[t] && INFO[t].gas) || t===T.GRAVE || t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC;
 }
 function drawMinimap(){
 	if(!showMinimap) return;
@@ -3779,7 +4146,7 @@ function drawMinimap(){
 							continue;
 						}
 						const c=minimapTileColor(t);
-						if(t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || (INFO[t] && INFO[t].gas) || INFO[t].chestTier){ color=c; priority=true; wx=wx1+1; break; }
+						if(t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || (INFO[t] && INFO[t].gas) || INFO[t].chestTier){ color=c; priority=true; wx=wx1+1; break; }
 						if(!color) color=c;
 					}
 				}
@@ -3940,7 +4307,7 @@ function placeDebugDynamo(){
 			const cells=DYNAMO.plannedCells(cx,cy,dynamoOrientation);
 			cells.forEach(cell=>ensureChunk(Math.floor(cell.x/CHUNK_W)));
 			if(!debugDynamoCellsClear(cells)) continue;
-			cells.forEach(cell=>setTile(cell.x,cell.y,cell.t));
+			placeDebugCells(cells);
 			if(FALLING && FALLING.afterPlacement) cells.forEach(cell=>FALLING.afterPlacement(cell.x,cell.y));
 			if(WATER && WATER.onTileChanged) cells.forEach(cell=>WATER.onTileChanged(cell.x,cell.y,getTile));
 			try{ DYNAMO.recordFlow(cx,cy,T.WATER,3,getTile); }catch(e){}
@@ -4024,14 +4391,30 @@ function debugRigCellsClear(cells){
 	for(const cell of cells){
 		if(cell.y<0 || cell.y>=WORLD_H) return false;
 		ensureChunk(Math.floor(cell.x/CHUNK_W));
+		if(isInfrastructureTileId(cell.t)){
+			if(getInfrastructureTile(cell.x,cell.y)!==T.AIR) return false;
+			const base=getTile(cell.x,cell.y);
+			if(INFO[base] && INFO[base].chestTier) return false;
+			if(base===T.DYNAMO || base===T.DYNAMO_SLOT || base===T.TELEPORTER || base===T.WATER_PUMP || base===T.TURRET || base===T.FIRE_TURRET || base===T.WATER_TURRET || base===T.SOLAR_PANEL || base===T.SOLAR_BATTERY || base===T.ANTIGRAVITY_BEACON || base===T.METEOR_SIREN) return false;
+			continue;
+		}
 		const t=getTile(cell.x,cell.y);
 		if(t!==T.AIR && !isGasTileId(t)) return false;
 		if(cellOverlapsPlayer(cell.x,cell.y)) return false;
 	}
 	return true;
 }
+function placeDebugCell(cell){
+	if(!cell) return;
+	if(isInfrastructureTileId(cell.t) && WORLD && WORLD.setInfrastructure) WORLD.setInfrastructure(cell.x,cell.y,cell.t);
+	else setTile(cell.x,cell.y,cell.t);
+}
+function placeDebugCells(cells){
+	cells.forEach(placeDebugCell);
+}
 function finalizeDebugPlacedCells(cells,playSound){
 	cells.forEach(cell=>{
+		if(isInfrastructureTileId(cell.t)) return;
 		if(FALLING && FALLING.afterPlacement) FALLING.afterPlacement(cell.x,cell.y);
 		if(WATER && WATER.onTileChanged) WATER.onTileChanged(cell.x,cell.y,getTile);
 	});
@@ -4090,6 +4473,21 @@ function placeDebugAntigravityBeacon(){
 	}
 	return false;
 }
+function placeDebugMeteorSiren(){
+	const p=placeDebugSolarTile(T.METEOR_SIREN);
+	return !!p;
+}
+function scanDebugMeteorCrater(){
+	if(!METEORITES || !METEORITES.scanNearestCrater) return false;
+	const scan=METEORITES.scanNearestCrater(player,getTile);
+	return !!(scan && scan.ok);
+}
+function useCraterScanner(){
+	if(!METEORITES || !METEORITES.scanNearestCrater) return false;
+	if(!godMode && (inv.craterScanner||0)<=0){ msg('Brak skanera kraterow'); return false; }
+	const scan=METEORITES.scanNearestCrater(player,getTile);
+	return !!(scan && scan.ok);
+}
 function nearestDebugSolar(){
 	const cx=Math.floor(player.x), cy=Math.floor(player.y);
 	let best=null, bestD=Infinity;
@@ -4121,6 +4519,94 @@ function emptyDebugSolar(){
 	if(ok){ noteSaveActivity(); saveState(); }
 	return ok;
 }
+function giveDebugPumps(){
+	inv.waterPipe=(inv.waterPipe||0)+24;
+	inv.waterPump=(inv.waterPump||0)+1;
+	inv.waterTurret=(inv.waterTurret||0)+1;
+	updateInventory();
+	updateHotbarCounts();
+	noteSaveActivity();
+	saveState();
+	return 1;
+}
+function placeDebugPump(){
+	const p=placeDebugSolarTile(T.WATER_PUMP);
+	if(p && PUMPS && PUMPS.setOrientationAt) PUMPS.setOrientationAt(p.x,p.y,pumpOrientation,getTile);
+	if(p && PUMPS && PUMPS._debug && PUMPS._debug.debugChargeAt) PUMPS._debug.debugChargeAt(p.x,p.y,PUMPS._debug.PUMP_CAPACITY,getTile);
+	if(p){ noteSaveActivity(); saveState(); }
+	return !!p;
+}
+function nearestDebugPump(){
+	const cx=Math.floor(player.x), cy=Math.floor(player.y);
+	let best=null, bestD=Infinity;
+	for(let y=Math.max(0,cy-34); y<=Math.min(WORLD_H-1,cy+34); y++){
+		for(let x=cx-52; x<=cx+52; x++){
+			if(getTile(x,y)!==T.WATER_PUMP) continue;
+			const d=Math.abs(x-cx)+Math.abs(y-cy);
+			if(d<bestD){ bestD=d; best={x,y}; }
+		}
+	}
+	return best;
+}
+function chargeDebugPump(){
+	const s=nearestDebugPump();
+	if(!s || !PUMPS || !PUMPS._debug || !PUMPS._debug.debugChargeAt) return false;
+	const got=PUMPS._debug.debugChargeAt(s.x,s.y,PUMPS._debug.PUMP_CAPACITY,getTile);
+	if(got>0){
+		if(PARTICLES && PARTICLES.spawnEnergyAbsorb) PARTICLES.spawnEnergyAbsorb((s.x+0.5)*TILE,(s.y+0.5)*TILE,player.x*TILE,(player.y-0.05)*TILE,1.15);
+		if(AUDIO && AUDIO.play) AUDIO.play('charge');
+		noteSaveActivity(); saveState();
+	}
+	return got>0;
+}
+function emptyDebugPump(){
+	const s=nearestDebugPump();
+	if(!s || !PUMPS || !PUMPS._debug || !PUMPS._debug.debugSetEnergyAt) return false;
+	const ok=!!PUMPS._debug.debugSetEnergyAt(s.x,s.y,0,getTile);
+	if(ok){ noteSaveActivity(); saveState(); }
+	return ok;
+}
+function placeDebugPumpRig(){
+	if(!PUMPS || !DYNAMO || !DYNAMO.plannedCells) return false;
+	const facing=player.facing<0 ? -1 : 1;
+	const dir=facing<0 ? 'west' : 'east';
+	const baseX=Math.floor(player.x + facing*5);
+	const baseY=Math.floor(player.y)-1;
+	const yOffsets=[0,-1,1,-2,2,-3,3];
+	const xOffsets=[0,facing*2,-facing*2,facing*4,-facing*4];
+	for(const dy of yOffsets){
+		for(const dx of xOffsets){
+			const y=baseY+dy;
+			const pumpX=baseX+dx;
+			const sourceX=pumpX-facing*3;
+			const turretX=pumpX+facing*3;
+			const dynCx=pumpX;
+			const cells=[
+				{x:sourceX,y,t:T.WATER},
+				{x:sourceX,y:y+1,t:T.WATER},
+				{x:pumpX-facing*2,y,t:T.WATER_PIPE},
+				{x:pumpX-facing,y,t:T.WATER_PIPE},
+				{x:pumpX,y,t:T.WATER_PUMP},
+				{x:pumpX+facing,y,t:T.WATER_PIPE},
+				{x:pumpX+facing*2,y,t:T.WATER_PIPE},
+				{x:turretX,y,t:T.WATER_TURRET},
+				{x:pumpX,y:y+1,t:T.COPPER_WIRE},
+				{x:pumpX,y:y+2,t:T.COPPER_WIRE},
+				...DYNAMO.plannedCells(dynCx,y+3,'horizontal')
+			];
+			if(!debugRigCellsClear(cells)) continue;
+			placeDebugCells(cells);
+			try{ PUMPS.setOrientationAt(pumpX,y,dir,getTile); }catch(e){}
+			try{ for(let i=0;i<18;i++) DYNAMO.recordFlow(dynCx,y+3,T.WATER,4,getTile); }catch(e){}
+			try{ if(PUMPS._debug && PUMPS._debug.debugChargeAt) PUMPS._debug.debugChargeAt(pumpX,y,PUMPS._debug.PUMP_CAPACITY,getTile); }catch(e){}
+			try{ if(TURRETS && TURRETS._debug && TURRETS._debug.debugChargeAt) TURRETS._debug.debugChargeAt(turretX,y,TURRETS._debug.TURRET_CAPACITY,getTile); }catch(e){}
+			try{ if(TURRETS && TURRETS._debug && TURRETS._debug.debugSetWaterAt) TURRETS._debug.debugSetWaterAt(turretX,y,0,getTile); }catch(e){}
+			finalizeDebugPlacedCells(cells,'charge');
+			return true;
+		}
+	}
+	return false;
+}
 function placeDebugSolarRig(){
 	const facing=player.facing<0 ? -1 : 1;
 	const baseX=Math.floor(player.x + facing*4);
@@ -4138,10 +4624,10 @@ function placeDebugSolarRig(){
 				{x:teleX,y,t:T.TELEPORTER}
 			];
 			if(!debugRigCellsClear(cells)) continue;
-			cells.forEach(cell=>setTile(cell.x,cell.y,cell.t));
+			placeDebugCells(cells);
 			if(SOLAR && SOLAR._debug && SOLAR._debug.debugChargeAt) SOLAR._debug.debugChargeAt(panelX,y,120,getTile);
 			try{ if(TELEPORTERS && TELEPORTERS._debug && TELEPORTERS._debug.ensureMachine) TELEPORTERS._debug.ensureMachine(teleX,y,getTile); }catch(e){}
-			try{ if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(0.55,{x:teleX+0.5,y:y+0.5,w:0.7,h:0.95,vx:0,vy:0,energy:0},getTile,setTile,{dynamo:DYNAMO,heroEnergy:MM.heroEnergy}); }catch(e){}
+			try{ if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(0.55,{x:teleX+0.5,y:y+0.5,w:0.7,h:0.95,vx:0,vy:0,energy:0},getNetworkTile,setTile,{dynamo:DYNAMO,heroEnergy:MM.heroEnergy}); }catch(e){}
 			finalizeDebugPlacedCells(cells,'charge');
 			return true;
 		}
@@ -4168,7 +4654,7 @@ function placeDebugTeleporterPair(){
 				{x:rightX,y,t:T.TELEPORTER}
 			];
 			if(!debugRigCellsClear(cells)) continue;
-			cells.forEach(cell=>setTile(cell.x,cell.y,cell.t));
+			placeDebugCells(cells);
 			if(FALLING && FALLING.afterPlacement) cells.forEach(cell=>FALLING.afterPlacement(cell.x,cell.y));
 			if(WATER && WATER.onTileChanged) cells.forEach(cell=>WATER.onTileChanged(cell.x,cell.y,getTile));
 			try{ for(let i=0;i<18;i++) DYNAMO.recordFlow(dynCx,y,T.WATER,4,getTile); }catch(e){}
@@ -4296,7 +4782,7 @@ function placeDebugTurretRig(){
 				{x:turretX,y,t:T.TURRET}
 			];
 			if(!debugRigCellsClear(cells)) continue;
-			cells.forEach(cell=>setTile(cell.x,cell.y,cell.t));
+			placeDebugCells(cells);
 			try{ for(let i=0;i<18;i++) DYNAMO.recordFlow(dynCx,y,T.WATER,4,getTile); }catch(e){}
 			try{ if(TURRETS && TURRETS._debug && TURRETS._debug.debugChargeAt) TURRETS._debug.debugChargeAt(turretX,y,TURRETS._debug.TURRET_CAPACITY,getTile); }catch(e){}
 			finalizeDebugPlacedCells(cells,'charge');
@@ -4372,7 +4858,10 @@ if(MM.ui && MM.ui.injectSeasonDebugPanel) MM.ui.injectSeasonDebugPanel({
 if(MM.ui && MM.ui.injectMeteorDebugPanel) MM.ui.injectMeteorDebugPanel({
 	setEnabled:(enabled)=>{ if(!METEORITES || !METEORITES.setEnabled) return false; const ok=!!METEORITES.setEnabled(enabled); if(ok){ noteSaveActivity(); saveState(); } return ok; },
 	spawn:()=>{ if(!METEORITES || !METEORITES.forceSpawn) return false; const ok=!!METEORITES.forceSpawn({nearHero:true,intensity:1.65},player,getTile); if(ok){ noteSaveActivity(); saveState(); } return ok; },
+	spawnClass:(classId)=>{ if(!METEORITES || !METEORITES.forceSpawn) return false; const ok=!!METEORITES.forceSpawn({nearHero:true,intensity:1.65,classId},player,getTile); if(ok){ noteSaveActivity(); saveState(); } return ok; },
 	beacon:()=> placeDebugAntigravityBeacon(),
+	siren:()=> placeDebugMeteorSiren(),
+	scan:()=> scanDebugMeteorCrater(),
 	roll:()=>{ if(!METEORITES || !METEORITES.rollSchedule) return false; const ok=!!METEORITES.rollSchedule(); if(ok){ noteSaveActivity(); saveState(); } return ok; },
 	clear:()=>{ if(!METEORITES || !METEORITES.clearActive) return false; METEORITES.clearActive(); return true; },
 	metrics:()=> (METEORITES && METEORITES.metrics) ? METEORITES.metrics() : null
@@ -4407,6 +4896,14 @@ if(MM.ui && MM.ui.injectTeleporterDebugPanel) MM.ui.injectTeleporterDebugPanel({
 	hero:()=> (MM.heroEnergy && MM.heroEnergy.info) ? MM.heroEnergy.info() : null,
 	metrics:()=> (TELEPORTERS && TELEPORTERS.metrics) ? TELEPORTERS.metrics() : null
 }, menuPanel);
+if(MM.ui && MM.ui.injectPumpDebugPanel) MM.ui.injectPumpDebugPanel({
+	give:giveDebugPumps,
+	place:placeDebugPump,
+	placeRig:placeDebugPumpRig,
+	charge:chargeDebugPump,
+	empty:emptyDebugPump,
+	metrics:()=> (PUMPS && PUMPS.metrics) ? PUMPS.metrics() : null
+}, menuPanel);
 if(MM.ui && MM.ui.injectTurretDebugPanel) MM.ui.injectTurretDebugPanel({
 	give:giveDebugTurrets,
 	place:placeDebugTurret,
@@ -4432,10 +4929,10 @@ function regenWorld(){
 	try{ if(FOG && FOG.importSeen) FOG.importSeen([]); if(FOG && FOG.setRevealAll) FOG.setRevealAll(false); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); }catch(e){}
 
 	// Reset transient systems
-	mining=false; if(FALLING && FALLING.reset) FALLING.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(UFO && UFO.reset) UFO.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
+	mining=false; if(FALLING && FALLING.reset) FALLING.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(UFO && UFO.reset) UFO.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
 
 	// Reset inventory/tools/hotbar
-	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.diamond=false; player.tool='basic'; hotbarIndex=0; // if god mode active, restore 100 stack after reset
+	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.meteor=inv.tools.diamond=false; player.tool='basic'; hotbarIndex=0; // if god mode active, restore 100 stack after reset
 	// Fresh world = fresh hero arc: XP, level, skill points and milestones restart
 	player.xp=0; player.energy=0; if(PROGRESS && PROGRESS.reset) PROGRESS.reset(); applyProgressHp(); applyHeroEnergyCapacity(); respawnPoint=null; saveRespawnPoint(); grave=null; saveGrave();
 	// Ensure all animals are removed when creating a new world and prevent immediate respawn
@@ -4451,7 +4948,8 @@ function msg(t){ if(MM.ui && MM.ui.msg) MM.ui.msg(t); else { el.msg.textContent=
 // Engine modules (mobs death, lightning electrocution) reach messages via window.msg
 window.msg = msg;
 window.forceVolcanoMasterStone = function(){ return !!(VOLCANO && VOLCANO.forceMasterEruption && VOLCANO.forceMasterEruption()); };
-window.forceMeteor = function(){ return !!(METEORITES && METEORITES.forceSpawn && METEORITES.forceSpawn({nearHero:true,intensity:1.65},player,getTile)); };
+window.forceMeteor = function(classId){ return !!(METEORITES && METEORITES.forceSpawn && METEORITES.forceSpawn({nearHero:true,intensity:1.65,classId},player,getTile)); };
+window.scanMeteorCrater = function(){ return METEORITES && METEORITES.scanNearestCrater ? METEORITES.scanNearestCrater(player,getTile) : null; };
 
 // FPS
 let frames=0,lastFps=performance.now(), currentFps=0; function updateFps(now){ frames++; if(now-lastFps>1000){ currentFps=frames; const budget = (GRASS && GRASS.getBudgetInfo)? GRASS.getBudgetInfo():''; el.fps.textContent=currentFps+' FPS'+ (budget? (' '+budget):''); frames=0; lastFps=now; }}
@@ -4660,7 +5158,7 @@ function runGameStep(dt,ts){
 	if(GASES && GASES.update) GASES.update(dt, getTile, setTile, player);
 	if(PLANTS && PLANTS.update) PLANTS.update(getTile, setTile, dt);
 	if(PROGRESS && PROGRESS.update) PROGRESS.update(dt);
-	updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); updateHeroEnergy(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCape(dt); updateBlink(ts);
+	updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); updateHeroEnergy(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCape(dt); updateBlink(ts);
 }
 let lastLoopErrAt=0; function loop(ts){
 	if(shouldSkipFrameForCap(ts)){ requestAnimationFrame(loop); return; }
@@ -4808,10 +5306,10 @@ if(!window.__lootPopupInit){
 }
 
 // Regenerate world using the CURRENT seed (do not change WG.worldSeed)
-window.regenWorldSameSeed = function(){ try{ if(MOBS && MOBS.clearAll) try{ MOBS.clearAll(); }catch(e){} if(WORLD && WORLD.clear) WORLD.clear(); if(typeof chunkCanvases!=='undefined') chunkCanvases.clear(); if(WORLD && WORLD.clearHeights) WORLD.clearHeights(); if(FALLING && FALLING.reset) FALLING.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(UFO && UFO.reset) UFO.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
+window.regenWorldSameSeed = function(){ try{ if(MOBS && MOBS.clearAll) try{ MOBS.clearAll(); }catch(e){} if(WORLD && WORLD.clear) WORLD.clear(); if(typeof chunkCanvases!=='undefined') chunkCanvases.clear(); if(WORLD && WORLD.clearHeights) WORLD.clearHeights(); if(FALLING && FALLING.reset) FALLING.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(UFO && UFO.reset) UFO.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
 	// Reset fog-of-war as well
 	try{ if(FOG && FOG.importSeen) FOG.importSeen([]); if(FOG && FOG.setRevealAll) FOG.setRevealAll(false); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); }catch(e){}
-	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.diamond=false; player.tool='basic'; hotbarIndex=0; player.xp=0; player.energy=0; if(PROGRESS && PROGRESS.reset) PROGRESS.reset(); applyProgressHp(); applyHeroEnergyCapacity(); respawnPoint=null; saveRespawnPoint(); grave=null; saveGrave();
+	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.meteor=inv.tools.diamond=false; player.tool='basic'; hotbarIndex=0; player.xp=0; player.energy=0; if(PROGRESS && PROGRESS.reset) PROGRESS.reset(); applyProgressHp(); applyHeroEnergyCapacity(); respawnPoint=null; saveRespawnPoint(); grave=null; saveGrave();
 	// Also remove all animals when regenerating with same seed and freeze spawns briefly
 	if(MOBS){ try{ if(MOBS.clearAll) MOBS.clearAll(); else if(MOBS.deserialize) MOBS.deserialize({v:3, list:[], aggro:{mode:'rel', m:{}}}); if(MOBS.freezeSpawns) MOBS.freezeSpawns(4000); }catch(e){} } if(godMode){ if(!_preGodInventory){ _preGodInventory={}; RESOURCE_KEYS.forEach(k=>{ _preGodInventory[k]=0; }); } RESOURCE_KEYS.forEach(k=>{ inv[k]=100; }); }
 	updateInventory(); updateHotbarSel(); placePlayer(true); saveState(); msg('Odświeżono świat (seed '+WORLDGEN.worldSeed+', ustawienia zmienione)'); }catch(e){ console.warn('regenWorldSameSeed failed',e); }}

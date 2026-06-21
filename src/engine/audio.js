@@ -70,6 +70,7 @@ window.MM = window.MM || {};
     gas:    ()=>{ if(throttled('gas',200)) return; noise(0.2,0.045,600,1600,'lowpass'); },
     chest:  ()=>{ tone('triangle',520,780,0.12,0.14); tone('triangle',780,1170,0.18,0.12); },
     craft:  ()=>{ noise(0.06,0.14,1500,4200); tone('square',330,330,0.08,0.08); },
+    alarm:  ()=>{ if(throttled('alarm',900)) return; tone('square',880,660,0.20,0.13,0.12); setTimeout(()=>tone('square',880,660,0.20,0.12,0.12),260); noise(0.16,0.035,1800,5200,'bandpass'); },
     charge: ()=>{ if(throttled('charge',240)) return; tone('sine',660,1320,0.18,0.055,0.11); tone('triangle',1480,940,0.22,0.035,0.18); noise(0.10,0.022,4200,9000,'highpass'); },
     harvest:()=>{ tone('sine',520,650,0.10,0.12); },
     levelup:()=>{ [392,494,587,784].forEach((f,i)=>setTimeout(()=>tone('triangle',f,f,0.18,0.16),i*90)); },

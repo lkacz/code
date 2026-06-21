@@ -85,6 +85,14 @@ try{
   assert.ok(smokeCalls.some(c=>c.opts && c.opts.tileX===1 && c.opts.tileY===3), 'burning wood emits smoke');
   assert.ok(smokeCalls.some(c=>c.opts && c.opts.tileX===2 && c.opts.tileY===3 && c.intensity>2), 'burning coal emits a heavier plume');
   assert.ok(smokeCalls.some(c=>c.opts && c.opts.tileX===4 && c.opts.tileY===3 && c.intensity>2), 'volcano lava emits a heavier plume');
+  const fireSnap=fire.snapshot();
+  assert.equal(fireSnap.list.length,2,'fire snapshot captures active burning tiles');
+  fire.reset();
+  assert.equal(fire.count(),0,'fire reset clears active burning tiles');
+  fire.restore(fireSnap,getTile);
+  assert.equal(fire.count(),2,'fire restore revives active burning tiles after reload');
+  assert.equal(fire.isBurning(1,3),true,'restored wood tile is still burning');
+  assert.equal(fire.isBurning(2,3),true,'restored coal tile is still burning');
   fire.update(getTile,setTile,59);
   assert.equal(getTile(1,3), T.WOOD, 'wood block is still present after almost one minute of burning');
   assert.equal(getTile(2,3), T.COAL, 'coal block is still present after one minute of burning');

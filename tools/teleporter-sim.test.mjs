@@ -170,8 +170,8 @@ assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source end
 
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 assert.match(mainSrc, /import \{ teleporters as TELEPORTERS \}/, 'main imports the teleporter engine');
-assert.match(mainSrc, /TELEPORTERS\.update\(dt, player, getTile, setTile, \{dynamo:DYNAMO, heroEnergy:MM\.heroEnergy\}\)/, 'main updates teleporters with dynamo and hero energy access');
-assert.match(mainSrc, /TELEPORTERS\.draw\(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getTile\)/, 'main draws teleporter energy overlays');
+assert.match(mainSrc, /TELEPORTERS\.update\(dt, player, getNetworkTile, setTile, \{dynamo:DYNAMO, heroEnergy:MM\.heroEnergy\}\)/, 'main updates teleporters with overlay-aware dynamo and hero energy access');
+assert.match(mainSrc, /TELEPORTERS\.draw\(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getNetworkTile\)/, 'main draws teleporter energy overlays through infrastructure overlays');
 assert.match(mainSrc, /TELEPORTERS\.cableConnections\(wx,y,peek\)/, 'main uses smart copper cable layouts without forcing neighbor chunks to generate');
 assert.match(mainSrc, /function placeDebugTeleporterPair\(\)/, 'main exposes a debug action that places a powered teleporter pair');
 assert.match(mainSrc, /function placeDebugTeleporterOne\(\)/, 'main exposes a debug action that places one teleporter');

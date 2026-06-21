@@ -18,11 +18,19 @@ globalThis.msg = ()=>{};
 const { T, INFO } = await import('../src/constants.js');
 const { meteorites } = await import('../src/engine/meteorites.js');
 const worldSrc = await readFile(new URL('../src/engine/world.js', import.meta.url), 'utf8');
+const audioSrc = await readFile(new URL('../src/engine/audio.js', import.meta.url), 'utf8');
 
 assert.ok(meteorites && meteorites.forceSpawn && meteorites.update, 'meteorites module exports');
 assert.equal(typeof meteorites.onTileChanged, 'function', 'meteorites expose a beacon tile-change index hook');
 assert.equal(INFO[T.ANTIGRAVITY_BEACON].meteorShield, true, 'antigravity beacon is registered as a meteor shield tile');
+assert.equal(T.METEOR_SIREN, 49, 'meteor siren has a stable tile id after water pump');
+assert.equal(INFO[T.METEOR_SIREN].meteorSiren, true, 'meteor siren is registered as an alert machine');
+assert.equal(INFO[T.RADIOACTIVE_ORE].radioactive, true, 'radioactive meteor ore is flagged');
+assert.equal(INFO[T.ALIEN_BIOMASS].biological, true, 'biological meteor biomass is flagged');
+assert.equal(INFO[T.METEOR_DUST].dust, true, 'meteor dust is flagged as strange residue');
+assert.equal(INFO[T.ANTIMATTER_CRYSTAL].antimatter, true, 'antimatter meteor crystals are flagged');
 assert.match(worldSrc, /MM\.meteorites && MM\.meteorites\.onTileChanged/, 'world lifecycle keeps the meteor beacon index synchronized');
+assert.match(audioSrc, /alarm:\s*\(\)=>/, 'meteor sirens have an actual procedural alarm audio effect');
 
 const SURF = 82;
 const DAY_SECONDS = 600;
@@ -36,7 +44,8 @@ function getTile(x,y){
 }
 function setTile(x,y,t){ tiles.set(kxy(x,y),t); }
 
-let waterWake=0, removed=0, placed=0, marked=0, smoke=0, sparks=0, splashes=0, audio=0, hotGas=0, steamGas=0;
+let waterWake=0, removed=0, placed=0, marked=0, smoke=0, sparks=0, splashes=0, audio=0, hotGas=0, steamGas=0, poisonGas=0;
+let alienSows=0, plantMutations=0;
 globalThis.__mmMarkWorldChanged = ()=>{ marked++; };
 globalThis.player = {x:0,y:SURF-1,w:0.7,h:0.95,vx:0,vy:0,hp:100,maxHp:100,hpInvul:0,facing:1};
 MM.worldGen = { surfaceHeight:()=>SURF };
@@ -48,14 +57,23 @@ MM.particles = {
   spawnSplash(){ sparks++; splashes++; }
 };
 MM.audio = { play(){ audio++; }, isReady:()=>true };
-MM.gases = { add(kind){ if(kind==='hot') hotGas++; if(kind==='steam') steamGas++; } };
+MM.gases = { add(kind){ if(kind==='hot') hotGas++; if(kind==='steam') steamGas++; if(kind==='poison') poisonGas++; } };
+MM.plants = {
+  sow(type){ if(type==='alienbloom') alienSows++; return {type}; },
+  mutateAt(){ plantMutations++; return 1; }
+};
 
 meteorites.restore({enabled:false,nextIn:60,spawned:0,impacts:0});
 assert.equal(meteorites.metrics().beacons, 0, 'restore clears the antigravity beacon lookup index');
+assert.equal(meteorites.metrics().sirens, 0, 'restore clears the meteor siren lookup index');
 meteorites.onTileChanged(7,SURF-1,T.AIR,T.ANTIGRAVITY_BEACON);
 assert.equal(meteorites.metrics().beacons, 1, 'antigravity beacon placement registers in the lookup index');
 meteorites.onTileChanged(7,SURF-1,T.ANTIGRAVITY_BEACON,T.AIR);
 assert.equal(meteorites.metrics().beacons, 0, 'antigravity beacon removal prunes the lookup index');
+meteorites.onTileChanged(8,SURF-1,T.AIR,T.METEOR_SIREN);
+assert.equal(meteorites.metrics().sirens, 1, 'meteor siren placement registers in the lookup index');
+meteorites.onTileChanged(8,SURF-1,T.METEOR_SIREN,T.AIR);
+assert.equal(meteorites.metrics().sirens, 0, 'meteor siren removal prunes the lookup index');
 let indexedReads=0;
 function getIndexedBeaconTile(x,y){
   indexedReads++;
@@ -80,6 +98,19 @@ const offBefore=meteorites.metrics();
 meteorites.update(30,player,getTile,setTile);
 assert.equal(meteorites.metrics().spawned, offBefore.spawned, 'disabled scheduler does not spawn meteors');
 
+let noBeaconReads=0;
+function getNoBeaconTile(x,y){
+  noBeaconReads++;
+  x=Math.floor(x); y=Math.floor(y);
+  return y>=SURF ? T.STONE : T.AIR;
+}
+function setNoBeaconTile(x,y,t){}
+assert.ok(meteorites.forceSpawn({x:120,y:SURF,intensity:1.15,side:-1,classId:'iron'}, player, getNoBeaconTile), 'forced meteor spawns without any beacon');
+noBeaconReads=0;
+for(let i=0;i<60;i++) meteorites.update(1/60, player, getNoBeaconTile, setNoBeaconTile);
+assert.ok(noBeaconReads<30000, 'missing-beacon lookup is throttled instead of rescanning every meteor substep ('+noBeaconReads+' reads)');
+meteorites.clearActive();
+
 const treeKeys=[];
 for(let x=-4; x<=6; x++){
   for(let y=SURF-13; y<SURF; y++){
@@ -89,7 +120,7 @@ for(let x=-4; x<=6; x++){
   }
 }
 
-const spawned = meteorites.forceSpawn({x:0,y:SURF,intensity:1.65,side:-1}, player, getTile);
+const spawned = meteorites.forceSpawn({x:0,y:SURF,intensity:1.65,side:-1,classId:'iridium'}, player, getTile);
 assert.ok(spawned, 'forced debug meteor spawns');
 assert.equal(meteorites.metrics().meteors, 1, 'active meteor is tracked');
 
@@ -197,6 +228,128 @@ meteorites._debug.impactAt(9,SURF-4,getWaterTile,setWaterTile,1.65,null,{waterHi
 assert.ok(splashes-beforeWaterSplash>=6, 'water impact throws a broad water splash');
 assert.ok(steamGas>beforeSteam, 'water impact emits steam');
 
+function instantClassImpact(classId,x0){
+  const localTiles = new Map();
+  function getLocal(x,y){
+    x=Math.floor(x); y=Math.floor(y);
+    const k=kxy(x,y);
+    if(localTiles.has(k)) return localTiles.get(k);
+    return y>=SURF ? T.STONE : T.AIR;
+  }
+  function setLocal(x,y,t){ localTiles.set(kxy(x,y),t); }
+  const beforePoison=poisonGas;
+  const beforeBurst=meteorites._debug.gravityBursts.length;
+  meteorites._debug.impactAt(x0,SURF,getLocal,setLocal,1.55,null,{classId});
+  const vals=[...localTiles.values()];
+  return {
+    vals,
+    localTiles,
+    poisonDelta:poisonGas-beforePoison,
+    burstDelta:meteorites._debug.gravityBursts.length-beforeBurst,
+    scan:meteorites.scanNearestCrater({x:x0,y:SURF},getLocal)
+  };
+}
+const ironImpact=instantClassImpact('iron',320);
+assert.ok(ironImpact.vals.includes(T.METEORIC_IRON), 'iron meteor class leaves meteoric iron');
+assert.ok(ironImpact.scan && ironImpact.scan.classId==='iron', 'crater scanner reports iron class');
+const iceImpact=instantClassImpact('ice',390);
+assert.ok(iceImpact.vals.includes(T.ICE) || iceImpact.vals.includes(T.SNOW), 'ice meteor class leaves frozen material');
+const radioactiveImpact=instantClassImpact('radioactive',460);
+assert.ok(radioactiveImpact.vals.includes(T.RADIOACTIVE_ORE), 'radioactive meteor class leaves radioactive ore');
+assert.ok(radioactiveImpact.vals.includes(T.METEOR_DUST), 'radioactive meteor class leaves meteor dust');
+assert.ok(radioactiveImpact.poisonDelta>0, 'radioactive impact injects poison gas');
+const antimatterImpact=instantClassImpact('antimatter',530);
+assert.ok(antimatterImpact.vals.includes(T.ANTIMATTER_CRYSTAL), 'antimatter meteor class leaves antimatter crystals');
+assert.ok(antimatterImpact.burstDelta>0, 'antimatter impact leaves inverse-gravity burst effects');
+const biologicalImpact=instantClassImpact('biological',600);
+assert.ok(biologicalImpact.vals.includes(T.ALIEN_BIOMASS), 'biological meteor class leaves alien biomass');
+assert.ok(biologicalImpact.vals.includes(T.METEOR_DUST), 'biological meteor class leaves mutation dust');
+assert.ok(meteorites.metrics().meteorMutations>0, 'meteor dust ecology mutations are tracked');
+
+const ecoTiles = new Map();
+function getEcoTile(x,y){
+  x=Math.floor(x); y=Math.floor(y);
+  const k=kxy(x,y);
+  if(ecoTiles.has(k)) return ecoTiles.get(k);
+  return y>=SURF ? T.STONE : T.AIR;
+}
+function setEcoTile(x,y,t){ ecoTiles.set(kxy(x,y),t); }
+const beforeEcoOps=meteorites.metrics().craterEcologyOps;
+const beforePlantMutations=plantMutations;
+meteorites._debug.impactAt(760,SURF,getEcoTile,setEcoTile,1.45,null,{classId:'radioactive'});
+for(let i=0;i<70;i++) meteorites.update(1, player, getEcoTile, setEcoTile);
+const ecoAfter=meteorites.metrics();
+const ecoScan=meteorites.scanNearestCrater({x:760,y:SURF},getEcoTile);
+assert.ok(ecoAfter.craterEcologyOps>beforeEcoOps, 'old craters evolve through a bounded ecology worker');
+assert.ok(ecoAfter.ecologyCraters>0, 'metrics report active crater landmarks');
+assert.ok(plantMutations>beforePlantMutations, 'radioactive crater ecology mutates nearby plants through the plant hook');
+assert.ok(ecoScan && ecoScan.ecology && ecoScan.ecology.kind==='glow', 'crater scanner reports the crater ecology landmark type');
+assert.match(ecoScan.ecology.label, /radioaktywne/, 'crater scanner exposes a readable ecology label');
+const ecoSnap=meteorites.snapshot();
+meteorites.restore(ecoSnap);
+const restoredEcoScan=meteorites.scanNearestCrater({x:760,y:SURF},getEcoTile);
+assert.ok(restoredEcoScan && restoredEcoScan.ecology && restoredEcoScan.ecology.kind==='glow', 'crater ecology landmark type survives snapshot restore');
+assert.ok(restoredEcoScan.ecology.glow>=ecoScan.ecology.glow, 'crater ecology progress survives snapshot restore');
+
+const burstBefore=meteorites._debug.gravityBursts.length;
+assert.equal(meteorites.triggerAntimatterBurst(780,SURF-1,1.2), true, 'breaking antimatter can trigger a manual inverse-gravity burst');
+assert.ok(meteorites._debug.gravityBursts.length>burstBefore, 'manual antimatter burst reuses the meteor gravity-burst system');
+
+const forestTiles = new Map();
+function getForestTile(x,y){
+  x=Math.floor(x); y=Math.floor(y);
+  const k=kxy(x,y);
+  if(forestTiles.has(k)) return forestTiles.get(k);
+  if(y>=SURF-10 && y<SURF){
+    return (x>=690 && x<=706) ? (y<SURF-4 ? T.LEAF : T.WOOD) : T.AIR;
+  }
+  return y>=SURF ? T.STONE : T.AIR;
+}
+function setForestTile(x,y,t){ forestTiles.set(kxy(x,y),t); }
+const beforeConsequences=meteorites.metrics().impactConsequences;
+meteorites._debug.impactAt(698,SURF,getForestTile,setForestTile,1.45,null,{classId:'iron',deflected:true});
+const consequenceAfter=meteorites.metrics();
+assert.ok(consequenceAfter.impactConsequences>beforeConsequences, 'redirected meteor impact creates an ethical consequence record');
+assert.ok(consequenceAfter.consequenceCounts.forest>0, 'redirected forest damage increments forest consequence count');
+assert.ok(consequenceAfter.lastConsequence && consequenceAfter.lastConsequence.site==='forest', 'last consequence identifies the impacted site type');
+assert.match(consequenceAfter.lastConsequence.message, /lasu/, 'consequence message explains what was protected and harmed');
+
+const sirenTiles = new Map();
+function getSirenTile(x,y){
+  x=Math.floor(x); y=Math.floor(y);
+  const k=kxy(x,y);
+  if(sirenTiles.has(k)) return sirenTiles.get(k);
+  return y>=SURF ? T.STONE : T.AIR;
+}
+function setSirenTile(x,y,t){ sirenTiles.set(kxy(x,y),t); }
+setSirenTile(660,SURF-1,T.METEOR_SIREN);
+meteorites.onTileChanged(660,SURF-1,T.AIR,T.METEOR_SIREN);
+const beforeAlerts=meteorites.metrics().sirenAlerts;
+assert.ok(meteorites.forceSpawn({x:666,y:SURF,intensity:1.25,side:-1,classId:'ice'}, player, getSirenTile), 'forced meteor spawns near siren');
+const sirenAfter=meteorites.metrics();
+assert.equal(sirenAfter.sirens, 1, 'siren remains indexed after alert');
+assert.ok(sirenAfter.sirenAlerts>beforeAlerts, 'siren warns about nearby meteor target');
+assert.ok(sirenAfter.sirenPulses>0, 'siren warning emits visible pulses');
+meteorites.clearActive();
+
+const lakeTiles = new Map();
+function getLakeTile(x,y){
+  x=Math.floor(x); y=Math.floor(y);
+  const k=kxy(x,y);
+  if(lakeTiles.has(k)) return lakeTiles.get(k);
+  return y>=SURF ? T.STONE : T.AIR;
+}
+function setLakeTile(x,y,t){ lakeTiles.set(kxy(x,y),t); }
+MM.clouds = { isRainingAt:()=>true };
+const beforeLakeOps=meteorites.metrics().craterLakeOps;
+meteorites._debug.impactAt(740,SURF,getLakeTile,setLakeTile,1.45,null,{classId:'iron'});
+for(let i=0;i<160;i++) meteorites.update(1, player, getLakeTile, setLakeTile);
+const lakeAfter=meteorites.metrics();
+assert.ok([...lakeTiles.values()].includes(T.WATER), 'rain can slowly turn a crater into a lake');
+assert.ok(lakeAfter.craterLakeOps>beforeLakeOps, 'crater lake filling is tracked as bounded work');
+assert.ok(lakeAfter.lakeCraters>0, 'metrics report water-bearing craters');
+delete MM.clouds;
+
 meteorites.clearActive();
 const beaconTiles = new Map();
 function getBeaconTile(x,y){
@@ -215,7 +368,7 @@ player.vx=0;
 player.vy=0;
 const beforeBeaconImpacts=meteorites.metrics().impacts;
 const beforeDeflections=meteorites.metrics().deflections;
-const shielded = meteorites.forceSpawn({x:0,y:SURF,intensity:1.65,side:-1}, player, getBeaconTile);
+const shielded = meteorites.forceSpawn({x:0,y:SURF,intensity:1.65,side:-1,classId:'iron'}, player, getBeaconTile);
 assert.ok(shielded, 'forced debug meteor spawns against an antigravity beacon');
 let sawDeflection=false;
 let sawWave=false;
@@ -270,7 +423,7 @@ player.vx=0;
 player.vy=0;
 const beforeChainImpacts=meteorites.metrics().impacts;
 const beforeChainDeflections=meteorites.metrics().deflections;
-assert.ok(meteorites.forceSpawn({x:0,y:SURF,intensity:1.65,side:-1}, player, getChainTile), 'forced meteor spawns for chained beacon deflection');
+assert.ok(meteorites.forceSpawn({x:0,y:SURF,intensity:1.65,side:-1,classId:'iron'}, player, getChainTile), 'forced meteor spawns for chained beacon deflection');
 for(let i=0;i<1300;i++){
   meteorites.update(1/60, player, getChainTile, setChainTile);
   const m=meteorites.metrics();
@@ -294,9 +447,15 @@ assert.equal(restored.nextIn, 12.5, 'restore keeps next meteor clock');
 assert.equal(restored.spawned, 3, 'restore keeps spawned counter');
 assert.equal(restored.impacts, 4, 'restore keeps impact counter');
 const snap=meteorites.snapshot();
-assert.equal(snap.v, 2, 'snapshot uses the weekly meteor schedule format');
+assert.equal(snap.v, 4, 'snapshot uses the crater ecology persistence format');
 assert.equal(snap.enabled, true, 'snapshot exposes enabled state');
 assert.equal(snap.nextIn, 12.5, 'snapshot exposes next clock');
+assert.ok(Array.isArray(snap.craters), 'snapshot preserves known crater science records');
+assert.ok(snap.craters.every(c=>!c || c.eco==null || typeof c.eco.k === 'string'), 'snapshot preserves compact crater ecology records');
+assert.ok(snap.classCounts && typeof snap.classCounts.iron === 'number', 'snapshot preserves meteor class counters');
+assert.ok(typeof snap.craterEcologyOps === 'number', 'snapshot preserves bounded crater ecology work metrics');
+assert.ok(Array.isArray(snap.consequences), 'snapshot preserves redirected-impact consequence history');
+assert.ok(snap.consequenceCounts && typeof snap.consequenceCounts.forest === 'number', 'snapshot preserves consequence counters');
 
 assert.equal(meteorites.rollSchedule(), true, 'debug can roll a natural meteor schedule');
 const weekly=meteorites.metrics();

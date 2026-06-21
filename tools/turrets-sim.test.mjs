@@ -9,6 +9,7 @@ globalThis.MM = {};
 const { T, INFO, WORLD_H } = await import('../src/constants.js');
 const { dynamo } = await import('../src/engine/dynamo.js');
 const { teleporters } = await import('../src/engine/teleporters.js');
+const { weapons } = await import('../src/engine/weapons.js');
 const { turrets } = await import('../src/engine/turrets.js');
 
 const tiles = new Map();
@@ -32,11 +33,13 @@ function reset(){
   tiles.clear();
   dynamo.reset();
   teleporters.reset();
+  weapons.reset();
   turrets.reset();
   globalThis.MM.world={getTile,setTile};
   globalThis.MM.audio={play(){}};
   globalThis.MM.particles={spawnSparks(){}, spawnSplash(){}, spawnEnergyAbsorb(){}};
   globalThis.MM.fire={heatAround(){}};
+  delete globalThis.MM.mobs;
 }
 function placeDynamo(cx,y,orientation='horizontal'){
   dynamo.plannedCells(cx,y,orientation).forEach(cell=>setTile(cell.x,cell.y,cell.t));
@@ -83,6 +86,22 @@ function fakeMobAt(x,y,hp=30){
   };
   return {mob,state};
 }
+function fakeFireAt(cells){
+  const burning=new Set(cells.map(([x,y])=>k(x,y)));
+  const state={extinguished:0};
+  globalThis.MM.fire={
+    heatAround(){},
+    isBurning(x,y){ return burning.has(k(x,y)); },
+    extinguish(x,y){
+      const id=k(x,y);
+      const had=burning.delete(id);
+      if(had) state.extinguished++;
+      return had;
+    },
+    count(){ return burning.size; }
+  };
+  return state;
+}
 
 assert.equal(T.TURRET,44,'basic turret has a stable tile id after antigravity beacon');
 assert.equal(T.FIRE_TURRET,45,'fire turret has a stable tile id after basic turret');
@@ -124,6 +143,8 @@ assert.equal(INFO[T.TURRET].passable,false,'turrets are solid defensive machines
   const {mob,state}=fakeMobAt(6.5,10.5,20);
   for(let i=0;i<70;i++) tick(1/30);
   assert.ok(turrets.metrics().shots>0,'fire turret fires at nearby mobs');
+  assert.ok(weapons.metrics().puffs>0,'fire turret emits the shared flamethrower stream puffs');
+  assert.equal(turrets._debug.shots.length,0,'fire turret no longer draws a separate beam/line shot');
   assert.ok(state.burns>0,'fire turret applies burn status through the mob API');
   assert.ok(mob.hp<20,'fire turret still deals direct damage');
 }
@@ -136,7 +157,45 @@ assert.equal(INFO[T.TURRET].passable,false,'turrets are solid defensive machines
   for(let i=0;i<50;i++) tick(1/30);
   assert.ok(turrets.metrics().shots>0,'water turret fires at nearby mobs');
   assert.ok(state.douses>0,'water turret douses burning targets through the mob API');
+  assert.ok(state.hits>0 && mob.hp<20,'water turret inflicts only small direct damage while pushing');
   assert.ok(Math.abs(mob.vx)>0.01,'water turret applies a small knockback to its target');
+}
+
+{
+  reset();
+  setTile(0,10,T.WATER_TURRET);
+  setTile(5,10,T.WOOD);
+  const fireState=fakeFireAt([[5,10]]);
+  turrets._debug.debugChargeAt(0,10,turrets._debug.TURRET_CAPACITY,getTile);
+  for(let i=0;i<50;i++) tick(1/30);
+  assert.ok(turrets.metrics().shots>0,'water turret acts as a fire brigade when no hostile mob is present');
+  assert.ok(fireState.extinguished>0,'water turret extinguishes the visible burning tile');
+  assert.equal(globalThis.MM.fire.count(),0,'water turret clears the targeted fire');
+}
+
+{
+  reset();
+  setTile(0,10,T.WATER_TURRET);
+  setTile(3,8,T.WOOD);
+  const fireState=fakeFireAt([[3,8]]);
+  turrets._debug.debugChargeAt(0,10,turrets._debug.TURRET_CAPACITY,getTile);
+  const {mob,state}=fakeMobAt(5.5,10.5,20);
+  for(let i=0;i<50;i++) tick(1/30);
+  assert.ok(state.hits>0 && mob.hp<20,'water turret keeps hostile targets ahead of firefighting');
+  assert.equal(fireState.extinguished,0,'water turret does not switch to fire while a hostile target is present');
+  assert.equal(globalThis.MM.fire.count(),1,'visible fire remains until hostile targets are gone');
+}
+
+{
+  reset();
+  setTile(0,10,T.WATER_TURRET);
+  setTile(2,10,T.STONE);
+  setTile(5,10,T.WOOD);
+  const fireState=fakeFireAt([[5,10]]);
+  turrets._debug.debugChargeAt(0,10,turrets._debug.TURRET_CAPACITY,getTile);
+  for(let i=0;i<60;i++) tick(1/30);
+  assert.equal(turrets.metrics().shots,0,'water turret does not shoot fire through solid terrain');
+  assert.equal(fireState.extinguished,0,'blocked fire remains untouched');
 }
 
 {
@@ -166,7 +225,7 @@ assert.equal(INFO[T.TURRET].passable,false,'turrets are solid defensive machines
 
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 assert.match(mainSrc, /import \{ turrets as TURRETS \}/, 'main imports the turret engine');
-assert.match(mainSrc, /TURRETS\.update\(dt, player, getTile, setTile, \{dynamo:DYNAMO, teleporters:TELEPORTERS\}\)/, 'main updates turrets with power-network access');
+assert.match(mainSrc, /TURRETS\.update\(dt, player, getTile, setTile, \{dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS\}\)/, 'main updates turrets with power-network and pump access');
 assert.match(mainSrc, /TURRETS\.draw\(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getTile\)/, 'main draws turret overlays and shot FX');
 assert.match(mainSrc, /turrets:\s*timedSavePart\('turrets',[^\n]*TURRETS && TURRETS\.snapshot/, 'main saves turret battery state');
 assert.match(mainSrc, /TURRETS\.restore\(data\.turrets,getTile\)/, 'main restores turret battery state');

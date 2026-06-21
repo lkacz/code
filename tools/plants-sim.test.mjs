@@ -95,7 +95,21 @@ setTile(0,10,T.AIR); // dig out the soil
 step(6);
 assert.ok(!plants._debug().has(0), 'plant dies when its soil is mined');
 
-// 7) berry harvest heals the hero and resets the bush a stage
+// 7) radioactive meteor residue mutates nearby plants on the existing env tick
+fresh(70);
+raining=true;
+const mutant=plants.sow('fern',0,getTile);
+setTile(1,10,T.RADIOACTIVE_ORE);
+step(8);
+assert.equal(plants._debug().get(0).type, 'alienbloom', 'radioactive ore mutates a nearby plant into alien bloom');
+assert.ok(mutant.health>0, 'mutated plant remains alive after the material personality event');
+
+fresh(71);
+setTile(0,10,T.ALIEN_BIOMASS);
+const alien=plants.sow('alienbloom',0,getTile);
+assert.ok(alien, 'alien bloom can be seeded on alien biomass crater soil');
+
+// 8) berry harvest heals the hero and resets the bush a stage
 fresh(77);
 raining=true;
 const bush=plants.sow('berrybush',0,getTile);

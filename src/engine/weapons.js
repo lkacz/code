@@ -30,6 +30,18 @@ import { reactions as REACTIONS } from './reactions.js';
     gas:  {speed:6,  emit:2, grav:-1.2, lifeMult:1.9},
     steam:{speed:2,  emit:0, grav:-3.2, lifeMult:1.0}  // cosmetic, spawned by boiling
   };
+  const STREAM_FUEL={
+    flame:{key:'wood', label:'drewna', rate:1},
+    hose: {key:'water', label:'wody', rate:1},
+    gas:  {key:'rottenMeat', label:'zepsutego miesa', rate:1}
+  };
+  const ARROW_TIERS=[
+    {id:'iridium',  key:'arrowIridium',  label:'irydowe',     damage:2.80, speed:1.32, life:1.55, spread:0.004, color:'#b8d7ff', head:'#f0f7ff'},
+    {id:'diamond',  key:'arrowDiamond',  label:'diamentowe',  damage:2.15, speed:1.18, life:1.35, spread:0.012, color:'#48f1ff', head:'#dffcff'},
+    {id:'obsidian', key:'arrowObsidian', label:'obsydianowe', damage:1.65, speed:1.08, life:1.15, spread:0.020, color:'#7a5cc1', head:'#c7b8ff'},
+    {id:'stone',    key:'arrowStone',    label:'kamienne',    damage:1.25, speed:1.00, life:1.00, spread:0.032, color:'#9aa0a8', head:'#e1e5ea'},
+    {id:'wood',     key:'arrowWood',     label:'drewniane',   damage:1.00, speed:0.92, life:0.85, spread:0.050, color:'#caa472', head:'#dfe6f1'}
+  ];
   const WATER_CONDENSE_CHANCE=0.008; // per dying hose puff (~1 tile per second of spray)
   // Elemental conversion odds (per puff contact — sustained streams transform terrain)
   const EVAPORATE_CHANCE=0.05;  // flame boils a water tile away → vapor joins the clouds
@@ -47,8 +59,11 @@ import { reactions as REACTIONS } from './reactions.js';
   const sandHeat=new Map();     // key "x,y" -> {x,y,heat,gap}
   const heatForgedGlass=new Map(); // key -> {x,y,cool}; refreshed while flame keeps heating it
   const flameHeatRays=[];
+  const streamFuelDebt={flame:0,hose:0,gas:0};
+  const warnAt=Object.create(null);
   let bowCd=0, meleeCd=0, bossAcc=0, ultCharge=1, electricCd=0;
   let heroFlameHitCd=0;
+  let iridiumPierces=0;
   let lastGetTile=null, lastSetTile=null;
   const ULT_CHARGE_TIME=5;
   // Melee swing visual: drawHeld animates the held blade, draw() adds a slash arc
@@ -79,7 +94,8 @@ import { reactions as REACTIONS } from './reactions.js';
     const before=a.vx||0;
     const response=a.power ? 0.12 : 0.16;
     a.vx = before + sp*response*dt;
-    if(Math.abs(a.vx)>ARROW_SPEED*1.35) a.vx=Math.sign(a.vx)*ARROW_SPEED*1.35;
+    const cap=Math.max(ARROW_SPEED*1.35, Number(a.windCap)||0);
+    if(Math.abs(a.vx)>cap) a.vx=Math.sign(a.vx)*cap;
     return a.vx!==before;
   }
   function puffWindResponse(kind){
@@ -105,6 +121,126 @@ import { reactions as REACTIONS } from './reactions.js';
     try{
       return !!(REACTIONS && REACTIONS.apply && REACTIONS.apply(stimulus,tx,ty,getTile,setTile));
     }catch(e){ return false; }
+  }
+  function nowMs(){
+    try{ if(typeof performance!=='undefined' && performance.now) return performance.now(); }catch(e){}
+    return Date.now();
+  }
+  function sayLimited(id,text,delay){
+    const t=nowMs(), wait=delay||900;
+    if(t-(warnAt[id]||0)<wait) return;
+    warnAt[id]=t;
+    try{ if(window.msg) window.msg(text); }catch(e){}
+  }
+  function resourceCount(key){
+    const inv=(typeof window!=='undefined' && window.inv) ? window.inv : null;
+    if(!inv || typeof inv[key]!=='number') return 0;
+    return Math.max(0, inv[key]|0);
+  }
+  function canSpendResource(key,n){
+    const need=Math.max(0, n|0);
+    return need<=0 || resourceCount(key)>=need;
+  }
+  function markWorldChanged(){
+    try{ if(typeof window!=='undefined' && typeof window.__mmMarkWorldChanged==='function') window.__mmMarkWorldChanged(); }catch(e){}
+  }
+  function notifyResourceSpent(key,n){
+    let updated=false;
+    try{
+      if(typeof window.updateInventoryHud==='function'){
+        window.updateInventoryHud();
+        updated=true;
+      }
+    }catch(e){}
+    if(!updated){
+      try{
+        if(typeof window.dispatchEvent==='function' && typeof CustomEvent!=='undefined'){
+          window.dispatchEvent(new CustomEvent('mm-resources-change',{detail:{key, spent:n}}));
+        }
+      }catch(e){}
+      markWorldChanged();
+    }
+  }
+  function spendResource(key,n){
+    const need=Math.max(0, n|0);
+    if(need<=0) return true;
+    const inv=(typeof window!=='undefined' && window.inv) ? window.inv : null;
+    if(!inv || typeof inv[key]!=='number') return false;
+    if((inv[key]|0)<need) return false;
+    inv[key]=Math.max(0,(inv[key]|0)-need);
+    notifyResourceSpent(key,need);
+    return true;
+  }
+  function warnMissingResource(spec){
+    if(!spec) return;
+    sayLimited('res_'+spec.key,'Brak: '+spec.label);
+  }
+  function consumeStreamFuel(kind,dt){
+    const spec=STREAM_FUEL[kind];
+    if(!spec) return true;
+    if(resourceCount(spec.key)<=0){
+      warnMissingResource(spec);
+      return false;
+    }
+    const step=Math.max(0,Math.min(0.25, Number(dt)||0.016));
+    streamFuelDebt[kind]=(streamFuelDebt[kind]||0)+step*(spec.rate||1);
+    const due=Math.floor(streamFuelDebt[kind]+1e-9);
+    if(due>0){
+      if(!spendResource(spec.key,due)){
+        streamFuelDebt[kind]=Math.min(streamFuelDebt[kind],0.99);
+        warnMissingResource(spec);
+        return false;
+      }
+      streamFuelDebt[kind]=Math.max(0,streamFuelDebt[kind]-due);
+    }
+    return true;
+  }
+  function streamBurstFuelCost(kind,charge){
+    const spec=STREAM_FUEL[kind];
+    if(!spec) return 0;
+    const c=Math.max(0.35,Math.min(1,Number(charge)||0));
+    return Math.max(1,Math.ceil((0.75+c*1.5)*(spec.rate||1)));
+  }
+  function consumeStreamBurstFuel(kind,charge){
+    const spec=STREAM_FUEL[kind];
+    const cost=streamBurstFuelCost(kind,charge);
+    if(!spec || cost<=0) return true;
+    if(!spendResource(spec.key,cost)){
+      warnMissingResource(spec);
+      return false;
+    }
+    return true;
+  }
+  function pickArrowTier(){
+    for(const tier of ARROW_TIERS){
+      if(resourceCount(tier.key)>0) return tier;
+    }
+    return null;
+  }
+  function hasArrowAmmo(){ return !!pickArrowTier(); }
+  function warnNoArrows(){ sayLimited('arrows_empty','Brak strzal'); }
+  function consumeArrowTier(){
+    const tier=pickArrowTier();
+    if(!tier){ warnNoArrows(); return null; }
+    if(!spendResource(tier.key,1)){ warnNoArrows(); return null; }
+    return tier;
+  }
+  function arrowAmmoCounts(){
+    const out={};
+    for(const tier of ARROW_TIERS) out[tier.id]=resourceCount(tier.key);
+    return out;
+  }
+  function spreadAim(v,tier,scale){
+    const spread=Math.max(0,Number(tier && tier.spread)||0)*(scale||1);
+    if(spread<=0) return v;
+    const a=(Math.random()-0.5)*spread*2;
+    const ca=Math.cos(a), sa=Math.sin(a);
+    return {dx:v.dx*ca - v.dy*sa, dy:v.dx*sa + v.dy*ca};
+  }
+  function pushArrow(a){
+    if(arrows.length>=MAX_ARROWS) arrows.shift();
+    arrows.push(a);
+    return a;
   }
 
   function notifyMeleeSwing(tx,ty,player){
@@ -154,6 +290,18 @@ import { reactions as REACTIONS } from './reactions.js';
       const charge=consumeUltCharge();
       return fireElectric(player, aimX, aimY, w, plannedPower, charge);
     }
+    if(type==='bow' && !hasArrowAmmo()){
+      warnNoArrows();
+      return false;
+    }
+    if(STREAMS[type] && ultCharge>=0.35){
+      const spec=STREAM_FUEL[type];
+      const plannedCost=streamBurstFuelCost(type,Math.min(1,ultCharge));
+      if(spec && plannedCost>0 && !canSpendResource(spec.key,plannedCost)){
+        warnMissingResource(spec);
+        return false;
+      }
+    }
     const charge=consumeUltCharge();
     if(!charge) return false;
     if(type==='bow') return firePowerBow(player, aimX, aimY, w, charge);
@@ -178,34 +326,40 @@ import { reactions as REACTIONS } from './reactions.js';
   }
   function fireBow(player, aimX, aimY, w){
     if(bowCd>0) return false;
+    const tier=consumeArrowTier();
+    if(!tier) return false;
     bowCd=Math.max(0.25, (w && w.fireCooldown)||0.55);
-    if(arrows.length>=MAX_ARROWS) arrows.shift();
-    let dx=aimX-player.x, dy=aimY-player.y;
-    const d=Math.hypot(dx,dy)||1; dx/=d; dy/=d;
-    arrows.push({
-      x:player.x + dx*0.7,
-      y:player.y - 0.15 + dy*0.7,
-      vx:dx*ARROW_SPEED,
-      vy:dy*ARROW_SPEED - 1.2, // slight lob so mid-range shots arc naturally
-      dmg:(w && w.attackDamage)||3,
-      life:ARROW_LIFE, stuck:false, stuckT:ARROW_STUCK
+    const v=spreadAim(aimVector(player,aimX,aimY),tier,1);
+    const sp=ARROW_SPEED*tier.speed;
+    pushArrow({
+      x:player.x + v.dx*0.7,
+      y:player.y - 0.15 + v.dy*0.7,
+      vx:v.dx*sp,
+      vy:v.dy*sp - 1.2, // slight lob so mid-range shots arc naturally
+      dmg:Math.max(1,Math.round(((w && w.attackDamage)||3)*tier.damage)),
+      life:ARROW_LIFE*tier.life, stuck:false, stuckT:ARROW_STUCK,
+      tier:tier.id, color:tier.color, headColor:tier.head, windCap:sp*1.35,
+      pierceLeft:tier.id==='iridium' ? 3 : 0
     });
-    player.facing = dx>=0?1:-1;
+    player.facing = v.dx>=0?1:-1;
     try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
     return true;
   }
   function firePowerBow(player, aimX, aimY, w, charge){
-    if(arrows.length>=MAX_ARROWS) arrows.shift();
-    const v=aimVector(player,aimX,aimY);
-    const sp=ARROW_SPEED*(1.18+charge*0.28);
-    arrows.push({
+    const tier=consumeArrowTier();
+    if(!tier) return false;
+    const v=spreadAim(aimVector(player,aimX,aimY),tier,0.45);
+    const sp=ARROW_SPEED*tier.speed*(1.18+charge*0.28);
+    pushArrow({
       x:player.x + v.dx*0.75,
       y:player.y - 0.15 + v.dy*0.75,
       vx:v.dx*sp,
       vy:v.dy*sp - 0.9,
-      dmg:Math.round(((w && w.attackDamage)||3)*(2.7+charge*2.3)),
-      life:ARROW_LIFE*(1.05+charge*0.35), stuck:false, stuckT:ARROW_STUCK,
-      power:true, fire:charge>0.85
+      dmg:Math.round(((w && w.attackDamage)||3)*tier.damage*(2.7+charge*2.3)),
+      life:ARROW_LIFE*tier.life*(1.05+charge*0.35), stuck:false, stuckT:ARROW_STUCK,
+      power:true, fire:charge>0.85,
+      tier:tier.id, color:tier.color, headColor:tier.head, windCap:sp*1.25,
+      pierceLeft:tier.id==='iridium' ? 5 : 0
     });
     player.facing = v.dx>=0?1:-1;
     bowCd=Math.max(bowCd,0.25);
@@ -313,28 +467,14 @@ import { reactions as REACTIONS } from './reactions.js';
     return true;
   }
   function fireStream(player, aimX, aimY, w, dt, kind){
+    if(!consumeStreamFuel(kind,dt)) return false;
     try{ if(MM.audio && MM.audio.play) MM.audio.play(kind==='flame'?'flame': kind==='hose'?'hose':'gas'); }catch(e){}
-    const cfg=STREAMS[kind];
     let dx=aimX-player.x, dy=aimY-player.y;
     const d=Math.hypot(dx,dy)||1; dx/=d; dy/=d;
     player.facing = dx>=0?1:-1;
     const range=(w && w.fireRange)||6;
     const dps=(w && w.fireDps)||(kind==='hose'?2:6);
-    if(kind==='flame') flameHeatRays.push({x:player.x,y:player.y-0.1,dx,dy,range});
-    for(let i=0;i<cfg.emit && puffs.length<MAX_PUFFS;i++){
-      const spread=(Math.random()-0.5)*0.22;
-      const ca=Math.cos(spread), sa=Math.sin(spread);
-      const ex=dx*ca - dy*sa, ey=dx*sa + dy*ca;
-      const sp=cfg.speed*(0.85+Math.random()*0.3);
-      puffs.push({
-        kind,
-        x:player.x + ex*0.6, y:player.y - 0.1 + ey*0.6,
-        vx:ex*sp, vy:ey*sp - 0.3,
-        life:range/cfg.speed*cfg.lifeMult*(0.9+Math.random()*0.25),
-        total:range/cfg.speed*cfg.lifeMult,
-        dps
-      });
-    }
+    spawnExternalStream(kind,player.x,player.y-0.1,dx,dy,{range,dps});
     // flame & gas tick direct damage into boss parts / a hovering saucer along
     // the stream (bosses have no burn/poison status; the hose is harmless to them)
     if(kind!=='hose'){
@@ -350,7 +490,38 @@ import { reactions as REACTIONS } from './reactions.js';
     }
     return true;
   }
+  function spawnExternalStream(kind,x,y,dx,dy,opts){
+    opts=opts||{};
+    const cfg=STREAMS[kind];
+    if(!cfg || !Number.isFinite(x) || !Number.isFinite(y)) return 0;
+    const d=Math.hypot(dx,dy)||1; dx/=d; dy/=d;
+    const range=Math.max(0.5,Number(opts.range)||6);
+    const dps=Math.max(0,Number(opts.dps)||((kind==='hose')?2:6));
+    const emit=Math.max(1,Math.round((cfg.emit||1)*(Number(opts.emitScale)||1)));
+    const spreadBase=Number.isFinite(opts.spread) ? Math.max(0,opts.spread) : 0.22;
+    let made=0;
+    if(kind==='flame') flameHeatRays.push({x,y,dx,dy,range});
+    for(let i=0;i<emit && puffs.length<MAX_PUFFS;i++){
+      const spread=(Math.random()-0.5)*spreadBase;
+      const ca=Math.cos(spread), sa=Math.sin(spread);
+      const ex=dx*ca - dy*sa, ey=dx*sa + dy*ca;
+      const sp=cfg.speed*(Number(opts.speedMult)||1)*(0.85+Math.random()*0.3);
+      puffs.push({
+        kind,
+        x:x + ex*(Number(opts.muzzle)||0.6),
+        y:y + ey*(Number(opts.muzzle)||0.6),
+        vx:ex*sp, vy:ey*sp + (Number.isFinite(opts.vyKick)?opts.vyKick:-0.3),
+        life:range/cfg.speed*cfg.lifeMult*(0.9+Math.random()*0.25),
+        total:range/cfg.speed*cfg.lifeMult,
+        dps,
+        scale:Number(opts.scale)||1
+      });
+      made++;
+    }
+    return made;
+  }
   function firePowerStream(player, aimX, aimY, w, kind, charge){
+    if(!consumeStreamBurstFuel(kind,charge)) return false;
     try{ if(MM.audio && MM.audio.play) MM.audio.play(kind==='flame'?'flame': kind==='hose'?'hose':'gas'); }catch(e){}
     const cfg=STREAMS[kind];
     const v=aimVector(player,aimX,aimY);
@@ -535,6 +706,44 @@ import { reactions as REACTIONS } from './reactions.js';
     }catch(e){}
     try{ if(MM.fallingSolids && MM.fallingSolids.onTileRemoved) MM.fallingSolids.onTileRemoved(tx,ty); }catch(e){}
     try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(tx,ty,getTile); }catch(e){}
+    return true;
+  }
+  function arrowPierceableTile(t){
+    const info=INFO[t] || {};
+    if(t===T.AIR || t===T.WATER || t===T.LAVA) return false;
+    if(info.machine || info.chestTier || info.story) return false;
+    if(t===T.BEDROCK || t===T.OBSIDIAN || t===T.DIAMOND || t===T.IRIDIUM || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return false;
+    return isSolid(t);
+  }
+  function triggerAntimatterBreak(tx,ty){
+    try{
+      if(MM.meteorites && typeof MM.meteorites.triggerAntimatterBurst==='function'){
+        return MM.meteorites.triggerAntimatterBurst(tx+0.5,ty+0.5,1.15);
+      }
+    }catch(e){}
+    return false;
+  }
+  function tryIridiumPierceBlock(a,tx,ty,t,getTile,setTile){
+    if(!a || a.tier!=='iridium' || !(a.pierceLeft>0) || typeof setTile!=='function') return false;
+    if(t===T.ANTIMATTER_CRYSTAL){
+      setTile(tx,ty,T.AIR);
+      triggerAntimatterBreak(tx,ty);
+    } else {
+      if(!arrowPierceableTile(t)) return false;
+      setTile(tx,ty,T.AIR);
+    }
+    try{ if(MM.fallingSolids && MM.fallingSolids.onTileRemoved) MM.fallingSolids.onTileRemoved(tx,ty); }catch(e){}
+    try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(tx,ty,getTile); }catch(e){}
+    markWorldChanged();
+    try{
+      const p=MM.particles, tile=MM.TILE||20;
+      if(p && p.spawnSparks) p.spawnSparks((tx+0.5)*tile,(ty+0.5)*tile,'rare',8);
+    }catch(e){}
+    a.pierceLeft--;
+    a.dmg=Math.max(1,Math.round((a.dmg||1)*0.78));
+    a.vx*=0.92;
+    a.vy*=0.92;
+    iridiumPierces++;
     return true;
   }
   function tileKey(x,y){ return x+','+y; }
@@ -751,6 +960,10 @@ import { reactions as REACTIONS } from './reactions.js';
           break;
         }
         if(isSolid(t)){
+          if(tryIridiumPierceBlock(a,tx,ty,t,getTile,setTile)){
+            if(a.fire && FIRE) FIRE.ignite(tx,ty,getTile,setTile);
+            continue;
+          }
           a.x-=a.vx*sdt*0.6; a.y-=a.vy*sdt*0.6; // sit at the surface, not inside
           a.stuck=true;
           if(a.fire && FIRE){ FIRE.ignite(tx,ty,getTile,setTile); FIRE.ignite(Math.floor(a.x),Math.floor(a.y),getTile,setTile); }
@@ -928,9 +1141,9 @@ import { reactions as REACTIONS } from './reactions.js';
         if(!a.stuck) a.ang=ang;
         ctx.save();
         ctx.translate(a.x*TILE, a.y*TILE); ctx.rotate(ang);
-        ctx.strokeStyle=a.power?'#f5d66a':'#caa472'; ctx.lineWidth=a.power?3.2:2;
+        ctx.strokeStyle=a.power?(a.color||'#f5d66a'):(a.color||'#caa472'); ctx.lineWidth=a.power?3.2:2;
         ctx.beginPath(); ctx.moveTo(-10,0); ctx.lineTo(6,0); ctx.stroke();
-        ctx.fillStyle=a.power?'#fff1a8':'#dfe6f1'; // head
+        ctx.fillStyle=a.headColor || (a.power?'#fff1a8':'#dfe6f1'); // head
         ctx.beginPath(); ctx.moveTo(9,0); ctx.lineTo(4,-2.6); ctx.lineTo(4,2.6); ctx.closePath(); ctx.fill();
         ctx.fillStyle='#e8e2d2'; // fletching
         ctx.fillRect(-11,-2.4,4,1.6); ctx.fillRect(-11,0.8,4,1.6);
@@ -1123,10 +1336,10 @@ import { reactions as REACTIONS } from './reactions.js';
     };
   }
 
-  function reset(){ arrows.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); heatForgedGlass.clear(); bowCd=0; meleeCd=0; electricCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; }
-  MM.weapons={fireHeld,fireUlt,update,draw,drawHeld,notifyMeleeSwing,reset,explodeAt,spawnGasCloud,
-    metrics:()=>({arrows:arrows.length,puffs:puffs.length,electricBeams:electricBeams.length,ultCharge,stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio()}),
-    _debug:{arrows,puffs,electricBeams}};
+  function reset(){ arrows.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; meleeCd=0; electricCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; }
+  MM.weapons={fireHeld,fireUlt,update,draw,drawHeld,notifyMeleeSwing,reset,explodeAt,spawnGasCloud,spawnExternalStream,
+    metrics:()=>({arrows:arrows.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),ultCharge,stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),iridiumPierces}),
+    _debug:{arrows,puffs,electricBeams,arrowTiers:ARROW_TIERS}};
 })();
 // ESM export (progressive migration)
 export const weapons = (typeof window!=='undefined' && window.MM) ? window.MM.weapons : undefined;

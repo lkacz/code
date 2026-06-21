@@ -34,6 +34,8 @@ MM.water={ onTileChanged(){}, addSource:(x,y,g,s)=>{ s(x,y,T.WATER); } };
 MM.fallingSolids={ onTileRemoved(){} };
 let glassShards=0, sparks=0;
 MM.particles={ spawnGlassShards(){ glassShards++; }, spawnSparks(){ sparks++; } };
+let worldChanged=0;
+globalThis.__mmMarkWorldChanged=()=>{ worldChanged++; };
 let heroEnergy=0, electricDamage=0, beamSounds=0, electricTarget=null;
 MM.heroEnergy={
   info(){ return {energy:heroEnergy, max:40}; },
@@ -62,6 +64,15 @@ MM.gases={
   igniteAt(){ return false; },
   consumeRadius(){ return 0; }
 };
+const RESOURCE_SEED={
+  water:1000, wood:1000, rottenMeat:1000,
+  arrowWood:1000, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:0
+};
+function refillResources(overrides={}){
+  globalThis.inv=Object.assign({}, RESOURCE_SEED, overrides);
+  return globalThis.inv;
+}
+refillResources();
 
 const player={x:0.5, y:0.5, facing:1, atkCd:0};
 const weaponItems={ flame:{weaponType:'flame', fireDps:6, fireRange:6.5},
@@ -127,6 +138,87 @@ weapons.update(0.5, getTile, setTile);
 arrow=weapons._debug.arrows[0];
 assert.ok(arrow && arrow.vx>arrowVx0, 'wind bends flying arrows without touching electric beams');
 delete MM.wind;
+
+tiles=new Map(); weapons.reset(); fire.reset();
+refillResources({arrowWood:0, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:0});
+equipped=weaponItems.bow;
+assert.equal(weapons.fireHeld(player, 6, 0.5, 1/60), false, 'bow refuses to fire without arrow ammo');
+assert.equal(weapons.metrics().arrows, 0, 'no-ammo bow creates no projectile');
+
+tiles=new Map(); weapons.reset(); fire.reset();
+refillResources({arrowWood:0, arrowStone:2});
+equipped=weaponItems.bow;
+assert.equal(weapons.fireHeld(player, 6, 0.5, 1/60), true, 'bow fires with crafted stone arrows');
+assert.equal(globalThis.inv.arrowStone, 1, 'bow shot consumes one arrow from the active tier');
+arrow=weapons._debug.arrows[0];
+assert.equal(arrow.tier, 'stone', 'bow projectile records the material tier');
+assert.ok(arrow.dmg>weaponItems.bow.attackDamage, 'stone arrows hit harder than plain bow damage');
+
+tiles=new Map(); weapons.reset(); fire.reset(); randomSeed=0x2468ace0;
+refillResources({arrowWood:1, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:0});
+equipped=weaponItems.bow;
+weapons.fireHeld(player, 8, 0.5, 1/60);
+const woodArrow=weapons._debug.arrows[0];
+tiles=new Map(); weapons.reset(); fire.reset(); randomSeed=0x2468ace0;
+refillResources({arrowWood:0, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:1});
+equipped=weaponItems.bow;
+weapons.fireHeld(player, 8, 0.5, 1/60);
+const iridiumArrow=weapons._debug.arrows[0];
+assert.ok(iridiumArrow.dmg>woodArrow.dmg, 'iridium arrows deal more damage than wood arrows');
+assert.ok(Math.hypot(iridiumArrow.vx, iridiumArrow.vy)>Math.hypot(woodArrow.vx, woodArrow.vy), 'iridium arrows fly faster than wood arrows');
+assert.ok(iridiumArrow.life>woodArrow.life, 'iridium arrows keep range longer than wood arrows');
+
+tiles=new Map(); weapons.reset(); fire.reset(); sparks=0;
+refillResources({arrowWood:0, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:1});
+setTile(4,0,T.STONE);
+setTile(5,0,T.COAL);
+equipped=weaponItems.bow;
+assert.equal(weapons.fireHeld(player, 8, 0.5, 1/60), true, 'iridium bow fires for piercing test');
+worldChanged=0;
+for(let i=0;i<45;i++) weapons.update(1/60, getTile, setTile);
+assert.equal(getTile(4,0), T.AIR, 'iridium arrows pierce ordinary stone blocks');
+assert.equal(getTile(5,0), T.AIR, 'iridium arrows keep piercing through a second block');
+assert.ok(weapons.metrics().iridiumPierces>=2, 'iridium piercing is tracked as material behavior');
+assert.ok(sparks>=2, 'iridium block piercing emits rare sparks');
+assert.ok(worldChanged>=2, 'iridium piercing schedules edited terrain for persistence');
+
+tiles=new Map(); weapons.reset(); fire.reset(); sparks=0; worldChanged=0;
+let antimatterBursts=0;
+const oldMeteorites=MM.meteorites;
+MM.meteorites={ triggerAntimatterBurst(){ antimatterBursts++; return true; } };
+refillResources({arrowWood:0, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:1});
+setTile(4,0,T.ANTIMATTER_CRYSTAL);
+equipped=weaponItems.bow;
+assert.equal(weapons.fireHeld(player, 8, 0.5, 1/60), true, 'iridium bow fires at antimatter crystal');
+worldChanged=0;
+for(let i=0;i<45;i++) weapons.update(1/60, getTile, setTile);
+assert.equal(getTile(4,0), T.AIR, 'iridium arrows can break antimatter crystals');
+assert.equal(antimatterBursts, 1, 'breaking antimatter crystals triggers an inverse-gravity burst hook');
+assert.ok(weapons.metrics().iridiumPierces>=1, 'antimatter crystal break is counted as iridium piercing material behavior');
+assert.ok(worldChanged>=1, 'antimatter crystal break schedules edited terrain for persistence');
+if(oldMeteorites===undefined) delete MM.meteorites; else MM.meteorites=oldMeteorites;
+
+tiles=new Map(); weapons.reset(); fire.reset();
+refillResources({arrowWood:0, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:1});
+setTile(4,0,T.BEDROCK);
+equipped=weaponItems.bow;
+assert.equal(weapons.fireHeld(player, 8, 0.5, 1/60), true, 'iridium bow fires at bedrock');
+for(let i=0;i<45;i++) weapons.update(1/60, getTile, setTile);
+assert.equal(getTile(4,0), T.BEDROCK, 'bedrock resists iridium arrow piercing');
+assert.equal(weapons.metrics().iridiumPierces, 0, 'bedrock resistance is not counted as a successful pierce');
+
+for(const [kind,key] of [['hose','water'],['flame','wood'],['gas','rottenMeat']]){
+  tiles=new Map(); weapons.reset(); fire.reset();
+  refillResources({water:1000, wood:1000, rottenMeat:1000, [key]:1});
+  equipped=weaponItems[kind];
+  for(let i=0;i<60;i++){
+    assert.equal(weapons.fireHeld(player, 6, 0.5, 1/60), true, kind+' keeps firing while fuel remains');
+    weapons.update(1/60, getTile, setTile);
+  }
+  assert.equal(globalThis.inv[key], 0, kind+' consumes one '+key+' block per second');
+  assert.equal(weapons.fireHeld(player, 6, 0.5, 1/60), false, kind+' refuses to fire once its fuel is gone');
+}
+refillResources();
 
 function flamePuffXAfter(windSpeed){
   tiles=new Map(); weapons.reset(); fire.reset();

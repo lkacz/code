@@ -75,8 +75,24 @@ assert.ok(reservoirWidth >= v.reservoir*2, 'bottom magma reservoir spans the vol
 
 for(let y=surface; y<Math.min(WORLD_H-3, surface+12); y++){
   const wall = world.getTile(center+v.pipe+1,y);
-  assert.ok(wall===T.OBSIDIAN || wall===T.STONE, 'pipe is bounded by hardened rock');
+  assert.ok(wall===T.OBSIDIAN || wall===T.BASALT || wall===T.STONE, 'pipe is bounded by hardened volcanic rock');
 }
+
+let volcanicBasalt = 0;
+let volcanicObsidian = 0;
+let volcanicContact = 0;
+for(let x=center-v.radius-8; x<=center+v.radius+8; x++){
+  const surf = WG.surfaceHeight(x);
+  for(let y=Math.max(surf+6,surface+6); y<WORLD_H-10; y++){
+    const t = world.getTile(x,y);
+    if(t===T.BASALT) volcanicBasalt++;
+    else if(t===T.OBSIDIAN) volcanicObsidian++;
+    else if(t===T.GRANITE || t===T.STONE) volcanicContact++;
+  }
+}
+assert.ok(volcanicBasalt>=80, 'volcano roots include abundant basaltic rock (got '+volcanicBasalt+')');
+assert.ok(volcanicObsidian>=20, 'volcano vents include quenched obsidian (got '+volcanicObsidian+')');
+assert.ok(volcanicContact>=30, 'volcano margins keep baked country rock/contact zones (got '+volcanicContact+')');
 
 const snapshot=[];
 for(let y=surface; y<WORLD_H-3; y++) snapshot.push(world.getTile(center,y));

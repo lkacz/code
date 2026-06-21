@@ -13,13 +13,48 @@ const { chests } = await import('../src/engine/chests.js');
 
 // --- resource registry: city salvage materials are tracked and placeable where intended ---
 const res = key => INV.RESOURCES.find(r => r.key === key);
+const resourceKeys = new Set(INV.RESOURCES.map(r => r.key));
+assert.equal(resourceKeys.size, INV.RESOURCES.length, 'resource registry keys are unique');
+for (const r of INV.RESOURCES) {
+  assert.ok(r && typeof r.key === 'string' && r.key, 'every resource has a stable key');
+  assert.ok(!r.tile || T[r.tile] != null, 'resource '+r.key+' points at a known tile id');
+}
+for (const [tileId, info] of Object.entries(INFO)) {
+  if (info.drop) assert.ok(resourceKeys.has(info.drop), 'tile '+tileId+' drop '+info.drop+' is a registered resource');
+  if (Array.isArray(info.drops)) {
+    for (const d of info.drops) {
+      if (d && d.item) assert.ok(resourceKeys.has(d.item), 'tile '+tileId+' drop '+d.item+' is a registered resource');
+    }
+  }
+}
 assert.equal(INFO[T.COAL].drop, 'coal', 'coal blocks drop coal');
+assert.equal(INFO[T.DIRT].drop, 'dirt', 'dirt blocks drop dirt');
+assert.equal(INFO[T.GRANITE].drop, 'granite', 'granite blocks drop granite');
+assert.equal(INFO[T.BASALT].drop, 'basalt', 'basalt blocks drop basalt');
+assert.equal(INFO[T.BEDROCK].drop, null, 'bedrock does not drop as a resource');
+assert.equal(INFO[T.BEDROCK].unmineable, true, 'bedrock is an unmineable world boundary');
+const digOrder=[T.SAND,T.DIRT,T.STONE,T.GRANITE,T.BASALT].map(t=>INFO[t].hp);
+for(let i=1;i<digOrder.length;i++){
+  assert.ok(digOrder[i]>digOrder[i-1], 'geology dig difficulty increases from sand to basalt');
+}
 assert.equal(INFO[T.ROTTEN_MEAT].drop, 'rottenMeat', 'rotten meat blocks drop rotten meat');
 assert.equal(INFO[T.BAKED_MEAT].drop, 'bakedMeat', 'baked meat blocks drop baked meat');
+assert.equal(INFO[T.GLASS].drop, 'glass', 'glass blocks drop recoverable glass');
 assert.equal(res('coal')?.tile, 'COAL', 'coal is a placeable mined resource');
+assert.equal(res('dirt')?.tile, 'DIRT', 'dirt is a placeable mined resource');
+assert.equal(res('granite')?.tile, 'GRANITE', 'granite is a placeable mined resource');
+assert.equal(res('basalt')?.tile, 'BASALT', 'basalt is a placeable mined resource');
+assert.equal(res('bedrock'), undefined, 'bedrock is not a placeable mined resource');
+assert.equal(res('stone')?.label, 'Skala', 'stone resource is presented as rock in the new geology ladder');
+assert.equal(res('arrowWood')?.tile, null, 'wood arrows are tracked as non-placeable ammo');
+assert.equal(res('arrowStone')?.tile, null, 'stone arrows are tracked as non-placeable ammo');
+assert.equal(res('arrowObsidian')?.tile, null, 'obsidian arrows are tracked as non-placeable ammo');
+assert.equal(res('arrowDiamond')?.tile, null, 'diamond arrows are tracked as non-placeable ammo');
+assert.equal(res('arrowIridium')?.tile, null, 'iridium arrows are tracked as non-placeable ammo');
 assert.equal(res('meat')?.tile, 'MEAT', 'raw meat is tracked as a placeable/eatable block resource');
 assert.equal(res('rottenMeat')?.tile, 'ROTTEN_MEAT', 'rotten meat is tracked separately');
 assert.equal(res('bakedMeat')?.tile, 'BAKED_MEAT', 'baked meat is tracked separately');
+assert.equal(res('glass')?.tile, 'GLASS', 'glass is tracked as a placeable/recoverable resource');
 assert.equal(res('wire')?.tile, 'WIRE', 'wire is a placeable salvaged resource');
 assert.equal(res('plastic')?.tile, null, 'plastic is tracked as a non-placeable component');
 assert.equal(res('copper')?.tile, null, 'copper is tracked as a non-placeable component');
@@ -28,6 +63,12 @@ assert.equal(res('transistor')?.tile, 'TRANSISTOR', 'transistor is placeable for
 assert.equal(res('dynamo')?.tile, 'DYNAMO', 'dynamo is a craftable placeable machine resource');
 assert.equal(res('teleporter')?.tile, 'TELEPORTER', 'teleporter is a placeable machine resource');
 assert.equal(res('antigravityBeacon')?.tile, 'ANTIGRAVITY_BEACON', 'antigravity beacon is a placeable machine resource');
+assert.equal(res('meteorSiren')?.tile, 'METEOR_SIREN', 'meteor siren is a placeable alert machine resource');
+assert.equal(res('craterScanner')?.tile, null, 'crater scanner is tracked as a non-placeable science tool');
+assert.equal(res('radioactiveOre')?.tile, 'RADIOACTIVE_ORE', 'radioactive meteor ore is placeable after collection');
+assert.equal(res('alienBiomass')?.tile, 'ALIEN_BIOMASS', 'alien biomass is placeable after collection');
+assert.equal(res('meteorDust')?.tile, 'METEOR_DUST', 'meteor dust is tracked as strange residue');
+assert.equal(res('antimatter')?.tile, 'ANTIMATTER_CRYSTAL', 'antimatter is placeable as rare meteor crystal matter');
 assert.equal(res('turret')?.tile, 'TURRET', 'basic turret is a placeable defensive machine resource');
 assert.equal(res('fireTurret')?.tile, 'FIRE_TURRET', 'fire turret is a placeable defensive machine resource');
 assert.equal(res('waterTurret')?.tile, 'WATER_TURRET', 'water turret is a placeable defensive machine resource');
@@ -41,6 +82,11 @@ assert.equal(INFO[T.COPPER_WIRE].conductor, true, 'copper wire is marked as an e
 assert.equal(INFO[T.TELEPORTER].machine, 'teleporter', 'teleporter tile is marked as a machine');
 assert.equal(INFO[T.TELEPORTER].powerDevice, true, 'teleporter is marked as a powered device');
 assert.equal(INFO[T.ANTIGRAVITY_BEACON].meteorShield, true, 'antigravity beacon is marked as a meteor shield');
+assert.equal(INFO[T.METEOR_SIREN].meteorSiren, true, 'meteor siren is marked as a meteor alert machine');
+assert.equal(INFO[T.RADIOACTIVE_ORE].radioactive, true, 'radioactive ore advertises its hazard type');
+assert.equal(INFO[T.ALIEN_BIOMASS].biological, true, 'alien biomass advertises its biological origin');
+assert.equal(INFO[T.METEOR_DUST].dust, true, 'meteor dust advertises its strange residue role');
+assert.equal(INFO[T.ANTIMATTER_CRYSTAL].antimatter, true, 'antimatter crystal advertises antimatter origin');
 assert.equal(INFO[T.TURRET].powerDevice, true, 'basic turret is marked as a powered device');
 assert.equal(INFO[T.FIRE_TURRET].powerDevice, true, 'fire turret is marked as a powered device');
 assert.equal(INFO[T.WATER_TURRET].powerDevice, true, 'water turret is marked as a powered device');

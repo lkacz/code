@@ -91,6 +91,7 @@ assert.ok(count(samples[0],T.GRASS)>=40, 'forest exposes grass surface');
 assert.ok(countAny(samples[0],[T.WOOD,T.LEAF])>=180, 'forest generates dense tree material');
 
 assert.ok(count(samples[1],T.GRASS)>=35, 'plains expose broad grassland');
+assert.ok(count(samples[1],T.DIRT)>=80, 'plains have a diggable dirt subsoil under grass');
 assert.ok(countAny(samples[0],[T.WOOD,T.LEAF]) > countAny(samples[1],[T.WOOD,T.LEAF])*4,
   'forests are materially denser with trees than plains');
 
@@ -112,11 +113,14 @@ assert.ok(count(samples[6],T.SAND)>=200, 'lake representative has a sediment bed
 
 assert.ok(samples[7].avgElev>=30, 'mountain representative is high altitude');
 assert.ok(samples[7].rowSpan>=8, 'mountain representative has rugged relief');
-assert.ok(countAny(samples[7],[T.STONE,T.SNOW])>=650, 'mountain is rocky or snow-capped');
+assert.ok(countAny(samples[7],[T.STONE,T.GRANITE,T.BASALT,T.BEDROCK,T.SNOW])>=650, 'mountain is rocky or snow-capped');
 
 let coal = 0;
 let diamonds = 0;
-let stone = 0;
+let rockMass = 0;
+let granite = 0;
+let basalt = 0;
+let bedrock = 0;
 for(const biome of [0,1,2,3,4,6,7]){
   const center = samples[biome].run.center;
   const left = center - 80;
@@ -129,17 +133,29 @@ for(const biome of [0,1,2,3,4,6,7]){
       const t = world.getTile(wx,y);
       if(t===T.COAL) coal++;
       else if(t===T.DIAMOND) diamonds++;
-      else if(t===T.STONE) stone++;
+      else if(t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK){
+        rockMass++;
+        if(t===T.GRANITE) granite++;
+        else if(t===T.BASALT) basalt++;
+        else if(t===T.BEDROCK) bedrock++;
+      }
     }
   }
 }
 assert.ok(coal>=220, 'underground stone mass contains coal seams (got '+coal+')');
 assert.ok(coal>diamonds*2, 'coal is noticeably more common than diamonds (coal '+coal+', diamonds '+diamonds+')');
-assert.ok(stone>coal*8, 'coal remains a resource seam, not the dominant underground material');
+assert.ok(rockMass>coal*8, 'coal remains a resource seam, not the dominant underground material');
+assert.ok(granite>=120, 'deeper underground includes granite strata (got '+granite+')');
+assert.ok(basalt>=80, 'deep underground includes basalt strata (got '+basalt+')');
+assert.ok(bedrock>=20, 'world bottom includes bedrock strata (got '+bedrock+')');
 
 const worldSource = await readFile(new URL('../src/engine/world.js', import.meta.url), 'utf8');
 assert.match(worldSource, /function isCaveTreasureFloor\(t\)/, 'worldgen centralizes cave treasure floor material checks');
-assert.match(worldSource, /t===T\.STONE\s*\|\|\s*t===T\.COAL/, 'coal seams still support cave treasure placement');
+assert.match(worldSource, /t===T\.STONE\s*\|\|\s*t===T\.GRANITE\s*\|\|\s*t===T\.BASALT\s*\|\|\s*t===T\.BEDROCK\s*\|\|\s*t===T\.COAL/, 'hard geology and coal seams support cave treasure placement');
+assert.match(worldSource, /function geologyLayerDepth\(wx,y,depth,biome\)/, 'geology layers use warped depth instead of straight horizontal bands');
+assert.match(worldSource, /function geologyMix\(wx,y,primary,secondary,seed,amount\)/, 'geology transitions are feathered by local noise');
+assert.match(worldSource, /function volcanoDikeTile\(v,wx,y,ground,depth\)/, 'volcanoes generate basaltic intrusion dikes');
+assert.match(worldSource, /Volcanic contact aureole/, 'volcanic rock generation includes baked contact zones');
 
 assert.ok(count(samples[8],T.STEEL)>=150, 'devastated city exposes harvestable steel');
 assert.ok(count(samples[8],T.OBSIDIAN)>=40, 'devastated city contains hardened ruin material');

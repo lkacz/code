@@ -9,7 +9,7 @@ const mobs = (function(){
   // Using ESM imports for T/MOVE/isSolid/WORLD/WORLDGEN
   // Helper predicates
   function isSolidGround(t){ return isSolid(t) && !isLeaf(t); }
-  function isRockFloor(t){ return t===T.STONE || t===T.COAL; }
+  function isRockFloor(t){ return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL; }
 
   // Precomputed color variant helper (once per mob instead of per-frame string math)
   function variantColor(spawnT, shiftBits, a, b){
@@ -752,7 +752,7 @@ const mobs = (function(){
       if(biomeAt(x)!==8) return false;
       if(getTile(x,y)!==T.AIR || getTile(x,y-1)!==T.AIR) return false;
       const below=getTile(x,y+1);
-      return below===T.STEEL || below===T.STONE || below===T.OBSIDIAN;
+      return below===T.STEEL || below===T.STONE || below===T.GRANITE || below===T.BASALT || below===T.OBSIDIAN;
     },
     biome:'city',
     onUpdate(m,spec,{player,dt,distToPlayer,getTile,now}){

@@ -274,6 +274,16 @@ import { reactions as REACTIONS } from './reactions.js';
     drawScanCache={key:scanKey, at:now, tiles};
     return {tiles, reused:false};
   }
+  function radioactiveLampBoost(x,y,getTile){
+    if(typeof getTile!=='function') return 0;
+    for(let dx=-2;dx<=2;dx++) for(let dy=-2;dy<=2;dy++){
+      if(Math.abs(dx)+Math.abs(dy)>3) continue;
+      const t=getTile(x+dx,y+dy);
+      if(t===T.RADIOACTIVE_ORE) return 1;
+      if(t===T.METEOR_DUST) return 0.55;
+    }
+    return 0;
+  }
   function drawLava(ctx,TILE,sx,sy,viewX,viewY,getTile,now,visibility,smokeTick){
     const GS=glowSprite.width, FH=flameFrames[0].height;
     const igniteTick = now-lastLavaTick>500;
@@ -305,9 +315,10 @@ import { reactions as REACTIONS } from './reactions.js';
           noteTorch(x,y);
           const px=x*TILE, py=y*TILE;
           const flick=Math.sin(now*0.01 + x*5.3)*0.5+0.5;
+          const radBoost=radioactiveLampBoost(x,y,getTile);
           // stick + ember head
           ctx.fillStyle='#6e4a22'; ctx.fillRect(px+TILE/2-1.5, py+TILE*0.35, 3, TILE*0.6);
-          ctx.fillStyle='#ffd56e'; ctx.fillRect(px+TILE/2-2.5, py+TILE*0.22, 5, 5);
+          ctx.fillStyle=radBoost>0 ? '#caff73' : '#ffd56e'; ctx.fillRect(px+TILE/2-2.5, py+TILE*0.22, 5, 5);
           if(!visibleTile(x,y)) continue;
           // small flame + radial glow (baked sprites)
           const fi=(((now*0.012)|0)+x*7)%FRAMES;
@@ -316,6 +327,20 @@ import { reactions as REACTIONS } from './reactions.js';
           ctx.globalAlpha=(0.5+0.3*flick)*night*1.6;
           const gs=GS*2.4;
           ctx.drawImage(glowSprite, px+TILE/2-gs/2, py+TILE*0.3-gs/2, gs, gs);
+          if(radBoost>0){
+            ctx.save();
+            ctx.globalCompositeOperation='lighter';
+            ctx.globalAlpha=(0.18+0.12*flick)*radBoost;
+            const rg=ctx.createRadialGradient(px+TILE/2,py+TILE*0.32,1,px+TILE/2,py+TILE*0.32,GS*(1.55+radBoost*0.85));
+            rg.addColorStop(0,'rgba(190,255,105,0.85)');
+            rg.addColorStop(0.42,'rgba(110,235,70,0.34)');
+            rg.addColorStop(1,'rgba(110,235,70,0)');
+            ctx.fillStyle=rg;
+            ctx.beginPath();
+            ctx.arc(px+TILE/2,py+TILE*0.32,GS*(1.55+radBoost*0.85),0,Math.PI*2);
+            ctx.fill();
+            ctx.restore();
+          }
           ctx.globalAlpha=1;
           continue;
         }
@@ -693,11 +718,54 @@ import { reactions as REACTIONS } from './reactions.js';
     }
   }
 
+  function sanitizeBurnRecord(raw,getTile){
+    if(!raw || typeof getTile!=='function') return null;
+    const x=Math.floor(Number(raw.x)), y=Math.floor(Number(raw.y));
+    if(!Number.isFinite(x) || !Number.isFinite(y) || y<0 || y>=WORLD_H) return null;
+    if(!flammableAt(getTile,x,y) || wetAt(getTile,x,y)) return null;
+    const info=INFO[getTile(x,y)] || {};
+    const fallbackTotal=Math.max(0.4, info.burnTime||2);
+    const total=Math.max(0.4, Number.isFinite(raw.total) ? raw.total : fallbackTotal);
+    const left=Math.max(0.05, Math.min(total, Number.isFinite(raw.left) ? raw.left : total));
+    if(left<=0) return null;
+    return {
+      x,y,left,total,
+      spreadAcc:Math.max(0, Math.min(SPREAD_INTERVAL, Number.isFinite(raw.spreadAcc) ? raw.spreadAcc : Math.random()*SPREAD_INTERVAL)),
+      envAcc:Math.max(0, Math.min(0.25, Number.isFinite(raw.envAcc) ? raw.envAcc : Math.random()*0.25)),
+      hotAcc:Math.max(0, Math.min(BURNING_HOT_AIR_INTERVAL, Number.isFinite(raw.hotAcc) ? raw.hotAcc : Math.random()*0.8))
+    };
+  }
+  function snapshot(){
+    const list=[...burning.values()]
+      .filter(b=>b && Number.isFinite(b.x) && Number.isFinite(b.y) && (b.left||0)>0)
+      .sort((a,b)=>(a.x-b.x)||(a.y-b.y))
+      .slice(0,MAX_BURNING)
+      .map(b=>({
+        x:b.x|0,
+        y:b.y|0,
+        left:+Math.max(0,b.left||0).toFixed(3),
+        total:+Math.max(0.4,b.total||0.4).toFixed(3),
+        spreadAcc:+Math.max(0,b.spreadAcc||0).toFixed(3),
+        envAcc:+Math.max(0,b.envAcc||0).toFixed(3),
+        hotAcc:+Math.max(0,b.hotAcc||0).toFixed(3)
+      }));
+    return {v:1,list};
+  }
+  function restore(data,getTile){
+    burning.clear();
+    if(!data || !Array.isArray(data.list) || typeof getTile!=='function') return;
+    for(const raw of data.list){
+      if(burning.size>=MAX_BURNING) break;
+      const b=sanitizeBurnRecord(raw,getTile);
+      if(!b) continue;
+      burning.set(key(b.x,b.y),b);
+    }
+  }
   function reset(){ burning.clear(); lavaSet.clear(); torchHeat.clear(); torchHeatAcc=0; lastSmokeTick=-Infinity; smokeEmissionBuckets.clear(); drawScanCache={key:'', at:0, tiles:[]}; }
   function isBurning(x,y){ return burning.has(key(x|0,y|0)); }
   // Put out a single tile (water hose, rain, …) — the tile keeps whatever charring it had
   function extinguish(x,y){ return burning.delete(key(x|0,y|0)); }
-  MM.fire={ignite,extinguish,update,draw,reset,isBurning,thawAt,cookAt,heatAround,noteTorch,noteLava,wakeLavaAround,wakeVolcanoLeaksNear,count:()=>burning.size,lavaCount:()=>lavaSet.size};
+  MM.fire={ignite,extinguish,update,draw,reset,snapshot,restore,isBurning,thawAt,cookAt,heatAround,noteTorch,noteLava,wakeLavaAround,wakeVolcanoLeaksNear,count:()=>burning.size,lavaCount:()=>lavaSet.size};
 })();
 // ESM export (progressive migration)
 export const fire = (typeof window!=='undefined' && window.MM) ? window.MM.fire : undefined;

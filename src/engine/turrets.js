@@ -12,6 +12,9 @@ const turrets = (function(){
   const PUFF_CAP = 120;
   const PLAYER_SCAN_INTERVAL = 0.45;
   const VISIBLE_SCAN_INTERVAL_MS = 220;
+  const WATER_TURRET_TANK = 24;
+  const WATER_TURRET_START_WATER = 18;
+  const WATER_TURRET_WATER_PER_SHOT = 1;
 
   const KIND_BY_TILE = {
     [T.TURRET]:'standard',
@@ -44,6 +47,12 @@ const turrets = (function(){
   function clampEnergy(n){ return clamp(Number(n)||0,0,TURRET_CAPACITY); }
   function cfgFor(kind){ return CFG[kind] || CFG.standard; }
   function nowMs(){ return (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now(); }
+  function waterCapacityFor(m){
+    if(!m || m.kind!=='water') return 0;
+    const info=INFO[T.WATER_TURRET] || {};
+    return Math.max(1,Number(info.waterCapacity)||WATER_TURRET_TANK);
+  }
+  function clampWater(n,m){ return clamp(Number(n)||0,0,waterCapacityFor(m)); }
 
   function ensureMachine(x,y,getTile){
     x=Math.floor(x); y=Math.floor(y);
@@ -59,6 +68,12 @@ const turrets = (function(){
     }
     m.x=x; m.y=y; m.kind=kind;
     m.energy=clampEnergy(m.energy);
+    if(kind==='water'){
+      if(typeof m.water!=='number') m.water=Math.min(WATER_TURRET_START_WATER,waterCapacityFor(m));
+      m.water=clampWater(m.water,m);
+    }else{
+      delete m.water;
+    }
     m.cooldown=Math.max(0,Number(m.cooldown)||0);
     m.scanT=Math.max(0,Number(m.scanT)||0);
     m.pulse=clamp(Number(m.pulse)||0,0,1);
@@ -94,7 +109,7 @@ const turrets = (function(){
     }
   }
 
-  function lineClear(x0,y0,x1,y1,getTile,ownX,ownY){
+  function lineClear(x0,y0,x1,y1,getTile,ownX,ownY,targetX,targetY){
     if(typeof getTile!=='function') return true;
     const dx=x1-x0, dy=y1-y0;
     const dist=Math.hypot(dx,dy)||1;
@@ -104,6 +119,7 @@ const turrets = (function(){
       const tx=Math.floor(x0+dx*f);
       const ty=Math.floor(y0+dy*f);
       if(tx===ownX && ty===ownY) continue;
+      if(tx===targetX && ty===targetY) continue;
       const t=getSafe(getTile,tx,ty,T.AIR);
       if(t===T.AIR || t===T.WATER || t===T.LAVA) continue;
       const info=INFO[t] || INFO[T.AIR];
@@ -128,6 +144,42 @@ const turrets = (function(){
     if(!lineClear(sx,sy,tx,ty,getTile,m.x,m.y)) return null;
     return target;
   }
+  function nearestFireTarget(m,getTile){
+    if(m.kind!=='water' || !MM.fire || typeof MM.fire.isBurning!=='function') return null;
+    const cfg=cfgFor(m.kind);
+    const sx=m.x+0.5, sy=m.y+0.5;
+    const r=Math.ceil(cfg.range), r2=cfg.range*cfg.range;
+    let best=null, bd=Infinity;
+    const y0=Math.max(0,m.y-r), y1=Math.min(WORLD_H-1,m.y+r);
+    for(let y=y0; y<=y1; y++){
+      for(let x=m.x-r; x<=m.x+r; x++){
+        const cx=x+0.5, cy=y+0.5;
+        const dx=cx-sx, dy=cy-sy, d2=dx*dx+dy*dy;
+        if(d2>r2 || d2>=bd) continue;
+        let burning=false;
+        try{ burning=!!MM.fire.isBurning(x,y); }catch(e){ burning=false; }
+        if(!burning) continue;
+        if(!lineClear(sx,sy,cx,cy,getTile,m.x,m.y,x,y)) continue;
+        best={kind:'fire',x:cx,y:cy,tx:x,ty:y,hp:1};
+        bd=d2;
+      }
+    }
+    return best;
+  }
+  function targetCoords(target){
+    if(!target) return null;
+    const x=Number(target.x), y=Number(target.y);
+    if(!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return {x,y,tx:Math.floor(x),ty:Math.floor(y),fire:target.kind==='fire'};
+  }
+  function targetStillValid(m,target,getTile){
+    const c=targetCoords(target);
+    if(!c) return false;
+    if(c.fire){
+      try{ if(!MM.fire || typeof MM.fire.isBurning!=='function' || !MM.fire.isBurning(target.tx,target.ty)) return false; }catch(e){ return false; }
+    }else if(!(target.hp>0)) return false;
+    return lineClear(m.x+0.5,m.y+0.5,c.x,c.y,getTile,m.x,m.y,c.fire?target.tx:undefined,c.fire?target.ty:undefined);
+  }
 
   function damageAt(tx,ty,dmg){
     let hit=false;
@@ -146,6 +198,11 @@ const turrets = (function(){
     puffs.push(p);
   }
   function spawnFirePuffs(sx,sy,dx,dy,range){
+    try{
+      if(MM.weapons && typeof MM.weapons.spawnExternalStream==='function'){
+        return MM.weapons.spawnExternalStream('flame',sx,sy,dx,dy,{range,dps:CFG.fire.damage*2.1,emitScale:1.8,spread:0.24,muzzle:0.38,speedMult:1.02,vyKick:-0.35,scale:1.08});
+      }
+    }catch(e){}
     const n=10;
     for(let i=0;i<n;i++){
       const spread=(Math.random()-0.5)*0.34;
@@ -164,11 +221,23 @@ const turrets = (function(){
     }
   }
 
+  function extinguishFireTarget(tx,ty){
+    if(!MM.fire || typeof MM.fire.extinguish!=='function') return false;
+    let n=0;
+    const cells=[[0,0],[1,0],[-1,0],[0,1],[0,-1]];
+    for(const [dx,dy] of cells){
+      const x=tx+dx, y=ty+dy;
+      try{ if(MM.fire.isBurning && !MM.fire.isBurning(x,y)) continue; }catch(e){}
+      try{ if(MM.fire.extinguish(x,y)) n++; }catch(e){}
+    }
+    return n>0;
+  }
   function applySpecial(kind,target,tx,ty,sx,sy,dx,dy){
     if(kind==='fire'){
       try{ if(MM.mobs && MM.mobs.igniteAt) MM.mobs.igniteAt(tx,ty,{dur:3.8,dps:2.5}); }catch(e){}
       try{ if(MM.fire && MM.fire.heatAround) MM.fire.heatAround(tx,ty,0.8); }catch(e){}
     }else if(kind==='water'){
+      if(target && target.kind==='fire') return extinguishFireTarget(tx,ty);
       try{ if(MM.mobs && MM.mobs.douseRadius) MM.mobs.douseRadius(tx+0.5,ty+0.5,1.6); }catch(e){}
       if(target){
         try{
@@ -183,22 +252,29 @@ const turrets = (function(){
         }
       }catch(e){}
     }
+    return false;
   }
 
   function fireAt(m,target,getTile){
     const cfg=cfgFor(m.kind);
     if(!target) return false;
+    if(m.kind==='water'){
+      if(!hasWaterForShot(m)) return false;
+      m.water=clampWater((m.water||0)-WATER_TURRET_WATER_PER_SHOT,m);
+    }
     const sx=m.x+0.5, sy=m.y+0.5;
-    const txw=Number(target.x), tyw=Number(target.y);
-    if(!Number.isFinite(txw) || !Number.isFinite(tyw)) return false;
+    const coords=targetCoords(target);
+    if(!coords) return false;
+    const txw=coords.x, tyw=coords.y;
     const dx0=txw-sx, dy0=tyw-sy;
     const dist=Math.hypot(dx0,dy0)||1;
     const dx=dx0/dist, dy=dy0/dist;
     const ex=sx+dx*Math.min(dist,cfg.range);
     const ey=sy+dy*Math.min(dist,cfg.range);
-    const tx=Math.floor(txw), ty=Math.floor(tyw);
-    const hit=damageAt(tx,ty,cfg.damage);
-    applySpecial(m.kind,target,tx,ty,sx,sy,dx,dy);
+    const tx=coords.fire ? target.tx : coords.tx;
+    const ty=coords.fire ? target.ty : coords.ty;
+    const specialHit=applySpecial(m.kind,target,tx,ty,sx,sy,dx,dy);
+    const hit=coords.fire ? specialHit : damageAt(tx,ty,cfg.damage);
     if(hit) totalHits++;
     totalShots++;
     m.energy=clampEnergy((m.energy||0)-cfg.cost);
@@ -206,8 +282,8 @@ const turrets = (function(){
     m.pulse=1;
     m.aim=Math.atan2(dy,dx);
     m.activeT=0.55;
-    pushShot({kind:m.kind,x1:sx,y1:sy,x2:ex,y2:ey,t:0,life:m.kind==='fire'?0.25:(m.kind==='water'?0.18:0.14),hit,phase:Math.random()*Math.PI*2,power:clamp((m.energy||0)/TURRET_CAPACITY,0,1)});
     if(m.kind==='fire') spawnFirePuffs(sx,sy,dx,dy,dist);
+    else pushShot({kind:m.kind,x1:sx,y1:sy,x2:ex,y2:ey,t:0,life:m.kind==='water'?0.18:0.14,hit,phase:Math.random()*Math.PI*2,power:clamp((m.energy||0)/TURRET_CAPACITY,0,1)});
     if(m.kind==='water') spawnWaterPuffs(sx,sy,dx,dy,dist);
     try{ if(MM.audio && MM.audio.play) MM.audio.play(cfg.sound); }catch(e){}
     try{
@@ -239,9 +315,27 @@ const turrets = (function(){
   function chargeFromNetwork(m,dt,getTile,dynamo){
     const charger=MM.teleporters;
     if(!charger || !charger.chargeBatteryAt) return 0;
-    const gained=charger.chargeBatteryAt(m.x,m.y,m,dt,getTile,dynamo,{capacity:TURRET_CAPACITY,rate:CHARGE_RATE});
+    const netTile=(MM.world && MM.world.getNetworkTile) ? MM.world.getNetworkTile : getTile;
+    const gained=charger.chargeBatteryAt(m.x,m.y,m,dt,netTile,dynamo,{capacity:TURRET_CAPACITY,rate:CHARGE_RATE});
     if(gained>0) m.pulse=Math.max(m.pulse||0,0.55);
     return gained;
+  }
+  function receiveWaterAt(x,y,amount,getTile){
+    const m=ensureMachine(x,y,getTile || (MM.world && MM.world.getTile));
+    if(!m || m.kind!=='water') return 0;
+    const before=clampWater(m.water,m);
+    const add=Math.max(0,Number(amount)||0);
+    m.water=clampWater(before+add,m);
+    if(m.water>before) m.pulse=Math.max(m.pulse||0,0.35);
+    return m.water-before;
+  }
+  function waterNeedAt(x,y,getTile){
+    const m=ensureMachine(x,y,getTile || (MM.world && MM.world.getTile));
+    if(!m || m.kind!=='water') return 0;
+    return Math.max(0,waterCapacityFor(m)-clampWater(m.water,m));
+  }
+  function hasWaterForShot(m){
+    return m.kind!=='water' || (m.water||0)+1e-6>=WATER_TURRET_WATER_PER_SHOT;
   }
 
   function update(dt,player,getTile,_setTile,opts){
@@ -270,17 +364,22 @@ const turrets = (function(){
       if(m.scanT<=0){
         m.scanT=cfg.scan+Math.random()*0.08;
         m.target=nearestMobTarget(m,getTile);
+        if(!m.target && m.kind==='water') m.target=nearestFireTarget(m,getTile);
         if(m.target){
-          const dx=m.target.x-(m.x+0.5), dy=m.target.y-(m.y+0.5);
-          m.aim=Math.atan2(dy,dx);
-          m.lastSeen=nowMs();
+          const c=targetCoords(m.target);
+          if(c){
+            const dx=c.x-(m.x+0.5), dy=c.y-(m.y+0.5);
+            m.aim=Math.atan2(dy,dx);
+            m.lastSeen=nowMs();
+          }
         }
       }
-      if(m.target && m.cooldown<=0 && (m.energy||0)+1e-6>=cfg.cost){
+      if(m.target && m.cooldown<=0 && (m.energy||0)+1e-6>=cfg.cost && hasWaterForShot(m)){
         const target=m.target;
-        const dx=target.x-(m.x+0.5), dy=target.y-(m.y+0.5);
+        const c=targetCoords(target);
+        const dx=c ? c.x-(m.x+0.5) : 0, dy=c ? c.y-(m.y+0.5) : 0;
         const d=Math.hypot(dx,dy);
-        if(d<=cfg.range+0.35 && target.hp>0 && lineClear(m.x+0.5,m.y+0.5,target.x,target.y,getTile,m.x,m.y)){
+        if(c && d<=cfg.range+0.35 && targetStillValid(m,target,getTile)){
           fireAt(m,target,getTile);
         }else{
           m.target=null;
@@ -376,6 +475,14 @@ const turrets = (function(){
     ctx.fillRect(px+TILE*0.18,py+TILE*0.78,TILE*0.64,TILE*0.055);
     ctx.fillStyle=charge>0.5 ? '#8cffd8' : (charge>0.18 ? '#ffe38f' : '#ff7a5a');
     ctx.fillRect(px+TILE*0.18,py+TILE*0.78,Math.max(1,TILE*0.64*charge),TILE*0.055);
+    if(m.kind==='water'){
+      const water=clampWater(m.water,m)/waterCapacityFor(m);
+      ctx.fillStyle='rgba(2,10,18,0.82)';
+      ctx.fillRect(px+TILE*0.12,py+TILE*0.18,TILE*0.055,TILE*0.58);
+      ctx.fillStyle=water>0.25 ? '#54d8ff' : '#ff8a66';
+      const h=TILE*0.58*water;
+      ctx.fillRect(px+TILE*0.12,py+TILE*0.18+TILE*0.58-h,TILE*0.055,Math.max(1,h));
+    }
     ctx.restore();
   }
 
@@ -410,10 +517,14 @@ const turrets = (function(){
 
   function snapshot(){
     const list=[...machines.values()]
-      .filter(m=>m && finiteTile(m.x,m.y) && (m.energy||0)>0.001)
+      .filter(m=>m && finiteTile(m.x,m.y) && ((m.energy||0)>0.001 || (m.kind==='water' && Math.abs(clampWater(m.water,m)-WATER_TURRET_START_WATER)>0.001)))
       .sort((a,b)=>(a.x-b.x)||(a.y-b.y))
       .slice(0,MACHINE_CAP)
-      .map(m=>({x:m.x,y:m.y,kind:m.kind,energy:+(m.energy||0).toFixed(3),aim:+(Number(m.aim)||0).toFixed(3)}));
+      .map(m=>{
+        const out={x:m.x,y:m.y,kind:m.kind,energy:+(m.energy||0).toFixed(3),aim:+(Number(m.aim)||0).toFixed(3)};
+        if(m.kind==='water') out.water=+clampWater(m.water,m).toFixed(3);
+        return out;
+      });
     return {v:1,list};
   }
   function restore(data,getTile){
@@ -428,6 +539,7 @@ const turrets = (function(){
       if(!m) continue;
       m.energy=clampEnergy(raw.energy);
       m.aim=Number.isFinite(raw.aim) ? raw.aim : 0;
+      if(m.kind==='water' && typeof raw.water==='number') m.water=clampWater(raw.water,m);
     }
   }
   function reset(){
@@ -441,15 +553,16 @@ const turrets = (function(){
     totalHits=0;
   }
   function metrics(){
-    let storedEnergy=0, charged=0, active=0;
+    let storedEnergy=0, storedWater=0, charged=0, active=0;
     const byKind={standard:0,fire:0,water:0};
     for(const m of machines.values()){
       storedEnergy+=Math.max(0,m.energy||0);
       if((m.energy||0)>0.001) charged++;
       if((m.activeT||0)>0 || m.target) active++;
       if(byKind[m.kind]!=null) byKind[m.kind]++;
+      if(m.kind==='water') storedWater+=clampWater(m.water,m);
     }
-    return {machines:machines.size, active, charged, storedEnergy:+storedEnergy.toFixed(2), shots:totalShots, hits:totalHits, effects:shots.length+puffs.length, byKind};
+    return {machines:machines.size, active, charged, storedEnergy:+storedEnergy.toFixed(2), storedWater:+storedWater.toFixed(2), shots:totalShots, hits:totalHits, effects:shots.length+puffs.length, byKind};
   }
   function debugChargeAt(x,y,amount,getTile){
     const m=ensureMachine(x,y,getTile || (MM.world && MM.world.getTile));
@@ -466,6 +579,13 @@ const turrets = (function(){
     m.pulse=1;
     return true;
   }
+  function debugSetWaterAt(x,y,amount,getTile){
+    const m=ensureMachine(x,y,getTile || (MM.world && MM.world.getTile));
+    if(!m || m.kind!=='water') return false;
+    m.water=clampWater(amount,m);
+    m.pulse=1;
+    return true;
+  }
 
   const api={
     isTurretTile,
@@ -478,7 +598,9 @@ const turrets = (function(){
     restore,
     reset,
     metrics,
-    _debug:{machines,shots,puffs,TURRET_CAPACITY,CHARGE_RATE,CFG,debugChargeAt,debugSetEnergyAt,ensureMachine,nearestMobTarget}
+    receiveWaterAt,
+    waterNeedAt,
+    _debug:{machines,shots,puffs,TURRET_CAPACITY,CHARGE_RATE,CFG,WATER_TURRET_TANK,WATER_TURRET_START_WATER,WATER_TURRET_WATER_PER_SHOT,debugChargeAt,debugSetEnergyAt,debugSetWaterAt,ensureMachine,nearestMobTarget}
   };
   MM.turrets=api;
   return api;

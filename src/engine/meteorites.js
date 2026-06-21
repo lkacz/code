@@ -14,18 +14,28 @@ const meteorites = (function(){
   const MAX_PLUMES = 34;
   const MAX_BEACON_WAVES = 8;
   const MAX_GRAVITY_BURSTS = 6;
+  const MAX_SIREN_PULSES = 12;
+  const MAX_CRATER_RECORDS = 96;
+  const MAX_IMPACT_CONSEQUENCES = 48;
   const GRAVITY = 7.5;
   const BEACON_SCAN_RADIUS = 44;
   const BEACON_FIELD_RADIUS = 34;
   const BEACON_DEFLECT_RADIUS = 18;
   const BEACON_HARD_DEFLECT_RADIUS = 10;
   const BEACON_SCAN_INTERVAL = 0.12;
+  const BEACON_EMPTY_SCAN_INTERVAL = 0.75;
   const BEACON_BOUNCE_MIN_DISTANCE = 60;
   const BEACON_BOUNCE_MAX_DISTANCE = 96;
   const BEACON_BOUNCE_CLEARANCE = 48;
   const MAX_BEACON_DEFLECTIONS_PER_METEOR = 4;
   const BASE_TERRAIN_BUDGET = 8;
   const STRESSED_TERRAIN_BUDGET = 4;
+  const SIREN_SCAN_RADIUS = 70;
+  const SIREN_ALERT_RADIUS = 58;
+  const CRATER_LAKE_STEP_CAP = 2;
+  const CRATER_ECOLOGY_CHECKS_PER_SECOND = 4;
+  const CRATER_ECOLOGY_MAX_BATCH = 2;
+  const CRATER_ECOLOGY_INTERVAL = 6.0;
 
   const meteors = [];
   const terrainJobs = [];
@@ -36,20 +46,47 @@ const meteorites = (function(){
   const scorches = [];
   const beaconWaves = [];
   const gravityBursts = [];
+  const sirenPulses = [];
+  const craterRecords = [];
+  const impactConsequences = [];
   const plumeSprites = new Map();
   const beaconIndex = new Map();
+  const sirenIndex = new Map();
   let enabled = false;
   let nextIn = 0;
   let spawned = 0;
   let impacts = 0;
   let deflections = 0;
+  let sirenAlerts = 0;
+  let craterLakeOps = 0;
+  let craterEcologyOps = 0;
+  let meteorMutations = 0;
+  let lakeCursor = 0;
+  let ecologyCursor = 0;
+  let ecologyBudgetAcc = 0;
+  let ecologyTime = 0;
   let lastDeflection = null;
+  let lastSirenAlert = null;
+  let lastScan = null;
+  let lastConsequence = null;
   let screenFlash = 0;
   let lastImpact = null;
   let shakeT = 0;
   let shakeMax = 0;
   let shakeAmp = 0;
   let shakeSeed = 0;
+  const classCounts = {iron:0, iridium:0, ice:0, radioactive:0, antimatter:0, biological:0};
+  const consequenceCounts = {settlement:0, forest:0, lake:0, meadow:0, wildlands:0};
+
+  const METEOR_CLASSES = {
+    iron:{id:'iron',label:'zelazny',weight:38,intensityMult:1.00,craterScale:1.00,lakeRate:1.0,ember:'iron',trailOuter:'rgba(255,110,26,',trailInner:'rgba(255,232,120,',glow1:'rgba(255,255,236,0.95)',glow2:'rgba(255,216,91,0.86)',glow3:'rgba(255,78,22,0.42)',body:'#fff7c9',core:'#ff6a21',deposits:[{tile:T.METEORIC_IRON,count:2},{tile:T.COAL,count:1},{tile:T.OBSIDIAN,count:1,chance:0.55}]},
+    iridium:{id:'iridium',label:'irydowy',weight:16,intensityMult:1.07,craterScale:1.05,lakeRate:1.0,ember:'iridium',trailOuter:'rgba(184,215,255,',trailInner:'rgba(238,250,255,',glow1:'rgba(244,250,255,0.98)',glow2:'rgba(184,215,255,0.84)',glow3:'rgba(90,130,255,0.38)',body:'#f4fbff',core:'#b8d7ff',deposits:[{tile:T.IRIDIUM,count:2},{tile:T.METEORIC_IRON,count:1},{tile:T.COAL,count:1}]},
+    ice:{id:'ice',label:'lodowy',weight:13,intensityMult:0.88,craterScale:0.92,lakeRate:1.75,ember:'ice',trailOuter:'rgba(122,210,255,',trailInner:'rgba(232,252,255,',glow1:'rgba(250,255,255,0.96)',glow2:'rgba(157,238,255,0.76)',glow3:'rgba(58,150,255,0.32)',body:'#effdff',core:'#8fd6ff',deposits:[{tile:T.ICE,count:3},{tile:T.SNOW,count:2},{tile:T.METEOR_DUST,count:1,chance:0.50}]},
+    radioactive:{id:'radioactive',label:'radioaktywny',weight:11,intensityMult:1.02,craterScale:1.02,lakeRate:0.85,ember:'radioactive',trailOuter:'rgba(108,255,78,',trailInner:'rgba(230,255,142,',glow1:'rgba(245,255,213,0.96)',glow2:'rgba(138,255,79,0.78)',glow3:'rgba(50,190,43,0.34)',body:'#f3ffd4',core:'#8aff4f',deposits:[{tile:T.RADIOACTIVE_ORE,count:2},{tile:T.METEOR_DUST,count:2},{tile:T.METEORIC_IRON,count:1}]},
+    antimatter:{id:'antimatter',label:'antymaterialny',weight:5,intensityMult:1.20,craterScale:1.16,lakeRate:0.70,ember:'antimatter',trailOuter:'rgba(204,92,255,',trailInner:'rgba(124,247,255,',glow1:'rgba(255,242,255,0.98)',glow2:'rgba(211,107,255,0.84)',glow3:'rgba(74,247,255,0.36)',body:'#fff2ff',core:'#d36bff',deposits:[{tile:T.ANTIMATTER_CRYSTAL,count:1},{tile:T.IRIDIUM,count:1},{tile:T.OBSIDIAN,count:2}]},
+    biological:{id:'biological',label:'biologiczny',weight:9,intensityMult:0.96,craterScale:0.98,lakeRate:1.20,ember:'biological',trailOuter:'rgba(111,224,91,',trailInner:'rgba(255,190,122,',glow1:'rgba(244,255,217,0.95)',glow2:'rgba(121,201,93,0.78)',glow3:'rgba(255,101,131,0.28)',body:'#ecffd9',core:'#79c95d',deposits:[{tile:T.ALIEN_BIOMASS,count:3},{tile:T.METEOR_DUST,count:2},{tile:T.COAL,count:1}]}
+  };
+  const METEOR_CLASS_IDS = Object.keys(METEOR_CLASSES);
 
   function clamp(n,a,b){ return Math.max(a, Math.min(b,n)); }
   function rand(a,b){ return a + Math.random()*(b-a); }
@@ -79,32 +116,139 @@ const meteorites = (function(){
   loadSettings();
   if(!(nextIn>0)) rollNext();
 
+  function classProfile(id){
+    if(id && METEOR_CLASSES[id]) return METEOR_CLASSES[id];
+    return METEOR_CLASSES.iron;
+  }
+  function ecologyKindForProfile(profile){
+    profile=classProfile(profile && profile.id);
+    if(profile.id==='radioactive') return 'glow';
+    if(profile.id==='biological') return 'alien';
+    if(profile.id==='ice') return 'lake';
+    if(profile.id==='antimatter') return 'steam';
+    return 'mineral';
+  }
+  function ecologyLabel(kind){
+    if(kind==='glow') return 'radioaktywne pole';
+    if(kind==='alien') return 'obca flora';
+    if(kind==='lake') return 'miska jeziorna';
+    if(kind==='steam') return 'kominy parowe';
+    return 'mineralny szyb';
+  }
+  function makeCraterEcology(profile,raw){
+    raw=raw||{};
+    const kind=['glow','alien','lake','steam','mineral'].includes(raw.kind || raw.k) ? (raw.kind || raw.k) : ecologyKindForProfile(profile);
+    return {
+      kind,
+      cursor:Math.max(0,(raw.cursor==null ? raw.c : raw.cursor)|0),
+      t:Math.max(0,Number(raw.t)||0),
+      stage:Math.max(0,(raw.stage==null ? raw.s : raw.stage)|0),
+      plants:Math.max(0,(raw.plants==null ? raw.p : raw.plants)|0),
+      minerals:Math.max(0,(raw.minerals==null ? raw.m : raw.minerals)|0),
+      vents:Math.max(0,(raw.vents==null ? raw.v : raw.vents)|0),
+      glow:Math.max(0,(raw.glow==null ? raw.g : raw.glow)|0),
+      last:Number.isFinite(raw.last) ? raw.last : ecologyTime
+    };
+  }
+  function packCraterEcology(eco){
+    if(!eco) return null;
+    return {
+      k:eco.kind,
+      c:eco.cursor|0,
+      t:+Math.max(0,eco.t||0).toFixed(2),
+      s:eco.stage|0,
+      p:eco.plants|0,
+      m:eco.minerals|0,
+      v:eco.vents|0,
+      g:eco.glow|0
+    };
+  }
+  function craterEcologyScore(eco){
+    if(!eco) return 0;
+    return Math.max(0,(eco.stage|0)+(eco.plants|0)+(eco.minerals|0)+(eco.vents|0)+(eco.glow|0));
+  }
+  function activeEcologyCraters(){
+    let n=0;
+    for(const c of craterRecords) if(c && craterEcologyScore(c.ecology)>0) n++;
+    return n;
+  }
+  function classFromOpts(opts){
+    opts=opts||{};
+    const id=opts.classId || opts.kind || opts.type || opts.meteorClass;
+    if(id && METEOR_CLASSES[id]) return METEOR_CLASSES[id];
+    let total=0;
+    for(const k of METEOR_CLASS_IDS) total+=METEOR_CLASSES[k].weight||1;
+    let r=Math.random()*Math.max(1,total);
+    for(const k of METEOR_CLASS_IDS){
+      r-=METEOR_CLASSES[k].weight||1;
+      if(r<=0) return METEOR_CLASSES[k];
+    }
+    return METEOR_CLASSES.iron;
+  }
+  function classCountBump(profile){
+    if(!profile) return;
+    if(classCounts[profile.id]==null) classCounts[profile.id]=0;
+    classCounts[profile.id]++;
+  }
+  function copyClassCounts(){
+    return Object.assign({}, classCounts);
+  }
+  function resetClassCounts(src){
+    for(const k of METEOR_CLASS_IDS) classCounts[k]=0;
+    if(!src || typeof src!=='object') return;
+    for(const k of METEOR_CLASS_IDS) classCounts[k]=Math.max(0,(src[k]|0)||0);
+  }
+  function copyConsequenceCounts(){
+    return Object.assign({}, consequenceCounts);
+  }
+  function resetConsequenceCounts(src){
+    for(const k in consequenceCounts) consequenceCounts[k]=0;
+    if(!src || typeof src!=='object') return;
+    for(const k in consequenceCounts) consequenceCounts[k]=Math.max(0,(src[k]|0)||0);
+  }
   function tileInfo(t){ return INFO[t] || INFO[T.AIR]; }
   function isGas(t){ return !!(tileInfo(t) && tileInfo(t).gas); }
   function meteorGroundTile(t){
-    return t===T.GRASS || t===T.SAND || t===T.STONE || t===T.SNOW ||
+    return t===T.GRASS || t===T.SAND || t===T.DIRT || t===T.STONE ||
+      t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.SNOW ||
       t===T.ICE || t===T.MUD || t===T.OBSIDIAN || t===T.COAL ||
       t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON ||
-      t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE;
+      t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS ||
+      t===T.ANTIMATTER_CRYSTAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE;
   }
   function protectedTile(t){
     return t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC ||
       t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE ||
-      t===T.ANTIGRAVITY_BEACON;
+      t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN;
   }
   function meteorShattersTile(t){
     if(t===T.AIR || t===T.WATER || t===T.LAVA || isGas(t)) return false;
     if(protectedTile(t) || meteorGroundTile(t)) return false;
     return true;
   }
-  function hotTileForFloor(old,edge,central){
+  function hotTileForFloor(old,edge,central,profile){
+    profile=classProfile(profile && profile.id);
+    if(profile.id==='ice'){
+      if(central) return T.ICE;
+      if(old===T.SAND && edge<0.28) return T.GLASS;
+      return edge<0.62 ? T.ICE : T.SNOW;
+    }
+    if(profile.id==='radioactive' && (central || edge<0.22)) return T.RADIOACTIVE_ORE;
+    if(profile.id==='biological' && (central || edge<0.34)) return T.ALIEN_BIOMASS;
+    if(profile.id==='antimatter' && central) return Math.random()<0.72 ? T.ANTIMATTER_CRYSTAL : T.LAVA;
     if(central) return T.LAVA;
     if(old===T.SAND) return T.GLASS;
     if(edge<0.46) return Math.random()<0.72 ? T.OBSIDIAN : T.METEORIC_IRON;
-    if(old===T.STONE || old===T.COAL || old===T.STEEL || old===T.METEORIC_IRON || old===T.OBSIDIAN) return Math.random()<0.90 ? T.OBSIDIAN : T.STONE;
+    if(old===T.STONE || old===T.GRANITE || old===T.BASALT || old===T.BEDROCK || old===T.COAL || old===T.STEEL || old===T.METEORIC_IRON || old===T.OBSIDIAN) return Math.random()<0.90 ? T.OBSIDIAN : T.STONE;
     return Math.random()<0.82 ? T.OBSIDIAN : T.STONE;
   }
-  function meteorCoreTile(){
+  function meteorCoreTile(profile){
+    profile=classProfile(profile && profile.id);
+    if(profile.id==='iridium') return Math.random()<0.70 ? T.IRIDIUM : T.METEORIC_IRON;
+    if(profile.id==='ice') return Math.random()<0.70 ? T.ICE : T.SNOW;
+    if(profile.id==='radioactive') return Math.random()<0.70 ? T.RADIOACTIVE_ORE : T.METEOR_DUST;
+    if(profile.id==='antimatter') return Math.random()<0.68 ? T.ANTIMATTER_CRYSTAL : T.IRIDIUM;
+    if(profile.id==='biological') return Math.random()<0.72 ? T.ALIEN_BIOMASS : T.METEOR_DUST;
     const r=Math.random();
     if(r<0.13) return T.IRIDIUM;
     if(r<0.52) return T.METEORIC_IRON;
@@ -125,6 +269,10 @@ const meteorites = (function(){
     x=Math.floor(x); y=Math.floor(y);
     return {x:x+0.5,y:y+0.5,tx:x,ty:y};
   }
+  function sirenAtTile(x,y){
+    x=Math.floor(x); y=Math.floor(y);
+    return {x:x+0.5,y:y+0.5,tx:x,ty:y};
+  }
   function onTileChanged(x,y,oldTile,newTile){
     x=Math.floor(x); y=Math.floor(y);
     if(!Number.isFinite(x) || !Number.isFinite(y)) return false;
@@ -133,8 +281,16 @@ const meteorites = (function(){
       beaconIndex.set(k,beaconAtTile(x,y));
       return true;
     }
+    if(newTile===T.METEOR_SIREN){
+      sirenIndex.set(k,sirenAtTile(x,y));
+      return true;
+    }
     if(oldTile===T.ANTIGRAVITY_BEACON || beaconIndex.has(k)){
       beaconIndex.delete(k);
+      return true;
+    }
+    if(oldTile===T.METEOR_SIREN || sirenIndex.has(k)){
+      sirenIndex.delete(k);
       return true;
     }
     return false;
@@ -190,6 +346,88 @@ const meteorites = (function(){
       }
     }
     return best;
+  }
+  function nearestIndexedSiren(cx,cy,getTile,radius){
+    if(!sirenIndex.size || typeof getTile!=='function') return null;
+    const r2=radius*radius;
+    let best=null;
+    let bestD2=r2+1;
+    const stale=[];
+    for(const [k,s] of sirenIndex){
+      if(readTile(getTile,s.tx,s.ty)!==T.METEOR_SIREN){
+        stale.push(k);
+        continue;
+      }
+      const dx=s.x-cx, dy=s.y-cy;
+      const d2=dx*dx+dy*dy;
+      if(d2<bestD2){
+        bestD2=d2;
+        best=s;
+      }
+    }
+    for(const k of stale) sirenIndex.delete(k);
+    if(!best) return null;
+    return {x:best.x,y:best.y,tx:best.tx,ty:best.ty,d2:bestD2,d:Math.sqrt(bestD2)};
+  }
+  function nearestSiren(cx,cy,getTile,radius){
+    if(typeof getTile!=='function' || !Number.isFinite(cx) || !Number.isFinite(cy)) return null;
+    const r=clamp(Number(radius)||SIREN_SCAN_RADIUS,1,SIREN_SCAN_RADIUS);
+    const indexed=nearestIndexedSiren(cx,cy,getTile,r);
+    if(indexed) return indexed;
+    const minX=Math.floor(cx-r);
+    const maxX=Math.ceil(cx+r);
+    const minY=Math.max(1,Math.floor(cy-r));
+    const maxY=Math.min(WORLD_H-4,Math.ceil(cy+r));
+    let best=null;
+    let bestD2=r*r+1;
+    for(let y=minY; y<=maxY; y++){
+      for(let x=minX; x<=maxX; x++){
+        if(readTile(getTile,x,y)!==T.METEOR_SIREN) continue;
+        const sx=x+0.5, sy=y+0.5;
+        const dx=sx-cx, dy=sy-cy;
+        const d2=dx*dx+dy*dy;
+        if(d2<bestD2){
+          bestD2=d2;
+          best={x:sx,y:sy,tx:x,ty:y,d2,d:Math.sqrt(d2)};
+        }
+        onTileChanged(x,y,T.AIR,T.METEOR_SIREN);
+      }
+    }
+    return best;
+  }
+  function queueSirenPulse(s,m){
+    if(!s) return;
+    pushCapped(sirenPulses,{
+      x:s.x,
+      y:s.y,
+      mx:m && Number.isFinite(m.x) ? m.x : null,
+      my:m && Number.isFinite(m.y) ? m.y : null,
+      life:0,
+      max:1.15,
+      phase:Math.random()*Math.PI*2
+    },MAX_SIREN_PULSES);
+  }
+  function alertSirenForMeteor(m,getTile){
+    if(!m || m.sirenAlerted) return false;
+    const target=m.target || {x:m.x,y:m.y};
+    const s=nearestSiren(target.x,target.y,getTile,SIREN_SCAN_RADIUS);
+    if(!s || s.d>SIREN_ALERT_RADIUS) return false;
+    m.sirenAlerted=true;
+    sirenAlerts++;
+    lastSirenAlert={
+      x:+s.x.toFixed(2),
+      y:+s.y.toFixed(2),
+      targetX:+target.x.toFixed(2),
+      targetY:+target.y.toFixed(2),
+      classId:m.classId || 'iron',
+      d:+s.d.toFixed(2),
+      t:0
+    };
+    queueSirenPulse(s,m);
+    screenFlash=Math.max(screenFlash,0.20);
+    try{ if(typeof window.msg==='function') window.msg('Syrena meteorytowa: wykryto meteoryt '+(classProfile(m.classId).label||'')); }catch(e){}
+    try{ if(MM.audio && MM.audio.play && (!MM.audio.isReady || MM.audio.isReady())) MM.audio.play('alarm'); }catch(e){}
+    return true;
   }
   function surfaceNear(x,guessY,getTile){
     const wg=MM.worldGen;
@@ -275,6 +513,8 @@ const meteorites = (function(){
     const ms=frameMs();
     if(ms>34 && Math.random()<0.62) return;
     const side=(Math.random()-0.5)*0.9;
+    const profile=classProfile(m && m.classId);
+    const hue=profile.ember==='iron' ? (Math.random()<0.22?'white':(Math.random()<0.55?'gold':'orange')) : profile.ember;
     pushCapped(embers,{
       x:m.x+side,
       y:m.y+side*0.25,
@@ -283,7 +523,7 @@ const meteorites = (function(){
       life:0,
       max:0.38+Math.random()*0.48,
       size:0.06+Math.random()*0.10,
-      hue:Math.random()<0.22?'white':(Math.random()<0.55?'gold':'orange')
+      hue
     },MAX_EMBERS);
   }
   function smokeAt(x,y,power){
@@ -374,6 +614,32 @@ const meteorites = (function(){
       power:21+Math.min(10,(m && m.intensity ? m.intensity : 1)*4),
       seed:Math.random()*Math.PI*2
     },MAX_GRAVITY_BURSTS);
+  }
+  function triggerAntimatterBurst(x,y,intensity){
+    if(!Number.isFinite(x) || !Number.isFinite(y)) return false;
+    const power=Math.max(0.5,Number(intensity)||1);
+    queueGravityBurst({x,y},{intensity:power});
+    screenFlash=Math.max(screenFlash,1.05);
+    startShake(0.38+power*0.08,5.5+power*2.3);
+    const stress=frameMs()>30;
+    const n=stress ? 8 : 18;
+    for(let i=0;i<n;i++){
+      const a=Math.random()*Math.PI*2;
+      const sp=rand(1.8,7.2)*(0.85+power*0.12);
+      pushCapped(embers,{
+        x:x+rand(-0.22,0.22),
+        y:y+rand(-0.22,0.22),
+        vx:Math.cos(a)*sp,
+        vy:Math.sin(a)*sp-rand(0.4,2.2),
+        life:0,
+        max:rand(0.35,0.95),
+        size:rand(0.05,0.13),
+        hue:Math.random()<0.55?'antimatter':'ice'
+      },MAX_EMBERS);
+    }
+    try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(x*(MM.TILE||20),y*(MM.TILE||20),'rare',12); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('beam'); }catch(e){}
+    return true;
   }
   function inverseGravityAt(x,y){
     let lift=0;
@@ -535,14 +801,19 @@ const meteorites = (function(){
     if(!m || (m.deflectionCount||0)>=MAX_BEACON_DEFLECTIONS_PER_METEOR) return false;
     m.beaconScanT=(Number.isFinite(m.beaconScanT)?m.beaconScanT:0)-dt;
     let b=m.cachedBeacon || null;
-    if(!b || m.beaconScanT<=0){
-      m.beaconScanT=BEACON_SCAN_INTERVAL;
+    if(b && readTile(getTile,b.tx,b.ty)!==T.ANTIGRAVITY_BEACON){
+      b=null;
+      m.cachedBeacon=null;
+      m.beaconScanT=0;
+    }
+    if(m.beaconScanT<=0){
       const exclude=m.usedBeaconKeys||[];
       const target=m.target || {x:m.x,y:m.y};
       const targetBeacon=nearestBeacon(target.x,target.y,getTile,BEACON_SCAN_RADIUS,{exclude});
       const currentBeacon=nearestBeacon(m.x,m.y,getTile,BEACON_FIELD_RADIUS,{exclude});
       b=currentBeacon || targetBeacon;
       m.cachedBeacon=b;
+      m.beaconScanT=b ? BEACON_SCAN_INTERVAL : BEACON_EMPTY_SCAN_INTERVAL;
     }
     if(!b) return false;
     const d=Math.hypot(m.x-b.x,m.y-b.y);
@@ -626,9 +897,10 @@ const meteorites = (function(){
   }
   function buildCraterOps(cx,cy,intensity,getTile,opts){
     opts=opts||{};
+    const profile=classProfile((opts.profile && opts.profile.id) || opts.classId || opts.kind || opts.type);
     const impactY=clamp(Math.round(Number.isFinite(opts.surfaceY)?opts.surfaceY:cy),2,WORLD_H-6);
     const seed=Number.isFinite(opts.seed) ? +opts.seed : rand(1,1000000);
-    const scale=clamp(Number(opts.scale)||rand(0.68,1.42),0.62,1.55);
+    const scale=clamp((Number(opts.scale)||rand(0.68,1.42))*(profile.craterScale||1),0.62,1.85);
     const baseRx=8.8+intensity*4.25;
     const leftRx=clamp(baseRx*scale*rand(0.82,1.30),10.5,24.5);
     const rightRx=clamp(baseRx*scale*rand(0.82,1.30),10.5,24.5);
@@ -670,11 +942,11 @@ const meteorites = (function(){
         }
         const old=readTile(getTile,x,floorY);
         const central=edge<(0.14+hashUnit(seed+2.2,x)*0.10) && intensity>0.8;
-        addOp(1,x,floorY,hotTileForFloor(old,edge,central),Math.abs(dx),true);
+        addOp(1,x,floorY,hotTileForFloor(old,edge,central,profile),Math.abs(dx),true);
         floorCells.push({x,floorY,edge,d:Math.abs(dx)});
         if(edge<0.52 && floorY+1<WORLD_H-3){
           const mineral=hashUnit(seed+37.2,x*1.73+floorY*0.37);
-          const t=edge<0.24 ? meteorCoreTile() : (mineral<0.42 ? T.METEORIC_IRON : (mineral<0.68 ? T.COAL : T.OBSIDIAN));
+          const t=edge<0.24 ? meteorCoreTile(profile) : (mineral<0.42 ? (profile.id==='ice'?T.ICE:T.METEORIC_IRON) : (mineral<0.68 ? (profile.id==='biological'?T.ALIEN_BIOMASS:T.COAL) : T.OBSIDIAN));
           addOp(1,x,floorY+1,t,Math.abs(dx)+0.7,true);
         }
       }
@@ -725,6 +997,15 @@ const meteorites = (function(){
     addDeposit(T.METEORIC_IRON,1+Math.round(hashUnit(seed+64.4,1)),0.30);
     addDeposit(T.COAL,1+Math.round(hashUnit(seed+65.2,2)),0.32);
     if(intensity>1.2) addDeposit(T.IRIDIUM,2,0.35);
+    for(const dep of profile.deposits || []){
+      if(!dep || dep.tile==null) continue;
+      const count=Math.max(1,dep.count|0);
+      for(let i=0;i<count;i++){
+        if(dep.chance!=null && hashUnit(seed+70.3+i,dep.tile*1.7+i)>dep.chance) continue;
+        const offset=1+((i + Math.round(hashUnit(seed+71.9,dep.tile+i)))%3);
+        addDeposit(dep.tile,offset,0.18+i*0.06);
+      }
+    }
     ops.sort((a,b)=>a.phase-b.phase || a.d-b.d);
     return ops;
   }
@@ -741,7 +1022,7 @@ const meteorites = (function(){
   }
   function queueCrater(cx,cy,intensity,getTile,preparedOps,setTile,opts){
     opts=opts||{};
-    const ops=Array.isArray(preparedOps) ? preparedOps : buildCraterOps(cx,cy,intensity,getTile);
+    const ops=Array.isArray(preparedOps) ? preparedOps : buildCraterOps(cx,cy,intensity,getTile,opts);
     if(opts.instant && typeof setTile==='function'){
       for(const op of ops) applyCraterOp(op,getTile,setTile);
       return ops.length;
@@ -767,12 +1048,447 @@ const meteorites = (function(){
       else break;
     }
   }
-  function emitImpactFx(cx,cy,intensity,waterHit){
+  function setTileNotified(x,y,t,getTile,setTile){
+    if(typeof setTile!=='function') return false;
+    x=Math.floor(x); y=Math.floor(y);
+    if(y<1 || y>=WORLD_H-3) return false;
+    const old=readTile(getTile,x,y);
+    if(old===t || protectedTile(old)) return false;
+    setTile(x,y,t);
+    notifyTerrainChange(x,y,old,t,getTile,setTile);
+    return true;
+  }
+  function impactSiteKind(cx,cy,getTile){
+    let water=0, forest=0, built=0, life=0;
+    for(let y=Math.floor(cy)-5; y<=Math.floor(cy)+7; y++){
+      if(y<1 || y>=WORLD_H-3) continue;
+      for(let x=Math.floor(cx)-8; x<=Math.floor(cx)+8; x++){
+        const t=readTile(getTile,x,y);
+        if(t===T.WATER || t===T.ICE) water++;
+        if(t===T.WOOD || t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED) forest++;
+        if(t===T.GRASS || t===T.MUD || t===T.ALIEN_BIOMASS) life++;
+        if((INFO[t] && (INFO[t].machine || INFO[t].chestTier)) || t===T.STEEL || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE) built++;
+      }
+    }
+    if(built>=5) return 'settlement';
+    if(water>=12) return 'lake';
+    if(forest>=10) return 'forest';
+    if(life>=18) return 'meadow';
+    return 'wildlands';
+  }
+  function consequenceMessage(site,profile){
+    const label=(profile && profile.label) || 'meteoryt';
+    if(site==='settlement') return 'Beacon ocalil baze, ale odbity '+label+' uderzyl w zabudowania.';
+    if(site==='forest') return 'Beacon ocalil baze, ale odbity '+label+' zniszczyl fragment lasu.';
+    if(site==='lake') return 'Beacon ocalil baze, ale odbity '+label+' skazil zbiornik wodny.';
+    if(site==='meadow') return 'Beacon ocalil baze, ale odbity '+label+' zmienil zywa lake.';
+    return 'Beacon ocalil baze: odbity '+label+' spadl w dziki teren.';
+  }
+  function consequenceSeverity(site){
+    if(site==='settlement') return 4;
+    if(site==='forest' || site==='lake') return 3;
+    if(site==='meadow') return 2;
+    return 1;
+  }
+  function recordImpactConsequence(cx,cy,profile,site,opts){
+    opts=opts||{};
+    if(!opts.deflected) return null;
+    profile=classProfile(profile && profile.id);
+    const key=consequenceCounts[site]!=null ? site : 'wildlands';
+    consequenceCounts[key]++;
+    const rec={
+      x:+cx.toFixed(2),
+      y:+cy.toFixed(2),
+      classId:profile.id,
+      label:profile.label,
+      site:key,
+      severity:consequenceSeverity(key),
+      message:consequenceMessage(key,profile),
+      t:0
+    };
+    pushCapped(impactConsequences,rec,MAX_IMPACT_CONSEQUENCES);
+    lastConsequence=rec;
+    try{ if(typeof window.msg==='function') window.msg(rec.message); }catch(e){}
+    return rec;
+  }
+  function pushCraterRecord(cx,cy,intensity,profile,site,opts){
+    opts=opts||{};
+    const r=clamp(Math.round((9.5+intensity*4.8)*(profile.craterScale||1)),8,30);
+    pushCapped(craterRecords,{
+      x:+cx.toFixed(2),
+      y:+cy.toFixed(2),
+      r,
+      classId:profile.id,
+      label:profile.label,
+      site:site||'wildlands',
+      redirected:!!opts.deflected,
+      rain:0,
+      water:0,
+      filled:false,
+      age:0,
+      cursor:0,
+      ecology:makeCraterEcology(profile)
+    },MAX_CRATER_RECORDS);
+    return craterRecords[craterRecords.length-1];
+  }
+  function surfaceScatterTile(tile,cx,cy,count,radius,getTile,setTile){
+    let placed=0;
+    const tries=Math.max(8,count*5);
+    for(let i=0;i<tries && placed<count;i++){
+      const x=Math.floor(cx+rand(-radius,radius));
+      const surf=craterSurfaceNear(x,cy,getTile);
+      if(surf==null) continue;
+      const y=Math.max(1,surf-1);
+      const cur=readTile(getTile,x,y);
+      const below=readTile(getTile,x,y+1);
+      if(cur!==T.AIR && !isGas(cur) && cur!==T.WATER) continue;
+      if(below===T.AIR || isGas(below)) continue;
+      if(setTileNotified(x,y,tile,getTile,setTile)) placed++;
+    }
+    return placed;
+  }
+  function freezeNearbyWater(cx,cy,intensity,getTile,setTile){
+    let n=0;
+    const r=Math.round(5+intensity*2);
+    for(let y=Math.floor(cy)-5; y<=Math.floor(cy)+6; y++){
+      if(y<1 || y>=WORLD_H-3) continue;
+      for(let x=Math.floor(cx)-r; x<=Math.floor(cx)+r; x++){
+        if(Math.hypot(x+0.5-cx,y+0.5-cy)>r+1) continue;
+        const t=readTile(getTile,x,y);
+        if(t===T.WATER && setTileNotified(x,y,T.ICE,getTile,setTile)) n++;
+        else if(t===T.LAVA && setTileNotified(x,y,T.OBSIDIAN,getTile,setTile)) n++;
+      }
+    }
+    return n;
+  }
+  function seedMeteorPlants(cx,cy,intensity,getTile){
+    let n=0;
+    const types=['fern','berrybush','reed','sunflower'];
+    if(!MM.plants || typeof MM.plants.sow!=='function') return 0;
+    const attempts=8+Math.round(intensity*4);
+    for(let i=0;i<attempts;i++){
+      const x=Math.floor(cx+rand(-10,10));
+      const type=types[(Math.random()*types.length)|0];
+      try{ if(MM.plants.sow(type,x,getTile)) n++; }catch(e){}
+    }
+    return n;
+  }
+  function applyMeteorAftermath(cx,cy,intensity,profile,getTile,setTile,site,opts){
+    profile=classProfile(profile && profile.id);
+    const stress=frameMs()>30;
+    const radius=clamp(8+intensity*4,8,22);
+    let changed=0;
+    if(profile.id==='ice'){
+      changed+=freezeNearbyWater(cx,cy,intensity,getTile,setTile);
+      changed+=surfaceScatterTile(T.SNOW,cx,cy,stress?3:7,radius,getTile,setTile);
+      try{ if(MM.gases && MM.gases.add) MM.gases.add('steam',cx,cy-0.6,{power:0.8+intensity*0.2,cells:5}); }catch(e){}
+    } else if(profile.id==='radioactive'){
+      changed+=surfaceScatterTile(T.METEOR_DUST,cx,cy,stress?4:9,radius,getTile,setTile);
+      changed+=surfaceScatterTile(T.RADIOACTIVE_ORE,cx,cy,stress?2:4,radius*0.72,getTile,setTile);
+      try{ if(MM.gases && MM.gases.add) MM.gases.add('poison',cx,cy-0.2,{power:1.5+intensity*0.38,cells:10}); }catch(e){}
+      try{ if(MM.mobs && MM.mobs.poisonRadius) meteorMutations+=MM.mobs.poisonRadius(cx,cy,radius,{dur:10,dps:2}); }catch(e){}
+      meteorMutations+=changed;
+    } else if(profile.id==='antimatter'){
+      changed+=surfaceScatterTile(T.METEOR_DUST,cx,cy,stress?3:6,radius,getTile,setTile);
+      queueGravityBurst({x:cx,y:cy}, {intensity:intensity+1.0});
+      screenFlash=Math.max(screenFlash,1.55);
+    } else if(profile.id==='biological'){
+      changed+=surfaceScatterTile(T.METEOR_DUST,cx,cy,stress?5:11,radius,getTile,setTile);
+      changed+=surfaceScatterTile(T.ALIEN_BIOMASS,cx,cy,stress?3:7,radius*0.82,getTile,setTile);
+      meteorMutations+=changed + seedMeteorPlants(cx,cy,intensity,getTile);
+    } else if(profile.id==='iridium'){
+      changed+=surfaceScatterTile(T.METEOR_DUST,cx,cy,stress?1:3,radius*0.70,getTile,setTile);
+    }
+    if(changed>0) markWorldChanged();
+    return changed;
+  }
+  function craterRainActive(c){
+    try{ return !!(MM.clouds && MM.clouds.isRainingAt && MM.clouds.isRainingAt(c.x)); }catch(e){ return false; }
+  }
+  function fillCraterLakeCell(c,getTile,setTile){
+    if(!c || c.filled || typeof setTile!=='function') return false;
+    const r=clamp(c.r|0,6,30);
+    const cols=r*2+1;
+    const yMin=Math.max(1,Math.floor(c.y)-1);
+    const yMax=Math.min(WORLD_H-4,Math.floor(c.y+Math.max(5,r*0.55)+4));
+    const start=(c.cursor|0) % cols;
+    for(let n=0;n<Math.min(cols,24);n++){
+      const idx=(start+n)%cols;
+      const dx=idx-r;
+      const x=Math.floor(c.x+dx);
+      if(Math.abs(dx)>r) continue;
+      for(let y=yMax; y>=yMin; y--){
+        const cur=readTile(getTile,x,y);
+        if(cur!==T.AIR && !isGas(cur)) continue;
+        const below=readTile(getTile,x,y+1);
+        if(below!==T.WATER && (below===T.AIR || isGas(below))) continue;
+        if(setTileNotified(x,y,T.WATER,getTile,setTile)){
+          try{ if(MM.water && MM.water.addSource) MM.water.addSource(x,y,getTile,setTile); }catch(e){}
+          c.cursor=(idx+1)%cols;
+          c.water=(c.water|0)+1;
+          craterLakeOps++;
+          if(c.water>=Math.max(8,Math.round(r*1.4))) c.filled=true;
+          markWorldChanged();
+          return true;
+        }
+      }
+    }
+    c.cursor=(start+24)%cols;
+    return false;
+  }
+  function updateCraterLakes(dt,getTile,setTile){
+    if(!craterRecords.length || typeof getTile!=='function' || typeof setTile!=='function') return;
+    const checks=Math.min(CRATER_LAKE_STEP_CAP,craterRecords.length);
+    for(let i=0;i<checks;i++){
+      lakeCursor=(lakeCursor+1)%craterRecords.length;
+      const c=craterRecords[lakeCursor];
+      if(!c) continue;
+      c.age=Math.min(999999,(c.age||0)+dt);
+      if(c.filled || !craterRainActive(c)) continue;
+      const profile=classProfile(c.classId);
+      c.rain=(c.rain||0)+dt*0.55*(profile.lakeRate||1);
+      if(c.rain>=1){
+        c.rain-=1;
+        fillCraterLakeCell(c,getTile,setTile);
+      }
+    }
+  }
+  function nextCraterColumn(c,eco,scale){
+    const r=clamp(c.r|0,6,32);
+    const span=Math.max(2,Math.round(r*(scale||0.82)));
+    const n=(eco.cursor|0);
+    eco.cursor=(n+1)%(span*2+1);
+    return Math.floor(c.x + ((n*7)%(span*2+1))-span);
+  }
+  function placeCraterGroundTile(c,eco,tile,getTile,setTile,opts){
+    opts=opts||{};
+    for(let tries=0; tries<8; tries++){
+      const x=nextCraterColumn(c,eco,opts.scale||0.74);
+      const surface=craterSurfaceNear(x,c.y,getTile);
+      if(surface==null) continue;
+      const y=clamp(surface + (opts.buried ? 1+((eco.cursor+tries)%2) : 0),1,WORLD_H-4);
+      const cur=readTile(getTile,x,y);
+      const info=tileInfo(cur);
+      if(protectedTile(cur) || (info && info.machine)) continue;
+      if(opts.openOnly && cur!==T.AIR && !isGas(cur) && cur!==T.WATER) continue;
+      if(setTileNotified(x,y,tile,getTile,setTile)) return true;
+    }
+    return false;
+  }
+  function placeCraterAirTile(c,eco,tile,getTile,setTile){
+    for(let tries=0; tries<8; tries++){
+      const x=nextCraterColumn(c,eco,0.66);
+      const surface=craterSurfaceNear(x,c.y,getTile);
+      if(surface==null) continue;
+      const y=Math.max(1,surface-1);
+      const cur=readTile(getTile,x,y);
+      if(cur!==T.AIR && !isGas(cur)) continue;
+      if(setTileNotified(x,y,tile,getTile,setTile)) return true;
+    }
+    return false;
+  }
+  function seedAlienBloom(c,eco,getTile,setTile){
+    const x=nextCraterColumn(c,eco,0.92);
+    const surface=craterSurfaceNear(x,c.y,getTile);
+    if(surface!=null){
+      const soil=readTile(getTile,x,surface);
+      if(soil!==T.ALIEN_BIOMASS && soil!==T.METEOR_DUST && soil!==T.GRASS && soil!==T.MUD){
+        setTileNotified(x,surface,T.ALIEN_BIOMASS,getTile,setTile);
+      }
+    }
+    try{
+      if(MM.plants && typeof MM.plants.sow==='function' && MM.plants.sow('alienbloom',x,getTile)){
+        eco.plants++;
+        meteorMutations++;
+        return true;
+      }
+    }catch(e){}
+    return false;
+  }
+  function runGlowEcology(c,eco,getTile,setTile){
+    let changed=false;
+    if(eco.glow<Math.max(5,Math.round((c.r||10)*0.75))){
+      const tile=(eco.glow%4===3) ? T.RADIOACTIVE_ORE : T.METEOR_DUST;
+      if(placeCraterGroundTile(c,eco,tile,getTile,setTile,{scale:0.86,buried:tile===T.RADIOACTIVE_ORE})){
+        eco.glow++;
+        changed=true;
+      }
+    }
+    try{
+      if(MM.gases && MM.gases.add && eco.glow>0 && Math.random()<0.45){
+        MM.gases.add('poison',c.x+rand(-1.4,1.4),c.y-0.5,{power:0.22,cells:1,getTile,setTile});
+        changed=true;
+      }
+    }catch(e){}
+    try{
+      if(MM.plants && typeof MM.plants.mutateAt==='function'){
+        const n=MM.plants.mutateAt(c.x,c.y,Math.max(4,(c.r||8)*0.55),getTile,setTile)|0;
+        if(n>0){ eco.plants+=n; meteorMutations+=n; changed=true; }
+      }
+    }catch(e){}
+    return changed;
+  }
+  function runAlienEcology(c,eco,getTile,setTile){
+    let changed=false;
+    if(eco.stage<Math.max(6,Math.round((c.r||10)*0.55))){
+      const tile=(eco.stage%3===2) ? T.METEOR_DUST : T.ALIEN_BIOMASS;
+      if(placeCraterGroundTile(c,eco,tile,getTile,setTile,{scale:0.96})){
+        eco.stage++;
+        changed=true;
+      }
+    }
+    if(eco.plants<Math.max(3,Math.round((c.r||10)*0.35))){
+      changed = seedAlienBloom(c,eco,getTile,setTile) || changed;
+    }
+    return changed;
+  }
+  function runMineralEcology(c,eco,getTile,setTile){
+    if(eco.minerals>=Math.max(5,Math.round((c.r||10)*0.50))) return false;
+    const profile=classProfile(c.classId);
+    let tile=T.METEORIC_IRON;
+    if(profile.id==='iridium' && eco.minerals%3===1) tile=T.IRIDIUM;
+    else if(eco.minerals%4===2) tile=T.COAL;
+    else if(profile.id==='iron' && eco.minerals%5===4) tile=T.OBSIDIAN;
+    if(placeCraterGroundTile(c,eco,tile,getTile,setTile,{scale:0.62,buried:true})){
+      eco.minerals++;
+      return true;
+    }
+    return false;
+  }
+  function runSteamEcology(c,eco,getTile,setTile){
+    let changed=false;
+    if(eco.vents<Math.max(4,Math.round((c.r||10)*0.38))){
+      if(placeCraterAirTile(c,eco,T.STEAM,getTile,setTile)){
+        eco.vents++;
+        changed=true;
+      }
+    }
+    try{
+      if(MM.gases && MM.gases.add && Math.random()<0.70){
+        MM.gases.add('steam',c.x+rand(-Math.max(1,(c.r||10)*0.35),Math.max(1,(c.r||10)*0.35)),c.y-0.6,{power:0.35,cells:1,getTile,setTile});
+        changed=true;
+      }
+    }catch(e){}
+    if(eco.minerals<3 && placeCraterGroundTile(c,eco,T.OBSIDIAN,getTile,setTile,{scale:0.56,buried:true})){
+      eco.minerals++;
+      changed=true;
+    }
+    return changed;
+  }
+  function runCraterEcologyStep(c,getTile,setTile){
+    if(!c || typeof getTile!=='function' || typeof setTile!=='function') return false;
+    const profile=classProfile(c.classId);
+    if(!c.ecology) c.ecology=makeCraterEcology(profile);
+    const eco=c.ecology;
+    if(eco.kind==='lake'){
+      if(craterRainActive(c)) return fillCraterLakeCell(c,getTile,setTile);
+      return false;
+    }
+    if(eco.kind==='glow') return runGlowEcology(c,eco,getTile,setTile);
+    if(eco.kind==='alien') return runAlienEcology(c,eco,getTile,setTile);
+    if(eco.kind==='steam') return runSteamEcology(c,eco,getTile,setTile);
+    return runMineralEcology(c,eco,getTile,setTile);
+  }
+  function updateCraterEcology(dt,getTile,setTile){
+    if(!(dt>0) || !craterRecords.length || typeof getTile!=='function' || typeof setTile!=='function') return;
+    ecologyTime+=Math.min(10,dt);
+    ecologyBudgetAcc=Math.min(CRATER_ECOLOGY_MAX_BATCH,ecologyBudgetAcc + dt*CRATER_ECOLOGY_CHECKS_PER_SECOND);
+    const checks=Math.min(craterRecords.length,CRATER_ECOLOGY_MAX_BATCH,Math.floor(ecologyBudgetAcc));
+    if(checks<=0) return;
+    ecologyBudgetAcc-=checks;
+    for(let i=0;i<checks;i++){
+      ecologyCursor=(ecologyCursor+1)%craterRecords.length;
+      const c=craterRecords[ecologyCursor];
+      if(!c) continue;
+      if(!c.ecology) c.ecology=makeCraterEcology(classProfile(c.classId));
+      const eco=c.ecology;
+      const elapsed=Math.max(0,Math.min(60,ecologyTime-(Number.isFinite(eco.last)?eco.last:ecologyTime)));
+      eco.last=ecologyTime;
+      eco.t=(eco.t||0)+elapsed;
+      if(eco.t<CRATER_ECOLOGY_INTERVAL) continue;
+      eco.t-=CRATER_ECOLOGY_INTERVAL;
+      if(runCraterEcologyStep(c,getTile,setTile)){
+        craterEcologyOps++;
+        markWorldChanged();
+      }
+    }
+  }
+  function countCraterMaterials(c,getTile){
+    const counts={};
+    if(!c || typeof getTile!=='function') return counts;
+    const r=clamp(c.r|0,6,32);
+    const yMin=Math.max(1,Math.floor(c.y)-3);
+    const yMax=Math.min(WORLD_H-4,Math.floor(c.y+r*0.70+6));
+    for(let y=yMin; y<=yMax; y++){
+      for(let x=Math.floor(c.x-r); x<=Math.floor(c.x+r); x++){
+        if(Math.hypot(x+0.5-c.x,(y+0.5-c.y)*1.7)>r+3) continue;
+        const t=readTile(getTile,x,y);
+        if(t===T.IRIDIUM) counts.iridium=(counts.iridium||0)+1;
+        else if(t===T.METEORIC_IRON) counts.meteoricIron=(counts.meteoricIron||0)+1;
+        else if(t===T.RADIOACTIVE_ORE) counts.radioactiveOre=(counts.radioactiveOre||0)+1;
+        else if(t===T.ALIEN_BIOMASS) counts.alienBiomass=(counts.alienBiomass||0)+1;
+        else if(t===T.METEOR_DUST) counts.meteorDust=(counts.meteorDust||0)+1;
+        else if(t===T.ANTIMATTER_CRYSTAL) counts.antimatter=(counts.antimatter||0)+1;
+        else if(t===T.ICE || t===T.SNOW) counts.ice=(counts.ice||0)+1;
+        else if(t===T.WATER) counts.water=(counts.water||0)+1;
+      }
+    }
+    return counts;
+  }
+  function scanNearestCrater(player,getTile){
+    if(!craterRecords.length){
+      lastScan={ok:false,reason:'no-craters',t:0};
+      try{ if(typeof window.msg==='function') window.msg('Skaner kraterow: brak znanych kraterow'); }catch(e){}
+      return lastScan;
+    }
+    const px=(player && Number.isFinite(player.x)) ? player.x : 0;
+    const py=(player && Number.isFinite(player.y)) ? player.y : 0;
+    let best=null, bestD=Infinity;
+    for(const c of craterRecords){
+      const d=Math.hypot(c.x-px,c.y-py);
+      if(d<bestD){ bestD=d; best=c; }
+    }
+    if(!best) return null;
+    const materials=countCraterMaterials(best,getTile);
+    if(!best.ecology) best.ecology=makeCraterEcology(classProfile(best.classId));
+    const eco=best.ecology;
+    lastScan={
+      ok:true,
+      x:best.x,
+      y:best.y,
+      r:best.r,
+      classId:best.classId,
+      label:best.label,
+      site:best.site,
+      redirected:!!best.redirected,
+      water:best.water|0,
+      filled:!!best.filled,
+      dist:+bestD.toFixed(1),
+      ecology:{
+        kind:eco.kind,
+        label:ecologyLabel(eco.kind),
+        stage:eco.stage|0,
+        plants:eco.plants|0,
+        minerals:eco.minerals|0,
+        vents:eco.vents|0,
+        glow:eco.glow|0
+      },
+      materials,
+      t:0
+    };
+    const materialText=Object.keys(materials).filter(k=>materials[k]>0).slice(0,4).join(', ') || 'brak probek';
+    try{ if(typeof window.msg==='function') window.msg('Skan krateru: '+best.label+' / '+ecologyLabel(eco.kind)+' / '+best.site+' / '+materialText); }catch(e){}
+    return lastScan;
+  }
+  function emitImpactFx(cx,cy,intensity,waterHit,profile,site,opts){
+    profile=classProfile(profile && profile.id);
+    opts=opts||{};
     impacts++;
-    lastImpact={x:cx,y:cy,t:0};
+    lastImpact={x:cx,y:cy,t:0,classId:profile.id,label:profile.label,site:site||'wildlands',redirected:!!opts.deflected};
     screenFlash=Math.max(screenFlash,1.28);
     startShake(0.78+intensity*0.18,9.5+intensity*5.2);
     const stress=frameMs()>30;
+    const impactHue=profile.ember || 'iron';
     const debrisCount=stress ? 5 : 12;
     const emberCount=stress ? 18 : 44;
     for(let i=0;i<debrisCount;i++){
@@ -801,7 +1517,7 @@ const meteorites = (function(){
         life:0,
         max:rand(0.55,1.35),
         size:rand(0.08,0.20),
-        hue:Math.random()<0.16?'white':(Math.random()<0.54?'gold':'orange')
+        hue:impactHue==='iron' ? (Math.random()<0.16?'white':(Math.random()<0.54?'gold':'orange')) : impactHue
       },MAX_EMBERS);
     }
     const plumeCount=stress ? 7 : 14;
@@ -814,7 +1530,7 @@ const meteorites = (function(){
         life:0,
         max:rand(2.6,5.2),
         r:rand(0.44,1.05)*(1+intensity*0.16),
-        shade:Math.floor(rand(38,82))
+        shade:profile.id==='ice' ? Math.floor(rand(128,190)) : (profile.id==='radioactive' ? Math.floor(rand(70,118)) : Math.floor(rand(38,82)))
       },MAX_PLUMES);
     }
     if(waterHit) emitWaterImpactFx(cx,cy,1.15+intensity*0.25);
@@ -823,7 +1539,12 @@ const meteorites = (function(){
     try{ if(MM.gases && MM.gases.add) MM.gases.add('hot',cx,cy-0.6,{power:2.6+intensity*0.55,cells:12}); }catch(e){}
     playReadyAudio('meteor');
     playReadyAudio('explosion');
-    try{ if(typeof window.msg==='function') window.msg('Krater @ x='+Math.round(cx)); }catch(e){}
+    try{
+      if(typeof window.msg==='function'){
+        const displaced=opts.deflected ? ' (odbity: '+(site||'teren')+')' : '';
+        window.msg('Krater '+profile.label+' @ x='+Math.round(cx)+displaced);
+      }
+    }catch(e){}
   }
   function hurtActors(cx,cy,intensity){
     const radius=8.0+intensity*2.3;
@@ -849,14 +1570,20 @@ const meteorites = (function(){
   }
   function impactAt(wx,wy,getTile,setTile,intensity,preparedOps,opts){
     opts=opts||{};
+    const profile=classProfile((opts.profile && opts.profile.id) || opts.classId || opts.kind || opts.type);
     const cx=Math.floor(wx)+0.5;
     const cy=clamp(Math.floor(wy),2,WORLD_H-5);
     const hit=readTile(getTile,Math.floor(cx),Math.floor(cy));
     const waterHit=!!opts.waterHit || hit===T.WATER || hit===T.ICE;
-    queueCrater(cx,cy,intensity||1,getTile,preparedOps,setTile,{instant:true});
+    const site=opts.site || impactSiteKind(cx,cy,getTile);
+    const pow=intensity||1;
+    queueCrater(cx,cy,pow,getTile,preparedOps,setTile,{instant:true,classId:profile.id,profile,surfaceY:cy});
+    pushCraterRecord(cx,cy,pow,profile,site,opts);
+    recordImpactConsequence(cx,cy,profile,site,opts);
+    applyMeteorAftermath(cx,cy,pow,profile,getTile,setTile,site,opts);
     markWorldChanged();
-    emitImpactFx(cx,cy,intensity||1,waterHit);
-    hurtActors(cx,cy,intensity||1);
+    emitImpactFx(cx,cy,pow,waterHit,profile,site,opts);
+    hurtActors(cx,cy,pow);
     return true;
   }
   function forceSpawn(opts,player,getTile){
@@ -864,7 +1591,9 @@ const meteorites = (function(){
     if(meteors.length>=MAX_METEORS) return null;
     const target=pickTarget(player,getTile,opts);
     if(!target || !Number.isFinite(target.x) || !Number.isFinite(target.y)) return null;
-    const intensity=clamp(Number(opts.intensity)||rand(1.12,1.58),0.85,2.2);
+    const profile=classFromOpts(opts);
+    const baseIntensity=clamp(Number(opts.intensity)||rand(1.12,1.58),0.85,2.2);
+    const intensity=clamp(baseIntensity*(profile.intensityMult||1),0.78,2.65);
     const surfaceY=clamp(craterSurfaceNear(target.x,target.y,getTile)||target.y,2,WORLD_H-6);
     const side=opts.side || (Math.random()<0.5 ? -1 : 1);
     const fallTime=rand(2.05,2.72);
@@ -883,6 +1612,8 @@ const meteorites = (function(){
       t:0,
       trail:[],
       intensity,
+      classId:profile.id,
+      classLabel:profile.label,
       rot:Math.random()*Math.PI*2,
       spin:rand(-5.5,5.5),
       waterEntryFx:false,
@@ -892,7 +1623,9 @@ const meteorites = (function(){
     };
     meteors.push(m);
     spawned++;
-    try{ if(typeof window.msg==='function') window.msg('Niebo przecina meteoryt...'); }catch(e){}
+    classCountBump(profile);
+    alertSirenForMeteor(m,getTile);
+    try{ if(typeof window.msg==='function') window.msg('Niebo przecina meteoryt '+profile.label+'...'); }catch(e){}
     return m;
   }
   function destroyFlyThroughTile(x,y,t,getTile,setTile,intensity){
@@ -928,14 +1661,14 @@ const meteorites = (function(){
         emitWaterImpactFx(m.x,m.y,m.intensity);
       }
       if(ty>=WORLD_H-3 || (ty>=1 && meteorGroundTile(t))){
-        impactAt(m.x,m.y,getTile,setTile,m.intensity,null,{waterHit:m.waterHit});
+        impactAt(m.x,m.y,getTile,setTile,m.intensity,null,{waterHit:m.waterHit,classId:m.classId,deflected:!!m.deflected});
         return true;
       }
       destroyFlyThroughTile(tx,ty,t,getTile,setTile,m.intensity);
       if(m.life<=0){
         const rt=m.redirectTarget;
-        if(rt && Number.isFinite(rt.x) && Number.isFinite(rt.y)) impactAt(rt.x,rt.y,getTile,setTile,m.intensity,null,{waterHit:m.waterHit});
-        else impactAt(m.x,m.y,getTile,setTile,m.intensity,null,{waterHit:m.waterHit});
+        if(rt && Number.isFinite(rt.x) && Number.isFinite(rt.y)) impactAt(rt.x,rt.y,getTile,setTile,m.intensity,null,{waterHit:m.waterHit,classId:m.classId,deflected:!!m.deflected});
+        else impactAt(m.x,m.y,getTile,setTile,m.intensity,null,{waterHit:m.waterHit,classId:m.classId,deflected:!!m.deflected});
         return true;
       }
       const pl=player || (typeof window!=='undefined' ? window.player : null);
@@ -956,6 +1689,23 @@ const meteorites = (function(){
     if(lastDeflection){
       lastDeflection.t+=dt;
       if(lastDeflection.t>7) lastDeflection=null;
+    }
+    if(lastSirenAlert){
+      lastSirenAlert.t+=dt;
+      if(lastSirenAlert.t>9) lastSirenAlert=null;
+    }
+    if(lastScan && lastScan.t!=null){
+      lastScan.t+=dt;
+      if(lastScan.t>18) lastScan=null;
+    }
+    if(lastConsequence && lastConsequence.t!=null){
+      lastConsequence.t+=dt;
+      if(lastConsequence.t>18) lastConsequence=null;
+    }
+    for(let i=sirenPulses.length-1;i>=0;i--){
+      const s=sirenPulses[i];
+      s.life+=dt;
+      if(s.life>=s.max) sirenPulses.splice(i,1);
     }
     for(let i=beaconWaves.length-1;i>=0;i--){
       const w=beaconWaves[i];
@@ -1023,6 +1773,8 @@ const meteorites = (function(){
     }
     applyGravityBurstToPlayer(dt,player || (typeof window!=='undefined' ? window.player : null));
     applyTerrainJobs(getTile,setTile);
+    updateCraterLakes(dt,getTile,setTile);
+    updateCraterEcology(dt,getTile,setTile);
     updateFx(dt);
   }
   function tileVisibleFn(canDrawTile){
@@ -1030,19 +1782,20 @@ const meteorites = (function(){
     return (x,y)=> !visible || visible(Math.floor(x),Math.max(0,Math.min(WORLD_H-1,Math.floor(y))));
   }
   function drawMeteor(ctx,TILE,m){
+    const profile=classProfile(m && m.classId);
     const ang=Math.atan2(m.vy,m.vx);
     ctx.save();
     ctx.globalCompositeOperation='lighter';
     for(let i=m.trail.length-1;i>0;i--){
       const a=m.trail[i], b=m.trail[i-1];
       const k=i/m.trail.length;
-      ctx.strokeStyle='rgba(255,110,26,'+(0.08+0.34*k)+')';
+      ctx.strokeStyle=(profile.trailOuter||'rgba(255,110,26,')+(0.08+0.34*k)+')';
       ctx.lineWidth=TILE*(0.10+0.42*k);
       ctx.beginPath();
       ctx.moveTo(a.x*TILE,a.y*TILE);
       ctx.lineTo(b.x*TILE,b.y*TILE);
       ctx.stroke();
-      ctx.strokeStyle='rgba(255,232,120,'+(0.10+0.28*k)+')';
+      ctx.strokeStyle=(profile.trailInner||'rgba(255,232,120,')+(0.10+0.28*k)+')';
       ctx.lineWidth=TILE*(0.035+0.13*k);
       ctx.beginPath();
       ctx.moveTo(a.x*TILE,a.y*TILE);
@@ -1052,17 +1805,17 @@ const meteorites = (function(){
     const px=m.x*TILE, py=m.y*TILE;
     const glowR=TILE*2.4;
     const glow=ctx.createRadialGradient(px,py,1,px,py,glowR);
-    glow.addColorStop(0,'rgba(255,255,236,0.95)');
-    glow.addColorStop(0.18,'rgba(255,216,91,0.86)');
-    glow.addColorStop(0.48,'rgba(255,78,22,0.42)');
+    glow.addColorStop(0,profile.glow1 || 'rgba(255,255,236,0.95)');
+    glow.addColorStop(0.18,profile.glow2 || 'rgba(255,216,91,0.86)');
+    glow.addColorStop(0.48,profile.glow3 || 'rgba(255,78,22,0.42)');
     glow.addColorStop(1,'rgba(255,24,0,0)');
     ctx.fillStyle=glow;
     ctx.beginPath(); ctx.arc(px,py,glowR,0,Math.PI*2); ctx.fill();
     ctx.translate(px,py);
     ctx.rotate(ang);
-    ctx.fillStyle='#fff7c9';
+    ctx.fillStyle=profile.body || '#fff7c9';
     ctx.beginPath(); ctx.ellipse(0,0,TILE*0.42,TILE*0.30,0,0,Math.PI*2); ctx.fill();
-    ctx.fillStyle='#ff6a21';
+    ctx.fillStyle=profile.core || '#ff6a21';
     ctx.beginPath(); ctx.ellipse(-TILE*0.08,TILE*0.04,TILE*0.34,TILE*0.22,0,0,Math.PI*2); ctx.fill();
     ctx.strokeStyle='rgba(60,22,14,0.68)';
     ctx.lineWidth=2;
@@ -1128,6 +1881,34 @@ const meteorites = (function(){
     ctx.stroke();
     ctx.restore();
   }
+  function drawSirenPulse(ctx,TILE,s){
+    const age=clamp(s.life/s.max,0,1);
+    const alpha=Math.pow(1-age,1.2);
+    const cx=s.x*TILE, cy=s.y*TILE;
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
+    for(let i=0;i<3;i++){
+      const phase=(age+i*0.22)%1;
+      const r=TILE*(0.55+phase*4.8);
+      ctx.strokeStyle='rgba(255,159,69,'+(alpha*(1-phase)*0.58)+')';
+      ctx.lineWidth=1.8-i*0.25;
+      ctx.beginPath();
+      ctx.arc(cx,cy,r,0,Math.PI*2);
+      ctx.stroke();
+    }
+    if(Number.isFinite(s.mx) && Number.isFinite(s.my)){
+      const mx=s.mx*TILE, my=s.my*TILE;
+      const dash=8+Math.sin(age*18+s.phase)*3;
+      ctx.strokeStyle='rgba(255,225,120,'+(0.42*alpha)+')';
+      ctx.lineWidth=1.2;
+      if(ctx.setLineDash) ctx.setLineDash([dash,6]);
+      ctx.beginPath();
+      ctx.moveTo(cx,cy);
+      ctx.lineTo(mx,my);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
   function drawGravityBurst(ctx,TILE,b){
     const age=clamp(b.life/b.max,0,1);
     const alpha=Math.sin(Math.PI*age);
@@ -1160,14 +1941,88 @@ const meteorites = (function(){
     }
     ctx.restore();
   }
+  function drawCraterEcology(ctx,TILE,c){
+    const eco=c && c.ecology;
+    const score=craterEcologyScore(eco);
+    if(score<=0) return;
+    const px=c.x*TILE, py=(c.y+0.45)*TILE;
+    const r=clamp(c.r|0,6,32)*TILE;
+    const pulse=Math.sin((typeof performance!=='undefined'?performance.now():0)*0.0017 + c.x*0.13)*0.5+0.5;
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
+    if(eco.kind==='glow'){
+      const a=Math.min(0.34,0.09+score*0.018);
+      const g=ctx.createRadialGradient(px,py,1,px,py,r*(0.72+score*0.015));
+      g.addColorStop(0,'rgba(155,255,90,'+(a*0.95)+')');
+      g.addColorStop(0.42,'rgba(90,230,70,'+(a*0.45)+')');
+      g.addColorStop(1,'rgba(90,230,70,0)');
+      ctx.fillStyle=g;
+      ctx.beginPath(); ctx.ellipse(px,py,r*0.82,r*0.28,0,0,Math.PI*2); ctx.fill();
+      for(let i=0;i<Math.min(9,2+eco.glow);i++){
+        const dx=((i*37)%17-8)/9*r*0.44;
+        const dy=((i*19)%11-5)/10*r*0.18;
+        ctx.fillStyle='rgba(190,255,120,'+(0.20+0.16*pulse)+')';
+        ctx.fillRect(px+dx,py+dy,Math.max(1.5,TILE*0.10),Math.max(1.5,TILE*0.10));
+      }
+    } else if(eco.kind==='alien'){
+      ctx.strokeStyle='rgba(122,238,108,'+(0.18+0.10*pulse)+')';
+      ctx.lineWidth=1.2;
+      for(let i=0;i<Math.min(10,2+eco.stage+eco.plants);i++){
+        const a=i*2.399+c.x*0.07;
+        const rr=r*(0.18+((i*11)%13)/22);
+        const x=px+Math.cos(a)*rr;
+        const y=py+Math.sin(a)*rr*0.28;
+        ctx.beginPath();
+        ctx.moveTo(x,y);
+        ctx.quadraticCurveTo(x+Math.sin(a)*TILE*0.30,y-TILE*(0.35+pulse*0.22),x+Math.cos(a)*TILE*0.18,y-TILE*(0.62+pulse*0.28));
+        ctx.stroke();
+      }
+    } else if(eco.kind==='steam'){
+      for(let i=0;i<Math.min(7,1+eco.vents);i++){
+        const x=px+(((i*29)%17)-8)/8*r*0.34;
+        const y=py-r*0.10;
+        ctx.strokeStyle='rgba(205,240,255,'+(0.16+0.12*pulse)+')';
+        ctx.lineWidth=1.4;
+        ctx.beginPath();
+        ctx.moveTo(x,y);
+        ctx.bezierCurveTo(x+TILE*0.22,y-TILE*0.45,x-TILE*0.18,y-TILE*0.85,x+TILE*0.10,y-TILE*1.18);
+        ctx.stroke();
+      }
+    } else if(eco.kind==='mineral'){
+      ctx.strokeStyle='rgba(190,216,230,'+Math.min(0.28,0.08+eco.minerals*0.025)+')';
+      ctx.lineWidth=1.1;
+      for(let i=0;i<Math.min(8,eco.minerals);i++){
+        const x=px+(((i*31)%19)-9)/10*r*0.42;
+        const y=py+(((i*13)%7)-3)/8*r*0.16;
+        ctx.beginPath();
+        ctx.moveTo(x-TILE*0.15,y+TILE*0.10);
+        ctx.lineTo(x+TILE*0.15,y-TILE*0.10);
+        ctx.moveTo(x+TILE*0.10,y+TILE*0.12);
+        ctx.lineTo(x+TILE*0.24,y-TILE*0.04);
+        ctx.stroke();
+      }
+    } else if(eco.kind==='lake'){
+      if((c.water|0)>0 || c.filled){
+        ctx.fillStyle='rgba(80,160,255,'+(0.10+Math.min(0.18,(c.water||0)*0.006))+')';
+        ctx.beginPath(); ctx.ellipse(px,py,r*0.50,r*0.16,0,0,Math.PI*2); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
   function draw(ctx,TILE,canDrawTile){
     const tileVisible=tileVisibleFn(canDrawTile);
     ctx.save();
+    for(const c of craterRecords){
+      if(c && tileVisible(c.x,c.y)) drawCraterEcology(ctx,TILE,c);
+    }
     for(const s of scorches){
       if(tileVisible(s.x,s.y)) drawScorch(ctx,TILE,s);
     }
     for(const b of gravityBursts){
       if(tileVisible(b.x,b.y)) drawGravityBurst(ctx,TILE,b);
+    }
+    for(const s of sirenPulses){
+      if(tileVisible(s.x,s.y) || (Number.isFinite(s.mx) && tileVisible(s.mx,s.my))) drawSirenPulse(ctx,TILE,s);
     }
     for(const w of beaconWaves){
       if(tileVisible(w.x0,w.y0) || tileVisible(w.x1,w.y1)) drawBeaconWave(ctx,TILE,w);
@@ -1206,7 +2061,13 @@ const meteorites = (function(){
     for(const e of embers){
       if(!tileVisible(e.x,e.y)) continue;
       const alpha=1-e.life/e.max;
-      ctx.fillStyle=e.hue==='white' ? 'rgba(255,255,230,'+(0.95*alpha)+')' : (e.hue==='gold' ? 'rgba(255,214,82,'+(0.86*alpha)+')' : 'rgba(255,91,28,'+(0.78*alpha)+')');
+      ctx.fillStyle=e.hue==='white' ? 'rgba(255,255,230,'+(0.95*alpha)+')' :
+        (e.hue==='gold' ? 'rgba(255,214,82,'+(0.86*alpha)+')' :
+        (e.hue==='iridium' ? 'rgba(184,215,255,'+(0.82*alpha)+')' :
+        (e.hue==='ice' ? 'rgba(157,238,255,'+(0.78*alpha)+')' :
+        (e.hue==='radioactive' ? 'rgba(138,255,79,'+(0.80*alpha)+')' :
+        (e.hue==='antimatter' ? 'rgba(211,107,255,'+(0.84*alpha)+')' :
+        (e.hue==='biological' ? 'rgba(121,201,93,'+(0.78*alpha)+')' : 'rgba(255,91,28,'+(0.78*alpha)+')'))))));
       const s=Math.max(1.2,e.size*TILE);
       ctx.fillRect(e.x*TILE-s*0.5,e.y*TILE-s*0.5,s,s);
     }
@@ -1257,9 +2118,11 @@ const meteorites = (function(){
     scorches.length=0;
     beaconWaves.length=0;
     gravityBursts.length=0;
+    sirenPulses.length=0;
     screenFlash=0;
     lastImpact=null;
     lastDeflection=null;
+    lastSirenAlert=null;
     shakeT=0;
     shakeMax=0;
     shakeAmp=0;
@@ -1277,18 +2140,99 @@ const meteorites = (function(){
     return true;
   }
   function snapshot(){
-    return {v:2,enabled,nextIn:+Math.max(0,nextIn).toFixed(2),spawned,impacts,deflections};
+    return {
+      v:4,
+      enabled,
+      nextIn:+Math.max(0,nextIn).toFixed(2),
+      spawned,
+      impacts,
+      deflections,
+      sirenAlerts,
+      craterLakeOps,
+      craterEcologyOps,
+      meteorMutations,
+      classCounts:copyClassCounts(),
+      consequenceCounts:copyConsequenceCounts(),
+      craters:craterRecords.map(c=>({
+        x:c.x,y:c.y,r:c.r,classId:c.classId,label:c.label,site:c.site,redirected:!!c.redirected,
+        rain:+Math.max(0,c.rain||0).toFixed(2),water:c.water|0,filled:!!c.filled,age:+Math.max(0,c.age||0).toFixed(1),cursor:c.cursor|0,
+        eco:packCraterEcology(c.ecology)
+      })).slice(-MAX_CRATER_RECORDS),
+      consequences:impactConsequences.map(c=>({
+        x:c.x,y:c.y,classId:c.classId,label:c.label,site:c.site,severity:c.severity|0,message:c.message,t:+Math.max(0,c.t||0).toFixed(1)
+      })).slice(-MAX_IMPACT_CONSEQUENCES)
+    };
   }
   function restore(data){
     clearActive();
     terrainJobs.length=0;
     beaconIndex.clear();
+    sirenIndex.clear();
+    craterRecords.length=0;
+    impactConsequences.length=0;
+    lastScan=null;
+    lastConsequence=null;
+    sirenAlerts=0;
+    craterLakeOps=0;
+    craterEcologyOps=0;
+    meteorMutations=0;
+    lakeCursor=0;
+    ecologyCursor=0;
+    ecologyBudgetAcc=0;
+    ecologyTime=0;
+    resetClassCounts();
+    resetConsequenceCounts();
     if(data && typeof data==='object'){
       enabled=data.enabled===true;
       nextIn=loadedNextIn(data);
       spawned=Math.max(0,(data.spawned|0)||0);
       impacts=Math.max(0,(data.impacts|0)||0);
       deflections=Math.max(0,(data.deflections|0)||0);
+      sirenAlerts=Math.max(0,(data.sirenAlerts|0)||0);
+      craterLakeOps=Math.max(0,(data.craterLakeOps|0)||0);
+      craterEcologyOps=Math.max(0,(data.craterEcologyOps|0)||0);
+      meteorMutations=Math.max(0,(data.meteorMutations|0)||0);
+      resetClassCounts(data.classCounts);
+      resetConsequenceCounts(data.consequenceCounts);
+      if(Array.isArray(data.craters)){
+        for(const raw of data.craters.slice(-MAX_CRATER_RECORDS)){
+          if(!raw || !Number.isFinite(raw.x) || !Number.isFinite(raw.y)) continue;
+          const profile=classProfile(raw.classId);
+          craterRecords.push({
+            x:+raw.x,
+            y:+raw.y,
+            r:clamp((raw.r|0)||12,6,32),
+            classId:profile.id,
+            label:profile.label,
+            site:typeof raw.site==='string' ? raw.site.slice(0,24) : 'wildlands',
+            redirected:raw.redirected===true,
+            rain:Math.max(0,Number(raw.rain)||0),
+            water:Math.max(0,(raw.water|0)||0),
+            filled:raw.filled===true,
+            age:Math.max(0,Number(raw.age)||0),
+            cursor:Math.max(0,(raw.cursor|0)||0),
+            ecology:makeCraterEcology(profile,raw.eco || raw.ecology)
+          });
+        }
+      }
+      if(Array.isArray(data.consequences)){
+        for(const raw of data.consequences.slice(-MAX_IMPACT_CONSEQUENCES)){
+          if(!raw || !Number.isFinite(raw.x) || !Number.isFinite(raw.y)) continue;
+          const profile=classProfile(raw.classId);
+          const site=consequenceCounts[raw.site]!=null ? raw.site : 'wildlands';
+          impactConsequences.push({
+            x:+raw.x,
+            y:+raw.y,
+            classId:profile.id,
+            label:profile.label,
+            site,
+            severity:consequenceSeverity(site),
+            message:typeof raw.message==='string' && raw.message.length<=180 ? raw.message : consequenceMessage(site,profile),
+            t:Math.max(0,Number(raw.t)||0)
+          });
+        }
+        if(impactConsequences.length) lastConsequence=impactConsequences[impactConsequences.length-1];
+      }
     }
     if(!(nextIn>0)) rollNext();
     saveSettings();
@@ -1298,6 +2242,24 @@ const meteorites = (function(){
     clearActive();
     terrainJobs.length=0;
     beaconIndex.clear();
+    sirenIndex.clear();
+    craterRecords.length=0;
+    impactConsequences.length=0;
+    lastScan=null;
+    lastConsequence=null;
+    sirenAlerts=0;
+    craterLakeOps=0;
+    craterEcologyOps=0;
+    meteorMutations=0;
+    lakeCursor=0;
+    ecologyCursor=0;
+    ecologyBudgetAcc=0;
+    ecologyTime=0;
+    resetClassCounts();
+    resetConsequenceCounts();
+    spawned=0;
+    impacts=0;
+    deflections=0;
     rollNext();
     saveSettings();
   }
@@ -1318,13 +2280,28 @@ const meteorites = (function(){
       plumes:plumes.length,
       beaconWaves:beaconWaves.length,
       gravityBursts:gravityBursts.length,
+      sirenPulses:sirenPulses.length,
       beacons:beaconIndex.size,
+      sirens:sirenIndex.size,
+      craters:craterRecords.length,
+      lakeCraters:craterRecords.filter(c=>c && (c.water>0 || c.filled)).length,
+      ecologyCraters:activeEcologyCraters(),
+      impactConsequences:impactConsequences.length,
+      consequenceCounts:copyConsequenceCounts(),
+      craterLakeOps,
+      craterEcologyOps,
+      meteorMutations,
       impacts,
       deflections,
+      sirenAlerts,
       spawned,
       shake:+Math.max(0,shakeT).toFixed(2),
       lastImpact,
-      lastDeflection
+      lastDeflection,
+      lastSirenAlert,
+      lastScan,
+      lastConsequence,
+      classCounts:copyClassCounts()
     };
   }
   function isChunkBusy(cx){
@@ -1350,7 +2327,9 @@ const meteorites = (function(){
     restore,
     metrics,
     isChunkBusy,
-    _debug:{impactAt,queueCrater,applyTerrainJobs,pickTarget,nearestBeacon,beaconIndex,meteors,terrainJobs,embers,debris,plumes,beaconWaves,gravityBursts,shockwaves,scorches}
+    scanNearestCrater,
+    triggerAntimatterBurst,
+    _debug:{impactAt,queueCrater,applyTerrainJobs,pickTarget,nearestBeacon,nearestSiren,beaconIndex,sirenIndex,meteors,terrainJobs,embers,debris,plumes,beaconWaves,gravityBursts,sirenPulses,shockwaves,scorches,craterRecords,impactConsequences,METEOR_CLASSES,scanNearestCrater,updateCraterLakes,updateCraterEcology,runCraterEcologyStep}
   };
   MM.meteorites=api;
   return api;

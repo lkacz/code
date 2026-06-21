@@ -126,6 +126,7 @@ fallingSolids.draw(rememberedFallingCtx,20,(x,y)=>x===4 && y===4);
 assert.ok(rememberedFallingCtx.calls.includes('fillRect'), 'remembered falling solids still draw');
 
 globalThis.MM.inventory = { equippedItem(){ return {kind:'weapon', weaponType:'bow', tier:'common', attackDamage:2}; } };
+globalThis.inv = { arrowWood:1 };
 weapons.reset();
 weapons.fireHeld({x:5,y:5,facing:1}, 10, 5, 0.016);
 const undiscoveredWeaponCtx = makeCtx();
@@ -160,12 +161,12 @@ assert.match(mainSource, /const TERRAIN_PATTERN_VARIANTS = 6;/, 'terrain rendere
 assert.match(mainSource, /function terrainTextureVariant\(t,wx,y,h\)/, 'terrain texture variants are chosen from world coordinates');
 assert.match(mainSource, /\(patch \^ \(h>>>7\) \^ \(t\*97\)\)>>>0/, 'terrain texture variant hashes stay unsigned');
 assert.match(mainSource, /function drawTerrainPattern\(g,t,px,py,wx,y,h\)/, 'chunk renderer has a cached terrain pattern pass');
-assert.match(mainSource, /if\(t===T\.STONE && \(h&1\)\) return;/, 'stone texture pass is budgeted for large underground masses');
-assert.match(mainSource, /return t===T\.SAND \|\| t===T\.STONE \|\| t===T\.COAL;/, 'sand, stone and coal opt into characteristic pattern textures');
+assert.match(mainSource, /t===T\.STONE \|\| t===T\.GRANITE \|\| t===T\.BASALT \|\| t===T\.BEDROCK/, 'hard-rock texture pass is budgeted for large underground masses');
+assert.match(mainSource, /return t===T\.SAND \|\| t===T\.DIRT \|\| t===T\.STONE \|\| t===T\.GRANITE \|\| t===T\.BASALT \|\| t===T\.BEDROCK \|\| t===T\.COAL;/, 'sand, dirt, rock and coal opt into characteristic pattern textures');
 assert.match(mainSource, /drawTerrainPattern\(cctx,t,lx\*TILE,y\*TILE,wx,y,h\);/, 'visible chunk cache draws terrain patterns for real world tiles');
 assert.match(mainSource, /g\.drawImage\(terrainPatternCanvas\(t,variant\),px,py\);/, 'terrain patterns are blitted from a small cached atlas');
 const sandBranchStart = mainSource.indexOf('} else if(t===T.SAND){');
-const sandBranchEnd = mainSource.indexOf('} else if(t===T.STONE){', sandBranchStart);
+const sandBranchEnd = mainSource.indexOf('} else if(t===T.DIRT){', sandBranchStart);
 assert.ok(sandBranchStart > 0 && sandBranchEnd > sandBranchStart, 'sand material branch is present');
 const sandBranch = mainSource.slice(sandBranchStart, sandBranchEnd);
 assert.ok(!sandBranch.includes('drawBlockBevel'), 'sand does not draw explicit tile-grid bevels');
@@ -174,6 +175,10 @@ assert.match(mainSource, /function smoothTerrainNoise\(wx,y,scale\)/, 'continuou
 assert.match(mainSource, /function isContinuousTerrainTile\(t\)/, 'renderer can classify terrain that should not show per-tile borders');
 assert.match(mainSource, /if\(isContinuousTerrainTile\(t\)\)/, 'terrain shade avoids per-cell random jitter for natural masses');
 assert.match(mainSource, /if\(t===T\.SAND\) return 4;/, 'sand shade variance stays low enough to avoid block grid patches');
+assert.match(mainSource, /if\(t===T\.DIRT\) return 5;/, 'dirt has a restrained continuous shade variance');
+assert.match(mainSource, /if\(t===T\.GRANITE\) return 6;/, 'granite has its own shade variance');
+assert.match(mainSource, /if\(t===T\.BASALT\) return 5;/, 'basalt has its own shade variance');
+assert.match(mainSource, /if\(t===T\.BEDROCK\) return 4;/, 'bedrock has a dark low-variance texture');
 const snowBranchStart = mainSource.indexOf('if(t===T.SNOW){');
 const snowBranchEnd = mainSource.indexOf('// Ice reads glossy', snowBranchStart);
 assert.ok(snowBranchStart > 0 && snowBranchEnd > snowBranchStart, 'snow chunk styling branch is present');
