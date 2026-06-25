@@ -227,10 +227,13 @@
     colors:{cape:'#b91818', outfit:'#f4c05a'},
     bag:[],            // dynamic loot items collected from chests
     discarded:new Set(), // ids the player threw away (never re-added by loot sync)
-    shortcutOff:new Set() // weapon ids excluded from number-key cycling (opt-out: new loot joins its category automatically)
+    shortcutOff:new Set(), // weapon ids excluded from number-key cycling (opt-out: new loot joins its category automatically)
+    newItems:new Set() // looted items not yet acknowledged in the inventory UI
   };
   const extraItems=[]; // runtime-registered items (mods/extensions)
   const MAX_BAG=300, MAX_DISCARDED=1000; // localStorage quota guards for long-lived saves
+  const discardUndo=[]; // session-only safety net for accidental item deletion
+  const DISCARD_UNDO_LIMIT=20;
 
   // Loot items come from localStorage (bag + dynamic-loot keys) — whitelist their
   // fields on ingest so tampered/corrupt entries can't smuggle objects or markup
@@ -253,14 +256,13 @@
     });
     return it;
   }
-  function pushToBag(item){
+  function pushToBag(item, opts){
+    opts=opts||{};
     if(state.bag.length>=MAX_BAG){
-      // evict the oldest non-equipped item; if everything is equipped (absurd), refuse
-      const idx=state.bag.findIndex(b=>!SLOTS.some(s=>state.equipped[s.id]===b.id));
-      if(idx<0) return false;
-      state.bag.splice(idx,1);
+      return false;
     }
     state.bag.push(item);
+    if(opts.markNew!==false) state.newItems.add(item.id);
     return true;
   }
 
@@ -398,7 +400,8 @@
       colors:Object.assign({}, state.colors),
       bag:state.bag.map(i=>Object.assign({}, i)),
       discarded:[...state.discarded],
-      shortcutOff:[...state.shortcutOff]
+      shortcutOff:[...state.shortcutOff],
+      newItems:[...state.newItems]
     };
   }
   function restoreSnapshot(src, opts){
@@ -426,6 +429,12 @@
     state.shortcutOff=new Set();
     if(Array.isArray(src.shortcutOff)){
       src.shortcutOff.slice(0,MAX_DISCARDED).forEach(id=>{ if(typeof id==='string' && id.length<=96) state.shortcutOff.add(id); });
+    }
+    state.newItems=new Set();
+    if(Array.isArray(src.newItems)){
+      src.newItems.slice(0,MAX_DISCARDED).forEach(id=>{
+        if(typeof id==='string' && id.length<=96 && state.bag.some(i=>i.id===id)) state.newItems.add(id);
+      });
     }
     ensureValid();
     syncCustomization();
@@ -468,13 +477,7 @@
     if(!raw){ migrateLegacy(); return; }
     try{
       const d=JSON.parse(raw);
-      if(d && typeof d==='object'){
-        if(d.equipped && typeof d.equipped==='object') Object.assign(state.equipped, d.equipped);
-        if(d.colors && typeof d.colors==='object') Object.assign(state.colors, d.colors);
-        if(Array.isArray(d.bag)) state.bag=d.bag.map(i=>sanitizeLootItem(i)).filter(Boolean).slice(0,MAX_BAG);
-        if(Array.isArray(d.discarded)) d.discarded.forEach(id=>{ if(typeof id==='string') state.discarded.add(id); });
-        if(Array.isArray(d.shortcutOff)) d.shortcutOff.forEach(id=>{ if(typeof id==='string') state.shortcutOff.add(id); });
-      }
+      if(d && typeof d==='object') restoreSnapshot(d,{persist:false,silent:true});
     }catch(e){ migrateLegacy(); }
   }
 
@@ -491,6 +494,7 @@
     const slot=slotFor(item.kind); if(!slot) return false;
     if(state.equipped[slot.id]===itemId) return true;
     state.equipped[slot.id]=itemId;
+    state.newItems.delete(itemId);
     notifyChange({key:slot.id, value:itemId});
     return true;
   }
@@ -506,7 +510,10 @@
     const item=findItem(itemId); if(!item) return false;
     const builtin=BUILTIN_ITEMS.some(i=>i.id===itemId);
     if(builtin) return false; // built-in gear can't be thrown away
+    discardUndo.unshift(Object.assign({}, item));
+    if(discardUndo.length>DISCARD_UNDO_LIMIT) discardUndo.length=DISCARD_UNDO_LIMIT;
     state.discarded.add(itemId);
+    state.newItems.delete(itemId);
     state.shortcutOff.delete(itemId); // a discarded weapon must not pin its id in the opt-out set forever
     // FIFO cap (Sets iterate in insertion order): ids of long-gone loot expire first
     if(state.discarded.size>MAX_DISCARDED){ state.discarded.delete(state.discarded.values().next().value); }
@@ -524,6 +531,103 @@
     notifyChange({key:'discard', value:itemId});
     return true;
   }
+  function dynamicLootKeyForKind(kind){
+    return kind==='cape'?'capes':kind==='eyes'?'eyes':kind==='outfit'?'outfits':kind==='weapon'?'weapons':kind==='charm'?'charms':null;
+  }
+  function restoreDynamicLootItem(item){
+    const key=dynamicLootKeyForKind(item && item.kind);
+    if(!key) return;
+    if(!MM.dynamicLoot) MM.dynamicLoot={capes:[],eyes:[],outfits:[],weapons:[],charms:[]};
+    if(!Array.isArray(MM.dynamicLoot[key])) MM.dynamicLoot[key]=[];
+    if(!MM.dynamicLoot[key].some(i=>i && i.id===item.id)) MM.dynamicLoot[key].push(Object.assign({}, item));
+    if(MM.chests && MM.chests.saveDynamicLoot) MM.chests.saveDynamicLoot();
+  }
+  function undoDiscard(){
+    while(discardUndo.length){
+      const item=discardUndo.shift();
+      if(!item || !item.id || BUILTIN_ITEMS.some(i=>i.id===item.id)) continue;
+      if(findItem(item.id)) return true;
+      if(state.bag.length>=MAX_BAG){
+        discardUndo.unshift(item);
+        return false;
+      }
+      state.discarded.delete(item.id);
+      if(!state.bag.some(i=>i.id===item.id)) state.bag.push(Object.assign({}, item));
+      restoreDynamicLootItem(item);
+      ensureValid();
+      notifyChange({key:'undoDiscard', value:item.id});
+      return true;
+    }
+    return false;
+  }
+  function discardUndoCount(){ return discardUndo.length; }
+  function isNew(itemId){ return state.newItems.has(itemId); }
+  function markSeen(ids){
+    const before=state.newItems.size;
+    if(Array.isArray(ids)) ids.forEach(id=>state.newItems.delete(id));
+    else if(typeof ids==='string') state.newItems.delete(ids);
+    else state.newItems.clear();
+    if(state.newItems.size!==before) notifyChange({key:'seen'});
+  }
+  function capacity(){
+    return {
+      used:state.bag.filter(i=>!state.discarded.has(i.id)).length,
+      max:MAX_BAG,
+      free:Math.max(0, MAX_BAG-state.bag.length),
+      full:state.bag.length>=MAX_BAG,
+      warning:state.bag.length>=Math.floor(MAX_BAG*0.9)
+    };
+  }
+  function comparableItems(item, opts){
+    opts=opts||{};
+    if(!item) return [];
+    const itemCat=item.kind==='weapon' ? weaponCategory(item) : null;
+    return itemsOfKind(item.kind).filter(other=>{
+      if(!opts.includeSelf && other.id===item.id) return false;
+      if(item.kind!=='weapon') return true;
+      const otherCat=weaponCategory(other);
+      return !!(itemCat && otherCat && itemCat.id===otherCat.id);
+    });
+  }
+  function compareItem(input){
+    const item=typeof input==='string' ? findItem(input) : input;
+    if(!item) return null;
+    const slot=slotFor(item.kind);
+    const score=itemScore(item);
+    const itemCat=item.kind==='weapon' ? weaponCategory(item) : null;
+    const equipped=slot ? findItem(state.equipped[slot.id]) : null;
+    const equippedComparable=!!(equipped && (item.kind!=='weapon' || (itemCat && weaponCategory(equipped) && weaponCategory(equipped).id===itemCat.id)));
+    const bestExisting=comparableItems(item).sort((a,b)=>itemScore(b)-itemScore(a))[0]||null;
+    const equippedScore=equippedComparable ? itemScore(equipped) : null;
+    const bestScore=bestExisting ? itemScore(bestExisting) : null;
+    const equippedDelta=equippedScore==null ? null : score-equippedScore;
+    const bestDelta=bestScore==null ? null : score-bestScore;
+    let verdict='newOption';
+    if(bestExisting && bestDelta<0) verdict='belowBest';
+    else if(bestExisting && bestDelta===0) verdict='matchesBest';
+    else if(bestDelta==null || bestDelta>0) verdict='newBest';
+    if(verdict!=='newBest' && equippedDelta!=null && equippedDelta>0) verdict='equippedUpgrade';
+    return {
+      item,
+      score,
+      slotId:slot?slot.id:null,
+      groupId:item.kind==='weapon' && itemCat ? 'weapon:'+itemCat.id : item.kind,
+      groupLabel:item.kind==='weapon' && itemCat ? itemCat.label : ((slot && slot.label) || KIND_LABELS[item.kind] || item.kind),
+      equipped,
+      equippedComparable,
+      equippedScore,
+      equippedDelta,
+      bestExisting,
+      bestScore,
+      bestDelta,
+      isNewBest:bestDelta==null || bestDelta>0,
+      isEquippedUpgrade:equippedDelta!=null && equippedDelta>0,
+      verdict
+    };
+  }
+  function newItems(){
+    return state.bag.filter(i=>!state.discarded.has(i.id) && state.newItems.has(i.id));
+  }
   function setColor(which,color){
     if(which!=='cape' && which!=='outfit') return;
     if(typeof color!=='string') return;
@@ -539,8 +643,9 @@
   // --- Dynamic loot sync: chests.js fills MM.dynamicLoot; merge new items into the bag ---
   const DYN_KIND_MAP={capes:'cape', eyes:'eyes', outfits:'outfit', weapons:'weapon', charms:'charm'};
   function syncDynamicLoot(){
-    const dl=MM.dynamicLoot; if(!dl) return;
+    const dl=MM.dynamicLoot; if(!dl) return {added:0, blocked:0};
     let added=0;
+    let blocked=0;
     Object.keys(DYN_KIND_MAP).forEach(k=>{
       const arr=dl[k]; if(!Array.isArray(arr)) return;
       arr.forEach(raw=>{
@@ -549,9 +654,14 @@
         if(state.discarded.has(it.id)) return;
         if(findItem(it.id)) return;
         if(pushToBag(it)) added++;
+        else blocked++;
       });
     });
-    if(added){ save(); try{ window.dispatchEvent(new CustomEvent('mm-inventory-change',{detail:{key:'loot', added}})); }catch(e){ /* no-op */ } }
+    if(added || blocked){
+      if(added) save();
+      try{ window.dispatchEvent(new CustomEvent('mm-inventory-change',{detail:{key:'loot', added, blocked}})); }catch(e){ /* no-op */ }
+    }
+    return {added, blocked};
   }
   window.updateDynamicCustomization=syncDynamicLoot;
 
@@ -616,7 +726,8 @@
     bagItems:()=>state.bag.filter(i=>!state.discarded.has(i.id)),
     getItem:findItem,
     isBuiltin:(id)=>BUILTIN_ITEMS.some(i=>i.id===id),
-    equip, unequip, discard, registerItem, registerModifierSource,
+    equip, unequip, discard, undoDiscard, discardUndoCount, registerItem, registerModifierSource,
+    isNew, markSeen, newItems, capacity, compareItem,
     equippedId:(slotId)=>state.equipped[slotId]||null,
     equippedItem:(slotId)=>findItem(state.equipped[slotId]),
     isEquipped:(itemId)=>SLOTS.some(s=>state.equipped[s.id]===itemId),

@@ -396,6 +396,34 @@ assert.equal(getTile(0, 10), T.LEAF, 'spring scan-now also restores autumn leave
   Object.assign(seasons.config, savedCfg);
 }
 
+{
+  const savedCfg = Object.assign({}, seasons.config);
+  resetTiles();
+  Object.assign(seasons.config, {
+    autoTerrainEffects: true,
+    terrainAllowVisibleCommits: false,
+    terrainPlanRadius: 12,
+    terrainPlanColsPerTick: 25,
+    terrainPlanMaxCandidatesPerTick: 8,
+    terrainApplyInterval: 0.01,
+    terrainApplyOpsPerTick: 1,
+    terrainApplyVisibleInterval: 0.01,
+    terrainVisibleMarginTiles: 67,
+  });
+  setTile(0, 10, T.WATER);
+  setTile(0, 11, T.STONE);
+  seasons.forceSeason('winter');
+  const visibleCtx = {viewport:{x0:-8,y0:0,x1:8,y1:22}, inputActive:false};
+  seasons.update(0.25, getTile, setTile, {x:4, y:30}, visibleCtx);
+  assert.equal(getTile(0, 10), T.WATER, 'season terrain work does not commit visible chunk-invalidating changes by default');
+  assert.ok(seasons.metrics().terrain.queued >= 1, 'visible terrain work remains queued for offscreen application');
+  assert.ok(seasons.metrics().terrain.visibleSkipped >= 1, 'season metrics expose visible terrain skips');
+  seasons.config.terrainAllowVisibleCommits = true;
+  seasons.update(0.25, getTile, setTile, {x:4, y:30}, visibleCtx);
+  assert.equal(getTile(0, 10), T.ICE, 'debug-visible seasonal commits can still be explicitly enabled');
+  Object.assign(seasons.config, savedCfg);
+}
+
 seasons.reset();
 seasons.setDay(26);
 let m = seasons.metrics();

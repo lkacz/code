@@ -31,6 +31,52 @@
   function overlayKey(sx,sy,viewX,viewY,WORLD_H,visibleTile){
     return sx+'|'+sy+'|'+viewX+'|'+viewY+'|'+WORLD_H+'|'+(visibleTile?1:0);
   }
+  function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+  function cleanNumber(v,fallback){
+    return (typeof v === 'number' && isFinite(v)) ? v : fallback;
+  }
+  function readWindFrame(now){
+    const W = window.MM && window.MM.wind;
+    let speed = 0;
+    let intensity = 0;
+    let storm = 0;
+    let thermal = 0;
+    let night = 0;
+    let squall = 0;
+    if(W){
+      let m = null;
+      if(typeof W.metrics === 'function'){
+        try{ m = W.metrics(); }catch(e){}
+      }
+      if(m && typeof m === 'object'){
+        speed = cleanNumber(m.speed, 0);
+        intensity = cleanNumber(m.intensity, Math.min(1, Math.abs(speed)/5.2));
+        storm = cleanNumber(m.storm, 0);
+        thermal = cleanNumber(m.thermal, 0);
+        night = cleanNumber(m.night, 0);
+        squall = m.squall && m.squall.active ? Math.min(1, Math.abs(cleanNumber(m.squall.speed, speed))/5.2) : 0;
+      } else if(typeof W.speed === 'function'){
+        try{ speed = cleanNumber(W.speed(), 0); }catch(e){}
+        intensity = Math.min(1, Math.abs(speed)/5.2);
+      }
+    }
+    const mag = Math.min(5.2, Math.abs(speed));
+    const dir = speed < -0.01 ? -1 : (speed > 0.01 ? 1 : 0);
+    const motion = clamp(mag/5.2,0,1);
+    const pulse = (Math.sin(now*0.0003)*0.55 + Math.sin(now*0.0011)*0.35) * motion;
+    return {
+      speed,
+      dir,
+      mag,
+      motion,
+      intensity:clamp(intensity,0,1),
+      storm:clamp(storm,0,1),
+      thermal:clamp(thermal,0,1),
+      night:clamp(night,0,2),
+      squall:clamp(squall,0,1),
+      pulse
+    };
+  }
   function buildOverlayCandidates(sx,sy,viewX,viewY,WORLD_H,getTile,T,visibleTile){
     const tiles=[];
     let grassTiles=0;
@@ -56,7 +102,7 @@
   grass.drawOverlays = function(ctx, pass, sx, sy, viewX, viewY, TILE, WORLD_H, getTile, T, zoom, densityScalar, heightScalar, canDrawTile){
     const visibleTile = typeof canDrawTile === 'function' ? canDrawTile : null;
     const now=performance.now();
-    const wind = Math.sin(now*0.0003)*1.2 + Math.sin(now*0.0011)*0.8;
+    const wind = readWindFrame(now);
     const diamondPulse = (Math.sin(now*0.005)+1)/2;
     const key=overlayKey(sx,sy,viewX,viewY,WORLD_H,visibleTile);
     if(pass==='back' || overlayCache.key!==key){
@@ -100,15 +146,19 @@
             let heightFactor = 0.10 + randA*0.40;
             heightFactor *= heightScalar;
             if(heightFactor>0.8) heightFactor=0.8;
-            const freq = 0.0025 + randB*0.0035;
-            const amp = 2.0 + randC*3.0;
+            const typeEnergy = 1 + wind.thermal*0.18 + wind.night*0.06 + wind.storm*0.34 + wind.squall*0.42;
+            const freq = (0.0018 + randB*0.0025) * (0.6 + wind.motion*1.5 + wind.storm*0.7 + wind.squall*0.9);
+            const amp = (1.1 + randC*2.4) * wind.motion * typeEnergy;
             const phase = ((bSeed>>>6)&1023)/1023 * Math.PI*2;
-            const timeTerm = now*freq + phase + wind*0.4;
-            const sway = Math.sin(timeTerm) * amp;
+            const rolling = Math.sin(now*0.00042 + x*0.17 + phase) * wind.motion * wind.thermal*1.7;
+            const stormJitter = Math.sin(now*(0.006 + randB*0.006) + phase*1.7) * wind.motion * (wind.storm*1.8 + wind.squall*2.2);
+            const timeTerm = now*freq + phase + wind.pulse*0.25 + rolling*0.08;
+            const gustLean = wind.dir * (wind.mag*1.15 + wind.motion*2.8 + wind.squall*2.2);
+            const sway = Math.sin(timeTerm) * amp + rolling + stormJitter + gustLean;
             const jitter = ((bSeed>>>26)&63)/63; const frac = (b + jitter)/bladeCount;
             const baseX = x*TILE + (frac - 0.5)*TILE*0.98 + TILE/2;
             const baseY = y*TILE;
-            const bendDir = Math.sin(phase + wind*0.2);
+            const bendDir = Math.sin(phase)*0.14 + wind.dir*(wind.motion*0.92 + wind.squall*0.24);
             const curvature = 0.2 + randB*0.4;
             const topX = baseX + sway*0.45;
             const topY = baseY - TILE*heightFactor;

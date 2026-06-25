@@ -1,6 +1,7 @@
 // Infrastructure overlay regressions: pipes/cables coexist with terrain while
 // still powering hydraulic/electric networks.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 globalThis.window = globalThis;
 globalThis.MM = {};
@@ -54,6 +55,12 @@ teleporters.update(1,{x:20,y:20,w:0.7,h:0.95,vx:0,vy:0},getNetworkTile,setTile,{
 assert.equal(getTile(-2,30),T.STONE,'powered cable preserves stone underneath');
 assert.equal(getTile(-1,30),T.SAND,'powered cable preserves sand underneath');
 assert.ok(teleporters.metrics().storedEnergy>0,'teleporter charges through cable overlays on terrain');
+
+reset();
+setTile(-5,38,T.WATER);
+setTile(-5,38,T.WATER_PIPE);
+assert.equal(getTile(-5,38),T.WATER,'placing a water pipe through setTile preserves water as the base tile');
+assert.equal(getNetworkTile(-5,38),T.WATER_PIPE,'setTile routes water pipe into the infrastructure overlay');
 
 reset();
 setTile(-2,40,T.WATER);
@@ -115,5 +122,13 @@ for(let i=0;i<150;i++){
 }
 assert.equal(getTile(-4,70),T.AIR,'pipe intake can pull a stranded water remnant across a one-tile dry gap');
 assert.equal(getTile(0,75),T.WATER,'stranded remnant exits through the lower open pipe end');
+
+const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+const waterDrawIdx = mainSrc.indexOf('if(WATER){ WATER.drawOverlay');
+const infraDrawIdx = mainSrc.indexOf('drawInfrastructureOverlays(sx,sy,viewX,viewY);', waterDrawIdx);
+assert.ok(waterDrawIdx > 0 && infraDrawIdx > waterDrawIdx, 'pipe overlays render after the water overlay for smooth submerged composition');
+assert.match(mainSrc, /function migrateLegacyInfrastructureTerrain/, 'load path migrates legacy pipe terrain into infrastructure overlays');
+assert.match(mainSrc, /function getRenderInfrastructureTile/, 'render path has a legacy infrastructure fallback');
+assert.doesNotMatch(mainSrc, /if\(t===T\.WATER_PIPE\)\{[\s\S]{0,360}PUMPS\.drawPipeTile\(cctx/, 'chunk cache no longer bakes water pipes before water');
 
 console.log('infrastructure-overlay-sim: all assertions passed');

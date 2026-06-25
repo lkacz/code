@@ -978,6 +978,31 @@ window.MM = window.MM || {};
     for(const m of monsters){ if(m.dead) continue; const d=Math.abs(m.x-wx); if(d<=range && d<bd){ bd=d; best=m; } }
     return best;
   }
+  function targetsForTurret(sx,sy,range,onlyMonster){
+    if(!Number.isFinite(sx) || !Number.isFinite(sy)) return null;
+    const r=Math.max(0,Number(range)||0);
+    const r2=r*r;
+    const targets=[];
+    for(const m of monsters){
+      if(!m || m.dead || (onlyMonster && m!==onlyMonster)) continue;
+      const parts=Array.isArray(m.parts) ? m.parts : [];
+      const sealed=coreProtected(m);
+      for(const p of parts){
+        if(!p || !(p.hp>0)) continue;
+        if(p===m.core && sealed) continue;
+        const x=m.x+p.dx+0.5, y=m.y+p.dy+0.5;
+        const dx=x-sx, dy=y-sy, d2=dx*dx+dy*dy;
+        if(d2>r2) continue;
+        targets.push({kind:'boss',boss:m,part:p,x,y,tx:Math.floor(x),ty:Math.floor(y),hp:p.hp,d2});
+      }
+    }
+    targets.sort((a,b)=>a.d2-b.d2);
+    return targets;
+  }
+  function nearestForTurret(sx,sy,range,onlyMonster){
+    const targets=targetsForTurret(sx,sy,range,onlyMonster);
+    return targets && targets.length ? targets[0] : null;
+  }
   function abduct(m){
     const i=monsters.indexOf(m); if(i<0) return false;
     for(const p of m.parts) spawnDebris(m,p,1); // body crumbles upward into the beam
@@ -1309,7 +1334,7 @@ window.MM = window.MM || {};
   function _debug(){ return {monsters, debris, blasts, projectiles, spawnTimer, lastIsDay}; }
 
   MM.bosses={update, draw, drawHUD, attackAt, damageAt, forceSpawn, killNearest, collideHero, clearAll, reset, metrics,
-             nearestForAbduction, abduct, setCycleOverride, config:CFG, _debug};
+             nearestForAbduction, nearestForTurret, targetsForTurret, abduct, setCycleOverride, config:CFG, _debug};
 })();
 // ESM export (progressive migration)
 export const bosses = (typeof window!=='undefined' && window.MM) ? window.MM.bosses : undefined;

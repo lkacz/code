@@ -63,9 +63,12 @@ assert.match(progressSrc, /state\.trophies=cleanTrophies\(d\.trophies\)/, 'progr
 assert.match(src, /player\.energy = \(data\.player && typeof data\.player\.energy==='number'\) \? data\.player\.energy : 0/, 'load path restores stored hero energy');
 assert.match(src, /function chunkForTerrainSave\(arr\)/, 'save path strips transient world layers from terrain chunks');
 assert.match(src, /function stripTransientTerrainTiles\(arr\)/, 'load path sanitizes transient world layers from saved chunks');
+assert.match(src, /function migrateLegacyInfrastructureTerrain\(cx,arr\)/, 'load path migrates legacy pipe and cable terrain into overlays');
+assert.match(src, /function restoreTerrainChunk\(cx,arr\)/, 'chunk restore uses one shared terrain cleanup helper');
+assert.match(src, /stripTransientTerrainTiles\(arr\);\s*migrateLegacyInfrastructureTerrain\(cx,arr\);/, 'terrain restore strips transient tiles before migrating infrastructure overlays');
 assert.match(src, /encodeRLE\(chunkForTerrainSave\(arr\)\)/, 'full and incremental chunk saves encode sanitized terrain chunks');
-assert.match(src, /stripTransientTerrainTiles\(ch\.rle\? decodeRLE\(ch\.data, CHUNK_W\*WORLD_H\): decodeRaw\(ch\.data\)\)/, 'inline modified chunk restore removes transient tiles from terrain');
-assert.match(src, /stripTransientTerrainTiles\(ref\.rle===false \? decodeRaw\(data\) : decodeRLE\(data, CHUNK_W\*WORLD_H\)\)/, 'referenced autosave restore removes transient tiles from terrain');
+assert.match(src, /restoreTerrainChunk\(ch\.cx,arr\)/, 'inline modified chunk restore removes transient and legacy overlay tiles from terrain');
+assert.match(src, /restoreTerrainChunk\(ref\.cx,arr\)/, 'referenced autosave restore removes transient and legacy overlay tiles from terrain');
 assert.match(src, /updateInventory\(\{noSave:true\}\)/, 'load path refreshes inventory UI without dirtying the save');
 assert.match(src, /refreshHotbarDom\(\)/, 'load path refreshes visible hotbar labels');
 assert.match(src, /updateHotbarSel\(\)/, 'load path refreshes visible hotbar selection');

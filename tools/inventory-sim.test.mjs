@@ -145,6 +145,37 @@ assert.equal(dirty.moveSpeedMult, 1.05, '1.0437 snaps to +5%');
 assert.equal(dirty.jumpPowerMult, 1.15, '1.137 snaps to +15%');
 assert.equal(INV.getItem('w_electric').energyCost, 11, 'electric loot keeps energyCost through sanitization');
 assert.equal(INV.getItem('battery_dynamic').energyCapacityBonus, 75, 'dynamic loot keeps energy capacity through sanitization');
+assert.equal(INV.isNew('battery_dynamic'), true, 'fresh dynamic loot is marked new');
+assert.ok(INV.newItems().some(i => i.id === 'battery_dynamic'), 'fresh dynamic loot is listed for review');
+const batteryCmp = INV.compareItem('battery_dynamic');
+assert.equal(batteryCmp.verdict, 'newBest', 'strong new charm is flagged as the best comparable item');
+assert.ok(batteryCmp.bestDelta > 0, 'new charm compares against the best existing charm');
+INV.equip('stone_blade');
+const dirtyCmp = INV.compareItem('w_dirty');
+assert.equal(dirtyCmp.equippedComparable, true, 'same-role weapon compares against equipped weapon');
+assert.ok(dirtyCmp.equippedDelta > 0, 'new weapon shows upgrade over equipped weapon');
+INV.unequip('weapon');
+INV.markSeen('battery_dynamic');
+assert.equal(INV.isNew('battery_dynamic'), false, 'acknowledged loot loses the new marker');
+
+// --- capacity guard: full bags refuse overflow instead of evicting loot ----
+const capacitySnap = INV.snapshot();
+const dynamicLootSnap = JSON.parse(JSON.stringify(globalThis.MM.dynamicLoot));
+const maxBag = INV.capacity().max;
+globalThis.MM.dynamicLoot = {
+  capes: [], eyes: [], outfits: [], weapons: [],
+  charms: Array.from({ length: maxBag + 2 }, (_, i) => ({
+    id: 'bulk_'+i, kind: 'charm', name: 'Bulk '+i, tier: 'common', mineSpeedMult: 1.05
+  }))
+};
+const fullBagSync = window.updateDynamicCustomization();
+assert.equal(INV.capacity().used, maxBag, 'bag fills exactly to capacity');
+assert.ok(fullBagSync.blocked > 0, 'capacity overflow is reported to callers');
+assert.ok(INV.getItem('bulk_0'), 'first overflow-test item is retained');
+assert.equal(INV.getItem('bulk_'+(maxBag + 1)), null, 'overflow item is refused, not silently inserted');
+assert.equal(INV.capacity().full, true, 'capacity reports full state');
+INV.restore(capacitySnap, { persist: false, silent: true });
+globalThis.MM.dynamicLoot = dynamicLootSnap;
 
 // --- shortcut category cycling: strongest first, opt-out respected --------
 // melee by score: w_dirty(36) > stone_blade(15) >= spear(15) > stick(6)
@@ -168,6 +199,14 @@ INV.setShortcut('electric_gun', false);
 INV.unequip('weapon');
 assert.notEqual(INV.cycleWeaponCategory('stream')?.id, 'electric_gun', 'electric gun can be opted out of stream cycling');
 INV.setShortcut('electric_gun', true);
+
+// --- undo discard restores an accidental delete into bag + dynamic loot ----
+assert.equal(INV.discard('w_electric'), true, 'dynamic item can be discarded');
+assert.equal(INV.getItem('w_electric'), null, 'discard removes dynamic item');
+assert.ok(INV.discardUndoCount() > 0, 'discard creates an undo entry');
+assert.equal(INV.undoDiscard(), true, 'undo discard succeeds');
+assert.ok(INV.getItem('w_electric'), 'undo discard restores the item');
+assert.ok(globalThis.MM.dynamicLoot.weapons.some(i => i.id === 'w_electric'), 'undo discard restores dynamic loot source');
 
 // --- discard removes the item AND its shortcut opt-out entry --------------
 INV.setShortcut('w_dirty', false);
@@ -207,6 +246,24 @@ assert.equal(INV.restore(snap, { persist: false, silent: true }), true, 'invento
 assert.equal(INV.equippedId('outfit'), 'ninja', 'snapshot restores outfit');
 assert.equal(INV.getColors().outfit, '#123456', 'snapshot restores outfit color');
 assert.equal(INV.isShortcut('bow_wood'), false, 'snapshot restores shortcut exclusions');
+
+// --- restore sanitizes persisted shape and new-item references ------------
+const cleanSnap = INV.snapshot();
+assert.equal(INV.restore({
+  equipped: { cape: { bad: true }, eyes: 'bright', outfit: 'default', weapon: null, charm: null },
+  colors: { cape: { bad: true }, outfit: '#456789' },
+  bag: [{ id: 'restore_ok', kind: 'charm', name: 'Restore OK', mineSpeedMult: 1.0437 }],
+  discarded: ['discarded_ok'],
+  shortcutOff: ['bow_wood'],
+  newItems: ['restore_ok', 'missing_item']
+}, { persist: false, silent: true }), true, 'malformed persisted state restores safely');
+assert.equal(INV.equippedId('cape'), 'classic', 'malformed required equipment falls back to default');
+assert.equal(INV.getColors().cape, '#b91818', 'malformed color falls back to default');
+assert.equal(INV.getColors().outfit, '#456789', 'valid color is preserved');
+assert.equal(INV.getItem('restore_ok').mineSpeedMult, 1.05, 'restored loot is normalized');
+assert.equal(INV.isNew('restore_ok'), true, 'new marker for existing restored loot is kept');
+assert.equal(INV.isNew('missing_item'), false, 'new marker for absent loot is dropped');
+INV.restore(cleanSnap, { persist: false, silent: true });
 
 console.log('inventory-sim: all assertions passed (avg Moc common/rare/epic: '
   + [(sums.common / counts.common).toFixed(1), (sums.rare / counts.rare).toFixed(1), (sums.epic / counts.epic).toFixed(1)].join('/') + ')');

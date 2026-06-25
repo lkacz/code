@@ -11,6 +11,7 @@ const { dynamo } = await import('../src/engine/dynamo.js');
 const { teleporters } = await import('../src/engine/teleporters.js');
 const { weapons } = await import('../src/engine/weapons.js');
 const { turrets } = await import('../src/engine/turrets.js');
+const { bosses } = await import('../src/engine/bosses.js');
 
 const tiles = new Map();
 const k = (x,y)=>Math.floor(x)+','+Math.floor(y);
@@ -35,11 +36,17 @@ function reset(){
   teleporters.reset();
   weapons.reset();
   turrets.reset();
+  bosses.reset();
   globalThis.MM.world={getTile,setTile};
+  delete globalThis.MM.worldGen;
   globalThis.MM.audio={play(){}};
   globalThis.MM.particles={spawnSparks(){}, spawnSplash(){}, spawnEnergyAbsorb(){}};
+  globalThis.MM.water={onTileChanged(){}, disturb(){}};
   globalThis.MM.fire={heatAround(){}};
+  delete globalThis.player;
   delete globalThis.MM.mobs;
+  delete globalThis.MM.bosses;
+  delete globalThis.MM.ufo;
 }
 function placeDynamo(cx,y,orientation='horizontal'){
   dynamo.plannedCells(cx,y,orientation).forEach(cell=>setTile(cell.x,cell.y,cell.t));
@@ -86,6 +93,47 @@ function fakeMobAt(x,y,hp=30){
   };
   return {mob,state};
 }
+function fakeBossAt(x,y,hp=40){
+  const part={hp};
+  const boss={x,y,dead:false,parts:[part],core:null};
+  const state={hits:0,scans:0};
+  globalThis.MM.bosses={
+    nearestForTurret(wx,wy,r,onlyBoss){
+      state.scans++;
+      if(onlyBoss && onlyBoss!==boss) return null;
+      if(boss.dead || !(part.hp>0)) return null;
+      const dx=x-wx, dy=y-wy;
+      if(dx*dx+dy*dy>r*r) return null;
+      return {kind:'boss',boss,part,x,y,tx:Math.floor(x),ty:Math.floor(y),hp:part.hp};
+    },
+    damageAt(tx,ty,dmg){
+      if(boss.dead || !(part.hp>0)) return false;
+      if(Math.abs((tx+0.5)-x)>1 || Math.abs((ty+0.5)-y)>1) return false;
+      part.hp-=Math.max(0.5,Number(dmg)||1);
+      state.hits++;
+      if(part.hp<=0) boss.dead=true;
+      return true;
+    }
+  };
+  return {boss,part,state};
+}
+function fakeUfoAt(x,y,hp=60){
+  const craft={name:'test saucer',archetype:'test',phase:'scan',x,y,hp,maxHp:hp,hullW:4,seed:1};
+  const state={hits:0};
+  globalThis.MM.ufo={
+    current(){
+      return craft.hp>0 ? Object.assign({},craft) : null;
+    },
+    damageAt(tx,ty,dmg){
+      if(!(craft.hp>0)) return false;
+      if(Math.abs((tx+0.5)-craft.x)>3 || Math.abs((ty+0.5)-craft.y)>2) return false;
+      craft.hp-=Math.max(0.5,Number(dmg)||1);
+      state.hits++;
+      return true;
+    }
+  };
+  return {craft,state};
+}
 function fakeFireAt(cells){
   const burning=new Set(cells.map(([x,y])=>k(x,y)));
   const state={extinguished:0};
@@ -101,6 +149,9 @@ function fakeFireAt(cells){
     count(){ return burning.size; }
   };
   return state;
+}
+function totalBossHp(boss){
+  return (boss.parts||[]).reduce((sum,p)=>sum+Math.max(0,Number(p.hp)||0),0);
 }
 
 assert.equal(T.TURRET,44,'basic turret has a stable tile id after antigravity beacon');
@@ -134,6 +185,72 @@ assert.equal(INFO[T.TURRET].passable,false,'turrets are solid defensive machines
   assert.ok(after.shots>0,'basic turret fires when a mob approaches in range');
   assert.ok(state.hits>0 && mob.hp<24,'basic turret damages the target mob');
   assert.ok(after.storedEnergy<beforeEnergy,'basic turret spends local battery energy per shot');
+}
+
+{
+  reset();
+  setTile(0,10,T.TURRET);
+  turrets._debug.debugChargeAt(0,10,turrets._debug.TURRET_CAPACITY,getTile);
+  const {part,state}=fakeBossAt(6.5,10.5,32);
+  for(let i=0;i<80;i++) tick(1/30);
+  assert.ok(state.scans>0,'basic turret asks the boss system for hostile targets');
+  assert.ok(turrets.metrics().shots>0,'basic turret fires when a boss part is in range');
+  assert.ok(state.hits>0 && part.hp<32,'basic turret damages boss parts through the boss API');
+}
+
+for(const tile of [T.FIRE_TURRET,T.WATER_TURRET]){
+  reset();
+  setTile(0,10,tile);
+  turrets._debug.debugChargeAt(0,10,turrets._debug.TURRET_CAPACITY,getTile);
+  if(tile===T.WATER_TURRET) turrets._debug.debugSetWaterAt(0,10,turrets._debug.WATER_TURRET_TANK,getTile);
+  const {part,state}=fakeBossAt(6.5,10.5,32);
+  for(let i=0;i<80;i++) tick(1/30);
+  assert.ok(turrets.metrics().shots>0,(tile===T.FIRE_TURRET?'fire':'water')+' turret fires when a boss part is in range');
+  assert.ok(state.hits>0 && part.hp<32,(tile===T.FIRE_TURRET?'fire':'water')+' turret damages boss parts through the boss API');
+}
+
+{
+  reset();
+  globalThis.MM.bosses=bosses;
+  globalThis.MM.worldGen={surfaceHeight(){ return 90; }, biomeType(){ return 0; }, settings:{seaLevel:95}};
+  globalThis.player={x:0,y:88,hp:100,maxHp:100,xp:0,vx:0,vy:0,hpInvul:0,tool:'basic'};
+  bosses.setCycleOverride({isDay:true,tDay:0.5});
+  for(let x=-12; x<=22; x++) setTile(x,90,T.STONE);
+  setTile(0,88,T.TURRET);
+  setTile(2,88,T.STONE);
+  setTile(3,88,T.STONE);
+  turrets._debug.debugChargeAt(0,88,turrets._debug.TURRET_CAPACITY,getTile);
+  const boss=bosses.forceSpawn(getTile,{x:7,seed:1234,freeze:true});
+  assert.ok(boss,'real boss spawns for turret line-of-sight regression');
+  const machine=turrets._debug.ensureMachine(0,88,getTile);
+  const target=turrets._debug.nearestBossTarget(machine,getTile);
+  assert.ok(target,'turret finds a visible boss part when the closest low part is blocked');
+  const beforeHp=totalBossHp(boss);
+  for(let i=0;i<120;i++) tick(1/30,globalThis.player);
+  const after=turrets.metrics();
+  assert.ok(after.shots>0,'turret fires at a real boss behind low cover');
+  assert.ok(after.hits>0 && totalBossHp(boss)<beforeHp,'turret damages a real boss through visible body parts');
+}
+
+{
+  reset();
+  setTile(0,10,T.TURRET);
+  turrets._debug.debugChargeAt(0,10,turrets._debug.TURRET_CAPACITY,getTile);
+  const {craft,state}=fakeUfoAt(6.5,10.5,60);
+  for(let i=0;i<80;i++) tick(1/30);
+  assert.ok(turrets.metrics().shots>0,'basic turret fires when a UFO is in range');
+  assert.ok(state.hits>0 && craft.hp<60,'basic turret damages the UFO through the UFO API');
+}
+
+for(const tile of [T.FIRE_TURRET,T.WATER_TURRET]){
+  reset();
+  setTile(0,10,tile);
+  turrets._debug.debugChargeAt(0,10,turrets._debug.TURRET_CAPACITY,getTile);
+  if(tile===T.WATER_TURRET) turrets._debug.debugSetWaterAt(0,10,turrets._debug.WATER_TURRET_TANK,getTile);
+  const {craft,state}=fakeUfoAt(6.5,10.5,60);
+  for(let i=0;i<80;i++) tick(1/30);
+  assert.ok(turrets.metrics().shots>0,(tile===T.FIRE_TURRET?'fire':'water')+' turret fires when a UFO is in range');
+  assert.ok(state.hits>0 && craft.hp<60,(tile===T.FIRE_TURRET?'fire':'water')+' turret damages the UFO through the UFO API');
 }
 
 {
@@ -243,5 +360,10 @@ assert.match(uiSrc, /Uklad testowy/, 'turret debug panel includes a powered rig 
 
 const worldSrc = await readFile(new URL('../src/engine/world.js', import.meta.url), 'utf8');
 assert.match(worldSrc, /MM\.turrets && MM\.turrets\.onTileChanged/, 'world lifecycle notifies turrets about tile changes');
+
+const bossesSrc = await readFile(new URL('../src/engine/bosses.js', import.meta.url), 'utf8');
+assert.match(bossesSrc, /function nearestForTurret\(sx,sy,range,onlyMonster\)/, 'bosses expose a turret targeting query');
+assert.match(bossesSrc, /function targetsForTurret\(sx,sy,range,onlyMonster\)/, 'bosses expose sorted turret target candidates');
+assert.match(bossesSrc, /nearestForAbduction, nearestForTurret, targetsForTurret, abduct/, 'boss turret targeting is part of the public boss API');
 
 console.log('turrets-sim: all assertions passed');

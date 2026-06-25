@@ -4,6 +4,22 @@
 import './inventory.js';
 (function(){
   window.MM = window.MM || {};
+  if(!MM.modalInput){
+    const active=new Set();
+    function setModalFlag(){
+      if(!document.body) return;
+      if(active.size) document.body.dataset.mmModalOpen='true';
+      else delete document.body.dataset.mmModalOpen;
+    }
+    function emit(id){
+      try{ window.dispatchEvent(new CustomEvent('mm-modal-input',{detail:{open:active.size>0,id,active:[...active]}})); }catch(e){}
+    }
+    MM.modalInput={
+      push(id){ if(!id) return; const before=active.size; active.add(id); setModalFlag(); if(active.size!==before) emit(id); },
+      pop(id){ if(!id || !active.has(id)) return; active.delete(id); setModalFlag(); emit(id); },
+      isOpen(){ return active.size>0; }
+    };
+  }
   const INV=MM.inventory;
   if(!INV) return;
 
@@ -12,6 +28,7 @@ import './inventory.js';
   const overlay=document.getElementById('invOverlay');
   const closeBtn=document.getElementById('invClose');
   const tabsEl=document.getElementById('invTabs');
+  const rightEl=document.getElementById('invRight');
   const grid=document.getElementById('invGrid');
   const slotsEl=document.getElementById('invSlots');
   const previewCanvas=document.getElementById('invPreview');
@@ -29,6 +46,10 @@ import './inventory.js';
   const TABS=MM.inventory.SLOTS.map(s=>({key:s.accepts, label:INV.KIND_LABELS[s.accepts]||s.accepts, kind:s.accepts}))
     .concat([{key:'resources', label:'Surowce'}]);
   let activeTab=TABS[0];
+  let searchText='';
+  let tierFilter='all';
+  let sortMode='power';
+  let toolbarEl=null, searchInput=null, tierSelect=null, sortSelect=null, capEl=null, undoBtn=null, newReviewEl=null;
 
   function isOpen(){ return overlay.style.display==='block'; }
 
@@ -46,6 +67,73 @@ import './inventory.js';
       tabsEl.appendChild(b);
     });
     setActive(activeTab);
+  }
+  function ensureToolbar(){
+    if(toolbarEl || !rightEl) return;
+    toolbarEl=document.createElement('div');
+    toolbarEl.id='invToolbar';
+    const searchWrap=document.createElement('label');
+    searchWrap.className='invSearchWrap';
+    searchInput=document.createElement('input');
+    searchInput.id='invSearch';
+    searchInput.type='search';
+    searchInput.placeholder='Szukaj';
+    searchInput.autocomplete='off';
+    searchInput.addEventListener('input',()=>{
+      searchText=searchInput.value.trim().toLowerCase();
+      buildGrid();
+    });
+    searchWrap.appendChild(searchInput);
+    tierSelect=document.createElement('select');
+    tierSelect.className='invSelect';
+    [['all','Wszystkie'],['new','Nowe'],['common','Zwykle'],['rare','Rzadkie'],['epic','Epickie']].forEach(([v,t])=>{
+      const o=document.createElement('option'); o.value=v; o.textContent=t; tierSelect.appendChild(o);
+    });
+    tierSelect.addEventListener('change',()=>{ tierFilter=tierSelect.value; buildGrid(); });
+    sortSelect=document.createElement('select');
+    sortSelect.className='invSelect';
+    [['power','Moc'],['tier','Rzadkosc'],['new','Nowe'],['name','Nazwa']].forEach(([v,t])=>{
+      const o=document.createElement('option'); o.value=v; o.textContent=t; sortSelect.appendChild(o);
+    });
+    sortSelect.addEventListener('change',()=>{ sortMode=sortSelect.value; buildGrid(); });
+    capEl=document.createElement('div');
+    capEl.className='invCapacity';
+    undoBtn=document.createElement('button');
+    undoBtn.className='invUndoBtn';
+    undoBtn.textContent='Cofnij wyrzut';
+    undoBtn.addEventListener('click',()=>{
+      if(INV.undoDiscard && INV.undoDiscard()){
+        if(window.msg) window.msg('Przywrocono ostatni przedmiot');
+        refreshAll(true);
+      } else if(window.msg) window.msg('Brak przedmiotu do przywrocenia');
+    });
+    toolbarEl.appendChild(searchWrap);
+    toolbarEl.appendChild(tierSelect);
+    toolbarEl.appendChild(sortSelect);
+    toolbarEl.appendChild(capEl);
+    toolbarEl.appendChild(undoBtn);
+    rightEl.insertBefore(toolbarEl, grid);
+    newReviewEl=document.createElement('div');
+    newReviewEl.id='invNewReview';
+    rightEl.insertBefore(newReviewEl, grid);
+  }
+  function updateToolbar(){
+    ensureToolbar();
+    if(!toolbarEl) return;
+    const itemTab=activeTab.key!=='resources';
+    searchInput.style.display=itemTab?'':'none';
+    tierSelect.style.display=itemTab?'':'none';
+    sortSelect.style.display=itemTab?'':'none';
+    tierSelect.value=tierFilter;
+    sortSelect.value=sortMode;
+    const cap=INV.capacity? INV.capacity():null;
+    if(cap){
+      capEl.textContent=cap.used+'/'+cap.max;
+      capEl.classList.toggle('warn', cap.warning);
+      capEl.title=cap.full?'Torba pelna':(cap.free+' wolnych miejsc');
+    }
+    undoBtn.disabled=!(INV.discardUndoCount && INV.discardUndoCount()>0);
+    buildNewReview();
   }
 
   // --- Equipment slots panel ---
@@ -76,6 +164,148 @@ import './inventory.js';
     if(item.name) return item.name;
     const slot=INV.slotForKind(item.kind); // slot labels are the singular kind names
     return ((slot && slot.label)||'Przedmiot')+' '+String(item.id).slice(-4);
+  }
+  function compare(item){ return INV.compareItem ? INV.compareItem(item.id||item) : null; }
+  function signed(n){ return n>0 ? '+'+n : String(n); }
+  function relationClass(cmp){
+    if(!cmp) return 'option';
+    if(cmp.bestDelta==null || cmp.bestDelta>0) return 'best';
+    if(cmp.equippedDelta!=null && cmp.equippedDelta>0) return 'upgrade';
+    if(cmp.bestDelta===0) return 'match';
+    return 'worse';
+  }
+  function verdictText(cmp){
+    if(!cmp) return 'Nowa opcja';
+    if(cmp.bestDelta==null) return 'Pierwszy taki przedmiot';
+    if(cmp.bestDelta>0) return 'Najlepsze w torbie '+signed(cmp.bestDelta);
+    if(cmp.equippedDelta!=null && cmp.equippedDelta>0) return 'Lepsze od noszonego '+signed(cmp.equippedDelta);
+    if(cmp.bestDelta===0) return 'Remis z najlepszym';
+    return 'Słabsze od najlepszego '+signed(cmp.bestDelta);
+  }
+  function compactVerdict(cmp){
+    if(!cmp) return 'Opcja';
+    if(cmp.bestDelta==null) return 'Pierwsze';
+    if(cmp.bestDelta>0) return 'TOP '+signed(cmp.bestDelta);
+    if(cmp.equippedDelta!=null && cmp.equippedDelta>0) return 'UP '+signed(cmp.equippedDelta);
+    if(cmp.bestDelta===0) return 'Remis';
+    return signed(cmp.bestDelta);
+  }
+  function compareLine(label,item,delta,score){
+    const row=document.createElement('div');
+    row.className='invCompareLine '+(delta>0?'up':delta<0?'down':'eq');
+    const l=document.createElement('span'); l.textContent=label;
+    const v=document.createElement('b');
+    if(item) v.textContent=displayName(item)+' · Moc '+score+(delta==null?'':' · '+signed(delta));
+    else v.textContent='brak porównania';
+    row.appendChild(l); row.appendChild(v);
+    return row;
+  }
+  function comparisonBlock(cmp, compact){
+    const box=document.createElement('div');
+    box.className=compact?'invCompareMini':'invCompareBlock';
+    if(!cmp) return box;
+    if(cmp.equipped){
+      const label=cmp.equippedComparable?'Noszone':'Noszone (inna rola)';
+      box.appendChild(compareLine(label, cmp.equipped, cmp.equippedDelta, cmp.equippedScore));
+    } else {
+      box.appendChild(compareLine('Noszone', null, null, null));
+    }
+    if(cmp.bestExisting){
+      box.appendChild(compareLine('Najlepsze w torbie', cmp.bestExisting, cmp.bestDelta, cmp.bestScore));
+    } else {
+      box.appendChild(compareLine('Najlepsze w torbie', null, null, null));
+    }
+    return box;
+  }
+  function newComparisons(){
+    const items=INV.newItems ? INV.newItems() : (INV.bagItems?INV.bagItems().filter(i=>INV.isNew&&INV.isNew(i.id)):[]);
+    return items.map(compare).filter(Boolean).sort((a,b)=>{
+      const ar=Math.max(a.bestDelta==null?999:a.bestDelta, a.equippedDelta==null?-999:a.equippedDelta);
+      const br=Math.max(b.bestDelta==null?999:b.bestDelta, b.equippedDelta==null?-999:b.equippedDelta);
+      return br-ar || b.score-a.score;
+    });
+  }
+  function showNewItems(cmp){
+    const target=cmp || newComparisons()[0];
+    if(target){
+      const tab=TABS.find(t=>t.kind===target.item.kind);
+      if(tab) activeTab=tab;
+    }
+    tierFilter='new';
+    sortMode='new';
+    searchText='';
+    if(searchInput) searchInput.value='';
+    setActive(activeTab);
+  }
+  function buildNewReview(){
+    if(!newReviewEl) return;
+    const cmps=newComparisons();
+    newReviewEl.innerHTML='';
+    if(!cmps.length){ newReviewEl.style.display='none'; return; }
+    newReviewEl.style.display='block';
+    const upgrades=cmps.filter(c=>c.isNewBest || c.isEquippedUpgrade).length;
+    const head=document.createElement('div'); head.className='invNewReviewHead';
+    const title=document.createElement('div');
+    const count=document.createElement('b'); count.textContent='Nowe przedmioty: '+cmps.length;
+    const upgradeCount=document.createElement('span'); upgradeCount.textContent=upgrades+' możliwych ulepszeń';
+    title.appendChild(count); title.appendChild(upgradeCount);
+    const actions=document.createElement('div');
+    const show=document.createElement('button'); show.textContent='Pokaż nowe'; show.addEventListener('click',()=>showNewItems(cmps[0]));
+    const seen=document.createElement('button'); seen.textContent='Oznacz widziane'; seen.className='sec'; seen.addEventListener('click',()=>{ if(INV.markSeen) INV.markSeen(cmps.map(c=>c.item.id)); refreshAll(true); });
+    actions.appendChild(show); actions.appendChild(seen);
+    head.appendChild(title); head.appendChild(actions); newReviewEl.appendChild(head);
+    const list=document.createElement('div'); list.className='invNewReviewList';
+    cmps.slice(0,4).forEach(cmp=>{
+      const item=cmp.item;
+      const card=document.createElement('div'); card.className='invReviewItem '+relationClass(cmp);
+      const top=document.createElement('div'); top.className='invReviewTop';
+      const name=document.createElement('b'); name.textContent=displayName(item);
+      const badge=document.createElement('span'); badge.className=relationClass(cmp); badge.textContent=verdictText(cmp);
+      top.appendChild(name); top.appendChild(badge); card.appendChild(top);
+      const meta=document.createElement('div'); meta.className='invReviewMeta'; meta.textContent=cmp.groupLabel+' · Moc '+cmp.score;
+      card.appendChild(meta);
+      card.appendChild(comparisonBlock(cmp,false));
+      const row=document.createElement('div'); row.className='invReviewBtns';
+      const go=document.createElement('button'); go.textContent='Pokaż'; go.addEventListener('click',()=>showNewItems(cmp));
+      row.appendChild(go);
+      if(INV.slotForKind(item.kind)){
+        const eq=document.createElement('button'); eq.textContent='Załóż'; eq.addEventListener('click',()=>{ if(INV.markSeen) INV.markSeen(item.id); INV.equip(item.id); });
+        row.appendChild(eq);
+      }
+      card.appendChild(row);
+      list.appendChild(card);
+    });
+    newReviewEl.appendChild(list);
+  }
+  function tierRank(item){ return item.tier==='epic'?3:item.tier==='rare'?2:item.tier==='common'?1:0; }
+  function itemSearchText(item){
+    return [
+      item.id, item.name, item.tier, item.unique, item.weaponType, item.desc,
+      ...(INV.statChips? INV.statChips(item).map(c=>c.label+' '+c.text):[])
+    ].filter(Boolean).join(' ').toLowerCase();
+  }
+  function matchesFilters(item){
+    if(tierFilter==='new' && !(INV.isNew && INV.isNew(item.id))) return false;
+    if(['common','rare','epic'].includes(tierFilter) && item.tier!==tierFilter) return false;
+    if(searchText && !itemSearchText(item).includes(searchText)) return false;
+    return true;
+  }
+  function sortItems(list){
+    return list.slice().sort((a,b)=>{
+      if(sortMode==='name') return displayName(a).localeCompare(displayName(b));
+      if(sortMode==='tier') return tierRank(b)-tierRank(a) || INV.itemScore(b)-INV.itemScore(a);
+      if(sortMode==='new'){
+        const na=(INV.isNew&&INV.isNew(a.id))?1:0, nb=(INV.isNew&&INV.isNew(b.id))?1:0;
+        return nb-na || INV.itemScore(b)-INV.itemScore(a);
+      }
+      return INV.itemScore(b)-INV.itemScore(a) || tierRank(b)-tierRank(a);
+    });
+  }
+  function discardItem(item){
+    if(!item || !INV.discard) return;
+    const valuable=item.tier==='rare' || item.tier==='epic' || item.unique;
+    if(valuable && !window.confirm('Wyrzucic '+displayName(item)+'?')) return;
+    if(INV.discard(item.id) && window.msg) window.msg('Wyrzucono '+displayName(item)+' - mozna cofnac');
   }
   // --- Shared stat presentation: chips + power score (model lives in inventory.js) ---
   // Every place items are shown (grid, loot popup) renders the same compact pills:
@@ -117,11 +347,19 @@ import './inventory.js';
   }
   function makeCard(item,slot,maxScore,refScore){
     const div=document.createElement('div'); div.className='invItem'; div.tabIndex=0;
+    const cmp=compare(item);
     const equipped=INV.isEquipped(item.id);
     if(equipped){
       div.classList.add('sel');
       const eb=document.createElement('div'); eb.className='invEqBadge'; eb.textContent='✓ w użyciu';
       div.appendChild(eb);
+    }
+    if(INV.isNew && INV.isNew(item.id)){
+      div.classList.add('new',relationClass(cmp));
+      const nb=document.createElement('div'); nb.className='invNewBadge'; nb.textContent='Nowe';
+      div.appendChild(nb);
+      const ub=document.createElement('div'); ub.className='invUpgradeBadge '+relationClass(cmp); ub.textContent=compactVerdict(cmp);
+      div.appendChild(ub);
     }
     if(item.tier){ div.style.borderColor=(TIER_COLORS[item.tier]||'')+'aa'; }
     const c=document.createElement('canvas'); c.width=80; c.height=80;
@@ -138,6 +376,7 @@ import './inventory.js';
       div.appendChild(ub);
     }
     div.appendChild(powerRow(item,maxScore,refScore));
+    if(INV.isNew && INV.isNew(item.id)) div.appendChild(comparisonBlock(cmp,true));
     const chips=chipsRow(item);
     if(chips.childNodes.length) div.appendChild(chips);
     if(item.desc){
@@ -152,7 +391,7 @@ import './inventory.js';
       row.appendChild(un);
     } else if(!equipped){
       const eq=document.createElement('button'); eq.textContent='Załóż';
-      eq.addEventListener('click',e=>{ e.stopPropagation(); INV.equip(item.id); });
+      eq.addEventListener('click',e=>{ e.stopPropagation(); if(INV.markSeen) INV.markSeen(item.id); INV.equip(item.id); });
       row.appendChild(eq);
     }
     // Weapons: opt in/out of the number-key shortcut cycle (keys 2/3/4)
@@ -172,29 +411,30 @@ import './inventory.js';
     }
     if(!INV.isBuiltin(item.id)){
       const del=document.createElement('button'); del.textContent='Wyrzuć'; del.className='danger';
-      del.addEventListener('click',e=>{ e.stopPropagation(); INV.discard(item.id); });
+      del.addEventListener('click',e=>{ e.stopPropagation(); discardItem(item); });
       row.appendChild(del);
     }
     if(row.childNodes.length) div.appendChild(row);
-    function choose(){ if(!INV.isEquipped(item.id)) INV.equip(item.id); }
+    function choose(){ if(INV.markSeen) INV.markSeen(item.id); if(!INV.isEquipped(item.id)) INV.equip(item.id); }
     div.addEventListener('click',choose);
     div.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); choose(); } });
     return div;
   }
   function buildGrid(){
+    updateToolbar();
     grid.innerHTML='';
     if(activeTab.key==='resources'){ buildResourcesGrid(); return; }
     const kind=activeTab.kind;
-    const list=INV.items(kind);
+    const list=sortItems(INV.items(kind).filter(matchesFilters));
     if(!list.length){
       const empty=document.createElement('div'); empty.className='invEmpty';
-      empty.textContent='Brak przedmiotów — szukaj w skrzyniach!';
+      empty.textContent=searchText || tierFilter!=='all' ? 'Brak wyników' : 'Brak przedmiotów - szukaj w skrzyniach!';
       grid.appendChild(empty);
       return;
     }
     const slot=INV.slotForKind(kind);
     if(kind==='weapon' && INV.WEAPON_CATEGORIES && INV.weaponCategory){ buildWeaponSections(list,slot); return; }
-    const sorted=list.slice().sort((a,b)=>INV.itemScore(b)-INV.itemScore(a));
+    const sorted=sortItems(list);
     const maxScore=INV.itemScore(sorted[0])||1;
     const eq=INV.equippedItem(slot.id);
     const refScore=eq? INV.itemScore(eq):null;
@@ -211,14 +451,14 @@ import './inventory.js';
     const eqCat=eq? (INV.weaponCategory(eq)||{}).id : null;
     const groups=INV.WEAPON_CATEGORIES.map(c=>({cat:c, items:[]}));
     const other={cat:{id:'other', label:'Inne', icon:'❔', key:null}, items:[]};
-    list.forEach(it=>{ const c=INV.weaponCategory(it); const g=c && groups.find(x=>x.cat.id===c.id); (g||other).items.push(it); });
+    sortItems(list).forEach(it=>{ const c=INV.weaponCategory(it); const g=c && groups.find(x=>x.cat.id===c.id); (g||other).items.push(it); });
     if(other.items.length) groups.push(other);
     groups.forEach(g=>{
       if(!g.items.length) return;
       const head=document.createElement('div'); head.className='invCatHead';
       head.textContent=g.cat.icon+' '+g.cat.label+(g.cat.key? ' · klawisz '+g.cat.key:'');
       grid.appendChild(head);
-      g.items.sort((a,b)=>INV.itemScore(b)-INV.itemScore(a));
+      g.items=sortItems(g.items);
       const maxScore=INV.itemScore(g.items[0])||1;
       const refScore=(eq && eqCat===g.cat.id)? INV.itemScore(eq):null;
       g.items.forEach(item=>grid.appendChild(makeCard(item,slot,maxScore,refScore)));
@@ -695,13 +935,14 @@ import './inventory.js';
   // dozens of 'input' events per second, each dispatching mm-customization-change,
   // and a full DOM rebuild per event caused layout thrash while the panel was open.
   let refreshQueued=false;
-  function refreshAll(){
-    if(!isOpen() || refreshQueued) return;
+  function refreshAll(force){
+    if(!isOpen() && !force) return;
+    if(refreshQueued) return;
     refreshQueued=true;
     requestAnimationFrame(()=>{
       refreshQueued=false;
       if(!isOpen()) return;
-      buildSlots(); buildGrid(); buildColors(); updatePreview(); updateStats(); updateSelInfo(); buildProgress();
+      updateToolbar(); buildSlots(); buildGrid(); buildColors(); updatePreview(); updateStats(); updateSelInfo(); buildProgress();
     });
   }
   window.addEventListener('mm-inventory-change',refreshAll);
@@ -719,13 +960,17 @@ import './inventory.js';
     else { if(document.activeElement===last){ e.preventDefault(); first.focus(); } }
   }
   function open(){
+    if(isOpen()) return;
     overlay.style.display='block'; lastFocus=document.activeElement;
-    buildSlots(); buildGrid(); buildColors(); updatePreview(); updateStats(); updateSelInfo(); buildProgress();
+    if(MM.modalInput) MM.modalInput.push('inventory');
+    ensureToolbar(); updateToolbar(); buildSlots(); buildGrid(); buildColors(); updatePreview(); updateStats(); updateSelInfo(); buildProgress();
     const firstTab=tabsEl.querySelector('.invTabBtn'); if(firstTab) firstTab.focus();
     document.addEventListener('keydown',trapFocus);
   }
   function close(){
+    if(!isOpen()) return;
     overlay.style.display='none';
+    if(MM.modalInput) MM.modalInput.pop('inventory');
     document.removeEventListener('keydown',trapFocus);
     if(lastFocus && lastFocus.focus) lastFocus.focus();
   }
@@ -735,16 +980,21 @@ import './inventory.js';
   overlay.addEventListener('click',e=>{ if(e.target===overlay) close(); });
   function isEditableTarget(t){ if(!t || !t.tagName) return false; const tag=t.tagName; return tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||t.isContentEditable; }
   window.addEventListener('keydown',e=>{
-    if(e.key==='Escape' && isOpen()){ close(); return; }
+    if(isOpen()){
+      if(e.key==='Escape'){ e.preventDefault(); close(); e.stopImmediatePropagation(); return; }
+      if(!isEditableTarget(e.target) && e.key.toLowerCase()==='e' && !e.ctrlKey && !e.metaKey && !e.altKey){ e.preventDefault(); close(); e.stopImmediatePropagation(); return; }
+      if(e.ctrlKey && (e.key==='ArrowRight' || e.key==='ArrowLeft')){
+        e.preventDefault();
+        const idx=TABS.indexOf(activeTab);
+        let ni=idx + (e.key==='ArrowRight'?1:-1);
+        if(ni<0) ni=TABS.length-1; if(ni>=TABS.length) ni=0;
+        setActive(TABS[ni]);
+      }
+      e.stopImmediatePropagation();
+      return;
+    }
     if(isEditableTarget(e.target)) return;
     if(e.key.toLowerCase()==='e' && !e.ctrlKey && !e.metaKey && !e.altKey){ toggle(); }
-    if(isOpen() && e.ctrlKey && (e.key==='ArrowRight' || e.key==='ArrowLeft')){
-      e.preventDefault();
-      const idx=TABS.indexOf(activeTab);
-      let ni=idx + (e.key==='ArrowRight'?1:-1);
-      if(ni<0) ni=TABS.length-1; if(ni>=TABS.length) ni=0;
-      setActive(TABS[ni]);
-    }
   });
 
   buildTabs();

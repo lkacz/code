@@ -179,9 +179,10 @@ const CFG = {
   terrainApplyInterval: 0.14,
   terrainApplyOpsPerTick: 1,
   terrainApplyVisibleInterval: 0.75,
+  terrainAllowVisibleCommits: false,
   terrainApplySlowFrameMs: 24,
   terrainApplySearchLimit: 256,
-  terrainVisibleMarginTiles: 3,
+  terrainVisibleMarginTiles: CHUNK_W + 3,
   terrainPlayerMarginTiles: 1.25,
   terrainMovingSpeed: 0.18,
 };
@@ -262,9 +263,10 @@ function scanConfig(){
     terrainApplyInterval: clamp(finiteNumber(CFG.terrainApplyInterval, 0.14), 0.02, 2),
     terrainApplyOps: safeInt(CFG.terrainApplyOpsPerTick, 1, 0, 8),
     terrainVisibleInterval: clamp(finiteNumber(CFG.terrainApplyVisibleInterval, 0.75), 0.05, 6),
+    terrainAllowVisible: CFG.terrainAllowVisibleCommits === true,
     terrainApplySlowFrameMs: safeInt(CFG.terrainApplySlowFrameMs, 24, 0, 250),
     terrainApplySearchLimit: safeInt(CFG.terrainApplySearchLimit, 256, 8, 4096),
-    terrainVisibleMargin: safeInt(CFG.terrainVisibleMarginTiles, 3, 0, 32),
+    terrainVisibleMargin: safeInt(CFG.terrainVisibleMarginTiles, CHUNK_W + 3, 0, CHUNK_W * 2),
     terrainPlayerMargin: clamp(finiteNumber(CFG.terrainPlayerMarginTiles, 1.25), 0, 8),
     terrainMovingSpeed: clamp(finiteNumber(CFG.terrainMovingSpeed, 0.18), 0, 20),
   };
@@ -1006,7 +1008,7 @@ function applyTerrainPlan(getTile, setTile, player, s, sc, opts){
     return 0;
   }
   const moving = terrainInputActive(player, opts, sc);
-  const allowVisible = !moving && terrainVisibleApplyAcc >= sc.terrainVisibleInterval;
+  const allowVisible = sc.terrainAllowVisible && !moving && terrainVisibleApplyAcc >= sc.terrainVisibleInterval;
   const started = typeof performance !== 'undefined' && performance.now ? performance.now() : 0;
   let applied = 0;
   let visibleApplied = 0;

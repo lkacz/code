@@ -129,6 +129,20 @@ const turrets = (function(){
     return true;
   }
 
+  function wrapTarget(kind,raw,x,y,hp,extra){
+    const tx=Number.isFinite(extra && extra.tx) ? Math.floor(extra.tx) : Math.floor(x);
+    const ty=Number.isFinite(extra && extra.ty) ? Math.floor(extra.ty) : Math.floor(y);
+    return Object.assign({kind,raw,x,y,tx,ty,hp},extra||{});
+  }
+  function targetEntity(target){
+    return target && (target.raw || target.mob || target.boss || null);
+  }
+  function targetDistance2(m,target){
+    const c=targetCoords(target);
+    if(!c) return Infinity;
+    const dx=c.x-(m.x+0.5), dy=c.y-(m.y+0.5);
+    return dx*dx+dy*dy;
+  }
   function nearestMobTarget(m,getTile){
     const cfg=cfgFor(m.kind);
     const sx=m.x+0.5, sy=m.y+0.5;
@@ -141,8 +155,55 @@ const turrets = (function(){
     if(!target || !(target.hp>0)) return null;
     const tx=Number(target.x), ty=Number(target.y);
     if(!Number.isFinite(tx) || !Number.isFinite(ty)) return null;
-    if(!lineClear(sx,sy,tx,ty,getTile,m.x,m.y)) return null;
-    return target;
+    const out=wrapTarget('mob',target,tx,ty,target.hp,{mob:target});
+    if(!lineClear(sx,sy,tx,ty,getTile,m.x,m.y,out.tx,out.ty)) return null;
+    return out;
+  }
+  function nearestBossTarget(m,getTile,onlyBoss){
+    const cfg=cfgFor(m.kind);
+    const sx=m.x+0.5, sy=m.y+0.5;
+    let targets=[];
+    try{
+      if(MM.bosses && MM.bosses.targetsForTurret){
+        targets=MM.bosses.targetsForTurret(sx,sy,cfg.range,onlyBoss) || [];
+      }else if(MM.bosses && MM.bosses.nearestForTurret){
+        const target=MM.bosses.nearestForTurret(sx,sy,cfg.range,onlyBoss);
+        targets=target ? [target] : [];
+      }
+    }catch(e){ targets=[]; }
+    for(const target of targets){
+      const tx=Number(target && target.x), ty=Number(target && target.y);
+      if(!Number.isFinite(tx) || !Number.isFinite(ty)) continue;
+      const out=wrapTarget('boss',target.boss || target.raw || target,tx,ty,target.hp || 1,Object.assign({},target,{boss:target.boss || target.raw || target}));
+      if(!lineClear(sx,sy,tx,ty,getTile,m.x,m.y,out.tx,out.ty)) continue;
+      return out;
+    }
+    return null;
+  }
+  function nearestUfoTarget(m,getTile){
+    const cfg=cfgFor(m.kind);
+    const sx=m.x+0.5, sy=m.y+0.5;
+    let craft=null;
+    try{
+      if(MM.ufo && MM.ufo.current) craft=MM.ufo.current();
+    }catch(e){ craft=null; }
+    if(!craft || !(craft.hp>0)) return null;
+    const tx=Number(craft.x), ty=Number(craft.y);
+    if(!Number.isFinite(tx) || !Number.isFinite(ty)) return null;
+    const dx=tx-sx, dy=ty-sy;
+    if(dx*dx+dy*dy>cfg.range*cfg.range) return null;
+    const out=wrapTarget('ufo',craft,tx,ty,craft.hp,{ufo:craft});
+    if(!lineClear(sx,sy,tx,ty,getTile,m.x,m.y,out.tx,out.ty)) return null;
+    return out;
+  }
+  function nearestHostileTarget(m,getTile){
+    const targets=[nearestMobTarget(m,getTile), nearestBossTarget(m,getTile), nearestUfoTarget(m,getTile)].filter(Boolean);
+    let best=null, bd=Infinity;
+    for(const t of targets){
+      const d=targetDistance2(m,t);
+      if(d<bd){ bd=d; best=t; }
+    }
+    return best;
   }
   function nearestFireTarget(m,getTile){
     if(m.kind!=='water' || !MM.fire || typeof MM.fire.isBurning!=='function') return null;
@@ -170,15 +231,60 @@ const turrets = (function(){
     if(!target) return null;
     const x=Number(target.x), y=Number(target.y);
     if(!Number.isFinite(x) || !Number.isFinite(y)) return null;
-    return {x,y,tx:Math.floor(x),ty:Math.floor(y),fire:target.kind==='fire'};
+    const tx=Number.isFinite(target.tx) ? Math.floor(target.tx) : Math.floor(x);
+    const ty=Number.isFinite(target.ty) ? Math.floor(target.ty) : Math.floor(y);
+    return {x,y,tx,ty,fire:target.kind==='fire'};
+  }
+  function refreshTarget(m,target,getTile){
+    if(!target) return null;
+    if(target.kind==='mob'){
+      const mob=targetEntity(target);
+      if(!mob || !(mob.hp>0)) return null;
+      const x=Number(mob.x), y=Number(mob.y);
+      if(!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      target.x=x; target.y=y; target.tx=Math.floor(x); target.ty=Math.floor(y); target.hp=mob.hp;
+      return target;
+    }
+    if(target.kind==='boss'){
+      const boss=target.boss || targetEntity(target);
+      if(!boss || boss.dead) return null;
+      const part=target.part;
+      if(part && part.hp>0 && (!Array.isArray(boss.parts) || boss.parts.includes(part))){
+        const x=Number(boss.x)+Number(part.dx)+0.5;
+        const y=Number(boss.y)+Number(part.dy)+0.5;
+        if(Number.isFinite(x) && Number.isFinite(y)){
+          target.x=x; target.y=y; target.tx=Math.floor(x); target.ty=Math.floor(y); target.hp=part.hp; target.raw=boss; target.boss=boss;
+          return target;
+        }
+      }
+      const fresh=nearestBossTarget(m,getTile,boss);
+      if(!fresh) return null;
+      const x=Number(fresh.x), y=Number(fresh.y);
+      if(!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      target.x=x; target.y=y; target.tx=Number.isFinite(fresh.tx)?Math.floor(fresh.tx):Math.floor(x); target.ty=Number.isFinite(fresh.ty)?Math.floor(fresh.ty):Math.floor(y);
+      target.hp=fresh.hp || 1; target.boss=fresh.boss || boss; target.raw=target.boss; target.part=fresh.part;
+      return target;
+    }
+    if(target.kind==='ufo'){
+      let craft=null;
+      try{ if(MM.ufo && MM.ufo.current) craft=MM.ufo.current(); }catch(e){ craft=null; }
+      if(!craft || !(craft.hp>0)) return null;
+      const x=Number(craft.x), y=Number(craft.y);
+      if(!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      target.x=x; target.y=y; target.tx=Math.floor(x); target.ty=Math.floor(y); target.hp=craft.hp; target.ufo=craft; target.raw=craft;
+      return target;
+    }
+    return target;
   }
   function targetStillValid(m,target,getTile){
+    target=refreshTarget(m,target,getTile);
+    if(!target) return false;
     const c=targetCoords(target);
     if(!c) return false;
     if(c.fire){
       try{ if(!MM.fire || typeof MM.fire.isBurning!=='function' || !MM.fire.isBurning(target.tx,target.ty)) return false; }catch(e){ return false; }
     }else if(!(target.hp>0)) return false;
-    return lineClear(m.x+0.5,m.y+0.5,c.x,c.y,getTile,m.x,m.y,c.fire?target.tx:undefined,c.fire?target.ty:undefined);
+    return lineClear(m.x+0.5,m.y+0.5,c.x,c.y,getTile,m.x,m.y,c.tx,c.ty);
   }
 
   function damageAt(tx,ty,dmg){
@@ -239,10 +345,11 @@ const turrets = (function(){
     }else if(kind==='water'){
       if(target && target.kind==='fire') return extinguishFireTarget(tx,ty);
       try{ if(MM.mobs && MM.mobs.douseRadius) MM.mobs.douseRadius(tx+0.5,ty+0.5,1.6); }catch(e){}
-      if(target){
+      const entity=targetEntity(target) || target;
+      if(entity){
         try{
-          target.vx=(Number(target.vx)||0)+dx*1.8;
-          target.vy=(Number(target.vy)||0)+dy*0.45-0.15;
+          entity.vx=(Number(entity.vx)||0)+dx*1.8;
+          entity.vy=(Number(entity.vy)||0)+dy*0.45-0.15;
         }catch(e){}
       }
       try{
@@ -363,7 +470,7 @@ const turrets = (function(){
       chargeFromNetwork(m,dt,getTile,dynamo);
       if(m.scanT<=0){
         m.scanT=cfg.scan+Math.random()*0.08;
-        m.target=nearestMobTarget(m,getTile);
+        m.target=nearestHostileTarget(m,getTile);
         if(!m.target && m.kind==='water') m.target=nearestFireTarget(m,getTile);
         if(m.target){
           const c=targetCoords(m.target);
@@ -375,7 +482,11 @@ const turrets = (function(){
         }
       }
       if(m.target && m.cooldown<=0 && (m.energy||0)+1e-6>=cfg.cost && hasWaterForShot(m)){
-        const target=m.target;
+        const target=refreshTarget(m,m.target,getTile);
+        if(!target){
+          m.target=null;
+          continue;
+        }
         const c=targetCoords(target);
         const dx=c ? c.x-(m.x+0.5) : 0, dy=c ? c.y-(m.y+0.5) : 0;
         const d=Math.hypot(dx,dy);
@@ -600,7 +711,7 @@ const turrets = (function(){
     metrics,
     receiveWaterAt,
     waterNeedAt,
-    _debug:{machines,shots,puffs,TURRET_CAPACITY,CHARGE_RATE,CFG,WATER_TURRET_TANK,WATER_TURRET_START_WATER,WATER_TURRET_WATER_PER_SHOT,debugChargeAt,debugSetEnergyAt,debugSetWaterAt,ensureMachine,nearestMobTarget}
+    _debug:{machines,shots,puffs,TURRET_CAPACITY,CHARGE_RATE,CFG,WATER_TURRET_TANK,WATER_TURRET_START_WATER,WATER_TURRET_WATER_PER_SHOT,debugChargeAt,debugSetEnergyAt,debugSetWaterAt,ensureMachine,nearestMobTarget,nearestBossTarget,nearestUfoTarget,nearestHostileTarget}
   };
   MM.turrets=api;
   return api;

@@ -23,8 +23,10 @@ const getTile = (x,y)=>tiles.get(key(x,y)) ?? T.AIR;
 
 function makeCtx(){
   const calls=[];
+  const quadratics=[];
   return {
     calls,
+    quadratics,
     fillStyle:'',
     strokeStyle:'',
     lineWidth:1,
@@ -42,7 +44,7 @@ function makeCtx(){
     lineTo(){ calls.push('lineTo'); },
     arc(){ calls.push('arc'); },
     ellipse(){ calls.push('ellipse'); },
-    quadraticCurveTo(){ calls.push('quadraticCurveTo'); },
+    quadraticCurveTo(...args){ calls.push('quadraticCurveTo'); quadratics.push(args); },
     stroke(){ calls.push('stroke'); },
     fill(){ calls.push('fill'); },
     fillRect(){ calls.push('fillRect'); },
@@ -66,6 +68,48 @@ assert.equal(undiscoveredCtx.calls.length, 0, 'undiscovered vegetation and diamo
 const rememberedDiamondCtx = makeCtx();
 grass.drawOverlays(rememberedDiamondCtx,'back',0,4,1,3,20,WORLD_H,getTile,T,1,1,1,(x,y)=>x===0 && y===5);
 assert.ok(rememberedDiamondCtx.calls.includes('fillRect'), 'remembered diamond still gets its shimmer pass');
+
+const originalPerformanceNow = globalThis.performance && globalThis.performance.now
+  ? globalThis.performance.now.bind(globalThis.performance)
+  : null;
+if(!globalThis.performance) globalThis.performance = {};
+function setPerfNow(ms){
+  try{ Object.defineProperty(globalThis.performance, 'now', {value:()=>ms, configurable:true}); }
+  catch(e){ globalThis.performance.now = ()=>ms; }
+}
+function grassGeometryForWind(speed, nowMs, extraMetrics){
+  setPerfNow(nowMs);
+  grass.reset();
+  const baseMetrics = {
+    speed,
+    intensity:Math.min(1, Math.abs(speed)/5.2),
+    storm:0,
+    thermal:0,
+    night:0,
+    squall:{active:false, speed:0}
+  };
+  globalThis.MM.wind = { metrics(){ return Object.assign({}, baseMetrics, extraMetrics||{}); } };
+  const ctx = makeCtx();
+  grass.drawOverlays(ctx,'back',0,4,4,3,20,WORLD_H,getTile,T,1,1,1,()=>true);
+  assert.ok(ctx.quadratics.length > 0, 'grass blades draw for wind responsiveness check');
+  return {
+    topX:ctx.quadratics.reduce((sum,args)=>sum+args[2],0) / ctx.quadratics.length,
+    midX:ctx.quadratics.reduce((sum,args)=>sum+args[0],0) / ctx.quadratics.length
+  };
+}
+const calmGrassEarly = grassGeometryForWind(0, 1234);
+const calmGrassLate = grassGeometryForWind(0, 98765);
+assert.deepEqual(calmGrassLate, calmGrassEarly, 'calm wind leaves grass geometry still across frames');
+const rightWindGrass = grassGeometryForWind(5, 1234);
+const leftWindGrass = grassGeometryForWind(-5, 1234);
+assert.ok(rightWindGrass.topX > calmGrassEarly.topX + 2, `right wind pushes grass tips right (${calmGrassEarly.topX.toFixed(2)} -> ${rightWindGrass.topX.toFixed(2)})`);
+assert.ok(leftWindGrass.topX < calmGrassEarly.topX - 2, `left wind pushes grass tips left (${calmGrassEarly.topX.toFixed(2)} -> ${leftWindGrass.topX.toFixed(2)})`);
+assert.ok(rightWindGrass.topX > leftWindGrass.topX + 4, `grass bends with wind direction (${leftWindGrass.topX.toFixed(2)} -> ${rightWindGrass.topX.toFixed(2)})`);
+globalThis.MM.wind = null;
+if(originalPerformanceNow){
+  try{ Object.defineProperty(globalThis.performance, 'now', {value:originalPerformanceNow, configurable:true}); }
+  catch(e){ globalThis.performance.now = originalPerformanceNow; }
+}
 
 particles.reset();
 particles.spawnBurst(5*20, 5*20, 'common');
@@ -156,6 +200,11 @@ mobs.draw(rememberedMobCtx,20,0,0,1,(x,y)=>x===5 && y===5);
 assert.ok(rememberedMobCtx.calls.includes('fillRect'), 'remembered animals still draw');
 
 const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+const grassSource = readFileSync(new URL('../src/engine/grass.js', import.meta.url), 'utf8');
+assert.match(grassSource, /W\.metrics\(\)/, 'grass samples shared wind metrics once per overlay pass');
+assert.match(grassSource, /wind\.storm/, 'grass motion reacts to storm wind flavor');
+assert.match(grassSource, /wind\.squall/, 'grass motion reacts to squall wind flavor');
+assert.doesNotMatch(grassSource, /speedAt\(/, 'grass avoids per-tile wind exposure scans while drawing blades');
 assert.match(mainSource, /function drawSandGrains\(g,px,py,h\)/, 'sand has a dedicated grain renderer');
 assert.match(mainSource, /const TERRAIN_PATTERN_VARIANTS = 6;/, 'terrain renderer has multiple deterministic texture variants');
 assert.match(mainSource, /function terrainTextureVariant\(t,wx,y,h\)/, 'terrain texture variants are chosen from world coordinates');
