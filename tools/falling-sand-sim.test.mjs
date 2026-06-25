@@ -1,6 +1,7 @@
 // Falling-sand regressions: save/autosave freezes airborne grains into tiles.
 // That path must form a pile instead of stacking every grain into one column.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 globalThis.window = globalThis;
 globalThis.MM = {};
@@ -56,6 +57,15 @@ function buildRect(t,x0,x1,y0,y1){
     for(let y=y0; y<=y1; y++) setTile(x,y,t);
   }
 }
+function placeBuilt(t,x,y){
+  setTile(x,y,t);
+  fallingSolids.afterPlacement(x,y);
+}
+function placeBuiltRect(t,x0,x1,y0,y1){
+  for(let x=x0; x<=x1; x++){
+    for(let y=y0; y<=y1; y++) placeBuilt(t,x,y);
+  }
+}
 function assertSettledState(label){
   const snap=fallingSolids.snapshot();
   assert.equal(snap.active.length, 0, label+' leaves no rigid falling bodies');
@@ -69,6 +79,34 @@ function stepFalling(seconds,dt=1/60){
     fallingSolids.update(getTile,setTile,d);
     t+=d;
   }
+}
+function makeDrawCtx(){
+  const calls=[];
+  return {
+    calls,
+    fillStyle:'',
+    strokeStyle:'',
+    lineWidth:1,
+    save(){ calls.push('save'); },
+    restore(){ calls.push('restore'); },
+    beginPath(){ calls.push('beginPath'); },
+    closePath(){ calls.push('closePath'); },
+    moveTo(){ calls.push('moveTo'); },
+    lineTo(){ calls.push('lineTo'); },
+    stroke(){ calls.push('stroke'); },
+    fill(){ calls.push('fill'); },
+    fillRect(){ calls.push('fillRect'); },
+    strokeRect(){ calls.push('strokeRect'); }
+  };
+}
+function supportedCantileverCells(t,span=25){
+  reset();
+  setFlatSurface(60);
+  fillFloor(60,-40,40);
+  placeBuiltRect(t,0,0,55,59);
+  placeBuiltRect(t,0,span,54,54);
+  fallingSolids.settleAll();
+  return countRegionTile(t,0,span,54,54);
 }
 
 {
@@ -179,6 +217,247 @@ function stepFalling(seconds,dt=1/60){
   assert.ok(pile.counts.size>=4, 'immediate-save sand release spreads before being frozen into the world');
   assert.ok(pile.max<=3, 'released sand column settles as a low pile, not a chimney');
   assertSettledState('immediate-save release');
+}
+
+{
+  reset();
+  setFlatSurface(60);
+  fillFloor(60,-30,30);
+  assert.equal(fallingSolids.canSupportPlacement(6,40,T.STONE).ok,false,'placement support check rejects a block floating in open air');
+  setTile(0,50,T.STONE);
+  assert.equal(fallingSolids.canSupportPlacement(1,50,T.STONE).ok,true,'placement support check still allows a short wall-attached block');
+}
+
+{
+  reset();
+  setFlatSurface(60);
+  fillFloor(60,-30,30);
+  setTile(0,50,T.WATER_PUMP);
+  assert.equal(fallingSolids.canSupportPlacement(1,50,T.STONE).ok,false,'machines do not count as building-physics anchors');
+  setTile(0,50,T.BEDROCK);
+  assert.equal(fallingSolids.canSupportPlacement(1,50,T.STONE).ok,true,'terrain anchors still support wall-attached building blocks');
+}
+
+{
+  reset();
+  fillFloor(40,-10,10);
+  setTile(0,21,T.STONE);
+  setTile(0,20,T.TURRET);
+  fallingSolids.afterPlacement(0,20);
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,20),T.TURRET,'solid machine stays put while it has footing');
+  setTile(0,21,T.AIR);
+  fallingSolids.onTileRemoved(0,21);
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,20),T.AIR,'solid machine leaves its unsupported original cell');
+  assert.equal(getTile(0,39),T.TURRET,'unsupported solid machine falls onto the floor');
+}
+
+{
+  reset();
+  fillFloor(40,-10,10);
+  setTile(-1,20,T.STONE);
+  setTile(0,20,T.WATER_PUMP);
+  fallingSolids.afterPlacement(0,20);
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,20),T.WATER_PUMP,'side-braced machine can hang from a terrain wall');
+  setTile(-1,20,T.AIR);
+  fallingSolids.onTileRemoved(-1,20);
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,39),T.WATER_PUMP,'side-braced machine falls when the wall brace is removed');
+}
+
+{
+  reset();
+  fillFloor(40,-10,10);
+  setTile(5,20,T.CHEST_RARE);
+  fallingSolids.auditChunks([0],{force:true,immediate:true});
+  fallingSolids.settleAll();
+  assert.equal(getTile(5,20),T.AIR,'chunk audit discovers floating object tiles from older/generated worlds');
+  assert.equal(getTile(5,39),T.CHEST_RARE,'unsupported chest falls as a rigid object');
+}
+
+{
+  reset();
+  fillFloor(40,-10,10);
+  setTile(-1,20,T.STONE);
+  setTile(0,20,T.TORCH);
+  fallingSolids.afterPlacement(0,20);
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,20),T.TORCH,'torch remains while attached to a solid neighbor');
+  setTile(-1,20,T.AIR);
+  fallingSolids.onTileRemoved(-1,20);
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,20),T.AIR,'orphaned torch breaks instead of hovering');
+}
+
+{
+  reset();
+  setFlatSurface(60);
+  fillFloor(60,-30,30);
+  placeBuiltRect(T.STONE,0,0,55,59);
+  let accepted=0;
+  let denied=null;
+  for(let x=0; x<30; x++){
+    const support=fallingSolids.canSupportPlacement(x,54,T.STONE);
+    if(!support.ok){ denied={x,reason:support.reason}; break; }
+    placeBuilt(T.STONE,x,54);
+    accepted++;
+  }
+  assert.ok(denied && denied.x<30,'placement support check stops zipper-building a screen-wide floating stone slab');
+  assert.ok(accepted>=4,'placement support check still allows a short practical cantilever before the limit');
+}
+
+{
+  const glass=supportedCantileverCells(T.GLASS);
+  const ice=supportedCantileverCells(T.ICE);
+  const stone=supportedCantileverCells(T.STONE);
+  const wood=supportedCantileverCells(T.WOOD);
+  const granite=supportedCantileverCells(T.GRANITE);
+  const basalt=supportedCantileverCells(T.BASALT);
+  const obsidian=supportedCantileverCells(T.OBSIDIAN);
+  const diamond=supportedCantileverCells(T.DIAMOND);
+  const antimatter=supportedCantileverCells(T.ANTIMATTER_CRYSTAL);
+  const steel=supportedCantileverCells(T.STEEL);
+  const meteoric=supportedCantileverCells(T.METEORIC_IRON);
+  const iridium=supportedCantileverCells(T.IRIDIUM);
+  assert.ok(glass<=2,'player-built glass is brittle and cannot form a long cantilever');
+  assert.ok(ice>glass && stone>ice,'stone carries a longer span than fragile glass or ice');
+  assert.ok(wood>=stone,'wood flexibility offsets some of its lower strength in simple spans');
+  assert.ok(granite>=stone && basalt>=granite && obsidian>=basalt,'harder rock variants improve span capacity over plain stone');
+  assert.ok(diamond>=stone,'player-built diamond uses the material support graph instead of loose-ore falling');
+  assert.ok(antimatter>=obsidian,'antimatter crystal is treated as a strong but brittle exotic building material');
+  assert.ok(steel>=Math.max(obsidian,antimatter)+5,'steel frame physics carries far longer spans than stone-family or crystal materials');
+  assert.ok(meteoric>=steel && iridium>=meteoric,'advanced metals are strongest in the building solver');
+}
+
+{
+  const glass=supportedCantileverCells(T.GLASS);
+  const electronics=supportedCantileverCells(T.ELECTRONICS);
+  const dirt=supportedCantileverCells(T.DIRT);
+  const mud=supportedCantileverCells(T.MUD);
+  const coal=supportedCantileverCells(T.COAL);
+  const radioactive=supportedCantileverCells(T.RADIOACTIVE_ORE);
+  const biomass=supportedCantileverCells(T.ALIEN_BIOMASS);
+  const stone=supportedCantileverCells(T.STONE);
+  assert.ok(electronics<=glass+1,'electronics behave as fragile hardware, not generic stone');
+  assert.ok(dirt<=coal && mud<=coal,'soil-like materials stay weaker than compact coal');
+  assert.ok(radioactive>coal && radioactive<stone,'dense radioactive ore is brittle enough to underperform stone spans');
+  assert.ok(biomass>coal && biomass<stone,'alien biomass flexes farther than coal but remains weaker than stone');
+}
+
+{
+  reset();
+  setFlatSurface(60);
+  fillFloor(60,-30,30);
+  buildRect(T.WOOD,0,0,55,59);
+  buildRect(T.WOOD,0,12,54,54);
+  fallingSolids.auditChunks([0],{force:true,immediate:true});
+  fallingSolids.settleAll();
+  assert.ok(fallingSolids.metrics().built>0,'chunk audit migrates old-save suspended structures into player-built physics');
+  assert.ok(fallingSolids.metrics().stress>0,'migrated old-save bridge shows visible stress warnings');
+  assert.ok(countRegionTile(T.WOOD,10,12,54,54)<3,'migrated overextended bridge can break without being rebuilt');
+}
+
+{
+  reset();
+  setFlatSurface(10);
+  fillFloor(10,-5,5);
+  setTile(0,9,T.WOOD);
+  setTile(0,8,T.WOOD);
+  setTile(-1,7,T.LEAF);
+  setTile(0,7,T.LEAF);
+  setTile(1,7,T.LEAF);
+  fallingSolids.auditChunks([0],{force:true,immediate:true});
+  fallingSolids.settleAll();
+  assert.equal(fallingSolids.metrics().built,0,'legacy migration does not mark natural-looking tree trunks as player-built stress frames');
+  assert.equal(fallingSolids.metrics().stress,0,'natural-looking tree trunks do not get building stress cracks');
+}
+
+{
+  reset();
+  setFlatSurface(60);
+  fillFloor(60,-30,30);
+  placeBuiltRect(T.WOOD,0,0,55,59);
+  placeBuiltRect(T.WOOD,0,8,54,54);
+  fallingSolids.settleAll();
+  assert.equal(countRegionTile(T.WOOD,0,8,54,54),9,'supported player-built wooden platform stays in place');
+  assert.ok(fallingSolids.metrics().stress>0,'near-limit player-built platform shows structural stress warnings');
+  const stress=fallingSolids._debug().stress;
+  assert.ok(stress.some(c=>c.ratio>=fallingSolids._debug().thresholds.warn),'stress debug exposes visible warning intensity');
+  const stressCtx=makeDrawCtx();
+  fallingSolids.draw(stressCtx,20,()=>true);
+  assert.ok(stressCtx.calls.includes('strokeRect') && stressCtx.calls.includes('stroke'),'stress warning draws a visible cracked overlay');
+  const snap=fallingSolids.snapshot();
+  assert.equal(snap.v,5,'falling save schema tracks general player-built structures');
+  assert.ok(Array.isArray(snap.playerBuilt) && snap.playerBuilt.length>=14,'player-built support graph is saved');
+
+  fallingSolids.restore(snap);
+  fallingSolids.settleAll();
+  assert.ok(fallingSolids.metrics().stress>0,'restored player-built structures recalculate visible stress warnings');
+  for(let y=55; y<=59; y++){
+    setTile(0,y,T.AIR);
+    fallingSolids.onTileRemoved(0,y);
+  }
+  fallingSolids.settleAll();
+  assert.equal(countRegionTile(T.WOOD,0,8,54,54),0,'player-built platform falls when its support column is removed');
+  assert.equal(countRegionTile(T.WOOD,-2,10,55,60),9,'unsupported player-built platform lands lower instead of vanishing');
+  assert.equal(fallingSolids.metrics().built,0,'fallen player-built platform becomes rubble, not a new floating structure');
+}
+
+{
+  reset();
+  setFlatSurface(60);
+  fillFloor(60,-30,30);
+  placeBuiltRect(T.WOOD,0,0,55,59);
+  placeBuiltRect(T.WOOD,0,14,54,54);
+  fallingSolids.settleAll();
+  assert.equal(countRegionTile(T.WOOD,0,9,54,54),10,'short portion of a player-built cantilever remains supported');
+  assert.equal(countRegionTile(T.WOOD,10,14,54,54),0,'overloaded player-built cantilever tail breaks away');
+  assert.equal(countRegionTile(T.WOOD,10,14,55,60),5,'overloaded cantilever tail falls down as physical blocks');
+  assert.ok(fallingSolids.metrics().stress>0,'remaining cantilever exposes the highest-tension blocks visually');
+  assert.ok(fallingSolids.metrics().breaks>0,'overloaded cantilever leaves a visible snap/break flash');
+}
+
+{
+  reset();
+  setFlatSurface(60);
+  fillFloor(60,-30,30);
+  placeBuiltRect(T.WOOD,0,0,55,59);
+  placeBuiltRect(T.WOOD,0,8,54,54);
+  fallingSolids.settleAll();
+  const before=fallingSolids._debug().stress.find(c=>c.x===8 && c.y===54);
+  assert.ok(before && before.ratio>0.7,'test starts with a visibly stressed cantilever tail');
+  setTile(9,54,T.BEDROCK);
+  fallingSolids.afterPlacement(9,54);
+  fallingSolids.settleAll();
+  const after=fallingSolids._debug().stress.find(c=>c.x===8 && c.y===54);
+  assert.ok(!after || after.ratio<before.ratio,'placing a terrain side brace wakes and relaxes the stressed component');
+}
+
+{
+  reset();
+  setFlatSurface(60);
+  fillFloor(60,-30,30);
+  fillFloor(70,-30,30);
+  placeBuiltRect(T.WOOD,0,0,55,59);
+  placeBuiltRect(T.WOOD,0,8,54,54);
+  fallingSolids.settleAll();
+  for(let y=55; y<=59; y++){
+    setTile(0,y,T.AIR);
+    fallingSolids.onTileRemoved(0,y);
+  }
+  fallingSolids.settleAll();
+  assert.equal(countRegionTile(T.WOOD,0,8,59,59),9,'collapsed wooden platform settles as debris on the upper floor');
+  assert.equal(fallingSolids.metrics().built,0,'collapsed wooden debris is not reclassified as a new building frame');
+  assert.equal(fallingSolids.metrics().debris,9,'collapsed wooden debris remains tracked for future support removals');
+  for(let x=-2; x<=10; x++){
+    setTile(x,60,T.AIR);
+    fallingSolids.onTileRemoved(x,60);
+  }
+  fallingSolids.settleAll();
+  assert.equal(countRegionTile(T.WOOD,0,8,69,69),9,'undercut wooden debris falls again onto the lower floor');
+  assert.equal(fallingSolids.metrics().built,0,'re-settled wooden debris still does not join the build graph');
 }
 
 {
@@ -375,6 +654,16 @@ function stepFalling(seconds,dt=1/60){
   reset();
   setFlatSurface(130);
   fillFloor(130,-80,80);
+  for(let y=129; y>=30; y--) placeBuilt(T.STEEL,0,y);
+  fallingSolids.settleAll();
+  assert.equal(countRegionTile(T.STEEL,0,0,30,129),100,'100-high player-placed steel chimney keeps the same vertical stability as the pillar solver');
+  assert.equal(fallingSolids.metrics().breaks,0,'stable player-placed steel chimney does not shed blocks through the stress graph');
+}
+
+{
+  reset();
+  setFlatSurface(130);
+  fillFloor(130,-80,80);
   buildRect(T.STEEL,0,0,29,129);
   fallingSolids.afterPlacement(0,29);
   fallingSolids.settleAll();
@@ -383,4 +672,10 @@ function stepFalling(seconds,dt=1/60){
 }
 
 fallingSolids.reset();
+
+const mainSource=readFileSync(new URL('../src/main.js', import.meta.url),'utf8');
+assert.match(mainSource,/FALLING && FALLING\.canSupportPlacement/,'main placement preview/rejection uses the structural support solver');
+assert.match(mainSource,/checkedStructural/,'main falls back to contact support only for non-structural placements');
+assert.match(mainSource,/if\(v\.chest\)\{ setTile\(tx,ty,id\); if\(FALLING && FALLING\.afterPlacement\) FALLING\.afterPlacement\(tx,ty\); return; \}/,'main wakes falling physics after chest placement');
+
 console.log('falling sand simulation tests passed');

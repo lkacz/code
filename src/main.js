@@ -3560,11 +3560,19 @@ function canPlaceAt(tx,ty){
 		if(blocked) return {ok:false, reason:blocked};
 	}
 	if(!chest && !godMode && id!==T.SAND && id!==T.WATER){
-		// Support: anything below, or a non-fluid neighbour on either side / above (wall & ceiling builds)
-		const below=getTile(tx,ty+1);
-		const support = (below!==T.AIR && below!==T.WATER && !(INFO[below] && INFO[below].gas))
-			|| [[1,0],[-1,0],[0,-1]].some(([dx,dy])=>{ const n=getTile(tx+dx,ty+dy); return n!==T.AIR && n!==T.WATER && !(INFO[n] && INFO[n].gas); });
-		if(!support) return {ok:false, reason:'Brak podparcia'};
+		let checkedStructural=false;
+		if(FALLING && FALLING.canSupportPlacement){
+			const structural=FALLING.canSupportPlacement(tx,ty,id);
+			checkedStructural=!!(structural && structural.applies);
+			if(checkedStructural && !structural.ok) return {ok:false, reason:structural.reason||'Brak podparcia'};
+		}
+		if(!checkedStructural){
+			// Fallback when the physics module is unavailable: direct footing or a wall/ceiling contact.
+			const below=getTile(tx,ty+1);
+			const support = (below!==T.AIR && below!==T.WATER && !(INFO[below] && INFO[below].gas))
+				|| [[1,0],[-1,0],[0,-1]].some(([dx,dy])=>{ const n=getTile(tx+dx,ty+dy); return n!==T.AIR && n!==T.WATER && !(INFO[n] && INFO[n].gas); });
+			if(!support) return {ok:false, reason:'Brak podparcia'};
+		}
 	}
 	if(!chest && !haveBlocksFor(id)) return {ok:false, reason:'Brak bloków'};
 	return {ok:true, id, chest, replacedWater:cur===T.WATER};
@@ -3573,7 +3581,7 @@ function tryPlace(tx,ty){
 	const v=canPlaceAt(tx,ty);
 	if(!v.ok){ if(v.reason) msg(v.reason); return; }
 	const id=v.id; const prevRaw=getTile(tx,ty); const prev=isGasTileId(prevRaw)?T.AIR:prevRaw;
-	if(v.chest){ setTile(tx,ty,id); return; }
+	if(v.chest){ setTile(tx,ty,id); if(FALLING && FALLING.afterPlacement) FALLING.afterPlacement(tx,ty); return; }
 	if(v.structure==='dynamo'){ placeDynamoStructure(v); return; }
 	if(v.overlay){
 		const oldOver=getInfrastructureTile(tx,ty);
