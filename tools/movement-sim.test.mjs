@@ -61,6 +61,8 @@ assert.match(mainSource, /if\(frameClock\.resetFrames>0\)/, 'frame loop skips ca
 assert.match(mainSource, /const FRAME_CAP_FPS=120;/, 'game loop defaults to a 120 FPS cap');
 assert.match(mainSource, /function shouldSkipFrameForCap\(ts\)/, 'game loop has a frame-cap scheduler');
 assert.match(mainSource, /if\(shouldSkipFrameForCap\(ts\)\)\{ requestAnimationFrame\(loop\); return; \}/, 'frame cap skips before simulation and rendering work');
+assert.match(mainSource, /elapsed<FRAME_CAP_MS-0\.35/, 'frame cap skips sub-120-FPS-deadline rAF callbacks');
+assert.match(mainSource, /frameCapRafLast \+= FRAME_CAP_MS\*Math\.max\(1, Math\.min\(8, missed\)\)/, 'frame cap advances a virtual deadline instead of only using integer refresh divisors');
 assert.match(mainSource, /localStorage\.setItem\(FRAME_CAP_STORAGE_KEY/, 'FPS cap menu setting is persisted');
 assert.match(indexSource, /id="fpsUnlockCheckbox"/, 'menu exposes an FPS unlock checkbox');
 assert.match(indexSource, /id="fpsCapLabel"/, 'menu exposes the current FPS cap state');
@@ -71,10 +73,12 @@ assert.match(mainSource, /try \{\s+\/\/ render tiles[\s\S]*finally \{\s+ctx\.res
 assert.ok(!mainSource.includes('player.y += bob'), 'surface-water bob must stay visual/velocity based and not mutate hero position directly');
 assert.match(mainSource, /const TURBO_SPEED_MULT=1\.5;/, 'turbo speed multiplier is 1.5x');
 assert.match(mainSource, /const TURBO_JUMP_MULT=1\.5;/, 'turbo jump multiplier is 1.5x');
-assert.match(mainSource, /keys\['shiftleft'\]/, 'turbo listens to physical Left Shift');
+assert.match(mainSource, /function turboKeyHeld\(\)\{ return !!\(keys\['shift'\]\|\|keys\['shiftleft'\]\|\|keys\['shiftright'\]\); \}/, 'turbo listens to either Shift key');
 assert.match(mainSource, /moveMult = [^;]*\* turboSpeedMult;/, 'turbo speed feeds horizontal movement');
 assert.match(mainSource, /jumpMult = [^;]*\* turboJumpMult;/, 'turbo jump feeds jump impulse');
 assert.match(mainSource, /spendTurboEnergy\(dt\)/, 'turbo consumes hero energy while active');
+assert.match(mainSource, /turboRechargePauseT=Math\.max\(turboRechargePauseT,0\.18\)/, 'turbo spending briefly blocks passive recharge so cost is visible');
+assert.match(mainSource, /if\(!turboRechargeBlocked && DYNAMO && typeof DYNAMO\.absorbNear==='function'/, 'passive dynamo recharge does not immediately erase turbo spending');
 assert.match(mainSource, /spawnTurboSparks/, 'turbo emits electric spark feedback');
 
 console.log('movement-sim: all assertions passed');

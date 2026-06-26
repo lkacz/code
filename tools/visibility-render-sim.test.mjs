@@ -130,8 +130,9 @@ particles.draw(driftSmokeCtx,(x,y)=>x===5 && y===5,20);
 assert.ok(driftSmokeCtx.calls.includes('arc') && driftSmokeCtx.calls.includes('fill'), 'smoke stays visible while drifting from a remembered source');
 
 globalThis.MM = { T, WORLD_H, TILE:20, particles:{ spawnSplash(){}, spawnBubble(){} } };
+let waterLayerCtx = null;
 globalThis.document = {
-  createElement(){ return {width:0, height:0, getContext(){ return makeCtx(); }}; },
+  createElement(){ return {width:0, height:0, getContext(){ waterLayerCtx = makeCtx(); return waterLayerCtx; }}; },
   getElementById(){ return null; }
 };
 const { water } = await import('../src/engine/water.js');
@@ -150,6 +151,22 @@ water.drawOverlay(waterCtx,20,getTile,0,4,2,3,()=>false);
 assert.equal(waterCtx.drew, false, 'undiscovered water overlay exits without painting');
 water.drawOverlay(waterCtx,20,getTile,0,4,2,3,(x,y)=>x===0 && y===5);
 assert.equal(waterCtx.drew, true, 'remembered water overlay paints');
+assert.ok(waterLayerCtx && waterLayerCtx.calls.includes('quadraticCurveTo'), 'open water endings render as rounded caps instead of square columns');
+assert.ok(waterLayerCtx.quadratics.some(args=>args[2]>2 && args[2]<4), 'open water side wall is softened inward at exposed edges');
+water.reset();
+tiles = new Map([[key(0,5), T.WATER],[key(1,5), T.WATER]]);
+waterLayerCtx.calls.length = 0;
+waterLayerCtx.quadratics.length = 0;
+const joinedWaterCtx = {
+  drew:false,
+  save(){},
+  restore(){},
+  drawImage(){ this.drew = true; }
+};
+water.drawOverlay(joinedWaterCtx,20,getTile,0,4,3,3,(x,y)=>y===5 && (x===0 || x===1));
+assert.equal(joinedWaterCtx.drew, true, 'adjacent remembered water columns paint as one body');
+assert.ok(waterLayerCtx.quadratics.some(args=>args[2]>36 && args[2]<38), 'right exposed water edge is also rounded inward');
+assert.equal(waterLayerCtx.quadratics.some(args=>Math.abs(args[2]-20)<0.01), false, 'joined water columns do not add curved seams inside the water body');
 
 gases.reset();
 tiles = new Map([[key(7,5), 28]]);

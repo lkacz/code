@@ -82,6 +82,19 @@ assert.equal(persistentGas, 1, 'volcano gas also enters the persistent world gas
 
 {
   volcano.reset();
+  const w=makeTiles();
+  w.setTile(2,8,T.VOLCANO_MASTER_STONE);
+  w.setTile(2,9,T.CHEST_COMMON);
+  volcano.trackMasterStone(2,8,0);
+  volcano.update(20,{x:0,y:6},w.getTile,w.setTile);
+  assert.equal(w.getTile(2,8), T.VOLCANO_MASTER_STONE, 'master stone does not treat a chest as stable footing');
+  w.setTile(2,9,T.STONE);
+  volcano.update(10.1,{x:0,y:6},w.getTile,w.setTile);
+  assert.equal(w.getTile(2,8), T.SERVANT_STONE, 'master stone resumes its floor timer on real footing');
+}
+
+{
+  volcano.reset();
   assert.ok(volcano.forceMasterEruption(volcanoDef), 'debug eruption can throw a master stone directly');
   assert.equal(volcano.metrics().masterShots, 1, 'debug eruption produced one master shot');
   assert.equal(audioPlays.at(-1), 'masterstone', 'debug master stone throw also plays the sound cue');
@@ -115,6 +128,26 @@ assert.equal(persistentGas, 1, 'volcano gas also enters the persistent world gas
   volcano._debug.rocks.push({x:0.5,y:5.2,vx:0,vy:0,life:1,rot:0,spin:0});
   volcano.update(0.03,{x:2000,y:6},w.getTile,w.setTile);
   assert.equal(volcano.metrics().rocks,1,'volcano rocks pass through gas instead of colliding with it');
+}
+
+{
+  volcano.reset();
+  const w=makeTiles();
+  w.setTile(0,5,T.WATER_PIPE);
+  volcano._debug.rocks.push({x:0.5,y:5.2,vx:0,vy:0,life:1,rot:0,spin:0});
+  volcano.update(0.03,{x:2000,y:6},w.getTile,w.setTile);
+  assert.equal(volcano.metrics().rocks,1,'volcano rocks pass through passable pipes instead of treating them as walls');
+  assert.equal(w.getTile(0,5), T.WATER_PIPE, 'passable pipe is not consumed by a fly-through rock');
+}
+
+{
+  volcano.reset();
+  const w=makeTiles();
+  w.setTile(2,8,T.WIRE);
+  w.setTile(2,9,T.STONE);
+  volcano._debug.masterShots.push({x:2.5,y:8.1,vx:0,vy:0,life:0.01,rot:0,spin:0});
+  volcano.update(0.02,{x:2000,y:6},w.getTile,w.setTile);
+  assert.equal(w.getTile(2,8), T.WIRE, 'master stone settlement does not overwrite passable wiring');
 }
 
 {

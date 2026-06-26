@@ -84,6 +84,31 @@ assert.equal(count(T.WIRE), 0, 'orphaned wire run clears when its anchor is remo
 
 reset();
 fillFloor(35);
+setTile(0,34,T.SAND);
+setTile(0,33,T.WIRE);
+fallingSolids.auditChunks([0],{immediate:true});
+fallingSolids.settleAll();
+assert.equal(getTile(0,33), T.WIRE, 'wire can rest on ordinary object footing such as sand');
+
+reset();
+fillFloor(35);
+setTile(0,34,T.CHEST_COMMON);
+setTile(0,33,T.WIRE);
+fallingSolids.auditChunks([0],{immediate:true});
+fallingSolids.settleAll();
+assert.equal(getTile(0,33), T.AIR, 'wire does not use a chest as its only support');
+assert.equal(getTile(0,34), T.CHEST_COMMON, 'stable chest remains while unsupported wire clears');
+
+reset();
+fillFloor(35);
+setTile(-1,20,T.COAL);
+setTile(0,20,T.WIRE);
+fallingSolids.auditChunks([0],{immediate:true});
+fallingSolids.settleAll();
+assert.equal(getTile(0,20), T.AIR, 'wire does not use loose coal as a side anchor');
+
+reset();
+fillFloor(35);
 setTile(0,10,T.ELECTRONICS);
 fallingSolids.maybeStart(0,10);
 fallingSolids.settleAll();
@@ -96,5 +121,19 @@ setTile(0,10,T.ELECTRONICS);
 fallingSolids.auditChunks([0],{immediate:true});
 fallingSolids.settleAll();
 assert.equal(getTile(0,34), T.ELECTRONICS, 'floating electronics are discovered by chunk audit');
+
+reset();
+fillFloor(35);
+setTile(0,10,T.COAL);
+fallingSolids.maybeStart(0,10);
+fallingSolids.settleAll();
+assert.equal(getTile(0,34), T.COAL, 'unsupported coal falls as a loose resource block when disturbed');
+
+reset();
+fillFloor(35);
+setTile(0,10,T.RADIOACTIVE_ORE);
+fallingSolids.auditChunks([0],{immediate:true});
+fallingSolids.settleAll();
+assert.equal(getTile(0,34), T.RADIOACTIVE_ORE, 'floating radioactive ore is discovered by chunk audit and falls');
 
 console.log('city-materials-sim: all assertions passed');

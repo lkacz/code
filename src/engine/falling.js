@@ -4,6 +4,30 @@
 // angle-of-repose rule (a grain topples when a side and the cell below it are open),
 // so piles relax into natural 45° slopes and avalanches propagate frame by frame.
 import { CHUNK_W, T, INFO, WORLD_H } from '../constants.js';
+import {
+  buildMaterialProfile as sharedBuildMaterialProfile,
+  fallingWindResponseForMaterial,
+  isBuildAnchorTile as sharedBuildAnchorTile,
+  isBuildFoundationTile as sharedBuildFoundationTile,
+  isBuiltPillarMaterial as sharedBuiltPillarMaterial,
+  isFragileFallingMaterial,
+  isGasTile,
+  isLoadBearingSupportTile,
+  isLegacyPhysicsAuditMaterial,
+  isLooseRigidMaterial,
+  isMountedFixtureTile,
+  isObjectCrushableSupportTile,
+  isObjectBraceTile,
+  isObjectFootingTile,
+  isPassableForFalling,
+  isPlayerBuiltMaterial as sharedPlayerBuiltMaterial,
+  isRigidObjectTile,
+  isRubbleTrackedMaterial as sharedRubbleTrackedMaterial,
+  isStructuralMaterial,
+  isWeakFillMaterial,
+  structuralRubbleRollLimit,
+  structuralSupportStrengthForMaterial
+} from './material_physics.js';
 window.MM = window.MM || {};
 (function(){
   const G_AIR = 60,  G_WATER = 25;            // gravity (tiles/s^2); buoyancy reduces it in water
@@ -23,6 +47,13 @@ window.MM = window.MM || {};
   const BUILD_STRESS_WARN = 0.28;
   const BUILD_STRESS_DANGER = 0.68;
   const BUILD_STRESS_FAIL = 0.94;
+  const BUILD_FLOW_RESISTANCE_SCALE = 3.8;
+  const BUILD_FLOW_REACH_SCALE = 1.18;
+  const BUILD_FLOW_LOAD_STRESS = 0.56;
+  const BUILD_FLOW_TRANSFER_STRESS = 0.035;
+  const BUILD_BEARING_CAPACITY_SCALE = 3.0;
+  const BUILD_BEARING_BACKING_LIMIT = 28;
+  const BUILD_BEARING_CRUSH_RATIO = 1.05;
   const BUILD_BREAK_EFFECT_MS = 900;
 
   const active = [];          // rigid blocks {x,yFloat,type,vy,wet,rubble}
@@ -35,7 +66,10 @@ window.MM = window.MM || {};
   const manualCityBuilt = new Set(); // player/event placed city tiles; generated city stays on city-collapse logic
   const playerBuilt = new Set(); // user placed build materials; natural terrain is intentionally excluded
   const buildStress = new Map(); // key -> 0..1 warning intensity for supported-but-near-limit blocks
+  const buildStressFlow = new Map(); // key -> normalized direction where load is flowing
   const buildBreaks = []; // short-lived visual flashes where player-built structure snapped
+  const buildBearingLoads = new WeakMap(); // supported-built Map -> external footing load map
+  const buildFlowDirections = new WeakMap(); // supported-built Map -> cell force-flow directions
   const settledRubble = new Set(); // structural debris that already fell and should not become a new building frame
   // Tile accessors supplied by main.js; update() refreshes them so event-driven
   // helpers (onTileRemoved etc.) always see the live world.
@@ -69,34 +103,17 @@ window.MM = window.MM || {};
 
   // Falling solids pass through passable fixtures instead of treating torches,
   // leaves, wires, graves, lava, etc. as invisible foundations.
-  function passable(t){ return t===T.AIR || t===T.WATER || (t!==T.DYNAMO_SLOT && t!==T.TELEPORTER && !!(INFO[t] && INFO[t].passable)); }
-  function isGas(t){ return !!(INFO[t] && INFO[t].gas); }
+  function passable(t){ return isPassableForFalling(t); }
   function notifyGasChange(x,y,oldTile,newTile){
-    if(oldTile===newTile || (!isGas(oldTile) && !isGas(newTile))) return;
+    if(oldTile===newTile || (!isGasTile(oldTile) && !isGasTile(newTile))) return;
     try{ const g=window.MM && MM.gases; if(g && g.onTileChanged) g.onTileChanged(x,y,oldTile,newTile); }catch(e){}
   }
-  function isStructural(t){ return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.STEEL || t===T.METEORIC_IRON || t===T.IRIDIUM || t===T.OBSIDIAN; }
-  function isFragileFalling(t){ return t===T.GLASS; }
-  function isLooseRigid(t){ return t===T.DIAMOND || t===T.ELECTRONICS; }
-  function isRigidObject(t){
-    const info=INFO[t];
-    if(!info) return false;
-    if(info.chestTier) return true;
-    if(t===T.TELEPORTER) return true;
-    if(info.machine && t!==T.DYNAMO_SLOT && t!==T.COPPER_WIRE && t!==T.WATER_PIPE) return true;
-    return false;
-  }
-  function isMountedFixture(t){
-    return t===T.TORCH;
-  }
-  function isPlayerBuiltMaterial(t){
-    const info=INFO[t];
-    if(!info || !info.color || info.passable || info.chestTier || info.gas || info.machine || info.looseItem) return false;
-    if(t===T.AIR || t===T.WATER || t===T.LAVA || t===T.SAND || t===T.BEDROCK) return false;
-    if(t===T.TORCH || t===T.WIRE || t===T.COPPER_WIRE || t===T.GRAVE) return false;
-    if(t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) return false;
-    return true;
-  }
+  function isStructural(t){ return isStructuralMaterial(t); }
+  function isFragileFalling(t){ return isFragileFallingMaterial(t); }
+  function isLooseRigid(t){ return isLooseRigidMaterial(t); }
+  function isRigidObject(t){ return isRigidObjectTile(t); }
+  function isMountedFixture(t){ return isMountedFixtureTile(t); }
+  function isPlayerBuiltMaterial(t){ return sharedPlayerBuiltMaterial(t); }
   function rememberPlayerBuild(x,y){
     if(!getTile || !isPlayerBuiltMaterial(getTile(x,y))) return;
     const k=key(x,y);
@@ -108,6 +125,7 @@ window.MM = window.MM || {};
     const k=key(x,y);
     playerBuilt.delete(k);
     buildStress.delete(k);
+    buildStressFlow.delete(k);
   }
   function syncPlayerBuild(x,y){
     forgetPlayerBuild(x,y);
@@ -159,36 +177,103 @@ window.MM = window.MM || {};
     quietStable.delete(k);
     return true;
   }
-  function isRubbleTrackedMaterial(t){
-    return isStructural(t) || isPlayerBuiltMaterial(t);
-  }
-  function isObjectFooting(t){
-    const info=INFO[t];
-    if(t===T.AIR || t===T.WATER || t===T.LAVA || t===T.DYNAMO_SLOT) return false;
-    if(info && (info.gas || info.passable || info.looseItem)) return false;
-    return true;
-  }
-  function isObjectBrace(t){
-    const info=INFO[t];
-    if(t===T.AIR || t===T.WATER || t===T.LAVA || t===T.DYNAMO_SLOT) return false;
-    if(info && (info.gas || info.passable || info.looseItem || info.machine || info.chestTier)) return false;
-    return true;
-  }
+  function isRubbleTrackedMaterial(t){ return sharedRubbleTrackedMaterial(t); }
+  function isObjectFooting(t){ return isObjectFootingTile(t); }
+  function isObjectBrace(t){ return isObjectBraceTile(t); }
   function objectAnchorAt(x,y){
     if(y+1>=WORLD_H) return true;
     if(isObjectFooting(getTile(x,y+1))) return true;
     if(isObjectBrace(getTile(x-1,y)) || isObjectBrace(getTile(x+1,y)) || isObjectBrace(getTile(x,y-1))) return true;
     return false;
   }
-  function isLoadBearingSupport(t){
-    const info=INFO[t];
-    if(passable(t) || isStructural(t) || isFragileFalling(t) || isLooseRigid(t)) return false;
-    if(t===T.DYNAMO_SLOT) return false;
-    if(t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC) return false;
-    if(t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) return false;
-    if(info && (info.machine || info.looseItem || info.gas)) return false;
+  function isDynamoTile(t){ return t===T.DYNAMO || t===T.DYNAMO_SLOT; }
+  function dynamoCellsAt(x,y){
+    const d=window.MM && MM.dynamo;
+    let cells=[];
+    try{ if(d && d.structureCellsAt) cells=d.structureCellsAt(x,y,getTile) || []; }catch(e){ cells=[]; }
+    if(!Array.isArray(cells) || !cells.length){
+      const t=getTile(x,y);
+      return isDynamoTile(t) ? [{x,y,t,role:'orphan'}] : [];
+    }
+    const seen=new Set();
+    const out=[];
+    for(const c of cells){
+      const cx=Math.floor(c.x), cy=Math.floor(c.y);
+      const t=getTile(cx,cy);
+      if(!isDynamoTile(t)) continue;
+      const k=key(cx,cy);
+      if(seen.has(k)) continue;
+      seen.add(k);
+      out.push({x:cx,y:cy,t,role:c.role});
+    }
+    return out;
+  }
+  function completeDynamoCellsAt(x,y){
+    const cells=dynamoCellsAt(x,y);
+    if(cells.length!==3) return null;
+    let casings=0, slots=0;
+    for(const c of cells){
+      if(c.t===T.DYNAMO) casings++;
+      else if(c.t===T.DYNAMO_SLOT) slots++;
+    }
+    return casings===2 && slots===1 ? cells : null;
+  }
+  function dynamoCompositeAnchorAt(cells,cellKeys){
+    for(const c of cells){
+      if(c.y+1>=WORLD_H) return true;
+      const belowKey=key(c.x,c.y+1);
+      if(!cellKeys.has(belowKey) && isObjectFooting(getTile(c.x,c.y+1))) return true;
+      const sideChecks=[[c.x-1,c.y],[c.x+1,c.y],[c.x,c.y-1]];
+      for(const p of sideChecks){
+        if(cellKeys.has(key(p[0],p[1]))) continue;
+        if(isObjectBrace(getTile(p[0],p[1]))) return true;
+      }
+    }
+    return false;
+  }
+  function crushDynamoWeakFootings(cells,cellKeys){
+    const crushed=new Set();
+    for(const c of cells){
+      const x=c.x, y=c.y+1;
+      if(y>=WORLD_H || cellKeys.has(key(x,y))) continue;
+      const support=getTile(x,y);
+      if(!isObjectCrushableSupportTile(support)) continue;
+      const k=key(x,y);
+      if(crushed.has(k)) continue;
+      crushed.add(k);
+      setTile(x,y,T.AIR);
+      forgetPlayerBuild(x,y);
+      forgetSettledRubble(x,y);
+      if(isFragileFalling(support)) breakFragile(x,y);
+      else spawn(x,y,support,isRubbleTrackedMaterial(support),0.85);
+      queueAroundRemoval(x,y);
+    }
+  }
+  function processDynamoCompositeAt(x,y,processed){
+    if(!isDynamoTile(getTile(x,y))) return false;
+    const cells=completeDynamoCellsAt(x,y);
+    if(!cells) return false;
+    const cellKeys=new Set(cells.map(c=>key(c.x,c.y)));
+    for(const c of cells){
+      const ck=key(c.x,c.y);
+      if(processed) processed.add(ck);
+      unstable.delete(ck);
+    }
+    if(dynamoCompositeAnchorAt(cells,cellKeys)){
+      markQuietCluster(cells);
+      return true;
+    }
+    crushDynamoWeakFootings(cells,cellKeys);
+    for(const c of cells){
+      if(getTile(c.x,c.y)!==c.t) continue;
+      setTile(c.x,c.y,T.AIR);
+      spawn(c.x,c.y,c.t,false);
+      queueAroundRemoval(c.x,c.y);
+    }
     return true;
   }
+  function isLoadBearingSupport(t){ return isLoadBearingSupportTile(t); }
+  function isStructuralFootingSupport(t){ return isLoadBearingSupport(t) || isWeakFillMaterial(t); }
   function spawn(x,y,t,rubble,stress){ active.push({x,yFloat:y,type:t,vy:0,wet:false,rubble:!!rubble,windCarry:0,stress:Math.max(0,Math.min(1,stress||0))}); }
   function spawnSand(x,y){ sandActive.push({x,yFloat:y,vy:0,wet:false,windCarry:0}); }
   function isSettledRubble(x,y){
@@ -221,23 +306,7 @@ window.MM = window.MM || {};
     }catch(e){ return 0; }
   }
   function fallingWindResponse(type,rubble){
-    if(type===T.SAND) return 0.22;
-    if(type===T.GLASS) return 0.16;
-    if(type===T.DIAMOND || type===T.ELECTRONICS) return 0.09;
-    if(type===T.ALIEN_BIOMASS) return 0.085;
-    if(type===T.SNOW) return 0.075;
-    if(type===T.GRASS || type===T.DIRT) return 0.065;
-    if(type===T.WOOD) return 0.06;
-    if(type===T.ICE || type===T.MUD || type===T.COAL) return 0.045;
-    if(type===T.STONE) return rubble ? 0.022 : 0.014;
-    if(type===T.GRANITE) return rubble ? 0.018 : 0.011;
-    if(type===T.RADIOACTIVE_ORE) return 0.012;
-    if(type===T.BASALT || type===T.BEDROCK) return 0.009;
-    if(type===T.OBSIDIAN || type===T.ANTIMATTER_CRYSTAL) return 0.010;
-    if(type===T.IRIDIUM) return 0.008;
-    if(type===T.METEORIC_IRON) return 0.007;
-    if(type===T.STEEL) return 0.006;
-    return 0.035;
+    return fallingWindResponseForMaterial(type,rubble);
   }
   function canWindShift(x,y,dir){
     if(y<0 || y>=WORLD_H) return false;
@@ -266,7 +335,7 @@ window.MM = window.MM || {};
 
   // Never solidify a tile inside the player — the entity rests on them until they move
   function playerBlocks(x,y){ const p=window.player; if(!p) return false; return x+1 > p.x-p.w/2 && x < p.x+p.w/2 && y+1 > p.y-p.h/2 && y < p.y+p.h/2; }
-  function rubbleCrushes(t){ return isFragileFalling(t) || t===T.WIRE || t===T.COPPER_WIRE || t===T.ELECTRONICS; }
+  function rubbleCrushes(t){ return isObjectCrushableSupportTile(t); }
   function crushTile(x,y){
     const t=getTile(x,y);
     if(!rubbleCrushes(t)) return false;
@@ -274,6 +343,7 @@ window.MM = window.MM || {};
     forgetSettledRubble(x,y);
     queueAroundRemoval(x,y);
     if(isFragileFalling(t)) breakFragile(x,y);
+    else spawn(x,y,t,isRubbleTrackedMaterial(t),0.85);
     return true;
   }
 
@@ -378,12 +448,7 @@ window.MM = window.MM || {};
     return cluster.length>0;
   }
   function isBuiltPillarMaterial(t){
-    const info=INFO[t];
-    if(!info || !info.color || info.chestTier) return false;
-    if(info.passable || info.machine || info.looseItem || info.gas) return false;
-    if(t===T.AIR || t===T.WATER || t===T.LAVA || t===T.TORCH || t===T.WIRE || t===T.GRAVE || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return false;
-    if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || t===T.ELECTRONICS) return false;
-    return true;
+    return sharedBuiltPillarMaterial(t);
   }
   function aboveGeneratedSurface(x,y){
     const wg=window.MM && MM.worldGen;
@@ -567,7 +632,8 @@ window.MM = window.MM || {};
     const ns=[[1,0],[-1,0],[0,-1],[0,1]];
     for(const n of ns){
       const t=getTile(x+n[0],y+n[1]);
-      if(t!==T.WIRE && !passable(t) && !isFragileFalling(t)) return true;
+      if(t===T.WIRE) continue;
+      if(n[1]===1 ? isObjectFooting(t) : isObjectBrace(t)) return true;
     }
     return false;
   }
@@ -597,6 +663,15 @@ window.MM = window.MM || {};
   function processRigidObjectAt(x,y){
     const t=getTile(x,y);
     if(!isRigidObject(t) || objectAnchorAt(x,y)) return false;
+    const below=y+1<WORLD_H ? getTile(x,y+1) : T.BEDROCK;
+    if(y+1<WORLD_H && isObjectCrushableSupportTile(below)){
+      setTile(x,y+1,T.AIR);
+      forgetPlayerBuild(x,y+1);
+      forgetSettledRubble(x,y+1);
+      if(isFragileFalling(below)) breakFragile(x,y+1);
+      else spawn(x,y+1,below,isRubbleTrackedMaterial(below),0.85);
+      queueAroundRemoval(x,y+1);
+    }
     setTile(x,y,T.AIR);
     spawn(x,y,t,false);
     queueAroundRemoval(x,y);
@@ -653,11 +728,7 @@ window.MM = window.MM || {};
     return y;
   }
   function structuralRollLimit(type){
-    if(type===T.STEEL) return 5;
-    if(type===T.METEORIC_IRON) return 4;
-    if(type===T.IRIDIUM) return 4;
-    if(type===T.OBSIDIAN) return 3;
-    return 4;
+    return structuralRubbleRollLimit(type);
   }
   function chooseRubbleRollDir(x,y,type,originX,step){
     if(y+1>=WORLD_H) return 0;
@@ -754,6 +825,8 @@ window.MM = window.MM || {};
       if(processFragileAt(x,y,processed)) return;
     } else if(t===T.WIRE){
       processWireAt(x,y,processed);
+    } else if(isDynamoTile(t)){
+      if(processDynamoCompositeAt(x,y,processed)) return;
     } else if(isRigidObject(t)){
       if(processRigidObjectAt(x,y)) return;
     } else if(isMountedFixture(t)){
@@ -782,11 +855,7 @@ window.MM = window.MM || {};
     while(unstable.size && guard++<64) processQueue();
   }
   function structuralSupportStrength(t){
-    if(t===T.STEEL) return 18;
-    if(t===T.IRIDIUM) return 20;
-    if(t===T.METEORIC_IRON) return 17;
-    if(t===T.OBSIDIAN) return 13;
-    return 11;
+    return structuralSupportStrengthForMaterial(t);
   }
   function structuralTransferCost(x,y,nx,ny){
     if(nx===x && ny<y) return 0.35;
@@ -828,8 +897,10 @@ window.MM = window.MM || {};
   }
   function shouldAuditTile(x,y,t){
     if(claimLegacyPlayerBuild(x,y,t)) return true;
+    if(isDynamoTile(t)) return true;
     if(isRigidObject(t) || isMountedFixture(t)) return true;
-    if(t===T.GLASS || t===T.WIRE || t===T.ELECTRONICS || t===T.STEEL || t===T.METEORIC_IRON || t===T.IRIDIUM) return true;
+    if(isLooseRigid(t)) return true;
+    if(isLegacyPhysicsAuditMaterial(t)) return true;
     if(isStructural(t)) return isCityColumn(x) && !isStructuralAnchor(x,y,t);
     return false;
   }
@@ -844,11 +915,15 @@ window.MM = window.MM || {};
       queueCheck(x,y);
       return;
     }
-    if(t===T.ELECTRONICS){
+    if(isLooseRigid(t)){
       if(y+1<WORLD_H && passable(getTile(x,y+1))) queueCheck(x,y);
       return;
     }
     if(t===T.WIRE){
+      queueCheck(x,y);
+      return;
+    }
+    if(isDynamoTile(t)){
       queueCheck(x,y);
       return;
     }
@@ -939,86 +1014,230 @@ window.MM = window.MM || {};
   }
 
   function builtMaterialProfile(t){
-    if(t===T.IRIDIUM) return {strength:28, weight:1.22, compression:0.16, lateral:0.86, flex:1.24, down:0.24, warn:0.38, fail:0.985};
-    if(t===T.METEORIC_IRON) return {strength:26, weight:1.45, compression:0.17, lateral:0.93, flex:1.18, down:0.27, warn:0.36, fail:0.975};
-    if(t===T.STEEL) return {strength:24, weight:1.35, compression:0.18, lateral:1.02, flex:1.18, down:0.27, warn:0.34, fail:0.970};
-    if(t===T.ANTIMATTER_CRYSTAL) return {strength:22, weight:1.05, compression:0.24, lateral:1.18, flex:0.72, down:0.28, warn:0.20, fail:0.860};
-    if(t===T.OBSIDIAN) return {strength:19, weight:1.30, compression:0.43, lateral:1.08, flex:0.92, down:0.26, warn:0.24, fail:0.930};
-    if(t===T.DIAMOND) return {strength:18, weight:1.08, compression:0.30, lateral:1.22, flex:0.76, down:0.25, warn:0.22, fail:0.870};
-    if(t===T.BASALT) return {strength:17, weight:1.24, compression:0.40, lateral:1.06, flex:0.95, down:0.25, warn:0.25, fail:0.925};
-    if(t===T.GRANITE) return {strength:15, weight:1.18, compression:0.38, lateral:1.06, flex:0.96, down:0.24, warn:0.26, fail:0.920};
-    if(t===T.RADIOACTIVE_ORE) return {strength:13.5, weight:1.52, compression:0.46, lateral:1.22, flex:0.76, down:0.30, warn:0.22, fail:0.880};
-    if(t===T.STONE) return {strength:12, weight:1.05, compression:0.37, lateral:1.05, flex:1.00, down:0.21, warn:0.28, fail:0.930};
-    if(t===T.WOOD) return {strength:7.6, weight:0.72, compression:0.26, lateral:0.90, flex:1.12, down:0.17, warn:0.42, fail:0.925};
-    if(t===T.COAL) return {strength:6.8, weight:0.86, compression:0.48, lateral:1.20, flex:0.76, down:0.22, warn:0.20, fail:0.830};
-    if(t===T.ALIEN_BIOMASS) return {strength:5.6, weight:0.62, compression:0.30, lateral:0.98, flex:1.24, down:0.16, warn:0.36, fail:0.900};
-    if(t===T.GLASS) return {strength:3.4, weight:0.88, compression:0.70, lateral:1.45, flex:0.55, down:0.28, warn:0.18, fail:0.720};
-    if(t===T.ELECTRONICS) return {strength:3.2, weight:0.72, compression:0.64, lateral:1.50, flex:0.55, down:0.24, warn:0.18, fail:0.760};
-    if(t===T.ICE) return {strength:5.4, weight:0.82, compression:0.55, lateral:1.28, flex:0.70, down:0.24, warn:0.22, fail:0.840};
-    if(t===T.SNOW) return {strength:4.8, weight:0.72, compression:0.54, lateral:1.22, flex:0.78, down:0.22, warn:0.22, fail:0.830};
-    if(t===T.DIRT || t===T.GRASS || t===T.MUD) return {strength:6.5, weight:1.00, compression:0.42, lateral:1.15, flex:0.86, down:0.22, warn:0.25, fail:0.880};
-    return {strength:8, weight:1.00, compression:0.35, lateral:1.05, flex:1.00, down:0.20, warn:BUILD_STRESS_WARN, fail:BUILD_STRESS_FAIL};
+    return sharedBuildMaterialProfile(t);
   }
-  function builtSupportStrength(t){ return builtMaterialProfile(t).strength; }
-  function builtVerticalCompressionCost(t){ return builtMaterialProfile(t).compression; }
+  function builtSupportStrength(t){
+    const p=builtMaterialProfile(t);
+    return p ? p.strength : 0;
+  }
+  function builtVerticalCompressionCost(t){
+    const p=builtMaterialProfile(t);
+    return p ? p.compression : Infinity;
+  }
   function builtTransferCost(from,to){
     const p=builtMaterialProfile(to.t);
-    const fromFlex=Math.max(0.55,builtMaterialProfile(from.t).flex);
+    const fromProfile=builtMaterialProfile(from.t);
+    if(!p || !fromProfile) return Infinity;
+    const fromFlex=Math.max(0.55,fromProfile.flex);
     if(to.x===from.x && to.y<from.y) return builtVerticalCompressionCost(to.t);
     if(to.x===from.x && to.y>from.y) return p.down*p.weight;
     return (p.lateral*p.weight)/fromFlex;
   }
   function isBuildAnchorTile(t){
-    const info=INFO[t];
-    if(passable(t) || isFragileFalling(t) || isLooseRigid(t)) return false;
-    if(t===T.DYNAMO_SLOT || t===T.WIRE || t===T.COPPER_WIRE) return false;
-    if(t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC) return false;
-    if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || t===T.GRAVE) return false;
-    if(info && (info.machine || info.looseItem || info.gas)) return false;
-    return true;
+    return sharedBuildAnchorTile(t);
   }
-  function builtSupportMultiplier(c,componentKeys){
-    if(c.y+1>=WORLD_H) return 1;
-    let best=0;
+  function isBuildFoundationTile(t){
+    return sharedBuildFoundationTile(t);
+  }
+  function builtSupportContacts(c,componentKeys,tileFn){
+    const tileAt=tileFn || getTile;
+    const out=[];
+    if(c.y+1>=WORLD_H) return [{x:c.x,y:c.y+1,t:T.BEDROCK,mult:1,worldEdge:true}];
     const belowKey=key(c.x,c.y+1);
-    if(!componentKeys.has(belowKey) && isBuildAnchorTile(getTile(c.x,c.y+1))) best=Math.max(best,1);
+    let t=tileAt(c.x,c.y+1);
+    if(!componentKeys.has(belowKey) && isBuildFoundationTile(t)) out.push({x:c.x,y:c.y+1,t,mult:1});
     for(const dir of [-1,1]){
       const sideKey=key(c.x+dir,c.y);
-      if(!componentKeys.has(sideKey) && isBuildAnchorTile(getTile(c.x+dir,c.y))) best=Math.max(best,0.62);
+      t=tileAt(c.x+dir,c.y);
+      if(!componentKeys.has(sideKey) && isBuildAnchorTile(t)) out.push({x:c.x+dir,y:c.y,t,mult:0.62});
     }
     const aboveKey=key(c.x,c.y-1);
-    if(!componentKeys.has(aboveKey) && isBuildAnchorTile(getTile(c.x,c.y-1))) best=Math.max(best,0.72);
-    return best;
+    t=tileAt(c.x,c.y-1);
+    if(!componentKeys.has(aboveKey) && isBuildAnchorTile(t)) out.push({x:c.x,y:c.y-1,t,mult:0.72});
+    return out;
   }
-  function supportedBuiltKeys(component,componentKeys,supports){
-    const best=new Map();
-    const byKey=new Map(component.map(c=>[key(c.x,c.y),c]));
+  function builtSupportMultiplier(c,componentKeys){
+    return builtSupportContacts(c,componentKeys,getTile).reduce((best,s)=>Math.max(best,s.mult),0);
+  }
+  function builtSelfWeight(t){
+    const p=builtMaterialProfile(t);
+    return p ? Math.max(0.1,p.weight || 1) : Infinity;
+  }
+  function builtFlowCapacity(c){
+    return Math.max(1,builtSupportStrength(c.t)*BUILD_FLOW_RESISTANCE_SCALE);
+  }
+  function builtResidualBudget(c,ratio){
+    return builtSupportStrength(c.t)*(1-Math.max(0,ratio));
+  }
+  function bearingCellCapacity(t){
+    if(t===T.BEDROCK) return Infinity;
+    const p=builtMaterialProfile(t);
+    if(p){
+      const compression=Math.max(0.12,Math.min(0.85,p.compression || 0.4));
+      return Math.max(1.5,p.strength*(1.15-compression*0.45));
+    }
+    if(isStructural(t)) return structuralSupportStrength(t)*0.95;
+    return isBuildFoundationTile(t) ? 2.5 : 0;
+  }
+  function bearingBackingScore(x,y,componentKeys){
+    if(y>=WORLD_H) return BUILD_BEARING_BACKING_LIMIT;
+    const start=key(x,y);
+    const seen=new Set([start]);
+    const q=[[x,y]];
+    let score=0, head=0;
+    while(head<q.length && score<BUILD_BEARING_BACKING_LIMIT){
+      const [cx,cy]=q[head++];
+      if(cy<y-1 || cy>y+7 || Math.abs(cx-x)>4) continue;
+      const k=key(cx,cy);
+      if(componentKeys && componentKeys.has(k)) continue;
+      const t=getTile(cx,cy);
+      if(t===T.BEDROCK){ score=BUILD_BEARING_BACKING_LIMIT; break; }
+      if(!isBuildFoundationTile(t)) continue;
+      score++;
+      for(const n of [[cx,cy+1],[cx-1,cy],[cx+1,cy],[cx,cy-1]]){
+        const nk=key(n[0],n[1]);
+        if(seen.has(nk)) continue;
+        seen.add(nk);
+        q.push(n);
+      }
+    }
+    return Math.max(1,score);
+  }
+  function bearingCapacityAt(x,y,t,componentKeys){
+    const base=bearingCellCapacity(t);
+    if(!Number.isFinite(base)) return Infinity;
+    return base*Math.sqrt(bearingBackingScore(x,y,componentKeys))*BUILD_BEARING_CAPACITY_SCALE;
+  }
+  function supportCostMap(component,componentKeys,supports,byKey){
+    const cost=new Map();
     const q=[];
     for(const c of supports){
-      const budget=builtSupportStrength(c.t)*c.mult;
       const k=key(c.x,c.y);
-      best.set(k,budget);
-      q.push({x:c.x,y:c.y,budget});
+      cost.set(k,0);
+      q.push({x:c.x,y:c.y});
     }
     let head=0;
     while(head<q.length){
       const cur=q[head++];
       const curKey=key(cur.x,cur.y);
       const curCell=byKey.get(curKey);
-      if(!curCell || cur.budget < (best.get(curKey) ?? -Infinity)) continue;
+      const curCost=cost.get(curKey);
+      if(!curCell || !Number.isFinite(curCost)) continue;
       const ns=[[cur.x+1,cur.y],[cur.x-1,cur.y],[cur.x,cur.y+1],[cur.x,cur.y-1]];
       for(const n of ns){
         const nk=key(n[0],n[1]);
         if(!componentKeys.has(nk)) continue;
         const next=byKey.get(nk);
         if(!next) continue;
-        const nextBudget=cur.budget-builtTransferCost(curCell,next);
-        if(nextBudget<0) continue;
-        if(nextBudget <= (best.get(nk) ?? -Infinity)) continue;
-        best.set(nk,nextBudget);
-        q.push({x:n[0],y:n[1],budget:nextBudget});
+        const nextCost=curCost+builtTransferCost(curCell,next);
+        if(nextCost >= (cost.get(nk) ?? Infinity)) continue;
+        cost.set(nk,nextCost);
+        q.push({x:n[0],y:n[1]});
       }
     }
+    return cost;
+  }
+  function normalizedFlowVector(dx,dy){
+    const m=Math.hypot(dx,dy);
+    if(!(m>0)) return null;
+    return {dx:+(dx/m).toFixed(3),dy:+(dy/m).toFixed(3)};
+  }
+  function buildFlowDirectionFor(c,k,cost,componentKeys,supportContacts){
+    const contacts=supportContacts.get(k) || [];
+    let contact=null;
+    for(const s of contacts){
+      if(!contact || (s.mult || 0)>(contact.mult || 0)) contact=s;
+    }
+    if(contact) return normalizedFlowVector(contact.x-c.x, contact.y-c.y);
+    const curCost=cost.get(k);
+    if(!Number.isFinite(curCost)) return null;
+    let best=null, bestCost=curCost;
+    for(const n of [[c.x+1,c.y],[c.x-1,c.y],[c.x,c.y+1],[c.x,c.y-1]]){
+      const nk=key(n[0],n[1]);
+      if(!componentKeys.has(nk)) continue;
+      const nCost=cost.get(nk);
+      if(!Number.isFinite(nCost) || nCost>=bestCost-0.0001) continue;
+      best={x:n[0],y:n[1]};
+      bestCost=nCost;
+    }
+    return best ? normalizedFlowVector(best.x-c.x,best.y-c.y) : null;
+  }
+  function supportedBuiltKeys(component,componentKeys,supports,tileFn){
+    const best=new Map();
+    const byKey=new Map(component.map(c=>[key(c.x,c.y),c]));
+    if(!supports.length) return best;
+    const pureVerticalColumn=component.length>0 && component.every(c=>c.x===component[0].x);
+    const supportMult=new Map();
+    const supportContacts=new Map();
+    for(const c of supports){
+      const k=key(c.x,c.y);
+      supportMult.set(k,Math.max(supportMult.get(k) || 0,c.mult || 0));
+      supportContacts.set(k,builtSupportContacts(c,componentKeys,tileFn || getTile));
+    }
+    const cost=supportCostMap(component,componentKeys,supports,byKey);
+    const load=new Map();
+    const bearingLoads=new Map();
+    const flowDirs=new Map();
+    const supported=component.filter(c=>{
+      const k=key(c.x,c.y);
+      if(!Number.isFinite(cost.get(k))) return false;
+      load.set(k,builtSelfWeight(c.t));
+      return true;
+    });
+    supported.sort((a,b)=>(cost.get(key(b.x,b.y)) || 0)-(cost.get(key(a.x,a.y)) || 0));
+    for(const c of supported){
+      const k=key(c.x,c.y);
+      const cCost=cost.get(k) || 0;
+      let force=load.get(k) || 0;
+      const localSupport=supportMult.get(k) || 0;
+      if(localSupport>0){
+        const absorbed=Math.min(force,builtFlowCapacity(c)*localSupport*0.85);
+        const contacts=supportContacts.get(k) || [];
+        const total=contacts.reduce((sum,s)=>sum+s.mult,0) || 1;
+        for(const s of contacts){
+          if(s.worldEdge) continue;
+          const sk=key(s.x,s.y);
+          bearingLoads.set(sk,(bearingLoads.get(sk) || 0)+absorbed*(s.mult/total));
+        }
+        force=Math.max(0,force-absorbed);
+      }
+      if(force<=0) continue;
+      const carryLimit=builtFlowCapacity(c)*(builtMaterialProfile(c.t).fail/BUILD_FLOW_LOAD_STRESS);
+      const transmitForce=Math.min(force,carryLimit);
+      const exits=[];
+      const ns=[[c.x+1,c.y],[c.x-1,c.y],[c.x,c.y+1],[c.x,c.y-1]];
+      for(const n of ns){
+        const nk=key(n[0],n[1]);
+        if(!componentKeys.has(nk)) continue;
+        const next=byKey.get(nk);
+        if(!next) continue;
+        const nCost=cost.get(nk);
+        if(!Number.isFinite(nCost) || nCost>=cCost-0.0001) continue;
+        const penalty=builtTransferCost(c,next);
+        exits.push({k:nk,score:1/Math.max(0.2,0.2+penalty+nCost*0.04),penalty});
+      }
+      if(!exits.length) continue;
+      exits.sort((a,b)=>b.score-a.score);
+      const chosen=exits.slice(0,3);
+      const total=chosen.reduce((sum,e)=>sum+e.score,0) || 1;
+      for(const e of chosen){
+        const transferred=transmitForce*(e.score/total)*(1+e.penalty*BUILD_FLOW_TRANSFER_STRESS);
+        load.set(e.k,(load.get(e.k) || 0)+transferred);
+      }
+    }
+    for(const c of supported){
+      const k=key(c.x,c.y);
+      const reachRatio=(cost.get(k) || 0)/Math.max(1,builtSupportStrength(c.t)*BUILD_FLOW_REACH_SCALE);
+      const localSupport=supportMult.get(k) || 0;
+      const capacity=builtFlowCapacity(c)*(1+localSupport*0.55);
+      const loadRatio=pureVerticalColumn ? 0 : ((load.get(k) || builtSelfWeight(c.t))/capacity)*BUILD_FLOW_LOAD_STRESS;
+      const ratio=Math.max(reachRatio,loadRatio);
+      best.set(k,builtResidualBudget(c,ratio));
+      const flow=buildFlowDirectionFor(c,k,cost,componentKeys,supportContacts);
+      if(flow) flowDirs.set(k,flow);
+    }
+    buildBearingLoads.set(best,bearingLoads);
+    buildFlowDirections.set(best,flowDirs);
     return best;
   }
   function canSupportPlacement(px,py,pt){
@@ -1049,7 +1268,7 @@ window.MM = window.MM || {};
       let mult=0;
       if(c.y+1>=WORLD_H) mult=1;
       const belowKey=key(c.x,c.y+1);
-      if(!componentKeys.has(belowKey) && isBuildAnchorTile(virtualTile(c.x,c.y+1))) mult=Math.max(mult,1);
+      if(!componentKeys.has(belowKey) && isBuildFoundationTile(virtualTile(c.x,c.y+1))) mult=Math.max(mult,1);
       for(const dir of [-1,1]){
         const sideKey=key(c.x+dir,c.y);
         if(!componentKeys.has(sideKey) && isBuildAnchorTile(virtualTile(c.x+dir,c.y))) mult=Math.max(mult,0.62);
@@ -1059,7 +1278,7 @@ window.MM = window.MM || {};
       if(mult>0) supports.push(Object.assign({mult},c));
     }
     if(!supports.length) return {ok:false, reason:'Brak podparcia'};
-    const stable=supportedBuiltKeys(component,componentKeys,supports);
+    const stable=supportedBuiltKeys(component,componentKeys,supports,virtualTile);
     if(!stable.has(virtualKey)) return {ok:false, reason:'Brak podparcia'};
     const failing=overstressedBuiltCells(component,stable,new Set());
     if(failing.some(c=>key(c.x,c.y)===virtualKey)) return {ok:false, reason:'Za duze naprezenie'};
@@ -1084,20 +1303,70 @@ window.MM = window.MM || {};
       const budget=best.get(k);
       if(!Number.isFinite(budget)) continue;
       const ratio=buildStressRatio(c,budget);
-      if(ratio>=builtMaterialProfile(c.t).fail) out.push(Object.assign({stress:ratio},c));
+      const p=builtMaterialProfile(c.t);
+      if(p && ratio>=p.fail) out.push(Object.assign({stress:ratio},c));
     }
     return out;
   }
   function recordBuildStress(component,best,fallingKeys){
-    if(buildStress.size>BUILD_STRESS_CAP) buildStress.clear();
-    for(const c of component) buildStress.delete(key(c.x,c.y));
+    if(buildStress.size>BUILD_STRESS_CAP){ buildStress.clear(); buildStressFlow.clear(); }
+    const flows=buildFlowDirections.get(best);
+    for(const c of component){
+      const k=key(c.x,c.y);
+      buildStress.delete(k);
+      buildStressFlow.delete(k);
+    }
     for(const c of component){
       const k=key(c.x,c.y);
       if(fallingKeys && fallingKeys.has(k)) continue;
       const budget=best.get(k);
       if(!Number.isFinite(budget)) continue;
       const ratio=buildStressRatio(c,budget);
-      if(ratio>=builtMaterialProfile(c.t).warn) buildStress.set(k,+ratio.toFixed(3));
+      const p=builtMaterialProfile(c.t);
+      if(p && ratio>=p.warn){
+        buildStress.set(k,+ratio.toFixed(3));
+        const flow=flows && flows.get(k);
+        if(flow) buildStressFlow.set(k,flow);
+      }
+    }
+  }
+  function canCrushBearingSupport(t){
+    if(t===T.BEDROCK || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return false;
+    return isBuildFoundationTile(t);
+  }
+  function crushBearingSupport(x,y,t,ratio){
+    if(!canCrushBearingSupport(t) || getTile(x,y)!==t) return false;
+    setTile(x,y,T.AIR);
+    forgetPlayerBuild(x,y);
+    forgetSettledRubble(x,y);
+    recordBuildBreak(x,y,t,ratio);
+    if(isFragileFalling(t)) breakFragile(x,y);
+    else if(isRubbleTrackedMaterial(t) || isPlayerBuiltMaterial(t) || isStructural(t)) spawn(x,y,t,true,ratio);
+    queueAroundRemoval(x,y);
+    return true;
+  }
+  function crushOverloadedBearingSupports(best,componentKeys){
+    const loads=buildBearingLoads.get(best);
+    if(!loads || !loads.size || !getTile || !setTile) return false;
+    let changed=false;
+    for(const [raw,force] of loads){
+      const c=parseCellKey(raw);
+      if(!c || !Number.isFinite(force) || force<=0) continue;
+      const t=getTile(c.x,c.y);
+      if(!canCrushBearingSupport(t)) continue;
+      const cap=bearingCapacityAt(c.x,c.y,t,componentKeys);
+      if(!Number.isFinite(cap) || cap<=0) continue;
+      const ratio=force/cap;
+      if(ratio>=BUILD_BEARING_CRUSH_RATIO && crushBearingSupport(c.x,c.y,t,Math.min(1,ratio))) changed=true;
+    }
+    return changed;
+  }
+  function requeueBuiltComponent(component,processed){
+    for(const c of component){
+      const k=key(c.x,c.y);
+      if(processed) processed.delete(k);
+      quietStable.delete(k);
+      unstable.add(k);
     }
   }
   function releaseBuiltCells(cells){
@@ -1155,6 +1424,11 @@ window.MM = window.MM || {};
         fallingKeys.add(k);
       }
     }
+    if(stableKeys.size && crushOverloadedBearingSupports(stableKeys,componentKeys)){
+      requeueBuiltComponent(component,processed);
+      recordBuildStress(component,stableKeys,fallingKeys);
+      return true;
+    }
     recordBuildStress(component,stableKeys,fallingKeys);
     if(falling.length){
       const changed=releaseBuiltCells(falling);
@@ -1173,7 +1447,7 @@ window.MM = window.MM || {};
     if(isSettledRubble(sx,sy)) return processSettledRubbleAt(sx,sy);
     if(isStructuralAnchor(sx,sy,getTile(sx,sy))){ processed.add(key(sx,sy)); markQuiet(sx,sy); return false; }
     const belowStart=getTile(sx,sy+1);
-    if(sy+1>=WORLD_H || isLoadBearingSupport(belowStart) || isStructuralAnchor(sx,sy+1,belowStart)){ processed.add(key(sx,sy)); markQuiet(sx,sy); return false; } // directly supported
+    if(sy+1>=WORLD_H || isStructuralFootingSupport(belowStart) || isStructuralAnchor(sx,sy+1,belowStart)){ processed.add(key(sx,sy)); markQuiet(sx,sy); return false; } // directly supported
     const stack=[[sx,sy]]; const seen=new Set(); const cluster=[]; const supports=[];
     let supported=false, hasSteel=false;
     while(stack.length){
@@ -1189,7 +1463,7 @@ window.MM = window.MM || {};
       if(y+1>=WORLD_H){ directSupport=true; }
       const below=getTile(x,y+1);
       if(isStructuralAnchor(x,y+1,below)) directSupport=true;
-      if(isLoadBearingSupport(below)) directSupport=true;
+      if(isStructuralFootingSupport(below)) directSupport=true;
       if(directSupport){
         supported=true;
         supports.push({x,y,t});
@@ -1338,67 +1612,97 @@ window.MM = window.MM || {};
     if(!Number.isFinite(x) || !Number.isFinite(y)) return null;
     return {x,y};
   }
-  function drawCracks(ctx,x,y,TILE,ratio,alpha,offset){
+  function drawCracks(ctx,x,y,TILE,ratio,alpha,offset,mode){
     const a=Math.max(0,Math.min(1,alpha));
-    const w=Math.max(1.4,TILE*(0.045+0.045*ratio));
+    const snap=mode==='snap';
+    const w=snap ? Math.max(1.2,TILE*(0.035+0.040*ratio)) : Math.max(1,TILE*(0.020+0.024*ratio));
     const shift=(offset||0)*TILE;
     ctx.lineCap='round';
     ctx.lineJoin='round';
-    ctx.lineWidth=w+1.8;
-    ctx.strokeStyle='rgba(42,9,4,'+(0.34+0.32*a).toFixed(3)+')';
+    ctx.lineWidth=w+(snap?1.4:1.1);
+    ctx.strokeStyle=snap ? 'rgba(48,16,8,'+(0.24+0.34*a).toFixed(3)+')' : 'rgba(10,12,14,'+(0.24+0.28*a).toFixed(3)+')';
     ctx.beginPath();
-    ctx.moveTo(x+TILE*0.18+shift,y+TILE*0.28);
-    ctx.lineTo(x+TILE*0.43,y+TILE*0.45);
-    ctx.lineTo(x+TILE*0.31,y+TILE*0.72);
-    ctx.moveTo(x+TILE*0.56-shift,y+TILE*0.16);
-    ctx.lineTo(x+TILE*0.72,y+TILE*0.40);
-    ctx.lineTo(x+TILE*0.63,y+TILE*0.70);
-    ctx.moveTo(x+TILE*0.24,y+TILE*0.78);
-    ctx.lineTo(x+TILE*0.46,y+TILE*0.62);
-    ctx.lineTo(x+TILE*0.58,y+TILE*0.80);
+    ctx.moveTo(x+TILE*0.22+shift,y+TILE*0.34);
+    ctx.lineTo(x+TILE*0.43,y+TILE*0.49);
+    ctx.lineTo(x+TILE*0.37,y+TILE*0.68);
+    if(ratio>0.58 || snap){
+      ctx.moveTo(x+TILE*0.48-shift*0.4,y+TILE*0.31);
+      ctx.lineTo(x+TILE*0.61,y+TILE*0.46);
+      ctx.lineTo(x+TILE*0.57,y+TILE*0.62);
+    }
+    if(snap){
+      ctx.moveTo(x+TILE*0.25,y+TILE*0.76);
+      ctx.lineTo(x+TILE*0.45,y+TILE*0.63);
+      ctx.lineTo(x+TILE*0.59,y+TILE*0.79);
+    }
     ctx.stroke();
     ctx.lineWidth=w;
-    ctx.strokeStyle='rgba(255,230,96,'+(0.48+0.46*a).toFixed(3)+')';
+    ctx.strokeStyle=snap ? 'rgba(255,214,116,'+(0.24+0.34*a).toFixed(3)+')' : 'rgba(232,238,234,'+(0.24+0.32*a).toFixed(3)+')';
     ctx.beginPath();
-    ctx.moveTo(x+TILE*0.18+shift,y+TILE*0.28);
-    ctx.lineTo(x+TILE*0.43,y+TILE*0.45);
-    ctx.lineTo(x+TILE*0.31,y+TILE*0.72);
-    ctx.moveTo(x+TILE*0.56-shift,y+TILE*0.16);
-    ctx.lineTo(x+TILE*0.72,y+TILE*0.40);
-    ctx.lineTo(x+TILE*0.63,y+TILE*0.70);
-    ctx.moveTo(x+TILE*0.24,y+TILE*0.78);
-    ctx.lineTo(x+TILE*0.46,y+TILE*0.62);
-    ctx.lineTo(x+TILE*0.58,y+TILE*0.80);
+    ctx.moveTo(x+TILE*0.22+shift,y+TILE*0.34);
+    ctx.lineTo(x+TILE*0.43,y+TILE*0.49);
+    ctx.lineTo(x+TILE*0.37,y+TILE*0.68);
+    if(ratio>0.58 || snap){
+      ctx.moveTo(x+TILE*0.48-shift*0.4,y+TILE*0.31);
+      ctx.lineTo(x+TILE*0.61,y+TILE*0.46);
+      ctx.lineTo(x+TILE*0.57,y+TILE*0.62);
+    }
+    if(snap){
+      ctx.moveTo(x+TILE*0.25,y+TILE*0.76);
+      ctx.lineTo(x+TILE*0.45,y+TILE*0.63);
+      ctx.lineTo(x+TILE*0.59,y+TILE*0.79);
+    }
     ctx.stroke();
   }
   function drawBuildStress(ctx,TILE,tileVisible){
     if(!buildStress.size || !getTile) return;
     const now=(typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-    const pulse=0.72+0.28*Math.sin(now*0.012);
+    const pulse=0.80+0.20*Math.sin(now*0.010);
     ctx.save();
     for(const [raw,ratio] of buildStress){
       const c=parseCellKey(raw);
-      if(!c){ buildStress.delete(raw); continue; }
-      if(!isTrackedPlayerBuild(c.x,c.y)){ buildStress.delete(raw); continue; }
+      if(!c){ buildStress.delete(raw); buildStressFlow.delete(raw); continue; }
+      if(!isTrackedPlayerBuild(c.x,c.y)){ buildStress.delete(raw); buildStressFlow.delete(raw); continue; }
       if(!tileVisible(c.x,c.y)) continue;
       const x=c.x*TILE, y=c.y*TILE;
       const danger=Math.max(0,Math.min(1,(ratio-BUILD_STRESS_WARN)/(1-BUILD_STRESS_WARN)));
-      const a=Math.max(0,Math.min(1,0.42+danger*0.58))*pulse;
-      ctx.fillStyle='rgba(255,54,32,'+(0.10+0.30*a).toFixed(3)+')';
+      const a=Math.max(0,Math.min(1,0.42+danger*0.54))*pulse;
+      ctx.fillStyle='rgba(202,210,206,'+(0.055+0.095*danger).toFixed(3)+')';
       ctx.fillRect(x,y,TILE,TILE);
-      ctx.strokeStyle='rgba(255,190,54,'+(0.36+0.44*a).toFixed(3)+')';
-      ctx.lineWidth=Math.max(1,TILE*(0.035+0.035*danger));
-      ctx.strokeRect(x+1,y+1,Math.max(1,TILE-2),Math.max(1,TILE-2));
-      drawCracks(ctx,x,y,TILE,ratio,a,Math.sin(now*0.018+c.x*0.7+c.y*0.2)*0.025*danger);
-      if(ratio>=BUILD_STRESS_DANGER){
-        ctx.fillStyle='rgba(255,238,120,'+(0.28+0.34*a).toFixed(3)+')';
+      ctx.strokeStyle='rgba(228,234,230,'+(0.34+0.40*a).toFixed(3)+')';
+      ctx.lineWidth=Math.max(1,TILE*(0.026+0.020*danger));
+      ctx.strokeRect(x+1.5,y+1.5,Math.max(1,TILE-3),Math.max(1,TILE-3));
+      const sweep=(now*0.0014+c.x*0.19+c.y*0.11)%1;
+      ctx.strokeStyle='rgba(246,248,244,'+(0.18+0.32*danger).toFixed(3)+')';
+      ctx.lineWidth=Math.max(0.85,TILE*(0.014+0.012*danger));
+      ctx.beginPath();
+      ctx.moveTo(x+TILE*(0.12+sweep*0.55),y+TILE*0.15);
+      ctx.lineTo(x+TILE*(0.02+sweep*0.55),y+TILE*0.84);
+      ctx.stroke();
+      const flow=buildStressFlow.get(raw);
+      if(flow && Number.isFinite(flow.dx) && Number.isFinite(flow.dy)){
+        const cx=x+TILE*0.5, cy=y+TILE*0.5;
+        const len=TILE*(0.24+0.12*danger);
+        const sx=cx-flow.dx*len*0.55, sy=cy-flow.dy*len*0.55;
+        const ex=cx+flow.dx*len*0.55, ey=cy+flow.dy*len*0.55;
+        ctx.strokeStyle='rgba(210,222,218,'+(0.28+0.30*a).toFixed(3)+')';
+        ctx.lineWidth=Math.max(1,TILE*(0.020+0.010*danger));
         ctx.beginPath();
-        ctx.moveTo(x+TILE*0.50,y+TILE*0.12);
-        ctx.lineTo(x+TILE*0.60,y+TILE*0.34);
-        ctx.lineTo(x+TILE*0.42,y+TILE*0.34);
-        ctx.closePath();
-        ctx.fill();
+        ctx.moveTo(sx,sy);
+        ctx.lineTo(ex,ey);
+        ctx.stroke();
+        const chase=(now*0.0022+c.x*0.13+c.y*0.07)%1;
+        const p0=Math.max(0,Math.min(1,chase-0.35)), p1=Math.max(0,Math.min(1,chase-0.08));
+        if(p1>p0){
+          ctx.strokeStyle='rgba(248,252,246,'+(0.18+0.30*danger).toFixed(3)+')';
+          ctx.lineWidth=Math.max(0.8,TILE*(0.012+0.008*danger));
+          ctx.beginPath();
+          ctx.moveTo(sx+(ex-sx)*p0,sy+(ey-sy)*p0);
+          ctx.lineTo(sx+(ex-sx)*p1,sy+(ey-sy)*p1);
+          ctx.stroke();
+        }
       }
+      drawCracks(ctx,x,y,TILE,ratio,a,Math.sin(now*0.014+c.x*0.7+c.y*0.2)*0.014*danger,'stress');
     }
     ctx.restore();
   }
@@ -1417,7 +1721,7 @@ window.MM = window.MM || {};
       const a=Math.max(0,Math.min(1,t))*b.ratio;
       ctx.fillStyle='rgba(255,42,24,'+(0.12+0.22*a).toFixed(3)+')';
       ctx.fillRect(x,y,TILE,TILE);
-      drawCracks(ctx,x,y,TILE,b.ratio,a,Math.sin((b.seed+age)*0.03)*0.035);
+      drawCracks(ctx,x,y,TILE,b.ratio,a,Math.sin((b.seed+age)*0.03)*0.035,'snap');
       ctx.lineWidth=Math.max(1,TILE*(0.03+0.05*a));
       ctx.strokeStyle='rgba(255,218,94,'+(0.30+0.55*a).toFixed(3)+')';
       ctx.beginPath();
@@ -1441,7 +1745,7 @@ window.MM = window.MM || {};
       const x=b.x*TILE, y=b.yFloat*TILE;
       ctx.fillStyle=INFO[b.type].color;
       ctx.fillRect(x,y,TILE,TILE);
-      if(b.stress>0) drawCracks(ctx,x,y,TILE,b.stress,Math.max(0.35,b.stress),0);
+      if(b.stress>0) drawCracks(ctx,x,y,TILE,b.stress,Math.max(0.35,b.stress),0,'snap');
     }
     if(sandActive.length){ ctx.fillStyle=INFO[T.SAND].color; for(const s of sandActive){ if(!tileVisible(s.x,s.yFloat)) continue; ctx.fillRect(s.x*TILE,s.yFloat*TILE,TILE,TILE); } }
     drawBuildBreaks(ctx,TILE,tileVisible);
@@ -1453,7 +1757,7 @@ window.MM = window.MM || {};
   function afterPlacement(x,y){ forgetSettledRubble(x,y); rememberManualCityBuild(x,y); rememberPlayerBuild(x,y); queueAroundSettle(x,y); checkBuiltPillarAround(x,y); }
   function maybeStart(x,y){ queueCheck(x,y); }
 
-  function reset(){ active.length=0; sandActive.length=0; unstable.clear(); quietStable.clear(); auditJobs.length=0; auditPending.clear(); auditLast.clear(); manualCityBuilt.clear(); playerBuilt.clear(); buildStress.clear(); buildBreaks.length=0; settledRubble.clear(); }
+  function reset(){ active.length=0; sandActive.length=0; unstable.clear(); quietStable.clear(); auditJobs.length=0; auditPending.clear(); auditLast.clear(); manualCityBuilt.clear(); playerBuilt.clear(); buildStress.clear(); buildStressFlow.clear(); buildBreaks.length=0; settledRubble.clear(); }
   function metrics(){ return {queue:unstable.size, audit:auditJobs.length, active:active.length, sand:sandActive.length, debris:settledRubble.size, built:playerBuilt.size, stress:buildStress.size, breaks:buildBreaks.length}; }
   function parseSavedKey(k){
     if(typeof k!=='string' || k.length>=32) return null;
@@ -1510,7 +1814,7 @@ window.MM = window.MM || {};
 
   function _debug(){
     return {
-      stress:[...buildStress].map(([raw,ratio])=>Object.assign({ratio},parseCellKey(raw)||{})).filter(c=>Number.isFinite(c.x)),
+      stress:[...buildStress].map(([raw,ratio])=>Object.assign({ratio},buildStressFlow.get(raw)||{},parseCellKey(raw)||{})).filter(c=>Number.isFinite(c.x)),
       breaks:buildBreaks.map(b=>({x:b.x,y:b.y,ratio:b.ratio,age:((typeof performance !== 'undefined' && performance.now)?performance.now():Date.now())-b.born})),
       thresholds:{warn:BUILD_STRESS_WARN,danger:BUILD_STRESS_DANGER,fail:BUILD_STRESS_FAIL}
     };

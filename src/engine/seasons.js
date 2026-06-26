@@ -1,4 +1,5 @@
-import { CHUNK_W, T, INFO, WORLD_H, isAutumnLeaf, isLeaf } from '../constants.js';
+import { CHUNK_W, T, WORLD_H, isAutumnLeaf } from '../constants.js';
+import { isSkyOpenTile } from './material_physics.js';
 
 const root = typeof window !== 'undefined' ? window : globalThis;
 root.MM = root.MM || {};
@@ -450,12 +451,8 @@ function temperatureAt(x, row, baseTemp, prof, dayTempDelta){
   return clim + finiteNumber(p.temperatureDelta, 0) + daily - lapse;
 }
 
-function isGas(t){
-  const info = INFO[t];
-  return !!(info && info.gas);
-}
 function skyOpenTile(t){
-  return t === T.AIR || isLeaf(t) || isGas(t);
+  return isSkyOpenTile(t);
 }
 function skyExposed(x, y, getTile, maxScan){
   if(typeof getTile !== 'function') return true;

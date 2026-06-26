@@ -19,6 +19,8 @@
 // deferred per column (fractional accumulator), so lakes drain slowly while vapor and
 // clouds respond quickly. Everything below the rendering section runs headless (Node
 // tests stub MM.worldGen / MM.water — see tools/clouds-sim.test.mjs).
+import { isFoliageTile, isSkyOpenTile, isWaterOpenTile } from './material_physics.js';
+
 window.MM = window.MM || {};
 (function(){
   const {T, WORLD_H} = MM;
@@ -363,18 +365,11 @@ window.MM = window.MM || {};
   function tileIs(t,id){
     return typeof id==='number' && t===id;
   }
-  function tileInfo(t){
-    return MM.INFO && MM.INFO[t];
-  }
-  function isGasTile(t){
-    const info=tileInfo(t);
-    return !!(info && info.gas);
-  }
   function isLeafTile(t){
-    return t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED;
+    return isFoliageTile(t);
   }
   function skyOpenTile(t){
-    return t===T.AIR || isLeafTile(t) || isGasTile(t);
+    return isSkyOpenTile(t);
   }
   function dryTeleportAir(t){
     return skyOpenTile(t) || tileIs(t,T.TORCH) || tileIs(t,T.GRAVE);
@@ -656,7 +651,7 @@ window.MM = window.MM || {};
     while(py>1 && isLeafTile(getTile(cx,py))) py--;   // surface under a canopy: climb to air
     try{
       const pt=getTile(cx,py);
-      if(MM.water && MM.water.addSource && (pt===T.AIR || isGasTile(pt))){
+      if(MM.water && MM.water.addSource && isWaterOpenTile(pt)){
         return !!MM.water.addSource(cx,py,getTile,setTile);
       }
     }catch(e){}

@@ -15,6 +15,7 @@
 // cell because it is not T.AIR), so the seam is one conversion rule, not a
 // shared engine. Revisit only if lava ever needs waves/pressure of its own.
 import { T, INFO, WORLD_H, TILE as TILE_PX } from '../constants.js';
+import { isLavaExposureOpenTile, isLavaVentOpenTile } from './material_physics.js';
 import { reactions as REACTIONS } from './reactions.js';
 (function(){
   window.MM = window.MM || {};
@@ -474,7 +475,7 @@ import { reactions as REACTIONS } from './reactions.js';
     return ms>32 ? 2 : (ms>18 ? 5 : 12);
   }
   function lavaOpenTile(t){
-    return t===T.AIR || t===T.WATER || t===T.TORCH || t===T.GRAVE || (INFO[t] && INFO[t].gas);
+    return isLavaExposureOpenTile(t);
   }
   function emitLavaHotAir(L,getTile,setTile){
     if(!L || typeof getTile!=='function' || typeof setTile!=='function') return 0;
@@ -584,7 +585,7 @@ import { reactions as REACTIONS } from './reactions.js';
   function scanOpenToLava(getTile,x,y){
     for(const [dx,dy] of [[0,-1],[1,0],[-1,0],[0,1]]){
       const t=getTile(x+dx,y+dy);
-      if(t===T.AIR || t===T.TORCH || t===T.GRAVE || (INFO[t] && INFO[t].gas)) return true;
+      if(isLavaVentOpenTile(t)) return true;
     }
     return false;
   }

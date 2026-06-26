@@ -2,7 +2,8 @@
 // Regular panels generate a small daylight buffer. Storage panels (made with a
 // transistor in the recipe) keep a much larger battery and can feed devices via
 // copper cable networks.
-import { T, INFO, WORLD_H } from '../constants.js';
+import { T, WORLD_H } from '../constants.js';
+import { isSunTransparentTile } from './material_physics.js';
 
 (function(){
   window.MM = window.MM || {};
@@ -35,9 +36,7 @@ import { T, INFO, WORLD_H } from '../constants.js';
   function capacityForTile(t){ return isStorageTile(t) ? STORAGE_CAPACITY : PANEL_CAPACITY; }
   function rateForTile(t){ return isStorageTile(t) ? STORAGE_RATE : PANEL_RATE; }
   function transparentForSun(t){
-    if(t===T.AIR || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.TORCH || t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED) return true;
-    const info=INFO[t];
-    return !!(info && (info.gas || info.passable));
+    return isSunTransparentTile(t);
   }
   function skyExposed(x,y,getTile){
     x=Math.floor(x); y=Math.floor(y);

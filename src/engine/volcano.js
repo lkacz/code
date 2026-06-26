@@ -1,4 +1,5 @@
-import { T, INFO, WORLD_H } from '../constants.js';
+import { T, WORLD_H } from '../constants.js';
+import { isBlastProtectedTile, isObjectFootingTile, isPassableForFalling, isReplaceableNaturalOpenTile } from './material_physics.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
 
 (function(){
@@ -22,12 +23,11 @@ import { worldGen as WORLDGEN } from './worldgen.js';
 
   function wg(){ return (window.MM && MM.worldGen) || WORLDGEN; }
   function key(x,y){ return (x|0)+','+(y|0); }
-  function tileInfo(t){ return INFO[t] || INFO[T.AIR]; }
   function finiteNumber(n){ return Number.isFinite(n); }
   function finiteTile(x,y){ return finiteNumber(x) && finiteNumber(y) && y>=0 && y<WORLD_H && Math.abs(x)<100000000; }
   function clamp(n,a,b){ return Math.max(a, Math.min(b,n)); }
-  function projectileOpen(t){ return t===T.AIR || t===T.WATER || t===T.LAVA || t===T.TORCH || t===T.GRAVE || !!(tileInfo(t) && tileInfo(t).gas); }
-  function supportSolid(t){ return t!==T.AIR && t!==T.WATER && !(tileInfo(t) && tileInfo(t).passable); }
+  function projectileOpen(t){ return isPassableForFalling(t) || t===T.LAVA; }
+  function supportSolid(t){ return isObjectFootingTile(t); }
   function volcanoId(v){ return v && v.cell!=null ? 'c'+v.cell : 'x'+Math.round(v ? v.center : 0); }
   function randomRange(a,b){ return a + Math.random()*(b-a); }
   function seeded(v,salt){
@@ -173,7 +173,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
         const x=tx+dx, y=ty+dy;
         if(y<1 || y>=WORLD_H-2) continue;
         const here=getTile(x,y);
-        if(here!==T.AIR && here!==T.WATER && !(tileInfo(here) && tileInfo(here).gas) && (allowLava? here!==T.LAVA : true)) continue;
+        if(!isReplaceableNaturalOpenTile(here,allowLava)) continue;
         const below=getTile(x,y+1);
         if(supportSolid(below)) candidates.push({x,y,score:Math.abs(dx)*1.2+Math.abs(dy)});
       }
@@ -227,7 +227,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       return false;
     }
     const old=getTile(rest.x,rest.y);
-    if(old!==T.AIR && old!==T.WATER && !(tileInfo(old) && tileInfo(old).gas)) return false;
+    if(!isReplaceableNaturalOpenTile(old,false)) return false;
     setTile(rest.x,rest.y,T.VOLCANO_MASTER_STONE);
     trackMasterStone(rest.x,rest.y,0);
     if(old===T.WATER){ try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(rest.x,rest.y,getTile); }catch(e){} }
@@ -251,7 +251,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
         const tx=x+dx, ty=y+dy;
         if(ty<1 || ty>=WORLD_H-3) continue;
         const t=getTile(tx,ty);
-        if(t===T.AIR || t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC || t===T.OBSIDIAN || t===T.DIAMOND) continue;
+        if(isBlastProtectedTile(t)) continue;
         setTile(tx,ty,T.AIR);
         notifyTileChanged(tx,ty,t,T.AIR,getTile);
       }

@@ -8,6 +8,7 @@ globalThis.MM = {};
 
 const { T } = await import('../src/constants.js');
 const { fallingSolids } = await import('../src/engine/falling.js');
+await import('../src/engine/dynamo.js');
 
 const key = (x,y)=>x+','+y;
 const tiles = new Map();
@@ -151,6 +152,41 @@ function supportedCantileverCells(t,span=25){
 
 {
   reset();
+  fillFloor(30,-8,8);
+  setTile(0,20,T.WIRE);
+  fallingSolids.restore({
+    v:4,
+    active:[{x:0,y:4,type:T.STONE,vy:0,rubble:true}],
+    sand:[],
+    queue:[]
+  });
+  stepFalling(1.2);
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,20),T.WIRE,'live falling rubble passes through passable wiring instead of erasing it');
+  assert.equal(countRegionTile(T.STONE,-2,2,0,29),1,'rubble remains conserved after passing through passable wiring');
+  assertSettledState('wire pass-through rubble guard');
+}
+
+{
+  reset();
+  fillFloor(30,-8,8);
+  setTile(0,20,T.COAL);
+  fallingSolids.restore({
+    v:4,
+    active:[{x:0,y:4,type:T.STONE,vy:0,rubble:true}],
+    sand:[],
+    queue:[]
+  });
+  stepFalling(1.2);
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,20),T.AIR,'live falling rubble crushes invalid coal support instead of resting on it');
+  assert.equal(countRegionTile(T.STONE,-3,3,0,29),1,'crushing a coal support conserves the falling rubble');
+  assert.equal(countRegionTile(T.COAL,-3,3,0,29),1,'crushed coal support becomes falling material instead of disappearing');
+  assertSettledState('coal crush rubble guard');
+}
+
+{
+  reset();
   fillFloor(120,-80,80);
   MM.wind = { speedAt(){ return 5; }, speed(){ return 5; } };
   fallingSolids.restore({
@@ -240,6 +276,17 @@ function supportedCantileverCells(t,span=25){
 
 {
   reset();
+  setFlatSurface(60);
+  setTile(0,51,T.DIRT);
+  assert.equal(fallingSolids.canSupportPlacement(0,50,T.STONE).ok,true,'weak fill can carry a direct vertical footing');
+  reset();
+  setFlatSurface(60);
+  setTile(-1,50,T.DIRT);
+  assert.equal(fallingSolids.canSupportPlacement(0,50,T.STONE).ok,false,'weak fill does not act as a lateral wall anchor');
+}
+
+{
+  reset();
   fillFloor(40,-10,10);
   setTile(0,21,T.STONE);
   setTile(0,20,T.TURRET);
@@ -256,6 +303,19 @@ function supportedCantileverCells(t,span=25){
 {
   reset();
   fillFloor(40,-10,10);
+  setTile(0,21,T.CHEST_COMMON);
+  setTile(0,20,T.TURRET);
+  fallingSolids.auditChunks([0],{force:true,immediate:true});
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,20),T.AIR,'machine does not stay supported by a chest footing');
+  assert.equal(getTile(0,21),T.AIR,'chest under a machine is audited as its own falling object');
+  assert.equal(countRegionTile(T.TURRET,-2,2,0,39),1,'unsupported machine remains conserved while falling/settling');
+  assert.equal(countRegionTile(T.CHEST_COMMON,-2,2,0,39),1,'unsupported chest remains conserved while falling/settling');
+}
+
+{
+  reset();
+  fillFloor(40,-10,10);
   setTile(-1,20,T.STONE);
   setTile(0,20,T.WATER_PUMP);
   fallingSolids.afterPlacement(0,20);
@@ -265,6 +325,87 @@ function supportedCantileverCells(t,span=25){
   fallingSolids.onTileRemoved(-1,20);
   fallingSolids.settleAll();
   assert.equal(getTile(0,39),T.WATER_PUMP,'side-braced machine falls when the wall brace is removed');
+}
+
+{
+  reset();
+  fillFloor(40,-10,10);
+  setTile(0,21,T.GLASS);
+  setTile(0,20,T.TURRET);
+  fallingSolids.auditChunks([0],{force:true,immediate:true});
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,20),T.AIR,'legacy machine does not remain supported by fragile glass footing');
+  assert.equal(getTile(0,39),T.TURRET,'machine on invalid fragile footing falls to the real floor');
+}
+
+{
+  reset();
+  fillFloor(40,-10,10);
+  setTile(0,21,T.COAL);
+  setTile(0,20,T.TURRET);
+  fallingSolids.auditChunks([0],{force:true,immediate:true});
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,20),T.AIR,'machine crushes invalid coal footing instead of hovering on it');
+  assert.equal(countRegionTile(T.TURRET,-2,2,0,39),1,'machine is conserved after crushing coal footing');
+  assert.equal(countRegionTile(T.COAL,-2,2,0,39),1,'crushed coal support is released as falling material');
+}
+
+{
+  reset();
+  fillFloor(40,-10,10);
+  setTile(-1,20,T.DYNAMO);
+  setTile(0,20,T.DYNAMO_SLOT);
+  setTile(1,20,T.DYNAMO);
+  setTile(-1,21,T.STONE);
+  fallingSolids.auditChunks([0],{force:true,immediate:true});
+  fallingSolids.settleAll();
+  assert.equal(getTile(-1,20),T.DYNAMO,'supported dynamo keeps its left casing');
+  assert.equal(getTile(0,20),T.DYNAMO_SLOT,'supported dynamo keeps its center slot');
+  assert.equal(getTile(1,20),T.DYNAMO,'supported dynamo keeps its right casing instead of splitting');
+  setTile(-1,21,T.AIR);
+  fallingSolids.onTileRemoved(-1,21);
+  fallingSolids.settleAll();
+  assert.equal(getTile(-1,20),T.AIR,'unsupported dynamo releases its left casing from the original position');
+  assert.equal(getTile(0,20),T.AIR,'unsupported dynamo releases its slot from the original position');
+  assert.equal(getTile(1,20),T.AIR,'unsupported dynamo releases its right casing from the original position');
+  assert.equal(countRegionTile(T.DYNAMO,-4,4,0,39),2,'unsupported dynamo conserves both casing tiles');
+  assert.equal(countRegionTile(T.DYNAMO_SLOT,-4,4,0,39),1,'unsupported dynamo conserves its slot tile');
+}
+
+{
+  reset();
+  fillFloor(40,-10,10);
+  setTile(5,18,T.DYNAMO);
+  setTile(5,19,T.DYNAMO_SLOT);
+  setTile(5,20,T.DYNAMO);
+  fallingSolids.auditChunks([0],{force:true,immediate:true});
+  fallingSolids.settleAll();
+  assert.equal(getTile(5,18),T.AIR,'legacy unsupported vertical dynamo does not leave its top casing floating');
+  assert.equal(getTile(5,19),T.AIR,'legacy unsupported vertical dynamo does not leave its slot floating');
+  assert.equal(getTile(5,20),T.AIR,'legacy unsupported vertical dynamo does not leave its bottom casing floating');
+  assert.equal(countRegionTile(T.DYNAMO,3,7,0,39),2,'vertical dynamo collapse preserves both casing tiles');
+  assert.equal(countRegionTile(T.DYNAMO_SLOT,3,7,0,39),1,'vertical dynamo collapse preserves the slot tile');
+}
+
+{
+  reset();
+  fillFloor(40,-10,10);
+  setTile(0,21,T.SAND);
+  setTile(0,20,T.CHEST_COMMON);
+  fallingSolids.auditChunks([0],{force:true,immediate:true});
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,20),T.CHEST_COMMON,'chest can rest on sand without becoming structural support');
+}
+
+{
+  reset();
+  fillFloor(40,-10,10);
+  setTile(-1,20,T.GLASS);
+  setTile(0,20,T.WATER_PUMP);
+  fallingSolids.auditChunks([0],{force:true,immediate:true});
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,20),T.AIR,'machine cannot hang from a fragile glass side brace');
+  assert.equal(getTile(0,39),T.WATER_PUMP,'machine with invalid side brace falls to the real floor');
 }
 
 {
@@ -348,6 +489,41 @@ function supportedCantileverCells(t,span=25){
 
 {
   reset();
+  setFlatSurface(100);
+  fillFloor(100,-80,80);
+  setTile(0,60,T.STONE);
+  placeBuiltRect(T.STEEL,-12,12,59,59);
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,60),T.AIR,'heavy steel beam crushes an isolated one-block stone support');
+  assert.equal(countRegionTile(T.STEEL,-12,12,59,59),0,'beam wakes after crushing its footing instead of remaining suspended');
+  assert.equal(countRegionTile(T.STEEL,-80,80,0,99),25,'crushed heavy beam conserves its steel as falling debris');
+}
+
+{
+  reset();
+  setFlatSurface(100);
+  fillFloor(100,-80,80);
+  setTile(0,60,T.DIRT);
+  placeBuiltRect(T.STEEL,-12,12,59,59);
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,60),T.AIR,'heavy steel beam crushes an isolated weak-fill footing');
+  assert.equal(countRegionTile(T.STEEL,-80,80,0,99),25,'beam material is conserved after crushing weak fill');
+}
+
+{
+  reset();
+  setFlatSurface(100);
+  fillFloor(100,-80,80);
+  buildRect(T.STONE,-2,2,60,99);
+  placeBuiltRect(T.STEEL,-12,12,59,59);
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,60),T.STONE,'substantial stone pier is not crushed by the same steel beam');
+  assert.equal(countRegionTile(T.STEEL,-12,12,59,59),25,'substantial stone pier carries the heavy steel beam');
+  assert.equal(fallingSolids.metrics().breaks,0,'sufficient bearing support avoids a collapse flash');
+}
+
+{
+  reset();
   setFlatSurface(60);
   fillFloor(60,-30,30);
   buildRect(T.WOOD,0,0,55,59);
@@ -385,6 +561,7 @@ function supportedCantileverCells(t,span=25){
   assert.ok(fallingSolids.metrics().stress>0,'near-limit player-built platform shows structural stress warnings');
   const stress=fallingSolids._debug().stress;
   assert.ok(stress.some(c=>c.ratio>=fallingSolids._debug().thresholds.warn),'stress debug exposes visible warning intensity');
+  assert.ok(stress.some(c=>Number.isFinite(c.dx) && Number.isFinite(c.dy) && Math.abs(c.dx)+Math.abs(c.dy)>0),'stress debug exposes force-flow direction');
   const stressCtx=makeDrawCtx();
   fallingSolids.draw(stressCtx,20,()=>true);
   assert.ok(stressCtx.calls.includes('strokeRect') && stressCtx.calls.includes('stroke'),'stress warning draws a visible cracked overlay');

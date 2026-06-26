@@ -1,5 +1,14 @@
 // World storage & chunk generation
-import { CHUNK_W, WORLD_H, T, INFO, SNOW_LINE, SURFACE_GRASS_DEPTH, SAND_DEPTH } from '../constants.js';
+import { CHUNK_W, WORLD_H, T, SNOW_LINE, SURFACE_GRASS_DEPTH, SAND_DEPTH } from '../constants.js';
+import {
+  generatedCityStructuralTile,
+  generatedCitySupportTile,
+  isGeneratedStructureReplaceableTile,
+  isLavaExposureOpenTile,
+  isObjectFootingTile,
+  isReplaceableNaturalOpenTile,
+  isRockStructuralMaterial
+} from './material_physics.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
 import { ruins as RUINS } from './ruins.js';
 window.MM = window.MM || {};
@@ -147,7 +156,7 @@ window.MM = window.MM || {};
         if(y<0 || y>=WORLD_H) return false;
         if(lx<0 || lx>=CHUNK_W) return false;
         const t=arr[tileIndex(lx,y)];
-        return t===T.AIR || t===T.WATER || t===T.TORCH || t===T.GRAVE;
+        return isLavaExposureOpenTile(t);
       };
       for(let lx=0; lx<CHUNK_W; lx++){
         const wx=cx*CHUNK_W+lx;
@@ -160,13 +169,8 @@ window.MM = window.MM || {};
       }
     }catch(e){}
   }
-  function isCityStructuralTile(t){ return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.STEEL || t===T.OBSIDIAN; }
-  function isCityLoadBearingTile(t){
-    if(t===T.AIR || t===T.WATER || (INFO[t] && INFO[t].passable) || t===T.GLASS || t===T.ELECTRONICS) return false;
-    if(t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return false;
-    if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) return false;
-    return true;
-  }
+  function isCityStructuralTile(t){ return generatedCityStructuralTile(t); }
+  function isCityLoadBearingTile(t){ return generatedCitySupportTile(t); }
   function auditCityStructuralStability(arr,cx){
     const faller=MM.fallingSolids;
     if(!faller || !faller.maybeStart || !WG || !WG.column) return;
@@ -272,7 +276,7 @@ window.MM = window.MM || {};
     return fleck<0.055 ? T.GRANITE : T.STONE;
   }
   function isCaveTreasureFloor(t){
-    return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL;
+    return isRockStructuralMaterial(t) && isObjectFootingTile(t);
   }
 
   function applyDevastatedCity(arr,cx){
@@ -281,7 +285,7 @@ window.MM = window.MM || {};
     const put=(wx,y,t,force)=>{
       if(wx<worldLeft || wx>worldRight || y<0 || y>=WORLD_H-3) return false;
       const lx=wx-worldLeft, idx=tileIndex(lx,y), cur=arr[idx];
-      if(force || cur===T.AIR || cur===T.WATER || cur===T.LEAF || cur===T.AUTUMN_LEAF_ORANGE || cur===T.AUTUMN_LEAF_RED || cur===T.TORCH || cur===T.GRAVE){
+      if(force || isGeneratedStructureReplaceableTile(cur)){
         arr[idx]=t;
         return true;
       }
@@ -721,7 +725,7 @@ window.MM = window.MM || {};
     const wx0=cx*CHUNK_W+lx0;
     const col=WG.column(wx0);
     if(col.volcano) return;
-    const put=(lx,y,t)=>{ if(lx>=0&&lx<CHUNK_W&&y>=0&&y<WORLD_H){ const i=tileIndex(lx,y); if(arr[i]===T.AIR||arr[i]===T.WATER||t===T.AIR) arr[i]=t; } };
+    const put=(lx,y,t)=>{ if(lx>=0&&lx<CHUNK_W&&y>=0&&y<WORLD_H){ const i=tileIndex(lx,y); if(isReplaceableNaturalOpenTile(arr[i],false)||t===T.AIR) arr[i]=t; } };
     if(col.biome===5){
       // shipwreck: a broken wooden hull resting on the seabed with an epic chest
       const s=col.row;

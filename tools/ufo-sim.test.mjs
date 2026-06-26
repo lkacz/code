@@ -37,6 +37,23 @@ MM.heroEnergy = { drain(){ const p=globalThis.player; const n=Math.max(0, Number
 
 const { ufo } = await import('../src/engine/ufo.js');
 assert.ok(ufo && ufo.forceSpawn, 'ufo module exports');
+assert.equal(ufo._debug.dropCellSupported(T.CHEST_COMMON), false, 'UFO wreck salvage does not use chests as landing footing');
+assert.equal(ufo._debug.dropCellSupported(T.GLASS), false, 'UFO wreck salvage does not use fragile glass as landing footing');
+assert.equal(ufo._debug.dropCellSupported(T.WATER_PUMP), false, 'UFO wreck salvage does not use machines as landing footing');
+assert.equal(ufo._debug.dropCellSupported(T.STONE), true, 'UFO wreck salvage can land on real terrain footing');
+assert.equal(ufo._debug.dropCellFree(T.POISON_GAS), true, 'UFO wreck salvage can pass through transient gas');
+assert.equal(ufo._debug.dropCellFree(T.WATER), false, 'UFO wreck salvage does not overwrite water without a displacement path');
+{
+  const used=new Set();
+  const tileAt=(x,y)=>{
+    if(y===10) return T.AIR;
+    if(y===11) return T.CHEST_COMMON;
+    if(y===12) return T.AIR;
+    if(y===13) return T.STONE;
+    return T.AIR;
+  };
+  assert.deepEqual(ufo._debug.findScrapLanding(0,10,used,tileAt), {x:0,y:12}, 'UFO wreck salvage skips invalid chest footing and lands on real support');
+}
 const scheduleBefore=ufo.state().acc;
 ufo.update(NaN, player);
 ufo.update(-1, player);

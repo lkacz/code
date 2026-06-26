@@ -1,4 +1,5 @@
 import { CHUNK_W, T, INFO, WORLD_H } from '../constants.js';
+import { isGasTile, isMeteorForestSiteTile, isMeteorImpactGroundTile, isMeteorLifeSiteTile, isMeteorProtectedTile, isMeteorSettlementSiteTile, isMeteorWaterSiteTile } from './material_physics.js';
 
 const meteorites = (function(){
   const MM = window.MM = window.MM || {};
@@ -207,19 +208,12 @@ const meteorites = (function(){
     for(const k in consequenceCounts) consequenceCounts[k]=Math.max(0,(src[k]|0)||0);
   }
   function tileInfo(t){ return INFO[t] || INFO[T.AIR]; }
-  function isGas(t){ return !!(tileInfo(t) && tileInfo(t).gas); }
+  function isGas(t){ return isGasTile(t); }
   function meteorGroundTile(t){
-    return t===T.GRASS || t===T.SAND || t===T.DIRT || t===T.STONE ||
-      t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.SNOW ||
-      t===T.ICE || t===T.MUD || t===T.OBSIDIAN || t===T.COAL ||
-      t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON ||
-      t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS ||
-      t===T.ANTIMATTER_CRYSTAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE;
+    return isMeteorImpactGroundTile(t);
   }
   function protectedTile(t){
-    return t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC ||
-      t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE ||
-      t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN;
+    return isMeteorProtectedTile(t);
   }
   function meteorShattersTile(t){
     if(t===T.AIR || t===T.WATER || t===T.LAVA || isGas(t)) return false;
@@ -1064,10 +1058,10 @@ const meteorites = (function(){
       if(y<1 || y>=WORLD_H-3) continue;
       for(let x=Math.floor(cx)-8; x<=Math.floor(cx)+8; x++){
         const t=readTile(getTile,x,y);
-        if(t===T.WATER || t===T.ICE) water++;
-        if(t===T.WOOD || t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED) forest++;
-        if(t===T.GRASS || t===T.MUD || t===T.ALIEN_BIOMASS) life++;
-        if((INFO[t] && (INFO[t].machine || INFO[t].chestTier)) || t===T.STEEL || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE) built++;
+        if(isMeteorWaterSiteTile(t)) water++;
+        if(isMeteorForestSiteTile(t)) forest++;
+        if(isMeteorLifeSiteTile(t)) life++;
+        if(isMeteorSettlementSiteTile(t)) built++;
       }
     }
     if(built>=5) return 'settlement';

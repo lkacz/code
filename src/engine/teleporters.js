@@ -2,6 +2,7 @@
 // network: adjacent dynamos can charge devices directly or through contiguous
 // copper cable runs, while each teleporter keeps its own small battery.
 import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
+import { isPlayerPassableTile } from './material_physics.js';
 
 (function(){
   window.MM = window.MM || {};
@@ -560,8 +561,7 @@ import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
     return best;
   }
   function passableForPlayer(t){
-    if(t===T.AIR || t===T.WATER || t===T.LAVA) return true;
-    return !!(INFO[t] && INFO[t].passable);
+    return isPlayerPassableTile(t);
   }
   function canStandAt(player,x,y,getTile){
     const w=Math.max(0.5,Number(player && player.w)||0.7);

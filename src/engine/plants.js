@@ -5,7 +5,8 @@
 // One plant per world column; entities are persisted to localStorage so a garden
 // survives reloads. The sim core is DOM-free (Node-testable); only draw() touches
 // canvas. Hooks used: MM.water, MM.clouds.isRainingAt, MM.fire.isBurning.
-import { T, INFO, WORLD_H } from '../constants.js';
+import { T, WORLD_H } from '../constants.js';
+import { isGasTile, isPlantSpaceTile } from './material_physics.js';
 (function(){
   window.MM = window.MM || {};
 
@@ -33,9 +34,8 @@ import { T, INFO, WORLD_H } from '../constants.js';
   let rng=Math.random;        // swappable for deterministic tests
 
   function rand(a,b){ return a + rng()*(b-a); }
-  function isGasTile(t){ return !!(INFO[t] && INFO[t].gas); }
   function openAir(t){ return t===T.AIR || isGasTile(t); }
-  function plantSpace(t){ return t===T.AIR || t===T.WATER || isGasTile(t); }
+  function plantSpace(t){ return isPlantSpaceTile(t); }
 
   // --- Lifecycle ----------------------------------------------------------------
   // Surface lookup: prefer the worldgen column cache; fall back to a tile scan

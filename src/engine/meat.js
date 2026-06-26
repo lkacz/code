@@ -1,4 +1,5 @@
-import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
+import { T, WORLD_H, CHUNK_W } from '../constants.js';
+import { isGasTile, isObjectFootingTile, isReplaceableNaturalOpenTile } from './material_physics.js';
 
 window.MM = window.MM || {};
 
@@ -16,13 +17,10 @@ const meat = (function(){
   const key = (x,y)=>x+','+y;
   const finiteTile = (x,y)=>Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H;
   const isMeatTile = t=>t===T.MEAT || t===T.ROTTEN_MEAT;
-  const isGasTile = t=>!!(INFO[t] && INFO[t].gas);
-  const canOccupy = t=>t===T.AIR || t===T.WATER || isGasTile(t);
+  const canOccupy = t=>isReplaceableNaturalOpenTile(t,false);
   function getSafe(getTile,x,y){ try{ return getTile ? getTile(x,y) : T.AIR; }catch(e){ return T.AIR; } }
   function supportedBy(t){
-    if(t===T.AIR || t===T.WATER || t===T.LAVA) return false;
-    const info = INFO[t];
-    return !!(info && !info.passable);
+    return isObjectFootingTile(t);
   }
   function nextGasDelay(){ return ROTTEN_GAS_INTERVAL; }
 

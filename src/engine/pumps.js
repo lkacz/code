@@ -2,6 +2,7 @@
 // intake/output; pipes form cached water networks and only recompute after local
 // topology changes are observed.
 import { T, INFO, WORLD_H } from '../constants.js';
+import { isWaterFillTile } from './material_physics.js';
 
 const pumps = (function(){
   const MM = window.MM = window.MM || {};
@@ -77,8 +78,6 @@ const pumps = (function(){
   function isPumpTile(t){ return t===T.WATER_PUMP; }
   function isWaterDeviceTile(t){ return !!(INFO[t] && INFO[t].waterDevice); }
   function isWaterSourceTile(t){ return t===T.WATER; }
-  function isGasTile(t){ return !!(INFO[t] && INFO[t].gas); }
-  function isLeafTile(t){ return t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED; }
   function isHydraulicTopologyTile(t){ return isPipeTile(t) || isPumpTile(t) || isWaterDeviceTile(t); }
   function isPipeLinkTile(t){ return isPipeTile(t) || isPumpTile(t) || isWaterDeviceTile(t); }
   function normalizeDir(dir){ return DIR_VEC[dir] ? dir : 'east'; }
@@ -175,7 +174,7 @@ const pumps = (function(){
   function canReceiveWaterTile(x,y,getTile){
     if(!finiteTile(x,y)) return false;
     const t=getBaseTile(x,y,getTile);
-    return t===T.AIR || isGasTile(t) || isLeafTile(t);
+    return isWaterFillTile(t);
   }
   function wakeWaterAround(x,y,getTile){
     try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(Math.floor(x),Math.floor(y),baseGetter(getTile)); }catch(e){}

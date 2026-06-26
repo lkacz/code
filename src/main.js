@@ -1,11 +1,12 @@
 // Nowy styl / pełny ekran inspirowany Diamonds Explorer
 // Module entry: import constants (also hydrates window.MM via shim) and side-effect engine modules
-import { CHUNK_W, WORLD_H, TILE, T, INFO, isSolid, MOVE, isAutumnLeaf, isLeaf } from './constants.js';
+import { CHUNK_W, WORLD_H, TILE, T, INFO, MOVE, isAutumnLeaf, isLeaf } from './constants.js';
 // Ensure worldgen initializes before world (world.js reads MM.worldGen on load)
 import { worldGen as WORLDGEN } from './engine/worldgen.js';
 import world from './engine/world.js';
 import { trees as TREES } from './engine/trees.js';
 import { fallingSolids as FALLING } from './engine/falling.js';
+import { isAirOrGasTile, isGasTile, isMeteorPickDenseRockMaterial, isMeteorPickSparkMaterial, isPlayerPassableTile, isReplaceableNaturalOpenTile, isSafeLandingFloorTile, isSolidCollisionTile as isSolid, isStableMachineSupportTile } from './engine/material_physics.js';
 import { water as WATER } from './engine/water.js';
 import { gases as GASES } from './engine/gases.js';
 import { dynamo as DYNAMO } from './engine/dynamo.js';
@@ -105,7 +106,7 @@ let frameCapSkipCounter=0;
 
 function publishFrameCapState(){
 	try{
-		const effective=(frameCapDivisor>1 && frameCapNativeMs>0) ? Math.round(1000/(frameCapNativeMs*frameCapDivisor)) : 0;
+		const effective=frameCapUnlocked ? 0 : FRAME_CAP_FPS;
 		window.__mmFrameCap={fps:frameCapUnlocked?0:FRAME_CAP_FPS, unlocked:frameCapUnlocked, divisor:frameCapDivisor, effectiveFps:effective};
 	}catch(e){}
 }
@@ -128,32 +129,40 @@ function initFrameCapControls(){
 function shouldSkipFrameForCap(ts){
 	if(frameCapUnlocked){
 		frameCapRafLast=ts;
+		frameCapNativeMs=0;
 		frameCapSkipCounter=0;
 		return false;
 	}
 	if(frameClock.resetFrames>0){
 		frameCapRafLast=ts;
+		frameCapNativeMs=0;
 		frameCapSkipCounter=0;
 		return false;
 	}
 	if(!(ts>=0) || !Number.isFinite(ts)) return false;
 	if(!(frameCapRafLast>0)){
 		frameCapRafLast=ts;
+		frameCapNativeMs=0;
 		frameCapSkipCounter=0;
 		return false;
 	}
-	const delta=Math.max(0, Math.min(1000, ts-frameCapRafLast));
-	frameCapRafLast=ts;
-	if(delta>0 && delta<100){
-		const prevDiv=frameCapDivisor;
-		frameCapNativeMs = frameCapNativeMs ? frameCapNativeMs*0.92 + delta*0.08 : delta;
-		const ratio=FRAME_CAP_MS/frameCapNativeMs;
-		frameCapDivisor = ratio>=1.75 ? Math.max(2, Math.round(ratio)) : 1;
-		if(frameCapDivisor!==prevDiv){ frameCapSkipCounter=0; publishFrameCapState(); }
+	const elapsed=ts-frameCapRafLast;
+	if(elapsed<FRAME_CAP_MS-0.35){
+		frameCapSkipCounter++;
+		return true;
 	}
-	if(frameCapDivisor<=1) return false;
-	frameCapSkipCounter=(frameCapSkipCounter+1)%frameCapDivisor;
-	return frameCapSkipCounter!==0;
+	const measured=Math.max(0, Math.min(1000, elapsed));
+	if(measured>0 && measured<100) frameCapNativeMs = frameCapNativeMs ? frameCapNativeMs*0.9 + measured*0.1 : measured;
+	const missed=Math.floor(elapsed/FRAME_CAP_MS);
+	frameCapRafLast += FRAME_CAP_MS*Math.max(1, Math.min(8, missed));
+	if(ts-frameCapRafLast>FRAME_CAP_MS*4) frameCapRafLast=ts;
+	if(frameCapSkipCounter>0){
+		const native=frameCapNativeMs>0 ? frameCapNativeMs : measured;
+		frameCapDivisor=native>0 ? Math.max(1, Math.round(FRAME_CAP_MS/native)) : 1;
+		frameCapSkipCounter=0;
+		publishFrameCapState();
+	}
+	return false;
 }
 
 // --- Player Speed Slider Controls ---
@@ -243,6 +252,7 @@ const TURBO_MIN_ENERGY=0.03;
 let energyChargeFx={t:0,intensity:0,source:null,flash:0};
 let energyFxEmitT=0;
 let turboFx=0, turboSparkT=0;
+let turboRechargePauseT=0;
 let _lastEnergySaveAt=0;
 // Expose player globally so mobs module (loaded separately) can reference and damage the player
 window.player = player;
@@ -342,7 +352,9 @@ function spendTurboEnergy(dt){
 	const before=Math.max(0, Number(player.energy)||0);
 	if(before<=TURBO_MIN_ENERGY) return false;
 	const want=TURBO_ENERGY_PER_SEC*dt;
-	player.energy=Math.max(0, before-Math.min(before,want));
+	const spent=Math.min(before,want);
+	player.energy=Math.max(0, before-spent);
+	if(spent>0) turboRechargePauseT=Math.max(turboRechargePauseT,0.18);
 	const now=performance.now();
 	if(now-_lastEnergySaveAt>2500){ _lastEnergySaveAt=now; saveState(); }
 	return true;
@@ -368,6 +380,7 @@ function heroEnergyInfo(){
 MM.heroEnergy={capacity:heroEnergyCapacity, info:heroEnergyInfo, add:addHeroEnergy, chargeExternal:chargeHeroEnergy, spend:spendHeroEnergy, drain:drainHeroEnergy};
 window.addEventListener('mm-progress-change',applyHeroEnergyCapacity);
 applyHeroEnergyCapacity();
+function turboKeyHeld(){ return !!(keys['shift']||keys['shiftleft']||keys['shiftright']); }
 const tools={basic:1,stone:2,meteor:3.3,diamond:4};
 // --- Resource registry: SINGLE source for collectable/placeable resources,
 // derived from MM.inventory.RESOURCES ({key,label,color,tile}). Adding a new
@@ -427,13 +440,13 @@ Object.assign(TILE_LABELS,{
 });
 function tileLabel(t){ return TILE_LABELS[t] || 'Nieznany blok'; }
 function tileHoverColor(t){ return t===T.AIR ? '#9fb8d1' : ((INFO[t]&&INFO[t].color) || '#9fb8d1'); }
-function isGasTileId(t){ return !!(INFO[t] && INFO[t].gas); }
+function isGasTileId(t){ return isGasTile(t); }
 function isLooseItemTile(t){ return !!(INFO[t] && INFO[t].looseItem); }
 function gasSkyExposedTile(x,y){
 	if(GASES && typeof GASES.skyExposed==='function') return GASES.skyExposed(x,y,getTile);
 	for(let yy=Math.floor(y)-1; yy>=0; yy--){
 		const t=getTile(x,yy);
-		if(t===T.AIR || isGasTileId(t)) continue;
+		if(isAirOrGasTile(t)) continue;
 		return false;
 	}
 	return true;
@@ -530,7 +543,7 @@ window.heroDied=function(){
 		if(here!==T.AIR && here!==T.WATER && getTile(gx,gy-1)===T.AIR) gy=gy-1;
 		grave={x:gx, y:gy, res, seed:WORLDGEN.worldSeed}; saveGrave();
 		const t=getTile(gx,gy);
-		if(t===T.AIR || t===T.WATER || isGasTileId(t)) setTile(gx,gy,T.GRAVE);
+		if(isReplaceableNaturalOpenTile(t,false)) setTile(gx,gy,T.GRAVE);
 		msg('☠ Zginąłeś — połowa zasobów czeka w nagrobku ('+gx+', '+gy+')');
 	} else {
 		msg('☠ Zginąłeś – respawn');
@@ -604,7 +617,7 @@ function decodeRLE(b64,totalLen){
 }
 function decodeRaw(b64){ return _bytesFromB64(b64); }
 function isTransientTerrainTile(t){
-	return !!(INFO[t] && INFO[t].gas);
+	return isGasTile(t);
 }
 function chunkForTerrainSave(arr){
 	let copy=null;
@@ -798,8 +811,9 @@ function buildSaveObject(opts){
  const perf=opts.perf||null;
  let saveChunkIds = Array.isArray(opts.auditChunkIds) ? opts.auditChunkIds : null;
  if(!opts.lightweight){
-	 timedSavePart('falling.settle',()=>{ try{ if(FALLING && FALLING.settleAll) FALLING.settleAll(); }catch(e){} },perf);
 	 saveChunkIds=timedSavePart('world.modified',()=>modifiedChunkIds(),perf);
+	 timedSavePart('falling.audit',()=>{ try{ if(saveChunkIds.length && FALLING && FALLING.auditChunks) FALLING.auditChunks(saveChunkIds,{force:true,immediate:true}); }catch(e){} },perf);
+	 timedSavePart('falling.settle',()=>{ try{ if(FALLING && FALLING.settleAll) FALLING.settleAll(); }catch(e){} },perf);
 	 timedSavePart('trees.audit',()=>{ try{ if(TREES && TREES.auditChunks) TREES.auditChunks(saveChunkIds,getTile); }catch(e){} },perf);
 	 timedSavePart('trees.settle',()=>{ try{ if(TREES && TREES.settleAll) TREES.settleAll(getTile,setTile); }catch(e){} },perf);
 	 saveChunkIds=timedSavePart('world.modified2',()=>modifiedChunkIds(),perf);
@@ -1147,6 +1161,7 @@ function runAutoSaveWork(){
 			const ver=WORLD._versions ? (WORLD._versions.get('c'+cx)||0) : 0;
 			if(!arr || ver===0) continue;
 			const auditT=savePerfNow();
+			try{ if(FALLING && FALLING.auditChunks) FALLING.auditChunks([cx],{force:true,immediate:true}); }catch(e){}
 			try{ if(MEAT && MEAT.auditChunks) MEAT.auditChunks([cx],getTile); }catch(e){}
 			try{ if(GASES && GASES.auditChunks) GASES.auditChunks([cx],getTile); }catch(e){}
 			job.auditMs += savePerfNow()-auditT;
@@ -2901,7 +2916,9 @@ function updateHeroEnergy(dt){
 	if(!player.maxEnergy) applyHeroEnergyCapacity();
 	let charged=0, got=null;
 	const max=player.maxEnergy||heroEnergyCapacity();
-	if(DYNAMO && typeof DYNAMO.absorbNear==='function' && (player.energy||0)<max-0.02){
+	const turboRechargeBlocked=turboRechargePauseT>0;
+	if(turboRechargePauseT>0) turboRechargePauseT=Math.max(0,turboRechargePauseT-dt);
+	if(!turboRechargeBlocked && DYNAMO && typeof DYNAMO.absorbNear==='function' && (player.energy||0)<max-0.02){
 		const lv=(MM.progress && MM.progress.level)? MM.progress.level() : {level:1};
 		const st=(MM.progress && MM.progress.stats)? MM.progress.stats() : {cap:0};
 		const capPts=(st && st.cap)||0;
@@ -2937,7 +2954,7 @@ function physics(dt){
 	// Horizontal input
 	let input=0; if(keys['a']||keys['arrowleft']) input-=1; if(keys['d']||keys['arrowright']) input+=1; if(input!==0) player.facing=input;
 	const jumpHeldEarly=!!(keys['w']||keys['arrowup']||keys[' ']);
-	const turboRequested=!!keys['shiftleft'];
+	const turboRequested=turboKeyHeld();
 	const turboDoingWork=turboRequested && (Math.abs(input)>0 || Math.abs(player.vx||0)>0.25 || jumpHeldEarly || !player.onGround);
 	const turboActive=turboDoingWork && spendTurboEnergy(dt);
 	updateTurboFx(dt,turboActive);
@@ -3353,7 +3370,7 @@ function dismantleDynamoAt(tx,ty){
 	return true;
 }
 function meteorPickSparkTile(t){
-	return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL || t===T.OBSIDIAN || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ANTIMATTER_CRYSTAL;
+	return isMeteorPickSparkMaterial(t);
 }
 function emitMeteorPickSpark(tx,ty,count){
 	try{
@@ -3374,7 +3391,7 @@ function applyMaterialBreakPersonality(tId,tx,ty){
 		return;
 	}
 	if(player.tool==='meteor' && meteorPickSparkTile(tId)){
-		emitMeteorPickSpark(tx,ty,(tId===T.STONE || tId===T.GRANITE || tId===T.BASALT || tId===T.BEDROCK)?7:5);
+		emitMeteorPickSpark(tx,ty,isMeteorPickDenseRockMaterial(tId)?7:5);
 		try{ if(MM.gases && MM.gases.add && tId===T.COAL) MM.gases.add('hot',tx+0.5,ty+0.5,{power:0.16,cells:1,getTile,setTile}); }catch(e){}
 	}
 }
@@ -3394,13 +3411,13 @@ function breakMinedTile(){
 	const info=INFO[tId];
 	if(!info) return false;
 	if(info.unmineable) return false;
-	if(info.gas) return false;
+	if(isGasTileId(tId)) return false;
 	if(tId===T.DYNAMO || tId===T.DYNAMO_SLOT) return dismantleDynamoAt(mineTx,mineTy);
 	setTile(mineTx,mineTy,T.AIR);
 	applyMaterialBreakPersonality(tId,mineTx,mineTy);
 	if(FIRE && FIRE.wakeLavaAround) FIRE.wakeLavaAround(mineTx,mineTy,getTile,{radius:22});
 	const drops=awardTileDrops(info);
-	if(tId===T.WOOD) startTreeFall(mineTx,mineTy-1);
+	if(tId===T.WOOD && getTile(mineTx,mineTy-1)===T.WOOD) startTreeFall(mineTx,mineTy-1);
 	if(FALLING && FALLING.onTileRemoved) FALLING.onTileRemoved(mineTx,mineTy);
 	if(WATER && WATER.onTileChanged) WATER.onTileChanged(mineTx,mineTy,getTile);
 	pushUndo(mineTx,mineTy,tId,T.AIR,'break',drops);
@@ -3514,15 +3531,11 @@ function cellOverlapsPlayer(tx,ty){
 	return tx+1 > player.x - player.w/2 && tx < player.x + player.w/2 && ty+1 > player.y - player.h/2 && ty < player.y + player.h/2;
 }
 function isStableMachineSupport(t){
-	if(t===T.AIR || t===T.WATER || t===T.LAVA || isLeaf(t) || t===T.DYNAMO || t===T.DYNAMO_SLOT) return false;
-	if(INFO[t] && INFO[t].gas) return false;
-	return isSolid(t) || t===T.GRASS || t===T.SAND || t===T.SNOW || t===T.ICE || t===T.MUD || t===T.WOOD || t===T.STEEL || t===T.IRIDIUM || t===T.OBSIDIAN || t===T.STONE;
+	return isStableMachineSupportTile(t);
 }
 function canDynamoCellReplace(cell,cur){
-	if(cell && (cell.role==='slot' || cell.t===T.DYNAMO_SLOT)){
-		return cur===T.AIR || cur===T.WATER || (INFO[cur] && INFO[cur].gas);
-	}
-	return cur===T.AIR || (INFO[cur] && INFO[cur].gas);
+	const slot=cell && (cell.role==='slot' || cell.t===T.DYNAMO_SLOT);
+	return isReplaceableNaturalOpenTile(cur,false) && (slot || cur!==T.WATER);
 }
 function dynamoCellLabel(cell){
 	const role=cell && cell.role;
@@ -3611,7 +3624,7 @@ function canPlaceAt(tx,ty){
 	const overlay=canPlaceInfrastructureAt(tx,ty,id);
 	if(overlay) return overlay;
 	// Solid blocks may also replace water (building under water); water into water is a no-op
-	if(cur!==T.AIR && cur!==T.WATER && !(INFO[cur] && INFO[cur].gas)) return {ok:false};
+	if(!isReplaceableNaturalOpenTile(cur,false)) return {ok:false};
 	if(cur===T.WATER && id===T.WATER) return {ok:false};
 	// Tile [tx,tx+1)×[ty,ty+1) vs player AABB — full-tile overlap test
 	if(cellOverlapsPlayer(tx,ty)) return {ok:false};
@@ -3631,8 +3644,8 @@ function canPlaceAt(tx,ty){
 		if(!checkedStructural){
 			// Fallback when the physics module is unavailable: direct footing or a wall/ceiling contact.
 			const below=getTile(tx,ty+1);
-			const support = (below!==T.AIR && below!==T.WATER && !(INFO[below] && INFO[below].gas))
-				|| [[1,0],[-1,0],[0,-1]].some(([dx,dy])=>{ const n=getTile(tx+dx,ty+dy); return n!==T.AIR && n!==T.WATER && !(INFO[n] && INFO[n].gas); });
+			const support = isStableMachineSupport(below)
+				|| [[1,0],[-1,0],[0,-1]].some(([dx,dy])=>isStableMachineSupport(getTile(tx+dx,ty+dy)));
 			if(!support) return {ok:false, reason:'Brak podparcia'};
 		}
 	}
@@ -3786,12 +3799,91 @@ const hotSelectMenu=document.getElementById('hotSelectMenu');
 const hotSelectOptions=document.getElementById('hotSelectOptions');
 function closeHotSelect(){ if(hotSelectMenu){ hotSelectMenu.style.display='none'; } }
 function openHotSelect(slot,anchorEl){ if(!hotSelectMenu) return; hotSelectOptions.innerHTML='';
+	if(MM.groupedHotSelect) return MM.groupedHotSelect(slot,anchorEl);
 	const baseTypes=RESOURCE_DEFS.filter(r=>r.tile).map(r=>({k:r.tile, label:r.label}));
 	let types=[...baseTypes];
 	if(godMode){ types.push({k:'CHEST_COMMON',label:'Skrzynia zwykła',col:'#b07f2c'}); types.push({k:'CHEST_RARE',label:'Skrzynia rzadka',col:'#a74cc9'}); types.push({k:'CHEST_EPIC',label:'Skrzynia epicka',col:'#e0b341'}); }
 	types.forEach(t=>{ const b=document.createElement('button'); b.textContent=t.label; const baseBg='rgba(255,255,255,.08)'; const rareBg=t.col? t.col+'33': baseBg; const border=t.col? t.col+'88':'rgba(255,255,255,.15)'; b.style.cssText='text-align:left; background:'+rareBg+'; border:1px solid '+border+'; color:#fff; border-radius:8px; padding:4px 8px; cursor:pointer; font-size:12px;'; if(HOTBAR_ORDER[slot]===t.k) b.style.outline='2px solid #2c7ef8'; b.addEventListener('click',()=>{ HOTBAR_ORDER[slot]=t.k; closeHotSelect(); cycleHotbar(slot); msg('Slot '+hotbarKeyLabel(slot)+' -> '+t.label); }); hotSelectOptions.appendChild(b); });
 	const rect=anchorEl.getBoundingClientRect(); hotSelectMenu.style.display='block'; hotSelectMenu.style.left=(rect.left + rect.width/2)+'px'; hotSelectMenu.style.top=(rect.top - 8)+'px'; hotSelectMenu.style.transform='translate(-50%,-100%)'; }
-document.addEventListener('click',e=>{ if(hotSelectMenu && hotSelectMenu.style.display==='block'){ if(!hotSelectMenu.contains(e.target) && !(e.target.closest && e.target.closest('.hotSlot'))){ closeHotSelect(); } }});
+const HOT_SELECT_GROUPS=[
+	{id:'basic',label:'Podstawowe',tiles:['GRASS','SAND','DIRT','STONE','WOOD','LEAF','SNOW','WATER']},
+	{id:'rock',label:'Skały i rudy',tiles:['GRANITE','BASALT','COAL','OBSIDIAN','DIAMOND','IRIDIUM','METEORIC_IRON','RADIOACTIVE_ORE','METEOR_DUST','ANTIMATTER_CRYSTAL']},
+	{id:'build',label:'Budulce',tiles:['GLASS','STEEL','ALIEN_BIOMASS','VOLCANO_MASTER_STONE','SERVANT_STONE']},
+	{id:'machine',label:'Maszyny',tiles:['DYNAMO','TELEPORTER','ANTIGRAVITY_BEACON','METEOR_SIREN','TURRET','FIRE_TURRET','WATER_TURRET']},
+	{id:'utility',label:'Instalacje',tiles:['WIRE','COPPER_WIRE','WATER_PIPE','WATER_PUMP','TRANSISTOR','TORCH']},
+	{id:'food',label:'Jedzenie',tiles:['MEAT','ROTTEN_MEAT','BAKED_MEAT']},
+	{id:'chest',label:'Skrzynie',tiles:['CHEST_COMMON','CHEST_RARE','CHEST_EPIC']},
+	{id:'other',label:'Inne',tiles:[]}
+];
+const HOT_SELECT_GROUP_BY_TILE=new Map();
+HOT_SELECT_GROUPS.forEach(g=>g.tiles.forEach(t=>HOT_SELECT_GROUP_BY_TILE.set(t,g.id)));
+function hotSelectGroupId(tileKey){ return HOT_SELECT_GROUP_BY_TILE.get(tileKey) || 'other'; }
+function hotSelectCount(t){
+	if(t.chest) return godMode ? '\u221e' : '';
+	if(!t.resKey) return '';
+	return godMode ? '\u221e' : String(inv[t.resKey]||0);
+}
+function makeHotSelectButton(t,slot){
+	const b=document.createElement('button');
+	const baseBg='rgba(255,255,255,.075)';
+	const rareBg=t.col? t.col+'2e':baseBg;
+	const border=t.col? t.col+'78':'rgba(255,255,255,.13)';
+	b.style.cssText='display:flex; align-items:center; justify-content:space-between; gap:10px; text-align:left; background:'+rareBg+'; border:1px solid '+border+'; color:#fff; border-radius:8px; padding:5px 8px; cursor:pointer; font-size:12px; min-height:28px;';
+	if(HOTBAR_ORDER[slot]===t.k) b.style.outline='2px solid #2c7ef8';
+	const lab=document.createElement('span');
+	lab.textContent=t.label;
+	lab.style.cssText='min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+	b.appendChild(lab);
+	const count=hotSelectCount(t);
+	if(count){
+		const qty=document.createElement('span');
+		qty.textContent=count;
+		qty.style.cssText='font-size:11px; opacity:.72; flex:0 0 auto;';
+		b.appendChild(qty);
+	}
+	b.addEventListener('click',()=>{ HOTBAR_ORDER[slot]=t.k; closeHotSelect(); cycleHotbar(slot); msg('Slot '+hotbarKeyLabel(slot)+' -> '+t.label); });
+	return b;
+}
+function appendHotSelectGroup(group,items,slot,isOpen){
+	if(!items.length) return;
+	const section=document.createElement('details');
+	section.open=!!isOpen;
+	section.style.cssText='border:1px solid rgba(255,255,255,.10); border-radius:9px; background:rgba(255,255,255,.045); overflow:hidden;';
+	const summary=document.createElement('summary');
+	summary.textContent=group.label+' ('+items.length+')';
+	summary.style.cssText='cursor:pointer; padding:6px 8px; font-weight:600; color:#fff; opacity:.9; user-select:none;';
+	section.appendChild(summary);
+	const body=document.createElement('div');
+	body.style.cssText='display:flex; flex-direction:column; gap:4px; padding:0 6px 6px;';
+	items.forEach(t=>body.appendChild(makeHotSelectButton(t,slot)));
+	section.appendChild(body);
+	hotSelectOptions.appendChild(section);
+}
+function openHotSelectGrouped(slot,anchorEl){ if(!hotSelectMenu) return; hotSelectOptions.innerHTML='';
+	const baseTypes=RESOURCE_DEFS.filter(r=>r.tile).map(r=>({k:r.tile,label:r.label,col:r.color,resKey:r.key}));
+	const types=[...baseTypes];
+	if(godMode){
+		types.push({k:'CHEST_COMMON',label:'Skrzynia zwykła',col:'#b07f2c',chest:true});
+		types.push({k:'CHEST_RARE',label:'Skrzynia rzadka',col:'#a74cc9',chest:true});
+		types.push({k:'CHEST_EPIC',label:'Skrzynia epicka',col:'#e0b341',chest:true});
+	}
+	const grouped=new Map(HOT_SELECT_GROUPS.map(g=>[g.id,[]]));
+	types.forEach(t=>{
+		const gid=hotSelectGroupId(t.k);
+		if(!grouped.has(gid)) grouped.set(gid,[]);
+		grouped.get(gid).push(t);
+	});
+	const currentGroup=hotSelectGroupId(HOTBAR_ORDER[slot]);
+	let opened=false;
+	HOT_SELECT_GROUPS.forEach(g=>{
+		const items=grouped.get(g.id)||[];
+		const open=!opened && (g.id===currentGroup || (currentGroup==='other' && g.id==='basic'));
+		if(items.length && open) opened=true;
+		appendHotSelectGroup(g,items,slot,open);
+	});
+	const rect=anchorEl.getBoundingClientRect(); hotSelectMenu.style.display='flex'; hotSelectMenu.style.left=(rect.left + rect.width/2)+'px'; hotSelectMenu.style.top=(rect.top - 8)+'px'; hotSelectMenu.style.transform='translate(-50%,-100%)'; }
+MM.groupedHotSelect=openHotSelectGrouped;
+document.addEventListener('click',e=>{ if(hotSelectMenu && hotSelectMenu.style.display!=='none'){ if(!hotSelectMenu.contains(e.target) && !(e.target.closest && e.target.closest('.hotSlot'))){ closeHotSelect(); } }});
 // Shift+click or a second click/tap on the already-selected slot opens the remap menu
 // (previously Shift-only outside god mode, which made remapping impossible on touch)
 document.querySelectorAll('.hotSlot').forEach((el,i)=>{ el.addEventListener('click',e=>{ if(e.shiftKey || hotbarIndex===i) { openHotSelect(i,el); } else { cycleHotbar(i); } }); });
@@ -3937,7 +4029,7 @@ function draw(){ // Background first
 	 const curT=getTile(gp.tx,gp.ty);
 	 const placingDynamo=selectedTileId()===T.DYNAMO;
 	 const placingInfrastructure=isInfrastructureTileId(selectedTileId());
-	 if(placingInfrastructure || placingDynamo || curT===T.AIR || curT===T.WATER || (INFO[curT] && INFO[curT].gas)){
+	 if(placingInfrastructure || placingDynamo || isReplaceableNaturalOpenTile(curT,false)){
 		 const v=canPlaceAt(gp.tx,gp.ty);
 		 ctx.strokeStyle= v.ok? 'rgba(140,255,140,0.7)':'rgba(255,110,110,0.6)';
 		 ctx.lineWidth=1;
@@ -4167,7 +4259,7 @@ function minimapTileColor(t){
 	return '#686d78';
 }
 function minimapConcealsUndiscovered(t){
-	return t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.OBSIDIAN || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || (INFO[t] && INFO[t].gas) || t===T.GRAVE || t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC;
+	return t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.OBSIDIAN || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || t===T.GRAVE || t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC;
 }
 function drawMinimap(){
 	if(!showMinimap) return;
@@ -4212,12 +4304,12 @@ function drawMinimap(){
 							continue;
 						}
 						if(wy>surf && !worldTileDiscovered(wx,wy) && minimapConcealsUndiscovered(t)){
-							if(t===T.WATER || t===T.LAVA || t===T.TORCH || INFO[t].passable) cave=true;
+							if(isPlayerPassableTile(t) || t===T.TORCH) cave=true;
 							else if(!color) color='#686d78';
 							continue;
 						}
 						const c=minimapTileColor(t);
-						if(t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || (INFO[t] && INFO[t].gas) || INFO[t].chestTier){ color=c; priority=true; wx=wx1+1; break; }
+						if(t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || INFO[t].chestTier){ color=c; priority=true; wx=wx1+1; break; }
 						if(!color) color=c;
 					}
 				}
@@ -5044,7 +5136,7 @@ function placePlayer(skipMsg){
 		}
 	}
 	ensureChunk(Math.floor(x/CHUNK_W));
-	let y=0; while(y<WORLD_H-1){ const tt=getTile(x,y); if(tt!==T.AIR && !(INFO[tt] && INFO[tt].passable)) break; y++; }
+	let y=0; while(y<WORLD_H-1){ const tt=getTile(x,y); if(!isPlayerPassableTile(tt)) break; y++; }
 	player.x=x+0.5; player.y=y-1; centerOnPlayer(); if(!skipMsg) msg('Seed '+worldSeed); }
 window.placePlayer = placePlayer; // mobs.js respawn-on-death relies on this bridge
 function centerOnPlayer(){ revealAround(); snapCameraToPlayer(); initScarf(); resetFrameTiming('center'); }
@@ -5060,10 +5152,7 @@ function teleportHeroTo(x,y,opts){
 }
 window.teleportHeroTo = teleportHeroTo;
 function safeLandingFloor(t){
-	if(!isSolid(t) || t===T.WATER || t===T.LAVA) return false;
-	if(t===T.WOOD || t===T.DIAMOND || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return false;
-	if(t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC) return false;
-	return true;
+	return isSafeLandingFloorTile(t);
 }
 function safeVolcanoLandingAt(tx){
 	if(typeof tx!=='number' || !isFinite(tx)) return null;

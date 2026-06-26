@@ -12,6 +12,8 @@
 //   * ambient bubbles in deep water (rendered by the shared particle module)
 // Everything draws to an offscreen layer; effects are clipped to the water shape with
 // 'source-atop' compositing, then the layer blends onto the scene in one drawImage.
+import { isFoliageTile, isGasTile, isWaterFillTile, isWaterOpenTile } from './material_physics.js';
+
 window.MM = window.MM || {};
 (function(){
   const {T, WORLD_H} = MM;
@@ -68,10 +70,10 @@ window.MM = window.MM || {};
 
   function k(x,y){ return x+","+y; }
   function mark(x,y){ active.add(k(x,y)); }
-  function isGas(t){ return !!(MM.INFO && MM.INFO[t] && MM.INFO[t].gas); }
-  function isLeaf(t){ return t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED; }
-  function isAir(t){ return t===T.AIR || isGas(t); }
-  function canFill(t){ return t===T.AIR || isLeaf(t) || isGas(t); }
+  function isGas(t){ return isGasTile(t); }
+  function isLeaf(t){ return isFoliageTile(t); }
+  function isAir(t){ return isWaterOpenTile(t); }
+  function canFill(t){ return isWaterFillTile(t); }
   function validDynamoSlot(x,y,getTile,orientation){
     try{ return !!(MM.dynamo && MM.dynamo.isValidSlot && MM.dynamo.isValidSlot(x,y,getTile,orientation)); }catch(e){ return false; }
   }
@@ -117,6 +119,23 @@ window.MM = window.MM || {};
   function canSurfaceLevel(x,y,getTile){
     return !!(surfaceLevelTarget(x,y,-1,getTile) || surfaceLevelTarget(x,y,1,getTile));
   }
+  function verticalDropDepth(x,y,getTile,maxDepth){
+    let d=0, yy=y+1;
+    const lim=Math.max(1,maxDepth||16);
+    while(yy<WORLD_H && d<lim && canFill(getTile(x,yy))){ d++; yy++; }
+    return d;
+  }
+  function sideDrainInletTarget(x,y,getTile){
+    if(y+1>=WORLD_H) return null;
+    const order=((x+y)&1)?[-1,1]:[1,-1];
+    for(const dx of order){
+      const nx=x+dx;
+      if(!canFill(getTile(nx,y))) continue;
+      if(verticalDropDepth(nx,y,getTile,8)<4) continue;
+      return {x:nx,y};
+    }
+    return null;
+  }
   function waterFallTarget(x,y,getTile){
     const MAX_FALL=12;
     let ny=y, steps=0, slotY=null;
@@ -136,6 +155,24 @@ window.MM = window.MM || {};
       break;
     }
     return ny>y ? {y:ny, slotY} : null;
+  }
+  function pullAdjacentIntoDrainMouth(x,y,next,getTile,setTile){
+    if(y+1>=WORLD_H || !canFill(getTile(x,y)) || !canFill(getTile(x,y+1))) return false;
+    const order=((x+y)&1)?[-1,1]:[1,-1];
+    for(const dx of order){
+      const sx=x+dx;
+      if(getTile(sx,y)!==T.WATER) continue;
+      setTile(sx,y,T.AIR);
+      writeExternalTile(x,y,T.WATER,getTile,setTile);
+      next.add(k(x,y));
+      markNeighbors(next,x,y);
+      markNeighbors(next,sx,y);
+      if(pressureSeeds.size<2000) pressureSeeds.add(k(x,y));
+      pressureAcc=Math.max(pressureAcc, pressureIntervalCurrent*0.7);
+      disturb(x, 36);
+      return true;
+    }
+    return false;
   }
   function recordDynamoWater(x,slotY,getTile){
     if(slotY==null) return;
@@ -307,12 +344,27 @@ window.MM = window.MM || {};
       const fall=waterFallTarget(sx,sy,getTile);
       if(fall){
         const ny=fall.y;
-        setTile(sx,sy,T.AIR); writeExternalTile(sx,ny,T.WATER,getTile,setTile); next.add(k(sx,ny)); markNeighbors(next,sx,ny);
+        setTile(sx,sy,T.AIR); writeExternalTile(sx,ny,T.WATER,getTile,setTile); next.add(k(sx,ny)); markNeighbors(next,sx,ny); markNeighbors(next,sx,sy);
         recordDynamoWater(sx,fall.slotY,getTile);
         if(ny-sy>=2) noteFall(sx,sy,ny);
+        if(ny-sy>=2) pullAdjacentIntoDrainMouth(sx,sy,next,getTile,setTile);
         continue;
       }
       let moved=false;
+      if(!canSideFlowThroughDynamo(sx,sy,getTile)){
+        const inlet=sideDrainInletTarget(sx,sy,getTile);
+        if(inlet){
+          setTile(sx,sy,T.AIR);
+          writeExternalTile(inlet.x,inlet.y,T.WATER,getTile,setTile);
+          next.add(k(inlet.x,inlet.y));
+          markNeighbors(next,inlet.x,inlet.y);
+          markNeighbors(next,sx,sy);
+          if(pressureSeeds.size<2000) pressureSeeds.add(k(inlet.x,inlet.y));
+          pressureAcc=Math.max(pressureAcc, pressureIntervalCurrent*0.55);
+          disturb(inlet.x, 34);
+          continue;
+        }
+      }
       const lateralEvaluated = lateralStep && !(lateralCooldown.get(sx)>0);
       if(lateralEvaluated){
         const dynOrder=((sx+sy)&1)?[-1,1]:[1,-1];
@@ -506,6 +558,37 @@ window.MM = window.MM || {};
   }
 
   // ---------------- Rendering ----------------
+  function drawWaterTopPath(g,xpx,TILE,sg,offset){
+    const yL=sg.yl+(offset||0), yR=sg.yr+(offset||0);
+    const lCap=sg.lCap||0, rCap=sg.rCap||0;
+    const xL=xpx+(sg.lSoft||0), xR=xpx+TILE-(sg.rSoft||0);
+    if(lCap>0){
+      g.moveTo(xL,yL+lCap);
+      g.quadraticCurveTo(xpx+TILE*0.07,yL+lCap*0.42,xpx+TILE*0.30,yL);
+    } else {
+      g.moveTo(xL,yL);
+    }
+    if(rCap>0){
+      g.lineTo(xpx+TILE*0.70,yR);
+      g.quadraticCurveTo(xpx+TILE*0.93,yR+rCap*0.42,xR,yR+rCap);
+    } else {
+      g.lineTo(xR,yR);
+    }
+  }
+  function drawWaterSegmentPath(g,xpx,TILE,sg,botPx){
+    const yL=sg.yl, yR=sg.yr;
+    const lTopY=yL+(sg.lCap||0), rTopY=yR+(sg.rCap||0);
+    const lSoft=sg.lSoft||0, rSoft=sg.rSoft||0;
+    const xL=xpx+lSoft;
+    g.beginPath();
+    drawWaterTopPath(g,xpx,TILE,sg,0);
+    if(rSoft>0) g.quadraticCurveTo(xpx+TILE-rSoft*0.18,(rTopY+botPx)*0.5,xpx+TILE,botPx);
+    else g.lineTo(xpx+TILE,botPx);
+    g.lineTo(xpx,botPx);
+    if(lSoft>0) g.quadraticCurveTo(xpx+lSoft*0.18,(lTopY+botPx)*0.5,xL,lTopY);
+    else g.lineTo(xL,lTopY);
+    g.closePath();
+  }
   function drawOverlay(ctx,TILE,getTile,sx,sy,vx,vy,canDrawTile){
     const visibleTile = typeof canDrawTile === 'function' ? canDrawTile : null;
     const tileVisible = (x,y)=> !visibleTile || visibleTile(x,y);
@@ -619,21 +702,30 @@ window.MM = window.MM || {};
     g.clearRect(0,0,offCanvas.width,offCanvas.height);
     g.setTransform(1,0,0,1,-ox,-oy);
 
-    // 4a. Base body: per-column quads with shared edge heights = continuous smooth surface
+    // 4a. Base body: per-column water shapes with shared edge heights.
+    // Exposed top edges get rounded caps so lakes stop as water, not square UI blocks.
     for(let xi=0; xi<n; xi++){
       const segs=cols[xi]; if(!segs) continue;
-      const xpx=(x0+xi)*TILE;
+      const wx=x0+xi, xpx=wx*TILE;
       for(let si=0; si<segs.length; si++){
         const sg=segs[si];
         let yL=sg.surf, yR=sg.surf;
+        let joinedL=false, joinedR=false;
+        let lf=null, rt=null;
         if(si===0){
           // Join only near-equal surfaces (≤1 row): averaging across taller steps turns
           // spill fronts and shore lips into unnatural bulges
-          const lf=xi>0? cols[xi-1] : null, rt=xi<n-1? cols[xi+1] : null;
-          if(lf && Math.abs(lf[0].top-sg.top)<=1) yL=(lf[0].surf+sg.surf)/2;
-          if(rt && Math.abs(rt[0].top-sg.top)<=1) yR=(rt[0].surf+sg.surf)/2;
+          lf=xi>0? cols[xi-1] : null; rt=xi<n-1? cols[xi+1] : null;
+          if(lf && Math.abs(lf[0].top-sg.top)<=1){ yL=(lf[0].surf+sg.surf)/2; joinedL=true; }
+          if(rt && Math.abs(rt[0].top-sg.top)<=1){ yR=(rt[0].surf+sg.surf)/2; joinedR=true; }
         }
         sg.yl=yL; sg.yr=yR;
+        sg.lCap=sg.open && !joinedL ? TILE*0.42 : 0;
+        sg.rCap=sg.open && !joinedR ? TILE*0.42 : 0;
+        const lOpenSide=sg.open && !joinedL && (isAir(getTile(wx-1,sg.top)) || (lf && Math.abs(lf[0].top-sg.top)>1));
+        const rOpenSide=sg.open && !joinedR && (isAir(getTile(wx+1,sg.top)) || (rt && Math.abs(rt[0].top-sg.top)>1));
+        sg.lSoft=lOpenSide ? TILE*0.14 : 0;
+        sg.rSoft=rOpenSide ? TILE*0.14 : 0;
         const botPx=(sg.bot+1)*TILE;
         const topMin=Math.min(yL,yR,sg.surf);
         const grad=g.createLinearGradient(0,topMin,0,topMin+TILE*9);
@@ -646,10 +738,8 @@ window.MM = window.MM || {};
           grad.addColorStop(1,'rgba(6,22,70,0.93)');
         }
         g.fillStyle=grad;
-        g.beginPath();
-        g.moveTo(xpx,yL); g.lineTo(xpx+TILE,yR);
-        g.lineTo(xpx+TILE,botPx); g.lineTo(xpx,botPx);
-        g.closePath(); g.fill();
+        drawWaterSegmentPath(g,xpx,TILE,sg,botPx);
+        g.fill();
       }
     }
 
@@ -733,15 +823,15 @@ window.MM = window.MM || {};
         }
         // surface sheen: bright crest + soft underglow band
         g.strokeStyle='rgba(255,255,255,0.38)'; g.lineWidth=1.6;
-        g.beginPath(); g.moveTo(xpx,s0.yl); g.lineTo(xpx+TILE,s0.yr); g.stroke();
+        g.beginPath(); drawWaterTopPath(g,xpx,TILE,s0,0); g.stroke();
         g.strokeStyle='rgba(170,215,255,0.10)'; g.lineWidth=4;
-        g.beginPath(); g.moveTo(xpx,s0.yl+3); g.lineTo(xpx+TILE,s0.yr+3); g.stroke();
+        g.beginPath(); drawWaterTopPath(g,xpx,TILE,s0,3); g.stroke();
         // whitecap: agitated water (steep slope) breaks into foam along the crest
         const slope=Math.abs(s0.yr-s0.yl);
         if(slope>2.2){
           const fa=Math.min(0.55, (slope-2.2)*0.16);
           g.strokeStyle='rgba(255,255,255,'+fa.toFixed(3)+')'; g.lineWidth=3;
-          g.beginPath(); g.moveTo(xpx,s0.yl-0.5); g.lineTo(xpx+TILE,s0.yr-0.5); g.stroke();
+          g.beginPath(); drawWaterTopPath(g,xpx,TILE,s0,-0.5); g.stroke();
         }
         if(!SIMPLE){
           // sparkle glints twinkling along the surface (soft dots, not literal crosses)
@@ -760,8 +850,8 @@ window.MM = window.MM || {};
           if(lShore||rShore){
             const bob=Math.sin(tSec*3.1+wx*1.3)*1.4;
             g.fillStyle='rgba(255,255,255,'+(0.16+0.08*Math.sin(tSec*4+wx)).toFixed(3)+')';
-            if(lShore) g.fillRect(xpx, s0.yl-1+bob*0.5, TILE*0.35, 3);
-            if(rShore) g.fillRect(xpx+TILE*0.65, s0.yr-1-bob*0.5, TILE*0.35, 3);
+            if(lShore) g.fillRect(xpx+TILE*0.08, s0.yl+Math.max(0,s0.lCap*0.25)-1+bob*0.5, TILE*0.30, 3);
+            if(rShore) g.fillRect(xpx+TILE*0.62, s0.yr+Math.max(0,s0.rCap*0.25)-1-bob*0.5, TILE*0.30, 3);
           }
           // sparse ambient bubbles drifting up through deep water
           if((s0.bot-s0.top)>=4 && Math.random()<0.0022*(dtMs/16)){

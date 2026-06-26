@@ -21,7 +21,8 @@
 // Triggers are double-wired: every trap also springs when any of its watched
 // tiles is disturbed (mined, or a chest opened), so "careful" means looking,
 // not just walking slowly. Fired traps stay dead for the session.
-import { T, isSolid } from '../constants.js';
+import { T } from '../constants.js';
+import { isSolidCollisionTile as isSolid } from './material_physics.js';
 
 const traps = (function(){
   const MM = (typeof window!=='undefined')? (window.MM = window.MM || {}) : {};

@@ -1,6 +1,7 @@
 // Powered defensive turrets. They reuse the copper/dynamo/solar network exposed
 // by teleporters, but keep local batteries and light bounded targeting state.
-import { T, INFO, WORLD_H, isSolid } from '../constants.js';
+import { T, INFO, WORLD_H } from '../constants.js';
+import { isPlayerPassableTile, isSolidCollisionTile as isSolid } from './material_physics.js';
 
 const turrets = (function(){
   const MM = window.MM = window.MM || {};
@@ -121,9 +122,7 @@ const turrets = (function(){
       if(tx===ownX && ty===ownY) continue;
       if(tx===targetX && ty===targetY) continue;
       const t=getSafe(getTile,tx,ty,T.AIR);
-      if(t===T.AIR || t===T.WATER || t===T.LAVA) continue;
-      const info=INFO[t] || INFO[T.AIR];
-      if(info.gas || info.passable) continue;
+      if(isPlayerPassableTile(t)) continue;
       if(isSolid(t)) return false;
     }
     return true;

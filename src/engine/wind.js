@@ -2,7 +2,8 @@
 // Wind is sampled weather state, not a per-tile simulation: it pushes exposed
 // airborne actors, biases sparse gas motion, bends smoke/particles and draws a
 // tiny bounded dust/snow layer so even light wind is readable.
-import { T, INFO, WORLD_H, MOVE } from '../constants.js';
+import { T, WORLD_H, MOVE } from '../constants.js';
+import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, isWindExposureBlockerTile, isWindPorousTile } from './material_physics.js';
 
 (function(){
   const root = typeof window !== 'undefined' ? window : globalThis;
@@ -88,17 +89,11 @@ import { T, INFO, WORLD_H, MOVE } from '../constants.js';
     return (typeof v === 'number' && isFinite(v)) ? v : fallback;
   }
   function isAirLike(t){
-    if(t === T.AIR) return true;
-    const info=INFO[t];
-    return !!(info && (info.passable || info.gas));
+    return isWindPorousTile(t);
   }
-  function isLeafTile(t){ return t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED; }
+  function isLeafTile(t){ return isFoliageTile(t); }
   function isWindBlocker(t){
-    if(t === T.AIR) return false;
-    const info=INFO[t];
-    if(info && info.gas) return false;
-    if(isLeafTile(t) || t === T.TORCH || t === T.GRAVE) return false;
-    return !(info && info.passable);
+    return isWindExposureBlockerTile(t);
   }
   function exposureAt(x,y,getTile){
     if(typeof getTile !== 'function') return 1;
@@ -230,24 +225,40 @@ import { T, INFO, WORLD_H, MOVE } from '../constants.js';
     if(!isAirLike(t) || t===T.WATER || t===T.LAVA) return false;
     return exposureAt(x,y,getTile)>0.18;
   }
+  function windVisualResponse(t){
+    return clamp(fallingWindResponseForMaterial(t,false)/0.065,0.18,3.20);
+  }
+  function tuneMaterialDescriptor(t,desc){
+    const response=fallingWindResponseForMaterial(t,false);
+    const f=windVisualResponse(t);
+    const sizeMult=clamp(0.82+f*0.18,0.82,1.42);
+    const liftMult=clamp(0.72+f*0.32,0.72,1.62);
+    const lineMult=clamp(0.78+f*0.22,0.78,1.48);
+    return Object.assign({}, desc, {
+      size:Math.max(0.025,(desc.size||0.06)*sizeMult),
+      lift:Math.max(0.006,(desc.lift||0.04)*liftMult),
+      line:Math.max(0.10,(desc.line||0.26)*lineMult),
+      windResponse:response
+    });
+  }
   function materialDescriptor(t,mag){
-    if(t===T.SNOW || t===T.ICE) return {kind:'snow', color:'#f4fbff', size:0.045+Math.min(0.05,mag*0.008), lift:0.11, line:0.18};
-    if(t===T.SAND) return {kind:'sand', color:'#d9c38e', size:0.055+Math.min(0.05,mag*0.009), lift:0.08, line:0.32};
-    if(t===T.DIRT) return {kind:'dust', color:'#8a6040', size:0.058+Math.min(0.04,mag*0.008), lift:0.045, line:0.26};
-    if(t===T.MUD) return {kind:'sand', color:'#8a744c', size:0.055, lift:0.045, line:0.24};
-    if(t===T.GRASS || isLeafTile(t)) return {kind:'dust', color:t===T.GRASS?'#7fa65a':'#9a7a52', size:0.055+Math.min(0.04,mag*0.007), lift:0.035, line:0.22};
-    if(t===T.WOOD) return {kind:'grit', color:Math.random()<0.5?'#a8783d':'#7f552e', size:0.075, lift:0.045, line:0.28};
-    if(t===T.COAL || t===T.OBSIDIAN) return {kind:'grit', color:'#2b2b31', size:0.062, lift:0.035, line:0.22};
+    if(t===T.SNOW || t===T.ICE) return tuneMaterialDescriptor(t,{kind:'snow', color:'#f4fbff', size:0.045+Math.min(0.05,mag*0.008), lift:0.11, line:0.18});
+    if(t===T.SAND) return tuneMaterialDescriptor(t,{kind:'sand', color:'#d9c38e', size:0.055+Math.min(0.05,mag*0.009), lift:0.08, line:0.32});
+    if(t===T.DIRT) return tuneMaterialDescriptor(t,{kind:'dust', color:'#8a6040', size:0.058+Math.min(0.04,mag*0.008), lift:0.045, line:0.26});
+    if(t===T.MUD) return tuneMaterialDescriptor(t,{kind:'sand', color:'#8a744c', size:0.055, lift:0.045, line:0.24});
+    if(t===T.GRASS || isLeafTile(t)) return tuneMaterialDescriptor(t,{kind:'dust', color:t===T.GRASS?'#7fa65a':'#9a7a52', size:0.055+Math.min(0.04,mag*0.007), lift:0.035, line:0.22});
+    if(t===T.WOOD) return tuneMaterialDescriptor(t,{kind:'grit', color:Math.random()<0.5?'#a8783d':'#7f552e', size:0.075, lift:0.045, line:0.28});
+    if(t===T.COAL || t===T.OBSIDIAN) return tuneMaterialDescriptor(t,{kind:'grit', color:'#2b2b31', size:0.062, lift:0.035, line:0.22});
     if(t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.STEEL || t===T.METEORIC_IRON || t===T.IRIDIUM || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT){
       const rockColor=t===T.BASALT || t===T.BEDROCK ? '#5d6573' : (t===T.GRANITE ? '#b3aca8' : '#a4aab2');
-      return {kind:'grit', color:t===T.GLASS?'#bff7ff':(t===T.IRIDIUM?'#cfe6ff':(t===T.METEORIC_IRON?'#9da7ad':rockColor)), size:0.055, lift:0.035, line:0.24};
+      return tuneMaterialDescriptor(t,{kind:'grit', color:t===T.GLASS?'#bff7ff':(t===T.IRIDIUM?'#cfe6ff':(t===T.METEORIC_IRON?'#9da7ad':rockColor)), size:0.055, lift:0.035, line:0.24});
     }
-    return {kind:'dust', color:'#d8c7a2', size:0.06+Math.min(0.04,mag*0.008), lift:0.04, line:0.26};
+    return tuneMaterialDescriptor(t,{kind:'dust', color:'#d8c7a2', size:0.06+Math.min(0.04,mag*0.008), lift:0.04, line:0.26});
   }
   function nearestMaterialBelow(tx,ty,getTile){
     for(let dy=1; dy<=9; dy++){
       const t=getSafe(getTile,tx,ty+dy,T.AIR);
-      if(t===T.AIR || (INFO[t] && INFO[t].gas) || t===T.WATER || t===T.LAVA) continue;
+      if(isVisualOpenFluidTile(t)) continue;
       return t;
     }
     return T.AIR;
@@ -258,7 +269,7 @@ import { T, INFO, WORLD_H, MOVE } from '../constants.js';
     const end=Math.min(WORLD_H-1, Math.floor(player.y + CFG.VISUAL_RADIUS_Y*0.72 + 5));
     for(let y=start; y<=end; y++){
       const t=getSafe(getTile,x,y,T.STONE);
-      if(t===T.AIR || (INFO[t] && INFO[t].gas) || t===T.WATER || t===T.LAVA) continue;
+      if(isVisualOpenFluidTile(t)) continue;
       const openY=y-1;
       if(openVisualSpot(x,openY,getTile)){
         return {x, y:openY, material:t};
@@ -544,7 +555,7 @@ import { T, INFO, WORLD_H, MOVE } from '../constants.js';
     exposureAt, applyToHero, setOverride, setCycleOverride, setCloudMetricsOverride,
     setWeatherProfile, forceSquall,
     config:CFG,
-    _debug:{particles, squall, computeEnvironment, computeTarget, exposureAt, altitudeMultiplier, squallSpeed}
+    _debug:{particles, squall, computeEnvironment, computeTarget, exposureAt, altitudeMultiplier, squallSpeed, isWindBlocker, materialDescriptor}
   };
   root.MM.wind=api;
 })();

@@ -20,6 +20,16 @@ const roofTile = (x,y)=> {
   if(y===42 && x>=-3 && x<=3) return T.STONE;
   return T.AIR;
 };
+const wireRoofTile = (x,y)=> {
+  if(y>=90) return T.STONE;
+  if(y===42 && x>=-3 && x<=3) return T.WIRE;
+  return T.AIR;
+};
+const pumpRoofTile = (x,y)=> {
+  if(y>=90) return T.STONE;
+  if(y===42 && x>=-3 && x<=3) return T.WATER_PUMP;
+  return T.AIR;
+};
 const player = {x:0,y:50,vx:0,vy:0,onGround:false,w:0.7,h:0.95};
 
 function runGroundedIntoWind(windSpeed, input=1, moveMult=2){
@@ -114,6 +124,13 @@ const openExposure = wind.exposureAt(0,50,openTile);
 const roofExposure = wind.exposureAt(0,50,roofTile);
 assert.ok(openExposure > 0.9, 'open sky has full wind exposure');
 assert.ok(roofExposure < openExposure*0.35, `roofed exposure is reduced (${roofExposure.toFixed(2)})`);
+assert.equal(wind._debug.isWindBlocker(T.WIRE), false, 'passable wires do not block wind exposure');
+assert.equal(wind._debug.isWindBlocker(T.DYNAMO_SLOT), false, 'dynamo slots stay porous for wind exposure');
+assert.equal(wind._debug.isWindBlocker(T.TORCH), false, 'mounted fixtures do not create wind canopies');
+assert.equal(wind._debug.isWindBlocker(T.WATER_PUMP), true, 'solid machines block wind without acting as structure supports');
+assert.equal(wind._debug.isWindBlocker(T.CHEST_COMMON), true, 'solid chests block wind without acting as structure supports');
+assert.ok(wind.exposureAt(0,50,wireRoofTile) > openExposure*0.9, 'wire runs do not accidentally roof over wind');
+assert.ok(wind.exposureAt(0,50,pumpRoofTile) < openExposure*0.35, 'solid machines still block wind exposure physically');
 assert.ok(wind.gasDrift(0,50,T.STEAM,openTile) > wind.gasDrift(0,50,T.STEAM,roofTile)*2, 'gas drift also respects exposure');
 const highWind = wind.speedAt(0,18,openTile);
 const lowWind = wind.speedAt(0,84,openTile);
@@ -128,6 +145,13 @@ wind.setOverride(2.4);
 player.vx=0; player.y=84; player.vy=0; player.onGround=false;
 const lowHeroPush = wind.applyToHero(player,1,openTile,{inWater:false}).delta;
 assert.ok(highHeroPush > lowHeroPush*1.35, `hero catches stronger wind at altitude (${highHeroPush.toFixed(2)} vs ${lowHeroPush.toFixed(2)})`);
+
+const steelGrit = wind._debug.materialDescriptor(T.STEEL,5);
+const glassGrit = wind._debug.materialDescriptor(T.GLASS,5);
+const sandGrit = wind._debug.materialDescriptor(T.SAND,5);
+assert.ok(glassGrit.windResponse > steelGrit.windResponse*10, 'glass wind visual response comes from material profile');
+assert.ok(glassGrit.lift > steelGrit.lift*1.5, 'brittle glass particles catch visibly more wind than steel grit');
+assert.ok(sandGrit.lift > steelGrit.lift*3, 'loose sand still has much stronger wind lift than steel');
 
 // Visual particles are bounded even under a long high-wind run.
 wind.reset();

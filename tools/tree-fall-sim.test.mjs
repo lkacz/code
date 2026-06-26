@@ -1,6 +1,7 @@
 // Falling-tree regressions: snowy crowns should fall, snowy ground should not be
 // collected as part of the tree, and pending tree blocks must not vanish on save.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 globalThis.window = globalThis;
 globalThis.MM = {};
@@ -53,6 +54,15 @@ function fallenColumnCounts(tileType){
     total++;
   }
   return {counts,total,max:[...counts.values()].reduce((m,n)=>Math.max(m,n),0)};
+}
+function markRegisteredTree(id,cells){
+  let set=trees._treeTiles.get(id);
+  if(!set){ set=new Set(); trees._treeTiles.set(id,set); }
+  for(const [x,y] of cells){
+    const k=key(x,y);
+    trees._tileTreeIds.set(k,id);
+    set.add(k);
+  }
 }
 
 worldGen.randSeed = ()=>0;
@@ -300,6 +310,22 @@ worldGen.randSeed = ()=>0;
   MM.fallingSolids={ onTileRemoved(){}, afterPlacement(){} };
   MM.water={};
 
+  setTile(0,5,T.TORCH);
+  setTile(0,8,T.STONE);
+  trees._fallingBlocks.push({x:0,y:3,t:T.WOOD,dir:0,hBudget:0});
+  for(let i=0;i<40;i++) trees.updateFallingBlocks(getTile,setTile,1/60);
+  assert.equal(getTile(0,4), T.AIR, 'tree debris does not park above a passable mounted fixture');
+  assert.equal(getTile(0,5), T.TORCH, 'passable mounted fixture remains in place while debris falls through');
+  assert.equal(getTile(0,7), T.WOOD, 'tree debris lands on the real floor below the fixture');
+}
+
+{
+  resetTiles();
+  resetTreeSystem();
+  worldGen.surfaceHeight = ()=>20;
+  MM.fallingSolids={ onTileRemoved(){}, afterPlacement(){} };
+  MM.water={};
+
   setTile(0,4,T.WOOD);
   setTile(0,5,T.WOOD);
   setTile(0,6,T.STONE);
@@ -335,6 +361,56 @@ worldGen.randSeed = ()=>0;
   assert.equal(getTile(0,11), T.AIR, 'unsupported fallen snowy crown is released like other tree debris');
   for(let i=0;i<40;i++) trees.updateFallingBlocks(getTile,setTile,1/60);
   assert.equal(getTile(0,15), T.SNOW, 'fallen snowy crown lands on the next support');
+}
+
+{
+  resetTiles();
+  resetTreeSystem();
+  worldGen.surfaceHeight = ()=>20;
+  MM.fallingSolids={ onTileRemoved(){}, afterPlacement(){} };
+  MM.water={};
+
+  setTile(0,8,T.WOOD);
+  setTile(0,7,T.WOOD);
+  setTile(0,6,T.WOOD);
+  setTile(0,9,T.STONE);
+  setTile(-1,5,T.LEAF);
+  setTile(0,5,T.LEAF);
+  setTile(1,5,T.LEAF);
+
+  setTileWithTreeHook(0,6,T.AIR);
+  trees.updateFallingBlocks(getTile,setTileWithTreeHook,1/60);
+
+  assert.equal(getTile(-1,5), T.LEAF, 'unregistered canopy remains when only the top trunk block is removed');
+  assert.equal(getTile(0,5), T.LEAF, 'leaf directly above a removed top trunk is not treated as loose-crown cleanup');
+  assert.equal(getTile(1,5), T.LEAF, 'connected unregistered canopy does not disappear as a group');
+  assert.equal(trees._fallingBlocks.length, 0, 'top-trunk removal does not spawn hidden leaf debris');
+}
+
+{
+  resetTiles();
+  resetTreeSystem();
+  worldGen.surfaceHeight = ()=>20;
+  MM.fallingSolids={ onTileRemoved(){}, afterPlacement(){} };
+  MM.water={};
+
+  const cells=[[0,8],[0,7],[0,6],[-1,5],[0,5],[1,5]];
+  setTile(0,8,T.WOOD);
+  setTile(0,7,T.WOOD);
+  setTile(0,6,T.WOOD);
+  setTile(0,9,T.STONE);
+  setTile(-1,5,T.LEAF);
+  setTile(0,5,T.LEAF);
+  setTile(1,5,T.LEAF);
+  markRegisteredTree('test:top-trunk-canopy',cells);
+
+  setTileWithTreeHook(0,6,T.AIR);
+  trees.updateFallingBlocks(getTile,setTileWithTreeHook,1/60);
+
+  assert.equal(getTile(-1,5), T.LEAF, 'registered/generated canopy remains after top trunk loss');
+  assert.equal(getTile(0,5), T.LEAF, 'registered leaf above a removed top trunk remains visible');
+  assert.equal(getTile(1,5), T.LEAF, 'registered canopy sides are not bulk-deleted');
+  assert.equal(trees._fallingBlocks.length, 0, 'registered top-trunk loss does not create leaf debris');
 }
 
 {
@@ -1089,6 +1165,11 @@ worldGen.randSeed = ()=>0;
   worldGen.valueNoise=original.valueNoise;
   worldGen.randSeed=original.randSeed;
   worldGen.settings=original.settings;
+}
+
+{
+  const mainSource=readFileSync(new URL('../src/main.js', import.meta.url),'utf8');
+  assert.match(mainSource,/tId===T\.WOOD && getTile\(mineTx,mineTy-1\)===T\.WOOD\) startTreeFall\(mineTx,mineTy-1\)/,'mining only starts a tree fall when another trunk block remains above the removed wood');
 }
 
 console.log('tree-fall-sim: all assertions passed');

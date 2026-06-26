@@ -207,6 +207,24 @@ for(let i=0;i<45;i++) weapons.update(1/60, getTile, setTile);
 assert.equal(getTile(4,0), T.BEDROCK, 'bedrock resists iridium arrow piercing');
 assert.equal(weapons.metrics().iridiumPierces, 0, 'bedrock resistance is not counted as a successful pierce');
 
+tiles=new Map(); weapons.reset(); fire.reset();
+fill(2,8,2,6,T.STONE);
+setTile(4,4,T.BEDROCK);
+setTile(5,4,T.VOLCANO_MASTER_STONE);
+setTile(6,4,T.CHEST_COMMON);
+setTile(4,5,T.OBSIDIAN);
+setTile(5,5,T.DIAMOND);
+setTile(6,5,T.IRIDIUM);
+const blastStoneBefore=count(T.STONE);
+assert.equal(weapons.explodeAt(5,4,getTile,setTile,{force:true}), true, 'forced gas blast detonates for material immunity test');
+assert.equal(getTile(4,4), T.BEDROCK, 'gas explosions do not erase bedrock');
+assert.equal(getTile(5,4), T.VOLCANO_MASTER_STONE, 'gas explosions do not erase story stones');
+assert.equal(getTile(6,4), T.CHEST_COMMON, 'gas explosions do not erase chests');
+assert.equal(getTile(4,5), T.OBSIDIAN, 'gas explosions do not erase obsidian');
+assert.equal(getTile(5,5), T.DIAMOND, 'gas explosions do not erase diamond');
+assert.equal(getTile(6,5), T.IRIDIUM, 'gas explosions do not erase iridium');
+assert.ok(count(T.STONE)<blastStoneBefore, 'gas explosions still crater ordinary stone');
+
 for(const [kind,key] of [['hose','water'],['flame','wood'],['gas','rottenMeat']]){
   tiles=new Map(); weapons.reset(); fire.reset();
   refillResources({water:1000, wood:1000, rottenMeat:1000, [key]:1});

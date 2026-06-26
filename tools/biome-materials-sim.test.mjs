@@ -151,7 +151,7 @@ assert.ok(bedrock>=20, 'world bottom includes bedrock strata (got '+bedrock+')')
 
 const worldSource = await readFile(new URL('../src/engine/world.js', import.meta.url), 'utf8');
 assert.match(worldSource, /function isCaveTreasureFloor\(t\)/, 'worldgen centralizes cave treasure floor material checks');
-assert.match(worldSource, /t===T\.STONE\s*\|\|\s*t===T\.GRANITE\s*\|\|\s*t===T\.BASALT\s*\|\|\s*t===T\.BEDROCK\s*\|\|\s*t===T\.COAL/, 'hard geology and coal seams support cave treasure placement');
+assert.match(worldSource, /isRockStructuralMaterial\(t\) && isObjectFootingTile\(t\)/, 'cave treasure uses shared substantial-rock footing checks instead of loose resource seams');
 assert.match(worldSource, /function geologyLayerDepth\(wx,y,depth,biome\)/, 'geology layers use warped depth instead of straight horizontal bands');
 assert.match(worldSource, /function geologyMix\(wx,y,primary,secondary,seed,amount\)/, 'geology transitions are feathered by local noise');
 assert.match(worldSource, /function volcanoDikeTile\(v,wx,y,ground,depth\)/, 'volcanoes generate basaltic intrusion dikes');

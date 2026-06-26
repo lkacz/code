@@ -94,9 +94,68 @@ background._debugBiomeBlendCached(30,cachedWorld);
 assert.equal(background._debugBiomeBlendCacheSize(),4, 'moving far enough computes a second endpoint pair');
 
 assert.ok(background._debugStarPositions && background._debugStarLayerCount, 'background exposes star debug hooks');
+assert.ok(background._debugCelestialPosition && background._debugCelestialCyclePosition, 'background exposes celestial debug positions');
+assert.ok(background._debugMoonState && background._debugSunState, 'background exposes celestial character debug state');
+assert.ok(background._debugMoonAlpha, 'background exposes moon visibility debug hook');
+assert.ok(background._debugDrawScene && background._debugBackdropBlurPx, 'background exposes scene and blur debug hooks');
 const starLayers = background._debugStarLayerCount();
 assert.ok(starLayers.dome>=140, 'single sky-dome star layer is populated');
 assert.equal(starLayers.near,0, 'near parallax star layer is removed');
+const noonSun = background._debugCelestialPosition('sun',0.5,900,500);
+const sunriseSun = background._debugCelestialPosition('sun',0,900,500);
+const midnightMoon = background._debugCelestialPosition('moon',0.5,900,500);
+const moonrise = background._debugCelestialPosition('moon',0,900,500);
+const cycleNoonSun = background._debugCelestialCyclePosition('sun',0.25,900,500);
+const cycleDuskMoon = background._debugCelestialCyclePosition('moon',0.5,900,500);
+const cycleMidnightMoon = background._debugCelestialCyclePosition('moon',0.75,900,500);
+const cycleDawnMoon = background._debugCelestialCyclePosition('moon',0.999,900,500);
+assert.ok(noonSun.y>55 && noonSun.y<125, 'midday sun peaks in the upper sky instead of below the viewport');
+assert.ok(sunriseSun.y>noonSun.y+330, 'sunrise/sunset remain near the horizon relative to noon');
+assert.ok(midnightMoon.y>70 && midnightMoon.y<110, 'midnight moon peaks high in the upper sky instead of below the viewport');
+assert.ok(moonrise.y>midnightMoon.y+440, 'moon rise/set arc stays below the horizon relative to the peak');
+assert.ok(Math.abs(cycleNoonSun.y-noonSun.y)<0.001, 'cycle-time noon uses the high sun arc');
+assert.ok(cycleMidnightMoon.y>70 && cycleMidnightMoon.y<110, 'cycle-time midnight uses the high moon arc');
+assert.ok(cycleDuskMoon.y>cycleMidnightMoon.y+440, 'cycle-time dusk moon starts below the horizon');
+assert.ok(cycleDawnMoon.y>cycleMidnightMoon.y+440, 'cycle-time dawn moon sets below the horizon');
+assert.equal(background._debugMoonAlpha(0.25),0, 'midday moon is hidden instead of ghosting behind the sun');
+assert.ok(background._debugMoonAlpha(0.01)>0.06, 'twilight moon can remain faintly visible');
+assert.ok(background._debugMoonAlpha(0.75)>0.9, 'night moon remains fully visible');
+const summerSun = background._debugSunState({
+  day:12, dayFloat:12, season:'summer', from:'summer', to:'summer', transition:false, blend:1
+}, pure(3), 0.25, 900, 500, 1000, 0);
+const winterCitySun = background._debugSunState({
+  day:31, dayFloat:31, season:'winter', from:'winter', to:'winter', transition:false, blend:1,
+  snowStrength:1
+}, cityNearby, 0.25, 900, 500, 1000, 0);
+assert.equal(summerSun.season, 'summer', 'sun state follows the active season');
+assert.equal(summerSun.world, 'desert', 'sun state follows the local biome context');
+assert.equal(winterCitySun.season, 'winter', 'sun state reports winter when the calendar is winter');
+assert.equal(winterCitySun.world, 'city', 'sun state picks up strong generated-world landmarks');
+assert.notEqual(summerSun.accent, winterCitySun.accent, 'sun palette changes with season and world context');
+assert.ok(summerSun.heat>winterCitySun.heat, 'summer sun is hotter than winter sun');
+assert.ok(summerSun.sizeScale>winterCitySun.sizeScale, 'summer sun has a larger seasonal size scale than winter sun');
+assert.ok(summerSun.radius>winterCitySun.radius+10, 'sun rendered radius follows the seasonal size scale at the same viewport');
+assert.equal(Object.prototype.hasOwnProperty.call(summerSun,'eye'), false, 'sun debug state does not expose face-only eye styling');
+assert.equal(Object.prototype.hasOwnProperty.call(summerSun,'mood'), false, 'sun debug state does not expose face-only mood styling');
+const springMoon = background._debugMoonState({
+  day:1, dayFloat:1, season:'spring', from:'spring', to:'spring', transition:false, blend:1
+}, pure(0), 0.75, 900, 500, 1000, 0);
+const winterMoon = background._debugMoonState({
+  day:31, dayFloat:31, season:'winter', from:'winter', to:'winter', transition:false, blend:1,
+  snowStrength:1
+}, realVolcano, 0.75, 900, 500, 1000, 0);
+const winterNextMoon = background._debugMoonState({
+  day:32, dayFloat:32, season:'winter', from:'winter', to:'winter', transition:false, blend:1,
+  snowStrength:1
+}, realVolcano, 0.75, 900, 500, 1000, 0);
+assert.equal(springMoon.season, 'spring', 'moon state follows the active season');
+assert.equal(winterMoon.season, 'winter', 'moon state reports winter when the calendar is winter');
+assert.equal(winterMoon.world, 'volcano', 'moon state picks up strong nearby world landmarks');
+assert.notEqual(springMoon.accent, winterMoon.accent, 'moon palette changes with season and world context');
+assert.notEqual(winterMoon.phaseIndex, winterNextMoon.phaseIndex, 'moon phase advances from the season calendar day');
+assert.ok(winterMoon.illumination>=0 && winterMoon.illumination<=1, 'moon illumination remains normalized');
+assert.equal(Object.prototype.hasOwnProperty.call(winterMoon,'eye'), false, 'moon debug state does not expose face-only eye styling');
+assert.equal(Object.prototype.hasOwnProperty.call(winterMoon,'mood'), false, 'moon debug state does not expose face-only mood styling');
 const starsHere = background._debugStarPositions(900,500,0.72,0,20).slice(0,30);
 const starsFarAway = background._debugStarPositions(900,500,0.72,12000,20).slice(0,30);
 assert.deepEqual(starsHere, starsFarAway, 'star field does not shift when the player walks');
@@ -118,6 +177,8 @@ function makeOffscreenCtx(){
     strokeStyle:'',
     lineWidth:1,
     globalAlpha:1,
+    globalCompositeOperation:'source-over',
+    filter:'none',
     save(){},
     restore(){},
     clearRect(){},
@@ -127,7 +188,10 @@ function makeOffscreenCtx(){
     closePath(){},
     moveTo(){},
     lineTo(){},
+    quadraticCurveTo(){},
+    clip(){},
     arc(){},
+    ellipse(){},
     fill(){},
     stroke(){},
     createLinearGradient(){ return gradient(); },
@@ -147,16 +211,19 @@ function makeBackgroundCtx(){
     lineWidth:1,
     globalAlpha:1,
     globalCompositeOperation:'source-over',
-    save(){ state.push({fillStyle:this.fillStyle,strokeStyle:this.strokeStyle,lineWidth:this.lineWidth,globalAlpha:this.globalAlpha,globalCompositeOperation:this.globalCompositeOperation}); },
+    filter:'none',
+    save(){ state.push({fillStyle:this.fillStyle,strokeStyle:this.strokeStyle,lineWidth:this.lineWidth,globalAlpha:this.globalAlpha,globalCompositeOperation:this.globalCompositeOperation,filter:this.filter}); },
     restore(){ const s=state.pop(); if(!s) return; Object.assign(this,s); },
     fillRect(x,y,w,h){ calls.push(['fillRect',+x.toFixed(3),+y.toFixed(3),+w.toFixed(3),+h.toFixed(3),+this.globalAlpha.toFixed(3)]); },
-    drawImage(img,x=0,y=0){ calls.push(['drawImage',+Number(x||0).toFixed(3),+Number(y||0).toFixed(3)]); },
+    drawImage(img,x=0,y=0){ calls.push(['drawImage',+Number(x||0).toFixed(3),+Number(y||0).toFixed(3),img && img.width || 0,img && img.height || 0,this.filter,+this.globalAlpha.toFixed(3)]); },
     beginPath(){},
     closePath(){},
     moveTo(){},
     lineTo(){},
+    quadraticCurveTo(){},
+    clip(){},
     arc(){},
-    ellipse(x,y,rx,ry){ calls.push(['ellipse',+x.toFixed(3),+y.toFixed(3),+rx.toFixed(3),+ry.toFixed(3),+this.globalAlpha.toFixed(3)]); },
+    ellipse(x,y,rx,ry){ calls.push(['ellipse',+x.toFixed(3),+y.toFixed(3),+rx.toFixed(3),+ry.toFixed(3),+this.globalAlpha.toFixed(3),this.globalCompositeOperation]); },
     fill(){},
     stroke(){},
     createLinearGradient(){ return gradient(); },
@@ -165,6 +232,7 @@ function makeBackgroundCtx(){
   };
   return ctx;
 }
+const drawScene = background._debugDrawScene || background.draw;
 
 const oldSeasonApi = globalThis.MM.seasons;
 const oldTintOverrideActive = globalThis.__timeOverrideActive;
@@ -197,24 +265,46 @@ globalThis.__timeOverrideValue = 0.72;
 globalThis.performance.now = ()=>1234567;
 const drawCtxA = makeBackgroundCtx();
 const drawCtxB = makeBackgroundCtx();
-background.draw(drawCtxA,900,500,0,20,pure(1));
-background.draw(drawCtxB,900,500,12000,20,pure(1));
+const blurredBackdropCtx = makeBackgroundCtx();
+background.draw(blurredBackdropCtx,900,500,0,20,pure(1));
+const blurredComposites = blurredBackdropCtx.calls.filter(c=>c[0]==='drawImage' && c[3]===900 && c[4]===500);
+assert.equal(blurredComposites.length,1, 'public background draw emits one screen-sized backdrop composite');
+assert.match(blurredComposites[0][5], /^blur\(/, 'public background draw softens the complete backdrop layer');
+assert.ok(background._debugBackdropBlurPx(900,500)>=0.85 && background._debugBackdropBlurPx(900,500)<=1.55, 'background blur stays within the intended subtle range');
+drawScene(drawCtxA,900,500,0,20,pure(1));
+drawScene(drawCtxB,900,500,12000,20,pure(1));
 const smallStarsA = drawCtxA.calls.filter(c=>c[0]==='fillRect' && c[3]<=2 && c[4]<=2);
 const smallStarsB = drawCtxB.calls.filter(c=>c[0]==='fillRect' && c[3]<=2 && c[4]<=2);
 assert.ok(smallStarsA.length>60, 'actual draw emits visible sky-dome stars at night');
 assert.deepEqual(smallStarsA, smallStarsB, 'actual star draw does not shift with player position');
+assert.equal(drawCtxA.calls.some(c=>c.includes && c.includes('destination-out')), false, 'moon renderer does not punch transparent holes into the sky');
+const drawImagesA = drawCtxA.calls.filter(c=>c[0]==='drawImage');
+const celestialCompositeIndex = drawImagesA.findIndex(c=>c[3]===900 && c[4]===500);
+const landscapeImageIndex = drawImagesA.findIndex((c,i)=>i>celestialCompositeIndex && c[3]>=2000);
+assert.ok(celestialCompositeIndex>=0, 'sun and moon are composited from a screen-sized sky layer');
+assert.ok(landscapeImageIndex>celestialCompositeIndex, 'background landscape draws after the celestial layer so it hides sun and moon');
+const mountainImageAlphas = drawImagesA.filter(c=>c[3]===2200).map(c=>c[6]);
+assert.ok(mountainImageAlphas.length>0, 'actual draw emits parallax mountain repeats');
+assert.ok(mountainImageAlphas.every(a=>a>=0.92), 'parallax mountain silhouettes stay solid instead of ghost-transparent');
+const cityBackdropCtx = makeBackgroundCtx();
+background._debugClearBiomeBlendCache();
+drawScene(cityBackdropCtx,900,500,0,20,cityNearby);
+const cityImageAlphas = cityBackdropCtx.calls.filter(c=>c[0]==='drawImage' && c[3]===2400).map(c=>c[6]);
+assert.ok(cityImageAlphas.length>0, 'actual draw emits generated-city backdrop repeats near cities');
+assert.ok(cityImageAlphas.every(a=>a>=0.80), 'generated-city backdrop silhouettes stay substantial once present');
+background._debugClearBiomeBlendCache();
 const fractionalParallaxCtx = makeBackgroundCtx();
 const oldDpr = globalThis.devicePixelRatio;
 globalThis.devicePixelRatio = 2;
-background.draw(fractionalParallaxCtx,900,500,0.13,20,pure(7));
+drawScene(fractionalParallaxCtx,900,500,0.13,20,pure(7));
 globalThis.devicePixelRatio = oldDpr;
 const parallaxImages = fractionalParallaxCtx.calls.filter(c=>c[0]==='drawImage');
 assert.ok(parallaxImages.every(c=>Math.abs(c[1]*2-Math.round(c[1]*2))<0.001), 'mountain parallax repeats snap to device pixels');
 assert.ok(parallaxImages.some(c=>Math.abs(c[1]-Math.round(c[1]))>0.001), 'high-DPI mountain parallax can still move in sub-CSS-pixel increments');
 const volcanoDrawCtx = makeBackgroundCtx();
-background.draw(volcanoDrawCtx,900,500,0,20,realVolcano);
+drawScene(volcanoDrawCtx,900,500,0,20,realVolcano);
 const volcanoEllipses = volcanoDrawCtx.calls.filter(c=>c[0]==='ellipse');
-const volcanoSmokePuffs = volcanoEllipses.filter(c=>Math.abs(c[1]-450)<180 && c[2]<250 && c[4]>12);
+const volcanoSmokePuffs = volcanoEllipses.filter(c=>c[6]==='source-over' && Math.abs(c[1]-450)<180 && c[2]>140 && c[2]<250 && c[4]>12);
 assert.equal(volcanoSmokePuffs.length,0, 'background volcano cue does not draw detached parallax smoke puffs');
 globalThis.performance.now = oldNow;
 globalThis.__timeOverrideActive = oldTimeOverrideActive;

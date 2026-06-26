@@ -162,6 +162,20 @@ wind.setOverride(5.0);
 for(let i=0; i<60*4; i++) dynamo.update(1/60,getTile);
 assert.equal(dynamo.metrics().storedEnergy,0,'blocked vertical dynamo intake prevents wind charging');
 
+resetWorld();
+placeDynamo(0,24,'vertical');
+setTile(-1,24,T.WIRE);
+wind.setOverride(5.0);
+for(let i=0; i<60*4; i++) dynamo.update(1/60,getTile);
+assert.ok(dynamo.metrics().storedEnergy>0.01,'porous utility wires do not block a wind turbine intake');
+
+resetWorld();
+placeDynamo(0,24,'vertical');
+setTile(-1,24,T.WATER);
+wind.setOverride(5.0);
+for(let i=0; i<60*4; i++) dynamo.update(1/60,getTile);
+assert.equal(dynamo.metrics().storedEnergy,0,'water blocks turbine airflow even though it is not a structural wind canopy');
+
 // An orphan slot is not pass-through and does not generate power.
 resetWorld();
 setTile(0,5,T.DYNAMO_SLOT);
@@ -321,6 +335,7 @@ assert.match(mainSrc, /DYNAMO\.plannedCells\(cx,cy,dynamoOrientation\)/, 'debug 
 assert.match(mainSrc, /MM\.ui\.injectDynamoDebugPanel/, 'main injects the dynamo debug panel');
 
 const dynamoSrc = await readFile(new URL('../src/engine/dynamo.js', import.meta.url), 'utf8');
+assert.match(dynamoSrc, /isWindExposureBlockerTile/, 'dynamo wind turbine intake reuses shared material wind exposure rules');
 assert.match(dynamoSrc, /const ENERGY_CAPACITY = 100/, 'dynamo has a fixed battery capacity');
 assert.match(dynamoSrc, /function drawBatteryLines\(ctx,TILE,px,py,charge,pulse\)/, 'dynamo draws stored energy as battery lines');
 assert.match(dynamoSrc, /function drawRotorFan\(ctx,TILE,px,py,angle,work,pulse\)/, 'dynamo draws a visible rotating fan');

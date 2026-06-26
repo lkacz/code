@@ -10,6 +10,8 @@
   const CYCLE_DURATION=DAY_DURATION+NIGHT_DURATION;
   const DAY_FRAC = DAY_DURATION / CYCLE_DURATION; // 0.5
   const TWILIGHT_BAND = 0.12;
+  const BACKDROP_BLUR_MIN=0.85;
+  const BACKDROP_BLUR_MAX=1.55;
   let cycleStart=performance.now();
 
   // Palettes keyed by worldgen biome id. The background now follows the actual
@@ -87,6 +89,7 @@
   const mountainCache=new Map();
   const citySkylineCache=new Map();
   const biomeBlendCache=new Map();
+  const scratchCanvases=new Map();
   const BIOME_BLEND_CACHE_CAP=2048;
   const MOUNTAIN_W=2200, MOUNTAIN_H=380;
   const MOUNTAIN_LAYER=[
@@ -209,6 +212,27 @@
     const snap=(v)=>Math.round(v*dpr)/dpr;
     for(; x<W; x+=img.width) ctx.drawImage(img,snap(x),drawY);
   }
+  function scratchCanvas(name,W,H){
+    if(typeof document==='undefined' || !document.createElement) return null;
+    const w=Math.max(1,Math.ceil(W));
+    const h=Math.max(1,Math.ceil(H));
+    let c=scratchCanvases.get(name);
+    if(!c){
+      c=document.createElement('canvas');
+      scratchCanvases.set(name,c);
+    }
+    if(c.width!==w) c.width=w;
+    if(c.height!==h) c.height=h;
+    return c;
+  }
+  function clearScratch(ctx,W,H){
+    if(!ctx) return false;
+    ctx.globalCompositeOperation='source-over';
+    ctx.globalAlpha=1;
+    if('filter' in ctx) ctx.filter='none';
+    if(ctx.clearRect) ctx.clearRect(0,0,W,H);
+    return true;
+  }
 
   // Distant devastated-city silhouettes. Generated once per layer and repeated
   // as a parallax band; the actual foreground city is still tile-based.
@@ -275,14 +299,13 @@
     citySkylineCache.set(key,c);
     return c;
   }
-  function drawCitySkyline(ctx,W,H,playerX,TILE,influence,isDay,tDay){
+  function drawCitySkyline(ctx,W,H,playerX,TILE,influence,isDay,mask){
     if(influence<=0.01) return;
-    const nightMul=isDay?0.9:(1.18+0.15*Math.sin(tDay*Math.PI));
     for(let layer=0; layer<CITY_SKYLINE_LAYER.length; layer++){
       const spec=CITY_SKYLINE_LAYER[layer];
       const img=getCitySkylineLayer(layer);
       const y=Math.round(H*spec.y);
-      const alpha=spec.alpha*influence*nightMul;
+      const alpha=mask ? clamp(influence*1.35,0,1) : cityBackdropOpacity(influence,isDay,layer);
       drawMountainRepeats(ctx,img,-((playerX*TILE)*spec.par),y,alpha,W);
     }
   }
@@ -314,7 +337,33 @@
   function lerpColor(c1,c2,t){ const p1=parseInt(c1.slice(1),16); const p2=parseInt(c2.slice(1),16); const r=lerp((p1>>16)&255,(p2>>16)&255,t)|0; const g=lerp((p1>>8)&255,(p2>>8)&255,t)|0; const b=lerp(p1&255,p2&255,t)|0; return '#'+r.toString(16).padStart(2,'0')+g.toString(16).padStart(2,'0')+b.toString(16).padStart(2,'0'); }
   function hexToRgba(hex,a){ const p=parseInt(hex.slice(1),16); const r=(p>>16)&255,g=(p>>8)&255,b=p&255; return `rgba(${r},${g},${b},${a})`; }
   function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+  function backdropBlurPx(W,H){
+    const span=Math.max(1,Math.min(Number(W)||1,Number(H)||1));
+    return clamp(span*0.0024,BACKDROP_BLUR_MIN,BACKDROP_BLUR_MAX);
+  }
+  function solidBackdropOpacity(raw,floor=0.92){
+    return clamp(floor+(1-floor)*clamp(finite(raw,1),0,1),floor,1);
+  }
+  function cityBackdropOpacity(influence,isDay,layer){
+    const presence=smoothstep(0.04,0.30,clamp(finite(influence,0),0,1));
+    const base=[0.84,0.90,0.96][layer] || 0.90;
+    return clamp(presence*base*(isDay?0.96:1),0,1);
+  }
   function smoothstep(a,b,x){ const t=Math.min(1,Math.max(0,(x-a)/(b-a))); return t*t*(3-2*t); }
+  function celestialPosition(frac,W,H,opts){
+    const ang=lerp(opts.start,opts.end,frac);
+    return {
+      x:W*0.5 + Math.cos(ang)*W*opts.xAmp,
+      y:H*opts.yBase - Math.sin(ang)*H*opts.yAmp,
+      angle:ang
+    };
+  }
+  function sunPosition(frac,W,H){ return celestialPosition(frac,W,H,{start:Math.PI*1.05,end:Math.PI*-0.05,xAmp:0.45,yBase:0.82,yAmp:0.65}); }
+  function moonPosition(frac,W,H){ return celestialPosition(frac,W,H,{start:Math.PI*1.13,end:Math.PI*-0.13,xAmp:0.50,yBase:0.84,yAmp:0.67}); }
+  function moonFracForCycle(cycleT){
+    const t=((cycleT%1)+1)%1;
+    return (((t-DAY_FRAC)/(1-DAY_FRAC))%1+1)%1;
+  }
   function blendColor(c1,c2,t){ return lerpColor(c1,c2,t); }
   function blendPalette(p1,p2,t){ if(!p2||t<=0) return p1; if(t>=1) return p2; return {
     dayTop:blendColor(p1.dayTop,p2.dayTop,t), dayBot:blendColor(p1.dayBot,p2.dayBot,t),
@@ -328,6 +377,61 @@
     autumn:{color:'#d98942',alpha:0.034},
     winter:{color:'#d9efff',alpha:0.046}
   };
+  const MOON_SEASON_STYLES={
+    spring:{core:'#f3f0d5',edge:'#fff7d7',halo:'#8bd99b',accent:'#86df8f',shade:'#334356',mark:'#8abf93',mote:'#b5ffd0'},
+    summer:{core:'#fff1c4',edge:'#fff9dd',halo:'#ffd570',accent:'#ffca61',shade:'#463b39',mark:'#e2a950',mote:'#ffe089'},
+    autumn:{core:'#f4dec2',edge:'#fff0d8',halo:'#d98a45',accent:'#d88342',shade:'#4a3541',mark:'#b76d3a',mote:'#f6a65a'},
+    winter:{core:'#e7f5ff',edge:'#fbfdff',halo:'#bceaff',accent:'#c8f3ff',shade:'#233049',mark:'#8fcde7',mote:'#dffaff'},
+    off:{core:'#edf0e6',edge:'#fff8e5',halo:'#b8c7d5',accent:'#cbd5de',shade:'#2d3544',mark:'#aeb8c2',mote:'#f2f6ff'}
+  };
+  const MOON_BIOME_STYLES={
+    0:{id:'forest', accent:'#94d58b', mark:'#6caa72', mote:'#b8ffc0'},
+    1:{id:'plains', accent:'#cbdc83', mark:'#9aae69', mote:'#f2f6aa'},
+    2:{id:'snow', accent:'#d8f7ff', mark:'#9ad7ec', mote:'#ffffff'},
+    3:{id:'desert', accent:'#e7bf72', mark:'#bb8c54', mote:'#ffd98b'},
+    4:{id:'swamp', accent:'#82c6a3', mark:'#5d9a82', mote:'#a3ffd8'},
+    5:{id:'sea', accent:'#75c9ff', mark:'#5597c8', mote:'#a9e8ff'},
+    6:{id:'lake', accent:'#82dbf2', mark:'#57a8bd', mote:'#bdf6ff'},
+    7:{id:'mountain', accent:'#ccd6e1', mark:'#8d9aa9', mote:'#e9eef5'},
+    8:{id:'city', accent:'#9ca8ba', mark:'#697484', mote:'#c9d6e8'},
+    volcano:{id:'volcano', accent:'#ff8c45', mark:'#b74f2d', mote:'#ffc26c'}
+  };
+  const MOON_CRATERS=[
+    {x:-0.34,y:-0.32,rx:0.14,ry:0.10,a:0.18},
+    {x:0.18,y:-0.34,rx:0.10,ry:0.08,a:0.16},
+    {x:0.38,y:-0.05,rx:0.15,ry:0.11,a:0.18},
+    {x:-0.18,y:0.10,rx:0.12,ry:0.09,a:0.14},
+    {x:0.08,y:0.34,rx:0.18,ry:0.11,a:0.13},
+    {x:-0.46,y:0.24,rx:0.08,ry:0.06,a:0.12},
+    {x:0.02,y:-0.04,rx:0.07,ry:0.05,a:0.10}
+  ];
+  const MOON_PHASES=8;
+  const SUN_SEASON_STYLES={
+    spring:{core:'#ffeaa2',edge:'#fff8cc',halo:'#ffe59a',accent:'#8bdc86',ray:'#ffe18a',shade:'#9d7133',mark:'#d8a94b',mote:'#eaffb8',heat:0.74,size:1.00},
+    summer:{core:'#ffd66a',edge:'#fff0a6',halo:'#ffc154',accent:'#ff9f42',ray:'#ffd25f',shade:'#9a4d1f',mark:'#d97727',mote:'#ffe18d',heat:1,size:1.18},
+    autumn:{core:'#ffc47a',edge:'#ffe5ad',halo:'#d98942',accent:'#d7733e',ray:'#f29a4e',shade:'#7d4230',mark:'#b65f32',mote:'#ffbd75',heat:0.66,size:1.04},
+    winter:{core:'#fff0c9',edge:'#fffceb',halo:'#dff4ff',accent:'#bfeeff',ray:'#fff2bc',shade:'#746b5f',mark:'#b8c3c8',mote:'#f6fbff',heat:0.42,size:0.82},
+    off:{core:'#ffe59a',edge:'#fff4c2',halo:'#ffd170',accent:'#ffc268',ray:'#ffd878',shade:'#865a29',mark:'#c08334',mote:'#fff0aa',heat:0.72,size:1.00}
+  };
+  const SUN_BIOME_STYLES={
+    0:{id:'forest', accent:'#9be37d', mark:'#78b85d', mote:'#d4ff9a'},
+    1:{id:'plains', accent:'#d9dc78', mark:'#b4ad4d', mote:'#fbf6a2'},
+    2:{id:'snow', accent:'#d4f7ff', mark:'#aacfe1', mote:'#ffffff'},
+    3:{id:'desert', accent:'#f2bd64', mark:'#cb7f35', mote:'#ffe09a'},
+    4:{id:'swamp', accent:'#94c98e', mark:'#639a73', mote:'#c3ffad'},
+    5:{id:'sea', accent:'#70d5ff', mark:'#4aa4d2', mote:'#baf0ff'},
+    6:{id:'lake', accent:'#80e2ed', mark:'#58afbf', mote:'#c7fbff'},
+    7:{id:'mountain', accent:'#d4d4c9', mark:'#9b9c91', mote:'#f4f0db'},
+    8:{id:'city', accent:'#b8c0ca', mark:'#7d8795', mote:'#e0e5ef'},
+    volcano:{id:'volcano', accent:'#ff6938', mark:'#bd3f28', mote:'#ffba62'}
+  };
+  const SUN_SPOTS=[
+    {x:-0.44,y:-0.30,rx:0.070,ry:0.035,a:0.09,rot:-0.45},
+    {x:0.30,y:-0.08,rx:0.115,ry:0.050,a:0.12,rot:0.30},
+    {x:-0.18,y:0.18,rx:0.055,ry:0.030,a:0.08,rot:0.72},
+    {x:0.08,y:0.40,rx:0.135,ry:0.052,a:0.10,rot:-0.18},
+    {x:0.48,y:0.24,rx:0.052,ry:0.030,a:0.07,rot:0.62}
+  ];
   function finite(v,fallback){ return Number.isFinite(+v) ? +v : fallback; }
   function currentSeasonMetrics(){
     const seasons=window.MM && window.MM.seasons;
@@ -368,6 +472,584 @@
       blend:+clamp(finite(m.blend,1),0,1).toFixed(4),
       transition
     };
+  }
+  function blendMoonStyle(a,b,t){
+    if(!a) return b || MOON_SEASON_STYLES.off;
+    if(!b || t<=0) return a;
+    if(t>=1) return b;
+    const u=clamp(finite(t,0),0,1);
+    return {
+      core:lerpColor(a.core,b.core,u),
+      edge:lerpColor(a.edge,b.edge,u),
+      halo:lerpColor(a.halo,b.halo,u),
+      accent:lerpColor(a.accent,b.accent,u),
+      shade:lerpColor(a.shade,b.shade,u),
+      mark:lerpColor(a.mark,b.mark,u),
+      mote:lerpColor(a.mote,b.mote,u)
+    };
+  }
+  function moonSeasonStyle(metrics){
+    const m=metrics || currentSeasonMetrics();
+    const id=(m && m.season && MOON_SEASON_STYLES[m.season]) ? m.season : 'off';
+    let spec=MOON_SEASON_STYLES[id] || MOON_SEASON_STYLES.off;
+    if(m && m.transition && m.from && m.to && m.from!==m.to){
+      spec=blendMoonStyle(MOON_SEASON_STYLES[m.from],MOON_SEASON_STYLES[m.to],m.blend) || spec;
+    }
+    return {id,spec,metrics:m || null};
+  }
+  function moonWorldStyle(blend){
+    const volcano=blend && blend.volcano ? blend.volcano : null;
+    if(volcano && volcano.amount>0.16) return Object.assign({amount:clamp(volcano.amount,0,1)},MOON_BIOME_STYLES.volcano);
+    if(blend && blend.city>0.45) return Object.assign({amount:clamp(blend.city,0,1)},MOON_BIOME_STYLES[8]);
+    const id=blend && Number.isFinite(blend.a) ? (blend.a|0) : 0;
+    return Object.assign({amount:1},MOON_BIOME_STYLES[id] || MOON_BIOME_STYLES[0]);
+  }
+  function moonDayNumber(metrics){
+    if(metrics && Number.isFinite(+metrics.dayFloat)) return +metrics.dayFloat;
+    if(metrics && Number.isFinite(+metrics.day)) return +metrics.day;
+    if(metrics && Number.isFinite(+metrics.seasonDay) && Number.isFinite(+metrics.seasonIndex)) return +metrics.seasonIndex*10 + +metrics.seasonDay;
+    return NaN;
+  }
+  function moonPhaseFromCalendar(metrics,WORLDGEN,cycleIndex){
+    const day=moonDayNumber(metrics);
+    if(Number.isFinite(day)){
+      const seed=WORLDGEN && Number.isFinite(WORLDGEN.worldSeed) ? Math.abs(WORLDGEN.worldSeed|0) : 0;
+      const seasonOffset={spring:0,summer:2,autumn:4,winter:6,off:0}[(metrics && metrics.season) || 'off'] || 0;
+      return (((Math.floor(day-1)+seasonOffset+(seed%MOON_PHASES))%MOON_PHASES)+MOON_PHASES)%MOON_PHASES;
+    }
+    if(cycleIndex !== lastPhaseCycle){
+      lastPhaseCycle=cycleIndex;
+      moonPhaseIndex=(moonPhaseIndex+1)%MOON_PHASES;
+    }
+    return moonPhaseIndex;
+  }
+  function moonStateForDraw(cycleT,metrics,blend,WORLDGEN,now,playerX){
+    const season=moonSeasonStyle(metrics);
+    const world=moonWorldStyle(blend);
+    const cycleIndex=Math.floor((now-cycleStart)/CYCLE_DURATION);
+    const phaseIndex=moonPhaseFromCalendar(season.metrics,WORLDGEN,cycleIndex);
+    moonPhaseIndex=phaseIndex;
+    const phaseT=phaseIndex/MOON_PHASES;
+    const illumination=clamp(0.5-0.5*Math.cos(phaseT*Math.PI*2),0,1);
+    const seasonal=season.spec || MOON_SEASON_STYLES.off;
+    const style=Object.assign({},seasonal,{
+      accent:blendColor(seasonal.accent,world.accent,0.34),
+      mark:blendColor(seasonal.mark,world.mark,0.28),
+      mote:blendColor(seasonal.mote,world.mote,0.34),
+      halo:blendColor(seasonal.halo,world.accent,0.18)
+    });
+    return {
+      season:season.id,
+      transition:!!(season.metrics && season.metrics.transition),
+      world:world.id,
+      worldAmount:+finite(world.amount,1).toFixed(3),
+      phaseIndex,
+      phaseT:+phaseT.toFixed(4),
+      illumination:+illumination.toFixed(4),
+      cycleT:+(((cycleT%1)+1)%1).toFixed(4),
+      day:Number.isFinite(moonDayNumber(season.metrics)) ? +moonDayNumber(season.metrics).toFixed(3) : null,
+      playerX:finite(playerX,0),
+      core:style.core,
+      edge:style.edge,
+      halo:style.halo,
+      accent:style.accent,
+      shade:style.shade,
+      mark:style.mark,
+      mote:style.mote
+    };
+  }
+  function blendSunStyle(a,b,t){
+    if(!a) return b || SUN_SEASON_STYLES.off;
+    if(!b || t<=0) return a;
+    if(t>=1) return b;
+    const u=clamp(finite(t,0),0,1);
+    return {
+      core:lerpColor(a.core,b.core,u),
+      edge:lerpColor(a.edge,b.edge,u),
+      halo:lerpColor(a.halo,b.halo,u),
+      accent:lerpColor(a.accent,b.accent,u),
+      ray:lerpColor(a.ray,b.ray,u),
+      shade:lerpColor(a.shade,b.shade,u),
+      mark:lerpColor(a.mark,b.mark,u),
+      mote:lerpColor(a.mote,b.mote,u),
+      heat:lerp(finite(a.heat,0.7),finite(b.heat,0.7),u),
+      size:lerp(finite(a.size,1),finite(b.size,1),u)
+    };
+  }
+  function sunSeasonStyle(metrics){
+    const m=metrics || currentSeasonMetrics();
+    const id=(m && m.season && SUN_SEASON_STYLES[m.season]) ? m.season : 'off';
+    let spec=SUN_SEASON_STYLES[id] || SUN_SEASON_STYLES.off;
+    if(m && m.transition && m.from && m.to && m.from!==m.to){
+      spec=blendSunStyle(SUN_SEASON_STYLES[m.from],SUN_SEASON_STYLES[m.to],m.blend) || spec;
+    }
+    return {id,spec,metrics:m || null};
+  }
+  function sunWorldStyle(blend){
+    const volcano=blend && blend.volcano ? blend.volcano : null;
+    if(volcano && volcano.amount>0.16) return Object.assign({amount:clamp(volcano.amount,0,1)},SUN_BIOME_STYLES.volcano);
+    if(blend && blend.city>0.45) return Object.assign({amount:clamp(blend.city,0,1)},SUN_BIOME_STYLES[8]);
+    const id=blend && Number.isFinite(blend.a) ? (blend.a|0) : 0;
+    return Object.assign({amount:1},SUN_BIOME_STYLES[id] || SUN_BIOME_STYLES[0]);
+  }
+  function sunStateForDraw(cycleT,metrics,blend,WORLDGEN,now,playerX,tDay){
+    const season=sunSeasonStyle(metrics);
+    const world=sunWorldStyle(blend);
+    const seasonal=season.spec || SUN_SEASON_STYLES.off;
+    const daylight=clamp(Math.sin(clamp(finite(tDay,0.5),0,1)*Math.PI),0,1);
+    const edgeWarmth=1-smoothstep(0.08,0.45,Math.min(clamp(finite(tDay,0.5),0,1),1-clamp(finite(tDay,0.5),0,1)));
+    const heat=clamp(finite(seasonal.heat,0.72)*(0.62+0.38*daylight),0.16,1.12);
+    const style=Object.assign({},seasonal,{
+      accent:blendColor(seasonal.accent,world.accent,0.38),
+      mark:blendColor(seasonal.mark,world.mark,0.30),
+      mote:blendColor(seasonal.mote,world.mote,0.30),
+      halo:blendColor(seasonal.halo,world.accent,0.18),
+      core:blendColor(seasonal.core,edgeWarmth>0.01?'#ffd18a':seasonal.core,edgeWarmth*0.25),
+      ray:blendColor(seasonal.ray,edgeWarmth>0.01?'#ff9f56':seasonal.ray,edgeWarmth*0.22)
+    });
+    return {
+      season:season.id,
+      transition:!!(season.metrics && season.metrics.transition),
+      world:world.id,
+      worldAmount:+finite(world.amount,1).toFixed(3),
+      daylight:+daylight.toFixed(4),
+      edgeWarmth:+edgeWarmth.toFixed(4),
+      heat:+heat.toFixed(4),
+      cycleT:+(((cycleT%1)+1)%1).toFixed(4),
+      day:Number.isFinite(moonDayNumber(season.metrics)) ? +moonDayNumber(season.metrics).toFixed(3) : null,
+      playerX:finite(playerX,0),
+      core:style.core,
+      edge:style.edge,
+      halo:style.halo,
+      accent:style.accent,
+      ray:style.ray,
+      shade:style.shade,
+      mark:style.mark,
+      mote:style.mote,
+      sizeScale:+clamp(finite(style.size,1),0.72,1.28).toFixed(4)
+    };
+  }
+  function sunRadiusForState(W,state){
+    const base=clamp(W*0.050,34,58);
+    return clamp(base*finite(state && state.sizeScale,1),28,72);
+  }
+  function strokeCircle(ctx,x,y,r,color,alpha,lineWidth){
+    ctx.save();
+    ctx.globalAlpha*=alpha;
+    ctx.strokeStyle=color;
+    ctx.lineWidth=lineWidth;
+    ctx.beginPath();
+    ctx.arc(x,y,r,0,Math.PI*2);
+    ctx.stroke();
+    ctx.restore();
+  }
+  function drawSunMotes(ctx,cx,cy,r,state,now){
+    const n=state.world==='volcano' ? 11 : (state.season==='summer' ? 10 : 8);
+    ctx.save();
+    const baseAlpha=ctx.globalAlpha;
+    for(let i=0;i<n;i++){
+      const orbit=r*(1.25+0.32*((i%4)/3));
+      const a=now*0.00032*(i%2?-1:1)+i*Math.PI*2/n+state.heat*0.7;
+      const x=cx+Math.cos(a)*orbit;
+      const y=cy+Math.sin(a)*orbit*(0.78+0.08*Math.sin(i));
+      const tw=0.55+0.45*Math.sin(now*0.0017+i*1.37);
+      ctx.globalAlpha=baseAlpha*(0.10+0.20*tw)*(0.75+0.25*state.daylight);
+      ctx.fillStyle=i%3===0 ? state.accent : state.mote;
+      ctx.beginPath();
+      ctx.arc(x,y,r*(0.014+0.010*(i%2)),0,Math.PI*2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+  function drawSunCorona(ctx,cx,cy,r,state,now){
+    const rays=state.season==='winter' ? 14 : 18;
+    ctx.save();
+    ctx.strokeStyle=hexToRgba(state.ray,0.18+0.10*state.heat);
+    ctx.lineWidth=Math.max(1,r*0.022);
+    for(let i=0;i<rays;i++){
+      const a=i*Math.PI*2/rays+now*0.00010*(i%2?-1:1);
+      const wobble=0.5+0.5*Math.sin(now*0.0015+i*0.91);
+      const inner=r*(0.94+0.03*wobble);
+      const outer=r*(1.28+0.26*wobble*state.heat);
+      ctx.globalAlpha=0.26+0.28*wobble;
+      ctx.beginPath();
+      ctx.moveTo(cx+Math.cos(a)*inner,cy+Math.sin(a)*inner);
+      ctx.lineTo(cx+Math.cos(a)*outer,cy+Math.sin(a)*outer);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  function drawSunSeasonAura(ctx,cx,cy,r,state,now){
+    ctx.save();
+    ctx.strokeStyle=hexToRgba(state.accent,0.28);
+    ctx.fillStyle=hexToRgba(state.accent,0.22);
+    ctx.lineWidth=Math.max(1,r*0.018);
+    if(state.season==='spring'){
+      for(let i=0;i<6;i++){
+        const a=-Math.PI*0.92+i*Math.PI*0.16+Math.sin(now*0.0007+i)*0.025;
+        const x=cx+Math.cos(a)*r*0.98;
+        const y=cy+Math.sin(a)*r*0.98;
+        ctx.beginPath();
+        ctx.ellipse(x,y,r*0.05,r*0.105,a+Math.PI*0.5,0,Math.PI*2);
+        ctx.fill();
+      }
+    } else if(state.season==='summer'){
+      ctx.strokeStyle=hexToRgba(state.accent,0.34);
+      for(let i=0;i<8;i++){
+        const a=i*Math.PI*2/8+now*0.00016;
+        ctx.beginPath();
+        ctx.moveTo(cx+Math.cos(a)*r*1.09,cy+Math.sin(a)*r*1.09);
+        ctx.quadraticCurveTo(
+          cx+Math.cos(a+0.08)*r*1.22,
+          cy+Math.sin(a+0.08)*r*1.22,
+          cx+Math.cos(a+0.14)*r*1.34,
+          cy+Math.sin(a+0.14)*r*1.34
+        );
+        ctx.stroke();
+      }
+    } else if(state.season==='autumn'){
+      for(let i=0;i<5;i++){
+        const a=Math.PI*0.54+i*0.21+Math.sin(now*0.0008+i)*0.05;
+        const x=cx+Math.cos(a)*r*1.04;
+        const y=cy+Math.sin(a)*r*1.04;
+        ctx.beginPath();
+        ctx.ellipse(x,y,r*0.055,r*0.115,a,0,Math.PI*2);
+        ctx.fill();
+      }
+    } else if(state.season==='winter'){
+      for(let i=0;i<8;i++){
+        const a=i*Math.PI*2/8+now*0.00006;
+        const x=cx+Math.cos(a)*r*1.06;
+        const y=cy+Math.sin(a)*r*1.06;
+        ctx.beginPath();
+        ctx.moveTo(x-r*0.055,y);
+        ctx.lineTo(x+r*0.055,y);
+        ctx.moveTo(x,y-r*0.055);
+        ctx.lineTo(x,y+r*0.055);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+  function drawSunSurfaceMarks(ctx,cx,cy,r,state,now){
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx,cy,r*0.96,0,Math.PI*2);
+    ctx.clip();
+    for(const s of SUN_SPOTS){
+      const x=cx+s.x*r+Math.sin(now*0.00035+s.x*7)*r*0.018;
+      const y=cy+s.y*r+Math.cos(now*0.00032+s.y*9)*r*0.012;
+      ctx.fillStyle=hexToRgba(state.shade,s.a*(0.78+0.35*state.heat));
+      ctx.beginPath();
+      ctx.ellipse(x,y,s.rx*r,s.ry*r,s.rot || 0,0,Math.PI*2);
+      ctx.fill();
+    }
+    ctx.strokeStyle=hexToRgba(state.mark,0.12+0.07*state.heat);
+    ctx.lineWidth=Math.max(1,r*0.014);
+    const filaments=[
+      [-0.58,-0.38,-0.26,-0.48,0.08,-0.34],
+      [0.02,-0.22,0.34,-0.30,0.60,-0.14],
+      [-0.52,0.02,-0.18,-0.07,0.18,0.05],
+      [-0.20,0.31,0.10,0.24,0.48,0.34],
+      [-0.64,0.42,-0.42,0.34,-0.12,0.43]
+    ];
+    for(let i=0;i<filaments.length;i++){
+      const f=filaments[i];
+      const wobble=Math.sin(now*0.00042+i*1.7)*0.018;
+      ctx.beginPath();
+      ctx.moveTo(cx+r*f[0],cy+r*(f[1]+wobble));
+      ctx.quadraticCurveTo(cx+r*f[2],cy+r*(f[3]-wobble),cx+r*f[4],cy+r*(f[5]+wobble*0.7));
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  function drawSunWorldMarks(ctx,cx,cy,r,state,now){
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx,cy,r*0.94,0,Math.PI*2);
+    ctx.clip();
+    ctx.strokeStyle=hexToRgba(state.mark,0.22);
+    ctx.fillStyle=hexToRgba(state.mark,0.20);
+    ctx.lineWidth=Math.max(1,r*0.017);
+    if(state.world==='sea' || state.world==='lake'){
+      for(let i=0;i<3;i++){
+        const y=cy+r*(0.08+i*0.16);
+        ctx.beginPath();
+        ctx.moveTo(cx-r*0.52,y);
+        ctx.quadraticCurveTo(cx-r*0.23,y-r*0.05,cx+r*0.03,y);
+        ctx.quadraticCurveTo(cx+r*0.25,y+r*0.05,cx+r*0.52,y-r*0.01);
+        ctx.stroke();
+      }
+    } else if(state.world==='desert'){
+      for(let i=0;i<18;i++){
+        const a=i*2.12+state.heat;
+        const rr=r*(0.18+0.62*((i*41)%89)/89);
+        ctx.fillRect(cx+Math.cos(a)*rr,cy+Math.sin(a)*rr,r*0.018,r*0.018);
+      }
+    } else if(state.world==='city'){
+      const baseAlpha=ctx.globalAlpha;
+      for(let i=0;i<5;i++){
+        const x=cx-r*0.46+i*r*0.23;
+        ctx.globalAlpha=baseAlpha*0.45;
+        ctx.beginPath();
+        ctx.moveTo(x,cy-r*0.48);
+        ctx.lineTo(x+r*0.03*Math.sin(now*0.001+i),cy+r*0.46);
+        ctx.stroke();
+      }
+    } else if(state.world==='volcano'){
+      const g=ctx.createRadialGradient(cx,cy+r*0.46,r*0.02,cx,cy+r*0.42,r*0.52);
+      g.addColorStop(0,hexToRgba('#ff5931',0.26));
+      g.addColorStop(0.55,hexToRgba('#ff9a45',0.12));
+      g.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.fillStyle=g;
+      ctx.fillRect(cx-r,cy-r*0.05,r*2,r);
+    } else if(state.world==='mountain' || state.world==='snow'){
+      for(let i=0;i<3;i++){
+        const x=cx-r*0.35+i*r*0.28;
+        ctx.beginPath();
+        ctx.moveTo(x,cy+r*0.46);
+        ctx.lineTo(x+r*0.14,cy+r*0.12);
+        ctx.lineTo(x+r*0.30,cy+r*0.46);
+        ctx.stroke();
+      }
+    } else if(state.world==='forest'){
+      for(let i=0;i<4;i++){
+        const a=-0.7+i*0.34;
+        const x=cx+Math.cos(a)*r*0.50;
+        const y=cy+Math.sin(a)*r*0.40;
+        ctx.beginPath();
+        ctx.ellipse(x,y,r*0.035,r*0.075,a,0,Math.PI*2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+  function drawSunObject(ctx,W,H,sun,r,alpha,state,now){
+    if(alpha<=0.01) return;
+    const cx=sun.x, cy=Math.max(sun.y,Math.min(H*0.28,r+46));
+    const horizonFade=clamp((H*1.06-cy)/(H*0.30),0,1);
+    const drawAlpha=alpha*horizonFade;
+    if(drawAlpha<=0.01) return;
+    const pulse=0.5+0.5*Math.sin(now*0.0018+state.heat*2.1);
+    ctx.save();
+    ctx.globalAlpha*=drawAlpha;
+    const haloR=r*(2.12+0.42*state.heat+0.12*pulse);
+    const halo=ctx.createRadialGradient(cx,cy,r*0.24,cx,cy,haloR);
+    halo.addColorStop(0,hexToRgba(state.halo,0.34));
+    halo.addColorStop(0.36,hexToRgba(state.ray,0.15));
+    halo.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=halo;
+    ctx.beginPath();
+    ctx.arc(cx,cy,haloR,0,Math.PI*2);
+    ctx.fill();
+    drawSunMotes(ctx,cx,cy,r,state,now);
+    drawSunCorona(ctx,cx,cy,r,state,now);
+    drawSunSeasonAura(ctx,cx,cy,r,state,now);
+    const body=ctx.createRadialGradient(cx-r*0.34,cy-r*0.38,r*0.08,cx+r*0.18,cy+r*0.22,r*1.02);
+    body.addColorStop(0,state.edge);
+    body.addColorStop(0.48,state.core);
+    body.addColorStop(1,blendColor(state.core,state.shade,0.26));
+    ctx.fillStyle=body;
+    ctx.beginPath();
+    ctx.arc(cx,cy,r,0,Math.PI*2);
+    ctx.fill();
+    strokeCircle(ctx,cx,cy,r,state.edge,0.56,Math.max(1,r*0.028));
+    strokeCircle(ctx,cx,cy,r*0.82,state.ray,0.16,Math.max(1,r*0.012));
+    drawSunSurfaceMarks(ctx,cx,cy,r,state,now);
+    drawSunWorldMarks(ctx,cx,cy,r,state,now);
+    ctx.restore();
+  }
+  function drawMoonMotes(ctx,cx,cy,r,state,now){
+    const n=state.season==='winter' ? 9 : (state.world==='volcano' ? 8 : 7);
+    ctx.save();
+    for(let i=0;i<n;i++){
+      const orbit=r*(1.38+0.18*((i%3)/2));
+      const a=now*0.00018*(i%2?-1:1)+i*Math.PI*2/n+state.phaseIndex*0.21;
+      const x=cx+Math.cos(a)*orbit;
+      const y=cy+Math.sin(a)*orbit*0.62;
+      const tw=0.55+0.45*Math.sin(now*0.0011+i*1.7);
+      ctx.globalAlpha=0.16+0.22*tw;
+      ctx.fillStyle=i%3===0 ? state.accent : state.mote;
+      ctx.beginPath();
+      ctx.arc(x,y,r*(0.015+0.008*(i%2)),0,Math.PI*2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+  function drawMoonSeasonAura(ctx,cx,cy,r,state,now){
+    ctx.save();
+    ctx.strokeStyle=hexToRgba(state.accent,0.35);
+    ctx.fillStyle=hexToRgba(state.accent,0.28);
+    ctx.lineWidth=Math.max(1,r*0.025);
+    if(state.season==='winter'){
+      for(let i=0;i<6;i++){
+        const a=-Math.PI*0.9+i*Math.PI/5+Math.sin(now*0.0006+i)*0.025;
+        const x=cx+Math.cos(a)*r*1.02;
+        const y=cy+Math.sin(a)*r*1.02;
+        ctx.beginPath();
+        ctx.moveTo(x,y-r*0.10);
+        ctx.lineTo(x,y+r*0.10);
+        ctx.moveTo(x-r*0.08,y);
+        ctx.lineTo(x+r*0.08,y);
+        ctx.stroke();
+      }
+    } else if(state.season==='spring'){
+      for(let i=0;i<5;i++){
+        const a=-Math.PI*0.84+i*0.23;
+        const x=cx+Math.cos(a)*r*0.98;
+        const y=cy+Math.sin(a)*r*0.98;
+        ctx.beginPath();
+        ctx.ellipse(x,y,r*0.055,r*0.11,a+Math.PI*0.5,0,Math.PI*2);
+        ctx.fill();
+      }
+    } else if(state.season==='summer'){
+      for(let i=0;i<12;i++){
+        const a=i*Math.PI*2/12+now*0.00008;
+        const inner=r*1.05, outer=r*(1.16+0.04*Math.sin(now*0.001+i));
+        ctx.beginPath();
+        ctx.moveTo(cx+Math.cos(a)*inner,cy+Math.sin(a)*inner);
+        ctx.lineTo(cx+Math.cos(a)*outer,cy+Math.sin(a)*outer);
+        ctx.stroke();
+      }
+    } else if(state.season==='autumn'){
+      for(let i=0;i<4;i++){
+        const a=Math.PI*0.58+i*0.24+Math.sin(now*0.0007+i)*0.04;
+        const x=cx+Math.cos(a)*r*1.03;
+        const y=cy+Math.sin(a)*r*1.03;
+        ctx.beginPath();
+        ctx.ellipse(x,y,r*0.06,r*0.13,a,0,Math.PI*2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(x-r*0.03,y-r*0.01);
+        ctx.lineTo(x+r*0.05,y+r*0.06);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+  function drawMoonCraters(ctx,cx,cy,r,state){
+    ctx.save();
+    for(const c of MOON_CRATERS){
+      const x=cx+c.x*r, y=cy+c.y*r;
+      ctx.fillStyle=hexToRgba(state.shade,c.a);
+      ctx.beginPath();
+      ctx.ellipse(x,y,c.rx*r,c.ry*r,0.22,0,Math.PI*2);
+      ctx.fill();
+      ctx.strokeStyle=hexToRgba(state.edge,0.09);
+      ctx.lineWidth=Math.max(0.75,r*0.012);
+      ctx.beginPath();
+      ctx.ellipse(x-c.rx*r*0.14,y-c.ry*r*0.18,c.rx*r*0.84,c.ry*r*0.74,0.22,0,Math.PI*2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  function drawMoonWorldMarks(ctx,cx,cy,r,state,now){
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx,cy,r*0.95,0,Math.PI*2);
+    ctx.clip();
+    ctx.strokeStyle=hexToRgba(state.mark,0.22);
+    ctx.lineWidth=Math.max(1,r*0.018);
+    if(state.world==='sea' || state.world==='lake'){
+      for(let i=0;i<4;i++){
+        const y=cy-r*0.12+i*r*0.15;
+        ctx.beginPath();
+        ctx.moveTo(cx-r*0.52,y);
+        ctx.quadraticCurveTo(cx-r*0.20,y-r*0.06,cx+r*0.08,y);
+        ctx.quadraticCurveTo(cx+r*0.30,y+r*0.05,cx+r*0.54,y-r*0.01);
+        ctx.stroke();
+      }
+    } else if(state.world==='city'){
+      for(let i=0;i<5;i++){
+        const y=cy-r*0.42+i*r*0.20;
+        ctx.globalAlpha=0.42;
+        ctx.beginPath();
+        ctx.moveTo(cx-r*0.66,y);
+        ctx.lineTo(cx+r*0.66,y+Math.sin(now*0.001+i)*r*0.018);
+        ctx.stroke();
+      }
+    } else if(state.world==='volcano'){
+      const g=ctx.createRadialGradient(cx,cy+r*0.62,r*0.02,cx,cy+r*0.62,r*0.56);
+      g.addColorStop(0,hexToRgba('#ff9b45',0.28));
+      g.addColorStop(0.46,hexToRgba('#ff6a2c',0.12));
+      g.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.fillStyle=g;
+      ctx.fillRect(cx-r,cy,r*2,r);
+      ctx.fillStyle=hexToRgba(state.mote,0.45);
+      for(let i=0;i<5;i++){
+        const x=cx-r*0.42+i*r*0.21;
+        const y=cy+r*(0.34+0.08*Math.sin(now*0.002+i));
+        ctx.fillRect(x,y,r*0.035,r*0.05);
+      }
+    } else if(state.world==='desert'){
+      ctx.fillStyle=hexToRgba(state.mark,0.20);
+      for(let i=0;i<16;i++){
+        const a=i*2.399;
+        const rr=r*(0.16+0.67*((i*37)%97)/97);
+        ctx.fillRect(cx+Math.cos(a)*rr,cy+Math.sin(a)*rr,r*0.018,r*0.018);
+      }
+    } else if(state.world==='mountain' || state.world==='snow'){
+      for(let i=0;i<4;i++){
+        const x=cx-r*0.42+i*r*0.25;
+        ctx.beginPath();
+        ctx.moveTo(x,cy+r*0.45);
+        ctx.lineTo(x+r*0.13,cy+r*0.05);
+        ctx.lineTo(x+r*0.28,cy+r*0.43);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+  function drawMoonObject(ctx,W,H,moon,r,alpha,state,now){
+    if(alpha<=0.01) return;
+    const cx=moon.x, cy=Math.max(moon.y,Math.min(H*0.30,r+48));
+    const horizonFade=clamp((H*1.05-cy)/(H*0.34),0,1);
+    const drawAlpha=alpha*horizonFade;
+    if(drawAlpha<=0.01) return;
+    const pulse=0.5+0.5*Math.sin(now*0.0014+state.phaseIndex*0.73);
+    ctx.save();
+    ctx.globalAlpha*=drawAlpha;
+    const haloR=r*(2.02+0.18*pulse+(state.season==='winter'?0.18:0));
+    const halo=ctx.createRadialGradient(cx,cy,r*0.32,cx,cy,haloR);
+    halo.addColorStop(0,hexToRgba(state.halo,0.34));
+    halo.addColorStop(0.42,hexToRgba(state.accent,0.13));
+    halo.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=halo;
+    ctx.beginPath();
+    ctx.arc(cx,cy,haloR,0,Math.PI*2);
+    ctx.fill();
+    drawMoonMotes(ctx,cx,cy,r,state,now);
+    drawMoonSeasonAura(ctx,cx,cy,r,state,now);
+    const body=ctx.createRadialGradient(cx-r*0.34,cy-r*0.42,r*0.10,cx+r*0.16,cy+r*0.20,r*1.04);
+    body.addColorStop(0,state.edge);
+    body.addColorStop(0.48,state.core);
+    body.addColorStop(1,blendColor(state.core,state.shade,0.34));
+    ctx.fillStyle=body;
+    ctx.beginPath();
+    ctx.arc(cx,cy,r,0,Math.PI*2);
+    ctx.fill();
+    strokeCircle(ctx,cx,cy,r,state.edge,0.48,Math.max(1,r*0.030));
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx,cy,r*0.98,0,Math.PI*2);
+    ctx.clip();
+    const side=state.phaseT<0.5 ? -1 : 1;
+    const shadeAlpha=0.10+0.34*(1-state.illumination);
+    const phaseW=r*(0.74+0.52*state.illumination);
+    const phaseX=cx+side*r*(state.illumination*0.98-0.12);
+    ctx.fillStyle=hexToRgba(state.shade,shadeAlpha);
+    ctx.beginPath();
+    ctx.ellipse(phaseX,cy,phaseW,r*1.14,0,0,Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle=hexToRgba(state.mark,0.16+0.12*(1-state.illumination));
+    ctx.lineWidth=Math.max(1,r*0.018);
+    ctx.beginPath();
+    ctx.ellipse(phaseX,cy,phaseW,r*1.10,0,Math.PI*0.5,Math.PI*1.5);
+    ctx.stroke();
+    ctx.restore();
+    drawMoonCraters(ctx,cx,cy,r,state);
+    drawMoonWorldMarks(ctx,cx,cy,r,state,now);
+    ctx.restore();
   }
   function computeCityInfluence(x,WORLDGEN){
     if(!WORLDGEN || !WORLDGEN.cityAt) return 0;
@@ -566,7 +1248,7 @@
   }
 
   let lastCycleInfo={cycleT:0,isDay:true,tDay:0,twilightBand:TWILIGHT_BAND};
-  let moonPhaseIndex=0, lastPhaseCycle=-1; const MOON_PHASES=8;
+  let moonPhaseIndex=0, lastPhaseCycle=-1;
   function setCachedCycleInfo(cycleT){
     const t=((cycleT%1)+1)%1;
     const isDay=t<DAY_FRAC;
@@ -574,8 +1256,63 @@
     lastCycleInfo={cycleT:t,isDay,tDay,twilightBand:TWILIGHT_BAND};
     return lastCycleInfo;
   }
+  function moonAlphaForInfo(info){
+    const c=info || lastCycleInfo || {isDay:false,tDay:0.5};
+    if(!c.isDay) return 0.94;
+    const t=clamp(finite(c.tDay,0.5),0,1);
+    const band=TWILIGHT_BAND*1.4;
+    const edgeIn=smoothstep(0,band,t);
+    const edgeOut=smoothstep(0,band,1-t);
+    return 0.08*(1-Math.min(edgeIn,edgeOut));
+  }
+  function drawBackgroundLandscape(ctx,W,H,playerX,TILE,blend,isDay,mode){
+    const mask=mode==='mask';
+    ctx.save();
+    const relief=clamp(typeof blend.relief==='number'?blend.relief:0.46,0.12,1);
+    const volcanoCue=blend.volcano || {amount:0};
+    const cityMountainDamp=(blend.city>0.25 && (!volcanoCue || volcanoCue.amount<0.04)) ? (1-Math.min(0.62,blend.city*0.62)) : 1;
+    for(let layer=0; layer<3; layer++){
+      const spec=MOUNTAIN_LAYER[layer];
+      const layerStrength=([0.42,0.25,0.12][layer] || 0.2) + relief*([0.58,0.75,0.88][layer] || 0.7);
+      const y=Math.round(H*spec.y + (1-relief)*(20+layer*27));
+      const imgA=getMountainLayer(blend.a,layer);
+      const scrollA=-((playerX*TILE)*spec.par);
+      const alphaBase=solidBackdropOpacity(spec.alpha*layerStrength*cityMountainDamp,0.92);
+      drawMountainRepeats(ctx,imgA,scrollA,y,mask ? 1 : alphaBase,W);
+      if(blend.t>0){
+        const imgB=getMountainLayer(blend.b,layer);
+        drawMountainRepeats(ctx,imgB,scrollA,y,mask ? clamp(blend.t+0.55,0,1) : alphaBase*blend.t,W);
+      }
+    }
+    if(mask){
+      drawCitySkyline(ctx,W,H,playerX,TILE,blend.city,isDay,true);
+    } else {
+      drawVolcanoCue(ctx,W,H,playerX,TILE,volcanoCue,isDay);
+      drawCitySkyline(ctx,W,H,playerX,TILE,blend.city,isDay,false);
+    }
+    ctx.restore();
+  }
+  function drawCelestialLayer(ctx,W,H,drawFn,maskFn){
+    const layer=scratchCanvas('celestial',W,H);
+    if(!layer || !layer.getContext){
+      drawFn(ctx);
+      return;
+    }
+    const g=layer.getContext('2d');
+    if(!clearScratch(g,W,H)){
+      drawFn(ctx);
+      return;
+    }
+    drawFn(g);
+    g.globalCompositeOperation='destination-out';
+    g.globalAlpha=1;
+    maskFn(g);
+    g.globalCompositeOperation='source-over';
+    g.globalAlpha=1;
+    ctx.drawImage(layer,0,0);
+  }
 
-  background.draw = function(ctx,W,H,playerX,TILE,WORLDGEN){
+  function drawBackgroundScene(ctx,W,H,playerX,TILE,WORLDGEN){
     initStars();
     const now=performance.now();
     const debugEnabled = window.__timeOverrideActive===true;
@@ -602,33 +1339,46 @@
       drawStars(ctx,W,H,cycleT,starAlpha,now);
     }
     // Sun/Moon helpers
-    function drawBody(frac,radius,color,glowCol){ const ang=lerp(Math.PI*1.05, Math.PI*-0.05, frac); const cx=W*0.5 + Math.cos(ang)*W*0.45; const cy=H*0.82 + Math.sin(ang)*H*0.65; const grd2=ctx.createRadialGradient(cx,cy,radius*0.15,cx,cy,radius); grd2.addColorStop(0,glowCol); grd2.addColorStop(1,'rgba(0,0,0,0)'); ctx.fillStyle=grd2; ctx.beginPath(); ctx.arc(cx,cy,radius,0,Math.PI*2); ctx.fill(); ctx.fillStyle=color; ctx.beginPath(); ctx.arc(cx,cy,radius*0.55,0,Math.PI*2); ctx.fill(); }
-    const dayCore = isDay && tDay>=TWILIGHT_BAND && tDay<=1-TWILIGHT_BAND; if(isDay){ const sunGlow=dayCore? 'rgba(255,255,255,0.55)':'rgba(255,180,120,0.55)'; drawBody(tDay, 140, '#fff8d2', sunGlow); }
-    const currentCycleIndex = Math.floor((performance.now()-cycleStart)/CYCLE_DURATION); if(currentCycleIndex !== lastPhaseCycle){ lastPhaseCycle=currentCycleIndex; moonPhaseIndex = (moonPhaseIndex + 1) % MOON_PHASES; }
-    const moonFrac=(cycleT+0.5)%1; const moonAlpha=isDay? 0.05:0.9; const mAng=lerp(Math.PI*1.15, Math.PI*-0.15, moonFrac); const mcx=W*0.5 + Math.cos(mAng)*W*0.48; const mcy=H*0.88 + Math.sin(mAng)*H*0.68; const mr=70; ctx.save(); ctx.globalAlpha=moonAlpha; ctx.fillStyle='rgba(255,255,255,0.65)'; ctx.beginPath(); ctx.arc(mcx,mcy,mr,0,Math.PI*2); ctx.fill(); ctx.globalCompositeOperation='destination-out'; if(moonPhaseIndex!==MOON_PHASES-1){ const phaseT = moonPhaseIndex / (MOON_PHASES-1); const cut = (0.5 - phaseT/2); ctx.beginPath(); const off = cut*mr*1.9; ctx.ellipse(mcx+off,mcy,mr*0.95,mr*1.05,0,0,Math.PI*2); ctx.fill(); if(moonPhaseIndex>0){ ctx.beginPath(); const off2 = (cut+0.15)*mr*1.2; ctx.ellipse(mcx-off2,mcy,mr*0.75,mr*0.95,0,0,Math.PI*2); ctx.fill(); } } ctx.restore();
-    // Mountains (parallax)
-    ctx.save();
-    const nightMul=isDay?1:(0.68+0.10*Math.sin(tDay*Math.PI));
-    const relief=clamp(typeof blend.relief==='number'?blend.relief:0.46,0.12,1);
-    const volcanoCue=blend.volcano || {amount:0};
-    const cityMountainDamp=(blend.city>0.25 && (!volcanoCue || volcanoCue.amount<0.04)) ? (1-Math.min(0.62,blend.city*0.62)) : 1;
-    for(let layer=0; layer<3; layer++){
-      const spec=MOUNTAIN_LAYER[layer];
-      const layerStrength=([0.42,0.25,0.12][layer] || 0.2) + relief*([0.58,0.75,0.88][layer] || 0.7);
-      const y=Math.round(H*spec.y + (1-relief)*(20+layer*27));
-      const imgA=getMountainLayer(blend.a,layer);
-      const scrollA=-((playerX*TILE)*spec.par);
-      const alphaBase=spec.alpha*nightMul*layerStrength*cityMountainDamp;
-      drawMountainRepeats(ctx,imgA,scrollA,y,alphaBase*(blend.t>0?(1-blend.t):1),W);
-      if(blend.t>0){
-        const imgB=getMountainLayer(blend.b,layer);
-        drawMountainRepeats(ctx,imgB,scrollA,y,alphaBase*blend.t,W);
+    const seasonMetrics=currentSeasonMetrics();
+    drawCelestialLayer(ctx,W,H,(skyCtx)=>{
+      if(isDay){
+        const sun=sunPosition(tDay,W,H);
+        const sunState=sunStateForDraw(cycleT,seasonMetrics,blend,WORLDGEN,now,playerX,tDay);
+        const sunAlpha=clamp(0.34+0.66*Math.sin(clamp(tDay,0,1)*Math.PI),0.24,1);
+        const sr=sunRadiusForState(W,sunState);
+        drawSunObject(skyCtx,W,H,sun,sr,sunAlpha,sunState,now);
       }
-    }
-    drawVolcanoCue(ctx,W,H,playerX,TILE,volcanoCue,isDay);
-    drawCitySkyline(ctx,W,H,playerX,TILE,blend.city,isDay,tDay);
-    ctx.restore();
+      const moonFrac=moonFracForCycle(cycleT);
+      const moonAlpha=moonAlphaForInfo(infoNow);
+      const moon=moonPosition(moonFrac,W,H);
+      const moonState=moonStateForDraw(cycleT,seasonMetrics,blend,WORLDGEN,now,playerX);
+      const mr=clamp(W*0.065,42,74);
+      drawMoonObject(skyCtx,W,H,moon,mr,moonAlpha,moonState,now);
+    },(maskCtx)=>{
+      drawBackgroundLandscape(maskCtx,W,H,playerX,TILE,blend,isDay,'mask');
+    });
+    // Mountains (parallax)
+    drawBackgroundLandscape(ctx,W,H,playerX,TILE,blend,isDay,'normal');
     ctx.restore(); // end background layer
+  }
+
+  background.draw = function(ctx,W,H,playerX,TILE,WORLDGEN){
+    const layer=scratchCanvas('backgroundSoftFocus',W,H);
+    if(!layer || !layer.getContext || !ctx || !ctx.drawImage){
+      drawBackgroundScene(ctx,W,H,playerX,TILE,WORLDGEN);
+      return;
+    }
+    const bg=layer.getContext('2d');
+    if(!clearScratch(bg,W,H)){
+      drawBackgroundScene(ctx,W,H,playerX,TILE,WORLDGEN);
+      return;
+    }
+    drawBackgroundScene(bg,W,H,playerX,TILE,WORLDGEN);
+    const blur=backdropBlurPx(W,H);
+    ctx.save();
+    if('filter' in ctx) ctx.filter=`blur(${blur.toFixed(2)}px)`;
+    ctx.drawImage(layer,0,0);
+    ctx.restore();
   };
 
   background.applyTint = function(ctx,W,H){
@@ -669,6 +1419,8 @@
   // Live day/night info for other systems (weather/clouds). Reflects the debug time
   // override because it is captured from the same cycleT used to render the sky.
   background.getCycleInfo = function(){ return lastCycleInfo; };
+  background._debugDrawScene = drawBackgroundScene;
+  background._debugBackdropBlurPx = function(W,H){ return +backdropBlurPx(W,H).toFixed(3); };
   background._debugBiomeBlend = computeBiomeBlend;
   background._debugBiomeBlendCached = cachedBiomeBlend;
   background._debugClearBiomeBlendCache = function(){ biomeBlendCache.clear(); };
@@ -676,6 +1428,53 @@
   background._debugSkyPalettes = SKY_PALETTES;
   background._debugStarPositions = starPositions;
   background._debugStarLayerCount = function(){ initStars(); return {dome:stars.length, near:0}; };
+  background._debugCelestialPosition = function(kind,frac,W,H){
+    const p=(kind==='moon' ? moonPosition : sunPosition)(frac,W,H);
+    return {x:+p.x.toFixed(3), y:+p.y.toFixed(3), angle:+p.angle.toFixed(6)};
+  };
+  background._debugCelestialCyclePosition = function(kind,cycleT,W,H){
+    const t=((cycleT%1)+1)%1;
+    const frac=kind==='moon' ? moonFracForCycle(t) : (t<DAY_FRAC ? t/DAY_FRAC : ((t-DAY_FRAC)/(1-DAY_FRAC)));
+    const p=(kind==='moon' ? moonPosition : sunPosition)(frac,W,H);
+    return {x:+p.x.toFixed(3), y:+p.y.toFixed(3), frac:+frac.toFixed(6), angle:+p.angle.toFixed(6)};
+  };
+  background._debugMoonState = function(metrics,WORLDGEN,cycleT,W,H,now,playerX){
+    const t=Number.isFinite(+cycleT) ? +cycleT : 0.75;
+    const tm=Number.isFinite(+now) ? +now : performance.now();
+    const x=Number.isFinite(+playerX) ? +playerX : 0;
+    const blend=computeBiomeBlend(x,WORLDGEN);
+    const state=moonStateForDraw(t,metrics || null,blend,WORLDGEN,tm,x);
+    const p=moonPosition(moonFracForCycle(t),Number.isFinite(+W)?+W:900,Number.isFinite(+H)?+H:500);
+    return Object.assign({
+      x:+p.x.toFixed(3),
+      y:+p.y.toFixed(3)
+    },state);
+  };
+  background._debugSunState = function(metrics,WORLDGEN,cycleT,W,H,now,playerX){
+    const t=((Number.isFinite(+cycleT) ? +cycleT : 0.25)%1+1)%1;
+    const tm=Number.isFinite(+now) ? +now : performance.now();
+    const x=Number.isFinite(+playerX) ? +playerX : 0;
+    const dayT=t<DAY_FRAC ? t/DAY_FRAC : ((t-DAY_FRAC)/(1-DAY_FRAC));
+    const blend=computeBiomeBlend(x,WORLDGEN);
+    const state=sunStateForDraw(t,metrics || null,blend,WORLDGEN,tm,x,dayT);
+    const ww=Number.isFinite(+W)?+W:900;
+    const hh=Number.isFinite(+H)?+H:500;
+    const p=sunPosition(dayT,ww,hh);
+    return Object.assign({
+      x:+p.x.toFixed(3),
+      y:+p.y.toFixed(3),
+      radius:+sunRadiusForState(ww,state).toFixed(3)
+    },state);
+  };
+  background._debugMoonAlpha = function(cycleT){
+    const t=((Number.isFinite(+cycleT) ? +cycleT : 0.75)%1+1)%1;
+    return +moonAlphaForInfo({
+      cycleT:t,
+      isDay:t<DAY_FRAC,
+      tDay:t<DAY_FRAC ? t/DAY_FRAC : ((t-DAY_FRAC)/(1-DAY_FRAC)),
+      twilightBand:TWILIGHT_BAND
+    }).toFixed(4);
+  };
   background._debugSeasonTint = seasonVisualTint;
 
   // Save/load support for time-of-day and moon phase
@@ -692,7 +1491,7 @@
       cycleStart = now - cycleT*CYCLE_DURATION;
       setCachedCycleInfo(cycleT);
     }
-    if(typeof s.moonPhaseIndex==='number') moonPhaseIndex = s.moonPhaseIndex % MOON_PHASES;
+    if(typeof s.moonPhaseIndex==='number') moonPhaseIndex = (((s.moonPhaseIndex|0)%MOON_PHASES)+MOON_PHASES)%MOON_PHASES;
     if(typeof s.lastPhaseCycle==='number') lastPhaseCycle = s.lastPhaseCycle;
   };
   background.snapshot = background.exportState;

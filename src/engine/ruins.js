@@ -23,6 +23,7 @@
 // masonry, chests, fluids) or 'soft' (surface hints that only settle onto
 // open air, never cutting into terrain or trees).
 import { CHUNK_W, WORLD_H, T } from '../constants.js';
+import { isReplaceableNaturalOpenTile } from './material_physics.js';
 import { worldGen as WG } from './worldgen.js';
 
 const ruins = (function(){
@@ -333,7 +334,7 @@ const ruins = (function(){
         if(op.x<x0 || op.x>x1) continue;
         const idx=op.y*CHUNK_W+(op.x-x0);
         if(op.f){ arr[idx]=op.t; }
-        else { const cur=arr[idx]; if(cur===T.AIR || cur===T.WATER) arr[idx]=op.t; }
+        else { const cur=arr[idx]; if(isReplaceableNaturalOpenTile(cur,false)) arr[idx]=op.t; }
       }
     }
   }

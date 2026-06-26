@@ -4,7 +4,8 @@
 // rising up through a horizontal slot produce transient power plus accumulated
 // energy for future machine systems. Other gases may vent through slots, but
 // do not charge the machine.
-import { T, INFO, WORLD_H } from '../constants.js';
+import { T, WORLD_H } from '../constants.js';
+import { isWindExposureBlockerTile } from './material_physics.js';
 
 (function(){
   window.MM = window.MM || {};
@@ -30,10 +31,9 @@ import { T, INFO, WORLD_H } from '../constants.js';
   function isCasing(t){ return t===T.DYNAMO; }
   function isSlot(t){ return t===T.DYNAMO_SLOT; }
   function canWindPass(t){
-    if(t===T.AIR) return true;
     if(t===T.WATER || t===T.LAVA) return false;
-    const info=INFO[t];
-    return !!(info && (info.gas || (info.passable && t!==T.DYNAMO && t!==T.DYNAMO_SLOT)));
+    if(t===T.DYNAMO || t===T.DYNAMO_SLOT) return false;
+    return !isWindExposureBlockerTile(t);
   }
   function normalizeOrientation(orientation){
     return orientation==='vertical' || orientation==='v' ? 'vertical' : 'horizontal';

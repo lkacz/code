@@ -11,8 +11,9 @@
 // Run: node tools/boss-sim.test.mjs
 import { strict as assert } from 'assert';
 
-const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,POISON_GAS:28,FUEL_GAS:29};
 globalThis.window = globalThis; // bosses.js attaches to window.MM
+globalThis.MM = {};
+const { T, INFO } = await import('../src/constants.js');
 
 // Sparse world: bedrock from y=90 down, open sky above; supports negative x.
 const H = 140;
@@ -22,13 +23,7 @@ const setTile = (x,y,v)=>{ if(y>=0&&y<H) tiles.set(x+','+y,v); };
 
 globalThis.MM = {
   T, WORLD_H:140, TILE:20,
-  INFO: {
-    [T.AIR]: {passable:true},
-    [T.LEAF]: {passable:true},
-    [T.WATER]: {passable:true},
-    [T.POISON_GAS]: {passable:true, gas:true},
-    [T.FUEL_GAS]: {passable:true, gas:true},
-  },
+  INFO,
   worldGen: { surfaceHeight: ()=>90, biomeType: ()=>0, settings:{seaLevel:95} },
   world: { getTile, setTile },          // attackAt reaches the world through MM.world
   water: { onTileChanged(){}, disturb(){} },
@@ -163,6 +158,11 @@ const mh = bosses.forceSpawn(getTile, {x:300, seed:888, freeze:true, archetype:'
 step(30); // settle
 const cbx=Math.round(mh.x)+mh.core.dx, cby=Math.round(mh.y)+mh.core.dy;
 setTile(300+9, 91, T.CHEST_EPIC);  // buried treasure just inside the blast radius
+setTile(cbx+8, cby+1, T.BEDROCK);
+setTile(cbx+7, cby+1, T.VOLCANO_MASTER_STONE);
+setTile(cbx+6, cby+1, T.OBSIDIAN);
+setTile(cbx+5, cby+1, T.DIAMOND);
+setTile(cbx+4, cby+1, T.IRIDIUM);
 globalThis.player.x = cbx+3; globalThis.player.y = 88; globalThis.player.hpInvul = 0;
 const solidBefore = (()=>{ let c=0; for(let x=cbx-12;x<=cbx+12;x++) for(let y=85;y<100;y++) if(getTile(x,y)!==T.AIR && getTile(x,y)!==T.WATER) c++; return c; })();
 // fully armored heart: even an overwhelming blow glances off the plating
@@ -175,6 +175,11 @@ assert.ok(bosses.attackAt(cbx, cby, 99999), 'the exposed heart can be struck');
 const solidAfter = (()=>{ let c=0; for(let x=cbx-12;x<=cbx+12;x++) for(let y=85;y<100;y++) if(getTile(x,y)!==T.AIR && getTile(x,y)!==T.WATER) c++; return c; })();
 assert.ok(solidAfter < solidBefore-10, `blast cratered the terrain (${solidBefore} -> ${solidAfter} solids)`);
 assert.equal(getTile(300+9,91), T.CHEST_EPIC, 'chests survive the blast');
+assert.equal(getTile(cbx+8,cby+1), T.BEDROCK, 'bedrock survives the boss heart blast');
+assert.equal(getTile(cbx+7,cby+1), T.VOLCANO_MASTER_STONE, 'story stones survive the boss heart blast');
+assert.equal(getTile(cbx+6,cby+1), T.OBSIDIAN, 'obsidian survives the boss heart blast');
+assert.equal(getTile(cbx+5,cby+1), T.DIAMOND, 'diamond survives the boss heart blast');
+assert.equal(getTile(cbx+4,cby+1), T.IRIDIUM, 'iridium survives the boss heart blast');
 assert.equal(bosses.metrics().alive, 0, 'monster is gone after its heart burst');
 assert.equal(bosses.metrics().killed, 1, 'kill recorded');
 assert.ok(globalThis.player.hp < 100, `nearby hero took blast damage (hp=${globalThis.player.hp})`);

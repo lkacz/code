@@ -7,8 +7,9 @@
 //   'gas'   — toxic cloud: poisons living (organic) creatures; lingers and pools
 //   'electric' — spends hero energy to fire a straight robot-style beam
 // The equipped weapon comes from MM.inventory.
-import { T, INFO, isSolid, WORLD_H } from '../constants.js';
+import { T, INFO, WORLD_H } from '../constants.js';
 import { fire as FIRE } from './fire.js';
+import { isBlastProtectedTile, isCondensedWaterTargetTile, isHeatRayPassableTile, isIridiumArrowPierceableTile, isSolidCollisionTile as isSolid } from './material_physics.js';
 import { reactions as REACTIONS } from './reactions.js';
 (function(){
   window.MM = window.MM || {};
@@ -587,7 +588,7 @@ import { reactions as REACTIONS } from './reactions.js';
     if(Math.random()>=WATER_CONDENSE_CHANCE) return;
     const tx=Math.floor(x), ty=Math.floor(y);
     const t=getTile(tx,ty);
-    if(t!==T.AIR && !(INFO[t] && INFO[t].gas)) return;
+    if(!isCondensedWaterTargetTile(t)) return;
     try{
       if(MM.water && MM.water.addSource) MM.water.addSource(tx,ty,getTile,setTile);
       else setTile(tx,ty,T.WATER);
@@ -624,7 +625,7 @@ import { reactions as REACTIONS } from './reactions.js';
         const tx=bx+dx, ty=by+dy;
         if(ty<1 || ty>=WORLD_H-3) continue;
         const t=getTile(tx,ty);
-        if(t===T.AIR||t===T.CHEST_COMMON||t===T.CHEST_RARE||t===T.CHEST_EPIC||t===T.OBSIDIAN||t===T.DIAMOND) continue;
+        if(isBlastProtectedTile(t)) continue;
         if(typeof setTile!=='function') continue;
         setTile(tx,ty,T.AIR);
         try{ if(MM.fallingSolids && MM.fallingSolids.onTileRemoved) MM.fallingSolids.onTileRemoved(tx,ty); }catch(e){}
@@ -709,11 +710,7 @@ import { reactions as REACTIONS } from './reactions.js';
     return true;
   }
   function arrowPierceableTile(t){
-    const info=INFO[t] || {};
-    if(t===T.AIR || t===T.WATER || t===T.LAVA) return false;
-    if(info.machine || info.chestTier || info.story) return false;
-    if(t===T.BEDROCK || t===T.OBSIDIAN || t===T.DIAMOND || t===T.IRIDIUM || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return false;
-    return isSolid(t);
+    return isIridiumArrowPierceableTile(t);
   }
   function triggerAntimatterBreak(tx,ty){
     try{
@@ -822,9 +819,7 @@ import { reactions as REACTIONS } from './reactions.js';
     return best;
   }
   function flameHeatRayPasses(t){
-    if(t===T.AIR) return true;
-    if(t===T.WATER || t===T.LAVA) return false;
-    return !!(INFO[t] && INFO[t].passable);
+    return isHeatRayPassableTile(t);
   }
   function applyFlameHeatRays(touchedSand,getTile){
     if(!flameHeatRays.length) return;
@@ -991,8 +986,8 @@ import { reactions as REACTIONS } from './reactions.js';
       p.vx*=1-Math.min(1,dt*0.9); p.vy*=1-Math.min(1,dt*(p.kind==='hose'?0.5:0.9));
       const tx=Math.floor(p.x), ty=Math.floor(p.y);
       const t=getTile(tx,ty);
-      const info=INFO[t];
-      const hitWall=info && !info.passable && t!==T.AIR;
+      const info=INFO[t] || null;
+      const hitWall=isSolid(t);
       if(p.kind==='flame' && applyBlockReaction('heat',tx,ty,getTile,setTile)){
         puffs.splice(i,1); continue;
       }

@@ -191,6 +191,17 @@ assert.equal(getTile(44,5),T.STONE,'blocked exact cell is not overwritten by mea
 assert.equal(meat.snapshot().list.length,1,'fallback drop is still tracked for decay');
 
 clear();
+setTile(50,5,T.STONE);
+setTile(50,4,T.STONE);
+setTile(50,7,T.CHEST_COMMON);
+setTile(49,7,T.CHEST_COMMON);
+setTile(51,7,T.GRASS);
+assert.equal(meat.dropFromMob({x:50.2,y:5.4},getTile,setTile),true,'blocked meat drop searches for a valid material footing');
+assert.equal(getTile(49,6),T.AIR,'meat fallback does not choose a chest as nearby footing');
+assert.equal(getTile(50,6),T.AIR,'meat fallback does not choose a chest under the original column');
+assert.equal(getTile(51,6),T.MEAT,'meat fallback chooses ordinary ground over chest support');
+
+clear();
 setTile(1,6,T.GRASS);
 setTile(1,5,T.MEAT);
 assert.equal(meat.auditChunks([0],getTile),1,'save audit finds untracked meat in modified chunks');

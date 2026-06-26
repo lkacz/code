@@ -40,6 +40,8 @@
 // One prototype, three archetypes (walker / hopper / floater) — new species plug in
 // by extending the generator (silhouette + stats) without touching physics or combat.
 // The sim core runs headless; Node tests stub MM (see tools/boss-sim.test.mjs).
+import { isBlastProtectedTile, isCreatureOpenTile, isFoliageTile } from './material_physics.js';
+
 window.MM = window.MM || {};
 (function(){
   const {T, WORLD_H} = MM;
@@ -131,10 +133,8 @@ window.MM = window.MM || {};
     if(bg && bg.getCycleInfo) return bg.getCycleInfo();
     return {isDay:true, tDay:0.5};
   }
-  function tileInfo(t){ return MM.INFO && MM.INFO[t]; }
-  function isGasTile(t){ const info=tileInfo(t); return !!(info && info.gas); }
-  function isLeafTile(t){ return t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED; }
-  function openT(t){ return t===T.AIR || t===T.WATER || isLeafTile(t) || isGasTile(t); }
+  function isLeafTile(t){ return isFoliageTile(t); }
+  function openT(t){ return isCreatureOpenTile(t); }
   // Monsters pass through air, water, leaves and transient gases; everything else is wall/floor.
   function solidT(t){ return !openT(t); }
   function playerRef(){ return (typeof window!=='undefined' && window.player) || null; }
@@ -911,7 +911,7 @@ window.MM = window.MM || {};
     }
     refreshStructure(m);   // a leaner body limps on with fresh bounds + occupancy
   }
-  // The heart bursts: crater the terrain (bedrock and chests survive), hurl debris,
+  // The heart bursts: crater the terrain (protected materials survive), hurl debris,
   // hurt a hero standing close, and pay out the bounty.
   function detonate(m,getTile,setTile){
     const bx=Math.round(m.x)+m.core.dx, by=Math.round(m.y)+m.core.dy;
@@ -922,8 +922,7 @@ window.MM = window.MM || {};
         const tx=bx+dx, ty=by+dy;
         if(ty<1 || ty>=WORLD_H-3) continue;                    // bedrock shelf survives
         const t=getTile(tx,ty);
-        if(t===T.AIR) continue;
-        if(t===T.CHEST_COMMON||t===T.CHEST_RARE||t===T.CHEST_EPIC) continue; // loot survives
+        if(isBlastProtectedTile(t)) continue;
         setTile(tx,ty,T.AIR);
         try{ if(MM.fallingSolids && MM.fallingSolids.onTileRemoved) MM.fallingSolids.onTileRemoved(tx,ty); }catch(e){}
       }

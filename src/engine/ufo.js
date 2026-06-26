@@ -1,3 +1,5 @@
+import { isObjectFootingTile, isReplaceableNaturalOpenTile } from './material_physics.js';
+
 // UFO visitor: every 2-3 in-game days a procedurally generated saucer descends,
 // scans for a living victim — an animal, the hero, even a boss — locks a tractor
 // beam and flies away with the catch. The hull is heavily shielded (incoming
@@ -139,12 +141,10 @@ const ufo = (function(){
     return null;
   }
   function dropCellFree(t){
-    const TT=MM.T||{}, info=(MM.INFO||{})[t];
-    return t===TT.AIR || (info && info.gas);
+    return isReplaceableNaturalOpenTile(t,false) && t!==((MM.T||{}).WATER);
   }
   function dropCellSupported(t){
-    const TT=MM.T||{}, info=(MM.INFO||{})[t];
-    return t!==TT.AIR && !(info && info.passable);
+    return isObjectFootingTile(t);
   }
   function findScrapLanding(x,y0,used,getTile){
     const maxY=Math.max(0,(MM.WORLD_H||140)-4);
@@ -585,6 +585,7 @@ const ufo = (function(){
     state:()=>({acc, nextAt, visits}),
     beaming,
     _gen:generate, // deterministic look (tests)
+    _debug:{dropCellFree,dropCellSupported,findScrapLanding},
     reset(){ craft=null; acc=0; visits=0; rollNext(); save(); }
   };
   MM.ufo=api;

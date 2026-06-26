@@ -66,6 +66,9 @@ assert.match(src, /function stripTransientTerrainTiles\(arr\)/, 'load path sanit
 assert.match(src, /function migrateLegacyInfrastructureTerrain\(cx,arr\)/, 'load path migrates legacy pipe and cable terrain into overlays');
 assert.match(src, /function restoreTerrainChunk\(cx,arr\)/, 'chunk restore uses one shared terrain cleanup helper');
 assert.match(src, /stripTransientTerrainTiles\(arr\);\s*migrateLegacyInfrastructureTerrain\(cx,arr\);/, 'terrain restore strips transient tiles before migrating infrastructure overlays');
+assert.match(src, /timedSavePart\('falling\.audit',[^\n]*FALLING\.auditChunks\(saveChunkIds,\{force:true,immediate:true\}\)/, 'full save audits modified chunks through falling physics before settling terrain');
+assert.match(src, /timedSavePart\('falling\.settle',[^\n]*FALLING\.settleAll\(\)/, 'full save settles queued falling physics before chunk serialization');
+assert.match(src, /FALLING\.auditChunks\(\[cx\],\{force:true,immediate:true\}\)/, 'incremental autosave audits each chunk through falling physics before writing its blob');
 assert.match(src, /encodeRLE\(chunkForTerrainSave\(arr\)\)/, 'full and incremental chunk saves encode sanitized terrain chunks');
 assert.match(src, /restoreTerrainChunk\(ch\.cx,arr\)/, 'inline modified chunk restore removes transient and legacy overlay tiles from terrain');
 assert.match(src, /restoreTerrainChunk\(ref\.cx,arr\)/, 'referenced autosave restore removes transient and legacy overlay tiles from terrain');

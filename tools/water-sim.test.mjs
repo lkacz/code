@@ -6,7 +6,7 @@
 // Run: node tools/water-sim.test.mjs
 import { strict as assert } from 'assert';
 
-const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8};
+const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,WIRE:23};
 globalThis.window = globalThis; // water.js attaches to window.MM
 globalThis.MM = { T, WORLD_H:140, TILE:20, particles:{ spawnSplash(){}, spawnBubble(){} } };
 
@@ -29,6 +29,15 @@ assert.ok(water.addSource(60, 80, getTile, setTile), 'addSource places water');
 step(300);
 assert.equal(getTile(60,99), T.WATER, 'water landed on the floor');
 assert.equal(countWater(), 1, 'volume conserved during fall');
+
+resetWorld();
+for(let y=45;y<=51;y++){ setTile(-1,y,T.STONE); setTile(1,y,T.STONE); }
+setTile(0,51,T.STONE);
+setTile(0,50,T.WIRE);
+assert.ok(water.addSource(0,45,getTile,setTile), 'water source above passable wiring is accepted');
+step(4);
+assert.equal(getTile(0,50),T.WIRE,'falling water does not overwrite passable wiring');
+assert.equal(getTile(0,49),T.WATER,'falling water rests above passable wiring when no lower opening exists');
 
 // --- 2. Waterfall events: a tall drop registers a stream ---
 resetWorld();
@@ -202,6 +211,36 @@ for(let x=70;x<=95;x++) maxShelfDepth=Math.max(maxShelfDepth, depthAt(x,80,95));
 assert.ok(maxShelfDepth<=1, `pond bulk drained over the cliff (max remaining depth ${maxShelfDepth})`);
 let overCliff=0; for(let x=96;x<=130;x++) overCliff+=depthAt(x,90,100);
 assert.ok(overCliff>=pondVol*0.5, `most water went over the cliff (${overCliff}/${pondVol})`);
+
+// --- 12b. Vertical drain mouths pull neighboring water instead of leaving surface gaps ---
+resetWorld();
+for(let x=78;x<=82;x++) for(let y=71;y<100;y++) setTile(x,y,T.STONE);
+for(let y=71;y<100;y++) setTile(80,y,T.AIR);                            // narrow shaft through the floor
+setTile(79,70,T.WATER);
+setTile(80,70,T.WATER);
+setTile(81,70,T.WATER);
+const shaftVol=countWater();
+water.onTileChanged(80,70,getTile);
+step(1);
+assert.equal(countWater(), shaftVol, 'shaft-mouth pull conserves volume');
+let shaftLowered=false; for(let y=71;y<100;y++) if(getTile(80,y)===T.WATER) shaftLowered=true;
+assert.equal(shaftLowered, true, 'source water transfers downward through the shaft immediately');
+assert.equal(getTile(80,70), T.WATER, 'shaft mouth is refilled by neighboring water instead of staying as a surface gap');
+let shaftTopWater=0; for(const x of [79,80,81]) if(getTile(x,70)===T.WATER) shaftTopWater++;
+assert.equal(shaftTopWater, 2, 'refilling the drain mouth moves the surface notch to the donor edge');
+
+// --- 12c. Side drain inlets close first, then fall, instead of diagonal-skipping the mouth ---
+resetWorld();
+for(let x=72;x<=79;x++) setTile(x,75,T.STONE);
+for(let x=72;x<=79;x++) setTile(x,74,T.WATER);                           // shallow pond beside a vertical drop
+const inletVol=countWater();
+water.onTileChanged(80,74,getTile);
+step(1);
+assert.equal(countWater(), inletVol, 'side drain inlet conserves volume');
+assert.equal(getTile(80,74), T.WATER, 'water fills the open shaft mouth before falling down it');
+assert.equal(getTile(80,75), T.AIR, 'first response closes the surface gap rather than skipping diagonally downward');
+step(80);
+assert.ok(depthAt(80,76,100)>0, 'refilled shaft mouth then transfers water downward');
 
 // --- 13. U-tube pressure: water poured into one arm RISES in the other until level ---
 resetWorld();

@@ -1,5 +1,6 @@
 // Tree generation + falling system
 import { CHUNK_W, WORLD_H, T, SNOW_LINE, isAutumnLeaf, isLeaf } from '../constants.js';
+import { fallingWindResponseForMaterial, isPassableForFalling } from './material_physics.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
 window.MM = window.MM || {};
 (function(){
@@ -414,9 +415,9 @@ window.MM = window.MM || {};
 
   function startTreeFall(getTile,setTile,playerFacing,x,y){ const collected=collectTreeTiles(getTile,setTile,x,y); const tiles=collected.tiles; if(!tiles.length) return false; tiles.forEach(tile=>notifyRemoved(getTile,tile.x,tile.y)); if(!collected.stem){ const dir=normalizeDir(playerFacing||1); tiles.forEach(tile=>{ if(fallsAsTreeDebris(tile.t)) fallingBlocks.push(makeFallingPiece(tile.x,tile.y,tile.t,dir)); }); return true; } const tree=makeRotatingTree(tiles,collected.stem,playerFacing||1); if(tree.tiles.length) fallingTrees.push(tree); while(fallingTrees.length>MAX_FALLING_TREES){ const old=fallingTrees.shift(); landTree(getTile,setTile,old,landedAngle(old)); } return true; }
 
-  function isGasTile(t){ const info=MM.INFO && MM.INFO[t]; return !!(info && info.gas); }
-  // Felled blocks pass through air, water and transient gases, like rigid falling solids.
-  function passThrough(t){ return t===T.AIR || t===T.WATER || isGasTile(t); }
+  // Felled blocks share pass-through rules with rigid falling solids, but still
+  // collide with standing foliage so wood can crush or slide off tree crowns.
+  function passThrough(t){ return !isLeaf(t) && isPassableForFalling(t); }
   function normalizeDir(dir){ return dir<0?-1:(dir>0?1:0); }
   function windSpeedAt(getTile,x,y){
     try{
@@ -430,8 +431,9 @@ window.MM = window.MM || {};
   }
   function treeWindResponse(t){
     if(isLeaf(t) || t===T.SNOW) return 0.55;
-    if(t===T.WOOD) return 0.12;
-    return 0.22;
+    const base=fallingWindResponseForMaterial(t,false);
+    if(t===T.WOOD) return Math.max(0.10,base*2.0);
+    return Math.max(0.08,Math.min(0.55,base*2.5));
   }
   function pileRollBudget(t){ return t===T.WOOD ? 4 : 6; }
   function makeFallingPiece(x,y,t,dir,hBudget){
@@ -834,6 +836,7 @@ window.MM = window.MM || {};
       if(!component.length) continue;
       const componentKeys=new Set(component.map(tile=>key(tile.x,tile.y)));
       componentKeys.forEach(ck=>processed.add(ck));
+      if(!component.some(tile=>tile.t===T.WOOD)) continue;
       if(!terrainSupportsTreeComponent(getTile,component,componentKeys)) releaseStandingComponent(getTile,setTile,component);
     }
   }

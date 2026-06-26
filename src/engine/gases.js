@@ -5,6 +5,7 @@
 // lose a little mass when turbines extract power, so stacked dynamos attenuate a
 // plume instead of multiplying one source forever.
 import { T, WORLD_H, CHUNK_W } from '../constants.js';
+import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from './material_physics.js';
 
 (function(){
   window.MM = window.MM || {};
@@ -141,11 +142,10 @@ import { T, WORLD_H, CHUNK_W } from '../constants.js';
     return ms>32 ? 22 : (ms>18 ? 54 : 124);
   }
   function canReplaceWithGas(tile,dst){
-    if(dst===T.AIR) return true;
-    return false;
+    return canGasReplaceTile(tile,dst);
   }
   function canSwapThroughGas(tile,dst){
-    return tile===T.HOT_AIR && isGasTile(dst) && dst!==T.HOT_AIR;
+    return canGasSwapTile(tile,dst);
   }
   function freshGasRecord(x,y,t){
     return {
@@ -284,7 +284,7 @@ import { T, WORLD_H, CHUNK_W } from '../constants.js';
   function placeCondensedWaterAt(x,y,getTile,setTile){
     if(typeof setTile!=='function' || !finiteTile(x,y)) return false;
     const cur=getSafe(getTile,x,y,T.STONE);
-    if(cur!==T.AIR && cur!==T.WATER && !isGasTile(cur)) return false;
+    if(!isCondensedWaterTargetTile(cur)) return false;
     let placed=false;
     try{ if(MM.water && MM.water.addSource) placed=!!MM.water.addSource(x,y,getTile,setTile); }catch(e){ placed=false; }
     if(!placed){

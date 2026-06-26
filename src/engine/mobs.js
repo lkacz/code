@@ -1,4 +1,5 @@
-import { T, MOVE, isLeaf, isSolid, WORLD_H } from '../constants.js';
+import { T, MOVE, isLeaf, WORLD_H } from '../constants.js';
+import { isCreatureRockFloorTile, isSolidCollisionTile as isSolid } from './material_physics.js';
 import WORLD from './world.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
 
@@ -9,7 +10,7 @@ const mobs = (function(){
   // Using ESM imports for T/MOVE/isSolid/WORLD/WORLDGEN
   // Helper predicates
   function isSolidGround(t){ return isSolid(t) && !isLeaf(t); }
-  function isRockFloor(t){ return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL; }
+  function isRockFloor(t){ return isCreatureRockFloorTile(t); }
 
   // Precomputed color variant helper (once per mob instead of per-frame string math)
   function variantColor(spawnT, shiftBits, a, b){
@@ -694,7 +695,7 @@ const mobs = (function(){
       if(!dead && player && Math.abs(player.x-pr.x)<0.6 && Math.abs(player.y-pr.y)<0.8){
         damagePlayer(pr.dmg, pr.x, pr.y); dead=true;
       }
-      if(!dead && getTile){ const tt=getTile(Math.floor(pr.x),Math.floor(pr.y)); if(tt!==T.AIR && tt!==T.WATER && !(MM.INFO && MM.INFO[tt] && MM.INFO[tt].passable)) dead=true; }
+      if(!dead && getTile){ const tt=getTile(Math.floor(pr.x),Math.floor(pr.y)); if(tt!==T.WATER && isSolid(tt)) dead=true; }
       if(dead) mobProjectiles.splice(i,1);
     }
   }

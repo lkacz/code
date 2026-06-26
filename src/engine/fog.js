@@ -6,6 +6,7 @@
 //  MM.fog.importSeen(list)
 //  MM.fog.getRevealAll() / MM.fog.setRevealAll(v) / MM.fog.toggleRevealAll()
 import { CHUNK_W, WORLD_H } from '../constants.js';
+import { isAirOrGasTile, isGasTile } from './material_physics.js';
 (function(){
   window.MM = window.MM || {};
   const F = {};
@@ -83,13 +84,12 @@ import { CHUNK_W, WORLD_H } from '../constants.js';
     // The unknown fog is an opaque final mask; a tiny overlap hides zoom/camera
     // subpixel cracks without changing the readable shape of exposed terrain.
     const blackSeamOverlap = TILE>=8 ? Math.max(1, Math.min(2, TILE*0.05)) : 0;
-    const isGasTile=(t)=>!!(window.MM && MM.INFO && MM.INFO[t] && MM.INFO[t].gas);
     const gasSkyExposed=(x,y)=>{
       const gas=(window.MM && MM.gases && typeof MM.gases.skyExposed==='function') ? MM.gases : null;
       if(gas) return gas.skyExposed(x,y,getTile);
       for(let yy=y-1; yy>=0; yy--){
         const tt=getTile(x,yy);
-        if(tt===T.AIR || isGasTile(tt)) continue;
+        if(isAirOrGasTile(tt)) continue;
         return false;
       }
       return true;

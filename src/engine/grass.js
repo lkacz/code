@@ -1,6 +1,8 @@
 // Grass and overlay animations module (grass blades, leaf shimmer, diamond glow)
 // API: MM.grass.drawOverlays(ctx, pass, sx, sy, viewX, viewY, TILE, WORLD_H, getTile, T, zoom, densityScalar, heightScalar, canDrawTile)
 //      MM.grass.getBudgetInfo() -> string for FPS HUD suffix
+import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
+
 (function(){
   window.MM = window.MM || {};
   const grass = {};
@@ -15,7 +17,7 @@
   let overlayCache = {key:'', tiles:[], grassTiles:0};
 
   function hash32(x,y){ let h = (x|0)*374761393 + (y|0)*668265263; h = (h^(h>>>13))*1274126177; h = h^(h>>>16); return h>>>0; }
-  function openAbove(t,T){ return t===T.AIR || !!(MM.INFO && MM.INFO[t] && MM.INFO[t].gas); }
+  function openAbove(t){ return isAirOrGasTile(t); }
 
   grass.getBudgetInfo = function(){ return grassBudgetInfo; };
 
@@ -27,7 +29,7 @@
     overlayCache = {key:'', tiles:[], grassTiles:0};
   };
 
-  function leafTile(t,T){ return t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED; }
+  function leafTile(t){ return isFoliageTile(t); }
   function overlayKey(sx,sy,viewX,viewY,WORLD_H,visibleTile){
     return sx+'|'+sy+'|'+viewX+'|'+viewY+'|'+WORLD_H+'|'+(visibleTile?1:0);
   }
@@ -87,11 +89,11 @@
         if(t===T.AIR) continue;
         const visible=!visibleTile || visibleTile(x,y);
         if(t===T.GRASS){
-          if(visible && openAbove(getTile(x,y-1),T)){
+          if(visible && openAbove(getTile(x,y-1))){
             grassTiles++;
             tiles.push([x,y,t]);
           }
-        } else if(visible && (leafTile(t,T) || t===T.DIAMOND)){
+        } else if(visible && (leafTile(t) || t===T.DIAMOND)){
           tiles.push([x,y,t]);
         }
       }
@@ -175,7 +177,7 @@
           }
         }
         // Leaf shimmer
-        if(leafTile(t,T)){ const h=hash32(x,y); const frontLeaf = ((h>>7)&1)===1; if((pass==='back' && frontLeaf) || (pass==='front' && !frontLeaf)){} else { const phase=(h&255)/255; const offset = Math.sin(now*0.0025 + phase*6.283)*2.5; ctx.fillStyle='rgba(255,255,255,'+(frontLeaf?0.10:0.06)+')'; ctx.fillRect(x*TILE + TILE/2 + offset - TILE*0.22, y*TILE+3, TILE*0.44, TILE*0.44); } }
+        if(leafTile(t)){ const h=hash32(x,y); const frontLeaf = ((h>>7)&1)===1; if((pass==='back' && frontLeaf) || (pass==='front' && !frontLeaf)){} else { const phase=(h&255)/255; const offset = Math.sin(now*0.0025 + phase*6.283)*2.5; ctx.fillStyle='rgba(255,255,255,'+(frontLeaf?0.10:0.06)+')'; ctx.fillRect(x*TILE + TILE/2 + offset - TILE*0.22, y*TILE+3, TILE*0.44, TILE*0.44); } }
         // Diamond shimmer + flash (back pass)
         if(pass==='back' && t===T.DIAMOND){ const h=hash32(x,y); const flash = Math.sin(now*0.006 + (h&1023))*0.5 + 0.5; if(flash>0.8){ const alpha=(flash-0.8)/0.2; ctx.fillStyle='rgba(255,255,255,'+(0.3*alpha)+')'; const cxp=x*TILE+TILE/2, cyp=y*TILE+TILE/2; ctx.fillRect(cxp-1,cyp-1,2,2); ctx.fillRect(cxp-3,cyp,6,1); ctx.fillRect(cxp,cyp-3,1,6); }
           ctx.fillStyle='rgba(255,255,255,'+(0.05+diamondPulse*0.07)+')'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); }
