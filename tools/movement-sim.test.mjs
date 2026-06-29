@@ -47,7 +47,7 @@ assert.match(mainSource, /function renderCameraCoord\(v\)/, 'render camera has a
 assert.match(mainSource, /return Math\.round\(v\*scale\)\/scale;/, 'render camera snaps only to device pixels, not whole tiles');
 assert.match(mainSource, /const renderCam=currentRenderCamera\(\);/, 'draw loop computes one stable render camera per frame');
 assert.match(mainSource, /const camRenderX = renderCam\.x;\s+const camRenderY = renderCam\.y;/, 'world render uses the pixel-stable render camera');
-assert.match(mainSource, /function drawBackground\(\)\{ if\(BACKGROUND && BACKGROUND\.draw\) BACKGROUND\.draw\(ctx, W, H, player\.x, TILE, WORLDGEN\); \}/, 'background parallax follows the stable player position used before the regression');
+assert.match(mainSource, /function drawBackground\(\)\{ if\(BACKGROUND && BACKGROUND\.draw\) BACKGROUND\.draw\(ctx, W, H, player\.x, TILE, WORLDGEN, zoom\); \}/, 'background parallax follows the stable player position and receives live camera zoom');
 assert.ok(!mainSource.includes('backgroundCameraX('), 'background parallax does not use the snapped render camera');
 assert.match(mainSource, /const CAMERA_MAX_DT=0\.05;/, 'camera follow delta matches the capped per-frame simulation delta');
 assert.match(mainSource, /function runGameStep\(dt,ts\)/, 'game simulation is extracted into one rendered-frame step');

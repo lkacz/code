@@ -8,6 +8,7 @@
 // (The previous generator mixed those two conventions up, which is why mountains
 // generated as basins and oceans as dry plateaus.)
 import { WORLD_H } from '../constants.js';
+import { worldHostility as HOSTILITY } from './world_hostility.js';
 window.MM = window.MM || {};
 const WG = {};
 WG.worldSeed = 12345;
@@ -70,12 +71,17 @@ const volcanoCellCache = new Map();
 function volcanoCandidateForCell(cell){
 	let v = volcanoCellCache.get(cell);
 	if(v!==undefined) return v;
+	const approxCenter = Math.round((cell+0.5)*VOLCANO_CELL_W);
+	const roughHostility = HOSTILITY.at(approxCenter);
 	const gate = ih(cell, 9101);
-	if(gate<0.78){ volcanoCellCache.set(cell,null); return null; }
+	const gateThreshold = clamp(0.78 + roughHostility.volcanoGateDelta, 0.56, 0.86);
+	if(gate<gateThreshold){ volcanoCellCache.set(cell,null); return null; }
 	const center = Math.round((cell+0.5)*VOLCANO_CELL_W + (ih(cell,9102)-0.5)*VOLCANO_CELL_W*0.58);
 	if(Math.abs(center)<VOLCANO_SPAWN_SAFE_RADIUS){ volcanoCellCache.set(cell,null); return null; }
-	const radius = 18 + Math.floor(ih(cell,9103)*13);
-	const height = 24 + Math.floor(ih(cell,9104)*16);
+	const host = HOSTILITY.at(center);
+	const sizeMult = host.volcanoSizeMult || 1;
+	const radius = Math.round((18 + Math.floor(ih(cell,9103)*13)) * sizeMult);
+	const height = Math.round((24 + Math.floor(ih(cell,9104)*16)) * (1 + host.hot * 0.48));
 	const crater = 2 + Math.floor(ih(cell,9105)*2);
 	const pipe = 1 + Math.floor(ih(cell,9106)*2);
 	const reservoir = Math.max(5, Math.floor(radius*0.34));
@@ -93,6 +99,15 @@ function rawVolcanoAt(x){
 		if(d<=v.radius && (!best || d<best.d)) best = Object.assign({d}, v);
 	}
 	return best;
+}
+function volcanoSiteEmerges(v,currentX,row,biome,island,sea,mountainMask,pv){
+	if(!v) return false;
+	if(Math.round(currentX)===Math.round(v.center)){
+		const rugged = biome===7 || biome===3 || mountainMask>0.55 || pv>0.50;
+		return rugged && biome!==5 && biome!==6 && biome!==8 && row<sea-4 && !island;
+	}
+	const centerCol = WG.column(v.center);
+	return !!(centerCol && centerCol.volcano && centerCol.volcano.center===v.center);
 }
 WG.volcanoAt = function(x){ const c=WG.column(Math.round(x)); return c && c.volcano ? c.volcano : null; };
 WG.nearestVolcano = function(x, dir, maxCells){
@@ -148,8 +163,8 @@ function rawCityAt(x){
 
 // --- Climate -------------------------------------------------------------------
 // 2 octaves + strong spread so cold/hot and wet/dry extremes actually occur
-WG.temperature = function(x){ return spread(fbm1(x,2600,2,5001),2.2); };
-WG.moisture    = function(x){ return spread(fbm1(x,1900,2,6001),2.2); };
+WG.temperature = function(x){ return HOSTILITY.climateTemperature(x, spread(fbm1(x,2600,2,5001),2.2)); };
+WG.moisture    = function(x){ return HOSTILITY.climateMoisture(x, spread(fbm1(x,1900,2,6001),2.2)); };
 
 // --- Continental spline ----------------------------------------------------------
 // cont (0..1) → base elevation in tiles above sea level. oceanFrac shifts the
@@ -261,15 +276,18 @@ WG.column = function(x){
 	else biome=0;
 	// Islets above the waterline are sandy desert isles regardless of climate
 	if(island && elevF>-2.5) biome=3;
-	const beach = (elevF>=-3 && elevF<=2.5 && cont<S.oceanFrac+0.12);
+	let beach = (elevF>=-3 && elevF<=2.5 && cont<S.oceanFrac+0.12);
 	let volcano = null;
 	const vCand = rawVolcanoAt(x);
-	if(vCand && biome!==5 && biome!==6 && biome!==8 && row<sea-4 && !island){
+	if(volcanoSiteEmerges(vCand,x,row,biome,island,sea,mountainMask,pv)){
 		const cone = clamp(1-vCand.d/vCand.radius,0,1);
 		const lift = vCand.height*Math.pow(cone,0.82);
 		const craterBite = Math.pow(clamp(1-vCand.d/Math.max(1,vCand.crater+2),0,1),1.5)*6;
 		row = Math.round(clamp(row-lift+craterBite, 8, Math.min(sea+31, WORLD_H-34)));
+		elevF = sea-row;
+		beach = false;
 		biome = 7;
+		city = null;
 		volcano = vCand;
 	}
 	// Cave control fields

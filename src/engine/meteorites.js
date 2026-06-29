@@ -1,5 +1,6 @@
 import { CHUNK_W, T, INFO, WORLD_H } from '../constants.js';
 import { isGasTile, isMeteorForestSiteTile, isMeteorImpactGroundTile, isMeteorLifeSiteTile, isMeteorProtectedTile, isMeteorSettlementSiteTile, isMeteorWaterSiteTile } from './material_physics.js';
+import { worldHostility as HOSTILITY } from './world_hostility.js';
 
 const meteorites = (function(){
   const MM = window.MM = window.MM || {};
@@ -9,6 +10,8 @@ const meteorites = (function(){
   const MAX_WAIT_DAYS = 10;
   const MIN_WAIT = DAY_SECONDS * MIN_WAIT_DAYS;
   const MAX_WAIT = DAY_SECONDS * MAX_WAIT_DAYS;
+  // Hard floor on the scheduled wait, even after the hostility frequency mult shortens it.
+  const MIN_SCHEDULE_DAYS = 1.75;
   const MAX_METEORS = 2;
   const MAX_EMBERS = 140;
   const MAX_DEBRIS = 60;
@@ -94,7 +97,15 @@ const meteorites = (function(){
   function frameMs(){
     return (typeof window !== 'undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
   }
-  function rollNext(){ nextIn = rand(MIN_WAIT, MAX_WAIT); }
+  function playerX(fallback){
+    const p = typeof window !== 'undefined' ? window.player : null;
+    return p && Number.isFinite(p.x) ? p.x : fallback;
+  }
+  function rollNext(anchorX){
+    const h=HOSTILITY.at(Number.isFinite(anchorX) ? anchorX : playerX(0));
+    const raw=rand(MIN_WAIT, MAX_WAIT) / Math.max(1, h.meteorFrequencyMult || 1);
+    nextIn = clamp(raw, DAY_SECONDS * MIN_SCHEDULE_DAYS, MAX_WAIT);
+  }
   function loadedNextIn(data){
     if(!data || !Number.isFinite(data.nextIn) || !(data.nextIn>0)) return 0;
     const raw=+data.nextIn;
@@ -173,15 +184,24 @@ const meteorites = (function(){
     for(const c of craterRecords) if(c && craterEcologyScore(c.ecology)>0) n++;
     return n;
   }
-  function classFromOpts(opts){
+  function classWeightsAt(x){
+    const out={};
+    for(const k of METEOR_CLASS_IDS){
+      const base=METEOR_CLASSES[k].weight||1;
+      out[k]=base * HOSTILITY.meteorClassWeightMult(k, x);
+    }
+    return out;
+  }
+  function classFromOpts(opts,x){
     opts=opts||{};
     const id=opts.classId || opts.kind || opts.type || opts.meteorClass;
     if(id && METEOR_CLASSES[id]) return METEOR_CLASSES[id];
     let total=0;
-    for(const k of METEOR_CLASS_IDS) total+=METEOR_CLASSES[k].weight||1;
+    const weights=classWeightsAt(x);
+    for(const k of METEOR_CLASS_IDS) total+=weights[k]||1;
     let r=Math.random()*Math.max(1,total);
     for(const k of METEOR_CLASS_IDS){
-      r-=METEOR_CLASSES[k].weight||1;
+      r-=weights[k]||1;
       if(r<=0) return METEOR_CLASSES[k];
     }
     return METEOR_CLASSES.iron;
@@ -1585,9 +1605,10 @@ const meteorites = (function(){
     if(meteors.length>=MAX_METEORS) return null;
     const target=pickTarget(player,getTile,opts);
     if(!target || !Number.isFinite(target.x) || !Number.isFinite(target.y)) return null;
-    const profile=classFromOpts(opts);
+    const profile=classFromOpts(opts,target.x);
+    const host=HOSTILITY.at(target.x);
     const baseIntensity=clamp(Number(opts.intensity)||rand(1.12,1.58),0.85,2.2);
-    const intensity=clamp(baseIntensity*(profile.intensityMult||1),0.78,2.65);
+    const intensity=clamp(baseIntensity*(profile.intensityMult||1)*(host.meteorIntensityMult||1),0.78,3.35);
     const surfaceY=clamp(craterSurfaceNear(target.x,target.y,getTile)||target.y,2,WORLD_H-6);
     const side=opts.side || (Math.random()<0.5 ? -1 : 1);
     const fallTime=rand(2.05,2.72);
@@ -1758,7 +1779,7 @@ const meteorites = (function(){
       nextIn-=dt;
       if(nextIn<=0){
         forceSpawn({nearHero:false},player,getTile);
-        rollNext();
+        rollNext(player && Number.isFinite(player.x) ? player.x : undefined);
         saveSettings();
       }
     }
@@ -2260,6 +2281,7 @@ const meteorites = (function(){
   function metrics(){
     let queued=0;
     for(const j of terrainJobs) queued+=Math.max(0,j.ops.length-j.i);
+    const host=HOSTILITY.at(playerX(0));
     return {
       enabled,
       nextIn:+Math.max(0,nextIn).toFixed(1),
@@ -2295,7 +2317,10 @@ const meteorites = (function(){
       lastSirenAlert,
       lastScan,
       lastConsequence,
-      classCounts:copyClassCounts()
+      classCounts:copyClassCounts(),
+      hostility:+host.hostility.toFixed(3),
+      hostilitySide:host.side,
+      scheduleBoundsDays:HOSTILITY.meteorScheduleBoundsDays(host.x, MIN_WAIT_DAYS, MAX_WAIT_DAYS, MIN_SCHEDULE_DAYS)
     };
   }
   function isChunkBusy(cx){
@@ -2323,7 +2348,7 @@ const meteorites = (function(){
     isChunkBusy,
     scanNearestCrater,
     triggerAntimatterBurst,
-    _debug:{impactAt,queueCrater,applyTerrainJobs,pickTarget,nearestBeacon,nearestSiren,beaconIndex,sirenIndex,meteors,terrainJobs,embers,debris,plumes,beaconWaves,gravityBursts,sirenPulses,shockwaves,scorches,craterRecords,impactConsequences,METEOR_CLASSES,scanNearestCrater,updateCraterLakes,updateCraterEcology,runCraterEcologyStep}
+    _debug:{impactAt,queueCrater,applyTerrainJobs,pickTarget,nearestBeacon,nearestSiren,beaconIndex,sirenIndex,meteors,terrainJobs,embers,debris,plumes,beaconWaves,gravityBursts,sirenPulses,shockwaves,scorches,craterRecords,impactConsequences,METEOR_CLASSES,classWeightsAt,scanNearestCrater,updateCraterLakes,updateCraterEcology,runCraterEcologyStep}
   };
   MM.meteorites=api;
   return api;

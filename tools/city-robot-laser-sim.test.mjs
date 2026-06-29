@@ -58,7 +58,7 @@ function spawnSentinel(facing=1, extra={}){
 function runFrames(n){
   for(let i=0; i<n; i++){
     fakeNow += 1000/60;
-    mobs.update(1/60, player, getTile);
+    mobs.update(1/60, player, getTile, setTile);
   }
 }
 function runUntil(fn, maxFrames){
@@ -67,6 +67,12 @@ function runUntil(fn, maxFrames){
     runFrames(1);
   }
   return fn();
+}
+function withRandom(value, fn){
+  const originalRandom = Math.random;
+  Math.random = typeof value === 'function' ? value : ()=>value;
+  try{ return fn(); }
+  finally{ Math.random = originalRandom; }
 }
 
 let damageEvents = 0;
@@ -136,6 +142,53 @@ assert.equal(metrics.projectiles, 0, 'fresh cover does not produce fallback proj
 assert.equal(beamSounds, beforeFreshCover.beamSounds, 'fresh cover prevents stale cached sight from playing a beam sound');
 assert.equal(sparks, beforeFreshCover.sparks, 'fresh cover prevents stale cached sight from emitting sparks');
 assert.equal(bursts, beforeFreshCover.bursts, 'fresh cover still avoids heavy burst particles');
+
+resetWorld();
+withRandom(0.5, ()=>{
+  spawnSentinel(1, {scale:1, speedMul:1, jumpMul:1});
+  setTile(4,20,T.MEAT);
+  const beforeMeat = {damageEvents, beamSounds};
+  assert.equal(runUntil(()=>getTile(4,20)!==T.MEAT, 140), true, 'visible raw meat bait is shot by a city sentinel');
+  metrics = mobs.metrics();
+  assert.equal(getTile(4,20), T.BAKED_MEAT, 'robot laser cooks visible raw meat most of the time');
+  assert.equal(damageEvents, beforeMeat.damageEvents, 'sentinel prioritizes visible meat bait over the hero');
+  assert.equal(beamSounds, beforeMeat.beamSounds + 1, 'meat shot uses the same beam cue as a robot laser');
+  assert.equal(metrics.sentinelMeatCooked, 1, 'meat cooking is tracked in mob metrics');
+  assert.equal(metrics.sentinelMeatDestroyed, 0, 'non-destructive meat shot does not count as destroyed');
+});
+
+resetWorld();
+withRandom(0.05, ()=>{
+  spawnSentinel(1, {scale:1, speedMul:1, jumpMul:1});
+  setTile(4,20,T.MEAT);
+  assert.equal(runUntil(()=>getTile(4,20)!==T.MEAT, 140), true, 'visible raw meat bait is resolved by a robot shot');
+  metrics = mobs.metrics();
+  assert.equal(getTile(4,20), T.AIR, 'low destruction roll makes the robot laser vaporize raw meat');
+  assert.equal(metrics.sentinelMeatDestroyed, 1, 'destructive meat shot is tracked in mob metrics');
+});
+
+resetWorld();
+withRandom(0, ()=>{
+  const savedSpeed = sentinelSpec.speed;
+  sentinelSpec.speed = 0;
+  try{
+    spawnSentinel(1, {scale:1, speedMul:1, jumpMul:1, sentinelShotsUntilReload:3});
+    const beforeReloadDamage = damageEvents;
+    assert.equal(runUntil(()=>mobs.metrics().sentinelReloads >= 1, 420), true, 'sentinel enters reload after its fixed three-shot burst');
+    assert.equal(damageEvents - beforeReloadDamage, 3, 'fixed three-shot burst deals exactly three laser hits before reload');
+    const damageAtReload = damageEvents;
+    const savedReloadState = mobs.serialize().list[0];
+    assert.ok(savedReloadState.sentinelReloadT > 0, 'sentinel reload timer is included in save data');
+    mobs.deserialize({v:4, list:[savedReloadState], aggro:{mode:'rel',m:{}}});
+    mobs.freezeSpawns(10000);
+    assert.ok(mobs.serialize().list[0].sentinelReloadT > 0, 'sentinel reload timer survives save restore');
+    runFrames(120);
+    assert.equal(damageEvents, damageAtReload, 'sentinel cannot fire during the first two seconds of its reload window');
+    assert.equal(runUntil(()=>damageEvents > damageAtReload, 240), true, 'sentinel resumes firing after the three-second reload');
+  } finally {
+    sentinelSpec.speed = savedSpeed;
+  }
+});
 
 resetWorld();
 player.x = 12;

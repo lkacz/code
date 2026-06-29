@@ -21,6 +21,8 @@ import { isSunTransparentTile } from './material_physics.js';
   const CLUSTER_LIMIT = 80;
   const CELL_CAP = 1600;
   const FAR_IDLE_PRUNE_DIST = 260;
+  const CATCHUP_MAX_SECONDS = 1800;
+  const DAY_CYCLE_SECONDS = 600;
   let scanT = 0;
   let visibleScanAt = 0;
   let visibleScanKey = '';
@@ -47,13 +49,13 @@ import { isSunTransparentTile } from './material_physics.js';
     }
     return true;
   }
-  function daylight(){
-    let sun=1;
-    try{
-      const bg=MM.background;
-      const c=bg && bg.getCycleInfo && bg.getCycleInfo();
-      if(c && typeof c.isDay==='boolean') sun=c.isDay ? Math.sin(Math.max(0,Math.min(1,c.tDay||0))*Math.PI) : 0;
-    }catch(e){}
+  function cycleSunAt(cycleT){
+    const t=((Number(cycleT)||0)%1+1)%1;
+    if(t>=0.5) return 0;
+    return Math.max(0,Math.min(1,Math.sin((t/0.5)*Math.PI)));
+  }
+  function cloudSunFactor(){
+    let f=1;
     try{
       const cm=MM.clouds && MM.clouds.metrics && MM.clouds.metrics();
       if(cm){
@@ -61,10 +63,43 @@ import { isSunTransparentTile } from './material_physics.js';
         const count=Math.max(0,Number(cm.clouds)||0);
         const cloudiness=Math.max(0,Math.min(1,mass/90+count/36));
         const storm=cm.storm && cm.storm.active ? Math.max(0,Math.min(1,Number(cm.storm.intensity)||0)) : 0;
-        sun*=Math.max(0.18,1-cloudiness*0.42-storm*0.48);
+        f*=Math.max(0.18,1-cloudiness*0.42-storm*0.48);
       }
     }catch(e){}
+    return Math.max(0,Math.min(1,f));
+  }
+  function currentCycleT(){
+    try{
+      const bg=MM.background;
+      const c=bg && bg.timeInfo && bg.timeInfo();
+      if(c && Number.isFinite(Number(c.cycleT))) return Number(c.cycleT);
+    }catch(e){}
+    try{
+      const bg=MM.background;
+      const c=bg && bg.getCycleInfo && bg.getCycleInfo();
+      if(c && Number.isFinite(Number(c.cycleT))) return Number(c.cycleT);
+      if(c && typeof c.isDay==='boolean' && Number.isFinite(Number(c.tDay))){
+        return c.isDay ? Math.max(0,Math.min(0.5,Number(c.tDay)*0.5)) : 0.5+Math.max(0,Math.min(0.5,Number(c.tDay)*0.5));
+      }
+    }catch(e){}
+    return 0.25;
+  }
+  function daylight(){
+    const sun=cycleSunAt(currentCycleT())*cloudSunFactor();
     return Math.max(0,Math.min(1,sun));
+  }
+  function averageDaylight(seconds){
+    const span=Math.max(0,Number(seconds)||0);
+    if(span<=0.001) return daylight();
+    const end=currentCycleT();
+    const delta=span/DAY_CYCLE_SECONDS;
+    const samples=Math.max(4,Math.min(72,Math.ceil(span/30)));
+    let total=0;
+    for(let i=0; i<samples; i++){
+      const f=(i+0.5)/samples;
+      total+=cycleSunAt(end-delta+delta*f);
+    }
+    return Math.max(0,Math.min(1,(total/samples)*cloudSunFactor()));
   }
   function normalizeState(m,t){
     const cap=capacityForTile(t);
@@ -140,7 +175,6 @@ import { isSunTransparentTile } from './material_physics.js';
       const take=Math.min(remaining,Math.max(0,m.energy||0));
       if(take<=0) continue;
       m.energy=Math.max(0,(m.energy||0)-take);
-      m.power=Math.max(m.power||0,12+take*4);
       m.pulse=1;
       remaining-=take;
       drained+=take;
@@ -161,7 +195,6 @@ import { isSunTransparentTile } from './material_physics.js';
       const add=Math.min(remaining,Math.max(0,cap-(m.energy||0)));
       if(add<=0) continue;
       m.energy=Math.min(cap,(m.energy||0)+add);
-      m.power=Math.max(m.power||0,STORAGE_RATE);
       m.pulse=1;
       remaining-=add;
       gained+=add;
@@ -175,7 +208,6 @@ import { isSunTransparentTile } from './material_physics.js';
     for(const m of list){
       const t=getSafe(getTile,m.x,m.y,T.AIR);
       m.energy=Math.min(capacityForTile(t),per);
-      m.power=Math.max(m.power||0,STORAGE_RATE);
       m.pulse=1;
     }
     return true;
@@ -242,6 +274,22 @@ import { isSunTransparentTile } from './material_physics.js';
     pruneCells(player,getTile);
     const sun=daylight();
     for(const m of [...cells.values()]) updateCell(m,dt,getTile,sun);
+  }
+  function catchUp(dt,player,getTile){
+    if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function') return false;
+    const simDt=Math.max(0,Math.min(CATCHUP_MAX_SECONDS,Number(dt)||0));
+    if(simDt<=0) return false;
+    lastGetTile=getTile;
+    scanAround(player,getTile);
+    pruneCells(player,getTile);
+    const sun=averageDaylight(simDt);
+    let changed=false;
+    for(const m of [...cells.values()]){
+      const before=m ? m.energy : 0;
+      updateCell(m,simDt,getTile,sun);
+      if(!m || !cells.has(key(m.x,m.y)) || Math.abs((m.energy||0)-before)>0.0001) changed=true;
+    }
+    return changed;
   }
   function ensureVisible(sx,sy,viewX,viewY,getTile){
     if(typeof getTile!=='function') return;
@@ -365,7 +413,8 @@ import { isSunTransparentTile } from './material_physics.js';
     restore,
     reset,
     metrics,
-    _debug:{cells,PANEL_CAPACITY,STORAGE_CAPACITY,PANEL_RATE,STORAGE_RATE,CELL_CAP,clusterCells,daylight,ensureVisible,debugChargeAt,debugSetEnergyAt}
+    catchUp,
+    _debug:{cells,PANEL_CAPACITY,STORAGE_CAPACITY,PANEL_RATE,STORAGE_RATE,CELL_CAP,CATCHUP_MAX_SECONDS,clusterCells,daylight,averageDaylight,ensureVisible,debugChargeAt,debugSetEnergyAt}
   };
   MM.solar=api;
 })();

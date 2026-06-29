@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 globalThis.window = globalThis;
 globalThis.MM = {};
 
-const { T, WORLD_H, isSolid } = await import('../src/constants.js');
+const { T, WORLD_H, CHUNK_W, isSolid } = await import('../src/constants.js');
 const { gases } = await import('../src/engine/gases.js');
 const { fog } = await import('../src/engine/fog.js');
 assert.ok(gases, 'gases module exports');
@@ -61,6 +61,24 @@ assert.equal(fog.hasLineOfSight(0,5,3,5,getTile,(t)=>isSolid(t)), false, 'public
   const ctx={fillStyle:'', fillRect(x,y,w,h){ fills.push({style:this.fillStyle,x,y,w,h}); }};
   fog.applyOverlay(ctx,3,5,0,0,1,getTile,T,{showMemory:true});
   assert.equal(fills.some(f=>f.x===3 && f.y===5 && f.w===2 && f.style==='#000'), true, 'never-seen hidden terrain is fully black and batched');
+}
+
+{
+  const farX=-4999999;
+  setTile(farX,5,T.STONE);
+  fog.importSeen([]);
+  fog.setRevealAll(false);
+  fog.revealRect(farX+3,6,farX-3,4,{lineOfSight:false,rememberSeen:true,getTile,blocksSight:(t)=>isSolid(t)});
+  assert.equal(fog.hasSeen(farX,5), true, 'rect reveal handles very large negative world columns');
+  assert.ok(fog.exportSeen().some(row=>row.cx===Math.floor(farX/CHUNK_W)), 'large negative seen chunks export with their real chunk key');
+
+  fog.importSeen([]);
+  fog.revealAround(0,1,0,{lineOfSight:false,rememberSeen:false,getTile,blocksSight:(t)=>isSolid(t)});
+  const localFills=[];
+  const localCtx={fillStyle:'', fillRect(x,y,w,h){ localFills.push({style:this.fillStyle,x,y,w,h}); }};
+  fog.applyOverlay(localCtx,farX,5,0,0,1,getTile,T,{showMemory:true,originX:farX-1,originY:4});
+  assert.equal(localFills.some(f=>f.x===1 && f.y===1 && f.style==='#000'), true, 'fog overlay can draw at camera-local coordinates for huge world columns');
+  setTile(farX,5,T.AIR);
 }
 
 {

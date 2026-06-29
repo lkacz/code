@@ -174,16 +174,31 @@ assert.equal(INFO[T.SOLAR_BATTERY].energyCapacity,120,'storage solar panel adver
   for(let i=0;i<20;i++) solar.update(0.25,{x:71,y:11},getTile);
   const before=solar.metrics().storedEnergy;
   assert.ok(before>1,'sky-exposed storage panel charges from daylight');
+  assert.equal(solar.catchUp(120,{x:71,y:11},getTile),true,'solar catch-up reports stored-energy progress after a long inactive gap');
+  assert.ok(solar.metrics().storedEnergy>before,'solar catch-up accumulates daylight production while offscreen');
   const src=solar.sourceAt(70,10,getTile);
   assert.ok(src && src.kind==='solar','solar cluster exposes a power-source endpoint');
+  const productionBeforeDrain=solar.metrics().currentPower;
   const drained=solar.drainAt(src.x,src.y,1.5,getTile);
   assert.ok(drained && drained.amount>0,'solar energy can be drained by machines');
+  assert.equal(solar.metrics().currentPower,productionBeforeDrain,'machine drain does not inflate active solar production');
   const snap=solar.snapshot();
   solar.reset();
   assert.equal(solar.metrics().cells,0,'solar reset clears cached battery state');
   solar.restore(snap,getTile);
   assert.ok(solar.metrics().storedEnergy>0,'solar restore preserves stored panel energy');
   assertCells(cells,T.SOLAR_BATTERY,'charging does not rewrite panel terrain');
+}
+
+{
+  reset();
+  setTile(0,12,T.STONE);
+  setTile(0,10,T.SOLAR_BATTERY);
+  solar.restore({v:1,list:[{x:0,y:10,energy:20,power:0}]},getTile);
+  assert.equal(solar.metrics().currentPower,0,'restored idle solar battery starts with no active production');
+  const drained=solar.drainAt(0,10,4,getTile);
+  assert.ok(drained && drained.amount>0,'stored solar energy can be drained from an idle battery');
+  assert.equal(solar.metrics().currentPower,0,'draining a solar battery does not masquerade as fresh solar output');
 }
 
 {

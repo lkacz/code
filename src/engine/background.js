@@ -1,5 +1,5 @@
 // Background rendering module: sky gradient, stars, sun/moon, mountains, tint overlay
-// Exposes MM.background.draw(ctx,W,H,playerX,TILE,WORLDGEN) and MM.background.applyTint(ctx,W,H)
+// Exposes MM.background.draw(ctx,W,H,playerX,TILE,WORLDGEN,cameraZoom) and MM.background.applyTint(ctx,W,H)
 (function(){
   window.MM = window.MM || {};
   const background = {};
@@ -10,8 +10,9 @@
   const CYCLE_DURATION=DAY_DURATION+NIGHT_DURATION;
   const DAY_FRAC = DAY_DURATION / CYCLE_DURATION; // 0.5
   const TWILIGHT_BAND = 0.12;
-  const BACKDROP_BLUR_MIN=0.85;
-  const BACKDROP_BLUR_MAX=1.55;
+  const BACKDROP_BLUR_MIN=1.25;
+  const BACKDROP_BLUR_MAX=2.80;
+  const RED_DWARF_PERIOD_CYCLES=4.75;
   let cycleStart=performance.now();
 
   // Palettes keyed by worldgen biome id. The background now follows the actual
@@ -91,6 +92,10 @@
   const biomeBlendCache=new Map();
   const scratchCanvases=new Map();
   const BIOME_BLEND_CACHE_CAP=2048;
+  const BACKDROP_CACHE_FAST_FPS=60;
+  const BACKDROP_CACHE_BALANCED_FPS=30;
+  const BACKDROP_CACHE_SLOW_FPS=15;
+  const backdropCache={w:0,h:0,playerX:0,tile:0,blur:0,lastMs:-1e9,refreshes:0};
   const MOUNTAIN_W=2200, MOUNTAIN_H=380;
   const MOUNTAIN_LAYER=[
     {par:0.070, y:0.315, alpha:0.62, base:188, amp:104, broad:520, mid:210, fine:68, step:18},
@@ -202,7 +207,13 @@
     mountainCache.set(key,c);
     return c;
   }
-  function drawMountainRepeats(ctx,img,scroll,y,alpha,W){
+  function mountainBottomFillStyle(biome,layer,mask){
+    if(mask) return '#000';
+    const pal=SKY_PALETTES[biome]||SKY_PALETTES[0];
+    const col=pal.mount[Math.min(layer,pal.mount.length-1)];
+    return blendColor(col,'#000000',0.34);
+  }
+  function drawMountainRepeats(ctx,img,scroll,y,alpha,W,extendToY,bottomFill){
     if(alpha<=0) return;
     ctx.globalAlpha=alpha;
     let x=scroll%img.width;
@@ -211,6 +222,11 @@
     const dpr=(typeof window!=='undefined' && Number.isFinite(window.devicePixelRatio)) ? Math.max(1,Math.min(3,window.devicePixelRatio||1)) : 1;
     const snap=(v)=>Math.round(v*dpr)/dpr;
     for(; x<W; x+=img.width) ctx.drawImage(img,snap(x),drawY);
+    const bottom=drawY+img.height;
+    if(Number.isFinite(extendToY) && extendToY>bottom && bottomFill){
+      ctx.fillStyle=bottomFill;
+      ctx.fillRect(0,bottom,W,extendToY-bottom);
+    }
   }
   function scratchCanvas(name,W,H){
     if(typeof document==='undefined' || !document.createElement) return null;
@@ -339,7 +355,46 @@
   function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
   function backdropBlurPx(W,H){
     const span=Math.max(1,Math.min(Number(W)||1,Number(H)||1));
-    return clamp(span*0.0024,BACKDROP_BLUR_MIN,BACKDROP_BLUR_MAX);
+    return clamp(span*0.0038,BACKDROP_BLUR_MIN,BACKDROP_BLUR_MAX);
+  }
+  function backdropBlurScale(){
+    const root = (typeof window!=='undefined') ? window : (typeof globalThis!=='undefined' ? globalThis : null);
+    const raw = root ? Number(root.__backdropBlurScale) : 1;
+    return Number.isFinite(raw) ? clamp(raw,0.5,2.2) : 1;
+  }
+  function cameraZoomBlurScale(cameraZoom){
+    const z=Number.isFinite(+cameraZoom) ? clamp(+cameraZoom,0.5,3) : 1;
+    if(z<=1) return lerp(0.5,1,(z-0.5)/0.5);
+    return lerp(1,2,(z-1)/2);
+  }
+  function effectiveBackdropBlurPx(W,H,cameraZoom){
+    return backdropBlurPx(W,H)*backdropBlurScale()*cameraZoomBlurScale(cameraZoom);
+  }
+  function measuredFrameMs(){
+    const root = (typeof window!=='undefined') ? window : (typeof globalThis!=='undefined' ? globalThis : null);
+    const raw = root ? Number(root.__mmFrameMs) : 0;
+    return Number.isFinite(raw) && raw>0 ? raw : 0;
+  }
+  function backdropRefreshIntervalMs(){
+    const frameMs=measuredFrameMs();
+    if(frameMs>10.5) return 1000/BACKDROP_CACHE_SLOW_FPS;
+    if(frameMs>8.8) return 1000/BACKDROP_CACHE_BALANCED_FPS;
+    return 1000/BACKDROP_CACHE_FAST_FPS;
+  }
+  function shouldRefreshBackdropCache(W,H,playerX,TILE,blur,now){
+    if(backdropCache.w!==Math.ceil(W) || backdropCache.h!==Math.ceil(H)) return true;
+    if(Math.abs((backdropCache.blur||0)-blur)>0.035) return true;
+    if(Math.abs((backdropCache.tile||0)-TILE)>0.001) return true;
+    return now-backdropCache.lastMs>=backdropRefreshIntervalMs();
+  }
+  function markBackdropCache(W,H,playerX,TILE,blur,now){
+    backdropCache.w=Math.ceil(W);
+    backdropCache.h=Math.ceil(H);
+    backdropCache.playerX=playerX;
+    backdropCache.tile=TILE;
+    backdropCache.blur=blur;
+    backdropCache.lastMs=now;
+    backdropCache.refreshes++;
   }
   function solidBackdropOpacity(raw,floor=0.92){
     return clamp(floor+(1-floor)*clamp(finite(raw,1),0,1),floor,1);
@@ -360,6 +415,7 @@
   }
   function sunPosition(frac,W,H){ return celestialPosition(frac,W,H,{start:Math.PI*1.05,end:Math.PI*-0.05,xAmp:0.45,yBase:0.82,yAmp:0.65}); }
   function moonPosition(frac,W,H){ return celestialPosition(frac,W,H,{start:Math.PI*1.13,end:Math.PI*-0.13,xAmp:0.50,yBase:0.84,yAmp:0.67}); }
+  function redDwarfPosition(frac,W,H){ return celestialPosition(frac,W,H,{start:Math.PI*1.18,end:Math.PI*-0.18,xAmp:0.58,yBase:0.76,yAmp:0.54}); }
   function moonFracForCycle(cycleT){
     const t=((cycleT%1)+1)%1;
     return (((t-DAY_FRAC)/(1-DAY_FRAC))%1+1)%1;
@@ -633,6 +689,47 @@
     const base=clamp(W*0.050,34,58);
     return clamp(base*finite(state && state.sizeScale,1),28,72);
   }
+  function redDwarfSeedOffset(WORLDGEN){
+    const seed=WORLDGEN && Number.isFinite(+WORLDGEN.worldSeed) ? (+WORLDGEN.worldSeed|0) : 0;
+    return mountainHash(seed,7919)*0.72+0.11;
+  }
+  function redDwarfPhaseFromElapsed(elapsedCycles,WORLDGEN){
+    const cycles=Number.isFinite(+elapsedCycles) ? +elapsedCycles : 0;
+    return (((cycles/RED_DWARF_PERIOD_CYCLES)+redDwarfSeedOffset(WORLDGEN))%1+1)%1;
+  }
+  function redDwarfSkyAlpha(cycleT){
+    const t=((Number.isFinite(+cycleT) ? +cycleT : 0.75)%1+1)%1;
+    const isDay=t<DAY_FRAC;
+    const tDay=isDay ? t/DAY_FRAC : ((t-DAY_FRAC)/(1-DAY_FRAC));
+    const edge=smoothstep(0,TWILIGHT_BAND*1.5,tDay)*smoothstep(0,TWILIGHT_BAND*1.5,1-tDay);
+    return isDay ? lerp(0.38,0.20,edge) : 0.88;
+  }
+  function redDwarfStateForElapsed(elapsedCycles,cycleT,W,H,WORLDGEN,blend){
+    const phase=redDwarfPhaseFromElapsed(elapsedCycles,WORLDGEN);
+    const p=redDwarfPosition(phase,W,H);
+    const volcano=blend && blend.volcano && blend.volcano.amount>0.12;
+    const city=blend && blend.city>0.42;
+    const tint=volcano ? '#ff5f3d' : (city ? '#ff7a63' : '#d64235');
+    const core=volcano ? '#ffd0a1' : '#ffb18b';
+    return {
+      kind:'redDwarf',
+      periodCycles:RED_DWARF_PERIOD_CYCLES,
+      phase:+phase.toFixed(5),
+      x:+p.x.toFixed(3),
+      y:+p.y.toFixed(3),
+      angle:+p.angle.toFixed(6),
+      radius:+clamp(W*0.019,13,25).toFixed(3),
+      alpha:+redDwarfSkyAlpha(cycleT).toFixed(4),
+      core,
+      color:tint,
+      halo:volcano ? '#ff421d' : '#b91f2d',
+      mark:city ? '#6e1d2a' : '#5b1219'
+    };
+  }
+  function redDwarfStateForDraw(cycleT,now,W,H,WORLDGEN,blend){
+    const elapsedCycles=(now-cycleStart)/CYCLE_DURATION;
+    return redDwarfStateForElapsed(elapsedCycles,cycleT,W,H,WORLDGEN,blend);
+  }
   function strokeCircle(ctx,x,y,r,color,alpha,lineWidth){
     ctx.save();
     ctx.globalAlpha*=alpha;
@@ -641,6 +738,72 @@
     ctx.beginPath();
     ctx.arc(x,y,r,0,Math.PI*2);
     ctx.stroke();
+    ctx.restore();
+  }
+  function drawRedDwarfObject(ctx,W,H,state,now){
+    if(!state || state.alpha<=0.01) return;
+    const cx=state.x, cy=state.y, r=state.radius;
+    const horizonFade=clamp((H*1.08-cy)/(H*0.30),0,1);
+    if(horizonFade<=0.01 || cy<-r*5 || cy>H+r*5) return;
+    const pulse=0.5+0.5*Math.sin(now*0.0011+state.phase*Math.PI*2);
+    const drawAlpha=state.alpha*horizonFade;
+    ctx.save();
+    ctx.globalAlpha*=drawAlpha;
+    const haloR=r*(3.05+0.34*pulse);
+    const halo=ctx.createRadialGradient(cx,cy,r*0.18,cx,cy,haloR);
+    halo.addColorStop(0,hexToRgba(state.core,0.42));
+    halo.addColorStop(0.30,hexToRgba(state.color,0.22));
+    halo.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=halo;
+    ctx.beginPath();
+    ctx.arc(cx,cy,haloR,0,Math.PI*2);
+    ctx.fill();
+
+    ctx.strokeStyle=hexToRgba(state.halo,0.20+0.08*pulse);
+    ctx.lineWidth=Math.max(1,r*0.045);
+    ctx.beginPath();
+    ctx.arc(cx,cy,r*(1.52+0.05*pulse),Math.PI*0.08,Math.PI*1.68);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx,cy,r*(1.18+0.04*pulse),Math.PI*1.18,Math.PI*2.42);
+    ctx.stroke();
+
+    const body=ctx.createRadialGradient(cx-r*0.34,cy-r*0.36,r*0.06,cx+r*0.18,cy+r*0.20,r*1.05);
+    body.addColorStop(0,state.core);
+    body.addColorStop(0.44,state.color);
+    body.addColorStop(1,'#5a1018');
+    ctx.fillStyle=body;
+    ctx.beginPath();
+    ctx.arc(cx,cy,r,0,Math.PI*2);
+    ctx.fill();
+    strokeCircle(ctx,cx,cy,r,state.core,0.42,Math.max(1,r*0.035));
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx,cy,r*0.94,0,Math.PI*2);
+    ctx.clip();
+    ctx.strokeStyle=hexToRgba(state.mark,0.26);
+    ctx.lineWidth=Math.max(1,r*0.030);
+    for(let i=0;i<3;i++){
+      const wobble=Math.sin(now*0.0007+i*2.1)*0.035;
+      ctx.beginPath();
+      ctx.moveTo(cx-r*(0.58-0.09*i),cy+r*(-0.32+i*0.25+wobble));
+      ctx.quadraticCurveTo(cx-r*0.10,cy+r*(-0.40+i*0.19-wobble),cx+r*(0.42+0.05*i),cy+r*(-0.25+i*0.23+wobble*0.5));
+      ctx.stroke();
+    }
+    ctx.fillStyle=hexToRgba(state.mark,0.24);
+    const spots=[
+      [-0.36,-0.12,0.090],
+      [0.14,-0.34,0.060],
+      [0.38,0.18,0.075],
+      [-0.08,0.36,0.050]
+    ];
+    for(const s of spots){
+      ctx.beginPath();
+      ctx.arc(cx+s[0]*r,cy+s[1]*r,s[2]*r,0,Math.PI*2);
+      ctx.fill();
+    }
+    ctx.restore();
     ctx.restore();
   }
   function drawSunMotes(ctx,cx,cy,r,state,now){
@@ -1278,10 +1441,12 @@
       const imgA=getMountainLayer(blend.a,layer);
       const scrollA=-((playerX*TILE)*spec.par);
       const alphaBase=solidBackdropOpacity(spec.alpha*layerStrength*cityMountainDamp,0.92);
-      drawMountainRepeats(ctx,imgA,scrollA,y,mask ? 1 : alphaBase,W);
+      const endlessBottom=layer===MOUNTAIN_LAYER.length-1;
+      const extendTo=endlessBottom ? H : null;
+      drawMountainRepeats(ctx,imgA,scrollA,y,mask ? 1 : alphaBase,W,extendTo,endlessBottom ? mountainBottomFillStyle(blend.a,layer,mask) : null);
       if(blend.t>0){
         const imgB=getMountainLayer(blend.b,layer);
-        drawMountainRepeats(ctx,imgB,scrollA,y,mask ? clamp(blend.t+0.55,0,1) : alphaBase*blend.t,W);
+        drawMountainRepeats(ctx,imgB,scrollA,y,mask ? clamp(blend.t+0.55,0,1) : alphaBase*blend.t,W,extendTo,endlessBottom ? mountainBottomFillStyle(blend.b,layer,mask) : null);
       }
     }
     if(mask){
@@ -1341,6 +1506,8 @@
     // Sun/Moon helpers
     const seasonMetrics=currentSeasonMetrics();
     drawCelestialLayer(ctx,W,H,(skyCtx)=>{
+      const redDwarf=redDwarfStateForDraw(cycleT,now,W,H,WORLDGEN,blend);
+      drawRedDwarfObject(skyCtx,W,H,redDwarf,now);
       if(isDay){
         const sun=sunPosition(tDay,W,H);
         const sunState=sunStateForDraw(cycleT,seasonMetrics,blend,WORLDGEN,now,playerX,tDay);
@@ -1362,21 +1529,35 @@
     ctx.restore(); // end background layer
   }
 
-  background.draw = function(ctx,W,H,playerX,TILE,WORLDGEN){
+  background.draw = function(ctx,W,H,playerX,TILE,WORLDGEN,cameraZoom){
+    const scene=scratchCanvas('backgroundSharpScene',W,H);
     const layer=scratchCanvas('backgroundSoftFocus',W,H);
-    if(!layer || !layer.getContext || !ctx || !ctx.drawImage){
+    if(!scene || !scene.getContext || !layer || !layer.getContext || !ctx || !ctx.drawImage){
       drawBackgroundScene(ctx,W,H,playerX,TILE,WORLDGEN);
       return;
     }
-    const bg=layer.getContext('2d');
-    if(!clearScratch(bg,W,H)){
+    const bg=scene.getContext('2d');
+    const soft=layer.getContext('2d');
+    if(!bg || !soft){
       drawBackgroundScene(ctx,W,H,playerX,TILE,WORLDGEN);
       return;
     }
-    drawBackgroundScene(bg,W,H,playerX,TILE,WORLDGEN);
-    const blur=backdropBlurPx(W,H);
+    const blur=effectiveBackdropBlurPx(W,H,cameraZoom);
+    const now=performance.now();
+    if(shouldRefreshBackdropCache(W,H,playerX,TILE,blur,now)){
+      if(!clearScratch(bg,W,H) || !clearScratch(soft,W,H)){
+        drawBackgroundScene(ctx,W,H,playerX,TILE,WORLDGEN);
+        return;
+      }
+      drawBackgroundScene(bg,W,H,playerX,TILE,WORLDGEN);
+      soft.save();
+      if('filter' in soft) soft.filter=`blur(${blur.toFixed(2)}px)`;
+      soft.drawImage(scene,0,0);
+      soft.restore();
+      markBackdropCache(W,H,playerX,TILE,blur,now);
+    }
     ctx.save();
-    if('filter' in ctx) ctx.filter=`blur(${blur.toFixed(2)}px)`;
+    if('filter' in ctx) ctx.filter='none';
     ctx.drawImage(layer,0,0);
     ctx.restore();
   };
@@ -1420,7 +1601,12 @@
   // override because it is captured from the same cycleT used to render the sky.
   background.getCycleInfo = function(){ return lastCycleInfo; };
   background._debugDrawScene = drawBackgroundScene;
-  background._debugBackdropBlurPx = function(W,H){ return +backdropBlurPx(W,H).toFixed(3); };
+  background._debugBackdropBlurPx = function(W,H,cameraZoom){ return +effectiveBackdropBlurPx(W,H,cameraZoom).toFixed(3); };
+  background._debugBaseBackdropBlurPx = function(W,H){ return +backdropBlurPx(W,H).toFixed(3); };
+  background._debugCameraZoomBlurScale = function(cameraZoom){ return +cameraZoomBlurScale(cameraZoom).toFixed(3); };
+  background._debugBackdropCacheState = function(){ return Object.assign({}, backdropCache); };
+  background._debugBackdropRefreshIntervalMs = function(){ return +backdropRefreshIntervalMs().toFixed(3); };
+  background._debugClearBackdropCache = function(){ backdropCache.w=0; backdropCache.h=0; backdropCache.playerX=0; backdropCache.tile=0; backdropCache.blur=0; backdropCache.lastMs=-1e9; backdropCache.refreshes=0; };
   background._debugBiomeBlend = computeBiomeBlend;
   background._debugBiomeBlendCached = cachedBiomeBlend;
   background._debugClearBiomeBlendCache = function(){ biomeBlendCache.clear(); };
@@ -1437,6 +1623,14 @@
     const frac=kind==='moon' ? moonFracForCycle(t) : (t<DAY_FRAC ? t/DAY_FRAC : ((t-DAY_FRAC)/(1-DAY_FRAC)));
     const p=(kind==='moon' ? moonPosition : sunPosition)(frac,W,H);
     return {x:+p.x.toFixed(3), y:+p.y.toFixed(3), frac:+frac.toFixed(6), angle:+p.angle.toFixed(6)};
+  };
+  background._debugRedDwarfState = function(elapsedCycles,W,H,WORLDGEN,cycleT){
+    const cycles=Number.isFinite(+elapsedCycles) ? +elapsedCycles : 0;
+    const ww=Number.isFinite(+W)?+W:900;
+    const hh=Number.isFinite(+H)?+H:500;
+    const t=Number.isFinite(+cycleT) ? +cycleT : 0.75;
+    const blend=computeBiomeBlend(0,WORLDGEN);
+    return redDwarfStateForElapsed(cycles,t,ww,hh,WORLDGEN,blend);
   };
   background._debugMoonState = function(metrics,WORLDGEN,cycleT,W,H,now,playerX){
     const t=Number.isFinite(+cycleT) ? +cycleT : 0.75;
@@ -1496,6 +1690,30 @@
   };
   background.snapshot = background.exportState;
   background.restore = background.importState;
+
+  // Day/night state for HUD readouts. Honors the debug time override so the
+  // displayed clock always matches the sky on screen. The cycle maps to a 24h
+  // clock with dawn at 06:00 (cycleT 0), noon at 12:00 (0.25), dusk at 18:00
+  // (0.5) and midnight at 00:00 (0.75).
+  background.timeInfo = function(){
+    const now=performance.now();
+    const raw=(((now-cycleStart)%CYCLE_DURATION)+CYCLE_DURATION)%CYCLE_DURATION/CYCLE_DURATION;
+    const cycleT = window.__timeOverrideActive===true
+      ? ((((window.__timeOverrideValue||0)%1)+1)%1)
+      : raw;
+    const isDay = cycleT<DAY_FRAC;
+    const tDay = isDay ? (cycleT/DAY_FRAC) : ((cycleT-DAY_FRAC)/(1-DAY_FRAC));
+    const dayMinutes = (((cycleT*24)+6)%24)*60;
+    const hour = Math.floor(dayMinutes/60)%24;
+    const minute = Math.floor(dayMinutes%60);
+    // dawn/day/dusk/night windows for a friendly icon
+    let phase;
+    if(hour>=5 && hour<7) phase='dawn';
+    else if(hour>=7 && hour<17) phase='day';
+    else if(hour>=17 && hour<19) phase='dusk';
+    else phase='night';
+    return { cycleT, isDay, tDay, hour, minute, phase };
+  };
 
   MM.background = background;
 })();

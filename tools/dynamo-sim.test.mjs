@@ -150,6 +150,15 @@ assert.ok(dynamo.metrics().storedEnergy>0.035,'severe ground wind can charge a v
 assert.ok(dynamo.metrics().storedEnergy<0.30,'severe wind turbine output remains nerfed');
 
 resetWorld();
+placeDynamo(0,24,'vertical');
+dynamo.restore({v:1,list:[{x:0,y:24,power:0,energy:20,lastKind:'wind'}]},getTile);
+const beforeDrainEnergy=dynamo.metrics().storedEnergy;
+const drainResult=dynamo.drainAt(0,24,4,getTile);
+assert.ok(drainResult && drainResult.amount>0,'powered devices can drain a stored wind-turbine battery');
+assert.ok(dynamo.metrics().storedEnergy<beforeDrainEnergy,'network drain consumes stored wind-turbine energy');
+assert.equal(dynamo.metrics().currentPower,0,'draining a dynamo battery does not masquerade as fresh turbine output');
+
+resetWorld();
 placeDynamo(0,24,'horizontal');
 wind.setOverride(5.0);
 for(let i=0; i<60*4; i++) dynamo.update(1/60,getTile);
@@ -168,6 +177,14 @@ setTile(-1,24,T.WIRE);
 wind.setOverride(5.0);
 for(let i=0; i<60*4; i++) dynamo.update(1/60,getTile);
 assert.ok(dynamo.metrics().storedEnergy>0.01,'porous utility wires do not block a wind turbine intake');
+
+resetWorld();
+placeDynamo(0,24,'vertical');
+wind.setOverride(5.0);
+assert.equal(dynamo.metrics().storedEnergy,0,'wind catch-up test starts with an empty turbine battery');
+assert.equal(dynamo.catchUp(120,getTile),true,'wind turbine catch-up reports stored-energy progress after a long inactive gap');
+assert.ok(dynamo.metrics().storedEnergy>0.25,'wind turbine catch-up accumulates offscreen energy');
+assert.equal(dynamo._debug.machines.get('0,24').lastKind,'wind','wind catch-up preserves the source kind for UI/debugging');
 
 resetWorld();
 placeDynamo(0,24,'vertical');

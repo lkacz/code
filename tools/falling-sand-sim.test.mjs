@@ -187,6 +187,28 @@ function supportedCantileverCells(t,span=25){
 
 {
   reset();
+  fillFloor(13,-8,8);
+  setTile(2,5,T.BAKED_MEAT);
+  fallingSolids.afterPlacement(2,5);
+  fallingSolids.settleAll();
+  assert.equal(getTile(2,5),T.AIR,'freshly placed baked meat does not remain floating');
+  assert.equal(getTile(2,12),T.BAKED_MEAT,'freshly placed baked meat settles through loose-item falling physics');
+  assertSettledState('placed baked meat loose-item fall');
+}
+
+{
+  reset();
+  fillFloor(13,-8,8);
+  setTile(4,5,T.BAKED_MEAT);
+  fallingSolids.auditChunks([0],{force:true,immediate:true});
+  fallingSolids.settleAll();
+  assert.equal(getTile(4,5),T.AIR,'legacy unsupported baked meat is audited instead of floating forever');
+  assert.equal(getTile(4,12),T.BAKED_MEAT,'legacy unsupported baked meat settles during chunk audit');
+  assertSettledState('audited baked meat loose-item fall');
+}
+
+{
+  reset();
   fillFloor(120,-80,80);
   MM.wind = { speedAt(){ return 5; }, speed(){ return 5; } };
   fallingSolids.restore({
@@ -288,6 +310,50 @@ function supportedCantileverCells(t,span=25){
 {
   reset();
   fillFloor(40,-10,10);
+  setTile(2,20,T.WOOD_DOOR);
+  fallingSolids.afterPlacement(2,20);
+  fallingSolids.settleAll();
+  assert.equal(getTile(2,20),T.AIR,'unsupported player-built door leaves its floating origin cell');
+  assert.equal(getTile(2,39),T.WOOD_DOOR,'unsupported player-built door falls as a physical build material');
+}
+
+{
+  reset();
+  fillFloor(40,-10,10);
+  setTile(3,20,T.WOOD_TRAPDOOR);
+  fallingSolids.afterPlacement(3,20);
+  fallingSolids.settleAll();
+  assert.equal(getTile(3,20),T.AIR,'unsupported player-built trapdoor leaves its floating origin cell');
+  assert.equal(getTile(3,39),T.WOOD_TRAPDOOR,'unsupported player-built trapdoor falls as a physical build material');
+}
+
+{
+  reset();
+  setFlatSurface(60);
+  fillFloor(60,-10,10);
+  placeBuilt(T.WOOD_DOOR,0,59);
+  placeBuilt(T.WOOD,0,58);
+  placeBuilt(T.WOOD,1,58);
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,59),T.WOOD_DOOR,'grounded wood door remains a structural footing');
+  assert.equal(countRegionTile(T.WOOD,0,1,58,58),2,'grounded wood door can carry a short attached wooden structure');
+}
+
+{
+  reset();
+  setFlatSurface(60);
+  fillFloor(60,-10,10);
+  placeBuilt(T.WOOD_TRAPDOOR,0,59);
+  placeBuilt(T.WOOD,0,58);
+  placeBuilt(T.WOOD,1,58);
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,59),T.WOOD_TRAPDOOR,'grounded wood trapdoor remains a structural floor');
+  assert.equal(countRegionTile(T.WOOD,0,1,58,58),2,'grounded wood trapdoor can carry a short attached wooden structure');
+}
+
+{
+  reset();
+  fillFloor(40,-10,10);
   setTile(0,21,T.STONE);
   setTile(0,20,T.TURRET);
   fallingSolids.afterPlacement(0,20);
@@ -298,6 +364,20 @@ function supportedCantileverCells(t,span=25){
   fallingSolids.settleAll();
   assert.equal(getTile(0,20),T.AIR,'solid machine leaves its unsupported original cell');
   assert.equal(getTile(0,39),T.TURRET,'unsupported solid machine falls onto the floor');
+}
+
+{
+  reset();
+  fillFloor(40,-10,10);
+  setTile(0,21,T.STONE);
+  setTile(0,20,T.VENDING_MACHINE);
+  fallingSolids.afterPlacement(0,20);
+  fallingSolids.settleAll();
+  setTile(0,21,T.AIR);
+  fallingSolids.onTileRemoved(0,21);
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,20),T.AIR,'vending machine leaves its unsupported original cell');
+  assert.equal(getTile(0,39),T.VENDING_MACHINE,'unsupported vending machine falls onto the floor');
 }
 
 {
@@ -462,6 +542,12 @@ function supportedCantileverCells(t,span=25){
   const steel=supportedCantileverCells(T.STEEL);
   const meteoric=supportedCantileverCells(T.METEORIC_IRON);
   const iridium=supportedCantileverCells(T.IRIDIUM);
+  const woodDoor=supportedCantileverCells(T.WOOD_DOOR);
+  const stoneDoor=supportedCantileverCells(T.STONE_DOOR);
+  const steelDoor=supportedCantileverCells(T.STEEL_DOOR);
+  const woodTrapdoor=supportedCantileverCells(T.WOOD_TRAPDOOR);
+  const stoneTrapdoor=supportedCantileverCells(T.STONE_TRAPDOOR);
+  const steelTrapdoor=supportedCantileverCells(T.STEEL_TRAPDOOR);
   assert.ok(glass<=2,'player-built glass is brittle and cannot form a long cantilever');
   assert.ok(ice>glass && stone>ice,'stone carries a longer span than fragile glass or ice');
   assert.ok(wood>=stone,'wood flexibility offsets some of its lower strength in simple spans');
@@ -470,6 +556,12 @@ function supportedCantileverCells(t,span=25){
   assert.ok(antimatter>=obsidian,'antimatter crystal is treated as a strong but brittle exotic building material');
   assert.ok(steel>=Math.max(obsidian,antimatter)+5,'steel frame physics carries far longer spans than stone-family or crystal materials');
   assert.ok(meteoric>=steel && iridium>=meteoric,'advanced metals are strongest in the building solver');
+  assert.ok(stoneDoor<stone,'stone doors are structural but weaker than solid stone blocks');
+  assert.ok(woodDoor>stoneDoor,'light wood doors span farther than brittle stone doors because they are lighter and more flexible');
+  assert.ok(steelDoor>woodDoor && steelDoor<steel,'steel doors are strong structural doors without matching solid steel beams');
+  assert.ok(stoneTrapdoor<stoneDoor,'stone trapdoors are structural hatches but weaker than full stone doors');
+  assert.ok(woodTrapdoor>=stoneTrapdoor,'wood trapdoor flexibility offsets some of its lower strength');
+  assert.ok(steelTrapdoor>woodTrapdoor && steelTrapdoor<steel,'steel trapdoors are strong walkable hatches without matching solid steel beams');
 }
 
 {
@@ -580,6 +672,21 @@ function supportedCantileverCells(t,span=25){
   assert.equal(countRegionTile(T.WOOD,0,8,54,54),0,'player-built platform falls when its support column is removed');
   assert.equal(countRegionTile(T.WOOD,-2,10,55,60),9,'unsupported player-built platform lands lower instead of vanishing');
   assert.equal(fallingSolids.metrics().built,0,'fallen player-built platform becomes rubble, not a new floating structure');
+}
+
+{
+  reset();
+  setFlatSurface(60);
+  fillFloor(60,-30,30);
+  placeBuiltRect(T.WOOD,-5,-5,55,59);
+  placeBuiltRect(T.WOOD,5,5,55,59);
+  placeBuiltRect(T.WOOD,-5,5,54,54);
+  fallingSolids.settleAll();
+  const stress=fallingSolids._debug().stress;
+  const byX=new Map(stress.filter(c=>c.y===54).map(c=>[c.x,c]));
+  assert.ok(byX.has(-1) && byX.has(0) && byX.has(1),'symmetric two-pier span exposes center stress samples');
+  assert.ok(Math.abs(byX.get(-1).ratio-byX.get(1).ratio)<0.001,'symmetric span has mirrored stress intensity');
+  assert.ok(!Number.isFinite(byX.get(0).dx) || Math.abs(byX.get(0).dx)<0.05,'center stress flow does not pick an arbitrary left/right side');
 }
 
 {
@@ -853,6 +960,6 @@ fallingSolids.reset();
 const mainSource=readFileSync(new URL('../src/main.js', import.meta.url),'utf8');
 assert.match(mainSource,/FALLING && FALLING\.canSupportPlacement/,'main placement preview/rejection uses the structural support solver');
 assert.match(mainSource,/checkedStructural/,'main falls back to contact support only for non-structural placements');
-assert.match(mainSource,/if\(v\.chest\)\{ setTile\(tx,ty,id\); if\(FALLING && FALLING\.afterPlacement\) FALLING\.afterPlacement\(tx,ty\); return; \}/,'main wakes falling physics after chest placement');
+assert.match(mainSource,/if\(v\.chest\)\{ setTile\(tx,ty,id\); if\(FALLING && FALLING\.afterPlacement\) FALLING\.afterPlacement\(tx,ty\); return true; \}/,'main wakes falling physics after chest placement');
 
 console.log('falling sand simulation tests passed');

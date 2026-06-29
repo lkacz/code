@@ -1,5 +1,6 @@
 import { CHUNK_W, T, WORLD_H, isAutumnLeaf } from '../constants.js';
 import { isSkyOpenTile } from './material_physics.js';
+import { worldHostility as HOSTILITY } from './world_hostility.js';
 
 const root = typeof window !== 'undefined' ? window : globalThis;
 root.MM = root.MM || {};
@@ -216,6 +217,10 @@ function cleanProfileNumber(key, value, fallback){
   const range = PROFILE_RANGES[key] || [-Infinity, Infinity];
   return clamp(finiteNumber(value, fallback), range[0], range[1]);
 }
+function activeWorldX(fallback){
+  const p = root && root.player;
+  return p && Number.isFinite(p.x) ? p.x : fallback;
+}
 function safeInt(v, fallback, min, max){
   const n = Math.floor(finiteNumber(v, fallback));
   return clamp(n, min, max);
@@ -367,7 +372,77 @@ function currentState(){
   return cachedState;
 }
 
-function profile(){ return enabled ? currentState().profile : DISABLED_PROFILE; }
+function hostilityAdjustedProfile(base, x){
+  if(!base || base.id === 'off') return base || DISABLED_PROFILE;
+  const h = HOSTILITY.at(activeWorldX(finiteNumber(x, 0)));
+  if(h.hostility <= 0.001) return base;
+  const out = Object.assign({}, base);
+  const extreme = h.seasonExtremeMult || 1;
+  out.temperatureDelta = cleanProfileNumber(
+    'temperatureDelta',
+    finiteNumber(base.temperatureDelta, 0) * extreme + h.temperatureBias * 0.45,
+    finiteNumber(base.temperatureDelta, 0)
+  );
+  // animalSpawnMult stays purely seasonal here: regional spawn pressure is owned
+  // by HOSTILITY.mobSpawnMult in mobs.js. Re-applying hostility here too would
+  // double-count it against mob spawn rate (and muddy the player-facing readout).
+  out.animalSpawnMult = finiteNumber(base.animalSpawnMult, 1);
+  out.windMult = cleanProfileNumber(
+    'windMult',
+    finiteNumber(base.windMult, 1) * (h.windExtremeMult || 1),
+    finiteNumber(base.windMult, 1)
+  );
+  out.squallChanceMult = cleanProfileNumber(
+    'squallChanceMult',
+    finiteNumber(base.squallChanceMult, 1) * (1 + h.hostility * 0.45 + h.cold * 0.65),
+    finiteNumber(base.squallChanceMult, 1)
+  );
+  out.stormChanceMult = cleanProfileNumber(
+    'stormChanceMult',
+    finiteNumber(base.stormChanceMult, 1) * (1 + h.hot * 0.45 + h.cold * 0.25),
+    finiteNumber(base.stormChanceMult, 1)
+  );
+  out.stormFeedMult = cleanProfileNumber(
+    'stormFeedMult',
+    finiteNumber(base.stormFeedMult, 1) * (1 + h.hot * 0.35 + h.cold * 0.20),
+    finiteNumber(base.stormFeedMult, 1)
+  );
+  out.rainRateMult = cleanProfileNumber(
+    'rainRateMult',
+    finiteNumber(base.rainRateMult, 1) * (1 + h.hot * 0.18 + h.cold * 0.10),
+    finiteNumber(base.rainRateMult, 1)
+  );
+  out.borderMoistureMult = cleanProfileNumber(
+    'borderMoistureMult',
+    finiteNumber(base.borderMoistureMult, 1) * (1 + h.cold * 0.20 - h.hot * 0.10),
+    finiteNumber(base.borderMoistureMult, 1)
+  );
+  out.freezeStrength = cleanProfileNumber(
+    'freezeStrength',
+    finiteNumber(base.freezeStrength, 0) + h.cold * 0.38 - h.hot * 0.16,
+    finiteNumber(base.freezeStrength, 0)
+  );
+  out.thawStrength = cleanProfileNumber(
+    'thawStrength',
+    finiteNumber(base.thawStrength, 0) + h.hot * 0.30 - h.cold * 0.16,
+    finiteNumber(base.thawStrength, 0)
+  );
+  out.snowStrength = cleanProfileNumber(
+    'snowStrength',
+    finiteNumber(base.snowStrength, 0) + h.cold * 0.45 - h.hot * 0.18,
+    finiteNumber(base.snowStrength, 0)
+  );
+  out.snowMeltStrength = cleanProfileNumber(
+    'snowMeltStrength',
+    finiteNumber(base.snowMeltStrength, 0) + h.hot * 0.28 - h.cold * 0.14,
+    finiteNumber(base.snowMeltStrength, 0)
+  );
+  out.hostility = +h.hostility.toFixed(3);
+  out.hostilitySide = h.side;
+  return Object.freeze(out);
+}
+
+function profile(){ return enabled ? hostilityAdjustedProfile(currentState().profile) : DISABLED_PROFILE; }
 
 function emit(type, payload){
   const ev = Object.freeze(Object.assign({
@@ -1288,7 +1363,8 @@ function terrainMetricsSnapshot(){
 
 function metrics(){
   const s = currentState();
-  const p = s.profile;
+  const p = profile();
+  const h = HOSTILITY.at(activeWorldX(0));
   if(!enabled){
     return {
       day: s.day,
@@ -1350,6 +1426,8 @@ function metrics(){
     events: recentEvents.slice(-6),
     forced: !!s.forced,
     enabled: true,
+    hostility: +h.hostility.toFixed(3),
+    hostilitySide: h.side,
   };
 }
 

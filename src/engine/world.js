@@ -18,7 +18,7 @@ window.MM = window.MM || {};
   const world = new Map();
   const versions = new Map(); // chunk key -> version number for render cache invalidation
   const modifiedChunks = new Set();
-  const infrastructure = new Map(); // "x,y" -> overlay tile (wire / copper cable / water pipe)
+  const infrastructure = new Map(); // "x,y" -> overlay tile stack (wire / copper cable / water pipe)
   // Cache of surface heights per world column to avoid recomputing noise repeatedly
   const heightCache = new Map();
   // Cache of perched-lake water rows, computed per contiguous lake segment
@@ -365,6 +365,19 @@ window.MM = window.MM || {};
         const chestY=ground-2-Math.floor(WG.randSeed(anchor*2.71+cell)*Math.min(5,Math.max(1,h-2)));
         put(chestX,chestY,WG.randSeed(anchor*3.33+cell)>0.83?T.CHEST_EPIC:T.CHEST_RARE,true);
       }
+      const vendingChance=style==='factory'?0.34:(style==='tower'?0.16:0.23);
+      if(w>=7 && h>=6 && WG.randSeed(anchor*1.37+cell*0.61)<vendingChance){
+        const vx=anchor+2+Math.floor(WG.randSeed(anchor*2.91+cell)*Math.max(1,w-4));
+        const floors=Math.max(1,Math.floor((h-2)/floorGap));
+        const rel=1+floorGap*Math.floor(WG.randSeed(anchor*3.07+cell)*floors);
+        const vy=Math.max(2,ground-rel-1);
+        if(cityCol(vx) && cityCol(vx-1) && cityCol(vx+1)){
+          put(vx,vy+1,cityTile(vx,vy+1,cell,true),true);
+          carve(vx,vy-1);
+          put(vx,vy,T.VENDING_MACHINE,true);
+          maybeWire(vx-1,vy,anchor*0.41+cell,0.38,true);
+        }
+      }
     };
     const buildMonument=(anchor,cell)=>{
       const col=cityCol(anchor); if(!col) return;
@@ -480,6 +493,11 @@ window.MM = window.MM || {};
         put(cx0-2,turbineY,T.STEEL,true);
         put(cx0+2,turbineY,T.STEEL,true);
         put(cx0,turbineY+1,T.STEEL,true);
+      }
+      const vendNear=dynCenters[0]+2;
+      if(cityCol(vendNear)){
+        put(vendNear,turbineY,T.VENDING_MACHINE,true);
+        put(vendNear,turbineY+1,T.STEEL,true);
       }
       const cableY=Math.max(roofY+3,turbineY-3);
       for(let dx=4; dx<w-4; dx+=3){
@@ -756,9 +774,26 @@ window.MM = window.MM || {};
   // NaN/Infinity coordinates slip past `y<0||y>=WORLD_H` (NaN compares false) and
   // runaway x used to mint chunks without bound — both are treated as void here.
   function getTile(x,y){ if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return T.AIR; const cx=Math.floor(x/CHUNK_W); const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W; const arr=ensureChunk(cx); return getTileRaw(arr,lx,y); }
+  function normalizeInfrastructureStack(v){
+    const out=[];
+    const arr=Array.isArray(v) ? v : [v];
+    for(const t of arr){
+      if(!isInfrastructureTile(t) || out.includes(t)) continue;
+      out.push(t);
+    }
+    return out;
+  }
+  function getInfrastructureStack(x,y){
+    if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return [];
+    return normalizeInfrastructureStack(infrastructure.get(key(x,y)));
+  }
   function getInfrastructure(x,y){
-    if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return T.AIR;
-    return infrastructure.get(key(x,y)) || T.AIR;
+    const stack=getInfrastructureStack(x,y);
+    return stack.length ? stack[stack.length-1] : T.AIR;
+  }
+  function hasInfrastructure(x,y,t){
+    if(!isInfrastructureTile(t)) return false;
+    return getInfrastructureStack(x,y).includes(t);
   }
   function getNetworkTile(x,y){
     const over=getInfrastructure(x,y);
@@ -789,24 +824,40 @@ window.MM = window.MM || {};
     try{ if(MM.meteorites && MM.meteorites.onTileChanged) MM.meteorites.onTileChanged(x,y,old,v); }catch(e){}
   }
   function notifyInfrastructureChanged(x,y,old,v){
-    try{ if(MM.teleporters && MM.teleporters.onTileChanged) MM.teleporters.onTileChanged(x,y,old,v); }catch(e){}
-    try{ if(MM.pumps && MM.pumps.onTileChanged) MM.pumps.onTileChanged(x,y,old,v); }catch(e){}
+    const oldStack=normalizeInfrastructureStack(old);
+    const nextStack=normalizeInfrastructureStack(v);
+    const changed=new Set([...oldStack,...nextStack]);
+    for(const t of changed){
+      const had=oldStack.includes(t), has=nextStack.includes(t);
+      if(had===has) continue;
+      const from=had ? t : T.AIR;
+      const to=has ? t : T.AIR;
+      try{ if(MM.teleporters && MM.teleporters.onTileChanged) MM.teleporters.onTileChanged(x,y,from,to); }catch(e){}
+      try{ if(MM.pumps && MM.pumps.onTileChanged) MM.pumps.onTileChanged(x,y,from,to); }catch(e){}
+    }
   }
-  function setInfrastructureInternal(x,y,v,transient){
+  function setInfrastructureInternal(x,y,v,transient,removeOnly){
     if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return false;
     x=Math.floor(x); y=Math.floor(y);
-    const next=isInfrastructureTile(v) ? v : T.AIR;
+    const item=isInfrastructureTile(v) ? v : T.AIR;
     const k=key(x,y);
-    const old=infrastructure.get(k) || T.AIR;
-    if(old===next) return false;
-    if(next===T.AIR) infrastructure.delete(k);
+    const old=normalizeInfrastructureStack(infrastructure.get(k));
+    let next;
+    if(item===T.AIR) next=[];
+    else if(removeOnly) next=old.filter(t=>t!==item);
+    else next=old.includes(item) ? old.slice() : old.concat(item);
+    if(old.length===next.length && old.every((t,i)=>t===next[i])) return false;
+    if(!next.length) infrastructure.delete(k);
     else infrastructure.set(k,next);
     notifyInfrastructureChanged(x,y,old,next);
     if(!transient) markModifiedChunk(Math.floor(x/CHUNK_W));
     return true;
   }
   function setInfrastructure(x,y,v){ return setInfrastructureInternal(x,y,v,false); }
-  function clearInfrastructure(x,y){ return setInfrastructureInternal(x,y,T.AIR,false); }
+  function clearInfrastructure(x,y,v){
+    if(isInfrastructureTile(v)) return setInfrastructureInternal(x,y,v,false,true);
+    return setInfrastructureInternal(x,y,T.AIR,false);
+  }
   function setTileInternal(x,y,v,transient){
     if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return;
     if(isInfrastructureTile(v)){ setInfrastructureInternal(x,y,v,transient); return; }
@@ -825,15 +876,19 @@ window.MM = window.MM || {};
   // without turning every drift step into terrain-save churn or chunk-cache invalidation.
   function setTransientTile(x,y,v){ setTileInternal(x,y,v,true); }
   function snapshotInfrastructure(){
-    const list=[...infrastructure.entries()]
-      .map(([k,t])=>{
+    const list=[];
+    for(const [k,raw] of infrastructure.entries()){
+      const stack=normalizeInfrastructureStack(raw);
+      if(!stack.length) continue;
         const comma=k.indexOf(',');
-        return {x:+k.slice(0,comma),y:+k.slice(comma+1),t};
-      })
+      const x=+k.slice(0,comma), y=+k.slice(comma+1);
+      for(const t of stack) list.push({x,y,t});
+    }
+    const clean=list
       .filter(o=>isInfrastructureTile(o.t) && isFinite(o.x) && isFinite(o.y) && o.y>=0 && o.y<WORLD_H)
-      .sort((a,b)=>(a.x-b.x)||(a.y-b.y))
+      .sort((a,b)=>(a.x-b.x)||(a.y-b.y)||(a.t-b.t))
       .slice(0,20000);
-    return {v:1,list};
+    return {v:2,list:clean};
   }
   function restoreInfrastructure(data){
     infrastructure.clear();
@@ -843,7 +898,9 @@ window.MM = window.MM || {};
       if(!isFinite(raw.x) || !isFinite(raw.y)) continue;
       const x=Math.floor(raw.x), y=Math.floor(raw.y);
       if(!(y>=0) || y>=WORLD_H || Math.abs(x)>MAX_COORD) continue;
-      infrastructure.set(key(x,y),raw.t);
+      const k=key(x,y);
+      const stack=normalizeInfrastructureStack(infrastructure.get(k));
+      if(!stack.includes(raw.t)) infrastructure.set(k,stack.concat(raw.t));
       markModifiedChunk(Math.floor(x/CHUNK_W));
     }
     try{ if(MM.teleporters && MM.teleporters.onTileChanged) MM.teleporters.onTileChanged(0,0,T.AIR,T.COPPER_WIRE); }catch(e){}
@@ -854,6 +911,8 @@ window.MM = window.MM || {};
   worldAPI.ensureChunk = ensureChunk;
   worldAPI.getTile = getTile;
   worldAPI.getInfrastructure = getInfrastructure;
+  worldAPI.getInfrastructureStack = getInfrastructureStack;
+  worldAPI.hasInfrastructure = hasInfrastructure;
   worldAPI.getOverlay = getInfrastructure;
   worldAPI.getNetworkTile = getNetworkTile;
   worldAPI.peekTile = peekTile;

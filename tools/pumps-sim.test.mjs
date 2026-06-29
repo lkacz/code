@@ -1,6 +1,7 @@
-// Regression tests for the water pump and pipe network.
+// Regression tests for the fluid pump and pipe network.
 // Verifies resource/tile registration, directional input/output, power use,
-// branched pipe traversal, water-turret tanks, save/restore and main/UI hooks.
+// passive water/gas flow, branched pipe traversal, water-turret tanks,
+// save/restore and main/UI hooks.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
@@ -9,6 +10,7 @@ globalThis.MM = {};
 const { T, INFO, WORLD_H } = await import('../src/constants.js');
 const { dynamo } = await import('../src/engine/dynamo.js');
 const { teleporters } = await import('../src/engine/teleporters.js');
+const { gases } = await import('../src/engine/gases.js');
 const { pumps } = await import('../src/engine/pumps.js');
 const { turrets } = await import('../src/engine/turrets.js');
 
@@ -27,6 +29,7 @@ function setTile(x,y,v){
   else tiles.set(id,v);
   if(dynamo && dynamo.onTileChanged) dynamo.onTileChanged(x,y,old,v);
   if(teleporters && teleporters.onTileChanged) teleporters.onTileChanged(x,y,old,v);
+  if(gases && gases.onTileChanged) gases.onTileChanged(x,y,old,v);
   if(pumps && pumps.onTileChanged) pumps.onTileChanged(x,y,old,v);
   if(turrets && turrets.onTileChanged) turrets.onTileChanged(x,y,old,v);
 }
@@ -34,6 +37,7 @@ function reset(){
   tiles.clear();
   dynamo.reset();
   teleporters.reset();
+  gases.reset();
   pumps.reset();
   turrets.reset();
   globalThis.MM.world={getTile,setTile};
@@ -116,6 +120,19 @@ assert.equal(INFO[T.WATER_TURRET].waterDevice,true,'water turret is a hydraulic 
   for(let i=0;i<90;i++) tick(1/30);
   assert.equal(turrets.metrics().storedWater,0,'unpowered pump does not fill a connected water turret');
   assert.equal(pumps.metrics().moved,0,'unpowered pump moves no water');
+}
+
+{
+  reset();
+  setTile(0,10,T.WATER_PUMP);
+  placeDynamo(-4,10);
+  setTile(-2,10,T.COPPER_WIRE);
+  setTile(-1,10,T.COPPER_WIRE);
+  chargeDynamo(-4,10);
+  const beforeDynamo=dynamo.metrics().storedEnergy;
+  assert.equal(pumps.catchUp(30,null,getTile,setTile,{dynamo,teleporters}),true,'pump catch-up charges its battery through copper wires');
+  assert.ok(pumps.metrics().storedEnergy>0,'pump catch-up stores offscreen network energy');
+  assert.ok(dynamo.metrics().storedEnergy<beforeDynamo,'pump catch-up drains the connected power source');
 }
 
 {
@@ -209,6 +226,45 @@ assert.equal(INFO[T.WATER_TURRET].waterDevice,true,'water turret is a hydraulic 
 
 {
   reset();
+  setTile(0,20,T.STEAM);
+  for(let y=16; y<=19; y++) setTile(0,y,T.WATER_PIPE);
+  for(let i=0;i<90;i++) tick(1/30);
+  assert.equal(getTile(0,20),T.AIR,'passive pipe chimney consumes gas from the lower intake');
+  assert.equal(getTile(0,15),T.STEAM,'passive pipe chimney releases gas at the higher outlet');
+  assert.ok(pumps.metrics().passiveGasMoved>0,'passive gas transfers are reported separately from water transfers');
+  assert.equal(gases.metrics().steam,1,'transferred steam remains in the active gas registry');
+}
+
+{
+  reset();
+  setTile(0,15,T.POISON_GAS);
+  for(let y=16; y<=19; y++) setTile(0,y,T.WATER_PIPE);
+  for(let i=0;i<120;i++) tick(1/30);
+  assert.equal(getTile(0,15),T.POISON_GAS,'passive gas pipes do not move gas downward against buoyancy');
+  assert.equal(getTile(0,20),T.AIR,'lower outlet stays empty without pump pressure');
+  assert.equal(pumps.metrics().passiveGasMoved,0,'downward passive gas transfer is rejected');
+}
+
+{
+  reset();
+  setTile(-3,8,T.POISON_GAS);
+  setTile(-2,8,T.WATER_PIPE);
+  setTile(-1,8,T.WATER_PIPE);
+  setTile(0,8,T.WATER_PUMP);
+  pumps.setOrientationAt(0,8,'east',getTile);
+  setTile(1,8,T.WATER_PIPE);
+  setTile(1,9,T.WATER_PIPE);
+  setTile(1,10,T.WATER_PIPE);
+  pumps._debug.debugSetEnergyAt(0,8,pumps._debug.PUMP_CAPACITY,getTile);
+  for(let i=0;i<120;i++) tick(1/30);
+  assert.equal(getTile(-3,8),T.AIR,'powered pump consumes gas from its directional input network');
+  assert.equal(getTile(1,11),T.POISON_GAS,'powered pump can force gas to a lower outlet regardless of buoyancy');
+  assert.ok(pumps.metrics().gasMoved>0,'powered gas pump transfers are reported');
+  assert.ok(pumps.metrics().storedEnergy<pumps._debug.PUMP_CAPACITY,'pumping gas consumes pump battery energy');
+}
+
+{
+  reset();
   setTile(0,10,T.WATER_PUMP);
   setTile(-1,10,T.COPPER_WIRE);
   placeDynamo(-3,10);
@@ -253,8 +309,8 @@ const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8
 assert.match(mainSrc, /import \{ pumps as PUMPS \}/, 'main imports the pump engine');
 assert.match(mainSrc, /pumps:\s*timedSavePart\('pumps',[^\n]*PUMPS && PUMPS\.snapshot/, 'main saves pump machine state');
 assert.match(mainSrc, /PUMPS\.restore\(data\.pumps,getTile\)/, 'main restores pump machine state');
-assert.match(mainSrc, /PUMPS\.update\(dt, player, getNetworkTile, setTile, \{dynamo:DYNAMO, teleporters:TELEPORTERS\}\)/, 'main updates pumps before turrets with overlay-aware pipe networks');
-assert.match(mainSrc, /PUMPS\.draw\(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getNetworkTile\)/, 'main draws pump overlays and pipe flow FX through infrastructure overlays');
+assert.match(mainSrc, /PUMPS\.update\(dt, player, getFluidNetworkTile, setTile, \{dynamo:DYNAMO, teleporters:TELEPORTERS\}\)/, 'main updates pumps before turrets with overlay-aware pipe networks');
+assert.match(mainSrc, /PUMPS\.draw\(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getFluidNetworkTile\)/, 'main draws pump overlays and pipe flow FX through infrastructure overlays');
 assert.match(mainSrc, /id:'water_pipe'/, 'crafting exposes water pipes');
 assert.match(mainSrc, /id:'water_pump'/, 'crafting exposes water pumps');
 assert.match(mainSrc, /function placeDebugPumpRig\(\)/, 'main exposes a complete pump debug rig');

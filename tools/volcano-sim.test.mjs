@@ -40,6 +40,10 @@ const v = col.volcano;
 assert.ok(v && v.radius>=18 && v.height>=24, 'volcano metadata is substantial');
 assert.equal(WG.biomeType(center), 7, 'volcano becomes mountain biome');
 assert.equal(WG.volcanoAt(center).center, center, 'volcanoAt reports materialized volcanoes');
+for(let x=center-v.radius; x<=center+v.radius; x++){
+  const vc = WG.column(x).volcano;
+  assert.ok(vc && vc.center===center, 'every column inside the volcano radius shares the same volcano footprint at x='+x);
+}
 assert.equal(WG.nearestVolcano(center-v.radius-80, 1).center, center, 'nearestVolcano finds the next volcano to the right');
 assert.equal(WG.nearestVolcano(center+v.radius+80, -1).center, center, 'nearestVolcano finds the previous volcano to the left');
 const afterCurrent = WG.nearestVolcano(center+v.radius+2, 1);

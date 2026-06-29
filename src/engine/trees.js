@@ -135,7 +135,7 @@ window.MM = window.MM || {};
 
   function treeSpacingFor(variant){
     if(variant==='megaOak') return 5;
-    if(variant==='mangrove') return 3;
+    if(variant==='mangrove') return 1;
     if(variant==='palm') return 3;
     return 3;
   }
@@ -198,13 +198,14 @@ window.MM = window.MM || {};
       const trunkH=3+Math.floor(randSeed(wx+73)*3);
       for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,T.WOOD); }
       put(lx-1,s-1,T.WOOD); put(lx+1,s-1,T.WOOD);
-      if(randSeed(wx+75)>0.45) put(lx-2,s-1,T.WOOD);
-      if(randSeed(wx+76)>0.45) put(lx+2,s-1,T.WOOD);
+      put(lx-2,s-1,T.WOOD); put(lx+2,s-1,T.WOOD);
+      if(randSeed(wx+75)>0.38) put(lx-3,s-1,T.WOOD);
+      if(randSeed(wx+76)>0.38) put(lx+3,s-1,T.WOOD);
       const top=s-1-trunkH;
-      for(let dy=-2; dy<=2; dy++){
-        for(let dx=-3; dx<=3; dx++){
-          const dist=Math.abs(dx)*0.74+Math.abs(dy);
-          if(dist<=2.55+(randSeed(wx+dx*23+dy*29)-0.45)) put(lx+dx,top+dy,T.LEAF);
+      for(let dy=-3; dy<=2; dy++){
+        for(let dx=-4; dx<=4; dx++){
+          const dist=Math.abs(dx)*0.68+Math.abs(dy)*0.88;
+          if(dist<=3.05+(randSeed(wx+dx*23+dy*29)-0.42)) put(lx+dx,top+dy,T.LEAF);
         }
       }
     } else if(variant==='palm'){
@@ -1064,9 +1065,9 @@ window.MM = window.MM || {};
       let chance = 0.08;
       if(island) chance=0.16; // palms cluster on the islet
       else if(biome===0) chance=0.18; // forest, with patch mask below
-      else if(biome===1) chance=0.07; // plains
+      else if(biome===1) chance=0.025; // plains: occasional shade trees, never forest-density canopy
       else if(biome===2) chance=0.05; // snow
-      else if(biome===4) chance=0.12; // swamp: sparse mangrove pockets on mud banks
+      else if(biome===4) chance=0.34; // swamp: visible mangrove pockets on mud banks
       else if(biome===7) chance= (s<MM.SNOW_LINE?0.04:0.015); // fewer at high elevation
       // Cluster patches in forests: use a low-frequency patch mask to boost chance locally
       if(biome===0){

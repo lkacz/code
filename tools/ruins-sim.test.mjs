@@ -76,6 +76,7 @@ assert.ok(cityTop - megaSurf >= 25 || cityTop >= 96, 'the city lies DEEP ('+(cit
 assert.ok(mega.maxX - mega.minX >= 44, 'a vast cavern ('+(mega.maxX-mega.minX)+' wide)');
 assert.ok(mega.ops.filter(o=>o.t===T.CHEST_EPIC).length >= 2, 'the ziggurat hides multiple epic chests');
 assert.ok(mega.ops.filter(o=>o.t===T.TORCH).length >= 8, 'the city is torch-lit for the reveal');
+assert.ok(mega.ops.filter(o=>o.t===T.STONE_DOOR).length >= 2, 'the city tower entrances use structural stone doors');
 assert.ok(mega.ops.some(o=>o.t===T.LAVA), 'a lava moat glows in the dark');
 assert.ok(mega.ops.filter(o=>o.t===T.DIAMOND).length >= 4, 'crystal garden + studded vault sparkle');
 assert.ok(mega.ops.some(o=>o.f===0 && o.t===T.OBSIDIAN && o.y < WG.surfaceHeight(o.x)), 'an obsidian monolith marks it on the surface');

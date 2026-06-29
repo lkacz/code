@@ -71,11 +71,36 @@ window.MM = window.MM || {};
   const buildBearingLoads = new WeakMap(); // supported-built Map -> external footing load map
   const buildFlowDirections = new WeakMap(); // supported-built Map -> cell force-flow directions
   const settledRubble = new Set(); // structural debris that already fell and should not become a new building frame
+  // Protected structures (e.g. procedurally placed NPC houses) are exempt from every
+  // collapse pathway here — they neither get claimed as player builds, audited, nor
+  // toppled, and they never queue for sand/glass/pillar processing. The player can
+  // still mine them: onTileRemoved frees the slot, so damage is permanent and other
+  // systems (NPC house integrity) react to it, but nothing collapses on its own.
+  const protectedBuilds = new Set(); // 'x,y' cells owned by a managed structure
+  const PROTECTED_SAVE_CAP = 40000;
   // Tile accessors supplied by main.js; update() refreshes them so event-driven
   // helpers (onTileRemoved etc.) always see the live world.
   let getTile = null, setTile = null;
   function init(gt, st){ getTile = gt; setTile = st; }
   const key = (x,y)=>x+','+y;
+  function isProtectedBuild(x,y){ return protectedBuilds.has(key(x,y)); }
+  function protectBuild(x,y){
+    if(!Number.isFinite(x) || !Number.isFinite(y)) return;
+    if(protectedBuilds.size>PROTECTED_SAVE_CAP) return;
+    const k=key(Math.floor(x),Math.floor(y));
+    protectedBuilds.add(k);
+    // A protected tile is, by definition, stable: drop any pending churn for it.
+    unstable.delete(k);
+    playerBuilt.delete(k);
+    manualCityBuilt.delete(k);
+  }
+  function unprotectBuild(x,y){ protectedBuilds.delete(key(Math.floor(x),Math.floor(y))); }
+  function protectStructure(cells){
+    if(!Array.isArray(cells)) return 0;
+    let n=0;
+    for(const c of cells){ if(c && Number.isFinite(c.x) && Number.isFinite(c.y)){ protectBuild(c.x,c.y); n++; } }
+    return n;
+  }
   function supportSignature(x,y){
     if(!getTile) return '';
     return getTile(x,y)+'/'+getTile(x,y+1)+'/'+getTile(x-1,y)+'/'+getTile(x+1,y)+'/'+getTile(x,y-1);
@@ -165,6 +190,7 @@ window.MM = window.MM || {};
     return false;
   }
   function claimLegacyPlayerBuild(x,y,t){
+    if(isProtectedBuild(x,y)) return false;
     if(isTrackedPlayerBuild(x,y)) return true;
     if(isSettledRubble(x,y)) return false;
     if(!getTile || !legacyBuildMaterial(t) || !isPlayerBuiltMaterial(t)) return false;
@@ -799,6 +825,7 @@ window.MM = window.MM || {};
 
   function checkCell(x,y,processed){
     const ck=key(x,y);
+    if(protectedBuilds.has(ck)){ markQuiet(x,y); return; }
     const trackedBuild=isTrackedPlayerBuild(x,y);
     if(quietStable.has(ck)){
       const sig=supportSignature(x,y);
@@ -905,6 +932,7 @@ window.MM = window.MM || {};
     return false;
   }
   function auditCell(x,y){
+    if(isProtectedBuild(x,y)) return;
     const t=getTile(x,y);
     if(!shouldAuditTile(x,y,t)) return;
     if(isTrackedPlayerBuild(x,y)){
@@ -1142,25 +1170,43 @@ window.MM = window.MM || {};
     if(!(m>0)) return null;
     return {dx:+(dx/m).toFixed(3),dy:+(dy/m).toFixed(3)};
   }
+  function averageFlowVector(vectors){
+    let dx=0, dy=0, n=0;
+    for(const v of vectors){
+      if(!v || !Number.isFinite(v.dx) || !Number.isFinite(v.dy)) continue;
+      dx+=v.dx;
+      dy+=v.dy;
+      n++;
+    }
+    if(!n) return null;
+    return normalizedFlowVector(dx/n,dy/n);
+  }
   function buildFlowDirectionFor(c,k,cost,componentKeys,supportContacts){
     const contacts=supportContacts.get(k) || [];
-    let contact=null;
+    let bestMult=0;
     for(const s of contacts){
-      if(!contact || (s.mult || 0)>(contact.mult || 0)) contact=s;
+      bestMult=Math.max(bestMult,s.mult || 0);
     }
-    if(contact) return normalizedFlowVector(contact.x-c.x, contact.y-c.y);
+    if(bestMult>0){
+      const tied=contacts.filter(s=>Math.abs((s.mult || 0)-bestMult)<0.0001).map(s=>normalizedFlowVector(s.x-c.x, s.y-c.y));
+      return averageFlowVector(tied);
+    }
     const curCost=cost.get(k);
     if(!Number.isFinite(curCost)) return null;
-    let best=null, bestCost=curCost;
+    let bestCost=curCost;
+    const best=[];
     for(const n of [[c.x+1,c.y],[c.x-1,c.y],[c.x,c.y+1],[c.x,c.y-1]]){
       const nk=key(n[0],n[1]);
       if(!componentKeys.has(nk)) continue;
       const nCost=cost.get(nk);
-      if(!Number.isFinite(nCost) || nCost>=bestCost-0.0001) continue;
-      best={x:n[0],y:n[1]};
-      bestCost=nCost;
+      if(!Number.isFinite(nCost) || nCost>=curCost-0.0001) continue;
+      if(nCost<bestCost-0.0001){
+        best.length=0;
+        bestCost=nCost;
+      }
+      if(Math.abs(nCost-bestCost)<0.0001) best.push({x:n[0],y:n[1]});
     }
-    return best ? normalizedFlowVector(best.x-c.x,best.y-c.y) : null;
+    return averageFlowVector(best.map(b=>normalizedFlowVector(b.x-c.x,b.y-c.y)));
   }
   function supportedBuiltKeys(component,componentKeys,supports,tileFn){
     const best=new Map();
@@ -1218,7 +1264,8 @@ window.MM = window.MM || {};
       }
       if(!exits.length) continue;
       exits.sort((a,b)=>b.score-a.score);
-      const chosen=exits.slice(0,3);
+      const cutoff=exits[Math.min(2,exits.length-1)].score;
+      const chosen=exits.filter((e,i)=>i<3 || Math.abs(e.score-cutoff)<0.000001);
       const total=chosen.reduce((sum,e)=>sum+e.score,0) || 1;
       for(const e of chosen){
         const transferred=transmitForce*(e.score/total)*(1+e.penalty*BUILD_FLOW_TRANSFER_STRESS);
@@ -1752,13 +1799,13 @@ window.MM = window.MM || {};
   }
 
   // --- Public event API (names kept stable for main.js / undo) ---
-  function onTileRemoved(x,y){ forgetManualCityBuild(x,y); forgetPlayerBuild(x,y); forgetSettledRubble(x,y); queueAroundRemoval(x,y); checkBuiltPillarAround(x,y); }
+  function onTileRemoved(x,y){ unprotectBuild(x,y); forgetManualCityBuild(x,y); forgetPlayerBuild(x,y); forgetSettledRubble(x,y); queueAroundRemoval(x,y); checkBuiltPillarAround(x,y); }
   function recheckNeighborhood(x,y){ forgetSettledRubble(x,y); syncManualCityBuild(x,y); syncPlayerBuild(x,y); queueCheck(x,y); queueAroundRemoval(x,y); checkBuiltPillarAround(x,y); } // undo can both add and remove tiles
   function afterPlacement(x,y){ forgetSettledRubble(x,y); rememberManualCityBuild(x,y); rememberPlayerBuild(x,y); queueAroundSettle(x,y); checkBuiltPillarAround(x,y); }
   function maybeStart(x,y){ queueCheck(x,y); }
 
-  function reset(){ active.length=0; sandActive.length=0; unstable.clear(); quietStable.clear(); auditJobs.length=0; auditPending.clear(); auditLast.clear(); manualCityBuilt.clear(); playerBuilt.clear(); buildStress.clear(); buildStressFlow.clear(); buildBreaks.length=0; settledRubble.clear(); }
-  function metrics(){ return {queue:unstable.size, audit:auditJobs.length, active:active.length, sand:sandActive.length, debris:settledRubble.size, built:playerBuilt.size, stress:buildStress.size, breaks:buildBreaks.length}; }
+  function reset(){ active.length=0; sandActive.length=0; unstable.clear(); quietStable.clear(); auditJobs.length=0; auditPending.clear(); auditLast.clear(); manualCityBuilt.clear(); playerBuilt.clear(); buildStress.clear(); buildStressFlow.clear(); buildBreaks.length=0; settledRubble.clear(); protectedBuilds.clear(); }
+  function metrics(){ return {queue:unstable.size, audit:auditJobs.length, active:active.length, sand:sandActive.length, debris:settledRubble.size, built:playerBuilt.size, stress:buildStress.size, breaks:buildBreaks.length, protected:protectedBuilds.size}; }
   function parseSavedKey(k){
     if(typeof k!=='string' || k.length>=32) return null;
     const ix=k.indexOf(',');
@@ -1792,6 +1839,12 @@ window.MM = window.MM || {};
       if(cell && isRubbleTrackedMaterial(cell.t)) debris.push(cell.k);
       if(debris.length>=22000) break;
     }
+    const protectedOut=[];
+    for(const raw of protectedBuilds){
+      const kk=parseSavedKey(raw);
+      if(kk) protectedOut.push(kk);
+      if(protectedOut.length>=PROTECTED_SAVE_CAP) break;
+    }
     return {
       v:5,
       active:active.map(b=>restoredRigid({x:b.x,y:b.yFloat,type:b.type,vy:b.vy,windCarry:b.windCarry||0,rubble:!!b.rubble})).filter(Boolean).map(b=>({x:b.x,y:b.yFloat,type:b.type,vy:b.vy,windCarry:b.windCarry||0,rubble:!!b.rubble})),
@@ -1799,7 +1852,8 @@ window.MM = window.MM || {};
       queue:[...unstable].map(parseSavedKey).filter(Boolean).slice(0,6000),
       built,
       playerBuilt:playerBuiltOut,
-      debris
+      debris,
+      protected:protectedOut
     };
   }catch(e){ return null; } }
   function restore(s){ reset(); if(!s||typeof s!=='object') return; try{
@@ -1809,7 +1863,8 @@ window.MM = window.MM || {};
     if(Array.isArray(s.built)) for(const k of s.built){ const kk=parseSavedKey(k); if(kk && manualCityBuilt.size<20000) manualCityBuilt.add(kk); }
     if(Array.isArray(s.playerBuilt)) for(const k of s.playerBuilt){ const kk=parseSavedKey(k); if(kk && playerBuilt.size<PLAYER_BUILT_SAVE_CAP) playerBuilt.add(kk); }
     if(Array.isArray(s.debris)) for(const k of s.debris){ const kk=parseSavedKey(k); if(kk && settledRubble.size<22000) settledRubble.add(kk); }
-    for(const k of playerBuilt){ if(unstable.size>=6000) break; unstable.add(k); }
+    if(Array.isArray(s.protected)) for(const k of s.protected){ const kk=parseSavedKey(k); if(kk && protectedBuilds.size<PROTECTED_SAVE_CAP) protectedBuilds.add(kk); }
+    for(const k of playerBuilt){ if(unstable.size>=6000) break; if(protectedBuilds.has(k)) continue; unstable.add(k); }
   }catch(e){} }
 
   function _debug(){
@@ -1820,7 +1875,7 @@ window.MM = window.MM || {};
     };
   }
 
-  MM.fallingSolids={init,update,draw,onTileRemoved,maybeStart,reset,recheckNeighborhood,afterPlacement,canSupportPlacement,auditChunks,settleAll,snapshot,restore,metrics,_debug};
+  MM.fallingSolids={init,update,draw,onTileRemoved,maybeStart,reset,recheckNeighborhood,afterPlacement,canSupportPlacement,auditChunks,settleAll,snapshot,restore,metrics,protectStructure,protectBuild,unprotectBuild,isProtectedBuild,_debug};
 })();
 // ESM export (progressive migration)
 export const fallingSolids = (typeof window!=='undefined' && window.MM) ? window.MM.fallingSolids : undefined;

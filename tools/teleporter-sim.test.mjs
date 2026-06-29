@@ -86,6 +86,19 @@ assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source end
   setTile(-2,10,T.COPPER_WIRE);
   setTile(-1,10,T.COPPER_WIRE);
   chargeDynamo(-4,10);
+  const beforeDynamo=dynamo.metrics().storedEnergy;
+  assert.equal(teleporters.catchUp(30,null,getTile,setTile,{dynamo}),true,'teleporter catch-up charges batteries through copper wires');
+  assert.ok(teleporters.metrics().storedEnergy>0,'teleporter catch-up stores network energy while offscreen');
+  assert.ok(dynamo.metrics().storedEnergy<beforeDynamo,'teleporter catch-up drains the real connected power source');
+}
+
+{
+  reset();
+  setTile(0,10,T.TELEPORTER);
+  placeDynamo(-4,10);
+  setTile(-2,10,T.COPPER_WIRE);
+  setTile(-1,10,T.COPPER_WIRE);
+  chargeDynamo(-4,10);
   const battery={energy:0};
   const gained=teleporters.chargeBatteryAt(0,10,battery,1,getTile,dynamo,{capacity:50,rate:20});
   assert.ok(gained>0 && battery.energy>0,'generic power devices can charge a local battery through copper wires');
@@ -170,8 +183,8 @@ assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source end
 
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 assert.match(mainSrc, /import \{ teleporters as TELEPORTERS \}/, 'main imports the teleporter engine');
-assert.match(mainSrc, /TELEPORTERS\.update\(dt, player, getNetworkTile, setTile, \{dynamo:DYNAMO, heroEnergy:MM\.heroEnergy\}\)/, 'main updates teleporters with overlay-aware dynamo and hero energy access');
-assert.match(mainSrc, /TELEPORTERS\.draw\(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getNetworkTile\)/, 'main draws teleporter energy overlays through infrastructure overlays');
+assert.match(mainSrc, /TELEPORTERS\.update\(dt, player, getElectricNetworkTile, setTile, \{dynamo:DYNAMO, heroEnergy:MM\.heroEnergy\}\)/, 'main updates teleporters with overlay-aware dynamo and hero energy access');
+assert.match(mainSrc, /TELEPORTERS\.draw\(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getElectricNetworkTile\)/, 'main draws teleporter energy overlays through infrastructure overlays');
 assert.match(mainSrc, /TELEPORTERS\.cableConnections\(wx,y,peek\)/, 'main uses smart copper cable layouts without forcing neighbor chunks to generate');
 assert.match(mainSrc, /function placeDebugTeleporterPair\(\)/, 'main exposes a debug action that places a powered teleporter pair');
 assert.match(mainSrc, /function placeDebugTeleporterOne\(\)/, 'main exposes a debug action that places one teleporter');

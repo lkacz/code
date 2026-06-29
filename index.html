@@ -32,13 +32,49 @@
   #menuPanel .seedRow{ align-items:center; gap:6px; font-size:12px; }
   #menuPanel input{ background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 6px; font-size:12px; width:110px; }
   #menuPanel .hint{ font-size:11px; opacity:.75; }
-    #craft{ position:absolute; left:8px; top:54px; pointer-events:auto; display:flex; flex-direction:column; gap:6px; background:rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:8px; max-width:min(55vw,340px); max-height:calc(100vh - 92px); overflow-y:auto; overscroll-behavior:contain; font-size:12px; }
-    #craft .craftHeader{ display:flex; align-items:center; justify-content:space-between; gap:8px; position:sticky; top:-8px; margin:-8px -8px 0; padding:8px 8px 4px; background:rgba(0,0,0,.55); border-radius:12px 12px 0 0; z-index:1; }
-    #craft .craftBody{ display:flex; flex-direction:column; gap:6px; }
+    #craft{ position:absolute; left:8px; top:54px; pointer-events:auto; display:flex; flex-direction:column; gap:8px; width:min(560px,calc(100vw - 16px)); max-height:calc(100vh - 92px); overflow:hidden; overscroll-behavior:contain; color:#eef4fb; background:rgba(13,17,24,.88); border:1px solid rgba(255,255,255,.14); border-radius:12px; padding:9px; font-size:12px; box-shadow:0 12px 30px rgba(0,0,0,.45); backdrop-filter:blur(10px); }
+    #craft .craftHeader{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin:-9px -9px 0; padding:9px; background:rgba(8,11,17,.82); border-bottom:1px solid rgba(255,255,255,.08); }
+    #craft .craftTitleWrap{ display:flex; align-items:baseline; gap:8px; min-width:0; }
+    #craft .craftTitle{ font-size:13px; white-space:nowrap; }
+    #craft .craftSummary{ color:#aeb9c7; font-size:11px; white-space:nowrap; }
+    #craft .craftBody{ display:flex; flex-direction:column; gap:7px; min-height:0; }
     #craftToggle{ min-width:32px; padding:3px 8px; line-height:1.1; }
-    #craft[data-collapsed="true"]{ overflow:hidden; }
+    #craft[data-collapsed="true"]{ width:auto; overflow:hidden; }
     #craft[data-collapsed="true"] .craftBody{ display:none; }
+    #craft .craftToolbar{ display:flex; gap:6px; }
+    #craftSearch{ width:100%; min-width:0; background:rgba(255,255,255,.08); color:#f4f7fb; border:1px solid rgba(255,255,255,.16); border-radius:8px; padding:7px 9px; font-size:12px; outline:none; }
+    #craftSearch:focus{ border-color:#58a6ff; box-shadow:0 0 0 2px rgba(88,166,255,.22); }
+    #craft .craftTabs{ display:flex; gap:5px; overflow-x:auto; padding-bottom:2px; scrollbar-width:thin; }
+    #craft .craftTab{ flex:0 0 auto; border:1px solid rgba(255,255,255,.12); border-radius:8px; background:rgba(255,255,255,.07); color:#dce5ef; padding:5px 8px; font-size:11px; font-weight:700; cursor:pointer; }
+    #craft .craftTab.selected{ background:#2c7ef8; color:#fff; border-color:rgba(255,255,255,.26); }
+    #craft .craftContent{ display:grid; grid-template-columns:minmax(210px,1fr) minmax(190px,.9fr); gap:8px; min-height:0; }
+    #craft .craftList{ display:flex; flex-direction:column; gap:6px; min-height:0; max-height:min(54vh,430px); overflow-y:auto; padding-right:2px; }
+    #craft .craftRecipe{ display:flex; flex-direction:column; gap:5px; width:100%; min-height:58px; text-align:left; color:#e8eef6; background:rgba(255,255,255,.075); border:1px solid rgba(255,255,255,.12); border-radius:8px; padding:7px; box-shadow:none; cursor:pointer; }
+    #craft .craftRecipe.available{ border-color:rgba(91,206,143,.55); background:rgba(42,111,71,.25); }
+    #craft .craftRecipe.done{ opacity:.72; }
+    #craft .craftRecipe.selected{ outline:2px solid #2c7ef8; outline-offset:-2px; }
+    #craft .craftRecipeTop{ display:grid; grid-template-columns:24px minmax(0,1fr) auto; align-items:center; gap:6px; }
+    #craft .craftIcon, #craft .craftDetailIcon{ display:inline-flex; align-items:center; justify-content:center; border-radius:7px; background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.14); color:#fff; font-weight:800; }
+    #craft .craftIcon{ width:24px; height:24px; font-size:12px; }
+    #craft .craftName{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:700; }
+    #craft .craftRecipeState{ color:#aab6c4; font-size:10px; text-transform:uppercase; }
+    #craft .craftCost, #craft .craftDetailCosts{ display:flex; flex-wrap:wrap; gap:4px; }
+    #craft .craftChip{ display:inline-flex; align-items:center; gap:4px; min-height:19px; max-width:100%; border:1px solid rgba(255,255,255,.11); border-radius:999px; background:rgba(255,255,255,.075); color:#dce5ef; padding:2px 6px; font-size:11px; }
+    #craft .craftChip i{ width:8px; height:8px; border-radius:2px; display:inline-block; flex:0 0 auto; box-shadow:0 0 0 1px rgba(0,0,0,.25); }
+    #craft .craftChip.missing{ color:#ffc3b8; border-color:rgba(255,107,79,.38); background:rgba(126,35,26,.25); }
+    #craft .craftDetail{ min-height:0; max-height:min(54vh,430px); overflow-y:auto; border:1px solid rgba(255,255,255,.11); border-radius:8px; background:rgba(255,255,255,.055); padding:9px; display:flex; flex-direction:column; gap:8px; }
+    #craft .craftDetailHeader{ display:grid; grid-template-columns:34px minmax(0,1fr); gap:8px; align-items:center; }
+    #craft .craftDetailIcon{ width:34px; height:34px; font-size:14px; }
+    #craft .craftDetailHeader strong{ display:block; font-size:13px; overflow-wrap:anywhere; }
+    #craft .craftDetailHeader span span{ display:block; margin-top:2px; color:#aeb9c7; font-size:11px; }
+    #craft .craftDesc, #craft .craftStatus, #craft .craftEmpty{ color:#c8d3df; line-height:1.35; }
+    #craft .craftActions{ display:flex; gap:6px; margin-top:auto; }
+    #craft .craftPrimary, #craft .craftSecondary{ border:none; border-radius:8px; padding:7px 10px; color:#fff; font-weight:800; cursor:pointer; }
+    #craft .craftPrimary{ flex:1; background:#2c7ef8; }
+    #craft .craftSecondary{ background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.16); }
+    #craft .craftPrimary:disabled{ cursor:not-allowed; opacity:.45; filter:grayscale(.4); }
     #craft .req{ font-size:11px; opacity:.9; }
+    @media (max-width:680px){ #craft{ width:min(360px,calc(100vw - 16px)); } #craft .craftContent{ grid-template-columns:1fr; } #craft .craftList, #craft .craftDetail{ max-height:34vh; } }
     #help{ position:absolute; left:8px; right:8px; top:140px; background:rgba(0,0,0,.65); border:1px solid rgba(255,255,255,.18); border-radius:12px; padding:10px 12px; font-size:12px; line-height:1.4; display:none; pointer-events:auto; }
     #controls{ position:absolute; left:0; right:0; bottom:0; padding:12px; display:flex; justify-content:space-between; gap:12px; pointer-events:none; }
     .pad{ pointer-events:auto; display:grid; gap:8px; grid-template-columns:var(--cell) var(--cell) var(--cell); grid-template-rows:var(--cell) var(--cell) var(--cell); }
@@ -133,6 +169,7 @@
         <span class="item pill">🌍 <b id="biome">—</b></span>
         <span class="item pill">kilof: <b id="pick">podstawowy</b></span>
       </div>
+      <div class="panel" id="worldStatusPanel"><span id="worldStatus" title="Pozycja bohatera · zegar · pogoda · pora roku">📍 —</span></div>
       <div class="panel"><span id="fps">— FPS</span></div>
       <div id="menuWrap">
   <button id="menuBtn" class="topbtn" aria-haspopup="true" aria-expanded="false" title="Menu" aria-label="Menu główne">≡</button>
@@ -224,9 +261,9 @@
       <div class="hotSlot" data-key="0"><span class="key">0</span><span>woda</span><span class="count">0</span></div>
     </div>
       <!-- Dynamic selection popover for remapping slot resource (includes chests in God mode) -->
-    <div id="hotSelectMenu" style="position:absolute; display:none; flex-direction:column; z-index:1000; background:rgba(15,18,26,.96); border:1px solid rgba(255,255,255,.18); border-radius:12px; padding:6px 8px; box-shadow:0 8px 24px -4px rgba(0,0,0,.55); font-size:12px; min-width:220px; max-width:300px; max-height:min(70vh,520px); pointer-events:auto;">
-        <div style="font-weight:600; margin:2px 0 6px; opacity:.9">Wybierz typ</div>
-        <div id="hotSelectOptions" style="display:flex; flex-direction:column; gap:6px; overflow:auto; padding-right:2px;"></div>
+    <div id="hotSelectMenu" style="position:absolute; display:none; flex-direction:column; z-index:1000; background:rgba(15,18,26,.96); border:1px solid rgba(255,255,255,.18); border-radius:12px; padding:6px 8px; box-shadow:0 8px 24px -4px rgba(0,0,0,.55); font-size:12px; min-width:220px; width:min(300px,calc(100vw - 16px)); max-width:300px; max-height:min(78vh,calc(100vh - 86px)); overflow:hidden; pointer-events:auto; box-sizing:border-box;">
+        <div style="flex:0 0 auto; font-weight:600; margin:2px 0 6px; opacity:.9">Wybierz typ</div>
+        <div id="hotSelectOptions" style="display:flex; flex:1 1 auto; min-height:0; flex-direction:column; gap:6px; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; touch-action:pan-y; padding-right:4px; scrollbar-width:thin;"></div>
         <div style="margin-top:6px; font-size:10px; opacity:.6;">Skrzynie dostępne tylko w trybie Boga.</div>
       </div>
     <div id="errorBox" role="alert"></div>

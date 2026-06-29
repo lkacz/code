@@ -12,6 +12,12 @@ assert.match(uiSrc, /range\.value=String\(debugNumber\('time','value',0,0,1\)\)/
 assert.match(uiSrc, /debugSet\('time','active',chk\.checked\)/, 'time override toggle persists across app runs');
 assert.match(uiSrc, /debugSet\('time','value',readTimeValue\(\)\)/, 'time override value persists across app runs');
 
+assert.match(uiSrc, /background:\{blur:1\}/, 'background debug settings have a stable default blur scale');
+assert.match(uiSrc, /function injectBackgroundDebugPanel\(menuPanel\)/, 'ui exposes a background debug panel injector');
+assert.match(uiSrc, /blur\.value=String\(debugNumber\('background','blur',1,0\.5,2\.2\)\)/, 'background blur slider restores its saved scale');
+assert.match(uiSrc, /window\.__backdropBlurScale=value;/, 'background blur slider applies to the live renderer');
+assert.match(uiSrc, /debugSet\('background','blur',readBlur\(\)\)/, 'background blur slider persists changes');
+
 assert.match(uiSrc, /power\.value=String\(debugNumber\('gas','power',2,0\.5,5\)\)/, 'gas debug power slider restores saved power');
 assert.match(uiSrc, /debugSet\('gas','power',readPower\(\)\)/, 'gas debug power slider persists changes');
 
@@ -29,6 +35,13 @@ assert.match(uiSrc, /debugSet\('seasons','forced',null\)/, 'season natural mode 
 assert.match(uiSrc, /debugSet\('seasons','forced',id\)/, 'forced season debug mode persists');
 assert.match(uiSrc, /debugHasKey\('seasons','forced'\)/, 'season restore only applies explicitly saved forced mode');
 assert.match(uiSrc, /debugHasKey\('seasons','enabled'\)/, 'season restore only applies explicitly saved enabled toggle');
+
+assert.match(uiSrc, /hostility:\{intensity:1,reach:1\}/, 'hostility ramp debug settings have stable defaults');
+assert.match(uiSrc, /function injectHostilityDebugPanel\(actions, menuPanel\)/, 'ui exposes a hostility ramp debug panel injector');
+assert.match(uiSrc, /debugNumber\('hostility','intensity',1,0,3\)/, 'hostility intensity slider restores its saved value');
+assert.match(uiSrc, /debugNumber\('hostility','reach',1,0\.25,4\)/, 'hostility reach slider restores its saved value');
+assert.match(uiSrc, /debugSet\('hostility','intensity',readIntensity\(\)\)/, 'hostility intensity slider persists changes');
+assert.match(uiSrc, /debugSet\('hostility','reach',readReach\(\)\)/, 'hostility reach slider persists changes');
 
 assert.match(meteoritesSrc, /const STORE_KEY = 'mm_meteorites_v1'/, 'meteorite debug toggle already has stable persisted settings');
 assert.match(meteoritesSrc, /localStorage\.setItem\(STORE_KEY/, 'meteorite debug toggle writes persisted settings');

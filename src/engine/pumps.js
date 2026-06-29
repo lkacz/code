@@ -2,7 +2,7 @@
 // intake/output; pipes form cached water networks and only recompute after local
 // topology changes are observed.
 import { T, INFO, WORLD_H } from '../constants.js';
-import { isWaterFillTile } from './material_physics.js';
+import { isGasTile, isWaterFillTile } from './material_physics.js';
 
 const pumps = (function(){
   const MM = window.MM = window.MM || {};
@@ -10,7 +10,9 @@ const pumps = (function(){
   const PUMP_CAPACITY = 80;
   const CHARGE_RATE = 24;
   const PUMP_RATE = 8;
+  const PUMP_GAS_RATE = 8;
   const ENERGY_PER_WATER = 0.7;
+  const ENERGY_PER_GAS = 0.35;
   const MACHINE_CAP = 320;
   const NETWORK_CAP = 900;
   const NETWORK_CACHE_CAP = 260;
@@ -27,9 +29,13 @@ const pumps = (function(){
   const PASSIVE_SCAN_SEEDS = 70;
   const PASSIVE_NETWORKS_PER_UPDATE = 3;
   const PASSIVE_FLOW_RATE = 3.2;
+  const PASSIVE_GAS_FLOW_RATE = 3.8;
   const PASSIVE_STATE_CAP = 160;
   const SOURCE_REACH_CAP = 34;
   const SOURCE_REACH_DIST = 3;
+  const CATCHUP_MAX_SECONDS = 900;
+  const CATCHUP_TRANSFER_SECONDS = 24;
+  const CATCHUP_TRANSFER_STEP = 1.0;
 
   const DIR_ORDER = ['east','south','west','north'];
   const DIR_VEC = {
@@ -58,7 +64,9 @@ const pumps = (function(){
   let consumerChecks = 0;
   let sourceChecks = 0;
   let passiveTransfers = 0;
+  let passiveGasTransfers = 0;
   let pumpOutletTransfers = 0;
+  let pumpGasTransfers = 0;
 
   function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
   function sideKey(m,side){ return key(m.x,m.y)+':'+side+':'+normalizeDir(m.dir); }
@@ -72,6 +80,24 @@ const pumps = (function(){
     }catch(e){}
     return getSafe(getTile,x,y,T.AIR);
   }
+  function worldHasInfrastructure(x,y,t){
+    try{
+      return !!(MM.world && typeof MM.world.hasInfrastructure==='function' && MM.world.hasInfrastructure(Math.floor(x),Math.floor(y),t));
+    }catch(e){ return false; }
+  }
+  function networkTileFor(kind,x,y,getTile){
+    x=Math.floor(x); y=Math.floor(y);
+    if(worldHasInfrastructure(x,y,kind)) return kind;
+    try{
+      if(MM.world && typeof MM.world.getNetworkTile==='function'){
+        const t=MM.world.getNetworkTile(x,y);
+        if(t===kind) return kind;
+      }
+    }catch(e){}
+    return getSafe(getTile,x,y,getBaseTile(x,y,getTile));
+  }
+  function getElectricNetworkTile(x,y,getTile){ return networkTileFor(T.COPPER_WIRE,x,y,getTile); }
+  function getFluidNetworkTile(x,y,getTile){ return networkTileFor(T.WATER_PIPE,x,y,getTile); }
   function clamp(n,a,b){ return Math.max(a,Math.min(b,n)); }
   function nowMs(){ return (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now(); }
   function isPipeTile(t){ return t===T.WATER_PIPE; }
@@ -175,6 +201,47 @@ const pumps = (function(){
     if(!finiteTile(x,y)) return false;
     const t=getBaseTile(x,y,getTile);
     return isWaterFillTile(t);
+  }
+  function canReceiveGasTile(x,y,getTile,gasTile){
+    if(!finiteTile(x,y) || !isGasTile(gasTile)) return false;
+    return getBaseTile(x,y,getTile)===T.AIR;
+  }
+  function gasFlowName(t){
+    if(t===T.HOT_AIR) return 'hot';
+    if(t===T.STEAM) return 'steam';
+    if(t===T.FUEL_GAS) return 'fuel';
+    if(t===T.POISON_GAS) return 'poison';
+    return 'gas';
+  }
+  function gasSourceForPort(port,getTile){
+    if(!port) return null;
+    const t=getBaseTile(port.x,port.y,getTile);
+    return isGasTile(t) ? {x:port.x,y:port.y,level:port.y,t} : null;
+  }
+  function gasTargetForPort(port,gasTile,getTile){
+    if(!port || !canReceiveGasTile(port.x,port.y,getTile,gasTile)) return null;
+    return {x:port.x,y:port.y,level:port.y};
+  }
+  function moveGasAt(src,target,getTile,setTile){
+    if(!src || !target || typeof setTile!=='function') return false;
+    const gasGet=baseGetter(getTile);
+    const tile=getBaseTile(src.x,src.y,getTile);
+    if(!isGasTile(tile) || !canReceiveGasTile(target.x,target.y,getTile,tile)) return false;
+    try{
+      if(MM.gases && typeof MM.gases.moveCell==='function'){
+        const moved=MM.gases.moveCell(src.x,src.y,target.x,target.y,gasGet,setTile);
+        return isGasTile(moved) ? moved : false;
+      }
+    }catch(e){}
+    setTile(src.x,src.y,T.AIR);
+    setTile(target.x,target.y,tile);
+    try{
+      if(MM.gases && MM.gases.onTileChanged){
+        MM.gases.onTileChanged(src.x,src.y,tile,T.AIR);
+        MM.gases.onTileChanged(target.x,target.y,T.AIR,tile);
+      }
+    }catch(e){}
+    return getBaseTile(target.x,target.y,getTile)===tile && getBaseTile(src.x,src.y,getTile)!==tile ? tile : false;
   }
   function wakeWaterAround(x,y,getTile){
     try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(Math.floor(x),Math.floor(y),baseGetter(getTile)); }catch(e){}
@@ -300,6 +367,51 @@ const pumps = (function(){
     }
     return ports;
   }
+  function gasEndpointPortsFromPipes(pipes,getTile,opts){
+    const list=Array.isArray(pipes) ? pipes : [];
+    const includeOpen=!opts || opts.includeOpen!==false;
+    const includeGas=!opts || opts.includeGas!==false;
+    const pipeSet=new Set(list.map(p=>key(p.x,p.y)));
+    const ports=[];
+    const seen=new Set();
+    for(const p of list){
+      if(!p || ports.length>=OUTLET_CANDIDATE_CAP) break;
+      const px=Math.floor(p.x), py=Math.floor(p.y);
+      const links=[];
+      for(const d of ADJ){
+        const nx=px+d.dx, ny=py+d.dy;
+        const nt=getSafe(getTile,nx,ny,T.AIR);
+        if(pipeSet.has(key(nx,ny)) || isPumpTile(nt) || isWaterDeviceTile(nt)) links.push(d);
+      }
+      if(includeGas && isGasTile(getBaseTile(px,py,getTile))) addEndpointPort(ports,seen,'gas',px,py,px,py);
+      if(links.length>1) continue;
+      const dirs=links.length===1 ? [oppositeDir(links[0])] : ADJ;
+      for(const d of dirs){
+        if(ports.length>=OUTLET_CANDIDATE_CAP) break;
+        const nx=px+d.dx, ny=py+d.dy;
+        const nt=getSafe(getTile,nx,ny,T.AIR);
+        if(isPipeLinkTile(nt)) continue;
+        const base=getBaseTile(nx,ny,getTile);
+        if(includeGas && isGasTile(base)) addEndpointPort(ports,seen,'gas',nx,ny,px,py);
+        else if(includeOpen && base===T.AIR) addEndpointPort(ports,seen,'open',nx,ny,px,py);
+      }
+    }
+    return ports;
+  }
+  function gasPortsForNetwork(net,getTile,opts){
+    const ports=gasEndpointPortsFromPipes(net && net.pipes,getTile,opts);
+    if(net && (!net.pipes || !net.pipes.length) && net.rootPort){
+      const rp=net.rootPort;
+      const nt=getSafe(getTile,rp.x,rp.y,T.AIR);
+      if(!isPipeLinkTile(nt)){
+        const base=getBaseTile(rp.x,rp.y,getTile);
+        const seen=new Set(ports.map(p=>p.kind+':'+key(p.x,p.y)));
+        if((!opts || opts.includeGas!==false) && isGasTile(base)) addEndpointPort(ports,seen,'gas',rp.x,rp.y,rp.x,rp.y);
+        else if((!opts || opts.includeOpen!==false) && base===T.AIR) addEndpointPort(ports,seen,'open',rp.x,rp.y,rp.x,rp.y);
+      }
+    }
+    return ports;
+  }
   function fillTargetForPort(port,getTile){
     if(!port) return null;
     if(port.kind==='open'){
@@ -400,7 +512,7 @@ const pumps = (function(){
     const hitCap=pipeSeen.size>=NETWORK_CAP;
     if(hitCap) capHits++;
     const outlets=endpointPortsFromPipes(pipes,getTile,{includeOpen:true,includeWater:true});
-    const net={rev:networkRev,side,dir:normalizeDir(m.dir),pipeCount:pipes.length,pipes,sources,sourceCandidates,sourceCursor:0,consumers,outlets,outletCursor:0,capHit:hitCap};
+    const net={rev:networkRev,side,dir:normalizeDir(m.dir),rootPort:port,pipeCount:pipes.length,pipes,sources,sourceCandidates,sourceCursor:0,consumers,outlets,outletCursor:0,capHit:hitCap};
     networkCache.set(ck,net);
     pruneNetworkCache();
     return net;
@@ -442,14 +554,15 @@ const pumps = (function(){
     return false;
   }
 
-  function markPipe(x,y,level){
+  function markPipe(x,y,level,fluid){
     const k=key(x,y);
-    const cur=pipeActivity.get(k) || {x:Math.floor(x),y:Math.floor(y),ttl:0,level:0};
+    const cur=pipeActivity.get(k) || {x:Math.floor(x),y:Math.floor(y),ttl:0,level:0,fluid:'water'};
     cur.ttl=Math.max(cur.ttl,PIPE_TTL);
     cur.level=Math.min(1,Math.max(cur.level*0.72,level));
+    if(fluid) cur.fluid=fluid;
     pipeActivity.set(k,cur);
   }
-  function markNetworkActivity(net,amount,deviceKey){
+  function markNetworkActivity(net,amount,deviceKey,fluid){
     if(!net || !Array.isArray(net.pipes) || !net.pipes.length) return;
     const dk=String(deviceKey||'pipe');
     const now=nowMs();
@@ -466,11 +579,11 @@ const pumps = (function(){
     const level=Math.max(0.25,Math.min(1,0.2+(Number(amount)||0)/8));
     const cap=Math.min(FLOW_DRAW_CAP,net.pipes.length);
     if(net.pipes.length<=cap){
-      for(const p of net.pipes) markPipe(p.x,p.y,level);
+      for(const p of net.pipes) markPipe(p.x,p.y,level,fluid);
       return;
     }
     const stride=Math.max(1,Math.floor(net.pipes.length/cap));
-    for(let i=0,count=0; i<net.pipes.length && count<cap; i+=stride,count++) markPipe(net.pipes[i].x,net.pipes[i].y,level);
+    for(let i=0,count=0; i<net.pipes.length && count<cap; i+=stride,count++) markPipe(net.pipes[i].x,net.pipes[i].y,level,fluid);
   }
   function decayPipeActivity(dt,getTile){
     if(!pipeActivity.size) return;
@@ -565,10 +678,72 @@ const pumps = (function(){
     return moved;
   }
 
+  function liveGasPorts(net,getTile){
+    return gasPortsForNetwork(net,getTile,{includeOpen:true,includeGas:true})
+      .map(port=>({port,source:gasSourceForPort(port,getTile)}))
+      .filter(row=>row.source);
+  }
+  function openGasPorts(net,gasTile,getTile){
+    return gasPortsForNetwork(net,getTile,{includeOpen:true,includeGas:false})
+      .map(port=>({port,target:gasTargetForPort(port,gasTile,getTile)}))
+      .filter(row=>row.target);
+  }
+  function pumpGasTransfer(m,dt,getTile,setTile){
+    if(!m || !(dt>0) || (m.energy||0)<=0.001 || typeof setTile!=='function') return 0;
+    const input=networkForSide(m,'input',getTile);
+    const output=networkForSide(m,'output',getTile);
+    if(!input || !output) return 0;
+    const maxGas=Math.min(PUMP_GAS_RATE*dt,(m.energy||0)/ENERGY_PER_GAS);
+    if(maxGas<=0.001) return 0;
+    m.gasCarry=Math.min(OUTLET_TILES_PER_UPDATE+0.98,(Number(m.gasCarry)||0)+maxGas);
+    const unitCap=Math.min(OUTLET_TILES_PER_UPDATE,Math.floor(m.gasCarry));
+    if(unitCap<=0) return 0;
+    let moved=0, lastGas=0;
+    for(let unit=0; unit<unitCap; unit++){
+      const sources=liveGasPorts(input,getTile);
+      if(!sources.length) break;
+      const sourceIdx=Math.max(0,Math.floor(Number(m.gasSourceCursor)||0))%sources.length;
+      let did=false;
+      for(let si=0; si<sources.length && !did; si++){
+        const srow=sources[(sourceIdx+si)%sources.length];
+        const gasTile=srow.source && srow.source.t;
+        const targets=openGasPorts(output,gasTile,getTile);
+        if(!targets.length) continue;
+        const targetIdx=Math.max(0,Math.floor(Number(m.gasTargetCursor)||0))%targets.length;
+        for(let ti=0; ti<targets.length; ti++){
+          const trow=targets[(targetIdx+ti)%targets.length];
+          const placed=moveGasAt(srow.source,trow.target,getTile,setTile);
+          if(!isGasTile(placed)) continue;
+          m.gasCarry-=1;
+          moved+=1;
+          lastGas=placed;
+          m.gasSourceCursor=(sourceIdx+si+1)%Math.max(1,sources.length);
+          m.gasTargetCursor=(targetIdx+ti+1)%Math.max(1,targets.length);
+          did=true;
+          break;
+        }
+      }
+      if(!did) break;
+    }
+    if(moved<=0 && m.gasCarry>=1) m.gasCarry=0.98;
+    if(moved>0){
+      m.energy=clampEnergy((m.energy||0)-moved*ENERGY_PER_GAS);
+      m.pulse=1;
+      m.flowT=0.55;
+      m.lastMoved=moved;
+      totalMoved+=moved;
+      pumpGasTransfers+=moved;
+      const medium=gasFlowName(lastGas);
+      markNetworkActivity(input,moved,key(m.x,m.y)+':gas-in',medium);
+      markNetworkActivity(output,moved,key(m.x,m.y)+':gas-out',medium);
+    }
+    return moved;
+  }
+
   function chargeFromNetwork(m,dt,getTile,dynamo){
     const charger=MM.teleporters;
     if(!charger || !charger.chargeBatteryAt) return 0;
-    const netTile=(MM.world && MM.world.getNetworkTile) ? MM.world.getNetworkTile : getTile;
+    const netTile=(x,y)=>getElectricNetworkTile(x,y,getTile);
     const gained=charger.chargeBatteryAt(m.x,m.y,m,dt,netTile,dynamo,{capacity:PUMP_CAPACITY,rate:CHARGE_RATE});
     if(gained>0) m.pulse=Math.max(m.pulse||0,0.55);
     return gained;
@@ -621,7 +796,7 @@ const pumps = (function(){
     }
   }
 
-  function passiveTransfer(comp,state,dt,getTile,setTile){
+  function passiveWaterTransfer(comp,state,dt,getTile,setTile){
     if(!comp || !Array.isArray(comp.pipes) || !comp.pipes.length || !(dt>0) || typeof setTile!=='function') return 0;
     const ports=endpointPortsFromPipes(comp.pipes,getTile,{includeOpen:true,includeWater:true});
     if(ports.length<2) return 0;
@@ -641,9 +816,10 @@ const pumps = (function(){
       .sort((a,b)=>b.level-a.level || a.x-b.x || a.y-b.y);
     if(!candidates.length) return 0;
     const dest=candidates[0];
-    state.carry=Math.min(OUTLET_TILES_PER_UPDATE+0.98,(Number(state.carry)||0)+PASSIVE_FLOW_RATE*dt);
+    if(!Number.isFinite(state.waterCarry)) state.waterCarry=Number.isFinite(state.carry) ? state.carry : 0;
+    state.waterCarry=Math.min(OUTLET_TILES_PER_UPDATE+0.98,(Number(state.waterCarry)||0)+PASSIVE_FLOW_RATE*dt);
     let moved=0;
-    const limit=Math.min(OUTLET_TILES_PER_UPDATE,Math.floor(state.carry));
+    const limit=Math.min(OUTLET_TILES_PER_UPDATE,Math.floor(state.waterCarry));
     for(let i=0; i<limit; i++){
       const liveSource=sourceForPort(source,getTile);
       const liveSourceLevel=liveSource ? liveSource.level : null;
@@ -652,19 +828,76 @@ const pumps = (function(){
       const drained=drainWaterPort(source,getTile,setTile);
       if(!drained) break;
       if(addWaterAt(target.x,target.y,getTile,setTile)){
-        state.carry-=1;
+        state.waterCarry-=1;
         moved+=1;
       } else {
         restoreWaterAt(drained,getTile,setTile);
         break;
       }
     }
-    if(moved<=0 && state.carry>=1) state.carry=0.98;
+    if(moved<=0 && state.waterCarry>=1) state.waterCarry=0.98;
     if(moved>0){
       passiveTransfers+=moved;
       markNetworkActivity({pipes:comp.pipes},moved,'passive:'+comp.id);
     }
     return moved;
+  }
+
+  function passiveGasTransfer(comp,state,dt,getTile,setTile){
+    if(!comp || !Array.isArray(comp.pipes) || !comp.pipes.length || !(dt>0) || typeof setTile!=='function') return 0;
+    const ports=gasEndpointPortsFromPipes(comp.pipes,getTile,{includeOpen:true,includeGas:true});
+    if(ports.length<2) return 0;
+    const sources=[];
+    const targets=[];
+    for(const port of ports){
+      const src=gasSourceForPort(port,getTile);
+      if(src) sources.push({port,source:src,level:src.level});
+      if(port.kind==='open') targets.push({port,level:port.y});
+    }
+    if(!sources.length || !targets.length) return 0;
+    sources.sort((a,b)=>b.level-a.level || a.port.x-b.port.x || a.port.y-b.port.y);
+    let moved=0, lastGas=0;
+    if(!Number.isFinite(state.gasCarry)) state.gasCarry=0;
+    state.gasCarry=Math.min(OUTLET_TILES_PER_UPDATE+0.98,(Number(state.gasCarry)||0)+PASSIVE_GAS_FLOW_RATE*dt);
+    const limit=Math.min(OUTLET_TILES_PER_UPDATE,Math.floor(state.gasCarry));
+    for(let unit=0; unit<limit; unit++){
+      const liveSources=sources
+        .map(s=>({port:s.port,source:gasSourceForPort(s.port,getTile)}))
+        .filter(s=>s.source)
+        .sort((a,b)=>b.source.level-a.source.level || a.source.x-b.source.x || a.source.y-b.source.y);
+      if(!liveSources.length) break;
+      let did=false;
+      for(const s of liveSources){
+        const gasTile=s.source.t;
+        const candidates=targets
+          .map(t=>({port:t.port,target:gasTargetForPort(t.port,gasTile,getTile)}))
+          .filter(t=>t.target && t.target.level<s.source.level)
+          .sort((a,b)=>a.target.level-b.target.level || a.target.x-b.target.x || a.target.y-b.target.y);
+        for(const d of candidates){
+          const placed=moveGasAt(s.source,d.target,getTile,setTile);
+          if(!isGasTile(placed)) continue;
+          state.gasCarry-=1;
+          moved+=1;
+          lastGas=placed;
+          did=true;
+          break;
+        }
+        if(did) break;
+      }
+      if(!did) break;
+    }
+    if(moved<=0 && state.gasCarry>=1) state.gasCarry=0.98;
+    if(moved>0){
+      passiveGasTransfers+=moved;
+      markNetworkActivity({pipes:comp.pipes},moved,'passive-gas:'+comp.id,gasFlowName(lastGas));
+    }
+    return moved;
+  }
+
+  function passiveTransfer(comp,state,dt,getTile,setTile){
+    const water=passiveWaterTransfer(comp,state,dt,getTile,setTile);
+    const gas=passiveGasTransfer(comp,state,dt,getTile,setTile);
+    return water+gas;
   }
 
   function processPassiveNetworks(dt,getTile,setTile){
@@ -680,7 +913,7 @@ const pumps = (function(){
       }
       const st=passiveState.get(comp.id) || {carry:0};
       const got=passiveTransfer(comp,st,dt,getTile,setTile);
-      if(got>0 || (st.carry||0)>0) passiveState.set(comp.id,st);
+      if(got>0 || (st.carry||0)>0 || (st.waterCarry||0)>0 || (st.gasCarry||0)>0) passiveState.set(comp.id,st);
       moved+=got;
       processed++;
     }
@@ -745,6 +978,7 @@ const pumps = (function(){
       m.flowT=Math.max(0,(m.flowT||0)-dt);
       chargeFromNetwork(m,dt,getTile,dynamo);
       pumpTransfer(m,dt,getTile,setTile);
+      pumpGasTransfer(m,dt,getTile,setTile);
     }
     processPassiveNetworks(dt,getTile,setTile);
     if(machines.size>MACHINE_CAP){
@@ -800,10 +1034,18 @@ const pumps = (function(){
     ctx.restore();
   }
 
-  function drawFlow(ctx,TILE,px,py,conn,level,ttl,h,phase){
+  function flowPalette(fluid){
+    if(fluid==='hot') return {line:'255,182,82',spark:'255,238,172'};
+    if(fluid==='steam') return {line:'210,232,242',spark:'255,255,255'};
+    if(fluid==='poison') return {line:'132,232,91',spark:'220,255,168'};
+    if(fluid==='fuel') return {line:'218,196,112',spark:'255,235,150'};
+    return {line:'73,215,255',spark:'214,255,255'};
+  }
+  function drawFlow(ctx,TILE,px,py,conn,level,ttl,h,phase,fluid){
     const fade=clamp(ttl/PIPE_TTL,0,1);
     const a=clamp(level,0,1)*fade;
     if(a<=0.01) return;
+    const pal=flowPalette(fluid);
     const c=conn || {left:true,right:true,up:false,down:false};
     const any=c.left||c.right||c.up||c.down;
     const cx=px+TILE*0.5, cy=py+TILE*0.5;
@@ -811,7 +1053,7 @@ const pumps = (function(){
     ctx.globalCompositeOperation='lighter';
     ctx.lineCap='round';
     ctx.lineJoin='round';
-    ctx.strokeStyle='rgba(73,215,255,'+(0.26+0.46*a).toFixed(3)+')';
+    ctx.strokeStyle='rgba('+pal.line+','+(0.26+0.46*a).toFixed(3)+')';
     ctx.lineWidth=Math.max(1,TILE*(0.12+0.10*a));
     ctx.beginPath();
     if(c.left || !any){ ctx.moveTo(cx,cy); ctx.lineTo(px+3,cy); }
@@ -832,7 +1074,7 @@ const pumps = (function(){
       const dist=(0.14+0.70*travel)*TILE*(d[0]||d[1]);
       const sx=cx + (d[0]?dist:((seed-0.5)*TILE*0.08));
       const sy=cy + (d[1]?dist:((seed-0.5)*TILE*0.08));
-      ctx.fillStyle='rgba(214,255,255,'+(0.42+0.48*a).toFixed(3)+')';
+      ctx.fillStyle='rgba('+pal.spark+','+(0.42+0.48*a).toFixed(3)+')';
       ctx.beginPath();
       ctx.arc(sx,sy,Math.max(1,TILE*(0.05+0.035*a)),0,Math.PI*2);
       ctx.fill();
@@ -906,7 +1148,7 @@ const pumps = (function(){
         if(visible && !visible(a.x,a.y)) continue;
         if(getSafe(getTile,a.x,a.y,T.AIR)!==T.WATER_PIPE) continue;
         const conn=pipeConnections(a.x,a.y,getTile);
-        drawFlow(ctx,TILE,a.x*TILE,a.y*TILE,conn,a.level||0,a.ttl||0,((a.x*73856093)^(a.y*19349663))>>>0,phase+a.x*0.17+a.y*0.13);
+        drawFlow(ctx,TILE,a.x*TILE,a.y*TILE,conn,a.level||0,a.ttl||0,((a.x*73856093)^(a.y*19349663))>>>0,phase+a.x*0.17+a.y*0.13,a.fluid||'water');
       }
       ctx.restore();
     }
@@ -930,6 +1172,48 @@ const pumps = (function(){
       invalidateNetworks();
       return;
     }
+    if(oldTile===T.WATER || newTile===T.WATER || isGasTile(oldTile) || isGasTile(newTile)){
+      const netGet=(x,y)=>getFluidNetworkTile(x,y,MM.world && MM.world.getTile);
+      if(typeof netGet==='function'){
+        for(const d of ADJ) enqueuePassivePipe(tx+d.dx,ty+d.dy,netGet);
+        enqueuePassivePipe(tx,ty,netGet);
+      }
+    }
+  }
+  function catchUp(dt,_player,getTile,setTile,opts){
+    if(!(dt>0) || !Number.isFinite(dt) || typeof getTile!=='function') return false;
+    const simDt=Math.max(0,Math.min(CATCHUP_MAX_SECONDS,Number(dt)||0));
+    if(simDt<=0) return false;
+    let changed=false;
+    const dynamo=opts && opts.dynamo;
+    for(const [raw,m] of machines){
+      if(!m || getSafe(getTile,m.x,m.y,T.AIR)!==T.WATER_PUMP){
+        machines.delete(raw);
+        changed=true;
+        continue;
+      }
+      m.dir=normalizeDir(m.dir);
+      const before=m.energy||0;
+      chargeFromNetwork(m,simDt,getTile,dynamo);
+      if(Math.abs((m.energy||0)-before)>0.0001) changed=true;
+      m.pulse=0;
+      m.flowT=0;
+    }
+    if(typeof setTile==='function'){
+      const transferDt=Math.min(CATCHUP_TRANSFER_SECONDS,simDt);
+      const steps=Math.max(0,Math.min(48,Math.ceil(transferDt/CATCHUP_TRANSFER_STEP)));
+      for(let i=0; i<steps; i++){
+        const stepDt=transferDt/steps;
+        for(const m of machines.values()){
+          if(!m || getSafe(getTile,m.x,m.y,T.AIR)!==T.WATER_PUMP) continue;
+          const beforeEnergy=m.energy||0;
+          const moved=pumpTransfer(m,stepDt,getTile,setTile)+pumpGasTransfer(m,stepDt,getTile,setTile);
+          if(moved>0 || Math.abs((m.energy||0)-beforeEnergy)>0.0001) changed=true;
+        }
+        processPassiveNetworks(stepDt,getTile,setTile);
+      }
+    }
+    return changed;
   }
 
   function snapshot(){
@@ -970,7 +1254,9 @@ const pumps = (function(){
     consumerChecks=0;
     sourceChecks=0;
     passiveTransfers=0;
+    passiveGasTransfers=0;
     pumpOutletTransfers=0;
+    pumpGasTransfers=0;
     scanT=0;
     visibleScanKey='';
     visibleScanAt=0;
@@ -983,7 +1269,7 @@ const pumps = (function(){
       if((m.energy||0)>0.001) charged++;
       if((m.flowT||0)>0 || (m.pulse||0)>0.05) active++;
     }
-    return {machines:machines.size, active, charged, storedEnergy:+storedEnergy.toFixed(2), moved:+totalMoved.toFixed(2), passiveMoved:+passiveTransfers.toFixed(2), outletMoved:+pumpOutletTransfers.toFixed(2), activePipes:pipeActivity.size, passiveQueue:passiveQueue.length, networkRev, cacheSize:networkCache.size, cacheHits, cacheBuilds, cacheInvalidations, capHits, consumerChecks, sourceChecks};
+    return {machines:machines.size, active, charged, storedEnergy:+storedEnergy.toFixed(2), moved:+totalMoved.toFixed(2), passiveMoved:+passiveTransfers.toFixed(2), passiveGasMoved:+passiveGasTransfers.toFixed(2), outletMoved:+pumpOutletTransfers.toFixed(2), gasMoved:+pumpGasTransfers.toFixed(2), activePipes:pipeActivity.size, passiveQueue:passiveQueue.length, networkRev, cacheSize:networkCache.size, cacheHits, cacheBuilds, cacheInvalidations, capHits, consumerChecks, sourceChecks};
   }
   function debugChargeAt(x,y,amount,getTile){
     const m=ensureMachine(x,y,getTile || (MM.world && MM.world.getTile));
@@ -1012,13 +1298,14 @@ const pumps = (function(){
     setOrientationAt,
     rotateDir,
     update,
+    catchUp,
     draw,
     onTileChanged,
     snapshot,
     restore,
     reset,
     metrics,
-    _debug:{machines,networkCache,pipeActivity,PUMP_CAPACITY,CHARGE_RATE,PUMP_RATE,ENERGY_PER_WATER,CONSUMER_CHECK_CAP,SOURCE_CHECK_CAP,ensureMachine,networkForSide,debugChargeAt,debugSetEnergyAt}
+    _debug:{machines,networkCache,pipeActivity,PUMP_CAPACITY,CHARGE_RATE,PUMP_RATE,PUMP_GAS_RATE,ENERGY_PER_WATER,ENERGY_PER_GAS,CATCHUP_MAX_SECONDS,CATCHUP_TRANSFER_SECONDS,CONSUMER_CHECK_CAP,SOURCE_CHECK_CAP,ensureMachine,networkForSide,debugChargeAt,debugSetEnergyAt}
   };
   MM.pumps=api;
   return api;

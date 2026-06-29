@@ -226,7 +226,20 @@ const placed=gases.add('fuel',10,40,{power:5,cells:20,getTile,setTile});
 assert.ok(placed>0 && placed<=12,'add() places a bounded number of fuel gas cells');
 assert.equal(gases.metrics().fuel,placed,'metrics expose fuel gas count');
 
-// 9) The active registry stays bounded but new nearby gas still becomes active.
+// 9) Machine-facing move API preserves gas identity and active registry state.
+resetWorld();
+setTile(12,40,T.STEAM);
+assert.equal(gases.moveCell(12,40,12,35,getTile,setTile),T.STEAM,'moveCell can relocate a single gas cell for pipe machines');
+assert.equal(getTile(12,40),T.AIR,'moveCell clears the source cell');
+assert.equal(getTile(12,35),T.STEAM,'moveCell fills the target cell');
+assert.equal(gases.metrics().active,1,'moveCell keeps one active gas record after relocation');
+assert.equal(gases.moveCell(12,35,12,36,getTile,setTile),T.STEAM,'moveCell can move the same active gas again');
+assert.equal(gases.metrics().steam,1,'moveCell preserves gas kind across repeated moves');
+setTile(12,34,T.STONE);
+assert.equal(gases.moveCell(12,36,12,34,getTile,setTile),false,'moveCell refuses to overwrite solid cells');
+assert.equal(getTile(12,36),T.STEAM,'failed moveCell keeps the source gas intact');
+
+// 10) The active registry stays bounded but new nearby gas still becomes active.
 resetWorld();
 for(let i=0; i<1905; i++) setTile(i,50,T.POISON_GAS);
 assert.ok(gases.metrics().active<=1800,'gas active registry is capped');
@@ -236,7 +249,7 @@ const cappedAdd=gases.add('fuel',2200,50,{power:1,cells:1,getTile,setTile});
 assert.equal(cappedAdd,1,'add() can still evict an older active gas at the cap');
 assert.equal(count(T.FUEL_GAS),1,'cap-time add() places the new gas tile');
 
-// 10) In the real world store, gas is queryable through getTile but does not dirty
+// 11) In the real world store, gas is queryable through getTile but does not dirty
 // terrain chunks or invalidate cached terrain art on every drift step.
 const { world } = await import('../src/engine/world.js');
 world.clear();
@@ -258,7 +271,7 @@ assert.equal(world.getTile(airSpot.x,airSpot.y),T.STEAM,'gas snapshot restore ca
 assert.equal(world.chunkVersion(Math.floor(airSpot.x/CHUNK_W)),0,'gas snapshot restore also avoids terrain dirtying');
 assert.deepEqual(world.modifiedChunkIds(),[],'gas snapshot restore is kept out of terrain save chunks');
 
-// 11) Public water APIs clean up gas records even when called with a raw setter
+// 12) Public water APIs clean up gas records even when called with a raw setter
 // that does not forward world tile-change hooks. Future machines can use those
 // APIs directly without leaving invisible stale gas entries behind.
 const { water } = await import('../src/engine/water.js');
@@ -321,7 +334,7 @@ for(let i=0;i<8000;i++) water.update(getTile,rawSetTile,1/60);
 assert.equal(getTile(81,94),T.WATER,'pressure leveling replaced roofed-mouth gas with water');
 assert.equal(gases.metrics().active,0,'pressure leveling removed the replaced gas record without world hooks');
 
-// 12) Falling-solid APIs also clean up gas when run with a raw setter. That keeps
+// 13) Falling-solid APIs also clean up gas when run with a raw setter. That keeps
 // gases as a reliable transient layer for future machines and off-main simulations.
 const { fallingSolids } = await import('../src/engine/falling.js');
 resetWorld();

@@ -1,6 +1,7 @@
 // Fog of War module: tracks seen tiles and applies fog overlay
 // API:
 //  MM.fog.revealAround(px,py,r,{lineOfSight,getTile,blocksSight,rememberSeen})
+//  MM.fog.revealRect(x0,y0,x1,y1,{originX,originY,lineOfSight,getTile,blocksSight,rememberSeen})
 //  MM.fog.applyOverlay(ctx, sx, sy, viewX, viewY, TILE, getTile, T, {showMemory})
 //  MM.fog.exportSeen() -> [{cx:number, data:string, rle:true}]
 //  MM.fog.importSeen(list)
@@ -74,11 +75,32 @@ import { isAirOrGasTile, isGasTile } from './material_physics.js';
     }
   };
 
+  F.revealRect = function(x0,y0,x1,y1,opts){
+    visibleChunks.clear();
+    const ax=+x0, bx=+x1, ay=+y0, by=+y1;
+    x0=Math.floor(Math.min(ax,bx));
+    x1=Math.ceil(Math.max(ax,bx));
+    y0=Math.max(0,Math.floor(Math.min(ay,by)));
+    y1=Math.min(WORLD_H-1,Math.ceil(Math.max(ay,by)));
+    if(!Number.isFinite(x0)||!Number.isFinite(x1)||!Number.isFinite(y0)||!Number.isFinite(y1)) return;
+    const ox=opts && Number.isFinite(opts.originX) ? Math.floor(opts.originX) : Math.floor((x0+x1)/2);
+    const oy=opts && Number.isFinite(opts.originY) ? Math.floor(opts.originY) : Math.floor((y0+y1)/2);
+    const los=opts && opts.lineOfSight && typeof opts.getTile==='function' && typeof opts.blocksSight==='function';
+    const rememberSeen=!(opts && opts.rememberSeen===false);
+    for(let y=y0; y<=y1; y++){
+      for(let x=x0; x<=x1; x++){
+        if(!los || hasLineOfSight(ox,oy,x,y,opts.getTile,opts.blocksSight)) markRevealed(x,y,rememberSeen);
+      }
+    }
+  };
+
   // Fog covers unseen solid tiles AND unseen underground air, so undiscovered caves
   // stay hidden instead of reading as silhouettes against the cave backdrop
   F.applyOverlay = function(ctx, sx, sy, viewX, viewY, TILE, getTile, T, opts){
     if(revealAll) return;
     const showMemory=!(opts && opts.showMemory===false);
+    const originX=(opts && Number.isFinite(opts.originX)) ? opts.originX : 0;
+    const originY=(opts && Number.isFinite(opts.originY)) ? opts.originY : 0;
     const WGen=(window.MM && MM.worldGen && MM.worldGen.surfaceHeight)? MM.worldGen : null;
     const xEnd=sx+viewX+2;
     // The unknown fog is an opaque final mask; a tiny overlap hides zoom/camera
@@ -103,7 +125,7 @@ import { isAirOrGasTile, isGasTile } from './material_physics.js';
     };
     const drawRect=(r)=>{
       ctx.fillStyle=r.style;
-      const x=r.x0*TILE, y=r.y0*TILE;
+      const x=(r.x0-originX)*TILE, y=(r.y0-originY)*TILE;
       const w=(r.x1-r.x0)*TILE, h=(r.y1-r.y0+1)*TILE;
       if(r.style==='#000' && blackSeamOverlap>0){
         const o=blackSeamOverlap;

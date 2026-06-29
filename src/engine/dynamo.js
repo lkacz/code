@@ -19,6 +19,7 @@ import { isWindExposureBlockerTile } from './material_physics.js';
   const WIND_MIN_SPEED = 2.75;
   const WIND_RATED_SPEED = 6.2;
   const WIND_MAX_ENERGY_PER_SEC = 0.062;
+  const CATCHUP_MAX_SECONDS = 900;
   const VISIBLE_SCAN_INTERVAL_MS = 250;
   let visibleScanKey = '';
   let visibleScanAt = 0;
@@ -215,7 +216,6 @@ import { isWindExposureBlockerTile } from './material_physics.js';
     const take=Math.min(maxTake, Math.max(0,best.energy||0));
     if(take<=0) return null;
     best.energy=Math.max(0,(best.energy||0)-take);
-    best.power=Math.min(MAX_POWER, Math.max(best.power||0, 24 + take*20));
     best.pulse=1;
     kickRotor(best,0.2+take*0.8);
     return {
@@ -245,7 +245,6 @@ import { isWindExposureBlockerTile } from './material_physics.js';
     const take=Math.min(maxTake,Math.max(0,m.energy||0));
     if(take<=0) return null;
     m.energy=Math.max(0,(m.energy||0)-take);
-    m.power=Math.min(MAX_POWER,Math.max(m.power||0,18+take*8));
     m.pulse=1;
     kickRotor(m,0.18+take*0.42);
     return {
@@ -292,6 +291,34 @@ import { isWindExposureBlockerTile } from './material_physics.js';
       idle.sort((a,b)=>(b.y-a.y)||(a.x-b.x));
       for(let i=0; i<idle.length && machines.size>Math.floor(MACHINE_CAP*0.85); i++) machines.delete(idle[i].k);
     }
+  }
+  function catchUp(dt,getTile){
+    if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function') return false;
+    const simDt=Math.max(0,Math.min(CATCHUP_MAX_SECONDS,Number(dt)||0));
+    if(simDt<=0) return false;
+    let changed=false;
+    for(const [k,m] of machines){
+      if(!m || !finiteTile(m.x,m.y) || !isValidSlot(m.x,m.y,getTile)){
+        machines.delete(k);
+        changed=true;
+        continue;
+      }
+      normalizeMachine(m);
+      const before=m.energy||0;
+      const winded=recordWindPower(m,simDt,getTile);
+      if(!winded){
+        if((m.power||0)>0 || (m.pulse||0)>0) changed=true;
+        m.power=0;
+        m.pulse=0;
+        m.rotorSpeed=0;
+      }else{
+        const work=Math.max(0,Math.min(1,(m.power||0)/MAX_POWER));
+        m.rotorSpeed=Math.max(m.rotorSpeed||0,5+work*20);
+        m.rotorAngle=((m.rotorAngle||0)+(m.rotorSpeed||0)*Math.min(2,simDt))%(Math.PI*2);
+      }
+      if(Math.abs((m.energy||0)-before)>0.0001) changed=true;
+    }
+    return changed;
   }
   function ensureVisibleMachines(sx,sy,viewX,viewY,getTile){
     if(typeof getTile!=='function') return;
@@ -462,7 +489,7 @@ import { isWindExposureBlockerTile } from './material_physics.js';
     return {machines:machines.size, active, currentPower:+currentPower.toFixed(2), storedEnergy:+storedEnergy.toFixed(2), rotorSpeed:+rotorSpeed.toFixed(2)};
   }
 
-  const api={isCasing,isSlot,isValidSlot,slotOrientation,plannedCells,structureCellsAt,recordFlow,absorbNear,energyAt,drainAt,onTileChanged,update,draw,snapshot,restore,reset,metrics,_debug:{machines,MAX_POWER,ENERGY_CAPACITY,MACHINE_CAP,windSpeedForSlot,WIND_MIN_SPEED,WIND_RATED_SPEED,WIND_MAX_ENERGY_PER_SEC}};
+  const api={isCasing,isSlot,isValidSlot,slotOrientation,plannedCells,structureCellsAt,recordFlow,absorbNear,energyAt,drainAt,onTileChanged,update,catchUp,draw,snapshot,restore,reset,metrics,_debug:{machines,MAX_POWER,ENERGY_CAPACITY,MACHINE_CAP,windSpeedForSlot,WIND_MIN_SPEED,WIND_RATED_SPEED,WIND_MAX_ENERGY_PER_SEC,CATCHUP_MAX_SECONDS}};
   MM.dynamo=api;
 })();
 

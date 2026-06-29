@@ -31,6 +31,8 @@ assert.ok(MM.inventory.RESOURCES.some(r=>r.key==='copper' && !r.tile), 'copper i
 assert.ok(MM.inventory.RESOURCES.some(r=>r.key==='transistor' && r.tile==='TRANSISTOR'), 'transistor can be placed for solar block-reaction assemblies');
 assert.equal(INFO[T.DYNAMO].machine, 'dynamo', 'dynamo casing is a machine tile');
 assert.ok(MM.inventory.RESOURCES.some(r=>r.key==='dynamo' && r.tile==='DYNAMO'), 'dynamo is a collectable/placeable resource');
+assert.equal(INFO[T.VENDING_MACHINE].machine, 'vendingMachine', 'vending machines are machine tiles');
+assert.ok(MM.inventory.RESOURCES.some(r=>r.key==='vendingMachine' && r.tile==='VENDING_MACHINE'), 'vending machines are collectable/placeable city salvage');
 
 WG.worldSeed = 20260616;
 WG.clearCaches();
@@ -62,6 +64,7 @@ const counts = {
   dynamo: 0,
   dynamoSlot: 0,
   validDynamos: 0,
+  vending: 0,
   torches: 0,
   chests: 0,
   airBelowSurface: 0
@@ -84,6 +87,7 @@ for(let x=center-150; x<=center+150; x++){
       counts.dynamoSlot++;
       if(dynamo.isValidSlot(x,y,world.getTile)) counts.validDynamos++;
     }
+    else if(t===T.VENDING_MACHINE) counts.vending++;
     else if(t===T.TORCH) counts.torches++;
     else if(t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC) counts.chests++;
     else if(t===T.AIR && y>surf+2) counts.airBelowSurface++;
@@ -100,6 +104,7 @@ assert.ok(counts.electronics > 0 && counts.electronics <= 5, 'city generates rar
 assert.ok(counts.dynamo >= 2, 'city power plant contains harvestable dynamo casing blocks');
 assert.ok(counts.dynamoSlot >= 1, 'city power plant contains a dynamo turbine slot');
 assert.ok(counts.validDynamos >= 1 && counts.validDynamos <= 2, 'each generated city exposes one or two complete dynamo structures in its power plant');
+assert.ok(counts.vending >= 1, 'city generates fancy salvageable vending machines');
 assert.ok(counts.torches > 0, 'city generates lights in underground structures');
 assert.ok(counts.chests > 0, 'city can contain loot');
 assert.ok(counts.airBelowSurface > 500, 'city contains carved interiors/tunnels below surface');

@@ -41,6 +41,7 @@
 // by extending the generator (silhouette + stats) without touching physics or combat.
 // The sim core runs headless; Node tests stub MM (see tools/boss-sim.test.mjs).
 import { isBlastProtectedTile, isCreatureOpenTile, isFoliageTile } from './material_physics.js';
+import { worldHostility as HOSTILITY } from './world_hostility.js';
 
 window.MM = window.MM || {};
 (function(){
@@ -138,6 +139,7 @@ window.MM = window.MM || {};
   // Monsters pass through air, water, leaves and transient gases; everything else is wall/floor.
   function solidT(t){ return !openT(t); }
   function playerRef(){ return (typeof window!=='undefined' && window.player) || null; }
+  function hostilityAt(x){ return HOSTILITY.at(Number.isFinite(x) ? x : 0); }
   function say(t){ try{ if(typeof window!=='undefined' && window.msg) window.msg(t); }catch(e){} }
   // Hero damage is centralized in main.js (window.damageHero); the inline body
   // below is the fallback for the DOM-less Node sims, which stub neither handler.
@@ -170,6 +172,7 @@ window.MM = window.MM || {};
   // opts.scale  → silhouette dimensions multiplier (3 = gargantuan).
   function generateMonster(seed,x,y,opts){
     const rng=mulberry(seed);
+    const host=hostilityAt(x);
     const scale=Math.max(1,(opts && opts.scale)||1);
     const aquatic=!!(opts && opts.aquatic);
     const roll=rng();
@@ -238,6 +241,7 @@ window.MM = window.MM || {};
         hitT:0, limbP:rng()*6.28,
       };
       p.maxHp = isCore? 18+size : nearCore? 9+Math.floor(rng()*4) : dy===0? 5 : 4+Math.floor(rng()*3);
+      p.maxHp = Math.max(1, Math.round(p.maxHp * (host.bossHpMult || 1)));
       p.hp=p.maxHp;
       parts.push(p); if(isCore) core=p;
     }
@@ -260,8 +264,9 @@ window.MM = window.MM || {};
       id:monsterSeq++, seed, name, archetype, parts, core, hue, bodyBlocks,
       x, y, vx:0, vy:0, dir:facing, onGround:false,
       baseParts:reach.size, aquatic, gargantuan,
-      speed:(1.2+rng()*1.4)*(gargantuan?0.75:1), sense:18+rng()*14+(gargantuan?10:0),
-      jump:7+rng()*3, hopT:0, attackDmg:Math.round((6+rng()*6)*(gargantuan?2:1)),
+      hostility:+host.hostility.toFixed(3), hostilitySide:host.side,
+      speed:(1.2+rng()*1.4)*(gargantuan?0.75:1)*(host.bossSpeedMult || 1), sense:18+rng()*14+(gargantuan?10:0)+host.hostility*18,
+      jump:7+rng()*3, hopT:0, attackDmg:Math.round((6+rng()*6)*(gargantuan?2:1)*(host.bossDamageMult || 1)),
       state:'roam', flipT:2+rng()*4, frozen:false, bobP:rng()*6.28,
       hunger:rng()*0.4, feed:null, biteT:0, mealBites:0, grown:0, forageCd:0,
       tilt:0, tiltV:0, gait:rng()*6.28, airFrom:null,
@@ -296,7 +301,9 @@ window.MM = window.MM || {};
     const seed=(opts && typeof opts.seed==='number')? (opts.seed>>>0) : ((Math.random()*0x7fffffff)|0);
     // 10% of natural spawns are gargantuan: 3x silhouette, double attack power,
     // an epic-chest hoard on death. Forced/test spawns stay normal unless asked.
-    const scale=(opts && opts.scale) || ((!opts || !opts.force) && Math.random()<0.10? 3 : 1);
+    const hostNear=hostilityAt(px);
+    const giantChance=0.10 + (hostNear.bossGargantuanBonus || 0);
+    const scale=(opts && opts.scale) || ((!opts || !opts.force) && Math.random()<giantChance? (hostNear.hostility>0.86 && Math.random()<0.30 ? 4 : 3) : 1);
     for(let attempt=0; attempt<40; attempt++){
       let x;
       if(opts && typeof opts.x==='number'){
@@ -693,15 +700,17 @@ window.MM = window.MM || {};
     const pick=cands[Math.floor(Math.random()*cands.length)];
     const block=EAT_GROW[eatenType] ?? eatenType;
     const base=infoColor(block);
+    const host=hostilityAt(m.x);
+    const partHp=Math.max(1, Math.round((pick[1]===0?5:4+Math.floor(Math.random()*3)) * (host.bossHpMult || 1)));
     const np={
       dx:pick[0], dy:pick[1], role: pick[1]===0?'leg':'flesh', blockType:block,
       color: base? shade(base, Math.round(Math.random()*26-13)) : m.parts[0].color,
-      hitT:0.2, limbP:Math.random()*6.28, maxHp: pick[1]===0?5:4+Math.floor(Math.random()*3),
+      hitT:0.2, limbP:Math.random()*6.28, maxHp: partHp,
     };
     np.hp=np.maxHp;
     m.parts.push(np); m.grown++;
     refreshStructure(m);   // bigger silhouette: bounds + occupancy must follow
-    if(m.core) m.core.maxHp += 1;                        // a larger beast guards a tougher heart
+    if(m.core) m.core.maxHp += Math.max(1, Math.round(host.bossHpMult || 1)); // a larger beast guards a tougher heart
     return np;
   }
   // Drive a hungry OR wounded beast to forage and chew; while eating it is peaceable
@@ -1092,10 +1101,19 @@ window.MM = window.MM || {};
     // at Infinity until the next phase flip pulls it back down
     const isDay=!!cycleInfo().isDay;
     if(lastIsDay===null) lastIsDay=isDay;
-    else if(isDay!==lastIsDay){ lastIsDay=isDay; spawnTimer=Math.min(spawnTimer,0.5); }
+    else if(isDay!==lastIsDay){
+      lastIsDay=isDay;
+      const p=playerRef();
+      const host=hostilityAt(p && Number.isFinite(p.x) ? p.x : 0);
+      spawnTimer=Math.min(spawnTimer,0.5 / Math.max(1, host.bossSpawnMult || 1));
+    }
     if(spawnTimer>0){
       spawnTimer-=dt;
-      if(spawnTimer<=0) spawnTimer = trySpawn(getTile)? Infinity : CFG.RETRY_DELAY;
+      if(spawnTimer<=0){
+        const p=playerRef();
+        const host=hostilityAt(p && Number.isFinite(p.x) ? p.x : 0);
+        spawnTimer = trySpawn(getTile)? Infinity : CFG.RETRY_DELAY / Math.max(1, host.bossSpawnMult || 1);
+      }
     }
     const p=playerRef();
     const hasPlayer=!!(p && isFinite(p.x));
@@ -1322,9 +1340,12 @@ window.MM = window.MM || {};
   }
   function metrics(){
     let parts=0; for(const m of monsters) parts+=m.parts.length;
+    const p=playerRef();
+    const host=hostilityAt(p && Number.isFinite(p.x) ? p.x : 0);
     return {alive:monsters.length, parts, debris:debris.length, projectiles:projectiles.length,
             spawned:spawnedTotal, killed:killedTotal,
-            nextIn:(spawnTimer>0 && isFinite(spawnTimer))? spawnTimer : null};
+            nextIn:(spawnTimer>0 && isFinite(spawnTimer))? spawnTimer : null,
+            hostility:+host.hostility.toFixed(3), hostilitySide:host.side};
   }
   function setCycleOverride(o){
     if(o===null || o===undefined){ cycleOverride=null; return; }

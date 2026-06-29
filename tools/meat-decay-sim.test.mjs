@@ -30,6 +30,8 @@ const looseItemSrc = mainSrc.slice(looseItemBranch, baseFillBranch);
 assert.match(looseItemSrc, /drawUndergroundBackdrop\(cctx,lx\*TILE,y\*TILE,wx,y,surf\)/, 'loose items keep cave backdrops underground');
 assert.match(looseItemSrc, /drawMeatTile/, 'loose meat renders through the cutout meat sprite');
 assert.match(looseItemSrc, /continue;/, 'loose item branch exits before block-color fill');
+assert.match(mainSrc, /const loosePlacement=!chest && isLooseItemTile\(id\);[\s\S]*id!==T\.WATER && !loosePlacement/, 'loose item placement bypasses structural support checks so meat can be dropped');
+assert.match(mainSrc, /function useToolSecondaryAt\(tx,ty\)\{[\s\S]*const selectedFood=selectedFoodEffect\(\);[\s\S]*if\(selectedFood\)\{[\s\S]*return tryPlace\(tx,ty\);[\s\S]*return false;[\s\S]*\}[\s\S]*if\(eatSelectedFood\(\)\) return true;/, 'secondary tool action treats hotbar-selected food as a placeable block instead of silently eating it');
 const meatRendererSrc = mainSrc.slice(mainSrc.indexOf('function drawMeatTile'), mainSrc.indexOf('function drawChestTile'));
 assert.doesNotMatch(meatRendererSrc, /fillRect\(px\+4,py\+TILE-4,TILE-8,2\)/, 'meat sprite does not paint an artificial rectangular backing');
 
@@ -164,6 +166,60 @@ assert.equal(getTile(8,8),T.BAKED_MEAT,'heated fresh meat becomes baked meat');
 advance(180,{x:8,y:8});
 assert.equal(getTile(8,8),T.BAKED_MEAT,'baked meat does not rot or vanish through the meat decay lifecycle');
 assert.equal(meat.snapshot().list.length,0,'baked meat is removed from meat decay tracking');
+
+clear();
+setTile(12,9,T.GRASS);
+setTile(12,8,T.MEAT);
+setTile(13,8,T.LAVA);
+meat.noteMeat(12,8,{age:0,gasT:99});
+meat.update(0.1,{x:12,y:8},getTile,setTile);
+assert.equal(getTile(12,8),T.BAKED_MEAT,'fresh meat placed directly next to lava cooks');
+assert.equal(meat.snapshot().list.length,0,'lava-cooked meat is removed from decay tracking');
+
+clear();
+setTile(14,9,T.GRASS);
+setTile(14,8,T.MEAT);
+setTile(13,8,T.TORCH);
+meat.noteMeat(14,8,{age:0,gasT:99});
+meat.update(0.1,{x:14,y:8},getTile,setTile);
+assert.equal(getTile(14,8),T.BAKED_MEAT,'fresh meat placed directly next to a torch cooks');
+
+clear();
+setTile(15,9,T.GRASS);
+setTile(15,8,T.MEAT);
+setTile(16,8,T.WOOD);
+assert.equal(fire.ignite(16,8,getTile,setTile),true,'wood next to meat can be burning');
+meat.noteMeat(15,8,{age:0,gasT:99});
+meat.update(0.1,{x:15,y:8},getTile,setTile);
+assert.equal(getTile(15,8),T.BAKED_MEAT,'fresh meat placed directly next to burning fire cooks');
+
+clear();
+setTile(18,9,T.GRASS);
+setTile(18,8,T.MEAT);
+[[1,0],[-1,0],[0,-1],[1,-1],[-1,-1]].forEach(([dx,dy])=>setTile(18+dx,8+dy,T.HOT_AIR));
+meat.noteMeat(18,8,{age:0,gasT:99});
+meat.update(0.1,{x:18,y:8},getTile,setTile);
+assert.equal(getTile(18,8),T.BAKED_MEAT,'fresh meat cooks after absorbing five nearby hot-air cells');
+assert.equal([[1,0],[-1,0],[0,-1],[1,-1],[-1,-1]].filter(([dx,dy])=>getTile(18+dx,8+dy)===T.HOT_AIR).length,0,'hot-air cooking consumes the five hot-air cells');
+
+clear();
+for(let x=28; x<=32; x++) setTile(x,15,T.STONE);
+setTile(30,8,T.MEAT);
+[[1,0],[-1,0],[0,-1],[1,-1],[-1,-1]].forEach(([dx,dy])=>setTile(30+dx,8+dy,T.HOT_AIR));
+meat.noteMeat(30,8,{age:0,gasT:99});
+meat.update(0.1,{x:30,y:8},getTile,setTile);
+assert.equal(getTile(30,8),T.AIR,'unsupported hot-air-cooked meat leaves the floating source cell');
+assert.equal(getTile(30,14),T.BAKED_MEAT,'unsupported hot-air-cooked meat settles as a cooked loose item');
+assert.equal(meat.snapshot().list.length,0,'settled cooked meat is still not tracked for decay');
+
+clear();
+setTile(22,9,T.GRASS);
+setTile(22,8,T.MEAT);
+[[1,0],[-1,0],[0,-1],[1,-1]].forEach(([dx,dy])=>setTile(22+dx,8+dy,T.HOT_AIR));
+meat.noteMeat(22,8,{age:0,gasT:99});
+meat.update(0.1,{x:22,y:8},getTile,setTile);
+assert.equal(getTile(22,8),T.MEAT,'four nearby hot-air cells are not enough to cook fresh meat');
+assert.equal([[1,0],[-1,0],[0,-1],[1,-1]].filter(([dx,dy])=>getTile(22+dx,8+dy)===T.HOT_AIR).length,4,'insufficient hot air is not consumed');
 
 clear();
 setTile(7,11,T.GRASS);

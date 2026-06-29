@@ -2,6 +2,7 @@ import { T, MOVE, isLeaf, WORLD_H } from '../constants.js';
 import { isCreatureRockFloorTile, isSolidCollisionTile as isSolid } from './material_physics.js';
 import WORLD from './world.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
+import { worldHostility as HOSTILITY } from './world_hostility.js';
 
 // Basic mob / animal system (birds, fish) with aggression propagation.
 // Exposes MM.mobs API (legacy) and ESM exports.
@@ -561,14 +562,20 @@ const mobs = (function(){
   const mobLasers=[]; const MOB_LASER_CAP=18;
   const SENTINEL_VOLLEY_WINDOW_MS=450;
   const SENTINEL_VOLLEY_SHOT_CAP=3;
+  const SENTINEL_RELOAD_SECONDS=3;
+  const SENTINEL_BURST_MIN=3;
+  const SENTINEL_BURST_MAX=5;
+  const SENTINEL_MEAT_SCAN_MS=180;
+  const SENTINEL_MEAT_RANGE=12;
   let laserTraceCalls=0, laserTileChecks=0;
   let sentinelVolleyStart=0, sentinelVolleyShots=0;
   let sentinelShotsThisFrame=0, sentinelDeferredThisFrame=0;
+  let sentinelMeatShots=0, sentinelMeatCooked=0, sentinelMeatDestroyed=0, sentinelReloads=0;
   function shootAt(m, target, speed, dmg){
     if(mobProjectiles.length>=MOB_PROJ_CAP) return false;
     const dx=target.x-m.x, dy=(target.y-0.3)-m.y;
     const d=Math.hypot(dx,dy)||1;
-    mobProjectiles.push({x:m.x, y:m.y-0.4, vx:dx/d*speed, vy:dy/d*speed-1.4, dmg, t:0, spin:Math.random()*6.28});
+    mobProjectiles.push({x:m.x, y:m.y-0.4, vx:dx/d*speed, vy:dy/d*speed-1.4, dmg:dmg*(m.dmgMult||1), t:0, spin:Math.random()*6.28});
     try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
     return true;
   }
@@ -583,6 +590,7 @@ const mobs = (function(){
     ];
   }
   function sentinelAimPoint(target){
+    if(target && target.kind==='meat') return {x:target.x, y:target.y};
     return {x:target.x, y:target.y-0.42};
   }
   function traceLaser(sx,sy,tx,ty,getTile,maxDist){
@@ -609,9 +617,12 @@ const mobs = (function(){
   function sentinelShotLines(m,target,getTile,maxDist,dirOverride){
     if(!m || !target) return [];
     const aim=sentinelAimPoint(target);
+    const tileReader = (target.kind==='meat' && typeof getTile==='function')
+      ? ((x,y)=> (x===target.tx && y===target.ty) ? T.AIR : getTile(x,y))
+      : getTile;
     return sentinelEyeOrigins(m,dirOverride).map(o=>({
       origin:o,
-      end:traceLaser(o.x,o.y,aim.x,aim.y,getTile,maxDist||16)
+      end:traceLaser(o.x,o.y,aim.x,aim.y,tileReader,maxDist||16)
     }));
   }
   function sentinelVisionLines(m,target,getTile,maxDist,now,dirOverride){
@@ -643,8 +654,91 @@ const mobs = (function(){
     m._sentinelLosFresh=true;
     return lines;
   }
-  function sentinelLaserAt(m,target,dmg,getTile,lines){
+  function sentinelBurstBudget(){
+    return SENTINEL_BURST_MIN + Math.floor(Math.random()*(SENTINEL_BURST_MAX-SENTINEL_BURST_MIN+1));
+  }
+  function sentinelShotReady(m,dt){
+    if(!m) return false;
+    if(m.sentinelReloadT>0){
+      m.sentinelReloadT=Math.max(0,m.sentinelReloadT-dt);
+      m.vx*=0.55;
+      return false;
+    }
+    if(!finiteNum(m.sentinelShotsUntilReload) || m.sentinelShotsUntilReload<=0) m.sentinelShotsUntilReload=sentinelBurstBudget();
+    return true;
+  }
+  function sentinelRecordShot(m){
+    if(!m) return;
+    if(!finiteNum(m.sentinelShotsUntilReload) || m.sentinelShotsUntilReload<=0) m.sentinelShotsUntilReload=sentinelBurstBudget();
+    m.sentinelShotsUntilReload--;
+    if(m.sentinelShotsUntilReload<=0){
+      m.sentinelReloadT=SENTINEL_RELOAD_SECONDS;
+      m.sentinelShotsUntilReload=sentinelBurstBudget();
+      sentinelReloads++;
+    }
+  }
+  function isSentinelMeatTile(t){ return t===T.MEAT; }
+  function sentinelMeatTargetAt(tx,ty){
+    return {kind:'meat', tx, ty, x:tx+0.5, y:ty+0.5};
+  }
+  function cachedSentinelMeatTarget(m,getTile){
+    if(!m || !m._sentinelMeatTarget || typeof getTile!=='function') return null;
+    const t=m._sentinelMeatTarget;
+    if(isSentinelMeatTile(getTile(t.tx,t.ty))) return sentinelMeatTargetAt(t.tx,t.ty);
+    m._sentinelMeatTarget=null;
+    return null;
+  }
+  function findSentinelMeatTarget(m,getTile,now){
+    if(!m || typeof getTile!=='function') return null;
+    const t=(typeof now==='number' && isFinite(now)) ? now : performance.now();
+    if(m._nextSentinelMeatScanAt && t<m._nextSentinelMeatScanAt) return cachedSentinelMeatTarget(m,getTile);
+    m._nextSentinelMeatScanAt=t+SENTINEL_MEAT_SCAN_MS;
+    const minX=Math.floor(m.x-SENTINEL_MEAT_RANGE);
+    const maxX=Math.floor(m.x+SENTINEL_MEAT_RANGE);
+    const minY=Math.floor(m.y-6);
+    const maxY=Math.floor(m.y+3);
+    const candidates=[];
+    for(let y=minY; y<=maxY; y++){
+      for(let x=minX; x<=maxX; x++){
+        if(!isSentinelMeatTile(getTile(x,y))) continue;
+        const tx=x+0.5, ty=y+0.5;
+        const dx=tx-m.x, dy=ty-m.y;
+        const d2=dx*dx+dy*dy;
+        if(d2>SENTINEL_MEAT_RANGE*SENTINEL_MEAT_RANGE || Math.abs(dy)>7.5) continue;
+        candidates.push({tx:x,ty:y,x:tx,y:ty,d2});
+      }
+    }
+    candidates.sort((a,b)=>a.d2-b.d2);
+    for(const c of candidates.slice(0,5)){
+      const target=sentinelMeatTargetAt(c.tx,c.ty);
+      const dir=target.x>=m.x?1:-1;
+      const lines=sentinelShotLines(m,target,getTile,SENTINEL_MEAT_RANGE,dir);
+      if(lines.some(l=>l.end && l.end.clear)){
+        m._sentinelMeatTarget={tx:c.tx,ty:c.ty};
+        target.lines=lines;
+        target.dir=dir;
+        return target;
+      }
+    }
+    m._sentinelMeatTarget=null;
+    return null;
+  }
+  function applySentinelMeatLaser(target,getTile,setTile){
+    if(!target || target.kind!=='meat' || typeof getTile!=='function' || typeof setTile!=='function') return false;
+    if(!isSentinelMeatTile(getTile(target.tx,target.ty))) return false;
+    sentinelMeatShots++;
+    if(Math.random()<0.10){
+      setTile(target.tx,target.ty,T.AIR);
+      sentinelMeatDestroyed++;
+    } else {
+      setTile(target.tx,target.ty,T.BAKED_MEAT);
+      sentinelMeatCooked++;
+    }
+    return true;
+  }
+  function sentinelLaserAt(m,target,dmg,getTile,setTile,lines){
     if(!m || !target || mobLasers.length>=MOB_LASER_CAP-1) return false;
+    if(target.kind==='meat' && (!isSentinelMeatTile(getTile(target.tx,target.ty)) || typeof setTile!=='function')) return false;
     const shotLines=Array.isArray(lines) ? lines : sentinelShotLines(m,target,getTile,16);
     const clearLines=shotLines.filter(l=>l && l.end && l.end.clear);
     if(!clearLines.length) return false;
@@ -659,7 +753,8 @@ const mobs = (function(){
         phase:Math.random()*Math.PI*2
       });
     }
-    damagePlayer(dmg, m.x, m.y-0.6);
+    if(target.kind==='meat') applySentinelMeatLaser(target,getTile,setTile);
+    else damagePlayer(dmg*(m.dmgMult||1), m.x, m.y-0.6);
     try{ if(MM.audio && MM.audio.play) MM.audio.play('beam'); }catch(e){}
     try{
       const p=MM.particles;
@@ -671,6 +766,7 @@ const mobs = (function(){
         }
       }
     }catch(e){}
+    sentinelRecordShot(m);
     return true;
   }
   function reserveSentinelLaserShot(now){
@@ -756,23 +852,37 @@ const mobs = (function(){
       return below===T.STEEL || below===T.STONE || below===T.GRANITE || below===T.BASALT || below===T.OBSIDIAN;
     },
     biome:'city',
-    onUpdate(m,spec,{player,dt,distToPlayer,getTile,now}){
-      const dx=player.x-m.x, dy=player.y-m.y, adx=Math.abs(dx)||1;
+    onUpdate(m,spec,{player,dt,distToPlayer,getTile,setTile,now}){
+      const weaponReady=sentinelShotReady(m,dt);
+      const meatTarget = typeof setTile==='function' ? findSentinelMeatTarget(m,getTile,now) : null;
+      const target = meatTarget || player;
+      const targetIsMeat = target && target.kind==='meat';
+      const dx=target.x-m.x, dy=target.y-m.y, adx=Math.abs(dx)||1;
       const dir=dx>=0?1:-1;
-      const inView = distToPlayer < spec.sightRange && Math.abs(dy) < 7.5;
-      const losRange = Math.min(16, spec.sightRange||16);
-      const lines = inView ? sentinelVisionLines(m,player,getTile,losRange,now,dir) : [];
-      const canSeePlayer = lines.some(l=>l.end && l.end.clear);
-      if(canSeePlayer){
+      const distToTarget = Math.hypot(dx,dy);
+      const inView = targetIsMeat
+        ? distToTarget < SENTINEL_MEAT_RANGE && Math.abs(dy) < 7.5
+        : distToPlayer < spec.sightRange && Math.abs(dy) < 7.5;
+      const losRange = targetIsMeat ? SENTINEL_MEAT_RANGE : Math.min(16, spec.sightRange||16);
+      const lines = inView ? (targetIsMeat && target.lines ? target.lines : sentinelVisionLines(m,target,getTile,losRange,now,dir)) : [];
+      const canSeeTarget = lines.some(l=>l.end && l.end.clear);
+      if(canSeeTarget){
         m.facing=dir;
-        if(adx>1.8 && distToPlayer<spec.pursueRange) m.vx += dir*spec.speed*0.42*dt*30;
+        if(targetIsMeat){
+          if(adx>2.4 && distToTarget<spec.pursueRange) m.vx += dir*spec.speed*0.22*dt*30;
+          else m.vx *= 0.68;
+        } else if(adx>1.8 && distToPlayer<spec.pursueRange) m.vx += dir*spec.speed*0.42*dt*30;
         else m.vx *= 0.78;
-        m.shootCd=(m.shootCd==null?0.9:m.shootCd)-dt;
-        if(distToPlayer<13 && distToPlayer>3 && m.shootCd<=0){
-          const shotLines = m._sentinelLosFresh ? lines : null;
-          if(!reserveSentinelLaserShot(now)){
+        m.shootCd=(m.shootCd==null?(targetIsMeat?0.65:0.9):m.shootCd)-dt;
+        const minRange = targetIsMeat ? 0.8 : 3;
+        const maxRange = targetIsMeat ? SENTINEL_MEAT_RANGE : 13;
+        if(distToTarget<maxRange && distToTarget>minRange && m.shootCd<=0){
+          const shotLines = (targetIsMeat && target.lines) ? target.lines : (m._sentinelLosFresh ? lines : null);
+          if(!weaponReady){
+            m.shootCd=Math.min(m.shootCd,0);
+          } else if(!reserveSentinelLaserShot(now)){
             m.shootCd=0.18+Math.random()*0.22;
-          } else if(sentinelLaserAt(m,player,spec.dmg,getTile,shotLines)) m.shootCd=1.55+Math.random()*0.75;
+          } else if(sentinelLaserAt(m,target,targetIsMeat?0:spec.dmg,getTile,setTile,shotLines)) m.shootCd=1.55+Math.random()*0.75;
           else m.shootCd=0.25;
         }
       } else {
@@ -946,14 +1056,29 @@ const mobs = (function(){
   function validMobState(m){
     return !!m && finiteCoord(m.x) && finiteCoord(m.y) && finiteNum(m.vx) && finiteNum(m.vy) && finiteNum(m.hp);
   }
+  function mobHostilityAt(x){ return HOSTILITY.at(finiteCoord(x) ? x : 0); }
+  function mobMaxHp(spec,x){
+    const h=mobHostilityAt(x);
+    const base=Math.max(1, Math.round(spec && spec.hp ? spec.hp : 5));
+    if(spec && spec.id==='ZLOTY') return base;
+    const mult=(spec && spec.organic===false) ? (1 + h.hostility * 0.70) : (h.mobHpMult || 1);
+    return Math.max(1, Math.round(base * mult));
+  }
+  function mobDamageMult(spec,x){
+    const h=mobHostilityAt(x);
+    if(spec && spec.id==='ZLOTY') return 1;
+    return (spec && spec.organic===false) ? (1 + h.hostility * 0.62) : (h.mobDamageMult || 1);
+  }
 
   function create(spec, x,y,getTile){
     x=finiteCoord(x)?x:0; y=finiteCoord(y)?y:0;
     const now = performance.now();
-  const m={ id: spec.id, x, y, vx:0, vy:0, hp: spec.hp, state:'idle', tNext: now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000, facing:1, spawnT: now, attackCd:0, hitFlashUntil:0, shake:0, tickMod: (Math.random()<0.5?1:0), sleepUntil:0 };
+  const h=mobHostilityAt(x);
+  const maxHp=mobMaxHp(spec,x);
+  const m={ id: spec.id, x, y, vx:0, vy:0, hp: maxHp, maxHp, baseHp: spec.hp, hostility:+h.hostility.toFixed(3), hostilitySide:h.side, dmgMult:mobDamageMult(spec,x), state:'idle', tNext: now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000, facing:1, spawnT: now, attackCd:0, hitFlashUntil:0, shake:0, tickMod: (Math.random()<0.5?1:0), sleepUntil:0 };
   // Per-entity variability
   m.scale = 0.75 + Math.random()*0.25; // 0.75..1.0 visual & collider scaling
-  m.speedMul = 0.75 + Math.random()*0.25; // 0.75..1.0 movement speed
+  m.speedMul = (0.75 + Math.random()*0.25) * (h.mobSpeedMult || 1); // regional speed pressure + per-mob variance
   m.jumpMul = 0.75 + Math.random()*0.25; // 0.75..1.0 jump strength
   // Natural lifespan to avoid overpopulation: base span per species or default, scaled 0.5..1.5
   const BASE_LIFE_SEC = (spec.lifeSpanSec && spec.lifeSpanSec>0) ? spec.lifeSpanSec : 120; // default 2 minutes
@@ -1157,7 +1282,8 @@ const mobs = (function(){
       const p=seasons && typeof seasons.profile==='function' ? seasons.profile() : null;
       const v=p && p.animalSpawnMult;
       const broad=(typeof v==='number' && isFinite(v)) ? Math.max(0.05, Math.min(3, v)) : 1;
-      return Math.max(0.02, Math.min(3.2, broad * seasonalSpeciesFactor(spec)));
+      const h=mobHostilityAt((window.player && finiteCoord(window.player.x)) ? window.player.x : 0);
+      return Math.max(0.02, Math.min(4.2, broad * seasonalSpeciesFactor(spec) * (h.mobSpawnMult || 1)));
     }catch(e){ return 1; }
   }
   function seasonAdjustedLocalCap(spec){
@@ -1200,8 +1326,10 @@ const mobs = (function(){
   if(now < nextSpawnCheck) return; // throttle globally
   if(now < spawnFreezeUntil) { nextSpawnCheck = now + 500; return; }
     nextSpawnCheck = now + ECO_SPAWN_MIN_MS + Math.random()*ECO_SPAWN_JITTER_MS;
+    const host=mobHostilityAt(player.x);
+    const totalLocalCap=Math.max(ECO_TOTAL_LOCAL_CAP, Math.round(ECO_TOTAL_LOCAL_CAP * (host.mobLocalCapMult || 1)));
     const local=localMobCounts(player,ECO_LOCAL_RADIUS);
-    if(local.total>=ECO_TOTAL_LOCAL_CAP) return;
+    if(local.total>=totalLocalCap) return;
     const biome=biomeAt(Math.floor(player.x));
     const candidates=[];
     for(const key in SPECIES){
@@ -1220,7 +1348,7 @@ const mobs = (function(){
     }
     candidates.sort((a,b)=>b.weight-a.weight);
     let born=0;
-    while(born<ECO_MAX_BIRTHS_PER_PASS && local.total+born<ECO_TOTAL_LOCAL_CAP && candidates.length){
+    while(born<ECO_MAX_BIRTHS_PER_PASS && local.total+born<totalLocalCap && candidates.length){
       const totalWeight=candidates.reduce((s,c)=>s+c.weight,0);
       let pick=Math.random()*totalWeight, idx=0;
       for(; idx<candidates.length; idx++){ pick-=candidates[idx].weight; if(pick<=0) break; }
@@ -1228,7 +1356,7 @@ const mobs = (function(){
       candidates.splice(Math.min(idx,candidates.length-1),1);
       const batch=(typeof cand.spec.spawnBatch==='number' && isFinite(cand.spec.spawnBatch)) ? Math.max(1,cand.spec.spawnBatch|0) : 1;
       const passCapForCandidate=Math.max(ECO_MAX_BIRTHS_PER_PASS,batch);
-      for(let n=0; n<batch && born<passCapForCandidate && local.total+born<ECO_TOTAL_LOCAL_CAP; n++){
+      for(let n=0; n<batch && born<passCapForCandidate && local.total+born<totalLocalCap; n++){
         const localCap=seasonAdjustedLocalCap(cand.spec);
         const localCount=local.bySpecies[cand.spec.id]||0;
         if(localCount>=localCap || countSpecies(cand.spec.id)>=cand.spec.max) break;
@@ -1348,7 +1476,7 @@ const mobs = (function(){
     if(Math.abs(pr.vx)>13) pr.vx=Math.sign(pr.vx)*13;
     return pr.vx!==before;
   }
-  function update(dt, player, getTile){
+  function update(dt, player, getTile, setTile){
     if(!(dt>0) || !isFinite(dt) || !player || !finiteCoord(player.x) || !finiteCoord(player.y) || typeof getTile!=='function') return;
     const now = performance.now(); frame++;
     laserTraceCalls=0; laserTileChecks=0;
@@ -1365,13 +1493,19 @@ const mobs = (function(){
       const p=MM.seasons && MM.seasons.profile ? MM.seasons.profile() : null;
       metrics.seasonAnimalMult = p && typeof p.animalSpawnMult==='number' ? +p.animalSpawnMult.toFixed(3) : 1;
     }catch(e){ metrics.seasonAnimalMult = 1; }
+    try{
+      const h=mobHostilityAt(player.x);
+      metrics.hostility = +h.hostility.toFixed(3);
+      metrics.hostilitySide = h.side;
+      metrics.mobSpawnMult = +(h.mobSpawnMult || 1).toFixed(3);
+    }catch(e){}
     let active=0;
     for(let i=0;i<mobs.length;i++){
       const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue; const aggressive=isAggro(m.id)||!!spec.alwaysAggro;
       // Natural lifespan: apply health decay when past decayStartAt; ensure it runs before far-sleep skip
       if(m.decayStartAt && now >= m.decayStartAt){
         const total = Math.max(0.5, ((m.lifeEndAt||now) - m.decayStartAt)/1000); // seconds window
-        const rate = (spec.hp||5) / total; // hp per second to reach 0 by lifeEndAt
+        const rate = ((m.maxHp||spec.hp)||5) / total; // hp per second to reach 0 by lifeEndAt
         m.hp -= rate * dt; if(m.hp <= 0){ m.hp = 0; m._naturalDeath = true; }
       }
       // Prepare player-like physics state for ground mobs
@@ -1386,7 +1520,7 @@ const mobs = (function(){
   const canSee = distToPlayer <= sight;
   const shouldPursue = distToPlayer <= pursue;
   const aggroNow = aggressive && (canSee || shouldPursue);
-  updateMob(m, spec, {dt, now, aggressive: aggroNow, player, getTile, distToPlayer});
+  updateMob(m, spec, {dt, now, aggressive: aggroNow, player, getTile, setTile, distToPlayer});
       if(isGroundMob){
         // Interpret AI changes: any upward impulse (vy<-1) becomes a jump intent
         if(m.vy < -1){ m._wantJump=true; }
@@ -1553,7 +1687,7 @@ const mobs = (function(){
       if(distTouch < 0.9){ // bounce push
         const nx=dxP/(distTouch||1); const ny=dyP/(distTouch||1);
         player.vx += nx*3*dt; player.vy += ny*2*dt; // gentle continuous push
-        if(isAggro(m.id)||spec.alwaysAggro){ if(m.attackCd>0) m.attackCd-=dt; if(m.attackCd<=0){ damagePlayer(spec.dmg, m.x, m.y); m.attackCd=0.8 + Math.random()*0.5; } }
+        if(isAggro(m.id)||spec.alwaysAggro){ if(m.attackCd>0) m.attackCd-=dt; if(m.attackCd<=0){ damagePlayer(spec.dmg*(m.dmgMult||1), m.x, m.y); m.attackCd=0.8 + Math.random()*0.5; } }
       }
     }
     updateProjectiles(dt, player, getTile);
@@ -1564,6 +1698,10 @@ const mobs = (function(){
     metrics.laserTileChecks = laserTileChecks;
     metrics.sentinelShots = sentinelShotsThisFrame;
     metrics.sentinelDeferred = sentinelDeferredThisFrame;
+    metrics.sentinelMeatShots = sentinelMeatShots;
+    metrics.sentinelMeatCooked = sentinelMeatCooked;
+    metrics.sentinelMeatDestroyed = sentinelMeatDestroyed;
+    metrics.sentinelReloads = sentinelReloads;
     metrics.active = active;
     if(now - lastMetricsSample > 1000){ metrics.dtAvg = (metrics.dtAvg*0.7 + dt*0.3); lastMetricsSample = now; if(window.__mobDebug){ window.__mobMetrics = {...metrics, frame}; } }
   } // end update()
@@ -2073,8 +2211,9 @@ const mobs = (function(){
             ctx.fillRect(screenX+3+gal*2, screenY-3,3,7); ctx.fillRect(screenX+8-gal*2, screenY-3,3,7);
           }
           // prominent golden HP bar once wounded (the chase needs readable feedback)
-          if(m.hp < spec.hp){
-            const w=46, frac=Math.max(0,Math.min(1,m.hp/spec.hp));
+          const goldMaxHp = m.maxHp || spec.hp || 1;
+          if(m.hp < goldMaxHp){
+            const w=46, frac=Math.max(0,Math.min(1,m.hp/goldMaxHp));
             const byy=topY-13;
             ctx.fillStyle='rgba(0,0,0,0.65)'; ctx.fillRect(screenX-w/2-1, byy-1, w+2, 7);
             ctx.fillStyle='#5a1a1a'; ctx.fillRect(screenX-w/2, byy, w, 5);
@@ -2100,21 +2239,38 @@ const mobs = (function(){
           const body = flashing? '#f5fbff' : (m.baseColor||'#8f9aa6');
           const pulse=(Math.sin(now*0.008+m.spawnT*0.003)*0.5+0.5);
           const laserHot = mobLasers.some(l=>Math.abs(l.x1-m.x)<0.7 && Math.abs(l.y1-(m.y-0.62))<0.35);
+          const reloading = m.sentinelReloadT>0;
+          const reloadFrac = reloading ? Math.max(0,Math.min(1,m.sentinelReloadT/SENTINEL_RELOAD_SECONDS)) : 0;
           box(screenX-7, screenY-22,14,17,body,'#3f4852');
           shade(screenX-7,screenY-22,14,4,'#fff',0.14);
           shade(screenX-7,screenY-9,14,4,'#000',0.15);
           ctx.fillStyle='#5f6872';
           ctx.fillRect(screenX-4,screenY-28,8,7); hpTop(screenY-28);
-          const eyeGlow = laserHot ? 1 : (0.45+0.35*pulse);
-          ctx.fillStyle=laserHot?'#f8ffff':'#42e7ff';
+          const eyeGlow = reloading ? 0.22+0.12*pulse : (laserHot ? 1 : (0.45+0.35*pulse));
+          ctx.fillStyle=laserHot?'#f8ffff':(reloading?'#f0a642':'#42e7ff');
           const eyeA=screenX+(faceDir>0?2:-4);
           const eyeB=screenX+(faceDir>0?-2:2);
           ctx.fillRect(eyeA,screenY-26,3,2);
           ctx.fillRect(eyeB,screenY-25,3,2);
           ctx.globalAlpha=eyeGlow*0.45;
-          ctx.fillStyle='#42e7ff';
+          ctx.fillStyle=reloading?'#f0a642':'#42e7ff';
           ctx.fillRect(screenX-7,screenY-28,14,5);
           ctx.globalAlpha=1;
+          if(reloading){
+            const spin=now*0.014+m.spawnT*0.001;
+            ctx.save();
+            ctx.translate(screenX,screenY-14);
+            ctx.strokeStyle='rgba(240,166,66,0.82)';
+            ctx.lineWidth=1.4;
+            ctx.beginPath();
+            ctx.arc(0,0,5,spin,spin+Math.PI*1.7*(1-reloadFrac));
+            ctx.stroke();
+            ctx.restore();
+            ctx.fillStyle='rgba(24,29,35,0.9)';
+            ctx.fillRect(screenX-6,screenY-4,12,2);
+            ctx.fillStyle='#f0a642';
+            ctx.fillRect(screenX-6,screenY-4,12*(1-reloadFrac),2);
+          }
           ctx.strokeStyle='#3f4852'; ctx.lineWidth=2;
           const armSwing=Math.sin(phase)*2;
           ctx.beginPath(); ctx.moveTo(screenX-7,screenY-17); ctx.lineTo(screenX-12,screenY-11+armSwing); ctx.stroke();
@@ -2138,7 +2294,7 @@ const mobs = (function(){
       }
       // HP bar (position above highest drawn pixel); species with bespoke bars
       // (golden sprinter) or hidden bodies (mole in rock) set m._hideBar
-      if(!m._hideBar && m.hp < (SPECIES[m.id]?.hp||1)){
+      if(!m._hideBar && m.hp < (m.maxHp || SPECIES[m.id]?.hp || 1)){
         // Transform anchor point to screen space, then draw with identity transform
         const cur = ctx.getTransform ? ctx.getTransform() : null;
         let px = screenX, py = topY;
@@ -2152,7 +2308,7 @@ const mobs = (function(){
         const screenSpace = !!ctx.setTransform;
         if(screenSpace){ ctx.save(); ctx.setTransform(1,0,0,1,0,0); }
         try{
-          const maxHp = hpSpec.hp || 1;
+          const maxHp = m.maxHp || hpSpec.hp || 1;
           const w = Math.max(12, Math.min(36, maxHp||10));
           const frac = Math.max(0, Math.min(1, m.hp/maxHp));
           const barY = py - 6;
@@ -2431,7 +2587,9 @@ const mobs = (function(){
       y:+m.y.toFixed(4),
       vx:+clampFinite(m.vx,0,-80,80).toFixed(4),
       vy:+clampFinite(m.vy,0,-80,80).toFixed(4),
-      hp:+Math.max(0,Math.min(spec.hp||m.hp,m.hp)).toFixed(3),
+      hp:+Math.max(0,Math.min(m.maxHp||spec.hp||m.hp,m.hp)).toFixed(3),
+      maxHp:+Math.max(1,m.maxHp||spec.hp||m.hp||1).toFixed(3),
+      hostility:finiteNum(m.hostility) ? +m.hostility.toFixed(3) : 0,
       state:typeof m.state==='string'?m.state:'idle',
       facing:m.facing<0?-1:1,
       spawnT:clampFinite(m.spawnT,performance.now(),0,Number.MAX_SAFE_INTEGER),
@@ -2445,6 +2603,10 @@ const mobs = (function(){
     if(typeof m.baseColor==='string') out.baseColor=m.baseColor;
     if(finiteNum(m.lifeEndAt)) out.lifeEndAt=m.lifeEndAt;
     if(finiteNum(m.decayStartAt)) out.decayStartAt=m.decayStartAt;
+    if(m.id==='STRAZNIK'){
+      if(finiteNum(m.sentinelReloadT)) out.sentinelReloadT=clampFinite(m.sentinelReloadT,0,0,SENTINEL_RELOAD_SECONDS);
+      if(finiteNum(m.sentinelShotsUntilReload)) out.sentinelShotsUntilReload=clampFinite(m.sentinelShotsUntilReload,SENTINEL_BURST_MIN,0,SENTINEL_BURST_MAX);
+    }
     return out;
   }
 
@@ -2458,7 +2620,35 @@ const mobs = (function(){
     for(const k in speciesCounts) delete speciesCounts[k];
     goldenRestore(data && data.golden);
     if(data && Array.isArray(data.list)){
-  for(const r of data.list){ if(!r || !SPECIES[r.id] || !finiteCoord(r.x) || !finiteCoord(r.y)) continue; const spec=SPECIES[r.id]; const m=create(spec, r.x, r.y); m.vx=clampFinite(r.vx,0,-80,80); m.vy=clampFinite(r.vy,0,-80,80); m.hp=clampFinite(r.hp,spec.hp,0.1,spec.hp||999); m.state=typeof r.state==='string'?r.state:'idle'; m.facing=r.facing<0?-1:1; m.spawnT=clampFinite(r.spawnT,performance.now(),0,Number.MAX_SAFE_INTEGER); m.attackCd=clampFinite(r.attackCd,0,0,60); if(finiteNum(r.scale)) m.scale=clampFinite(r.scale,1,0.35,3); if(finiteNum(r.speedMul)) m.speedMul=clampFinite(r.speedMul,1,0.1,4); if(finiteNum(r.jumpMul)) m.jumpMul=clampFinite(r.jumpMul,1,0.1,4); if(typeof r.baseColor==='string') m.baseColor=r.baseColor; if(finiteNum(r.lifeEndAt)) m.lifeEndAt=r.lifeEndAt; if(finiteNum(r.decayStartAt)) m.decayStartAt=r.decayStartAt;
+      for(const r of data.list){
+        if(!r || !SPECIES[r.id] || !finiteCoord(r.x) || !finiteCoord(r.y)) continue;
+        const spec=SPECIES[r.id];
+        const m=create(spec, r.x, r.y);
+        const restoredMax=m.maxHp || spec.hp || 999;
+        m.vx=clampFinite(r.vx,0,-80,80);
+        m.vy=clampFinite(r.vy,0,-80,80);
+        if(finiteNum(r.hp)){
+          const savedMax=finiteNum(r.maxHp) ? Math.max(1,r.maxHp) : Math.max(1,spec.hp||restoredMax);
+          if(!finiteNum(r.maxHp) && r.hp >= (spec.hp||savedMax)-0.001) m.hp=restoredMax;
+          else {
+            const rawHp=finiteNum(r.maxHp) ? restoredMax * clampFinite(r.hp / savedMax, 1, 0, 1) : r.hp;
+            m.hp=clampFinite(rawHp,restoredMax,0.1,restoredMax);
+          }
+        }
+        m.state=typeof r.state==='string'?r.state:'idle';
+        m.facing=r.facing<0?-1:1;
+        m.spawnT=clampFinite(r.spawnT,performance.now(),0,Number.MAX_SAFE_INTEGER);
+        m.attackCd=clampFinite(r.attackCd,0,0,60);
+        if(finiteNum(r.scale)) m.scale=clampFinite(r.scale,1,0.35,3);
+        if(finiteNum(r.speedMul)) m.speedMul=clampFinite(r.speedMul,1,0.1,4);
+        if(finiteNum(r.jumpMul)) m.jumpMul=clampFinite(r.jumpMul,1,0.1,4);
+        if(typeof r.baseColor==='string') m.baseColor=r.baseColor;
+        if(finiteNum(r.lifeEndAt)) m.lifeEndAt=r.lifeEndAt;
+        if(finiteNum(r.decayStartAt)) m.decayStartAt=r.decayStartAt;
+        if(r.id==='STRAZNIK'){
+          if(finiteNum(r.sentinelReloadT)) m.sentinelReloadT=clampFinite(r.sentinelReloadT,0,0,SENTINEL_RELOAD_SECONDS);
+          if(finiteNum(r.sentinelShotsUntilReload)) m.sentinelShotsUntilReload=clampFinite(r.sentinelShotsUntilReload,SENTINEL_BURST_MIN,0,SENTINEL_BURST_MAX);
+        }
         if(spec.aquatic){ if(finiteNum(r.waterTopY)) m.waterTopY=r.waterTopY; if(finiteNum(r.desiredDepth)) m.desiredDepth=r.desiredDepth; m.nextWaterScan = performance.now() + 3000; m.strandedTime=0; }
         mobs.push(m);
       }
@@ -2489,6 +2679,20 @@ const mobs = (function(){
       sentinelVolleyShots = 0;
       sentinelShotsThisFrame = 0;
       sentinelDeferredThisFrame = 0;
+      sentinelMeatShots = 0;
+      sentinelMeatCooked = 0;
+      sentinelMeatDestroyed = 0;
+      sentinelReloads = 0;
+      metrics.count = 0;
+      metrics.active = 0;
+      metrics.projectiles = 0;
+      metrics.lasers = 0;
+      metrics.sentinelShots = 0;
+      metrics.sentinelDeferred = 0;
+      metrics.sentinelMeatShots = 0;
+      metrics.sentinelMeatCooked = 0;
+      metrics.sentinelMeatDestroyed = 0;
+      metrics.sentinelReloads = 0;
       // Reset global aggro
       for(const k in speciesAggro){ delete speciesAggro[k]; }
       goldenReset();

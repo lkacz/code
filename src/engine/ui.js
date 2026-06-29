@@ -9,9 +9,11 @@ MM.ui = (function(){
   const DEBUG_SETTINGS_KEY='mm_debug_menu_settings_v1';
   const DEBUG_DEFAULTS={
     time:{active:false,value:0},
+    background:{blur:1},
     gas:{power:2},
     wind:{speed:0,mode:'natural',profile:null},
-    seasons:{enabled:true,forced:null}
+    seasons:{enabled:true,forced:null},
+    hostility:{intensity:1,reach:1}
   };
   function debugStorageAvailable(){ return typeof localStorage!=='undefined'; }
   function debugDefaultSection(section){ return Object.assign({}, DEBUG_DEFAULTS[section] || {}); }
@@ -235,6 +237,170 @@ MM.ui = (function(){
     });
     applyTimeOverride();
     upd();
+  }
+  function injectBackgroundDebugPanel(menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel) return;
+    if(window.__backgroundDebugPanelInjected) return; window.__backgroundDebugPanelInjected = true;
+    const wrap=document.createElement('div');
+    wrap.id='backgroundDebugBox';
+    wrap.className='group';
+    wrap.style.cssText='flex-direction:column; align-items:stretch; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;';
+    const label=document.createElement('label');
+    label.style.cssText='font-size:12px; display:flex; justify-content:space-between; gap:8px; align-items:center;';
+    label.textContent='Rozmycie tla';
+    const span=document.createElement('span');
+    span.style.fontSize='11px';
+    span.style.opacity='0.7';
+    label.appendChild(span);
+    const blur=document.createElement('input');
+    blur.type='range';
+    blur.min='0.5';
+    blur.max='2.2';
+    blur.step='0.05';
+    blur.value=String(debugNumber('background','blur',1,0.5,2.2));
+    blur.style.width='100%';
+    wrap.appendChild(label);
+    wrap.appendChild(blur);
+    panel.appendChild(wrap);
+    function readBlur(){
+      const n=parseFloat(blur.value);
+      return Number.isFinite(n) ? Math.max(0.5,Math.min(2.2,n)) : 1;
+    }
+    function upd(){
+      const value=readBlur();
+      span.textContent='x'+value.toFixed(2);
+      window.__backdropBlurScale=value;
+    }
+    blur.addEventListener('input',()=>{
+      upd();
+      debugSet('background','blur',readBlur());
+    });
+    upd();
+  }
+  // Playtest knob for the long-distance difficulty ramp (world_hostility.js).
+  // Two sliders: how STRONG the ramp gets, and how FAR you travel before it bites.
+  // Persists to the shared debug-settings store and reapplies on the next run.
+  function injectHostilityDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel) return;
+    if(window.__hostilityDebugPanelInjected) return; window.__hostilityDebugPanelInjected = true;
+    actions = actions || {};
+    const wrap=document.createElement('div');
+    wrap.id='hostilityDebugBox';
+    wrap.className='group';
+    wrap.style.cssText='flex-direction:column; align-items:stretch; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;';
+    const title=document.createElement('div');
+    title.textContent='Wrogość świata (dystans)';
+    title.style.cssText='font-size:12px; opacity:.85; margin-bottom:2px;';
+    wrap.appendChild(title);
+    function makeRow(labelText, min, max, step, value){
+      const label=document.createElement('label');
+      label.style.cssText='font-size:11px; display:flex; justify-content:space-between; gap:8px; align-items:center; margin-top:2px;';
+      label.textContent=labelText;
+      const span=document.createElement('span');
+      span.style.cssText='font-size:11px; opacity:.7;';
+      label.appendChild(span);
+      const range=document.createElement('input');
+      range.type='range'; range.min=String(min); range.max=String(max); range.step=String(step);
+      range.value=String(value); range.style.width='100%';
+      wrap.appendChild(label); wrap.appendChild(range);
+      return {range, span};
+    }
+    const intensity=makeRow('Siła narastania', 0, 3, 0.05, debugNumber('hostility','intensity',1,0,3));
+    const reach=makeRow('Zasięg (dystans)', 0.25, 4, 0.05, debugNumber('hostility','reach',1,0.25,4));
+    const readout=document.createElement('div');
+    readout.style.cssText='font-size:11px; opacity:.65; margin-top:3px;';
+    wrap.appendChild(readout);
+    const resetBtn=document.createElement('button');
+    resetBtn.textContent='Reset (x1.0 / x1.0)';
+    resetBtn.style.cssText='font-size:11px; padding:3px 6px; margin-top:4px;';
+    wrap.appendChild(resetBtn);
+    panel.appendChild(wrap);
+    function readIntensity(){ const n=parseFloat(intensity.range.value); return Number.isFinite(n)?Math.max(0,Math.min(3,n)):1; }
+    function readReach(){ const n=parseFloat(reach.range.value); return Number.isFinite(n)?Math.max(0.25,Math.min(4,n)):1; }
+    function describe(){
+      const i=readIntensity(), r=readReach();
+      intensity.span.textContent='x'+i.toFixed(2);
+      reach.span.textContent='x'+r.toFixed(2);
+      const sample = typeof actions.sample==='function' ? actions.sample() : null;
+      if(sample && typeof sample.hostility==='number'){
+        readout.textContent='tu: wrogość '+sample.hostility.toFixed(2)+' ('+(sample.side||'center')+')';
+      } else {
+        readout.textContent = i===0 ? 'ramp wyłączony' : 'idź dalej w bok, by poczuć zmianę';
+      }
+    }
+    function apply(){
+      if(typeof actions.set==='function') actions.set(readIntensity(), readReach());
+      describe();
+    }
+    intensity.range.addEventListener('input',()=>{ debugSet('hostility','intensity',readIntensity()); apply(); });
+    reach.range.addEventListener('input',()=>{ debugSet('hostility','reach',readReach()); apply(); });
+    resetBtn.addEventListener('click',()=>{
+      intensity.range.value='1'; reach.range.value='1';
+      debugSet('hostility','intensity',1); debugSet('hostility','reach',1);
+      apply();
+    });
+    // Reapply the persisted tuning to the live module so runtime matches the UI.
+    apply();
+  }
+  // Debug travel: fixed-distance hops (±1000/±100 columns) plus an absolute
+  // coordinate jump. Surface-drops the hero unless an explicit Y is supplied.
+  function injectTravelDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel) return;
+    if(window.__travelDebugPanelInjected) return; window.__travelDebugPanelInjected = true;
+    actions = actions || {};
+    const wrap=document.createElement('div');
+    wrap.id='travelDebugBox';
+    wrap.className='group';
+    wrap.style.cssText='flex-direction:column; align-items:stretch; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;';
+    const title=document.createElement('div');
+    title.textContent='Podróż / teleport (debug)';
+    title.style.cssText='font-size:12px; opacity:.85; margin-bottom:2px;';
+    wrap.appendChild(title);
+    const readout=document.createElement('div');
+    readout.style.cssText='font-size:11px; opacity:.65; margin-top:1px;';
+    function syncFromPos(pos){
+      const p = pos || (typeof actions.pos==='function' ? actions.pos() : null);
+      if(p && typeof p.x==='number' && isFinite(p.x)){
+        readout.textContent='pozycja: x='+Math.round(p.x)+', y='+Math.round(p.y);
+        if(document.activeElement!==xIn) xIn.value=String(Math.round(p.x));
+      }
+    }
+    const moveRow=document.createElement('div');
+    moveRow.style.cssText='display:flex; gap:4px; margin-top:2px;';
+    [[-1000,'◀ 1000'],[-100,'◀ 100'],[100,'100 ▶'],[1000,'1000 ▶']].forEach(([dx,label])=>{
+      const b=document.createElement('button'); b.textContent=label;
+      b.style.cssText='flex:1 1 0; min-width:0; font-size:11px; padding:3px 4px;';
+      b.addEventListener('click',()=>{ syncFromPos(typeof actions.move==='function' ? actions.move(dx) : null); });
+      moveRow.appendChild(b);
+    });
+    wrap.appendChild(moveRow);
+    const jumpRow=document.createElement('div');
+    jumpRow.style.cssText='display:flex; gap:4px; margin-top:4px; align-items:center;';
+    function mkInput(ph){
+      const i=document.createElement('input'); i.type='number'; i.placeholder=ph;
+      i.style.cssText='flex:1 1 0; min-width:0; width:100%; font-size:11px; padding:3px 4px; background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:6px;';
+      return i;
+    }
+    const xIn=mkInput('X'); const yIn=mkInput('Y (opcj.)');
+    const goBtn=document.createElement('button'); goBtn.textContent='Teleport';
+    goBtn.style.cssText='flex:0 0 auto; font-size:11px; padding:3px 8px;';
+    jumpRow.appendChild(xIn); jumpRow.appendChild(yIn); jumpRow.appendChild(goBtn);
+    wrap.appendChild(jumpRow);
+    wrap.appendChild(readout);
+    panel.appendChild(wrap);
+    goBtn.addEventListener('click',()=>{
+      const x=parseFloat(xIn.value);
+      if(!isFinite(x)){ msg('Podaj współrzędną X'); return; }
+      const yRaw=parseFloat(yIn.value);
+      const r=(typeof actions.jump==='function') ? actions.jump(x, isFinite(yRaw)?yRaw:undefined) : null;
+      if(r===false){ msg('Teleport nieudany'); return; }
+      syncFromPos(r);
+    });
+    [xIn,yIn].forEach(i=> i.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); goBtn.click(); } }));
+    syncFromPos();
   }
   function injectMobSpawnPanel(spawnCb, menuPanel){
     const panel = menuPanel || document.getElementById('menuPanel');
@@ -1108,6 +1274,156 @@ MM.ui = (function(){
     },1200);
     panel.appendChild(box);
   }
+  function injectNpcDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('npcDebugBox')) return;
+    actions = actions || {};
+    const box=document.createElement('div');
+    box.id='npcDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(226,200,128,.14); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='NPC (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+    const metrics=document.createElement('div');
+    metrics.id='npcDebugMetrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    function refreshMetrics(){
+      const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+      if(!m){ metrics.textContent='brak metryk NPC'; return; }
+      const current=m.current ? (' | '+m.current.name+' / '+m.current.status) : '';
+      metrics.textContent='aktywni '+(m.total||0)+' | blisko '+(m.nearby||0)+current;
+    }
+    const buttons=[
+      ['prev','< NPC','Przenosi bohatera do poprzedniego NPC po lewej'],
+      ['nearest','Najblizszy','Przenosi bohatera do najblizszego aktywnego NPC'],
+      ['next','NPC >','Przenosi bohatera do nastepnego NPC po prawej']
+    ];
+    buttons.forEach(([id,txt,title])=>{
+      const b=document.createElement('button');
+      b.textContent=txt;
+      b.title=title;
+      b.style.cssText='flex:1 1 82px; font-size:11px; padding:3px 6px; border:1px solid rgba(226,200,128,.65);';
+      b.addEventListener('click',()=>{
+        try{
+          let ok=false;
+          if(id==='prev') ok=!!(actions.jump && actions.jump(-1));
+          else if(id==='next') ok=!!(actions.jump && actions.jump(1));
+          else ok=!!(actions.nearest && actions.nearest());
+          msg(ok ? 'Skok do NPC' : 'Nie znaleziono NPC');
+          refreshMetrics();
+        }catch(e){ msg('Debug NPC: blad'); }
+      });
+      box.appendChild(b);
+    });
+    box.appendChild(metrics);
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1500);
+    panel.appendChild(box);
+  }
+  function injectCompanionDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('companionDebugBox')) return;
+    actions = actions || {};
+    const box=document.createElement('div');
+    box.id='companionDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(115,255,160,.16); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='Bio-pomocnik (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.72;';
+    box.appendChild(label);
+    function makeNumber(id,labelText,min,max,step,value){
+      const wrap=document.createElement('label');
+      wrap.style.cssText='flex:1 1 82px; display:flex; flex-direction:column; gap:2px; font-size:10px; opacity:.8;';
+      const text=document.createElement('span');
+      text.textContent=labelText;
+      const input=document.createElement('input');
+      input.type='number'; input.min=String(min); input.max=String(max); input.step=String(step); input.value=String(value);
+      input.style.cssText='width:100%; box-sizing:border-box; padding:3px 4px; font-size:11px;';
+      input.addEventListener('change',()=>{ debugSet('companions',id,readNumber(input,value,min,max)); });
+      wrap.appendChild(text); wrap.appendChild(input);
+      box.appendChild(wrap);
+      return input;
+    }
+    function readNumber(input,fallback,min,max){
+      const v=Number(input && input.value);
+      if(!Number.isFinite(v)) return fallback;
+      return Math.max(min,Math.min(max,v));
+    }
+    const spawnInput=makeNumber('spawnBiomass','start biomasy',1,30,1,debugNumber('companions','spawnBiomass',5,1,30));
+    const feedInput=makeNumber('feedBiomass','dokarm +',1,30,1,debugNumber('companions','feedBiomass',1,1,30));
+    const damageInput=makeNumber('damage','obrazenia',1,999,1,debugNumber('companions','damage',25,1,999));
+    const metrics=document.createElement('div');
+    metrics.id='companionDebugMetrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.72;';
+    const details=document.createElement('div');
+    details.id='companionDebugDetails';
+    details.style.cssText='width:100%; font-size:10px; opacity:.62; line-height:1.25;';
+    function listText(list){
+      if(!Array.isArray(list) || !list.length) return 'brak aktywnych pomocnikow';
+      return list.slice(0,4).map((c,i)=>{
+        const g=c.genome || {};
+        return '#'+(i+1)+' '+(c.name||c.id)+' HP '+Math.round(c.hp||0)+'/'+Math.round(c.maxHp||0)+' bio '+(c.biomass||0)+' '+(g.body||'?')+' oczy '+(g.eyes||0)+' nogi '+(g.legs||0);
+      }).join(' | ');
+    }
+    function refreshMetrics(){
+      const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+      const list=(typeof actions.list==='function') ? actions.list() : [];
+      metrics.textContent=m ? ('aktywni '+(m.count||0)+' | HP '+(m.hp||0)+'/'+(m.maxHp||0)+' | biomasa '+(m.biomass||0)+' | lasery '+(m.lasers||0)) : 'brak metryk pomocnikow';
+      details.textContent=listText(list);
+    }
+    const buttons=[
+      ['give','Skladniki +20','Dodaje biomase obcych i surowe mieso do ekwipunku'],
+      ['spawn','Stworz','Tworzy pomocnika z wybrana poczatkowa biomasa'],
+      ['spawnStrong','Mocny','Tworzy silniejszego pomocnika testowego'],
+      ['feed','Dokarm','Dodaje wybrana porcje biomasy do najblizszego pomocnika'],
+      ['setBiomass','Ustaw bio','Ustawia biomase najblizszego pomocnika na wartosc startowa'],
+      ['heal','Pelne HP','Leczy najblizszego pomocnika do maksimum'],
+      ['damage','Ran','Zadaje najblizszemu pomocnikowi wybrane obrazenia'],
+      ['kill','Zabij','Testuje smierc i lekka eksplozje pomocnika'],
+      ['teleport','Do hero','Przenosi najblizszego pomocnika obok bohatera; kosztuje go 10% maks. HP'],
+      ['gas','Gaz','Wymusza emisje trujacego gazu'],
+      ['laser','Laser','Wymusza strzal, jezeli istnieje cel w zasiegu'],
+      ['clear','Wyczysc','Usuwa wszystkich pomocnikow']
+    ];
+    buttons.forEach(([id,txt,title])=>{
+      const b=document.createElement('button');
+      b.textContent=txt;
+      b.title=title;
+      b.style.cssText='flex:1 1 76px; font-size:11px; padding:3px 6px; border:1px solid rgba(115,255,160,.58);';
+      b.addEventListener('click',()=>{
+        try{
+          let ok=false;
+          if(id==='give') ok=!!(actions.give && actions.give());
+          else if(id==='spawn') ok=!!(actions.spawn && actions.spawn(readNumber(spawnInput,5,1,30)));
+          else if(id==='spawnStrong') ok=!!(actions.spawn && actions.spawn(18));
+          else if(id==='feed') ok=!!(actions.feed && actions.feed(readNumber(feedInput,1,1,30)));
+          else if(id==='setBiomass') ok=!!(actions.setBiomass && actions.setBiomass(readNumber(spawnInput,5,1,30)));
+          else if(id==='heal') ok=!!(actions.heal && actions.heal());
+          else if(id==='damage') ok=!!(actions.damage && actions.damage(readNumber(damageInput,25,1,999)));
+          else if(id==='kill') ok=!!(actions.kill && actions.kill());
+          else if(id==='teleport') ok=!!(actions.teleport && actions.teleport());
+          else if(id==='gas') ok=!!(actions.gas && actions.gas());
+          else if(id==='laser') ok=!!(actions.laser && actions.laser());
+          else if(id==='clear') ok=!!(actions.clear && actions.clear());
+          msg(ok ? 'Debug pomocnika: OK' : 'Debug pomocnika: brak celu / miejsca');
+          refreshMetrics();
+        }catch(e){ msg('Debug pomocnika: blad'); }
+      });
+      box.appendChild(b);
+    });
+    box.appendChild(metrics);
+    box.appendChild(details);
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1100);
+    panel.appendChild(box);
+  }
   // Radar pulse helper (adds/removes pulse class on #radarBtn)
   function setRadarPulsing(active){
     const b = document.getElementById('radarBtn');
@@ -1115,7 +1431,7 @@ MM.ui = (function(){
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, injectMobSpawnPanel, injectGasDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectPumpDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
+  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;

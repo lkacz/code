@@ -25,10 +25,10 @@ window.MM = window.MM || {};
   let passiveScanOffset = 0;
   const PASSIVE_SCAN_RADIUS = 240;
   const PASSIVE_SCAN_SPAN = PASSIVE_SCAN_RADIUS*2+1;
-  const PASSIVE_SCAN_INTERVAL = 0.12;
+  const PASSIVE_SCAN_INTERVAL = 0.10;
   const PASSIVE_SCAN_BURST_LIMIT = 3;
-  const PASSIVE_SCAN_COLS_IDLE = 48;
-  const PASSIVE_SCAN_COLS_ACTIVE = 18;
+  const PASSIVE_SCAN_COLS_IDLE = 64;
+  const PASSIVE_SCAN_COLS_ACTIVE = 24;
   let passiveScanAcc = 0;
   let passiveScanLastColumns = 0;
   let passiveScanTotalColumns = 0;
@@ -36,12 +36,12 @@ window.MM = window.MM || {};
   const chunkWakes = [];
   // Lateral energy cooldown after pressure smoothing
   const lateralCooldown = new Map(); // x -> seconds remaining
-  const LATERAL_INTERVAL = 0.16;
+  const LATERAL_INTERVAL = 0.075;
   let lateralAcc = 0;
   // Adaptive pressure leveling cadence
-  const PRESSURE_INTERVAL_MIN = 0.30;
-  const PRESSURE_INTERVAL_BASE = 0.65;
-  const PRESSURE_INTERVAL_MAX = 1.20;
+  const PRESSURE_INTERVAL_MIN = 0.18;
+  const PRESSURE_INTERVAL_BASE = 0.40;
+  const PRESSURE_INTERVAL_MAX = 0.90;
   let pressureIntervalCurrent = PRESSURE_INTERVAL_BASE;
   let pressureAcc = 0;
   let pressureLastMs = 0;
@@ -305,7 +305,10 @@ window.MM = window.MM || {};
             if(canFill(peek(wx,y+1,T.STONE)) || isAir(peek(wx-1,y,T.STONE)) || isAir(peek(wx+1,y,T.STONE))){ mark(wx,y); woke=true; }
           }
         }
-        if(woke) pressureAcc=Math.max(pressureAcc, pressureIntervalCurrent*0.5);
+        if(woke){
+          pressureAcc=Math.max(pressureAcc, pressureIntervalCurrent*0.88);
+          lateralAcc=Math.max(lateralAcc,LATERAL_INTERVAL);
+        }
       }
     }
     // Passive activation slice: sweep a window around the player (worlds extend into
@@ -328,7 +331,7 @@ window.MM = window.MM || {};
       passiveScanAcc=0;
     }
     const size = active.size;
-    const MAX = Math.min(2000, 300 + Math.floor(size*0.35));
+    const MAX = Math.min(2400, 360 + Math.floor(size*0.40));
     // Cooldown decay
     if(lateralCooldown.size){
       for(const [cx,val] of lateralCooldown){ const nv=val-dt; if(nv<=0) lateralCooldown.delete(cx); else lateralCooldown.set(cx,nv); }
@@ -484,7 +487,7 @@ window.MM = window.MM || {};
     active.clear(); for(const kk of next) active.add(kk);
     // Pressure leveling scheduling
     pressureAcc += dt;
-    if(pressureAcc >= pressureIntervalCurrent && active.size < 1200){
+    if(pressureAcc >= pressureIntervalCurrent && active.size < 1800){
       pressureAcc=0;
       const pressureT0=(typeof performance!=='undefined' && performance.now) ? performance.now() : 0;
       const result=runPressureLeveling(getTile,setTile);
@@ -525,35 +528,59 @@ window.MM = window.MM || {};
   }
 
   function markNeighbors(set,x,y){ set.add(k(x-1,y)); set.add(k(x+1,y)); set.add(k(x,y-1)); set.add(k(x,y+1)); }
+  function hurrySolver(){
+    lateralAcc=Math.max(lateralAcc,LATERAL_INTERVAL);
+    pressureAcc=Math.max(pressureAcc,pressureIntervalCurrent*0.88);
+  }
+  function wakeWaterCell(x,y,includeNeighbors){
+    mark(x,y);
+    if(includeNeighbors) markNeighbors(active,x,y);
+    if(pressureSeeds.size<2400) pressureSeeds.add(k(x,y));
+  }
+  function wakeWaterAround(x,y,getTile,rx,ry){
+    if(typeof getTile!=='function') return false;
+    const cx=Math.floor(x), cy=Math.floor(y);
+    const xRad=Math.max(1, Math.floor(rx||5));
+    const yRad=Math.max(1, Math.floor(ry||4));
+    let woke=false;
+    for(let yy=Math.max(0,cy-yRad); yy<=Math.min(WORLD_H-1,cy+yRad); yy++){
+      for(let xx=cx-xRad; xx<=cx+xRad; xx++){
+        if(getTile(xx,yy)!==T.WATER) continue;
+        wakeWaterCell(xx,yy,false);
+        woke=true;
+      }
+    }
+    if(woke) hurrySolver();
+    return woke;
+  }
   function addSource(x,y,getTile,setTile){
     if(hasWaterRecipes()) reactionBudget=Math.max(reactionBudget,4);
     const cur=getTile(x,y);
     if(cur===T.AIR || isGas(cur)){
       writeExternalTile(x,y,T.WATER,getTile,setTile);
-      mark(x,y); disturb(x,140);
+      wakeWaterCell(x,y,false); hurrySolver(); disturb(x,140);
       return true;
     }
     if(cur===T.WATER){
-      mark(x,y);
+      wakeWaterCell(x,y,false); hurrySolver();
       applyWaterReactionsNear(x,y,getTile,setTile);
       return true;
     }
     return applyWaterReactionAt(x,y,getTile,setTile);
   }
   function onTileChanged(x,y,getTile){
-    let woke=false;
-    for(let dy=-1; dy<=1; dy++) for(let dx=-1; dx<=1; dx++){ if(getTile(x+dx,y+dy)===T.WATER){ mark(x+dx,y+dy); woke=true; } }
-    // A world edit beside water: bring the next leveling pass forward so the body
-    // reacts promptly (fills the opening / flattens) instead of waiting out the timer
-    if(woke) pressureAcc=Math.max(pressureAcc, pressureIntervalCurrent*0.5);
+    // Edits are usually player/mining/worldgen events. Wake a modest region so
+    // shelves, drain mouths, and cave bores react on the next tick instead of waiting
+    // for the passive scan to rediscover settled water.
+    wakeWaterAround(x,y,getTile,5,4);
   }
   // A solid is about to overwrite the water at (x,y): conserve volume by moving that
   // unit to the nearest opening — above the column it belongs to, else beside it.
   function displaceAt(x,y,getTile,setTile){
     let ty=y-1, steps=0;
     while(ty>=0 && getTile(x,ty)===T.WATER && steps<MAX_VERTICAL_SCAN){ ty--; steps++; }
-    if(ty>=0 && isAir(getTile(x,ty))){ writeExternalTile(x,ty,T.WATER,getTile,setTile); mark(x,ty); markNeighbors(active,x,ty); disturb(x,90); return true; }
-    for(const dx of [-1,1]){ if(isAir(getTile(x+dx,y))){ writeExternalTile(x+dx,y,T.WATER,getTile,setTile); mark(x+dx,y); markNeighbors(active,x+dx,y); disturb(x+dx,70); return true; } }
+    if(ty>=0 && isAir(getTile(x,ty))){ writeExternalTile(x,ty,T.WATER,getTile,setTile); wakeWaterCell(x,ty,false); hurrySolver(); disturb(x,90); return true; }
+    for(const dx of [-1,1]){ if(isAir(getTile(x+dx,y))){ writeExternalTile(x+dx,y,T.WATER,getTile,setTile); wakeWaterCell(x+dx,y,false); hurrySolver(); disturb(x+dx,70); return true; } }
     return false; // fully sealed pocket — the unit is lost
   }
 
@@ -978,8 +1005,8 @@ window.MM = window.MM || {};
   const EQ_GLOBAL_BODY_SOFT_CAP=1600; // larger bodies use the bounded window path
   const EQ_BODY_CAP=6500;   // safety caps for the two flood fills
   const EQ_VOID_CAP=9000;
-  const EQ_RATE=48;         // max units moved per body per pass
-  const EQ_BODIES=2;        // bodies equalized per pass
+  const EQ_RATE=72;         // max units moved per body per pass
+  const EQ_BODIES=3;        // bodies equalized per pass
 
   function runPressureLeveling(getTile,setTile){
     const world = (typeof window!=='undefined' && window.MM && MM.world) ? MM.world : null;

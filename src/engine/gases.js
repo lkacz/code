@@ -509,6 +509,32 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
     const t=getSafe(getTile || (MM.world && MM.world.getTile),Math.floor(x),Math.floor(y),T.AIR);
     return isGasTile(t) ? gasKind(t) : null;
   }
+  function moveCell(sx,sy,tx,ty,getTile,setTile,opts){
+    sx=Math.floor(sx); sy=Math.floor(sy); tx=Math.floor(tx); ty=Math.floor(ty);
+    if(!finiteTile(sx,sy) || !finiteTile(tx,ty) || (sx===tx && sy===ty)) return false;
+    if(typeof getTile!=='function' || typeof setTile!=='function') return false;
+    const tile=getSafe(getTile,sx,sy,T.AIR);
+    if(!isGasTile(tile)) return false;
+    const dst=getSafe(getTile,tx,ty,T.AIR);
+    if(!canReplaceWithGas(tile,dst)) return false;
+    const oldKey=key(sx,sy);
+    const newKey=key(tx,ty);
+    const rec=active.get(oldKey) || freshGasRecord(sx,sy,tile);
+    setGasTile(sx,sy,T.AIR,setTile);
+    setGasTile(tx,ty,tile,setTile);
+    active.delete(oldKey);
+    active.delete(newKey);
+    rec.x=tx;
+    rec.y=ty;
+    rec.t=tile;
+    if(opts && Number.isFinite(opts.age)) rec.age=Math.max(0,opts.age);
+    else rec.age=Math.max(0,Number(rec.age)||0);
+    rec.moveT=Number.isFinite(rec.moveT) ? Math.max(0.04,rec.moveT) : moveDelay(tile,tx,ty);
+    rec._frame=frameSeq;
+    active.set(newKey,rec);
+    try{ if(MM.water && MM.water.onTileChanged){ MM.water.onTileChanged(sx,sy,getTile); MM.water.onTileChanged(tx,ty,getTile); } }catch(e){}
+    return tile;
+  }
   function update(dt,getTile,setTile,player){
     if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function' || typeof setTile!=='function') return;
     dt=Math.min(2,dt);
@@ -666,7 +692,7 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
     return {active:active.size, hot, steam, poison, fuel, steamCondensate};
   }
 
-  const api={update,draw,add,igniteAt,consumeRadius,gasAt,isGasTile,skyExposed,onTileChanged,auditChunks,snapshot,restore,reset,metrics,_debug:{active,condensate,GAS_DEF,KIND_TILE,STEAM_TO_WATER,DYNAMO_POWERED_GAS_LOSS_CHANCE,skyExposed}};
+  const api={update,draw,add,moveCell,igniteAt,consumeRadius,gasAt,isGasTile,skyExposed,onTileChanged,auditChunks,snapshot,restore,reset,metrics,_debug:{active,condensate,GAS_DEF,KIND_TILE,STEAM_TO_WATER,DYNAMO_POWERED_GAS_LOSS_CHANCE,skyExposed}};
   MM.gases=api;
 })();
 

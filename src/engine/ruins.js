@@ -258,7 +258,7 @@ const ruins = (function(){
           const edge=(x===tx2-(tw>>1)||x===tx2+(tw>>1)||y===base-th);
           put(x,y, edge? wallT() : T.AIR, true);
         }
-        put(tx2, base, T.AIR, true);                 // doorway
+        put(tx2, base, T.STONE_DOOR, true);          // self-opening structural doorway
         for(let y=base-2;y>base-th;y-=3) torch(tx2, y); // lit windows climbing the tower
         if(i===0){ chest(tx2, base-1, T.CHEST_RARE); chests++; }
       });

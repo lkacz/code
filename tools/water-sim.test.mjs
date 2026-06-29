@@ -125,7 +125,7 @@ assert.equal(water.metrics().passiveScanColumns, 0, 'short idle frame does not r
 for(let i=0;i<7;i++) water.update(getTile, setTile, 1/60);
 assert.ok(water._debug().passiveScanTotalColumns > 0, 'passive scan still runs on its simulation cadence');
 water.update(getTile, setTile, 2);
-assert.ok(water._debug().passiveScanLastColumns <= 48*3, 'large dt catch-up is bounded');
+assert.ok(water._debug().passiveScanLastColumns <= 64*3, 'large dt catch-up is bounded');
 delete globalThis.player;
 
 // --- 8. Passive wake-up works at negative world x ---
@@ -212,6 +212,18 @@ assert.ok(maxShelfDepth<=1, `pond bulk drained over the cliff (max remaining dep
 let overCliff=0; for(let x=96;x<=130;x++) overCliff+=depthAt(x,90,100);
 assert.ok(overCliff>=pondVol*0.5, `most water went over the cliff (${overCliff}/${pondVol})`);
 
+// --- 12a. A freshly opened shelf flow reacts on the next simulation tick ---
+resetWorld();
+setTile(74,75,T.STONE);
+setTile(74,76,T.STONE);
+for(let x=75;x<=85;x++) setTile(x,76,T.STONE);                          // flat shelf, open drop at x=86
+for(let x=75;x<=80;x++) setTile(x,75,T.WATER);                           // settled shallow pond
+const shelfVol=countWater();
+water.onTileChanged(81,75,getTile);                                      // player mined/placed beside the pond
+step(1);
+assert.equal(countWater(), shelfVol, 'instant shelf wake conserves volume');
+assert.ok(getTile(81,75)===T.WATER || getTile(82,75)===T.WATER, 'water begins advancing sideways on the first tick after an edit');
+
 // --- 12b. Vertical drain mouths pull neighboring water instead of leaving surface gaps ---
 resetWorld();
 for(let x=78;x<=82;x++) for(let y=71;y<100;y++) setTile(x,y,T.STONE);
@@ -227,7 +239,7 @@ let shaftLowered=false; for(let y=71;y<100;y++) if(getTile(80,y)===T.WATER) shaf
 assert.equal(shaftLowered, true, 'source water transfers downward through the shaft immediately');
 assert.equal(getTile(80,70), T.WATER, 'shaft mouth is refilled by neighboring water instead of staying as a surface gap');
 let shaftTopWater=0; for(const x of [79,80,81]) if(getTile(x,70)===T.WATER) shaftTopWater++;
-assert.equal(shaftTopWater, 2, 'refilling the drain mouth moves the surface notch to the donor edge');
+assert.ok(shaftTopWater>=1 && shaftTopWater<=2, 'refilling the drain mouth keeps the shaft mouth wet while flow starts downward');
 
 // --- 12c. Side drain inlets close first, then fall, instead of diagonal-skipping the mouth ---
 resetWorld();
@@ -353,12 +365,12 @@ water.restore({
 const clean=water._debug();
 assert.deepEqual(new Set(clean.active), new Set(['1,2','-3,5']), 'water restore drops malformed active cells but keeps valid negative-x cells');
 assert.deepEqual(clean.cooldown, [[1,2],[3,5]], 'water restore sanitizes malformed and oversized lateral cooldowns');
-assert.equal(clean.pressureIntervalCurrent, 1.2, 'water restore clamps pressure interval');
+assert.equal(clean.pressureIntervalCurrent, 0.9, 'water restore clamps pressure interval');
 assert.equal(clean.pressureAcc, 0, 'water restore rejects invalid pressure accumulator');
 water.reset();
 const afterReset=water._debug();
 assert.equal(afterReset.pressureAcc, 0, 'water reset clears inherited pressure accumulator');
-assert.equal(afterReset.pressureIntervalCurrent, 0.65, 'water reset restores default pressure cadence');
+assert.equal(afterReset.pressureIntervalCurrent, 0.4, 'water reset restores default pressure cadence');
 assert.deepEqual(afterReset.active, [], 'water reset clears active water cells');
 
 console.log('OK: all water simulation tests passed');

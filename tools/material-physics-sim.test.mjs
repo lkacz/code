@@ -22,9 +22,11 @@ const {
   isBuildLoadTransferMaterial,
   isCondensedWaterTargetTile,
   isCreatureRockFloorTile,
+  isDoorTile,
   isFoliageTile,
   isGeneratedStructureReplaceableTile,
   isGasTile,
+  isHeroPassableTile,
   isAirOrGasTile,
   isHeatRayPassableTile,
   isIridiumArrowPierceableTile,
@@ -41,7 +43,10 @@ const {
   isMeteorWaterSiteTile,
   isMountedFixtureTile,
   isCreatureOpenTile,
+  isNpcPassableTile,
+  isLooseItemMaterial,
   isLooseRigidMaterial,
+  isMeatDecayMaterial,
   isNonStructuralResourceMaterial,
   isObjectBraceTile,
   isObjectCrushableSupportTile,
@@ -60,12 +65,14 @@ const {
   isSolidCollisionTile,
   isStructuralMaterial,
   isSunTransparentTile,
+  isTrapdoorTile,
   isVisualOpenFluidTile,
   isWaterFillTile,
   isWaterOpenTile,
   isWindPorousTile,
   isWindExposureBlockerTile,
   isWeakFillMaterial,
+  looseItemPhysicsMode,
   materialPhysicsCoverage,
   materialPhysicsRoute,
   structuralSupportStrengthForMaterial
@@ -93,9 +100,11 @@ function projectPhysicsSourceFiles(){
 function assertNoMaterialPolicyDrift(){
   const constantsSolidImport=/import\s*\{[\s\S]*?\bisSolid\b[\s\S]*?\}\s*from ['"](?:\.\/constants\.js|\.\.\/constants\.js)['"]/;
   const rawInfoPassability=/(?:INFO\[[^\]]+\]|\binfo)\s*\.\s*(?:gas|passable)\b/;
+  const rawInfoLooseItem=/(?:INFO\[[^\]]+\]|\binfo)\s*\.\s*looseItem\b/;
   for(const [name,src] of projectPhysicsSourceFiles()){
     assert.doesNotMatch(src, constantsSolidImport, name+' does not import raw isSolid from constants');
     assert.doesNotMatch(src, rawInfoPassability, name+' does not inspect raw INFO gas/passable flags outside material_physics.js');
+    assert.doesNotMatch(src, rawInfoLooseItem, name+' does not inspect raw INFO looseItem flags outside material_physics.js');
   }
 }
 
@@ -150,6 +159,8 @@ function assertRouteContract(row){
     return;
   }
   if(route==='loose-item'){
+    assert.equal(isLooseItemMaterial(t), true, name+' loose item route matches loose item predicate');
+    assert.notEqual(looseItemPhysicsMode(t), 'unhandled', name+' loose item has an explicit physics owner');
     assertNoSupportRole(name,t);
     assert.equal(isPlayerBuiltMaterial(t), false, name+' loose item is not a player-built material');
     assert.equal(isRubbleTrackedMaterial(t), false, name+' loose item is not structural rubble');
@@ -219,6 +230,7 @@ assert.equal(materialPhysicsRoute(T.VOLCANO_MASTER_STONE), 'story', 'story stone
 assert.equal(materialPhysicsRoute(T.TORCH), 'mounted-fixture', 'torches have the mounted-fixture material route');
 assert.equal(materialPhysicsRoute(T.MEAT), 'loose-item', 'loose item tiles have the loose-item material route');
 assert.equal(materialPhysicsRoute(T.DYNAMO), 'rigid-object', 'machines have the rigid-object material route');
+assert.equal(materialPhysicsRoute(T.VENDING_MACHINE), 'rigid-object', 'vending machines have the rigid-object material route');
 assert.equal(materialPhysicsRoute(T.COPPER_WIRE), 'passable-utility', 'thin infrastructure has the passable-utility material route');
 assert.equal(materialPhysicsRoute(T.STONE), 'build-material', 'stone has the build-material route');
 for(const r of rows){
@@ -275,10 +287,25 @@ for(const [raw,p] of Object.entries(BUILD_MATERIAL_PROFILES)){
 }
 
 assert.ok(classified.some(([key,kind])=>key==='steel' && kind==='build'), 'steel resource enters the build stress graph');
+assert.ok(classified.some(([key,kind])=>key==='woodDoor' && kind==='build'), 'wood doors enter the build stress graph');
+assert.ok(classified.some(([key,kind])=>key==='stoneDoor' && kind==='build'), 'stone doors enter the build stress graph');
+assert.ok(classified.some(([key,kind])=>key==='steelDoor' && kind==='build'), 'steel doors enter the build stress graph');
+assert.ok(classified.some(([key,kind])=>key==='woodTrapdoor' && kind==='build'), 'wood trapdoors enter the build stress graph');
+assert.ok(classified.some(([key,kind])=>key==='stoneTrapdoor' && kind==='build'), 'stone trapdoors enter the build stress graph');
+assert.ok(classified.some(([key,kind])=>key==='steelTrapdoor' && kind==='build'), 'steel trapdoors enter the build stress graph');
+assert.equal(isDoorTile(T.WOOD_DOOR), true, 'wood door carries the canonical door tag');
+assert.equal(isDoorTile(T.STONE_DOOR), true, 'stone door carries the canonical door tag');
+assert.equal(isDoorTile(T.STEEL_DOOR), true, 'steel door carries the canonical door tag');
+assert.equal(isTrapdoorTile(T.WOOD_TRAPDOOR), true, 'wood trapdoor carries the canonical trapdoor tag');
+assert.equal(isTrapdoorTile(T.STONE_TRAPDOOR), true, 'stone trapdoor carries the canonical trapdoor tag');
+assert.equal(isTrapdoorTile(T.STEEL_TRAPDOOR), true, 'steel trapdoor carries the canonical trapdoor tag');
+assert.equal(isDoorTile(T.WOOD_TRAPDOOR), false, 'trapdoors are not always-open hero doors');
 assert.ok(classified.some(([key,kind])=>key==='waterPump' && kind==='object'), 'water pump resource enters rigid object physics');
+assert.ok(classified.some(([key,kind])=>key==='vendingMachine' && kind==='object'), 'vending machine resource enters rigid object physics');
 assert.ok(classified.some(([key,kind])=>key==='torch' && kind==='fixture'), 'torch resource enters mounted fixture physics');
 
 assert.equal(isBuildAnchorTile(T.WATER_PUMP), false, 'machines are not building anchors');
+assert.equal(isBuildAnchorTile(T.VENDING_MACHINE), false, 'vending machines are not building anchors');
 assert.equal(isBuildAnchorTile(T.CHEST_COMMON), false, 'chests are not building anchors');
 assert.equal(isBuildAnchorTile(T.GLASS), false, 'fragile glass is not a building anchor');
 assert.equal(isBuildAnchorTile(T.ELECTRONICS), false, 'electronics are not a building anchor');
@@ -287,13 +314,32 @@ assert.equal(isBuildAnchorTile(T.COAL), false, 'resource lumps are not building 
 assert.equal(isBuildAnchorTile(T.RADIOACTIVE_ORE), false, 'ore is not a building anchor');
 assert.equal(isBuildAnchorTile(T.WOOD), true, 'wood is a light structural anchor');
 assert.equal(isBuildAnchorTile(T.STONE), true, 'stone remains a valid terrain/build anchor');
+assert.equal(isBuildAnchorTile(T.WOOD_DOOR), true, 'wood doors are light structural anchors');
+assert.equal(isBuildAnchorTile(T.STONE_DOOR), true, 'stone doors are structural anchors');
+assert.equal(isBuildAnchorTile(T.STEEL_DOOR), true, 'steel doors are structural anchors');
+assert.equal(isBuildAnchorTile(T.WOOD_TRAPDOOR), true, 'wood trapdoors are light structural anchors');
+assert.equal(isBuildAnchorTile(T.STONE_TRAPDOOR), true, 'stone trapdoors are structural anchors');
+assert.equal(isBuildAnchorTile(T.STEEL_TRAPDOOR), true, 'steel trapdoors are structural anchors');
 
 assert.equal(isBuildFoundationTile(T.DIRT), true, 'weak fill can act as simple vertical footing');
 assert.equal(isBuildFoundationTile(T.GRASS), true, 'surface soil can act as simple vertical footing');
 assert.equal(isBuildFoundationTile(T.COAL), false, 'coal is tracked by physics but is not terrain footing');
 assert.equal(isBuildFoundationTile(T.ELECTRONICS), false, 'electronics are tracked by physics but are not terrain footing');
 assert.equal(isBuildFoundationTile(T.WATER_PUMP), false, 'machines are not terrain footing for buildings');
+assert.equal(isBuildFoundationTile(T.VENDING_MACHINE), false, 'vending machines are not terrain footing for buildings');
+assert.equal(isBuildFoundationTile(T.WOOD_DOOR), true, 'wood doors can vertically support structures');
+assert.equal(isBuildFoundationTile(T.STONE_DOOR), true, 'stone doors can vertically support structures');
+assert.equal(isBuildFoundationTile(T.STEEL_DOOR), true, 'steel doors can vertically support structures');
+assert.equal(isBuildFoundationTile(T.WOOD_TRAPDOOR), true, 'wood trapdoors are walkable structural floors');
+assert.equal(isBuildFoundationTile(T.STONE_TRAPDOOR), true, 'stone trapdoors are walkable structural floors');
+assert.equal(isBuildFoundationTile(T.STEEL_TRAPDOOR), true, 'steel trapdoors are walkable structural floors');
 assert.equal(isBuildLoadTransferMaterial(T.STEEL), true, 'steel transfers structural load');
+assert.equal(isBuildLoadTransferMaterial(T.WOOD_DOOR), true, 'wood doors transfer structural load without becoming open air');
+assert.equal(isBuildLoadTransferMaterial(T.STONE_DOOR), true, 'stone doors transfer structural load without becoming open air');
+assert.equal(isBuildLoadTransferMaterial(T.STEEL_DOOR), true, 'steel doors transfer structural load without becoming open air');
+assert.equal(isBuildLoadTransferMaterial(T.WOOD_TRAPDOOR), true, 'wood trapdoors transfer structural load without becoming open air');
+assert.equal(isBuildLoadTransferMaterial(T.STONE_TRAPDOOR), true, 'stone trapdoors transfer structural load without becoming open air');
+assert.equal(isBuildLoadTransferMaterial(T.STEEL_TRAPDOOR), true, 'steel trapdoors transfer structural load without becoming open air');
 assert.equal(isBuildLoadTransferMaterial(T.ALIEN_BIOMASS), true, 'alien biomass transfers light structural load');
 assert.equal(isBuildLoadTransferMaterial(T.DIRT), false, 'weak fill does not transfer frame load');
 assert.equal(isBuildLoadTransferMaterial(T.RADIOACTIVE_ORE), false, 'ore does not transfer frame load');
@@ -301,28 +347,49 @@ assert.equal(isWeakFillMaterial(T.MUD), true, 'mud is classified as weak fill');
 assert.equal(isNonStructuralResourceMaterial(T.COAL), true, 'coal is classified as non-structural resource');
 assert.equal(isLooseRigidMaterial(T.COAL), true, 'untracked coal behaves as a loose rigid resource block');
 assert.equal(isLooseRigidMaterial(T.RADIOACTIVE_ORE), true, 'untracked radioactive ore behaves as a loose rigid resource block');
+assert.equal(isLooseRigidMaterial(T.BAKED_MEAT), true, 'cooked meat has generic loose-item falling because it has no decay timer');
+assert.equal(isLooseRigidMaterial(T.MEAT), false, 'fresh meat keeps its lifecycle-aware settling path');
+assert.equal(isLooseRigidMaterial(T.ROTTEN_MEAT), false, 'rotten meat keeps its lifecycle-aware settling path');
+assert.equal(isLooseItemMaterial(T.MEAT), true, 'fresh meat is a canonical loose item');
+assert.equal(isLooseItemMaterial(T.BAKED_MEAT), true, 'baked meat is a canonical loose item');
+assert.equal(isMeatDecayMaterial(T.MEAT), true, 'fresh meat owns the meat decay physics path');
+assert.equal(isMeatDecayMaterial(T.ROTTEN_MEAT), true, 'rotten meat owns the meat decay physics path');
+assert.equal(isMeatDecayMaterial(T.BAKED_MEAT), false, 'baked meat does not enter decay physics');
+assert.equal(looseItemPhysicsMode(T.MEAT), 'meat-decay', 'fresh loose meat has the lifecycle physics owner');
+assert.equal(looseItemPhysicsMode(T.ROTTEN_MEAT), 'meat-decay', 'rotten loose meat has the lifecycle physics owner');
+assert.equal(looseItemPhysicsMode(T.BAKED_MEAT), 'loose-rigid', 'baked loose meat has the generic falling physics owner');
+for(const row of materialPhysicsCoverage().filter(r=>r.route==='loose-item')){
+  assert.notEqual(looseItemPhysicsMode(row.id), 'unhandled', row.name+' cannot be a loose-item route without a physics owner');
+}
 assert.equal(isLooseRigidMaterial(T.STONE), false, 'ordinary stone is not a loose resource block');
 assert.equal(isPlayerBuiltMaterial(T.COAL), true, 'coal remains tracked by player-built physics');
 assert.equal(isPlayerBuiltStructuralMaterial(T.COAL), false, 'coal tracking does not imply structural support role');
 assert.equal(isPlayerBuiltStructuralMaterial(T.WOOD), true, 'wood tracking includes structural support role');
 
 assert.equal(isStableMachineSupportTile(T.WATER_PUMP), false, 'machines do not support machine placement');
+assert.equal(isStableMachineSupportTile(T.VENDING_MACHINE), false, 'vending machines do not support machine placement');
 assert.equal(isStableMachineSupportTile(T.CHEST_RARE), false, 'chests do not support machine placement');
 assert.equal(isStableMachineSupportTile(T.GLASS), false, 'fragile glass does not support machine placement');
 assert.equal(isStableMachineSupportTile(T.STONE), true, 'stone supports machine placement');
+assert.equal(isStableMachineSupportTile(T.WOOD_DOOR), true, 'closed wood doors can support machine placement as structural blocks');
+assert.equal(isStableMachineSupportTile(T.WOOD_TRAPDOOR), true, 'closed wood trapdoors can support machine placement as structural floors');
 assert.equal(isStableMachineSupportTile(T.DIRT), true, 'simple machines can stand on weak fill footing');
 
 assert.equal(isSafeLandingFloorTile(T.STONE), true, 'teleport landing can use real terrain footing');
 assert.equal(isSafeLandingFloorTile(T.DIRT), true, 'teleport landing can use ordinary weak ground');
 assert.equal(isSafeLandingFloorTile(T.SAND), true, 'teleport landing can use sand floors');
 assert.equal(isSafeLandingFloorTile(T.WATER_PUMP), false, 'teleport landing does not use machine tops as floors');
+assert.equal(isSafeLandingFloorTile(T.VENDING_MACHINE), false, 'teleport landing does not use vending machine tops as floors');
 assert.equal(isSafeLandingFloorTile(T.CHEST_COMMON), false, 'teleport landing does not use chest tops as floors');
 assert.equal(isSafeLandingFloorTile(T.GLASS), false, 'teleport landing avoids fragile glass floors');
+assert.equal(isSafeLandingFloorTile(T.WOOD_DOOR), false, 'teleport landing does not use hero-passable doors as floors');
+assert.equal(isSafeLandingFloorTile(T.WOOD_TRAPDOOR), true, 'teleport landing can use closed walkable trapdoors as floors');
 assert.equal(isSafeLandingFloorTile(T.DIAMOND), false, 'teleport landing avoids loose rigid ore floors');
 assert.equal(isSafeLandingFloorTile(T.COAL), false, 'teleport landing avoids loose coal seam floors');
 assert.equal(isSafeLandingFloorTile(T.WOOD), false, 'teleport landing keeps the old tree-trunk avoidance behavior');
 
 assert.equal(isObjectFootingTile(T.WATER_PUMP), false, 'machines cannot be object footings');
+assert.equal(isObjectFootingTile(T.VENDING_MACHINE), false, 'vending machines cannot be object footings');
 assert.equal(isObjectFootingTile(T.CHEST_COMMON), false, 'chests cannot be object footings');
 assert.equal(isObjectFootingTile(T.GLASS), false, 'fragile glass cannot be an object footing');
 assert.equal(isObjectFootingTile(T.DIAMOND), false, 'loose rigid ore cannot be an object footing');
@@ -339,8 +406,13 @@ assert.equal(isObjectCrushableSupportTile(T.GLASS), true, 'rigid objects crush i
 assert.equal(isObjectCrushableSupportTile(T.SAND), false, 'rigid objects can rest on sand as an ordinary floor');
 
 assert.equal(generatedCityStructuralTile(T.STEEL), true, 'city steel uses shared structural classification');
+assert.equal(generatedCityStructuralTile(T.STONE_DOOR), true, 'generated city stone doors use shared structural classification');
+assert.equal(generatedCityStructuralTile(T.STEEL_DOOR), true, 'generated city steel doors use shared structural classification');
+assert.equal(generatedCityStructuralTile(T.STONE_TRAPDOOR), true, 'generated city stone trapdoors use shared structural classification');
+assert.equal(generatedCityStructuralTile(T.STEEL_TRAPDOOR), true, 'generated city steel trapdoors use shared structural classification');
 assert.equal(generatedCityStructuralTile(T.IRIDIUM), true, 'advanced metals are structural if generated or restored');
 assert.equal(generatedCitySupportTile(T.DYNAMO), false, 'generated machines do not count as city supports');
+assert.equal(generatedCitySupportTile(T.VENDING_MACHINE), false, 'generated vending machines do not count as city supports');
 assert.equal(generatedCitySupportTile(T.CHEST_EPIC), false, 'generated chests do not count as city supports');
 assert.equal(generatedCitySupportTile(T.DIRT), true, 'generated weak fill can act as city terrain footing without becoming a player anchor');
 assert.equal(generatedCitySupportTile(T.STONE), true, 'generated stone remains a city support');
@@ -357,6 +429,8 @@ assert.equal(isWindPorousTile(T.AIR), true, 'wind treats air as porous');
 assert.equal(isWindPorousTile(T.WIRE), true, 'wind treats passable wiring as porous');
 assert.equal(isWindPorousTile(T.DYNAMO_SLOT), true, 'wind treats passable machine slots as porous');
 assert.equal(isWindPorousTile(T.STEAM), true, 'wind treats gases as porous');
+assert.equal(isWindPorousTile(T.WOOD_DOOR), false, 'wind treats doors as closed structural faces');
+assert.equal(isWindPorousTile(T.WOOD_TRAPDOOR), false, 'wind treats trapdoors as closed structural faces');
 assert.equal(isWindPorousTile(T.STONE), false, 'wind treats solid terrain as closed');
 
 assert.equal(isGasTile(T.STEAM), true, 'steam is a gas tile');
@@ -374,6 +448,8 @@ assert.equal(isWaterFillTile(T.LEAF), true, 'water can flow through/occupy folia
 assert.equal(isWaterFillTile(T.WIRE), false, 'water does not overwrite passable wiring');
 assert.equal(isWaterFillTile(T.DYNAMO_SLOT), false, 'water does not overwrite dynamo slots');
 assert.equal(isWaterFillTile(T.TORCH), false, 'water does not overwrite mounted fixtures');
+assert.equal(isWaterFillTile(T.WOOD_DOOR), false, 'water does not treat doors as fillable air');
+assert.equal(isWaterFillTile(T.WOOD_TRAPDOOR), false, 'water does not treat closed trapdoors as fillable air');
 assert.equal(isSkyOpenTile(T.AIR), true, 'sky exposure sees air as open');
 assert.equal(isSkyOpenTile(T.LEAF), true, 'sky exposure filters through foliage');
 assert.equal(isSkyOpenTile(T.STEAM), true, 'sky exposure filters through gases');
@@ -387,17 +463,29 @@ assert.equal(isCreatureOpenTile(T.WATER), true, 'creatures can move through wate
 assert.equal(isCreatureOpenTile(T.LEAF), true, 'creatures can move through foliage');
 assert.equal(isCreatureOpenTile(T.STEAM), true, 'creatures can move through gas');
 assert.equal(isCreatureOpenTile(T.STONE), false, 'creatures collide with solid terrain');
+assert.equal(isCreatureOpenTile(T.WOOD_DOOR), false, 'ordinary creatures do not path through doors');
+assert.equal(isCreatureOpenTile(T.WOOD_TRAPDOOR), false, 'ordinary creatures do not path through trapdoors');
 assert.equal(isPlayerPassableTile(T.AIR), true, 'player passability includes air');
 assert.equal(isPlayerPassableTile(T.WATER), true, 'player passability includes water');
 assert.equal(isPlayerPassableTile(T.LAVA), true, 'player passability includes lava as a damaging medium');
 assert.equal(isPlayerPassableTile(T.WIRE), true, 'player passability includes passable wiring');
 assert.equal(isPlayerPassableTile(T.TELEPORTER), true, 'player passability includes teleporter cells');
 assert.equal(isPlayerPassableTile(T.STONE), false, 'player passability excludes solid terrain');
+assert.equal(isPlayerPassableTile(T.WOOD_DOOR), false, 'baseline open-medium passability keeps doors closed to non-hero systems');
+assert.equal(isPlayerPassableTile(T.WOOD_TRAPDOOR), false, 'baseline open-medium passability keeps trapdoors closed to non-hero systems');
+assert.equal(isHeroPassableTile(T.WOOD_DOOR), true, 'hero-specific passability opens wood doors');
+assert.equal(isHeroPassableTile(T.STONE_DOOR), true, 'hero-specific passability opens stone doors');
+assert.equal(isHeroPassableTile(T.STEEL_DOOR), true, 'hero-specific passability opens steel doors');
+assert.equal(isHeroPassableTile(T.WOOD_TRAPDOOR), false, 'hero trapdoor opening is directional collision logic, not always-open passability');
+assert.equal(isNpcPassableTile(T.WOOD_DOOR), true, 'NPC-specific passability opens wood doors');
+assert.equal(isNpcPassableTile(T.WOOD_TRAPDOOR), false, 'NPC trapdoor opening is directional collision logic, not always-open passability');
 assert.equal(isSolidCollisionTile(T.STONE), true, 'solid collision blocks stone');
 assert.equal(isSolidCollisionTile(T.WATER), false, 'solid collision does not block water');
 assert.equal(isSolidCollisionTile(T.LAVA), false, 'solid collision does not block lava');
 assert.equal(isSolidCollisionTile(T.WIRE), false, 'solid collision does not block thin passable infrastructure');
 assert.equal(isSolidCollisionTile(T.TELEPORTER), false, 'solid collision does not block teleporter cells');
+assert.equal(isSolidCollisionTile(T.WOOD_DOOR), true, 'generic solid collision still blocks doors for mobs/projectiles');
+assert.equal(isSolidCollisionTile(T.WOOD_TRAPDOOR), true, 'generic solid collision still blocks trapdoors for mobs/projectiles/gases');
 assert.equal(isSunTransparentTile(T.AIR), true, 'sunlight passes through air');
 assert.equal(isSunTransparentTile(T.GLASS), true, 'sunlight passes through glass');
 assert.equal(isSunTransparentTile(T.WIRE), true, 'sunlight passes through thin wiring');
@@ -426,6 +514,8 @@ assert.equal(isCondensedWaterTargetTile(T.LEAF), false, 'steam condensate does n
 assert.equal(canGasReplaceTile(T.POISON_GAS,T.AIR), true, 'gas can occupy air');
 assert.equal(canGasReplaceTile(T.POISON_GAS,T.WIRE), false, 'gas does not overwrite passable wiring');
 assert.equal(canGasReplaceTile(T.POISON_GAS,T.LEAF), false, 'gas does not overwrite foliage');
+assert.equal(canGasReplaceTile(T.POISON_GAS,T.WOOD_DOOR), false, 'gas does not pass through or overwrite doors');
+assert.equal(canGasReplaceTile(T.POISON_GAS,T.WOOD_TRAPDOOR), false, 'gas does not pass through or overwrite trapdoors');
 assert.equal(canGasSwapTile(T.HOT_AIR,T.POISON_GAS), true, 'hot air can bubble through heavier gases');
 assert.equal(canGasSwapTile(T.STEAM,T.POISON_GAS), false, 'ordinary gases do not swap through each other');
 assert.equal(canGasSwapTile(T.HOT_AIR,T.HOT_AIR), false, 'hot air does not swap with itself');
@@ -491,7 +581,7 @@ for(const t of [T.WOOD,T.LEAF,T.AUTUMN_LEAF_ORANGE,T.AUTUMN_LEAF_RED]){
 for(const t of [T.GRASS,T.MUD,T.ALIEN_BIOMASS]){
   assert.equal(isMeteorLifeSiteTile(t), true, 'meteor consequence living sites include '+(INFO[t]?.name || t));
 }
-for(const t of [T.STEEL,T.WIRE,T.COPPER_WIRE,T.WATER_PIPE,T.DYNAMO,T.WATER_PUMP,T.CHEST_COMMON,T.TURRET]){
+for(const t of [T.STEEL,T.WOOD_DOOR,T.STONE_DOOR,T.STEEL_DOOR,T.WOOD_TRAPDOOR,T.STONE_TRAPDOOR,T.STEEL_TRAPDOOR,T.WIRE,T.COPPER_WIRE,T.WATER_PIPE,T.DYNAMO,T.WATER_PUMP,T.CHEST_COMMON,T.TURRET]){
   assert.equal(isMeteorSettlementSiteTile(t), true, 'meteor consequence settlement sites include '+(INFO[t]?.name || t));
 }
 for(const t of [T.AIR,T.STONE,T.SAND,T.COAL,T.WATER,T.ICE,T.WOOD,T.GRASS,T.ALIEN_BIOMASS]){
@@ -514,6 +604,7 @@ assert.ok(structuralSupportStrengthForMaterial(T.STEEL)>structuralSupportStrengt
 assert.ok(structuralSupportStrengthForMaterial(T.BASALT)>structuralSupportStrengthForMaterial(T.STONE), 'basalt structural support differs from stone');
 assert.equal(structuralSupportStrengthForMaterial(T.STEEL), buildMaterialProfile(T.STEEL).support, 'structural support strength is derived from steel material profile support');
 assert.equal(structuralSupportStrengthForMaterial(T.BASALT), buildMaterialProfile(T.BASALT).support, 'structural support strength is derived from basalt material profile support');
+assert.equal(structuralSupportStrengthForMaterial(T.STEEL_TRAPDOOR), buildMaterialProfile(T.STEEL_TRAPDOOR).support, 'structural support strength is derived from steel trapdoor material profile support');
 assert.equal(structuralSupportStrengthForMaterial(T.COAL), 0, 'unknown/non-structural support strength does not fall back to stone-like strength');
 assert.ok(buildMaterialProfile(T.WOOD).flex>buildMaterialProfile(T.GLASS).flex, 'wood flex differs from brittle glass');
 assert.ok(buildMaterialProfile(T.COAL).fail<buildMaterialProfile(T.STONE).fail, 'coal fails earlier than stone');
@@ -561,6 +652,8 @@ assert.match(mainSource, /function isGasTileId\(t\)\{ return isGasTile\(t\); \}/
 assert.match(mainSource, /function isTransientTerrainTile\(t\)\{\s*return isGasTile\(t\);\s*\}/, 'save stripping delegates transient gas identity to shared material physics');
 assert.match(mainSource, /if\(isGasTileId\(tId\)\) return false;/, 'mining gas rejection uses shared gas identity');
 assert.match(mainSource, /isSolidCollisionTile as isSolid/, 'main collision checks use shared solid-collision predicates');
+assert.match(mainSource, /function heroTrapdoorOpenForCollision\(t,axis\)\{[\s\S]*isTrapdoorTile\(t\)[\s\S]*axis==='y'[\s\S]*heroDropThroughInput\(\)[\s\S]*\}/, 'hero collision gives trapdoors directional pass-through instead of always-open passability');
+assert.match(mainSource, /function solidAt\(x,y,axis\)\{[\s\S]*const t=getTile\(x,y\);[\s\S]*heroTrapdoorOpenForCollision\(t,axis\)[\s\S]*return !isHeroPassableTile\(t\);[\s\S]*\}/, 'hero collision keeps door passability shared while trapdoors stay conditional');
 assert.match(mainSource, /function meteorPickSparkTile\(t\)\{\s*return isMeteorPickSparkMaterial\(t\);\s*\}/, 'meteor pick mining feedback uses shared material predicates');
 assert.match(mainSource, /emitMeteorPickSpark\(tx,ty,isMeteorPickDenseRockMaterial\(tId\)\?7:5\);/, 'meteor pick dense-rock intensity uses shared material predicates');
 assert.match(mainSource, /return isReplaceableNaturalOpenTile\(cur,false\) && \(slot \|\| cur!==T\.WATER\);/, 'dynamo placement uses shared natural-open replacement rules');
@@ -577,7 +670,10 @@ assert.match(worldSource, /isGeneratedStructureReplaceableTile/, 'generated-city
 assert.match(worldSource, /isLavaExposureOpenTile/, 'generated lava registration uses shared exposure predicates');
 assert.match(worldSource, /isReplaceableNaturalOpenTile\(arr\[i\],false\)/, 'small generated structures use shared natural-open replacement predicates');
 assert.match(worldSource, /isRockStructuralMaterial\(t\) && isObjectFootingTile\(t\)/, 'cave treasure footing uses shared material physics');
-assert.match(meatSource, /import \{ isGasTile, isObjectFootingTile, isReplaceableNaturalOpenTile \} from '\.\/material_physics\.js'/, 'loose meat drops import shared gas, footing and open-cell predicates');
+assert.match(mainSource, /import \{[^}]*isLooseItemMaterial[^}]*\} from '\.\/engine\/material_physics\.js'/, 'main imports shared loose-item predicates');
+assert.match(mainSource, /function isLooseItemTile\(t\)\{\s*return isLooseItemMaterial\(t\);\s*\}/, 'rendering and placement loose-item checks delegate to shared material physics');
+assert.match(meatSource, /import \{[^}]*isGasTile[^}]*isMeatDecayMaterial[^}]*isObjectFootingTile[^}]*isReplaceableNaturalOpenTile[^}]*\} from '\.\/material_physics\.js'/, 'loose meat drops import shared gas, lifecycle, footing and open-cell predicates');
+assert.match(meatSource, /const isMeatTile = t=>isMeatDecayMaterial\(t\);/, 'meat lifecycle uses the shared loose-item ownership predicate');
 assert.match(meatSource, /function supportedBy\(t\)\{\s*return isObjectFootingTile\(t\);\s*\}/, 'loose meat drops do not keep a private solid-support list');
 assert.match(meatSource, /const canOccupy = t=>isReplaceableNaturalOpenTile\(t,false\);/, 'loose meat drops use the shared natural-open predicate');
 assert.match(meatSource, /old!==T\.AIR && !isGasTile\(old\)/, 'rotten meat gas fallback uses shared gas identity');
@@ -594,7 +690,7 @@ assert.match(gasSource, /import \{ canGasReplaceTile, canGasSwapTile, isCondense
 assert.match(gasSource, /function canReplaceWithGas\(tile,dst\)\{\s*return canGasReplaceTile\(tile,dst\);\s*\}/, 'gas motion uses shared replacement predicates');
 assert.match(gasSource, /function canSwapThroughGas\(tile,dst\)\{\s*return canGasSwapTile\(tile,dst\);\s*\}/, 'gas swapping uses shared material predicates');
 assert.match(gasSource, /if\(!isCondensedWaterTargetTile\(cur\)\) return false;/, 'steam condensate uses shared water target predicates');
-assert.match(pumpSource, /import \{ isWaterFillTile \} from '\.\/material_physics\.js'/, 'water pumps import shared hydraulic receiver predicates');
+assert.match(pumpSource, /import \{ isGasTile, isWaterFillTile \} from '\.\/material_physics\.js'/, 'fluid pumps import shared gas and water receiver predicates');
 assert.match(pumpSource, /return isWaterFillTile\(t\);/, 'pump outlets use the same water-fill predicate as natural water');
 assert.match(windSource, /isWindExposureBlockerTile/, 'wind exposure uses shared material physics predicates');
 assert.match(windSource, /isWindPorousTile/, 'wind open-cell checks use shared material physics predicates');
@@ -615,8 +711,8 @@ assert.match(fogSource, /if\(isAirOrGasTile\(tt\)\) continue;/, 'fog fallback sk
 assert.match(grassSource, /import \{ isAirOrGasTile, isFoliageTile \} from '\.\/material_physics\.js'/, 'grass overlays import shared open and foliage predicates');
 assert.match(grassSource, /function openAbove\(t\)\{ return isAirOrGasTile\(t\); \}/, 'grass overlay open checks use shared air/gas predicates');
 assert.match(grassSource, /function leafTile\(t\)\{ return isFoliageTile\(t\); \}/, 'grass overlay foliage checks use shared foliage predicates');
-assert.match(teleporterSource, /import \{ isPlayerPassableTile \} from '\.\/material_physics\.js'/, 'teleporter exits import shared player passability predicates');
-assert.match(teleporterSource, /function passableForPlayer\(t\)\{\s*return isPlayerPassableTile\(t\);\s*\}/, 'teleporter exit validation uses shared player passability');
+assert.match(teleporterSource, /import \{ isHeroPassableTile \} from '\.\/material_physics\.js'/, 'teleporter exits import shared hero passability predicates');
+assert.match(teleporterSource, /function passableForPlayer\(t\)\{\s*return isHeroPassableTile\(t\);\s*\}/, 'teleporter exit validation uses shared hero passability');
 assert.match(turretSource, /import \{[^}]*isPlayerPassableTile[^}]*\} from '\.\/material_physics\.js'/, 'turret sight checks import shared open-medium predicates');
 assert.match(turretSource, /if\(isPlayerPassableTile\(t\)\) continue;/, 'turret sight checks use shared open-medium predicates');
 assert.match(turretSource, /isSolidCollisionTile as isSolid/, 'turret hard cover checks use shared solid-collision predicates');

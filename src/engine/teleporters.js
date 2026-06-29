@@ -2,7 +2,7 @@
 // network: adjacent dynamos can charge devices directly or through contiguous
 // copper cable runs, while each teleporter keeps its own small battery.
 import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
-import { isPlayerPassableTile } from './material_physics.js';
+import { isHeroPassableTile } from './material_physics.js';
 
 (function(){
   window.MM = window.MM || {};
@@ -23,6 +23,7 @@ import { isPlayerPassableTile } from './material_physics.js';
   const TELEPORT_COOLDOWN = 0.72;
   const PLAYER_SCAN_INTERVAL = 0.45;
   const VISIBLE_SCAN_INTERVAL_MS = 250;
+  const CATCHUP_MAX_SECONDS = 900;
 
   let networkRev = 1;
   let scanT = 0;
@@ -561,7 +562,7 @@ import { isPlayerPassableTile } from './material_physics.js';
     return best;
   }
   function passableForPlayer(t){
-    return isPlayerPassableTile(t);
+    return isHeroPassableTile(t);
   }
   function canStandAt(player,x,y,getTile){
     const w=Math.max(0.5,Number(player && player.w)||0.7);
@@ -689,6 +690,27 @@ import { isPlayerPassableTile } from './material_physics.js';
       }
     }
     tryTeleport(player,getTile,opts||{});
+  }
+  function catchUp(dt,_player,getTile,_setTile,opts){
+    if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function') return false;
+    const simDt=Math.max(0,Math.min(CATCHUP_MAX_SECONDS,Number(dt)||0));
+    if(simDt<=0) return false;
+    let changed=false;
+    const dynamo=opts && opts.dynamo;
+    for(const [raw,m] of machines){
+      if(!m || getSafe(getTile,m.x,m.y,T.AIR)!==T.TELEPORTER){
+        machines.delete(raw);
+        networkCache.delete(raw);
+        changed=true;
+        continue;
+      }
+      const before=m.energy||0;
+      m.cooldown=0;
+      m.pulse=0;
+      chargeFromNetwork(m,simDt,getTile,dynamo);
+      if(Math.abs((m.energy||0)-before)>0.0001) changed=true;
+    }
+    return changed;
   }
   function drawBatteryLines(ctx,TILE,px,py,charge,pulse){
     const lineW=TILE*0.46;
@@ -855,13 +877,14 @@ import { isPlayerPassableTile } from './material_physics.js';
     drainNetworkEnergyAt,
     chargeBatteryAt,
     update,
+    catchUp,
     draw,
     onTileChanged,
     snapshot,
     restore,
     reset,
     metrics,
-    _debug:{machines,networkCache,wireActivity,TELEPORTER_CAPACITY,MACHINE_CAP,TRAVEL_COST,CHARGE_RATE,debugCharge,debugSetEnergy,ensureMachine,networkFor}
+    _debug:{machines,networkCache,wireActivity,TELEPORTER_CAPACITY,MACHINE_CAP,TRAVEL_COST,CHARGE_RATE,CATCHUP_MAX_SECONDS,debugCharge,debugSetEnergy,ensureMachine,networkFor}
   };
   MM.teleporters=api;
 })();

@@ -177,6 +177,15 @@ assert.equal(INFO[T.TURRET].passable,false,'turrets are solid defensive machines
 {
   reset();
   placePoweredTurret(T.TURRET,0,10);
+  const beforeDynamo=dynamo.metrics().storedEnergy;
+  assert.equal(turrets.catchUp(30,null,getTile,setTile,{dynamo,teleporters}),true,'turret catch-up charges through copper wires while offscreen');
+  assert.ok(turrets.metrics().storedEnergy>20,'turret catch-up stores offscreen network energy');
+  assert.ok(dynamo.metrics().storedEnergy<beforeDynamo,'turret catch-up drains the real connected power source');
+}
+
+{
+  reset();
+  placePoweredTurret(T.TURRET,0,10);
   for(let i=0;i<4;i++) tick(0.5);
   const beforeEnergy=turrets.metrics().storedEnergy;
   const {mob,state}=fakeMobAt(7.5,10.5,24);

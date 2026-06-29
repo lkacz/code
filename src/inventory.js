@@ -182,6 +182,12 @@
     {key:'alienBiomass', label:'Biomasa obca', color:'#79c95d', tile:'ALIEN_BIOMASS'},
     {key:'meteorDust', label:'Pyl meteorytowy', color:'#c8a6ff', tile:'METEOR_DUST'},
     {key:'wood',    label:'Drewno',  color:'#8b5a2b', tile:'WOOD'},
+    {key:'woodDoor', label:'Drzwi drewniane', color:'#9b6730', tile:'WOOD_DOOR'},
+    {key:'stoneDoor', label:'Drzwi kamienne', color:'#8d9098', tile:'STONE_DOOR'},
+    {key:'steelDoor', label:'Drzwi stalowe', color:'#9aa8b5', tile:'STEEL_DOOR'},
+    {key:'woodTrapdoor', label:'Zapadnia drewniana', color:'#a57136', tile:'WOOD_TRAPDOOR'},
+    {key:'stoneTrapdoor', label:'Zapadnia kamienna', color:'#858992', tile:'STONE_TRAPDOOR'},
+    {key:'steelTrapdoor', label:'Zapadnia stalowa', color:'#91a0ad', tile:'STEEL_TRAPDOOR'},
     {key:'arrowWood', label:'Strzaly drewniane', color:'#caa472', tile:null},
     {key:'arrowStone', label:'Strzaly kamienne', color:'#9aa0a8', tile:null},
     {key:'arrowObsidian', label:'Strzaly obsydianowe', color:'#7a5cc1', tile:null},
@@ -200,10 +206,13 @@
     {key:'plastic', label:'Plastik', color:'#d7dbe3', tile:null},
     {key:'copper',  label:'Miedz',   color:'#cc7a36', tile:null},
     {key:'copperWire', label:'Przewod miedziany', color:'#d68535', tile:'COPPER_WIRE'},
-    {key:'waterPipe', label:'Rura wodna', color:'#2d8ec9', tile:'WATER_PIPE'},
-    {key:'waterPump', label:'Pompa wodna', color:'#58d4ff', tile:'WATER_PUMP'},
+    {key:'waterPipe', label:'Rura fluidowa', color:'#2d8ec9', tile:'WATER_PIPE'},
+    {key:'waterPump', label:'Pompa fluidowa', color:'#58d4ff', tile:'WATER_PUMP'},
     {key:'transistor', label:'Tranzystor', color:'#47d18c', tile:'TRANSISTOR'},
     {key:'dynamo',  label:'Dynamo',  color:'#ffd24a', tile:'DYNAMO'},
+    {key:'vendingMachine', label:'Automat vendingowy', color:'#55d7ff', tile:'VENDING_MACHINE'},
+    {key:'solarPanel', label:'Panel sloneczny', color:'#2290b2', tile:'SOLAR_PANEL'},
+    {key:'solarBattery', label:'Panel sloneczny z bateria', color:'#19b3a8', tile:'SOLAR_BATTERY'},
     {key:'teleporter', label:'Teleporter', color:'#7cf7ff', tile:'TELEPORTER'},
     {key:'antigravityBeacon', label:'Beacon antygrawitacyjny', color:'#c46bff', tile:'ANTIGRAVITY_BEACON'},
     {key:'meteorSiren', label:'Syrena meteorytowa', color:'#ff9f45', tile:'METEOR_SIREN'},
@@ -258,7 +267,7 @@
   }
   function pushToBag(item, opts){
     opts=opts||{};
-    if(state.bag.length>=MAX_BAG){
+    if(state.bag.length>=MAX_BAG && !opts.essential){
       return false;
     }
     state.bag.push(item);
@@ -639,6 +648,20 @@
     extraItems.push(def);
     return true;
   }
+  function grantItem(raw, opts){
+    opts=opts||{};
+    const item=sanitizeLootItem(raw, raw && raw.kind);
+    if(!item) return false;
+    if(findItem(item.id)){
+      if(opts.equip && item.kind) equip(item.id);
+      return true;
+    }
+    if(!pushToBag(item,{markNew:opts.markNew!==false, essential:!!opts.essential})) return false;
+    restoreDynamicLootItem(item);
+    notifyChange({key:'grant', value:item.id});
+    if(opts.equip) equip(item.id);
+    return true;
+  }
 
   // --- Dynamic loot sync: chests.js fills MM.dynamicLoot; merge new items into the bag ---
   const DYN_KIND_MAP={capes:'cape', eyes:'eyes', outfits:'outfit', weapons:'weapon', charms:'charm'};
@@ -726,7 +749,7 @@
     bagItems:()=>state.bag.filter(i=>!state.discarded.has(i.id)),
     getItem:findItem,
     isBuiltin:(id)=>BUILTIN_ITEMS.some(i=>i.id===id),
-    equip, unequip, discard, undoDiscard, discardUndoCount, registerItem, registerModifierSource,
+    equip, unequip, discard, undoDiscard, discardUndoCount, registerItem, grantItem, registerModifierSource,
     isNew, markSeen, newItems, capacity, compareItem,
     equippedId:(slotId)=>state.equipped[slotId]||null,
     equippedItem:(slotId)=>findItem(state.equipped[slotId]),

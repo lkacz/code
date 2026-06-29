@@ -1,5 +1,5 @@
 import { T, WORLD_H, CHUNK_W } from '../constants.js';
-import { isGasTile, isObjectFootingTile, isReplaceableNaturalOpenTile } from './material_physics.js';
+import { isGasTile, isMeatDecayMaterial, isObjectFootingTile, isReplaceableNaturalOpenTile } from './material_physics.js';
 
 window.MM = window.MM || {};
 
@@ -11,12 +11,25 @@ const meat = (function(){
   const SCAN_RX = 72;
   const SCAN_RY = 46;
   const MAX_RECORDS = 900;
+  const HOT_AIR_COOK_CELLS = 5;
+  const HEAT_NEIGHBORS = Object.freeze([[0,-1],[1,-1],[-1,-1],[1,0],[-1,0],[0,1],[1,1],[-1,1]]);
+  const HOT_AIR_ABSORB_OFFSETS = Object.freeze((()=>{
+    const out=[];
+    for(let dy=-2; dy<=2; dy++){
+      for(let dx=-2; dx<=2; dx++){
+        if(dx===0 && dy===0) continue;
+        out.push([dx,dy,dx*dx+dy*dy]);
+      }
+    }
+    out.sort((a,b)=>a[2]-b[2]);
+    return out.map(([dx,dy])=>[dx,dy]);
+  })());
   const records = new Map();
   let scanAcc = 0;
 
   const key = (x,y)=>x+','+y;
   const finiteTile = (x,y)=>Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H;
-  const isMeatTile = t=>t===T.MEAT || t===T.ROTTEN_MEAT;
+  const isMeatTile = t=>isMeatDecayMaterial(t);
   const canOccupy = t=>isReplaceableNaturalOpenTile(t,false);
   function getSafe(getTile,x,y){ try{ return getTile ? getTile(x,y) : T.AIR; }catch(e){ return T.AIR; } }
   function supportedBy(t){
@@ -93,6 +106,52 @@ const meat = (function(){
     try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(x,y,getTile); }catch(e){}
     try{ if(MM.fallingSolids && MM.fallingSolids.afterPlacement) MM.fallingSolids.afterPlacement(x,y); }catch(e){}
   }
+  function clearHotAirCell(x,y,setTile){
+    if(typeof setTile!=='function') return false;
+    try{
+      if(typeof setTile.transient==='function') setTile.transient(x,y,T.AIR);
+      else setTile(x,y,T.AIR);
+      return true;
+    }catch(e){ return false; }
+  }
+  function directHeatAt(x,y,getTile){
+    try{ if(MM.fire && MM.fire.isBurning && MM.fire.isBurning(x,y)) return true; }catch(e){}
+    for(const [dx,dy] of HEAT_NEIGHBORS){
+      const hx=x+dx, hy=y+dy;
+      const t=getSafe(getTile,hx,hy,T.AIR);
+      if(t===T.LAVA || t===T.TORCH) return true;
+      try{ if(MM.fire && MM.fire.isBurning && MM.fire.isBurning(hx,hy)) return true; }catch(e){}
+    }
+    return false;
+  }
+  function absorbHotAirForCooking(x,y,getTile,setTile){
+    if(typeof getTile!=='function' || typeof setTile!=='function') return false;
+    const cells=[];
+    for(const [dx,dy] of HOT_AIR_ABSORB_OFFSETS){
+      const hx=x+dx, hy=y+dy;
+      if(getSafe(getTile,hx,hy,T.AIR)===T.HOT_AIR) cells.push({x:hx,y:hy});
+      if(cells.length>=HOT_AIR_COOK_CELLS) break;
+    }
+    if(cells.length<HOT_AIR_COOK_CELLS) return false;
+    for(const c of cells) clearHotAirCell(c.x,c.y,setTile);
+    return true;
+  }
+  function cookMeatRecord(k,r,getTile,setTile,reason){
+    if(!r || typeof setTile!=='function') return false;
+    if(getSafe(getTile,r.x,r.y,T.AIR)!==T.MEAT) return false;
+    try{ if(MM.fire && MM.fire.extinguish) MM.fire.extinguish(r.x,r.y); }catch(e){}
+    setTile(r.x,r.y,T.BAKED_MEAT);
+    settleLooseFoodTile(r.x,r.y,T.BAKED_MEAT,getTile,setTile);
+    records.delete(k);
+    try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((r.x+0.5)*(MM.TILE||20),(r.y+0.5)*(MM.TILE||20),reason==='hot-air'?'rare':'common'); }catch(e){}
+    return true;
+  }
+  function cookFromEnvironment(k,r,getTile,setTile){
+    if(!r || getSafe(getTile,r.x,r.y,T.AIR)!==T.MEAT) return false;
+    if(directHeatAt(r.x,r.y,getTile)) return cookMeatRecord(k,r,getTile,setTile,'direct');
+    if(absorbHotAirForCooking(r.x,r.y,getTile,setTile)) return cookMeatRecord(k,r,getTile,setTile,'hot-air');
+    return false;
+  }
 
   function dropFromMob(m,getTile,setTile){
     getTile = getTile || (MM.world && MM.world.getTile);
@@ -160,6 +219,21 @@ const meat = (function(){
     r.x=dest.x; r.y=dest.y;
     records.set(key(r.x,r.y),r);
     notifyTileChanged(r.x,r.y,getTile);
+    return true;
+  }
+
+  function settleLooseFoodTile(x,y,t,getTile,setTile){
+    if(typeof setTile!=='function') return false;
+    if(!canOccupy(getSafe(getTile,x,y+1))) return false;
+    const dest=settleSpot(x,y,t,getTile);
+    if(dest.x===x && dest.y===y) return false;
+    if(!canOccupy(getSafe(getTile,dest.x,dest.y))) return false;
+    setTile(x,y,T.AIR);
+    notifyTileRemoved(x,y,getTile);
+    const was=getSafe(getTile,dest.x,dest.y);
+    if(was===T.WATER) displaceWater(dest.x,dest.y,getTile,setTile);
+    setTile(dest.x,dest.y,t);
+    notifyTileChanged(dest.x,dest.y,getTile);
     return true;
   }
 
@@ -252,6 +326,7 @@ const meat = (function(){
     for(const [k,r] of [...records]){
       const t=getSafe(getTile,r.x,r.y);
       if(!isMeatTile(t)){ records.delete(k); continue; }
+      if(t===T.MEAT && cookFromEnvironment(k,r,getTile,setTile)) continue;
       if(settleUnsupportedRecord(k,r,t,getTile,setTile)) continue;
       if(t===T.MEAT){
         if(getSafe(getTile,r.x,r.y+1)===T.SNOW) continue;

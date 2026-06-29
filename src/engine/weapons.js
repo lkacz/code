@@ -318,6 +318,7 @@ import { reactions as REACTIONS } from './reactions.js';
     const bonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
     const hit=(MM.bosses && MM.bosses.attackAt && MM.bosses.attackAt(tx,ty,bonus))
            || (MM.ufo && MM.ufo.attackAt && MM.ufo.attackAt(tx,ty,bonus))
+           || (MM.npcSystem && MM.npcSystem.attackAt && MM.npcSystem.attackAt(tx,ty,bonus))
            || (MM.mobs && MM.mobs.attackAt && MM.mobs.attackAt(tx,ty,bonus));
     meleeCd=0.35; player.atkCd=Math.max(player.atkCd||0, 0.35);
     player.facing = tx>=px? 1 : -1;
@@ -406,6 +407,7 @@ import { reactions as REACTIONS } from './reactions.js';
   }
   function electricDamageAt(tx,ty,dmg){
     try{ if(MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg)) return true; }catch(e){}
+    try{ if(MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,dmg)) return true; }catch(e){}
     try{ if(MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,dmg)) return true; }catch(e){}
     try{ if(MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,dmg)) return true; }catch(e){}
     return false;
@@ -570,6 +572,7 @@ import { reactions as REACTIONS } from './reactions.js';
         const x=tx+dx, y=ty+dy;
         hit = !!((MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(x,y,dmg))
           || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(x,y,dmg))
+          || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(x,y,dmg))
           || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(x,y,dmg))) || hit;
       }
     }
@@ -945,6 +948,7 @@ import { reactions as REACTIONS } from './reactions.js';
         // Creature hit (mob, boss part or a hovering saucer)
         if((MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,a.dmg))
         || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,a.dmg))
+        || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,a.dmg))
         || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,a.dmg))){
           if(a.fire && MM.mobs && MM.mobs.igniteAt) MM.mobs.igniteAt(tx,ty,{dur:2.5,dps:2});
           arrows.splice(i,1); break;

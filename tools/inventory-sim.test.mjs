@@ -4,12 +4,23 @@
 // weapon shortcut category cycling (strongest-first, opt-out, empty category)
 // and shortcutOff hygiene on discard. Run: npm run test:inventory
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 globalThis.window = globalThis;
 const { T, INFO } = await import('../src/constants.js');
 await import('../src/inventory.js');
 const INV = globalThis.MM.inventory;
 const { chests } = await import('../src/engine/chests.js');
+
+const indexHtml = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+assert.match(indexHtml, /id="hotSelectMenu"[^>]*max-height:min\(78vh,calc\(100vh - 86px\)\)[^>]*overflow:hidden/, 'hotbar picker is height-bounded instead of growing behind the viewport');
+assert.match(indexHtml, /id="hotSelectOptions"[^>]*flex:1 1 auto[^>]*min-height:0[^>]*overflow-y:auto/, 'hotbar picker options list owns vertical scrolling');
+assert.match(indexHtml, /#craft\{[^}]*width:min\(560px,calc\(100vw - 16px\)\)[^}]*overflow:hidden/, 'crafting recipe book is viewport-bounded');
+assert.match(indexHtml, /#craftSearch\{[^}]*width:100%/, 'crafting recipe book exposes a full-width recipe search');
+assert.match(indexHtml, /#craft \.craftTabs\{[^}]*overflow-x:auto/, 'crafting recipe groups scroll horizontally when needed');
+assert.match(indexHtml, /#craft \.craftContent\{[^}]*grid-template-columns:minmax\(210px,1fr\) minmax\(190px,\.9fr\)/, 'crafting recipe book has a recipe list plus detail panel');
+assert.match(indexHtml, /#craft \.craftList\{[^}]*overflow-y:auto/, 'crafting recipe list owns vertical scrolling');
 
 // --- resource registry: city salvage materials are tracked and placeable where intended ---
 const res = key => INV.RESOURCES.find(r => r.key === key);
@@ -40,6 +51,18 @@ for(let i=1;i<digOrder.length;i++){
 assert.equal(INFO[T.ROTTEN_MEAT].drop, 'rottenMeat', 'rotten meat blocks drop rotten meat');
 assert.equal(INFO[T.BAKED_MEAT].drop, 'bakedMeat', 'baked meat blocks drop baked meat');
 assert.equal(INFO[T.GLASS].drop, 'glass', 'glass blocks drop recoverable glass');
+assert.equal(INFO[T.WOOD_DOOR].drop, 'woodDoor', 'wood doors drop the wood-door resource');
+assert.equal(INFO[T.STONE_DOOR].drop, 'stoneDoor', 'stone doors drop the stone-door resource');
+assert.equal(INFO[T.STEEL_DOOR].drop, 'steelDoor', 'steel doors drop the steel-door resource');
+assert.equal(INFO[T.WOOD_TRAPDOOR].drop, 'woodTrapdoor', 'wood trapdoors drop the wood-trapdoor resource');
+assert.equal(INFO[T.STONE_TRAPDOOR].drop, 'stoneTrapdoor', 'stone trapdoors drop the stone-trapdoor resource');
+assert.equal(INFO[T.STEEL_TRAPDOOR].drop, 'steelTrapdoor', 'steel trapdoors drop the steel-trapdoor resource');
+assert.equal(INFO[T.WOOD_DOOR].door, true, 'wood door advertises door semantics');
+assert.equal(INFO[T.STONE_DOOR].door, true, 'stone door advertises door semantics');
+assert.equal(INFO[T.STEEL_DOOR].door, true, 'steel door advertises door semantics');
+assert.equal(INFO[T.WOOD_TRAPDOOR].trapdoor, true, 'wood trapdoor advertises trapdoor semantics');
+assert.equal(INFO[T.STONE_TRAPDOOR].trapdoor, true, 'stone trapdoor advertises trapdoor semantics');
+assert.equal(INFO[T.STEEL_TRAPDOOR].trapdoor, true, 'steel trapdoor advertises trapdoor semantics');
 assert.equal(res('coal')?.tile, 'COAL', 'coal is a placeable mined resource');
 assert.equal(res('dirt')?.tile, 'DIRT', 'dirt is a placeable mined resource');
 assert.equal(res('granite')?.tile, 'GRANITE', 'granite is a placeable mined resource');
@@ -55,13 +78,22 @@ assert.equal(res('meat')?.tile, 'MEAT', 'raw meat is tracked as a placeable/eata
 assert.equal(res('rottenMeat')?.tile, 'ROTTEN_MEAT', 'rotten meat is tracked separately');
 assert.equal(res('bakedMeat')?.tile, 'BAKED_MEAT', 'baked meat is tracked separately');
 assert.equal(res('glass')?.tile, 'GLASS', 'glass is tracked as a placeable/recoverable resource');
+assert.equal(res('woodDoor')?.tile, 'WOOD_DOOR', 'wood door is a craftable placeable resource');
+assert.equal(res('stoneDoor')?.tile, 'STONE_DOOR', 'stone door is a craftable placeable resource');
+assert.equal(res('steelDoor')?.tile, 'STEEL_DOOR', 'steel door is a craftable placeable resource');
+assert.equal(res('woodTrapdoor')?.tile, 'WOOD_TRAPDOOR', 'wood trapdoor is a craftable placeable resource');
+assert.equal(res('stoneTrapdoor')?.tile, 'STONE_TRAPDOOR', 'stone trapdoor is a craftable placeable resource');
+assert.equal(res('steelTrapdoor')?.tile, 'STEEL_TRAPDOOR', 'steel trapdoor is a craftable placeable resource');
 assert.equal(res('wire')?.tile, 'WIRE', 'wire is a placeable salvaged resource');
 assert.equal(res('plastic')?.tile, null, 'plastic is tracked as a non-placeable component');
 assert.equal(res('copper')?.tile, null, 'copper is tracked as a non-placeable component');
 assert.equal(res('copperWire')?.tile, 'COPPER_WIRE', 'copper wire is a placeable power cable resource');
 assert.equal(res('transistor')?.tile, 'TRANSISTOR', 'transistor is placeable for block-reaction assemblies');
 assert.equal(res('dynamo')?.tile, 'DYNAMO', 'dynamo is a craftable placeable machine resource');
+assert.equal(res('solarPanel')?.tile, 'SOLAR_PANEL', 'solar panel is a craftable placeable power-source resource');
+assert.equal(res('solarBattery')?.tile, 'SOLAR_BATTERY', 'solar battery panel is a craftable placeable storage resource');
 assert.equal(res('teleporter')?.tile, 'TELEPORTER', 'teleporter is a placeable machine resource');
+assert.equal(res('vendingMachine')?.tile, 'VENDING_MACHINE', 'vending machine is a collectable/placeable powered appliance resource');
 assert.equal(res('antigravityBeacon')?.tile, 'ANTIGRAVITY_BEACON', 'antigravity beacon is a placeable machine resource');
 assert.equal(res('meteorSiren')?.tile, 'METEOR_SIREN', 'meteor siren is a placeable alert machine resource');
 assert.equal(res('craterScanner')?.tile, null, 'crater scanner is tracked as a non-placeable science tool');
@@ -81,6 +113,11 @@ assert.equal(INFO[T.COPPER_WIRE].drop, 'copperWire', 'copper wire drops itself w
 assert.equal(INFO[T.COPPER_WIRE].conductor, true, 'copper wire is marked as an energy conductor');
 assert.equal(INFO[T.TELEPORTER].machine, 'teleporter', 'teleporter tile is marked as a machine');
 assert.equal(INFO[T.TELEPORTER].powerDevice, true, 'teleporter is marked as a powered device');
+assert.equal(INFO[T.VENDING_MACHINE].machine, 'vendingMachine', 'vending machine tile is marked as a machine');
+assert.equal(INFO[T.VENDING_MACHINE].powerDevice, true, 'vending machine is marked as a powered device');
+assert.equal(INFO[T.VENDING_MACHINE].drop, 'vendingMachine', 'vending machine can be salvaged and placed again');
+assert.ok(INFO[T.VENDING_MACHINE].drops.some(d=>d.item==='copperWire'), 'vending machine dismantles into copper wiring');
+assert.ok(INFO[T.VENDING_MACHINE].drops.some(d=>d.item==='waterPipe'), 'vending machine can yield water pipes');
 assert.equal(INFO[T.ANTIGRAVITY_BEACON].meteorShield, true, 'antigravity beacon is marked as a meteor shield');
 assert.equal(INFO[T.METEOR_SIREN].meteorSiren, true, 'meteor siren is marked as a meteor alert machine');
 assert.equal(INFO[T.RADIOACTIVE_ORE].radioactive, true, 'radioactive ore advertises its hazard type');
@@ -91,8 +128,13 @@ assert.equal(INFO[T.TURRET].powerDevice, true, 'basic turret is marked as a powe
 assert.equal(INFO[T.FIRE_TURRET].powerDevice, true, 'fire turret is marked as a powered device');
 assert.equal(INFO[T.WATER_TURRET].powerDevice, true, 'water turret is marked as a powered device');
 assert.equal(INFO[T.DYNAMO].powerSource, true, 'dynamo casing is marked as a power source');
+assert.equal(INFO[T.SOLAR_PANEL].drop, 'solarPanel', 'solar panels can be recovered as placeable resources');
+assert.equal(INFO[T.SOLAR_BATTERY].drop, 'solarBattery', 'solar battery panels can be recovered as placeable resources');
 assert.equal(INFO[T.SOLAR_PANEL].powerSource, true, 'solar panel is marked as a power source');
 assert.equal(INFO[T.SOLAR_BATTERY].energyCapacity, 120, 'storage solar panel advertises its battery capacity');
+assert.match(mainSrc, /id:'solar_panel'/, 'crafting exposes solar panels outside the debug menu');
+assert.match(mainSrc, /id:'solar_battery'/, 'crafting exposes solar battery panels outside the debug menu');
+assert.match(mainSrc, /tiles:\['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY'/, 'hotbar machine group includes solar panels');
 
 // --- percent ladder snapping ---------------------------------------------
 assert.equal(INV.snapPct(1), 0, 'noise under 2.5% disappears');
@@ -121,6 +163,17 @@ assert.ok(INV.statChips(INV.getItem('battery_charm_test')).some(c => c.text === 
 INV.equip('battery_charm_test');
 assert.equal(globalThis.MM.activeModifiers.energyCapacityBonus, 50, 'equipped capacity item contributes to modifiers');
 INV.unequip('charm');
+const questRewardSnap = INV.snapshot();
+const questBow = {id:'quest_bow_test', kind:'weapon', weaponType:'bow', name:'Quest Bow', attackDamage:4, fireCooldown:0.5, desc:'Test reward bow'};
+assert.equal(INV.grantItem(questBow,{equip:true,markNew:true}), true, 'quest rewards can grant and equip new loot');
+assert.ok(INV.bagItems().some(i => i.id === 'quest_bow_test'), 'granted quest reward is stored in the loot bag');
+assert.equal(INV.equippedId('weapon'), 'quest_bow_test', 'grantItem can equip the reward immediately');
+assert.equal(INV.isNew('quest_bow_test'), false, 'equipped quest reward is treated as acknowledged');
+assert.equal(INV.grantItem(questBow,{equip:true}), true, 'grantItem is idempotent for already owned rewards');
+assert.equal(INV.bagItems().filter(i => i.id === 'quest_bow_test').length, 1, 'grantItem does not duplicate an owned reward');
+assert.equal(INV.grantItem({id:'quest_charm_test', kind:'charm', name:'Quest Charm', mineSpeedMult:1.05},{markNew:true}), true, 'quest rewards can be granted without auto-equip');
+assert.equal(INV.isNew('quest_charm_test'), true, 'unequipped quest reward is marked new for review');
+INV.restore(questRewardSnap, { persist: false, silent: true });
 
 // --- power score: intuitive ordering within a kind ------------------------
 const s = id => INV.itemScore(INV.getItem(id));
@@ -174,6 +227,11 @@ assert.ok(fullBagSync.blocked > 0, 'capacity overflow is reported to callers');
 assert.ok(INV.getItem('bulk_0'), 'first overflow-test item is retained');
 assert.equal(INV.getItem('bulk_'+(maxBag + 1)), null, 'overflow item is refused, not silently inserted');
 assert.equal(INV.capacity().full, true, 'capacity reports full state');
+const essentialBow = {id:'essential_bow_test', kind:'weapon', weaponType:'bow', name:'Essential Bow', attackDamage:4, fireCooldown:0.5};
+assert.equal(INV.grantItem(essentialBow,{equip:true,essential:true}), true, 'essential quest rewards bypass a full ordinary loot bag');
+assert.ok(INV.getItem('essential_bow_test'), 'essential quest reward is retained even when the bag is full');
+assert.equal(INV.equippedId('weapon'), 'essential_bow_test', 'essential quest reward can still equip immediately');
+assert.equal(INV.capacity().used, maxBag+1, 'essential quest reward may exceed the ordinary bag cap by one item');
 INV.restore(capacitySnap, { persist: false, silent: true });
 globalThis.MM.dynamicLoot = dynamicLootSnap;
 

@@ -231,6 +231,13 @@ assert.match(mainSource, /t===T\.STONE \|\| t===T\.GRANITE \|\| t===T\.BASALT \|
 assert.match(mainSource, /return t===T\.SAND \|\| t===T\.DIRT \|\| t===T\.STONE \|\| t===T\.GRANITE \|\| t===T\.BASALT \|\| t===T\.BEDROCK \|\| t===T\.COAL;/, 'sand, dirt, rock and coal opt into characteristic pattern textures');
 assert.match(mainSource, /drawTerrainPattern\(cctx,t,lx\*TILE,y\*TILE,wx,y,h\);/, 'visible chunk cache draws terrain patterns for real world tiles');
 assert.match(mainSource, /g\.drawImage\(terrainPatternCanvas\(t,variant\),px,py\);/, 'terrain patterns are blitted from a small cached atlas');
+assert.match(mainSource, /function beginPrecisionSafeWorldLayer\(opts\)/, 'main renderer has a camera-local layer path for large world coordinates');
+assert.match(mainSource, /drawWorldVisible\(sx,sy,viewX,viewY,\{camX:camRenderX,camY:camRenderY,shake:meteorShake\}\)/, 'cached terrain receives the render camera for precision-safe drawing');
+assert.match(mainSource, /ctx\.drawImage\(entry\.canvas, localLayer\?\(cx\*CHUNK_W-camDrawX\)\*TILE:chunkXpx/, 'chunk blits use camera-local x coordinates when precision-safe rendering is active');
+assert.match(mainSource, /drawFogOverlay\(sx,sy,viewX,viewY,\{camX:camRenderX,camY:camRenderY,shake:meteorShake\}\)/, 'fog overlay receives the render camera for precision-safe drawing');
+assert.match(mainSource, /originX: localLayer \? opts\.camX : 0/, 'fog overlay can draw in camera-local coordinates');
+assert.match(mainSource, /function revealDebugTravelArea\(\)/, 'debug travel has a wider survey reveal for inspecting distant generated regions');
+assert.match(mainSource, /FOG\.revealRect\(x0,y0,x1,y1,opts\)/, 'debug travel reveal covers the visible viewport instead of only a tiny landing circle');
 const sandBranchStart = mainSource.indexOf('} else if(t===T.SAND){');
 const sandBranchEnd = mainSource.indexOf('} else if(t===T.DIRT){', sandBranchStart);
 assert.ok(sandBranchStart > 0 && sandBranchEnd > sandBranchStart, 'sand material branch is present');
