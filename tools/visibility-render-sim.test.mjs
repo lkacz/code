@@ -131,8 +131,12 @@ assert.ok(driftSmokeCtx.calls.includes('arc') && driftSmokeCtx.calls.includes('f
 
 globalThis.MM = { T, WORLD_H, TILE:20, particles:{ spawnSplash(){}, spawnBubble(){} } };
 let waterLayerCtx = null;
+let waterLayerCanvas = null;
 globalThis.document = {
-  createElement(){ return {width:0, height:0, getContext(){ waterLayerCtx = makeCtx(); return waterLayerCtx; }}; },
+  createElement(){
+    waterLayerCanvas = {width:0, height:0, getContext(){ waterLayerCtx = makeCtx(); return waterLayerCtx; }};
+    return waterLayerCanvas;
+  },
   getElementById(){ return null; }
 };
 const { water } = await import('../src/engine/water.js');
@@ -167,6 +171,22 @@ water.drawOverlay(joinedWaterCtx,20,getTile,0,4,3,3,(x,y)=>y===5 && (x===0 || x=
 assert.equal(joinedWaterCtx.drew, true, 'adjacent remembered water columns paint as one body');
 assert.ok(waterLayerCtx.quadratics.some(args=>args[2]>36 && args[2]<38), 'right exposed water edge is also rounded inward');
 assert.equal(waterLayerCtx.quadratics.some(args=>Math.abs(args[2]-20)<0.01), false, 'joined water columns do not add curved seams inside the water body');
+water.reset();
+tiles = new Map([[key(2,5), T.WATER]]);
+const scaledWaterCtx = {
+  drew:false,
+  drawArgs:null,
+  save(){},
+  restore(){},
+  getTransform(){ return {a:2,b:0,c:0,d:2}; },
+  drawImage(...args){ this.drew = true; this.drawArgs = args; }
+};
+water.drawOverlay(scaledWaterCtx,20,getTile,1,4,3,3,(x,y)=>x===2 && y===5);
+assert.equal(scaledWaterCtx.drew, true, 'scaled water overlay paints');
+assert.equal(waterLayerCanvas.width, 320, 'water layer supersamples the visible width under a 2x transform');
+assert.equal(waterLayerCanvas.height, 560, 'water layer supersamples the visible height under a 2x transform');
+assert.equal(scaledWaterCtx.drawArgs[3], 320, 'water drawImage uses the high-resolution source width');
+assert.equal(scaledWaterCtx.drawArgs[7], 160, 'water drawImage still maps back to world-pixel width');
 
 gases.reset();
 tiles = new Map([[key(7,5), 28]]);
@@ -218,6 +238,12 @@ assert.ok(rememberedMobCtx.calls.includes('fillRect'), 'remembered animals still
 
 const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const grassSource = readFileSync(new URL('../src/engine/grass.js', import.meta.url), 'utf8');
+assert.match(mainSource, /const MINIMAP_ALPHA=0\.62, MINIMAP_POINTER_ALPHA=0\.18, MINIMAP_BACKDROP_ALPHA=0\.12;/, 'minimap uses a deliberately translucent overlay opacity');
+assert.match(mainSource, /g\.clearRect\(0,0,MW,MH\);/, 'minimap offscreen canvas clears to transparent air instead of an opaque panel');
+assert.match(mainSource, /const pxColor=priority\?color:\(cave\?'rgba\(2,5,10,0\.72\)':\(color\|\|null\)\);/, 'minimap cave fill stays translucent so actors behind it remain visible');
+assert.match(mainSource, /const pointerOver=lastPointer\.has && lastPointer\.x>=mx && lastPointer\.x<=mx\+MW && lastPointer\.y>=my && lastPointer\.y<=my\+MH;[\s\S]*const alpha=pointerOver \? MINIMAP_POINTER_ALPHA : MINIMAP_ALPHA;/, 'minimap fades down when the pointer is over it');
+assert.doesNotMatch(mainSource, /g\.fillStyle='rgba\(6,10,18,0\.95\)'; g\.fillRect\(0,0,MW,MH\);/, 'minimap no longer bakes in an opaque dark rectangle');
+assert.doesNotMatch(mainSource, /ctx\.globalAlpha=0\.92;/, 'minimap is no longer painted almost opaque over UFOs and bosses');
 assert.match(grassSource, /W\.metrics\(\)/, 'grass samples shared wind metrics once per overlay pass');
 assert.match(grassSource, /wind\.storm/, 'grass motion reacts to storm wind flavor');
 assert.match(grassSource, /wind\.squall/, 'grass motion reacts to squall wind flavor');
@@ -228,9 +254,20 @@ assert.match(mainSource, /function terrainTextureVariant\(t,wx,y,h\)/, 'terrain 
 assert.match(mainSource, /\(patch \^ \(h>>>7\) \^ \(t\*97\)\)>>>0/, 'terrain texture variant hashes stay unsigned');
 assert.match(mainSource, /function drawTerrainPattern\(g,t,px,py,wx,y,h\)/, 'chunk renderer has a cached terrain pattern pass');
 assert.match(mainSource, /t===T\.STONE \|\| t===T\.GRANITE \|\| t===T\.BASALT \|\| t===T\.BEDROCK/, 'hard-rock texture pass is budgeted for large underground masses');
-assert.match(mainSource, /return t===T\.SAND \|\| t===T\.DIRT \|\| t===T\.STONE \|\| t===T\.GRANITE \|\| t===T\.BASALT \|\| t===T\.BEDROCK \|\| t===T\.COAL;/, 'sand, dirt, rock and coal opt into characteristic pattern textures');
+assert.match(mainSource, /return t===T\.SAND \|\| t===T\.CLAY \|\| t===T\.WET_CLAY \|\| t===T\.BRICK \|\| t===T\.DIRT \|\| t===T\.STONE \|\| t===T\.GRANITE \|\| t===T\.BASALT \|\| t===T\.BEDROCK \|\| t===T\.COAL;/, 'sand, clay, brick, dirt, rock and coal opt into characteristic pattern textures');
 assert.match(mainSource, /drawTerrainPattern\(cctx,t,lx\*TILE,y\*TILE,wx,y,h\);/, 'visible chunk cache draws terrain patterns for real world tiles');
 assert.match(mainSource, /g\.drawImage\(terrainPatternCanvas\(t,variant\),px,py\);/, 'terrain patterns are blitted from a small cached atlas');
+assert.match(mainSource, /function drawTurretTilePixels\(g,t,px,py,h\)[\s\S]*Stepped barrel pixels keep the turret crisp/, 'turrets have a dedicated detailed pixel renderer');
+assert.match(mainSource, /drawTurretTilePixels\(g,t,px,py,h\);/, 'material and debug previews use the detailed turret renderer');
+assert.match(mainSource, /drawTurretTilePixels\(cctx,t,px,py,h\);/, 'placed world turrets use the same detailed pixel renderer in the chunk cache');
+assert.match(mainSource, /function drawMeteorSirenTilePixels\(g,px,py,h\)/, 'meteor sirens have a dedicated detailed pixel renderer');
+assert.match(mainSource, /drawMeteorSirenTilePixels\(g,px,py,h\);/, 'material and debug previews use the detailed meteor siren renderer');
+assert.match(mainSource, /drawMeteorSirenTilePixels\(cctx,lx\*TILE,y\*TILE,h\);/, 'placed world meteor sirens use a detailed chunk-cache renderer');
+const turretRendererStart = mainSource.indexOf('function drawTurretTilePixels(g,t,px,py,h){');
+const turretRendererEnd = mainSource.indexOf('function drawSandGrains', turretRendererStart);
+assert.ok(turretRendererStart > 0 && turretRendererEnd > turretRendererStart, 'turret pixel renderer is present');
+const turretRenderer = mainSource.slice(turretRendererStart, turretRendererEnd);
+assert.ok(!turretRenderer.includes('.arc('), 'turret renderer avoids soft circular shapes that read as low-detail scaling');
 assert.match(mainSource, /function beginPrecisionSafeWorldLayer\(opts\)/, 'main renderer has a camera-local layer path for large world coordinates');
 assert.match(mainSource, /drawWorldVisible\(sx,sy,viewX,viewY,\{camX:camRenderX,camY:camRenderY,shake:meteorShake\}\)/, 'cached terrain receives the render camera for precision-safe drawing');
 assert.match(mainSource, /ctx\.drawImage\(entry\.canvas, localLayer\?\(cx\*CHUNK_W-camDrawX\)\*TILE:chunkXpx/, 'chunk blits use camera-local x coordinates when precision-safe rendering is active');
@@ -239,7 +276,7 @@ assert.match(mainSource, /originX: localLayer \? opts\.camX : 0/, 'fog overlay c
 assert.match(mainSource, /function revealDebugTravelArea\(\)/, 'debug travel has a wider survey reveal for inspecting distant generated regions');
 assert.match(mainSource, /FOG\.revealRect\(x0,y0,x1,y1,opts\)/, 'debug travel reveal covers the visible viewport instead of only a tiny landing circle');
 const sandBranchStart = mainSource.indexOf('} else if(t===T.SAND){');
-const sandBranchEnd = mainSource.indexOf('} else if(t===T.DIRT){', sandBranchStart);
+const sandBranchEnd = mainSource.indexOf('} else if(t===T.CLAY || t===T.WET_CLAY){', sandBranchStart);
 assert.ok(sandBranchStart > 0 && sandBranchEnd > sandBranchStart, 'sand material branch is present');
 const sandBranch = mainSource.slice(sandBranchStart, sandBranchEnd);
 assert.ok(!sandBranch.includes('drawBlockBevel'), 'sand does not draw explicit tile-grid bevels');

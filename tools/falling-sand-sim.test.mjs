@@ -12,15 +12,23 @@ await import('../src/engine/dynamo.js');
 
 const key = (x,y)=>x+','+y;
 const tiles = new Map();
+const backgroundTiles = new Map();
 const getTile = (x,y)=>tiles.get(key(x,y)) ?? T.AIR;
 const setTile = (x,y,t)=>{
   if(t===T.AIR) tiles.delete(key(x,y));
   else tiles.set(key(x,y), t);
 };
+const getBackgroundTile = (x,y)=>backgroundTiles.get(key(x,y)) ?? T.AIR;
+const setBackgroundTile = (x,y,t)=>{
+  if(t===T.AIR) backgroundTiles.delete(key(x,y));
+  else backgroundTiles.set(key(x,y), t);
+};
 
 function reset(){
   tiles.clear();
+  backgroundTiles.clear();
   fallingSolids.reset();
+  MM.world = { getConstructionBackground:getBackgroundTile };
   MM.water = { displaceAt(){}, onTileChanged(){} };
   fallingSolids.init(getTile,setTile);
 }
@@ -678,15 +686,30 @@ function supportedCantileverCells(t,span=25){
   reset();
   setFlatSurface(60);
   fillFloor(60,-30,30);
+  for(let y=55; y<=59; y++) setBackgroundTile(0,y,T.BRICK);
+  assert.equal(fallingSolids.canSupportPlacement(0,54,T.WOOD).ok,true,'background construction wall supports foreground placement checks');
+  placeBuiltRect(T.WOOD,0,4,54,54);
+  fallingSolids.settleAll();
+  assert.equal(countRegionTile(T.WOOD,0,4,54,54),5,'background construction wall supports a player-built platform');
+  for(let y=55; y<=59; y++) setBackgroundTile(0,y,T.AIR);
+  fallingSolids.recheckNeighborhood(0,55);
+  fallingSolids.settleAll();
+  assert.equal(countRegionTile(T.WOOD,0,4,54,54),0,'removing background support lets the foreground platform fall');
+}
+
+{
+  reset();
+  setFlatSurface(60);
+  fillFloor(60,-30,30);
   placeBuiltRect(T.WOOD,-5,-5,55,59);
   placeBuiltRect(T.WOOD,5,5,55,59);
   placeBuiltRect(T.WOOD,-5,5,54,54);
   fallingSolids.settleAll();
   const stress=fallingSolids._debug().stress;
   const byX=new Map(stress.filter(c=>c.y===54).map(c=>[c.x,c]));
-  assert.ok(byX.has(-1) && byX.has(0) && byX.has(1),'symmetric two-pier span exposes center stress samples');
-  assert.ok(Math.abs(byX.get(-1).ratio-byX.get(1).ratio)<0.001,'symmetric span has mirrored stress intensity');
-  assert.ok(!Number.isFinite(byX.get(0).dx) || Math.abs(byX.get(0).dx)<0.05,'center stress flow does not pick an arbitrary left/right side');
+  assert.ok(byX.has(-5) && byX.has(5),'symmetric two-pier span exposes pressure at both pier attachments');
+  assert.ok(Math.abs(byX.get(-5).ratio-byX.get(5).ratio)<0.001,'symmetric span has mirrored attachment pressure');
+  assert.equal(byX.has(0),false,'span pressure is not shown at the distal center');
 }
 
 {
@@ -710,13 +733,26 @@ function supportedCantileverCells(t,span=25){
   placeBuiltRect(T.WOOD,0,0,55,59);
   placeBuiltRect(T.WOOD,0,8,54,54);
   fallingSolids.settleAll();
-  const before=fallingSolids._debug().stress.find(c=>c.x===8 && c.y===54);
-  assert.ok(before && before.ratio>0.7,'test starts with a visibly stressed cantilever tail');
+  const before=fallingSolids._debug().stress.find(c=>c.x===0 && c.y===54);
+  assert.ok(before && before.ratio>0.7,'test starts with pressure on the cantilever attachment');
+  assert.equal(!!fallingSolids._debug().stress.find(c=>c.x===8 && c.y===54),false,'cantilever pressure is not shown at the distal tail');
   setTile(9,54,T.BEDROCK);
   fallingSolids.afterPlacement(9,54);
   fallingSolids.settleAll();
-  const after=fallingSolids._debug().stress.find(c=>c.x===8 && c.y===54);
+  const after=fallingSolids._debug().stress.find(c=>c.x===0 && c.y===54);
   assert.ok(!after || after.ratio<before.ratio,'placing a terrain side brace wakes and relaxes the stressed component');
+}
+
+{
+  reset();
+  setFlatSurface(60);
+  fillFloor(60,-30,30);
+  placeBuiltRect(T.WOOD,0,0,55,59);
+  placeBuiltRect(T.WOOD,0,7,54,54);
+  const preview=fallingSolids.canSupportPlacement(8,54,T.WOOD);
+  assert.equal(preview.ok,true,'side-build preview accepts the next practical cantilever block');
+  assert.ok(preview.pressureCells.some(c=>c.x===0 && c.y===54),'side-build preview marks pressure on the attached block');
+  assert.equal(preview.pressureCells.some(c=>c.x===8 && c.y===54),false,'side-build preview does not mark pressure on the distal target');
 }
 
 {
@@ -941,7 +977,21 @@ function supportedCantileverCells(t,span=25){
   for(let y=129; y>=30; y--) placeBuilt(T.STEEL,0,y);
   fallingSolids.settleAll();
   assert.equal(countRegionTile(T.STEEL,0,0,30,129),100,'100-high player-placed steel chimney keeps the same vertical stability as the pillar solver');
+  const basePressure=fallingSolids._debug().stress.find(c=>c.x===0 && c.y===129);
+  assert.ok(basePressure && basePressure.ratio>0.6,'vertical column pressure is shown on the bottom bearing block');
+  assert.equal(!!fallingSolids._debug().stress.find(c=>c.x===0 && c.y===30),false,'vertical column pressure is not shown on the distal top block');
   assert.equal(fallingSolids.metrics().breaks,0,'stable player-placed steel chimney does not shed blocks through the stress graph');
+}
+
+{
+  reset();
+  setFlatSurface(130);
+  fillFloor(130,-80,80);
+  for(let y=129; y>=31; y--) placeBuilt(T.STEEL,0,y);
+  const preview=fallingSolids.canSupportPlacement(0,30,T.STEEL);
+  assert.equal(preview.ok,true,'vertical-column preview accepts the next supported steel block');
+  assert.ok(preview.pressureCells.some(c=>c.x===0 && c.y===129),'vertical-column preview marks pressure on the bottom bearing block');
+  assert.equal(preview.pressureCells.some(c=>c.x===0 && c.y===30),false,'vertical-column preview does not mark pressure on the distal top block');
 }
 
 {

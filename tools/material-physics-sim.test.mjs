@@ -233,6 +233,9 @@ assert.equal(materialPhysicsRoute(T.DYNAMO), 'rigid-object', 'machines have the 
 assert.equal(materialPhysicsRoute(T.VENDING_MACHINE), 'rigid-object', 'vending machines have the rigid-object material route');
 assert.equal(materialPhysicsRoute(T.COPPER_WIRE), 'passable-utility', 'thin infrastructure has the passable-utility material route');
 assert.equal(materialPhysicsRoute(T.STONE), 'build-material', 'stone has the build-material route');
+assert.equal(materialPhysicsRoute(T.CLAY), 'build-material', 'clay has the build-material route');
+assert.equal(materialPhysicsRoute(T.WET_CLAY), 'build-material', 'wet clay has the build-material route');
+assert.equal(materialPhysicsRoute(T.BRICK), 'build-material', 'brick has the build-material route');
 for(const r of rows){
   if(!r.tile) continue;
   const id=T[r.tile];
@@ -323,6 +326,8 @@ assert.equal(isBuildAnchorTile(T.STEEL_TRAPDOOR), true, 'steel trapdoors are str
 
 assert.equal(isBuildFoundationTile(T.DIRT), true, 'weak fill can act as simple vertical footing');
 assert.equal(isBuildFoundationTile(T.GRASS), true, 'surface soil can act as simple vertical footing');
+assert.equal(isBuildFoundationTile(T.CLAY), true, 'clay can act as simple vertical footing');
+assert.equal(isBuildFoundationTile(T.WET_CLAY), true, 'wet clay can act as simple vertical footing');
 assert.equal(isBuildFoundationTile(T.COAL), false, 'coal is tracked by physics but is not terrain footing');
 assert.equal(isBuildFoundationTile(T.ELECTRONICS), false, 'electronics are tracked by physics but are not terrain footing');
 assert.equal(isBuildFoundationTile(T.WATER_PUMP), false, 'machines are not terrain footing for buildings');
@@ -342,8 +347,12 @@ assert.equal(isBuildLoadTransferMaterial(T.STONE_TRAPDOOR), true, 'stone trapdoo
 assert.equal(isBuildLoadTransferMaterial(T.STEEL_TRAPDOOR), true, 'steel trapdoors transfer structural load without becoming open air');
 assert.equal(isBuildLoadTransferMaterial(T.ALIEN_BIOMASS), true, 'alien biomass transfers light structural load');
 assert.equal(isBuildLoadTransferMaterial(T.DIRT), false, 'weak fill does not transfer frame load');
+assert.equal(isBuildLoadTransferMaterial(T.CLAY), false, 'unfired clay remains weak fill rather than frame support');
+assert.equal(isBuildLoadTransferMaterial(T.BRICK), true, 'fired brick transfers structural load');
 assert.equal(isBuildLoadTransferMaterial(T.RADIOACTIVE_ORE), false, 'ore does not transfer frame load');
 assert.equal(isWeakFillMaterial(T.MUD), true, 'mud is classified as weak fill');
+assert.equal(isWeakFillMaterial(T.CLAY), true, 'clay is classified as weak fill before firing');
+assert.equal(isWeakFillMaterial(T.WET_CLAY), true, 'wet clay is classified as weak fill before drying');
 assert.equal(isNonStructuralResourceMaterial(T.COAL), true, 'coal is classified as non-structural resource');
 assert.equal(isLooseRigidMaterial(T.COAL), true, 'untracked coal behaves as a loose rigid resource block');
 assert.equal(isLooseRigidMaterial(T.RADIOACTIVE_ORE), true, 'untracked radioactive ore behaves as a loose rigid resource block');
@@ -581,7 +590,7 @@ for(const t of [T.WOOD,T.LEAF,T.AUTUMN_LEAF_ORANGE,T.AUTUMN_LEAF_RED]){
 for(const t of [T.GRASS,T.MUD,T.ALIEN_BIOMASS]){
   assert.equal(isMeteorLifeSiteTile(t), true, 'meteor consequence living sites include '+(INFO[t]?.name || t));
 }
-for(const t of [T.STEEL,T.WOOD_DOOR,T.STONE_DOOR,T.STEEL_DOOR,T.WOOD_TRAPDOOR,T.STONE_TRAPDOOR,T.STEEL_TRAPDOOR,T.WIRE,T.COPPER_WIRE,T.WATER_PIPE,T.DYNAMO,T.WATER_PUMP,T.CHEST_COMMON,T.TURRET]){
+for(const t of [T.STEEL,T.WOOD_DOOR,T.STONE_DOOR,T.STEEL_DOOR,T.WOOD_TRAPDOOR,T.STONE_TRAPDOOR,T.STEEL_TRAPDOOR,T.WIRE,T.COPPER_WIRE,T.WATER_PIPE,T.LADDER,T.DYNAMO,T.WATER_PUMP,T.CHEST_COMMON,T.TURRET]){
   assert.equal(isMeteorSettlementSiteTile(t), true, 'meteor consequence settlement sites include '+(INFO[t]?.name || t));
 }
 for(const t of [T.AIR,T.STONE,T.SAND,T.COAL,T.WATER,T.ICE,T.WOOD,T.GRASS,T.ALIEN_BIOMASS]){
@@ -652,12 +661,13 @@ assert.match(mainSource, /function isGasTileId\(t\)\{ return isGasTile\(t\); \}/
 assert.match(mainSource, /function isTransientTerrainTile\(t\)\{\s*return isGasTile\(t\);\s*\}/, 'save stripping delegates transient gas identity to shared material physics');
 assert.match(mainSource, /if\(isGasTileId\(tId\)\) return false;/, 'mining gas rejection uses shared gas identity');
 assert.match(mainSource, /isSolidCollisionTile as isSolid/, 'main collision checks use shared solid-collision predicates');
-assert.match(mainSource, /function heroTrapdoorOpenForCollision\(t,axis\)\{[\s\S]*isTrapdoorTile\(t\)[\s\S]*axis==='y'[\s\S]*heroDropThroughInput\(\)[\s\S]*\}/, 'hero collision gives trapdoors directional pass-through instead of always-open passability');
-assert.match(mainSource, /function solidAt\(x,y,axis\)\{[\s\S]*const t=getTile\(x,y\);[\s\S]*heroTrapdoorOpenForCollision\(t,axis\)[\s\S]*return !isHeroPassableTile\(t\);[\s\S]*\}/, 'hero collision keeps door passability shared while trapdoors stay conditional');
+assert.match(mainSource, /function heroTrapdoorOpenForCollision\(t,x,y,axis\)\{[\s\S]*isTrapdoorTile\(t\)[\s\S]*const opening=\(\(player\.vy\|\|0\)<0 \|\| heroDropThroughInput\(\)\);[\s\S]*axis==='y'[\s\S]*axis!=='x' \|\| !opening[\s\S]*right>x\+0\.02[\s\S]*\}/, 'hero collision gives trapdoors vertical pass-through without side-pushing the hero');
+assert.match(mainSource, /function solidAt\(x,y,axis\)\{[\s\S]*const t=getTile\(x,y\);[\s\S]*hasLadderAt\(x,y\)[\s\S]*heroTrapdoorOpenForCollision\(t,x,y,axis\)[\s\S]*return !isHeroPassableTile\(t\);[\s\S]*\}/, 'hero collision keeps door passability shared while ladders and trapdoors stay conditional');
 assert.match(mainSource, /function meteorPickSparkTile\(t\)\{\s*return isMeteorPickSparkMaterial\(t\);\s*\}/, 'meteor pick mining feedback uses shared material predicates');
 assert.match(mainSource, /emitMeteorPickSpark\(tx,ty,isMeteorPickDenseRockMaterial\(tId\)\?7:5\);/, 'meteor pick dense-rock intensity uses shared material predicates');
 assert.match(mainSource, /return isReplaceableNaturalOpenTile\(cur,false\) && \(slot \|\| cur!==T\.WATER\);/, 'dynamo placement uses shared natural-open replacement rules');
-assert.match(mainSource, /const support = isStableMachineSupport\(below\)/, 'non-structural placement fallback uses the same stable support predicate');
+assert.match(mainSource, /function isStableConstructionSupportAt\(x,y\)\{[\s\S]*isStableMachineSupport\(getTile\(x,y\)\)[\s\S]*isStableMachineSupport\(getConstructionBackgroundTile\(x,y\)\)[\s\S]*\}/, 'non-structural placement fallback uses the same stable support predicate including background construction');
+assert.match(mainSource, /function drawBackgroundBuildTile\(g,t,px,py,wx,y,h\)\{[\s\S]*g\.globalAlpha=1;[\s\S]*drawTerrainPattern\(g,t,px,py,wx,y,h\);[\s\S]*\}/, 'background construction tiles render opaque while staying passable');
 assert.match(fallingSource, /from '\.\/material_physics\.js'/, 'falling solver imports shared material physics');
 assert.match(fallingSource, /function builtMaterialProfile\(t\)\{\s*return sharedBuildMaterialProfile\(t\);\s*\}/, 'falling solver does not invent generic build profiles');
 assert.doesNotMatch(fallingSource, /\|\|\s*\{strength:/, 'build solver has no silent generic strength fallback');
@@ -683,7 +693,7 @@ assert.match(volcanoSource, /function projectileOpen\(t\)\{ return isPassableFor
 assert.match(volcanoSource, /isReplaceableNaturalOpenTile\(here,allowLava\)/, 'volcano rest-cell search uses shared natural replacement predicate');
 assert.match(volcanoSource, /isReplaceableNaturalOpenTile\(old,false\)/, 'volcano master stones do not settle by overwriting passable fixtures');
 assert.match(volcanoSource, /if\(isBlastProtectedTile\(t\)\) continue;/, 'volcano servant blasts do not keep a private blast-protection list');
-assert.match(waterSource, /import \{ isFoliageTile, isGasTile, isWaterFillTile, isWaterOpenTile \} from '\.\/material_physics\.js'/, 'water simulation imports shared fluid occupancy predicates');
+assert.match(waterSource, /import \{ isFoliageTile, isGasTile, isSunTransparentTile, isWaterFillTile, isWaterOpenTile \} from '\.\/material_physics\.js'/, 'water simulation imports shared fluid occupancy predicates');
 assert.match(waterSource, /function isAir\(t\)\{ return isWaterOpenTile\(t\); \}/, 'water pressure and surface checks use shared water-open predicates');
 assert.match(waterSource, /function canFill\(t\)\{ return isWaterFillTile\(t\); \}/, 'water flow uses shared water-fill predicates');
 assert.match(gasSource, /import \{ canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile \} from '\.\/material_physics\.js'/, 'gas simulation imports shared gas occupancy predicates');

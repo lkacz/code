@@ -1,6 +1,7 @@
 // Mob population regression: stationary hero should see a bounded local ecology,
 // not an ever-growing pile of animals spawned near the camera.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 globalThis.window = globalThis;
 globalThis.MM = {};
@@ -48,6 +49,41 @@ function seededRandom(){
   return seed/4294967296;
 }
 Math.random=seededRandom;
+
+let dayCycle=false;
+MM.background = { getCycleInfo(){ return {isDay:dayCycle}; } };
+try{
+  mobs.clearAll();
+  mobs.freezeSpawns(10000);
+  mobs.deserialize({
+    v:4,
+    list:[{id:'GHOUL',x:4,y:29,vx:0,vy:0,hp:16,state:'idle',facing:-1,scale:1,speedMul:1,jumpMul:1}],
+    aggro:{mode:'rel',m:{}}
+  });
+  mobs.freezeSpawns(10000);
+  simNow += 50;
+  mobs.update(0.05,player,getTile);
+  let ghoul=mobs.nearestLiving(4,29,8);
+  assert.ok(ghoul && !mobs.hasStatus(ghoul,'burn'), 'night ghoul stays unburned before dawn');
+  dayCycle=true;
+  simNow += 50;
+  mobs.update(0.05,player,getTile);
+  ghoul=mobs.nearestLiving(4,29,8);
+  assert.ok(ghoul && mobs.hasStatus(ghoul,'burn'), 'sunrise lights night mobs on fire');
+  assert.ok(ghoul.status.burn.t > 7, 'sunrise burn lasts longer than the weak daytime habitat burn');
+  assert.ok(ghoul.status.burn.dps >= 6, 'sunrise burn uses the stronger dawn damage rate');
+  const hpBefore=ghoul.hp;
+  for(let i=0;i<6;i++){
+    simNow += 100;
+    mobs.update(0.1,player,getTile);
+  }
+  ghoul=mobs.nearestLiving(4,29,8);
+  assert.ok(!ghoul || ghoul.hp < hpBefore, 'sunrise burn starts damaging the night mob');
+} finally {
+  delete MM.background;
+  mobs.clearAll();
+}
+
 try{
   assert.equal(mobs.forceSpawn('RABBIT', null, getTile), false, 'debug force-spawn rejects missing player state');
   mobs.deserialize({
@@ -71,6 +107,76 @@ try{
   assert.equal(mobs.serialize().list[0].hp, restored[0].hp, 'invalid hit coordinates cannot damage mobs');
   mobs.clearAll();
 
+  function killMobForDeathFx(id,opts){
+    mobs.clearAll();
+    mobs.deserialize({
+      v:4,
+      list:[{id,x:0.5,y:29.5,vx:0,vy:0,hp:999,state:'idle',facing:1,scale:1,speedMul:1,jumpMul:1}],
+      aggro:{mode:'rel',m:{}}
+    });
+    mobs.freezeSpawns(10000);
+    assert.equal(mobs.damageAt(0,29,999,opts||{source:'hero'}), true, id+' can be killed for death-fx regression');
+    const fx=mobs._debugDeathFx();
+    assert.equal(fx.length,1,id+' creates one persistent mob death effect');
+    assert.ok(fx[0].core>=3,id+' death effect keeps a readable collapsing body core');
+    assert.ok(fx[0].fragments>=8,id+' death effect has a real fragment burst');
+    assert.ok(fx[0].rings>=1,id+' death effect has a secondary shock ring');
+    assert.ok(fx[0].residue>=3,id+' death effect leaves short-lived procedural residue');
+    assert.ok(fx[0].physicsPieces>=Math.min(10,fx[0].core+fx[0].fragments),id+' death effect has budgeted physics bodies');
+    assert.ok(typeof fx[0].signature==='string' && fx[0].signature.includes(fx[0].style),id+' death effect has a seeded visual signature');
+    return fx[0];
+  }
+  const rabbitDeath=killMobForDeathFx('RABBIT',{source:'hero'});
+  assert.equal(rabbitDeath.style,'creature','ordinary animals use creature death fragments');
+  simNow += 50;
+  mobs.update(0.05,player,getTile);
+  assert.equal(mobs.serialize().list.length,0,'dead mob is removed from the live list after death');
+  assert.equal(mobs._debugDeathFx().length,1,'death effect keeps animating after the live mob is removed');
+  for(let i=0;i<8;i++){ simNow += 80; mobs.update(0.08,player,getTile); }
+  const rabbitPhysics=mobs._debugDeathFx(getTile)[0];
+  assert.ok(rabbitPhysics.travel>1.2,'ground mob death parts physically travel after the burst');
+  assert.ok(rabbitPhysics.bounces>=1,'ground mob death parts bounce or slide against terrain');
+  assert.ok(rabbitPhysics.puffs>=1,'ground mob death pieces kick up landing puffs');
+  for(let i=0;i<24;i++){ simNow += 100; mobs.update(0.1,player,getTile); }
+  assert.equal(mobs._debugDeathFx().length,0,'mob death effects expire and clean themselves up');
+
+  const fishDeath=killMobForDeathFx('FISH',{source:'hero'});
+  const sentinelDeath=killMobForDeathFx('STRAZNIK',{source:'companion',cause:'laser'});
+  const burntGhoulDeath=killMobForDeathFx('GHOUL',{source:'sunrise',cause:'burn'});
+  assert.equal(fishDeath.style,'splash','aquatic mobs use splash death effects');
+  assert.equal(sentinelDeath.style,'machine','robot mobs use mechanical death effects');
+  assert.equal(burntGhoulDeath.style,'ash','burned organic mobs use ash death effects');
+  assert.notEqual(rabbitDeath.seed,sentinelDeath.seed,'death effects are procedurally seeded per mob');
+  assert.notEqual(rabbitDeath.signature,sentinelDeath.signature,'different mobs get different death signatures');
+  mobs.clearAll();
+
+  function tunnelGetTile(x,y){
+    if(y<0 || y>140) return T.STONE;
+    if(x>=-3 && x<=3 && y===29) return T.AIR;
+    return T.STONE;
+  }
+  mobs.deserialize({
+    v:4,
+    list:[{id:'BEAR',x:0.5,y:29.2,vx:0,vy:0,hp:999,state:'idle',facing:1,scale:1,speedMul:1,jumpMul:1}],
+    aggro:{mode:'rel',m:{}}
+  });
+  mobs.freezeSpawns(10000);
+  assert.equal(mobs.damageAt(0,29,999,{source:'hero',getTile:tunnelGetTile}), true, 'large tunnel mob can be killed for death-fx clamp regression');
+  let tunnelDeath=mobs._debugDeathFx(tunnelGetTile)[0];
+  assert.ok(tunnelDeath.tunnelClamped, 'death effect origin is clamped out of the tunnel ceiling');
+  assert.equal(tunnelDeath.solidPieces, 0, 'death effect pieces do not spawn inside tunnel stone');
+  assert.equal(tunnelDeath.badFinite, 0, 'death effect pieces spawn with finite coordinates');
+  for(let i=0;i<14;i++){
+    simNow += 50;
+    mobs.update(0.05,player,tunnelGetTile);
+    tunnelDeath=mobs._debugDeathFx(tunnelGetTile)[0];
+    if(!tunnelDeath) break;
+    assert.equal(tunnelDeath.solidPieces, 0, 'death effect pieces stay out of tunnel stone during update '+i);
+    assert.equal(tunnelDeath.badFinite, 0, 'death effect pieces stay finite during tunnel update '+i);
+    assert.ok(tunnelDeath.maxDist<=8.6, 'death effect pieces stay bounded in a tunnel during update '+i+' (max '+tunnelDeath.maxDist+')');
+  }
+  mobs.clearAll();
+
   for(let i=0;i<60*5*20;i++){
     simNow += 50;
     mobs.update(0.05,player,getTile);
@@ -83,6 +189,16 @@ try{
   Math.random=realRandom;
   mobs.clearAll();
 }
+
+const mobsSource = readFileSync(new URL('../src/engine/mobs.js', import.meta.url), 'utf8');
+assert.match(mobsSource, /function spawnMobDeathFx/, 'mobs have an explicit procedural death effect generator');
+assert.match(mobsSource, /function updateMobDeathFx/, 'mob death effects update after live mobs are removed');
+assert.match(mobsSource, /function drawMobDeathFx/, 'mob death effects have a dedicated renderer');
+assert.match(mobsSource, /function mobDeathCoreKind/, 'mob death effects include species-style core chunks');
+assert.match(mobsSource, /function mobDeathResidueKind/, 'mob death effects include procedural residue');
+assert.match(mobsSource, /MOB_DEATH_PHYSICS_FRAME_BUDGET/, 'mob death physics has an explicit per-frame budget');
+assert.match(mobsSource, /function integrateDeathPiecePhysics/, 'mob death pieces use bounded terrain physics');
+assert.match(mobsSource, /function primeDeathPhysics/, 'mob death pieces get per-piece collision and slide parameters');
 
 function cityCenterForSeed(){
   let best=null;

@@ -132,6 +132,13 @@ try{
   assert.ok(energyCtx.calls.includes('lineTo') && energyCtx.calls.includes('stroke'), 'energy absorption draws electric streaks');
 
   particles.reset();
+  particles.spawnEnergyAbsorb(20,20,60,30,1,{quick:true,hue:'gold'});
+  const quickEnergy=particles._debugSnapshot().filter(p=>p.kind==='energy');
+  assert.ok(quickEnergy.length>0, 'quick energy absorption still emits particles');
+  assert.ok(quickEnergy.every(p=>p.hue==='gold'), 'quick warm energy absorption can force a gold palette');
+  assert.ok(quickEnergy.every(p=>p.max<=0.25), 'quick energy absorption uses a shorter lifetime for faster flare motion');
+
+  particles.reset();
   particles.spawnTurboSparks(80,90,1,1);
   const turboSparks=particles._debugSnapshot().filter(p=>p.kind==='spark');
   assert.ok(turboSparks.length>=3, 'turbo mode emits a compact electric spark batch');

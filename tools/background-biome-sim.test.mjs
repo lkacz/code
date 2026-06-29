@@ -3,6 +3,7 @@
 // blends across biome boundaries instead of using unrelated backdrop noise.
 // Run: node tools/background-biome-sim.test.mjs
 import { strict as assert } from 'assert';
+import { readFileSync } from 'fs';
 
 globalThis.window = globalThis;
 globalThis.MM = {};
@@ -10,6 +11,7 @@ globalThis.MM = {};
 const { background } = await import('../src/engine/background.js');
 assert.ok(background && background._debugBiomeBlend, 'background exposes biome debug blend');
 assert.ok(background._debugSeasonTint, 'background exposes season tint debug hook');
+const backgroundSource = readFileSync(new URL('../src/engine/background.js', import.meta.url), 'utf8');
 
 const palettes = background._debugSkyPalettes;
 const pure = (id)=>({
@@ -145,6 +147,8 @@ assert.notEqual(summerSun.accent, winterCitySun.accent, 'sun palette changes wit
 assert.ok(summerSun.heat>winterCitySun.heat, 'summer sun is hotter than winter sun');
 assert.ok(summerSun.sizeScale>winterCitySun.sizeScale, 'summer sun has a larger seasonal size scale than winter sun');
 assert.ok(summerSun.radius>winterCitySun.radius+10, 'sun rendered radius follows the seasonal size scale at the same viewport');
+assert.ok(backgroundSource.includes('halo.addColorStop(1,hexToRgba(state.ray,0));'), 'sun halo fades to transparent warm light instead of transparent black');
+assert.ok(backgroundSource.includes('body.addColorStop(1,blendColor(state.core,state.accent,0.18));'), 'sun body rim stays warm and bright instead of using a dark edge shade');
 assert.equal(Object.prototype.hasOwnProperty.call(summerSun,'eye'), false, 'sun debug state does not expose face-only eye styling');
 assert.equal(Object.prototype.hasOwnProperty.call(summerSun,'mood'), false, 'sun debug state does not expose face-only mood styling');
 const springMoon = background._debugMoonState({

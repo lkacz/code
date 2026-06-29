@@ -164,16 +164,22 @@
     }
   };
 
-  mod.spawnEnergyAbsorb = function(fromX,fromY,toX,toY,intensity){
+  mod.spawnEnergyAbsorb = function(fromX,fromY,toX,toY,intensity,opts){
+    opts=opts||{};
     const k=Math.max(0.15, Math.min(1.6, Number(intensity)||0.5));
+    const quick=!!opts.quick;
     const ms=frameMs();
     let n=Math.round(3 + 8*k);
+    if(quick) n=Math.max(2, Math.round(n*0.7));
     if(ms>34) n=Math.max(2, Math.round(n*0.45));
     else if(ms>24) n=Math.max(3, Math.round(n*0.65));
     for(let i=0;i<n;i++){
       if(particles.length>=PARTICLE_CAP) break;
       const ox=(Math.random()-0.5)*14;
       const oy=(Math.random()-0.5)*14;
+      const hue = opts.hue==='gold' || opts.hue==='cyan'
+        ? opts.hue
+        : (Math.random()<0.65?'cyan':'gold');
       particles.push({
         kind:'energy',
         x:fromX+ox,
@@ -183,10 +189,10 @@
         tx:toX+(Math.random()-0.5)*10,
         ty:toY+(Math.random()-0.5)*14,
         life:0,
-        max:0.26+Math.random()*0.28,
+        max:quick ? (0.12+Math.random()*0.12) : (0.26+Math.random()*0.28),
         phase:Math.random()*Math.PI*2,
-        wobble:0.35+Math.random()*0.65,
-        hue:Math.random()<0.65?'cyan':'gold'
+        wobble:quick ? (0.18+Math.random()*0.42) : (0.35+Math.random()*0.65),
+        hue
       });
     }
   };
@@ -418,7 +424,7 @@
       smokeAlphaScale:smokeDrawAlphaScale(ms,smokeCount)
     };
   };
-  mod._debugSnapshot = function(){ return particles.map(p=>({kind:p.kind,x:p.x,y:p.y,vx:p.vx,vy:p.vy,life:p.life,max:p.max,r:p.r,alpha:p.alpha,tileX:p.tileX,tileY:p.tileY})); };
+  mod._debugSnapshot = function(){ return particles.map(p=>({kind:p.kind,x:p.x,y:p.y,vx:p.vx,vy:p.vy,life:p.life,max:p.max,r:p.r,alpha:p.alpha,tileX:p.tileX,tileY:p.tileY,hue:p.hue})); };
 
   MM.particles = mod;
 })();

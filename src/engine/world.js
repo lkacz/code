@@ -6,6 +6,7 @@ import {
   isGeneratedStructureReplaceableTile,
   isLavaExposureOpenTile,
   isObjectFootingTile,
+  isPlayerBuiltMaterial,
   isReplaceableNaturalOpenTile,
   isRockStructuralMaterial
 } from './material_physics.js';
@@ -18,7 +19,8 @@ window.MM = window.MM || {};
   const world = new Map();
   const versions = new Map(); // chunk key -> version number for render cache invalidation
   const modifiedChunks = new Set();
-  const infrastructure = new Map(); // "x,y" -> overlay tile stack (wire / copper cable / water pipe)
+  const infrastructure = new Map(); // "x,y" -> overlay tile stack (wire / copper cable / water pipe / ladder)
+  const constructionBackground = new Map(); // "x,y" -> passable building support/decor tile
   // Cache of surface heights per world column to avoid recomputing noise repeatedly
   const heightCache = new Map();
   // Cache of perched-lake water rows, computed per contiguous lake segment
@@ -48,7 +50,8 @@ window.MM = window.MM || {};
   function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
   function tileIndex(x,y){ return y*CHUNK_W+x; }
   function getTileRaw(arr,lx,y){ return arr[tileIndex(lx,y)]; }
-  function isInfrastructureTile(t){ return t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE; }
+  function isInfrastructureTile(t){ return t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.LADDER; }
+  function isConstructionBackgroundTile(t){ return isPlayerBuiltMaterial(t); }
   function markModifiedChunk(cx,version){
     if(!isFinite(cx)) return;
     const k=ck(cx);
@@ -235,9 +238,11 @@ window.MM = window.MM || {};
 
   function swampGroundTile(wx,depth,poolDepth){
     const wet = poolDepth>0 || WG.valueNoise(wx,42,3302)>0.57 || WG.valueNoise(wx,15,3305)>0.78;
+    const clayLens = WG.randSeed(wx*5.41+depth*1.77)<(poolDepth>0?0.22:0.13);
     if(depth===0) return wet ? T.MUD : T.GRASS;
-    if(depth<4 && (wet || WG.randSeed(wx*8.17+depth*2.13)<0.62)) return T.MUD;
-    return depth<7 ? T.DIRT : T.SAND;
+    if(depth<4 && (wet || WG.randSeed(wx*8.17+depth*2.13)<0.62)) return (depth>=2 && clayLens) ? T.CLAY : T.MUD;
+    if(depth<7) return (wet && clayLens) ? T.CLAY : T.DIRT;
+    return WG.randSeed(wx*6.11+depth*1.91)<0.08 ? T.CLAY : T.SAND;
   }
   function dirtThickness(wx,biome,beach,desertF,waterF){
     if(biome===8) return 0;
@@ -675,6 +680,7 @@ window.MM = window.MM || {};
             } else if(depth<SURFACE_GRASS_DEPTH+sandTh){
             t=biome===8 ? citySurfaceTile(WG,wx,depth) : (biome===4 ? swampGroundTile(wx,depth,poolDepth) : ((cold && depth<3)? T.SNOW : T.SAND));
             if(t===T.SAND && depth>2 && WG.randSeed(wx*9.71+y*0.23)<0.18) t=T.STONE;
+            if(t===T.SAND && depth>=2 && (biome===5 || biome===6 || lakeRow!==Infinity || waterF>0.35) && WG.randSeed(wx*4.19+y*0.31)<0.045) t=T.CLAY;
             } else if(depth<SURFACE_GRASS_DEPTH+sandTh+dirtTh){
             t=biome===8 ? citySurfaceTile(WG,wx,depth) : T.DIRT;
             } else {
@@ -795,6 +801,11 @@ window.MM = window.MM || {};
     if(!isInfrastructureTile(t)) return false;
     return getInfrastructureStack(x,y).includes(t);
   }
+  function getConstructionBackground(x,y){
+    if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return T.AIR;
+    const t=constructionBackground.get(key(x,y));
+    return isConstructionBackgroundTile(t) ? t : T.AIR;
+  }
   function getNetworkTile(x,y){
     const over=getInfrastructure(x,y);
     return over!==T.AIR ? over : getTile(x,y);
@@ -822,6 +833,7 @@ window.MM = window.MM || {};
     try{ if(MM.pumps && MM.pumps.onTileChanged) MM.pumps.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.turrets && MM.turrets.onTileChanged) MM.turrets.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.meteorites && MM.meteorites.onTileChanged) MM.meteorites.onTileChanged(x,y,old,v); }catch(e){}
+    try{ if(MM.companions && MM.companions.onTileChanged) MM.companions.onTileChanged(x,y,old,v,getTile,setTile); }catch(e){}
   }
   function notifyInfrastructureChanged(x,y,old,v){
     const oldStack=normalizeInfrastructureStack(old);
@@ -858,6 +870,20 @@ window.MM = window.MM || {};
     if(isInfrastructureTile(v)) return setInfrastructureInternal(x,y,v,false,true);
     return setInfrastructureInternal(x,y,T.AIR,false);
   }
+  function setConstructionBackgroundInternal(x,y,v,transient){
+    if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return false;
+    x=Math.floor(x); y=Math.floor(y);
+    const item=isConstructionBackgroundTile(v) ? v : T.AIR;
+    const k=key(x,y);
+    const old=getConstructionBackground(x,y);
+    if(old===item) return false;
+    if(item===T.AIR) constructionBackground.delete(k);
+    else constructionBackground.set(k,item);
+    if(!transient) markModifiedChunk(Math.floor(x/CHUNK_W));
+    return true;
+  }
+  function setConstructionBackground(x,y,v){ return setConstructionBackgroundInternal(x,y,v,false); }
+  function clearConstructionBackground(x,y){ return setConstructionBackgroundInternal(x,y,T.AIR,false); }
   function setTileInternal(x,y,v,transient){
     if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return;
     if(isInfrastructureTile(v)){ setInfrastructureInternal(x,y,v,transient); return; }
@@ -906,26 +932,58 @@ window.MM = window.MM || {};
     try{ if(MM.teleporters && MM.teleporters.onTileChanged) MM.teleporters.onTileChanged(0,0,T.AIR,T.COPPER_WIRE); }catch(e){}
     try{ if(MM.pumps && MM.pumps.onTileChanged) MM.pumps.onTileChanged(0,0,T.AIR,T.WATER_PIPE); }catch(e){}
   }
-  function clearWorld(){ try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); versions.clear(); modifiedChunks.clear(); infrastructure.clear(); heightCache.clear(); lakeLevels.clear(); if(WG.clearCaches) WG.clearCaches(); }
+  function snapshotConstructionBackground(){
+    const list=[];
+    for(const [k,t] of constructionBackground.entries()){
+      if(!isConstructionBackgroundTile(t)) continue;
+      const comma=k.indexOf(',');
+      const x=+k.slice(0,comma), y=+k.slice(comma+1);
+      list.push({x,y,t});
+    }
+    const clean=list
+      .filter(o=>isConstructionBackgroundTile(o.t) && isFinite(o.x) && isFinite(o.y) && o.y>=0 && o.y<WORLD_H)
+      .sort((a,b)=>(a.x-b.x)||(a.y-b.y)||(a.t-b.t))
+      .slice(0,40000);
+    return {v:1,list:clean};
+  }
+  function restoreConstructionBackground(data){
+    constructionBackground.clear();
+    if(!data || !Array.isArray(data.list)) return;
+    for(const raw of data.list){
+      if(!raw || !isConstructionBackgroundTile(raw.t)) continue;
+      if(!isFinite(raw.x) || !isFinite(raw.y)) continue;
+      const x=Math.floor(raw.x), y=Math.floor(raw.y);
+      if(!(y>=0) || y>=WORLD_H || Math.abs(x)>MAX_COORD) continue;
+      constructionBackground.set(key(x,y),raw.t);
+      markModifiedChunk(Math.floor(x/CHUNK_W));
+    }
+  }
+  function clearWorld(){ try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); versions.clear(); modifiedChunks.clear(); infrastructure.clear(); constructionBackground.clear(); heightCache.clear(); lakeLevels.clear(); if(WG.clearCaches) WG.clearCaches(); }
 
   worldAPI.ensureChunk = ensureChunk;
   worldAPI.getTile = getTile;
   worldAPI.getInfrastructure = getInfrastructure;
   worldAPI.getInfrastructureStack = getInfrastructureStack;
   worldAPI.hasInfrastructure = hasInfrastructure;
+  worldAPI.getConstructionBackground = getConstructionBackground;
   worldAPI.getOverlay = getInfrastructure;
   worldAPI.getNetworkTile = getNetworkTile;
   worldAPI.peekTile = peekTile;
   worldAPI.peekNetworkTile = peekNetworkTile;
   worldAPI.setTile = setTile;
   worldAPI.setInfrastructure = setInfrastructure;
+  worldAPI.setConstructionBackground = setConstructionBackground;
   worldAPI.setOverlay = setInfrastructure;
   worldAPI.clearInfrastructure = clearInfrastructure;
+  worldAPI.clearConstructionBackground = clearConstructionBackground;
   worldAPI.clearOverlay = clearInfrastructure;
   worldAPI.setTransientTile = setTransientTile;
   worldAPI.snapshotInfrastructure = snapshotInfrastructure;
   worldAPI.restoreInfrastructure = restoreInfrastructure;
+  worldAPI.snapshotConstructionBackground = snapshotConstructionBackground;
+  worldAPI.restoreConstructionBackground = restoreConstructionBackground;
   worldAPI.isInfrastructureTile = isInfrastructureTile;
+  worldAPI.isConstructionBackgroundTile = isConstructionBackgroundTile;
   worldAPI.clear = clearWorld;
   worldAPI.clearHeights = ()=>{ heightCache.clear(); lakeLevels.clear(); if(WG.clearCaches) WG.clearCaches(); };
   worldAPI.markModifiedChunk = markModifiedChunk;
@@ -935,7 +993,7 @@ window.MM = window.MM || {};
   worldAPI._modifiedChunks = modifiedChunks;
   worldAPI.chunkVersion = function(cx){ return versions.get(ck(cx))||0; };
   worldAPI.metrics = function(){
-    return {chunks:world.size, modified:modifiedChunks.size, infrastructure:infrastructure.size, heightCache:heightCache.size, lakeCache:lakeLevels.size};
+    return {chunks:world.size, modified:modifiedChunks.size, infrastructure:infrastructure.size, constructionBackground:constructionBackground.size, heightCache:heightCache.size, lakeCache:lakeLevels.size};
   };
 
   MM.world = worldAPI;

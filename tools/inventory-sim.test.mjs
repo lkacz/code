@@ -43,6 +43,10 @@ assert.equal(INFO[T.DIRT].drop, 'dirt', 'dirt blocks drop dirt');
 assert.equal(INFO[T.GRANITE].drop, 'granite', 'granite blocks drop granite');
 assert.equal(INFO[T.BASALT].drop, 'basalt', 'basalt blocks drop basalt');
 assert.equal(INFO[T.BEDROCK].drop, null, 'bedrock does not drop as a resource');
+assert.equal(INFO[T.CLAY].drop, 'clay', 'clay blocks drop clay');
+assert.equal(INFO[T.WET_CLAY].drop, 'clay', 'wet clay recovers as clay');
+assert.equal(INFO[T.BRICK].drop, 'brick', 'brick blocks drop brick');
+assert.equal(INFO[T.LADDER].drop, 'ladder', 'ladders drop the ladder resource');
 assert.equal(INFO[T.BEDROCK].unmineable, true, 'bedrock is an unmineable world boundary');
 const digOrder=[T.SAND,T.DIRT,T.STONE,T.GRANITE,T.BASALT].map(t=>INFO[t].hp);
 for(let i=1;i<digOrder.length;i++){
@@ -78,6 +82,9 @@ assert.equal(res('meat')?.tile, 'MEAT', 'raw meat is tracked as a placeable/eata
 assert.equal(res('rottenMeat')?.tile, 'ROTTEN_MEAT', 'rotten meat is tracked separately');
 assert.equal(res('bakedMeat')?.tile, 'BAKED_MEAT', 'baked meat is tracked separately');
 assert.equal(res('glass')?.tile, 'GLASS', 'glass is tracked as a placeable/recoverable resource');
+assert.equal(res('clay')?.tile, 'CLAY', 'clay is tracked as a primary placeable resource');
+assert.equal(res('brick')?.tile, 'BRICK', 'brick is tracked as a fired ceramic building resource');
+assert.equal(res('ladder')?.tile, 'LADDER', 'ladder is tracked as a placeable climbing fixture');
 assert.equal(res('woodDoor')?.tile, 'WOOD_DOOR', 'wood door is a craftable placeable resource');
 assert.equal(res('stoneDoor')?.tile, 'STONE_DOOR', 'stone door is a craftable placeable resource');
 assert.equal(res('steelDoor')?.tile, 'STEEL_DOOR', 'steel door is a craftable placeable resource');
@@ -104,11 +111,14 @@ assert.equal(res('antimatter')?.tile, 'ANTIMATTER_CRYSTAL', 'antimatter is place
 assert.equal(res('turret')?.tile, 'TURRET', 'basic turret is a placeable defensive machine resource');
 assert.equal(res('fireTurret')?.tile, 'FIRE_TURRET', 'fire turret is a placeable defensive machine resource');
 assert.equal(res('waterTurret')?.tile, 'WATER_TURRET', 'water turret is a placeable defensive machine resource');
+assert.equal(res('springPlatform')?.tile, 'SPRING_PLATFORM', 'spring platform is a craftable placeable movement machine');
 assert.equal(res('springAntler')?.tile, null, 'spring hallmark antlers are tracked as a non-placeable trophy');
 assert.equal(res('summerHorn')?.tile, null, 'summer hallmark horn is tracked as a non-placeable trophy');
 assert.equal(res('autumnHeartwood')?.tile, null, 'autumn hallmark heartwood is tracked as a non-placeable trophy');
 assert.equal(res('winterFur')?.tile, null, 'winter hallmark fur is tracked as a non-placeable trophy');
 assert.equal(INFO[T.DYNAMO_SLOT].passable, true, 'dynamo slot is passable for the hero and machine flow');
+assert.equal(INFO[T.LADDER].passable, true, 'ladders are passable climbing fixtures');
+assert.equal(INFO[T.LADDER].ladder, true, 'ladders advertise ladder movement semantics');
 assert.equal(INFO[T.COPPER_WIRE].drop, 'copperWire', 'copper wire drops itself when dismantled');
 assert.equal(INFO[T.COPPER_WIRE].conductor, true, 'copper wire is marked as an energy conductor');
 assert.equal(INFO[T.TELEPORTER].machine, 'teleporter', 'teleporter tile is marked as a machine');
@@ -127,6 +137,8 @@ assert.equal(INFO[T.ANTIMATTER_CRYSTAL].antimatter, true, 'antimatter crystal ad
 assert.equal(INFO[T.TURRET].powerDevice, true, 'basic turret is marked as a powered device');
 assert.equal(INFO[T.FIRE_TURRET].powerDevice, true, 'fire turret is marked as a powered device');
 assert.equal(INFO[T.WATER_TURRET].powerDevice, true, 'water turret is marked as a powered device');
+assert.equal(INFO[T.SPRING_PLATFORM].powerDevice, true, 'spring platform is marked as a powered device');
+assert.equal(INFO[T.SPRING_PLATFORM].energyCapacity, 70, 'spring platform advertises its battery capacity');
 assert.equal(INFO[T.DYNAMO].powerSource, true, 'dynamo casing is marked as a power source');
 assert.equal(INFO[T.SOLAR_PANEL].drop, 'solarPanel', 'solar panels can be recovered as placeable resources');
 assert.equal(INFO[T.SOLAR_BATTERY].drop, 'solarBattery', 'solar battery panels can be recovered as placeable resources');
@@ -134,7 +146,10 @@ assert.equal(INFO[T.SOLAR_PANEL].powerSource, true, 'solar panel is marked as a 
 assert.equal(INFO[T.SOLAR_BATTERY].energyCapacity, 120, 'storage solar panel advertises its battery capacity');
 assert.match(mainSrc, /id:'solar_panel'/, 'crafting exposes solar panels outside the debug menu');
 assert.match(mainSrc, /id:'solar_battery'/, 'crafting exposes solar battery panels outside the debug menu');
-assert.match(mainSrc, /tiles:\['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY'/, 'hotbar machine group includes solar panels');
+assert.match(mainSrc, /id:'spring_platform'/, 'crafting exposes spring platforms outside the debug menu');
+assert.match(mainSrc, /id:'ladders'/, 'crafting exposes ladders outside the debug menu');
+assert.match(mainSrc, /tiles:\['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY','SPRING_PLATFORM'/, 'hotbar machine group includes solar panels and spring platforms');
+assert.match(mainSrc, /tiles:\['WIRE','COPPER_WIRE','WATER_PIPE','LADDER'/, 'hotbar utility group includes ladders with overlays');
 
 // --- percent ladder snapping ---------------------------------------------
 assert.equal(INV.snapPct(1), 0, 'noise under 2.5% disappears');

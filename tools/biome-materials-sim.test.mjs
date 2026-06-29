@@ -102,6 +102,7 @@ assert.ok(count(samples[3],T.SAND)>=300, 'desert has deep sand cover');
 assert.equal(countAny(samples[3],[T.WATER,T.ICE]),0, 'desert representative stays dry');
 
 assert.ok(count(samples[4],T.MUD)>=120, 'swamp generates natural mud banks');
+assert.ok(count(samples[4],T.CLAY)>=8, 'swamp exposes clay sediment lenses');
 assert.ok(count(samples[4],T.WATER)>=25, 'swamp keeps shallow pools');
 assert.ok(countAny(samples[4],[T.WOOD,T.LEAF])>=70, 'swamp generates sparse mangrove material');
 

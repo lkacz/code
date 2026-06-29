@@ -32,6 +32,7 @@ const mobs = (function(){
 
   const mobs = []; // entities
   const speciesAggro = {}; // speciesId -> expiry timestamp (ms)
+  const HERO_FOCUS_MS = 12000;
   const speciesCounts = {}; // live counts for quick spawn capping
   const ECO_LOCAL_RADIUS = 92;
   const ECO_INNER_RADIUS = 18;
@@ -39,8 +40,10 @@ const mobs = (function(){
   const ECO_MAX_BIRTHS_PER_PASS = 2;
   const ECO_SPAWN_MIN_MS = 4200;
   const ECO_SPAWN_JITTER_MS = 2600;
+  const DEFAULT_SUNRISE_BURN = { dur: 8, dps: 6 };
   // Spawn throttle/freeze (used after world regeneration)
   let spawnFreezeUntil = 0; // timestamp (ms). While now < this, no new spawns are attempted.
+  let lastDayState = null;
   // Spatial partitioning (uniform grid) to speed up point queries (attackAt)
   const CELL=16; // tiles per cell both axes
   const grid = new Map(); // key "cx,cy" -> Set of mob refs
@@ -537,10 +540,16 @@ const mobs = (function(){
 
   // --- Nocturnal hostiles: spawn only after dark, inherently aggressive, and the
   // sunrise sets them alight (burning DoT) so the day stays safe ---
-  function isNight(){ try{ const c=MM.background && MM.background.getCycleInfo && MM.background.getCycleInfo(); return !!(c && c.isDay===false); }catch(e){ return false; } }
+  function cycleIsDay(){
+    try{
+      const c=MM.background && MM.background.getCycleInfo && MM.background.getCycleInfo();
+      return c && typeof c.isDay==='boolean' ? c.isDay : null;
+    }catch(e){ return null; }
+  }
+  function isNight(){ return cycleIsDay()===false; }
   registerSpecies({ // Ghoul: shambling night stalker
     id:'GHOUL', max:8, hp:16, dmg:8, speed:2.6, wanderInterval:[1.5,3.5], xp:20, ground:true,
-    sightRange:22, pursueRange:30, alwaysAggro:true,
+    sightRange:22, pursueRange:30, alwaysAggro:true, sunriseBurn:{dur:8,dps:6},
     move:{jumpVel:-4.6, maxClimb:2, avoidWater:true},
     body:{w:0.9,h:1.6},
     spawnTest(x,y,getTile){ if(!isNight()) return false; const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); return below===T.GRASS||below===T.SAND||below===T.SNOW||isRockFloor(below)||below===T.MUD; },
@@ -551,7 +560,7 @@ const mobs = (function(){
   registerSpecies({ // Night bat: erratic flying biter
     id:'BAT', max:10, hp:6, dmg:5, speed:3.6, wanderInterval:[0.8,2.0], xp:10, flying:true,
     sightRange:20, pursueRange:26, alwaysAggro:true,
-    body:{w:0.7,h:0.45}, collideTerrain:true,
+    body:{w:0.7,h:0.45}, collideTerrain:true, sunriseBurn:{dur:6,dps:6},
     spawnTest(x,y,getTile){ if(!isNight()) return false; const here=getTile(x,y); const above=getTile(x,y-1); return here===T.AIR && above===T.AIR; },
     biome:'any',
     habitatUpdate(m){ if(Math.random()<0.06){ m.vx+=(Math.random()*2-1)*1.5; m.vy+=(Math.random()*2-1)*1.0; } if(!isNight()) applyStatus(m,'burn',{dur:2,dps:4}); }
@@ -560,6 +569,11 @@ const mobs = (function(){
   // --- Mob projectiles: lobbed shards that arc, shatter on terrain, hurt the hero ---
   const mobProjectiles=[]; const MOB_PROJ_CAP=40;
   const mobLasers=[]; const MOB_LASER_CAP=18;
+  const mobDeathFx=[]; const MOB_DEATH_FX_CAP=44;
+  const MOB_DEATH_PHYSICS_FRAME_BUDGET=96;
+  const MOB_DEATH_PHYSICS_MAX_STEPS=4;
+  const MOB_DEATH_PHYSICS_MAX_DT=0.05;
+  let lastDeathFxGetTile=null;
   const SENTINEL_VOLLEY_WINDOW_MS=450;
   const SENTINEL_VOLLEY_SHOT_CAP=3;
   const SENTINEL_RELOAD_SECONDS=3;
@@ -573,7 +587,8 @@ const mobs = (function(){
   let sentinelMeatShots=0, sentinelMeatCooked=0, sentinelMeatDestroyed=0, sentinelReloads=0;
   function shootAt(m, target, speed, dmg){
     if(mobProjectiles.length>=MOB_PROJ_CAP) return false;
-    const dx=target.x-m.x, dy=(target.y-0.3)-m.y;
+    const aimY=target && target.kind==='companion' && target.aimY!=null ? target.aimY : target.y-0.3;
+    const dx=target.x-m.x, dy=aimY-m.y;
     const d=Math.hypot(dx,dy)||1;
     mobProjectiles.push({x:m.x, y:m.y-0.4, vx:dx/d*speed, vy:dy/d*speed-1.4, dmg:dmg*(m.dmgMult||1), t:0, spin:Math.random()*6.28});
     try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
@@ -591,6 +606,7 @@ const mobs = (function(){
   }
   function sentinelAimPoint(target){
     if(target && target.kind==='meat') return {x:target.x, y:target.y};
+    if(target && target.kind==='companion') return {x:target.x, y:target.aimY==null ? target.y-0.42 : target.aimY};
     return {x:target.x, y:target.y-0.42};
   }
   function traceLaser(sx,sy,tx,ty,getTile,maxDist){
@@ -754,6 +770,7 @@ const mobs = (function(){
       });
     }
     if(target.kind==='meat') applySentinelMeatLaser(target,getTile,setTile);
+    else if(target.kind==='companion') damageCompanionTarget(target,dmg*(m.dmgMult||1),m.x,m.y-0.6,'sentinel');
     else damagePlayer(dmg*(m.dmgMult||1), m.x, m.y-0.6);
     try{ if(MM.audio && MM.audio.play) MM.audio.play('beam'); }catch(e){}
     try{
@@ -788,6 +805,10 @@ const mobs = (function(){
       const pr=mobProjectiles[i];
       pr.t+=dt; pr.vy+=9*dt; applyWindToMobProjectile(pr,dt,getTile); pr.x+=pr.vx*dt; pr.y+=pr.vy*dt; pr.spin+=dt*8;
       let dead=pr.t>4;
+      if(!dead){
+        const cmp=nearestCompanionTarget(pr.x,pr.y,0.75);
+        if(cmp && damageCompanionTarget(cmp,pr.dmg,pr.x-pr.vx*0.08,pr.y-pr.vy*0.08,'mob_projectile')) dead=true;
+      }
       if(!dead && player && Math.abs(player.x-pr.x)<0.6 && Math.abs(player.y-pr.y)<0.8){
         damagePlayer(pr.dmg, pr.x, pr.y); dead=true;
       }
@@ -818,7 +839,7 @@ const mobs = (function(){
     },
     biome:'any',
     habitatUpdate(m,spec,getTile,dt){
-      const p=(typeof window!=='undefined' && window.player)||null; if(!p) return;
+      const p=m._combatTarget || ((typeof window!=='undefined' && window.player)||null); if(!p) return;
       const dx=p.x-m.x, dy=p.y-m.y, d=Math.hypot(dx,dy);
       m.shootCd=(m.shootCd==null?1.2:m.shootCd)-dt;
       if(d<14 && d>2.5 && m.shootCd<=0 && Math.abs(dy)<8){ shootAt(m,p,9,spec.dmg); m.shootCd=1.6+Math.random()*0.8; }
@@ -1385,12 +1406,996 @@ const mobs = (function(){
   function isAggro(specId){ const exp=speciesAggro[specId]; return exp && exp> Date.now(); }
 
   function setAggro(specId){ speciesAggro[specId] = Date.now() + 5*60*1000; }
+  function sourceIsHero(opts){
+    if(opts===true) return true;
+    if(!opts || typeof opts!=='object') return false;
+    if(opts.hero===true) return true;
+    const src=String(opts.source || opts.actor || opts.by || '').toLowerCase();
+    return src==='hero' || src==='player';
+  }
+  function markHeroAttack(m){
+    if(!m) return false;
+    const now=Date.now();
+    m.heroFocusUntil=now+HERO_FOCUS_MS;
+    m.heroFocusAt=now;
+    return true;
+  }
+  function isHeroFocused(m,now){
+    return !!(m && finiteNum(m.heroFocusUntil) && m.heroFocusUntil>(now||Date.now()));
+  }
+  function isMobHostile(m,now){
+    if(!m || m.hp<=0) return false;
+    const spec=SPECIES[m.id];
+    return !!(spec && (spec.alwaysAggro || isAggro(m.id) || isHeroFocused(m,now)));
+  }
+  function mobAllowedByOpts(m,opts){
+    if(!m) return false;
+    const ex=(opts && opts.exclude)||[];
+    if(ex.includes(m.id)) return false;
+    if(opts && opts.hostileOnly && !isMobHostile(m)) return false;
+    return true;
+  }
+  function noteDamageSource(m,opts){
+    if(!m) return;
+    if(opts && typeof opts==='object'){
+      const src=opts.source || opts.actor || opts.by;
+      const cause=opts.cause || opts.element;
+      if(src!=null) m._lastDamageSource=String(src);
+      if(cause!=null) m._lastDamageCause=String(cause);
+    } else if(opts===true) {
+      m._lastDamageSource='hero';
+    }
+    if(sourceIsHero(opts)) markHeroAttack(m);
+  }
+  function nearestCompanionTarget(wx,wy,range,opts){
+    try{
+      const api=MM.companions;
+      if(api && typeof api.nearestForEnemy==='function') return api.nearestForEnemy(wx,wy,range,opts);
+    }catch(e){}
+    return null;
+  }
+  function companionTargetPoint(t){
+    return {x:t.x, y:t.aimY==null ? t.y : t.aimY};
+  }
+  function damageCompanionTarget(t,dmg,srcX,srcY,cause){
+    if(!t) return false;
+    try{
+      const api=MM.companions;
+      if(api && typeof api.damageAtWorld==='function') return !!api.damageAtWorld(t.x,t.aimY==null ? t.y : t.aimY,dmg,{source:'mob',cause:cause||'mob',srcX,srcY,knockback:2.8});
+      if(api && typeof api.damageAt==='function') return !!api.damageAt(t.tx==null ? Math.floor(t.x) : t.tx,t.ty==null ? Math.floor(t.y) : t.ty,dmg,{source:'mob',cause:cause||'mob',srcX,srcY});
+    }catch(e){}
+    return false;
+  }
+  function combatTargetForMob(m,hero,aggressive,range){
+    if(!aggressive || !m || !hero) return hero;
+    const cmp=nearestCompanionTarget(m.x,m.y,range||16);
+    if(!cmp) return hero;
+    const cp=companionTargetPoint(cmp);
+    const cdx=cp.x-m.x, cdy=cp.y-m.y;
+    const hdx=hero.x-m.x, hdy=hero.y-m.y;
+    const c2=cdx*cdx+cdy*cdy;
+    const h2=hdx*hdx+hdy*hdy;
+    if(c2<h2*1.18 || h2>(range||16)*(range||16)) return cmp;
+    return hero;
+  }
 
-  let frame=0; let lastMetricsSample=0; let metrics={count:0, active:0, dtAvg:0};
+  let frame=0; let lastMetricsSample=0; let metrics={count:0, active:0, dtAvg:0, sunriseBurns:0};
+  function sunriseBurnOptions(spec){
+    const cfg=spec && spec.sunriseBurn;
+    const dur=(cfg && typeof cfg==='object' && finiteNum(cfg.dur)) ? cfg.dur : DEFAULT_SUNRISE_BURN.dur;
+    const dps=(cfg && typeof cfg==='object' && finiteNum(cfg.dps)) ? cfg.dps : DEFAULT_SUNRISE_BURN.dps;
+    return {dur,dps,source:'sunrise'};
+  }
+  function applySunriseBurn(now){
+    let lit=0;
+    for(const m of mobs){
+      if(!validMobState(m) || m.hp<=0) continue;
+      const spec=SPECIES[m.id];
+      if(!spec || !spec.sunriseBurn) continue;
+      if(applyStatus(m,'burn',sunriseBurnOptions(spec))){
+        m._sunriseBurnAt=now;
+        lit++;
+      }
+    }
+    if(lit) metrics.sunriseBurns=(metrics.sunriseBurns||0)+lit;
+    return lit;
+  }
+  function updateSunriseBurnState(now){
+    const isDay=cycleIsDay();
+    if(isDay===null) return;
+    if(isDay && lastDayState!==true) applySunriseBurn(now);
+    lastDayState=isDay;
+  }
   function bodyHalfExtents(m,spec){
     const body = spec.body || {w:1,h:1};
     const sc = m.scale || 1;
     return {halfW:(body.w||1)*0.5*sc, halfH:(body.h||1)*0.5*sc};
+  }
+  function safeHexColor(c,fallback){
+    return (typeof c==='string' && /^#[0-9a-f]{6}$/i.test(c)) ? c : fallback;
+  }
+  function mixHexColor(a,b,t){
+    a=safeHexColor(a,'#999999');
+    b=safeHexColor(b,'#ffffff');
+    t=Math.max(0,Math.min(1,finiteNum(t)?t:0));
+    const ca=hexToRgb(a), cb=hexToRgb(b);
+    return rgbToHex(
+      ca.r+(cb.r-ca.r)*t,
+      ca.g+(cb.g-ca.g)*t,
+      ca.b+(cb.b-ca.b)*t
+    );
+  }
+  function rgbaHex(c,a){
+    const rgb=hexToRgb(safeHexColor(c,'#ffffff'));
+    return 'rgba('+rgb.r+','+rgb.g+','+rgb.b+','+Math.max(0,Math.min(1,a)).toFixed(3)+')';
+  }
+  function mobDeathSeed(m){
+    let h=2166136261>>>0;
+    const id=String(m && m.id || 'mob');
+    for(let i=0;i<id.length;i++){ h^=id.charCodeAt(i); h=Math.imul(h,16777619)>>>0; }
+    h^=(Math.floor((m.x||0)*997)>>>0); h=Math.imul(h,2246822519)>>>0;
+    h^=(Math.floor((m.y||0)*1319)>>>0); h=Math.imul(h,3266489917)>>>0;
+    h^=(Math.floor((m.spawnT||0)*17)>>>0);
+    h^=((Math.random()*0xffffffff)>>>0);
+    return h>>>0;
+  }
+  function deathRand(seed){
+    let s=seed>>>0;
+    return function(){
+      s=(Math.imul(s,1664525)+1013904223)>>>0;
+      return s/4294967296;
+    };
+  }
+  function mobDeathStyle(m,spec,cause){
+    if(m && m.id==='ZLOTY') return 'gold';
+    if(cause==='burn' || cause==='fire' || cause==='flamethrower') return spec && spec.organic===false ? 'machine' : 'ash';
+    if(spec && spec.aquatic) return 'splash';
+    if(spec && spec.organic===false) return 'machine';
+    if(m && m.id==='STRAZNIK') return 'machine';
+    if(m && m.id==='SZKIELET') return 'bone';
+    if(m && (m.id==='GHOUL' || m.id==='PELZACZ' || m.id==='BAT')) return 'shadow';
+    if(spec && spec.flying) return 'feather';
+    if(m && (m.id==='CRAB' || m.id==='JASZCZUR')) return 'shell';
+    return 'creature';
+  }
+  function mobDeathCause(m,opts){
+    const explicit=opts && (opts.cause || opts.element || opts.source);
+    if(explicit) return String(explicit).toLowerCase();
+    if(m && m._lastDamageCause) return String(m._lastDamageCause).toLowerCase();
+    if(hasStatus(m,'burn')) return 'burn';
+    if(hasStatus(m,'poison')) return 'poison';
+    return 'hit';
+  }
+  function mobDeathAccent(style,base,cause){
+    if(cause==='poison') return '#90e06e';
+    if(style==='splash') return '#aee8ff';
+    if(style==='machine') return '#64f4ff';
+    if(style==='bone') return '#efe8d4';
+    if(style==='shadow') return '#b7ff86';
+    if(style==='gold') return '#fff1a8';
+    if(style==='ash') return '#ffb15f';
+    if(style==='feather') return mixHexColor(base,'#ffffff',0.36);
+    return mixHexColor(base,'#ffffff',0.22);
+  }
+  function mobDeathShape(style,r){
+    if(style==='splash') return r<0.70 ? 'drop' : 'bubble';
+    if(style==='machine') return r<0.45 ? 'panel' : (r<0.78 ? 'spark' : 'wire');
+    if(style==='bone') return r<0.54 ? 'bone' : (r<0.78 ? 'chip' : 'wisp');
+    if(style==='shadow') return r<0.42 ? 'wisp' : (r<0.62 ? 'rag' : (r<0.82 ? 'bone' : 'spark'));
+    if(style==='ash') return r<0.36 ? 'ash' : (r<0.54 ? 'wisp' : (r<0.78 ? 'bone' : 'spark'));
+    if(style==='feather') return r<0.68 ? 'feather' : 'chip';
+    if(style==='shell') return r<0.55 ? 'shell' : 'chip';
+    if(style==='gold') return r<0.52 ? 'spark' : (r<0.76 ? 'feather' : 'chip');
+    return r<0.50 ? 'chunk' : (r<0.66 ? 'bone' : (r<0.84 ? 'dust' : 'spark'));
+  }
+  function mobDeathCoreKind(style,r){
+    if(style==='splash') return r<0.58 ? 'splashCrest' : 'dropCore';
+    if(style==='machine') return r<0.32 ? 'sensor' : (r<0.64 ? 'gear' : 'panelCore');
+    if(style==='bone') return r<0.28 ? 'skull' : (r<0.68 ? 'rib' : 'longBone');
+    if(style==='shadow') return r<0.38 ? 'eyeWisp' : (r<0.72 ? 'rag' : 'smokeCore');
+    if(style==='ash') return r<0.42 ? 'emberCore' : (r<0.72 ? 'ashCloud' : 'rag');
+    if(style==='feather') return r<0.50 ? 'wing' : (r<0.78 ? 'featherCore' : 'eyeWisp');
+    if(style==='shell') return r<0.48 ? 'shellPlate' : (r<0.76 ? 'tail' : 'leg');
+    if(style==='gold') return r<0.44 ? 'starCore' : (r<0.72 ? 'haloShard' : 'panelCore');
+    return r<0.30 ? 'bodyCore' : (r<0.56 ? 'headCore' : (r<0.76 ? 'limbCore' : (r<0.88 ? 'longBone' : 'tuft')));
+  }
+  function mobDeathResidueKind(style,r){
+    if(style==='splash') return r<0.72 ? 'ripple' : 'droplet';
+    if(style==='machine') return r<0.52 ? 'scorch' : (r<0.78 ? 'sparkResidue' : 'bolt');
+    if(style==='bone') return r<0.48 ? 'bonePile' : (r<0.78 ? 'dustRing' : 'chip');
+    if(style==='shadow') return r<0.70 ? 'shadowPool' : 'greenMote';
+    if(style==='ash') return r<0.62 ? 'ashSmear' : 'ember';
+    if(style==='feather') return r<0.62 ? 'feather' : 'dustRing';
+    if(style==='shell') return r<0.62 ? 'shellShard' : 'scratch';
+    if(style==='gold') return r<0.68 ? 'star' : 'glitter';
+    return r<0.42 ? 'smear' : (r<0.72 ? 'dustRing' : 'tuft');
+  }
+  function mobDeathSignature(m,spec,style,cause,rnd){
+    const body=spec && spec.body || {w:1,h:1};
+    const area=(body.w||1)*(body.h||1)*Math.max(0.5,m && m.scale || 1);
+    const size=area>3.0 ? 'huge' : (area>1.35 ? 'large' : (area<0.55 ? 'tiny' : 'small'));
+    const motion=spec && spec.aquatic ? 'water' : (spec && spec.flying ? 'air' : (spec && spec.alwaysAggro ? 'hostile' : 'ground'));
+    return style+':'+cause+':'+size+':'+motion+':'+Math.floor(rnd()*10000).toString(36);
+  }
+  function pushDeathPuff(fx,p,y){
+    if(!fx || !p || !fx.puffs || fx.puffs.length>=18 || (p._puffCooldown||0)>0) return;
+    p._puffCooldown=0.13;
+    fx.puffs.push({
+      x:p.x,
+      y:Number.isFinite(y) ? y : p.y,
+      life:0,
+      max:0.24+((fx.seed>>>3)&7)*0.012,
+      size:Math.max(0.10,Math.min(0.42,(p.size||0.08)*2.4)),
+      color:p.color || fx.accent || '#cccccc',
+      kind:fx.style==='splash'?'spray':(fx.style==='machine'||fx.style==='gold'?'spark':'dust'),
+      phase:((fx.seed>>>7)&255)*0.031
+    });
+  }
+  function deathFxTileOpen(getTile,x,y){
+    if(!getTile || !Number.isFinite(x) || !Number.isFinite(y)) return true;
+    const ty=Math.floor(y);
+    if(ty<0 || ty>=WORLD_H) return false;
+    const t=getTile(Math.floor(x),ty);
+    return t===T.WATER || !isSolid(t);
+  }
+  function nearestDeathFxOpenPoint(x,y,getTile,limit){
+    if(!getTile || deathFxTileOpen(getTile,x,y)) return {x,y,found:true};
+    const tx=Math.floor(x), ty=Math.floor(y);
+    const maxR=Math.max(1,Math.min(6,limit==null?4:limit|0));
+    let best=null, bestScore=Infinity;
+    for(let r=1; r<=maxR; r++){
+      for(let dy=-r; dy<=r; dy++){
+        for(let dx=-r; dx<=r; dx++){
+          if(Math.max(Math.abs(dx),Math.abs(dy))!==r) continue;
+          const cx=tx+dx+0.5, cy=ty+dy+0.5;
+          if(!deathFxTileOpen(getTile,cx,cy)) continue;
+          const score=dx*dx+dy*dy + (dy>0?0.35:0) + (dy<0?0.08:0);
+          if(score<bestScore){ bestScore=score; best={x:cx,y:cy,found:true}; }
+        }
+      }
+      if(best) return best;
+    }
+    return {x,y,found:false};
+  }
+  function nearestDeathFxOpenPiecePoint(x,y,r,getTile,limit){
+    if(!getTile || !Number.isFinite(x) || !Number.isFinite(y)) return {x,y,found:!getTile};
+    if(!deathPieceOverlapsSolid(getTile,x,y,r)) return {x,y,found:true};
+    const tx=Math.floor(x), ty=Math.floor(y);
+    const maxR=Math.max(1,Math.min(6,limit==null?4:limit|0));
+    let best=null, bestScore=Infinity;
+    for(let rr=0; rr<=maxR; rr++){
+      for(let dy=-rr; dy<=rr; dy++){
+        for(let dx=-rr; dx<=rr; dx++){
+          if(rr>0 && Math.max(Math.abs(dx),Math.abs(dy))!==rr) continue;
+          const cx=tx+dx+0.5, cy=ty+dy+0.5;
+          if(deathPieceOverlapsSolid(getTile,cx,cy,r)) continue;
+          const score=dx*dx+dy*dy + (dy>0?0.35:0) + (dy<0?0.08:0);
+          if(score<bestScore){ bestScore=score; best={x:cx,y:cy,found:true}; }
+        }
+      }
+      if(best) return best;
+    }
+    return {x,y,found:false};
+  }
+  function clampDeathFxPartSpawn(fx,p,getTile){
+    if(!p || !getTile) return;
+    const radius=deathPieceRadius(p);
+    if(!deathPieceOverlapsSolid(getTile,p.x,p.y,radius)) return;
+    const safe=nearestDeathFxOpenPiecePoint(p.x,p.y,radius,getTile,3);
+    if(!safe.found){
+      p.x=fx.x; p.y=fx.y;
+    } else {
+      p.x=safe.x; p.y=safe.y;
+    }
+    if(Number.isFinite(p.vx)) p.vx*=0.24;
+    if(Number.isFinite(p.vy)) p.vy=Math.min(-0.15, p.vy*0.18);
+    if(Number.isFinite(p.spin)) p.spin*=0.4;
+  }
+  function deathPhysicsFrameBudget(){
+    const ms=(typeof window!=='undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
+    if(ms>36) return Math.round(MOB_DEATH_PHYSICS_FRAME_BUDGET*0.38);
+    if(ms>25) return Math.round(MOB_DEATH_PHYSICS_FRAME_BUDGET*0.62);
+    return MOB_DEATH_PHYSICS_FRAME_BUDGET;
+  }
+  function deathFloatyKind(kind){
+    return kind==='wisp' || kind==='ash' || kind==='bubble' || kind==='smokeCore' || kind==='ashCloud' || kind==='eyeWisp';
+  }
+  function deathPieceRadius(p){
+    if(!p) return 0.08;
+    if(Number.isFinite(p.radius)) return p.radius;
+    if(Number.isFinite(p.size)) return Math.max(0.045, Math.min(0.22, p.size*1.25));
+    const w=Number.isFinite(p.w) ? p.w : 0.12;
+    const h=Number.isFinite(p.h) ? p.h : 0.10;
+    return Math.max(0.055, Math.min(0.34, Math.max(w,h)*0.46));
+  }
+  function primeDeathPhysics(p,fx,rnd,kind){
+    if(!p) return p;
+    const solid=!deathFloatyKind(kind||p.kind||p.shape);
+    p.physics=solid;
+    p.radius=deathPieceRadius(p);
+    p.restitution=solid ? (fx.style==='machine'||fx.style==='gold'?0.38:(fx.style==='bone'?0.34:(fx.style==='shell'?0.30:0.25))) : 0.12;
+    p.groundFriction=solid ? (fx.style==='machine'?0.83:(fx.style==='bone'||p.shape==='bone'||p.kind==='longBone'?0.88:0.76)) : 0.94;
+    p.wallFriction=solid ? 0.78 : 0.88;
+    p.spinFriction=solid ? 0.78 : 0.92;
+    p.slideSpin=solid ? (0.45+(rnd?rnd():0.5)*0.35) : 0.08;
+    p.travel=0;
+    p.bounces=0;
+    p.settleT=0;
+    p.settled=false;
+    return p;
+  }
+  function deathSolidTile(getTile,tx,ty){
+    if(!getTile) return false;
+    if(ty<0 || ty>=WORLD_H) return true;
+    const t=getTile(tx,ty);
+    return t!==T.WATER && isSolid(t);
+  }
+  function deathPieceOverlapsSolid(getTile,x,y,r){
+    if(!getTile || !Number.isFinite(x) || !Number.isFinite(y)) return false;
+    if(y-r<0 || y+r>=WORLD_H) return true;
+    const minX=Math.floor(x-r), maxX=Math.floor(x+r);
+    const minY=Math.floor(y-r), maxY=Math.floor(y+r);
+    for(let ty=minY; ty<=maxY; ty++){
+      for(let tx=minX; tx<=maxX; tx++){
+        if(!deathSolidTile(getTile,tx,ty)) continue;
+        const cx=Math.max(tx,Math.min(x,tx+1));
+        const cy=Math.max(ty,Math.min(y,ty+1));
+        const dx=x-cx, dy=y-cy;
+        if(dx*dx+dy*dy <= r*r) return true;
+      }
+    }
+    return false;
+  }
+  function constrainDeathPieceRange(fx,p){
+    if(!fx || !p) return;
+    const maxR=Math.max(3.2, Math.min(8.5, 2.8 + (fx.bodyW||1)*0.65 + (fx.bodyH||1)*0.50));
+    const dx=p.x-fx.x, dy=p.y-fx.y;
+    const d=Math.hypot(dx,dy);
+    if(!(d>maxR)) return;
+    const nx=dx/(d||1), ny=dy/(d||1);
+    p.x=fx.x+nx*maxR;
+    p.y=fx.y+ny*maxR;
+    p.vx*=0.18;
+    p.vy*=0.18;
+  }
+  function moveDeathPieceAxis(fx,p,getTile,dx,dy){
+    if(!dx && !dy) return false;
+    const oldX=p.x, oldY=p.y;
+    p.x+=dx; p.y+=dy;
+    const r=deathPieceRadius(p);
+    if(!deathPieceOverlapsSolid(getTile,p.x,p.y,r)) return false;
+    let lo=0, hi=1;
+    for(let i=0;i<5;i++){
+      const mid=(lo+hi)*0.5;
+      const nx=oldX+dx*mid, ny=oldY+dy*mid;
+      if(deathPieceOverlapsSolid(getTile,nx,ny,r)) hi=mid;
+      else lo=mid;
+    }
+    p.x=oldX+dx*Math.max(0,lo-0.02);
+    p.y=oldY+dy*Math.max(0,lo-0.02);
+    const impact=dx ? Math.abs(p.vx||0) : Math.abs(p.vy||0);
+    p.bounces=(p.bounces||0)+1;
+    if(dx){
+      p.vx=impact>0.35 ? -(p.vx||0)*(p.restitution||0.24) : 0;
+      p.vy=(p.vy||0)*(p.wallFriction||0.82);
+      if(Number.isFinite(p.spin)) p.spin+=(p.vy||0)*0.08;
+    } else {
+      if(dy>0){
+        p.onGround=true;
+        p.vy=impact>1.05 ? -(p.vy||0)*(p.restitution||0.24) : 0;
+        p.vx=(p.vx||0)*(p.groundFriction||0.78);
+        if(Number.isFinite(p.spin)) p.spin+=(p.vx||0)*((p.slideSpin||0.45)/(r||0.1));
+      } else {
+        p.vy=impact>0.35 ? -(p.vy||0)*Math.max(0.12,(p.restitution||0.24)*0.72) : 0;
+        p.vx=(p.vx||0)*(p.wallFriction||0.82);
+      }
+    }
+    if(impact>1.25) pushDeathPuff(fx,p,p.y+r*0.55);
+    return true;
+  }
+  function integrateDeathPiecePhysics(fx,p,getTile,dt){
+    if(!p.physics || !getTile){
+      const prevX=p.x, prevY=p.y;
+      p.x+=(p.vx||0)*dt;
+      p.y+=(p.vy||0)*dt;
+      if(Number.isFinite(p.travel)) p.travel+=Math.hypot(p.x-prevX,p.y-prevY);
+      resolveDeathPieceTerrain(fx,p,getTile,prevX,prevY);
+      return;
+    }
+    if(p.settled){
+      p.vx=0; p.vy=0; p.spin*=Math.pow(p.spinFriction||0.82,dt*10);
+      return;
+    }
+    const speed=Math.max(Math.abs(p.vx||0),Math.abs(p.vy||0));
+    const steps=Math.max(1,Math.min(MOB_DEATH_PHYSICS_MAX_STEPS,Math.ceil(speed*dt/0.22)));
+    const sdt=dt/steps;
+    p.onGround=false;
+    for(let s=0;s<steps;s++){
+      const oldX=p.x, oldY=p.y;
+      moveDeathPieceAxis(fx,p,getTile,(p.vx||0)*sdt,0);
+      moveDeathPieceAxis(fx,p,getTile,0,(p.vy||0)*sdt);
+      if(Number.isFinite(p.travel)) p.travel+=Math.hypot(p.x-oldX,p.y-oldY);
+      constrainDeathPieceRange(fx,p);
+      if(!Number.isFinite(p.x) || !Number.isFinite(p.y)){ p.life=p.max+1; return; }
+    }
+    if(p.onGround){
+      p.vx*=Math.pow(p.groundFriction||0.78,dt*8);
+      p.spin*=Math.pow(p.spinFriction||0.82,dt*4);
+      if(Math.abs(p.vx||0)<0.08 && Math.abs(p.vy||0)<0.08) p.settleT=(p.settleT||0)+dt;
+      else p.settleT=0;
+      if(p.settleT>0.24){
+        p.settled=true;
+        p.vx=0; p.vy=0; p.spin*=0.25;
+      }
+    } else {
+      p.settleT=0;
+    }
+  }
+  function resolveDeathPieceTerrain(fx,p,getTile,prevX,prevY){
+    if(!getTile || !p) return;
+    if(!Number.isFinite(p.x) || !Number.isFinite(p.y)){
+      p.life=p.max+1;
+      return;
+    }
+    constrainDeathPieceRange(fx,p);
+    if(deathFxTileOpen(getTile,p.x,p.y)) return;
+    const hadPrev=Number.isFinite(prevX) && Number.isFinite(prevY) && deathFxTileOpen(getTile,prevX,prevY);
+    if(hadPrev){
+      const hitX=!deathFxTileOpen(getTile,p.x,prevY);
+      const hitY=!deathFxTileOpen(getTile,prevX,p.y);
+      p.x=prevX; p.y=prevY;
+      if(hitX) p.vx*=-0.22; else p.vx*=0.42;
+      if(hitY) p.vy*=-0.24; else p.vy*=0.36;
+      if(Number.isFinite(p.spin)) p.spin*=0.55;
+      pushDeathPuff(fx,p,p.y);
+      return;
+    }
+    const safe=nearestDeathFxOpenPoint(p.x,p.y,getTile,3);
+    if(safe.found){
+      p.x=safe.x; p.y=safe.y;
+      if(Number.isFinite(p.vx)) p.vx*=0.18;
+      if(Number.isFinite(p.vy)) p.vy*=0.18;
+      if(Number.isFinite(p.spin)) p.spin*=0.45;
+      pushDeathPuff(fx,p,p.y);
+      return;
+    }
+    p.life=p.max+1;
+  }
+  function deathFxGetTile(opts){
+    if(opts && typeof opts.getTile==='function') return opts.getTile;
+    if(typeof lastDeathFxGetTile==='function') return lastDeathFxGetTile;
+    try{ if(MM && MM.world && typeof MM.world.getTile==='function') return MM.world.getTile; }catch(e){}
+    try{ if(WORLD && typeof WORLD.getTile==='function') return WORLD.getTile; }catch(e){}
+    return null;
+  }
+  function spawnMobDeathFx(m,opts){
+    const spec=SPECIES[m && m.id];
+    if(!m || !spec || m._deathFxSpawned || m._naturalDeath) return false;
+    m._deathFxSpawned=true;
+    const getTile=deathFxGetTile(opts);
+    const cause=mobDeathCause(m,opts);
+    const style=mobDeathStyle(m,spec,cause);
+    const seed=mobDeathSeed(m);
+    const rnd=deathRand(seed);
+    const body=spec.body || {w:1,h:1};
+    const sc=Math.max(0.5,Math.min(2.4,m.scale||1));
+    const bw=Math.max(0.45,(body.w||1)*sc);
+    const bh=Math.max(0.40,(body.h||1)*sc);
+    const area=Math.max(0.20,bw*bh);
+    const maxHp=Math.max(1,m.maxHp||spec.hp||1);
+    const base=safeHexColor(m.baseColor, style==='bone'?'#dcd6c4':(style==='machine'?'#8f9aa6':'#a8a8a8'));
+    const accent=mobDeathAccent(style,base,cause);
+    const count=Math.max(8,Math.min(38,Math.round(8+area*8+Math.sqrt(maxHp)*1.25+(style==='machine'?5:0)+(style==='gold'?9:0))));
+    const origin=nearestDeathFxOpenPoint(m.x,m.y-bh*0.18,getTile,5);
+    const ox=origin.found ? origin.x : m.x;
+    const oy=origin.found ? origin.y : m.y;
+    const fx={
+      id:m.id,
+      x:ox,
+      y:oy,
+      sourceX:m.x,
+      sourceY:m.y,
+      tunnelClamped:!!(origin.found && (Math.abs(ox-m.x)>0.001 || Math.abs(oy-m.y)>0.001)),
+      style,
+      cause,
+      life:0,
+      max:style==='splash'?1.08:(style==='feather'?1.62:(style==='shadow'||style==='ash'?1.46:1.38)),
+      seed,
+      signature:mobDeathSignature(m,spec,style,cause,rnd),
+      base,
+      accent,
+      bodyW:bw,
+      bodyH:bh,
+      core:[],
+      fragments:[],
+      rings:[],
+      residue:[],
+      puffs:[]
+    };
+    const coreCount=Math.max(3,Math.min(10,Math.round(2+area*1.35+(style==='machine'?2:0)+(style==='bone'?2:0)+(style==='gold'?2:0))));
+    for(let i=0;i<coreCount;i++){
+      const side=(i%2?1:-1);
+      const kind=mobDeathCoreKind(style,rnd());
+      const partScale=kind==='bodyCore'||kind==='panelCore'||kind==='shellPlate'||kind==='splashCrest' ? 1.0 : 0.62+rnd()*0.42;
+      const col=kind==='sensor'||kind==='eyeWisp'||kind==='starCore' ? accent : (rnd()<0.66 ? base : mixHexColor(base,accent,0.38+rnd()*0.28));
+      const part={
+        kind,
+        x:fx.x+(rnd()-0.5)*bw*0.35,
+        y:fx.y-bh*(0.04+rnd()*0.34),
+        ox:(rnd()-0.5)*bw*0.18,
+        oy:-bh*(0.14+rnd()*0.30),
+        vx:side*(0.82+rnd()*2.05)+(m.vx||0)*0.14,
+        vy:-(1.05+rnd()*2.05)+(m.vy||0)*0.10,
+        w:Math.max(0.10,bw*(0.18+rnd()*0.20)*partScale),
+        h:Math.max(0.08,bh*(0.13+rnd()*0.22)*partScale),
+        rot:(rnd()-0.5)*0.9,
+        spin:(rnd()-0.5)*(style==='machine'?7.5:4.8),
+        color:col,
+        life:0,
+        max:fx.max*(0.62+rnd()*0.34),
+        alpha:0.78+rnd()*0.18,
+        gravity:kind==='smokeCore'||kind==='ashCloud'||kind==='eyeWisp' ? -0.35-rnd()*0.35 : (style==='splash' ? -0.2 : 7.4+rnd()*2.4),
+        drag:kind==='smokeCore'||kind==='ashCloud'||kind==='wing'||kind==='featherCore' ? 0.91+rnd()*0.06 : 0.76+rnd()*0.14,
+        phase:rnd()*Math.PI*2
+      };
+      primeDeathPhysics(part,fx,rnd,kind);
+      clampDeathFxPartSpawn(fx,part,getTile);
+      fx.core.push(part);
+    }
+    const lift=style==='splash'?1.35:(style==='feather'?1.05:(style==='shadow'||style==='ash'?1.25:0.72));
+    for(let i=0;i<count;i++){
+      const ang=rnd()*Math.PI*2;
+      const radial=0.38+rnd()*0.88;
+      const speed=(style==='machine'?3.25:(style==='gold'?3.85:(style==='splash'?2.35:2.55))) * (0.55+rnd()*0.95);
+      const shape=mobDeathShape(style,rnd());
+      const hot=(cause==='burn' || cause==='fire' || cause==='flamethrower') && rnd()<0.38;
+      const col=hot ? (rnd()<0.5?'#ffcf64':'#ff7a35') : (rnd()<0.55 ? base : accent);
+      const size=(0.035+rnd()*0.075) * (shape==='panel'?1.45:(shape==='feather'?1.35:(shape==='bone'?1.25:1)));
+      const frag={
+        x:fx.x+(rnd()-0.5)*bw*0.55,
+        y:fx.y-bh*(0.04+rnd()*0.36),
+        vx:Math.cos(ang)*speed*radial+(m.vx||0)*0.08,
+        vy:Math.sin(ang)*speed*0.58-lift*(0.45+rnd()*0.65)+(m.vy||0)*0.04,
+        rot:rnd()*Math.PI*2,
+        spin:(rnd()-0.5)*(style==='machine'?13:8),
+        size,
+        life:0,
+        max:fx.max*(0.62+rnd()*0.42),
+        color:col,
+        shape,
+        alpha:0.72+rnd()*0.28,
+        gravity:shape==='wisp' ? -0.45-rnd()*0.35 : (shape==='feather' ? 2.0+rnd()*1.6 : (shape==='bubble' ? -0.55 : 8.0+rnd()*3.2)),
+        drag:shape==='feather'||shape==='wisp'||shape==='bubble' ? 0.90+rnd()*0.08 : 0.74+rnd()*0.18,
+        wobble:rnd()*Math.PI*2
+      };
+      primeDeathPhysics(frag,fx,rnd,shape);
+      clampDeathFxPartSpawn(fx,frag,getTile);
+      fx.fragments.push(frag);
+    }
+    const residueCount=Math.max(3,Math.min(16,Math.round(3+area*2.4+(style==='gold'?4:0)+(style==='splash'?3:0))));
+    for(let i=0;i<residueCount;i++){
+      const ang=rnd()*Math.PI*2;
+      const rr=(0.08+rnd()*0.58)*(0.55+Math.min(2.4,area)*0.20);
+      const kind=mobDeathResidueKind(style,rnd());
+      const res={
+        kind,
+        x:fx.x+Math.cos(ang)*rr*bw,
+        y:fx.y+bh*(0.10+rnd()*0.10)+Math.sin(ang)*rr*bh*0.22,
+        rx:(0.10+rnd()*0.34)*(style==='splash'?1.35:1)*Math.max(0.65,bw),
+        ry:(0.035+rnd()*0.12)*Math.max(0.65,bh),
+        rot:(rnd()-0.5)*0.75,
+        color:rnd()<0.58 ? base : accent,
+        life:0,
+        max:fx.max*(0.92+rnd()*0.78),
+        alpha:0.18+rnd()*0.40,
+        phase:rnd()*Math.PI*2
+      };
+      clampDeathFxPartSpawn(fx,res,getTile);
+      fx.residue.push(res);
+    }
+    const ringCount=style==='splash'?2:(style==='machine'||style==='gold'?2:1);
+    for(let i=0;i<ringCount;i++){
+      fx.rings.push({
+        delay:i*0.055,
+        max:0.38+i*0.16+rnd()*0.12,
+        radius:(0.42+area*0.18)*(1+i*0.36),
+        squash:0.36+rnd()*0.18,
+        color:i===0?accent:base
+      });
+    }
+    mobDeathFx.push(fx);
+    while(mobDeathFx.length>MOB_DEATH_FX_CAP) mobDeathFx.shift();
+    metrics.deathFx=mobDeathFx.length;
+    try{
+      const p=MM.particles, tile=MM.TILE||20;
+      if(p && style==='splash' && p.spawnSplash) p.spawnSplash(fx.x*tile,fx.y*tile,Math.min(1,0.35+area*0.25));
+      else if(p && style==='machine' && p.spawnSparks) p.spawnSparks(fx.x*tile,(fx.y-bh*0.20)*tile,'electric',Math.min(14,6+Math.round(area*4)));
+      else if(p && (style==='ash' || cause==='burn') && p.spawnSmoke) p.spawnSmoke(fx.x*tile,(fx.y-bh*0.20)*tile,1.0+area*0.45,{tileSize:tile,tileX:Math.floor(fx.x),tileY:Math.floor(fx.y)});
+      else if(p && p.spawnSparks) p.spawnSparks(fx.x*tile,(fx.y-bh*0.20)*tile,style==='gold'?'epic':'common',Math.min(12,4+Math.round(area*3)));
+    }catch(e){}
+    return true;
+  }
+  function updateMobDeathFx(dt,getTile){
+    const moveDt=Math.min(MOB_DEATH_PHYSICS_MAX_DT,Math.max(0,dt||0));
+    let physicsBudget=deathPhysicsFrameBudget();
+    for(let i=mobDeathFx.length-1;i>=0;i--){
+      const fx=mobDeathFx[i];
+      fx.life+=dt;
+      let alive=fx.life<fx.max+0.45;
+      for(const r of fx.residue||[]){
+        r.life+=dt;
+        if(r.life<=r.max) alive=true;
+      }
+      for(const p of fx.puffs||[]){
+        p.life+=dt;
+        const prevX=p.x, prevY=p.y;
+        p.y-=dt*(p.kind==='spark'?0.32:0.10);
+        p.size+=dt*(p.kind==='spark'?0.42:0.24);
+        if(!deathFxTileOpen(getTile,p.x,p.y)){
+          if(deathFxTileOpen(getTile,prevX,prevY)){
+            p.x=prevX; p.y=prevY;
+          } else {
+            const safe=nearestDeathFxOpenPoint(p.x,p.y,getTile,2);
+            if(safe.found){ p.x=safe.x; p.y=safe.y; }
+            else p.life=p.max+1;
+          }
+        }
+        if(p.life<=p.max) alive=true;
+      }
+      for(const p of fx.core||[]){
+        p.life+=dt;
+        if(p.life>p.max) continue;
+        if(p._puffCooldown>0) p._puffCooldown=Math.max(0,p._puffCooldown-dt);
+        if(!p.settled){
+          p.vx*=Math.pow(p.drag,moveDt*5);
+          p.vy+=p.gravity*moveDt;
+          const wind=windSpeedAt(p.x,p.y,getTile);
+          if(Math.abs(wind)>0.03) p.vx+=wind*(p.kind==='wing'||p.kind==='smokeCore'||p.kind==='ashCloud'?0.14:0.05)*moveDt;
+        }
+        const usePhysics=!!p.physics && physicsBudget>0;
+        if(p.physics) physicsBudget--;
+        if(usePhysics) integrateDeathPiecePhysics(fx,p,getTile,moveDt);
+        else {
+          const prevX=p.x, prevY=p.y;
+          p.x+=(p.vx||0)*moveDt;
+          p.y+=(p.vy||0)*moveDt;
+          if(Number.isFinite(p.travel)) p.travel+=Math.hypot(p.x-prevX,p.y-prevY);
+          resolveDeathPieceTerrain(fx,p,getTile,prevX,prevY);
+        }
+        p.rot+=p.spin*moveDt;
+        alive=true;
+      }
+      for(const f of fx.fragments){
+        f.life+=dt;
+        if(f.life>f.max) continue;
+        if(f._puffCooldown>0) f._puffCooldown=Math.max(0,f._puffCooldown-dt);
+        if(!f.settled){
+          f.vx*=Math.pow(f.drag,moveDt*5);
+          f.vy+=f.gravity*moveDt;
+          const wind=windSpeedAt(f.x,f.y,getTile);
+          if(Math.abs(wind)>0.03) f.vx+=wind*(f.shape==='feather'||f.shape==='wisp'?0.18:0.06)*moveDt;
+        }
+        const usePhysics=!!f.physics && physicsBudget>0;
+        if(f.physics) physicsBudget--;
+        if(usePhysics) integrateDeathPiecePhysics(fx,f,getTile,moveDt);
+        else {
+          const prevX=f.x, prevY=f.y;
+          f.x+=(f.vx||0)*moveDt;
+          f.y+=(f.vy||0)*moveDt;
+          if(Number.isFinite(f.travel)) f.travel+=Math.hypot(f.x-prevX,f.y-prevY);
+          resolveDeathPieceTerrain(fx,f,getTile,prevX,prevY);
+        }
+        f.rot+=f.spin*moveDt;
+        alive=true;
+      }
+      if(!alive) mobDeathFx.splice(i,1);
+    }
+    metrics.deathFx=mobDeathFx.length;
+  }
+  function drawMobDeathFragment(ctx,TILE,f,alpha){
+    const s=Math.max(1.2,f.size*TILE);
+    ctx.save();
+    ctx.translate(f.x*TILE,f.y*TILE);
+    ctx.rotate(f.rot||0);
+    ctx.globalAlpha*=alpha*(f.alpha||1);
+    if(f.shape==='spark'){
+      ctx.globalCompositeOperation='lighter';
+      ctx.strokeStyle=rgbaHex(f.color,0.86);
+      ctx.lineWidth=Math.max(1,s*0.28);
+      ctx.beginPath(); ctx.moveTo(-s*1.4,0); ctx.lineTo(s*1.4,0); ctx.moveTo(0,-s*0.95); ctx.lineTo(0,s*0.95); ctx.stroke();
+      ctx.fillStyle='rgba(255,255,255,0.72)';
+      ctx.fillRect(-s*0.18,-s*0.18,s*0.36,s*0.36);
+    } else if(f.shape==='drop' || f.shape==='bubble'){
+      ctx.fillStyle=rgbaHex(f.color,f.shape==='bubble'?0.28:0.74);
+      ctx.strokeStyle=rgbaHex('#d8f4ff',0.62);
+      ctx.lineWidth=1;
+      ctx.beginPath();
+      ctx.ellipse(0,0,s*0.55,s*(f.shape==='bubble'?0.55:0.82),0,0,Math.PI*2);
+      if(f.shape==='bubble') ctx.stroke(); else ctx.fill();
+    } else if(f.shape==='feather'){
+      ctx.strokeStyle=rgbaHex(f.color,0.86);
+      ctx.lineWidth=Math.max(1,s*0.22);
+      ctx.beginPath();
+      ctx.moveTo(-s*0.15,s*1.2);
+      ctx.quadraticCurveTo(s*0.75,0,s*0.10,-s*1.15);
+      ctx.stroke();
+      ctx.fillStyle=rgbaHex(mixHexColor(f.color,'#ffffff',0.24),0.52);
+      ctx.beginPath();
+      ctx.moveTo(0,-s*1.05);
+      ctx.quadraticCurveTo(s*0.90,-s*0.18,0,s*1.05);
+      ctx.quadraticCurveTo(-s*0.54,-s*0.18,0,-s*1.05);
+      ctx.fill();
+    } else if(f.shape==='panel'){
+      ctx.fillStyle=rgbaHex(f.color,0.84);
+      ctx.fillRect(-s*0.85,-s*0.45,s*1.7,s*0.9);
+      ctx.fillStyle=rgbaHex('#ffffff',0.26);
+      ctx.fillRect(-s*0.65,-s*0.32,s*1.0,s*0.18);
+      ctx.strokeStyle=rgbaHex('#26313a',0.75);
+      ctx.lineWidth=1;
+      ctx.strokeRect(-s*0.85,-s*0.45,s*1.7,s*0.9);
+    } else if(f.shape==='wire'){
+      ctx.strokeStyle=rgbaHex(f.color,0.82);
+      ctx.lineWidth=Math.max(1,s*0.18);
+      ctx.beginPath();
+      ctx.moveTo(-s*1.2,Math.sin(f.wobble)*s*0.15);
+      ctx.quadraticCurveTo(0,s*0.65,s*1.2,-Math.sin(f.wobble)*s*0.15);
+      ctx.stroke();
+    } else if(f.shape==='bone'){
+      ctx.fillStyle=rgbaHex(f.color,0.88);
+      ctx.fillRect(-s*0.90,-s*0.18,s*1.8,s*0.36);
+      ctx.beginPath(); ctx.arc(-s*0.92,0,s*0.32,0,Math.PI*2); ctx.arc(s*0.92,0,s*0.32,0,Math.PI*2); ctx.fill();
+    } else if(f.shape==='wisp' || f.shape==='ash' || f.shape==='dust'){
+      ctx.fillStyle=rgbaHex(f.color,f.shape==='ash'?0.36:0.46);
+      ctx.beginPath();
+      ctx.ellipse(0,0,s*(0.60+0.18*Math.sin(f.wobble+f.life*8)),s*0.42,0,0,Math.PI*2);
+      ctx.fill();
+    } else if(f.shape==='shell'){
+      ctx.fillStyle=rgbaHex(f.color,0.80);
+      ctx.beginPath();
+      ctx.moveTo(0,-s*0.75);
+      ctx.lineTo(s*0.92,s*0.55);
+      ctx.lineTo(-s*0.92,s*0.55);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle=rgbaHex('#2a1a12',0.45);
+      ctx.lineWidth=1;
+      ctx.stroke();
+    } else {
+      ctx.fillStyle=rgbaHex(f.color,0.76);
+      ctx.beginPath();
+      ctx.moveTo(-s*0.90,-s*0.36);
+      ctx.lineTo(-s*0.05,-s*0.82);
+      ctx.lineTo(s*0.82,-s*0.18);
+      ctx.lineTo(s*0.48,s*0.70);
+      ctx.lineTo(-s*0.62,s*0.56);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+  function drawMobDeathResidue(ctx,TILE,r,alpha){
+    if(!r || alpha<=0) return;
+    const px=r.x*TILE, py=r.y*TILE;
+    const rx=Math.max(1.2,r.rx*TILE), ry=Math.max(0.8,r.ry*TILE);
+    ctx.save();
+    ctx.translate(px,py);
+    ctx.rotate(r.rot||0);
+    ctx.globalAlpha*=alpha*(r.alpha||0.35);
+    if(r.kind==='ripple'){
+      ctx.strokeStyle=rgbaHex(r.color,0.84);
+      ctx.lineWidth=Math.max(1,TILE*0.035);
+      ctx.beginPath(); ctx.ellipse(0,0,rx*1.8,Math.max(1.2,ry*1.8),0,0,Math.PI*2); ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(0,0,rx*0.92,Math.max(1,ry*0.92),0,0,Math.PI*2); ctx.stroke();
+    } else if(r.kind==='scorch' || r.kind==='ashSmear' || r.kind==='shadowPool' || r.kind==='smear'){
+      const col=r.kind==='shadowPool' ? '#1a191d' : (r.kind==='scorch' ? '#30231b' : r.color);
+      ctx.fillStyle=rgbaHex(col,r.kind==='shadowPool'?0.72:0.55);
+      ctx.beginPath(); ctx.ellipse(0,0,rx*(1.0+0.2*Math.sin(r.phase)),Math.max(1,ry*(0.80+0.14*Math.cos(r.phase))),0,0,Math.PI*2); ctx.fill();
+      if(r.kind==='shadowPool'){
+        ctx.fillStyle=rgbaHex('#b7ff86',0.24);
+        ctx.fillRect(-rx*0.18,-Math.max(1,ry*0.6),Math.max(1,rx*0.14),Math.max(1,ry*0.55));
+        ctx.fillRect(rx*0.08,-Math.max(1,ry*0.45),Math.max(1,rx*0.14),Math.max(1,ry*0.45));
+      }
+    } else if(r.kind==='star' || r.kind==='glitter' || r.kind==='sparkResidue' || r.kind==='ember' || r.kind==='greenMote'){
+      ctx.globalCompositeOperation='lighter';
+      ctx.strokeStyle=rgbaHex(r.kind==='greenMote'?'#b7ff86':r.color,0.88);
+      ctx.lineWidth=Math.max(1,TILE*0.035);
+      ctx.beginPath();
+      ctx.moveTo(-rx*0.45,0); ctx.lineTo(rx*0.45,0);
+      ctx.moveTo(0,-rx*0.45); ctx.lineTo(0,rx*0.45);
+      ctx.stroke();
+    } else if(r.kind==='bolt'){
+      ctx.strokeStyle=rgbaHex(r.color,0.80);
+      ctx.lineWidth=Math.max(1,TILE*0.045);
+      ctx.beginPath();
+      ctx.moveTo(-rx*0.65,-ry*0.35);
+      ctx.lineTo(-rx*0.10,ry*0.10);
+      ctx.lineTo(rx*0.28,-ry*0.06);
+      ctx.lineTo(rx*0.66,ry*0.32);
+      ctx.stroke();
+    } else if(r.kind==='bonePile' || r.kind==='shellShard' || r.kind==='chip'){
+      ctx.fillStyle=rgbaHex(r.color,0.78);
+      ctx.fillRect(-rx*0.58,-Math.max(1,ry*0.32),rx*1.16,Math.max(1,ry*0.64));
+      ctx.fillStyle=rgbaHex('#ffffff',0.24);
+      ctx.fillRect(-rx*0.44,-Math.max(1,ry*0.20),rx*0.44,Math.max(1,ry*0.16));
+    } else if(r.kind==='scratch'){
+      ctx.strokeStyle=rgbaHex(r.color,0.62);
+      ctx.lineWidth=1;
+      for(let i=0;i<3;i++){
+        ctx.beginPath();
+        ctx.moveTo(-rx*0.55+i*rx*0.28,-ry*0.36);
+        ctx.lineTo(-rx*0.22+i*rx*0.28,ry*0.36);
+        ctx.stroke();
+      }
+    } else if(r.kind==='feather' || r.kind==='tuft'){
+      ctx.strokeStyle=rgbaHex(r.color,0.70);
+      ctx.lineWidth=Math.max(1,TILE*0.026);
+      ctx.beginPath();
+      ctx.moveTo(-rx*0.48,ry*0.25);
+      ctx.quadraticCurveTo(0,-ry*0.85,rx*0.50,ry*0.10);
+      ctx.stroke();
+    } else {
+      ctx.fillStyle=rgbaHex(r.color,0.42);
+      ctx.beginPath(); ctx.ellipse(0,0,rx,Math.max(1,ry),0,0,Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+  }
+  function drawMobDeathCorePart(ctx,TILE,p,fx,alpha){
+    if(!p || alpha<=0) return;
+    const w=Math.max(1.4,p.w*TILE), h=Math.max(1.2,p.h*TILE);
+    ctx.save();
+    ctx.translate(p.x*TILE,p.y*TILE);
+    ctx.rotate(p.rot||0);
+    ctx.globalAlpha*=alpha*(p.alpha||0.9);
+    const c=p.color || fx.base || '#aaa';
+    if(p.kind==='sensor' || p.kind==='eyeWisp' || p.kind==='starCore' || p.kind==='emberCore'){
+      ctx.globalCompositeOperation='lighter';
+      ctx.fillStyle=rgbaHex(c,0.86);
+      ctx.fillRect(-w*0.42,-h*0.42,w*0.84,h*0.84);
+      ctx.fillStyle='rgba(255,255,255,0.62)';
+      ctx.fillRect(-w*0.18,-h*0.18,w*0.36,h*0.36);
+      if(p.kind==='starCore'){
+        ctx.strokeStyle=rgbaHex('#fff1a8',0.82);
+        ctx.lineWidth=Math.max(1,w*0.10);
+        ctx.beginPath(); ctx.moveTo(-w,0); ctx.lineTo(w,0); ctx.moveTo(0,-w); ctx.lineTo(0,w); ctx.stroke();
+      }
+    } else if(p.kind==='gear'){
+      ctx.strokeStyle=rgbaHex(c,0.86);
+      ctx.lineWidth=Math.max(1,w*0.18);
+      ctx.beginPath(); ctx.arc(0,0,Math.max(w,h)*0.45,0,Math.PI*2); ctx.stroke();
+      for(let i=0;i<6;i++){
+        const a=i*Math.PI/3;
+        ctx.fillStyle=rgbaHex(c,0.76);
+        ctx.fillRect(Math.cos(a)*w*0.42-1,Math.sin(a)*h*0.42-1,2,2);
+      }
+    } else if(p.kind==='skull'){
+      ctx.fillStyle=rgbaHex(c,0.88);
+      ctx.fillRect(-w*0.45,-h*0.48,w*0.9,h*0.78);
+      ctx.fillStyle='rgba(28,28,34,0.72)';
+      ctx.fillRect(-w*0.25,-h*0.22,w*0.16,h*0.18);
+      ctx.fillRect(w*0.08,-h*0.22,w*0.16,h*0.18);
+      ctx.fillRect(-w*0.08,h*0.06,w*0.16,h*0.16);
+    } else if(p.kind==='rib' || p.kind==='longBone'){
+      ctx.strokeStyle=rgbaHex(c,0.86);
+      ctx.lineWidth=Math.max(1,h*0.22);
+      ctx.lineCap='round';
+      ctx.beginPath();
+      if(p.kind==='rib') ctx.arc(0,0,w*0.48,Math.PI*0.12,Math.PI*0.88);
+      else { ctx.moveTo(-w*0.55,0); ctx.lineTo(w*0.55,0); }
+      ctx.stroke();
+    } else if(p.kind==='wing' || p.kind==='featherCore'){
+      ctx.fillStyle=rgbaHex(c,0.74);
+      ctx.beginPath();
+      ctx.moveTo(-w*0.52,h*0.45);
+      ctx.quadraticCurveTo(0,-h*0.85,w*0.62,h*0.10);
+      ctx.quadraticCurveTo(0,h*0.35,-w*0.52,h*0.45);
+      ctx.fill();
+      ctx.strokeStyle=rgbaHex(mixHexColor(c,'#ffffff',0.28),0.74);
+      ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(-w*0.20,h*0.32); ctx.lineTo(w*0.30,-h*0.28); ctx.stroke();
+    } else if(p.kind==='splashCrest' || p.kind==='dropCore'){
+      ctx.fillStyle=rgbaHex(c,p.kind==='dropCore'?0.54:0.36);
+      ctx.strokeStyle=rgbaHex('#d8f4ff',0.68);
+      ctx.lineWidth=1;
+      ctx.beginPath(); ctx.ellipse(0,0,w*0.58,h*0.70,0,0,Math.PI*2);
+      if(p.kind==='dropCore') ctx.fill(); else ctx.stroke();
+    } else if(p.kind==='shellPlate' || p.kind==='tail' || p.kind==='leg'){
+      ctx.fillStyle=rgbaHex(c,0.82);
+      ctx.beginPath();
+      ctx.moveTo(0,-h*0.52);
+      ctx.lineTo(w*0.62,h*0.42);
+      ctx.lineTo(-w*0.62,h*0.42);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle='rgba(42,26,18,0.45)';
+      ctx.lineWidth=1;
+      ctx.stroke();
+    } else if(p.kind==='smokeCore' || p.kind==='ashCloud' || p.kind==='rag'){
+      ctx.fillStyle=rgbaHex(c,p.kind==='rag'?0.62:0.36);
+      ctx.beginPath();
+      ctx.ellipse(0,0,w*(0.55+0.08*Math.sin(p.phase+p.life*7)),h*0.50,0,0,Math.PI*2);
+      ctx.fill();
+    } else {
+      ctx.fillStyle=rgbaHex(c,0.80);
+      ctx.fillRect(-w*0.5,-h*0.5,w,h);
+      ctx.fillStyle=rgbaHex(mixHexColor(c,'#ffffff',0.22),0.26);
+      ctx.fillRect(-w*0.38,-h*0.38,w*0.42,h*0.16);
+    }
+    ctx.restore();
+  }
+  function drawMobDeathPuff(ctx,TILE,p,alpha){
+    if(!p || alpha<=0) return;
+    const s=Math.max(1,p.size*TILE);
+    ctx.save();
+    ctx.translate(p.x*TILE,p.y*TILE);
+    ctx.globalAlpha*=alpha;
+    if(p.kind==='spark'){
+      ctx.globalCompositeOperation='lighter';
+      ctx.strokeStyle=rgbaHex(p.color,0.82);
+      ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(-s,0); ctx.lineTo(s,0); ctx.moveTo(0,-s); ctx.lineTo(0,s); ctx.stroke();
+    } else if(p.kind==='spray'){
+      ctx.strokeStyle=rgbaHex('#d8f4ff',0.58);
+      ctx.lineWidth=1;
+      ctx.beginPath(); ctx.arc(0,0,s*0.9,0,Math.PI*2); ctx.stroke();
+    } else {
+      ctx.fillStyle=rgbaHex(p.color,0.32);
+      ctx.beginPath(); ctx.ellipse(0,0,s*1.25,s*0.45,0,0,Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+  }
+  function drawMobDeathFx(ctx,TILE,fx,visibleTile){
+    if(visibleTile && !visibleTile(Math.floor(fx.x),Math.floor(fx.y))) return;
+    const pieceVisible=(p)=> !visibleTile || (p && visibleTile(Math.floor(p.x),Math.floor(p.y)));
+    const age=Math.max(0,Math.min(1,fx.life/fx.max));
+    const px=fx.x*TILE, py=fx.y*TILE;
+    ctx.save();
+    for(const r of fx.residue||[]){
+      if(r.life>r.max || !pieceVisible(r)) continue;
+      const ra=1-Math.max(0,Math.min(1,r.life/r.max));
+      drawMobDeathResidue(ctx,TILE,r,Math.pow(ra,0.52));
+    }
+    const shadowA=(1-age)*0.24;
+    if(shadowA>0.01){
+      ctx.fillStyle='rgba(0,0,0,'+shadowA.toFixed(3)+')';
+      ctx.beginPath();
+      ctx.ellipse(px,py+fx.bodyH*TILE*0.28,TILE*fx.bodyW*(0.36+age*0.18),TILE*Math.max(0.08,fx.bodyH*0.08*(1-age*0.25)),0,0,Math.PI*2);
+      ctx.fill();
+    }
+    if(fx.style==='machine' || fx.style==='gold') ctx.globalCompositeOperation='lighter';
+    for(const r of fx.rings){
+      const rt=Math.max(0,fx.life-(r.delay||0));
+      if(rt<=0 || rt>r.max) continue;
+      const k=rt/r.max;
+      ctx.strokeStyle=rgbaHex(r.color,(1-k)*(fx.style==='splash'?0.50:0.38));
+      ctx.lineWidth=Math.max(1,TILE*(0.045*(1-k)+0.010));
+      ctx.beginPath();
+      ctx.ellipse(px,py-fx.bodyH*TILE*0.20,TILE*r.radius*(0.55+k*1.7),TILE*r.radius*(r.squash+k*0.35),0,0,Math.PI*2);
+      ctx.stroke();
+    }
+    if(fx.style==='shadow' || fx.style==='ash'){
+      const a=(1-age)*0.24;
+      const g=ctx.createRadialGradient(px,py-fx.bodyH*TILE*0.5,2,px,py-fx.bodyH*TILE*0.5,TILE*(0.8+fx.bodyH*0.4));
+      g.addColorStop(0,rgbaHex(fx.accent,a));
+      g.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.fillStyle=g;
+      ctx.beginPath(); ctx.arc(px,py-fx.bodyH*TILE*0.5,TILE*(0.8+fx.bodyH*0.4),0,Math.PI*2); ctx.fill();
+    }
+    for(const p of fx.core||[]){
+      if(p.life>p.max || !pieceVisible(p)) continue;
+      const pa=1-Math.max(0,Math.min(1,p.life/p.max));
+      drawMobDeathCorePart(ctx,TILE,p,fx,Math.pow(pa,0.70));
+    }
+    for(const f of fx.fragments){
+      if(f.life>f.max || !pieceVisible(f)) continue;
+      const fa=1-Math.max(0,Math.min(1,f.life/f.max));
+      drawMobDeathFragment(ctx,TILE,f,Math.pow(fa,0.78));
+    }
+    for(const p of fx.puffs||[]){
+      if(p.life>p.max || !pieceVisible(p)) continue;
+      const pa=1-Math.max(0,Math.min(1,p.life/p.max));
+      drawMobDeathPuff(ctx,TILE,p,Math.pow(pa,0.72));
+    }
+    ctx.restore();
   }
   function integrateFloatingTerrainStep(m,spec,getTile,dt){
     const {halfW,halfH}=bodyHalfExtents(m,spec);
@@ -1478,7 +2483,9 @@ const mobs = (function(){
   }
   function update(dt, player, getTile, setTile){
     if(!(dt>0) || !isFinite(dt) || !player || !finiteCoord(player.x) || !finiteCoord(player.y) || typeof getTile!=='function') return;
+    lastDeathFxGetTile=getTile;
     const now = performance.now(); frame++;
+    updateSunriseBurnState(now);
     laserTraceCalls=0; laserTileChecks=0;
     sentinelShotsThisFrame=0; sentinelDeferredThisFrame=0;
     // Despawn far / off-screen old passive mobs (not aggro)
@@ -1514,13 +2521,17 @@ const mobs = (function(){
       m._wantJump=false;
       // Run species AI / behavior first
   // Distance gating for aggression and pursuit
-  const dxP0 = player.x - m.x; const dyP0 = player.y - m.y; const distToPlayer = Math.hypot(dxP0, dyP0);
+  const dxP0 = player.x - m.x; const dyP0 = player.y - m.y; const distToHero = Math.hypot(dxP0, dyP0);
   const sight = (typeof spec.sightRange==='number'? spec.sightRange : 16);
   const pursue = (typeof spec.pursueRange==='number'? spec.pursueRange : (sight+6));
+  const combatTarget = combatTargetForMob(m,player,aggressive,Math.max(sight,pursue));
+  const aimTarget = combatTarget && combatTarget.kind==='companion' ? companionTargetPoint(combatTarget) : combatTarget;
+  const distToPlayer = aimTarget ? Math.hypot(aimTarget.x-m.x, aimTarget.y-m.y) : distToHero;
   const canSee = distToPlayer <= sight;
   const shouldPursue = distToPlayer <= pursue;
   const aggroNow = aggressive && (canSee || shouldPursue);
-  updateMob(m, spec, {dt, now, aggressive: aggroNow, player, getTile, setTile, distToPlayer});
+  m._combatTarget=aggroNow ? (combatTarget && combatTarget.kind==='companion' ? Object.assign({},combatTarget,{y:combatTarget.aimY==null ? combatTarget.y : combatTarget.aimY}) : combatTarget) : player;
+  updateMob(m, spec, {dt, now, aggressive: aggroNow, player:m._combatTarget, getTile, setTile, distToPlayer});
       if(isGroundMob){
         // Interpret AI changes: any upward impulse (vy<-1) becomes a jump intent
         if(m.vy < -1){ m._wantJump=true; }
@@ -1683,17 +2694,22 @@ const mobs = (function(){
       // Status effects: DoT, cures and movement side-effects, table-driven
       tickStatuses(m,getTile,dt);
       // Contact damage + bounce (touch) independent of attack cooldown
-  const dxP = player.x - m.x; const dyP = player.y - m.y; const distTouch = Math.hypot(dxP,dyP);
+  const touchCompanion = aggressive ? nearestCompanionTarget(m.x,m.y,1.15) : null;
+  const touchTarget = touchCompanion || player;
+  const touchPoint = touchCompanion ? companionTargetPoint(touchCompanion) : touchTarget;
+  const dxP = touchPoint.x - m.x; const dyP = touchPoint.y - m.y; const distTouch = Math.hypot(dxP,dyP);
       if(distTouch < 0.9){ // bounce push
         const nx=dxP/(distTouch||1); const ny=dyP/(distTouch||1);
-        player.vx += nx*3*dt; player.vy += ny*2*dt; // gentle continuous push
-        if(isAggro(m.id)||spec.alwaysAggro){ if(m.attackCd>0) m.attackCd-=dt; if(m.attackCd<=0){ damagePlayer(spec.dmg*(m.dmgMult||1), m.x, m.y); m.attackCd=0.8 + Math.random()*0.5; } }
+        if(!touchCompanion){ player.vx += nx*3*dt; player.vy += ny*2*dt; } // gentle continuous push
+        if(isAggro(m.id)||spec.alwaysAggro){ if(m.attackCd>0) m.attackCd-=dt; if(m.attackCd<=0){ if(touchCompanion) damageCompanionTarget(touchCompanion,spec.dmg*(m.dmgMult||1),m.x,m.y,'mob'); else damagePlayer(spec.dmg*(m.dmgMult||1), m.x, m.y); m.attackCd=0.8 + Math.random()*0.5; } }
       }
     }
     updateProjectiles(dt, player, getTile);
     updateLasers(dt);
+    updateMobDeathFx(dt,getTile);
     metrics.projectiles = mobProjectiles.length;
     metrics.lasers = mobLasers.length;
+    metrics.deathFx = mobDeathFx.length;
     metrics.laserTraceCalls = laserTraceCalls;
     metrics.laserTileChecks = laserTileChecks;
     metrics.sentinelShots = sentinelShotsThisFrame;
@@ -2338,6 +3354,10 @@ const mobs = (function(){
       ctx.closePath(); ctx.fill();
       if(Math.random()<0.3){ ctx.fillStyle='rgba(255,230,140,0.9)'; ctx.fillRect(px+(Math.random()*2-1)*6, baseY-h-Math.random()*4, 2,2); }
     }
+    for(const fx of mobDeathFx){
+      if(!disableCull && (fx.x < viewL || fx.x > viewR || fx.y < viewT || fx.y > viewB)) continue;
+      drawMobDeathFx(ctx,TILE,fx,visibleTile);
+    }
     // City sentinel eye lasers: short-lived dual beams with a hot core.
     if(mobLasers.length){
       const prevComp=ctx.globalCompositeOperation;
@@ -2405,12 +3425,22 @@ const mobs = (function(){
 
   // --- Abduction support (UFO): pick a live victim, then detach it silently ---
   function nearestLiving(wx,wy,r,opts){
-    const ex=(opts && opts.exclude)||[];
     let best=null, bd=Infinity; const r2=r*r;
     for(const m of mobs){
-      if(m.hp<=0 || ex.includes(m.id)) continue;
+      if(m.hp<=0 || !mobAllowedByOpts(m,opts)) continue;
       const dx=m.x-wx, dy=m.y-wy, d2=dx*dx+dy*dy;
       if(d2<=r2 && d2<bd){ bd=d2; best=m; }
+    }
+    return best;
+  }
+  function nearestHostileLiving(wx,wy,r,opts){
+    let best=null, bd=Infinity, bp=-1; const r2=r*r, now=Date.now();
+    for(const m of mobs){
+      if(m.hp<=0 || !mobAllowedByOpts(m,opts) || !isMobHostile(m,now)) continue;
+      const dx=m.x-wx, dy=m.y-wy, d2=dx*dx+dy*dy;
+      if(d2>r2) continue;
+      const priority=(opts && opts.preferHeroFocus===false) ? 0 : (isHeroFocused(m,now) ? 1 : 0);
+      if(priority>bp || (priority===bp && d2<bd)){ bp=priority; bd=d2; best=m; }
     }
     return best;
   }
@@ -2434,10 +3464,10 @@ const mobs = (function(){
     }
     return best; }
 
-  function attackAt(tileX,tileY,dmgBonus){ const m=findAt(tileX,tileY); if(!m) return false; const bonus=(typeof dmgBonus==='number' && isFinite(dmgBonus) && dmgBonus>0)? dmgBonus:0; damageMob(m, 3 + bonus); setAggro(m.id); return true; }
+  function attackAt(tileX,tileY,dmgBonus,opts){ const m=findAt(tileX,tileY); if(!m) return false; const bonus=(typeof dmgBonus==='number' && isFinite(dmgBonus) && dmgBonus>0)? dmgBonus:0; damageMob(m, 3 + bonus, opts); setAggro(m.id); return true; }
 
   // Absolute-damage strike (projectiles): no base melee added
-  function damageAt(tileX,tileY,dmg){ const m=findAt(tileX,tileY); if(!m) return false; damageMob(m, Math.max(0.5, (typeof dmg==='number' && isFinite(dmg))? dmg:1)); setAggro(m.id); return true; }
+  function damageAt(tileX,tileY,dmg,opts){ const m=findAt(tileX,tileY); if(!m) return false; damageMob(m, Math.max(0.5, (typeof dmg==='number' && isFinite(dmg))? dmg:1), opts); setAggro(m.id); return true; }
 
   // --- Status effects (data-driven). Each entry declares cadence, gating, cures
   // and movement side-effects; a new effect ("freeze", "stun") is one table row
@@ -2450,13 +3480,19 @@ const mobs = (function(){
   };
   function applyStatus(m,id,opts){
     const def=STATUS[id]; if(!def) return false;
+    if(!mobAllowedByOpts(m,opts)) return false;
     const spec=SPECIES[m.id];
     if(def.organicOnly && (!spec || spec.organic===false)) return false;
     const st=m.status || (m.status={});
     const s=st[id] || (st[id]={t:0,dps:0,acc:0});
     s.t=Math.max(s.t, (opts && opts.dur)||3);
     s.dps=Math.max(s.dps, (opts && opts.dps)||2);
+    if(opts && typeof opts==='object'){
+      if(opts.source!=null) s.source=String(opts.source);
+      if(opts.cause!=null || opts.element!=null) s.cause=String(opts.cause || opts.element);
+    }
     setAggro(m.id);
+    noteDamageSource(m,opts);
     return true;
   }
   function hasStatus(m,id){ return !!(m.status && m.status[id] && m.status[id].t>0); }
@@ -2468,7 +3504,7 @@ const mobs = (function(){
       if(!def || !(s.t>0)){ delete st[id]; continue; }
       if(def.curedByWater && getTile && getTile(Math.floor(m.x),Math.floor(m.y))===T.WATER){ delete st[id]; continue; }
       s.t-=dt; s.acc+=dt;
-      if(s.acc>=def.tickEvery){ s.acc-=def.tickEvery; damageMob(m, s.dps*def.tickEvery); }
+      if(s.acc>=def.tickEvery){ s.acc-=def.tickEvery; damageMob(m, s.dps*def.tickEvery,{source:s.source||id,cause:s.cause||id}); }
       if(def.panic && Math.random()<0.08){ m.vx+=(Math.random()*2-1)*def.panic; m.facing=m.vx>=0?1:-1; }
       if(def.slowRate) m.vx*=Math.max(0,1-dt*def.slowRate);
     }
@@ -2481,13 +3517,15 @@ const mobs = (function(){
   // Water hose: put out burning creatures in an area
   function douseRadius(wx,wy,r){ let n=0; const r2=r*r; for(const m of mobs){ if(!hasStatus(m,'burn')) continue; const dx=m.x-wx, dy=m.y-wy; if(dx*dx+dy*dy<=r2){ clearStatus(m,'burn'); n++; } } return n; }
   // Explosion: distance-scaled area damage with knockback away from the center
-  function blastRadius(wx,wy,r,dmg){
+  function blastRadius(wx,wy,r,dmg,opts){
     let n=0; const r2=r*r;
     for(const m of mobs){
+      if(!mobAllowedByOpts(m,opts)) continue;
       const dx=m.x-wx, dy=m.y-wy; const d2=dx*dx+dy*dy;
       if(d2>r2) continue;
       const d=Math.sqrt(d2);
-      damageMob(m, Math.max(2, Math.round((dmg||10)*(1-d/(r+0.5)))));
+      const blastOpts=Object.assign({cause:'blast'},opts||{});
+      damageMob(m, Math.max(2, Math.round((dmg||10)*(1-d/(r+0.5)))), blastOpts);
       const k=6*(1-d/(r+1));
       m.vx+=(dx/(d||1))*k; m.vy+=(dy/(d||1))*k-2;
       setAggro(m.id); n++;
@@ -2532,7 +3570,7 @@ const mobs = (function(){
     return false;
   }
 
-  function damageMob(m,amount){ if(m.hp<=0) return; m.hp-=amount; m.hitFlashUntil = performance.now()+120; m.shake = 0.6; if(m.hp<=0){ m.hp=0; m.shake=1; onMobDeath(m); }
+  function damageMob(m,amount,opts){ if(m.hp<=0) return; noteDamageSource(m,opts); m.hp-=amount; m.hitFlashUntil = performance.now()+120; m.shake = 0.6; if(m.hp<=0){ m.hp=0; m.shake=1; spawnMobDeathFx(m,opts); onMobDeath(m); }
   }
 
   function onMobDeath(m){
@@ -2603,6 +3641,7 @@ const mobs = (function(){
     if(typeof m.baseColor==='string') out.baseColor=m.baseColor;
     if(finiteNum(m.lifeEndAt)) out.lifeEndAt=m.lifeEndAt;
     if(finiteNum(m.decayStartAt)) out.decayStartAt=m.decayStartAt;
+    if(isHeroFocused(m)) out.heroFocusMs=Math.max(0,Math.round(m.heroFocusUntil-Date.now()));
     if(m.id==='STRAZNIK'){
       if(finiteNum(m.sentinelReloadT)) out.sentinelReloadT=clampFinite(m.sentinelReloadT,0,0,SENTINEL_RELOAD_SECONDS);
       if(finiteNum(m.sentinelShotsUntilReload)) out.sentinelShotsUntilReload=clampFinite(m.sentinelShotsUntilReload,SENTINEL_BURST_MIN,0,SENTINEL_BURST_MAX);
@@ -2617,7 +3656,10 @@ const mobs = (function(){
     return { v:4, list: mobs.map(serializeMob).filter(Boolean), aggro:{mode:'rel', m:rel}, golden:goldenSnapshot() }; }
   function deserialize(data){ // clear
     for(const m of mobs) removeFromGrid(m); mobs.length=0; // reset live counts before rebuild
+    mobDeathFx.length=0;
+    metrics.deathFx=0;
     for(const k in speciesCounts) delete speciesCounts[k];
+    lastDayState = null;
     goldenRestore(data && data.golden);
     if(data && Array.isArray(data.list)){
       for(const r of data.list){
@@ -2645,6 +3687,7 @@ const mobs = (function(){
         if(typeof r.baseColor==='string') m.baseColor=r.baseColor;
         if(finiteNum(r.lifeEndAt)) m.lifeEndAt=r.lifeEndAt;
         if(finiteNum(r.decayStartAt)) m.decayStartAt=r.decayStartAt;
+        if(finiteNum(r.heroFocusMs) && r.heroFocusMs>0) m.heroFocusUntil=Date.now()+Math.min(r.heroFocusMs,HERO_FOCUS_MS);
         if(r.id==='STRAZNIK'){
           if(finiteNum(r.sentinelReloadT)) m.sentinelReloadT=clampFinite(r.sentinelReloadT,0,0,SENTINEL_RELOAD_SECONDS);
           if(finiteNum(r.sentinelShotsUntilReload)) m.sentinelShotsUntilReload=clampFinite(r.sentinelShotsUntilReload,SENTINEL_BURST_MIN,0,SENTINEL_BURST_MAX);
@@ -2675,6 +3718,7 @@ const mobs = (function(){
       grid.clear();
       mobProjectiles.length = 0;
       mobLasers.length = 0;
+      mobDeathFx.length = 0;
       sentinelVolleyStart = 0;
       sentinelVolleyShots = 0;
       sentinelShotsThisFrame = 0;
@@ -2687,12 +3731,15 @@ const mobs = (function(){
       metrics.active = 0;
       metrics.projectiles = 0;
       metrics.lasers = 0;
+      metrics.deathFx = 0;
       metrics.sentinelShots = 0;
       metrics.sentinelDeferred = 0;
       metrics.sentinelMeatShots = 0;
       metrics.sentinelMeatCooked = 0;
       metrics.sentinelMeatDestroyed = 0;
       metrics.sentinelReloads = 0;
+      metrics.sunriseBurns = 0;
+      lastDayState = null;
       // Reset global aggro
       for(const k in speciesAggro){ delete speciesAggro[k]; }
       goldenReset();
@@ -2720,7 +3767,52 @@ const mobs = (function(){
       report.metrics={...metrics};
       return report;
     }
-  const api = { update, draw, attackAt, damageAt, igniteAt, igniteRadius, poisonAt, poisonRadius, douseRadius, blastRadius, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}) };
+    function debugDeathFx(getTile){
+      return mobDeathFx.map(f=>{
+        const pieces=[...(f.core||[]),...(f.fragments||[]),...(f.residue||[]),...(f.puffs||[])].filter(p=>p && (!Number.isFinite(p.life) || !Number.isFinite(p.max) || p.life<=p.max));
+        const physics=[...(f.core||[]),...(f.fragments||[])].filter(p=>p && p.physics);
+        let solidPieces=0, maxDist=0, badFinite=0, bounces=0, travel=0, settledPieces=0, movingPieces=0;
+        for(const p of pieces){
+          if(!Number.isFinite(p.x) || !Number.isFinite(p.y)){ badFinite++; continue; }
+          const d=Math.hypot(p.x-f.x,p.y-f.y);
+          if(d>maxDist) maxDist=d;
+          const softPuff = p.kind==='dust' || p.kind==='spark' || p.kind==='spray';
+          if(getTile && (softPuff ? !deathFxTileOpen(getTile,p.x,p.y) : deathPieceOverlapsSolid(getTile,p.x,p.y,deathPieceRadius(p)))) solidPieces++;
+          if(Number.isFinite(p.bounces)) bounces+=p.bounces;
+          if(Number.isFinite(p.travel)) travel+=p.travel;
+          if(p.settled) settledPieces++;
+          if(Math.hypot(p.vx||0,p.vy||0)>0.12) movingPieces++;
+        }
+        return {
+          id:f.id,
+          style:f.style,
+          cause:f.cause,
+          signature:f.signature,
+          life:+f.life.toFixed(3),
+          x:+f.x.toFixed(3),
+          y:+f.y.toFixed(3),
+          sourceX:+(f.sourceX==null?f.x:f.sourceX).toFixed(3),
+          sourceY:+(f.sourceY==null?f.y:f.sourceY).toFixed(3),
+          tunnelClamped:!!f.tunnelClamped,
+          core:(f.core||[]).length,
+          fragments:f.fragments.length,
+          rings:f.rings.length,
+          residue:(f.residue||[]).length,
+          puffs:(f.puffs||[]).length,
+          livePieces:pieces.length,
+          physicsPieces:physics.length,
+          movingPieces,
+          settledPieces,
+          bounces,
+          travel:+travel.toFixed(3),
+          solidPieces,
+          badFinite,
+          maxDist:+maxDist.toFixed(3),
+          seed:f.seed
+        };
+      });
+    }
+  const api = { update, draw, attackAt, damageAt, igniteAt, igniteRadius, poisonAt, poisonRadius, douseRadius, blastRadius, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, isHostile:isMobHostile, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx };
   MM.mobs = api;
   try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
   return api;

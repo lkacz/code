@@ -1,11 +1,14 @@
 // Player survival timers that should stay deterministic and easy to test.
 window.MM = window.MM || {};
 (function(){
-  const DROWN_GRACE = 60;
+  const DROWN_GRACE = 20;
   const DROWN_RATE_BASE = 2;
   const DROWN_RATE_RAMP = 0.18;
   const DROWN_RATE_MAX = 18;
   const DROWN_DAMAGE_BANK_MAX = 30;
+  const UNDERWATER_ENERGY_DAMAGE_PER_ENERGY = 0.45;
+  const UNDERWATER_ENERGY_DAMAGE_MAX = 10;
+  const UNDERWATER_ENERGY_DAMAGE_BANK_MAX = 24;
 
   function createDrowningState(){
     return {airless:0, damageAcc:0, warned:false};
@@ -43,12 +46,44 @@ window.MM = window.MM || {};
     state.damageAcc = Math.max(0, state.damageAcc - amount);
   }
 
+  function createUnderwaterEnergyState(){
+    return {damageAcc:0};
+  }
+
+  function resetUnderwaterEnergyShock(state){
+    if(!state) return;
+    state.damageAcc=0;
+  }
+
+  function updateUnderwaterEnergyShock(state, energySpent, submerged){
+    if(!state) state=createUnderwaterEnergyState();
+    const spent=Math.max(0,Number(energySpent)||0);
+    if(!submerged || spent<=0){
+      if(!submerged) resetUnderwaterEnergyShock(state);
+      return {state, damage:0};
+    }
+    state.damageAcc=Math.min(UNDERWATER_ENERGY_DAMAGE_BANK_MAX, state.damageAcc + spent*UNDERWATER_ENERGY_DAMAGE_PER_ENERGY);
+    const damage=state.damageAcc>0 ? Math.max(1, Math.min(UNDERWATER_ENERGY_DAMAGE_MAX, Math.floor(state.damageAcc))) : 0;
+    return {state, damage};
+  }
+
+  function consumeUnderwaterEnergyDamage(state, amount){
+    if(!state || !(amount>0)) return;
+    state.damageAcc=Math.max(0, state.damageAcc - amount);
+  }
+
   MM.survival = {
     DROWN_GRACE,
+    UNDERWATER_ENERGY_DAMAGE_PER_ENERGY,
+    UNDERWATER_ENERGY_DAMAGE_MAX,
     createDrowningState,
     resetDrowning,
     updateDrowning,
-    consumeDrowningDamage
+    consumeDrowningDamage,
+    createUnderwaterEnergyState,
+    resetUnderwaterEnergyShock,
+    updateUnderwaterEnergyShock,
+    consumeUnderwaterEnergyDamage
   };
 })();
 

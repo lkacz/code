@@ -35,8 +35,10 @@ MM.mobs = { nearestLiving: ()=>fakeMob, abduct: (m)=>{ abductedMob=m; fakeMob=nu
 let drainedByUfo=0;
 MM.heroEnergy = { drain(){ const p=globalThis.player; const n=Math.max(0, Number(p.energy)||0); p.energy=0; drainedByUfo+=n; return n; } };
 
+const { companions } = await import('../src/engine/companions.js');
 const { ufo } = await import('../src/engine/ufo.js');
 assert.ok(ufo && ufo.forceSpawn, 'ufo module exports');
+assert.equal(ufo._debug.bioCompanionDropChance, 0.10, 'destroyed UFOs have a one-in-ten bio companion drop chance');
 assert.equal(ufo._debug.dropCellSupported(T.CHEST_COMMON), false, 'UFO wreck salvage does not use chests as landing footing');
 assert.equal(ufo._debug.dropCellSupported(T.GLASS), false, 'UFO wreck salvage does not use fragile glass as landing footing');
 assert.equal(ufo._debug.dropCellSupported(T.WATER_PUMP), false, 'UFO wreck salvage does not use machines as landing footing');
@@ -233,7 +235,40 @@ assert.ok(wreckTiles.includes(T.COPPER_WIRE), 'wreck drops visible copper power 
 assert.equal(inv.teleporter, 0, 'world-dropped teleporter is not duplicated into inventory');
 assert.ok(particleBursts.some(p=>p.y >= (SURF-2)*20), 'visible wreck salvage sparks where it lands');
 
-// --- 8. Single-saucer cap ---
+// --- 8. Rare bio companion wreck drop: 1/10 destroyed UFOs create a normal companion ---
+ufo.reset();
+companions.reset();
+Object.assign(inv,{antimatter:0, teleporter:0, transistor:0, copperWire:0, wire:0, copper:0, plastic:0, steel:0});
+messages.length=0;
+const companionDropTiles = new Map();
+MM.world = {
+  getTile(x,y){
+    const k=kxy(x,y);
+    if(companionDropTiles.has(k)) return companionDropTiles.get(k);
+    return y>=SURF ? T.STONE : T.AIR;
+  },
+  setTile(x,y,t){ companionDropTiles.set(kxy(x,y),t); }
+};
+MM.particles = { spawnBurst(){} };
+Math.random=()=>0.05;
+try{
+  c=ufo.forceSpawn({seed:9, prefer:'hero'});
+  for(let i=0;i<40 && ufo.current();i++){
+    const cc=ufo.current();
+    ufo.damageAt(Math.floor(cc.x), Math.floor(cc.y), 200);
+  }
+}finally{
+  Math.random=realRandom;
+  delete MM.world;
+  delete MM.particles;
+}
+assert.equal(ufo.current(), null, 'saucer destroyed for the rare companion roll');
+assert.equal(companions.count(), 1, 'lucky UFO wreck roll spawns one bio companion');
+assert.equal(companions._debug.list()[0].kind || 'bio', 'bio', 'UFO wreck companion is the normal bio variety');
+assert.equal(companions.metrics().biomass, 3, 'UFO wreck bio companion uses the regular starter biomass');
+assert.ok(messages.some(t=>t.includes('bio-pomocnik')), 'kill announcement mentions the rare bio companion drop');
+
+// --- 9. Single-saucer cap ---
 c=ufo.forceSpawn({seed:5});
 assert.ok(c, 'slot free again');
 assert.equal(ufo.forceSpawn({seed:6}), null, 'only one saucer at a time');

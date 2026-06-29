@@ -36,6 +36,7 @@ window.MM = window.MM || {};
   const QUEUE_BUDGET = 360;                   // instability checks per frame (cascades span frames)
   const QUEUE_BUDGET_LOW_FPS = 120;
   const QUEUE_BUDGET_CRITICAL = 48;
+  const CHANGE_BATCH_WAKE_CAP = 128;
   const CLUSTER_CAP = 4000;                   // larger structural clusters are treated as bedrock-stable
   const ACTIVE_RIGID_CAP = 1100;              // settle huge city cascades in chunks instead of dragging FPS for seconds
   const SAND_SETTLE_ROLL_LIMIT = 96;          // save-time grains must pile, not stack straight up
@@ -70,6 +71,7 @@ window.MM = window.MM || {};
   const buildBreaks = []; // short-lived visual flashes where player-built structure snapped
   const buildBearingLoads = new WeakMap(); // supported-built Map -> external footing load map
   const buildFlowDirections = new WeakMap(); // supported-built Map -> cell force-flow directions
+  const buildPressureRatios = new WeakMap(); // supported-built Map -> visible pressure receiver ratios
   const settledRubble = new Set(); // structural debris that already fell and should not become a new building frame
   // Protected structures (e.g. procedurally placed NPC houses) are exempt from every
   // collapse pathway here — they neither get claimed as player builds, audited, nor
@@ -83,6 +85,19 @@ window.MM = window.MM || {};
   let getTile = null, setTile = null;
   function init(gt, st){ getTile = gt; setTile = st; }
   const key = (x,y)=>x+','+y;
+  function constructionBackgroundTile(x,y){
+    try{
+      const w=window.MM && MM.world;
+      const t=(w && w.getConstructionBackground) ? w.getConstructionBackground(x,y) : T.AIR;
+      return sharedPlayerBuiltMaterial(t) ? t : T.AIR;
+    }catch(e){ return T.AIR; }
+  }
+  function buildSupportTile(x,y,tileFn){
+    const fg=(tileFn || getTile)(x,y);
+    if(sharedBuildFoundationTile(fg) || sharedBuildAnchorTile(fg)) return fg;
+    const bg=constructionBackgroundTile(x,y);
+    return bg!==T.AIR ? bg : fg;
+  }
   function isProtectedBuild(x,y){ return protectedBuilds.has(key(x,y)); }
   function protectBuild(x,y){
     if(!Number.isFinite(x) || !Number.isFinite(y)) return;
@@ -103,7 +118,11 @@ window.MM = window.MM || {};
   }
   function supportSignature(x,y){
     if(!getTile) return '';
-    return getTile(x,y)+'/'+getTile(x,y+1)+'/'+getTile(x-1,y)+'/'+getTile(x+1,y)+'/'+getTile(x,y-1);
+    return getTile(x,y)+'|'+constructionBackgroundTile(x,y)+'/'+
+      getTile(x,y+1)+'|'+constructionBackgroundTile(x,y+1)+'/'+
+      getTile(x-1,y)+'|'+constructionBackgroundTile(x-1,y)+'/'+
+      getTile(x+1,y)+'|'+constructionBackgroundTile(x+1,y)+'/'+
+      getTile(x,y-1)+'|'+constructionBackgroundTile(x,y-1);
   }
   function markQuiet(x,y){
     if(!getTile || y<0 || y>=WORLD_H) return;
@@ -1068,7 +1087,7 @@ window.MM = window.MM || {};
     return sharedBuildFoundationTile(t);
   }
   function builtSupportContacts(c,componentKeys,tileFn){
-    const tileAt=tileFn || getTile;
+    const tileAt=(x,y)=>buildSupportTile(x,y,tileFn || getTile);
     const out=[];
     if(c.y+1>=WORLD_H) return [{x:c.x,y:c.y+1,t:T.BEDROCK,mult:1,worldEdge:true}];
     const belowKey=key(c.x,c.y+1);
@@ -1118,7 +1137,7 @@ window.MM = window.MM || {};
       if(cy<y-1 || cy>y+7 || Math.abs(cx-x)>4) continue;
       const k=key(cx,cy);
       if(componentKeys && componentKeys.has(k)) continue;
-      const t=getTile(cx,cy);
+      const t=buildSupportTile(cx,cy,getTile);
       if(t===T.BEDROCK){ score=BUILD_BEARING_BACKING_LIMIT; break; }
       if(!isBuildFoundationTile(t)) continue;
       score++;
@@ -1208,6 +1227,49 @@ window.MM = window.MM || {};
     }
     return averageFlowVector(best.map(b=>normalizedFlowVector(b.x-c.x,b.y-c.y)));
   }
+  function pressureReceiverKeysFor(c,k,cost,componentKeys,byKey,supportContacts,lastDir,guard){
+    let cur=c, curKey=k, dir=lastDir||null;
+    for(let step=guard||0; step<PLAYER_BUILT_CAP; step++){
+      const contacts=supportContacts.get(curKey) || [];
+      if(contacts.length) return [curKey];
+      const curCost=cost.get(curKey);
+      if(!Number.isFinite(curCost)) return [curKey];
+      let bestCost=curCost;
+      const best=[];
+      for(const n of [[cur.x+1,cur.y],[cur.x-1,cur.y],[cur.x,cur.y+1],[cur.x,cur.y-1]]){
+        const nk=key(n[0],n[1]);
+        if(!componentKeys.has(nk)) continue;
+        const nCost=cost.get(nk);
+        if(!Number.isFinite(nCost) || nCost>=curCost-0.0001) continue;
+        if(nCost<bestCost-0.0001){
+          best.length=0;
+          bestCost=nCost;
+        }
+        if(Math.abs(nCost-bestCost)<0.0001) best.push({k:nk,x:n[0],y:n[1],dir:{dx:Math.sign(n[0]-cur.x),dy:Math.sign(n[1]-cur.y)}});
+      }
+      if(!best.length) return [curKey];
+      if(dir){
+        const straight=best.filter(b=>b.dir.dx===dir.dx && b.dir.dy===dir.dy);
+        if(!straight.length) return [curKey];
+        best.length=0;
+        best.push(...straight);
+      }
+      if(best.length>1){
+        const out=new Set();
+        for(const b of best){
+          const next=byKey.get(b.k);
+          if(!next) out.add(b.k);
+          else pressureReceiverKeysFor(next,b.k,cost,componentKeys,byKey,supportContacts,b.dir,step+1).forEach(r=>out.add(r));
+        }
+        return [...out];
+      }
+      dir=best[0].dir;
+      curKey=best[0].k;
+      cur=byKey.get(curKey);
+      if(!cur) return [curKey];
+    }
+    return [curKey];
+  }
   function supportedBuiltKeys(component,componentKeys,supports,tileFn){
     const best=new Map();
     const byKey=new Map(component.map(c=>[key(c.x,c.y),c]));
@@ -1224,6 +1286,7 @@ window.MM = window.MM || {};
     const load=new Map();
     const bearingLoads=new Map();
     const flowDirs=new Map();
+    const pressureRatios=new Map();
     const supported=component.filter(c=>{
       const k=key(c.x,c.y);
       if(!Number.isFinite(cost.get(k))) return false;
@@ -1282,9 +1345,14 @@ window.MM = window.MM || {};
       best.set(k,builtResidualBudget(c,ratio));
       const flow=buildFlowDirectionFor(c,k,cost,componentKeys,supportContacts);
       if(flow) flowDirs.set(k,flow);
+      const pressureKeys=pressureReceiverKeysFor(c,k,cost,componentKeys,byKey,supportContacts);
+      for(const pressureKey of pressureKeys){
+        if(ratio>(pressureRatios.get(pressureKey) || 0)) pressureRatios.set(pressureKey,ratio);
+      }
     }
     buildBearingLoads.set(best,bearingLoads);
     buildFlowDirections.set(best,flowDirs);
+    buildPressureRatios.set(best,pressureRatios);
     return best;
   }
   function canSupportPlacement(px,py,pt){
@@ -1293,6 +1361,7 @@ window.MM = window.MM || {};
     if(!Number.isFinite(px) || !Number.isFinite(py) || py<0 || py>=WORLD_H) return {ok:false, reason:'Brak podparcia'};
     const virtualKey=key(px,py);
     const virtualTile=(x,y)=> (x===px && y===py) ? pt : getTile(x,y);
+    const virtualSupportTile=(x,y)=> (x===px && y===py) ? pt : buildSupportTile(x,y,virtualTile);
     const virtualBuildAt=(x,y)=>{
       if(x===px && y===py) return true;
       const k=key(x,y);
@@ -1310,31 +1379,51 @@ window.MM = window.MM || {};
     }
     if(!seen.has(virtualKey)) return {ok:false, reason:'Brak podparcia'};
     const componentKeys=new Set(component.map(c=>key(c.x,c.y)));
+    const componentByKey=new Map(component.map(c=>[key(c.x,c.y),c]));
     const supports=[];
     for(const c of component){
       let mult=0;
       if(c.y+1>=WORLD_H) mult=1;
       const belowKey=key(c.x,c.y+1);
-      if(!componentKeys.has(belowKey) && isBuildFoundationTile(virtualTile(c.x,c.y+1))) mult=Math.max(mult,1);
+      if(!componentKeys.has(belowKey) && isBuildFoundationTile(virtualSupportTile(c.x,c.y+1))) mult=Math.max(mult,1);
       for(const dir of [-1,1]){
         const sideKey=key(c.x+dir,c.y);
-        if(!componentKeys.has(sideKey) && isBuildAnchorTile(virtualTile(c.x+dir,c.y))) mult=Math.max(mult,0.62);
+        if(!componentKeys.has(sideKey) && isBuildAnchorTile(virtualSupportTile(c.x+dir,c.y))) mult=Math.max(mult,0.62);
       }
       const aboveKey=key(c.x,c.y-1);
-      if(!componentKeys.has(aboveKey) && isBuildAnchorTile(virtualTile(c.x,c.y-1))) mult=Math.max(mult,0.72);
+      if(!componentKeys.has(aboveKey) && isBuildAnchorTile(virtualSupportTile(c.x,c.y-1))) mult=Math.max(mult,0.72);
       if(mult>0) supports.push(Object.assign({mult},c));
     }
     if(!supports.length) return {ok:false, reason:'Brak podparcia'};
-    const stable=supportedBuiltKeys(component,componentKeys,supports,virtualTile);
-    if(!stable.has(virtualKey)) return {ok:false, reason:'Brak podparcia'};
+    const stable=supportedBuiltKeys(component,componentKeys,supports,virtualSupportTile);
+    const pressureCells=pressureStressCells(component,stable,new Set(),{byKey:componentByKey,tileFn:virtualTile,requireTracked:false}).map(c=>({x:c.x,y:c.y,ratio:c.ratio}));
+    if(!stable.has(virtualKey)) return {ok:false, reason:'Brak podparcia', pressureCells};
     const failing=overstressedBuiltCells(component,stable,new Set());
-    if(failing.some(c=>key(c.x,c.y)===virtualKey)) return {ok:false, reason:'Za duze naprezenie'};
-    if(failing.length) return {ok:false, reason:'Konstrukcja peknie'};
-    return {ok:true, applies:true};
+    if(failing.some(c=>key(c.x,c.y)===virtualKey)) return {ok:false, reason:'Za duze naprezenie', pressureCells};
+    if(failing.length) return {ok:false, reason:'Konstrukcja peknie', pressureCells};
+    return {ok:true, applies:true, pressureCells};
   }
   function buildStressRatio(c,budget){
     if(!Number.isFinite(budget)) return 0;
     return Math.max(0,Math.min(1,1-budget/Math.max(1,builtSupportStrength(c.t))));
+  }
+  function pressureStressCells(component,best,fallingKeys,opts){
+    const pressures=buildPressureRatios.get(best);
+    if(!pressures || !pressures.size) return [];
+    const byKey=(opts && opts.byKey) || new Map(component.map(c=>[key(c.x,c.y),c]));
+    const tileAt=(opts && opts.tileFn) || getTile;
+    const requireTracked=!(opts && opts.requireTracked===false);
+    const out=[];
+    for(const [raw,ratio] of pressures){
+      if(fallingKeys && fallingKeys.has(raw)) continue;
+      const c=parseCellKey(raw);
+      if(!c) continue;
+      if(requireTracked && !isTrackedPlayerBuild(c.x,c.y)) continue;
+      const src=byKey.get(raw) || c;
+      const p=builtMaterialProfile(tileAt(c.x,c.y));
+      if(p && ratio>=p.warn) out.push({x:c.x,y:c.y,t:src.t,ratio:+Math.max(0,Math.min(1,ratio)).toFixed(3)});
+    }
+    return out;
   }
   function recordBuildBreak(x,y,t,ratio){
     if(buildBreaks.length>220) buildBreaks.splice(0, buildBreaks.length-220);
@@ -1358,10 +1447,21 @@ window.MM = window.MM || {};
   function recordBuildStress(component,best,fallingKeys){
     if(buildStress.size>BUILD_STRESS_CAP){ buildStress.clear(); buildStressFlow.clear(); }
     const flows=buildFlowDirections.get(best);
+    const pressures=buildPressureRatios.get(best);
+    const pressureCells=pressureStressCells(component,best,fallingKeys);
     for(const c of component){
       const k=key(c.x,c.y);
       buildStress.delete(k);
       buildStressFlow.delete(k);
+    }
+    if(pressures && pressures.size){
+      for(const c of pressureCells){
+        const k=key(c.x,c.y);
+        buildStress.set(k,c.ratio);
+        const flow=flows && flows.get(k);
+        if(flow) buildStressFlow.set(k,flow);
+      }
+      return;
     }
     for(const c of component){
       const k=key(c.x,c.y);
@@ -1802,7 +1902,84 @@ window.MM = window.MM || {};
   function onTileRemoved(x,y){ unprotectBuild(x,y); forgetManualCityBuild(x,y); forgetPlayerBuild(x,y); forgetSettledRubble(x,y); queueAroundRemoval(x,y); checkBuiltPillarAround(x,y); }
   function recheckNeighborhood(x,y){ forgetSettledRubble(x,y); syncManualCityBuild(x,y); syncPlayerBuild(x,y); queueCheck(x,y); queueAroundRemoval(x,y); checkBuiltPillarAround(x,y); } // undo can both add and remove tiles
   function afterPlacement(x,y){ forgetSettledRubble(x,y); rememberManualCityBuild(x,y); rememberPlayerBuild(x,y); queueAroundSettle(x,y); checkBuiltPillarAround(x,y); }
+  function sanitizeBatchCells(cells,limit){
+    if(!Array.isArray(cells) || !cells.length) return [];
+    const out=[];
+    const seen=new Set();
+    const max=Math.max(1,limit|0);
+    for(const c of cells){
+      if(out.length>=max) break;
+      if(!c || !Number.isFinite(c.x) || !Number.isFinite(c.y)) continue;
+      const x=Math.floor(c.x), y=Math.floor(c.y);
+      if(y<0 || y>=WORLD_H) continue;
+      const kk=key(x,y);
+      if(seen.has(kk)) continue;
+      seen.add(kk);
+      out.push({x,y});
+    }
+    return out;
+  }
+  function selectBatchWakeCells(cells,cap){
+    if(!Array.isArray(cells) || !cells.length || !(cap>0)) return [];
+    const byX=new Map();
+    for(const c of cells){
+      if(!c || !Number.isFinite(c.x) || !Number.isFinite(c.y)) continue;
+      const x=Math.floor(c.x), y=Math.floor(c.y);
+      let rec=byX.get(x);
+      if(!rec){ rec={x,minY:y,maxY:y}; byX.set(x,rec); }
+      else {
+        if(y<rec.minY) rec.minY=y;
+        if(y>rec.maxY) rec.maxY=y;
+      }
+    }
+    const xs=[...byX.keys()].sort((a,b)=>a-b);
+    const out=[];
+    const used=new Set();
+    const add=(x,y)=>{
+      if(out.length>=cap || !Number.isFinite(y)) return;
+      const kk=key(x,y);
+      if(used.has(kk)) return;
+      used.add(kk);
+      out.push({x,y});
+    };
+    const stride=Math.max(1,Math.ceil(xs.length/Math.max(1,Math.floor(cap*0.5))));
+    for(let offset=0; offset<stride && out.length<cap; offset++){
+      for(let i=offset; i<xs.length && out.length<cap; i+=stride){
+        const rec=byX.get(xs[i]);
+        add(rec.x,rec.minY);
+        add(rec.x,rec.maxY);
+      }
+    }
+    return out;
+  }
+  function onTilesChangedBatch(removedCells,placedCells,opts){
+    opts=opts||{};
+    const wakeCap=Math.max(16,Math.min(256,(opts.wakeCap|0)||CHANGE_BATCH_WAKE_CAP));
+    const removed=sanitizeBatchCells(removedCells,6000);
+    const placed=sanitizeBatchCells(placedCells,6000);
+    for(const c of removed){
+      unprotectBuild(c.x,c.y);
+      forgetManualCityBuild(c.x,c.y);
+      forgetPlayerBuild(c.x,c.y);
+      forgetSettledRubble(c.x,c.y);
+    }
+    for(const c of placed){
+      forgetSettledRubble(c.x,c.y);
+      rememberManualCityBuild(c.x,c.y);
+      rememberPlayerBuild(c.x,c.y);
+    }
+    for(const c of selectBatchWakeCells(removed,wakeCap)){
+      queueAroundRemoval(c.x,c.y);
+      checkBuiltPillarAround(c.x,c.y);
+    }
+    for(const c of selectBatchWakeCells(placed,wakeCap)){
+      queueAroundSettle(c.x,c.y);
+      checkBuiltPillarAround(c.x,c.y);
+    }
+    return {removed:removed.length,placed:placed.length};
+  }
   function maybeStart(x,y){ queueCheck(x,y); }
+  function isPlayerBuiltAt(x,y){ return isTrackedPlayerBuild(Math.floor(x),Math.floor(y)); }
 
   function reset(){ active.length=0; sandActive.length=0; unstable.clear(); quietStable.clear(); auditJobs.length=0; auditPending.clear(); auditLast.clear(); manualCityBuilt.clear(); playerBuilt.clear(); buildStress.clear(); buildStressFlow.clear(); buildBreaks.length=0; settledRubble.clear(); protectedBuilds.clear(); }
   function metrics(){ return {queue:unstable.size, audit:auditJobs.length, active:active.length, sand:sandActive.length, debris:settledRubble.size, built:playerBuilt.size, stress:buildStress.size, breaks:buildBreaks.length, protected:protectedBuilds.size}; }
@@ -1875,7 +2052,7 @@ window.MM = window.MM || {};
     };
   }
 
-  MM.fallingSolids={init,update,draw,onTileRemoved,maybeStart,reset,recheckNeighborhood,afterPlacement,canSupportPlacement,auditChunks,settleAll,snapshot,restore,metrics,protectStructure,protectBuild,unprotectBuild,isProtectedBuild,_debug};
+  MM.fallingSolids={init,update,draw,onTileRemoved,onTilesChangedBatch,maybeStart,reset,recheckNeighborhood,afterPlacement,canSupportPlacement,isPlayerBuiltAt,auditChunks,settleAll,snapshot,restore,metrics,protectStructure,protectBuild,unprotectBuild,isProtectedBuild,_debug};
 })();
 // ESM export (progressive migration)
 export const fallingSolids = (typeof window!=='undefined' && window.MM) ? window.MM.fallingSolids : undefined;

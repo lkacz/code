@@ -46,6 +46,7 @@ function reset(){
   teleporters.reset();
   water.reset();
   clouds.reset();
+  MM.clouds=clouds;
   MM.world={getTile,setTile};
   MM.water=water;
   MM.worldGen={temperature:()=>0.7,surfaceHeight:()=>80,settings:{seaLevel:95},worldSeed:12345};
@@ -72,9 +73,45 @@ function assertCells(cells,tile,msg){
 assert.equal(T.TRANSISTOR,35,'transistor tile id stays stable after teleporters');
 assert.equal(T.SOLAR_PANEL,36,'solar panel tile id is stable');
 assert.equal(T.SOLAR_BATTERY,37,'solar storage panel tile id is stable');
+assert.equal(T.CLAY,65,'clay tile id is appended for save stability');
+assert.equal(T.WET_CLAY,66,'wet clay tile id is appended for save stability');
+assert.equal(T.BRICK,67,'brick tile id is appended for save stability');
+assert.equal(T.LADDER,68,'ladder tile id is appended for save stability');
+assert.equal(T.SPRING_PLATFORM,69,'spring platform tile id is appended for save stability');
 assert.equal(INFO[T.TRANSISTOR].drop,'transistor','placed transistors can be recovered');
 assert.equal(INFO[T.SOLAR_PANEL].powerSource,true,'solar panels are power sources');
 assert.equal(INFO[T.SOLAR_BATTERY].energyCapacity,120,'storage solar panel advertises its battery capacity');
+assert.equal(solar._debug.FULL_LIGHT_THRESHOLD,0.9,'solar panels require high full daylight before producing energy');
+assert.ok(solar._debug.PANEL_RATE<0.25,'basic solar panel production is intentionally weak');
+assert.ok(solar._debug.STORAGE_RATE<0.35,'storage solar panel production is intentionally weak');
+
+{
+  reset();
+  setTile(5,10,T.SOLAR_BATTERY);
+  for(let i=0;i<40;i++) solar.update(0.25,{x:5,y:10},getTile);
+  const stored=solar.metrics().storedEnergy;
+  assert.ok(stored>0.5 && stored<4,'clear full-light noon charges a single storage panel slowly');
+}
+
+{
+  reset();
+  setTile(5,10,T.SOLAR_BATTERY);
+  MM.clouds={metrics:()=>({clouds:1,cloudMass:0.1,drops:0,storm:{active:false,intensity:0}})};
+  for(let i=0;i<120;i++) solar.update(0.25,{x:5,y:10},getTile);
+  assert.equal(solar.metrics().storedEnergy,0,'any visible cloud cover blocks solar production completely');
+  assert.equal(solar.metrics().sun,0,'clouded sky reports zero solar sun');
+}
+
+{
+  reset();
+  setTile(5,10,T.SOLAR_BATTERY);
+  MM.background={getCycleInfo:()=>({isDay:true,tDay:0.18})};
+  for(let i=0;i<120;i++) solar.update(0.25,{x:5,y:10},getTile);
+  assert.equal(solar.metrics().storedEnergy,0,'partial morning light is not full enough for solar production');
+  MM.background={getCycleInfo:()=>({isDay:false,tDay:0.5})};
+  for(let i=0;i<120;i++) solar.update(0.25,{x:5,y:10},getTile);
+  assert.equal(solar.metrics().storedEnergy,0,'night never produces solar energy');
+}
 
 {
   reset();
@@ -113,6 +150,14 @@ assert.equal(INFO[T.SOLAR_BATTERY].energyCapacity,120,'storage solar panel adver
   const cells=placePattern(50,10,false,false);
   assert.equal(reactions.apply('water',50,10,getTile,setTile),null,'wrong stimulus does not complete a heat recipe');
   for(const c of cells) assert.equal(getTile(c.x,c.y),c.t,'wrong stimulus leaves the assembly unchanged');
+}
+
+{
+  reset();
+  setTile(55,10,T.CLAY);
+  const done=reactions.apply('heat',55,10,getTile,setTile);
+  assert.ok(done && done.recipe==='heat_clay_to_brick','heat fires clay into brick');
+  assert.equal(getTile(55,10),T.BRICK,'clay heat recipe produces brick terrain');
 }
 
 // The registry is open-ended: future water/electric reactions can be registered

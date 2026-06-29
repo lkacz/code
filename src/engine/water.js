@@ -10,9 +10,10 @@
 //     surface sheen + sparkle glints, shoreline foam
 //   * waterfall streams with bright cores, falling streaks and impact mist
 //   * ambient bubbles in deep water (rendered by the shared particle module)
-// Everything draws to an offscreen layer; effects are clipped to the water shape with
-// 'source-atop' compositing, then the layer blends onto the scene in one drawImage.
-import { isFoliageTile, isGasTile, isWaterFillTile, isWaterOpenTile } from './material_physics.js';
+// Everything draws to a transform-aware offscreen layer; effects are clipped to the
+// water shape with 'source-atop' compositing, then the layer blends onto the scene in
+// one drawImage.
+import { isFoliageTile, isGasTile, isSunTransparentTile, isWaterFillTile, isWaterOpenTile } from './material_physics.js';
 
 window.MM = window.MM || {};
 (function(){
@@ -37,6 +38,7 @@ window.MM = window.MM || {};
   // Lateral energy cooldown after pressure smoothing
   const lateralCooldown = new Map(); // x -> seconds remaining
   const LATERAL_INTERVAL = 0.075;
+  const TILE_CHANGE_BATCH_WAKE_CAP = 24;
   let lateralAcc = 0;
   // Adaptive pressure leveling cadence
   const PRESSURE_INTERVAL_MIN = 0.18;
@@ -50,6 +52,28 @@ window.MM = window.MM || {};
   const MAX_VERTICAL_SCAN = 48;
   const WATER_REACTION_BUDGET_BASE = 48;
   let reactionBudget = 0;
+  // Ambient material reactions:
+  //   water + sand -> mud consumes one water cell after a short, varied soak;
+  //   water + clay -> wet clay; sunlit mud/wet clay dries and releases steam.
+  const MATERIAL_SCAN_INTERVAL = 0.22;
+  const MATERIAL_SCAN_RADIUS = 220;
+  const MATERIAL_SCAN_SPAN = MATERIAL_SCAN_RADIUS*2+1;
+  const MATERIAL_SCAN_COLS_IDLE = 36;
+  const MATERIAL_SCAN_COLS_ACTIVE = 16;
+  const MATERIAL_QUEUE_CAP = 2400;
+  const MATERIAL_PROCESS_CAP = 56;
+  const WET_SAND_SECONDS = 2.2;
+  const CLAY_HYDRATE_SECONDS = 1.8;
+  const MUD_DRY_SECONDS = 5.5;
+  const WET_CLAY_DRY_SECONDS = 45;
+  const WET_CLAY_DRY_PROGRESS_CAP = WET_CLAY_DRY_SECONDS*1.5;
+  const SUN_DRY_MIN = 0.18;
+  const wetSand = new Map(); // "x,y" -> {x,y,wet}
+  const wetClay = new Map(); // "x,y" -> {x,y,wet}
+  const dryMud = new Map();  // "x,y" -> {x,y,dry}
+  const dryClay = new Map(); // "x,y" -> {x,y,dry}
+  let materialScanAcc = 0;
+  let materialScanOffset = 0;
 
   // ---------------- FX state ----------------
   const springs = new Map();        // x -> {o:px offset, v:px/s, y:surface tile row, seen:frame}
@@ -63,6 +87,8 @@ window.MM = window.MM || {};
   let lastOverlayTime = performance.now();
   let offCanvas = null, offCtx = null;
   const OVERLAY_CACHE_INTERVAL_MS = 1000/120;
+  const OVERLAY_PIXEL_SCALE_MAX = 2.5;
+  const OVERLAY_PIXEL_BUDGET = 10000000;
   let lastOverlayRefresh = 0;
   let overlayCache = {valid:false};
   let overlayCacheHits = 0;
@@ -74,6 +100,27 @@ window.MM = window.MM || {};
   function isLeaf(t){ return isFoliageTile(t); }
   function isAir(t){ return isWaterOpenTile(t); }
   function canFill(t){ return isWaterFillTile(t); }
+  function overlayPixelScale(ctx,wpx,hpx){
+    let scale=1;
+    try{
+      if(ctx && typeof ctx.getTransform==='function'){
+        const m=ctx.getTransform();
+        const sx=Math.hypot(Number(m.a)||0, Number(m.b)||0);
+        const sy=Math.hypot(Number(m.c)||0, Number(m.d)||0);
+        scale=Math.max(sx,sy);
+      }
+    }catch(e){ scale=1; }
+    if(!Number.isFinite(scale) || scale<=1.05) return 1;
+    const area=Math.max(1,wpx*hpx);
+    const areaCap=Math.sqrt(OVERLAY_PIXEL_BUDGET/area);
+    scale=Math.min(OVERLAY_PIXEL_SCALE_MAX, areaCap, scale);
+    if(scale<=1.05) return 1;
+    return Math.max(1, Math.ceil(scale*2)/2);
+  }
+  function validTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H; }
+  function getSafe(getTile,x,y,fallback){
+    try{ return typeof getTile==='function' ? getTile(x,y) : fallback; }catch(e){ return fallback; }
+  }
   function validDynamoSlot(x,y,getTile,orientation){
     try{ return !!(MM.dynamo && MM.dynamo.isValidSlot && MM.dynamo.isValidSlot(x,y,getTile,orientation)); }catch(e){ return false; }
   }
@@ -215,9 +262,326 @@ window.MM = window.MM || {};
     const old=typeof getTile==='function' ? getTile(x,y) : undefined;
     setTile(x,y,v);
     notifyGasChange(x,y,old,v);
-    if(v===T.WATER) applyWaterReactionsNear(x,y,getTile,setTile);
+    if(v===T.WATER){
+      applyWaterReactionsNear(x,y,getTile,setTile);
+      queueMaterialAround(x,y,getTile);
+    }
   }
   function hash32(x,y){ let h=(x|0)*374761393+(y|0)*668265263; h=(h^(h>>>13))*1274126177; return (h^(h>>>16))>>>0; }
+  function hash32Salt(x,y,salt){
+    let h=Math.imul(x|0,374761393) ^ Math.imul(y|0,668265263) ^ Math.imul(salt|0,2246822519);
+    h=Math.imul(h^(h>>>13),1274126177);
+    return (h^(h>>>16))>>>0;
+  }
+  function rand01(x,y,salt){ return hash32Salt(x,y,salt)/4294967296; }
+  function materialReactionsEnabled(){
+    return Number.isFinite(T.SAND) && Number.isFinite(T.WATER) && Number.isFinite(T.MUD);
+  }
+  function clayReactionsEnabled(){
+    return materialReactionsEnabled() && Number.isFinite(T.CLAY) && Number.isFinite(T.WET_CLAY);
+  }
+  function countAdjacentWater(x,y,getTile){
+    let n=0;
+    if(getSafe(getTile,x,y-1,T.AIR)===T.WATER) n++;
+    if(getSafe(getTile,x-1,y,T.AIR)===T.WATER) n++;
+    if(getSafe(getTile,x+1,y,T.AIR)===T.WATER) n++;
+    if(getSafe(getTile,x,y+1,T.AIR)===T.WATER) n++;
+    return n;
+  }
+  function adjacentWaterCell(x,y,getTile){
+    const dirs=[[0,-1],[-1,0],[1,0],[0,1]];
+    const start=hash32Salt(x,y,311)%dirs.length;
+    for(let i=0;i<dirs.length;i++){
+      const d=dirs[(start+i)%dirs.length];
+      const wx=x+d[0], wy=y+d[1];
+      if(getSafe(getTile,wx,wy,T.AIR)===T.WATER) return {x:wx,y:wy};
+    }
+    return null;
+  }
+  function queueWetSand(x,y,getTile){
+    if(!materialReactionsEnabled() || !validTile(x,y)) return false;
+    x=Math.floor(x); y=Math.floor(y);
+    if(getSafe(getTile,x,y,T.AIR)!==T.SAND || countAdjacentWater(x,y,getTile)<=0) return false;
+    const kk=k(x,y);
+    if(!wetSand.has(kk)){
+      if(wetSand.size>=MATERIAL_QUEUE_CAP) return false;
+      wetSand.set(kk,{x,y,wet:0});
+    }
+    return true;
+  }
+  function queueDryMud(x,y,getTile){
+    if(!materialReactionsEnabled() || !validTile(x,y)) return false;
+    x=Math.floor(x); y=Math.floor(y);
+    if(getSafe(getTile,x,y,T.AIR)!==T.MUD) return false;
+    const kk=k(x,y);
+    if(!dryMud.has(kk)){
+      if(dryMud.size>=MATERIAL_QUEUE_CAP) return false;
+      dryMud.set(kk,{x,y,dry:0});
+    }
+    return true;
+  }
+  function queueWetClay(x,y,getTile){
+    if(!clayReactionsEnabled() || !validTile(x,y)) return false;
+    x=Math.floor(x); y=Math.floor(y);
+    if(getSafe(getTile,x,y,T.AIR)!==T.CLAY || countAdjacentWater(x,y,getTile)<=0) return false;
+    const kk=k(x,y);
+    if(!wetClay.has(kk)){
+      if(wetClay.size>=MATERIAL_QUEUE_CAP) return false;
+      wetClay.set(kk,{x,y,wet:0});
+    }
+    return true;
+  }
+  function queueDryClay(x,y,getTile){
+    if(!clayReactionsEnabled() || !validTile(x,y)) return false;
+    x=Math.floor(x); y=Math.floor(y);
+    if(getSafe(getTile,x,y,T.AIR)!==T.WET_CLAY) return false;
+    const kk=k(x,y);
+    if(!dryClay.has(kk)){
+      if(dryClay.size>=MATERIAL_QUEUE_CAP) return false;
+      dryClay.set(kk,{x,y,dry:0});
+    }
+    return true;
+  }
+  function queueMaterialAround(x,y,getTile){
+    if(!materialReactionsEnabled() || typeof getTile!=='function') return false;
+    let queued=false;
+    const cells=[[0,0],[1,0],[-1,0],[0,1],[0,-1]];
+    for(const d of cells){
+      const tx=Math.floor(x)+d[0], ty=Math.floor(y)+d[1];
+      queued = queueWetSand(tx,ty,getTile) || queued;
+      queued = queueDryMud(tx,ty,getTile) || queued;
+      queued = queueWetClay(tx,ty,getTile) || queued;
+      queued = queueDryClay(tx,ty,getTile) || queued;
+    }
+    return queued;
+  }
+  function currentSunIntensity(){
+    try{
+      const s=MM.solar;
+      if(s && s._debug && typeof s._debug.daylight==='function'){
+        const v=Number(s._debug.daylight());
+        if(Number.isFinite(v)) return Math.max(0,Math.min(1,v));
+      }
+      if(s && typeof s.metrics==='function'){
+        const m=s.metrics();
+        const v=Number(m && m.sun);
+        if(Number.isFinite(v)) return Math.max(0,Math.min(1,v));
+      }
+    }catch(e){}
+    try{
+      const bg=MM.background;
+      const c=bg && (typeof bg.timeInfo==='function' ? bg.timeInfo() : (typeof bg.getCycleInfo==='function' ? bg.getCycleInfo() : null));
+      if(c && Number.isFinite(Number(c.cycleT))){
+        const t=((Number(c.cycleT)%1)+1)%1;
+        return t>=0.5 ? 0 : Math.max(0,Math.sin((t/0.5)*Math.PI));
+      }
+      if(c && typeof c.isDay==='boolean' && Number.isFinite(Number(c.tDay))){
+        return c.isDay ? Math.max(0,Math.sin(Math.max(0,Math.min(1,Number(c.tDay)))*Math.PI)) : 0;
+      }
+    }catch(e){}
+    return 1;
+  }
+  function skyExposedToSun(x,y,getTile){
+    if(typeof getTile!=='function') return true;
+    for(let yy=y-1; yy>=0; yy--){
+      if(!isSunTransparentTile(getSafe(getTile,x,yy,T.STONE))) return false;
+    }
+    return true;
+  }
+  function materialThreshold(base,x,y,salt){
+    return base*(0.72+rand01(x,y,salt)*0.66);
+  }
+  function notifySolidMaterialChange(x,y,oldTile,newTile,getTile,setTile){
+    if(oldTile===newTile) return;
+    try{ if(MM.fallingSolids && MM.fallingSolids.recheckNeighborhood) MM.fallingSolids.recheckNeighborhood(x,y); }catch(e){}
+    try{ if(MM.fallingSolids && MM.fallingSolids.afterPlacement) MM.fallingSolids.afterPlacement(x,y); }catch(e){}
+    try{ if(MM.volcano && MM.volcano.onTileChanged) MM.volcano.onTileChanged(x,y,newTile,getTile,setTile); }catch(e){}
+  }
+  function writeGasTile(x,y,t,getTile,setTile){
+    if(typeof setTile!=='function') return false;
+    const old=getSafe(getTile,x,y,T.AIR);
+    try{
+      if(typeof setTile.transient==='function') setTile.transient(x,y,t);
+      else setTile(x,y,t);
+      notifyGasChange(x,y,old,t);
+      return true;
+    }catch(e){ return false; }
+  }
+  function emitMudSteam(x,y,getTile,setTile){
+    try{
+      if(MM.gases && MM.gases.add && MM.gases.add('steam',x,y,{power:0.45,cells:1,getTile,setTile})>0) return true;
+    }catch(e){}
+    if(!Number.isFinite(T.STEAM)) return false;
+    const spots=[[0,-1],[-1,-1],[1,-1],[0,-2],[-1,0],[1,0]];
+    for(const d of spots){
+      const tx=x+d[0], ty=y+d[1];
+      if(!validTile(tx,ty) || getSafe(getTile,tx,ty,T.STONE)!==T.AIR) continue;
+      if(writeGasTile(tx,ty,T.STEAM,getTile,setTile)) return true;
+    }
+    return false;
+  }
+  function absorbWaterIntoSand(rec,getTile,setTile){
+    if(typeof setTile!=='function' || getSafe(getTile,rec.x,rec.y,T.AIR)!==T.SAND) return false;
+    const water=adjacentWaterCell(rec.x,rec.y,getTile);
+    if(!water) return false;
+    setTile(water.x,water.y,T.AIR);
+    setTile(rec.x,rec.y,T.MUD);
+    notifySolidMaterialChange(rec.x,rec.y,T.SAND,T.MUD,getTile,setTile);
+    wetSand.delete(k(rec.x,rec.y));
+    if(dryMud.size<MATERIAL_QUEUE_CAP) dryMud.set(k(rec.x,rec.y),{x:rec.x,y:rec.y,dry:0});
+    wakeWaterCell(water.x,water.y,true);
+    markNeighbors(active,rec.x,rec.y);
+    hurrySolver();
+    disturb(water.x, -45);
+    try{ const p=MM.particles; if(p && p.spawnSplash) p.spawnSplash((water.x+0.5)*(MM.TILE||20),(water.y+0.5)*(MM.TILE||20),0.22); }catch(e){}
+    return true;
+  }
+  function hydrateClay(rec,getTile,setTile){
+    if(typeof setTile!=='function' || !clayReactionsEnabled() || getSafe(getTile,rec.x,rec.y,T.AIR)!==T.CLAY) return false;
+    const water=adjacentWaterCell(rec.x,rec.y,getTile);
+    if(!water) return false;
+    setTile(water.x,water.y,T.AIR);
+    setTile(rec.x,rec.y,T.WET_CLAY);
+    notifySolidMaterialChange(rec.x,rec.y,T.CLAY,T.WET_CLAY,getTile,setTile);
+    wetClay.delete(k(rec.x,rec.y));
+    if(dryClay.size<MATERIAL_QUEUE_CAP) dryClay.set(k(rec.x,rec.y),{x:rec.x,y:rec.y,dry:0});
+    wakeWaterCell(water.x,water.y,true);
+    markNeighbors(active,rec.x,rec.y);
+    hurrySolver();
+    disturb(water.x, -38);
+    return true;
+  }
+  function dryMudToSand(rec,getTile,setTile){
+    if(typeof setTile!=='function' || getSafe(getTile,rec.x,rec.y,T.AIR)!==T.MUD) return false;
+    setTile(rec.x,rec.y,T.SAND);
+    notifySolidMaterialChange(rec.x,rec.y,T.MUD,T.SAND,getTile,setTile);
+    emitMudSteam(rec.x,rec.y,getTile,setTile);
+    dryMud.delete(k(rec.x,rec.y));
+    if(countAdjacentWater(rec.x,rec.y,getTile)>0) queueWetSand(rec.x,rec.y,getTile);
+    return true;
+  }
+  function dryWetClayToClay(rec,getTile,setTile){
+    if(typeof setTile!=='function' || !clayReactionsEnabled() || getSafe(getTile,rec.x,rec.y,T.AIR)!==T.WET_CLAY) return false;
+    setTile(rec.x,rec.y,T.CLAY);
+    notifySolidMaterialChange(rec.x,rec.y,T.WET_CLAY,T.CLAY,getTile,setTile);
+    emitMudSteam(rec.x,rec.y,getTile,setTile);
+    dryClay.delete(k(rec.x,rec.y));
+    if(countAdjacentWater(rec.x,rec.y,getTile)>0) queueWetClay(rec.x,rec.y,getTile);
+    return true;
+  }
+  function runMaterialScan(getTile,cols){
+    if(!materialReactionsEnabled() || typeof getTile!=='function') return false;
+    const p=(typeof window!=='undefined' && window.player);
+    const cx=(p && isFinite(p.x)) ? Math.floor(p.x) : 0;
+    const columns=Math.max(0,Math.floor(cols)||0);
+    let queued=false;
+    for(let i=0;i<columns;i++){
+      const wx = cx - MATERIAL_SCAN_RADIUS + ((materialScanOffset+i)%MATERIAL_SCAN_SPAN);
+      for(let y=1;y<WORLD_H-1;y++){
+        const t=getSafe(getTile,wx,y,T.AIR);
+        if(t===T.SAND) queued = queueWetSand(wx,y,getTile) || queued;
+        else if(t===T.MUD) queued = queueDryMud(wx,y,getTile) || queued;
+        else if(t===T.CLAY) queued = queueWetClay(wx,y,getTile) || queued;
+        else if(t===T.WET_CLAY) queued = queueDryClay(wx,y,getTile) || queued;
+      }
+    }
+    materialScanOffset=(materialScanOffset+columns)%MATERIAL_SCAN_SPAN;
+    return queued;
+  }
+  function processWetSand(getTile,setTile,dt,budget){
+    const keys=[...wetSand.keys()].sort();
+    let left=budget;
+    for(const kk of keys){
+      if(left--<=0) break;
+      const rec=wetSand.get(kk);
+      if(!rec){ continue; }
+      if(getSafe(getTile,rec.x,rec.y,T.AIR)!==T.SAND){ wetSand.delete(kk); continue; }
+      const water=countAdjacentWater(rec.x,rec.y,getTile);
+      if(water<=0){
+        rec.wet=Math.max(0,(rec.wet||0)-dt*0.7);
+        if(rec.wet<=0) wetSand.delete(kk);
+        continue;
+      }
+      rec.wet=(rec.wet||0)+dt*(0.85+Math.min(3,water)*0.35);
+      if(rec.wet>=materialThreshold(WET_SAND_SECONDS,rec.x,rec.y,401)) absorbWaterIntoSand(rec,getTile,setTile);
+      else wetSand.set(kk,rec);
+    }
+    return Math.max(0,left);
+  }
+  function processWetClay(getTile,setTile,dt,budget){
+    const keys=[...wetClay.keys()].sort();
+    let left=budget;
+    for(const kk of keys){
+      if(left--<=0) break;
+      const rec=wetClay.get(kk);
+      if(!rec){ continue; }
+      if(getSafe(getTile,rec.x,rec.y,T.AIR)!==T.CLAY){ wetClay.delete(kk); continue; }
+      const water=countAdjacentWater(rec.x,rec.y,getTile);
+      if(water<=0){
+        rec.wet=Math.max(0,(rec.wet||0)-dt*0.7);
+        if(rec.wet<=0) wetClay.delete(kk);
+        continue;
+      }
+      rec.wet=(rec.wet||0)+dt*(0.9+Math.min(3,water)*0.38);
+      if(rec.wet>=materialThreshold(CLAY_HYDRATE_SECONDS,rec.x,rec.y,421)) hydrateClay(rec,getTile,setTile);
+      else wetClay.set(kk,rec);
+    }
+    return Math.max(0,left);
+  }
+  function processDryMud(getTile,setTile,dt,budget,sun){
+    const keys=[...dryMud.keys()].sort();
+    let left=budget;
+    for(const kk of keys){
+      if(left--<=0) break;
+      const rec=dryMud.get(kk);
+      if(!rec){ continue; }
+      if(getSafe(getTile,rec.x,rec.y,T.AIR)!==T.MUD){ dryMud.delete(kk); continue; }
+      if(sun<SUN_DRY_MIN || !skyExposedToSun(rec.x,rec.y,getTile)){
+        rec.dry=Math.max(0,(rec.dry||0)-dt*0.45);
+        dryMud.set(kk,rec);
+        continue;
+      }
+      rec.dry=(rec.dry||0)+dt*sun;
+      if(rec.dry>=materialThreshold(MUD_DRY_SECONDS,rec.x,rec.y,409)) dryMudToSand(rec,getTile,setTile);
+      else dryMud.set(kk,rec);
+    }
+    return Math.max(0,left);
+  }
+  function processDryClay(getTile,setTile,dt,budget,sun){
+    const keys=[...dryClay.keys()].sort();
+    let left=budget;
+    for(const kk of keys){
+      if(left--<=0) break;
+      const rec=dryClay.get(kk);
+      if(!rec){ continue; }
+      if(getSafe(getTile,rec.x,rec.y,T.AIR)!==T.WET_CLAY){ dryClay.delete(kk); continue; }
+      if(sun<SUN_DRY_MIN || !skyExposedToSun(rec.x,rec.y,getTile)){
+        rec.dry=Math.max(0,(rec.dry||0)-dt*0.45);
+        dryClay.set(kk,rec);
+        continue;
+      }
+      rec.dry=(rec.dry||0)+dt*sun;
+      if(rec.dry>=materialThreshold(WET_CLAY_DRY_SECONDS,rec.x,rec.y,429)) dryWetClayToClay(rec,getTile,setTile);
+      else dryClay.set(kk,rec);
+    }
+    return Math.max(0,left);
+  }
+  function updateMaterialReactions(getTile,setTile,dt){
+    if(!materialReactionsEnabled() || !(dt>0) || typeof getTile!=='function' || typeof setTile!=='function') return;
+    materialScanAcc=Math.min(materialScanAcc+dt,MATERIAL_SCAN_INTERVAL*3);
+    const passes=Math.min(3,Math.floor(materialScanAcc/MATERIAL_SCAN_INTERVAL));
+    if(passes>0){
+      materialScanAcc-=passes*MATERIAL_SCAN_INTERVAL;
+      const cols=(active.size || wetSand.size || wetClay.size || dryMud.size || dryClay.size) ? MATERIAL_SCAN_COLS_ACTIVE : MATERIAL_SCAN_COLS_IDLE;
+      for(let i=0;i<passes;i++) runMaterialScan(getTile,cols);
+    }
+    let budget=MATERIAL_PROCESS_CAP;
+    budget=processWetSand(getTile,setTile,dt,budget);
+    if(budget>0) budget=processWetClay(getTile,setTile,dt,budget);
+    const sun=budget>0 ? currentSunIntensity() : 0;
+    if(budget>0) budget=processDryMud(getTile,setTile,dt,budget,sun);
+    if(budget>0) processDryClay(getTile,setTile,dt,budget,sun);
+  }
 
   // Public wave kick: positive impulse pushes the surface down (entry), negative lifts it.
   function disturb(x, impulse){
@@ -288,6 +652,7 @@ window.MM = window.MM || {};
     reactionBudget = hasWaterRecipes()
       ? Math.min(160, WATER_REACTION_BUDGET_BASE + Math.floor(active.size*0.03))
       : 0;
+    updateMaterialReactions(getTile,setTile,dt);
     // Newly generated chunks: wake water along their boundary columns. World generation
     // can place caves right beside dormant water (or water beside old caves) and nothing
     // else notifies the sim about that seam.
@@ -553,6 +918,40 @@ window.MM = window.MM || {};
     if(woke) hurrySolver();
     return woke;
   }
+  function selectBatchWakeCells(cells,cap){
+    if(!Array.isArray(cells) || !cells.length || !(cap>0)) return [];
+    const byX=new Map();
+    for(const c of cells){
+      if(!c || !Number.isFinite(c.x) || !Number.isFinite(c.y)) continue;
+      const x=Math.floor(c.x), y=Math.floor(c.y);
+      let rec=byX.get(x);
+      if(!rec){ rec={x,minY:y,maxY:y}; byX.set(x,rec); }
+      else {
+        if(y<rec.minY) rec.minY=y;
+        if(y>rec.maxY) rec.maxY=y;
+      }
+    }
+    const xs=[...byX.keys()].sort((a,b)=>a-b);
+    if(!xs.length) return [];
+    const out=[];
+    const used=new Set();
+    const add=(x,y)=>{
+      if(out.length>=cap || !Number.isFinite(y)) return;
+      const kk=k(x,y);
+      if(used.has(kk)) return;
+      used.add(kk);
+      out.push({x,y});
+    };
+    const stride=Math.max(1,Math.ceil(xs.length/Math.max(1,Math.floor(cap*0.5))));
+    for(let offset=0; offset<stride && out.length<cap; offset++){
+      for(let i=offset; i<xs.length && out.length<cap; i+=stride){
+        const rec=byX.get(xs[i]);
+        add(rec.x,rec.minY);
+        add(rec.x,rec.maxY);
+      }
+    }
+    return out;
+  }
   function addSource(x,y,getTile,setTile){
     if(hasWaterRecipes()) reactionBudget=Math.max(reactionBudget,4);
     const cur=getTile(x,y);
@@ -564,15 +963,30 @@ window.MM = window.MM || {};
     if(cur===T.WATER){
       wakeWaterCell(x,y,false); hurrySolver();
       applyWaterReactionsNear(x,y,getTile,setTile);
+      queueMaterialAround(x,y,getTile);
       return true;
     }
-    return applyWaterReactionAt(x,y,getTile,setTile);
+    const reacted=applyWaterReactionAt(x,y,getTile,setTile);
+    if(reacted) queueMaterialAround(x,y,getTile);
+    return reacted;
   }
   function onTileChanged(x,y,getTile){
     // Edits are usually player/mining/worldgen events. Wake a modest region so
     // shelves, drain mouths, and cave bores react on the next tick instead of waiting
     // for the passive scan to rediscover settled water.
     wakeWaterAround(x,y,getTile,5,4);
+    queueMaterialAround(x,y,getTile);
+  }
+  function onTilesChangedBatch(cells,getTile,opts){
+    const cap=Math.max(4,Math.min(48,(opts && opts.cap)|0 || TILE_CHANGE_BATCH_WAKE_CAP));
+    const selected=selectBatchWakeCells(cells,cap);
+    let woke=false;
+    for(const c of selected){
+      woke = wakeWaterAround(c.x,c.y,getTile,5,4) || woke;
+      queueMaterialAround(c.x,c.y,getTile);
+    }
+    if(woke) hurrySolver();
+    return selected.length;
   }
   // A solid is about to overwrite the water at (x,y): conserve volume by moving that
   // unit to the nearest opening — above the column it belongs to, else beside it.
@@ -625,16 +1039,20 @@ window.MM = window.MM || {};
     if(n<=0 || yBot<yTop) return;
     const ox=x0*TILE, oy=yTop*TILE;
     const wpx=n*TILE, hpx=(yBot-yTop+1)*TILE;
+    const pixelScale=overlayPixelScale(ctx,wpx,hpx);
+    const swpx=Math.max(1,Math.ceil(wpx*pixelScale));
+    const shpx=Math.max(1,Math.ceil(hpx*pixelScale));
     const cap=(typeof window!=='undefined') ? window.__mmFrameCap : null;
     const canReuse=!!(cap && cap.unlocked && offCanvas && overlayCache.valid &&
       now-lastOverlayRefresh<OVERLAY_CACHE_INTERVAL_MS &&
       overlayCache.x0===x0 && overlayCache.yTop===yTop && overlayCache.n===n && overlayCache.yBot===yBot &&
-      overlayCache.wpx===wpx && overlayCache.hpx===hpx);
+      overlayCache.wpx===wpx && overlayCache.hpx===hpx &&
+      overlayCache.pixelScale===pixelScale && overlayCache.swpx===swpx && overlayCache.shpx===shpx);
     if(canReuse){
       overlayCacheHits++;
       ctx.save();
       ctx.imageSmoothingEnabled=true;
-      ctx.drawImage(offCanvas, 0,0, wpx,hpx, ox,oy, wpx,hpx);
+      ctx.drawImage(offCanvas, 0,0, swpx,shpx, ox,oy, wpx,hpx);
       ctx.restore();
       return;
     }
@@ -721,13 +1139,17 @@ window.MM = window.MM || {};
 
     // 4. Offscreen layer (world-pixel space) — base shape, then clipped effects
     if(!offCanvas){ offCanvas=document.createElement('canvas'); offCtx=offCanvas.getContext('2d'); }
-    if(offCanvas.width<wpx) offCanvas.width=wpx;
-    if(offCanvas.height<hpx) offCanvas.height=hpx;
+    if(offCanvas.width<swpx || offCanvas.height<shpx || offCanvas.width>swpx*1.6 || offCanvas.height>shpx*1.6){
+      offCanvas.width=swpx;
+      offCanvas.height=shpx;
+      overlayCache.valid=false;
+    }
     const g=offCtx;
+    g.imageSmoothingEnabled=true;
     g.setTransform(1,0,0,1,0,0);
     g.globalCompositeOperation='source-over';
     g.clearRect(0,0,offCanvas.width,offCanvas.height);
-    g.setTransform(1,0,0,1,-ox,-oy);
+    g.setTransform(pixelScale,0,0,pixelScale,-ox*pixelScale,-oy*pixelScale);
 
     // 4a. Base body: per-column water shapes with shared edge heights.
     // Exposed top edges get rounded caps so lakes stop as water, not square UI blocks.
@@ -892,15 +1314,16 @@ window.MM = window.MM || {};
     // 5. Composite the layer in one blend (smoothing on: soft edges under zoom)
     ctx.save();
     ctx.imageSmoothingEnabled=true;
-    ctx.drawImage(offCanvas, 0,0, wpx,hpx, ox,oy, wpx,hpx);
+    ctx.drawImage(offCanvas, 0,0, swpx,shpx, ox,oy, wpx,hpx);
     ctx.restore();
     lastOverlayRefresh=now;
     overlayFullRenders++;
-    overlayCache={valid:true,x0,yTop,n,yBot,wpx,hpx};
+    overlayCache={valid:true,x0,yTop,n,yBot,wpx,hpx,pixelScale,swpx,shpx};
   }
 
   const RESTORE_ACTIVE_CAP = 4000;
   const RESTORE_LATERAL_CAP = 1200;
+  const RESTORE_MATERIAL_CAP = 1200;
   function validRestoreCoord(x,y){
     return Number.isFinite(x) && Number.isFinite(y) && Math.abs(x)<10000000 && y>=0 && y<WORLD_H;
   }
@@ -940,6 +1363,12 @@ window.MM = window.MM || {};
     pressureLastMs=0;
     pressureMaxMs=0;
     reactionBudget=0;
+    wetSand.clear();
+    wetClay.clear();
+    dryMud.clear();
+    dryClay.clear();
+    materialScanAcc=0;
+    materialScanOffset=0;
   }
   function snapshot(){
     try{
@@ -957,15 +1386,45 @@ window.MM = window.MM || {};
         lateral.push([Math.floor(x),Math.max(0,Math.min(5,val))]);
         if(lateral.length>=RESTORE_LATERAL_CAP) break;
       }
+      const wet=[];
+      for(const rec of wetSand.values()){
+        if(!rec || !validRestoreCoord(rec.x,rec.y)) continue;
+        wet.push([Math.floor(rec.x),Math.floor(rec.y),clampFinite(rec.wet,0,20,0)]);
+        if(wet.length>=RESTORE_MATERIAL_CAP) break;
+      }
+      const clayWet=[];
+      for(const rec of wetClay.values()){
+        if(!rec || !validRestoreCoord(rec.x,rec.y)) continue;
+        clayWet.push([Math.floor(rec.x),Math.floor(rec.y),clampFinite(rec.wet,0,20,0)]);
+        if(clayWet.length>=RESTORE_MATERIAL_CAP) break;
+      }
+      const dry=[];
+      for(const rec of dryMud.values()){
+        if(!rec || !validRestoreCoord(rec.x,rec.y)) continue;
+        dry.push([Math.floor(rec.x),Math.floor(rec.y),clampFinite(rec.dry,0,30,0)]);
+        if(dry.length>=RESTORE_MATERIAL_CAP) break;
+      }
+      const clayDry=[];
+      for(const rec of dryClay.values()){
+        if(!rec || !validRestoreCoord(rec.x,rec.y)) continue;
+        clayDry.push([Math.floor(rec.x),Math.floor(rec.y),clampFinite(rec.dry,0,WET_CLAY_DRY_PROGRESS_CAP,0)]);
+        if(clayDry.length>=RESTORE_MATERIAL_CAP) break;
+      }
       return {
         v:2,
         active:activeList,
         lateral,
+        wet,
+        clayWet,
+        dry,
+        clayDry,
         passiveScanOffset:Number.isFinite(passiveScanOffset)?Math.floor(passiveScanOffset):0,
         passiveScanAcc:clampFinite(passiveScanAcc,0,PASSIVE_SCAN_INTERVAL*PASSIVE_SCAN_BURST_LIMIT,0),
         pressureIntervalCurrent:clampFinite(pressureIntervalCurrent,PRESSURE_INTERVAL_MIN,PRESSURE_INTERVAL_MAX,PRESSURE_INTERVAL_BASE),
         pressureAcc:clampFinite(pressureAcc,0,10,0),
-        lateralAcc:clampFinite(lateralAcc,0,5,0)
+        lateralAcc:clampFinite(lateralAcc,0,5,0),
+        materialScanOffset:Number.isFinite(materialScanOffset)?Math.floor(materialScanOffset):0,
+        materialScanAcc:clampFinite(materialScanAcc,0,MATERIAL_SCAN_INTERVAL*3,0)
       };
     }catch(e){ return null; }
   }
@@ -985,11 +1444,41 @@ window.MM = window.MM || {};
         if(Number.isFinite(x) && Math.abs(x)<10000000 && Number.isFinite(val) && val>0) lateralCooldown.set(Math.floor(x),Math.max(0,Math.min(5,val)));
       }
     }
+    if(Array.isArray(s.wet)){
+      for(const row of s.wet){
+        if(!Array.isArray(row) || row.length<2 || wetSand.size>=RESTORE_MATERIAL_CAP) continue;
+        const x=Number(row[0]), y=Number(row[1]), wet=Number(row[2]);
+        if(validRestoreCoord(x,y)) wetSand.set(Math.floor(x)+','+Math.floor(y),{x:Math.floor(x),y:Math.floor(y),wet:clampFinite(wet,0,20,0)});
+      }
+    }
+    if(Array.isArray(s.clayWet)){
+      for(const row of s.clayWet){
+        if(!Array.isArray(row) || row.length<2 || wetClay.size>=RESTORE_MATERIAL_CAP) continue;
+        const x=Number(row[0]), y=Number(row[1]), wet=Number(row[2]);
+        if(validRestoreCoord(x,y)) wetClay.set(Math.floor(x)+','+Math.floor(y),{x:Math.floor(x),y:Math.floor(y),wet:clampFinite(wet,0,20,0)});
+      }
+    }
+    if(Array.isArray(s.dry)){
+      for(const row of s.dry){
+        if(!Array.isArray(row) || row.length<2 || dryMud.size>=RESTORE_MATERIAL_CAP) continue;
+        const x=Number(row[0]), y=Number(row[1]), dry=Number(row[2]);
+        if(validRestoreCoord(x,y)) dryMud.set(Math.floor(x)+','+Math.floor(y),{x:Math.floor(x),y:Math.floor(y),dry:clampFinite(dry,0,30,0)});
+      }
+    }
+    if(Array.isArray(s.clayDry)){
+      for(const row of s.clayDry){
+        if(!Array.isArray(row) || row.length<2 || dryClay.size>=RESTORE_MATERIAL_CAP) continue;
+        const x=Number(row[0]), y=Number(row[1]), dry=Number(row[2]);
+        if(validRestoreCoord(x,y)) dryClay.set(Math.floor(x)+','+Math.floor(y),{x:Math.floor(x),y:Math.floor(y),dry:clampFinite(dry,0,WET_CLAY_DRY_PROGRESS_CAP,0)});
+      }
+    }
     if(Number.isFinite(s.passiveScanOffset)) passiveScanOffset=Math.max(0,Math.floor(s.passiveScanOffset));
     if(Number.isFinite(s.passiveScanAcc)) passiveScanAcc=clampFinite(s.passiveScanAcc,0,PASSIVE_SCAN_INTERVAL*PASSIVE_SCAN_BURST_LIMIT,0);
     if(Number.isFinite(s.pressureIntervalCurrent)) pressureIntervalCurrent=clampFinite(s.pressureIntervalCurrent,PRESSURE_INTERVAL_MIN,PRESSURE_INTERVAL_MAX,PRESSURE_INTERVAL_BASE);
     if(Number.isFinite(s.pressureAcc)) pressureAcc=clampFinite(s.pressureAcc,0,10,0);
     if(Number.isFinite(s.lateralAcc)) lateralAcc=clampFinite(s.lateralAcc,0,5,0);
+    if(Number.isFinite(s.materialScanOffset)) materialScanOffset=Math.max(0,Math.floor(s.materialScanOffset));
+    if(Number.isFinite(s.materialScanAcc)) materialScanAcc=clampFinite(s.materialScanAcc,0,MATERIAL_SCAN_INTERVAL*3,0);
   }catch(e){} }
 
   // ---- Hydrostatic equalization (true communicating vessels) ----
@@ -1173,11 +1662,11 @@ window.MM = window.MM || {};
     return {touchedXs, variance, hadTransfers};
   }
 
-  function metrics(){ return {active:active.size, springs:springs.size, streams:streams.length, passiveScanColumns:passiveScanLastColumns, pressureMs:+pressureLastMs.toFixed(3), overlayCacheHits, overlayFullRenders}; }
+  function metrics(){ return {active:active.size, springs:springs.size, streams:streams.length, wetSand:wetSand.size, wetClay:wetClay.size, dryMud:dryMud.size, dryClay:dryClay.size, passiveScanColumns:passiveScanLastColumns, pressureMs:+pressureLastMs.toFixed(3), overlayCacheHits, overlayFullRenders}; }
   // Test/debug introspection (not used by the game loop)
-  function _debug(){ return {active:[...active], seeds:[...pressureSeeds], cooldown:[...lateralCooldown.entries()], pressureAcc, pressureIntervalCurrent, pressureLastMs, pressureMaxMs, passiveScanAcc, passiveScanOffset, passiveScanLastColumns, passiveScanTotalColumns}; }
+  function _debug(){ return {active:[...active], seeds:[...pressureSeeds], cooldown:[...lateralCooldown.entries()], wetSand:[...wetSand.values()], wetClay:[...wetClay.values()], dryMud:[...dryMud.values()], dryClay:[...dryClay.values()], pressureAcc, pressureIntervalCurrent, pressureLastMs, pressureMaxMs, passiveScanAcc, passiveScanOffset, passiveScanLastColumns, passiveScanTotalColumns, materialScanAcc, materialScanOffset}; }
 
-  MM.water = {update, addSource, drawOverlay, onTileChanged, displaceAt, disturb, noteChunkGenerated, reset, snapshot, restore, metrics, _debug};
+  MM.water = {update, addSource, drawOverlay, onTileChanged, onTilesChangedBatch, displaceAt, disturb, noteChunkGenerated, reset, snapshot, restore, metrics, _debug};
 })();
 // ESM export (progressive migration)
 export const water = (typeof window!=='undefined' && window.MM) ? window.MM.water : undefined;

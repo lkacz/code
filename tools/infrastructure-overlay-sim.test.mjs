@@ -1,5 +1,5 @@
-// Infrastructure overlay regressions: pipes/cables coexist with terrain while
-// still powering hydraulic/electric networks.
+// Infrastructure overlay regressions: pipes/cables/ladders coexist with terrain
+// while still powering hydraulic/electric networks.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
@@ -46,6 +46,19 @@ assert.equal(getTile(0,20),T.STONE,'restore keeps terrain under overlay');
 assert.equal(getNetworkTile(0,20),T.COPPER_WIRE,'restore revives cable overlay');
 
 reset();
+setTile(1,21,T.BRICK);
+setOverlay(1,21,T.LADDER);
+assert.equal(getTile(1,21),T.BRICK,'ladder overlay can be placed on a solid block without replacing it');
+assert.ok(world.hasInfrastructure(1,21,T.LADDER),'ladder is stored in the infrastructure overlay stack');
+assert.deepEqual(world.getInfrastructureStack(1,21),[T.LADDER],'ladder overlay stack exposes the climbing fixture');
+snap=world.snapshotInfrastructure();
+assert.deepEqual(snap.list.map(o=>[o.x,o.y,o.t]),[[1,21,T.LADDER]],'infrastructure snapshot captures ladder overlays');
+world.clearInfrastructure(1,21,T.LADDER);
+assert.equal(getTile(1,21),T.BRICK,'clearing a ladder overlay preserves the supporting block');
+world.restoreInfrastructure(snap);
+assert.ok(world.hasInfrastructure(1,21,T.LADDER),'restore revives ladder overlays on solid blocks');
+
+reset();
 setTile(0,22,T.STONE);
 setOverlay(0,22,T.COPPER_WIRE);
 setOverlay(0,22,T.WATER_PIPE);
@@ -70,6 +83,21 @@ setOverlay(0,24,T.WATER_PIPE);
 setOverlay(0,24,T.COPPER_WIRE);
 assert.equal(getElectricNetworkTile(0,24),T.COPPER_WIRE,'electric getter is independent from stacked placement order');
 assert.equal(getFluidNetworkTile(0,24),T.WATER_PIPE,'fluid getter is independent from stacked placement order');
+
+reset();
+setTile(6,26,T.AIR);
+assert.equal(world.setConstructionBackground(6,26,T.BRICK),true,'background construction tile can be placed in its own layer');
+assert.equal(getTile(6,26),T.AIR,'background construction does not replace passable foreground terrain');
+assert.equal(world.getConstructionBackground(6,26),T.BRICK,'background construction getter returns the support/decor tile');
+assert.equal(world.isConstructionBackgroundTile(T.BRICK),true,'brick is eligible for construction background');
+assert.equal(world.isConstructionBackgroundTile(T.WATER_PIPE),false,'infrastructure is not eligible for construction background');
+let bgSnap=world.snapshotConstructionBackground();
+assert.deepEqual(bgSnap.list.map(o=>[o.x,o.y,o.t]),[[6,26,T.BRICK]],'background construction snapshot captures support tiles');
+assert.equal(world.clearConstructionBackground(6,26),true,'background construction tile can be cleared independently');
+assert.equal(getTile(6,26),T.AIR,'clearing background construction still preserves foreground terrain');
+world.restoreConstructionBackground(bgSnap);
+assert.equal(world.getConstructionBackground(6,26),T.BRICK,'background construction restore revives support tiles');
+assert.equal(world.metrics().constructionBackground,1,'world metrics track construction background cells');
 
 reset();
 dynamo.plannedCells(-4,30,'horizontal').forEach(c=>setTile(c.x,c.y,c.t));
@@ -177,12 +205,20 @@ assert.equal(getTile(0,75),T.WATER,'stranded remnant exits through the lower ope
 
 const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const waterDrawIdx = mainSrc.indexOf('if(WATER){ WATER.drawOverlay');
-const infraDrawIdx = mainSrc.indexOf('drawInfrastructureOverlays(sx,sy,viewX,viewY);', waterDrawIdx);
-assert.ok(waterDrawIdx > 0 && infraDrawIdx > waterDrawIdx, 'pipe overlays render after the water overlay for smooth submerged composition');
+const playerDrawIdx = mainSrc.indexOf('drawPlayer();');
+const ladderBackDrawIdx = mainSrc.indexOf('drawInfrastructureOverlays(sx,sy,viewX,viewY,{only:T.LADDER});');
+const infraDrawIdx = mainSrc.indexOf('drawInfrastructureOverlays(sx,sy,viewX,viewY,{exclude:T.LADDER});', waterDrawIdx);
+assert.ok(ladderBackDrawIdx > 0 && playerDrawIdx > ladderBackDrawIdx, 'ladder overlays render before the hero so the hero appears on the ladder');
+assert.ok(waterDrawIdx > 0 && infraDrawIdx > waterDrawIdx, 'pipe and cable overlays render after the water overlay for smooth submerged composition');
 assert.match(mainSrc, /function migrateLegacyInfrastructureTerrain/, 'load path migrates legacy pipe terrain into infrastructure overlays');
 assert.match(mainSrc, /function getRenderInfrastructureTile/, 'render path has a legacy infrastructure fallback');
 assert.match(mainSrc, /function getElectricNetworkTile/, 'main has an electric-network getter for stacked infrastructure');
 assert.match(mainSrc, /function getFluidNetworkTile/, 'main has a fluid-network getter for stacked infrastructure');
+assert.match(mainSrc, /function drawLadderOverlay\(g,px,py,h,conn\)/, 'main renders ladders as detailed overlay fixtures');
+assert.match(mainSrc, /else if\(t===T\.LADDER\)\{\s+drawLadderOverlay\(ctx,px,py,h,ladderConnections\(x,y,hasLadderAt\)\);/, 'infrastructure overlay pass draws connection-aware ladders over supporting blocks');
+assert.match(mainSrc, /t===T\.LADDER \? 3/, 'render sorting keeps ladders above pipes and cables in stacked overlay cells');
+assert.match(mainSrc, /function canPlaceLadderAt\(tx,ty,cur\)/, 'main has ladder-specific placement rules');
+assert.match(mainSrc, /FALLING && FALLING\.isPlayerBuiltAt && FALLING\.isPlayerBuiltAt\(x,y\)/, 'ladder placement can distinguish player-built foreground from natural terrain');
 assert.doesNotMatch(mainSrc, /if\(t===T\.WATER_PIPE\)\{[\s\S]{0,360}PUMPS\.drawPipeTile\(cctx/, 'chunk cache no longer bakes water pipes before water');
 
 console.log('infrastructure-overlay-sim: all assertions passed');

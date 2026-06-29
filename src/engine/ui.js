@@ -1222,6 +1222,58 @@ MM.ui = (function(){
     },1200);
     panel.appendChild(box);
   }
+  function injectSpringPlatformDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('springPlatformDebugBox')) return;
+    actions = actions || {};
+    const box=document.createElement('div');
+    box.id='springPlatformDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(124,199,216,.14); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='Platformy sprezynowe (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+    const metrics=document.createElement('div');
+    metrics.id='springPlatformDebugMetrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    function refreshMetrics(){
+      const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+      metrics.textContent=m ? ('platformy '+m.machines+' | naladowane '+m.charged+' | suma '+m.storedEnergy+' E | skoki '+m.launches+' | pelne '+m.poweredLaunches+' | slabe '+m.unpoweredLaunches) : 'brak metryk platform';
+    }
+    const buttons=[
+      ['give','Platformy +','Dodaje platformy sprezynowe i przewody do zasobow'],
+      ['place','Postaw naladowana','Stawia naladowana platforme obok bohatera'],
+      ['placeRig','Uklad testowy','Stawia dynamo, przewody i naladowana platforme'],
+      ['charge','Laduj najblizsza','Laduje najblizsza platforme'],
+      ['empty','Rozladuj najblizsza','Rozladowuje najblizsza platforme']
+    ];
+    buttons.forEach(([id,txt,title])=>{
+      const b=document.createElement('button');
+      b.textContent=txt;
+      b.title=title;
+      b.style.cssText='flex:1 1 108px; font-size:11px; padding:3px 6px; border:1px solid rgba(124,199,216,.68);';
+      b.addEventListener('click',()=>{
+        try{
+          const fn=actions[id];
+          const ok=(typeof fn==='function') ? fn() : false;
+          if(id==='give') msg(ok ? ('Platformy +'+ok) : 'Nie dodano platform');
+          else if(id==='place') msg(ok ? 'Platforma postawiona' : 'Brak miejsca na platforme');
+          else if(id==='placeRig') msg(ok ? 'Uklad platformy postawiony' : 'Brak miejsca na uklad');
+          else if(id==='charge') msg(ok ? 'Platforma naladowana' : 'Brak platformy w poblizu');
+          else if(id==='empty') msg(ok ? 'Platforma rozladowana' : 'Brak platformy w poblizu');
+          refreshMetrics();
+        }catch(e){ msg('Debug platformy: blad'); }
+      });
+      box.appendChild(b);
+    });
+    box.appendChild(metrics);
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1200);
+    panel.appendChild(box);
+  }
   function injectPumpDebugPanel(actions, menuPanel){
     const panel = menuPanel || document.getElementById('menuPanel');
     if(!panel || document.getElementById('pumpDebugBox')) return;
@@ -1332,9 +1384,16 @@ MM.ui = (function(){
     box.id='companionDebugBox';
     box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(115,255,160,.16); padding-top:6px;';
     const label=document.createElement('div');
-    label.textContent='Bio-pomocnik (debug):';
+    label.textContent='Pomocnicy (debug):';
     label.style.cssText='width:100%; font-size:11px; opacity:.72;';
     box.appendChild(label);
+    function makeGroup(text){
+      const g=document.createElement('div');
+      g.textContent=text;
+      g.style.cssText='width:100%; font-size:10px; opacity:.58; margin-top:2px;';
+      box.appendChild(g);
+      return g;
+    }
     function makeNumber(id,labelText,min,max,step,value){
       const wrap=document.createElement('label');
       wrap.style.cssText='flex:1 1 82px; display:flex; flex-direction:column; gap:2px; font-size:10px; opacity:.8;';
@@ -1353,8 +1412,19 @@ MM.ui = (function(){
       if(!Number.isFinite(v)) return fallback;
       return Math.max(min,Math.min(max,v));
     }
+    makeGroup('Bio');
     const spawnInput=makeNumber('spawnBiomass','start biomasy',1,30,1,debugNumber('companions','spawnBiomass',5,1,30));
     const feedInput=makeNumber('feedBiomass','dokarm +',1,30,1,debugNumber('companions','feedBiomass',1,1,30));
+    makeGroup('Golem z mokrej gliny');
+    const golemClayInput=makeNumber('golemClay','masa gliny',6,18,1,debugNumber('companions','golemClay',8,6,18));
+    const guardInput=makeNumber('guardDamage','test guard',1,999,1,debugNumber('companions','guardDamage',30,1,999));
+    makeGroup('Lisciany potworek');
+    const leafInput=makeNumber('leafMass','masa lisci',5,16,1,debugNumber('companions','leafMass',8,5,16));
+    makeGroup('Wodny golem');
+    const waterInput=makeNumber('waterMass','masa wody',6,20,1,debugNumber('companions','waterMass',10,6,20));
+    makeGroup('Miesny golem');
+    const meatInput=makeNumber('meatMass','masa miesa',6,18,1,debugNumber('companions','meatMass',10,6,18));
+    makeGroup('Wspolne');
     const damageInput=makeNumber('damage','obrazenia',1,999,1,debugNumber('companions','damage',25,1,999));
     const metrics=document.createElement('div');
     metrics.id='companionDebugMetrics';
@@ -1366,21 +1436,61 @@ MM.ui = (function(){
       if(!Array.isArray(list) || !list.length) return 'brak aktywnych pomocnikow';
       return list.slice(0,4).map((c,i)=>{
         const g=c.genome || {};
-        return '#'+(i+1)+' '+(c.name||c.id)+' HP '+Math.round(c.hp||0)+'/'+Math.round(c.maxHp||0)+' bio '+(c.biomass||0)+' '+(g.body||'?')+' oczy '+(g.eyes||0)+' nogi '+(g.legs||0);
+        if(c.kind==='clay_golem'){
+          return '#'+(i+1)+' '+(c.name||c.id)+' GOLEM HP '+Math.round(c.hp||0)+'/'+Math.round(c.maxHp||0)+' glina '+(c.clay||0)+' '+(g.torso||'?')+'/'+(g.arms||'?')+' oczy '+(g.eyeCount||0);
+        }
+        if(c.kind==='leaf_monster'){
+          return '#'+(i+1)+' '+(c.name||c.id)+' LISC HP '+Math.round(c.hp||0)+'/'+Math.round(c.maxHp||0)+' liscie '+(c.leaves||0)+' wiatr '+Number(c.lastWind||0).toFixed(2)+' '+(g.silhouette||'?')+'/'+(g.wings||'?');
+        }
+        if(c.kind==='water_golem'){
+          return '#'+(i+1)+' '+(c.name||c.id)+' WODA HP '+Math.round(c.hp||0)+'/'+Math.round(c.maxHp||0)+' woda '+(c.water||0)+' mokry '+Number(c.wateredT||0).toFixed(1)+' '+(g.torso||'?')+'/'+(g.arms||'?');
+        }
+        if(c.kind==='meat_golem'){
+          return '#'+(i+1)+' '+(c.name||c.id)+' MIESO HP '+Math.round(c.hp||0)+'/'+Math.round(c.maxHp||0)+' mieso '+(c.meat||0)+' zgnije za '+Math.round(c.rotIn||0)+'s '+(g.torso||'?')+'/'+(g.arms||'?');
+        }
+        if(c.kind==='rotten_meat_golem'){
+          return '#'+(i+1)+' '+(c.name||c.id)+' ZOMBI HP '+Math.round(c.hp||0)+'/'+Math.round(c.maxHp||0)+' mieso '+(c.meat||0)+' atak '+Number(c.attackCd||0).toFixed(1)+' '+(g.torso||'?')+'/'+(g.head||'?');
+        }
+        if(c.kind==='fried_chicken'){
+          return '#'+(i+1)+' '+(c.name||c.id)+' KURCZAK pickup pelne HP';
+        }
+        return '#'+(i+1)+' '+(c.name||c.id)+' BIO HP '+Math.round(c.hp||0)+'/'+Math.round(c.maxHp||0)+' bio '+(c.biomass||0)+' '+(g.body||'?')+' oczy '+(g.eyes||0)+' nogi '+(g.legs||0);
       }).join(' | ');
     }
     function refreshMetrics(){
       const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
       const list=(typeof actions.list==='function') ? actions.list() : [];
-      metrics.textContent=m ? ('aktywni '+(m.count||0)+' | HP '+(m.hp||0)+'/'+(m.maxHp||0)+' | biomasa '+(m.biomass||0)+' | lasery '+(m.lasers||0)) : 'brak metryk pomocnikow';
+      metrics.textContent=m ? ('aktywni '+(m.count||0)+' | HP '+(m.hp||0)+'/'+(m.maxHp||0)+' | bio '+(m.biomass||0)+' | golemy '+(m.golems||0)+' | glina '+(m.clay||0)+' | lisciaki '+(m.leafMonsters||0)+' | liscie '+(m.leaves||0)+' | wodne '+(m.waterGolems||0)+' | woda '+(m.water||0)+' | miesne '+(m.meatGolems||0)+' | zombi '+(m.rottenMeatGolems||0)+' | kurczaki '+(m.friedChickens||0)+' | lasery '+(m.lasers||0)) : 'brak metryk pomocnikow';
       details.textContent=listText(list);
     }
     const buttons=[
-      ['give','Skladniki +20','Dodaje biomase obcych i surowe mieso do ekwipunku'],
-      ['spawn','Stworz','Tworzy pomocnika z wybrana poczatkowa biomasa'],
-      ['spawnStrong','Mocny','Tworzy silniejszego pomocnika testowego'],
-      ['feed','Dokarm','Dodaje wybrana porcje biomasy do najblizszego pomocnika'],
-      ['setBiomass','Ustaw bio','Ustawia biomase najblizszego pomocnika na wartosc startowa'],
+      ['give','Bio skladniki','Dodaje biomase obcych i surowe mieso do ekwipunku'],
+      ['spawn','Stworz bio','Tworzy bio-pomocnika z wybrana poczatkowa biomasa'],
+      ['spawnStrong','Mocny bio','Tworzy silniejszego bio-pomocnika testowego'],
+      ['feed','Dokarm bio','Dodaje wybrana porcje biomasy do najblizszego bio-pomocnika'],
+      ['setBiomass','Ustaw bio','Ustawia biomase najblizszego bio-pomocnika na wartosc startowa'],
+      ['giveGolem','Glina + kamien','Dodaje gline i kamienie mistrza do ekwipunku'],
+      ['ritualGolem','Rytual golema','Uklada mokra gline wokol kamienia mistrza i uruchamia prawdziwy rytual'],
+      ['spawnGolem','Stworz golema','Tworzy glinianego golema debugowego z wybrana masa gliny'],
+      ['setClay','Ustaw gline','Ustawia mase gliny najblizszego golema'],
+      ['guard','Guard hit','Symuluje obrazenia bohatera, aby sprawdzic absorpcje golema'],
+      ['shield','Tarcza','Wymusza widoczny puls tarczy najblizszego golema'],
+      ['golemMelee','Cios golema','Wymusza cios golema, jezeli istnieje cel w zasiegu'],
+      ['giveLeaf','Liscie + kamien','Dodaje liscie i kamienie slugi do ekwipunku'],
+      ['ritualLeaf','Rytual lisciaka','Uklada liscie wokol kamienia slugi i uruchamia rytual'],
+      ['spawnLeaf','Stworz lisciaka','Tworzy debugowego liscianego potworka z wybrana masa lisci'],
+      ['setLeaves','Ustaw liscie','Ustawia mase lisci najblizszego liscianego potworka'],
+      ['giveWater','Woda + kamien','Dodaje wode i kamienie mistrza do ekwipunku'],
+      ['ritualWater','Rytual wodny','Uklada basen wody, wrzuca kamien mistrza i uruchamia rytual'],
+      ['spawnWater','Stworz wodnego','Tworzy debugowego wodnego golema z wybrana masa wody'],
+      ['setWater','Ustaw wode','Ustawia mase wody najblizszego wodnego golema'],
+      ['waterSpray','Strumien wody','Wymusza gaszenie ognia albo strzal wodny, jezeli jest cel'],
+      ['giveMeat','Mieso + kamien','Dodaje surowe mieso i kamienie mistrza do ekwipunku'],
+      ['ritualMeat','Rytual miesny','Uklada surowe mieso wokol kamienia mistrza i uruchamia rytual'],
+      ['spawnMeat','Stworz miesnego','Tworzy debugowego miesnego golema z wybrana masa miesa'],
+      ['setMeat','Ustaw mieso','Ustawia mase miesa najblizszego miesnego golema'],
+      ['rotMeat','Zgnij teraz','Natychmiast zmienia najblizszego surowego miesnego golema w zombi'],
+      ['cookMeat','Usmaz','Zamienia najblizszego miesnego lub zombi golema w pieczonego kurczaka'],
       ['heal','Pelne HP','Leczy najblizszego pomocnika do maksimum'],
       ['damage','Ran','Zadaje najblizszemu pomocnikowi wybrane obrazenia'],
       ['kill','Zabij','Testuje smierc i lekka eksplozje pomocnika'],
@@ -1389,6 +1499,26 @@ MM.ui = (function(){
       ['laser','Laser','Wymusza strzal, jezeli istnieje cel w zasiegu'],
       ['clear','Wyczysc','Usuwa wszystkich pomocnikow']
     ];
+    function failText(id){
+      if(id==='spawnGolem') return 'Debug golema: nie udalo sie znalezc/spawnac golema';
+      if(id==='ritualGolem') return 'Debug golema: brak wolnego miejsca na rytual';
+      if(id==='setClay' || id==='shield') return 'Debug golema: brak aktywnego golema';
+      if(id==='guard') return 'Debug golema: brak golema blisko bohatera';
+      if(id==='golemMelee') return 'Debug golema: brak celu w zasiegu';
+      if(id==='spawnLeaf') return 'Debug lisciaka: nie udalo sie znalezc/spawnac potworka';
+      if(id==='ritualLeaf') return 'Debug lisciaka: brak wolnego miejsca na rytual';
+      if(id==='setLeaves') return 'Debug lisciaka: brak aktywnego liscianego potworka';
+      if(id==='spawnWater') return 'Debug wodnego golema: nie udalo sie znalezc/spawnac golema';
+      if(id==='ritualWater') return 'Debug wodnego golema: brak wolnego miejsca na rytual';
+      if(id==='setWater') return 'Debug wodnego golema: brak aktywnego wodnego golema';
+      if(id==='waterSpray') return 'Debug wodnego golema: brak ognia lub celu w zasiegu';
+      if(id==='spawnMeat') return 'Debug miesnego golema: nie udalo sie znalezc/spawnac golema';
+      if(id==='ritualMeat') return 'Debug miesnego golema: brak wolnego miejsca na rytual';
+      if(id==='setMeat') return 'Debug miesnego golema: brak aktywnego miesnego golema';
+      if(id==='rotMeat') return 'Debug miesnego golema: brak surowego miesnego golema';
+      if(id==='cookMeat') return 'Debug miesnego golema: brak miesnego/zombi golema';
+      return 'Debug pomocnika: brak celu / miejsca';
+    }
     buttons.forEach(([id,txt,title])=>{
       const b=document.createElement('button');
       b.textContent=txt;
@@ -1398,10 +1528,32 @@ MM.ui = (function(){
         try{
           let ok=false;
           if(id==='give') ok=!!(actions.give && actions.give());
+          else if(id==='giveGolem') ok=!!(actions.giveGolem && actions.giveGolem());
+          else if(id==='giveLeaf') ok=!!(actions.giveLeaf && actions.giveLeaf());
+          else if(id==='giveWater') ok=!!(actions.giveWater && actions.giveWater());
+          else if(id==='giveMeat') ok=!!(actions.giveMeat && actions.giveMeat());
           else if(id==='spawn') ok=!!(actions.spawn && actions.spawn(readNumber(spawnInput,5,1,30)));
           else if(id==='spawnStrong') ok=!!(actions.spawn && actions.spawn(18));
+          else if(id==='spawnGolem') ok=!!(actions.spawnGolem && actions.spawnGolem(readNumber(golemClayInput,8,6,18)));
+          else if(id==='ritualGolem') ok=!!(actions.ritualGolem && actions.ritualGolem(readNumber(golemClayInput,8,6,18)));
+          else if(id==='spawnLeaf') ok=!!(actions.spawnLeaf && actions.spawnLeaf(readNumber(leafInput,8,5,16)));
+          else if(id==='ritualLeaf') ok=!!(actions.ritualLeaf && actions.ritualLeaf(readNumber(leafInput,8,5,16)));
+          else if(id==='spawnWater') ok=!!(actions.spawnWater && actions.spawnWater(readNumber(waterInput,10,6,20)));
+          else if(id==='ritualWater') ok=!!(actions.ritualWater && actions.ritualWater(readNumber(waterInput,10,6,20)));
+          else if(id==='spawnMeat') ok=!!(actions.spawnMeat && actions.spawnMeat(readNumber(meatInput,10,6,18)));
+          else if(id==='ritualMeat') ok=!!(actions.ritualMeat && actions.ritualMeat(readNumber(meatInput,10,6,18)));
           else if(id==='feed') ok=!!(actions.feed && actions.feed(readNumber(feedInput,1,1,30)));
           else if(id==='setBiomass') ok=!!(actions.setBiomass && actions.setBiomass(readNumber(spawnInput,5,1,30)));
+          else if(id==='setClay') ok=!!(actions.setClay && actions.setClay(readNumber(golemClayInput,8,6,18)));
+          else if(id==='setLeaves') ok=!!(actions.setLeaves && actions.setLeaves(readNumber(leafInput,8,5,16)));
+          else if(id==='setWater') ok=!!(actions.setWater && actions.setWater(readNumber(waterInput,10,6,20)));
+          else if(id==='setMeat') ok=!!(actions.setMeat && actions.setMeat(readNumber(meatInput,10,6,18)));
+          else if(id==='rotMeat') ok=!!(actions.rotMeat && actions.rotMeat());
+          else if(id==='cookMeat') ok=!!(actions.cookMeat && actions.cookMeat());
+          else if(id==='guard') ok=!!(actions.guard && actions.guard(readNumber(guardInput,30,1,999)));
+          else if(id==='shield') ok=!!(actions.shield && actions.shield());
+          else if(id==='golemMelee') ok=!!(actions.golemMelee && actions.golemMelee());
+          else if(id==='waterSpray') ok=!!(actions.waterSpray && actions.waterSpray());
           else if(id==='heal') ok=!!(actions.heal && actions.heal());
           else if(id==='damage') ok=!!(actions.damage && actions.damage(readNumber(damageInput,25,1,999)));
           else if(id==='kill') ok=!!(actions.kill && actions.kill());
@@ -1409,7 +1561,7 @@ MM.ui = (function(){
           else if(id==='gas') ok=!!(actions.gas && actions.gas());
           else if(id==='laser') ok=!!(actions.laser && actions.laser());
           else if(id==='clear') ok=!!(actions.clear && actions.clear());
-          msg(ok ? 'Debug pomocnika: OK' : 'Debug pomocnika: brak celu / miejsca');
+          msg(ok ? 'Debug pomocnika: OK' : failText(id));
           refreshMetrics();
         }catch(e){ msg('Debug pomocnika: blad'); }
       });
@@ -1431,7 +1583,7 @@ MM.ui = (function(){
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
+  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;

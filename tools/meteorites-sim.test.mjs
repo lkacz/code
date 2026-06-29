@@ -19,6 +19,8 @@ const { T, INFO } = await import('../src/constants.js');
 const { meteorites } = await import('../src/engine/meteorites.js');
 const worldSrc = await readFile(new URL('../src/engine/world.js', import.meta.url), 'utf8');
 const audioSrc = await readFile(new URL('../src/engine/audio.js', import.meta.url), 'utf8');
+const fallingSrc = await readFile(new URL('../src/engine/falling.js', import.meta.url), 'utf8');
+const waterSrc = await readFile(new URL('../src/engine/water.js', import.meta.url), 'utf8');
 
 assert.ok(meteorites && meteorites.forceSpawn && meteorites.update, 'meteorites module exports');
 assert.equal(typeof meteorites.onTileChanged, 'function', 'meteorites expose a beacon tile-change index hook');
@@ -31,6 +33,8 @@ assert.equal(INFO[T.METEOR_DUST].dust, true, 'meteor dust is flagged as strange 
 assert.equal(INFO[T.ANTIMATTER_CRYSTAL].antimatter, true, 'antimatter meteor crystals are flagged');
 assert.match(worldSrc, /MM\.meteorites && MM\.meteorites\.onTileChanged/, 'world lifecycle keeps the meteor beacon index synchronized');
 assert.match(audioSrc, /alarm:\s*\(\)=>/, 'meteor sirens have an actual procedural alarm audio effect');
+assert.match(fallingSrc, /onTilesChangedBatch/, 'falling solids expose a batched terrain wake path for crater-sized edits');
+assert.match(waterSrc, /onTilesChangedBatch/, 'water exposes a batched terrain wake path for crater-sized edits');
 
 const SURF = 82;
 const DAY_SECONDS = 600;
@@ -177,6 +181,25 @@ assert.ok(changed.some(c=>c.t===T.COAL), 'meteorite leaves carbon-rich deposits'
 assert.ok(craterWidth>=20, 'meteor creates a broad visible bowl crater (width '+craterWidth+')');
 assert.ok(stoneRubble<=24, 'meteor does not overfill the crater with ordinary stone rubble (got '+stoneRubble+')');
 
+const batchTiles = new Map();
+function getBatchTile(x,y){
+  x=Math.floor(x); y=Math.floor(y);
+  const k=kxy(x,y);
+  if(batchTiles.has(k)) return batchTiles.get(k);
+  return y>=SURF ? T.STONE : T.AIR;
+}
+function setBatchTile(x,y,t){ batchTiles.set(kxy(x,y),t); }
+const waterWakeBeforeBatch=waterWake;
+const removedBeforeBatch=removed;
+const placedBeforeBatch=placed;
+meteorites._debug.impactAt(820,SURF,getBatchTile,setBatchTile,1.75,null,{classId:'iridium'});
+const batchWaterWake=waterWake-waterWakeBeforeBatch;
+const batchRemovedWake=removed-removedBeforeBatch;
+const batchPlacedWake=placed-placedBeforeBatch;
+assert.ok(batchWaterWake>0 && batchWaterWake<=32, 'meteor crater batches water wakeups instead of per-cell scans ('+batchWaterWake+')');
+assert.ok(batchRemovedWake>0 && batchRemovedWake<=120, 'meteor crater batches falling removal wakeups ('+batchRemovedWake+')');
+assert.ok(batchPlacedWake>0 && batchPlacedWake<=120, 'meteor crater batches falling placement wakeups ('+batchPlacedWake+')');
+
 function analyzeProceduralCrater(x0){
   const localTiles = new Map();
   function getLocal(x,y){
@@ -290,6 +313,14 @@ meteorites.restore(ecoSnap);
 const restoredEcoScan=meteorites.scanNearestCrater({x:760,y:SURF},getEcoTile);
 assert.ok(restoredEcoScan && restoredEcoScan.ecology && restoredEcoScan.ecology.kind==='glow', 'crater ecology landmark type survives snapshot restore');
 assert.ok(restoredEcoScan.ecology.glow>=ecoScan.ecology.glow, 'crater ecology progress survives snapshot restore');
+globalThis.__mmFrameMs = 35;
+const criticalEcoBefore=meteorites.metrics().craterEcologyOps;
+for(let i=0;i<20;i++) meteorites.update(1, player, getEcoTile, setEcoTile);
+const criticalEcoAfter=meteorites.metrics();
+assert.equal(criticalEcoAfter.craterPerfTier, 2, 'meteorite metrics report critical frame pressure');
+assert.equal(criticalEcoAfter.craterDrawQuality, 0, 'crater ecology switches to cheapest draw quality under critical frame pressure');
+assert.equal(criticalEcoAfter.craterEcologyOps, criticalEcoBefore, 'critical frame pressure pauses persistent crater ecology work');
+globalThis.__mmFrameMs = 16;
 
 const burstBefore=meteorites._debug.gravityBursts.length;
 assert.equal(meteorites.triggerAntimatterBurst(780,SURF-1,1.2), true, 'breaking antimatter can trigger a manual inverse-gravity burst');

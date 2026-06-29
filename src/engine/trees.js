@@ -279,7 +279,7 @@ window.MM = window.MM || {};
 
   function isTreeMaterial(t,x,y){ return t===T.WOOD || isFoliage(t,x,y); }
   function isFallenTreeMaterial(t){ return t===T.WOOD || isLeaf(t) || t===T.SNOW; }
-  function fallsAsTreeDebris(t){ return t===T.WOOD || t===T.SNOW; }
+  function fallsAsTreeDebris(t){ return isFallenTreeMaterial(t); }
 
   function collectRegisteredTreeTiles(getTile,setTile,id,stem){
     const set=treeTiles.get(id);

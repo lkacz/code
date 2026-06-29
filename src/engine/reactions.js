@@ -207,6 +207,15 @@ import { T, WORLD_H } from '../constants.js';
     resultTile:'SOLAR_PANEL',
     mirror:true
   });
+  register({
+    id:'heat_clay_to_brick',
+    stimulus:'heat',
+    priority:1,
+    pattern:['C'],
+    map:{C:'CLAY'},
+    resultTile:'BRICK',
+    mirror:false
+  });
 
   const api={
     register,

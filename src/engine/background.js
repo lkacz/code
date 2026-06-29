@@ -1000,7 +1000,7 @@
     const halo=ctx.createRadialGradient(cx,cy,r*0.24,cx,cy,haloR);
     halo.addColorStop(0,hexToRgba(state.halo,0.34));
     halo.addColorStop(0.36,hexToRgba(state.ray,0.15));
-    halo.addColorStop(1,'rgba(0,0,0,0)');
+    halo.addColorStop(1,hexToRgba(state.ray,0));
     ctx.fillStyle=halo;
     ctx.beginPath();
     ctx.arc(cx,cy,haloR,0,Math.PI*2);
@@ -1011,7 +1011,7 @@
     const body=ctx.createRadialGradient(cx-r*0.34,cy-r*0.38,r*0.08,cx+r*0.18,cy+r*0.22,r*1.02);
     body.addColorStop(0,state.edge);
     body.addColorStop(0.48,state.core);
-    body.addColorStop(1,blendColor(state.core,state.shade,0.26));
+    body.addColorStop(1,blendColor(state.core,state.accent,0.18));
     ctx.fillStyle=body;
     ctx.beginPath();
     ctx.arc(cx,cy,r,0,Math.PI*2);

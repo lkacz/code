@@ -160,6 +160,35 @@ window.MM = window.MM || {};
       try{ say('Potwór cię pokonał – respawn'); p.hp=p.maxHp||100; if(window.placePlayer) window.placePlayer(true); }catch(e){}
     }
   }
+  function companionTargetAt(wx,wy,range){
+    try{
+      const api=MM.companions;
+      if(api && typeof api.nearestForEnemy==='function') return api.nearestForEnemy(wx,wy,range);
+    }catch(e){}
+    return null;
+  }
+  function targetPoint(t){
+    if(t && t.kind==='companion') return {x:t.x, y:t.aimY==null ? t.y : t.aimY};
+    return t ? {x:t.x, y:t.y} : {x:0,y:0};
+  }
+  function damageCompanionTarget(t,dmg,srcX,srcY,cause){
+    if(!t || t.kind!=='companion') return false;
+    try{
+      const api=MM.companions;
+      if(api && typeof api.damageAtWorld==='function') return !!api.damageAtWorld(t.x,t.aimY==null ? t.y : t.aimY,dmg,{source:'boss',cause:cause||'boss',srcX,srcY,knockback:4.0});
+    }catch(e){}
+    return false;
+  }
+  function preyForBoss(m,hero,range){
+    const centerY=m.y-(m.height||2)/2;
+    const cmp=companionTargetAt(m.x,centerY,range||18);
+    if(!cmp) return hero || null;
+    if(!hero || !isFinite(hero.x) || !isFinite(hero.y)) return cmp;
+    const cp=targetPoint(cmp);
+    const c2=(cp.x-m.x)*(cp.x-m.x)+(cp.y-centerY)*(cp.y-centerY);
+    const h2=(hero.x-m.x)*(hero.x-m.x)+(hero.y-centerY)*(hero.y-centerY);
+    return (c2<h2*1.16 || h2>(range||18)*(range||18)) ? cmp : hero;
+  }
 
   // ---------------- Procedural generation ----------------
   const NAME_A=['Gro','Mor','Zar','Kru','Vol','Tar','Bru','Skal','Drog','Hul'];
@@ -801,11 +830,12 @@ window.MM = window.MM || {};
     const sx=m.x+(m.minDx+m.maxDx+1)/2, sy=m.y-m.height;        // …and launches from the crown
     const t=clamp(dist/CFG.THROW_SPEED, 0.45, 1.3);
     const g=CFG.GRAV*0.55;
-    const aimX=p.x + (p.vx||0)*t*0.5;               // lead a moving hero by half his drift
+    const aim=targetPoint(p);
+    const aimX=aim.x + (p.vx||0)*t*0.5;               // lead a moving target by half its drift
     projectiles.push({
       x:sx, y:sy,
       vx:(aimX-sx)/t + (Math.random()-0.5)*0.8,
-      vy:(p.y-0.5-sy)/t - 0.5*g*t,
+      vy:(aim.y-0.5-sy)/t - 0.5*g*t,
       t:0, max:4, tile:b.t, color:infoColor(b.t)||'#9a9a9a',
       spin:Math.random()*6.28, dmg:Math.max(2, Math.round(m.attackDmg*CFG.THROW_DMG)),
     });
@@ -818,12 +848,15 @@ window.MM = window.MM || {};
     // feeding takes priority over hunting: a grazing beast is peaceable until
     // it is full, attacked, or the hero is right on top of it
     const pNow=playerRef();
+    const closeCompanion=companionTargetAt(m.x,m.y-m.height/2,4.5);
     const heroClose = pNow && Math.abs(pNow.x-m.x) < 4 && Math.abs(pNow.y-(m.y-m.height/2)) < m.height;
-    if(!heroClose && stepFeeding(m,getTile,setTile_global,dt)) return;
-    if(m.feed && (heroClose || m.core.hp<m.core.maxHp)){ m.feed=null; m.state='roam'; } // disturbed → stop eating
-    const p=playerRef();
-    const pdx=p? p.x-m.x : 1e9;
-    const pdy=p? p.y-(m.y-m.height/2) : 1e9;
+    const preyClose = heroClose || !!closeCompanion;
+    if(!preyClose && stepFeeding(m,getTile,setTile_global,dt)) return;
+    if(m.feed && (preyClose || m.core.hp<m.core.maxHp)){ m.feed=null; m.state='roam'; } // disturbed → stop eating
+    const p=preyForBoss(m,pNow,Math.max(4,m.sense||18));
+    const pp=targetPoint(p);
+    const pdx=p? pp.x-m.x : 1e9;
+    const pdy=p? pp.y-(m.y-m.height/2) : 1e9;
     const dist=Math.abs(pdx);
     const enraged=m.core.hp < m.core.maxHp*0.5;
     // hunt/roam with hysteresis so the monster doesn't flicker at the sense edge;
@@ -858,7 +891,7 @@ window.MM = window.MM || {};
       const wg=MM.worldGen;
       const surf=(wg && wg.surfaceHeight)? wg.surfaceHeight(Math.round(m.x)) : m.y+2;
       let targetY=surf-m.height-3;
-      if(m.state==='hunt' && p) targetY=Math.max(targetY-2, p.y-2);   // swoop at prey
+      if(m.state==='hunt' && p) targetY=Math.max(targetY-2, pp.y-2);   // swoop at prey
       m.bobP+=dt*2; if(m.bobP>1e3) m.bobP%=(Math.PI*2);
       m.vy=clamp((targetY-m.y)*1.1, -4, 4)+Math.sin(m.bobP)*0.8;
     } else if(m.archetype==='swimmer'){
@@ -869,7 +902,7 @@ window.MM = window.MM || {};
       let waterTop=Math.floor(m.y); let scan=0;
       while(scan<48 && getTile(tx,waterTop-1)===T.WATER){ waterTop--; scan++; }
       let targetY=waterTop + m.height + 1;
-      if(m.state==='hunt' && p) targetY=Math.max(targetY, Math.min(p.y+1, m.y+12));
+      if(m.state==='hunt' && p) targetY=Math.max(targetY, Math.min(pp.y+1, m.y+12));
       m.bobP+=dt*1.6; if(m.bobP>1e3) m.bobP%=(Math.PI*2);
       m.vy=clamp((targetY-m.y)*1.1, -4, 4)+Math.sin(m.bobP)*0.6;
       // don't swim into the beach: water must continue at mid-body depth ahead
@@ -972,6 +1005,12 @@ window.MM = window.MM || {};
       const d=Math.max(Math.abs(p.x-bx), Math.abs(p.y-by));
       if(d<R+4) damageHero(Math.round(40*(1-d/(R+5))+6), bx, 'boss_blast');
     }
+    const cmp=companionTargetAt(bx,by,R+4);
+    if(cmp){
+      const cp=targetPoint(cmp);
+      const d=Math.max(Math.abs(cp.x-bx), Math.abs(cp.y-by));
+      if(d<R+4) damageCompanionTarget(cmp,Math.round(40*(1-d/(R+5))+6),bx,by,'boss_blast');
+    }
     if(p && typeof p.xp==='number') p.xp+=40+m.parts.length*2;
     say('💥 Serce potwora '+m.name+' zniszczone! +'+(40+m.parts.length*2)+' XP'+(m.gargantuan? ' — zostawił stos epickich skrzyń!':' — zostawił skrzynię!'));
     killedTotal++;
@@ -1024,6 +1063,11 @@ window.MM = window.MM || {};
     const c=m.core; if(!c) return false;
     return m.occ.has((c.dx+1)+','+c.dy) && m.occ.has((c.dx-1)+','+c.dy)
         && m.occ.has(c.dx+','+(c.dy+1)) && m.occ.has(c.dx+','+(c.dy-1));
+  }
+  function coreHealthRatio(m){
+    const c=m && m.core;
+    if(!c || !(c.maxHp>0)) return 0;
+    return clamp(c.hp/c.maxHp,0,1);
   }
   // Attack the part occupying world tile (tx,ty). Damage = hero's tool + optional
   // equipped-weapon bonus passed by main.js (MM.activeModifiers.attackDamage).
@@ -1153,6 +1197,10 @@ window.MM = window.MM || {};
       const pr=projectiles[i];
       pr.t+=dt; pr.vy+=CFG.GRAV*0.55*dt; applyWindToProjectile(pr,getTile,dt); pr.x+=pr.vx*dt; pr.y+=pr.vy*dt; pr.spin+=dt*9;
       let dead=pr.t>pr.max || pr.y>WORLD_H+5;
+      if(!dead){
+        const cmp=companionTargetAt(pr.x,pr.y,0.85);
+        if(cmp && damageCompanionTarget(cmp,pr.dmg,pr.x-pr.vx*0.1,pr.y-pr.vy*0.1,'boss_projectile')) dead=true;
+      }
       if(!dead && hasPlayer && Math.abs(p.x-pr.x)<0.75 && Math.abs(p.y-pr.y)<0.95){
         damageHero(pr.dmg, pr.x - pr.vx*0.1, 'boss_projectile');   // knock the hero along the block's flight
         dead=true;
@@ -1215,7 +1263,8 @@ window.MM = window.MM || {};
       // A shaking beast judders sideways to telegraph "get off my back".
       const bx=m.x + (m.shakeT>0? Math.sin(now*0.055)*0.18 : 0), by=m.y;
       const wob=(m.archetype==='floater'||m.archetype==='swimmer')? Math.sin(now*0.002+m.bobP)*2 : 0;
-      const enraged=m.core.hp<m.core.maxHp*0.5;
+      const healthRatio=coreHealthRatio(m);
+      const enraged=healthRatio<0.5;
       const occ=m.occ;   // occupancy lattice kept fresh by refreshStructure()
       // feeding cue: pulse the morsel being eaten (world space, untilted)
       if(m.state==='feed' && m.feed && tileVisible(canDrawTile,m.feed.tx,m.feed.ty)){
@@ -1270,12 +1319,12 @@ window.MM = window.MM || {};
       }
       ctx.stroke();
       ctx.restore();
-      // health bar over the beast (total structural integrity) — drawn upright
-      let hp=0,maxHp=0; for(const p of m.parts){ hp+=p.hp; maxHp+=p.maxHp; }
+      // The monster dies when its heart reaches zero. Body blocks are destructible
+      // armor, so the visible boss bar tracks heart HP instead of total body HP.
       const barW=(m.maxDx-m.minDx+1)*TILE*0.8;
       const barX=(bx+(m.minDx+m.maxDx)/2)*TILE+TILE/2-barW/2, barY=(by-m.height)*TILE-8+wob;
       ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(barX,barY,barW,4);
-      ctx.fillStyle=enraged?'#ff4040':'#7fdc5a'; ctx.fillRect(barX,barY,barW*clamp(hp/maxHp,0,1),4);
+      ctx.fillStyle=enraged?'#ff4040':'#7fdc5a'; ctx.fillRect(barX,barY,barW*healthRatio,4);
       // a sated, growing beast shows a green feeding pip on its bar
       if(m.state==='feed'){ ctx.fillStyle='#9fe85a'; ctx.fillRect(barX-5,barY-1,4,6); }
     }

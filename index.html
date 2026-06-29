@@ -100,6 +100,9 @@
   #hotbarWrap{ position:absolute; left:50%; bottom:10px; transform:translateX(-50%); display:flex; gap:6px; pointer-events:auto; }
   .hotSlot{ width:46px; height:46px; border:1px solid rgba(255,255,255,.25); background:rgba(0,0,0,.45); border-radius:10px; display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:11px; position:relative; box-shadow:0 2px 8px rgba(0,0,0,.5); }
   .hotSlot.sel{ outline:2px solid #2c7ef8; }
+  .hotSlot.bgMode{ border-color:rgba(120,220,255,.78); background:rgba(24,74,96,.48); }
+  .hotSlot.bgMode.sel{ outline:2px solid #78dcff; }
+  .hotSlot.bgMode::after{ content:"TŁO"; position:absolute; left:4px; bottom:2px; font-size:8px; font-weight:800; color:#bfefff; letter-spacing:.4px; text-shadow:0 1px 2px #00131f; }
   .hotSlot .count{ font-weight:600; }
   .hotSlot .key{ position:absolute; top:2px; right:4px; font-size:10px; opacity:.7; }
   #weaponBar{ position:absolute; left:50%; bottom:62px; transform:translateX(-50%); display:flex; gap:6px; pointer-events:auto; }

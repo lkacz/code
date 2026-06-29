@@ -11,8 +11,9 @@ import { isSunTransparentTile } from './material_physics.js';
   const cells = new Map(); // "x,y" -> {x,y,energy,power,pulse,storage}
   const PANEL_CAPACITY = 18;
   const STORAGE_CAPACITY = 120;
-  const PANEL_RATE = 3.0;
-  const STORAGE_RATE = 3.8;
+  const PANEL_RATE = 0.18;
+  const STORAGE_RATE = 0.28;
+  const FULL_LIGHT_THRESHOLD = 0.9;
   const POWER_DECAY = 10;
   const PULSE_DECAY = 2.4;
   const SCAN_INTERVAL = 0.45;
@@ -54,19 +55,22 @@ import { isSunTransparentTile } from './material_physics.js';
     if(t>=0.5) return 0;
     return Math.max(0,Math.min(1,Math.sin((t/0.5)*Math.PI)));
   }
-  function cloudSunFactor(){
-    let f=1;
+  function clearSkyForSolar(){
     try{
       const cm=MM.clouds && MM.clouds.metrics && MM.clouds.metrics();
       if(cm){
         const mass=Math.max(0,Number(cm.cloudMass)||0);
         const count=Math.max(0,Number(cm.clouds)||0);
-        const cloudiness=Math.max(0,Math.min(1,mass/90+count/36));
-        const storm=cm.storm && cm.storm.active ? Math.max(0,Math.min(1,Number(cm.storm.intensity)||0)) : 0;
-        f*=Math.max(0.18,1-cloudiness*0.42-storm*0.48);
+        const drops=Math.max(0,Number(cm.drops)||0);
+        const storm=!!(cm.storm && cm.storm.active);
+        if(count>0 || mass>0.001 || drops>0 || storm) return false;
       }
     }catch(e){}
-    return Math.max(0,Math.min(1,f));
+    return true;
+  }
+  function fullLightSunAt(cycleT){
+    const raw=cycleSunAt(cycleT);
+    return raw>=FULL_LIGHT_THRESHOLD ? raw : 0;
   }
   function currentCycleT(){
     try{
@@ -85,10 +89,12 @@ import { isSunTransparentTile } from './material_physics.js';
     return 0.25;
   }
   function daylight(){
-    const sun=cycleSunAt(currentCycleT())*cloudSunFactor();
+    if(!clearSkyForSolar()) return 0;
+    const sun=fullLightSunAt(currentCycleT());
     return Math.max(0,Math.min(1,sun));
   }
   function averageDaylight(seconds){
+    if(!clearSkyForSolar()) return 0;
     const span=Math.max(0,Number(seconds)||0);
     if(span<=0.001) return daylight();
     const end=currentCycleT();
@@ -97,9 +103,9 @@ import { isSunTransparentTile } from './material_physics.js';
     let total=0;
     for(let i=0; i<samples; i++){
       const f=(i+0.5)/samples;
-      total+=cycleSunAt(end-delta+delta*f);
+      total+=fullLightSunAt(end-delta+delta*f);
     }
-    return Math.max(0,Math.min(1,(total/samples)*cloudSunFactor()));
+    return Math.max(0,Math.min(1,total/samples));
   }
   function normalizeState(m,t){
     const cap=capacityForTile(t);
@@ -414,7 +420,7 @@ import { isSunTransparentTile } from './material_physics.js';
     reset,
     metrics,
     catchUp,
-    _debug:{cells,PANEL_CAPACITY,STORAGE_CAPACITY,PANEL_RATE,STORAGE_RATE,CELL_CAP,CATCHUP_MAX_SECONDS,clusterCells,daylight,averageDaylight,ensureVisible,debugChargeAt,debugSetEnergyAt}
+    _debug:{cells,PANEL_CAPACITY,STORAGE_CAPACITY,PANEL_RATE,STORAGE_RATE,FULL_LIGHT_THRESHOLD,CELL_CAP,CATCHUP_MAX_SECONDS,clusterCells,daylight,averageDaylight,clearSkyForSolar,fullLightSunAt,ensureVisible,debugChargeAt,debugSetEnergyAt}
   };
   MM.solar=api;
 })();

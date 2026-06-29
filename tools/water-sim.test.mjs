@@ -6,7 +6,7 @@
 // Run: node tools/water-sim.test.mjs
 import { strict as assert } from 'assert';
 
-const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,WIRE:23};
+const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,MUD:14,WIRE:23,STEAM:27,CLAY:65,WET_CLAY:66,BRICK:67};
 globalThis.window = globalThis; // water.js attaches to window.MM
 globalThis.MM = { T, WORLD_H:140, TILE:20, particles:{ spawnSplash(){}, spawnBubble(){} } };
 
@@ -20,6 +20,7 @@ function resetWorld(){ tiles = new Map(); water.reset(); delete globalThis.playe
 const getTile = (x,y)=>{ if(y<0||y>=H) return T.STONE; const v=tiles.get(x+','+y); return v===undefined ? (y>=100? T.STONE : T.AIR) : v; };
 const setTile = (x,y,v)=>{ if(y>=0&&y<H) tiles.set(x+','+y,v); };
 const countWater = ()=>{ let c=0; for(const v of tiles.values()) if(v===T.WATER) c++; return c; };
+const countTile = tile=>{ let c=0; for(const v of tiles.values()) if(v===tile) c++; return c; };
 const step = (n)=>{ for(let i=0;i<n;i++) water.update(getTile,setTile,1/60); };
 const depthAt = (x, yFrom, yTo)=>{ let d=0; for(let y=yFrom;y<yTo;y++) if(getTile(x,y)===T.WATER) d++; return d; };
 
@@ -346,7 +347,50 @@ for(let x=61;x<106;x++) rightMaxDepth=Math.max(rightMaxDepth, depthAt(x,88,100))
 assert.ok(leftMinDepth>=6, `source basin remains at/above the trunk lip (min depth ${leftMinDepth})`);
 assert.ok(rightMaxDepth<=5, `wide receiving basin only gets overflow above the lip (max depth ${rightMaxDepth})`);
 
-// --- 15. Wave API safety: disturb/snapshot/restore never throw, reject junk ---
+// --- 15. Water absorbs into sand as mud, consuming the water cell ---
+resetWorld();
+setTile(0,49,T.STONE);
+setTile(-1,50,T.STONE); setTile(1,50,T.STONE);
+setTile(-1,51,T.STONE); setTile(1,51,T.STONE);
+setTile(0,51,T.SAND);
+assert.ok(water.addSource(0,50,getTile,setTile), 'water source placed over sand');
+step(260);
+assert.equal(getTile(0,51),T.MUD,'sand touching water eventually becomes mud');
+assert.equal(getTile(0,50),T.AIR,'the absorbed water cell is consumed');
+assert.equal(countWater(),0,'absorption conserves by removing one water tile');
+
+// --- 16. Sun-exposed mud dries back to sand and vents steam ---
+resetWorld();
+setTile(0,50,T.MUD);
+water.onTileChanged(0,50,getTile);
+step(700);
+assert.equal(getTile(0,50),T.SAND,'sunlit mud dries back into sand');
+assert.ok(countTile(T.STEAM)>=1,'drying mud releases a steam tile');
+
+// --- 17. Water hydrates clay into wet clay, consuming the water cell ---
+resetWorld();
+setTile(10,49,T.STONE);
+setTile(9,50,T.STONE); setTile(11,50,T.STONE);
+setTile(9,51,T.STONE); setTile(11,51,T.STONE);
+setTile(10,51,T.CLAY);
+assert.ok(water.addSource(10,50,getTile,setTile), 'water source placed over clay');
+step(240);
+assert.equal(getTile(10,51),T.WET_CLAY,'clay touching water becomes wet clay');
+assert.equal(getTile(10,50),T.AIR,'hydrating clay consumes the adjacent water cell');
+assert.equal(countWater(),0,'clay hydration removes one water tile');
+
+// --- 18. Sun-exposed wet clay dries back to clay and vents steam ---
+resetWorld();
+setTile(10,50,T.WET_CLAY);
+water.onTileChanged(10,50,getTile);
+step(620);
+assert.equal(getTile(10,50),T.WET_CLAY,'sunlit wet clay stays workable far longer than mud');
+assert.equal(countTile(T.STEAM),0,'slow-drying wet clay does not release steam at the old fast timing');
+step(3200);
+assert.equal(getTile(10,50),T.CLAY,'sunlit wet clay dries back into clay');
+assert.ok(countTile(T.STEAM)>=1,'drying wet clay releases a steam tile');
+
+// --- 19. Wave API safety: disturb/snapshot/restore never throw, reject junk ---
 water.disturb(85, 200); water.disturb(85.7, -300); water.disturb(NaN, 50); water.disturb(10, Infinity);
 const snap=water.snapshot();
 assert.ok(snap && snap.v===2, 'snapshot v2');

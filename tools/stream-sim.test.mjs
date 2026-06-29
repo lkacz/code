@@ -386,6 +386,17 @@ assert.equal(count(T.GLASS), 0, 'lava blocks sustained flame heat from vitrifyin
 // 3) flame vs water pool → evaporation + vapor
 tiles=new Map(); weapons.reset(); fire.reset(); vaporInjected=0; gasAdds=[];
 fill(3,8,1,2,T.WATER);
+const waterBeforeBoil=count(T.WATER);
+sprayActive('flame', 6, 1.5, 1.6);
+heatMetrics=weapons.metrics();
+assert.equal(vaporInjected,0,'brief flame contact does not instantly boil water into cloud vapor');
+assert.equal(count(T.WATER),waterBeforeBoil,'brief flame contact leaves water tiles in place');
+assert.ok(heatMetrics.waterHeat>=1, 'water tracks heat before it boils');
+assert.ok(heatMetrics.waterHeatMax>0 && heatMetrics.waterHeatMax<1, 'water heat progress stays below complete during brief contact');
+settleStreams(1);
+assert.equal(weapons.metrics().waterHeat,0, 'interrupted water heating cools back to zero');
+tiles=new Map(); weapons.reset(); fire.reset(); vaporInjected=0; gasAdds=[];
+fill(3,8,1,2,T.WATER);
 spray('flame', 6, 1.5, 5);
 assert.ok(vaporInjected>=1, 'boiled water mass joins the cloud vapor (got '+vaporInjected+')');
 assert.ok(gasAdds.some(g=>g.kind==='steam' && g.hasAccessors), 'boiled water emits persistent steam gas through local accessors');

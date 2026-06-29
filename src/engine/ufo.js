@@ -34,6 +34,7 @@ const ufo = (function(){
     BOSS_CHARGE:4.5,            // seconds of beam needed to dematerialize a boss
     CARRY_MIN:70, CARRY_MAX:130 // hero deportation distance, tiles
   };
+  const BIO_COMPANION_DROP_CHANCE = 0.10;
 
   let craft=null;               // the single active saucer
   let acc=0, saveAcc=0, nextAt=0, visits=0;
@@ -228,6 +229,30 @@ const ufo = (function(){
     return look;
   }
 
+  function dropBioCompanion(c,pl){
+    if(!c || Math.random()>=BIO_COMPANION_DROP_CHANCE) return null;
+    const C=MM.companions;
+    if(!C || typeof C.spawnFromCraft!=='function') return null;
+    const W=MM.world || {};
+    const sx=Number(c.x);
+    const groundY=surfaceY(Number.isFinite(sx) ? sx : ((pl && pl.x) || 0), pl && pl.y);
+    const dropper={
+      x:Number.isFinite(sx) ? sx : ((pl && pl.x) || 0),
+      y:Math.max(2,groundY-1),
+      facing:(pl && Number.isFinite(pl.x) && pl.x<c.x) ? -1 : 1
+    };
+    const companion=C.spawnFromCraft(dropper,{
+      biomass:3,
+      meat:0,
+      getTile:typeof W.getTile==='function' ? W.getTile : null,
+      refund:{}
+    });
+    if(companion){
+      try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(companion.x*(MM.TILE||20),(companion.y-0.5)*(MM.TILE||20),'rare'); }catch(e){}
+      return companion;
+    }
+    return null;
+  }
   function playerRef(){ return (typeof window!=='undefined' && window.player)||null; }
 
   function forceSpawn(opts){
@@ -332,10 +357,12 @@ const ufo = (function(){
       }catch(e){}
     }
     artMsg=scrapMsg+artMsg;
+    const bioCompanion=dropBioCompanion(c,pl);
+    const bioMsg=bioCompanion ? ' i bio-pomocnik!' : '';
     if(pl && typeof pl.xp==='number') pl.xp+=120;
     burst(c.x,c.y,'epic'); burst(c.x-1.5,c.y+0.5,'epic'); burst(c.x+1.5,c.y+0.5,'epic');
     sfx('explosion');
-    say('💥 '+c.look.name+' zestrzelony! Antymateria ×'+n+artMsg+' (+120 XP)');
+    say('💥 '+c.look.name+' zestrzelony! Antymateria ×'+n+artMsg+bioMsg+' (+120 XP)');
     if(typeof window!=='undefined' && window.updateInventoryHud) try{ window.updateInventoryHud(); }catch(e){}
     craft=null;
     acc=0; rollNext(); save();
@@ -585,7 +612,7 @@ const ufo = (function(){
     state:()=>({acc, nextAt, visits}),
     beaming,
     _gen:generate, // deterministic look (tests)
-    _debug:{dropCellFree,dropCellSupported,findScrapLanding},
+    _debug:{dropCellFree,dropCellSupported,findScrapLanding,bioCompanionDropChance:BIO_COMPANION_DROP_CHANCE},
     reset(){ craft=null; acc=0; visits=0; rollNext(); save(); }
   };
   MM.ufo=api;

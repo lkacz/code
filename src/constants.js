@@ -3,7 +3,7 @@ export const WORLD_H = 140;
 export const TILE = 20;
 export const SURFACE_GRASS_DEPTH = 1;
 export const SAND_DEPTH = 8;
-export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,LAVA:13,MUD:14,OBSIDIAN:15,TORCH:16,GRAVE:17,VOLCANO_MASTER_STONE:18,STEEL:19,MEAT:20,ROTTEN_MEAT:21,GLASS:22,WIRE:23,ELECTRONICS:24,COAL:25,HOT_AIR:26,STEAM:27,POISON_GAS:28,FUEL_GAS:29,DYNAMO:30,DYNAMO_SLOT:31,BAKED_MEAT:32,COPPER_WIRE:33,TELEPORTER:34,TRANSISTOR:35,SOLAR_PANEL:36,SOLAR_BATTERY:37,SERVANT_STONE:38,AUTUMN_LEAF_ORANGE:39,AUTUMN_LEAF_RED:40,IRIDIUM:41,METEORIC_IRON:42,ANTIGRAVITY_BEACON:43,TURRET:44,FIRE_TURRET:45,WATER_TURRET:46,WATER_PIPE:47,WATER_PUMP:48,METEOR_SIREN:49,RADIOACTIVE_ORE:50,ALIEN_BIOMASS:51,METEOR_DUST:52,ANTIMATTER_CRYSTAL:53,DIRT:54,GRANITE:55,BASALT:56,BEDROCK:57,WOOD_DOOR:58,STONE_DOOR:59,STEEL_DOOR:60,VENDING_MACHINE:61,WOOD_TRAPDOOR:62,STONE_TRAPDOOR:63,STEEL_TRAPDOOR:64};
+export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,LAVA:13,MUD:14,OBSIDIAN:15,TORCH:16,GRAVE:17,VOLCANO_MASTER_STONE:18,STEEL:19,MEAT:20,ROTTEN_MEAT:21,GLASS:22,WIRE:23,ELECTRONICS:24,COAL:25,HOT_AIR:26,STEAM:27,POISON_GAS:28,FUEL_GAS:29,DYNAMO:30,DYNAMO_SLOT:31,BAKED_MEAT:32,COPPER_WIRE:33,TELEPORTER:34,TRANSISTOR:35,SOLAR_PANEL:36,SOLAR_BATTERY:37,SERVANT_STONE:38,AUTUMN_LEAF_ORANGE:39,AUTUMN_LEAF_RED:40,IRIDIUM:41,METEORIC_IRON:42,ANTIGRAVITY_BEACON:43,TURRET:44,FIRE_TURRET:45,WATER_TURRET:46,WATER_PIPE:47,WATER_PUMP:48,METEOR_SIREN:49,RADIOACTIVE_ORE:50,ALIEN_BIOMASS:51,METEOR_DUST:52,ANTIMATTER_CRYSTAL:53,DIRT:54,GRANITE:55,BASALT:56,BEDROCK:57,WOOD_DOOR:58,STONE_DOOR:59,STEEL_DOOR:60,VENDING_MACHINE:61,WOOD_TRAPDOOR:62,STONE_TRAPDOOR:63,STEEL_TRAPDOOR:64,CLAY:65,WET_CLAY:66,BRICK:67,LADDER:68,SPRING_PLATFORM:69};
 export const INFO = {
   0:{hp:0,color:null,drop:null,passable:true},
   // flammable/burnTime drive the fire system (engine/fire.js): seconds a tile burns
@@ -84,7 +84,13 @@ export const INFO = {
  61:{hp:8,color:'#38506c',drop:'vendingMachine',passable:false, machine:'vendingMachine', powerDevice:true, drops:[{item:'copperWire',min:1,max:3},{item:'waterPipe',min:1,max:2,chance:0.65},{item:'plastic',min:1,max:2,chance:0.45}]},
  62:{hp:4,color:'#a57136',drop:'woodTrapdoor',passable:false, trapdoor:true, doorMaterial:'wood', flammable:true, burnTime:44, spreadInMult:0.75},
  63:{hp:7,color:'#858992',drop:'stoneTrapdoor',passable:false, trapdoor:true, doorMaterial:'stone'},
- 64:{hp:9,color:'#91a0ad',drop:'steelTrapdoor',passable:false, trapdoor:true, doorMaterial:'steel'}
+ 64:{hp:9,color:'#91a0ad',drop:'steelTrapdoor',passable:false, trapdoor:true, doorMaterial:'steel'},
+ 65:{hp:3,color:'#8f7a62',drop:'clay',passable:false},
+ // Wet clay is a waterlogged clay state; mining it recovers clay.
+ 66:{hp:2,color:'#6f5c46',drop:'clay',passable:false, wetClay:true},
+ 67:{hp:8,color:'#a65a3a',drop:'brick',passable:false, ceramic:true},
+ 68:{hp:2,color:'#b98243',drop:'ladder',passable:true, ladder:true, flammable:true, burnTime:32},
+ 69:{hp:7,color:'#7cc7d8',drop:'springPlatform',passable:false, machine:'springPlatform', powerDevice:true, energyCapacity:70}
 };
 // Rows above (i.e. numerically below) this line get snow cover; tuned for the v2
 // terrain where sea level sits at row ~62 and peaks reach row ~10

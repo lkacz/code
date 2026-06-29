@@ -30,6 +30,7 @@ globalThis.MM = {
   particles: { spawnBurst(){}, spawnSplash(){} },
 };
 
+const { companions } = await import('../src/engine/companions.js');
 const { bosses } = await import('../src/engine/bosses.js');
 assert.ok(bosses, 'bosses module exports');
 const CFG = bosses.config;
@@ -40,6 +41,7 @@ const step = (n,dt=1/30)=>{ for(let i=0;i<n;i++) bosses.update(getTile,setTile,d
 function resetWorld(){
   tiles = new Map();
   bosses.reset();
+  companions.reset();
   delete globalThis.MM.wind;
   bosses.setCycleOverride({isDay:true, tDay:0.5});
   globalThis.player = {x:0, y:88, hp:100, maxHp:100, xp:0, vx:0, vy:0, hpInvul:0, tool:'basic'};
@@ -56,6 +58,24 @@ function assertConnected(m,label){
     }
   }
   assert.equal(seen.size, m.parts.length, label+': all parts connected to the heart');
+}
+function recordingCtx(){
+  const calls=[];
+  const gradient={addColorStop(){}};
+  return {
+    calls,
+    fillStyle:'#000',
+    strokeStyle:'#000',
+    lineWidth:1,
+    globalAlpha:1,
+    font:'',
+    textAlign:'left',
+    save(){}, restore(){}, translate(){}, rotate(){},
+    beginPath(){}, moveTo(){}, lineTo(){}, closePath(){}, arc(){},
+    stroke(){}, fill(){}, strokeRect(){},
+    fillRect(x,y,w,h){ calls.push({x,y,w,h,style:this.fillStyle,alpha:this.globalAlpha}); },
+    createRadialGradient(){ return gradient; },
+  };
 }
 
 // --- 1. Generation: a large, connected, seeded structure with a buried heart ---
@@ -171,6 +191,7 @@ assert.equal(bosses.metrics().alive, 1, 'the sealed heart shrugged the blow off'
 assert.equal(mh.core.hp, mh.core.maxHp, 'the protected heart took no damage');
 // carve a path: destroy one armor block beside the heart, then strike again
 assert.ok(bosses.attackAt(cbx+1, cby, 999), 'the armor beside the heart can be broken');
+companions.restore({v:1,list:[{x:cbx+1.5,y:cby+0.96,biomass:3,hp:88,seed:8891,laserCd:99,gasCd:99}]},getTile);
 assert.ok(bosses.attackAt(cbx, cby, 99999), 'the exposed heart can be struck');
 const solidAfter = (()=>{ let c=0; for(let x=cbx-12;x<=cbx+12;x++) for(let y=85;y<100;y++) if(getTile(x,y)!==T.AIR && getTile(x,y)!==T.WATER) c++; return c; })();
 assert.ok(solidAfter < solidBefore-10, `blast cratered the terrain (${solidBefore} -> ${solidAfter} solids)`);
@@ -183,7 +204,24 @@ assert.equal(getTile(cbx+4,cby+1), T.IRIDIUM, 'iridium survives the boss heart b
 assert.equal(bosses.metrics().alive, 0, 'monster is gone after its heart burst');
 assert.equal(bosses.metrics().killed, 1, 'kill recorded');
 assert.ok(globalThis.player.hp < 100, `nearby hero took blast damage (hp=${globalThis.player.hp})`);
+assert.ok(companions._debug.list()[0].hp<88, 'nearby companion also takes boss blast damage');
 assert.ok(globalThis.player.xp > 0, `hero earned XP (+${globalThis.player.xp})`);
+
+resetWorld();
+const mhBar = bosses.forceSpawn(getTile, {x:300, seed:889, freeze:true, archetype:'walker'});
+step(30);
+for(const part of mhBar.parts) part.hp = part.maxHp;
+mhBar.core.hp = mhBar.core.maxHp * 0.25;
+const structuralHp = mhBar.parts.reduce((sum,part)=>sum+part.hp,0);
+const structuralMax = mhBar.parts.reduce((sum,part)=>sum+part.maxHp,0);
+assert.ok(structuralHp/structuralMax > 0.75, 'test setup keeps the old structural health bar mostly full');
+const bossCtx = recordingCtx();
+bosses.draw(bossCtx, globalThis.MM.TILE, ()=>true);
+const healthBarFill = bossCtx.calls.find(call=>call.h===4 && call.style==='#ff4040');
+const expectedBossBarW = (mhBar.maxDx-mhBar.minDx+1)*globalThis.MM.TILE*0.8;
+assert.ok(healthBarFill, 'boss draw emits the enraged health bar fill');
+assert.ok(Math.abs(healthBarFill.w - expectedBossBarW*0.25) < 0.001,
+  `boss health bar follows heart HP, not remaining body blocks (${healthBarFill.w} vs ${expectedBossBarW*0.25})`);
 
 // --- 7. Passive body contact: standing inside the beast is harmless ---
 resetWorld();

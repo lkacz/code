@@ -40,6 +40,12 @@ const meteorites = (function(){
   const CRATER_ECOLOGY_CHECKS_PER_SECOND = 4;
   const CRATER_ECOLOGY_MAX_BATCH = 2;
   const CRATER_ECOLOGY_INTERVAL = 6.0;
+  const STRESSED_FRAME_MS = 22;
+  const CRITICAL_FRAME_MS = 30;
+  const METEOR_WATER_WAKE_CAP = 22;
+  const METEOR_FALLING_WAKE_CAP = 96;
+  const METEOR_SMOKE_WAKE_CAP = 18;
+  const METEOR_SPLASH_WAKE_CAP = 18;
 
   const meteors = [];
   const terrainJobs = [];
@@ -96,6 +102,10 @@ const meteorites = (function(){
   function rand(a,b){ return a + Math.random()*(b-a); }
   function frameMs(){
     return (typeof window !== 'undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
+  }
+  function perfTier(){
+    const ms=frameMs();
+    return ms>CRITICAL_FRAME_MS ? 2 : (ms>STRESSED_FRAME_MS ? 1 : 0);
   }
   function playerX(fallback){
     const p = typeof window !== 'undefined' ? window.player : null;
@@ -183,6 +193,16 @@ const meteorites = (function(){
     let n=0;
     for(const c of craterRecords) if(c && craterEcologyScore(c.ecology)>0) n++;
     return n;
+  }
+  function craterEcologyDrawQuality(){
+    const tier=perfTier();
+    const active=activeEcologyCraters();
+    if(tier>=2 || active>48) return 0;
+    if(tier>=1 || active>24) return 1;
+    return 2;
+  }
+  function craterEcologyDrawCap(quality){
+    return quality<=0 ? 4 : (quality===1 ? 10 : 18);
   }
   function classWeightsAt(x){
     const out={};
@@ -876,8 +896,83 @@ const meteorites = (function(){
       y:(Math.cos(t*2.11+shakeSeed*1.37)+Math.sin(t*5.03+shakeSeed)*0.35)*amp*0.72
     };
   }
-  function notifyTerrainChange(x,y,oldTile,newTile,getTile,setTile){
+  function createTerrainChangeBatch(cx,cy,intensity){
+    return {x:cx,y:cy,intensity:intensity||1,removed:[],placed:[],water:[],smoke:[],splash:[]};
+  }
+  function pushCell(list,x,y){
+    if(!list || !Number.isFinite(x) || !Number.isFinite(y)) return;
+    list.push({x:Math.floor(x),y:Math.floor(y)});
+  }
+  function selectBatchWakeCells(cells,cap){
+    if(!Array.isArray(cells) || !cells.length || !(cap>0)) return [];
+    const byX=new Map();
+    for(const c of cells){
+      if(!c || !Number.isFinite(c.x) || !Number.isFinite(c.y)) continue;
+      const x=Math.floor(c.x), y=Math.floor(c.y);
+      let rec=byX.get(x);
+      if(!rec){ rec={x,minY:y,maxY:y}; byX.set(x,rec); }
+      else {
+        if(y<rec.minY) rec.minY=y;
+        if(y>rec.maxY) rec.maxY=y;
+      }
+    }
+    const xs=[...byX.keys()].sort((a,b)=>a-b);
+    if(!xs.length) return [];
+    const out=[];
+    const used=new Set();
+    const add=(x,y)=>{
+      if(out.length>=cap || !Number.isFinite(y)) return;
+      const k=x+','+y;
+      if(used.has(k)) return;
+      used.add(k);
+      out.push({x,y});
+    };
+    const stride=Math.max(1,Math.ceil(xs.length/Math.max(1,Math.floor(cap*0.5))));
+    for(let offset=0; offset<stride && out.length<cap; offset++){
+      for(let i=offset; i<xs.length && out.length<cap; i+=stride){
+        const rec=byX.get(xs[i]);
+        add(rec.x,rec.minY);
+        add(rec.x,rec.maxY);
+      }
+    }
+    return out;
+  }
+  function flushTerrainChangeBatch(batch,getTile,setTile){
+    if(!batch) return;
+    try{
+      const f=MM.fallingSolids;
+      if(f && typeof f.onTilesChangedBatch==='function') f.onTilesChangedBatch(batch.removed,batch.placed,{source:'meteor',x:batch.x,y:batch.y,wakeCap:METEOR_FALLING_WAKE_CAP});
+      else if(f){
+        for(const c of selectBatchWakeCells(batch.removed,METEOR_FALLING_WAKE_CAP)) if(f.onTileRemoved) f.onTileRemoved(c.x,c.y);
+        for(const c of selectBatchWakeCells(batch.placed,METEOR_FALLING_WAKE_CAP)) if(f.afterPlacement) f.afterPlacement(c.x,c.y);
+      }
+    }catch(e){}
+    try{
+      const w=MM.water;
+      if(w && typeof w.onTilesChangedBatch==='function') w.onTilesChangedBatch(batch.water,getTile,{source:'meteor',x:batch.x,y:batch.y,cap:METEOR_WATER_WAKE_CAP});
+      else if(w && w.onTileChanged){
+        for(const c of selectBatchWakeCells(batch.water,METEOR_WATER_WAKE_CAP)) w.onTileChanged(c.x,c.y,getTile);
+      }
+    }catch(e){}
+    for(const c of selectBatchWakeCells(batch.splash,METEOR_SPLASH_WAKE_CAP)) splashAt(c.x+0.5,c.y+0.5,0.8);
+    for(const c of selectBatchWakeCells(batch.smoke,METEOR_SMOKE_WAKE_CAP)) smokeAt(c.x+0.5,c.y+0.4,0.8);
+  }
+  function notifyTerrainChange(x,y,oldTile,newTile,getTile,setTile,batch){
     if(oldTile===newTile) return;
+    if(batch){
+      if(newTile===T.AIR) pushCell(batch.removed,x,y);
+      else pushCell(batch.placed,x,y);
+      pushCell(batch.water,x,y);
+      if(oldTile===T.WATER || oldTile===T.ICE) pushCell(batch.splash,x,y);
+      if(tileInfo(oldTile).flammable && newTile===T.AIR) pushCell(batch.smoke,x,y);
+      try{
+        if(newTile===T.LAVA && MM.fire && MM.fire.noteLava){
+          MM.fire.noteLava(x,y,{priority:true,fast:true});
+          if(MM.fire.heatAround) MM.fire.heatAround(x,y,getTile,setTile,{includeCenter:false});
+        }
+      }catch(e){}
+      return;
+    }
     try{
       if(newTile===T.AIR && MM.fallingSolids && MM.fallingSolids.onTileRemoved) MM.fallingSolids.onTileRemoved(x,y);
       else if(newTile!==T.AIR && MM.fallingSolids && MM.fallingSolids.afterPlacement) MM.fallingSolids.afterPlacement(x,y);
@@ -1023,7 +1118,7 @@ const meteorites = (function(){
     ops.sort((a,b)=>a.phase-b.phase || a.d-b.d);
     return ops;
   }
-  function applyCraterOp(op,getTile,setTile){
+  function applyCraterOp(op,getTile,setTile,batch){
     if(!op || op.y<1 || op.y>=WORLD_H-3 || !Number.isFinite(op.x)) return false;
     const old=readTile(getTile,op.x,op.y);
     if(old===op.t) return false;
@@ -1031,14 +1126,16 @@ const meteorites = (function(){
     if(op.phase===0 && old===T.AIR) return false;
     if(op.phase===1 && !op.place && op.t!==T.LAVA && old===T.AIR && Math.random()<0.72) return false;
     setTile(op.x,op.y,op.t);
-    notifyTerrainChange(op.x,op.y,old,op.t,getTile,setTile);
+    notifyTerrainChange(op.x,op.y,old,op.t,getTile,setTile,batch);
     return true;
   }
   function queueCrater(cx,cy,intensity,getTile,preparedOps,setTile,opts){
     opts=opts||{};
     const ops=Array.isArray(preparedOps) ? preparedOps : buildCraterOps(cx,cy,intensity,getTile,opts);
     if(opts.instant && typeof setTile==='function'){
-      for(const op of ops) applyCraterOp(op,getTile,setTile);
+      const batch=createTerrainChangeBatch(cx,cy,intensity);
+      for(const op of ops) applyCraterOp(op,getTile,setTile,batch);
+      flushTerrainChangeBatch(batch,getTile,setTile);
       return ops.length;
     }
     if(ops.length){
@@ -1252,7 +1349,9 @@ const meteorites = (function(){
   }
   function updateCraterLakes(dt,getTile,setTile){
     if(!craterRecords.length || typeof getTile!=='function' || typeof setTile!=='function') return;
-    const checks=Math.min(CRATER_LAKE_STEP_CAP,craterRecords.length);
+    const tier=perfTier();
+    if(tier>=2) return;
+    const checks=Math.min(tier>=1 ? 1 : CRATER_LAKE_STEP_CAP,craterRecords.length);
     for(let i=0;i<checks;i++){
       lakeCursor=(lakeCursor+1)%craterRecords.length;
       const c=craterRecords[lakeCursor];
@@ -1405,9 +1504,16 @@ const meteorites = (function(){
   }
   function updateCraterEcology(dt,getTile,setTile){
     if(!(dt>0) || !craterRecords.length || typeof getTile!=='function' || typeof setTile!=='function') return;
+    const tier=perfTier();
+    if(tier>=2){
+      ecologyBudgetAcc=0;
+      return;
+    }
     ecologyTime+=Math.min(10,dt);
-    ecologyBudgetAcc=Math.min(CRATER_ECOLOGY_MAX_BATCH,ecologyBudgetAcc + dt*CRATER_ECOLOGY_CHECKS_PER_SECOND);
-    const checks=Math.min(craterRecords.length,CRATER_ECOLOGY_MAX_BATCH,Math.floor(ecologyBudgetAcc));
+    const maxBatch=tier>=1 ? 1 : CRATER_ECOLOGY_MAX_BATCH;
+    const rate=tier>=1 ? Math.max(1,CRATER_ECOLOGY_CHECKS_PER_SECOND*0.5) : CRATER_ECOLOGY_CHECKS_PER_SECOND;
+    ecologyBudgetAcc=Math.min(maxBatch,ecologyBudgetAcc + dt*rate);
+    const checks=Math.min(craterRecords.length,maxBatch,Math.floor(ecologyBudgetAcc));
     if(checks<=0) return;
     ecologyBudgetAcc-=checks;
     for(let i=0;i<checks;i++){
@@ -1956,10 +2062,11 @@ const meteorites = (function(){
     }
     ctx.restore();
   }
-  function drawCraterEcology(ctx,TILE,c){
+  function drawCraterEcology(ctx,TILE,c,quality){
     const eco=c && c.ecology;
     const score=craterEcologyScore(eco);
-    if(score<=0) return;
+    if(score<=0) return false;
+    quality=quality==null ? 2 : clamp(quality|0,0,2);
     const px=c.x*TILE, py=(c.y+0.45)*TILE;
     const r=clamp(c.r|0,6,32)*TILE;
     const pulse=Math.sin((typeof performance!=='undefined'?performance.now():0)*0.0017 + c.x*0.13)*0.5+0.5;
@@ -1967,13 +2074,19 @@ const meteorites = (function(){
     ctx.globalCompositeOperation='lighter';
     if(eco.kind==='glow'){
       const a=Math.min(0.34,0.09+score*0.018);
-      const g=ctx.createRadialGradient(px,py,1,px,py,r*(0.72+score*0.015));
-      g.addColorStop(0,'rgba(155,255,90,'+(a*0.95)+')');
-      g.addColorStop(0.42,'rgba(90,230,70,'+(a*0.45)+')');
-      g.addColorStop(1,'rgba(90,230,70,0)');
-      ctx.fillStyle=g;
-      ctx.beginPath(); ctx.ellipse(px,py,r*0.82,r*0.28,0,0,Math.PI*2); ctx.fill();
-      for(let i=0;i<Math.min(9,2+eco.glow);i++){
+      if(quality>=2){
+        const g=ctx.createRadialGradient(px,py,1,px,py,r*(0.72+score*0.015));
+        g.addColorStop(0,'rgba(155,255,90,'+(a*0.95)+')');
+        g.addColorStop(0.42,'rgba(90,230,70,'+(a*0.45)+')');
+        g.addColorStop(1,'rgba(90,230,70,0)');
+        ctx.fillStyle=g;
+        ctx.beginPath(); ctx.ellipse(px,py,r*0.82,r*0.28,0,0,Math.PI*2); ctx.fill();
+      } else {
+        ctx.fillStyle='rgba(110,238,82,'+(quality ? a*0.48 : Math.min(0.14,a*0.34))+')';
+        ctx.beginPath(); ctx.ellipse(px,py,r*(quality?0.66:0.48),r*(quality?0.21:0.13),0,0,Math.PI*2); ctx.fill();
+      }
+      const glowN=quality>=2 ? 9 : (quality===1 ? 5 : 2);
+      for(let i=0;i<Math.min(glowN,2+eco.glow);i++){
         const dx=((i*37)%17-8)/9*r*0.44;
         const dy=((i*19)%11-5)/10*r*0.18;
         ctx.fillStyle='rgba(190,255,120,'+(0.20+0.16*pulse)+')';
@@ -1981,8 +2094,9 @@ const meteorites = (function(){
       }
     } else if(eco.kind==='alien'){
       ctx.strokeStyle='rgba(122,238,108,'+(0.18+0.10*pulse)+')';
-      ctx.lineWidth=1.2;
-      for(let i=0;i<Math.min(10,2+eco.stage+eco.plants);i++){
+      ctx.lineWidth=quality ? 1.2 : 1;
+      const vineN=quality>=2 ? 10 : (quality===1 ? 5 : 3);
+      for(let i=0;i<Math.min(vineN,2+eco.stage+eco.plants);i++){
         const a=i*2.399+c.x*0.07;
         const rr=r*(0.18+((i*11)%13)/22);
         const x=px+Math.cos(a)*rr;
@@ -1993,11 +2107,12 @@ const meteorites = (function(){
         ctx.stroke();
       }
     } else if(eco.kind==='steam'){
-      for(let i=0;i<Math.min(7,1+eco.vents);i++){
+      const ventN=quality>=2 ? 7 : (quality===1 ? 4 : 2);
+      for(let i=0;i<Math.min(ventN,1+eco.vents);i++){
         const x=px+(((i*29)%17)-8)/8*r*0.34;
         const y=py-r*0.10;
         ctx.strokeStyle='rgba(205,240,255,'+(0.16+0.12*pulse)+')';
-        ctx.lineWidth=1.4;
+        ctx.lineWidth=quality ? 1.4 : 1;
         ctx.beginPath();
         ctx.moveTo(x,y);
         ctx.bezierCurveTo(x+TILE*0.22,y-TILE*0.45,x-TILE*0.18,y-TILE*0.85,x+TILE*0.10,y-TILE*1.18);
@@ -2005,8 +2120,9 @@ const meteorites = (function(){
       }
     } else if(eco.kind==='mineral'){
       ctx.strokeStyle='rgba(190,216,230,'+Math.min(0.28,0.08+eco.minerals*0.025)+')';
-      ctx.lineWidth=1.1;
-      for(let i=0;i<Math.min(8,eco.minerals);i++){
+      ctx.lineWidth=quality ? 1.1 : 1;
+      const mineralN=quality>=2 ? 8 : (quality===1 ? 5 : 3);
+      for(let i=0;i<Math.min(mineralN,eco.minerals);i++){
         const x=px+(((i*31)%19)-9)/10*r*0.42;
         const y=py+(((i*13)%7)-3)/8*r*0.16;
         ctx.beginPath();
@@ -2023,12 +2139,19 @@ const meteorites = (function(){
       }
     }
     ctx.restore();
+    return true;
   }
   function draw(ctx,TILE,canDrawTile){
     const tileVisible=tileVisibleFn(canDrawTile);
+    const craterQuality=craterEcologyDrawQuality();
+    const craterCap=craterEcologyDrawCap(craterQuality);
+    let cratersDrawn=0;
     ctx.save();
     for(const c of craterRecords){
-      if(c && tileVisible(c.x,c.y)) drawCraterEcology(ctx,TILE,c);
+      if(c && tileVisible(c.x,c.y) && drawCraterEcology(ctx,TILE,c,craterQuality)){
+        cratersDrawn++;
+        if(cratersDrawn>=craterCap) break;
+      }
     }
     for(const s of scorches){
       if(tileVisible(s.x,s.y)) drawScorch(ctx,TILE,s);
@@ -2302,6 +2425,9 @@ const meteorites = (function(){
       craters:craterRecords.length,
       lakeCraters:craterRecords.filter(c=>c && (c.water>0 || c.filled)).length,
       ecologyCraters:activeEcologyCraters(),
+      craterPerfTier:perfTier(),
+      craterDrawQuality:craterEcologyDrawQuality(),
+      craterEcologyBudget:+Math.max(0,ecologyBudgetAcc||0).toFixed(2),
       impactConsequences:impactConsequences.length,
       consequenceCounts:copyConsequenceCounts(),
       craterLakeOps,
@@ -2348,7 +2474,7 @@ const meteorites = (function(){
     isChunkBusy,
     scanNearestCrater,
     triggerAntimatterBurst,
-    _debug:{impactAt,queueCrater,applyTerrainJobs,pickTarget,nearestBeacon,nearestSiren,beaconIndex,sirenIndex,meteors,terrainJobs,embers,debris,plumes,beaconWaves,gravityBursts,sirenPulses,shockwaves,scorches,craterRecords,impactConsequences,METEOR_CLASSES,classWeightsAt,scanNearestCrater,updateCraterLakes,updateCraterEcology,runCraterEcologyStep}
+      _debug:{impactAt,queueCrater,applyTerrainJobs,pickTarget,nearestBeacon,nearestSiren,beaconIndex,sirenIndex,meteors,terrainJobs,embers,debris,plumes,beaconWaves,gravityBursts,sirenPulses,shockwaves,scorches,craterRecords,impactConsequences,METEOR_CLASSES,classWeightsAt,scanNearestCrater,updateCraterLakes,updateCraterEcology,runCraterEcologyStep,perfTier,craterEcologyDrawQuality,selectBatchWakeCells}
   };
   MM.meteorites=api;
   return api;

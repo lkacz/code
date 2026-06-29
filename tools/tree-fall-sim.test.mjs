@@ -136,6 +136,7 @@ worldGen.randSeed = ()=>0;
   assert.equal(getTile(4,8), T.WOOD, 'neighbor trunk top remains standing');
   assert.equal(getTile(3,7), T.LEAF, 'neighbor-side canopy remains standing');
   assert.equal(getTile(2,7), T.LEAF, 'shared canopy boundary is not claimed by either trunk');
+  assert.equal(trees._fallingTrees[0].tiles.some(b=>b.ox===0 && b.oy===7 && b.t===T.LEAF), true, 'claimed canopy leaves join the rotating fall');
   assert.equal(trees._fallingTrees[0].tiles.some(b=>b.ox===4), false, 'neighbor tree blocks are not pulled into the fall');
 }
 
@@ -427,10 +428,12 @@ worldGen.randSeed = ()=>0;
   assert.equal(trees.startTreeFall(getTile,setTile,1,0,5), true, 'loose crown can be cleared even without a trunk seed');
   assert.equal(getTile(0,5), T.AIR, 'loose crown seed is cleared from the world');
   assert.equal(getTile(1,5), T.AIR, 'connected loose crown is cleared from the world');
-  assert.equal(trees._fallingBlocks.length, 0, 'loose crown leaves vanish instead of becoming falling debris');
+  assert.equal(trees._fallingBlocks.length, 2, 'loose crown leaves become falling debris');
   for(let i=0;i<40;i++) trees.updateFallingBlocks(getTile,setTile,1/60);
-  assert.equal(getTile(0,8), T.AIR, 'loose crown debris does not settle as leaf litter');
-  assert.equal(getTile(1,8), T.AIR, 'connected loose crown debris does not settle as leaf litter');
+  assert.equal(getTile(0,8), T.LEAF, 'loose crown debris settles as leaf litter');
+  assert.equal(getTile(1,8), T.LEAF, 'connected loose crown debris settles as leaf litter');
+  assert.equal(trees._fallenTreeTiles.has('0,8'), true, 'loose crown litter is tracked as fallen tree debris');
+  assert.equal(trees._fallenTreeTiles.has('1,8'), true, 'connected loose crown litter is tracked as fallen tree debris');
 }
 
 {
@@ -662,7 +665,7 @@ worldGen.randSeed = ()=>0;
   assert.equal(trees.startTreeFall(getTile,setTile,1,10,15), true, 'generated crown above a top cut starts falling');
   assert.equal(getTile(10,17), T.WOOD, 'trunk below top cut remains standing');
   assert.equal(getTile(10,15), T.AIR, 'generated crown seed is released');
-  assert.equal(trees._fallingBlocks.length, 0, 'generated crown-only leaves do not become falling debris');
+  assert.ok(trees._fallingBlocks.length > 0, 'generated crown-only leaves become falling debris');
   assert.equal(trees._fallingTrees.length, 0, 'crown-only fall does not create a trunk rotation body');
 }
 
@@ -707,7 +710,7 @@ worldGen.randSeed = ()=>0;
   assert.equal(getTile(10,17), T.WOOD, 'trunk below a burned top remains standing');
   assert.equal(getTile(10,16), T.AIR, 'burned top trunk tile is removed');
   assert.equal(getTile(10,15), T.AIR, 'crown above the burned top is released');
-  assert.equal(trees._fallingBlocks.length, 0, 'burned top trunk clears crown leaves without falling debris');
+  assert.ok(trees._fallingBlocks.length > 0, 'burned top trunk releases crown leaves as falling debris');
   assert.equal(trees._fallingTrees.length, 0, 'burned top trunk does not create a trunk rotation body');
 }
 

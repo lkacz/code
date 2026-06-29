@@ -246,6 +246,9 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
     if(t===T.SAND) return tuneMaterialDescriptor(t,{kind:'sand', color:'#d9c38e', size:0.055+Math.min(0.05,mag*0.009), lift:0.08, line:0.32});
     if(t===T.DIRT) return tuneMaterialDescriptor(t,{kind:'dust', color:'#8a6040', size:0.058+Math.min(0.04,mag*0.008), lift:0.045, line:0.26});
     if(t===T.MUD) return tuneMaterialDescriptor(t,{kind:'sand', color:'#8a744c', size:0.055, lift:0.045, line:0.24});
+    if(t===T.CLAY) return tuneMaterialDescriptor(t,{kind:'dust', color:'#9a8062', size:0.052, lift:0.035, line:0.22});
+    if(t===T.WET_CLAY) return tuneMaterialDescriptor(t,{kind:'dust', color:'#6f5c46', size:0.045, lift:0.018, line:0.18});
+    if(t===T.BRICK) return tuneMaterialDescriptor(t,{kind:'grit', color:'#b86442', size:0.054, lift:0.026, line:0.20});
     if(t===T.GRASS || isLeafTile(t)) return tuneMaterialDescriptor(t,{kind:'dust', color:t===T.GRASS?'#7fa65a':'#9a7a52', size:0.055+Math.min(0.04,mag*0.007), lift:0.035, line:0.22});
     if(t===T.WOOD) return tuneMaterialDescriptor(t,{kind:'grit', color:Math.random()<0.5?'#a8783d':'#7f552e', size:0.075, lift:0.045, line:0.28});
     if(t===T.COAL || t===T.OBSIDIAN) return tuneMaterialDescriptor(t,{kind:'grit', color:'#2b2b31', size:0.062, lift:0.035, line:0.22});

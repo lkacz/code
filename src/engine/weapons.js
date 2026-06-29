@@ -44,12 +44,13 @@ import { reactions as REACTIONS } from './reactions.js';
     {id:'wood',     key:'arrowWood',     label:'drewniane',   damage:1.00, speed:0.92, life:0.85, spread:0.050, color:'#caa472', head:'#dfe6f1'}
   ];
   const WATER_CONDENSE_CHANCE=0.008; // per dying hose puff (~1 tile per second of spray)
-  // Elemental conversion odds (per puff contact — sustained streams transform terrain)
-  const EVAPORATE_CHANCE=0.05;  // flame boils a water tile away → vapor joins the clouds
+  // Elemental conversions use sustained contact so one lucky puff cannot reshape terrain.
+  const WATER_BOIL_SECONDS=2.8; // flame must hold on water before it boils into steam
   const STONE_MELT_SECONDS=5.0; // flame must hold on one stone tile continuously
   const SAND_GLASS_SECONDS=10.0; // sand must be heated longer before it vitrifies
   const SAND_HEAT_CONTACT_SCALE=1.0;
   const STONE_HEAT_GRACE=0.22;  // tiny stream jitter grace; longer gaps lose the heat
+  const WATER_HEAT_GRACE=0.45;  // water flickers/splashes, so allow a little stream jitter
   const QUENCH_CHANCE=0.5;      // hose hardens lava → obsidian
   const MUD_CHANCE=0.25;        // hose soaks sand → mud
   const SELF_FLAME_ARM_SEC=0.16; // muzzle is safe; lingering/backflow flame burns
@@ -58,6 +59,7 @@ import { reactions as REACTIONS } from './reactions.js';
   const HEAT_FORGED_GLASS_GRACE=0.55;
   const stoneHeat=new Map();    // key "x,y" -> {x,y,heat,gap}
   const sandHeat=new Map();     // key "x,y" -> {x,y,heat,gap}
+  const waterHeat=new Map();    // key "x,y" -> {x,y,heat,gap}
   const heatForgedGlass=new Map(); // key -> {x,y,cool}; refreshed while flame keeps heating it
   const flameHeatRays=[];
   const streamFuelDebt={flame:0,hose:0,gas:0};
@@ -319,7 +321,7 @@ import { reactions as REACTIONS } from './reactions.js';
     const hit=(MM.bosses && MM.bosses.attackAt && MM.bosses.attackAt(tx,ty,bonus))
            || (MM.ufo && MM.ufo.attackAt && MM.ufo.attackAt(tx,ty,bonus))
            || (MM.npcSystem && MM.npcSystem.attackAt && MM.npcSystem.attackAt(tx,ty,bonus))
-           || (MM.mobs && MM.mobs.attackAt && MM.mobs.attackAt(tx,ty,bonus));
+           || (MM.mobs && MM.mobs.attackAt && MM.mobs.attackAt(tx,ty,bonus,{source:'hero'}));
     meleeCd=0.35; player.atkCd=Math.max(player.atkCd||0, 0.35);
     player.facing = tx>=px? 1 : -1;
     notifyMeleeSwing(tx,ty,player);
@@ -406,7 +408,7 @@ import { reactions as REACTIONS } from './reactions.js';
     electricBeams.push(b);
   }
   function electricDamageAt(tx,ty,dmg){
-    try{ if(MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg)) return true; }catch(e){}
+    try{ if(MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg,{source:'hero'})) return true; }catch(e){}
     try{ if(MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,dmg)) return true; }catch(e){}
     try{ if(MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,dmg)) return true; }catch(e){}
     try{ if(MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,dmg)) return true; }catch(e){}
@@ -573,7 +575,7 @@ import { reactions as REACTIONS } from './reactions.js';
         hit = !!((MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(x,y,dmg))
           || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(x,y,dmg))
           || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(x,y,dmg))
-          || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(x,y,dmg))) || hit;
+          || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(x,y,dmg,{source:'hero'}))) || hit;
       }
     }
     player.facing = v.dx>=0?1:-1;
@@ -640,7 +642,7 @@ import { reactions as REACTIONS } from './reactions.js';
       for(let k=0;k<6;k++){ const a=Math.random()*6.283; FIRE.ignite(Math.round(bx+Math.cos(a)*R), Math.round(by+Math.sin(a)*R), getTile, setTile); }
     }
     // creatures, bosses, plants
-    try{ if(MM.mobs && MM.mobs.blastRadius) MM.mobs.blastRadius(wx,wy,R+1.5,14); }catch(e){}
+    try{ if(MM.mobs && MM.mobs.blastRadius) MM.mobs.blastRadius(wx,wy,R+1.5,14,{source:'hero'}); }catch(e){}
     try{ if(MM.bosses && MM.bosses.damageAt){ MM.bosses.damageAt(bx,by,12); MM.bosses.damageAt(bx+1,by,8); MM.bosses.damageAt(bx-1,by,8); MM.bosses.damageAt(bx,by-1,8); } }catch(e){}
     try{ if(MM.ufo && MM.ufo.damageAt){ MM.ufo.damageAt(bx,by,14); MM.ufo.damageAt(bx,by-1,8); } }catch(e){}
     try{ if(MM.plants && MM.plants.scorchAt) MM.plants.scorchAt(wx,wy,R+1); }catch(e){}
@@ -752,6 +754,48 @@ import { reactions as REACTIONS } from './reactions.js';
   }
   function noteSandHeat(tx,ty,touched){
     touched.add(tileKey(tx,ty));
+  }
+  function noteWaterHeat(tx,ty,touched){
+    touched.add(tileKey(tx,ty));
+  }
+  function waterHeatRatioAt(tx,ty){
+    const h=waterHeat.get(tileKey(tx,ty));
+    return h ? Math.max(0,Math.min(1,(h.heat||0)/WATER_BOIL_SECONDS)) : 0;
+  }
+  function updateWaterHeat(touched,getTile,setTile,dt){
+    if(!touched.size && !waterHeat.size) return;
+    for(const k of touched){
+      const comma=k.indexOf(',');
+      const x=+k.slice(0,comma), y=+k.slice(comma+1);
+      if(getTile(x,y)!==T.WATER) continue;
+      const h=waterHeat.get(k) || {x,y,heat:0,gap:0};
+      h.heat+=dt;
+      h.gap=0;
+      if(h.heat>=WATER_BOIL_SECONDS && typeof setTile==='function'){
+        setTile(x,y,T.AIR);
+        waterHeat.delete(k);
+        try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(x,y,getTile); }catch(e){}
+        try{ if(MM.clouds && MM.clouds.injectVapor) MM.clouds.injectVapor(x,1); }catch(e){}
+        emitSteam(x+0.5,y+0.25,3,getTile,setTile);
+      } else {
+        waterHeat.set(k,h);
+      }
+    }
+    for(const [k,h] of waterHeat){
+      if(touched.has(k)) continue;
+      if(getTile(h.x,h.y)!==T.WATER){ waterHeat.delete(k); continue; }
+      h.gap=(h.gap||0)+dt;
+      if(h.gap>WATER_HEAT_GRACE) waterHeat.delete(k);
+      else waterHeat.set(k,h);
+    }
+  }
+  function waterHeatMaxRatio(){
+    let best=0;
+    for(const h of waterHeat.values()){
+      const r=Math.max(0,Math.min(1,(h.heat||0)/WATER_BOIL_SECONDS));
+      if(r>best) best=r;
+    }
+    return best;
   }
   function updateStoneHeat(touched,getTile,setTile,dt){
     if(!touched.size && !stoneHeat.size) return;
@@ -916,6 +960,7 @@ import { reactions as REACTIONS } from './reactions.js';
     if(heroFlameHitCd>0) heroFlameHitCd=Math.max(0,heroFlameHitCd-dt);
     const heatedStoneTiles=new Set();
     const heatedSandTiles=new Set();
+    const heatedWaterTiles=new Set();
     for(let i=blastsFx.length-1;i>=0;i--){ blastsFx[i].t+=dt; if(blastsFx[i].t>blastsFx[i].max) blastsFx.splice(i,1); }
     for(let i=electricBeams.length-1;i>=0;i--){
       const b=electricBeams[i];
@@ -946,11 +991,11 @@ import { reactions as REACTIONS } from './reactions.js';
         // an arrow flying through open flame or over lava catches fire
         if(!a.fire && ((FIRE && FIRE.isBurning(tx,ty)) || getTile(tx,ty)===T.LAVA)) a.fire=true;
         // Creature hit (mob, boss part or a hovering saucer)
-        if((MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,a.dmg))
+        if((MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,a.dmg,{source:'hero'}))
         || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,a.dmg))
         || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,a.dmg))
         || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,a.dmg))){
-          if(a.fire && MM.mobs && MM.mobs.igniteAt) MM.mobs.igniteAt(tx,ty,{dur:2.5,dps:2});
+          if(a.fire && MM.mobs && MM.mobs.igniteAt) MM.mobs.igniteAt(tx,ty,{dur:2.5,dps:2,source:'hero'});
           arrows.splice(i,1); break;
         }
         const t=getTile(tx,ty);
@@ -1005,17 +1050,13 @@ import { reactions as REACTIONS } from './reactions.js';
         if(igniteWorldGas(p.x,p.y,getTile,setTile,1.6)){ puffs.splice(i,1); continue; }
         hurtHeroWithFlame(p);
         if(t===T.WATER){
-          // boiling: sometimes the tile evaporates outright — its mass rises as
-          // vapor into the cloud system (volume-true: 1 tile == 1.0 vapor mass)
-          if(typeof setTile==='function' && Math.random()<EVAPORATE_CHANCE){
-            setTile(tx,ty,T.AIR);
-            try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(tx,ty,getTile); }catch(e){}
-            try{ if(MM.clouds && MM.clouds.injectVapor) MM.clouds.injectVapor(tx,1); }catch(e){}
-            emitSteam(p.x,p.y-0.3,3,getTile,setTile);
-          } else if(Math.random()<0.35) emitSteam(p.x,p.y-0.3,1,getTile,setTile); // hissing surface
+          noteWaterHeat(tx,ty,heatedWaterTiles);
+          const heatR=waterHeatRatioAt(tx,ty);
+          if(heatR>0.35 && Math.random()<(0.18+heatR*0.34)) emitSteam(p.x,p.y-0.3,1,getTile,setTile); // hissing surface
           puffs.splice(i,1); continue;
         }
         if(t===T.MEAT && cookMeatAt(tx,ty,getTile,setTile)){ puffs.splice(i,1); continue; }
+        if(MM.companions && MM.companions.heatAt && MM.companions.heatAt(tx,ty,getTile,setTile,{source:'hero',element:'fire'})){ puffs.splice(i,1); continue; }
         if(info && info.flammable && Math.random()<0.22 && FIRE) FIRE.ignite(tx,ty,getTile,setTile);
         if(hitWall){
           // sustained flame melts bare rock into a lava pool; snow and ice thaw to water
@@ -1026,14 +1067,14 @@ import { reactions as REACTIONS } from './reactions.js';
           }
           puffs.splice(i,1); continue;
         }
-        if(Math.random()<0.3 && MM.mobs && MM.mobs.igniteRadius) MM.mobs.igniteRadius(p.x,p.y,0.9,{dur:2.5, dps:(p.dps||6)*0.6});
+        if(Math.random()<0.3 && MM.mobs && MM.mobs.igniteRadius) MM.mobs.igniteRadius(p.x,p.y,0.9,{dur:2.5, dps:(p.dps||6)*0.6,source:'hero'});
         if(Math.random()<0.25 && MM.plants && MM.plants.scorchAt) MM.plants.scorchAt(p.x,p.y,1.2);
       } else if(p.kind==='hose'){
         if(FIRE && FIRE.isBurning(tx,ty)) FIRE.extinguish(tx,ty);
         if(Math.random()<0.3 && MM.mobs && MM.mobs.douseRadius) MM.mobs.douseRadius(p.x,p.y,1.0);
         // watering can: the jet hydrates the garden it passes over
         if(Math.random()<0.3 && MM.plants && MM.plants.waterAt) MM.plants.waterAt(p.x,p.y,0.3,1.6);
-        if(Math.random()<0.10 && MM.mobs && MM.mobs.damageAt) MM.mobs.damageAt(tx,ty, Math.max(1,(p.dps||2)*0.5));
+        if(Math.random()<0.10 && MM.mobs && MM.mobs.damageAt) MM.mobs.damageAt(tx,ty, Math.max(1,(p.dps||2)*0.5),{source:'hero'});
         if(t===T.LAVA){
           // quenching: molten rock hardens to obsidian under the jet
           if(typeof setTile==='function' && Math.random()<QUENCH_CHANCE){
@@ -1062,12 +1103,13 @@ import { reactions as REACTIONS } from './reactions.js';
           addWorldGas('poison',px0,py0,{power:0.18,cells:1,getTile,setTile});
           p.x=px0; p.y=py0; p.vx*=0.3; p.vy=-Math.abs(p.vy)*0.3;
         } // pools against walls
-        if(Math.random()<0.3 && MM.mobs && MM.mobs.poisonRadius) MM.mobs.poisonRadius(p.x,p.y,0.95,{dur:4, dps:(p.dps||5)*0.7});
+        if(Math.random()<0.3 && MM.mobs && MM.mobs.poisonRadius) MM.mobs.poisonRadius(p.x,p.y,0.95,{dur:4, dps:(p.dps||5)*0.7,source:'hero'});
       } else { // steam: purely cosmetic, fades on contact
         if(hitWall || t===T.WATER){ puffs.splice(i,1); continue; }
       }
     }
     applyFlameHeatRays(heatedSandTiles,getTile);
+    updateWaterHeat(heatedWaterTiles,getTile,setTile,dt);
     updateStoneHeat(heatedStoneTiles,getTile,setTile,dt);
     updateSandHeat(heatedSandTiles,getTile,setTile,dt);
     updateHeatForgedGlass(getTile,dt);
@@ -1335,10 +1377,10 @@ import { reactions as REACTIONS } from './reactions.js';
     };
   }
 
-  function reset(){ arrows.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; meleeCd=0; electricCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; }
+  function reset(){ arrows.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; meleeCd=0; electricCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; }
   MM.weapons={fireHeld,fireUlt,update,draw,drawHeld,notifyMeleeSwing,reset,explodeAt,spawnGasCloud,spawnExternalStream,
-    metrics:()=>({arrows:arrows.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),ultCharge,stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),iridiumPierces}),
-    _debug:{arrows,puffs,electricBeams,arrowTiers:ARROW_TIERS}};
+    metrics:()=>({arrows:arrows.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),ultCharge,stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
+    _debug:{arrows,puffs,electricBeams,arrowTiers:ARROW_TIERS,waterHeat}};
 })();
 // ESM export (progressive migration)
 export const weapons = (typeof window!=='undefined' && window.MM) ? window.MM.weapons : undefined;

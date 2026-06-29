@@ -26,7 +26,10 @@ export const BUILD_MATERIAL_PROFILES = Object.freeze({
   [T.SNOW]: Object.freeze({strength:4.8, weight:0.72, compression:0.54, lateral:1.22, flex:0.78, down:0.22, warn:0.22, fail:0.830, wind:0.075, rubbleRoll:3}),
   [T.DIRT]: Object.freeze({strength:6.5, weight:1.00, compression:0.42, lateral:1.15, flex:0.86, down:0.22, warn:0.25, fail:0.880, wind:0.065, rubbleRoll:3}),
   [T.GRASS]: Object.freeze({strength:6.5, weight:1.00, compression:0.42, lateral:1.15, flex:0.86, down:0.22, warn:0.25, fail:0.880, wind:0.065, rubbleRoll:3}),
-  [T.MUD]: Object.freeze({strength:6.5, weight:1.00, compression:0.42, lateral:1.15, flex:0.86, down:0.22, warn:0.25, fail:0.880, wind:0.045, rubbleRoll:3})
+  [T.MUD]: Object.freeze({strength:6.5, weight:1.00, compression:0.42, lateral:1.15, flex:0.86, down:0.22, warn:0.25, fail:0.880, wind:0.045, rubbleRoll:3}),
+  [T.CLAY]: Object.freeze({strength:7.2, weight:1.06, compression:0.48, lateral:1.18, flex:0.80, down:0.23, warn:0.24, fail:0.875, wind:0.040, rubbleRoll:3}),
+  [T.WET_CLAY]: Object.freeze({strength:5.8, weight:1.12, compression:0.58, lateral:1.26, flex:0.74, down:0.25, warn:0.22, fail:0.835, wind:0.020, rubbleRoll:2}),
+  [T.BRICK]: Object.freeze({strength:12.6, support:10.2, weight:1.08, compression:0.36, lateral:1.00, flex:0.92, down:0.22, warn:0.27, fail:0.910, wind:0.018, rubbleRoll:4})
 });
 
 export function buildMaterialProfile(t){
@@ -148,7 +151,8 @@ export function isLavaExposureOpenTile(t){
 export function isMeteorImpactGroundTile(t){
   return t===T.GRASS || t===T.SAND || t===T.DIRT || t===T.STONE ||
     t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.SNOW ||
-    t===T.ICE || t===T.MUD || t===T.OBSIDIAN || t===T.COAL ||
+    t===T.ICE || t===T.MUD || t===T.CLAY || t===T.WET_CLAY ||
+    t===T.BRICK || t===T.OBSIDIAN || t===T.COAL ||
     t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON ||
     t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS ||
     t===T.ANTIMATTER_CRYSTAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE;
@@ -192,7 +196,7 @@ export function isMeteorLifeSiteTile(t){
 export function isMeteorSettlementSiteTile(t){
   const info=INFO[t] || INFO[T.AIR];
   return !!(info && (info.machine || info.chestTier || info.door || info.trapdoor)) ||
-    t===T.STEEL || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE;
+    t===T.STEEL || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.LADDER;
 }
 
 export function isCreatureRockFloorTile(t){
@@ -210,7 +214,7 @@ export function isIridiumArrowPierceableTile(t){
 export function isStructuralMaterial(t){
   return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK ||
     t===T.STONE_DOOR || t===T.STONE_TRAPDOOR || t===T.STEEL || t===T.STEEL_DOOR || t===T.STEEL_TRAPDOOR ||
-    t===T.METEORIC_IRON || t===T.IRIDIUM || t===T.OBSIDIAN;
+    t===T.METEORIC_IRON || t===T.IRIDIUM || t===T.OBSIDIAN || t===T.BRICK;
 }
 
 export function isMetalStructuralMaterial(t){
@@ -218,7 +222,7 @@ export function isMetalStructuralMaterial(t){
 }
 
 export function isRockStructuralMaterial(t){
-  return t===T.STONE || t===T.STONE_DOOR || t===T.STONE_TRAPDOOR || t===T.GRANITE || t===T.BASALT || t===T.OBSIDIAN || t===T.BEDROCK;
+  return t===T.STONE || t===T.STONE_DOOR || t===T.STONE_TRAPDOOR || t===T.GRANITE || t===T.BASALT || t===T.OBSIDIAN || t===T.BRICK || t===T.BEDROCK;
 }
 
 export function isLightStructuralMaterial(t){
@@ -226,7 +230,7 @@ export function isLightStructuralMaterial(t){
 }
 
 export function isWeakFillMaterial(t){
-  return t===T.DIRT || t===T.GRASS || t===T.MUD || t===T.SNOW;
+  return t===T.DIRT || t===T.GRASS || t===T.MUD || t===T.CLAY || t===T.WET_CLAY || t===T.SNOW;
 }
 
 export function isNonStructuralResourceMaterial(t){
@@ -239,7 +243,7 @@ export function isLimitedBrittleStructuralMaterial(t){
 
 export function isUtilityMaterial(t){
   const info=INFO[t];
-  if(t===T.TORCH || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.GRAVE) return true;
+  if(t===T.TORCH || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.LADDER || t===T.GRAVE) return true;
   if(t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return true;
   if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) return true;
   return !!(info && (info.machine || info.chestTier || info.gas || isLooseItemMaterial(t)));
@@ -296,7 +300,7 @@ export function isPlayerBuiltMaterial(t){
   if(!buildMaterialProfile(t)) return false;
   if(!info || !info.color || info.passable || info.chestTier || info.gas || info.machine || isLooseItemMaterial(t)) return false;
   if(t===T.AIR || t===T.WATER || t===T.LAVA || t===T.SAND || t===T.BEDROCK) return false;
-  if(t===T.TORCH || t===T.WIRE || t===T.COPPER_WIRE || t===T.GRAVE) return false;
+  if(t===T.TORCH || t===T.WIRE || t===T.COPPER_WIRE || t===T.LADDER || t===T.GRAVE) return false;
   if(t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) return false;
   return true;
 }

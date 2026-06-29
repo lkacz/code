@@ -17,11 +17,13 @@ await import('../src/engine/trees.js');
 const { worldGen: WG } = await import('../src/engine/worldgen.js');
 const { world } = await import('../src/engine/world.js');
 const { mobs } = await import('../src/engine/mobs.js');
+const { companions } = await import('../src/engine/companions.js');
 
 WG.worldSeed = 20260616;
 WG.clearCaches();
 world.clear();
 mobs.clearAll();
+companions.reset();
 
 const SPECIES = mobs._debugSpecies();
 assert.ok(SPECIES.JASZCZUR && mobs.species.includes('JASZCZUR'), 'desert lizard is registered');
@@ -35,6 +37,38 @@ assert.ok(SPECIES.WIOSENNY_JELEN.loot.some(d=>d.item==='springAntler'), 'spring 
 assert.ok(SPECIES.LETNI_ZUBR.loot.some(d=>d.item==='summerHorn'), 'summer bison carries the summer trophy');
 assert.ok(SPECIES.JESIENNY_LOS.loot.some(d=>d.item==='autumnHeartwood'), 'autumn moose carries the autumn trophy');
 assert.ok(SPECIES.ZIMOWY_NIEDZWIEDZ.loot.some(d=>d.item==='winterFur'), 'winter bear carries the winter trophy');
+assert.equal(typeof mobs.nearestHostileLiving, 'function', 'mobs expose hostile-only target lookup for companions');
+
+mobs.deserialize({
+  v:4,
+  list:[
+    {id:'DEER',x:12,y:10,vx:0,vy:0,hp:10,state:'idle',facing:1,scale:1,speedMul:1,jumpMul:1},
+    {id:'BAT',x:4,y:10,vx:0,vy:0,hp:6,state:'idle',facing:1,scale:1,speedMul:1,jumpMul:1}
+  ],
+  aggro:{mode:'rel',m:{}}
+});
+let hostileTarget = mobs.nearestHostileLiving(0,10,20,{exclude:['ZLOTY'],preferHeroFocus:true});
+assert.equal(hostileTarget && hostileTarget.id, 'BAT', 'hostile lookup ignores passive animals before the hero attacks them');
+assert.equal(mobs.nearestHostileLiving(0,10,3,{exclude:['ZLOTY']}), null, 'nearby passive animals are not treated as hostile targets');
+assert.equal(mobs.attackAt(12,10,0,{source:'hero'}), true, 'hero attack can mark a passive animal as the focused target');
+hostileTarget = mobs.nearestHostileLiving(0,10,20,{exclude:['ZLOTY'],preferHeroFocus:true});
+assert.equal(hostileTarget && hostileTarget.id, 'DEER', 'hero-attacked animals outrank closer hostile animals for companion targeting');
+mobs.clearAll();
+
+function flatTile(_x,y){ return y>=10 ? T.GRASS : T.AIR; }
+mobs.freezeSpawns(10000);
+companions.restore({v:1,list:[{x:0,y:9.96,biomass:3,hp:88,seed:4160,laserCd:99,gasCd:99}]},flatTile);
+mobs.deserialize({
+  v:4,
+  list:[{id:'BAT',x:0.08,y:9.35,vx:0,vy:0,hp:6,state:'idle',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],
+  aggro:{mode:'rel',m:{}}
+});
+const farHero = {x:20,y:9.96,hp:100,maxHp:100,vx:0,vy:0,hpInvul:0};
+mobs.update(1/30,farHero,flatTile,()=>{});
+assert.ok(companions._debug.list()[0].hp<88, 'always-hostile mobs attack nearby companions before a far hero');
+assert.equal(farHero.hp, 100, 'mob companion targeting leaves the far hero unharmed');
+companions.reset();
+mobs.clearAll();
 
 function setSeason(id){
   MM.seasons = id ? {
