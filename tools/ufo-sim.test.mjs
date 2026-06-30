@@ -13,6 +13,8 @@ globalThis.window = globalThis; // engine modules attach to window.MM
 globalThis.MM = {};
 
 const SURF = 90;
+const FAR_RIGHT_X = 50000;
+const FAR_LEFT_X = -50000;
 const messages = [];
 globalThis.msg = (t)=>messages.push(String(t));
 globalThis.player = { x:0, y:SURF-1, hp:100, maxHp:100, xp:0, vx:0, vy:0, hpInvul:0, energy:0, maxEnergy:100 };
@@ -87,6 +89,23 @@ assert.equal(a1.hullW, a2.hullW, 'same seed → same hull');
 assert.equal(a1.hp, a2.hp, 'same seed → same hp');
 assert.ok(a1.name!==b1.name || a1.hullW!==b1.hullW, 'different seeds → different craft');
 assert.ok(a1.hp >= 100, 'tough hull (hp '+a1.hp+')');
+const farHot=ufo._gen(12345, FAR_RIGHT_X), farCold=ufo._gen(12345, FAR_LEFT_X);
+assert.equal(farHot.hostilitySide, 'hot', 'far-right UFOs inherit the hot hostility branch');
+assert.equal(farCold.hostilitySide, 'cold', 'far-left UFOs inherit the cold hostility branch');
+assert.ok(farHot.hostilityTier>=2, 'far-region UFOs carry a visible threat tier');
+assert.ok(farHot.hullW>a1.hullW*1.05, 'far-region UFOs grow a larger silhouette');
+assert.ok(farHot.hp>a1.hp*1.5, 'far-region UFOs become much tougher');
+assert.ok(farHot.speed>a1.speed, 'far-region UFOs travel faster');
+assert.ok(farHot.beamHalf<a1.beamHalf, 'far-region UFOs use a tighter tractor beam escape cone');
+assert.ok(farHot.lights>a1.lights, 'far-region UFOs add more visible rim lights');
+assert.notEqual(farHot.lightColor, a1.lightColor, 'far-region UFOs tint their lights with regional accent color');
+player.x=FAR_RIGHT_X; player.y=SURF-1; player.vx=player.vy=0;
+ufo.reset();
+const farSpawn=ufo.forceSpawn({seed:42, prefer:'hero'});
+assert.ok(farSpawn && farSpawn.look.hostilityTier>=2, 'spawned UFOs scale from the hero region');
+assert.equal(ufo.current().hostilitySide, 'hot', 'current UFO debug state exposes the scaled branch');
+ufo.reset();
+player.x=0; player.y=SURF-1; player.vx=player.vy=0;
 
 // --- 2. Scheduler: first visit at half of the 2-3 day period (600..900s) ---
 let st=ufo.state();

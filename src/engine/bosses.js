@@ -113,6 +113,20 @@ window.MM = window.MM || {};
     const r=c(parseInt(hex.slice(1,3),16)+d), g=c(parseInt(hex.slice(3,5),16)+d), b=c(parseInt(hex.slice(5,7),16)+d);
     return '#'+r.toString(16).padStart(2,'0')+g.toString(16).padStart(2,'0')+b.toString(16).padStart(2,'0');
   }
+  function mixHexColor(a,b,t){
+    if(typeof a!=='string' || typeof b!=='string' || a[0]!=='#' || b[0]!=='#' || a.length<7 || b.length<7) return a;
+    const ca=parseInt(a.slice(1,7),16), cb=parseInt(b.slice(1,7),16);
+    const k=clamp(Number(t)||0,0,1);
+    const r=((ca>>16)&255)+(((cb>>16)&255)-((ca>>16)&255))*k;
+    const g=((ca>>8)&255)+(((cb>>8)&255)-((ca>>8)&255))*k;
+    const bl=(ca&255)+((cb&255)-(ca&255))*k;
+    return '#'+[r,g,bl].map(v=>Math.max(0,Math.min(255,v|0)).toString(16).padStart(2,'0')).join('');
+  }
+  function rgbaHex(hex,a){
+    if(typeof hex!=='string' || hex[0]!=='#' || hex.length<7) return 'rgba(255,255,255,'+clamp(a,0,1).toFixed(3)+')';
+    const n=parseInt(hex.slice(1,7),16);
+    return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+clamp(a,0,1).toFixed(3)+')';
+  }
 
   // ---------------- State ----------------
   let monsters = [];
@@ -140,6 +154,40 @@ window.MM = window.MM || {};
   function solidT(t){ return !openT(t); }
   function playerRef(){ return (typeof window!=='undefined' && window.player) || null; }
   function hostilityAt(x){ return HOSTILITY.at(Number.isFinite(x) ? x : 0); }
+  function bossThreatTier(hostility){
+    const h=Math.max(0,Number(hostility)||0);
+    if(h>=2.25) return 4;
+    if(h>=1.45) return 3;
+    if(h>=0.75) return 2;
+    if(h>=0.25) return 1;
+    return 0;
+  }
+  function bossThreatAccent(side){
+    if(side==='cold') return '#a9e8ff';
+    if(side==='hot') return '#ffb15c';
+    return '#dcff95';
+  }
+  function bossThreatProfile(host){
+    const h=Math.max(0,Number(host && host.hostility)||0);
+    const tier=bossThreatTier(h);
+    return {
+      tier,
+      accent:tier>0 ? bossThreatAccent(host && host.side) : '',
+      aimLead:Math.min(1.12,h*0.72),
+      aimError:Math.max(0.16,0.78-h*0.18),
+      throwSpeedMult:Math.min(1.34,1+h*0.10),
+      throwCdMult:Math.max(0.55,1-h*0.16),
+      reactionMult:Math.min(1.38,1+h*0.13),
+      shakeCdMult:Math.max(0.62,1-h*0.10),
+      armorTint:Math.min(0.32,0.08+h*0.10)
+    };
+  }
+  function bossTopologyScaleForHost(host){
+    const h=Math.max(0,Number(host && host.hostility)||0);
+    if(h>=2.2) return 3;
+    if(h>=0.92) return 2;
+    return 1;
+  }
   function say(t){ try{ if(typeof window!=='undefined' && window.msg) window.msg(t); }catch(e){} }
   // Hero damage is centralized in main.js (window.damageHero); the inline body
   // below is the fallback for the DOM-less Node sims, which stub neither handler.
@@ -202,6 +250,7 @@ window.MM = window.MM || {};
   function generateMonster(seed,x,y,opts){
     const rng=mulberry(seed);
     const host=hostilityAt(x);
+    const threat=bossThreatProfile(host);
     const scale=Math.max(1,(opts && opts.scale)||1);
     const aquatic=!!(opts && opts.aquatic);
     const roll=rng();
@@ -249,9 +298,12 @@ window.MM = window.MM || {};
     const bodyBlocks=[primary, accent];
     const legBlock = (primary===T.WOOD||accent===T.WOOD)? T.WOOD : T.STONE;
     function paintColor(blockType, isCore, nearCore){
-      if(isCore) return '#ff3b5c';
+      if(isCore) return threat.accent ? mixHexColor('#ff3b5c',threat.accent,0.18) : '#ff3b5c';
       const base=infoColor(blockType);
-      if(base) return shade(base, Math.round(rng()*26-13));
+      if(base){
+        const jittered=shade(base, Math.round(rng()*26-13));
+        return threat.accent ? mixHexColor(jittered, threat.accent, nearCore ? threat.armorTint*0.55 : threat.armorTint) : jittered;
+      }
       // headless / no-INFO fallback (sim tests): keep the old hue scheme
       return nearCore? hsl(hue,30,26) : hsl(hue+rng()*24-12, 38+rng()*18, 34+rng()*14);
     }
@@ -294,6 +346,10 @@ window.MM = window.MM || {};
       x, y, vx:0, vy:0, dir:facing, onGround:false,
       baseParts:reach.size, aquatic, gargantuan,
       hostility:+host.hostility.toFixed(3), hostilitySide:host.side,
+      hostilityTier:threat.tier, threatAccent:threat.accent,
+      aimLead:threat.aimLead, aimError:threat.aimError,
+      throwSpeedMult:threat.throwSpeedMult, throwCdMult:threat.throwCdMult,
+      reactionMult:threat.reactionMult, shakeCdMult:threat.shakeCdMult,
       speed:(1.2+rng()*1.4)*(gargantuan?0.75:1)*(host.bossSpeedMult || 1), sense:18+rng()*14+(gargantuan?10:0)+host.hostility*18,
       jump:7+rng()*3, hopT:0, attackDmg:Math.round((6+rng()*6)*(gargantuan?2:1)*(host.bossDamageMult || 1)),
       state:'roam', flipT:2+rng()*4, frozen:false, bobP:rng()*6.28,
@@ -330,9 +386,12 @@ window.MM = window.MM || {};
     const seed=(opts && typeof opts.seed==='number')? (opts.seed>>>0) : ((Math.random()*0x7fffffff)|0);
     // 10% of natural spawns are gargantuan: 3x silhouette, double attack power,
     // an epic-chest hoard on death. Forced/test spawns stay normal unless asked.
-    const hostNear=hostilityAt(px);
+    const scaleAnchorX=(opts && typeof opts.x==='number' && isFinite(opts.x)) ? opts.x : px;
+    const hostNear=hostilityAt(scaleAnchorX);
     const giantChance=0.10 + (hostNear.bossGargantuanBonus || 0);
-    const scale=(opts && opts.scale) || ((!opts || !opts.force) && Math.random()<giantChance? (hostNear.hostility>0.86 && Math.random()<0.30 ? 4 : 3) : 1);
+    const explicitScale=!!(opts && typeof opts.scale==='number' && opts.scale>0);
+    const regionalScale=bossTopologyScaleForHost(hostNear);
+    const scale=explicitScale ? opts.scale : ((!opts || !opts.force) && Math.random()<giantChance ? (hostNear.hostility>0.86 && Math.random()<0.30 ? 4 : 3) : regionalScale);
     for(let attempt=0; attempt<40; attempt++){
       let x;
       if(opts && typeof opts.x==='number'){
@@ -828,18 +887,23 @@ window.MM = window.MM || {};
     setTile(b.tx,b.ty,T.AIR);                                   // the block leaves the world…
     try{ if(MM.fallingSolids && MM.fallingSolids.onTileRemoved) MM.fallingSolids.onTileRemoved(b.tx,b.ty); }catch(e){}
     const sx=m.x+(m.minDx+m.maxDx+1)/2, sy=m.y-m.height;        // …and launches from the crown
-    const t=clamp(dist/CFG.THROW_SPEED, 0.45, 1.3);
+    const throwSpeed=CFG.THROW_SPEED*((m && m.throwSpeedMult)||1);
+    const t=clamp(dist/throwSpeed, 0.38, 1.3);
     const g=CFG.GRAV*0.55;
     const aim=targetPoint(p);
-    const aimX=aim.x + (p.vx||0)*t*0.5;               // lead a moving target by half its drift
+    const lead=clamp((m && m.aimLead)||0,0,1.2);
+    const err=clamp((m && m.aimError)||0.78,0.05,1.2);
+    const aimX=aim.x + (p.vx||0)*t*(0.35+0.65*lead);
+    const aimY=aim.y - 0.5 + (p.vy||0)*t*0.35*lead;
     projectiles.push({
       x:sx, y:sy,
-      vx:(aimX-sx)/t + (Math.random()-0.5)*0.8,
-      vy:(aim.y-0.5-sy)/t - 0.5*g*t,
+      vx:(aimX-sx)/t + (Math.random()-0.5)*err,
+      vy:(aimY-sy)/t - 0.5*g*t + (Math.random()-0.5)*err*0.35,
       t:0, max:4, tile:b.t, color:infoColor(b.t)||'#9a9a9a',
       spin:Math.random()*6.28, dmg:Math.max(2, Math.round(m.attackDmg*CFG.THROW_DMG)),
+      lead,
     });
-    m.throwCd=CFG.THROW_CD[0]+Math.random()*(CFG.THROW_CD[1]-CFG.THROW_CD[0]);
+    m.throwCd=(CFG.THROW_CD[0]+Math.random()*(CFG.THROW_CD[1]-CFG.THROW_CD[0]))*((m && m.throwCdMult)||1);
   }
   function stepBehavior(m,getTile,dt){
     // hunger accrues steadily — even while a nearby hero suppresses feeding
@@ -866,7 +930,7 @@ window.MM = window.MM || {};
     let want=0;
     if(m.state==='hunt'){
       m.dir=pdx>=0?1:-1;
-      want=m.dir*m.speed*(enraged?1.6:1.15);
+      want=m.dir*m.speed*(enraged?1.6:1.15)*((m && m.reactionMult)||1);
       // out of close reach: rip a block from the terrain and hurl it instead
       if(p) tryThrow(m,p,dist,getTile,setTile_global,dt);
     } else {
@@ -1176,7 +1240,7 @@ window.MM = window.MM || {};
         if(m.heroOnTop) damageHero(Math.max(2,Math.round(m.attackDmg*CFG.SHAKE_DMG)), m.x-m.dir, 'boss_shake');
       } else if(m.heroOnTop && !m.frozen && m.shakeCd<=0 && Math.random()<dt*1.2){
         m.shakeT=CFG.SHAKE_TIME;
-        m.shakeCd=CFG.SHAKE_CD[0]+Math.random()*(CFG.SHAKE_CD[1]-CFG.SHAKE_CD[0]);
+        m.shakeCd=(CFG.SHAKE_CD[0]+Math.random()*(CFG.SHAKE_CD[1]-CFG.SHAKE_CD[0]))*((m && m.shakeCdMult)||1);
         say('🌀 '+m.name+' otrząsa się!');
       }
       m.heroOnTop=false;   // re-armed by collideHero when the hero is still up there
@@ -1253,6 +1317,54 @@ window.MM = window.MM || {};
     for(const p of m.parts){ if(tileVisible(canDrawTile,m.x+p.dx,m.y+p.dy)) return true; }
     return false;
   }
+  function bossOuterPart(occ,p){
+    return !occ.has(p.dx+','+(p.dy-1)) || !occ.has(p.dx+','+(p.dy+1)) || !occ.has((p.dx-1)+','+p.dy) || !occ.has((p.dx+1)+','+p.dy);
+  }
+  function drawBossThreatMarks(ctx,TILE,m,bx,by,wob,now,occ){
+    const tier=Math.max(0,Math.min(4,(m && m.hostilityTier)||0));
+    const accent=m && m.threatAccent;
+    if(tier<=0 || !accent) return;
+    const alpha=Math.min(0.72,0.18+tier*0.11);
+    let topDy=99;
+    for(const p of m.parts){ if(p.dy<topDy) topDy=p.dy; }
+    let idx=0;
+    const stride=Math.max(1,5-tier);
+    for(const p of m.parts){
+      if(p.role==='core' || !bossOuterPart(occ,p)) continue;
+      if((idx++ % stride)!==0) continue;
+      const off=limbOffset(m,p,now);
+      const X=(bx+p.dx)*TILE+off.ox, Y=(by+p.dy)*TILE+wob+off.oy;
+      ctx.fillStyle=rgbaHex(accent,alpha);
+      if(p.role==='eye'){
+        ctx.fillRect(X+TILE*0.22,Y+TILE*0.18,TILE*0.56,TILE*0.12);
+        continue;
+      }
+      const s=Math.max(2,TILE*(0.14+0.025*tier));
+      ctx.fillRect(X+TILE*0.18,Y+TILE*0.18,s,s);
+      if(tier>=2) ctx.fillRect(X+TILE*0.68,Y+TILE*0.62,s*0.85,s*0.85);
+    }
+    if(tier>=2){
+      ctx.fillStyle=rgbaHex(accent,0.30+0.07*tier);
+      for(const p of m.parts){
+        if(p.dy!==topDy || !bossOuterPart(occ,p)) continue;
+        const off=limbOffset(m,p,now);
+        const X=(bx+p.dx)*TILE+off.ox, Y=(by+p.dy)*TILE+wob+off.oy;
+        ctx.beginPath();
+        ctx.moveTo(X+TILE*0.15,Y+1);
+        ctx.lineTo(X+TILE*0.50,Y-TILE*(0.18+0.05*tier));
+        ctx.lineTo(X+TILE*0.85,Y+1);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+    if(tier>=3){
+      const w=(m.maxDx-m.minDx+1)*TILE;
+      const h=(m.height||4)*TILE;
+      ctx.strokeStyle=rgbaHex(accent,0.18);
+      ctx.lineWidth=1;
+      ctx.strokeRect((bx+m.minDx)*TILE+0.5,(by-(m.height||4)+1)*TILE+wob+0.5,w,h);
+    }
+  }
   function draw(ctx,TILE,canDrawTile){
     if(!monsters.length && !debris.length && !blasts.length && !projectiles.length) return;
     const now=(typeof performance!=='undefined')? performance.now() : 0;
@@ -1304,6 +1416,7 @@ window.MM = window.MM || {};
           ctx.beginPath(); ctx.moveTo(X+3,Y+TILE*0.3); ctx.lineTo(X+TILE*0.6,Y+TILE*0.55); ctx.lineTo(X+TILE*0.4,Y+TILE-3); ctx.stroke();
         }
       }
+      drawBossThreatMarks(ctx,TILE,m,bx,by,wob,now,occ);
       // crisp silhouette: outline only the edges with no body neighbour, so the
       // creature reads as one fused mass of blocks rather than a grid of tiles.
       // All edges accumulate into one path → a single stroke per monster.

@@ -1,4 +1,5 @@
 import { isObjectFootingTile, isReplaceableNaturalOpenTile } from './material_physics.js';
+import { worldHostility as HOSTILITY } from './world_hostility.js';
 
 // UFO visitor: every 2-3 in-game days a procedurally generated saucer descends,
 // scans for a living victim — an animal, the hero, even a boss — locks a tractor
@@ -40,6 +41,59 @@ const ufo = (function(){
   let acc=0, saveAcc=0, nextAt=0, visits=0;
 
   function mulberry32(a){ a=a>>>0; return function(){ a|=0; a=(a+0x6D2B79F5)|0; let t=Math.imul(a^(a>>>15),1|a); t=(t+Math.imul(t^(t>>>7),61|t))^t; return ((t^(t>>>14))>>>0)/4294967296; }; }
+  function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+  function mixHexColor(a,b,t){
+    if(typeof a!=='string' || typeof b!=='string' || a[0]!=='#' || b[0]!=='#' || a.length<7 || b.length<7) return a;
+    const ca=parseInt(a.slice(1,7),16), cb=parseInt(b.slice(1,7),16);
+    const k=clamp(Number(t)||0,0,1);
+    const r=((ca>>16)&255)+(((cb>>16)&255)-((ca>>16)&255))*k;
+    const g=((ca>>8)&255)+(((cb>>8)&255)-((ca>>8)&255))*k;
+    const bl=(ca&255)+((cb&255)-(ca&255))*k;
+    return '#'+[r,g,bl].map(v=>Math.max(0,Math.min(255,v|0)).toString(16).padStart(2,'0')).join('');
+  }
+  function rgbaHex(hex,a){
+    if(typeof hex!=='string' || hex[0]!=='#' || hex.length<7) return 'rgba(255,255,255,'+clamp(a,0,1).toFixed(3)+')';
+    const n=parseInt(hex.slice(1,7),16);
+    return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+clamp(a,0,1).toFixed(3)+')';
+  }
+  function hostilityAt(x){ return HOSTILITY.at(Number.isFinite(x) ? x : 0); }
+  function ufoThreatTier(hostility){
+    const h=Math.max(0,Number(hostility)||0);
+    if(h>=2.25) return 4;
+    if(h>=1.45) return 3;
+    if(h>=0.75) return 2;
+    if(h>=0.25) return 1;
+    return 0;
+  }
+  function ufoThreatAccent(side){
+    if(side==='cold') return '#a9e8ff';
+    if(side==='hot') return '#ffb15c';
+    return '#dcff95';
+  }
+  function ufoThreatProfile(x){
+    const h=hostilityAt(x);
+    const hostility=Math.max(0,Number(h.hostility)||0);
+    const tier=ufoThreatTier(hostility);
+    return {
+      h,
+      hostility,
+      side:h.side || 'center',
+      tier,
+      accent:tier>0 ? ufoThreatAccent(h.side) : '',
+      scaleMult:Math.min(1.34,1+hostility*0.09),
+      hpMult:Math.min(2.25,1+hostility*0.55),
+      speedMult:Math.min(1.32,1+hostility*0.10),
+      controlMult:Math.min(1.55,1+hostility*0.16),
+      scanDelayMult:Math.max(0.55,1-hostility*0.14),
+      liftSpeedMult:Math.min(1.45,1+hostility*0.14),
+      beamPullMult:Math.min(1.42,1+hostility*0.12),
+      beamHalfMult:Math.max(0.78,1-hostility*0.055),
+      bossChargeMult:Math.max(0.62,1-hostility*0.12),
+      carrySpeedMult:Math.min(1.28,1+hostility*0.08),
+      carryDistMult:Math.min(1.42,1+hostility*0.12),
+      hoverLift:Math.min(5,hostility*1.2)
+    };
+  }
   function rollNext(){ nextAt=(CFG.MIN_DAYS+Math.random()*(CFG.MAX_DAYS-CFG.MIN_DAYS))*DAY_SEC*(visits===0?0.5:1); }
   (function load(){
     try{
@@ -209,23 +263,44 @@ const ufo = (function(){
   const HULLS=['#9fb2c8','#7d8aa0','#b8a06a','#6f7d8f','#8a7da6'];
   const TRIMS=['#3de1c5','#ffd24a','#ff5ad1','#9dff57','#6bc7ff'];
   const ARCHE=['Zwiadowca','Kolekcjoner','Badacz','Żniwiarz','Turysta'];
-  function generate(seed){
+  function generate(seed, anchorX){
     const r=mulberry32(seed);
+    const threat=ufoThreatProfile(anchorX || 0);
     const archetype=ARCHE[(r()*ARCHE.length)|0];
-    const hullW=3.4+r()*2.2, hullH=hullW*(0.30+r()*0.10);
+    const baseHullW=3.4+r()*2.2;
+    const hullW=baseHullW*threat.scaleMult, hullH=hullW*(0.30+r()*0.10);
+    const baseHull=HULLS[(r()*HULLS.length)|0];
+    const accentMix=clamp(0.16+threat.hostility*0.05,0.16,0.34);
+    const dome=(r()*3)|0;
+    const occupant=(r()*3)|0;
+    const lights=Math.min(10,4+((r()*5)|0)+threat.tier);
+    const baseLight=TRIMS[(r()*TRIMS.length)|0];
     const look={
       seed, archetype, hullW, hullH,
-      hullColor:HULLS[(r()*HULLS.length)|0],
-      dome:(r()*3)|0,            // 0 glass / 1 amber / 2 violet
-      occupant:(r()*3)|0,        // 0 gray alien / 1 tentacles / 2 brain
-      lights:4+((r()*5)|0),
-      lightColor:TRIMS[(r()*TRIMS.length)|0],
+      hullColor:threat.accent ? mixHexColor(baseHull, threat.accent, accentMix) : baseHull,
+      dome,                       // 0 glass / 1 amber / 2 violet
+      occupant,                   // 0 gray alien / 1 tentacles / 2 brain
+      lights,
+      lightColor:threat.accent ? mixHexColor(baseLight, threat.accent, 0.30) : baseLight,
       fins:(r()*3)|0,
       blink:0.6+r()*1.4,
-      speed:7+r()*4,
+      speed:(7+r()*4)*threat.speedMult,
+      hostility:+threat.hostility.toFixed(3),
+      hostilitySide:threat.side,
+      hostilityTier:threat.tier,
+      threatAccent:threat.accent,
+      controlMult:threat.controlMult,
+      scanDelay:2.2*threat.scanDelayMult,
+      liftSpeedMult:threat.liftSpeedMult,
+      beamPullMult:threat.beamPullMult,
+      beamHalf:CFG.BEAM_HALF*threat.beamHalfMult,
+      bossCharge:CFG.BOSS_CHARGE*threat.bossChargeMult,
+      carrySpeed:12*threat.carrySpeedMult,
+      carryDistMult:threat.carryDistMult,
+      hoverAlt:CFG.HOVER_ALT+threat.hoverLift,
       name:'Spodek „'+archetype+'” '+String.fromCharCode(65+((r()*26)|0))+'-'+(10+((r()*90)|0)),
     };
-    look.hp=Math.round(CFG.HP_BASE*(0.85+r()*0.5)*(hullW/4.2));
+    look.hp=Math.round(CFG.HP_BASE*(0.85+r()*0.5)*(hullW/4.2)*threat.hpMult);
     return look;
   }
 
@@ -259,7 +334,8 @@ const ufo = (function(){
     if(craft) return null;
     const pl=playerRef(); if(!pl) return null;
     const seed=(opts && typeof opts.seed==='number')? (opts.seed>>>0) : ((Math.random()*1e9)|0);
-    const look=generate(seed);
+    const anchorX=(opts && typeof opts.anchorX==='number' && Number.isFinite(opts.anchorX)) ? opts.anchorX : pl.x;
+    const look=generate(seed, anchorX);
     const side=Math.random()<0.5?-1:1;
     const sx=pl.x + side*(45+Math.random()*20);
     craft={
@@ -384,21 +460,28 @@ const ufo = (function(){
     c.t+=dt; c.phaseT+=dt;
     if(c.hitFlash>0) c.hitFlash-=dt;
     const surf=surfaceY(c.x, pl.y);
-    const hoverY=surf-CFG.HOVER_ALT;
+    const control=(c.look && c.look.controlMult) || 1;
+    const liftSpeed=(c.look && c.look.liftSpeedMult) || 1;
+    const beamPull=(c.look && c.look.beamPullMult) || 1;
+    const beamHalf=(c.look && c.look.beamHalf) || CFG.BEAM_HALF;
+    const bossCharge=(c.look && c.look.bossCharge) || CFG.BOSS_CHARGE;
+    const carrySpeed=(c.look && c.look.carrySpeed) || 12;
+    const carryDistMult=(c.look && c.look.carryDistMult) || 1;
+    const hoverY=surf-((c.look && c.look.hoverAlt) || CFG.HOVER_ALT);
 
     if(c.phase==='approach'){
       // glide in toward the airspace above the hero
       const dx=pl.x-c.x;
-      c.vx=Math.sign(dx)*Math.min(c.look.speed, Math.abs(dx)*1.2);
+      c.vx=Math.sign(dx)*Math.min(c.look.speed, Math.abs(dx)*1.2*control);
       c.x+=c.vx*dt;
-      c.y+=(hoverY-c.y)*Math.min(1,dt*1.2);
+      c.y+=(hoverY-c.y)*Math.min(1,dt*1.2*control);
       if(Math.abs(dx)<6){ c.phase='scan'; c.phaseT=0; }
       if(c.phaseT>30) leaveWith(null); // can't reach (shouldn't happen)
     }
     else if(c.phase==='scan'){
-      c.y+=(hoverY-c.y)*Math.min(1,dt*1.5);
-      c.x+=Math.sin(c.t*0.8)*dt*2; // searching drift
-      if(c.phaseT>2.2){
+      c.y+=(hoverY-c.y)*Math.min(1,dt*1.5*control);
+      c.x+=Math.sin(c.t*0.8)*dt*2*(1+0.12*((c.look && c.look.hostilityTier)||0)); // searching drift
+      if(c.phaseT>((c.look && c.look.scanDelay) || 2.2)){
         const v=pickVictim(pl);
         if(!v){ leaveWith(null); say('🛸 Obcy nie znaleźli nic ciekawego i odlatują.'); }
         else{
@@ -419,11 +502,11 @@ const ufo = (function(){
         else{
           // hover over the prey, then lift it (runs after mobs.update, so these
           // overrides win the frame; gravity resumes the instant we let go)
-          c.x+=(m.x-c.x)*Math.min(1,dt*2.5);
-          c.y+=(hoverY-c.y)*Math.min(1,dt*1.5);
+          c.x+=(m.x-c.x)*Math.min(1,dt*2.5*control);
+          c.y+=(hoverY-c.y)*Math.min(1,dt*1.5*control);
           m.vx=0; m.vy=0;
-          m.x+=(c.x-m.x)*Math.min(1,dt*3);
-          m.y-=CFG.LIFT_SPEED*dt;
+          m.x+=(c.x-m.x)*Math.min(1,dt*3*control);
+          m.y-=CFG.LIFT_SPEED*liftSpeed*dt;
           if(Math.random()<0.1) m.facing*=-1; // helpless wriggle
           if(m.y<=c.y+1.0){
             try{ if(MM.mobs && MM.mobs.abduct) MM.mobs.abduct(m); }catch(e){}
@@ -436,27 +519,29 @@ const ufo = (function(){
       else if(v.kind==='hero'){
         if(pl.hp<=0){ c.victim=null; c.phase='scan'; c.phaseT=0; }
         else{
-          c.x+=(pl.x-c.x)*Math.min(1,dt*2.2);
-          c.y+=(hoverY-c.y)*Math.min(1,dt*1.5);
+          c.x+=(pl.x-c.x)*Math.min(1,dt*2.2*control);
+          c.y+=(hoverY-c.y)*Math.min(1,dt*1.5*control);
           const dx=pl.x-c.x;
           // first line up over the hero; the escape rule only applies once locked
           if(!v.locked){
-            if(Math.abs(dx)<CFG.BEAM_HALF*0.7) v.locked=true;
+            if(Math.abs(dx)<beamHalf*0.7) v.locked=true;
             else if(c.phaseT>8){ c.victim=null; c.phase='scan'; c.phaseT=0; } // couldn't line up
           }
-          else if(Math.abs(dx)>CFG.BEAM_HALF+1.0){
+          else if(Math.abs(dx)>beamHalf+1.0){
             // the hero out-ran the beam cone
             c.retries++; c.victim=null;
             if(c.retries>1){ leaveWith(null); say('🛸 Wyrwałeś się! Obcy rezygnują i odlatują.'); }
             else{ c.phase='scan'; c.phaseT=0; say('🛸 Wyrwałeś się z wiązki! Spodek szuka dalej...'); }
           }
           if(c.victim && v.locked){
+            if(beamPull!==1) pl.vx+=(c.x-pl.x)*1.6*(beamPull-1)*dt;
             pl.vx+=(c.x-pl.x)*1.6*dt;             // gentle centering — sprint sideways to escape
             pl.vy=Math.min(pl.vy,-2.6);            // steady upward drag
+            if(liftSpeed!==1) pl.vy=Math.min(pl.vy,-2.6*liftSpeed);
             if(pl.y<=c.y+1.2){
               c.phase='carry'; c.phaseT=0;
               c.carryDir=Math.random()<0.5?-1:1;
-              c.carryDist=CFG.CARRY_MIN+Math.random()*(CFG.CARRY_MAX-CFG.CARRY_MIN);
+              c.carryDist=(CFG.CARRY_MIN+Math.random()*(CFG.CARRY_MAX-CFG.CARRY_MIN))*carryDistMult;
               c.carried=0;
               drainHeroEnergy(pl);
               say('🛸 PORWANY! Obcy zabierają cię na badania...');
@@ -468,12 +553,12 @@ const ufo = (function(){
         const b=v.boss;
         if(!b || b.dead){ c.victim=null; c.phase='scan'; c.phaseT=0; }
         else{
-          c.x+=(b.x-c.x)*Math.min(1,dt*2.0);
-          c.y+=(hoverY-c.y)*Math.min(1,dt*1.5);
+          c.x+=(b.x-c.x)*Math.min(1,dt*2.0*control);
+          c.y+=(hoverY-c.y)*Math.min(1,dt*1.5*control);
           if(Math.abs(b.x-c.x)>40){ c.victim=null; c.phase='scan'; c.phaseT=0; }
           else{
             c.charge+=dt;
-            if(c.charge>=CFG.BOSS_CHARGE){
+            if(c.charge>=bossCharge){
               let name=null;
               try{ if(MM.bosses && MM.bosses.abduct && MM.bosses.abduct(b)) name=b.name; }catch(e){}
               burst(c.x,c.y+2,'epic');
@@ -486,7 +571,7 @@ const ufo = (function(){
     }
     else if(c.phase==='carry'){
       // deportation flight: the hero dangles under the hull until released
-      c.vx=c.carryDir*12;
+      c.vx=c.carryDir*carrySpeed;
       c.x+=c.vx*dt;
       c.y+=((surf-14)-c.y)*Math.min(1,dt*1.2);
       c.carried+=Math.abs(c.vx)*dt;
@@ -512,6 +597,54 @@ const ufo = (function(){
   }
 
   // --- Rendering (browser only; world-space, same transform as mobs.draw) ---
+  function drawUfoThreatMarks(ctx,TILE,c,px,py,hw,hh,L,now){
+    const tier=Math.max(0,Math.min(4,(L && L.hostilityTier)||0));
+    const accent=L && L.threatAccent;
+    if(tier<=0 || !accent) return;
+    const tick=now*0.006;
+    const pxSize=Math.max(2,Math.round(TILE*0.12));
+    ctx.save();
+    ctx.strokeStyle=rgbaHex(accent,0.24+0.08*tier);
+    ctx.lineWidth=1.1+0.15*tier;
+    ctx.beginPath();
+    ctx.ellipse(px,py,hw*(1.04+0.02*tier),hh*(1.06+0.025*tier),0,0,Math.PI*2);
+    ctx.stroke();
+
+    ctx.fillStyle=rgbaHex(accent,0.44+0.08*tier);
+    const marks=tier+3;
+    for(let i=0;i<marks;i++){
+      const a=(i/marks)*Math.PI*2+tick*0.18;
+      const lx=px+Math.cos(a)*hw*0.72;
+      const ly=py+Math.sin(a)*hh*0.48;
+      ctx.fillRect(lx-pxSize*0.5,ly-pxSize*0.5,pxSize,pxSize);
+    }
+
+    ctx.fillStyle=rgbaHex(accent,0.34+0.08*tier);
+    for(let s=-1;s<=1;s+=2){
+      ctx.beginPath();
+      ctx.moveTo(px+s*hw*0.38,py-hh*0.70);
+      ctx.lineTo(px+s*hw*(0.48+0.03*tier),py-hh*(1.05+0.08*tier)-Math.sin(tick+s)*2);
+      ctx.lineTo(px+s*hw*0.28,py-hh*0.78);
+      ctx.closePath();
+      ctx.fill();
+      if(tier>=3){
+        ctx.fillRect(px+s*hw*0.93-pxSize*0.5,py+hh*0.34-pxSize*0.5,pxSize,pxSize);
+      }
+    }
+
+    if(tier>=2){
+      ctx.strokeStyle=rgbaHex(accent,0.50);
+      ctx.lineWidth=1;
+      ctx.beginPath();
+      ctx.moveTo(px-hw*0.55,py+hh*0.15);
+      ctx.lineTo(px-hw*0.25,py+hh*0.32);
+      ctx.moveTo(px+hw*0.55,py+hh*0.15);
+      ctx.lineTo(px+hw*0.25,py+hh*0.32);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   function draw(ctx, TILE, canDrawTile){
     const c=craft; if(!c || typeof document==='undefined') return;
     if(typeof canDrawTile === 'function' && !canDrawTile(Math.floor(c.x), Math.floor(c.y))) return;
@@ -527,7 +660,7 @@ const ufo = (function(){
       else if(v && v.kind==='mob' && v.mob) tyPx=v.mob.y*TILE+TILE*0.6;
       else if(v && v.kind==='boss' && v.boss) tyPx=v.boss.y*TILE+TILE*2;
       else tyPx=surfaceY(c.x)*TILE;
-      const bw=CFG.BEAM_HALF*TILE;
+      const bw=((L && L.beamHalf) || CFG.BEAM_HALF)*TILE;
       const g=ctx.createLinearGradient(px,py,px,tyPx);
       const col=L.lightColor;
       g.addColorStop(0, col+'cc'); g.addColorStop(1, col+'11');
@@ -555,6 +688,7 @@ const ufo = (function(){
     ctx.beginPath(); ctx.ellipse(px,py+hh*0.35,hw*0.96,hh*0.55,0,0,Math.PI); ctx.fill();
     ctx.strokeStyle='rgba(20,26,34,0.8)'; ctx.lineWidth=1.5;
     ctx.beginPath(); ctx.ellipse(px,py,hw,hh,0,0,Math.PI*2); ctx.stroke();
+    drawUfoThreatMarks(ctx,TILE,c,px,py,hw,hh,L,now);
     // fins
     if(L.fins>0){ ctx.fillStyle=L.hullColor;
       ctx.beginPath(); ctx.moveTo(px-hw*0.95,py); ctx.lineTo(px-hw*1.25,py-hh*0.8); ctx.lineTo(px-hw*0.6,py-hh*0.3); ctx.closePath(); ctx.fill();
@@ -608,11 +742,21 @@ const ufo = (function(){
 
   const api={
     update, draw, damageAt, attackAt, forceSpawn, snapshot, restore, clearActive,
-    current:()=> craft? {name:craft.look.name, archetype:craft.look.archetype, phase:craft.phase, x:craft.x, y:craft.y, hp:craft.hp, maxHp:craft.maxHp, hullW:craft.look.hullW, seed:craft.look.seed} : null,
+    current:()=> craft? {
+      name:craft.look.name, archetype:craft.look.archetype, phase:craft.phase,
+      x:craft.x, y:craft.y, hp:craft.hp, maxHp:craft.maxHp,
+      hullW:craft.look.hullW, seed:craft.look.seed, speed:craft.look.speed,
+      hostility:craft.look.hostility || 0,
+      hostilitySide:craft.look.hostilitySide || 'center',
+      hostilityTier:craft.look.hostilityTier || 0,
+      beamHalf:craft.look.beamHalf || CFG.BEAM_HALF,
+      lightColor:craft.look.lightColor,
+      threatAccent:craft.look.threatAccent || '',
+    } : null,
     state:()=>({acc, nextAt, visits}),
     beaming,
     _gen:generate, // deterministic look (tests)
-    _debug:{dropCellFree,dropCellSupported,findScrapLanding,bioCompanionDropChance:BIO_COMPANION_DROP_CHANCE},
+    _debug:{dropCellFree,dropCellSupported,findScrapLanding,bioCompanionDropChance:BIO_COMPANION_DROP_CHANCE,threatProfile:ufoThreatProfile},
     reset(){ craft=null; acc=0; visits=0; rollNext(); save(); }
   };
   MM.ufo=api;

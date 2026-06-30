@@ -1,3 +1,6 @@
+import { WORLD_H } from '../constants.js';
+import { isSolidCollisionTile } from './material_physics.js';
+
 // Chest burst particles + simple sfx
 // API: MM.particles.spawnBurst(x,y,tier,{sound}), spawnSmoke(x,y,intensity,opts),
 // update(dt, TILE), draw(ctx, canDrawTile, TILE)
@@ -82,6 +85,109 @@
     if(kind==='smoke') return 0.16;
     if(kind==='bubble' || kind==='energy') return 0;
     return 0.22;
+  }
+  function physicalParticleRadius(p){
+    if(!p) return 2;
+    if(p.kind==='splash') return 1.5;
+    if(p.kind==='spark') return Math.max(1.2, Math.min(3.5, (p.size||3)*0.48));
+    if(p.kind==='glass') return Math.max(1.4, Math.min(4.2, (p.size||3)*0.58));
+    return 2;
+  }
+  function physicalParticleBounce(p){
+    if(p.kind==='splash') return 0.10;
+    if(p.kind==='spark') return 0.22;
+    if(p.kind==='glass') return 0.36;
+    return 0.28;
+  }
+  function physicalParticleFriction(p){
+    if(p.kind==='glass') return 0.74;
+    if(p.kind==='spark') return 0.68;
+    if(p.kind==='splash') return 0.42;
+    return 0.70;
+  }
+  function particleSolidTile(getTile,tx,ty){
+    if(!getTile) return false;
+    if(ty<0) return false;
+    if(ty>=WORLD_H) return true;
+    try{ return isSolidCollisionTile(getTile(tx,ty)); }
+    catch(e){ return true; }
+  }
+  function particleOverlapsSolid(getTile,x,y,r,tileSize){
+    if(!getTile || !Number.isFinite(x) || !Number.isFinite(y)) return false;
+    if(y+r>=WORLD_H*tileSize) return true;
+    const minX=Math.floor((x-r)/tileSize), maxX=Math.floor((x+r)/tileSize);
+    const minY=Math.floor((y-r)/tileSize), maxY=Math.floor((y+r)/tileSize);
+    for(let ty=minY; ty<=maxY; ty++){
+      for(let tx=minX; tx<=maxX; tx++){
+        if(!particleSolidTile(getTile,tx,ty)) continue;
+        const left=tx*tileSize, top=ty*tileSize;
+        const cx=Math.max(left, Math.min(x, left+tileSize));
+        const cy=Math.max(top, Math.min(y, top+tileSize));
+        const dx=x-cx, dy=y-cy;
+        if(dx*dx+dy*dy <= r*r) return true;
+      }
+    }
+    return false;
+  }
+  function movePhysicalParticleAxis(p,getTile,tileSize,dx,dy){
+    if(!dx && !dy) return false;
+    const r=physicalParticleRadius(p);
+    const oldX=p.x, oldY=p.y;
+    p.x+=dx; p.y+=dy;
+    if(!particleOverlapsSolid(getTile,p.x,p.y,r,tileSize)) return false;
+    let lo=0, hi=1;
+    for(let i=0;i<5;i++){
+      const mid=(lo+hi)*0.5;
+      const nx=oldX+dx*mid, ny=oldY+dy*mid;
+      if(particleOverlapsSolid(getTile,nx,ny,r,tileSize)) hi=mid;
+      else lo=mid;
+    }
+    const safe=Math.max(0,lo-0.025);
+    p.x=oldX+dx*safe;
+    p.y=oldY+dy*safe;
+    const bounce=physicalParticleBounce(p);
+    const friction=physicalParticleFriction(p);
+    if(dx){
+      p.vx=Math.abs(p.vx||0)>0.05 ? -(p.vx||0)*bounce : 0;
+      p.vy=(p.vy||0)*friction;
+    } else {
+      if(dy>0){
+        p.onGround=true;
+        p.vy=Math.abs(p.vy||0)>0.55 ? -(p.vy||0)*bounce : 0;
+        p.vx=(p.vx||0)*friction;
+      } else {
+        p.vy=Math.abs(p.vy||0)>0.05 ? -(p.vy||0)*Math.max(0.08,bounce*0.65) : 0;
+        p.vx=(p.vx||0)*friction;
+      }
+    }
+    return true;
+  }
+  function integratePhysicalParticle(p,dt,tileSize,getTile){
+    if(!getTile){
+      p.x += p.vx*dt*tileSize;
+      p.y += p.vy*dt*tileSize;
+      p.vy += 8*dt;
+      return;
+    }
+    const moveDt=Math.min(0.45, Math.max(0,dt||0));
+    p.vy += 8*moveDt;
+    const dx=(p.vx||0)*moveDt*tileSize;
+    const dy=(p.vy||0)*moveDt*tileSize;
+    const steps=Math.max(1, Math.min(8, Math.ceil(Math.max(Math.abs(dx),Math.abs(dy))/(tileSize*0.35))));
+    p.onGround=false;
+    for(let s=0;s<steps;s++){
+      movePhysicalParticleAxis(p,getTile,tileSize,dx/steps,0);
+      movePhysicalParticleAxis(p,getTile,tileSize,0,dy/steps);
+      if(!Number.isFinite(p.x) || !Number.isFinite(p.y)){
+        p.life=p.max+1;
+        return;
+      }
+    }
+    if(p.onGround){
+      p.vx*=Math.pow(0.34,moveDt*8);
+      if(Math.abs(p.vx)<0.03) p.vx=0;
+      if(Math.abs(p.vy)<0.08) p.vy=0;
+    }
   }
 
   function smokeSprite(shade,variant){
@@ -301,6 +407,7 @@
 
   mod.update = function(dt, TILE, getTile){
     const tileSize = TILE || 20;
+    const tileFn=typeof getTile === 'function' ? getTile : fallbackGetTile();
     // One bad frame should fade effects, not pop them. Hard trimming starts only
     // after pressure persists for multiple frames.
     const pressure=updateFxPressure();
@@ -315,7 +422,7 @@
       } else if(p.kind==='smoke'){
         const age=Math.min(1,p.life/p.max);
         p.vx += (p.shear||0)*dt;
-        const worldWind=windAtParticle(p,tileSize,getTile)*windResponse('smoke');
+        const worldWind=windAtParticle(p,tileSize,tileFn)*windResponse('smoke');
         p.x += (p.vx + worldWind + (p.wind||0)*p.life + Math.sin(p.life*2.6 + p.phase)*0.16*(1+age))*dt*tileSize;
         p.y += p.vy*dt*tileSize;
         p.vy -= (p.lift||0.18)*dt;
@@ -331,11 +438,9 @@
         p.x += dx*pull + side*dt*tileSize;
         p.y += dy*pull + Math.cos(p.life*22 + (p.phase||0))*side*0.35*dt*tileSize;
       } else {
-        const worldWind=windAtParticle(p,tileSize,getTile);
+        const worldWind=windAtParticle(p,tileSize,tileFn);
         p.vx += worldWind*windResponse(p.kind)*dt;
-        p.x += p.vx*dt*tileSize;
-        p.y += p.vy*dt*tileSize;
-        p.vy += 8*dt;
+        integratePhysicalParticle(p,dt,tileSize,tileFn);
       }
       if(p.life>p.max){
         if(p.kind==='smoke') smokeCount=Math.max(0,smokeCount-1);
@@ -449,7 +554,11 @@
       smokeAlphaScale:smokeDrawAlphaScale(ms,smokeCount)
     };
   };
-  mod._debugSnapshot = function(){ return particles.map(p=>({kind:p.kind,x:p.x,y:p.y,vx:p.vx,vy:p.vy,life:p.life,max:p.max,r:p.r,alpha:p.alpha,tileX:p.tileX,tileY:p.tileY,hue:p.hue})); };
+  mod._debugSnapshot = function(){ return particles.map(p=>({kind:p.kind,x:p.x,y:p.y,vx:p.vx,vy:p.vy,life:p.life,max:p.max,r:p.r,alpha:p.alpha,tileX:p.tileX,tileY:p.tileY,hue:p.hue,onGround:!!p.onGround})); };
+  mod._debugAdd = function(p){
+    if(!p || typeof p!=='object') return;
+    particles.push(Object.assign({x:0,y:0,vx:0,vy:0,life:0,max:1,tier:'common'},p));
+  };
 
   MM.particles = mod;
 })();

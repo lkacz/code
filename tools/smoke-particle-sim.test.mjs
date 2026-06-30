@@ -124,6 +124,24 @@ try{
   delete globalThis.MM.wind;
 
   particles.reset();
+  assert.equal(typeof particles._debugAdd, 'function', 'particle tests can inject deterministic particles');
+  const PT=globalThis.MM.T;
+  const floorGetTile=(x,y)=> y>=3 ? PT.STONE : PT.AIR;
+  particles._debugAdd({kind:'spark',x:42,y:42,vx:0,vy:14,life:0,max:2,tier:'common',size:3});
+  for(let i=0;i<10;i++) particles.update(1/30,20,floorGetTile);
+  let collided=particles._debugSnapshot()[0];
+  assert.ok(collided.y <= 60 - 1.1, 'physical particles collide with solid floors');
+  assert.ok(collided.vy <= 0.2 || collided.onGround, 'floor collision kills or reverses downward particle velocity');
+
+  particles.reset();
+  const wallGetTile=(x,y)=> x>=3 ? PT.STONE : PT.AIR;
+  particles._debugAdd({kind:'glass',x:42,y:42,vx:16,vy:0,life:0,max:2,size:4});
+  for(let i=0;i<6;i++) particles.update(1/30,20,wallGetTile);
+  collided=particles._debugSnapshot()[0];
+  assert.ok(collided.x <= 60 - 1.2, 'physical particles collide with solid walls');
+  assert.ok(collided.vx <= 0, 'wall collision reflects particle velocity');
+
+  particles.reset();
   particles.spawnEnergyAbsorb(20,20,60,30,1);
   assert.ok(particles.count()>0, 'energy absorption emits a small particle batch');
   particles.update(0.08,20);

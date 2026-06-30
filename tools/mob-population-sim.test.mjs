@@ -157,7 +157,7 @@ try{
   }
   mobs.deserialize({
     v:4,
-    list:[{id:'BEAR',x:0.5,y:29.2,vx:0,vy:0,hp:999,state:'idle',facing:1,scale:1,speedMul:1,jumpMul:1}],
+    list:[{id:'BEAR',x:0.5,y:29.2,vx:0,vy:0,hp:999,state:'idle',facing:1,scale:2.4,speedMul:1,jumpMul:1}],
     aggro:{mode:'rel',m:{}}
   });
   mobs.freezeSpawns(10000);
@@ -166,14 +166,21 @@ try{
   assert.ok(tunnelDeath.tunnelClamped, 'death effect origin is clamped out of the tunnel ceiling');
   assert.equal(tunnelDeath.solidPieces, 0, 'death effect pieces do not spawn inside tunnel stone');
   assert.equal(tunnelDeath.badFinite, 0, 'death effect pieces spawn with finite coordinates');
-  for(let i=0;i<14;i++){
-    simNow += 50;
-    mobs.update(0.05,player,tunnelGetTile);
-    tunnelDeath=mobs._debugDeathFx(tunnelGetTile)[0];
-    if(!tunnelDeath) break;
-    assert.equal(tunnelDeath.solidPieces, 0, 'death effect pieces stay out of tunnel stone during update '+i);
-    assert.equal(tunnelDeath.badFinite, 0, 'death effect pieces stay finite during tunnel update '+i);
-    assert.ok(tunnelDeath.maxDist<=8.6, 'death effect pieces stay bounded in a tunnel during update '+i+' (max '+tunnelDeath.maxDist+')');
+  const prevFrameMs=globalThis.__mmFrameMs;
+  globalThis.__mmFrameMs=48;
+  try{
+    for(let i=0;i<14;i++){
+      simNow += 50;
+      mobs.update(0.05,player,tunnelGetTile);
+      tunnelDeath=mobs._debugDeathFx(tunnelGetTile)[0];
+      if(!tunnelDeath) break;
+      assert.equal(tunnelDeath.solidPieces, 0, 'death effect pieces stay out of tunnel stone during stressed update '+i);
+      assert.equal(tunnelDeath.badFinite, 0, 'death effect pieces stay finite during stressed tunnel update '+i);
+      assert.ok(tunnelDeath.maxDist<=8.6, 'death effect pieces stay bounded in a tunnel during stressed update '+i+' (max '+tunnelDeath.maxDist+')');
+    }
+  } finally {
+    if(prevFrameMs===undefined) delete globalThis.__mmFrameMs;
+    else globalThis.__mmFrameMs=prevFrameMs;
   }
   mobs.clearAll();
 
@@ -199,6 +206,9 @@ assert.match(mobsSource, /function mobDeathResidueKind/, 'mob death effects incl
 assert.match(mobsSource, /MOB_DEATH_PHYSICS_FRAME_BUDGET/, 'mob death physics has an explicit per-frame budget');
 assert.match(mobsSource, /function integrateDeathPiecePhysics/, 'mob death pieces use bounded terrain physics');
 assert.match(mobsSource, /function primeDeathPhysics/, 'mob death pieces get per-piece collision and slide parameters');
+assert.match(mobsSource, /function drawIrregularDeathBlob/, 'organic death chunks use irregular blob silhouettes');
+assert.match(mobsSource, /function drawIrregularDeathShard/, 'small death debris uses angular shard silhouettes');
+assert.doesNotMatch(mobsSource, /ctx\.fillRect\(-w\*0\.5,-h\*0\.5,w,h\)/, 'organic death core fallback is no longer a rectangular block');
 
 function cityCenterForSeed(){
   let best=null;

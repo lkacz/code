@@ -82,17 +82,50 @@ function flatGrassTile(x,y){
   if(y > 30) return T.STONE;
   return T.AIR;
 }
+function withRandom(value, fn){
+  const prev = Math.random;
+  Math.random = () => value;
+  try{ return fn(); }
+  finally{ Math.random = prev; }
+}
 mobs.clearAll();
 globalThis.player.x = CENTER_X;
-assert.equal(mobs.forceSpawn('RABBIT', {x:CENTER_X, y:29}, flatGrassTile), true, 'center rabbit can spawn');
+withRandom(0.5, ()=>{
+  assert.equal(mobs.forceSpawn('RABBIT', {x:CENTER_X, y:29}, flatGrassTile), true, 'center rabbit can spawn');
+});
 const centerRabbit = mobs.serialize().list.find(m=>m.id==='RABBIT');
 mobs.clearAll();
 globalThis.player.x = FAR_RIGHT_X;
-assert.equal(mobs.forceSpawn('RABBIT', {x:FAR_RIGHT_X, y:29}, flatGrassTile), true, 'far rabbit can spawn');
+withRandom(0.5, ()=>{
+  assert.equal(mobs.forceSpawn('RABBIT', {x:FAR_RIGHT_X, y:29}, flatGrassTile), true, 'far rabbit can spawn');
+});
 const farRabbit = mobs.serialize().list.find(m=>m.id==='RABBIT');
 assert.ok(centerRabbit && farRabbit, 'rabbit snapshots are available');
 assert.ok(farRabbit.maxHp > centerRabbit.maxHp, 'far-region mobs persist higher max HP');
 assert.ok(farRabbit.hostility > 0.9, 'mob snapshot records regional hostility for migration/debugging');
+assert.equal(farRabbit.hostilitySide, 'hot', 'far-right mobs persist their regional branch');
+assert.ok(farRabbit.hostilityTier >= 2, 'far-region mobs persist a visible/mechanical threat tier');
+assert.ok(farRabbit.scale > centerRabbit.scale * 1.08, 'far-region mobs gain a larger physical silhouette');
+assert.ok(farRabbit.jumpMul > centerRabbit.jumpMul * 1.12, 'far-region mobs gain more agile movement traits');
+assert.ok(farRabbit.attackCdMult < centerRabbit.attackCdMult, 'far-region mobs recover attacks faster');
+assert.ok(farRabbit.aimLead > centerRabbit.aimLead + 0.5, 'far-region ranged mobs lead moving targets instead of aiming only at current position');
+assert.ok(typeof farRabbit.threatAccent === 'string' && farRabbit.threatAccent.length > 0, 'far-region mobs carry a visual accent color for draw marks');
+mobs.clearAll();
+
+const movingTarget = {x:FAR_RIGHT_X+8, y:29, hp:100, maxHp:100, vx:6, vy:0, hpInvul:0};
+globalThis.player = movingTarget;
+mobs.freezeSpawns(10000);
+mobs.deserialize({v:4, list:[{id:'SZKIELET', x:FAR_RIGHT_X, y:29, vx:0, vy:0, hp:12, maxHp:12, state:'idle', facing:1, spawnT:0, attackCd:0}], aggro:{mode:'rel', m:{}}});
+let fired = null;
+withRandom(0.5, ()=>{
+  for(let i=0; i<20 && !fired; i++){
+    simNow += 130;
+    mobs.update(0.13, movingTarget, flatGrassTile);
+    fired = mobs._debugCombat().projectiles[0] || null;
+  }
+});
+assert.ok(fired, 'far skeleton fires a projectile during the ranged combat window');
+assert.ok(fired.lead > 0.5, 'far skeleton projectile records predictive aim lead');
 mobs.clearAll();
 
 let bossTiles = new Map();
@@ -120,9 +153,13 @@ bossTiles = new Map();
 const centerBoss = bosses.forceSpawn(bossGetTile, {x:CENTER_X, seed:777, freeze:true, archetype:'walker'});
 const farBoss = bosses.forceSpawn(bossGetTile, {x:FAR_RIGHT_X, seed:777, freeze:true, archetype:'walker'});
 assert.ok(centerBoss && farBoss, 'bosses spawn in center and far regions');
-assert.equal(farBoss.parts.length, centerBoss.parts.length, 'same seed keeps the same boss body plan');
+assert.ok(farBoss.parts.length > centerBoss.parts.length, 'far-region bosses turn the same seed into a larger silhouette');
 assert.ok(bossHpSum(farBoss) > bossHpSum(centerBoss) * 2, 'far-region bosses have substantially tougher parts');
 assert.ok(farBoss.attackDmg > centerBoss.attackDmg, 'far-region bosses hit harder');
+assert.ok(farBoss.hostilityTier >= 2, 'far-region bosses carry a visible threat tier');
+assert.ok(farBoss.throwCdMult < centerBoss.throwCdMult, 'far-region bosses recover block throws faster');
+assert.ok(farBoss.aimLead > centerBoss.aimLead + 0.5, 'far-region bosses lead moving targets with hurled blocks');
+assert.ok(typeof farBoss.threatAccent === 'string' && farBoss.threatAccent.length > 0, 'far-region bosses carry hot/cold armor accent data');
 
 // --- Debug-menu tuning: intensity scales strength, reach stretches the ramp ---
 const probeX = 12000;

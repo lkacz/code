@@ -585,12 +585,75 @@ const mobs = (function(){
   let sentinelVolleyStart=0, sentinelVolleyShots=0;
   let sentinelShotsThisFrame=0, sentinelDeferredThisFrame=0;
   let sentinelMeatShots=0, sentinelMeatCooked=0, sentinelMeatDestroyed=0, sentinelReloads=0;
+  function mobThreatTier(hostility){
+    const h=Math.max(0, Number(hostility)||0);
+    if(h>=2.25) return 4;
+    if(h>=1.45) return 3;
+    if(h>=0.75) return 2;
+    if(h>=0.25) return 1;
+    return 0;
+  }
+  function mobThreatProfile(spec,x,hOpt){
+    const h=hOpt || mobHostilityAt(x);
+    const hostility=Math.max(0, Number(h.hostility)||0);
+    const organic=!(spec && spec.organic===false);
+    const tier=mobThreatTier(hostility);
+    return {
+      h,
+      hostility,
+      side:h.side || 'center',
+      tier,
+      scaleMult: spec && spec.id==='ZLOTY' ? 1 : Math.min(organic ? 1.46 : 1.30, 1 + hostility*(organic?0.13:0.08)),
+      speedAccent: spec && spec.id==='ZLOTY' ? 1 : Math.min(1.18, 1 + hostility*(organic?0.045:0.035)),
+      jumpMult: spec && spec.id==='ZLOTY' ? 1 : Math.min(1.42, 1 + hostility*(organic?0.16:0.08)),
+      reactionMult: Math.min(1.85, 1 + hostility*(organic?0.22:0.16)),
+      attackCdMult: Math.max(0.58, 1 - hostility*(organic?0.115:0.085)),
+      projectileSpeedMult: Math.min(1.32, 1 + hostility*0.08),
+      aimLead: Math.min(1.05, Math.max(0, hostility*0.72)),
+      aimError: Math.max(0.025, 0.16 - hostility*0.05)
+    };
+  }
+  function targetAimBase(target, yOffset){
+    if(!target) return {x:0,y:0};
+    if(target.kind==='meat') return {x:target.x,y:target.y};
+    if(target.kind==='companion') return {x:target.x, y:target.aimY==null ? target.y+(yOffset==null?-0.42:yOffset) : target.aimY};
+    return {x:target.x, y:target.y+(yOffset==null?-0.3:yOffset)};
+  }
+  function predictiveAimPoint(m,target,speed,yOffset,opts){
+    const base=targetAimBase(target,yOffset);
+    if(!m || !target || target.kind==='meat') return base;
+    const lead=Math.max(0, Math.min(1.15, Number(m.aimLead)||0));
+    if(lead<=0.001) return base;
+    const dx=base.x-m.x, dy=base.y-m.y;
+    const dist=Math.hypot(dx,dy)||1;
+    const travel=Math.min(1.45, dist/Math.max(0.1, speed||8));
+    const vx=finiteNum(target.vx) ? target.vx : 0;
+    const vy=finiteNum(target.vy) ? target.vy : 0;
+    const error=(Number(m.aimError)||0) * (opts && opts.laser ? 0.38 : 1) * Math.max(0,1-lead*0.65);
+    return {
+      x:base.x + vx*travel*lead + (Math.random()-0.5)*error,
+      y:base.y + vy*travel*lead*0.55 + (Math.random()-0.5)*error*0.7
+    };
+  }
+  function hostilityAccentColor(m){
+    if(!m || !m.hostilityTier) return null;
+    if(m.hostilitySide==='cold') return '#bde8ff';
+    if(m.hostilitySide==='hot') return '#ffb05a';
+    return '#d8ff9a';
+  }
+  function tintMobColorForThreat(color,m){
+    if(!color || !m || !(m.hostility>0.12)) return color;
+    const accent=hostilityAccentColor(m);
+    if(!accent) return color;
+    return mixHexColor(color,accent,Math.min(0.34,0.08+m.hostility*0.10));
+  }
   function shootAt(m, target, speed, dmg){
     if(mobProjectiles.length>=MOB_PROJ_CAP) return false;
-    const aimY=target && target.kind==='companion' && target.aimY!=null ? target.aimY : target.y-0.3;
-    const dx=target.x-m.x, dy=aimY-m.y;
+    const shotSpeed=speed * ((m && m.projectileSpeedMult) || 1);
+    const aim=predictiveAimPoint(m,target,shotSpeed,-0.3);
+    const dx=aim.x-m.x, dy=aim.y-m.y;
     const d=Math.hypot(dx,dy)||1;
-    mobProjectiles.push({x:m.x, y:m.y-0.4, vx:dx/d*speed, vy:dy/d*speed-1.4, dmg:dmg*(m.dmgMult||1), t:0, spin:Math.random()*6.28});
+    mobProjectiles.push({x:m.x, y:m.y-0.4, vx:dx/d*shotSpeed, vy:dy/d*shotSpeed-1.4, dmg:dmg*(m.dmgMult||1), t:0, spin:Math.random()*6.28, lead:m.aimLead||0});
     try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
     return true;
   }
@@ -604,10 +667,8 @@ const mobs = (function(){
       {x:headX-dir*0.16, y:y+0.045}
     ];
   }
-  function sentinelAimPoint(target){
-    if(target && target.kind==='meat') return {x:target.x, y:target.y};
-    if(target && target.kind==='companion') return {x:target.x, y:target.aimY==null ? target.y-0.42 : target.aimY};
-    return {x:target.x, y:target.y-0.42};
+  function sentinelAimPoint(target,m){
+    return predictiveAimPoint(m,target,24,-0.42,{laser:true});
   }
   function traceLaser(sx,sy,tx,ty,getTile,maxDist){
     laserTraceCalls++;
@@ -632,7 +693,7 @@ const mobs = (function(){
   }
   function sentinelShotLines(m,target,getTile,maxDist,dirOverride){
     if(!m || !target) return [];
-    const aim=sentinelAimPoint(target);
+    const aim=sentinelAimPoint(target,m);
     const tileReader = (target.kind==='meat' && typeof getTile==='function')
       ? ((x,y)=> (x===target.tx && y===target.ty) ? T.AIR : getTile(x,y))
       : getTile;
@@ -643,7 +704,7 @@ const mobs = (function(){
   }
   function sentinelVisionLines(m,target,getTile,maxDist,now,dirOverride){
     if(!m || !target || typeof getTile!=='function') return [];
-    const aim=sentinelAimPoint(target);
+    const aim=sentinelAimPoint(target,m);
     const dir=(typeof dirOverride==='number' ? dirOverride : m.facing)>=0?1:-1;
     const t=(typeof now==='number' && isFinite(now)) ? now : performance.now();
     const fresh = m._sentinelLosAt && (t-m._sentinelLosAt)<110
@@ -670,8 +731,12 @@ const mobs = (function(){
     m._sentinelLosFresh=true;
     return lines;
   }
-  function sentinelBurstBudget(){
-    return SENTINEL_BURST_MIN + Math.floor(Math.random()*(SENTINEL_BURST_MAX-SENTINEL_BURST_MIN+1));
+  function sentinelReloadSeconds(m){
+    return SENTINEL_RELOAD_SECONDS * Math.max(0.62, Math.min(1, m && m.attackCdMult || 1));
+  }
+  function sentinelBurstBudget(m){
+    const bonus=Math.max(0, Math.min(2, Math.floor((m && m.hostilityTier || 0)/2)));
+    return SENTINEL_BURST_MIN + bonus + Math.floor(Math.random()*(SENTINEL_BURST_MAX-SENTINEL_BURST_MIN+1));
   }
   function sentinelShotReady(m,dt){
     if(!m) return false;
@@ -680,16 +745,16 @@ const mobs = (function(){
       m.vx*=0.55;
       return false;
     }
-    if(!finiteNum(m.sentinelShotsUntilReload) || m.sentinelShotsUntilReload<=0) m.sentinelShotsUntilReload=sentinelBurstBudget();
+    if(!finiteNum(m.sentinelShotsUntilReload) || m.sentinelShotsUntilReload<=0) m.sentinelShotsUntilReload=sentinelBurstBudget(m);
     return true;
   }
   function sentinelRecordShot(m){
     if(!m) return;
-    if(!finiteNum(m.sentinelShotsUntilReload) || m.sentinelShotsUntilReload<=0) m.sentinelShotsUntilReload=sentinelBurstBudget();
+    if(!finiteNum(m.sentinelShotsUntilReload) || m.sentinelShotsUntilReload<=0) m.sentinelShotsUntilReload=sentinelBurstBudget(m);
     m.sentinelShotsUntilReload--;
     if(m.sentinelShotsUntilReload<=0){
-      m.sentinelReloadT=SENTINEL_RELOAD_SECONDS;
-      m.sentinelShotsUntilReload=sentinelBurstBudget();
+      m.sentinelReloadT=sentinelReloadSeconds(m);
+      m.sentinelShotsUntilReload=sentinelBurstBudget(m);
       sentinelReloads++;
     }
   }
@@ -842,7 +907,7 @@ const mobs = (function(){
       const p=m._combatTarget || ((typeof window!=='undefined' && window.player)||null); if(!p) return;
       const dx=p.x-m.x, dy=p.y-m.y, d=Math.hypot(dx,dy);
       m.shootCd=(m.shootCd==null?1.2:m.shootCd)-dt;
-      if(d<14 && d>2.5 && m.shootCd<=0 && Math.abs(dy)<8){ shootAt(m,p,9,spec.dmg); m.shootCd=1.6+Math.random()*0.8; }
+      if(d<14 && d>2.5 && m.shootCd<=0 && Math.abs(dy)<8){ shootAt(m,p,9,spec.dmg); m.shootCd=(1.6+Math.random()*0.8)*((m && m.attackCdMult)||1); }
       if(d<4) m.vx-=Math.sign(dx)*0.2; // archers back off from melee range
     }
   });
@@ -873,8 +938,10 @@ const mobs = (function(){
       return below===T.STEEL || below===T.STONE || below===T.GRANITE || below===T.BASALT || below===T.OBSIDIAN;
     },
     biome:'city',
-    onUpdate(m,spec,{player,dt,distToPlayer,getTile,setTile,now}){
+    onUpdate(m,spec,{player,dt,distToPlayer,getTile,setTile,now,speed}){
       const weaponReady=sentinelShotReady(m,dt);
+      const moveSpeed=speed||spec.speed||2.4;
+      const cdMul=(m && m.attackCdMult)||1;
       const meatTarget = typeof setTile==='function' ? findSentinelMeatTarget(m,getTile,now) : null;
       const target = meatTarget || player;
       const targetIsMeat = target && target.kind==='meat';
@@ -890,11 +957,11 @@ const mobs = (function(){
       if(canSeeTarget){
         m.facing=dir;
         if(targetIsMeat){
-          if(adx>2.4 && distToTarget<spec.pursueRange) m.vx += dir*spec.speed*0.22*dt*30;
+          if(adx>2.4 && distToTarget<spec.pursueRange) m.vx += dir*moveSpeed*0.22*dt*30;
           else m.vx *= 0.68;
-        } else if(adx>1.8 && distToPlayer<spec.pursueRange) m.vx += dir*spec.speed*0.42*dt*30;
+        } else if(adx>1.8 && distToPlayer<spec.pursueRange) m.vx += dir*moveSpeed*0.42*dt*30;
         else m.vx *= 0.78;
-        m.shootCd=(m.shootCd==null?(targetIsMeat?0.65:0.9):m.shootCd)-dt;
+        m.shootCd=(m.shootCd==null?((targetIsMeat?0.65:0.9)*cdMul):m.shootCd)-dt;
         const minRange = targetIsMeat ? 0.8 : 3;
         const maxRange = targetIsMeat ? SENTINEL_MEAT_RANGE : 13;
         if(distToTarget<maxRange && distToTarget>minRange && m.shootCd<=0){
@@ -902,9 +969,9 @@ const mobs = (function(){
           if(!weaponReady){
             m.shootCd=Math.min(m.shootCd,0);
           } else if(!reserveSentinelLaserShot(now)){
-            m.shootCd=0.18+Math.random()*0.22;
-          } else if(sentinelLaserAt(m,target,targetIsMeat?0:spec.dmg,getTile,setTile,shotLines)) m.shootCd=1.55+Math.random()*0.75;
-          else m.shootCd=0.25;
+            m.shootCd=(0.18+Math.random()*0.22)*Math.max(0.75,cdMul);
+          } else if(sentinelLaserAt(m,target,targetIsMeat?0:spec.dmg,getTile,setTile,shotLines)) m.shootCd=(1.55+Math.random()*0.75)*cdMul;
+          else m.shootCd=0.25*Math.max(0.75,cdMul);
         }
       } else {
         m.vx *= 0.82;
@@ -1090,6 +1157,27 @@ const mobs = (function(){
     if(spec && spec.id==='ZLOTY') return 1;
     return (spec && spec.organic===false) ? (1 + h.hostility * 0.62) : (h.mobDamageMult || 1);
   }
+  function applyMobProgressionTraits(m,spec,hOpt,opts){
+    if(!m || !spec) return null;
+    const p=mobThreatProfile(spec,m.x,hOpt);
+    m.hostility=+p.hostility.toFixed(3);
+    m.hostilitySide=p.side;
+    m.hostilityTier=p.tier;
+    m.reactionMult=p.reactionMult;
+    m.attackCdMult=p.attackCdMult;
+    m.projectileSpeedMult=p.projectileSpeedMult;
+    m.aimLead=p.aimLead;
+    m.aimError=p.aimError;
+    m.threatAccent=hostilityAccentColor(m) || '';
+    if(!opts || !opts.behaviorOnly){
+      const flying=!!(spec.flying || spec.aquatic);
+      m.scale=clampFinite((m.scale||1) * p.scaleMult, 1, 0.35, flying ? 1.38 : 1.72);
+      m.speedMul=clampFinite((m.speedMul||1) * p.speedAccent, 1, 0.1, 4);
+      m.jumpMul=clampFinite((m.jumpMul||1) * p.jumpMult, 1, 0.1, 4);
+      if(typeof m.baseColor==='string') m.baseColor=tintMobColorForThreat(m.baseColor,m);
+    }
+    return p;
+  }
 
   function create(spec, x,y,getTile){
     x=finiteCoord(x)?x:0; y=finiteCoord(y)?y:0;
@@ -1122,6 +1210,7 @@ const mobs = (function(){
     m.baseColor = jitterColor(base, {h:12, s:0.14, l:0.10});
   }
     if(typeof spec.onCreate==='function') spec.onCreate(m, spec, getTile);
+    applyMobProgressionTraits(m,spec,h);
     addToGrid(m); speciesCounts[spec.id]=(speciesCounts[spec.id]||0)+1; return m; }
 
   // --- Aquatic helpers (fish) ---
@@ -1793,6 +1882,40 @@ const mobs = (function(){
     if(impact>1.25) pushDeathPuff(fx,p,p.y+r*0.55);
     return true;
   }
+  function settleDeathPieceOnGround(p,dt){
+    if(!p || !p.onGround) return;
+    p.vx*=Math.pow(p.groundFriction||0.78,dt*8);
+    p.spin*=Math.pow(p.spinFriction||0.82,dt*4);
+    if(Math.abs(p.vx||0)<0.08 && Math.abs(p.vy||0)<0.08) p.settleT=(p.settleT||0)+dt;
+    else p.settleT=0;
+    if(p.settleT>0.24){
+      p.settled=true;
+      p.vx=0; p.vy=0; p.spin*=0.25;
+    }
+  }
+  function integrateDeathPieceCheapPhysics(fx,p,getTile,dt){
+    if(!p.physics || !getTile){
+      const prevX=p.x, prevY=p.y;
+      p.x+=(p.vx||0)*dt;
+      p.y+=(p.vy||0)*dt;
+      if(Number.isFinite(p.travel)) p.travel+=Math.hypot(p.x-prevX,p.y-prevY);
+      resolveDeathPieceTerrain(fx,p,getTile,prevX,prevY);
+      return;
+    }
+    if(p.settled){
+      p.vx=0; p.vy=0; p.spin*=Math.pow(p.spinFriction||0.82,dt*10);
+      return;
+    }
+    p.onGround=false;
+    const oldX=p.x, oldY=p.y;
+    moveDeathPieceAxis(fx,p,getTile,(p.vx||0)*dt,0);
+    moveDeathPieceAxis(fx,p,getTile,0,(p.vy||0)*dt);
+    if(Number.isFinite(p.travel)) p.travel+=Math.hypot(p.x-oldX,p.y-oldY);
+    constrainDeathPieceRange(fx,p);
+    if(!Number.isFinite(p.x) || !Number.isFinite(p.y)){ p.life=p.max+1; return; }
+    if(p.onGround) settleDeathPieceOnGround(p,dt);
+    else p.settleT=0;
+  }
   function integrateDeathPiecePhysics(fx,p,getTile,dt){
     if(!p.physics || !getTile){
       const prevX=p.x, prevY=p.y;
@@ -1819,14 +1942,7 @@ const mobs = (function(){
       if(!Number.isFinite(p.x) || !Number.isFinite(p.y)){ p.life=p.max+1; return; }
     }
     if(p.onGround){
-      p.vx*=Math.pow(p.groundFriction||0.78,dt*8);
-      p.spin*=Math.pow(p.spinFriction||0.82,dt*4);
-      if(Math.abs(p.vx||0)<0.08 && Math.abs(p.vy||0)<0.08) p.settleT=(p.settleT||0)+dt;
-      else p.settleT=0;
-      if(p.settleT>0.24){
-        p.settled=true;
-        p.vx=0; p.vy=0; p.spin*=0.25;
-      }
+      settleDeathPieceOnGround(p,dt);
     } else {
       p.settleT=0;
     }
@@ -1838,11 +1954,20 @@ const mobs = (function(){
       return;
     }
     constrainDeathPieceRange(fx,p);
-    if(deathFxTileOpen(getTile,p.x,p.y)) return;
-    const hadPrev=Number.isFinite(prevX) && Number.isFinite(prevY) && deathFxTileOpen(getTile,prevX,prevY);
+    const overlaps=p.physics
+      ? deathPieceOverlapsSolid(getTile,p.x,p.y,deathPieceRadius(p))
+      : !deathFxTileOpen(getTile,p.x,p.y);
+    if(!overlaps) return;
+    const hadPrev=Number.isFinite(prevX) && Number.isFinite(prevY) && (p.physics
+      ? !deathPieceOverlapsSolid(getTile,prevX,prevY,deathPieceRadius(p))
+      : deathFxTileOpen(getTile,prevX,prevY));
     if(hadPrev){
-      const hitX=!deathFxTileOpen(getTile,p.x,prevY);
-      const hitY=!deathFxTileOpen(getTile,prevX,p.y);
+      const hitX=p.physics
+        ? deathPieceOverlapsSolid(getTile,p.x,prevY,deathPieceRadius(p))
+        : !deathFxTileOpen(getTile,p.x,prevY);
+      const hitY=p.physics
+        ? deathPieceOverlapsSolid(getTile,prevX,p.y,deathPieceRadius(p))
+        : !deathFxTileOpen(getTile,prevX,p.y);
       p.x=prevX; p.y=prevY;
       if(hitX) p.vx*=-0.22; else p.vx*=0.42;
       if(hitY) p.vy*=-0.24; else p.vy*=0.36;
@@ -1850,7 +1975,9 @@ const mobs = (function(){
       pushDeathPuff(fx,p,p.y);
       return;
     }
-    const safe=nearestDeathFxOpenPoint(p.x,p.y,getTile,3);
+    const safe=p.physics
+      ? nearestDeathFxOpenPiecePoint(p.x,p.y,deathPieceRadius(p),getTile,3)
+      : nearestDeathFxOpenPoint(p.x,p.y,getTile,3);
     if(safe.found){
       p.x=safe.x; p.y=safe.y;
       if(Number.isFinite(p.vx)) p.vx*=0.18;
@@ -2053,8 +2180,8 @@ const mobs = (function(){
           if(Math.abs(wind)>0.03) p.vx+=wind*(p.kind==='wing'||p.kind==='smokeCore'||p.kind==='ashCloud'?0.14:0.05)*moveDt;
         }
         const usePhysics=!!p.physics && physicsBudget>0;
-        if(p.physics) physicsBudget--;
-        if(usePhysics) integrateDeathPiecePhysics(fx,p,getTile,moveDt);
+        if(usePhysics){ physicsBudget--; integrateDeathPiecePhysics(fx,p,getTile,moveDt); }
+        else if(p.physics && getTile) integrateDeathPieceCheapPhysics(fx,p,getTile,moveDt);
         else {
           const prevX=p.x, prevY=p.y;
           p.x+=(p.vx||0)*moveDt;
@@ -2076,8 +2203,8 @@ const mobs = (function(){
           if(Math.abs(wind)>0.03) f.vx+=wind*(f.shape==='feather'||f.shape==='wisp'?0.18:0.06)*moveDt;
         }
         const usePhysics=!!f.physics && physicsBudget>0;
-        if(f.physics) physicsBudget--;
-        if(usePhysics) integrateDeathPiecePhysics(fx,f,getTile,moveDt);
+        if(usePhysics){ physicsBudget--; integrateDeathPiecePhysics(fx,f,getTile,moveDt); }
+        else if(f.physics && getTile) integrateDeathPieceCheapPhysics(fx,f,getTile,moveDt);
         else {
           const prevX=f.x, prevY=f.y;
           f.x+=(f.vx||0)*moveDt;
@@ -2091,6 +2218,53 @@ const mobs = (function(){
       if(!alive) mobDeathFx.splice(i,1);
     }
     metrics.deathFx=mobDeathFx.length;
+  }
+  function deathShapeNoise(seed,i){
+    const v=Math.sin((Number(seed)||0)*12.9898 + i*78.233)*43758.5453;
+    return v-Math.floor(v);
+  }
+  function drawIrregularDeathBlob(ctx,w,h,seed,points){
+    const n=Math.max(6,points||9);
+    ctx.beginPath();
+    for(let i=0;i<n;i++){
+      const a=-Math.PI/2 + (i/n)*Math.PI*2;
+      const rx=0.76+deathShapeNoise(seed,i)*0.30;
+      const ry=0.74+deathShapeNoise(seed+7.31,i)*0.34;
+      const notch=(i%3===1) ? 0.92 : 1;
+      const x=Math.cos(a)*w*0.52*rx*notch;
+      const y=Math.sin(a)*h*0.52*ry;
+      if(i===0) ctx.moveTo(x,y);
+      else ctx.lineTo(x,y);
+    }
+    ctx.closePath();
+  }
+  function drawIrregularDeathShard(ctx,w,h,seed){
+    const skew=(deathShapeNoise(seed,1)-0.5)*w*0.18;
+    const bite=(deathShapeNoise(seed,2)-0.5)*h*0.22;
+    ctx.beginPath();
+    ctx.moveTo(-w*0.58,-h*0.18+bite);
+    ctx.lineTo(-w*0.14,-h*0.52);
+    ctx.lineTo(w*0.56+skew,-h*0.26);
+    ctx.lineTo(w*0.44,h*0.34+bite*0.4);
+    ctx.lineTo(-w*0.30,h*0.50);
+    ctx.lineTo(-w*0.66,h*0.12);
+    ctx.closePath();
+  }
+  function drawRoundedDeathBone(ctx,len,thick,color,alpha){
+    ctx.strokeStyle=rgbaHex(color,alpha==null?0.88:alpha);
+    ctx.lineWidth=Math.max(1,thick);
+    ctx.lineCap='round';
+    ctx.beginPath();
+    ctx.moveTo(-len*0.5,0);
+    ctx.lineTo(len*0.5,0);
+    ctx.stroke();
+    ctx.fillStyle=rgbaHex(color,alpha==null?0.88:alpha);
+    ctx.beginPath();
+    ctx.arc(-len*0.52,-thick*0.14,thick*0.52,0,Math.PI*2);
+    ctx.arc(-len*0.52,thick*0.18,thick*0.42,0,Math.PI*2);
+    ctx.arc(len*0.52,-thick*0.16,thick*0.46,0,Math.PI*2);
+    ctx.arc(len*0.52,thick*0.18,thick*0.50,0,Math.PI*2);
+    ctx.fill();
   }
   function drawMobDeathFragment(ctx,TILE,f,alpha){
     const s=Math.max(1.2,f.size*TILE);
@@ -2127,12 +2301,25 @@ const mobs = (function(){
       ctx.fill();
     } else if(f.shape==='panel'){
       ctx.fillStyle=rgbaHex(f.color,0.84);
-      ctx.fillRect(-s*0.85,-s*0.45,s*1.7,s*0.9);
-      ctx.fillStyle=rgbaHex('#ffffff',0.26);
-      ctx.fillRect(-s*0.65,-s*0.32,s*1.0,s*0.18);
+      drawIrregularDeathShard(ctx,s*1.8,s*1.0,f.wobble||f.life||0);
+      ctx.fill();
       ctx.strokeStyle=rgbaHex('#26313a',0.75);
       ctx.lineWidth=1;
-      ctx.strokeRect(-s*0.85,-s*0.45,s*1.7,s*0.9);
+      ctx.stroke();
+      ctx.strokeStyle=rgbaHex('#ffffff',0.26);
+      ctx.beginPath();
+      ctx.moveTo(-s*0.55,-s*0.26);
+      ctx.lineTo(s*0.38,-s*0.18);
+      ctx.stroke();
+    } else if(f.shape==='bone'){
+      drawRoundedDeathBone(ctx,s*1.72,s*0.34,f.color,0.88);
+    } else if(f.shape==='chip'){
+      ctx.fillStyle=rgbaHex(f.color,0.80);
+      drawIrregularDeathShard(ctx,s*1.28,s*0.86,f.wobble||f.life||0);
+      ctx.fill();
+      ctx.strokeStyle=rgbaHex('#26313a',0.75);
+      ctx.lineWidth=1;
+      ctx.stroke();
     } else if(f.shape==='wire'){
       ctx.strokeStyle=rgbaHex(f.color,0.82);
       ctx.lineWidth=Math.max(1,s*0.18);
@@ -2140,10 +2327,6 @@ const mobs = (function(){
       ctx.moveTo(-s*1.2,Math.sin(f.wobble)*s*0.15);
       ctx.quadraticCurveTo(0,s*0.65,s*1.2,-Math.sin(f.wobble)*s*0.15);
       ctx.stroke();
-    } else if(f.shape==='bone'){
-      ctx.fillStyle=rgbaHex(f.color,0.88);
-      ctx.fillRect(-s*0.90,-s*0.18,s*1.8,s*0.36);
-      ctx.beginPath(); ctx.arc(-s*0.92,0,s*0.32,0,Math.PI*2); ctx.arc(s*0.92,0,s*0.32,0,Math.PI*2); ctx.fill();
     } else if(f.shape==='wisp' || f.shape==='ash' || f.shape==='dust'){
       ctx.fillStyle=rgbaHex(f.color,f.shape==='ash'?0.36:0.46);
       ctx.beginPath();
@@ -2162,13 +2345,7 @@ const mobs = (function(){
       ctx.stroke();
     } else {
       ctx.fillStyle=rgbaHex(f.color,0.76);
-      ctx.beginPath();
-      ctx.moveTo(-s*0.90,-s*0.36);
-      ctx.lineTo(-s*0.05,-s*0.82);
-      ctx.lineTo(s*0.82,-s*0.18);
-      ctx.lineTo(s*0.48,s*0.70);
-      ctx.lineTo(-s*0.62,s*0.56);
-      ctx.closePath();
+      drawIrregularDeathBlob(ctx,s*1.32,s*1.05,f.wobble||f.life||0,8);
       ctx.fill();
     }
     ctx.restore();
@@ -2212,11 +2389,20 @@ const mobs = (function(){
       ctx.lineTo(rx*0.28,-ry*0.06);
       ctx.lineTo(rx*0.66,ry*0.32);
       ctx.stroke();
-    } else if(r.kind==='bonePile' || r.kind==='shellShard' || r.kind==='chip'){
+    } else if(r.kind==='bonePile'){
+      drawRoundedDeathBone(ctx,rx*1.12,Math.max(1,ry*0.54),r.color,0.72);
+      ctx.rotate(0.55);
+      drawRoundedDeathBone(ctx,rx*0.86,Math.max(1,ry*0.42),r.color,0.58);
+    } else if(r.kind==='shellShard' || r.kind==='chip'){
       ctx.fillStyle=rgbaHex(r.color,0.78);
-      ctx.fillRect(-rx*0.58,-Math.max(1,ry*0.32),rx*1.16,Math.max(1,ry*0.64));
-      ctx.fillStyle=rgbaHex('#ffffff',0.24);
-      ctx.fillRect(-rx*0.44,-Math.max(1,ry*0.20),rx*0.44,Math.max(1,ry*0.16));
+      drawIrregularDeathShard(ctx,rx*1.24,Math.max(1.2,ry*1.05),r.phase||0);
+      ctx.fill();
+      ctx.strokeStyle=rgbaHex('#ffffff',0.20);
+      ctx.lineWidth=1;
+      ctx.beginPath();
+      ctx.moveTo(-rx*0.36,-ry*0.16);
+      ctx.lineTo(rx*0.22,-ry*0.04);
+      ctx.stroke();
     } else if(r.kind==='scratch'){
       ctx.strokeStyle=rgbaHex(r.color,0.62);
       ctx.lineWidth=1;
@@ -2250,9 +2436,21 @@ const mobs = (function(){
     if(p.kind==='sensor' || p.kind==='eyeWisp' || p.kind==='starCore' || p.kind==='emberCore'){
       ctx.globalCompositeOperation='lighter';
       ctx.fillStyle=rgbaHex(c,0.86);
-      ctx.fillRect(-w*0.42,-h*0.42,w*0.84,h*0.84);
+      ctx.beginPath();
+      ctx.moveTo(0,-h*0.50);
+      ctx.lineTo(w*0.50,0);
+      ctx.lineTo(0,h*0.50);
+      ctx.lineTo(-w*0.50,0);
+      ctx.closePath();
+      ctx.fill();
       ctx.fillStyle='rgba(255,255,255,0.62)';
-      ctx.fillRect(-w*0.18,-h*0.18,w*0.36,h*0.36);
+      ctx.beginPath();
+      ctx.moveTo(0,-h*0.20);
+      ctx.lineTo(w*0.20,0);
+      ctx.lineTo(0,h*0.20);
+      ctx.lineTo(-w*0.20,0);
+      ctx.closePath();
+      ctx.fill();
       if(p.kind==='starCore'){
         ctx.strokeStyle=rgbaHex('#fff1a8',0.82);
         ctx.lineWidth=Math.max(1,w*0.10);
@@ -2269,7 +2467,14 @@ const mobs = (function(){
       }
     } else if(p.kind==='skull'){
       ctx.fillStyle=rgbaHex(c,0.88);
-      ctx.fillRect(-w*0.45,-h*0.48,w*0.9,h*0.78);
+      ctx.beginPath();
+      ctx.moveTo(-w*0.36,-h*0.44);
+      ctx.quadraticCurveTo(0,-h*0.62,w*0.36,-h*0.44);
+      ctx.lineTo(w*0.42,h*0.08);
+      ctx.quadraticCurveTo(w*0.18,h*0.36,0,h*0.34);
+      ctx.quadraticCurveTo(-w*0.18,h*0.36,-w*0.42,h*0.08);
+      ctx.closePath();
+      ctx.fill();
       ctx.fillStyle='rgba(28,28,34,0.72)';
       ctx.fillRect(-w*0.25,-h*0.22,w*0.16,h*0.18);
       ctx.fillRect(w*0.08,-h*0.22,w*0.16,h*0.18);
@@ -2314,11 +2519,24 @@ const mobs = (function(){
       ctx.beginPath();
       ctx.ellipse(0,0,w*(0.55+0.08*Math.sin(p.phase+p.life*7)),h*0.50,0,0,Math.PI*2);
       ctx.fill();
+    } else if(p.kind==='panelCore' || p.kind==='haloShard'){
+      ctx.fillStyle=rgbaHex(c,0.80);
+      drawIrregularDeathShard(ctx,w,h,p.phase||0);
+      ctx.fill();
+      ctx.strokeStyle=rgbaHex(mixHexColor(c,'#ffffff',0.28),0.30);
+      ctx.lineWidth=1;
+      ctx.beginPath();
+      ctx.moveTo(-w*0.28,-h*0.18);
+      ctx.lineTo(w*0.24,-h*0.06);
+      ctx.stroke();
     } else {
       ctx.fillStyle=rgbaHex(c,0.80);
-      ctx.fillRect(-w*0.5,-h*0.5,w,h);
-      ctx.fillStyle=rgbaHex(mixHexColor(c,'#ffffff',0.22),0.26);
-      ctx.fillRect(-w*0.38,-h*0.38,w*0.42,h*0.16);
+      drawIrregularDeathBlob(ctx,w,h,p.phase||0,9);
+      ctx.fill();
+      ctx.fillStyle=rgbaHex(mixHexColor(c,'#ffffff',0.22),0.20);
+      ctx.beginPath();
+      ctx.ellipse(-w*0.12,-h*0.16,w*0.18,h*0.08,-0.2,0,Math.PI*2);
+      ctx.fill();
     }
     ctx.restore();
   }
@@ -2701,7 +2919,7 @@ const mobs = (function(){
       if(distTouch < 0.9){ // bounce push
         const nx=dxP/(distTouch||1); const ny=dyP/(distTouch||1);
         if(!touchCompanion){ player.vx += nx*3*dt; player.vy += ny*2*dt; } // gentle continuous push
-        if(isAggro(m.id)||spec.alwaysAggro){ if(m.attackCd>0) m.attackCd-=dt; if(m.attackCd<=0){ if(touchCompanion) damageCompanionTarget(touchCompanion,spec.dmg*(m.dmgMult||1),m.x,m.y,'mob'); else damagePlayer(spec.dmg*(m.dmgMult||1), m.x, m.y); m.attackCd=0.8 + Math.random()*0.5; } }
+        if(isAggro(m.id)||spec.alwaysAggro){ if(m.attackCd>0) m.attackCd-=dt; if(m.attackCd<=0){ if(touchCompanion) damageCompanionTarget(touchCompanion,spec.dmg*(m.dmgMult||1),m.x,m.y,'mob'); else damagePlayer(spec.dmg*(m.dmgMult||1), m.x, m.y); m.attackCd=(0.8 + Math.random()*0.5)*Math.max(0.55,Math.min(1.2,(m.attackCdMult||1))); } }
       }
     }
     updateProjectiles(dt, player, getTile);
@@ -2728,9 +2946,10 @@ const mobs = (function(){
     // Only aggressive if within species sight range; otherwise idle/wander
     const sight = (typeof spec.sightRange==='number'? spec.sightRange : 16);
     if(aggressive && distP <= sight){
-      const desiredVx = (toPlayerX/distP)*((spec.speed||1)*(m.speedMul||1))*0.9; m.vx += (desiredVx - m.vx)*Math.min(1, dt*4);
+      const react=Math.max(0.5,Math.min(2.1,m.reactionMult||1));
+      const desiredVx = (toPlayerX/distP)*((spec.speed||1)*(m.speedMul||1))*0.9; m.vx += (desiredVx - m.vx)*Math.min(1, dt*4*react);
       const desiredVy = spec.aquatic? ((toPlayerY)*0.8) : (toPlayerY*0.6);
-      m.vy += (desiredVy - m.vy)*Math.min(1, dt*2.5);
+      m.vy += (desiredVy - m.vy)*Math.min(1, dt*2.5*react);
       m.facing = toPlayerX>=0?1:-1;
     } else {
       if(now>m.tNext){
@@ -2745,6 +2964,132 @@ const mobs = (function(){
         m.vy += (baseBob - m.vy)*Math.min(1, dt*0.8);
       } // grounded: no vertical bob
     }
+  }
+
+  function drawMobThreatMarks(ctx,TILE,m,spec,screenX,screenY,faceDir,phase,hpTop){
+    const tier=Math.max(0,Math.min(4,(m && m.hostilityTier)||0));
+    if(tier<=0 || !m || m.id==='ZLOTY') return;
+    const accent=hostilityAccentColor(m);
+    if(!accent) return;
+    const body=(spec && spec.body) || {w:1,h:1};
+    const bw=Math.max(9,(body.w||1)*TILE);
+    const bh=Math.max(8,(body.h||1)*TILE);
+    const top=screenY - bh*0.58 - (spec && spec.ground ? 2 : 0);
+    const midY=top+bh*0.38;
+    const alpha=Math.min(0.72,0.20+tier*0.10);
+    const hot=m.hostilitySide==='hot';
+    const cold=m.hostilitySide==='cold';
+    ctx.save();
+    ctx.globalAlpha=1;
+    function tri(points,color){
+      ctx.fillStyle=color;
+      ctx.beginPath();
+      ctx.moveTo(points[0][0],points[0][1]);
+      for(let i=1;i<points.length;i++) ctx.lineTo(points[i][0],points[i][1]);
+      ctx.closePath();
+      ctx.fill();
+    }
+    function pixel(x,y,w,h,color){ ctx.fillStyle=color; ctx.fillRect(x,y,w,h); }
+    function bodyPlate(x,y,w,h,a){
+      pixel(x,y,w,h,rgbaHex(accent,a==null?alpha:a));
+      pixel(x,y,w,Math.max(1,h*0.28),rgbaHex(mixHexColor(accent,'#ffffff',0.34),Math.min(0.82,(a==null?alpha:a)+0.12)));
+    }
+    function eye(x,y,s){
+      const glow=rgbaHex(mixHexColor(accent,'#ffffff',0.40),Math.min(0.88,alpha+0.18));
+      pixel(x-s*0.5,y-s*0.5,s,s,glow);
+      if(tier>=3) pixel(x-s*0.2,y-s*0.2,Math.max(1,s*0.4),Math.max(1,s*0.4),'#fff6d0');
+    }
+    function backSpines(count,x0,x1,y,up){
+      const n=Math.max(1,count|0);
+      for(let i=0;i<n;i++){
+        const t=n===1?0.5:i/(n-1);
+        const x=x0+(x1-x0)*t;
+        const h=(3+tier*1.4)*(0.75+0.35*Math.sin(phase+i));
+        tri([[x-2,y+1],[x+2,y+1],[x,y-up*h]],rgbaHex(accent,alpha));
+      }
+    }
+    function sideFang(x,y,dir,len){
+      tri([[x,y],[x+dir*(3+len),y+2],[x+dir*1.5,y+5]],rgbaHex(mixHexColor(accent,'#ffffff',0.18),alpha+0.04));
+    }
+    const plateN=Math.min(4,1+tier);
+    const plateW=Math.max(3,bw*0.12);
+    for(let i=0;i<plateN;i++){
+      const t=plateN===1?0.5:i/(plateN-1);
+      const x=screenX-bw*0.25+bw*0.50*t-plateW*0.5;
+      const y=top+bh*0.22+Math.sin(phase+i)*0.6;
+      bodyPlate(x,y,plateW,Math.max(2,bh*0.08),alpha*0.82);
+    }
+
+    const id=m.id;
+    if(id==='STRAZNIK'){
+      const finY=top+bh*0.18;
+      bodyPlate(screenX-bw*0.22,top+bh*0.08,bw*0.44,Math.max(2,bh*0.08),alpha+0.06);
+      pixel(screenX-faceDir*bw*0.42,midY-3,Math.max(3,bw*0.12),6,rgbaHex(accent,alpha+0.08));
+      pixel(screenX+faceDir*bw*0.26,finY-4,Math.max(3,bw*0.12),4,rgbaHex(accent,alpha+0.02));
+      eye(screenX+faceDir*bw*0.18,top+bh*0.12,3.2);
+      if(tier>=3) pixel(screenX-bw*0.32,screenY-bh*0.05,bw*0.64,2,rgbaHex(accent,0.22));
+    } else if(id==='SZKIELET'){
+      eye(screenX+faceDir*3,top+bh*0.10,2.6);
+      eye(screenX-faceDir*1,top+bh*0.11,2.2);
+      for(let i=0;i<tier;i++) pixel(screenX-bw*0.16+i*3,top+bh*0.38+i%2,2,Math.max(5,bh*0.18),rgbaHex(accent,0.28+0.05*tier));
+      if(tier>=2) sideFang(screenX+faceDir*bw*0.26,top+bh*0.26,faceDir,2+tier);
+    } else if(id==='GHOUL'){
+      eye(screenX+faceDir*bw*0.18,top+bh*0.12,3);
+      eye(screenX+faceDir*bw*0.30,top+bh*0.14,2.4);
+      for(let i=0;i<2+tier;i++){
+        const x=screenX-bw*0.32+i*bw/(2+tier);
+        pixel(x,top+bh*0.46+(i%2)*2,Math.max(2,bw*0.08),Math.max(4,bh*0.24),rgbaHex(accent,0.18+0.05*tier));
+      }
+      if(tier>=3) backSpines(3,screenX-bw*0.22,screenX+bw*0.16,top+bh*0.10,1);
+    } else if(spec && spec.aquatic){
+      backSpines(Math.min(5,2+tier),screenX-bw*0.28,screenX+bw*0.28,top+bh*0.14,1);
+      pixel(screenX-faceDir*bw*0.38,midY-2,Math.max(3,bw*0.16),Math.max(3,bh*0.18),rgbaHex(accent,alpha));
+      eye(screenX+faceDir*bw*0.34,top+bh*0.34,2.5);
+      if(tier>=3){
+        tri([[screenX+faceDir*bw*0.12,top+bh*0.02],[screenX+faceDir*bw*0.24,top-bh*0.18],[screenX+faceDir*bw*0.32,top+bh*0.08]],rgbaHex(accent,alpha*0.7));
+      }
+    } else if(spec && spec.flying){
+      const flap=Math.sin(phase*2.1);
+      eye(screenX+faceDir*bw*0.12,top+bh*0.28,2.2);
+      for(let sgn=-1;sgn<=1;sgn+=2){
+        const wx=screenX+sgn*bw*0.34;
+        tri([[wx,midY],[wx+sgn*(4+tier*2),midY+flap*2],[wx+sgn*2,midY+bh*0.22]],rgbaHex(accent,0.22+0.06*tier));
+        if(tier>=3) tri([[wx+sgn*(3+tier),midY+bh*0.08],[wx+sgn*(8+tier*2),midY+bh*0.14],[wx+sgn*(4+tier),midY+bh*0.22]],rgbaHex(accent,0.26));
+      }
+      if(hot) pixel(screenX-faceDir*bw*0.22,top+bh*0.58,Math.max(4,bw*0.18),2,rgbaHex(accent,0.30));
+    } else {
+      const hornCol=rgbaHex(mixHexColor(accent,cold?'#ffffff':'#ffe1a5',0.28),alpha+0.04);
+      if(id==='DEER' || id==='WIOSENNY_JELEN' || id==='JESIENNY_LOS' || id==='GOAT'){
+        const hx=screenX+faceDir*bw*0.22, hy=top+bh*0.06;
+        for(let i=0;i<Math.min(3,tier);i++){
+          pixel(hx+faceDir*i*3,hy-i*2,2,Math.max(5,bh*0.18)+i*2,hornCol);
+          pixel(hx+faceDir*(i*3+2),hy-i*3,Math.max(3,bw*0.11),2,hornCol);
+        }
+        if(tier>=3) backSpines(3,screenX-bw*0.16,screenX+bw*0.18,top+bh*0.10,1);
+      } else if(id==='WOLF' || id==='BEAR' || id==='ZIMOWY_NIEDZWIEDZ'){
+        backSpines(Math.min(5,2+tier),screenX-bw*0.28,screenX+bw*0.20,top+bh*0.12,1);
+        sideFang(screenX+faceDir*bw*0.38,top+bh*0.30,faceDir,2+tier);
+        bodyPlate(screenX-bw*0.34,top+bh*0.34,bw*0.24,Math.max(3,bh*0.12),alpha+0.02);
+        eye(screenX+faceDir*bw*0.34,top+bh*0.23,2.8);
+      } else if(id==='CRAB' || id==='PELZACZ'){
+        for(let i=0;i<Math.min(5,2+tier);i++){
+          const x=screenX-bw*0.34+i*bw*0.17;
+          tri([[x,midY],[x-3,midY+4+tier],[x+3,midY+3]],rgbaHex(accent,alpha));
+        }
+        eye(screenX+faceDir*bw*0.28,top+bh*0.28,2.4);
+      } else {
+        backSpines(Math.min(4,1+tier),screenX-bw*0.22,screenX+bw*0.18,top+bh*0.14,1);
+        eye(screenX+faceDir*bw*0.28,top+bh*0.22,2.4);
+      }
+    }
+    if(tier>=4){
+      ctx.fillStyle=rgbaHex(accent,0.14);
+      ctx.beginPath();
+      ctx.ellipse(screenX,screenY+Math.min(8,bh*0.22),bw*0.34,bw*0.08,0,0,Math.PI*2);
+      ctx.fill();
+    }
+    hpTop(top-Math.max(3,tier*4));
+    ctx.restore();
   }
 
   // Pre-baked radial glow for the golden sprinter (per-frame gradients are costly)
@@ -3308,6 +3653,7 @@ const mobs = (function(){
           box(screenX-4, screenY-4,8,8, flashing? '#ffffff':'#888', '#444');
         }
       }
+      drawMobThreatMarks(ctx,TILE,m,spec,screenX,screenY,faceDir,phase,hpTop);
       // HP bar (position above highest drawn pixel); species with bespoke bars
       // (golden sprinter) or hidden bodies (mole in rock) set m._hideBar
       if(!m._hideBar && m.hp < (m.maxHp || SPECIES[m.id]?.hp || 1)){
@@ -3628,6 +3974,8 @@ const mobs = (function(){
       hp:+Math.max(0,Math.min(m.maxHp||spec.hp||m.hp,m.hp)).toFixed(3),
       maxHp:+Math.max(1,m.maxHp||spec.hp||m.hp||1).toFixed(3),
       hostility:finiteNum(m.hostility) ? +m.hostility.toFixed(3) : 0,
+      hostilitySide:(m.hostilitySide==='hot'||m.hostilitySide==='cold'||m.hostilitySide==='center') ? m.hostilitySide : 'center',
+      hostilityTier:clampFinite(m.hostilityTier,0,0,4),
       state:typeof m.state==='string'?m.state:'idle',
       facing:m.facing<0?-1:1,
       spawnT:clampFinite(m.spawnT,performance.now(),0,Number.MAX_SAFE_INTEGER),
@@ -3638,6 +3986,12 @@ const mobs = (function(){
     if(finiteNum(m.scale)) out.scale=clampFinite(m.scale,1,0.35,3);
     if(finiteNum(m.speedMul)) out.speedMul=clampFinite(m.speedMul,1,0.1,4);
     if(finiteNum(m.jumpMul)) out.jumpMul=clampFinite(m.jumpMul,1,0.1,4);
+    if(finiteNum(m.reactionMult)) out.reactionMult=clampFinite(m.reactionMult,1,0.2,3);
+    if(finiteNum(m.attackCdMult)) out.attackCdMult=clampFinite(m.attackCdMult,1,0.2,2);
+    if(finiteNum(m.projectileSpeedMult)) out.projectileSpeedMult=clampFinite(m.projectileSpeedMult,1,0.2,3);
+    if(finiteNum(m.aimLead)) out.aimLead=clampFinite(m.aimLead,0,0,1.2);
+    if(finiteNum(m.aimError)) out.aimError=clampFinite(m.aimError,0.1,0,1);
+    if(typeof m.threatAccent==='string') out.threatAccent=m.threatAccent;
     if(typeof m.baseColor==='string') out.baseColor=m.baseColor;
     if(finiteNum(m.lifeEndAt)) out.lifeEndAt=m.lifeEndAt;
     if(finiteNum(m.decayStartAt)) out.decayStartAt=m.decayStartAt;
@@ -3685,6 +4039,19 @@ const mobs = (function(){
         if(finiteNum(r.speedMul)) m.speedMul=clampFinite(r.speedMul,1,0.1,4);
         if(finiteNum(r.jumpMul)) m.jumpMul=clampFinite(r.jumpMul,1,0.1,4);
         if(typeof r.baseColor==='string') m.baseColor=r.baseColor;
+        if(finiteNum(r.hostility)) m.hostility=clampFinite(r.hostility,m.hostility||0,0,4);
+        if(r.hostilitySide==='hot'||r.hostilitySide==='cold'||r.hostilitySide==='center') m.hostilitySide=r.hostilitySide;
+        if(finiteNum(r.hostilityTier)){
+          m.hostilityTier=clampFinite(r.hostilityTier,m.hostilityTier||0,0,4);
+          if(finiteNum(r.reactionMult)) m.reactionMult=clampFinite(r.reactionMult,m.reactionMult||1,0.2,3);
+          if(finiteNum(r.attackCdMult)) m.attackCdMult=clampFinite(r.attackCdMult,m.attackCdMult||1,0.2,2);
+          if(finiteNum(r.projectileSpeedMult)) m.projectileSpeedMult=clampFinite(r.projectileSpeedMult,m.projectileSpeedMult||1,0.2,3);
+          if(finiteNum(r.aimLead)) m.aimLead=clampFinite(r.aimLead,m.aimLead||0,0,1.2);
+          if(finiteNum(r.aimError)) m.aimError=clampFinite(r.aimError,m.aimError||0.1,0,1);
+          m.threatAccent=typeof r.threatAccent==='string' ? r.threatAccent : (hostilityAccentColor(m)||'');
+        } else if(finiteNum(r.scale) || finiteNum(r.speedMul) || finiteNum(r.jumpMul) || typeof r.baseColor==='string'){
+          applyMobProgressionTraits(m,spec,mobHostilityAt(m.x));
+        }
         if(finiteNum(r.lifeEndAt)) m.lifeEndAt=r.lifeEndAt;
         if(finiteNum(r.decayStartAt)) m.decayStartAt=r.decayStartAt;
         if(finiteNum(r.heroFocusMs) && r.heroFocusMs>0) m.heroFocusUntil=Date.now()+Math.min(r.heroFocusMs,HERO_FOCUS_MS);
@@ -3812,7 +4179,13 @@ const mobs = (function(){
         };
       });
     }
-  const api = { update, draw, attackAt, damageAt, igniteAt, igniteRadius, poisonAt, poisonRadius, douseRadius, blastRadius, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, isHostile:isMobHostile, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx };
+    function debugCombat(){
+      return {
+        projectiles:mobProjectiles.map(p=>({x:p.x,y:p.y,vx:p.vx,vy:p.vy,dmg:p.dmg,lead:p.lead||0})),
+        lasers:mobLasers.map(l=>({x1:l.x1,y1:l.y1,x2:l.x2,y2:l.y2,dmg:l.dmg||0,hit:!!l.hit}))
+      };
+    }
+  const api = { update, draw, attackAt, damageAt, igniteAt, igniteRadius, poisonAt, poisonRadius, douseRadius, blastRadius, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, isHostile:isMobHostile, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat };
   MM.mobs = api;
   try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
   return api;

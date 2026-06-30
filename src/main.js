@@ -150,13 +150,12 @@ function applyAtmosphericTint(){ if(!VISUAL.atmoTint) return; if(BACKGROUND && B
 let currentRenderDetail={tier:0, visibleTiles:0, fogStep:1, grass:true, label:'full'};
 function renderDetailFor(z,viewX,viewY){
 	const visibleTiles=Math.max(0,(Math.ceil(viewX)||0)*(Math.ceil(viewY)||0));
-	const tier=(z<0.48 || visibleTiles>11000) ? 2 : ((z<0.72 || visibleTiles>6500) ? 1 : 0);
 	return {
-		tier,
+		tier:0,
 		visibleTiles,
-		fogStep:tier>=2 ? 3 : (tier>=1 ? 2 : 1),
-		grass:tier===0,
-		label:tier>=2 ? 'far' : (tier>=1 ? 'wide' : 'full')
+		fogStep:1,
+		grass:true,
+		label:'full'
 	};
 }
 function publishRenderDetail(detail,z){
@@ -3914,7 +3913,7 @@ function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk
 		}
 		if(chestDebug){ const pcx=Math.floor(player.x/CHUNK_W); const cnt=countChestsAround(pcx,4); ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(sx*TILE+6, sy*TILE+6, 140,24); ctx.fillStyle='#fff'; ctx.font='14px system-ui'; ctx.fillText('Skrzynie ±4: '+cnt, sx*TILE+12, sy*TILE+24); }
 	if(localLayer) ctx.restore();
-	if(currentRenderDetail.grass && VISUAL.animations && GRASS && GRASS.drawOverlays){ GRASS.drawOverlays(ctx,'back', sx,sy,viewX,viewY,TILE,WORLD_H,getTile,T,zoom,grassDensityScalar,grassHeightScalar,worldFxVisible); }
+	if(VISUAL.animations && GRASS && GRASS.drawOverlays){ GRASS.drawOverlays(ctx,'back', sx,sy,viewX,viewY,TILE,WORLD_H,getTile,T,zoom,grassDensityScalar,grassHeightScalar,worldFxVisible); }
 }
 
 function drawFogOverlay(sx,sy,viewX,viewY,opts){
@@ -3923,8 +3922,7 @@ function drawFogOverlay(sx,sy,viewX,viewY,opts){
 		FOG.applyOverlay(ctx, sx, sy, viewX, viewY, TILE, getTile, T, {
 			showMemory: visionRemembersMap(),
 			originX: localLayer ? opts.camX : 0,
-			originY: localLayer ? opts.camY : 0,
-			lodStep:currentRenderDetail.fogStep
+			originY: localLayer ? opts.camY : 0
 		});
 		if(localLayer) ctx.restore();
 	}
@@ -4142,6 +4140,7 @@ function bindPad(){ document.querySelectorAll('#pad .btn').forEach(btn=>{ const 
 
 // Kamera
 let camX=0,camY=0,camSX=0,camSY=0; let zoom=1, zoomTarget=1; function ensureChunks(){ const pcx=Math.floor(player.x/CHUNK_W); for(let d=-2; d<=2; d++) ensureChunk(pcx+d); }
+const MIN_ZOOM=0.72, MAX_ZOOM=3;
 const CAMERA_FOLLOW_RATE=8;
 const CAMERA_MAX_DT=0.05;
 let lastFrameMs=0;
@@ -4229,7 +4228,7 @@ function resetFrameTiming(reason){
 	lastFrameMs=0;
 	try{ window.__mmFrameMs=0; window.__mmFrameResetReason=reason||'reset'; }catch(e){}
 }
-function clampZoom(z){ return Math.min(3, Math.max(0.5, z)); }
+function clampZoom(z){ return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z)); }
 function setZoom(z){ zoomTarget = clampZoom(z); }
 function nudgeZoom(f){ setZoom(zoomTarget * f); }
 canvas.addEventListener('wheel',e=>{ if(modalInputOpen()) return; noteSaveActivity(); if(e.ctrlKey){ // let browser zoom work
@@ -5742,7 +5741,7 @@ function draw(){ // Background first
  // world gases (steam, poison, fuel, hot air) drift over terrain and obey fog
  if(GASES && GASES.draw) GASES.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible);
  // visible wind: bounded dust/snow streaks, hidden by fog
- if(currentRenderDetail.tier<2 && WIND && WIND.draw) WIND.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible);
+ if(WIND && WIND.draw) WIND.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible);
  // ruin surface markers dressed as worked masonry (mortar, moss, etched rune)
  if(RUINS && RUINS.drawHints) RUINS.drawHints(ctx,TILE,worldFxVisible);
  // ruin-trap telltales + live effects (darts, gas) — over tiles, under mobs
@@ -5761,7 +5760,7 @@ function draw(){ // Background first
  // particles (screen-space in world coords)
  drawParticles();
  // front vegetation pass (blades/leaves that should appear in front)
- if(currentRenderDetail.grass && VISUAL.animations && GRASS && GRASS.drawOverlays){ GRASS.drawOverlays(ctx,'front', sx,sy,viewX,viewY,TILE,WORLD_H,getTile,T,zoom,grassDensityScalar,grassHeightScalar,worldFxVisible); }
+ if(VISUAL.animations && GRASS && GRASS.drawOverlays){ GRASS.drawOverlays(ctx,'front', sx,sy,viewX,viewY,TILE,WORLD_H,getTile,T,zoom,grassDensityScalar,grassHeightScalar,worldFxVisible); }
  // Water overlay shimmer (after vegetation front to avoid overdraw? place before falling solids for clarity)
  if(WATER){ WATER.drawOverlay(ctx,TILE,getTile,sx,sy,viewX,viewY,worldFxVisible); }
  drawInfrastructureOverlays(sx,sy,viewX,viewY,{exclude:T.LADDER});
