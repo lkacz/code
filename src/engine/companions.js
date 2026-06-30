@@ -2127,6 +2127,12 @@ const companions = (function(){
       }
     }catch(e){}
     try{
+      if(MM.guardianLairs && MM.guardianLairs.nearestForTurret){
+        const g=MM.guardianLairs.nearestForTurret(sx,sy,traits.laserRange,false);
+        if(g && Number.isFinite(g.x) && Number.isFinite(g.y) && lineClear(sx,sy,g.x,g.y,getTile)) options.push(wrapTarget('guardian',g.guardian||g.raw||g,g.x,g.y,g.hp||1));
+      }
+    }catch(e){}
+    try{
       if(MM.ufo && MM.ufo.current){
         const u=MM.ufo.current();
         if(u && u.hp>0 && Number.isFinite(u.x) && Number.isFinite(u.y)){
@@ -2167,6 +2173,7 @@ const companions = (function(){
     let hit=false;
     try{
       if(t.kind==='mob' && MM.mobs && MM.mobs.damageAt) hit=!!MM.mobs.damageAt(t.tx,t.ty,dmg,{source:'companion'});
+      else if(t.kind==='guardian' && MM.guardianLairs && MM.guardianLairs.damageAt) hit=!!MM.guardianLairs.damageAt(t.tx,t.ty,dmg);
       else if(t.kind==='boss' && MM.bosses && MM.bosses.damageAt) hit=!!MM.bosses.damageAt(t.tx,t.ty,dmg);
       else if(t.kind==='ufo' && MM.ufo && MM.ufo.damageAt) hit=!!MM.ufo.damageAt(t.tx,t.ty,dmg);
     }catch(e){}

@@ -215,7 +215,9 @@ assert.ok(rememberedFallingCtx.calls.includes('fillRect'), 'remembered falling s
 globalThis.MM.inventory = { equippedItem(){ return {kind:'weapon', weaponType:'bow', tier:'common', attackDamage:2}; } };
 globalThis.inv = { arrowWood:1 };
 weapons.reset();
-weapons.fireHeld({x:5,y:5,facing:1}, 10, 5, 0.016);
+const bowPlayer = {x:5,y:5,facing:1};
+weapons.fireHeld(bowPlayer, 10, 5, 0.016);
+weapons.releaseHeld(bowPlayer, 10, 5);
 const undiscoveredWeaponCtx = makeCtx();
 weapons.draw(undiscoveredWeaponCtx,20,()=>false);
 assert.equal(undiscoveredWeaponCtx.calls.filter(c=>c==='stroke' || c==='fillRect').length, 0, 'undiscovered weapon projectiles draw nothing');

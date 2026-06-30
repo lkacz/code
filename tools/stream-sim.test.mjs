@@ -82,6 +82,24 @@ const weaponItems={ flame:{weaponType:'flame', fireDps:6, fireRange:6.5},
                     bow:{weaponType:'bow', attackDamage:3, fireCooldown:0.25} };
 let equipped=null;
 MM.inventory={ equippedItem:()=>equipped, TIER_COLORS:{} };
+function drawBowFor(seconds, aimX=8, aimY=0.5){
+  const total=Math.max(0, Number(seconds)||0);
+  const step=1/60;
+  let elapsed=0, ok=false;
+  while(elapsed<total-1e-9){
+    const dt=Math.min(step,total-elapsed);
+    ok=weapons.fireHeld(player, aimX, aimY, dt) || ok;
+    elapsed+=dt;
+  }
+  return ok;
+}
+function releaseBowAt(aimX=8, aimY=0.5){
+  return weapons.releaseHeld(player, aimX, aimY);
+}
+function fireBowTap(aimX=8, aimY=0.5){
+  const held=drawBowFor(1/60, aimX, aimY);
+  return releaseBowAt(aimX, aimY) && held;
+}
 
 tiles=new Map(); weapons.reset(); fire.reset();
 weapons.update(NaN,getTile,setTile);
@@ -122,7 +140,7 @@ withHeroDamageProbe(read=>{
 tiles=new Map(); weapons.reset(); fire.reset(); glassShards=0;
 setTile(4,0,T.GLASS);
 equipped=weaponItems.bow;
-weapons.fireHeld(player, 6, 0.5, 1/60);
+fireBowTap(6, 0.5);
 for(let i=0;i<30;i++) weapons.update(1/60, getTile, setTile);
 assert.equal(getTile(4,0), T.AIR, 'arrow shatters fragile glass into air');
 assert.equal(weapons.metrics().arrows, 0, 'arrow is consumed by shattering glass');
@@ -131,7 +149,7 @@ assert.ok(glassShards>=1, 'arrow impact spawns broken glass shards');
 tiles=new Map(); weapons.reset(); fire.reset();
 MM.wind={ speedAt(){ return 5; } };
 equipped=weaponItems.bow;
-weapons.fireHeld(player, 8, 0.5, 1/60);
+fireBowTap(8, 0.5);
 let arrow=weapons._debug.arrows[0];
 const arrowVx0=arrow.vx;
 weapons.update(0.5, getTile, setTile);
@@ -143,37 +161,84 @@ tiles=new Map(); weapons.reset(); fire.reset();
 refillResources({arrowWood:0, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:0});
 equipped=weaponItems.bow;
 assert.equal(weapons.fireHeld(player, 6, 0.5, 1/60), false, 'bow refuses to fire without arrow ammo');
+assert.equal(weapons.releaseHeld(player, 6, 0.5), false, 'no-ammo bow has no held shot to release');
 assert.equal(weapons.metrics().arrows, 0, 'no-ammo bow creates no projectile');
 
 tiles=new Map(); weapons.reset(); fire.reset();
 refillResources({arrowWood:0, arrowStone:2});
 equipped=weaponItems.bow;
-assert.equal(weapons.fireHeld(player, 6, 0.5, 1/60), true, 'bow fires with crafted stone arrows');
+assert.equal(fireBowTap(6, 0.5), true, 'bow fires with crafted stone arrows on release');
 assert.equal(globalThis.inv.arrowStone, 1, 'bow shot consumes one arrow from the active tier');
 arrow=weapons._debug.arrows[0];
 assert.equal(arrow.tier, 'stone', 'bow projectile records the material tier');
 assert.ok(arrow.dmg>weaponItems.bow.attackDamage, 'stone arrows hit harder than plain bow damage');
 
+tiles=new Map(); weapons.reset(); fire.reset(); heroEnergy=20;
+refillResources({arrowWood:2, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:0});
+equipped=weaponItems.bow;
+assert.equal(drawBowFor(4, 8, 0.5), true, 'holding a bow for 4 seconds reaches full draw');
+let charge=weapons.metrics().bowCharge;
+assert.equal(charge.full, true, 'bow charge reports full capacity at 4 seconds');
+assert.equal(weapons.metrics().arrows, 0, 'full draw does not fire until release');
+assert.ok(heroEnergy>=19.99, 'bow does not spend energy before full draw');
+assert.equal(releaseBowAt(8, 0.5), true, 'releasing a fully drawn bow fires');
+arrow=weapons._debug.arrows[0];
+assert.equal(arrow.dmg, weaponItems.bow.attackDamage*2, '4-second bow release doubles arrow damage');
+assert.equal(arrow.fullDraw, true, 'fully drawn bow projectile records full draw');
+
+tiles=new Map(); weapons.reset(); fire.reset(); heroEnergy=20;
+refillResources({arrowWood:1, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:0});
+equipped=weaponItems.bow;
+assert.equal(drawBowFor(4.5, 8, 0.5), true, 'holding after full draw keeps the bow overdrawn');
+charge=weapons.metrics().bowCharge;
+assert.ok(charge.energySpent>2.5 && charge.energySpent<3.5, 'overdraw drains hero energy after the 4-second cap');
+assert.ok(heroEnergy<18, 'hero energy is lower after overdraw');
+assert.equal(releaseBowAt(8, 0.5), true, 'overdrawn bow still fires on release');
+arrow=weapons._debug.arrows[0];
+assert.equal(arrow.dmg, weaponItems.bow.attackDamage*2, 'overdraw does not scale beyond double damage');
+
 tiles=new Map(); weapons.reset(); fire.reset(); randomSeed=0x2468ace0;
 refillResources({arrowWood:1, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:0});
 equipped=weaponItems.bow;
-weapons.fireHeld(player, 8, 0.5, 1/60);
+fireBowTap(8, 0.5);
 const woodArrow=weapons._debug.arrows[0];
 tiles=new Map(); weapons.reset(); fire.reset(); randomSeed=0x2468ace0;
 refillResources({arrowWood:0, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:1});
 equipped=weaponItems.bow;
-weapons.fireHeld(player, 8, 0.5, 1/60);
+fireBowTap(8, 0.5);
 const iridiumArrow=weapons._debug.arrows[0];
 assert.ok(iridiumArrow.dmg>woodArrow.dmg, 'iridium arrows deal more damage than wood arrows');
 assert.ok(Math.hypot(iridiumArrow.vx, iridiumArrow.vy)>Math.hypot(woodArrow.vx, woodArrow.vy), 'iridium arrows fly faster than wood arrows');
 assert.ok(iridiumArrow.life>woodArrow.life, 'iridium arrows keep range longer than wood arrows');
+
+{
+  const savedMobs=MM.mobs;
+  assert.equal(weapons._debug.arrowRangeBand({travel:2.9,maxTravel:9}), 'close', 'first third of arrow range is close range');
+  assert.equal(weapons._debug.arrowRangeBand({travel:4.5,maxTravel:9}), 'mid', 'second third of arrow range is mid range');
+  assert.equal(weapons._debug.arrowRangeBand({travel:7.1,maxTravel:9}), 'long', 'final third of arrow range is long range');
+  assert.equal(weapons._debug.arrowDamageAtRange({dmg:30,travel:2.9,maxTravel:9}), 30, 'close range arrows keep full damage');
+  assert.equal(weapons._debug.arrowDamageAtRange({dmg:30,travel:4.5,maxTravel:9}), 18, 'mid range arrows deal reduced damage');
+  assert.equal(weapons._debug.arrowDamageAtRange({dmg:30,travel:7.1,maxTravel:9}), 10, 'long range arrows deal minimal damage');
+  function hitDamageAtTravel(travel){
+    tiles=new Map(); weapons.reset(); fire.reset();
+    let got=0;
+    MM.mobs={damageAt(tx,ty,dmg){ if(tx===0 && ty===0){ got=dmg; return true; } return false; }};
+    weapons._debug.arrows.push({x:-0.1,y:0.5,vx:12,vy:0,dmg:30,life:1,stuck:false,stuckT:4,travel,maxTravel:9});
+    weapons.update(1/60,getTile,setTile);
+    return got;
+  }
+  assert.equal(hitDamageAtTravel(1), 30, 'real close-range arrow hit applies full damage');
+  assert.equal(hitDamageAtTravel(4), 18, 'real mid-range arrow hit applies reduced damage');
+  assert.equal(hitDamageAtTravel(7), 10, 'real long-range arrow hit applies minimal damage');
+  MM.mobs=savedMobs;
+}
 
 tiles=new Map(); weapons.reset(); fire.reset(); sparks=0;
 refillResources({arrowWood:0, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:1});
 setTile(4,0,T.STONE);
 setTile(5,0,T.COAL);
 equipped=weaponItems.bow;
-assert.equal(weapons.fireHeld(player, 8, 0.5, 1/60), true, 'iridium bow fires for piercing test');
+assert.equal(fireBowTap(8, 0.5), true, 'iridium bow fires for piercing test');
 worldChanged=0;
 for(let i=0;i<45;i++) weapons.update(1/60, getTile, setTile);
 assert.equal(getTile(4,0), T.AIR, 'iridium arrows pierce ordinary stone blocks');
@@ -189,7 +254,7 @@ MM.meteorites={ triggerAntimatterBurst(){ antimatterBursts++; return true; } };
 refillResources({arrowWood:0, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:1});
 setTile(4,0,T.ANTIMATTER_CRYSTAL);
 equipped=weaponItems.bow;
-assert.equal(weapons.fireHeld(player, 8, 0.5, 1/60), true, 'iridium bow fires at antimatter crystal');
+assert.equal(fireBowTap(8, 0.5), true, 'iridium bow fires at antimatter crystal');
 worldChanged=0;
 for(let i=0;i<45;i++) weapons.update(1/60, getTile, setTile);
 assert.equal(getTile(4,0), T.AIR, 'iridium arrows can break antimatter crystals');
@@ -202,7 +267,7 @@ tiles=new Map(); weapons.reset(); fire.reset();
 refillResources({arrowWood:0, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:1});
 setTile(4,0,T.BEDROCK);
 equipped=weaponItems.bow;
-assert.equal(weapons.fireHeld(player, 8, 0.5, 1/60), true, 'iridium bow fires at bedrock');
+assert.equal(fireBowTap(8, 0.5), true, 'iridium bow fires at bedrock');
 for(let i=0;i<45;i++) weapons.update(1/60, getTile, setTile);
 assert.equal(getTile(4,0), T.BEDROCK, 'bedrock resists iridium arrow piercing');
 assert.equal(weapons.metrics().iridiumPierces, 0, 'bedrock resistance is not counted as a successful pierce');

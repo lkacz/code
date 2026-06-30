@@ -82,6 +82,12 @@ MM.ui = (function(){
     b.classList.toggle('toggled', !!on);
     b.textContent = 'Bóg: ' + (on?'ON':'OFF');
   }
+  function updateImmunityButton(on){
+    const b = document.getElementById('immunityBtn');
+    if(!b) return;
+    b.classList.toggle('toggled', !!on);
+    b.textContent = 'Immune: ' + (on?'ON':'OFF');
+  }
   function updateMapButton(on){
     const b = document.getElementById('mapBtn');
     if(!b) return;
@@ -389,6 +395,38 @@ MM.ui = (function(){
     goBtn.style.cssText='flex:0 0 auto; font-size:11px; padding:3px 8px;';
     jumpRow.appendChild(xIn); jumpRow.appendChild(yIn); jumpRow.appendChild(goBtn);
     wrap.appendChild(jumpRow);
+    if(typeof actions.guardian==='function'){
+      const guardianRow=document.createElement('div');
+      guardianRow.style.cssText='display:flex; gap:4px; margin-top:4px;';
+      [['fire','Fire gate'],['ice','Ice gate']].forEach(([kind,label])=>{
+        const b=document.createElement('button');
+        b.textContent=label;
+        b.title='Teleport to the '+label+' lair';
+        b.style.cssText='flex:1 1 0; min-width:0; font-size:11px; padding:3px 6px; border:1px solid '+(kind==='fire'?'rgba(255,120,50,.65)':'rgba(130,220,255,.65)')+';';
+        b.addEventListener('click',()=>{
+          const r=actions.guardian(kind);
+          if(r===false){ msg('Guardian teleport failed'); return; }
+          syncFromPos(r);
+        });
+        guardianRow.appendChild(b);
+      });
+      wrap.appendChild(guardianRow);
+    }
+    if(typeof actions.underground==='function'){
+      const undergroundRow=document.createElement('div');
+      undergroundRow.style.cssText='display:flex; gap:4px; margin-top:4px;';
+      const b=document.createElement('button');
+      b.textContent='Underground gate';
+      b.title='Teleport to the underground guardian gate';
+      b.style.cssText='flex:1 1 0; min-width:0; font-size:11px; padding:3px 6px; border:1px solid rgba(196,107,255,.7);';
+      b.addEventListener('click',()=>{
+        const r=actions.underground();
+        if(r===false){ msg('Underground teleport failed'); return; }
+        syncFromPos(r);
+      });
+      undergroundRow.appendChild(b);
+      wrap.appendChild(undergroundRow);
+    }
     wrap.appendChild(readout);
     panel.appendChild(wrap);
     goBtn.addEventListener('click',()=>{
@@ -545,6 +583,20 @@ MM.ui = (function(){
         }catch(e){}
       });
       box.appendChild(killBtn);
+      const guardianLab=document.createElement('div'); guardianLab.textContent='Guardians (debug):'; guardianLab.style.cssText='width:100%; font-size:11px; opacity:.7; margin-top:4px;';
+      box.appendChild(guardianLab);
+      [['fire','Fire gate'],['ice','Ice gate']].forEach(([kind,label])=>{
+        const b=document.createElement('button'); b.textContent=label; b.style.cssText='flex:1 1 70px; font-size:11px; padding:3px 6px; border:1px solid rgba(130,220,255,.55);';
+        b.addEventListener('click',()=>{
+          try{
+            const G=window.MM && (MM.guardianLairs || MM.guardians);
+            if(!G || !G.forceAwaken) return;
+            const ok=G.forceAwaken(kind);
+            msg(ok? ('Przyzwano '+label) : 'Guardian: limit aktywnych spotkan?');
+          }catch(e){}
+        });
+        box.appendChild(b);
+      });
     }
     // Expose populate for any external triggers (keeps backward compatibility)
     api.populateMobSpawnButtons = populate;
@@ -1583,7 +1635,7 @@ MM.ui = (function(){
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateMapButton, initMenuToggle, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
+  const api = { msg, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;

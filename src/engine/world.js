@@ -12,6 +12,8 @@ import {
 } from './material_physics.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
 import { ruins as RUINS } from './ruins.js';
+import { guardianLairs as GUARDIANS } from './guardian_lairs.js';
+import { undergroundBoss as UNDERGROUND } from './underground_boss.js';
 window.MM = window.MM || {};
 (function(){
   const WG = WORLDGEN;
@@ -728,6 +730,8 @@ window.MM = window.MM || {};
     // applied last: carved interiors and masonry win over terrain/trees/chests
     if(RUINS && RUINS.applyToChunk) RUINS.applyToChunk(arr,cx);
     reinforceVolcanoConduits(arr,cx);
+    if(GUARDIANS && GUARDIANS.applyToChunk) GUARDIANS.applyToChunk(arr,cx);
+    if(UNDERGROUND && UNDERGROUND.applyToChunk) UNDERGROUND.applyToChunk(arr,cx);
     try{ if(MM.trees && MM.trees.pruneChunk) MM.trees.pruneChunk(arr,cx); }catch(e){}
     world.set(k,arr); markModifiedChunk(cx,0);
     if(world.size>CHUNK_CAP) evictFarChunks();

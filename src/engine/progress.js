@@ -6,9 +6,10 @@
 window.MM = window.MM || {};
 (function(){
   const SAVE_KEY='mm_progress_v1';
-  const state={ vit:0, str:0, agi:0, cap:0, lastLevel:1, bossKills:0, done:{}, trophies:{} };
+  const state={ vit:0, str:0, agi:0, cap:0, lastLevel:1, bossKills:0, done:{}, trophies:{}, guardians:{} };
   let berries=0;
   const SEASON_TROPHY_KEYS=['springAntler','summerHorn','autumnHeartwood','winterFur'];
+  const GUARDIAN_KEYS=['fire','ice','earth','air'];
 
   function toInt(v,min,max){
     const n=Number(v);
@@ -32,6 +33,13 @@ window.MM = window.MM || {};
     }
     return out;
   }
+  function cleanGuardians(src){
+    const out={};
+    if(src && typeof src==='object'){
+      for(const k of GUARDIAN_KEYS) if(src[k]) out[k]=1;
+    }
+    return out;
+  }
   function snapshot(){
     return {
       v:2,
@@ -43,6 +51,7 @@ window.MM = window.MM || {};
       bossKills:toInt(state.bossKills,0),
       done:cleanDone(state.done),
       trophies:cleanTrophies(state.trophies),
+      guardians:cleanGuardians(state.guardians),
       berries:toInt(berries,0),
     };
   }
@@ -56,6 +65,7 @@ window.MM = window.MM || {};
     state.bossKills=toInt(d.bossKills,0);
     state.done=cleanDone(d.done);
     state.trophies=cleanTrophies(d.trophies);
+    state.guardians=cleanGuardians(d.guardians);
     berries=toInt(d.berries,0);
     return true;
   }
@@ -94,11 +104,30 @@ window.MM = window.MM || {};
     if(changed) save();
     return changed;
   }
+  function markGuardianHearts(inv){
+    if(!inv || typeof inv!=='object') return false;
+    let changed=false;
+    if(!state.guardians.fire && (Number(inv.heartFire)||0)>0){ state.guardians.fire=1; changed=true; }
+    if(!state.guardians.ice && (Number(inv.heartIce)||0)>0){ state.guardians.ice=1; changed=true; }
+    if(!state.guardians.earth && (Number(inv.heartEarth)||0)>0){ state.guardians.earth=1; changed=true; }
+    if(changed) save();
+    return changed;
+  }
+  function markGuardianHeart(kind){
+    if(GUARDIAN_KEYS.indexOf(kind)<0) return false;
+    if(state.guardians[kind]) return false;
+    state.guardians[kind]=1;
+    save();
+    notify();
+    return true;
+  }
+  function hasGuardianHeart(kind){ return !!state.guardians[kind]; }
+  function guardianHearts(){ return cleanGuardians(state.guardians); }
   function hasSeasonalTrophy(ctx,key){
     return !!(state.trophies[key] || (ctx && ctx.inv && (Number(ctx.inv[key])||0)>0));
   }
   if(typeof window!=='undefined' && window.addEventListener){
-    window.addEventListener('mm-resources-change',()=>{ markSeasonalTrophies((typeof window!=='undefined'&&window.inv)||null); });
+    window.addEventListener('mm-resources-change',()=>{ const inv=(typeof window!=='undefined'&&window.inv)||null; markSeasonalTrophies(inv); markGuardianHearts(inv); });
   }
 
   // --- Levels: cumulative XP thresholds, gently super-linear ---
@@ -214,6 +243,7 @@ window.MM = window.MM || {};
     const ctx={ player:p, inv:(typeof window!=='undefined'&&window.inv)||{}, berries,
                 bossKilled:state.bossKills };
     markSeasonalTrophies(ctx.inv);
+    markGuardianHearts(ctx.inv);
     for(const m of MILESTONES){
       if(state.done[m.id]) continue;
       let ok=false; try{ ok=m.check(ctx); }catch(e){}
@@ -227,9 +257,10 @@ window.MM = window.MM || {};
     }
   }
 
-  function reset(){ state.vit=state.str=state.agi=state.cap=0; state.lastLevel=1; state.bossKills=0; state.done={}; state.trophies={}; berries=0; save(); try{ if(MM.recomputeModifiers) MM.recomputeModifiers(); }catch(e){} notify(); }
+  function reset(){ state.vit=state.str=state.agi=state.cap=0; state.lastLevel=1; state.bossKills=0; state.done={}; state.trophies={}; state.guardians={}; berries=0; save(); try{ if(MM.recomputeModifiers) MM.recomputeModifiers(); }catch(e){} notify(); }
 
   MM.progress={ update, level, points, spend, bonuses, reset, addBuff, snapshot, restore,
+    markGuardianHeart, hasGuardianHeart, guardianHearts,
     getBuffs:()=>buffs.map(b=>({name:b.name,icon:b.icon,t:b.t})),
     stats:()=>({vit:state.vit,str:state.str,agi:state.agi,cap:state.cap}),
     milestones:()=>MILESTONES.map(m=>({id:m.id,desc:m.desc,done:!!state.done[m.id]})) };

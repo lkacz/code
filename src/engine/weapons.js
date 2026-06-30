@@ -14,10 +14,14 @@ import { reactions as REACTIONS } from './reactions.js';
 (function(){
   window.MM = window.MM || {};
 
-  const arrows=[]; // {x,y,vx,vy,dmg,life,stuck,stuckT,ang}
+  const arrows=[]; // {x,y,vx,vy,dmg,life,stuck,stuckT,travel,maxTravel}
   const puffs=[];  // {kind,x,y,vx,vy,life,total,dps}
   const electricBeams=[]; // {x1,y1,x2,y2,t,life,hit,blocked,phase}
   const ARROW_SPEED=22, ARROW_GRAV=14, ARROW_LIFE=5, ARROW_STUCK=4, MAX_ARROWS=64;
+  const ARROW_DAMAGE_FALLOFF={close:1, mid:0.6, long:0.33};
+  const BOW_CHARGE_SECONDS=4;
+  const BOW_MAX_CHARGE_MULT=2;
+  const BOW_OVERDRAW_ENERGY_PER_SEC=6;
   const MAX_PUFFS=220;
   const MAX_ELECTRIC_BEAMS=24;
   // Per-kind stream tuning: emission count/frame, muzzle speed, vertical pull
@@ -68,6 +72,7 @@ import { reactions as REACTIONS } from './reactions.js';
   let heroFlameHitCd=0;
   let iridiumPierces=0;
   let lastGetTile=null, lastSetTile=null;
+  const bowCharge={active:false,t:0,aimX:0,aimY:0,player:null,full:false,overdrawT:0,energySpent:0,starved:false};
   const ULT_CHARGE_TIME=5;
   // Melee swing visual: drawHeld animates the held blade, draw() adds a slash arc
   const swing={t:0, dur:0.2, tx:0, ty:0, dir:1};
@@ -242,6 +247,10 @@ import { reactions as REACTIONS } from './reactions.js';
   }
   function pushArrow(a){
     if(arrows.length>=MAX_ARROWS) arrows.shift();
+    a.travel=Number.isFinite(a.travel) ? Math.max(0,a.travel) : 0;
+    if(!Number.isFinite(a.maxTravel) || !(a.maxTravel>0)){
+      a.maxTravel=Math.max(1,Math.hypot(a.vx||0,a.vy||0)*Math.max(0.1,a.life||ARROW_LIFE));
+    }
     arrows.push(a);
     return a;
   }
@@ -254,7 +263,8 @@ import { reactions as REACTIONS } from './reactions.js';
   function fireHeld(player, aimX, aimY, dt){
     const w=equippedWeapon();
     const type=weaponType(w);
-    if(type==='bow') return fireBow(player, aimX, aimY, w);
+    if(type==='bow') return updateBowCharge(player, aimX, aimY, w, dt||0.016);
+    if(bowCharge.active) cancelHeld();
     if(type==='electric') return fireElectric(player, aimX, aimY, w, 1);
     if(STREAMS[type]) return fireStream(player, aimX, aimY, w, dt||0.016, type);
     return fireMelee(player, aimX, aimY);
@@ -318,7 +328,9 @@ import { reactions as REACTIONS } from './reactions.js';
     let tx=Math.floor(aimX), ty=Math.floor(aimY);
     tx=Math.max(px-3, Math.min(px+3, tx)); ty=Math.max(py-3, Math.min(py+3, ty));
     const bonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
-    const hit=(MM.bosses && MM.bosses.attackAt && MM.bosses.attackAt(tx,ty,bonus))
+    const hit=(MM.guardianLairs && MM.guardianLairs.attackAt && MM.guardianLairs.attackAt(tx,ty,bonus))
+           || (MM.undergroundBoss && MM.undergroundBoss.attackAt && MM.undergroundBoss.attackAt(tx,ty,bonus))
+           || (MM.bosses && MM.bosses.attackAt && MM.bosses.attackAt(tx,ty,bonus))
            || (MM.ufo && MM.ufo.attackAt && MM.ufo.attackAt(tx,ty,bonus))
            || (MM.npcSystem && MM.npcSystem.attackAt && MM.npcSystem.attackAt(tx,ty,bonus))
            || (MM.mobs && MM.mobs.attackAt && MM.mobs.attackAt(tx,ty,bonus,{source:'hero'}));
@@ -328,26 +340,123 @@ import { reactions as REACTIONS } from './reactions.js';
     try{ if(MM.audio && MM.audio.play) MM.audio.play('swing'); }catch(e){}
     return !!hit;
   }
-  function fireBow(player, aimX, aimY, w){
+  function bowChargeRatio(){
+    return bowCharge.active ? Math.max(0,Math.min(1,(bowCharge.t||0)/BOW_CHARGE_SECONDS)) : 0;
+  }
+  function bowDamageMult(chargeRatio){
+    return 1 + Math.max(0,Math.min(1,Number(chargeRatio)||0))*(BOW_MAX_CHARGE_MULT-1);
+  }
+  function bowOverdrawEnergyRate(w){
+    return Math.max(0, Number(w && w.energyCost)||BOW_OVERDRAW_ENERGY_PER_SEC);
+  }
+  function heroEnergyStored(player){
+    try{
+      if(MM.heroEnergy && typeof MM.heroEnergy.info==='function'){
+        const info=MM.heroEnergy.info() || {};
+        return Math.max(0,Number(info.energy)||0);
+      }
+    }catch(e){}
+    if(player && typeof player.energy==='number') return Math.max(0,Number(player.energy)||0);
+    return null;
+  }
+  function spendHeroEnergyUpTo(player,amount){
+    const n=Math.max(0,Number(amount)||0);
+    if(n<=0) return 0;
+    const stored=heroEnergyStored(player);
+    const spend=stored==null ? n : Math.min(n,stored);
+    if(spend<=0) return 0;
+    return spendHeroEnergy(player,spend) ? spend : 0;
+  }
+  function resetBowCharge(){
+    bowCharge.active=false;
+    bowCharge.t=0;
+    bowCharge.aimX=0;
+    bowCharge.aimY=0;
+    bowCharge.player=null;
+    bowCharge.full=false;
+    bowCharge.overdrawT=0;
+    bowCharge.energySpent=0;
+    bowCharge.starved=false;
+  }
+  function updateBowCharge(player, aimX, aimY, w, dt){
+    if(!player) return false;
+    if(!bowCharge.active){
+      if(bowCd>0) return false;
+      if(!hasArrowAmmo()){ warnNoArrows(); return false; }
+      bowCharge.active=true;
+      bowCharge.t=0;
+      bowCharge.aimX=aimX;
+      bowCharge.aimY=aimY;
+      bowCharge.player=player;
+      bowCharge.full=false;
+      bowCharge.overdrawT=0;
+      bowCharge.energySpent=0;
+      bowCharge.starved=false;
+    }
+    const v=aimVector(player,aimX,aimY);
+    player.facing=v.dx>=0?1:-1;
+    bowCharge.aimX=aimX;
+    bowCharge.aimY=aimY;
+    bowCharge.player=player;
+    const step=Math.max(0,Math.min(0.12,Number(dt)||0));
+    const before=bowCharge.t;
+    bowCharge.t+=step;
+    if(!bowCharge.full && before<BOW_CHARGE_SECONDS && bowCharge.t+1e-6>=BOW_CHARGE_SECONDS){
+      bowCharge.full=true;
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('charge'); }catch(e){}
+    }
+    const overDt=Math.max(0,bowCharge.t-Math.max(before,BOW_CHARGE_SECONDS));
+    if(overDt>0){
+      const spent=spendHeroEnergyUpTo(player,bowOverdrawEnergyRate(w)*overDt);
+      bowCharge.energySpent+=spent;
+      bowCharge.overdrawT+=overDt;
+      if(spent<=0 && !bowCharge.starved){
+        bowCharge.starved=true;
+        sayLimited('bow_energy_empty','Brak energii na dalsze napiecie luku',1400);
+      }
+    }
+    return true;
+  }
+  function fireBowShot(player, aimX, aimY, w, chargeRatio){
     if(bowCd>0) return false;
     const tier=consumeArrowTier();
     if(!tier) return false;
     bowCd=Math.max(0.25, (w && w.fireCooldown)||0.55);
     const v=spreadAim(aimVector(player,aimX,aimY),tier,1);
     const sp=ARROW_SPEED*tier.speed;
+    const baseDamage=Math.max(1,Math.round(((w && w.attackDamage)||3)*tier.damage));
+    const ratio=Math.max(0,Math.min(1,Number(chargeRatio)||0));
+    const full=ratio>=0.999;
     pushArrow({
       x:player.x + v.dx*0.7,
       y:player.y - 0.15 + v.dy*0.7,
       vx:v.dx*sp,
       vy:v.dy*sp - 1.2, // slight lob so mid-range shots arc naturally
-      dmg:Math.max(1,Math.round(((w && w.attackDamage)||3)*tier.damage)),
+      dmg:Math.max(1,Math.round(baseDamage*bowDamageMult(ratio))),
       life:ARROW_LIFE*tier.life, stuck:false, stuckT:ARROW_STUCK,
-      tier:tier.id, color:tier.color, headColor:tier.head, windCap:sp*1.35,
+      charged:ratio>0.01, fullDraw:full,
+      tier:tier.id, color:full?'#f5d66a':tier.color, headColor:full?'#fff1a8':tier.head, windCap:sp*1.35,
       pierceLeft:tier.id==='iridium' ? 3 : 0
     });
     player.facing = v.dx>=0?1:-1;
     try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
     return true;
+  }
+  function releaseHeld(player, aimX, aimY){
+    if(!bowCharge.active) return false;
+    const w=equippedWeapon();
+    if(!w || weaponType(w)!=='bow'){ resetBowCharge(); return false; }
+    const p=player || bowCharge.player;
+    const ax=Number.isFinite(aimX) ? aimX : bowCharge.aimX;
+    const ay=Number.isFinite(aimY) ? aimY : bowCharge.aimY;
+    const ratio=bowChargeRatio();
+    resetBowCharge();
+    return fireBowShot(p, ax, ay, w, ratio);
+  }
+  function cancelHeld(){
+    const was=bowCharge.active;
+    resetBowCharge();
+    return was;
   }
   function firePowerBow(player, aimX, aimY, w, charge){
     const tier=consumeArrowTier();
@@ -410,6 +519,8 @@ import { reactions as REACTIONS } from './reactions.js';
   function electricDamageAt(tx,ty,dmg){
     try{ if(MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg,{source:'hero'})) return true; }catch(e){}
     try{ if(MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,dmg)) return true; }catch(e){}
+    try{ if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,dmg)) return true; }catch(e){}
+    try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(tx,ty,dmg)) return true; }catch(e){}
     try{ if(MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,dmg)) return true; }catch(e){}
     try{ if(MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,dmg)) return true; }catch(e){}
     return false;
@@ -484,10 +595,12 @@ import { reactions as REACTIONS } from './reactions.js';
     // the stream (bosses have no burn/poison status; the hose is harmless to them)
     if(kind!=='hose'){
       bossAcc+=dt;
-      if(bossAcc>=0.2 && ((MM.bosses && MM.bosses.damageAt) || (MM.ufo && MM.ufo.damageAt))){
+      if(bossAcc>=0.2 && ((MM.guardianLairs && MM.guardianLairs.damageAt) || (MM.undergroundBoss && MM.undergroundBoss.damageAt) || (MM.bosses && MM.bosses.damageAt) || (MM.ufo && MM.ufo.damageAt))){
         bossAcc=0;
         for(const t of [0.35,0.6,0.85]){
           const sx=Math.floor(player.x + dx*range*t), sy=Math.floor(player.y + dy*range*t);
+          if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(sx,sy, dps*0.2)) break;
+          if(MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy, dps*0.2)) break;
           if(MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy, dps*0.2)) break;
           if(MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy, dps*0.2)) break;
         }
@@ -553,6 +666,8 @@ import { reactions as REACTIONS } from './reactions.js';
     if(kind!=='hose'){
       for(const t of [0.35,0.55,0.75,0.95]){
         const sx=Math.floor(player.x + v.dx*range*t), sy=Math.floor(player.y + v.dy*range*t);
+        if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(sx,sy,dps*0.18)) break;
+        if(MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy,dps*0.18)) break;
         if(MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy,dps*0.18)) break;
         if(MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy,dps*0.18)) break;
       }
@@ -572,7 +687,9 @@ import { reactions as REACTIONS } from './reactions.js';
       for(let dx=-ri;dx<=ri;dx++){
         if(dx*dx+dy*dy>radius*radius) continue;
         const x=tx+dx, y=ty+dy;
-        hit = !!((MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(x,y,dmg))
+        hit = !!((MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(x,y,dmg))
+          || (MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(x,y,dmg))
+          || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(x,y,dmg))
           || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(x,y,dmg))
           || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(x,y,dmg))
           || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(x,y,dmg,{source:'hero'}))) || hit;
@@ -643,6 +760,8 @@ import { reactions as REACTIONS } from './reactions.js';
     }
     // creatures, bosses, plants
     try{ if(MM.mobs && MM.mobs.blastRadius) MM.mobs.blastRadius(wx,wy,R+1.5,14,{source:'hero'}); }catch(e){}
+    try{ if(MM.guardianLairs && MM.guardianLairs.damageAt){ MM.guardianLairs.damageAt(bx,by,14); MM.guardianLairs.damageAt(bx+1,by,9); MM.guardianLairs.damageAt(bx-1,by,9); MM.guardianLairs.damageAt(bx,by-1,9); } }catch(e){}
+    try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt){ MM.undergroundBoss.damageAt(bx,by,14); MM.undergroundBoss.damageAt(bx+1,by,9); MM.undergroundBoss.damageAt(bx-1,by,9); MM.undergroundBoss.damageAt(bx,by-1,9); } }catch(e){}
     try{ if(MM.bosses && MM.bosses.damageAt){ MM.bosses.damageAt(bx,by,12); MM.bosses.damageAt(bx+1,by,8); MM.bosses.damageAt(bx-1,by,8); MM.bosses.damageAt(bx,by-1,8); } }catch(e){}
     try{ if(MM.ufo && MM.ufo.damageAt){ MM.ufo.damageAt(bx,by,14); MM.ufo.damageAt(bx,by-1,8); } }catch(e){}
     try{ if(MM.plants && MM.plants.scorchAt) MM.plants.scorchAt(wx,wy,R+1); }catch(e){}
@@ -747,6 +866,18 @@ import { reactions as REACTIONS } from './reactions.js';
     a.vy*=0.92;
     iridiumPierces++;
     return true;
+  }
+  function arrowRangeBand(a){
+    const max=Number.isFinite(a && a.maxTravel) && a.maxTravel>0 ? a.maxTravel : 1;
+    const frac=Math.max(0,Math.min(1,(Number(a && a.travel)||0)/max));
+    if(frac<=1/3) return 'close';
+    if(frac<=2/3) return 'mid';
+    return 'long';
+  }
+  function arrowDamageAtRange(a){
+    const base=Math.max(0.5,Number(a && a.dmg)||1);
+    const mult=ARROW_DAMAGE_FALLOFF[arrowRangeBand(a)] || ARROW_DAMAGE_FALLOFF.long;
+    return Math.max(1,Math.round(base*mult));
   }
   function tileKey(x,y){ return x+','+y; }
   function noteStoneHeat(tx,ty,touched){
@@ -986,15 +1117,20 @@ import { reactions as REACTIONS } from './reactions.js';
       const steps=Math.max(1, Math.ceil(Math.max(Math.abs(a.vx),Math.abs(a.vy))*dt/0.35));
       const sdt=dt/steps;
       for(let s=0;s<steps;s++){
-        a.x+=a.vx*sdt; a.y+=a.vy*sdt;
+        const dx=(a.vx||0)*sdt, dy=(a.vy||0)*sdt;
+        a.x+=dx; a.y+=dy;
+        a.travel=(Number(a.travel)||0)+Math.hypot(dx,dy);
         const tx=Math.floor(a.x), ty=Math.floor(a.y);
         // an arrow flying through open flame or over lava catches fire
         if(!a.fire && ((FIRE && FIRE.isBurning(tx,ty)) || getTile(tx,ty)===T.LAVA)) a.fire=true;
         // Creature hit (mob, boss part or a hovering saucer)
-        if((MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,a.dmg,{source:'hero'}))
-        || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,a.dmg))
-        || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,a.dmg))
-        || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,a.dmg))){
+        const hitDmg=arrowDamageAtRange(a);
+        if((MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,hitDmg,{source:'hero'}))
+        || (MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,hitDmg))
+        || (MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(tx,ty,hitDmg))
+        || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,hitDmg))
+        || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,hitDmg))
+        || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,hitDmg))){
           if(a.fire && MM.mobs && MM.mobs.igniteAt) MM.mobs.igniteAt(tx,ty,{dur:2.5,dps:2,source:'hero'});
           arrows.splice(i,1); break;
         }
@@ -1322,12 +1458,35 @@ import { reactions as REACTIONS } from './reactions.js';
       ctx.fillStyle=col||'#cfd6e4'; ctx.fillRect(-2.6,0,5.2,1.6);
       ctx.fillStyle='#6e4a22'; ctx.fillRect(-0.9,1.6,1.8,3.4);
     } else if(type==='bow'){
-      ctx.strokeStyle=col||'#9a6a32'; ctx.lineWidth=1.6; ctx.lineCap='round';
+      const draw=bowCharge.active ? bowChargeRatio() : 0;
+      const full=draw>=0.999;
+      const pulse=full ? (0.72+0.28*Math.sin(nowMs()*0.018)) : 0;
+      ctx.strokeStyle=full ? '#f5d66a' : (col||'#9a6a32'); ctx.lineWidth=1.6+draw*0.5; ctx.lineCap='round';
       const a0=facing===1? -1.15 : Math.PI-1.15, a1=facing===1? 1.15 : Math.PI+1.15;
       ctx.beginPath(); ctx.arc(0,-2,6,a0,a1); ctx.stroke();
-      ctx.strokeStyle='#e8e2d2'; ctx.lineWidth=0.8;
+      if(full){
+        ctx.save();
+        ctx.globalCompositeOperation='lighter';
+        ctx.strokeStyle='rgba(255,236,150,'+(0.38+0.22*pulse).toFixed(3)+')';
+        ctx.lineWidth=4;
+        ctx.beginPath(); ctx.arc(0,-2,7.5,a0,a1); ctx.stroke();
+        ctx.restore();
+      }
+      ctx.strokeStyle=full?'#fff1a8':'#e8e2d2'; ctx.lineWidth=0.8+draw*0.7;
       const ex=Math.cos(1.15)*6*facing, ey=Math.sin(1.15)*6;
-      ctx.beginPath(); ctx.moveTo(ex,-2-ey); ctx.lineTo(ex,-2+ey); ctx.stroke();
+      const pull=-facing*(1.2+draw*7.2);
+      ctx.beginPath(); ctx.moveTo(ex,-2-ey); ctx.lineTo(pull,-2); ctx.lineTo(ex,-2+ey); ctx.stroke();
+      if(draw>0.03){
+        ctx.strokeStyle=full?'#fff7c7':'#dfe6f1';
+        ctx.lineWidth=1.2+draw*0.6;
+        ctx.beginPath(); ctx.moveTo(pull,-2); ctx.lineTo(facing*(7.4+draw*1.4),-2); ctx.stroke();
+        ctx.fillStyle=full?'#fff1a8':'#dfe6f1';
+        ctx.beginPath();
+        ctx.moveTo(facing*(8.8+draw*1.4),-2);
+        ctx.lineTo(facing*(5.9+draw*1.1),-4.2);
+        ctx.lineTo(facing*(5.9+draw*1.1),0.2);
+        ctx.closePath(); ctx.fill();
+      }
     } else {
       // stream device: body + nozzle tinted by class, with a faint idle wisp
       const tint= type==='flame'? '#b35324' : type==='hose'? '#2c7ef8' : type==='electric'? '#53e9ff' : '#4d9230';
@@ -1377,10 +1536,20 @@ import { reactions as REACTIONS } from './reactions.js';
     };
   }
 
-  function reset(){ arrows.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; meleeCd=0; electricCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; }
-  MM.weapons={fireHeld,fireUlt,update,draw,drawHeld,notifyMeleeSwing,reset,explodeAt,spawnGasCloud,spawnExternalStream,
-    metrics:()=>({arrows:arrows.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),ultCharge,stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
-    _debug:{arrows,puffs,electricBeams,arrowTiers:ARROW_TIERS,waterHeat}};
+  function bowChargeStatus(){
+    return {
+      active:!!bowCharge.active,
+      t:+(bowCharge.t||0).toFixed(3),
+      ratio:+bowChargeRatio().toFixed(3),
+      full:!!bowCharge.full,
+      overdrawT:+(bowCharge.overdrawT||0).toFixed(3),
+      energySpent:+(bowCharge.energySpent||0).toFixed(3)
+    };
+  }
+  function reset(){ arrows.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; meleeCd=0; electricCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; resetBowCharge(); }
+  MM.weapons={fireHeld,releaseHeld,cancelHeld,fireUlt,update,draw,drawHeld,notifyMeleeSwing,reset,explodeAt,spawnGasCloud,spawnExternalStream,
+    metrics:()=>({arrows:arrows.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),ultCharge,bowCharge:bowChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
+    _debug:{arrows,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,waterHeat}};
 })();
 // ESM export (progressive migration)
 export const weapons = (typeof window!=='undefined' && window.MM) ? window.MM.weapons : undefined;

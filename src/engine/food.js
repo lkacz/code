@@ -21,6 +21,7 @@ function applyFoodEffect(player, inv, tileId, opts = {}) {
   if (!player) return { ok: false, reason: 'no_player', effect };
 
   const godMode = !!opts.godMode;
+  const immunityMode = !!opts.immunityMode;
   const count = inv ? Number(inv[effect.key] || 0) : 0;
   if (!godMode && count <= 0) return { ok: false, reason: 'none', effect };
 
@@ -32,6 +33,10 @@ function applyFoodEffect(player, inv, tileId, opts = {}) {
   }
 
   if (!godMode && inv) inv[effect.key] = Math.max(0, count - 1);
+  if (effect.hp < 0 && immunityMode) {
+    player.hp = maxHp;
+    return { ok: true, effect, before: maxHp, after: maxHp, delta: 0, dead: false, immune: true };
+  }
   const after = effect.hp > 0
     ? Math.min(maxHp, before + effect.hp)
     : Math.max(0, before + effect.hp);

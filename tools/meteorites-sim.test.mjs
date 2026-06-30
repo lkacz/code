@@ -23,6 +23,7 @@ const fallingSrc = await readFile(new URL('../src/engine/falling.js', import.met
 const waterSrc = await readFile(new URL('../src/engine/water.js', import.meta.url), 'utf8');
 
 assert.ok(meteorites && meteorites.forceSpawn && meteorites.update, 'meteorites module exports');
+assert.equal(typeof meteorites.impactAt, 'function', 'meteorites expose the normal impact/crater pipeline');
 assert.equal(typeof meteorites.onTileChanged, 'function', 'meteorites expose a beacon tile-change index hook');
 assert.equal(INFO[T.ANTIGRAVITY_BEACON].meteorShield, true, 'antigravity beacon is registered as a meteor shield tile');
 assert.equal(T.METEOR_SIREN, 49, 'meteor siren has a stable tile id after water pump');

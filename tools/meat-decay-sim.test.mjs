@@ -62,6 +62,15 @@ assert.doesNotMatch(meatRendererSrc, /fillRect\(px\+4,py\+TILE-4,TILE-8,2\)/, 'm
   r = food.applyFoodEffect(doomed, badInv, T.ROTTEN_MEAT);
   assert.equal(doomed.hp, 0, 'rotten meat can reduce HP to zero');
   assert.equal(r.dead, true, 'rotten meat reports lethal damage');
+
+  const immune = { hp: 100, maxHp: 100 };
+  const immuneInv = { rottenMeat: 1 };
+  r = food.applyFoodEffect(immune, immuneInv, T.ROTTEN_MEAT, { immunityMode: true });
+  assert.equal(r.ok, true, 'rotten meat can still be consumed while immune');
+  assert.equal(r.immune, true, 'negative food HP effects report immunity prevention');
+  assert.equal(immune.hp, 100, 'immunity prevents rotten meat from lowering HP');
+  assert.equal(immuneInv.rottenMeat, 0, 'immune rotten meat use still consumes inventory');
+  assert.equal(r.dead, false, 'immune rotten meat cannot be lethal');
 }
 
 let tiles = new Map();

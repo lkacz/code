@@ -187,9 +187,36 @@ const turrets = (function(){
         targets=target ? [target] : [];
       }
     }catch(e){ targets=[]; }
+    try{
+      if(MM.guardianLairs && MM.guardianLairs.targetsForTurret){
+        targets=targets.concat(MM.guardianLairs.targetsForTurret(sx,sy,cfg.range,onlyBoss) || []);
+      }else if(MM.guardianLairs && MM.guardianLairs.nearestForTurret){
+        const target=MM.guardianLairs.nearestForTurret(sx,sy,cfg.range,onlyBoss);
+        if(target) targets.push(target);
+      }
+    }catch(e){}
+    try{
+      if(MM.undergroundBoss && MM.undergroundBoss.targetsForTurret){
+        targets=targets.concat(MM.undergroundBoss.targetsForTurret(sx,sy,cfg.range,onlyBoss) || []);
+      }else if(MM.undergroundBoss && MM.undergroundBoss.nearestForTurret){
+        const target=MM.undergroundBoss.nearestForTurret(sx,sy,cfg.range,onlyBoss);
+        if(target) targets.push(target);
+      }
+    }catch(e){}
+    targets.sort((a,b)=>(a.d2||0)-(b.d2||0));
     for(const target of targets){
       const tx=Number(target && target.x), ty=Number(target && target.y);
       if(!Number.isFinite(tx) || !Number.isFinite(ty)) continue;
+      if(target.kind==='guardian' || target.guardian){
+        const out=wrapTarget('guardian',target.guardian || target.raw || target,tx,ty,target.hp || 1,Object.assign({},target,{guardian:target.guardian || target.raw || target}));
+        if(!lineClear(sx,sy,tx,ty,getTile,m.x,m.y,out.tx,out.ty)) continue;
+        return out;
+      }
+      if(target.kind==='underground' || target.underground){
+        const out=wrapTarget('underground',target.underground || target.raw || target,tx,ty,target.hp || 1,Object.assign({},target,{underground:target.underground || target.raw || target}));
+        if(!lineClear(sx,sy,tx,ty,getTile,m.x,m.y,out.tx,out.ty)) continue;
+        return out;
+      }
       const out=wrapTarget('boss',target.boss || target.raw || target,tx,ty,target.hp || 1,Object.assign({},target,{boss:target.boss || target.raw || target}));
       if(!lineClear(sx,sy,tx,ty,getTile,m.x,m.y,out.tx,out.ty)) continue;
       return out;
@@ -281,6 +308,22 @@ const turrets = (function(){
       target.hp=fresh.hp || 1; target.boss=fresh.boss || boss; target.raw=target.boss; target.part=fresh.part;
       return target;
     }
+    if(target.kind==='guardian'){
+      const guardian=target.guardian || targetEntity(target);
+      if(!guardian || guardian.dead || !(guardian.hp>0)) return null;
+      const x=Number(guardian.x), y=Number(guardian.y);
+      if(!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      target.x=x; target.y=y; target.tx=Math.floor(x); target.ty=Math.floor(y); target.hp=guardian.hp; target.guardian=guardian; target.raw=guardian;
+      return target;
+    }
+    if(target.kind==='underground'){
+      const underground=target.underground || targetEntity(target);
+      if(!underground || underground.dead || !(underground.hp>0)) return null;
+      const x=Number(underground.x), y=Number(underground.y);
+      if(!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      target.x=x; target.y=y; target.tx=Math.floor(x); target.ty=Math.floor(y); target.hp=underground.hp; target.underground=underground; target.raw=underground;
+      return target;
+    }
     if(target.kind==='ufo'){
       let craft=null;
       try{ if(MM.ufo && MM.ufo.current) craft=MM.ufo.current(); }catch(e){ craft=null; }
@@ -306,6 +349,8 @@ const turrets = (function(){
   function damageAt(tx,ty,dmg){
     let hit=false;
     try{ if(MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
+    try{ if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
+    try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
     try{ if(MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
     try{ if(MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
     return hit;

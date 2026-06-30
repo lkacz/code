@@ -30,7 +30,7 @@ assert.ok(deathHandler, 'hero death handler is present');
 assert.ok(!deathHandler[1].includes('placePlayer(true)'), 'hero death no longer teleports in the same frame');
 assert.match(deathHandler[1], /updateInventory\(\);\s*startDeathTravelFx\(cause\);/, 'hero death schedules the transit after creating the grave drop');
 
-assert.match(mainSource, /if\(deathTravelFx\) return false;\s*const now=performance\.now\(\);/, 'damage is ignored while the hero is already in death transit');
+assert.match(mainSource, /if\(deathTravelFx\) return false;\s*if\(immunityMode\)\{ player\.hp=player\.maxHp; return false; \}\s*const now=performance\.now\(\);/, 'damage is ignored while the hero is already in death transit or immune');
 assert.match(mainSource, /const HURT_FLASH_MS=520;/, 'hurt screen flash has a fixed short duration');
 assert.match(mainSource, /player\.hurtFlashUntil=now\+HURT_FLASH_MS;/, 'damage starts a fixed hurt flash independent of i-frame duration');
 assert.match(mainSource, /player\.hurtFlashUntil=Math\.max\(player\.hurtFlashUntil\|\|0, performance\.now\(\)\+HURT_FLASH_MS\);/, 'direct death starts the same fixed hurt flash');

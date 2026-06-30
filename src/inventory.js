@@ -231,6 +231,9 @@
     {key:'summerHorn', label:'Rog lata', color:'#9b6b38', tile:null},
     {key:'autumnHeartwood', label:'Jesienne twardziel', color:'#b57936', tile:null},
     {key:'winterFur', label:'Zimowe futro', color:'#e8f4ff', tile:null},
+    {key:'heartFire', label:'Serce ognia', color:'#ff6a21', tile:null},
+    {key:'heartIce', label:'Serce lodu', color:'#9deeff', tile:null},
+    {key:'heartEarth', label:'Serce ziemi', color:'#79c95d', tile:null},
     {key:'antimatter', label:'Antymateria', color:'#c46bff', tile:'ANTIMATTER_CRYSTAL'} // dropped by downed UFOs and rare antimatter meteors
   ];
 

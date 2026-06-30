@@ -1007,13 +1007,14 @@ const meteorites = (function(){
   function buildCraterOps(cx,cy,intensity,getTile,opts){
     opts=opts||{};
     const profile=classProfile((opts.profile && opts.profile.id) || opts.classId || opts.kind || opts.type);
+    const colossal=opts.colossal===true;
     const impactY=clamp(Math.round(Number.isFinite(opts.surfaceY)?opts.surfaceY:cy),2,WORLD_H-6);
     const seed=Number.isFinite(opts.seed) ? +opts.seed : rand(1,1000000);
-    const scale=clamp((Number(opts.scale)||rand(0.68,1.42))*(profile.craterScale||1),0.62,1.85);
+    const scale=clamp((Number(opts.scale)||rand(0.68,1.42))*(profile.craterScale||1),colossal?1.18:0.62,colossal?3.15:1.85);
     const baseRx=8.8+intensity*4.25;
-    const leftRx=clamp(baseRx*scale*rand(0.82,1.30),10.5,24.5);
-    const rightRx=clamp(baseRx*scale*rand(0.82,1.30),10.5,24.5);
-    const ry=clamp((4.0+intensity*2.15)*rand(0.70,1.40),3.6,10.8);
+    const leftRx=clamp(baseRx*scale*rand(0.82,1.30),colossal?18.0:10.5,colossal?46.0:24.5);
+    const rightRx=clamp(baseRx*scale*rand(0.82,1.30),colossal?18.0:10.5,colossal?46.0:24.5);
+    const ry=clamp((4.0+intensity*2.15)*rand(0.70,1.40),colossal?7.0:3.6,colossal?20.0:10.8);
     const basinShift=rand(-0.16,0.16)*(leftRx+rightRx)*0.5;
     const bowlPower=rand(0.52,1.04);
     const roughness=rand(0.08,0.24);
@@ -1043,7 +1044,7 @@ const meteorites = (function(){
         if(terraceStrength && edge>terraceAt && edge<terraceAt+0.22) depth-=terraceStrength*ry;
         if(edge>0.70 && hashUnit(seed+23.4,x)>0.84) depth-=1.1+hashUnit(seed+24.1,x)*1.2;
         if(edge<0.18 && hashUnit(seed+29.9,x)>0.72) depth+=0.8+hashUnit(seed+30.6,x)*1.0;
-        depth=clamp(Math.floor(depth),1,12);
+        depth=clamp(Math.floor(depth),1,colossal?22:12);
         const startY=Math.max(1,Math.floor(surface-1));
         const floorY=Math.min(WORLD_H-4,Math.floor(surface+depth));
         for(let y=startY; y<=floorY; y++){
@@ -1224,7 +1225,9 @@ const meteorites = (function(){
   }
   function pushCraterRecord(cx,cy,intensity,profile,site,opts){
     opts=opts||{};
-    const r=clamp(Math.round((9.5+intensity*4.8)*(profile.craterScale||1)),8,30);
+    const colossal=opts.colossal===true;
+    const rScale=colossal ? 1.42 : 1;
+    const r=clamp(Math.round((9.5+intensity*4.8)*(profile.craterScale||1)*rScale),colossal?24:8,colossal?58:30);
     pushCapped(craterRecords,{
       x:+cx.toFixed(2),
       y:+cy.toFixed(2),
@@ -1285,9 +1288,10 @@ const meteorites = (function(){
     return n;
   }
   function applyMeteorAftermath(cx,cy,intensity,profile,getTile,setTile,site,opts){
+    opts=opts||{};
     profile=classProfile(profile && profile.id);
     const stress=frameMs()>30;
-    const radius=clamp(8+intensity*4,8,22);
+    const radius=clamp(8+intensity*4,8,opts.colossal===true?42:22);
     let changed=0;
     if(profile.id==='ice'){
       changed+=freezeNearbyWater(cx,cy,intensity,getTile,setTile);
@@ -1318,7 +1322,7 @@ const meteorites = (function(){
   }
   function fillCraterLakeCell(c,getTile,setTile){
     if(!c || c.filled || typeof setTile!=='function') return false;
-    const r=clamp(c.r|0,6,30);
+    const r=clamp(c.r|0,6,58);
     const cols=r*2+1;
     const yMin=Math.max(1,Math.floor(c.y)-1);
     const yMax=Math.min(WORLD_H-4,Math.floor(c.y+Math.max(5,r*0.55)+4));
@@ -1367,7 +1371,7 @@ const meteorites = (function(){
     }
   }
   function nextCraterColumn(c,eco,scale){
-    const r=clamp(c.r|0,6,32);
+    const r=clamp(c.r|0,6,58);
     const span=Math.max(2,Math.round(r*(scale||0.82)));
     const n=(eco.cursor|0);
     eco.cursor=(n+1)%(span*2+1);
@@ -1536,7 +1540,7 @@ const meteorites = (function(){
   function countCraterMaterials(c,getTile){
     const counts={};
     if(!c || typeof getTile!=='function') return counts;
-    const r=clamp(c.r|0,6,32);
+    const r=clamp(c.r|0,6,58);
     const yMin=Math.max(1,Math.floor(c.y)-3);
     const yMax=Math.min(WORLD_H-4,Math.floor(c.y+r*0.70+6));
     for(let y=yMin; y<=yMax; y++){
@@ -1603,14 +1607,15 @@ const meteorites = (function(){
   function emitImpactFx(cx,cy,intensity,waterHit,profile,site,opts){
     profile=classProfile(profile && profile.id);
     opts=opts||{};
+    const colossal=opts.colossal===true;
     impacts++;
     lastImpact={x:cx,y:cy,t:0,classId:profile.id,label:profile.label,site:site||'wildlands',redirected:!!opts.deflected};
-    screenFlash=Math.max(screenFlash,1.28);
-    startShake(0.78+intensity*0.18,9.5+intensity*5.2);
+    screenFlash=Math.max(screenFlash,colossal?1.85:1.28);
+    startShake((colossal?1.15:0.78)+intensity*0.18,(colossal?15.5:9.5)+intensity*5.2);
     const stress=frameMs()>30;
     const impactHue=profile.ember || 'iron';
-    const debrisCount=stress ? 5 : 12;
-    const emberCount=stress ? 18 : 44;
+    const debrisCount=stress ? (colossal?8:5) : (colossal?20:12);
+    const emberCount=stress ? (colossal?28:18) : (colossal?72:44);
     for(let i=0;i<debrisCount;i++){
       const a=rand(-Math.PI*0.95,-Math.PI*0.05);
       const sp=rand(4.0,11.5)*(0.75+intensity*0.18);
@@ -1640,7 +1645,7 @@ const meteorites = (function(){
         hue:impactHue==='iron' ? (Math.random()<0.16?'white':(Math.random()<0.54?'gold':'orange')) : impactHue
       },MAX_EMBERS);
     }
-    const plumeCount=stress ? 7 : 14;
+    const plumeCount=stress ? (colossal?11:7) : (colossal?24:14);
     for(let i=0;i<plumeCount;i++){
       pushCapped(plumes,{
         x:cx+rand(-3.8,3.8),
@@ -1670,6 +1675,14 @@ const meteorites = (function(){
     const radius=8.0+intensity*2.3;
     try{ if(MM.mobs && MM.mobs.blastRadius) MM.mobs.blastRadius(cx,cy,radius,34+intensity*10); }catch(e){}
     try{
+      if(MM.guardianLairs && MM.guardianLairs.damageAt){
+        const d=38+intensity*12;
+        MM.guardianLairs.damageAt(Math.round(cx),Math.round(cy),d);
+        MM.guardianLairs.damageAt(Math.round(cx)+1,Math.round(cy),d*0.6);
+        MM.guardianLairs.damageAt(Math.round(cx)-1,Math.round(cy),d*0.6);
+      }
+    }catch(e){}
+    try{
       if(MM.bosses && MM.bosses.damageAt){
         const d=34+intensity*11;
         MM.bosses.damageAt(Math.round(cx),Math.round(cy),d);
@@ -1697,13 +1710,13 @@ const meteorites = (function(){
     const waterHit=!!opts.waterHit || hit===T.WATER || hit===T.ICE;
     const site=opts.site || impactSiteKind(cx,cy,getTile);
     const pow=intensity||1;
-    queueCrater(cx,cy,pow,getTile,preparedOps,setTile,{instant:true,classId:profile.id,profile,surfaceY:cy});
+    queueCrater(cx,cy,pow,getTile,preparedOps,setTile,Object.assign({},opts,{instant:true,classId:profile.id,profile,surfaceY:Number.isFinite(opts.surfaceY)?opts.surfaceY:cy}));
     pushCraterRecord(cx,cy,pow,profile,site,opts);
     recordImpactConsequence(cx,cy,profile,site,opts);
     applyMeteorAftermath(cx,cy,pow,profile,getTile,setTile,site,opts);
     markWorldChanged();
     emitImpactFx(cx,cy,pow,waterHit,profile,site,opts);
-    hurtActors(cx,cy,pow);
+    if(!opts.skipActorDamage) hurtActors(cx,cy,pow);
     return true;
   }
   function forceSpawn(opts,player,getTile){
@@ -2068,7 +2081,7 @@ const meteorites = (function(){
     if(score<=0) return false;
     quality=quality==null ? 2 : clamp(quality|0,0,2);
     const px=c.x*TILE, py=(c.y+0.45)*TILE;
-    const r=clamp(c.r|0,6,32)*TILE;
+    const r=clamp(c.r|0,6,58)*TILE;
     const pulse=Math.sin((typeof performance!=='undefined'?performance.now():0)*0.0017 + c.x*0.13)*0.5+0.5;
     ctx.save();
     ctx.globalCompositeOperation='lighter';
@@ -2339,7 +2352,7 @@ const meteorites = (function(){
           craterRecords.push({
             x:+raw.x,
             y:+raw.y,
-            r:clamp((raw.r|0)||12,6,32),
+            r:clamp((raw.r|0)||12,6,58),
             classId:profile.id,
             label:profile.label,
             site:typeof raw.site==='string' ? raw.site.slice(0,24) : 'wildlands',
@@ -2463,6 +2476,7 @@ const meteorites = (function(){
     drawScreen,
     screenShakeOffset,
     forceSpawn,
+    impactAt,
     setEnabled,
     onTileChanged,
     rollSchedule,
