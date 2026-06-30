@@ -117,6 +117,25 @@ window.MM = window.MM || {};
     if(scale<=1.05) return 1;
     return Math.max(1, Math.ceil(scale*2)/2);
   }
+  function currentFrameMs(){
+    return (typeof window!=='undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
+  }
+  function overlayReuseWindowMs(){
+    const ms=currentFrameMs();
+    if(ms>40) return 1000/24;
+    if(ms>26) return 1000/40;
+    try{
+      const cap=window.__mmFrameCap;
+      if(cap && !cap.unlocked && Number.isFinite(cap.effectiveFps) && cap.effectiveFps>0){
+        return Math.max(OVERLAY_CACHE_INTERVAL_MS, 1000/Math.min(120,Math.max(30,cap.effectiveFps)));
+      }
+    }catch(e){}
+    return OVERLAY_CACHE_INTERVAL_MS;
+  }
+  function invalidateOverlayCache(){
+    overlayCache.valid=false;
+    lastOverlayRefresh=0;
+  }
   function validTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H; }
   function getSafe(getTile,x,y,fallback){
     try{ return typeof getTile==='function' ? getTile(x,y) : fallback; }catch(e){ return fallback; }
@@ -974,10 +993,12 @@ window.MM = window.MM || {};
     // Edits are usually player/mining/worldgen events. Wake a modest region so
     // shelves, drain mouths, and cave bores react on the next tick instead of waiting
     // for the passive scan to rediscover settled water.
+    invalidateOverlayCache();
     wakeWaterAround(x,y,getTile,5,4);
     queueMaterialAround(x,y,getTile);
   }
   function onTilesChangedBatch(cells,getTile,opts){
+    invalidateOverlayCache();
     const cap=Math.max(4,Math.min(48,(opts && opts.cap)|0 || TILE_CHANGE_BATCH_WAKE_CAP));
     const selected=selectBatchWakeCells(cells,cap);
     let woke=false;
@@ -1042,9 +1063,9 @@ window.MM = window.MM || {};
     const pixelScale=overlayPixelScale(ctx,wpx,hpx);
     const swpx=Math.max(1,Math.ceil(wpx*pixelScale));
     const shpx=Math.max(1,Math.ceil(hpx*pixelScale));
-    const cap=(typeof window!=='undefined') ? window.__mmFrameCap : null;
-    const canReuse=!!(cap && cap.unlocked && offCanvas && overlayCache.valid &&
-      now-lastOverlayRefresh<OVERLAY_CACHE_INTERVAL_MS &&
+    const reuseWindow=overlayReuseWindowMs();
+    const canReuse=!!(offCanvas && overlayCache.valid &&
+      now-lastOverlayRefresh<reuseWindow &&
       overlayCache.x0===x0 && overlayCache.yTop===yTop && overlayCache.n===n && overlayCache.yBot===yBot &&
       overlayCache.wpx===wpx && overlayCache.hpx===hpx &&
       overlayCache.pixelScale===pixelScale && overlayCache.swpx===swpx && overlayCache.shpx===shpx);
@@ -1662,7 +1683,7 @@ window.MM = window.MM || {};
     return {touchedXs, variance, hadTransfers};
   }
 
-  function metrics(){ return {active:active.size, springs:springs.size, streams:streams.length, wetSand:wetSand.size, wetClay:wetClay.size, dryMud:dryMud.size, dryClay:dryClay.size, passiveScanColumns:passiveScanLastColumns, pressureMs:+pressureLastMs.toFixed(3), overlayCacheHits, overlayFullRenders}; }
+  function metrics(){ return {active:active.size, springs:springs.size, streams:streams.length, wetSand:wetSand.size, wetClay:wetClay.size, dryMud:dryMud.size, dryClay:dryClay.size, passiveScanColumns:passiveScanLastColumns, pressureMs:+pressureLastMs.toFixed(3), overlayCacheHits, overlayFullRenders, overlayReuseMs:+overlayReuseWindowMs().toFixed(2)}; }
   // Test/debug introspection (not used by the game loop)
   function _debug(){ return {active:[...active], seeds:[...pressureSeeds], cooldown:[...lateralCooldown.entries()], wetSand:[...wetSand.values()], wetClay:[...wetClay.values()], dryMud:[...dryMud.values()], dryClay:[...dryClay.values()], pressureAcc, pressureIntervalCurrent, pressureLastMs, pressureMaxMs, passiveScanAcc, passiveScanOffset, passiveScanLastColumns, passiveScanTotalColumns, materialScanAcc, materialScanOffset}; }
 

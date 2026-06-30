@@ -11,12 +11,17 @@
   const smokeSprites = new Map();
   let smokeCount = 0;
   let audioCtx = null;
+  let fxPressure = 0;
   function frameMs(){
     return (typeof window!=='undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
   }
   function currentSmokeCap(){
     const ms=frameMs();
     return ms>42 ? 140 : (ms>26 ? 220 : SMOKE_CAP);
+  }
+  function currentParticleCap(){
+    const ms=frameMs();
+    return ms>42 ? 520 : (ms>26 ? 680 : PARTICLE_CAP);
   }
   function smokeDrawAlphaScale(ms,count){
     if(ms>42) return 0.58;
@@ -32,6 +37,25 @@
         smokeCount=Math.max(0,smokeCount-1);
       } else i++;
     }
+  }
+  function trimParticlesToCap(cap){
+    cap=Math.max(120, Math.min(PARTICLE_CAP, cap|0));
+    if(particles.length<=cap) return;
+    const removed=particles.splice(0, particles.length-cap);
+    removed.forEach(p=>{ if(p && p.kind==='smoke') smokeCount=Math.max(0,smokeCount-1); });
+  }
+  function updateFxPressure(){
+    const ms=frameMs();
+    if(ms>42) fxPressure=Math.min(8,fxPressure+2);
+    else if(ms>26) fxPressure=Math.min(8,fxPressure+1);
+    else fxPressure=Math.max(0,fxPressure-1);
+    return fxPressure;
+  }
+  function trimSmokeCapForPressure(pressure){
+    return pressure>=3 ? currentSmokeCap() : SMOKE_CAP;
+  }
+  function trimParticleCapForPressure(pressure){
+    return pressure>=2 ? currentParticleCap() : PARTICLE_CAP;
   }
   function fallbackGetTile(){
     try{
@@ -121,7 +145,7 @@
     opts=opts||{};
     const count = 24 + (tier==='epic'?24 : tier==='rare'?12 : 0);
     for(let i=0;i<count;i++){
-      if(particles.length>=PARTICLE_CAP) break;
+      if(particles.length>=currentParticleCap()) break;
       const ang = Math.random()*Math.PI*2;
       const sp = (Math.random()*2 + 1.5) * (tier==='epic'?1.6 : tier==='rare'?1.3 : 1);
       particles.push({ x, y, vx:Math.cos(ang)*sp, vy:Math.sin(ang)*sp*0.6-1, life:0, max:0.9+Math.random()*0.5, tier });
@@ -134,7 +158,7 @@
   mod.spawnSparks = function(x,y,tier,count){
     const n=Math.max(1, Math.min(14, count==null?8:(count|0)));
     for(let i=0;i<n;i++){
-      if(particles.length>=PARTICLE_CAP) break;
+      if(particles.length>=currentParticleCap()) break;
       const ang=Math.random()*Math.PI*2;
       const sp=1.0+Math.random()*2.0;
       particles.push({ kind:'spark', x, y, vx:Math.cos(ang)*sp, vy:Math.sin(ang)*sp*0.55-0.55, life:0, max:0.22+Math.random()*0.22, tier });
@@ -146,7 +170,7 @@
     const n=Math.max(2, Math.min(9, Math.round(2+k*4)));
     const dir=(Number(facing)||1)>=0 ? 1 : -1;
     for(let i=0;i<n;i++){
-      if(particles.length>=PARTICLE_CAP) break;
+      if(particles.length>=currentParticleCap()) break;
       const back=-dir;
       const side=(Math.random()-0.5)*1.1;
       const sp=(0.9+Math.random()*2.2)*k;
@@ -174,7 +198,7 @@
     if(ms>34) n=Math.max(2, Math.round(n*0.45));
     else if(ms>24) n=Math.max(3, Math.round(n*0.65));
     for(let i=0;i<n;i++){
-      if(particles.length>=PARTICLE_CAP) break;
+      if(particles.length>=currentParticleCap()) break;
       const ox=(Math.random()-0.5)*14;
       const oy=(Math.random()-0.5)*14;
       const hue = opts.hue==='gold' || opts.hue==='cyan'
@@ -200,7 +224,7 @@
   mod.spawnGlassShards = function(x,y,count){
     const n=Math.max(3, Math.min(24, count==null?14:(count|0)));
     for(let i=0;i<n;i++){
-      if(particles.length>=PARTICLE_CAP) break;
+      if(particles.length>=currentParticleCap()) break;
       const ang=Math.random()*Math.PI*2;
       const sp=1.2+Math.random()*3.2;
       particles.push({
@@ -224,7 +248,7 @@
     const k = Math.max(0.15, Math.min(1, intensity||0.5));
     const count = Math.round(6 + 18*k);
     for(let i=0;i<count;i++){
-      if(particles.length>=PARTICLE_CAP) break;
+      if(particles.length>=currentParticleCap()) break;
       const ang = -Math.PI/2 + (Math.random()-0.5)*1.4; // mostly upward fan
       const sp = (1.2 + Math.random()*2.4) * (0.5 + k);
       particles.push({ kind:'splash', x:x+(Math.random()-0.5)*10, y, vx:Math.cos(ang)*sp, vy:Math.sin(ang)*sp, life:0, max:0.35+Math.random()*0.45 });
@@ -233,7 +257,7 @@
 
   // Air bubble: rises with a sine wobble, pops at the end of its life.
   mod.spawnBubble = function(x,y){
-    if(particles.length>=PARTICLE_CAP) return;
+    if(particles.length>=currentParticleCap()) return;
     particles.push({ kind:'bubble', x, y, vx:0, vy:-(0.6+Math.random()*0.9), life:0, max:0.8+Math.random()*1.2, phase:Math.random()*Math.PI*2, r:1.5+Math.random()*2 });
   };
 
@@ -245,7 +269,7 @@
     let count = Math.max(1, Math.round(1 + power*0.9));
     if(smokeCount>cap*0.65) count=Math.max(1, Math.min(count, Math.round(count*0.55)));
     for(let i=0;i<count;i++){
-      if(particles.length>=PARTICLE_CAP || smokeCount>=cap) break;
+      if(particles.length>=currentParticleCap() || smokeCount>=cap) break;
       const r = (5.5+Math.random()*8.0) * (0.85+power*0.18);
       const max = (3.2+Math.random()*3.8) * (0.95+power*0.16);
       const vx = (Math.random()-0.5)*(0.28+power*0.08);
@@ -277,8 +301,10 @@
 
   mod.update = function(dt, TILE, getTile){
     const tileSize = TILE || 20;
-    // Frame spikes should pause new smoke, not chop an existing plume in half.
-    trimSmokeToCap(SMOKE_CAP);
+    // One bad frame should fade effects, not pop them. Hard trimming starts only
+    // after pressure persists for multiple frames.
+    const pressure=updateFxPressure();
+    trimSmokeToCap(trimSmokeCapForPressure(pressure));
     for(let i=particles.length-1;i>=0;i--){
       const p=particles[i];
       p.life += dt;
@@ -316,10 +342,7 @@
         particles.splice(i,1);
       }
     }
-    if(particles.length>PARTICLE_CAP){
-      const removed=particles.splice(0, particles.length-PARTICLE_CAP);
-      removed.forEach(p=>{ if(p.kind==='smoke') smokeCount=Math.max(0,smokeCount-1); });
-    }
+    trimParticlesToCap(trimParticleCapForPressure(pressure));
   };
 
   mod.draw = function(ctx, canDrawTile, TILE){
@@ -409,7 +432,7 @@
   };
 
   // Clear particles (world regen / fresh start)
-  mod.reset = function(){ particles.length = 0; smokeCount = 0; };
+  mod.reset = function(){ particles.length = 0; smokeCount = 0; fxPressure = 0; };
   // Live particle count (debug / tests)
   mod.count = function(){ return particles.length; };
   mod.smokeCount = function(){ return smokeCount; };
@@ -417,6 +440,8 @@
     const ms=frameMs();
     return {
       particles:particles.length,
+      particleCap:currentParticleCap(),
+      fxPressure,
       smoke:smokeCount,
       smokeSprites:smokeSprites.size,
       smokeCap:currentSmokeCap(),

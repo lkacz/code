@@ -636,6 +636,24 @@ worldGen.randSeed = ()=>0;
   MM.fallingSolids={ onTileRemoved(){}, afterPlacement(){} };
   MM.water={};
 
+  for(let x=-3; x<=3; x++) setTile(x,10,T.STONE);
+  setTile(0,9,T.LEAF);
+  setTile(0,8,T.LEAF);
+  trees.restore({v:2, debris:[key(0,9),key(0,8)], identities:[]}, getTile);
+  for(let i=0;i<20;i++) trees.updateFallingBlocks(getTile,setTile,1/60,{sx:-2,sy:0,viewX:5,viewY:12});
+
+  assert.equal(getTile(0,8), T.LEAF, 'settled fallen leaves remain static instead of re-entering pile relaxation');
+  assert.equal(getTile(0,9), T.LEAF, 'settled leaf support remains in place');
+  assert.equal(trees._fallingBlocks.length, 0, 'stable fallen leaf piles do not flicker as active debris');
+}
+
+{
+  resetTiles();
+  resetTreeSystem();
+  worldGen.surfaceHeight = ()=>20;
+  MM.fallingSolids={ onTileRemoved(){}, afterPlacement(){} };
+  MM.water={};
+
   for(let x=-8; x<=8; x++) setTile(x,15,T.STONE);
   const debris=[];
   for(let y=9;y<=14;y++){ setTile(0,y,T.WOOD); debris.push(key(0,y)); }
@@ -1168,6 +1186,22 @@ worldGen.randSeed = ()=>0;
   worldGen.valueNoise=original.valueNoise;
   worldGen.randSeed=original.randSeed;
   worldGen.settings=original.settings;
+}
+
+{
+  resetTiles();
+  resetTreeSystem();
+  for(let x=-2; x<=14; x++) setTile(x,12,T.STONE);
+  for(let x=0; x<10; x++){
+    setTile(x,11,T.WOOD);
+    setTile(x,10,T.LEAF);
+    trees._fallenTreeTiles.add(key(x,11));
+    trees._fallenTreeTiles.add(key(x,10));
+  }
+  trees._unstableFallenTreeTiles.clear();
+  trees.auditStandingTreesInArea(getTile,{sx:-1,sy:8,viewX:14,viewY:6});
+  assert.equal(trees._unstableFallenTreeTiles.size, 0, 'stable fallen tree piles are not requeued every visible-area audit');
+  assert.equal(trees.metrics().fallen, 20, 'tree metrics expose settled debris count for perf debugging');
 }
 
 {

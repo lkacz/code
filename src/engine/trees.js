@@ -93,6 +93,12 @@ window.MM = window.MM || {};
   function unmarkFallenTreeTile(x,y){ const k=key(x,y); fallenTreeTiles.delete(k); seasonalLeafLitter.delete(k); }
   function queueFallenTreeCheck(x,y){ if(y>=0 && y<WORLD_H) unstableFallenTreeTiles.add(key(Math.floor(x),Math.floor(y))); }
   function queueStandingTreeCheck(x,y){ if(y>=0 && y<WORLD_H) unstableTreeTiles.add(key(Math.floor(x),Math.floor(y))); }
+  function queueFallenTreeAroundPlacement(x,y){
+    queueFallenTreeCheck(x,y);
+    queueFallenTreeCheck(x,y-1);
+    queueFallenTreeCheck(x-1,y);
+    queueFallenTreeCheck(x+1,y);
+  }
   function queueFallenTreeAroundRemoval(x,y){
     queueFallenTreeCheck(x,y-1); queueFallenTreeCheck(x,y+1);
     queueFallenTreeCheck(x-1,y); queueFallenTreeCheck(x+1,y);
@@ -570,7 +576,7 @@ window.MM = window.MM || {};
     setTile(x,y,b.t);
     markFallenTreeTile(x,y,b.t);
     markSeasonalLeafLitter(x,y,b.t);
-    queueFallenTreeCheck(x,y);
+    queueFallenTreeAroundPlacement(x,y);
     try{ if(MM.fallingSolids && MM.fallingSolids.afterPlacement) MM.fallingSolids.afterPlacement(x,y); }catch(e){}
     if(was===T.WATER){ try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(x,y,getTile); }catch(e){} }
     return y;
@@ -675,7 +681,7 @@ window.MM = window.MM || {};
       if(y+1>=WORLD_H) continue;
       if(passThrough(getTile(x,y+1))) releaseFallenTreeTile(getTile,setTile,x,y,t);
       else if(standingTreeSupportAt(getTile,x,y+1)) releaseFallenTreeTile(getTile,setTile,x,y,t);
-      else if(pileSupportAt(null,x,y+1)){
+      else if(t===T.WOOD && pileSupportAt(null,x,y+1)){
         const probe=makeFallingPiece(x,y,t,0);
         const dir=choosePileRollDir(getTile,probe,null);
         if(dir) releaseFallenTreeTile(getTile,setTile,x,y,t,dir);
@@ -690,7 +696,7 @@ window.MM = window.MM || {};
   }
   function suspiciousFallenTreeSupport(getTile,x,y){
     if(y+1>=WORLD_H) return false;
-    return passThrough(getTile(x,y+1)) || standingTreeSupportAt(getTile,x,y+1) || pileSupportAt(null,x,y+1);
+    return passThrough(getTile(x,y+1)) || standingTreeSupportAt(getTile,x,y+1);
   }
   function sameRegisteredStandingComponentTile(getTile,id,x,y){
     const k=key(x,y);
@@ -848,14 +854,15 @@ window.MM = window.MM || {};
       processFallenTreeQueue(getTile,setTile,10000);
     }
   }
-  function auditStandingTreesInArea(getTile,area){
+  function auditStandingTreesInArea(getTile,area,budgetOverride){
     if(!area || typeof getTile!=='function') return;
     const sx=Math.floor(area.sx||0), sy=Math.max(0, Math.floor(area.sy||0));
     const w=Math.max(0, Math.ceil(area.viewX||0)+3);
     const h=Math.max(0, Math.min(WORLD_H-sy, Math.ceil(area.viewY||0)+3));
     if(w<=0 || h<=0) return;
     const total=w*h;
-    let budget=Math.min(TREE_AREA_AUDIT_BUDGET,total);
+    const requested=Number.isFinite(budgetOverride) ? Math.max(0,budgetOverride|0) : TREE_AREA_AUDIT_BUDGET;
+    let budget=Math.min(requested,total);
     areaAuditCursor%=total;
     while(budget-- > 0){
       const n=areaAuditCursor++ % total;
@@ -1021,10 +1028,36 @@ window.MM = window.MM || {};
       notifyRemoved(getTile,x,y);
     }
   }
+  function perfTier(area){
+    const ms=area && Number.isFinite(area.frameMs) ? area.frameMs : 0;
+    return ms>44 ? 2 : (ms>26 ? 1 : 0);
+  }
+  function scaledBudget(base,tier){
+    if(tier>=2) return Math.max(8, Math.floor(base*0.22));
+    if(tier>=1) return Math.max(16, Math.floor(base*0.48));
+    return base;
+  }
+  function metrics(){
+    return {
+      fallingTrees:fallingTrees.length,
+      fallingBlocks:fallingBlocks.length,
+      fallen:fallenTreeTiles.size,
+      unstableFallen:unstableFallenTreeTiles.size,
+      unstableStanding:unstableTreeTiles.size,
+      leafLitter:seasonalLeafLitter.size
+    };
+  }
   function updateFallingBlocks(getTile,setTile,dt,area){
     if(dt>0 && Number.isFinite(dt)) treeElapsedSeconds += Math.min(0.25, dt);
-    pruneSeasonalLeafLitter(getTile,setTile);
-    auditStandingTreesInArea(getTile,area); processStandingTreeQueue(getTile,setTile); processFallenTreeQueue(getTile,setTile); updateFallingTrees(getTile,setTile,dt); processStandingTreeQueue(getTile,setTile); processFallenTreeQueue(getTile,setTile); updateFallingPieces(getTile,setTile,dt);
+    const tier=perfTier(area);
+    pruneSeasonalLeafLitter(getTile,setTile,scaledBudget(SEASONAL_LEAF_CLEANUP_BUDGET,tier));
+    auditStandingTreesInArea(getTile,area,scaledBudget(TREE_AREA_AUDIT_BUDGET,tier));
+    processStandingTreeQueue(getTile,setTile,scaledBudget(TREE_STABILITY_QUEUE_BUDGET,tier));
+    processFallenTreeQueue(getTile,setTile,scaledBudget(TREE_DEBRIS_QUEUE_BUDGET,tier));
+    updateFallingTrees(getTile,setTile,dt);
+    processStandingTreeQueue(getTile,setTile,scaledBudget(TREE_STABILITY_QUEUE_BUDGET,tier));
+    processFallenTreeQueue(getTile,setTile,scaledBudget(TREE_DEBRIS_QUEUE_BUDGET,tier));
+    updateFallingPieces(getTile,setTile,dt);
   }
 
   function drawFallingBlocks(ctx,TILE,INFO,canDrawTile){
@@ -1100,6 +1133,7 @@ window.MM = window.MM || {};
   trees.settleAll = settleAll;
   trees.reset = reset;
   trees.snapshot = snapshot;
+  trees.metrics = metrics;
   trees.restore = restore;
   trees.clearChunk = clearChunk;
   trees.pruneChunk = pruneChunk;

@@ -215,7 +215,8 @@ assert.match(mainSrc, /function getRenderInfrastructureTile/, 'render path has a
 assert.match(mainSrc, /function getElectricNetworkTile/, 'main has an electric-network getter for stacked infrastructure');
 assert.match(mainSrc, /function getFluidNetworkTile/, 'main has a fluid-network getter for stacked infrastructure');
 assert.match(mainSrc, /function drawLadderOverlay\(g,px,py,h,conn\)/, 'main renders ladders as detailed overlay fixtures');
-assert.match(mainSrc, /else if\(t===T\.LADDER\)\{\s+drawLadderOverlay\(ctx,px,py,h,ladderConnections\(x,y,hasLadderAt\)\);/, 'infrastructure overlay pass draws connection-aware ladders over supporting blocks');
+assert.match(mainSrc, /function infrastructureOverlayCellsFor\(sx,sy,viewX,viewY\)/, 'infrastructure overlay pass reuses one visible-cell scan per frame');
+assert.match(mainSrc, /else if\(t===T\.LADDER\)\{\s+drawLadderOverlay\(ctx,cell\.px,cell\.py,cell\.h,ladderConnections\(cell\.x,cell\.y,hasLadderAt\)\);/, 'infrastructure overlay pass draws connection-aware ladders over supporting blocks');
 assert.match(mainSrc, /t===T\.LADDER \? 3/, 'render sorting keeps ladders above pipes and cables in stacked overlay cells');
 assert.match(mainSrc, /function canPlaceLadderAt\(tx,ty,cur\)/, 'main has ladder-specific placement rules');
 assert.match(mainSrc, /FALLING && FALLING\.isPlayerBuiltAt && FALLING\.isPlayerBuiltAt\(x,y\)/, 'ladder placement can distinguish player-built foreground from natural terrain');

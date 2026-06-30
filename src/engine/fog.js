@@ -101,6 +101,7 @@ import { isAirOrGasTile, isGasTile } from './material_physics.js';
     const showMemory=!(opts && opts.showMemory===false);
     const originX=(opts && Number.isFinite(opts.originX)) ? opts.originX : 0;
     const originY=(opts && Number.isFinite(opts.originY)) ? opts.originY : 0;
+    const lodStep=Math.max(1, Math.min(4, (opts && Number.isFinite(opts.lodStep)) ? Math.floor(opts.lodStep) : 1));
     const WGen=(window.MM && MM.worldGen && MM.worldGen.surfaceHeight)? MM.worldGen : null;
     const xEnd=sx+viewX+2;
     // The unknown fog is an opaque final mask; a tiny overlap hides zoom/camera
@@ -134,6 +135,51 @@ import { isAirOrGasTile, isGasTile } from './material_physics.js';
         ctx.fillRect(x,y,w,h);
       }
     };
+    const styleAt=(x,y)=>{
+      if(y<0||y>=WORLD_H) return null;
+      if(hasVisible(x,y)) return null;
+      const t=getTile(x,y);
+      const underground = WGen? (y>surfaceAt(x)) : false;
+      const openGas = isGasTile(t) && gasSkyExposed(x,y);
+      if((t!==T.AIR && !isGasTile(t)) || (underground && !openGas)){
+        return showMemory && hasSeen(x,y)?'rgba(0,0,0,.48)':'#000';
+      }
+      return null;
+    };
+    const strongerStyle=(a,b)=> a==='#000' || b==='#000' ? '#000' : (a || b || null);
+    const blockStyle=(x,y,step)=>{
+      const xMax=xEnd-1, yMax=Math.min(WORLD_H-1, sy+viewY+1);
+      let style=styleAt(x,y);
+      const x2=Math.min(xMax,x+step-1), y2=Math.min(yMax,y+step-1);
+      if(x2!==x || y2!==y) style=strongerStyle(style,styleAt(x2,y2));
+      if(step>2){
+        const cx=Math.min(xMax,x+(step>>1)), cy=Math.min(yMax,y+(step>>1));
+        style=strongerStyle(style,styleAt(cx,cy));
+      }
+      return style;
+    };
+    if(lodStep>1){
+      for(let y=sy; y<sy+viewY+2; y+=lodStep){
+        if(y<0||y>=WORLD_H) continue;
+        let runStart=0, runStyle=null;
+        const y1=Math.min(WORLD_H-1,y+lodStep-1);
+        const flushRun=(x)=>{
+          if(!runStyle) return;
+          drawRect({x0:runStart,x1:x,y0:y,y1,style:runStyle});
+          runStyle=null;
+        };
+        for(let x=sx; x<xEnd; x+=lodStep){
+          const xNext=Math.min(xEnd,x+lodStep);
+          const style=blockStyle(x,y,lodStep);
+          if(style!==runStyle){
+            flushRun(x);
+            if(style){ runStart=x; runStyle=style; }
+          }
+          if(xNext>=xEnd) flushRun(xEnd);
+        }
+      }
+      return;
+    }
     let pendingRuns=new Map();
     for(let y=sy; y<sy+viewY+2; y++){
       if(y<0||y>=WORLD_H) continue;
