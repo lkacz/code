@@ -1510,6 +1510,7 @@ const guardianLairs = (function(){
     }else say(spec.heartLabel+' already beats in your story.');
     try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-guardian-defeated',{detail:{kind,name:spec.bossName,heart:spec.heartKey,newReward:newly}})); }catch(e){}
     try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-boss-killed',{detail:{name:spec.bossName,guardian:true,kind}})); }catch(e){}
+    try{ if(MM.guardianAftermath && MM.guardianAftermath.start) MM.guardianAftermath.start(kind); }catch(e){}
     markWorldChanged();
   }
   function defeatEntity(e){

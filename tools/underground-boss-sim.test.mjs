@@ -201,9 +201,14 @@ assert.match(mainSrc, /UNDERGROUND && UNDERGROUND\.drawHUD/, 'main HUD loop rend
 assert.match(mainSrc, /UNDERGROUND && UNDERGROUND\.collideHero/, 'player physics resolves against underground boss bodies');
 assert.match(mainSrc, /UNDERGROUND && UNDERGROUND\.attackAt/, 'melee attacks can hit underground boss entities');
 assert.match(mainSrc, /function debugJumpUndergroundBoss\(\)/, 'main exposes underground boss debug jump helper');
+assert.match(mainSrc, /function debugStartUndergroundFight\(\)/, 'main exposes an underground boss debug fight-start helper');
 assert.match(mainSrc, /window\.teleportHeroToUndergroundBoss/, 'console debug can teleport to the underground boss');
+assert.match(mainSrc, /window\.startUndergroundBossFight/, 'console debug can start the underground boss fight');
+assert.match(mainSrc, /undergroundFight:\(\)=> debugStartUndergroundFight\(\)/, 'travel debug panel can start the underground fight');
 assert.match(uiSrc, /actions\.underground/, 'travel debug UI includes underground teleport action');
 assert.match(uiSrc, /Underground gate/, 'travel debug UI labels the underground gate jump');
+assert.match(uiSrc, /actions\.undergroundFight/, 'travel debug UI includes underground fight-start action');
+assert.match(uiSrc, /Underground fight/, 'travel debug UI labels the underground fight-start button');
 assert.match(worldSrc, /import \{ undergroundBoss as UNDERGROUND \}/, 'world imports underground boss terrain');
 assert.match(worldSrc, /UNDERGROUND && UNDERGROUND\.applyToChunk/, 'world applies underground boss structures to chunks');
 assert.match(weaponsSrc, /MM\.undergroundBoss && MM\.undergroundBoss\.damageAt/, 'player weapons can damage underground boss entities');

@@ -425,7 +425,46 @@ MM.ui = (function(){
         syncFromPos(r);
       });
       undergroundRow.appendChild(b);
+      if(typeof actions.undergroundFight==='function'){
+        const fightBtn=document.createElement('button');
+        fightBtn.textContent='Underground fight';
+        fightBtn.title='Teleport to the underground arena and start the boss fight';
+        fightBtn.style.cssText='flex:1 1 0; min-width:0; font-size:11px; padding:3px 6px; border:1px solid rgba(121,201,93,.7);';
+        fightBtn.addEventListener('click',()=>{
+          const r=actions.undergroundFight();
+          if(r===false){ msg('Underground fight start failed'); return; }
+          syncFromPos(r);
+        });
+        undergroundRow.appendChild(fightBtn);
+      }
       wrap.appendChild(undergroundRow);
+    }
+    if(typeof actions.aftermath==='function'){
+      const aftermathLab=document.createElement('div');
+      aftermathLab.textContent='Aftermath (debug):';
+      aftermathLab.style.cssText='font-size:11px; opacity:.68; margin-top:5px;';
+      wrap.appendChild(aftermathLab);
+      const aftermathRow=document.createElement('div');
+      aftermathRow.style.cssText='display:flex; gap:4px; margin-top:3px;';
+      [
+        ['fire','Fire','rgba(255,120,50,.7)'],
+        ['ice','Ice','rgba(130,220,255,.7)'],
+        ['earth','Earth','rgba(196,107,255,.7)'],
+        ['scars','Scars','rgba(121,201,93,.7)'],
+        ['clear','Clear','rgba(255,255,255,.28)']
+      ].forEach(([kind,label,border])=>{
+        const b=document.createElement('button');
+        b.textContent=label;
+        b.title=kind==='clear' ? 'Clear the active guardian aftermath' : (kind==='scars' ? 'Force old aftermath scars around the hero' : 'Force '+label+' guardian aftermath near the hero');
+        b.style.cssText='flex:1 1 0; min-width:0; font-size:11px; padding:3px 5px; border:1px solid '+border+';';
+        b.addEventListener('click',()=>{
+          const r=actions.aftermath(kind);
+          if(r===false){ msg('Aftermath debug failed'); return; }
+          syncFromPos(typeof actions.pos==='function' ? actions.pos() : null);
+        });
+        aftermathRow.appendChild(b);
+      });
+      wrap.appendChild(aftermathRow);
     }
     wrap.appendChild(readout);
     panel.appendChild(wrap);

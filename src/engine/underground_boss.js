@@ -877,6 +877,7 @@ const undergroundBoss = (function(){
     }
     try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-guardian-defeated',{detail:{kind:'earth',name:SPEC.bossName,heart:SPEC.heartKey,newReward:newly,underground:true}})); }catch(e){}
     try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-boss-killed',{detail:{name:SPEC.bossName,guardian:true,kind:'earth',underground:true}})); }catch(e){}
+    try{ if(MM.guardianAftermath && MM.guardianAftermath.start) MM.guardianAftermath.start('earth'); }catch(e){}
     markWorldChanged(true);
     return newly;
   }
@@ -1423,7 +1424,9 @@ const undergroundBoss = (function(){
     clearActive();
     return true;
   }
-  function forceAwaken(){
+  function forceAwaken(getTile,setTile){
+    if(typeof getTile==='function') lastGetTile=getTile;
+    if(typeof setTile==='function') lastSetTile=setTile;
     state.unlocked=true;
     return awaken({debug:true,force:true,getTile:lastGetTile,setTile:lastSetTile});
   }

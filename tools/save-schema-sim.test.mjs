@@ -40,6 +40,7 @@ assert.match(src, /vending:\s*timedSavePart\('vending',[^\n]*VENDING && VENDING\
 assert.match(src, /volcano:\s*timedSavePart\('volcano',[^\n]*VOLCANO && VOLCANO\.snapshot/, 'save payload includes volcano story-item and hazard state');
 assert.match(src, /guardians:\s*timedSavePart\('guardians',[^\n]*GUARDIANS && GUARDIANS\.snapshot/, 'save payload includes elemental guardian state');
 assert.match(src, /undergroundBoss:\s*timedSavePart\('undergroundBoss',[^\n]*UNDERGROUND && UNDERGROUND\.snapshot/, 'save payload includes underground boss state');
+assert.match(src, /guardianAftermath:\s*timedSavePart\('guardianAftermath',[^\n]*AFTERMATH && AFTERMATH\.snapshot/, 'save payload includes lingering guardian aftermath state');
 assert.match(src, /meteorites:\s*timedSavePart\('meteorites',[^\n]*METEORITES && METEORITES\.snapshot/, 'save payload includes meteorite schedule state');
 assert.match(src, /mobs:\s*timedSavePart\('mobs',[^\n]*MOBS && MOBS\.serialize/, 'save payload includes live mob ecology state');
 assert.match(src, /generatedNpcs:\s*timedSavePart\('generatedNpcs',[^\n]*GENERATED_NPCS && GENERATED_NPCS\.snapshot/, 'save payload includes generated NPC discovery state');
@@ -75,6 +76,7 @@ assert.match(src, /VENDING\.restore\(data\.vending,getTile\)/, 'load path restor
 assert.match(src, /VOLCANO\.restore\(data\.volcano,getTile\)/, 'load path restores volcano story-item timers after terrain');
 assert.match(src, /GUARDIANS\.restore\(data\.guardians\)/, 'load path restores guardian progression runtime state');
 assert.match(src, /UNDERGROUND\.restore\(data\.undergroundBoss\)/, 'load path restores underground boss runtime state');
+assert.match(src, /AFTERMATH\.restore\(data\.guardianAftermath\)/, 'load path restores lingering guardian aftermath runtime state');
 assert.match(src, /METEORITES\.restore\(data\.meteorites\)/, 'load path restores meteorite schedule state');
 assert.match(src, /MOBS\.deserialize\(data\.mobs\)/, 'load path restores live mob ecology after terrain');
 assert.match(src, /GENERATED_NPCS\.restore\(data\.generatedNpcs\)/, 'load path restores generated NPC discovery metadata before the NPC registry');
@@ -93,10 +95,13 @@ assert.match(src, /PROGRESS\.restore\(data\.progress\)/, 'load path restores tra
 assert.match(src, /PLANTS\.restore\(data\.plants\)/, 'load path restores living plant state');
 assert.match(src, /import \{ guardianLairs as GUARDIANS \} from '\.\/engine\/guardian_lairs\.js';/, 'main imports the elemental guardian engine');
 assert.match(src, /import \{ undergroundBoss as UNDERGROUND \} from '\.\/engine\/underground_boss\.js';/, 'main imports the underground boss engine');
+assert.match(src, /import \{ guardianAftermath as AFTERMATH \} from '\.\/engine\/guardian_aftermath\.js';/, 'main imports the lingering guardian aftermath engine');
 assert.match(src, /GUARDIANS && GUARDIANS\.update/, 'main update loop advances elemental guardians');
 assert.match(src, /UNDERGROUND && UNDERGROUND\.update/, 'main update loop advances the underground boss');
+assert.match(src, /AFTERMATH && AFTERMATH\.update/, 'main update loop advances guardian aftermath consequences');
 assert.match(src, /GUARDIANS && GUARDIANS\.draw/, 'main draw loop renders elemental guardians');
 assert.match(src, /UNDERGROUND && UNDERGROUND\.draw/, 'main draw loop renders the underground boss');
+assert.match(src, /AFTERMATH && AFTERMATH\.draw/, 'main draw loop renders guardian aftermath consequences');
 assert.match(src, /GUARDIANS && GUARDIANS\.attackAt/, 'melee attacks can hit elemental guardians');
 assert.match(src, /UNDERGROUND && UNDERGROUND\.attackAt/, 'melee attacks can hit the underground boss');
 assert.match(progressSrc, /trophies:cleanTrophies\(state\.trophies\)/, 'progress snapshots include seasonal trophy history');
