@@ -5540,7 +5540,10 @@ function tryPlace(tx,ty){
 	const v=canPlaceAt(tx,ty);
 	if(!v.ok){ if(v.reason) msg(v.reason); return false; }
 	const id=v.id; const prevRaw=getTile(tx,ty); const prev=isGasTileId(prevRaw)?T.AIR:prevRaw;
-	if(v.chest){ setTile(tx,ty,id); if(FALLING && FALLING.afterPlacement) FALLING.afterPlacement(tx,ty); return true; }
+	// A solid placed into water pushes the fluid unit out (up/sideways) instead of
+	// deleting it, so player builds conserve volume like falling blocks, trees and meat.
+	const displacePlacedWater=()=>{ if(WATER && WATER.displaceAt && id!==T.WATER && getTile(tx,ty)===T.WATER) WATER.displaceAt(tx,ty,getTile,setTile); };
+	if(v.chest){ displacePlacedWater(); setTile(tx,ty,id); if(FALLING && FALLING.afterPlacement) FALLING.afterPlacement(tx,ty); return true; }
 	if(v.structure==='dynamo') return placeDynamoStructure(v);
 	if(v.overlay){
 		const oldOver=getInfrastructureTile(tx,ty);
@@ -5561,6 +5564,7 @@ function tryPlace(tx,ty){
 		return true;
 	}
 	pushUndo(tx,ty,prev,id,'place');
+	displacePlacedWater();
 	setTile(tx,ty,id);
 	if(COMPANIONS && COMPANIONS.onTileChanged) COMPANIONS.onTileChanged(tx,ty,prev,id,getTile,setTile);
 	if(id===T.VENDING_MACHINE && VENDING && VENDING.onPlaced) VENDING.onPlaced(tx,ty,getTile);

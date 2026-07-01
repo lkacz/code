@@ -5,6 +5,7 @@
 // and passive wake-up at negative world coordinates.
 // Run: node tools/water-sim.test.mjs
 import { strict as assert } from 'assert';
+import { readFile } from 'node:fs/promises';
 
 const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,MUD:14,WIRE:23,STEAM:27,CLAY:65,WET_CLAY:66,BRICK:67};
 globalThis.window = globalThis; // water.js attaches to window.MM
@@ -437,5 +438,29 @@ const afterReset=water._debug();
 assert.equal(afterReset.pressureAcc, 0, 'water reset clears inherited pressure accumulator');
 assert.equal(afterReset.pressureIntervalCurrent, 0.4, 'water reset restores default pressure cadence');
 assert.deepEqual(afterReset.active, [], 'water reset clears active water cells');
+
+// --- 20. displaceAt conserves volume when a solid enters water (engine contract) ---
+// This is the primitive the player-placement integration relies on: pushing the unit out
+// instead of deleting it, exactly like falling blocks, trees and meat.
+resetWorld();
+for(let x=80;x<100;x++) for(let y=100;y<105;y++) setTile(x,y,T.AIR);
+for(let x=80;x<100;x++) for(let y=101;y<105;y++) setTile(x,y,T.WATER); // 4-deep pool
+step(200);
+{
+  const before=countWater();
+  const tx=90, ty=103; // submerged cell
+  assert.equal(getTile(tx,ty), T.WATER, 'target cell is submerged before placement');
+  water.displaceAt(tx,ty,getTile,setTile); // player/build path: push the unit out first
+  setTile(tx,ty,T.STONE);                  // then the solid claims the cell
+  step(400);
+  assert.equal(countWater(), before, 'placing a solid into water displaces the unit instead of deleting it');
+}
+
+// --- 21. Integration: player block placement uses displaceAt (industry-standard, volume-conserving) ---
+// The player's own placement path must displace water like every other solid-placement path,
+// not just wake neighbors and let the overwrite delete the cell.
+const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+assert.match(mainSrc, /getTile\(tx,ty\)===T\.WATER\)\s*WATER\.displaceAt\(tx,ty,getTile,setTile\)/, 'player block placement displaces water via displaceAt instead of deleting it');
+assert.match(mainSrc, /displacePlacedWater\(\);\s*\n\s*setTile\(tx,ty,id\);/, 'placement displaces water immediately before overwriting the tile');
 
 console.log('OK: all water simulation tests passed');
