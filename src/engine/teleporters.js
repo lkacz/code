@@ -1,7 +1,7 @@
 // Teleporters and copper power cables. Copper wires form a lightweight machine
 // network: adjacent dynamos can charge devices directly or through contiguous
 // copper cable runs, while each teleporter keeps its own small battery.
-import { T, INFO, WORLD_H, CHUNK_W } from '../constants.js';
+import { T, INFO, WORLD_H, WORLD_SECTION_H, WORLD_MIN_Y, WORLD_MAX_Y, CHUNK_W } from '../constants.js';
 import { isHeroPassableTile } from './material_physics.js';
 
 (function(){
@@ -31,9 +31,11 @@ import { isHeroPassableTile } from './material_physics.js';
   let teleporterListCache = [];
   let visibleScanKey = '';
   let visibleScanAt = 0;
+  const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
+  const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
   function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
-  function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H; }
+  function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=WORLD_TOP && y<WORLD_BOTTOM; }
   function getSafe(getTile,x,y,fallback){
     try{ return typeof getTile==='function' ? getTile(x,y) : fallback; }catch(e){ return fallback; }
   }
@@ -507,7 +509,8 @@ import { isHeroPassableTile } from './material_physics.js';
   function listLoadedTeleporters(getTile,originX){
     const out=[];
     const seen=new Set();
-    const world=MM.world && MM.world._world;
+    const worldAPI=MM.world || {};
+    const world=worldAPI._world;
     const cx=Math.floor(Number(originX)||0);
     const stamp = world && typeof world.forEach==='function'
       ? 'world:'+networkRev+':'+(Number(world.size)||0)
@@ -516,13 +519,26 @@ import { isHeroPassableTile } from './material_physics.js';
     if(world && typeof world.forEach==='function'){
       world.forEach((arr,id)=>{
         if(!arr || typeof arr.length!=='number') return;
-        const cx=Number(String(id).replace(/^c/,''));
-        if(!Number.isFinite(cx)) return;
+        const ref=typeof worldAPI.normalizeChunkRef==='function' ? worldAPI.normalizeChunkRef(id) : null;
+        let chunkX=NaN, originY=0, height=WORLD_H;
+        if(ref){
+          chunkX=ref.cx;
+          originY=Number.isFinite(ref.sy) && !ref.base ? ref.sy*WORLD_SECTION_H : 0;
+          height=ref.base ? WORLD_H : WORLD_SECTION_H;
+        } else {
+          chunkX=Number(String(id).replace(/^c/,''));
+          originY=0;
+          height=WORLD_H;
+        }
+        if(!Number.isFinite(chunkX)) return;
         for(let i=0; i<arr.length; i++){
           if(arr[i]!==T.TELEPORTER) continue;
-          const y=Math.floor(i/CHUNK_W);
-          const lx=i-y*CHUNK_W;
-          const x=cx*CHUNK_W+lx;
+          const localY=Math.floor(i/CHUNK_W);
+          if(localY<0 || localY>=height) continue;
+          const y=originY+localY;
+          if(!finiteTile(0,y) || y>=originY+height) continue;
+          const localX=i-localY*CHUNK_W;
+          const x=chunkX*CHUNK_W+localX;
           const k=key(x,y);
           if(seen.has(k)) continue;
           seen.add(k);
@@ -535,7 +551,7 @@ import { isHeroPassableTile } from './material_physics.js';
       return out;
     }
     for(let x=cx-1800; x<=cx+1800; x++){
-      for(let y=0; y<WORLD_H; y++){
+      for(let y=WORLD_TOP; y<WORLD_BOTTOM; y++){
         if(getSafe(getTile,x,y,T.AIR)!==T.TELEPORTER) continue;
         const k=key(x,y);
         if(seen.has(k)) continue;
@@ -615,7 +631,7 @@ import { isHeroPassableTile } from './material_physics.js';
     if(!player) return;
     const cx=Math.floor(player.x), cy=Math.floor(player.y);
     const x0=cx-72, x1=cx+72;
-    const y0=Math.max(0,cy-36), y1=Math.min(WORLD_H-1,cy+36);
+    const y0=Math.max(WORLD_TOP,cy-36), y1=Math.min(WORLD_BOTTOM-1,cy+36);
     for(let y=y0; y<=y1; y++){
       for(let x=x0; x<=x1; x++){
         if(getSafe(getTile,x,y,T.AIR)===T.TELEPORTER) ensureMachine(x,y,getTile);
@@ -757,7 +773,7 @@ import { isHeroPassableTile } from './material_physics.js';
   }
   function ensureVisibleMachines(sx,sy,viewX,viewY,getTile){
     const x0=Math.floor(sx)-2, x1=Math.ceil(sx+viewX)+2;
-    const y0=Math.max(0,Math.floor(sy)-2), y1=Math.min(WORLD_H-1,Math.ceil(sy+viewY)+2);
+    const y0=Math.max(WORLD_TOP,Math.floor(sy)-2), y1=Math.min(WORLD_BOTTOM-1,Math.ceil(sy+viewY)+2);
     const now=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
     const scanKey=x0+','+x1+','+y0+','+y1;
     if(scanKey===visibleScanKey && now-visibleScanAt<VISIBLE_SCAN_INTERVAL_MS) return;

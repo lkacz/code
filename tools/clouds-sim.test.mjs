@@ -13,8 +13,10 @@ globalThis.window = globalThis; // clouds.js attaches to window.MM
 
 // Mutable climate knob so individual tests can freeze/thaw the world
 let TEMP = 0.7;
+const WORLD_MIN_Y = -140;
+const WORLD_MAX_Y = 280;
 globalThis.MM = {
-  T, WORLD_H:140, TILE:20,
+  T, WORLD_H:140, WORLD_MIN_Y, WORLD_MAX_Y, TILE:20,
   INFO: {
     [T.AIR]: {passable:true},
     [T.LEAF]: {passable:true},
@@ -43,10 +45,9 @@ const CFG = clouds.config;
 const DEF = Object.assign({}, CFG); // restore knobs between scenarios
 
 // Sparse world: bedrock from y=90 down, open sky above; supports negative x.
-const H = 140;
 let tiles;
-const getTile = (x,y)=>{ if(y<0||y>=H) return T.STONE; const v=tiles.get(x+','+y); return v===undefined ? (y>=90? T.STONE : T.AIR) : v; };
-const setTile = (x,y,v)=>{ if(y>=0&&y<H) tiles.set(x+','+y,v); };
+const getTile = (x,y)=>{ if(y<WORLD_MIN_Y||y>=WORLD_MAX_Y) return T.STONE; const v=tiles.get(x+','+y); return v===undefined ? (y>=90? T.STONE : T.AIR) : v; };
+const setTile = (x,y,v)=>{ if(y>=WORLD_MIN_Y&&y<WORLD_MAX_Y) tiles.set(x+','+y,v); };
 const countWater = ()=>{ let c=0; for(const v of tiles.values()) if(v===T.WATER) c++; return c; };
 const step = (n,dt=1/30)=>{ for(let i=0;i<n;i++) clouds.update(getTile,setTile,dt); };
 function resetWorld(){
@@ -208,6 +209,40 @@ const wres = clouds.strike(61, getTile, setTile);
 assert.ok(wres && !wres.chest, 'water strike does not create a chest');
 assert.equal(getTile(61,89), T.WATER, 'water tile is unchanged');
 delete MM.heroEnergy;
+
+resetWorld();
+CFG.EVAP_BASE = 0;
+setTile(0,-40,T.STONE);
+globalThis.player = {x:0, y:-41, hp:100, maxHp:100, energy:0, maxEnergy:100};
+const skyStrike = clouds.strike(0, getTile, setTile);
+assert.ok(skyStrike && skyStrike.chest, 'debug lightning follows a sky-layer hero into the upper world');
+assert.equal(skyStrike.y, -40, 'sky-layer lightning hits the first sky-island surface');
+assert.ok(CHEST_IDS.includes(getTile(0,-40)), 'sky-layer lightning can transmute a sky-island tile');
+assert.ok(globalThis.player.hp < 100, 'sky-layer lightning can damage a nearby hero');
+
+resetWorld();
+CFG.EVAP_BASE = 0; CFG.BORDER_SPAWN = false; CFG.LIGHTNING_BASE = 0;
+const oldSurfaceHeight = MM.worldGen.surfaceHeight;
+const oldSeaLevel = MM.worldGen.settings.seaLevel;
+const oldRandom2 = Math.random;
+MM.worldGen.surfaceHeight = () => -42;
+MM.worldGen.settings.seaLevel = -35;
+Math.random = () => 0.5;
+try{
+  clouds.setWindOverride(0);
+  setTile(0,-40,T.STONE);
+  const skyCloud = clouds.addCloud(0,-62,80);
+  assert.ok(skyCloud && skyCloud.alt < 0, 'sky weather can start above a sky island');
+  step(30*10);
+  assert.ok(clouds._debug().clouds[0].alt < 0, 'sky cloud cruising altitude remains in the upper world');
+  let skyWater=false;
+  for(let x=-8; x<=8; x++) if(getTile(x,-41)===T.WATER) skyWater=true;
+  assert.equal(skyWater, true, 'sky rain deposits water onto a sky-island surface');
+} finally {
+  MM.worldGen.surfaceHeight = oldSurfaceHeight;
+  MM.worldGen.settings.seaLevel = oldSeaLevel;
+  Math.random = oldRandom2;
+}
 
 resetWorld();
 CFG.EVAP_BASE = 0;

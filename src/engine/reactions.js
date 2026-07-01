@@ -7,7 +7,7 @@
 //
 // Recipes are matched around the touched tile, so heating any block in a valid
 // assembly can complete the structure. Patterns may be mirrored horizontally.
-import { T, WORLD_H } from '../constants.js';
+import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 
 (function(){
   window.MM = window.MM || {};
@@ -15,8 +15,10 @@ import { T, WORLD_H } from '../constants.js';
   const recipes = [];
   const byStimulus = new Map();
   const byId = new Map();
+  const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
+  const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
-  function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H; }
+  function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=WORLD_TOP && y<WORLD_BOTTOM; }
   function getSafe(getTile,x,y,fallback){
     try{ return typeof getTile==='function' ? getTile(x,y) : fallback; }catch(e){ return fallback; }
   }

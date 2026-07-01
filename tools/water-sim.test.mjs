@@ -8,17 +8,19 @@ import { strict as assert } from 'assert';
 
 const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,MUD:14,WIRE:23,STEAM:27,CLAY:65,WET_CLAY:66,BRICK:67};
 globalThis.window = globalThis; // water.js attaches to window.MM
-globalThis.MM = { T, WORLD_H:140, TILE:20, particles:{ spawnSplash(){}, spawnBubble(){} } };
+const WORLD_H = 140;
+const WORLD_MIN_Y = -140;
+const WORLD_MAX_Y = 280;
+globalThis.MM = { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, TILE:20, particles:{ spawnSplash(){}, spawnBubble(){} } };
 
 const { water } = await import('../src/engine/water.js');
 assert.ok(water, 'water module exports');
 
 // Sparse world: default bedrock below y=100, air above; supports negative x.
-const H = 140;
 let tiles;
 function resetWorld(){ tiles = new Map(); water.reset(); delete globalThis.player; }
-const getTile = (x,y)=>{ if(y<0||y>=H) return T.STONE; const v=tiles.get(x+','+y); return v===undefined ? (y>=100? T.STONE : T.AIR) : v; };
-const setTile = (x,y,v)=>{ if(y>=0&&y<H) tiles.set(x+','+y,v); };
+const getTile = (x,y)=>{ if(y<WORLD_MIN_Y||y>=WORLD_MAX_Y) return T.STONE; const v=tiles.get(x+','+y); return v===undefined ? (y>=100? T.STONE : T.AIR) : v; };
+const setTile = (x,y,v)=>{ if(y>=WORLD_MIN_Y&&y<WORLD_MAX_Y) tiles.set(x+','+y,v); };
 const countWater = ()=>{ let c=0; for(const v of tiles.values()) if(v===T.WATER) c++; return c; };
 const countTile = tile=>{ let c=0; for(const v of tiles.values()) if(v===tile) c++; return c; };
 const step = (n)=>{ for(let i=0;i<n;i++) water.update(getTile,setTile,1/60); };
@@ -30,6 +32,25 @@ assert.ok(water.addSource(60, 80, getTile, setTile), 'addSource places water');
 step(300);
 assert.equal(getTile(60,99), T.WATER, 'water landed on the floor');
 assert.equal(countWater(), 1, 'volume conserved during fall');
+
+resetWorld();
+assert.ok(WORLD_MIN_Y<0 && WORLD_MAX_Y>WORLD_H, 'water tests cover extended vertical sections');
+for(let x=10; x<=14; x++) setTile(x,-10,T.STONE);
+assert.ok(water.addSource(12,-11,getTile,setTile), 'sky-layer water source is accepted');
+step(10);
+assert.equal(getTile(12,-11), T.WATER, 'sky-layer water rests on a sky-island surface');
+let skySnap=water.snapshot();
+assert.ok(skySnap.active.some(([x,y])=>x===12 && y===-11), 'water snapshot preserves sky-layer active cells');
+water.reset();
+water.restore(skySnap);
+assert.ok(water._debug().active.includes('12,-11'), 'water restore rehydrates sky-layer active cells');
+
+resetWorld();
+for(let y=WORLD_H+5; y<=WORLD_H+12; y++) setTile(18,y,T.AIR);
+setTile(18,WORLD_H+13,T.STONE);
+assert.ok(water.addSource(18,WORLD_H+5,getTile,setTile), 'deep-layer water source is accepted');
+step(300);
+assert.equal(getTile(18,WORLD_H+12), T.WATER, 'deep-layer water falls to the local deep floor');
 
 resetWorld();
 for(let y=45;y<=51;y++){ setTile(-1,y,T.STONE); setTile(1,y,T.STONE); }

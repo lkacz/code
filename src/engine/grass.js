@@ -1,5 +1,5 @@
 // Grass and overlay animations module (grass blades, leaf shimmer, diamond glow)
-// API: MM.grass.drawOverlays(ctx, pass, sx, sy, viewX, viewY, TILE, WORLD_H, getTile, T, zoom, densityScalar, heightScalar, canDrawTile)
+// API: MM.grass.drawOverlays(ctx, pass, sx, sy, viewX, viewY, TILE, worldMaxY, getTile, T, zoom, densityScalar, heightScalar, canDrawTile, worldMinY)
 //      MM.grass.getBudgetInfo() -> string for FPS HUD suffix
 import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
 
@@ -30,8 +30,8 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
   };
 
   function leafTile(t){ return isFoliageTile(t); }
-  function overlayKey(sx,sy,viewX,viewY,WORLD_H,visibleTile){
-    return sx+'|'+sy+'|'+viewX+'|'+viewY+'|'+WORLD_H+'|'+(visibleTile?1:0);
+  function overlayKey(sx,sy,viewX,viewY,worldMinY,worldMaxY,visibleTile){
+    return sx+'|'+sy+'|'+viewX+'|'+viewY+'|'+worldMinY+'|'+worldMaxY+'|'+(visibleTile?1:0);
   }
   function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
   function cleanNumber(v,fallback){
@@ -79,11 +79,11 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
       pulse
     };
   }
-  function buildOverlayCandidates(sx,sy,viewX,viewY,WORLD_H,getTile,T,visibleTile){
+  function buildOverlayCandidates(sx,sy,viewX,viewY,worldMinY,worldMaxY,getTile,T,visibleTile){
     const tiles=[];
     let grassTiles=0;
     for(let y=sy; y<sy+viewY+2; y++){
-      if(y<0||y>=WORLD_H) continue;
+      if(y<worldMinY||y>=worldMaxY) continue;
       for(let x=sx; x<sx+viewX+2; x++){
         const t=getTile(x,y);
         if(t===T.AIR) continue;
@@ -101,14 +101,16 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
     return {tiles, grassTiles};
   }
 
-  grass.drawOverlays = function(ctx, pass, sx, sy, viewX, viewY, TILE, WORLD_H, getTile, T, zoom, densityScalar, heightScalar, canDrawTile){
+  grass.drawOverlays = function(ctx, pass, sx, sy, viewX, viewY, TILE, worldMaxY, getTile, T, zoom, densityScalar, heightScalar, canDrawTile, worldMinY){
     const visibleTile = typeof canDrawTile === 'function' ? canDrawTile : null;
+    const minY = Number.isFinite(worldMinY) ? worldMinY : 0;
+    const maxY = Number.isFinite(worldMaxY) ? worldMaxY : 0;
     const now=performance.now();
     const wind = readWindFrame(now);
     const diamondPulse = (Math.sin(now*0.005)+1)/2;
-    const key=overlayKey(sx,sy,viewX,viewY,WORLD_H,visibleTile);
+    const key=overlayKey(sx,sy,viewX,viewY,minY,maxY,visibleTile);
     if(pass==='back' || overlayCache.key!==key){
-      const next=buildOverlayCandidates(sx,sy,viewX,viewY,WORLD_H,getTile,T,visibleTile);
+      const next=buildOverlayCandidates(sx,sy,viewX,viewY,minY,maxY,getTile,T,visibleTile);
       overlayCache={key, tiles:next.tiles, grassTiles:next.grassTiles};
     }
     const candidates=overlayCache.tiles;

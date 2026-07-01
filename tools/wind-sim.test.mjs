@@ -8,7 +8,7 @@ globalThis.MM = {
   background: {getCycleInfo:()=>({cycleT:0.25, isDay:true, tDay:0.5})},
 };
 
-const { T, MOVE } = await import('../src/constants.js');
+const { T, MOVE, WORLD_MIN_Y } = await import('../src/constants.js');
 const { applyHorizontalMovement } = await import('../src/engine/movement.js');
 const { wind } = await import('../src/engine/wind.js');
 
@@ -132,6 +132,14 @@ assert.equal(wind._debug.isWindBlocker(T.CHEST_COMMON), true, 'solid chests bloc
 assert.ok(wind.exposureAt(0,50,wireRoofTile) > openExposure*0.9, 'wire runs do not accidentally roof over wind');
 assert.ok(wind.exposureAt(0,50,pumpRoofTile) < openExposure*0.35, 'solid machines still block wind exposure physically');
 assert.ok(wind.gasDrift(0,50,T.STEAM,openTile) > wind.gasDrift(0,50,T.STEAM,roofTile)*2, 'gas drift also respects exposure');
+assert.ok(WORLD_MIN_Y<0, 'wind tests cover the extended sky range');
+const skyRoofTile = (x,y)=> {
+  if(y===-58 && x>=-3 && x<=3) return T.STONE;
+  if(y>=90) return T.STONE;
+  return T.AIR;
+};
+assert.ok(wind.exposureAt(0,-50,openTile)>0.9, 'open sky section has strong wind exposure');
+assert.ok(wind.exposureAt(0,-50,skyRoofTile)<0.35, 'sky-island roofs attenuate wind instead of y<0 always being open');
 const highWind = wind.speedAt(0,18,openTile);
 const lowWind = wind.speedAt(0,84,openTile);
 assert.ok(highWind > lowWind*1.35, `open-air wind strengthens with altitude (${highWind.toFixed(2)} vs ${lowWind.toFixed(2)})`);

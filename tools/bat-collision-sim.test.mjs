@@ -16,7 +16,7 @@ globalThis.localStorage = {
 const originalRandom = Math.random;
 Math.random = ()=>0.99;
 
-const { T } = await import('../src/constants.js');
+const { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } = await import('../src/constants.js');
 const { mobs } = await import('../src/engine/mobs.js');
 
 const key = (x,y)=>x+','+y;
@@ -101,6 +101,26 @@ b = bat();
 assert.ok(b.x < 4.66, 'wind cannot push a bat through a stone wall');
 assert.equal(b.vx, 0, 'bat wind velocity is cancelled by wall collision');
 delete MM.wind;
+
+reset();
+const skyY = Math.max(WORLD_MIN_Y + 25, -40);
+spawnBat(2,skyY,0,0);
+assert.equal(mobs.damageAt(2,Math.floor(skyY),99,{source:'test'}), true, 'sky-layer bat can be killed through the normal damage API');
+let fx = mobs._debugDeathFx(getTile);
+assert.equal(fx.length, 1, 'sky-layer mob death creates one death effect');
+assert.ok(fx[0].sourceY < 0, 'sky-layer death effect keeps its negative world y');
+assert.equal(fx[0].badFinite, 0, 'sky-layer death effect pieces stay finite');
+assert.equal(fx[0].solidPieces, 0, 'sky-layer death effect does not treat negative y as a world wall');
+
+reset();
+const deepY = Math.min(WORLD_MAX_Y - 25, WORLD_H + 20);
+spawnBat(2,deepY,0,0);
+assert.equal(mobs.damageAt(2,Math.floor(deepY),99,{source:'test'}), true, 'deep-layer bat can be killed through the normal damage API');
+fx = mobs._debugDeathFx(getTile);
+assert.equal(fx.length, 1, 'deep-layer mob death creates one death effect');
+assert.ok(fx[0].sourceY > WORLD_H, 'deep-layer death effect keeps its extended world y');
+assert.equal(fx[0].badFinite, 0, 'deep-layer death effect pieces stay finite');
+assert.equal(fx[0].solidPieces, 0, 'deep-layer death effect does not treat legacy WORLD_H as a floor');
 
 Math.random = originalRandom;
 console.log('bat-collision-sim: all assertions passed');

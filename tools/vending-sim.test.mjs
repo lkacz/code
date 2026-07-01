@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 globalThis.window = globalThis;
 globalThis.MM = {};
 
-const { T, WORLD_H } = await import('../src/constants.js');
+const { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } = await import('../src/constants.js');
 await import('../src/inventory.js');
 const { dynamo } = await import('../src/engine/dynamo.js');
 const { teleporters } = await import('../src/engine/teleporters.js');
@@ -32,12 +32,12 @@ const key = (x,y)=>Math.floor(x)+','+Math.floor(y);
 const inv = {};
 let testDay = 1;
 function getTile(x,y){
-  if(y<0 || y>=WORLD_H) return T.STONE;
+  if(y<WORLD_MIN_Y || y>=WORLD_MAX_Y) return T.STONE;
   return tiles.get(key(x,y)) ?? T.AIR;
 }
 function getElectricNetworkTile(x,y){ return getTile(x,y); }
 function setTile(x,y,t){
-  if(y<0 || y>=WORLD_H) return;
+  if(y<WORLD_MIN_Y || y>=WORLD_MAX_Y) return;
   const k=key(x,y);
   if(t===T.AIR) tiles.delete(k);
   else tiles.set(k,t);
@@ -127,6 +127,20 @@ assert.equal(res.ok, false, 'generated powered vending machine also cools down f
 testDay = 2;
 res = vending.vendAt(10,10,baseCtx(()=>0.10));
 assert.equal(res.ok, true, 'generated powered vending machine is ready again on the next day');
+
+resetWorld();
+assert.ok(WORLD_MIN_Y<0 && WORLD_MAX_Y>WORLD_H,'vending tests cover extended vertical sections');
+setTile(10,-22,T.VENDING_MACHINE);
+setTile(11,-22,T.DYNAMO);
+vending.onPlaced(10,-22,getTile);
+res = vending.vendAt(10,-22,baseCtx(sequence([0.86,0,0])));
+assert.equal(res.ok, true, 'sky-layer vending machine can vend with adjacent power');
+assert.equal(res.powered, true, 'sky-layer vending machine detects adjacent power');
+const skySnap = vending.snapshot();
+assert.ok(skySnap.list.some(m=>m.y<0),'vending snapshot preserves sky-layer machines');
+vending.reset();
+vending.restore(skySnap,getTile);
+assert.equal(vending.metrics().machines, 1, 'vending restore rehydrates sky-layer machines');
 
 resetWorld();
 setTile(20,20,T.VENDING_MACHINE);

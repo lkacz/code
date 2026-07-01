@@ -4,7 +4,7 @@
 // rising up through a horizontal slot produce transient power plus accumulated
 // energy for future machine systems. Other gases may vent through slots, but
 // do not charge the machine.
-import { T, WORLD_H } from '../constants.js';
+import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 import { isWindExposureBlockerTile } from './material_physics.js';
 
 (function(){
@@ -23,9 +23,11 @@ import { isWindExposureBlockerTile } from './material_physics.js';
   const VISIBLE_SCAN_INTERVAL_MS = 250;
   let visibleScanKey = '';
   let visibleScanAt = 0;
+  const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
+  const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
   function key(x,y){ return (Math.floor(x))+','+(Math.floor(y)); }
-  function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H; }
+  function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=WORLD_TOP && y<WORLD_BOTTOM; }
   function getSafe(getTile,x,y,fallback){
     try{ return typeof getTile==='function' ? getTile(x,y) : fallback; }catch(e){ return fallback; }
   }
@@ -323,7 +325,7 @@ import { isWindExposureBlockerTile } from './material_physics.js';
   function ensureVisibleMachines(sx,sy,viewX,viewY,getTile){
     if(typeof getTile!=='function') return;
     const x0=Math.floor(sx)-2, x1=Math.ceil(sx+viewX)+2;
-    const y0=Math.max(0,Math.floor(sy)-2), y1=Math.min(WORLD_H-1,Math.ceil(sy+viewY)+2);
+    const y0=Math.max(WORLD_TOP,Math.floor(sy)-2), y1=Math.min(WORLD_BOTTOM-1,Math.ceil(sy+viewY)+2);
     const now=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
     const scanKey=x0+','+x1+','+y0+','+y1;
     if(scanKey===visibleScanKey && now-visibleScanAt<VISIBLE_SCAN_INTERVAL_MS) return;

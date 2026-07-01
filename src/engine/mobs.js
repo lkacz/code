@@ -1,4 +1,4 @@
-import { T, MOVE, isLeaf, WORLD_H } from '../constants.js';
+import { T, MOVE, isLeaf, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 import { isCreatureRockFloorTile, isSolidCollisionTile as isSolid } from './material_physics.js';
 import WORLD from './world.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
@@ -8,6 +8,11 @@ import { worldHostility as HOSTILITY } from './world_hostility.js';
 // Exposes MM.mobs API (legacy) and ESM exports.
 const mobs = (function(){
   const MM = window.MM = window.MM || {};
+  const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
+  const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
+  function inWorldY(y,topPad=0,bottomPad=0){
+    return Number.isFinite(y) && y>=WORLD_TOP+topPad && y<WORLD_BOTTOM-bottomPad;
+  }
   // Using ESM imports for T/MOVE/isSolid/WORLD/WORLDGEN
   // Helper predicates
   function isSolidGround(t){ return isSolid(t) && !isLeaf(t); }
@@ -162,7 +167,7 @@ const mobs = (function(){
   function safeSetMobTile(x,y,t,getTile){
     if(!WORLD || typeof WORLD.setTile!=='function' || typeof getTile!=='function') return false;
     x=Math.floor(x); y=Math.floor(y);
-    if(y<1 || y>=WORLD_H-1 || getTile(x,y)!==T.AIR) return false;
+    if(!inWorldY(y,1,1) || getTile(x,y)!==T.AIR) return false;
     WORLD.setTile(x,y,t);
     return getTile(x,y)===t;
   }
@@ -1723,7 +1728,7 @@ const mobs = (function(){
   function deathFxTileOpen(getTile,x,y){
     if(!getTile || !Number.isFinite(x) || !Number.isFinite(y)) return true;
     const ty=Math.floor(y);
-    if(ty<0 || ty>=WORLD_H) return false;
+    if(!inWorldY(ty)) return false;
     const t=getTile(Math.floor(x),ty);
     return t===T.WATER || !isSolid(t);
   }
@@ -1815,13 +1820,13 @@ const mobs = (function(){
   }
   function deathSolidTile(getTile,tx,ty){
     if(!getTile) return false;
-    if(ty<0 || ty>=WORLD_H) return true;
+    if(!inWorldY(ty)) return true;
     const t=getTile(tx,ty);
     return t!==T.WATER && isSolid(t);
   }
   function deathPieceOverlapsSolid(getTile,x,y,r){
     if(!getTile || !Number.isFinite(x) || !Number.isFinite(y)) return false;
-    if(y-r<0 || y+r>=WORLD_H) return true;
+    if(y-r<WORLD_TOP || y+r>=WORLD_BOTTOM) return true;
     const minX=Math.floor(x-r), maxX=Math.floor(x+r);
     const minY=Math.floor(y-r), maxY=Math.floor(y+r);
     for(let ty=minY; ty<=maxY; ty++){

@@ -1,6 +1,6 @@
 // Powered defensive turrets. They reuse the copper/dynamo/solar network exposed
 // by teleporters, but keep local batteries and light bounded targeting state.
-import { T, INFO, WORLD_H } from '../constants.js';
+import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 import { isPlayerPassableTile, isSolidCollisionTile as isSolid } from './material_physics.js';
 
 const turrets = (function(){
@@ -37,9 +37,11 @@ const turrets = (function(){
   let visibleScanAt = 0;
   let totalShots = 0;
   let totalHits = 0;
+  const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
+  const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
   function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
-  function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H; }
+  function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=WORLD_TOP && y<WORLD_BOTTOM; }
   function getSafe(getTile,x,y,fallback){
     try{ return typeof getTile==='function' ? getTile(Math.floor(x),Math.floor(y)) : fallback; }catch(e){ return fallback; }
   }
@@ -103,7 +105,7 @@ const turrets = (function(){
     const cx=Math.floor(Number(player.x)||0);
     const cy=Math.floor(Number(player.y)||0);
     const rx=58, ry=36;
-    const y0=Math.max(0,cy-ry), y1=Math.min(WORLD_H-1,cy+ry);
+    const y0=Math.max(WORLD_TOP,cy-ry), y1=Math.min(WORLD_BOTTOM-1,cy+ry);
     for(let y=y0; y<=y1; y++){
       for(let x=cx-rx; x<=cx+rx; x++){
         if(isTurretTile(getSafe(getTile,x,y,T.AIR))) ensureMachine(x,y,getTile);
@@ -114,7 +116,7 @@ const turrets = (function(){
   function ensureVisibleMachines(sx,sy,viewX,viewY,getTile){
     if(typeof getTile!=='function') return;
     const x0=Math.floor(sx)-2, x1=Math.ceil(sx+viewX)+2;
-    const y0=Math.max(0,Math.floor(sy)-2), y1=Math.min(WORLD_H-1,Math.ceil(sy+viewY)+2);
+    const y0=Math.max(WORLD_TOP,Math.floor(sy)-2), y1=Math.min(WORLD_BOTTOM-1,Math.ceil(sy+viewY)+2);
     const now=nowMs();
     const scanKey=x0+','+x1+','+y0+','+y1;
     if(scanKey===visibleScanKey && now-visibleScanAt<VISIBLE_SCAN_INTERVAL_MS) return;
@@ -254,7 +256,7 @@ const turrets = (function(){
     const sx=m.x+0.5, sy=m.y+0.5;
     const r=Math.ceil(cfg.range), r2=cfg.range*cfg.range;
     let best=null, bd=Infinity;
-    const y0=Math.max(0,m.y-r), y1=Math.min(WORLD_H-1,m.y+r);
+    const y0=Math.max(WORLD_TOP,m.y-r), y1=Math.min(WORLD_BOTTOM-1,m.y+r);
     for(let y=y0; y<=y1; y++){
       for(let x=m.x-r; x<=m.x+r; x++){
         const cx=x+0.5, cy=y+0.5;

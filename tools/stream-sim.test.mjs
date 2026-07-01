@@ -16,7 +16,7 @@ Math.random = ()=>{
   return randomSeed / 4294967296;
 };
 
-const { T } = await import('../src/constants.js');
+const { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } = await import('../src/constants.js');
 const { fire } = await import('../src/engine/fire.js');
 const { weapons } = await import('../src/engine/weapons.js');
 assert.ok(fire && weapons, 'modules export');
@@ -290,6 +290,20 @@ assert.equal(getTile(5,5), T.DIAMOND, 'gas explosions do not erase diamond');
 assert.equal(getTile(6,5), T.IRIDIUM, 'gas explosions do not erase iridium');
 assert.ok(count(T.STONE)<blastStoneBefore, 'gas explosions still crater ordinary stone');
 
+tiles=new Map(); weapons.reset(); fire.reset();
+const skyBlastY=Math.max(WORLD_MIN_Y+12,-36);
+fill(2,8,skyBlastY-2,skyBlastY+2,T.STONE);
+const skyBlastStoneBefore=count(T.STONE);
+assert.equal(weapons.explodeAt(5,skyBlastY,getTile,setTile,{force:true}), true, 'forced gas blast detonates in the sky layer');
+assert.ok(count(T.STONE)<skyBlastStoneBefore, 'sky-layer gas explosions crater ordinary stone');
+
+tiles=new Map(); weapons.reset(); fire.reset();
+const deepBlastY=Math.min(WORLD_MAX_Y-12,WORLD_H+36);
+fill(2,8,deepBlastY-2,deepBlastY+2,T.STONE);
+const deepBlastStoneBefore=count(T.STONE);
+assert.equal(weapons.explodeAt(5,deepBlastY,getTile,setTile,{force:true}), true, 'forced gas blast detonates in the deep layer');
+assert.ok(count(T.STONE)<deepBlastStoneBefore, 'deep-layer gas explosions crater ordinary stone');
+
 for(const [kind,key] of [['hose','water'],['flame','wood'],['gas','rottenMeat']]){
   tiles=new Map(); weapons.reset(); fire.reset();
   refillResources({water:1000, wood:1000, rottenMeat:1000, [key]:1});
@@ -394,6 +408,43 @@ function sprayActive(kind, aimX, aimY, seconds){
 function settleStreams(seconds){
   const dt=1/60;
   for(let i=0;i<seconds*60;i++){ weapons.update(dt, getTile, setTile); fire.update(getTile, setTile, dt); }
+}
+
+{
+  const oldGuardians=MM.guardianLairs;
+  const oldUnderground=MM.undergroundBoss;
+  const oldBosses=MM.bosses;
+  const oldUfo=MM.ufo;
+  const guardianCalls=[];
+  const undergroundDamageCalls=[];
+  const undergroundHeatCalls=[];
+  MM.guardianLairs={ damageAt(tx,ty,dmg,opts){ guardianCalls.push({tx,ty,dmg,opts}); return false; } };
+  MM.undergroundBoss={
+    damageAt(tx,ty,dmg,opts){ undergroundDamageCalls.push({tx,ty,dmg,opts}); return false; },
+    heatAt(tx,ty,get,set,opts){ undergroundHeatCalls.push({tx,ty,opts,hasAccessors:typeof get==='function' && typeof set==='function'}); return false; }
+  };
+  delete MM.bosses;
+  delete MM.ufo;
+  try{
+    tiles=new Map(); weapons.reset(); fire.reset(); refillResources();
+    sprayActive('hose', 6, 0.5, 0.25);
+    assert.ok(guardianCalls.some(c=>c.opts && c.opts.kind==='hose' && c.opts.element==='water'), 'hose stream tags guardian damage as water');
+    guardianCalls.length=0;
+    undergroundHeatCalls.length=0;
+    tiles=new Map(); weapons.reset(); fire.reset(); refillResources();
+    sprayActive('flame', 6, 0.5, 0.25);
+    assert.ok(guardianCalls.some(c=>c.opts && c.opts.kind==='flame' && c.opts.element==='fire'), 'flame stream tags guardian damage as fire');
+    assert.ok(undergroundHeatCalls.some(c=>c.opts && c.opts.element==='fire' && c.hasAccessors), 'flame stream keeps fire heat routing for underground golem cooking');
+    undergroundDamageCalls.length=0;
+    tiles=new Map(); weapons.reset(); fire.reset(); refillResources();
+    sprayActive('gas', 6, 0.5, 0.25);
+    assert.ok(undergroundDamageCalls.some(c=>c.opts && c.opts.kind==='gas' && c.opts.element==='gas'), 'gas stream tags underground boss damage as gas');
+  } finally {
+    if(oldGuardians===undefined) delete MM.guardianLairs; else MM.guardianLairs=oldGuardians;
+    if(oldUnderground===undefined) delete MM.undergroundBoss; else MM.undergroundBoss=oldUnderground;
+    if(oldBosses===undefined) delete MM.bosses; else MM.bosses=oldBosses;
+    if(oldUfo===undefined) delete MM.ufo; else MM.ufo=oldUfo;
+  }
 }
 
 // 1) flame vs stone wall → lava only after sustained heating

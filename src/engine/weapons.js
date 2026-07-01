@@ -7,7 +7,7 @@
 //   'gas'   — toxic cloud: poisons living (organic) creatures; lingers and pools
 //   'electric' — spends hero energy to fire a straight robot-style beam
 // The equipped weapon comes from MM.inventory.
-import { T, INFO, WORLD_H } from '../constants.js';
+import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 import { fire as FIRE } from './fire.js';
 import { isBlastProtectedTile, isCondensedWaterTargetTile, isHeatRayPassableTile, isIridiumArrowPierceableTile, isSolidCollisionTile as isSolid } from './material_physics.js';
 import { reactions as REACTIONS } from './reactions.js';
@@ -72,6 +72,8 @@ import { reactions as REACTIONS } from './reactions.js';
   let heroFlameHitCd=0;
   let iridiumPierces=0;
   let lastGetTile=null, lastSetTile=null;
+  const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
+  const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
   const bowCharge={active:false,t:0,aimX:0,aimY:0,player:null,full:false,overdrawT:0,energySpent:0,starved:false};
   const ULT_CHARGE_TIME=5;
   // Melee swing visual: drawHeld animates the held blade, draw() adds a slash arc
@@ -320,6 +322,12 @@ import { reactions as REACTIONS } from './reactions.js';
     if(type==='bow') return firePowerBow(player, aimX, aimY, w, charge);
     if(STREAMS[type]) return firePowerStream(player, aimX, aimY, w, type, charge);
     return firePowerMelee(player, aimX, aimY, w, charge);
+  }
+  function streamDamageOpts(kind,extra){
+    const element = kind==='hose' ? 'water' : (kind==='flame' ? 'fire' : (kind==='gas' ? 'gas' : kind));
+    const opts={source:'hero',kind,element,type:kind,weaponType:kind,stream:true};
+    if(extra && typeof extra==='object') Object.assign(opts,extra);
+    return opts;
   }
   function fireMelee(player, aimX, aimY){
     if(meleeCd>0 || (player.atkCd && player.atkCd>0)) return false;
@@ -591,19 +599,19 @@ import { reactions as REACTIONS } from './reactions.js';
     const range=(w && w.fireRange)||6;
     const dps=(w && w.fireDps)||(kind==='hose'?2:6);
     spawnExternalStream(kind,player.x,player.y-0.1,dx,dy,{range,dps});
-    // flame & gas tick direct damage into boss parts / a hovering saucer along
-    // the stream (bosses have no burn/poison status; the hose is harmless to them)
-    if(kind!=='hose'){
-      bossAcc+=dt;
-      if(bossAcc>=0.2 && ((MM.guardianLairs && MM.guardianLairs.damageAt) || (MM.undergroundBoss && MM.undergroundBoss.damageAt) || (MM.bosses && MM.bosses.damageAt) || (MM.ufo && MM.ufo.damageAt))){
-        bossAcc=0;
-        for(const t of [0.35,0.6,0.85]){
-          const sx=Math.floor(player.x + dx*range*t), sy=Math.floor(player.y + dy*range*t);
-          if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(sx,sy, dps*0.2)) break;
-          if(MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy, dps*0.2)) break;
-          if(MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy, dps*0.2)) break;
-          if(MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy, dps*0.2)) break;
-        }
+    // Elemental streams tick direct damage into boss bodies along the ray.
+    // Guardian-specific weaknesses are resolved by guardian_lairs.damageAt.
+    bossAcc+=dt;
+    if(bossAcc>=0.2 && ((MM.guardianLairs && MM.guardianLairs.damageAt) || (MM.undergroundBoss && MM.undergroundBoss.damageAt) || (MM.bosses && MM.bosses.damageAt) || (MM.ufo && MM.ufo.damageAt))){
+      bossAcc=0;
+      for(const t of [0.35,0.6,0.85]){
+        const sx=Math.floor(player.x + dx*range*t), sy=Math.floor(player.y + dy*range*t);
+        const opts=streamDamageOpts(kind,{x:sx+0.5,y:sy+0.5});
+        if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(sx,sy, dps*0.2, opts)) break;
+        if(kind==='flame' && MM.undergroundBoss && MM.undergroundBoss.heatAt && MM.undergroundBoss.heatAt(sx,sy,lastGetTile,lastSetTile,opts)) break;
+        if(kind==='gas' && MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy, dps*0.2, opts)) break;
+        if(kind!=='hose' && MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy, dps*0.2)) break;
+        if(kind!=='hose' && MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy, dps*0.2)) break;
       }
     }
     return true;
@@ -663,14 +671,14 @@ import { reactions as REACTIONS } from './reactions.js';
         scale:1.25+charge*0.75
       });
     }
-    if(kind!=='hose'){
-      for(const t of [0.35,0.55,0.75,0.95]){
-        const sx=Math.floor(player.x + v.dx*range*t), sy=Math.floor(player.y + v.dy*range*t);
-        if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(sx,sy,dps*0.18)) break;
-        if(MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy,dps*0.18)) break;
-        if(MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy,dps*0.18)) break;
-        if(MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy,dps*0.18)) break;
-      }
+    for(const t of [0.35,0.55,0.75,0.95]){
+      const sx=Math.floor(player.x + v.dx*range*t), sy=Math.floor(player.y + v.dy*range*t);
+      const opts=streamDamageOpts(kind,{x:sx+0.5,y:sy+0.5});
+      if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(sx,sy,dps*0.18,opts)) break;
+      if(kind==='flame' && MM.undergroundBoss && MM.undergroundBoss.heatAt && MM.undergroundBoss.heatAt(sx,sy,lastGetTile,lastSetTile,opts)) break;
+      if(kind==='gas' && MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy,dps*0.18,opts)) break;
+      if(kind!=='hose' && MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy,dps*0.18)) break;
+      if(kind!=='hose' && MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy,dps*0.18)) break;
     }
     return true;
   }
@@ -716,6 +724,9 @@ import { reactions as REACTIONS } from './reactions.js';
       else setTile(tx,ty,T.WATER);
     }catch(e){ /* fluid sim unavailable — no puddle */ }
   }
+  function explosionEditableY(y){
+    return Number.isFinite(y) && y>=WORLD_TOP+1 && y<WORLD_BOTTOM-3;
+  }
   // --- Gas detonation (TNT effect) ----------------------------------------------
   // Toxic vapour touching open flame or lava explodes: nearby gas puffs are
   // consumed into the blast (bigger cloud → bigger boom), soft terrain craters
@@ -745,7 +756,7 @@ import { reactions as REACTIONS } from './reactions.js';
       for(let dx=-Ri;dx<=Ri;dx++){
         if(dx*dx+dy*dy>R*R) continue;
         const tx=bx+dx, ty=by+dy;
-        if(ty<1 || ty>=WORLD_H-3) continue;
+        if(!explosionEditableY(ty)) continue;
         const t=getTile(tx,ty);
         if(isBlastProtectedTile(t)) continue;
         if(typeof setTile!=='function') continue;
@@ -761,7 +772,7 @@ import { reactions as REACTIONS } from './reactions.js';
     // creatures, bosses, plants
     try{ if(MM.mobs && MM.mobs.blastRadius) MM.mobs.blastRadius(wx,wy,R+1.5,14,{source:'hero'}); }catch(e){}
     try{ if(MM.guardianLairs && MM.guardianLairs.damageAt){ MM.guardianLairs.damageAt(bx,by,14); MM.guardianLairs.damageAt(bx+1,by,9); MM.guardianLairs.damageAt(bx-1,by,9); MM.guardianLairs.damageAt(bx,by-1,9); } }catch(e){}
-    try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt){ MM.undergroundBoss.damageAt(bx,by,14); MM.undergroundBoss.damageAt(bx+1,by,9); MM.undergroundBoss.damageAt(bx-1,by,9); MM.undergroundBoss.damageAt(bx,by-1,9); } }catch(e){}
+    try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt){ const gasOpts=streamDamageOpts('gas',{x:wx,y:wy,type:'gasExplosion'}); MM.undergroundBoss.damageAt(bx,by,14,gasOpts); MM.undergroundBoss.damageAt(bx+1,by,9,gasOpts); MM.undergroundBoss.damageAt(bx-1,by,9,gasOpts); MM.undergroundBoss.damageAt(bx,by-1,9,gasOpts); } }catch(e){}
     try{ if(MM.bosses && MM.bosses.damageAt){ MM.bosses.damageAt(bx,by,12); MM.bosses.damageAt(bx+1,by,8); MM.bosses.damageAt(bx-1,by,8); MM.bosses.damageAt(bx,by-1,8); } }catch(e){}
     try{ if(MM.ufo && MM.ufo.damageAt){ MM.ufo.damageAt(bx,by,14); MM.ufo.damageAt(bx,by-1,8); } }catch(e){}
     try{ if(MM.plants && MM.plants.scorchAt) MM.plants.scorchAt(wx,wy,R+1); }catch(e){}
@@ -878,6 +889,27 @@ import { reactions as REACTIONS } from './reactions.js';
     const base=Math.max(0.5,Number(a && a.dmg)||1);
     const mult=ARROW_DAMAGE_FALLOFF[arrowRangeBand(a)] || ARROW_DAMAGE_FALLOFF.long;
     return Math.max(1,Math.round(base*mult));
+  }
+  function bounceArrowFromUnderground(a,tx,ty){
+    if(!a) return false;
+    const vx=Number(a.vx)||0, vy=Number(a.vy)||0;
+    const speed=Math.max(3,Math.hypot(vx,vy)||1);
+    const nx=-(vx/speed || 1), ny=-(vy/speed || -0.15);
+    a.x += nx*0.78;
+    a.y += ny*0.78;
+    a.vx = nx*speed*0.58 + (Math.random()-0.5)*1.4;
+    a.vy = ny*speed*0.36 - 1.05 + (Math.random()-0.5)*0.45;
+    a.life=Math.min(a.life||0.6,0.85);
+    a.ignoreUndergroundT=0.18;
+    a.dmg=Math.max(1,Math.round((Number(a.dmg)||1)*0.42));
+    a.pierceLeft=0;
+    a.bounced=true;
+    try{
+      const p=MM.particles, tile=MM.TILE||20;
+      if(p && p.spawnSparks) p.spawnSparks((tx+0.5)*tile,(ty+0.5)*tile,'common',7);
+    }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('spark'); }catch(e){}
+    return true;
   }
   function tileKey(x,y){ return x+','+y; }
   function noteStoneHeat(tx,ty,touched){
@@ -1103,6 +1135,7 @@ import { reactions as REACTIONS } from './reactions.js';
       const a=arrows[i];
       if(a.stuck){ a.stuckT-=dt; if(a.stuckT<=0) arrows.splice(i,1); continue; }
       a.life-=dt; if(a.life<=0){ arrows.splice(i,1); continue; }
+      a.ignoreUndergroundT=Math.max(0,(Number(a.ignoreUndergroundT)||0)-dt);
       // a burning arrow flying into a gas cloud detonates it
       if(a.fire){
         for(const q of puffs){
@@ -1125,9 +1158,17 @@ import { reactions as REACTIONS } from './reactions.js';
         if(!a.fire && ((FIRE && FIRE.isBurning(tx,ty)) || getTile(tx,ty)===T.LAVA)) a.fire=true;
         // Creature hit (mob, boss part or a hovering saucer)
         const hitDmg=arrowDamageAtRange(a);
+        let undergroundResult=false;
+        if((a.ignoreUndergroundT||0)<=0 && MM.undergroundBoss && MM.undergroundBoss.damageAt){
+          undergroundResult=MM.undergroundBoss.damageAt(tx,ty,hitDmg,{source:'hero',kind:'arrow',x:a.x,y:a.y,vx:a.vx,vy:a.vy,tier:a.tier,fire:!!a.fire});
+          if(undergroundResult==='bounce'){
+            bounceArrowFromUnderground(a,tx,ty);
+            break;
+          }
+        }
         if((MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,hitDmg,{source:'hero'}))
         || (MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,hitDmg))
-        || (MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(tx,ty,hitDmg))
+        || undergroundResult
         || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,hitDmg))
         || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,hitDmg))
         || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,hitDmg))){
@@ -1193,6 +1234,7 @@ import { reactions as REACTIONS } from './reactions.js';
         }
         if(t===T.MEAT && cookMeatAt(tx,ty,getTile,setTile)){ puffs.splice(i,1); continue; }
         if(MM.companions && MM.companions.heatAt && MM.companions.heatAt(tx,ty,getTile,setTile,{source:'hero',element:'fire'})){ puffs.splice(i,1); continue; }
+        if(MM.undergroundBoss && MM.undergroundBoss.heatAt && MM.undergroundBoss.heatAt(tx,ty,getTile,setTile,{source:'hero',element:'fire'})){ puffs.splice(i,1); continue; }
         if(info && info.flammable && Math.random()<0.22 && FIRE) FIRE.ignite(tx,ty,getTile,setTile);
         if(hitWall){
           // sustained flame melts bare rock into a lava pool; snow and ice thaw to water

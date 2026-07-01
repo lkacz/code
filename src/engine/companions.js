@@ -1,4 +1,4 @@
-import { T, INFO, WORLD_H, isLeaf } from '../constants.js';
+import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, isLeaf } from '../constants.js';
 import { buildMaterialProfile, isDoorTile, isGasTile, isHeroPassableTile } from './material_physics.js';
 
 const companions = (function(){
@@ -17,6 +17,7 @@ const companions = (function(){
   const KIND_WATER_GOLEM = 'water_golem';
   const KIND_MEAT_GOLEM = 'meat_golem';
   const KIND_ROTTEN_MEAT_GOLEM = 'rotten_meat_golem';
+  const KIND_FRIED_MEAT_GOLEM = 'fried_meat_golem';
   const KIND_FRIED_CHICKEN = 'fried_chicken';
   const CLAY_GOLEM_MIN_CLAY = 6;
   const CLAY_GOLEM_MAX_CLAY = 18;
@@ -54,6 +55,9 @@ const companions = (function(){
   const MEAT_GOLEM_ROT_SECONDS = 300;
   const MEAT_GOLEM_ZOMBIE_DAMAGE = 11;
   const MEAT_GOLEM_ZOMBIE_ATTACK_SECONDS = 0.72;
+  const FRIED_MEAT_GOLEM_HEAL_RATIO = 0.20;
+  const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
+  const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
   const BASE_HP = 34;
   const HP_PER_BIOMASS = 18;
   const MAX_BIOMASS = 30;
@@ -89,6 +93,15 @@ const companions = (function(){
   const ARCHETYPE_IDS = Object.keys(ARCHETYPE_TRAITS);
 
   function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+  function inCompanionWorldY(y,topPad=0,bottomPad=0){
+    return Number.isFinite(Number(y)) && Number(y)>=WORLD_TOP+topPad && Number(y)<WORLD_BOTTOM-bottomPad;
+  }
+  function clampCompanionWorldY(y,topPad=0,bottomPad=0){
+    const lo=WORLD_TOP+topPad;
+    const hi=Math.max(lo,WORLD_BOTTOM-bottomPad);
+    const n=Number(y);
+    return clamp(Number.isFinite(n) ? n : lo,lo,hi);
+  }
   function finiteNumber(v,fallback){
     const n=Number(v);
     return Number.isFinite(n) ? n : fallback;
@@ -144,9 +157,12 @@ const companions = (function(){
   function isWaterGolem(c){ return !!c && c.kind===KIND_WATER_GOLEM; }
   function isRawMeatGolem(c){ return !!c && c.kind===KIND_MEAT_GOLEM; }
   function isRottenMeatGolem(c){ return !!c && c.kind===KIND_ROTTEN_MEAT_GOLEM; }
+  function isFriedMeatGolem(c){ return !!c && (c.kind===KIND_FRIED_MEAT_GOLEM || c.kind===KIND_FRIED_CHICKEN); }
   function isMeatGolem(c){ return isRawMeatGolem(c) || isRottenMeatGolem(c); }
-  function isWalkingGolem(c){ return isClayGolem(c) || isWaterGolem(c) || isMeatGolem(c); }
-  function isFriedChicken(c){ return !!c && c.kind===KIND_FRIED_CHICKEN; }
+  function isFriendlyMeatGolem(c){ return isRawMeatGolem(c) || isFriedMeatGolem(c); }
+  function isAnyMeatGolem(c){ return isMeatGolem(c) || isFriedMeatGolem(c); }
+  function isWalkingGolem(c){ return isClayGolem(c) || isWaterGolem(c) || isMeatGolem(c) || isFriedMeatGolem(c); }
+  function isFriedChicken(c){ return isFriedMeatGolem(c); }
   function clayMass(c){ return clamp(Math.floor((c && (c.clay || c.clayMass || c.biomass)) || CLAY_GOLEM_MIN_CLAY),CLAY_GOLEM_MIN_CLAY,CLAY_GOLEM_MAX_CLAY); }
   function leafMass(c){ return clamp(Math.floor((c && (c.leaves || c.leafMass || c.biomass)) || LEAF_MONSTER_MIN_LEAVES),LEAF_MONSTER_MIN_LEAVES,LEAF_MONSTER_MAX_LEAVES); }
   function waterMass(c){ return clamp(Math.floor((c && (c.water || c.waterMass || c.biomass)) || WATER_GOLEM_MIN_WATER),WATER_GOLEM_MIN_WATER,WATER_GOLEM_MAX_WATER); }
@@ -164,7 +180,7 @@ const companions = (function(){
     return MEAT_GOLEM_BASE_HP + meatMass({meat})*MEAT_GOLEM_HP_PER_MEAT;
   }
   function expectedMaxHp(c){
-    if(isFriedChicken(c)) return 1;
+    if(isFriedMeatGolem(c)) return maxHpForMeat(meatMass(c));
     if(isMeatGolem(c)) return maxHpForMeat(meatMass(c));
     if(isWaterGolem(c)) return maxHpForWater(waterMass(c));
     if(isLeafMonster(c)) return maxHpForLeaves(leafMass(c));
@@ -177,20 +193,20 @@ const companions = (function(){
     if(isClayGolem(c)) c.genome=makeClayGenome(seed,clayMass(c));
     else if(isLeafMonster(c)) c.genome=makeLeafGenome(seed,leafMass(c));
     else if(isWaterGolem(c)) c.genome=makeWaterGenome(seed,waterMass(c));
-    else if(isMeatGolem(c) || isFriedChicken(c)) c.genome=makeMeatGenome(seed,meatMass(c));
+    else if(isAnyMeatGolem(c)) c.genome=makeMeatGenome(seed,meatMass(c));
     else c.genome=makeGenome(seed);
   }
   function sanitizeCompanion(c){
     if(!c || typeof c!=='object') return false;
     c.x=finiteNumber(c.x,0);
-    c.y=clamp(finiteNumber(c.y,WORLD_H-1),1,WORLD_H-0.15);
+    c.y=clampCompanionWorldY(finiteNumber(c.y,WORLD_BOTTOM-1),1,0.15);
     c.vx=clamp(finiteNumber(c.vx,0),-40,40);
     c.vy=clamp(finiteNumber(c.vy,0),-40,40);
     c.seed=(finiteNumber(c.seed,hashSeed(c.x,c.y,c.biomass||1))>>>0) || 1;
     if(isClayGolem(c)){ c.clay=clayMass(c); c.biomass=c.clay; }
     else if(isLeafMonster(c)){ c.leaves=leafMass(c); c.biomass=c.leaves; }
     else if(isWaterGolem(c)){ c.water=waterMass(c); c.biomass=c.water; }
-    else if(isMeatGolem(c) || isFriedChicken(c)){ c.meat=meatMass(c); c.biomass=c.meat; }
+    else if(isAnyMeatGolem(c)){ c.meat=meatMass(c); c.biomass=c.meat; }
     else c.biomass=clamp(Math.floor(finiteNumber(c.biomass,3)),1,MAX_BIOMASS);
     c.maxHp=Math.max(1, finiteNumber(c.maxHp, expectedMaxHp(c)));
     c.hp=clamp(finiteNumber(c.hp,c.maxHp),0,c.maxHp);
@@ -225,16 +241,14 @@ const companions = (function(){
     if(isClayGolem(c)) return 1.05 + Math.min(0.42, clayMass(c)*0.022);
     if(isLeafMonster(c)) return 0.66 + Math.min(0.20, leafMass(c)*0.010);
     if(isWaterGolem(c)) return 0.92 + Math.min(0.46, waterMass(c)*0.026);
-    if(isMeatGolem(c)) return 0.88 + Math.min(0.32, meatMass(c)*0.018);
-    if(isFriedChicken(c)) return 0.72;
+    if(isMeatGolem(c) || isFriedMeatGolem(c)) return 0.88 + Math.min(0.32, meatMass(c)*0.018);
     return BODY_W*(0.92+Math.min(0.18,(c && c.biomass || 1)*0.008));
   }
   function companionBodyH(c){
     if(isClayGolem(c)) return 1.34 + Math.min(0.34, clayMass(c)*0.015);
     if(isLeafMonster(c)) return 0.78 + Math.min(0.18, leafMass(c)*0.008);
     if(isWaterGolem(c)) return 1.18 + Math.min(0.42, waterMass(c)*0.018);
-    if(isMeatGolem(c)) return 1.08 + Math.min(0.30, meatMass(c)*0.014);
-    if(isFriedChicken(c)) return 0.58;
+    if(isMeatGolem(c) || isFriedMeatGolem(c)) return 1.08 + Math.min(0.30, meatMass(c)*0.014);
     return BODY_H;
   }
   function makeGenome(seed){
@@ -597,22 +611,24 @@ const companions = (function(){
     return out;
   }
   function traitsFor(c){
-    if(isFriedChicken(c)){
+    if(isFriedMeatGolem(c)){
+      const meat=meatMass(c);
+      const g=(c && c.genome) || {};
       return {
-        archetype:KIND_FRIED_CHICKEN,
-        label:'pieczony kurczak',
-        follow:0,
-        spacing:0,
-        speed:0,
-        accel:0,
-        jump:0,
-        laserRange:0,
-        laserCooldown:999,
-        laserDamage:0,
+        archetype:KIND_FRIED_MEAT_GOLEM,
+        label:'pieczony sprzymierzeniec',
+        follow:1.28,
+        spacing:0.62,
+        speed:4.25*(1+(Number(g.gait)||0)*0.035),
+        accel:18.0,
+        jump:-8.5,
+        laserRange:2.35 + Math.min(0.50,meat*0.018),
+        laserCooldown:0.54,
+        laserDamage:7.2 + meat*0.38,
         poisonInterval:999,
         poisonPower:0,
-        death:0.12,
-        orbit:0
+        death:0.36,
+        orbit:0.02
       };
     }
     if(isMeatGolem(c)){
@@ -730,34 +746,38 @@ const companions = (function(){
       : (opts.kind===KIND_WATER_GOLEM ? KIND_WATER_GOLEM
       : (opts.kind===KIND_MEAT_GOLEM ? KIND_MEAT_GOLEM
       : (opts.kind===KIND_ROTTEN_MEAT_GOLEM ? KIND_ROTTEN_MEAT_GOLEM
-      : (opts.kind===KIND_FRIED_CHICKEN ? KIND_FRIED_CHICKEN : KIND_BIO)))));
-    if(kind===KIND_FRIED_CHICKEN){
+      : (opts.kind===KIND_FRIED_MEAT_GOLEM || opts.kind===KIND_FRIED_CHICKEN ? KIND_FRIED_MEAT_GOLEM : KIND_BIO)))));
+    if(kind===KIND_FRIED_MEAT_GOLEM){
       const meat=meatMass({meat:opts.meat || opts.meatMass || opts.biomass});
       const seed=(opts.seed>>>0) || hashSeed(opts.x,opts.y,meat ^ 0xf17ed);
       const genome=normalizeMeatGenome(opts.genome,seed,meat);
+      const maxHp=Number.isFinite(opts.maxHp) ? Math.max(1,opts.maxHp) : maxHpForMeat(meat);
       return {
         kind,
-        id:opts.id || ('fried_'+seed.toString(36)+'_'+Date.now().toString(36)),
+        id:opts.id || ('friedgolem_'+seed.toString(36)+'_'+Date.now().toString(36)),
         seed,
         genome,
-        name:opts.name || 'Pieczony kurczak',
+        name:opts.name || meatGolemName(genome,false).replace('Miesny','Pieczony').replace('Surowy','Pieczony'),
         x:Number.isFinite(opts.x) ? opts.x : 0,
         y:Number.isFinite(opts.y) ? opts.y : 0,
         vx:Number.isFinite(opts.vx) ? opts.vx : 0,
         vy:Number.isFinite(opts.vy) ? opts.vy : 0,
-        hp:1,
-        maxHp:1,
+        hp:Number.isFinite(opts.hp) ? Math.max(1, Math.min(maxHp,opts.hp)) : maxHp,
+        maxHp,
         meat,
         biomass:meat,
         facing:opts.facing || 1,
         grounded:false,
-        laserCd:999,
+        laserCd:Number.isFinite(opts.laserCd) ? opts.laserCd : (0.16+Math.random()*0.22),
         gasCd:999,
         hurtCd:0,
         stuckT:0,
+        guardCd:Number.isFinite(opts.guardCd) ? opts.guardCd : 0,
+        attackCd:Number.isFinite(opts.attackCd) ? opts.attackCd : 0,
         age:opts.age || 0,
         feedPulse:opts.feedPulse || 0,
         hitPulse:0,
+        shieldPulse:opts.shieldPulse || 0,
         lastTarget:null,
         harvestX:null,
         harvestY:null,
@@ -1123,7 +1143,7 @@ const companions = (function(){
     }
     candidates.sort((a,b)=>a.d2-b.d2);
     for(const p of candidates){
-      if(p.y<1 || p.y>=WORLD_H-0.2) continue;
+      if(!inCompanionWorldY(p.y,1,0.2)) continue;
       if(clearAt(p.x,p.y,c,getTile)) return p;
     }
     return null;
@@ -1158,8 +1178,7 @@ const companions = (function(){
     if(isClayGolem(c)) return 2.5 + clayMass(c)*0.08;
     if(isWaterGolem(c)) return 1.9 + waterMass(c)*0.055;
     if(isLeafMonster(c)) return 0.38 + leafMass(c)*0.018;
-    if(isMeatGolem(c)) return 1.45 + meatMass(c)*0.045;
-    if(isFriedChicken(c)) return 0.28;
+    if(isMeatGolem(c) || isFriedMeatGolem(c)) return 1.45 + meatMass(c)*0.045;
     return 1 + Math.max(0,Math.floor((c && c.biomass) || 1))*0.035;
   }
   function companionVerticalOverlap(a,b){
@@ -1309,7 +1328,7 @@ const companions = (function(){
     const node={x,y};
     if(bounds && !navInBounds(node,bounds)) return false;
     const p=navPos(node);
-    if(p.y<1.2 || p.y>=WORLD_H-0.2) return false;
+    if(!inCompanionWorldY(p.y,1.2,0.2)) return false;
     return clearAt(p.x,p.y,c,getTile) && hasFloorFor(c,p.x,p.y,getTile);
   }
   function findStandNodeNear(c,x,y,getTile,radius,bounds){
@@ -1352,7 +1371,7 @@ const companions = (function(){
     return path;
   }
   function findCompanionPath(c,targetX,targetY,getTile){
-    if(!c || isLeafMonster(c) || isFriedChicken(c)) return null;
+    if(!c || isLeafMonster(c)) return null;
     const pathGetTile=cachedTileGetter(getTile);
     if(!hasFloorFor(c,c.x,c.y,pathGetTile)) return null;
     const start=navNodeFor(c.x,c.y);
@@ -1398,7 +1417,7 @@ const companions = (function(){
     return null;
   }
   function companionPathTarget(c,targetX,targetY,dt,getTile){
-    if(!c || isLeafMonster(c) || isFriedChicken(c)) return {x:targetX,y:targetY,routed:false};
+    if(!c || isLeafMonster(c)) return {x:targetX,y:targetY,routed:false};
     const d2=(targetX-c.x)*(targetX-c.x)+(targetY-c.y)*(targetY-c.y);
     if(d2<1.25){
       c.navPath=null;
@@ -1436,7 +1455,7 @@ const companions = (function(){
     for(const p of spawnProbeTiles(baseX,baseY)){
       for(let yy=Math.floor(p[1])-3; yy<=Math.floor(p[1])+3; yy++){
         const x=p[0], y=yy+0.96;
-        if(y<2 || y>=WORLD_H-1) continue;
+        if(!inCompanionWorldY(y,2,1)) continue;
         if(clearAt(x,y,{biomass:3},getTile) && hasFloor(x,y,getTile)) return {x,y};
       }
     }
@@ -1451,7 +1470,7 @@ const companions = (function(){
     for(const p of spawnProbeTiles(baseX,baseY)){
       for(let yy=Math.floor(p[1])-3; yy<=Math.floor(p[1])+4; yy++){
         const x=p[0], y=yy+0.96;
-        if(y<2 || y>=WORLD_H-1) continue;
+        if(!inCompanionWorldY(y,2,1)) continue;
         if(clearAt(x,y,probe,getTile) && hasFloorFor(probe,x,y,getTile)) return {x,y};
       }
     }
@@ -1530,12 +1549,12 @@ const companions = (function(){
     for(const base of spots){
       for(let drop=0;drop<=4;drop++){
         const p={x:base.x,y:base.y+drop};
-        if(p.y<2 || p.y>=WORLD_H-1) continue;
+        if(!inCompanionWorldY(p.y,2,1)) continue;
         if(clearAt(p.x,p.y,probe,gt) && hasFloorFor(probe,p.x,p.y,gt)) return p;
       }
     }
     for(const base of spots){
-      if(base.y>2 && base.y<WORLD_H-1 && clearAt(base.x,base.y,probe,gt)) return base;
+      if(inCompanionWorldY(base.y,2,1) && clearAt(base.x,base.y,probe,gt)) return base;
     }
     return {x:mx+0.5,y:my+0.96};
   }
@@ -1597,7 +1616,7 @@ const companions = (function(){
       {x:sx-0.5,y:sy+0.5},{x:sx+1.5,y:sy+0.5},{x:sx-1.5,y:sy+0.35},{x:sx+2.5,y:sy+0.35}
     ];
     for(const p of spots){
-      if(p.y<1 || p.y>=WORLD_H-0.5) continue;
+      if(!inCompanionWorldY(p.y,1,0.5)) continue;
       if(clearAt(p.x,p.y,probe,gt)) return p;
     }
     return {x:sx+0.5,y:sy+0.5};
@@ -1713,12 +1732,12 @@ const companions = (function(){
     for(const base of spots){
       for(let drop=0;drop<=4;drop++){
         const p={x:base.x,y:base.y+drop};
-        if(p.y<1 || p.y>=WORLD_H-0.5) continue;
+        if(!inCompanionWorldY(p.y,1,0.5)) continue;
         if(clearAt(p.x,p.y,probe,gt) && hasFloorFor(probe,p.x,p.y,gt)) return p;
       }
     }
     for(const base of spots){
-      if(base.y>1 && base.y<WORLD_H-0.5 && clearAt(base.x,base.y,probe,gt)) return base;
+      if(inCompanionWorldY(base.y,1,0.5) && clearAt(base.x,base.y,probe,gt)) return base;
     }
     return {x:mx+0.5,y:my+0.96};
   }
@@ -1732,12 +1751,12 @@ const companions = (function(){
     for(const base of spots){
       for(let drop=0;drop<=5;drop++){
         const p={x:base.x,y:base.y+drop};
-        if(p.y<1 || p.y>=WORLD_H-0.5) continue;
+        if(!inCompanionWorldY(p.y,1,0.5)) continue;
         if(clearAt(p.x,p.y,probe,gt) && hasFloorFor(probe,p.x,p.y,gt)) return p;
       }
     }
     for(const base of spots){
-      if(base.y>1 && base.y<WORLD_H-0.5 && clearAt(base.x,base.y,probe,gt)) return base;
+      if(inCompanionWorldY(base.y,1,0.5) && clearAt(base.x,base.y,probe,gt)) return base;
     }
     return {x:mx+0.5,y:my+0.96};
   }
@@ -1966,7 +1985,7 @@ const companions = (function(){
     for(const p of spawnProbeTiles(baseX,baseY)){
       for(let yy=Math.floor(p[1])-2; yy<=Math.floor(p[1])+3; yy++){
         const x=p[0], y=yy+0.5;
-        if(y<1 || y>=WORLD_H-0.5) continue;
+        if(!inCompanionWorldY(y,1,0.5)) continue;
         if(clearAt(x,y,probe,getTile)) return {x,y};
       }
     }
@@ -2062,7 +2081,7 @@ const companions = (function(){
       return ad-bd;
     });
     for(const s of spots){
-      if(s.y>1 && s.y<WORLD_H-0.2 && clearAt(s.x,s.y,c,getTile)) return s;
+      if(inCompanionWorldY(s.y,1,0.2) && clearAt(s.x,s.y,c,getTile)) return s;
     }
     return {x:x+0.5,y:y+0.96};
   }
@@ -2080,7 +2099,7 @@ const companions = (function(){
           for(let dy=-r;dy<=r;dy++){
             if(Math.max(Math.abs(dx),Math.abs(dy))!==r) continue;
             const x=center.x+dx, y=center.y+dy;
-            if(y<0 || y>=WORLD_H) continue;
+            if(!inCompanionWorldY(y)) continue;
             if(!canHarvestTileAt(x,y,getTile)) continue;
             const d=(x+0.5-c.x)*(x+0.5-c.x)+(y+0.5-(c.y-0.55))*(y+0.5-(c.y-0.55))+center.bias;
             if(d<bd){ bd=d; best={x,y}; foundInRing=true; }
@@ -2133,6 +2152,12 @@ const companions = (function(){
       }
     }catch(e){}
     try{
+      if(MM.undergroundBoss && MM.undergroundBoss.nearestForTurret){
+        const u=MM.undergroundBoss.nearestForTurret(sx,sy,traits.laserRange,false);
+        if(u && Number.isFinite(u.x) && Number.isFinite(u.y) && lineClear(sx,sy,u.x,u.y,getTile)) options.push(wrapTarget('underground',u.underground||u.raw||u,u.x,u.y,u.hp||1));
+      }
+    }catch(e){}
+    try{
       if(MM.ufo && MM.ufo.current){
         const u=MM.ufo.current();
         if(u && u.hp>0 && Number.isFinite(u.x) && Number.isFinite(u.y)){
@@ -2153,7 +2178,7 @@ const companions = (function(){
     const sx=c.x, sy=c.y-0.62;
     const r=Math.ceil(range||5), r2=(range||5)*(range||5);
     let best=null, bd=Infinity;
-    for(let y=Math.max(0,Math.floor(sy)-r); y<=Math.min(WORLD_H-1,Math.floor(sy)+r); y++){
+    for(let y=Math.max(WORLD_TOP,Math.floor(sy)-r); y<=Math.min(WORLD_BOTTOM-1,Math.floor(sy)+r); y++){
       for(let x=Math.floor(sx)-r; x<=Math.floor(sx)+r; x++){
         const cx=x+0.5, cy=y+0.5;
         const dx=cx-sx, dy=cy-sy, d2=dx*dx+dy*dy;
@@ -2174,6 +2199,7 @@ const companions = (function(){
     try{
       if(t.kind==='mob' && MM.mobs && MM.mobs.damageAt) hit=!!MM.mobs.damageAt(t.tx,t.ty,dmg,{source:'companion'});
       else if(t.kind==='guardian' && MM.guardianLairs && MM.guardianLairs.damageAt) hit=!!MM.guardianLairs.damageAt(t.tx,t.ty,dmg);
+      else if(t.kind==='underground' && MM.undergroundBoss && MM.undergroundBoss.damageAt) hit=!!MM.undergroundBoss.damageAt(t.tx,t.ty,dmg,{source:'companion'});
       else if(t.kind==='boss' && MM.bosses && MM.bosses.damageAt) hit=!!MM.bosses.damageAt(t.tx,t.ty,dmg);
       else if(t.kind==='ufo' && MM.ufo && MM.ufo.damageAt) hit=!!MM.ufo.damageAt(t.tx,t.ty,dmg);
     }catch(e){}
@@ -2262,15 +2288,16 @@ const companions = (function(){
   function cookMeatGolem(c,reason){
     if(!isMeatGolem(c)) return false;
     const wasRotten=isRottenMeatGolem(c);
-    c.kind=KIND_FRIED_CHICKEN;
-    c.name='Pieczony kurczak';
-    c.hp=1;
-    c.maxHp=1;
-    c.vx*=0.18;
+    const hpRatio=clamp((Number(c.hp)||1)/Math.max(1,Number(c.maxHp)||maxHpForMeat(meatMass(c))),0.12,1);
+    c.kind=KIND_FRIED_MEAT_GOLEM;
+    c.name='Pieczony '+(wasRotten?'oczyszczony ':'')+'golem miesny';
+    c.maxHp=maxHpForMeat(meatMass(c));
+    c.hp=clamp(c.maxHp*hpRatio,1,c.maxHp);
+    c.vx*=0.38;
     c.vy=Math.min(c.vy||0,-1.8);
-    c.laserCd=999;
+    c.laserCd=0.18;
     c.gasCd=999;
-    c.attackCd=999;
+    c.attackCd=0;
     c.feedPulse=1.0;
     c.hitPulse=0;
     c.shieldPulse=0;
@@ -2282,8 +2309,8 @@ const companions = (function(){
     if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
     sparks(c.x,c.y-0.42,'common',wasRotten?16:12);
     sfx('fire');
-    say((wasRotten?'Zombi golem':'Miesny golem')+' upiekl sie na kurczaka.');
-    try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_FRIED_CHICKEN,reason:reason||'heat'}})); }catch(e){}
+    say((wasRotten?'Zombi golem':'Miesny golem')+' upiekl sie i staje po stronie bohatera.');
+    try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_FRIED_MEAT_GOLEM,reason:reason||'heat'}})); }catch(e){}
     return true;
   }
   function heatAt(tx,ty,getTile,setTile,opts){
@@ -2317,7 +2344,7 @@ const companions = (function(){
     return true;
   }
   function meatGolemStrike(c,target){
-    if(!isRawMeatGolem(c) || !target) return false;
+    if(!isFriendlyMeatGolem(c) || !target) return false;
     const sx=c.x, sy=c.y-0.50;
     const dx=target.x-sx, dy=target.y-sy;
     const d=Math.hypot(dx,dy)||1;
@@ -2337,7 +2364,7 @@ const companions = (function(){
     return hit;
   }
   function updateMeatGolemAction(c,dt,player,getTile){
-    if(!isRawMeatGolem(c)) return false;
+    if(!isFriendlyMeatGolem(c)) return false;
     c.laserCd=Math.max(0,(c.laserCd||0)-dt);
     const target=nearestHostile(c,player,getTile);
     if(!target){
@@ -2387,23 +2414,27 @@ const companions = (function(){
     }
     return true;
   }
-  function tryConsumeFriedChicken(c,player){
-    if(!isFriedChicken(c) || !player) return false;
-    const dx=c.x-player.x, dy=(c.y-0.30)-(player.y-0.48);
+  function tryConsumeFriedMeatGolem(c,player){
+    if(!isFriedMeatGolem(c) || !player) return false;
+    const maxHp=Math.max(1,Number(player.maxHp)||100);
+    const before=Math.max(0,Number(player.hp)||0);
+    if(before>=maxHp-0.5) return false;
+    const dx=c.x-player.x, dy=(c.y-0.55)-(player.y-0.48);
     const reachX=(Number(player.w)||0.7)*0.5+0.42;
     const reachY=(Number(player.h)||0.95)*0.5+0.42;
     if(Math.abs(dx)>reachX || Math.abs(dy)>reachY) return false;
-    const maxHp=Math.max(1,Number(player.maxHp)||100);
-    const before=Math.max(0,Number(player.hp)||0);
-    player.hp=maxHp;
+    const golemRatio=clamp((Number(c.hp)||0)/Math.max(1,Number(c.maxHp)||1),0,1);
+    const heal=maxHp*FRIED_MEAT_GOLEM_HEAL_RATIO*golemRatio;
+    if(!(heal>0)) return false;
+    player.hp=Math.min(maxHp,before+heal);
     const i=list.indexOf(c);
     if(i>=0) list.splice(i,1);
-    deathFx.push({x:c.x,y:c.y-0.30,t:0,max:0.34,color:'#ffd98c',fill:'rgba(255,210,122,0.18)'});
+    deathFx.push({x:c.x,y:c.y-0.48,t:0,max:0.42,color:'#ffd98c',fill:'rgba(255,210,122,0.18)'});
     if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
-    sparks(c.x,c.y-0.30,'rare',10);
+    sparks(c.x,c.y-0.48,'rare',12);
     sfx('heal');
-    say('Pieczony kurczak: pelne HP'+(before<maxHp ? ' +' + Math.round(maxHp-before) : '')+'.');
-    try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_FRIED_CHICKEN,consumed:true}})); }catch(e){}
+    say('Pieczony golem: +' + Math.round(player.hp-before) + ' HP.');
+    try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_FRIED_MEAT_GOLEM,consumed:true,heal:Math.round(player.hp-before)}})); }catch(e){}
     return true;
   }
   function emitPoison(c,getTile,setTile){
@@ -2586,10 +2617,10 @@ const companions = (function(){
   function kill(c){
     const i=list.indexOf(c);
     if(i>=0) list.splice(i,1);
-    if(isFriedChicken(c)){
-      deathFx.push({x:c.x,y:c.y-0.30,t:0,max:0.34,color:'#ffd98c', fill:'rgba(255,210,122,0.16)'});
+    if(isFriedMeatGolem(c)){
+      deathFx.push({x:c.x,y:c.y-0.48,t:0,max:0.42,color:'#ffd98c', fill:'rgba(255,210,122,0.16)'});
       if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
-      sparks(c.x,c.y-0.30,'common',6);
+      sparks(c.x,c.y-0.48,'common',10);
       return true;
     }
     if(isMeatGolem(c)){
@@ -2837,7 +2868,7 @@ const companions = (function(){
     moveAxis(c,c.vx*dt,'x',getTile,setTile,dt,opts);
     moveAxis(c,c.vy*dt,'y',getTile,setTile,dt,opts);
     c.x=clamp(c.x,-999999999,999999999);
-    c.y=clamp(c.y,1,WORLD_H-0.35);
+    c.y=clampCompanionWorldY(c.y,1,0.35);
     c.lastWind=wind.speed*wind.exposure;
     snapHeroToLeafTransport(c,player);
     return true;
@@ -2861,7 +2892,7 @@ const companions = (function(){
     moveAxis(c,c.vx*dt,'x',getTile,setTile,dt,opts);
     moveAxis(c,c.vy*dt,'y',getTile,setTile,dt,opts);
     c.x=clamp(c.x,-999999999,999999999);
-    c.y=clamp(c.y,1,WORLD_H-0.35);
+    c.y=clampCompanionWorldY(c.y,1,0.35);
     c.lastWind=wind.speed*wind.exposure;
   }
   function strainDistantClayGolem(c,d2,dt){
@@ -2942,7 +2973,7 @@ const companions = (function(){
     const ny=c.y-1.0;
     const frontFoot=nx+dir*(companionBodyW(c)*0.5+0.12);
     const frontSupport=!passableForCompanion(tileAt(getTile,frontFoot,ny+0.08));
-    if(ny<1 || !clearAt(nx,ny,c,getTile) || (!hasFloorFor(c,nx,ny,getTile) && !frontSupport)) return false;
+    if(!inCompanionWorldY(ny,1,0.35) || !clearAt(nx,ny,c,getTile) || (!hasFloorFor(c,nx,ny,getTile) && !frontSupport)) return false;
     c.x=nx;
     c.y=ny;
     c.vy=Math.min(c.vy,-1.0);
@@ -3133,7 +3164,7 @@ const companions = (function(){
     c.grounded=false;
     moveAxis(c,c.vy*dt,'y',getTile,setTile,dt,opts);
     c.x=clamp(c.x,-999999999,999999999);
-    c.y=clamp(c.y,1,WORLD_H-0.15);
+    c.y=clampCompanionWorldY(c.y,1,0.15);
   }
   function planHarvest(c,dt,player,getTile){
     if(!isHarvestMode() || command.awaiting || command.harvestTile==null) return;
@@ -3182,13 +3213,6 @@ const companions = (function(){
     for(let i=list.length-1;i>=0;i--){
       const c=list[i];
       if(!sanitizeCompanion(c)) continue;
-      if(isFriedChicken(c)){
-        c.age+=dt;
-        c.feedPulse=Math.max(0,(c.feedPulse||0)-dt*1.7);
-        c.hitPulse=Math.max(0,(c.hitPulse||0)-dt*2.8);
-        tryConsumeFriedChicken(c,player);
-        continue;
-      }
       if(!isRottenMeatGolem(c)) planHarvest(c,dt,player,getTile);
       updateMotion(c,dt,player,getTile,setTile,i,opts);
       if(list.indexOf(c)<0) continue;
@@ -3204,6 +3228,7 @@ const companions = (function(){
       if(list.indexOf(c)<0) continue;
       applyEnvironmentDamage(c,dt,getTile,setTile);
       if(list.indexOf(c)<0) continue;
+      if(isFriedMeatGolem(c) && tryConsumeFriedMeatGolem(c,player)) continue;
       c.shieldPulse=Math.max(0,(c.shieldPulse||0)-dt*1.8);
       if(isLeafMonster(c) && c.transportMounted) continue;
       if(isLeafMonster(c) && updateLeafMonsterFeeding(c,dt,getTile,setTile)) continue;
@@ -3220,6 +3245,10 @@ const companions = (function(){
       if(isMeatGolem(c)){
         if(isRottenMeatGolem(c)) updateRottenMeatGolemAction(c,dt,player);
         else if(isAttackMode()) updateMeatGolemAction(c,dt,player,getTile);
+        continue;
+      }
+      if(isFriedMeatGolem(c)){
+        if(isAttackMode()) updateMeatGolemAction(c,dt,player,getTile);
         continue;
       }
       if(isClayGolem(c)){
@@ -3268,7 +3297,7 @@ const companions = (function(){
     return false;
   }
   function enemyTargetable(c){
-    return !!(c && c.hp>0 && !isFriedChicken(c));
+    return !!(c && c.hp>0);
   }
   function companionAimY(c){
     return c.y-Math.min(0.72, companionBodyH(c)*0.46);
@@ -3299,7 +3328,7 @@ const companions = (function(){
     let best=null, bd=r*r;
     for(const c of list){
       if(!enemyTargetable(c)) continue;
-      if(opts && opts.excludeGolems && (isClayGolem(c) || isWaterGolem(c) || isMeatGolem(c))) continue;
+      if(opts && opts.excludeGolems && (isClayGolem(c) || isWaterGolem(c) || isMeatGolem(c) || isFriedMeatGolem(c))) continue;
       const ax=c.x, ay=companionAimY(c);
       const dx=ax-wx, dy=ay-wy, d2=dx*dx+dy*dy;
       if(d2>bd) continue;
@@ -3830,7 +3859,7 @@ const companions = (function(){
   }
   function drawCommandBadge(ctx,tile,c,px,py,h){
     const kind=commandBadgeKind(c);
-    if(!kind || isFriedChicken(c)) return;
+    if(!kind) return;
     const by=py-h-tile*(c.hp<c.maxHp?0.54:0.34);
     const timer=kind==='swords' ? command.fightBadgeT : (kind==='pickaxe' ? command.harvestBadgeT : (kind==='transport' ? command.transportBadgeT : 1));
     const alpha=kind==='ask' ? 1 : clamp((timer||0)/0.45,0,1);
@@ -4322,69 +4351,24 @@ const companions = (function(){
     }
     drawCommandBadge(ctx,tile,c,px,py,h);
   }
-  function drawFriedChicken(ctx,tile,c){
-    const g=normalizeMeatGenome(c.genome,c.seed||1,meatMass(c));
-    const px=c.x*tile, py=c.y*tile;
-    const bob=Math.sin(c.age*4.2+(g.pulse||0))*tile*0.025;
-    ctx.save();
-    ctx.translate(px,py+bob);
-    ctx.scale(c.facing||1,1);
-    ctx.globalAlpha=0.30;
-    ctx.fillStyle='rgba(60,32,14,0.42)';
-    ctx.beginPath();
-    ctx.ellipse(0,tile*0.04,tile*0.40,tile*0.10,0,0,Math.PI*2);
-    ctx.fill();
-    ctx.globalAlpha=1;
-    const grad=ctx.createRadialGradient(-tile*0.08,-tile*0.26,tile*0.05,0,-tile*0.26,tile*0.48);
-    grad.addColorStop(0,'#ffe3a8');
-    grad.addColorStop(0.52,'#d98532');
-    grad.addColorStop(1,'#8a4328');
-    ctx.fillStyle=grad;
-    ctx.strokeStyle='#6e351f';
-    ctx.lineWidth=Math.max(1,tile*0.055);
-    ctx.beginPath();
-    ctx.ellipse(0,-tile*0.27,tile*0.34,tile*0.24,-0.10,0,Math.PI*2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle='#f4d2bf';
-    ctx.strokeStyle='#8a735f';
-    ctx.lineWidth=Math.max(1,tile*0.040);
-    for(const side of [-1,1]){
-      ctx.beginPath();
-      ctx.ellipse(side*tile*0.35,-tile*0.23,tile*0.12,tile*0.065,side*0.20,0,Math.PI*2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(side*tile*0.46,-tile*0.23,tile*0.055,0,Math.PI*2);
-      ctx.fill();
-      ctx.stroke();
-    }
-    ctx.fillStyle='rgba(255,235,160,0.70)';
-    for(let i=0;i<3;i++){
-      ctx.beginPath();
-      ctx.ellipse((-0.16+i*0.15)*tile,-tile*(0.37+0.02*Math.sin(c.age+i)),tile*0.055,tile*0.018,0.2,0,Math.PI*2);
-      ctx.fill();
-    }
-    ctx.restore();
-  }
   function drawMeatGolem(ctx,tile,c){
-    if(isFriedChicken(c)){ drawFriedChicken(ctx,tile,c); return; }
     const g=normalizeMeatGenome(c.genome,c.seed||1,meatMass(c));
     const rotten=isRottenMeatGolem(c);
+    const fried=isFriedMeatGolem(c);
     const mass=meatMass(c);
     const px=c.x*tile, py=c.y*tile;
-    const walk=Math.sin(c.age*(rotten?5.6:8.2)+(g.pulse||0));
+    const walk=Math.sin(c.age*(rotten?5.6:(fried?6.8:8.2))+(g.pulse||0));
     const hit=c.hitPulse>0 ? Math.sin(c.hitPulse*34)*0.10 : 0;
     const w=tile*(0.78+mass*0.014)*g.shoulder;
     const h=tile*(1.02+mass*0.012);
     const facing=c.facing || 1;
-    const primary=rotten ? mixColor(g.primary,g.rot,0.58) : g.primary;
-    const secondary=rotten ? mixColor(g.secondary,g.rot,0.48) : g.secondary;
-    const highlight=rotten ? mixColor(g.highlight,g.rot,0.34) : g.highlight;
+    const primary=rotten ? mixColor(g.primary,g.rot,0.58) : (fried ? mixColor(g.primary,'#d98532',0.62) : g.primary);
+    const secondary=rotten ? mixColor(g.secondary,g.rot,0.48) : (fried ? mixColor(g.secondary,'#8a4328',0.58) : g.secondary);
+    const highlight=rotten ? mixColor(g.highlight,g.rot,0.34) : (fried ? mixColor(g.highlight,'#ffe3a8',0.55) : g.highlight);
     ctx.save();
     ctx.translate(px,py);
     ctx.scale(facing,1);
-    ctx.rotate((g.gait||0)*0.025 + walk*(rotten?0.028:0.045));
+    ctx.rotate((g.gait||0)*0.025 + walk*(rotten?0.028:(fried?0.034:0.045)));
 
     ctx.globalAlpha=0.28;
     ctx.fillStyle='rgba(38,12,10,0.55)';
@@ -4395,9 +4379,9 @@ const companions = (function(){
 
     for(let i=0;i<2;i++){
       const side=i===0?-1:1;
-      const step=walk*side*tile*(rotten?0.035:0.075);
+      const step=walk*side*tile*(rotten?0.035:(fried?0.055:0.075));
       ctx.fillStyle=secondary;
-      ctx.strokeStyle=rotten ? '#3e4d20' : '#5b1e20';
+      ctx.strokeStyle=rotten ? '#3e4d20' : (fried ? '#704322' : '#5b1e20');
       ctx.lineWidth=Math.max(1,tile*0.055);
       ctx.beginPath();
       ctx.ellipse(side*w*0.24,-h*0.10+step,w*0.18*g.legScale,h*0.28,side*0.12,0,Math.PI*2);
@@ -4411,9 +4395,9 @@ const companions = (function(){
 
     for(let i=0;i<2;i++){
       const side=i===0?-1:1;
-      const swing=walk*side*tile*(rotten?0.045:0.085);
+      const swing=walk*side*tile*(rotten?0.045:(fried?0.065:0.085));
       ctx.fillStyle=i===0 && g.arms==='hook' ? highlight : primary;
-      ctx.strokeStyle=rotten ? '#455421' : '#5b1e20';
+      ctx.strokeStyle=rotten ? '#455421' : (fried ? '#704322' : '#5b1e20');
       ctx.lineWidth=Math.max(1,tile*0.060);
       ctx.beginPath();
       ctx.ellipse(side*w*0.58,-h*0.48+swing,w*0.17*g.armScale,h*(g.arms==='long'?0.36:0.28),side*0.22,0,Math.PI*2);
@@ -4430,7 +4414,7 @@ const companions = (function(){
     grad.addColorStop(0.55,primary);
     grad.addColorStop(1,secondary);
     ctx.fillStyle=grad;
-    ctx.strokeStyle=hit>0 ? '#ffe3d8' : (rotten ? '#405020' : '#5d1d1e');
+    ctx.strokeStyle=hit>0 ? '#ffe3d8' : (rotten ? '#405020' : (fried ? '#7f4b25' : '#5d1d1e'));
     ctx.lineWidth=Math.max(2,tile*0.070);
     ctx.beginPath();
     if(g.torso==='runner'){
@@ -4445,7 +4429,7 @@ const companions = (function(){
     ctx.fill();
     ctx.stroke();
 
-    ctx.strokeStyle=rotten ? 'rgba(190,220,96,0.35)' : 'rgba(255,215,190,0.34)';
+    ctx.strokeStyle=rotten ? 'rgba(190,220,96,0.35)' : (fried ? 'rgba(255,224,150,0.42)' : 'rgba(255,215,190,0.34)');
     ctx.lineWidth=Math.max(1,tile*0.030);
     for(let i=0;i<g.sinews;i++){
       const r=prng(g.seed+i*617);
@@ -4457,8 +4441,8 @@ const companions = (function(){
       ctx.stroke();
     }
 
-    ctx.fillStyle=g.fat;
-    ctx.strokeStyle='#8a735f';
+    ctx.fillStyle=fried ? '#d98532' : g.fat;
+    ctx.strokeStyle=fried ? '#8a4b24' : '#8a735f';
     ctx.lineWidth=Math.max(1,tile*0.032);
     for(let i=0;i<g.bones;i++){
       const r=prng(g.seed ^ (i*733));
@@ -4474,8 +4458,8 @@ const companions = (function(){
     const headH=h*(g.head==='snout'?0.20:0.24);
     const headX=g.asym*w*0.24;
     const headY=-h*(0.88+0.025*Math.abs(walk));
-    ctx.fillStyle=mixColor(primary,highlight,0.18);
-    ctx.strokeStyle=rotten ? '#35461c' : '#5d1d1e';
+    ctx.fillStyle=mixColor(primary,highlight,fried?0.30:0.18);
+    ctx.strokeStyle=rotten ? '#35461c' : (fried ? '#7f4b25' : '#5d1d1e');
     ctx.lineWidth=Math.max(1,tile*0.055);
     ctx.beginPath();
     if(g.head==='split'){
@@ -4486,8 +4470,8 @@ const companions = (function(){
     }
     ctx.fill();
     ctx.stroke();
-    if(g.head==='jaw' || rotten){
-      ctx.strokeStyle=rotten ? '#d4e590' : '#f4d2bf';
+    if(g.head==='jaw' || rotten || fried){
+      ctx.strokeStyle=rotten ? '#d4e590' : (fried ? '#ffe3a8' : '#f4d2bf');
       ctx.lineWidth=Math.max(1,tile*0.030);
       ctx.beginPath();
       ctx.moveTo(headX-headW*0.38,headY+headH*0.25);
@@ -4499,9 +4483,9 @@ const companions = (function(){
       const t=(i/(Math.max(1,g.eyes-1)))-0.5;
       const ex=headX+t*headW*0.70;
       const ey=headY-headH*0.05;
-      ctx.fillStyle=rotten ? '#d8ff66' : '#f7fbff';
+      ctx.fillStyle=rotten ? '#d8ff66' : (fried ? '#ffe3a8' : '#f7fbff');
       ctx.fillRect(ex-tile*0.040,ey-tile*0.032,tile*0.080,tile*0.064);
-      ctx.fillStyle=rotten ? '#25330c' : '#351218';
+      ctx.fillStyle=rotten ? '#25330c' : (fried ? '#5b2a16' : '#351218');
       ctx.fillRect(ex+(facing>0?tile*0.010:-tile*0.026),ey-tile*0.020,tile*0.026,tile*0.040);
     }
 
@@ -4511,7 +4495,7 @@ const companions = (function(){
       const bw=tile*1.10, bh=Math.max(3,tile*0.10);
       ctx.fillStyle='rgba(0,0,0,0.50)';
       ctx.fillRect(px-bw*0.5,py-h-tile*0.24,bw,bh);
-      ctx.fillStyle=c.hp/c.maxHp>0.35 ? (rotten?'#b7db60':'#ff8a78') : '#ff635c';
+      ctx.fillStyle=c.hp/c.maxHp>0.35 ? (rotten?'#b7db60':(fried?'#ffd08a':'#ff8a78')) : '#ff635c';
       ctx.fillRect(px-bw*0.5,py-h-tile*0.24,bw*clamp(c.hp/c.maxHp,0,1),bh);
     }
     drawCommandBadge(ctx,tile,c,px,py,h);
@@ -4754,7 +4738,7 @@ const companions = (function(){
       if(isClayGolem(c)) drawClayGolem(ctx,tile,c);
       else if(isLeafMonster(c)) drawLeafMonster(ctx,tile,c);
       else if(isWaterGolem(c)) drawWaterGolem(ctx,tile,c);
-      else if(isMeatGolem(c) || isFriedChicken(c)) drawMeatGolem(ctx,tile,c);
+      else if(isMeatGolem(c) || isFriedMeatGolem(c)) drawMeatGolem(ctx,tile,c);
       else drawCompanion(ctx,tile,c);
     }
     for(const fx of deathFx) drawDeathFx(ctx,tile,fx);
@@ -4782,11 +4766,11 @@ const companions = (function(){
     for(const raw of arr.slice(0,MAX_COMPANIONS)){
       if(!raw || !Number.isFinite(raw.x) || !Number.isFinite(raw.y)) continue;
       const c=makeCompanion(raw);
-      c.maxHp=isFriedChicken(c) ? 1 : (isMeatGolem(c) ? maxHpForMeat(c.meat) : (isWaterGolem(c) ? maxHpForWater(c.water) : (isLeafMonster(c) ? maxHpForLeaves(c.leaves) : (isClayGolem(c) ? maxHpForClay(c.clay) : maxHpForBiomass(c.biomass)))));
+      c.maxHp=isFriedMeatGolem(c) ? maxHpForMeat(c.meat) : (isMeatGolem(c) ? maxHpForMeat(c.meat) : (isWaterGolem(c) ? maxHpForWater(c.water) : (isLeafMonster(c) ? maxHpForLeaves(c.leaves) : (isClayGolem(c) ? maxHpForClay(c.clay) : maxHpForBiomass(c.biomass)))));
       c.hp=clamp(Number(raw.hp)||c.maxHp,1,c.maxHp);
       sanitizeCompanion(c);
       if(getTile && !clearAt(c.x,c.y,c,getTile)){
-        c.y=Math.max(2,c.y-1);
+        c.y=clampCompanionWorldY(c.y-1,2,0.15);
       }
       list.push(c);
     }
@@ -4799,17 +4783,17 @@ const companions = (function(){
     setCommand({mode:'attack'});
   }
   function metrics(){
-    let hp=0,maxHp=0,biomass=0,golems=0,clay=0,leafMonsters=0,leaves=0,transportMounted=0,waterGolems=0,water=0,meatGolems=0,rottenMeatGolems=0,friedChickens=0,meat=0;
+    let hp=0,maxHp=0,biomass=0,golems=0,clay=0,leafMonsters=0,leaves=0,transportMounted=0,waterGolems=0,water=0,meatGolems=0,rottenMeatGolems=0,friedMeatGolems=0,meat=0;
     for(const c of list){
       hp+=c.hp; maxHp+=c.maxHp;
-      if(isFriedChicken(c)){ friedChickens++; meat+=meatMass(c); }
+      if(isFriedMeatGolem(c)){ friedMeatGolems++; meat+=meatMass(c); }
       else if(isMeatGolem(c)){ if(isRottenMeatGolem(c)) rottenMeatGolems++; else meatGolems++; meat+=meatMass(c); }
       else if(isWaterGolem(c)){ waterGolems++; water+=waterMass(c); }
       else if(isLeafMonster(c)){ leafMonsters++; leaves+=leafMass(c); if(c.transportMounted) transportMounted++; }
       else if(isClayGolem(c)){ golems++; clay+=clayMass(c); }
       else biomass+=c.biomass;
     }
-    return {count:list.length, hp:Math.round(hp), maxHp:Math.round(maxHp), biomass, golems, clay, leafMonsters, leaves, transportMounted, waterGolems, water, meatGolems, rottenMeatGolems, friedChickens, meat, lasers:lasers.length, mode:command.mode, awaitingHarvest:command.awaiting, harvestTile:command.harvestTile};
+    return {count:list.length, hp:Math.round(hp), maxHp:Math.round(maxHp), biomass, golems, clay, leafMonsters, leaves, transportMounted, waterGolems, water, meatGolems, rottenMeatGolems, friedMeatGolems, friedChickens:friedMeatGolems, meat, lasers:lasers.length, mode:command.mode, awaitingHarvest:command.awaiting, harvestTile:command.harvestTile};
   }
   function debugList(){
     return list.map(c=>({kind:c.kind||KIND_BIO,id:c.id,name:c.name,x:c.x,y:c.y,vx:c.vx,vy:c.vy,hp:c.hp,maxHp:c.maxHp,biomass:c.biomass,clay:c.clay,leaves:c.leaves,water:c.water,meat:c.meat,age:c.age,rotIn:isRawMeatGolem(c)?Math.max(0,MEAT_GOLEM_ROT_SECONDS-(c.age||0)):0,wateredT:c.wateredT,waterDrinkCd:c.waterDrinkCd,leafFeedCd:c.leafFeedCd,leafFeeding:c.leafFeeding,leafFeedTarget:c.leafFeedTarget,transportMounted:!!c.transportMounted,transportRideT:c.transportRideT,transportPulse:c.transportPulse,lastWind:c.lastWind,laserCd:c.laserCd,gasCd:c.gasCd,guardCd:c.guardCd,attackCd:c.attackCd,genome:c.genome,harvestX:c.harvestX,harvestY:c.harvestY,harvestProgress:c.harvestProgress}));

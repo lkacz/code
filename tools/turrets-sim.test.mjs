@@ -6,7 +6,7 @@ import { readFile } from 'node:fs/promises';
 
 globalThis.window = globalThis;
 globalThis.MM = {};
-const { T, INFO, WORLD_H } = await import('../src/constants.js');
+const { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } = await import('../src/constants.js');
 const { dynamo } = await import('../src/engine/dynamo.js');
 const { teleporters } = await import('../src/engine/teleporters.js');
 const { weapons } = await import('../src/engine/weapons.js');
@@ -17,7 +17,7 @@ const tiles = new Map();
 const k = (x,y)=>Math.floor(x)+','+Math.floor(y);
 function getTile(x,y){
   x=Math.floor(x); y=Math.floor(y);
-  if(y<0 || y>=WORLD_H) return T.AIR;
+  if(y<WORLD_MIN_Y || y>=WORLD_MAX_Y) return T.AIR;
   return tiles.get(k(x,y)) ?? T.AIR;
 }
 function setTile(x,y,v){
@@ -205,6 +205,22 @@ assert.equal(INFO[T.TURRET].passable,false,'turrets are solid defensive machines
   assert.ok(state.scans>0,'basic turret asks the boss system for hostile targets');
   assert.ok(turrets.metrics().shots>0,'basic turret fires when a boss part is in range');
   assert.ok(state.hits>0 && part.hp<32,'basic turret damages boss parts through the boss API');
+}
+
+{
+  reset();
+  assert.ok(WORLD_MIN_Y<0 && WORLD_MAX_Y>WORLD_H,'turret tests cover extended vertical sections');
+  setTile(0,-22,T.TURRET);
+  turrets._debug.debugChargeAt(0,-22,turrets._debug.TURRET_CAPACITY,getTile);
+  const {mob,state}=fakeMobAt(6.5,-21.5,24);
+  for(let i=0;i<80;i++) tick(1/30,{x:0.5,y:-21.5,w:0.7,h:0.95});
+  assert.ok(turrets.metrics().shots>0,'sky-layer turret fires when a mob approaches in range');
+  assert.ok(state.hits>0 && mob.hp<24,'sky-layer turret damages the target mob');
+  const snap=turrets.snapshot();
+  assert.ok(snap.list.some(m=>m.y<0),'turret snapshot preserves sky-layer machines');
+  turrets.reset();
+  turrets.restore(snap,getTile);
+  assert.equal(turrets.metrics().machines,1,'turret restore rehydrates sky-layer machines');
 }
 
 for(const tile of [T.FIRE_TURRET,T.WATER_TURRET]){

@@ -2,7 +2,7 @@
 // Regular panels generate a small daylight buffer. Storage panels (made with a
 // transistor in the recipe) keep a much larger battery and can feed devices via
 // copper cable networks.
-import { T, WORLD_H } from '../constants.js';
+import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 import { isSunTransparentTile } from './material_physics.js';
 
 (function(){
@@ -28,9 +28,11 @@ import { isSunTransparentTile } from './material_physics.js';
   let visibleScanAt = 0;
   let visibleScanKey = '';
   let lastGetTile = null;
+  const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
+  const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
   function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
-  function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H; }
+  function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=WORLD_TOP && y<WORLD_BOTTOM; }
   function getSafe(getTile,x,y,fallback){
     try{ return typeof getTile==='function' ? getTile(x,y) : fallback; }catch(e){ return fallback; }
   }
@@ -44,7 +46,7 @@ import { isSunTransparentTile } from './material_physics.js';
   function skyExposed(x,y,getTile){
     x=Math.floor(x); y=Math.floor(y);
     if(!finiteTile(x,y)) return false;
-    for(let yy=y-1; yy>=0; yy--){
+    for(let yy=y-1; yy>=WORLD_TOP; yy--){
       const t=getSafe(getTile,x,yy,T.STONE);
       if(!transparentForSun(t)) return false;
     }
@@ -262,7 +264,7 @@ import { isSunTransparentTile } from './material_physics.js';
     if(!player || typeof getTile!=='function') return;
     const cx=Math.floor(player.x), cy=Math.floor(player.y);
     const x0=cx-SCAN_RX, x1=cx+SCAN_RX;
-    const y0=Math.max(0,cy-SCAN_RY), y1=Math.min(WORLD_H-1,cy+SCAN_RY);
+    const y0=Math.max(WORLD_TOP,cy-SCAN_RY), y1=Math.min(WORLD_BOTTOM-1,cy+SCAN_RY);
     for(let y=y0; y<=y1; y++){
       for(let x=x0; x<=x1; x++){
         if(isSourceTile(getSafe(getTile,x,y,T.AIR))) ensureCell(x,y,getTile);
@@ -308,7 +310,7 @@ import { isSunTransparentTile } from './material_physics.js';
     visibleScanKey=keyStr;
     visibleScanAt=now+350;
     const x0=Math.floor(sx)-2, x1=Math.ceil(sx+viewX)+2;
-    const y0=Math.max(0,Math.floor(sy)-2), y1=Math.min(WORLD_H-1,Math.ceil(sy+viewY)+2);
+    const y0=Math.max(WORLD_TOP,Math.floor(sy)-2), y1=Math.min(WORLD_BOTTOM-1,Math.ceil(sy+viewY)+2);
     for(let y=y0; y<=y1; y++){
       for(let x=x0; x<=x1; x++){
         if(isSourceTile(getSafe(getTile,x,y,T.AIR))) ensureCell(x,y,getTile);

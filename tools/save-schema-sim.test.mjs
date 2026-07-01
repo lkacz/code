@@ -61,7 +61,8 @@ assert.match(src, /WORLD\.restoreInfrastructure\(data\.infrastructure\)/, 'load 
 assert.match(src, /WORLD\.restoreConstructionBackground\(data\.constructionBackground\)/, 'load path restores background construction support tiles after terrain');
 assert.match(src, /BACKGROUND\.restore\(data\.background\)/, 'load path restores day-night background state');
 assert.match(src, /GASES\.restore\(data\.gases,getTile,setTile\)/, 'load path restores active gas state through transient world writes');
-assert.match(src, /GASES\.auditChunks\(restoredChunks,getTile\)/, 'load path re-audits saved gas tiles from chunks');
+assert.match(src, /const restoredBaseChunks=baseChunkIdsForAudits\(restoredChunks\)/, 'load path narrows mixed vertical-section refs to legacy base chunks for old auditors');
+assert.match(src, /GASES\.auditChunks\(restoredBaseChunks,getTile\)/, 'load path re-audits saved gas tiles from base chunks');
 assert.match(src, /FIRE\.restore\(data\.fire,getTile\)/, 'load path restores active burning fire after terrain');
 assert.match(src, /WIND\.restore\(data\.wind\)/, 'load path restores weather wind state');
 assert.match(src, /SEASONS\.restore\(data\.seasons\)/, 'load path restores season clock state');
@@ -118,8 +119,9 @@ assert.match(src, /function chunkForTerrainSave\(arr\)/, 'save path strips trans
 assert.match(src, /function stripTransientTerrainTiles\(arr\)/, 'load path sanitizes transient world layers from saved chunks');
 assert.match(src, /function migrateLegacyInfrastructureTerrain\(cx,arr\)/, 'load path migrates legacy pipe and cable terrain into overlays');
 assert.match(src, /function restoreTerrainChunk\(cx,arr\)/, 'chunk restore uses one shared terrain cleanup helper');
-assert.match(src, /stripTransientTerrainTiles\(arr\);\s*migrateLegacyInfrastructureTerrain\(cx,arr\);/, 'terrain restore strips transient tiles before migrating infrastructure overlays');
-assert.match(src, /timedSavePart\('falling\.audit',[^\n]*FALLING\.auditChunks\(saveChunkIds,\{force:true,immediate:true\}\)/, 'full save audits modified chunks through falling physics before settling terrain');
+assert.match(src, /stripTransientTerrainTiles\(arr\);\s*migrateLegacyInfrastructureTerrain\(cx,arr,ref\.base\?null:ref\.sy\);/, 'terrain restore strips transient tiles before migrating legacy base infrastructure overlays');
+assert.match(src, /const auditChunkIds=baseChunkIdsForAudits\(saveChunkIds\)/, 'full save filters vertical-section refs before legacy chunk auditors run');
+assert.match(src, /timedSavePart\('falling\.audit',[^\n]*FALLING\.auditChunks\(auditChunkIds,\{force:true,immediate:true\}\)/, 'full save audits base modified chunks through falling physics before settling terrain');
 assert.match(src, /timedSavePart\('falling\.settle',[^\n]*FALLING\.settleAll\(\)/, 'full save settles queued falling physics before chunk serialization');
 assert.match(src, /FALLING\.auditChunks\(\[cx\],\{force:true,immediate:true\}\)/, 'incremental autosave audits each chunk through falling physics before writing its blob');
 assert.match(src, /encodeRLE\(chunkForTerrainSave\(arr\)\)/, 'full and incremental chunk saves encode sanitized terrain chunks');

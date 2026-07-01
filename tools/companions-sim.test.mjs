@@ -8,7 +8,7 @@ const messages = [];
 globalThis.msg = text => messages.push(String(text));
 globalThis.inv = { alienBiomass:0, meat:0, clay:0, masterStone:0, leaf:0, servantStone:0, water:0 };
 
-const { T } = await import('../src/constants.js');
+const { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } = await import('../src/constants.js');
 const { companions } = await import('../src/engine/companions.js');
 
 function getTile(_x,y){
@@ -220,6 +220,23 @@ assert.equal(companions.count(), 0, 'reset clears companions');
 assert.equal(companions.restore(snap,getTile), true, 'restore accepts snapshots');
 assert.equal(companions.count(), 1, 'restore rebuilds active companions');
 
+function extendedFloorTile(floorY){
+  return (_x,y)=> y>=floorY ? T.GRASS : T.AIR;
+}
+const skyFloorY=Math.max(WORLD_MIN_Y+24,-32);
+const skyCompanionY=skyFloorY-0.04;
+companions.restore({v:1,list:[{x:0,y:skyCompanionY,biomass:3,hp:88,seed:913,laserCd:99,gasCd:99}]},extendedFloorTile(skyFloorY));
+assert.ok(companions._debug.list()[0].y<0, 'restore keeps companions in sky-section coordinates instead of clamping to legacy y');
+for(let i=0;i<12;i++) companions.update(1/30,{x:3,y:skyCompanionY,facing:1},extendedFloorTile(skyFloorY),setTile);
+assert.ok(companions._debug.list()[0].y<0, 'sky-section companion update preserves extended negative y');
+
+const deepFloorY=Math.min(WORLD_MAX_Y-24,WORLD_H+24);
+const deepCompanionY=deepFloorY-0.04;
+companions.restore({v:1,list:[{x:0,y:deepCompanionY,biomass:3,hp:88,seed:914,laserCd:99,gasCd:99}]},extendedFloorTile(deepFloorY));
+assert.ok(companions._debug.list()[0].y>WORLD_H, 'restore keeps companions in deep-section coordinates instead of clamping to legacy bottom');
+for(let i=0;i<12;i++) companions.update(1/30,{x:3,y:deepCompanionY,facing:1},extendedFloorTile(deepFloorY),setTile);
+assert.ok(companions._debug.list()[0].y>WORLD_H, 'deep-section companion update preserves extended y');
+
 companions.restore({v:1,list:[{
   x:0,y:9.96,biomass:2,hp:30,seed:909,
   genome:{body:'orb',archetype:'old-save-archetype',eyeLayout:'old-eye',legStyle:'old-leg',tail:'old-tail',crest:'old-crest',marking:'old-mark',size:99,width:-3,glowPattern:99}
@@ -395,17 +412,43 @@ globalThis.damageHero = oldDamageHero;
 companions.restore({v:1,list:[{kind:'meat_golem',x:0,y:9.96,meat:8,hp:202,seed:83830,laserCd:99}]},getTile);
 function lavaEverywhere(){ return T.LAVA; }
 companions.update(0.12,{x:0,y:9.96,facing:1},lavaEverywhere,setTile);
-assert.equal(companions._debug.list()[0].kind, 'fried_chicken', 'raw meat golem fries into passive chicken when exposed to fire');
+assert.equal(companions._debug.list()[0].kind, 'fried_meat_golem', 'raw meat golem fries into an allied cooked meat golem when exposed to fire');
+const friedAgedSnapshot = companions.snapshot();
+friedAgedSnapshot.list[0].age = companions._debug.meatGolemRotSeconds + 1;
+companions.restore(friedAgedSnapshot,getTile);
+companions.update(0.12,{x:0,y:9.96,facing:1,hp:100,maxHp:100},getTile,setTile);
+assert.equal(companions._debug.list()[0].kind, 'fried_meat_golem', 'cooked meat golem never rots into a zombie');
 
 companions.restore({v:1,list:[{kind:'rotten_meat_golem',x:0,y:9.96,meat:8,hp:202,seed:83840,laserCd:99}]},getTile);
 assert.equal(companions.heatAt(0,9,getTile,setTile,{element:'fire'}), true, 'direct heat API fries a rotten meat zombie golem');
-assert.equal(companions._debug.list()[0].kind, 'fried_chicken', 'rotten meat golem also becomes fried chicken');
+assert.equal(companions._debug.list()[0].kind, 'fried_meat_golem', 'rotten meat golem becomes an allied cooked meat golem');
 
-const hungryHero = {x:0,y:9.96,facing:1,w:0.7,h:0.95,hp:7,maxHp:135,vx:0,vy:0};
-companions.restore({v:1,list:[{kind:'fried_chicken',x:0,y:9.96,meat:8,seed:83850}]},getTile);
+let friedUndergroundHits = 0;
+globalThis.MM.undergroundBoss = {
+  nearestForTurret(){ return {kind:'underground',x:0.8,y:9.40,hp:120}; },
+  damageAt(tx,ty,dmg,opts){
+    assert.equal(opts && opts.source, 'companion', 'fried meat golem damage is companion-sourced against underground boss');
+    assert.ok(dmg>8, 'fried meat golem hits the underground boss with meaningful damage');
+    friedUndergroundHits++;
+    return true;
+  }
+};
+companions.restore({v:1,list:[{kind:'fried_meat_golem',x:0,y:9.96,meat:8,hp:202,maxHp:202,seed:83845,laserCd:0}]},getTile);
+companions.update(1/30,{x:0,y:9.96,facing:1,hp:100,maxHp:100},getTile,setTile);
+assert.equal(friedUndergroundHits, 1, 'fried meat golem can fight the underground boss as an ally');
+globalThis.MM.undergroundBoss = null;
+
+const hungryHero = {x:0,y:9.96,facing:1,w:0.7,h:0.95,hp:50,maxHp:100,vx:0,vy:0};
+companions.restore({v:1,list:[{kind:'fried_meat_golem',x:0,y:9.96,meat:8,hp:101,maxHp:202,seed:83850}]},getTile);
 companions.update(0.12,hungryHero,getTile,setTile);
-assert.equal(hungryHero.hp, 135, 'bumping fried chicken restores the hero to full health');
-assert.equal(companions.count(), 0, 'fried chicken is consumed on hero bump');
+assert.equal(hungryHero.hp, 60, 'eating a half-health fried meat golem restores 10 percent of hero max HP');
+assert.equal(companions.count(), 0, 'fried meat golem is consumed on wounded hero bump');
+
+const fullHero = {x:0,y:9.96,facing:1,w:0.7,h:0.95,hp:100,maxHp:100,vx:0,vy:0};
+companions.restore({v:1,list:[{kind:'fried_chicken',x:0,y:9.96,meat:8,seed:83855}]},getTile);
+companions.update(0.12,fullHero,getTile,setTile);
+assert.equal(companions._debug.list()[0].kind, 'fried_meat_golem', 'legacy fried chicken saves migrate into fried meat golems');
+assert.equal(companions.count(), 1, 'full-health hero does not accidentally eat a fried meat golem');
 
 companions.restore({v:1,list:[{kind:'water_golem',x:0,y:9.96,water:10,hp:180,seed:8383,laserCd:99}]},getTile);
 const dryWaterGolemStart = companions._debug.list()[0];
@@ -779,12 +822,12 @@ assert.equal(companions.metrics().meat, 16, 'debug meat mass override updates me
 assert.ok(companions._debug.list().find(c=>c.kind==='meat_golem').maxHp>debugMeatHp, 'increasing debug meat mass increases meat golem max HP');
 assert.ok(companions._debug.rotMeatGolem(player), 'debug API can rot a meat golem into a zombie');
 assert.equal(companions.metrics().rottenMeatGolems, 1, 'debug-rotted meat golem is tracked as zombie');
-assert.ok(companions._debug.cookMeatGolem(player), 'debug API can cook a meat or zombie golem into fried chicken');
-assert.equal(companions.metrics().friedChickens, 1, 'debug-cooked meat golem is tracked as fried chicken');
-const debugChicken = companions._debug.list().find(c=>c.kind==='fried_chicken');
-player.x=debugChicken.x; player.y=debugChicken.y;
-assert.ok(companions._debug.kill(player), 'debug API can remove fried chicken through normal death path');
-assert.equal(companions.metrics().friedChickens, 0, 'debug chicken kill removes the pickup');
+assert.ok(companions._debug.cookMeatGolem(player), 'debug API can cook a meat or zombie golem into a fried ally');
+assert.equal(companions.metrics().friedMeatGolems, 1, 'debug-cooked meat golem is tracked as a fried meat golem');
+const debugFried = companions._debug.list().find(c=>c.kind==='fried_meat_golem');
+player.x=debugFried.x; player.y=debugFried.y;
+assert.ok(companions._debug.kill(player), 'debug API can remove fried meat golem through normal death path');
+assert.equal(companions.metrics().friedMeatGolems, 0, 'debug fried meat golem kill removes the ally');
 assert.ok(companions._debug.clear(), 'debug API can clear remaining companions after meat tests');
 player.x=0; player.y=9.96;
 
@@ -927,7 +970,9 @@ assert.match(companionSource, /setMeat:debugSetMeat/, 'companion debug API expos
 assert.match(companionSource, /rotMeatGolem:debugRotMeatGolem/, 'companion debug API exposes meat golem rot action');
 assert.match(companionSource, /cookMeatGolem:debugCookMeatGolem/, 'companion debug API exposes meat golem cook action');
 assert.match(companionSource, /function drawMeatGolem/, 'companion renderer has a dedicated meat golem branch');
-assert.match(companionSource, /KIND_FRIED_CHICKEN/, 'companion system has a fried chicken pickup state');
+assert.match(companionSource, /KIND_FRIED_MEAT_GOLEM/, 'companion system has a fried meat golem ally state');
+assert.match(companionSource, /FRIED_MEAT_GOLEM_HEAL_RATIO = 0\.20/, 'fried meat golem eating heals up to twenty percent of hero max HP');
+assert.match(companionSource, /MM\.undergroundBoss && MM\.undergroundBoss\.nearestForTurret/, 'companions can target the underground boss');
 assert.match(companionSource, /guardHero:debugGuardHero/, 'companion debug API exposes golem guard testing');
 assert.match(companionSource, /nearestHostileLiving/, 'companions target hostile animals through the mob hostility API');
 assert.match(companionSource, /hostileOnly:true,source:'companion'/, 'companion area attacks are limited to hostile mobs');

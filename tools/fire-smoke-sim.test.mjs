@@ -35,7 +35,7 @@ globalThis.document = {
   createElement(){ return {width:0, height:0, getContext(){ return makeCtx(); }}; }
 };
 
-const { T, INFO } = await import('../src/constants.js');
+const { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } = await import('../src/constants.js');
 const { fire } = await import('../src/engine/fire.js');
 assert.ok(fire, 'fire module exports');
 
@@ -104,6 +104,27 @@ try{
   fire.update(getTile,setTile,3);
   assert.equal(getTile(2,3), T.AIR, 'coal block burns away after about twelve minutes');
 
+  fire.reset();
+  const verticalTiles=new Map();
+  const verticalKey=(x,y)=>x+','+y;
+  const getVerticalTile=(x,y)=>verticalTiles.get(verticalKey(x,y)) ?? T.AIR;
+  const setVerticalTile=(x,y,t)=>{ if(t===T.AIR) verticalTiles.delete(verticalKey(x,y)); else verticalTiles.set(verticalKey(x,y),t); };
+  assert.ok(WORLD_MIN_Y<0 && WORLD_MAX_Y>WORLD_H, 'fire tests cover extended vertical sections');
+  setVerticalTile(0,-24,T.WOOD);
+  setVerticalTile(1,WORLD_H+8,T.WOOD);
+  assert.ok(fire.ignite(0,-24,getVerticalTile,setVerticalTile), 'sky-layer wood can ignite');
+  assert.ok(fire.ignite(1,WORLD_H+8,getVerticalTile,setVerticalTile), 'deep-layer wood can ignite');
+  const verticalSnap=fire.snapshot();
+  assert.ok(verticalSnap.list.some(b=>b.y<0), 'fire snapshot preserves sky-layer flames');
+  assert.ok(verticalSnap.list.some(b=>b.y>WORLD_H), 'fire snapshot preserves deep-layer flames');
+  fire.reset();
+  fire.restore(verticalSnap,getVerticalTile);
+  assert.equal(fire.isBurning(0,-24), true, 'fire restore revives sky-layer flames');
+  assert.equal(fire.isBurning(1,WORLD_H+8), true, 'fire restore revives deep-layer flames');
+  fire.update(getVerticalTile,setVerticalTile,61);
+  assert.equal(getVerticalTile(0,-24), T.AIR, 'sky-layer wood burns away normally');
+  assert.equal(getVerticalTile(1,WORLD_H+8), T.AIR, 'deep-layer wood burns away normally');
+
   assert.equal(burnsAfterSingleSpreadStep(T.WOOD,0.07), true, 'normal solid fuel catches this lateral spread roll');
   assert.equal(burnsAfterSingleSpreadStep(T.COAL,0.02), true, 'coal can catch a low lateral spread roll after the 0.04 multiplier');
   assert.equal(burnsAfterSingleSpreadStep(T.COAL,0.03), false, 'coal rejects a near-threshold lateral spread roll after the 0.04 multiplier');
@@ -121,6 +142,26 @@ try{
   fire.noteLava(4,3,{hotT:0});
   fire.update(getLavaTile,setLavaTile,0.1);
   assert.ok(gasAdds.some(g=>g.kind==='hot' && g.opts && g.opts.cells===1), 'exposed lava emits a small hot-air packet');
+
+  fire.reset();
+  smokeCalls=[];
+  gasAdds=[];
+  const skyLavaTiles=new Map();
+  const skyLavaKey=(x,y)=>x+','+y;
+  let skyDrawReads=0;
+  const getSkyLavaTile=(x,y)=>{
+    if(y<0) skyDrawReads++;
+    return skyLavaTiles.get(skyLavaKey(x,y)) ?? T.STONE;
+  };
+  const setSkyLavaTile=(x,y,t)=>skyLavaTiles.set(skyLavaKey(x,y),t);
+  setSkyLavaTile(6,-26,T.AIR);
+  setSkyLavaTile(6,-25,T.LAVA);
+  setSkyLavaTile(6,-24,T.STONE);
+  fire.noteLava(6,-25,{hotT:0});
+  fire.update(getSkyLavaTile,setSkyLavaTile,0.1);
+  assert.ok(gasAdds.some(g=>g.kind==='hot' && g.y<0), 'sky-layer exposed lava emits hot air above y=0');
+  fire.draw(makeCtx(),20,0,-30,12,12,getSkyLavaTile,{visible:()=>true, seen:()=>true});
+  assert.ok(skyDrawReads>0, 'sky-layer lava participates in draw scans');
   const fireSrc = await readFile(new URL('../src/engine/fire.js', import.meta.url), 'utf8');
   assert.match(fireSrc, /const LAVA_HOT_AIR_INTERVAL=8\.5/, 'lava hot-air cadence is 10% of coal/wood hot-air cadence');
 

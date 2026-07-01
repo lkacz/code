@@ -1,7 +1,7 @@
 // Water pumps and pipes. A pump is a powered one-tile machine with a directional
 // intake/output; pipes form cached water networks and only recompute after local
 // topology changes are observed.
-import { T, INFO, WORLD_H } from '../constants.js';
+import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 import { isGasTile, isWaterFillTile } from './material_physics.js';
 
 const pumps = (function(){
@@ -67,10 +67,12 @@ const pumps = (function(){
   let passiveGasTransfers = 0;
   let pumpOutletTransfers = 0;
   let pumpGasTransfers = 0;
+  const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
+  const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
   function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
   function sideKey(m,side){ return key(m.x,m.y)+':'+side+':'+normalizeDir(m.dir); }
-  function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H; }
+  function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=WORLD_TOP && y<WORLD_BOTTOM; }
   function getSafe(getTile,x,y,fallback){
     try{ return typeof getTile==='function' ? getTile(Math.floor(x),Math.floor(y)) : fallback; }catch(e){ return fallback; }
   }
@@ -926,7 +928,7 @@ const pumps = (function(){
     const cx=Math.floor(Number(player.x)||0);
     const cy=Math.floor(Number(player.y)||0);
     const rx=58, ry=36;
-    const y0=Math.max(0,cy-ry), y1=Math.min(WORLD_H-1,cy+ry);
+    const y0=Math.max(WORLD_TOP,cy-ry), y1=Math.min(WORLD_BOTTOM-1,cy+ry);
     let pipeSeeds=0;
     for(let y=y0; y<=y1; y++){
       for(let x=cx-rx; x<=cx+rx; x++){
@@ -942,7 +944,7 @@ const pumps = (function(){
   function ensureVisibleMachines(sx,sy,viewX,viewY,getTile){
     if(typeof getTile!=='function') return;
     const x0=Math.floor(sx)-2, x1=Math.ceil(sx+viewX)+2;
-    const y0=Math.max(0,Math.floor(sy)-2), y1=Math.min(WORLD_H-1,Math.ceil(sy+viewY)+2);
+    const y0=Math.max(WORLD_TOP,Math.floor(sy)-2), y1=Math.min(WORLD_BOTTOM-1,Math.ceil(sy+viewY)+2);
     const now=nowMs();
     const scanKey=x0+','+x1+','+y0+','+y1;
     if(scanKey===visibleScanKey && now-visibleScanAt<VISIBLE_SCAN_INTERVAL_MS) return;

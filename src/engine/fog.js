@@ -3,25 +3,29 @@
 //  MM.fog.revealAround(px,py,r,{lineOfSight,getTile,blocksSight,rememberSeen})
 //  MM.fog.revealRect(x0,y0,x1,y1,{originX,originY,lineOfSight,getTile,blocksSight,rememberSeen})
 //  MM.fog.applyOverlay(ctx, sx, sy, viewX, viewY, TILE, getTile, T, {showMemory})
-//  MM.fog.exportSeen() -> [{cx:number, data:string, rle:true}]
+//  MM.fog.exportSeen() -> [{cx:number, data:string, rle:true, minY:number, maxY:number}]
 //  MM.fog.importSeen(list)
 //  MM.fog.getRevealAll() / MM.fog.setRevealAll(v) / MM.fog.toggleRevealAll()
-import { CHUNK_W, WORLD_H } from '../constants.js';
+import { CHUNK_W, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 import { isAirOrGasTile, isGasTile } from './material_physics.js';
 (function(){
   window.MM = window.MM || {};
   const F = {};
 
   let revealAll = false;
-  const seenChunks = new Map(); // key: chunkX -> Uint8Array bitset (CHUNK_W*WORLD_H bits)
+  const WORLD_SPAN_H = WORLD_MAX_Y - WORLD_MIN_Y;
+  const LEGACY_BYTES_PER_CHUNK = Math.ceil((CHUNK_W*WORLD_H)/8);
+  const seenChunks = new Map(); // key: chunkX -> Uint8Array bitset (CHUNK_W*WORLD_SPAN_H bits)
   const visibleChunks = new Map(); // current frame visibility; rebuilt by revealAround()
 
-  function bytesPerChunk(){ return Math.ceil((CHUNK_W*WORLD_H)/8); }
+  function worldYInBounds(y){ return Number.isFinite(y) && y>=WORLD_MIN_Y && y<WORLD_MAX_Y; }
+  function bitY(y){ return Math.floor(y) - WORLD_MIN_Y; }
+  function bytesPerChunk(){ return Math.ceil((CHUNK_W*WORLD_SPAN_H)/8); }
   function ensureSeenChunk(cx){ let arr = seenChunks.get(cx); if(!arr){ arr = new Uint8Array(bytesPerChunk()); seenChunks.set(cx, arr); } return arr; }
   function ensureVisibleChunk(cx){ let arr = visibleChunks.get(cx); if(!arr){ arr = new Uint8Array(bytesPerChunk()); visibleChunks.set(cx, arr); } return arr; }
-  function setBit(map,ensure,x,y){ if(y<0||y>=WORLD_H) return; const cx=Math.floor(x/CHUNK_W); let lx=x - cx*CHUNK_W; if(lx<0||lx>=CHUNK_W) return; const idx=y*CHUNK_W + lx; const arr=ensure(cx); arr[idx>>3] |= (1 << (idx & 7)); }
-  function getBit(map,x,y){ if(y<0||y>=WORLD_H) return false; const cx=Math.floor(x/CHUNK_W); const arr=map.get(cx); if(!arr) return false; const lx=x - cx*CHUNK_W; if(lx<0||lx>=CHUNK_W) return false; const idx=y*CHUNK_W + lx; return (arr[idx>>3] & (1 << (idx & 7)))!==0; }
-  function markSeen(x,y){ if(y<0||y>=WORLD_H) return; const cx=Math.floor(x/CHUNK_W); let lx=x - cx*CHUNK_W; if(lx<0||lx>=CHUNK_W) return; const idx=y*CHUNK_W + lx; const arr=ensureSeenChunk(cx); arr[idx>>3] |= (1 << (idx & 7)); }
+  function setBit(map,ensure,x,y){ y=Math.floor(y); if(!worldYInBounds(y)) return; const cx=Math.floor(x/CHUNK_W); let lx=Math.floor(x) - cx*CHUNK_W; if(lx<0||lx>=CHUNK_W) return; const idx=bitY(y)*CHUNK_W + lx; const arr=ensure(cx); arr[idx>>3] |= (1 << (idx & 7)); }
+  function getBit(map,x,y){ y=Math.floor(y); if(!worldYInBounds(y)) return false; const cx=Math.floor(x/CHUNK_W); const arr=map.get(cx); if(!arr) return false; const lx=Math.floor(x) - cx*CHUNK_W; if(lx<0||lx>=CHUNK_W) return false; const idx=bitY(y)*CHUNK_W + lx; return (arr[idx>>3] & (1 << (idx & 7)))!==0; }
+  function markSeen(x,y){ setBit(seenChunks,ensureSeenChunk,x,y); }
   function markVisible(x,y){ setBit(visibleChunks,ensureVisibleChunk,x,y); }
   function hasSeen(x,y){ return getBit(seenChunks,x,y); }
   function hasVisible(x,y){ return getBit(visibleChunks,x,y); }
@@ -33,9 +37,39 @@ import { isAirOrGasTile, isGasTile } from './material_physics.js';
   function encodeRLE(arr){ const out=[]; for(let i=0;i<arr.length;){ const v=arr[i]; let run=1; while(i+run<arr.length && arr[i+run]===v && run<65535) run++; let remain=run; while(remain>0){ const take=Math.min(255,remain); out.push(v,take); remain-=take; } i+=run; } return _b64FromBytes(Uint8Array.from(out)); }
   function decodeRLE(b64,totalLen){ const bytes=_bytesFromB64(b64); const out=new Uint8Array(totalLen); let oi=0; for(let i=0;i<bytes.length; i+=2){ const v=bytes[i]; const count=bytes[i+1]; for(let r=0;r<count;r++) out[oi++]=v; } return out; }
   function decodeRaw(b64){ return _bytesFromB64(b64); }
+  function bitIsSet(arr,idx){ return !!(arr[idx>>3] & (1 << (idx & 7))); }
+  function setBitIndex(arr,idx){ arr[idx>>3] |= (1 << (idx & 7)); }
+  function migrateLegacySeen(arr){
+    const out=new Uint8Array(bytesPerChunk());
+    const srcRows=Math.min(WORLD_H, WORLD_SPAN_H);
+    for(let y=0; y<srcRows; y++){
+      const dstY=bitY(y);
+      if(dstY<0 || dstY>=WORLD_SPAN_H) continue;
+      for(let lx=0; lx<CHUNK_W; lx++){
+        const srcIdx=y*CHUNK_W+lx;
+        if(bitIsSet(arr,srcIdx)) setBitIndex(out,dstY*CHUNK_W+lx);
+      }
+    }
+    return out;
+  }
 
-  F.exportSeen = function(){ const out=[]; for(const [cx,buf] of seenChunks.entries()){ out.push({cx, data: encodeRLE(buf), rle:true}); } return out; };
-  F.importSeen = function(list){ if(!Array.isArray(list)) return; seenChunks.clear(); const totalLen = bytesPerChunk(); for(const row of list){ if(typeof row.cx!=='number'||!row.data) continue; const arr=row.rle? decodeRLE(row.data, totalLen): decodeRaw(row.data); seenChunks.set(row.cx, arr); } };
+  F.exportSeen = function(){ const out=[]; for(const [cx,buf] of seenChunks.entries()){ out.push({cx, data: encodeRLE(buf), rle:true, minY:WORLD_MIN_Y, maxY:WORLD_MAX_Y}); } return out; };
+  F.importSeen = function(list){
+    if(!Array.isArray(list)) return;
+    seenChunks.clear();
+    const totalLen = bytesPerChunk();
+    for(const row of list){
+      if(typeof row.cx!=='number'||!row.data) continue;
+      let arr;
+      if(row.rle){
+        const expected = Number.isFinite(row.minY) && Number.isFinite(row.maxY) ? Math.ceil((CHUNK_W*(row.maxY-row.minY))/8) : LEGACY_BYTES_PER_CHUNK;
+        arr = decodeRLE(row.data, expected);
+      } else arr = decodeRaw(row.data);
+      if(arr.length!==totalLen) arr = arr.length===LEGACY_BYTES_PER_CHUNK ? migrateLegacySeen(arr) : arr.slice(0,totalLen);
+      if(arr.length<totalLen){ const padded=new Uint8Array(totalLen); padded.set(arr); arr=padded; }
+      seenChunks.set(Math.floor(row.cx), arr);
+    }
+  };
 
   function hasLineOfSight(x0,y0,x1,y1,getTile,blocksSight){
     if(x0===x1 && y0===y1) return true;
@@ -80,8 +114,8 @@ import { isAirOrGasTile, isGasTile } from './material_physics.js';
     const ax=+x0, bx=+x1, ay=+y0, by=+y1;
     x0=Math.floor(Math.min(ax,bx));
     x1=Math.ceil(Math.max(ax,bx));
-    y0=Math.max(0,Math.floor(Math.min(ay,by)));
-    y1=Math.min(WORLD_H-1,Math.ceil(Math.max(ay,by)));
+    y0=Math.max(WORLD_MIN_Y,Math.floor(Math.min(ay,by)));
+    y1=Math.min(WORLD_MAX_Y-1,Math.ceil(Math.max(ay,by)));
     if(!Number.isFinite(x0)||!Number.isFinite(x1)||!Number.isFinite(y0)||!Number.isFinite(y1)) return;
     const ox=opts && Number.isFinite(opts.originX) ? Math.floor(opts.originX) : Math.floor((x0+x1)/2);
     const oy=opts && Number.isFinite(opts.originY) ? Math.floor(opts.originY) : Math.floor((y0+y1)/2);
@@ -103,14 +137,17 @@ import { isAirOrGasTile, isGasTile } from './material_physics.js';
     const originY=(opts && Number.isFinite(opts.originY)) ? opts.originY : 0;
     const lodStep=Math.max(1, Math.min(4, (opts && Number.isFinite(opts.lodStep)) ? Math.floor(opts.lodStep) : 1));
     const WGen=(window.MM && MM.worldGen && MM.worldGen.surfaceHeight)? MM.worldGen : null;
-    const xEnd=sx+viewX+2;
+    const x0=Math.floor(sx);
+    const yStart=Math.max(WORLD_MIN_Y,Math.floor(sy));
+    const yEnd=Math.min(WORLD_MAX_Y-1,Math.ceil(sy+viewY+1));
+    const xEnd=Math.ceil(sx+viewX+2);
     // The unknown fog is an opaque final mask; a tiny overlap hides zoom/camera
     // subpixel cracks without changing the readable shape of exposed terrain.
     const blackSeamOverlap = TILE>=8 ? Math.max(1, Math.min(2, TILE*0.05)) : 0;
     const gasSkyExposed=(x,y)=>{
       const gas=(window.MM && MM.gases && typeof MM.gases.skyExposed==='function') ? MM.gases : null;
       if(gas) return gas.skyExposed(x,y,getTile);
-      for(let yy=y-1; yy>=0; yy--){
+      for(let yy=y-1; yy>=WORLD_MIN_Y; yy--){
         const tt=getTile(x,yy);
         if(isAirOrGasTile(tt)) continue;
         return false;
@@ -136,7 +173,7 @@ import { isAirOrGasTile, isGasTile } from './material_physics.js';
       }
     };
     const styleAt=(x,y)=>{
-      if(y<0||y>=WORLD_H) return null;
+      if(!worldYInBounds(y)) return null;
       if(hasVisible(x,y)) return null;
       const t=getTile(x,y);
       const underground = WGen? (y>surfaceAt(x)) : false;
@@ -148,7 +185,7 @@ import { isAirOrGasTile, isGasTile } from './material_physics.js';
     };
     const strongerStyle=(a,b)=> a==='#000' || b==='#000' ? '#000' : (a || b || null);
     const blockStyle=(x,y,step)=>{
-      const xMax=xEnd-1, yMax=Math.min(WORLD_H-1, sy+viewY+1);
+      const xMax=xEnd-1, yMax=yEnd;
       let style=styleAt(x,y);
       const x2=Math.min(xMax,x+step-1), y2=Math.min(yMax,y+step-1);
       if(x2!==x || y2!==y) style=strongerStyle(style,styleAt(x2,y2));
@@ -159,16 +196,15 @@ import { isAirOrGasTile, isGasTile } from './material_physics.js';
       return style;
     };
     if(lodStep>1){
-      for(let y=sy; y<sy+viewY+2; y+=lodStep){
-        if(y<0||y>=WORLD_H) continue;
+      for(let y=yStart; y<=yEnd; y+=lodStep){
         let runStart=0, runStyle=null;
-        const y1=Math.min(WORLD_H-1,y+lodStep-1);
+        const y1=Math.min(WORLD_MAX_Y-1,y+lodStep-1);
         const flushRun=(x)=>{
           if(!runStyle) return;
           drawRect({x0:runStart,x1:x,y0:y,y1,style:runStyle});
           runStyle=null;
         };
-        for(let x=sx; x<xEnd; x+=lodStep){
+        for(let x=x0; x<xEnd; x+=lodStep){
           const xNext=Math.min(xEnd,x+lodStep);
           const style=blockStyle(x,y,lodStep);
           if(style!==runStyle){
@@ -181,8 +217,7 @@ import { isAirOrGasTile, isGasTile } from './material_physics.js';
       return;
     }
     let pendingRuns=new Map();
-    for(let y=sy; y<sy+viewY+2; y++){
-      if(y<0||y>=WORLD_H) continue;
+    for(let y=yStart; y<=yEnd; y++){
       const rowRuns=[];
       let runStart=0, runStyle=null;
       const flushRun=(x)=>{
@@ -190,7 +225,7 @@ import { isAirOrGasTile, isGasTile } from './material_physics.js';
         rowRuns.push({x0:runStart,x1:x,style:runStyle});
         runStyle=null;
       };
-      for(let x=sx; x<xEnd; x++){
+      for(let x=x0; x<xEnd; x++){
         let style=null;
         if(!hasVisible(x,y)){
           const t=getTile(x,y);

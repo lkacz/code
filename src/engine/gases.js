@@ -4,7 +4,7 @@
 // a small API for later machine systems (consume/inspect/add). Steam and hot air
 // lose a little mass when turbines extract power, so stacked dynamos attenuate a
 // plume instead of multiplying one source forever.
-import { T, WORLD_H, CHUNK_W } from '../constants.js';
+import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, CHUNK_W } from '../constants.js';
 import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from './material_physics.js';
 
 (function(){
@@ -51,17 +51,19 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
   let heroPoisonCd = 0;
   let spriteTile = 0;
   let sprites = null;
+  const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
+  const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
   function key(x,y){ return (x|0)+','+(y|0); }
   function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
-  function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H; }
+  function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=WORLD_TOP && y<WORLD_BOTTOM; }
   function isGasTile(t){ return GAS_TILES.has(t); }
   function gasDef(t){ return GAS_DEF[t] || null; }
   function gasKind(t){ const d=gasDef(t); return d ? d.kind : null; }
   function skyExposed(x,y,getTile){
     x=Math.floor(x); y=Math.floor(y);
     if(!finiteTile(x,y) || typeof getTile!=='function') return false;
-    for(let yy=y-1; yy>=0; yy--){
+    for(let yy=y-1; yy>=WORLD_TOP; yy--){
       const t=getSafe(getTile,x,yy,T.AIR);
       if(t===T.AIR || isGasTile(t)) continue;
       return false;
@@ -182,7 +184,7 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
     const D=(typeof window!=='undefined' && window.MM) ? MM.dynamo : null;
     if(!D || typeof D.isValidSlot!=='function' || !D.isValidSlot(nx,ny,getTile,'horizontal')) return false;
     const ty=ny-1;
-    if(ty<0){ clearGasCell(g.x,g.y,getTile,setTile); return true; }
+    if(ty<WORLD_TOP){ clearGasCell(g.x,g.y,getTile,setTile); return true; }
     const dst=getSafe(getTile,nx,ty,T.AIR);
     if(swapGasCells(g,nx,ty,dst,getTile,setTile)){
       try{ if(D.recordFlow && D.recordFlow(nx,ny,g.t,1,getTile)) maybeConsumePoweredGas(g,nx,ny,nx,ty,getTile,setTile); }catch(e){}
@@ -357,7 +359,7 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
     const cx=Math.floor(wx), cy=Math.floor(wy);
     let n=0;
     for(let y=cy-ri; y<=cy+ri; y++){
-      if(y<0 || y>=WORLD_H) continue;
+      if(y<WORLD_TOP || y>=WORLD_BOTTOM) continue;
       for(let x=cx-ri; x<=cx+ri; x++){
         const dx=(x+0.5)-wx, dy=(y+0.5)-wy;
         if(dx*dx+dy*dy>R*R) continue;
@@ -387,7 +389,7 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
     const cx=Math.floor(x), cy=Math.floor(y);
     let best=null, bestD=Infinity;
     for(let yy=cy-ri; yy<=cy+ri; yy++){
-      if(yy<0 || yy>=WORLD_H) continue;
+      if(yy<WORLD_TOP || yy>=WORLD_BOTTOM) continue;
       for(let xx=cx-ri; xx<=cx+ri; xx++){
         if(getSafe(getTile,xx,yy,T.AIR)!==T.FUEL_GAS) continue;
         const dx=(xx+0.5)-x, dy=(yy+0.5)-y, d=dx*dx+dy*dy;
@@ -411,7 +413,7 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
     }
   }
   function moveGas(g,getTile,setTile){
-    if(g.y<=0){ clearGasCell(g.x,g.y,getTile,setTile); return true; }
+    if(g.y<=WORLD_TOP){ clearGasCell(g.x,g.y,getTile,setTile); return true; }
     const drift=windDriftFor(g,getTile);
     const windDir=drift>0.06 ? 1 : (drift<-0.06 ? -1 : 0);
     const sideFirst=windDir || ((hash32(g.x,g.y,Math.floor(g.age*3)+101)&1) ? -1 : 1);
@@ -422,8 +424,8 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
       : [[0,-1],[sideFirst,-1],[-sideFirst,-1],[sideFirst,0],[-sideFirst,0]];
     for(const [dx,dy] of dirs){
       const nx=g.x+dx, ny=g.y+dy;
-      if(ny<0){ clearGasCell(g.x,g.y,getTile,setTile); return true; }
-      if(ny>=WORLD_H) continue;
+      if(ny<WORLD_TOP){ clearGasCell(g.x,g.y,getTile,setTile); return true; }
+      if(ny>=WORLD_BOTTOM) continue;
       const dst=getSafe(getTile,nx,ny,T.AIR);
       if(tryMoveGasThroughDynamo(g,nx,ny,dx,dy,getTile,setTile)) return true;
       if(swapGasCells(g,nx,ny,dst,getTile,setTile)) return true;
@@ -445,7 +447,7 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
     if(!player || typeof getTile!=='function') return;
     const cx=Math.floor(player.x), cy=Math.floor(player.y);
     const left=cx-SCAN_RX, right=cx+SCAN_RX;
-    const top=Math.max(0,cy-SCAN_RY), bottom=Math.min(WORLD_H-1,cy+SCAN_RY);
+    const top=Math.max(WORLD_TOP,cy-SCAN_RY), bottom=Math.min(WORLD_BOTTOM-1,cy+SCAN_RY);
     for(let x=left; x<=right; x++){
       for(let y=top; y<=bottom; y++){
         const t=getSafe(getTile,x,y,T.AIR);
@@ -471,7 +473,7 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
         const cx=Math.floor(cxRaw);
         const left=cx*CHUNK_W;
         for(let x=left; x<left+CHUNK_W; x++){
-          for(let y=0; y<WORLD_H; y++){
+          for(let y=WORLD_TOP; y<WORLD_BOTTOM; y++){
             const t=getSafe(getTile,x,y,T.AIR);
             if(isGasTile(t)){ if(noteGas(x,y,t)) found++; }
           }

@@ -1,6 +1,6 @@
 // Nowy styl / pełny ekran inspirowany Diamonds Explorer
 // Module entry: import constants (also hydrates window.MM via shim) and side-effect engine modules
-import { CHUNK_W, WORLD_H, TILE, T, INFO, MOVE, isAutumnLeaf, isLeaf } from './constants.js';
+import { CHUNK_W, WORLD_H, WORLD_SECTION_H, WORLD_MIN_SECTION, WORLD_MAX_SECTION, WORLD_MIN_Y, WORLD_MAX_Y, TILE, T, INFO, MOVE, isAutumnLeaf, isLeaf } from './constants.js';
 // Ensure worldgen initializes before world (world.js reads MM.worldGen on load)
 import { worldGen as WORLDGEN } from './engine/worldgen.js';
 import world from './engine/world.js';
@@ -68,6 +68,65 @@ function resetFrameCanvasState(){
 
 // --- Świat (łagodniejsze biomy: równiny / wzgórza / góry) ---
 const WORLD = world || MM.world;
+function worldSectionHeight(){ return (WORLD && Number.isFinite(WORLD.sectionHeight)) ? WORLD.sectionHeight : WORLD_SECTION_H; }
+function worldMinY(){ return (WORLD && Number.isFinite(WORLD.minY)) ? WORLD.minY : WORLD_MIN_Y; }
+function worldMaxY(){ return (WORLD && Number.isFinite(WORLD.maxY)) ? WORLD.maxY : WORLD_MAX_Y; }
+function worldMinSection(){ return (WORLD && Number.isFinite(WORLD.minSection)) ? WORLD.minSection : WORLD_MIN_SECTION; }
+function worldMaxSection(){ return (WORLD && Number.isFinite(WORLD.maxSection)) ? WORLD.maxSection : WORLD_MAX_SECTION; }
+function worldSectionY(y){ return (WORLD && WORLD.sectionYFor) ? WORLD.sectionYFor(y) : Math.floor(Math.floor(y)/worldSectionHeight()); }
+function worldSectionOriginY(sy){ return (WORLD && WORLD.sectionOriginY) ? WORLD.sectionOriginY(sy) : sy*worldSectionHeight(); }
+function worldSectionLocalY(y,sy){ return (WORLD && WORLD.sectionLocalY) ? WORLD.sectionLocalY(y,sy) : Math.floor(y)-worldSectionOriginY(sy); }
+function worldYInBounds(y){ return Number.isFinite(y) && y>=worldMinY() && y<worldMaxY(); }
+function baseWorldSectionMax(){ return Math.max(0, Math.ceil(WORLD_H/worldSectionHeight())-1); }
+function isBaseWorldSection(sy){ return sy==null || (sy>=0 && sy<=baseWorldSectionMax()); }
+function fallbackNormalizeChunkRef(ref){
+	if(typeof ref==='number' && Number.isFinite(ref)) return {cx:Math.floor(ref), sy:null, base:true, key:'c'+Math.floor(ref), h:WORLD_H};
+	if(ref && typeof ref==='object' && Number.isFinite(ref.cx)){
+		const sy=Number.isFinite(ref.sy) ? Math.floor(ref.sy) : null;
+		const base=isBaseWorldSection(sy);
+		return {cx:Math.floor(ref.cx), sy, base, key:base?('c'+Math.floor(ref.cx)):('c'+Math.floor(ref.cx)+':s'+sy), h:base?WORLD_H:worldSectionHeight()};
+	}
+	if(typeof ref==='string' && ref[0]==='c'){
+		const body=ref.slice(1), split=body.indexOf(':s');
+		if(split<0){
+			const cx=Number(body);
+			return Number.isFinite(cx) ? {cx:Math.floor(cx), sy:null, base:true, key:'c'+Math.floor(cx), h:WORLD_H} : null;
+		}
+		const cx=Number(body.slice(0,split)), sy=Number(body.slice(split+2));
+		if(!Number.isFinite(cx) || !Number.isFinite(sy)) return null;
+		return {cx:Math.floor(cx), sy:Math.floor(sy), base:false, key:'c'+Math.floor(cx)+':s'+Math.floor(sy), h:worldSectionHeight()};
+	}
+	return null;
+}
+function normalizeWorldChunkRef(ref){
+	if(WORLD && typeof WORLD.normalizeChunkRef==='function'){
+		const out=WORLD.normalizeChunkRef(ref);
+		if(out) return out;
+	}
+	return fallbackNormalizeChunkRef(ref);
+}
+function worldRenderSectionKey(cx,sy){ return 'c'+Math.floor(cx)+':r'+Math.floor(sy); }
+function parseWorldRenderSectionKey(key){
+	if(typeof key!=='string') return null;
+	const split=key.indexOf(':r');
+	if(split<0) return normalizeWorldChunkRef(key);
+	const cx=Number(key.slice(1,split)), sy=Number(key.slice(split+2));
+	return Number.isFinite(cx) && Number.isFinite(sy) ? {cx:Math.floor(cx), sy:Math.floor(sy)} : null;
+}
+function worldChunkVersion(ref){
+	const norm=normalizeWorldChunkRef(ref);
+	if(!norm) return 0;
+	if(WORLD && typeof WORLD.chunkVersion==='function') return WORLD.chunkVersion(norm.cx,norm.sy);
+	return WORLD && WORLD._versions ? (WORLD._versions.get(norm.key)||0) : 0;
+}
+function worldChunkArrayFor(ref,generate){
+	const norm=normalizeWorldChunkRef(ref);
+	if(!norm) return null;
+	if(generate && WORLD && typeof WORLD.ensureSection==='function' && Number.isFinite(norm.sy)) return WORLD.ensureSection(norm.cx,norm.sy);
+	if(generate && norm.base && WORLD && typeof WORLD.ensureChunk==='function') return WORLD.ensureChunk(norm.cx);
+	if(WORLD && typeof WORLD.chunkArray==='function') return WORLD.chunkArray(norm);
+	return WORLD && WORLD._world ? (WORLD._world.get(norm.key)||null) : null;
+}
 // Using ESM imports for trees and cape
 // const TREES = MM.trees;
 // const CAPE = MM.cape;
@@ -309,6 +368,14 @@ try {
 }
 function setSeedFromInput(){ WORLDGEN.setSeedFromInput(); worldSeed=WORLDGEN.worldSeed; }
 function ensureChunk(cx){ return WORLD.ensureChunk(cx); }
+function ensureChunkAtY(cx,y){
+	if(WORLD && typeof WORLD.ensureSection==='function' && Number.isFinite(y)){
+		const sy=worldSectionY(y);
+		const section=WORLD.ensureSection(cx,sy);
+		if(section) return section;
+	}
+	return ensureChunk(cx);
+}
 
 // light error overlay (keep minimal)
 (function(){ const box=document.getElementById('errorBox'); if(!box) return; function show(msg){ box.textContent=msg; box.style.display='block'; }
@@ -340,13 +407,14 @@ function getRenderInfrastructureTile(x,y){
 	return list.length ? list[list.length-1] : T.AIR;
 }
 function setTile(x,y,v){
-	if(!(y>=0) || y>=WORLD_H || !isFinite(x)){ WORLD.setTile(x,y,v); return; }
+	if(!Number.isFinite(x) || !Number.isFinite(y) || !worldYInBounds(y)){ WORLD.setTile(x,y,v); return; }
 	const tx=Math.floor(x), ty=Math.floor(y), cx=Math.floor(tx/CHUNK_W);
 	const old=(WORLD && WORLD.getTile) ? WORLD.getTile(tx,ty) : undefined;
-	const beforeVer=(WORLD && WORLD.chunkVersion) ? WORLD.chunkVersion(cx) : undefined;
+	const sy=worldSectionY(ty);
+	const beforeVer=(WORLD && WORLD.chunkVersion) ? WORLD.chunkVersion(cx,sy) : undefined;
 	WORLD.setTile(tx,ty,v);
 	const next=(WORLD && WORLD.getTile) ? WORLD.getTile(tx,ty) : v;
-	if(old!==next) markChunkRenderDirty(cx,ty,2,beforeVer,(WORLD && WORLD.chunkVersion) ? WORLD.chunkVersion(cx) : undefined);
+	if(old!==next) markChunkRenderDirty(cx,ty,2,beforeVer,(WORLD && WORLD.chunkVersion) ? WORLD.chunkVersion(cx,sy) : undefined);
 }
 setTile.transient = function(x,y,v){
 	if(WORLD && typeof WORLD.setTransientTile==='function') WORLD.setTransientTile(x,y,v);
@@ -776,7 +844,7 @@ function defaultRespawnTarget(){
 }
 function deathRespawnTarget(){
 	if(respawnPoint && typeof respawnPoint.x==='number' && typeof respawnPoint.y==='number'){
-		ensureChunk(Math.floor(respawnPoint.x/CHUNK_W));
+		ensureChunkAtY(Math.floor(respawnPoint.x/CHUNK_W),respawnPoint.y);
 		return {x:respawnPoint.x, y:respawnPoint.y, kind:'totem'};
 	}
 	return defaultRespawnTarget();
@@ -1057,6 +1125,8 @@ function legacyInfrastructureBase(arr,lx,y,t){
 	return T.AIR;
 }
 function migrateLegacyInfrastructureTerrain(cx,arr){
+	const sy=arguments.length>2 ? arguments[2] : null;
+	if(Number.isFinite(sy)) return arr;
 	if(!arr || typeof arr.length!=='number' || !WORLD || !WORLD.setInfrastructure) return arr;
 	for(let i=0;i<arr.length;i++){
 		const t=arr[i];
@@ -1068,11 +1138,14 @@ function migrateLegacyInfrastructureTerrain(cx,arr){
 	return arr;
 }
 function restoreTerrainChunk(cx,arr){
+	const sy=arguments.length>2 ? arguments[2] : null;
+	const ref=normalizeWorldChunkRef({cx, sy:Number.isFinite(sy)?sy:null});
+	if(!ref) return;
 	stripTransientTerrainTiles(arr);
-	migrateLegacyInfrastructureTerrain(cx,arr);
-	try{ if(TREES && TREES.clearChunk) TREES.clearChunk(cx); }catch(e){}
-	WORLD._world.set('c'+cx, arr);
-	markWorldChunkModified(cx);
+	migrateLegacyInfrastructureTerrain(cx,arr,ref.base?null:ref.sy);
+	try{ if(ref.base && TREES && TREES.clearChunk) TREES.clearChunk(ref.cx); }catch(e){}
+	WORLD._world.set(ref.key, arr);
+	markWorldChunkModified(ref.cx,ref.sy);
 }
 // --- Integrity helpers (stable stringify + FNV1a hash) ---
 function stableStringify(v){ if(v===null||typeof v!=='object') return JSON.stringify(v); if(Array.isArray(v)) return '['+v.map(stableStringify).join(',')+']'; const keys=Object.keys(v).sort(); return '{'+keys.map(k=>JSON.stringify(k)+':'+stableStringify(v[k])).join(',')+'}'; }
@@ -1112,16 +1185,45 @@ const AUTO_SAVE_IDLE_REQUIRED_MS=12000;
 const AUTO_SAVE_MIN_GAP_MS=90000;
 const AUTO_SAVE_CHUNK_BATCH_MS=5;
 function noteSaveActivity(){ _lastSaveActivityAt=Date.now(); }
-function modifiedChunkIds(){ if(WORLD && typeof WORLD.modifiedChunkIds==='function') return WORLD.modifiedChunkIds(); const out=[]; const worldMap=WORLD._world; if(!worldMap) return out; for(const [k] of worldMap.entries()){ const cx=parseInt(k.slice(1), 10); if(isNaN(cx)) continue; const ver=WORLD._versions.get(k)||0; if(ver!==0) out.push(cx); } return out; }
-function gatherModifiedChunks(ids){ const out=[]; const worldMap=WORLD._world; if(!worldMap) return out; const list=Array.isArray(ids) ? [...new Set(ids)] : null; if(list){ for(const cx of list){ if(typeof cx!=='number' || !isFinite(cx)) continue; const arr=worldMap.get('c'+cx); const ver=WORLD._versions.get('c'+cx)||0; if(!arr || ver===0) continue; out.push({cx,data:encodeRLE(chunkForTerrainSave(arr)),rle:true}); } return out; } for(const [k,arr] of worldMap.entries()){ const cx=parseInt(k.slice(1), 10); if(isNaN(cx)) continue; const ver=WORLD._versions.get(k)||0; if(ver===0) continue; out.push({cx,data:encodeRLE(chunkForTerrainSave(arr)),rle:true}); } return out; }
-function markWorldChunkModified(cx){
-	const beforeVer=(WORLD && WORLD.chunkVersion) ? WORLD.chunkVersion(cx) : undefined;
-	if(WORLD && typeof WORLD.markModifiedChunk==='function') WORLD.markModifiedChunk(cx,1); else if(WORLD && WORLD._versions) WORLD._versions.set('c'+cx,1);
-	if(WORLD && WORLD._modifiedChunks) WORLD._modifiedChunks.add(cx);
-	markChunkRenderDirtyFull(cx,beforeVer,(WORLD && WORLD.chunkVersion) ? WORLD.chunkVersion(cx) : undefined);
+function modifiedChunkIds(){ if(WORLD && typeof WORLD.modifiedChunkIds==='function') return WORLD.modifiedChunkIds(); const out=[]; const worldMap=WORLD._world; if(!worldMap) return out; for(const [k] of worldMap.entries()){ const ref=normalizeWorldChunkRef(k); if(!ref) continue; const ver=WORLD._versions.get(ref.key)||0; if(ver!==0) out.push(ref.base?ref.cx:{cx:ref.cx,sy:ref.sy}); } return out; }
+function gatherModifiedChunks(ids){
+	const out=[]; const worldMap=WORLD._world; if(!worldMap) return out;
+	const rawList=Array.isArray(ids) ? ids : [...worldMap.keys()];
+	const seen=new Set();
+	for(const raw of rawList){
+		const ref=normalizeWorldChunkRef(raw);
+		if(!ref || seen.has(ref.key)) continue;
+		seen.add(ref.key);
+		const arr=worldChunkArrayFor(ref,false);
+		const ver=worldChunkVersion(ref);
+		if(!arr || ver===0) continue;
+		const item={cx:ref.cx,data:encodeRLE(chunkForTerrainSave(arr)),rle:true};
+		if(!ref.base){ item.sy=ref.sy; item.sectionH=ref.h||worldSectionHeight(); }
+		out.push(item);
+	}
+	return out;
 }
-function restoreModifiedChunks(list){ const restored=[]; if(!Array.isArray(list)) return restored; for(const ch of list){ if(typeof ch.cx!=='number'||!ch.data) continue; const arr = ch.rle? decodeRLE(ch.data, CHUNK_W*WORLD_H): decodeRaw(ch.data); restoreTerrainChunk(ch.cx,arr); restored.push(ch.cx); } return restored; }
-function autosaveChunkKey(cx,jobId){ return AUTOSAVE_CHUNK_PREFIX+WORLDGEN.worldSeed+'_'+cx+(jobId?('_'+jobId):''); }
+function baseChunkIdsForAudits(ids){
+	const out=[], seen=new Set();
+	if(!Array.isArray(ids)) return out;
+	for(const raw of ids){
+		const ref=normalizeWorldChunkRef(raw);
+		if(!ref || !ref.base || seen.has(ref.cx)) continue;
+		seen.add(ref.cx); out.push(ref.cx);
+	}
+	return out;
+}
+function markWorldChunkModified(cx){
+	const sy=arguments.length>1 && Number.isFinite(arguments[1]) ? Math.floor(arguments[1]) : null;
+	const ref=normalizeWorldChunkRef({cx, sy});
+	if(!ref) return;
+	const beforeVer=(WORLD && WORLD.chunkVersion) ? WORLD.chunkVersion(ref.cx,ref.sy) : undefined;
+	if(WORLD && typeof WORLD.markModifiedChunk==='function') WORLD.markModifiedChunk(ref.cx,1,ref.sy); else if(WORLD && WORLD._versions) WORLD._versions.set(ref.key,1);
+	if(WORLD && WORLD._modifiedChunks) WORLD._modifiedChunks.add(ref.base?ref.cx:ref.key);
+	markChunkRenderDirtyFull(ref.cx,beforeVer,(WORLD && WORLD.chunkVersion) ? WORLD.chunkVersion(ref.cx,ref.sy) : undefined,ref.sy);
+}
+function restoreModifiedChunks(list){ const restored=[]; if(!Array.isArray(list)) return restored; for(const ch of list){ if(typeof ch.cx!=='number'||!ch.data) continue; const sy=Number.isFinite(ch.sy)?Math.floor(ch.sy):null; const size=CHUNK_W*(sy==null?WORLD_H:(Number.isFinite(ch.sectionH)?ch.sectionH:worldSectionHeight())); const arr = ch.rle? decodeRLE(ch.data, size): decodeRaw(ch.data); if(sy==null) restoreTerrainChunk(ch.cx,arr); else restoreTerrainChunk(ch.cx,arr,sy); restored.push(sy==null?ch.cx:{cx:ch.cx,sy}); } return restored; }
+function autosaveChunkKey(cx,jobId){ const sy=arguments.length>2 && Number.isFinite(arguments[2]) ? Math.floor(arguments[2]) : null; return AUTOSAVE_CHUNK_PREFIX+WORLDGEN.worldSeed+'_'+cx+(sy==null?'':('_s'+sy))+(jobId?('_'+jobId):''); }
 function currentAutosaveRefs(){ try{ const raw=localStorage.getItem(SAVE_KEY); if(!raw) return []; const data=JSON.parse(raw); const refs=data && data.world && Array.isArray(data.world.chunkRefs) ? data.world.chunkRefs : []; return refs.filter(r=>r && typeof r.key==='string' && r.key.startsWith(AUTOSAVE_CHUNK_PREFIX)); }catch(e){ return []; } }
 function cleanupAutosaveChunks(keepKeys,oldRefs){ if(!Array.isArray(oldRefs)) return; for(const r of oldRefs){ try{ if(r && typeof r.key==='string' && r.key.startsWith(AUTOSAVE_CHUNK_PREFIX) && !keepKeys.has(r.key)) localStorage.removeItem(r.key); }catch(e){} } }
 function scanAutosaveRefs(raw,keep){
@@ -1171,7 +1273,7 @@ function recordSaveFailure(e,manual){
 	try{ window.__lastSaveError=_lastSaveError; window.__lastSaveFailures=_saveFailureCount; window.__nextSaveRetryAt=_nextAutoSaveRetryAt; }catch(err){}
 	if(manual) msg(quota?'Blad zapisu - brak miejsca?':'Blad zapisu');
 }
-function restoreReferencedChunks(refs){ const restored=[]; if(!Array.isArray(refs)) return restored; for(const ref of refs){ if(!ref || typeof ref.cx!=='number' || typeof ref.key!=='string' || !ref.key.startsWith(AUTOSAVE_CHUNK_PREFIX)) continue; let data=null; try{ data=localStorage.getItem(ref.key); }catch(e){ data=null; } if(!data) continue; if(ref.h && computeHash(data)!==ref.h){ console.warn('Autosave chunk hash mismatch',ref.cx); continue; } const arr = ref.rle===false ? decodeRaw(data) : decodeRLE(data, CHUNK_W*WORLD_H); restoreTerrainChunk(ref.cx,arr); restored.push(ref.cx); } return restored; }
+function restoreReferencedChunks(refs){ const restored=[]; if(!Array.isArray(refs)) return restored; for(const ref of refs){ if(!ref || typeof ref.cx!=='number' || typeof ref.key!=='string' || !ref.key.startsWith(AUTOSAVE_CHUNK_PREFIX)) continue; let data=null; try{ data=localStorage.getItem(ref.key); }catch(e){ data=null; } if(!data) continue; if(ref.h && computeHash(data)!==ref.h){ console.warn('Autosave chunk hash mismatch',ref.cx); continue; } const sy=Number.isFinite(ref.sy)?Math.floor(ref.sy):null; const size=CHUNK_W*(sy==null?WORLD_H:(Number.isFinite(ref.sectionH)?ref.sectionH:worldSectionHeight())); const arr = ref.rle===false ? decodeRaw(data) : decodeRLE(data, size); if(sy==null) restoreTerrainChunk(ref.cx,arr); else restoreTerrainChunk(ref.cx,arr,sy); restored.push(sy==null?ref.cx:{cx:ref.cx,sy}); } return restored; }
 function restoreWorldChunks(worldData){ if(!worldData || typeof worldData!=='object') return []; if(Array.isArray(worldData.modified)) return restoreModifiedChunks(worldData.modified); if(Array.isArray(worldData.chunkRefs)) return restoreReferencedChunks(worldData.chunkRefs); return []; }
 // (legacy v4 export*/import* save helpers removed — v5 persists only blocks + player position)
 function snapshotInventory(){
@@ -1228,15 +1330,17 @@ function buildSaveObject(opts){
  let saveChunkIds = Array.isArray(opts.auditChunkIds) ? opts.auditChunkIds : null;
  if(!opts.lightweight){
 	 saveChunkIds=timedSavePart('world.modified',()=>modifiedChunkIds(),perf);
-	 timedSavePart('falling.audit',()=>{ try{ if(saveChunkIds.length && FALLING && FALLING.auditChunks) FALLING.auditChunks(saveChunkIds,{force:true,immediate:true}); }catch(e){} },perf);
+	 const auditChunkIds=baseChunkIdsForAudits(saveChunkIds);
+	 timedSavePart('falling.audit',()=>{ try{ if(auditChunkIds.length && FALLING && FALLING.auditChunks) FALLING.auditChunks(auditChunkIds,{force:true,immediate:true}); }catch(e){} },perf);
 	 timedSavePart('falling.settle',()=>{ try{ if(FALLING && FALLING.settleAll) FALLING.settleAll(); }catch(e){} },perf);
-	 timedSavePart('trees.audit',()=>{ try{ if(TREES && TREES.auditChunks) TREES.auditChunks(saveChunkIds,getTile); }catch(e){} },perf);
+	 timedSavePart('trees.audit',()=>{ try{ if(TREES && TREES.auditChunks) TREES.auditChunks(auditChunkIds,getTile); }catch(e){} },perf);
 	 timedSavePart('trees.settle',()=>{ try{ if(TREES && TREES.settleAll) TREES.settleAll(getTile,setTile); }catch(e){} },perf);
 	 saveChunkIds=timedSavePart('world.modified2',()=>modifiedChunkIds(),perf);
  }
  if(saveChunkIds==null) saveChunkIds = Array.isArray(opts.chunkRefs) ? [] : timedSavePart('world.modified',()=>modifiedChunkIds(),perf);
- timedSavePart('meat.audit',()=>{ try{ if(saveChunkIds.length && MEAT && MEAT.auditChunks) MEAT.auditChunks(saveChunkIds,getTile); }catch(e){} },perf);
- timedSavePart('gases.audit',()=>{ try{ if(saveChunkIds.length && GASES && GASES.auditChunks) GASES.auditChunks(saveChunkIds,getTile); }catch(e){} },perf);
+ const saveAuditChunkIds=baseChunkIdsForAudits(saveChunkIds);
+ timedSavePart('meat.audit',()=>{ try{ if(saveAuditChunkIds.length && MEAT && MEAT.auditChunks) MEAT.auditChunks(saveAuditChunkIds,getTile); }catch(e){} },perf);
+ timedSavePart('gases.audit',()=>{ try{ if(saveAuditChunkIds.length && GASES && GASES.auditChunks) GASES.auditChunks(saveAuditChunkIds,getTile); }catch(e){} },perf);
  const worldData = timedSavePart(Array.isArray(opts.chunkRefs)?'world.refs':'world.chunks',()=>(
 	Array.isArray(opts.chunkRefs) ? {chunkRefs:opts.chunkRefs, external:true} : {modified: gatherModifiedChunks(saveChunkIds)}
  ),perf);
@@ -1244,6 +1348,7 @@ function buildSaveObject(opts){
 	v:7,
 	seed: WORLDGEN.worldSeed,
 	world:worldData,
+	fog: timedSavePart('fog',()=>((FOG && FOG.exportSeen) ? {v:2,revealAll:!!(FOG.getRevealAll && FOG.getRevealAll()),seen:FOG.exportSeen()} : null),perf),
 	infrastructure: timedSavePart('infrastructure',()=>((WORLD && WORLD.snapshotInfrastructure) ? WORLD.snapshotInfrastructure() : null),perf),
 	background: timedSavePart('background',()=>((BACKGROUND && BACKGROUND.snapshot) ? BACKGROUND.snapshot() : ((BACKGROUND && BACKGROUND.exportState) ? BACKGROUND.exportState() : null)),perf),
 	trees: timedSavePart('trees',()=>((TREES && TREES.snapshot) ? TREES.snapshot() : null),perf),
@@ -1374,15 +1479,16 @@ function loadGame(){
 	// Restore modified blocks and player position. v6 saves are self-contained;
 	// v7 autosaves may reference separately stored chunk blobs.
 	const restoredChunks=restoreWorldChunks(data.world);
+	const restoredBaseChunks=baseChunkIdsForAudits(restoredChunks);
 	try{ if(WORLD && WORLD.restoreInfrastructure) WORLD.restoreInfrastructure(data.infrastructure); }catch(e){}
 	try{ if(WORLD && WORLD.restoreConstructionBackground) WORLD.restoreConstructionBackground(data.constructionBackground); }catch(e){}
 	try{ if(TREES && TREES.restore) TREES.restore(data.trees,getTile); }catch(e){}
-	try{ if(TREES && TREES.auditChunks) TREES.auditChunks(restoredChunks,getTile); }catch(e){}
+	try{ if(TREES && TREES.auditChunks) TREES.auditChunks(restoredBaseChunks,getTile); }catch(e){}
 	try{ if(FALLING && FALLING.restore) FALLING.restore(data.falling); }catch(e){}
-	try{ if(FALLING && FALLING.auditChunks) FALLING.auditChunks(restoredChunks,{force:true}); }catch(e){}
+	try{ if(FALLING && FALLING.auditChunks) FALLING.auditChunks(restoredBaseChunks,{force:true}); }catch(e){}
 	try{ if(MEAT && MEAT.restore) MEAT.restore(data.meat,getTile); }catch(e){}
 	try{ if(GASES && GASES.restore) GASES.restore(data.gases,getTile,setTile); }catch(e){}
-	try{ if(GASES && GASES.auditChunks) GASES.auditChunks(restoredChunks,getTile); }catch(e){}
+	try{ if(GASES && GASES.auditChunks) GASES.auditChunks(restoredBaseChunks,getTile); }catch(e){}
 	try{ if(FIRE && FIRE.restore) FIRE.restore(data.fire,getTile); }catch(e){}
 	try{ if(WIND && WIND.restore) WIND.restore(data.wind); }catch(e){}
 	try{ if(SEASONS && SEASONS.restore) SEASONS.restore(data.seasons); }catch(e){}
@@ -1398,6 +1504,7 @@ function loadGame(){
 	try{ if(GUARDIANS && GUARDIANS.restore) GUARDIANS.restore(data.guardians); }catch(e){}
 	try{ if(UNDERGROUND && UNDERGROUND.restore) UNDERGROUND.restore(data.undergroundBoss); }catch(e){}
 	try{ if(AFTERMATH && AFTERMATH.restore) AFTERMATH.restore(data.guardianAftermath); }catch(e){}
+	try{ if(FOG && data.fog){ if(FOG.importSeen) FOG.importSeen(Array.isArray(data.fog) ? data.fog : data.fog.seen); if(FOG.setRevealAll) FOG.setRevealAll(!!data.fog.revealAll); } }catch(e){}
 	try{ if(METEORITES && METEORITES.restore) METEORITES.restore(data.meteorites); }catch(e){}
 	try{ if(MOBS && MOBS.deserialize && data.mobs) MOBS.deserialize(data.mobs); }catch(e){}
 	try{ if(COMPANIONS && COMPANIONS.restore) COMPANIONS.restore(data.companions,getTile); }catch(e){}
@@ -1601,23 +1708,29 @@ function runAutoSaveWork(){
 		const worldMap=WORLD._world;
 		let processed=0;
 		while(job.index<job.chunks.length){
-			const cx=job.chunks[job.index++];
-			const arr=worldMap && worldMap.get('c'+cx);
-			const ver=WORLD._versions ? (WORLD._versions.get('c'+cx)||0) : 0;
+			const rawRef=job.chunks[job.index++];
+			const ref=normalizeWorldChunkRef(rawRef);
+			if(!ref) continue;
+			const cx=ref.cx;
+			const arr=worldMap && worldMap.get(ref.key);
+			const ver=worldChunkVersion(ref);
 			if(!arr || ver===0) continue;
 			const auditT=savePerfNow();
-			try{ if(FALLING && FALLING.auditChunks) FALLING.auditChunks([cx],{force:true,immediate:true}); }catch(e){}
-			try{ if(MEAT && MEAT.auditChunks) MEAT.auditChunks([cx],getTile); }catch(e){}
-			try{ if(GASES && GASES.auditChunks) GASES.auditChunks([cx],getTile); }catch(e){}
+			if(ref.base){
+				try{ if(FALLING && FALLING.auditChunks) FALLING.auditChunks([cx],{force:true,immediate:true}); }catch(e){}
+				try{ if(MEAT && MEAT.auditChunks) MEAT.auditChunks([cx],getTile); }catch(e){}
+				try{ if(GASES && GASES.auditChunks) GASES.auditChunks([cx],getTile); }catch(e){}
+			}
 			job.auditMs += savePerfNow()-auditT;
 			const encT=savePerfNow();
 			const data=encodeRLE(chunkForTerrainSave(arr));
 			job.encodeMs += savePerfNow()-encT;
-			const ref={cx,key:autosaveChunkKey(cx,job.id),rle:true,h:computeHash(data)};
+			const saveRef={cx,key:ref.base?autosaveChunkKey(cx,job.id):autosaveChunkKey(cx,job.id,ref.sy),rle:true,h:computeHash(data)};
+			if(!ref.base){ saveRef.sy=ref.sy; saveRef.sectionH=ref.h||worldSectionHeight(); }
 			const writeT=savePerfNow();
-			localStorage.setItem(ref.key,data);
+			localStorage.setItem(saveRef.key,data);
 			job.chunkWriteMs += savePerfNow()-writeT;
-			job.refs.push(ref);
+			job.refs.push(saveRef);
 			job.bytes+=data.length;
 			processed++;
 			if(processed>=1 && savePerfNow()-t0>=AUTO_SAVE_CHUNK_BATCH_MS) break;
@@ -2238,38 +2351,49 @@ function drawPlayer(){ if(drawDeathTravelFx()) return; const c=MM.customization|
 		}
 	} }
 
-// Chunk render cache (offscreen canvas per chunk)
-const chunkCanvases = new Map(); // key: chunkX -> {canvas,ctx,version,chests,doorways}
+// Chunk render cache (offscreen canvas per horizontal chunk and vertical section)
+const chunkCanvases = new Map(); // key: cX or cX:sY -> {canvas,ctx,version,chests,doorways}
 const CHUNK_CANVAS_MIN_KEEP = 10;
-const CHUNK_CANVAS_MAX_KEEP = 16;
-const chunkRenderDirty = new Map(); // chunkX -> {min,max,baseVersion,version,full}
+const CHUNK_CANVAS_MAX_KEEP = 32;
+const chunkRenderDirty = new Map(); // section key -> {min,max,baseVersion,version,full}
 let chunkCacheRebuildBudget=3;
 let chunkCacheRebuiltThisFrame=0;
 let chunkCacheDeferredThisFrame=0;
 let chunkCachePartialRebuiltThisFrame=0;
 function markChunkRenderDirty(cx,y,pad,baseVersion,nextVersion){
 	if(!Number.isFinite(cx)) return;
-	if(!(y>=0) || y>=WORLD_H){ markChunkRenderDirtyFull(cx,baseVersion,nextVersion); return; }
-	const row=Math.floor(y);
+	if(!Number.isFinite(y) || !worldYInBounds(y)){ return; }
+	const sy=worldSectionY(y);
+	const key=worldRenderSectionKey(cx,sy);
+	const row=worldSectionLocalY(y,sy);
 	const p=Math.max(0, Math.min(6, Number.isFinite(pad)?pad:1));
-	let d=chunkRenderDirty.get(cx);
+	let d=chunkRenderDirty.get(key);
 	if(!d){
-		d={min:WORLD_H,max:-1,baseVersion:Number.isFinite(baseVersion)?baseVersion:((WORLD && WORLD.chunkVersion)?WORLD.chunkVersion(cx):0),version:Number.isFinite(nextVersion)?nextVersion:((WORLD && WORLD.chunkVersion)?WORLD.chunkVersion(cx):0),full:false};
-		chunkRenderDirty.set(cx,d);
+		const ver=(WORLD && WORLD.chunkVersion)?WORLD.chunkVersion(cx,sy):0;
+		d={min:worldSectionHeight(),max:-1,baseVersion:Number.isFinite(baseVersion)?baseVersion:ver,version:Number.isFinite(nextVersion)?nextVersion:ver,full:false};
+		chunkRenderDirty.set(key,d);
 	}
 	d.min=Math.max(0,Math.min(d.min,row-p));
-	d.max=Math.min(WORLD_H-1,Math.max(d.max,row+p));
+	d.max=Math.min(worldSectionHeight()-1,Math.max(d.max,row+p));
 	if(Number.isFinite(nextVersion)) d.version=nextVersion;
 }
 function markChunkRenderDirtyFull(cx,baseVersion,nextVersion){
 	if(!Number.isFinite(cx)) return;
-	let d=chunkRenderDirty.get(cx);
+	const syArg=arguments.length>3 && Number.isFinite(arguments[3]) ? Math.floor(arguments[3]) : null;
+	const sections=syArg==null ? Array.from({length:baseWorldSectionMax()+1},(_,i)=>i) : [syArg];
+	for(const sy of sections) markChunkRenderDirtyFullSection(cx,sy,baseVersion,nextVersion);
+}
+function markChunkRenderDirtyFullSection(cx,sy,baseVersion,nextVersion){
+	const key=worldRenderSectionKey(cx,sy);
+	const h=worldSectionHeight();
+	let d=chunkRenderDirty.get(key);
 	if(!d){
-		d={min:0,max:WORLD_H-1,baseVersion:Number.isFinite(baseVersion)?baseVersion:((WORLD && WORLD.chunkVersion)?WORLD.chunkVersion(cx):0),version:Number.isFinite(nextVersion)?nextVersion:((WORLD && WORLD.chunkVersion)?WORLD.chunkVersion(cx):0),full:true};
-		chunkRenderDirty.set(cx,d);
+		const ver=(WORLD && WORLD.chunkVersion)?WORLD.chunkVersion(cx,sy):0;
+		d={min:0,max:h-1,baseVersion:Number.isFinite(baseVersion)?baseVersion:ver,version:Number.isFinite(nextVersion)?nextVersion:ver,full:true};
+		chunkRenderDirty.set(key,d);
 		return;
 	}
-	d.min=0; d.max=WORLD_H-1; d.full=true;
+	d.min=0; d.max=h-1; d.full=true;
 	if(Number.isFinite(nextVersion)) d.version=nextVersion;
 }
 function beginChunkCacheFrame(){
@@ -2294,10 +2418,16 @@ function canRebuildChunkCache(entry,currentVersion){
 	chunkCacheRebuiltThisFrame++;
 	return true;
 }
-function trimChunkCanvasCache(centerCx, keep){
+function trimChunkCanvasCache(centerCx, keep, centerSy){
 	keep=Math.max(CHUNK_CANVAS_MIN_KEEP, Math.min(CHUNK_CANVAS_MAX_KEEP, keep|0));
 	if(chunkCanvases.size<=keep) return;
-	const keys=[...chunkCanvases.keys()].sort((a,b)=>Math.abs(b-centerCx)-Math.abs(a-centerCx));
+	centerSy=Number.isFinite(centerSy) ? centerSy : 0;
+	const keys=[...chunkCanvases.keys()].sort((a,b)=>{
+		const ar=parseWorldRenderSectionKey(a), br=parseWorldRenderSectionKey(b);
+		const ad=ar ? Math.abs(ar.cx-centerCx)+Math.abs((ar.sy==null?0:ar.sy)-centerSy)*0.35 : 999999;
+		const bd=br ? Math.abs(br.cx-centerCx)+Math.abs((br.sy==null?0:br.sy)-centerSy)*0.35 : 999999;
+		return bd-ad;
+	});
 	for(const key of keys){
 		if(chunkCanvases.size<=keep) break;
 		chunkCanvases.delete(key);
@@ -2380,9 +2510,12 @@ function drawUndergroundBackdrop(g,px,py,wx,y,surf){
 	g.fillStyle='rgb('+Math.round(L*0.92)+','+Math.round(L*0.86)+','+Math.round(L*1.18)+')';
 	g.fillRect(px,py,TILE,TILE);
 }
-function chunkTileAt(arr,cx,lx,y){
-	if(y<0 || y>=WORLD_H) return T.AIR;
-	if(lx>=0 && lx<CHUNK_W) return arr[y*CHUNK_W+lx];
+function chunkTileAt(arr,cx,lx,y,originY,sectionH){
+	originY=Number.isFinite(originY) ? originY : 0;
+	sectionH=Number.isFinite(sectionH) ? sectionH : WORLD_H;
+	if(!worldYInBounds(y)) return y>=worldMaxY() ? T.BEDROCK : T.AIR;
+	const localY=y-originY;
+	if(lx>=0 && lx<CHUNK_W && localY>=0 && localY<sectionH) return arr[localY*CHUNK_W+lx];
 	return getTile(cx*CHUNK_W+lx,y);
 }
 // Gravestone marker: a rounded headstone with an etched cross instead of the old
@@ -3248,29 +3381,35 @@ function drawBackgroundBuildTile(g,t,px,py,wx,y,h){
 		g.fillRect(px+4+((h>>>7)&7),py+5+((h>>>11)&7),3,1);
 	}
 }
-function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=WORLD._world.get(k); if(!arr) return; let entry=chunkCanvases.get(key); if(!entry){
+function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(sy) : 0; const key=worldRenderSectionKey(cx,sy); const arr=worldChunkArrayFor({cx,sy},true); if(!arr) return; const originY=worldSectionOriginY(sy); const sectionH=worldSectionHeight(); let entry=chunkCanvases.get(key); if(!entry){
 		// each cached chunk holds a full-height canvas (megabytes of pixels) — evict the
 		// chunks farthest from the current view so a long trek can't accumulate them forever
-		trimChunkCanvasCache(Number.isFinite(centerCx)?centerCx:cx, CHUNK_CANVAS_MAX_KEEP-1);
-		const c=document.createElement('canvas'); c.width=CHUNK_W*TILE; c.height=WORLD_H*TILE; const cctx=c.getContext('2d'); cctx.imageSmoothingEnabled=false; entry={canvas:c,ctx:cctx,version:-1,chests:[],doorways:[]}; chunkCanvases.set(key,entry); }
-	const currentVersion=WORLD.chunkVersion(cx); if(entry.version===currentVersion){ chunkRenderDirty.delete(cx); return; } if(entry.version>=0 && METEORITES && METEORITES.isChunkBusy && METEORITES.isChunkBusy(cx)){ chunkCacheDeferredThisFrame++; return; } if(!canRebuildChunkCache(entry,currentVersion)) return; const cctx=entry.ctx; const dirty=chunkRenderDirty.get(cx); const partial=!!(entry.version>=0 && dirty && !dirty.full && dirty.baseVersion===entry.version && dirty.version===currentVersion && dirty.min<=dirty.max);
+		trimChunkCanvasCache(Number.isFinite(centerCx)?centerCx:cx, CHUNK_CANVAS_MAX_KEEP-1, sy);
+		const c=document.createElement('canvas'); c.width=CHUNK_W*TILE; c.height=sectionH*TILE; const cctx=c.getContext('2d'); cctx.imageSmoothingEnabled=false; entry={canvas:c,ctx:cctx,version:-1,sy,chests:[],doorways:[]}; chunkCanvases.set(key,entry); }
+	const currentVersion=WORLD.chunkVersion(cx,sy); if(entry.version===currentVersion){ chunkRenderDirty.delete(key); return; } if(entry.version>=0 && METEORITES && METEORITES.isChunkBusy && METEORITES.isChunkBusy(cx)){ chunkCacheDeferredThisFrame++; return; } if(!canRebuildChunkCache(entry,currentVersion)) return; const cctx=entry.ctx; const dirty=chunkRenderDirty.get(key); const partial=!!(entry.version>=0 && dirty && !dirty.full && dirty.baseVersion===entry.version && dirty.version===currentVersion && dirty.min<=dirty.max);
 	const redrawY0=partial?Math.max(0,dirty.min|0):0;
-	const redrawY1=partial?Math.min(WORLD_H-1,dirty.max|0):WORLD_H-1;
+	const redrawY1=partial?Math.min(sectionH-1,dirty.max|0):sectionH-1;
+	const redrawWorldY0=originY+redrawY0;
+	const redrawWorldY1=originY+redrawY1;
+	if(cctx.setTransform) cctx.setTransform(1,0,0,1,0,0);
 	if(partial){
 		chunkCachePartialRebuiltThisFrame++;
 		cctx.clearRect(0,redrawY0*TILE,cctx.canvas.width,(redrawY1-redrawY0+1)*TILE);
-		entry.chests=(entry.chests||[]).filter(o=>o.y<redrawY0 || o.y>redrawY1);
-		entry.doorways=(entry.doorways||[]).filter(o=>o.y<redrawY0 || o.y>redrawY1);
+		entry.chests=(entry.chests||[]).filter(o=>o.y<redrawWorldY0 || o.y>redrawWorldY1);
+		entry.doorways=(entry.doorways||[]).filter(o=>o.y<redrawWorldY0 || o.y>redrawWorldY1);
 	}else{
 		cctx.clearRect(0,0,cctx.canvas.width,cctx.canvas.height);
 		entry.chests=[];
 		entry.doorways=[];
 	}
+	cctx.save();
+	cctx.translate(0,-originY*TILE);
 		for(let lx=0; lx<CHUNK_W; lx++){
 			const wx=cx*CHUNK_W+lx;
 			const surf=WORLDGEN.surfaceHeight(wx);
-			for(let y=redrawY0;y<=redrawY1;y++){
-				const t=arr[y*CHUNK_W+lx];
+			for(let y=redrawWorldY0;y<=redrawWorldY1;y++){
+				const localY=y-originY;
+				const t=arr[localY*CHUNK_W+lx];
 				// TORCH renders as a sprite in the fire.js pass; GRAVE gets a headstone shape
 				// below — both bake only their backdrop here
 				const gasTile = isGasTileId(t);
@@ -3520,8 +3659,8 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 				// Snow-specific styling: soft top highlight and subtle dark rim for separation
 				if(t===T.SNOW){
 					const px=lx*TILE, py=y*TILE;
-					const above=chunkTileAt(arr,cx,lx,y-1);
-					const below=chunkTileAt(arr,cx,lx,y+1);
+					const above=chunkTileAt(arr,cx,lx,y-1,originY,sectionH);
+					const below=chunkTileAt(arr,cx,lx,y+1,originY,sectionH);
 					if(above!==T.SNOW){
 						cctx.fillStyle='rgba(255,255,255,0.30)';
 						cctx.fillRect(px, py, TILE, Math.max(2, Math.floor(TILE*0.22)));
@@ -3538,8 +3677,8 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 				// Ice reads glossy, not grainy: cool depth shade below, bright crown,
 				// and a deterministic diagonal glint pair (snow stays matte for contrast)
 				if(t===T.ICE){
-					const above=chunkTileAt(arr,cx,lx,y-1);
-					const below=chunkTileAt(arr,cx,lx,y+1);
+					const above=chunkTileAt(arr,cx,lx,y-1,originY,sectionH);
+					const below=chunkTileAt(arr,cx,lx,y+1,originY,sectionH);
 					if(below!==T.ICE){
 						cctx.fillStyle='rgba(40,90,160,0.16)';
 						cctx.fillRect(lx*TILE, y*TILE+TILE-3, TILE, 3);
@@ -3564,7 +3703,7 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 					}
 				}
 				if(t===T.COAL){
-					if(chunkTileAt(arr,cx,lx,y+1)!==T.COAL){
+					if(chunkTileAt(arr,cx,lx,y+1,originY,sectionH)!==T.COAL){
 						cctx.fillStyle='rgba(0,0,0,0.22)';
 						cctx.fillRect(lx*TILE, y*TILE+TILE-4, TILE, 4);
 					}
@@ -3637,7 +3776,8 @@ function drawChunkToCache(cx,centerCx){ const key=cx; const k='c'+cx; const arr=
 				if(t===T.WOOD){ cctx.fillStyle='rgba(0,0,0,0.05)'; cctx.fillRect(lx*TILE + ((h>>8)&3), y*TILE, 2, TILE); }
 			}
 		}
-	entry.version=currentVersion; chunkRenderDirty.delete(cx); }
+	cctx.restore();
+	entry.version=currentVersion; chunkRenderDirty.delete(key); }
 function drawLooseWireOverlay(g,px,py,h){
 	const y1=py+9+((h>>4)&2);
 	const y2=py+5+((h>>7)&3);
@@ -3721,7 +3861,7 @@ function infrastructureOverlayCacheKey(sx,sy,viewX,viewY){
 function collectInfrastructureOverlayCells(sx,sy,viewX,viewY){
 	if(!WORLD || !WORLD.getInfrastructure) return;
 	const x0=Math.floor(sx)-2, x1=Math.ceil(sx+viewX)+2;
-	const y0=Math.max(0,Math.floor(sy)-2), y1=Math.min(WORLD_H-1,Math.ceil(sy+viewY)+2);
+	const y0=Math.max(worldMinY(),Math.floor(sy)-2), y1=Math.min(worldMaxY()-1,Math.ceil(sy+viewY)+2);
 	const cells=[];
 	for(let y=y0; y<=y1; y++){
 		for(let x=x0; x<=x1; x++){
@@ -3802,23 +3942,9 @@ function collectDoorwayCellsInRange(x0,x1,y0,y1,cells){
 }
 function visibleDoorwayCellsFor(sx,sy,viewX,viewY){
 	const x0=Math.floor(sx)-2, x1=Math.ceil(sx+viewX)+2;
-	const y0=Math.max(0,Math.floor(sy)-2), y1=Math.min(WORLD_H-1,Math.ceil(sy+viewY)+2);
+	const y0=Math.max(worldMinY(),Math.floor(sy)-2), y1=Math.min(worldMaxY()-1,Math.ceil(sy+viewY)+2);
 	const cells=[];
-	const minChunk=Math.floor(x0/CHUNK_W), maxChunk=Math.floor(x1/CHUNK_W);
-	for(let cx=minChunk; cx<=maxChunk; cx++){
-		const entry=chunkCanvases.get(cx);
-		if(!entry || !Array.isArray(entry.doorways)){
-			collectDoorwayCellsInRange(Math.max(x0,cx*CHUNK_W),Math.min(x1,cx*CHUNK_W+CHUNK_W-1),y0,y1,cells);
-			continue;
-		}
-		for(const d of entry.doorways){
-			if(!d || d.x<x0 || d.x>x1 || d.y<y0 || d.y>y1) continue;
-			const t=getTile(d.x,d.y);
-			if(!isDoorTile(t) && !isTrapdoorTile(t)) continue;
-			if(!worldFxVisible(d.x,d.y)) continue;
-			cells.push({x:d.x,y:d.y,t,h:Number.isFinite(d.h)?d.h:hash32(d.x,d.y)});
-		}
-	}
+	collectDoorwayCellsInRange(x0,x1,y0,y1,cells);
 	return {cells,x0,x1,y0,y1};
 }
 function drawDoorOpenOverlays(sx,sy,viewX,viewY){
@@ -3882,52 +4008,63 @@ function drawSeamSafeChunkCanvas(canvas, dx, dy){
 	ctx.drawImage(canvas,0,0,1,sh,dx-overlap,dy,overlap,sh);
 	ctx.drawImage(canvas,sw-1,0,1,sh,dx+sw,dy,overlap,sh);
 }
-function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk=Math.floor(sx/CHUNK_W)-1; const maxChunk=Math.floor((sx+viewX+2)/CHUNK_W)+1; const centerChunk=Math.floor((sx+viewX*0.5)/CHUNK_W); // prepare caches
-	const visibleChunkCount=maxChunk-minChunk+1;
-	const visibleChunks=[];
+function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk=Math.floor(sx/CHUNK_W)-1; const maxChunk=Math.floor((sx+viewX+2)/CHUNK_W)+1; const centerChunk=Math.floor((sx+viewX*0.5)/CHUNK_W); const minSection=Math.max(worldMinSection(),worldSectionY(Math.floor(sy)-2)); const maxSection=Math.min(worldMaxSection(),worldSectionY(Math.ceil(sy+viewY)+2)); const centerSection=worldSectionY(sy+viewY*0.5); // prepare caches
+	const visibleChunkCount=(maxChunk-minChunk+1)*Math.max(1,maxSection-minSection+1);
+	const visibleChunks=[], visibleChunkSeen=new Set();
+	const fallingAuditChunks=[], fallingAuditChunkSeen=new Set();
 	beginChunkCacheFrame();
-	for(let cx=minChunk; cx<=maxChunk; cx++){ WORLD.ensureChunk(cx); drawChunkToCache(cx,centerChunk); }
-	for(let cx=minChunk; cx<=maxChunk; cx++) visibleChunks.push(cx);
-	if(FALLING && FALLING.auditChunks) FALLING.auditChunks(visibleChunks);
-	trimChunkCanvasCache(centerChunk, visibleChunkCount+6);
+	for(let cx=minChunk; cx<=maxChunk; cx++){
+		for(let section=minSection; section<=maxSection; section++){
+			drawChunkToCache(cx,section,centerChunk);
+			if(!fallingAuditChunkSeen.has(cx)){ fallingAuditChunkSeen.add(cx); fallingAuditChunks.push(cx); }
+			if(isBaseWorldSection(section) && !visibleChunkSeen.has(cx)){ visibleChunkSeen.add(cx); visibleChunks.push(cx); }
+		}
+	}
+	if(FALLING && FALLING.auditChunks) FALLING.auditChunks(fallingAuditChunks);
+	trimChunkCanvasCache(centerChunk, visibleChunkCount+6, centerSection);
 	// Draw whole chunks that intersect view (avoids per-tile seams)
 	const localLayer=beginPrecisionSafeWorldLayer(opts);
 	const camDrawX=localLayer?opts.camX:0;
 	const camDrawY=localLayer?opts.camY:0;
 	const viewPX0 = sx*TILE, viewPX1=(sx+viewX+2)*TILE;
 	for(let cx=minChunk; cx<=maxChunk; cx++){
-		const entry=chunkCanvases.get(cx); if(!entry) continue; const chunkXpx = cx*CHUNK_W*TILE;
-		const chunkRight = chunkXpx + CHUNK_W*TILE; if(chunkRight < viewPX0-CHUNK_W*TILE || chunkXpx > viewPX1+CHUNK_W*TILE) continue;
-		drawSeamSafeChunkCanvas(entry.canvas, localLayer?(cx*CHUNK_W-camDrawX)*TILE:chunkXpx, localLayer?(-camDrawY*TILE):0);
+		for(let section=minSection; section<=maxSection; section++){
+			const entry=chunkCanvases.get(worldRenderSectionKey(cx,section)); if(!entry) continue; const chunkXpx = cx*CHUNK_W*TILE;
+			const chunkRight = chunkXpx + CHUNK_W*TILE; if(chunkRight < viewPX0-CHUNK_W*TILE || chunkXpx > viewPX1+CHUNK_W*TILE) continue;
+			const originY=worldSectionOriginY(section);
+			drawSeamSafeChunkCanvas(entry.canvas, localLayer?(cx*CHUNK_W-camDrawX)*TILE:chunkXpx, localLayer?((originY-camDrawY)*TILE):(originY*TILE));
+		}
 	}
 		// Chest aura second pass (not cached) for pulsing glow
 		const nowA=performance.now();
 		const y0=sy, y1=sy+viewY+2;
 		for(let cx2=minChunk; cx2<=maxChunk; cx2++){
-			const entry=chunkCanvases.get(cx2);
-			const chests=entry && Array.isArray(entry.chests) ? entry.chests : [];
-			for(const ch of chests){
-				const wx=ch.x, y=ch.y, t=ch.t;
-				if(y<y0 || y>=y1) continue;
-				if(!chestDebug && !worldFxVisible(wx,y)) continue;
-				const pulse=Math.sin(nowA*0.004 + wx*0.7 + y*0.3)*0.5+0.5;
-				const rad=TILE*0.6 + pulse*TILE*0.25;
-				const cxp=(localLayer?(wx-camDrawX):wx)*TILE+TILE/2;
-				const cyp=(localLayer?(y-camDrawY):y)*TILE+TILE/2;
-				const g=ctx.createRadialGradient(cxp,cyp,rad*0.2,cxp,cyp,rad);
-				const col = t===T.CHEST_EPIC? 'rgba(224,179,65,' : (t===T.CHEST_RARE? 'rgba(167,76,201,' : 'rgba(176,127,44,');
-				g.addColorStop(0,col+(0.45+0.35*pulse)+(chestDebug?0.15:0)+')');
-				g.addColorStop(1,col+'0)');
-				ctx.fillStyle=g;
-				ctx.beginPath();
-				ctx.arc(cxp,cyp,rad*(chestDebug?1.15:1),0,Math.PI*2);
-				ctx.fill();
-				if(chestDebug){ ctx.strokeStyle='#fff'; ctx.lineWidth=1; ctx.strokeRect((localLayer?(wx-camDrawX):wx)*TILE+1,(localLayer?(y-camDrawY):y)*TILE+1,TILE-2,TILE-2); }
+			for(let section=minSection; section<=maxSection; section++){
+				const entry=chunkCanvases.get(worldRenderSectionKey(cx2,section));
+				const chests=entry && Array.isArray(entry.chests) ? entry.chests : [];
+				for(const ch of chests){
+					const wx=ch.x, y=ch.y, t=ch.t;
+					if(y<y0 || y>=y1) continue;
+					if(!chestDebug && !worldFxVisible(wx,y)) continue;
+					const pulse=Math.sin(nowA*0.004 + wx*0.7 + y*0.3)*0.5+0.5;
+					const rad=TILE*0.6 + pulse*TILE*0.25;
+					const cxp=(localLayer?(wx-camDrawX):wx)*TILE+TILE/2;
+					const cyp=(localLayer?(y-camDrawY):y)*TILE+TILE/2;
+					const g=ctx.createRadialGradient(cxp,cyp,rad*0.2,cxp,cyp,rad);
+					const col = t===T.CHEST_EPIC? 'rgba(224,179,65,' : (t===T.CHEST_RARE? 'rgba(167,76,201,' : 'rgba(176,127,44,');
+					g.addColorStop(0,col+(0.45+0.35*pulse)+(chestDebug?0.15:0)+')');
+					g.addColorStop(1,col+'0)');
+					ctx.fillStyle=g;
+					ctx.beginPath();
+					ctx.arc(cxp,cyp,rad*(chestDebug?1.15:1),0,Math.PI*2);
+					ctx.fill();
+					if(chestDebug){ ctx.strokeStyle='#fff'; ctx.lineWidth=1; ctx.strokeRect((localLayer?(wx-camDrawX):wx)*TILE+1,(localLayer?(y-camDrawY):y)*TILE+1,TILE-2,TILE-2); }
+				}
 			}
 		}
 		if(chestDebug){ const pcx=Math.floor(player.x/CHUNK_W); const cnt=countChestsAround(pcx,4); ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(sx*TILE+6, sy*TILE+6, 140,24); ctx.fillStyle='#fff'; ctx.font='14px system-ui'; ctx.fillText('Skrzynie ±4: '+cnt, sx*TILE+12, sy*TILE+24); }
 	if(localLayer) ctx.restore();
-	if(VISUAL.animations && GRASS && GRASS.drawOverlays){ GRASS.drawOverlays(ctx,'back', sx,sy,viewX,viewY,TILE,WORLD_H,getTile,T,zoom,grassDensityScalar,grassHeightScalar,worldFxVisible); }
+	if(VISUAL.animations && GRASS && GRASS.drawOverlays){ GRASS.drawOverlays(ctx,'back', sx,sy,viewX,viewY,TILE,worldMaxY(),getTile,T,zoom,grassDensityScalar,grassHeightScalar,worldFxVisible,worldMinY()); }
 }
 
 function drawFogOverlay(sx,sy,viewX,viewY,opts){
@@ -3989,7 +4126,7 @@ function targetFaceExposedToPlayer(tx,ty){
 }
 function canPhysicallyTargetTile(tx,ty){
 	if(!Number.isFinite(tx) || !Number.isFinite(ty)) return false;
-	if(ty<0 || ty>=WORLD_H) return false;
+	if(!worldYInBounds(ty)) return false;
 	const px=Math.floor(player.x), py=Math.floor(player.y);
 	const los=(FOG && (FOG.hasLineOfSight || FOG._hasLineOfSight)) || null;
 	const rayClear = typeof los==='function' ? los(px,py,tx,ty,getTile,(t)=>isSolid(t)) : fallbackLineOfSight(px,py,tx,ty);
@@ -4163,7 +4300,11 @@ let mineDir={dx:1,dy:0}; document.querySelectorAll('.dirbtn').forEach(b=>{ b.add
 function bindPad(){ document.querySelectorAll('#pad .btn').forEach(btn=>{ const code=btn.getAttribute('data-key'); if(!code) return; btn.addEventListener('pointerdown',ev=>{ ev.preventDefault(); noteSaveActivity(); keys[code.toLowerCase()]=true; btn.classList.add('on'); if(code==='ArrowDown') trapdoorDropBufferT=TRAPDOOR_DROP_BUFFER; if(code==='ArrowUp') keys['w']=true; }); ['pointerup','pointerleave','pointercancel'].forEach(evName=> btn.addEventListener(evName,()=>{ noteSaveActivity(); keys[code.toLowerCase()]=false; btn.classList.remove('on'); if(code==='ArrowUp') keys['w']=false; })); }); } bindPad();
 
 // Kamera
-let camX=0,camY=0,camSX=0,camSY=0; let zoom=1, zoomTarget=1; function ensureChunks(){ const pcx=Math.floor(player.x/CHUNK_W); for(let d=-2; d<=2; d++) ensureChunk(pcx+d); }
+let camX=0,camY=0,camSX=0,camSY=0; let zoom=1, zoomTarget=1;
+function ensureChunks(){
+	const pcx=Math.floor(player.x/CHUNK_W);
+	for(let d=-2; d<=2; d++) ensureChunkAtY(pcx+d,player.y);
+}
 const MIN_ZOOM=0.72, MAX_ZOOM=3;
 const CAMERA_FOLLOW_RATE=8;
 const CAMERA_MAX_DT=0.05;
@@ -4600,7 +4741,8 @@ function heroTrapdoorOpenForCollision(t,x,y,axis){
 	return right>x+0.02 && left<x+0.98 && bottom>y-0.08 && top<y+1.08;
 }
 function solidAt(x,y,axis){
-	if(y>=WORLD_H) return true;
+	if(y>=worldMaxY()) return true;
+	if(y<worldMinY()) return false;
 	const t=getTile(x,y);
 	if(hasLadderAt(x,y)) return false;
 	if(heroTrapdoorOpenForCollision(t,x,y,axis)) return false;
@@ -4680,8 +4822,8 @@ function revealDebugTravelArea(){
 	const viewH=(TILE>0 && zoom>0) ? H/(TILE*zoom) : 48;
 	const x0=Math.floor(camX)-6;
 	const x1=Math.ceil(camX+viewW)+6;
-	const y0=Math.max(0,Math.floor(camY)-6);
-	const y1=Math.min(WORLD_H-1,Math.ceil(camY+viewH)+6);
+	const y0=Math.max(worldMinY(),Math.floor(camY)-6);
+	const y1=Math.min(worldMaxY()-1,Math.ceil(camY+viewH)+6);
 	const opts={
 		originX:Math.floor(player.x),
 		originY:Math.floor(player.y),
@@ -4715,8 +4857,8 @@ let hoverInfoKey='';
 function hoverTargetInfo(){
 	if(!hoverInfoEl || !lastPointer.has || pinch) return null;
 	const p=screenToWorldTile(lastPointer.x,lastPointer.y);
-	if(p.ty<0) return {key:'sky:'+p.tx+','+p.ty,label:'Niebo',color:'#8bbff5'};
-	if(p.ty>=WORLD_H) return {key:'bottom:'+p.tx+','+p.ty,label:'Dno swiata',color:'#343944'};
+	if(p.ty<worldMinY()) return {key:'sky:'+p.tx+','+p.ty,label:'Niebo',color:'#8bbff5'};
+	if(p.ty>=worldMaxY()) return {key:'bottom:'+p.tx+','+p.ty,label:'Dno swiata',color:'#343944'};
 	const t=getTile(p.tx,p.ty);
 	const overs=getRenderInfrastructureTiles(p.tx,p.ty);
 	const topOver=getRenderInfrastructureTile(p.tx,p.ty);
@@ -5217,7 +5359,7 @@ function ladderUndergroundAt(x,y){
 	}catch(e){ return false; }
 }
 function ladderAnchorAt(x,y){
-	if(y<0 || y>=WORLD_H) return false;
+	if(!worldYInBounds(y)) return false;
 	return isStableConstructionSupportAt(x,y) || ladderTargetHasBuiltBackingAt(x,y);
 }
 function ladderBaseIsOpen(t){
@@ -5816,7 +5958,7 @@ function draw(){ // Background first
  // particles (screen-space in world coords)
  drawParticles();
  // front vegetation pass (blades/leaves that should appear in front)
- if(VISUAL.animations && GRASS && GRASS.drawOverlays){ GRASS.drawOverlays(ctx,'front', sx,sy,viewX,viewY,TILE,WORLD_H,getTile,T,zoom,grassDensityScalar,grassHeightScalar,worldFxVisible); }
+ if(VISUAL.animations && GRASS && GRASS.drawOverlays){ GRASS.drawOverlays(ctx,'front', sx,sy,viewX,viewY,TILE,worldMaxY(),getTile,T,zoom,grassDensityScalar,grassHeightScalar,worldFxVisible,worldMinY()); }
  // Water overlay shimmer (after vegetation front to avoid overdraw? place before falling solids for clarity)
  if(WATER){ WATER.drawOverlay(ctx,TILE,getTile,sx,sy,viewX,viewY,worldFxVisible); }
  drawInfrastructureOverlays(sx,sy,viewX,viewY,{exclude:T.LADDER});
@@ -6065,7 +6207,7 @@ function draw(){ // Background first
 // Rebuilt to an offscreen canvas twice a second; blitted under the FPS panel.
 // Keep it translucent: the minimap is a navigational aid, not a hard cover over
 // sky enemies, bosses, UFOs, or build targeting near the top of the screen.
-const MINIMAP_W=220, MINIMAP_H=64, MINIMAP_RANGE=220;
+const MINIMAP_W=220, MINIMAP_H=96, MINIMAP_RANGE=220;
 const MINIMAP_ALPHA=0.62, MINIMAP_POINTER_ALPHA=0.18, MINIMAP_BACKDROP_ALPHA=0.12;
 let mmCanvas=null, mmLastBuild=0;
 function minimapTileColor(t){
@@ -6138,10 +6280,26 @@ function minimapTileColor(t){
 function minimapConcealsUndiscovered(t){
 	return t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.OBSIDIAN || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.GLASS || t===T.BRICK || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || t===T.GRAVE || t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC;
 }
+function minimapWorldYToPixel(row,mh,minY,maxY){
+	const span=Math.max(1,maxY-minY-1);
+	return Math.max(1, Math.min(mh-2, Math.round((row-minY)*(mh-1)/span)));
+}
+function drawMinimapBands(g,mw,mh,minY,maxY){
+	const topBase=minimapWorldYToPixel(0,mh,minY,maxY);
+	const deep=minimapWorldYToPixel(WORLD_H,mh,minY,maxY);
+	g.fillStyle='rgba(71,122,176,0.16)';
+	g.fillRect(0,0,mw,Math.max(0,topBase));
+	g.fillStyle='rgba(37,31,24,0.16)';
+	g.fillRect(0,deep,mw,Math.max(0,mh-deep));
+	g.strokeStyle='rgba(190,220,255,0.26)';
+	g.beginPath(); g.moveTo(0.5,topBase+0.5); g.lineTo(mw-0.5,topBase+0.5); g.stroke();
+	g.strokeStyle='rgba(120,96,82,0.32)';
+	g.beginPath(); g.moveTo(0.5,deep+0.5); g.lineTo(mw-0.5,deep+0.5); g.stroke();
+}
 function drawMinimap(){
 	if(!showMinimap) return;
 	const MW=MINIMAP_W, MH=MINIMAP_H, RANGE=MINIMAP_RANGE;
-	if(!mmCanvas){ mmCanvas=document.createElement('canvas'); mmCanvas.width=MW; mmCanvas.height=MH; }
+	if(!mmCanvas || mmCanvas.width!==MW || mmCanvas.height!==MH){ mmCanvas=document.createElement('canvas'); mmCanvas.width=MW; mmCanvas.height=MH; mmLastBuild=0; }
 	const now=performance.now();
 	const frameLoaded=Number.isFinite(lastFrameMs) && lastFrameMs>28;
 	const rebuildEvery = lastFrameMs>40 ? 3200 : (lastFrameMs>24 ? 1800 : 900);
@@ -6163,19 +6321,21 @@ function drawMinimap(){
 		mmLastBuild=now;
 		const g=mmCanvas.getContext('2d');
 		g.clearRect(0,0,MW,MH);
+		const minY=worldMinY(), maxY=worldMaxY();
+		drawMinimapBands(g,MW,MH,minY,maxY);
 		const cx=Math.floor(player.x);
 		const xScale=(RANGE*2)/MW;
-		const yScale=WORLD_H/MH;
+		const yScale=(maxY-minY)/MH;
 		const surfCache=new Map();
 		const surfaceAt=(wx)=>{
 			let s=surfCache.get(wx);
 			if(s===undefined){ s=WORLDGEN.surfaceHeight(wx); surfCache.set(wx,s); }
 			return s;
 		};
-		const rowToY=(row)=>Math.max(1, Math.min(MH-2, Math.round(row*(MH-1)/(WORLD_H-1))));
+		const rowToY=(row)=>minimapWorldYToPixel(row,MH,minY,maxY);
 		for(let py=0; py<MH; py++){
-			const y0=Math.max(0, Math.floor(py*yScale));
-			const y1=Math.min(WORLD_H-1, Math.ceil((py+1)*yScale)-1);
+			const y0=Math.max(minY, Math.floor(minY+py*yScale));
+			const y1=Math.min(maxY-1, Math.ceil(minY+(py+1)*yScale)-1);
 			let runColor=null, runStart=0;
 			const flushRun=(i)=>{
 				if(!runColor) return;
@@ -6195,14 +6355,16 @@ function drawMinimap(){
 							if(wy>surf) cave=true;
 							continue;
 						}
-						if(wy>surf && !worldTileDiscovered(wx,wy) && minimapConcealsUndiscovered(t)){
+						const outsideLegacyBand = wy<0 || wy>=WORLD_H;
+						const discovered=worldTileDiscovered(wx,wy);
+						if((wy>surf || outsideLegacyBand) && !discovered && minimapConcealsUndiscovered(t)){
 							if(isPlayerPassableTile(t) || t===T.TORCH) cave=true;
-							else if(!color) color='#686d78';
+							else if(!color) color=outsideLegacyBand?'rgba(99,121,148,0.62)':'#686d78';
 							continue;
 						}
 						const c=minimapTileColor(t);
 						if(t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || INFO[t].chestTier){ color=c; priority=true; wx=wx1+1; break; }
-						if(!color) color=c;
+						if(!color) color=outsideLegacyBand && !discovered ? 'rgba(120,145,176,0.58)' : c;
 					}
 				}
 				const pxColor=priority?color:(cave?'rgba(2,5,10,0.72)':(color||null));
@@ -6277,7 +6439,7 @@ function debugGasOrigin(){
 	const offsets=[[0,0],[0,-1],[facing,0],[-facing,0],[0,1],[facing,-1],[-facing,-1],[facing,1],[-facing,1],[facing*2,0],[0,-2],[facing*2,-1],[-facing*2,-1]];
 	for(const [dx,dy] of offsets){
 		const tx=bx+dx, ty=by+dy;
-		ensureChunk(Math.floor(tx/CHUNK_W));
+		ensureChunkAtY(Math.floor(tx/CHUNK_W),ty);
 		const t=getTile(tx,ty);
 		if(t===T.AIR || isGasTileId(t)) return {x:tx+0.5,y:ty+0.5,tileX:tx,tileY:ty};
 	}
@@ -6323,13 +6485,16 @@ function clearDebugGases(){
 		if(worldMap && typeof worldMap.forEach==='function'){
 			worldMap.forEach((arr,k)=>{
 				if(!arr || typeof k!=='string' || k[0]!=='c') return;
-				const cx=Number(k.slice(1));
-				if(!Number.isFinite(cx)) return;
+				const ref=normalizeWorldChunkRef(k);
+				if(!ref) return;
+				const cx=ref.cx;
+				const originY=ref.base ? 0 : worldSectionOriginY(ref.sy);
+				const h=ref.h || (ref.base ? WORLD_H : worldSectionHeight());
 				const x0=cx*CHUNK_W;
-				for(let y=0; y<WORLD_H; y++){
-					const row=y*CHUNK_W;
+				for(let ly=0; ly<h; ly++){
+					const row=ly*CHUNK_W;
 					for(let lx=0; lx<CHUNK_W; lx++){
-						if(isGasTileId(arr[row+lx])) clearAt(x0+lx,y);
+						if(isGasTileId(arr[row+lx])) clearAt(x0+lx,originY+ly);
 					}
 				}
 			});
@@ -6368,7 +6533,7 @@ function placeDebugDynamo(){
 		for(const dx of dxs){
 			const cx=baseX+dx, cy=baseY+dy;
 			const cells=DYNAMO.plannedCells(cx,cy,dynamoOrientation);
-			cells.forEach(cell=>ensureChunk(Math.floor(cell.x/CHUNK_W)));
+			cells.forEach(cell=>ensureChunkAtY(Math.floor(cell.x/CHUNK_W),cell.y));
 			if(!debugDynamoCellsClear(cells)) continue;
 			placeDebugCells(cells);
 			if(FALLING && FALLING.afterPlacement) cells.forEach(cell=>FALLING.afterPlacement(cell.x,cell.y));
@@ -6385,7 +6550,7 @@ function nearestDebugDynamoSlot(){
 	if(!DYNAMO || !DYNAMO.isValidSlot) return null;
 	const cx=Math.floor(player.x), cy=Math.floor(player.y);
 	let best=null, bestD=Infinity;
-	for(let y=Math.max(0,cy-28); y<=Math.min(WORLD_H-1,cy+28); y++){
+	for(let y=Math.max(worldMinY(),cy-28); y<=Math.min(worldMaxY()-1,cy+28); y++){
 		for(let x=cx-40; x<=cx+40; x++){
 			if(!DYNAMO.isValidSlot(x,y,getTile)) continue;
 			const d=Math.abs(x-cx)+Math.abs(y-cy);
@@ -6452,8 +6617,8 @@ function giveDebugCopperWire(){
 }
 function debugRigCellsClear(cells){
 	for(const cell of cells){
-		if(cell.y<0 || cell.y>=WORLD_H) return false;
-		ensureChunk(Math.floor(cell.x/CHUNK_W));
+		if(!worldYInBounds(cell.y)) return false;
+		ensureChunkAtY(Math.floor(cell.x/CHUNK_W),cell.y);
 		if(isInfrastructureTileId(cell.t)){
 			if(hasInfrastructureTile(cell.x,cell.y,cell.t)) return false;
 			const base=getTile(cell.x,cell.y);
@@ -6517,7 +6682,7 @@ function placeDebugAntigravityBeacon(){
 	const baseX=Math.floor(player.x + facing*5);
 	const xs=[0,facing,-facing,facing*2,-facing*2,facing*3,-facing*3].map(dx=>baseX+dx);
 	for(const x of xs){
-		ensureChunk(Math.floor(x/CHUNK_W));
+		ensureChunkAtY(Math.floor(x/CHUNK_W),player.y);
 		let y=null;
 		try{ y=Math.floor(WORLDGEN.surfaceHeight(x))-1; }catch(e){ y=null; }
 		const candidates=[];
@@ -6526,7 +6691,7 @@ function placeDebugAntigravityBeacon(){
 		for(let dy=-3; dy<=5; dy++) candidates.push(py+dy);
 		for(const cyRaw of candidates){
 			const cy=Math.floor(cyRaw);
-			if(cy<1 || cy>=WORLD_H-2) continue;
+			if(cy<worldMinY()+1 || cy>=worldMaxY()-2) continue;
 			const cells=[{x,y:cy,t:T.ANTIGRAVITY_BEACON}];
 			if(!debugRigCellsClear(cells)) continue;
 			if(!isStableMachineSupport(getTile(x,cy+1)) && !isStableMachineSupport(getTile(x-1,cy)) && !isStableMachineSupport(getTile(x+1,cy))) continue;
@@ -6555,7 +6720,7 @@ function useCraterScanner(){
 function nearestDebugSolar(){
 	const cx=Math.floor(player.x), cy=Math.floor(player.y);
 	let best=null, bestD=Infinity;
-	for(let y=Math.max(0,cy-34); y<=Math.min(WORLD_H-1,cy+34); y++){
+	for(let y=Math.max(worldMinY(),cy-34); y<=Math.min(worldMaxY()-1,cy+34); y++){
 		for(let x=cx-52; x<=cx+52; x++){
 			const t=getTile(x,y);
 			if(t!==T.SOLAR_PANEL && t!==T.SOLAR_BATTERY) continue;
@@ -6603,7 +6768,7 @@ function placeDebugPump(){
 function nearestDebugPump(){
 	const cx=Math.floor(player.x), cy=Math.floor(player.y);
 	let best=null, bestD=Infinity;
-	for(let y=Math.max(0,cy-34); y<=Math.min(WORLD_H-1,cy+34); y++){
+	for(let y=Math.max(worldMinY(),cy-34); y<=Math.min(worldMaxY()-1,cy+34); y++){
 		for(let x=cx-52; x<=cx+52; x++){
 			if(getTile(x,y)!==T.WATER_PUMP) continue;
 			const d=Math.abs(x-cx)+Math.abs(y-cy);
@@ -6761,7 +6926,7 @@ function placeDebugTeleporterOne(){
 function nearestDebugTeleporter(){
 	const cx=Math.floor(player.x), cy=Math.floor(player.y);
 	let best=null, bestD=Infinity;
-	for(let y=Math.max(0,cy-28); y<=Math.min(WORLD_H-1,cy+28); y++){
+	for(let y=Math.max(worldMinY(),cy-28); y<=Math.min(worldMaxY()-1,cy+28); y++){
 		for(let x=cx-48; x<=cx+48; x++){
 			if(getTile(x,y)!==T.TELEPORTER) continue;
 			const d=Math.abs(x-cx)+Math.abs(y-cy);
@@ -6858,7 +7023,7 @@ function placeDebugTurretRig(){
 function nearestDebugTurret(){
 	const cx=Math.floor(player.x), cy=Math.floor(player.y);
 	let best=null, bestD=Infinity;
-	for(let y=Math.max(0,cy-28); y<=Math.min(WORLD_H-1,cy+28); y++){
+	for(let y=Math.max(worldMinY(),cy-28); y<=Math.min(worldMaxY()-1,cy+28); y++){
 		for(let x=cx-48; x<=cx+48; x++){
 			const t=getTile(x,y);
 			if(t!==T.TURRET && t!==T.FIRE_TURRET && t!==T.WATER_TURRET) continue;
@@ -6905,7 +7070,7 @@ function placeDebugSpringPlatform(){
 function nearestDebugSpringPlatform(){
 	const cx=Math.floor(player.x), cy=Math.floor(player.y);
 	let best=null, bestD=Infinity;
-	for(let y=Math.max(0,cy-28); y<=Math.min(WORLD_H-1,cy+28); y++){
+	for(let y=Math.max(worldMinY(),cy-28); y<=Math.min(worldMaxY()-1,cy+28); y++){
 		for(let x=cx-48; x<=cx+48; x++){
 			if(getTile(x,y)!==T.SPRING_PLATFORM) continue;
 			const d=Math.abs(x-cx)+Math.abs(y-cy);
@@ -7375,6 +7540,7 @@ if(MM.ui && MM.ui.injectHostilityDebugPanel) MM.ui.injectHostilityDebugPanel({
 if(MM.ui && MM.ui.injectTravelDebugPanel) MM.ui.injectTravelDebugPanel({
 	move:(dx)=> debugShiftHero(dx),
 	jump:(x,y)=> debugJumpHero(x, y),
+	sky:(layer)=> debugJumpSky(layer),
 	guardian:(kind)=> debugJumpGuardian(kind),
 	underground:()=> debugJumpUndergroundBoss(),
 	undergroundFight:()=> debugStartUndergroundFight(),
@@ -7598,7 +7764,7 @@ function placePlayer(skipMsg,opts){
 	opts=opts||{};
 	// A crafted Totem odrodzenia overrides the default spawn search
 	if(respawnPoint && typeof respawnPoint.x==='number'){
-		ensureChunk(Math.floor(respawnPoint.x/CHUNK_W));
+		ensureChunkAtY(Math.floor(respawnPoint.x/CHUNK_W),respawnPoint.y);
 		player.x=respawnPoint.x; player.y=respawnPoint.y; player.vx=0; player.vy=0;
 		if(opts.center===false){ revealAround(); ensureChunks(); initScarf(); }
 		else centerOnPlayer();
@@ -7625,7 +7791,7 @@ function centerOnPlayer(){ revealAround(); snapCameraToPlayer(); initScarf(); re
 function teleportHeroTo(x,y,opts){
 	opts=opts||{};
 	if(typeof x!=='number'||!isFinite(x)||typeof y!=='number'||!isFinite(y)) return false;
-	ensureChunk(Math.floor(x/CHUNK_W));
+	ensureChunkAtY(Math.floor(x/CHUNK_W),y);
 	player.x=x; player.y=y; player.vx=0; player.vy=0;
 	if(opts.center!==false) centerOnPlayer(); else ensureChunks();
 	if(opts.message) msg(opts.message);
@@ -7657,6 +7823,36 @@ function debugShiftHero(dx){
 function safeLandingFloor(t){
 	return isSafeLandingFloorTile(t);
 }
+function skyLandingSpot(layer){
+	const sy=layer==='high' ? -2 : -1;
+	const y0=worldSectionOriginY(sy), y1=y0+worldSectionHeight()-1;
+	const origin=Math.round(player.x);
+	const tries=[0];
+	for(let d=8; d<=1800; d+=8){ tries.push(d,-d); }
+	for(const dx of tries){
+		const tx=origin+dx;
+		const cx=Math.floor(tx/CHUNK_W);
+		if(WORLD && WORLD.ensureSection) WORLD.ensureSection(cx,sy); else ensureChunk(cx);
+		for(let fy=y0+2; fy<=y1; fy++){
+			const floor=getTile(tx,fy), body=getTile(tx,fy-1), head=getTile(tx,fy-2);
+			if(!safeLandingFloor(floor)) continue;
+			if(!bodySpaceOpen(body,false) || !bodySpaceOpen(head,false)) continue;
+			return {x:tx+0.5,y:fy-1,tileX:tx,surface:fy,sy};
+		}
+	}
+	return null;
+}
+function debugJumpSky(layer){
+	const spot=skyLandingSpot(layer);
+	if(!spot){ msg('Sky layer: brak wyspy w poblizu'); return false; }
+	const label=spot.sy<=-2 ? 'High sky island' : 'Low sky island';
+	const ok=teleportHeroTo(spot.x, spot.y, {message:label+' @ x='+Math.round(spot.tileX)+', y='+Math.round(spot.surface), center:true});
+	if(!ok) return false;
+	revealDebugTravelArea();
+	noteSaveActivity(); saveState();
+	return {x:Math.round(player.x), y:Math.round(player.y), kind:'sky', layer:spot.sy<=-2?'high':'low'};
+}
+window.teleportHeroToSkyLayer = function(layer){ return debugJumpSky(layer); };
 function safeVolcanoLandingAt(tx){
 	if(typeof tx!=='number' || !isFinite(tx)) return null;
 	tx=Math.round(tx);
@@ -7748,7 +7944,7 @@ function undergroundLandingSpot(){
 	const L=UNDERGROUND.layoutFor();
 	if(!L) return null;
 	const minCx=Math.floor((L.minX-4)/CHUNK_W), maxCx=Math.floor((L.maxX+4)/CHUNK_W);
-	for(let cx=minCx; cx<=maxCx; cx++) ensureChunk(cx);
+	for(let cx=minCx; cx<=maxCx; cx++) ensureChunkAtY(cx,L.floorY);
 	try{ if(UNDERGROUND.materializeArena) UNDERGROUND.materializeArena(getTile,setTile); }catch(e){}
 	return UNDERGROUND.landingSpot ? UNDERGROUND.landingSpot(getTile) : {x:L.ax+0.5,y:L.floorY-3,tileX:Math.round(L.ax),surface:L.floorY,layout:L,fallback:true};
 }

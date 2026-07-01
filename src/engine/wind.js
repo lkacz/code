@@ -2,7 +2,7 @@
 // Wind is sampled weather state, not a per-tile simulation: it pushes exposed
 // airborne actors, biases sparse gas motion, bends smoke/particles and draws a
 // tiny bounded dust/snow layer so even light wind is readable.
-import { T, WORLD_H, MOVE } from '../constants.js';
+import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, MOVE } from '../constants.js';
 import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, isWindExposureBlockerTile, isWindPorousTile } from './material_physics.js';
 
 (function(){
@@ -37,6 +37,8 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
   let particles = [];
   const squall = {t:0, max:0, amp:0, dir:1};
   let lastEnv = {night:0, sun:0, cloudiness:0, thermal:0, storm:0};
+  const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
+  const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
   function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
   function rgba(hex,a){
@@ -98,23 +100,23 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
   function exposureAt(x,y,getTile){
     if(typeof getTile !== 'function') return 1;
     x=Math.floor(x); y=Math.floor(y);
-    if(y<0) return 1;
-    if(y>=WORLD_H) return 0;
+    if(y<WORLD_TOP) return 1;
+    if(y>=WORLD_BOTTOM) return 0;
     let open=0;
     for(let dy=0; dy<12; dy++){
       const yy=y-dy;
-      if(yy<0){ open=12; break; }
+      if(yy<WORLD_TOP){ open=12; break; }
       if(isWindBlocker(getSafe(getTile,x,yy,T.STONE))) break;
       open++;
     }
     let sky=0;
-    for(let yy=y-1; yy>=0; yy--){
+    for(let yy=y-1; yy>=WORLD_TOP; yy--){
       if(isWindBlocker(getSafe(getTile,x,yy,T.STONE))){
         const gap=y-yy;
         sky=gap>18 ? 0.48 : (gap>7 ? 0.22 : 0.06);
         break;
       }
-      if(yy===0) sky=1;
+      if(yy===WORLD_TOP) sky=1;
     }
     const local=open/12;
     if(sky>=0.98) return clamp(local,0,1);
@@ -268,8 +270,8 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
   }
   function findSurfaceVisualSpot(player,getTile){
     const x=Math.floor(player.x + (Math.random()*2-1)*CFG.VISUAL_RADIUS_X);
-    const start=Math.max(-2, Math.floor(player.y - 8 - Math.random()*4));
-    const end=Math.min(WORLD_H-1, Math.floor(player.y + CFG.VISUAL_RADIUS_Y*0.72 + 5));
+    const start=Math.max(WORLD_TOP, Math.floor(player.y - 8 - Math.random()*4));
+    const end=Math.min(WORLD_BOTTOM-1, Math.floor(player.y + CFG.VISUAL_RADIUS_Y*0.72 + 5));
     for(let y=start; y<=end; y++){
       const t=getSafe(getTile,x,y,T.STONE);
       if(isVisualOpenFluidTile(t)) continue;

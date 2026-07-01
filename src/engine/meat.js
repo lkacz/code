@@ -1,4 +1,4 @@
-import { T, WORLD_H, CHUNK_W } from '../constants.js';
+import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, WORLD_SECTION_H, CHUNK_W } from '../constants.js';
 import { isGasTile, isMeatDecayMaterial, isObjectFootingTile, isReplaceableNaturalOpenTile } from './material_physics.js';
 
 window.MM = window.MM || {};
@@ -28,9 +28,17 @@ const meat = (function(){
   let scanAcc = 0;
 
   const key = (x,y)=>x+','+y;
-  const finiteTile = (x,y)=>Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H;
+  const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
+  const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
+  const finiteTile = (x,y)=>Number.isFinite(x) && Number.isFinite(y) && y>=WORLD_TOP && y<WORLD_BOTTOM;
   const isMeatTile = t=>isMeatDecayMaterial(t);
   const canOccupy = t=>isReplaceableNaturalOpenTile(t,false);
+  function clampY(y,topPad=0,bottomPad=0){
+    const lo=WORLD_TOP+topPad;
+    const hi=Math.max(lo,WORLD_BOTTOM-bottomPad);
+    const n=Number(y);
+    return Math.max(lo,Math.min(hi,Math.floor(Number.isFinite(n) ? n : lo)));
+  }
   function getSafe(getTile,x,y){ try{ return getTile ? getTile(x,y) : T.AIR; }catch(e){ return T.AIR; } }
   function supportedBy(t){
     return isObjectFootingTile(t);
@@ -65,21 +73,21 @@ const meat = (function(){
   function findDropSpot(m,getTile){
     if(!m || typeof getTile!=='function') return null;
     const baseX=Math.floor(m.x);
-    const baseY=Math.max(0,Math.min(WORLD_H-2,Math.floor(m.y)));
+    const baseY=clampY(m.y,0,2);
     if(canOccupy(getSafe(getTile,baseX,baseY))) return {x:baseX,y:baseY};
     const offsets=[0,-1,1,-2,2,-3,3,-4,4];
     const starts=[baseY,baseY-1,baseY+1];
     for(const dx of offsets){
       const x=baseX+dx;
       for(const syRaw of starts){
-        const sy=Math.max(0,Math.min(WORLD_H-2,syRaw));
+        const sy=clampY(syRaw,0,2);
         const here=getSafe(getTile,x,sy);
         if(canOccupy(here) && supportedBy(getSafe(getTile,x,sy+1))) return {x,y:sy};
       }
     }
     for(const dx of offsets){
       const x=baseX+dx;
-      const maxY=WORLD_H-2;
+      const maxY=WORLD_BOTTOM-2;
       for(let y=baseY; y<=maxY; y++){
         const here=getSafe(getTile,x,y);
         if(canOccupy(here) && supportedBy(getSafe(getTile,x,y+1))) return {x,y};
@@ -88,7 +96,7 @@ const meat = (function(){
     for(const dx of offsets){
       const x=baseX+dx;
       for(let dy=-2; dy<=2; dy++){
-        const y=Math.max(0,Math.min(WORLD_H-2,baseY+dy));
+        const y=clampY(baseY+dy,0,2);
         if(canOccupy(getSafe(getTile,x,y))) return {x,y};
       }
     }
@@ -169,8 +177,8 @@ const meat = (function(){
   }
 
   function dropY(x,y,getTile){
-    let yy=Math.max(0,Math.min(WORLD_H-2,Math.floor(y)));
-    while(yy<WORLD_H-2 && canOccupy(getSafe(getTile,x,yy+1))) yy++;
+    let yy=clampY(y,0,2);
+    while(yy<WORLD_BOTTOM-2 && canOccupy(getSafe(getTile,x,yy+1))) yy++;
     return yy;
   }
   function rollDepth(x,y,getTile){
@@ -178,7 +186,7 @@ const meat = (function(){
     return Math.max(0,end-y);
   }
   function chooseRollDir(x,y,getTile,originX,step){
-    if(y+1>=WORLD_H) return 0;
+    if(y+1>=WORLD_BOTTOM) return 0;
     const dirs=[];
     for(const dir of [-1,1]){
       if(canOccupy(getSafe(getTile,x+dir,y)) && canOccupy(getSafe(getTile,x+dir,y+1))){
@@ -241,7 +249,7 @@ const meat = (function(){
     if(!player || typeof getTile!=='function') return;
     const cx=Math.floor(player.x), cy=Math.floor(player.y);
     const left=cx-SCAN_RX, right=cx+SCAN_RX;
-    const top=Math.max(0,cy-SCAN_RY), bottom=Math.min(WORLD_H-1,cy+SCAN_RY);
+    const top=Math.max(WORLD_TOP,cy-SCAN_RY), bottom=Math.min(WORLD_BOTTOM-1,cy+SCAN_RY);
     for(let x=left; x<=right; x++){
       for(let y=top; y<=bottom; y++){
         const t=getSafe(getTile,x,y);
@@ -268,12 +276,22 @@ const meat = (function(){
   function auditChunks(chunks,getTile){
     if(typeof getTile!=='function') return 0;
     let found=0;
+    function chunkScanRange(ref){
+      if(typeof ref==='number' && isFinite(ref)) return {cx:Math.floor(ref),top:0,bottom:WORLD_H};
+      if(!ref || !Number.isFinite(ref.cx)) return null;
+      if(!Number.isFinite(ref.sy)) return {cx:Math.floor(ref.cx),top:0,bottom:WORLD_H};
+      const sy=Math.floor(ref.sy);
+      const top=Math.max(WORLD_TOP,sy*WORLD_SECTION_H);
+      const bottom=Math.min(WORLD_BOTTOM,top+WORLD_SECTION_H);
+      return bottom>top ? {cx:Math.floor(ref.cx),top,bottom} : null;
+    }
     if(Array.isArray(chunks)){
-      for(const cx of chunks){
-        if(typeof cx!=='number' || !isFinite(cx)) continue;
-        const left=Math.floor(cx)*CHUNK_W;
+      for(const ref of chunks){
+        const range=chunkScanRange(ref);
+        if(!range) continue;
+        const left=range.cx*CHUNK_W;
         for(let x=left; x<left+CHUNK_W; x++){
-          for(let y=0; y<WORLD_H; y++){
+          for(let y=range.top; y<range.bottom; y++){
             const t=getSafe(getTile,x,y);
             if(isMeatTile(t)){
               const k=key(x,y);

@@ -1,5 +1,10 @@
 export const CHUNK_W = 64;
 export const WORLD_H = 140;
+export const WORLD_SECTION_H = 70;
+export const WORLD_MIN_SECTION = -2;
+export const WORLD_MAX_SECTION = 3;
+export const WORLD_MIN_Y = WORLD_MIN_SECTION * WORLD_SECTION_H;
+export const WORLD_MAX_Y = (WORLD_MAX_SECTION + 1) * WORLD_SECTION_H;
 export const TILE = 20;
 export const SURFACE_GRASS_DEPTH = 1;
 export const SAND_DEPTH = 8;
@@ -109,6 +114,11 @@ if (typeof window !== 'undefined') {
   Object.assign(window.MM, {
     CHUNK_W,
     WORLD_H,
+    WORLD_SECTION_H,
+    WORLD_MIN_SECTION,
+    WORLD_MAX_SECTION,
+    WORLD_MIN_Y,
+    WORLD_MAX_Y,
     TILE,
     SURFACE_GRASS_DEPTH,
     SAND_DEPTH,

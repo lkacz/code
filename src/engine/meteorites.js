@@ -1,4 +1,4 @@
-import { CHUNK_W, T, INFO, WORLD_H } from '../constants.js';
+import { CHUNK_W, T, INFO, WORLD_H, WORLD_MAX_Y } from '../constants.js';
 import { isGasTile, isMeteorForestSiteTile, isMeteorImpactGroundTile, isMeteorLifeSiteTile, isMeteorProtectedTile, isMeteorSettlementSiteTile, isMeteorWaterSiteTile } from './material_physics.js';
 import { worldHostility as HOSTILITY } from './world_hostility.js';
 
@@ -87,6 +87,7 @@ const meteorites = (function(){
   let shakeSeed = 0;
   const classCounts = {iron:0, iridium:0, ice:0, radioactive:0, antimatter:0, biological:0};
   const consequenceCounts = {settlement:0, forest:0, lake:0, meadow:0, wildlands:0};
+  const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
   const METEOR_CLASSES = {
     iron:{id:'iron',label:'zelazny',weight:38,intensityMult:1.00,craterScale:1.00,lakeRate:1.0,ember:'iron',trailOuter:'rgba(255,110,26,',trailInner:'rgba(255,232,120,',glow1:'rgba(255,255,236,0.95)',glow2:'rgba(255,216,91,0.86)',glow3:'rgba(255,78,22,0.42)',body:'#fff7c9',core:'#ff6a21',deposits:[{tile:T.METEORIC_IRON,count:2},{tile:T.COAL,count:1},{tile:T.OBSIDIAN,count:1,chance:0.55}]},
@@ -362,7 +363,7 @@ const meteorites = (function(){
     const minX=Math.floor(cx-r);
     const maxX=Math.ceil(cx+r);
     const minY=Math.max(1,Math.floor(cy-r));
-    const maxY=Math.min(WORLD_H-4,Math.ceil(cy+r));
+    const maxY=Math.min(WORLD_BOTTOM-4,Math.ceil(cy+r));
     let best=null;
     let bestD2=r*r+1;
     for(let y=minY; y<=maxY; y++){
@@ -411,7 +412,7 @@ const meteorites = (function(){
     const minX=Math.floor(cx-r);
     const maxX=Math.ceil(cx+r);
     const minY=Math.max(1,Math.floor(cy-r));
-    const maxY=Math.min(WORLD_H-4,Math.ceil(cy+r));
+    const maxY=Math.min(WORLD_BOTTOM-4,Math.ceil(cy+r));
     let best=null;
     let bestD2=r*r+1;
     for(let y=minY; y<=maxY; y++){
@@ -471,12 +472,12 @@ const meteorites = (function(){
     }
     if(center==null || !Number.isFinite(center)) center=62;
     const from=Math.max(1,center-18);
-    const to=Math.min(WORLD_H-4,center+24);
+    const to=Math.min(WORLD_BOTTOM-4,center+24);
     for(let y=from; y<=to; y++){
       const t=readTile(getTile,x,y);
       if(meteorGroundTile(t) || t===T.LAVA) return y;
     }
-    for(let y=1; y<WORLD_H-3; y++){
+    for(let y=1; y<WORLD_BOTTOM-3; y++){
       const t=readTile(getTile,x,y);
       if(meteorGroundTile(t) || t===T.LAVA) return y;
     }
@@ -492,7 +493,7 @@ const meteorites = (function(){
       }
     }catch(e){}
     if(center==null || !Number.isFinite(center)) return surfaceNear(x,impactY,getTile);
-    center=clamp(Math.round(center),2,WORLD_H-5);
+    center=clamp(Math.round(center),2,WORLD_BOTTOM-5);
     const solidAt=(y)=>{
       const t=readTile(getTile,x,y);
       return meteorGroundTile(t) || t===T.LAVA;
@@ -505,7 +506,7 @@ const meteorites = (function(){
     }
     for(let d=1; d<=14; d++){
       const down=center+d;
-      if(down<WORLD_H-3 && solidAt(down)) return down;
+      if(down<WORLD_BOTTOM-3 && solidAt(down)) return down;
       const up=center-d;
       if(up>1 && solidAt(up)) return up;
     }
@@ -517,7 +518,7 @@ const meteorites = (function(){
   function pickTarget(player,getTile,opts){
     opts=opts||{};
     if(Number.isFinite(opts.x) && Number.isFinite(opts.y)){
-      return {x:Math.round(opts.x), y:clamp(Math.round(opts.y),2,WORLD_H-5)};
+      return {x:Math.round(opts.x), y:clamp(Math.round(opts.y),2,WORLD_BOTTOM-5)};
     }
     const px=(player && Number.isFinite(player.x)) ? player.x : 0;
     const facing=(player && Number.isFinite(player.facing) && player.facing<0) ? -1 : 1;
@@ -796,7 +797,7 @@ const meteorites = (function(){
     }
     const fallbackX=Math.round(b.x+awaySide*((BEACON_BOUNCE_MIN_DISTANCE+BEACON_BOUNCE_MAX_DISTANCE)*0.5));
     const fallbackY=craterSurfaceNear(fallbackX,originalY,getTile);
-    return {x:fallbackX,y:clamp(fallbackY==null ? Math.round(b.y) : fallbackY,2,WORLD_H-6)};
+    return {x:fallbackX,y:clamp(fallbackY==null ? Math.round(b.y) : fallbackY,2,WORLD_BOTTOM-6)};
   }
   function retargetMeteorForBounce(m,b,getTile){
     const target=chooseBounceTarget(m,b,getTile);
@@ -1008,7 +1009,7 @@ const meteorites = (function(){
     opts=opts||{};
     const profile=classProfile((opts.profile && opts.profile.id) || opts.classId || opts.kind || opts.type);
     const colossal=opts.colossal===true;
-    const impactY=clamp(Math.round(Number.isFinite(opts.surfaceY)?opts.surfaceY:cy),2,WORLD_H-6);
+    const impactY=clamp(Math.round(Number.isFinite(opts.surfaceY)?opts.surfaceY:cy),2,WORLD_BOTTOM-6);
     const seed=Number.isFinite(opts.seed) ? +opts.seed : rand(1,1000000);
     const scale=clamp((Number(opts.scale)||rand(0.68,1.42))*(profile.craterScale||1),colossal?1.18:0.62,colossal?3.15:1.85);
     const baseRx=8.8+intensity*4.25;
@@ -1025,7 +1026,7 @@ const meteorites = (function(){
     const ops=[];
     const floorCells=[];
     function addOp(phase,x,y,t,d,place){
-      if(y<1 || y>=WORLD_H-3 || !Number.isFinite(x)) return;
+      if(y<1 || y>=WORLD_BOTTOM-3 || !Number.isFinite(x)) return;
       ops.push({phase,x,y,t,d,place:!!place});
     }
     for(let x=Math.floor(cx-leftRx-3); x<=Math.ceil(cx+rightRx+3); x++){
@@ -1046,7 +1047,7 @@ const meteorites = (function(){
         if(edge<0.18 && hashUnit(seed+29.9,x)>0.72) depth+=0.8+hashUnit(seed+30.6,x)*1.0;
         depth=clamp(Math.floor(depth),1,colossal?22:12);
         const startY=Math.max(1,Math.floor(surface-1));
-        const floorY=Math.min(WORLD_H-4,Math.floor(surface+depth));
+        const floorY=Math.min(WORLD_BOTTOM-4,Math.floor(surface+depth));
         for(let y=startY; y<=floorY; y++){
           addOp(0,x,y,T.AIR,Math.abs(dx)+(y-surface)*0.18,false);
         }
@@ -1054,7 +1055,7 @@ const meteorites = (function(){
         const central=edge<(0.14+hashUnit(seed+2.2,x)*0.10) && intensity>0.8;
         addOp(1,x,floorY,hotTileForFloor(old,edge,central,profile),Math.abs(dx),true);
         floorCells.push({x,floorY,edge,d:Math.abs(dx)});
-        if(edge<0.52 && floorY+1<WORLD_H-3){
+        if(edge<0.52 && floorY+1<WORLD_BOTTOM-3){
           const mineral=hashUnit(seed+37.2,x*1.73+floorY*0.37);
           const t=edge<0.24 ? meteorCoreTile(profile) : (mineral<0.42 ? (profile.id==='ice'?T.ICE:T.METEORIC_IRON) : (mineral<0.68 ? (profile.id==='biological'?T.ALIEN_BIOMASS:T.COAL) : T.OBSIDIAN));
           addOp(1,x,floorY+1,t,Math.abs(dx)+0.7,true);
@@ -1065,12 +1066,12 @@ const meteorites = (function(){
         const rimY=Math.max(1,surface-1-(edge<1.04 && rimRoll<rimRaiseChance?1:0)+(rimRoll>0.90?1:0));
         addOp(1,x,rimY,rimRoll<0.74?T.OBSIDIAN:T.STONE,Math.abs(dx)+2,true);
         if(edge<1.07 && hashUnit(seed+47.8,x)>0.72){
-          addOp(1,x,Math.min(WORLD_H-4,rimY+1),hashUnit(seed+48.5,x)<0.62?T.STONE:T.OBSIDIAN,Math.abs(dx)+2.4,true);
+          addOp(1,x,Math.min(WORLD_BOTTOM-4,rimY+1),hashUnit(seed+48.5,x)<0.62?T.STONE:T.OBSIDIAN,Math.abs(dx)+2.4,true);
         }
       }
     }
     floorCells.sort((a,b)=>a.d-b.d || a.floorY-b.floorY);
-    const core=floorCells[0] || {x:Math.floor(cx),floorY:clamp(impactY+Math.round(ry),2,WORLD_H-4),d:0};
+    const core=floorCells[0] || {x:Math.floor(cx),floorY:clamp(impactY+Math.round(ry),2,WORLD_BOTTOM-4),d:0};
     const coreX=core.x;
     const floorY=core.floorY;
     for(let x=coreX-lavaSpan; x<=coreX+lavaSpan; x++) addOp(1,x,floorY,T.LAVA,0.01+Math.abs(x-coreX)*0.04,true);
@@ -1094,7 +1095,7 @@ const meteorites = (function(){
     function addDeposit(tile,offsetY,dBase){
       for(const c of depositCells){
         const y=c.floorY+offsetY;
-        if(y>=WORLD_H-3) continue;
+        if(y>=WORLD_BOTTOM-3) continue;
         const key=c.x+','+y;
         if(usedDeposits.has(key)) continue;
         usedDeposits.add(key);
@@ -1120,7 +1121,7 @@ const meteorites = (function(){
     return ops;
   }
   function applyCraterOp(op,getTile,setTile,batch){
-    if(!op || op.y<1 || op.y>=WORLD_H-3 || !Number.isFinite(op.x)) return false;
+    if(!op || op.y<1 || op.y>=WORLD_BOTTOM-3 || !Number.isFinite(op.x)) return false;
     const old=readTile(getTile,op.x,op.y);
     if(old===op.t) return false;
     if(protectedTile(old)) return false;
@@ -1163,7 +1164,7 @@ const meteorites = (function(){
   function setTileNotified(x,y,t,getTile,setTile){
     if(typeof setTile!=='function') return false;
     x=Math.floor(x); y=Math.floor(y);
-    if(y<1 || y>=WORLD_H-3) return false;
+    if(y<1 || y>=WORLD_BOTTOM-3) return false;
     const old=readTile(getTile,x,y);
     if(old===t || protectedTile(old)) return false;
     setTile(x,y,t);
@@ -1173,7 +1174,7 @@ const meteorites = (function(){
   function impactSiteKind(cx,cy,getTile){
     let water=0, forest=0, built=0, life=0;
     for(let y=Math.floor(cy)-5; y<=Math.floor(cy)+7; y++){
-      if(y<1 || y>=WORLD_H-3) continue;
+      if(y<1 || y>=WORLD_BOTTOM-3) continue;
       for(let x=Math.floor(cx)-8; x<=Math.floor(cx)+8; x++){
         const t=readTile(getTile,x,y);
         if(isMeteorWaterSiteTile(t)) water++;
@@ -1265,7 +1266,7 @@ const meteorites = (function(){
     let n=0;
     const r=Math.round(5+intensity*2);
     for(let y=Math.floor(cy)-5; y<=Math.floor(cy)+6; y++){
-      if(y<1 || y>=WORLD_H-3) continue;
+      if(y<1 || y>=WORLD_BOTTOM-3) continue;
       for(let x=Math.floor(cx)-r; x<=Math.floor(cx)+r; x++){
         if(Math.hypot(x+0.5-cx,y+0.5-cy)>r+1) continue;
         const t=readTile(getTile,x,y);
@@ -1325,7 +1326,7 @@ const meteorites = (function(){
     const r=clamp(c.r|0,6,58);
     const cols=r*2+1;
     const yMin=Math.max(1,Math.floor(c.y)-1);
-    const yMax=Math.min(WORLD_H-4,Math.floor(c.y+Math.max(5,r*0.55)+4));
+    const yMax=Math.min(WORLD_BOTTOM-4,Math.floor(c.y+Math.max(5,r*0.55)+4));
     const start=(c.cursor|0) % cols;
     for(let n=0;n<Math.min(cols,24);n++){
       const idx=(start+n)%cols;
@@ -1383,7 +1384,7 @@ const meteorites = (function(){
       const x=nextCraterColumn(c,eco,opts.scale||0.74);
       const surface=craterSurfaceNear(x,c.y,getTile);
       if(surface==null) continue;
-      const y=clamp(surface + (opts.buried ? 1+((eco.cursor+tries)%2) : 0),1,WORLD_H-4);
+      const y=clamp(surface + (opts.buried ? 1+((eco.cursor+tries)%2) : 0),1,WORLD_BOTTOM-4);
       const cur=readTile(getTile,x,y);
       const info=tileInfo(cur);
       if(protectedTile(cur) || (info && info.machine)) continue;
@@ -1542,7 +1543,7 @@ const meteorites = (function(){
     if(!c || typeof getTile!=='function') return counts;
     const r=clamp(c.r|0,6,58);
     const yMin=Math.max(1,Math.floor(c.y)-3);
-    const yMax=Math.min(WORLD_H-4,Math.floor(c.y+r*0.70+6));
+    const yMax=Math.min(WORLD_BOTTOM-4,Math.floor(c.y+r*0.70+6));
     for(let y=yMin; y<=yMax; y++){
       for(let x=Math.floor(c.x-r); x<=Math.floor(c.x+r); x++){
         if(Math.hypot(x+0.5-c.x,(y+0.5-c.y)*1.7)>r+3) continue;
@@ -1705,7 +1706,7 @@ const meteorites = (function(){
     opts=opts||{};
     const profile=classProfile((opts.profile && opts.profile.id) || opts.classId || opts.kind || opts.type);
     const cx=Math.floor(wx)+0.5;
-    const cy=clamp(Math.floor(wy),2,WORLD_H-5);
+    const cy=clamp(Math.floor(wy),2,WORLD_BOTTOM-5);
     const hit=readTile(getTile,Math.floor(cx),Math.floor(cy));
     const waterHit=!!opts.waterHit || hit===T.WATER || hit===T.ICE;
     const site=opts.site || impactSiteKind(cx,cy,getTile);
@@ -1728,7 +1729,7 @@ const meteorites = (function(){
     const host=HOSTILITY.at(target.x);
     const baseIntensity=clamp(Number(opts.intensity)||rand(1.12,1.58),0.85,2.2);
     const intensity=clamp(baseIntensity*(profile.intensityMult||1)*(host.meteorIntensityMult||1),0.78,3.35);
-    const surfaceY=clamp(craterSurfaceNear(target.x,target.y,getTile)||target.y,2,WORLD_H-6);
+    const surfaceY=clamp(craterSurfaceNear(target.x,target.y,getTile)||target.y,2,WORLD_BOTTOM-6);
     const side=opts.side || (Math.random()<0.5 ? -1 : 1);
     const fallTime=rand(2.05,2.72);
     const distance=rand(54,82);
@@ -1794,7 +1795,7 @@ const meteorites = (function(){
         m.waterHit=true;
         emitWaterImpactFx(m.x,m.y,m.intensity);
       }
-      if(ty>=WORLD_H-3 || (ty>=1 && meteorGroundTile(t))){
+      if(ty>=WORLD_BOTTOM-3 || (ty>=1 && meteorGroundTile(t))){
         impactAt(m.x,m.y,getTile,setTile,m.intensity,null,{waterHit:m.waterHit,classId:m.classId,deflected:!!m.deflected});
         return true;
       }
@@ -1880,7 +1881,7 @@ const meteorites = (function(){
       d.vy+=(13.5-inverseGravityAt(d.x,d.y))*dt;
       d.vx*=1-Math.min(0.16,dt*0.45);
       d.rot+=d.spin*dt;
-      if(d.life>=d.max || d.y>=WORLD_H) debris.splice(i,1);
+      if(d.life>=d.max || d.y>=WORLD_BOTTOM) debris.splice(i,1);
     }
     for(let i=embers.length-1;i>=0;i--){
       const e=embers[i];
@@ -1889,7 +1890,7 @@ const meteorites = (function(){
       e.y+=e.vy*dt;
       e.vy+=(5.5-inverseGravityAt(e.x,e.y)*0.45)*dt;
       e.vx*=1-Math.min(0.12,dt*0.3);
-      if(e.life>=e.max || e.y>=WORLD_H) embers.splice(i,1);
+      if(e.life>=e.max || e.y>=WORLD_BOTTOM) embers.splice(i,1);
     }
   }
   function update(dt,player,getTile,setTile){
@@ -1913,7 +1914,7 @@ const meteorites = (function(){
   }
   function tileVisibleFn(canDrawTile){
     const visible=typeof canDrawTile==='function' ? canDrawTile : null;
-    return (x,y)=> !visible || visible(Math.floor(x),Math.max(0,Math.min(WORLD_H-1,Math.floor(y))));
+    return (x,y)=> !visible || visible(Math.floor(x),Math.max(0,Math.min(WORLD_BOTTOM-1,Math.floor(y))));
   }
   function drawMeteor(ctx,TILE,m){
     const profile=classProfile(m && m.classId);

@@ -56,6 +56,7 @@ globalThis.document = {
   createElement(){ return {width:0, height:0, getContext(){ return makeCtx(); }}; }
 };
 
+const { T: PT, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } = await import('../src/constants.js');
 const { particles } = await import('../src/engine/particles.js');
 assert.ok(particles, 'particles module exports');
 
@@ -125,13 +126,30 @@ try{
 
   particles.reset();
   assert.equal(typeof particles._debugAdd, 'function', 'particle tests can inject deterministic particles');
-  const PT=globalThis.MM.T;
   const floorGetTile=(x,y)=> y>=3 ? PT.STONE : PT.AIR;
   particles._debugAdd({kind:'spark',x:42,y:42,vx:0,vy:14,life:0,max:2,tier:'common',size:3});
   for(let i=0;i<10;i++) particles.update(1/30,20,floorGetTile);
   let collided=particles._debugSnapshot()[0];
   assert.ok(collided.y <= 60 - 1.1, 'physical particles collide with solid floors');
   assert.ok(collided.vy <= 0.2 || collided.onGround, 'floor collision kills or reverses downward particle velocity');
+
+  particles.reset();
+  const skyFloorY=Math.max(WORLD_MIN_Y+8, -12);
+  const skyFloorGetTile=(x,y)=> y===skyFloorY ? PT.STONE : PT.AIR;
+  particles._debugAdd({kind:'spark',x:42,y:(skyFloorY-2)*20+2,vx:0,vy:14,life:0,max:2,tier:'common',size:3});
+  for(let i=0;i<12;i++) particles.update(1/30,20,skyFloorGetTile);
+  collided=particles._debugSnapshot()[0];
+  assert.ok(collided.y <= skyFloorY*20 - 1.1, 'physical particles collide with solid sky-section floors');
+  assert.ok(collided.vy <= 0.2 || collided.onGround, 'sky-section floor collision kills or reverses downward particle velocity');
+
+  particles.reset();
+  const deepFloorY=Math.min(WORLD_MAX_Y-8, WORLD_H+12);
+  const deepFloorGetTile=(x,y)=> y===deepFloorY ? PT.STONE : PT.AIR;
+  particles._debugAdd({kind:'spark',x:42,y:(deepFloorY-2)*20+2,vx:0,vy:14,life:0,max:2,tier:'common',size:3});
+  for(let i=0;i<12;i++) particles.update(1/30,20,deepFloorGetTile);
+  collided=particles._debugSnapshot()[0];
+  assert.ok(collided.y <= deepFloorY*20 - 1.1, 'physical particles collide with solid deep-section floors');
+  assert.ok(collided.vy <= 0.2 || collided.onGround, 'deep-section floor collision kills or reverses downward particle velocity');
 
   particles.reset();
   const wallGetTile=(x,y)=> x>=3 ? PT.STONE : PT.AIR;

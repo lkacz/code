@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises';
 globalThis.window = globalThis;
 globalThis.MM = {};
 
-const { T, INFO, WORLD_H } = await import('../src/constants.js');
+const { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, WORLD_SECTION_H } = await import('../src/constants.js');
 let gasUnits = 0;
 MM.gases = { add(kind,x,y,opts){ gasUnits += opts && opts.cells ? opts.cells : 1; return opts && opts.cells ? opts.cells : 1; } };
 
@@ -76,11 +76,12 @@ assert.doesNotMatch(meatRendererSrc, /fillRect\(px\+4,py\+TILE-4,TILE-8,2\)/, 'm
 let tiles = new Map();
 const key = (x,y)=>x+','+y;
 function getTile(x,y){
-  if(y<0 || y>=WORLD_H) return T.STONE;
+  if(y<WORLD_MIN_Y) return T.AIR;
+  if(y>=WORLD_MAX_Y) return T.STONE;
   return tiles.get(key(x,y)) ?? T.AIR;
 }
 function setTile(x,y,t){
-  if(y<0 || y>=WORLD_H) return;
+  if(y<WORLD_MIN_Y || y>=WORLD_MAX_Y) return;
   const k=key(x,y);
   if(t===T.AIR) tiles.delete(k);
   else tiles.set(k,t);
@@ -249,6 +250,23 @@ meat.update(0.1,{x:30,y:5},getTile,setTile);
 assert.equal(getTile(30,79),T.MEAT,'deep-water style drops settle above the bottom');
 
 clear();
+const skyFloorY=Math.max(WORLD_MIN_Y+24,-46);
+for(let x=68; x<=72; x++) setTile(x,skyFloorY,T.STONE);
+assert.equal(meat.dropFromMob({x:70.2,y:skyFloorY-6.4},getTile,setTile),true,'sky-layer mob death can place meat at the killed animal cell');
+assert.equal(getTile(70,skyFloorY-7),T.MEAT,'sky-layer meat initially appears at the exact death spot');
+meat.update(0.1,{x:70,y:skyFloorY-7},getTile,setTile);
+assert.equal(getTile(70,skyFloorY-1),T.MEAT,'sky-layer unsupported meat settles onto the local sky floor');
+assert.ok(meat.snapshot().list.some(r=>r.y<0),'sky-layer meat is preserved in the lifecycle snapshot');
+
+clear();
+const deepFloorY=Math.min(WORLD_MAX_Y-24,WORLD_H+46);
+for(let x=72; x<=76; x++) setTile(x,deepFloorY,T.STONE);
+assert.equal(meat.dropFromMob({x:74.2,y:deepFloorY-6.4},getTile,setTile),true,'deep-layer mob death can place meat at the killed animal cell');
+meat.update(0.1,{x:74,y:deepFloorY-7},getTile,setTile);
+assert.equal(getTile(74,deepFloorY-1),T.MEAT,'deep-layer unsupported meat settles onto the local deep floor');
+assert.ok(meat.snapshot().list.some(r=>r.y>WORLD_H),'deep-layer meat is preserved in the lifecycle snapshot');
+
+clear();
 setTile(44,5,T.STONE);
 setTile(44,7,T.GRASS);
 assert.equal(meat.dropFromMob({x:44.3,y:5.2},getTile,setTile),true,'blocked death cells fall back to the nearest valid meat cell');
@@ -274,6 +292,15 @@ assert.equal(meat.snapshot().list.length,1,'audited meat is included in the snap
 setTile(1,5,T.AIR);
 assert.equal(meat.auditChunks([0],getTile),0,'save audit ignores removed meat');
 assert.equal(meat.snapshot().list.length,0,'save audit prunes stale meat records');
+
+clear();
+const skyAuditY=Math.max(WORLD_MIN_Y+12,-52);
+setTile(2,skyAuditY,T.MEAT);
+assert.equal(meat.auditChunks([{cx:0,sy:Math.floor(skyAuditY/WORLD_SECTION_H)}],getTile),1,'section save audit finds untracked sky-layer meat');
+assert.ok(meat.snapshot().list.some(r=>r.x===2 && r.y===skyAuditY),'section-audited sky meat is included in the snapshot');
+setTile(2,skyAuditY,T.AIR);
+assert.equal(meat.auditChunks([{cx:0,sy:Math.floor(skyAuditY/WORLD_SECTION_H)}],getTile),0,'section save audit ignores removed sky-layer meat');
+assert.equal(meat.snapshot().list.length,0,'section save audit prunes stale sky meat records');
 
 clear();
 setTile(40,6,T.GRASS);

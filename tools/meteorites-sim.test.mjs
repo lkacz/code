@@ -15,7 +15,7 @@ globalThis.localStorage = {
 };
 globalThis.msg = ()=>{};
 
-const { T, INFO } = await import('../src/constants.js');
+const { T, INFO, WORLD_H, WORLD_MAX_Y } = await import('../src/constants.js');
 const { meteorites } = await import('../src/engine/meteorites.js');
 const worldSrc = await readFile(new URL('../src/engine/world.js', import.meta.url), 'utf8');
 const audioSrc = await readFile(new URL('../src/engine/audio.js', import.meta.url), 'utf8');
@@ -200,6 +200,23 @@ const batchPlacedWake=placed-placedBeforeBatch;
 assert.ok(batchWaterWake>0 && batchWaterWake<=32, 'meteor crater batches water wakeups instead of per-cell scans ('+batchWaterWake+')');
 assert.ok(batchRemovedWake>0 && batchRemovedWake<=120, 'meteor crater batches falling removal wakeups ('+batchRemovedWake+')');
 assert.ok(batchPlacedWake>0 && batchPlacedWake<=120, 'meteor crater batches falling placement wakeups ('+batchPlacedWake+')');
+
+const deepSurface = Math.min(WORLD_MAX_Y-42, WORLD_H+62);
+const deepTiles = new Map();
+function getDeepTile(x,y){
+  x=Math.floor(x); y=Math.floor(y);
+  const k=kxy(x,y);
+  if(deepTiles.has(k)) return deepTiles.get(k);
+  return y>=deepSurface ? T.STONE : T.AIR;
+}
+function setDeepTile(x,y,t){ deepTiles.set(kxy(x,y),t); }
+const deepCratersBefore = meteorites.metrics().craters;
+meteorites._debug.impactAt(333,deepSurface,getDeepTile,setDeepTile,1.85,null,{surfaceY:deepSurface,site:'deep-test',colossal:true,classId:'antimatter',skipActorDamage:true});
+const deepChanged=[...deepTiles.entries()].map(([key,t])=>({x:Number(key.split(',')[0]),y:Number(key.split(',')[1]),t}));
+assert.ok(meteorites.metrics().craters>deepCratersBefore, 'direct deep impact records a crater');
+assert.ok(deepChanged.some(c=>c.t===T.AIR && c.y>=deepSurface && c.y<WORLD_MAX_Y-3), 'deep impact carves ordinary deep stone into air');
+assert.ok(deepChanged.some(c=>c.t===T.LAVA || c.t===T.OBSIDIAN || c.t===T.ANTIMATTER_CRYSTAL), 'deep impact leaves the normal heated/mineral crater materials');
+assert.ok(meteorites.snapshot().craters.at(-1).y>=WORLD_H, 'deep impact crater record keeps its extended y coordinate');
 
 function analyzeProceduralCrater(x0){
   const localTiles = new Map();

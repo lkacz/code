@@ -6,7 +6,7 @@ import { readFile } from 'node:fs/promises';
 globalThis.window = globalThis;
 globalThis.MM = {};
 
-const { T, INFO, WORLD_H } = await import('../src/constants.js');
+const { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } = await import('../src/constants.js');
 const { dynamo } = await import('../src/engine/dynamo.js');
 const { teleporters } = await import('../src/engine/teleporters.js');
 const { springPlatforms } = await import('../src/engine/spring_platforms.js');
@@ -15,7 +15,7 @@ const tiles = new Map();
 const k = (x,y)=>Math.floor(x)+','+Math.floor(y);
 function getTile(x,y){
   x=Math.floor(x); y=Math.floor(y);
-  if(y<0 || y>=WORLD_H) return T.AIR;
+  if(y<WORLD_MIN_Y || y>=WORLD_MAX_Y) return T.AIR;
   return tiles.get(k(x,y)) ?? T.AIR;
 }
 function setTile(x,y,v){
@@ -73,6 +73,22 @@ assert.equal(INFO[T.SPRING_PLATFORM].energyCapacity,70,'spring platform advertis
   assert.ok(Math.abs(heightRatio-3)<0.001,'unpowered launch reaches one third of powered height');
   assert.equal(springPlatforms.launchHero(hero(),0,10,getTile,{dynamo,teleporters}),null,'launch cooldown prevents repeated same-frame launches');
   assert.equal(springPlatforms.metrics().poweredLaunches,1,'metrics track powered launches');
+}
+
+{
+  reset();
+  assert.ok(WORLD_MIN_Y<0 && WORLD_MAX_Y>WORLD_H,'spring-platform tests cover extended vertical sections');
+  setTile(0,-20,T.SPRING_PLATFORM);
+  springPlatforms._debug.debugChargeAt(0,-20,springPlatforms._debug.CAPACITY,getTile);
+  const skyHero={x:0.5,y:-21,w:0.7,h:0.95,vx:1,vy:2,facing:1,onGround:true,jumpCount:0};
+  const launched=springPlatforms.launchHero(skyHero,0,-20,getTile,{dynamo,teleporters});
+  assert.ok(launched && launched.powered,'sky-layer spring platform can perform a powered launch');
+  assert.equal(skyHero.vy,springPlatforms._debug.POWERED_LAUNCH,'sky-layer spring uses the same powered impulse');
+  const snap=springPlatforms.snapshot();
+  assert.ok(snap.machines.some(m=>m.y<0),'spring platform snapshot preserves sky-layer machines');
+  springPlatforms.reset();
+  springPlatforms.restore(snap,getTile);
+  assert.equal(springPlatforms.metrics().machines,1,'spring platform restore rehydrates sky-layer machines');
 }
 
 {

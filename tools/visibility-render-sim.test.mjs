@@ -111,6 +111,13 @@ if(originalPerformanceNow){
   catch(e){ globalThis.performance.now = originalPerformanceNow; }
 }
 
+grass.reset();
+tiles.set(key(3,-6), T.GRASS);
+tiles.set(key(3,-7), T.AIR);
+const skyGrassCtx = makeCtx();
+grass.drawOverlays(skyGrassCtx,'back',2,-8,3,4,20,WORLD_H,getTile,T,1,1,1,()=>true,-16);
+assert.ok(skyGrassCtx.quadratics.length > 0, 'grass overlays can render in negative-y sky sections when given extended bounds');
+
 particles.reset();
 particles.spawnBurst(5*20, 5*20, 'common');
 const undiscoveredParticleCtx = makeCtx();
@@ -282,6 +289,12 @@ const turretRenderer = mainSource.slice(turretRendererStart, turretRendererEnd);
 assert.ok(!turretRenderer.includes('.arc('), 'turret renderer avoids soft circular shapes that read as low-detail scaling');
 assert.match(mainSource, /function beginPrecisionSafeWorldLayer\(opts\)/, 'main renderer has a camera-local layer path for large world coordinates');
 assert.match(mainSource, /drawWorldVisible\(sx,sy,viewX,viewY,\{camX:camRenderX,camY:camRenderY,shake:meteorShake\}\)/, 'cached terrain receives the render camera for precision-safe drawing');
+assert.match(mainSource, /const minSection=Math\.max\(worldMinSection\(\),worldSectionY\(Math\.floor\(sy\)-2\)\); const maxSection=Math\.min\(worldMaxSection\(\),worldSectionY\(Math\.ceil\(sy\+viewY\)\+2\)\)/, 'world renderer derives the visible vertical section range from the camera');
+assert.match(mainSource, /fallingAuditChunks=\[\], fallingAuditChunkSeen=new Set\(\)/, 'falling audits collect visible horizontal chunks even outside the legacy base section');
+assert.match(mainSource, /FALLING && FALLING\.auditChunks\) FALLING\.auditChunks\(fallingAuditChunks\)/, 'falling audits run for sky and deep section views, not only base-section views');
+assert.match(mainSource, /function clearDebugGases\(\)[\s\S]*const ref=normalizeWorldChunkRef\(k\)[\s\S]*originY=ref\.base \? 0 : worldSectionOriginY\(ref\.sy\)/, 'gas debug cleanup scans section-qualified sky and deep chunk arrays');
+assert.match(mainSource, /function debugRigCellsClear\(cells\)[\s\S]*worldYInBounds\(cell\.y\)/, 'debug rig placement accepts valid sky and deep world coordinates');
+assert.match(mainSource, /function nearestDebugDynamoSlot\(\)[\s\S]*Math\.max\(worldMinY\(\),cy-28\)[\s\S]*Math\.min\(worldMaxY\(\)-1,cy\+28\)/, 'debug power scans search around the hero across extended vertical bounds');
 assert.match(mainSource, /function drawSeamSafeChunkCanvas\(canvas, dx, dy\)/, 'chunk renderer has a seam-safe blit helper');
 assert.match(mainSource, /ctx\.drawImage\(canvas,0,0,1,sh,dx-overlap,dy,overlap,sh\);/, 'chunk renderer overlaps the left edge strip to hide subpixel gaps');
 assert.match(mainSource, /ctx\.drawImage\(canvas,sw-1,0,1,sh,dx\+sw,dy,overlap,sh\);/, 'chunk renderer overlaps the right edge strip to hide subpixel gaps');
@@ -291,8 +304,8 @@ assert.match(mainSource, /function markChunkRenderDirty\(cx,y,pad,baseVersion,ne
 assert.match(mainSource, /const partial=!!\(entry\.version>=0 && dirty && !dirty\.full && dirty\.baseVersion===entry\.version && dirty\.version===currentVersion/, 'chunk cache only uses partial redraws when every version since the cache was tracked');
 assert.match(mainSource, /cctx\.clearRect\(0,redrawY0\*TILE,cctx\.canvas\.width,\(redrawY1-redrawY0\+1\)\*TILE\)/, 'partial chunk redraw clears only the dirty vertical strip');
 assert.match(mainSource, /function beginChunkCacheFrame\(\)[\s\S]*chunkCacheRebuildBudget = ms>28 \? 1 : \(ms>20 \? 2 : 3\)/, 'dirty chunk-cache rebuilds are budgeted aggressively enough to avoid post-impact and post-tree-cut frame drops');
-assert.match(mainSource, /entry=\{canvas:c,ctx:cctx,version:-1,chests:\[\],doorways:\[\]\}/, 'chunk cache tracks door and trapdoor cells for overlay animation');
-assert.match(mainSource, /function visibleDoorwayCellsFor\(sx,sy,viewX,viewY\)/, 'door overlay animation uses cached chunk door metadata instead of a full visible-tile scan');
+assert.match(mainSource, /entry=\{canvas:c,ctx:cctx,version:-1,sy,chests:\[\],doorways:\[\]\}/, 'section chunk cache tracks door and trapdoor cells for metadata reuse');
+assert.match(mainSource, /function visibleDoorwayCellsFor\(sx,sy,viewX,viewY\)[\s\S]*collectDoorwayCellsInRange\(x0,x1,y0,y1,cells\)/, 'door overlay animation scans only the bounded visible section range');
 assert.match(mainSource, /window\.__mmPerf=\{[\s\S]*simMs[\s\S]*drawMs[\s\S]*chunks:\{rebuilt:chunkCacheRebuiltThisFrame,partial:chunkCachePartialRebuiltThisFrame,deferred:chunkCacheDeferredThisFrame/, 'frame profiler exposes sim/draw timing and full/partial chunk rebuild pressure');
 assert.match(mainSource, /drawFogOverlay\(sx,sy,viewX,viewY,\{camX:camRenderX,camY:camRenderY,shake:meteorShake\}\)/, 'fog overlay receives the render camera for precision-safe drawing');
 assert.match(mainSource, /originX: localLayer \? opts\.camX : 0/, 'fog overlay can draw in camera-local coordinates');

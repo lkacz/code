@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 globalThis.window = globalThis;
 globalThis.MM = {};
 
-const { T, WORLD_H, CHUNK_W, isSolid } = await import('../src/constants.js');
+const { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, CHUNK_W, isSolid } = await import('../src/constants.js');
 const { gases } = await import('../src/engine/gases.js');
 const { fog } = await import('../src/engine/fog.js');
 assert.ok(gases, 'gases module exports');
@@ -31,6 +31,37 @@ assert.equal(fog.hasVisible(1,5), true, 'public visible helper mirrors current l
 assert.equal(fog.hasSeen(3,5), false, 'public seen helper keeps undiscovered details hidden from render effects');
 assert.equal(fog.hasLineOfSight(0,5,2,5,getTile,(t)=>isSolid(t)), true, 'public LOS exposes the first blocking face');
 assert.equal(fog.hasLineOfSight(0,5,3,5,getTile,(t)=>isSolid(t)), false, 'public LOS rejects blocks hidden behind another block');
+
+{
+  setTile(10,-12,T.GLASS);
+  setTile(11,WORLD_H+8,T.BASALT);
+  fog.importSeen([]);
+  fog.setRevealAll(false);
+  fog.revealAround(10,-13,3,{lineOfSight:true,rememberSeen:true,getTile,blocksSight:(t)=>isSolid(t)});
+  assert.equal(fog.hasSeen(10,-12), true, 'fog tracks discovered sky-section tiles above legacy y=0');
+  assert.equal(fog.hasVisible(10,-12), true, 'current visibility also works in sky sections');
+
+  fog.revealAround(11,WORLD_H+7,3,{lineOfSight:true,rememberSeen:true,getTile,blocksSight:(t)=>isSolid(t)});
+  assert.equal(fog.hasSeen(11,WORLD_H+8), true, 'fog tracks discovered deep-section tiles below legacy WORLD_H');
+
+  fog.importSeen([]);
+  const skyFills=[];
+  const skyCtx={fillStyle:'', fillRect(x,y,w,h){ skyFills.push({style:this.fillStyle,x,y,w,h}); }};
+  fog.applyOverlay(skyCtx,10,-12,0,0,1,getTile,T,{showMemory:true});
+  assert.ok(skyFills.some(f=>f.style==='#000' && f.y===-12), 'unseen solid sky islands are hidden by fog');
+
+  const legacy = new Uint8Array(Math.ceil((CHUNK_W*WORLD_H)/8));
+  const legacyIdx = 5*CHUNK_W;
+  legacy[legacyIdx>>3] |= (1 << (legacyIdx & 7));
+  fog.importSeen([{cx:0,data:Buffer.from(legacy).toString('base64'),rle:false}]);
+  assert.equal(fog.hasSeen(0,5), true, 'legacy fog bitsets migrate into the base vertical band');
+  assert.equal(fog.hasSeen(0,WORLD_MIN_Y), false, 'legacy fog migration does not smear seen bits into the new sky band');
+  assert.equal(fog.hasSeen(0,WORLD_MAX_Y-1), false, 'legacy fog migration does not smear seen bits into the new deep band');
+
+  setTile(10,-12,T.AIR);
+  setTile(11,WORLD_H+8,T.AIR);
+  fog.importSeen([]);
+}
 
 {
   setTile(31,5,T.STONE);

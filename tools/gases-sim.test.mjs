@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises';
 globalThis.window = globalThis;
 globalThis.MM = {};
 
-const { T, WORLD_H, CHUNK_W } = await import('../src/constants.js');
+const { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, CHUNK_W } = await import('../src/constants.js');
 const { gases } = await import('../src/engine/gases.js');
 assert.ok(gases, 'gases module exports');
 
@@ -36,12 +36,27 @@ function setTile(x,y,v){
   else tiles.set(k,v);
   if(old!==v) gases.onTileChanged(x,y,old,v);
 }
+function getVerticalTile(x,y){
+  if(y<WORLD_MIN_Y || y>=WORLD_MAX_Y) return T.STONE;
+  return tiles.get(key(x,y)) ?? T.AIR;
+}
+function setVerticalTile(x,y,v){
+  if(y<WORLD_MIN_Y || y>=WORLD_MAX_Y) return;
+  const k=key(x,y);
+  const old=getVerticalTile(x,y);
+  if(v===T.AIR) tiles.delete(k);
+  else tiles.set(k,v);
+  if(old!==v) gases.onTileChanged(x,y,old,v);
+}
 function fill(x0,x1,y0,y1,t){
   for(let x=x0; x<=x1; x++) for(let y=y0; y<=y1; y++) setTile(x,y,t);
 }
-function step(seconds,dt=0.1){
+function stepWith(seconds,getFn,setFn,player={x:0,y:20},dt=0.1){
   const n=Math.ceil(seconds/dt);
-  for(let i=0; i<n; i++) gases.update(dt,getTile,setTile,{x:0,y:20});
+  for(let i=0; i<n; i++) gases.update(dt,getFn,setFn,player);
+}
+function step(seconds,dt=0.1){
+  stepWith(seconds,getTile,setTile,{x:0,y:20},dt);
 }
 function count(tile){
   let n=0;
@@ -51,8 +66,8 @@ function count(tile){
 
 // 1) A free gas bubble rises and vanishes when it exits the top of the map.
 resetWorld();
-setTile(0,4,T.POISON_GAS);
-step(5);
+setVerticalTile(0,WORLD_MIN_Y+4,T.POISON_GAS);
+stepWith(5,getVerticalTile,setVerticalTile,{x:0,y:WORLD_MIN_Y+8});
 assert.equal(count(T.POISON_GAS),0,'poison gas escapes at the top of the map');
 
 function sealSteamPocket(){
@@ -182,9 +197,9 @@ assert.equal(gases.snapshot().list[0].age,0,'gas restore sanitizes invalid saved
 // instead of being held at a dark visible floor.
 resetWorld();
 setTile(10,12,T.STEAM);
-assert.equal(gases.skyExposed(10,12,getTile),true,'steam with an open vertical path is sky-exposed');
+assert.equal(gases.skyExposed(10,12,getVerticalTile),true,'steam with an open vertical path is sky-exposed');
 setTile(10,6,T.STONE);
-assert.equal(gases.skyExposed(10,12,getTile),false,'a solid roof makes the same steam underground');
+assert.equal(gases.skyExposed(10,12,getVerticalTile),false,'a solid roof makes the same steam underground');
 setTile(10,6,T.AIR);
 const steamRecord=gases._debug.active.get('10,12');
 assert.ok(steamRecord,'steam record is active for fade rendering');
@@ -226,7 +241,36 @@ const placed=gases.add('fuel',10,40,{power:5,cells:20,getTile,setTile});
 assert.ok(placed>0 && placed<=12,'add() places a bounded number of fuel gas cells');
 assert.equal(gases.metrics().fuel,placed,'metrics expose fuel gas count');
 
-// 9) Machine-facing move API preserves gas identity and active registry state.
+// 9) Vertical-section gas works in sky and deep-world sections.
+assert.ok(WORLD_MIN_Y<0 && WORLD_MAX_Y>WORLD_H,'test constants expose vertical sections around the legacy world');
+resetWorld();
+setVerticalTile(20,-20,T.HOT_AIR);
+assert.equal(gases.skyExposed(20,-20,getVerticalTile),true,'sky gas can see the top of the extended world');
+setVerticalTile(20,-24,T.STONE);
+assert.equal(gases.skyExposed(20,-20,getVerticalTile),false,'sky gas still respects a roof in the extended world');
+setVerticalTile(20,-24,T.AIR);
+assert.equal(gases.add('hot',22,-18,{power:1,cells:4,getTile:getVerticalTile,setTile:setVerticalTile})>0,true,'add() can place gas above the legacy world top');
+assert.ok(gases.snapshot().list.some(g=>g.y<0),'snapshot keeps active gas in sky sections');
+gases._debug.active.get('20,-20').moveT=0;
+gases.update(0.05,getVerticalTile,setVerticalTile,{x:20,y:-20});
+assert.ok(gases.snapshot().list.some(g=>g.y<0),'sky gas remains tracked after a movement step');
+
+resetWorld();
+const deepY=WORLD_H+28;
+setVerticalTile(33,deepY,T.STEAM);
+assert.ok(gases.snapshot().list.some(g=>g.y>WORLD_H),'snapshot keeps active gas below the legacy world bottom');
+assert.equal(gases.moveCell(33,deepY,33,deepY-4,getVerticalTile,setVerticalTile),T.STEAM,'moveCell can relocate gas inside deep vertical sections');
+const deepSnap=gases.snapshot();
+gases.reset();
+gases.restore(deepSnap,getVerticalTile,setVerticalTile);
+assert.ok(gases.snapshot().list.some(g=>g.y===deepY-4),'restore rehydrates deep-section gas records');
+
+resetWorld();
+setVerticalTile(CHUNK_W*2+4,-18,T.POISON_GAS);
+gases.reset();
+assert.equal(gases.auditChunks([2],getVerticalTile),1,'chunk audits scan sky/deep vertical sections, not only legacy rows');
+
+// 10) Machine-facing move API preserves gas identity and active registry state.
 resetWorld();
 setTile(12,40,T.STEAM);
 assert.equal(gases.moveCell(12,40,12,35,getTile,setTile),T.STEAM,'moveCell can relocate a single gas cell for pipe machines');
@@ -239,7 +283,7 @@ setTile(12,34,T.STONE);
 assert.equal(gases.moveCell(12,36,12,34,getTile,setTile),false,'moveCell refuses to overwrite solid cells');
 assert.equal(getTile(12,36),T.STEAM,'failed moveCell keeps the source gas intact');
 
-// 10) The active registry stays bounded but new nearby gas still becomes active.
+// 11) The active registry stays bounded but new nearby gas still becomes active.
 resetWorld();
 for(let i=0; i<1905; i++) setTile(i,50,T.POISON_GAS);
 assert.ok(gases.metrics().active<=1800,'gas active registry is capped');
@@ -249,7 +293,7 @@ const cappedAdd=gases.add('fuel',2200,50,{power:1,cells:1,getTile,setTile});
 assert.equal(cappedAdd,1,'add() can still evict an older active gas at the cap');
 assert.equal(count(T.FUEL_GAS),1,'cap-time add() places the new gas tile');
 
-// 11) In the real world store, gas is queryable through getTile but does not dirty
+// 12) In the real world store, gas is queryable through getTile but does not dirty
 // terrain chunks or invalidate cached terrain art on every drift step.
 const { world } = await import('../src/engine/world.js');
 world.clear();
@@ -271,7 +315,7 @@ assert.equal(world.getTile(airSpot.x,airSpot.y),T.STEAM,'gas snapshot restore ca
 assert.equal(world.chunkVersion(Math.floor(airSpot.x/CHUNK_W)),0,'gas snapshot restore also avoids terrain dirtying');
 assert.deepEqual(world.modifiedChunkIds(),[],'gas snapshot restore is kept out of terrain save chunks');
 
-// 12) Public water APIs clean up gas records even when called with a raw setter
+// 13) Public water APIs clean up gas records even when called with a raw setter
 // that does not forward world tile-change hooks. Future machines can use those
 // APIs directly without leaving invisible stale gas entries behind.
 const { water } = await import('../src/engine/water.js');
@@ -334,7 +378,7 @@ for(let i=0;i<8000;i++) water.update(getTile,rawSetTile,1/60);
 assert.equal(getTile(81,94),T.WATER,'pressure leveling replaced roofed-mouth gas with water');
 assert.equal(gases.metrics().active,0,'pressure leveling removed the replaced gas record without world hooks');
 
-// 13) Falling-solid APIs also clean up gas when run with a raw setter. That keeps
+// 14) Falling-solid APIs also clean up gas when run with a raw setter. That keeps
 // gases as a reliable transient layer for future machines and off-main simulations.
 const { fallingSolids } = await import('../src/engine/falling.js');
 resetWorld();
@@ -393,7 +437,7 @@ assert.match(mainSrc, /GASES\.add\(kind,at\.x,at\.y,\{power:p,cells:Math\.round\
 assert.match(mainSrc, /GASES\.igniteAt\(at\.x,at\.y,getTile,setTile/, 'gas debug ignite uses the public gas ignition API');
 assert.match(mainSrc, /setTile\.transient\(x,y,T\.AIR\)/, 'gas debug clear removes visible transient gas cells');
 assert.match(mainSrc, /const worldMap=WORLD && WORLD\._world;/, 'gas debug clear scans loaded world chunks');
-assert.match(mainSrc, /if\(isGasTileId\(arr\[row\+lx\]\)\) clearAt\(x0\+lx,y\);/, 'gas debug clear removes stale loaded gas tiles beyond the active snapshot');
+assert.match(mainSrc, /const ref=normalizeWorldChunkRef\(k\)[\s\S]*originY=ref\.base \? 0 : worldSectionOriginY\(ref\.sy\)[\s\S]*if\(isGasTileId\(arr\[row\+lx\]\)\) clearAt\(x0\+lx,originY\+ly\);/, 'gas debug clear removes stale loaded gas tiles beyond the active snapshot, including sky/deep sections');
 assert.match(mainSrc, /MM\.ui\.injectGasDebugPanel/, 'main.js injects the gas debug controls into the menu');
 
 const uiSrc = await readFile(new URL('../src/engine/ui.js', import.meta.url), 'utf8');

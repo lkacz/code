@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 globalThis.window = globalThis;
 globalThis.MM = {};
 
-const { T } = await import('../src/constants.js');
+const { T, WORLD_H } = await import('../src/constants.js');
 const { fallingSolids } = await import('../src/engine/falling.js');
 await import('../src/engine/dynamo.js');
 
@@ -30,6 +30,7 @@ function reset(){
   fallingSolids.reset();
   MM.world = { getConstructionBackground:getBackgroundTile };
   MM.water = { displaceAt(){}, onTileChanged(){} };
+  delete MM.worldGen;
   fallingSolids.init(getTile,setTile);
 }
 function fillFloor(y,x0=-40,x1=40){
@@ -89,6 +90,15 @@ function stepFalling(seconds,dt=1/60){
     t+=d;
   }
 }
+function withPlayerY(y,fn){
+  const prev=globalThis.player;
+  globalThis.player = {x:100,y,w:1,h:2};
+  try{ return fn(); }
+  finally{
+    if(prev === undefined) delete globalThis.player;
+    else globalThis.player = prev;
+  }
+}
 function makeDrawCtx(){
   const calls=[];
   return {
@@ -107,6 +117,98 @@ function makeDrawCtx(){
     fillRect(){ calls.push('fillRect'); },
     strokeRect(){ calls.push('strokeRect'); }
   };
+}
+
+{
+  reset();
+  fillFloor(-20,-8,8);
+  fallingSolids.restore({
+    v:5,
+    active:[{x:0,y:-32,type:T.STONE,vy:0,rubble:true}],
+    sand:[{x:2,y:-35,vy:0}],
+    queue:['0,-31']
+  });
+  const snap=fallingSolids.snapshot();
+  assert.equal(snap.active.length,1,'falling save keeps a sky-section rigid body');
+  assert.equal(snap.sand.length,1,'falling save keeps a sky-section sand grain');
+  assert.ok(snap.queue.includes('0,-31'),'falling save keeps a negative-y instability queue entry');
+
+  fallingSolids.settleAll();
+
+  assert.equal(getTile(0,-21),T.STONE,'sky-section rubble settles onto the local sky floor');
+  assert.equal(getTile(2,-21),T.SAND,'sky-section sand settles onto the local sky floor');
+  assertSettledState('sky-section airborne material');
+}
+
+{
+  reset();
+  const floor=WORLD_H+24;
+  fillFloor(floor,-8,8);
+  fallingSolids.restore({
+    v:5,
+    active:[{x:0,y:WORLD_H+3,type:T.STONE,vy:0,rubble:true}],
+    sand:[{x:2,y:WORLD_H+5,vy:0}],
+    queue:[`0,${WORLD_H+4}`]
+  });
+  fallingSolids.settleAll();
+
+  assert.equal(getTile(0,floor-1),T.STONE,'deep-section rubble settles onto the local deep floor');
+  assert.equal(getTile(2,floor-1),T.SAND,'deep-section sand settles onto the local deep floor');
+  assertSettledState('deep-section airborne material');
+}
+
+{
+  reset();
+  fillFloor(-15,-8,8);
+  setTile(0,-30,T.CHEST_RARE);
+  withPlayerY(-38,()=>{
+    fallingSolids.auditChunks([0],{force:true,immediate:true});
+    fallingSolids.settleAll();
+  });
+
+  assert.equal(getTile(0,-30),T.AIR,'sky chunk audit wakes a legacy unsupported object');
+  assert.equal(getTile(0,-16),T.CHEST_RARE,'sky chunk audit settles legacy objects on the sky floor');
+}
+
+{
+  reset();
+  setFlatSurface(62);
+  buildRect(T.BASALT,-3,3,-31,-30);
+  buildRect(T.GLASS,-3,3,-34,-32);
+  setTile(0,-32,T.ANTIGRAVITY_BEACON);
+  withPlayerY(-40,()=>{
+    fallingSolids.auditChunks([0],{force:true,immediate:true});
+    fallingSolids.settleAll();
+  });
+
+  assert.equal(countRegionTile(T.BASALT,-3,3,-31,-30),14,'natural sky-island keel remains stable after sky audit');
+  assert.equal(countRegionTile(T.GLASS,-3,3,-34,-32),20,'natural sky-island glass crust is not claimed as player-built falling glass');
+  assert.equal(getTile(0,-32),T.ANTIGRAVITY_BEACON,'natural sky-island antigravity anchor remains in place');
+  assert.equal(fallingSolids.isPlayerBuiltAt(1,-33),false,'generated sky glass is not classified as a legacy player build');
+  assertSettledState('natural sky island audit');
+}
+
+{
+  reset();
+  const floor=WORLD_H+32;
+  fillFloor(floor,-8,8);
+  setTile(0,WORLD_H+10,T.CHEST_RARE);
+  withPlayerY(WORLD_H+12,()=>{
+    fallingSolids.auditChunks([0],{force:true,immediate:true});
+    fallingSolids.settleAll();
+  });
+
+  assert.equal(getTile(0,WORLD_H+10),T.AIR,'deep chunk audit wakes a legacy unsupported object');
+  assert.equal(getTile(0,floor-1),T.CHEST_RARE,'deep chunk audit settles legacy objects on the deep floor');
+}
+
+{
+  reset();
+  setTile(0,-12,T.BEDROCK);
+  assert.equal(fallingSolids.canSupportPlacement(1,-12,T.STONE).ok,true,'sky-section placement can anchor to a side wall');
+  assert.equal(fallingSolids.canSupportPlacement(4,-12,T.STONE).ok,false,'sky-section placement still rejects unsupported floating blocks');
+  setTile(0,WORLD_H+8,T.BEDROCK);
+  assert.equal(fallingSolids.canSupportPlacement(1,WORLD_H+8,T.STONE).ok,true,'deep-section placement can anchor to a side wall');
 }
 function supportedCantileverCells(t,span=25){
   reset();

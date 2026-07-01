@@ -2,7 +2,7 @@
 // Generated machines can cough up one ancient prize without power. Player-placed
 // machines need direct power or a copper network, vend once per in-game day, and
 // break into scrap after 10 total vends.
-import { T, INFO, WORLD_H } from '../constants.js';
+import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 
 (function(){
   window.MM = window.MM || {};
@@ -11,6 +11,8 @@ import { T, INFO, WORLD_H } from '../constants.js';
   const ENERGY_COST = 1.2;
   const MACHINE_CAP = 5000;
   const machines = new Map(); // "x,y" -> {x,y,usesLeft,placed,pulse,lastItem,lastVendDay}
+  const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
+  const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
   const JUNK = [
     {key:'sand',min:1,max:6,label:'piasek'},
@@ -44,7 +46,7 @@ import { T, INFO, WORLD_H } from '../constants.js';
   ];
 
   function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
-  function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=0 && y<WORLD_H; }
+  function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=WORLD_TOP && y<WORLD_BOTTOM; }
   function getSafe(getTile,x,y,fallback){
     try{ return typeof getTile==='function' ? getTile(x,y) : fallback; }catch(e){ return fallback; }
   }
@@ -339,7 +341,7 @@ import { T, INFO, WORLD_H } from '../constants.js';
   function draw(ctx,TILE,sx,sy,viewX,viewY,canDrawTile,getTile,opts){
     if(!ctx || !machines.size) return;
     const x0=Math.floor(sx)-2, x1=Math.ceil(sx+viewX)+2;
-    const y0=Math.max(0,Math.floor(sy)-2), y1=Math.min(WORLD_H-1,Math.ceil(sy+viewY)+2);
+    const y0=Math.max(WORLD_TOP,Math.floor(sy)-2), y1=Math.min(WORLD_BOTTOM-1,Math.ceil(sy+viewY)+2);
     const now=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
     ctx.save();
     for(const [raw,m] of machines){

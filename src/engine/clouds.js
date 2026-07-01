@@ -24,6 +24,8 @@ import { isFoliageTile, isSkyOpenTile, isWaterOpenTile } from './material_physic
 window.MM = window.MM || {};
 (function(){
   const {T, WORLD_H} = MM;
+  const WORLD_TOP = Number.isFinite(MM.WORLD_MIN_Y) ? MM.WORLD_MIN_Y : 0;
+  const WORLD_BOTTOM = Number.isFinite(MM.WORLD_MAX_Y) ? MM.WORLD_MAX_Y : WORLD_H;
 
   // ---------------- Tunables (exposed as MM.clouds.config) ----------------
   const CFG = {
@@ -172,7 +174,7 @@ window.MM = window.MM || {};
   }
   function altTargetFor(x,jit){
     // over extreme peaks the cruising band would leave the world: hug the ceiling
-    return Math.max(3, effSurf(x)-(13+jit*9));
+    return Math.max(WORLD_TOP+3, effSurf(x)-(13+jit*9));
   }
   // radius saturates for huge masses so merged storm cells can't demand giant sprites
   function radiusFor(mass){ return 2.6 + Math.sqrt(clamp(mass,0.3,80))*1.05; }
@@ -218,7 +220,7 @@ window.MM = window.MM || {};
       const surf=effSurf(wx);
       const y0=Math.max(2, surf-CFG.EVAP_SCAN_ABOVE);
       let yTop=-1;
-      for(let y=y0;y<Math.min(WORLD_H-1,surf+CFG.EVAP_SCAN_ABOVE);y++){
+      for(let y=y0;y<Math.min(WORLD_BOTTOM-1,surf+CFG.EVAP_SCAN_ABOVE);y++){
         const t=getTile(wx,y);
         if(skyOpenTile(t)) continue;            // light filters through leaves and thin gases
         if(t===T.WATER) yTop=y;
@@ -377,8 +379,12 @@ window.MM = window.MM || {};
   function dryTeleportSupport(t){
     return typeof t==='number' && !skyOpenTile(t) && t!==T.WATER && !tileIs(t,T.LAVA) && !tileIs(t,T.TORCH) && !tileIs(t,T.GRAVE);
   }
-  function dryLandingAt(x,getTile){
-    for(let y=2;y<WORLD_H-2;y++){
+  function dryLandingAt(x,getTile,range){
+    range=range||{};
+    const top=Number.isFinite(range.top) ? Math.max(WORLD_TOP+2,Math.floor(range.top)) : 2;
+    const bottom=Number.isFinite(range.bottom) ? Math.min(WORLD_BOTTOM-2,Math.floor(range.bottom)) : WORLD_H-2;
+    if(bottom<=top) return null;
+    for(let y=top;y<bottom;y++){
       const t=getTile(x,y);
       if(skyOpenTile(t)) continue;
       if(dryTeleportSupport(t) && dryTeleportAir(getTile(x,y-1)) && dryTeleportAir(getTile(x,y-2))){
@@ -393,13 +399,20 @@ window.MM = window.MM || {};
     const max=Math.max(min, CFG.LIGHTNING_TELEPORT_MAX||1500);
     const dir=Math.random()<0.5 ? -1 : 1;
     const target=Math.round(originX + dir*(min + Math.random()*(max-min)));
+    const p=(typeof window!=='undefined' && window.player);
+    const skyTraveler=!!(p && Number.isFinite(p.y) && p.y<0);
+    const ranges=skyTraveler
+      ? [{top:WORLD_TOP+2,bottom:Math.min(2,WORLD_BOTTOM-2)},{top:2,bottom:WORLD_BOTTOM-2}]
+      : [{top:2,bottom:WORLD_H-2}];
     for(let r=0;r<=96;r++){
       const candidates = r===0 ? [target] : [target+r, target-r];
       for(const x of candidates){
         const d=Math.abs((x+0.5)-originX);
         if(d<min || d>max) continue;
-        const spot=dryLandingAt(x,getTile);
-        if(spot) return {x:spot.x, y:spot.y, distance:d};
+        for(const range of ranges){
+          const spot=dryLandingAt(x,getTile,range);
+          if(spot) return {x:spot.x, y:spot.y, distance:d};
+        }
       }
     }
     return null;
@@ -456,12 +469,15 @@ window.MM = window.MM || {};
     return null;
   }
   function firstBlockingTile(x,fromRow,getTile){
-    for(let y=Math.max(1,Math.floor(fromRow));y<WORLD_H;y++){
+    for(let y=Math.max(WORLD_TOP+1,Math.floor(fromRow));y<WORLD_BOTTOM;y++){
       const t=getTile(x,y);
       if(skyOpenTile(t)) continue;
       return {x,y,t};
     }
     return null;
+  }
+  function lightningCanAlterTile(y,t){
+    return y<WORLD_BOTTOM-3 && t!==T.BEDROCK;
   }
   function findDynamoLightningTarget(x,fromRow,getTile){
     const radius=Math.max(0,Math.min(16,Math.floor(CFG.LIGHTNING_DYNAMO_ATTRACT_RADIUS||0)));
@@ -554,9 +570,9 @@ window.MM = window.MM || {};
         if(MM.water && MM.water.disturb){ MM.water.disturb(xi,280); MM.water.disturb(xi-1,180); MM.water.disturb(xi+1,180); }
         if(MM.particles && MM.particles.spawnSplash) MM.particles.spawnSplash((xi+0.5)*TILE, ty*TILE, 1);
       }catch(e){}
-    } else if(!isChest && ty<WORLD_H-3 && applyElectricReaction(xi,ty,getTile,setTile)){
+    } else if(!isChest && lightningCanAlterTile(ty,tile) && applyElectricReaction(xi,ty,getTile,setTile)){
       res.reaction=true;
-    } else if(!isChest && ty<WORLD_H-3){ // never transmute the bedrock shelf
+    } else if(!isChest && lightningCanAlterTile(ty,tile)){ // never transmute the bedrock shelf
       const r=Math.random();
       const id=r<0.70? T.CHEST_COMMON : (r<0.92? T.CHEST_RARE : T.CHEST_EPIC);
       setTile(xi,ty,id);
@@ -590,8 +606,10 @@ window.MM = window.MM || {};
     if(typeof getTile!=='function') getTile=w && w.getTile;
     if(typeof setTile!=='function') setTile=w && w.setTile;
     if(typeof getTile!=='function' || typeof setTile!=='function') return null;
-    const res=strikeAt(x,2,getTile,setTile);
-    if(res){ makeBolt(res.x, Math.max(2,res.y-18), res.x, res.y); viewFlash=Math.max(viewFlash,0.30); }
+    const p=(typeof window!=='undefined' && window.player);
+    const fromRow=(p && Number.isFinite(p.y) && p.y<0) ? WORLD_TOP+1 : 2;
+    const res=strikeAt(x,fromRow,getTile,setTile);
+    if(res){ makeBolt(res.x, Math.max(WORLD_TOP+1,res.y-18), res.x, res.y); viewFlash=Math.max(viewFlash,0.30); }
     return res;
   }
 
@@ -641,14 +659,14 @@ window.MM = window.MM || {};
   // debt across columns too thinly for tiles to ever materialize.
   function depositUnit(cx,fromRow,getTile,setTile){
     let ty=-1;
-    for(let y=Math.max(1,Math.floor(fromRow));y<WORLD_H;y++){
+    for(let y=Math.max(WORLD_TOP+1,Math.floor(fromRow));y<WORLD_BOTTOM;y++){
       const t=getTile(cx,y);
       if(skyOpenTile(t)) continue;
       ty=y; break;
     }
-    if(ty<1) return false;                         // fell out of the world
+    if(ty<=WORLD_TOP) return false;                // fell out of the world
     let py=ty-1;
-    while(py>1 && isLeafTile(getTile(cx,py))) py--;   // surface under a canopy: climb to air
+    while(py>WORLD_TOP+1 && isLeafTile(getTile(cx,py))) py--; // surface under a canopy: climb to air
     try{
       const pt=getTile(cx,py);
       if(MM.water && MM.water.addSource && isWaterOpenTile(pt)){
@@ -814,7 +832,7 @@ window.MM = window.MM || {};
       if(d.snow) d.x+=Math.sin(d.life*2+d.phase)*12*dt;
       d.x+=d.vx*dt; d.y+=d.vy*dt;
       const tx=Math.floor(d.x/TILE), ty=Math.floor(d.y/TILE);
-      if(ty>=WORLD_H || d.life>9){ drops.splice(i,1); continue; }
+      if(ty<WORLD_TOP || ty>=WORLD_BOTTOM || d.life>9){ drops.splice(i,1); continue; }
       const t=getTile(tx,ty);
       if(!skyOpenTile(t)){
         if(t===T.WATER){

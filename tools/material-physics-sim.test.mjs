@@ -42,6 +42,8 @@ const {
   isMeteorSettlementSiteTile,
   isMeteorWaterSiteTile,
   isMountedFixtureTile,
+  isNaturalFloatingAnchorTile,
+  isNaturalFloatingCohesionTile,
   isCreatureOpenTile,
   isNpcPassableTile,
   isLooseItemMaterial,
@@ -236,6 +238,15 @@ assert.equal(materialPhysicsRoute(T.STONE), 'build-material', 'stone has the bui
 assert.equal(materialPhysicsRoute(T.CLAY), 'build-material', 'clay has the build-material route');
 assert.equal(materialPhysicsRoute(T.WET_CLAY), 'build-material', 'wet clay has the build-material route');
 assert.equal(materialPhysicsRoute(T.BRICK), 'build-material', 'brick has the build-material route');
+assert.equal(isNaturalFloatingAnchorTile(T.ANTIGRAVITY_BEACON), true, 'antigravity beacons are natural sky-island anchors');
+assert.equal(isNaturalFloatingAnchorTile(T.ANTIMATTER_CRYSTAL), true, 'antimatter crystals are natural sky-island anchors');
+assert.equal(isNaturalFloatingAnchorTile(T.IRIDIUM), true, 'iridium cores can stabilize natural sky islands');
+assert.equal(isNaturalFloatingAnchorTile(T.GLASS), false, 'glass is sky cohesion but not a sky-island anchor');
+assert.equal(isNaturalFloatingCohesionTile(T.GLASS), true, 'sky glass can belong to natural floating masses');
+assert.equal(isNaturalFloatingCohesionTile(T.METEOR_DUST), true, 'meteor dust can mark natural sky transition veils');
+assert.equal(isNaturalFloatingCohesionTile(T.BASALT), true, 'basalt keels can belong to natural sky islands');
+assert.equal(isNaturalFloatingCohesionTile(T.GRANITE), true, 'granite keels can belong to natural sky islands');
+assert.equal(isNaturalFloatingCohesionTile(T.STONE), false, 'ordinary stone is not implicitly a natural floating sky material');
 for(const r of rows){
   if(!r.tile) continue;
   const id=T[r.tile];

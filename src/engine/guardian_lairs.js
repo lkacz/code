@@ -49,8 +49,8 @@ const guardianLairs = (function(){
       accent2: '#ffd15a',
       dark: '#3a1008',
       sidekicks: [
-        {role:'flare', name:'Cinder Oracle', hp:95, radius:1.05},
-        {role:'bulwark', name:'Magma Hound', hp:125, radius:1.18}
+        {role:'flare', name:'Cinder Oracle', hp:180, radius:1.05},
+        {role:'bulwark', name:'Magma Hound', hp:230, radius:1.18}
       ]
     },
     ice: {
@@ -63,8 +63,8 @@ const guardianLairs = (function(){
       accent2: '#d9fbff',
       dark: '#102538',
       sidekicks: [
-        {role:'mirror', name:'Aurora Mirror', hp:88, radius:1.0},
-        {role:'sentinel', name:'Glacier Sentinel', hp:135, radius:1.18}
+        {role:'mirror', name:'Aurora Mirror', hp:170, radius:1.0},
+        {role:'sentinel', name:'Glacier Sentinel', hp:240, radius:1.18}
       ]
     }
   };
@@ -301,6 +301,7 @@ const guardianLairs = (function(){
     const gateY=anchor.y;
     const topY=clamp(surfaceAt(ax)-1, 8, gateY-26);
     const ops=[];
+    const openCells=new Map();
     let minX=ax, maxX=ax, minY=topY, maxY=gateY;
     function bound(x,y){ if(x<minX)minX=x; if(x>maxX)maxX=x; if(y<minY)minY=y; if(y>maxY)maxY=y; }
     function put(x,y,t,force){
@@ -309,7 +310,12 @@ const guardianLairs = (function(){
       ops.push({x,y,t,f:force?1:0});
       bound(x,y);
     }
-    function clear(x,y){ put(x,y,T.AIR,true); }
+    function rememberOpen(x,y){
+      x=Math.round(x); y=Math.round(y);
+      if(y<1 || y>=WORLD_H-3) return;
+      openCells.set(x+','+y,{x,y});
+    }
+    function clear(x,y){ rememberOpen(x,y); put(x,y,T.AIR,true); }
     function alienWall(y,x,side){
       const r=WG.randSeed((x+side*19.7)*0.37+y*1.11+(anchor.seed||1)*0.013);
       if(r>0.82) return T.ANTIMATTER_CRYSTAL;
@@ -372,12 +378,51 @@ const guardianLairs = (function(){
     put(chamberX,gateY+3,T.ALIEN_BIOMASS,true);
     put(chamberX-1,gateY+4,T.METEOR_DUST,true);
     put(chamberX+1,gateY+4,T.METEOR_DUST,true);
+    const finalOps=new Map();
+    for(const o of ops) finalOps.set(o.x+','+o.y,o);
+    const bedrockHalo=new Map();
+    for(const cell of openCells.values()){
+      for(let yy=cell.y-6; yy<=cell.y+6; yy++){
+        for(let xx=cell.x-6; xx<=cell.x+6; xx++){
+          if(yy<topY+2) continue;
+          const d=Math.max(Math.abs(xx-cell.x),Math.abs(yy-cell.y));
+          if(d<3 || d>6) continue;
+          const k=xx+','+yy;
+          if(finalOps.has(k)) continue;
+          bedrockHalo.set(k,{x:xx,y:yy});
+        }
+      }
+    }
+    for(const c of [...bedrockHalo.values()].sort((a,b)=>a.y-b.y || a.x-b.x)) put(c.x,c.y,T.BEDROCK,true);
+    const sealCells=[];
+    const sealX=centerAt(topY);
+    for(let y=topY-1; y<=topY+3; y++){
+      for(let x=sealX-3; x<=sealX+3; x++){
+        const edge=Math.abs(x-sealX)===3 || y===topY-1 || y===topY+3;
+        put(x,y,edge?T.IRIDIUM:T.ANTIMATTER_CRYSTAL,true);
+        sealCells.push({x,y});
+      }
+    }
     return {
       kind:'underground',
       x:chamberX,
       y:gateY,
       mouthX:centerAt(topY),
       mouthY:topY,
+      sealed:true,
+      seal:{
+        x:sealX,
+        y:topY,
+        cells:sealCells.length,
+        bedrockCells:bedrockHalo.size,
+        bedrockThickness:3
+      },
+      design:{
+        schema:'mole_surface_gate_v2',
+        zones:['sealed_mouth','bedrock_conduit','alien_antechamber'],
+        sealed:true,
+        bedrockThickness:3
+      },
       minX:minX-2,
       maxX:maxX+2,
       minY:minY-2,
@@ -466,7 +511,7 @@ const guardianLairs = (function(){
     const side=spec.sidekicks.find(s=>s.role===role);
     const boss=role==='boss';
     const seed=((opts && opts.seed) || seedFor(kind,x) ^ entitySeq)>>>0;
-    const hp=boss ? (kind==='fire'?520:560) : (side ? side.hp : 90);
+    const hp=boss ? (kind==='fire'?920:980) : (side ? side.hp : 90);
     return {
       id:entitySeq++,
       kind, role,
@@ -475,7 +520,7 @@ const guardianLairs = (function(){
       hp, maxHp:hp, radius: boss ? (kind==='fire'?2.6:2.75) : ((side && side.radius)||1),
       t:0, aiT:0, attackCd: boss ? 1.6 : 1.0, specialCd: boss ? 4.0 : 2.2,
       phase:0, dir:spec.dir, seed, rng:mulberry32(seed), hitFlash:0,
-      shieldHint:0, awakening:(opts && opts.awakening)||0, ambient:!!(opts && opts.ambient),
+      shieldHint:0, weakHint:0, awakening:(opts && opts.awakening)||0, ambient:!!(opts && opts.ambient),
       dead:false, lastContact:0,
     };
   }
@@ -864,6 +909,7 @@ const guardianLairs = (function(){
   function updateEntity(e,p,getTile,setTile,dt){
     e.t+=dt;
     if(e.hitFlash>0) e.hitFlash-=dt;
+    if(e.weakHint>0) e.weakHint-=dt;
     if(e.stormResetMsgCd>0) e.stormResetMsgCd-=dt;
     const L=layoutFor(e.kind);
     if(e.boss){
@@ -1528,13 +1574,47 @@ const guardianLairs = (function(){
       for(const other of entities){ if(other.kind===e.kind) other.dead=true; }
     }else say(e.name+' breaks.');
   }
-  function hitEntity(e,dmg){
+  function weaponElement(opts){
+    if(!opts) return '';
+    const raw=[
+      opts.element,
+      opts.kind,
+      opts.type,
+      opts.stream,
+      opts.cause,
+      opts.weaponType
+    ].filter(v=>v!=null).join(' ').toLowerCase();
+    if(/\b(hose|water|aqua|wet|douse)\b/.test(raw)) return 'water';
+    if(/\b(flame|fire|heat|burn)\b/.test(raw)) return 'fire';
+    return raw;
+  }
+  function guardianWeaknessMultiplier(e,opts){
+    if(!e || !opts) return 1;
+    const element=weaponElement(opts);
+    if(e.kind==='fire' && element==='water') return e.boss ? 4.25 : 3.35;
+    if(e.kind==='ice' && element==='fire') return e.boss ? 2.45 : 2.05;
+    return 1;
+  }
+  function announceWeaknessHit(e,element){
+    if(!e || e.weakHint>0) return;
+    if(e.kind==='fire' && element==='water') say(e.name+' hisses and cracks under the water jet.');
+    else if(e.kind==='ice' && element==='fire') say(e.name+' fractures under the flame.');
+    e.weakHint=2.0;
+  }
+  function hitEntity(e,dmg,opts){
     if(!e || e.dead || !(dmg>0)) return false;
     let amount=Math.max(0.5,dmg);
     if(e.boss){
       const mult=sidekickShieldMult(e);
       amount*=mult;
       if(mult<0.95 && e.shieldHint<=0){ say(e.name+' is shielded by its sidekicks.'); e.shieldHint=2.5; }
+    }
+    const element=weaponElement(opts);
+    const weak=guardianWeaknessMultiplier(e,opts);
+    if(weak>1){
+      amount*=weak;
+      announceWeaknessHit(e,element);
+      addEffect({type:'burst',kind:e.kind,x:e.x,y:e.y,t:0,max:0.32,r:(e.radius||1)*3.2});
     }
     e.hp-=amount;
     e.hitFlash=0.18;
@@ -1554,10 +1634,10 @@ const guardianLairs = (function(){
     }
     return best;
   }
-  function damageAt(tx,ty,dmg){
+  function damageAt(tx,ty,dmg,opts){
     const e=entityAtTile(tx,ty);
     if(!e) return false;
-    return hitEntity(e, Math.max(0.5, Number(dmg)||1));
+    return hitEntity(e, Math.max(0.5, Number(dmg)||1), opts);
   }
   function attackAt(tx,ty,bonus){
     return damageAt(tx,ty, 4+Math.max(0,Number(bonus)||0));

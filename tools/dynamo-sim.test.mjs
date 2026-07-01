@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises';
 globalThis.window = globalThis;
 globalThis.MM = {};
 
-const { T, WORLD_H } = await import('../src/constants.js');
+const { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } = await import('../src/constants.js');
 const { dynamo } = await import('../src/engine/dynamo.js');
 const { water } = await import('../src/engine/water.js');
 const { gases } = await import('../src/engine/gases.js');
@@ -17,11 +17,11 @@ const { wind } = await import('../src/engine/wind.js');
 let tiles;
 function key(x,y){ return x+','+y; }
 function getTile(x,y){
-  if(y<0 || y>=WORLD_H) return T.STONE;
+  if(y<WORLD_MIN_Y || y>=WORLD_MAX_Y) return T.STONE;
   return tiles.get(key(x,y)) ?? T.AIR;
 }
 function setTile(x,y,v){
-  if(y<0 || y>=WORLD_H) return;
+  if(y<WORLD_MIN_Y || y>=WORLD_MAX_Y) return;
   const old=getTile(x,y);
   const k=key(x,y);
   if(v===T.AIR) tiles.delete(k);
@@ -135,6 +135,13 @@ const highWindEnergy=dynamo.metrics().storedEnergy;
 assert.ok(highWindEnergy>0.012,'moderate wind barely charges a vertical dynamo high in the map');
 assert.ok(highWindEnergy<0.35,'wind turbine output stays deliberately inefficient');
 assert.equal(dynamo._debug.machines.get('0,24').lastKind,'wind','wind power is recorded as a distinct dynamo source');
+
+resetWorld();
+assert.ok(WORLD_MIN_Y<0 && WORLD_MAX_Y>WORLD_H,'dynamo tests cover the extended vertical world');
+placeDynamo(0,-40,'vertical');
+wind.setOverride(2.4);
+for(let i=0; i<60*8; i++) dynamo.update(1/60,getTile);
+assert.ok(dynamo.metrics().storedEnergy>0.008,'sky-layer vertical dynamos can harvest exposed wind');
 
 resetWorld();
 placeDynamo(0,104,'vertical');
@@ -367,6 +374,7 @@ assert.match(dynamoSrc, /drawOutputReadout\(ctx,TILE,px,py,m\.power\|\|0,m\.last
 assert.doesNotMatch(dynamoSrc, /by=py-TILE\*0\.42/, 'dynamo output readout is no longer placed above the structure');
 assert.match(dynamoSrc, /rotorSpeed:\+rotorSpeed\.toFixed\(2\)/, 'dynamo metrics expose fan speed for regression tests');
 assert.match(dynamoSrc, /ensureVisibleMachines\(sx,sy,viewX,viewY,getTile\)/, 'visible dynamos materialize empty battery state for drawing');
+assert.match(dynamoSrc, /const y0=Math\.max\(WORLD_TOP,Math\.floor\(sy\)-2\), y1=Math\.min\(WORLD_BOTTOM-1,Math\.ceil\(sy\+viewY\)\+2\)/, 'visible dynamo scan follows extended sky/deep world bounds');
 const gasesSrc = await readFile(new URL('../src/engine/gases.js', import.meta.url), 'utf8');
 assert.match(gasesSrc, /const DYNAMO_POWERED_GAS_LOSS_CHANCE = 0\.10/, 'powered gas has a 10% turbine loss chance');
 assert.match(gasesSrc, /maybeConsumePoweredGas\(g,nx,ny,nx,ty,getTile,setTile\)/, 'gas pass-through may consume steam or hot air after powering a dynamo');

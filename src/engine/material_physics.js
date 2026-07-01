@@ -259,6 +259,15 @@ export function isBuildLoadTransferMaterial(t){
   return isHardStructuralMaterial(t) || isLightStructuralMaterial(t) || t===T.ICE || t===T.ANTIMATTER_CRYSTAL;
 }
 
+export function isNaturalFloatingAnchorTile(t){
+  return t===T.ANTIGRAVITY_BEACON || t===T.ANTIMATTER_CRYSTAL || t===T.IRIDIUM;
+}
+
+export function isNaturalFloatingCohesionTile(t){
+  return isNaturalFloatingAnchorTile(t) ||
+    t===T.GLASS || t===T.METEOR_DUST || t===T.BASALT || t===T.GRANITE;
+}
+
 export function isFragileFallingMaterial(t){
   return t===T.GLASS;
 }

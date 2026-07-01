@@ -28,6 +28,10 @@ globalThis.MM.water = {
 };
 
 const { CHUNK_W, WORLD_H, T } = await import('../src/constants.js');
+const { worldGen: WG } = await import('../src/engine/worldgen.js');
+const { world } = await import('../src/engine/world.js');
+const { guardianLairs } = await import('../src/engine/guardian_lairs.js');
+const { undergroundBoss } = await import('../src/engine/underground_boss.js');
 const { guardianAftermath } = await import('../src/engine/guardian_aftermath.js');
 
 assert.ok(guardianAftermath && guardianAftermath.start, 'guardian aftermath module exports');
@@ -146,6 +150,43 @@ const protectedSet = (x,y,t)=>protectedWrites.push({x,y,t});
 assert.equal(guardianAftermath._debug().applyAmbientChunk(3, {x:-999,y:-999}, protectedGet, protectedSet, {force:true}), false, 'ambient scars do not overwrite utility/passable infrastructure tiles');
 assert.equal(protectedWrites.length, 0, 'protected utility tiles receive no aftermath terrain writes');
 
+resetWorld();
+globalThis.inv = {heartFire:1, heartIce:1, heartEarth:0};
+WG.worldSeed = 20260630;
+WG.clearCaches && WG.clearCaches();
+world.clear();
+guardianLairs.reset();
+guardianLairs.clearCache && guardianLairs.clearCache();
+undergroundBoss.reset();
+undergroundBoss.clearCache && undergroundBoss.clearCache();
+guardianLairs.markDefeated('fire');
+guardianLairs.markDefeated('ice');
+function forcedOps(layout, cap=300){
+  const byKey = new Map();
+  for(const o of layout.ops || []) if(o.f === 1) byKey.set(o.x+','+o.y, o);
+  return [...byKey.values()].slice(0, cap);
+}
+function assertStructureProtected(kind, label, layout){
+  const forced = forcedOps(layout);
+  assert.ok(forced.length > 0, label+' exposes forced structure ops');
+  world.clear();
+  guardianAftermath.start(kind, {nextIn:999, salt:424242});
+  for(const o of forced) assert.equal(world.getTile(o.x,o.y), o.t, kind+' aftermath does not alter generated '+label+' tile at '+o.x+','+o.y);
+  const chunks = new Set(forced.map(o=>Math.floor(o.x / CHUNK_W)));
+  for(const cx of chunks) guardianAftermath._debug().applyAmbientChunk(cx, {x:-999,y:-999}, world.getTile, world.setTile, {force:true});
+  for(const o of forced) assert.equal(world.getTile(o.x,o.y), o.t, kind+' ambient scars do not alter '+label+' tile at '+o.x+','+o.y);
+}
+const protectedStructures = [
+  ['fire lair', guardianLairs.layoutFor('fire')],
+  ['ice lair', guardianLairs.layoutFor('ice')],
+  ['underground gate', guardianLairs.undergroundGateLayout()],
+  ['underground arena', undergroundBoss.layoutFor()]
+];
+for(const kind of ['fire','ice','earth']){
+  for(const [label, layout] of protectedStructures) assertStructureProtected(kind, label, layout);
+}
+
+resetWorld();
 guardianAftermath.start('ice', {elapsed:120, nextIn:33});
 const snap = guardianAftermath.snapshot();
 assert.equal(snap.active, 'ice', 'snapshot records active aftermath kind');

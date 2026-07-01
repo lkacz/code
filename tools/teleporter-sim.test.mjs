@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 globalThis.window = globalThis;
-const { T, INFO, WORLD_H } = await import('../src/constants.js');
+const { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } = await import('../src/constants.js');
 const { dynamo } = await import('../src/engine/dynamo.js');
 const { teleporters } = await import('../src/engine/teleporters.js');
 
@@ -11,7 +11,7 @@ const tiles = new Map();
 const k = (x,y)=>Math.floor(x)+','+Math.floor(y);
 function getTile(x,y){
   x=Math.floor(x); y=Math.floor(y);
-  if(y<0 || y>=WORLD_H) return T.AIR;
+  if(y<WORLD_MIN_Y || y>=WORLD_MAX_Y) return T.AIR;
   return tiles.get(k(x,y)) ?? T.AIR;
 }
 function setTile(x,y,v){
@@ -132,6 +132,24 @@ assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source end
   tick(0.05,player);
   assert.ok(player.x>40,'teleporter can fall back to hero energy when no device battery or dynamo is available');
   assert.equal(Math.round(player.energy),80-teleporters._debug.TRAVEL_COST,'hero energy pays the travel cost only as fallback');
+}
+
+{
+  reset();
+  assert.ok(WORLD_MIN_Y<0 && WORLD_MAX_Y>WORLD_H,'teleporter tests cover extended vertical sections');
+  setTile(30,-24,T.TELEPORTER);
+  setTile(42,-18,T.TELEPORTER);
+  const player={x:30.5,y:-23.5,w:0.7,h:0.95,vx:3,vy:0,energy:80,maxEnergy:80};
+  tick(0.05,player);
+  assert.ok(player.x>42,'sky-layer teleporter can jump to a target on the right');
+  assert.ok(player.y<0,'sky-layer teleporter keeps the hero in the sky section');
+  assert.equal(Math.round(player.energy),80-teleporters._debug.TRAVEL_COST,'sky-layer teleporter can use hero energy fallback');
+  teleporters._debug.debugCharge(42,-18,teleporters._debug.TRAVEL_COST,getTile);
+  player.x=42.5; player.y=-17.5; player.vx=0; player.energy=0; player._teleporterCooldown=0;
+  tick(1.0,player);
+  player.vx=-3;
+  tick(0.05,player);
+  assert.ok(player.x<31,'charged sky-layer teleporter can jump back left without hero energy');
 }
 
 {

@@ -1,4 +1,4 @@
-import { WORLD_H } from '../constants.js';
+import { WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 import { isSolidCollisionTile } from './material_physics.js';
 
 // Chest burst particles + simple sfx
@@ -8,6 +8,8 @@ import { isSolidCollisionTile } from './material_physics.js';
   window.MM = window.MM || {};
   const mod = {};
 
+  const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
+  const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
   const PARTICLE_CAP = 860;
   const SMOKE_CAP = 320;
   const particles = [];
@@ -107,14 +109,15 @@ import { isSolidCollisionTile } from './material_physics.js';
   }
   function particleSolidTile(getTile,tx,ty){
     if(!getTile) return false;
-    if(ty<0) return false;
-    if(ty>=WORLD_H) return true;
+    if(ty<WORLD_TOP) return false;
+    if(ty>=WORLD_BOTTOM) return true;
     try{ return isSolidCollisionTile(getTile(tx,ty)); }
     catch(e){ return true; }
   }
   function particleOverlapsSolid(getTile,x,y,r,tileSize){
     if(!getTile || !Number.isFinite(x) || !Number.isFinite(y)) return false;
-    if(y+r>=WORLD_H*tileSize) return true;
+    if(y+r>=WORLD_BOTTOM*tileSize) return true;
+    if(y+r<WORLD_TOP*tileSize) return false;
     const minX=Math.floor((x-r)/tileSize), maxX=Math.floor((x+r)/tileSize);
     const minY=Math.floor((y-r)/tileSize), maxY=Math.floor((y+r)/tileSize);
     for(let ty=minY; ty<=maxY; ty++){

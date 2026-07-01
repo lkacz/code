@@ -3,7 +3,7 @@
 // per-frame processor releases unstable tiles into moving entities. Sand obeys an
 // angle-of-repose rule (a grain topples when a side and the cell below it are open),
 // so piles relax into natural 45° slopes and avalanches propagate frame by frame.
-import { CHUNK_W, T, INFO, WORLD_H } from '../constants.js';
+import { CHUNK_W, T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 import {
   buildMaterialProfile as sharedBuildMaterialProfile,
   fallingWindResponseForMaterial,
@@ -16,6 +16,8 @@ import {
   isLegacyPhysicsAuditMaterial,
   isLooseRigidMaterial,
   isMountedFixtureTile,
+  isNaturalFloatingAnchorTile,
+  isNaturalFloatingCohesionTile,
   isObjectCrushableSupportTile,
   isObjectBraceTile,
   isObjectFootingTile,
@@ -56,6 +58,8 @@ window.MM = window.MM || {};
   const BUILD_BEARING_BACKING_LIMIT = 28;
   const BUILD_BEARING_CRUSH_RATIO = 1.05;
   const BUILD_BREAK_EFFECT_MS = 900;
+  const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
+  const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
   const active = [];          // rigid blocks {x,yFloat,type,vy,wet,rubble}
   const sandActive = [];      // flowing sand grains {x,yFloat,vy,wet}
@@ -85,6 +89,14 @@ window.MM = window.MM || {};
   let getTile = null, setTile = null;
   function init(gt, st){ getTile = gt; setTile = st; }
   const key = (x,y)=>x+','+y;
+  function inWorldY(y){ return Number.isFinite(y) && y>=WORLD_TOP && y<WORLD_BOTTOM; }
+  function activeAuditRange(){
+    const p=(typeof window!=='undefined' && window.player) ? window.player : null;
+    const py=(p && Number.isFinite(p.y)) ? p.y : WORLD_H/2;
+    if(py<0) return {top:WORLD_TOP, bottom:Math.min(WORLD_BOTTOM-1,WORLD_H-1)};
+    if(py>=WORLD_H) return {top:Math.max(WORLD_TOP,WORLD_H), bottom:WORLD_BOTTOM-1};
+    return {top:Math.max(WORLD_TOP,0), bottom:Math.min(WORLD_BOTTOM-1,WORLD_H-1)};
+  }
   function constructionBackgroundTile(x,y){
     try{
       const w=window.MM && MM.world;
@@ -125,7 +137,7 @@ window.MM = window.MM || {};
       getTile(x,y-1)+'|'+constructionBackgroundTile(x,y-1);
   }
   function markQuiet(x,y){
-    if(!getTile || y<0 || y>=WORLD_H) return;
+    if(!getTile || !inWorldY(y)) return;
     if(quietStable.size>12000) quietStable.clear();
     quietStable.set(key(x,y), supportSignature(x,y));
   }
@@ -158,6 +170,20 @@ window.MM = window.MM || {};
   function isRigidObject(t){ return isRigidObjectTile(t); }
   function isMountedFixture(t){ return isMountedFixtureTile(t); }
   function isPlayerBuiltMaterial(t){ return sharedPlayerBuiltMaterial(t); }
+  function isNaturalSkyCohesionAt(x,y,t){
+    return y<0 && isNaturalFloatingCohesionTile(t) && !isTrackedPlayerBuild(x,y);
+  }
+  function naturalFloatingAnchorAt(x,y,t){
+    return y<0 && isNaturalFloatingAnchorTile(t);
+  }
+  function naturalFloatingAnchorNear(x,y){
+    if(y>=0) return false;
+    const ns=[[0,0],[1,0],[-1,0],[0,-1],[0,1],[1,-1],[-1,-1],[1,1],[-1,1]];
+    for(const n of ns){
+      if(naturalFloatingAnchorAt(x+n[0],y+n[1],getTile(x+n[0],y+n[1]))) return true;
+    }
+    return false;
+  }
   function rememberPlayerBuild(x,y){
     if(!getTile || !isPlayerBuiltMaterial(getTile(x,y))) return;
     const k=key(x,y);
@@ -214,6 +240,7 @@ window.MM = window.MM || {};
     if(isSettledRubble(x,y)) return false;
     if(!getTile || !legacyBuildMaterial(t) || !isPlayerBuiltMaterial(t)) return false;
     if(!aboveGeneratedSurface(x,y)) return false;
+    if(isNaturalSkyCohesionAt(x,y,t)) return false;
     if(t===T.WOOD && likelyTreeWood(x,y)) return false;
     if(knownTreeTile(x,y)) return false;
     const k=key(x,y);
@@ -226,7 +253,7 @@ window.MM = window.MM || {};
   function isObjectFooting(t){ return isObjectFootingTile(t); }
   function isObjectBrace(t){ return isObjectBraceTile(t); }
   function objectAnchorAt(x,y){
-    if(y+1>=WORLD_H) return true;
+    if(y+1>=WORLD_BOTTOM) return true;
     if(isObjectFooting(getTile(x,y+1))) return true;
     if(isObjectBrace(getTile(x-1,y)) || isObjectBrace(getTile(x+1,y)) || isObjectBrace(getTile(x,y-1))) return true;
     return false;
@@ -265,7 +292,7 @@ window.MM = window.MM || {};
   }
   function dynamoCompositeAnchorAt(cells,cellKeys){
     for(const c of cells){
-      if(c.y+1>=WORLD_H) return true;
+      if(c.y+1>=WORLD_BOTTOM) return true;
       const belowKey=key(c.x,c.y+1);
       if(!cellKeys.has(belowKey) && isObjectFooting(getTile(c.x,c.y+1))) return true;
       const sideChecks=[[c.x-1,c.y],[c.x+1,c.y],[c.x,c.y-1]];
@@ -280,7 +307,7 @@ window.MM = window.MM || {};
     const crushed=new Set();
     for(const c of cells){
       const x=c.x, y=c.y+1;
-      if(y>=WORLD_H || cellKeys.has(key(x,y))) continue;
+      if(y>=WORLD_BOTTOM || cellKeys.has(key(x,y))) continue;
       const support=getTile(x,y);
       if(!isObjectCrushableSupportTile(support)) continue;
       const k=key(x,y);
@@ -354,7 +381,7 @@ window.MM = window.MM || {};
     return fallingWindResponseForMaterial(type,rubble);
   }
   function canWindShift(x,y,dir){
-    if(y<0 || y>=WORLD_H) return false;
+    if(!inWorldY(y)) return false;
     if(!passable(getTile(x+dir,y))) return false;
     if(playerBlocks(x+dir,y)) return false;
     return true;
@@ -394,7 +421,7 @@ window.MM = window.MM || {};
 
   // Write a settled solid into the world, displacing (not destroying) any water there
   function occupy(x,y,type){
-    let yy=y; while(yy>0 && !passable(getTile(x,yy))) yy--; // cell may have been claimed this frame — stack upward
+    let yy=y; while(yy>WORLD_TOP && !passable(getTile(x,yy))) yy--; // cell may have been claimed this frame — stack upward
     const was=getTile(x,yy);
     if(was===T.WATER) displaceWater(x,yy);
     setTile(x,yy,type);
@@ -406,7 +433,7 @@ window.MM = window.MM || {};
 
   function clampY(y){
     const yy=Math.floor(y);
-    return Number.isFinite(yy) ? Math.max(0, Math.min(WORLD_H-1, yy)) : 0;
+    return Number.isFinite(yy) ? Math.max(WORLD_TOP, Math.min(WORLD_BOTTOM-1, yy)) : 0;
   }
   function finiteX(x){ return Number.isFinite(x) && Math.abs(x)<10000000; }
   function validFallingType(t){ return Number.isInteger(t) && !!INFO[t]; }
@@ -414,7 +441,7 @@ window.MM = window.MM || {};
     if(!raw || !finiteX(raw.x) || !Number.isFinite(raw.y) || !validFallingType(raw.type)) return null;
     return {
       x:Math.floor(raw.x),
-      yFloat:Math.max(0,Math.min(WORLD_H-1,raw.y)),
+      yFloat:Math.max(WORLD_TOP,Math.min(WORLD_BOTTOM-1,raw.y)),
       type:raw.type,
       vy:Number.isFinite(raw.vy)?Math.max(-120,Math.min(120,raw.vy)):0,
       windCarry:Number.isFinite(raw.windCarry)?Math.max(-4,Math.min(4,raw.windCarry)):0,
@@ -426,7 +453,7 @@ window.MM = window.MM || {};
     if(!raw || !finiteX(raw.x) || !Number.isFinite(raw.y)) return null;
     return {
       x:Math.floor(raw.x),
-      yFloat:Math.max(0,Math.min(WORLD_H-1,raw.y)),
+      yFloat:Math.max(WORLD_TOP,Math.min(WORLD_BOTTOM-1,raw.y)),
       vy:Number.isFinite(raw.vy)?Math.max(-120,Math.min(120,raw.vy)):0,
       windCarry:Number.isFinite(raw.windCarry)?Math.max(-4,Math.min(4,raw.windCarry)):0,
       wet:false
@@ -434,17 +461,17 @@ window.MM = window.MM || {};
   }
   function dropY(x,y){
     let yy=clampY(y);
-    while(yy>0 && !passable(getTile(x,yy))) yy--;
-    while(yy<WORLD_H-1 && passable(getTile(x,yy+1))) yy++;
+    while(yy>WORLD_TOP && !passable(getTile(x,yy))) yy--;
+    while(yy<WORLD_BOTTOM-1 && passable(getTile(x,yy+1))) yy++;
     return yy;
   }
   function rollDepth(x,y){
     let yy=clampY(y), d=0;
-    while(d<32 && yy<WORLD_H-1 && passable(getTile(x,yy+1))){ yy++; d++; }
+    while(d<32 && yy<WORLD_BOTTOM-1 && passable(getTile(x,yy+1))){ yy++; d++; }
     return d;
   }
   function chooseSandRollDir(x,y,originX,step){
-    if(y+1>=WORLD_H) return 0;
+    if(y+1>=WORLD_BOTTOM) return 0;
     const dirs=[];
     for(const dir of [-1,1]){
       if(passable(getTile(x+dir,y)) && passable(getTile(x+dir,y+1))) dirs.push({dir, depth:rollDepth(x+dir,y+1)});
@@ -460,6 +487,7 @@ window.MM = window.MM || {};
     queueCheck(x-1,y-1); queueCheck(x+1,y-1);
   }
   function glassAnchorAt(x,y){
+    if(naturalFloatingAnchorNear(x,y)) return true;
     const ns=[[1,0],[-1,0],[0,-1],[0,1]];
     for(const n of ns){
       const t=getTile(x+n[0],y+n[1]);
@@ -708,8 +736,8 @@ window.MM = window.MM || {};
   function processRigidObjectAt(x,y){
     const t=getTile(x,y);
     if(!isRigidObject(t) || objectAnchorAt(x,y)) return false;
-    const below=y+1<WORLD_H ? getTile(x,y+1) : T.BEDROCK;
-    if(y+1<WORLD_H && isObjectCrushableSupportTile(below)){
+    const below=y+1<WORLD_BOTTOM ? getTile(x,y+1) : T.BEDROCK;
+    if(y+1<WORLD_BOTTOM && isObjectCrushableSupportTile(below)){
       setTile(x,y+1,T.AIR);
       forgetPlayerBuild(x,y+1);
       forgetSettledRubble(x,y+1);
@@ -739,8 +767,8 @@ window.MM = window.MM || {};
   function processSettledRubbleAt(x,y){
     if(!isSettledRubble(x,y)) return false;
     const t=getTile(x,y);
-    const below=y+1>=WORLD_H ? T.STONE : getTile(x,y+1);
-    if(y+1<WORLD_H && (passable(below) || rubbleCrushes(below))){
+    const below=y+1>=WORLD_BOTTOM ? T.STONE : getTile(x,y+1);
+    if(y+1<WORLD_BOTTOM && (passable(below) || rubbleCrushes(below))){
       setTile(x,y,T.AIR);
       forgetSettledRubble(x,y);
       if(rubbleCrushes(below)) crushTile(x,y+1);
@@ -776,7 +804,7 @@ window.MM = window.MM || {};
     return structuralRubbleRollLimit(type);
   }
   function chooseRubbleRollDir(x,y,type,originX,step){
-    if(y+1>=WORLD_H) return 0;
+    if(y+1>=WORLD_BOTTOM) return 0;
     const dirs=[];
     for(const dir of [-1,1]){
       if(passable(getTile(x+dir,y)) && passable(getTile(x+dir,y+1))) dirs.push({dir, depth:rollDepth(x+dir,y+1)});
@@ -791,8 +819,8 @@ window.MM = window.MM || {};
     let x=Math.floor(sx);
     if(!Number.isFinite(x)) x=0;
     let y=clampY(fromY);
-    while(y>0 && !passable(getTile(x,y))) y--;
-    while(y<WORLD_H-1){
+    while(y>WORLD_TOP && !passable(getTile(x,y))) y--;
+    while(y<WORLD_BOTTOM-1){
       const below=getTile(x,y+1);
       if(passable(below)){ y++; continue; }
       if(crushTile(x,y+1)){ y++; continue; }
@@ -806,8 +834,8 @@ window.MM = window.MM || {};
       if(!dir) break;
       x+=dir;
       y=clampY(y+1);
-      while(y>0 && !passable(getTile(x,y))) y--;
-      while(y<WORLD_H-1){
+      while(y>WORLD_TOP && !passable(getTile(x,y))) y--;
+      while(y<WORLD_BOTTOM-1){
         const below=getTile(x,y+1);
         if(passable(below)){ y++; continue; }
         if(crushTile(x,y+1)){ y++; continue; }
@@ -822,7 +850,7 @@ window.MM = window.MM || {};
 
   // --- Instability queue ---
   function queueCheck(x,y){
-    if(y<0 || y>=WORLD_H) return;
+    if(!inWorldY(y)) return;
     const k=key(x,y);
     if(getTile && quietStable.has(k)){
       const sig=supportSignature(x,y);
@@ -853,7 +881,7 @@ window.MM = window.MM || {};
     }
     const t=getTile(x,y);
     if(t===T.SAND){
-      if(y+1>=WORLD_H) return; // bottom row is bedrock-stable
+      if(y+1>=WORLD_BOTTOM) return; // bottom row is bedrock-stable
       if(passable(getTile(x,y+1))){ release(x,y); return; }
       // Static repose: undisturbed sand holds slopes up to 2 tiles per column, so
       // worldgen dunes (commonly slope 2) stay put and dig-triggered cascades die out
@@ -866,7 +894,7 @@ window.MM = window.MM || {};
     } else if(trackedBuild){
       if(processPlayerBuiltAt(x,y,processed)) return;
     } else if(isLooseRigid(t)){
-      if(y+1<WORLD_H && passable(getTile(x,y+1))){ setTile(x,y,T.AIR); spawn(x,y,t); queueAroundRemoval(x,y); }
+      if(y+1<WORLD_BOTTOM && passable(getTile(x,y+1))){ setTile(x,y,T.AIR); spawn(x,y,t); queueAroundRemoval(x,y); }
     } else if(isFragileFalling(t)){
       if(processFragileAt(x,y,processed)) return;
     } else if(t===T.WIRE){
@@ -934,7 +962,7 @@ window.MM = window.MM || {};
     return run>=32;
   }
   function isStructuralAnchor(x,y,t){
-    return isCityTerrainAnchor(x,y,t) || isWideStructuralSlabAnchor(x,y,t);
+    return naturalFloatingAnchorAt(x,y,t) || naturalFloatingAnchorNear(x,y) || isCityTerrainAnchor(x,y,t) || isWideStructuralSlabAnchor(x,y,t);
   }
   function isCityColumn(x){
     const wg=window.MM && MM.worldGen;
@@ -943,6 +971,7 @@ window.MM = window.MM || {};
   }
   function shouldAuditTile(x,y,t){
     if(claimLegacyPlayerBuild(x,y,t)) return true;
+    if(isNaturalSkyCohesionAt(x,y,t)) return false;
     if(isDynamoTile(t)) return true;
     if(isRigidObject(t) || isMountedFixture(t)) return true;
     if(isLooseRigid(t)) return true;
@@ -963,7 +992,7 @@ window.MM = window.MM || {};
       return;
     }
     if(isLooseRigid(t)){
-      if(y+1<WORLD_H && passable(getTile(x,y+1))) queueCheck(x,y);
+      if(y+1<WORLD_BOTTOM && passable(getTile(x,y+1))) queueCheck(x,y);
       return;
     }
     if(t===T.WIRE){
@@ -984,7 +1013,8 @@ window.MM = window.MM || {};
     }
   }
   function scanAuditColumn(wx){
-    for(let y=0; y<WORLD_H-3; y++) auditCell(wx,y);
+    const range=activeAuditRange();
+    for(let y=range.top; y<=range.bottom-3; y++) auditCell(wx,y);
   }
   function scanAuditChunk(cx){
     const left=cx*CHUNK_W;
@@ -1089,7 +1119,7 @@ window.MM = window.MM || {};
   function builtSupportContacts(c,componentKeys,tileFn){
     const tileAt=(x,y)=>buildSupportTile(x,y,tileFn || getTile);
     const out=[];
-    if(c.y+1>=WORLD_H) return [{x:c.x,y:c.y+1,t:T.BEDROCK,mult:1,worldEdge:true}];
+    if(c.y+1>=WORLD_BOTTOM) return [{x:c.x,y:c.y+1,t:T.BEDROCK,mult:1,worldEdge:true}];
     const belowKey=key(c.x,c.y+1);
     let t=tileAt(c.x,c.y+1);
     if(!componentKeys.has(belowKey) && isBuildFoundationTile(t)) out.push({x:c.x,y:c.y+1,t,mult:1});
@@ -1127,7 +1157,7 @@ window.MM = window.MM || {};
     return isBuildFoundationTile(t) ? 2.5 : 0;
   }
   function bearingBackingScore(x,y,componentKeys){
-    if(y>=WORLD_H) return BUILD_BEARING_BACKING_LIMIT;
+    if(y>=WORLD_BOTTOM) return BUILD_BEARING_BACKING_LIMIT;
     const start=key(x,y);
     const seen=new Set([start]);
     const q=[[x,y]];
@@ -1358,7 +1388,7 @@ window.MM = window.MM || {};
   function canSupportPlacement(px,py,pt){
     if(!getTile || !isPlayerBuiltMaterial(pt)) return {ok:true, applies:false};
     px=Math.floor(px); py=Math.floor(py);
-    if(!Number.isFinite(px) || !Number.isFinite(py) || py<0 || py>=WORLD_H) return {ok:false, reason:'Brak podparcia'};
+    if(!Number.isFinite(px) || !Number.isFinite(py) || !inWorldY(py)) return {ok:false, reason:'Brak podparcia'};
     const virtualKey=key(px,py);
     const virtualTile=(x,y)=> (x===px && y===py) ? pt : getTile(x,y);
     const virtualSupportTile=(x,y)=> (x===px && y===py) ? pt : buildSupportTile(x,y,virtualTile);
@@ -1383,7 +1413,7 @@ window.MM = window.MM || {};
     const supports=[];
     for(const c of component){
       let mult=0;
-      if(c.y+1>=WORLD_H) mult=1;
+      if(c.y+1>=WORLD_BOTTOM) mult=1;
       const belowKey=key(c.x,c.y+1);
       if(!componentKeys.has(belowKey) && isBuildFoundationTile(virtualSupportTile(c.x,c.y+1))) mult=Math.max(mult,1);
       for(const dir of [-1,1]){
@@ -1594,7 +1624,7 @@ window.MM = window.MM || {};
     if(isSettledRubble(sx,sy)) return processSettledRubbleAt(sx,sy);
     if(isStructuralAnchor(sx,sy,getTile(sx,sy))){ processed.add(key(sx,sy)); markQuiet(sx,sy); return false; }
     const belowStart=getTile(sx,sy+1);
-    if(sy+1>=WORLD_H || isStructuralFootingSupport(belowStart) || isStructuralAnchor(sx,sy+1,belowStart)){ processed.add(key(sx,sy)); markQuiet(sx,sy); return false; } // directly supported
+    if(sy+1>=WORLD_BOTTOM || isStructuralFootingSupport(belowStart) || isStructuralAnchor(sx,sy+1,belowStart)){ processed.add(key(sx,sy)); markQuiet(sx,sy); return false; } // directly supported
     const stack=[[sx,sy]]; const seen=new Set(); const cluster=[]; const supports=[];
     let supported=false, hasSteel=false;
     while(stack.length){
@@ -1607,7 +1637,7 @@ window.MM = window.MM || {};
       seen.add(k); cluster.push({x,y,t});
       if(t===T.STEEL) hasSteel=true;
       let directSupport=false;
-      if(y+1>=WORLD_H){ directSupport=true; }
+      if(y+1>=WORLD_BOTTOM){ directSupport=true; }
       const below=getTile(x,y+1);
       if(isStructuralAnchor(x,y+1,below)) directSupport=true;
       if(isStructuralFootingSupport(below)) directSupport=true;
@@ -1648,8 +1678,8 @@ window.MM = window.MM || {};
     if(type===T.SAND) return settleSand(x,fromY);
     if(isFragileFalling(type)) return breakFragile(x,fromY);
     if(rubble && isRubbleTrackedMaterial(type)) return settleRubble(x,fromY,type);
-    let y=Math.max(0, Math.min(WORLD_H-1, Math.floor(fromY)));
-    while(y<WORLD_H-1 && passable(getTile(x,y+1))) y++;
+    let y=clampY(fromY);
+    while(y<WORLD_BOTTOM-1 && passable(getTile(x,y+1))) y++;
     const restY=occupy(x,y,type);
     queueCheck(x,restY);
     return restY;
@@ -1698,7 +1728,7 @@ window.MM = window.MM || {};
       let remaining=b.vy*dt, settledAt=-1;
       while(remaining>0){
         const yi=Math.floor(b.yFloat);
-        if(yi>=WORLD_H-1){ b.yFloat=WORLD_H-1; settledAt=WORLD_H-1; break; }
+        if(yi>=WORLD_BOTTOM-1){ b.yFloat=WORLD_BOTTOM-1; settledAt=WORLD_BOTTOM-1; break; }
         let below=getTile(b.x,yi+1);
         if(b.rubble && isStructural(b.type) && crushTile(b.x,yi+1)) below=T.AIR;
         if(!passable(below)){ settledAt=yi; break; }
@@ -1726,7 +1756,7 @@ window.MM = window.MM || {};
       let remaining=s.vy*dt, blockedAt=-1;
       while(remaining>0){
         const yi=Math.floor(s.yFloat);
-        if(yi>=WORLD_H-1){ s.yFloat=WORLD_H-1; blockedAt=WORLD_H-1; break; }
+        if(yi>=WORLD_BOTTOM-1){ s.yFloat=WORLD_BOTTOM-1; blockedAt=WORLD_BOTTOM-1; break; }
         if(!passable(getTile(s.x,yi+1))){ blockedAt=yi; break; }
         const dist=(yi+1)-s.yFloat;
         if(remaining<dist){ s.yFloat+=remaining; remaining=0; }
@@ -1734,7 +1764,7 @@ window.MM = window.MM || {};
       }
       if(blockedAt<0) continue;
       const yi=blockedAt;
-      if(yi<WORLD_H-1){ // grain rolls down slopes (also under water)
+      if(yi<WORLD_BOTTOM-1){ // grain rolls down slopes (also under water)
         const canL = passable(getTile(s.x-1,yi)) && passable(getTile(s.x-1,yi+1));
         const canR = passable(getTile(s.x+1,yi)) && passable(getTile(s.x+1,yi+1));
         if(canL||canR){
@@ -1911,7 +1941,7 @@ window.MM = window.MM || {};
       if(out.length>=max) break;
       if(!c || !Number.isFinite(c.x) || !Number.isFinite(c.y)) continue;
       const x=Math.floor(c.x), y=Math.floor(c.y);
-      if(y<0 || y>=WORLD_H) continue;
+      if(!inWorldY(y)) continue;
       const kk=key(x,y);
       if(seen.has(kk)) continue;
       seen.add(kk);
@@ -1988,7 +2018,7 @@ window.MM = window.MM || {};
     const ix=k.indexOf(',');
     if(ix<=0 || ix!==k.lastIndexOf(',')) return null;
     const x=+k.slice(0,ix), y=+k.slice(ix+1);
-    if(!finiteX(x) || !Number.isFinite(y) || y<0 || y>=WORLD_H) return null;
+    if(!finiteX(x) || !Number.isFinite(y) || !inWorldY(y)) return null;
     return Math.floor(x)+','+Math.floor(y);
   }
   function keyTile(k){

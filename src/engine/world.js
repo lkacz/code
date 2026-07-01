@@ -1,5 +1,5 @@
 // World storage & chunk generation
-import { CHUNK_W, WORLD_H, T, SNOW_LINE, SURFACE_GRASS_DEPTH, SAND_DEPTH } from '../constants.js';
+import { CHUNK_W, WORLD_H, WORLD_SECTION_H, WORLD_MIN_SECTION, WORLD_MAX_SECTION, WORLD_MIN_Y, WORLD_MAX_Y, T, SNOW_LINE, SURFACE_GRASS_DEPTH, SAND_DEPTH } from '../constants.js';
 import {
   generatedCityStructuralTile,
   generatedCitySupportTile,
@@ -11,6 +11,7 @@ import {
   isRockStructuralMaterial
 } from './material_physics.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
+import { worldLayers as WORLD_LAYERS } from './world_layers.js';
 import { ruins as RUINS } from './ruins.js';
 import { guardianLairs as GUARDIANS } from './guardian_lairs.js';
 import { undergroundBoss as UNDERGROUND } from './underground_boss.js';
@@ -36,18 +37,57 @@ window.MM = window.MM || {};
   const MAX_COORD = 30e6;        // |x| beyond this is treated as void (no storage)
   const CHUNK_CAP = 1536;        // ~98k columns of live chunks before eviction
   const HEIGHT_CACHE_CAP = 200000;
+  const SECTION_SIZE = CHUNK_W * WORLD_SECTION_H;
+  const BASE_SECTION_MIN = 0;
+  const BASE_SECTION_MAX = Math.max(0, Math.ceil(WORLD_H / WORLD_SECTION_H) - 1);
   function colHeight(x){ let v=heightCache.get(x); if(v===undefined){ if(heightCache.size>HEIGHT_CACHE_CAP) heightCache.clear(); v=WG.surfaceHeight(x); heightCache.set(x,v); } return v; }
+  function worldYInBounds(y){ return y>=WORLD_MIN_Y && y<WORLD_MAX_Y; }
+  function sectionYFor(y){ return Math.floor(Math.floor(y) / WORLD_SECTION_H); }
+  function sectionOriginY(sy){ return sy * WORLD_SECTION_H; }
+  function sectionLocalY(y,sy){ return Math.floor(y) - sectionOriginY(sy); }
+  function isBaseSection(sy){ return sy>=BASE_SECTION_MIN && sy<=BASE_SECTION_MAX; }
+  function ckSection(cx,sy){ return isBaseSection(sy) ? ck(cx) : ('c'+cx+':s'+sy); }
+  function parseChunkKey(k){
+    if(typeof k!=='string' || k[0]!=='c') return null;
+    const rest=k.slice(1);
+    const sAt=rest.indexOf(':s');
+    if(sAt<0){
+      const cx=Number(rest);
+      return Number.isFinite(cx) ? {cx, sy:null, base:true, key:k} : null;
+    }
+    const cx=Number(rest.slice(0,sAt));
+    const sy=Number(rest.slice(sAt+2));
+    return Number.isFinite(cx) && Number.isFinite(sy) ? {cx, sy, base:false, key:k} : null;
+  }
+  function normalizeChunkRef(ref){
+    if(typeof ref==='number' && Number.isFinite(ref)) return {cx:ref, sy:null, base:true, key:ck(ref), h:WORLD_H};
+    if(ref && typeof ref==='object' && Number.isFinite(ref.cx)){
+      const sy=Number.isFinite(ref.sy) ? Math.floor(ref.sy) : null;
+      return {cx:Math.floor(ref.cx), sy, base:sy==null || isBaseSection(sy), key:sy==null || isBaseSection(sy) ? ck(Math.floor(ref.cx)) : ckSection(Math.floor(ref.cx),sy), h:sy==null || isBaseSection(sy) ? WORLD_H : WORLD_SECTION_H};
+    }
+    if(typeof ref==='string'){
+      const parsed=parseChunkKey(ref);
+      if(parsed) return {cx:parsed.cx, sy:parsed.sy, base:parsed.base, key:parsed.key, h:parsed.base ? WORLD_H : WORLD_SECTION_H};
+    }
+    return null;
+  }
   function evictFarChunks(){
     const p=(typeof window!=='undefined' && window.player) || null;
     const pcx=(p && isFinite(p.x))? Math.floor(p.x/CHUNK_W) : 0;
     const cand=[];
     for(const k of world.keys()){
       if(versions.get(k)) continue;               // modified chunk: player edits live here
-      cand.push([Math.abs(+k.slice(1)-pcx), k]);
+      const parsed=parseChunkKey(k);
+      if(!parsed) continue;
+      cand.push([Math.abs(parsed.cx-pcx) + Math.abs((parsed.sy==null?0:parsed.sy) - sectionYFor(p && isFinite(p.y) ? p.y : 0))*0.35, k]);
     }
     cand.sort((a,b)=>b[0]-a[0]);                  // farthest first
     const drop=Math.min(cand.length, world.size-((CHUNK_CAP*0.75)|0));
-    for(let i=0;i<drop;i++){ try{ if(MM.trees && MM.trees.clearChunk) MM.trees.clearChunk(+cand[i][1].slice(1)); }catch(e){} world.delete(cand[i][1]); versions.delete(cand[i][1]); }
+    for(let i=0;i<drop;i++){
+      const parsed=parseChunkKey(cand[i][1]);
+      try{ if(parsed && parsed.base && MM.trees && MM.trees.clearChunk) MM.trees.clearChunk(parsed.cx); }catch(e){}
+      world.delete(cand[i][1]); versions.delete(cand[i][1]);
+    }
   }
   function ck(x){ return 'c'+x; }
   function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
@@ -55,13 +95,16 @@ window.MM = window.MM || {};
   function getTileRaw(arr,lx,y){ return arr[tileIndex(lx,y)]; }
   function isInfrastructureTile(t){ return t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.LADDER; }
   function isConstructionBackgroundTile(t){ return isPlayerBuiltMaterial(t); }
-  function markModifiedChunk(cx,version){
+  function markModifiedChunk(cx,version,sy){
     if(!isFinite(cx)) return;
-    const k=ck(cx);
+    const keyRef=normalizeChunkRef({cx, sy:Number.isFinite(sy) ? sy : null});
+    if(!keyRef) return;
+    const k=keyRef.key;
     const next=(version==null) ? ((versions.get(k)||0)+1) : version;
     versions.set(k,next);
-    if(next!==0) modifiedChunks.add(cx);
-    else modifiedChunks.delete(cx);
+    const id=keyRef.base ? Math.floor(cx) : k;
+    if(next!==0) modifiedChunks.add(id);
+    else modifiedChunks.delete(id);
   }
 
   // Perched lakes sit in carved valley basins above sea level. The whole contiguous
@@ -254,34 +297,8 @@ window.MM = window.MM || {};
     if(biome===7) return 1 + Math.floor(WG.randSeed(wx*0.61)*2);
     return 3 + Math.floor(WG.randSeed(wx*0.67)*3) + (desertF>0.10 || waterF>0.10 ? 1 : 0);
   }
-  function clamp01(v){ return v<0 ? 0 : (v>1 ? 1 : v); }
-  function geologyMix(wx,y,primary,secondary,seed,amount){
-    return WG.valueNoise(wx+y*0.23,18,seed)<clamp01(amount) ? primary : secondary;
-  }
-  function geologyLayerDepth(wx,y,depth,biome){
-    const long=(WG.valueNoise(wx,92,4607)-0.5)*18;
-    const fold=Math.sin(wx*0.021 + WG.valueNoise(wx,180,4608)*6.28318)*5;
-    const shear=(WG.valueNoise(wx+y*0.16,38,4609)-0.5)*8;
-    const mountain=biome===7 ? 7 : 0;
-    return depth + Math.max(0,y-72)*0.45 + long + fold + shear + mountain;
-  }
   function geologyRockTile(wx,y,depth,biome){
-    if(y>=WORLD_H-4) return T.BEDROCK;
-    const deep=geologyLayerDepth(wx,y,depth,biome);
-    const band=WG.valueNoise(wx+y*0.11,64,4601);
-    const lens=WG.valueNoise(wx-y*0.18,27,4602);
-    const fleck=WG.randSeed(wx*5.13+y*0.41);
-    const graniteCut=27 + (band-0.5)*12 + (biome===7 ? -6 : 0);
-    const basaltCut=54 + (WG.valueNoise(wx+y*0.07,78,4603)-0.5)*16 + (lens>0.78 ? -8 : 0);
-    const bedrockCut=80 + (WG.valueNoise(wx-y*0.05,110,4604)-0.5)*12;
-    if(y>=WORLD_H-8 || deep>bedrockCut) return fleck<0.78 ? T.BEDROCK : T.BASALT;
-    if(deep>bedrockCut-6) return geologyMix(wx,y,T.BEDROCK,T.BASALT,4610,0.10 + ((deep-(bedrockCut-6))/6)*0.78);
-    if(deep>basaltCut) return (lens>0.68 || fleck<0.74) ? T.BASALT : T.GRANITE;
-    if(deep>basaltCut-7) return geologyMix(wx,y,T.BASALT,T.GRANITE,4611,0.12 + ((deep-(basaltCut-7))/7)*0.78);
-    if(deep>graniteCut) return lens>0.76 ? T.BASALT : (band>0.43 || fleck<0.58 ? T.GRANITE : T.STONE);
-    if(deep>graniteCut-5) return geologyMix(wx,y,T.GRANITE,T.STONE,4612,0.10 + ((deep-(graniteCut-5))/5)*0.76);
-    if(lens>0.82 && depth>16) return T.GRANITE;
-    return fleck<0.055 ? T.GRANITE : T.STONE;
+    return WORLD_LAYERS.legacyGeologyRockTile(WG,wx,y,depth,biome);
   }
   function isCaveTreasureFloor(t){
     return isRockStructuralMaterial(t) && isObjectFootingTile(t);
@@ -644,11 +661,10 @@ window.MM = window.MM || {};
       const ground=s+poolDepth;
       // Cave carve pass for this column (includes ravines/entrances opening the surface)
       COL_CARVE.fill(0);
-      for(let y=ground;y<WORLD_H-3;y++){ COL_CARVE[y]=WG.caveAt(wx,y,col); }
+      for(let y=ground;y<WORLD_H;y++){ COL_CARVE[y]=WG.caveAt(wx,y,col); }
 
       for(let y=0;y<WORLD_H;y++){
         let t=T.AIR;
-        if(y>=WORLD_H-3){ arr[tileIndex(lx,y)]=T.BEDROCK; continue; }
         const forcedVolcano=volcanoForcedTile(col,wx,y,ground);
         if(forcedVolcano!==undefined){ arr[tileIndex(lx,y)]=forcedVolcano; continue; }
         if(y<ground){
@@ -744,6 +760,38 @@ window.MM = window.MM || {};
     registerGeneratedLava(arr,cx);
     return arr; }
 
+  function skyTile(wx,y,sy){ return WORLD_LAYERS.skyTile(WG,wx,y,sy); }
+  function deepTile(wx,y){ return WORLD_LAYERS.deepTile(WG,wx,y); }
+  function generateVerticalSection(cx,sy){
+    const arr=new Uint8Array(SECTION_SIZE);
+    for(let lx=0; lx<CHUNK_W; lx++){
+      const wx=cx*CHUNK_W+lx;
+      for(let ly=0; ly<WORLD_SECTION_H; ly++){
+        const y=sectionOriginY(sy)+ly;
+        const t=sy<0 ? skyTile(wx,y,sy) : deepTile(wx,y);
+        arr[tileIndex(lx,ly)]=t;
+      }
+    }
+    try{ if(UNDERGROUND && UNDERGROUND.applyToSection) UNDERGROUND.applyToSection(arr,cx,sy); }catch(e){}
+    return arr;
+  }
+  function ensureSection(cx,sy){
+    sy=Number.isFinite(sy) ? Math.floor(sy) : 0;
+    if(sy<WORLD_MIN_SECTION || sy>WORLD_MAX_SECTION) return null;
+    if(isBaseSection(sy)){
+      const base=ensureChunk(cx);
+      return base.subarray(sy*SECTION_SIZE, Math.min(base.length,(sy+1)*SECTION_SIZE));
+    }
+    const k=ckSection(cx,sy);
+    let arr=world.get(k);
+    if(arr) return arr;
+    arr=generateVerticalSection(cx,sy);
+    world.set(k,arr);
+    markModifiedChunk(cx,0,sy);
+    if(world.size>CHUNK_CAP) evictFarChunks();
+    return arr;
+  }
+
   // --- Procedural structures: rare deterministic ruins (land) and shipwrecks
   // (sea floor), each sheltering a loot chest. One structure per eligible chunk,
   // anchored away from the chunk edges so it never spans a boundary.
@@ -785,7 +833,15 @@ window.MM = window.MM || {};
 
   // NaN/Infinity coordinates slip past `y<0||y>=WORLD_H` (NaN compares false) and
   // runaway x used to mint chunks without bound — both are treated as void here.
-  function getTile(x,y){ if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return T.AIR; const cx=Math.floor(x/CHUNK_W); const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W; const arr=ensureChunk(cx); return getTileRaw(arr,lx,y); }
+  function getTile(x,y){
+    if(!isFinite(x) || !Number.isFinite(Number(y)) || Math.abs(x)>MAX_COORD) return T.AIR;
+    y=Math.floor(y);
+    if(!worldYInBounds(y)) return y>=WORLD_MAX_Y ? T.BEDROCK : T.AIR;
+    const cx=Math.floor(x/CHUNK_W), sy=sectionYFor(y), ly=sectionLocalY(y,sy);
+    const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W;
+    const arr=ensureSection(cx,sy);
+    return arr ? getTileRaw(arr,lx,ly) : T.AIR;
+  }
   function normalizeInfrastructureStack(v){
     const out=[];
     const arr=Array.isArray(v) ? v : [v];
@@ -796,7 +852,7 @@ window.MM = window.MM || {};
     return out;
   }
   function getInfrastructureStack(x,y){
-    if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return [];
+    if(!worldYInBounds(y) || !isFinite(x) || Math.abs(x)>MAX_COORD) return [];
     return normalizeInfrastructureStack(infrastructure.get(key(x,y)));
   }
   function getInfrastructure(x,y){
@@ -808,7 +864,7 @@ window.MM = window.MM || {};
     return getInfrastructureStack(x,y).includes(t);
   }
   function getConstructionBackground(x,y){
-    if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return T.AIR;
+    if(!worldYInBounds(y) || !isFinite(x) || Math.abs(x)>MAX_COORD) return T.AIR;
     const t=constructionBackground.get(key(x,y));
     return isConstructionBackgroundTile(t) ? t : T.AIR;
   }
@@ -817,12 +873,13 @@ window.MM = window.MM || {};
     return over!==T.AIR ? over : getTile(x,y);
   }
   function peekTile(x,y,fallback){
-    if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return T.AIR;
-    const cx=Math.floor(x/CHUNK_W);
-    const arr=world.get(ck(cx));
+    if(!worldYInBounds(y) || !isFinite(x) || Math.abs(x)>MAX_COORD) return T.AIR;
+    y=Math.floor(y);
+    const cx=Math.floor(x/CHUNK_W), sy=sectionYFor(y), ly=sectionLocalY(y,sy);
+    const arr=world.get(isBaseSection(sy) ? ck(cx) : ckSection(cx,sy));
     if(!arr) return fallback===undefined ? T.AIR : fallback;
     const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W;
-    return getTileRaw(arr,lx,y);
+    return getTileRaw(arr,lx,isBaseSection(sy)?y:ly);
   }
   function peekNetworkTile(x,y,fallback){
     const over=getInfrastructure(x,y);
@@ -855,7 +912,7 @@ window.MM = window.MM || {};
     }
   }
   function setInfrastructureInternal(x,y,v,transient,removeOnly){
-    if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return false;
+    if(!worldYInBounds(y) || !isFinite(x) || Math.abs(x)>MAX_COORD) return false;
     x=Math.floor(x); y=Math.floor(y);
     const item=isInfrastructureTile(v) ? v : T.AIR;
     const k=key(x,y);
@@ -868,7 +925,7 @@ window.MM = window.MM || {};
     if(!next.length) infrastructure.delete(k);
     else infrastructure.set(k,next);
     notifyInfrastructureChanged(x,y,old,next);
-    if(!transient) markModifiedChunk(Math.floor(x/CHUNK_W));
+    if(!transient) markModifiedChunk(Math.floor(x/CHUNK_W),null,sectionYFor(y));
     return true;
   }
   function setInfrastructure(x,y,v){ return setInfrastructureInternal(x,y,v,false); }
@@ -877,7 +934,7 @@ window.MM = window.MM || {};
     return setInfrastructureInternal(x,y,T.AIR,false);
   }
   function setConstructionBackgroundInternal(x,y,v,transient){
-    if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return false;
+    if(!worldYInBounds(y) || !isFinite(x) || Math.abs(x)>MAX_COORD) return false;
     x=Math.floor(x); y=Math.floor(y);
     const item=isConstructionBackgroundTile(v) ? v : T.AIR;
     const k=key(x,y);
@@ -885,23 +942,26 @@ window.MM = window.MM || {};
     if(old===item) return false;
     if(item===T.AIR) constructionBackground.delete(k);
     else constructionBackground.set(k,item);
-    if(!transient) markModifiedChunk(Math.floor(x/CHUNK_W));
+    if(!transient) markModifiedChunk(Math.floor(x/CHUNK_W),null,sectionYFor(y));
     return true;
   }
   function setConstructionBackground(x,y,v){ return setConstructionBackgroundInternal(x,y,v,false); }
   function clearConstructionBackground(x,y){ return setConstructionBackgroundInternal(x,y,T.AIR,false); }
   function setTileInternal(x,y,v,transient){
-    if(!(y>=0) || y>=WORLD_H || !isFinite(x) || Math.abs(x)>MAX_COORD) return;
+    if(!worldYInBounds(y) || !isFinite(x) || Math.abs(x)>MAX_COORD) return;
     if(isInfrastructureTile(v)){ setInfrastructureInternal(x,y,v,transient); return; }
     const cx=Math.floor(x/CHUNK_W);
     const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W;
-    const arr=ensureChunk(cx);
-    const idx=tileIndex(lx,y);
+    y=Math.floor(y);
+    const sy=sectionYFor(y), ly=sectionLocalY(y,sy);
+    const arr=ensureSection(cx,sy);
+    if(!arr) return;
+    const idx=tileIndex(lx,ly);
     if(arr[idx]===v) return;
     const old=arr[idx];
     arr[idx]=v;
     notifyTileChanged(x,y,old,v);
-    if(!transient) markModifiedChunk(cx);
+    if(!transient) markModifiedChunk(cx,null,sy);
   }
   function setTile(x,y,v){ setTileInternal(x,y,v,false); }
   // Transient world-backed layers (currently gases) need to be visible to getTile()
@@ -917,7 +977,7 @@ window.MM = window.MM || {};
       for(const t of stack) list.push({x,y,t});
     }
     const clean=list
-      .filter(o=>isInfrastructureTile(o.t) && isFinite(o.x) && isFinite(o.y) && o.y>=0 && o.y<WORLD_H)
+      .filter(o=>isInfrastructureTile(o.t) && isFinite(o.x) && isFinite(o.y) && worldYInBounds(o.y))
       .sort((a,b)=>(a.x-b.x)||(a.y-b.y)||(a.t-b.t))
       .slice(0,20000);
     return {v:2,list:clean};
@@ -929,11 +989,11 @@ window.MM = window.MM || {};
       if(!raw || !isInfrastructureTile(raw.t)) continue;
       if(!isFinite(raw.x) || !isFinite(raw.y)) continue;
       const x=Math.floor(raw.x), y=Math.floor(raw.y);
-      if(!(y>=0) || y>=WORLD_H || Math.abs(x)>MAX_COORD) continue;
+      if(!worldYInBounds(y) || Math.abs(x)>MAX_COORD) continue;
       const k=key(x,y);
       const stack=normalizeInfrastructureStack(infrastructure.get(k));
       if(!stack.includes(raw.t)) infrastructure.set(k,stack.concat(raw.t));
-      markModifiedChunk(Math.floor(x/CHUNK_W));
+      markModifiedChunk(Math.floor(x/CHUNK_W),null,sectionYFor(y));
     }
     try{ if(MM.teleporters && MM.teleporters.onTileChanged) MM.teleporters.onTileChanged(0,0,T.AIR,T.COPPER_WIRE); }catch(e){}
     try{ if(MM.pumps && MM.pumps.onTileChanged) MM.pumps.onTileChanged(0,0,T.AIR,T.WATER_PIPE); }catch(e){}
@@ -947,7 +1007,7 @@ window.MM = window.MM || {};
       list.push({x,y,t});
     }
     const clean=list
-      .filter(o=>isConstructionBackgroundTile(o.t) && isFinite(o.x) && isFinite(o.y) && o.y>=0 && o.y<WORLD_H)
+      .filter(o=>isConstructionBackgroundTile(o.t) && isFinite(o.x) && isFinite(o.y) && worldYInBounds(o.y))
       .sort((a,b)=>(a.x-b.x)||(a.y-b.y)||(a.t-b.t))
       .slice(0,40000);
     return {v:1,list:clean};
@@ -959,14 +1019,25 @@ window.MM = window.MM || {};
       if(!raw || !isConstructionBackgroundTile(raw.t)) continue;
       if(!isFinite(raw.x) || !isFinite(raw.y)) continue;
       const x=Math.floor(raw.x), y=Math.floor(raw.y);
-      if(!(y>=0) || y>=WORLD_H || Math.abs(x)>MAX_COORD) continue;
+      if(!worldYInBounds(y) || Math.abs(x)>MAX_COORD) continue;
       constructionBackground.set(key(x,y),raw.t);
-      markModifiedChunk(Math.floor(x/CHUNK_W));
+      markModifiedChunk(Math.floor(x/CHUNK_W),null,sectionYFor(y));
     }
   }
   function clearWorld(){ try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); versions.clear(); modifiedChunks.clear(); infrastructure.clear(); constructionBackground.clear(); heightCache.clear(); lakeLevels.clear(); if(WG.clearCaches) WG.clearCaches(); }
 
   worldAPI.ensureChunk = ensureChunk;
+  worldAPI.ensureSection = ensureSection;
+  worldAPI.sectionHeight = WORLD_SECTION_H;
+  worldAPI.minSection = WORLD_MIN_SECTION;
+  worldAPI.maxSection = WORLD_MAX_SECTION;
+  worldAPI.minY = WORLD_MIN_Y;
+  worldAPI.maxY = WORLD_MAX_Y;
+  worldAPI.sectionYFor = sectionYFor;
+  worldAPI.sectionOriginY = sectionOriginY;
+  worldAPI.sectionLocalY = sectionLocalY;
+  worldAPI.sectionKey = ckSection;
+  worldAPI.normalizeChunkRef = normalizeChunkRef;
   worldAPI.getTile = getTile;
   worldAPI.getInfrastructure = getInfrastructure;
   worldAPI.getInfrastructureStack = getInfrastructureStack;
@@ -993,11 +1064,26 @@ window.MM = window.MM || {};
   worldAPI.clear = clearWorld;
   worldAPI.clearHeights = ()=>{ heightCache.clear(); lakeLevels.clear(); if(WG.clearCaches) WG.clearCaches(); };
   worldAPI.markModifiedChunk = markModifiedChunk;
-  worldAPI.modifiedChunkIds = ()=>[...modifiedChunks];
+  worldAPI.modifiedChunkIds = ()=>[...modifiedChunks]
+    .map(id=>normalizeChunkRef(id))
+    .filter(Boolean)
+    .map(ref=>ref.base ? ref.cx : {cx:ref.cx, sy:ref.sy});
   worldAPI._world = world;
   worldAPI._versions = versions;
   worldAPI._modifiedChunks = modifiedChunks;
-  worldAPI.chunkVersion = function(cx){ return versions.get(ck(cx))||0; };
+  worldAPI.chunkVersion = function(cx,sy){
+    const ref=normalizeChunkRef({cx, sy:Number.isFinite(sy) ? sy : null});
+    return ref ? (versions.get(ref.key)||0) : 0;
+  };
+  worldAPI.chunkArray = function(ref){
+    const norm=normalizeChunkRef(ref);
+    if(!norm) return null;
+    if(Number.isFinite(norm.sy) && isBaseSection(norm.sy)){
+      const base=world.get(ck(norm.cx));
+      return base ? base.subarray(norm.sy*SECTION_SIZE, Math.min(base.length,(norm.sy+1)*SECTION_SIZE)) : null;
+    }
+    return world.get(norm.key)||null;
+  };
   worldAPI.metrics = function(){
     return {chunks:world.size, modified:modifiedChunks.size, infrastructure:infrastructure.size, constructionBackground:constructionBackground.size, heightCache:heightCache.size, lakeCache:lakeLevels.size};
   };

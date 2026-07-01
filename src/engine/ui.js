@@ -412,6 +412,23 @@ MM.ui = (function(){
       });
       wrap.appendChild(guardianRow);
     }
+    if(typeof actions.sky==='function'){
+      const skyRow=document.createElement('div');
+      skyRow.style.cssText='display:flex; gap:4px; margin-top:4px;';
+      [['low','Sky low'],['high','Sky high']].forEach(([layer,label])=>{
+        const b=document.createElement('button');
+        b.textContent=label;
+        b.title='Teleport to a generated sky island layer';
+        b.style.cssText='flex:1 1 0; min-width:0; font-size:11px; padding:3px 6px; border:1px solid rgba(150,205,255,.65);';
+        b.addEventListener('click',()=>{
+          const r=actions.sky(layer);
+          if(r===false){ msg('Sky teleport failed'); return; }
+          syncFromPos(r);
+        });
+        skyRow.appendChild(b);
+      });
+      wrap.appendChild(skyRow);
+    }
     if(typeof actions.underground==='function'){
       const undergroundRow=document.createElement('div');
       undergroundRow.style.cssText='display:flex; gap:4px; margin-top:4px;';
@@ -1542,8 +1559,8 @@ MM.ui = (function(){
         if(c.kind==='rotten_meat_golem'){
           return '#'+(i+1)+' '+(c.name||c.id)+' ZOMBI HP '+Math.round(c.hp||0)+'/'+Math.round(c.maxHp||0)+' mieso '+(c.meat||0)+' atak '+Number(c.attackCd||0).toFixed(1)+' '+(g.torso||'?')+'/'+(g.head||'?');
         }
-        if(c.kind==='fried_chicken'){
-          return '#'+(i+1)+' '+(c.name||c.id)+' KURCZAK pickup pelne HP';
+        if(c.kind==='fried_meat_golem' || c.kind==='fried_chicken'){
+          return '#'+(i+1)+' '+(c.name||c.id)+' PIECZONY HP '+Math.round(c.hp||0)+'/'+Math.round(c.maxHp||0)+' mieso '+(c.meat||0);
         }
         return '#'+(i+1)+' '+(c.name||c.id)+' BIO HP '+Math.round(c.hp||0)+'/'+Math.round(c.maxHp||0)+' bio '+(c.biomass||0)+' '+(g.body||'?')+' oczy '+(g.eyes||0)+' nogi '+(g.legs||0);
       }).join(' | ');
@@ -1551,7 +1568,7 @@ MM.ui = (function(){
     function refreshMetrics(){
       const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
       const list=(typeof actions.list==='function') ? actions.list() : [];
-      metrics.textContent=m ? ('aktywni '+(m.count||0)+' | HP '+(m.hp||0)+'/'+(m.maxHp||0)+' | bio '+(m.biomass||0)+' | golemy '+(m.golems||0)+' | glina '+(m.clay||0)+' | lisciaki '+(m.leafMonsters||0)+' | liscie '+(m.leaves||0)+' | wodne '+(m.waterGolems||0)+' | woda '+(m.water||0)+' | miesne '+(m.meatGolems||0)+' | zombi '+(m.rottenMeatGolems||0)+' | kurczaki '+(m.friedChickens||0)+' | lasery '+(m.lasers||0)) : 'brak metryk pomocnikow';
+      metrics.textContent=m ? ('aktywni '+(m.count||0)+' | HP '+(m.hp||0)+'/'+(m.maxHp||0)+' | bio '+(m.biomass||0)+' | golemy '+(m.golems||0)+' | glina '+(m.clay||0)+' | lisciaki '+(m.leafMonsters||0)+' | liscie '+(m.leaves||0)+' | wodne '+(m.waterGolems||0)+' | woda '+(m.water||0)+' | miesne '+(m.meatGolems||0)+' | zombi '+(m.rottenMeatGolems||0)+' | pieczone '+(m.friedMeatGolems||m.friedChickens||0)+' | lasery '+(m.lasers||0)) : 'brak metryk pomocnikow';
       details.textContent=listText(list);
     }
     const buttons=[
@@ -1581,7 +1598,7 @@ MM.ui = (function(){
       ['spawnMeat','Stworz miesnego','Tworzy debugowego miesnego golema z wybrana masa miesa'],
       ['setMeat','Ustaw mieso','Ustawia mase miesa najblizszego miesnego golema'],
       ['rotMeat','Zgnij teraz','Natychmiast zmienia najblizszego surowego miesnego golema w zombi'],
-      ['cookMeat','Usmaz','Zamienia najblizszego miesnego lub zombi golema w pieczonego kurczaka'],
+      ['cookMeat','Usmaz','Zamienia najblizszego miesnego lub zombi golema w pieczonego sprzymierzenca'],
       ['heal','Pelne HP','Leczy najblizszego pomocnika do maksimum'],
       ['damage','Ran','Zadaje najblizszemu pomocnikowi wybrane obrazenia'],
       ['kill','Zabij','Testuje smierc i lekka eksplozje pomocnika'],

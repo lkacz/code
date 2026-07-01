@@ -14,7 +14,7 @@ globalThis.localStorage = {
   removeItem(){}
 };
 
-const { T, CHUNK_W, WORLD_H } = await import('../src/constants.js');
+const { T, CHUNK_W, WORLD_H, WORLD_MAX_Y } = await import('../src/constants.js');
 const { worldGen: WG } = await import('../src/engine/worldgen.js');
 await import('../src/engine/trees.js');
 const { world } = await import('../src/engine/world.js');
@@ -148,13 +148,27 @@ assert.ok(coal>diamonds*2, 'coal is noticeably more common than diamonds (coal '
 assert.ok(rockMass>coal*8, 'coal remains a resource seam, not the dominant underground material');
 assert.ok(granite>=120, 'deeper underground includes granite strata (got '+granite+')');
 assert.ok(basalt>=80, 'deep underground includes basalt strata (got '+basalt+')');
-assert.ok(bedrock>=20, 'world bottom includes bedrock strata (got '+bedrock+')');
+assert.equal(bedrock,0, 'legacy mid-world band no longer contains an artificial bedrock shelf (got '+bedrock+')');
+
+let deepBedrock = 0;
+for(const biome of [0,1,2,3,4,6,7]){
+  const center = samples[biome].run.center;
+  for(let wx=center-16; wx<=center+16; wx++){
+    for(let y=WORLD_MAX_Y-3; y<WORLD_MAX_Y; y++){
+      if(world.getTile(wx,y)===T.BEDROCK) deepBedrock++;
+    }
+  }
+}
+assert.ok(deepBedrock>=500, 'true extended-world bottom contains the hard bedrock boundary (got '+deepBedrock+')');
 
 const worldSource = await readFile(new URL('../src/engine/world.js', import.meta.url), 'utf8');
+const worldLayerSource = await readFile(new URL('../src/engine/world_layers.js', import.meta.url), 'utf8');
 assert.match(worldSource, /function isCaveTreasureFloor\(t\)/, 'worldgen centralizes cave treasure floor material checks');
 assert.match(worldSource, /isRockStructuralMaterial\(t\) && isObjectFootingTile\(t\)/, 'cave treasure uses shared substantial-rock footing checks instead of loose resource seams');
-assert.match(worldSource, /function geologyLayerDepth\(wx,y,depth,biome\)/, 'geology layers use warped depth instead of straight horizontal bands');
-assert.match(worldSource, /function geologyMix\(wx,y,primary,secondary,seed,amount\)/, 'geology transitions are feathered by local noise');
+assert.match(worldSource, /WORLD_LAYERS\.legacyGeologyRockTile\(WG,wx,y,depth,biome\)/, 'legacy terrain delegates rock geology to the shared vertical layer model');
+assert.match(worldLayerSource, /function geologyMix\(WG,wx,y,primary,secondary,seed,amount\)/, 'geology transitions are feathered by local noise');
+assert.match(worldLayerSource, /export function legacyGeologyLayerDepth\(WG,wx,y,depth,biome\)/, 'geology layers use warped depth instead of straight horizontal bands');
+assert.match(worldLayerSource, /export function legacyGeologyRockTile\(WG,wx,y,depth,biome\)/, 'legacy rock geology is centralized with sky and deep layer generation');
 assert.match(worldSource, /function volcanoDikeTile\(v,wx,y,ground,depth\)/, 'volcanoes generate basaltic intrusion dikes');
 assert.match(worldSource, /Volcanic contact aureole/, 'volcanic rock generation includes baked contact zones');
 

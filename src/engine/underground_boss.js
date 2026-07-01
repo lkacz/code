@@ -1,4 +1,4 @@
-import { CHUNK_W, WORLD_H, T } from '../constants.js';
+import { CHUNK_W, WORLD_H, WORLD_SECTION_H, WORLD_MAX_Y, T } from '../constants.js';
 import {
   isBlastProtectedTile,
   isGeneratedStructureReplaceableTile,
@@ -18,11 +18,27 @@ const undergroundBoss = (function(){
     LEASH_Y: 62,
     EFFECT_CAP: 180,
     HAZARD_CAP: 120,
-    BOSS_HP: 960,
-    DRONE_HP: 210,
+    BOSS_HP: 1560,
+    DRONE_HP: 280,
     BURROW_SPEED: 16,
     BURROW_RADIUS: 2.35,
     DRONE_TUNNEL_RADIUS: 1.25,
+    TUNNEL_X_MARGIN: 38,
+    TUNNEL_TOP_MARGIN: 18,
+    BOMB_ARM_TIME: 1.05,
+    BOMB_BLAST_LIFE: 0.52,
+    BOMB_RADIUS: 4.2,
+    ZOMBIE_GOLEM_HEALTH_RATIO: 0.50,
+    ZOMBIE_GOLEM_SPAWN_SECONDS: 30,
+    ZOMBIE_GOLEM_FIRST_DELAY: 30,
+    ZOMBIE_GOLEM_WAVE_SIZE: 2,
+    ZOMBIE_GOLEM_MAX_ACTIVE: 4,
+    ZOMBIE_GOLEM_HP: 230,
+    ZOMBIE_GOLEM_DAMAGE: 14,
+    ZOMBIE_GOLEM_RADIUS: 1.28,
+    GAS_FEAR_SECONDS: 2.6,
+    GAS_FEAR_BURROW_DELAY: 0.20,
+    GAS_DAMAGE_MULT: 2.65,
     CONTACT_CD: 0.78,
     SAVE_MARK_MIN_INTERVAL: 850,
     DEATH_BLAST_INTENSITY: 5.2,
@@ -62,6 +78,8 @@ const undergroundBoss = (function(){
   const finite = (v,f)=>Number.isFinite(Number(v)) ? Number(v) : f;
   const dist2 = (ax,ay,bx,by)=>{ const dx=ax-bx, dy=ay-by; return dx*dx+dy*dy; };
   const tileKey = (x,y)=>x+','+y;
+  const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
+  const HAS_DEEP_WORLD = WORLD_BOTTOM > WORLD_H + 24;
 
   function say(t){ try{ if(root.msg) root.msg(t); }catch(e){} }
   function sfx(id){ try{ if(MM.audio && MM.audio.play) MM.audio.play(id); }catch(e){} }
@@ -117,17 +135,23 @@ const undergroundBoss = (function(){
     const U = gateLayout() || {};
     const ax = Math.round(finite(U.x,0));
     const gateY = Math.round(finite(U.y,WORLD_H-16));
-    const floorY = clamp(gateY+7, 104, WORLD_H-7);
+    const deepDrop = HAS_DEEP_WORLD ? clamp(Math.round((WORLD_BOTTOM-WORLD_H)*0.55), WORLD_SECTION_H-4, WORLD_SECTION_H+26) : 7;
+    const floorMin = HAS_DEEP_WORLD ? Math.max(WORLD_H+34, gateY+44) : 104;
+    const floorMax = HAS_DEEP_WORLD ? WORLD_BOTTOM-24 : WORLD_H-7;
+    const floorY = clamp(gateY+deepDrop, floorMin, floorMax);
     const seed = Number(U.seed)||Number(WG.worldSeed)||1;
     const rx = 48;
-    const top = Math.max(10,floorY-34);
-    const bottom = Math.min(WORLD_H-4,floorY+4);
+    const complexSchema = 'mole_burrow_complex_v2';
+    const approachShellThickness = 3;
+    const approachShellOuter = approachShellThickness+2;
+    const top = Math.max(HAS_DEEP_WORLD ? gateY+8 : 10,floorY-34);
+    const bottom = Math.min(WORLD_BOTTOM-4,floorY+4);
     const ops = [];
     let minX=ax, maxX=ax, minY=top, maxY=bottom;
     function bound(x,y){ if(x<minX) minX=x; if(x>maxX) maxX=x; if(y<minY) minY=y; if(y>maxY) maxY=y; }
     function put(x,y,t,force){
       x=Math.round(x); y=Math.round(y);
-      if(y<1 || y>=WORLD_H-3) return;
+      if(y<1 || y>=WORLD_BOTTOM-3) return;
       ops.push({x,y,t,f:force?1:0});
       bound(x,y);
     }
@@ -170,22 +194,189 @@ const undergroundBoss = (function(){
       }
       for(let x=px-side*3; x!==px+side*4; x+=side) put(x,floorY-4,T.IRIDIUM,true);
     }
+    const vaultVents = [];
+    function carveVaultVent(side,index,offsetY,reach){
+      const startX=ax+side*(rx-3);
+      let lastY=floorY+offsetY;
+      for(let i=0;i<=reach;i++){
+        const x=startX+side*i;
+        const y=Math.round(floorY+offsetY + Math.sin(i*0.48+seed*0.002+index)*1.7 + (i/reach)*side*0.8);
+        for(let yy=y-2; yy<=y+2; yy++){
+          if(Math.abs(yy-y)<=1) clear(x,yy);
+          else put(x,yy,shellTile(x,yy),true);
+        }
+        if(i%5===0) put(x,y+2,T.METEOR_DUST,true);
+        lastY=y;
+      }
+      vaultVents.push({side,x:startX+side*reach,y:lastY,reach});
+    }
+    carveVaultVent(-1,1,-22,18);
+    carveVaultVent(1,2,-20,22);
+    carveVaultVent(-1,3,-13,26);
+    carveVaultVent(1,4,-12,18);
     const bridgeX = Math.round(finite(U.x,ax));
     const bridgeY = Math.round(finite(U.y,floorY-8));
-    for(let y=Math.min(bridgeY,floorY-12); y<=floorY-4; y++){
-      for(let x=bridgeX-3; x<=bridgeX+3; x++) clear(x,y);
-      put(bridgeX-5,y,shellTile(bridgeX-5,y),true);
-      put(bridgeX+5,y,shellTile(bridgeX+5,y),true);
+    const mazeEntryY = clamp(bridgeY+6, 4, Math.max(5,floorY-18));
+    const mazeExitY = Math.max(mazeEntryY+10,floorY-8);
+    const mazeOpen = new Map();
+    const mazeWalls = new Map();
+    const mazeLadders = new Map();
+    const mazeGuides = new Map();
+    const mazePath = [];
+    const mazeBranches = [];
+    let mazeMinX=bridgeX, mazeMaxX=bridgeX, mazeMinY=mazeEntryY, mazeMaxY=mazeEntryY;
+    function mazeBound(x,y){
+      if(x<mazeMinX) mazeMinX=x; if(x>mazeMaxX) mazeMaxX=x;
+      if(y<mazeMinY) mazeMinY=y; if(y>mazeMaxY) mazeMaxY=y;
     }
+    function mazeSet(map,x,y){
+      x=Math.round(x); y=Math.round(y);
+      if(y<1 || y>=WORLD_BOTTOM-3) return;
+      map.set(tileKey(x,y),{x,y});
+      mazeBound(x,y);
+    }
+    function mazeClearCell(x,y,r){
+      const rr=Math.max(1,Math.ceil(r||2));
+      const rx=Math.max(1.2,Number(r)||2);
+      const ry=Math.max(1.1,rx*0.82);
+      for(let yy=Math.floor(y-rr); yy<=Math.ceil(y+rr); yy++){
+        for(let xx=Math.floor(x-rr); xx<=Math.ceil(x+rr); xx++){
+          const dx=(xx-x)/rx, dy=(yy-y)/ry;
+          if(dx*dx+dy*dy<=1.15) mazeSet(mazeOpen,xx,yy);
+        }
+      }
+    }
+    function randMaze(i){ return WG.randSeed(seed*0.0217+i*17.37); }
+    function mainTunnelXAt(y){
+      const t=clamp((y-mazeEntryY)/Math.max(1,mazeExitY-mazeEntryY),0,1);
+      const taper=0.62+Math.sin(t*Math.PI)*0.38;
+      const drift=Math.sin(t*Math.PI*3.25+seed*0.0017)*17*taper + Math.sin(t*Math.PI*8.1+seed*0.0043)*6;
+      const pull=lerp(bridgeX,ax,t);
+      return clamp(Math.round(pull+drift),ax-36,ax+36);
+    }
+    function carveLine(a,b,r,ladderEvery){
+      const steps=Math.max(1,Math.ceil(Math.max(Math.abs(b.x-a.x),Math.abs(b.y-a.y))*2));
+      for(let i=0;i<=steps;i++){
+        const t=i/steps;
+        const x=lerp(a.x,b.x,t), y=lerp(a.y,b.y,t);
+        mazeClearCell(x,y,r);
+        if(ladderEvery && Math.abs(b.y-a.y)>=3 && Math.abs(b.x-a.x)<=2 && i%ladderEvery===0) mazeSet(mazeLadders,x,y);
+      }
+    }
+    let last={x:bridgeX,y:mazeEntryY};
+    mazePath.push({x:bridgeX,y:mazeEntryY});
+    for(let y=mazeEntryY; y<=mazeExitY; y++){
+      const t=clamp((y-mazeEntryY)/Math.max(1,mazeExitY-mazeEntryY),0,1);
+      const x=mainTunnelXAt(y);
+      const p={x,y};
+      carveLine(last,p,2.25+Math.sin(t*Math.PI)*0.28,0);
+      if((y-mazeEntryY)%5===0) mazePath.push({x,y});
+      if((y-mazeEntryY)%9===0) mazeSet(mazeGuides,x,y+2);
+      last=p;
+    }
+    function carveBranch(rootT,side,reach,drop,index){
+      const sy=Math.round(lerp(mazeEntryY+7,mazeExitY-8,rootT));
+      const sx=mainTunnelXAt(sy);
+      const steps=Math.max(16,Math.round(reach*0.9+Math.abs(drop)*0.8));
+      let prev={x:sx,y:sy};
+      const points=[];
+      for(let i=0;i<=steps;i++){
+        const t=i/steps;
+        const wobble=Math.sin(t*Math.PI*2.35+seed*0.002+index)*5 + Math.sin(t*Math.PI*5.1+index)*2.4;
+        const x=clamp(Math.round(sx + side*(reach*t + wobble*Math.sin(t*Math.PI))), ax-58, ax+58);
+        const y=clamp(Math.round(sy + drop*t + Math.sin(t*Math.PI*1.7+index)*3.5), mazeEntryY+3, floorY-12);
+        const p={x,y};
+        carveLine(prev,p,1.75+(i%5===0?0.25:0),0);
+        if(i%7===0) mazeSet(mazeGuides,x,y+1);
+        if(i%6===0) points.push({x,y});
+        prev=p;
+      }
+      mazeBranches.push({side,rootY:sy,endX:prev.x,endY:prev.y,points});
+    }
+    carveBranch(0.18,-1,24+Math.round(randMaze(40)*12),8+Math.round(randMaze(41)*8),1);
+    carveBranch(0.34,1,30+Math.round(randMaze(42)*14),-4+Math.round(randMaze(43)*11),2);
+    carveBranch(0.52,-1,34+Math.round(randMaze(44)*13),10+Math.round(randMaze(45)*10),3);
+    carveBranch(0.70,1,27+Math.round(randMaze(46)*16),7+Math.round(randMaze(47)*9),4);
+    for(const t of [0.16,0.46,0.78]){
+      const cy=Math.round(lerp(mazeEntryY+5,mazeExitY-5,t));
+      for(let y=cy-4; y<=cy+4; y++){
+        const x=mainTunnelXAt(y);
+        if(mazeOpen.has(tileKey(x,y))) mazeSet(mazeLadders,x,y);
+      }
+    }
+    mazePath.push({x:ax,y:mazeExitY});
+    for(const cell of mazeOpen.values()){
+      for(let yy=cell.y-approachShellOuter; yy<=cell.y+approachShellOuter; yy++){
+        for(let xx=cell.x-approachShellOuter; xx<=cell.x+approachShellOuter; xx++){
+          const k=tileKey(xx,yy);
+          if(mazeOpen.has(k)) continue;
+          const shellD=Math.max(Math.abs(xx-cell.x),Math.abs(yy-cell.y));
+          if(shellD<approachShellThickness || shellD>approachShellOuter) continue;
+          const dx=(xx-ax)/rx;
+          const dy=(yy-(floorY-14))/22;
+          if(yy>floorY-15 && yy<floorY && dx*dx+dy*dy<0.88) continue;
+          mazeSet(mazeWalls,xx,yy);
+        }
+      }
+    }
+    [...mazeWalls.values()].sort((a,b)=>a.y-b.y || a.x-b.x).forEach(c=>put(c.x,c.y,T.BEDROCK,true));
+    [...mazeOpen.values()].sort((a,b)=>a.y-b.y || a.x-b.x).forEach(c=>clear(c.x,c.y));
+    [...mazeLadders.values()].sort((a,b)=>a.y-b.y || a.x-b.x).forEach(c=>put(c.x,c.y,T.LADDER,true));
+    [...mazeGuides.values()].sort((a,b)=>a.y-b.y || a.x-b.x).forEach(c=>{
+      const k=tileKey(c.x,c.y);
+      if(mazeOpen.has(k) && !mazeLadders.has(k)) put(c.x,c.y,T.METEOR_DUST,true);
+    });
     for(let dx=-6; dx<=6; dx++){
       if(Math.abs(dx)<=2) clear(ax+dx,floorY-5);
       put(ax+dx,floorY-2,Math.abs(dx)<=2?T.METEOR_DUST:T.ANTIMATTER_CRYSTAL,true);
     }
+    const approach = {
+      entryX:bridgeX,
+      entryY:mazeEntryY,
+      exitX:ax,
+      exitY:mazeExitY,
+      minX:mazeMinX-2,
+      maxX:mazeMaxX+2,
+      minY:mazeMinY-2,
+      maxY:mazeMaxY+2,
+      kind:'organicTunnelNetwork',
+      shellThickness:approachShellThickness,
+      branches:mazeBranches.length,
+      turns:mazePath.length-1,
+      path:mazePath.map(p=>({x:p.x,y:p.y})),
+      branchPaths:mazeBranches.map(b=>({side:b.side,rootY:b.rootY,endX:b.endX,endY:b.endY,points:b.points})),
+      openCells:mazeOpen.size,
+      bedrockCells:mazeWalls.size,
+      ladderCells:mazeLadders.size
+    };
+    const vault = {
+      kind:'excavatorVault',
+      centerX:ax,
+      top,
+      floorY,
+      rx,
+      vents:vaultVents,
+      sidekickDocks:[{x:ax-29,y:floorY-6.2},{x:ax+29,y:floorY-6.2}]
+    };
+    const complex = {
+      schema:complexSchema,
+      surfaceGateSchema:U.design && U.design.schema ? U.design.schema : null,
+      zones:['sealed_surface_gate','armored_burrow_approach','excavator_vault'],
+      containment:{tile:T.BEDROCK, minThickness:approachShellThickness},
+      progression:{sealed:!!U.sealed, requiresFireAndIce:true},
+      visualLanguage:{
+        containment:T.BEDROCK,
+        guide:T.METEOR_DUST,
+        machineBones:T.IRIDIUM,
+        alienSeal:T.ANTIMATTER_CRYSTAL
+      }
+    };
     return {
       kind:'underground',
       ax, x:ax,
       gateX:bridgeX,
-      gateY:bridgeY,
+      gateY:mazeEntryY,
+      gateChamberY:bridgeY,
       mouthX:finite(U.mouthX,bridgeX),
       mouthY:finite(U.mouthY,bridgeY-30),
       floorY,
@@ -194,7 +385,15 @@ const undergroundBoss = (function(){
       anchorSpawns:[{x:ax-29,y:floorY-6.2,side:-1},{x:ax+29,y:floorY-6.2,side:1}],
       droneSpawns:[{role:'cutter',x:ax-29,y:floorY-6.2,side:-1},{role:'backfill',x:ax+29,y:floorY-6.2,side:1}],
       minX:minX-2, maxX:maxX+2, minY:minY-2, maxY:maxY+2,
+      tunnelMinX:minX-2-CFG.TUNNEL_X_MARGIN,
+      tunnelMaxX:maxX+2+CFG.TUNNEL_X_MARGIN,
+      tunnelMinY:Math.max(4,minY-2-CFG.TUNNEL_TOP_MARGIN),
+      tunnelMaxY:floorY-3,
       seed,
+      complex,
+      approach,
+      vault,
+      maze:approach,
       ops
     };
   }
@@ -213,17 +412,25 @@ const undergroundBoss = (function(){
       t===T.MUD || t===T.CLAY || t===T.WET_CLAY || t===T.SNOW || t===T.ICE || t===T.COAL ||
       t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL;
   }
-  function applyToChunk(arr,cx){
+  function applyOpsToArray(arr,cx,originY,height){
     if(!arr || !isUnlocked()) return;
     const L = layoutFor();
     const cmin = cx*CHUNK_W, cmax = cmin+CHUNK_W-1;
-    if(L.maxX<cmin || L.minX>cmax) return;
+    const y0=Math.floor(originY), y1=y0+Math.max(0,Math.floor(height||0))-1;
+    if(L.maxX<cmin || L.minX>cmax || L.maxY<y0 || L.minY>y1) return;
     for(const o of L.ops){
-      if(o.x<cmin || o.x>cmax || o.y<0 || o.y>=WORLD_H) continue;
-      const lx=o.x-cmin, idx=o.y*CHUNK_W+lx;
+      if(o.x<cmin || o.x>cmax || o.y<y0 || o.y>y1) continue;
+      const lx=o.x-cmin, ly=o.y-y0, idx=ly*CHUNK_W+lx;
       const cur=arr[idx];
       if(replaceableForArena(cur,!!o.f)) arr[idx]=o.t;
     }
+  }
+  function applyToChunk(arr,cx){
+    applyOpsToArray(arr,cx,0,WORLD_H);
+  }
+  function applyToSection(arr,cx,sy){
+    if(!Number.isFinite(sy)) return;
+    applyOpsToArray(arr,cx,Math.floor(sy)*WORLD_SECTION_H,WORLD_SECTION_H);
   }
   function terrainChanged(tx,ty,getTile){
     try{ if(MM.fallingSolids && MM.fallingSolids.onTileRemoved) MM.fallingSolids.onTileRemoved(tx,ty); }catch(e){}
@@ -231,7 +438,7 @@ const undergroundBoss = (function(){
   }
   function setTileKnown(tx,ty,cur,t,getTile,setTile,opts){
     if(typeof getTile!=='function' || typeof setTile!=='function') return false;
-    if(ty<1 || ty>=WORLD_H-3) return false;
+    if(ty<1 || ty>=WORLD_BOTTOM-3) return false;
     const force=!!(opts && opts.forceStory);
     if(cur!==T.AIR && isBlastProtectedTile(cur) && !force) return false;
     if(!replaceableForArena(cur,force || !!(opts && opts.replaceSolid))) return false;
@@ -304,6 +511,12 @@ const undergroundBoss = (function(){
       pulseCd:4.2,
       caveCd:3.1,
       drillCd:0,
+      bombCd:0.55,
+      zombieCd:CFG.ZOMBIE_GOLEM_SPAWN_SECONDS,
+      zombieAwakened:false,
+      gasFearT:0,
+      gasFearX:null,
+      gasFearY:null,
       shieldHint:0
     };
   }
@@ -329,16 +542,68 @@ const undergroundBoss = (function(){
       shotCd:1.3+index*0.45,
       carveCd:0.35+index*0.2,
       sealCd:1.0+index*0.35,
+      bombCd:role==='backfill' ? 1.1 : 1.8,
       hitFlash:0,
       contactCd:0
     };
   }
+  function makeZombieGolem(pos,index){
+    pos=pos||{};
+    const seed=(Math.floor((pos.x||0)*97+(pos.y||0)*131+state.seq*17)>>>0) || (state.seq*37);
+    return {
+      id:'earth-zombie-golem-'+(state.seq++),
+      kind:'earth',
+      role:'zombieGolem',
+      name:index%2 ? 'Rotten Tunnel Golem' : 'Zombie Stone Golem',
+      boss:false,
+      zombie:true,
+      seed,
+      x:Number.isFinite(pos.x) ? pos.x : layoutFor().ax,
+      y:Number.isFinite(pos.y) ? pos.y : layoutFor().floorY-3,
+      vx:0,
+      vy:0,
+      side:pos.side<0?-1:1,
+      dir:pos.side<0?-1:1,
+      radius:CFG.ZOMBIE_GOLEM_RADIUS,
+      hp:CFG.ZOMBIE_GOLEM_HP,
+      maxHp:CFG.ZOMBIE_GOLEM_HP,
+      t:0,
+      attackCd:0.25+Math.random()*0.35,
+      jumpCd:0.25+Math.random()*0.55,
+      hitFlash:0,
+      contactCd:0,
+      grounded:false,
+      spawnT:0.55
+    };
+  }
+  function fryZombieGolem(z){
+    if(!z || z.dead || z.role!=='zombieGolem') return false;
+    z.role='friedGolem';
+    z.name='Fried Tunnel Golem';
+    z.zombie=false;
+    z.friendly=true;
+    z.hp=clamp(Number(z.hp)||1,1,Number(z.maxHp)||CFG.ZOMBIE_GOLEM_HP);
+    z.attackCd=0.18;
+    z.jumpCd=0.25;
+    z.spawnT=0.65;
+    z.hitFlash=0.10;
+    addEffect({type:'burst',kind:'earth',x:z.x,y:z.y-0.55,t:0,max:0.80,r:7});
+    addEffect({type:'sparks',kind:'earth',x:z.x,y:z.y-0.55,t:0,max:0.55,r:5});
+    say('Zombi golem zostal upieczony i odwraca sie przeciwko Nyxolithowi.');
+    sfx('fire');
+    return true;
+  }
   function activeCore(){ return entities.find(e=>e && !e.dead && e.boss); }
   function activeDrones(){ return entities.filter(e=>e && !e.dead && e.role==='drone' && e.hp>0); }
+  function activeZombieGolems(){ return entities.filter(e=>e && !e.dead && e.role==='zombieGolem' && e.hp>0); }
+  function activeFriedGolems(){ return entities.filter(e=>e && !e.dead && e.role==='friedGolem' && e.hp>0); }
   function activeDroneCount(){
     let n=0;
     for(const e of entities) if(e && !e.dead && e.role==='drone' && e.hp>0) n++;
     return n;
+  }
+  function activeZombieGolemCount(){
+    return activeZombieGolems().length;
   }
   function inNeighbourhood(p,L){
     if(!p) return false;
@@ -361,8 +626,22 @@ const undergroundBoss = (function(){
     const floor=Number.isFinite(floorMargin) ? floorMargin : 4.2;
     return clamp(finite(y,L.floorY-8),L.minY+top,L.floorY-floor);
   }
+  function clampTunnelX(x,margin,L){
+    L=L || layoutFor();
+    const m=Number.isFinite(margin) ? margin : 7;
+    const min=Number.isFinite(L.tunnelMinX) ? L.tunnelMinX : L.minX-CFG.TUNNEL_X_MARGIN;
+    const max=Number.isFinite(L.tunnelMaxX) ? L.tunnelMaxX : L.maxX+CFG.TUNNEL_X_MARGIN;
+    return clamp(finite(x,L.ax),min+m,max-m);
+  }
+  function clampTunnelY(y,topMargin,floorMargin,L){
+    L=L || layoutFor();
+    const top=Number.isFinite(topMargin) ? topMargin : 7;
+    const floor=Number.isFinite(floorMargin) ? floorMargin : 4.2;
+    const min=Number.isFinite(L.tunnelMinY) ? L.tunnelMinY : L.minY-CFG.TUNNEL_TOP_MARGIN;
+    return clamp(finite(y,L.floorY-8),min+top,L.floorY-floor);
+  }
   function clampBurrowPoint(x,y,L){
-    return {x:clampArenaX(x,7,L), y:clampArenaY(y,7,4.2,L)};
+    return {x:clampTunnelX(x,7,L), y:clampTunnelY(y,7,4.2,L)};
   }
   function clearActive(){
     entities = [];
@@ -424,19 +703,26 @@ const undergroundBoss = (function(){
   function movePhysical(e,dt,getTile,L){
     if(!e || (e.boss && e.mode==='burrow')) return;
     L = L || layoutFor();
-    const maxSp = e.hp/e.maxHp<0.3 ? 5.0 : (e.hp/e.maxHp<0.65 ? 4.25 : 3.55);
+    const maxSp = e.role==='zombieGolem' ? 5.4 : (e.hp/e.maxHp<0.3 ? 5.0 : (e.hp/e.maxHp<0.65 ? 4.25 : 3.55));
     e.vx = clamp(e.vx,-maxSp,maxSp);
     e.vy = clamp(e.vy+18*dt,-10,12);
+    e.grounded=false;
+    const tunnelMin=Number.isFinite(L.tunnelMinX) ? L.tunnelMinX : L.minX-CFG.TUNNEL_X_MARGIN;
+    const tunnelMax=Number.isFinite(L.tunnelMaxX) ? L.tunnelMaxX : L.maxX+CFG.TUNNEL_X_MARGIN;
+    const tunnelTop=Number.isFinite(L.tunnelMinY) ? L.tunnelMinY : L.minY-CFG.TUNNEL_TOP_MARGIN;
+    const minX=(e.boss ? tunnelMin : L.minX)+5;
+    const maxX=(e.boss ? tunnelMax : L.maxX)-5;
+    const minY=(e.boss ? tunnelTop : L.minY)+3;
     let nx=e.x+e.vx*dt;
-    if(nx-e.radius<L.minX+6){ nx=L.minX+6+e.radius; e.vx=Math.abs(e.vx)*0.35; }
-    if(nx+e.radius>L.maxX-6){ nx=L.maxX-6-e.radius; e.vx=-Math.abs(e.vx)*0.35; }
+    if(nx-e.radius<minX){ nx=minX+e.radius; e.vx=Math.abs(e.vx)*0.35; }
+    if(nx+e.radius>maxX){ nx=maxX-e.radius; e.vx=-Math.abs(e.vx)*0.35; }
     if(circleBlocked(nx,e.y,e.radius*0.78,getTile)) e.vx*=-0.45;
     else e.x=nx;
     let ny=e.y+e.vy*dt;
-    if(ny+e.radius>L.floorY-0.12){ ny=L.floorY-e.radius-0.12; e.vy=0; }
-    if(ny-e.radius<L.minY+3){ ny=L.minY+3+e.radius; e.vy=Math.abs(e.vy)*0.2; }
+    if(ny+e.radius>L.floorY-0.12){ ny=L.floorY-e.radius-0.12; e.vy=0; e.grounded=true; }
+    if(ny-e.radius<minY){ ny=minY+e.radius; e.vy=Math.abs(e.vy)*0.2; }
     if(circleBlocked(e.x,ny,e.radius*0.76,getTile)){
-      if(e.vy>0) e.vy=0;
+      if(e.vy>0){ e.vy=0; e.grounded=true; }
       else e.vy=Math.abs(e.vy)*0.25;
     }else e.y=ny;
     e.vx*=Math.max(0,1-dt*1.55);
@@ -458,10 +744,12 @@ const undergroundBoss = (function(){
     if(typeof getTile!=='function' || typeof setTile!=='function') return 0;
     const L=opts.layout || layoutFor();
     const radius=Math.max(0.6,Number(r)||CFG.BURROW_RADIUS);
-    const minX=Math.max(Math.floor(L.minX-8),Math.floor(x-radius-2));
-    const maxX=Math.min(Math.ceil(L.maxX+8),Math.ceil(x+radius+2));
+    const tunnelMin=Number.isFinite(L.tunnelMinX) ? L.tunnelMinX : L.minX-8;
+    const tunnelMax=Number.isFinite(L.tunnelMaxX) ? L.tunnelMaxX : L.maxX+8;
+    const minX=Math.max(Math.floor(tunnelMin-4),Math.floor(x-radius-2));
+    const maxX=Math.min(Math.ceil(tunnelMax+4),Math.ceil(x+radius+2));
     const minY=Math.max(2,Math.floor(y-radius-2));
-    const maxY=Math.min(WORLD_H-4,Math.ceil(y+radius+2));
+    const maxY=Math.min(WORLD_BOTTOM-4,Math.ceil(y+radius+2));
     let changed=0, rim=0;
     for(let ty=minY; ty<=maxY; ty++){
       for(let tx=minX; tx<=maxX; tx++){
@@ -492,11 +780,22 @@ const undergroundBoss = (function(){
     const phase=phaseFor(core);
     const px=p && Number.isFinite(p.x) ? p.x : L.ax;
     const py=p && Number.isFinite(p.y) ? p.y : L.floorY-8;
-    const away = core && Number.isFinite(core.x) && px>=core.x ? 1 : -1;
-    const flip = Math.random()<0.45 ? -1 : 1;
-    let x = px + away*flip*(18+Math.random()*(phase>=3?30:22));
-    if(Math.abs(x-(core?core.x:L.ax))<14) x = (core?core.x:L.ax) - away*(24+Math.random()*14);
-    let y = py + (Math.random()-0.42)*(phase>=3?24:18);
+    const sideTowardPlayer = px>=L.ax ? 1 : -1;
+    const wallSide = Math.random()<0.72 ? sideTowardPlayer : -sideTowardPlayer;
+    let x, y;
+    if(Math.random() < (phase>=3 ? 0.78 : 0.62)){
+      const wallInner = wallSide>0 ? L.maxX+8 : L.minX-8;
+      const wallOuter = wallSide>0 ? L.tunnelMaxX-8 : L.tunnelMinX+8;
+      x = lerp(wallInner, wallOuter, 0.35+Math.random()*0.62);
+      y = py + (Math.random()-0.48)*(phase>=3?30:22);
+      if(Math.random()<0.25) y = L.minY-7-Math.random()*CFG.TUNNEL_TOP_MARGIN;
+    }else{
+      const away = core && Number.isFinite(core.x) && px>=core.x ? 1 : -1;
+      const flip = Math.random()<0.45 ? -1 : 1;
+      x = px + away*flip*(18+Math.random()*(phase>=3?30:22));
+      if(Math.abs(x-(core?core.x:L.ax))<14) x = (core?core.x:L.ax) - away*(24+Math.random()*14);
+      y = py + (Math.random()-0.42)*(phase>=3?24:18);
+    }
     if(phase>=2 && Math.random()<0.45) y -= 8+Math.random()*8;
     return clampBurrowPoint(x,y,L);
   }
@@ -532,6 +831,7 @@ const undergroundBoss = (function(){
     core.vy=0;
     core.lastCarveX=null;
     core.lastCarveY=null;
+    core.bombCd=0.28+Math.random()*0.24;
     carveTunnelAt(core.x,core.y,CFG.BURROW_RADIUS,getTile,setTile,{noise:false,layout:L});
     addEffect({type:'tunnel',kind:'earth',x:core.x,y:core.y,t:0,max:0.8,r:10});
   }
@@ -544,6 +844,7 @@ const undergroundBoss = (function(){
     core.pillarCd=0.95;
     core.pulseCd=0.55;
     core.caveCd=1.2;
+    core.bombCd=1.3;
     core.vx=0;
     core.vy=0;
     addEffect({type:'burst',kind:'earth',x:core.x,y:core.y,t:0,max:0.9,r:13});
@@ -590,10 +891,165 @@ const undergroundBoss = (function(){
     const x = clamp((p?finite(p.x,L.ax):L.ax)+(Math.random()-0.5)*30, L.ax-42, L.ax+42);
     addHazard({type:'fallrock',kind:'earth',x,y:L.minY+5,vx:(Math.random()-0.5)*1.2,vy:1.6+phase*0.25,r:0.72,t:0,life:7,dmg:18+phase*3,hit:false});
   }
+  function spawnBurrowBomb(from,phase,L){
+    if(!from) return false;
+    L = L || layoutFor();
+    const dir=from.dir<0?-1:1;
+    const bx=clampTunnelX(finite(from.x,L.ax)-dir*(1.0+Math.random()*1.6),2,L);
+    const by=clampTunnelY(finite(from.y,L.floorY-5)+0.6+Math.random()*0.8,2,2.5,L);
+    addHazard({
+      type:'burrowBomb',
+      kind:'earth',
+      x:bx,
+      y:by,
+      r:CFG.BOMB_RADIUS + Math.max(0,phase-1)*0.55,
+      delay:CFG.BOMB_ARM_TIME*(0.86+Math.random()*0.22),
+      life:CFG.BOMB_BLAST_LIFE,
+      t:0,
+      dmg:22+phase*5,
+      hit:false,
+      exploded:false
+    });
+    addEffect({type:'sparks',kind:'earth',x:bx,y:by,t:0,max:0.42,r:4});
+    return true;
+  }
+  function findZombieSpawnSpot(p,L,getTile,index){
+    L = L || layoutFor();
+    const px=p && Number.isFinite(p.x) ? p.x : L.ax;
+    const dir=index%2===0 ? -1 : 1;
+    const offsets=[dir*15,-dir*15,dir*23,-dir*23,dir*9,-dir*9,dir*31,-dir*31];
+    for(const off of offsets){
+      const tx=Math.round(clamp(px+off,L.minX+8,L.maxX-8));
+      for(const fy of [L.floorY,L.floorY-1,L.floorY+1,L.floorY-2,L.floorY+2]){
+        if(fy<4 || fy>=WORLD_BOTTOM-2) continue;
+        try{
+          const floor=getTile ? getTile(tx,fy) : T.BASALT;
+          const body=getTile ? getTile(tx,fy-1) : T.AIR;
+          const head=getTile ? getTile(tx,fy-2) : T.AIR;
+          if(isSolid(floor) && !isSolid(body) && !isSolid(head)){
+            return {x:tx+0.5,y:fy-1,side:px>=tx ? 1 : -1};
+          }
+        }catch(e){}
+      }
+    }
+    const fallbackX=clamp(px+dir*18,L.minX+8,L.maxX-8);
+    return {x:fallbackX,y:L.floorY-CFG.ZOMBIE_GOLEM_RADIUS-0.14,side:px>=fallbackX ? 1 : -1};
+  }
+  function spawnZombieGolemWave(core,p,L,getTile){
+    if(!core || core.dead || core.hp/core.maxHp>=CFG.ZOMBIE_GOLEM_HEALTH_RATIO) return 0;
+    L = L || layoutFor();
+    const room=Math.max(0,CFG.ZOMBIE_GOLEM_MAX_ACTIVE-activeZombieGolemCount());
+    const n=Math.min(CFG.ZOMBIE_GOLEM_WAVE_SIZE,room);
+    if(n<=0) return 0;
+    let spawned=0;
+    for(let i=0;i<n;i++){
+      const spot=findZombieSpawnSpot(p,L,getTile,i);
+      const z=makeZombieGolem(spot,i);
+      z.vx=(p && p.x<z.x ? -1 : 1)*(1.2+Math.random()*0.9);
+      z.vy=-2.4-Math.random()*1.2;
+      entities.push(z);
+      spawned++;
+      addEffect({type:'burst',kind:'earth',x:z.x,y:z.y-0.5,t:0,max:0.75,r:6});
+      addEffect({type:'sparks',kind:'earth',x:z.x,y:z.y-0.6,t:0,max:0.48,r:4});
+    }
+    if(spawned>0){
+      say('Zombie golemy wyrywaja sie z tuneli Nyxolithu.');
+      sfx('hurt');
+    }
+    return spawned;
+  }
+  function scareCoreFromGas(core,x,y,L){
+    if(!core || core.dead) return false;
+    L = L || layoutFor();
+    const sx=Number.isFinite(Number(x)) ? Number(x) : core.x;
+    const sy=Number.isFinite(Number(y)) ? Number(y) : core.y;
+    const dx=core.x-sx, dy=core.y-sy;
+    const d=Math.hypot(dx,dy)||1;
+    const awayX=dx/d || (core.dir<0?-1:1);
+    const awayY=dy/d;
+    const panic=clampBurrowPoint(core.x+awayX*(22+Math.random()*16), core.y+awayY*9-5-Math.random()*6, L);
+    core.gasFearT=CFG.GAS_FEAR_SECONDS;
+    core.gasFearX=sx;
+    core.gasFearY=sy;
+    core.targetX=panic.x;
+    core.targetY=panic.y;
+    core.vx+=awayX*3.8;
+    core.vy+=Math.min(0,awayY*2.0)-1.4;
+    core.shieldHint=Math.max(core.shieldHint||0,0.7);
+    addEffect({type:'warning',kind:'earth',x:core.x,y:core.y,t:0,max:0.52,r:10});
+    addEffect({type:'sparks',kind:'earth',x:sx,y:sy,t:0,max:0.40,r:4});
+    if(core.mode!=='burrow'){
+      core.mode='windup';
+      core.vulnerable=true;
+      core.modeT=Math.min(finite(core.modeT,1),CFG.GAS_FEAR_BURROW_DELAY);
+    }
+    if(state.hintCd<=0){
+      say('Nyxolith chokes on the gas and dives for cleaner stone.');
+      state.hintCd=2.2;
+    }
+    sfx('dig');
+    return true;
+  }
+  function detonateBurrowBomb(h,p,getTile,setTile,L){
+    if(!h || h.exploded) return 0;
+    h.exploded=true;
+    addEffect({type:'bomb',kind:'earth',x:h.x,y:h.y,t:0,max:0.72,r:h.r+2});
+    sfx('explosion');
+    if(p && !h.hit && Math.hypot(finite(p.x,0)-h.x,finite(p.y,0)-h.y)<h.r+0.9){
+      h.hit=true;
+      damageHero(h.dmg,h.x,h.y,'earth_burrow_bomb');
+    }
+    if(typeof getTile!=='function' || typeof setTile!=='function') return 0;
+    let changed=0, rim=0;
+    const minX=Math.floor(h.x-h.r-1), maxX=Math.ceil(h.x+h.r+1);
+    const minY=Math.floor(h.y-h.r-1), maxY=Math.ceil(h.y+h.r+1);
+    for(let ty=minY; ty<=maxY; ty++){
+      for(let tx=minX; tx<=maxX; tx++){
+        if(ty<2 || ty>=WORLD_BOTTOM-3) continue;
+        const dx=(tx+0.5-h.x)/h.r;
+        const dy=(ty+0.5-h.y)/(h.r*0.86);
+        const d=dx*dx+dy*dy;
+        if(d>1.28) continue;
+        let cur=T.AIR;
+        try{ cur=getTile(tx,ty); }catch(e){ cur=T.AIR; }
+        if(!excavatableTile(cur)) continue;
+        if(d<0.72){
+          if(setTileKnown(tx,ty,cur,T.AIR,getTile,setTile,{replaceSolid:true})) changed++;
+        }else if(rim<10 && setTileKnown(tx,ty,cur,tunnelRimTile(tx,ty,L),getTile,setTile,{replaceSolid:true})){
+          rim++;
+        }
+      }
+    }
+    if(changed>0){
+      state.tunnelsCarved += changed;
+      markWorldChanged(false);
+    }
+    return changed;
+  }
   function phaseFor(core){
     if(!core) return 1;
     const r=core.hp/core.maxHp;
     return r<0.3 ? 3 : (r<0.65 ? 2 : 1);
+  }
+  function updateZombieGolemSpawner(core,p,dt,L,getTile){
+    if(!core || core.dead) return;
+    const below=core.hp/core.maxHp<CFG.ZOMBIE_GOLEM_HEALTH_RATIO;
+    if(!below){
+      core.zombieAwakened=false;
+      core.zombieCd=CFG.ZOMBIE_GOLEM_SPAWN_SECONDS;
+      return;
+    }
+    if(!core.zombieAwakened){
+      core.zombieAwakened=true;
+      core.zombieCd=Math.min(finite(core.zombieCd,CFG.ZOMBIE_GOLEM_FIRST_DELAY),CFG.ZOMBIE_GOLEM_FIRST_DELAY);
+      addEffect({type:'warning',kind:'earth',x:core.x,y:core.y,t:0,max:1.1,r:14});
+      say('Nyxolith budzi zombi golemy w scianach tunelu.');
+    }
+    core.zombieCd=Math.max(0,finite(core.zombieCd,CFG.ZOMBIE_GOLEM_SPAWN_SECONDS)-dt);
+    if(core.zombieCd<=0){
+      spawnZombieGolemWave(core,p,L,getTile);
+      core.zombieCd=CFG.ZOMBIE_GOLEM_SPAWN_SECONDS;
+    }
   }
   function updateCore(core,p,getTile,setTile,dt,L){
     L = L || layoutFor();
@@ -602,6 +1058,8 @@ const undergroundBoss = (function(){
     core.hitFlash=Math.max(0,core.hitFlash-dt);
     core.contactCd=Math.max(0,core.contactCd-dt);
     core.shieldHint=Math.max(0,core.shieldHint-dt);
+    core.bombCd=Math.max(0,finite(core.bombCd,1)-dt);
+    core.gasFearT=Math.max(0,finite(core.gasFearT,0)-dt);
     if(core.mode==='burrow'){
       core.modeT-=dt;
       core.burrowT+=dt;
@@ -623,6 +1081,10 @@ const undergroundBoss = (function(){
         core.lastCarveX=core.x;
         core.lastCarveY=core.y;
       }
+      if(core.bombCd<=0){
+        spawnBurrowBomb(core,phase,L);
+        core.bombCd=(phase>=3?0.58:phase>=2?0.78:0.98)*(0.78+Math.random()*0.44);
+      }
       if(Math.random()<dt*(phase>=3?2.4:1.5)) spawnCaveRock({x:core.x,y:core.y},phase,L);
       if(d<1.05 || core.modeT<=0) finishBurrow(core);
       return;
@@ -639,11 +1101,12 @@ const undergroundBoss = (function(){
     core.vulnerable=true;
     core.modeT-=dt;
     if(p){
-      const dir = finite(p.x,core.x)>=core.x ? 1 : -1;
+      const afraid=core.gasFearT>0 && Number.isFinite(core.gasFearX);
+      const dir = afraid ? (core.x>=core.gasFearX ? 1 : -1) : (finite(p.x,core.x)>=core.x ? 1 : -1);
       core.dir=dir;
-      const desired = dir*(phase>=3?12:phase>=2?9.5:7.5);
+      const desired = dir*(afraid ? (phase>=3?13:11) : (phase>=3?12:phase>=2?9.5:7.5));
       core.vx += desired*dt;
-      if(phase>=2 && Math.abs(p.x-core.x)<10 && Math.abs(p.y-core.y)<8 && Math.abs(core.vy)<0.1){
+      if(!afraid && phase>=2 && Math.abs(p.x-core.x)<10 && Math.abs(p.y-core.y)<8 && Math.abs(core.vy)<0.1){
         core.vy -= 4.6+phase*0.9;
       }
     }
@@ -671,6 +1134,10 @@ const undergroundBoss = (function(){
       for(let i=0;i<n;i++) spawnCaveRock(p,phase,L);
       core.caveCd=(phase>=3?2.25:3.2)*(0.9+Math.random()*0.35);
     }
+    if(core.bombCd<=0){
+      spawnBurrowBomb(core,phase,L);
+      core.bombCd=(phase>=3?2.2:3.2)*(0.85+Math.random()*0.42);
+    }
     if(core.modeT<=0) startWindup(core,p,L);
   }
   function updateDrone(d,p,getTile,setTile,dt,L){
@@ -681,6 +1148,7 @@ const undergroundBoss = (function(){
     d.shotCd-=dt;
     d.carveCd-=dt;
     d.sealCd-=dt;
+    d.bombCd-=dt;
     const core=activeCore();
     const targetX=d.droneRole==='cutter'
       ? (p ? finite(p.x,d.x)+d.side*5 : d.x+d.side*4)
@@ -702,7 +1170,7 @@ const undergroundBoss = (function(){
       const bx=Math.round(d.x-d.side*2), by=Math.round(d.y+1);
       if(!p || dist2(p.x,p.y,bx+0.5,by+0.5)>12.25){
         const cur=getTile(bx,by);
-        if(cur===T.AIR && by>2 && by<WORLD_H-4){
+        if(cur===T.AIR && by>2 && by<WORLD_BOTTOM-4){
           const t=Math.random()<0.55?T.METEOR_DUST:T.BASALT;
           if(setTileKnown(bx,by,cur,t,getTile,setTile,{replaceSolid:false})){
             markWorldChanged(false);
@@ -717,6 +1185,95 @@ const undergroundBoss = (function(){
       else spawnCaveRock(d,1,L);
       d.shotCd=d.droneRole==='cutter' ? 1.25+Math.random()*0.55 : 1.75+Math.random()*0.9;
     }
+    if(d.bombCd<=0){
+      spawnBurrowBomb(d,d.droneRole==='backfill'?2:1,L);
+      d.bombCd=d.droneRole==='backfill' ? 2.1+Math.random()*0.9 : 3.0+Math.random()*1.2;
+    }
+  }
+  function updateZombieGolem(z,p,getTile,setTile,dt,L){
+    void setTile;
+    L = L || layoutFor();
+    z.t+=dt;
+    z.spawnT=Math.max(0,finite(z.spawnT,0)-dt);
+    z.hitFlash=Math.max(0,z.hitFlash-dt);
+    z.contactCd=Math.max(0,z.contactCd-dt);
+    z.attackCd=Math.max(0,finite(z.attackCd,0)-dt);
+    z.jumpCd=Math.max(0,finite(z.jumpCd,0)-dt);
+    if(p){
+      const dx=finite(p.x,z.x)-z.x;
+      const dy=finite(p.y,z.y)-z.y;
+      const dir=dx>=0 ? 1 : -1;
+      z.dir=dir;
+      z.vx += dir*dt*(Math.abs(dx)>1.1 ? 11.5 : 4.2);
+      if(z.grounded && z.jumpCd<=0 && (Math.abs(dx)>2.2 || dy<-1.0)){
+        z.vy=Math.min(z.vy,-7.4-Math.random()*1.8);
+        z.jumpCd=0.85+Math.random()*0.55;
+      }
+      const reach=(z.radius||1)+0.55;
+      if(z.spawnT<=0 && z.attackCd<=0 && Math.abs(dx)<reach && Math.abs(dy)<2.05){
+        z.attackCd=0.78+Math.random()*0.22;
+        z.vx+=dir*1.6;
+        addEffect({type:'hit',kind:'earth',x:p.x,y:p.y-0.55,t:0,max:0.28,r:3.5});
+        damageHero(CFG.ZOMBIE_GOLEM_DAMAGE,z.x,z.y-0.6,'earth_zombie_golem');
+      }
+    }
+    movePhysical(z,dt,getTile,L);
+    if(z.y>WORLD_BOTTOM+8 || z.x<L.minX-16 || z.x>L.maxX+16) z.dead=true;
+  }
+  function friedGolemTarget(z){
+    let best=null, bd=Infinity;
+    for(const e of entities){
+      if(!e || e.dead || e===z || e.friendly) continue;
+      if(e.boss && !coreVulnerable(e)) continue;
+      if(!(e.boss || e.role==='drone' || e.role==='zombieGolem')) continue;
+      const d=dist2(z.x,z.y,e.x,e.y);
+      if(d<bd){ bd=d; best=e; }
+    }
+    return best;
+  }
+  function friedGolemStrike(z,target){
+    if(!z || !target || target.dead) return false;
+    const dmg=12+Math.min(10,(Number(z.hp)||0)*0.045);
+    target.hp-=dmg;
+    target.hitFlash=0.18;
+    addEffect({type:'hit',kind:'earth',x:target.x,y:target.y,t:0,max:0.30,r:(target.radius||1)*2.1});
+    sparksTarget(target.x,target.y);
+    if(target.hp<=0) defeatEntity(target);
+    return true;
+  }
+  function sparksTarget(x,y){
+    addEffect({type:'sparks',kind:'earth',x,y,t:0,max:0.32,r:4});
+  }
+  function updateFriedGolem(z,p,getTile,setTile,dt,L){
+    void p; void setTile;
+    L = L || layoutFor();
+    z.t+=dt;
+    z.spawnT=Math.max(0,finite(z.spawnT,0)-dt);
+    z.hitFlash=Math.max(0,z.hitFlash-dt);
+    z.contactCd=Math.max(0,z.contactCd-dt);
+    z.attackCd=Math.max(0,finite(z.attackCd,0)-dt);
+    z.jumpCd=Math.max(0,finite(z.jumpCd,0)-dt);
+    const target=friedGolemTarget(z);
+    if(target){
+      const dx=target.x-z.x, dy=target.y-z.y;
+      const dir=dx>=0 ? 1 : -1;
+      z.dir=dir;
+      z.vx += dir*dt*(Math.abs(dx)>1.1 ? 10.2 : 3.6);
+      if(z.grounded && z.jumpCd<=0 && (Math.abs(dx)>2.0 || dy<-1.0)){
+        z.vy=Math.min(z.vy,-7.0-Math.random()*1.4);
+        z.jumpCd=0.92+Math.random()*0.48;
+      }
+      const reach=(z.radius||1)+((target.radius||1)*0.66)+0.48;
+      if(z.spawnT<=0 && z.attackCd<=0 && Math.abs(dx)<reach && Math.abs(dy)<2.2){
+        z.attackCd=0.72+Math.random()*0.24;
+        z.vx+=dir*1.35;
+        friedGolemStrike(z,target);
+      }
+    }else{
+      z.vx*=Math.max(0,1-dt*1.8);
+    }
+    movePhysical(z,dt,getTile,L);
+    if(z.y>WORLD_BOTTOM+8 || z.x<L.minX-16 || z.x>L.maxX+16) z.dead=true;
   }
   function hitHeroCircle(p,x,y,r,dmg,cause,h){
     if(!p || h.hit) return false;
@@ -799,8 +1356,16 @@ const undergroundBoss = (function(){
           hazards.splice(i,1);
           continue;
         }
+      }else if(h.type==='burrowBomb'){
+        if(h.t>=h.delay && !h.exploded) detonateBurrowBomb(h,p,getTile,setTile,L);
+        if(h.exploded && h.t>=h.delay+h.life){
+          hazards.splice(i,1);
+          continue;
+        }
       }
-      if(h.t>h.life+2 || h.x<L.minX-10 || h.x>L.maxX+10 || h.y<0 || h.y>WORLD_H){ hazards.splice(i,1); }
+      const minX=(Number.isFinite(L.tunnelMinX)?L.tunnelMinX:L.minX)-12;
+      const maxX=(Number.isFinite(L.tunnelMaxX)?L.tunnelMaxX:L.maxX)+12;
+      if(h.t>h.life+2+(h.delay||0) || h.x<minX || h.x>maxX || h.y<0 || h.y>WORLD_BOTTOM){ hazards.splice(i,1); }
     }
   }
   function updateEffects(dt){
@@ -843,7 +1408,7 @@ const undergroundBoss = (function(){
         const d=Math.hypot(dx,dy*1.12);
         if(d>R || Math.random()>(1-d/R)*0.95+0.05) continue;
         const tx=Math.round(e.x+dx), ty=Math.round(L.floorY-3+dy);
-        if(ty<2 || ty>=WORLD_H-3 || !setTile || !getTile) continue;
+        if(ty<2 || ty>=WORLD_BOTTOM-3 || !setTile || !getTile) continue;
         const cur=getTile(tx,ty);
         if(isBlastProtectedTile(cur)) continue;
         setTile(tx,ty,d>R*0.74 ? (Math.random()<0.5?T.METEOR_DUST:T.BASALT) : T.AIR);
@@ -891,13 +1456,40 @@ const undergroundBoss = (function(){
       awardHeart();
       for(const other of entities) other.dead=true;
       hazards.length=0;
+    }else if(e.role==='zombieGolem'){
+      say(e.name+' rozpada sie na zgnily gruz.');
     }else{
       say(e.name+' fractures.');
     }
   }
-  function hitEntity(e,dmg){
+  function isArrowDamage(opts){
+    return !!(opts && (opts.kind==='arrow' || opts.type==='arrow' || opts.projectile==='arrow' || opts.source==='arrow'));
+  }
+  function isGasDamage(opts){
+    return !!(opts && (opts.element==='gas' || opts.kind==='gas' || opts.type==='gas' || opts.poison || opts.toxic));
+  }
+  function deflectArrow(e,opts){
+    if(!e || !e.boss) return false;
+    const x=Number.isFinite(Number(opts && opts.x)) ? Number(opts.x) : e.x;
+    const y=Number.isFinite(Number(opts && opts.y)) ? Number(opts.y) : e.y;
+    e.hitFlash=0.10;
+    addEffect({type:'sparks',kind:'earth',x,y,t:0,max:0.36,r:4.5});
+    addEffect({type:'hit',kind:'earth',x:e.x,y:e.y,t:0,max:0.24,r:6});
+    if(state.hintCd<=0){
+      say('Strzala odbija sie od pancerza Nyxolithu.');
+      state.hintCd=1.8;
+    }
+    sfx('spark');
+    return 'bounce';
+  }
+  function hitEntity(e,dmg,opts){
     if(!e || e.dead || !(dmg>0)) return false;
     let amount=Math.max(0.5,Number(dmg)||1);
+    if(e.boss && isArrowDamage(opts)) return deflectArrow(e,opts);
+    if(e.boss && isGasDamage(opts)){
+      scareCoreFromGas(e,opts && opts.x,opts && opts.y,layoutFor());
+      amount*=CFG.GAS_DAMAGE_MULT;
+    }
     if(e.boss && !coreVulnerable(e)){
       if(state.hintCd<=0){
         say('The excavator is under the rock. Follow the fresh tunnel and hit it when it surfaces.');
@@ -921,16 +1513,30 @@ const undergroundBoss = (function(){
     let best=null, bd=Infinity;
     for(const e of entities){
       if(e.dead) continue;
+      if(e.friendly) continue;
       if(e.boss && !coreVulnerable(e)) continue;
       const d=entityHitScore(e,x,y,0.66);
       if(d<bd){ bd=d; best=e; }
     }
     return best;
   }
-  function damageAt(tx,ty,dmg){
+  function damageAt(tx,ty,dmg,opts){
     const e=entityAtTile(tx,ty);
     if(!e) return false;
-    return hitEntity(e,dmg);
+    return hitEntity(e,dmg,opts);
+  }
+  function heatAt(tx,ty,getTile,setTile,opts){
+    void getTile; void setTile; void opts;
+    const x=Number(tx)+0.5, y=Number(ty)+0.5;
+    if(!Number.isFinite(x) || !Number.isFinite(y)) return false;
+    for(const e of entities){
+      if(!e || e.dead || e.role!=='zombieGolem') continue;
+      const reach=Math.max(1.0,(e.radius||1)*0.82);
+      if(Math.abs(x-e.x)<=reach && Math.abs(y-e.y)<=Math.max(1.2,(e.radius||1)*1.15)){
+        return fryZombieGolem(e);
+      }
+    }
+    return false;
   }
   function attackAt(tx,ty,bonus){
     return damageAt(tx,ty,5+Math.max(0,Number(bonus)||0));
@@ -954,9 +1560,11 @@ const undergroundBoss = (function(){
     p.vx = finite(p.vx,0)+nx*5.2*dt;
     p.vy = finite(p.vy,0)+ny*3.0*dt;
     e.contactCd=Math.max(0,(e.contactCd||0)-dt);
-    if(e.contactCd<=0){
+    if(!e.friendly && e.contactCd<=0){
       e.contactCd=CFG.CONTACT_CD;
-      damageHero(e.boss?18:9,e.x,e.y,e.boss?'earth_excavator_contact':'earth_drone_contact');
+      const contactDmg=e.boss?18:(e.role==='zombieGolem'?7:9);
+      const cause=e.boss?'earth_excavator_contact':(e.role==='zombieGolem'?'earth_zombie_golem_contact':'earth_drone_contact');
+      damageHero(contactDmg,e.x,e.y,cause);
     }
     return true;
   }
@@ -994,10 +1602,15 @@ const undergroundBoss = (function(){
       awaken({getTile,setTile});
     }
     const core = activeCore();
-    if(core) updateCore(core,player,getTile,setTile,dt,L);
+    if(core){
+      updateCore(core,player,getTile,setTile,dt,L);
+      updateZombieGolemSpawner(core,player,dt,L,getTile);
+    }
     for(const e of entities){
       if(e.dead || e.boss) continue;
       if(e.role==='drone') updateDrone(e,player,getTile,setTile,dt,L);
+      else if(e.role==='zombieGolem') updateZombieGolem(e,player,getTile,setTile,dt,L);
+      else if(e.role==='friedGolem') updateFriedGolem(e,player,getTile,setTile,dt,L);
     }
     updateHazards(dt,player,getTile,setTile,L);
     collideHero(player,dt);
@@ -1040,94 +1653,251 @@ const undergroundBoss = (function(){
     ctx.fillRect((L.ax-52)*TILE,(L.floorY-40)*TILE,104*TILE,48*TILE);
     ctx.restore();
   }
+  function drawDrill(ctx,TILE,len,rad,spin,accent){
+    ctx.fillStyle='#2b2433';
+    ctx.beginPath();
+    ctx.moveTo(TILE*1.9,-rad*TILE);
+    ctx.lineTo(TILE*(1.9+len),0);
+    ctx.lineTo(TILE*1.9,rad*TILE);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle=rgba(accent||SPEC.accent2,0.88);
+    ctx.lineWidth=Math.max(1,TILE*0.11);
+    for(let i=0;i<5;i++){
+      const px=TILE*(2.05+i*len/5);
+      const off=Math.sin(spin+i)*rad*TILE*0.38;
+      ctx.beginPath();
+      ctx.moveTo(px,-rad*TILE+off);
+      ctx.lineTo(px+TILE*0.46,rad*TILE-off);
+      ctx.stroke();
+    }
+    ctx.fillStyle=rgba(accent||SPEC.accent2,0.80);
+    ctx.beginPath(); ctx.arc(TILE*(1.9+len),0,Math.max(2,TILE*0.18),0,Math.PI*2); ctx.fill();
+  }
+  function drawTreads(ctx,TILE,t,scale){
+    scale=scale||1;
+    ctx.fillStyle='rgba(10,8,15,0.92)';
+    ctx.fillRect(-TILE*2.6*scale,TILE*1.16*scale,TILE*4.7*scale,TILE*0.78*scale);
+    ctx.fillStyle='rgba(92,82,106,0.95)';
+    for(let i=0;i<8;i++){
+      const x=(-2.45+i*0.62+((t*2)%0.62))*TILE*scale;
+      if(x>TILE*2.25*scale) continue;
+      ctx.fillRect(x,TILE*1.22*scale,TILE*0.30*scale,TILE*0.64*scale);
+    }
+  }
+  function drawExcavatorBody(ctx,TILE,e,phase){
+    const spin=e.t*(9+phase*1.6);
+    drawTreads(ctx,TILE,e.t,1);
+    ctx.fillStyle='rgba(16,13,24,0.85)';
+    ctx.beginPath(); ctx.ellipse(-TILE*0.55,TILE*0.42,TILE*2.35,TILE*1.25,0,0,Math.PI*2); ctx.fill();
+    const shell=ctx.createLinearGradient(-TILE*2.8,-TILE*1.8,TILE*2.8,TILE*1.8);
+    shell.addColorStop(0,'#1d1528');
+    shell.addColorStop(0.35,'#58466b');
+    shell.addColorStop(0.68,'#7d5a92');
+    shell.addColorStop(1,'#2c1d3c');
+    ctx.fillStyle=shell;
+    ctx.beginPath(); ctx.ellipse(-TILE*0.35,-TILE*0.15,TILE*2.75,TILE*1.82,-0.08,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle=rgba(SPEC.accent,0.72);
+    ctx.lineWidth=Math.max(1,TILE*0.10);
+    ctx.stroke();
+    ctx.fillStyle=rgba(SPEC.accent2,0.78);
+    ctx.fillRect(-TILE*1.75,-TILE*1.10,TILE*1.25,TILE*0.25);
+    ctx.fillRect(-TILE*1.75,-TILE*0.55,TILE*1.65,TILE*0.22);
+    ctx.fillStyle='#24182f';
+    ctx.beginPath(); ctx.ellipse(TILE*1.55,-TILE*0.22,TILE*1.25,TILE*1.15,0,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='rgba(220,255,225,0.78)';
+    ctx.stroke();
+    ctx.fillStyle=rgba(SPEC.accent2,0.95);
+    ctx.beginPath(); ctx.arc(TILE*1.88,-TILE*0.50,TILE*0.22,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle=rgba(SPEC.accent,0.82);
+    ctx.beginPath(); ctx.arc(TILE*1.70,TILE*0.10,TILE*0.16,0,Math.PI*2); ctx.fill();
+    drawDrill(ctx,TILE,2.75,0.68,spin,SPEC.accent2);
+    for(const side of [-1,1]){
+      ctx.strokeStyle=rgba(SPEC.accent2,0.74);
+      ctx.lineWidth=Math.max(1,TILE*0.16);
+      ctx.beginPath();
+      ctx.moveTo(-TILE*0.5,side*TILE*0.45);
+      ctx.quadraticCurveTo(TILE*1.1,side*TILE*1.4,TILE*2.45,side*TILE*1.75);
+      ctx.stroke();
+      ctx.fillStyle='#22172e';
+      ctx.beginPath(); ctx.arc(TILE*2.55,side*TILE*1.78,TILE*0.26,0,Math.PI*2); ctx.fill();
+    }
+  }
   function drawCore(ctx,TILE,e,now){
     const x=e.x*TILE, y=e.y*TILE;
-    ctx.save();
-    ctx.globalCompositeOperation='lighter';
-    ctx.shadowColor=SPEC.accent;
-    ctx.shadowBlur=24;
     const phase=phaseFor(e);
     if(e.mode==='burrow'){
       const tx=finite(e.targetX,e.x)*TILE, ty=finite(e.targetY,e.y)*TILE;
+      const ang=Math.atan2(ty-y,tx-x);
+      ctx.save();
+      ctx.globalCompositeOperation='lighter';
       ctx.strokeStyle=rgba(SPEC.accent2,0.34);
-      ctx.lineWidth=Math.max(2,TILE*0.28);
+      ctx.lineWidth=Math.max(2,TILE*0.24);
       ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(tx,ty); ctx.stroke();
-      const wake=ctx.createRadialGradient(x,y,2,x,y,TILE*(5.5+Math.sin(e.t*10)*0.5));
-      wake.addColorStop(0,rgba(SPEC.accent2,0.34));
-      wake.addColorStop(0.45,rgba(SPEC.accent,0.18));
+      const wake=ctx.createRadialGradient(x,y,2,x,y,TILE*(5.4+Math.sin(e.t*10)*0.5));
+      wake.addColorStop(0,rgba(SPEC.accent2,0.30));
+      wake.addColorStop(0.5,rgba(SPEC.accent,0.14));
       wake.addColorStop(1,rgba(SPEC.accent,0));
       ctx.fillStyle=wake;
-      ctx.beginPath(); ctx.ellipse(x,y,TILE*5.8,TILE*2.2,Math.atan2(ty-y,tx-x),0,Math.PI*2); ctx.fill();
-      ctx.strokeStyle=rgba(SPEC.accent,0.58);
-      ctx.lineWidth=Math.max(1,TILE*0.08);
-      ctx.beginPath(); ctx.arc(tx,ty,TILE*(3.2+Math.sin(e.t*8)*0.35),0,Math.PI*2); ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(x,y,TILE*5.6,TILE*2.1,ang,0,Math.PI*2); ctx.fill();
+      ctx.restore();
+      ctx.save();
+      ctx.translate(x,y);
+      ctx.rotate(ang);
+      ctx.shadowColor=SPEC.accent2;
+      ctx.shadowBlur=14;
+      ctx.globalCompositeOperation='source-over';
+      drawDrill(ctx,TILE,2.35,0.60,e.t*14,SPEC.accent2);
+      ctx.fillStyle='rgba(42,31,55,0.86)';
+      ctx.beginPath(); ctx.ellipse(-TILE*0.55,0,TILE*1.7,TILE*0.95,0,0,Math.PI*2); ctx.fill();
+      ctx.strokeStyle=rgba(SPEC.accent,0.70); ctx.stroke();
       ctx.restore();
       return;
     }
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
+    const glow=ctx.createRadialGradient(x,y,2,x,y,TILE*(e.radius*3.2));
+    glow.addColorStop(0,rgba(SPEC.accent,0.22));
+    glow.addColorStop(1,rgba(SPEC.accent,0));
+    ctx.fillStyle=glow;
+    ctx.beginPath(); ctx.arc(x,y,TILE*(e.radius*3.2),0,Math.PI*2); ctx.fill();
     if(e.mode==='windup'){
       const tx=finite(e.targetX,e.x)*TILE, ty=finite(e.targetY,e.y)*TILE;
       ctx.strokeStyle=rgba(SPEC.accent2,0.72);
       ctx.lineWidth=Math.max(2,TILE*0.12);
       ctx.beginPath(); ctx.arc(tx,ty,TILE*(4.5+Math.sin(e.t*16)*0.5),0,Math.PI*2); ctx.stroke();
     }
-    for(let i=0;i<9;i++){
-      const a=now*0.001*(0.9+phase*0.12)+i*Math.PI*2/9;
-      const rr=(e.radius*(0.82+0.08*Math.sin(e.t*3+i)))*TILE;
-      ctx.strokeStyle=rgba(i%2?SPEC.accent:SPEC.accent2,0.30+phase*0.05);
-      ctx.lineWidth=Math.max(1,TILE*0.12);
-      ctx.beginPath();
-      ctx.ellipse(x+Math.cos(a)*TILE*0.32,y+Math.sin(a*1.7)*TILE*0.2,rr*(1.0+0.12*Math.sin(a)),rr*0.55, a,0,Math.PI*2);
-      ctx.stroke();
-    }
-    const body=ctx.createRadialGradient(x,y-TILE*0.55,2,x,y,TILE*e.radius*1.25);
-    body.addColorStop(0,'rgba(245,248,255,0.88)');
-    body.addColorStop(0.22,rgba(SPEC.accent2,0.82));
-    body.addColorStop(0.58,rgba(SPEC.accent,0.70));
-    body.addColorStop(1,'rgba(20,10,36,0.80)');
-    ctx.fillStyle=body;
-    ctx.beginPath();
-    ctx.ellipse(x,y,TILE*e.radius*0.9,TILE*e.radius*1.03,Math.sin(e.t)*0.08,0,Math.PI*2);
-    ctx.fill();
-    ctx.strokeStyle='rgba(255,255,255,0.7)';
-    ctx.lineWidth=1.4;
-    ctx.stroke();
-    for(const side of [-1,1]){
-      ctx.strokeStyle=rgba(SPEC.accent2,0.62);
-      ctx.lineWidth=Math.max(1,TILE*0.18);
-      ctx.beginPath();
-      ctx.moveTo(x+side*TILE*1.4,y+TILE*0.5);
-      ctx.quadraticCurveTo(x+side*TILE*3.6,y+TILE*1.4,x+side*TILE*5.2,y+TILE*2.2);
-      ctx.stroke();
-    }
+    ctx.restore();
+    ctx.save();
+    ctx.translate(x,y);
+    ctx.scale(e.dir<0?-1:1,1);
+    ctx.shadowColor=SPEC.accent;
+    ctx.shadowBlur=10+phase*2;
+    ctx.globalCompositeOperation='source-over';
+    drawExcavatorBody(ctx,TILE,e,phase);
     if(e.hitFlash>0){
       ctx.fillStyle='rgba(255,255,255,'+(e.hitFlash*3).toFixed(2)+')';
-      ctx.beginPath(); ctx.arc(x,y,TILE*(e.radius+0.7),0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(0,0,TILE*(e.radius+0.8),0,Math.PI*2); ctx.fill();
     }
     ctx.restore();
   }
   function drawDrone(ctx,TILE,e){
     const x=e.x*TILE, y=e.y*TILE;
+    const dir=e.dir<0?-1:1;
     ctx.save();
-    ctx.globalCompositeOperation='lighter';
-    ctx.shadowColor=SPEC.accent2;
-    ctx.shadowBlur=16;
-    ctx.fillStyle=rgba(e.droneRole==='cutter'?SPEC.accent:SPEC.accent2,0.80);
-    ctx.beginPath();
-    ctx.moveTo(x+e.dir*TILE*1.75,y);
-    ctx.lineTo(x-e.dir*TILE*0.8,y-TILE*1.15);
-    ctx.lineTo(x-e.dir*TILE*0.45,y+TILE*1.15);
-    ctx.closePath(); ctx.fill();
-    ctx.fillStyle=rgba(SPEC.dark,0.78);
-    ctx.beginPath(); ctx.arc(x-e.dir*TILE*0.6,y,TILE*0.72,0,Math.PI*2); ctx.fill();
-    ctx.strokeStyle='rgba(255,255,255,0.72)';
-    ctx.lineWidth=1.4;
+    ctx.translate(x,y);
+    ctx.scale(dir,1);
+    ctx.shadowColor=e.droneRole==='cutter'?SPEC.accent:SPEC.accent2;
+    ctx.shadowBlur=10;
+    ctx.globalCompositeOperation='source-over';
+    drawTreads(ctx,TILE,e.t,0.48);
+    ctx.fillStyle=e.droneRole==='cutter' ? '#45305a' : '#2d3c30';
+    ctx.beginPath(); ctx.ellipse(-TILE*0.35,-TILE*0.08,TILE*1.18,TILE*0.78,0,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle=rgba(e.droneRole==='cutter'?SPEC.accent:SPEC.accent2,0.78);
+    ctx.lineWidth=Math.max(1,TILE*0.08);
     ctx.stroke();
-    ctx.strokeStyle=rgba(SPEC.accent2,0.62);
-    ctx.lineWidth=2;
-    ctx.beginPath(); ctx.arc(x,y,TILE*(2.1+Math.sin(e.t*3)*0.18),0,Math.PI*2); ctx.stroke();
+    if(e.droneRole==='cutter'){
+      drawDrill(ctx,TILE,1.35,0.38,e.t*12,SPEC.accent);
+      ctx.fillStyle=rgba(SPEC.accent2,0.92);
+      ctx.beginPath(); ctx.arc(TILE*0.38,-TILE*0.28,TILE*0.13,0,Math.PI*2); ctx.fill();
+    }else{
+      ctx.fillStyle='rgba(121,201,93,0.82)';
+      ctx.beginPath();
+      ctx.moveTo(TILE*1.05,-TILE*0.52);
+      ctx.lineTo(TILE*1.85,-TILE*0.18);
+      ctx.lineTo(TILE*1.05,TILE*0.50);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle=rgba(SPEC.accent,0.78);
+      ctx.fillRect(-TILE*1.35,-TILE*0.55,TILE*0.72,TILE*0.34);
+    }
     if(e.hitFlash>0){
       ctx.fillStyle='rgba(255,255,255,'+(e.hitFlash*3).toFixed(2)+')';
-      ctx.beginPath(); ctx.arc(x,y,TILE*(e.radius+0.8),0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(0,0,TILE*(e.radius+0.8),0,Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+  }
+  function drawZombieGolem(ctx,TILE,e){
+    const x=e.x*TILE, y=e.y*TILE;
+    const dir=e.dir<0?-1:1;
+    const fried=e.role==='friedGolem' || e.friendly;
+    const pulse=0.55+Math.sin(e.t*8+e.seed*0.01)*0.18;
+    ctx.save();
+    ctx.translate(x,y);
+    ctx.scale(dir,1);
+    ctx.shadowColor=fried?'#ffd08a':'#9fd267';
+    ctx.shadowBlur=9+5*pulse;
+    ctx.globalCompositeOperation='source-over';
+
+    const footY=TILE*0.93;
+    ctx.fillStyle='rgba(24,18,24,0.88)';
+    ctx.fillRect(-TILE*0.95,footY,TILE*0.74,TILE*0.34);
+    ctx.fillRect(TILE*0.22,footY,TILE*0.88,TILE*0.34);
+
+    const body=ctx.createLinearGradient(-TILE*1.2,-TILE*1.9,TILE*1.15,TILE*0.95);
+    body.addColorStop(0,fried?'#563016':'#293421');
+    body.addColorStop(0.45,fried?'#b86b2c':'#73525c');
+    body.addColorStop(1,fried?'#5a291c':'#34263a');
+    ctx.fillStyle=body;
+    ctx.strokeStyle='rgba(13,9,16,0.72)';
+    ctx.lineWidth=Math.max(1,TILE*0.08);
+    ctx.beginPath();
+    ctx.moveTo(-TILE*1.10,TILE*0.62);
+    ctx.lineTo(-TILE*0.82,-TILE*1.38);
+    ctx.lineTo(TILE*0.28,-TILE*1.78);
+    ctx.lineTo(TILE*1.04,-TILE*0.72);
+    ctx.lineTo(TILE*0.88,TILE*0.72);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle=fried?'rgba(255,194,103,0.82)':'rgba(105,142,67,0.82)';
+    ctx.fillRect(-TILE*0.64,-TILE*1.02,TILE*0.42,TILE*0.22);
+    ctx.fillRect(TILE*0.05,-TILE*0.48,TILE*0.54,TILE*0.18);
+    ctx.fillStyle=fried?'rgba(255,227,168,0.62)':'rgba(196,107,255,0.52)';
+    ctx.beginPath();
+    ctx.arc(-TILE*0.16,-TILE*0.38,TILE*(0.20+pulse*0.04),0,Math.PI*2);
+    ctx.fill();
+
+    ctx.fillStyle=fried?'#b86b2c':'#5d6f34';
+    ctx.beginPath();
+    ctx.ellipse(TILE*0.38,-TILE*2.04,TILE*0.58,TILE*0.42,-0.08,0,Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle='rgba(20,14,20,0.70)';
+    ctx.stroke();
+    ctx.fillStyle=fried?'#ffe3a8':'#d7ff9b';
+    ctx.fillRect(TILE*0.20,-TILE*2.10,TILE*0.12,TILE*0.09);
+    ctx.fillRect(TILE*0.52,-TILE*2.07,TILE*0.12,TILE*0.09);
+    ctx.fillStyle='rgba(17,13,18,0.86)';
+    ctx.fillRect(TILE*0.24,-TILE*2.08,TILE*0.04,TILE*0.06);
+    ctx.fillRect(TILE*0.56,-TILE*2.05,TILE*0.04,TILE*0.06);
+
+    ctx.strokeStyle=fried?'rgba(190,100,42,0.94)':'rgba(88,116,58,0.94)';
+    ctx.lineWidth=Math.max(2,TILE*0.17);
+    for(const side of [-1,1]){
+      ctx.beginPath();
+      ctx.moveTo(-TILE*0.48, -TILE*0.82+side*TILE*0.05);
+      ctx.quadraticCurveTo(-TILE*1.34, -TILE*0.15+side*TILE*0.18, -TILE*1.52, TILE*0.78+side*TILE*0.10);
+      ctx.stroke();
+    }
+    ctx.fillStyle='rgba(204,214,149,0.82)';
+    ctx.beginPath();
+    ctx.arc(-TILE*1.52,TILE*0.78,TILE*0.18,0,Math.PI*2);
+    ctx.fill();
+
+    if(e.spawnT>0){
+      ctx.save();
+      ctx.globalCompositeOperation='lighter';
+      ctx.globalAlpha=clamp(e.spawnT/0.55,0,1);
+      ctx.strokeStyle=rgba(SPEC.accent2,0.80);
+      ctx.lineWidth=Math.max(1,TILE*0.10);
+      ctx.beginPath();
+      ctx.arc(0,-TILE*0.58,TILE*(1.6-e.spawnT),0,Math.PI*2);
+      ctx.stroke();
+      ctx.restore();
+    }
+    if(e.hitFlash>0){
+      ctx.fillStyle='rgba(255,255,255,'+(e.hitFlash*3).toFixed(2)+')';
+      ctx.beginPath(); ctx.arc(0,-TILE*0.6,TILE*(e.radius+0.8),0,Math.PI*2); ctx.fill();
     }
     ctx.restore();
   }
@@ -1172,6 +1942,18 @@ const undergroundBoss = (function(){
         ctx.fillStyle=rgba(SPEC.accent2,0.72);
         ctx.fillRect((h.x-h.r)*TILE,(h.y-h.r)*TILE,h.r*2*TILE,h.r*2*TILE);
         ctx.strokeStyle=rgba(SPEC.accent,0.55); ctx.strokeRect((h.x-h.r)*TILE,(h.y-h.r)*TILE,h.r*2*TILE,h.r*2*TILE);
+      }else if(h.type==='burrowBomb'){
+        const armed=h.t>=h.delay;
+        const blink=0.55+Math.sin(h.t*18)*0.35;
+        ctx.shadowColor=armed?'#ffcf7a':SPEC.accent;
+        ctx.shadowBlur=armed?22:12;
+        ctx.fillStyle='rgba(28,18,20,0.94)';
+        ctx.beginPath(); ctx.ellipse(h.x*TILE,h.y*TILE,TILE*0.76,TILE*0.52,0,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle=rgba(armed?'#ffb347':SPEC.accent2,0.75+blink*0.20);
+        ctx.beginPath(); ctx.arc((h.x+0.18)*TILE,(h.y-0.08)*TILE,TILE*0.18,0,Math.PI*2); ctx.fill();
+        ctx.strokeStyle=rgba(armed?'#ffcf7a':SPEC.accent,0.42+blink*0.28);
+        ctx.lineWidth=Math.max(1,TILE*0.08);
+        ctx.beginPath(); ctx.arc(h.x*TILE,h.y*TILE,TILE*(h.r*(armed?0.72:0.32)),0,Math.PI*2); ctx.stroke();
       }
       ctx.restore();
     }
@@ -1186,6 +1968,13 @@ const undergroundBoss = (function(){
         ctx.strokeStyle=rgba(SPEC.accent2,0.62*(1-f));
         ctx.lineWidth=Math.max(2,TILE*(0.38*(1-f)));
         ctx.beginPath(); ctx.moveTo(e.x*TILE,(e.y-12)*TILE); ctx.lineTo(e.x*TILE,(e.y+1)*TILE); ctx.stroke();
+      }else if(e.type==='bomb'){
+        const r=(e.r||5)*TILE*(0.22+f*1.08);
+        ctx.strokeStyle='rgba(255,188,91,'+(0.86*(1-f)).toFixed(3)+')';
+        ctx.lineWidth=Math.max(2,TILE*0.18);
+        ctx.beginPath(); ctx.arc(e.x*TILE,e.y*TILE,r,0,Math.PI*2); ctx.stroke();
+        ctx.fillStyle='rgba(255,93,41,'+(0.20*(1-f)).toFixed(3)+')';
+        ctx.beginPath(); ctx.arc(e.x*TILE,e.y*TILE,r*0.58,0,Math.PI*2); ctx.fill();
       }else{
         const r=(e.r||5)*TILE*(0.35+f*0.9);
         const grad=ctx.createRadialGradient(e.x*TILE,e.y*TILE,2,e.x*TILE,e.y*TILE,r);
@@ -1208,6 +1997,7 @@ const undergroundBoss = (function(){
     for(const e of entities){
       if(!tileVisible(canDrawTile,e.x,e.y,view,(e.radius||1)+5)) continue;
       if(e.boss) drawCore(ctx,TILE,e,now);
+      else if(e.role==='zombieGolem' || e.role==='friedGolem') drawZombieGolem(ctx,TILE,e);
       else drawDrone(ctx,TILE,e);
       drawHealth(ctx,TILE,e);
     }
@@ -1238,6 +2028,7 @@ const undergroundBoss = (function(){
     const r2=(Number(range)||0)*(Number(range)||0);
     for(const e of entities){
       if(e.dead) continue;
+      if(e.friendly) continue;
       if(e.boss && !coreVulnerable(e)) continue;
       if(onlyBoss && onlyBoss!==true && onlyBoss!==e) continue;
       if(onlyBoss===true && !e.boss) continue;
@@ -1259,7 +2050,7 @@ const undergroundBoss = (function(){
       const tx=Math.round(L.ax+off);
       const floorYs=[L.floorY,L.floorY-1,L.floorY+1,L.floorY-2,L.floorY+2];
       for(const fy of floorYs){
-        if(fy<3 || fy>=WORLD_H-2) continue;
+        if(fy<3 || fy>=WORLD_BOTTOM-2) continue;
         try{
           const floor=getTile ? getTile(tx,fy) : T.BASALT;
           const body=getTile ? getTile(tx,fy-1) : T.AIR;
@@ -1274,6 +2065,7 @@ const undergroundBoss = (function(){
     return {
       id:String(e.id||'').slice(0,48),
       role:e.role,
+      friendly:!!e.friendly,
       x:+finite(e.x,0).toFixed(2),
       y:+finite(e.y,0).toFixed(2),
       vx:+finite(e.vx,0).toFixed(2),
@@ -1281,6 +2073,7 @@ const undergroundBoss = (function(){
       hp:+clamp(Number(e.hp)||0,0,5000).toFixed(1),
       maxHp:+clamp(Number(e.maxHp)||1,1,5000).toFixed(1),
       dir:e.dir<0?-1:1,
+      side:e.side<0?-1:1,
       mode:e.mode||null,
       modeT:+finite(e.modeT,0).toFixed(2),
       vulnerable:e.vulnerable!==false,
@@ -1295,7 +2088,17 @@ const undergroundBoss = (function(){
       shardCd:+finite(e.shardCd,1).toFixed(2),
       pillarCd:+finite(e.pillarCd,2).toFixed(2),
       pulseCd:+finite(e.pulseCd,4).toFixed(2),
-      caveCd:+finite(e.caveCd,3).toFixed(2)
+      caveCd:+finite(e.caveCd,3).toFixed(2),
+      bombCd:+finite(e.bombCd,1).toFixed(2),
+      zombieCd:+finite(e.zombieCd,CFG.ZOMBIE_GOLEM_SPAWN_SECONDS).toFixed(2),
+      zombieAwakened:!!e.zombieAwakened,
+      gasFearT:+finite(e.gasFearT,0).toFixed(2),
+      gasFearX:e.gasFearX==null ? null : +finite(e.gasFearX,e.x).toFixed(2),
+      gasFearY:e.gasFearY==null ? null : +finite(e.gasFearY,e.y).toFixed(2),
+      attackCd:+finite(e.attackCd,0).toFixed(2),
+      jumpCd:+finite(e.jumpCd,0).toFixed(2),
+      spawnT:+finite(e.spawnT,0).toFixed(2),
+      seed:Math.max(0,Number(e.seed)||0)
     };
   }
   function cleanMode(mode){
@@ -1313,8 +2116,8 @@ const undergroundBoss = (function(){
       const mode=cleanMode(src.mode);
       const target=clampBurrowPoint(src.targetX,src.targetY);
       e.id=String(src.id||e.id).slice(0,48);
-      e.x=clampArenaX(src.x,8);
-      e.y=clampArenaY(src.y,6,4.2);
+      e.x=clampTunnelX(src.x,8);
+      e.y=clampTunnelY(src.y,6,4.2);
       e.vx=clamp(finite(src.vx,0),-8,8);
       e.vy=clamp(finite(src.vy,0),-10,12);
       e.dir=src.dir<0?-1:1;
@@ -1334,6 +2137,12 @@ const undergroundBoss = (function(){
       e.pillarCd=clamp(finite(src.pillarCd,e.pillarCd),0,10);
       e.pulseCd=clamp(finite(src.pulseCd,e.pulseCd),0,12);
       e.caveCd=clamp(finite(src.caveCd,e.caveCd),0,10);
+      e.bombCd=clamp(finite(src.bombCd,e.bombCd),0,8);
+      e.zombieCd=clamp(finite(src.zombieCd,e.zombieCd),0,CFG.ZOMBIE_GOLEM_SPAWN_SECONDS);
+      e.zombieAwakened=!!src.zombieAwakened;
+      e.gasFearT=clamp(finite(src.gasFearT,src.fireFearT||0),0,CFG.GAS_FEAR_SECONDS);
+      e.gasFearX=Number.isFinite(Number(src.gasFearX)) ? finite(src.gasFearX,e.x) : (Number.isFinite(Number(src.fireFearX)) ? finite(src.fireFearX,e.x) : null);
+      e.gasFearY=Number.isFinite(Number(src.gasFearY)) ? finite(src.gasFearY,e.y) : (Number.isFinite(Number(src.fireFearY)) ? finite(src.fireFearY,e.y) : null);
       return e;
     }
     if(src.role==='drone' || src.role==='anchor'){
@@ -1356,6 +2165,36 @@ const undergroundBoss = (function(){
       e.shotCd=clamp(finite(src.shotCd,e.shotCd),0,8);
       e.carveCd=clamp(finite(src.carveCd,e.carveCd),0,4);
       e.sealCd=clamp(finite(src.sealCd,e.sealCd),0,8);
+      e.bombCd=clamp(finite(src.bombCd,e.bombCd),0,8);
+      return e;
+    }
+    if(src.role==='zombieGolem' || src.role==='zombie_golem' || src.role==='friedGolem'){
+      const e=makeZombieGolem({
+        x:clampArenaX(src.x,7),
+        y:clampArenaY(src.y,5,2.2),
+        side:src.side<0?-1:1
+      }, 0);
+      e.id=String(src.id||e.id).slice(0,48);
+      e.name=String(src.name||e.name).slice(0,48);
+      if(src.role==='friedGolem' || src.friendly){
+        e.role='friedGolem';
+        e.name=e.name || 'Fried Tunnel Golem';
+        e.zombie=false;
+        e.friendly=true;
+      }
+      e.seed=Math.max(1,Number(src.seed)||e.seed);
+      e.x=clampArenaX(src.x,7);
+      e.y=clampArenaY(src.y,5,2.2);
+      e.vx=clamp(finite(src.vx,0),-8,8);
+      e.vy=clamp(finite(src.vy,0),-10,12);
+      e.side=src.side<0?-1:1;
+      e.dir=src.dir<0?-1:1;
+      e.maxHp=CFG.ZOMBIE_GOLEM_HP;
+      e.hp=clamp(Number(src.hp)||e.maxHp,0,e.maxHp);
+      e.t=clamp(finite(src.t,0),0,3600);
+      e.attackCd=clamp(finite(src.attackCd,e.attackCd),0,4);
+      e.jumpCd=clamp(finite(src.jumpCd,e.jumpCd),0,4);
+      e.spawnT=clamp(finite(src.spawnT,0),0,1);
       return e;
     }
     return null;
@@ -1370,7 +2209,7 @@ const undergroundBoss = (function(){
       materialized:!!state.materialized,
       seq:Math.max(1,state.seq|0),
       tunnelsCarved:Math.max(0,Number(state.tunnelsCarved)||0),
-      entities:entities.filter(e=>e && !e.dead).slice(0,4).map(cleanEntity),
+      entities:entities.filter(e=>e && !e.dead).slice(0,8).map(cleanEntity),
       lastCrater:state.lastCrater ? {x:+finite(state.lastCrater.x,0).toFixed(1), y:+finite(state.lastCrater.y,0).toFixed(1), meteorite:!!state.lastCrater.meteorite} : null
     };
   }
@@ -1436,10 +2275,14 @@ const undergroundBoss = (function(){
       unlocked:isUnlocked(),
       defeated:isDefeated(),
       awakened:!!state.awakened,
-      lair:{x:L.ax,y:L.floorY,gateX:L.gateX,gateY:L.gateY,minX:L.minX,maxX:L.maxX,minY:L.minY,maxY:L.maxY},
-      entities:entities.map(e=>({id:e.id,role:e.role,droneRole:e.droneRole||null,name:e.name,hp:e.hp,maxHp:e.maxHp,x:e.x,y:e.y,boss:!!e.boss,mode:e.mode||null,vulnerable:e.boss?coreVulnerable(e):true})),
+      lair:{x:L.ax,y:L.floorY,gateX:L.gateX,gateY:L.gateY,minX:L.minX,maxX:L.maxX,minY:L.minY,maxY:L.maxY,tunnelMinX:L.tunnelMinX,tunnelMaxX:L.tunnelMaxX,tunnelMinY:L.tunnelMinY},
+      entities:entities.map(e=>({id:e.id,role:e.role,droneRole:e.droneRole||null,name:e.name,hp:e.hp,maxHp:e.maxHp,x:e.x,y:e.y,boss:!!e.boss,zombie:!!e.zombie,friendly:!!e.friendly,mode:e.mode||null,vulnerable:e.boss?coreVulnerable(e):true})),
       hazards:hazards.length,
+      bombs:hazards.filter(h=>h.type==='burrowBomb').length,
+      zombieGolems:activeZombieGolemCount(),
+      friedGolems:activeFriedGolems().length,
       mode:activeCore() ? activeCore().mode : null,
+      gasFear:activeCore() ? +(activeCore().gasFearT||0).toFixed(2) : 0,
       tunnelsCarved:state.tunnelsCarved||0,
       materialized:!!state.materialized
     };
@@ -1450,12 +2293,16 @@ const undergroundBoss = (function(){
       alive:entities.length,
       bosses:core?1:0,
       drones:activeDrones().length,
+      zombieGolems:activeZombieGolemCount(),
+      friedGolems:activeFriedGolems().length,
       hazards:hazards.length,
+      bombs:hazards.filter(h=>h.type==='burrowBomb').length,
       effects:effects.length,
       unlocked:isUnlocked(),
       defeated:isDefeated(),
       mode:core ? core.mode : null,
       vulnerable:core ? coreVulnerable(core) : false,
+      gasFear:core ? +(core.gasFearT||0).toFixed(2) : 0,
       tunnelsCarved:state.tunnelsCarved||0,
       hp:core ? +core.hp.toFixed(1) : 0,
       materialized:!!state.materialized
@@ -1479,6 +2326,14 @@ const undergroundBoss = (function(){
         if(!core) return false;
         finishBurrow(core);
         return true;
+      },
+      forceZombieWave:()=>{
+        const core=activeCore();
+        if(!core) return 0;
+        core.hp=Math.min(core.hp,core.maxHp*(CFG.ZOMBIE_GOLEM_HEALTH_RATIO-0.01));
+        core.zombieAwakened=true;
+        core.zombieCd=0;
+        return spawnZombieGolemWave(core,playerRef(),layoutFor(),lastGetTile);
       }
     };
   }
@@ -1489,12 +2344,14 @@ const undergroundBoss = (function(){
     layoutFor,
     landingSpot,
     applyToChunk,
+    applyToSection,
     materializeArena,
     update,
     draw,
     drawHUD,
     attackAt,
     damageAt,
+    heatAt,
     collideHero,
     targetsForTurret,
     nearestForTurret,

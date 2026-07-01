@@ -10,7 +10,7 @@ globalThis.MM = {
   clouds:{metrics:()=>({clouds:0,cloudMass:0,storm:{active:false,intensity:0}})}
 };
 
-const { T, INFO, WORLD_H } = await import('../src/constants.js');
+const { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } = await import('../src/constants.js');
 const { reactions } = await import('../src/engine/reactions.js');
 const { solar } = await import('../src/engine/solar.js');
 const { dynamo } = await import('../src/engine/dynamo.js');
@@ -23,7 +23,7 @@ const tiles = new Map();
 const key = (x,y)=>Math.floor(x)+','+Math.floor(y);
 function getTile(x,y){
   x=Math.floor(x); y=Math.floor(y);
-  if(y<0 || y>=WORLD_H) return T.AIR;
+  if(y<WORLD_MIN_Y || y>=WORLD_MAX_Y) return T.AIR;
   return tiles.get(key(x,y)) ?? T.AIR;
 }
 function setTile(x,y,v){
@@ -95,6 +95,24 @@ assert.ok(solar._debug.STORAGE_RATE<0.35,'storage solar panel production is inte
 
 {
   reset();
+  assert.ok(WORLD_MIN_Y<0 && WORLD_MAX_Y>WORLD_H,'solar tests cover extended vertical sections');
+  setTile(6,-35,T.SOLAR_BATTERY);
+  for(let i=0;i<40;i++) solar.update(0.25,{x:6,y:-35},getTile);
+  const stored=solar.metrics().storedEnergy;
+  assert.ok(stored>0.5 && stored<4,'sky-layer solar battery charges from full daylight');
+  assert.equal(solar.skyExposed(6,-35,getTile),true,'sky-layer solar panel sees the extended top of the world');
+  setTile(6,-40,T.STONE);
+  assert.equal(solar.skyExposed(6,-35,getTile),false,'sky-layer solar exposure is blocked by local island roofs');
+  setTile(6,-40,T.AIR);
+  const snap=solar.snapshot();
+  assert.ok(snap.list.some(c=>c.y<0),'solar snapshot preserves sky-layer batteries');
+  solar.reset();
+  solar.restore(snap,getTile);
+  assert.ok(solar.metrics().storedEnergy>0,'solar restore rehydrates sky-layer battery state');
+}
+
+{
+  reset();
   setTile(5,10,T.SOLAR_BATTERY);
   MM.clouds={metrics:()=>({clouds:1,cloudMass:0.1,drops:0,storm:{active:false,intensity:0}})};
   for(let i=0;i<120;i++) solar.update(0.25,{x:5,y:10},getTile);
@@ -119,6 +137,22 @@ assert.ok(solar._debug.STORAGE_RATE<0.35,'storage solar panel production is inte
   const done=reactions.apply('heat',10,10,getTile,setTile);
   assert.ok(done && done.recipe==='heat_solar_panel','heat completes the basic solar recipe');
   assertCells(cells,T.SOLAR_PANEL,'basic recipe turns every assembly block into panel terrain');
+}
+
+{
+  reset();
+  const cells=placePattern(12,Math.max(WORLD_MIN_Y+12,-44),false,false);
+  const done=reactions.apply('heat',cells[0].x,cells[0].y,getTile,setTile);
+  assert.ok(done && done.recipe==='heat_solar_panel','heat reactions can complete a sky-section solar recipe');
+  assertCells(cells,T.SOLAR_PANEL,'sky-section recipe turns every assembly block into panel terrain');
+}
+
+{
+  reset();
+  const cells=placePattern(14,Math.min(WORLD_MAX_Y-18,WORLD_H+20),true,false);
+  const done=reactions.apply('heat',cells[0].x,cells[0].y,getTile,setTile);
+  assert.ok(done && done.recipe==='heat_solar_storage_panel','heat reactions can complete a deep-section storage recipe');
+  assertCells(cells,T.SOLAR_BATTERY,'deep-section recipe turns every assembly block into storage panel terrain');
 }
 
 {
@@ -257,6 +291,19 @@ assert.ok(solar._debug.STORAGE_RATE<0.35,'storage solar panel production is inte
   teleporters.update(1.0,{x:99,y:20,w:0.7,h:0.95,vx:0,vy:0,energy:0},getTile,setTile,{dynamo});
   assert.ok(teleporters.metrics().storedEnergy>0,'teleporter battery charges through copper wire from solar source');
   assert.ok(solar.metrics().storedEnergy<solarBefore,'charging a device drains stored solar energy');
+}
+
+{
+  reset();
+  setTile(0,-30,T.SOLAR_BATTERY);
+  setTile(1,-30,T.COPPER_WIRE);
+  setTile(2,-30,T.TELEPORTER);
+  for(let i=0;i<24;i++) solar.update(0.25,{x:1,y:-30},getTile);
+  const solarBefore=solar.metrics().storedEnergy;
+  assert.ok(solarBefore>0,'sky solar panel stores energy before network drain');
+  teleporters.update(1.0,{x:99,y:-30,w:0.7,h:0.95,vx:0,vy:0,energy:0},getTile,setTile,{dynamo});
+  assert.ok(teleporters.metrics().storedEnergy>0,'sky teleporter battery charges through copper wire from sky solar source');
+  assert.ok(solar.metrics().storedEnergy<solarBefore,'sky network charging drains the real solar battery');
 }
 
 {

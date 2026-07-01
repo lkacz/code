@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises';
 
 globalThis.window = globalThis;
 globalThis.MM = {};
-const { T, INFO, WORLD_H } = await import('../src/constants.js');
+const { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } = await import('../src/constants.js');
 const { dynamo } = await import('../src/engine/dynamo.js');
 const { teleporters } = await import('../src/engine/teleporters.js');
 const { gases } = await import('../src/engine/gases.js');
@@ -18,7 +18,7 @@ const tiles = new Map();
 const k = (x,y)=>Math.floor(x)+','+Math.floor(y);
 function getTile(x,y){
   x=Math.floor(x); y=Math.floor(y);
-  if(y<0 || y>=WORLD_H) return T.AIR;
+  if(y<WORLD_MIN_Y || y>=WORLD_MAX_Y) return T.AIR;
   return tiles.get(k(x,y)) ?? T.AIR;
 }
 function setTile(x,y,v){
@@ -163,6 +163,25 @@ assert.equal(INFO[T.WATER_TURRET].waterDevice,true,'water turret is a hydraulic 
   for(let i=0;i<90;i++) tick(1/30);
   assert.equal(getTile(2,10),T.WATER,'powered pump spills water from an open output pipe when no water device is attached');
   assert.ok(pumps.metrics().outletMoved>0,'pump metrics record open-end pipe discharge');
+}
+
+{
+  reset();
+  assert.ok(WORLD_MIN_Y<0 && WORLD_MAX_Y>WORLD_H,'pump tests cover extended vertical sections');
+  setTile(-2,-20,T.WATER);
+  setTile(-1,-20,T.WATER_PIPE);
+  setTile(0,-20,T.WATER_PUMP);
+  pumps.setOrientationAt(0,-20,'east',getTile);
+  setTile(1,-20,T.WATER_PIPE);
+  pumps._debug.debugSetEnergyAt(0,-20,pumps._debug.PUMP_CAPACITY,getTile);
+  for(let i=0;i<90;i++) tick(1/30,{x:0.5,y:-20.5,w:0.7,h:0.95,vx:0,vy:0});
+  assert.equal(getTile(2,-20),T.WATER,'sky-layer pump spills water from an open output pipe');
+  assert.ok(pumps.metrics().outletMoved>0,'sky-layer pump records open-end pipe discharge');
+  const snap=pumps.snapshot();
+  assert.ok(snap.list.some(m=>m.y<0),'pump snapshot preserves sky-layer machines');
+  pumps.reset();
+  pumps.restore(snap,getTile);
+  assert.equal(pumps.orientationAt(0,-20,getTile),'east','pump restore rehydrates sky-layer orientation');
 }
 
 {

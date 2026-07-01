@@ -14,7 +14,7 @@
 // only at tile boundaries (LAVA+WATER→OBSIDIAN here; water never enters a LAVA
 // cell because it is not T.AIR), so the seam is one conversion rule, not a
 // shared engine. Revisit only if lava ever needs waves/pressure of its own.
-import { T, INFO, WORLD_H, TILE as TILE_PX } from '../constants.js';
+import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, TILE as TILE_PX } from '../constants.js';
 import { isLavaExposureOpenTile, isLavaVentOpenTile } from './material_physics.js';
 import { reactions as REACTIONS } from './reactions.js';
 (function(){
@@ -30,10 +30,13 @@ import { reactions as REACTIONS } from './reactions.js';
   // 8-neighbourhood; fire prefers climbing (trees burn upward)
   const NEIGHBORS=[[0,-1],[1,-1],[-1,-1],[1,0],[-1,0],[0,1],[1,1],[-1,1]];
   const HEAT_NEIGHBORS=[[0,0],[0,-1],[1,0],[-1,0],[0,1],[1,-1],[-1,-1],[1,1],[-1,1]];
+  const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
+  const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
   function key(x,y){ return x+','+y; }
+  function finiteTile(_x,y){ return Number.isFinite(y) && y>=WORLD_TOP && y<WORLD_BOTTOM; }
   function flammableAt(getTile,x,y){
-    if(y<0||y>=WORLD_H) return false;
+    if(!finiteTile(x,y)) return false;
     const info=INFO[getTile(x,y)];
     return !!(info && info.flammable);
   }
@@ -49,6 +52,7 @@ import { reactions as REACTIONS } from './reactions.js';
   function thawAt(x,y,getTile,setTile){
     if(typeof getTile!=='function' || typeof setTile!=='function') return false;
     x|=0; y|=0;
+    if(!finiteTile(x,y)) return false;
     const t=getTile(x,y);
     if(t!==T.SNOW && t!==T.ICE) return false;
     setTile(x,y,T.WATER);
@@ -60,6 +64,7 @@ import { reactions as REACTIONS } from './reactions.js';
   function cookAt(x,y,getTile,setTile){
     if(typeof getTile!=='function' || typeof setTile!=='function') return false;
     x|=0; y|=0;
+    if(!finiteTile(x,y)) return false;
     if(getTile(x,y)!==T.MEAT) return false;
     burning.delete(key(x,y));
     setTile(x,y,T.BAKED_MEAT);
@@ -262,7 +267,7 @@ import { reactions as REACTIONS } from './reactions.js';
   let drawScanCache = {key:'', at:0, tiles:[]};
   function drawLavaCandidates(sx,sy,viewX,viewY,getTile,now){
     const x0=Math.floor(sx), x1=Math.ceil(sx+viewX+2);
-    const y0=Math.max(0,Math.floor(sy)), y1=Math.min(WORLD_H-1,Math.ceil(sy+viewY+2));
+    const y0=Math.max(WORLD_TOP,Math.floor(sy)), y1=Math.min(WORLD_BOTTOM-1,Math.ceil(sy+viewY+2));
     const scanKey=x0+','+x1+','+y0+','+y1;
     if(drawScanCache.key===scanKey && now-drawScanCache.at<DRAW_SCAN_INTERVAL_MS) return {tiles:drawScanCache.tiles, reused:true};
     const tiles=[];
@@ -534,6 +539,7 @@ import { reactions as REACTIONS } from './reactions.js';
   }
   function setLavaEntry(x,y,opts){
     x|=0; y|=0; const k=key(x,y);
+    if(!finiteTile(x,y)) return null;
     opts=opts||{};
     const pressure=opts.pressure ? Math.max(0, Math.min(1, opts.pressure===true?1:opts.pressure)) : 0;
     const source=!!opts.source || magmaSourceTile(x,y);
@@ -621,7 +627,7 @@ import { reactions as REACTIONS } from './reactions.js';
     if(!anyVolcano) return 0;
     if(ty < surfaceAtX(tx)-1) return 0;
     let woke=0;
-    for(let y=Math.max(0,ty-ry); y<=Math.min(WORLD_H-1,ty+ry); y++){
+    for(let y=Math.max(WORLD_TOP,ty-ry); y<=Math.min(WORLD_BOTTOM-1,ty+ry); y++){
       for(let x=tx-rx; x<=tx+rx; x++){
         if(readTile(x,y)!==T.LAVA) continue;
         const v=volcanoAtX(x);
@@ -722,7 +728,7 @@ import { reactions as REACTIONS } from './reactions.js';
   function sanitizeBurnRecord(raw,getTile){
     if(!raw || typeof getTile!=='function') return null;
     const x=Math.floor(Number(raw.x)), y=Math.floor(Number(raw.y));
-    if(!Number.isFinite(x) || !Number.isFinite(y) || y<0 || y>=WORLD_H) return null;
+    if(!Number.isFinite(x) || !Number.isFinite(y) || !finiteTile(x,y)) return null;
     if(!flammableAt(getTile,x,y) || wetAt(getTile,x,y)) return null;
     const info=INFO[getTile(x,y)] || {};
     const fallbackTotal=Math.max(0.4, info.burnTime||2);

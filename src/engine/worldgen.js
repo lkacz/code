@@ -357,10 +357,10 @@ WG.valleyMask = function(x){ const c=WG.column(x); return clamp(c.valleyDepth/(W
 // --- Cave query ------------------------------------------------------------------
 // Returns 0 = solid, 1 = open cave air, 2 = flooded (cave lake / aquifer water).
 WG.caveAt = function(x, y, colOpt){
-	if(y>=WORLD_H-7) return 0;                       // bedrock shelf stays sealed
 	const c = colOpt || WG.column(x);
 	const s = c.row, depth = y-s;
 	if(depth<0) return 0;
+	const bottomBlend = clamp((y-(WORLD_H-18))/18,0,1);
 	const S = WG.settings;
 	const submerged = s>=S.seaLevel-1 || c.biome===6; // don't pierce sea/lake beds at gen time
 	let carved = false;
@@ -375,23 +375,44 @@ WG.caveAt = function(x, y, colOpt){
 		const dprog = clamp((depth-margin)/60,0,1);
 		// Cheese caverns — larger and more common with depth
 		const cav = fbm2(x,y,64,36,3,1001);
-		if(cav > 0.80-0.13*dprog-0.06*(S.caveDensity-1)) carved = true;
+		if(cav > 0.80-0.13*dprog-0.06*(S.caveDensity-1)-bottomBlend*0.025) carved = true;
 		// Winding tunnels — two crossing systems form branching networks
 		if(!carved){
-			let w = (0.012+0.011*dprog)*S.tunnelDensity;
+			let w = (0.012+0.011*dprog+bottomBlend*0.004)*S.tunnelDensity;
 			if(c.entrance && depth<16) w += 0.045*(1-depth/16); // widen mouths near surface
 			const t1 = fbm2(x,y,110,46,2,1101);
 			if(Math.abs(t1-0.5)<w) carved = true;
 			else { const t2 = fbm2(x,y,74,30,2,1201); if(Math.abs(t2-0.5)<w*0.8) carved = true; }
 		}
 		// Rare vertical shafts connecting cave layers
-		if(!carved && WG.valueNoise(x,340,1301)>0.76){
+		if(!carved && (WG.valueNoise(x,340,1301)>0.76 || (bottomBlend>0.35 && WG.valueNoise(x,260,1501)>0.72))){
 			const sh = vnoise2(x,y,14,90,1401);
-			if(Math.abs(sh-0.5)<0.04) carved = true;
+			if(Math.abs(sh-0.5)<0.04+bottomBlend*0.006) carved = true;
+		}
+		if(!carved && bottomBlend>0){
+			const bridge = fbm2(x,y,150,28,2,1502);
+			if(bridge>0.90-bottomBlend*0.035) carved = true;
 		}
 	}
 	if(!carved) return 0;
-	return y>=c.aquifer ? 2 : 1;
+	const waterTransition = clamp((y-(WORLD_H-28))/28,0,1);
+	const aquiferWarp = waterTransition>0
+		? (WG.valueNoise(x,86,1505)-0.5)*20*waterTransition + (WG.valueNoise(x,23,1506)-0.5)*8*waterTransition
+		: 0;
+	if(y>=c.aquifer+aquiferWarp){
+		if(waterTransition>0){
+			if(waterTransition>0.05){
+				const rarePocket = vnoise2(x,y,35,17,1507)>0.955 && fbm2(x,y,88,31,2,1508)>0.62;
+				return rarePocket ? 2 : 1;
+			}
+			const pocket = vnoise2(x,y,42,20,1503);
+			const channel = fbm2(x,y,120,34,2,1504);
+			const keepWater = pocket>0.72+waterTransition*0.20 || Math.abs(channel-0.5)<0.010+0.006*(1-waterTransition);
+			return keepWater ? 2 : 1;
+		}
+		return 2;
+	}
+	return 1;
 };
 
 // --- Biome fraction map around a column, used for soft material transitions ----
