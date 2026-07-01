@@ -69,6 +69,21 @@ assert.ok(L.ops.some(o=>o.t===T.IRIDIUM), 'underground boss arena uses iridium a
 assert.equal(undergroundBoss.status().unlocked, true, 'fire and ice progress unlocks the underground boss');
 assert.ok(undergroundBoss.materializeArena(world.getTile, world.setTile) > 0, 'underground boss can materialize into already generated gate chunks');
 
+// The three zones must weld into one traversable complex: the burrow approach reaches
+// up into the surface-gate chamber through a clear throat, instead of the approach's own
+// bedrock shell capping its entry and sealing the chamber floor with unmineable rock.
+{
+  const throatX = L.approach.entryX;
+  let throatBedrock = 0, throatAir = 0;
+  for(let y=L.gateChamberY; y<=L.approach.entryY; y++){
+    const t = world.getTile(throatX, y);
+    if(t===T.BEDROCK) throatBedrock++;
+    if(t===T.AIR) throatAir++;
+  }
+  assert.equal(throatBedrock, 0, 'no unmineable bedrock plugs the surface-gate-to-approach throat');
+  assert.ok(throatAir >= (L.approach.entryY - L.gateChamberY), 'the chamber-to-approach throat is carved clear so the descent is one coherent complex');
+}
+
 const forcedByKey = new Map();
 for(const o of L.ops) if(o.f===1) forcedByKey.set(o.x+','+o.y, o);
 function assertWorldOp(o,message){

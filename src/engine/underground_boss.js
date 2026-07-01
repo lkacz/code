@@ -305,6 +305,14 @@ const undergroundBoss = (function(){
       }
     }
     mazePath.push({x:ax,y:mazeExitY});
+    // Weld the burrow approach up into the sealed surface-gate chamber. Without this
+    // the approach's own bedrock shell caps the top of its entry tunnel, plugging the
+    // chamber floor and severing the three zones into two unreachable structures.
+    // The sealed gate above supplies containment for this throat, so the shell must
+    // not re-cap it (see the throat exclusion in the shell pass below).
+    const throatX = bridgeX;
+    const throatTop = clamp(Math.round(bridgeY), mazeEntryY-16, mazeEntryY);
+    for(let y=throatTop; y<=mazeEntryY; y++) mazeClearCell(throatX,y,2.3);
     for(const cell of mazeOpen.values()){
       for(let yy=cell.y-approachShellOuter; yy<=cell.y+approachShellOuter; yy++){
         for(let xx=cell.x-approachShellOuter; xx<=cell.x+approachShellOuter; xx++){
@@ -315,6 +323,7 @@ const undergroundBoss = (function(){
           const dx=(xx-ax)/rx;
           const dy=(yy-(floorY-14))/22;
           if(yy>floorY-15 && yy<floorY && dx*dx+dy*dy<0.88) continue;
+          if(yy<=mazeEntryY && Math.abs(xx-throatX)<=approachShellOuter) continue;
           mazeSet(mazeWalls,xx,yy);
         }
       }

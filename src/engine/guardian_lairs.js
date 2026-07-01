@@ -284,11 +284,37 @@ const guardianLairs = (function(){
     }
     return best;
   }
+  function undergroundBiomeOk(x){
+    // The surface mouth winds up to ~10 blocks off the anchor, so keep the whole
+    // gate footprint (not just the anchor column) out of ocean/lake/city biomes.
+    for(let dx=-12; dx<=12; dx+=2){
+      let b=1;
+      try{ b = WG.biomeType ? WG.biomeType(Math.round(x)+dx) : 1; }catch(e){}
+      if(b===5 || b===6 || b===8) return false;
+    }
+    return true;
+  }
+  function undergroundSurfaceX(seed){
+    const base=clamp(Math.round((WG.randSeed(seed*0.017+41.3)-0.5)*180),-220,220);
+    // Keep the original seeded spot when it is already solid ground so existing
+    // worlds are undisturbed; only relocate when it fell in ocean/lake/city, by
+    // walking outward to the nearest clear column near the start.
+    if(undergroundBiomeOk(base)) return base;
+    // Radius up to 440 so the outward walk spans the full [-220,220] band from any
+    // base (a base near one edge would otherwise never reach clear ground at the other).
+    for(let r=1;r<=440;r++){
+      const a=clamp(base-r,-220,220);
+      if(a!==base && undergroundBiomeOk(a)) return a;
+      const b=clamp(base+r,-220,220);
+      if(b!==base && undergroundBiomeOk(b)) return b;
+    }
+    return base;
+  }
   function undergroundAnchor(){
     const seed=Number(WG.worldSeed)||1;
     const saved=state.underground || {};
     let x=Number.isFinite(saved.x) ? Math.round(saved.x) : null;
-    if(x==null) x=Math.round((WG.randSeed(seed*0.017+41.3)-0.5)*180);
+    if(x==null) x=undergroundSurfaceX(seed);
     x=clamp(x,-220,220);
     let y=Number.isFinite(saved.y) ? Math.round(saved.y) : null;
     if(y==null) y=clamp(WORLD_H-16, surfaceAt(x)+54, WORLD_H-14);

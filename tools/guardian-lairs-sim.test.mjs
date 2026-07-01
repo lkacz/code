@@ -273,4 +273,29 @@ assert.match(uiSrc, /actions\.guardian/, 'travel debug UI includes guardian tele
 assert.match(uiSrc, /Fire gate/, 'travel debug UI includes the fire guardian jump');
 assert.match(uiSrc, /Ice gate/, 'travel debug UI includes the ice guardian jump');
 
+// Regression: the sealed surface gate has no historical biome filter and could
+// surface in an ocean/lake/city. Whenever solid ground exists near the start it must
+// relocate onto it, so the mouth footprint never lands in a water/city biome.
+{
+  const badBiome = b => b===5 || b===6 || b===8;
+  const clearWindow = x => { for(let dx=-12; dx<=12; dx+=2){ if(badBiome(WG.biomeType(x+dx))) return false; } return true; };
+  let placedInWater = 0, oceanLocked = 0, sampled = 0;
+  for(let s=0; s<40; s++){
+    const seed = 4242 + s*911;
+    WG.worldSeed = seed;
+    WG.clearCaches && WG.clearCaches();
+    guardianLairs.clearCache();
+    guardianLairs.reset();
+    world.clear();
+    guardianLairs.enableUndergroundGate(world.getTile, world.setTile, {force:true});
+    const U = guardianLairs.undergroundGateLayout();
+    sampled++;
+    let landNearby = false;
+    for(let x=-220; x<=220 && !landNearby; x++) if(clearWindow(x)) landNearby = true;
+    if(badBiome(WG.biomeType(Math.round(U.mouthX)))){ if(landNearby) placedInWater++; else oceanLocked++; }
+  }
+  assert.ok(sampled >= 40, 'underground gate biome sampling ran across many seeds');
+  assert.equal(placedInWater, 0, 'sealed surface gate avoids ocean/lake/city biomes whenever solid ground exists near the start ('+oceanLocked+' seeds were fully ocean-locked)');
+}
+
 console.log('guardian-lairs-sim: all assertions passed');
