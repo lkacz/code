@@ -14,6 +14,13 @@ const messages = [];
 globalThis.msg = t=>messages.push(String(t));
 
 const { T } = await import('../src/constants.js');
+const taskCalls = [];
+MM.tasks = {
+  upsertAlienCache(cache){ taskCalls.push(['upsert', cache && cache.id, cache && cache.x, cache && cache.y]); return true; },
+  completeAlienCache(cache){ taskCalls.push(['complete', cache && cache.id]); return true; },
+  syncAlienCaches(caches){ taskCalls.push(['sync', Array.isArray(caches) ? caches.length : -1]); return true; },
+  removeSource(source){ taskCalls.push(['removeSource', source]); return 0; }
+};
 const { invasions } = await import('../src/engine/invasions.js');
 
 MM.TILE = 20;
@@ -111,9 +118,11 @@ for(const item of originalBag){
 }
 overrides.clear();
 saveMarks = 0;
+taskCalls.length = 0;
 const theft = invasions.onHeroKilled({player, inv, resourceKeys:['wood','stone','diamond'], inventory, getTile, setTile, ...ctx});
 assert.equal(theft.handled, true, 'alien-caused death is handled by the invasion theft path');
 assert.ok(theft.cache && getTile(theft.cache.x,theft.cache.y)===T.INVASION_CACHE, 'stolen loot is hidden in a special neighborhood cache tile');
+assert.ok(taskCalls.some(c=>c[0] === 'upsert' && c[1] === theft.cache.id), 'stolen loot cache registers a recovery task');
 assert.ok(inv.wood < originalInv.wood || inv.stone < originalInv.stone || inv.diamond < originalInv.diamond, 'alien theft removes roughly half of carried resources');
 assert.ok(snap.bag.length < originalBag.length, 'alien theft removes random dynamic gear from the bag');
 assert.ok(theft.cache.gear.length >= 1, 'alien cache records stolen gear objects for recovery');
@@ -122,7 +131,14 @@ const dynamicIds = new Set(Object.values(MM.dynamicLoot).flat().map(item=>item &
 for(const id of stolenIds) assert.equal(dynamicIds.has(id), false, 'stolen gear is removed from the dynamic loot pool until recovery');
 assert.ok(dynamicLootSaves >= 1, 'stealing gear persists the dynamic loot pool cleanup');
 assert.ok(saveMarks >= 1, 'creating a theft cache asks the host save system to persist it');
+const theftSnap = invasions.snapshot();
+invasions.reset();
+taskCalls.length = 0;
+assert.equal(invasions.restore(theftSnap,getTile,setTile), true, 'invasion restore accepts theft-cache snapshots');
+assert.ok(taskCalls.some(c=>c[0] === 'sync' && c[1] === 1), 'restoring theft caches refreshes task tracker state');
+taskCalls.length = 0;
 assert.ok(invasions.openCacheAt(theft.cache.x,theft.cache.y,{inv, inventory, getTile, setTile, updateInventory(){}, saveState(){}, notifyStructureTileChanged(){}}), 'opening the cache restores stolen loot');
+assert.ok(taskCalls.some(c=>c[0] === 'complete' && c[1] === theft.cache.id), 'opening the stolen loot cache completes its task');
 assert.equal(getTile(theft.cache.x,theft.cache.y), T.AIR, 'opened cache tile is cleared');
 assert.equal(snap.bag.length, originalBag.length, 'opening the cache grants stolen gear back');
 assert.ok(inv.wood >= originalInv.wood && inv.stone >= originalInv.stone, 'opening the cache restores stolen resources');
@@ -137,9 +153,12 @@ assert.ok(saveMarks >= 1, 'alien structure damage asks the host save system to p
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const weaponsSrc = await readFile(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
 assert.match(mainSrc, /import \{ invasions as INVASIONS \} from '\.\/engine\/invasions\.js';/, 'main imports the invasion engine');
+assert.match(mainSrc, /import \{ tasks as TASKS \} from '\.\/engine\/tasks\.js';/, 'main imports the task tracker before invasion cache updates');
 assert.match(mainSrc, /cause==='alien_invasion'[\s\S]*INVASIONS\.onHeroKilled/, 'alien deaths route to invasion theft before normal gravestones');
 assert.match(mainSrc, /invasions: timedSavePart\('invasions',[^\n]*INVASIONS && INVASIONS\.snapshot/, 'save payload includes invasion state');
+assert.match(mainSrc, /tasks: timedSavePart\('tasks',[^\n]*TASKS && TASKS\.snapshot/, 'save payload includes the task tracker state');
 assert.match(mainSrc, /INVASIONS\.restore\(data\.invasions,getTile,setTile\)/, 'load path restores invasion teams and caches');
+assert.match(mainSrc, /TASKS\.drawHUD\(ctx,W,H,camRenderX,camRenderY,zoom,TILE,worldFxVisible,player\)/, 'main gives task targets the shared red pointer before boss arrows');
 assert.match(mainSrc, /INVASIONS\.update\(dt, player, getTile, setTile/, 'main update loop advances invasions');
 assert.match(mainSrc, /INVASIONS\.draw\(ctx,TILE,worldFxVisible\)/, 'main draw loop renders invasions');
 assert.match(mainSrc, /tryOpenInvasionCacheAt/, 'main has a dedicated invasion cache opener');

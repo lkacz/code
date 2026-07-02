@@ -13,10 +13,12 @@
     html,body{ margin:0; padding:0; height:100%; background:#0b0f16; color:#e8e8e8; font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,'Helvetica Neue',Arial,'Noto Sans',sans-serif; touch-action:none; user-select:none; overscroll-behavior:none; }
     canvas{ display:block; width:100vw; height:100vh; }
     #ui{ position:fixed; inset:0; pointer-events:none; }
-    #hud{ position:absolute; left:8px; right:8px; top:8px; display:grid; grid-template-columns:minmax(0,1fr) auto auto auto; gap:8px; align-items:start; }
+    #hud{ position:absolute; left:8px; right:8px; top:8px; display:grid; grid-template-columns:minmax(0,1fr) auto auto auto auto; gap:8px; align-items:start; }
     #hud .panel{ pointer-events:auto; background:rgba(0,0,0,.48); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:6px 10px; display:inline-flex; align-items:center; gap:10px; font-size:12px; contain:layout paint; }
     #worldStatusPanel{ min-width:0; max-width:min(520px,58vw); overflow:hidden; }
     #worldStatus{ display:block; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    #taskPanel{ min-width:0; max-width:min(300px,34vw); overflow:hidden; border-color:rgba(255,80,100,.26); }
+    #taskStatus{ display:block; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     #inv{ gap:14px; min-width:0; max-width:100%; overflow-x:auto; overflow-y:hidden; white-space:nowrap; flex-wrap:nowrap; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.28) transparent; }
     #inv::-webkit-scrollbar{ height:4px; }
     #inv::-webkit-scrollbar-thumb{ background:rgba(255,255,255,.28); border-radius:999px; }
@@ -34,6 +36,7 @@
   #menuPanel .seedRow{ align-items:center; gap:6px; font-size:12px; }
   #menuPanel input{ background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 6px; font-size:12px; width:110px; }
   #menuPanel .hint{ font-size:11px; opacity:.75; }
+    @media (max-width:760px){ #hud{ grid-template-columns:minmax(0,1fr) auto auto auto; } #taskPanel{ grid-column:1 / span 2; grid-row:2; max-width:min(520px,calc(100vw - 108px)); } }
     #craft{ position:absolute; left:8px; top:54px; pointer-events:auto; display:flex; flex-direction:column; gap:8px; width:min(560px,calc(100vw - 16px)); max-height:calc(100vh - 92px); overflow:hidden; overscroll-behavior:contain; color:#eef4fb; background:rgba(13,17,24,.88); border:1px solid rgba(255,255,255,.14); border-radius:12px; padding:9px; font-size:12px; box-shadow:0 12px 30px rgba(0,0,0,.45); backdrop-filter:blur(10px); }
     #craft .craftHeader{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin:-9px -9px 0; padding:9px; background:rgba(8,11,17,.82); border-bottom:1px solid rgba(255,255,255,.08); }
     #craft .craftTitleWrap{ display:flex; align-items:baseline; gap:8px; min-width:0; }
@@ -174,6 +177,7 @@
         <span class="item pill">🌍 <b id="biome">—</b></span>
         <span class="item pill">kilof: <b id="pick">podstawowy</b></span>
       </div>
+      <div class="panel" id="taskPanel" hidden><span id="taskStatus" title="Zadania">Zadania -</span></div>
       <div class="panel" id="worldStatusPanel"><span id="worldStatus" title="Pozycja bohatera · zegar · pogoda · pora roku">📍 —</span></div>
       <div class="panel"><span id="fps">— FPS</span></div>
       <div id="menuWrap">

@@ -47,6 +47,7 @@ assert.match(src, /generatedNpcs:\s*timedSavePart\('generatedNpcs',[^\n]*GENERAT
 assert.match(src, /npcs:\s*timedSavePart\('npcs',[^\n]*NPCS && NPCS\.snapshot/, 'save payload includes registered NPC system state');
 assert.match(src, /tutorialNpc:\s*timedSavePart\('tutorialNpc',[^\n]*TUTORIAL_NPC && TUTORIAL_NPC\.snapshot/, 'save payload includes tutorial mentor quest state');
 assert.match(src, /ufo:\s*timedSavePart\('ufo',[^\n]*UFO && UFO\.snapshot/, 'save payload includes UFO visitor schedule state');
+assert.match(src, /tasks:\s*timedSavePart\('tasks',[^\n]*TASKS && TASKS\.snapshot/, 'save payload includes active and completed task tracker state');
 assert.match(src, /invasions:\s*timedSavePart\('invasions',[^\n]*INVASIONS && INVASIONS\.snapshot/, 'save payload includes active invasion teams and theft caches');
 assert.match(src, /progress:\s*timedSavePart\('progress',[^\n]*PROGRESS && PROGRESS\.snapshot/, 'save payload includes trained progression state');
 assert.match(src, /plants:\s*timedSavePart\('plants',[^\n]*PLANTS && PLANTS\.snapshot/, 'save payload includes living plant state');
@@ -93,12 +94,14 @@ assert.match(src, /GENERATED_NPCS\.update\(dt, player, getTile, setTile, tutoria
 assert.match(src, /GENERATED_NPCS\.draw\(ctx,TILE,worldFxVisible,getTile,WORLDGEN\)/, 'generated NPC homes are drawn from the manager before NPC actors');
 assert.match(src, /NPCS\.update\(dt, player, getTile, setTile, tutorialNpcCtx\)/, 'NPC update uses the same shared quest context as damage and input paths');
 assert.match(src, /UFO\.restore\(data\.ufo\)/, 'load path restores UFO visitor schedule');
+assert.match(src, /TASKS\.restore\(data\.tasks\)/, 'load path restores task tracker state before source systems resync their tasks');
 assert.match(src, /INVASIONS\.restore\(data\.invasions,getTile,setTile\)/, 'load path restores invasion teams and hidden theft caches');
 assert.match(src, /PROGRESS\.restore\(data\.progress\)/, 'load path restores trained progression state');
 assert.match(src, /PLANTS\.restore\(data\.plants\)/, 'load path restores living plant state');
 assert.match(src, /import \{ guardianLairs as GUARDIANS \} from '\.\/engine\/guardian_lairs\.js';/, 'main imports the elemental guardian engine');
 assert.match(src, /import \{ undergroundBoss as UNDERGROUND \} from '\.\/engine\/underground_boss\.js';/, 'main imports the underground boss engine');
 assert.match(src, /import \{ guardianAftermath as AFTERMATH \} from '\.\/engine\/guardian_aftermath\.js';/, 'main imports the lingering guardian aftermath engine');
+assert.match(src, /import \{ tasks as TASKS \} from '\.\/engine\/tasks\.js';/, 'main imports the task tracker');
 assert.match(src, /import \{ invasions as INVASIONS \} from '\.\/engine\/invasions\.js';/, 'main imports the nightly invasion engine');
 assert.match(src, /GUARDIANS && GUARDIANS\.update/, 'main update loop advances elemental guardians');
 assert.match(src, /UNDERGROUND && UNDERGROUND\.update/, 'main update loop advances the underground boss');
@@ -108,6 +111,8 @@ assert.match(src, /GUARDIANS && GUARDIANS\.draw/, 'main draw loop renders elemen
 assert.match(src, /UNDERGROUND && UNDERGROUND\.draw/, 'main draw loop renders the underground boss');
 assert.match(src, /AFTERMATH && AFTERMATH\.draw/, 'main draw loop renders guardian aftermath consequences');
 assert.match(src, /INVASIONS && INVASIONS\.draw/, 'main draw loop renders nightly invasions');
+assert.match(src, /TASKS\.drawHUD\(ctx,W,H,camRenderX,camRenderY,zoom,TILE,worldFxVisible,player\)/, 'main draws the task pointer with the shared red-arrow HUD');
+assert.match(src, /if\(!taskPointerDrawn && BOSSES && BOSSES\.drawHUD\)/, 'boss red arrow yields to active off-screen task targets');
 assert.match(src, /GUARDIANS && GUARDIANS\.attackAt/, 'melee attacks can hit elemental guardians');
 assert.match(src, /UNDERGROUND && UNDERGROUND\.attackAt/, 'melee attacks can hit the underground boss');
 assert.match(src, /INVASIONS && INVASIONS\.attackAt/, 'melee attacks can hit invasion aliens');
@@ -220,5 +225,7 @@ assert.match(sameSeedRegen, /PROGRESS && PROGRESS\.reset/, 'same-seed regenerati
 assert.match(sameSeedRegen, /respawnPoint=null/, 'same-seed regeneration clears stale respawn points');
 assert.match(sameSeedRegen, /grave=null/, 'same-seed regeneration clears stale graves');
 assert.match(sameSeedRegen, /if\(godMode\)/, 'same-seed regeneration preserves debug god-mode resource stacks after reset');
+assert.match(indexSrc, /id="taskPanel"/, 'HUD exposes a compact task tracker panel');
+assert.match(indexSrc, /id="taskStatus"/, 'task tracker panel has a dedicated status text node');
 
 console.log('save-schema-sim: all assertions passed');

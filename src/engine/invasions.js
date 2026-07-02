@@ -51,6 +51,66 @@ const invasions = (function(){
       else if(typeof root.saveState === 'function') root.saveState();
     }catch(e){}
   }
+  function taskApi(){
+    try{ return MM.tasks || root.tasks || null; }catch(e){ return null; }
+  }
+  function cacheTaskId(cache){
+    const id = cache && cache.id ? String(cache.id) : '';
+    return id ? 'invasion_cache:'+id : '';
+  }
+  function cacheTaskDetail(cache){
+    let resources = 0;
+    for(const k in (cache && cache.resources) || {}) resources += Math.max(0, Math.floor(Number(cache.resources[k]) || 0));
+    const gear = Array.isArray(cache && cache.gear) ? cache.gear.length : 0;
+    const parts = [];
+    if(resources) parts.push(resources+' zasobow');
+    if(gear) parts.push(gear+' przedm.');
+    return parts.length ? 'Skrytka obcych: '+parts.join(', ') : 'Skrytka obcych';
+  }
+  function syncCacheTask(cache){
+    const tasks = taskApi();
+    if(!tasks || !cache) return;
+    try{
+      if(typeof tasks.upsertAlienCache === 'function'){ tasks.upsertAlienCache(cache); return; }
+      if(typeof tasks.upsert === 'function'){
+        tasks.upsert({
+          id:cacheTaskId(cache),
+          source:'invasions',
+          kind:'recovery',
+          title:'Odzyskaj skradziony lup',
+          detail:cacheTaskDetail(cache),
+          priority:90,
+          pointer:true,
+          target:{x:cache.x+0.5,y:cache.y+0.5,label:'Skrytka obcych'},
+          createdAt:cache.createdAt
+        });
+      }
+    }catch(e){}
+  }
+  function completeCacheTask(cache){
+    const tasks = taskApi();
+    if(!tasks || !cache) return;
+    try{
+      if(typeof tasks.completeAlienCache === 'function'){ tasks.completeAlienCache(cache); return; }
+      if(typeof tasks.complete === 'function') tasks.complete(cacheTaskId(cache));
+    }catch(e){}
+  }
+  function syncCacheTasks(){
+    const tasks = taskApi();
+    if(!tasks) return;
+    try{
+      if(typeof tasks.syncAlienCaches === 'function'){ tasks.syncAlienCaches(caches); return; }
+      for(const cache of caches) syncCacheTask(cache);
+    }catch(e){}
+  }
+  function clearCacheTasks(){
+    const tasks = taskApi();
+    if(!tasks) return;
+    try{
+      if(typeof tasks.syncAlienCaches === 'function'){ tasks.syncAlienCaches([]); return; }
+      if(typeof tasks.removeSource === 'function') tasks.removeSource('invasions');
+    }catch(e){}
+  }
   function maybeSave(dt){
     saveAcc += Math.max(0, Number(dt) || 0);
     if(saveAcc < 3) return;
@@ -752,6 +812,7 @@ const invasions = (function(){
     caches.push(cache);
     writeTile(ctx.setTile,spot.x,spot.y,T.INVASION_CACHE);
     wakeTileChanged(ctx,spot.x,spot.y,T.AIR,T.INVASION_CACHE);
+    syncCacheTask(cache);
     burst(spot.x+0.5,spot.y+0.5,'epic');
     say('Obcy zabrali lup i ukryli skrytke gdzies w okolicy.');
     play('grave');
@@ -795,6 +856,7 @@ const invasions = (function(){
       return true;
     }
     const cache = caches.splice(idx,1)[0];
+    completeCacheTask(cache);
     const restored = restoreCacheLoot(cache,ctx);
     try{ if(typeof ctx.updateInventory === 'function') ctx.updateInventory(); }catch(e){}
     burst(tx+0.5,ty+0.5,'epic');
@@ -903,6 +965,7 @@ const invasions = (function(){
         if(readTile(getTile,c.x,c.y) !== T.INVASION_CACHE) writeTile(setTile,c.x,c.y,T.INVASION_CACHE);
       }
     }
+    syncCacheTasks();
     saveLocal();
     return true;
   }
@@ -913,6 +976,7 @@ const invasions = (function(){
     tileDamage.clear();
     lastNightDay = 0;
     seq = 1;
+    clearCacheTasks();
     saveLocal();
   }
   function metrics(){
