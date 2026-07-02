@@ -88,6 +88,7 @@ window.MM = window.MM || {};
       try{ if(parsed && parsed.base && MM.trees && MM.trees.clearChunk) MM.trees.clearChunk(parsed.cx); }catch(e){}
       world.delete(cand[i][1]); versions.delete(cand[i][1]);
     }
+    sectionViews.clear(); // cached views may alias deleted chunk arrays
   }
   function ck(x){ return 'c'+x; }
   function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
@@ -741,20 +742,36 @@ window.MM = window.MM || {};
     try{ if(UNDERGROUND && UNDERGROUND.applyToSection) UNDERGROUND.applyToSection(arr,cx,sy); }catch(e){}
     return arr;
   }
+  // --- Hot-path section-view cache -------------------------------------------
+  // getTile runs hundreds of thousands of times per second (fluid sim, fire glow,
+  // structural audits, companion scans). The old path built a string key AND
+  // allocated a fresh subarray view per call — allocation churn that dominated
+  // CPU profiles. Views are deterministic per (chunk, section): cache them under
+  // a packed numeric key and drop the cache whenever a chunk array is deleted or
+  // replaced (creating a NEW chunk never invalidates other entries).
+  const sectionViews=new Map();
+  const viewKey=(cx,sy)=>cx*8+(sy-WORLD_MIN_SECTION); // section index 0..5 < 8: unique per cx
   function ensureSection(cx,sy){
     sy=Number.isFinite(sy) ? Math.floor(sy) : 0;
     if(sy<WORLD_MIN_SECTION || sy>WORLD_MAX_SECTION) return null;
+    const vk=viewKey(cx,sy);
+    const cached=sectionViews.get(vk);
+    if(cached) return cached;
+    let arr;
     if(isBaseSection(sy)){
       const base=ensureChunk(cx);
-      return base.subarray(sy*SECTION_SIZE, Math.min(base.length,(sy+1)*SECTION_SIZE));
+      arr=base.subarray(sy*SECTION_SIZE, Math.min(base.length,(sy+1)*SECTION_SIZE));
+    }else{
+      const k=ckSection(cx,sy);
+      arr=world.get(k);
+      if(!arr){
+        arr=generateVerticalSection(cx,sy);
+        world.set(k,arr);
+        markModifiedChunk(cx,0,sy);
+        if(world.size>CHUNK_CAP) evictFarChunks();
+      }
     }
-    const k=ckSection(cx,sy);
-    let arr=world.get(k);
-    if(arr) return arr;
-    arr=generateVerticalSection(cx,sy);
-    world.set(k,arr);
-    markModifiedChunk(cx,0,sy);
-    if(world.size>CHUNK_CAP) evictFarChunks();
+    if(arr) sectionViews.set(vk,arr);
     return arr;
   }
 
@@ -805,8 +822,9 @@ window.MM = window.MM || {};
     if(!worldYInBounds(y)) return y>=WORLD_MAX_Y ? T.BEDROCK : T.AIR;
     const cx=Math.floor(x/CHUNK_W), sy=sectionYFor(y), ly=sectionLocalY(y,sy);
     const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W;
-    const arr=ensureSection(cx,sy);
-    return arr ? getTileRaw(arr,lx,ly) : T.AIR;
+    // fast path: cached numeric-key view — no string keys, no subarray allocation
+    const arr=sectionViews.get(viewKey(cx,sy)) || ensureSection(cx,sy);
+    return arr ? arr[ly*CHUNK_W+lx] : T.AIR;
   }
   function normalizeInfrastructureStack(v){
     const out=[];
@@ -817,19 +835,27 @@ window.MM = window.MM || {};
     }
     return out;
   }
+  // Shared empty stack: overlay maps are usually tiny or empty, yet these getters
+  // sit on per-frame scan paths (network tiles, turret/solar probes) — the old
+  // code built a string key and allocated fresh arrays per call even for misses.
+  const EMPTY_STACK=[];
   function getInfrastructureStack(x,y){
-    if(!worldYInBounds(y) || !isFinite(x) || Math.abs(x)>MAX_COORD) return [];
-    return normalizeInfrastructureStack(infrastructure.get(key(x,y)));
+    if(infrastructure.size===0) return EMPTY_STACK;
+    if(!worldYInBounds(y) || !isFinite(x) || Math.abs(x)>MAX_COORD) return EMPTY_STACK;
+    const raw=infrastructure.get(key(x,y));
+    if(raw===undefined) return EMPTY_STACK;
+    return normalizeInfrastructureStack(raw);
   }
   function getInfrastructure(x,y){
     const stack=getInfrastructureStack(x,y);
     return stack.length ? stack[stack.length-1] : T.AIR;
   }
   function hasInfrastructure(x,y,t){
-    if(!isInfrastructureTile(t)) return false;
+    if(infrastructure.size===0 || !isInfrastructureTile(t)) return false;
     return getInfrastructureStack(x,y).includes(t);
   }
   function getConstructionBackground(x,y){
+    if(constructionBackground.size===0) return T.AIR;
     if(!worldYInBounds(y) || !isFinite(x) || Math.abs(x)>MAX_COORD) return T.AIR;
     const t=constructionBackground.get(key(x,y));
     return isConstructionBackgroundTile(t) ? t : T.AIR;
@@ -842,9 +868,11 @@ window.MM = window.MM || {};
     if(!worldYInBounds(y) || !isFinite(x) || Math.abs(x)>MAX_COORD) return T.AIR;
     y=Math.floor(y);
     const cx=Math.floor(x/CHUNK_W), sy=sectionYFor(y), ly=sectionLocalY(y,sy);
+    const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W;
+    const view=sectionViews.get(viewKey(cx,sy));
+    if(view) return view[ly*CHUNK_W+lx];
     const arr=world.get(isBaseSection(sy) ? ck(cx) : ckSection(cx,sy));
     if(!arr) return fallback===undefined ? T.AIR : fallback;
-    const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W;
     return getTileRaw(arr,lx,isBaseSection(sy)?y:ly);
   }
   function peekNetworkTile(x,y,fallback){
@@ -891,7 +919,12 @@ window.MM = window.MM || {};
     if(!next.length) infrastructure.delete(k);
     else infrastructure.set(k,next);
     notifyInfrastructureChanged(x,y,old,next);
-    if(!transient) markModifiedChunk(Math.floor(x/CHUNK_W),null,sectionYFor(y));
+    if(!transient){
+      markModifiedChunk(Math.floor(x/CHUNK_W),null,sectionYFor(y));
+      // overlays bake into chunk canvases too — record a partial dirty band so
+      // the version bump doesn't force a full-section rebake
+      try{ if(MM.onTileRenderChanged) MM.onTileRenderChanged(x,y,T.AIR,T.AIR); }catch(e){}
+    }
     return true;
   }
   function setInfrastructure(x,y,v){ return setInfrastructureInternal(x,y,v,false); }
@@ -908,7 +941,10 @@ window.MM = window.MM || {};
     if(old===item) return false;
     if(item===T.AIR) constructionBackground.delete(k);
     else constructionBackground.set(k,item);
-    if(!transient) markModifiedChunk(Math.floor(x/CHUNK_W),null,sectionYFor(y));
+    if(!transient){
+      markModifiedChunk(Math.floor(x/CHUNK_W),null,sectionYFor(y));
+      try{ if(MM.onTileRenderChanged) MM.onTileRenderChanged(x,y,T.AIR,T.AIR); }catch(e){}
+    }
     return true;
   }
   function setConstructionBackground(x,y,v){ return setConstructionBackgroundInternal(x,y,v,false); }
@@ -927,7 +963,14 @@ window.MM = window.MM || {};
     const old=arr[idx];
     arr[idx]=v;
     notifyTileChanged(x,y,old,v);
-    if(!transient) markModifiedChunk(cx,null,sy);
+    if(!transient){
+      markModifiedChunk(cx,null,sy);
+      // render-cache hook (main.js): runs for EVERY real tile edit — including
+      // engines that call world.setTile directly (plants, trees, seasons) — so
+      // the renderer can record a partial dirty band instead of falling back to
+      // a full chunk rebake when it only sees a version bump
+      try{ if(MM.onTileRenderChanged) MM.onTileRenderChanged(x,y,old,v); }catch(e){}
+    }
   }
   function setTile(x,y,v){ setTileInternal(x,y,v,false); }
   // Transient world-backed layers (currently gases) need to be visible to getTile()
@@ -990,10 +1033,14 @@ window.MM = window.MM || {};
       markModifiedChunk(Math.floor(x/CHUNK_W),null,sectionYFor(y));
     }
   }
-  function clearWorld(){ try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); versions.clear(); modifiedChunks.clear(); infrastructure.clear(); constructionBackground.clear(); heightCache.clear(); lakeLevels.clear(); if(WG.clearCaches) WG.clearCaches(); }
+  function clearWorld(){ try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); sectionViews.clear(); versions.clear(); modifiedChunks.clear(); infrastructure.clear(); constructionBackground.clear(); heightCache.clear(); lakeLevels.clear(); if(WG.clearCaches) WG.clearCaches(); }
+  // Save loading replaces whole chunk arrays: any cached section view over the
+  // old array must be dropped or reads would silently hit the orphaned buffer.
+  function setChunkArray(key,arr){ world.set(key,arr); sectionViews.clear(); }
 
   worldAPI.ensureChunk = ensureChunk;
   worldAPI.ensureSection = ensureSection;
+  worldAPI.setChunkArray = setChunkArray;
   worldAPI.sectionHeight = WORLD_SECTION_H;
   worldAPI.minSection = WORLD_MIN_SECTION;
   worldAPI.maxSection = WORLD_MAX_SECTION;

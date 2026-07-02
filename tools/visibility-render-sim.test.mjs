@@ -331,12 +331,19 @@ assert.match(mainSource, /if\(t===T\.DIRT\) return 5;/, 'dirt has a restrained c
 assert.match(mainSource, /if\(t===T\.GRANITE\) return 6;/, 'granite has its own shade variance');
 assert.match(mainSource, /if\(t===T\.BASALT\) return 5;/, 'basalt has its own shade variance');
 assert.match(mainSource, /if\(t===T\.BEDROCK\) return 4;/, 'bedrock has a dark low-variance texture');
-const snowBranchStart = mainSource.indexOf('if(t===T.SNOW){');
-const snowBranchEnd = mainSource.indexOf('// Ice reads glossy', snowBranchStart);
-assert.ok(snowBranchStart > 0 && snowBranchEnd > snowBranchStart, 'snow chunk styling branch is present');
-const snowBranch = mainSource.slice(snowBranchStart, snowBranchEnd);
-assert.match(snowBranch, /above!==T\.SNOW/, 'snow top highlight only draws on exposed snow edges');
-assert.match(snowBranch, /below!==T\.SNOW/, 'snow bottom shade only draws on exposed snow edges');
+// Edge lighting v2: caps/rims/shadows live in one neighbor-aware pass instead of
+// per-material above/below checks scattered through the bake loop.
+const edgeFxStart = mainSource.indexOf('function drawTerrainEdgeFX(');
+const edgeFxEnd = mainSource.indexOf('// ---- Tile art v2: richer inner material art', edgeFxStart);
+assert.ok(edgeFxStart > 0 && edgeFxEnd > edgeFxStart, 'neighbor-aware edge lighting pass is present');
+const edgeFx = mainSource.slice(edgeFxStart, edgeFxEnd);
+assert.match(edgeFx, /const oU=tileOpenForEdge\(fam,nU\), oD=tileOpenForEdge\(fam,nD\);/, 'edge pass derives exposure from material-family neighbor openness');
+assert.match(edgeFx, /if\(oU\)\{[\s\S]*?t===T\.SNOW[\s\S]*?rgba\(255,255,255/, 'snow top highlight only draws on exposed snow edges');
+assert.match(edgeFx, /if\(oD\)\{[\s\S]*?t===T\.SNOW/, 'snow bottom shade only draws on exposed snow edges');
+assert.match(mainSource, /drawTerrainEdgeFX\(cctx,t,arr,cx,lx,y,originY,sectionH,wx,lx\*TILE,y\*TILE,h,surf\);/, 'chunk bake runs the edge lighting pass for every terrain tile');
+const snowSparkleStart = mainSource.indexOf('// Snow sparkle');
+assert.ok(snowSparkleStart > 0, 'snow sparkle styling branch is present');
+const snowBranch = mainSource.slice(snowSparkleStart, mainSource.indexOf('// Ice reads glossy', snowSparkleStart));
 assert.ok(!snowBranch.includes('fillRect(lx*TILE, y*TILE, 1, TILE)'), 'snow no longer draws a left tile border');
 assert.ok(!snowBranch.includes('fillRect(lx*TILE + TILE-1, y*TILE, 1, TILE)'), 'snow no longer draws a right tile border');
 assert.doesNotMatch(mainSource, /t===T\.STONE \|\| t===T\.WOOD\)\{ cctx\.fillStyle='rgba\(0,0,0,0\.05\)'; cctx\.fillRect\(lx\*TILE \+ \(\(h>>8\)&3\), y\*TILE, 2, TILE\); \}/, 'stone no longer uses full-height per-tile streaks');

@@ -237,6 +237,8 @@ let frameCapNativeMs=0;
 let frameCapDivisor=1;
 let frameCapPhase=0;
 let frameCapPublishAt=0;
+let frameCapCandidate=1;
+let frameCapCandidateStreak=0;
 
 function publishFrameCapState(){
 	try{
@@ -274,6 +276,8 @@ function resetFrameCapScheduler(ts,publish){
 	frameCapDivisor=1;
 	frameCapPhase=0;
 	frameCapPublishAt=0;
+	frameCapCandidate=1;
+	frameCapCandidateStreak=0;
 	if(publish!==false) publishFrameCapState();
 }
 function shouldSkipFrameForCap(ts){
@@ -300,12 +304,25 @@ function shouldSkipFrameForCap(ts){
 	const nativeFps=native>0 ? 1000/native : 0;
 	let nextDivisor=1;
 	if(nativeFps>FRAME_CAP_SMOOTH_NATIVE_MAX_FPS){
-		nextDivisor=Math.max(1, Math.ceil(nativeFps/FRAME_CAP_FPS));
+		// round, not ceil: a 240Hz-class display measures ~240.05 native and ceil
+		// picked divisor 3 (every 3rd frame = 80fps, flapping with 2 = the reported
+		// unstable ~70fps under the 120 cap); round gives 2 → a clean ~120
+		nextDivisor=Math.max(1, Math.round(nativeFps/FRAME_CAP_FPS));
 	}
+	// Debounce: EMA jitter near a divisor boundary must not flap the cadence —
+	// only adopt a new divisor after it stays the winner for ~45 consecutive frames
 	if(nextDivisor!==frameCapDivisor){
-		frameCapDivisor=nextDivisor;
-		frameCapPhase=0;
-		frameCapPublishAt=0;
+		if(nextDivisor===frameCapCandidate) frameCapCandidateStreak++;
+		else { frameCapCandidate=nextDivisor; frameCapCandidateStreak=1; }
+		if(frameCapCandidateStreak>=45){
+			frameCapDivisor=nextDivisor;
+			frameCapPhase=0;
+			frameCapPublishAt=0;
+			frameCapCandidateStreak=0;
+		}
+	}else{
+		frameCapCandidate=frameCapDivisor;
+		frameCapCandidateStreak=0;
 	}
 	if(!frameCapPublishAt || ts-frameCapPublishAt>1000){
 		frameCapPublishAt=ts;
@@ -407,14 +424,73 @@ function getRenderInfrastructureTile(x,y){
 	return list.length ? list[list.length-1] : T.AIR;
 }
 function setTile(x,y,v){
-	if(!Number.isFinite(x) || !Number.isFinite(y) || !worldYInBounds(y)){ WORLD.setTile(x,y,v); return; }
-	const tx=Math.floor(x), ty=Math.floor(y), cx=Math.floor(tx/CHUNK_W);
-	const old=(WORLD && WORLD.getTile) ? WORLD.getTile(tx,ty) : undefined;
-	const sy=worldSectionY(ty);
-	const beforeVer=(WORLD && WORLD.chunkVersion) ? WORLD.chunkVersion(cx,sy) : undefined;
-	WORLD.setTile(tx,ty,v);
-	const next=(WORLD && WORLD.getTile) ? WORLD.getTile(tx,ty) : v;
-	if(old!==next) markChunkRenderDirty(cx,ty,2,beforeVer,(WORLD && WORLD.chunkVersion) ? WORLD.chunkVersion(cx,sy) : undefined);
+	// render-dirty marking + border invalidation ride on MM.onTileRenderChanged,
+	// which world.js fires for every real change regardless of the caller
+	WORLD.setTile(x,y,v);
+}
+// world.js invokes this after every non-transient tile change AND its version
+// bump — including engines that call world.setTile directly (plants, trees,
+// seasons). Recording the dirty band here keeps chunk-cache redraws partial;
+// before this hook those paths only bumped the version, forcing full-section
+// rebakes (the dominant frame cost whenever water/rain/growth was active).
+MM.onTileRenderChanged=function(tx,ty,old,next){
+	if(window.__mmNoRenderHook) return;
+	if(!Number.isFinite(tx) || !Number.isFinite(ty) || !worldYInBounds(ty)) return;
+	tx=Math.floor(tx); ty=Math.floor(ty);
+	const cx=Math.floor(tx/CHUNK_W), sy=worldSectionY(ty);
+	const after=(WORLD && WORLD.chunkVersion) ? WORLD.chunkVersion(cx,sy) : undefined;
+	markChunkRenderDirty(cx,ty,2,Number.isFinite(after)?after-1:undefined,after);
+	if(window.__mmNoSibling) return;
+	markSiblingBaseSectionVersion(cx,sy,after);
+	if(edgeRenderSignature(old)!==edgeRenderSignature(next)) invalidateAdjacentRenderCaches(tx,ty,cx,sy);
+};
+// The two base sections (sy 0 and 1) share a single world-version key, so an
+// edit in one bumps the other's version with no changed pixels. Record that as
+// an empty, version-only dirty band — the renderer then adopts the new version
+// without repainting instead of full-rebaking the sibling on every water tick.
+function markSiblingBaseSectionVersion(cx,sy,after){
+	const sibling = sy===0 ? 1 : (sy===1 ? 0 : null);
+	if(sibling===null || !Number.isFinite(after) || typeof chunkCanvases==='undefined') return;
+	const key=worldRenderSectionKey(cx,sibling);
+	const e=chunkCanvases.get(key);
+	if(!e || e.version<0) return;
+	let d=chunkRenderDirty.get(key);
+	if(!d){
+		d={min:worldSectionHeight(),max:-1,baseVersion:e.version,version:after,full:false};
+		chunkRenderDirty.set(key,d);
+	}else d.version=after;
+}
+// How a tile looks to a NEIGHBOR's edge-lighting pass: universally open (air and
+// water are interchangeable there — critical, since the water sim moves tiles via
+// setTile every tick and must never trigger neighbor rebakes), lava (ember rims),
+// family-gated passables (leaves etc.), or an opaque wall. Only transitions that
+// change this signature can alter a neighbor's baked pixels.
+function edgeRenderSignature(t){
+	if(t===T.AIR || t===T.WATER) return 1;
+	if(t===T.LAVA) return 2;
+	const inf=INFO[t];
+	if(inf && inf.passable) return 16+tileEdgeFamily(t);
+	return 0;
+}
+// Edge lighting reads across chunk/section borders, so a border tile change must
+// refresh the neighboring cached canvas. Marked as edgeStale + a partial dirty
+// band: the rebake goes through the normal per-frame budget (stale pixels stay
+// visible meanwhile) instead of forcing unbudgeted full redraws every frame.
+function invalidateAdjacentRenderCaches(tx,ty,cx,sy){
+	if(typeof chunkCanvases==='undefined') return;
+	const markStale=(ncx,dirtyY)=>{
+		const nsy=worldSectionY(dirtyY);
+		const e=chunkCanvases.get(worldRenderSectionKey(ncx,nsy));
+		if(!e || e.version<0) return;
+		e.edgeStale=true;
+		markChunkRenderDirty(ncx,dirtyY,2,e.version,e.version);
+	};
+	const lx=((tx%CHUNK_W)+CHUNK_W)%CHUNK_W;
+	if(lx===0) markStale(cx-1,ty);
+	if(lx===CHUNK_W-1) markStale(cx+1,ty);
+	const ly=worldSectionLocalY(ty,sy);
+	if(ly===0 && sy-1>=worldMinSection()) markStale(cx,ty-1);
+	if(ly===worldSectionHeight()-1 && sy+1<=worldMaxSection()) markStale(cx,ty+1);
 }
 setTile.transient = function(x,y,v){
 	if(WORLD && typeof WORLD.setTransientTile==='function') WORLD.setTransientTile(x,y,v);
@@ -1144,7 +1220,10 @@ function restoreTerrainChunk(cx,arr){
 	stripTransientTerrainTiles(arr);
 	migrateLegacyInfrastructureTerrain(cx,arr,ref.base?null:ref.sy);
 	try{ if(ref.base && TREES && TREES.clearChunk) TREES.clearChunk(ref.cx); }catch(e){}
-	WORLD._world.set(ref.key, arr);
+	// setChunkArray drops the section-view cache — plain _world.set would leave
+	// getTile reading the orphaned pre-restore buffer through stale views
+	if(typeof WORLD.setChunkArray==='function') WORLD.setChunkArray(ref.key, arr);
+	else WORLD._world.set(ref.key, arr);
 	markWorldChunkModified(ref.cx,ref.sy);
 }
 // --- Integrity helpers (stable stringify + FNV1a hash) ---
@@ -1764,6 +1843,14 @@ function saveState(){
 window.__mmMarkWorldChanged = function(){
 	noteSaveActivity();
 	saveState();
+};
+// Debug/visual-test hook (tools/tile-art-shot.mjs): teleport the hero so headless
+// screenshot runs can frame surface/cave scenes without simulated input.
+window.__mmDebugHero = function(x,y){
+	if(Number.isFinite(x)) player.x=x;
+	if(Number.isFinite(y)) player.y=y;
+	player.vx=0; player.vy=0;
+	return {x:player.x, y:player.y};
 };
 function flushPendingSave(){
 	if(_saveStateT){ clearTimeout(_saveStateT); _saveStateT=null; }
@@ -2404,7 +2491,7 @@ function beginChunkCacheFrame(){
 	chunkCachePartialRebuiltThisFrame=0;
 }
 function canRebuildChunkCache(entry,currentVersion){
-	if(!entry || entry.version===currentVersion) return false;
+	if(!entry || (entry.version===currentVersion && !entry.edgeStale)) return false;
 	if(entry.version<0){
 		chunkCacheRebuiltThisFrame++;
 		if(chunkCacheRebuildBudget>0) chunkCacheRebuildBudget--;
@@ -2434,10 +2521,17 @@ function trimChunkCanvasCache(centerCx, keep, centerSy){
 	}
 }
 function hash32(x,y){ let h = (x|0)*374761393 + (y|0)*668265263; h = (h^(h>>>13))*1274126177; h = h^(h>>>16); return h>>>0; }
+const shadeColorCache=new Map(); // (hex,delta) pairs recur thousands of times per section bake
 function shadeColor(hex,delta){ // hex like #rgb or #rrggbb (we use rrggbb)
+	const key=hex+((delta|0)+512);
+	const hit=shadeColorCache.get(key);
+	if(hit) return hit;
 	const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
 	const clamp=v=>v<0?0:v>255?255:v; const nr=clamp(r+delta), ng=clamp(g+delta), nb=clamp(b+delta);
-	return '#'+nr.toString(16).padStart(2,'0')+ng.toString(16).padStart(2,'0')+nb.toString(16).padStart(2,'0'); }
+	const out='#'+nr.toString(16).padStart(2,'0')+ng.toString(16).padStart(2,'0')+nb.toString(16).padStart(2,'0');
+	if(shadeColorCache.size>4096) shadeColorCache.clear();
+	shadeColorCache.set(key,out);
+	return out; }
 function smoothstep(t){ return t*t*(3-2*t); }
 function lerp(a,b,t){ return a+(b-a)*t; }
 function latticeShade(ix,iy){
@@ -2455,7 +2549,7 @@ function smoothTerrainNoise(wx,y,scale){
 	return lerp(a,b,ty);
 }
 function isContinuousTerrainTile(t){
-	return t===T.GRASS || t===T.SAND || t===T.CLAY || t===T.WET_CLAY || t===T.BRICK || t===T.DIRT || t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL || t===T.SNOW || t===T.ICE || t===T.MUD || t===T.OBSIDIAN || t===T.WOOD || t===T.STEEL || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.GLASS;
+	return t===T.GRASS || t===T.SAND || t===T.CLAY || t===T.WET_CLAY || t===T.BRICK || t===T.DIRT || t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL || t===T.SNOW || t===T.ICE || t===T.MUD || t===T.OBSIDIAN || t===T.WOOD || t===T.STEEL || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.GLASS || isLeaf(t) || t===T.LAVA;
 }
 function tileShadeAmp(t){
 	if(t===T.DIRT) return 5;
@@ -2478,6 +2572,9 @@ function tileShadeAmp(t){
 	if(t===T.DIAMOND) return 0;
 	if(t===T.WOOD) return 8;
 	if(t===T.GRASS) return 8;
+	if(isLeaf(t)) return 9;
+	if(t===T.MUD) return 6;
+	if(t===T.LAVA) return 10;
 	if(t===T.SNOW) return 3;
 	if(t===T.ICE) return 4;
 	if(t===T.OBSIDIAN) return 5;
@@ -2497,18 +2594,373 @@ function terrainShadeDelta(t,wx,y,h){
 	if(!amp) return 0;
 	if(isContinuousTerrainTile(t)){
 		const scale = t===T.SNOW || t===T.ICE ? 9 : (t===T.COAL || t===T.OBSIDIAN || t===T.BASALT || t===T.BEDROCK ? 6 : 7);
-		return Math.round(smoothTerrainNoise(wx,y,scale)*amp);
+		// two octaves: small-scale grain plus broad patchiness so large rock/soil
+		// masses show natural light variation instead of a uniform wash. Rock keeps
+		// the macro octave gentle — worldgen already interleaves granite/basalt there
+		const fam=tileEdgeFamily(t);
+		const macroW=fam===EDGE_ROCK ? 0.30 : 0.55;
+		return Math.round((smoothTerrainNoise(wx,y,scale)*0.72 + smoothTerrainNoise(wx,y,scale*3.6)*macroW)*amp*1.12);
 	}
 	return Math.round(((h & 0xFF)/255 - 0.5)*amp);
 }
-function drawUndergroundBackdrop(g,px,py,wx,y,surf){
-	if(y<=surf) return;
+const backdropColorCache=new Map(); // quantized (brightness, depth) -> css string
+function undergroundBackdropColor(wx,y,surf){
 	const dd=Math.min(1,(y-surf)/45);
 	const hv=hash32(wx,y);
-	const jitter=((hv&15)-8)*0.6;
-	const L=Math.max(6, 34-18*dd+jitter);
-	g.fillStyle='rgb('+Math.round(L*0.92)+','+Math.round(L*0.86)+','+Math.round(L*1.18)+')';
+	const jitter=((hv&15)-8)*0.55;
+	const macro=window.__mmNoCaveFX?0:smoothTerrainNoise(wx,y,13)*9;
+	const L=Math.max(5, Math.round(34-19*dd+jitter+macro));
+	// deep caves drift from cool blue toward warm violet-brown rock; quantized so
+	// the css string is built once per (L,depth) pair instead of per air tile
+	const wq=Math.min(8,Math.max(0,Math.round(dd*8)));
+	const key=(L<<4)|wq;
+	let c=backdropColorCache.get(key);
+	if(!c){
+		const warm=wq*0.0275;
+		c='rgb('+Math.round(L*(0.92+warm*0.5))+','+Math.round(L*(0.86+warm*0.15))+','+Math.round(L*(1.18-warm*0.45))+')';
+		backdropColorCache.set(key,c);
+	}
+	return c;
+}
+function drawUndergroundBackdrop(g,px,py,wx,y,surf){
+	if(y<=surf) return;
+	g.fillStyle=undergroundBackdropColor(wx,y,surf);
 	g.fillRect(px,py,TILE,TILE);
+	// wavy sediment strata: noise-warped row bands so cave walls read as layered rock
+	if(window.__mmNoCaveFX) return;
+	const warp=Math.floor(smoothTerrainNoise(wx,y,23)*8);
+	if(((y+warp)%11+11)%11===0){
+		g.fillStyle='rgba(0,0,0,0.10)';
+		g.fillRect(px,py+((hash32(wx,y)>>>7)&7),TILE,2);
+	}
+}
+// Soft contact shadows painted onto cave backdrops along adjacent solid tiles:
+// caves stop looking like flat cutouts and gain volume at every wall/ceiling/floor
+function drawCaveContactShade(g,px,py,sU,sD,sL,sR){
+	if(window.__mmNoCaveFX) return;
+	if(sU){ g.fillStyle='rgba(0,0,0,0.17)'; g.fillRect(px,py,TILE,1); g.fillStyle='rgba(0,0,0,0.08)'; g.fillRect(px,py+1,TILE,2); }
+	if(sD){ g.fillStyle='rgba(0,0,0,0.12)'; g.fillRect(px,py+TILE-1,TILE,1); g.fillStyle='rgba(0,0,0,0.05)'; g.fillRect(px,py+TILE-3,TILE,2); }
+	if(sL){ g.fillStyle='rgba(0,0,0,0.13)'; g.fillRect(px,py,1,TILE); g.fillStyle='rgba(0,0,0,0.06)'; g.fillRect(px+1,py,2,TILE); }
+	if(sR){ g.fillStyle='rgba(0,0,0,0.13)'; g.fillRect(px+TILE-1,py,1,TILE); g.fillStyle='rgba(0,0,0,0.06)'; g.fillRect(px+TILE-3,py,2,TILE); }
+}
+// ---- Tile art v2: neighbor-aware edge lighting ------------------------------
+// Tiles of one family render as continuous mass (no seams inside a dirt patch or
+// rock face); only faces exposed to open space get sunlit rims, AO shadows and
+// material caps. This removes the per-tile grid look without any sprite assets.
+const EDGE_ROCK=1, EDGE_EARTH=2, EDGE_SAND=3, EDGE_FROST=4, EDGE_WOOD=5, EDGE_LEAF=6, EDGE_BUILT=7, EDGE_METEOR=8, EDGE_LAVA=9;
+function tileEdgeFamily(t){
+	switch(t){
+		case T.STONE: case T.GRANITE: case T.BASALT: case T.BEDROCK: case T.COAL: case T.DIAMOND:
+		case T.OBSIDIAN: case T.VOLCANO_MASTER_STONE: case T.SERVANT_STONE: return EDGE_ROCK;
+		case T.DIRT: case T.GRASS: case T.MUD: case T.CLAY: case T.WET_CLAY: return EDGE_EARTH;
+		case T.SAND: return EDGE_SAND;
+		case T.SNOW: case T.ICE: return EDGE_FROST;
+		case T.WOOD: return EDGE_WOOD;
+		case T.LEAF: case T.AUTUMN_LEAF_ORANGE: case T.AUTUMN_LEAF_RED: return EDGE_LEAF;
+		case T.STEEL: case T.BRICK: return EDGE_BUILT;
+		case T.IRIDIUM: case T.METEORIC_IRON: case T.RADIOACTIVE_ORE: case T.ALIEN_BIOMASS:
+		case T.METEOR_DUST: case T.ANTIMATTER_CRYSTAL: return EDGE_METEOR;
+		case T.LAVA: return EDGE_LAVA;
+		default: return 0;
+	}
+}
+// A neighbor counts as "open" (this face is exposed and should be lit/shaded)
+// when it lets light through and belongs to a different material family.
+function tileOpenForEdge(fam,n){
+	if(n===T.AIR || n===T.WATER) return true;
+	const inf=INFO[n];
+	if(!inf || !inf.passable) return false;
+	return tileEdgeFamily(n)!==fam;
+}
+// Rounds the sky silhouette of soft materials by clearing 1-2 px corner notches.
+// Above ground the notch reveals sky; in caves it is refilled with backdrop color.
+function cutTopCornerNotch(g,px,py,left,deep,wx,y,surf){
+	const w=deep?3:2;
+	const x0=left?px:px+TILE-w;
+	const x1=left?px:px+TILE-1;
+	const bg=(WORLD && WORLD.getConstructionBackground) ? WORLD.getConstructionBackground(wx,y) : T.AIR;
+	if(bg!==T.AIR) return;
+	if(y>surf){
+		g.fillStyle=undergroundBackdropColor(wx,y,surf);
+		g.fillRect(x0,py,w,1);
+		g.fillRect(x1,py+1,1,1);
+	}else{
+		g.clearRect(x0,py,w,1);
+		g.clearRect(x1,py+1,1,1);
+	}
+}
+function drawGrassTurfCap(g,px,py,h,x0,x1,openL,openR,sun){
+	// under-lip shade so the blade row reads as standing above the soil
+	g.fillStyle='rgba(18,60,20,'+(0.24*sun).toFixed(3)+')';
+	g.fillRect(px+x0,py+4,x1-x0,2);
+	// lush lip: bright sun-struck line over a saturated second row
+	g.fillStyle='rgba(212,255,128,'+(0.42*sun).toFixed(3)+')';
+	g.fillRect(px+x0,py,x1-x0,1);
+	g.fillStyle='rgba(142,224,84,'+(0.34*sun).toFixed(3)+')';
+	g.fillRect(px+x0,py+1,x1-x0,1);
+	// dense blade tuft texture in the top rows
+	for(let i=0;i<7;i++){
+		const r=hash32(h+i*53,i*97);
+		const bx=px+1+((r>>>3)%18);
+		const bh=2+((r>>>8)%4);
+		g.fillStyle=(r&1)?'rgba(58,150,44,0.55)':'rgba(126,214,74,0.50)';
+		g.fillRect(bx,py+1,1,bh);
+	}
+	// occasional wildflower
+	if((h%23)<2){
+		const fx=px+4+((h>>>9)%12);
+		const petal=(h>>>13)&3;
+		g.fillStyle=petal===0?'rgba(255,255,255,0.85)':petal===1?'rgba(255,214,92,0.85)':petal===2?'rgba(255,132,160,0.85)':'rgba(150,170,255,0.85)';
+		g.fillRect(fx-1,py+2,3,1);
+		g.fillRect(fx,py+1,1,3);
+		g.fillStyle='rgba(255,196,60,0.9)';
+		g.fillRect(fx,py+2,1,1);
+	}
+	// turf drapes a few pixels down exposed sides
+	if(openL){
+		g.fillStyle='rgba(96,190,64,'+(0.45*sun).toFixed(3)+')';
+		g.fillRect(px,py,1,5);
+		g.fillStyle='rgba(46,118,44,'+(0.30*sun).toFixed(3)+')';
+		g.fillRect(px,py+5,1,3);
+	}
+	if(openR){
+		g.fillStyle='rgba(96,190,64,'+(0.45*sun).toFixed(3)+')';
+		g.fillRect(px+TILE-1,py,1,5);
+		g.fillStyle='rgba(46,118,44,'+(0.30*sun).toFixed(3)+')';
+		g.fillRect(px+TILE-1,py+5,1,3);
+	}
+}
+// The main edge pass: called last for every bakeable terrain tile.
+function drawTerrainEdgeFX(g,t,arr,cx,lx,y,originY,sectionH,wx,px,py,h,surf){
+	if(window.__mmNoEdgeFX) return;
+	const fam=tileEdgeFamily(t);
+	if(!fam || t===T.GLASS) return;
+	const nU=chunkTileAt(arr,cx,lx,y-1,originY,sectionH);
+	const nD=chunkTileAt(arr,cx,lx,y+1,originY,sectionH);
+	const nL=chunkTileAt(arr,cx,lx-1,y,originY,sectionH);
+	const nR=chunkTileAt(arr,cx,lx+1,y,originY,sectionH);
+	const oU=tileOpenForEdge(fam,nU), oD=tileOpenForEdge(fam,nD);
+	const oL=tileOpenForEdge(fam,nL), oR=tileOpenForEdge(fam,nR);
+	// sunlight strength fades with depth below the surface but never to zero
+	const sun=Math.max(0.35, 1-Math.max(0,y-surf)/26);
+	// silhouette rounding for soft materials against the sky / cave air above
+	let notchL=false, notchR=false;
+	if(oU && nU===T.AIR && (fam===EDGE_EARTH || fam===EDGE_SAND || t===T.SNOW)){
+		const deep=t===T.SNOW;
+		if(oL){ cutTopCornerNotch(g,px,py,true,deep,wx,y,surf); notchL=true; }
+		if(oR){ cutTopCornerNotch(g,px,py,false,deep,wx,y,surf); notchR=true; }
+	}
+	const x0=notchL?(t===T.SNOW?3:2):0;
+	const x1=TILE-(notchR?(t===T.SNOW?3:2):0);
+	if(oU){
+		if(t===T.GRASS){
+			drawGrassTurfCap(g,px,py,h,x0,x1,oL,oR,sun);
+		}else if(t===T.SNOW){
+			g.fillStyle='rgba(255,255,255,'+(0.40*sun).toFixed(3)+')'; g.fillRect(px+x0,py,x1-x0,1);
+			g.fillStyle='rgba(255,255,255,'+(0.22*sun).toFixed(3)+')'; g.fillRect(px+x0,py+1,x1-x0,1);
+			g.fillStyle='rgba(255,255,255,'+(0.10*sun).toFixed(3)+')'; g.fillRect(px+x0,py+2,x1-x0,1);
+		}else if(t===T.ICE){
+			g.fillStyle='rgba(255,255,255,'+(0.32*sun).toFixed(3)+')'; g.fillRect(px,py,TILE,1);
+			g.fillStyle='rgba(214,240,255,'+(0.14*sun).toFixed(3)+')'; g.fillRect(px,py+1,TILE,1);
+		}else if(t===T.SAND){
+			g.fillStyle='rgba(255,247,202,'+(0.30*sun).toFixed(3)+')'; g.fillRect(px+x0,py,x1-x0,1);
+			g.fillStyle='rgba(255,240,180,'+(0.13*sun).toFixed(3)+')'; g.fillRect(px+x0,py+1,x1-x0,1);
+			if((h&7)===0){ g.fillStyle='rgba(255,255,238,0.55)'; g.fillRect(px+3+((h>>>6)%13),py+1,1,1); }
+		}else if(fam===EDGE_EARTH){
+			g.fillStyle='rgba(236,204,150,'+(0.20*sun).toFixed(3)+')'; g.fillRect(px+x0,py,x1-x0,1);
+			g.fillStyle='rgba(214,176,120,'+(0.09*sun).toFixed(3)+')'; g.fillRect(px+x0,py+1,x1-x0,1);
+		}else if(t===T.OBSIDIAN){
+			g.fillStyle='rgba(168,126,236,'+(0.24*sun).toFixed(3)+')'; g.fillRect(px,py,TILE,1);
+			g.fillStyle='rgba(120,86,190,'+(0.10*sun).toFixed(3)+')'; g.fillRect(px,py+1,TILE,1);
+		}else if(fam===EDGE_ROCK){
+			g.fillStyle='rgba(228,236,246,'+(0.20*sun).toFixed(3)+')'; g.fillRect(px,py,TILE,1);
+			g.fillStyle='rgba(228,236,246,'+(0.08*sun).toFixed(3)+')'; g.fillRect(px,py+1,TILE,1);
+		}else if(fam===EDGE_WOOD){
+			g.fillStyle='rgba(255,214,130,'+(0.20*sun).toFixed(3)+')'; g.fillRect(px,py,TILE,1);
+		}else if(fam===EDGE_BUILT){
+			g.fillStyle='rgba(255,255,255,'+(0.22*sun).toFixed(3)+')'; g.fillRect(px,py,TILE,1);
+			g.fillStyle='rgba(255,255,255,'+(0.09*sun).toFixed(3)+')'; g.fillRect(px,py+1,TILE,1);
+		}else if(fam===EDGE_METEOR){
+			g.fillStyle='rgba(202,222,255,'+(0.20*sun).toFixed(3)+')'; g.fillRect(px,py,TILE,1);
+		}else if(fam===EDGE_LEAF){
+			g.fillStyle='rgba(216,255,150,0.30)';
+			for(let i=0;i<4;i++){ const r=hash32(h+i*31,i*67); g.fillRect(px+1+((r>>>4)%17),py+((r>>>9)&1),2,1); }
+		}else if(fam===EDGE_LAVA){
+			g.fillStyle='rgba(255,246,190,0.85)'; g.fillRect(px,py,TILE,1);
+			g.fillStyle='rgba(255,196,84,0.45)'; g.fillRect(px,py+1,TILE,1);
+			g.fillStyle='rgba(255,124,32,0.18)'; g.fillRect(px,py+2,TILE,2);
+		}
+	}
+	if(oD){
+		if(fam===EDGE_LAVA){
+			g.fillStyle='rgba(96,18,2,0.42)'; g.fillRect(px,py+TILE-1,TILE,1);
+		}else if(fam===EDGE_LEAF){
+			g.fillStyle='rgba(10,50,16,0.30)';
+			for(let i=0;i<4;i++){ const r=hash32(h+i*41,i*89); g.fillRect(px+1+((r>>>5)%17),py+TILE-1-((r>>>10)&1),2,1); }
+		}else if(t===T.ICE){
+			g.fillStyle='rgba(40,90,160,0.16)'; g.fillRect(px,py+TILE-3,TILE,3);
+		}else if(t===T.SNOW){
+			g.fillStyle='rgba(110,140,195,0.16)'; g.fillRect(px,py+TILE-2,TILE,2);
+		}else{
+			const deep=fam===EDGE_ROCK||fam===EDGE_BUILT||fam===EDGE_METEOR;
+			g.fillStyle='rgba(6,8,16,'+(deep?0.26:0.20)+')'; g.fillRect(px,py+TILE-1,TILE,1);
+			g.fillStyle='rgba(6,8,16,'+(deep?0.13:0.10)+')'; g.fillRect(px,py+TILE-2,TILE,1);
+			g.fillStyle='rgba(6,8,16,0.05)'; g.fillRect(px,py+TILE-3,TILE,1);
+			// grass/dirt overhangs sprout hanging root fibers
+			if(fam===EDGE_EARTH && t!==T.CLAY && t!==T.WET_CLAY && (h&3)!==3){
+				g.fillStyle='rgba(58,40,24,0.42)';
+				g.fillRect(px+3+((h>>>4)%6),py+TILE-3,1,3);
+				g.fillRect(px+11+((h>>>8)%6),py+TILE-2,1,2);
+			}
+		}
+	}
+	if(oL && fam!==EDGE_LEAF){
+		if(fam===EDGE_LAVA){ g.fillStyle='rgba(255,170,70,0.30)'; g.fillRect(px,py,1,TILE); }
+		else{
+			g.fillStyle='rgba(235,242,250,'+(0.11*sun).toFixed(3)+')'; g.fillRect(px,py+(oU?2:0),1,TILE-(oU?2:0)-(oD?1:0));
+			g.fillStyle='rgba(8,10,18,0.05)'; g.fillRect(px+1,py+2,1,TILE-4);
+		}
+	}
+	if(oR && fam!==EDGE_LEAF){
+		if(fam===EDGE_LAVA){ g.fillStyle='rgba(255,170,70,0.30)'; g.fillRect(px+TILE-1,py,1,TILE); }
+		else{
+			g.fillStyle='rgba(8,10,18,'+(fam===EDGE_ROCK||fam===EDGE_BUILT?0.15:0.11)+')'; g.fillRect(px+TILE-1,py+(oU?2:0),1,TILE-(oU?2:0));
+			g.fillStyle='rgba(8,10,18,0.06)'; g.fillRect(px+TILE-2,py+2,1,TILE-4);
+		}
+	}
+	// hot ember rims where solid rock borders lava pools
+	if(fam!==EDGE_LAVA){
+		if(nD===T.LAVA){ g.fillStyle='rgba(255,140,44,0.34)'; g.fillRect(px,py+TILE-1,TILE,1); g.fillStyle='rgba(255,96,20,0.12)'; g.fillRect(px,py+TILE-3,TILE,2); }
+		if(nL===T.LAVA){ g.fillStyle='rgba(255,140,44,0.30)'; g.fillRect(px,py,1,TILE); }
+		if(nR===T.LAVA){ g.fillStyle='rgba(255,140,44,0.30)'; g.fillRect(px+TILE-1,py,1,TILE); }
+		if(nU===T.LAVA){ g.fillStyle='rgba(255,150,50,0.26)'; g.fillRect(px,py,TILE,1); }
+	}
+	// inner-corner ambient occlusion: a diagonal opening beside two solid faces
+	// gets a small dark wedge, grounding staircase terrain into crevices
+	if(fam!==EDGE_LEAF && fam!==EDGE_LAVA){
+		g.fillStyle='rgba(8,10,18,0.13)';
+		if(!oU && !oL && tileOpenForEdge(fam,chunkTileAt(arr,cx,lx-1,y-1,originY,sectionH))){ g.fillRect(px,py,3,1); g.fillRect(px,py+1,1,2); }
+		if(!oU && !oR && tileOpenForEdge(fam,chunkTileAt(arr,cx,lx+1,y-1,originY,sectionH))){ g.fillRect(px+TILE-3,py,3,1); g.fillRect(px+TILE-1,py+1,1,2); }
+		if(!oD && !oL && tileOpenForEdge(fam,chunkTileAt(arr,cx,lx-1,y+1,originY,sectionH))){ g.fillRect(px,py+TILE-1,3,1); g.fillRect(px,py+TILE-3,1,2); }
+		if(!oD && !oR && tileOpenForEdge(fam,chunkTileAt(arr,cx,lx+1,y+1,originY,sectionH))){ g.fillRect(px+TILE-3,py+TILE-1,3,1); g.fillRect(px+TILE-1,py+TILE-3,1,2); }
+	}
+	// convex rock corners get a chamfer pixel so hard edges don't glare
+	if((fam===EDGE_ROCK || fam===EDGE_BUILT || fam===EDGE_METEOR)){
+		g.fillStyle='rgba(8,10,18,0.20)';
+		if(oU&&oL) g.fillRect(px,py,1,1);
+		if(oU&&oR) g.fillRect(px+TILE-1,py,1,1);
+	}
+	// cave dressing: mossy growth on rock faces that touch underground air
+	if(fam===EDGE_ROCK && y>surf+4 && t!==T.OBSIDIAN && t!==T.BASALT && t!==T.BEDROCK){
+		if(oU && (h%11)<3){
+			g.fillStyle='rgba(96,168,92,0.34)';
+			g.fillRect(px+2+((h>>>5)%12),py,3,1);
+			g.fillRect(px+3+((h>>>5)%12),py+1,1,1);
+		}
+		if(oD && (h%13)<2){
+			g.fillStyle='rgba(70,140,80,0.26)';
+			g.fillRect(px+4+((h>>>7)%11),py+TILE-1,2,1);
+			g.fillRect(px+4+((h>>>7)%11),py+TILE-3,1,2);
+		}
+	}
+}
+// ---- Tile art v2: richer inner material art ---------------------------------
+function drawDiamondOreArt(g,px,py,h){
+	// gems read as crystals embedded in host rock, not a flat cyan block
+	const cx0=px+7+((h>>>3)&6), cy0=py+8+((h>>>6)&4);
+	g.fillStyle='rgba(60,210,255,0.10)';
+	g.beginPath(); g.arc(cx0,cy0,6.5,0,Math.PI*2); g.fill();
+	const rhomb=(x,y,r)=>{ g.beginPath(); g.moveTo(x,y-r); g.lineTo(x+r,y); g.lineTo(x,y+r); g.lineTo(x-r,y); g.closePath(); };
+	rhomb(cx0,cy0,5); g.fillStyle='#1c5f80'; g.fill();
+	rhomb(cx0,cy0,4); g.fillStyle='#37d3f2'; g.fill();
+	g.fillStyle='rgba(226,255,255,0.85)';
+	g.beginPath(); g.moveTo(cx0,cy0-4); g.lineTo(cx0+4,cy0); g.lineTo(cx0,cy0); g.closePath(); g.fill();
+	g.fillStyle='rgba(8,52,80,0.55)';
+	g.beginPath(); g.moveTo(cx0,cy0+4); g.lineTo(cx0-4,cy0); g.lineTo(cx0,cy0); g.closePath(); g.fill();
+	const dx=((h>>>9)&1)?-6:6, dy=((h>>>10)&1)?-4:4;
+	const sx=Math.max(px+3,Math.min(px+TILE-3,cx0+dx)), sy2=Math.max(py+3,Math.min(py+TILE-3,cy0+dy));
+	rhomb(sx,sy2,2.5); g.fillStyle='#2aa9cf'; g.fill();
+	rhomb(sx,sy2,1.5); g.fillStyle='rgba(190,247,255,0.9)'; g.fill();
+	g.fillStyle='rgba(255,255,255,0.95)';
+	g.fillRect(cx0-1,cy0-2,1,1);
+	g.fillRect(cx0-2,cy0-1,3,1);
+	g.fillRect(cx0-1,cy0,1,1);
+}
+// Clamp a fill to the tile rect so world-lattice art never spills onto neighbor
+// tiles (partial chunk redraws would re-composite spill pixels on uncleared rows)
+function fillRectClampedToTile(g,px,py,x,y,w,h){
+	const x0=Math.max(px,x), y0=Math.max(py,y);
+	const x1=Math.min(px+TILE,x+w), y1=Math.min(py+TILE,y+h);
+	if(x1>x0 && y1>y0) g.fillRect(x0,y0,x1-x0,y1-y0);
+}
+function drawLeafClumpArt(g,t,px,py,wx,y,h){
+	const red=t===T.AUTUMN_LEAF_RED, orange=t===T.AUTUMN_LEAF_ORANGE;
+	const dark=red?'rgba(96,52,22,0.42)':orange?'rgba(150,66,20,0.40)':'rgba(18,88,32,0.40)';
+	const mid=red?'rgba(158,94,40,0.40)':orange?'rgba(216,122,34,0.42)':'rgba(52,150,52,0.42)';
+	const lite=red?'rgba(214,142,66,0.36)':orange?'rgba(255,184,84,0.38)':'rgba(126,220,90,0.38)';
+	// Dapple discs live on a world-space lattice so clumps straddle tile borders
+	// and the canopy reads as one organic mass. Discs are rendered as two clamped
+	// fillRects (a pixel-art disc) — the earlier clip+arc version made canopy
+	// bakes an order of magnitude slower.
+	const CELL=9;
+	const wpx=wx*TILE, wpy=y*TILE;
+	const c0x=Math.floor((wpx-6)/CELL), c1x=Math.floor((wpx+TILE+6)/CELL);
+	const c0y=Math.floor((wpy-6)/CELL), c1y=Math.floor((wpy+TILE+6)/CELL);
+	for(let cy=c0y;cy<=c1y;cy++){
+		for(let cx2=c0x;cx2<=c1x;cx2++){
+			const r=hash32(cx2*7349,cy*9151);
+			const ax=px+(cx2*CELL+((r>>>3)%CELL)-wpx);
+			const ay=py+(cy*CELL+((r>>>8)%CELL)-wpy);
+			const rr=2+((r>>>13)%3);
+			const tone=(r>>>16)%3;
+			g.fillStyle=tone===0?dark:tone===1?mid:lite;
+			fillRectClampedToTile(g,px,py,ax-rr,ay-rr+1,rr*2,rr*2-2);
+			fillRectClampedToTile(g,px,py,ax-rr+1,ay-rr,rr*2-2,rr*2);
+		}
+	}
+	if(!red && !orange && (h%17)===0){
+		g.fillStyle='rgba(220,60,70,0.85)';
+		g.fillRect(px+5+((h>>>6)%10),py+6+((h>>>10)%9),2,2);
+	}
+}
+function drawMudDetail(g,px,py,h){
+	g.fillStyle='rgba(35,24,13,0.28)';
+	g.fillRect(px+2+((h>>>5)&7),py+11,6,2);
+	g.fillRect(px+10,py+4+((h>>>9)&3),5,2);
+	g.fillStyle='rgba(128,103,67,0.26)';
+	g.fillRect(px+4,py+6+((h>>>7)&3),4,2);
+	// wet gloss streaks
+	g.fillStyle='rgba(196,224,244,0.10)';
+	g.fillRect(px+3+((h>>>4)&5),py+3,5,1);
+	g.fillRect(px+9,py+13+((h>>>11)&2),6,1);
+}
+function drawLavaCrustArt(g,px,py,h){
+	// cooling crust islands with white-hot fissures between them
+	g.fillStyle='rgba(58,14,4,0.50)';
+	g.fillRect(px+2+((h>>>4)&4),py+4+((h>>>7)&3),6,4);
+	g.fillRect(px+11,py+11+((h>>>10)&3),6,4);
+	g.fillStyle='rgba(96,26,8,0.42)';
+	g.fillRect(px+12,py+3+((h>>>12)&2),5,3);
+	g.fillRect(px+3,py+13,5,3);
+	strokePath(g,'rgba(255,232,130,0.65)',1,[[px+2,py+9+((h>>>5)&3)],[px+8,py+10],[px+12,py+7+((h>>>8)&4)],[px+18,py+9]]);
+	g.fillStyle='rgba(255,255,208,0.85)';
+	g.fillRect(px+7+((h>>>6)&6),py+9+((h>>>9)&2),2,1);
+	g.fillStyle='rgba(255,180,70,0.30)';
+	g.fillRect(px+4+((h>>>11)&8),py+6,2,2);
+}
+function drawGrassBodyGradient(g,px,py,col){
+	// turf block: fresh green up top fading into root-zone soil at the base
+	// (band overlays, not createLinearGradient — gradients per tile bake slowly)
+	g.fillStyle=col;
+	g.fillRect(px,py,TILE,TILE);
+	g.fillStyle='rgba(224,255,152,0.10)';
+	g.fillRect(px,py,TILE,7);
+	g.fillStyle='rgba(16,40,14,0.10)';
+	g.fillRect(px,py+13,TILE,7);
+	g.fillStyle='rgba(94,66,40,0.26)';
+	g.fillRect(px,py+TILE-3,TILE,3);
+	g.fillStyle='rgba(70,48,30,0.22)';
+	g.fillRect(px,py+TILE-1,TILE,1);
 }
 function chunkTileAt(arr,cx,lx,y,originY,sectionH){
 	originY=Number.isFinite(originY) ? originY : 0;
@@ -3386,7 +3838,17 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 		// chunks farthest from the current view so a long trek can't accumulate them forever
 		trimChunkCanvasCache(Number.isFinite(centerCx)?centerCx:cx, CHUNK_CANVAS_MAX_KEEP-1, sy);
 		const c=document.createElement('canvas'); c.width=CHUNK_W*TILE; c.height=sectionH*TILE; const cctx=c.getContext('2d'); cctx.imageSmoothingEnabled=false; entry={canvas:c,ctx:cctx,version:-1,sy,chests:[],doorways:[]}; chunkCanvases.set(key,entry); }
-	const currentVersion=WORLD.chunkVersion(cx,sy); if(entry.version===currentVersion){ chunkRenderDirty.delete(key); return; } if(entry.version>=0 && METEORITES && METEORITES.isChunkBusy && METEORITES.isChunkBusy(cx)){ chunkCacheDeferredThisFrame++; return; } if(!canRebuildChunkCache(entry,currentVersion)) return; const cctx=entry.ctx; const dirty=chunkRenderDirty.get(key); const partial=!!(entry.version>=0 && dirty && !dirty.full && dirty.baseVersion===entry.version && dirty.version===currentVersion && dirty.min<=dirty.max);
+	const currentVersion=WORLD.chunkVersion(cx,sy); if(entry.version===currentVersion && !entry.edgeStale){ chunkRenderDirty.delete(key); return; }
+	// Version-only sync: the shared base-section version moved but no pixels in
+	// THIS section changed (empty dirty band) — adopt the version, skip repainting
+	if(entry.version>=0 && !entry.edgeStale){
+		const d0=chunkRenderDirty.get(key);
+		if(d0 && !d0.full && d0.min>d0.max && d0.baseVersion===entry.version && d0.version===currentVersion){
+			entry.version=currentVersion; chunkRenderDirty.delete(key); return;
+		}
+	}
+	if(entry.version>=0 && METEORITES && METEORITES.isChunkBusy && METEORITES.isChunkBusy(cx)){ chunkCacheDeferredThisFrame++; return; } if(!canRebuildChunkCache(entry,currentVersion)) return; const cctx=entry.ctx; const dirty=chunkRenderDirty.get(key); const partial=!!(entry.version>=0 && dirty && !dirty.full && dirty.baseVersion===entry.version && dirty.version===currentVersion && dirty.min<=dirty.max);
+	const __bakeT0=performance.now();
 	const redrawY0=partial?Math.max(0,dirty.min|0):0;
 	const redrawY1=partial?Math.min(sectionH-1,dirty.max|0):sectionH-1;
 	const redrawWorldY0=originY+redrawY0;
@@ -3425,8 +3887,16 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 					// Water is rendered by the dynamic fluid layer (springs/waves/caustics), not
 					// baked here — only its backdrop is. Underground air or water = carved cave /
 					// aquifer: paint a dark rock backdrop so the sky parallax never shows through
-					if(!hasBg && y>surf && !(gasTile && gasSkyExposedTile(wx,y))){
+					const hasBackdrop=y>surf && !(gasTile && gasSkyExposedTile(wx,y));
+					if(!hasBg && hasBackdrop){
 						drawUndergroundBackdrop(cctx,lx*TILE,y*TILE,wx,y,surf);
+					}
+					if(hasBg || hasBackdrop){
+						drawCaveContactShade(cctx,lx*TILE,y*TILE,
+							isSolid(chunkTileAt(arr,cx,lx,y-1,originY,sectionH)),
+							isSolid(chunkTileAt(arr,cx,lx,y+1,originY,sectionH)),
+							isSolid(chunkTileAt(arr,cx,lx-1,y,originY,sectionH)),
+							isSolid(chunkTileAt(arr,cx,lx+1,y,originY,sectionH)));
 					}
 					if(t===T.GRAVE) drawGraveTile(cctx, lx*TILE, y*TILE);
 					if(t===T.WIRE){
@@ -3480,10 +3950,28 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 					continue;
 				}
 				let base=INFO[t].color; if(!base) continue;
-				const delta = terrainShadeDelta(t,wx,y,h);
-				const col = delta? shadeColor(base, delta) : base;
-				cctx.fillStyle=col; cctx.fillRect(lx*TILE,y*TILE,TILE,TILE);
-				drawTerrainPattern(cctx,t,lx*TILE,y*TILE,wx,y,h);
+				// static depth shade folded into the base fill: buried terrain darkens
+				// gently so caves feel deep (emissive matter keeps glowing in the dark)
+				const depthDelta=(y>surf && t!==T.LAVA && t!==T.RADIOACTIVE_ORE && t!==T.ANTIMATTER_CRYSTAL)
+					? -Math.min(14,(y-surf)*0.5)|0 : 0;
+				if(t===T.DIAMOND){
+					// diamond bakes as crystals embedded in host stone, not a flat cyan slab
+					const rockCol=shadeColor(INFO[T.STONE].color, terrainShadeDelta(T.STONE,wx,y,h)+depthDelta);
+					cctx.fillStyle=rockCol; cctx.fillRect(lx*TILE,y*TILE,TILE,TILE);
+					drawTerrainPattern(cctx,T.STONE,lx*TILE,y*TILE,wx,y,h);
+					drawDiamondOreArt(cctx,lx*TILE,y*TILE,h);
+				}else if(t===T.GRASS){
+					const delta = terrainShadeDelta(t,wx,y,h)+depthDelta;
+					drawGrassBodyGradient(cctx,lx*TILE,y*TILE,delta?shadeColor(base,delta):base);
+				}else{
+					const delta = terrainShadeDelta(t,wx,y,h)+depthDelta;
+					const col = delta? shadeColor(base, delta) : base;
+					cctx.fillStyle=col; cctx.fillRect(lx*TILE,y*TILE,TILE,TILE);
+					drawTerrainPattern(cctx,t,lx*TILE,y*TILE,wx,y,h);
+				}
+				if(isLeaf(t)) drawLeafClumpArt(cctx,t,lx*TILE,y*TILE,wx,y,h);
+				if(t===T.MUD) drawMudDetail(cctx,lx*TILE,y*TILE,h);
+				if(t===T.LAVA) drawLavaCrustArt(cctx,lx*TILE,y*TILE,h);
 				// Keep chunk-cache rebuilds cheap; special tiles below carry the high-detail pass.
 				if(t===T.GLASS){
 					const px=lx*TILE, py=y*TILE;
@@ -3656,57 +4144,30 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 				if(t===T.METEOR_SIREN){
 					drawMeteorSirenTilePixels(cctx,lx*TILE,y*TILE,h);
 				}
-				// Snow-specific styling: soft top highlight and subtle dark rim for separation
+				// Snow sparkle (caps/rims now come from the neighbor-aware edge pass)
 				if(t===T.SNOW){
-					const px=lx*TILE, py=y*TILE;
-					const above=chunkTileAt(arr,cx,lx,y-1,originY,sectionH);
-					const below=chunkTileAt(arr,cx,lx,y+1,originY,sectionH);
-					if(above!==T.SNOW){
-						cctx.fillStyle='rgba(255,255,255,0.30)';
-						cctx.fillRect(px, py, TILE, Math.max(2, Math.floor(TILE*0.22)));
-					}
-					if(below!==T.SNOW){
-						cctx.fillStyle='rgba(0,0,0,0.06)';
-						cctx.fillRect(px, py + TILE-2, TILE, 2);
-					}
 					if((h&7)===0){
 						cctx.fillStyle='rgba(255,255,255,0.18)';
-						cctx.fillRect(px+4+((h>>5)&8), py+6+((h>>10)&6), 3, 1);
+						cctx.fillRect(lx*TILE+4+((h>>5)&8), y*TILE+6+((h>>10)&6), 3, 1);
 					}
 				}
-				// Ice reads glossy, not grainy: cool depth shade below, bright crown,
-				// and a deterministic diagonal glint pair (snow stays matte for contrast)
+				// Ice reads glossy, not grainy: deterministic diagonal glint pair
+				// (snow stays matte for contrast); crown/depth shading is edge-pass work
 				if(t===T.ICE){
-					const above=chunkTileAt(arr,cx,lx,y-1,originY,sectionH);
-					const below=chunkTileAt(arr,cx,lx,y+1,originY,sectionH);
-					if(below!==T.ICE){
-						cctx.fillStyle='rgba(40,90,160,0.16)';
-						cctx.fillRect(lx*TILE, y*TILE+TILE-3, TILE, 3);
-					}
-					if(above!==T.ICE){
-						cctx.fillStyle='rgba(255,255,255,0.30)';
-						cctx.fillRect(lx*TILE, y*TILE, TILE, 2);
-					}
 					const gx=lx*TILE+3+((h>>5)&7), gy=y*TILE+4;
 					cctx.strokeStyle='rgba(255,255,255,0.30)'; cctx.lineWidth=1.5;
 					cctx.beginPath(); cctx.moveTo(gx, gy+9); cctx.lineTo(gx+8, gy); cctx.stroke();
 					cctx.strokeStyle='rgba(140,195,235,0.35)'; cctx.lineWidth=1;
 					cctx.beginPath(); cctx.moveTo(gx-2, gy+12); cctx.lineTo(gx+4, gy+5); cctx.stroke();
 				}
-				// Obsidian: volcanic glass — faint violet crown sheen + a rare glint pixel
+				// Obsidian: volcanic glass — a rare glint pixel (violet sheen via edge pass)
 				if(t===T.OBSIDIAN){
-					cctx.fillStyle='rgba(150,110,220,0.12)';
-					cctx.fillRect(lx*TILE, y*TILE, TILE, 2);
 					if((h&7)===0){
 						cctx.fillStyle='rgba(190,150,255,0.45)';
 						cctx.fillRect(lx*TILE+3+((h>>6)&13), y*TILE+4+((h>>10)&11), 2, 2);
 					}
 				}
 				if(t===T.COAL){
-					if(chunkTileAt(arr,cx,lx,y+1,originY,sectionH)!==T.COAL){
-						cctx.fillStyle='rgba(0,0,0,0.22)';
-						cctx.fillRect(lx*TILE, y*TILE+TILE-4, TILE, 4);
-					}
 					cctx.fillStyle='rgba(255,255,255,0.10)';
 					cctx.fillRect(lx*TILE+2+((h>>3)&5), y*TILE+3+((h>>8)&4), 3, 2);
 					if((h&3)===0){
@@ -3715,10 +4176,6 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 					}
 				}
 				if(t===T.STEEL){
-					cctx.fillStyle='rgba(255,255,255,0.20)';
-					cctx.fillRect(lx*TILE, y*TILE, TILE, 2);
-					cctx.fillStyle='rgba(15,22,30,0.18)';
-					cctx.fillRect(lx*TILE, y*TILE+TILE-3, TILE, 3);
 					cctx.fillStyle='rgba(0,0,0,0.22)';
 					cctx.fillRect(lx*TILE+((h>>8)&3), y*TILE, 2, TILE);
 					cctx.fillStyle='rgba(230,245,255,0.55)';
@@ -3728,10 +4185,6 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 					cctx.fillRect(lx*TILE+TILE-5, y*TILE+TILE-6, 2, 2);
 				}
 				if(t===T.IRIDIUM){
-					cctx.fillStyle='rgba(255,255,255,0.24)';
-					cctx.fillRect(lx*TILE, y*TILE, TILE, 2);
-					cctx.fillStyle='rgba(12,18,29,0.22)';
-					cctx.fillRect(lx*TILE, y*TILE+TILE-4, TILE, 4);
 					cctx.strokeStyle='rgba(220,244,255,0.44)';
 					cctx.lineWidth=1;
 					cctx.beginPath();
@@ -3746,10 +4199,6 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 					}
 				}
 				if(t===T.METEORIC_IRON){
-					cctx.fillStyle='rgba(235,240,244,0.16)';
-					cctx.fillRect(lx*TILE, y*TILE, TILE, 2);
-					cctx.fillStyle='rgba(8,11,14,0.18)';
-					cctx.fillRect(lx*TILE, y*TILE+TILE-3, TILE, 3);
 					cctx.fillStyle='rgba(26,31,35,0.26)';
 					cctx.fillRect(lx*TILE+4+((h>>7)&4), y*TILE+5, 4, 3);
 					cctx.fillStyle='rgba(179,113,58,0.24)';
@@ -3774,10 +4223,15 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 					}
 				}
 				if(t===T.WOOD){ cctx.fillStyle='rgba(0,0,0,0.05)'; cctx.fillRect(lx*TILE + ((h>>8)&3), y*TILE, 2, TILE); }
+				// Final neighbor-aware pass: sunlit rims, AO shadows, silhouette
+				// notching and material caps on every exposed face
+				drawTerrainEdgeFX(cctx,t,arr,cx,lx,y,originY,sectionH,wx,lx*TILE,y*TILE,h,surf);
 			}
 		}
 	cctx.restore();
-	entry.version=currentVersion; chunkRenderDirty.delete(key); }
+	entry.version=currentVersion; entry.edgeStale=false; chunkRenderDirty.delete(key);
+	try{ const ms=performance.now()-__bakeT0; const s=window.__mmBakeStats=window.__mmBakeStats||{fullN:0,fullMs:0,fullMax:0,partN:0,partMs:0}; if(partial){ s.partN++; s.partMs+=ms; } else { s.fullN++; s.fullMs+=ms; s.fullMax=Math.max(s.fullMax,ms); } }catch(e){}
+}
 function drawLooseWireOverlay(g,px,py,h){
 	const y1=py+9+((h>>4)&2);
 	const y2=py+5+((h>>7)&3);

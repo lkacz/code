@@ -63,7 +63,8 @@ assert.match(mainSource, /const FRAME_CAP_SMOOTH_NATIVE_MAX_FPS=180;/, 'frame pa
 assert.match(mainSource, /function shouldSkipFrameForCap\(ts\)/, 'game loop has a frame-cap scheduler');
 assert.match(mainSource, /if\(shouldSkipFrameForCap\(ts\)\)\{ requestAnimationFrame\(loop\); return; \}/, 'frame cap skips before simulation and rendering work');
 assert.match(mainSource, /nativeFps>FRAME_CAP_SMOOTH_NATIVE_MAX_FPS/, 'frame cap only skips when native refresh is too high for smooth native rendering');
-assert.match(mainSource, /Math\.ceil\(nativeFps\/FRAME_CAP_FPS\)/, 'frame cap uses integer refresh divisors instead of uneven virtual deadlines');
+assert.match(mainSource, /Math\.round\(nativeFps\/FRAME_CAP_FPS\)/, 'frame cap uses the NEAREST integer refresh divisor - ceil turned a 240Hz display into an unstable 80fps (divisor 3) under the 120 cap');
+assert.match(mainSource, /frameCapCandidateStreak>=45/, 'frame cap divisor changes are debounced so EMA jitter cannot flap the cadence');
 assert.match(mainSource, /frameCapPhase=\(frameCapPhase\+1\)%frameCapDivisor;/, 'frame cap skips in a stable cadence when a divisor is needed');
 assert.ok(!mainSource.includes('elapsed<FRAME_CAP_MS-0.35'), 'frame cap no longer uses an uneven sub-deadline skip pattern');
 assert.ok(!mainSource.includes('frameCapRafLast += FRAME_CAP_MS'), 'frame cap no longer advances a virtual 120 FPS deadline');
