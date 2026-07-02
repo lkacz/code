@@ -300,7 +300,9 @@ const invasions = (function(){
     const spot = opts.spot || findLandingSpot(player, side, index, getTile);
     const alienCount = Math.max(1, opts.alienCount || alienCountForDay(day,index));
     const id = 'inv_'+(seq++);
-    const landY = spot.y - 2.3;
+    // hull center sits 1.35 tiles up so the landing legs (1.25 tiles) plant
+    // their pads on the surface instead of dangling mid-air
+    const landY = spot.y - 1.35;
     return {
       id,
       kind:'aliens',
@@ -446,8 +448,8 @@ const invasions = (function(){
     }
     return {x:endX,y:endY,blocked:false,clear:Math.hypot(tx-endX,ty-endY) < 0.75,tx:Math.floor(endX),ty:Math.floor(endY),tile:T.AIR};
   }
-  function pushLaser(x1,y1,x2,y2,hit,blocked){
-    lasers.push({x1,y1,x2,y2,t:0,life:0.20,hit:!!hit,blocked:!!blocked,phase:Math.random()*Math.PI*2});
+  function pushLaser(x1,y1,x2,y2,hit,blocked,heavy){
+    lasers.push({x1,y1,x2,y2,t:0,life:heavy?0.26:0.20,hit:!!hit,blocked:!!blocked,heavy:!!heavy,phase:Math.random()*Math.PI*2});
     while(lasers.length > LASER_CAP) lasers.shift();
   }
   function isAttackableStructureTile(t){
@@ -507,8 +509,9 @@ const invasions = (function(){
       aimY = (Number.isFinite(player.vy) ? player.y - 0.52 + player.vy * 0.035 : player.y - 0.52) + randRange(-wobble,wobble);
     }
     const hit = traceLine(ox,oy,aimX,aimY,getTile,range);
-    pushLaser(ox,oy,hit.x,hit.y,hit.clear,hit.blocked);
     const dmgMult = Number.isFinite(opts.damageMult) ? opts.damageMult : 1;
+    pushLaser(ox,oy,hit.x,hit.y,hit.clear,hit.blocked,dmgMult >= 1.5);
+    a.lastShotAt = nowMs();
     if(hit.clear && !tileAim){
       try{
         if(root.damageHero) root.damageHero(Math.max(1, Math.round((5 + Math.min(4, Math.floor((team.day || 1) / 5))) * dmgMult)), {srcX:a.x,srcY:a.y-0.4,kb:3.5,kbY:-2.2,invulMs:430,cause:'alien_invasion'});
@@ -743,78 +746,350 @@ const invasions = (function(){
     }
     return hit;
   }
-  // Head tint per tactical role so the player can read the squad composition.
+  // Per-role skins: tint = shell, dark = under-shell/limbs, eye = glow,
+  // accent = weapon/gear energy color. Flat fills with layered highlights to
+  // match the game's chunky art; no shadowBlur (too slow for squads).
   const ROLE_TINTS = {
-    rusher:'#9edac1',
-    flanker:'#8fd4ea',
-    orbiter:'#c0aaf2',
-    sniper:'#ecc27d',
-    sapper:'#ef9a8b',
-    engineer:'#aee87f'
+    rusher:  {tint:'#9edac1', dark:'#48796a', deep:'#2c4f44', eye:'#c9fff2', accent:'#4fe9b5'},
+    flanker: {tint:'#8fd4ea', dark:'#3e6d84', deep:'#274a5c', eye:'#dcf7ff', accent:'#54c8ff'},
+    orbiter: {tint:'#c0aaf2', dark:'#5d4a90', deep:'#3d2f64', eye:'#efe6ff', accent:'#a67ffb'},
+    sniper:  {tint:'#ecc27d', dark:'#8a6a34', deep:'#5c451e', eye:'#fff3d6', accent:'#ffb84e'},
+    sapper:  {tint:'#ef9a8b', dark:'#8c4136', deep:'#5e2a22', eye:'#ffe6e0', accent:'#ff7a5c'},
+    engineer:{tint:'#aee87f', dark:'#557d35', deep:'#375420', eye:'#f0ffdd', accent:'#8dff4f'}
   };
+  function drawHealthBar(ctx,cx,topY,w,frac){
+    const f = clamp(frac,0,1);
+    ctx.fillStyle = 'rgba(4,8,10,0.62)';
+    ctx.fillRect(cx-w/2-0.5, topY-0.5, w+1, 4);
+    ctx.fillStyle = f > 0.55 ? '#6dff9e' : (f > 0.28 ? '#ffd45e' : '#ff6d5e');
+    ctx.fillRect(cx-w/2, topY, w*f, 3);
+    ctx.fillStyle = 'rgba(255,255,255,0.28)';
+    ctx.fillRect(cx-w/2, topY, w*f, 1);
+  }
+  function drawLaserFx(ctx,TILE_SIZE,visible){
+    ctx.lineCap = 'round';
+    for(const l of lasers){
+      if(!visible(l.x1,l.y1) && !visible(l.x2,l.y2)) continue;
+      const a = Math.max(0, 1 - l.t / Math.max(0.001,l.life));
+      const x1 = l.x1*TILE_SIZE, y1 = l.y1*TILE_SIZE, x2 = l.x2*TILE_SIZE, y2 = l.y2*TILE_SIZE;
+      const w = l.heavy ? 1.55 : 1;
+      const col = l.hit ? '115,255,222' : (l.blocked ? '255,145,84' : '255,111,91');
+      ctx.globalAlpha = a;
+      // wide halo -> saturated body -> hot core
+      ctx.strokeStyle = 'rgba('+col+',0.20)';
+      ctx.lineWidth = 7.5*w;
+      ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+      ctx.strokeStyle = 'rgba('+col+',0.85)';
+      ctx.lineWidth = 3.0*w;
+      ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+      ctx.strokeStyle = 'rgba(240,255,255,0.92)';
+      ctx.lineWidth = 1.1*w;
+      ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+      // impact flare: bloom + four rays
+      if(l.hit || l.blocked){
+        const fr = (2.4 + Math.sin(l.phase + l.t*40)*0.7) * w;
+        ctx.fillStyle = 'rgba('+col+',0.55)';
+        ctx.beginPath(); ctx.arc(x2,y2,fr*1.9,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.beginPath(); ctx.arc(x2,y2,fr*0.75,0,Math.PI*2); ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x2-fr*2.6,y2); ctx.lineTo(x2+fr*2.6,y2);
+        ctx.moveTo(x2,y2-fr*2.6); ctx.lineTo(x2,y2+fr*2.6);
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+  function drawLander(ctx,l,TILE_SIZE,now){
+    const px = l.x*TILE_SIZE, py = l.y*TILE_SIZE;
+    const T2 = TILE_SIZE;
+    const ph = l.phase || 0;
+    const pulse = 0.5 + Math.sin(ph*2.4)*0.5;
+    ctx.save();
+    ctx.translate(px,py);
+    if(l.destroyed){
+      // wreck: tilted scorched hull with fracture lines and dying embers,
+      // settled onto the ground below its hover height
+      ctx.translate(0,T2*0.55);
+      ctx.rotate(0.16);
+      ctx.fillStyle = 'rgba(16,20,24,0.94)';
+      ctx.beginPath(); ctx.ellipse(0,T2*0.18,T2*1.8,T2*0.5,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle = 'rgba(34,40,46,0.9)';
+      ctx.beginPath(); ctx.ellipse(-T2*0.1,T2*0.02,T2*1.5,T2*0.34,0,0,Math.PI*2); ctx.fill();
+      ctx.strokeStyle = 'rgba(6,8,10,0.85)';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(-T2*1.1,T2*0.05); ctx.lineTo(-T2*0.5,T2*0.28); ctx.lineTo(-T2*0.2,T2*0.02);
+      ctx.moveTo(T2*0.4,T2*0.3); ctx.lineTo(T2*0.7,T2*0.02); ctx.lineTo(T2*1.2,T2*0.22);
+      ctx.stroke();
+      const ember = 0.25 + 0.35*Math.abs(Math.sin(now*0.006));
+      ctx.fillStyle = 'rgba(255,140,60,'+ember.toFixed(3)+')';
+      ctx.fillRect(-T2*0.55,T2*0.12,3,2); ctx.fillRect(T2*0.35,T2*0.2,2,2); ctx.fillRect(T2*0.85,T2*0.05,2,1);
+      ctx.restore();
+      return;
+    }
+    const grounded = !!l.landed;
+    // descent thrusters
+    if(!grounded){
+      const flick = 0.5 + 0.5*Math.sin(now*0.02 + ph*3);
+      for(const tx of [-T2*0.85, 0, T2*0.85]){
+        const fh = T2*(0.55 + 0.35*flick);
+        const g = ctx.createLinearGradient(tx,T2*0.3,tx,T2*0.3+fh);
+        g.addColorStop(0,'rgba(150,255,230,0.85)');
+        g.addColorStop(0.5,'rgba(90,220,255,0.35)');
+        g.addColorStop(1,'rgba(90,220,255,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.moveTo(tx-T2*0.16,T2*0.30);
+        ctx.lineTo(tx+T2*0.16,T2*0.30);
+        ctx.lineTo(tx+T2*0.05,T2*0.30+fh);
+        ctx.lineTo(tx-T2*0.05,T2*0.30+fh);
+        ctx.closePath(); ctx.fill();
+      }
+    }
+    // landing legs + ground glow once down (pads plant at ~1.25 tiles below
+    // the hull center, matching the landY offset in makeAlienTeam)
+    if(grounded){
+      ctx.strokeStyle = '#20303a';
+      ctx.lineWidth = T2*0.14;
+      ctx.lineCap = 'round';
+      for(const [sx,fx] of [[-T2*1.0,-T2*1.45],[0,0],[T2*1.0,T2*1.45]]){
+        ctx.beginPath(); ctx.moveTo(sx,T2*0.18); ctx.lineTo(fx,T2*1.22); ctx.stroke();
+      }
+      ctx.fillStyle = '#141f26';
+      for(const fx of [-T2*1.45, 0, T2*1.45]) ctx.fillRect(fx-T2*0.20,T2*1.18,T2*0.40,T2*0.13);
+      ctx.fillStyle = 'rgba(110,255,220,'+(0.06+pulse*0.07).toFixed(3)+')';
+      ctx.beginPath(); ctx.ellipse(0,T2*1.3,T2*1.9,T2*0.26,0,0,Math.PI*2); ctx.fill();
+    }
+    // underside bowl + hatch port
+    ctx.fillStyle = '#101c23';
+    ctx.beginPath(); ctx.ellipse(0,T2*0.16,T2*1.6,T2*0.42,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'rgba(118,255,218,'+(0.3+pulse*0.35).toFixed(3)+')';
+    ctx.beginPath(); ctx.ellipse(0,T2*0.30,T2*0.42,T2*0.13,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'rgba(220,255,246,'+(0.25+pulse*0.4).toFixed(3)+')';
+    ctx.beginPath(); ctx.ellipse(0,T2*0.30,T2*0.18,T2*0.06,0,0,Math.PI*2); ctx.fill();
+    // hull disc with metallic sheen
+    const hull = ctx.createLinearGradient(0,-T2*0.5,0,T2*0.3);
+    hull.addColorStop(0,'#54707e');
+    hull.addColorStop(0.45,'#31454f');
+    hull.addColorStop(1,'#17242b');
+    ctx.fillStyle = hull;
+    ctx.beginPath(); ctx.ellipse(0,-T2*0.05,T2*1.9,T2*0.52,0,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle = 'rgba(8,14,18,0.7)';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.ellipse(0,-T2*0.05,T2*1.9,T2*0.52,0,0,Math.PI*2); ctx.stroke();
+    // plating seams
+    ctx.strokeStyle = 'rgba(10,18,22,0.5)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.ellipse(0,-T2*0.05,T2*1.45,T2*0.36,0,0.15,Math.PI-0.15);
+    ctx.stroke();
+    // specular rim on top edge
+    ctx.strokeStyle = 'rgba(214,240,248,0.5)';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.ellipse(0,-T2*0.10,T2*1.62,T2*0.36,0,Math.PI*1.12,Math.PI*1.88); ctx.stroke();
+    // rim lights: staggered blink chase
+    for(let i=0;i<7;i++){
+      const ang = Math.PI*(0.12 + i*0.126);
+      const lx = Math.cos(ang)*T2*1.68;
+      const ly = T2*0.08 + Math.sin(ang)*T2*0.30;
+      const on = 0.35 + 0.65*Math.abs(Math.sin(ph*3 + i*0.9));
+      ctx.fillStyle = (i%2===0) ? 'rgba(126,255,225,'+on.toFixed(3)+')' : 'rgba(255,224,130,'+on.toFixed(3)+')';
+      ctx.beginPath(); ctx.arc(lx,ly,T2*0.07,0,Math.PI*2); ctx.fill();
+    }
+    // cockpit dome with pilot silhouette
+    const dome = ctx.createLinearGradient(0,-T2*0.95,0,-T2*0.2);
+    dome.addColorStop(0,'rgba(190,250,240,0.85)');
+    dome.addColorStop(0.5,'rgba(96,180,190,0.72)');
+    dome.addColorStop(1,'rgba(40,90,104,0.75)');
+    ctx.fillStyle = dome;
+    ctx.beginPath(); ctx.ellipse(0,-T2*0.34,T2*0.72,T2*0.55,0,Math.PI,Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'rgba(16,34,32,0.85)';
+    ctx.beginPath(); ctx.ellipse(0,-T2*0.4,T2*0.2,T2*0.24,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'rgba(150,255,235,0.9)';
+    ctx.fillRect(-T2*0.11,-T2*0.48,T2*0.07,T2*0.06);
+    ctx.fillRect(T2*0.04,-T2*0.48,T2*0.07,T2*0.06);
+    ctx.strokeStyle = 'rgba(235,255,252,0.65)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.ellipse(-T2*0.2,-T2*0.52,T2*0.3,T2*0.2,-0.5,Math.PI*1.15,Math.PI*1.75); ctx.stroke();
+    // battle damage sparks when hurting
+    if(l.hp < l.maxHp*0.5){
+      const sp = Math.sin(now*0.03 + ph*7);
+      if(sp > 0.55){
+        ctx.fillStyle = 'rgba(255,190,90,0.9)';
+        ctx.fillRect(T2*(0.4+0.5*Math.sin(ph*11)),-T2*0.1,2.5,2.5);
+      }
+      ctx.fillStyle = 'rgba(30,34,38,0.55)';
+      ctx.beginPath(); ctx.ellipse(-T2*0.7,-T2*0.15,T2*0.34,T2*0.12,0.3,0,Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+    if(l.hp < l.maxHp) drawHealthBar(ctx,px,py-T2*1.25,T2*2.4,l.hp/l.maxHp);
+  }
+  function drawAlien(ctx,a,TILE_SIZE,now){
+    const skin = ROLE_TINTS[a.role] || ROLE_TINTS.rusher;
+    const T2 = TILE_SIZE;
+    const px = a.x*T2, foot = a.y*T2;
+    const hurt = now < (a.hitFlashUntil || 0);
+    const moving = Math.abs(a.vx || 0) > 0.35;
+    const gait = a.onGround ? Math.sin(a.x*3.1) * (moving ? 1 : 0) : 0;
+    const bob = a.onGround ? Math.abs(Math.cos(a.x*3.1)) * (moving ? T2*0.045 : 0) : -T2*0.06;
+    const fleeing = !!(a._ai && a._ai.state === 'flee');
+    ctx.save();
+    ctx.translate(px,foot);
+    // ground contact shadow
+    if(a.onGround){
+      ctx.fillStyle = 'rgba(6,10,12,0.35)';
+      ctx.beginPath(); ctx.ellipse(0,T2*0.02,T2*0.30,T2*0.07,0,0,Math.PI*2); ctx.fill();
+    }
+    ctx.scale(a.facing < 0 ? -1 : 1, 1);
+    ctx.translate(0,-bob);
+    ctx.lineCap = 'round';
+    // legs: two digitigrade limbs with opposite swing (tucked mid-air)
+    ctx.strokeStyle = skin.deep;
+    ctx.lineWidth = T2*0.09;
+    const legSwing = a.onGround ? gait*T2*0.14 : T2*0.10;
+    const legLift = a.onGround ? 0 : -T2*0.12;
+    ctx.beginPath();
+    ctx.moveTo(-T2*0.10,-T2*0.36);
+    ctx.quadraticCurveTo(-T2*0.16,-T2*0.18, -T2*0.10-legSwing, legLift);
+    ctx.moveTo(T2*0.10,-T2*0.36);
+    ctx.quadraticCurveTo(T2*0.16,-T2*0.18, T2*0.10+legSwing, legLift*0.6);
+    ctx.stroke();
+    // feet pads
+    ctx.fillStyle = skin.deep;
+    ctx.fillRect(-T2*0.16-legSwing, legLift-T2*0.02, T2*0.13, T2*0.05);
+    ctx.fillRect(T2*0.04+legSwing, legLift*0.6-T2*0.02, T2*0.13, T2*0.05);
+    // orbiters ride a glowing anti-grav ring instead of standing tall
+    if(a.role === 'orbiter'){
+      const hum = 0.35 + 0.3*Math.abs(Math.sin(now*0.008 + a.phase));
+      ctx.fillStyle = 'rgba(166,127,251,'+hum.toFixed(3)+')';
+      ctx.beginPath(); ctx.ellipse(0,-T2*0.10,T2*0.26,T2*0.07,0,0,Math.PI*2); ctx.fill();
+    }
+    // torso: rounded carapace with belly plate
+    ctx.fillStyle = hurt ? '#eaffff' : skin.dark;
+    ctx.beginPath();
+    ctx.ellipse(0,-T2*0.46,T2*0.21,T2*0.26,0,0,Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = hurt ? '#d2fff4' : skin.tint;
+    ctx.beginPath();
+    ctx.ellipse(T2*0.045,-T2*0.48,T2*0.145,T2*0.20,0.12,0,Math.PI*2);
+    ctx.fill();
+    // sapper hazard chevrons / engineer tool harness across the belly
+    if(a.role === 'sapper'){
+      ctx.strokeStyle = 'rgba(46,20,14,0.85)';
+      ctx.lineWidth = T2*0.045;
+      ctx.beginPath();
+      ctx.moveTo(-T2*0.06,-T2*0.56); ctx.lineTo(T2*0.13,-T2*0.50);
+      ctx.moveTo(-T2*0.06,-T2*0.46); ctx.lineTo(T2*0.13,-T2*0.40);
+      ctx.stroke();
+    } else if(a.role === 'engineer'){
+      ctx.strokeStyle = skin.deep;
+      ctx.lineWidth = T2*0.05;
+      ctx.beginPath(); ctx.moveTo(-T2*0.14,-T2*0.58); ctx.lineTo(T2*0.14,-T2*0.38); ctx.stroke();
+      ctx.fillStyle = skin.accent;
+      ctx.fillRect(-T2*0.02,-T2*0.50,T2*0.07,T2*0.07);
+    }
+    // head: big glossy dome with visor eyes and antennae
+    const headY = -T2*0.76;
+    ctx.fillStyle = hurt ? '#f4ffff' : skin.tint;
+    ctx.beginPath(); ctx.ellipse(T2*0.02,headY,T2*0.20,T2*0.17,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.30)';
+    ctx.beginPath(); ctx.ellipse(-T2*0.04,headY-T2*0.07,T2*0.10,T2*0.05,-0.4,0,Math.PI*2); ctx.fill();
+    // wraparound eyes (blink on phase)
+    const blink = (Math.sin(now*0.004 + a.phase*5) > 0.97) ? 0.25 : 1;
+    ctx.fillStyle = '#0a1512';
+    ctx.beginPath(); ctx.ellipse(T2*0.10,headY+T2*0.01,T2*0.105,T2*0.075*blink,0.25,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = skin.eye;
+    ctx.beginPath(); ctx.ellipse(T2*0.115,headY+T2*0.005,T2*0.065,T2*0.045*blink,0.25,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.fillRect(T2*0.13,headY-T2*0.03,T2*0.035,T2*0.028*blink);
+    // antennae with glow bulbs
+    ctx.strokeStyle = skin.dark;
+    ctx.lineWidth = T2*0.035;
+    ctx.beginPath();
+    ctx.moveTo(-T2*0.05,headY-T2*0.13); ctx.quadraticCurveTo(-T2*0.13,headY-T2*0.26,-T2*0.16,headY-T2*0.22);
+    ctx.moveTo(T2*0.06,headY-T2*0.14); ctx.quadraticCurveTo(T2*0.10,headY-T2*0.28,T2*0.15,headY-T2*0.26);
+    ctx.stroke();
+    const bulb = 0.55 + 0.45*Math.sin(now*0.01 + a.phase*3);
+    ctx.fillStyle = 'rgba('+(a.role==='sniper'?'255,184,78':'126,255,225')+','+(0.4+bulb*0.5).toFixed(3)+')';
+    ctx.beginPath(); ctx.arc(-T2*0.16,headY-T2*0.22,T2*0.035,0,Math.PI*2); ctx.arc(T2*0.15,headY-T2*0.26,T2*0.035,0,Math.PI*2); ctx.fill();
+    // weapon per role, held forward
+    const armY = -T2*0.50;
+    ctx.strokeStyle = skin.deep;
+    ctx.lineWidth = T2*0.055;
+    ctx.beginPath(); ctx.moveTo(T2*0.06,armY); ctx.lineTo(T2*0.22,armY-T2*0.03); ctx.stroke();
+    const justFired = now - (a.lastShotAt || 0) < 95;
+    if(a.role === 'sniper'){
+      ctx.strokeStyle = '#241c10';
+      ctx.lineWidth = T2*0.075;
+      ctx.beginPath(); ctx.moveTo(T2*0.10,armY-T2*0.02); ctx.lineTo(T2*0.52,armY-T2*0.10); ctx.stroke();
+      ctx.fillStyle = skin.accent;
+      ctx.fillRect(T2*0.26,armY-T2*0.16,T2*0.07,T2*0.05); // scope
+      ctx.fillRect(T2*0.49,armY-T2*0.13,T2*0.05,T2*0.04); // muzzle bead
+    } else if(a.role === 'sapper'){
+      ctx.fillStyle = '#33231d';
+      ctx.fillRect(T2*0.18,armY-T2*0.10,T2*0.16,T2*0.14);
+      ctx.fillStyle = skin.accent;
+      ctx.beginPath();
+      ctx.moveTo(T2*0.34,armY-T2*0.10); ctx.lineTo(T2*0.46,armY-T2*0.03); ctx.lineTo(T2*0.34,armY+T2*0.04);
+      ctx.closePath(); ctx.fill();
+    } else if(a.role === 'engineer'){
+      ctx.strokeStyle = '#2c3a22';
+      ctx.lineWidth = T2*0.07;
+      ctx.beginPath(); ctx.moveTo(T2*0.16,armY); ctx.lineTo(T2*0.34,armY-T2*0.05); ctx.stroke();
+      ctx.strokeStyle = skin.accent;
+      ctx.lineWidth = T2*0.04;
+      ctx.beginPath(); ctx.arc(T2*0.38,armY-T2*0.06,T2*0.06,-1.2,1.6); ctx.stroke();
+    } else {
+      // compact blaster (rusher/flanker/orbiter variants by barrel length)
+      const len = a.role === 'flanker' ? T2*0.30 : T2*0.36;
+      ctx.fillStyle = '#1d2a26';
+      ctx.fillRect(T2*0.16,armY-T2*0.08,len,T2*0.09);
+      ctx.fillStyle = skin.accent;
+      ctx.fillRect(T2*0.16+len-T2*0.05,armY-T2*0.065,T2*0.05,T2*0.06);
+    }
+    if(justFired){
+      ctx.fillStyle = 'rgba(255,255,235,0.9)';
+      const mx = a.role === 'sniper' ? T2*0.54 : T2*0.5;
+      ctx.beginPath(); ctx.arc(mx,armY-T2*0.08,T2*0.085,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle = 'rgba(126,255,225,0.5)';
+      ctx.beginPath(); ctx.arc(mx,armY-T2*0.08,T2*0.16,0,Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+    // status cues + health readout (screen-aligned, drawn unmirrored)
+    if(fleeing){
+      const wob = Math.sin(now*0.02)*T2*0.03;
+      ctx.fillStyle = 'rgba(140,220,255,0.85)';
+      ctx.beginPath();
+      ctx.moveTo(px+T2*0.24, foot-T2*1.02+wob);
+      ctx.quadraticCurveTo(px+T2*0.31, foot-T2*0.92+wob, px+T2*0.24, foot-T2*0.88+wob);
+      ctx.quadraticCurveTo(px+T2*0.17, foot-T2*0.92+wob, px+T2*0.24, foot-T2*1.02+wob);
+      ctx.fill();
+    }
+    if(a.hp < a.maxHp*0.3 && Math.sin(now*0.02 + a.phase*9) > 0.4){
+      ctx.fillStyle = 'rgba(255,170,90,0.85)';
+      ctx.fillRect(px-T2*0.1+Math.sin(a.phase*17)*T2*0.15, foot-T2*0.5, 2, 2);
+    }
+    if(a.hp < a.maxHp) drawHealthBar(ctx,px,foot-T2*1.1,T2*0.62,a.hp/a.maxHp);
+  }
   function draw(ctx,tileSize,canDrawTile){
     const TILE_SIZE = tileSize || DEFAULT_TILE;
     const visible = (x,y)=> typeof canDrawTile === 'function' ? !!canDrawTile(Math.floor(x),Math.floor(y)) : true;
     const now = nowMs();
     ctx.save();
-    ctx.lineCap = 'round';
-    for(const l of lasers){
-      const a = Math.max(0, 1 - l.t / Math.max(0.001,l.life));
-      if(!visible(l.x1,l.y1) && !visible(l.x2,l.y2)) continue;
-      ctx.globalAlpha = a;
-      ctx.strokeStyle = l.hit ? 'rgba(115,255,222,0.92)' : 'rgba(255,111,91,0.86)';
-      ctx.lineWidth = 3.2;
-      ctx.beginPath();
-      ctx.moveTo(l.x1*TILE_SIZE,l.y1*TILE_SIZE);
-      ctx.lineTo(l.x2*TILE_SIZE,l.y2*TILE_SIZE);
-      ctx.stroke();
-      ctx.strokeStyle = 'rgba(236,255,255,0.85)';
-      ctx.lineWidth = 1.1;
-      ctx.beginPath();
-      ctx.moveTo(l.x1*TILE_SIZE,l.y1*TILE_SIZE);
-      ctx.lineTo(l.x2*TILE_SIZE,l.y2*TILE_SIZE);
-      ctx.stroke();
-    }
-    ctx.globalAlpha = 1;
     for(const team of teams){
       if(!team || team.state === 'defeated') continue;
       const l = team.lander;
-      if(l && !l.destroyed && visible(l.x,l.y)){
-        const px = l.x*TILE_SIZE, py = l.y*TILE_SIZE;
-        const pulse = 0.5 + Math.sin((l.phase||0)*2.4)*0.5;
-        ctx.fillStyle = 'rgba(28,44,52,0.92)';
-        ctx.beginPath(); ctx.ellipse(px,py,TILE_SIZE*1.9,TILE_SIZE*0.55,0,0,Math.PI*2); ctx.fill();
-        ctx.fillStyle = 'rgba(118,255,218,'+(0.22+pulse*0.24).toFixed(3)+')';
-        ctx.beginPath(); ctx.ellipse(px,py+TILE_SIZE*0.22,TILE_SIZE*1.05,TILE_SIZE*0.20,0,0,Math.PI*2); ctx.fill();
-        ctx.strokeStyle = 'rgba(194,255,236,0.70)';
-        ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.ellipse(px,py-TILE_SIZE*0.12,TILE_SIZE*1.20,TILE_SIZE*0.36,0,0,Math.PI*2); ctx.stroke();
-        if(l.hp < l.maxHp){
-          ctx.fillStyle='rgba(0,0,0,0.48)'; ctx.fillRect(px-TILE_SIZE*1.25,py-TILE_SIZE*1.1,TILE_SIZE*2.5,4);
-          ctx.fillStyle='#7dffdc'; ctx.fillRect(px-TILE_SIZE*1.25,py-TILE_SIZE*1.1,TILE_SIZE*2.5*Math.max(0,l.hp/l.maxHp),4);
-        }
-      }
+      if(l && visible(l.x,l.y)) drawLander(ctx,l,TILE_SIZE,now);
+    }
+    drawLaserFx(ctx,TILE_SIZE,visible);
+    for(const team of teams){
+      if(!team || team.state === 'defeated') continue;
       for(const a of team.aliens){
         if(!a || a.dead || a.hp <= 0 || !visible(a.x,a.y)) continue;
-        const px = a.x*TILE_SIZE, foot = a.y*TILE_SIZE;
-        const hurt = now < (a.hitFlashUntil || 0);
-        ctx.fillStyle = hurt ? '#eaffff' : (ROLE_TINTS[a.role] || '#9edac1');
-        ctx.beginPath(); ctx.ellipse(px,foot-TILE_SIZE*0.62,TILE_SIZE*0.24,TILE_SIZE*0.30,0,0,Math.PI*2); ctx.fill();
-        ctx.fillStyle = hurt ? '#a9fff1' : '#4f897a';
-        ctx.fillRect(px-TILE_SIZE*0.18,foot-TILE_SIZE*0.45,TILE_SIZE*0.36,TILE_SIZE*0.34);
-        ctx.fillStyle = '#07110f';
-        ctx.fillRect(px-TILE_SIZE*0.12,foot-TILE_SIZE*0.68,TILE_SIZE*0.08,TILE_SIZE*0.10);
-        ctx.fillRect(px+TILE_SIZE*0.04,foot-TILE_SIZE*0.68,TILE_SIZE*0.08,TILE_SIZE*0.10);
-        ctx.strokeStyle = 'rgba(110,255,221,0.76)';
-        ctx.lineWidth = 1.6;
-        ctx.beginPath();
-        ctx.moveTo(px-a.facing*TILE_SIZE*0.08,foot-TILE_SIZE*0.42);
-        ctx.lineTo(px+a.facing*TILE_SIZE*0.33,foot-TILE_SIZE*0.55);
-        ctx.stroke();
-        if(a.hp < a.maxHp){
-          ctx.fillStyle='rgba(0,0,0,0.45)'; ctx.fillRect(px-TILE_SIZE*0.32,foot-TILE_SIZE*1.02,TILE_SIZE*0.64,3);
-          ctx.fillStyle='#79ffcf'; ctx.fillRect(px-TILE_SIZE*0.32,foot-TILE_SIZE*1.02,TILE_SIZE*0.64*Math.max(0,a.hp/a.maxHp),3);
-        }
+        drawAlien(ctx,a,TILE_SIZE,now);
       }
     }
     ctx.restore();
@@ -1108,7 +1383,7 @@ const invasions = (function(){
       lander:{
         x:finiteNum(lander.x)?lander.x:(finiteNum(t.x)?t.x:0),
         y:finiteNum(lander.y)?lander.y:(finiteNum(t.y)?t.y-3:57),
-        targetY:finiteNum(lander.targetY)?lander.targetY:(finiteNum(t.y)?t.y-2.3:57),
+        targetY:finiteNum(lander.targetY)?lander.targetY:(finiteNum(t.y)?t.y-1.35:57),
         vx:finiteNum(lander.vx)?lander.vx:0,
         vy:finiteNum(lander.vy)?lander.vy:3.5,
         hp:finiteNum(lander.hp)?lander.hp:80,
