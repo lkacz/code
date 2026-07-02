@@ -169,13 +169,59 @@ function fmtStatusCoord(v){
 	if(!Number.isFinite(v)) return '?';
 	return Math.abs(v)>=10000 ? (v/1000).toFixed(1)+'k' : String(Math.round(v));
 }
+function fmtStatusDistance(v){
+	const n=Math.max(0, Number(v)||0);
+	if(n>=10000) return (n/1000).toFixed(1)+'km';
+	return Math.ceil(n)+'m';
+}
+function fmtStatusSeconds(v){
+	const n=Math.max(0, Number(v)||0);
+	if(n>=10) return Math.ceil(n)+'s';
+	return n.toFixed(1)+'s';
+}
+function deathTravelRemainingPathLength(fx,progress){
+	if(!fx) return 0;
+	const start=deathClamp01(progress);
+	if(start>=1) return 0;
+	const estimate=Math.max(1, (Number(fx.pathLen)||Number(fx.dist)||1) * (1-start));
+	const steps=Math.max(4,Math.min(48,Math.ceil(estimate/8)));
+	let len=0;
+	let prev=deathTravelPointAt(fx,start);
+	for(let i=1;i<=steps;i++){
+		const p=start+(1-start)*(i/steps);
+		const pt=deathTravelPointAt(fx,p);
+		len+=Math.hypot(pt.x-prev.x,pt.y-prev.y);
+		prev=pt;
+	}
+	return len;
+}
+function deathTravelHudMetrics(){
+	const fx=deathTravelFx;
+	if(!fx) return null;
+	const dur=Math.max(0.001, Number(fx.dur)||0.001);
+	const t=Math.max(0, Number(fx.t)||0);
+	const raw=deathClamp01(t/dur);
+	const progress=deathTravelProgressAt(raw);
+	const pos=deathTravelPointAt(fx,progress);
+	return {
+		pos,
+		distanceLeft:deathTravelRemainingPathLength(fx,progress),
+		secondsLeft:Math.max(0,dur-t)
+	};
+}
 function updateStatusHud(ts){
 	const el=document.getElementById('worldStatus');
 	if(!el || !player) return;
 	const now=(typeof ts==='number') ? ts : performance.now();
 	if(now-_lastStatusAt < 250) return; // throttle: a HUD line never needs per-frame DOM writes
 	_lastStatusAt=now;
-	const parts=['📍 '+fmtStatusCoord(player.x)+','+fmtStatusCoord(player.y)];
+	const travel=deathTravelHudMetrics();
+	const pos=(travel && travel.pos) || player;
+	const parts=['📍 '+fmtStatusCoord(pos.x)+','+fmtStatusCoord(pos.y)];
+	if(travel){
+		parts.push('🧭 '+fmtStatusDistance(travel.distanceLeft));
+		parts.push('⏱ '+fmtStatusSeconds(travel.secondsLeft));
+	}
 	let isDay=true;
 	try{
 		const ti=(BACKGROUND && BACKGROUND.timeInfo) ? BACKGROUND.timeInfo() : null;
@@ -189,7 +235,7 @@ function updateStatusHud(ts){
 	try{
 		const wm=(WIND && WIND.metrics) ? WIND.metrics() : null;
 		const cm=(CLOUDS && CLOUDS.metrics) ? CLOUDS.metrics() : null;
-		const raining=(CLOUDS && CLOUDS.isRainingAt) ? CLOUDS.isRainingAt(Math.floor(player.x)) : false;
+		const raining=(CLOUDS && CLOUDS.isRainingAt) ? CLOUDS.isRainingAt(Math.floor(pos.x)) : false;
 		const storming=!!(cm && cm.storm && cm.storm.active);
 		const speed=wm ? wm.speed : 0;
 		const squall=!!(wm && wm.squall && wm.squall.active);
@@ -206,7 +252,9 @@ function updateStatusHud(ts){
 		if(sm && sm.enabled!==false && STATUS_SEASON_ICON[sm.season]) parts.push(STATUS_SEASON_ICON[sm.season]);
 	}catch(e){}
 	const text=parts.join('  ·  ');
+	const title=travel ? 'Podroz po smierci: aktualna pozycja, pozostaly dystans i szacowany czas' : 'Pozycja bohatera, zegar, pogoda i pora roku';
 	if(text!==_lastStatusText){ _lastStatusText=text; el.textContent=text; }
+	if(el.title!==title) el.title=title;
 }
 // --- Dynamic Background delegated to engine/background.js ---
 function drawBackground(){ if(BACKGROUND && BACKGROUND.draw) BACKGROUND.draw(ctx, W, H, player.x, TILE, WORLDGEN, zoom); }

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+const indexSource = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 
 assert.match(mainSource, /let deathTravelFx=null;/, 'death respawn transit has a single active state object');
 assert.match(mainSource, /function startDeathTravelFx\(cause\)[\s\S]*deathRespawnTarget\(\)[\s\S]*releaseGameplayInput\(\)[\s\S]*spawnEnergyAbsorb/, 'starting death transit locks input and emits energy toward the respawn target');
@@ -20,6 +21,8 @@ assert.match(mainSource, /function deathTravelGroundYAt\(fx,x\)[\s\S]*for\(let d
 assert.match(mainSource, /function deathTravelPointAt\(fx,p\)[\s\S]*cruiseY=deathTravelGroundYAt\(fx,x\)-DEATH_TRAVEL_GROUND_CLEARANCE[\s\S]*cruiseBlend/, 'death transit blends from the death point into a terrain-following spirit flight and back to respawn');
 assert.match(mainSource, /function deathTravelEstimatedPathLength\(fx\)[\s\S]*deathTravelPointAt\(fx,i\/steps\)/, 'death transit speed is estimated from the sampled spirit path rather than a straight line');
 assert.match(mainSource, /function deathTravelDurationForPathLength\(pathLength\)[\s\S]*len\/DEATH_TRAVEL_SPEED_TILES_PER_SEC/, 'death transit duration is derived from sampled path length and speed');
+assert.match(mainSource, /function deathTravelRemainingPathLength\(fx,progress\)[\s\S]*deathTravelPointAt\(fx,start\)[\s\S]*deathTravelPointAt\(fx,p\)/, 'death transit HUD samples the remaining route instead of showing straight-line distance');
+assert.match(mainSource, /function deathTravelHudMetrics\(\)[\s\S]*const fx=deathTravelFx;[\s\S]*deathTravelPointAt\(fx,progress\)[\s\S]*distanceLeft:deathTravelRemainingPathLength\(fx,progress\)[\s\S]*secondsLeft:Math\.max\(0,dur-t\)/, 'death transit exposes live HUD position, remaining distance and ETA');
 assert.match(mainSource, /route\.pathLen=deathTravelEstimatedPathLength\(route\);[\s\S]*route\.dur=deathTravelDurationForPathLength\(route\.pathLen\);/, 'death transit no longer forces far respawns into a fixed short duration');
 assert.ok(!/0\.9 \+ dist\*0\.018/.test(mainSource), 'death transit does not use the old capped distance fudge');
 assert.ok(!/DEATH_TRAVEL_MAX_DUR=2\.35/.test(mainSource), 'death transit no longer has the short max duration that made far flights too fast');
@@ -46,6 +49,11 @@ assert.match(mainSource, /function drawPlayer\(\)\{ if\(drawDeathTravelFx\(\)\) 
 assert.match(mainSource, /if\(!deathTravelFx && WEAPONS && WEAPONS\.drawHeld\) WEAPONS\.drawHeld\(ctx,TILE,player\);/, 'held weapon is hidden during death transit');
 assert.match(mainSource, /function cameraCenterForPlayer\(\)\{[\s\S]*deathTravelFx \? deathTravelCurrentPoint\(deathTravelFx\) : player/, 'camera follows the traveling energy while death transit is active');
 assert.match(mainSource, /function updateCameraFollow\(dt\)[\s\S]*if\(deathTravelFx\)\{[\s\S]*camSX=c\.x; camSY=c\.y;[\s\S]*applyCameraFromCenter\(\);[\s\S]*return;/, 'death transit keeps the spirit centered instead of camera-lagging behind it');
+assert.match(mainSource, /function updateStatusHud\(ts\)[\s\S]*const travel=deathTravelHudMetrics\(\);[\s\S]*const pos=\(travel && travel\.pos\) \|\| player;[\s\S]*fmtStatusCoord\(pos\.x\)\+','\+fmtStatusCoord\(pos\.y\)/, 'status panel reports the traveling spirit position while death transit is active');
+assert.match(mainSource, /function updateStatusHud\(ts\)[\s\S]*if\(travel\)\{[\s\S]*fmtStatusDistance\(travel\.distanceLeft\)[\s\S]*fmtStatusSeconds\(travel\.secondsLeft\)/, 'status panel adds remaining distance and ETA during death transit');
+assert.match(mainSource, /CLOUDS\.isRainingAt\) \? CLOUDS\.isRainingAt\(Math\.floor\(pos\.x\)\)/, 'status panel weather lookup follows the live displayed position during death transit');
+assert.match(indexSource, /#worldStatusPanel\{[^}]*max-width:min\(520px,58vw\)[^}]*overflow:hidden/, 'status panel is bounded so death transit HUD details do not break the top bar');
+assert.match(indexSource, /#worldStatus\{[^}]*white-space:nowrap[^}]*text-overflow:ellipsis/, 'status text remains a single trimmed line on narrow screens');
 assert.match(mainSource, /function runGameStep\(dt,ts\)\{\s*if\(updateDeathTravelFx\(dt\)\)\{[\s\S]*updateParticles\(dt\);[\s\S]*updateBlink\(ts\);[\s\S]*return;/, 'simulation pauses gameplay and still advances particles during death transit');
 
 console.log('death-respawn-fx-sim: all assertions passed');
