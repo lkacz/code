@@ -787,21 +787,21 @@ MM.ui = (function(){
     const speed=document.createElement('input');
     speed.id='windDebugSpeed';
     speed.type='range';
-    speed.min='-5.2';
-    speed.max='5.2';
+    speed.min='-7.2';
+    speed.max='7.2';
     speed.step='0.1';
-    speed.value=String(debugNumber('wind','speed',0,-5.2,5.2));
+    speed.value=String(debugNumber('wind','speed',0,-7.2,7.2));
     speed.style.cssText='flex:1; min-width:92px;';
     const speedVal=document.createElement('span');
     speedVal.style.cssText='min-width:36px; text-align:right; opacity:.7;';
     function readSpeed(){
       const n=parseFloat(speed.value);
-      return Number.isFinite(n) ? Math.max(-5.2, Math.min(5.2, n)) : 0;
+      return Number.isFinite(n) ? Math.max(-7.2, Math.min(7.2, n)) : 0;
     }
     function refreshSpeed(){ speedVal.textContent=readSpeed().toFixed(1); }
     speed.addEventListener('input',()=>{ refreshSpeed(); debugSet('wind','speed',readSpeed()); });
     function persistWindOverride(value){
-      const v=Math.max(-5.2,Math.min(5.2,Number(value)||0));
+      const v=Math.max(-7.2,Math.min(7.2,Number(value)||0));
       speed.value=String(v);
       refreshSpeed();
       debugSet('wind','mode','override');
@@ -822,7 +822,7 @@ MM.ui = (function(){
       const mode=String(saved.mode||'natural');
       if(!debugHasKey('wind','mode')) return;
       if(mode==='override'){
-        const v=debugNumber('wind','speed',0,-5.2,5.2);
+        const v=debugNumber('wind','speed',0,-7.2,7.2);
         speed.value=String(v);
         refreshSpeed();
         if(actions.exact) actions.exact(v);
@@ -841,8 +841,8 @@ MM.ui = (function(){
       ['exact','Ustaw','Wymusza dokladna moc i kierunek z suwaka',()=>{ const ok=actions.exact && actions.exact(readSpeed()); if(ok) persistWindOverride(readSpeed()); return ok; },'Wiatr: ustawiony '+readSpeed().toFixed(1)],
       ['breezeLeft','Bryza <-','Lekka bryza w lewo',()=>{ const ok=actions.breeze && actions.breeze(-1); if(ok) persistWindOverride(-1.35); return ok; },'Wiatr: bryza w lewo'],
       ['breezeRight','Bryza ->','Lekka bryza w prawo',()=>{ const ok=actions.breeze && actions.breeze(1); if(ok) persistWindOverride(1.35); return ok; },'Wiatr: bryza w prawo'],
-      ['galeLeft','Wichura <-','Silny wiatr w lewo',()=>{ const ok=actions.gale && actions.gale(-1); if(ok) persistWindOverride(-4.65); return ok; },'Wiatr: wichura w lewo'],
-      ['galeRight','Wichura ->','Silny wiatr w prawo',()=>{ const ok=actions.gale && actions.gale(1); if(ok) persistWindOverride(4.65); return ok; },'Wiatr: wichura w prawo'],
+      ['galeLeft','Wichura <-','Silny wiatr w lewo',()=>{ const ok=actions.gale && actions.gale(-1); if(ok) persistWindOverride(-6.4); return ok; },'Wiatr: wichura w lewo'],
+      ['galeRight','Wichura ->','Silny wiatr w prawo',()=>{ const ok=actions.gale && actions.gale(1); if(ok) persistWindOverride(6.4); return ok; },'Wiatr: wichura w prawo'],
       ['squallLeft','Szkwal <-','Jednorazowy poryw w lewo',()=>actions.squall && actions.squall(-1),'Wiatr: szkwal w lewo'],
       ['squallRight','Szkwal ->','Jednorazowy poryw w prawo',()=>actions.squall && actions.squall(1),'Wiatr: szkwal w prawo'],
       ['storm','Burza + szkwal','Uruchamia burze i mocny poryw',()=>{ const p=actions.profile && actions.profile('storm'); const s=actions.storm && actions.storm(); if(p) persistWindProfile('storm'); return !!(p||s); },'Wiatr: burza i szkwal'],

@@ -127,11 +127,11 @@ assert.match(src, /FALLING\.auditChunks\(\[cx\],\{force:true,immediate:true\}\)/
 assert.match(src, /encodeRLE\(chunkForTerrainSave\(arr\)\)/, 'full and incremental chunk saves encode sanitized terrain chunks');
 assert.match(src, /restoreTerrainChunk\(ch\.cx,arr\)/, 'inline modified chunk restore removes transient and legacy overlay tiles from terrain');
 assert.match(src, /restoreTerrainChunk\(ref\.cx,arr\)/, 'referenced autosave restore removes transient and legacy overlay tiles from terrain');
-assert.match(src, /updateInventory\(\{noSave:true\}\)/, 'load path refreshes inventory UI without dirtying the save');
+assert.match(src, /updateInventory\(\{noSave:true,noCraftNotify:true\}\)/, 'load path refreshes inventory UI without dirtying the save or replaying craft notifications');
 assert.match(src, /refreshHotbarDom\(\)/, 'load path refreshes visible hotbar labels');
 assert.match(src, /updateHotbarSel\(\)/, 'load path refreshes visible hotbar selection');
 assert.match(src, /function updateInventory\(opts\)/, 'inventory refresh accepts options');
-assert.match(src, /if\(!\(opts&&opts\.noSave\)\) saveState\(\)/, 'inventory refresh can suppress save scheduling');
+assert.match(src, /if\(!opts\.noSave\) saveState\(\)/, 'inventory refresh can suppress save scheduling');
 assert.match(src, /function recordSaveFailure\(e,manual\)/, 'autosave records and backs off after storage failures');
 assert.match(src, /function timedSavePart\(label,fn,perf\)/, 'save path has per-subsystem timing instrumentation');
 assert.match(src, /window\.__lastSavePerfParts=parts/, 'save path publishes slowest save subsystems for the debug HUD');
@@ -198,6 +198,11 @@ assert.match(src, /const CRAFT_GROUP_ORDER=\{\}; CRAFT_GROUPS\.forEach\(\(g,i\)=
 assert.match(src, /const CRAFT_RECIPE_META=\{/, 'crafting recipes carry UI metadata separately from effects');
 assert.match(src, /function recipeMissing\(r\)/, 'crafting can report missing ingredients per recipe');
 assert.match(src, /function recipeMaxCrafts\(r\)/, 'crafting computes craftable batch capacity from inventory');
+assert.match(src, /crafting: timedSavePart\('crafting',\(\)=>snapshotCrafting\(\),perf\)/, 'save file persists which crafting recipes already announced availability');
+assert.match(src, /restoreCraftingAvailability\(data\.crafting\)/, 'load path restores announced crafting availability state');
+assert.match(src, /function checkCraftingAvailability\(opts\)/, 'crafting tracks newly available recipes from inventory changes');
+assert.match(src, /msg\('Nowe receptury w Rzemiosle: '\+shown\+extra\)/, 'newly available crafting recipes show one player notification');
+assert.match(src, /checkCraftingAvailability\(\{silent:!!opts\.noCraftNotify\}\)/, 'inventory refresh can silence initial crafting notifications');
 assert.match(src, /function filteredCraftRecipes\(\)/, 'crafting filters recipes by group and search text');
 assert.match(src, /function renderCraftPanel\(\)/, 'crafting renders through the recipe-book panel');
 assert.match(src, /search\.addEventListener\('input',\(\)=>\{ craftQuery=search\.value\|\|''; renderCraftPanel\(\); \}\)/, 'crafting search updates the visible recipe list');

@@ -6,6 +6,9 @@ const TRACTION = Object.freeze({
   snow: Object.freeze({ speed: 1, accel: 0.78, friction: 0.28, kind: 'snow' }),
   ice: Object.freeze({ speed: 1.04, accel: 0.34, friction: 0.055, kind: 'ice' }),
 });
+export const JUMP_ARC = Object.freeze({
+  DOWN_CANCEL_FALL_TILES: 0.08,
+});
 
 function safePositive(n, fallback){
   return (typeof n === 'number' && isFinite(n) && n > 0) ? n : fallback;
@@ -34,5 +37,15 @@ export function applyHorizontalMovement(vx, input, dt, moveMultiplier, move, gro
   return vx - fr * Math.sign(vx);
 }
 
-export const movement = { surfaceTraction, applyHorizontalMovement };
+export function applyJumpArcControl(vy, gravity, options = {}){
+  const g = safePositive(gravity, MOVE.GRAV);
+  let next = (typeof vy === 'number' && isFinite(vy)) ? vy : 0;
+  if(options.cancel){
+    const fallVy = Math.sqrt(2 * g * JUMP_ARC.DOWN_CANCEL_FALL_TILES);
+    if(next < fallVy) next = fallVy;
+  }
+  return next;
+}
+
+export const movement = { surfaceTraction, applyHorizontalMovement, applyJumpArcControl, JUMP_ARC };
 export default movement;

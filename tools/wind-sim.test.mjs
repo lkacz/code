@@ -30,6 +30,11 @@ const pumpRoofTile = (x,y)=> {
   if(y===42 && x>=-3 && x<=3) return T.WATER_PUMP;
   return T.AIR;
 };
+const narrowRoofTile = (x,y)=> {
+  if(y>=90) return T.STONE;
+  if(y===42 && x===0) return T.STONE;
+  return T.AIR;
+};
 const player = {x:0,y:50,vx:0,vy:0,onGround:false,w:0.7,h:0.95};
 
 function runGroundedIntoWind(windSpeed, input=1, moveMult=2){
@@ -49,6 +54,8 @@ function runGroundedIntoWind(windSpeed, input=1, moveMult=2){
 wind.reset();
 wind.setOverride(3);
 assert.equal(wind.metrics().override, 3, 'wind debug override is visible in metrics');
+wind.setOverride(99);
+assert.equal(wind.metrics().override, 7.2, 'wind debug override clamps to the stronger gale cap');
 wind.reset();
 assert.equal(wind.metrics().override, null, 'wind reset clears debug override');
 assert.equal(wind.speed(), 0, 'wind reset returns weather speed to zero');
@@ -117,6 +124,20 @@ const runAgainstWind = runGroundedIntoWind(-5.0);
 const runCalm = runGroundedIntoWind(0);
 assert.ok(runWithWind.vx >= runCalm.vx, `running with wind must not be slower than calm (${runWithWind.vx.toFixed(2)} vs ${runCalm.vx.toFixed(2)})`);
 assert.ok(runWithWind.vx > runAgainstWind.vx + 0.05, `running with wind must be faster than against it (${runWithWind.vx.toFixed(2)} vs ${runAgainstWind.vx.toFixed(2)})`);
+const galeWithWind = runGroundedIntoWind(6.4);
+const galeAgainstWind = runGroundedIntoWind(-6.4);
+const galeStanding = runGroundedIntoWind(6.4,0);
+assert.ok(galeWithWind.x > galeAgainstWind.x + 8, `strong gales create a major position gap (${galeWithWind.x.toFixed(2)} vs ${galeAgainstWind.x.toFixed(2)})`);
+assert.ok(galeAgainstWind.x < runCalm.x - 5, `running into a strong gale loses meaningful ground (${galeAgainstWind.x.toFixed(2)} vs calm ${runCalm.x.toFixed(2)})`);
+assert.ok(galeStanding.x > 2.0, `standing in a strong gale gets shoved several tiles (${galeStanding.x.toFixed(2)})`);
+assert.ok(wind._debug.heroStrongWindMultiplier(6.4) > wind._debug.heroStrongWindMultiplier(3.0)*1.8, 'hero wind force ramps up nonlinearly for strong gales');
+wind.setOverride(6.4);
+const sameSpotStanding = {x:0,y:88,vx:0,vy:0,onGround:true,w:0.7,h:0.95};
+const sameSpotJumping = {x:0,y:88,vx:0,vy:-9,onGround:false,w:0.7,h:0.95};
+const standingGaleFrame = wind.applyToHero(sameSpotStanding,1/60,openTile,{inWater:false,groundSpeedCap:MOVE.MAX*2}).delta;
+wind.setOverride(6.4);
+const jumpingGaleFrame = wind.applyToHero(sameSpotJumping,1/60,openTile,{inWater:false,groundSpeedCap:MOVE.MAX*2}).delta;
+assert.ok(jumpingGaleFrame > standingGaleFrame*1.9, `jumping catches much more gale force than standing (${jumpingGaleFrame.toFixed(2)} vs ${standingGaleFrame.toFixed(2)})`);
 
 // Roofs and tunnels attenuate wind strongly.
 wind.setOverride(4.0);
@@ -132,6 +153,25 @@ assert.equal(wind._debug.isWindBlocker(T.CHEST_COMMON), true, 'solid chests bloc
 assert.ok(wind.exposureAt(0,50,wireRoofTile) > openExposure*0.9, 'wire runs do not accidentally roof over wind');
 assert.ok(wind.exposureAt(0,50,pumpRoofTile) < openExposure*0.35, 'solid machines still block wind exposure physically');
 assert.ok(wind.gasDrift(0,50,T.STEAM,openTile) > wind.gasDrift(0,50,T.STEAM,roofTile)*2, 'gas drift also respects exposure');
+
+wind.setOverride(6.4);
+const openGaleJump = {x:0,y:50,vx:0,vy:-9,onGround:false,w:0.7,h:0.95};
+const openGaleJumpDelta = wind.applyToHero(openGaleJump,1/60,openTile,{inWater:false,groundSpeedCap:MOVE.MAX*2}).delta;
+wind.setOverride(6.4);
+const narrowRoofJump = {x:0,y:50,vx:0,vy:-9,onGround:false,w:0.7,h:0.95};
+const narrowRoofJumpDelta = wind.applyToHero(narrowRoofJump,1/60,narrowRoofTile,{inWater:false,groundSpeedCap:MOVE.MAX*2}).delta;
+wind.setOverride(6.4);
+const fullRoofJump = {x:0,y:50,vx:0,vy:-9,onGround:false,w:0.7,h:0.95};
+const fullRoofJumpDelta = wind.applyToHero(fullRoofJump,1/60,roofTile,{inWater:false,groundSpeedCap:MOVE.MAX*2}).delta;
+assert.ok(narrowRoofJumpDelta > openGaleJumpDelta*0.65, `one noisy roof column should not erase jump wind (${narrowRoofJumpDelta.toFixed(2)} vs open ${openGaleJumpDelta.toFixed(2)})`);
+assert.ok(fullRoofJumpDelta < openGaleJumpDelta*0.45, `real roofs still shelter jump wind (${fullRoofJumpDelta.toFixed(2)} vs open ${openGaleJumpDelta.toFixed(2)})`);
+wind.setOverride(6.4);
+const openGaleStand = {x:0,y:50,vx:0,vy:0,onGround:true,w:0.7,h:0.95};
+const openGaleStandDelta = wind.applyToHero(openGaleStand,1/60,openTile,{inWater:false,groundSpeedCap:MOVE.MAX*2}).delta;
+wind.setOverride(6.4);
+const narrowRoofStand = {x:0,y:50,vx:0,vy:0,onGround:true,w:0.7,h:0.95};
+const narrowRoofStandDelta = wind.applyToHero(narrowRoofStand,1/60,narrowRoofTile,{inWater:false,groundSpeedCap:MOVE.MAX*2}).delta;
+assert.ok(narrowRoofStandDelta > openGaleStandDelta*0.65, `one noisy roof column should not erase standing gale force (${narrowRoofStandDelta.toFixed(2)} vs open ${openGaleStandDelta.toFixed(2)})`);
 assert.ok(WORLD_MIN_Y<0, 'wind tests cover the extended sky range');
 const skyRoofTile = (x,y)=> {
   if(y===-58 && x>=-3 && x<=3) return T.STONE;

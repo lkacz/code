@@ -5,7 +5,7 @@ globalThis.window = globalThis;
 globalThis.MM = {};
 
 const { MOVE, T } = await import('../src/constants.js');
-const { applyHorizontalMovement, surfaceTraction } = await import('../src/engine/movement.js');
+const { JUMP_ARC, applyHorizontalMovement, applyJumpArcControl, surfaceTraction } = await import('../src/engine/movement.js');
 
 function coast(tile, seconds){
   let vx = MOVE.MAX * 2;
@@ -40,6 +40,14 @@ assert.ok(snowAfter > normalAfter + 3, 'snow keeps the hero sliding after releas
 assert.ok(iceAfter > snowAfter + 5, 'ice keeps substantially more glide than snow');
 
 assert.ok(accelerate(T.ICE, 0.25) < accelerate(T.SNOW, 0.25), 'ice starts/turns more slowly than snow');
+
+const defaultHeroGravity = MOVE.GRAV * 2;
+const fullJumpVy = MOVE.JUMP * 2;
+assert.equal(applyJumpArcControl(fullJumpVy, defaultHeroGravity, {release:true}), fullJumpVy, 'releasing jump no longer trims the arc into a small hop');
+const downCancelVy = applyJumpArcControl(fullJumpVy, defaultHeroGravity, {cancel:true});
+assert.ok(downCancelVy > 0, 'pressing down during upward jump turns the arc into a fall');
+assert.equal(applyJumpArcControl(8, defaultHeroGravity, {cancel:true}), 8, 'down cancel does not slow an already faster fall');
+assert.equal(JUMP_ARC.DOWN_CANCEL_FALL_TILES, 0.08, 'down cancel keeps a crisp fall impulse');
 
 const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const indexSource = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
@@ -78,7 +86,15 @@ assert.ok(!mainSource.includes('drawMaterialTile(cctx,t,lx*TILE,y*TILE,h)'), 'ch
 assert.match(mainSource, /try \{\s+\/\/ render tiles[\s\S]*finally \{\s+ctx\.restore\(\);/, 'world transform is restored even if a draw subsystem fails');
 assert.ok(!mainSource.includes('player.y += bob'), 'surface-water bob must stay visual/velocity based and not mutate hero position directly');
 assert.match(mainSource, /function heroTouchesLadder\(\)[\s\S]*hasLadderAt\(x,y\)/, 'hero movement samples ladder overlays across the body');
+assert.match(mainSource, /import \{ applyHorizontalMovement, applyJumpArcControl, surfaceTraction \} from '\.\/engine\/movement\.js';/, 'hero movement imports shared jump arc control');
+assert.match(mainSource, /function queueJumpInput\(k\)\{[\s\S]*jumpBufferT=JUMP_BUFFER;[\s\S]*\}/, 'jump keydown and touch taps queue jump presses immediately');
+assert.match(mainSource, /if\(!e\.repeat\) queueJumpInput\(k\);/, 'keyboard jump taps are buffered on keydown');
+assert.match(mainSource, /btn\.addEventListener\('pointerdown'[\s\S]*queueJumpInput\(k\);/, 'touch up-button taps are buffered on pointerdown');
 assert.match(mainSource, /const ladderContact=heroTouchesLadder\(\);[\s\S]*const jumpHeldEarly=!!keys\[' '\] \|\| \(!ladderContact && climbUpInput\);/, 'up input climbs ladders instead of becoming a jump press while on a ladder');
+assert.ok(!mainSource.includes('releaseCut'), 'releasing jump does not cut upward speed into a small hop');
+assert.ok(!mainSource.includes('jumpReleasedThisFrame'), 'jump release is not used for variable-height short hops');
+assert.match(mainSource, /const downCancel=heroDropThroughInput\(\) && !ladderContact;/, 'pressing or tapping down in the air cancels the current jump arc');
+assert.match(mainSource, /applyJumpArcControl\(player\.vy, gravForCut, \{cancel:true\}\)/, 'hero jump arc control only applies the down-cancel helper');
 assert.match(mainSource, /if\(ladderContact && !ladderJumped && ladderReleaseT<=0\)\{[\s\S]*const climbDir=\(climbDownInput\?1:0\)-\(climbUpInput\?1:0\);[\s\S]*player\.vy=climbDir\*climbSpeed;[\s\S]*player\.jumpCount=0;/, 'ladder contact drives vertical climb speed and resets air jumps');
 assert.match(mainSource, /ladderReleaseT=0\.2;/, 'jumping from a ladder briefly releases ladder grip');
 assert.match(mainSource, /function solidAt\(x,y,axis\)\{[\s\S]*if\(hasLadderAt\(x,y\)\) return false;/, 'ladder overlays make their cells passable for hero collision');

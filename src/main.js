@@ -14,8 +14,9 @@ import { solar as SOLAR } from './engine/solar.js';
 import { teleporters as TELEPORTERS } from './engine/teleporters.js';
 import { pumps as PUMPS } from './engine/pumps.js';
 import { canPlaceLadderFixture, ladderConnections } from './engine/ladders.js';
-import { applyHorizontalMovement, surfaceTraction } from './engine/movement.js';
+import { applyHorizontalMovement, applyJumpArcControl, surfaceTraction } from './engine/movement.js';
 import { cape as CAPE } from './engine/cape.js';
+import { necklace as NECKLACE } from './engine/necklace.js';
 import { chests as CHESTS } from './engine/chests.js';
 import './inventory.js';
 import { mobs as MOBS } from './engine/mobs.js';
@@ -1460,6 +1461,7 @@ function buildSaveObject(opts){
 	progress: timedSavePart('progress',()=>((PROGRESS && PROGRESS.snapshot) ? PROGRESS.snapshot() : null),perf),
 	plants: timedSavePart('plants',()=>((PLANTS && PLANTS.snapshot) ? PLANTS.snapshot() : null),perf),
 	inv: timedSavePart('inventory',()=>snapshotInventory(),perf),
+	crafting: timedSavePart('crafting',()=>snapshotCrafting(),perf),
 	hotbar: timedSavePart('hotbar',()=>snapshotHotbar(),perf),
 	equipment: timedSavePart('equipment',()=>snapshotEquipment(),perf),
 	player: { x: player.x, y: player.y, xp: player.xp|0, tool: player.tool, energy:+(player.energy||0).toFixed(2) },
@@ -1594,6 +1596,7 @@ function loadGame(){
 	try{ if(PROGRESS && PROGRESS.restore && data.progress) PROGRESS.restore(data.progress); }catch(e){}
 	try{ if(PLANTS && PLANTS.restore && data.plants) PLANTS.restore(data.plants); }catch(e){}
 	restoreInventory(data.inv);
+	restoreCraftingAvailability(data.crafting);
 	restoreHotbar(data.hotbar || (data.player && {tool:data.player.tool}));
 	restoreEquipment(data.equipment);
 	// Restore only player position
@@ -1608,7 +1611,7 @@ function loadGame(){
 	if(data.player && typeof data.player.x==='number' && typeof data.player.y==='number') { centerOnPlayer(); } else { placePlayer(true); }
 	try{ if(TUTORIAL_NPC && TUTORIAL_NPC.hasPosition && !TUTORIAL_NPC.hasPosition() && TUTORIAL_NPC.placeNearWorldStart) TUTORIAL_NPC.placeNearWorldStart(getTile,WORLDGEN); }catch(e){}
 	try{
-		updateInventory({noSave:true});
+		updateInventory({noSave:true,noCraftNotify:true});
 		refreshHotbarDom();
 		updateHotbarSel();
 		updateWeaponBar();
@@ -2055,6 +2058,37 @@ const CRAFT_GROUP_KEY='mm_craft_group_v1';
 let selectedCraftId=null;
 let craftQuery='';
 let craftGroup='all';
+let craftSeenAvailableIds=new Set();
+function recipeKnown(id){ return RECIPES.some(r=>r.id===id); }
+function resetCraftingAvailability(){ craftSeenAvailableIds=new Set(); }
+function markCraftableRecipesSeen(){
+	RECIPES.forEach(r=>{ if(canCraft(r)) craftSeenAvailableIds.add(r.id); });
+}
+function snapshotCrafting(){
+	return {seenAvailable:[...craftSeenAvailableIds].filter(recipeKnown)};
+}
+function restoreCraftingAvailability(src){
+	resetCraftingAvailability();
+	let restored=false;
+	if(src && typeof src==='object' && Array.isArray(src.seenAvailable)){
+		src.seenAvailable.forEach(id=>{ if(typeof id==='string' && recipeKnown(id)) craftSeenAvailableIds.add(id); });
+		restored=true;
+	}
+	if(!restored) markCraftableRecipesSeen();
+}
+function checkCraftingAvailability(opts){
+	const silent=!!(opts&&opts.silent);
+	const newly=[];
+	RECIPES.forEach(r=>{
+		if(!canCraft(r) || craftSeenAvailableIds.has(r.id)) return;
+		craftSeenAvailableIds.add(r.id);
+		newly.push(r);
+	});
+	if(silent || !newly.length) return;
+	const shown=newly.slice(0,3).map(r=>r.name||r.id).join(', ');
+	const extra=newly.length>3 ? ' (+'+(newly.length-3)+')' : '';
+	msg('Nowe receptury w Rzemiosle: '+shown+extra);
+}
 function loadCraftCollapsed(){
 	try{ return localStorage.getItem(CRAFT_COLLAPSED_KEY)==='1'; }catch(e){ return false; }
 }
@@ -2246,8 +2280,8 @@ function updateCraftButtons(){ renderCraftPanel(); }
 // Blink moved to engine/eyes.js
 function updateBlink(now){ if(EYES && EYES.update) EYES.update(now); }
  // Cape physics: chain with gravity that droops when idle and streams when moving
-function initScarf(){ CAPE.init(player); }
-function updateCape(dt){ CAPE.update(player,dt,getTile,isSolid); }
+function initScarf(){ CAPE.init(player); if(NECKLACE && NECKLACE.init) NECKLACE.init(player); }
+function updateCape(dt){ CAPE.update(player,dt,getTile,isSolid); if(NECKLACE && NECKLACE.update) NECKLACE.update(player,dt,getTile); }
 function drawDeathTravelFx(){
 	const fx=deathTravelFx;
 	if(!fx) return false;
@@ -2383,6 +2417,7 @@ function drawPlayer(){ if(drawDeathTravelFx()) return; const c=MM.customization|
 		}
 		ctx.restore();
 	}
+	if(NECKLACE && NECKLACE.drawBack) NECKLACE.drawBack(ctx,TILE,player);
 	// Normalize outfit style to avoid hidden whitespace/case issues
 	const style = ((c && c.outfitStyle)!=null ? String(c.outfitStyle) : 'default').trim().toLowerCase();
 		 // draw outfit body using shared renderer from inventory.js
@@ -2394,6 +2429,7 @@ function drawPlayer(){ if(drawDeathTravelFx()) return; const c=MM.customization|
 			 ctx.fillRect(bodyX,bodyY,bw,bh);
 			 ctx.strokeStyle='#4b3212'; ctx.lineWidth=2; ctx.strokeRect(bodyX,bodyY,bw,bh);
 		 }
+	if(NECKLACE && NECKLACE.drawFront) NECKLACE.drawFront(ctx,TILE,player);
 	 // Eyes (for all outfits except ninja/ironperson which draw their own above)
 	 if(style!=='ninja' && style!=='ironperson') {
 		const eyeW=6, eyeHOpen=6; let eyeH = (EYES && EYES.getEyeHeight)? EYES.getEyeHeight(eyeHOpen, c.eyeStyle): eyeHOpen;
@@ -4604,12 +4640,17 @@ function modalInputOpen(){ return !!(MM.modalInput && MM.modalInput.isOpen && MM
 function releaseGameplayInput(){
 	for(const k in keys) keys[k]=false;
 	keysOnce.clear();
+	jumpBufferT=0;
+	jumpPrev=false;
 	trapdoorDropBufferT=0;
 	try{ stopMining(); }catch(e){}
 	try{ if(WEAPONS && WEAPONS.cancelHeld) WEAPONS.cancelHeld(); }catch(e){}
 	minePointerId=null; weaponPointerId=null; mineBtnHeld=false; fireBtnHeld=false;
 	activePointers.clear();
 	pinch=null;
+}
+function queueJumpInput(k){
+	if(k===' ' || ((k==='w' || k==='arrowup') && !heroTouchesLadder())) jumpBufferT=JUMP_BUFFER;
 }
 window.addEventListener('mm-modal-input',e=>{ if(e.detail && e.detail.open) releaseGameplayInput(); });
 // Debug overlay toggle (F3)
@@ -4712,7 +4753,7 @@ document.querySelectorAll('#weaponBar .wepSlot').forEach(el=>{
 	el.addEventListener('click',()=>selectWeaponKey(el.getAttribute('data-wkey')));
 });
 window.addEventListener('mm-customization-change',updateWeaponBar);
-window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if(modalInputOpen()){ releaseGameplayInput(); return; } noteSaveActivity(); const k=e.key.toLowerCase(); const code=(e.code||'').toLowerCase(); keys[k]=true; if(code) keys[code]=true; if(k==='s' || k==='arrowdown') trapdoorDropBufferT=TRAPDOOR_DROP_BUFFER; if(k==='escape'){ closeHotSelect(); }
+window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if(modalInputOpen()){ releaseGameplayInput(); return; } noteSaveActivity(); const k=e.key.toLowerCase(); const code=(e.code||'').toLowerCase(); keys[k]=true; if(code) keys[code]=true; if(!e.repeat) queueJumpInput(k); if(k==='s' || k==='arrowdown') trapdoorDropBufferT=TRAPDOOR_DROP_BUFFER; if(k==='escape'){ closeHotSelect(); }
  if(!e.repeat && NPCS && NPCS.handleKey && NPCS.handleKey(e.key,player,tutorialNpcCtx)){ e.preventDefault(); return; }
  // Weapon shortcuts: 1 = pickaxe/build mode (cycles owned tiers), 2/3/4 cycle weapon categories
  if(!e.repeat && ['1','2','3','4'].includes(e.key)){ selectWeaponKey(e.key); }
@@ -4751,7 +4792,7 @@ window.addEventListener('blur',releaseGameplayInput);
 let mineDir={dx:1,dy:0}; document.querySelectorAll('.dirbtn').forEach(b=>{ b.addEventListener('click',()=>{ noteSaveActivity(); mineDir.dx=+b.getAttribute('data-dx'); mineDir.dy=+b.getAttribute('data-dy'); document.querySelectorAll('.dirbtn').forEach(o=>o.classList.remove('sel')); b.classList.add('sel'); }); }); document.querySelector('.dirbtn[data-dx="1"][data-dy="0"]').classList.add('sel');
 
 // Pad dotykowy
-function bindPad(){ document.querySelectorAll('#pad .btn').forEach(btn=>{ const code=btn.getAttribute('data-key'); if(!code) return; btn.addEventListener('pointerdown',ev=>{ ev.preventDefault(); noteSaveActivity(); keys[code.toLowerCase()]=true; btn.classList.add('on'); if(code==='ArrowDown') trapdoorDropBufferT=TRAPDOOR_DROP_BUFFER; if(code==='ArrowUp') keys['w']=true; }); ['pointerup','pointerleave','pointercancel'].forEach(evName=> btn.addEventListener(evName,()=>{ noteSaveActivity(); keys[code.toLowerCase()]=false; btn.classList.remove('on'); if(code==='ArrowUp') keys['w']=false; })); }); } bindPad();
+function bindPad(){ document.querySelectorAll('#pad .btn').forEach(btn=>{ const code=btn.getAttribute('data-key'); if(!code) return; btn.addEventListener('pointerdown',ev=>{ ev.preventDefault(); noteSaveActivity(); const k=code.toLowerCase(); keys[k]=true; btn.classList.add('on'); queueJumpInput(k); if(code==='ArrowDown') trapdoorDropBufferT=TRAPDOOR_DROP_BUFFER; if(code==='ArrowUp') keys['w']=true; }); ['pointerup','pointerleave','pointercancel'].forEach(evName=> btn.addEventListener(evName,()=>{ noteSaveActivity(); keys[code.toLowerCase()]=false; btn.classList.remove('on'); if(code==='ArrowUp') keys['w']=false; })); }); } bindPad();
 
 // Kamera
 let camX=0,camY=0,camSX=0,camSY=0; let zoom=1, zoomTarget=1;
@@ -5105,6 +5146,15 @@ function physics(dt){
 			}
 		}
 		// otherwise: keep the press buffered — landing within the window fires the jump
+	}
+	const jumpArcControlAllowed=!inWater && (!ladderContact || ladderJumped) && !player.onGround && player.jumpCount>0;
+	if(jumpArcControlAllowed){
+		const downCancel=heroDropThroughInput() && !ladderContact;
+		if(downCancel){
+			const gravForCut=MOVE.GRAV * (window.playerSpeedMultiplier || 2);
+			player.vy=applyJumpArcControl(player.vy, gravForCut, {cancel:true});
+			jumpBufferT=0;
+		}
 	}
 	jumpPrev=jumpNow;
 	if(WIND && WIND.applyToHero) WIND.applyToHero(player,dt,getTile,{inWater,godMode,groundSpeedCap:MOVE.MAX*moveMult*(groundTraction.speed||1)});
@@ -6869,7 +6919,17 @@ function buildResourceHud(){
 buildResourceHud();
 const el={pick:document.getElementById('pick'),fps:document.getElementById('fps'),msg:document.getElementById('messages')};
 RESOURCE_KEYS.forEach(k=>{ el[k]=document.getElementById(k); }); // HUD counters share the resource keys as element ids
-function updateInventory(opts){ RESOURCE_KEYS.forEach(k=>{ if(el[k]) el[k].textContent=inv[k]; }); el.pick.textContent=PICK_LABELS[player.tool]||player.tool; updateCraftButtons(); updateHotbarCounts(); updateWeaponBar(); if(!(opts&&opts.noSave)) saveState(); try{ window.dispatchEvent(new CustomEvent('mm-resources-change')); }catch(e){} }
+function updateInventory(opts){
+	opts=opts||{};
+	RESOURCE_KEYS.forEach(k=>{ if(el[k]) el[k].textContent=inv[k]; });
+	el.pick.textContent=PICK_LABELS[player.tool]||player.tool;
+	checkCraftingAvailability({silent:!!opts.noCraftNotify});
+	updateCraftButtons();
+	updateHotbarCounts();
+	updateWeaponBar();
+	if(!opts.noSave) saveState();
+	try{ window.dispatchEvent(new CustomEvent('mm-resources-change')); }catch(e){}
+}
 // Inventory overlay (resources tab) refreshes the HUD after dropping resources
 window.updateInventoryHud = updateInventory;
 const tutorialNpcCtx = {damageHero:window.damageHero, onInventoryChange:updateInventory, onChange:saveState, worldGen:WORLDGEN, gameDayFloat:()=>{ const m=(SEASONS && SEASONS.metrics) ? SEASONS.metrics() : null; return m && Number.isFinite(Number(m.dayFloat)) ? Number(m.dayFloat) : 1; }};
@@ -8018,11 +8078,11 @@ if(MM.ui && MM.ui.injectWindDebugPanel) MM.ui.injectWindDebugPanel({
 	calm:()=>{ if(!WIND || !WIND.setOverride) return false; WIND.setOverride(0); return true; },
 	exact:(value)=>{ if(!WIND || !WIND.setOverride) return false; const v=Number(value); if(!Number.isFinite(v)) return false; WIND.setOverride(v); return true; },
 	breeze:(dir)=>{ if(!WIND || !WIND.setOverride) return false; WIND.setOverride((dir<0?-1:1)*1.35); return true; },
-	gale:(dir)=>{ if(!WIND || !WIND.setOverride) return false; WIND.setOverride((dir<0?-1:1)*4.65); return true; },
+	gale:(dir)=>{ if(!WIND || !WIND.setOverride) return false; WIND.setOverride((dir<0?-1:1)*6.4); return true; },
 	natural:()=>{ if(!WIND || !WIND.setOverride) return false; WIND.setOverride(null); if(WIND.setWeatherProfile) WIND.setWeatherProfile(null); return true; },
 	profile:(id)=>{ if(!WIND || !WIND.setWeatherProfile) return false; return !!WIND.setWeatherProfile(id); },
-	squall:(dir)=>{ if(!WIND || !WIND.forceSquall) return false; return !!WIND.forceSquall(dir<0?-1:1,3.2,26); },
-	storm:()=>{ let ok=false; try{ if(CLOUDS && CLOUDS.startStorm){ CLOUDS.startStorm(75,1); ok=true; } }catch(e){} try{ if(WIND && WIND.forceSquall) ok=!!WIND.forceSquall(player.facing<0?-1:1,3.6,32) || ok; }catch(e){} return ok; },
+	squall:(dir)=>{ if(!WIND || !WIND.forceSquall) return false; return !!WIND.forceSquall(dir<0?-1:1,4.9,26); },
+	storm:()=>{ let ok=false; try{ if(CLOUDS && CLOUDS.startStorm){ CLOUDS.startStorm(75,1); ok=true; } }catch(e){} try{ if(WIND && WIND.forceSquall) ok=!!WIND.forceSquall(player.facing<0?-1:1,5.7,32) || ok; }catch(e){} return ok; },
 	metrics:()=> (WIND && WIND.metrics) ? WIND.metrics() : null
 }, menuPanel);
 if(MM.ui && MM.ui.injectSeasonDebugPanel) MM.ui.injectSeasonDebugPanel({
@@ -8171,7 +8231,8 @@ function regenWorld(){
 	// Ensure all animals are removed when creating a new world and prevent immediate respawn
 	if(MOBS){ try{ if(MOBS.clearAll) MOBS.clearAll(); else if(MOBS.deserialize) MOBS.deserialize({v:3, list:[], aggro:{mode:'rel', m:{}}}); }catch(e){} }
 	if(godMode){ if(!_preGodInventory){ _preGodInventory={}; RESOURCE_KEYS.forEach(k=>{ _preGodInventory[k]=0; }); } RESOURCE_KEYS.forEach(k=>{ inv[k]=100; }); }
-	updateInventory(); updateHotbarSel(); placePlayer(true); try{ if(TUTORIAL_NPC && TUTORIAL_NPC.placeNearWorldStart) TUTORIAL_NPC.placeNearWorldStart(getTile,WORLDGEN); }catch(e){} saveState(); msg('Nowy świat seed '+worldSeed); }
+	resetCraftingAvailability();
+	updateInventory({noCraftNotify:true}); updateHotbarSel(); placePlayer(true); try{ if(TUTORIAL_NPC && TUTORIAL_NPC.placeNearWorldStart) TUTORIAL_NPC.placeNearWorldStart(getTile,WORLDGEN); }catch(e){} saveState(); msg('Nowy świat seed '+worldSeed); }
 document.getElementById('centerBtn').addEventListener('click',()=>{ snapCameraToPlayer(); });
 document.getElementById('helpBtn').addEventListener('click',()=>{ const h=document.getElementById('help'); const show=h.style.display!=='block'; h.style.display=show?'block':'none'; document.getElementById('helpBtn').setAttribute('aria-expanded', String(show)); });
 const radarBtn=document.getElementById('radarBtn'); radarBtn.addEventListener('click',()=>{ radarFlash=performance.now()+1500; }); let radarFlash=0;
@@ -8607,7 +8668,7 @@ window.teleportHeroToNextNpc = function(dir){ return jumpDebugNpc(dir); };
 window.teleportHeroToNearestNpc = function(){ return jumpDebugNearestNpc(); };
 const loaded=loadGame();
 if(!loaded){ placePlayer(); } else { centerOnPlayer(); }
-updateInventory(); updateGodBtn(); updateImmunityBtn(); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); updateHotbarSel(); refreshHotbarDom(); updateWeaponBar(); if(!loaded) msg('Sterowanie: A/D/W. 1=kilof: LPM kopie, PPM stawia. 2/3/4=broń: LPM strzela/atakuje, PPM ult. E=Ekwipunek, G=Bóg, I=Immune, M=Mapa, C=Centrum, H=Pomoc'); else msg('Wczytano zapis – miłej gry!');
+updateInventory({noCraftNotify:true}); updateGodBtn(); updateImmunityBtn(); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); updateHotbarSel(); refreshHotbarDom(); updateWeaponBar(); if(!loaded) msg('Sterowanie: A/D/W. 1=kilof: LPM kopie, PPM stawia. 2/3/4=broń: LPM strzela/atakuje, PPM ult. E=Ekwipunek, G=Bóg, I=Immune, M=Mapa, C=Centrum, H=Pomoc'); else msg('Wczytano zapis – miłej gry!');
 // (Ghost preview is computed per-frame in draw() from lastPointer — see canPlaceAt)
 
 // Robustly initialize both grass and player speed controls after DOM is ready
@@ -8762,6 +8823,36 @@ if(!window.__lootPopupInit){
 	window.updateLootInboxIndicator=updateLootInboxIndicator;
 	function removeInboxItem(id){ window.lootInbox=window.lootInbox.filter(it=>it && it.id!==id); lootInboxUnread=Math.min(lootInboxUnread, window.lootInbox.length); persistInbox(); updateLootInboxIndicator(); }
 	function clearInbox(){ window.lootInbox=[]; lootInboxUnread=0; persistInbox(); updateLootInboxIndicator(); }
+	function lootNoticeName(it){ return it ? (it.name||it.id) : 'brak'; }
+	function lootNoticeSigned(n){ return n>0? '+'+n : String(n); }
+	function lootNoticeSuffix(cmp){
+		if(!cmp) return '';
+		if(cmp.equippedComparable && cmp.equippedDelta!=null) return ' vs noszone '+lootNoticeSigned(cmp.equippedDelta)+' Moc';
+		if(cmp.equipped) return ' - inna rola niz noszone';
+		return ' - pierwszy w slocie';
+	}
+	function lootNoticeRank(row){
+		const cmp=row && row.cmp;
+		if(!cmp) return -1;
+		let rank=0;
+		if(cmp.equippedComparable && cmp.equippedDelta!=null){
+			rank=10000+Math.abs(cmp.equippedDelta);
+			if(cmp.equippedDelta>0) rank+=100000;
+		} else if(cmp.equipped) rank=5000;
+		else rank=2500;
+		if(cmp.isNewBest) rank+=1000;
+		return rank;
+	}
+	function notifyFreshLoot(fresh){
+		const INV=MM.inventory;
+		if(!INV || !INV.compareItem || !fresh || !fresh.length) return;
+		const rows=fresh.map(it=>({item:it, cmp:INV.compareItem(it.id)})).filter(row=>row.item && row.cmp);
+		if(!rows.length) return;
+		rows.sort((a,b)=>lootNoticeRank(b)-lootNoticeRank(a));
+		const top=rows[0];
+		const extra=fresh.length>1 ? ' (+'+(fresh.length-1)+')' : '';
+		msg('Nowy przedmiot: '+lootNoticeName(top.item)+lootNoticeSuffix(top.cmp)+extra);
+	}
 	function addInboxItems(items){
 		const before=new Set(window.lootInbox.map(it=>it.id));
 		const fresh=ownedGearItems(items).filter(it=>!before.has(it.id));
@@ -8769,6 +8860,7 @@ if(!window.__lootPopupInit){
 		window.lootInbox.push(...fresh);
 		lootInboxUnread += fresh.length;
 		persistInbox(); updateLootInboxIndicator();
+		notifyFreshLoot(fresh);
 		return fresh.length;
 	}
 	function buildRows(items){ lootItemsBox.innerHTML='';
@@ -8904,5 +8996,6 @@ window.regenWorldSameSeed = function(){ try{ if(MOBS && MOBS.clearAll) try{ MOBS
 	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.meteor=inv.tools.diamond=false; player.tool='basic'; hotbarIndex=0; player.xp=0; player.energy=0; if(PROGRESS && PROGRESS.reset) PROGRESS.reset(); applyProgressHp(); applyHeroEnergyCapacity(); respawnPoint=null; saveRespawnPoint(); grave=null; saveGrave();
 	// Also remove all animals when regenerating with same seed and freeze spawns briefly
 	if(MOBS){ try{ if(MOBS.clearAll) MOBS.clearAll(); else if(MOBS.deserialize) MOBS.deserialize({v:3, list:[], aggro:{mode:'rel', m:{}}}); if(MOBS.freezeSpawns) MOBS.freezeSpawns(4000); }catch(e){} } if(godMode){ if(!_preGodInventory){ _preGodInventory={}; RESOURCE_KEYS.forEach(k=>{ _preGodInventory[k]=0; }); } RESOURCE_KEYS.forEach(k=>{ inv[k]=100; }); }
-	updateInventory(); updateHotbarSel(); placePlayer(true); try{ if(TUTORIAL_NPC && TUTORIAL_NPC.placeNearWorldStart) TUTORIAL_NPC.placeNearWorldStart(getTile,WORLDGEN); }catch(e){} saveState(); msg('Odświeżono świat (seed '+WORLDGEN.worldSeed+', ustawienia zmienione)'); }catch(e){ console.warn('regenWorldSameSeed failed',e); }}
+	resetCraftingAvailability();
+	updateInventory({noCraftNotify:true}); updateHotbarSel(); placePlayer(true); try{ if(TUTORIAL_NPC && TUTORIAL_NPC.placeNearWorldStart) TUTORIAL_NPC.placeNearWorldStart(getTile,WORLDGEN); }catch(e){} saveState(); msg('Odświeżono świat (seed '+WORLDGEN.worldSeed+', ustawienia zmienione)'); }catch(e){ console.warn('regenWorldSameSeed failed',e); }}
 window.addEventListener('mm-regen-same-seed', ()=>{ if(window.regenWorldSameSeed) window.regenWorldSameSeed(); });

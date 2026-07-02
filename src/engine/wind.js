@@ -10,11 +10,14 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
   root.MM = root.MM || {};
 
   const CFG = {
-    MAX_SPEED: 5.2,              // tiles/sec, rare squalls can approach this
-    HERO_AIR_ACCEL: 1.55,        // horizontal acceleration multiplier while airborne
-    HERO_JUMPING_BOOST: 1.45,    // upward jumps catch the wind more than falling arcs
-    HERO_GROUND_THRESHOLD: 3.15, // only severe gusts shove a standing hero
-    HERO_GROUND_ACCEL: 0.42,
+    MAX_SPEED: 7.2,              // tiles/sec, rare gales/squalls can approach this
+    HERO_AIR_ACCEL: 1.85,        // horizontal acceleration multiplier while airborne
+    HERO_AIRBORNE_BOOST: 1.45,
+    HERO_JUMPING_BOOST: 3.60,    // upward jumps catch the wind much more than grounded movement
+    HERO_STRONG_THRESHOLD: 2.8,  // above this, hero movement starts scaling aggressively
+    HERO_STRONG_MAX_MULT: 2.65,
+    HERO_GROUND_THRESHOLD: 3.2,  // only severe gusts shove a standing hero
+    HERO_GROUND_ACCEL: 2.20,
     GAS_DRIFT_SCALE: 1.05,
     PARTICLE_CAP: 120,
     PARTICLE_LOW_CAP: 42,
@@ -193,26 +196,61 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
     const tileBoost = (t===T.STEAM || t===T.HOT_AIR) ? 1.15 : (t===T.POISON_GAS ? 0.92 : 1.0);
     return speedAt(x,y,getTile) * CFG.GAS_DRIFT_SCALE * tileBoost;
   }
+  function heroStrongWindMultiplier(mag){
+    const span=Math.max(0.001,CFG.MAX_SPEED-CFG.HERO_STRONG_THRESHOLD);
+    const t=clamp((mag-CFG.HERO_STRONG_THRESHOLD)/span,0,1);
+    return 1 + Math.pow(t,1.22)*(CFG.HERO_STRONG_MAX_MULT-1);
+  }
+  function heroExposureAt(player,getTile){
+    if(typeof getTile !== 'function' || !player) return 1;
+    const w=clamp((typeof player.w === 'number' && isFinite(player.w)) ? player.w : 0.7,0.35,1.4);
+    const h=clamp((typeof player.h === 'number' && isFinite(player.h)) ? player.h : 0.95,0.45,1.8);
+    const rx=Math.max(0.72,w*0.95);
+    const xs=[player.x-rx, player.x, player.x+rx];
+    const ys=[player.y-h*0.44, player.y-h*0.20, player.y+h*0.04];
+    let sum=0, max=0, n=0;
+    for(const sx of xs){
+      for(const sy of ys){
+        const e=exposureAt(sx,sy,getTile);
+        sum+=e;
+        if(e>max) max=e;
+        n++;
+      }
+    }
+    const avg=n ? sum/n : 1;
+    // Bias slightly toward the most-open shoulder sample so one noisy tile column
+    // cannot make hero movement feel like the wind randomly vanished.
+    return clamp(avg*0.60 + max*0.40,0,1);
+  }
+  function heroWindSample(player,getTile){
+    const h=player && typeof player.h === 'number' && isFinite(player.h) ? player.h : 0.95;
+    const y=player ? player.y-h*0.2 : 0;
+    return {
+      speed:localSpeedAt(player ? player.x : 0,y),
+      exposure:heroExposureAt(player,getTile)
+    };
+  }
   function applyToHero(player,dt,getTile,opts){
     if(!player || !(dt>0) || !isFinite(dt)) return {applied:false, delta:0, exposure:0, speed:currentSpeed()};
     opts=opts||{};
     if(opts.godMode) return {applied:false, delta:0, exposure:0, speed:currentSpeed()};
-    const sp=localSpeedAt(player.x,player.y-0.2);
+    const sample=heroWindSample(player,getTile);
+    const sp=sample.speed;
     const mag=Math.abs(sp);
     if(mag<0.045) return {applied:false, delta:0, exposure:0, speed:sp};
-    const exposure=exposureAt(player.x,player.y-0.2,getTile);
+    const exposure=sample.exposure;
     if(exposure<=0.02) return {applied:false, delta:0, exposure, speed:sp};
     const inWater=!!opts.inWater;
     const airborne=!player.onGround;
     let factor=0;
     if(airborne){
       const jumping=(player.vy||0)<-0.35;
-      factor=jumping ? CFG.HERO_JUMPING_BOOST : 0.92;
+      factor=jumping ? CFG.HERO_JUMPING_BOOST : CFG.HERO_AIRBORNE_BOOST;
     }
     else if(mag>CFG.HERO_GROUND_THRESHOLD) factor=CFG.HERO_GROUND_ACCEL*clamp((mag-CFG.HERO_GROUND_THRESHOLD)/(CFG.MAX_SPEED-CFG.HERO_GROUND_THRESHOLD),0,1);
     if(inWater) factor*=0.16;
     if(factor<=0.001) return {applied:false, delta:0, exposure, speed:sp};
-    const accel=sp*CFG.HERO_AIR_ACCEL*factor*exposure;
+    const accel=sp*CFG.HERO_AIR_ACCEL*factor*exposure*heroStrongWindMultiplier(mag);
     const before=player.vx||0;
     player.vx=before+accel*dt;
     const groundSpeedCap = Number.isFinite(opts.groundSpeedCap) && opts.groundSpeedCap>0
@@ -560,7 +598,7 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
     exposureAt, applyToHero, setOverride, setCycleOverride, setCloudMetricsOverride,
     setWeatherProfile, forceSquall,
     config:CFG,
-    _debug:{particles, squall, computeEnvironment, computeTarget, exposureAt, altitudeMultiplier, squallSpeed, isWindBlocker, materialDescriptor}
+    _debug:{particles, squall, computeEnvironment, computeTarget, exposureAt, heroExposureAt, heroWindSample, altitudeMultiplier, squallSpeed, heroStrongWindMultiplier, isWindBlocker, materialDescriptor}
   };
   root.MM.wind=api;
 })();

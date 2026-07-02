@@ -1531,15 +1531,15 @@ function forceSeasonEvent(id, opts){
     event = 'summer-storm';
     if(clouds && typeof clouds.startStorm === 'function'){ clouds.startStorm(92, 1); ok = true; }
     ok = addEventClouds(p.x, 4, 16, 190) > 0 || ok;
-    if(wind && typeof wind.forceSquall === 'function') ok = wind.forceSquall(dir, 3.6, 34) || ok;
+    if(wind && typeof wind.forceSquall === 'function') ok = wind.forceSquall(dir, 4.7, 34) || ok;
   } else if(key === 'autumn'){
     event = 'autumn-gale';
-    if(wind && typeof wind.forceSquall === 'function') ok = wind.forceSquall(dir, 4.7, 56) || ok;
+    if(wind && typeof wind.forceSquall === 'function') ok = wind.forceSquall(dir, 6.5, 56) || ok;
     if(clouds && typeof clouds.startStorm === 'function'){ clouds.startStorm(42, 0.45); ok = true; }
     ok = addEventClouds(p.x, 2, 8, 180) > 0 || ok;
   } else if(key === 'winter'){
     event = 'winter-blizzard';
-    if(wind && typeof wind.forceSquall === 'function') ok = wind.forceSquall(dir, 3.8, 70) || ok;
+    if(wind && typeof wind.forceSquall === 'function') ok = wind.forceSquall(dir, 5.8, 70) || ok;
     if(clouds && typeof clouds.startStorm === 'function'){ clouds.startStorm(72, 0.62); ok = true; }
     ok = addEventClouds(p.x, 3, 12, 170) > 0 || ok;
   }
