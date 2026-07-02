@@ -658,13 +658,13 @@ window.MM = window.MM || {};
   // Each cloud carries its own fractional deposit so wind drift can't smear the
   // debt across columns too thinly for tiles to ever materialize.
   function depositUnit(cx,fromRow,getTile,setTile){
-    let ty=-1;
+    let ty=null;                                   // null = no blocking tile found
     for(let y=Math.max(WORLD_TOP+1,Math.floor(fromRow));y<WORLD_BOTTOM;y++){
       const t=getTile(cx,y);
       if(skyOpenTile(t)) continue;
       ty=y; break;
     }
-    if(ty<=WORLD_TOP) return false;                // fell out of the world
+    if(ty===null || ty<=WORLD_TOP) return false;   // fell out of the world
     let py=ty-1;
     while(py>WORLD_TOP+1 && isLeafTile(getTile(cx,py))) py--; // surface under a canopy: climb to air
     try{

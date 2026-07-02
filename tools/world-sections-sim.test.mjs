@@ -313,6 +313,112 @@ WG.clearCaches();
   }
   assert.ok(volcanicTiles > 500, 'volcano root materializes as a substantial low-world basalt/obsidian/lava conduit');
   assert.ok(lavaTiles > 40, 'volcano root carries visible lava into the low world');
+
+  // The conduit jacket must cross WORLD_H as one body: volcanic mass present on
+  // every row through the contact band, with no cliff jump at the seam.
+  const vol = WG.column(volcanoX).volcano;
+  const nearPipe = vol.pipe + 6;
+  let prevVolc = null;
+  for(let y=126; y<=154; y++){
+    let volc = 0;
+    for(let dx=-nearPipe; dx<=nearPipe; dx++){
+      const t = world.getTile(volcanoX+dx, y);
+      if(t===T.LAVA || t===T.OBSIDIAN || t===T.BASALT) volc++;
+    }
+    assert.ok(volc > 0, 'volcano conduit jacket stays present across the mid/low contact (y='+y+')');
+    if(prevVolc!==null && y>=138 && y<=142){
+      assert.ok(Math.abs(volc-prevVolc) <= 8, 'volcanic mass does not jump at the WORLD_H contact (y='+y+': '+prevVolc+'->'+volc+')');
+    }
+    prevVolc = volc;
+  }
+}
+
+{
+  // Aquifer: a warped regional water table with genuinely wet and dry stretches,
+  // never a single flat world row.
+  let minA = Infinity, maxA = -Infinity, dryCols = 0, wetCols = 0;
+  for(let x=-2400; x<=2400; x+=8){
+    const a = WG.aquiferAt(x);
+    assert.equal(Number.isFinite(a), true, 'aquifer level is finite');
+    minA = Math.min(minA, a); maxA = Math.max(maxA, a);
+    if(a > WORLD_H - 2) dryCols++;
+    if(a < 100) wetCols++;
+  }
+  assert.ok(maxA - minA >= 30, 'aquifer table swings regionally instead of tracking one row (spread '+(maxA-minA)+')');
+  assert.ok(dryCols > 0, 'some regions run dry so caves stay open into the deep sections');
+  assert.ok(wetCols > 0, 'some regions keep shallow saturated water tables');
+
+  // Underground pocket surfaces must scatter across many rows (no shelf).
+  const tops = new Map();
+  let watered = 0;
+  for(let x=-384; x<=384; x++){
+    for(let y=74; y<139; y++){
+      const t = world.getTile(x, y);
+      if(t===T.WATER && world.getTile(x, y-1)!==T.WATER){
+        tops.set(y, (tops.get(y)||0)+1);
+        watered++;
+        break;
+      }
+    }
+  }
+  let flattest = 0;
+  for(const c of tops.values()) flattest = Math.max(flattest, c);
+  assert.ok(watered > 10, 'mid-band aquifer pockets exist ('+watered+' columns)');
+  assert.ok(flattest <= Math.max(10, watered*0.4), 'aquifer pocket surfaces never align into one flat row (peak '+flattest+' of '+watered+')');
+
+  // Deep flooding follows the same table: wet stretches stay wet below the
+  // contact, dry stretches carry open caves much deeper before pooling.
+  let wetFlood = 0, wetOpen = 0, dryFlood = 0, dryOpen = 0;
+  for(let x=-4800; x<=4800; x+=3){
+    const a = WG.aquiferAt(x);
+    const cave = worldLayers.deepCaveProfile(WG, x, WORLD_H+52);
+    if(!cave.open) continue;
+    if(a < 104){ wetOpen++; if(cave.flooded) wetFlood++; }
+    else if(a > WORLD_H){ dryOpen++; if(cave.flooded) dryFlood++; }
+  }
+  assert.ok(wetOpen > 20 && dryOpen > 20, 'aquifer sampling covers wet and dry deep caves');
+  assert.ok(wetFlood/wetOpen > 0.7, 'wet water-table regions keep flooded caves below the contact');
+  assert.ok(dryFlood/dryOpen < 0.5, 'dry water-table regions continue as open caves below the contact');
+}
+
+{
+  // Ore systems cross the contact and pool into masses instead of uniform flecks.
+  let coalAbove = 0, coalBelow = 0;
+  for(let x=-384; x<=384; x++){
+    for(let y=126; y<140; y++) if(world.getTile(x,y)===T.COAL) coalAbove++;
+    for(let y=140; y<169; y++) if(world.getTile(x,y)===T.COAL) coalBelow++;
+  }
+  assert.ok(coalAbove >= 15 && coalBelow >= 30, 'coal seams continue across the mid/low contact (above '+coalAbove+', below '+coalBelow+')');
+
+  let diamonds = 0, clustered = 0;
+  for(let x=-384; x<=384; x++){
+    for(let y=150; y<270; y++){
+      if(world.getTile(x,y)!==T.DIAMOND) continue;
+      diamonds++;
+      let neighbor = false;
+      for(let dy=-1; dy<=1 && !neighbor; dy++){
+        for(let dx=-1; dx<=1; dx++){
+          if((dx||dy) && world.getTile(x+dx,y+dy)===T.DIAMOND){ neighbor = true; break; }
+        }
+      }
+      if(neighbor) clustered++;
+    }
+  }
+  assert.ok(diamonds > 300, 'deep sections keep a meaningful diamond supply ('+diamonds+')');
+  assert.ok(clustered/Math.max(1,diamonds) > 0.18, 'deep ores cluster into pocket masses ('+(clustered/Math.max(1,diamonds)*100).toFixed(1)+'% adjacent)');
+}
+
+{
+  // Bedrock exists only as a ragged true-boundary roof, never a clean shelf.
+  const bedrockTops = new Set();
+  for(let x=-200; x<=200; x++){
+    let y = WORLD_MAX_Y-1;
+    while(y > WORLD_MAX_Y-14 && world.getTile(x,y)===T.BEDROCK) y--;
+    const top = y+1;
+    assert.ok(top >= WORLD_MAX_Y-11 && top <= WORLD_MAX_Y-3, 'bedrock roof stays a bounded boundary feature (top '+top+')');
+    bedrockTops.add(top);
+  }
+  assert.ok(bedrockTops.size >= 4, 'bedrock roof is ragged rather than flat ('+bedrockTops.size+' levels)');
 }
 
 world.clear();

@@ -1107,6 +1107,25 @@ function supportedCantileverCells(t,span=25){
   assert.equal(countRegionTile(T.STEEL,-8,8,29,129),101,'toppled steel excess remains as nearby rubble');
 }
 
+{
+  // Sky sections: the world extends into negative rows and falling entities must
+  // settle onto island floors there instead of hovering forever (the old settle
+  // sentinels treated every negative row as "still falling").
+  reset();
+  setFlatSurface(50);
+  for(let x=-5; x<=5; x++) setTile(x,-10,T.STONE);
+  setTile(0,-14,T.COAL);
+  fallingSolids.maybeStart(0,-14);
+  setTile(2,-16,T.SAND);
+  fallingSolids.maybeStart(2,-16);
+  stepFalling(10);
+  assert.equal(getTile(0,-11),T.COAL,'loose rigid block settles onto a sky-island floor at negative y');
+  assert.equal(getTile(2,-11),T.SAND,'sand grain settles onto a sky-island floor at negative y');
+  const m=fallingSolids.metrics();
+  assert.equal(m.active,0,'no rigid body hovers in the sky sections');
+  assert.equal(m.sand,0,'no sand grain hovers in the sky sections');
+}
+
 fallingSolids.reset();
 
 const mainSource=readFileSync(new URL('../src/main.js', import.meta.url),'utf8');

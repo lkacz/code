@@ -146,46 +146,12 @@ window.MM = window.MM || {};
     }
     return undefined;
   }
-  function volcanoDikeTile(v,wx,y,ground,depth){
-    if(depth<7 || depth>76) return undefined;
-    const dx=wx-v.center;
-    if(Math.abs(dx)>v.radius+10) return undefined;
-    const bend=(WG.valueNoise(wx+y*0.13,31,4521)-0.5)*2.2;
-    const left=Math.abs(dx + (depth-v.crater)*0.20 + bend);
-    const right=Math.abs(dx - (depth-v.crater)*0.23 - bend);
-    const ring=Math.abs(Math.abs(dx) - (v.pipe+2+depth*0.055+(WG.valueNoise(y,33,4522)-0.5)*2.6));
-    if(left<0.85 || right<0.85 || (depth>18 && ring<0.75)){
-      return WG.randSeed(wx*9.11+y*0.53)<0.18 ? T.OBSIDIAN : T.BASALT;
-    }
-    return undefined;
-  }
+  // Volcanic underground rock (dikes, pipe carapace, thermal aureole) comes from
+  // the shared vertical layer model so mid-world and deep-section volcanism form
+  // one continuous body instead of per-band boxes.
   function volcanoRockTile(col,wx,y,ground,depth){
     const v=col && col.volcano; if(!v || y<ground || y>=WORLD_H-3) return undefined;
-    const d=Math.abs(wx-v.center);
-    if(d>v.radius+8) return undefined;
-    const dike=volcanoDikeTile(v,wx,y,ground,depth);
-    if(dike!==undefined) return dike;
-    const r=WG.randSeed(wx*3.91+y*0.27);
-    if(d<=v.pipe+2) return r<0.30 ? T.OBSIDIAN : T.BASALT;
-    if(depth<12){
-      if(d<=v.crater+3 || WG.randSeed(wx*4.73+y*0.19)<0.16) return T.OBSIDIAN;
-      return r<0.58 ? T.BASALT : T.STONE;
-    }
-    const heat=1-Math.min(1,d/Math.max(1,v.radius+6));
-    const contact=d>v.radius*0.70 || Math.abs(d-(v.pipe+3))<2;
-    // Volcanic contact aureole: baked country rock, basalt intrusions and
-    // obsidian only where lava would quench quickly near vents.
-    if(depth<36){
-      if(d<=v.radius*0.55 || heat>0.38) return r<0.78 ? T.BASALT : T.OBSIDIAN;
-      if(contact && r<0.54) return T.GRANITE;
-      return r<0.42 ? T.BASALT : T.STONE;
-    }
-    if(depth<68){
-      if(d<=v.reservoir+4) return r<0.75 ? T.BASALT : T.OBSIDIAN;
-      if(contact) return r<0.58 ? T.GRANITE : T.STONE;
-      if(heat>0.25 && r<0.56) return T.BASALT;
-    }
-    return undefined;
+    return WORLD_LAYERS.volcanoAureoleTile(WG,col,wx,y,ground,depth);
   }
   function reinforceVolcanoConduits(arr,cx){
     for(let lx=0; lx<CHUNK_W; lx++){

@@ -1725,7 +1725,8 @@ window.MM = window.MM || {};
       applyWindToFalling(b,b.type,dt,inWater);
       b.vy += (inWater?G_WATER:G_AIR)*dt;
       const cap=inWater?VMAX_WATER:VMAX_AIR; if(b.vy>cap) b.vy=cap;
-      let remaining=b.vy*dt, settledAt=-1;
+      // null = still falling; any finite row (including negative sky-section rows) = resting spot
+      let remaining=b.vy*dt, settledAt=null;
       while(remaining>0){
         const yi=Math.floor(b.yFloat);
         if(yi>=WORLD_BOTTOM-1){ b.yFloat=WORLD_BOTTOM-1; settledAt=WORLD_BOTTOM-1; break; }
@@ -1736,7 +1737,7 @@ window.MM = window.MM || {};
         if(remaining<dist){ b.yFloat+=remaining; remaining=0; }
         else { b.yFloat=yi+1; remaining-=dist; }
       }
-      if(settledAt>=0){
+      if(settledAt!==null){
         if(playerBlocks(b.x,settledAt)){ b.vy=0; b.yFloat=settledAt; continue; } // rest on the player until they move
         if(isFragileFalling(b.type)){ breakFragile(b.x,settledAt); active.splice(i,1); continue; }
         if(b.rubble && isRubbleTrackedMaterial(b.type)) settleRubble(b.x,settledAt,b.type);
@@ -1753,7 +1754,8 @@ window.MM = window.MM || {};
       applyWindToFalling(s,T.SAND,dt,inWater);
       s.vy += (inWater?G_WATER:G_AIR)*dt;
       const cap=inWater?SAND_VMAX_WATER:SAND_VMAX_AIR; if(s.vy>cap) s.vy=cap;
-      let remaining=s.vy*dt, blockedAt=-1;
+      // null = still falling; negative rows are valid resting spots in the sky sections
+      let remaining=s.vy*dt, blockedAt=null;
       while(remaining>0){
         const yi=Math.floor(s.yFloat);
         if(yi>=WORLD_BOTTOM-1){ s.yFloat=WORLD_BOTTOM-1; blockedAt=WORLD_BOTTOM-1; break; }
@@ -1762,7 +1764,7 @@ window.MM = window.MM || {};
         if(remaining<dist){ s.yFloat+=remaining; remaining=0; }
         else { s.yFloat=yi+1; remaining-=dist; }
       }
-      if(blockedAt<0) continue;
+      if(blockedAt===null) continue;
       const yi=blockedAt;
       if(yi<WORLD_BOTTOM-1){ // grain rolls down slopes (also under water)
         const canL = passable(getTile(s.x-1,yi)) && passable(getTile(s.x-1,yi+1));

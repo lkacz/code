@@ -737,7 +737,7 @@ window.MM = window.MM || {};
     lateralAcc += dt; const lateralStep = lateralAcc >= LATERAL_INTERVAL; if(lateralStep) lateralAcc=0;
     for(const key of keys){
       if(processed++>MAX){ next.add(key); continue; }
-      const [sx,sy] = key.split(',').map(Number);
+      const ci=key.indexOf(','); const sx=+key.slice(0,ci), sy=+key.slice(ci+1);
       if(getTile(sx,sy)!==T.WATER) continue;
       // Gravity (multi-cell drop)
       const fall=waterFallTarget(sx,sy,getTile);
@@ -1533,9 +1533,27 @@ window.MM = window.MM || {};
 
   function runPressureLeveling(getTile,setTile){
     const world = (typeof window!=='undefined' && window.MM && MM.world) ? MM.world : null;
-    const readTile = world && typeof world.peekTile==='function'
+    const rawReadTile = world && typeof world.peekTile==='function'
       ? (x,y)=>world.peekTile(x,y,T.STONE)
       : getTile;
+    // Per-body memoized reads: the flood fills probe interior cells 4-6x each
+    // (neighbor scans + sill checks). Nothing mutates tiles until a body's final
+    // transfer loop, and the cache is cleared before each body's seed check, so
+    // the cached view is always exact. Y spans <512 rows, so a packed numeric
+    // key avoids string churn.
+    const tileCache=new Map();
+    // Packed numeric cell key: the offset keeps it non-negative for the y-1 probes
+    // at WORLD_TOP; the world spans 420 rows and solver probes stay within ±8 of
+    // it, so 512 slots per column cannot alias. Used for the read cache and the
+    // flood-fill membership sets — string keys per neighbor probe dominated the
+    // solver's profile via allocation churn.
+    const PK=(x,y)=>x*512+(y-WORLD_TOP+8);
+    const readTile=(x,y)=>{
+      const kk=PK(x,y);
+      let v=tileCache.get(kk);
+      if(v===undefined){ v=rawReadTile(x,y); tileCache.set(kk,v); }
+      return v;
+    };
     const isPressureSillCell=(x,y)=>{
       if(readTile(x,y)!==T.WATER) return false;
       const above=readTile(x,y-1);
@@ -1567,30 +1585,32 @@ window.MM = window.MM || {};
       }
       return true;
     };
+    // Flood fills carry numeric coords beside the string-key sets: parsing keys per
+    // popped cell dominated the solver's profile (and churned the GC) on big bodies.
     const collectBody = (sx,sy,windowLimit,softCap)=>{
-      const seedKey=sx+','+sy;
-      const bodySet=new Set([seedKey]);
-      const stack=[seedKey];
+      const bodyKeys=new Set([PK(sx,sy)]);
+      const bodyCoords=[sx,sy];        // flat [x0,y0,x1,y1,…] in discovery order
+      const stack=[sx,sy];
       let minSurf=WORLD_BOTTOM, overflow=false;
       while(stack.length){
-        const ck=stack.pop(); const ci=ck.indexOf(','); const cx=+ck.slice(0,ci), cy=+ck.slice(ci+1);
+        const cy=stack.pop(), cx=stack.pop();
         if(cy<minSurf) minSurf=cy;
         for(let d=0;d<4;d++){
           const nx=cx+(d===0?-1:d===1?1:0), ny=cy+(d===2?-1:d===3?1:0);
           if(windowLimit!=null && Math.abs(nx-sx)>windowLimit) continue;
           if(ny<WORLD_TOP || ny>=WORLD_BOTTOM) continue;
-          const nk=nx+','+ny;
-          if(bodySet.has(nk) || readTile(nx,ny)!==T.WATER) continue;
+          const nk=PK(nx,ny);
+          if(bodyKeys.has(nk) || readTile(nx,ny)!==T.WATER) continue;
           if(!pressureConnected(cx,cy,nx,ny)) continue;
-          bodySet.add(nk); stack.push(nk);
-          if(bodySet.size>EQ_BODY_CAP || (softCap && bodySet.size>softCap)){ overflow=true; stack.length=0; break; }
+          bodyKeys.add(nk); bodyCoords.push(nx,ny); stack.push(nx,ny);
+          if(bodyKeys.size>EQ_BODY_CAP || (softCap && bodyKeys.size>softCap)){ overflow=true; stack.length=0; break; }
         }
       }
-      return {bodySet,minSurf,overflow,windowLimit};
+      return {bodyKeys,bodyCoords,minSurf,overflow,windowLimit};
     };
-    const bodyHasOpenSpill = (bodySet)=>{
-      for(const ck of bodySet){
-        const ci=ck.indexOf(','); const x=+ck.slice(0,ci), y=+ck.slice(ci+1);
+    const bodyHasOpenSpill = (bodyCoords)=>{
+      for(let i=0;i<bodyCoords.length;i+=2){
+        const x=bodyCoords[i], y=bodyCoords[i+1];
         if(y+1<WORLD_BOTTOM && canFill(readTile(x,y+1))) return true;
         for(const dx of [-1,1]){
           if(y+1<WORLD_BOTTOM && canFill(readTile(x+dx,y)) && canFill(readTile(x+dx,y+1))) return true;
@@ -1606,57 +1626,60 @@ window.MM = window.MM || {};
       if(bodies>=EQ_BODIES) break;
       if(processed.has(key)) continue;
       const ci0=key.indexOf(','); const sx=+key.slice(0,ci0), sy=+key.slice(ci0+1);
+      // Previous body's transfers mutated tiles: start each body from a fresh view.
+      tileCache.clear();
       if(readTile(sx,sy)!==T.WATER) continue;
       // 1. connected water body (4-neighbor flood fill). Try the whole loaded body
       // first so wide lakes truly level; if it is too large, fall back to the old
       // local window so oceans and mega-caverns still get bounded incremental work.
       let bodyInfo=collectBody(sx,sy,null,EQ_GLOBAL_BODY_SOFT_CAP);
-      if(bodyInfo.overflow || bodyHasOpenSpill(bodyInfo.bodySet)) bodyInfo=collectBody(sx,sy,EQ_WINDOW);
-      const {bodySet,minSurf,overflow,windowLimit}=bodyInfo;
-      for(const bk of bodySet) processed.add(bk);
+      if(bodyInfo.overflow || bodyHasOpenSpill(bodyInfo.bodyCoords)) bodyInfo=collectBody(sx,sy,EQ_WINDOW);
+      const {bodyKeys,bodyCoords,minSurf,overflow,windowLimit}=bodyInfo;
+      for(let i=0;i<bodyCoords.length;i+=2) processed.add(bodyCoords[i]+','+bodyCoords[i+1]);
       bodies++;
-      if(overflow || bodySet.size<2) continue;
+      if(overflow || bodyKeys.size<2) continue;
       // 2. container: void reachable below the body's highest surface. At the surface
       // row itself, only covered mouths / existing lower water columns are admitted:
       // open dry shore remains a wall, while cave lips and one-tile-low water notches
       // can level.
       const floorRow=minSurf+1;
-      const contSet=new Set(bodySet); const q=[...bodySet]; let voidOver=false;
+      const contKeys=new Set(bodyKeys); const contCoords=bodyCoords.slice(); const q=bodyCoords.slice(); let voidOver=false;
       while(q.length){
-        const ck=q.pop(); const ci=ck.indexOf(','); const cx=+ck.slice(0,ci), cy=+ck.slice(ci+1);
+        const cy=q.pop(), cx=q.pop();
         for(let d=0;d<4;d++){
           const nx=cx+(d===0?-1:d===1?1:0), ny=cy+(d===2?-1:d===3?1:0);
           if(windowLimit!=null && Math.abs(nx-sx)>windowLimit) continue;
           if(ny<minSurf || ny>=WORLD_BOTTOM) continue;
-          const nk=nx+','+ny;
-          if(contSet.has(nk) || !canFill(readTile(nx,ny))) continue;
+          const nk=PK(nx,ny);
+          if(contKeys.has(nk) || !canFill(readTile(nx,ny))) continue;
           if(ny<floorRow && !surfaceVoidCanLevel(nx,ny,readTile)) continue;
-          contSet.add(nk); q.push(nk);
-          if(contSet.size>EQ_VOID_CAP){ voidOver=true; q.length=0; break; }
+          contKeys.add(nk); contCoords.push(nx,ny); q.push(nx,ny);
+          if(contKeys.size>EQ_VOID_CAP){ voidOver=true; q.length=0; break; }
         }
       }
       if(voidOver) continue;
       // 3. bottom-up equilibrium fill of the container with the body's volume
       const byRow=new Map();
-      for(const ck of contSet){ const ci=ck.indexOf(','); const x=+ck.slice(0,ci), y=+ck.slice(ci+1); let a=byRow.get(y); if(!a){ a=[]; byRow.set(y,a); } a.push(x); }
+      for(let i=0;i<contCoords.length;i+=2){ const x=contCoords[i], y=contCoords[i+1]; let a=byRow.get(y); if(!a){ a=[]; byRow.set(y,a); } a.push(x); }
       const rowsDesc=[...byRow.keys()].sort((a,b)=>b-a);
-      let vol=bodySet.size;
-      const target=new Set();
+      let vol=bodyKeys.size;
+      const target=new Set(); // packed numeric cell keys
       for(const y of rowsDesc){
         if(vol<=0) break;
         const xs=byRow.get(y);
-        if(xs.length<=vol){ for(const x of xs) target.add(x+','+y); vol-=xs.length; }
+        if(xs.length<=vol){ for(const x of xs) target.add(PK(x,y)); vol-=xs.length; }
         else {
           // Partial surface row: covered mouths are preferred so caves flood instead
           // of leaving a dry notch; otherwise keep existing cells for stability.
-          xs.sort((a,b)=>{
-            const ak=a+','+y, bk=b+','+y;
-            const ac=surfaceVoidCanLevel(a,y,readTile) && !isAir(readTile(a,y-1)) ? 0 : 1;
-            const bc=surfaceVoidCanLevel(b,y,readTile) && !isAir(readTile(b,y-1)) ? 0 : 1;
-            const aw=bodySet.has(ak)?0:1, bw=bodySet.has(bk)?0:1;
-            return ac-bc || aw-bw || a-b;
-          });
-          for(let i=0;i<vol;i++) target.add(xs[i]+','+y);
+          // Rank keys are precomputed — evaluating tile reads inside the comparator
+          // cost O(n log n) redundant getTile calls on wide surface rows.
+          const ranked=xs.map(x=>({
+            x,
+            c:surfaceVoidCanLevel(x,y,readTile) && !isAir(readTile(x,y-1)) ? 0 : 1,
+            w:bodyKeys.has(PK(x,y))?0:1
+          }));
+          ranked.sort((a,b)=> a.c-b.c || a.w-b.w || a.x-b.x);
+          for(let i=0;i<vol;i++) target.add(PK(ranked[i].x,y));
           vol=0;
         }
       }
@@ -1664,29 +1687,36 @@ window.MM = window.MM || {};
       // Sources clear top-down and destinations fill bottom-up, so every intermediate
       // state is gravity-consistent and each unit moved conserves volume exactly.
       let spillFloor=WORLD_BOTTOM;
-      for(const bk of bodySet){
-        const ci=bk.indexOf(','); const bx=+bk.slice(0,ci), by=+bk.slice(ci+1);
+      for(let i=0;i<bodyCoords.length;i+=2){
+        const bx=bodyCoords[i], by=bodyCoords[i+1];
         for(const dx of [-1,1]){
           const nx=bx+dx;
           if(isPressureSillCell(nx,by) && readTile(bx,by+1)===T.WATER) spillFloor=Math.min(spillFloor,by+1);
           if(isOpenLipWall(bx,by,dx)) spillFloor=Math.min(spillFloor,by);
         }
       }
+      // Sources/dests carry parsed coords; the sort keeps the original ordering
+      // contract exactly (row, then lexicographic "x,y" key compare).
       const sources=[]; const dests=[];
-      const rowOf=(s)=>+s.slice(s.indexOf(',')+1);
-      for(const bk of bodySet){ if(!target.has(bk) && rowOf(bk)<spillFloor) sources.push(bk); }
-      for(const tk of target){ if(!bodySet.has(tk)) dests.push(tk); }
+      for(let i=0;i<bodyCoords.length;i+=2){
+        const bx=bodyCoords[i], by=bodyCoords[i+1];
+        if(by>=spillFloor) continue;
+        if(!target.has(PK(bx,by))) sources.push({k:bx+','+by,x:bx,y:by});
+      }
+      for(const tk of target){
+        if(bodyKeys.has(tk)) continue;
+        const x=Math.floor(tk/512), y=tk-x*512+WORLD_TOP-8;
+        dests.push({k:x+','+y,x,y});
+      }
       if(!sources.length || !dests.length) continue; // already at equilibrium
-      sources.sort((a,b)=> rowOf(a)-rowOf(b) || a.localeCompare(b)); // highest first
-      dests.sort((a,b)=> rowOf(b)-rowOf(a) || a.localeCompare(b));   // deepest first
+      sources.sort((a,b)=> a.y-b.y || a.k.localeCompare(b.k)); // highest first
+      dests.sort((a,b)=> b.y-a.y || a.k.localeCompare(b.k));   // deepest first
       const K=Math.min(EQ_RATE, sources.length, dests.length);
       for(let i=0;i<K;i++){
-        const sk=sources[i], dk=dests[i];
-        const sci=sk.indexOf(','); const sxx=+sk.slice(0,sci), syy=+sk.slice(sci+1);
-        const dci=dk.indexOf(','); const dxx=+dk.slice(0,dci), dyy=+dk.slice(dci+1);
-        setTile(sxx,syy,T.AIR); writeExternalTile(dxx,dyy,T.WATER,getTile,setTile);
-        mark(dxx,dyy); markNeighbors(active,dxx,dyy); markNeighbors(active,sxx,syy);
-        touchedXs.add(sxx); touchedXs.add(dxx);
+        const s=sources[i], d=dests[i];
+        setTile(s.x,s.y,T.AIR); writeExternalTile(d.x,d.y,T.WATER,getTile,setTile);
+        mark(d.x,d.y); markNeighbors(active,d.x,d.y); markNeighbors(active,s.x,s.y);
+        touchedXs.add(s.x); touchedXs.add(d.x);
       }
       if(K>0){
         hadTransfers=true;

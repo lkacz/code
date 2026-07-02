@@ -169,8 +169,10 @@ assert.match(worldSource, /WORLD_LAYERS\.legacyGeologyRockTile\(WG,wx,y,depth,bi
 assert.match(worldLayerSource, /function geologyMix\(WG,wx,y,primary,secondary,seed,amount\)/, 'geology transitions are feathered by local noise');
 assert.match(worldLayerSource, /export function legacyGeologyLayerDepth\(WG,wx,y,depth,biome\)/, 'geology layers use warped depth instead of straight horizontal bands');
 assert.match(worldLayerSource, /export function legacyGeologyRockTile\(WG,wx,y,depth,biome\)/, 'legacy rock geology is centralized with sky and deep layer generation');
-assert.match(worldSource, /function volcanoDikeTile\(v,wx,y,ground,depth\)/, 'volcanoes generate basaltic intrusion dikes');
-assert.match(worldSource, /Volcanic contact aureole/, 'volcanic rock generation includes baked contact zones');
+assert.match(worldLayerSource, /const dikeA=Math\.abs\(dx \+ sub\*/, 'volcanoes generate basaltic intrusion dikes that flare continuously from the vent');
+assert.match(worldLayerSource, /export function volcanoAureoleTile\(WG,col,wx,y,ground,depth\)/, 'volcanic contact aureoles live in the shared vertical layer model');
+assert.match(worldLayerSource, /Volcanic contact aureole/, 'volcanic rock generation includes baked contact zones');
+assert.match(worldSource, /WORLD_LAYERS\.volcanoAureoleTile\(WG,col,wx,y,ground,depth\)/, 'legacy terrain delegates volcanic rock to the shared aureole model');
 
 assert.ok(count(samples[8],T.STEEL)>=150, 'devastated city exposes harvestable steel');
 assert.ok(count(samples[8],T.OBSIDIAN)>=40, 'devastated city contains hardened ruin material');

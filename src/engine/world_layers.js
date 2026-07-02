@@ -63,6 +63,28 @@ function safeClimate(WG,fn,wx,fallback){
   return fallback;
 }
 
+function safeVolcanoBody(WG,wx){
+  try{
+    if(WG && typeof WG.volcanoInfluenceAt === 'function') return WG.volcanoInfluenceAt(Math.round(wx), 48);
+  }catch(e){}
+  const col=safeColumn(WG,wx);
+  return (col && col.volcano) || null;
+}
+
+function safeAquifer(WG,wx){
+  try{
+    if(WG && typeof WG.aquiferAt === 'function') return WG.aquiferAt(Math.round(wx));
+  }catch(e){}
+  return null;
+}
+
+function safeCoalVein(WG,wx,y){
+  try{
+    if(WG && typeof WG.coalVeinAt === 'function') return !!WG.coalVeinAt(Math.round(wx), y, false);
+  }catch(e){}
+  return false;
+}
+
 export function columnProfile(WG,wx){
   const ix=Math.round(finiteNumber(wx,0));
   const c=safeColumn(WG,ix);
@@ -191,7 +213,9 @@ function lowerWorldDominatesContact(WG,wx,y){
   const p=lowerContactBlend(WG,wx,y);
   if(p<=0) return false;
   if(p>=1) return true;
-  return safeRand(WG,wx*12.71 + y*3.17 + 7476)<p;
+  // Coherent interfingering tongues along the contact instead of per-tile static
+  const tongue=fbm2D(WG,wx,y,27,13,2,7476);
+  return tongue < 0.18 + p*0.64;
 }
 
 export function legacyGeologyLayerDepth(WG,wx,y,depth,biome){
@@ -204,9 +228,12 @@ export function legacyGeologyLayerDepth(WG,wx,y,depth,biome){
 
 export function volcanoRootProfile(WG,wx,y){
   const col=safeColumn(WG,wx);
-  const v=col && col.volcano;
-  if(!v || y<col.row) return {active:false};
-  const rootDepth=Math.max(0,y-WORLD_H);
+  const v=safeVolcanoBody(WG,wx);
+  if(!v) return {active:false};
+  const surface=col && Number.isFinite(col.row) ? col.row : 64;
+  if(y<surface) return {active:false};
+  const sub=Math.max(0,y-surface);                 // depth under this column's surface
+  const rootDepth=Math.max(0,y-WORLD_H);           // depth into the low world
   const endFade=clamp01(1-Math.max(0,rootDepth-112)/30);
   const dx=wx-v.center;
   const bend=(safeNoise(WG,y+v.center*0.17,54,7461)-0.5)*(2.4+rootDepth*0.045);
@@ -220,12 +247,48 @@ export function volcanoRootProfile(WG,wx,y){
   const influence=clamp01(1-ad/Math.max(1,rootRadius+chamberT*chamberRadius))*endFade;
   const core=ad<=pipeRadius && rootDepth<122 && endFade>0;
   const chamber=chamberT>0 && ad<chamberRadius*(0.35+chamberT*0.65) && endFade>0.12;
-  const dikeA=Math.abs(dx + rootDepth*0.15 + bend*0.55);
-  const dikeB=Math.abs(dx - rootDepth*0.18 - bend*0.50);
-  const ring=Math.abs(ad-(pipeRadius+2.2+rootDepth*0.045));
-  const dike=(rootDepth>4 && rootDepth<124 && endFade>0.05 && (dikeA<0.95 || dikeB<0.95 || ring<0.80));
+  // Dikes flare continuously from just below the vent, through the mid/low
+  // contact, down to the terminal fade — one formula, no per-band restart.
+  const dikeA=Math.abs(dx + sub*0.115 + bend*0.55);
+  const dikeB=Math.abs(dx - sub*0.13 - bend*0.50);
+  const ring=Math.abs(ad-(pipeRadius+2.2+sub*0.028));
+  const dike=(sub>9 && rootDepth<124 && endFade>0.05 && (dikeA<0.95 || dikeB<0.95 || ring<0.80));
   const lava=(core && (rootDepth<96 || safeNoise(WG,wx+y*0.11,23,7463)>0.34)) || (chamber && chamberT>0.46 && safeNoise(WG,wx-y*0.13,31,7464)>0.38);
-  return {active:influence>0.02 || core || chamber || dike, col, volcano:v, rootDepth, endFade, influence, core, chamber, chamberT, dike, lava};
+  return {active:influence>0.02 || core || chamber || dike, col, volcano:v, sub, rootDepth, endFade, influence, core, chamber, chamberT, dike, lava};
+}
+
+// Volcanic contact aureole: baked country rock, basaltic intrusion lobes and
+// quench obsidian wrap the conduit in a warped, noise-dissolved thermal jacket.
+// The jacket bends with depth, dissolves into ordinary geology before the cone
+// edge, and fades out before the deep root zone takes over — no straight box
+// edges and no material family swap at WORLD_H or any other fixed row.
+export function volcanoAureoleTile(WG,col,wx,y,ground,depth){
+  const v=col && col.volcano;
+  if(!v || y<ground) return undefined;
+  const rawD=Math.abs(wx-v.center);
+  if(rawD<=(v.pipe||1)+2) return safeRand(WG,wx*3.91+y*0.27)<0.30 ? T.OBSIDIAN : T.BASALT;
+  if(y<WORLD_H-18){
+    const root=volcanoRootProfile(WG,wx,y);
+    if(root.active && root.dike) return safeRand(WG,wx*9.11+y*0.53)<0.18 ? T.OBSIDIAN : T.BASALT;
+  }
+  const sway=(safeNoise(WG,y+v.center*0.31,47,4524)-0.5)*(2.6+depth*0.07);
+  const d=Math.abs(wx-v.center-sway);
+  const outer=Math.max(6,(v.radius||18)-1.5);
+  const r=safeRand(WG,wx*3.91+y*0.27);
+  if(depth<12){
+    if(d>outer+5) return undefined;
+    if(d<=(v.crater||2)+3 || safeRand(WG,wx*4.73+y*0.19)<0.16) return T.OBSIDIAN;
+    return r<0.58 ? T.BASALT : T.STONE;
+  }
+  const depthFade=clamp01(1-Math.max(0,depth-40)/52);
+  const shell=clamp01(1-d/outer)*depthFade;
+  if(shell<=0) return undefined;
+  const dissolve=fbm2D(WG,wx,y,24,15,2,4526);
+  if(dissolve>0.34+shell*0.55) return undefined;
+  const heat=clamp01(1-d/Math.max(1,(v.pipe||1)+4+depth*0.10));
+  if(heat>0.40 || d<=(v.reservoir||5)+3) return r<0.76 ? T.BASALT : T.OBSIDIAN;
+  if(shell>0.30) return r<0.44 ? T.BASALT : (r<0.62 ? T.GRANITE : T.STONE);
+  return r<0.30 ? T.BASALT : (r<0.52 ? T.GRANITE : undefined);
 }
 
 function legacyGeologyRockCoreTile(WG,wx,y,depth,biome){
@@ -445,14 +508,22 @@ export function deepCaveProfile(WG,wx,y,strataOpt){
   const channel=fbm2D(WG,wx,y,180,46,2,7411);
   const branch=fbm2D(WG,wx-17,y+23,68,92,2,7412);
   const grain=fbm2D(WG,wx,y,24,18,2,7421);
-  const cavernThreshold=0.805 - depthN*0.075 - strata.fracture*0.080;
+  // Passages pinch out approaching the world floor: rare sealed pockets remain,
+  // but no tunnel runs flat along the bedrock boundary.
+  const floorSeal=clamp01((y-(WORLD_MAX_Y-18))/12);
+  const cavernThreshold=0.805 - depthN*0.075 - strata.fracture*0.080 + floorSeal*0.14;
   const cavernOpen=cavern>cavernThreshold && chamber>0.42;
-  const channelWidth=0.014 + depthN*0.020 + strata.fracture*0.012;
+  const channelWidth=(0.014 + depthN*0.020 + strata.fracture*0.012)*(1-floorSeal*0.85);
   const tunnelOpen=Math.abs(channel-0.5)<channelWidth && grain>0.34;
   const branchOpen=Math.abs(branch-0.5)<channelWidth*0.72 && grain>0.55 && deep>18;
   const shaftGate=safeNoise(WG,wx,310,7431)>0.82 || env.ravine>0.35;
-  const shaft=shaftGate && deep>12 && Math.abs(fbm2D(WG,wx,y,18,118,2,7432)-0.5)<0.018+env.ravine*0.020;
-  const waterLine=WORLD_H + 24 + safeNoise(WG,wx,260,7441)*34 + env.ocean*18 + env.lake*12 - env.mountain*7 - env.volcanic*5;
+  const shaft=shaftGate && deep>12 && y<WORLD_MAX_Y-16 && Math.abs(fbm2D(WG,wx,y,18,118,2,7432)-0.5)<0.018+env.ravine*0.020;
+  // Deep flooding follows the same regional water table as the mid-world
+  // aquifer: wet stretches stay wet into the low world, dry stretches carry
+  // open caves far deeper before pooling.
+  const tableRef=safeAquifer(WG,wx);
+  const tableT=tableRef==null ? clamp01(safeNoise(WG,wx,260,7441)) : clamp01((tableRef-88)/92);
+  const waterLine=WORLD_H + 16 + tableT*44 + (safeNoise(WG,wx,140,7444)-0.5)*14 + env.ocean*16 + env.lake*10 - env.mountain*7 - env.volcanic*5;
   const wet=safeNoise2D(WG,wx,y,64,24,7442)>0.30 || env.ocean>0.55 || env.lake>0.5;
   const carryFade=clamp01(1-deep/50);
   const carryChance=clamp01(0.20 + carryFade*0.58 + env.deepFracture*0.08 + env.ravine*0.10);
@@ -474,11 +545,17 @@ function deepRockMaterialTile(WG,wx,y,strataOpt){
   const inMantle=strata.virtualDepth>strata.mantleLine;
   const inBasalt=strata.virtualDepth>strata.basaltLine;
   const inGranite=strata.virtualDepth>strata.graniteLine;
+  // Ores concentrate in warped pocket masses instead of uniform salt-and-pepper
+  // flecks; outside a pocket the same rolls run much leaner.
+  const pocket=fbm2D(WG,wx+29,y+13,36,20,2,7455);
+  const oreScale=0.42 + clamp01((pocket-0.58)/0.16)*1.9;
+  // Coal seams continue across the mid/low contact and taper out with depth
+  if(deep<48 && safeCoalVein(WG,wx,y) && safeRand(WG,wx*3.37+y*0.61)<1-deep/48) return T.COAL;
   if(env.city>0.24 && ore>0.989-deep*0.00008 && vein>0.20) return T.METEORIC_IRON;
-  if(deep>18 && vein>0.88 && ore<0.030+strata.crystal*0.050) return T.DIAMOND;
-  if(deep>86 && ore<0.006+strata.crystal*0.010) return T.ANTIMATTER_CRYSTAL;
-  if(deep>52 && ore<0.012+strata.crystal*0.022) return T.IRIDIUM;
-  if(deep>34 && ore<0.018+strata.crystal*0.026 && vein>0.68) return T.DIAMOND;
+  if(deep>18 && vein>0.88 && ore<(0.030+strata.crystal*0.050)*oreScale) return T.DIAMOND;
+  if(deep>86 && ore<(0.006+strata.crystal*0.010)*oreScale) return T.ANTIMATTER_CRYSTAL;
+  if(deep>52 && ore<(0.012+strata.crystal*0.022)*oreScale) return T.IRIDIUM;
+  if(deep>34 && ore<(0.018+strata.crystal*0.026)*oreScale && vein>0.68) return T.DIAMOND;
   if(deep>58 && env.volcanic>0 && ore<0.050+strata.igneous*0.090) return T.OBSIDIAN;
   if(inMantle) return texture<0.50+strata.igneous*0.20 || vein<0.15 ? T.BASALT : T.GRANITE;
   if(inBasalt) return (texture<0.54+strata.igneous*0.20 || vein<0.22) ? T.BASALT : T.GRANITE;
@@ -488,6 +565,13 @@ function deepRockMaterialTile(WG,wx,y,strataOpt){
 
 export function deepTile(WG,wx,y){
   if(y>=WORLD_MAX_Y-3) return T.BEDROCK;
+  // Ragged bedrock roof: the absolute floor rises a few tiles on a warped line
+  // with scattered bedrock teeth above it, never a clean flat shelf.
+  if(y>=WORLD_MAX_Y-12){
+    const floorRise=safeNoise(WG,wx,23,7481)*2.4 + safeNoise(WG,wx,64,7482)*2.8;
+    if(y>=WORLD_MAX_Y-3-floorRise) return T.BEDROCK;
+    if(y>=WORLD_MAX_Y-6-floorRise && safeRand(WG,wx*6.53+y*0.71)<0.34) return T.BEDROCK;
+  }
   const strata=deepStrataProfile(WG,wx,y);
   const env=strata.env;
   const root=strata.root || volcanoRootProfile(WG,wx,y);
@@ -511,6 +595,7 @@ export const worldLayers = Object.freeze({
   legacyGeologyLayerDepth,
   midLowContactY,
   volcanoRootProfile,
+  volcanoAureoleTile,
   legacyGeologyRockTile,
   skyLayerConfig,
   skyCellTraits,

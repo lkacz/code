@@ -110,6 +110,25 @@ function volcanoSiteEmerges(v,currentX,row,biome,island,sea,mountainMask,pv){
 	return !!(centerCol && centerCol.volcano && centerCol.volcano.center===v.center);
 }
 WG.volcanoAt = function(x){ const c=WG.column(Math.round(x)); return c && c.volcano ? c.volcano : null; };
+// Volcano body lookup that is NOT clipped by the surface cone mask. Deep magma
+// chambers, roots and dikes can be wider than the cone above them, so the
+// vertical layer model resolves the emerged volcano within `reach` tiles of the
+// cone radius instead of relying on the per-column volcano field.
+WG.volcanoInfluenceAt = function(x, reach){
+	x = Math.round(x);
+	reach = (typeof reach==='number' && reach>0) ? reach : 48;
+	const cell = Math.floor(x/VOLCANO_CELL_W);
+	let best = null;
+	for(let dc=-1; dc<=1; dc++){
+		const v = volcanoCandidateForCell(cell+dc);
+		if(!v) continue;
+		const d = Math.abs(x-v.center);
+		if(d>v.radius+reach || (best && d>=best.d)) continue;
+		const c = WG.column(v.center);
+		if(c && c.volcano && c.volcano.center===v.center) best = Object.assign({d}, v);
+	}
+	return best;
+};
 WG.nearestVolcano = function(x, dir, maxCells){
 	dir = dir<0 ? -1 : 1;
 	maxCells = (typeof maxCells==='number' && maxCells>0) ? Math.floor(maxCells) : 420;
@@ -197,6 +216,28 @@ function applyOceanBreaker(elev,island,xw,cfg){
 	if(archElev<=elev) return {elev,island};
 	return {elev:archElev,island:island || archElev>cfg.islandAt};
 }
+
+// --- Aquifer profile ---------------------------------------------------------------
+// The underground water table is a warped regional surface, not a flat world row:
+// broad folds swing it by tens of tiles, ridged basins pool it locally, and whole
+// stretches run dry (their caves stay open all the way into the deep sections).
+// world_layers couples the deep-section water line to this same profile so mid
+// and low water behave as one connected system. `aquiferLevel` stays the mean.
+WG.aquiferAt = function(x, row, biome){
+	const S = WG.settings;
+	const base = (S.aquiferLevel===undefined) ? 108 : S.aquiferLevel;
+	const fold = (fbm1(x,640,2,811)-0.5)*38 + (fbm1(x,210,2,812)-0.5)*14;
+	const basin = ridgeSharp(x,470,813,1.9);
+	const dry = smoothstep(0.60,0.80,WG.valueNoise(x,1500,814));
+	let level = base + fold + dry*58 - (basin>0.70 ? (basin-0.70)*46 : 0);
+	if(biome===5 || biome===6) level -= 9;       // seas/lakes keep saturated ground
+	else if(biome===4) level -= 6;               // swamps sit on shallow water tables
+	else if(biome===3) level += 7;               // deserts drain deep
+	else if(biome===7) level += 8;               // ranges shed water downslope
+	const sea = (S.seaLevel===undefined) ? 62 : S.seaLevel;
+	const floor = Math.max(sea+4, (Number.isFinite(row)?row:sea)+8);
+	return Math.round(clamp(level, floor, WORLD_H+40));
+};
 
 // --- Column model -----------------------------------------------------------------
 // Everything derived from x is computed once per column and cached.
@@ -296,7 +337,7 @@ WG.column = function(x){
 	const rvGate = 1-0.035*Math.max(0.0001,S.ravineFreq);
 	let ravine=0, ravineDepth=0;
 	if(S.ravineFreq>0 && rv>rvGate && elevF>2 && !beach && !island && biome!==8){ ravine=(rv-rvGate)/(1-rvGate); ravineDepth=16+48*ravine; }
-	const aquifer = Math.round(S.aquiferLevel + (fbm1(x,820,2,811)-0.5)*40);
+	const aquifer = WG.aquiferAt(x, row, biome);
 	c = {row,biome,elev:sea-row,cont,ero,pv,mountainMask,valleyDepth,t,m,beach,island,entrance,ravine,ravineDepth,aquifer,volcano,city};
 	colCache.set(x,c); return c;
 };
@@ -449,8 +490,14 @@ WG.coalVeinAt = function(x,y,nearCave){
 	const body=fbm2(x,y,24,17,2,1801);
 	return body>0.57 || WG.randSeed(x*7.73+y*0.37)<chance*0.42;
 };
-// Diamond odds scale with absolute depth; world.js triples this beside cave walls
-WG.diamondChance = function(y){ const d=clamp((y-58)/80,0,1); return 0.0006 + d*d*0.038; };
+// Diamond odds scale with absolute depth; world.js triples this beside cave walls.
+// The ramp eases off through the last rows above WORLD_H so ore density blends
+// into the deep-section pocket model instead of cliff-dropping at the contact.
+WG.diamondChance = function(y){
+	const d=clamp((y-58)/80,0,1);
+	const contactEase=clamp((y-(WORLD_H-22))/22,0,1);
+	return 0.0006 + d*d*0.038*(1-contactEase*0.62);
+};
 
 // Node sims import this module without a DOM; the seed input only exists in the browser
 if(typeof document!=='undefined') WG.setSeedFromInput();
