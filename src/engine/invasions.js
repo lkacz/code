@@ -8,9 +8,19 @@ import {
   isSolidCollisionTile as isSolid,
   isTrapdoorTile
 } from './material_physics.js';
+import {
+  applySeparation,
+  assignRoles,
+  beginAIFrame,
+  createNav,
+  createSquadBrain,
+  makeTeamProfile
+} from './invasion_ai.js';
 
 // Night invasions are intentionally team-based. Today the implemented team type
 // is "aliens", but the save shape and scheduler can host more invader kinds.
+// Tactics (pathfinding, roles, flanking, cover, sieges) live in invasion_ai.js
+// and are team-agnostic; each kind only registers a profile here.
 const invasions = (function(){
   const root = typeof window !== 'undefined' ? window : globalThis;
   const MM = root.MM = root.MM || {};
@@ -23,9 +33,21 @@ const invasions = (function(){
   const caches = [];
   const lasers = [];
   const tileDamage = new Map();
+  const brains = new Map(); // team.id -> squad brain (transient, rebuilt after load)
   let seq = 1;
   let lastNightDay = 0;
   let saveAcc = 0;
+
+  // Team profile registry: future invader kinds (dwarves, animal packs, ...)
+  // call registerTeamType with their own tuning and reuse the whole pipeline.
+  const TEAM_TYPES = {};
+  function registerTeamType(kind, def){
+    TEAM_TYPES[kind] = makeTeamProfile(Object.assign({}, def, {kind}));
+    return TEAM_TYPES[kind];
+  }
+  function profileFor(team){
+    return TEAM_TYPES[team && team.kind] || TEAM_TYPES.aliens;
+  }
 
   function finiteNum(v){ return typeof v === 'number' && Number.isFinite(v); }
   function clamp(v,a,b){ return v < a ? a : (v > b ? b : v); }
@@ -163,9 +185,12 @@ const invasions = (function(){
     return false;
   }
   function inWorldY(y,pad=1){ return Number.isFinite(y) && y >= WORLD_TOP + pad && y < WORLD_BOTTOM - pad; }
+  // Navigation openness must mirror movement collision exactly (foliage,
+  // torches, ladders, water are all walk-through), otherwise forests and
+  // decorated ground become artificial nav walls; only lava is treated as
+  // a wall so paths never lead through it.
   function isAlienOpenTile(t){
-    return (isReplaceableNaturalOpenTile(t,false) && t !== T.WATER && t !== T.LAVA) ||
-      t === T.TORCH || t === T.GRAVE || t === T.LADDER;
+    return !isSolid(t) && t !== T.LAVA;
   }
   function canStandAt(tx,ty,getTile){
     if(!inWorldY(ty,2)) return false;
@@ -174,6 +199,38 @@ const invasions = (function(){
     const below = readTile(getTile,tx,ty+1);
     return isAlienOpenTile(here) && isAlienOpenTile(head) && below !== T.WATER && below !== T.LAVA && isSolid(below);
   }
+
+  // Shared navigation for all invasion units. getTileFn is repointed on every
+  // update() call so the nav always reads through the host's tile accessor.
+  const navWorld = {
+    getTileFn:null,
+    readTile(x,y){ return readTile(navWorld.getTileFn,x,y); },
+    isOpen:isAlienOpenTile,
+    isSolid:(t)=>isSolid(t) && t !== T.WATER && t !== T.LAVA,
+    minY:WORLD_TOP,
+    maxY:WORLD_BOTTOM
+  };
+  const nav = createNav(navWorld);
+  function ensureBrain(team){
+    let brain = brains.get(team.id);
+    if(!brain){
+      brain = createSquadBrain(profileFor(team), nav);
+      brains.set(team.id, brain);
+    }
+    return brain;
+  }
+
+  registerTeamType('aliens', {
+    baseSpeed:2.35,
+    jumpVel:9.6,
+    fireRange:14,
+    meleeRange:0.72,
+    fleeHpFrac:0.32,
+    fleeDist:15,
+    siegeAfter:3.5,
+    breachRange:12,
+    buildCap:8
+  });
   function findSurfaceStandSpot(x, nearY, getTile){
     const tx = floor(x);
     const s = surfaceY(tx, nearY);
@@ -229,7 +286,9 @@ const invasions = (function(){
       onGround:false,
       facing:Math.random() < 0.5 ? -1 : 1,
       hitFlashUntil:0,
+      lastHitAt:0,
       dead:false,
+      role:'',
       phase:Math.random()*Math.PI*2
     };
   }
@@ -255,6 +314,7 @@ const invasions = (function(){
       startedAt:Date.now(),
       defeatedAt:0,
       announced:false,
+      builtTiles:[],
       lander:{
         x:spot.x,
         y:Math.max(WORLD_TOP + 6, spot.y - 26 - index * 2),
@@ -306,8 +366,11 @@ const invasions = (function(){
   function spawnAliens(team){
     if(!team || team.aliens.length) return;
     const baseY = team.y;
+    const roles = assignRoles(team.alienCount, profileFor(team));
     for(let i=0; i<team.alienCount; i++){
-      team.aliens.push(makeAlien(team, team.x, baseY, i));
+      const a = makeAlien(team, team.x, baseY, i);
+      a.role = roles[i] || 'rusher';
+      team.aliens.push(a);
     }
     team.state = 'active';
     team.lander.landed = true;
@@ -421,55 +484,118 @@ const invasions = (function(){
     }
     return false;
   }
-  function shouldBreakBlockedTile(hit,player){
+  function shouldBreakBlockedTile(hit,player,range){
     if(!hit || !hit.blocked || !isAttackableStructureTile(hit.tile)) return false;
     const px = player && Number.isFinite(player.x) ? player.x : 0;
     const py = player && Number.isFinite(player.y) ? player.y : 0;
-    return Math.hypot((hit.tx+0.5)-px,(hit.ty+0.5)-py) <= 7.5;
+    return Math.hypot((hit.tx+0.5)-px,(hit.ty+0.5)-py) <= (Number.isFinite(range) ? range : 7.5);
   }
-  function fireAlienLaser(a,team,player,getTile,setTile,ctx){
-    const range = 14 + Math.min(6, (team.day || 1) * 0.35);
+  function fireAlienLaser(a,team,player,getTile,setTile,ctx,opts){
+    opts = opts || {};
+    const profile = profileFor(team);
+    const range = profile.fireRange + Math.min(6, (team.day || 1) * 0.35);
     const ox = a.x + (a.facing || 1) * 0.23;
     const oy = a.y - 0.62;
-    const aimX = (Number.isFinite(player.vx) ? player.x + player.vx * 0.08 : player.x);
-    const aimY = (Number.isFinite(player.vy) ? player.y - 0.52 + player.vy * 0.035 : player.y - 0.52);
+    let aimX, aimY;
+    const tileAim = Number.isFinite(opts.aimX) && Number.isFinite(opts.aimY);
+    if(tileAim){
+      aimX = opts.aimX; aimY = opts.aimY;
+    } else {
+      // lead the hero, degraded by the role's aim quality
+      const wobble = Math.min(0.55, Math.max(0, 1 - (opts.aim || 0.9)) * 1.2);
+      aimX = (Number.isFinite(player.vx) ? player.x + player.vx * 0.08 : player.x) + randRange(-wobble,wobble);
+      aimY = (Number.isFinite(player.vy) ? player.y - 0.52 + player.vy * 0.035 : player.y - 0.52) + randRange(-wobble,wobble);
+    }
     const hit = traceLine(ox,oy,aimX,aimY,getTile,range);
     pushLaser(ox,oy,hit.x,hit.y,hit.clear,hit.blocked);
-    if(hit.clear){
+    const dmgMult = Number.isFinite(opts.damageMult) ? opts.damageMult : 1;
+    if(hit.clear && !tileAim){
       try{
-        if(root.damageHero) root.damageHero(5 + Math.min(4, Math.floor((team.day || 1) / 5)), {srcX:a.x,srcY:a.y-0.4,kb:3.5,kbY:-2.2,invulMs:430,cause:'alien_invasion'});
+        if(root.damageHero) root.damageHero(Math.max(1, Math.round((5 + Math.min(4, Math.floor((team.day || 1) / 5))) * dmgMult)), {srcX:a.x,srcY:a.y-0.4,kb:3.5,kbY:-2.2,invulMs:430,cause:'alien_invasion'});
       }catch(e){}
-      return true;
+      return hit;
     }
-    if(shouldBreakBlockedTile(hit,player)){
-      damageStructureTile(hit.tx,hit.ty,3.6 + Math.min(3, (team.day || 1) * 0.22),getTile,setTile,ctx);
-      return true;
+    const breakRange = opts.breach ? profile.breachRange : 7.5;
+    if(shouldBreakBlockedTile(hit,player,breakRange)){
+      damageStructureTile(hit.tx,hit.ty,(3.6 + Math.min(3, (team.day || 1) * 0.22)) * dmgMult,getTile,setTile,ctx);
     }
-    return false;
+    return hit;
   }
-  function updateAlien(a,team,dt,player,getTile,setTile,ctx){
+  function canPlaceBarricadeAt(tx,ty,player,team,getTile){
+    const t = readTile(getTile,tx,ty);
+    if(!isReplaceableNaturalOpenTile(t,false) || t === T.WATER) return false;
+    const px = player && Number.isFinite(player.x) ? player.x : 0;
+    const py = player && Number.isFinite(player.y) ? player.y : 0;
+    if(Math.hypot((tx+0.5)-px,(ty+0.5)-py) < 2.4) return false;
+    for(const other of (team && team.aliens) || []){
+      if(!other || other.dead || other.hp <= 0) continue;
+      if(Math.abs(other.x-(tx+0.5)) < 0.75 && other.y > ty - 0.1 && other.y < ty + 1.9) return false;
+    }
+    return true;
+  }
+  function placeBarricadeTile(team,tx,ty,getTile,setTile,ctx){
+    const profile = profileFor(team);
+    if(!Array.isArray(team.builtTiles)) team.builtTiles = [];
+    if(team.builtTiles.length >= profile.buildCap) return false;
+    const old = readTile(getTile,tx,ty);
+    if(!writeTile(setTile,tx,ty,T.ALIEN_BIOMASS)) return false;
+    wakeTileChanged(ctx,tx,ty,old,T.ALIEN_BIOMASS);
+    team.builtTiles.push({x:floor(tx),y:floor(ty)});
+    burst(tx+0.5,ty+0.5,'common');
+    markHostSave(ctx);
+    return true;
+  }
+  function cleanupBuiltTiles(team,getTile,setTile,ctx){
+    if(!team || !Array.isArray(team.builtTiles) || !team.builtTiles.length) return;
+    for(const bt of team.builtTiles){
+      if(readTile(getTile,bt.x,bt.y) === T.ALIEN_BIOMASS && writeTile(setTile,bt.x,bt.y,T.AIR)){
+        wakeTileChanged(ctx,bt.x,bt.y,T.ALIEN_BIOMASS,T.AIR);
+      }
+    }
+    team.builtTiles.length = 0;
+  }
+  function teamHooks(team,player,getTile,setTile,ctx){
+    return {
+      fire:(a,opts)=>fireAlienLaser(a,team,player,getTile,setTile,ctx,opts),
+      tileAttack:(a,tx,ty,mult)=>{
+        burst(tx+0.5,ty+0.5,'common');
+        return damageStructureTile(tx,ty,(4.2 + Math.min(3,(team.day||1)*0.22)) * Math.max(1, mult || 1),getTile,setTile,ctx);
+      },
+      isBreachableTile:(tx,ty)=>isAttackableStructureTile(readTile(getTile,tx,ty)),
+      canBuildAt:(tx,ty)=>canPlaceBarricadeAt(tx,ty,player,team,getTile),
+      build:(a,tx,ty)=>placeBarricadeTile(team,tx,ty,getTile,setTile,ctx),
+      onModeChange:(mode)=>{
+        if(mode === 'siege') say('Obcy przechodza do oblezenia: celuja w oslony bohatera.');
+      }
+    };
+  }
+  // Physics + touch damage only: all decisions (where to go, when to shoot,
+  // when to hide or flee) come from the squad brain via a._ai.intent.
+  function updateAlien(a,team,dt,player,getTile){
     if(!a || a.dead || a.hp <= 0) return;
+    const profile = profileFor(team);
+    const intent = a._ai && a._ai.intent ? a._ai.intent : null;
     const px = player && Number.isFinite(player.x) ? player.x : a.x;
     const py = player && Number.isFinite(player.y) ? player.y : a.y;
     const dx = px - a.x;
     const dy = (py - 0.4) - (a.y - 0.45);
     const dist = Math.hypot(dx,dy) || 1;
-    a.facing = dx >= 0 ? 1 : -1;
-    const speed = 2.35 + Math.min(1.4, (team.day || 1) * 0.06);
-    const desired = Math.abs(dx) > 0.45 ? Math.sign(dx) * speed : 0;
+    const speed = (profile.baseSpeed + Math.min(1.4, (team.day || 1) * 0.06)) * (intent ? (intent.speedMult || 1) : 1);
+    const desired = intent ? intent.moveX * speed : 0;
     a.vx += (desired - (a.vx || 0)) * Math.min(1, dt * 5.8);
-    const aheadX = a.x + a.facing * 0.42;
-    if(a.onGround && alienCollidesAt(a,aheadX,a.y,getTile)){
-      a.vy = -7.4 - Math.min(1.4, (team.day || 1) * 0.04);
+    if(intent && intent.jump && a.onGround){
+      a.vy = -profile.jumpVel;
       a.onGround = false;
+      intent.jump = false;
+    } else if(a.onGround && intent && intent.moveX !== 0){
+      const aheadX = a.x + intent.moveX * 0.42;
+      if(alienCollidesAt(a,aheadX,a.y,getTile)){
+        a.vy = -profile.jumpVel * 0.85;
+        a.onGround = false;
+      }
     }
     a.attackCd = Math.max(0, (a.attackCd || 0) - dt);
-    if(dist < 14.5 && a.attackCd <= 0){
-      fireAlienLaser(a,team,player,getTile,setTile,ctx);
-      a.attackCd = 0.72 + Math.random() * 0.38;
-      a.vx *= 0.62;
-    }
-    if(dist < 0.72 && Math.abs(dy) < 1.0 && a.attackCd <= 0.15){
+    if(dist < profile.meleeRange && Math.abs(dy) < 1.0 && a.attackCd <= 0.15){
       try{ if(root.damageHero) root.damageHero(3,{srcX:a.x,srcY:a.y,kb:2.4,invulMs:500,cause:'alien_invasion'}); }catch(e){}
       a.attackCd = 0.55;
     }
@@ -488,10 +614,12 @@ const invasions = (function(){
       play('laser');
     }
   }
-  function defeatTeam(team,player,ctx){
+  function defeatTeam(team,player,ctx,getTile,setTile){
     if(!team || team.state === 'defeated') return false;
     team.state = 'defeated';
     team.defeatedAt = Date.now();
+    cleanupBuiltTiles(team,getTile,setTile,ctx);
+    brains.delete(team.id);
     const reward = Math.max(60, team.xpReward || 160);
     if(player && typeof player.xp === 'number') player.xp += reward;
     say('Oddzial obcych pokonany: +'+reward+' XP.');
@@ -501,24 +629,41 @@ const invasions = (function(){
     return true;
   }
   function updateTeams(dt,player,getTile,setTile,ctx){
+    navWorld.getTileFn = getTile;
+    beginAIFrame();
+    const allUnits = [];
+    const now = nowMs();
     for(const team of teams){
       if(!team || team.state === 'defeated' || team.state === 'retreat') continue;
       updateLander(team,dt);
       if(team.lander && team.lander.destroyed && !team.aliens.length){
-        defeatTeam(team,player,ctx);
+        defeatTeam(team,player,ctx,getTile,setTile);
         continue;
+      }
+      if(team.aliens.length && player){
+        const brain = ensureBrain(team);
+        brain.update(team, team.aliens, dt, player, teamHooks(team,player,getTile,setTile,ctx), {now});
       }
       let alive = 0;
       for(const a of team.aliens){
         if(!a || a.dead || a.hp <= 0) continue;
-        updateAlien(a,team,dt,player,getTile,setTile,ctx);
-        if(a.hp > 0 && !a.dead) alive++;
+        updateAlien(a,team,dt,player,getTile);
+        if(a.hp > 0 && !a.dead){ alive++; allUnits.push(a); }
       }
-      if(team.state === 'active' && alive <= 0) defeatTeam(team,player,ctx);
+      if(team.state === 'active' && alive <= 0) defeatTeam(team,player,ctx,getTile,setTile);
     }
+    // Units shoulder each other (and the hero) aside instead of stacking.
+    applySeparation(allUnits, {
+      radius:0.30,
+      hero:player,
+      canOccupy:(u,x,y)=>!alienCollidesAt(u,x,y,getTile)
+    });
     for(let i=teams.length-1;i>=0;i--){
       const t = teams[i];
-      if(t && t.state === 'defeated' && t.defeatedAt && Date.now() - t.defeatedAt > 5000) teams.splice(i,1);
+      if(t && t.state === 'defeated' && t.defeatedAt && Date.now() - t.defeatedAt > 5000){
+        brains.delete(t.id);
+        teams.splice(i,1);
+      }
     }
   }
   function updateLasers(dt){
@@ -553,6 +698,7 @@ const invasions = (function(){
     if(hit.alien){
       hit.alien.hp -= amount;
       hit.alien.hitFlashUntil = nowMs() + 120;
+      hit.alien.lastHitAt = nowMs();
       if(hit.alien.hp <= 0){
         hit.alien.dead = true;
         burst(hit.alien.x,hit.alien.y-0.4,'rare');
@@ -589,6 +735,7 @@ const invasions = (function(){
         if(Math.hypot(a.x-wx,(a.y-0.4)-wy) <= radius){
           a.hp -= amount;
           a.hitFlashUntil = nowMs() + 150;
+          a.lastHitAt = nowMs();
           if(a.hp <= 0){ a.dead = true; burst(a.x,a.y-0.4,'rare'); }
           hit = true;
         }
@@ -596,6 +743,15 @@ const invasions = (function(){
     }
     return hit;
   }
+  // Head tint per tactical role so the player can read the squad composition.
+  const ROLE_TINTS = {
+    rusher:'#9edac1',
+    flanker:'#8fd4ea',
+    orbiter:'#c0aaf2',
+    sniper:'#ecc27d',
+    sapper:'#ef9a8b',
+    engineer:'#aee87f'
+  };
   function draw(ctx,tileSize,canDrawTile){
     const TILE_SIZE = tileSize || DEFAULT_TILE;
     const visible = (x,y)=> typeof canDrawTile === 'function' ? !!canDrawTile(Math.floor(x),Math.floor(y)) : true;
@@ -642,7 +798,7 @@ const invasions = (function(){
         if(!a || a.dead || a.hp <= 0 || !visible(a.x,a.y)) continue;
         const px = a.x*TILE_SIZE, foot = a.y*TILE_SIZE;
         const hurt = now < (a.hitFlashUntil || 0);
-        ctx.fillStyle = hurt ? '#eaffff' : '#9edac1';
+        ctx.fillStyle = hurt ? '#eaffff' : (ROLE_TINTS[a.role] || '#9edac1');
         ctx.beginPath(); ctx.ellipse(px,foot-TILE_SIZE*0.62,TILE_SIZE*0.24,TILE_SIZE*0.30,0,0,Math.PI*2); ctx.fill();
         ctx.fillStyle = hurt ? '#a9fff1' : '#4f897a';
         ctx.fillRect(px-TILE_SIZE*0.18,foot-TILE_SIZE*0.45,TILE_SIZE*0.36,TILE_SIZE*0.34);
@@ -869,12 +1025,34 @@ const invasions = (function(){
     markHostSave(ctx);
     return true;
   }
+  // Persist only durable unit facts; transient tactics (_ai paths, tokens,
+  // cover spots) are rebuilt by the squad brain after load.
+  function serializeAlien(a){
+    return {
+      id:a.id, teamId:a.teamId,
+      x:a.x, y:a.y, vx:a.vx, vy:a.vy,
+      hp:a.hp, maxHp:a.maxHp,
+      attackCd:a.attackCd, breakCd:a.breakCd,
+      onGround:a.onGround, facing:a.facing,
+      dead:a.dead, role:a.role || '', phase:a.phase
+    };
+  }
+  function serializeTeam(t){
+    return {
+      id:t.id, kind:t.kind, day:t.day, index:t.index, state:t.state,
+      x:t.x, y:t.y, alienCount:t.alienCount, xpReward:t.xpReward,
+      startedAt:t.startedAt, defeatedAt:t.defeatedAt, announced:t.announced,
+      builtTiles:Array.isArray(t.builtTiles) ? t.builtTiles.map(b=>({x:b.x,y:b.y})) : [],
+      lander:Object.assign({}, t.lander),
+      aliens:t.aliens.map(serializeAlien)
+    };
+  }
   function snapshot(){
     return {
       v:1,
       lastNightDay,
       seq,
-      teams:teams.map(t=>deepCopy(t)),
+      teams:teams.map(serializeTeam),
       caches:caches.map(c=>deepCopy(c))
     };
   }
@@ -894,9 +1072,20 @@ const invasions = (function(){
       onGround:!!a.onGround,
       facing:a.facing < 0 ? -1 : 1,
       hitFlashUntil:0,
+      lastHitAt:0,
       dead:!!a.dead || (Number(a.hp)||0) <= 0,
+      role:typeof a.role === 'string' ? a.role : '',
       phase:finiteNum(a.phase)?a.phase:0
     };
+  }
+  function normalizeBuiltTiles(list){
+    if(!Array.isArray(list)) return [];
+    const out = [];
+    for(const b of list){
+      if(b && Number.isFinite(Number(b.x)) && Number.isFinite(Number(b.y))) out.push({x:floor(b.x),y:floor(b.y)});
+      if(out.length >= 40) break;
+    }
+    return out;
   }
   function normalizeTeam(t){
     if(!t || typeof t !== 'object') return null;
@@ -915,6 +1104,7 @@ const invasions = (function(){
       startedAt:Number(t.startedAt)||Date.now(),
       defeatedAt:Number(t.defeatedAt)||0,
       announced:!!t.announced,
+      builtTiles:normalizeBuiltTiles(t.builtTiles),
       lander:{
         x:finiteNum(lander.x)?lander.x:(finiteNum(t.x)?t.x:0),
         y:finiteNum(lander.y)?lander.y:(finiteNum(t.y)?t.y-3:57),
@@ -955,10 +1145,19 @@ const invasions = (function(){
     caches.length = 0;
     lasers.length = 0;
     tileDamage.clear();
+    brains.clear();
     if(!data || typeof data !== 'object') return false;
     lastNightDay = Math.max(0, Number(data.lastNightDay)||0);
     seq = Math.max(1, Number(data.seq)||1);
     if(Array.isArray(data.teams)) teams.push(...data.teams.map(normalizeTeam).filter(Boolean).slice(0,12));
+    for(const team of teams){
+      // Older saves have no roles: re-roll so restored squads keep their variety.
+      const missing = team.aliens.filter(a=>!a.role || !(profileFor(team).roles[a.role]));
+      if(missing.length){
+        const roles = assignRoles(missing.length, profileFor(team));
+        for(let i=0;i<missing.length;i++) missing[i].role = roles[i] || 'rusher';
+      }
+    }
     if(Array.isArray(data.caches)){
       caches.push(...data.caches.map(normalizeCache).filter(Boolean).slice(0,24));
       for(const c of caches){
@@ -974,15 +1173,21 @@ const invasions = (function(){
     caches.length = 0;
     lasers.length = 0;
     tileDamage.clear();
+    brains.clear();
     lastNightDay = 0;
     seq = 1;
     clearCacheTasks();
     saveLocal();
   }
   function metrics(){
-    let aliens = 0;
-    for(const t of teams) for(const a of t.aliens || []) if(a && !a.dead && a.hp > 0) aliens++;
-    return {teams:teams.length, activeTeams:activeAlienTeams().length, aliens, caches:caches.length, lasers:lasers.length, lastNightDay};
+    let aliens = 0, siegeTeams = 0, builtTiles = 0;
+    for(const t of teams){
+      for(const a of t.aliens || []) if(a && !a.dead && a.hp > 0) aliens++;
+      if(Array.isArray(t.builtTiles)) builtTiles += t.builtTiles.length;
+      const brain = brains.get(t.id);
+      if(brain && brain.mode === 'siege') siegeTeams++;
+    }
+    return {teams:teams.length, activeTeams:activeAlienTeams().length, aliens, siegeTeams, builtTiles, caches:caches.length, lasers:lasers.length, lastNightDay};
   }
   function forceNightInvasion(player,getTile,setTile,opts){
     return spawnNightInvasion(player,getTile,setTile,opts || {});
@@ -1004,12 +1209,14 @@ const invasions = (function(){
     onHeroKilled,
     openCacheAt,
     forceNightInvasion,
+    registerTeamType,
+    teamTypes:()=>Object.keys(TEAM_TYPES),
     snapshot,
     restore,
     reset,
     metrics,
-    state:()=>({teams:teams.map(t=>deepCopy(t)), caches:caches.map(c=>deepCopy(c)), lastNightDay, seq}),
-    _debug:{teams,caches,lasers,tileDamage,traceLine,damageStructureTile,findCacheSpot,stealResources,stealGear}
+    state:()=>({teams:teams.map(serializeTeam), caches:caches.map(c=>deepCopy(c)), lastNightDay, seq}),
+    _debug:{teams,caches,lasers,tileDamage,brains,nav,traceLine,damageStructureTile,findCacheSpot,stealResources,stealGear,canPlaceBarricadeAt,placeBarricadeTile,cleanupBuiltTiles,profileFor}
   };
   MM.invasions = api;
   return api;

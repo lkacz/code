@@ -72,6 +72,67 @@ assert.ok(invasions.attackAt(Math.floor(alien.x),Math.floor(alien.y-0.45),500), 
 invasions.update(0.1, player, getTile, setTile, ctx);
 assert.ok(invasions.metrics().activeTeams === 0 || player.xp > 0, 'killing the final alien can finish the team');
 
+// --- tactical AI integration ------------------------------------------------
+// Roles, separation, and the siege that breaches a shelter the hero hides in.
+invasions.reset();
+overrides.clear();
+for(let y=45; y<=49; y++){ setTile(-2,y,T.STONE); setTile(2,y,T.STONE); }
+for(let x=-2; x<=2; x++) setTile(x,45,T.STONE);
+invasions.forceNightInvasion(player,getTile,setTile,{day:6,teams:1,alienCount:5});
+let sawLaser = false, sawSiege = false, sawTileDamage = false;
+for(let i=0;i<420;i++){
+  invasions.update(0.1, player, getTile, setTile, ctx);
+  const m = invasions.metrics();
+  if(m.lasers > 0) sawLaser = true;
+  if(m.siegeTeams > 0) sawSiege = true;
+  if(invasions._debug.tileDamage.size > 0) sawTileDamage = true;
+}
+state = invasions.state();
+const squad = state.teams[0];
+assert.ok(squad && squad.aliens.length >= 5, 'siege scenario fields a full squad');
+const roleSet = new Set(squad.aliens.map(a=>a.role));
+assert.ok([...roleSet].every(r=>typeof r === 'string' && r.length > 0), 'every alien carries a tactical role');
+assert.ok(roleSet.size >= 4, 'a five-alien squad mixes at least four different tactics');
+let minGap = Infinity;
+const liveAliens = squad.aliens.filter(a=>!a.dead && a.hp > 0);
+for(let i=0;i<liveAliens.length;i++){
+  for(let j=i+1;j<liveAliens.length;j++){
+    const gap = Math.hypot(liveAliens[i].x-liveAliens[j].x, liveAliens[i].y-liveAliens[j].y);
+    if(gap < minGap) minGap = gap;
+  }
+}
+assert.ok(minGap > 0.3, 'separation keeps invaders from overlapping (min gap '+minGap.toFixed(2)+')');
+assert.ok(sawLaser, 'invaders fire lasers during the assault');
+assert.ok(sawSiege, 'a sheltered hero flips the squad into siege mode');
+let wallBreached = false;
+for(let y=45; y<=49; y++){ if(getTile(-2,y)!==T.STONE || getTile(2,y)!==T.STONE) wallBreached = true; }
+for(let x=-2; x<=2; x++){ if(getTile(x,45)!==T.STONE) wallBreached = true; }
+assert.ok(sawTileDamage || wallBreached, 'the siege chews through the shelter shell');
+
+// roles survive save/load
+const roleSnap = invasions.snapshot();
+assert.ok(roleSnap.teams[0].aliens.every(a=>a.role), 'snapshot persists tactical roles');
+assert.ok(roleSnap.teams[0].aliens.every(a=>a._ai === undefined), 'snapshot strips transient AI state');
+invasions.reset();
+invasions.restore(roleSnap,getTile,setTile);
+const restoredRoles = invasions.state().teams[0].aliens.map(a=>a.role);
+assert.deepEqual(restoredRoles, roleSnap.teams[0].aliens.map(a=>a.role), 'restore keeps each alien on its role');
+
+// engineer barricades are tracked and cleaned up when the team falls
+const debugTeam = invasions._debug.teams[0];
+invasions._debug.cleanupBuiltTiles(debugTeam,getTile,setTile,ctx); // clear any sim-built walls first
+assert.ok(invasions._debug.placeBarricadeTile(debugTeam,30,49,getTile,setTile,ctx), 'invaders can raise barricade tiles');
+assert.equal(getTile(30,49), T.ALIEN_BIOMASS, 'barricades are alien biomass tiles');
+assert.equal(debugTeam.builtTiles.length, 1, 'placed barricades are tracked on the team');
+invasions._debug.cleanupBuiltTiles(debugTeam,getTile,setTile,ctx);
+assert.equal(getTile(30,49), T.AIR, 'defeated teams leave no barricades behind');
+assert.equal(debugTeam.builtTiles.length, 0, 'cleanup empties the built-tile ledger');
+
+// team scalability: other invader kinds register their own profiles
+assert.ok(invasions.teamTypes().includes('aliens'), 'alien profile is registered by default');
+invasions.registerTeamType('dwarves', {baseSpeed:2.0, roles:{rusher:{weight:3}, sapper:{weight:2}}});
+assert.ok(invasions.teamTypes().includes('dwarves'), 'new invader kinds can register team profiles');
+
 const inv = {wood:10, stone:8, diamond:1};
 const originalInv = {...inv};
 const originalBag = [
