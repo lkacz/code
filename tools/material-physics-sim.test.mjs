@@ -233,6 +233,13 @@ assert.equal(materialPhysicsRoute(T.TORCH), 'mounted-fixture', 'torches have the
 assert.equal(materialPhysicsRoute(T.MEAT), 'loose-item', 'loose item tiles have the loose-item material route');
 assert.equal(materialPhysicsRoute(T.DYNAMO), 'rigid-object', 'machines have the rigid-object material route');
 assert.equal(materialPhysicsRoute(T.VENDING_MACHINE), 'rigid-object', 'vending machines have the rigid-object material route');
+assert.equal(materialPhysicsRoute(T.INVASION_CACHE), 'rigid-object', 'invasion recovery caches have the rigid-object material route');
+assert.equal(isRigidObjectTile(T.INVASION_CACHE), true, 'invasion recovery caches enter rigid-object physics');
+assertNoSupportRole('INVASION_CACHE', T.INVASION_CACHE);
+assert.equal(isBlastProtectedTile(T.INVASION_CACHE), true, 'invasion recovery caches are protected from blast cleanup');
+assert.equal(isMeteorProtectedTile(T.INVASION_CACHE), true, 'invasion recovery caches are protected from meteor cleanup');
+assert.equal(isMeteorSettlementSiteTile(T.INVASION_CACHE), true, 'invasion recovery caches count as settlement objects for meteor avoidance');
+assert.equal(isIridiumArrowPierceableTile(T.INVASION_CACHE), false, 'iridium arrows cannot pierce recovery caches');
 assert.equal(materialPhysicsRoute(T.COPPER_WIRE), 'passable-utility', 'thin infrastructure has the passable-utility material route');
 assert.equal(materialPhysicsRoute(T.STONE), 'build-material', 'stone has the build-material route');
 assert.equal(materialPhysicsRoute(T.CLAY), 'build-material', 'clay has the build-material route');

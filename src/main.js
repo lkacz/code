@@ -46,6 +46,7 @@ import { progress as PROGRESS } from './engine/progress.js';
 import { survival as SURVIVAL } from './engine/survival.js';
 import { audio as AUDIO } from './engine/audio.js';
 import { ufo as UFO } from './engine/ufo.js';
+import { invasions as INVASIONS } from './engine/invasions.js';
 import { traps as TRAPS } from './engine/traps.js';
 import { ruins as RUINS } from './engine/ruins.js';
 import { meteorites as METEORITES } from './engine/meteorites.js';
@@ -679,6 +680,7 @@ Object.assign(TILE_LABELS,{
 	[T.MUD]:'Bloto',
 	[T.WET_CLAY]:'Mokra glina',
 	[T.GRAVE]:'Nagrobek',
+	[T.INVASION_CACHE]:'Skrytka obcych',
 	[T.VOLCANO_MASTER_STONE]:'Kamien mistrza',
 	[T.SERVANT_STONE]:'Kamien slugi',
 	[T.AUTUMN_LEAF_ORANGE]:'Jesienny lisc',
@@ -1089,6 +1091,15 @@ window.heroDied=function(cause){
 	if(deathTravelFx) return;
 	if(immunityMode){ player.hp=player.maxHp; return; }
 	player.hurtFlashUntil=Math.max(player.hurtFlashUntil||0, performance.now()+HURT_FLASH_MS);
+	if(cause==='alien_invasion' && INVASIONS && INVASIONS.onHeroKilled){
+		const stolen=INVASIONS.onHeroKilled({player, inv, resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, getTile, setTile, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst});
+		if(stolen && stolen.handled){
+			try{ if(MM.audio && MM.audio.play) MM.audio.play('grave'); }catch(e){}
+			updateInventory();
+			startDeathTravelFx(cause);
+			return;
+		}
+	}
 	const res={}; let any=false;
 	for(const k of RESOURCE_KEYS){
 		const half=Math.floor((inv[k]||0)/2);
@@ -1458,6 +1469,7 @@ function buildSaveObject(opts){
 	npcs: timedSavePart('npcs',()=>((NPCS && NPCS.snapshot) ? NPCS.snapshot() : null),perf),
 	tutorialNpc: timedSavePart('tutorialNpc',()=>((TUTORIAL_NPC && TUTORIAL_NPC.snapshot) ? TUTORIAL_NPC.snapshot() : null),perf),
 	ufo: timedSavePart('ufo',()=>((UFO && UFO.snapshot) ? UFO.snapshot() : null),perf),
+	invasions: timedSavePart('invasions',()=>((INVASIONS && INVASIONS.snapshot) ? INVASIONS.snapshot() : null),perf),
 	progress: timedSavePart('progress',()=>((PROGRESS && PROGRESS.snapshot) ? PROGRESS.snapshot() : null),perf),
 	plants: timedSavePart('plants',()=>((PLANTS && PLANTS.snapshot) ? PLANTS.snapshot() : null),perf),
 	inv: timedSavePart('inventory',()=>snapshotInventory(),perf),
@@ -1541,6 +1553,7 @@ function loadGame(){
 	try{ if(VENDING && VENDING.reset) VENDING.reset(); }catch(e){}
 	try{ if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); }catch(e){}
 	try{ if(UFO && UFO.clearActive) UFO.clearActive(); }catch(e){}
+	try{ if(INVASIONS && INVASIONS.reset) INVASIONS.reset(); }catch(e){}
 	try{ if(METEORITES && METEORITES.clearActive) METEORITES.clearActive(); }catch(e){}
 	// Plants/progress restore from the save snapshot below; old saves still fall
 	// back to their historical mm_* side stores for compatibility.
@@ -1593,6 +1606,7 @@ function loadGame(){
 	try{ if(NPCS && NPCS.restore && data.npcs) NPCS.restore(data.npcs); }catch(e){}
 	try{ if(!data.npcs && TUTORIAL_NPC && TUTORIAL_NPC.restore && data.tutorialNpc) TUTORIAL_NPC.restore(data.tutorialNpc); }catch(e){}
 	try{ if(UFO && UFO.restore && data.ufo) UFO.restore(data.ufo); }catch(e){}
+	try{ if(INVASIONS && INVASIONS.restore && data.invasions) INVASIONS.restore(data.invasions,getTile,setTile); }catch(e){}
 	try{ if(PROGRESS && PROGRESS.restore && data.progress) PROGRESS.restore(data.progress); }catch(e){}
 	try{ if(PLANTS && PLANTS.restore && data.plants) PLANTS.restore(data.plants); }catch(e){}
 	restoreInventory(data.inv);
@@ -2623,6 +2637,7 @@ function tileShadeAmp(t){
 	if(t===T.ANTIGRAVITY_BEACON) return 3;
 	if(t===T.METEOR_SIREN) return 4;
 	if(INFO[t] && INFO[t].chestTier) return 4;
+	if(INFO[t] && INFO[t].cache) return 5;
 	return 22;
 }
 function terrainShadeDelta(t,wx,y,h){
@@ -3150,6 +3165,37 @@ function drawChestTile(g,px,py,t,h){
 	} else if(((h>>>11)&7)===0){
 		g.fillStyle='rgba(255,255,255,0.62)';
 		g.fillRect(px+6+((h>>>3)&6),py+6,2,1);
+	}
+	g.restore();
+}
+function drawInvasionCacheTile(g,px,py,h){
+	g.save();
+	const pulse=((h>>>5)&7)/7;
+	drawBlockBevel(g,px,py,'rgba(122,255,222,0.28)','rgba(0,5,8,0.55)');
+	g.fillStyle='rgba(4,12,18,0.88)';
+	g.fillRect(px+2,py+4,TILE-4,TILE-7);
+	g.fillStyle='rgba(24,70,76,0.92)';
+	g.fillRect(px+3,py+5,TILE-6,TILE-9);
+	g.fillStyle='rgba(8,24,30,0.85)';
+	g.fillRect(px+5,py+7,TILE-10,TILE-12);
+	g.strokeStyle='rgba(121,255,219,0.88)';
+	g.lineWidth=1.5;
+	g.beginPath();
+	g.moveTo(px+4,py+7);
+	g.lineTo(px+10,py+3);
+	g.lineTo(px+16,py+7);
+	g.moveTo(px+5,py+14);
+	g.lineTo(px+15,py+14);
+	g.stroke();
+	g.fillStyle='rgba(126,255,225,'+(0.42+pulse*0.22).toFixed(3)+')';
+	g.fillRect(px+8,py+8,4,4);
+	g.fillStyle='rgba(230,255,249,0.82)';
+	g.fillRect(px+9,py+8,2,1);
+	g.fillStyle='rgba(0,0,0,0.36)';
+	g.fillRect(px+3,py+17,TILE-6,2);
+	if((h&3)!==0){
+		g.fillStyle='rgba(123,255,226,0.52)';
+		g.fillRect(px+5+((h>>>8)&7),py+5+((h>>>12)&1),2,1);
 	}
 	g.restore();
 }
@@ -4248,6 +4294,9 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 				if(t===T.CHEST_COMMON||t===T.CHEST_RARE||t===T.CHEST_EPIC){
 					entry.chests.push({x:wx,y,t});
 					drawChestTile(cctx,lx*TILE,y*TILE,t,h);
+				}
+				if(t===T.INVASION_CACHE){
+					drawInvasionCacheTile(cctx,lx*TILE,y*TILE,h);
 				}
 				if(t===T.STONE){
 					const px=lx*TILE, py=y*TILE;
@@ -5420,6 +5469,16 @@ function tryOpenChestAt(tx,ty){
 	}
 	return !!res;
 }
+function tryOpenInvasionCacheAt(tx,ty){
+	if(getTile(tx,ty)!==T.INVASION_CACHE || !INVASIONS || !INVASIONS.openCacheAt) return false;
+	const ok=INVASIONS.openCacheAt(tx,ty,{inv, inventory:MM.inventory, getTile, setTile, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst});
+	if(ok){
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('chest'); }catch(e){}
+		noteSaveActivity();
+		saveState();
+	}
+	return !!ok;
+}
 function vendingLootText(d){
 	if(!d) return 'nic';
 	const label=(RES_LABEL[d.key] || d.label || d.key);
@@ -5479,7 +5538,7 @@ function isUnmineableTile(t){ return !!(INFO[t] && INFO[t].unmineable); }
 function unmineableReason(t){ return tileLabel(t)+' jest nie do ruszenia'; }
 function companionHarvestAssignableTile(t){
 	const info=INFO[t];
-	return !!info && t!==T.AIR && !isGasTileId(t) && !info.unmineable && !info.chestTier && !info.machine && !info.story;
+	return !!info && t!==T.AIR && !isGasTileId(t) && !info.unmineable && !info.chestTier && !info.cache && !info.machine && !info.story;
 }
 function assignCompanionHarvestTargetAt(tx,ty){
 	if(!COMPANIONS || !COMPANIONS.awaitingHarvestTarget || !COMPANIONS.awaitingHarvestTarget()) return false;
@@ -5503,6 +5562,7 @@ function startMineAt(tx,ty,opts){
 	if(isUnmineableTile(t)){ if(!quiet) msg(unmineableReason(t)); return false; }
 	const blocked=blockedTargetReason(tx,ty);
 	if(blocked){ if(!quiet) msg(blocked); return false; }
+	if(t===T.INVASION_CACHE){ if(quiet) return false; return tryOpenInvasionCacheAt(tx,ty); }
 	if(t===T.VENDING_MACHINE){ if(quiet) return false; return tryUseVendingAt(tx,ty); }
 	if(INFO[t] && INFO[t].chestTier){ if(quiet) return false; return tryOpenChestAt(tx,ty); }
 	mining=true; mineTimer=0; mineTx=tx; mineTy=ty; mineBtn.classList.add('on');
@@ -5519,6 +5579,7 @@ function startMine(opts){
 	if(isUnmineableTile(t)){ if(!quiet) msg(unmineableReason(t)); return; }
 	const blocked=blockedTargetReason(tx,ty);
 	if(blocked){ if(!quiet) msg(blocked); return; }
+	if(t===T.INVASION_CACHE){ tryOpenInvasionCacheAt(tx,ty); return; }
 	if(t===T.VENDING_MACHINE){ tryUseVendingAt(tx,ty); return; }
 	if(INFO[t] && INFO[t].chestTier){ tryOpenChestAt(tx,ty); return; }
 	mining=true; mineTimer=0; mineTx=tx; mineTy=ty; mineBtn.classList.add('on');
@@ -5704,6 +5765,7 @@ function breakMinedTile(){
 	const info=INFO[tId];
 	if(!info) return false;
 	if(info.unmineable) return false;
+	if(tId===T.INVASION_CACHE) return tryOpenInvasionCacheAt(mineTx,mineTy);
 	if(isGasTileId(tId)) return false;
 	if(tId===T.DYNAMO || tId===T.DYNAMO_SLOT) return dismantleDynamoAt(mineTx,mineTy);
 	setTile(mineTx,mineTy,T.AIR);
@@ -5753,7 +5815,7 @@ function updateMining(dt){
 	if(minePointerId!=null && !mineBtnHeld && lastPointer.has){
 		const p=screenToWorldTile(lastPointer.x,lastPointer.y);
 		const pt=mineTileIdAt(p.tx,p.ty);
-		if((p.tx!==mineTx||p.ty!==mineTy) && withinReach(p.tx,p.ty,MINE_REACH) && canPhysicallyTargetTile(p.tx,p.ty) && pt!==T.AIR && !isGasTileId(pt) && !isUnmineableTile(pt) && !(INFO[pt]&&INFO[pt].chestTier)){ mineTx=p.tx; mineTy=p.ty; mineTimer=0; }
+		if((p.tx!==mineTx||p.ty!==mineTy) && withinReach(p.tx,p.ty,MINE_REACH) && canPhysicallyTargetTile(p.tx,p.ty) && pt!==T.AIR && !isGasTileId(pt) && !isUnmineableTile(pt) && !(INFO[pt]&&(INFO[pt].chestTier||INFO[pt].cache))){ mineTx=p.tx; mineTy=p.ty; mineTimer=0; }
 	}
 	const mineMult=(MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1;
 	const curId=mineTileIdAt(mineTx,mineTy);
@@ -5928,6 +5990,7 @@ function canPlaceInfrastructureAt(tx,ty,id){
 	if(id===T.LADDER && hasLadderAt(tx,ty)) return {ok:false, id, overlay:true, reason:'Juz jest taka instalacja'};
 	if(hasInfrastructureTile(tx,ty,id)) return {ok:false, id, overlay:true, reason:'Juz jest taka instalacja'};
 	if(INFO[cur] && INFO[cur].chestTier) return {ok:false, id, overlay:true, reason:'Skrzynia blokuje instalacje'};
+	if(INFO[cur] && INFO[cur].cache) return {ok:false, id, overlay:true, reason:'Skrytka blokuje instalacje'};
 	if(cur===T.DYNAMO || cur===T.DYNAMO_SLOT || cur===T.TELEPORTER || cur===T.WATER_PUMP || cur===T.VENDING_MACHINE || cur===T.TURRET || cur===T.FIRE_TURRET || cur===T.WATER_TURRET || cur===T.SPRING_PLATFORM || cur===T.SOLAR_PANEL || cur===T.SOLAR_BATTERY || cur===T.ANTIGRAVITY_BEACON || cur===T.METEOR_SIREN) return {ok:false, id, overlay:true, reason:'Maszyna blokuje instalacje'};
 	if(!godMode && !withinReach(tx,ty,PLACE_REACH)) return {ok:false, id, overlay:true, reason:'Za daleko'};
 	const blocked=blockedTargetReason(tx,ty);
@@ -5942,7 +6005,7 @@ function canPlaceInfrastructureAt(tx,ty,id){
 function constructionBackgroundBlockedReason(cur){
 	if(cur===T.LAVA) return 'Lawa blokuje tlo';
 	const info=INFO[cur];
-	if(info && (info.chestTier || info.machine || info.story || info.unmineable)) return 'Blokuje tlo';
+	if(info && (info.chestTier || info.cache || info.machine || info.story || info.unmineable)) return 'Blokuje tlo';
 	if(cur!==T.AIR && !isGasTileId(cur) && cur!==T.WATER && !isHeroPassableTile(cur)) return 'Pierwszy plan zajety';
 	return '';
 }
@@ -6362,11 +6425,12 @@ canvas.addEventListener('pointerdown',e=>{
 		const dxRange = Math.abs(tx - Math.floor(player.x)); const dyRange=Math.abs(ty - Math.floor(player.y));
 		// Equipped weapon/charm bonus damage on top of base melee / tool damage
 		const atkBonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
-		if(dxRange<=3 && dyRange<=3 && player.atkCd<=0 && ((GUARDIANS && GUARDIANS.attackAt && GUARDIANS.attackAt(tx,ty,atkBonus)) || (UNDERGROUND && UNDERGROUND.attackAt && UNDERGROUND.attackAt(tx,ty,atkBonus)) || (BOSSES && BOSSES.attackAt && BOSSES.attackAt(tx,ty,atkBonus)) || (NPCS && NPCS.attackAt && NPCS.attackAt(tx,ty,atkBonus,tutorialNpcCtx)) || (MOBS && MOBS.attackAt && MOBS.attackAt(tx,ty,atkBonus,{source:'hero'})))){ player.atkCd=0.35; if(WEAPONS && WEAPONS.notifyMeleeSwing) WEAPONS.notifyMeleeSwing(tx,ty,player); return; }
+		if(dxRange<=3 && dyRange<=3 && player.atkCd<=0 && ((GUARDIANS && GUARDIANS.attackAt && GUARDIANS.attackAt(tx,ty,atkBonus)) || (UNDERGROUND && UNDERGROUND.attackAt && UNDERGROUND.attackAt(tx,ty,atkBonus)) || (BOSSES && BOSSES.attackAt && BOSSES.attackAt(tx,ty,atkBonus)) || (INVASIONS && INVASIONS.attackAt && INVASIONS.attackAt(tx,ty,atkBonus)) || (NPCS && NPCS.attackAt && NPCS.attackAt(tx,ty,atkBonus,tutorialNpcCtx)) || (MOBS && MOBS.attackAt && MOBS.attackAt(tx,ty,atkBonus,{source:'hero'})))){ player.atkCd=0.35; if(WEAPONS && WEAPONS.notifyMeleeSwing) WEAPONS.notifyMeleeSwing(tx,ty,player); return; }
 		// Click an NPC (non-duel) to talk: they speak the next line in their repertoire.
 		if(NPCS && NPCS.interactAt && NPCS.interactAt(tx,ty,player,tutorialNpcCtx)) return;
 		if(tryUseVendingAt(tx,ty)) return;
 		if(tryOpenChestAt(tx,ty)) return;
+		if(tryOpenInvasionCacheAt(tx,ty)) return;
 		if(dxRange<=3 && dyRange<=3 && tryOpenGraveAt(tx,ty)) return;
 		// plants: harvest ripe berries / clear vegetation before digging the tile behind it
 		if(dxRange<=3 && dyRange<=3 && PLANTS && PLANTS.harvestAt && PLANTS.harvestAt(tx,ty)){ try{ if(MM.audio && MM.audio.play) MM.audio.play('harvest'); }catch(e){} return; }
@@ -6452,6 +6516,7 @@ function draw(){ // Background first
  if(AFTERMATH && AFTERMATH.draw) AFTERMATH.draw(ctx,TILE,worldFxVisible,camRenderX,camRenderY,W,H,zoom);
  // mobs
  if(MOBS && MOBS.draw) MOBS.draw(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible);
+ if(INVASIONS && INVASIONS.draw) INVASIONS.draw(ctx,TILE,worldFxVisible);
  if(COMPANIONS && COMPANIONS.draw) COMPANIONS.draw(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible);
  if(GUARDIANS && GUARDIANS.draw) GUARDIANS.draw(ctx,TILE,worldFxVisible,camRenderX,camRenderY,W,H,zoom);
  if(UNDERGROUND && UNDERGROUND.draw) UNDERGROUND.draw(ctx,TILE,worldFxVisible,camRenderX,camRenderY,W,H,zoom);
@@ -6639,6 +6704,10 @@ function draw(){ // Background first
 			if(mm){ lines.push('Mobs: '+mm.count+' live, ~'+mm.active+' active  dt '+(mm.dtAvg*1000).toFixed(1)+'ms'); }
 		}catch(e){}
 		try{
+			const im = (INVASIONS && INVASIONS.metrics)? INVASIONS.metrics() : null;
+			if(im && (im.activeTeams || im.caches || im.aliens)){ lines.push('Invasions: '+im.activeTeams+'/'+im.teams+' teams  aliens '+im.aliens+'  caches '+im.caches+'  lasers '+im.lasers); }
+		}catch(e){}
+		try{
 			const cm = (COMPANIONS && COMPANIONS.metrics)? COMPANIONS.metrics() : null;
 			if(cm && cm.count){ lines.push('Pomocnicy: '+cm.count+'  HP '+cm.hp+'/'+cm.maxHp+'  biomasa '+cm.biomass+'  lasery '+cm.lasers); }
 		}catch(e){}
@@ -6732,6 +6801,7 @@ function minimapTileColor(t){
 	if(t===T.VOLCANO_MASTER_STONE) return '#ff6a21';
 	if(t===T.SERVANT_STONE) return '#8b2d17';
 	if(t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC) return '#dba33a';
+	if(t===T.INVASION_CACHE) return '#7dffdc';
 	if(t===T.TORCH) return '#ffc24b';
 	if(t===T.OBSIDIAN) return '#4a3b66';
 	if(t===T.WOOD_DOOR) return '#9b6730';
@@ -6786,7 +6856,7 @@ function minimapTileColor(t){
 	return '#686d78';
 }
 function minimapConcealsUndiscovered(t){
-	return t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.OBSIDIAN || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.GLASS || t===T.BRICK || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || t===T.GRAVE || t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC;
+	return t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.OBSIDIAN || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.GLASS || t===T.BRICK || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || t===T.GRAVE || t===T.INVASION_CACHE || t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC;
 }
 function minimapWorldYToPixel(row,mh,minY,maxY){
 	const span=Math.max(1,maxY-minY-1);
@@ -6871,7 +6941,7 @@ function drawMinimap(){
 							continue;
 						}
 						const c=minimapTileColor(t);
-						if(t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || INFO[t].chestTier){ color=c; priority=true; wx=wx1+1; break; }
+						if(t===T.WATER || t===T.LAVA || t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || INFO[t].chestTier || INFO[t].cache){ color=c; priority=true; wx=wx1+1; break; }
 						if(!color) color=outsideLegacyBand && !discovered ? 'rgba(120,145,176,0.58)' : c;
 					}
 				}
@@ -7141,6 +7211,7 @@ function debugRigCellsClear(cells){
 			if(hasInfrastructureTile(cell.x,cell.y,cell.t)) return false;
 			const base=getTile(cell.x,cell.y);
 			if(INFO[base] && INFO[base].chestTier) return false;
+			if(INFO[base] && INFO[base].cache) return false;
 			if(base===T.DYNAMO || base===T.DYNAMO_SLOT || base===T.TELEPORTER || base===T.WATER_PUMP || base===T.VENDING_MACHINE || base===T.TURRET || base===T.FIRE_TURRET || base===T.WATER_TURRET || base===T.SPRING_PLATFORM || base===T.SOLAR_PANEL || base===T.SOLAR_BATTERY || base===T.ANTIGRAVITY_BEACON || base===T.METEOR_SIREN) return false;
 			continue;
 		}
@@ -8222,7 +8293,7 @@ function regenWorld(){
 	try{ if(FOG && FOG.importSeen) FOG.importSeen([]); if(FOG && FOG.setRevealAll) FOG.setRevealAll(false); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); }catch(e){}
 
 	// Reset transient systems
-	mining=false; if(FALLING && FALLING.reset) FALLING.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(SPRING_PLATFORMS && SPRING_PLATFORMS.reset) SPRING_PLATFORMS.reset(); if(VENDING && VENDING.reset) VENDING.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GUARDIANS && GUARDIANS.reset) GUARDIANS.reset(); if(UNDERGROUND && UNDERGROUND.reset) UNDERGROUND.reset(); if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); if(NPCS && NPCS.reset) NPCS.reset(); if(GENERATED_NPCS && GENERATED_NPCS.reset) GENERATED_NPCS.reset(); if(COMPANIONS && COMPANIONS.reset) COMPANIONS.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(UFO && UFO.reset) UFO.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
+	mining=false; if(FALLING && FALLING.reset) FALLING.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(SPRING_PLATFORMS && SPRING_PLATFORMS.reset) SPRING_PLATFORMS.reset(); if(VENDING && VENDING.reset) VENDING.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GUARDIANS && GUARDIANS.reset) GUARDIANS.reset(); if(UNDERGROUND && UNDERGROUND.reset) UNDERGROUND.reset(); if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); if(NPCS && NPCS.reset) NPCS.reset(); if(GENERATED_NPCS && GENERATED_NPCS.reset) GENERATED_NPCS.reset(); if(COMPANIONS && COMPANIONS.reset) COMPANIONS.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(UFO && UFO.reset) UFO.reset(); if(INVASIONS && INVASIONS.reset) INVASIONS.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
 
 	// Reset inventory/tools/hotbar
 	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.meteor=inv.tools.diamond=false; player.tool='basic'; hotbarIndex=0; // if god mode active, restore 100 stack after reset
@@ -8736,7 +8807,7 @@ function runGameStep(dt,ts){
 	if(GASES && GASES.update) GASES.update(dt, getTile, setTile, player);
 	if(PLANTS && PLANTS.update) PLANTS.update(getTile, setTile, dt);
 	if(PROGRESS && PROGRESS.update) PROGRESS.update(dt);
-updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCape(dt); updateBlink(ts);
+updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCape(dt); updateBlink(ts);
 }
 let lastLoopErrAt=0; function loop(ts){
 	if(shouldSkipFrameForCap(ts)){ requestAnimationFrame(loop); return; }
@@ -8990,7 +9061,7 @@ if(!window.__lootPopupInit){
 }
 
 // Regenerate world using the CURRENT seed (do not change WG.worldSeed)
-window.regenWorldSameSeed = function(){ try{ if(MOBS && MOBS.clearAll) try{ MOBS.clearAll(); }catch(e){} if(COMPANIONS && COMPANIONS.reset) try{ COMPANIONS.reset(); }catch(e){} if(WORLD && WORLD.clear) WORLD.clear(); if(typeof chunkCanvases!=='undefined') chunkCanvases.clear(); if(typeof chunkRenderDirty!=='undefined') chunkRenderDirty.clear(); if(WORLD && WORLD.clearHeights) WORLD.clearHeights(); if(FALLING && FALLING.reset) FALLING.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(SPRING_PLATFORMS && SPRING_PLATFORMS.reset) SPRING_PLATFORMS.reset(); if(VENDING && VENDING.reset) VENDING.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GUARDIANS && GUARDIANS.reset) GUARDIANS.reset(); if(UNDERGROUND && UNDERGROUND.reset) UNDERGROUND.reset(); if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); if(NPCS && NPCS.reset) NPCS.reset(); if(GENERATED_NPCS && GENERATED_NPCS.reset) GENERATED_NPCS.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(UFO && UFO.reset) UFO.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
+window.regenWorldSameSeed = function(){ try{ if(MOBS && MOBS.clearAll) try{ MOBS.clearAll(); }catch(e){} if(COMPANIONS && COMPANIONS.reset) try{ COMPANIONS.reset(); }catch(e){} if(WORLD && WORLD.clear) WORLD.clear(); if(typeof chunkCanvases!=='undefined') chunkCanvases.clear(); if(typeof chunkRenderDirty!=='undefined') chunkRenderDirty.clear(); if(WORLD && WORLD.clearHeights) WORLD.clearHeights(); if(FALLING && FALLING.reset) FALLING.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(SPRING_PLATFORMS && SPRING_PLATFORMS.reset) SPRING_PLATFORMS.reset(); if(VENDING && VENDING.reset) VENDING.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GUARDIANS && GUARDIANS.reset) GUARDIANS.reset(); if(UNDERGROUND && UNDERGROUND.reset) UNDERGROUND.reset(); if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); if(NPCS && NPCS.reset) NPCS.reset(); if(GENERATED_NPCS && GENERATED_NPCS.reset) GENERATED_NPCS.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(UFO && UFO.reset) UFO.reset(); if(INVASIONS && INVASIONS.reset) INVASIONS.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
 	// Reset fog-of-war as well
 	try{ if(FOG && FOG.importSeen) FOG.importSeen([]); if(FOG && FOG.setRevealAll) FOG.setRevealAll(false); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); }catch(e){}
 	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.meteor=inv.tools.diamond=false; player.tool='basic'; hotbarIndex=0; player.xp=0; player.energy=0; if(PROGRESS && PROGRESS.reset) PROGRESS.reset(); applyProgressHp(); applyHeroEnergyCapacity(); respawnPoint=null; saveRespawnPoint(); grave=null; saveGrave();

@@ -171,14 +171,14 @@ export function isBlastProtectedTile(t){
   const info=INFO[t] || INFO[T.AIR];
   return t===T.AIR || t===T.OBSIDIAN || t===T.DIAMOND || t===T.IRIDIUM ||
     t===T.BEDROCK || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE ||
-    !!(info && (info.chestTier || info.story || info.unmineable));
+    !!(info && (info.chestTier || info.cache || info.story || info.unmineable));
 }
 
 export function isMeteorProtectedTile(t){
   const info=INFO[t] || INFO[T.AIR];
   return t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN ||
     t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE ||
-    !!(info && (info.chestTier || info.story || info.unmineable));
+    !!(info && (info.chestTier || info.cache || info.story || info.unmineable));
 }
 
 export function isMeteorWaterSiteTile(t){
@@ -195,7 +195,7 @@ export function isMeteorLifeSiteTile(t){
 
 export function isMeteorSettlementSiteTile(t){
   const info=INFO[t] || INFO[T.AIR];
-  return !!(info && (info.machine || info.chestTier || info.door || info.trapdoor)) ||
+  return !!(info && (info.machine || info.chestTier || info.cache || info.door || info.trapdoor)) ||
     t===T.STEEL || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.LADDER;
 }
 
@@ -206,7 +206,7 @@ export function isCreatureRockFloorTile(t){
 export function isIridiumArrowPierceableTile(t){
   const info=INFO[t] || INFO[T.AIR];
   if(t===T.AIR || t===T.WATER || t===T.LAVA) return false;
-  if(info.machine || info.chestTier || info.story || info.unmineable) return false;
+  if(info.machine || info.chestTier || info.cache || info.story || info.unmineable) return false;
   if(t===T.OBSIDIAN || t===T.DIAMOND || t===T.IRIDIUM || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return false;
   return t!==T.AIR && !(info && info.passable);
 }
@@ -246,7 +246,7 @@ export function isUtilityMaterial(t){
   if(t===T.TORCH || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.LADDER || t===T.GRAVE) return true;
   if(t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return true;
   if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) return true;
-  return !!(info && (info.machine || info.chestTier || info.gas || isLooseItemMaterial(t)));
+  return !!(info && (info.machine || info.chestTier || info.cache || info.gas || isLooseItemMaterial(t)));
 }
 
 export function isHardStructuralMaterial(t){
@@ -296,6 +296,7 @@ export function isRigidObjectTile(t){
   const info=INFO[t];
   if(!info) return false;
   if(info.chestTier) return true;
+  if(info.cache) return true;
   if(t===T.TELEPORTER) return true;
   return !!(info.machine && t!==T.DYNAMO_SLOT && t!==T.COPPER_WIRE && t!==T.WATER_PIPE);
 }
@@ -307,7 +308,7 @@ export function isMountedFixtureTile(t){
 export function isPlayerBuiltMaterial(t){
   const info=INFO[t];
   if(!buildMaterialProfile(t)) return false;
-  if(!info || !info.color || info.passable || info.chestTier || info.gas || info.machine || isLooseItemMaterial(t)) return false;
+  if(!info || !info.color || info.passable || info.chestTier || info.cache || info.gas || info.machine || isLooseItemMaterial(t)) return false;
   if(t===T.AIR || t===T.WATER || t===T.LAVA || t===T.SAND || t===T.BEDROCK) return false;
   if(t===T.TORCH || t===T.WIRE || t===T.COPPER_WIRE || t===T.LADDER || t===T.GRAVE) return false;
   if(t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) return false;
@@ -376,8 +377,9 @@ export function isLoadBearingSupportTile(t){
   if(isWeakFillMaterial(t) || isNonStructuralResourceMaterial(t)) return false;
   if(t===T.DYNAMO_SLOT) return false;
   if(t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC) return false;
+  if(t===T.INVASION_CACHE) return false;
   if(t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) return false;
-  if(info && (info.machine || isLooseItemMaterial(t) || info.gas)) return false;
+  if(info && (info.machine || info.cache || isLooseItemMaterial(t) || info.gas)) return false;
   return isLightStructuralMaterial(t) || t===T.ICE || t===T.ANTIMATTER_CRYSTAL;
 }
 
@@ -404,9 +406,9 @@ export function isSafeLandingFloorTile(t){
 
 export function isBuiltPillarMaterial(t){
   const info=INFO[t];
-  if(!info || !info.color || info.chestTier) return false;
+  if(!info || !info.color || info.chestTier || info.cache) return false;
   if(info.passable || info.machine || isLooseItemMaterial(t) || info.gas) return false;
-  if(t===T.AIR || t===T.WATER || t===T.LAVA || t===T.TORCH || t===T.WIRE || t===T.GRAVE || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return false;
+  if(t===T.AIR || t===T.WATER || t===T.LAVA || t===T.TORCH || t===T.WIRE || t===T.GRAVE || t===T.INVASION_CACHE || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return false;
   if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || t===T.ELECTRONICS) return false;
   return true;
 }

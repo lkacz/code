@@ -340,6 +340,7 @@ import { reactions as REACTIONS } from './reactions.js';
            || (MM.undergroundBoss && MM.undergroundBoss.attackAt && MM.undergroundBoss.attackAt(tx,ty,bonus))
            || (MM.bosses && MM.bosses.attackAt && MM.bosses.attackAt(tx,ty,bonus))
            || (MM.ufo && MM.ufo.attackAt && MM.ufo.attackAt(tx,ty,bonus))
+           || (MM.invasions && MM.invasions.attackAt && MM.invasions.attackAt(tx,ty,bonus))
            || (MM.npcSystem && MM.npcSystem.attackAt && MM.npcSystem.attackAt(tx,ty,bonus))
            || (MM.mobs && MM.mobs.attackAt && MM.mobs.attackAt(tx,ty,bonus,{source:'hero'}));
     meleeCd=0.35; player.atkCd=Math.max(player.atkCd||0, 0.35);
@@ -531,6 +532,7 @@ import { reactions as REACTIONS } from './reactions.js';
     try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(tx,ty,dmg)) return true; }catch(e){}
     try{ if(MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,dmg)) return true; }catch(e){}
     try{ if(MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,dmg)) return true; }catch(e){}
+    try{ if(MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(tx,ty,dmg)) return true; }catch(e){}
     return false;
   }
   function fireElectric(player, aimX, aimY, w, power, charge){
@@ -602,7 +604,7 @@ import { reactions as REACTIONS } from './reactions.js';
     // Elemental streams tick direct damage into boss bodies along the ray.
     // Guardian-specific weaknesses are resolved by guardian_lairs.damageAt.
     bossAcc+=dt;
-    if(bossAcc>=0.2 && ((MM.guardianLairs && MM.guardianLairs.damageAt) || (MM.undergroundBoss && MM.undergroundBoss.damageAt) || (MM.bosses && MM.bosses.damageAt) || (MM.ufo && MM.ufo.damageAt))){
+    if(bossAcc>=0.2 && ((MM.guardianLairs && MM.guardianLairs.damageAt) || (MM.undergroundBoss && MM.undergroundBoss.damageAt) || (MM.bosses && MM.bosses.damageAt) || (MM.ufo && MM.ufo.damageAt) || (MM.invasions && MM.invasions.damageAt))){
       bossAcc=0;
       for(const t of [0.35,0.6,0.85]){
         const sx=Math.floor(player.x + dx*range*t), sy=Math.floor(player.y + dy*range*t);
@@ -612,6 +614,7 @@ import { reactions as REACTIONS } from './reactions.js';
         if(kind==='gas' && MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy, dps*0.2, opts)) break;
         if(kind!=='hose' && MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy, dps*0.2)) break;
         if(kind!=='hose' && MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy, dps*0.2)) break;
+        if(kind!=='hose' && MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(sx,sy, dps*0.2)) break;
       }
     }
     return true;
@@ -679,6 +682,7 @@ import { reactions as REACTIONS } from './reactions.js';
       if(kind==='gas' && MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy,dps*0.18,opts)) break;
       if(kind!=='hose' && MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy,dps*0.18)) break;
       if(kind!=='hose' && MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy,dps*0.18)) break;
+      if(kind!=='hose' && MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(sx,sy,dps*0.18)) break;
     }
     return true;
   }
@@ -699,6 +703,7 @@ import { reactions as REACTIONS } from './reactions.js';
           || (MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(x,y,dmg))
           || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(x,y,dmg))
           || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(x,y,dmg))
+          || (MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(x,y,dmg))
           || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(x,y,dmg))
           || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(x,y,dmg,{source:'hero'}))) || hit;
       }
@@ -775,6 +780,7 @@ import { reactions as REACTIONS } from './reactions.js';
     try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt){ const gasOpts=streamDamageOpts('gas',{x:wx,y:wy,type:'gasExplosion'}); MM.undergroundBoss.damageAt(bx,by,14,gasOpts); MM.undergroundBoss.damageAt(bx+1,by,9,gasOpts); MM.undergroundBoss.damageAt(bx-1,by,9,gasOpts); MM.undergroundBoss.damageAt(bx,by-1,9,gasOpts); } }catch(e){}
     try{ if(MM.bosses && MM.bosses.damageAt){ MM.bosses.damageAt(bx,by,12); MM.bosses.damageAt(bx+1,by,8); MM.bosses.damageAt(bx-1,by,8); MM.bosses.damageAt(bx,by-1,8); } }catch(e){}
     try{ if(MM.ufo && MM.ufo.damageAt){ MM.ufo.damageAt(bx,by,14); MM.ufo.damageAt(bx,by-1,8); } }catch(e){}
+    try{ if(MM.invasions && MM.invasions.blastRadius) MM.invasions.blastRadius(wx,wy,R+1.25,14,{source:'hero'}); }catch(e){}
     try{ if(MM.plants && MM.plants.scorchAt) MM.plants.scorchAt(wx,wy,R+1); }catch(e){}
     // the hero standing close is hurt and hurled (central damageHero handles
     // i-frames/knockback/death; explosions just bring bigger numbers)
@@ -1170,6 +1176,7 @@ import { reactions as REACTIONS } from './reactions.js';
         || (MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,hitDmg))
         || undergroundResult
         || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,hitDmg))
+        || (MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(tx,ty,hitDmg))
         || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,hitDmg))
         || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,hitDmg))){
           if(a.fire && MM.mobs && MM.mobs.igniteAt) MM.mobs.igniteAt(tx,ty,{dur:2.5,dps:2,source:'hero'});
