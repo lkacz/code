@@ -45,6 +45,12 @@ const invasions = (function(){
   function saveLocal(){
     try{ if(root.localStorage) root.localStorage.setItem(SAVE_KEY, JSON.stringify(snapshot())); }catch(e){}
   }
+  function markHostSave(ctx){
+    try{
+      if(ctx && typeof ctx.saveState === 'function') ctx.saveState();
+      else if(typeof root.saveState === 'function') root.saveState();
+    }catch(e){}
+  }
   function maybeSave(dt){
     saveAcc += Math.max(0, Number(dt) || 0);
     if(saveAcc < 3) return;
@@ -219,17 +225,18 @@ const invasions = (function(){
       say(count > 1 ? 'Nocna inwazja: '+count+' oddzialy obcych laduja w okolicy.' : 'Nocna inwazja: obcy laduja w okolicy.');
       play('warning');
       maybeSave(99);
+      markHostSave(opts.ctx);
     }
     return spawned;
   }
   function activeAlienTeams(){
     return teams.filter(t=>t && t.kind === 'aliens' && t.state !== 'defeated' && t.state !== 'retreat');
   }
-  function maybeScheduleNight(player,getTile,setTile){
+  function maybeScheduleNight(player,getTile,setTile,ctx){
     const info = currentDayInfo();
     if(!info.isNight || !player || player.hp <= 0) return false;
     if(lastNightDay >= info.dayIndex) return false;
-    spawnNightInvasion(player,getTile,setTile,{day:info.dayIndex});
+    spawnNightInvasion(player,getTile,setTile,{day:info.dayIndex,ctx});
     return true;
   }
   function landerTileHit(lander,tx,ty){
@@ -349,6 +356,7 @@ const invasions = (function(){
     if(writeTile(setTile,tx,ty,T.AIR)){
       wakeTileChanged(ctx,tx,ty,t,T.AIR);
       burst(tx+0.5,ty+0.5,'common');
+      markHostSave(ctx);
       return true;
     }
     return false;
@@ -420,7 +428,7 @@ const invasions = (function(){
       play('laser');
     }
   }
-  function defeatTeam(team,player){
+  function defeatTeam(team,player,ctx){
     if(!team || team.state === 'defeated') return false;
     team.state = 'defeated';
     team.defeatedAt = Date.now();
@@ -429,6 +437,7 @@ const invasions = (function(){
     say('Oddzial obcych pokonany: +'+reward+' XP.');
     play('milestone');
     burst(team.x,team.y-1,'epic');
+    markHostSave(ctx);
     return true;
   }
   function updateTeams(dt,player,getTile,setTile,ctx){
@@ -436,7 +445,7 @@ const invasions = (function(){
       if(!team || team.state === 'defeated' || team.state === 'retreat') continue;
       updateLander(team,dt);
       if(team.lander && team.lander.destroyed && !team.aliens.length){
-        defeatTeam(team,player);
+        defeatTeam(team,player,ctx);
         continue;
       }
       let alive = 0;
@@ -445,7 +454,7 @@ const invasions = (function(){
         updateAlien(a,team,dt,player,getTile,setTile,ctx);
         if(a.hp > 0 && !a.dead) alive++;
       }
-      if(team.state === 'active' && alive <= 0) defeatTeam(team,player);
+      if(team.state === 'active' && alive <= 0) defeatTeam(team,player,ctx);
     }
     for(let i=teams.length-1;i>=0;i--){
       const t = teams[i];
@@ -461,7 +470,7 @@ const invasions = (function(){
   function update(dt,player,getTile,setTile,ctx){
     ctx = ctx || {};
     dt = Math.max(0, Math.min(0.08, Number(dt) || 0));
-    maybeScheduleNight(player,getTile,setTile);
+    maybeScheduleNight(player,getTile,setTile,ctx);
     updateTeams(dt,player,getTile,setTile,ctx);
     updateLasers(dt);
     maybeSave(dt);
@@ -601,6 +610,28 @@ const invasions = (function(){
     }
     return arr;
   }
+  function dynamicLootKeys(){
+    return ['capes','eyes','outfits','weapons','charms'];
+  }
+  function removeDynamicLootItems(ids){
+    if(!ids || !ids.size || !MM.dynamicLoot) return 0;
+    let removed = 0;
+    for(const key of dynamicLootKeys()){
+      const arr = MM.dynamicLoot[key];
+      if(!Array.isArray(arr)) continue;
+      for(let i=arr.length-1; i>=0; i--){
+        const item = arr[i];
+        if(item && ids.has(item.id)){
+          arr.splice(i,1);
+          removed++;
+        }
+      }
+    }
+    if(removed){
+      try{ if(MM.chests && MM.chests.saveDynamicLoot) MM.chests.saveDynamicLoot(); }catch(e){}
+    }
+    return removed;
+  }
   function stealResources(inv,resourceKeys){
     const stolen = {};
     if(!inv) return stolen;
@@ -657,7 +688,10 @@ const invasions = (function(){
         next.equipped[slot.id] = slot.required ? slot.def : null;
       }
     }
-    inventory.restore(next,{persist:true,silent:false});
+    let restored = false;
+    try{ restored = inventory.restore(next,{persist:true,silent:false}) !== false; }catch(e){ restored = false; }
+    if(!restored) return {gear:[],equipped:{}};
+    removeDynamicLootItems(chosen);
     return {gear:stolenGear,equipped:stolenEquipped};
   }
   function resourceCount(obj){
@@ -722,6 +756,7 @@ const invasions = (function(){
     say('Obcy zabrali lup i ukryli skrytke gdzies w okolicy.');
     play('grave');
     saveLocal();
+    markHostSave(ctx);
     return {handled:true,cache,resources:totalResources,gear:totalGear};
   }
   function restoreCacheLoot(cache,ctx){
@@ -769,7 +804,7 @@ const invasions = (function(){
     if(restored.gearCount) parts.push(restored.gearCount+' przedm.');
     say('Odzyskano skrytke obcych: '+(parts.length ? parts.join(', ') : 'pusto')+'.');
     saveLocal();
-    try{ if(typeof ctx.saveState === 'function') ctx.saveState(); }catch(e){}
+    markHostSave(ctx);
     return true;
   }
   function snapshot(){

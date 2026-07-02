@@ -30,12 +30,15 @@ function getTile(x,y){
 }
 function setTile(x,y,t){ overrides.set(key(x,y),t); }
 const player = {x:0,y:49,hp:100,maxHp:100,vx:0,vy:0,xp:0};
-const ctx = {getTile,setTile,spawnBurst(){},msg:globalThis.msg,ensureChunkAtY(){},notifyStructureTileChanged(){}};
+let saveMarks = 0;
+const ctx = {getTile,setTile,spawnBurst(){},msg:globalThis.msg,ensureChunkAtY(){},notifyStructureTileChanged(){},saveState(){ saveMarks++; }};
 
 invasions.reset();
+saveMarks = 0;
 invasions.update(0.016, player, getTile, setTile, ctx);
 assert.equal(invasions.metrics().teams, 1, 'first night update schedules one alien team');
 assert.equal(invasions.metrics().lastNightDay, 2, 'night spawn is recorded for the current in-game day');
+assert.ok(saveMarks >= 1, 'night scheduling asks the host save system to persist active invasion state');
 invasions.update(0.016, player, getTile, setTile, ctx);
 assert.equal(invasions.metrics().teams, 1, 'same night does not spawn duplicate teams');
 
@@ -99,18 +102,37 @@ const inventory = {
     return false;
   }
 };
+let dynamicLootSaves = 0;
+MM.dynamicLoot = {capes:[],eyes:[],outfits:[],weapons:[],charms:[]};
+MM.chests = {saveDynamicLoot(){ dynamicLootSaves++; }};
+for(const item of originalBag){
+  const keyName = item.kind === 'cape' ? 'capes' : item.kind === 'eyes' ? 'eyes' : item.kind === 'outfit' ? 'outfits' : item.kind === 'weapon' ? 'weapons' : 'charms';
+  MM.dynamicLoot[keyName].push({...item});
+}
 overrides.clear();
+saveMarks = 0;
 const theft = invasions.onHeroKilled({player, inv, resourceKeys:['wood','stone','diamond'], inventory, getTile, setTile, ...ctx});
 assert.equal(theft.handled, true, 'alien-caused death is handled by the invasion theft path');
 assert.ok(theft.cache && getTile(theft.cache.x,theft.cache.y)===T.INVASION_CACHE, 'stolen loot is hidden in a special neighborhood cache tile');
 assert.ok(inv.wood < originalInv.wood || inv.stone < originalInv.stone || inv.diamond < originalInv.diamond, 'alien theft removes roughly half of carried resources');
 assert.ok(snap.bag.length < originalBag.length, 'alien theft removes random dynamic gear from the bag');
 assert.ok(theft.cache.gear.length >= 1, 'alien cache records stolen gear objects for recovery');
+const stolenIds = new Set(theft.cache.gear.map(item=>item.id));
+const dynamicIds = new Set(Object.values(MM.dynamicLoot).flat().map(item=>item && item.id).filter(Boolean));
+for(const id of stolenIds) assert.equal(dynamicIds.has(id), false, 'stolen gear is removed from the dynamic loot pool until recovery');
+assert.ok(dynamicLootSaves >= 1, 'stealing gear persists the dynamic loot pool cleanup');
+assert.ok(saveMarks >= 1, 'creating a theft cache asks the host save system to persist it');
 assert.ok(invasions.openCacheAt(theft.cache.x,theft.cache.y,{inv, inventory, getTile, setTile, updateInventory(){}, saveState(){}, notifyStructureTileChanged(){}}), 'opening the cache restores stolen loot');
 assert.equal(getTile(theft.cache.x,theft.cache.y), T.AIR, 'opened cache tile is cleared');
 assert.equal(snap.bag.length, originalBag.length, 'opening the cache grants stolen gear back');
 assert.ok(inv.wood >= originalInv.wood && inv.stone >= originalInv.stone, 'opening the cache restores stolen resources');
 assert.ok(grants.length >= theft.cache.gear.length, 'each stolen gear item is granted back through inventory APIs');
+
+saveMarks = 0;
+overrides.set(key(8,49), T.WOOD);
+assert.ok(invasions._debug.damageStructureTile(8,49,99,getTile,setTile,ctx), 'alien lasers can destroy a player-built shelter tile');
+assert.equal(getTile(8,49), T.AIR, 'destroyed shelter tile is removed from the world');
+assert.ok(saveMarks >= 1, 'alien structure damage asks the host save system to persist world changes');
 
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const weaponsSrc = await readFile(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
