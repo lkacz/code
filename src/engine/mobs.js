@@ -621,6 +621,7 @@ const mobs = (function(){
   function targetAimBase(target, yOffset){
     if(!target) return {x:0,y:0};
     if(target.kind==='meat') return {x:target.x,y:target.y};
+    if(isInvasionTarget(target)) return {x:target.x, y:target.aimY==null ? target.y+(yOffset==null?-0.42:yOffset) : target.aimY};
     if(target.kind==='companion') return {x:target.x, y:target.aimY==null ? target.y+(yOffset==null?-0.42:yOffset) : target.aimY};
     return {x:target.x, y:target.y+(yOffset==null?-0.3:yOffset)};
   }
@@ -840,6 +841,7 @@ const mobs = (function(){
       });
     }
     if(target.kind==='meat') applySentinelMeatLaser(target,getTile,setTile);
+    else if(isInvasionTarget(target)) damageAlienTarget(target,dmg*(m.dmgMult||1),m.x,m.y-0.6,'sentinel');
     else if(target.kind==='companion') damageCompanionTarget(target,dmg*(m.dmgMult||1),m.x,m.y-0.6,'sentinel');
     else damagePlayer(dmg*(m.dmgMult||1), m.x, m.y-0.6);
     try{ if(MM.audio && MM.audio.play) MM.audio.play('beam'); }catch(e){}
@@ -943,28 +945,59 @@ const mobs = (function(){
       return below===T.STEEL || below===T.STONE || below===T.GRANITE || below===T.BASALT || below===T.OBSIDIAN;
     },
     biome:'city',
-    onUpdate(m,spec,{player,dt,distToPlayer,getTile,setTile,now,speed}){
+    onUpdate(m,spec,{player,dt,getTile,setTile,now,speed}){
       const weaponReady=sentinelShotReady(m,dt);
       const moveSpeed=speed||spec.speed||2.4;
       const cdMul=(m && m.attackCdMult)||1;
       const meatTarget = typeof setTile==='function' ? findSentinelMeatTarget(m,getTile,now) : null;
-      const target = meatTarget || player;
-      const targetIsMeat = target && target.kind==='meat';
-      const dx=target.x-m.x, dy=target.y-m.y, adx=Math.abs(dx)||1;
-      const dir=dx>=0?1:-1;
-      const distToTarget = Math.hypot(dx,dy);
+      const alienTarget = meatTarget ? null : nearestAlienTarget(m.x,m.y,Math.max(spec.sightRange||18,spec.pursueRange||24),{source:'sentinel'});
+      let target = meatTarget || player;
+      if(alienTarget){
+        const ap = alienTargetPoint(alienTarget);
+        const ax = ap.x - m.x, ay = ap.y - m.y;
+        const px = player ? player.x - m.x : Infinity;
+        const py = player ? player.y - m.y : Infinity;
+        const a2 = ax * ax + ay * ay;
+        const p2 = px * px + py * py;
+        const sight2 = (spec.sightRange||18) * (spec.sightRange||18);
+        if(a2 <= p2 * 1.18 || p2 > sight2) target = alienTarget;
+      }
+      let targetIsMeat = target && target.kind==='meat';
+      let targetIsAlien = isInvasionTarget(target);
+      let dx=target.x-m.x, dy=target.y-m.y, adx=Math.abs(dx)||1;
+      let dir=dx>=0?1:-1;
+      let distToTarget = Math.hypot(dx,dy);
       const inView = targetIsMeat
         ? distToTarget < SENTINEL_MEAT_RANGE && Math.abs(dy) < 7.5
-        : distToPlayer < spec.sightRange && Math.abs(dy) < 7.5;
+        : distToTarget < spec.sightRange && Math.abs(dy) < 7.5;
       const losRange = targetIsMeat ? SENTINEL_MEAT_RANGE : Math.min(16, spec.sightRange||16);
-      const lines = inView ? (targetIsMeat && target.lines ? target.lines : sentinelVisionLines(m,target,getTile,losRange,now,dir)) : [];
-      const canSeeTarget = lines.some(l=>l.end && l.end.clear);
+      let lines = inView ? (targetIsMeat && target.lines ? target.lines : sentinelVisionLines(m,target,getTile,losRange,now,dir)) : [];
+      let canSeeTarget = lines.some(l=>l.end && l.end.clear);
+      if(targetIsAlien && !canSeeTarget && player){
+        const fdx=player.x-m.x, fdy=player.y-m.y;
+        const fallbackInView = Math.hypot(fdx,fdy) < spec.sightRange && Math.abs(fdy) < 7.5;
+        const fallbackDir = fdx>=0?1:-1;
+        const fallbackLines = fallbackInView ? sentinelVisionLines(m,player,getTile,Math.min(16,spec.sightRange||16),now,fallbackDir) : [];
+        if(fallbackLines.some(l=>l.end && l.end.clear)){
+          target = player;
+          targetIsMeat = false;
+          targetIsAlien = false;
+          lines = fallbackLines;
+          canSeeTarget = true;
+          dx=target.x-m.x;
+          dy=target.y-m.y;
+          adx=Math.abs(dx)||1;
+          dir=dx>=0?1:-1;
+          distToTarget = Math.hypot(dx,dy);
+        }
+      }
       if(canSeeTarget){
-        m.facing=dir;
+        const aimDir = target.x>=m.x?1:-1;
+        m.facing=aimDir;
         if(targetIsMeat){
           if(adx>2.4 && distToTarget<spec.pursueRange) m.vx += dir*moveSpeed*0.22*dt*30;
           else m.vx *= 0.68;
-        } else if(adx>1.8 && distToPlayer<spec.pursueRange) m.vx += dir*moveSpeed*0.42*dt*30;
+        } else if(Math.abs(target.x-m.x)>1.8 && distToTarget<spec.pursueRange) m.vx += aimDir*moveSpeed*0.42*dt*30;
         else m.vx *= 0.78;
         m.shootCd=(m.shootCd==null?((targetIsMeat?0.65:0.9)*cdMul):m.shootCd)-dt;
         const minRange = targetIsMeat ? 0.8 : 3;
@@ -1548,7 +1581,20 @@ const mobs = (function(){
     }catch(e){}
     return null;
   }
+  function nearestAlienTarget(wx,wy,range,opts){
+    try{
+      const api=MM.invasions;
+      if(api && typeof api.nearestForEnemy==='function') return api.nearestForEnemy(wx,wy,range,opts);
+    }catch(e){}
+    return null;
+  }
+  function isInvasionTarget(t){
+    return !!(t && (t.kind==='alien' || t.kind==='molekin'));
+  }
   function companionTargetPoint(t){
+    return {x:t.x, y:t.aimY==null ? t.y : t.aimY};
+  }
+  function alienTargetPoint(t){
     return {x:t.x, y:t.aimY==null ? t.y : t.aimY};
   }
   function damageCompanionTarget(t,dmg,srcX,srcY,cause){
@@ -1557,6 +1603,16 @@ const mobs = (function(){
       const api=MM.companions;
       if(api && typeof api.damageAtWorld==='function') return !!api.damageAtWorld(t.x,t.aimY==null ? t.y : t.aimY,dmg,{source:'mob',cause:cause||'mob',srcX,srcY,knockback:2.8});
       if(api && typeof api.damageAt==='function') return !!api.damageAt(t.tx==null ? Math.floor(t.x) : t.tx,t.ty==null ? Math.floor(t.y) : t.ty,dmg,{source:'mob',cause:cause||'mob',srcX,srcY});
+    }catch(e){}
+    return false;
+  }
+  function damageAlienTarget(t,dmg,srcX,srcY,cause){
+    if(!t) return false;
+    try{
+      const api=MM.invasions;
+      const wy=t.aimY==null ? t.y : t.aimY;
+      if(api && typeof api.damageAtWorld==='function') return !!api.damageAtWorld(t.x,wy,dmg,{source:'sentinel',cause:cause||'sentinel',srcX,srcY});
+      if(api && typeof api.damageAt==='function') return !!api.damageAt(t.tx==null ? Math.floor(t.x) : t.tx,t.ty==null ? Math.floor(wy) : t.ty,dmg,{source:'sentinel',cause:cause||'sentinel',srcX,srcY});
     }catch(e){}
     return false;
   }

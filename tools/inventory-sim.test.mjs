@@ -48,6 +48,8 @@ assert.equal(INFO[T.WET_CLAY].drop, 'clay', 'wet clay recovers as clay');
 assert.equal(INFO[T.BRICK].drop, 'brick', 'brick blocks drop brick');
 assert.equal(INFO[T.LADDER].drop, 'ladder', 'ladders drop the ladder resource');
 assert.equal(INFO[T.BEDROCK].unmineable, true, 'bedrock is an unmineable world boundary');
+assert.equal(INFO[T.MOTHER_ICE].drop, 'motherIce', 'mother ice drops the crafting resource');
+assert.equal(INFO[T.MOTHER_LAVA].drop, 'motherLava', 'mother lava drops the crafting resource');
 const digOrder=[T.SAND,T.DIRT,T.STONE,T.GRANITE,T.BASALT].map(t=>INFO[t].hp);
 for(let i=1;i<digOrder.length;i++){
   assert.ok(digOrder[i]>digOrder[i-1], 'geology dig difficulty increases from sand to basalt');
@@ -72,6 +74,9 @@ assert.equal(res('dirt')?.tile, 'DIRT', 'dirt is a placeable mined resource');
 assert.equal(res('granite')?.tile, 'GRANITE', 'granite is a placeable mined resource');
 assert.equal(res('basalt')?.tile, 'BASALT', 'basalt is a placeable mined resource');
 assert.equal(res('bedrock'), undefined, 'bedrock is not a placeable mined resource');
+assert.equal(res('motherIce')?.tile, 'MOTHER_ICE', 'mother ice is a registered guardian-afterfall resource');
+assert.equal(res('motherLava')?.tile, 'MOTHER_LAVA', 'mother lava is a registered guardian-afterfall resource');
+assert.equal(res('heartAir')?.tile, null, 'Heart of Air is tracked as a non-placeable guardian trophy');
 assert.equal(res('stone')?.label, 'Skala', 'stone resource is presented as rock in the new geology ladder');
 assert.equal(res('arrowWood')?.tile, null, 'wood arrows are tracked as non-placeable ammo');
 assert.equal(res('arrowStone')?.tile, null, 'stone arrows are tracked as non-placeable ammo');

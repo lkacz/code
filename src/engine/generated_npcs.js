@@ -1,5 +1,6 @@
 import { T, WORLD_H } from '../constants.js';
 import { createQuestNpc, npcRegistry } from './npc_system.js';
+import { storyWhispersForProgress } from './story_lore.js';
 
 const CELL_W = 1250;
 const ACTIVE_RADIUS = 1800;
@@ -143,6 +144,11 @@ function jobFor(biome,seed,cell,cycle){
   const list=BIOME_JOBS[biome] || BIOME_JOBS.default;
   const base=Math.floor(hash01(seed,cell,41)*list.length)%list.length;
   return list[(base+Math.max(0,cycle|0))%list.length];
+}
+function loreWhisperFor(seed,cell){
+  const list=storyWhispersForProgress();
+  if(!list.length) return '';
+  return list[Math.floor(hash01(seed,cell,505)*list.length)%list.length];
 }
 function jobCatalogStats(){
   const counts={};
@@ -397,6 +403,7 @@ function buildCandidate(base,cycle){
     role:job.role,
     job,
     lore:job.lore,
+    whisper:loreWhisperFor(base.seed,base.cell),
     moral:job.moral,
     prompt:job.role+': '+job.lore+' Przynies '+job.cost.amount+' x '+job.cost.label+'. Nagroda: '+rewardText(job)+'.',
     missing:job.missing+' Potrzebuje '+job.cost.amount+' x '+job.cost.label+'.',
@@ -473,6 +480,7 @@ function definitionFor(candidate){
     cell:candidate.cell,
     role:job.role,
     lore:job.lore,
+    whisper:candidate.whisper || '',
     moral:job.moral,
     cycle:candidate.cycle,
     completedJobs:candidate.state && candidate.state.completedJobs || 0,
@@ -501,7 +509,8 @@ function definitionFor(candidate){
         prompt:[
           candidate.prompt,
           job.role+': '+job.moral+' Przynies '+job.cost.amount+' x '+job.cost.label+'.',
-          job.role+': '+job.missing+' Nagroda: '+rewardText(job)+'.'
+          job.role+': '+job.missing+' Nagroda: '+rewardText(job)+'.',
+          candidate.whisper ? job.role+': '+candidate.whisper : ''
         ],
         missing:candidate.missing,
         complete:candidate.complete,
@@ -521,7 +530,8 @@ function definitionFor(candidate){
         prompt:[
           job.role+': '+job.lore,
           job.role+': '+job.moral,
-          job.role+': '+job.complete
+          job.role+': '+job.complete,
+          candidate.whisper ? job.role+': '+candidate.whisper : ''
         ]
       }
     ],
@@ -533,6 +543,7 @@ function definitionFor(candidate){
         biomeName:biomeName(candidate.biome),
         role:job.role,
         lore:job.lore,
+        whisper:candidate.whisper || '',
         moral:job.moral,
         cycle:candidate.cycle,
         completedJobs:candidate.state && candidate.state.completedJobs || 0,

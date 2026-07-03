@@ -898,7 +898,23 @@ const meteorites = (function(){
     };
   }
   function createTerrainChangeBatch(cx,cy,intensity){
-    return {x:cx,y:cy,intensity:intensity||1,removed:[],placed:[],water:[],smoke:[],splash:[]};
+    return {x:cx,y:cy,intensity:intensity||1,removed:[],placed:[],water:[],smoke:[],splash:[],ufoConcrete:0};
+  }
+  function addMeteorUfoConcrete(count){
+    const n=Math.max(0,Math.floor(Number(count)||0));
+    if(!n) return false;
+    const inv=(typeof window!=='undefined' && window.inv) ? window.inv : null;
+    if(!inv) return false;
+    if(typeof inv.ufoConcrete!=='number') inv.ufoConcrete=0;
+    inv.ufoConcrete+=n;
+    try{ if(typeof window.updateInventoryHud==='function') window.updateInventoryHud(); }catch(e){}
+    try{
+      if(typeof window.dispatchEvent==='function' && typeof CustomEvent!=='undefined'){
+        window.dispatchEvent(new CustomEvent('mm-resources-change',{detail:{key:'ufoConcrete',gained:n,source:'meteor'}}));
+      }
+    }catch(e){}
+    markWorldChanged();
+    return true;
   }
   function pushCell(list,x,y){
     if(!list || !Number.isFinite(x) || !Number.isFinite(y)) return;
@@ -957,10 +973,12 @@ const meteorites = (function(){
     }catch(e){}
     for(const c of selectBatchWakeCells(batch.splash,METEOR_SPLASH_WAKE_CAP)) splashAt(c.x+0.5,c.y+0.5,0.8);
     for(const c of selectBatchWakeCells(batch.smoke,METEOR_SMOKE_WAKE_CAP)) smokeAt(c.x+0.5,c.y+0.4,0.8);
+    addMeteorUfoConcrete(batch.ufoConcrete);
   }
   function notifyTerrainChange(x,y,oldTile,newTile,getTile,setTile,batch){
     if(oldTile===newTile) return;
     if(batch){
+      if(oldTile===T.UFO_CONCRETE) batch.ufoConcrete=(batch.ufoConcrete||0)+1;
       if(newTile===T.AIR) pushCell(batch.removed,x,y);
       else pushCell(batch.placed,x,y);
       pushCell(batch.water,x,y);
@@ -974,6 +992,7 @@ const meteorites = (function(){
       }catch(e){}
       return;
     }
+    if(oldTile===T.UFO_CONCRETE) addMeteorUfoConcrete(1);
     try{
       if(newTile===T.AIR && MM.fallingSolids && MM.fallingSolids.onTileRemoved) MM.fallingSolids.onTileRemoved(x,y);
       else if(newTile!==T.AIR && MM.fallingSolids && MM.fallingSolids.afterPlacement) MM.fallingSolids.afterPlacement(x,y);

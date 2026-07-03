@@ -31,12 +31,12 @@ function makePlayer(opts={}){
     onGround:opts.onGround !== false
   };
 }
-function runNecklace(player, seconds=1){
+function runNecklace(player, seconds=1, getTile){
   necklace.init(player);
   const steps=Math.ceil(seconds*60);
   for(let i=0;i<steps;i++){
     player.x += (player.vx||0)/60;
-    necklace.update(player,1/60);
+    necklace.update(player,1/60,getTile);
   }
   return {
     points:necklace._points.map(p=>({x:p.x,y:p.y})),
@@ -78,6 +78,22 @@ p = makePlayer();
 const windLeft = runNecklace(p,1);
 assert.ok(windRight.pendant.x > windLeft.pendant.x + 0.12, `wind pushes the pendant side-to-side (${windRight.pendant.x.toFixed(2)} vs ${windLeft.pendant.x.toFixed(2)})`);
 assert.ok(windRight.points.every(pt=>pt.y >= necklace._debug.anchors(p).guardY-0.001), 'wind motion still keeps chain below the eyes');
+
+// Submerged (water tile = 8): wind is muted and the swing heavily damped, matching cape drag
+const WATER_TILE = 8;
+windSpeed = 6.4;
+p = makePlayer();
+const submerged = runNecklace(p,1,()=>WATER_TILE);
+assert.ok(Math.abs(submerged.pendant.x - p.x) < Math.abs(windRight.pendant.x - p.x)*0.5,
+  `underwater wind push is damped (${submerged.pendant.x.toFixed(3)} vs dry ${windRight.pendant.x.toFixed(3)})`);
+assert.ok(submerged.points.every(pt=>pt.y >= necklace._debug.anchors(p).guardY-0.001), 'submerged chain stays below the eyes');
+
+// Non-finite wind samples must not poison the verlet state
+windSpeed = NaN;
+p = makePlayer();
+const nanRun = runNecklace(p,0.5);
+assert.ok(nanRun.points.every(pt=>isFinite(pt.x) && isFinite(pt.y)), 'NaN wind does not corrupt bead positions');
+assert.ok(isFinite(nanRun.pendant.x) && isFinite(nanRun.pendant.y) && isFinite(nanRun.pendant.spin), 'NaN wind does not corrupt the pendant');
 windSpeed = 0;
 
 equippedCharm = null;

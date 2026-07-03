@@ -6,7 +6,7 @@ globalThis.performance = { now:()=>1000 };
 globalThis.MM = { TILE:20 };
 const messages = [];
 globalThis.msg = text => messages.push(String(text));
-globalThis.inv = { alienBiomass:0, meat:0, clay:0, masterStone:0, leaf:0, servantStone:0, water:0 };
+globalThis.inv = { alienBiomass:0, meat:0, clay:0, masterStone:0, leaf:0, servantStone:0, water:0, ufoConcrete:0, motherIce:0, motherLava:0 };
 
 const { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } = await import('../src/constants.js');
 const { companions } = await import('../src/engine/companions.js');
@@ -57,6 +57,22 @@ const waterVisualKeys = ['primary','secondary','highlight','foam','core','head',
 const waterDiffs = waterVisualKeys.filter(k=>waterGenome1[k]!==waterGenome2[k]).length;
 assert.ok(waterDiffs>=8, 'procedural water golems differ while keeping a watery golem silhouette');
 assert.ok(/^#/.test(waterGenome1.primary) && /^#/.test(waterGenome1.core), 'water golem genome carries water and master-stone colors');
+
+const ufoGenome1 = companions._debug.makeUfoAlienGenome(777,6,'tank');
+const ufoGenome2 = companions._debug.makeUfoAlienGenome(888,12,'sniper');
+const ufoVisualKeys = ['primary','secondary','glow','laser','body','alienRole','eyeLayout','legStyle','tail','crest','marking','eyes','legs','tendrils','horns','plates','size','width','iceFractures','crownShard','circuitBands'];
+const ufoDiffs = ufoVisualKeys.filter(k=>ufoGenome1[k]!==ufoGenome2[k]).length;
+assert.ok(ufoDiffs>=10, 'procedural UFO alien companions differ while keeping alien-team role silhouettes');
+assert.equal(ufoGenome1.alienRole, 'tank', 'UFO alien genome preserves the alien-team role');
+assert.ok(/^#/.test(ufoGenome1.primary) && /^#/.test(ufoGenome1.glow), 'UFO alien genome carries mother-ice and tech glow colors');
+
+const moleGenome1 = companions._debug.makeMolekinGenome(779,6,'tank');
+const moleGenome2 = companions._debug.makeMolekinGenome(889,16,'sniper');
+const moleVisualKeys = ['fur','dark','deep','eye','accent','ember','moleRole','body','height','head','eyeScale','arm','leg','stance','gait','glow','helmet','snout','beard','claw','ears','braids','rankBands','soot'];
+const moleDiffs = moleVisualKeys.filter(k=>moleGenome1[k]!==moleGenome2[k]).length;
+assert.ok(moleDiffs>=12, 'procedural molekin companions differ while keeping the lava mole-team silhouette');
+assert.equal(moleGenome1.moleRole, 'tank', 'molekin genome preserves the mole-team role');
+assert.ok(/^#/.test(moleGenome1.fur) && /^#/.test(moleGenome1.accent), 'molekin genome carries fur and lava accent colors');
 
 companions.reset();
 const ritualTiles = new Map();
@@ -187,6 +203,84 @@ assert.equal(companions.onTileChanged(-14,8,T.AIR,T.MEAT,ritualGetTile,ritualSet
 assert.equal(companions._debug.list()[0].meat, 6, 'minimum meat ritual keeps the connected six-cell mass');
 companions.reset();
 assert.ok(companions.spawnFromCraft(player,{biomass:3,meat:2,getTile}), 'regular companion can still be created after a clay ritual');
+companions.reset();
+
+const oldGuardianLairs = globalThis.MM.guardianLairs;
+globalThis.MM.guardianLairs = {status:()=>({defeated:{fire:false, ice:false}})};
+globalThis.inv.motherIce = 0;
+assert.equal(companions.spawnUfoAlienFromCraft(player,{motherIce:1,getTile,role:'tank',refund:{motherIce:1}}), null, 'mother-ice alien companion waits until the west ice guardian is defeated');
+assert.equal(companions.metrics().ufoAliens, 0, 'blocked mother-ice craft creates no companion');
+assert.equal(globalThis.inv.motherIce, 1, 'blocked mother-ice craft refunds the ice core cost');
+globalThis.inv.motherIce = 0;
+globalThis.MM.guardianLairs = {status:()=>({defeated:{fire:false, ice:true}})};
+const ufoCompanion = companions.spawnUfoAlienFromCraft(player,{motherIce:1,getTile,role:'tank'});
+assert.ok(ufoCompanion, 'mother-ice craft creates an elite alien companion');
+assert.equal(ufoCompanion.kind, 'ufo_alien', 'crafted mother-ice companion uses the UFO alien kind');
+assert.equal(ufoCompanion.ufoRole, 'tank', 'crafted UFO companion can be one of the normal alien-team roles');
+assert.ok(companions._debug.ufoAlienRoles.includes(ufoCompanion.ufoRole), 'UFO companion role is drawn from the alien-team role pool');
+assert.ok(ufoCompanion.maxHp>companions._debug.maxHpForClay(companions._debug.clayGolemMax), 'UFO alien tank has more HP than the largest clay golem');
+assert.equal(companions.metrics().ufoAliens, 1, 'metrics count UFO alien companions separately');
+assert.equal(companions.metrics().motherIce, 1, 'metrics track mother-ice alien mass');
+const ufoSnap = companions.snapshot();
+assert.equal(ufoSnap.list[0].kind, 'ufo_alien', 'snapshot persists UFO alien kind');
+assert.equal(ufoSnap.list[0].motherIce, 1, 'snapshot persists mother-ice mass');
+assert.equal(ufoSnap.list[0].ufoRole, 'tank', 'snapshot persists UFO alien role');
+companions.reset();
+assert.equal(companions.restore(ufoSnap,getTile), true, 'restore accepts UFO alien snapshots');
+assert.equal(companions._debug.list()[0].ufoRole, 'tank', 'restore rebuilds the UFO alien role');
+companions.reset();
+assert.ok(companions.spawnFromCraft(player,{biomass:3,meat:2,getTile}), 'regular companion can still be created after a UFO alien craft');
+
+globalThis.MM.guardianLairs = {status:()=>({defeated:{fire:false, ice:true}})};
+companions.reset();
+ritualTiles.clear();
+ritualSetTile(80,8,T.VOLCANO_MASTER_STONE);
+for(let x=81;x<=86;x++) ritualSetTile(x,8,T.MOTHER_LAVA);
+assert.equal(companions.tryMolekinRitualAt(80,8,ritualGetTile,ritualSetTile,{announce:true}), null, 'molekin lava ritual waits until the fire guardian is defeated');
+assert.equal(companions.metrics().molekin, 0, 'blocked molekin ritual does not create a companion');
+globalThis.MM.guardianLairs = {status:()=>({defeated:{fire:true, ice:true}})};
+const molekin = companions.tryMolekinRitualAt(80,8,ritualGetTile,ritualSetTile,{announce:true,role:'tank'});
+assert.ok(molekin, 'master stone plus mother lava creates a molekin companion after the fire guardian falls');
+assert.equal(molekin.kind, 'molekin', 'mother-lava ritual result is a molekin companion');
+assert.equal(molekin.moleRole, 'tank', 'molekin ritual can select one of the mole-team roles');
+assert.equal(molekin.lava, 6, 'molekin ritual mass comes from nearby lava cells');
+assert.equal(ritualGetTile(80,8), T.AIR, 'molekin ritual consumes the master stone');
+assert.equal([...ritualTiles.values()].filter(t=>t===T.MOTHER_LAVA).length, 0, 'molekin ritual consumes the mother-lava body');
+assert.equal([...ritualTiles.values()].filter(t=>t===T.BASALT).length, 6, 'molekin ritual cools consumed mother lava into basalt traces');
+assert.equal(companions.metrics().molekin, 1, 'metrics count molekin companions separately');
+assert.equal(companions.metrics().lava, 6, 'metrics track molekin lava mass');
+const moleSnap = companions.snapshot();
+assert.equal(moleSnap.list[0].kind, 'molekin', 'snapshot persists molekin kind');
+assert.equal(moleSnap.list[0].lava, 6, 'snapshot persists molekin lava mass');
+assert.equal(moleSnap.list[0].moleRole, 'tank', 'snapshot persists molekin role');
+companions.reset();
+assert.equal(companions.restore(moleSnap,getTile), true, 'restore accepts molekin snapshots');
+assert.equal(companions._debug.list()[0].moleRole, 'tank', 'restore rebuilds the molekin role');
+
+companions.reset();
+ritualTiles.clear();
+globalThis.MM.guardianLairs = {status:()=>({defeated:{fire:true, ice:true}})};
+ritualSetTile(-60,8,T.VOLCANO_MASTER_STONE);
+for(let x=-59;x<=-55;x++) ritualSetTile(x,8,T.MOTHER_LAVA);
+assert.equal(companions.onTileChanged(-60,8,T.MOTHER_LAVA,T.VOLCANO_MASTER_STONE,ritualGetTile,ritualSetTile), true, 'placing a master stone into mother lava triggers the molekin ritual after fire guardian defeat');
+assert.equal(companions._debug.list()[0].lava, 6, 'molekin ritual counts the replaced mother-lava tile plus the connected mother-lava mass');
+companions.reset();
+ritualTiles.clear();
+ritualSetTile(-80,8,T.VOLCANO_MASTER_STONE);
+for(let x=-79;x<=-75;x++) ritualSetTile(x,8,T.MOTHER_LAVA);
+for(let x=-81;x>=-86;x--) ritualSetTile(x,8,T.WATER);
+assert.equal(companions.onTileChanged(-80,8,T.MOTHER_LAVA,T.VOLCANO_MASTER_STONE,ritualGetTile,ritualSetTile), true, 'mother-lava replacement prioritizes the molekin ritual even if water nearby could form a water golem');
+assert.equal(companions._debug.list()[0].kind, 'molekin', 'mixed mother-lava-water ritual creates a molekin, not a water golem');
+assert.equal(companions.metrics().waterGolems, 0, 'mixed ritual does not steal the lava event for a water golem');
+companions.reset();
+ritualTiles.clear();
+ritualSetTile(-90,8,T.VOLCANO_MASTER_STONE);
+for(let x=-89;x<=-84;x++) ritualSetTile(x,8,T.LAVA);
+assert.equal(companions.tryMolekinRitualAt(-90,8,ritualGetTile,ritualSetTile,{announce:true}), null, 'ordinary lava no longer creates a molekin after the fire guardian');
+assert.equal(companions.onTileChanged(-90,8,T.LAVA,T.VOLCANO_MASTER_STONE,ritualGetTile,ritualSetTile), false, 'placing master stone into ordinary lava does not trigger the molekin ritual');
+globalThis.MM.guardianLairs = oldGuardianLairs;
+companions.reset();
+assert.ok(companions.spawnFromCraft(player,{biomass:3,meat:2,getTile}), 'regular companion can still be created after a molekin ritual');
 
 function traits(archetype, extraGenome={}){
   return companions._debug.traits({biomass:10, genome:Object.assign({archetype,size:1,gait:0}, extraGenome)});
@@ -208,6 +302,17 @@ assert.ok(sentinelTraits.orbit>guardianTraits.orbit*5, 'sentinel companion has a
 const clayTankTraits = companions._debug.traits({kind:'clay_golem',clay:8,genome:{gait:0}});
 assert.ok(clayTankTraits.speed<guardianTraits.speed*0.35, 'clay golem moves much slower than living companions');
 assert.ok(clayTankTraits.accel<guardianTraits.accel*0.45, 'clay golem accelerates like a heavy tank companion');
+const ufoTankTraits = companions._debug.traits({kind:'ufo_alien',motherIce:1,ufoRole:'tank',genome:companions._debug.makeUfoAlienGenome(990,1,'tank')});
+assert.ok(ufoTankTraits.laserDamage>clayTankTraits.laserDamage*1.35, 'UFO alien tank hits harder than a clay golem tank');
+assert.ok(ufoTankTraits.guardAbsorb>0, 'UFO alien tank can protect the hero as a top-tier companion');
+const moleTankTraits = companions._debug.traits({kind:'molekin',lava:1,moleRole:'tank',genome:companions._debug.makeMolekinGenome(991,1,'tank')});
+const moleHealerTraits = companions._debug.traits({kind:'molekin',lava:1,moleRole:'healer',genome:companions._debug.makeMolekinGenome(992,1,'healer')});
+const moleSapperTraits = companions._debug.traits({kind:'molekin',lava:1,moleRole:'sapper',genome:companions._debug.makeMolekinGenome(993,1,'sapper')});
+assert.ok(moleTankTraits.guardAbsorb>0.70, 'mother-lava molekin tank can guard the hero as a smart combat companion');
+assert.ok(moleHealerTraits.healMult>1.5, 'mother-lava molekin healer has a dedicated strong support profile');
+assert.ok(moleSapperTraits.harvest>2.4, 'mother-lava molekin sapper is especially useful for digging support');
+assert.ok(companions._debug.maxHpForMolekin(1,'tank')>companions._debug.maxHpForClay(companions._debug.clayGolemMax), 'one mother-lava molekin is stronger than the largest clay golem');
+assert.ok(companions._debug.maxHpForUfoAlien(1,'tank')>companions._debug.maxHpForWater(companions._debug.waterGolemMax), 'one mother-ice alien is stronger than the largest water golem');
 const smallWaterTraits = companions._debug.traits({kind:'water_golem',water:6,genome:{wave:0}});
 const largeWaterTraits = companions._debug.traits({kind:'water_golem',water:20,genome:{wave:0}});
 assert.ok(largeWaterTraits.laserDamage>smallWaterTraits.laserDamage, 'larger water golems spray harder');
@@ -522,6 +627,43 @@ globalThis.MM.weapons = null;
 globalThis.MM.mobs = null;
 globalThis.MM.fire = null;
 
+let molekinFireDamage = 0;
+let molekinIgnites = 0;
+globalThis.MM.mobs = {
+  nearestHostileLiving(x,y,range,opts){
+    assert.equal(opts && opts.hostileOnly, true, 'molekin hostile query stays hostile-only');
+    if(range<2) return null;
+    return {x:x+2,y,hp:60,id:'MOLEKIN_TARGET'};
+  },
+  damageAt(tx,ty,dmg,opts){
+    assert.equal(opts && opts.source, 'companion', 'molekin fire damage is companion-sourced');
+    assert.ok(dmg>14, 'molekin fire attack has high combat impact');
+    molekinFireDamage++;
+    return true;
+  },
+  igniteRadius(x,y,r,opts){
+    assert.equal(opts && opts.hostileOnly, true, 'molekin ignition is hostile-only');
+    molekinIgnites++;
+    return 1;
+  }
+};
+companions.restore({v:1,list:[{kind:'molekin',x:0,y:9.96,lava:12,moleRole:'sapper',hp:608,seed:87860,laserCd:0}]},getTile);
+companions.update(1/30,{x:0,y:9.96,facing:1,hp:100,maxHp:100},getTile,setTile);
+assert.equal(molekinFireDamage, 1, 'molekin companion attacks hostile animals with fire/lava');
+assert.ok(molekinIgnites>=1, 'molekin fire attack adds hostile-only ignition pressure');
+
+globalThis.MM.mobs = null;
+const woundedHeroForMole = {x:0.5,y:9.96,facing:1,hp:40,maxHp:100};
+companions.restore({v:1,list:[{kind:'molekin',x:0,y:9.96,lava:12,moleRole:'healer',hp:560,seed:87861,laserCd:99,attackCd:0}]},getTile);
+companions.update(1/30,woundedHeroForMole,getTile,setTile);
+assert.ok(woundedHeroForMole.hp>40, 'molekin healer actively heals a wounded hero in combat mode');
+
+companions.restore({v:1,list:[{kind:'molekin',x:0,y:9.96,lava:12,moleRole:'tank',hp:790,seed:87862,laserCd:99}]},getTile);
+const moleTank = companions._debug.list()[0];
+const moleGuarded = companions.absorbHeroDamage(40,{cause:'mob'}, {x:moleTank.x+0.6,y:moleTank.y-0.3});
+assert.ok(moleGuarded.absorbed>24, 'molekin tank absorbs a large chunk of hero damage');
+assert.ok(companions._debug.list()[0].hp<moleTank.hp, 'molekin guard absorption costs the tank health');
+
 function assertWalkingGolemFlatTravel(raw,label){
   companions.restore({v:1,list:[raw]},getTile);
   const startX = companions._debug.list()[0].x;
@@ -539,6 +681,7 @@ function assertWalkingGolemFlatTravel(raw,label){
 assertWalkingGolemFlatTravel({kind:'clay_golem',x:0,y:9.96,clay:8,hp:320,seed:8787,laserCd:99}, 'clay golem');
 assertWalkingGolemFlatTravel({kind:'water_golem',x:0,y:9.96,water:10,hp:220,seed:8788,laserCd:99}, 'water golem');
 assertWalkingGolemFlatTravel({kind:'meat_golem',x:0,y:9.96,meat:10,hp:232,seed:8789,laserCd:99}, 'meat golem');
+assertWalkingGolemFlatTravel({kind:'molekin',x:0,y:9.96,lava:10,moleRole:'flanker',hp:550,seed:8790,laserCd:99}, 'molekin companion');
 
 companions.restore({v:1,list:[{x:0,y:9.96,biomass:3,hp:88,seed:8790,laserCd:99,gasCd:99}]},getTile);
 const enemyTargetableCompanion = companions.nearestForEnemy(0,9.35,3);
@@ -831,6 +974,28 @@ assert.equal(companions.metrics().friedMeatGolems, 0, 'debug fried meat golem ki
 assert.ok(companions._debug.clear(), 'debug API can clear remaining companions after meat tests');
 player.x=0; player.y=9.96;
 
+for(let i=0;i<3;i++) assert.ok(companions._debug.spawn(player,3,getTile), 'debug setup fills capacity for molekin replacement');
+assert.ok(companions._debug.spawnMolekin(player,12,getTile,'sapper'), 'debug API can spawn a molekin companion directly');
+assert.equal(companions.metrics().molekin, 1, 'debug-spawned molekin is tracked in metrics');
+assert.equal(companions.metrics().lava, 12, 'debug-spawned molekin records its lava mass');
+assert.equal(companions.count(), 3, 'debug molekin spawn makes room instead of exceeding companion capacity');
+const debugMoleHp = companions._debug.list().find(c=>c.kind==='molekin').maxHp;
+assert.ok(companions._debug.setLava(player,18), 'debug API can tune molekin lava mass');
+assert.equal(companions.metrics().lava, 18, 'debug molekin lava override updates metrics');
+assert.ok(companions._debug.list().find(c=>c.kind==='molekin').maxHp>debugMoleHp, 'increasing debug lava mass increases molekin max HP');
+const debugMoleForFire = companions._debug.list().find(c=>c.kind==='molekin');
+player.x=debugMoleForFire.x; player.y=debugMoleForFire.y;
+globalThis.MM.mobs = {
+  nearestHostileLiving(x,y){ return {x:x+2,y,hp:30,id:'DEBUG_MOLE_TARGET'}; },
+  damageAt(){ return true; }
+};
+assert.ok(companions._debug.forceMolekinFire(player,getTile,setTile), 'debug API can force a molekin fire strike');
+globalThis.MM.mobs = null;
+assert.ok(companions._debug.kill(player), 'debug API can kill the molekin through normal death path');
+assert.equal(companions.metrics().molekin, 0, 'debug molekin kill removes the ally');
+assert.ok(companions._debug.clear(), 'debug API can clear remaining companions after molekin tests');
+player.x=0; player.y=9.96;
+
 companions.restore({v:1,list:[{x:0,y:9.96,biomass:3,hp:88,seed:1001,laserCd:0,gasCd:0}]},getTile);
 const harvestCompanion = companions._debug.list()[0];
 assert.equal(companions.commandAt(Math.floor(harvestCompanion.x),Math.floor(harvestCompanion.y-0.55),player), true, 'right-click style command toggles a nearby companion squad');
@@ -933,6 +1098,11 @@ assert.match(main, /spawnDebugMeatGolem/, 'main wires direct meat golem debug sp
 assert.match(main, /placeDebugMeatRitual/, 'main wires meat golem ritual debug placement');
 assert.match(main, /rotDebugMeatGolem/, 'main wires meat golem rot debug action');
 assert.match(main, /cookDebugMeatGolem/, 'main wires meat golem cook debug action');
+assert.match(main, /molekinMotherLavaDrop/, 'main allows the post-fire-guardian master-stone-on-mother-lava molekin ritual placement');
+assert.match(main, /function debugMolekinLavaMass\(amount\)\{[\s\S]*molekinMin\) \|\| 1;[\s\S]*Number\(amount\)\|\|4/, 'main debug molekin mass fallback honors the one-block mother-lava minimum');
+assert.match(main, /spawnDebugMolekin/, 'main wires direct molekin debug spawning');
+assert.match(main, /placeDebugMolekinRitual/, 'main wires molekin lava ritual debug placement');
+assert.match(main, /molekinFireDebugCompanion/, 'main wires molekin fire debug action');
 assert.match(main, /COMPANIONS\.onTileChanged\(tx,ty,prev,id,getTile,setTile\)/, 'main notifies companions when placed tiles can trigger rituals');
 assert.match(ui, /function injectCompanionDebugPanel/, 'UI exposes a companion debug panel');
 assert.match(ui, /Pomocnicy \(debug\)/, 'companion debug panel has a visible label');
@@ -951,6 +1121,12 @@ assert.match(ui, /Rytual miesny/, 'companion debug panel exposes a meat golem ri
 assert.match(ui, /Stworz miesnego/, 'companion debug panel exposes a direct meat golem spawn button');
 assert.match(ui, /Zgnij teraz/, 'companion debug panel exposes meat golem rot button');
 assert.match(ui, /Usmaz/, 'companion debug panel exposes meat golem cook button');
+assert.match(ui, /molekinMass/, 'companion debug panel exposes molekin mother-lava mass input');
+assert.match(ui, /Rytual lawy mac\./, 'companion debug panel exposes a molekin mother-lava ritual button');
+assert.match(ui, /spawnMolekin'[\s\S]*readNumber\(molekinInput,4,1,20\)/, 'molekin debug spawn honors the one-block mother-lava minimum');
+assert.match(ui, /setLava'[\s\S]*readNumber\(molekinInput,4,1,20\)/, 'molekin debug mass tuning honors the one-block mother-lava minimum');
+assert.match(ui, /Stworz kreta/, 'companion debug panel exposes a direct molekin spawn button');
+assert.match(ui, /Zar kreta/, 'companion debug panel exposes a molekin fire action button');
 assert.match(companionSource, /function tryClayGolemRitualAt/, 'companion system exposes wet-clay master-stone ritual creation');
 assert.match(companionSource, /function tryLeafMonsterRitualAt/, 'companion system exposes leaf servant-stone ritual creation');
 assert.match(companionSource, /mode==='transport'/, 'companion command state supports leaf transport mode');
@@ -958,15 +1134,25 @@ assert.match(companionSource, /LEAF_MONSTER_TRANSPORT_DRAIN_RATIO = 0\.10/, 'lea
 assert.match(companionSource, /function updateLeafMonsterTransport/, 'leaf monsters have a mounted transport movement path');
 assert.match(companionSource, /!c\.transportMounted && \(command\.transportBadgeT\|\|0\)>0/, 'mounted leaf monsters hide the transport command badge');
 assert.match(companionSource, /function tryWaterGolemRitualAt/, 'companion system exposes water master-stone ritual creation');
+assert.match(companionSource, /function tryMolekinRitualAt/, 'companion system exposes post-fire lava master-stone molekin ritual creation');
+assert.match(companionSource, /function fireGuardianDefeated/, 'molekin ritual checks the fire guardian defeat state');
+assert.match(companionSource, /T\.MOTHER_LAVA/, 'molekin ritual uses mother lava instead of ordinary lava');
+assert.match(companionSource, /function iceGuardianDefeated/, 'mother-ice alien companion crafting checks the west ice guardian defeat state');
+assert.match(companionSource, /spawnUfoAlienFromCraft[\s\S]*iceGuardianDefeated/, 'mother-ice alien companion crafting is gated behind the west guardian');
+assert.match(companionSource, /function sayVariant\(key,lines,vars\)/, 'companion event messages use a small anti-repeat variant helper');
+assert.match(companionSource, /sayVariant\('molekin_ritual'[\s\S]*Hero-Prostokat[\s\S]*dawny zar/, 'mother-lava molekin ritual has multiple lore-aware message variants');
+assert.match(companionSource, /sayVariant\('ufo_alien_craft'[\s\S]*Hero-Prostokat[\s\S]*alien teamu/, 'mother-ice alien companion craft has multiple hero-worship message variants');
 assert.match(companionSource, /function tryMeatGolemRitualAt/, 'companion system exposes meat master-stone ritual creation');
 assert.match(companionSource, /spawnGolem:debugSpawnGolem/, 'companion debug API exposes clay golem spawning');
 assert.match(companionSource, /spawnLeafMonster:debugSpawnLeafMonster/, 'companion debug API exposes leaf monster spawning');
 assert.match(companionSource, /spawnWaterGolem:debugSpawnWaterGolem/, 'companion debug API exposes water golem spawning');
 assert.match(companionSource, /spawnMeatGolem:debugSpawnMeatGolem/, 'companion debug API exposes meat golem spawning');
+assert.match(companionSource, /spawnMolekin:debugSpawnMolekin/, 'companion debug API exposes molekin spawning');
 assert.match(companionSource, /setClay:debugSetClay/, 'companion debug API exposes clay golem mass tuning');
 assert.match(companionSource, /setLeaves:debugSetLeaves/, 'companion debug API exposes leaf monster mass tuning');
 assert.match(companionSource, /setWater:debugSetWater/, 'companion debug API exposes water golem mass tuning');
 assert.match(companionSource, /setMeat:debugSetMeat/, 'companion debug API exposes meat golem mass tuning');
+assert.match(companionSource, /setLava:debugSetLava/, 'companion debug API exposes molekin lava mass tuning');
 assert.match(companionSource, /rotMeatGolem:debugRotMeatGolem/, 'companion debug API exposes meat golem rot action');
 assert.match(companionSource, /cookMeatGolem:debugCookMeatGolem/, 'companion debug API exposes meat golem cook action');
 assert.match(companionSource, /function drawMeatGolem/, 'companion renderer has a dedicated meat golem branch');
@@ -988,6 +1174,7 @@ assert.match(companionSource, /collideHero\(player,dt,getTile\)/, 'companion upd
 assert.match(companionSource, /function drawClayGolem/, 'companion renderer has a dedicated wet clay golem branch');
 assert.match(companionSource, /function drawLeafMonster/, 'companion renderer has a dedicated leaf monster branch');
 assert.match(companionSource, /function drawWaterGolem/, 'companion renderer has a dedicated water golem branch');
+assert.match(companionSource, /function drawMolekin/, 'companion renderer has a dedicated molekin branch');
 assert.match(companionSource, /spawnExternalStream\('hose'/, 'water golem spray reuses the hose-style stream visual when available');
 assert.match(companionSource, /LEAF_MONSTER_WIND_DRIFT/, 'leaf monster movement has explicit wind sensitivity');
 assert.match(companionSource, /WATER_GOLEM_MAX_WATER = 20/, 'water golem ritual has the requested twenty-water-cell cap');

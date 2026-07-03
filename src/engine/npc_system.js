@@ -138,7 +138,7 @@ function validateQuestDefinition(def){
     if(!sid) errors.push('step '+i+' has no id');
     if(ids.has(sid)) errors.push('duplicate step '+sid);
     ids.add(sid);
-    if(!['handoff','duel','choice','done'].includes(step.kind)) errors.push('step '+sid+' has unsupported kind '+step.kind);
+    if(!['handoff','observe','duel','choice','done'].includes(step.kind)) errors.push('step '+sid+' has unsupported kind '+step.kind);
   });
   steps.forEach(step=>{
     if(!step || typeof step!=='object') return;
@@ -147,6 +147,10 @@ function validateQuestDefinition(def){
       if(!step.item) errors.push('handoff '+sid+' has no item');
       if(!(Number(step.amount)>0)) errors.push('handoff '+sid+' has invalid amount');
       if(!ids.has(cleanId(step.next))) errors.push('handoff '+sid+' points to missing next '+step.next);
+    }
+    if(step.kind==='observe'){
+      if(!(Number(step.seconds)>0)) errors.push('observe '+sid+' has invalid seconds');
+      if(!ids.has(cleanId(step.next))) errors.push('observe '+sid+' points to missing next '+step.next);
     }
     if(step.kind==='choice'){
       const choices=Array.isArray(step.choices) ? step.choices : (Array.isArray(def.choiceRewards) ? def.choiceRewards : []);
@@ -445,6 +449,7 @@ function createQuestNpc(def){
     talkIdx:0,
     rewards:{},
     data:Object.assign({},initialData),
+    observe:{phase:'',t:0,best:0,ok:false,lineCd:0},
     // Transient movement + behaviour (never snapshotted; the home anchor reseeds it).
     move:{vx:0,vy:0,facing:1,onGround:false,walkT:0},
     ai:{mode:'idle',t:0.6,targetX:null,job:null,jobT:0,jumpCd:0}
@@ -569,10 +574,48 @@ function createQuestNpc(def){
   }
   function currentStep(){ return stepMap[state.phase] || null; }
   function stepForPhase(){ const step=currentStep(); return step && step.kind==='handoff' ? step : null; }
+  function observeSeconds(step){ return Math.max(0.1,Number(step && step.seconds) || 1); }
+  function observeProgress(step){
+    const obs=state.observe && step && state.observe.phase===step.id ? state.observe : null;
+    return obs ? clamp(Number(obs.t)||0,0,observeSeconds(step)) : 0;
+  }
+  function ensureObserveState(step){
+    if(!state.observe || state.observe.phase!==step.id){
+      state.observe={phase:step.id,t:0,best:0,ok:false,lineCd:0};
+    }
+    return state.observe;
+  }
+  function cleanObserve(src){
+    if(!src || typeof src!=='object') return {phase:'',t:0,best:0,ok:false,lineCd:0};
+    const phase=cleanId(src.phase);
+    return {
+      phase:stepMap[phase] ? phase : '',
+      t:Math.max(0,Number(src.t)||0),
+      best:Math.max(0,Number(src.best)||0),
+      ok:src.ok===true,
+      lineCd:Math.max(0,Number(src.lineCd)||0)
+    };
+  }
+  function observeReady(step,player,getTile,setTile,ctx){
+    try{
+      if(typeof step.check==='function') return !!step.check({step,player,getTile,setTile,ctx,state,helpers:{T,finite,clamp,distToPlayer,safeGet,npcBodyH,npcBodyW}});
+      if(typeof def.observeCheck==='function') return !!def.observeCheck(step,player,getTile,setTile,ctx,state,{T,finite,clamp,distToPlayer,safeGet,npcBodyH,npcBodyW});
+    }catch(e){ return false; }
+    return distToPlayer(player)<=bubbleR;
+  }
+  function appendTalkLines(lines,value){
+    if(Array.isArray(value)){
+      value.map(v=>String(v||'').trim()).filter(Boolean).forEach(v=>lines.push(v));
+    } else {
+      const text=textOf(value).trim();
+      if(text) lines.push(text);
+    }
+  }
   function jobStatus(){
     const step=currentStep();
     if(!step) return 'unknown';
     if(step.kind==='done') return 'completed';
+    if(step.kind==='observe') return 'observe';
     if(step.kind==='duel') return 'duel';
     if(step.kind==='choice') return 'choice';
     return 'available';
@@ -604,6 +647,19 @@ function createQuestNpc(def){
     if(step.kind==='handoff'){
       summary.required={item:step.item, amount:Math.max(1,step.amount|0), have:resourceCount(step.item)};
       if(summary.required.have>=summary.required.amount) summary.status='ready';
+    } else if(step.kind==='observe'){
+      const seconds=observeSeconds(step);
+      const progress=observeProgress(step);
+      const obs=state.observe && state.observe.phase===step.id ? state.observe : null;
+      summary.required={item:'observe', amount:Math.ceil(seconds), have:Math.floor(progress)};
+      summary.observe={
+        mode:step.mode || null,
+        label:step.label || step.id,
+        seconds,
+        progress,
+        active:!!(obs && obs.ok),
+        best:obs ? Math.max(progress,Number(obs.best)||0) : progress
+      };
     }
     return summary;
   }
@@ -719,12 +775,41 @@ function createQuestNpc(def){
     if(step.reward) applyReward(step.reward,ctx);
     return true;
   }
+  function advanceObserveStep(step,ctx){
+    const next=cleanPhase(step.next);
+    const nextStep=stepMap[next];
+    state.observe={phase:'',t:0,best:0,ok:false,lineCd:0};
+    if(nextStep && nextStep.kind==='duel') beginDuel();
+    else state.phase=next;
+    if(step.complete) setLine(step.complete,5.2,true);
+    markChanged(ctx);
+    if(step.reward) applyReward(step.reward,ctx);
+    return true;
+  }
+  function updateObserveStep(step,dt,player,getTile,setTile,ctx){
+    const obs=ensureObserveState(step);
+    obs.lineCd=Math.max(0,(Number(obs.lineCd)||0)-dt);
+    const active=observeReady(step,player,getTile,setTile,ctx);
+    obs.ok=!!active;
+    const seconds=observeSeconds(step);
+    if(active){
+      obs.t=clamp((Number(obs.t)||0)+dt,0,seconds);
+      obs.best=Math.max(Number(obs.best)||0,obs.t);
+      if(obs.t>=seconds) advanceObserveStep(step,ctx);
+    } else if(obs.t>0){
+      obs.t=Math.max(0,obs.t-dt*0.35);
+    }
+  }
   // Dialogue is now click-driven (see talk()/interactAt). updateQuest only auto-resolves
   // a handoff when the player is adjacent and already carrying the goods — the NPC stays
   // quiet until spoken to, then reacts.
-  function updateQuest(dt,player,ctx){
-    void dt;
-    const step=stepForPhase();
+  function updateQuest(dt,player,ctx,getTile,setTile){
+    const current=currentStep();
+    if(current && current.kind==='observe'){
+      updateObserveStep(current,dt,player,getTile,setTile,ctx);
+      return;
+    }
+    const step=current && current.kind==='handoff' ? current : null;
     if(step && distToPlayer(player)<=interactR && resourceCount(step.item)>=step.amount){
       advanceStep(step,ctx);
     }
@@ -736,11 +821,16 @@ function createQuestNpc(def){
     const tag=t=>role && state.data && state.data.generated ? role+': '+t : t;
     if(step){
       if(step.kind==='handoff'){
-        lines.push(textOf(step.prompt));
+        appendTalkLines(lines,step.prompt);
         const need=Math.max(1,step.amount|0)-resourceCount(step.item);
-        if(need>0 && step.missing) lines.push(textOf(step.missing));
+        if(need>0 && step.missing) appendTalkLines(lines,step.missing);
+      } else if(step.kind==='observe'){
+        appendTalkLines(lines,step.prompt);
+        const progress=observeProgress(step);
+        if(progress>0 && progress<observeSeconds(step) && step.progress) appendTalkLines(lines,step.progress);
+        else if(step.missing) appendTalkLines(lines,step.missing);
       } else {
-        lines.push(textOf(step.prompt));
+        appendTalkLines(lines,step.prompt);
       }
     }
     if(state.data){
@@ -754,8 +844,14 @@ function createQuestNpc(def){
     const lines=talkLines();
     if(!lines.length) return false;
     if(player && finite(player.x) && finite(state.x)) state.move.facing = player.x>=state.x ? 1 : -1;
-    const text=lines[(state.talkIdx|0) % lines.length];
+    let idx=(state.talkIdx|0) % lines.length;
+    let text=lines[idx];
+    if(lines.length>1 && text===state.lastTalkLine){
+      idx=(idx+1)%lines.length;
+      text=lines[idx];
+    }
     state.talkIdx=(state.talkIdx|0)+1;
+    state.lastTalkLine=text;
     setLine(text, 4.6, true);
     state.talkT=4.6;
     state.ai.mode='talk';
@@ -982,9 +1078,14 @@ function createQuestNpc(def){
     state.talkT=Math.max(0,(state.talkT||0)-dt);
     const worldGen=(ctx && ctx.worldGen) || MM.worldGen;
     ensurePlaced(player,getTile,worldGen);
-    updateQuest(dt,player,ctx);
+    updateQuest(dt,player,ctx,getTile,setTile);
     const step=currentStep();
     if(step && step.kind==='duel') updateDuel(dt,player,getTile,worldGen,ctx);
+    else if(step && step.kind==='observe'){
+      if(state.ai && state.ai.job) restoreJob();
+      state.move.vx*=0.5;
+      followGround(getTile,worldGen);
+    }
     else updateRoam(dt,player,getTile,setTile,worldGen);
   }
   function hitAt(tileX,tileY){
@@ -1088,12 +1189,15 @@ function createQuestNpc(def){
       kind:step.kind,
       item:step.item || null,
       amount:step.amount || 0,
+      seconds:step.kind==='observe' ? observeSeconds(step) : 0,
+      mode:step.mode || null,
+      label:step.label || null,
       next:step.next || null,
       choices:step.kind==='choice' ? choicesForStep(step).map(r=>({key:r.key,id:r.id,weaponType:r.weaponType,name:r.name})) : null
     }));
   }
   function snapshot(){
-    if(typeof def.snapshot==='function') return def.snapshot(state,{cleanPhase,maxHp,finite,clamp});
+    if(typeof def.snapshot==='function') return def.snapshot(state,{cleanPhase,maxHp,finite,clamp,cleanObserve});
     return {
       v:1,
       id,
@@ -1102,7 +1206,8 @@ function createQuestNpc(def){
       phase:cleanPhase(state.phase),
       hp:clamp(Number(state.hp)||0,0,maxHp),
       rewards:cleanRecord(state.rewards),
-      data:cleanRecord(state.data)
+      data:cleanRecord(state.data),
+      observe:cleanObserve(state.observe)
     };
   }
   function restore(data){
@@ -1115,6 +1220,7 @@ function createQuestNpc(def){
     state.hp=clamp(Number(restored.hp)||0,0,maxHp);
     state.rewards=cleanRecord(restored.rewards);
     state.data=Object.assign({},initialData,cleanRecord(restored.data));
+    state.observe=cleanObserve(restored.observe);
     state.line='';
     state.lineT=0;
     state.attackCd=0;
@@ -1142,6 +1248,7 @@ function createQuestNpc(def){
     state.talkT=0; state.talkIdx=0;
     state.rewards={};
     state.data=Object.assign({},initialData);
+    state.observe={phase:'',t:0,best:0,ok:false,lineCd:0};
     state.move={vx:0,vy:0,facing:1,onGround:false,walkT:0};
     state.ai={mode:'idle',t:0.6,targetX:null,job:null,jobT:0,jumpCd:0};
   }

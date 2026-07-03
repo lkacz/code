@@ -601,6 +601,18 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     }
   }
 
+  // Registry lookup for other engines (companions rituals): every master/servant
+  // stone enters the world through tracked paths (player placement, eruptions,
+  // save restore, scanMasterTilesNear adoption), so iterating this small map
+  // replaces per-tile-change area scans. Stale entries are pruned by
+  // updateMasterTiles; callers must still verify the tile via getTile.
+  function masterStonesNear(x,y,r){
+    const out=[];
+    for(const m of masterTiles.values()){
+      if(Math.abs(m.x-x)<=r && Math.abs(m.y-y)<=r) out.push({x:m.x,y:m.y,stage:m.stage});
+    }
+    return out;
+  }
   const api={
     update,
     draw,
@@ -610,6 +622,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     forceMasterEruption,
     onTileChanged,
     trackMasterStone,
+    masterStonesNear,
     metrics:()=>({rocks:rocks.length, masterShots:masterShots.length, masterTiles:masterTiles.size, activeVolcanoes:activeVolcanoes.length}),
     _debug:{emitGas,spawnRock,spawnMaster,consumeDiamondTriggers,updateMasterTiles,collectActiveVolcanoes,rocks,masterShots,masterTiles,maybeDestroyDynamoAt,explodeServantStone,MASTER_EJECTION_FORCE,SERVANT_FLOOR_SECONDS}
   };

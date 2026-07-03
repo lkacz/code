@@ -4,6 +4,7 @@
 // heart rewards.
 import { CHUNK_W, WORLD_H, T } from '../constants.js';
 import { isBlastProtectedTile, isGeneratedStructureReplaceableTile, isReplaceableNaturalOpenTile, isSolidCollisionTile as isSolid } from './material_physics.js';
+import { STORY_LORE } from './story_lore.js';
 import { worldGen as WG } from './worldgen.js';
 
 const guardianLairs = (function(){
@@ -1471,13 +1472,18 @@ const guardianLairs = (function(){
   }
   function ghostSpeech(kind){
     const other=kind==='fire'?'ice':'fire';
+    const metaphor = STORY_LORE.metaphor && STORY_LORE.metaphor.guardians ? STORY_LORE.metaphor.guardians : {};
+    const selfMeta = kind==='fire' ? metaphor.east_fire : metaphor.west_ice;
+    const otherMeta = other==='fire' ? metaphor.east_fire : metaphor.west_ice;
+    const selfLine = selfMeta && selfMeta.symbol ? ' I wore the shape of '+selfMeta.symbol+'.' : '';
+    const otherLine = otherMeta && otherMeta.symbol ? ' The next gate carries '+otherMeta.symbol+'.' : '';
     if(guardiansBothDefeated()){
-      return 'The simulation lets me breathe at last. Fire and ice are free. Near the first steps of this world, an alien passage has opened downward to the underground gate.';
+      return 'The simulation lets me breathe at last. Fire and ice are free.'+selfLine+' Near the first steps of this world, an alien passage has opened downward to the underground gate.';
     }
     if(other==='ice'){
-      return 'The simulation lets me breathe at last. I guarded this gate because the code demanded it. The west still holds ice: seek Aurex beyond -10000 blocks.';
+      return 'The simulation lets me breathe at last. I guarded this gate because the code demanded it.'+selfLine+otherLine+' The west still holds ice: seek Aurex beyond -10000 blocks.';
     }
-    return 'The simulation lets me breathe at last. I guarded this gate because the code demanded it. The east still holds fire: seek Ignivar beyond +10000 blocks.';
+    return 'The simulation lets me breathe at last. I guarded this gate because the code demanded it.'+selfLine+otherLine+' The east still holds fire: seek Ignivar beyond +10000 blocks.';
   }
   function ghostGroundY(kind,x,fallbackY,getTile){
     const L=layoutFor(kind);

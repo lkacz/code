@@ -1,5 +1,7 @@
 // Physics talisman necklace: side anchors, front chain and a swinging pendant.
 // It appears only while the optional inventory charm slot is equipped.
+// Submerged in water/lava the chain drags: wind muted, gravity buoyed, swing damped.
+import { T } from '../constants.js';
 const root = typeof window !== 'undefined' ? window : globalThis;
 root.MM = root.MM || {};
 
@@ -7,27 +9,42 @@ root.MM = root.MM || {};
   const necklaceAPI = {};
   const points = [];
   const rest = [];
+  const ideals = []; // reusable rest-pose scratch, refreshed once per update (solver passes reuse it)
   const BEADS = 13;
+  const MID = Math.floor(BEADS/2);
   const PENDANT_REST = 0.135;
+  // Per-bead shape constants (t, catenary arc, side dip) never change: bake them once.
+  const BEAD_T = [], BEAD_ARC = [], BEAD_DIP = [];
+  for(let i=0;i<BEADS;i++){
+    const t=i/(BEADS-1);
+    BEAD_T.push(t);
+    BEAD_ARC.push(Math.sin(t*Math.PI));
+    BEAD_DIP.push(Math.sin(t*Math.PI*2)*0.018);
+  }
   let charmId = null;
   let pendant = null;
+  let cachedCharmId;      // equipped slot id backing cachedCharm
+  let cachedCharm = null; // inventory.equippedItem() scans + allocates per call, so resolve once per equip
+  let palCacheItem = null;
+  let palCache = null;
 
   function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
   function finite(n,fallback){ return (typeof n === 'number' && isFinite(n)) ? n : fallback; }
   function inventory(){ return root.MM && root.MM.inventory; }
   function currentCharm(){
     const inv = inventory();
-    if(inv && typeof inv.equippedItem === 'function'){
-      const item = inv.equippedItem('charm');
-      if(item) return item;
-    }
-    if(inv && typeof inv.equippedId === 'function'){
+    if(!inv) return null;
+    if(typeof inv.equippedId === 'function'){
       const id = inv.equippedId('charm');
-      if(id){
-        const item = inv.getItem ? inv.getItem(id) : null;
-        return item || {id, kind:'charm', name:id};
-      }
+      if(!id){ cachedCharmId=undefined; cachedCharm=null; return null; }
+      if(cachedCharmId===id && cachedCharm) return cachedCharm;
+      let item = typeof inv.equippedItem === 'function' ? inv.equippedItem('charm') : null;
+      if(!item && inv.getItem) item = inv.getItem(id);
+      cachedCharm = item || {id, kind:'charm', name:id};
+      cachedCharmId = id;
+      return cachedCharm;
     }
+    if(typeof inv.equippedItem === 'function') return inv.equippedItem('charm') || null;
     return null;
   }
   function bodyMetrics(player){
@@ -60,23 +77,25 @@ root.MM = root.MM || {};
       h:m.h
     };
   }
-  function restPoint(i,a){
-    const t=i/(BEADS-1);
-    const arc=Math.sin(t*Math.PI);
-    const sideDip=Math.sin(t*Math.PI*2)*0.018;
-    return {
-      x:a.lx+(a.rx-a.lx)*t,
-      y:a.ly + arc*(a.h*0.185) + sideDip
-    };
+  function computeIdeals(a){
+    if(ideals.length!==BEADS){
+      ideals.length=0;
+      for(let i=0;i<BEADS;i++) ideals.push({x:0,y:0});
+    }
+    for(let i=0;i<BEADS;i++){
+      ideals[i].x=a.lx+(a.rx-a.lx)*BEAD_T[i];
+      ideals[i].y=a.ly + BEAD_ARC[i]*(a.h*0.185) + BEAD_DIP[i];
+    }
   }
   function charmKey(item){
     return item ? (item.id || item.name || 'charm') : null;
   }
   function rebuildRest(){
-    rest.length=0;
-    for(let i=1;i<points.length;i++){
-      const a=points[i-1], b=points[i];
-      rest.push(Math.max(0.035,Math.hypot(b.x-a.x,b.y-a.y)));
+    rest.length=BEADS-1;
+    for(let i=1;i<BEADS;i++){
+      const p=ideals[i-1], q=ideals[i];
+      const dx=q.x-p.x, dy=q.y-p.y;
+      rest[i-1]=Math.max(0.035,Math.sqrt(dx*dx+dy*dy));
     }
   }
   function clear(){
@@ -84,17 +103,21 @@ root.MM = root.MM || {};
     rest.length=0;
     charmId=null;
     pendant=null;
+    cachedCharmId=undefined;
+    cachedCharm=null;
+    palCacheItem=null;
+    palCache=null;
   }
   function init(player){
     const item=currentCharm();
     clear();
     if(!item || !player) return false;
-    const a=anchors(player);
+    computeIdeals(anchors(player));
     for(let i=0;i<BEADS;i++){
-      const p=restPoint(i,a);
+      const p=ideals[i];
       points.push({x:p.x,y:p.y,px:p.x,py:p.y});
     }
-    const center=points[Math.floor(BEADS/2)];
+    const center=points[MID];
     pendant={x:center.x,y:center.y+PENDANT_REST,px:center.x,py:center.y+PENDANT_REST,spin:0,vspin:0};
     charmId=charmKey(item);
     rebuildRest();
@@ -116,6 +139,13 @@ root.MM = root.MM || {};
     }catch(e){}
     return 0;
   }
+  function fluidAt(x,y,getTile){
+    if(typeof getTile!=='function') return false;
+    try{
+      const t=getTile(Math.floor(x),Math.floor(y));
+      return t===T.WATER || t===T.LAVA;
+    }catch(e){ return false; }
+  }
   function clampAwayFromEyes(a){
     for(let i=1;i<points.length-1;i++){
       if(points[i].y<a.guardY) points[i].y=a.guardY;
@@ -128,7 +158,7 @@ root.MM = root.MM || {};
       for(let i=0;i<BEADS-1;i++){
         const pa=points[i], pb=points[i+1];
         let dx=pb.x-pa.x, dy=pb.y-pa.y;
-        const d=Math.hypot(dx,dy)||0.0001;
+        const d=Math.sqrt(dx*dx+dy*dy)||0.0001;
         const diff=(d-rest[i])/d;
         const ax=i===0, bx=i+1===BEADS-1;
         if(ax){
@@ -145,10 +175,9 @@ root.MM = root.MM || {};
         }
       }
       for(let i=1;i<BEADS-1;i++){
-        const ideal=restPoint(i,a);
+        const ideal=ideals[i];
         const p=points[i];
-        const t=i/(BEADS-1);
-        const relax=0.010+Math.sin(t*Math.PI)*0.012;
+        const relax=0.010+BEAD_ARC[i]*0.012;
         p.x+=(ideal.x-p.x)*relax;
         p.y+=(ideal.y-p.y)*relax;
       }
@@ -156,20 +185,20 @@ root.MM = root.MM || {};
     }
     pin(a);
   }
-  function solvePendant(a,dt){
+  function solvePendant(a,dt,fluid){
     if(!pendant || points.length!==BEADS) return;
-    const center=points[Math.floor(BEADS/2)];
+    const center=points[MID];
     for(let pass=0;pass<5;pass++){
       let dx=pendant.x-center.x, dy=pendant.y-center.y;
-      const d=Math.hypot(dx,dy)||0.0001;
+      const d=Math.sqrt(dx*dx+dy*dy)||0.0001;
       const diff=(d-PENDANT_REST)/d;
       pendant.x-=dx*diff;
       pendant.y-=dy*diff;
       if(pendant.y<a.chestY) pendant.y=a.chestY;
     }
     const spinTarget=clamp((pendant.x-center.x)*8,-0.85,0.85);
-    pendant.vspin=(pendant.vspin||0)*Math.pow(0.58,dt*60)+(spinTarget-(pendant.spin||0))*dt*9;
-    pendant.spin=clamp((pendant.spin||0)+pendant.vspin,-0.9,0.9);
+    pendant.vspin=(pendant.vspin||0)*Math.pow(fluid?0.40:0.58,dt*60)+(spinTarget-(pendant.spin||0))*dt*(fluid?4.5:9);
+    pendant.spin=clamp((pendant.spin||0)+pendant.vspin*dt*60,-0.9,0.9);
   }
   function update(player,dt,getTile){
     const item=currentCharm();
@@ -178,31 +207,41 @@ root.MM = root.MM || {};
     if(points.length!==BEADS || !pendant || charmId!==id) init(player);
     if(points.length!==BEADS || !pendant || !(dt>0) || !isFinite(dt)) return false;
     dt=clamp(dt,0.001,0.05);
+    const mid=points[MID];
+    if(!isFinite(mid.x+mid.y+pendant.x+pendant.y)){
+      init(player);
+      if(points.length!==BEADS || !pendant) return false;
+    }
     const a=anchors(player);
+    computeIdeals(a);
+    rebuildRest();
     const vx=finite(player.vx,0), vy=finite(player.vy,0);
     const airborne=player.onGround===false;
-    const wind=sampleWind(player,getTile);
+    const fluid=fluidAt(player.x,a.chestY,getTile);
+    const wind=finite(sampleWind(player,getTile),0)*(fluid?0.18:1);
     const windMag=clamp(Math.abs(wind)/7.2,0,1);
-    const damp=Math.pow(0.54+windMag*0.08,dt*60);
+    const damp=Math.pow(fluid?0.24:(0.54+windMag*0.08),dt*60);
+    const gravMul=fluid?0.35:1;
+    const step=dt*60;
+    const nowMs=finite(root.performance && root.performance.now && root.performance.now(),0);
     pin(a);
     for(let i=1;i<BEADS-1;i++){
       const p=points[i];
-      const t=i/(BEADS-1);
-      const arc=Math.sin(t*Math.PI);
+      const arc=BEAD_ARC[i];
       const oldX=p.x, oldY=p.y;
       const trailX=-vx*0.024*dt*arc + wind*0.020*dt*(0.25+arc*0.95);
       const trailY=-vy*0.012*dt*arc*(airborne?1.85:0.82);
-      const bounce=Math.sin((finite(root.performance && root.performance.now && root.performance.now(),0))*0.012+i*0.9)*0.0009*windMag;
+      const bounce=Math.sin(nowMs*0.012+i*0.9)*0.0009*windMag*step;
       p.x += (p.x-p.px)*damp + trailX + bounce;
-      p.y += (p.y-p.py)*damp + 13.0*dt*dt + trailY;
+      p.y += (p.y-p.py)*damp + 13.0*gravMul*dt*dt + trailY;
       p.px=oldX; p.py=oldY;
     }
     const oldPX=pendant.x, oldPY=pendant.y;
-    pendant.x += (pendant.x-pendant.px)*Math.pow(0.48,dt*60) - vx*0.040*dt + wind*0.034*dt;
-    pendant.y += (pendant.y-pendant.py)*Math.pow(0.50,dt*60) + 18.0*dt*dt - vy*0.020*dt*(airborne?1.55:0.75);
+    pendant.x += (pendant.x-pendant.px)*Math.pow(fluid?0.22:0.48,dt*60) - vx*0.040*dt + wind*0.034*dt;
+    pendant.y += (pendant.y-pendant.py)*Math.pow(fluid?0.24:0.50,dt*60) + 18.0*gravMul*dt*dt - vy*0.020*dt*(airborne?1.55:0.75);
     pendant.px=oldPX; pendant.py=oldPY;
     solveChain(a,8);
-    solvePendant(a,dt);
+    solvePendant(a,dt,fluid);
     return true;
   }
   function shade(hex,delta){
@@ -216,6 +255,7 @@ root.MM = root.MM || {};
     return '#'+r.toString(16).padStart(2,'0')+g.toString(16).padStart(2,'0')+b.toString(16).padStart(2,'0');
   }
   function palette(item){
+    if(item && palCacheItem===item && palCache) return palCache;
     let gem='#8ee9ff';
     if(item && item.attackDamage) gem='#ffb24d';
     else if(item && item.energyCapacityBonus) gem='#ffd45f';
@@ -224,7 +264,7 @@ root.MM = root.MM || {};
     const tier=String((item && item.tier) || '').toLowerCase();
     if(tier==='epic') gem='#ffc857';
     if(tier==='legendary' || tier==='mythic') gem='#ff75ec';
-    return {
+    const pal={
       chain:tier==='epic' ? '#ffe08a' : '#d6c28a',
       chainDark:'#5a4220',
       rim:'#fff0ad',
@@ -232,6 +272,8 @@ root.MM = root.MM || {};
       gemDark:shade(gem,-56),
       gemLight:shade(gem,54)
     };
+    if(item){ palCacheItem=item; palCache=pal; }
+    return pal;
   }
   function drawChainPath(ctx,TILE,from,to,pal,alpha){
     if(points.length!==BEADS) return;
@@ -331,14 +373,13 @@ root.MM = root.MM || {};
     const pal=palette(item);
     const now=(typeof performance!=='undefined' && performance.now) ? performance.now()*0.001 : 0;
     const glow=0.55+0.45*Math.sin(now*4.3+(pendant?pendant.spin*2:0));
-    const centerIndex=Math.floor(BEADS/2);
     ctx.save();
     ctx.lineCap='round';
     ctx.lineJoin='round';
     drawChainPath(ctx,TILE,0,BEADS-1,pal,1);
     drawBeads(ctx,TILE,1,BEADS-2,pal);
     if(pendant){
-      const cx=points[centerIndex].x*TILE, cy=points[centerIndex].y*TILE;
+      const cx=points[MID].x*TILE, cy=points[MID].y*TILE;
       const px=pendant.x*TILE, py=pendant.y*TILE;
       ctx.strokeStyle='rgba(35,23,8,0.58)';
       ctx.lineWidth=Math.max(1,TILE*0.050);
@@ -369,7 +410,7 @@ root.MM = root.MM || {};
   necklaceAPI.active=active;
   necklaceAPI._points=points;
   necklaceAPI._pendant=()=>pendant;
-  necklaceAPI._debug={currentCharm,palette,anchors,bodyMetrics,sampleWind};
+  necklaceAPI._debug={currentCharm,palette,anchors,bodyMetrics,sampleWind,fluidAt};
   root.MM.necklace=necklaceAPI;
 })();
 

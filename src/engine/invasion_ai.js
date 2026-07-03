@@ -278,16 +278,19 @@ export function createNav(world, caps){
 // flanker; a dwarf crew may lean on sapper + engineer).
 export const DEFAULT_ROLES = Object.freeze({
   rusher:   {weight:3, minRange:1.4, maxRange:4.5, speedMult:1.06, fireCd:0.85, damageMult:1.0, aim:0.9},
+  tank:     {weight:1, minRange:1.0, maxRange:3.8, speedMult:0.82, fireCd:1.25, damageMult:1.1, aim:0.72, stoic:true, guard:true},
+  healer:   {weight:1, minRange:3.5, maxRange:8.0, speedMult:0.96, fireCd:1.45, damageMult:0.55, aim:0.78, support:true, healRange:5.8, healCd:1.15, healAmount:5},
   flanker:  {weight:2, minRange:2.0, maxRange:5.5, speedMult:1.12, fireCd:0.95, damageMult:1.0, aim:0.85, flank:true},
   orbiter:  {weight:2, minRange:4.0, maxRange:7.5, speedMult:1.0,  fireCd:1.05, damageMult:0.9, aim:0.8, orbit:5.6},
   sniper:   {weight:2, minRange:8.0, maxRange:13,  speedMult:0.92, fireCd:2.1,  damageMult:1.9, aim:1.0, coverAfterShot:true, skittish:true},
   sapper:   {weight:1, minRange:2.0, maxRange:6.0, speedMult:0.95, fireCd:1.1,  damageMult:0.8, aim:0.8, tileDmgMult:3.0, breacher:true},
-  engineer: {weight:1, minRange:5.0, maxRange:9.0, speedMult:0.95, fireCd:1.5,  damageMult:0.8, aim:0.8, builder:true}
+  engineer: {weight:1, minRange:5.0, maxRange:9.0, speedMult:0.95, fireCd:1.5,  damageMult:0.8, aim:0.8, builder:true},
+  commander:{weight:0.25, minRange:1.2, maxRange:5.2, speedMult:0.78, fireCd:1.3, damageMult:1.25, aim:0.86, stoic:true, guard:true}
 });
 
 // Guaranteed opening variety: small squads still feel like a coordinated
 // strike team instead of N copies of the same unit.
-const ROLE_OPENING = ['rusher','sniper','orbiter','flanker','engineer','sapper'];
+const ROLE_OPENING = ['rusher','tank','healer','sniper','orbiter','flanker','engineer','sapper'];
 
 export function makeTeamProfile(opts){
   opts = opts || {};
@@ -306,6 +309,11 @@ export function makeTeamProfile(opts){
     meleeRange: Number(opts.meleeRange) || 0.72,
     fleeHpFrac: Number.isFinite(opts.fleeHpFrac) ? opts.fleeHpFrac : 0.32,
     fleeDist: Number(opts.fleeDist) || 15,
+    repairHpFrac: Number.isFinite(opts.repairHpFrac) ? opts.repairHpFrac : 0.42,
+    repairMinHpFrac: Number.isFinite(opts.repairMinHpFrac) ? opts.repairMinHpFrac : 0.10,
+    repairDoneFrac: Number.isFinite(opts.repairDoneFrac) ? opts.repairDoneFrac : 0.82,
+    repairRange: Number(opts.repairRange) || 2.4,
+    repairRate: Number(opts.repairRate) || 0.18,
     strikeTokens: Number(opts.strikeTokens) || 0, // 0 = auto by squad size
     siegeAfter: Number(opts.siegeAfter) || 3.5,   // seconds without LoS/path
     breachRange: Number(opts.breachRange) || 12,
@@ -410,8 +418,11 @@ function freshAI(){
     orbitAng:Math.random() * Math.PI * 2,
     coverX:0, coverY:0, hasCover:false,
     fleeUntil:0,
+    repairUntil:0,
+    repairCooldownUntil:0,
     buildX:0, buildY:0, buildStage:0, buildT:0,
     breachX:0, breachY:0, hasBreach:false,
+    supportId:'',
     token:false,
     hadLos:false,
     intent:{moveX:0, jump:false, speedMult:1}
@@ -431,6 +442,33 @@ export function createSquadBrain(profile, nav){
 
   function roleOf(u){
     return profile.roles[u.role] || profile.roles.rusher || DEFAULT_ROLES.rusher;
+  }
+
+  function findLiveById(live, id){
+    if(!id) return null;
+    for(const u of live){
+      if(u && u.id === id && !u.dead && u.hp > 0) return u;
+    }
+    return null;
+  }
+
+  function findSupportTarget(u, live, role){
+    if(!role.support) return null;
+    let best = null;
+    let bestScore = 0;
+    const scan = role.supportScan || 18;
+    for(const other of live){
+      if(!other || other === u || other.dead || other.hp <= 0 || !(other.maxHp > 0)) continue;
+      const missing = Math.max(0, other.maxHp - other.hp);
+      const frac = other.hp / other.maxHp;
+      if(frac > 0.88 || missing < 1.2) continue;
+      const dist = Math.hypot(other.x - u.x, other.y - u.y);
+      if(dist > scan) continue;
+      const score = missing * 1.2 + (other.role === 'tank' ? 2.5 : 0) - dist * 0.16;
+      if(!best || score > bestScore){ best = other; bestScore = score; }
+    }
+    if(!best && u.maxHp > 0 && u.hp / u.maxHp < 0.62) best = u;
+    return best;
   }
 
   function setState(ai, state){
@@ -486,16 +524,34 @@ export function createSquadBrain(profile, nav){
   function fleeing(u, ai, hero, now){
     const role = roleOf(u);
     const frac = u.maxHp > 0 ? u.hp / u.maxHp : 1;
-    const threshold = profile.fleeHpFrac * (role.skittish ? 1.5 : 1);
+    const threshold = profile.fleeHpFrac * (role.skittish ? 1.5 : 1) * (role.stoic ? 0.45 : 1);
     const recentlyHit = now - (u.lastHitAt || 0) < 2600;
     return frac <= threshold && recentlyHit;
   }
+  function landerRepairReady(team){
+    const l = team && team.lander;
+    return !!(l && l.landed && !l.destroyed);
+  }
+  function landerRepairPoint(team){
+    const l = team && team.lander ? team.lander : {};
+    return {
+      x:Number.isFinite(l.x) ? l.x : (Number.isFinite(team && team.x) ? team.x : 0),
+      y:Number.isFinite(team && team.y) ? team.y : (Number.isFinite(l.targetY) ? l.targetY + 1.35 : (Number.isFinite(l.y) ? l.y + 1.35 : 0))
+    };
+  }
+  function wantsLanderRepair(team,u,ai,now){
+    if(!landerRepairReady(team) || !u || !(u.maxHp > 0)) return false;
+    if(now < (ai.repairCooldownUntil || 0)) return false;
+    const frac = u.hp / u.maxHp;
+    return frac > profile.repairMinHpFrac && frac <= profile.repairHpFrac;
+  }
 
-  function stepUnit(team, u, dt, hero, hooks, ctx){
+  function stepUnit(team, u, dt, hero, hooks, ctx, live){
     const ai = u._ai || (u._ai = freshAI());
     const role = roleOf(u);
     const intent = ai.intent;
-    const wasMoving = intent.moveX !== 0;
+    const previousMoveX = intent.moveX || u.facing || 0;
+    const wasMoving = previousMoveX !== 0;
     intent.moveX = 0;
     intent.jump = false;
     intent.speedMult = role.speedMult || 1;
@@ -523,6 +579,7 @@ export function createSquadBrain(profile, nav){
       ai.stuckT += dt;
       if(ai.stuckT > 0.7){
         ai.path = null; ai.repathIn = 0;
+        if(hooks.unstuck) hooks.unstuck(u, {dir:previousMoveX, reason:'stuck', now});
         if(u.onGround) intent.jump = true;
         ai.stuckT = 0;
       }
@@ -530,12 +587,53 @@ export function createSquadBrain(profile, nav){
     ai.lastX = u.x; ai.lastY = u.y;
 
     // --- global overrides -------------------------------------------------
-    if(ai.state !== 'flee' && fleeing(u, ai, hero, now)){
+    if(ai.state !== 'repair' && wantsLanderRepair(team,u,ai,now)){
+      setState(ai, 'repair');
+      ai.repairUntil = now + 12000 + Math.random() * 3000;
+    }
+    if(ai.state !== 'repair' && ai.state !== 'flee' && fleeing(u, ai, hero, now)){
       setState(ai, 'flee');
       ai.fleeUntil = now + 4200 + Math.random() * 1800;
     }
+    if(role.support && ai.state !== 'flee' && ai.state !== 'repair'){
+      const target = findSupportTarget(u, live || [], role);
+      if(target){
+        ai.supportId = target.id;
+        if(ai.state !== 'support') setState(ai, 'support');
+      } else if(ai.state === 'support') {
+        ai.supportId = '';
+        setState(ai, sight.clear ? 'strike' : 'approach');
+      }
+    }
 
     switch(ai.state){
+      case 'repair': {
+        if(!landerRepairReady(team) || !(u.maxHp > 0)){
+          ai.repairCooldownUntil = now + 3500;
+          setState(ai, sight.clear ? 'strike' : 'approach');
+          break;
+        }
+        const frac = u.hp / u.maxHp;
+        if(frac >= profile.repairDoneFrac || now > ai.repairUntil){
+          ai.repairCooldownUntil = now + (frac >= profile.repairDoneFrac ? 9000 : 4500);
+          setState(ai, sight.clear ? 'strike' : 'approach');
+          break;
+        }
+        const dock = landerRepairPoint(team);
+        const dockDist = Math.hypot(dock.x - u.x, dock.y - u.y);
+        u.facing = dock.x >= u.x ? 1 : -1;
+        intent.speedMult = (role.speedMult || 1) * 1.25;
+        if(dockDist > profile.repairRange){
+          steerTo(u, ai, dock.x, dock.y, dt);
+        } else {
+          intent.moveX = 0;
+          const amount = Math.max(0.45, u.maxHp * profile.repairRate * dt);
+          if(hooks.repairAtLander && hooks.repairAtLander(u, amount)){
+            ai.repairUntil = Math.max(ai.repairUntil || 0, now + 900);
+          }
+        }
+        break;
+      }
       case 'flee': {
         intent.speedMult = (role.speedMult || 1) * 1.18;
         const away = u.x >= hero.x ? 1 : -1;
@@ -556,6 +654,33 @@ export function createSquadBrain(profile, nav){
         steerTo(u, ai, ai.coverX, ai.coverY, dt);
         const readyAgain = (u.attackCd || 0) <= 0.15;
         if(readyAgain || ai.stateT > 2.6){ ai.hasCover = false; setState(ai, 'approach'); }
+        break;
+      }
+      case 'support': {
+        const target = findLiveById(live || [], ai.supportId);
+        if(!role.support || !target || target.dead || target.hp <= 0 || target.hp >= target.maxHp * 0.96){
+          ai.supportId = '';
+          setState(ai, sight.clear ? 'strike' : 'approach');
+          break;
+        }
+        const healRange = role.healRange || 5;
+        const tx = target.x;
+        const ty = target.y;
+        const tDist = Math.hypot(tx - u.x, ty - u.y);
+        u.facing = tx >= u.x ? 1 : -1;
+        if(target === u){
+          if(sight.clear && dist < (role.minRange || 3) * 0.75) intent.moveX = u.x >= hero.x ? 1 : -1;
+        } else if(tDist > healRange * 0.86){
+          steerTo(u, ai, tx, ty, dt);
+        } else if(tDist < Math.max(1.4, healRange * 0.32)){
+          const away = u.x >= tx ? 1 : -1;
+          steerTo(u, ai, u.x + away * 3, u.y, dt);
+        } else if(sight.clear && dist < (role.minRange || 3) * 0.75){
+          intent.moveX = u.x >= hero.x ? 1 : -1;
+        }
+        if((u.attackCd || 0) <= 0 && tDist <= healRange && hooks.heal && hooks.heal(u, target, role.healAmount || 4)){
+          u.attackCd = (role.healCd || role.fireCd || 1.2) * (0.85 + Math.random() * 0.3);
+        }
         break;
       }
       case 'build': {
@@ -707,7 +832,7 @@ export function createSquadBrain(profile, nav){
     for(let i=0;i<live.length;i++) live[i]._ai.token = false;
     for(let i=0;i<Math.min(tokens, candidates.length);i++) candidates[i]._ai.token = true;
 
-    for(const u of live) stepUnit(team, u, dt, hero, hooks, ctx);
+    for(const u of live) stepUnit(team, u, dt, hero, hooks, ctx, live);
   };
 
   return brain;

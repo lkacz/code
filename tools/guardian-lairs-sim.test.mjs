@@ -12,6 +12,7 @@ globalThis.CustomEvent = class CustomEvent{ constructor(type,init){ this.type=ty
 globalThis.dispatchEvent = ()=>{};
 
 const { T, CHUNK_W } = await import('../src/constants.js');
+const { STORY_LORE } = await import('../src/engine/story_lore.js');
 const { worldGen: WG } = await import('../src/engine/worldgen.js');
 const { meteorites } = await import('../src/engine/meteorites.js');
 const { guardianLairs } = await import('../src/engine/guardian_lairs.js');
@@ -212,6 +213,8 @@ assert.equal(granted[0].opts.equip, true, 'released guardian ghost auto-equips t
 status = guardianLairs.status();
 assert.ok(status.ghosts.fire, 'fire defeat leaves a released guardian ghost NPC');
 assert.match(status.ghosts.fire.text, /west.*ice|Aurex/i, 'first released ghost points toward the opposite guardian');
+assert.match(status.ghosts.fire.text, /namietnosc|odtracenie|chlod/i, 'released guardian ghost carries the metaphorical meaning of fire and ice');
+assert.match(STORY_LORE.metaphor.guardians.east_fire.symbol, /namietnosc/i, 'shared lore names the fire guardian passion metaphor');
 guardianLairs.update(0.05, globalThis.player, world.getTile, world.setTile);
 assert.equal(guardianLairs.forceAwaken('fire'), true, 'debug rematch can force a defeated guardian');
 const rematch = guardianLairs.status().entities.find(e=>e.kind==='fire' && e.boss);
@@ -225,6 +228,7 @@ status = guardianLairs.status();
 assert.equal(status.underground.enabled, true, 'defeating both guardians enables the underground gate');
 assert.ok(Math.abs(status.underground.mouthX) <= 240, 'underground passage opens near the world start');
 assert.match(status.ghosts.fire.text, /underground gate/i, 'released ghosts switch to underground guidance once both guardians are dead');
+assert.match(status.ghosts.fire.text, /namietnosc/i, 'released ghosts keep their defeated guardian metaphor after both gates are free');
 const gateLayout = guardianLairs.undergroundGateLayout();
 assert.ok(gateLayout.ops.some(o=>o.t === T.ALIEN_BIOMASS), 'underground guide passage uses alien biomass');
 assert.ok(gateLayout.ops.some(o=>o.t === T.ANTIMATTER_CRYSTAL), 'underground gate uses antimatter crystal');

@@ -84,6 +84,8 @@ assert.ok(guardianAftermath.status().falling >= 1, 'ice aftermath spawns a visib
 run(4, player);
 assert.equal(guardianAftermath.status().falling, 0, 'ice remnant collides with terrain instead of hovering forever');
 assert.ok(countTiles(t=>t === T.SNOW || t === T.ICE) > 0, 'ice aftermath leaves snow/ice blocks in the world');
+assert.equal(guardianAftermath._debug().motherCoreTile('ice'), T.MOTHER_ICE, 'ice aftermath maps to mother ice cores');
+assert.ok(countTiles(t=>t === T.MOTHER_ICE) > 0, 'ice aftermath falling remnants contain mother ice');
 assert.ok(fallingBatchCalls > 0, 'ice impact wakes falling-solid physics');
 assert.ok(waterBatchCalls > 0, 'ice impact wakes water/ice neighborhood logic');
 
@@ -93,6 +95,8 @@ assert.equal(guardianAftermath.status().falling, 0, 'replacement clears old in-f
 guardianAftermath.update(0.1, player, getTile, setTile);
 run(4, player);
 assert.ok(countTiles(t=>t === T.COAL || t === T.LAVA || t === T.BASALT || t === T.HOT_AIR || t === T.METEOR_DUST) > 0, 'fire aftermath leaves burning/charred blocks in the world');
+assert.equal(guardianAftermath._debug().motherCoreTile('fire'), T.MOTHER_LAVA, 'fire aftermath maps to mother lava cores');
+assert.ok(countTiles(t=>t === T.MOTHER_LAVA) > 0, 'fire aftermath falling remnants contain mother lava');
 assert.ok(igniteCalls > 0 || lavaNotes > 0, 'fire aftermath uses the fire/lava wake hooks');
 
 const beforeEarthTiles = tiles.size;
@@ -227,6 +231,6 @@ assert.match(uiSrc, /Scars/, 'travel debug UI exposes an aftermath scars button'
 assert.match(guardianSrc, /MM\.guardianAftermath && MM\.guardianAftermath\.start\) MM\.guardianAftermath\.start\(kind\)/, 'fire/ice guardian death starts aftermath');
 assert.match(undergroundSrc, /MM\.guardianAftermath && MM\.guardianAftermath\.start\) MM\.guardianAftermath\.start\('earth'\)/, 'underground guardian death starts earth aftermath');
 assert.match(packageSrc, /"test:guardian-aftermath"/, 'package exposes the guardian aftermath sim test');
-assert.match(packageSrc, /test:underground && npm run test:guardian-aftermath/, 'full check runs aftermath coverage after boss coverage');
+assert.match(packageSrc, /test:underground && npm run test:sky-guardian && npm run test:guardian-aftermath/, 'full check runs Sky Gate and aftermath coverage after boss coverage');
 
 console.log('guardian-aftermath-sim: all assertions passed');

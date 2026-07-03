@@ -10,6 +10,7 @@ globalThis.MM.seasons = { metrics(){ return {dayFloat:gameDay}; } };
 
 const { T } = await import('../src/constants.js');
 const { npcRegistry } = await import('../src/engine/npc_system.js');
+const { STORY_LORE, storyWhispersForProgress } = await import('../src/engine/story_lore.js');
 const { generatedNpcs } = await import('../src/engine/generated_npcs.js');
 
 const stats=generatedNpcs._jobCatalogStats();
@@ -38,6 +39,10 @@ for(let cell=1; cell<80; cell++){
 assert.ok(candidate, 'procedural NPC generator creates a sparse deterministic candidate away from spawn');
 assert.equal(candidate.biome, 8, 'candidate carries local biome context');
 assert.ok(candidate.lore && candidate.prompt.includes(candidate.lore), 'candidate prompt carries local lore');
+assert.ok(storyWhispersForProgress().includes(candidate.whisper), 'candidate receives a shared simulation-lore whisper for the current reveal stage');
+assert.ok(!storyWhispersForProgress('start').some(line=>/Centrum swiata|Macierzyst|Stary Kwadrat.*maska/i.test(line)), 'start-stage NPC whispers avoid final story spoilers');
+assert.ok(storyWhispersForProgress('earth_mole').some(line=>/zachodzie.*chlod|wschodzie.*pragnienie|Pod ziemia|Trzeci Kret/i.test(line)), 'later NPC whisper pools carry unlocked guardian metaphors');
+assert.ok(STORY_LORE.revealStages.mother_self.npcWhispers.some(line=>/Stary Kwadrat|centrum/i.test(line)), 'final-stage story data keeps the mentor/center reveal available for late systems');
 assert.ok(candidate.moral && candidate.moral.includes('Moral:'), 'candidate carries a distinct moral/story hook');
 const nextCandidate=generatedNpcs.findNext(0,1,worldGen,80);
 assert.ok(nextCandidate && nextCandidate.x>0, 'generated NPC manager can find the next deterministic local in a direction');
@@ -70,6 +75,7 @@ assert.equal(npc.displayName(), candidate.role, 'generated NPC uses its lore/job
 let state=npc._debug();
 assert.equal(state.generated, true, 'generated NPC debug metadata identifies procedural locals');
 assert.equal(state.lore, candidate.lore, 'generated NPC keeps its lore metadata');
+assert.equal(state.whisper, candidate.whisper, 'generated NPC keeps its shared story whisper metadata');
 assert.equal(npc.questSteps()[0].item, candidate.job.cost.item, 'generated job asks for its deterministic resource');
 let summary=npc.summary();
 assert.equal(summary.generated, true, 'generated NPC summaries identify procedural locals');

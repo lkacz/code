@@ -13,6 +13,7 @@ import { strict as assert } from 'assert';
 
 globalThis.window = globalThis; // bosses.js attaches to window.MM
 globalThis.MM = {};
+globalThis.inv = {ufoConcrete:0};
 const { T, INFO } = await import('../src/constants.js');
 
 // Sparse world: bedrock from y=90 down, open sky above; supports negative x.
@@ -42,6 +43,7 @@ function resetWorld(){
   tiles = new Map();
   bosses.reset();
   companions.reset();
+  globalThis.inv = {ufoConcrete:0};
   delete globalThis.MM.wind;
   bosses.setCycleOverride({isDay:true, tDay:0.5});
   globalThis.player = {x:0, y:88, hp:100, maxHp:100, xp:0, vx:0, vy:0, hpInvul:0, tool:'basic'};
@@ -183,6 +185,7 @@ setTile(cbx+7, cby+1, T.VOLCANO_MASTER_STONE);
 setTile(cbx+6, cby+1, T.OBSIDIAN);
 setTile(cbx+5, cby+1, T.DIAMOND);
 setTile(cbx+4, cby+1, T.IRIDIUM);
+setTile(cbx+3, cby+1, T.UFO_CONCRETE);
 globalThis.player.x = cbx+3; globalThis.player.y = 88; globalThis.player.hpInvul = 0;
 const solidBefore = (()=>{ let c=0; for(let x=cbx-12;x<=cbx+12;x++) for(let y=85;y<100;y++) if(getTile(x,y)!==T.AIR && getTile(x,y)!==T.WATER) c++; return c; })();
 // fully armored heart: even an overwhelming blow glances off the plating
@@ -193,6 +196,20 @@ assert.equal(mh.core.hp, mh.core.maxHp, 'the protected heart took no damage');
 assert.ok(bosses.attackAt(cbx+1, cby, 999), 'the armor beside the heart can be broken');
 companions.restore({v:1,list:[{x:cbx+1.5,y:cby+0.96,biomass:3,hp:88,seed:8891,laserCd:99,gasCd:99}]},getTile);
 assert.ok(bosses.attackAt(cbx, cby, 99999), 'the exposed heart can be struck');
+assert.equal(bosses.metrics().alive, 1, 'destroyed heart enters agony before the monster is removed');
+assert.equal(bosses.metrics().killed, 0, 'kill credit waits for the delayed heart blast');
+assert.ok(mh.dying, 'exposed heart is marked as dying');
+assert.ok(mh.agonyMax >= CFG.HEART_AGONY_MIN && mh.agonyMax <= CFG.HEART_AGONY_MAX, 'heart agony lasts within the warning window');
+assert.equal(mh.parts.length, 1, 'the block-built body collapses away from the dying heart');
+assert.ok(bosses._debug().fallingBodyBlocks.length > 0, 'collapsed boss body becomes falling block debris');
+assert.equal(globalThis.player.hp, 100, 'hero gets a moment to escape before the heart blast');
+assert.equal(globalThis.player.xp, 0, 'XP is delayed until the heart actually explodes');
+const solidDuringAgony = (()=>{ let c=0; for(let x=cbx-12;x<=cbx+12;x++) for(let y=85;y<100;y++) if(getTile(x,y)!==T.AIR && getTile(x,y)!==T.WATER) c++; return c; })();
+assert.equal(solidDuringAgony, solidBefore, 'heart agony has not cratered the terrain yet');
+step(20);
+assert.equal(bosses.metrics().alive, 1, 'heart is still in agony during the early warning beat');
+assert.equal(bosses.metrics().killed, 0, 'early warning beat still has no kill credit');
+step(90);
 const solidAfter = (()=>{ let c=0; for(let x=cbx-12;x<=cbx+12;x++) for(let y=85;y<100;y++) if(getTile(x,y)!==T.AIR && getTile(x,y)!==T.WATER) c++; return c; })();
 assert.ok(solidAfter < solidBefore-10, `blast cratered the terrain (${solidBefore} -> ${solidAfter} solids)`);
 assert.equal(getTile(300+9,91), T.CHEST_EPIC, 'chests survive the blast');
@@ -201,6 +218,8 @@ assert.equal(getTile(cbx+7,cby+1), T.VOLCANO_MASTER_STONE, 'story stones survive
 assert.equal(getTile(cbx+6,cby+1), T.OBSIDIAN, 'obsidian survives the boss heart blast');
 assert.equal(getTile(cbx+5,cby+1), T.DIAMOND, 'diamond survives the boss heart blast');
 assert.equal(getTile(cbx+4,cby+1), T.IRIDIUM, 'iridium survives the boss heart blast');
+assert.equal(getTile(cbx+3,cby+1), T.AIR, 'boss heart blast can destroy UFO concrete');
+assert.equal(globalThis.inv.ufoConcrete, 1, 'boss-destroyed UFO concrete yields summon material');
 assert.equal(bosses.metrics().alive, 0, 'monster is gone after its heart burst');
 assert.equal(bosses.metrics().killed, 1, 'kill recorded');
 assert.ok(globalThis.player.hp < 100, `nearby hero took blast damage (hp=${globalThis.player.hp})`);
@@ -287,11 +306,17 @@ step(30); // settle
 globalThis.player.x = 290; // the x=300 beast is the nearest
 const killedName = bosses.killNearest(getTile, setTile);
 assert.ok(typeof killedName==='string' && killedName.length>3, 'killNearest returns the victim name');
+assert.equal(bosses.metrics().alive, 2, 'killNearest starts the nearest monster death agony');
+assert.equal(bosses.metrics().killed, 0, 'killNearest waits for delayed blast before kill credit');
+assert.ok(bosses._debug().monsters.some(m=>m.dying && Math.abs(m.x-300)<30), 'nearest monster is the one in agony');
+step(90);
 assert.equal(bosses.metrics().alive, 1, 'only the nearest monster died');
 assert.equal(bosses.metrics().killed, 1, 'kill recorded through the real death path');
 assert.ok(Math.abs(bosses._debug().monsters[0].x - (-200)) < 30, 'the distant monster survived');
 assert.equal(getTile(300, 92), T.AIR, 'detonation cratered the terrain under the victim');
-assert.equal(bosses.killNearest(getTile, setTile) && bosses.killNearest(getTile, setTile), null, 'killNearest drains to null when no monsters remain');
+assert.ok(bosses.killNearest(getTile, setTile), 'killNearest can start the last monster death agony');
+step(90);
+assert.equal(bosses.killNearest(getTile, setTile), null, 'killNearest drains to null when no monsters remain');
 
 // --- 14. API safety: junk never throws; reset clears everything ---
 assert.equal(bosses.attackAt(NaN, 5), false, 'attackAt rejects junk');

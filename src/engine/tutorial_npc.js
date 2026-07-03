@@ -1,4 +1,6 @@
+import { T } from '../constants.js';
 import { createQuestNpc } from './npc_system.js';
+import { STORY_LORE } from './story_lore.js';
 
 const MAX_HP = 28;
 const QUEST_BOW = {
@@ -46,14 +48,75 @@ const STREAM_REWARDS = [
     desc:'Questowy emiter gazu: stawia trujace oblokowe problemy tam, gdzie celujesz.'
   }
 ];
+const LORE_TUTORIAL = STORY_LORE.tutorial;
 const QUEST_STEPS = [
+  {
+    id:'watch_area',
+    kind:'observe',
+    mode:'scan_area',
+    label:'obserwacja okolicy',
+    seconds:12,
+    next:'tree_watch_short',
+    prompt:LORE_TUTORIAL.watchArea.prompt,
+    missing:LORE_TUTORIAL.watchArea.missing,
+    progress:'Patrz jeszcze chwile. Najgorsze prawdy pojawiaja sie jako brak dowodu.',
+    complete:LORE_TUTORIAL.watchArea.complete
+  },
+  {
+    id:'tree_watch_short',
+    kind:'observe',
+    mode:'tree_top',
+    label:'czubek drzewa',
+    seconds:30,
+    next:'tree_watch_long',
+    prompt:LORE_TUTORIAL.treeWatchShort.prompt,
+    missing:LORE_TUTORIAL.treeWatchShort.missing,
+    progress:'Nie ruszaj sie. Drzewo liczy ciezar, a ja licze sekundy.',
+    complete:LORE_TUTORIAL.treeWatchShort.complete
+  },
+  {
+    id:'tree_watch_long',
+    kind:'observe',
+    mode:'tree_top',
+    label:'dluga obserwacja drzewa',
+    seconds:60,
+    next:'sand_hide',
+    prompt:LORE_TUTORIAL.treeWatchLong.prompt,
+    missing:LORE_TUTORIAL.treeWatchLong.missing,
+    progress:'Dluzej. Jesli swiat udaje cierpliwosc, musi sie w koncu zmeczyc.',
+    complete:LORE_TUTORIAL.treeWatchLong.complete
+  },
+  {
+    id:'sand_hide',
+    kind:'observe',
+    mode:'sand_hide',
+    label:'ukrycie w piasku',
+    seconds:30,
+    next:'water',
+    prompt:LORE_TUTORIAL.sandHide.prompt,
+    missing:LORE_TUTORIAL.sandHide.missing,
+    progress:'Cicho. Piasek jest tani, ale ma dobre referencje jako zaslona.',
+    complete:LORE_TUTORIAL.sandHide.complete
+  },
   {
     id:'water',
     kind:'handoff',
     item:'water', amount:1, next:'raw_meat',
-    prompt:'Hej, nowy kwadracie. Przynies mi 1 blok wody. Mam pragnienie jak pustynia.',
-    missing:'Wode wydobywa sie jak blok. Tak, to brzmi podejrzanie, ale dziala.',
-    complete:'Glup! Dobra woda. Teraz przynies surowe mieso. Naukowo, oczywiscie.'
+    prompt:[
+      'Hej, nowy kwadracie. Teraz normalna czesc: przynies mi 1 blok wody. Mam pragnienie jak pustynia po eksperymencie.',
+      'Skoro swiat jeszcze udaje stabilny, przynies 1 blok wody. Tak, blok. Nie pytaj fizyki o godnosc.',
+      'Dobrze. Potrzebuje 1 bloku wody. Jesli woda da sie nosic jak kostka, to tez jest dowod.'
+    ],
+    missing:[
+      'Wode wydobywa sie jak blok. Tak, to brzmi podejrzanie, ale dziala.',
+      'Przynies 1 blok wody. W tej warstwie rzeczy lubia byc kwadratowe, nawet gdy nie powinny.',
+      'Bez wody nie sprawdzimy, czy pragnienie jest funkcja organizmu, czy skryptu.'
+    ],
+    complete:[
+      'Glup! Dobra woda. Teraz przynies surowe mieso. Naukowo, oczywiscie.',
+      'Woda przyjeta. Jesli to byla czesc symulacji, smakowala bardzo mokro. Teraz mieso.',
+      'Tak. Blok wody zniknal w mentorze. To normalne zdanie w tym swiecie. Przynies mieso.'
+    ]
   },
   {
     id:'raw_meat',
@@ -99,6 +162,33 @@ const QUEST_STEPS = [
   }
 ];
 
+function safeTile(getTile,x,y){
+  try{ return getTile ? getTile(Math.floor(x),Math.floor(y)) : T.AIR; }catch(e){ return T.AIR; }
+}
+function isTreeMaterial(t){ return t===T.WOOD || t===T.LEAF; }
+function mentorObserveCheck(step,player,getTile,setTile,ctx,state){
+  void setTile; void ctx;
+  if(!player || !Number.isFinite(Number(player.x)) || !Number.isFinite(Number(player.y))) return false;
+  const mode=step && step.mode;
+  if(mode==='scan_area'){
+    const dx=Math.abs(Number(player.x)-Number(state.x));
+    const dy=Math.abs(Number(player.y)-Number(state.y));
+    return dx>=4 && dx<=20 && dy<=8;
+  }
+  const tx=Math.floor(Number(player.x));
+  const footY=Math.floor(Number(player.y)+1.05);
+  if(mode==='tree_top'){
+    const support=safeTile(getTile,tx,footY);
+    const head=safeTile(getTile,tx,footY-1);
+    const above=safeTile(getTile,tx,footY-2);
+    return isTreeMaterial(support) && head===T.AIR && above===T.AIR;
+  }
+  if(mode==='sand_hide'){
+    return safeTile(getTile,tx,footY)===T.SAND || safeTile(getTile,tx,footY-1)===T.SAND;
+  }
+  return false;
+}
+
 function choiceShortLabel(item){
   if(!item) return '';
   if(item.weaponType==='hose') return 'Waz';
@@ -115,7 +205,7 @@ function choiceFill(item){
 }
 function snapshotMentor(state,helpers){
   return {
-    v:3,
+    v:4,
     x:helpers.finite(state.x)?+state.x.toFixed(3):null,
     y:helpers.finite(state.y)?+state.y.toFixed(3):null,
     phase:helpers.cleanPhase(state.phase),
@@ -123,7 +213,8 @@ function snapshotMentor(state,helpers){
     rewarded:!!state.rewards.bow,
     bowRewarded:!!state.rewards.bow,
     streamRewarded:!!state.rewards.stream,
-    streamChoice:state.data.streamChoice || null
+    streamChoice:state.data.streamChoice || null,
+    observe:helpers.cleanObserve ? helpers.cleanObserve(state.observe) : null
   };
 }
 function migrateMentorSnapshot(data,helpers){
@@ -156,7 +247,8 @@ function migrateMentorSnapshot(data,helpers){
     phase,
     hp,
     rewards:{bow:bowRewarded,stream:streamRewarded},
-    data:{streamChoice}
+    data:{streamChoice},
+    observe:data.observe
   };
 }
 const tutorialNpc = createQuestNpc({
@@ -171,6 +263,7 @@ const tutorialNpc = createQuestNpc({
   bodyColor:'#6b5a48',
   accentColor:'#e8e5d2',
   steps:QUEST_STEPS,
+  observeCheck:mentorObserveCheck,
   choiceRewards:STREAM_REWARDS,
   duelReward:{
     once:'bow',

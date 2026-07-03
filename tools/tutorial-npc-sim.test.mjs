@@ -7,12 +7,31 @@ globalThis.msg = text => messages.push(String(text));
 const messages = [];
 
 const { T } = await import('../src/constants.js');
+const { STORY_LORE, storyRevealStage, storyWhispersForProgress, storyInvasionLinesForProgress } = await import('../src/engine/story_lore.js');
 const { tutorialNpc } = await import('../src/engine/tutorial_npc.js');
 
 const questSteps=tutorialNpc.questSteps();
-assert.deepEqual(questSteps.map(s=>s.id), ['water','raw_meat','cooked_meat','duel','master_stone','reward_choice','done'], 'mentor tutorial is defined as a scalable ordered quest chain');
+assert.deepEqual(questSteps.map(s=>s.id), ['watch_area','tree_watch_short','tree_watch_long','sand_hide','water','raw_meat','cooked_meat','duel','master_stone','reward_choice','done'], 'mentor tutorial is defined as a scalable ordered quest chain');
+assert.deepEqual(questSteps.filter(s=>s.kind==='observe').map(s=>s.seconds), [12,30,60,30], 'mentor prologue carries timed simulation-observation tasks');
 assert.ok(questSteps.filter(s=>s.kind==='handoff').every(s=>s.item && s.amount>0 && s.next), 'handoff quest steps declare resource requirements and next phase');
 assert.equal(questSteps.find(s=>s.id==='reward_choice').choices.length, 3, 'mentor stream reward step declares three choices');
+assert.ok(STORY_LORE.arc.some(a=>a.id==='mentor_reveal'), 'shared story lore names the mentor reveal for later systems');
+assert.ok(STORY_LORE.premise.join(' ').includes('symulacji'), 'shared story lore records the layered simulation premise');
+assert.equal(STORY_LORE.metaphor.order.length, 5, 'shared story lore defines the five metaphorical boss conflicts');
+assert.match(STORY_LORE.metaphor.guardians.west_ice.reveal, /odtraceni|chlod/i, 'ice guardian metaphor is emotional rejection and coldness');
+assert.match(STORY_LORE.metaphor.guardians.east_fire.reveal, /namietnos|pozar/i, 'fire guardian metaphor is unfulfilled or destructive passion');
+assert.match(STORY_LORE.metaphor.guardians.mother_self.reveal, /soba|siebie/i, 'mother guardian metaphor is the fight with oneself');
+const earlyLoreRoot = {MM:{progress:{guardianHearts(){ return {}; }}}};
+const iceLoreRoot = {MM:{progress:{guardianHearts(){ return {ice:true}; }}}};
+const earthLoreRoot = {MM:{progress:{guardianHearts(){ return {ice:true,fire:true,earth:true}; }}}};
+const finalLoreRoot = {MM:{progress:{guardianHearts(){ return {ice:true,fire:true,earth:true,sky:true,mother:true}; }}}};
+assert.equal(storyRevealStage(earlyLoreRoot), 'start', 'lore reveal starts with observer unease before guardian spoilers');
+assert.equal(storyRevealStage(iceLoreRoot), 'west_ice', 'ice heart advances lore to rejection/coldness');
+assert.equal(storyRevealStage(earthLoreRoot), 'earth_mole', 'earth heart advances lore to hidden-memory stage');
+assert.ok(!storyWhispersForProgress(earlyLoreRoot).some(line=>/Macierzyst|Centrum swiata|Stary Kwadrat.*maska/i.test(line)), 'early whispers avoid final mentor/center spoilers');
+assert.ok(storyWhispersForProgress(iceLoreRoot).some(line=>/chlod|odtrac/i.test(line)), 'post-ice whispers reveal the rejection metaphor');
+assert.ok(storyWhispersForProgress(finalLoreRoot).some(line=>/Centrum|Stary Kwadrat/i.test(line)), 'late whispers can mention center and mentor suspicion');
+assert.ok(storyInvasionLinesForProgress('alien','rare',finalLoreRoot).some(line=>/lustrem|samym soba/i.test(line)), 'late rare alien lore can hint at self-confrontation');
 
 const worldGen = {
   worldSeed:12345,
@@ -20,11 +39,15 @@ const worldGen = {
   biomeType(){ return 1; },
   surfaceHeight(){ return 30; }
 };
+const tileOverrides = new Map();
+function tileKey(x,y){ return Math.floor(x)+','+Math.floor(y); }
 function getTile(x,y){
+  const custom=tileOverrides.get(tileKey(x,y));
+  if(custom!==undefined) return custom;
   if(y>=30) return T.GRASS;
   return T.AIR;
 }
-function setTile(){}
+function setTile(x,y,t){ tileOverrides.set(tileKey(x,y),t); }
 
 let inventoryUpdates=0;
 let saveMarks=0;
@@ -53,6 +76,14 @@ function standByMentor(){
   player.x=s.x;
   player.y=s.y;
 }
+function runNpc(seconds){
+  const ticks=Math.ceil(seconds/0.1);
+  for(let i=0;i<ticks;i++) tutorialNpc.update(0.1,player,getTile,setTile,ctx);
+}
+function standAt(x,y){
+  player.x=x;
+  player.y=y;
+}
 
 tutorialNpc.reset();
 assert.equal(tutorialNpc.hasPosition(), false, 'mentor starts unplaced after reset');
@@ -60,6 +91,27 @@ assert.equal(tutorialNpc.placeNearWorldStart(getTile,worldGen), true, 'mentor ca
 assert.equal(tutorialNpc.hasPosition(), true, 'mentor has a world position after placement');
 let state=tutorialNpc._debug();
 assert.ok(Math.abs(state.x)<=40 && Math.abs(state.y-29)<0.01, 'mentor is near the start and standing on the surface');
+
+standAt(state.x+6,state.y);
+runNpc(12.2);
+assert.equal(tutorialNpc.phase(), 'tree_watch_short', 'area observation advances into the first tree experiment');
+assert.equal(tutorialNpc.summary().status, 'observe', 'tree experiment is exposed as an observe job');
+
+const treeX=Math.floor(state.x)+2;
+const treeSupportY=26;
+setTile(treeX,treeSupportY,T.LEAF);
+standAt(treeX+0.5,treeSupportY-1);
+runNpc(30.2);
+assert.equal(tutorialNpc.phase(), 'tree_watch_long', 'thirty seconds on a tree advances to the longer tree observation');
+standAt(treeX+0.5,treeSupportY-1);
+runNpc(60.2);
+assert.equal(tutorialNpc.phase(), 'sand_hide', 'sixty seconds on a tree advances to the sand hiding test');
+
+const sandX=Math.floor(state.x)+3;
+setTile(sandX,30,T.SAND);
+standAt(sandX+0.5,29);
+runNpc(30.2);
+assert.equal(tutorialNpc.phase(), 'water', 'sand hiding finishes the simulation prologue and starts the water request');
 
 standByMentor();
 globalThis.inv.water=1;

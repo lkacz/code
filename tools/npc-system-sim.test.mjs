@@ -114,4 +114,45 @@ assert.equal(npcRegistry.restore(snap), true, 'registry can restore registered N
 assert.equal(vendor.phase(), 'done', 'registry restore returns the NPC to the saved phase');
 assert.equal(vendor._debug().data.choice, 'qa_spanner', 'generic snapshot/restore preserves NPC data');
 
+const repeatNpc = createQuestNpc({
+  id:'qa_repeat',
+  displayName:'QA Repeat',
+  initialPhase:'done',
+  steps:[{id:'done',kind:'done',prompt:['Repeat','Repeat','Shifted']}]
+});
+repeatNpc.placeNearWorldStart(getTile,worldGen);
+const repeatState = repeatNpc._debug();
+player.x = repeatState.x;
+player.y = repeatState.y;
+assert.equal(repeatNpc.talk(player), true, 'repeat NPC can talk');
+const repeatFirst = repeatNpc._debug().line;
+assert.equal(repeatNpc.talk(player), true, 'repeat NPC can talk again');
+assert.notEqual(repeatNpc._debug().line, repeatFirst, 'NPC talk avoids repeating the same line twice in a row when variants exist');
+
+const observer = createQuestNpc({
+  id:'qa_observer',
+  displayName:'QA Observer',
+  steps:[
+    {id:'watch',kind:'observe',seconds:0.3,next:'done',mode:'test',prompt:'Watch the world',missing:'Still watching'},
+    {id:'done',kind:'done',prompt:'Observed'}
+  ],
+  observeCheck(step,p){ void step; return !!(p && p.x>100); }
+});
+observer.placeNearWorldStart(getTile,worldGen);
+player.x=99;
+observer.update(0.1,player,getTile,setTile,ctx);
+assert.equal(observer.phase(), 'watch', 'observe quest waits while its world condition is false');
+assert.equal(observer.summary().status, 'observe', 'observe quest exposes observe status');
+assert.equal(observer.summary().observe.active, false, 'observe summary reports inactive conditions');
+player.x=101;
+observer.update(0.1,player,getTile,setTile,ctx);
+assert.ok(observer.summary().observe.active, 'observe summary reports active conditions');
+const observerSnap=observer.snapshot();
+observer.reset();
+assert.equal(observer.restore(observerSnap), true, 'observe quest snapshot restores');
+assert.ok(observer.summary().observe.progress>0, 'observe snapshot keeps partial progress');
+observer.update(0.1,player,getTile,setTile,ctx);
+observer.update(0.1,player,getTile,setTile,ctx);
+assert.equal(observer.phase(), 'done', 'observe quest advances after enough active time');
+
 console.log('npc-system-sim: all assertions passed');

@@ -495,7 +495,8 @@ import './inventory.js';
     // Tools summary (pickaxes live outside equipment slots, switched with 1/2/3)
     const inv=window.inv||{};
     const tools=document.createElement('div'); tools.className='invHint';
-    const owned=['podstawowy'].concat(inv.tools && inv.tools.stone?['kamienny']:[], inv.tools && inv.tools.meteor?['meteorytowy']:[], inv.tools && inv.tools.diamond?['diamentowy']:[]);
+    const bedrockDur=Math.max(0, Math.min(10, inv.bedrockPickDurability|0));
+    const owned=['podstawowy'].concat(inv.tools && inv.tools.stone?['kamienny']:[], inv.tools && inv.tools.meteor?['meteorytowy']:[], inv.tools && inv.tools.diamond?['diamentowy']:[], inv.tools && inv.tools.bedrock && bedrockDur>0?['macierzysty '+bedrockDur+'/10']:[]);
     tools.textContent='Kilofy: '+owned.join(', ')+' (klawisz 1 przełącza, craft w panelu Rzemiosło). Aktywny: '+((window.player&&window.player.tool)||'basic');
     wrap.appendChild(tools);
     grid.appendChild(wrap);

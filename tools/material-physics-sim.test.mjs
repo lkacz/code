@@ -68,6 +68,7 @@ const {
   isStructuralMaterial,
   isSunTransparentTile,
   isTrapdoorTile,
+  isUfoVaultMaterial,
   isVisualOpenFluidTile,
   isWaterFillTile,
   isWaterOpenTile,
@@ -190,6 +191,17 @@ function assertRouteContract(row){
     assert.equal(isRubbleTrackedMaterial(t), false, name+' story route does not become generic rubble');
     return;
   }
+  if(route==='ufo-vault'){
+    assert.equal(isUfoVaultMaterial(t), true, name+' ufo-vault route matches UFO vault predicate');
+    assert.equal(isPassableForFalling(t), false, name+' ufo-vault route is a solid barrier');
+    assert.equal(isPlayerBuiltMaterial(t), false, name+' ufo-vault route does not enter player-built collapse physics');
+    assert.equal(isStructuralMaterial(t), false, name+' ufo-vault route does not enter natural structural collapse physics');
+    assert.equal(isRubbleTrackedMaterial(t), false, name+' ufo-vault route never becomes falling rubble');
+    assert.equal(isBuildAnchorTile(t), true, name+' ufo-vault route can anchor nearby structures');
+    assert.equal(isBuildFoundationTile(t), true, name+' ufo-vault route can act as a vertical footing');
+    assert.equal(isObjectFootingTile(t), true, name+' ufo-vault route is a solid object footing');
+    return;
+  }
   if(route==='build-material'){
     assert.ok(buildMaterialProfile(t), name+' build-material route has a profile');
     assert.ok(isPlayerBuiltMaterial(t), name+' build-material route reaches player-built physics');
@@ -219,7 +231,7 @@ for(const row of materialPhysicsCoverage()){
   assertRouteContract(row);
   routeCounts.set(row.route,(routeCounts.get(row.route)||0)+1);
 }
-for(const route of ['void','fluid','gas','foliage','rigid-object','mounted-fixture','loose-item','granular','bedrock','story','build-material','passable-utility']){
+for(const route of ['void','fluid','gas','foliage','rigid-object','mounted-fixture','loose-item','granular','bedrock','story','ufo-vault','build-material','passable-utility']){
   assert.ok(routeCounts.get(route)>0, 'canonical material route '+route+' is represented');
 }
 assert.equal(materialPhysicsRoute(T.AIR), 'void', 'air has the void material route');
@@ -228,6 +240,8 @@ assert.equal(materialPhysicsRoute(T.STEAM), 'gas', 'steam has the gas material r
 assert.equal(materialPhysicsRoute(T.LEAF), 'foliage', 'leaves have the foliage material route');
 assert.equal(materialPhysicsRoute(T.SAND), 'granular', 'sand has the granular material route');
 assert.equal(materialPhysicsRoute(T.BEDROCK), 'bedrock', 'bedrock has the bedrock material route');
+assert.equal(materialPhysicsRoute(T.MOTHER_ICE), 'build-material', 'mother ice is a strong relic material, not boundary bedrock');
+assert.equal(materialPhysicsRoute(T.MOTHER_LAVA), 'build-material', 'mother lava is a strong relic material, not boundary bedrock');
 assert.equal(materialPhysicsRoute(T.VOLCANO_MASTER_STONE), 'story', 'story stones have the story material route');
 assert.equal(materialPhysicsRoute(T.TORCH), 'mounted-fixture', 'torches have the mounted-fixture material route');
 assert.equal(materialPhysicsRoute(T.MEAT), 'loose-item', 'loose item tiles have the loose-item material route');
@@ -278,6 +292,12 @@ for(const r of rows){
     classified.push([r.key,'fixture']);
     continue;
   }
+  if(route==='ufo-vault'){
+    assert.ok(isBuildAnchorTile(id), r.tile+' vault material anchors structures without entering collapse physics');
+    assert.ok(isStableMachineSupportTile(id), r.tile+' vault material is solid enough to support machines');
+    classified.push([r.key,'nonstructural']);
+    continue;
+  }
   if(['fluid','foliage','granular','passable-utility','story','loose-item','gas'].includes(route)){
     if(id!==T.SAND && id!==T.VOLCANO_MASTER_STONE && id!==T.SERVANT_STONE) assert.ok(!isStableMachineSupportTile(id), r.tile+' non-structural resource does not support machines');
     classified.push([r.key,'nonstructural']);
@@ -289,7 +309,11 @@ for(const r of rows){
 for(const [raw] of Object.entries(BUILD_MATERIAL_PROFILES)){
   const t=Number(raw);
   const name=tileNameById.get(t) || String(t);
-  assert.ok(isPlayerBuiltMaterial(t), name+' profile is reachable by the player-built solver');
+  if(isUfoVaultMaterial(t)){
+    assert.equal(isPlayerBuiltMaterial(t), false, name+' profile is deliberately excluded from the player-built collapse solver');
+  } else {
+    assert.ok(isPlayerBuiltMaterial(t), name+' profile is reachable by the player-built solver');
+  }
   assertProfileShape(name,t);
 }
 const intentionalProfileAliases=new Set(['DIRT/GRASS']);
@@ -367,6 +391,8 @@ assert.equal(isBuildLoadTransferMaterial(T.ALIEN_BIOMASS), true, 'alien biomass 
 assert.equal(isBuildLoadTransferMaterial(T.DIRT), false, 'weak fill does not transfer frame load');
 assert.equal(isBuildLoadTransferMaterial(T.CLAY), false, 'unfired clay remains weak fill rather than frame support');
 assert.equal(isBuildLoadTransferMaterial(T.BRICK), true, 'fired brick transfers structural load');
+assert.equal(isBuildLoadTransferMaterial(T.MOTHER_ICE), true, 'mother ice transfers structural load through its relic profile');
+assert.equal(isBuildLoadTransferMaterial(T.MOTHER_LAVA), true, 'mother lava transfers structural load through its relic profile');
 assert.equal(isBuildLoadTransferMaterial(T.RADIOACTIVE_ORE), false, 'ore does not transfer frame load');
 assert.equal(isWeakFillMaterial(T.MUD), true, 'mud is classified as weak fill');
 assert.equal(isWeakFillMaterial(T.CLAY), true, 'clay is classified as weak fill before firing');
@@ -599,6 +625,13 @@ for(const t of [T.CHEST_COMMON,T.CHEST_RARE,T.CHEST_EPIC,T.VOLCANO_MASTER_STONE,
 for(const t of [T.AIR,T.STONE,T.OBSIDIAN,T.DIAMOND,T.IRIDIUM,T.WATER_PUMP,T.TURRET,T.WIRE,T.WATER]){
   assert.equal(isMeteorProtectedTile(t), false, 'meteor protected policy does not over-protect '+(INFO[t]?.name || t));
 }
+assert.equal(materialPhysicsRoute(T.UFO_CONCRETE), 'ufo-vault', 'UFO concrete uses the collapse-immune vault material route');
+assert.equal(isUfoVaultMaterial(T.UFO_CONCRETE), true, 'UFO concrete is identified as vault material');
+assert.equal(isStructuralMaterial(T.UFO_CONCRETE), false, 'UFO concrete does not enter spontaneous structural collapse physics');
+assert.equal(isPlayerBuiltMaterial(T.UFO_CONCRETE), false, 'UFO concrete is not claimed as player-built material');
+assert.equal(isRubbleTrackedMaterial(T.UFO_CONCRETE), false, 'UFO concrete never settles as rubble');
+assert.equal(isBuildAnchorTile(T.UFO_CONCRETE), true, 'UFO concrete still anchors adjacent structures');
+assert.equal(isBuildFoundationTile(T.UFO_CONCRETE), true, 'UFO concrete still acts as a solid footing');
 for(const t of [T.WATER,T.ICE]){
   assert.equal(isMeteorWaterSiteTile(t), true, 'meteor consequence water sites include '+(INFO[t]?.name || t));
 }
@@ -692,7 +725,7 @@ assert.doesNotMatch(fallingSource, /\|\|\s*\{strength:/, 'build solver has no si
 assert.match(fallingSource, /isGasTile\(oldTile\).*isGasTile\(newTile\)/, 'falling raw writes notify gases through shared gas identity');
 assert.match(fallingSource, /if\(isLegacyPhysicsAuditMaterial\(t\)\) return true;/, 'falling chunk audit uses shared legacy material wake predicates');
 assert.doesNotMatch(fallingSource, /T\.GLASS \|\| t===T\.WIRE \|\| t===T\.ELECTRONICS/, 'falling chunk audit does not keep a private legacy material list');
-assert.match(fallingSource, /function canCrushBearingSupport\(t\)\{[\s\S]*?return isBuildFoundationTile\(t\);[\s\S]*?\}/, 'bearing crushes use shared foundation predicates');
+assert.match(fallingSource, /function canCrushBearingSupport\(t\)\{[\s\S]*isUfoVaultMaterial\(t\)[\s\S]*return isBuildFoundationTile\(t\);[\s\S]*?\}/, 'bearing crushes use shared foundation predicates but preserve UFO vault concrete');
 assert.match(worldSource, /generatedCitySupportTile/, 'generated-city audit uses shared support predicates');
 assert.match(worldSource, /isGeneratedStructureReplaceableTile/, 'generated-city placement uses shared replacement predicates');
 assert.match(worldSource, /isLavaExposureOpenTile/, 'generated lava registration uses shared exposure predicates');

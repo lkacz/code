@@ -114,7 +114,8 @@ assert.match(mainSource, /turboRechargePauseT=Math\.max\(turboRechargePauseT,0\.
 assert.match(mainSource, /if\(!turboRechargeBlocked && DYNAMO && typeof DYNAMO\.absorbNear==='function'/, 'passive dynamo recharge does not immediately erase turbo spending');
 assert.match(mainSource, /spawnTurboSparks/, 'turbo emits electric spark feedback');
 assert.match(mainSource, /const underwaterEnergyState = SURVIVAL && SURVIVAL\.createUnderwaterEnergyState/, 'hero tracks banked underwater energy shock separately from drowning');
-assert.match(mainSource, /function heroWaterExposure\(\)[\s\S]*headCovered:getTile\(tileX,Math\.floor\(headY\)\)===T\.WATER && subFrac>0\.88/, 'water exposure sampling provides both submersion and head-covered drowning state');
+assert.match(mainSource, /function heroWaterExposure\(\)[\s\S]*headCovered:getTile\(tileX,headTy\)===T\.WATER && subFrac>0\.88 && headY>=waterSurfaceY\(tileX,headTy\)/, 'water exposure sampling provides submersion and head-covered drowning state at sub-tile surface precision');
+assert.match(mainSource, /const waterSurfaceY=\(tx,ty\)=>\{[\s\S]*WATER\.levelAt\(tx,ty,getTile\)/, 'water exposure respects sub-tile water levels so thin films do not read as swimmable');
 assert.match(mainSource, /function applyUnderwaterEnergyUseDamage\(energySpent\)[\s\S]*updateUnderwaterEnergyShock\(underwaterEnergyState,energySpent,submerged\)[\s\S]*cause:'underwater_energy'/, 'using hero energy while submerged routes shock damage through damageHero');
 assert.match(mainSource, /function spendHeroEnergy\(amount\)[\s\S]*player\.energy=Math\.max\(0,\(player\.energy\|\|0\)-n\);[\s\S]*applyUnderwaterEnergyUseDamage\(n\);/, 'shared hero energy spending can shock the hero underwater');
 assert.match(mainSource, /function spendTurboEnergy\(dt\)[\s\S]*applyUnderwaterEnergyUseDamage\(spent\);/, 'turbo energy spending can shock the hero underwater');

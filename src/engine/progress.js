@@ -110,6 +110,7 @@ window.MM = window.MM || {};
     if(!state.guardians.fire && (Number(inv.heartFire)||0)>0){ state.guardians.fire=1; changed=true; }
     if(!state.guardians.ice && (Number(inv.heartIce)||0)>0){ state.guardians.ice=1; changed=true; }
     if(!state.guardians.earth && (Number(inv.heartEarth)||0)>0){ state.guardians.earth=1; changed=true; }
+    if(!state.guardians.air && (Number(inv.heartAir)||0)>0){ state.guardians.air=1; changed=true; }
     if(changed) save();
     return changed;
   }

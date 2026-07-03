@@ -181,6 +181,9 @@
     {key:'meteoricIron', label:'Żelazo meteorytowe', color:'#7f878d', tile:'METEORIC_IRON'},
     {key:'radioactiveOre', label:'Ruda radioaktywna', color:'#8aff4f', tile:'RADIOACTIVE_ORE'},
     {key:'alienBiomass', label:'Biomasa obca', color:'#79c95d', tile:'ALIEN_BIOMASS'},
+    {key:'ufoConcrete', label:'Beton UFO', color:'#536977', tile:null},
+    {key:'motherIce', label:'Lod macierzysty', color:'#d8fbff', tile:'MOTHER_ICE'},
+    {key:'motherLava', label:'Lawa macierzysta', color:'#ff7a33', tile:'MOTHER_LAVA'},
     {key:'meteorDust', label:'Pyl meteorytowy', color:'#c8a6ff', tile:'METEOR_DUST'},
     {key:'wood',    label:'Drewno',  color:'#8b5a2b', tile:'WOOD'},
     {key:'ladder',  label:'Drabinka', color:'#b98243', tile:'LADDER'},
@@ -234,6 +237,7 @@
     {key:'heartFire', label:'Serce ognia', color:'#ff6a21', tile:null},
     {key:'heartIce', label:'Serce lodu', color:'#9deeff', tile:null},
     {key:'heartEarth', label:'Serce ziemi', color:'#79c95d', tile:null},
+    {key:'heartAir', label:'Serce powietrza', color:'#a8d7ff', tile:null},
     {key:'antimatter', label:'Antymateria', color:'#c46bff', tile:'ANTIMATTER_CRYSTAL'} // dropped by downed UFOs and rare antimatter meteors
   ];
 

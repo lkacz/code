@@ -26,6 +26,7 @@ import {
   isRigidObjectTile,
   isRubbleTrackedMaterial as sharedRubbleTrackedMaterial,
   isStructuralMaterial,
+  isUfoVaultMaterial,
   isWeakFillMaterial,
   structuralRubbleRollLimit,
   structuralSupportStrengthForMaterial
@@ -1508,7 +1509,7 @@ window.MM = window.MM || {};
     }
   }
   function canCrushBearingSupport(t){
-    if(t===T.BEDROCK || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return false;
+    if(t===T.BEDROCK || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || isUfoVaultMaterial(t)) return false;
     return isBuildFoundationTile(t);
   }
   function crushBearingSupport(x,y,t,ratio){

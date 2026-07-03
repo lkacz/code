@@ -107,10 +107,11 @@ const roles6 = assignRoles(6, profile);
 assert.equal(roles6.length, 6, 'role rollout covers the whole squad');
 assert.ok(new Set(roles6).size >= 4, 'a six-unit squad fields at least four distinct tactics');
 assert.deepEqual(assignRoles(1, profile), ['rusher'], 'a lone invader defaults to direct assault');
+assert.ok(roles6.includes('tank') && roles6.includes('healer'), 'opening alien squads include tank and healer support roles');
 const packProfile = makeTeamProfile({kind:'wolves', roles:{rusher:{weight:3}, flanker:{weight:2}}});
 const packRoles = assignRoles(8, packProfile);
 assert.ok(packRoles.every(r=>r==='rusher'||r==='flanker'), 'custom team profiles restrict the role pool');
-assert.ok(Object.keys(DEFAULT_ROLES).length >= 6, 'default role table ships six tactics');
+assert.ok(Object.keys(DEFAULT_ROLES).length >= 8, 'default role table ships diverse tactics');
 
 // --- squad brain -----------------------------------------------------------
 function makeUnit(id, x, role){
@@ -170,6 +171,93 @@ resetWorld();
   simulate({team, brain}, [unit], {x:10.5, y:50}, hooks, 3, 0.1);
   assert.equal(unit._ai.state === 'flee' || unit.x - startX > 2, true, 'a hurt unit disengages');
   assert.ok(unit.x > startX + 1.5, 'the fleeing unit gains distance from the hero');
+}
+
+// support: a healer seeks and restores wounded allies
+resetWorld();
+{
+  const team = {id:'tSupport', builtTiles:[]};
+  const brain = createSquadBrain(profile, nav);
+  const healer = makeUnit('healer1', 17.5, 'healer');
+  const tank = makeUnit('tank1', 15.5, 'tank');
+  tank.hp = 9;
+  const heals = [];
+  const hooks = {
+    fire:()=>({clear:true}),
+    heal:(u,target,amount)=>{ heals.push([u.id,target.id,amount]); target.hp = Math.min(target.maxHp, target.hp + amount); return true; },
+    tileAttack:()=>true,
+    isBreachableTile:()=>false,
+    canBuildAt:()=>false,
+    build:()=>false
+  };
+  simulate({team, brain}, [healer,tank], {x:10.5, y:50, vx:0, vy:0}, hooks, 4, 0.1);
+  assert.ok(heals.some(h=>h[0] === 'healer1' && h[1] === 'tank1'), 'healer spends support actions on the wounded tank');
+  assert.ok(tank.hp > 9, 'support healing restores ally health');
+}
+
+// repair: wounded aliens above the panic threshold return to the landed saucer
+resetWorld();
+{
+  const team = {
+    id:'tRepair',
+    builtTiles:[],
+    x:30.5,
+    y:50,
+    lander:{x:30.5,y:48.65,targetY:48.65,landed:true,destroyed:false}
+  };
+  const brain = createSquadBrain(profile, nav);
+  const unit = makeUnit('repair1', 12.5, 'rusher');
+  unit.hp = 8; // 33%: low enough to repair, high enough not to flee.
+  unit.lastHitAt = 1000;
+  const repairs = [];
+  const hooks = {
+    fire:()=>({clear:true}),
+    heal:()=>false,
+    repairAtLander:(u,amount)=>{ repairs.push([u.id,amount]); u.hp = Math.min(u.maxHp,u.hp+amount); return true; },
+    tileAttack:()=>true,
+    isBreachableTile:()=>false,
+    canBuildAt:()=>false,
+    build:()=>false
+  };
+  const startX = unit.x;
+  simulate({team, brain}, [unit], {x:10.5,y:50,vx:0,vy:0}, hooks, 5, 0.1);
+  assert.equal(unit._ai.state, 'repair', 'wounded alien prioritizes saucer repair over attacking');
+  assert.ok(unit.x > startX + 8, 'repairing alien retreats toward the landed saucer');
+  unit.x = team.x;
+  unit.y = team.y;
+  unit.hp = 8;
+  unit.vx = 0;
+  unit._ai.path = null;
+  unit._ai.repathIn = 0;
+  simulate({team, brain}, [unit], {x:10.5,y:50,vx:0,vy:0}, hooks, 1, 0.1);
+  assert.ok(repairs.length > 0, 'saucer repair hook charges health near the lander');
+  assert.ok(unit.hp > 8, 'saucer repair restores alien health');
+}
+
+// unstuck: a unit that keeps trying to move but does not advance asks the host to dig it out
+resetWorld();
+{
+  const team = {id:'tStuck', builtTiles:[]};
+  const brain = createSquadBrain(profile, nav);
+  const unit = makeUnit('stuck1', 12.5, 'rusher');
+  const unstucks = [];
+  const hooks = {
+    fire:()=>({clear:true}),
+    unstuck:(u,opts)=>{ unstucks.push([u.id,opts && opts.dir]); return true; },
+    tileAttack:()=>true,
+    isBreachableTile:()=>false,
+    canBuildAt:()=>false,
+    build:()=>false
+  };
+  let now = 1000;
+  for(let i=0;i<14;i++){
+    now += 100;
+    beginAIFrame();
+    brain.update(team, [unit], 0.1, {x:32.5,y:50,vx:0,vy:0}, hooks, {now});
+    unit.attackCd = Math.max(0, (unit.attackCd || 0) - 0.1);
+  }
+  assert.ok(unstucks.length > 0, 'stuck watchdog asks host escape logic to clear a blockage');
+  assert.ok(unstucks.some(u=>u[1] > 0), 'unstuck hook receives the last attempted movement direction');
 }
 
 // siege: hero sealed in a shelter -> squad switches modes and attacks the shell

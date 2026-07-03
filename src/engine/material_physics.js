@@ -2,6 +2,9 @@ import { T, INFO } from '../constants.js';
 
 export const BUILD_MATERIAL_PROFILES = Object.freeze({
   [T.IRIDIUM]: Object.freeze({strength:28, support:20, weight:1.22, compression:0.16, lateral:0.86, flex:1.24, down:0.24, warn:0.38, fail:0.985, wind:0.008, rubbleRoll:4}),
+  [T.UFO_CONCRETE]: Object.freeze({strength:27, support:19, weight:1.32, compression:0.22, lateral:1.05, flex:0.95, down:0.24, warn:0.30, fail:0.965, wind:0.009, rubbleRoll:5}),
+  [T.MOTHER_ICE]: Object.freeze({strength:25, support:17, weight:1.10, compression:0.22, lateral:1.18, flex:0.82, down:0.25, warn:0.24, fail:0.900, wind:0.012, rubbleRoll:3}),
+  [T.MOTHER_LAVA]: Object.freeze({strength:25, support:17, weight:1.18, compression:0.28, lateral:1.08, flex:0.90, down:0.26, warn:0.22, fail:0.905, wind:0.010, rubbleRoll:3}),
   [T.METEORIC_IRON]: Object.freeze({strength:26, support:17, weight:1.45, compression:0.17, lateral:0.93, flex:1.18, down:0.27, warn:0.36, fail:0.975, wind:0.007, rubbleRoll:4}),
   [T.STEEL]: Object.freeze({strength:24, support:18, weight:1.35, compression:0.18, lateral:1.02, flex:1.18, down:0.27, warn:0.34, fail:0.970, wind:0.006, rubbleRoll:5}),
   [T.STEEL_DOOR]: Object.freeze({strength:16.8, support:12.8, weight:1.04, compression:0.26, lateral:0.92, flex:1.08, down:0.24, warn:0.34, fail:0.940, wind:0.022, rubbleRoll:4}),
@@ -153,6 +156,7 @@ export function isMeteorImpactGroundTile(t){
     t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.SNOW ||
     t===T.ICE || t===T.MUD || t===T.CLAY || t===T.WET_CLAY ||
     t===T.BRICK || t===T.OBSIDIAN || t===T.COAL ||
+    t===T.UFO_CONCRETE || t===T.MOTHER_ICE || t===T.MOTHER_LAVA ||
     t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON ||
     t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS ||
     t===T.ANTIMATTER_CRYSTAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE;
@@ -168,6 +172,7 @@ export function isMeteorPickSparkMaterial(t){
 }
 
 export function isBlastProtectedTile(t){
+  if(t===T.UFO_CONCRETE) return false;
   const info=INFO[t] || INFO[T.AIR];
   return t===T.AIR || t===T.OBSIDIAN || t===T.DIAMOND || t===T.IRIDIUM ||
     t===T.BEDROCK || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE ||
@@ -175,6 +180,7 @@ export function isBlastProtectedTile(t){
 }
 
 export function isMeteorProtectedTile(t){
+  if(t===T.UFO_CONCRETE) return false;
   const info=INFO[t] || INFO[T.AIR];
   return t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN ||
     t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE ||
@@ -206,9 +212,14 @@ export function isCreatureRockFloorTile(t){
 export function isIridiumArrowPierceableTile(t){
   const info=INFO[t] || INFO[T.AIR];
   if(t===T.AIR || t===T.WATER || t===T.LAVA) return false;
+  if(t===T.UFO_CONCRETE) return true;
   if(info.machine || info.chestTier || info.cache || info.story || info.unmineable) return false;
   if(t===T.OBSIDIAN || t===T.DIAMOND || t===T.IRIDIUM || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return false;
   return t!==T.AIR && !(info && info.passable);
+}
+
+export function isUfoVaultMaterial(t){
+  return t===T.UFO_CONCRETE;
 }
 
 export function isStructuralMaterial(t){
@@ -256,7 +267,9 @@ export function isHardStructuralMaterial(t){
 export function isBuildLoadTransferMaterial(t){
   if(isPassableForFalling(t) || isUtilityMaterial(t) || isWeakFillMaterial(t) || isNonStructuralResourceMaterial(t)) return false;
   if(isFragileFallingMaterial(t) || isLooseRigidMaterial(t)) return false;
-  return isHardStructuralMaterial(t) || isLightStructuralMaterial(t) || t===T.ICE || t===T.ANTIMATTER_CRYSTAL;
+  const p = buildMaterialProfile(t);
+  return isUfoVaultMaterial(t) || isHardStructuralMaterial(t) || isLightStructuralMaterial(t) ||
+    t===T.ICE || t===T.ANTIMATTER_CRYSTAL || !!(p && Number.isFinite(p.support));
 }
 
 export function isNaturalFloatingAnchorTile(t){
@@ -308,6 +321,7 @@ export function isMountedFixtureTile(t){
 export function isPlayerBuiltMaterial(t){
   const info=INFO[t];
   if(!buildMaterialProfile(t)) return false;
+  if(isUfoVaultMaterial(t)) return false;
   if(!info || !info.color || info.passable || info.chestTier || info.cache || info.gas || info.machine || isLooseItemMaterial(t)) return false;
   if(t===T.AIR || t===T.WATER || t===T.LAVA || t===T.SAND || t===T.BEDROCK) return false;
   if(t===T.TORCH || t===T.WIRE || t===T.COPPER_WIRE || t===T.LADDER || t===T.GRAVE) return false;
@@ -336,6 +350,7 @@ export function materialPhysicsRoute(t){
   if(t===T.SAND) return 'granular';
   if(t===T.BEDROCK) return 'bedrock';
   if(t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || info.story) return 'story';
+  if(isUfoVaultMaterial(t)) return 'ufo-vault';
   if(isPlayerBuiltMaterial(t)) return 'build-material';
   if(t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.GRAVE || t===T.METEOR_DUST || info.passable) return 'passable-utility';
   if(info.machine) return 'rigid-object';
@@ -351,7 +366,7 @@ export function materialPhysicsCoverage(){
 }
 
 export function isRubbleTrackedMaterial(t){
-  return t!==T.BEDROCK && (isStructuralMaterial(t) || isPlayerBuiltMaterial(t));
+  return t!==T.BEDROCK && !isUfoVaultMaterial(t) && (isStructuralMaterial(t) || isPlayerBuiltMaterial(t));
 }
 
 export function isLegacyPhysicsAuditMaterial(t){
@@ -375,6 +390,7 @@ export function isLoadBearingSupportTile(t){
   const info=INFO[t];
   if(isPassableForFalling(t) || isStructuralMaterial(t) || isFragileFallingMaterial(t) || isLooseRigidMaterial(t)) return false;
   if(isWeakFillMaterial(t) || isNonStructuralResourceMaterial(t)) return false;
+  if(isUfoVaultMaterial(t)) return true;
   if(t===T.DYNAMO_SLOT) return false;
   if(t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC) return false;
   if(t===T.INVASION_CACHE) return false;
@@ -387,7 +403,9 @@ export function isBuildFoundationTile(t){
   if(t===T.BEDROCK) return true;
   if(isPassableForFalling(t) || isUtilityMaterial(t) || isNonStructuralResourceMaterial(t)) return false;
   if(isFragileFallingMaterial(t) || isLooseRigidMaterial(t)) return false;
-  return isHardStructuralMaterial(t) || isLightStructuralMaterial(t) || isWeakFillMaterial(t) || t===T.ICE || t===T.ANTIMATTER_CRYSTAL;
+  const p = buildMaterialProfile(t);
+  return isUfoVaultMaterial(t) || isHardStructuralMaterial(t) || isLightStructuralMaterial(t) ||
+    isWeakFillMaterial(t) || t===T.ICE || t===T.ANTIMATTER_CRYSTAL || !!(p && Number.isFinite(p.support));
 }
 
 export function isBuildAnchorTile(t){
@@ -408,6 +426,7 @@ export function isBuiltPillarMaterial(t){
   const info=INFO[t];
   if(!info || !info.color || info.chestTier || info.cache) return false;
   if(info.passable || info.machine || isLooseItemMaterial(t) || info.gas) return false;
+  if(isUfoVaultMaterial(t)) return false;
   if(t===T.AIR || t===T.WATER || t===T.LAVA || t===T.TORCH || t===T.WIRE || t===T.GRAVE || t===T.INVASION_CACHE || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return false;
   if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || t===T.ELECTRONICS) return false;
   return true;

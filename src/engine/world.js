@@ -13,8 +13,10 @@ import {
 import { worldGen as WORLDGEN } from './worldgen.js';
 import { worldLayers as WORLD_LAYERS } from './world_layers.js';
 import { ruins as RUINS } from './ruins.js';
+import { alienRuins as ALIEN_RUINS } from './alien_ruins.js';
 import { guardianLairs as GUARDIANS } from './guardian_lairs.js';
 import { undergroundBoss as UNDERGROUND } from './underground_boss.js';
+import { skyGuardian as SKY_GUARDIAN } from './sky_guardian.js';
 import { guardianAftermath as AFTERMATH } from './guardian_aftermath.js';
 window.MM = window.MM || {};
 (function(){
@@ -713,6 +715,7 @@ window.MM = window.MM || {};
     // Buried ruin complexes are anchor-based (they may span chunk borders) and
     // applied last: carved interiors and masonry win over terrain/trees/chests
     if(RUINS && RUINS.applyToChunk) RUINS.applyToChunk(arr,cx);
+    if(ALIEN_RUINS && ALIEN_RUINS.applyToChunk) ALIEN_RUINS.applyToChunk(arr,cx);
     reinforceVolcanoConduits(arr,cx);
     if(GUARDIANS && GUARDIANS.applyToChunk) GUARDIANS.applyToChunk(arr,cx);
     if(UNDERGROUND && UNDERGROUND.applyToChunk) UNDERGROUND.applyToChunk(arr,cx);
@@ -740,6 +743,7 @@ window.MM = window.MM || {};
       }
     }
     try{ if(UNDERGROUND && UNDERGROUND.applyToSection) UNDERGROUND.applyToSection(arr,cx,sy); }catch(e){}
+    try{ if(SKY_GUARDIAN && SKY_GUARDIAN.applyToSection) SKY_GUARDIAN.applyToSection(arr,cx,sy); }catch(e){}
     return arr;
   }
   // --- Hot-path section-view cache -------------------------------------------

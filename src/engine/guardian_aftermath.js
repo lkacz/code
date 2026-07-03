@@ -150,6 +150,31 @@ const guardianAftermath = (function(){
       t === T.STONE || t === T.GRANITE || t === T.BASALT || t === T.COAL ||
       t === T.METEOR_DUST || t === T.ALIEN_BIOMASS;
   }
+  function motherCoreTile(kind){
+    return kind === 'ice' ? T.MOTHER_ICE : (kind === 'fire' ? T.MOTHER_LAVA : null);
+  }
+  function depositMotherCore(kind, cx, cy, r, getTile, setTile, batch, protectedAreas){
+    const tile = motherCoreTile(kind);
+    if(tile == null) return 0;
+    const span = Math.max(1, Math.ceil(r * 0.45));
+    const spots = [{x:cx,y:cy},{x:cx,y:cy-1},{x:cx-1,y:cy},{x:cx+1,y:cy},{x:cx,y:cy+1}];
+    for(let dy=-span; dy<=span; dy++){
+      for(let dx=-span; dx<=span; dx++){
+        if(dx*dx + dy*dy > span*span) continue;
+        spots.push({x:cx+dx,y:cy+dy});
+      }
+    }
+    const used = new Set();
+    for(const s of spots){
+      const x = Math.round(s.x), y = Math.round(s.y);
+      const k = key(x,y);
+      if(used.has(k)) continue;
+      used.add(k);
+      if(!canSurfaceReplace(getTile(x,y))) continue;
+      if(setTileNotified(x, y, tile, getTile, setTile, batch, protectedAreas)) return 1;
+    }
+    return 0;
+  }
   function surfaceYAt(x, getTile){
     if(typeof getTile !== 'function') return WORLD_H - 4;
     const tx = Math.round(finite(x, 0));
@@ -579,6 +604,7 @@ const guardianAftermath = (function(){
         if(setTileNotified(x, y, tile, getTile, setTile, batch, protectedAreas)) changed++;
       }
     }
+    changed += depositMotherCore('ice', cx, cy, r, getTile, setTile, batch, protectedAreas);
     flushBatch(batch, getTile);
     return changed;
   }
@@ -612,6 +638,7 @@ const guardianAftermath = (function(){
         if(setTileNotified(x, y, tile, getTile, setTile, batch, protectedAreas)) changed++;
       }
     }
+    changed += depositMotherCore('fire', cx, cy, r, getTile, setTile, batch, protectedAreas);
     const hotCells = Math.min(5, Math.max(1, Math.floor(f.size / 2)));
     for(let i=0; i<hotCells; i++){
       const hx = cx + Math.round((Math.random() * 2 - 1) * Math.max(1, r));
@@ -909,6 +936,7 @@ const guardianAftermath = (function(){
       applyEarthShift,
       applyAmbientChunk,
       applyToChunk,
+      motherCoreTile,
       ambientSitesForChunk,
       ambientChunks
     };

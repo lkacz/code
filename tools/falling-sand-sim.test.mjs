@@ -624,6 +624,20 @@ function supportedCantileverCells(t,span=25){
 
 {
   reset();
+  setFlatSurface(80);
+  setTile(0,20,T.UFO_CONCRETE);
+  fallingSolids.afterPlacement(0,20);
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,20),T.UFO_CONCRETE,'unsupported UFO concrete remains an immovable vault wall');
+  assert.equal(countRegionTile(T.UFO_CONCRETE,-3,3,0,79),1,'UFO concrete is not released as falling rubble');
+  fallingSolids.onTileRemoved(0,21);
+  fallingSolids.settleAll();
+  assert.equal(getTile(0,20),T.UFO_CONCRETE,'removing support below UFO concrete still does not collapse it');
+  assertSettledState('UFO concrete vault wall');
+}
+
+{
+  reset();
   setFlatSurface(60);
   fillFloor(60,-30,30);
   placeBuiltRect(T.STONE,0,0,55,59);

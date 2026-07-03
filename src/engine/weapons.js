@@ -171,6 +171,30 @@ import { reactions as REACTIONS } from './reactions.js';
       markWorldChanged();
     }
   }
+  function notifyResourceGained(key,n){
+    try{ if(typeof window.updateInventoryHud==='function') window.updateInventoryHud(); }catch(e){}
+    try{
+      if(typeof window.dispatchEvent==='function' && typeof CustomEvent!=='undefined'){
+        window.dispatchEvent(new CustomEvent('mm-resources-change',{detail:{key, gained:n}}));
+      }
+    }catch(e){}
+    markWorldChanged();
+  }
+  function addResource(key,n){
+    const inv=(typeof window!=='undefined' && window.inv) ? window.inv : null;
+    const add=Math.max(0, n|0);
+    if(!inv || !key || add<=0) return false;
+    if(typeof inv[key]!=='number') inv[key]=0;
+    inv[key]+=add;
+    notifyResourceGained(key,add);
+    return true;
+  }
+  function awardUfoConcreteShard(tx,ty,t){
+    if(t!==T.UFO_CONCRETE) return false;
+    const ok=addResource('ufoConcrete',1);
+    if(ok) sayLimited('ufo_concrete_drop','Beton UFO +1 - reliktowy material z ruin UFO.',1200);
+    return ok;
+  }
   function spendResource(key,n){
     const need=Math.max(0, n|0);
     if(need<=0) return true;
@@ -338,6 +362,7 @@ import { reactions as REACTIONS } from './reactions.js';
     const bonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
     const hit=(MM.guardianLairs && MM.guardianLairs.attackAt && MM.guardianLairs.attackAt(tx,ty,bonus))
            || (MM.undergroundBoss && MM.undergroundBoss.attackAt && MM.undergroundBoss.attackAt(tx,ty,bonus))
+           || (MM.skyGuardian && MM.skyGuardian.attackAt && MM.skyGuardian.attackAt(tx,ty,bonus))
            || (MM.bosses && MM.bosses.attackAt && MM.bosses.attackAt(tx,ty,bonus))
            || (MM.ufo && MM.ufo.attackAt && MM.ufo.attackAt(tx,ty,bonus))
            || (MM.invasions && MM.invasions.attackAt && MM.invasions.attackAt(tx,ty,bonus))
@@ -530,6 +555,7 @@ import { reactions as REACTIONS } from './reactions.js';
     try{ if(MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,dmg)) return true; }catch(e){}
     try{ if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,dmg)) return true; }catch(e){}
     try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(tx,ty,dmg)) return true; }catch(e){}
+    try{ if(MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,dmg)) return true; }catch(e){}
     try{ if(MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,dmg)) return true; }catch(e){}
     try{ if(MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,dmg)) return true; }catch(e){}
     try{ if(MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(tx,ty,dmg)) return true; }catch(e){}
@@ -604,7 +630,7 @@ import { reactions as REACTIONS } from './reactions.js';
     // Elemental streams tick direct damage into boss bodies along the ray.
     // Guardian-specific weaknesses are resolved by guardian_lairs.damageAt.
     bossAcc+=dt;
-    if(bossAcc>=0.2 && ((MM.guardianLairs && MM.guardianLairs.damageAt) || (MM.undergroundBoss && MM.undergroundBoss.damageAt) || (MM.bosses && MM.bosses.damageAt) || (MM.ufo && MM.ufo.damageAt) || (MM.invasions && MM.invasions.damageAt))){
+    if(bossAcc>=0.2 && ((MM.guardianLairs && MM.guardianLairs.damageAt) || (MM.undergroundBoss && MM.undergroundBoss.damageAt) || (MM.skyGuardian && MM.skyGuardian.damageAt) || (MM.bosses && MM.bosses.damageAt) || (MM.ufo && MM.ufo.damageAt) || (MM.invasions && MM.invasions.damageAt))){
       bossAcc=0;
       for(const t of [0.35,0.6,0.85]){
         const sx=Math.floor(player.x + dx*range*t), sy=Math.floor(player.y + dy*range*t);
@@ -612,6 +638,7 @@ import { reactions as REACTIONS } from './reactions.js';
         if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(sx,sy, dps*0.2, opts)) break;
         if(kind==='flame' && MM.undergroundBoss && MM.undergroundBoss.heatAt && MM.undergroundBoss.heatAt(sx,sy,lastGetTile,lastSetTile,opts)) break;
         if(kind==='gas' && MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy, dps*0.2, opts)) break;
+        if(kind!=='hose' && MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(sx,sy, dps*0.2, opts)) break;
         if(kind!=='hose' && MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy, dps*0.2)) break;
         if(kind!=='hose' && MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy, dps*0.2)) break;
         if(kind!=='hose' && MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(sx,sy, dps*0.2)) break;
@@ -680,6 +707,7 @@ import { reactions as REACTIONS } from './reactions.js';
       if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(sx,sy,dps*0.18,opts)) break;
       if(kind==='flame' && MM.undergroundBoss && MM.undergroundBoss.heatAt && MM.undergroundBoss.heatAt(sx,sy,lastGetTile,lastSetTile,opts)) break;
       if(kind==='gas' && MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy,dps*0.18,opts)) break;
+      if(kind!=='hose' && MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(sx,sy,dps*0.18,opts)) break;
       if(kind!=='hose' && MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy,dps*0.18)) break;
       if(kind!=='hose' && MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy,dps*0.18)) break;
       if(kind!=='hose' && MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(sx,sy,dps*0.18)) break;
@@ -701,6 +729,7 @@ import { reactions as REACTIONS } from './reactions.js';
         const x=tx+dx, y=ty+dy;
         hit = !!((MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(x,y,dmg))
           || (MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(x,y,dmg))
+          || (MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(x,y,dmg,{kind:'melee',source:'hero'}))
           || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(x,y,dmg))
           || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(x,y,dmg))
           || (MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(x,y,dmg))
@@ -765,6 +794,7 @@ import { reactions as REACTIONS } from './reactions.js';
         const t=getTile(tx,ty);
         if(isBlastProtectedTile(t)) continue;
         if(typeof setTile!=='function') continue;
+        awardUfoConcreteShard(tx,ty,t);
         setTile(tx,ty,T.AIR);
         try{ if(MM.fallingSolids && MM.fallingSolids.onTileRemoved) MM.fallingSolids.onTileRemoved(tx,ty); }catch(e){}
         try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(tx,ty,getTile); }catch(e){}
@@ -778,6 +808,7 @@ import { reactions as REACTIONS } from './reactions.js';
     try{ if(MM.mobs && MM.mobs.blastRadius) MM.mobs.blastRadius(wx,wy,R+1.5,14,{source:'hero'}); }catch(e){}
     try{ if(MM.guardianLairs && MM.guardianLairs.damageAt){ MM.guardianLairs.damageAt(bx,by,14); MM.guardianLairs.damageAt(bx+1,by,9); MM.guardianLairs.damageAt(bx-1,by,9); MM.guardianLairs.damageAt(bx,by-1,9); } }catch(e){}
     try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt){ const gasOpts=streamDamageOpts('gas',{x:wx,y:wy,type:'gasExplosion'}); MM.undergroundBoss.damageAt(bx,by,14,gasOpts); MM.undergroundBoss.damageAt(bx+1,by,9,gasOpts); MM.undergroundBoss.damageAt(bx-1,by,9,gasOpts); MM.undergroundBoss.damageAt(bx,by-1,9,gasOpts); } }catch(e){}
+    try{ if(MM.skyGuardian && MM.skyGuardian.damageAt){ const gasOpts=streamDamageOpts('gas',{x:wx,y:wy,type:'gasExplosion'}); MM.skyGuardian.damageAt(bx,by,14,gasOpts); MM.skyGuardian.damageAt(bx+1,by,9,gasOpts); MM.skyGuardian.damageAt(bx-1,by,9,gasOpts); MM.skyGuardian.damageAt(bx,by-1,9,gasOpts); } }catch(e){}
     try{ if(MM.bosses && MM.bosses.damageAt){ MM.bosses.damageAt(bx,by,12); MM.bosses.damageAt(bx+1,by,8); MM.bosses.damageAt(bx-1,by,8); MM.bosses.damageAt(bx,by-1,8); } }catch(e){}
     try{ if(MM.ufo && MM.ufo.damageAt){ MM.ufo.damageAt(bx,by,14); MM.ufo.damageAt(bx,by-1,8); } }catch(e){}
     try{ if(MM.invasions && MM.invasions.blastRadius) MM.invasions.blastRadius(wx,wy,R+1.25,14,{source:'hero'}); }catch(e){}
@@ -868,6 +899,7 @@ import { reactions as REACTIONS } from './reactions.js';
       triggerAntimatterBreak(tx,ty);
     } else {
       if(!arrowPierceableTile(t)) return false;
+      awardUfoConcreteShard(tx,ty,t);
       setTile(tx,ty,T.AIR);
     }
     try{ if(MM.fallingSolids && MM.fallingSolids.onTileRemoved) MM.fallingSolids.onTileRemoved(tx,ty); }catch(e){}
@@ -1175,6 +1207,7 @@ import { reactions as REACTIONS } from './reactions.js';
         if((MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,hitDmg,{source:'hero'}))
         || (MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,hitDmg))
         || undergroundResult
+        || (MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,hitDmg,{source:'hero',kind:'arrow',x:a.x,y:a.y,vx:a.vx,vy:a.vy,tier:a.tier,fire:!!a.fire}))
         || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,hitDmg))
         || (MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(tx,ty,hitDmg))
         || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,hitDmg))

@@ -456,6 +456,33 @@ MM.ui = (function(){
       }
       wrap.appendChild(undergroundRow);
     }
+    if(typeof actions.skyGate==='function'){
+      const skyGateRow=document.createElement('div');
+      skyGateRow.style.cssText='display:flex; gap:4px; margin-top:4px;';
+      const b=document.createElement('button');
+      b.textContent='Sky Gate';
+      b.title='Teleport to the post-mole sky guardian gate';
+      b.style.cssText='flex:1 1 0; min-width:0; font-size:11px; padding:3px 6px; border:1px solid rgba(168,215,255,.75);';
+      b.addEventListener('click',()=>{
+        const r=actions.skyGate();
+        if(r===false){ msg('Sky Gate teleport failed'); return; }
+        syncFromPos(r);
+      });
+      skyGateRow.appendChild(b);
+      if(typeof actions.skyFight==='function'){
+        const fightBtn=document.createElement('button');
+        fightBtn.textContent='Sky fight';
+        fightBtn.title='Teleport to the Sky Gate and awaken the air guardian';
+        fightBtn.style.cssText='flex:1 1 0; min-width:0; font-size:11px; padding:3px 6px; border:1px solid rgba(255,231,122,.72);';
+        fightBtn.addEventListener('click',()=>{
+          const r=actions.skyFight();
+          if(r===false){ msg('Sky fight start failed'); return; }
+          syncFromPos(r);
+        });
+        skyGateRow.appendChild(fightBtn);
+      }
+      wrap.appendChild(skyGateRow);
+    }
     if(typeof actions.aftermath==='function'){
       const aftermathLab=document.createElement('div');
       aftermathLab.textContent='Aftermath (debug):';
@@ -751,6 +778,51 @@ MM.ui = (function(){
     box.appendChild(clear);
     box.appendChild(metrics);
     refreshPower();
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1500);
+    panel.appendChild(box);
+  }
+  function injectInvasionDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('invasionDebugBox')) return;
+    actions = actions || {};
+    const box=document.createElement('div');
+    box.id='invasionDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(255,120,80,.12); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='Inwazje nocne (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+    const metrics=document.createElement('div');
+    metrics.id='invasionDebugMetrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    function refreshMetrics(){
+      const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+      metrics.textContent=m ? ('teams '+m.activeTeams+'/'+m.teams+' | aliens '+(m.aliens||0)+' | molekin '+(m.molekin||0)+' | caches '+(m.caches||0)+' | lasers '+(m.lasers||0)) : 'brak metryk inwazji';
+    }
+    [
+      ['alien','UFO team','Wymusza nocny alien team obok bohatera'],
+      ['molekin','Kretoludzie','Wymusza podziemny atak kretoludzi']
+    ].forEach(([id,txt,title])=>{
+      const b=document.createElement('button');
+      b.textContent=txt;
+      b.title=title;
+      b.style.cssText='flex:1 1 95px; font-size:11px; padding:3px 6px; border:1px solid '+(id==='molekin'?'rgba(255,120,50,.68)':'rgba(124,247,255,.65)')+';';
+      b.addEventListener('click',()=>{
+        try{
+          const fn=id==='molekin' ? actions.molekin : actions.alien;
+          const spawned=(typeof fn==='function') ? fn() : null;
+          const n=Array.isArray(spawned) ? spawned.length : (spawned ? 1 : 0);
+          msg(n ? (txt+': '+n+' team') : (txt+': nie przyzwano'));
+          refreshMetrics();
+        }catch(e){ msg('Debug inwazji: blad'); }
+      });
+      box.appendChild(b);
+    });
+    box.appendChild(metrics);
     refreshMetrics();
     const timer=setInterval(()=>{
       if(!document.body.contains(box)){ clearInterval(timer); return; }
@@ -1532,6 +1604,8 @@ MM.ui = (function(){
     const waterInput=makeNumber('waterMass','masa wody',6,20,1,debugNumber('companions','waterMass',10,6,20));
     makeGroup('Miesny golem');
     const meatInput=makeNumber('meatMass','masa miesa',6,18,1,debugNumber('companions','meatMass',10,6,18));
+    makeGroup('Lawowi kretoludzie');
+    const molekinInput=makeNumber('molekinMass','masa lawy mac.',1,20,1,debugNumber('companions','molekinMass',4,1,20));
     makeGroup('Wspolne');
     const damageInput=makeNumber('damage','obrazenia',1,999,1,debugNumber('companions','damage',25,1,999));
     const metrics=document.createElement('div');
@@ -1562,13 +1636,16 @@ MM.ui = (function(){
         if(c.kind==='fried_meat_golem' || c.kind==='fried_chicken'){
           return '#'+(i+1)+' '+(c.name||c.id)+' PIECZONY HP '+Math.round(c.hp||0)+'/'+Math.round(c.maxHp||0)+' mieso '+(c.meat||0);
         }
+        if(c.kind==='molekin'){
+          return '#'+(i+1)+' '+(c.name||c.id)+' KRET HP '+Math.round(c.hp||0)+'/'+Math.round(c.maxHp||0)+' lawa '+(c.lava||0)+' rola '+(c.moleRole||'?')+' '+(g.snout?'pysk':'?')+'/'+(g.claw?'pazur':'?');
+        }
         return '#'+(i+1)+' '+(c.name||c.id)+' BIO HP '+Math.round(c.hp||0)+'/'+Math.round(c.maxHp||0)+' bio '+(c.biomass||0)+' '+(g.body||'?')+' oczy '+(g.eyes||0)+' nogi '+(g.legs||0);
       }).join(' | ');
     }
     function refreshMetrics(){
       const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
       const list=(typeof actions.list==='function') ? actions.list() : [];
-      metrics.textContent=m ? ('aktywni '+(m.count||0)+' | HP '+(m.hp||0)+'/'+(m.maxHp||0)+' | bio '+(m.biomass||0)+' | golemy '+(m.golems||0)+' | glina '+(m.clay||0)+' | lisciaki '+(m.leafMonsters||0)+' | liscie '+(m.leaves||0)+' | wodne '+(m.waterGolems||0)+' | woda '+(m.water||0)+' | miesne '+(m.meatGolems||0)+' | zombi '+(m.rottenMeatGolems||0)+' | pieczone '+(m.friedMeatGolems||m.friedChickens||0)+' | lasery '+(m.lasers||0)) : 'brak metryk pomocnikow';
+      metrics.textContent=m ? ('aktywni '+(m.count||0)+' | HP '+(m.hp||0)+'/'+(m.maxHp||0)+' | bio '+(m.biomass||0)+' | golemy '+(m.golems||0)+' | glina '+(m.clay||0)+' | lisciaki '+(m.leafMonsters||0)+' | liscie '+(m.leaves||0)+' | wodne '+(m.waterGolems||0)+' | woda '+(m.water||0)+' | miesne '+(m.meatGolems||0)+' | zombi '+(m.rottenMeatGolems||0)+' | pieczone '+(m.friedMeatGolems||m.friedChickens||0)+' | krety '+(m.molekin||0)+' | lawa '+(m.lava||0)+' | lasery '+(m.lasers||0)) : 'brak metryk pomocnikow';
       details.textContent=listText(list);
     }
     const buttons=[
@@ -1599,6 +1676,11 @@ MM.ui = (function(){
       ['setMeat','Ustaw mieso','Ustawia mase miesa najblizszego miesnego golema'],
       ['rotMeat','Zgnij teraz','Natychmiast zmienia najblizszego surowego miesnego golema w zombi'],
       ['cookMeat','Usmaz','Zamienia najblizszego miesnego lub zombi golema w pieczonego sprzymierzenca'],
+      ['giveMolekin','Kamien + lawa mac.','Dodaje kamienie mistrza; rytual debugowy sam uklada lawe macierzysta'],
+      ['ritualMolekin','Rytual lawy mac.','Uklada lawe macierzysta, kladzie kamien mistrza i przyzywa kretoludzia'],
+      ['spawnMolekin','Stworz kreta','Tworzy debugowego lawowego kretoludzia z wybrana masa lawy'],
+      ['setLava','Ustaw lawe','Ustawia mase lawy najblizszego kretoludzia'],
+      ['molekinFire','Zar kreta','Wymusza lawowy atak kretoludzia, jezeli jest cel'],
       ['heal','Pelne HP','Leczy najblizszego pomocnika do maksimum'],
       ['damage','Ran','Zadaje najblizszemu pomocnikowi wybrane obrazenia'],
       ['kill','Zabij','Testuje smierc i lekka eksplozje pomocnika'],
@@ -1625,6 +1707,9 @@ MM.ui = (function(){
       if(id==='setMeat') return 'Debug miesnego golema: brak aktywnego miesnego golema';
       if(id==='rotMeat') return 'Debug miesnego golema: brak surowego miesnego golema';
       if(id==='cookMeat') return 'Debug miesnego golema: brak miesnego/zombi golema';
+      if(id==='spawnMolekin') return 'Debug kretoludzia: nie udalo sie znalezc/spawnac kompana';
+      if(id==='ritualMolekin') return 'Debug kretoludzia: brak wolnego miejsca na rytual';
+      if(id==='setLava' || id==='molekinFire') return 'Debug kretoludzia: brak aktywnego kretoludzia albo celu';
       return 'Debug pomocnika: brak celu / miejsca';
     }
     buttons.forEach(([id,txt,title])=>{
@@ -1640,6 +1725,7 @@ MM.ui = (function(){
           else if(id==='giveLeaf') ok=!!(actions.giveLeaf && actions.giveLeaf());
           else if(id==='giveWater') ok=!!(actions.giveWater && actions.giveWater());
           else if(id==='giveMeat') ok=!!(actions.giveMeat && actions.giveMeat());
+          else if(id==='giveMolekin') ok=!!(actions.giveMolekin && actions.giveMolekin());
           else if(id==='spawn') ok=!!(actions.spawn && actions.spawn(readNumber(spawnInput,5,1,30)));
           else if(id==='spawnStrong') ok=!!(actions.spawn && actions.spawn(18));
           else if(id==='spawnGolem') ok=!!(actions.spawnGolem && actions.spawnGolem(readNumber(golemClayInput,8,6,18)));
@@ -1650,18 +1736,22 @@ MM.ui = (function(){
           else if(id==='ritualWater') ok=!!(actions.ritualWater && actions.ritualWater(readNumber(waterInput,10,6,20)));
           else if(id==='spawnMeat') ok=!!(actions.spawnMeat && actions.spawnMeat(readNumber(meatInput,10,6,18)));
           else if(id==='ritualMeat') ok=!!(actions.ritualMeat && actions.ritualMeat(readNumber(meatInput,10,6,18)));
+          else if(id==='spawnMolekin') ok=!!(actions.spawnMolekin && actions.spawnMolekin(readNumber(molekinInput,4,1,20)));
+          else if(id==='ritualMolekin') ok=!!(actions.ritualMolekin && actions.ritualMolekin(readNumber(molekinInput,4,1,20)));
           else if(id==='feed') ok=!!(actions.feed && actions.feed(readNumber(feedInput,1,1,30)));
           else if(id==='setBiomass') ok=!!(actions.setBiomass && actions.setBiomass(readNumber(spawnInput,5,1,30)));
           else if(id==='setClay') ok=!!(actions.setClay && actions.setClay(readNumber(golemClayInput,8,6,18)));
           else if(id==='setLeaves') ok=!!(actions.setLeaves && actions.setLeaves(readNumber(leafInput,8,5,16)));
           else if(id==='setWater') ok=!!(actions.setWater && actions.setWater(readNumber(waterInput,10,6,20)));
           else if(id==='setMeat') ok=!!(actions.setMeat && actions.setMeat(readNumber(meatInput,10,6,18)));
+          else if(id==='setLava') ok=!!(actions.setLava && actions.setLava(readNumber(molekinInput,4,1,20)));
           else if(id==='rotMeat') ok=!!(actions.rotMeat && actions.rotMeat());
           else if(id==='cookMeat') ok=!!(actions.cookMeat && actions.cookMeat());
           else if(id==='guard') ok=!!(actions.guard && actions.guard(readNumber(guardInput,30,1,999)));
           else if(id==='shield') ok=!!(actions.shield && actions.shield());
           else if(id==='golemMelee') ok=!!(actions.golemMelee && actions.golemMelee());
           else if(id==='waterSpray') ok=!!(actions.waterSpray && actions.waterSpray());
+          else if(id==='molekinFire') ok=!!(actions.molekinFire && actions.molekinFire());
           else if(id==='heal') ok=!!(actions.heal && actions.heal());
           else if(id==='damage') ok=!!(actions.damage && actions.damage(readNumber(damageInput,25,1,999)));
           else if(id==='kill') ok=!!(actions.kill && actions.kill());
@@ -1691,7 +1781,7 @@ MM.ui = (function(){
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
+  const api = { msg, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectInvasionDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;

@@ -205,6 +205,14 @@ const turrets = (function(){
         if(target) targets.push(target);
       }
     }catch(e){}
+    try{
+      if(MM.skyGuardian && MM.skyGuardian.targetsForTurret){
+        targets=targets.concat(MM.skyGuardian.targetsForTurret(sx,sy,cfg.range,onlyBoss) || []);
+      }else if(MM.skyGuardian && MM.skyGuardian.nearestForTurret){
+        const target=MM.skyGuardian.nearestForTurret(sx,sy,cfg.range,onlyBoss);
+        if(target) targets.push(target);
+      }
+    }catch(e){}
     targets.sort((a,b)=>(a.d2||0)-(b.d2||0));
     for(const target of targets){
       const tx=Number(target && target.x), ty=Number(target && target.y);
@@ -216,6 +224,11 @@ const turrets = (function(){
       }
       if(target.kind==='underground' || target.underground){
         const out=wrapTarget('underground',target.underground || target.raw || target,tx,ty,target.hp || 1,Object.assign({},target,{underground:target.underground || target.raw || target}));
+        if(!lineClear(sx,sy,tx,ty,getTile,m.x,m.y,out.tx,out.ty)) continue;
+        return out;
+      }
+      if(target.kind==='skyGuardian' || target.skyGuardian){
+        const out=wrapTarget('skyGuardian',target.skyGuardian || target.raw || target,tx,ty,target.hp || 1,Object.assign({},target,{skyGuardian:target.skyGuardian || target.raw || target}));
         if(!lineClear(sx,sy,tx,ty,getTile,m.x,m.y,out.tx,out.ty)) continue;
         return out;
       }
@@ -326,6 +339,14 @@ const turrets = (function(){
       target.x=x; target.y=y; target.tx=Math.floor(x); target.ty=Math.floor(y); target.hp=underground.hp; target.underground=underground; target.raw=underground;
       return target;
     }
+    if(target.kind==='skyGuardian'){
+      const sky=target.skyGuardian || targetEntity(target);
+      if(!sky || sky.dead || !(sky.hp>0)) return null;
+      const x=Number(sky.x), y=Number(sky.y);
+      if(!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      target.x=x; target.y=y; target.tx=Math.floor(x); target.ty=Math.floor(y); target.hp=sky.hp; target.skyGuardian=sky; target.raw=sky;
+      return target;
+    }
     if(target.kind==='ufo'){
       let craft=null;
       try{ if(MM.ufo && MM.ufo.current) craft=MM.ufo.current(); }catch(e){ craft=null; }
@@ -353,6 +374,7 @@ const turrets = (function(){
     try{ if(MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
     try{ if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
     try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
+    try{ if(MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,dmg,{source:'turret',kind:'turret'})) hit=true; }catch(e){}
     try{ if(MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
     try{ if(MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
     return hit;

@@ -19,6 +19,19 @@ const companions = (function(){
   const KIND_ROTTEN_MEAT_GOLEM = 'rotten_meat_golem';
   const KIND_FRIED_MEAT_GOLEM = 'fried_meat_golem';
   const KIND_FRIED_CHICKEN = 'fried_chicken';
+  const KIND_UFO_ALIEN = 'ufo_alien';
+  const KIND_MOLEKIN = 'molekin';
+  const UFO_ALIEN_MIN_CONCRETE = 1;
+  const UFO_ALIEN_MAX_CONCRETE = 18;
+  const UFO_ALIEN_BASE_HP = 620;
+  const UFO_ALIEN_HP_PER_CONCRETE = 140;
+  const UFO_ALIEN_ROLES = Object.freeze(['rusher','tank','healer','flanker','orbiter','sniper','sapper','engineer','commander']);
+  const MOLEKIN_MIN_LAVA = 1;
+  const MOLEKIN_MAX_LAVA = 20;
+  const MOLEKIN_BASE_HP = 560;
+  const MOLEKIN_HP_PER_LAVA = 120;
+  const MOLEKIN_BREAK_STUCK_SECONDS = 0.32;
+  const MOLEKIN_ROLES = Object.freeze(['rusher','tank','healer','flanker','orbiter','sniper','sapper','engineer']);
   const CLAY_GOLEM_MIN_CLAY = 6;
   const CLAY_GOLEM_MAX_CLAY = 18;
   const CLAY_GOLEM_BASE_HP = 160;
@@ -91,6 +104,27 @@ const companions = (function(){
     sentinel:{label:'satelita', follow:2.55, spacing:0.78, speed:0.70, accel:0.72, jump:0.88, range:1.18, cooldown:0.86, damage:0.98, poisonInterval:1.10, poisonPower:0.92, death:1.05, orbit:0.22}
   });
   const ARCHETYPE_IDS = Object.keys(ARCHETYPE_TRAITS);
+  const UFO_ALIEN_ROLE_TRAITS = Object.freeze({
+    rusher:{label:'macierzysty rusher', hp:1.06, speed:1.24, accel:1.16, jump:1.12, range:0.98, cooldown:0.70, damage:1.08, orbit:0.06, poison:0.86},
+    tank:{label:'lodowy tank', hp:1.38, speed:0.76, accel:0.80, jump:0.90, range:0.92, cooldown:0.96, damage:1.25, orbit:0.00, poison:0.48, guard:0.72},
+    healer:{label:'macierzysty medyk', hp:1.02, speed:1.04, accel:1.04, jump:1.06, range:1.10, cooldown:0.88, damage:0.86, orbit:0.08, poison:0.32},
+    flanker:{label:'lodowy flanker', hp:1.04, speed:1.34, accel:1.28, jump:1.16, range:0.96, cooldown:0.64, damage:1.02, orbit:0.12, poison:0.78},
+    orbiter:{label:'macierzysty orbiter', hp:1.02, speed:1.16, accel:1.20, jump:1.24, range:1.14, cooldown:0.74, damage:1.00, orbit:0.34, poison:0.62},
+    sniper:{label:'lodowy snajper', hp:0.98, speed:0.84, accel:0.88, jump:1.00, range:1.66, cooldown:1.08, damage:1.56, orbit:0.00, poison:0.30},
+    sapper:{label:'macierzysty saper', hp:1.10, speed:0.98, accel:1.00, jump:0.98, range:0.94, cooldown:0.78, damage:1.18, orbit:0.05, poison:1.02},
+    engineer:{label:'macierzysty inzynier', hp:1.08, speed:0.96, accel:0.98, jump:0.98, range:1.20, cooldown:0.82, damage:1.10, orbit:0.07, poison:0.54},
+    commander:{label:'zloty macierzysty commander', hp:1.70, speed:0.90, accel:0.92, jump:1.00, range:1.34, cooldown:0.76, damage:1.52, orbit:0.12, poison:0.74, guard:0.82}
+  });
+  const MOLEKIN_ROLE_TRAITS = Object.freeze({
+    rusher:{label:'macierzysto-lawowy rusher', hp:1.08, speed:1.22, accel:1.18, jump:1.00, range:0.96, cooldown:0.68, damage:1.12, orbit:0.03, harvest:1.55},
+    tank:{label:'macierzysto-bazaltowy tank', hp:1.42, speed:0.78, accel:0.86, jump:0.84, range:0.90, cooldown:0.92, damage:1.22, orbit:0, guard:0.78, harvest:1.50},
+    healer:{label:'macierzysty zarowy medyk', hp:1.02, speed:1.02, accel:1.04, jump:0.90, range:1.14, cooldown:0.84, damage:0.82, orbit:0.06, heal:1.62, harvest:1.42},
+    flanker:{label:'macierzysty tunelowy flanker', hp:1.04, speed:1.32, accel:1.28, jump:1.04, range:0.94, cooldown:0.62, damage:1.02, orbit:0.10, harvest:1.70},
+    orbiter:{label:'macierzysty dymny orbiter', hp:1.04, speed:1.14, accel:1.14, jump:0.98, range:1.18, cooldown:0.76, damage:0.98, orbit:0.28, harvest:1.52},
+    sniper:{label:'macierzysty plomienny snajper', hp:0.98, speed:0.88, accel:0.90, jump:0.84, range:1.62, cooldown:1.02, damage:1.58, orbit:0, harvest:1.38},
+    sapper:{label:'macierzysto-lawowy saper', hp:1.16, speed:1.00, accel:1.00, jump:0.88, range:0.98, cooldown:0.72, damage:1.18, orbit:0.03, harvest:2.65},
+    engineer:{label:'macierzysty podziemny inzynier', hp:1.10, speed:0.96, accel:0.98, jump:0.88, range:1.22, cooldown:0.80, damage:1.04, orbit:0.06, harvest:2.38}
+  });
 
   function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
   function inCompanionWorldY(y,topPad=0,bottomPad=0){
@@ -108,6 +142,18 @@ const companions = (function(){
   }
   function nowMs(){ return (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now(); }
   function say(text){ try{ if(root.msg) root.msg(text); }catch(e){} }
+  const sayMemory = {};
+  function sayVariant(key,lines,vars){
+    const pool = Array.isArray(lines) ? lines.map(t=>String(t || '').trim()).filter(Boolean) : [];
+    if(!pool.length) return;
+    const last = sayMemory[key] || '';
+    const choices = pool.length > 1 ? pool.filter(t=>t !== last) : pool;
+    let text = choices[Math.floor(Math.random() * choices.length)] || choices[0] || pool[0];
+    vars = vars || {};
+    text = text.replace(/\{([a-zA-Z0-9_]+)\}/g,(_,name)=>String(vars[name] == null ? '' : vars[name]));
+    sayMemory[key] = text;
+    say(text);
+  }
   function sfx(name){ try{ if(MM.audio && MM.audio.play) MM.audio.play(name); }catch(e){} }
   function burst(x,y,tier){
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(x*(MM.TILE||20), y*(MM.TILE||20), tier||'rare'); }catch(e){}
@@ -161,12 +207,26 @@ const companions = (function(){
   function isMeatGolem(c){ return isRawMeatGolem(c) || isRottenMeatGolem(c); }
   function isFriendlyMeatGolem(c){ return isRawMeatGolem(c) || isFriedMeatGolem(c); }
   function isAnyMeatGolem(c){ return isMeatGolem(c) || isFriedMeatGolem(c); }
-  function isWalkingGolem(c){ return isClayGolem(c) || isWaterGolem(c) || isMeatGolem(c) || isFriedMeatGolem(c); }
+  function isUfoAlien(c){ return !!c && c.kind===KIND_UFO_ALIEN; }
+  function isMolekin(c){ return !!c && c.kind===KIND_MOLEKIN; }
+  function isWalkingGolem(c){ return isClayGolem(c) || isWaterGolem(c) || isMeatGolem(c) || isFriedMeatGolem(c) || isMolekin(c); }
   function isFriedChicken(c){ return isFriedMeatGolem(c); }
   function clayMass(c){ return clamp(Math.floor((c && (c.clay || c.clayMass || c.biomass)) || CLAY_GOLEM_MIN_CLAY),CLAY_GOLEM_MIN_CLAY,CLAY_GOLEM_MAX_CLAY); }
   function leafMass(c){ return clamp(Math.floor((c && (c.leaves || c.leafMass || c.biomass)) || LEAF_MONSTER_MIN_LEAVES),LEAF_MONSTER_MIN_LEAVES,LEAF_MONSTER_MAX_LEAVES); }
   function waterMass(c){ return clamp(Math.floor((c && (c.water || c.waterMass || c.biomass)) || WATER_GOLEM_MIN_WATER),WATER_GOLEM_MIN_WATER,WATER_GOLEM_MAX_WATER); }
   function meatMass(c){ return clamp(Math.floor((c && (c.meat || c.meatMass || c.biomass)) || MEAT_GOLEM_MIN_MEAT),MEAT_GOLEM_MIN_MEAT,MEAT_GOLEM_MAX_MEAT); }
+  function ufoConcreteMass(c){ return clamp(Math.floor((c && (c.motherIce || c.motherIceMass || c.iceCore || c.ufoConcrete || c.concrete || c.concreteMass || c.biomass)) || UFO_ALIEN_MIN_CONCRETE),UFO_ALIEN_MIN_CONCRETE,UFO_ALIEN_MAX_CONCRETE); }
+  function lavaMass(c){ return clamp(Math.floor((c && (c.lava || c.lavaMass || c.biomass)) || MOLEKIN_MIN_LAVA),MOLEKIN_MIN_LAVA,MOLEKIN_MAX_LAVA); }
+  function ufoAlienRole(c){
+    const g = c && c.genome;
+    const role = (c && c.ufoRole) || (g && g.alienRole) || 'rusher';
+    return validChoice(String(role),UFO_ALIEN_ROLES,'rusher');
+  }
+  function molekinRole(c){
+    const g = c && c.genome;
+    const role = (c && c.moleRole) || (g && g.moleRole) || 'rusher';
+    return validChoice(String(role),MOLEKIN_ROLES,'rusher');
+  }
   function maxHpForClay(clay){
     return CLAY_GOLEM_BASE_HP + clayMass({clay})*CLAY_GOLEM_HP_PER_CLAY;
   }
@@ -179,7 +239,19 @@ const companions = (function(){
   function maxHpForMeat(meat){
     return MEAT_GOLEM_BASE_HP + meatMass({meat})*MEAT_GOLEM_HP_PER_MEAT;
   }
+  function maxHpForUfoAlien(concrete,role){
+    const mass = ufoConcreteMass({ufoConcrete:concrete});
+    const stats = UFO_ALIEN_ROLE_TRAITS[validChoice(String(role||'rusher'),UFO_ALIEN_ROLES,'rusher')] || UFO_ALIEN_ROLE_TRAITS.rusher;
+    return Math.round((UFO_ALIEN_BASE_HP + mass*UFO_ALIEN_HP_PER_CONCRETE) * (stats.hp || 1));
+  }
+  function maxHpForMolekin(lava,role){
+    const mass = lavaMass({lava});
+    const stats = MOLEKIN_ROLE_TRAITS[validChoice(String(role||'rusher'),MOLEKIN_ROLES,'rusher')] || MOLEKIN_ROLE_TRAITS.rusher;
+    return Math.round((MOLEKIN_BASE_HP + mass*MOLEKIN_HP_PER_LAVA) * (stats.hp || 1));
+  }
   function expectedMaxHp(c){
+    if(isMolekin(c)) return maxHpForMolekin(lavaMass(c),molekinRole(c));
+    if(isUfoAlien(c)) return maxHpForUfoAlien(ufoConcreteMass(c),ufoAlienRole(c));
     if(isFriedMeatGolem(c)) return maxHpForMeat(meatMass(c));
     if(isMeatGolem(c)) return maxHpForMeat(meatMass(c));
     if(isWaterGolem(c)) return maxHpForWater(waterMass(c));
@@ -194,6 +266,8 @@ const companions = (function(){
     else if(isLeafMonster(c)) c.genome=makeLeafGenome(seed,leafMass(c));
     else if(isWaterGolem(c)) c.genome=makeWaterGenome(seed,waterMass(c));
     else if(isAnyMeatGolem(c)) c.genome=makeMeatGenome(seed,meatMass(c));
+    else if(isUfoAlien(c)) c.genome=makeUfoAlienGenome(seed,ufoConcreteMass(c),ufoAlienRole(c));
+    else if(isMolekin(c)) c.genome=makeMolekinGenome(seed,lavaMass(c),molekinRole(c));
     else c.genome=makeGenome(seed);
   }
   function sanitizeCompanion(c){
@@ -207,6 +281,8 @@ const companions = (function(){
     else if(isLeafMonster(c)){ c.leaves=leafMass(c); c.biomass=c.leaves; }
     else if(isWaterGolem(c)){ c.water=waterMass(c); c.biomass=c.water; }
     else if(isAnyMeatGolem(c)){ c.meat=meatMass(c); c.biomass=c.meat; }
+    else if(isUfoAlien(c)){ c.motherIce=ufoConcreteMass(c); c.ufoConcrete=c.motherIce; c.ufoRole=ufoAlienRole(c); c.biomass=c.motherIce; }
+    else if(isMolekin(c)){ c.lava=lavaMass(c); c.moleRole=molekinRole(c); c.biomass=c.lava; }
     else c.biomass=clamp(Math.floor(finiteNumber(c.biomass,3)),1,MAX_BIOMASS);
     c.maxHp=Math.max(1, finiteNumber(c.maxHp, expectedMaxHp(c)));
     c.hp=clamp(finiteNumber(c.hp,c.maxHp),0,c.maxHp);
@@ -242,6 +318,8 @@ const companions = (function(){
     if(isLeafMonster(c)) return 0.66 + Math.min(0.20, leafMass(c)*0.010);
     if(isWaterGolem(c)) return 0.92 + Math.min(0.46, waterMass(c)*0.026);
     if(isMeatGolem(c) || isFriedMeatGolem(c)) return 0.88 + Math.min(0.32, meatMass(c)*0.018);
+    if(isUfoAlien(c)) return 0.90 + Math.min(0.42, ufoConcreteMass(c)*0.024);
+    if(isMolekin(c)) return 0.92 + Math.min(0.38, lavaMass(c)*0.018);
     return BODY_W*(0.92+Math.min(0.18,(c && c.biomass || 1)*0.008));
   }
   function companionBodyH(c){
@@ -249,6 +327,8 @@ const companions = (function(){
     if(isLeafMonster(c)) return 0.78 + Math.min(0.18, leafMass(c)*0.008);
     if(isWaterGolem(c)) return 1.18 + Math.min(0.42, waterMass(c)*0.018);
     if(isMeatGolem(c) || isFriedMeatGolem(c)) return 1.08 + Math.min(0.30, meatMass(c)*0.014);
+    if(isUfoAlien(c)) return 1.22 + Math.min(0.36, ufoConcreteMass(c)*0.016);
+    if(isMolekin(c)) return 1.06 + Math.min(0.30, lavaMass(c)*0.012);
     return BODY_H;
   }
   function makeGenome(seed){
@@ -585,6 +665,183 @@ const companions = (function(){
     const r=prng((genome && genome.seed) || 1);
     return a[randInt(r,a.length)]+' '+b[randInt(r,b.length)];
   }
+  function makeUfoAlienGenome(seed,concrete,role){
+    const r=prng(seed ^ 0x0f0a11e9);
+    const safeRole=validChoice(String(role||'rusher'),UFO_ALIEN_ROLES,'rusher');
+    const rolePalettes={
+      rusher:['#b8f7ff','#254a68','#7cf7ff','#effdff'],
+      tank:['#d8fbff','#365a72','#a7f4ff','#ffffff'],
+      healer:['#b9ffe4','#2f6158','#7dffcf','#effff6'],
+      flanker:['#a6ecff','#244966','#9df0ff','#fff0b8'],
+      orbiter:['#b7e8ff','#2b5275','#91d7ff','#f4fbff'],
+      sniper:['#e6f7ff','#39465c','#ffe18a','#fff7d6'],
+      sapper:['#ccefff','#4a445c','#ffb388','#fff0d6'],
+      engineer:['#c7f8ff','#315a70','#69f0d8','#e9fff8'],
+      commander:['#fff1a6','#5b4218','#ffffff','#fffbe0']
+    };
+    const p=rolePalettes[safeRole] || rolePalettes.rusher;
+    const bodies={rusher:'runner',tank:'beetle',healer:'lantern',flanker:'blade',orbiter:'orb',sniper:'spine',sapper:'tripod',engineer:'mantle',commander:'crown'};
+    const archetypes={rusher:'skirmisher',tank:'guardian',healer:'sentinel',flanker:'skirmisher',orbiter:'sentinel',sniper:'sniper',sapper:'volatile',engineer:'guardian',commander:'sentinel'};
+    return {
+      seed,
+      motherIce:ufoConcreteMass({motherIce:concrete}),
+      concrete:ufoConcreteMass({motherIce:concrete}),
+      alienRole:safeRole,
+      archetype:archetypes[safeRole] || 'guardian',
+      body:bodies[safeRole] || pick(r,['runner','beetle','orb','spine','tripod']),
+      primary:mixColor(p[0],'#d8fbff',0.18+r()*0.16),
+      secondary:mixColor(p[1],'#102236',0.14+r()*0.20),
+      glow:p[2],
+      laser:p[3],
+      eyeLayout:safeRole==='commander' ? 'halo' : pick(r,['row','triad','visor','split','halo']),
+      legStyle:safeRole==='orbiter' ? 'hover' : pick(r,['joint','talon','crawler','spider','stub']),
+      tail:safeRole==='sapper' ? 'spark' : pick(r,['none','fork','club','fan','whip']),
+      crest:safeRole==='commander' ? 'halo' : pick(r,['antenna','spines','frill','horns','none']),
+      marking:pick(r,['runes','split','veins','stripe','spots']),
+      eyes:clamp(2+randInt(r,5)+(safeRole==='commander'?1:0),2,7),
+      legs:clamp(3+randInt(r,5)+(safeRole==='tank'?1:0),3,8),
+      tendrils:clamp(1+randInt(r,5)+(safeRole==='engineer'?1:0),1,7),
+      horns:clamp(randInt(r,4)+(safeRole==='commander'?2:0),0,6),
+      plates:clamp(3+randInt(r,5)+(safeRole==='tank'?2:0),3,8),
+      size:clamp((safeRole==='tank'?1.22:(safeRole==='commander'?1.28:1.02)) + r()*0.12 - 0.04,0.88,1.44),
+      width:clamp((safeRole==='tank'?1.20:(safeRole==='sniper'?0.92:1.02)) + r()*0.16 - 0.06,0.82,1.44),
+      glowPattern:randInt(r,5),
+      gait:r()*2-1,
+      shoulder:r()*0.28-0.14,
+      asym:r()*0.34-0.17,
+      antenna:r()<0.78,
+      concreteCracks:3+randInt(r,7),
+      iceFractures:5+randInt(r,8),
+      crownShard:randInt(r,5),
+      circuitBands:2+randInt(r,5),
+      roleMark:randInt(r,6)
+    };
+  }
+  function normalizeUfoAlienGenome(g,seed,concrete,role){
+    const base=makeUfoAlienGenome(seed,concrete,role);
+    if(!g || typeof g!=='object') return base;
+    const out=Object.assign({},base,g);
+    out.seed=seed;
+    out.motherIce=ufoConcreteMass({motherIce:out.motherIce || out.concrete || concrete});
+    out.concrete=out.motherIce;
+    out.alienRole=validChoice(String(out.alienRole || role || base.alienRole),UFO_ALIEN_ROLES,base.alienRole);
+    out.archetype=validChoice(out.archetype,ARCHETYPE_IDS,base.archetype);
+    out.body=validChoice(out.body,['mantle','orb','runner','spine','crown','beetle','lantern','blade','tripod'],base.body);
+    out.eyeLayout=validChoice(out.eyeLayout,['row','stack','triad','halo','split','visor'],base.eyeLayout);
+    out.legStyle=validChoice(out.legStyle,['joint','spider','stub','talon','hover','crawler'],base.legStyle);
+    out.tail=validChoice(out.tail,['none','whip','fork','club','fan','spark'],base.tail);
+    out.crest=validChoice(out.crest,['none','horns','spines','frill','antenna','halo'],base.crest);
+    out.marking=validChoice(out.marking,['none','stripe','spots','runes','split','veins'],base.marking);
+    out.eyes=clamp(out.eyes|0,1,7);
+    out.legs=clamp(out.legs|0,2,8);
+    out.tendrils=clamp(out.tendrils|0,1,8);
+    out.horns=clamp(out.horns|0,0,6);
+    out.plates=clamp(out.plates|0,1,9);
+    out.size=clamp(Number(out.size)||base.size,0.82,1.48);
+    out.width=clamp(Number(out.width)||base.width,0.78,1.48);
+    out.glowPattern=clamp(out.glowPattern|0,0,4);
+    out.gait=clamp(Number(out.gait)||0,-1,1);
+    out.shoulder=clamp(Number(out.shoulder)||0,-0.24,0.24);
+    out.asym=clamp(Number(out.asym)||0,-0.42,0.42);
+    out.concreteCracks=clamp(out.concreteCracks|0,1,12);
+    out.iceFractures=clamp(out.iceFractures|0,1,14);
+    out.crownShard=clamp(out.crownShard|0,0,8);
+    out.circuitBands=clamp(out.circuitBands|0,1,8);
+    out.roleMark=clamp(out.roleMark|0,0,8);
+    return out;
+  }
+  function ufoAlienName(genome){
+    const role=validChoice(String((genome && genome.alienRole) || 'rusher'),UFO_ALIEN_ROLES,'rusher');
+    const a={rusher:'Macierzysty',tank:'Lodowy',healer:'Rezonansowy',flanker:'Srebrny',orbiter:'Orbitujacy',sniper:'Krysztalowy',sapper:'Saperski',engineer:'Inzynieryjny',commander:'Zloty'}[role] || 'Macierzysty';
+    const b={rusher:'Rusher',tank:'Tank',healer:'Medyk',flanker:'Flanker',orbiter:'Orbiter',sniper:'Snajper',sapper:'Saper',engineer:'Inzynier',commander:'Commander'}[role] || 'Alien';
+    const r=prng((genome && genome.seed) || 1);
+    const c=['UFO','Czworokat','Relikt','Akolita','Korpus','Signal'];
+    return a+' '+b+' '+c[randInt(r,c.length)];
+  }
+  function makeMolekinGenome(seed,lava,role){
+    const r=prng(seed ^ 0xea57111);
+    const safeRole=validChoice(String(role||'rusher'),MOLEKIN_ROLES,'rusher');
+    const rolePalettes={
+      rusher:['#7a5a3d','#3f2c20','#ffd38a','#ff8b35'],
+      tank:['#6c6258','#332f2e','#ffd9a3','#ffb45c'],
+      healer:['#8a6148','#493023','#ffe5a9','#ffc96f'],
+      flanker:['#6f5037','#35251b','#ffd08a','#ff7138'],
+      orbiter:['#77634f','#3c3027','#ffe0a0','#ffaa45'],
+      sniper:['#89523c','#45251e','#ffe6b8','#ff552e'],
+      sapper:['#76583f','#3a291e','#ffd28f','#ff9b38'],
+      engineer:['#816247','#3f2e22','#ffe0a6','#ffc04f']
+    };
+    const p=rolePalettes[safeRole] || rolePalettes.rusher;
+    const archetypes={rusher:'skirmisher',tank:'guardian',healer:'sentinel',flanker:'skirmisher',orbiter:'sentinel',sniper:'sniper',sapper:'volatile',engineer:'guardian'};
+    const baseSize=(MOLEKIN_ROLE_TRAITS[safeRole] && MOLEKIN_ROLE_TRAITS[safeRole].hp>1.15) ? 1.12 : (safeRole==='flanker'?0.92:1.0);
+    return {
+      seed,
+      lava:lavaMass({lava}),
+      moleRole:safeRole,
+      archetype:archetypes[safeRole] || 'guardian',
+      fur:mixColor(p[0],'#8d6746',0.20+r()*0.20),
+      dark:mixColor(p[1],'#1a100b',0.16+r()*0.22),
+      deep:mixColor(p[1],'#070403',0.32+r()*0.18),
+      eye:p[2],
+      accent:p[3],
+      ember:mixColor(p[3],'#fff0a8',0.12+r()*0.16),
+      body:clamp(baseSize*(0.92+r()*0.20),0.72,1.42),
+      height:clamp((safeRole==='tank'?0.92:(safeRole==='flanker'?0.76:0.84))*(0.90+r()*0.22),0.62,1.18),
+      head:clamp(0.86+r()*0.34,0.72,1.35),
+      eyeScale:clamp(0.78+r()*0.40,0.64,1.35),
+      arm:clamp(0.92+r()*0.40,0.70,1.55),
+      leg:clamp(0.72+r()*0.36,0.55,1.30),
+      stance:clamp(r()*0.20-0.10,-0.16,0.16),
+      gait:clamp(0.88+r()*0.46,0.62,1.55),
+      glow:clamp(0.70+r()*0.72,0.45,1.70),
+      helmet:clamp(0.78+r()*0.52,0.60,1.50),
+      snout:clamp(0.76+r()*0.52,0.55,1.50),
+      beard:clamp(0.40+r()*0.85,0.20,1.50),
+      claw:clamp(0.86+r()*0.50,0.60,1.55),
+      ears:1+randInt(r,3),
+      braids:randInt(r,4),
+      rankBands:1+randInt(r,4)+(safeRole==='tank'?1:0),
+      soot:2+randInt(r,7),
+      shoulder:r()*0.22-0.11,
+      pulse:r()*Math.PI*2
+    };
+  }
+  function normalizeMolekinGenome(g,seed,lava,role){
+    const base=makeMolekinGenome(seed,lava,role);
+    if(!g || typeof g!=='object') return base;
+    const out=Object.assign({},base,g);
+    out.seed=seed;
+    out.lava=lavaMass({lava:out.lava || lava});
+    out.moleRole=validChoice(String(out.moleRole || role || base.moleRole),MOLEKIN_ROLES,base.moleRole);
+    out.archetype=validChoice(out.archetype,ARCHETYPE_IDS,base.archetype);
+    out.body=clamp(Number(out.body)||base.body,0.72,1.48);
+    out.height=clamp(Number(out.height)||base.height,0.62,1.22);
+    out.head=clamp(Number(out.head)||base.head,0.72,1.35);
+    out.eyeScale=clamp(Number(out.eyeScale)||base.eyeScale,0.64,1.35);
+    out.arm=clamp(Number(out.arm)||base.arm,0.70,1.55);
+    out.leg=clamp(Number(out.leg)||base.leg,0.55,1.30);
+    out.stance=clamp(Number(out.stance)||0,-0.16,0.16);
+    out.gait=clamp(Number(out.gait)||base.gait,0.62,1.55);
+    out.glow=clamp(Number(out.glow)||base.glow,0.45,1.70);
+    out.helmet=clamp(Number(out.helmet)||base.helmet,0.60,1.50);
+    out.snout=clamp(Number(out.snout)||base.snout,0.55,1.50);
+    out.beard=clamp(Number(out.beard)||base.beard,0.20,1.50);
+    out.claw=clamp(Number(out.claw)||base.claw,0.60,1.55);
+    out.ears=clamp(out.ears|0,0,4);
+    out.braids=clamp(out.braids|0,0,5);
+    out.rankBands=clamp(out.rankBands|0,1,6);
+    out.soot=clamp(out.soot|0,1,10);
+    out.shoulder=clamp(Number(out.shoulder)||0,-0.24,0.24);
+    return out;
+  }
+  function molekinName(genome){
+    const role=validChoice(String((genome && genome.moleRole) || 'rusher'),MOLEKIN_ROLES,'rusher');
+    const a={rusher:'Lawowy',tank:'Bazaltowy',healer:'Zarowy',flanker:'Tunelowy',orbiter:'Dymny',sniper:'Plomienny',sapper:'Saperski',engineer:'Podziemny'}[role] || 'Lawowy';
+    const b={rusher:'Rusher',tank:'Tank',healer:'Medyk',flanker:'Flanker',orbiter:'Orbiter',sniper:'Snajper',sapper:'Saper',engineer:'Inzynier'}[role] || 'Kret';
+    const r=prng((genome && genome.seed) || 1);
+    const c=['Kretolud','Ryjownik','Akolita','Brat Tunelu','Zarokop','Pazur'];
+    return a+' '+b+' '+c[randInt(r,c.length)];
+  }
   function normalizeGenome(g,seed){
     const base=makeGenome(seed);
     if(!g || typeof g!=='object') return base;
@@ -717,6 +974,61 @@ const companions = (function(){
         guardAbsorb:0.74 + Math.min(0.16,clay*0.006)
       };
     }
+    if(isUfoAlien(c)){
+      const concrete=ufoConcreteMass(c);
+      const role=ufoAlienRole(c);
+      const roleTraits=UFO_ALIEN_ROLE_TRAITS[role] || UFO_ALIEN_ROLE_TRAITS.rusher;
+      const g=(c && c.genome) || {};
+      const gait=clamp(Number(g.gait)||0,-1,1);
+      return {
+        archetype:KIND_UFO_ALIEN,
+        role,
+        label:roleTraits.label || 'macierzysty alien',
+        follow:1.55 + Math.min(1.12,concrete*0.045),
+        spacing:role==='tank' || role==='commander' ? 0.88 : 0.66,
+        speed:5.45*(roleTraits.speed||1)*(1+gait*0.045),
+        accel:21.5*(roleTraits.accel||1),
+        jump:-9.10*(roleTraits.jump||1),
+        laserRange:(11.8 + Math.min(4.0,concrete*0.22))*(roleTraits.range||1),
+        laserCooldown:0.42*(roleTraits.cooldown||1),
+        laserDamage:(20.0 + concrete*1.35)*(roleTraits.damage||1),
+        poisonInterval:role==='sapper' ? 2.2 : 5.4,
+        poisonPower:roleTraits.poison || 0.35,
+        death:0.20,
+        orbit:roleTraits.orbit || 0,
+        guardRadius:(roleTraits.guard ? 4.9 + concrete*0.08 : 0),
+        guardAbsorb:roleTraits.guard || 0
+      };
+    }
+    if(isMolekin(c)){
+      const lava=lavaMass(c);
+      const role=molekinRole(c);
+      const roleTraits=MOLEKIN_ROLE_TRAITS[role] || MOLEKIN_ROLE_TRAITS.rusher;
+      const g=(c && c.genome) || {};
+      const gait=clamp(Number(g.gait)||1,0.62,1.55);
+      return {
+        archetype:KIND_MOLEKIN,
+        role,
+        label:roleTraits.label || 'lawowy kretolud',
+        follow:1.42 + Math.min(1.00,lava*0.038),
+        spacing:role==='tank' ? 0.86 : 0.60,
+        speed:5.15*(roleTraits.speed||1)*(0.96+gait*0.04),
+        accel:21.0*(roleTraits.accel||1),
+        jump:-8.55*(roleTraits.jump||1),
+        laserRange:(9.3 + Math.min(3.2,lava*0.16))*(roleTraits.range||1),
+        laserCooldown:0.40*(roleTraits.cooldown||1),
+        laserDamage:(17.0 + lava*1.05)*(roleTraits.damage||1),
+        poisonInterval:999,
+        poisonPower:0,
+        death:0.18,
+        orbit:roleTraits.orbit || 0,
+        guardRadius:(roleTraits.guard ? 5.2 + lava*0.07 : 0),
+        guardAbsorb:roleTraits.guard || 0,
+        healMult:roleTraits.heal || 1,
+        harvest:roleTraits.harvest || 1.25,
+        fireCompanion:true
+      };
+    }
     const g=(c && c.genome) || {};
     const base=ARCHETYPE_TRAITS[g.archetype] || ARCHETYPE_TRAITS.guardian;
     const biomass=Math.max(1,Math.floor((c && c.biomass) || 1));
@@ -746,7 +1058,91 @@ const companions = (function(){
       : (opts.kind===KIND_WATER_GOLEM ? KIND_WATER_GOLEM
       : (opts.kind===KIND_MEAT_GOLEM ? KIND_MEAT_GOLEM
       : (opts.kind===KIND_ROTTEN_MEAT_GOLEM ? KIND_ROTTEN_MEAT_GOLEM
-      : (opts.kind===KIND_FRIED_MEAT_GOLEM || opts.kind===KIND_FRIED_CHICKEN ? KIND_FRIED_MEAT_GOLEM : KIND_BIO)))));
+      : (opts.kind===KIND_FRIED_MEAT_GOLEM || opts.kind===KIND_FRIED_CHICKEN ? KIND_FRIED_MEAT_GOLEM
+      : (opts.kind===KIND_UFO_ALIEN ? KIND_UFO_ALIEN
+      : (opts.kind===KIND_MOLEKIN ? KIND_MOLEKIN : KIND_BIO)))))));
+    if(kind===KIND_MOLEKIN){
+      const lava=lavaMass({lava:opts.lava || opts.lavaMass || opts.biomass});
+      const role=validChoice(String(opts.moleRole || opts.role || (opts.genome && opts.genome.moleRole) || 'rusher'),MOLEKIN_ROLES,'rusher');
+      const seed=(opts.seed>>>0) || hashSeed(opts.x,opts.y,lava ^ 0xea57111);
+      const genome=normalizeMolekinGenome(opts.genome,seed,lava,role);
+      const maxHp=Number.isFinite(opts.maxHp) ? Math.max(1,opts.maxHp) : maxHpForMolekin(lava,genome.moleRole);
+      return {
+        kind,
+        id:opts.id || ('molekin_'+seed.toString(36)+'_'+Date.now().toString(36)),
+        seed,
+        genome,
+        name:opts.name || molekinName(genome),
+        x:Number.isFinite(opts.x) ? opts.x : 0,
+        y:Number.isFinite(opts.y) ? opts.y : 0,
+        vx:Number.isFinite(opts.vx) ? opts.vx : 0,
+        vy:Number.isFinite(opts.vy) ? opts.vy : 0,
+        hp:Number.isFinite(opts.hp) ? Math.max(1, Math.min(maxHp,opts.hp)) : maxHp,
+        maxHp,
+        lava,
+        moleRole:genome.moleRole,
+        biomass:lava,
+        facing:opts.facing || 1,
+        grounded:false,
+        laserCd:Number.isFinite(opts.laserCd) ? opts.laserCd : (0.10+Math.random()*0.22),
+        gasCd:999,
+        guardCd:Number.isFinite(opts.guardCd) ? opts.guardCd : 0,
+        hurtCd:0,
+        stuckT:0,
+        attackCd:Number.isFinite(opts.attackCd) ? opts.attackCd : 0,
+        pathBreakCd:Number.isFinite(opts.pathBreakCd) ? opts.pathBreakCd : 0,
+        age:opts.age || 0,
+        feedPulse:opts.feedPulse || 0,
+        hitPulse:0,
+        shieldPulse:opts.shieldPulse || 0,
+        lastTarget:null,
+        harvestX:null,
+        harvestY:null,
+        harvestProgress:0,
+        harvestScanCd:0
+      };
+    }
+    if(kind===KIND_UFO_ALIEN){
+      const concrete=ufoConcreteMass({motherIce:opts.motherIce || opts.motherIceMass || opts.iceCore || opts.ufoConcrete || opts.concrete || opts.concreteMass || opts.biomass});
+      const role=validChoice(String(opts.ufoRole || opts.role || (opts.genome && opts.genome.alienRole) || 'rusher'),UFO_ALIEN_ROLES,'rusher');
+      const seed=(opts.seed>>>0) || hashSeed(opts.x,opts.y,concrete ^ 0x0f0a11e9);
+      const genome=normalizeUfoAlienGenome(opts.genome,seed,concrete,role);
+      const maxHp=Number.isFinite(opts.maxHp) ? Math.max(1,opts.maxHp) : maxHpForUfoAlien(concrete,genome.alienRole);
+      return {
+        kind,
+        id:opts.id || ('ufoalien_'+seed.toString(36)+'_'+Date.now().toString(36)),
+        seed,
+        genome,
+        name:opts.name || ufoAlienName(genome),
+        x:Number.isFinite(opts.x) ? opts.x : 0,
+        y:Number.isFinite(opts.y) ? opts.y : 0,
+        vx:Number.isFinite(opts.vx) ? opts.vx : 0,
+        vy:Number.isFinite(opts.vy) ? opts.vy : 0,
+        hp:Number.isFinite(opts.hp) ? Math.max(1, Math.min(maxHp,opts.hp)) : maxHp,
+        maxHp,
+        motherIce:concrete,
+        ufoConcrete:concrete,
+        ufoRole:genome.alienRole,
+        biomass:concrete,
+        facing:opts.facing || 1,
+        grounded:false,
+        laserCd:Number.isFinite(opts.laserCd) ? opts.laserCd : (0.10+Math.random()*0.24),
+        gasCd:Number.isFinite(opts.gasCd) ? opts.gasCd : 1.4+Math.random()*2.0,
+        guardCd:Number.isFinite(opts.guardCd) ? opts.guardCd : 0,
+        hurtCd:0,
+        stuckT:0,
+        attackCd:Number.isFinite(opts.attackCd) ? opts.attackCd : 0,
+        age:opts.age || 0,
+        feedPulse:opts.feedPulse || 0,
+        hitPulse:0,
+        shieldPulse:opts.shieldPulse || 0,
+        lastTarget:null,
+        harvestX:null,
+        harvestY:null,
+        harvestProgress:0,
+        harvestScanCd:0
+      };
+    }
     if(kind===KIND_FRIED_MEAT_GOLEM){
       const meat=meatMass({meat:opts.meat || opts.meatMass || opts.biomass});
       const seed=(opts.seed>>>0) || hashSeed(opts.x,opts.y,meat ^ 0xf17ed);
@@ -1179,6 +1575,7 @@ const companions = (function(){
     if(isWaterGolem(c)) return 1.9 + waterMass(c)*0.055;
     if(isLeafMonster(c)) return 0.38 + leafMass(c)*0.018;
     if(isMeatGolem(c) || isFriedMeatGolem(c)) return 1.45 + meatMass(c)*0.045;
+    if(isMolekin(c)) return 1.70 + lavaMass(c)*0.050;
     return 1 + Math.max(0,Math.floor((c && c.biomass) || 1))*0.035;
   }
   function companionVerticalOverlap(a,b){
@@ -1481,21 +1878,29 @@ const companions = (function(){
     h=Math.imul(h ^ (h>>>13),1274126177);
     return (h ^ (h>>>16)) >>> 0;
   }
-  function clayRitualCandidates(x,y,getTile){
-    const masters=[];
-    const seen=new Set();
-    const r=CLAY_GOLEM_MAX_CLAY;
-    for(let dy=-r;dy<=r;dy++){
-      for(let dx=-r;dx<=r;dx++){
-        const mx=Math.floor(x)+dx, my=Math.floor(y)+dy;
-        if(tileAt(getTile,mx,my)!==T.VOLCANO_MASTER_STONE) continue;
-        const key=mx+','+my;
-        if(seen.has(key)) continue;
-        seen.add(key);
-        masters.push({x:mx,y:my});
+  function guardianDefeated(kind){
+    const key=String(kind || '');
+    try{
+      const g=MM.guardianLairs || null;
+      if(g && typeof g.status==='function'){
+        const st=g.status() || {};
+        if(st.defeated && st.defeated[key]) return true;
       }
-    }
-    return masters;
+      if(g && typeof g.metrics==='function'){
+        const m=g.metrics() || {};
+        if(m.defeated && m.defeated[key]) return true;
+      }
+    }catch(e){}
+    try{
+      const hearts=MM.progress && MM.progress.guardianHearts ? MM.progress.guardianHearts() : null;
+      if(hearts && hearts[key]) return true;
+    }catch(e){}
+    return false;
+  }
+  function fireGuardianDefeated(){ return guardianDefeated('fire'); }
+  function iceGuardianDefeated(){ return guardianDefeated('ice'); }
+  function clayRitualCandidates(x,y,getTile){
+    return ritualStonesNear(x,y,CLAY_GOLEM_MAX_CLAY,getTile,T.VOLCANO_MASTER_STONE);
   }
   function wetClayNearMaster(mx,my,getTile){
     const cells=[];
@@ -1558,14 +1963,36 @@ const companions = (function(){
     }
     return {x:mx+0.5,y:my+0.96};
   }
-  function leafRitualCandidates(x,y,getTile){
+  // Ritual anchor lookup. The naive version scanned (2r+1)^2 tiles around every
+  // relevant tile change — at r=20 that is 1,681 getTile calls per water-sim move,
+  // which dominated frame time near any active water body. The volcano engine
+  // already keeps a registry of every master/servant stone (placement, eruption,
+  // save restore and near-player adoption all feed it), so query that instead and
+  // verify each hit against the live tile. The area scan remains as a fallback for
+  // environments without the volcano module (headless sims, tests).
+  function ritualStonesNear(x,y,r,getTile,stoneTile){
+    const cx=Math.floor(x), cy=Math.floor(y);
+    let reg=null;
+    try{
+      const v=MM.volcano;
+      if(v && typeof v.masterStonesNear==='function') reg=v.masterStonesNear(cx,cy,r);
+    }catch(e){ reg=null; }
+    if(reg){
+      const stones=[];
+      for(const m of reg){
+        if(tileAt(getTile,m.x,m.y)!==stoneTile) continue;
+        stones.push({x:m.x,y:m.y});
+      }
+      // match the row-major order of the area scan so multi-anchor tie-breaks stay stable
+      stones.sort((a,b)=>(a.y-b.y)||(a.x-b.x));
+      return stones;
+    }
     const stones=[];
     const seen=new Set();
-    const r=LEAF_MONSTER_MAX_LEAVES;
     for(let dy=-r;dy<=r;dy++){
       for(let dx=-r;dx<=r;dx++){
-        const sx=Math.floor(x)+dx, sy=Math.floor(y)+dy;
-        if(tileAt(getTile,sx,sy)!==T.SERVANT_STONE) continue;
+        const sx=cx+dx, sy=cy+dy;
+        if(tileAt(getTile,sx,sy)!==stoneTile) continue;
         const key=sx+','+sy;
         if(seen.has(key)) continue;
         seen.add(key);
@@ -1573,6 +2000,9 @@ const companions = (function(){
       }
     }
     return stones;
+  }
+  function leafRitualCandidates(x,y,getTile){
+    return ritualStonesNear(x,y,LEAF_MONSTER_MAX_LEAVES,getTile,T.SERVANT_STONE);
   }
   function leavesNearServant(sx,sy,getTile){
     const cells=[];
@@ -1622,20 +2052,7 @@ const companions = (function(){
     return {x:sx+0.5,y:sy+0.5};
   }
   function waterRitualCandidates(x,y,getTile){
-    const masters=[];
-    const seen=new Set();
-    const r=WATER_GOLEM_MAX_WATER;
-    for(let dy=-r;dy<=r;dy++){
-      for(let dx=-r;dx<=r;dx++){
-        const mx=Math.floor(x)+dx, my=Math.floor(y)+dy;
-        if(tileAt(getTile,mx,my)!==T.VOLCANO_MASTER_STONE) continue;
-        const key=mx+','+my;
-        if(seen.has(key)) continue;
-        seen.add(key);
-        masters.push({x:mx,y:my});
-      }
-    }
-    return masters;
+    return ritualStonesNear(x,y,WATER_GOLEM_MAX_WATER,getTile,T.VOLCANO_MASTER_STONE);
   }
   function waterNearMaster(mx,my,getTile){
     const cells=[];
@@ -1673,20 +2090,7 @@ const companions = (function(){
     return Math.floor(p.x)===m.x && Math.floor(p.y)===m.y ? 1 : 0;
   }
   function meatRitualCandidates(x,y,getTile){
-    const masters=[];
-    const seen=new Set();
-    const r=MEAT_GOLEM_MAX_MEAT;
-    for(let dy=-r;dy<=r;dy++){
-      for(let dx=-r;dx<=r;dx++){
-        const mx=Math.floor(x)+dx, my=Math.floor(y)+dy;
-        if(tileAt(getTile,mx,my)!==T.VOLCANO_MASTER_STONE) continue;
-        const key=mx+','+my;
-        if(seen.has(key)) continue;
-        seen.add(key);
-        masters.push({x:mx,y:my});
-      }
-    }
-    return masters;
+    return ritualStonesNear(x,y,MEAT_GOLEM_MAX_MEAT,getTile,T.VOLCANO_MASTER_STONE);
   }
   function meatNearMaster(mx,my,getTile){
     const cells=[];
@@ -1760,6 +2164,67 @@ const companions = (function(){
     }
     return {x:mx+0.5,y:my+0.96};
   }
+  function molekinRitualCandidates(x,y,getTile){
+    return ritualStonesNear(x,y,MOLEKIN_MAX_LAVA,getTile,T.VOLCANO_MASTER_STONE);
+  }
+  function lavaNearMaster(mx,my,getTile){
+    const cells=[];
+    const seen=new Set();
+    const dirs=[[1,0],[-1,0],[0,1],[0,-1]];
+    const queue=[];
+    for(const [dx,dy] of WATER_GOLEM_CONTACT_OFFSETS){
+      const x=mx+dx, y=my+dy;
+      if(tileAt(getTile,x,y)!==T.MOTHER_LAVA) continue;
+      const k=x+','+y;
+      if(seen.has(k)) continue;
+      seen.add(k);
+      queue.push({x,y,d:Math.max(Math.abs(dx),Math.abs(dy))});
+    }
+    queue.sort((a,b)=>a.d-b.d || ritualHash(a.x,a.y,61)-ritualHash(b.x,b.y,61));
+    while(queue.length && cells.length<MOLEKIN_MAX_LAVA){
+      const cur=queue.shift();
+      cells.push(cur);
+      const next=dirs.map(([dx,dy])=>({x:cur.x+dx,y:cur.y+dy,d:Math.abs(cur.x+dx-mx)+Math.abs(cur.y+dy-my)}))
+        .sort((a,b)=>a.d-b.d || ritualHash(a.x,a.y,67)-ritualHash(b.x,b.y,67));
+      for(const n of next){
+        const k=n.x+','+n.y;
+        if(seen.has(k)) continue;
+        seen.add(k);
+        if(tileAt(getTile,n.x,n.y)!==T.MOTHER_LAVA) continue;
+        queue.push(n);
+      }
+      queue.sort((a,b)=>a.d-b.d || ritualHash(a.x,a.y,61)-ritualHash(b.x,b.y,61));
+    }
+    return cells;
+  }
+  function masterReplacedLava(m,opts){
+    const p=opts && opts.replacedMotherLavaAt;
+    if(!p) return 0;
+    return Math.floor(p.x)===m.x && Math.floor(p.y)===m.y ? 1 : 0;
+  }
+  function molekinRoleForRitual(seed,lava){
+    const preferred = lava>=16 ? ['tank','healer','sniper','sapper','engineer','flanker','rusher','orbiter'] : MOLEKIN_ROLES;
+    return preferred[(seed>>>3)%preferred.length] || 'rusher';
+  }
+  function findMolekinSpawn(mx,my,lava,getTile,clearCells,seed,role){
+    const probe=makeCompanion({kind:KIND_MOLEKIN,x:mx+0.5,y:my+0.96,lava,role,seed});
+    const gt=virtualGetTileAfterClearing(getTile,clearCells);
+    const spots=[
+      {x:mx+0.5,y:my+0.96},{x:mx+0.5,y:my-0.04},{x:mx+0.5,y:my+1.96},
+      {x:mx-0.5,y:my+0.96},{x:mx+1.5,y:my+0.96},{x:mx-1.5,y:my+0.96},{x:mx+2.5,y:my+0.96}
+    ];
+    for(const base of spots){
+      for(let drop=0;drop<=5;drop++){
+        const p={x:base.x,y:base.y+drop};
+        if(!inCompanionWorldY(p.y,1,0.5)) continue;
+        if(clearAt(p.x,p.y,probe,gt) && (hasFloorFor(probe,p.x,p.y,gt) || drop>=1)) return p;
+      }
+    }
+    for(const base of spots){
+      if(inCompanionWorldY(base.y,1,0.5) && clearAt(base.x,base.y,probe,gt)) return base;
+    }
+    return {x:mx+0.5,y:my+0.96};
+  }
   function makeDebugCompanionRoom(){
     if(list.length<MAX_COMPANIONS) return true;
     const removed=list.shift();
@@ -1804,7 +2269,11 @@ const companions = (function(){
       burst(golem.x,golem.y-0.7,'epic');
       sparks(golem.x,golem.y-0.72,'rare',22);
       sfx('charge');
-      say(golem.name+' wstal z mokrej gliny i kamienia mistrza.');
+      sayVariant('clay_ritual',[
+        '{name} wstal z mokrej gliny i kamienia mistrza.',
+        '{name} ulepil sie przy tobie i od razu wyglada, jakby znal regulamin tarczy.',
+        '{name} podniosl gliniana glowe. Kamien mistrza jeszcze mu brzeczy w srodku.'
+      ],{name:golem.name});
       try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_CLAY_GOLEM}})); }catch(e){}
       return golem;
     }
@@ -1842,7 +2311,11 @@ const companions = (function(){
       burst(leaf.x,leaf.y-0.38,'rare');
       sparks(leaf.x,leaf.y-0.42,'common',20);
       sfx('wind');
-      say(leaf.name+' zawirowal z lisci i kamienia slugi.');
+      sayVariant('leaf_ritual',[
+        '{name} zawirowal z lisci i kamienia slugi.',
+        '{name} wyskoczyl z lisci, jakby wiatr przez chwile mial plan.',
+        '{name} zaszelescil przysiega: szybko, krucho, po twojej stronie.'
+      ],{name:leaf.name});
       try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_LEAF_MONSTER}})); }catch(e){}
       return leaf;
     }
@@ -1884,9 +2357,64 @@ const companions = (function(){
       if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
       sparks(golem.x,golem.y-0.56,'rare',24);
       sfx('hose');
-      say(golem.name+' wynurzyl sie z wody i kamienia mistrza.');
+      sayVariant('water_ritual',[
+        '{name} wynurzyl sie z wody i kamienia mistrza.',
+        '{name} zebral sie w jedna postac, choc przez moment wygladal jak ambitna kaluza.',
+        '{name} plusnal na nogi i uznal, ze od teraz twoje problemy beda mokre.'
+      ],{name:golem.name});
       try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_WATER_GOLEM}})); }catch(e){}
       return golem;
+    }
+    return null;
+  }
+  function tryMolekinRitualAt(x,y,getTile,setTile,opts){
+    opts=opts||{};
+    if(ritualBusy || typeof getTile!=='function' || typeof setTile!=='function') return null;
+    if(!Number.isFinite(T.VOLCANO_MASTER_STONE) || !Number.isFinite(T.MOTHER_LAVA)) return null;
+    if(!fireGuardianDefeated() && !opts.ignoreGuardian && !opts.debugReplace){
+      if(opts.announce) say('Rytual kretoludzi milczy. Najpierw pokonaj Wschodniego Fire Guardiana.');
+      return null;
+    }
+    const masters=molekinRitualCandidates(x,y,getTile);
+    for(const m of masters){
+      const lavaCells=lavaNearMaster(m.x,m.y,getTile);
+      const replacedLava=masterReplacedLava(m,opts);
+      const lavaTotal=lavaCells.length+replacedLava;
+      if(lavaTotal<MOLEKIN_MIN_LAVA) continue;
+      if(list.length>=MAX_COMPANIONS){
+        if(opts.debugReplace){
+          if(!makeDebugCompanionRoom()) return null;
+        }else{
+          sayRitualCapacity(opts);
+          return null;
+        }
+      }
+      const lava=Math.min(MOLEKIN_MAX_LAVA,lavaTotal);
+      const seed=ritualHash(m.x,m.y,lava ^ Math.floor(nowMs()) ^ 0xea57111);
+      const role=validChoice(String(opts.role || opts.moleRole || molekinRoleForRitual(seed,lava)),MOLEKIN_ROLES,'rusher');
+      const consumedLavaCells=lavaCells.slice(0,Math.max(0,lava-replacedLava));
+      const clearCells=[{x:m.x,y:m.y},...consumedLavaCells];
+      const spot=findMolekinSpawn(m.x,m.y,lava,getTile,clearCells,seed,role);
+      ritualBusy=true;
+      try{
+        setTile(m.x,m.y,T.AIR);
+        for(const c of consumedLavaCells) setTile(c.x,c.y,Number.isFinite(T.BASALT)?T.BASALT:(Number.isFinite(T.OBSIDIAN)?T.OBSIDIAN:T.AIR));
+      }finally{
+        ritualBusy=false;
+      }
+      const mole=makeCompanion({kind:KIND_MOLEKIN,x:spot.x,y:spot.y,lava,role,seed,facing:1});
+      list.push(mole);
+      deathFx.push({x:mole.x,y:mole.y-0.48,t:0,max:0.58,color:(mole.genome && mole.genome.accent) || '#ff8b35', fill:'rgba(255,94,34,0.22)'});
+      if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
+      sparks(mole.x,mole.y-0.45,role==='tank'?'epic':'rare',24);
+      sfx('fire');
+      sayVariant('molekin_ritual',[
+        '{name} wylazl z lawy macierzystej po upadku Wschodniego Guardiana. Teraz klania sie Hero-Prostokatowi.',
+        '{name} wyszedl z lawy macierzystej, otrzepal popiol i uznal Hero-Prostokat za cieplejszy rozkaz.',
+        '{name} przyniosl z glebi dawny zar. Od tej chwili jego tunel prowadzi za bohaterem.'
+      ],{name:mole.name});
+      try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_MOLEKIN,role:mole.moleRole}})); }catch(e){}
+      return mole;
     }
     return null;
   }
@@ -1926,7 +2454,11 @@ const companions = (function(){
       if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
       sparks(golem.x,golem.y-0.58,'rare',22);
       sfx('charge');
-      say(golem.name+' zerwal sie z miesa i kamienia mistrza. Za piec minut zgnije.');
+      sayVariant('meat_ritual',[
+        '{name} zerwal sie z miesa i kamienia mistrza. Za piec minut zgnije.',
+        '{name} poskladal sie z miesa z niepokojaca determinacja. Zegar gnicia juz tyka.',
+        '{name} drgnal, wstal i wyglada, jakby byl swietnym pomyslem tylko przez chwile.'
+      ],{name:golem.name});
       try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_MEAT_GOLEM}})); }catch(e){}
       return golem;
     }
@@ -1934,13 +2466,25 @@ const companions = (function(){
   }
   function onTileChanged(x,y,oldTile,newTile,getTile,setTile){
     if(ritualBusy) return false;
+    // Register freshly placed anchor stones before the ritual lookup below —
+    // this hook can fire before volcano's own onTileChanged sees the placement,
+    // and ritualStonesNear trusts that registry.
+    if(newTile===T.VOLCANO_MASTER_STONE || newTile===T.SERVANT_STONE){
+      try{
+        const v=MM.volcano;
+        if(v && typeof v.trackMasterStone==='function') v.trackMasterStone(x,y,0,newTile===T.SERVANT_STONE?'servant':'master');
+      }catch(e){ /* registry optional */ }
+    }
     const clayRelevant=newTile===T.WET_CLAY || newTile===T.VOLCANO_MASTER_STONE || oldTile===T.WET_CLAY || oldTile===T.VOLCANO_MASTER_STONE;
     const leafRelevant=newTile===T.SERVANT_STONE || oldTile===T.SERVANT_STONE || isLeaf(newTile) || isLeaf(oldTile);
     const waterRelevant=newTile===T.WATER || oldTile===T.WATER || newTile===T.VOLCANO_MASTER_STONE || oldTile===T.VOLCANO_MASTER_STONE;
+    const lavaRelevant=newTile===T.MOTHER_LAVA || oldTile===T.MOTHER_LAVA || newTile===T.VOLCANO_MASTER_STONE || oldTile===T.VOLCANO_MASTER_STONE;
     const meatRelevant=newTile===T.MEAT || oldTile===T.MEAT || newTile===T.VOLCANO_MASTER_STONE || oldTile===T.VOLCANO_MASTER_STONE;
-    if(!clayRelevant && !leafRelevant && !waterRelevant && !meatRelevant) return false;
+    if(!clayRelevant && !leafRelevant && !waterRelevant && !lavaRelevant && !meatRelevant) return false;
     const waterOpts=(oldTile===T.WATER && newTile===T.VOLCANO_MASTER_STONE) ? {replacedWaterAt:{x,y}} : null;
-    return !!((clayRelevant && tryClayGolemRitualAt(x,y,getTile,setTile)) || (waterRelevant && tryWaterGolemRitualAt(x,y,getTile,setTile,waterOpts)) || (meatRelevant && tryMeatGolemRitualAt(x,y,getTile,setTile)) || (leafRelevant && tryLeafMonsterRitualAt(x,y,getTile,setTile)));
+    const lavaOpts=(oldTile===T.MOTHER_LAVA && newTile===T.VOLCANO_MASTER_STONE) ? {replacedMotherLavaAt:{x,y}} : null;
+    if(lavaOpts) return !!tryMolekinRitualAt(x,y,getTile,setTile,lavaOpts);
+    return !!((clayRelevant && tryClayGolemRitualAt(x,y,getTile,setTile)) || (waterRelevant && tryWaterGolemRitualAt(x,y,getTile,setTile,waterOpts)) || (lavaRelevant && tryMolekinRitualAt(x,y,getTile,setTile,lavaOpts)) || (meatRelevant && tryMeatGolemRitualAt(x,y,getTile,setTile)) || (leafRelevant && tryLeafMonsterRitualAt(x,y,getTile,setTile)));
   }
   function spawnFromCraft(player,opts){
     opts=opts||{};
@@ -1955,7 +2499,44 @@ const companions = (function(){
     list.push(c);
     burst(c.x,c.y-0.4,'rare');
     sfx('charge');
-    say(c.name+' dolaczyl do ciebie. Karm biomasa, jesli ma rosnac.');
+    sayVariant('bio_craft',[
+      '{name} dolaczyl do ciebie. Karm biomasa, jesli ma rosnac.',
+      '{name} spojrzal na bohatera jak na chodzaca instrukcje przetrwania.',
+      '{name} przylgnal do druzyny. Biomasa brzmi dla niego jak obietnica.'
+    ],{name:c.name});
+    return c;
+  }
+  function spawnUfoAlienFromCraft(player,opts){
+    opts=opts||{};
+    if(!iceGuardianDefeated() && !opts.ignoreGuardian && !opts.debugReplace){
+      invAdd(opts.refund || {motherIce:opts.motherIce||UFO_ALIEN_MIN_CONCRETE});
+      say('Lod macierzysty milczy. Najpierw pokonaj Zachodniego Ice Guardiana.');
+      return null;
+    }
+    if(list.length>=MAX_COMPANIONS){
+      invAdd(opts.refund || {motherIce:opts.motherIce||UFO_ALIEN_MIN_CONCRETE});
+      say('Pomocnikow jest juz za duzo. Oddalem lod macierzysty.');
+      return null;
+    }
+    const concrete=ufoConcreteMass({motherIce:opts.motherIce || opts.ufoConcrete || UFO_ALIEN_MIN_CONCRETE});
+    const role=validChoice(String(opts.role || opts.ufoRole || UFO_ALIEN_ROLES[Math.floor(Math.random()*UFO_ALIEN_ROLES.length)]),UFO_ALIEN_ROLES,'rusher');
+    const probe=makeCompanion({kind:KIND_UFO_ALIEN,x:0,y:0,motherIce:concrete,role});
+    const spot=findSpawnNear(player,opts.getTile,1.55+list.length*0.58);
+    const c=makeCompanion({kind:KIND_UFO_ALIEN,x:spot.x,y:spot.y,motherIce:concrete,role,facing:(player && player.facing)||1});
+    if(!clearAt(c.x,c.y,probe,opts.getTile)){
+      c.y=clampCompanionWorldY(c.y-1.1,2,0.15);
+    }
+    list.push(c);
+    deathFx.push({x:c.x,y:c.y-0.52,t:0,max:0.58,color:(c.genome && c.genome.glow) || '#7cf7ff', fill:'rgba(83,105,119,0.24)'});
+    if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
+    sparks(c.x,c.y-0.52,c.ufoRole==='commander'?'epic':'rare',24);
+    sfx('charge');
+    sayVariant('ufo_alien_craft',[
+      '{name} uznal Hero-Prostokat za nowy oltarz. To najsilniejszy typ kompana.',
+      '{name} przelaczyl kult na Hero-Prostokat i udaje, ze nigdy nie lubil starych rozkazow.',
+      '{name} niesie lod macierzysty jak przysiege. Wrogowie beda widziec role alien teamu po twojej stronie.'
+    ],{name:c.name});
+    try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_UFO_ALIEN,role:c.ufoRole}})); }catch(e){}
     return c;
   }
   function spawnLeafMonsterFromCraft(player,opts){
@@ -1997,7 +2578,7 @@ const companions = (function(){
     ritualScanCd=0.65;
     const px=Math.floor(Number(player.x)||0);
     const py=Math.floor(Number(player.y)||0);
-    return !!(tryClayGolemRitualAt(px,py,getTile,setTile) || tryWaterGolemRitualAt(px,py,getTile,setTile) || tryMeatGolemRitualAt(px,py,getTile,setTile) || tryLeafMonsterRitualAt(px,py,getTile,setTile));
+    return !!(tryClayGolemRitualAt(px,py,getTile,setTile) || tryWaterGolemRitualAt(px,py,getTile,setTile) || tryMolekinRitualAt(px,py,getTile,setTile) || tryMeatGolemRitualAt(px,py,getTile,setTile) || tryLeafMonsterRitualAt(px,py,getTile,setTile));
   }
   function nearestCompanion(player,range,predicate){
     if(!list.length || !player) return null;
@@ -2024,7 +2605,7 @@ const companions = (function(){
   }
   function feedNearest(player,amount,opts){
     opts=opts||{};
-    const c=nearestCompanion(player,6,c=>!isClayGolem(c) && !isLeafMonster(c) && !isWaterGolem(c) && !isMeatGolem(c) && !isFriedChicken(c));
+    const c=nearestCompanion(player,6,c=>!isClayGolem(c) && !isLeafMonster(c) && !isWaterGolem(c) && !isMeatGolem(c) && !isFriedChicken(c) && !isUfoAlien(c) && !isMolekin(c));
     if(!c){
       invAdd(opts.refund || {alienBiomass:amount||1, meat:opts.meat||1});
       say('Nie ma pomocnika w poblizu. Oddalem skladniki.');
@@ -2222,6 +2803,89 @@ const companions = (function(){
     sparks(target.x,target.y,hit?'rare':'common',hit?10:4);
     sfx('beam');
   }
+  function ufoAlienSupport(c,dt,player){
+    if(!isUfoAlien(c) || ufoAlienRole(c)!=='healer') return false;
+    c.attackCd=Math.max(0,(c.attackCd||0)-dt);
+    if(c.attackCd>0) return false;
+    const traits=traitsFor(c);
+    let target=null;
+    let bestMissing=0;
+    for(const other of list){
+      if(other===c || other.hp<=0 || !(other.maxHp>0)) continue;
+      const missing=other.maxHp-other.hp;
+      if(missing<=1) continue;
+      const d=Math.hypot(other.x-c.x,(other.y-0.55)-(c.y-0.55));
+      if(d<=traits.laserRange && missing>bestMissing){ target=other; bestMissing=missing; }
+    }
+    const heroMissing=player && player.maxHp>0 ? (player.maxHp-player.hp) : 0;
+    if(heroMissing>bestMissing && Math.hypot(player.x-c.x,(player.y-0.55)-(c.y-0.55))<=traits.laserRange){
+      target=player;
+      bestMissing=heroMissing;
+    }
+    if(!target) return false;
+    const heal=5.5 + ufoConcreteMass(c)*0.38;
+    if(target===player){
+      player.hp=Math.min(player.maxHp,player.hp+heal);
+    }else{
+      healCompanion(target,heal);
+      target.feedPulse=Math.max(target.feedPulse||0,0.16);
+    }
+    const tx=target.x, ty=(target===player ? target.y-0.55 : target.y-0.55);
+    c.lastTarget={x:tx,y:ty,t:0.65};
+    lasers.push({kind:'heal',x1:c.x,y1:c.y-0.62,x2:tx,y2:ty,life:0,max:0.30,hit:true,color:(c.genome && c.genome.laser) || '#d8ffe8',seed:(c.seed ^ Math.floor(nowMs()) ^ 0x0f0a11e9)>>>0});
+    if(lasers.length>48) lasers.splice(0,lasers.length-48);
+    sparks(tx,ty,'rare',6);
+    sfx('heal');
+    c.attackCd=1.20;
+    c.laserCd=Math.max(c.laserCd||0,0.16);
+    return true;
+  }
+  function molekinSupport(c,dt,player){
+    if(!isMolekin(c) || molekinRole(c)!=='healer') return false;
+    c.attackCd=Math.max(0,(c.attackCd||0)-dt);
+    if(c.attackCd>0) return false;
+    const traits=traitsFor(c);
+    let target=null;
+    let bestMissing=0;
+    const heroMissing=player && player.maxHp>0 ? (player.maxHp-player.hp) : 0;
+    const heroInRange=heroMissing>1 && Math.hypot(player.x-c.x,(player.y-0.55)-(c.y-0.55))<=traits.laserRange;
+    const heroUrgent=heroMissing>=Math.max(8,player && player.maxHp>0 ? player.maxHp*0.08 : 8);
+    if(heroInRange && heroUrgent){
+      target=player;
+      bestMissing=Number.POSITIVE_INFINITY;
+    }else if(c.maxHp>0 && c.hp<c.maxHp-1){
+      target=c;
+      bestMissing=c.maxHp-c.hp;
+    }
+    for(const other of list){
+      if(other===c || other.hp<=0 || !(other.maxHp>0)) continue;
+      const missing=other.maxHp-other.hp;
+      if(missing<=1 || missing<=bestMissing) continue;
+      const d=Math.hypot(other.x-c.x,(other.y-0.55)-(c.y-0.55));
+      if(d<=traits.laserRange){ target=other; bestMissing=missing; }
+    }
+    if(heroInRange && heroMissing>bestMissing){
+      target=player;
+      bestMissing=heroMissing;
+    }
+    if(!target) return false;
+    const heal=(7.0 + lavaMass(c)*0.42)*(traits.healMult||1);
+    if(target===player){
+      player.hp=Math.min(player.maxHp,player.hp+heal);
+    }else{
+      healCompanion(target,heal);
+      target.feedPulse=Math.max(target.feedPulse||0,0.18);
+    }
+    const tx=target.x, ty=target.y-0.55;
+    c.lastTarget={x:tx,y:ty,t:0.65};
+    lasers.push({kind:'mole_heal',x1:c.x,y1:c.y-0.58,x2:tx,y2:ty,life:0,max:0.30,hit:true,color:(c.genome && c.genome.ember) || '#ffc96f',seed:(c.seed ^ Math.floor(nowMs()) ^ 0xea57111)>>>0});
+    if(lasers.length>48) lasers.splice(0,lasers.length-48);
+    sparks(tx,ty,'rare',7);
+    sfx('heal');
+    c.attackCd=1.05;
+    c.laserCd=Math.max(c.laserCd||0,0.14);
+    return true;
+  }
   function extinguishFireTarget(tx,ty){
     if(!MM.fire || typeof MM.fire.extinguish!=='function') return false;
     let n=0;
@@ -2270,6 +2934,52 @@ const companions = (function(){
     sparks(target.x,target.y,hit?'common':'common',hit?8:3);
     sfx('hose');
     return hit;
+  }
+  function molekinFireStrike(c,target,getTile,setTile){
+    const sx=c.x, sy=c.y-0.58;
+    const traits=traitsFor(c);
+    const role=molekinRole(c);
+    const heavy=role==='sapper' || role==='tank' || role==='sniper';
+    const dmg=traits.laserDamage*(heavy ? 1.08 : 1);
+    const hit=damageTarget(target,dmg);
+    c.facing=target.x>=c.x ? 1 : -1;
+    c.lastTarget={x:target.x,y:target.y,t:0.70};
+    c.feedPulse=Math.max(c.feedPulse||0,0.12);
+    if(traits.guardAbsorb>0) c.shieldPulse=Math.max(c.shieldPulse||0,0.14);
+    try{ if(MM.mobs && MM.mobs.igniteRadius) MM.mobs.igniteRadius(target.x,target.y,heavy?1.8:1.2,{dur:2.8,dps:1.0+lavaMass(c)*0.04,hostileOnly:true,source:'companion'}); }catch(e){}
+    try{
+      if(heavy && MM.fire && MM.fire.heatAround && typeof setTile==='function'){
+        MM.fire.heatAround(Math.floor(target.x),Math.floor(target.y),getTile,setTile,{includeCenter:true,source:'companion'});
+      }
+    }catch(e){}
+    lasers.push({
+      kind:heavy?'mole_lava':'mole_fire',
+      x1:sx,y1:sy,x2:target.x,y2:target.y,
+      life:0,max:0.28,hit,
+      color:(c.genome && (heavy?c.genome.accent:c.genome.ember)) || (heavy?'#ff552e':'#ffc96f'),
+      seed:(c.seed ^ Math.floor(nowMs()) ^ 0xea57111)>>>0
+    });
+    if(lasers.length>48) lasers.splice(0,lasers.length-48);
+    sparks(target.x,target.y,hit?'rare':'common',hit?(heavy?12:9):4);
+    sfx('fire');
+    return hit;
+  }
+  function updateMolekinAction(c,dt,player,getTile,setTile){
+    if(!isMolekin(c)) return false;
+    if(molekinSupport(c,dt,player)) return true;
+    c.laserCd=Math.max(0,(c.laserCd||0)-dt);
+    const target=nearestHostile(c,player,getTile);
+    if(!target){
+      c.laserCd=Math.max(c.laserCd,0.14);
+      return false;
+    }
+    if(c.laserCd>0){
+      c.lastTarget={x:target.x,y:target.y,t:0.18};
+      return true;
+    }
+    molekinFireStrike(c,target,getTile,setTile);
+    c.laserCd=traitsFor(c).laserCooldown*(0.70+Math.random()*0.34);
+    return true;
   }
   function heatTouchesMeatGolem(c,getTile){
     if(!isMeatGolem(c) || typeof getTile!=='function') return false;
@@ -2581,6 +3291,15 @@ const companions = (function(){
       if(feet===T.WATER || body===T.WATER || feet===T.WET_CLAY || body===T.WET_CLAY) healCompanion(c,dt*(1.0+clayMass(c)*0.035));
       if(feet===T.LAVA || body===T.LAVA) dps+=28;
       if(body===T.FUEL_GAS || body===T.HOT_AIR) dps+=4.8;
+    }else if(isUfoAlien(c)){
+      if(feet===T.LAVA || body===T.LAVA) dps+=9.5;
+      if(body===T.FUEL_GAS || body===T.HOT_AIR) dps+=1.2;
+      if(feet===T.MOTHER_ICE || body===T.MOTHER_ICE || feet===T.ICE || body===T.ICE) healCompanion(c,dt*(2.4+ufoConcreteMass(c)*0.08));
+    }else if(isMolekin(c)){
+      if(feet===T.MOTHER_LAVA || body===T.MOTHER_LAVA) healCompanion(c,dt*(5.2+lavaMass(c)*0.16));
+      else if(feet===T.LAVA || body===T.LAVA) healCompanion(c,dt*(2.2+lavaMass(c)*0.06));
+      if(body===T.HOT_AIR || body===T.FUEL_GAS || body===T.STEAM) healCompanion(c,dt*(0.9+lavaMass(c)*0.035));
+      if(feet===T.WATER || body===T.WATER) dps+=6.5;
     }else{
       if(feet===T.LAVA || body===T.LAVA) dps+=20;
       if(body===T.FUEL_GAS || body===T.HOT_AIR) dps+=1.8;
@@ -2605,9 +3324,18 @@ const companions = (function(){
       const hot=reason==='env' || reason==='fire' || reason==='lava';
       amount*=hot ? 0.92 : (reason==='guard' ? 0.58 : 0.64);
     }
+    if(isUfoAlien(c)){
+      const hot=reason==='env' || reason==='fire' || reason==='lava';
+      amount*=hot ? 0.62 : (reason==='guard' ? 0.45 : 0.50);
+    }
+    if(isMolekin(c)){
+      const hot=reason==='env' || reason==='fire' || reason==='lava';
+      amount*=hot ? 0.30 : (reason==='guard' ? 0.46 : 0.54);
+    }
     c.hp-=amount;
     c.hitPulse=0.25;
     if(isClayGolem(c)) c.shieldPulse=Math.max(c.shieldPulse||0,0.18);
+    if(isMolekin(c) && traitsFor(c).guardAbsorb>0) c.shieldPulse=Math.max(c.shieldPulse||0,0.16);
     if(c.hp<=0){
       kill(c,reason||'damage');
       return true;
@@ -2654,6 +3382,22 @@ const companions = (function(){
       burst(c.x,c.y-0.45,'rare');
       sfx('break');
       say(c.name+' opadl w ciezkie bryly mokrej gliny.');
+      return;
+    }
+    if(isUfoAlien(c)){
+      deathFx.push({x:c.x,y:c.y-0.52,t:0,max:0.62,color:(c.genome && c.genome.glow) || '#7cf7ff', fill:'rgba(83,105,119,0.24)'});
+      if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
+      sparks(c.x,c.y-0.45,c.ufoRole==='commander'?'epic':'rare',20);
+      sfx('break');
+      say(c.name+' pekl w odlamki lodu macierzystego.');
+      return;
+    }
+    if(isMolekin(c)){
+      deathFx.push({x:c.x,y:c.y-0.46,t:0,max:0.58,color:(c.genome && c.genome.accent) || '#ff8b35', fill:'rgba(255,90,28,0.22)'});
+      if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
+      sparks(c.x,c.y-0.42,'rare',18);
+      sfx('fire');
+      say(c.name+' zapadl sie w goracy popiol.');
       return;
     }
     const traits=traitsFor(c);
@@ -2715,11 +3459,13 @@ const companions = (function(){
     c.laserCd=0.18;
     return false;
   }
-  function nearestClayGolemToHero(player,range){
+  function nearestGuardCompanionToHero(player,range){
     if(!player) return null;
     let best=null, bd=(range||CLAY_GOLEM_GUARD_RADIUS)*(range||CLAY_GOLEM_GUARD_RADIUS);
     for(const c of list){
-      if(!isClayGolem(c) || c.hp<=0) continue;
+      if(c.hp<=0 || (!isClayGolem(c) && !isUfoAlien(c) && !isMolekin(c))) continue;
+      const traits=traitsFor(c);
+      if(!(traits.guardAbsorb>0)) continue;
       const dx=c.x-player.x, dy=(c.y-0.6)-player.y;
       const d=dx*dx+dy*dy;
       if(d<bd){ bd=d; best=c; }
@@ -2731,7 +3477,7 @@ const companions = (function(){
     if(!(amount>0) || opts.ignoreCompanionGuard) return {amount,absorbed:0};
     const cause=String(opts.cause||'');
     if(cause==='drowning' || cause==='rotten_meat' || cause==='hunger') return {amount,absorbed:0};
-    const golem=nearestClayGolemToHero(player,CLAY_GOLEM_GUARD_RADIUS+1.8);
+    const golem=nearestGuardCompanionToHero(player,CLAY_GOLEM_GUARD_RADIUS+2.6);
     if(!golem) return {amount,absorbed:0};
     const traits=traitsFor(golem);
     const absorbed=Math.min(amount, amount*traits.guardAbsorb);
@@ -2744,7 +3490,7 @@ const companions = (function(){
   }
   function teleportToHero(c,player,getTile,offset,announce){
     if(!c || !player) return false;
-    const spot=isClayGolem(c)
+    const spot=(isClayGolem(c) || isUfoAlien(c) || isMolekin(c))
       ? findSpawnNearFor(c,player,getTile,offset||1.8)
       : (isLeafMonster(c) ? findLeafMonsterSpawnNear(player,getTile,c,offset||1.45) : findSpawnNear(player,getTile,offset||1.15));
     c.x=spot.x; c.y=spot.y; c.vx=0; c.vy=0;
@@ -2757,9 +3503,9 @@ const companions = (function(){
       return true;
     }
     burst(c.x,c.y-0.45,'rare');
-    const cost=Math.max(1,c.maxHp*0.10);
+    const cost=Math.max(1,c.maxHp*((isUfoAlien(c) || isMolekin(c)) ? 0.035 : 0.10));
     const survived=!damage(c,cost,'catchup');
-    if(survived && announce) say(c.name+' nadwyrezyl sie, doganiajac bohatera (-10% HP).');
+    if(survived && announce) say(c.name+' nadwyrezyl sie, doganiajac bohatera '+((isUfoAlien(c) || isMolekin(c))?'(-3.5% HP).':'(-10% HP).'));
     return survived || list.indexOf(c)<0;
   }
   function windAtForLeaf(c,getTile){
@@ -2930,6 +3676,12 @@ const companions = (function(){
     const info=INFO[t];
     return !!info && t!==T.AIR && !passableForCompanion(t) && !info.unmineable && !info.chestTier && !info.machine && !info.story && !isGasTile(t);
   }
+  function molekinCanBreakTile(t){
+    const info=INFO[t];
+    if(!info || t===T.AIR || passableForCompanion(t) || info.unmineable || info.chestTier || info.machine || info.story || info.cache || isGasTile(t)) return false;
+    if(isDoorTile(t) || info.door || info.trapdoor) return false;
+    return !!(info.geology || info.hardRock || t===T.STONE || t===T.GRASS || t===T.SAND || t===T.SNOW || t===T.ICE || t===T.MUD || t===T.CLAY || t===T.WET_CLAY || t===T.OBSIDIAN || t===T.BRICK);
+  }
   function clayGolemFrontBlockers(c,nx,ny,dir,getTile){
     const out=[];
     const seen=new Set();
@@ -2940,6 +3692,23 @@ const companions = (function(){
       const tx=Math.floor(front), ty=Math.floor(py);
       const t=tileAt(getTile,tx,ty);
       if(passableForCompanion(t) || !clayGolemCanBreakTile(t)) continue;
+      const kk=tx+','+ty;
+      if(seen.has(kk)) continue;
+      seen.add(kk);
+      out.push({x:tx,y:ty,t});
+    }
+    return out;
+  }
+  function molekinFrontBlockers(c,nx,ny,dir,getTile){
+    const out=[];
+    const seen=new Set();
+    const front=nx+dir*(companionBodyW(c)*0.5+0.05);
+    const h=companionBodyH(c);
+    const probes=[ny-0.16,ny-0.52,ny-Math.min(h-0.08,1.08)];
+    for(const py of probes){
+      const tx=Math.floor(front), ty=Math.floor(py);
+      const t=tileAt(getTile,tx,ty);
+      if(passableForCompanion(t) || !molekinCanBreakTile(t)) continue;
       const kk=tx+','+ty;
       if(seen.has(kk)) continue;
       seen.add(kk);
@@ -2962,6 +3731,30 @@ const companions = (function(){
         c.feedPulse=Math.max(c.feedPulse||0,0.14);
         c.lastTarget={x:b.x+0.5,y:b.y+0.5,t:0.22};
         sparks(b.x+0.5,b.y+0.5,'common',6);
+        sfx('break');
+        return true;
+      }
+    }
+    return false;
+  }
+  function molekinBreakPath(c,nx,ny,dir,getTile,setTile,opts){
+    if(!isMolekin(c) || (c.pathBreakCd||0)>0) return false;
+    const blockers=molekinFrontBlockers(c,nx,ny,dir,getTile);
+    if(!blockers.length) return false;
+    const breaker=opts && opts.breakTile;
+    const traits=traitsFor(c);
+    for(const b of blockers){
+      let ok=false;
+      if(typeof breaker==='function') ok=!!breaker(b.x,b.y,b.t,c);
+      else if(typeof setTile==='function'){ setTile(b.x,b.y,T.AIR); ok=true; }
+      if(ok){
+        c.pathBreakCd=0.12;
+        c.feedPulse=Math.max(c.feedPulse||0,0.12);
+        c.lastTarget={x:b.x+0.5,y:b.y+0.5,t:0.20};
+        c.vx+=dir*0.25;
+        sparks(b.x+0.5,b.y+0.5,'common',5);
+        if(molekinRole(c)==='sapper' || molekinRole(c)==='engineer') c.pathBreakCd=0.08;
+        if(traits.guardAbsorb>0) c.shieldPulse=Math.max(c.shieldPulse||0,0.10);
         sfx('break');
         return true;
       }
@@ -3039,6 +3832,19 @@ const companions = (function(){
             }
             if(clayGolemBreakPath(c,nx,ny,dir,getTile,setTile,opts)){
               c.vx*=0.22;
+              return false;
+            }
+          }else if(isMolekin(c)){
+            if(walkingGolemRecoveryJump(c,dir,getTile)){
+              c.vx*=0.30;
+              return false;
+            }
+            if(!c.grounded || c.stuckT<MOLEKIN_BREAK_STUCK_SECONDS){
+              c.vx*=0.40;
+              return false;
+            }
+            if(molekinBreakPath(c,nx,ny,dir,getTile,setTile,opts)){
+              c.vx*=0.30;
               return false;
             }
           }else if(isWalkingGolem(c)){
@@ -3188,7 +3994,8 @@ const companions = (function(){
     const info=INFO[command.harvestTile] || {hp:1};
     const heroSpeed=Math.max(0.1,Number(opts && opts.harvestSpeed)||1);
     const need=Math.max(0.12,(Number(info.hp)||1)/6);
-    c.harvestProgress=(c.harvestProgress||0)+dt*heroSpeed*HARVEST_SPEED_SCALE;
+    const harvestMult=Math.max(0.25,Number(traitsFor(c).harvest)||1);
+    c.harvestProgress=(c.harvestProgress||0)+dt*heroSpeed*HARVEST_SPEED_SCALE*harvestMult;
     c.lastTarget={x:c.harvestX+0.5,y:c.harvestY+0.5,t:0.22};
     c.facing=(c.harvestX+0.5)>=c.x ? 1 : -1;
     if(c.harvestProgress<need) return true;
@@ -3234,6 +4041,10 @@ const companions = (function(){
       if(isLeafMonster(c) && updateLeafMonsterFeeding(c,dt,getTile,setTile)) continue;
       const harvesting=updateHarvest(c,dt,getTile,opts);
       if(harvesting) continue;
+      if(isMolekin(c)){
+        if(isAttackMode()) updateMolekinAction(c,dt,player,getTile,setTile);
+        continue;
+      }
       if(isLeafMonster(c)){
         if(isAttackMode()) updateLeafMonsterAttack(c,dt,player,getTile);
         continue;
@@ -3256,6 +4067,7 @@ const companions = (function(){
         continue;
       }
       if(!isAttackMode()) continue;
+      if(isUfoAlien(c)) ufoAlienSupport(c,dt,player);
       c.gasCd-=dt;
       if(c.gasCd<=0){
         c.gasCd=traitsFor(c).poisonInterval*(0.75+Math.random()*0.65);
@@ -3413,15 +4225,49 @@ const companions = (function(){
     try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_MEAT_GOLEM,debug:true}})); }catch(e){}
     return c;
   }
+  function debugSpawnUfoAlien(player,concrete,getTile,role){
+    if(!makeDebugCompanionRoom()) return null;
+    const mass=ufoConcreteMass({motherIce:concrete});
+    const safeRole=validChoice(String(role || 'commander'),UFO_ALIEN_ROLES,'commander');
+    const seed=hashSeed(Number(player && player.x)||0,Number(player && player.y)||0,mass ^ 0x0f0a11e9);
+    const probe=makeCompanion({kind:KIND_UFO_ALIEN,x:0,y:0,motherIce:mass,role:safeRole,seed,facing:(player && player.facing)||1});
+    const spot=findSpawnNearFor(probe,player,getTile,1.75+list.length*0.66);
+    const c=makeCompanion({kind:KIND_UFO_ALIEN,x:spot.x,y:spot.y,motherIce:mass,role:safeRole,seed,facing:(player && player.facing)||1});
+    list.push(c);
+    deathFx.push({x:c.x,y:c.y-0.52,t:0,max:0.48,color:(c.genome && c.genome.glow) || '#7cf7ff',fill:'rgba(83,105,119,0.22)'});
+    if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
+    sparks(c.x,c.y-0.52,c.ufoRole==='commander'?'epic':'rare',22);
+    sfx('charge');
+    say(c.name+' dolaczyl do debugowej druzyny.');
+    try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_UFO_ALIEN,role:c.ufoRole,debug:true}})); }catch(e){}
+    return c;
+  }
+  function debugSpawnMolekin(player,lava,getTile,role){
+    if(!makeDebugCompanionRoom()) return null;
+    const mass=lavaMass({lava});
+    const safeRole=validChoice(String(role || MOLEKIN_ROLES[(Math.floor(Math.random()*MOLEKIN_ROLES.length))]),MOLEKIN_ROLES,'rusher');
+    const seed=hashSeed(Number(player && player.x)||0,Number(player && player.y)||0,mass ^ 0xea57111);
+    const probe=makeCompanion({kind:KIND_MOLEKIN,x:0,y:0,lava:mass,role:safeRole,seed,facing:(player && player.facing)||1});
+    const spot=findSpawnNearFor(probe,player,getTile,1.65+list.length*0.62);
+    const c=makeCompanion({kind:KIND_MOLEKIN,x:spot.x,y:spot.y,lava:mass,role:safeRole,seed,facing:(player && player.facing)||1});
+    list.push(c);
+    deathFx.push({x:c.x,y:c.y-0.44,t:0,max:0.46,color:(c.genome && c.genome.accent) || '#ff8b35',fill:'rgba(255,90,28,0.18)'});
+    if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
+    sparks(c.x,c.y-0.44,'rare',20);
+    sfx('fire');
+    say(c.name+' dolaczyl do debugowej druzyny.');
+    try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_MOLEKIN,role:c.moleRole,debug:true}})); }catch(e){}
+    return c;
+  }
   function debugFeed(player,amount){
-    const c=debugNearest(player,999999,c=>!isClayGolem(c) && !isLeafMonster(c) && !isWaterGolem(c) && !isMeatGolem(c) && !isFriedChicken(c));
+    const c=debugNearest(player,999999,c=>!isClayGolem(c) && !isLeafMonster(c) && !isWaterGolem(c) && !isMeatGolem(c) && !isFriedChicken(c) && !isUfoAlien(c) && !isMolekin(c));
     if(!c) return false;
     growCompanion(c,amount);
     sparks(c.x,c.y-0.55,'rare',14);
     return true;
   }
   function debugSetBiomass(player,biomass){
-    const c=debugNearest(player,999999,c=>!isClayGolem(c) && !isLeafMonster(c) && !isWaterGolem(c) && !isMeatGolem(c) && !isFriedChicken(c));
+    const c=debugNearest(player,999999,c=>!isClayGolem(c) && !isLeafMonster(c) && !isWaterGolem(c) && !isMeatGolem(c) && !isFriedChicken(c) && !isUfoAlien(c) && !isMolekin(c));
     if(!c) return false;
     c.biomass=clamp(Math.floor(biomass||1),1,MAX_BIOMASS);
     c.maxHp=maxHpForBiomass(c.biomass);
@@ -3485,6 +4331,20 @@ const companions = (function(){
     sparks(c.x,c.y-0.45,'common',12);
     return true;
   }
+  function debugSetLava(player,lava){
+    const c=debugNearest(player,999999,isMolekin);
+    if(!c) return false;
+    const mass=lavaMass({lava});
+    const before=c.maxHp;
+    c.lava=mass;
+    c.biomass=mass;
+    c.maxHp=maxHpForMolekin(mass,molekinRole(c));
+    c.hp=clamp(c.hp+(c.maxHp-before),1,c.maxHp);
+    c.genome=normalizeMolekinGenome(Object.assign({},c.genome,{lava:mass}),c.seed,mass,molekinRole(c));
+    c.feedPulse=1.0;
+    sparks(c.x,c.y-0.42,'rare',12);
+    return true;
+  }
   function debugRotMeatGolem(player){
     const c=debugNearest(player,999999,isRawMeatGolem);
     if(!c) return false;
@@ -3513,7 +4373,7 @@ const companions = (function(){
   function debugKill(player){
     const c=debugNearest(player,999999);
     if(!c) return false;
-    damage(c,c.hp+999,'debug');
+    damage(c,c.hp+c.maxHp*4+999,'debug');
     return true;
   }
   function debugTeleportToHero(player,getTile){
@@ -3521,19 +4381,26 @@ const companions = (function(){
     return teleportToHero(c,player,getTile,1.15,true);
   }
   function debugForceGas(player,getTile,setTile){
-    const c=debugNearest(player,999999,c=>!isClayGolem(c) && !isLeafMonster(c) && !isWaterGolem(c) && !isMeatGolem(c) && !isFriedChicken(c));
+    const c=debugNearest(player,999999,c=>!isClayGolem(c) && !isLeafMonster(c) && !isWaterGolem(c) && !isMeatGolem(c) && !isFriedChicken(c) && !isMolekin(c));
     if(!c) return false;
     emitPoison(c,getTile,setTile);
     return true;
   }
   function debugForceLaser(player,getTile){
-    const c=debugNearest(player,999999,c=>!isClayGolem(c) && !isWaterGolem(c) && !isMeatGolem(c) && !isFriedChicken(c));
+    const c=debugNearest(player,999999,c=>!isClayGolem(c) && !isWaterGolem(c) && !isMeatGolem(c) && !isFriedChicken(c) && !isMolekin(c));
     if(!c) return false;
     const t=nearestHostile(c,player,getTile);
     if(!t) return false;
     fireLaser(c,t);
     c.laserCd=LASER_COOLDOWN;
     return true;
+  }
+  function debugForceMolekinFire(player,getTile,setTile){
+    const c=debugNearest(player,999999,isMolekin);
+    if(!c) return false;
+    const t=nearestHostile(c,player,getTile);
+    if(!t) return false;
+    return molekinFireStrike(c,t,getTile,setTile);
   }
   function debugGuardHero(player,amount){
     const result=absorbHeroDamage(Math.max(1,Number(amount)||30),{cause:'debug'},player);
@@ -3591,6 +4458,32 @@ const companions = (function(){
         const py=(l.y1+(l.y2-l.y1)*t+(r()*0.22-0.11))*tile;
         ctx.beginPath();
         ctx.arc(px,py,Math.max(1.2,tile*(0.030+r()*0.030))*a,0,Math.PI*2);
+        ctx.fill();
+      }
+      ctx.restore();
+      return;
+    }
+    if(l.kind==='mole_fire' || l.kind==='mole_lava' || l.kind==='mole_heal'){
+      const lava=l.kind==='mole_lava';
+      const heal=l.kind==='mole_heal';
+      ctx.globalAlpha=(heal?0.68:0.78)*a;
+      ctx.strokeStyle=l.color || (heal?'#ffc96f':(lava?'#ff552e':'#ffb45c'));
+      ctx.lineWidth=lava?4.4:(heal?3.6:3.2);
+      ctx.lineCap='round';
+      const mx=(l.x1+l.x2)*0.5+(r()*0.40-0.20);
+      const my=(l.y1+l.y2)*0.5+(r()*0.32-0.16)-(lava?0.05:0);
+      ctx.beginPath();
+      ctx.moveTo(l.x1*tile,l.y1*tile);
+      ctx.quadraticCurveTo(mx*tile,my*tile,l.x2*tile,l.y2*tile);
+      ctx.stroke();
+      ctx.globalAlpha=(heal?0.55:0.88)*a;
+      ctx.fillStyle=heal?'rgba(255,226,156,0.82)':(lava?'rgba(255,86,38,0.84)':'rgba(255,184,84,0.82)');
+      for(let i=0;i<(lava?9:6);i++){
+        const t=(i+1)/(lava?10:7);
+        const px=(l.x1+(l.x2-l.x1)*t+(r()*0.26-0.13))*tile;
+        const py=(l.y1+(l.y2-l.y1)*t+(r()*0.22-0.11))*tile;
+        ctx.beginPath();
+        ctx.arc(px,py,Math.max(1.1,tile*(0.025+r()*0.035))*a,0,Math.PI*2);
         ctx.fill();
       }
       ctx.restore();
@@ -4731,6 +5624,180 @@ const companions = (function(){
     }
     drawCommandBadge(ctx,tile,c,px,py,h);
   }
+  function drawMolekin(ctx,tile,c){
+    const g=normalizeMolekinGenome(c.genome,c.seed||1,lavaMass(c),molekinRole(c));
+    const role=molekinRole(c);
+    const mass=lavaMass(c);
+    const px=c.x*tile, py=c.y*tile;
+    const walk=Math.sin(c.age*(6.1+g.gait*0.8)+g.pulse);
+    const pulse=(Math.sin(c.age*5.2+g.pulse)+1)*0.5;
+    const hit=c.hitPulse>0 ? Math.sin(c.hitPulse*34)*0.10 : 0;
+    const shield=clamp(c.shieldPulse||0,0,1);
+    const w=tile*(0.76+mass*0.010)*g.body;
+    const h=tile*(0.90+mass*0.008)*g.height;
+    const facing=c.facing || 1;
+    ctx.save();
+    ctx.translate(px,py);
+    ctx.scale(facing,1);
+    ctx.rotate(g.stance*0.12 + walk*0.020);
+
+    ctx.save();
+    ctx.globalAlpha=0.30;
+    ctx.fillStyle='rgba(20,9,4,0.58)';
+    ctx.beginPath();
+    ctx.ellipse(0,tile*0.05,w*0.58,tile*0.12,0,0,Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+
+    const legSwing=walk*tile*0.055*g.leg;
+    for(let i=0;i<2;i++){
+      const side=i===0?-1:1;
+      ctx.strokeStyle=g.deep;
+      ctx.lineWidth=Math.max(2,tile*0.080);
+      ctx.beginPath();
+      ctx.moveTo(side*w*0.18,-h*0.22);
+      ctx.lineTo(side*w*0.25+side*legSwing,tile*0.01);
+      ctx.stroke();
+      ctx.fillStyle=g.deep;
+      ctx.fillRect(side*w*0.25+side*legSwing-side*tile*0.03-tile*0.08,-tile*0.02,tile*0.18,tile*0.055);
+    }
+
+    for(let i=0;i<2;i++){
+      const side=i===0?-1:1;
+      const swing=walk*side*tile*0.070;
+      ctx.strokeStyle=g.deep;
+      ctx.lineWidth=Math.max(2,tile*0.070);
+      ctx.beginPath();
+      ctx.moveTo(side*w*0.34,-h*0.48);
+      ctx.lineTo(side*w*0.58*g.arm,-h*0.34+swing);
+      ctx.stroke();
+      ctx.fillStyle=role==='sapper' && i===1 ? g.accent : g.fur;
+      ctx.beginPath();
+      ctx.ellipse(side*w*0.64*g.arm,-h*0.30+swing,w*0.12*g.claw,h*0.065,side*0.18,0,Math.PI*2);
+      ctx.fill();
+    }
+
+    const grad=ctx.createRadialGradient(g.shoulder*w,-h*0.55,tile*0.05,0,-h*0.46,Math.max(w,h)*0.70);
+    grad.addColorStop(0,mixColor(g.ember,'#ffffff',0.15));
+    grad.addColorStop(0.45,hit>0 ? '#fff1de' : g.fur);
+    grad.addColorStop(1,g.dark);
+    ctx.fillStyle=grad;
+    ctx.strokeStyle=hit>0 ? '#fff6e8' : g.deep;
+    ctx.lineWidth=Math.max(2,tile*0.070);
+    ctx.beginPath();
+    ctx.ellipse(0,-h*0.44,w*0.46,h*0.38,0,0,Math.PI*2);
+    ctx.fill();
+    ctx.stroke();
+
+    if(role==='tank'){
+      ctx.fillStyle='rgba(38,39,42,0.90)';
+      ctx.fillRect(-w*0.34,-h*0.62,w*0.24,h*0.13);
+      ctx.fillRect(w*0.10,-h*0.62,w*0.24,h*0.13);
+    }else if(role==='healer'){
+      ctx.strokeStyle='rgba(255,201,111,0.72)';
+      ctx.lineWidth=Math.max(1,tile*0.045);
+      ctx.beginPath();
+      ctx.arc(0,-h*0.50,w*0.58,0,Math.PI*2);
+      ctx.stroke();
+    }else if(role==='engineer'){
+      ctx.fillStyle=g.accent;
+      ctx.fillRect(-w*0.05,-h*0.62,w*0.12,h*0.24);
+    }
+
+    ctx.strokeStyle='rgba(255,168,74,0.30)';
+    ctx.lineWidth=Math.max(1,tile*0.030);
+    for(let i=0;i<g.soot;i++){
+      const r=prng(g.seed ^ (i*1109));
+      const x=(-0.34+r()*0.68)*w;
+      const y=-h*(0.24+r()*0.42);
+      ctx.beginPath();
+      ctx.moveTo(x,y);
+      ctx.lineTo(x+tile*(r()*0.16-0.08),y+tile*(0.08+r()*0.10));
+      ctx.stroke();
+    }
+
+    const headY=-h*0.78;
+    const headW=w*0.34*g.head;
+    const headH=h*0.19*g.head;
+    ctx.fillStyle=hit>0 ? '#fff6e8' : g.fur;
+    ctx.strokeStyle=g.deep;
+    ctx.lineWidth=Math.max(1,tile*0.060);
+    ctx.beginPath();
+    ctx.ellipse(g.shoulder*w*0.16,headY,headW,headH,0.02,0,Math.PI*2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle=g.dark;
+    ctx.beginPath();
+    ctx.ellipse(headW*0.62*g.snout,headY+headH*0.16,headW*0.38*g.snout,headH*0.44,0,0,Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle='#120b08';
+    ctx.fillRect(headW*0.83*g.snout,headY+headH*0.08,tile*0.040,tile*0.030);
+
+    for(let i=0;i<g.ears;i++){
+      const side=i%2===0?-1:1;
+      ctx.fillStyle=g.dark;
+      ctx.beginPath();
+      ctx.ellipse(side*headW*0.45,headY-headH*0.68,headW*0.18,headH*0.36,side*0.25,0,Math.PI*2);
+      ctx.fill();
+    }
+
+    ctx.fillStyle='#17100c';
+    ctx.beginPath();
+    ctx.ellipse(headW*0.16,headY-headH*0.02,tile*0.095*g.eyeScale,tile*0.045*g.eyeScale,0,0,Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle=g.eye;
+    ctx.beginPath();
+    ctx.arc(headW*0.20,headY-headH*0.02,tile*0.030*g.eyeScale,0,Math.PI*2);
+    ctx.fill();
+
+    ctx.fillStyle='#2a2522';
+    ctx.beginPath();
+    ctx.ellipse(0,headY-headH*0.75,headW*0.88*g.helmet,headH*0.40,0,Math.PI,Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle=g.accent;
+    for(let i=0;i<g.rankBands;i++){
+      ctx.fillRect(-headW*0.34,headY-headH*(0.82+i*0.10),headW*0.68,tile*0.020);
+    }
+
+    const weaponGlow=0.32+0.22*pulse;
+    ctx.globalAlpha=weaponGlow;
+    ctx.fillStyle=g.accent;
+    if(role==='sniper'){
+      ctx.beginPath();
+      ctx.arc(w*0.66,-h*0.67,tile*0.13,0,Math.PI*2);
+      ctx.fill();
+    }else if(role==='sapper'){
+      ctx.fillRect(w*0.48,-h*0.44,tile*0.16,tile*0.10);
+    }else{
+      ctx.beginPath();
+      ctx.arc(w*0.56,-h*0.36,tile*0.09,0,Math.PI*2);
+      ctx.fill();
+    }
+    ctx.globalAlpha=1;
+
+    if(shield>0){
+      ctx.save();
+      ctx.globalAlpha=shield*0.32;
+      ctx.strokeStyle=mixColor(g.accent,'#fff3ba',0.20);
+      ctx.lineWidth=Math.max(1,tile*0.050);
+      ctx.beginPath();
+      ctx.ellipse(0,-h*0.48,w*(0.76+shield*0.14),h*(0.58+shield*0.08),0,0,Math.PI*2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    ctx.restore();
+
+    if(c.hp<c.maxHp){
+      const bw=tile*1.15, bh=Math.max(3,tile*0.10);
+      ctx.fillStyle='rgba(0,0,0,0.50)';
+      ctx.fillRect(px-bw*0.5,py-h-tile*0.24,bw,bh);
+      ctx.fillStyle=c.hp/c.maxHp>0.35 ? '#ffb45c' : '#ff635c';
+      ctx.fillRect(px-bw*0.5,py-h-tile*0.24,bw*clamp(c.hp/c.maxHp,0,1),bh);
+    }
+    drawCommandBadge(ctx,tile,c,px,py,h);
+  }
   function draw(ctx,tile){
     if(!ctx || !tile) return;
     for(const l of lasers) drawLaser(ctx,tile,l);
@@ -4739,6 +5806,7 @@ const companions = (function(){
       else if(isLeafMonster(c)) drawLeafMonster(ctx,tile,c);
       else if(isWaterGolem(c)) drawWaterGolem(ctx,tile,c);
       else if(isMeatGolem(c) || isFriedMeatGolem(c)) drawMeatGolem(ctx,tile,c);
+      else if(isMolekin(c)) drawMolekin(ctx,tile,c);
       else drawCompanion(ctx,tile,c);
     }
     for(const fx of deathFx) drawDeathFx(ctx,tile,fx);
@@ -4749,7 +5817,7 @@ const companions = (function(){
       command:snapshotCommand(),
       list:list.map(c=>({
         kind:c.kind||KIND_BIO, id:c.id, seed:c.seed, name:c.name, x:c.x, y:c.y, vx:c.vx, vy:c.vy,
-        hp:c.hp, maxHp:c.maxHp, biomass:c.biomass, clay:c.clay, leaves:c.leaves, water:c.water, meat:c.meat, facing:c.facing, age:c.age,
+        hp:c.hp, maxHp:c.maxHp, biomass:c.biomass, clay:c.clay, leaves:c.leaves, water:c.water, meat:c.meat, motherIce:c.motherIce, ufoConcrete:c.ufoConcrete, ufoRole:c.ufoRole, lava:c.lava, moleRole:c.moleRole, facing:c.facing, age:c.age,
         laserCd:c.laserCd, gasCd:c.gasCd, guardCd:c.guardCd, attackCd:c.attackCd, shieldPulse:c.shieldPulse,
         waterDrinkCd:c.waterDrinkCd, wateredT:c.wateredT, leafFeedCd:c.leafFeedCd, leafFeedTarget:c.leafFeedTarget,
         leafFeeding:c.leafFeeding, transportRideT:c.transportRideT, transportPulse:c.transportPulse, genome:c.genome,
@@ -4766,7 +5834,7 @@ const companions = (function(){
     for(const raw of arr.slice(0,MAX_COMPANIONS)){
       if(!raw || !Number.isFinite(raw.x) || !Number.isFinite(raw.y)) continue;
       const c=makeCompanion(raw);
-      c.maxHp=isFriedMeatGolem(c) ? maxHpForMeat(c.meat) : (isMeatGolem(c) ? maxHpForMeat(c.meat) : (isWaterGolem(c) ? maxHpForWater(c.water) : (isLeafMonster(c) ? maxHpForLeaves(c.leaves) : (isClayGolem(c) ? maxHpForClay(c.clay) : maxHpForBiomass(c.biomass)))));
+      c.maxHp=expectedMaxHp(c);
       c.hp=clamp(Number(raw.hp)||c.maxHp,1,c.maxHp);
       sanitizeCompanion(c);
       if(getTile && !clearAt(c.x,c.y,c,getTile)){
@@ -4783,7 +5851,7 @@ const companions = (function(){
     setCommand({mode:'attack'});
   }
   function metrics(){
-    let hp=0,maxHp=0,biomass=0,golems=0,clay=0,leafMonsters=0,leaves=0,transportMounted=0,waterGolems=0,water=0,meatGolems=0,rottenMeatGolems=0,friedMeatGolems=0,meat=0;
+    let hp=0,maxHp=0,biomass=0,golems=0,clay=0,leafMonsters=0,leaves=0,transportMounted=0,waterGolems=0,water=0,meatGolems=0,rottenMeatGolems=0,friedMeatGolems=0,meat=0,ufoAliens=0,motherIce=0,molekin=0,lava=0;
     for(const c of list){
       hp+=c.hp; maxHp+=c.maxHp;
       if(isFriedMeatGolem(c)){ friedMeatGolems++; meat+=meatMass(c); }
@@ -4791,15 +5859,17 @@ const companions = (function(){
       else if(isWaterGolem(c)){ waterGolems++; water+=waterMass(c); }
       else if(isLeafMonster(c)){ leafMonsters++; leaves+=leafMass(c); if(c.transportMounted) transportMounted++; }
       else if(isClayGolem(c)){ golems++; clay+=clayMass(c); }
+      else if(isUfoAlien(c)){ ufoAliens++; motherIce+=ufoConcreteMass(c); }
+      else if(isMolekin(c)){ molekin++; lava+=lavaMass(c); }
       else biomass+=c.biomass;
     }
-    return {count:list.length, hp:Math.round(hp), maxHp:Math.round(maxHp), biomass, golems, clay, leafMonsters, leaves, transportMounted, waterGolems, water, meatGolems, rottenMeatGolems, friedMeatGolems, friedChickens:friedMeatGolems, meat, lasers:lasers.length, mode:command.mode, awaitingHarvest:command.awaiting, harvestTile:command.harvestTile};
+    return {count:list.length, hp:Math.round(hp), maxHp:Math.round(maxHp), biomass, golems, clay, leafMonsters, leaves, transportMounted, waterGolems, water, meatGolems, rottenMeatGolems, friedMeatGolems, friedChickens:friedMeatGolems, meat, ufoAliens, motherIce, ufoConcrete:motherIce, molekin, lava, lasers:lasers.length, mode:command.mode, awaitingHarvest:command.awaiting, harvestTile:command.harvestTile};
   }
   function debugList(){
-    return list.map(c=>({kind:c.kind||KIND_BIO,id:c.id,name:c.name,x:c.x,y:c.y,vx:c.vx,vy:c.vy,hp:c.hp,maxHp:c.maxHp,biomass:c.biomass,clay:c.clay,leaves:c.leaves,water:c.water,meat:c.meat,age:c.age,rotIn:isRawMeatGolem(c)?Math.max(0,MEAT_GOLEM_ROT_SECONDS-(c.age||0)):0,wateredT:c.wateredT,waterDrinkCd:c.waterDrinkCd,leafFeedCd:c.leafFeedCd,leafFeeding:c.leafFeeding,leafFeedTarget:c.leafFeedTarget,transportMounted:!!c.transportMounted,transportRideT:c.transportRideT,transportPulse:c.transportPulse,lastWind:c.lastWind,laserCd:c.laserCd,gasCd:c.gasCd,guardCd:c.guardCd,attackCd:c.attackCd,genome:c.genome,harvestX:c.harvestX,harvestY:c.harvestY,harvestProgress:c.harvestProgress}));
+    return list.map(c=>({kind:c.kind||KIND_BIO,id:c.id,name:c.name,x:c.x,y:c.y,vx:c.vx,vy:c.vy,hp:c.hp,maxHp:c.maxHp,biomass:c.biomass,clay:c.clay,leaves:c.leaves,water:c.water,meat:c.meat,motherIce:c.motherIce,ufoConcrete:c.ufoConcrete,ufoRole:c.ufoRole,lava:c.lava,moleRole:c.moleRole,age:c.age,rotIn:isRawMeatGolem(c)?Math.max(0,MEAT_GOLEM_ROT_SECONDS-(c.age||0)):0,wateredT:c.wateredT,waterDrinkCd:c.waterDrinkCd,leafFeedCd:c.leafFeedCd,leafFeeding:c.leafFeeding,leafFeedTarget:c.leafFeedTarget,transportMounted:!!c.transportMounted,transportRideT:c.transportRideT,transportPulse:c.transportPulse,lastWind:c.lastWind,laserCd:c.laserCd,gasCd:c.gasCd,guardCd:c.guardCd,attackCd:c.attackCd,genome:c.genome,harvestX:c.harvestX,harvestY:c.harvestY,harvestProgress:c.harvestProgress}));
   }
-  const api={spawnFromCraft, spawnLeafMonsterFromCraft, feedNearest, tryClayGolemRitualAt, tryLeafMonsterRitualAt, tryWaterGolemRitualAt, tryMeatGolemRitualAt, onTileChanged, absorbHeroDamage, hasActive:()=>list.length>0, count:()=>list.length, update, draw, damageAt, damageAtWorld, nearestForEnemy, collideHero, heatAt, snapshot, restore, reset, metrics, commandAt, awaitingHarvestTarget, assignHarvestTarget,
-    _debug:{list:debugList, command:()=>snapshotCommand(), setCommand, makeGenome, makeClayGenome, makeLeafGenome, makeWaterGenome, makeMeatGenome, makeCompanion, traits:traitsFor, maxHpForBiomass, maxHpForClay, maxHpForLeaves, maxHpForWater, maxHpForMeat, maxCompanions:MAX_COMPANIONS, clayGolemMin:CLAY_GOLEM_MIN_CLAY, clayGolemMax:CLAY_GOLEM_MAX_CLAY, leafMonsterMin:LEAF_MONSTER_MIN_LEAVES, leafMonsterMax:LEAF_MONSTER_MAX_LEAVES, waterGolemMin:WATER_GOLEM_MIN_WATER, waterGolemMax:WATER_GOLEM_MAX_WATER, meatGolemMin:MEAT_GOLEM_MIN_MEAT, meatGolemMax:MEAT_GOLEM_MAX_MEAT, meatGolemRotSeconds:MEAT_GOLEM_ROT_SECONDS, damage, nearest:debugNearest, spawn:debugSpawn, spawnGolem:debugSpawnGolem, spawnLeafMonster:debugSpawnLeafMonster, spawnWaterGolem:debugSpawnWaterGolem, spawnMeatGolem:debugSpawnMeatGolem, feed:debugFeed, setBiomass:debugSetBiomass, setClay:debugSetClay, setLeaves:debugSetLeaves, setWater:debugSetWater, setMeat:debugSetMeat, rotMeatGolem:debugRotMeatGolem, cookMeatGolem:debugCookMeatGolem, heal:debugHeal, damageNearest:debugDamage, kill:debugKill, teleportToHero:debugTeleportToHero, forceGas:debugForceGas, forceLaser:debugForceLaser, guardHero:debugGuardHero, shieldGolem:debugShieldGolem, forceGolemStrike:debugForceGolemStrike, forceWaterSpray:debugForceWaterSpray, clear:debugClear}
+  const api={spawnFromCraft, spawnUfoAlienFromCraft, spawnLeafMonsterFromCraft, feedNearest, tryClayGolemRitualAt, tryLeafMonsterRitualAt, tryWaterGolemRitualAt, tryMolekinRitualAt, tryMeatGolemRitualAt, fireGuardianDefeated, iceGuardianDefeated, onTileChanged, absorbHeroDamage, hasActive:()=>list.length>0, count:()=>list.length, update, draw, damageAt, damageAtWorld, nearestForEnemy, collideHero, heatAt, snapshot, restore, reset, metrics, commandAt, awaitingHarvestTarget, assignHarvestTarget,
+    _debug:{list:debugList, command:()=>snapshotCommand(), setCommand, makeGenome, makeClayGenome, makeLeafGenome, makeWaterGenome, makeMeatGenome, makeUfoAlienGenome, makeMolekinGenome, makeCompanion, traits:traitsFor, maxHpForBiomass, maxHpForClay, maxHpForLeaves, maxHpForWater, maxHpForMeat, maxHpForUfoAlien, maxHpForMolekin, ufoAlienRoles:UFO_ALIEN_ROLES.slice(), molekinRoles:MOLEKIN_ROLES.slice(), maxCompanions:MAX_COMPANIONS, clayGolemMin:CLAY_GOLEM_MIN_CLAY, clayGolemMax:CLAY_GOLEM_MAX_CLAY, leafMonsterMin:LEAF_MONSTER_MIN_LEAVES, leafMonsterMax:LEAF_MONSTER_MAX_LEAVES, waterGolemMin:WATER_GOLEM_MIN_WATER, waterGolemMax:WATER_GOLEM_MAX_WATER, meatGolemMin:MEAT_GOLEM_MIN_MEAT, meatGolemMax:MEAT_GOLEM_MAX_MEAT, ufoAlienMin:UFO_ALIEN_MIN_CONCRETE, ufoAlienMax:UFO_ALIEN_MAX_CONCRETE, molekinMin:MOLEKIN_MIN_LAVA, molekinMax:MOLEKIN_MAX_LAVA, meatGolemRotSeconds:MEAT_GOLEM_ROT_SECONDS, fireGuardianDefeated, iceGuardianDefeated, damage, nearest:debugNearest, spawn:debugSpawn, spawnGolem:debugSpawnGolem, spawnLeafMonster:debugSpawnLeafMonster, spawnWaterGolem:debugSpawnWaterGolem, spawnMeatGolem:debugSpawnMeatGolem, spawnUfoAlien:debugSpawnUfoAlien, spawnMolekin:debugSpawnMolekin, feed:debugFeed, setBiomass:debugSetBiomass, setClay:debugSetClay, setLeaves:debugSetLeaves, setWater:debugSetWater, setMeat:debugSetMeat, setLava:debugSetLava, rotMeatGolem:debugRotMeatGolem, cookMeatGolem:debugCookMeatGolem, heal:debugHeal, damageNearest:debugDamage, kill:debugKill, teleportToHero:debugTeleportToHero, forceGas:debugForceGas, forceLaser:debugForceLaser, forceMolekinFire:debugForceMolekinFire, guardHero:debugGuardHero, shieldGolem:debugShieldGolem, forceGolemStrike:debugForceGolemStrike, forceWaterSpray:debugForceWaterSpray, clear:debugClear}
   };
   MM.companions=api;
   return api;

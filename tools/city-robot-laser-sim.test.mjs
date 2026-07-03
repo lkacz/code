@@ -18,6 +18,7 @@ Object.defineProperty(globalThis, 'performance', {
 
 const { T } = await import('../src/constants.js');
 const { mobs } = await import('../src/engine/mobs.js');
+const { invasions } = await import('../src/engine/invasions.js');
 
 let beamSounds = 0;
 let bursts = 0;
@@ -44,6 +45,7 @@ function setTile(x,y,t){
 function resetWorld(){
   tiles.clear();
   mobs.clearAll();
+  invasions.reset();
   mobs.freezeSpawns(10000);
   globalThis.player = {x:8,y:21.15,vx:0,vy:0,hp:100,maxHp:100};
 }
@@ -54,6 +56,30 @@ function spawnSentinel(facing=1, extra={}){
     aggro:{mode:'rel',m:{}}
   });
   mobs.freezeSpawns(10000);
+}
+function spawnActiveMolekinTarget(x=5.5,y=21.15){
+  invasions.restore({
+    teams:[{
+      id:'city_mole_target',
+      kind:'molekin',
+      state:'active',
+      x,y,
+      day:6,
+      index:0,
+      alienCount:1,
+      playerLevel:1,
+      threatLevel:8,
+      grade:1,
+      weaponTier:1,
+      burrow:{x,y,targetY:y,progress:1,open:true,warned:true,crackStage:2,phase:0},
+      lander:{x,y,targetY:y,vx:0,vy:0,hp:1,maxHp:1,destroyed:false,landed:true,invisible:true},
+      aliens:[{id:'city_mole_target:0',kind:'molekin',role:'rusher',x,y,vx:0,vy:0,hp:80,maxHp:80}]
+    }],
+    caches:[],
+    lastNightDay:0,
+    seq:20
+  }, getTile, setTile);
+  return invasions._debug.teams[0].aliens[0];
 }
 function runFrames(n){
   for(let i=0; i<n; i++){
@@ -93,6 +119,25 @@ assert.equal(metrics.projectiles, 0, 'sentinel laser attack does not create mob 
 assert.equal(beamSounds, 1, 'clear sentinel laser shot plays one beam sound');
 assert.equal(sparks, 2, 'clear sentinel laser shot emits two lightweight eye-impact sparks');
 assert.equal(bursts, 0, 'sentinel laser no longer uses heavy chest-style bursts');
+
+resetWorld();
+spawnSentinel(1, {scale:1, speedMul:1, jumpMul:1});
+const alienTeam = invasions.spawnRuinCommander(5.5,21.15,{key:'city-robot-target',player,getTile,setTile,day:6});
+const alienTarget = alienTeam.aliens[0];
+alienTarget.hp = alienTarget.maxHp = 80;
+const beforeAlienShot = {hp:alienTarget.hp, damageEvents, beamSounds};
+assert.equal(typeof invasions.nearestForEnemy, 'function', 'invasions expose alien targets for hostile city systems');
+assert.equal(runUntil(()=>alienTarget.hp < beforeAlienShot.hp, 140), true, 'city sentinel targets and shoots a visible alien invader');
+assert.equal(damageEvents, beforeAlienShot.damageEvents, 'sentinel attacking an alien does not damage the hero');
+assert.equal(beamSounds, beforeAlienShot.beamSounds + 1, 'alien shot uses the same city sentinel eye laser');
+
+resetWorld();
+spawnSentinel(1, {scale:1, speedMul:1, jumpMul:1});
+const moleTarget = spawnActiveMolekinTarget(5.5,21.15);
+const beforeMoleShot = {hp:moleTarget.hp, damageEvents, beamSounds};
+assert.equal(runUntil(()=>moleTarget.hp < beforeMoleShot.hp, 140), true, 'city sentinel also targets and shoots a visible molekin invader');
+assert.equal(damageEvents, beforeMoleShot.damageEvents, 'sentinel attacking a molekin does not damage the hero');
+assert.equal(beamSounds, beforeMoleShot.beamSounds + 1, 'molekin shot uses the same city sentinel eye laser');
 
 const originalSentinelSpeed = sentinelSpec.speed;
 sentinelSpec.speed = 0;

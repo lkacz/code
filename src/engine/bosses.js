@@ -86,6 +86,9 @@ window.MM = window.MM || {};
     THROW_SPEED: 14,    // tiles/s horizontal pace used to time the ballistic arc
     THROW_DMG: 0.7,     // x attackDmg dealt by a block that hits the hero
     PROJ_CAP: 24,       // most blocks airborne at once across all monsters
+    HEART_AGONY_MIN: 1.2, // exposed heart warning window before the final blast
+    HEART_AGONY_MAX: 1.8,
+    BODY_FALL_CAP: 220, // full boss-body tiles tumbling after heart collapse
   };
   // What a beast can consume from the world, and the body-block it grows in return
   // (drink water → icy flesh, eat sand → sandy flesh, graze grass/leaves → green, etc.)
@@ -132,6 +135,7 @@ window.MM = window.MM || {};
   let monsters = [];
   let setTile_global = ()=>{};   // captured each update() so feeding can eat tiles
   const debris = [];           // tumbling part chunks {x,y,vx,vy,c,t,max,s}
+  const fallingBodyBlocks = []; // full body tiles released when a heart enters agony
   const blasts = [];           // expanding detonation rings {x,y,R,t,max}
   const projectiles = [];      // hurled blocks {x,y,vx,vy,t,max,tile,color,spin,dmg}
   let lastIsDay = null;
@@ -153,6 +157,21 @@ window.MM = window.MM || {};
   // Monsters pass through air, water, leaves and transient gases; everything else is wall/floor.
   function solidT(t){ return !openT(t); }
   function playerRef(){ return (typeof window!=='undefined' && window.player) || null; }
+  function addUfoConcreteResource(count){
+    const n=Math.max(0,Math.floor(Number(count)||0));
+    if(!n || typeof window==='undefined') return false;
+    const inv=window.inv || null;
+    if(!inv) return false;
+    if(typeof inv.ufoConcrete!=='number') inv.ufoConcrete=0;
+    inv.ufoConcrete+=n;
+    try{ if(typeof window.updateInventoryHud==='function') window.updateInventoryHud(); }catch(e){}
+    try{
+      if(typeof window.dispatchEvent==='function' && typeof CustomEvent!=='undefined'){
+        window.dispatchEvent(new CustomEvent('mm-resources-change',{detail:{key:'ufoConcrete',gained:n,source:'boss_blast'}}));
+      }
+    }catch(e){}
+    return true;
+  }
   function hostilityAt(x){ return HOSTILITY.at(Number.isFinite(x) ? x : 0); }
   function bossThreatTier(hostility){
     const h=Math.max(0,Number(hostility)||0);
@@ -993,14 +1012,127 @@ window.MM = window.MM || {};
       });
     }
   }
+  function spawnFallingBodyBlock(m,p,power){
+    if(!m || !p || p.role==='core' || !p.blockType) return false;
+    while(fallingBodyBlocks.length>=CFG.BODY_FALL_CAP) fallingBodyBlocks.shift();
+    const shove=Number(power)||1;
+    fallingBodyBlocks.push({
+      x:m.x+p.dx+0.5,
+      y:m.y+p.dy+0.5,
+      vx:(Math.random()-0.5)*(2.4+shove*1.2),
+      vy:-3.0-Math.random()*(3.5+shove),
+      tile:p.blockType,
+      color:p.color,
+      rot:(Math.random()-0.5)*0.8,
+      spin:(Math.random()-0.5)*5.4,
+      t:0,
+      max:5.8+Math.random()*1.8
+    });
+    return true;
+  }
+  function releaseBodyAsBlocks(m){
+    if(!m || m.bodyReleased) return 0;
+    m.bodyReleased=true;
+    let released=0;
+    const core=m.core;
+    const parts=[...m.parts];
+    const cx=core ? core.dx : 0, cy=core ? core.dy : 0;
+    for(const p of parts){
+      if(p===core) continue;
+      const d=Math.hypot((p.dx||0)-cx,(p.dy||0)-cy);
+      if(spawnFallingBodyBlock(m,p,1+d*0.10)) released++;
+      spawnDebris(m,p,1);
+    }
+    if(core){
+      m.parts=[core];
+      core.hp=0;
+      core.hitT=0.35;
+      refreshStructure(m);
+    } else {
+      m.parts.length=0;
+    }
+    m.vx=0; m.vy=0; m.tilt=0; m.tiltV=0; m.throwCd=999;
+    return released;
+  }
+  function startHeartAgony(m,getTile,setTile){
+    if(!m || m.dying || m.dead) return false;
+    m.dying=true;
+    m.agonyT=0;
+    m.agonyMax=CFG.HEART_AGONY_MIN + Math.random()*Math.max(0,CFG.HEART_AGONY_MAX-CFG.HEART_AGONY_MIN);
+    m.deathPartCount=Math.max(1,Array.isArray(m.parts) ? m.parts.length : 1);
+    m.deathGetTile=getTile;
+    m.deathSetTile=setTile;
+    m.feed=null;
+    m.state='agony';
+    m.frozen=true;
+    releaseBodyAsBlocks(m);
+    const bx=Math.round(m.x)+(m.core?m.core.dx:0), by=Math.round(m.y)+(m.core?m.core.dy:0);
+    try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((bx+0.5)*(MM.TILE||20),(by+0.5)*(MM.TILE||20),'rare'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('warning'); }catch(e){}
+    say('Serce '+m.name+' kona i puchnie od energii - uciekaj!');
+    return true;
+  }
+  function updateHeartAgony(m,dt,getTile,setTile){
+    if(!m || !m.dying || m.dead) return false;
+    m.agonyT+=dt;
+    if(m.core){
+      m.core.hp=0;
+      m.core.hitT=Math.max(m.core.hitT||0,0.12);
+    }
+    if(m.agonyT>=m.agonyMax){
+      detonate(m,getTile||m.deathGetTile,setTile||m.deathSetTile);
+      return true;
+    }
+    return false;
+  }
+  function notifySettledBodyBlock(tx,ty,oldTile,newTile,getTile){
+    try{ if(MM.water && MM.water.onTileChanged && oldTile===T.WATER) MM.water.onTileChanged(tx,ty,getTile); }catch(e){}
+    try{ if(MM.gases && MM.gases.onTileChanged) MM.gases.onTileChanged(tx,ty,oldTile,newTile); }catch(e){}
+    try{ if(MM.fallingSolids && MM.fallingSolids.recheckNeighborhood) MM.fallingSolids.recheckNeighborhood(tx,ty); }catch(e){}
+  }
+  function settleFallingBodyBlock(b,tx,ty,getTile,setTile){
+    if(!b || typeof setTile!=='function') return false;
+    if(ty<1 || ty>=WORLD_H-2) return false;
+    const here=getTile(tx,ty);
+    const below=getTile(tx,ty+1);
+    if(openT(here) && solidT(below)){
+      setTile(tx,ty,b.tile);
+      notifySettledBodyBlock(tx,ty,here,b.tile,getTile);
+      return true;
+    }
+    if(!openT(here)){
+      const sy=ty-1;
+      if(sy>=1 && openT(getTile(tx,sy))){
+        const old=getTile(tx,sy);
+        setTile(tx,sy,b.tile);
+        notifySettledBodyBlock(tx,sy,old,b.tile,getTile);
+        return true;
+      }
+    }
+    return false;
+  }
+  function updateFallingBodyBlocks(getTile,setTile,dt){
+    for(let i=fallingBodyBlocks.length-1;i>=0;i--){
+      const b=fallingBodyBlocks[i];
+      b.t+=dt;
+      b.vy=Math.min(26,b.vy+CFG.GRAV*dt);
+      b.x+=b.vx*dt;
+      b.y+=b.vy*dt;
+      b.rot+=b.spin*dt;
+      const tx=Math.floor(b.x), ty=Math.floor(b.y);
+      if((b.vy>=0 && settleFallingBodyBlock(b,tx,ty,getTile,setTile)) || b.t>b.max || b.y>WORLD_H+4){
+        fallingBodyBlocks.splice(i,1);
+      }
+    }
+  }
   // Remove a part, then break off everything the heart can no longer reach —
   // the severed chunks tumble away as debris and the beast fights on with the rest.
   function destroyPart(m,part,getTile,setTile){
     const idx=m.parts.indexOf(part);
     if(idx<0) return;
+    if(part===m.core){ startHeartAgony(m,getTile,setTile); return; }
     spawnDebris(m,part,4);
     m.parts.splice(idx,1);
-    if(part===m.core){ detonate(m,getTile,setTile); return; }
     const byKey=new Map(); for(const p of m.parts) byKey.set(p.dx+','+p.dy,p);
     const reach=new Set([m.core.dx+','+m.core.dy]); const q=[m.core];
     while(q.length){
@@ -1020,8 +1152,13 @@ window.MM = window.MM || {};
   // The heart bursts: crater the terrain (protected materials survive), hurl debris,
   // hurt a hero standing close, and pay out the bounty.
   function detonate(m,getTile,setTile){
+    if(!m || m.dead) return;
+    if(typeof getTile!=='function') getTile=m.deathGetTile || (MM.world && MM.world.getTile) || (()=>T.AIR);
+    if(typeof setTile!=='function') setTile=m.deathSetTile || (MM.world && MM.world.setTile) || (()=>{});
     const bx=Math.round(m.x)+m.core.dx, by=Math.round(m.y)+m.core.dy;
-    const R=CFG.BLAST_BASE+Math.round(Math.sqrt(m.parts.length+1));
+    const deathPartCount=Math.max(m.deathPartCount||0,Array.isArray(m.parts)?m.parts.length:0,1);
+    const R=CFG.BLAST_BASE+Math.round(Math.sqrt(deathPartCount+1));
+    let ufoConcreteDrops=0;
     for(let dy=-R; dy<=R; dy++){
       for(let dx=-R; dx<=R; dx++){
         if(dx*dx+dy*dy>R*R) continue;
@@ -1029,10 +1166,12 @@ window.MM = window.MM || {};
         if(ty<1 || ty>=WORLD_H-3) continue;                    // bedrock shelf survives
         const t=getTile(tx,ty);
         if(isBlastProtectedTile(t)) continue;
+        if(t===T.UFO_CONCRETE) ufoConcreteDrops++;
         setTile(tx,ty,T.AIR);
         try{ if(MM.fallingSolids && MM.fallingSolids.onTileRemoved) MM.fallingSolids.onTileRemoved(tx,ty); }catch(e){}
       }
     }
+    addUfoConcreteResource(ufoConcreteDrops);
     // wake the fluid sim at the center and rim so lakes pour into the fresh crater
     try{
       if(MM.water && MM.water.onTileChanged){
@@ -1075,8 +1214,8 @@ window.MM = window.MM || {};
       const d=Math.max(Math.abs(cp.x-bx), Math.abs(cp.y-by));
       if(d<R+4) damageCompanionTarget(cmp,Math.round(40*(1-d/(R+5))+6),bx,by,'boss_blast');
     }
-    if(p && typeof p.xp==='number') p.xp+=40+m.parts.length*2;
-    say('💥 Serce potwora '+m.name+' zniszczone! +'+(40+m.parts.length*2)+' XP'+(m.gargantuan? ' — zostawił stos epickich skrzyń!':' — zostawił skrzynię!'));
+    if(p && typeof p.xp==='number') p.xp+=40+deathPartCount*2;
+    say('💥 Serce potwora '+m.name+' zniszczone! +'+(40+deathPartCount*2)+' XP'+(m.gargantuan? ' — zostawił stos epickich skrzyń!':' — zostawił skrzynię!'));
     killedTotal++;
     try{ if(typeof window!=='undefined' && window.dispatchEvent) window.dispatchEvent(new CustomEvent('mm-boss-killed',{detail:{name:m.name, gargantuan:!!m.gargantuan}})); }catch(e){}
     m.dead=true;
@@ -1195,7 +1334,7 @@ window.MM = window.MM || {};
     let best=null, bd=Infinity;
     for(const m of monsters){ const d=Math.abs(m.x-px); if(d<bd){ bd=d; best=m; } }
     const name=best.name;
-    detonate(best,getTile,setTile);
+    startHeartAgony(best,getTile,setTile);
     return name;
   }
 
@@ -1229,6 +1368,10 @@ window.MM = window.MM || {};
     for(let i=monsters.length-1;i>=0;i--){
       const m=monsters[i];
       if(!isFinite(m.x) || !isFinite(m.y)){ monsters.splice(i,1); continue; } // corrupted: drop
+      if(m.dying){
+        updateHeartAgony(m,dt,getTile,setTile);
+        continue;
+      }
       if(!m.frozen) stepBehavior(m,getTile,dt);
       if(!m.frozen) applyWindToMonster(m,getTile,dt);
       stepPhysics(m,getTile,dt);
@@ -1256,6 +1399,7 @@ window.MM = window.MM || {};
       }
     }
     separateMonsters(getTile);   // rigid bodies: no two beasts occupy the same space
+    updateFallingBodyBlocks(getTile,setTile,dt);
     // hurled blocks: ballistic arcs that shatter on terrain or strike the hero
     for(let i=projectiles.length-1;i>=0;i--){
       const pr=projectiles[i];
@@ -1366,7 +1510,7 @@ window.MM = window.MM || {};
     }
   }
   function draw(ctx,TILE,canDrawTile){
-    if(!monsters.length && !debris.length && !blasts.length && !projectiles.length) return;
+    if(!monsters.length && !debris.length && !fallingBodyBlocks.length && !blasts.length && !projectiles.length) return;
     const now=(typeof performance!=='undefined')? performance.now() : 0;
     for(const m of monsters){
       if(!monsterVisible(canDrawTile,m)) continue;
@@ -1393,11 +1537,14 @@ window.MM = window.MM || {};
         const X=(bx+p.dx)*TILE+off.ox, Y=(by+p.dy)*TILE+wob+off.oy;
         const dmgF=1-p.hp/p.maxHp;
         if(p.role==='core'){
-          const pulse=0.5+0.5*Math.sin(now*0.006);
-          const g=ctx.createRadialGradient(X+TILE/2,Y+TILE/2,1,X+TILE/2,Y+TILE/2,TILE*(1.1+pulse*0.5));
-          g.addColorStop(0,'rgba(255,70,100,'+(0.5+pulse*0.3)+')'); g.addColorStop(1,'rgba(255,70,100,0)');
+          const agonyF=m.dying ? clamp((m.agonyT||0)/Math.max(0.001,m.agonyMax||1),0,1) : 0;
+          const pulse=m.dying ? 0.5+0.5*Math.sin(now*(0.020+agonyF*0.030)) : 0.5+0.5*Math.sin(now*0.006);
+          const g=ctx.createRadialGradient(X+TILE/2,Y+TILE/2,1,X+TILE/2,Y+TILE/2,TILE*(1.1+pulse*0.5+agonyF*0.75));
+          g.addColorStop(0,'rgba(255,70,100,'+(0.5+pulse*0.3)+')');
+          if(m.dying) g.addColorStop(0.45,'rgba(255,216,94,'+(0.18+agonyF*0.45).toFixed(3)+')');
+          g.addColorStop(1,'rgba(255,70,100,0)');
           ctx.fillStyle=g; ctx.fillRect(X-TILE,Y-TILE,TILE*3,TILE*3);
-          ctx.fillStyle=enraged? '#ff1840':'#ff3b5c';
+          ctx.fillStyle=m.dying ? (pulse>0.72 ? '#fff0a0' : '#ff1840') : (enraged? '#ff1840':'#ff3b5c');
         } else if(p.role==='eye'){
           ctx.fillStyle='#fff';
         } else ctx.fillStyle=p.color;
@@ -1437,7 +1584,12 @@ window.MM = window.MM || {};
       const barW=(m.maxDx-m.minDx+1)*TILE*0.8;
       const barX=(bx+(m.minDx+m.maxDx)/2)*TILE+TILE/2-barW/2, barY=(by-m.height)*TILE-8+wob;
       ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(barX,barY,barW,4);
-      ctx.fillStyle=enraged?'#ff4040':'#7fdc5a'; ctx.fillRect(barX,barY,barW*healthRatio,4);
+      if(m.dying){
+        const left=1-clamp((m.agonyT||0)/Math.max(0.001,m.agonyMax||1),0,1);
+        ctx.fillStyle='#ffd45a'; ctx.fillRect(barX,barY,barW*left,4);
+      } else {
+        ctx.fillStyle=enraged?'#ff4040':'#7fdc5a'; ctx.fillRect(barX,barY,barW*healthRatio,4);
+      }
       // a sated, growing beast shows a green feeding pip on its bar
       if(m.state==='feed'){ ctx.fillStyle='#9fe85a'; ctx.fillRect(barX-5,barY-1,4,6); }
     }
@@ -1449,6 +1601,22 @@ window.MM = window.MM || {};
       const s=TILE*0.7;
       ctx.fillStyle=pr.color; ctx.fillRect(-s/2,-s/2,s,s);
       ctx.strokeStyle='rgba(0,0,0,0.4)'; ctx.lineWidth=1; ctx.strokeRect(-s/2,-s/2,s,s);
+      ctx.restore();
+    }
+    for(const b of fallingBodyBlocks){
+      if(!tileVisible(canDrawTile,b.x,b.y)) continue;
+      ctx.save();
+      ctx.translate(b.x*TILE,b.y*TILE);
+      ctx.rotate(b.rot||0);
+      ctx.fillStyle=b.color || infoColor(b.tile) || '#888';
+      ctx.fillRect(-TILE/2,-TILE/2,TILE,TILE);
+      ctx.fillStyle='rgba(255,255,255,0.12)';
+      ctx.fillRect(-TILE/2,-TILE/2,TILE,Math.max(2,TILE*0.22));
+      ctx.fillStyle='rgba(0,0,0,0.16)';
+      ctx.fillRect(-TILE/2,TILE/2-Math.max(2,TILE*0.18),TILE,Math.max(2,TILE*0.18));
+      ctx.strokeStyle='rgba(0,0,0,0.42)';
+      ctx.lineWidth=1;
+      ctx.strokeRect(-TILE/2+0.5,-TILE/2+0.5,TILE-1,TILE-1);
       ctx.restore();
     }
     for(const d of debris){
@@ -1494,7 +1662,7 @@ window.MM = window.MM || {};
   }
 
   // ---------------- Lifecycle / introspection ----------------
-  function clearAll(){ monsters=[]; debris.length=0; blasts.length=0; projectiles.length=0; }
+  function clearAll(){ monsters=[]; debris.length=0; fallingBodyBlocks.length=0; blasts.length=0; projectiles.length=0; }
   function reset(){
     clearAll();
     lastIsDay=null; spawnTimer=CFG.INITIAL_DELAY;
@@ -1504,7 +1672,7 @@ window.MM = window.MM || {};
     let parts=0; for(const m of monsters) parts+=m.parts.length;
     const p=playerRef();
     const host=hostilityAt(p && Number.isFinite(p.x) ? p.x : 0);
-    return {alive:monsters.length, parts, debris:debris.length, projectiles:projectiles.length,
+    return {alive:monsters.length, parts, debris:debris.length, fallingBlocks:fallingBodyBlocks.length, projectiles:projectiles.length,
             spawned:spawnedTotal, killed:killedTotal,
             nextIn:(spawnTimer>0 && isFinite(spawnTimer))? spawnTimer : null,
             hostility:+host.hostility.toFixed(3), hostilitySide:host.side};
@@ -1513,7 +1681,7 @@ window.MM = window.MM || {};
     if(o===null || o===undefined){ cycleOverride=null; return; }
     if(typeof o==='object' && typeof o.isDay==='boolean') cycleOverride=o;
   }
-  function _debug(){ return {monsters, debris, blasts, projectiles, spawnTimer, lastIsDay}; }
+  function _debug(){ return {monsters, debris, fallingBodyBlocks, blasts, projectiles, spawnTimer, lastIsDay}; }
 
   MM.bosses={update, draw, drawHUD, attackAt, damageAt, forceSpawn, killNearest, collideHero, clearAll, reset, metrics,
              nearestForAbduction, nearestForTurret, targetsForTurret, abduct, setCycleOverride, config:CFG, _debug};
