@@ -212,6 +212,7 @@ function cleanLocalState(src){
     houseBuilt:src.houseBuilt===true,
     housePhysical:src.housePhysical===true,
     houseDoorsMigrated:src.houseDoorsMigrated===true,
+    houseBackwallDone:src.houseBackwallDone===true,
     abandoned:src.abandoned===true
   };
 }
@@ -267,28 +268,81 @@ function homeFor(base){
 // to the falling engine's protected-structure set so the world's collapse,
 // granular-sand, and fragile-glass simulations leave the home standing — only the
 // player mining it (tracked by houseIntegrity) can bring it down.
-function housePalette(biome,home){
+// Each home rolls one of several biome-fitting archetypes (cabin, alpine chalet,
+// stilt house, stone tower, adobe terrace, brick farmhouse, city townhouse...)
+// plus independent attachment rolls (porch, garden, chimney, attic window,
+// second storey), so no two residents' houses read the same. All rolls are pure
+// hash01(seed,cell,salt) functions — the blueprint re-derives identically on
+// every scan, which the integrity/abandonment audit depends on.
+function housePalette(biome,home,arch){
   const warm=home && home.roof==='warm';
+  // backwall is placed on the world's construction-background layer (the layer
+  // players toggle onto with R) so interiors read as enclosed rooms, not sky.
+  const P=(wall,accent,roof,floor,door,post,backwall)=>({wall,accent,roof,floor,window:T.GLASS,door,post,backwall:backwall||wall});
   switch(biome|0){
-    case 0: return {wall:T.WOOD,  roof:T.WOOD,             floor:T.WOOD,  window:T.GLASS, door:T.WOOD_DOOR};
-    case 1: return {wall:T.WOOD,  roof:warm?T.WOOD:T.STONE,floor:T.WOOD,  window:T.GLASS, door:T.WOOD_DOOR};
-    case 2: return {wall:T.WOOD,  roof:T.STONE,            floor:T.WOOD,  window:T.GLASS, door:T.WOOD_DOOR};
-    case 3: return {wall:T.SAND,  roof:T.STONE,            floor:T.SAND,  window:T.GLASS, door:T.STONE_DOOR};
-    case 4: return {wall:T.WOOD,  roof:T.WOOD,             floor:T.WOOD,  window:T.GLASS, door:T.WOOD_DOOR};
+    case 0: return arch==='cottage'
+      ? P(T.STONE,T.WOOD, T.WOOD, T.WOOD, T.WOOD_DOOR, T.WOOD, T.WOOD)
+      : P(T.WOOD, T.STONE,warm?T.WOOD:T.STONE, T.WOOD, T.WOOD_DOOR, T.WOOD);
+    case 1: return arch==='farmhouse'
+      ? P(T.BRICK,T.STONE,T.WOOD, T.WOOD, T.WOOD_DOOR, T.WOOD, T.WOOD)
+      : P(T.WOOD, T.BRICK,warm?T.WOOD:T.STONE, T.WOOD, T.WOOD_DOOR, T.WOOD);
+    case 2: return P(T.WOOD, T.STONE, warm?T.WOOD:T.STONE, T.WOOD, T.WOOD_DOOR, T.WOOD);
+    case 3: return P(T.SAND, T.BRICK, T.STONE, T.STONE, T.STONE_DOOR, T.STONE, T.SAND);
+    case 4: return P(T.WOOD, T.WOOD,  T.WOOD,  T.WOOD, T.WOOD_DOOR, T.WOOD);
     case 5:
-    case 6: return {wall:T.WOOD,  roof:T.WOOD,             floor:T.WOOD,  window:T.GLASS, door:T.WOOD_DOOR};
-    case 7: return {wall:T.STONE, roof:warm?T.WOOD:T.STONE,floor:T.STONE, window:T.GLASS, door:T.STONE_DOOR};
-    case 8: return {wall:T.STEEL, roof:T.STONE,            floor:T.STEEL, window:T.GLASS, door:T.STEEL_DOOR};
-    default:return {wall:T.STONE, roof:T.WOOD,             floor:T.STONE, window:T.GLASS, door:T.STONE_DOOR};
+    case 6: return P(T.WOOD, T.STONE, warm?T.WOOD:T.STONE, T.WOOD, T.WOOD_DOOR, T.WOOD);
+    case 7: return P(T.STONE,T.GRANITE,warm?T.WOOD:T.STONE,T.STONE,T.STONE_DOOR,T.WOOD,T.STONE);
+    case 8: return warm
+      ? P(T.BRICK,T.STEEL,T.STONE,T.STEEL,T.STEEL_DOOR,T.STEEL,T.BRICK)
+      : P(T.STEEL,T.BRICK,T.STONE,T.STEEL,T.STEEL_DOOR,T.STEEL,T.BRICK);
+    default:return P(T.STONE,T.WOOD, T.WOOD, T.STONE,T.STONE_DOOR,T.WOOD);
   }
 }
+function houseArchetype(biome,r){
+  switch(biome|0){
+    case 0: return r<0.40?'cabin':(r<0.70?'lodge':'cottage');
+    case 1: return r<0.42?'farmhouse':(r<0.74?'cottage':'longhouse');
+    case 2: return r<0.55?'chalet':(r<0.82?'cottage':'lodge');
+    case 3: return r<0.62?'adobe':'riad';
+    case 4: return r<0.66?'stilt':'cabin';
+    case 5:
+    case 6: return r<0.70?'stilt':'cabin';
+    case 7: return r<0.50?'tower':(r<0.82?'chalet':'cottage');
+    case 8: return r<0.60?'townhouse':'loft';
+    default:return r<0.50?'cottage':'cabin';
+  }
+}
+const FLAT_ROOF_ARCHS={adobe:1,riad:1,tower:1,townhouse:1,loft:1};
+// Height of a pitched roof above the eaves row (kept analytic so houseLayout can
+// expose apexY without enumerating cells).
+function roofApexOffset(half,pitch){ return Math.ceil(Math.max(0,half-1)/Math.max(1,pitch)); }
 function groundRowAt(x,getTile,worldGen){ return homeGroundY(x,getTile,worldGen); }
 function houseLayout(candidate,getTile,worldGen){
   const home=candidate.home;
+  const seed=candidate.seed, cell=candidate.cell;
   const style=(home.style|0)%4;
-  const halfW=2+(style&1);          // interior width 5 or 7
-  const wallH=3+(style>1?1:0);      // wall height 3 or 4
-  // Settle the cabin on the flattest patch near the resident's drift point so it
+  const arch=houseArchetype(candidate.biome,hash01(seed,cell,211));
+  const roll=(salt)=>hash01(seed,cell,salt);
+  // Footprint and massing per archetype.
+  let halfW, s1, s2=0;                 // half width, storey heights (wall rows)
+  switch(arch){
+    case 'cabin':     halfW=3+Math.floor(roll(223)*2); s1=3+(style>1?1:0); break;
+    case 'cottage':   halfW=3+Math.floor(roll(223)*2); s1=3; break;
+    case 'lodge':     halfW=4+Math.floor(roll(223)*3); s1=3; s2=2+Math.floor(roll(227)*2); break;
+    case 'farmhouse': halfW=4+Math.floor(roll(223)*2); s1=4; break;
+    case 'longhouse': halfW=5+Math.floor(roll(223)*2); s1=3; break;
+    case 'chalet':    halfW=3+Math.floor(roll(223)*3); s1=3; s2=roll(227)<0.55?2:0; break;
+    case 'adobe':     halfW=3+Math.floor(roll(223)*2); s1=3+Math.floor(roll(227)*2); break;
+    case 'riad':      halfW=4+Math.floor(roll(223)*2); s1=3; s2=2; break;
+    case 'stilt':     halfW=3+Math.floor(roll(223)*2); s1=3; break;
+    case 'tower':     halfW=2+Math.floor(roll(223)*2); s1=3; s2=3+(roll(227)<0.4?3:0); break;
+    case 'townhouse': halfW=3+Math.floor(roll(223)*2); s1=3; s2=3; break;
+    case 'loft':      halfW=4+Math.floor(roll(223)*2); s1=4+Math.floor(roll(227)*2); break;
+    default:          halfW=3; s1=3; break;
+  }
+  const storeys=s2>0?2:1;
+  const wallH=s1+(storeys>1?1+s2:0);   // total wall rows incl. the mid slab row
+  // Settle the home on the flattest patch near the resident's drift point so it
   // never floats off a cliff edge or buries itself in a hillside.
   const base=Math.round(home.x);
   let cx=base, bestSpread=Infinity;
@@ -300,49 +354,231 @@ function houseLayout(candidate,getTile,worldGen){
     if(spread<bestSpread){ bestSpread=spread; cx=c; }
   }
   const left=cx-halfW, right=cx+halfW;
-  // Platform top sits at the highest ground point under the footprint; lower columns
-  // are packed up to it so the floor is always a level, grounded slab.
-  let g=Infinity;
-  for(let x=left-1; x<=right+1; x++){ const s=groundRowAt(x,getTile,worldGen); if(s<g) g=s; }
+  // Floor top sits at the highest ground point under the footprint; stilt homes
+  // hover above it on posts instead of packed foundations.
+  let terrain=Infinity;
+  for(let x=left-1; x<=right+1; x++){ const s=groundRowAt(x,getTile,worldGen); if(s<terrain) terrain=s; }
+  const stiltH=arch==='stilt' ? 2+Math.floor(roll(257)*2) : 0;
+  const g=terrain-stiltH;
+  const flatRoof=!!FLAT_ROOF_ARCHS[arch];
+  const overhang=arch==='chalet'?2:1;
+  const pitch=(arch==='chalet'||arch==='cabin'||arch==='cottage')?1:2;
+  const roofY=g-wallH-1;
+  const apexY=flatRoof ? roofY-1 : roofY-roofApexOffset(halfW+overhang,pitch);
+  const porchSide=roll(229)<0.5?-1:1;
+  const hasPorch=!flatRoof && arch!=='stilt' && arch!=='tower' && roll(231)<0.72;
+  const hasGarden=(candidate.biome!==3 && candidate.biome!==8) && roll(233)<0.62;
+  const doorX=porchSide<0?left+1:right-1;
+  const chimneySide=roll(239)<0.5?-1:1;
+  const chimneyX=Math.max(left,Math.min(right,flatRoof ? cx+chimneySide : cx+chimneySide*Math.max(2,halfW-2)));
+  // Row of the roof slope directly above the chimney column — the stack cells in
+  // houseCells and the smoke anchor in the ambiance overlay both derive from it.
+  const chimneyRoofLine=flatRoof ? roofY : roofY-Math.max(0,Math.floor((halfW+overhang-Math.abs(chimneyX-cx))/pitch));
   return {
-    cx,g,style,halfW,wallH,pal:housePalette(candidate.biome,home),
-    left,right,roofY:g-wallH-1,apexY:g-wallH-2,doorX:cx
+    cx,g,style,halfW,wallH,pal:housePalette(candidate.biome,home,arch),
+    left,right,roofY,apexY,doorX,
+    arch,storeys,s1,s2,flatRoof,overhang,pitch,stiltH,terrain,
+    porchSide,hasPorch,hasGarden,
+    chimneyX,chimneyTopY:chimneyRoofLine-2,
+    ladderX:porchSide<0?right-1:left+1
   };
 }
 // Expand a layout into concrete {x,y,t} placements. Cells flagged structural are
-// the load-bearing footprint used for the integrity / abandonment audit. Door tiles
-// are counted because they support roofs like any other buildable material; the
-// chimney torch and buried foundation packing are not counted as damage.
+// the load-bearing footprint used for the integrity / abandonment audit. Door and
+// window tiles are counted because they support the shell like any other block;
+// lights, furniture, stilts, porches, gardens and buried foundation packing are
+// flavour and never read as damage.
 function houseCells(candidate,getTile,worldGen){
   const L=houseLayout(candidate,getTile,worldGen);
-  const {cx,g,wallH,pal,left,right,roofY,apexY,doorX}=L;
-  const cells=[];
-  // Level floor slab, with foundation packing dropped beneath any low column so the
-  // slab and walls never hang in mid-air on uneven terrain.
+  const {cx,g,halfW,wallH,pal,left,right,roofY,apexY,doorX,arch,storeys,s1,flatRoof,overhang,pitch,stiltH,porchSide,hasPorch,hasGarden,chimneyX,ladderX}=L;
+  const seed=candidate.seed, cell=candidate.cell;
+  const roll=(salt)=>hash01(seed,cell,salt);
+  const map=new Map();
+  const putCell=(x,y,t,structural,role,force)=>{
+    const k=x+','+y;
+    if(!force && map.has(k)) return;
+    map.set(k,{x,y,t,structural:!!structural,role});
+  };
+  const slabY=storeys>1 ? g-s1-1 : null;     // mid-floor row for two-storey homes
+  // Floor slab with foundation packing (or stilt posts) down to local ground.
   for(let x=left; x<=right; x++){
-    cells.push({x,y:g,t:pal.floor,structural:true});
+    putCell(x,g,pal.floor,true,'floor');
     const localG=groundRowAt(x,getTile,worldGen);
-    for(let y=g+1; y<localG; y++) cells.push({x,y,t:pal.floor,structural:false,role:'foundation'});
+    if(stiltH>0){
+      const post=(x===left || x===right || (x-left)%3===0);
+      if(post) for(let y=g+1; y<localG; y++) putCell(x,y,pal.post,false,'foundation');
+    } else {
+      for(let y=g+1; y<localG; y++) putCell(x,y,pal.floor,false,'foundation');
+    }
   }
+  // Shell walls, storey slab, windows, interior air.
+  const baseCourse=arch==='chalet'||arch==='farmhouse'||arch==='townhouse';
+  const quoins=arch==='tower'||arch==='cottage'||arch==='adobe'||arch==='riad';
   for(let r=1; r<=wallH; r++){
     const y=g-r;
     for(let x=left; x<=right; x++){
       const edge=(x===left || x===right);
-      if(edge){ cells.push({x,y,t:pal.wall,structural:true}); continue; }
-      if(x===doorX && r<=2){ cells.push({x,y,t:pal.door,structural:true,role:'door'}); continue; }
-      if(r===wallH-1 && x!==doorX){ cells.push({x,y,t:pal.window,structural:true,role:'window'}); continue; }
-      if(r===wallH && x===doorX){ cells.push({x,y,t:T.TORCH,structural:false,role:'light'}); continue; }
-      cells.push({x,y,t:T.AIR,structural:false,role:'air'});
+      if(edge){
+        let t=pal.wall;
+        if(baseCourse && r===1) t=pal.accent;
+        if(quoins && r%3===0) t=pal.accent;
+        putCell(x,y,t,true,'wall');
+        continue;
+      }
+      if(slabY!==null && y===slabY){
+        if(x===ladderX) putCell(x,y,T.LADDER,false,'stairs');
+        else putCell(x,y,pal.floor,true,'floor');
+        continue;
+      }
+      putCell(x,y,T.AIR,false,'air');
     }
   }
-  // Pitched roof with shallow eaves over the walls.
-  for(let x=left-1; x<=right+1; x++) cells.push({x,y:roofY,t:pal.roof,structural:true,role:'roof'});
-  cells.push({x:cx,y:apexY,t:pal.roof,structural:true,role:'roof'});
-  return {layout:L,cells};
+  // Window patterns per storey: paired casements, long bands, or corner pairs.
+  const winStyle=roll(241);
+  const windowCols=[];
+  if(winStyle<0.34){ for(let x=left+2; x<=right-2; x+=2) windowCols.push(x); }
+  else if(winStyle<0.67){ for(let x=left+2; x<=right-2; x+=3){ windowCols.push(x); if(x+1<=right-2) windowCols.push(x+1); } }
+  else { windowCols.push(left+2,right-2); if(halfW>=4){ windowCols.push(cx); } }
+  const winY1=g-2;
+  for(const x of windowCols){
+    if(x===doorX || x<=left || x>=right) continue;
+    putCell(x,winY1,pal.window,true,'window',true);
+    if(arch==='loft'||arch==='townhouse'||arch==='riad') putCell(x,winY1-1,pal.window,true,'window',true);
+  }
+  if(slabY!==null){
+    for(const x of windowCols){
+      if(x<=left || x>=right || x===ladderX) continue;
+      putCell(x,slabY-2,pal.window,true,'window',true);
+    }
+  }
+  // Ladder run connecting the storeys.
+  if(slabY!==null){
+    for(let y=slabY; y<=g-1; y++) putCell(ladderX,y,T.LADDER,false,'stairs',true);
+  }
+  // Interior warmth: a torch per storey and a modest piece of furniture.
+  putCell(doorX,g-3,T.TORCH,false,'light',true);
+  const furnX=doorX>cx?left+2:right-2;
+  if(furnX>left && furnX<right && furnX!==doorX && furnX!==ladderX && roll(251)<0.8){
+    putCell(furnX,g-1,pal.accent===T.STEEL?T.STONE:pal.accent,false,'furniture',true);
+  }
+  if(slabY!==null) putCell(cx,slabY-1,T.TORCH,false,'light',true);
+  // Roof: pitched gable (2-thick sloped edges) or flat with a parapet.
+  if(flatRoof){
+    for(let x=left-1; x<=right+1; x++) putCell(x,roofY,pal.roof,true,'roof',true);
+    const merlons=arch==='tower';
+    for(let x=left-1; x<=right+1; x++){
+      const end=(x===left-1 || x===right+1);
+      if(end || (merlons && ((x-left)&1)===0)) putCell(x,roofY-1,x===cx?pal.roof:pal.accent,true,'roof',true);
+    }
+    putCell(cx,roofY-1,pal.roof,true,'roof',true);          // roof-access block = apex contract
+    if(arch==='townhouse'||arch==='loft'){
+      const ax=cx+(chimneyX>=cx?1:-1);
+      for(let y=roofY-2; y>=roofY-3; y--) putCell(ax,y,T.STEEL,false,'antenna',false);
+    }
+    if(arch==='riad'){
+      putCell(left,roofY-2,T.LEAF,false,'garden',false);
+      putCell(right,roofY-2,T.LEAF,false,'garden',false);
+    }
+  } else {
+    const half=halfW+overhang;
+    let i=0;
+    for(;;){
+      const h=half-i*pitch;
+      const y=roofY-i;
+      if(h<=1){
+        for(let x=cx-Math.max(0,h); x<=cx+Math.max(0,h); x++) putCell(x,y,pal.roof,true,'roof',true);
+        break;
+      }
+      putCell(cx-h,y,pal.roof,true,'roof',true);
+      putCell(cx-h+1,y,pal.roof,true,'roof',true);
+      putCell(cx+h-1,y,pal.roof,true,'roof',true);
+      putCell(cx+h,y,pal.roof,true,'roof',true);
+      i++;
+    }
+    // Attic porthole under the apex on roomy gables.
+    if(roofApexOffset(half,pitch)>=2 && roll(269)<0.6) putCell(cx,apexY+1,pal.window,true,'window',false);
+    // Chimney stack rising through the roof slope (base cell sits on the slope
+    // line so the stack never reads as floating over the open attic outline).
+    if(arch!=='stilt' && roll(239)<0.85){
+      const chX=Math.max(left,Math.min(right,chimneyX));
+      const roofLine=roofY-Math.max(0,Math.floor((half-Math.abs(chX-cx))/pitch));
+      for(let y=roofLine; y>=roofLine-2; y--) putCell(chX,y,pal.accent,false,'chimney',false);
+    }
+  }
+  // Porch: covered deck on the door side with a support post and a lantern.
+  if(hasPorch){
+    const dir=porchSide, start=dir<0?left-1:right+1, end=dir<0?left-3:right+3;
+    for(let x=Math.min(start,end); x<=Math.max(start,end); x++){
+      putCell(x,g,pal.floor,false,'porch',false);
+      const localG=groundRowAt(x,getTile,worldGen);
+      for(let y=g+1; y<localG; y++) putCell(x,y,pal.post,false,'foundation',false);
+      putCell(x,g-3,pal.roof,false,'porch',false);          // awning
+    }
+    putCell(end,g-1,pal.post,false,'porch',false);
+    putCell(end,g-2,pal.post,false,'porch',false);
+    putCell(end,g-4,T.TORCH,false,'light',false);
+  }
+  // Garden: picket fence, hedge tufts and a lantern on the quiet side.
+  if(hasGarden){
+    const dir=-porchSide, start=dir<0?left-2:right+2, len=3+Math.floor(roll(271)*3);
+    for(let i2=0; i2<len; i2++){
+      const x=start+dir*i2;
+      const localG=groundRowAt(x,getTile,worldGen);
+      if(i2%2===0) putCell(x,localG-1,pal.post,false,'garden',false);
+      else if(roll(273+i2)<0.7) putCell(x,localG-1,candidate.biome===2?T.SNOW:T.LEAF,false,'garden',false);
+    }
+    if(roll(277)<0.5){
+      const lx=start+dir*len;
+      const localG=groundRowAt(lx,getTile,worldGen);
+      putCell(lx,localG-1,pal.post,false,'garden',false);
+      putCell(lx,localG-2,T.TORCH,false,'light',false);
+    }
+  }
+  // Stilt homes get a wraparound deck with railing posts and a ladder to ground.
+  if(stiltH>0){
+    for(const x of [left-2,left-1,right+1,right+2]) putCell(x,g,pal.floor,false,'deck',false);
+    putCell(left-2,g-1,pal.post,false,'deck',false);
+    putCell(right+2,g-1,pal.post,false,'deck',false);
+    const lx=porchSide<0?left-2:right+2;
+    const localG=groundRowAt(lx,getTile,worldGen);
+    for(let y=g+1; y<localG; y++) putCell(lx,y,T.LADDER,false,'stairs',false);
+  }
+  // Doorway last so nothing overrides it; a full two-tile structural door.
+  putCell(doorX,g-1,pal.door,true,'door',true);
+  putCell(doorX,g-2,pal.door,true,'door',true);
+  // Apex contract: buildHouse verifies this exact cell to detect physical builds.
+  putCell(cx,apexY,pal.roof,true,'roof',true);
+  // Back walls: every interior cell gets a construction-background tile (same
+  // layer the player toggles with R), so rooms read as enclosed instead of
+  // showing sky through the doorway, torches and stair runs. Windows stay
+  // open to keep daylight in them.
+  const bgCells=[];
+  for(const c of map.values()){
+    if(c.x<=left || c.x>=right) continue;
+    if(c.role!=='air' && c.role!=='light' && c.role!=='furniture' && c.role!=='stairs' && c.role!=='door') continue;
+    bgCells.push({x:c.x,y:c.y,t:pal.backwall,structural:false,role:'backwall',layer:'bg'});
+  }
+  return {layout:L,cells:[...map.values(),...bgCells]};
+}
+// Back-wall cells live on the world's construction-background layer, not in the
+// foreground tile grid; place them through MM.world when it is available (the
+// headless sims run without it and simply skip the cosmetic layer).
+function placeHouseBackground(cells){
+  let placed=0;
+  try{
+    const w=runtimeRoot().MM && runtimeRoot().MM.world;
+    if(!w || !w.setConstructionBackground) return 0;
+    for(const c of cells){
+      if(c.layer!=='bg') continue;
+      try{ if(w.setConstructionBackground(c.x,c.y,c.t)) placed++; }catch(e){}
+    }
+  }catch(e){}
+  return placed;
 }
 function buildHouse(candidate,getTile,setTile,worldGen){
   const {layout,cells}=houseCells(candidate,getTile,worldGen);
-  for(const c of cells){ try{ setTile(c.x,c.y,c.t); }catch(e){} }
+  for(const c of cells){ if(c.layer==='bg') continue; try{ setTile(c.x,c.y,c.t); }catch(e){} }
+  placeHouseBackground(cells);
   // Verify the build actually took. In headless/Node simulations setTile is a no-op,
   // so the roof apex reads back as AIR — we then treat the house as non-physical and
   // skip destruction auditing, leaving the pure NPC lifecycle untouched.
@@ -371,7 +607,7 @@ function migrateHouseDoors(candidate,getTile,setTile,worldGen){
 function protectHouse(cells){
   try{
     const fs=runtimeRoot().MM && runtimeRoot().MM.fallingSolids;
-    if(fs && fs.protectStructure) fs.protectStructure(cells.filter(c=>c.t!==T.AIR));
+    if(fs && fs.protectStructure) fs.protectStructure(cells.filter(c=>c.t!==T.AIR && c.layer!=='bg'));
   }catch(e){}
 }
 function houseIntegrity(candidate,getTile,worldGen){
@@ -449,9 +685,9 @@ function drawHomeAmbiance(ctx,TILE,candidate,life,canDrawTile,getTile,worldGen){
     ctx.restore();
     return;
   }
-  // Occupied home → rising chimney smoke.
-  const chimneyX=(L.right-0.5)*TILE;
-  const chimneyTop=(L.roofY-0.4)*TILE;
+  // Occupied home → smoke rising from the actual chimney stack (or roof vent).
+  const chimneyX=((Number.isFinite(L.chimneyX)?L.chimneyX:L.right)+0.5)*TILE;
+  const chimneyTop=((Number.isFinite(L.chimneyTopY)?L.chimneyTopY:L.roofY)-0.4)*TILE;
   const t=Date.now()*0.001+candidate.cell;
   for(let i=0;i<3;i++){
     const ph=(t*0.6+i*0.9)%1;
@@ -620,6 +856,7 @@ function maintainHouses(player,getTile,setTile,worldGen,ctx,day){
       state.houseBuilt=true;
       state.housePhysical=physical;
       state.houseDoorsMigrated=physical;
+      state.houseBackwallDone=physical;
       if(physical) markChanged(ctx);
     }
     if(!state.houseBuilt || !state.housePhysical) return;
@@ -629,6 +866,12 @@ function maintainHouses(player,getTile,setTile,worldGen,ctx,day){
       if(changed) markChanged(ctx);
     }
     const {cells}=houseCells(candidate,getTile,worldGen);
+    // Houses from saves that predate interior back walls get them retrofitted once.
+    if(!state.houseBackwallDone){
+      const placed=placeHouseBackground(cells);
+      state.houseBackwallDone=true;
+      if(placed>0) markChanged(ctx);
+    }
     // Re-assert protection every scan so it survives save reloads and chunk reloads.
     if(!state.abandoned) protectHouse(cells);
     let total=0, intact=0;

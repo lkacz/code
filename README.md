@@ -19,6 +19,19 @@ The module-graph check exists because a single missing ESM export silently
 blanks the whole game — exactly what happened during the 2025 ESM migration
 (`water.js` published to `MM.water` but exported nothing, killing `main.js`).
 
+The runtime complement is `src/boot_watchdog.js` — a classic script outside
+the module graph. If any module fetch stalls or fails (flaky connection, bad
+deploy), the browser abandons the whole import tree and the player would be
+stuck on the static HUD skeleton forever; the watchdog waits for the main
+loop's frame heartbeat (`window.__mmFrameMs`) and otherwise raises a "Świat
+się nie załadował" panel with a retry button.
+
+End-to-end playability is exercised by `node tools/free-play-qa.mjs` (headless
+Edge over CDP): boots a fresh world, measures fps, walks/jumps with real key
+events, mines and places with real pointer events on a scanned flat-ground
+camp, swaps weapons, hikes into fresh chunks, then forces a save and asserts
+the reload restores position, health and terrain exactly.
+
 ## Inventory, Equipment & Gameplay Modifiers
 The Ekwipunek panel (menu button or `E`) is a scalable inventory: equipment slots (cape /
 eyes / outfit / weapon / charm), a bag of loot collected from chests, and a resources tab
@@ -37,20 +50,84 @@ Core model lives in `src/inventory.js` (registry, slots, bag, persistence under
 * Living plants (`engine/plants.js`, tested by `npm run test:plants`): five species (sunflower, berry bush, reed, fern, cactus) sprout naturally on watered soil near the hero — one per column, capped, persisted in `mm_plants_v1`. Each plant has hydration, health, age and a lifespan: it drinks from adjacent water (absorbing the whole tile every third sip), from rain (`clouds.isRainingAt`) and from the player's hose (`plants.waterAt` — a watering can); wet mud keeps roots damp; cacti barely need water. Hydrated plants grow through stages; thirsty ones yellow, wilt and crumble; even watered plants degrade and die of old age. Fire, lava, the flamethrower and mined-out soil destroy them. Clicking a ripe berry bush harvests it (+6 HP, the bush regrows); clearing other plants returns a leaf.
 * Item readability: the player never sees a raw multiplier — every stat displays as a clean signed percent snapped to a 5%-step ladder (5/10/15…50, then 10-steps to 100, then 25-steps, cap 200%; vision converts against its 10-tile baseline). Chest loot **rolls discrete clean steps natively** (`pctSteps` in `chests.js`), legacy items are normalized once on ingest (`sanitizeLootItem`). Each item gets one comparable **"Moc" power score** (`itemScore`, shared weights in `inventory.js`) shown with a bar relative to the strongest owned item of its group plus a ▲/▼ delta vs the equipped item; grids sort strongest-first, the weapons tab groups by shortcut category (a bow is never judged against a sword), the loot popup uses the identical chip/score presentation, and a 🧹 action discards looted items strictly weaker than what's equipped (built-ins and upgrades always stay).
 * The panel offers a live animated preview, per-style cape thumbnails matching engine physics shapes, stat breakdowns with per-item contributions, and randomize/reset buttons. Outfit bodies render through a shared `MM.drawOutfit` used by both the game and the preview.
+* Panel UX (2026 refresh): tabs carry kind icons, owned counts and a cyan dot when unseen
+  loot of that kind waits; the NEW-loot review is a single dismissible strip (the grid
+  cards themselves badge NOWE/TOP/UP verdicts in a reserved row so thumbnails align);
+  cards get a rarity-tinted frame via a `--tier` CSS variable, a primary **Załóż** vs
+  ghost/toggle/icon-danger button hierarchy, and 2-line-clamped names/descriptions with
+  tooltips. Resources render as a searchable card grid (owned first, empty stacks dimmed,
+  drop buttons disabled below their amount). Keyboard: `E` close, `Ctrl+←/→` tabs,
+  `/` focuses search, `Esc` clears the search before closing. Visual QA driver:
+  `node tools/inv-ui-qa.mjs` (headless Edge, seeds tiered loot, screenshots all tabs).
 
 Stats combine by declared rules (`sum` / `mul` / `max` in `STAT_RULES`), so future items
 can contribute new fields (e.g., swimSpeed, mana) aggregated into `MM.activeModifiers`.
+
+## Story Arc — "Warstwy Symulacji" (layers of the simulation)
+The world is one layer of a simulation that only moves while someone watches, and
+every great boss is both a program node and a metaphor for an inner struggle. The
+arc is fully playable start→finish and always signposted **diegetically** — the
+mentor, NPC whispers, world events and the task tracker carry the goals; the game
+never prints a bare "go to X":
+1. **Przebudzenie** — Stary Kwadrat's paranoid tutorial (observe the world, water,
+   meat, the duel, the volcano). Each quest step mirrors into the task HUD with a
+   pointer at the mentor (`story_progression.js`).
+2. **Dwa Horyzonty** — when the tutorial ends, the world "reacts" (one-time beats
+   from `STORY_LORE.progressionBeats`) and both horizons open as goals: the West
+   Ice Guardian (rejection/emotional cold) and the East Fire Guardian (unanswered
+   passion), ±10 000 columns out (`guardian_lairs.js`).
+3. **Trzeci Kret** — both elemental hearts open the alien passage down to
+   Nyxolith, the buried-memory mole (`underground_boss.js`). The gate self-heals
+   into place on old saves.
+4. **Niebo niespelnienia** — the earth heart raises the **Tower of Ambition**, a
+   climbable ladder spire from the surface to the Sky Gate arena (ladder cells are
+   infrastructure overlays; the hatch through the arena floor is a steel trapdoor
+   that opens for upward motion). Astrael is the deliberate *false final*.
+5. **Centrum (mother_self)** — the air heart wakes the center (`center_guardian.js`):
+   a mirror dais materializes where the story began, the false-final omen plays,
+   and Stary Kwadrat confesses (10-line click-through reveal) before dissolving
+   into **Guardian Macierzysty — the hero's mimic**, drawn with the player's own
+   outfit renderer and replaying the player's movement mirrored across the obelisk.
+   The fight has one rule, stated in the confession: **every blow belongs to the
+   one who deals it.** The hero's damage (melee/arrows/streams/electric/turrets/
+   explosions) is consumed and reflected back after a mirror-flash; the mimic's
+   strikes hurt the hero *and drain the mimic's own heart by the same amount*. The
+   only way through is acceptance: endure, and the mirror spends itself; the
+   killing blow is mutual. `heroDied` routes all `inner_*` causes to
+   `centerGuardian.onHeroKilled` — the mirror fight never drops a gravestone.
+6. **Epilog** — the obelisk quiets into a lantern, the freed mentor speaks closure
+   lines, the mother heart + "Serce Ciszy" charm + an epic chest pay out, and the
+   `story_complete` milestone (+1500 XP) lands. NPC whispers and invasion lore
+   advance through `storyRevealStage` one act ahead of the fallen guardian, so
+   foreshadowing always arrives *before* a fight and closure after it
+   (`story_lore.js`; epilogue stage after the finale).
+Deterministic regression tests: `npm run test:center-guardian` (call → confession →
+reversed damage → mutual fall → epilogue, snapshot/restore) and
+`npm run test:story-progression` (task chain + one-time beats per act).
 
 ## Progression, Audio & Survival Loop
 * **Levels** (`engine/progress.js`): XP (persisted in the world save) maps to levels via
   super-linear thresholds; each level grants a skill point spent in the Ekwipunek
   "Rozwój" panel on Witalność (+10 max HP), Siła (+1 damage) or Zwinność (+2% move/jump) —
   bonuses merge into the same `STAT_RULES` engine as gear. Six persistent **milestones**
-  (depth, travel, boss kills, berries, obsidian) reward XP and epic chests. The HUD shows
-  a level/XP bar under the health bar.
+  (depth, travel, boss kills, berries, obsidian) reward XP and epic chests.
+* **Vitals HUD** (`engine/vitals_hud.js`): the bottom-left glass panel bundles HP, energy,
+  level badge + XP and buff chips with game-feel feedback — tweened fills, a Souls-style
+  damage-chip ghost that lingers then drains (only discrete hits freeze it, ambient
+  drains don't), heal/charge shimmer, floating +/- combat numbers, low-HP heartbeat with
+  screen vignette, level-up ring burst, a pulsing "+pkt (E)" pill and per-buff duration
+  rings. Animation state machine is headless-tested (`npm run test:vitals-hud`); visuals
+  are exercised by the CDP driver `node tools/vitals-hud-qa.mjs`.
 * **Crafting** is a data-driven `RECIPES` table: pickaxes, torches ×4 (2 wood), an
   obsidian sword (+6 dmg, flows through the loot pipeline so it persists and equips),
   a diamond charm, and a **Totem odrodzenia** that sets the respawn point (flag marker).
+  The recipe-book panel (toggle with **T**) layers a quality-of-life model from
+  `engine/crafting.js` on top: ★ favorites pinned first, one 📌-tracked recipe with a
+  live HUD ingredient widget (announces when everything is gathered), NEW badges for
+  recipes that just became affordable, a craftable-only filter, per-ingredient
+  progress bars with "where to find it" source hints, ×5/Max batch crafting and
+  lifetime craft counters — all persisted in the save's `crafting` part and covered
+  headless by `npm run test:crafting`.
 * **Audio** (`engine/audio.js`): every effect is synthesized with WebAudio — zero asset
   files, CSP-safe; context unlocks on first gesture. Digging, breaking, placing, bows,
   swings, streams, explosions, chests, level-ups, boss roars, plus a looping rain bed
@@ -76,6 +153,16 @@ can contribute new fields (e.g., swimSpeed, mana) aggregated into `MM.activeModi
   the surface. Anchor-based — layouts are a pure function of (worldSeed, cell), so
   ruins may span chunk borders and every chunk reconstructs its slice identically
   (see the architecture note atop the module).
+* **Devastated cities** (`worldgen.js` districts + `world.js applyDevastatedCity`):
+  each rare urban biome draws one of five **architecture schools** (stone spires,
+  glass downtown, foundry sprawl, terraced ziggurats, brutalist megablocks) with its
+  own material palette, building-style mix and **skyline envelope** (downtown core,
+  twin peaks, terraces…), plus one themed **landmark** per district — ruined
+  cathedral, supertower, blast-furnace dome, grand ziggurat with a diamond apex, or
+  an atrium-cut arcology slab — placed clear of the district's old power plant.
+  Everything is a pure function of (worldSeed, cell/column), so no two cities look
+  alike yet every chunk regenerates its slice identically
+  (`tools/city-architecture-sim.test.mjs`).
 * **Ruin traps** split pure data from runtime: definitions live in ruin layouts
   (`L.traps`), `engine/traps.js` arms instances near the hero, watches triggers
   (tripwire, pressure plate, proximity, mined keystone — every trap also springs

@@ -578,5 +578,38 @@ spray('gas', 5, 0.8, 4);                     // spray slightly downward into the
 const stoneAfter=count(T.STONE);
 assert.ok(stoneAfter<stoneBefore-3, 'gas explosion craters the stone shelf ('+(stoneBefore-stoneAfter)+' tiles blasted)');
 
+// 11) arrow-tier HUD contract: auto fires the strongest owned tier, pinning a
+// tier holds it while stocked and falls back to auto once the stack runs dry
+tiles=new Map(); weapons.reset(); fire.reset();
+equipped=weaponItems.bow;
+refillResources({arrowWood:5, arrowStone:3, arrowObsidian:0, arrowDiamond:0, arrowIridium:2});
+let ainfo=weapons.arrowInfo();
+assert.equal(ainfo.pref, 'auto', 'arrow preference defaults to auto');
+assert.equal(ainfo.activeId, 'iridium', 'auto preference fires the strongest owned tier');
+assert.equal(ainfo.total, 10, 'arrowInfo totals every tier');
+assert.equal(ainfo.tiers.length, 5, 'arrowInfo lists all five tiers for the HUD pips');
+fireBowTap(6, 0.5);
+assert.equal(inv.arrowIridium, 1, 'firing consumes the active (strongest) tier');
+for(let i=0;i<30;i++) weapons.update(1/60, getTile, setTile); // clear bow cooldown
+assert.equal(weapons.setArrowPref('wood'), 'wood', 'pinning a tier is accepted');
+ainfo=weapons.arrowInfo();
+assert.equal(ainfo.activeId, 'wood', 'pinned tier becomes the active arrow');
+assert.ok(ainfo.tiers.find(t=>t.id==='wood').pinned, 'pinned flag is reported per tier');
+fireBowTap(6, 0.5);
+assert.equal(inv.arrowWood, 4, 'firing consumes the pinned tier while it lasts');
+inv.arrowWood=0;
+ainfo=weapons.arrowInfo();
+assert.equal(ainfo.activeId, 'iridium', 'an empty pinned tier falls back to the strongest owned');
+assert.equal(weapons.setArrowPref('bogus'), 'auto', 'unknown tier ids normalize to auto');
+
+// 12) fuel + gauge HUD contracts feeding the weapon bar status lines
+const flameFuel=weapons.fuelInfo('flame');
+assert.equal(flameFuel.key, 'wood', 'flamethrower reports wood as its fuel');
+assert.equal(flameFuel.count, inv.wood|0, 'fuel count mirrors the block inventory');
+assert.equal(weapons.fuelInfo('electric'), null, 'electric weapons have no resource fuel (hero energy instead)');
+const hud=weapons.hudStatus();
+assert.ok(hud.ult>=0 && hud.ult<=1 && typeof hud.bowActive==='boolean' && typeof hud.bowRatio==='number',
+	'hudStatus exposes ult charge and bow draw state for the slot gauges');
+
 Math.random = realRandom;
 console.log('OK: all stream-weapon elemental interaction tests passed');

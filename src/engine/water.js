@@ -8,7 +8,9 @@
 //   gravity drops, edge spills, same-row equalization in half-difference steps
 //   (surfaces meet smoothly instead of in one-block walls), lateral downhill seeking,
 //   and hydrostatic pressure leveling that fills a basin bottom-up in units so the
-//   final surface is flat across the whole basin to within 1/10 of a block.
+//   final surface is flat across the whole basin to within 1/10 of a block. Bodies too
+//   large to flood-fill within budget get a 1D surface-band leveler instead, so oceans
+//   still flatten globally (no window-boundary steps) and keep feeding open drains.
 // Presentation (strictly cosmetic — never mutates tiles):
 //   * one damped oscillator ("surface spring") per water column; neighbor coupling makes
 //     disturbances travel outward as waves (player dives, falling blocks, waterfalls, flow)
@@ -47,6 +49,7 @@ window.MM = window.MM || {};
   const PASSIVE_SCAN_BURST_LIMIT = 3;
   const PASSIVE_SCAN_COLS_IDLE = 64;
   const PASSIVE_SCAN_COLS_ACTIVE = 24;
+  const PASSIVE_SCAN_COLS_BUSY = 8;
   let passiveScanAcc = 0;
   let passiveScanLastColumns = 0;
   let passiveScanTotalColumns = 0;
@@ -780,19 +783,24 @@ window.MM = window.MM || {};
     // the sim is mostly idle, and also wakes pressurized cells facing a side opening —
     // not just fall candidates — so dormant anomalies (suspended layers, chunk seams)
     // self-heal instead of hanging forever.
-    if(active.size<32){
+    {
       passiveScanAcc=Math.min(passiveScanAcc+dt, PASSIVE_SCAN_INTERVAL*PASSIVE_SCAN_BURST_LIMIT);
       const passes=Math.min(PASSIVE_SCAN_BURST_LIMIT, Math.floor(passiveScanAcc/PASSIVE_SCAN_INTERVAL));
       if(passes>0){
         passiveScanAcc-=passes*PASSIVE_SCAN_INTERVAL;
-        for(let pass=0; pass<passes && active.size<32; pass++){
-          const idle=(active.size===0 && pressureSeeds.size===0);
-          runPassiveActivationScan(getTile, idle ? PASSIVE_SCAN_COLS_IDLE : PASSIVE_SCAN_COLS_ACTIVE);
+        if(active.size<32){
+          for(let pass=0; pass<passes && active.size<32; pass++){
+            const idle=(active.size===0 && pressureSeeds.size===0);
+            runPassiveActivationScan(getTile, idle ? PASSIVE_SCAN_COLS_IDLE : PASSIVE_SCAN_COLS_ACTIVE);
+          }
+        } else {
+          // Busy sim: a hard cutoff starved the scan completely, so dormant anomalies
+          // (steep shore ramps, chunk-seam walls) never woke while ANY water churned
+          // anywhere. Trickle a few columns per interval so they still self-heal.
+          runPassiveActivationScan(getTile, PASSIVE_SCAN_COLS_BUSY);
         }
       }
       if(active.size===0 && pressureSeeds.size===0) return;
-    } else {
-      passiveScanAcc=0;
     }
     const size = active.size;
     const MAX = Math.min(2400, 360 + Math.floor(size*0.40));
@@ -1007,7 +1015,7 @@ window.MM = window.MM || {};
         if(pressureLastMs>pressureMaxMs) pressureMaxMs=pressureLastMs;
       }
       if(result){
-        const {touchedXs, variance, hadTransfers} = result;
+        const {touchedXs, touchedTops, variance, hadTransfers} = result;
         if(hadTransfers){
           // Short cooldown: long blanket cooldowns choke drains (e.g. a lake emptying
           // into a dug shaft re-levels every pass, freezing its own outflow columns)
@@ -1017,8 +1025,18 @@ window.MM = window.MM || {};
           // killed in-progress flood fronts elsewhere (cells the leveling didn't touch)
           // and left bodies permanently unsettled.
           for(const x of touchedXs){
-            // find first water tile in column (cheap linear; columns small on average)
-            for(let y=WORLD_TOP;y<WORLD_BOTTOM;y++){ if(getTile(x,y)===T.WATER){ active.add(k(x,y)); break; } }
+            // Surface re-mark: climb from the touched row instead of scanning the whole
+            // column from the top of the world (~400 probes per column at ocean scale).
+            let ty=touchedTops ? touchedTops.get(x) : undefined;
+            if(ty!=null){
+              if(getTile(x,ty)===T.WATER){
+                while(ty-1>=WORLD_TOP && getTile(x,ty-1)===T.WATER) ty--;
+                active.add(k(x,ty));
+              } else { // touched cell drained dry: the column's water sits below it
+                const stop=Math.min(WORLD_BOTTOM, ty+64);
+                for(let y=ty+1; y<stop; y++){ if(getTile(x,y)===T.WATER){ active.add(k(x,y)); break; } }
+              }
+            }
             // gentle alternating wave kick so leveling reads as sloshing, not teleporting
             disturb(x, (x&1)? 56 : -56);
           }
@@ -1712,11 +1730,15 @@ window.MM = window.MM || {};
   // flood caves without leaving dry notches. Volume is conserved exactly; moves are
   // rate-limited so large equalizations read as flow over a second or two.
   const EQ_WINDOW=40;       // half-width for the oversized-body fallback window
-  const EQ_GLOBAL_BODY_SOFT_CAP=1600; // larger bodies use the bounded window path
+  const EQ_GLOBAL_BODY_SOFT_CAP=5000; // larger bodies use the bounded window + band path
   const EQ_BODY_CAP=6500;   // safety caps for the two flood fills
   const EQ_VOID_CAP=9000;
-  const EQ_RATE=720;        // max sub-tile units moved per body per pass (72 blocks)
+  const EQ_RATE=720;        // min sub-tile units moved per body per pass (72 blocks)
+  const EQ_RATE_MAX=3600;   // rate scales with body size up to this (360 blocks/pass)
   const EQ_BODIES=3;        // bodies equalized per pass
+  const EQ_TIME_BUDGET_MS=3;// per-pass wall budget; leftover seeds resume next pass
+  const EQ_BAND_SPAN=280;   // surface-band walk half-width for oversized bodies
+  const EQ_BAND_DEPTH=24;   // how deep a column run is probed during the band walk
 
   function runPressureLeveling(getTile,setTile){
     const world = (typeof window!=='undefined' && window.MM && MM.world) ? MM.world : null;
@@ -1778,16 +1800,26 @@ window.MM = window.MM || {};
       }
       return true;
     };
+    // Open spill = a body cell can gravity-drain (drop below, or sideways over an
+    // edge). Detected inline during the body flood fill: a separate whole-body scan
+    // (plus the windowed re-collect it used to trigger) doubled the solver's cost.
+    const cellSpills=(x,y)=>{
+      if(y+1>=WORLD_BOTTOM) return false;
+      if(canFill(readTile(x,y+1))) return true;
+      return (canFill(readTile(x-1,y)) && canFill(readTile(x-1,y+1))) ||
+             (canFill(readTile(x+1,y)) && canFill(readTile(x+1,y+1)));
+    };
     // Flood fills carry numeric coords beside the string-key sets: parsing keys per
     // popped cell dominated the solver's profile (and churned the GC) on big bodies.
     const collectBody = (sx,sy,windowLimit,softCap)=>{
       const bodyKeys=new Set([PK(sx,sy)]);
       const bodyCoords=[sx,sy];        // flat [x0,y0,x1,y1,…] in discovery order
       const stack=[sx,sy];
-      let minSurf=WORLD_BOTTOM, overflow=false;
+      let minSurf=WORLD_BOTTOM, maxSurf=WORLD_TOP, overflow=false, hasSpill=cellSpills(sx,sy);
       while(stack.length){
         const cy=stack.pop(), cx=stack.pop();
         if(cy<minSurf) minSurf=cy;
+        if(cy>maxSurf) maxSurf=cy;
         for(let d=0;d<4;d++){
           const nx=cx+(d===0?-1:d===1?1:0), ny=cy+(d===2?-1:d===3?1:0);
           if(windowLimit!=null && Math.abs(nx-sx)>windowLimit) continue;
@@ -1796,47 +1828,40 @@ window.MM = window.MM || {};
           if(bodyKeys.has(nk) || readTile(nx,ny)!==T.WATER) continue;
           if(!pressureConnected(cx,cy,nx,ny)) continue;
           bodyKeys.add(nk); bodyCoords.push(nx,ny); stack.push(nx,ny);
+          if(!hasSpill && cellSpills(nx,ny)) hasSpill=true;
           if(bodyKeys.size>EQ_BODY_CAP || (softCap && bodyKeys.size>softCap)){ overflow=true; stack.length=0; break; }
+          // Spilling bodies are re-collected windowed anyway (gravity + the bounded
+          // window own drains): stop the exploratory global fill as soon as a spill
+          // shows up instead of walking the whole body first.
+          if(softCap && hasSpill){ stack.length=0; break; }
         }
       }
-      return {bodyKeys,bodyCoords,minSurf,overflow,windowLimit};
+      return {bodyKeys,bodyCoords,minSurf,maxSurf,overflow,hasSpill,windowLimit};
     };
-    const bodyHasOpenSpill = (bodyCoords)=>{
-      for(let i=0;i<bodyCoords.length;i+=2){
-        const x=bodyCoords[i], y=bodyCoords[i+1];
-        if(y+1<WORLD_BOTTOM && canFill(readTile(x,y+1))) return true;
-        for(const dx of [-1,1]){
-          if(y+1<WORLD_BOTTOM && canFill(readTile(x+dx,y)) && canFill(readTile(x+dx,y+1))) return true;
-        }
+    const touchedXs=new Set(); const touchedTops=new Map(); // x -> min touched y (surface hint)
+    let variance=null; let hadTransfers=false;
+    const noteTouched=(x,y)=>{
+      touchedXs.add(x);
+      const cur=touchedTops.get(x);
+      if(cur===undefined || y<cur) touchedTops.set(x,y);
+    };
+    const noteMoved=(movedUnits)=>{
+      if(movedUnits>0){
+        hadTransfers=true;
+        const spread=Math.min(12,Math.ceil(movedUnits/UNITS));
+        if(variance==null || spread>variance) variance=spread;
       }
-      return false;
     };
-    const seedSet=new Set(active); for(const kk of pressureSeeds) seedSet.add(kk); pressureSeeds.clear();
-    const seeds=[...seedSet]; if(!seeds.length) return null; seeds.sort();
-    const processed=new Set(); // cells of bodies already handled this pass
-    const touchedXs=new Set(); let variance=null; let hadTransfers=false; let bodies=0;
-    for(const key of seeds){
-      if(bodies>=EQ_BODIES) break;
-      if(processed.has(key)) continue;
-      const ci0=key.indexOf(','); const sx=+key.slice(0,ci0), sy=+key.slice(ci0+1);
-      // Previous body's transfers mutated tiles: start each body from a fresh view.
-      tileCache.clear();
-      if(readTile(sx,sy)!==T.WATER) continue;
-      // 1. connected water body (4-neighbor flood fill). Try the whole loaded body
-      // first so wide lakes truly level; if it is too large, fall back to the old
-      // local window so oceans and mega-caverns still get bounded incremental work.
-      let bodyInfo=collectBody(sx,sy,null,EQ_GLOBAL_BODY_SOFT_CAP);
-      if(bodyInfo.overflow || bodyHasOpenSpill(bodyInfo.bodyCoords)) bodyInfo=collectBody(sx,sy,EQ_WINDOW);
-      const {bodyKeys,bodyCoords,minSurf,overflow,windowLimit}=bodyInfo;
-      for(let i=0;i<bodyCoords.length;i+=2) processed.add(bodyCoords[i]+','+bodyCoords[i+1]);
-      bodies++;
-      if(overflow || bodyKeys.size<2) continue;
-      // 2. container: void reachable below the body's highest surface. At the surface
-      // row itself, only covered mouths / existing lower water columns are admitted:
-      // open dry shore remains a wall, while cave lips and one-tile-low water notches
-      // can level.
+    // Cell-accurate equalization of one collected body.
+    // 2. container: void reachable below the body's highest surface. At the surface
+    // row itself, only covered mouths / existing lower water columns are admitted:
+    // open dry shore remains a wall, while cave lips and one-tile-low water notches
+    // can level.
+    const solveBody=(bodyInfo,sx)=>{
+      const {bodyKeys,bodyCoords,minSurf,windowLimit}=bodyInfo;
       const floorRow=minSurf+1;
-      const contKeys=new Set(bodyKeys); const contCoords=bodyCoords.slice(); const q=bodyCoords.slice(); let voidOver=false;
+      const contKeys=new Set(bodyKeys); const contCoords=bodyCoords.slice();
+      const q=bodyCoords.slice();
       while(q.length){
         const cy=q.pop(), cx=q.pop();
         for(let d=0;d<4;d++){
@@ -1847,10 +1872,15 @@ window.MM = window.MM || {};
           if(contKeys.has(nk) || !canFill(readTile(nx,ny))) continue;
           if(ny<floorRow && !surfaceVoidCanLevel(nx,ny,readTile)) continue;
           contKeys.add(nk); contCoords.push(nx,ny); q.push(nx,ny);
-          if(contKeys.size>EQ_VOID_CAP){ voidOver=true; q.length=0; break; }
+          // Container past the cap = effectively unbounded (open floors, mega
+          // caverns): skip ON PURPOSE, exactly like the shipped solver. Leveling a
+          // body against open ground would flatten its stable 1-unit-per-column
+          // taper, and every flattening re-arms the local spread rule — the puddle
+          // would creep across the whole map. Bounded windows plus the surface band
+          // pass own the oversized cases instead.
+          if(contKeys.size>EQ_VOID_CAP) return;
         }
       }
-      if(voidOver) continue;
       // 3. bottom-up equilibrium fill of the container with the body's volume, in
       // sub-tile units. Full rows take UNITS per cell; the topmost partial row splits
       // the remainder evenly across its columns, so the final surface is flat across
@@ -1909,17 +1939,20 @@ window.MM = window.MM || {};
         if(by>=spillFloor) continue;
         const cur=cellUnits(bx,by);
         const tgt=targetUnits.get(PK(bx,by))||0;
-        if(cur>tgt) sources.push({k:bx+','+by,x:bx,y:by,give:cur-tgt});
+        if(cur>tgt) sources.push({x:bx,y:by,give:cur-tgt});
       }
       for(const [tk,u] of targetUnits){
         const x=Math.floor(tk/512), y=tk-x*512+WORLD_TOP-8;
         const cur=cellUnits(x,y);
-        if(u>cur) dests.push({k:x+','+y,x,y,take:u-cur});
+        if(u>cur) dests.push({x,y,take:u-cur});
       }
-      if(!sources.length || !dests.length) continue; // already at equilibrium
-      sources.sort((a,b)=> a.y-b.y || a.k.localeCompare(b.k)); // highest first
-      dests.sort((a,b)=> b.y-a.y || a.k.localeCompare(b.k));   // deepest first
-      let budget=EQ_RATE, movedUnits=0, si=0, di=0;
+      if(!sources.length || !dests.length) return; // already at equilibrium
+      sources.sort((a,b)=> a.y-b.y || a.x-b.x); // highest first
+      dests.sort((a,b)=> b.y-a.y || a.x-b.x);   // deepest first
+      // Wide bodies move ~1 unit per column per pass instead of a fixed trickle:
+      // a fixed rate made ocean-scale redistribution take O(area) passes.
+      let budget=Math.min(EQ_RATE_MAX, Math.max(EQ_RATE, bodyKeys.size));
+      let movedUnits=0, si=0, di=0;
       while(budget>0 && si<sources.length && di<dests.length){
         const s=sources[si], d=dests[di];
         const n=Math.min(budget,s.give,d.take);
@@ -1927,16 +1960,144 @@ window.MM = window.MM || {};
         if(done<=0) break;
         s.give-=done; d.take-=done; budget-=done; movedUnits+=done;
         mark(d.x,d.y); markNeighbors(active,d.x,d.y); markNeighbors(active,s.x,s.y);
-        touchedXs.add(s.x); touchedXs.add(d.x);
+        noteTouched(s.x,s.y); noteTouched(d.x,d.y);
         if(s.give<=0) si++;
         if(d.take<=0) di++;
       }
-      if(movedUnits>0){
-        hadTransfers=true;
-        const spread=Math.min(12,Math.ceil(movedUnits/UNITS)); if(variance==null || spread>variance) variance=spread;
+      noteMoved(movedUnits);
+    };
+    // Oversized bodies (oceans, mega-caverns) cannot be cell-flood-filled within
+    // budget; flatten their open surface as a 1D column band instead. The walk
+    // follows the top water run of each column while consecutive runs share a row,
+    // so basins separated by solid lips stay hydraulically separate. Each pass moves
+    // top-cell units from above-average columns to below-average ones (rate-limited),
+    // which both levels sealed oceans without window-boundary steps and feeds the
+    // drawdown cone around a drain from the far field.
+    const bandLevel=(seedX,seedY)=>{
+      tileCache.clear(); // prior transfers this pass mutated tiles
+      let top=seedY;
+      if(readTile(seedX,top)!==T.WATER) return;
+      while(top-1>=WORLD_TOP && readTile(seedX,top-1)===T.WATER) top--;
+      let bot=top;
+      while(bot+1<WORLD_BOTTOM && bot-top<EQ_BAND_DEPTH && readTile(seedX,bot+1)===T.WATER) bot++;
+      const cols=[{x:seedX,top,bot}];
+      for(const dir of [-1,1]){
+        let pt=top, pb=bot;
+        for(let step=1; step<=EQ_BAND_SPAN; step++){
+          const x=seedX+dir*step;
+          let f=-1; // water within the previous run's row span = surface-connected
+          for(let y=pt; y<=pb; y++){ if(readTile(x,y)===T.WATER){ f=y; break; } }
+          if(f<0) break;
+          let t2=f; while(t2-1>=WORLD_TOP && readTile(x,t2-1)===T.WATER) t2--;
+          let b2=f; while(b2+1<WORLD_BOTTOM && b2-t2<EQ_BAND_DEPTH && readTile(x,b2+1)===T.WATER) b2++;
+          cols.push({x,top:t2,bot:b2});
+          pt=t2; pb=b2;
+        }
+      }
+      if(cols.length<8) return; // tiny band: the cell solver already covers it
+      cols.sort((a,b)=>a.x-b.x);
+      let loElev=Infinity, hiElev=-Infinity;
+      for(const c of cols){
+        c.fill=cellUnits(c.x,c.top);
+        c.openAbove=c.top-1>=WORLD_TOP && canFill(readTile(c.x,c.top-1));
+        c.elev=(WORLD_BOTTOM-c.top)*UNITS + c.fill;
+        if(c.elev<loElev) loElev=c.elev;
+        if(c.elev>hiElev) hiElev=c.elev;
+      }
+      // Only bulk imbalances (>= a full block of surface difference) are band work:
+      // trimming sub-block lumps belongs to local equalization — band-topping thin
+      // films re-arms their spread rule and creeps a puddle across the whole map.
+      if(hiElev-loElev<UNITS) return;
+      // Pair the highest surfaces directly with the lowest. Sharing toward the mean
+      // moves (imbalance/width) per column, which rounds to ZERO units for a narrow
+      // drawdown cone inside a wide flat ocean — the cliff around a drain would
+      // never erode. Per pass each column donates at most its top cell and rises at
+      // most one row, so every intermediate state stays gravity-consistent.
+      const byHigh=[...cols].sort((a,b)=> b.elev-a.elev || a.x-b.x);
+      const byLow=[...cols].sort((a,b)=> a.elev-b.elev || a.x-b.x);
+      let budget=Math.min(EQ_RATE_MAX, Math.max(EQ_RATE, cols.length*3));
+      let moved=0, hi=0, lo=0;
+      while(budget>0 && hi<byHigh.length && lo<byLow.length){
+        const s=byHigh[hi], d=byLow[lo];
+        if(s===d) break;
+        const gap=s.elev-d.elev;
+        if(gap<2) break; // the extreme pair is level: every other pair is closer
+        const takeCap=(UNITS-d.fill)+(d.openAbove?UNITS:0);
+        if(takeCap<=0){ lo++; continue; }
+        if(s.fill<=0){ hi++; continue; }
+        const n=Math.min(budget, s.fill, Math.floor(gap/2), takeCap);
+        if(n<=0){ hi++; continue; }
+        let done=0;
+        const into=Math.min(n, UNITS-d.fill); // top-up the destination's top cell first
+        if(into>0) done+=moveUnits(s.x,s.top,d.x,d.top,into,getTile,setTile);
+        if(done===into && n-done>0 && d.openAbove){ // remainder starts the row above
+          done+=moveUnits(s.x,s.top,d.x,d.top-1,n-done,getTile,setTile);
+        }
+        if(done<=0){ hi++; continue; }
+        s.fill-=done; s.elev-=done;
+        const newFill=d.fill+done;
+        if(newFill<=UNITS) d.fill=newFill;
+        else {
+          d.top=d.top-1; d.fill=newFill-UNITS;
+          d.openAbove=d.top-1>=WORLD_TOP && canFill(readTile(d.x,d.top-1));
+        }
+        d.elev+=done;
+        budget-=done; moved+=done;
+        mark(s.x,s.top); mark(d.x,d.top);
+        markNeighbors(active,d.x,d.top); markNeighbors(active,s.x,s.top);
+        if(pressureSeeds.size<2000){ pressureSeeds.add(k(s.x,s.top)); pressureSeeds.add(k(d.x,d.top)); }
+        noteTouched(s.x,s.top); noteTouched(d.x,d.top);
+        if(s.fill<=0) hi++;
+        if((UNITS-d.fill)+(d.openAbove?UNITS:0)<=0) lo++;
+      }
+      noteMoved(moved);
+    };
+    const seedSet=new Set(active); for(const kk of pressureSeeds) seedSet.add(kk); pressureSeeds.clear();
+    const seeds=[...seedSet]; if(!seeds.length) return null; seeds.sort();
+    const processed=new Set(); // packed cell keys of bodies already handled this pass
+    let bodies=0, stoppedAt=-1;
+    const passT0=(typeof performance!=='undefined' && performance.now) ? performance.now() : 0;
+    for(let seedIdx=0; seedIdx<seeds.length; seedIdx++){
+      // Body-count and wall-clock budget: whatever is left resumes next pass instead
+      // of being dropped (dropped seeds froze settled-but-unleveled bodies for good).
+      if(bodies>=EQ_BODIES || (bodies>0 && passT0 && performance.now()-passT0>EQ_TIME_BUDGET_MS)){ stoppedAt=seedIdx; break; }
+      const key=seeds[seedIdx];
+      const ci0=key.indexOf(','); const sx=+key.slice(0,ci0), sy=+key.slice(ci0+1);
+      if(processed.has(PK(sx,sy))) continue;
+      // Previous body's transfers mutated tiles: start each body from a fresh view.
+      tileCache.clear();
+      if(readTile(sx,sy)!==T.WATER) continue;
+      // 1. connected water body (4-neighbor flood fill). Try the whole loaded body
+      // first so wide lakes truly level. Oversized or spilling bodies fall back to
+      // the bounded local window (open-air descent stays window-bounded, exactly the
+      // shipped drain semantics) and additionally get the surface band pass so the
+      // far field still flattens and keeps feeding the drain.
+      let bodyInfo=collectBody(sx,sy,null,EQ_GLOBAL_BODY_SOFT_CAP);
+      const bounded=bodyInfo.overflow || bodyInfo.hasSpill;
+      if(bounded) bodyInfo=collectBody(sx,sy,EQ_WINDOW);
+      const bc=bodyInfo.bodyCoords;
+      for(let i=0;i<bc.length;i+=2) processed.add(PK(bc[i],bc[i+1]));
+      bodies++;
+      // Single-row bodies that are actively spilling (residual sheets draining into
+      // a breach) are local-equalization territory: the solver's even re-split would
+      // fight their stable taper every pass and its column cooldowns throttle the
+      // very trickle that drains them. Sealed films (trench pours) still get the
+      // solve — it converges to a flat film and then stops for good.
+      const singleRow=bodyInfo.maxSurf===bodyInfo.minSurf;
+      const drainingFilm=singleRow && bodyInfo.hasSpill;
+      if(!bodyInfo.overflow && bodyInfo.bodyKeys.size>=2 && !drainingFilm) solveBody(bodyInfo,sx);
+      // Single-row bodies can never pass the band's >=1-block-range gate (all tops
+      // share a row): skip the walk instead of paying for it every pass.
+      if(bounded && !singleRow) bandLevel(sx,sy);
+    }
+    if(stoppedAt>=0){
+      for(let r=stoppedAt; r<seeds.length && pressureSeeds.size<2000; r++){
+        const rk=seeds[r];
+        const rc=rk.indexOf(',');
+        if(!processed.has(PK(+rk.slice(0,rc),+rk.slice(rc+1)))) pressureSeeds.add(rk);
       }
     }
-    return {touchedXs, variance, hadTransfers};
+    return {touchedXs, touchedTops, variance, hadTransfers};
   }
 
   function metrics(){ return {active:active.size, partials:partial.size, springs:springs.size, streams:streams.length, wetSand:wetSand.size, wetClay:wetClay.size, dryMud:dryMud.size, dryClay:dryClay.size, passiveScanColumns:passiveScanLastColumns, pressureMs:+pressureLastMs.toFixed(3), overlayCacheHits, overlayFullRenders, overlayReuseMs:+overlayReuseWindowMs().toFixed(2)}; }

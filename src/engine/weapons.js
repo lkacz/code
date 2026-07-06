@@ -245,11 +245,55 @@ import { reactions as REACTIONS } from './reactions.js';
     }
     return true;
   }
+  // Arrow tier preference: 'auto' fires the strongest owned tier; a pinned tier id
+  // fires that tier while it lasts (saving rare arrows for real threats) and falls
+  // back to auto when the pinned stack runs dry. Persisted like other UI prefs.
+  const ARROW_PREF_KEY='mm_arrow_pref_v1';
+  let arrowPref='auto';
+  try{
+    const savedPref=(typeof localStorage!=='undefined') ? localStorage.getItem(ARROW_PREF_KEY) : null;
+    if(savedPref && ARROW_TIERS.some(t=>t.id===savedPref)) arrowPref=savedPref;
+  }catch(e){}
+  function setArrowPref(id){
+    arrowPref=(id && ARROW_TIERS.some(t=>t.id===id)) ? id : 'auto';
+    try{
+      if(typeof localStorage!=='undefined'){
+        if(arrowPref==='auto') localStorage.removeItem(ARROW_PREF_KEY);
+        else localStorage.setItem(ARROW_PREF_KEY,arrowPref);
+      }
+    }catch(e){}
+    return arrowPref;
+  }
   function pickArrowTier(){
+    if(arrowPref!=='auto'){
+      const pinned=ARROW_TIERS.find(t=>t.id===arrowPref);
+      if(pinned && resourceCount(pinned.key)>0) return pinned;
+    }
     for(const tier of ARROW_TIERS){
       if(resourceCount(tier.key)>0) return tier;
     }
     return null;
+  }
+  // HUD contract: everything the weapon bar shows about the bow in one call.
+  function arrowInfo(){
+    const active=pickArrowTier();
+    let total=0;
+    const tiers=ARROW_TIERS.map(t=>{
+      const count=resourceCount(t.key);
+      total+=count;
+      return {id:t.id, key:t.key, label:t.label, color:t.color, damage:t.damage,
+        count, active:!!(active && active.id===t.id), pinned:arrowPref===t.id};
+    });
+    return {tiers, activeId:active?active.id:null, pref:arrowPref, total};
+  }
+  function fuelInfo(kind){
+    const spec=STREAM_FUEL[kind];
+    if(!spec) return null;
+    return {key:spec.key, label:spec.label, count:resourceCount(spec.key), rate:spec.rate||1};
+  }
+  // Per-frame HUD gauge state (kept allocation-light next to the full metrics()).
+  function hudStatus(){
+    return {ult:ultCharge, bowActive:!!bowCharge.active, bowRatio:bowChargeRatio(), bowFull:!!bowCharge.full};
   }
   function hasArrowAmmo(){ return !!pickArrowTier(); }
   function warnNoArrows(){ sayLimited('arrows_empty','Brak strzal'); }
@@ -551,6 +595,7 @@ import { reactions as REACTIONS } from './reactions.js';
     electricBeams.push(b);
   }
   function electricDamageAt(tx,ty,dmg){
+    try{ if(MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,dmg,{kind:'electric',source:'hero'})) return true; }catch(e){}
     try{ if(MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg,{source:'hero'})) return true; }catch(e){}
     try{ if(MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,dmg)) return true; }catch(e){}
     try{ if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,dmg)) return true; }catch(e){}
@@ -635,6 +680,7 @@ import { reactions as REACTIONS } from './reactions.js';
       for(const t of [0.35,0.6,0.85]){
         const sx=Math.floor(player.x + dx*range*t), sy=Math.floor(player.y + dy*range*t);
         const opts=streamDamageOpts(kind,{x:sx+0.5,y:sy+0.5});
+        if(MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(sx,sy, dps*0.2, opts)) break;
         if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(sx,sy, dps*0.2, opts)) break;
         if(kind==='flame' && MM.undergroundBoss && MM.undergroundBoss.heatAt && MM.undergroundBoss.heatAt(sx,sy,lastGetTile,lastSetTile,opts)) break;
         if(kind==='gas' && MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy, dps*0.2, opts)) break;
@@ -704,6 +750,7 @@ import { reactions as REACTIONS } from './reactions.js';
     for(const t of [0.35,0.55,0.75,0.95]){
       const sx=Math.floor(player.x + v.dx*range*t), sy=Math.floor(player.y + v.dy*range*t);
       const opts=streamDamageOpts(kind,{x:sx+0.5,y:sy+0.5});
+      if(MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(sx,sy,dps*0.18,opts)) break;
       if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(sx,sy,dps*0.18,opts)) break;
       if(kind==='flame' && MM.undergroundBoss && MM.undergroundBoss.heatAt && MM.undergroundBoss.heatAt(sx,sy,lastGetTile,lastSetTile,opts)) break;
       if(kind==='gas' && MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy,dps*0.18,opts)) break;
@@ -727,7 +774,8 @@ import { reactions as REACTIONS } from './reactions.js';
       for(let dx=-ri;dx<=ri;dx++){
         if(dx*dx+dy*dy>radius*radius) continue;
         const x=tx+dx, y=ty+dy;
-        hit = !!((MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(x,y,dmg))
+        hit = !!((MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(x,y,dmg,{kind:'melee',source:'hero'}))
+          || (MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(x,y,dmg))
           || (MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(x,y,dmg))
           || (MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(x,y,dmg,{kind:'melee',source:'hero'}))
           || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(x,y,dmg))
@@ -806,6 +854,7 @@ import { reactions as REACTIONS } from './reactions.js';
     }
     // creatures, bosses, plants
     try{ if(MM.mobs && MM.mobs.blastRadius) MM.mobs.blastRadius(wx,wy,R+1.5,14,{source:'hero'}); }catch(e){}
+    try{ if(MM.centerGuardian && MM.centerGuardian.damageAt){ const mirrorOpts={kind:'explosion',source:'hero'}; MM.centerGuardian.damageAt(bx,by,14,mirrorOpts); MM.centerGuardian.damageAt(bx+1,by,9,mirrorOpts); MM.centerGuardian.damageAt(bx-1,by,9,mirrorOpts); } }catch(e){}
     try{ if(MM.guardianLairs && MM.guardianLairs.damageAt){ MM.guardianLairs.damageAt(bx,by,14); MM.guardianLairs.damageAt(bx+1,by,9); MM.guardianLairs.damageAt(bx-1,by,9); MM.guardianLairs.damageAt(bx,by-1,9); } }catch(e){}
     try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt){ const gasOpts=streamDamageOpts('gas',{x:wx,y:wy,type:'gasExplosion'}); MM.undergroundBoss.damageAt(bx,by,14,gasOpts); MM.undergroundBoss.damageAt(bx+1,by,9,gasOpts); MM.undergroundBoss.damageAt(bx-1,by,9,gasOpts); MM.undergroundBoss.damageAt(bx,by-1,9,gasOpts); } }catch(e){}
     try{ if(MM.skyGuardian && MM.skyGuardian.damageAt){ const gasOpts=streamDamageOpts('gas',{x:wx,y:wy,type:'gasExplosion'}); MM.skyGuardian.damageAt(bx,by,14,gasOpts); MM.skyGuardian.damageAt(bx+1,by,9,gasOpts); MM.skyGuardian.damageAt(bx-1,by,9,gasOpts); MM.skyGuardian.damageAt(bx,by-1,9,gasOpts); } }catch(e){}
@@ -1204,7 +1253,8 @@ import { reactions as REACTIONS } from './reactions.js';
             break;
           }
         }
-        if((MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,hitDmg,{source:'hero'}))
+        if((MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,hitDmg,{source:'hero',kind:'arrow'}))
+        || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,hitDmg,{source:'hero'}))
         || (MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,hitDmg))
         || undergroundResult
         || (MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,hitDmg,{source:'hero',kind:'arrow',x:a.x,y:a.y,vx:a.vx,vy:a.vy,tier:a.tier,fire:!!a.fire}))
@@ -1630,6 +1680,7 @@ import { reactions as REACTIONS } from './reactions.js';
   }
   function reset(){ arrows.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; meleeCd=0; electricCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; resetBowCharge(); }
   MM.weapons={fireHeld,releaseHeld,cancelHeld,fireUlt,update,draw,drawHeld,notifyMeleeSwing,reset,explodeAt,spawnGasCloud,spawnExternalStream,
+    arrowInfo,setArrowPref,fuelInfo,hudStatus,
     metrics:()=>({arrows:arrows.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),ultCharge,bowCharge:bowChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
     _debug:{arrows,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,waterHeat}};
 })();

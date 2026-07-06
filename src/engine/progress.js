@@ -1,15 +1,15 @@
 // Progression spine: XP → levels → skill points spent on trainable stats
-// (Witalność/Siła/Zwinność/Pojemność), plus persistent milestones with rewards. Bonuses
+// (Witalność/Siła/Zwinność/Pojemność/Twardość), plus persistent milestones with rewards. Bonuses
 // flow into the existing modifier engine (inventory.js merges MM.progress.bonuses()
 // into MM.activeModifiers); max-HP changes are applied by main.js listening to
 // the mm-progress-change event. State persists in mm_progress_v1.
 window.MM = window.MM || {};
 (function(){
   const SAVE_KEY='mm_progress_v1';
-  const state={ vit:0, str:0, agi:0, cap:0, lastLevel:1, bossKills:0, done:{}, trophies:{}, guardians:{} };
+  const state={ vit:0, str:0, agi:0, cap:0, hard:0, lastLevel:1, bossKills:0, done:{}, trophies:{}, guardians:{} };
   let berries=0;
   const SEASON_TROPHY_KEYS=['springAntler','summerHorn','autumnHeartwood','winterFur'];
-  const GUARDIAN_KEYS=['fire','ice','earth','air'];
+  const GUARDIAN_KEYS=['fire','ice','earth','air','mother'];
 
   function toInt(v,min,max){
     const n=Number(v);
@@ -47,6 +47,7 @@ window.MM = window.MM || {};
       str:toInt(state.str,0,999),
       agi:toInt(state.agi,0,999),
       cap:toInt(state.cap,0,999),
+      hard:toInt(state.hard,0,999),
       lastLevel:toInt(state.lastLevel,1,99),
       bossKills:toInt(state.bossKills,0),
       done:cleanDone(state.done),
@@ -61,6 +62,7 @@ window.MM = window.MM || {};
     state.str=toInt(d.str,0,999);
     state.agi=toInt(d.agi,0,999);
     state.cap=toInt(d.cap,0,999);
+    state.hard=toInt(d.hard,0,999); // absent in pre-Twardość saves → 0
     state.lastLevel=toInt(d.lastLevel,1,99);
     state.bossKills=toInt(d.bossKills,0);
     state.done=cleanDone(d.done);
@@ -111,6 +113,7 @@ window.MM = window.MM || {};
     if(!state.guardians.ice && (Number(inv.heartIce)||0)>0){ state.guardians.ice=1; changed=true; }
     if(!state.guardians.earth && (Number(inv.heartEarth)||0)>0){ state.guardians.earth=1; changed=true; }
     if(!state.guardians.air && (Number(inv.heartAir)||0)>0){ state.guardians.air=1; changed=true; }
+    if(!state.guardians.mother && (Number(inv.heartMother)||0)>0){ state.guardians.mother=1; changed=true; }
     if(changed) save();
     return changed;
   }
@@ -139,9 +142,9 @@ window.MM = window.MM || {};
     return {level:lvl, into:xp-acc, need:needFor(lvl)};
   }
   function level(){ const p=playerRef(); return levelFor((p&&p.xp)||0); }
-  function points(){ const L=level().level; return Math.max(0,(L-1)-(state.vit+state.str+state.agi+state.cap)); }
+  function points(){ const L=level().level; return Math.max(0,(L-1)-(state.vit+state.str+state.agi+state.cap+state.hard)); }
   function spend(stat){
-    if(points()<=0 || !(stat in {vit:1,str:1,agi:1,cap:1})) return false;
+    if(points()<=0 || !(stat in {vit:1,str:1,agi:1,cap:1,hard:1})) return false;
     state[stat]++; save();
     try{ if(MM.recomputeModifiers) MM.recomputeModifiers(); }catch(e){}
     notify();
@@ -155,6 +158,7 @@ window.MM = window.MM || {};
       jumpPowerMult: 1+state.agi*0.02,         // +2% jump per Zwinność
       maxHpBonus: state.vit*10,                // +10 HP per Witalność (applied in main)
       energyCapacityBonus: state.cap*25,       // +25 energy capacity per Pojemność
+      crushResistBonus: state.hard*1.5,        // +1.5 collapse-load capacity per Twardość (engine/hero_crush.js)
     };
   }
 
@@ -211,6 +215,13 @@ window.MM = window.MM || {};
       (state.done.season_autumn_trophy || state.trophies.autumnHeartwood) &&
       (state.done.season_winter_trophy || state.trophies.winterFur)
     ), xp:700, chest:true},
+    // The story arc pays out visibly at each node — the hearts double as
+    // milestone feedback so a fallen guardian always "counts" on the HUD.
+    {id:'guardian_ice',   desc:'Odwilz: zgas chlod zachodniego odtracenia', check:()=>!!state.guardians.ice, xp:300},
+    {id:'guardian_fire',  desc:'Wysluchanie: ukoj wschodni zar', check:()=>!!state.guardians.fire, xp:300},
+    {id:'guardian_earth', desc:'Odkopanie: obudz i uspij Trzeciego Kreta', check:()=>!!state.guardians.earth, xp:400},
+    {id:'guardian_air',   desc:'Zejscie na ziemie: sciagnij ambicje z nieba', check:()=>!!state.guardians.air, xp:500},
+    {id:'story_complete', desc:'Cisza: spotkaj siebie w srodku swiata', check:()=>!!state.guardians.mother, xp:1500, chest:true},
   ];
   if(typeof window!=='undefined' && window.addEventListener){
     window.addEventListener('mm-berry-harvest',()=>{ berries=toInt(berries+1,0); save(); });
@@ -258,12 +269,12 @@ window.MM = window.MM || {};
     }
   }
 
-  function reset(){ state.vit=state.str=state.agi=state.cap=0; state.lastLevel=1; state.bossKills=0; state.done={}; state.trophies={}; state.guardians={}; berries=0; save(); try{ if(MM.recomputeModifiers) MM.recomputeModifiers(); }catch(e){} notify(); }
+  function reset(){ state.vit=state.str=state.agi=state.cap=state.hard=0; state.lastLevel=1; state.bossKills=0; state.done={}; state.trophies={}; state.guardians={}; berries=0; save(); try{ if(MM.recomputeModifiers) MM.recomputeModifiers(); }catch(e){} notify(); }
 
   MM.progress={ update, level, points, spend, bonuses, reset, addBuff, snapshot, restore,
     markGuardianHeart, hasGuardianHeart, guardianHearts,
     getBuffs:()=>buffs.map(b=>({name:b.name,icon:b.icon,t:b.t})),
-    stats:()=>({vit:state.vit,str:state.str,agi:state.agi,cap:state.cap}),
+    stats:()=>({vit:state.vit,str:state.str,agi:state.agi,cap:state.cap,hard:state.hard}),
     milestones:()=>MILESTONES.map(m=>({id:m.id,desc:m.desc,done:!!state.done[m.id]})) };
   // Register as a stat provider: skill-point bonuses merge through the same
   // STAT_RULES engine as gear. Registration recomputes modifiers, which also
@@ -272,7 +283,7 @@ window.MM = window.MM || {};
     if(MM.inventory && MM.inventory.registerModifierSource){
       MM.inventory.registerModifierSource('progress', ()=>{
         const b=bonuses();
-        return { attackDamage:b.attackDamage, moveSpeedMult:b.moveSpeedMult, jumpPowerMult:b.jumpPowerMult, energyCapacityBonus:b.energyCapacityBonus };
+        return { attackDamage:b.attackDamage, moveSpeedMult:b.moveSpeedMult, jumpPowerMult:b.jumpPowerMult, energyCapacityBonus:b.energyCapacityBonus, crushResistBonus:b.crushResistBonus };
       });
       MM.inventory.registerModifierSource('buffs', buffBundle);
     } else if(MM.recomputeModifiers) MM.recomputeModifiers();

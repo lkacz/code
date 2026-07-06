@@ -483,6 +483,33 @@ MM.ui = (function(){
       }
       wrap.appendChild(skyGateRow);
     }
+    if(typeof actions.center==='function'){
+      const centerRow=document.createElement('div');
+      centerRow.style.cssText='display:flex; gap:4px; margin-top:4px;';
+      const b=document.createElement('button');
+      b.textContent='Centrum';
+      b.title='Teleport to the mirror obelisk at the world start (wakes the call)';
+      b.style.cssText='flex:1 1 0; min-width:0; font-size:11px; padding:3px 6px; border:1px solid rgba(155,140,255,.75);';
+      b.addEventListener('click',()=>{
+        const r=actions.center();
+        if(r===false){ msg('Centrum teleport failed'); return; }
+        syncFromPos(r);
+      });
+      centerRow.appendChild(b);
+      if(typeof actions.centerFight==='function'){
+        const fightBtn=document.createElement('button');
+        fightBtn.textContent='Mirror fight';
+        fightBtn.title='Teleport to the obelisk and start the inner-self mirror battle';
+        fightBtn.style.cssText='flex:1 1 0; min-width:0; font-size:11px; padding:3px 6px; border:1px solid rgba(232,229,210,.72);';
+        fightBtn.addEventListener('click',()=>{
+          const r=actions.centerFight();
+          if(r===false){ msg('Mirror fight start failed'); return; }
+          syncFromPos(r);
+        });
+        centerRow.appendChild(fightBtn);
+      }
+      wrap.appendChild(centerRow);
+    }
     if(typeof actions.aftermath==='function'){
       const aftermathLab=document.createElement('div');
       aftermathLab.textContent='Aftermath (debug):';

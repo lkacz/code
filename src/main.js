@@ -15,9 +15,12 @@ import { teleporters as TELEPORTERS } from './engine/teleporters.js';
 import { pumps as PUMPS } from './engine/pumps.js';
 import { canPlaceLadderFixture, ladderConnections } from './engine/ladders.js';
 import { applyHorizontalMovement, applyJumpArcControl, surfaceTraction } from './engine/movement.js';
+import './engine/input_mode.js'; // stamps data-input-mode on <html>; touch clusters gate off it
+import { CRUSH_TUNING, crushTickDamage, heroCrushCapacity, heroEmbeddedTiles, resolveHeroBurial } from './engine/hero_crush.js';
 import { cape as CAPE } from './engine/cape.js';
 import { necklace as NECKLACE } from './engine/necklace.js';
 import { chests as CHESTS } from './engine/chests.js';
+import { createCraftingModel, SOURCE_HINTS as CRAFT_SOURCE_HINTS } from './engine/crafting.js';
 import './inventory.js';
 import { mobs as MOBS } from './engine/mobs.js';
 import { tutorialNpc as TUTORIAL_NPC } from './engine/tutorial_npc.js';
@@ -35,6 +38,8 @@ import { guardianLairs as GUARDIANS } from './engine/guardian_lairs.js';
 import { undergroundBoss as UNDERGROUND } from './engine/underground_boss.js';
 import { skyGuardian as SKY_GUARDIAN } from './engine/sky_guardian.js';
 import { guardianAftermath as AFTERMATH } from './engine/guardian_aftermath.js';
+import { centerGuardian as CENTER_GUARDIAN } from './engine/center_guardian.js';
+import { storyProgression as STORY_PROGRESSION } from './engine/story_progression.js';
 import { grass as GRASS } from './engine/grass.js';
 import { fire as FIRE } from './engine/fire.js';
 import { weapons as WEAPONS } from './engine/weapons.js';
@@ -56,6 +61,7 @@ import { meteorites as METEORITES } from './engine/meteorites.js';
 import { turrets as TURRETS } from './engine/turrets.js';
 import { springPlatforms as SPRING_PLATFORMS } from './engine/spring_platforms.js';
 import { vending as VENDING } from './engine/vending.js';
+import { vitalsHud as VITALS_HUD } from './engine/vitals_hud.js';
 import './engine/ui.js';
 import './inventory_ui.js';
 // Bind global MM into a module-scoped constant for convenience
@@ -490,6 +496,7 @@ MM.onTileRenderChanged=function(tx,ty,old,next){
 	if(window.__mmNoRenderHook) return;
 	if(!Number.isFinite(tx) || !Number.isFinite(ty) || !worldYInBounds(ty)) return;
 	tx=Math.floor(tx); ty=Math.floor(ty);
+	noteTileBuriesHero(tx,ty,next);
 	const cx=Math.floor(tx/CHUNK_W), sy=worldSectionY(ty);
 	const after=(WORLD && WORLD.chunkVersion) ? WORLD.chunkVersion(cx,sy) : undefined;
 	markChunkRenderDirty(cx,ty,2,Number.isFinite(after)?after-1:undefined,after);
@@ -536,7 +543,11 @@ function invalidateAdjacentRenderCaches(tx,ty,cx,sy){
 		const e=chunkCanvases.get(worldRenderSectionKey(ncx,nsy));
 		if(!e || e.version<0) return;
 		e.edgeStale=true;
-		markChunkRenderDirty(ncx,dirtyY,2,e.version,e.version);
+		// nextVersion must be the key's CURRENT version: the neighbor may have pending
+		// dirty bands ahead of its canvas (e.version), and rewinding dirty.version to
+		// the canvas version breaks the partial-redraw check, forcing a full rebake
+		const cur=(WORLD && WORLD.chunkVersion) ? WORLD.chunkVersion(ncx,nsy) : e.version;
+		markChunkRenderDirty(ncx,dirtyY,2,e.version,Math.max(cur,e.version));
 	};
 	const lx=((tx%CHUNK_W)+CHUNK_W)%CHUNK_W;
 	if(lx===0) markStale(cx-1,ty);
@@ -1190,15 +1201,33 @@ window.heroDied=function(cause){
 			return;
 		}
 	}
+	// The mirror fight at the center: falling to yourself costs nothing material.
+	// 'inner_self_final' is the mutual killing blow (story completes); the other
+	// inner causes pause the battle and wait for the hero's return.
+	if((cause==='inner_self' || cause==='inner_mirror' || cause==='inner_self_final') && CENTER_GUARDIAN && CENTER_GUARDIAN.onHeroKilled){
+		const mirror=CENTER_GUARDIAN.onHeroKilled({cause, player});
+		if(mirror && mirror.handled){
+			try{ if(MM.audio && MM.audio.play) MM.audio.play(cause==='inner_self_final'?'milestone':'grave'); }catch(e){}
+			updateInventory();
+			startDeathTravelFx(cause);
+			return;
+		}
+	}
 	const res={}; let any=false;
 	for(const k of RESOURCE_KEYS){
 		const half=Math.floor((inv[k]||0)/2);
 		if(half>0){ res[k]=half; inv[k]-=half; any=true; }
 	}
 	if(any){
-		const gx=Math.round(player.x); let gy=Math.round(player.y);
+		let gx=Math.round(player.x); let gy=Math.round(player.y);
 		const here=getTile(gx,gy);
 		if(here!==T.AIR && here!==T.WATER && getTile(gx,gy-1)===T.AIR) gy=gy-1;
+		// A crush death leaves the hero inside solid rubble — hunt for the nearest
+		// open cell so the gravestone (and half his resources) stays reachable.
+		if(!isReplaceableNaturalOpenTile(getTile(gx,gy),false)){
+			const spot=nearestOpenGraveCell(gx,gy);
+			if(spot){ gx=spot.x; gy=spot.y; }
+		}
 		grave={x:gx, y:gy, res, seed:WORLDGEN.worldSeed}; saveGrave();
 		const t=getTile(gx,gy);
 		if(isReplaceableNaturalOpenTile(t,false)) setTile(gx,gy,T.GRAVE);
@@ -1210,6 +1239,19 @@ window.heroDied=function(cause){
 	updateInventory();
 	startDeathTravelFx(cause);
 };
+function nearestOpenGraveCell(cx,cy){
+	for(let r=1;r<=6;r++){
+		for(let dy=-r;dy<=r;dy++){
+			for(let dx=-r;dx<=r;dx++){
+				if(Math.max(Math.abs(dx),Math.abs(dy))!==r) continue; // ring perimeter only
+				const x=cx+dx, y=cy+dy;
+				if(y<worldMinY() || y>=worldMaxY()) continue;
+				if(isReplaceableNaturalOpenTile(getTile(x,y),false)) return {x,y};
+			}
+		}
+	}
+	return null;
+}
 function tryOpenGraveAt(tx,ty){
 	if(getTile(tx,ty)!==T.GRAVE) return false;
 	setTile(tx,ty,T.AIR);
@@ -1556,6 +1598,8 @@ function buildSaveObject(opts){
 	undergroundBoss: timedSavePart('undergroundBoss',()=>((UNDERGROUND && UNDERGROUND.snapshot) ? UNDERGROUND.snapshot() : null),perf),
 	skyGuardian: timedSavePart('skyGuardian',()=>((SKY_GUARDIAN && SKY_GUARDIAN.snapshot) ? SKY_GUARDIAN.snapshot() : null),perf),
 	guardianAftermath: timedSavePart('guardianAftermath',()=>((AFTERMATH && AFTERMATH.snapshot) ? AFTERMATH.snapshot() : null),perf),
+	centerGuardian: timedSavePart('centerGuardian',()=>((CENTER_GUARDIAN && CENTER_GUARDIAN.snapshot) ? CENTER_GUARDIAN.snapshot() : null),perf),
+	storyProgression: timedSavePart('storyProgression',()=>((STORY_PROGRESSION && STORY_PROGRESSION.snapshot) ? STORY_PROGRESSION.snapshot() : null),perf),
 	meteorites: timedSavePart('meteorites',()=>((METEORITES && METEORITES.snapshot) ? METEORITES.snapshot() : null),perf),
 	mobs: timedSavePart('mobs',()=>((MOBS && MOBS.serialize) ? MOBS.serialize() : null),perf),
 	companions: timedSavePart('companions',()=>((COMPANIONS && COMPANIONS.snapshot) ? COMPANIONS.snapshot() : null),perf),
@@ -1632,6 +1676,8 @@ function loadGame(){
 	try{ if(UNDERGROUND && UNDERGROUND.reset) UNDERGROUND.reset(); }catch(e){}
 	try{ if(SKY_GUARDIAN && SKY_GUARDIAN.reset) SKY_GUARDIAN.reset(); }catch(e){}
 	try{ if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); }catch(e){}
+	try{ if(CENTER_GUARDIAN && CENTER_GUARDIAN.reset) CENTER_GUARDIAN.reset(); }catch(e){}
+	try{ if(STORY_PROGRESSION && STORY_PROGRESSION.reset) STORY_PROGRESSION.reset(); }catch(e){}
 	try{ if(FALLING && FALLING.reset) FALLING.reset(); }catch(e){}
 	try{ if(TREES && TREES.reset) TREES.reset(); }catch(e){}
 	try{ if(GRASS && GRASS.reset) GRASS.reset(); }catch(e){}
@@ -1696,6 +1742,8 @@ function loadGame(){
 	try{ if(UNDERGROUND && UNDERGROUND.restore) UNDERGROUND.restore(data.undergroundBoss); }catch(e){}
 	try{ if(SKY_GUARDIAN && SKY_GUARDIAN.restore) SKY_GUARDIAN.restore(data.skyGuardian); }catch(e){}
 	try{ if(AFTERMATH && AFTERMATH.restore) AFTERMATH.restore(data.guardianAftermath); }catch(e){}
+	try{ if(CENTER_GUARDIAN && CENTER_GUARDIAN.restore) CENTER_GUARDIAN.restore(data.centerGuardian); }catch(e){}
+	try{ if(STORY_PROGRESSION && STORY_PROGRESSION.restore) STORY_PROGRESSION.restore(data.storyProgression); }catch(e){}
 	try{ if(FOG && data.fog){ if(FOG.importSeen) FOG.importSeen(Array.isArray(data.fog) ? data.fog : data.fog.seen); if(FOG.setRevealAll) FOG.setRevealAll(!!data.fog.revealAll); } }catch(e){}
 	try{ if(METEORITES && METEORITES.restore) METEORITES.restore(data.meteorites); }catch(e){}
 	try{ if(MOBS && MOBS.deserialize && data.mobs) MOBS.deserialize(data.mobs); }catch(e){}
@@ -1722,6 +1770,8 @@ function loadGame(){
 
 	// Recenter camera or place player if needed
 	if(data.player && typeof data.player.x==='number' && typeof data.player.y==='number') { centerOnPlayer(); } else { placePlayer(true); }
+	heroBuriedCells.clear(); // stale cells from the previous world
+	seedHeroBurialFromWorld(); // a save taken mid-collapse may wake the hero buried
 	try{ if(TUTORIAL_NPC && TUTORIAL_NPC.hasPosition && !TUTORIAL_NPC.hasPosition() && TUTORIAL_NPC.placeNearWorldStart) TUTORIAL_NPC.placeNearWorldStart(getTile,WORLDGEN); }catch(e){}
 	try{
 		updateInventory({noSave:true,noCraftNotify:true});
@@ -2072,63 +2122,67 @@ const CRAFT_GROUPS=[
 const CRAFT_GROUP_LABELS={}; CRAFT_GROUPS.forEach(g=>{ CRAFT_GROUP_LABELS[g.id]=g.label; });
 const CRAFT_GROUP_ORDER={}; CRAFT_GROUPS.forEach((g,i)=>{ CRAFT_GROUP_ORDER[g.id]=i; });
 const CRAFT_RECIPE_META={
-	pick_bedrock:{group:'tools',icon:'K',desc:'Kruchy reliktowy kilof: przebija skale macierzysta, po 10 przelamaniach rozpada sie.'},
-	pick_stone:{group:'tools',icon:'K',desc:'Pierwszy realny krok ponad kopanie rekami.'},
-	pick_meteoric_iron:{group:'tools',icon:'K',desc:'Szybsze kopanie twardej skaly i materialow z kraterow.'},
-	pick_diamond:{group:'tools',icon:'K',desc:'Najczystszy klasyczny awans narzedziowy.'},
-	torches:{group:'survival',icon:'L',out:'torch',amount:4,desc:'Male swiatlo do nocy, jaskin i baz.'},
-	coal_torches:{group:'survival',icon:'L',out:'torch',amount:8,desc:'Wiecej swiatla z tej samej ilosci drewna.'},
-	ladders:{group:'building',icon:'D',out:'ladder',amount:6,desc:'Przechodnie szczeble do pionowych szybikow i scian.'},
-	wood_doors:{group:'building',icon:'D',out:'woodDoor',amount:2,desc:'Nosne, przechodnie dla bohatera i NPC.'},
-	stone_doors:{group:'building',icon:'D',out:'stoneDoor',amount:2,desc:'Ciezsze drzwi do baz i ruin.'},
-	steel_doors:{group:'building',icon:'D',out:'steelDoor',amount:2,desc:'Najmocniejsza wersja drzwi.'},
-	wood_trapdoors:{group:'building',icon:'Z',out:'woodTrapdoor',amount:2,desc:'Poziome przejscie: chodzisz po nim, schodzisz po wskazaniu dolu.'},
-	stone_trapdoors:{group:'building',icon:'Z',out:'stoneTrapdoor',amount:2,desc:'Nosna zapadnia do szybikow i pieter.'},
-	steel_trapdoors:{group:'building',icon:'Z',out:'steelTrapdoor',amount:2,desc:'Techniczna zapadnia dla mocnych konstrukcji.'},
-	arrows_wood_small:{group:'weapons',icon:'A',out:'arrowWood',amount:10,desc:'Tania amunicja do pierwszego luku.'},
-	arrows_wood_bulk:{group:'weapons',icon:'A',out:'arrowWood',amount:100,desc:'Paczka amunicji na dluzsza wyprawe.'},
-	arrows_stone_bulk:{group:'weapons',icon:'A',out:'arrowStone',amount:100,desc:'Kamienne groty sa stabilniejsze i mocniejsze.'},
-	arrows_obsidian_bulk:{group:'weapons',icon:'A',out:'arrowObsidian',amount:100,desc:'Ostre groty z wulkanicznego szkla.'},
-	arrows_diamond_bulk:{group:'weapons',icon:'A',out:'arrowDiamond',amount:100,desc:'Droga, precyzyjna amunicja.'},
-	arrows_iridium_bulk:{group:'weapons',icon:'A',out:'arrowIridium',amount:100,desc:'Amunicja z materialu meteorytowego.'},
-	obsidian_sword:{group:'weapons',icon:'M',desc:'Craftowany ekwipunek trafia do torby i od razu sie zaklada.'},
-	lucky_charm:{group:'relics',icon:'T',desc:'Pasywny talizman z klasycznego rzadkiego surowca.'},
-	spring_antler_charm:{group:'relics',icon:'T',desc:'Sezonowe trofeum zamienione w staly bonus.'},
-	summer_horn_charm:{group:'relics',icon:'T',desc:'Ciezki talizman sily i energii.'},
-	autumn_heartwood_bow:{group:'relics',icon:'A',desc:'Sezonowy luk z wyraznym progiem rozwoju.'},
-	winter_fur_cape:{group:'relics',icon:'P',desc:'Ciepla peleryna do zimnych i wietrznych wypraw.'},
-	glass_from_sand:{group:'processing',icon:'S',out:'glass',amount:2,desc:'Podstawowy lancuch: piasek plus paliwo daje szklo.'},
-	bricks_from_clay:{group:'processing',icon:'C',out:'brick',amount:3,desc:'Glina wypalona paliwem daje twardy ceramiczny budulec.'},
-	steel_from_meteoric_iron:{group:'processing',icon:'S',out:'steel',amount:2,desc:'Przetop metalu z kraterow w budowlana stal.'},
-	transistor_basic:{group:'processing',icon:'T',out:'transistor',amount:1,desc:'Maly komponent spinajacy maszyny wyzszego poziomu.'},
-	respawn:{group:'survival',icon:'R',desc:'Ustawia punkt powrotu tam, gdzie stoisz.'},
-	dynamo:{group:'machines',icon:'G',out:'dynamo',amount:1,desc:'Zrodlo energii dla miasta, pomp i maszyn.'},
-	copper_wire:{group:'machines',icon:'W',out:'copperWire',amount:4,desc:'Laczy zasilanie z maszynami.'},
-	solar_panel:{group:'machines',icon:'S',out:'solarPanel',amount:2,desc:'Slaby panel: dziala tylko w bezchmurne, pelne swiatlo dnia.'},
-	solar_battery:{group:'machines',icon:'S',out:'solarBattery',amount:1,desc:'Slaby panel z magazynem; laduje sie tylko w czystym sloncu.'},
-	spring_platform:{group:'machines',icon:'P',out:'springPlatform',amount:1,desc:'Wybija bardzo wysoko po zasileniu; bez energii daje tylko jedna trzecia wysokosci.'},
-	water_pipe:{group:'machines',icon:'R',out:'waterPipe',amount:6,desc:'Prowadzi wode, pare, gorace powietrze i gazy.'},
-	water_pump:{group:'machines',icon:'P',out:'waterPump',amount:1,desc:'Wymusza przeplyw fluidow i gazow przez rury.'},
-	vending_machine:{group:'machines',icon:'V',out:'vendingMachine',amount:1,desc:'Losowy automat do baz: cenny lup albo kompletne rozczarowanie.'},
-	teleporter:{group:'machines',icon:'T',out:'teleporter',amount:1,desc:'Paruje odlegle punkty podrozy.'},
-	antigravity_beacon:{group:'machines',icon:'B',out:'antigravityBeacon',amount:1,desc:'Ochrona przed meteorytami dla dojrzalszych baz.'},
-	meteor_siren:{group:'machines',icon:'S',out:'meteorSiren',amount:1,desc:'Ostrzega przed zagrozeniem z nieba.'},
-	crater_scanner:{group:'machines',icon:'C',out:'craterScanner',amount:1,desc:'Wykrywa i opisuje okoliczne kratery.'},
-	turret:{group:'machines',icon:'T',out:'turret',amount:1,desc:'Podstawowa obrona zasilanej bazy.'},
-	fire_turret:{group:'machines',icon:'T',out:'fireTurret',amount:1,desc:'Obrona ogniowa do walki z falami wrogow.'},
-	water_turret:{group:'machines',icon:'T',out:'waterTurret',amount:1,desc:'Obrona wodna, gaszenie i kontrola terenu.'},
-	bio_companion:{group:'weapons',icon:'B',desc:'Tworzy proceduralnego pomocnika z biomasy i surowego miesa; chodzi za bohaterem, strzela laserem i emituje trucizne.'},
-	bio_companion_feed:{group:'weapons',icon:'B',desc:'Wzmacnia najblizszego bio-pomocnika. Kazda porcja biomasy zwieksza jego maksymalne HP.'},
-	ufo_alien_companion:{group:'weapons',icon:'U',desc:'Tworzy elitarnego kompana z lodu macierzystego. Rola i wyglad pochodza z alien teamu.'},
-	leaf_monster:{group:'weapons',icon:'L',desc:'Tworzy kruchego, bardzo szybkiego potworka z lisci i kamienia slugi. Lata, ale wiatr rzuca nim mocniej niz innymi.'},
-	potion_heal:{group:'alchemy',icon:'E',desc:'Natychmiastowe leczenie.'},
-	potion_speed:{group:'alchemy',icon:'E',desc:'Czasowy buff ruchu i skoku.'},
-	potion_strength:{group:'alchemy',icon:'E',desc:'Czasowy buff obrazen.'},
-	boss_horn:{group:'relics',icon:'R',desc:'Dobrowolne wzywanie klopotow, kiedy nagroda kusi za mocno.'},
-	potion_antigrav:{group:'alchemy',icon:'E',desc:'Czasowy buff skoku i lekkiego ruchu.'}
+	pick_bedrock:{group:'tools',icon:'⛏️',tint:'#9b8cff',desc:'Kruchy reliktowy kilof: przebija skale macierzysta, po 10 przelamaniach rozpada sie.'},
+	pick_stone:{group:'tools',icon:'⛏️',tint:'#888a90',desc:'Pierwszy realny krok ponad kopanie rekami.'},
+	pick_meteoric_iron:{group:'tools',icon:'⛏️',tint:'#c56f32',desc:'Szybsze kopanie twardej skaly i materialow z kraterow.'},
+	pick_diamond:{group:'tools',icon:'⛏️',tint:'#3ef',desc:'Najczystszy klasyczny awans narzedziowy.'},
+	torches:{group:'survival',icon:'🕯️',out:'torch',amount:4,desc:'Male swiatlo do nocy, jaskin i baz.'},
+	coal_torches:{group:'survival',icon:'🕯️',out:'torch',amount:8,desc:'Wiecej swiatla z tej samej ilosci drewna.'},
+	ladders:{group:'building',icon:'🪜',out:'ladder',amount:6,desc:'Przechodnie szczeble do pionowych szybikow i scian.'},
+	wood_doors:{group:'building',icon:'🚪',out:'woodDoor',amount:2,desc:'Nosne, przechodnie dla bohatera i NPC.'},
+	stone_doors:{group:'building',icon:'🚪',out:'stoneDoor',amount:2,desc:'Ciezsze drzwi do baz i ruin.'},
+	steel_doors:{group:'building',icon:'🚪',out:'steelDoor',amount:2,desc:'Najmocniejsza wersja drzwi.'},
+	wood_trapdoors:{group:'building',icon:'🕳️',out:'woodTrapdoor',amount:2,desc:'Poziome przejscie: chodzisz po nim, schodzisz po wskazaniu dolu.'},
+	stone_trapdoors:{group:'building',icon:'🕳️',out:'stoneTrapdoor',amount:2,desc:'Nosna zapadnia do szybikow i pieter.'},
+	steel_trapdoors:{group:'building',icon:'🕳️',out:'steelTrapdoor',amount:2,desc:'Techniczna zapadnia dla mocnych konstrukcji.'},
+	arrows_wood_small:{group:'weapons',icon:'🏹',out:'arrowWood',amount:10,desc:'Tania amunicja do pierwszego luku.'},
+	arrows_wood_bulk:{group:'weapons',icon:'🏹',out:'arrowWood',amount:100,desc:'Paczka amunicji na dluzsza wyprawe.'},
+	arrows_stone_bulk:{group:'weapons',icon:'🏹',out:'arrowStone',amount:100,desc:'Kamienne groty sa stabilniejsze i mocniejsze.'},
+	arrows_obsidian_bulk:{group:'weapons',icon:'🏹',out:'arrowObsidian',amount:100,desc:'Ostre groty z wulkanicznego szkla.'},
+	arrows_diamond_bulk:{group:'weapons',icon:'🏹',out:'arrowDiamond',amount:100,desc:'Droga, precyzyjna amunicja.'},
+	arrows_iridium_bulk:{group:'weapons',icon:'🏹',out:'arrowIridium',amount:100,desc:'Amunicja z materialu meteorytowego.'},
+	obsidian_sword:{group:'weapons',icon:'🗡️',tint:'#7a5cc1',desc:'Craftowany ekwipunek trafia do torby i od razu sie zaklada.'},
+	lucky_charm:{group:'relics',icon:'🍀',tint:'#3ef',desc:'Pasywny talizman z klasycznego rzadkiego surowca.'},
+	spring_antler_charm:{group:'relics',icon:'🦌',tint:'#d8a96b',desc:'Sezonowe trofeum zamienione w staly bonus.'},
+	summer_horn_charm:{group:'relics',icon:'🐂',tint:'#9b6b38',desc:'Ciezki talizman sily i energii.'},
+	autumn_heartwood_bow:{group:'relics',icon:'🏹',tint:'#b57936',desc:'Sezonowy luk z wyraznym progiem rozwoju.'},
+	winter_fur_cape:{group:'relics',icon:'🧥',tint:'#e8f4ff',desc:'Ciepla peleryna do zimnych i wietrznych wypraw.'},
+	glass_from_sand:{group:'processing',icon:'🪟',out:'glass',amount:2,desc:'Podstawowy lancuch: piasek plus paliwo daje szklo.'},
+	bricks_from_clay:{group:'processing',icon:'🧱',out:'brick',amount:3,desc:'Glina wypalona paliwem daje twardy ceramiczny budulec.'},
+	steel_from_meteoric_iron:{group:'processing',icon:'⚙️',out:'steel',amount:2,desc:'Przetop metalu z kraterow w budowlana stal.'},
+	transistor_basic:{group:'processing',icon:'🧩',out:'transistor',amount:1,desc:'Maly komponent spinajacy maszyny wyzszego poziomu.'},
+	respawn:{group:'survival',icon:'🚩',tint:'#ff6a21',desc:'Ustawia punkt powrotu tam, gdzie stoisz.'},
+	dynamo:{group:'machines',icon:'⚡',out:'dynamo',amount:1,desc:'Zrodlo energii dla miasta, pomp i maszyn.'},
+	copper_wire:{group:'machines',icon:'🔌',out:'copperWire',amount:4,desc:'Laczy zasilanie z maszynami.'},
+	solar_panel:{group:'machines',icon:'🔆',out:'solarPanel',amount:2,desc:'Slaby panel: dziala tylko w bezchmurne, pelne swiatlo dnia.'},
+	solar_battery:{group:'machines',icon:'🔋',out:'solarBattery',amount:1,desc:'Slaby panel z magazynem; laduje sie tylko w czystym sloncu.'},
+	spring_platform:{group:'machines',icon:'⏫',out:'springPlatform',amount:1,desc:'Wybija bardzo wysoko po zasileniu; bez energii daje tylko jedna trzecia wysokosci.'},
+	water_pipe:{group:'machines',icon:'🚰',out:'waterPipe',amount:6,desc:'Prowadzi wode, pare, gorace powietrze i gazy.'},
+	water_pump:{group:'machines',icon:'🌀',out:'waterPump',amount:1,desc:'Wymusza przeplyw fluidow i gazow przez rury.'},
+	vending_machine:{group:'machines',icon:'🎰',out:'vendingMachine',amount:1,desc:'Losowy automat do baz: cenny lup albo kompletne rozczarowanie.'},
+	teleporter:{group:'machines',icon:'🌌',out:'teleporter',amount:1,desc:'Paruje odlegle punkty podrozy.'},
+	antigravity_beacon:{group:'machines',icon:'🛸',out:'antigravityBeacon',amount:1,desc:'Ochrona przed meteorytami dla dojrzalszych baz.'},
+	meteor_siren:{group:'machines',icon:'📢',out:'meteorSiren',amount:1,desc:'Ostrzega przed zagrozeniem z nieba.'},
+	crater_scanner:{group:'machines',icon:'📡',out:'craterScanner',amount:1,desc:'Wykrywa i opisuje okoliczne kratery.'},
+	turret:{group:'machines',icon:'🗼',out:'turret',amount:1,desc:'Podstawowa obrona zasilanej bazy.'},
+	fire_turret:{group:'machines',icon:'🔥',out:'fireTurret',amount:1,desc:'Obrona ogniowa do walki z falami wrogow.'},
+	water_turret:{group:'machines',icon:'💦',out:'waterTurret',amount:1,desc:'Obrona wodna, gaszenie i kontrola terenu.'},
+	bio_companion:{group:'weapons',icon:'🐾',tint:'#79c95d',desc:'Tworzy proceduralnego pomocnika z biomasy i surowego miesa; chodzi za bohaterem, strzela laserem i emituje trucizne.'},
+	bio_companion_feed:{group:'weapons',icon:'🍖',tint:'#bd5145',desc:'Wzmacnia najblizszego bio-pomocnika. Kazda porcja biomasy zwieksza jego maksymalne HP.'},
+	ufo_alien_companion:{group:'weapons',icon:'👽',tint:'#d8fbff',desc:'Tworzy elitarnego kompana z lodu macierzystego. Rola i wyglad pochodza z alien teamu.'},
+	leaf_monster:{group:'weapons',icon:'🍃',tint:'#2faa2f',desc:'Tworzy kruchego, bardzo szybkiego potworka z lisci i kamienia slugi. Lata, ale wiatr rzuca nim mocniej niz innymi.'},
+	potion_heal:{group:'alchemy',icon:'🧪',tint:'#ff5a5a',desc:'Natychmiastowe leczenie.'},
+	potion_speed:{group:'alchemy',icon:'💨',tint:'#a8d7ff',desc:'Czasowy buff ruchu i skoku.'},
+	potion_strength:{group:'alchemy',icon:'💪',tint:'#ffb84a',desc:'Czasowy buff obrazen.'},
+	boss_horn:{group:'relics',icon:'📯',tint:'#e0b341',desc:'Dobrowolne wzywanie klopotow, kiedy nagroda kusi za mocno.'},
+	potion_antigrav:{group:'alchemy',icon:'🎈',tint:'#c46bff',desc:'Czasowy buff skoku i lekkiego ruchu.'}
 };
 RECIPES.forEach(r=>{ if(CRAFT_RECIPE_META[r.id]) Object.assign(r, CRAFT_RECIPE_META[r.id]); });
 function recipeDone(r){ try{ return !!(r.done && r.done()); }catch(e){ return false; } }
+// Crafting meta-state (favorites, the 📌-tracked recipe, NEW badges, craft
+// counters) lives in engine/crafting.js and is covered headless by
+// crafting-sim; main.js keeps recipe effects and the DOM.
+const CRAFT_MODEL=createCraftingModel({recipes:RECIPES, getHave:k=>inv[k]||0, isDone:recipeDone});
 function recipeCostEntries(r){ return Object.entries(r.cost || {}); }
 function recipeGroup(r){
 	if(r.group) return r.group;
@@ -2141,18 +2195,10 @@ function recipeGroup(r){
 }
 function recipeOutputName(r){ return r.out ? (RES_LABEL[r.out] || r.out) : (r.name || r.id); }
 function recipeMaxCrafts(r){
-	if(recipeDone(r)) return 0;
-	const entries=recipeCostEntries(r);
-	if(!entries.length) return 1;
-	let max=Infinity;
-	for(const [k,v] of entries){
-		const need=Math.max(1,v||0);
-		max=Math.min(max, Math.floor((inv[k]||0)/need));
-	}
-	return Math.max(0, Math.min(999, max===Infinity?1:max));
+	return CRAFT_MODEL.maxCrafts(r);
 }
 function recipeMissing(r){
-	return recipeCostEntries(r).map(([k,v])=>({key:k, need:v, have:inv[k]||0, missing:Math.max(0, v-(inv[k]||0))})).filter(x=>x.missing>0);
+	return CRAFT_MODEL.missing(r);
 }
 function canCraft(r){ return recipeMaxCrafts(r)>0; }
 function doCraft(r,count){
@@ -2167,53 +2213,53 @@ function doCraft(r,count){
 		if(recipeDone(r)) break;
 	}
 	if(!made) return;
+	CRAFT_MODEL.recordCraft(r.id, made);
+	craftFlashId=r.id;
 	try{ if(MM.audio && MM.audio.play) MM.audio.play('craft'); }catch(e){}
 	updateInventory();
 }
 const CRAFT_COLLAPSED_KEY='mm_craft_collapsed_v1';
 const CRAFT_GROUP_KEY='mm_craft_group_v1';
+const CRAFT_AVAIL_KEY='mm_craft_avail_v1';
 let selectedCraftId=null;
 let craftQuery='';
 let craftGroup='all';
-let craftSeenAvailableIds=new Set();
-function recipeKnown(id){ return RECIPES.some(r=>r.id===id); }
-function resetCraftingAvailability(){ craftSeenAvailableIds=new Set(); }
-function markCraftableRecipesSeen(){
-	RECIPES.forEach(r=>{ if(canCraft(r)) craftSeenAvailableIds.add(r.id); });
-}
+let craftAvailOnly=false;
+let craftFlashId=null;       // recipe id to pulse the detail panel for after a craft
+let craftTrackerBooted=false; // first tracker refresh swallows a stale justReady toast on load
+function resetCraftingAvailability(){ CRAFT_MODEL.reset(); }
 function snapshotCrafting(){
-	return {seenAvailable:[...craftSeenAvailableIds].filter(recipeKnown)};
+	return CRAFT_MODEL.snapshot();
 }
 function restoreCraftingAvailability(src){
-	resetCraftingAvailability();
-	let restored=false;
-	if(src && typeof src==='object' && Array.isArray(src.seenAvailable)){
-		src.seenAvailable.forEach(id=>{ if(typeof id==='string' && recipeKnown(id)) craftSeenAvailableIds.add(id); });
-		restored=true;
-	}
-	if(!restored) markCraftableRecipesSeen();
+	CRAFT_MODEL.restore(src);
 }
 function checkCraftingAvailability(opts){
 	const silent=!!(opts&&opts.silent);
-	const newly=[];
-	RECIPES.forEach(r=>{
-		if(!canCraft(r) || craftSeenAvailableIds.has(r.id)) return;
-		craftSeenAvailableIds.add(r.id);
-		newly.push(r);
-	});
-	if(silent || !newly.length) return;
+	if(silent){ CRAFT_MODEL.seedSeen(); return; }
+	const newly=CRAFT_MODEL.syncAvailability();
+	if(!newly.length) return;
 	const shown=newly.slice(0,3).map(r=>r.name||r.id).join(', ');
 	const extra=newly.length>3 ? ' (+'+(newly.length-3)+')' : '';
 	msg('Nowe receptury w Rzemiosle: '+shown+extra);
 }
 function loadCraftCollapsed(){
-	try{ return localStorage.getItem(CRAFT_COLLAPSED_KEY)==='1'; }catch(e){ return false; }
+	try{
+		const v=localStorage.getItem(CRAFT_COLLAPSED_KEY);
+		if(v!==null) return v==='1';
+	}catch(e){ return false; }
+	// No saved preference: on a touch screen the open panel would cover the whole
+	// view (phones especially), so first runs boot with it tucked away.
+	return !!(MM.inputMode && MM.inputMode.isTouch());
 }
 function loadCraftGroup(){
 	try{ return localStorage.getItem(CRAFT_GROUP_KEY) || 'all'; }catch(e){ return 'all'; }
 }
 function saveCraftGroup(group){
 	try{ localStorage.setItem(CRAFT_GROUP_KEY, group); }catch(e){}
+}
+function loadCraftAvailOnly(){
+	try{ return localStorage.getItem(CRAFT_AVAIL_KEY)==='1'; }catch(e){ return false; }
 }
 function setCraftCollapsed(host, collapsed){
 	if(!host) return;
@@ -2224,9 +2270,13 @@ function setCraftCollapsed(host, collapsed){
 	if(toggle){
 		toggle.textContent=collapsed?'+':'-';
 		toggle.setAttribute('aria-expanded', String(!collapsed));
-		toggle.title=collapsed?'Show crafting':'Hide crafting';
+		toggle.title=(collapsed?'Rozwiń rzemiosło':'Zwiń rzemiosło')+' (T)';
 	}
 	try{ localStorage.setItem(CRAFT_COLLAPSED_KEY, collapsed?'1':'0'); }catch(e){}
+}
+function toggleCraftPanel(){
+	const host=document.getElementById('craft'); if(!host) return;
+	setCraftCollapsed(host, host.dataset.collapsed!=='true');
 }
 function recipeSearchText(r){
 	const parts=[r.id,r.name,recipeOutputName(r),CRAFT_GROUP_LABELS[recipeGroup(r)]||'',r.desc||''];
@@ -2235,10 +2285,13 @@ function recipeSearchText(r){
 }
 function filteredCraftRecipes(){
 	const q=craftQuery.trim().toLowerCase();
-	let list=RECIPES.filter(r=>(craftGroup==='all' || recipeGroup(r)===craftGroup));
+	let list=RECIPES.filter(r=> craftGroup==='fav' ? CRAFT_MODEL.isFavorite(r.id) : (craftGroup==='all' || recipeGroup(r)===craftGroup));
+	if(craftAvailOnly) list=list.filter(r=>canCraft(r) && !recipeDone(r));
 	if(q) list=list.filter(r=>recipeSearchText(r).includes(q));
 	return list.sort((a,b)=>{
-		if(craftGroup==='all'){
+		const fa=CRAFT_MODEL.isFavorite(a.id)?0:1, fb=CRAFT_MODEL.isFavorite(b.id)?0:1;
+		if(fa!==fb) return fa-fb;
+		if(craftGroup==='all' || craftGroup==='fav'){
 			const ga=CRAFT_GROUP_ORDER[recipeGroup(a)] ?? 999;
 			const gb=CRAFT_GROUP_ORDER[recipeGroup(b)] ?? 999;
 			if(ga!==gb) return ga-gb;
@@ -2246,6 +2299,8 @@ function filteredCraftRecipes(){
 		const ra=canCraft(a)?0:(recipeDone(a)?2:1);
 		const rb=canCraft(b)?0:(recipeDone(b)?2:1);
 		if(ra!==rb) return ra-rb;
+		const na=CRAFT_MODEL.isFresh(a.id)?0:1, nb=CRAFT_MODEL.isFresh(b.id)?0:1;
+		if(na!==nb) return na-nb;
 		return (a.name||a.id).localeCompare(b.name||b.id);
 	});
 }
@@ -2253,7 +2308,8 @@ function makeCraftChip(k,need,compact){
 	const have=inv[k]||0;
 	const chip=document.createElement('span');
 	chip.className='craftChip'+(have<need?' missing':'');
-	chip.title=(RES_LABEL[k]||k)+': '+have+' / '+need;
+	const hint=have<need ? CRAFT_SOURCE_HINTS[k] : null;
+	chip.title=(RES_LABEL[k]||k)+': '+have+' / '+need+(hint?' — '+hint:'');
 	const sw=document.createElement('i');
 	sw.style.background=RES_COLOR[k] || '#9ca3af';
 	chip.appendChild(sw);
@@ -2269,81 +2325,183 @@ function appendCraftCosts(parent,r,compact){
 	}
 	entries.forEach(([k,v])=>parent.appendChild(makeCraftChip(k,v,compact)));
 }
+// Detail-pane ingredient row: swatch + label + have/need + fill bar; short
+// recipes also say WHERE to find the missing resource (SOURCE_HINTS).
+function makeIngredientRow(k,need){
+	const have=inv[k]||0;
+	const ok=have>=need;
+	const row=document.createElement('div'); row.className='craftIng'+(ok?' ok':' short');
+	const top=document.createElement('div'); top.className='craftIngTop';
+	const sw=document.createElement('i'); sw.className='craftIngSwatch'; sw.style.background=RES_COLOR[k]||'#9ca3af';
+	const lab=document.createElement('span'); lab.className='craftIngLabel'; lab.textContent=RES_LABEL[k]||k;
+	const val=document.createElement('b'); val.className='craftIngVal'; val.textContent=Math.min(have,9999)+' / '+need;
+	top.appendChild(sw); top.appendChild(lab); top.appendChild(val); row.appendChild(top);
+	const bar=document.createElement('div'); bar.className='craftIngBar';
+	const fill=document.createElement('i'); fill.style.width=Math.round(100*Math.min(1,have/Math.max(1,need)))+'%';
+	bar.appendChild(fill); row.appendChild(bar);
+	if(!ok && CRAFT_SOURCE_HINTS[k]){
+		const hint=document.createElement('div'); hint.className='craftIngHint'; hint.textContent='↳ '+CRAFT_SOURCE_HINTS[k];
+		row.appendChild(hint);
+	}
+	return row;
+}
 function renderCraftTabs(){
 	const tabs=document.getElementById('craftTabs'); if(!tabs) return;
 	tabs.innerHTML='';
-	const known=new Set(CRAFT_GROUPS.map(g=>g.id));
+	const favIds=new Set(CRAFT_MODEL.favoriteIds());
+	const defs=CRAFT_GROUPS.slice();
+	if(favIds.size) defs.splice(1,0,{id:'fav',label:'★'});
+	const known=new Set(defs.map(g=>g.id));
 	if(!known.has(craftGroup)) craftGroup='all';
-	CRAFT_GROUPS.forEach(g=>{
-		const count=g.id==='all' ? RECIPES.length : RECIPES.filter(r=>recipeGroup(r)===g.id).length;
-		if(g.id!=='all' && count<=0) return;
+	defs.forEach(g=>{
+		const members=g.id==='all' ? RECIPES : (g.id==='fav' ? RECIPES.filter(r=>favIds.has(r.id)) : RECIPES.filter(r=>recipeGroup(r)===g.id));
+		if(g.id!=='all' && !members.length) return;
+		const avail=members.filter(canCraft).length;
+		const hasFresh=members.some(r=>CRAFT_MODEL.isFresh(r.id));
 		const b=document.createElement('button');
 		b.type='button';
 		b.className='craftTab'+(craftGroup===g.id?' selected':'');
-		b.textContent=g.label+' '+count;
 		b.setAttribute('aria-pressed', String(craftGroup===g.id));
+		b.title=g.label+': dostępne teraz '+avail+' z '+members.length;
+		const lab=document.createElement('span'); lab.textContent=g.label; b.appendChild(lab);
+		if(avail){ const c=document.createElement('span'); c.className='craftTabCount'; c.textContent=String(avail); b.appendChild(c); }
+		if(hasFresh){ const dot=document.createElement('span'); dot.className='craftTabNew'; dot.title='Nowe receptury'; b.appendChild(dot); }
 		b.addEventListener('click',()=>{ craftGroup=g.id; saveCraftGroup(g.id); renderCraftPanel(); });
 		tabs.appendChild(b);
 	});
 }
+function craftIconTint(r){ return (r.out && RES_COLOR[r.out]) || r.tint || null; }
 function renderCraftDetail(r){
 	const detail=document.getElementById('craftDetail'); if(!detail) return;
 	detail.innerHTML='';
+	detail.classList.remove('flash');
 	if(!r){
 		const empty=document.createElement('div'); empty.className='craftEmpty'; empty.textContent='Brak receptur dla filtra.'; detail.appendChild(empty); return;
 	}
+	if(craftFlashId===r.id){ detail.classList.add('flash'); craftFlashId=null; }
+	const done=recipeDone(r);
+	const max=recipeMaxCrafts(r);
 	const head=document.createElement('div'); head.className='craftDetailHeader';
 	const icon=document.createElement('span'); icon.className='craftDetailIcon'; icon.textContent=r.icon || (recipeOutputName(r)[0]||'?').toUpperCase();
+	const tint=craftIconTint(r);
+	if(tint) icon.style.background='linear-gradient(160deg,'+tint+'44, rgba(255,255,255,.08))';
 	const names=document.createElement('div');
 	const h=document.createElement('strong'); h.textContent=r.name;
-	const sub=document.createElement('span'); sub.textContent=(CRAFT_GROUP_LABELS[recipeGroup(r)]||'Inne')+(r.out && r.amount ? ' - wynik: '+r.amount+' x '+recipeOutputName(r) : '');
+	const sub=document.createElement('span'); sub.textContent=(CRAFT_GROUP_LABELS[recipeGroup(r)]||'Inne')+(r.out && r.amount ? ' · wynik: '+r.amount+' × '+recipeOutputName(r) : '');
 	names.appendChild(h); names.appendChild(sub);
-	head.appendChild(icon); head.appendChild(names); detail.appendChild(head);
+	const favOn=CRAFT_MODEL.isFavorite(r.id);
+	const fav=document.createElement('button'); fav.type='button'; fav.className='craftFavBtn'+(favOn?' on':'');
+	fav.textContent=favOn?'★':'☆';
+	fav.title=favOn?'Usuń z ulubionych':'Dodaj do ulubionych (przypina na górze listy)';
+	fav.addEventListener('click',()=>{ CRAFT_MODEL.toggleFavorite(r.id); renderCraftPanel(); });
+	head.appendChild(icon); head.appendChild(names); head.appendChild(fav); detail.appendChild(head);
 	if(r.desc){
 		const desc=document.createElement('div'); desc.className='craftDesc'; desc.textContent=r.desc; detail.appendChild(desc);
 	}
-	const costs=document.createElement('div'); costs.className='craftDetailCosts';
-	appendCraftCosts(costs,r,false);
-	detail.appendChild(costs);
+	const ings=document.createElement('div'); ings.className='craftIngs';
+	const entries=recipeCostEntries(r);
+	if(entries.length) entries.forEach(([k,v])=>ings.appendChild(makeIngredientRow(k,v)));
+	else { const free=document.createElement('div'); free.className='craftIngHint'; free.textContent='Bez kosztu.'; ings.appendChild(free); }
+	detail.appendChild(ings);
 	const miss=recipeMissing(r);
 	const status=document.createElement('div'); status.className='craftStatus';
-	if(recipeDone(r)) status.textContent='Gotowe - masz juz ten wariant.';
-	else if(miss.length) status.textContent='Brakuje: '+miss.map(x=>x.missing+' x '+(RES_LABEL[x.key]||x.key)).join(', ');
-	else status.textContent='Mozesz wytworzyc teraz.';
+	if(done){ status.classList.add('done'); status.textContent='Gotowe - masz juz ten wariant.'; }
+	else if(miss.length) status.textContent='Brakuje: '+miss.map(x=>x.missing+' × '+(RES_LABEL[x.key]||x.key)).join(', ');
+	else { status.classList.add('ok'); status.textContent='Mozesz wytworzyc teraz'+(max>1?' (zapas na ×'+Math.min(99,max)+')':'')+'.'; }
 	detail.appendChild(status);
+	const crafted=CRAFT_MODEL.countOf(r.id);
+	if(crafted>0){
+		const st=document.createElement('div'); st.className='craftCrafted'; st.textContent='Wytworzono dotąd: ×'+crafted;
+		detail.appendChild(st);
+	}
 	const actions=document.createElement('div'); actions.className='craftActions';
-	const primary=document.createElement('button'); primary.type='button'; primary.className='craftPrimary'; primary.textContent=recipeDone(r)?'Gotowe':'Wytworz'; primary.disabled=!canCraft(r);
+	const tracking=CRAFT_MODEL.trackedId()===r.id;
+	const track=document.createElement('button'); track.type='button'; track.className='craftTrackBtn'+(tracking?' on':'');
+	track.textContent=tracking?'📌 Śledzone':'📌 Śledź';
+	track.title=tracking?'Przestań śledzić składniki tej receptury':'Przypnij licznik składników tej receptury do ekranu';
+	track.addEventListener('click',()=>{ CRAFT_MODEL.toggleTracked(r.id); renderCraftPanel(); });
+	actions.appendChild(track);
+	const primary=document.createElement('button'); primary.type='button'; primary.className='craftPrimary'; primary.textContent=done?'Gotowe':'Wytwórz'; primary.disabled=!canCraft(r);
 	primary.addEventListener('click',()=>doCraft(r,1));
 	actions.appendChild(primary);
-	const max=recipeMaxCrafts(r);
-	if(max>=5 && !recipeDone(r)){
-		const batch=document.createElement('button'); batch.type='button'; batch.className='craftSecondary'; batch.textContent='x'+Math.min(max,10); batch.addEventListener('click',()=>doCraft(r,Math.min(max,10))); actions.appendChild(batch);
+	if(!done && max>=5){
+		const b5=document.createElement('button'); b5.type='button'; b5.className='craftSecondary'; b5.textContent='×5'; b5.title='Wytwórz 5 sztuk';
+		b5.addEventListener('click',()=>doCraft(r,5)); actions.appendChild(b5);
+	}
+	if(!done && max>=2){
+		const bm=document.createElement('button'); bm.type='button'; bm.className='craftSecondary'; bm.textContent='Max ×'+Math.min(99,max); bm.title='Wytwórz maksymalną liczbę od razu';
+		bm.addEventListener('click',()=>doCraft(r,Math.min(99,max))); actions.appendChild(bm);
 	}
 	detail.appendChild(actions);
+}
+function makeCraftRow(r){
+	const done=recipeDone(r);
+	const available=canCraft(r);
+	const fresh=CRAFT_MODEL.isFresh(r.id);
+	const row=document.createElement('div');
+	row.id='craft_'+r.id;
+	row.className='craftRecipe craftBtn'+(available?' available':'')+(done?' done':'')+(selectedCraftId===r.id?' selected':'')+(fresh?' fresh':'');
+	row.tabIndex=0;
+	row.setAttribute('role','button');
+	row.setAttribute('aria-pressed', String(selectedCraftId===r.id));
+	function choose(){ selectedCraftId=r.id; CRAFT_MODEL.markSeen(r.id); renderCraftPanel(); }
+	row.addEventListener('click',choose);
+	row.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); choose(); } });
+	const icon=document.createElement('span'); icon.className='craftIcon'; icon.textContent=r.icon || (recipeOutputName(r)[0]||'?').toUpperCase();
+	const tint=craftIconTint(r);
+	if(tint) icon.style.background='linear-gradient(160deg,'+tint+'55, rgba(255,255,255,.07))';
+	row.appendChild(icon);
+	const main=document.createElement('span'); main.className='craftRecipeMain';
+	const top=document.createElement('span'); top.className='craftRecipeTop';
+	const name=document.createElement('span'); name.className='craftName'; name.textContent=r.name;
+	top.appendChild(name);
+	if(fresh){ const nb=document.createElement('span'); nb.className='craftNewBadge'; nb.textContent='NOWE'; top.appendChild(nb); }
+	main.appendChild(top);
+	const cost=document.createElement('span'); cost.className='craftCost';
+	appendCraftCosts(cost,r,true);
+	main.appendChild(cost);
+	if(!available && !done){
+		// bottleneck-ingredient progress toward affordability
+		const bar=document.createElement('span'); bar.className='craftRowBar';
+		const fill=document.createElement('i'); fill.style.width=Math.round(100*CRAFT_MODEL.progress(r))+'%';
+		bar.appendChild(fill); main.appendChild(bar);
+	}
+	row.appendChild(main);
+	const side=document.createElement('span'); side.className='craftRecipeSide';
+	const favOn=CRAFT_MODEL.isFavorite(r.id);
+	const fav=document.createElement('button'); fav.type='button'; fav.className='craftFavStar'+(favOn?' on':''); fav.textContent=favOn?'★':'☆';
+	fav.title=favOn?'Usuń z ulubionych':'Dodaj do ulubionych';
+	fav.addEventListener('click',e=>{ e.stopPropagation(); CRAFT_MODEL.toggleFavorite(r.id); renderCraftPanel(); });
+	side.appendChild(fav);
+	const state=document.createElement('span'); state.className='craftRecipeState';
+	state.textContent=done?'✓':(available?'×'+Math.min(99,recipeMaxCrafts(r)):'');
+	if(done) state.title='Masz już ten wariant';
+	else if(available) state.title='Możesz wytworzyć tyle sztuk teraz';
+	side.appendChild(state);
+	row.appendChild(side);
+	return row;
 }
 function renderCraftList(){
 	const list=document.getElementById('craftList'); if(!list) return;
 	const recipes=filteredCraftRecipes();
 	if(!recipes.some(r=>r.id===selectedCraftId)) selectedCraftId=(recipes.find(canCraft)||recipes[0]||{}).id || null;
 	list.innerHTML='';
+	if(!recipes.length){
+		const empty=document.createElement('div'); empty.className='craftEmpty';
+		empty.textContent=craftAvailOnly ? 'Nic do wytworzenia - zbierz surowce albo wyłącz filtr „Dostępne".' : 'Brak receptur dla filtra.';
+		list.appendChild(empty);
+	}
+	let lastSection=null;
 	recipes.forEach(r=>{
-		const done=recipeDone(r);
-		const available=canCraft(r);
-		const b=document.createElement('button');
-		b.type='button';
-		b.id='craft_'+r.id;
-		b.className='craftRecipe craftBtn'+(available?' available':'')+(done?' done':'')+(selectedCraftId===r.id?' selected':'');
-		b.setAttribute('aria-pressed', String(selectedCraftId===r.id));
-		b.addEventListener('click',()=>{ selectedCraftId=r.id; renderCraftPanel(); });
-		const top=document.createElement('span'); top.className='craftRecipeTop';
-		const icon=document.createElement('span'); icon.className='craftIcon'; icon.textContent=r.icon || (recipeOutputName(r)[0]||'?').toUpperCase();
-		const name=document.createElement('span'); name.className='craftName'; name.textContent=r.name;
-		const state=document.createElement('span'); state.className='craftRecipeState'; state.textContent=done?'ok':(available?'gotowe':'brak');
-		top.appendChild(icon); top.appendChild(name); top.appendChild(state); b.appendChild(top);
-		const cost=document.createElement('span'); cost.className='craftCost';
-		appendCraftCosts(cost,r,true);
-		b.appendChild(cost);
-		list.appendChild(b);
+		if(craftGroup==='all'){
+			const sec=CRAFT_MODEL.isFavorite(r.id) ? '★ Ulubione' : (CRAFT_GROUP_LABELS[recipeGroup(r)]||'Inne');
+			if(sec!==lastSection){
+				lastSection=sec;
+				const head=document.createElement('div'); head.className='craftListSection'; head.textContent=sec;
+				list.appendChild(head);
+			}
+		}
+		list.appendChild(makeCraftRow(r));
 	});
 	renderCraftDetail(recipes.find(r=>r.id===selectedCraftId) || null);
 }
@@ -2352,21 +2510,24 @@ function renderCraftPanel(){
 	const summary=document.getElementById('craftSummary');
 	if(summary){
 		const available=RECIPES.filter(canCraft).length;
-		const done=RECIPES.filter(recipeDone).length;
-		summary.textContent=available+' dost. / '+done+' got.';
+		const freshN=CRAFT_MODEL.freshCount();
+		summary.textContent=available+' dostępnych'+(freshN?' · '+freshN+' NOWE':'');
+		summary.classList.toggle('hasNew', freshN>0);
 	}
 	renderCraftTabs();
 	renderCraftList();
+	updateCraftTracker();
 }
 function buildCraftPanel(){
 	const host=document.getElementById('craft'); if(!host) return;
 	const existingTitle=host.querySelector('.craftTitle') || host.querySelector('strong');
-	const label=((existingTitle && existingTitle.textContent) || host.textContent || 'Rzemioslo').trim() || 'Rzemioslo';
+	const label=((existingTitle && existingTitle.textContent) || host.textContent || 'Rzemioslo').trim().replace(/^🛠️\s*/,'') || 'Rzemioslo';
 	const wasCollapsed = host.dataset.collapsed==='true' || loadCraftCollapsed();
 	craftGroup=loadCraftGroup();
+	craftAvailOnly=loadCraftAvailOnly();
 	host.innerHTML='';
 	const header=document.createElement('div'); header.className='craftHeader';
-	const title=document.createElement('strong'); title.className='craftTitle'; title.textContent=label;
+	const title=document.createElement('strong'); title.className='craftTitle'; title.textContent='🛠️ '+label;
 	const summary=document.createElement('span'); summary.id='craftSummary'; summary.className='craftSummary';
 	const titleWrap=document.createElement('div'); titleWrap.className='craftTitleWrap'; titleWrap.appendChild(title); titleWrap.appendChild(summary);
 	const toggle=document.createElement('button'); toggle.id='craftToggle'; toggle.className='topbtn'; toggle.type='button'; toggle.setAttribute('aria-controls','craftBody');
@@ -2376,24 +2537,82 @@ function buildCraftPanel(){
 	const toolbar=document.createElement('div'); toolbar.className='craftToolbar';
 	const search=document.createElement('input'); search.id='craftSearch'; search.type='search'; search.placeholder='Szukaj receptury'; search.autocomplete='off'; search.value=craftQuery;
 	search.addEventListener('input',()=>{ craftQuery=search.value||''; renderCraftPanel(); });
-	toolbar.appendChild(search); body.appendChild(toolbar);
+	toolbar.appendChild(search);
+	const availBtn=document.createElement('button'); availBtn.type='button'; availBtn.id='craftAvailBtn'; availBtn.className='craftFilterBtn'+(craftAvailOnly?' on':'');
+	availBtn.textContent='✔ Dostępne';
+	availBtn.title='Pokazuj tylko receptury, które możesz wytworzyć teraz';
+	availBtn.setAttribute('aria-pressed', String(craftAvailOnly));
+	availBtn.addEventListener('click',()=>{
+		craftAvailOnly=!craftAvailOnly;
+		availBtn.classList.toggle('on', craftAvailOnly);
+		availBtn.setAttribute('aria-pressed', String(craftAvailOnly));
+		try{ localStorage.setItem(CRAFT_AVAIL_KEY, craftAvailOnly?'1':'0'); }catch(e){}
+		renderCraftPanel();
+	});
+	toolbar.appendChild(availBtn);
+	body.appendChild(toolbar);
 	const tabs=document.createElement('div'); tabs.id='craftTabs'; tabs.className='craftTabs'; body.appendChild(tabs);
 	const content=document.createElement('div'); content.className='craftContent';
 	const list=document.createElement('div'); list.id='craftList'; list.className='craftList';
 	const detail=document.createElement('div'); detail.id='craftDetail'; detail.className='craftDetail';
 	content.appendChild(list); content.appendChild(detail); body.appendChild(content);
-	const legacyRows=[];
-	legacyRows.forEach(r=>{
-		const b=document.createElement('button'); b.className='craftBtn'; b.id='craft_'+r.id; b.textContent=r.name;
-		b.addEventListener('click',()=>doCraft(r));
-		const req=document.createElement('div'); req.className='req';
-		req.textContent=Object.entries(r.cost).map(([k,v])=>v+' × '+(RES_LABEL[k]||k)).join(' + ');
-		body.appendChild(b); body.appendChild(req);
-	});
 	setCraftCollapsed(host, wasCollapsed);
 	renderCraftPanel();
 }
 function updateCraftButtons(){ renderCraftPanel(); }
+// --- HUD ingredient tracker: the one 📌-pinned recipe stays on screen with
+// live have/need chips and announces once whenever it crosses into craftable.
+function ensureCraftTracker(){
+	let el=document.getElementById('craftTracker');
+	if(!el){
+		el=document.createElement('div'); el.id='craftTracker'; el.hidden=true;
+		const ui=document.getElementById('ui')||document.body;
+		ui.appendChild(el);
+	}
+	return el;
+}
+function updateCraftTracker(){
+	const el=ensureCraftTracker();
+	const st=CRAFT_MODEL.trackedStatus();
+	const booted=craftTrackerBooted; craftTrackerBooted=true;
+	if(!st){ el.hidden=true; el.innerHTML=''; return; }
+	if(st.justReady && booted) msg('📌 '+(st.recipe.name||st.recipe.id)+': wszystkie składniki gotowe!');
+	el.hidden=false;
+	el.innerHTML='';
+	el.classList.toggle('ready', st.canCraft);
+	const r=st.recipe;
+	const head=document.createElement('div'); head.className='craftTrackerHead';
+	const name=document.createElement('button'); name.type='button'; name.className='craftTrackerName';
+	name.textContent='📌 '+(r.name||r.id);
+	name.title='Pokaż recepturę w panelu Rzemiosło';
+	name.addEventListener('click',()=>{
+		const host=document.getElementById('craft');
+		if(host) setCraftCollapsed(host,false);
+		craftGroup='all'; craftQuery='';
+		const search=document.getElementById('craftSearch'); if(search) search.value='';
+		if(craftAvailOnly && !st.canCraft){
+			craftAvailOnly=false;
+			const ab=document.getElementById('craftAvailBtn');
+			if(ab){ ab.classList.remove('on'); ab.setAttribute('aria-pressed','false'); }
+		}
+		selectedCraftId=r.id;
+		renderCraftPanel();
+	});
+	const close=document.createElement('button'); close.type='button'; close.className='craftTrackerClose'; close.textContent='×'; close.title='Przestań śledzić';
+	close.addEventListener('click',()=>{ CRAFT_MODEL.setTracked(null); renderCraftPanel(); });
+	head.appendChild(name); head.appendChild(close); el.appendChild(head);
+	const chips=document.createElement('div'); chips.className='craftTrackerChips';
+	appendCraftCosts(chips,r,true);
+	el.appendChild(chips);
+	const bar=document.createElement('div'); bar.className='craftTrackerBar';
+	const fill=document.createElement('i'); fill.style.width=Math.round(100*st.progress)+'%';
+	bar.appendChild(fill); el.appendChild(bar);
+	const act=document.createElement('button'); act.type='button'; act.className='craftTrackerCraft';
+	act.textContent=st.done?'Gotowe':'Wytwórz';
+	act.disabled=!st.canCraft;
+	act.addEventListener('click',()=>doCraft(r,1));
+	el.appendChild(act);
+}
 // Blink moved to engine/eyes.js
 function updateBlink(now){ if(EYES && EYES.update) EYES.update(now); }
  // Cape physics: chain with gravity that droops when idle and streams when moving
@@ -4693,14 +4912,25 @@ function beginPrecisionSafeWorldLayer(opts){
 	ctx.imageSmoothingEnabled=false;
 	return true;
 }
-function drawSeamSafeChunkCanvas(canvas, dx, dy){
+function drawSeamSafeChunkCanvas(canvas, dx, dy, clipX0, clipY0, clipX1, clipY1){
 	if(!canvas) return;
-	ctx.drawImage(canvas,dx,dy);
 	const sw=canvas.width, sh=canvas.height;
-	if(sw<=1 || sh<=0) return;
+	if(sw<=0 || sh<=0) return;
+	// Blit only the sub-rect of this (1280x1400) section canvas that intersects the
+	// view window (layer px): full-canvas draws made the compositor the top frame
+	// cost — most of each tall section is offscreen and was rasterized away by clip.
+	let sx0=0, sy0=0, sx1=sw, sy1=sh;
+	if(Number.isFinite(clipX0) && Number.isFinite(clipY0) && Number.isFinite(clipX1) && Number.isFinite(clipY1)){
+		sx0=Math.max(0, Math.floor(clipX0-dx)); sx1=Math.min(sw, Math.ceil(clipX1-dx));
+		sy0=Math.max(0, Math.floor(clipY0-dy)); sy1=Math.min(sh, Math.ceil(clipY1-dy));
+		if(sx0>=sx1 || sy0>=sy1) return;
+	}
+	ctx.drawImage(canvas,sx0,sy0,sx1-sx0,sy1-sy0,dx+sx0,dy+sy0,sx1-sx0,sy1-sy0);
+	if(sw<=1) return; // degenerate canvas: main blit only, no seam strips
 	const overlap=Math.max(1, Math.min(4, Math.ceil(1/Math.max(0.35, zoom))));
-	ctx.drawImage(canvas,0,0,1,sh,dx-overlap,dy,overlap,sh);
-	ctx.drawImage(canvas,sw-1,0,1,sh,dx+sw,dy,overlap,sh);
+	// seam strips only where that canvas edge is actually inside the view window
+	if(sx0===0) ctx.drawImage(canvas,0,sy0,1,sy1-sy0,dx-overlap,dy+sy0,overlap,sy1-sy0);
+	if(sx1===sw) ctx.drawImage(canvas,sw-1,sy0,1,sy1-sy0,dx+sw,dy+sy0,overlap,sy1-sy0);
 }
 function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk=Math.floor(sx/CHUNK_W)-1; const maxChunk=Math.floor((sx+viewX+2)/CHUNK_W)+1; const centerChunk=Math.floor((sx+viewX*0.5)/CHUNK_W); const minSection=Math.max(worldMinSection(),worldSectionY(Math.floor(sy)-2)); const maxSection=Math.min(worldMaxSection(),worldSectionY(Math.ceil(sy+viewY)+2)); const centerSection=worldSectionY(sy+viewY*0.5); // prepare caches
 	const visibleChunkCount=(maxChunk-minChunk+1)*Math.max(1,maxSection-minSection+1);
@@ -4721,12 +4951,18 @@ function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk
 	const camDrawX=localLayer?opts.camX:0;
 	const camDrawY=localLayer?opts.camY:0;
 	const viewPX0 = sx*TILE, viewPX1=(sx+viewX+2)*TILE;
+	// view window in layer px (camera-relative when localLayer), padded 3 tiles:
+	// covers max meteor shake (amp 26 -> ~38 device px, > 2 tiles at min zoom 0.72)
+	// plus rounding, while still clipping each tall section canvas to the band
+	// actually on screen instead of submitting all ~1.8Mpx of it every frame
+	const clipX0=((sx-3)-camDrawX)*TILE, clipX1=((sx+viewX+5)-camDrawX)*TILE;
+	const clipY0=((sy-3)-camDrawY)*TILE, clipY1=((sy+viewY+5)-camDrawY)*TILE;
 	for(let cx=minChunk; cx<=maxChunk; cx++){
 		for(let section=minSection; section<=maxSection; section++){
 			const entry=chunkCanvases.get(worldRenderSectionKey(cx,section)); if(!entry) continue; const chunkXpx = cx*CHUNK_W*TILE;
 			const chunkRight = chunkXpx + CHUNK_W*TILE; if(chunkRight < viewPX0-CHUNK_W*TILE || chunkXpx > viewPX1+CHUNK_W*TILE) continue;
 			const originY=worldSectionOriginY(section);
-			drawSeamSafeChunkCanvas(entry.canvas, localLayer?(cx*CHUNK_W-camDrawX)*TILE:chunkXpx, localLayer?((originY-camDrawY)*TILE):(originY*TILE));
+			drawSeamSafeChunkCanvas(entry.canvas, localLayer?(cx*CHUNK_W-camDrawX)*TILE:chunkXpx, localLayer?((originY-camDrawY)*TILE):(originY*TILE), clipX0, clipY0, clipX1, clipY1);
 		}
 	}
 		// Chest aura second pass (not cached) for pulsing glow
@@ -4940,29 +5176,344 @@ function selectWeaponKey(key){
 // previews what each key holds — the held item on the active slot, the weapon
 // the key WOULD select on the others (categories cycle strongest-first), dimmed
 // when the category has nothing enabled. Clicking a slot = pressing its key.
+// Every slot also carries a live status line so ammo problems are visible before
+// a trigger click fails: pickaxe durability/mining speed, melee damage, the arrow
+// tier the bow will actually fire (with per-tier pips — click a pip to pin that
+// tier), thrower fuel and electric energy. A thin gauge on the bottom edge shows
+// ult charge on the active weapon (bow-draw progress while drawing, bedrock pick
+// durability on slot 1).
+const AMMO_LOW=15;
+const wepBarSlotCache={};
+document.querySelectorAll('#weaponBar .wepSlot').forEach(el=>{
+	wepBarSlotCache[el.getAttribute('data-wkey')]={
+		el,
+		name:el.querySelector('.wname'),
+		sub:el.querySelector('.wsub'),
+		pips:el.querySelector('.wpips'),
+		cyc:el.querySelector('.wcyc'),
+		gauge:el.querySelector('.wgauge'),
+		fill:el.querySelector('.wgauge i')
+	};
+});
+// Status line = optional color swatch + short text (rebuilt per update; ~2 nodes)
+function setWepSub(slot,parts){
+	if(!slot.sub) return;
+	slot.sub.textContent='';
+	(parts||[]).forEach(p=>{
+		if(p && p.dot){
+			const d=document.createElement('span'); d.className='ammoDot'; d.style.background=p.dot;
+			slot.sub.appendChild(d);
+		}else if(p!=null && p!==''){
+			slot.sub.appendChild(document.createTextNode(String(p)));
+		}
+	});
+}
+function toggleArrowPin(id){
+	if(!WEAPONS || !WEAPONS.setArrowPref || !WEAPONS.arrowInfo) return;
+	const cur=WEAPONS.arrowInfo();
+	const next=(cur.pref===id)?'auto':id;
+	WEAPONS.setArrowPref(next);
+	const tier=cur.tiers.find(t=>t.id===id);
+	msg(next==='auto' ? '🏹 Strzały: auto (najmocniejsze dostępne)' : '🏹 Przypięte strzały: '+(tier?tier.label:id));
+	updateWeaponBar(); // also refreshes an open tooltip
+}
+function ensureArrowPips(){
+	const slot=wepBarSlotCache['3'];
+	if(!slot || !slot.pips || slot.pips.childElementCount || !WEAPONS || !WEAPONS.arrowInfo) return;
+	WEAPONS.arrowInfo().tiers.forEach(t=>{
+		const b=document.createElement('button');
+		b.type='button'; b.className='pip'; b.setAttribute('data-tier',t.id);
+		b.addEventListener('click',ev=>{ ev.stopPropagation(); toggleArrowPin(t.id); });
+		slot.pips.appendChild(b);
+	});
+}
+function updateArrowPips(slot,info){
+	if(!slot.pips) return;
+	for(const p of slot.pips.children){
+		const t=info? info.tiers.find(x=>x.id===p.getAttribute('data-tier')):null;
+		if(!t){ p.classList.remove('on','act','pin'); p.style.background=''; p.title=''; continue; }
+		p.classList.toggle('on', t.count>0);
+		p.classList.toggle('act', !!t.active);
+		p.classList.toggle('pin', !!t.pinned);
+		p.style.background= t.count>0 ? t.color : '';
+		p.title='Strzały '+t.label+': '+t.count+(t.pinned?' — przypięte':'')+(t.active?' — te lecą teraz':'');
+	}
+}
 function updateWeaponBar(){
-	const bar=document.getElementById('weaponBar'); if(!bar) return;
-	const INV=MM.inventory;
+	const INV=MM.inventory; if(!INV) return;
 	const it=activeWeaponItem();
 	const cat=(it && INV.weaponCategory)? INV.weaponCategory(it):null;
 	const activeKey= cat? cat.key : (it? null : '1'); // uncategorised weapon → nothing lit
-	bar.querySelectorAll('.wepSlot').forEach(el=>{
-		const k=el.getAttribute('data-wkey');
-		el.classList.toggle('sel', k===activeKey);
-		const nm=el.querySelector('.wname');
-		if(!nm) return;
-		if(k==='1'){ nm.textContent=pickLabel(player.tool); el.classList.remove('empty'); return; }
-		const c=(INV && INV.WEAPON_CATEGORIES||[]).find(x=>x.key===k);
-		const list=(c && INV.categoryWeapons)? INV.categoryWeapons(c.id):[];
-		const preview=(cat && cat.key===k)? it : list[0];
-		nm.textContent= preview? (preview.name||preview.id) : '—';
-		el.classList.toggle('empty', !list.length);
+	ensureArrowPips();
+	Object.keys(wepBarSlotCache).forEach(k=>{
+		const slot=wepBarSlotCache[k];
+		if(!slot.name) return;
+		slot.el.classList.toggle('sel', k===activeKey);
+		let low=false, out=false, cycText='';
+		if(k==='1'){
+			slot.name.textContent=PICK_LABELS[player.tool]||player.tool;
+			slot.el.classList.remove('empty');
+			const owned=ownedPicks();
+			cycText= owned.length>1 ? (owned.indexOf(player.tool)+1)+'/'+owned.length : '';
+			if(player.tool==='bedrock'){
+				const dur=bedrockPickDurability();
+				setWepSub(slot,[dur+'/'+BEDROCK_PICK_MAX_DURABILITY]);
+				low= dur<=3;
+				slot.gauge.classList.add('show','dura');
+				slot.gauge.classList.remove('ready','draw');
+				slot.fill.style.width=Math.round(dur*100/BEDROCK_PICK_MAX_DURABILITY)+'%';
+			}else{
+				setWepSub(slot,['×'+(tools[player.tool]||1)]);
+				slot.gauge.classList.remove('show','dura','ready','draw');
+			}
+		}else{
+			const c=(INV.WEAPON_CATEGORIES||[]).find(x=>x.key===k);
+			const list=(c && INV.categoryWeapons)? INV.categoryWeapons(c.id):[];
+			const preview=(cat && c && cat.key===k)? it : list[0];
+			slot.name.textContent= preview? (preview.name||preview.id) : '—';
+			slot.el.classList.toggle('empty', !list.length);
+			const idx=preview? list.indexOf(preview) : -1;
+			cycText= (list.length>1 && idx>=0) ? (idx+1)+'/'+list.length : '';
+			slot.el.dataset.streamKind='';
+			if(!preview){
+				setWepSub(slot,[]);
+				if(slot.pips) updateArrowPips(slot,null);
+			}else if(c.id==='melee'){
+				setWepSub(slot, typeof preview.attackDamage==='number' ? ['+'+preview.attackDamage+' obr.'] : []);
+			}else if(c.id==='bow'){
+				const info=(WEAPONS && WEAPONS.arrowInfo)? WEAPONS.arrowInfo():null;
+				if(info){
+					const act=info.tiers.find(t=>t.active);
+					if(act){ setWepSub(slot,[{dot:act.color},String(act.count)]); low=act.count<AMMO_LOW; }
+					else { setWepSub(slot,['Brak strzał']); out=true; }
+					updateArrowPips(slot,info);
+				}
+			}else{ // throwers: fuel resource, or hero energy for the electric beam
+				const kind=preview.weaponType;
+				slot.el.dataset.streamKind=kind||'';
+				if(kind==='electric'){
+					const en=(MM.heroEnergy && MM.heroEnergy.info)? MM.heroEnergy.info():null;
+					const cost=Math.max(1,Number(preview.energyCost)||10);
+					if(en){
+						setWepSub(slot,[{dot:'#ffd24a'},Math.round(en.energy)+'/'+Math.round(en.max)]);
+						out= en.energy<cost*0.2; low= !out && en.energy<cost*1.5;
+					}
+				}else{
+					const fuel=(WEAPONS && WEAPONS.fuelInfo)? WEAPONS.fuelInfo(kind):null;
+					if(fuel){
+						setWepSub(slot,[{dot:RES_COLOR[fuel.key]||'#9ca3af'},String(fuel.count)]);
+						out= fuel.count<=0; low= !out && fuel.count<AMMO_LOW;
+					}else setWepSub(slot,[]);
+				}
+			}
+		}
+		if(slot.cyc) slot.cyc.textContent=cycText;
+		slot.el.classList.toggle('low', low && !out);
+		slot.el.classList.toggle('out', out);
 	});
+	refreshHudTip();
+}
+// Per-frame gauge pass (called from the game loop): ult charge on the active
+// weapon slot, bow-draw progress while drawing, live energy readout for the
+// electric beam. Change-detected so idle frames cost zero DOM writes.
+function updateWeaponGauges(){
+	if(!WEAPONS || !WEAPONS.hudStatus) return;
+	const st=WEAPONS.hudStatus();
+	const INV=MM.inventory;
+	const it=activeWeaponItem();
+	const cat=(it && INV && INV.weaponCategory)? INV.weaponCategory(it):null;
+	const activeKey=cat? cat.key:null;
+	const s4=wepBarSlotCache['4'];
+	if(s4 && s4.el && s4.el.dataset.streamKind==='electric' && MM.heroEnergy && MM.heroEnergy.info){
+		const rounded=Math.round(MM.heroEnergy.info().energy);
+		if(s4.lastEnergy!==rounded){ s4.lastEnergy=rounded; updateWeaponBar(); }
+	}
+	['2','3','4'].forEach(k=>{
+		const slot=wepBarSlotCache[k]; if(!slot || !slot.gauge) return;
+		let mode='', frac=0, ready=false;
+		if(k==='3' && st.bowActive){ mode='draw'; frac=st.bowRatio; ready=st.bowFull; }
+		else if(k===activeKey){ mode='ult'; frac=st.ult; ready=st.ult>=1; }
+		const sig=mode+((frac*50)|0)+(ready?'R':'');
+		if(slot.gaugeSig===sig) return;
+		slot.gaugeSig=sig;
+		if(!mode){ slot.gauge.classList.remove('show','draw','ready','dura'); slot.fill.style.width='0%'; return; }
+		slot.gauge.classList.add('show');
+		slot.gauge.classList.toggle('draw', mode==='draw');
+		slot.gauge.classList.toggle('ready', ready);
+		slot.gauge.classList.remove('dura');
+		slot.fill.style.width=Math.round(Math.max(0,Math.min(1,frac))*100)+'%';
+	});
+	// Touch ult trigger mirrors the active weapon's charge (fills bottom-up, pulses at 100%)
+	if(ultBtn){
+		const usable=!!activeKey;
+		const charge=usable? Math.max(0,Math.min(1,st.ult)) : 0;
+		const sig=(usable?'u':'-')+((charge*50)|0);
+		if(ultBtn.ultSig!==sig){
+			ultBtn.ultSig=sig;
+			ultBtn.style.setProperty('--ult', charge.toFixed(2));
+			ultBtn.classList.toggle('ready', usable && charge>=1);
+			ultBtn.style.opacity=usable? '' : '.4';
+		}
+	}
 }
 document.querySelectorAll('#weaponBar .wepSlot').forEach(el=>{
 	el.addEventListener('click',()=>selectWeaponKey(el.getAttribute('data-wkey')));
 });
 window.addEventListener('mm-customization-change',updateWeaponBar);
+// --- Rich HUD tooltip (weapon bar + hotbar) ---------------------------------
+// One shared #hudTip popover: weapon stats via MM.inventory.statChips, the full
+// arrow-tier breakdown, fuel/energy readouts and control hints. Mouse-only —
+// touch keeps the plain tap behaviour.
+const hudTipEl=document.getElementById('hudTip');
+var hudTipAnchor=null;
+function hudTipNode(cls,text){ const n=document.createElement('div'); n.className=cls; if(text!=null) n.textContent=text; return n; }
+function hudTipTitle(text,color){
+	const t=hudTipNode('tipTitle');
+	if(color){ const d=document.createElement('span'); d.className='tdot'; d.style.background=color; t.appendChild(d); }
+	t.appendChild(document.createTextNode(text));
+	return t;
+}
+function hudTipRow(color,label,value,opts){
+	const r=hudTipNode('tipRow');
+	if(opts && opts.dim) r.classList.add('dim');
+	if(opts && opts.mark){ const m=document.createElement('span'); m.className='tmark'; m.textContent=opts.mark; r.appendChild(m); }
+	if(color){ const d=document.createElement('span'); d.className='tdot'; d.style.background=color; r.appendChild(d); }
+	r.appendChild(document.createTextNode(label));
+	if(value!=null){ const v=document.createElement('span'); v.className='tval'; v.textContent=value; r.appendChild(v); }
+	return r;
+}
+const TIP_MARK_NONE=' '; // figure space keeps the ➤ column aligned
+function buildWeaponTip(k){
+	const INV=MM.inventory;
+	const frag=document.createDocumentFragment();
+	if(!INV) return frag;
+	if(k==='1'){
+		frag.appendChild(hudTipTitle('⛏️ Kilof '+(PICK_LABELS[player.tool]||player.tool)));
+		const owned=ownedPicks();
+		if(owned.length>1){
+			frag.appendChild(hudTipNode('tipSection','Posiadane kilofy — 1 przełącza'));
+			owned.forEach(id=>{
+				frag.appendChild(hudTipRow(null,(PICK_LABELS[id]||id),'×'+(tools[id]||1),{mark:id===player.tool?'➤':TIP_MARK_NONE, dim:id!==player.tool}));
+			});
+		}else{
+			frag.appendChild(hudTipNode('tipHint','Szybkość kopania ×'+(tools[player.tool]||1)));
+		}
+		if(player.tool==='bedrock') frag.appendChild(hudTipNode('tipHint','Wytrzymałość: '+bedrockPickDurability()+'/'+BEDROCK_PICK_MAX_DURABILITY+' uderzeń w skałę macierzystą'));
+		frag.appendChild(hudTipNode('tipHint','LPM kopie · PPM stawia blok'));
+		return frag;
+	}
+	const c=(INV.WEAPON_CATEGORIES||[]).find(x=>x.key===k);
+	if(!c) return frag;
+	const list=(c && INV.categoryWeapons)? INV.categoryWeapons(c.id):[];
+	const it=activeWeaponItem();
+	const cat=(it && INV.weaponCategory)? INV.weaponCategory(it):null;
+	const preview=(cat && cat.key===k)? it : list[0];
+	const tierColors=INV.TIER_COLORS||{};
+	if(!preview){
+		frag.appendChild(hudTipTitle(c.icon+' '+c.label));
+		frag.appendChild(hudTipNode('tipWarn','Brak broni w skrócie'));
+		frag.appendChild(hudTipNode('tipHint','Zaznacz „Skrót" przy broni w Ekwipunku (E)'));
+		return frag;
+	}
+	frag.appendChild(hudTipTitle(c.icon+' '+(preview.name||preview.id), tierColors[preview.tier]||null));
+	const chips=INV.statChips? INV.statChips(preview):[];
+	if(chips.length){
+		const wrap=hudTipNode('tipChips');
+		chips.forEach(ch=>{ const s=document.createElement('span'); s.className='tipChip'; s.textContent=ch.icon+' '+ch.label+' '+ch.text; wrap.appendChild(s); });
+		frag.appendChild(wrap);
+	}
+	if(c.id==='bow' && WEAPONS && WEAPONS.arrowInfo){
+		const info=WEAPONS.arrowInfo();
+		frag.appendChild(hudTipNode('tipSection','Strzały — ➤ leci jako następna'));
+		info.tiers.forEach(t=>{
+			frag.appendChild(hudTipRow(t.color,t.label+(t.pinned?' 📌':''),'×'+t.count,{mark:t.active?'➤':TIP_MARK_NONE, dim:t.count<=0}));
+		});
+		if(!info.total) frag.appendChild(hudTipNode('tipWarn','Brak strzał — wytwórz je w Wytwarzaniu (T)'));
+		frag.appendChild(hudTipNode('tipHint', info.pref==='auto'
+			? 'Auto: najmocniejsze dostępne · klik w kwadracik na slocie przypina typ'
+			: 'Typ przypięty — po wyczerpaniu wraca do auto · ponowny klik = auto'));
+	}
+	if(c.id==='stream'){
+		const kind=preview.weaponType;
+		if(kind==='electric'){
+			const en=(MM.heroEnergy && MM.heroEnergy.info)? MM.heroEnergy.info():null;
+			if(en) frag.appendChild(hudTipRow('#ffd24a','Energia bohatera',Math.round(en.energy)+'/'+Math.round(en.max)));
+		}else if(WEAPONS && WEAPONS.fuelInfo){
+			const fuel=WEAPONS.fuelInfo(kind);
+			if(fuel){
+				frag.appendChild(hudTipRow(RES_COLOR[fuel.key]||'#9ca3af','Paliwo: '+(RES_LABEL[fuel.key]||fuel.key),'×'+fuel.count));
+				if(fuel.count<=0) frag.appendChild(hudTipNode('tipWarn','Brak paliwa — broń nie wystrzeli'));
+			}
+		}
+	}
+	if(list.length>1){
+		frag.appendChild(hudTipNode('tipSection','W skrócie — '+k+' przełącza'));
+		list.forEach(w=>{
+			frag.appendChild(hudTipRow(tierColors[w.tier]||null, w.name||w.id, null, {mark:(it && it.id===w.id)?'➤':TIP_MARK_NONE, dim:!(it && it.id===w.id)}));
+		});
+	}
+	frag.appendChild(hudTipNode('tipHint','LPM atak · PPM ult (złoty pasek = gotowy)'));
+	return frag;
+}
+function buildHotbarTip(i){
+	const frag=document.createDocumentFragment();
+	const name=HOTBAR_ORDER[i];
+	if(!name) return frag;
+	const res=RESOURCE_DEFS.find(r=>r.tile===name);
+	const chest=isChestSelection(name);
+	const label=res? res.label : (chest? ({CHEST_COMMON:'Skrzynia zwykła',CHEST_RARE:'Skrzynia rzadka',CHEST_EPIC:'Skrzynia epicka'})[name] : name);
+	const color=res? res.color : (chest? ({CHEST_COMMON:'#b07f2c',CHEST_RARE:'#a74cc9',CHEST_EPIC:'#e0b341'})[name] : '#888');
+	frag.appendChild(hudTipTitle(label,color));
+	const key=TILE_TO_RES[T[name]];
+	if(key) frag.appendChild(hudTipRow(null,'W plecaku','×'+(inv[key]|0)));
+	if(chest) frag.appendChild(hudTipNode('tipHint','Skrzynie stawiasz tylko w trybie Boga'));
+	const id=T[name];
+	if(id===T.DYNAMO) frag.appendChild(hudTipNode('tipHint','R obraca dynamo ('+dynamoOrientationLabel()+')'));
+	else if(id===T.WATER_PUMP) frag.appendChild(hudTipNode('tipHint','R obraca pompę ('+pumpOrientationLabel()+')'));
+	else if(isBackgroundBuildTileId(id)) frag.appendChild(hudTipNode('tipHint','R przełącza budowanie w tle'));
+	frag.appendChild(hudTipNode('tipHint','Klawisz '+hotbarKeyLabel(i)+' · PPM w świecie stawia · drugi klik = zmiana typu'));
+	return frag;
+}
+function hideHudTip(){ if(!hudTipEl) return; hudTipEl.classList.remove('show'); hudTipEl.textContent=''; hudTipAnchor=null; }
+function positionHudTip(){
+	if(!hudTipEl || !hudTipAnchor) return;
+	const r=hudTipAnchor.getBoundingClientRect();
+	const tw=hudTipEl.offsetWidth, th=hudTipEl.offsetHeight;
+	let x=r.left + r.width/2 - tw/2;
+	x=Math.max(8, Math.min(window.innerWidth-tw-8, x));
+	let y=r.top - th - 10;
+	if(y<8) y=r.bottom+10;
+	hudTipEl.style.left=Math.round(x)+'px';
+	hudTipEl.style.top=Math.round(y)+'px';
+}
+function showHudTip(anchorEl,contentFrag){
+	if(!hudTipEl || !contentFrag || !contentFrag.childNodes.length) return;
+	hudTipEl.textContent='';
+	hudTipEl.appendChild(contentFrag);
+	hudTipEl.classList.add('show');
+	hudTipAnchor=anchorEl;
+	positionHudTip();
+}
+// Live refresh while visible: counts keep moving mid-fight and after clicks
+function refreshHudTip(){
+	if(!hudTipAnchor) return;
+	const wkey=hudTipAnchor.getAttribute('data-wkey');
+	if(wkey){ showHudTip(hudTipAnchor, buildWeaponTip(wkey)); return; }
+	if(typeof hudTipAnchor.__hotIdx==='number') showHudTip(hudTipAnchor, buildHotbarTip(hudTipAnchor.__hotIdx));
+}
+function bindHudTip(el,builder){
+	el.addEventListener('pointerenter',ev=>{ if(ev.pointerType==='touch') return; showHudTip(el,builder()); });
+	el.addEventListener('pointerleave',hideHudTip);
+	el.addEventListener('pointerdown',ev=>{ if(ev.pointerType==='touch') hideHudTip(); });
+}
+document.querySelectorAll('#weaponBar .wepSlot').forEach(el=>{
+	bindHudTip(el,()=>buildWeaponTip(el.getAttribute('data-wkey')));
+});
+document.querySelectorAll('#hotbarWrap .hotSlot').forEach((el,i)=>{
+	el.__hotIdx=i;
+	bindHudTip(el,()=>buildHotbarTip(i));
+});
+window.addEventListener('mm-resources-change',()=>{ if(hudTipAnchor) refreshHudTip(); });
 window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if(modalInputOpen()){ releaseGameplayInput(); return; } noteSaveActivity(); const k=e.key.toLowerCase(); const code=(e.code||'').toLowerCase(); keys[k]=true; if(code) keys[code]=true; if(!e.repeat) queueJumpInput(k); if(k==='s' || k==='arrowdown') trapdoorDropBufferT=TRAPDOOR_DROP_BUFFER; if(k==='escape'){ closeHotSelect(); }
  if(!e.repeat && NPCS && NPCS.handleKey && NPCS.handleKey(e.key,player,tutorialNpcCtx)){ e.preventDefault(); return; }
  // Weapon shortcuts: 1 = pickaxe/build mode (cycles owned tiers), 2/3/4 cycle weapon categories
@@ -4984,6 +5535,7 @@ window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if
 	if(k==='l'&&!keysOnce.has('l')){ keysOnce.add('l'); const px=Math.floor(player.x); const py=Math.floor(player.y); const below=py; if(getTile(px,below)===T.AIR){ const r=Math.random(); let cid=T.CHEST_COMMON; if(r>0.9) cid=T.CHEST_RARE; if(r>0.97) cid=T.CHEST_EPIC; setTile(px,below,cid); msg('Postawiono skrzynię ('+(cid===T.CHEST_EPIC?'epicka':cid===T.CHEST_RARE?'rzadka':'zwykła')+')'); } }
 	if(k==='m'&&!keysOnce.has('m')){ toggleMap(); keysOnce.add('m'); }
 	if(k==='c'&&!keysOnce.has('c')){ centerCam(); keysOnce.add('c'); }
+	if(k==='t'&&!keysOnce.has('t')){ toggleCraftPanel(); keysOnce.add('t'); }
 	if(k==='r'&&!keysOnce.has('r') && selectedTileId()===T.DYNAMO){ toggleDynamoOrientation(); keysOnce.add('r'); e.preventDefault(); }
 	if(k==='r'&&!keysOnce.has('r') && selectedTileId()===T.WATER_PUMP){ togglePumpOrientation(); keysOnce.add('r'); e.preventDefault(); }
 	if(k==='r'&&!keysOnce.has('r') && isBackgroundBuildTileId(selectedTileId())){ toggleBackgroundBuildMode(); keysOnce.add('r'); e.preventDefault(); }
@@ -5242,7 +5794,87 @@ function updateHeroEnergy(dt){
 		if(energyChargeFx.t<=0) energyChargeFx.source=null;
 	}
 }
+// --- Collapse burial (engine/hero_crush.js): the hero is a block, never a pinball ---
+// Cells that become solid *while overlapping the hero* are burial events; light
+// loads get re-loosened and rest on him, heavy loads pin and crush him in place.
+// Cells he is merely pushed against (boss shoves) ease him out without snapping.
+const heroBuriedCells=new Set();
+function noteTileBuriesHero(tx,ty,next){
+	const p=window.player;
+	if(!p || next===T.AIR || isHeroPassableTile(next)) return;
+	const w=p.w/2, h=p.h/2;
+	if(tx+1>p.x-w && tx<p.x+w && ty+1>p.y-h && ty<p.y+h){
+		if(heroBuriedCells.size>=64) heroBuriedCells.clear(); // pathological cascade guard
+		heroBuriedCells.add(tx+','+ty);
+	}
+}
+let crushMsgAt=0, pileMsgAt=0, crushSeeded=false;
+let heroPileWeight=0; // hovering debris resting on the hero (falling.js/trees.js entities)
+function seedHeroBurialFromWorld(){ crushSeeded=false; } // a (re)loaded save may wake the hero already buried
+function heroCrushLooseLoad(x,y,t){
+	return t===T.SAND
+		|| (FALLING && FALLING.isSettledRubbleAt && FALLING.isSettledRubbleAt(x,y))
+		|| (TREES && TREES.isFallenDebrisAt && TREES.isFallenDebrisAt(x,y));
+}
+function measureHeroPile(){
+	let w=0;
+	try{ if(FALLING && FALLING.heroRestingLoad) w+=FALLING.heroRestingLoad().weight; }catch(e){}
+	try{ if(TREES && TREES.heroRestingLoad) w+=TREES.heroRestingLoad().weight; }catch(e){}
+	return w;
+}
+function updateHeroCrush(dt){
+	if(deathTravelFx) return;
+	if(!crushSeeded){
+		// Whatever the hero wakes up embedded in was a collapse, not a wall he walked into
+		crushSeeded=true;
+		for(const c of heroEmbeddedTiles(player,(x,y)=>solidAt(x,y),getTile)) heroBuriedCells.add(c.x+','+c.y);
+	}
+	if(godMode) return;
+	const res=resolveHeroBurial({
+		player, getTile,
+		solidAt:(x,y)=>solidAt(x,y),
+		buriedCells:heroBuriedCells,
+		capacityBonus:(MM.activeModifiers && MM.activeModifiers.crushResistBonus)||0,
+		isLooseLoad:heroCrushLooseLoad,
+		minY:worldMinY(),
+		dt
+	});
+	if(res.status==='rest'){
+		for(const c of res.eject){
+			setTile(c.x,c.y,T.AIR);
+			heroBuriedCells.delete(c.x+','+c.y);
+			if(FALLING && FALLING.onTileRemoved) FALLING.onTileRemoved(c.x,c.y);
+			if(WATER && WATER.onTileChanged) WATER.onTileChanged(c.x,c.y,getTile);
+			if(FALLING && FALLING.spawnLoose) FALLING.spawnLoose(c.x,c.y,c.t);
+		}
+	} else if(res.status==='pinned'){
+		// Too heavy to shoulder: no relocation and no walking out from under it —
+		// the hero digs free (mining still works) or dies where he stands.
+		player.vx*=Math.max(0,1-12*dt);
+		if(player.vy<0) player.vy=0;
+		if(window.damageHero(res.damage,{cause:'crushed',invulMs:CRUSH_TUNING.TICK_MS}) && player.hp>0){
+			const now=performance.now();
+			if(now-crushMsgAt>2500){ crushMsgAt=now; msg('⛰ Miażdży cię zawał — odkop się!'); }
+		}
+	} else if(res.status==='shoved' && res.push){
+		player.x+=res.push.dx;
+		player.y+=res.push.dy;
+	}
+	// Debris resting on the hero as hovering entities is load too: it blocks
+	// jumping (enforced in physics) and, when it outweighs his Twardość capacity,
+	// presses like a burial. Horizontal movement stays free — entities cannot be
+	// mined, so stepping out from under the pile must remain the escape route.
+	heroPileWeight=measureHeroPile();
+	const pileExcess=heroPileWeight-heroCrushCapacity((MM.activeModifiers && MM.activeModifiers.crushResistBonus)||0);
+	if(pileExcess>0 && res.status!=='pinned'){
+		if(window.damageHero(crushTickDamage(pileExcess),{cause:'crushed',invulMs:CRUSH_TUNING.TICK_MS}) && player.hp>0){
+			const now=performance.now();
+			if(now-crushMsgAt>2500){ crushMsgAt=now; msg('⛰ Miażdży cię zawał — odkop się!'); }
+		}
+	}
+}
 function physics(dt){
+	updateHeroCrush(dt);
 	// Horizontal input
 	let input=0; if(keys['a']||keys['arrowleft']) input-=1; if(keys['d']||keys['arrowright']) input+=1; if(input!==0) player.facing=input;
 	const climbUpInput=!!(keys['w']||keys['arrowup']);
@@ -5434,14 +6066,25 @@ function physics(dt){
 		player.vy += MOVE.GRAV*gravMult*dt; if(player.vy>20*gravMult) player.vy=20*gravMult; swimBuoySmooth=0; // reset filter
 	}
 
+	// A pile resting on the hero is a ceiling: block upward motion so jump-spam
+	// cannot ratchet him up through his own debris (each jump used to settle a
+	// block under his feet, extruding a 1-wide chimney). Sideways stays free.
+	if(heroPileWeight>0 && player.vy<0 && !godMode){
+		player.vy=0;
+		if(jumpNow || climbUpInput){
+			const now=performance.now();
+			if(now-pileMsgAt>2500){ pileMsgAt=now; msg('📦 Rumowisko przygniata cię z góry — odsuń się!'); }
+		}
+	}
+
 	// Integrate & collisions — substepped so high speed multipliers / low FPS cannot tunnel through tiles
 	{
 		const maxDisp=Math.max(Math.abs(player.vx),Math.abs(player.vy))*dt;
 		const steps=Math.min(12, Math.max(1, Math.ceil(maxDisp/0.4)));
 		const sdt=dt/steps;
 		for(let i=0;i<steps;i++){
-			player.x += player.vx*sdt; collide('x');
-			player.y += player.vy*sdt; collide('y');
+			const px=player.x; player.x += player.vx*sdt; collide('x',px);
+			const py=player.y; player.y += player.vy*sdt; collide('y',py);
 			if(player.vx===0 && player.vy===0) break;
 		}
 	}
@@ -5450,6 +6093,7 @@ function physics(dt){
 	try{ if(GUARDIANS && GUARDIANS.collideHero) GUARDIANS.collideHero(player, dt); }catch(e){}
 	try{ if(UNDERGROUND && UNDERGROUND.collideHero) UNDERGROUND.collideHero(player, dt); }catch(e){}
 	try{ if(SKY_GUARDIAN && SKY_GUARDIAN.collideHero) SKY_GUARDIAN.collideHero(player, dt); }catch(e){}
+	try{ if(CENTER_GUARDIAN && CENTER_GUARDIAN.collideHero) CENTER_GUARDIAN.collideHero(player, dt); }catch(e){}
 
 	ensureChunks();
 }
@@ -5471,9 +6115,18 @@ function solidAt(x,y,axis){
 	if(heroTrapdoorOpenForCollision(t,x,y,axis)) return false;
 	return !isHeroPassableTile(t);
 }
-function collide(axis){
+// Swept per-axis resolution: only tiles the hero *entered during this substep*
+// (his pre-move span did not overlap them) push back. Tiles that already
+// overlapped are embedded — a collapse solidified around him — and belong to
+// updateHeroCrush(); resolving them here is what used to teleport him 1–2 tiles
+// diagonally out of a pile. OVER_EPS keeps the 0.001 resting margin from
+// reading as an overlap.
+const COLLIDE_OVER_EPS=1e-4;
+function collide(axis, prevC){
 	const w=player.w/2, h=player.h/2;
 	if(axis==='x'){
+		const prev=(typeof prevC==='number' && isFinite(prevC)) ? prevC : player.x;
+		const prevL=prev-w, prevR=prev+w;
 		const minX=Math.floor(player.x-w), maxX=Math.floor(player.x+w), minY=Math.floor(player.y-h), maxY=Math.floor(player.y+h);
 		// Resolve against the least-penetrating tile only; applying every tile in scan
 		// order could push the player out one side and back into a neighbour.
@@ -5481,12 +6134,15 @@ function collide(axis){
 		for(let y=minY;y<=maxY;y++){
 			for(let x=minX;x<=maxX;x++){
 				if(!solidAt(x,y,axis)) continue;
+				if(prevR>x+COLLIDE_OVER_EPS && prevL<x+1-COLLIDE_OVER_EPS) continue; // embedded before the move
 				if(player.vx>0){ const cand=x - w - 0.001; if(!hit || cand<target) target=cand; hit=true; }
 				else if(player.vx<0){ const cand=x + 1 + w + 0.001; if(!hit || cand>target) target=cand; hit=true; }
 			}
 		}
 		if(hit){ player.x=target; player.vx=0; }
 	} else {
+		const prev=(typeof prevC==='number' && isFinite(prevC)) ? prevC : player.y;
+		const prevT=prev-h, prevB=prev+h;
 		const minX=Math.floor(player.x-w), maxX=Math.floor(player.x+w), minY=Math.floor(player.y-h), maxY=Math.floor(player.y+h);
 		const wasGround=player.onGround;
 		player.onGround=false;
@@ -5494,6 +6150,7 @@ function collide(axis){
 		for(let y=minY;y<=maxY;y++){
 			for(let x=minX;x<=maxX;x++){
 				if(!solidAt(x,y,axis)) continue;
+				if(prevB>y+COLLIDE_OVER_EPS && prevT<y+1-COLLIDE_OVER_EPS) continue; // embedded before the move
 				if(player.vy>0){ const cand=y - h - 0.001; if(!hit || cand<target){ target=cand; landingTile={x,y}; } hit=true; landed=true; }
 				else if(player.vy<0){ const cand=y + 1 + h + 0.001; if(!hit || cand>target) target=cand; hit=true; }
 			}
@@ -5777,7 +6434,7 @@ function releaseTouchWeaponFire(cancel){
 	return true;
 }
 if(fireBtn){
-	fireBtn.addEventListener('pointerdown',e=>{ e.preventDefault(); noteSaveActivity(); if(!activeWeaponItem()){ msg('Wybierz broń klawiszem 2–4'); return; } fireBtnHeld=true; fireBtn.classList.add('on'); });
+	fireBtn.addEventListener('pointerdown',e=>{ e.preventDefault(); noteSaveActivity(); if(!activeWeaponItem()){ msg('Wybierz broń — stuknij pasek broni (2–4)'); return; } fireBtnHeld=true; fireBtn.classList.add('on'); });
 	['pointerup','pointerleave'].forEach(evName=> fireBtn.addEventListener(evName,()=>{ noteSaveActivity(); releaseTouchWeaponFire(false); fireBtnHeld=false; fireBtn.classList.remove('on'); }));
 	fireBtn.addEventListener('pointercancel',()=>{ noteSaveActivity(); releaseTouchWeaponFire(true); fireBtnHeld=false; fireBtn.classList.remove('on'); });
 	// Icon reflects the equipped weapon class
@@ -5789,6 +6446,18 @@ if(fireBtn){
 	}
 	refreshFireBtn();
 	window.addEventListener('mm-customization-change',refreshFireBtn);
+}
+// Touch ult trigger: the PPM-ult without a right button. Aims in the facing
+// direction like the fire button; charge state is fed by updateWeaponGauges.
+const ultBtn=document.getElementById('ultBtn');
+if(ultBtn){
+	ultBtn.addEventListener('pointerdown',e=>{
+		e.preventDefault(); noteSaveActivity();
+		const it=activeWeaponItem();
+		if(!it){ msg('Wybierz broń — stuknij pasek broni (2–4)'); return; }
+		const aim={x:player.x+player.facing*5, y:player.y-0.4};
+		if(WEAPONS && WEAPONS.fireUlt && WEAPONS.fireUlt(player, aim.x, aim.y)) notifyInvasionWeaponUse(it,{ult:true});
+	});
 }
 // Only the pointer that started cursor mining may stop it — releasing another finger
 // (e.g. a movement button on the touch pad) must not cancel digging.
@@ -5805,8 +6474,8 @@ function releasePointerWeaponFire(e,cancel){
 	weaponPointerId=null;
 	return true;
 }
-window.addEventListener('pointerup',e=>{ noteSaveActivity(); activePointers.delete(e.pointerId); if(activePointers.size<2) pinch=null; releasePointerWeaponFire(e,false); if(e.pointerId===minePointerId){ minePointerId=null; if(!mineBtnHeld) stopMining(); } });
-window.addEventListener('pointercancel',e=>{ noteSaveActivity(); activePointers.delete(e.pointerId); if(activePointers.size<2) pinch=null; releasePointerWeaponFire(e,true); if(e.pointerId===minePointerId){ minePointerId=null; if(!mineBtnHeld) stopMining(); } });
+window.addEventListener('pointerup',e=>{ noteSaveActivity(); if(touchHold && e.pointerId===touchHold.id) cancelTouchHold(); activePointers.delete(e.pointerId); if(activePointers.size<2) pinch=null; releasePointerWeaponFire(e,false); if(e.pointerId===minePointerId){ minePointerId=null; if(!mineBtnHeld) stopMining(); } });
+window.addEventListener('pointercancel',e=>{ noteSaveActivity(); if(touchHold && e.pointerId===touchHold.id) cancelTouchHold(); activePointers.delete(e.pointerId); if(activePointers.size<2) pinch=null; releasePointerWeaponFire(e,true); if(e.pointerId===minePointerId){ minePointerId=null; if(!mineBtnHeld) stopMining(); } });
 function waterCollectionChanceAt(tx,ty){
 	if(getTile(tx,ty)!==T.WATER) return 0;
 	const unitsMax=Math.max(1,(WATER && WATER.UNITS) || 10);
@@ -6046,11 +6715,36 @@ let lastChestOpen={t:0,x:0,y:0};
 const CHEST_PLACE_SUPPRESS_MS=250; // extended to reduce accidental placements
 const PLACE_REACH=5; // build reach in tiles (Chebyshev); god mode is unlimited
 let lastRightPlaceT=0; // right-button pointerdown already placed for this gesture (contextmenu dedupe)
+// Touch long-press = place block. Android surfaces it as a contextmenu event, iOS
+// never fires contextmenu at all — so a pointer-based hold timer covers both, and
+// lastRightPlaceT dedupes whichever path lands first on Android.
+let touchHold=null; // {id,x,y,timer} pending long-press placement
+const TOUCH_HOLD_MS=550, TOUCH_HOLD_SLOP=12;
+function cancelTouchHold(){ if(touchHold){ clearTimeout(touchHold.timer); touchHold=null; } }
+function armTouchHold(e){
+	cancelTouchHold();
+	const x=e.clientX, y=e.clientY;
+	touchHold={ id:e.pointerId, x, y, timer:setTimeout(()=>{
+		touchHold=null;
+		if(pinch || activePointers.size>1 || modalInputOpen()) return;
+		if(!isToolMode()) return;
+		const now=performance.now();
+		if(now-lastRightPlaceT<400) return;
+		if(now-lastChestOpen.t<CHEST_PLACE_SUPPRESS_MS) return;
+		lastRightPlaceT=now;
+		// the initial touch started cursor mining — cancel it before placing
+		if(minePointerId!=null){ minePointerId=null; stopMining(); }
+		const p=screenToWorldTile(x,y);
+		useToolSecondaryAt(p.tx,p.ty);
+	}, TOUCH_HOLD_MS) };
+}
 canvas.addEventListener('contextmenu',e=>{ if(modalInputOpen()){ e.preventDefault(); return; } e.preventDefault(); noteSaveActivity(); const now=performance.now();
 	// Right mouse button is handled on pointerdown; contextmenu remains only for touch long-press.
 	if(now-lastRightPlaceT<400) return;
 	if(!isToolMode()) return;
 	if(now-lastChestOpen.t<CHEST_PLACE_SUPPRESS_MS) return;
+	lastRightPlaceT=now; // beat the pointer-hold timer to this gesture
+	cancelTouchHold();
 	// Touch long-press: the initial touch started cursor mining — cancel it before placing
 	if(minePointerId!=null){ minePointerId=null; stopMining(); }
 	const p=screenToWorldTile(e.clientX,e.clientY);
@@ -6376,12 +7070,26 @@ function tryPlace(tx,ty){
 }
 // Per-slot counts (not per-type ids): two slots may hold the same resource after a
 // remap, and chest slots show ∞ in god mode instead of a meaningless number.
+// Big stacks compact to "1,2k" so they fit the slot; low (<10) stacks turn amber
+// and empty ones red + dim the whole slot, so running dry is visible at a glance.
+function fmtHudCount(n){
+	n=n|0;
+	if(n>=100000) return Math.floor(n/1000)+'k';
+	if(n>=10000) return Math.round(n/1000)+'k';
+	if(n>=1000) return (n/1000).toFixed(1).replace('.',',')+'k';
+	return String(n);
+}
 function updateHotbarCounts(){
 	document.querySelectorAll('#hotbarWrap .hotSlot').forEach((slotEl,i)=>{
 		const c=slotEl.querySelector('.count'); if(!c) return;
 		const name=HOTBAR_ORDER[i];
 		const key=TILE_TO_RES[T[name]];
-		c.textContent= key? String(inv[key]||0) : (isChestSelection(name)? '∞' : '');
+		const n=key? (inv[key]|0) : 0;
+		c.textContent= key? fmtHudCount(n) : (isChestSelection(name)? '∞' : '');
+		const track=!!key && !godMode;
+		c.classList.toggle('out', track && n<=0);
+		c.classList.toggle('low', track && n>0 && n<10);
+		slotEl.classList.toggle('depleted', track && n<=0);
 	});
 }
 // Chest pseudo-entries for hotbar dressing (label + tier accent color)
@@ -6399,8 +7107,9 @@ function refreshHotbarDom(){
 		const chest=HOTBAR_CHEST_DEFS[name];
 		const label=res? res.label.toLowerCase() : (chest? chest.label : name.toLowerCase());
 		const color=res? res.color : (chest? chest.color : '#888');
-		const spans=slotEl.querySelectorAll('span');
-		if(spans[1]) spans[1].textContent=label;
+		const lbl=slotEl.querySelector('.lbl')||slotEl.querySelectorAll('span')[1];
+		if(lbl) lbl.textContent=label;
+		slotEl.setAttribute('aria-label', label+', klawisz '+hotbarKeyLabel(i));
 		// resource color as an inset underline — ties the slot to its HUD swatch
 		slotEl.style.boxShadow='0 2px 8px rgba(0,0,0,.5), inset 0 -3px 0 '+color;
 	});
@@ -6616,6 +7325,7 @@ function drawParticles(){ if(PARTICLES && PARTICLES.draw) PARTICLES.draw(ctx,wor
 canvas.addEventListener('pointerdown',e=>{
 	if(modalInputOpen()){ e.preventDefault(); return; }
 	noteSaveActivity();
+	if(touchHold && e.pointerId!==touchHold.id) cancelTouchHold(); // a second finger is not a long-press
 	activePointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
 	if(activePointers.size===2){
 		// Second finger down → pinch zoom; abort the mining gesture from the first finger
@@ -6643,7 +7353,10 @@ canvas.addEventListener('pointerdown',e=>{
 		const dxRange = Math.abs(tx - Math.floor(player.x)); const dyRange=Math.abs(ty - Math.floor(player.y));
 		// Equipped weapon/charm bonus damage on top of base melee / tool damage
 		const atkBonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
-		if(dxRange<=3 && dyRange<=3 && player.atkCd<=0 && ((GUARDIANS && GUARDIANS.attackAt && GUARDIANS.attackAt(tx,ty,atkBonus)) || (UNDERGROUND && UNDERGROUND.attackAt && UNDERGROUND.attackAt(tx,ty,atkBonus)) || (SKY_GUARDIAN && SKY_GUARDIAN.attackAt && SKY_GUARDIAN.attackAt(tx,ty,atkBonus)) || (BOSSES && BOSSES.attackAt && BOSSES.attackAt(tx,ty,atkBonus)) || (INVASIONS && INVASIONS.attackAt && INVASIONS.attackAt(tx,ty,atkBonus)) || (NPCS && NPCS.attackAt && NPCS.attackAt(tx,ty,atkBonus,tutorialNpcCtx)) || (MOBS && MOBS.attackAt && MOBS.attackAt(tx,ty,atkBonus,{source:'hero'})))){ player.atkCd=0.35; if(WEAPONS && WEAPONS.notifyMeleeSwing) WEAPONS.notifyMeleeSwing(tx,ty,player); return; }
+		if(dxRange<=3 && dyRange<=3 && player.atkCd<=0 && ((CENTER_GUARDIAN && CENTER_GUARDIAN.attackAt && CENTER_GUARDIAN.attackAt(tx,ty,atkBonus)) || (GUARDIANS && GUARDIANS.attackAt && GUARDIANS.attackAt(tx,ty,atkBonus)) || (UNDERGROUND && UNDERGROUND.attackAt && UNDERGROUND.attackAt(tx,ty,atkBonus)) || (SKY_GUARDIAN && SKY_GUARDIAN.attackAt && SKY_GUARDIAN.attackAt(tx,ty,atkBonus)) || (BOSSES && BOSSES.attackAt && BOSSES.attackAt(tx,ty,atkBonus)) || (INVASIONS && INVASIONS.attackAt && INVASIONS.attackAt(tx,ty,atkBonus)) || (NPCS && NPCS.attackAt && NPCS.attackAt(tx,ty,atkBonus,tutorialNpcCtx)) || (MOBS && MOBS.attackAt && MOBS.attackAt(tx,ty,atkBonus,{source:'hero'})))){ player.atkCd=0.35; if(WEAPONS && WEAPONS.notifyMeleeSwing) WEAPONS.notifyMeleeSwing(tx,ty,player); return; }
+		// The center's confession/epilogue dialogue outranks ordinary NPC talk: the
+		// obelisk (and the mentor standing at it) belongs to the story while it speaks.
+		if(CENTER_GUARDIAN && CENTER_GUARDIAN.interactAt && CENTER_GUARDIAN.interactAt(tx,ty,player)) return;
 		// Click an NPC (non-duel) to talk: they speak the next line in their repertoire.
 		if(NPCS && NPCS.interactAt && NPCS.interactAt(tx,ty,player,tutorialNpcCtx)) return;
 		if(tryUseVendingAt(tx,ty)) return;
@@ -6653,6 +7366,7 @@ canvas.addEventListener('pointerdown',e=>{
 		// plants: harvest ripe berries / clear vegetation before digging the tile behind it
 		if(dxRange<=3 && dyRange<=3 && PLANTS && PLANTS.harvestAt && PLANTS.harvestAt(tx,ty)){ try{ if(MM.audio && MM.audio.play) MM.audio.play('harvest'); }catch(e){} return; }
 		startMineAt(tx,ty,{quiet:true});
+		if(e.pointerType==='touch') armTouchHold(e); // hold in place → block placement (iOS-safe)
 	} else if(e.button===2){
 		e.preventDefault();
 		lastRightPlaceT=performance.now();
@@ -6672,6 +7386,7 @@ canvas.addEventListener('pointerdown',e=>{
 });
 canvas.addEventListener('pointermove',e=>{
 	lastPointer.x=e.clientX; lastPointer.y=e.clientY; lastPointer.has=true;
+	if(touchHold && e.pointerId===touchHold.id && (Math.abs(e.clientX-touchHold.x)>TOUCH_HOLD_SLOP || Math.abs(e.clientY-touchHold.y)>TOUCH_HOLD_SLOP)) cancelTouchHold(); // drag = mining gesture
 	const ap=activePointers.get(e.pointerId);
 	if(ap){ noteSaveActivity(); ap.x=e.clientX; ap.y=e.clientY;
 		if(pinch && activePointers.size>=2){
@@ -6741,6 +7456,7 @@ function draw(){ // Background first
  if(GUARDIANS && GUARDIANS.draw) GUARDIANS.draw(ctx,TILE,worldFxVisible,camRenderX,camRenderY,W,H,zoom);
  if(UNDERGROUND && UNDERGROUND.draw) UNDERGROUND.draw(ctx,TILE,worldFxVisible,camRenderX,camRenderY,W,H,zoom);
  if(SKY_GUARDIAN && SKY_GUARDIAN.draw) SKY_GUARDIAN.draw(ctx,TILE,worldFxVisible,camRenderX,camRenderY,W,H,zoom);
+ if(CENTER_GUARDIAN && CENTER_GUARDIAN.draw) CENTER_GUARDIAN.draw(ctx,TILE,worldFxVisible,camRenderX,camRenderY,W,H,zoom);
  // boss monsters (multi-part procedural creatures, world-space)
  if(BOSSES && BOSSES.draw) BOSSES.draw(ctx,TILE,worldFxVisible);
  // visiting saucer + tractor beam (above creatures — the beam shines over its victim)
@@ -6843,29 +7559,19 @@ function draw(){ // Background first
 	if(GUARDIANS && GUARDIANS.drawHUD) GUARDIANS.drawHUD(ctx,W,H,camRenderX,camRenderY,zoom,TILE,worldFxVisible);
 	if(UNDERGROUND && UNDERGROUND.drawHUD) UNDERGROUND.drawHUD(ctx,W,H,camRenderX,camRenderY,zoom,TILE,worldFxVisible);
 	if(SKY_GUARDIAN && SKY_GUARDIAN.drawHUD) SKY_GUARDIAN.drawHUD(ctx,W,H,camRenderX,camRenderY,zoom,TILE,worldFxVisible);
-	// HUD: energy + health bars
-	ctx.save(); const barW=200, barH=18; const pad=12; const x=pad, y=H - barH - pad - 18;
-	const energyMax=player.maxEnergy||heroEnergyCapacity();
-	const energyFrac=energyMax>0? Math.max(0,Math.min(1,(player.energy||0)/energyMax)) : 0;
-	const ey=y-16;
-	ctx.fillStyle='rgba(0,0,0,0.48)'; ctx.fillRect(x,ey,barW,10);
-	const eg=ctx.createLinearGradient(x,ey,x+barW,ey); eg.addColorStop(0,'#43e7ff'); eg.addColorStop(0.55,'#4b7dff'); eg.addColorStop(1,'#ffe66d');
-	ctx.fillStyle=eg; ctx.fillRect(x,ey,Math.max(0,barW*energyFrac),10);
-	ctx.strokeStyle='rgba(190,245,255,0.34)'; ctx.lineWidth=1; ctx.strokeRect(x,ey,barW,10);
-	ctx.fillStyle='#dffcff'; ctx.font='12px system-ui'; ctx.fillText('EN '+Math.round(player.energy||0)+' / '+Math.round(energyMax), x+8, ey-3);
-	ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(x,y,barW,barH); const frac=player.hp/player.maxHp; const g=ctx.createLinearGradient(x,y,x+barW,y); g.addColorStop(0,'#ff3636'); g.addColorStop(1,'#ff9a3d'); ctx.fillStyle=g; ctx.fillRect(x,y,Math.max(0,barW*frac),barH); ctx.strokeStyle='rgba(255,255,255,0.3)'; ctx.lineWidth=2; ctx.strokeRect(x,y,barW,barH); ctx.fillStyle='#fff'; ctx.font='12px system-ui'; ctx.fillText('HP '+player.hp+' / '+player.maxHp, x+8, y-4);
-	// level + XP progress bar (engine/progress.js)
+	if(CENTER_GUARDIAN && CENTER_GUARDIAN.drawHUD) CENTER_GUARDIAN.drawHUD(ctx,W,H,camRenderX,camRenderY,zoom,TILE,worldFxVisible);
+	// HUD: vitals cluster (HP / energy / level+XP / buffs) — engine/vitals_hud.js
+	ctx.save();
 	{
 		const lv=(MM.progress && MM.progress.level)? MM.progress.level() : {level:1,into:player.xp||0,need:60};
-		const xy=y+barH+4;
-		ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(x,xy,barW,8);
-		ctx.fillStyle='#2c7ef8'; ctx.fillRect(x,xy,Math.max(0,Math.min(1,lv.into/lv.need))*barW,8);
-		ctx.strokeStyle='rgba(255,255,255,0.25)'; ctx.lineWidth=1; ctx.strokeRect(x,xy,barW,8);
 		const pts=(MM.progress && MM.progress.points)? MM.progress.points():0;
-		ctx.fillStyle='#fff'; ctx.fillText('Poz. '+lv.level+'  •  '+lv.into+'/'+lv.need+' XP'+(pts>0? '  •  +'+pts+' pkt (E)':''), x+8, xy+18);
-		// active potion buffs: icon + seconds remaining, stacked right of the XP bar
 		const bf=(MM.progress && MM.progress.getBuffs)? MM.progress.getBuffs():[];
-		bf.forEach((b,i)=>{ ctx.fillText(b.icon+' '+Math.ceil(b.t)+'s', x+barW+12+i*64, xy+8); });
+		VITALS_HUD.draw(ctx,{
+			W,H,
+			hp:player.hp, maxHp:player.maxHp,
+			energy:player.energy||0, energyMax:player.maxEnergy||heroEnergyCapacity(),
+			level:lv, points:pts, buffs:bf
+		});
 	}
 	// damage flash overlay
 	{
@@ -8431,6 +9137,8 @@ if(MM.ui && MM.ui.injectTravelDebugPanel) MM.ui.injectTravelDebugPanel({
 	undergroundFight:()=> debugStartUndergroundFight(),
 	skyGate:()=> debugJumpSkyGuardian(),
 	skyFight:()=> debugStartSkyGuardianFight(),
+	center:()=> debugJumpCenterGuardian(),
+	centerFight:()=> debugStartCenterFight(),
 	aftermath:(kind)=> debugGuardianAftermath(kind),
 	pos:()=> ({x:Math.round(player.x), y:Math.round(player.y)})
 }, menuPanel);
@@ -8907,6 +9615,31 @@ function debugStartSkyGuardianFight(){
 	return {x:Math.round(player.x), y:Math.round(player.y), kind:'skyGuardian', started:true, fallback:!!jumped.fallback};
 }
 window.startSkyGuardianFight = function(){ return debugStartSkyGuardianFight(); };
+function debugJumpCenterGuardian(){
+	if(!CENTER_GUARDIAN || !CENTER_GUARDIAN.layoutFor){ msg('Center: brak modulu'); return false; }
+	const L=CENTER_GUARDIAN.layoutFor();
+	const minCx=Math.floor((L.minX-4)/CHUNK_W), maxCx=Math.floor((L.maxX+4)/CHUNK_W);
+	for(let cx=minCx; cx<=maxCx; cx++) ensureChunkAtY(cx,L.floorY);
+	try{ if(CENTER_GUARDIAN.forceCall) CENTER_GUARDIAN.forceCall(getTile,setTile); }catch(e){}
+	const spot=CENTER_GUARDIAN.landingSpot ? CENTER_GUARDIAN.landingSpot(getTile) : {x:L.ax+0.5,y:L.floorY-1,tileX:Math.round(L.ax),surface:L.floorY,fallback:true};
+	const ok=teleportHeroTo(spot.x, spot.y, {message:'Obelisk @ x='+Math.round(spot.tileX)+', y='+Math.round(spot.surface), center:true});
+	if(!ok) return false;
+	revealDebugTravelArea();
+	noteSaveActivity(); saveState();
+	return {x:Math.round(player.x), y:Math.round(player.y), kind:'centerGuardian', fallback:!!spot.fallback};
+}
+window.teleportHeroToCenterGuardian = function(){ return debugJumpCenterGuardian(); };
+function debugStartCenterFight(){
+	const jumped=debugJumpCenterGuardian();
+	if(jumped===false) return false;
+	let started=false;
+	try{ if(CENTER_GUARDIAN && CENTER_GUARDIAN.forceBattle) started=!!CENTER_GUARDIAN.forceBattle(getTile,setTile); }catch(e){ started=false; }
+	if(!started){ msg('Center: nie udalo sie wymusic walki z lustrem'); return false; }
+	msg('Mirror fight started.');
+	noteSaveActivity(); saveState();
+	return {x:Math.round(player.x), y:Math.round(player.y), kind:'centerGuardian', started:true};
+}
+window.startCenterGuardianFight = function(){ return debugStartCenterFight(); };
 function debugGuardianAftermath(kind){
 	if(!AFTERMATH || !AFTERMATH.start) return false;
 	if(kind==='clear'){
@@ -9156,7 +9889,7 @@ function runGameStep(dt,ts){
 	if(GASES && GASES.update) GASES.update(dt, getTile, setTile, player);
 	if(PLANTS && PLANTS.update) PLANTS.update(getTile, setTile, dt);
 	if(PROGRESS && PROGRESS.update) PROGRESS.update(dt);
-updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(SKY_GUARDIAN && SKY_GUARDIAN.update) SKY_GUARDIAN.update(dt, player, getTile, setTile); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(ALIEN_RUINS && ALIEN_RUINS.update) ALIEN_RUINS.update(dt, player, getTile, setTile, {saveState, msg}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCape(dt); updateBlink(ts);
+updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(SKY_GUARDIAN && SKY_GUARDIAN.update) SKY_GUARDIAN.update(dt, player, getTile, setTile); if(CENTER_GUARDIAN && CENTER_GUARDIAN.update) CENTER_GUARDIAN.update(dt, player, getTile, setTile); if(STORY_PROGRESSION && STORY_PROGRESSION.update) STORY_PROGRESSION.update(dt, player, getTile, setTile); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(ALIEN_RUINS && ALIEN_RUINS.update) ALIEN_RUINS.update(dt, player, getTile, setTile, {saveState, msg}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCape(dt); updateBlink(ts);
 }
 let lastLoopErrAt=0; function loop(ts){
 	if(shouldSkipFrameForCap(ts)){ requestAnimationFrame(loop); return; }
@@ -9185,6 +9918,7 @@ let lastLoopErrAt=0; function loop(ts){
 		drawMs=framePerfNow()-drawT;
 		recordFramePerf(lastFrameMs,simMs,drawMs);
 		updateHoverInfo();
+		updateWeaponGauges();
 		if(paused){
 			ctx.save();
 			ctx.fillStyle='rgba(5,8,14,0.45)'; ctx.fillRect(0,0,W,H);

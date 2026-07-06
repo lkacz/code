@@ -167,11 +167,14 @@ assert.equal(INV.snapPct(62), 60, '10-steps between 50 and 100');
 assert.equal(INV.snapPct(140), 150, '25-steps above 100');
 assert.equal(INV.snapPct(500), 200, 'hard cap at 200%');
 
-// --- stat chips: clean percent text, maluses marked ----------------------
+// --- stat chips: function purity — one job stat per item ------------------
 const chipTexts = id => INV.statChips(INV.getItem(id)).map(c => c.text);
-assert.deepEqual(chipTexts('ninja'), ['+20%', '+15%'], 'ninja outfit chips');
-assert.deepEqual(chipTexts('sleepy'), ['-30%', '-5%', '-5%'], 'sleepy eyes chips (vision as percent of base 10)');
-assert.ok(INV.statChips(INV.getItem('stone_blade')).some(c => !c.good), 'stone blade move malus flagged bad');
+assert.deepEqual(chipTexts('ninja'), ['+20%'], 'ninja outfit carries exactly its movement profile');
+assert.deepEqual(chipTexts('sleepy'), ['-30%'], 'sleepy eyes carry only vision (as percent of base 10)');
+assert.deepEqual(chipTexts('miner'), ['+50%'], 'miner outfit carries only its mining profile');
+assert.deepEqual(chipTexts('ironperson'), ['+2'], 'iron outfit carries only crush resist');
+assert.deepEqual(INV.statChips(INV.getItem('stone_blade')).map(c=>c.label), ['Obrażenia'], 'melee weapon carries damage and nothing else');
+assert.deepEqual(chipTexts('triangle'), ['+1'], 'cape carries only its air jumps');
 assert.ok(INV.statChips(INV.getItem('bow_wood')).some(c => c.text.endsWith('/s')), 'bow shows fire rate');
 assert.equal((INV.weaponCategory(INV.getItem('electric_gun')) || {}).id, 'stream', 'electric gun maps to stream category');
 assert.ok(INV.statChips(INV.getItem('electric_gun')).some(c => c.label === 'Wiązka' && c.text.endsWith('/s')), 'electric gun shows beam damage');
@@ -198,24 +201,35 @@ INV.restore(questRewardSnap, { persist: false, silent: true });
 // --- power score: intuitive ordering within a kind ------------------------
 const s = id => INV.itemScore(INV.getItem(id));
 assert.ok(s('classic') < s('tattered'), 'capes: classic < tattered');
-assert.ok(s('tattered') < s('triangle'), 'capes: tattered < triangle');
+assert.ok(s('tattered') <= s('triangle'), 'capes: tattered <= triangle (same jump count, cosmetic variants)');
 assert.ok(s('triangle') < s('shadow'), 'capes: triangle < shadow');
 assert.ok(s('shadow') < s('royal'), 'capes: shadow < royal');
 assert.ok(s('royal') <= s('winged'), 'capes: royal <= winged');
 assert.ok(s('stick') < s('spear'), 'melee: stick < spear');
+assert.ok(s('spear') < s('stone_blade'), 'melee: spear < stone blade (pure damage ladder)');
 assert.ok(s('sleepy') < s('bright') && s('bright') < s('glow'), 'eyes ordered by quality');
+assert.ok(s('ironperson') > 0, 'crush resist counts toward the power score');
 
-// --- legacy dirty loot normalizes onto the ladder at ingest ---------------
+// --- legacy dirty loot: off-function stats strip, function stats normalize ---
 globalThis.MM.dynamicLoot = { weapons: [
   { id: 'w_dirty', kind: 'weapon', weaponType: 'melee', name: 'Test', attackDamage: 4, moveSpeedMult: 1.0437, jumpPowerMult: 1.137, tier: 'rare' },
   { id: 'w_electric', kind: 'weapon', weaponType: 'electric', name: 'Beam', fireDps:10, fireRange:8, energyCost:11, tier:'rare' }
+], outfits: [
+  { id: 'o_dirty', kind: 'outfit', name: 'Old Suit', mineSpeedMult: 1.35, moveSpeedMult: 0.9, jumpPowerMult: 1.1, visionRadius: 12, tier: 'rare' }
 ], charms: [
-  { id: 'battery_dynamic', kind: 'charm', name: 'Alien Battery', energyCapacityBonus:75, tier:'epic' }
+  { id: 'battery_dynamic', kind: 'charm', name: 'Alien Battery', energyCapacityBonus:75, visionRadius:14, tier:'epic' }
 ] };
 window.updateDynamicCustomization();
 const dirty = INV.getItem('w_dirty');
-assert.equal(dirty.moveSpeedMult, 1.05, '1.0437 snaps to +5%');
-assert.equal(dirty.jumpPowerMult, 1.15, '1.137 snaps to +15%');
+assert.equal(dirty.attackDamage, 4, 'melee loot keeps its damage');
+assert.equal(dirty.moveSpeedMult, undefined, 'melee loot sheds off-function move stat (one-shot save migration)');
+assert.equal(dirty.jumpPowerMult, undefined, 'melee loot sheds off-function jump stat');
+const dirtyOutfit = INV.getItem('o_dirty');
+assert.equal(dirtyOutfit.mineSpeedMult, 1.35, 'legacy multi-stat outfit keeps its strongest-priority profile stat');
+assert.equal(dirtyOutfit.moveSpeedMult, undefined, 'legacy outfit sheds the second profile stat');
+assert.equal(dirtyOutfit.jumpPowerMult, undefined, 'legacy outfit sheds the third profile stat');
+assert.equal(dirtyOutfit.visionRadius, undefined, 'outfits never carry vision');
+assert.equal(INV.getItem('battery_dynamic').visionRadius, undefined, 'charms never carry vision');
 assert.equal(INV.getItem('w_electric').energyCost, 11, 'electric loot keeps energyCost through sanitization');
 assert.equal(INV.getItem('battery_dynamic').energyCapacityBonus, 75, 'dynamic loot keeps energy capacity through sanitization');
 assert.equal(INV.isNew('battery_dynamic'), true, 'fresh dynamic loot is marked new');
@@ -298,13 +312,24 @@ INV.discard('w_dirty');
 assert.equal(INV.getItem('w_dirty'), null, 'discarded item gone');
 assert.equal(INV.isShortcut('w_dirty'), true, 'opt-out entry cleaned up with the item');
 
-// --- chest generation: every stat lands on the clean ladder ---------------
+// --- chest generation: function-pure stats on the clean ladder, tiers superior ---
 const RNG = seed => { let st = seed >>> 0; return () => { st = (st * 1664525 + 1013904223) >>> 0; return (st >>> 8) / 0xFFFFFF; }; };
 const onLadder = m => { const p = (m - 1) * 100; return Math.abs(p - Math.round(p)) < 1e-6 && Math.round(p) % 5 === 0; };
+const NUM_FIELDS = ['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','crushResistBonus'];
+const KIND_ONE_STAT = new Set(['cape','eyes','outfit','charm']);
 const sums = { common: 0, rare: 0, epic: 0 }, counts = { common: 0, rare: 0, epic: 0 };
 for (let i = 0; i < 2000; i++) {
   const tier = ['common', 'rare', 'epic'][i % 3];
   const item = chests.genItem(RNG(i * 7919 + 1), tier);
+  // Function purity: only the kind's job stats, and non-weapons carry exactly ONE
+  const allowed = INV.allowedStatsFor(item.kind, item.weaponType);
+  const present = NUM_FIELDS.filter(f => typeof item[f] === 'number');
+  for (const f of present) assert.ok(allowed.includes(f), tier + ' ' + item.kind + ' rolled off-function stat ' + f);
+  if (KIND_ONE_STAT.has(item.kind)) assert.equal(present.length, 1, tier + ' ' + item.kind + ' must carry exactly one stat, got ' + present.join(','));
+  if (item.weaponType === 'melee') assert.deepEqual(present, ['attackDamage'], 'melee loot is damage-only');
+  if (item.weaponType === 'bow') assert.deepEqual(present, ['attackDamage', 'fireCooldown'], 'bow loot is damage + rate');
+  if (item.weaponType === 'electric') assert.deepEqual(present, ['fireDps', 'fireRange', 'energyCost'], 'electric loot is beam + range + cost');
+  // Clean numbers
   for (const k of ['moveSpeedMult', 'jumpPowerMult', 'mineSpeedMult'])
     if (typeof item[k] === 'number') assert.ok(onLadder(item[k]), tier + ' ' + k + '=' + item[k] + ' off the 5% ladder');
   if (typeof item.fireRange === 'number') assert.equal(item.fireRange * 2, Math.round(item.fireRange * 2), 'fireRange in 0.5 steps');
@@ -312,6 +337,10 @@ for (let i = 0; i < 2000; i++) {
   if (item.weaponType === 'electric') assert.ok(item.energyCost > 0, 'electric loot always has an energyCost');
   if (typeof item.visionRadius === 'number') assert.equal(item.visionRadius, Math.round(item.visionRadius), 'vision in whole tiles');
   if (typeof item.attackDamage === 'number') assert.equal(item.attackDamage, Math.round(item.attackDamage), 'damage integer');
+  // Rarity = clearly superior magnitude of the SAME stat (unique boost included in bounds)
+  if (item.kind === 'cape'){ if (tier === 'common') assert.ok(item.airJumps <= 2, 'common cape jumps bounded'); if (tier === 'epic') assert.ok(item.airJumps >= 3, 'epic cape clearly superior'); }
+  if (item.kind === 'eyes'){ if (tier === 'common') assert.ok(item.visionRadius <= 14, 'common eyes bounded'); if (tier === 'epic') assert.ok(item.visionRadius >= 15, 'epic eyes clearly superior'); }
+  if (item.weaponType === 'melee'){ if (tier === 'common') assert.ok(item.attackDamage <= 6, 'common melee bounded'); if (tier === 'epic') assert.ok(item.attackDamage >= 8, 'epic melee clearly superior'); }
   sums[tier] += INV.itemScore(item); counts[tier]++;
 }
 assert.ok(sums.epic / counts.epic > sums.rare / counts.rare, 'epic loot averages stronger than rare');

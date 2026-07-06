@@ -123,6 +123,7 @@ try{
   const root=runtimeRoot();
   const MM=root.MM=root.MM||{};
   MM.npcSystem=npcRegistry;
+  MM.npcDialogueBubble=drawDialogueBubble; // shared renderer: story modules speak in the same voice
 }catch(e){}
 
 function validateQuestDefinition(def){
@@ -863,8 +864,21 @@ function createQuestNpc(def){
     const w=npcBodyW()/2, h=npcBodyH()/2;
     return (tileX+1)>(state.x-w) && tileX<(state.x+w) && (tileY+1)>(state.y-h) && tileY<(state.y+h);
   }
+  // Story modules can pull an NPC off-stage (the center guardian absorbs the
+  // mentor for the mirror fight). Hidden NPCs keep their position and quest
+  // state but neither render, speak, collide nor accept clicks.
+  function isHidden(){ return !!(state.data && state.data.hidden); }
+  function setHidden(v){
+    if(!state.data) state.data={};
+    const next=v?1:0;
+    if((state.data.hidden?1:0)===next) return false;
+    state.data.hidden=next;
+    if(next){ state.line=''; state.lineT=0; state.talkT=0; }
+    return true;
+  }
   // Click-to-talk: returns true (and speaks) when a non-duel NPC is clicked within reach.
   function interactAt(tileX,tileY,player){
+    if(isHidden()) return false;
     const step=currentStep();
     if(step && step.kind==='duel') return false;
     if(!bodyCoversTile(tileX,tileY)) return false;
@@ -1078,6 +1092,7 @@ function createQuestNpc(def){
     state.talkT=Math.max(0,(state.talkT||0)-dt);
     const worldGen=(ctx && ctx.worldGen) || MM.worldGen;
     ensurePlaced(player,getTile,worldGen);
+    if(isHidden()) return; // off-stage: keep position/state frozen until revealed
     updateQuest(dt,player,ctx,getTile,setTile);
     const step=currentStep();
     if(step && step.kind==='duel') updateDuel(dt,player,getTile,worldGen,ctx);
@@ -1089,6 +1104,7 @@ function createQuestNpc(def){
     else updateRoam(dt,player,getTile,setTile,worldGen);
   }
   function hitAt(tileX,tileY){
+    if(isHidden()) return false;
     const step=currentStep();
     if(!step || step.kind!=='duel' || !hasPosition() || state.hp<=0) return false;
     const wx=tileX+0.5, wy=tileY+0.5;
@@ -1162,7 +1178,7 @@ function createQuestNpc(def){
     drawActorBody(ctx,tile,state,{look,seed:lookSeed,now,maxHp});
   }
   function draw(ctx,tile,canDrawTile){
-    if(!ctx || !hasPosition()) return;
+    if(!ctx || !hasPosition() || isHidden()) return;
     const TILE_SIZE=tile||20;
     const tx=Math.floor(state.x), ty=Math.floor(state.y);
     if(typeof canDrawTile==='function' && !canDrawTile(tx,ty)) return;
@@ -1277,10 +1293,12 @@ function createQuestNpc(def){
     placeNearPlayer,
     placeNearWorldStart,
     hasPosition,
+    setHidden,
+    hidden:isHidden,
     questSteps:questDefinitions,
     phase:()=>state.phase,
     // Lightweight position accessor + nudge used by the registry's NPC-NPC separation.
-    body:()=>hasPosition()?{x:state.x,y:state.y,w:npcBodyW(),h:npcBodyH(),duel:(currentStep()&&currentStep().kind==='duel')}:null,
+    body:()=>(hasPosition() && !isHidden())?{x:state.x,y:state.y,w:npcBodyW(),h:npcBodyH(),duel:(currentStep()&&currentStep().kind==='duel')}:null,
     nudge:(dx)=>{ if(finite(state.x) && finite(dx)){ state.x+=dx; if(state.move) state.move.vx*=0.5; } },
     _debug:debug
   };

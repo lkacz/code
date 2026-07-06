@@ -28,76 +28,105 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   }catch(e){}
   function saveDynamicLoot(){ try{ if(MM.dynamicLoot) localStorage.setItem(DYN_KEY, JSON.stringify({version:DYN_VERSION, ...MM.dynamicLoot})); }catch(e){} }
 
-  // Multiplier bonuses roll DISCRETE clean percent steps (matching the 5%-ladder
-  // the inventory displays) — no more 1.0437x oddities; vision rolls whole tiles.
+  // Function-pure loot (contract shared with inventory.js KIND_STAT_PRIORITY):
+  // an item rolls ONLY its kind's job stats — capes jump, eyes see, outfits carry
+  // one work/movement profile, weapons their class numbers, charms one passive.
+  // Rarity buys BIGGER numbers of those same stats (ranges barely overlap so a
+  // rare/epic find is obviously superior), never extra unrelated stats. Percent
+  // values sit on the clean 5% ladder; vision in whole tiles, range half-tiles.
   const TIERS={
-    common:{weight:70, rolls:[1,1], attribBudget:[1,2], pctSteps:{move:[5],        jump:[5],        mine:[5,10,15]},  vision:[0,1], dmg:[1,2], flameDps:[4,6],  flameRange:[5,6],   uniqueChance:0.02},
-    rare:{weight:23, rolls:[1,2], attribBudget:[2,3], pctSteps:{move:[5,10],     jump:[5,10],     mine:[10,20,30]}, vision:[1,3], dmg:[2,4], flameDps:[6,9],  flameRange:[6,7.5], uniqueChance:0.07},
-    epic:{weight:7, rolls:[2,3], attribBudget:[3,4], pctSteps:{move:[10,15,20], jump:[10,15,20], mine:[20,30,50]}, vision:[2,5], dmg:[4,7], flameDps:[9,14], flameRange:[7,9],   uniqueChance:0.18}
+    common:{weight:70, rolls:[1,1], uniqueChance:0.02,
+      airJumps:1, vision:[11,12],
+      outfitPct:{mine:[10,15], move:[5,10],  jump:[5,10]},
+      charmPct:{mine:[5,10],  move:[5],     jump:[5]},
+      meleeDmg:[2,3],  bowDmg:[3,4],  bowCd:[0.55,0.6],      dps:[4,6],   range:[5,6],
+      energyCap:[15,20,25], crush:[1], eCost:[13,14]},
+    rare:{weight:23, rolls:[1,2], uniqueChance:0.07,
+      airJumps:2, vision:[13,14],
+      outfitPct:{mine:[25,30,35], move:[10,15], jump:[10,15]},
+      charmPct:{mine:[15,20], move:[10], jump:[10]},
+      meleeDmg:[4,6],  bowDmg:[5,7],  bowCd:[0.45,0.5],      dps:[7,10],  range:[6.5,7.5],
+      energyCap:[30,40,50], crush:[2], eCost:[10,12]},
+    epic:{weight:7, rolls:[2,3], uniqueChance:0.18,
+      airJumps:3, vision:[15,17],
+      outfitPct:{mine:[50,60,70], move:[20,25], jump:[20,25]},
+      charmPct:{mine:[25,30], move:[15,20], jump:[15,20]},
+      meleeDmg:[8,12], bowDmg:[9,13], bowCd:[0.3,0.35,0.4],  dps:[12,16], range:[8,9],
+      energyCap:[60,80,100], crush:[3,4], eCost:[8,9]}
   };
 
-  // Pool of base item kinds we can grant, each with base stat skeleton
-  const BASE_ITEMS={
-    cape:()=>({kind:'cape', airJumps:0}),
-    eyes:()=>({kind:'eyes', visionRadius:11}),
-    outfit:()=>({kind:'outfit'}),
-    weapon:()=>({kind:'weapon'}),
-    charm:()=>({kind:'charm'})
-  };
   // Procedural display names: "<base> <suffix>" (tier shown separately in the UI)
   const NAME_BASES={cape:'Peleryna', eyes:'Oczy', outfit:'Strój', weapon:'Ostrze', charm:'Talizman'};
   const WEAPON_NAME_BASES={melee:'Ostrze', bow:'Łuk', flame:'Miotacz', hose:'Sikawka', gas:'Emiter', electric:'Elektromiotacz'};
   const NAME_SUFFIXES=['wiatru','cienia','głębin','świtu','gór','burzy','lasu','żaru','echa','mrozu','otchłani','słońca'];
-
-  // Unique affixes add clean percent steps (additive, so totals stay on the ladder)
-  const UNIQUE_AFFIXES=[
-    {id:'wind_dancer', adds:{movePct:10,jumpPct:10}, tags:['speed']},
-    {id:'deep_vision', adds:{visionRadiusFlat:4}, tags:['vision']},
-    {id:'earth_breaker', adds:{minePct:35}, tags:['mining']},
-    {id:'sky_bound', adds:{airJumpsFlat:1,jumpPct:15}, tags:['jump']},
-    {id:'storm_edge', adds:{attackDamageFlat:3}, tags:['damage']}
-  ];
 
   function randInt(r,min,max){ return Math.floor(r()*(max-min+1))+min; }
   function randRange(r,min,max){ return min + (max-min)*r(); }
   function pick(r,arr){ return arr[randInt(r,0,arr.length-1)]; }
   // Add a clean percent step to a multiplier stat, additively: 1.05 + 10% = 1.15
   function addPct(item,key,pct){ item[key]=+(((item[key]||1)+pct/100).toFixed(2)); }
+  const PROFILE_KEYS={mine:'mineSpeedMult', move:'moveSpeedMult', jump:'jumpPowerMult'};
 
-  function genItem(r,tier){ const baseKeys=Object.keys(BASE_ITEMS); const baseKind=baseKeys[randInt(r,0,baseKeys.length-1)]; const item=BASE_ITEMS[baseKind](); item.id = baseKind+ '_' + Math.random().toString(36).slice(2,7); item.tier=tier; const tierDef=TIERS[tier];
-    // allocate attribute budget -> number of different stats to enhance
-    const attribCount=randInt(r,tierDef.attribBudget[0], tierDef.attribBudget[1]);
-    const statsPool=['move','jump','mine','vision','air','dmg'];
-    const chosen=[]; while(chosen.length<attribCount && statsPool.length){ const idx=randInt(r,0,statsPool.length-1); chosen.push(statsPool.splice(idx,1)[0]); }
-    chosen.forEach(stat=>{
-      if(stat==='move'){ addPct(item,'moveSpeedMult', pick(r,tierDef.pctSteps.move)); }
-      else if(stat==='jump'){ addPct(item,'jumpPowerMult', pick(r,tierDef.pctSteps.jump)); }
-      else if(stat==='mine'){ addPct(item,'mineSpeedMult', pick(r,tierDef.pctSteps.mine)); }
-      else if(stat==='vision'){ item.visionRadius = (item.visionRadius||10) + randInt(r, tierDef.vision[0], tierDef.vision[1]); }
-      else if(stat==='air'){ item.airJumps = (item.airJumps||0) + 1; }
-      else if(stat==='dmg'){ item.attackDamage = (item.attackDamage||0) + Math.max(1, Math.round(randInt(r,tierDef.dmg[0],tierDef.dmg[1])/2)); }
-    });
-    // Weapons roll a class: melee strike, bow (arrows), or a stream weapon
-    // (flame/hose/gas terrain streams, electric energy beam)
-    if(baseKind==='weapon'){
+  // Unique find (rarer the higher the tier chance): the item's PRIMARY stat gets a
+  // further visible boost — a superior version of its own function, nothing new.
+  const UNIQUE_NAMES={cape:'sky_bound', eyes:'deep_vision', outfit:'earth_breaker', charm:'wind_dancer', weapon:'storm_edge'};
+  function applyUniqueBoost(item){
+    item.unique=UNIQUE_NAMES[item.kind]||'storm_edge';
+    if(item.kind==='cape'){ item.airJumps=(item.airJumps||0)+1; return; }
+    if(item.kind==='eyes'){ item.visionRadius=(item.visionRadius||10)+2; return; }
+    if(item.kind==='outfit' || item.kind==='charm'){
+      if(typeof item.crushResistBonus==='number'){ item.crushResistBonus+=1; return; }
+      if(typeof item.energyCapacityBonus==='number'){ item.energyCapacityBonus+=25; return; }
+      for(const k of ['mineSpeedMult','moveSpeedMult','jumpPowerMult']){
+        if(typeof item[k]==='number'){ addPct(item,k,10); return; }
+      }
+      return;
+    }
+    if(item.weaponType==='melee' || item.weaponType==='bow'){ item.attackDamage=(item.attackDamage||0)+3; return; }
+    item.fireDps=(item.fireDps||0)+3;
+    item.fireRange=Math.min(10,(item.fireRange||5)+1);
+  }
+
+  function genItem(r,tier){
+    const kinds=['cape','eyes','outfit','weapon','charm'];
+    const kind=kinds[randInt(r,0,kinds.length-1)];
+    const item={kind, id:kind+'_'+Math.random().toString(36).slice(2,7), tier};
+    const td=TIERS[tier];
+    if(kind==='cape'){ item.airJumps=td.airJumps; }
+    else if(kind==='eyes'){ item.visionRadius=randInt(r, td.vision[0], td.vision[1]); }
+    else if(kind==='outfit'){
+      const pool= tier==='common'? ['mine','move','jump'] : ['mine','move','jump','crush'];
+      const p=pick(r,pool);
+      if(p==='crush') item.crushResistBonus=pick(r, td.crush);
+      else addPct(item, PROFILE_KEYS[p], pick(r, td.outfitPct[p]));
+    }
+    else if(kind==='charm'){
+      const pool= tier==='common'? ['mine','move','jump','energy'] : ['mine','move','jump','energy','crush'];
+      const p=pick(r,pool);
+      if(p==='energy') item.energyCapacityBonus=pick(r, td.energyCap);
+      else if(p==='crush') item.crushResistBonus=pick(r, td.crush);
+      else addPct(item, PROFILE_KEYS[p], pick(r, td.charmPct[p]));
+    }
+    else {
+      // Weapon class roll: melee strike, bow (arrows), or a stream weapon
+      // (flame/hose/gas terrain streams, electric energy beam) — class numbers only.
       const wRoll=r();
-      if(wRoll<0.40){ item.weaponType='melee'; item.attackDamage=(item.attackDamage||0) + randInt(r, tierDef.dmg[0], tierDef.dmg[1]); }
-      else if(wRoll<0.65){ item.weaponType='bow'; item.attackDamage=(item.attackDamage||0) + randInt(r, tierDef.dmg[0], tierDef.dmg[1]) + 1; item.fireCooldown=Math.max(0.3, +(0.6 - 0.05*randInt(r,0,3)).toFixed(2)); }
+      if(wRoll<0.40){ item.weaponType='melee'; item.attackDamage=randInt(r, td.meleeDmg[0], td.meleeDmg[1]); }
+      else if(wRoll<0.65){ item.weaponType='bow'; item.attackDamage=randInt(r, td.bowDmg[0], td.bowDmg[1]); item.fireCooldown=pick(r, td.bowCd); }
       else {
         item.weaponType= wRoll<0.78? 'flame' : wRoll<0.87? 'hose' : wRoll<0.95? 'gas' : 'electric';
-        const dps=randInt(r, tierDef.flameDps[0], tierDef.flameDps[1]);
+        const dps=randInt(r, td.dps[0], td.dps[1]);
         item.fireDps= item.weaponType==='hose'? Math.max(1,Math.round(dps/2)) : item.weaponType==='electric'? dps+2 : dps;
-        item.fireRange=Math.round(randRange(r, tierDef.flameRange[0], tierDef.flameRange[1])*2)/2; // 0.5-tile steps
+        item.fireRange=Math.round(randRange(r, td.range[0], td.range[1])*2)/2; // 0.5-tile steps
         if(item.weaponType==='electric'){
           item.fireRange=Math.min(10, item.fireRange+1);
-          item.energyCost=randInt(r, tier==='epic'?9:10, tier==='common'?14:12);
+          item.energyCost=randInt(r, td.eCost[0], td.eCost[1]);
         }
       }
     }
-    const nameBase = baseKind==='weapon'? (WEAPON_NAME_BASES[item.weaponType]||'Ostrze') : (NAME_BASES[baseKind]||'Przedmiot');
+    const nameBase = kind==='weapon'? (WEAPON_NAME_BASES[item.weaponType]||'Ostrze') : (NAME_BASES[kind]||'Przedmiot');
     item.name = nameBase + ' ' + NAME_SUFFIXES[randInt(r,0,NAME_SUFFIXES.length-1)];
-    // unique affix chance
-    if(r()<tierDef.uniqueChance){ const aff=UNIQUE_AFFIXES[randInt(r,0,UNIQUE_AFFIXES.length-1)]; item.unique=aff.id; if(aff.adds.movePct) addPct(item,'moveSpeedMult',aff.adds.movePct); if(aff.adds.jumpPct) addPct(item,'jumpPowerMult',aff.adds.jumpPct); if(aff.adds.minePct) addPct(item,'mineSpeedMult',aff.adds.minePct); if(aff.adds.visionRadiusFlat) item.visionRadius=(item.visionRadius||10)+aff.adds.visionRadiusFlat; if(aff.adds.airJumpsFlat) item.airJumps=(item.airJumps||0)+aff.adds.airJumpsFlat; if(aff.adds.attackDamageFlat) item.attackDamage=(item.attackDamage||0)+aff.adds.attackDamageFlat; }
+    if(r()<td.uniqueChance) applyUniqueBoost(item);
     return item;
   }
 

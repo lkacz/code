@@ -120,7 +120,8 @@ generatedNpcs.reset();
 tiles.clear();
 const legacyCandidate = generatedNpcs._candidateForCell(candidate.cell, worldGen);
 const legacyCells = generatedNpcs._houseCells(legacyCandidate, getTile, worldGen).cells;
-legacyCells.forEach(c => setTile(c.x, c.y, c.role === 'door' ? T.AIR : c.t));
+// Legacy saves predate the construction-background layer, so only foreground cells exist.
+legacyCells.forEach(c => { if(c.layer === 'bg') return; setTile(c.x, c.y, c.role === 'door' ? T.AIR : c.t); });
 generatedNpcs.restore({v:2, seed:worldGen.worldSeed, locals:[{
   id:legacyCandidate.id,
   houseBuilt:true,

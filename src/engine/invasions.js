@@ -243,29 +243,49 @@ const invasions = (function(){
     maxY:WORLD_BOTTOM
   };
   const nav = createNav(navWorld);
+  const navByKind = new Map();
+  function navForProfile(profile){
+    const key = String((profile && profile.kind) || 'aliens');
+    let n = navByKind.get(key);
+    if(!n){
+      n = createNav(navWorld, profile && profile.moveCaps);
+      navByKind.set(key,n);
+    }
+    return n;
+  }
   function ensureBrain(team){
     let brain = brains.get(team.id);
     if(!brain){
-      brain = createSquadBrain(profileFor(team), nav);
+      const profile = profileFor(team);
+      brain = createSquadBrain(profile, navForProfile(profile));
       brains.set(team.id, brain);
     }
     return brain;
   }
 
   registerTeamType('aliens', {
+    moveCaps:{jumpUp:2,highJumpUp:4,jumpSpan:4,maxFall:9,maxNodes:760},
     baseSpeed:2.35,
     jumpVel:9.6,
+    jumpKick:5.2,
+    highJumpMult:1.5,
     fireRange:14,
     meleeRange:0.72,
     fleeHpFrac:0.32,
     fleeDist:15,
     siegeAfter:3.5,
     breachRange:12,
-    buildCap:8
+    routeBreachAfter:1.05,
+    routeBreachRange:18,
+    buildCap:8,
+    rampBudget:12
   });
   registerTeamType('molekin', {
+    moveCaps:{jumpUp:2,highJumpUp:4,jumpSpan:3,maxFall:10,maxNodes:820},
     baseSpeed:2.08,
     jumpVel:8.25,
+    jumpKick:4.6,
+    highJumpMult:1.75,
     fireRange:10.5,
     meleeRange:0.84,
     fleeHpFrac:0.30,
@@ -277,7 +297,10 @@ const invasions = (function(){
     repairRate:0.24,
     siegeAfter:2.45,
     breachRange:9.5,
+    routeBreachAfter:0.42,
+    routeBreachRange:16,
     buildCap:5,
+    rampBudget:12,
     roles:{
       rusher:{weight:3.2,minRange:0.9,maxRange:2.8,speedMult:1.06,fireCd:1.02,damageMult:1.00,aim:0.72},
       tank:{weight:1.2,minRange:0.7,maxRange:2.4,speedMult:0.76,fireCd:1.25,damageMult:1.18,aim:0.64,stoic:true,guard:true},
@@ -1158,8 +1181,8 @@ const invasions = (function(){
     a.vy = Math.min(a.vy || 0, -1.4);
     a.onGround = false;
     if(team && now > (team.unstuckSpeechAt || 0)){
-      team.unstuckSpeechAt = now + 9000;
-      triggerTeamSpeech(team,'trapped',{speaker:a,now,force:true,cooldown:1400,keyCooldown:6800});
+      team.unstuckSpeechAt = now + 18000;
+      triggerTeamSpeech(team,'trapped',{speaker:a,now,force:true,cooldown:6200,keyCooldown:18000});
     }
     return true;
   }
@@ -1167,14 +1190,9 @@ const invasions = (function(){
     if(alienCollidesAt(a,a.x,a.y,getTile)) return;
     const stepDt = Math.max(0, Math.min(0.05, dt || 0));
     a.vy = Math.min(18, (a.vy || 0) + 22 * stepDt);
-    const ox = a.x;
-    const nx = a.x + (a.vx || 0) * stepDt;
-    if(!alienCollidesAt(a,nx,a.y,getTile)){
-      a.x = nx;
-    } else {
-      a.x = ox;
-      a.vx *= -0.10;
-    }
+    // Vertical before horizontal: a jump taken flush against a low step must
+    // rise past its lip before the x-probe runs, or the wall contact damps the
+    // takeoff impulse to nothing and the unit pogo-sticks in place.
     const oy = a.y;
     const ny = a.y + (a.vy || 0) * stepDt;
     if(!alienCollidesAt(a,a.x,ny,getTile)){
@@ -1194,6 +1212,16 @@ const invasions = (function(){
         a.y = oy;
       }
       a.vy = 0;
+    }
+    const ox = a.x;
+    const nx = a.x + (a.vx || 0) * stepDt;
+    if(!alienCollidesAt(a,nx,a.y,getTile)){
+      a.x = nx;
+    } else {
+      a.x = ox;
+      // keep pressing while rising so a jump flush against a ledge slides over
+      // its lip once the body clears it; damp only on the ground / falling
+      if(a.onGround || (a.vy || 0) >= 0) a.vx *= -0.10;
     }
     if(!inWorldY(a.y,1)){ a.hp = 0; a.dead = true; }
   }
@@ -1315,10 +1343,7 @@ const invasions = (function(){
     target.healFlashUntil = now + 180;
     healer.lastHealAt = now;
     pushLaser(healer.x,healer.y-0.70,target.x,target.y-0.58,true,false,false,isMolekinTeam(team) ? 'mole_heal' : 'heal',0);
-    triggerTeamSpeech(team,'support',{speaker:healer,now,force:true,cooldown:1500,keyCooldown:4200});
-    if(target !== healer){
-      triggerTeamSpeech(team,'healed',{speaker:target,now:now+1,force:true,cooldown:1500,keyCooldown:4200});
-    }
+    triggerTeamSpeech(team,'support',{speaker:healer,now,cooldown:7800,keyCooldown:22000});
     return true;
   }
   function repairAlienAtLander(team,a,amount){
@@ -1337,8 +1362,8 @@ const invasions = (function(){
       pushLaser(l.x,l.y+0.35,a.x,a.y-0.58,true,false,false,'heal',0);
     }
     if(now > (team.landerRepairSpeechAt || 0)){
-      team.landerRepairSpeechAt = now + 8000;
-      triggerTeamSpeech(team,'repair',{speaker:a,now,force:true,cooldown:1500,keyCooldown:5200});
+      team.landerRepairSpeechAt = now + 22000;
+      triggerTeamSpeech(team,'repair',{speaker:a,now,cooldown:8200,keyCooldown:24000});
     }
     return true;
   }
@@ -1358,8 +1383,8 @@ const invasions = (function(){
       pushLaser(b.x,b.targetY-0.15,a.x,a.y-0.58,true,false,false,'mole_heal',0);
     }
     if(now > (team.landerRepairSpeechAt || 0)){
-      team.landerRepairSpeechAt = now + 8000;
-      triggerTeamSpeech(team,'repair',{speaker:a,now,force:true,cooldown:1500,keyCooldown:5200});
+      team.landerRepairSpeechAt = now + 22000;
+      triggerTeamSpeech(team,'repair',{speaker:a,now,cooldown:8200,keyCooldown:24000});
     }
     return true;
   }
@@ -1920,6 +1945,27 @@ const invasions = (function(){
     build:['Wentyl gotowy.', 'Cieplo rosnie.', 'Kamien oddycha.']
   };
   const SPEECH_MEMORY_LIMIT = 9;
+  const SPEECH_MAX_CHARS = 64;
+  const SPEECH_GLOBAL_COOLDOWN = 5600;
+  const SPEECH_KEY_COOLDOWN = 18000;
+  const SPEECH_FORCE_COOLDOWN = 4200;
+  const SPEECH_FORCE_KEY_COOLDOWN = 11000;
+  function compactSpeechText(text){
+    let line = String(text || '').replace(/\s+/g,' ').trim();
+    if(!line) return '';
+    line = line
+      .replace(/\bHero-Prostokata\b/g,'Prostokata')
+      .replace(/\bHero-Prostokat\b/g,'Prostokat')
+      .replace(/\bswieta geometri[ae]\b/gi,'geometrie')
+      .replace(/\bWschodni Straznik\b/g,'Straznik Wschodu')
+      .replace(/\bOgnisty Guardian\b/g,'Guardian ognia');
+    if(line.length <= SPEECH_MAX_CHARS) return line;
+    const sentence = line.match(/^(.{20,}?[.!?])\s+/);
+    if(sentence && sentence[1].length <= SPEECH_MAX_CHARS) return sentence[1];
+    let cut = line.lastIndexOf(' ', SPEECH_MAX_CHARS - 1);
+    if(cut < 32) cut = SPEECH_MAX_CHARS - 1;
+    return line.slice(0,cut).replace(/[\s,;:.-]+$/,'') + '.';
+  }
   function speechTableFor(team){
     return isMolekinTeam(team) ? MOLEKIN_SPEECH : ALIEN_SPEECH;
   }
@@ -1930,11 +1976,11 @@ const invasions = (function(){
     return isMolekinTeam(team) ? MOLEKIN_ECHO_SPEECH : ALIEN_ECHO_SPEECH;
   }
   function speechLinesFor(table,key,team,opts){
-    let lines = Array.isArray(table && table[key]) ? table[key].map(t=>String(t || '').trim()).filter(Boolean) : [];
+    let lines = Array.isArray(table && table[key]) ? table[key].map(compactSpeechText).filter(Boolean) : [];
     if(key === 'lore'){
       const kind = isMolekinTeam(team) ? 'molekin' : 'alien';
       const rarity = opts && opts.rare ? 'rare' : 'base';
-      lines = lines.concat(storyInvasionLinesForProgress(kind,rarity,root));
+      lines = lines.concat(storyInvasionLinesForProgress(kind,rarity,root).map(compactSpeechText).filter(Boolean));
     }
     const seen = new Set();
     lines = lines.filter(line=>{
@@ -1969,7 +2015,7 @@ const invasions = (function(){
     const rare = speechLinesFor(rareSpeechTableFor(team),key,team,{rare:true});
     let lines = base.length ? base.slice() : fallback;
     const count = (team && team.speechEventCounts && team.speechEventCounts[key]) || 0;
-    const rareChance = opts.rare ? 1 : Math.min(0.34, 0.08 + count * 0.025 + (opts.force ? 0.04 : 0));
+    const rareChance = opts.rare ? 1 : Math.min(0.10, 0.015 + count * 0.006 + (opts.force ? 0.01 : 0));
     if(rare.length && Math.random() < rareChance) lines = rare.concat(lines);
     return chooseNovelSpeechLine(lines,team);
   }
@@ -2029,8 +2075,8 @@ const invasions = (function(){
     opts = opts || {};
     if(!a || !text) return '';
     if(!opts.override && a.speechText && now < (a.speechUntil || 0)) return '';
-    a.speechText = String(text).slice(0,96);
-    a.speechUntil = now + clamp(1900 + a.speechText.length * 42,2200,5200);
+    a.speechText = compactSpeechText(text);
+    a.speechUntil = now + clamp(1050 + a.speechText.length * 18,1300,2700);
     a._speechLayout = null;
     return a.speechText;
   }
@@ -2048,7 +2094,7 @@ const invasions = (function(){
     if(!team || !lines.length || !speaker) return '';
     if(now < (team.nextEchoSpeechAt || 0)) return '';
     const count = (team.speechEventCounts && team.speechEventCounts[key]) || 0;
-    const chance = opts && opts.echo ? 1 : Math.min(0.24, 0.06 + count * 0.018 + (opts && opts.force ? 0.04 : 0));
+    const chance = opts && opts.echo ? 1 : Math.min(0.07, 0.012 + count * 0.006 + (opts && opts.force ? 0.01 : 0));
     if(Math.random() >= chance) return '';
     const echoSpeaker = pickReactionSpeaker(team,{avoid:speaker,x:opts && opts.x,y:opts && opts.y});
     if(!echoSpeaker) return '';
@@ -2056,7 +2102,7 @@ const invasions = (function(){
     const said = setAlienSpeech(echoSpeaker,line,now,{override:false});
     if(!said) return '';
     rememberSpeechLine(team,said,key+':echo');
-    team.nextEchoSpeechAt = now + 7200 + Math.floor(Math.random() * 2600);
+    team.nextEchoSpeechAt = now + 22000 + Math.floor(Math.random() * 8000);
     return said;
   }
   function triggerTeamSpeech(team,key,opts){
@@ -2066,13 +2112,15 @@ const invasions = (function(){
     const now = Number.isFinite(opts.now) ? opts.now : nowMs();
     ensureReactionState(team);
     const force = !!opts.force;
-    const cooldown = Number.isFinite(opts.cooldown) ? opts.cooldown : 2300;
-    const keyCooldown = Number.isFinite(opts.keyCooldown) ? opts.keyCooldown : 6500;
+    const requestedCooldown = Number.isFinite(opts.cooldown) ? opts.cooldown : SPEECH_GLOBAL_COOLDOWN;
+    const requestedKeyCooldown = Number.isFinite(opts.keyCooldown) ? opts.keyCooldown : SPEECH_KEY_COOLDOWN;
+    const cooldown = Math.max(requestedCooldown, force ? SPEECH_FORCE_COOLDOWN : SPEECH_GLOBAL_COOLDOWN);
+    const keyCooldown = Math.max(requestedKeyCooldown, force ? SPEECH_FORCE_KEY_COOLDOWN : SPEECH_KEY_COOLDOWN);
     if(!force && now < (team.nextReactionAt || 0)) return '';
     if(!force && now < (team.reactionCooldowns[key] || 0)) return '';
     const speaker = (opts.speaker && !opts.speaker.dead && opts.speaker.hp > 0) ? opts.speaker : pickReactionSpeaker(team,opts);
     if(!speaker) return '';
-    const said = setAlienSpeech(speaker,opts.text || pickLine(key,team,Object.assign({},opts,{speaker})),now,{override:opts.override !== false});
+    const said = setAlienSpeech(speaker,opts.text || pickLine(key,team,Object.assign({},opts,{speaker})),now,{override:opts.override === true});
     if(!said) return '';
     rememberSpeechLine(team,said,key);
     speaker.speechCue = '';
@@ -2105,9 +2153,9 @@ const invasions = (function(){
         x,y,
         force:!!detail.force,
         preferRole:key === 'heroHeal' ? 'healer' : (key === 'heroLowHp' ? 'sniper' : ''),
-        cooldown:key.indexOf('weapon') === 0 ? 1900 : 2300,
-        keyCooldown:key.indexOf('weapon') === 0 ? 7600 : 6200,
-        override:detail.override !== false
+        cooldown:key.indexOf('weapon') === 0 ? 6800 : 7600,
+        keyCooldown:key.indexOf('weapon') === 0 ? 24000 : 22000,
+        override:detail.override === true
       });
       if(said){ spoken++; lines.push(said); }
     }
@@ -2127,14 +2175,14 @@ const invasions = (function(){
       if(team.heroHealthBand === band) continue;
       team.heroHealthBand = band;
       if(band === 'mid') continue;
-      if(now < (team.speechStartAt || now) + 3600) continue;
+      if(now < (team.speechStartAt || now) + 10000) continue;
       triggerTeamSpeech(team,band === 'low' ? 'heroLowHp' : 'heroHighHp',{
         x:player.x,
         y:player.y,
         now,
         preferRole:band === 'low' ? 'sniper' : '',
-        cooldown:2600,
-        keyCooldown:17000,
+        cooldown:9000,
+        keyCooldown:32000,
         override:false
       });
     }
@@ -2150,6 +2198,10 @@ const invasions = (function(){
     const px = player && Number.isFinite(player.x) ? player.x : 0;
     const py = player && Number.isFinite(player.y) ? player.y : 0;
     return Math.hypot((hit.tx+0.5)-px,(hit.ty+0.5)-py) <= (Number.isFinite(range) ? range : 7.5);
+  }
+  function isAimedBreachHit(hit,aimX,aimY){
+    return !!(hit && hit.blocked && Number.isFinite(aimX) && Number.isFinite(aimY) &&
+      Math.hypot((hit.tx+0.5)-aimX,(hit.ty+0.5)-aimY) <= 1.65);
   }
   function fireAlienLaser(a,team,player,getTile,setTile,ctx,opts){
     opts = opts || {};
@@ -2181,7 +2233,8 @@ const invasions = (function(){
       return hit;
     }
     const breakRange = opts.breach ? profile.breachRange : 7.5;
-    if(shouldBreakBlockedTile(hit,player,breakRange)){
+    if((tileAim && opts.breach && isAimedBreachHit(hit,aimX,aimY) && isAttackableStructureTile(hit.tile)) ||
+       shouldBreakBlockedTile(hit,player,breakRange)){
       const damaged = damageStructureTile(hit.tx,hit.ty,(3.6 + Math.min(4.4, threat * 0.20)) * dmgMult,getTile,setTile,ctx);
       if(damaged){
         triggerTeamSpeech(team,'breach',{speaker:a,x:hit.tx+0.5,y:hit.ty+0.5,cooldown:1900,keyCooldown:6200,override:false});
@@ -2238,7 +2291,8 @@ const invasions = (function(){
       return hit;
     }
     const breakRange = opts.breach ? profile.breachRange : 6.5;
-    if(shouldBreakBlockedTileForTeam(team,hit,player,breakRange)){
+    if((tileAim && opts.breach && isAimedBreachHit(hit,aimX,aimY) && isBreachableByTeam(team,hit.tile)) ||
+       shouldBreakBlockedTileForTeam(team,hit,player,breakRange)){
       const damaged = damageTeamTile(team,hit.tx,hit.ty,(5.6 + Math.min(6.4, threat * 0.28)) * dmgMult,getTile,setTile,ctx);
       if(damaged){
         if(Math.random() < 0.33) tryPlaceMoleHazard(team,hit.tx,hit.ty-1,player,getTile,setTile,ctx,heavy);
@@ -2298,17 +2352,50 @@ const invasions = (function(){
     markHostSave(ctx);
     return true;
   }
+  // Solid climbing scaffold both teams can fabricate when a route needs a ramp:
+  // aliens extrude biomass, molekin pack burrow earth. Separate budget from the
+  // engineer barricade cap so combat cover is never starved by climbing.
+  function canPlaceRampAt(tx,ty,player,team,getTile){
+    const t = readTile(getTile,tx,ty);
+    if(!isReplaceableNaturalOpenTile(t,false) || t === T.WATER) return false;
+    const px = player && Number.isFinite(player.x) ? player.x : 0;
+    const py = player && Number.isFinite(player.y) ? player.y : 0;
+    if(Math.hypot((tx+0.5)-px,(ty+0.5)-py) < 1.8) return false;
+    for(const other of (team && team.aliens) || []){
+      if(!other || other.dead || other.hp <= 0) continue;
+      // wide enough to cover the builder's own hitbox: fabricating a block
+      // into a body embeds and freezes the unit
+      if(Math.abs(other.x-(tx+0.5)) < 0.82 && other.y > ty - 0.1 && other.y < ty + 1.9) return false;
+    }
+    return true;
+  }
+  function placeRampTile(team,tx,ty,getTile,setTile,ctx){
+    const profile = profileFor(team);
+    if(!Array.isArray(team.builtTiles)) team.builtTiles = [];
+    if((team.rampTiles|0) >= (profile.rampBudget||0)) return false;
+    const tile = isMolekinTeam(team) ? T.DIRT : T.ALIEN_BIOMASS;
+    const old = readTile(getTile,tx,ty);
+    if(!writeTile(setTile,tx,ty,tile)) return false;
+    wakeTileChanged(ctx,tx,ty,old,tile);
+    team.builtTiles.push({x:floor(tx),y:floor(ty),tile,ramp:true});
+    team.rampTiles = (team.rampTiles|0) + 1;
+    burst(tx+0.5,ty+0.5,isMolekinTeam(team) ? 'rare' : 'common');
+    markHostSave(ctx);
+    return true;
+  }
   function cleanupBuiltTiles(team,getTile,setTile,ctx){
     if(!team || !Array.isArray(team.builtTiles) || !team.builtTiles.length) return;
     for(const bt of team.builtTiles){
       const t = readTile(getTile,bt.x,bt.y);
       const ownedMoleVent = isMolekinTeam(team) && (t === T.HOT_AIR || t === T.FUEL_GAS || t === T.STEAM);
       const ownedAlienWall = !isMolekinTeam(team) && t === T.ALIEN_BIOMASS;
-      if((ownedAlienWall || ownedMoleVent) && writeTile(setTile,bt.x,bt.y,T.AIR)){
+      const ownedRamp = bt.ramp && bt.tile != null && t === bt.tile;
+      if((ownedAlienWall || ownedMoleVent || ownedRamp) && writeTile(setTile,bt.x,bt.y,T.AIR)){
         wakeTileChanged(ctx,bt.x,bt.y,t,T.AIR);
       }
     }
     team.builtTiles.length = 0;
+    team.rampTiles = 0;
   }
   function teamHooks(team,player,getTile,setTile,ctx){
     return {
@@ -2328,6 +2415,14 @@ const invasions = (function(){
       },
       isBreachableTile:(tx,ty)=>isBreachableByTeam(team,readTile(getTile,tx,ty)),
       canBuildAt:(tx,ty)=>isMolekinTeam(team) ? canPlaceMoleVentAt(tx,ty,player,team,getTile) : canPlaceBarricadeAt(tx,ty,player,team,getTile),
+      canBuildRampAt:(tx,ty)=>canPlaceRampAt(tx,ty,player,team,getTile),
+      buildRamp:(a,tx,ty)=>{
+        const built = placeRampTile(team,tx,ty,getTile,setTile,ctx);
+        if(built){
+          triggerTeamSpeech(team,'build',{speaker:a,x:tx+0.5,y:ty+0.5,cooldown:2600,keyCooldown:9000,override:false});
+        }
+        return built;
+      },
       build:(a,tx,ty)=>{
         const built = isMolekinTeam(team) ? placeMoleVentTile(team,tx,ty,getTile,setTile,ctx) : placeBarricadeTile(team,tx,ty,getTile,setTile,ctx);
         if(built){
@@ -2364,16 +2459,36 @@ const invasions = (function(){
     }
     const speed = (profile.baseSpeed + Math.min(1.4, threat * 0.055) + grade * 0.08) * (Number(a.speedMult) || 1) * (intent ? (intent.speedMult || 1) : 1);
     const desired = intent ? intent.moveX * speed : 0;
-    a.vx += (desired - (a.vx || 0)) * Math.min(1, dt * 5.8);
+    // Weak air control: jump-kick impulses must carry across gaps instead of
+    // decaying back to walk speed mid-flight.
+    a.vx += (desired - (a.vx || 0)) * Math.min(1, dt * (a.onGround ? 5.8 : 1.5));
     if(intent && intent.jump && a.onGround){
-      a.vy = -profile.jumpVel * (Number(a.jumpMult) || 1);
+      const boost = Math.max(1, Math.min(1.85, Number(intent.jumpBoost) || 1));
+      a.vy = -profile.jumpVel * boost * (Number(a.jumpMult) || 1);
+      if(intent.moveX){
+        // every takeoff needs a matched forward impulse: wall contact damps vx
+        // to ~0 and weak air control cannot rebuild it, so un-kicked jumps
+        // would rise and land in place instead of mounting the ledge
+        const kick = intent.jumpKick ? (profile.jumpKick || speed * 1.6) : speed * 0.85;
+        a.vx = intent.moveX * Math.max(Math.abs(a.vx || 0), kick);
+      }
       a.onGround = false;
       intent.jump = false;
+      intent.jumpBoost = 1;
+      intent.jumpKick = false;
     } else if(a.onGround && intent && intent.moveX !== 0){
       const aheadX = a.x + intent.moveX * 0.42;
       if(alienCollidesAt(a,aheadX,a.y,getTile)){
-        a.vy = -profile.jumpVel * 0.85 * (Number(a.jumpMult) || 1);
-        a.onGround = false;
+        // auto-hop; a wall that still blocks at head height gets a full jump,
+        // and one the jump cannot top at all gets none — bouncing endlessly at
+        // a cliff base is the brain's cue to dig, ramp or relocate instead
+        const tall = alienCollidesAt(a,aheadX,a.y-1.05,getTile);
+        const hopeless = tall && alienCollidesAt(a,aheadX,a.y-2.05,getTile);
+        if(!hopeless){
+          a.vy = -profile.jumpVel * (tall ? 1.0 : 0.85) * (Number(a.jumpMult) || 1);
+          a.vx = intent.moveX * Math.max(Math.abs(a.vx || 0), speed * 0.7);
+          a.onGround = false;
+        }
       }
     }
     a.attackCd = Math.max(0, (a.attackCd || 0) - dt);
@@ -2459,7 +2574,12 @@ const invasions = (function(){
   }
   function updateTeams(dt,player,getTile,setTile,ctx){
     navWorld.getTileFn = getTile;
-    beginAIFrame();
+    let liveForNav = 0;
+    for(const team of teams){
+      if(!team || team.state === 'defeated' || team.state === 'retreat') continue;
+      liveForNav += ((team.aliens && team.aliens.length) || team.alienCount || 0);
+    }
+    beginAIFrame(Math.max(4, Math.min(12, 2 + Math.ceil(liveForNav / 3))));
     const allUnits = [];
     const now = nowMs();
     for(const team of teams){
@@ -4071,7 +4191,7 @@ const invasions = (function(){
     reset,
     metrics,
     state:()=>({teams:teams.map(serializeTeam), caches:caches.map(c=>deepCopy(c)), lastNightDay, seq}),
-    _debug:{teams,caches,lasers,tileDamage,brains,nav,traceLine,damageStructureTile,damageTeamTile,isMoleDiggableTile,fireMolekinAttack,unstuckAlien,alienEscapeCells,findCacheSpot,stealResources,stealGear,canPlaceBarricadeAt,placeBarricadeTile,canPlaceMoleVentAt,placeMoleVentTile,cleanupBuiltTiles,profileFor,playerLevelFor,threatLevelFor,gradeForThreat,teamCountForDay,alienCountForDay,molekinCountForDay,xpRewardForTeam,rewardProfileForTeam,westGuardianDefeated,eastGuardianDefeated,spawnRuinCommander,forceMolekinInvasion,forceAlienSpeech,triggerTeamSpeech,updateAlienSpeech,storyInvasionLinesForProgress,speechLines:ALIEN_SPEECH,moleSpeechLines:MOLEKIN_SPEECH,rareSpeechLines:ALIEN_RARE_SPEECH,moleRareSpeechLines:MOLEKIN_RARE_SPEECH,echoSpeechLines:ALIEN_ECHO_SPEECH,moleEchoSpeechLines:MOLEKIN_ECHO_SPEECH}
+    _debug:{teams,caches,lasers,tileDamage,brains,nav,traceLine,damageStructureTile,damageTeamTile,isMoleDiggableTile,fireMolekinAttack,unstuckAlien,alienEscapeCells,findCacheSpot,stealResources,stealGear,canPlaceBarricadeAt,placeBarricadeTile,canPlaceMoleVentAt,placeMoleVentTile,cleanupBuiltTiles,profileFor,playerLevelFor,threatLevelFor,gradeForThreat,teamCountForDay,alienCountForDay,molekinCountForDay,xpRewardForTeam,rewardProfileForTeam,westGuardianDefeated,eastGuardianDefeated,spawnRuinCommander,forceMolekinInvasion,forceAlienSpeech,triggerTeamSpeech,updateAlienSpeech,compactSpeechText,storyInvasionLinesForProgress,speechLines:ALIEN_SPEECH,moleSpeechLines:MOLEKIN_SPEECH,rareSpeechLines:ALIEN_RARE_SPEECH,moleRareSpeechLines:MOLEKIN_RARE_SPEECH,echoSpeechLines:ALIEN_ECHO_SPEECH,moleEchoSpeechLines:MOLEKIN_ECHO_SPEECH}
   };
   MM.invasions = api;
   return api;

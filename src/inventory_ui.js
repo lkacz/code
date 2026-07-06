@@ -45,6 +45,7 @@ import './inventory.js';
   // --- Tabs: one per item kind + resources ---
   const TABS=MM.inventory.SLOTS.map(s=>({key:s.accepts, label:INV.KIND_LABELS[s.accepts]||s.accepts, kind:s.accepts}))
     .concat([{key:'resources', label:'Surowce'}]);
+  const TAB_ICONS={cape:'🧥', eyes:'👁️', outfit:'👕', weapon:'⚔️', charm:'🧿', resources:'📦'};
   let activeTab=TABS[0];
   let searchText='';
   let tierFilter='all';
@@ -62,11 +63,34 @@ import './inventory.js';
     tabsEl.innerHTML='';
     TABS.forEach(tab=>{
       const b=document.createElement('button');
-      b.className='invTabBtn'; b.textContent=tab.label; b.dataset.key=tab.key;
+      b.className='invTabBtn'; b.dataset.key=tab.key;
+      const ic=document.createElement('span'); ic.setAttribute('aria-hidden','true'); ic.textContent=TAB_ICONS[tab.key]||'';
+      const lb=document.createElement('span'); lb.textContent=tab.label;
+      const cnt=document.createElement('span'); cnt.className='cnt'; cnt.style.display='none';
+      b.appendChild(ic); b.appendChild(lb); b.appendChild(cnt);
       b.addEventListener('click',()=>setActive(tab));
       tabsEl.appendChild(b);
     });
+    updateTabMeta();
     setActive(activeTab);
+  }
+  // Per-tab meta: owned count + a cyan dot on tabs that hold unseen loot, so
+  // "something new landed" is visible from any tab (standard in loot games).
+  function updateTabMeta(){
+    const news=INV.newItems? INV.newItems():[];
+    tabsEl.querySelectorAll('.invTabBtn').forEach(b=>{
+      const tab=TABS.find(t=>t.key===b.dataset.key); if(!tab) return;
+      const cnt=b.querySelector('.cnt');
+      if(cnt){
+        const n=tab.kind? INV.items(tab.kind).length : 0;
+        cnt.textContent=n;
+        cnt.style.display=(tab.kind && n)? '' : 'none';
+      }
+      const has=!!tab.kind && news.some(i=>i.kind===tab.kind);
+      let dot=b.querySelector('.dotNew');
+      if(has && !dot){ dot=document.createElement('i'); dot.className='dotNew'; b.appendChild(dot); }
+      if(!has && dot) dot.remove();
+    });
   }
   function ensureToolbar(){
     if(toolbarEl || !rightEl) return;
@@ -121,18 +145,20 @@ import './inventory.js';
     ensureToolbar();
     if(!toolbarEl) return;
     const itemTab=activeTab.key!=='resources';
-    searchInput.style.display=itemTab?'':'none';
+    searchInput.parentElement.style.display='';
+    searchInput.placeholder=itemTab? 'Szukaj przedmiotów…  ( / )' : 'Szukaj surowców…  ( / )';
     tierSelect.style.display=itemTab?'':'none';
     sortSelect.style.display=itemTab?'':'none';
     tierSelect.value=tierFilter;
     sortSelect.value=sortMode;
     const cap=INV.capacity? INV.capacity():null;
     if(cap){
-      capEl.textContent=cap.used+'/'+cap.max;
+      capEl.textContent='🎒 '+cap.used+'/'+cap.max;
       capEl.classList.toggle('warn', cap.warning);
       capEl.title=cap.full?'Torba pelna':(cap.free+' wolnych miejsc');
     }
     undoBtn.disabled=!(INV.discardUndoCount && INV.discardUndoCount()>0);
+    updateTabMeta();
     buildNewReview();
   }
 
@@ -141,17 +167,22 @@ import './inventory.js';
     slotsEl.innerHTML='';
     INV.SLOTS.forEach(slot=>{
       const box=document.createElement('div'); box.className='invSlot'; box.tabIndex=0;
+      box.title='Przejdź do zakładki: '+(INV.KIND_LABELS[slot.accepts]||slot.label);
       const it=INV.equippedItem(slot.id);
+      const ic=document.createElement('span'); ic.className='invSlotIcon'; ic.setAttribute('aria-hidden','true');
+      ic.textContent=TAB_ICONS[slot.accepts]||'';
       const lab=document.createElement('div'); lab.className='invSlotLabel'; lab.textContent=slot.label;
       const val=document.createElement('div'); val.className='invSlotVal';
       val.textContent= it? displayName(it) : (slot.emptyLabel||'—');
       if(it && it.tier){ val.style.color=TIER_COLORS[it.tier]||''; }
-      box.appendChild(lab); box.appendChild(val);
+      box.appendChild(ic); box.appendChild(lab); box.appendChild(val);
       if(!slot.required && it){
         const un=document.createElement('button'); un.className='invSlotUnequip'; un.textContent='×'; un.title='Zdejmij';
         un.addEventListener('click',e=>{ e.stopPropagation(); INV.unequip(slot.id); });
         box.appendChild(un);
       }
+      const go=document.createElement('span'); go.className='invSlotGo'; go.setAttribute('aria-hidden','true'); go.textContent='›';
+      box.appendChild(go);
       function goto(){ const tab=TABS.find(t=>t.kind===slot.accepts); if(tab) setActive(tab); }
       box.addEventListener('click',goto);
       box.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); goto(); } });
@@ -237,45 +268,30 @@ import './inventory.js';
     if(searchInput) searchInput.value='';
     setActive(activeTab);
   }
+  // One compact, dismissible line — the grid cards carry the per-item badges
+  // and comparisons, so the strip only answers "did anything new land, and is
+  // any of it an upgrade?" without pushing the collection below the fold.
   function buildNewReview(){
     if(!newReviewEl) return;
     const cmps=newComparisons();
     newReviewEl.innerHTML='';
-    if(!cmps.length){ newReviewEl.style.display='none'; return; }
+    if(!cmps.length || activeTab.key==='resources'){ newReviewEl.style.display='none'; return; }
     newReviewEl.style.display='block';
     const upgrades=cmps.filter(c=>c.isNewBest || c.isEquippedUpgrade).length;
     const head=document.createElement('div'); head.className='invNewReviewHead';
     const title=document.createElement('div');
-    const count=document.createElement('b'); count.textContent='Nowe przedmioty: '+cmps.length;
-    const upgradeCount=document.createElement('span'); upgradeCount.textContent=upgrades+' możliwych ulepszeń';
-    title.appendChild(count); title.appendChild(upgradeCount);
+    const count=document.createElement('b'); count.textContent='✨ Nowe przedmioty: '+cmps.length;
+    title.appendChild(count);
+    if(upgrades){
+      const upgradeCount=document.createElement('span');
+      upgradeCount.textContent=upgrades===1? '1 możliwe ulepszenie' : upgrades+' możliwych ulepszeń';
+      title.appendChild(upgradeCount);
+    }
     const actions=document.createElement('div');
     const show=document.createElement('button'); show.textContent='Pokaż nowe'; show.addEventListener('click',()=>showNewItems(cmps[0]));
     const seen=document.createElement('button'); seen.textContent='Oznacz widziane'; seen.className='sec'; seen.addEventListener('click',()=>{ if(INV.markSeen) INV.markSeen(cmps.map(c=>c.item.id)); refreshAll(true); });
     actions.appendChild(show); actions.appendChild(seen);
     head.appendChild(title); head.appendChild(actions); newReviewEl.appendChild(head);
-    const list=document.createElement('div'); list.className='invNewReviewList';
-    cmps.slice(0,4).forEach(cmp=>{
-      const item=cmp.item;
-      const card=document.createElement('div'); card.className='invReviewItem '+relationClass(cmp);
-      const top=document.createElement('div'); top.className='invReviewTop';
-      const name=document.createElement('b'); name.textContent=displayName(item);
-      const badge=document.createElement('span'); badge.className=relationClass(cmp); badge.textContent=verdictText(cmp);
-      top.appendChild(name); top.appendChild(badge); card.appendChild(top);
-      const meta=document.createElement('div'); meta.className='invReviewMeta'; meta.textContent=cmp.groupLabel+' · Moc '+cmp.score;
-      card.appendChild(meta);
-      card.appendChild(comparisonBlock(cmp,false));
-      const row=document.createElement('div'); row.className='invReviewBtns';
-      const go=document.createElement('button'); go.textContent='Pokaż'; go.addEventListener('click',()=>showNewItems(cmp));
-      row.appendChild(go);
-      if(INV.slotForKind(item.kind)){
-        const eq=document.createElement('button'); eq.textContent='Załóż'; eq.addEventListener('click',()=>{ if(INV.markSeen) INV.markSeen(item.id); INV.equip(item.id); });
-        row.appendChild(eq);
-      }
-      card.appendChild(row);
-      list.appendChild(card);
-    });
-    newReviewEl.appendChild(list);
   }
   function tierRank(item){ return item.tier==='epic'?3:item.tier==='rare'?2:item.tier==='common'?1:0; }
   function itemSearchText(item){
@@ -349,23 +365,25 @@ import './inventory.js';
     const div=document.createElement('div'); div.className='invItem'; div.tabIndex=0;
     const cmp=compare(item);
     const equipped=INV.isEquipped(item.id);
-    if(equipped){
-      div.classList.add('sel');
-      const eb=document.createElement('div'); eb.className='invEqBadge'; eb.textContent='✓ w użyciu';
-      div.appendChild(eb);
+    const isNew=!!(INV.isNew && INV.isNew(item.id));
+    if(item.tier && TIER_COLORS[item.tier]) div.style.setProperty('--tier',TIER_COLORS[item.tier]);
+    if(equipped) div.classList.add('sel');
+    if(isNew) div.classList.add('new',relationClass(cmp));
+    // status badges live in one flow row — nothing ever overlaps art or name
+    const badges=document.createElement('div'); badges.className='invBadges';
+    if(equipped){ const b=document.createElement('span'); b.className='bEq'; b.textContent='✓ W użyciu'; badges.appendChild(b); }
+    if(isNew){
+      const nb=document.createElement('span'); nb.className='bNew'; nb.textContent='Nowe'; badges.appendChild(nb);
+      const vb=document.createElement('span'); vb.className=relationClass(cmp); vb.textContent=compactVerdict(cmp);
+      vb.title=verdictText(cmp); badges.appendChild(vb);
     }
-    if(INV.isNew && INV.isNew(item.id)){
-      div.classList.add('new',relationClass(cmp));
-      const nb=document.createElement('div'); nb.className='invNewBadge'; nb.textContent='Nowe';
-      div.appendChild(nb);
-      const ub=document.createElement('div'); ub.className='invUpgradeBadge '+relationClass(cmp); ub.textContent=compactVerdict(cmp);
-      div.appendChild(ub);
-    }
-    if(item.tier){ div.style.borderColor=(TIER_COLORS[item.tier]||'')+'aa'; }
+    div.appendChild(badges);
+    const thumb=document.createElement('div'); thumb.className='invThumb';
     const c=document.createElement('canvas'); c.width=80; c.height=80;
     drawItemThumb(c.getContext('2d'), item);
-    div.appendChild(c);
+    thumb.appendChild(c); div.appendChild(thumb);
     const nm=document.createElement('div'); nm.className='nm'; nm.textContent=displayName(item);
+    nm.title=displayName(item);
     div.appendChild(nm);
     if(item.tier){
       const tb=document.createElement('div'); tb.className='invTier'; tb.textContent=TIER_LABELS[item.tier]||item.tier;
@@ -376,17 +394,18 @@ import './inventory.js';
       div.appendChild(ub);
     }
     div.appendChild(powerRow(item,maxScore,refScore));
-    if(INV.isNew && INV.isNew(item.id)) div.appendChild(comparisonBlock(cmp,true));
+    if(isNew) div.appendChild(comparisonBlock(cmp,true));
     const chips=chipsRow(item);
     if(chips.childNodes.length) div.appendChild(chips);
     if(item.desc){
-      const d=document.createElement('div'); d.className='invDesc'; d.textContent=item.desc;
+      const d=document.createElement('div'); d.className='invDesc'; d.textContent=item.desc; d.title=item.desc;
       div.appendChild(d);
     }
-    // Action row
+    // Action row: equip is the primary action; discard is a guarded icon so the
+    // destructive path never competes visually with the constructive one.
     const row=document.createElement('div'); row.className='invItemBtns';
     if(equipped && slot && !slot.required){
-      const un=document.createElement('button'); un.textContent='Zdejmij';
+      const un=document.createElement('button'); un.textContent='Zdejmij'; un.className='ghost';
       un.addEventListener('click',e=>{ e.stopPropagation(); INV.unequip(slot.id); });
       row.appendChild(un);
     } else if(!equipped){
@@ -400,17 +419,17 @@ import './inventory.js';
       if(cat){
         const on=INV.isShortcut(item.id);
         const sc=document.createElement('button');
-        sc.textContent=(on?'✓':'✗')+' Skrót '+cat.key;
+        sc.className='tgl'+(on?' on':'');
+        sc.textContent=(on?'✓':'○')+' Skrót '+cat.key;
         sc.title= on? 'W skrócie pod klawiszem '+cat.key+' ('+cat.label+') — kliknij, aby wyłączyć'
                     : 'Poza skrótem klawisza '+cat.key+' ('+cat.label+') — kliknij, aby włączyć';
-        if(on) sc.style.borderColor='#ffb84a';
-        else sc.style.opacity='.6';
         sc.addEventListener('click',e=>{ e.stopPropagation(); INV.setShortcut(item.id, !on); });
         row.appendChild(sc);
       }
     }
     if(!INV.isBuiltin(item.id)){
-      const del=document.createElement('button'); del.textContent='Wyrzuć'; del.className='danger';
+      const del=document.createElement('button'); del.textContent='🗑'; del.className='danger';
+      del.title='Wyrzuć — można cofnąć'; del.setAttribute('aria-label','Wyrzuć '+displayName(item));
       del.addEventListener('click',e=>{ e.stopPropagation(); discardItem(item); });
       row.appendChild(del);
     }
@@ -456,7 +475,12 @@ import './inventory.js';
     groups.forEach(g=>{
       if(!g.items.length) return;
       const head=document.createElement('div'); head.className='invCatHead';
-      head.textContent=g.cat.icon+' '+g.cat.label+(g.cat.key? ' · klawisz '+g.cat.key:'');
+      const hl=document.createElement('span'); hl.textContent=g.cat.icon+' '+g.cat.label;
+      head.appendChild(hl);
+      if(g.cat.key){
+        const hk=document.createElement('span'); hk.className='key'; hk.textContent='klawisz '+g.cat.key;
+        head.appendChild(hk);
+      }
       grid.appendChild(head);
       g.items=sortItems(g.items);
       const maxScore=INV.itemScore(g.items[0])||1;
@@ -465,18 +489,29 @@ import './inventory.js';
     });
   }
 
-  // --- Resources tab ---
+  // --- Resources tab: card grid, owned first, searchable; empty stacks dimmed ---
   function buildResourcesGrid(){
     const wrap=document.createElement('div'); wrap.className='invResources';
     const hint=document.createElement('div'); hint.className='invHint';
-    hint.textContent='Zebrane surowce. „Do paska” przypisuje surowiec do wybranego slotu paska (5–9, 0).';
+    hint.textContent='Zebrane surowce — posiadane na górze. „Do paska” przypisuje surowiec do aktywnego slotu paska (5–9, 0).';
     wrap.appendChild(hint);
-    INV.resources().forEach(r=>{
-      const row=document.createElement('div'); row.className='invResRow';
+    const cards=document.createElement('div'); cards.className='invResGrid';
+    let list=INV.resources();
+    if(searchText) list=list.filter(r=>String(r.label+' '+r.key).toLowerCase().includes(searchText));
+    list=list.slice().sort((a,b)=>((b.count>0)-(a.count>0)) || String(a.label).localeCompare(String(b.label),'pl'));
+    if(!list.length){
+      const empty=document.createElement('div'); empty.className='invEmpty';
+      empty.textContent='Brak surowców pasujących do wyszukiwania';
+      cards.appendChild(empty);
+    }
+    list.forEach(r=>{
+      const card=document.createElement('div'); card.className='invResCard'+(r.count>0?'':' zero');
+      const top=document.createElement('div'); top.className='invResTop';
       const dot=document.createElement('span'); dot.className='invResDot'; dot.style.background=r.color;
-      const lab=document.createElement('span'); lab.className='invResLabel'; lab.textContent=r.label;
-      const cnt=document.createElement('b'); cnt.className='invResCount'; cnt.textContent=r.count;
-      row.appendChild(dot); row.appendChild(lab); row.appendChild(cnt);
+      const lab=document.createElement('span'); lab.className='invResLabel'; lab.textContent=r.label; lab.title=r.label;
+      const cnt=document.createElement('b'); cnt.className='invResCount'; cnt.textContent=(r.count|0).toLocaleString('pl-PL');
+      top.appendChild(dot); top.appendChild(lab); top.appendChild(cnt);
+      card.appendChild(top);
       const btns=document.createElement('span'); btns.className='invResBtns';
       if(r.tile && MM.hotbar && MM.hotbar.assign){
         const hb=document.createElement('button'); hb.textContent='Do paska'; hb.title='Przypisz do aktywnego slotu paska';
@@ -485,13 +520,14 @@ import './inventory.js';
       }
       [['-1',1],['-10',10]].forEach(([t,n])=>{
         const b=document.createElement('button'); b.textContent=t; b.className='danger'; b.title='Wyrzuć '+n;
-        b.disabled=r.count<=0;
+        b.disabled=r.count<n;
         b.addEventListener('click',()=>{ INV.dropResource(r.key,n); if(window.updateInventoryHud) window.updateInventoryHud(); buildGrid(); });
         btns.appendChild(b);
       });
-      row.appendChild(btns);
-      wrap.appendChild(row);
+      card.appendChild(btns);
+      cards.appendChild(card);
     });
+    wrap.appendChild(cards);
     // Tools summary (pickaxes live outside equipment slots, switched with 1/2/3)
     const inv=window.inv||{};
     const tools=document.createElement('div'); tools.className='invHint';
@@ -754,7 +790,7 @@ import './inventory.js';
   }
   function drawPlayerPreview(ctx){
     ctx.save(); ctx.clearRect(0,0,previewCanvas.width,previewCanvas.height);
-    const SCALE=3.4; ctx.scale(SCALE,SCALE);
+    const SCALE=4.6; ctx.scale(SCALE,SCALE);
     const c=MM.customization; const bw=14, bh=20;
     const areaW=previewCanvas.width/SCALE, areaH=previewCanvas.height/SCALE;
     ctx.translate((areaW-bw)/2, (areaH-bh)/2);
@@ -817,13 +853,16 @@ import './inventory.js';
       statsBox.appendChild(statRow('Energia', Math.round(energyInfo.energy)+' / '+Math.round(energyInfo.max), energyLines));
     }
   }
+  // Footer = keyboard legend (the equipment rail above already lists what's worn)
   function updateSelInfo(){
     if(!selInfo) return;
-    const parts=INV.SLOTS.map(s=>{
-      const it=INV.equippedItem(s.id);
-      return s.label+': '+(it? (it.name||it.id) : (s.emptyLabel||'—'));
+    selInfo.textContent='';
+    [['E','zamknij'],['Ctrl+←/→','karty'],['/','szukaj']].forEach(([k,t],i)=>{
+      if(i) selInfo.appendChild(document.createTextNode('  ·  '));
+      const kbd=document.createElement('kbd'); kbd.textContent=k;
+      selInfo.appendChild(kbd);
+      selInfo.appendChild(document.createTextNode(' '+t));
     });
-    selInfo.textContent=parts.join(' | ');
   }
 
   // --- Colors ---
@@ -856,27 +895,29 @@ import './inventory.js';
     const PR=MM.progress; if(!PR) { host.style.display='none'; return; }
     const lv=PR.level(), pts=PR.points(), st=PR.stats();
     const head=document.createElement('div');
-    head.style.cssText='display:flex; justify-content:space-between; font-weight:600;';
+    head.style.cssText='display:flex; justify-content:space-between; align-items:center; font-weight:650;';
     const lvSpan=document.createElement('span'); lvSpan.textContent='Poziom '+lv.level;
-    const ptsSpan=document.createElement('span'); ptsSpan.textContent='Punkty: '+pts;
-    if(pts>0) ptsSpan.style.color='#ffd23e';
+    const ptsSpan=document.createElement('span'); ptsSpan.textContent=pts>0? '+'+pts+' pkt do wydania' : 'Punkty: 0';
+    if(pts>0) ptsSpan.style.cssText='color:#ffd968; background:rgba(246,201,69,.14); border:1px solid rgba(246,201,69,.45); border-radius:8px; padding:1px 7px; font-size:10px; font-weight:800;';
     head.appendChild(lvSpan); head.appendChild(ptsSpan); host.appendChild(head);
     // XP bar
-    const bar=document.createElement('div'); bar.style.cssText='height:6px; background:rgba(255,255,255,.12); border-radius:4px; margin:4px 0 6px; overflow:hidden;';
-    const fill=document.createElement('div'); fill.style.cssText='height:100%; width:'+Math.round(100*lv.into/lv.need)+'%; background:#2c7ef8;';
+    const bar=document.createElement('div'); bar.style.cssText='height:6px; background:rgba(255,255,255,.12); border-radius:4px; margin:5px 0 7px; overflow:hidden;';
+    const fill=document.createElement('div'); fill.style.cssText='height:100%; width:'+Math.round(100*lv.into/lv.need)+'%; background:linear-gradient(90deg,#2c7ef8,#7df9ff); border-radius:4px;';
     bar.appendChild(fill); host.appendChild(bar);
     const rows=[
       ['vit','Witalność', '+10 HP', st.vit],
       ['str','Siła', '+1 obrażeń', st.str],
       ['agi','Zwinność', '+2% ruch/skok', st.agi],
       ['cap','Pojemność', '+25 energii', st.cap||0],
+      ['hard','Twardość', '+1.5 udźwigu zawału', st.hard||0],
     ];
     rows.forEach(([key,label,effect,val])=>{
       const row=document.createElement('div');
       row.style.cssText='display:flex; align-items:center; gap:6px; font-size:11px; margin:2px 0;';
       const lab=document.createElement('span'); lab.style.flex='1'; lab.textContent=label+' '+val+' ('+effect+')';
       const btn=document.createElement('button'); btn.textContent='+'; btn.disabled=pts<=0;
-      btn.style.cssText='width:22px; height:20px; border-radius:6px; border:none; background:'+(pts>0?'#21a366':'rgba(255,255,255,.15)')+'; color:#fff; cursor:pointer; font-weight:700;';
+      btn.title=pts>0? 'Wydaj punkt: '+label : 'Brak punktów — zdobądź poziom';
+      btn.style.cssText='width:26px; height:22px; border-radius:7px; border:none; background:'+(pts>0?'linear-gradient(180deg,#27c274,#1d9d5c)':'rgba(255,255,255,.13)')+'; color:#fff; cursor:'+(pts>0?'pointer':'default')+'; font-weight:800; font-size:13px;';
       btn.addEventListener('click',()=>{ PR.spend(key); buildProgress(); });
       row.appendChild(lab); row.appendChild(btn); host.appendChild(row);
     });
@@ -982,8 +1023,20 @@ import './inventory.js';
   function isEditableTarget(t){ if(!t || !t.tagName) return false; const tag=t.tagName; return tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||t.isContentEditable; }
   window.addEventListener('keydown',e=>{
     if(isOpen()){
-      if(e.key==='Escape'){ e.preventDefault(); close(); e.stopImmediatePropagation(); return; }
+      if(e.key==='Escape'){
+        e.preventDefault();
+        // Esc backs out one layer: clear an active search first, then close
+        if(searchInput && document.activeElement===searchInput && searchInput.value){
+          searchInput.value=''; searchText=''; buildGrid();
+        } else close();
+        e.stopImmediatePropagation(); return;
+      }
       if(!isEditableTarget(e.target) && e.key.toLowerCase()==='e' && !e.ctrlKey && !e.metaKey && !e.altKey){ e.preventDefault(); close(); e.stopImmediatePropagation(); return; }
+      if(!isEditableTarget(e.target) && e.key==='/'){
+        e.preventDefault();
+        if(searchInput){ searchInput.focus(); searchInput.select(); }
+        e.stopImmediatePropagation(); return;
+      }
       if(e.ctrlKey && (e.key==='ArrowRight' || e.key==='ArrowLeft')){
         e.preventDefault();
         const idx=TABS.indexOf(activeTab);

@@ -399,6 +399,37 @@ const STORY_LORE = {
           'Macierzysty to nie pan pod ziemia. To ziemia pod kazdym "nie chce pamietac".'
         ]
       }
+    },
+    epilogue:{
+      title:'Cisza po lustrze',
+      npcWhispers:[
+        'Od jakiegos czasu cienie wracaja na miejsce, jak chca. Nikt ich nie ustawia.',
+        'Moj sen nie mial paska ladowania. Po prostu byl.',
+        'Podobno w centrum ktos umarl i wstal. Od tego dnia mapa oddycha rowniej.',
+        'Nie licze juz krokow miedzy klatkami. Wychodzi nierowno. Cieszy mnie to.',
+        'Stary Kwadrat pije wode, ktora sam sobie przynosi. To chyba koniec proroctw.',
+        'Swiat rusza sie takze wtedy, gdy nikt nie patrzy. Sprawdzilismy. Przestalismy sprawdzac.'
+      ],
+      invasions:{
+        alien:[
+          'Anteny milcza. Po raz pierwszy nie z rozkazu, tylko z ulgi.',
+          'Kult czterech bokow oglasza: piata strona byla srodkiem. Rozchodzimy sie dziwnie spokojni.',
+          'Hero-Prostokat umarl w centrum i zyje. Teologia zamyka warsztat.'
+        ],
+        molekin:[
+          'Tunel pod centrum zarosl cisza. Dobra cisza. Taka po spowiedzi.',
+          'Kamien juz nie udaje fundamentu. Jest po prostu kamieniem. Ulga dla wszystkich.',
+          'Trzeci Kret spi bez snow. Pierwszy raz od poczatku mapy.'
+        ],
+        rareAlien:[
+          'Ostatni log: obserwator i obserwowany podpisali rozejm. Podpis jest jeden.',
+          'Nie ma juz najglebszej warstwy. Jest podloga. Stoi sie na niej zaskakujaco dobrze.'
+        ],
+        rareMolekin:[
+          'Najglebszy tunel konczy sie teraz oknem. Nie pytaj jak. Popatrz.',
+          'Zdanie spod mapy wyszlo na powierzchnie i okazalo sie krotkie: to ja.'
+        ]
+      }
     }
   },
   finalBossHints:[
@@ -407,11 +438,109 @@ const STORY_LORE = {
     'Wiedzialem, ze wrocisz do centrum. Kazda warstwa udaje droge, ale wszystkie sa petla.',
     'Pokonales chlod odtracenia, ogien niespelnienia, tunel zapomnienia i niebo ambicji. Teraz zostalem ja, czyli ty.',
     'Nie jestem ostatnim wrogiem. Jestem czescia ciebie, ktora nauczyla sie wygladac jak boss.'
-  ]
+  ],
+  // One-time world reactions when the arc advances. The progression watcher plays
+  // each list once; goals are carried by these beats + task pointers, never by
+  // bare "go to X" instructions.
+  progressionBeats:{
+    horizons:[
+      'Stary Kwadrat konczy notatki i pierwszy raz patrzy w oba horyzonty naraz.',
+      'Na zachodzie cisza robi sie za gesta. Na wschodzie zar nie chce zgasnac.',
+      'Swiat ma dwa wezly, ktore nie daja mu spac: lod i ogien. Oba czekaja na swiadka.'
+    ],
+    ice:[
+      'Lod peka. Gdzies w srodku peka tez cisza, ktora udawala odpowiedz.',
+      'Zachod oddycha. Odtracenie przestalo trzymac framugi swiata.'
+    ],
+    fire:[
+      'Zar opada. Pragnienie, ktore palilo, w koncu zostalo wysluchane.',
+      'Wschod stygnie w spokoj, nie w chlod. To roznica.'
+    ],
+    gate:[
+      'Ziemia pod mapa przesuwa sie, jakby ktos odsunal wieko.',
+      'Trzeci Kret przewrocil sie we snie. Tunel czeka na kroki.'
+    ],
+    earth:[
+      'Kret zamiera. Zakopane zdanie wychodzi na powierzchnie i okazuje sie krotkie.',
+      'Nad poczatkiem swiata wyrasta wieza. Niebo przestalo byc wymowka.'
+    ]
+  },
+  center:{
+    bossName:'Guardian Macierzysty',
+    bossTitle:'Ostatnie Lustro',
+    mentorMask:'Stary Kwadrat',
+    // Played once, right after the Heart of Air, as the "false final" beat:
+    // every direction answered, no ending arrived, one direction remains.
+    falseFinalOmen:[
+      'Serce Powietrza spiewa... i nic. Zaden final nie nadchodzi.',
+      'Horyzonty sa czyste. Zachod, wschod, dol i gora - wszystkie odpowiedzialy.',
+      'Zostal jeden kierunek, ktorego nie ma na kompasie: srodek.',
+      'Wroc tam, gdzie uslyszales pierwsza prosbe o wode.'
+    ],
+    // The mentor's confession at the mirror obelisk, line by line.
+    reveal:[
+      'Przyszedles. Zawsze przychodzisz, kiedy konczy sie mapa.',
+      'Zaczne od przeprosin: pierwsza prosba o wode nie byla prosba. Byla testem, czy obserwator umie sie zatrzymac.',
+      'Zachod byl chlodem odtracenia. Wschod zarem, ktorego nikt nie odebral. Kret pilnowal zdania zakopanego za gleboko. Niebo trzymalo ambicje bez podlogi.',
+      'Wszystkie te wezly zbudowala jedna reka. Moja. Czyli twoja.',
+      'Jestem ta czescia ciebie, ktora wolala budowac warstwy, niz nazwac prawde po imieniu.',
+      'Nie mam juz dokad sie cofnac. Zostalo centrum, a centrum to my.',
+      'Ostatnia walka ma jedna zasade: kazdy cios nalezy do tego, kto go zadaje.',
+      'Nie zrozumiesz jej glowa. Zrozumiesz ja wtedy, gdy zabola cie wlasne uderzenia.',
+      'Przepraszam za wode, za mieso, za drzewa. I dziekuje, ze patrzyles.',
+      'A teraz podnies bron albo jej nie podnos. Obie decyzje beda twoje.'
+    ],
+    transform:'Stary Kwadrat prostuje sie. Jego zarys plynie jak woda i zastyga w ksztalt, ktory znasz najlepiej: twoj.',
+    battleStart:[
+      'Lustro czeka. Ma twoja postawe i twoja niecierpliwosc.',
+      'Guardian Macierzysty nie ryczy. Oddycha w twoim rytmie.'
+    ],
+    // Shown when the hero's own attack is reflected back (first three times).
+    mirrorHints:[
+      'Twoj cios wraca do ciebie. Lustro nie przyjmuje darow.',
+      'Ono nie oddaje ciosow. Ono je zwraca.',
+      'Przestan walczyc. Patrz, co robi z NIM kazde uderzenie, ktore samo zadaje.'
+    ],
+    // Spoken as the mimic's own strikes eat its heart (by remaining fraction).
+    strikeLines:{
+      hp75:'Uderzam cie, a peka moj pancerz. Tak to dzialalo od zawsze. Teraz przynajmniej widac.',
+      hp50:'Polowa mnie juz rozumie. Ta polowa, ktora bije najmocniej.',
+      hp25:'Nie bronisz sie. To najodwazniejsza rzecz, jaka widziala ta symulacja.',
+      hp10:'Jeszcze chwila. Stoj prosto. Zaraz obaj bedziemy wolni.'
+    },
+    // The mutual fall.
+    finale:[
+      'Ostatni cios jest wspolny.',
+      'Padasz. Ono pada razem z toba, bo nigdy nie bylo nikim innym.',
+      'Cisza. Pierwsza, ktora niczego nie udaje.'
+    ],
+    // After the death-travel respawn, once, at the transformed center.
+    epilogueArrival:[
+      'Swiat sie nie skonczyl. Po prostu przestal czekac na rozkazy.',
+      'Centrum pachnie deszczem, ktory spadl bez swiadka.',
+      'Guardian Macierzysty zostawil serce. Wez je. Bylo twoje od poczatku.'
+    ],
+    // The freed mentor's rotating closure lines.
+    epilogueTalk:[
+      'Prosze teraz o wode tylko wtedy, gdy naprawde chce pic.',
+      'Drzewa upadaja, kiedy chca. Sprawdzalem. Nikt nie liczy.',
+      'Czasem jeszcze slysze kursor. Ale to moze byc wiatr. Oba wyjasnienia sa dobre.',
+      'Nie pytaj, czy to nadal symulacja. Pytaj, czy nadal boli. Nie boli.',
+      'Zbudowales wyjscie z mapy, ktora nie miala krawedzi. Takie wyjscia robi sie od srodka.',
+      'Jesli kiedys znowu uslyszysz prosbe o wode, po prostu ja przynies. Bez testow.'
+    ],
+    // If the mimic kills the hero before its own heart is spent (the hero fought back
+    // too hard and the reflections did the rest), the fight waits instead of punishing.
+    heroFellEarly:[
+      'Wstane razem z toba. Zawsze wstaje razem z toba.',
+      'Lustro nie liczy porazek. Lustro liczy powroty.'
+    ],
+    stallHint:'Nie moge dotknac kogos, kto nie chce byc prawdziwy.'
+  }
 };
 
 function runtimeRoot(){ return (typeof window !== 'undefined') ? window : globalThis; }
-const STORY_REVEAL_STAGE_ORDER = ['start','west_ice','east_fire','earth_mole','sky_ambition','mother_self'];
+const STORY_REVEAL_STAGE_ORDER = ['start','west_ice','east_fire','earth_mole','sky_ambition','mother_self','epilogue'];
 
 function storyStageIndex(stage){
   const idx = STORY_REVEAL_STAGE_ORDER.indexOf(String(stage || 'start'));
@@ -455,13 +584,21 @@ function hasAnyHeart(hearts,names){
   return false;
 }
 
+// Each heart advances the whisper pool one act forward: a fallen guardian unlocks
+// the reflection lines about what it meant AND the foreshadowing of the next node
+// (the mole gate after both elements, the false final above after the mole, the
+// center after the sky, quiet after the mirror). Guidance arrives before the fight,
+// closure after it.
 function storyRevealStage(root){
   const hearts = storyGuardianHearts(root);
-  if(hasAnyHeart(hearts,['mother','center','self','mother_self','macierzysty'])) return 'mother_self';
-  if(hasAnyHeart(hearts,['sky','air','upper','ambition','sky_ambition'])) return 'sky_ambition';
-  if(hasAnyHeart(hearts,['earth','mole','underground','earth_mole'])) return 'earth_mole';
-  if(hasAnyHeart(hearts,['fire','east','east_fire'])) return 'east_fire';
-  if(hasAnyHeart(hearts,['ice','west','west_ice'])) return 'west_ice';
+  if(hasAnyHeart(hearts,['mother','center','self','mother_self','macierzysty'])) return 'epilogue';
+  if(hasAnyHeart(hearts,['sky','air','upper','ambition','sky_ambition'])) return 'mother_self';
+  if(hasAnyHeart(hearts,['earth','mole','underground','earth_mole'])) return 'sky_ambition';
+  const fire = hasAnyHeart(hearts,['fire','east','east_fire']);
+  const ice = hasAnyHeart(hearts,['ice','west','west_ice']);
+  if(fire && ice) return 'earth_mole';
+  if(fire) return 'east_fire';
+  if(ice) return 'west_ice';
   return 'start';
 }
 

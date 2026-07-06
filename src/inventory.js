@@ -78,6 +78,8 @@
       chips.push({icon:'⚡', label:'Pojemność energii', text:(item.energyCapacityBonus>0?'+':'')+item.energyCapacityBonus+'E', good:item.energyCapacityBonus>0});
     if(typeof item.airJumps==='number' && item.airJumps)
       chips.push({icon:'🪽', label:'Skoki', text:'+'+item.airJumps, good:item.airJumps>0});
+    if(typeof item.crushResistBonus==='number' && item.crushResistBonus)
+      chips.push({icon:'🪨', label:'Udźwig zawału', text:'+'+item.crushResistBonus, good:item.crushResistBonus>0});
     if(typeof item.visionRadius==='number'){
       const p=snapPct((item.visionRadius-VISION_BASE)*100/VISION_BASE);
       if(p) chips.push({icon:'👁️', label:'Widzenie', text:fmtPct(p), good:p>0});
@@ -100,6 +102,7 @@
     if(typeof item.energyCapacityBonus==='number') s+=item.energyCapacityBonus*0.55;
     if(item.weaponType==='bow' && typeof item.fireCooldown==='number') s+=(0.6-item.fireCooldown)*40; // faster bow = stronger
     if(typeof item.airJumps==='number') s+=item.airJumps*12;
+    if(typeof item.crushResistBonus==='number') s+=item.crushResistBonus*10;
     if(typeof item.visionRadius==='number') s+=(item.visionRadius-VISION_BASE)*3;
     ['moveSpeedMult','jumpPowerMult','mineSpeedMult'].forEach(k=>{
       if(typeof item[k]==='number') s+=pctOf(item[k])*0.6;
@@ -116,7 +119,8 @@
     moveSpeedMult:'mul',
     jumpPowerMult:'mul',
     attackDamage:'sum',
-    energyCapacityBonus:'sum'
+    energyCapacityBonus:'sum',
+    crushResistBonus:'sum'
   };
   const STAT_LABELS={
     maxAirJumps:'Skoki dodatkowe',
@@ -125,38 +129,40 @@
     jumpPowerMult:'Moc skoku',
     mineSpeedMult:'Szybkość kopania',
     attackDamage:'Obrażenia',
-    energyCapacityBonus:'Pojemność energii'
+    energyCapacityBonus:'Pojemność energii',
+    crushResistBonus:'Udźwig zawału'
   };
   const BASE_ATTACK=3; // bare-handed melee damage
 
   // --- Built-in items (gear ids preserved from the old customization system) ---
-  // Stat numbers stay on the clean percent ladder (multiples of 5%) so cards read
-  // uniformly; descs are flavor/usage only — the stat chips carry every number.
+  // One function stat per item (see KIND_STAT_PRIORITY): capes jump, eyes see,
+  // outfits carry a single work/movement profile, weapons only their class
+  // numbers, charms one passive. Descs are flavor/usage — chips carry the numbers.
   const BUILTIN_ITEMS=[
     // Capes: airJumps = additional mid-air jumps (0 => only ground jump)
     {id:'classic',  kind:'cape', name:'Klasyczna',    airJumps:0, desc:'Tylko skok z ziemi'},
-    {id:'triangle', kind:'cape', name:'Trójkątna',    airJumps:1, moveSpeedMult:1.05, jumpPowerMult:1.05, desc:'Podwójny skok'},
-    {id:'royal',    kind:'cape', name:'Królewska',    shiny:true, airJumps:3, moveSpeedMult:1.10, jumpPowerMult:1.10, desc:'Cztery skoki'},
+    {id:'triangle', kind:'cape', name:'Trójkątna',    airJumps:1, desc:'Podwójny skok'},
+    {id:'royal',    kind:'cape', name:'Królewska',    shiny:true, airJumps:3, desc:'Cztery skoki'},
     {id:'tattered', kind:'cape', name:'Postrzępiona', airJumps:1, desc:'Podwójny skok'},
-    {id:'winged',   kind:'cape', name:'Skrzydlata',   shiny:true, airJumps:3, moveSpeedMult:1.10, jumpPowerMult:1.15, desc:'Cztery skoki'},
-    {id:'shadow',   kind:'cape', name:'Cienista',     airJumps:2, moveSpeedMult:1.05, jumpPowerMult:1.05, desc:'Trzy skoki'},
+    {id:'winged',   kind:'cape', name:'Skrzydlata',   shiny:true, airJumps:3, desc:'Cztery skoki'},
+    {id:'shadow',   kind:'cape', name:'Cienista',     airJumps:2, desc:'Trzy skoki'},
     // Eyes: visionRadius drives fog reveal (base 10)
-    {id:'sleepy', kind:'eyes', name:'Wąskie',     visionRadius:7,  moveSpeedMult:0.95, jumpPowerMult:0.95, desc:'Przymrużone — niewiele widać'},
-    {id:'bright', kind:'eyes', name:'Szerokie',   visionRadius:11, moveSpeedMult:1.05, desc:'Czujne spojrzenie'},
-    {id:'glow',   kind:'eyes', name:'Przełomowe', visionRadius:15, moveSpeedMult:1.05, jumpPowerMult:1.05, desc:'Przeszywają mrok'},
-    {id:'gold',   kind:'eyes', name:'Złote',      visionRadius:13, moveSpeedMult:1.05, jumpPowerMult:1.05, desc:'Błyszczą w ciemności'},
-    // Outfits
+    {id:'sleepy', kind:'eyes', name:'Wąskie',     visionRadius:7,  desc:'Przymrużone — niewiele widać'},
+    {id:'bright', kind:'eyes', name:'Szerokie',   visionRadius:11, desc:'Czujne spojrzenie'},
+    {id:'glow',   kind:'eyes', name:'Przełomowe', visionRadius:15, desc:'Przeszywają mrok'},
+    {id:'gold',   kind:'eyes', name:'Złote',      visionRadius:13, desc:'Błyszczą w ciemności'},
+    // Outfits: one profile stat each — the suit says how you work, not everything at once
     {id:'default',    kind:'outfit', name:'Podstawowy', desc:'Zwykłe ubranie bez bonusów'},
-    {id:'miner',      kind:'outfit', name:'Górnik',  mineSpeedMult:1.5,  moveSpeedMult:0.90, jumpPowerMult:0.90, desc:'Ciężki strój do kopania'},
-    {id:'mystic',     kind:'outfit', name:'Mistyk',  moveSpeedMult:1.15, jumpPowerMult:1.10, desc:'Lekka szata wędrowca'},
-    {id:'ninja',      kind:'outfit', name:'Ninja',   moveSpeedMult:1.20, jumpPowerMult:1.15, desc:'Strój cichego zabójcy'},
-    {id:'ironperson', kind:'outfit', name:'Iron',    mineSpeedMult:1.25, moveSpeedMult:1.05, jumpPowerMult:1.05, desc:'Pancerz z servo-wspomaganiem'},
+    {id:'miner',      kind:'outfit', name:'Górnik',  mineSpeedMult:1.5,  desc:'Strój do kopania'},
+    {id:'mystic',     kind:'outfit', name:'Mistyk',  jumpPowerMult:1.15, desc:'Lekka szata wędrowca'},
+    {id:'ninja',      kind:'outfit', name:'Ninja',   moveSpeedMult:1.20, desc:'Strój cichego zabójcy'},
+    {id:'ironperson', kind:'outfit', name:'Iron',    crushResistBonus:2, desc:'Pancerz udźwignie zawał'},
     // Weapons (starter set; better ones drop from chests).
     // weaponType: 'melee' (default) strikes the aimed tile, 'bow' shoots arrows,
     // 'flame'/'hose'/'gas' streams terrain effects; 'electric' fires an energy beam.
     {id:'stick',        kind:'weapon', weaponType:'melee', name:'Kij',             attackDamage:1, desc:'Prosty kij na początek'},
-    {id:'stone_blade',  kind:'weapon', weaponType:'melee', name:'Ostrze kamienne', attackDamage:3, moveSpeedMult:0.95, desc:'Ciężkie, ale skuteczne'},
-    {id:'spear',        kind:'weapon', weaponType:'melee', name:'Włócznia',        attackDamage:2, jumpPowerMult:1.05, desc:'Lekka i poręczna'},
+    {id:'stone_blade',  kind:'weapon', weaponType:'melee', name:'Ostrze kamienne', attackDamage:3, desc:'Ciężkie, ale skuteczne'},
+    {id:'spear',        kind:'weapon', weaponType:'melee', name:'Włócznia',        attackDamage:2, desc:'Lekka i poręczna'},
     {id:'bow_wood',     kind:'weapon', weaponType:'bow',   name:'Łuk myśliwski',   attackDamage:4, fireCooldown:0.55, desc:'LPM strzela strzałami; PPM odpala naładowany ult'},
     {id:'flamethrower', kind:'weapon', weaponType:'flame', name:'Miotacz ognia',   fireDps:6, fireRange:6.5, desc:'Strumień ognia (przytrzymaj LPM): podpala wrogów, trawę i drzewa; PPM = ult'},
     {id:'water_hose',   kind:'weapon', weaponType:'hose',  name:'Wąż wodny',       fireDps:2, fireRange:6,   desc:'Strumień wody (przytrzymaj LPM): gasi ogień, czasem zostawia wodę; PPM = ult'},
@@ -238,6 +244,7 @@
     {key:'heartIce', label:'Serce lodu', color:'#9deeff', tile:null},
     {key:'heartEarth', label:'Serce ziemi', color:'#79c95d', tile:null},
     {key:'heartAir', label:'Serce powietrza', color:'#a8d7ff', tile:null},
+    {key:'heartMother', label:'Serce macierzyste', color:'#9b8cff', tile:null}, // the center: what remains after meeting yourself
     {key:'antimatter', label:'Antymateria', color:'#c46bff', tile:'ANTIMATTER_CRYSTAL'} // dropped by downed UFOs and rare antimatter meteors
   ];
 
@@ -255,10 +262,36 @@
   const discardUndo=[]; // session-only safety net for accidental item deletion
   const DISCARD_UNDO_LIMIT=20;
 
+  // --- Function purity: each kind carries ONLY the stats of its job -----------
+  // One item = its function, nothing else: capes jump, eyes see, outfits set one
+  // work/movement profile, weapons fight with their class numbers, charms hold a
+  // single passive. Tiers make those same numbers bigger — rarity means superior
+  // magnitude, never extra unrelated stats. Priority order decides which stat
+  // survives when legacy loot carried several (first hit wins).
+  const KIND_STAT_PRIORITY={
+    cape:['airJumps'],
+    eyes:['visionRadius'],
+    outfit:['mineSpeedMult','moveSpeedMult','jumpPowerMult','crushResistBonus'],
+    charm:['energyCapacityBonus','mineSpeedMult','moveSpeedMult','jumpPowerMult','crushResistBonus']
+  };
+  const KIND_STAT_MAX={cape:1, eyes:1, outfit:1, charm:1};
+  const WEAPON_TYPE_STATS={
+    melee:['attackDamage'],
+    bow:['attackDamage','fireCooldown'],
+    flame:['fireDps','fireRange'],
+    hose:['fireDps','fireRange'],
+    gas:['fireDps','fireRange'],
+    electric:['fireDps','fireRange','energyCost']
+  };
+  function allowedStatsFor(kind,weaponType){
+    if(kind==='weapon') return WEAPON_TYPE_STATS[weaponType||'melee']||WEAPON_TYPE_STATS.melee;
+    return KIND_STAT_PRIORITY[kind]||[];
+  }
+
   // Loot items come from localStorage (bag + dynamic-loot keys) — whitelist their
   // fields on ingest so tampered/corrupt entries can't smuggle objects or markup
   // into stat math and innerHTML-based displays downstream.
-  const ITEM_NUM_FIELDS=['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus'];
+  const ITEM_NUM_FIELDS=['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','crushResistBonus'];
   const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType'];
   const ITEM_KINDS=new Set(['cape','eyes','outfit','weapon','charm']);
   function sanitizeLootItem(raw,fallbackKind){
@@ -274,6 +307,13 @@
     ['moveSpeedMult','jumpPowerMult','mineSpeedMult'].forEach(f=>{
       if(typeof it[f]==='number'){ const m=snapMult(it[f]); if(m===1) delete it[f]; else it[f]=m; }
     });
+    // Function purity (also the one-shot migration for pre-rework saves): keep only
+    // the stats of this kind's job, at most KIND_STAT_MAX of them in priority order.
+    const allowed=allowedStatsFor(kind, it.weaponType);
+    const max=kind==='weapon'? allowed.length : (KIND_STAT_MAX[kind]||allowed.length);
+    let kept=0;
+    allowed.forEach(f=>{ if(typeof it[f]==='number'){ if(kept<max) kept++; else delete it[f]; } });
+    ITEM_NUM_FIELDS.forEach(f=>{ if(!allowed.includes(f)) delete it[f]; });
     return it;
   }
   function pushToBag(item, opts){
@@ -375,6 +415,7 @@
     if(typeof item.jumpPowerMult==='number') fn('jumpPowerMult', item.jumpPowerMult);
     if(typeof item.attackDamage==='number') fn('attackDamage', item.attackDamage);
     if(typeof item.energyCapacityBonus==='number') fn('energyCapacityBonus', item.energyCapacityBonus);
+    if(typeof item.crushResistBonus==='number') fn('crushResistBonus', item.crushResistBonus);
   }
   function computeModifiers(){
     adoptCustomizationWrites();
@@ -395,11 +436,13 @@
     if(mods.jumpPowerMult==null) mods.jumpPowerMult=1;
     if(mods.attackDamage==null) mods.attackDamage=0;
     if(mods.energyCapacityBonus==null) mods.energyCapacityBonus=0;
+    if(mods.crushResistBonus==null) mods.crushResistBonus=0;
     // Safety clamps (future-proof against extreme stacking)
     mods.moveSpeedMult=clampRange(mods.moveSpeedMult, 0.3, 30);
     mods.jumpPowerMult=clampRange(mods.jumpPowerMult, 0.3, 3);
     mods.attackDamage=clampRange(mods.attackDamage, 0, 97);
     mods.energyCapacityBonus=clampRange(mods.energyCapacityBonus, 0, 10000);
+    mods.crushResistBonus=clampRange(mods.crushResistBonus, 0, 500);
     MM.activeModifiers=mods;
     return mods;
   }
@@ -752,7 +795,7 @@
 
   MM.inventory={
     SLOTS, KIND_LABELS, TIER_COLORS, STAT_LABELS, STAT_RULES, RESOURCES, BASE_ATTACK,
-    WEAPON_CATEGORIES,
+    WEAPON_CATEGORIES, KIND_STAT_PRIORITY, WEAPON_TYPE_STATS, allowedStatsFor,
     weaponCategory, categoryWeapons, isShortcut, setShortcut, cycleWeaponCategory,
     statChips, itemScore, snapPct, fmtPct, VISION_BASE,
     items:itemsOfKind,

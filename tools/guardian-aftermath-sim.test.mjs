@@ -231,6 +231,6 @@ assert.match(uiSrc, /Scars/, 'travel debug UI exposes an aftermath scars button'
 assert.match(guardianSrc, /MM\.guardianAftermath && MM\.guardianAftermath\.start\) MM\.guardianAftermath\.start\(kind\)/, 'fire/ice guardian death starts aftermath');
 assert.match(undergroundSrc, /MM\.guardianAftermath && MM\.guardianAftermath\.start\) MM\.guardianAftermath\.start\('earth'\)/, 'underground guardian death starts earth aftermath');
 assert.match(packageSrc, /"test:guardian-aftermath"/, 'package exposes the guardian aftermath sim test');
-assert.match(packageSrc, /test:underground && npm run test:sky-guardian && npm run test:guardian-aftermath/, 'full check runs Sky Gate and aftermath coverage after boss coverage');
+assert.match(packageSrc, /test:underground && npm run test:sky-guardian && npm run test:center-guardian && npm run test:story-progression && npm run test:guardian-aftermath/, 'full check runs Sky Gate, center/story and aftermath coverage after boss coverage');
 
 console.log('guardian-aftermath-sim: all assertions passed');

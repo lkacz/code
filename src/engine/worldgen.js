@@ -164,7 +164,12 @@ function cityCandidateForCell(cell){
 	const density = 0.62 + ih(cell,9305)*0.28;
 	const decay = 0.35 + ih(cell,9306)*0.55;
 	const skyline = ih(cell,9307);
-	v = {center,radius,floorElev,density,decay,skyline,cell};
+	// Architecture school + silhouette motif make every district read differently:
+	// 0 stone spires, 1 glass downtown, 2 foundry sprawl, 3 terraced ziggurats,
+	// 4 brutalist megablocks. world.js consumes both when erecting structures.
+	const arch = Math.min(4, Math.floor(ih(cell,9315)*5));
+	const motif = ih(cell,9316);
+	v = {center,radius,floorElev,density,decay,skyline,arch,motif,cell};
 	cityCellCache.set(cell,v);
 	return v;
 }

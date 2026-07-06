@@ -1,0 +1,231 @@
+#!/usr/bin/env node
+// Headless-Edge live QA for input-mode detection (engine/input_mode.js) and the
+// touch control clusters: boots the real game over CDP and walks the modes a
+// player can hit, asserting the DOM gating and capturing layout screenshots:
+//   tools/mobile-controls-qa.png    desktop 1600x900, mouse → touch UI hidden
+//   tools/mobile-controls-qa-b.png  phone 390x844 portrait, touch → touch UI shown
+//   tools/mobile-controls-qa-c.png  hybrid: mouse press on a touch device → hidden
+//   tools/mobile-controls-qa-d.png  phone 844x390 landscape, touch → layout check
+// Hard-asserts data-input-mode + per-cluster computed display; exits 1 on failure.
+// Usage: node tools/mobile-controls-qa.mjs [--url=http://127.0.0.1:8123/index.html]
+import { spawn, execFile } from 'node:child_process';
+import { writeFile, mkdtemp, rm, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const args = process.argv.slice(2);
+const opt = (name, dflt) => {
+	const hit = args.find(a => a.startsWith('--' + name + '='));
+	return hit ? hit.slice(name.length + 3) : dflt;
+};
+const url = opt('url', 'http://127.0.0.1:8123/index.html');
+const outA = opt('out', 'tools/mobile-controls-qa.png');
+const outB = outA.replace(/\.png$/, '-b.png');
+const outC = outA.replace(/\.png$/, '-c.png');
+const outD = outA.replace(/\.png$/, '-d.png');
+
+const EDGE_CANDIDATES = [
+	'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+	'C:/Program Files/Microsoft/Edge/Application/msedge.exe'
+];
+
+let msgId = 0;
+const pending = new Map();
+function send(ws, method, params){
+	const id = ++msgId;
+	ws.send(JSON.stringify({ id, method, params: params || {} }));
+	return new Promise((resolve, reject) => pending.set(id, { resolve, reject, method }));
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// In-page probe: mode stamp, live media features and per-cluster visibility.
+const PROBE = `(()=>{
+	const ids=['controls','dirRing','fireBtn','ultBtn','radarBtn'];
+	const vis=id=>{ const el=document.getElementById(id); if(!el) return 'missing'; return getComputedStyle(el).display==='none'?'hidden':'shown'; };
+	const r=sel=>{ const el=document.querySelector(sel); if(!el) return null; const b=el.getBoundingClientRect(); return [Math.round(b.left),Math.round(b.top),Math.round(b.right),Math.round(b.bottom)]; };
+	return JSON.stringify({
+		mode:(document.documentElement.dataset.inputMode)||'(none)',
+		caps:{coarse:matchMedia('(pointer:coarse)').matches, hover:matchMedia('(hover:hover)').matches, fine:matchMedia('(pointer:fine)').matches, touchPoints:navigator.maxTouchPoints|0},
+		ui:Object.fromEntries(ids.map(id=>[id,vis(id)])),
+		craftOpen:(()=>{ const c=document.getElementById('craft'); return !!(c && c.dataset.collapsed!=='true'); })(),
+		// vitals panel is canvas-drawn bottom-left: PAD=12, PANEL_W=272, PANEL_H=98 (vitals_hud.js)
+		rects:{pad:r('#controls .pad'), ring:r('#dirRing'), hotbar:r('#hotbarWrap'), weaponBar:r('#weaponBar'), fire:r('#fireBtn'), ult:r('#ultBtn'), radar:r('#radarBtn'), vitals:[12, innerHeight-110, 284, innerHeight-12]}
+	});
+})()`;
+
+const BOOT_WAIT = `(async()=>{
+	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+	for(let i=0;i<400 && !(window.MM && window.player && MM.inputMode);i++) await sleep(100);
+	return (window.MM && window.player && MM.inputMode) ? 'boot ok' : 'boot-timeout';
+})()`;
+
+async function main(){
+	const { existsSync } = await import('node:fs');
+	const edge = EDGE_CANDIDATES.find(p => existsSync(p)) || EDGE_CANDIDATES[0];
+	const profile = await mkdtemp(join(tmpdir(), 'mm-mobileqa-'));
+	const proc = spawn(edge, [
+		'--headless=new', '--disable-gpu', '--no-first-run', '--hide-scrollbars',
+		'--force-device-scale-factor=1',
+		'--remote-debugging-port=0',
+		`--user-data-dir=${profile}`,
+		'--window-size=1600,900',
+		'about:blank'
+	], { stdio: 'ignore' });
+
+	let ws;
+	let failures = 0;
+	const check = (label, ok, detail) => {
+		console.log((ok ? 'PASS' : 'FAIL') + ' ' + label + (detail ? ' :: ' + detail : ''));
+		if(!ok) failures++;
+	};
+	try {
+		let target = null;
+		for (let i = 0; i < 60 && !target; i++){
+			await sleep(250);
+			try {
+				const portLine = (await readFile(join(profile, 'DevToolsActivePort'), 'utf8')).split(/\r?\n/)[0].trim();
+				if (!portLine) continue;
+				const res = await fetch(`http://127.0.0.1:${portLine}/json/list`);
+				target = (await res.json()).find(t => t.type === 'page');
+			} catch (e) { /* not up yet */ }
+		}
+		if (!target) throw new Error('DevTools endpoint never came up');
+
+		ws = new WebSocket(target.webSocketDebuggerUrl);
+		await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
+		const events = [];
+		const pageErrors = [];
+		ws.onmessage = ev => {
+			const m = JSON.parse(ev.data);
+			if (m.id && pending.has(m.id)){
+				const p = pending.get(m.id); pending.delete(m.id);
+				if (m.error) p.reject(new Error(p.method + ': ' + JSON.stringify(m.error)));
+				else p.resolve(m.result);
+			} else if (m.method){
+				events.push(m.method);
+				if (m.method === 'Runtime.exceptionThrown'){
+					try { pageErrors.push(JSON.stringify(m.params.exceptionDetails).slice(0, 500)); } catch (e) { /* ignore */ }
+				}
+				if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error'){
+					try { pageErrors.push('console.error: ' + m.params.args.map(a => a.value ?? a.description ?? '').join(' ').slice(0, 300)); } catch (e) { /* ignore */ }
+				}
+			}
+		};
+		const evalJson = async expr => {
+			const r = await send(ws, 'Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true, timeout: 90000 });
+			return r && r.result ? r.result.value : null;
+		};
+		const probe = async () => JSON.parse(await evalJson(PROBE));
+		const shot = async out => {
+			const s = await send(ws, 'Page.captureScreenshot', { format: 'png' });
+			await writeFile(out, Buffer.from(s.data, 'base64'));
+			console.log('wrote', out);
+		};
+		const tap = async (x, y) => {
+			await send(ws, 'Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+			await sleep(60);
+			await send(ws, 'Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+		};
+		const click = async (x, y) => {
+			await send(ws, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+			await sleep(40);
+			await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+		};
+		const allUi = (p, want) => Object.entries(p.ui).filter(([,v]) => v !== want).map(([k,v]) => k + '=' + v).join(',');
+		const overlaps = p => {
+			const r = p.rects;
+			const hit = (a, b) => a && b && a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
+			const bad = [];
+			const controls = ['pad','ring','fire','ult','radar'];
+			for (const c of controls){
+				for (const bar of ['hotbar','weaponBar']) if (hit(r[c], r[bar])) bad.push(c + '∩' + bar);
+			}
+			for (let i = 0; i < controls.length; i++) for (let j = i + 1; j < controls.length; j++){
+				if (hit(r[controls[i]], r[controls[j]])) bad.push(controls[i] + '∩' + controls[j]);
+			}
+			for (const el of [...controls, 'hotbar', 'weaponBar']) if (hit(r[el], r.vitals)) bad.push(el + '∩vitals');
+			return bad.join(',');
+		};
+
+		await send(ws, 'Page.enable');
+		await send(ws, 'Runtime.enable');
+
+		// --- stage A: desktop, mouse-first --------------------------------------
+		await send(ws, 'Emulation.setDeviceMetricsOverride', { width: 1600, height: 900, deviceScaleFactor: 1, mobile: false });
+		await send(ws, 'Page.navigate', { url });
+		for (let i = 0; i < 80 && !events.includes('Page.loadEventFired'); i++) await sleep(250);
+		console.log('boot:', await evalJson(BOOT_WAIT));
+		await sleep(800);
+		let p = await probe();
+		console.log('A probe:', JSON.stringify(p));
+		check('A desktop boots into pc mode', p.mode === 'pc', p.mode);
+		check('A touch UI hidden on desktop', allUi(p, 'hidden') === '', allUi(p, 'hidden'));
+		await shot(outA);
+
+		// --- stage B: phone portrait, touch -------------------------------------
+		// Stage A's boot persisted craft-collapsed='0'; drop it so the reload is a
+		// true phone first-run (the touch default only applies with no stored pref).
+		await evalJson(`(()=>{ try{ localStorage.removeItem('mm_craft_collapsed_v1'); }catch(e){} return 'pref cleared'; })()`);
+		await send(ws, 'Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+		await send(ws, 'Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true, screenWidth: 390, screenHeight: 844 });
+		await send(ws, 'Page.reload');
+		await sleep(1200);
+		console.log('boot:', await evalJson(BOOT_WAIT));
+		await sleep(800);
+		p = await probe();
+		console.log('B probe (pre-tap):', JSON.stringify(p));
+		await tap(60, 180); // sky tap: also exercises the last-input-wins path
+		await sleep(250);
+		p = await probe();
+		console.log('B probe:', JSON.stringify(p));
+		check('B phone lands in touch mode', p.mode === 'touch', p.mode);
+		check('B touch UI shown on phone', allUi(p, 'shown') === '', allUi(p, 'shown'));
+		check('B craft panel boots collapsed on touch', p.craftOpen === false, 'open=' + p.craftOpen);
+		check('B portrait controls do not overlap', overlaps(p) === '', overlaps(p));
+		await shot(outB);
+
+		// --- stage C: hybrid — mouse press while touch-capable -------------------
+		await sleep(900); // clear the ghost-mouse grace window
+		await click(60, 180);
+		await sleep(250);
+		p = await probe();
+		console.log('C probe:', JSON.stringify(p));
+		check('C mouse press flips to pc mode', p.mode === 'pc', p.mode);
+		check('C touch UI hidden after mouse press', allUi(p, 'hidden') === '', allUi(p, 'hidden'));
+		await shot(outC);
+		await tap(60, 180);
+		await sleep(250);
+		p = await probe();
+		check('C tap flips back to touch mode', p.mode === 'touch', p.mode);
+
+		// --- stage D: phone landscape layout ------------------------------------
+		await send(ws, 'Emulation.setDeviceMetricsOverride', { width: 844, height: 390, deviceScaleFactor: 2, mobile: true, screenWidth: 844, screenHeight: 390 });
+		await sleep(600);
+		await tap(120, 100);
+		await sleep(250);
+		p = await probe();
+		console.log('D probe:', JSON.stringify(p));
+		check('D landscape stays in touch mode', p.mode === 'touch', p.mode);
+		check('D touch UI shown in landscape', allUi(p, 'shown') === '', allUi(p, 'shown'));
+		check('D landscape controls do not overlap', overlaps(p) === '', overlaps(p));
+		await shot(outD);
+
+		if (pageErrors.length) console.log('pageErrors:', pageErrors.slice(0, 5).join('\n---\n'));
+		if (failures){ console.error(failures + ' check(s) FAILED'); process.exitCode = 1; }
+		else console.log('mobile-controls-qa: all checks passed');
+	} finally {
+		try { if (ws) ws.close(); } catch (e) { /* closing */ }
+		await new Promise(res => {
+			if (process.platform === 'win32'){
+				const marker = profile.split(/[\\/]/).pop();
+				execFile('powershell', ['-NoProfile', '-Command',
+					`Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" | Where-Object { $_.CommandLine -like '*${marker}*' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }`
+				], () => res());
+			} else { try { proc.kill('SIGKILL'); } catch (e) { /* gone */ } res(); }
+		});
+		await sleep(600);
+		try { await rm(profile, { recursive: true, force: true }); } catch (e) { /* profile locked; temp dir */ }
+	}
+}
+
+main().catch(err => { console.error(err); process.exit(1); });

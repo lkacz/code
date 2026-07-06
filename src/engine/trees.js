@@ -1,6 +1,7 @@
 // Tree generation + falling system
 import { CHUNK_W, WORLD_H, T, SNOW_LINE, isAutumnLeaf, isLeaf } from '../constants.js';
 import { fallingWindResponseForMaterial, isPassableForFalling } from './material_physics.js';
+import { heroLoadWeight } from './hero_crush.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
 window.MM = window.MM || {};
 (function(){
@@ -173,6 +174,100 @@ window.MM = window.MM || {};
       }
     }
     return true;
+  }
+
+  function canPlantSurfaceTile(t){
+    return t===T.GRASS || t===T.SNOW || t===T.SAND || t===T.STONE || t===T.MUD;
+  }
+  function bushChanceFor(biome,island,s,patch){
+    if(island) return 0.10;
+    if(biome===0) return 0.14 + (patch>0.62 ? 0.10 : (patch>0.52 ? 0.05 : 0));
+    if(biome===1) return 0.13;
+    if(biome===2) return 0.07;
+    if(biome===4) return 0.18;
+    if(biome===7) return s<SNOW_LINE ? 0.035 : 0.06;
+    return 0.05;
+  }
+  function bushVariantFor(biome,island,wx,s){
+    if(island) return 'island';
+    if(biome===4) return 'bog';
+    if(biome===2 || s<SNOW_LINE) return WG.randSeed(wx+934)>0.66 ? 'tall' : 'round';
+    if(biome===7) return WG.randSeed(wx+935)>0.58 ? 'wide' : 'round';
+    if(biome===1) return WG.randSeed(wx+930)>0.62 ? 'wide' : 'round';
+    if(biome===0) return WG.randSeed(wx+931)>0.72 ? 'tall' : 'round';
+    return 'round';
+  }
+  function bushRadiusFor(variant){
+    if(variant==='wide' || variant==='bog' || variant==='island') return 2;
+    return 1;
+  }
+  function bushMaxHeightFor(variant){
+    if(variant==='tall') return 3;
+    if(variant==='round') return 2;
+    return 2;
+  }
+  function canGrowBushAt(arr,lx,s,variant){
+    if(!arr || s<2 || !canPlantSurfaceTile(rawTile(arr,lx,s))) return false;
+    const radius=bushRadiusFor(variant);
+    const height=bushMaxHeightFor(variant);
+    for(let dx=-radius; dx<=radius; dx++){
+      const x=lx+dx;
+      if(x<0 || x>=CHUNK_W) continue;
+      const foot=rawTile(arr,x,s);
+      if(foot!==T.AIR && !canPlantSurfaceTile(foot)) return false;
+      for(let dy=1; dy<=height; dy++){
+        const y=s-dy;
+        if(y<0 || rawTile(arr,x,y)!==T.AIR) return false;
+      }
+    }
+    const spacing=Math.max(2,radius+1);
+    for(let x=Math.max(0,lx-spacing); x<=Math.min(CHUNK_W-1,lx+spacing); x++){
+      for(let y=Math.max(0,s-height-3); y<=Math.min(WORLD_H-2,s+1); y++){
+        const t=rawTile(arr,x,y);
+        if(t===T.WOOD || rawTreeBase(arr,x,y) || isLeaf(t)) return false;
+      }
+    }
+    return true;
+  }
+  function buildBush(arr,lx,s,variant,wx){
+    function tileIndex(x,y){ return y*CHUNK_W+x; }
+    const id=generatedTreeId(wx,s,'bush:'+variant);
+    const randSeed=WG.randSeed;
+    function put(localX,y){
+      if(y>=0 && y<WORLD_H && localX>=0 && localX<CHUNK_W){
+        const idx=tileIndex(localX,y);
+        if(arr[idx]===T.AIR){
+          arr[idx]=T.LEAF;
+          markTreeTile(id, wx + (localX-lx), y);
+        }
+      }
+    }
+    put(lx,s-1);
+    if(variant==='tall'){
+      put(lx,s-2);
+      if(randSeed(wx*6.17+3)>0.36) put(lx,s-3);
+      if(randSeed(wx*6.17+5)>0.24) put(lx-1,s-1);
+      if(randSeed(wx*6.17+7)>0.24) put(lx+1,s-1);
+      if(randSeed(wx*6.17+9)>0.62) put(lx-1,s-2);
+      if(randSeed(wx*6.17+11)>0.62) put(lx+1,s-2);
+      return;
+    }
+    if(variant==='wide' || variant==='bog' || variant==='island'){
+      for(let dx=-2; dx<=2; dx++){
+        const edge=Math.abs(dx)===2;
+        if(!edge || randSeed(wx*5.11+dx*19+17)>0.30) put(lx+dx,s-1);
+      }
+      for(let dx=-1; dx<=1; dx++){
+        if(randSeed(wx*5.11+dx*23+41)>0.18) put(lx+dx,s-2);
+      }
+      if(variant==='bog' && randSeed(wx*5.11+83)>0.55) put(lx,s-3);
+      return;
+    }
+    if(randSeed(wx*4.71+13)>0.18) put(lx-1,s-1);
+    if(randSeed(wx*4.71+29)>0.18) put(lx+1,s-1);
+    if(randSeed(wx*4.71+43)>0.35) put(lx,s-2);
+    if(randSeed(wx*4.71+59)>0.72) put(lx-1,s-2);
+    if(randSeed(wx*4.71+61)>0.72) put(lx+1,s-2);
   }
 
   function buildTree(arr,lx,s,variant,wx){
@@ -425,6 +520,15 @@ window.MM = window.MM || {};
   // Felled blocks share pass-through rules with rigid falling solids, but still
   // collide with standing foliage so wood can crush or slide off tree crowns.
   function passThrough(t){ return !isLeaf(t) && isPassableForFalling(t); }
+  // Never solidify tree debris inside the hero — pieces hover on him like the
+  // falling-solids entities do, and settle once he steps away (same contract as
+  // falling.js playerBlocks). Forced settles (save-time settleAll) bypass this;
+  // the burial resolver in engine/hero_crush.js cleans those up next frame.
+  function heroBlocks(x,y){
+    const p=(typeof window!=='undefined' && window.player) ? window.player : null;
+    if(!p) return false;
+    return x+1 > p.x-p.w/2 && x < p.x+p.w/2 && y+1 > p.y-p.h/2 && y < p.y+p.h/2;
+  }
   function normalizeDir(dir){ return dir<0?-1:(dir>0?1:0); }
   function windSpeedAt(getTile,x,y){
     try{
@@ -565,12 +669,15 @@ window.MM = window.MM || {};
   }
   // Settle a felled block into the world without destroying terrain or water:
   // bump up out of any cell claimed meanwhile, displace water instead of deleting it.
-  function settleTreeBlock(getTile,setTile,b){
+  // Returns 'hero' when the resting cell overlaps the hero (unless force), so the
+  // caller keeps the piece loose instead of burying him.
+  function settleTreeBlock(getTile,setTile,b,force){
     const x=Math.floor(b.x);
     let y=Math.max(0, Math.min(WORLD_H-1, Math.floor(b.y)));
     while(y>0 && !passThrough(getTile(x,y))) y--;
     if(!passThrough(getTile(x,y))) return false;
     if(y+1<WORLD_H && standingTreeSupportAt(getTile,x,y+1)) return false;
+    if(!force && heroBlocks(x,y)) return 'hero';
     const was=getTile(x,y);
     if(was===T.WATER){ try{ if(MM.water && MM.water.displaceAt) MM.water.displaceAt(x,y,getTile,setTile); }catch(e){} }
     setTile(x,y,b.t);
@@ -584,8 +691,13 @@ window.MM = window.MM || {};
   function dropSeasonalLeaf(){
     return false;
   }
-  function dropToRest(getTile,setTile,b){
+  function dropToRest(getTile,setTile,b,force){
     const piece=makeFallingPiece(b.x,b.y,b.t,b.dir,b.hBudget);
+    const settle=()=>{
+      const res=settleTreeBlock(getTile,setTile,piece,force);
+      if(res==='hero'){ piece.onHero=true; fallingBlocks.push(piece); return false; } // hover on the hero until he moves
+      return res;
+    };
     let guard=0;
     while(guard++<80){
       while(piece.y>0 && !passThrough(getTile(piece.x,piece.y))) piece.y--;
@@ -596,9 +708,9 @@ window.MM = window.MM || {};
         return false;
       }
       if(tryRollOnPile(getTile,piece,null)) continue;
-      return settleTreeBlock(getTile,setTile,piece);
+      return settle();
     }
-    return settleTreeBlock(getTile,setTile,piece);
+    return settle();
   }
   function transformedTile(tree,tile,angle){
     const c=Math.cos(angle), s=Math.sin(angle);
@@ -615,14 +727,14 @@ window.MM = window.MM || {};
     const y=Math.max(0, Math.min(WORLD_H-1, pos.y));
     fallingBlocks.push(makeFallingPiece(pos.x,Math.max(0,y-1),tile.t,tree.dir));
   }
-  function landTree(getTile,setTile,tree,angle){
+  function landTree(getTile,setTile,tree,angle,force){
     const placed=new Set();
     const tiles=tree.tiles.map(tile=>({tile,pos:transformedTile(tree,tile,angle)})).sort((a,b)=>b.pos.y-a.pos.y);
     tiles.forEach(({tile,pos})=>{
       while(pos.y>0 && placed.has(pos.x+','+pos.y)) pos.y--;
       if(placed.has(pos.x+','+pos.y)) return;
       placed.add(pos.x+','+pos.y);
-      dropToRest(getTile,setTile,makeFallingPiece(pos.x,pos.y,tile.t,tree.dir));
+      dropToRest(getTile,setTile,makeFallingPiece(pos.x,pos.y,tile.t,tree.dir),force);
     });
   }
   function updateFallingTreesStep(getTile,setTile,dt){
@@ -903,13 +1015,15 @@ window.MM = window.MM || {};
     drainTreeQueues(getTile,setTile);
     const trees=[...fallingTrees];
     fallingTrees.length=0;
-    trees.forEach(tree=>landTree(getTile,setTile,tree,landedAngle(tree)));
+    // force=true: the save cannot persist loose pieces, so a piece hovering on
+    // the hero solidifies in place — the burial resolver re-loosens it next frame
+    trees.forEach(tree=>landTree(getTile,setTile,tree,landedAngle(tree),true));
     let guard=0;
     while((fallingBlocks.length || unstableTreeTiles.size || unstableFallenTreeTiles.size) && guard++<64){
       const blocks=[...fallingBlocks].sort((a,b)=>b.y-a.y);
       fallingBlocks.length=0;
       fallStepAccum=0;
-      blocks.forEach(b=>dropToRest(getTile,setTile,b));
+      blocks.forEach(b=>dropToRest(getTile,setTile,b,true));
       drainTreeQueues(getTile,setTile);
     }
   }
@@ -965,11 +1079,12 @@ window.MM = window.MM || {};
       const toRemove=[];
       for(const idx of order){
         const b=fallingBlocks[idx];
+        b.onHero=false; // re-set by the hover branches below
         applyWindToPiece(getTile,b,occ,STEP);
         const belowY=b.y+1;
         if(belowY>=WORLD_H){
-          settleTreeBlock(getTile,setTile,b);
-          toRemove.push(idx);
+          if(settleTreeBlock(getTile,setTile,b)!=='hero') toRemove.push(idx);
+          else b.onHero=true;
           continue;
         }
         const belowKey=key(b.x,belowY);
@@ -1001,8 +1116,8 @@ window.MM = window.MM || {};
           occ.add(key(b.x,b.y));
           continue;
         }
-        settleTreeBlock(getTile,setTile,b);
-        toRemove.push(idx);
+        if(settleTreeBlock(getTile,setTile,b)!=='hero') toRemove.push(idx);
+        else b.onHero=true;
       }
       if(toRemove.length){
         toRemove.sort((a,b)=>b-a).forEach(i=>fallingBlocks.splice(i,1));
@@ -1084,7 +1199,8 @@ window.MM = window.MM || {};
   }
 
   trees.buildTree = buildTree;
-  // Populate trees for a freshly generated terrain chunk array
+  trees.buildBush = buildBush;
+  // Populate trees and leaf-canopy bushes for a freshly generated terrain chunk array
   trees.populateChunk = function(arr,cx){
     clearChunk(cx);
     const {CHUNK_W} = MM; const WG = WORLDGEN; if(!WG) return;
@@ -1103,23 +1219,40 @@ window.MM = window.MM || {};
       else if(biome===4) chance=0.34; // swamp: visible mangrove pockets on mud banks
       else if(biome===7) chance= (s<MM.SNOW_LINE?0.04:0.015); // fewer at high elevation
       // Cluster patches in forests: use a low-frequency patch mask to boost chance locally
+      let patch = 0;
       if(biome===0){
-        const patch = WG.valueNoise(wx, 180, 7771);
+        patch = WG.valueNoise(wx, 180, 7771);
         if(patch>0.62) chance += 0.20; else if(patch>0.52) chance += 0.10;
       }
       const densityMul = (WG.settings && WG.settings.forestDensityMul) || 1;
-      if(WG.randSeed(wx*1.777) > Math.min(0.95, chance * densityMul)) continue;
       const sL=WG.surfaceHeight(wx-1), sR=WG.surfaceHeight(wx+1);
       const slopeL=Math.abs(s-sL), slopeR=Math.abs(s-sR);
       if(slopeL>7 || slopeR>7) continue; // steeper cliffs skip
       // Require solid footing: the surface tile may be water (swamp pool), a carved
       // cave mouth or a ravine — never float a tree over those
       const baseT=arr[s*CHUNK_W+lx];
-      if(baseT!==T.GRASS && baseT!==T.SNOW && baseT!==T.SAND && baseT!==T.STONE && baseT!==T.MUD) continue;
-      // Slightly relax valley steepness
-      const variant = island? 'palm' : (biome===2?'conifer': biome===4?'mangrove': biome===1? (WG.randSeed(wx+300)>0.5?'oak':'tallOak') : (WG.randSeed(wx+500)<0.80?'megaOak':'oak'));
-      if(!canGrowTreeAt(arr,lx,s,variant)) continue;
-      buildTree(arr,lx,s,variant,wx);
+      if(!canPlantSurfaceTile(baseT)) continue;
+      let plantedTree=false;
+      if(WG.randSeed(wx*1.777) <= Math.min(0.95, chance * densityMul)){
+        const variant = island? 'palm' : (biome===2?'conifer': biome===4?'mangrove': biome===1? (WG.randSeed(wx+300)>0.5?'oak':'tallOak') : (WG.randSeed(wx+500)<0.80?'megaOak':'oak'));
+        if(canGrowTreeAt(arr,lx,s,variant)){
+          buildTree(arr,lx,s,variant,wx);
+          plantedTree=true;
+        }
+      }
+      if(plantedTree) continue;
+      const bushVariant=bushVariantFor(biome,island,wx,s);
+      const bushRadius=bushRadiusFor(bushVariant);
+      let bushSlopeOk=true;
+      for(let dx=-bushRadius; dx<=bushRadius; dx++){
+        if(Math.abs(WG.surfaceHeight(wx+dx)-s)>1){ bushSlopeOk=false; break; }
+      }
+      if(!bushSlopeOk) continue;
+      const bushDensityMul=Math.max(0.35, Math.min(1.8, 0.75 + densityMul*0.25));
+      const bushChance=Math.min(0.72, bushChanceFor(biome,island,s,patch) * bushDensityMul);
+      if(WG.randSeed(wx*2.917+19) > bushChance) continue;
+      if(!canGrowBushAt(arr,lx,s,bushVariant)) continue;
+      buildBush(arr,lx,s,bushVariant,wx);
     }
   };
   trees.isTreeBase = isTreeBase;
@@ -1139,6 +1272,19 @@ window.MM = window.MM || {};
   trees.pruneChunk = pruneChunk;
   trees.resetIdentities = resetIdentities;
   trees.onTileChanged = onTileChanged;
+  // Fallen-debris probe for the hero crush resolver: tree wreckage over a buried
+  // hero counts as loose load, an intact standing structure does not.
+  trees.isFallenDebrisAt = (x,y)=>fallenTreeTiles.has(key(Math.floor(x),Math.floor(y)));
+  // Pieces hovering on the hero — main.js blocks jumping under them and applies
+  // crush pressure when the pile outweighs his Twardość capacity.
+  trees.heroRestingLoad = ()=>{
+    let count=0, weight=0;
+    for(const b of fallingBlocks){
+      if(!b.onHero || !heroBlocks(b.x,b.y)) continue;
+      count++; weight+=heroLoadWeight(b.t);
+    }
+    return {count,weight};
+  };
   trees._fallingTrees = fallingTrees;
   trees._fallingBlocks = fallingBlocks;
   trees._tileTreeIds = tileTreeIds;

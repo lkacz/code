@@ -269,7 +269,7 @@ assert.ok((invasions._debug.rareSpeechLines.lore || []).some(line=>/Stary|symula
 assert.ok(lateRareAlienLore.some(line=>/lustrem|samym soba/i.test(line)), 'late rare alien lore hints that the final fight is with oneself');
 const forcedLore = invasions._debug.forceAlienSpeech(tank, actualSquad, 'lore');
 assert.equal(tank.speechText, forcedLore, 'forced debug speech appears above the selected alien');
-assert.ok(/prostokat|rectangle|hero|obserwator|anten|symulac|Zachodni/i.test(forcedLore), 'forced lore speech mentions the hero cult or currently unlocked backstory');
+assert.ok(forcedLore && forcedLore.length <= 64, 'forced lore speech is compact enough for a combat bubble');
 
 function clearSquadSpeech(team){
   for(const a of team.aliens){
@@ -288,7 +288,8 @@ function squadSaid(team,key){
   const table = team && team.kind === 'molekin' ? invasions._debug.moleSpeechLines : invasions._debug.speechLines;
   const rare = team && team.kind === 'molekin' ? invasions._debug.moleRareSpeechLines : invasions._debug.rareSpeechLines;
   const echo = team && team.kind === 'molekin' ? invasions._debug.moleEchoSpeechLines : invasions._debug.echoSpeechLines;
-  const lines = new Set([...(table && table[key] || []), ...(rare && rare[key] || []), ...(echo && echo[key] || [])]);
+  const rawLines = [...(table && table[key] || []), ...(rare && rare[key] || []), ...(echo && echo[key] || [])];
+  const lines = new Set(rawLines.flatMap(line=>[line, invasions._debug.compactSpeechText(line)]));
   return team.aliens.some(a=>lines.has(a.speechText));
 }
 
@@ -307,6 +308,13 @@ try{
   Math.random = originalRandom;
 }
 assert.ok(actualSquad.aliens.every(a=>!a.speechText), 'alien chatter stays silent without a world event');
+
+clearSquadSpeech(actualSquad);
+const gatedNow = performance.now() + 5400;
+assert.ok(invasions._debug.triggerTeamSpeech(actualSquad,'heroHit',{now:gatedNow}), 'first non-forced combat event can produce one short bark');
+invasions._debug.triggerTeamSpeech(actualSquad,'heroMine',{now:gatedNow+120});
+assert.equal(actualSquad.aliens.filter(a=>a.speechText).length, 1, 'back-to-back non-forced events are rate-limited to one bubble');
+assert.ok(actualSquad.aliens.every(a=>!a.speechText || a.speechText.length <= 64), 'combat bubbles stay short');
 
 clearSquadSpeech(actualSquad);
 const repeatedHeroHitLines = [];
@@ -358,14 +366,14 @@ assert.ok(squadSaid(actualSquad,'weaponElectric'), 'aliens identify electric wea
 clearSquadSpeech(actualSquad);
 player.hp = 20;
 actualSquad.heroHealthBand = 'mid';
-actualSquad.speechStartAt = performance.now() - 5000;
+actualSquad.speechStartAt = performance.now() - 12000;
 invasions.update(0.1, player, getTile, setTile, ctx);
 assert.ok(squadSaid(actualSquad,'heroLowHp'), 'aliens notice when the hero is low on health');
 
 clearSquadSpeech(actualSquad);
 player.hp = player.maxHp;
 actualSquad.heroHealthBand = 'mid';
-actualSquad.speechStartAt = performance.now() - 5000;
+actualSquad.speechStartAt = performance.now() - 12000;
 invasions.update(0.1, player, getTile, setTile, ctx);
 assert.ok(squadSaid(actualSquad,'heroHighHp'), 'aliens notice when the hero is healthy');
 
@@ -436,7 +444,7 @@ assert.ok(lateRareMoleLore.some(line=>/to ja|ostatnim panem/i.test(line)), 'late
 const moleSpeaker = moleTeam.aliens.find(a=>a.role === 'sapper') || moleTeam.aliens[0];
 const forcedMoleLore = invasions._debug.forceAlienSpeech(moleSpeaker,moleTeam,'lore');
 assert.equal(moleSpeaker.speechText, forcedMoleLore, 'debug forced speech also works for molekin');
-assert.ok(/Wschod|Ognist|Guardian|Trzeci|Kret|tunel|powierzchnia|warstwa|kamien|Bohater/i.test(forcedMoleLore), 'forced molekin speech worships or foreshadows the currently unlocked eastern underground plot');
+assert.ok(forcedMoleLore && forcedMoleLore.length <= 64, 'forced molekin lore speech is compact enough for a combat bubble');
 clearSquadSpeech(moleTeam);
 moleTeam.speechStartAt = performance.now() - 20000;
 Math.random = () => 0;

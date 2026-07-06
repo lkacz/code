@@ -1,0 +1,153 @@
+// Vitals HUD model regression: the bottom-left status cluster's feel is a
+// contract — damage chips linger then drain, heals shimmer, low HP pulses,
+// floating numbers merge rapid hits, level-ups burst, buff rings track their
+// longest seen duration. Renderer is exercised separately by
+// tools/vitals-hud-qa.mjs (CDP screenshots); this covers the state machine.
+import assert from 'node:assert/strict';
+
+globalThis.window = globalThis;
+const { createVitalsModel } = await import('../src/engine/vitals_hud.js');
+
+const DT = 1 / 60;
+const base = { hp: 100, maxHp: 100, en: 40, enMax: 112, level: 10, xpInto: 979, xpNeed: 1343, buffs: [] };
+const inp = (over) => Object.assign({}, base, over);
+function run(m, input, seconds){
+	let st;
+	for (let t = 0; t < seconds; t += DT) st = m.update(input, DT);
+	return st;
+}
+
+// --- 1. first sample snaps, no intro tween, no ghost numbers
+{
+	const m = createVitalsModel();
+	const st = m.update(inp(), DT);
+	assert.equal(st.hp.fill, 1, 'first sample snaps HP fill');
+	assert.equal(st.en.fill, 40 / 112, 'first sample snaps EN fill');
+	assert.equal(st.deltas.length, 0, 'boot does not spawn damage numbers');
+	assert.equal(st.xp.lvlBurst, 0, 'boot does not fire a level-up burst');
+}
+
+// --- 2. damage: chip freezes at pre-hit fill, holds, then drains to the fill
+{
+	const m = createVitalsModel();
+	m.update(inp(), DT);
+	let st = m.update(inp({ hp: 60 }), DT);
+	assert.ok(st.hp.chip > 0.99, 'chip stays at the pre-hit level right after damage');
+	assert.ok(st.hp.fill < 0.95, 'fill starts dropping immediately');
+	assert.equal(st.deltas.length, 1, 'hit spawns one floating number');
+	assert.equal(Math.round(st.deltas[0].v), -40, 'floating number carries the damage amount');
+	st = run(m, inp({ hp: 60 }), 0.25);
+	assert.ok(st.hp.chip > st.hp.fill + 0.05, 'chip still lingers during the hold window');
+	st = run(m, inp({ hp: 60 }), 2.0);
+	assert.ok(st.hp.chip - st.hp.fill < 0.01, 'chip drains down to the live fill');
+	assert.ok(Math.abs(st.hp.fill - 0.6) < 0.01, 'fill converges on the true fraction');
+	assert.equal(st.deltas.length, 0, 'floating numbers age out');
+}
+
+// --- 3. rapid hits merge into one floating number
+{
+	const m = createVitalsModel();
+	m.update(inp(), DT);
+	m.update(inp({ hp: 90 }), DT);
+	run(m, inp({ hp: 90 }), 0.1);
+	const st = m.update(inp({ hp: 78 }), DT);
+	assert.equal(st.deltas.length, 1, 'rapid same-sign hits merge');
+	assert.equal(Math.round(st.deltas[0].v), -22, 'merged number sums the hits');
+}
+
+// --- 4. heal: shimmer fires, fill rises smoothly, number is positive
+{
+	const m = createVitalsModel();
+	m.update(inp({ hp: 50 }), DT);
+	let st = m.update(inp({ hp: 90 }), DT);
+	assert.ok(st.hp.shimmer > 0.9, 'heal triggers the shimmer sweep');
+	assert.ok(st.hp.fill < 0.85, 'heal fill animates instead of snapping');
+	assert.equal(Math.round(st.deltas[0].v), 40, 'heal spawns a positive number');
+	st = run(m, inp({ hp: 90 }), 1.5);
+	assert.ok(Math.abs(st.hp.fill - 0.9) < 0.01, 'heal fill converges');
+	assert.equal(st.hp.shimmer, 0, 'shimmer decays fully');
+}
+
+// --- 5. low-HP heartbeat only below the threshold, faster when lower
+{
+	const m = createVitalsModel();
+	m.update(inp({ hp: 40 }), DT);
+	let st = run(m, inp({ hp: 40 }), 0.5);
+	assert.equal(st.hp.low, false, '40% HP is not low');
+	assert.equal(st.hp.lowPulse, 0, 'no pulse above threshold');
+	st = run(m, inp({ hp: 20 }), 0.5);
+	assert.equal(st.hp.low, true, '20% HP is low');
+	assert.ok(st.hp.lowPulse > 0, 'pulse phase advances when low');
+	const m2 = createVitalsModel();
+	m2.update(inp({ hp: 0 }), DT);
+	const dead = run(m2, inp({ hp: 0 }), 0.3);
+	assert.equal(dead.hp.low, false, 'dead (0 HP) does not heartbeat');
+}
+
+// --- 6. energy: spend chip, charging flag on regen, full flag at cap
+{
+	const m = createVitalsModel();
+	m.update(inp({ en: 80 }), DT);
+	let st = m.update(inp({ en: 30 }), DT);
+	assert.ok(st.en.chip > st.en.fill + 0.05, 'energy spend leaves a chip ghost');
+	assert.equal(st.en.charging, false, 'spending is not charging');
+	st = run(m, inp({ en: 30 }), 1.0);
+	let en = 30;
+	for (let t = 0; t < 0.5; t += DT) { en += 20 * DT; st = m.update(inp({ en }), DT); }
+	assert.equal(st.en.charging, true, 'rising energy sets the charging flag');
+	st = run(m, inp({ en: 112 }), 1.5);
+	assert.equal(st.en.full, true, 'cap sets the full flag');
+	assert.equal(st.en.charging, false, 'steady full energy stops charging');
+}
+
+// --- 7. level-up: burst fires once, XP bar wraps to zero then refills
+{
+	const m = createVitalsModel();
+	m.update(inp({ level: 10, xpInto: 1300, xpNeed: 1343 }), DT);
+	run(m, inp({ level: 10, xpInto: 1300, xpNeed: 1343 }), 0.5);
+	let st = m.update(inp({ level: 11, xpInto: 20, xpNeed: 1600 }), DT);
+	assert.ok(st.xp.lvlBurst > 0.9, 'level-up fires the badge burst');
+	assert.ok(st.xp.fill < 0.05, 'XP bar wraps to zero on level-up');
+	st = run(m, inp({ level: 11, xpInto: 800, xpNeed: 1600 }), 1.5);
+	assert.equal(st.xp.lvlBurst, 0, 'burst decays');
+	assert.ok(Math.abs(st.xp.fill - 0.5) < 0.02, 'XP bar refills toward the new fraction');
+}
+
+// --- 8. buff rings: frac tracks longest seen duration, expiring flag, pruning
+{
+	const m = createVitalsModel();
+	m.update(inp({ buffs: [{ name: 'Moc', icon: '✦', t: 60 }] }), DT);
+	let st = m.update(inp({ buffs: [{ name: 'Moc', icon: '✦', t: 30 }] }), DT);
+	assert.ok(Math.abs(st.buffs[0].frac - 0.5) < 0.01, 'ring fraction = remaining / longest seen');
+	assert.equal(st.buffs[0].expiring, false, '30s is not expiring');
+	st = m.update(inp({ buffs: [{ name: 'Moc', icon: '✦', t: 8 }] }), DT);
+	assert.equal(st.buffs[0].expiring, true, 'under 10s flips to expiring');
+	st = m.update(inp({ buffs: [] }), DT);
+	assert.equal(st.buffs.length, 0, 'expired buffs drop out');
+	st = m.update(inp({ buffs: [{ name: 'Moc', icon: '✦', t: 20 }] }), DT);
+	assert.ok(Math.abs(st.buffs[0].frac - 1) < 0.01, 're-applied buff gets a fresh ring, not the stale max');
+}
+
+// --- 9. ambient trickle drains must not freeze the chip ghost (survival cold,
+// beam upkeep etc. drain every frame; only discrete hits refresh the hold)
+{
+	const m = createVitalsModel();
+	m.update(inp({ hp: 100, en: 112 }), DT);
+	let hp = 100, en = 112, st;
+	for (let t = 0; t < 2; t += DT){ hp -= 3 * DT; en -= 8 * DT; st = m.update(inp({ hp, en }), DT); }
+	assert.ok(st.hp.chip - st.hp.fill < 0.05, 'slow HP drain: chip hugs the fill');
+	assert.ok(st.en.chip - st.en.fill < 0.05, 'ambient energy drain: chip hugs the fill');
+}
+
+// --- 10. degenerate inputs stay finite
+{
+	const m = createVitalsModel();
+	const st = m.update({ hp: 5, maxHp: 0, en: 3, enMax: 0, level: 1, xpInto: 0, xpNeed: 0, buffs: null }, DT);
+	assert.equal(st.hp.fill, 0, 'zero maxHp maps to empty, not NaN');
+	assert.equal(st.en.fill, 0, 'zero enMax maps to empty, not NaN');
+	assert.equal(st.xp.fill, 0, 'zero xpNeed maps to empty, not NaN');
+	const st2 = m.update(inp({ hp: 50 }), 999);
+	assert.ok(isFinite(st2.hp.fill) && st2.hp.fill >= 0 && st2.hp.fill <= 1, 'huge dt is clamped');
+}
+
+console.log('vitals-hud-sim: all assertions passed');

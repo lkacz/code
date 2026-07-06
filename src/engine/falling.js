@@ -31,6 +31,7 @@ import {
   structuralRubbleRollLimit,
   structuralSupportStrengthForMaterial
 } from './material_physics.js';
+import { heroLoadWeight } from './hero_crush.js';
 window.MM = window.MM || {};
 (function(){
   const G_AIR = 60,  G_WATER = 25;            // gravity (tiles/s^2); buoyancy reduces it in water
@@ -256,6 +257,9 @@ window.MM = window.MM || {};
   function objectAnchorAt(x,y){
     if(y+1>=WORLD_BOTTOM) return true;
     if(isObjectFooting(getTile(x,y+1))) return true;
+    // Sky-island relics (solar gear etc.) legitimately rest on natural island
+    // fabric like glass shells or meteor dust.
+    if(isNaturalSkyCohesionAt(x,y+1,getTile(x,y+1))) return true;
     if(isObjectBrace(getTile(x-1,y)) || isObjectBrace(getTile(x+1,y)) || isObjectBrace(getTile(x,y-1))) return true;
     return false;
   }
@@ -320,6 +324,7 @@ window.MM = window.MM || {};
       if(isFragileFalling(support)) breakFragile(x,y);
       else spawn(x,y,support,isRubbleTrackedMaterial(support),0.85);
       queueAroundRemoval(x,y);
+      releaseBackgroundAt(x,y);
     }
   }
   function processDynamoCompositeAt(x,y,processed){
@@ -343,11 +348,63 @@ window.MM = window.MM || {};
       spawn(c.x,c.y,c.t,false);
       queueAroundRemoval(c.x,c.y);
     }
+    releaseBackgroundCluster(cells);
     return true;
   }
   function isLoadBearingSupport(t){ return isLoadBearingSupportTile(t); }
   function isStructuralFootingSupport(t){ return isLoadBearingSupport(t) || isWeakFillMaterial(t); }
   function spawn(x,y,t,rubble,stress){ active.push({x,yFloat:y,type:t,vy:0,wet:false,rubble:!!rubble,windCarry:0,stress:Math.max(0,Math.min(1,stress||0))}); }
+  // When physics tears a foreground cell out of a structure, the back wall
+  // behind it (house/city interior backdrop on the construction-background
+  // layer) breaks loose with it: it leaves the background layer and falls as an
+  // ordinary foreground block. Called only at grid-cell collapse sites — never
+  // from entity-landing shatter, which happens at unrelated coordinates.
+  function releaseBackgroundAt(x,y){
+    try{
+      const w=window.MM && MM.world;
+      if(!w || !w.getConstructionBackground || !w.clearConstructionBackground) return;
+      const bg=w.getConstructionBackground(x,y);
+      if(!bg || bg===T.AIR) return;
+      w.clearConstructionBackground(x,y);
+      if(isFragileFalling(bg)){ breakFragile(x,y); return; }
+      if(passable(getTile(x,y))) spawn(x,y,bg,isRubbleTrackedMaterial(bg),0.75);
+      // else: an intact foreground block still fills the cell — the wall face
+      // behind it simply crumbles away.
+    }catch(e){}
+  }
+  // Interior back walls live behind AIR cells, so a collapsing shell never
+  // overlaps them directly. When a whole cluster breaks loose, peel every
+  // contiguous backdrop region touching the released cells: the rooms those
+  // back walls belonged to are gone, and the panels fall as foreground blocks
+  // instead of hovering as a ghost outline of the old building.
+  function releaseBackgroundCluster(cells){
+    try{
+      const w=window.MM && MM.world;
+      if(!w || !w.getConstructionBackground || !w.clearConstructionBackground) return;
+      const stack=[];
+      for(const c of cells){
+        const cx=Number.isFinite(c.x)?c.x:null;
+        if(cx===null) continue;
+        for(const d of [[0,0],[1,0],[-1,0],[0,1],[0,-1]]){
+          if(w.getConstructionBackground(c.x+d[0],c.y+d[1])!==T.AIR) stack.push([c.x+d[0],c.y+d[1]]);
+        }
+      }
+      if(!stack.length) return;
+      const seen=new Set();
+      let released=0;
+      while(stack.length && released<512){
+        const cell=stack.pop();
+        const bx=cell[0], by=cell[1];
+        const k=bx+','+by;
+        if(seen.has(k)) continue;
+        seen.add(k);
+        if(w.getConstructionBackground(bx,by)===T.AIR) continue;
+        releaseBackgroundAt(bx,by);
+        released++;
+        stack.push([bx+1,by],[bx-1,by],[bx,by+1],[bx,by-1]);
+      }
+    }catch(e){}
+  }
   function spawnSand(x,y){ sandActive.push({x,yFloat:y,vy:0,wet:false,windCarry:0}); }
   function isSettledRubble(x,y){
     const k=key(x,y);
@@ -408,6 +465,27 @@ window.MM = window.MM || {};
 
   // Never solidify a tile inside the player — the entity rests on them until they move
   function playerBlocks(x,y){ const p=window.player; if(!p) return false; return x+1 > p.x-p.w/2 && x < p.x+p.w/2 && y+1 > p.y-p.h/2 && y < p.y+p.h/2; }
+  // Live-settle sentinel: the roll/stack target landed on the hero — keep the
+  // entity hovering instead of materializing a tile onto him (returned by
+  // occupy/settleSand/settleRubble when force is falsy).
+  const HERO_REST=-2;
+  // Load currently resting on the hero (hovering entities). main.js uses this to
+  // block jumping under a pile — jump-spam used to ratchet the hero up through
+  // his own debris, extruding a 1-wide chimney — and to crush when it is too heavy.
+  function heroRestingLoad(){
+    let count=0, weight=0;
+    for(const b of active){
+      if(b.vy!==0) continue;
+      if(!playerBlocks(b.x,Math.floor(b.yFloat))) continue;
+      count++; weight+=heroLoadWeight(b.type);
+    }
+    for(const s of sandActive){
+      if(s.vy!==0) continue;
+      if(!playerBlocks(s.x,Math.floor(s.yFloat))) continue;
+      count++; weight+=heroLoadWeight(T.SAND);
+    }
+    return {count,weight};
+  }
   function rubbleCrushes(t){ return isObjectCrushableSupportTile(t); }
   function crushTile(x,y){
     const t=getTile(x,y);
@@ -417,12 +495,24 @@ window.MM = window.MM || {};
     queueAroundRemoval(x,y);
     if(isFragileFalling(t)) breakFragile(x,y);
     else spawn(x,y,t,isRubbleTrackedMaterial(t),0.85);
+    releaseBackgroundAt(x,y);
     return true;
   }
 
-  // Write a settled solid into the world, displacing (not destroying) any water there
-  function occupy(x,y,type){
+  // Write a settled solid into the world, displacing (not destroying) any water there.
+  // The hero is a block too: live settles that land on him return HERO_REST (the
+  // entity keeps hovering); forced settles (autosave settleAll, overload culling)
+  // may not lose mass, so they stack over his head instead — never into his body.
+  // If the column above him is sealed, force falls through to the old cell and
+  // the burial resolver (engine/hero_crush.js) sorts it out next frame.
+  function occupy(x,y,type,force){
     let yy=y; while(yy>WORLD_TOP && !passable(getTile(x,yy))) yy--; // cell may have been claimed this frame — stack upward
+    if(playerBlocks(x,yy)){
+      if(!force) return HERO_REST;
+      let hy=yy;
+      while(hy>WORLD_TOP && (playerBlocks(x,hy) || !passable(getTile(x,hy)))) hy--;
+      if(passable(getTile(x,hy))) yy=hy;
+    }
     const was=getTile(x,yy);
     if(was===T.WATER) displaceWater(x,yy);
     setTile(x,yy,type);
@@ -517,6 +607,7 @@ window.MM = window.MM || {};
         setTile(c.x,c.y,T.AIR);
         spawn(c.x,c.y,T.GLASS);
         queueAroundRemoval(c.x,c.y);
+        releaseBackgroundAt(c.x,c.y);
       }
     }
     return cluster.length>0;
@@ -596,6 +687,7 @@ window.MM = window.MM || {};
       if(getTile(c.x,c.y)===c.t) setTile(c.x,c.y,T.AIR);
       queueAroundRemoval(c.x,c.y);
     }
+    releaseBackgroundCluster(cells);
     const ordered=[...cells].sort((a,b)=>b.y-a.y);
     const minX=cells.reduce((m,c)=>Math.min(m,c.x),Infinity);
     const maxX=cells.reduce((m,c)=>Math.max(m,c.x),-Infinity);
@@ -745,6 +837,7 @@ window.MM = window.MM || {};
       if(isFragileFalling(below)) breakFragile(x,y+1);
       else spawn(x,y+1,below,isRubbleTrackedMaterial(below),0.85);
       queueAroundRemoval(x,y+1);
+      releaseBackgroundAt(x,y+1);
     }
     setTile(x,y,T.AIR);
     spawn(x,y,t,false);
@@ -780,7 +873,7 @@ window.MM = window.MM || {};
     markQuiet(x,y);
     return true;
   }
-  function settleSand(sx,fromY){
+  function settleSand(sx,fromY,force){
     let x=Math.floor(sx);
     if(!Number.isFinite(x)) x=0;
     let y=dropY(x,fromY);
@@ -791,6 +884,14 @@ window.MM = window.MM || {};
       if(!dir) break;
       x+=dir;
       y=dropY(x,y+1);
+    }
+    // The hero is a block: live grains landing on him keep hovering; forced
+    // settles pile the grain over his head rather than into his body (mirrors occupy())
+    if(playerBlocks(x,y)){
+      if(!force) return HERO_REST;
+      let hy=y;
+      while(hy>WORLD_TOP && (playerBlocks(x,hy) || !passable(getTile(x,hy)))) hy--;
+      if(passable(getTile(x,hy))) y=hy;
     }
     if(!passable(getTile(x,y))) return -1;
     const was=getTile(x,y);
@@ -816,7 +917,7 @@ window.MM = window.MM || {};
     const bias=type===T.STEEL ? 1 : -1;
     return ((originX + y + step + bias) & 1) ? 1 : -1;
   }
-  function settleRubble(sx,fromY,type){
+  function settleRubble(sx,fromY,type,force){
     let x=Math.floor(sx);
     if(!Number.isFinite(x)) x=0;
     let y=clampY(fromY);
@@ -843,7 +944,8 @@ window.MM = window.MM || {};
         break;
       }
     }
-    const restY=occupy(x,y,type);
+    const restY=occupy(x,y,type,force);
+    if(restY===HERO_REST) return HERO_REST;
     markSettledRubble(x,restY,type);
     queueAroundSettle(x,restY);
     return restY;
@@ -881,6 +983,9 @@ window.MM = window.MM || {};
       quietStable.delete(ck);
     }
     const t=getTile(x,y);
+    // Natural sky fabric (island shells, glass/dust ribbons at y<0 the player did
+    // not place) is exempt from every fall path, mirroring shouldAuditTile.
+    if(!trackedBuild && isNaturalSkyCohesionAt(x,y,t)){ markQuiet(x,y); return; }
     if(t===T.SAND){
       if(y+1>=WORLD_BOTTOM) return; // bottom row is bedrock-stable
       if(passable(getTile(x,y+1))){ release(x,y); return; }
@@ -895,7 +1000,7 @@ window.MM = window.MM || {};
     } else if(trackedBuild){
       if(processPlayerBuiltAt(x,y,processed)) return;
     } else if(isLooseRigid(t)){
-      if(y+1<WORLD_BOTTOM && passable(getTile(x,y+1))){ setTile(x,y,T.AIR); spawn(x,y,t); queueAroundRemoval(x,y); }
+      if(y+1<WORLD_BOTTOM && passable(getTile(x,y+1))){ setTile(x,y,T.AIR); spawn(x,y,t); queueAroundRemoval(x,y); releaseBackgroundAt(x,y); }
     } else if(isFragileFalling(t)){
       if(processFragileAt(x,y,processed)) return;
     } else if(t===T.WIRE){
@@ -940,7 +1045,9 @@ window.MM = window.MM || {};
   function isCityLikeCluster(cluster, hasReinforced){
     const wg=window.MM && MM.worldGen;
     if(!wg || !wg.biomeType) return !!hasReinforced;
-    for(const c of cluster){ try{ if(wg.biomeType(c.x)===8) return true; }catch(e){} }
+    // Only surface cells make a cluster "city-like": sky islands hovering above a
+    // devastated-city district must not inherit its collapse rules.
+    for(const c of cluster){ try{ if(c.y>=0 && wg.biomeType(c.x)===8) return true; }catch(e){} }
     return false;
   }
   function isCityTerrainAnchor(x,y,t){
@@ -963,7 +1070,10 @@ window.MM = window.MM || {};
     return run>=32;
   }
   function isStructuralAnchor(x,y,t){
-    return naturalFloatingAnchorAt(x,y,t) || naturalFloatingAnchorNear(x,y) || isCityTerrainAnchor(x,y,t) || isWideStructuralSlabAnchor(x,y,t);
+    // Natural sky-island fabric (basalt/granite keels etc. at y<0 that the player
+    // did not place) self-anchors: the audit already exempts it (shouldAuditTile),
+    // and the disturbance path must agree or mining near an island rains it down.
+    return naturalFloatingAnchorAt(x,y,t) || naturalFloatingAnchorNear(x,y) || isNaturalSkyCohesionAt(x,y,t) || isCityTerrainAnchor(x,y,t) || isWideStructuralSlabAnchor(x,y,t);
   }
   function isCityColumn(x){
     const wg=window.MM && MM.worldGen;
@@ -1521,6 +1631,7 @@ window.MM = window.MM || {};
     if(isFragileFalling(t)) breakFragile(x,y);
     else if(isRubbleTrackedMaterial(t) || isPlayerBuiltMaterial(t) || isStructural(t)) spawn(x,y,t,true,ratio);
     queueAroundRemoval(x,y);
+    releaseBackgroundAt(x,y);
     return true;
   }
   function crushOverloadedBearingSupports(best,componentKeys){
@@ -1549,6 +1660,7 @@ window.MM = window.MM || {};
   }
   function releaseBuiltCells(cells){
     if(!cells.length) return false;
+    const released=[];
     for(const c of cells){
       const t=getTile(c.x,c.y);
       if(t!==c.t) continue;
@@ -1559,7 +1671,9 @@ window.MM = window.MM || {};
       if(c.t===T.SAND) spawnSand(c.x,c.y);
       else spawn(c.x,c.y,c.t,isRubbleTrackedMaterial(c.t),Number.isFinite(c.stress)?c.stress:1);
       queueAroundRemoval(c.x,c.y);
+      released.push(c);
     }
+    releaseBackgroundCluster(released);
     return true;
   }
   function processPlayerBuiltAt(sx,sy,processed){
@@ -1670,18 +1784,19 @@ window.MM = window.MM || {};
     }
     // Anything that sat on the cluster (sand, diamonds) is now unsupported
     for(const c of falling) queueAroundRemoval(c.x,c.y);
+    releaseBackgroundCluster(falling);
     return falling.length>0;
   }
 
   // Freeze in-flight material into tiles so it can never be lost. Sand gets a
   // granular side-roll here too; otherwise autosave can turn a cascade into a chimney.
   function dropToRest(x, fromY, type, rubble){
-    if(type===T.SAND) return settleSand(x,fromY);
+    if(type===T.SAND) return settleSand(x,fromY,true);
     if(isFragileFalling(type)) return breakFragile(x,fromY);
-    if(rubble && isRubbleTrackedMaterial(type)) return settleRubble(x,fromY,type);
+    if(rubble && isRubbleTrackedMaterial(type)) return settleRubble(x,fromY,type,true);
     let y=clampY(fromY);
     while(y<WORLD_BOTTOM-1 && passable(getTile(x,y+1))) y++;
-    const restY=occupy(x,y,type);
+    const restY=occupy(x,y,type,true);
     queueCheck(x,restY);
     return restY;
   }
@@ -1741,8 +1856,9 @@ window.MM = window.MM || {};
       if(settledAt!==null){
         if(playerBlocks(b.x,settledAt)){ b.vy=0; b.yFloat=settledAt; continue; } // rest on the player until they move
         if(isFragileFalling(b.type)){ breakFragile(b.x,settledAt); active.splice(i,1); continue; }
-        if(b.rubble && isRubbleTrackedMaterial(b.type)) settleRubble(b.x,settledAt,b.type);
-        else occupy(b.x,settledAt,b.type);
+        // roll/stack target may land on the hero even when settledAt did not — hover, never bury
+        const rest=(b.rubble && isRubbleTrackedMaterial(b.type)) ? settleRubble(b.x,settledAt,b.type) : occupy(b.x,settledAt,b.type);
+        if(rest===HERO_REST){ b.vy=0; b.yFloat=settledAt; continue; }
         active.splice(i,1);
       }
     }
@@ -1780,7 +1896,7 @@ window.MM = window.MM || {};
         }
       }
       if(playerBlocks(s.x,yi)){ s.vy=0; s.yFloat=yi; continue; }
-      settleSand(s.x,yi);
+      if(settleSand(s.x,yi)===HERO_REST){ s.vy=0; s.yFloat=yi; continue; } // roll target landed on the hero
       sandActive.splice(i,1);
     }
   }
@@ -2013,6 +2129,15 @@ window.MM = window.MM || {};
   }
   function maybeStart(x,y){ queueCheck(x,y); }
   function isPlayerBuiltAt(x,y){ return isTrackedPlayerBuild(Math.floor(x),Math.floor(y)); }
+  // Re-loosen a tile the burial resolver pulled off the hero: the entity rests
+  // on him (playerBlocks) and settles normally once he steps away.
+  function spawnLoose(x,y,t){
+    if(!validFallingType(t)) return false;
+    x=Math.floor(x); y=clampY(y);
+    if(t===T.SAND) spawnSand(x,y); else spawn(x,y,t,isRubbleTrackedMaterial(t));
+    return true;
+  }
+  function isSettledRubbleAt(x,y){ return isSettledRubble(Math.floor(x),Math.floor(y)); }
 
   function reset(){ active.length=0; sandActive.length=0; unstable.clear(); quietStable.clear(); auditJobs.length=0; auditPending.clear(); auditLast.clear(); manualCityBuilt.clear(); playerBuilt.clear(); buildStress.clear(); buildStressFlow.clear(); buildBreaks.length=0; settledRubble.clear(); protectedBuilds.clear(); }
   function metrics(){ return {queue:unstable.size, audit:auditJobs.length, active:active.length, sand:sandActive.length, debris:settledRubble.size, built:playerBuilt.size, stress:buildStress.size, breaks:buildBreaks.length, protected:protectedBuilds.size}; }
@@ -2085,7 +2210,7 @@ window.MM = window.MM || {};
     };
   }
 
-  MM.fallingSolids={init,update,draw,onTileRemoved,onTilesChangedBatch,maybeStart,reset,recheckNeighborhood,afterPlacement,canSupportPlacement,isPlayerBuiltAt,auditChunks,settleAll,snapshot,restore,metrics,protectStructure,protectBuild,unprotectBuild,isProtectedBuild,_debug};
+  MM.fallingSolids={init,update,draw,onTileRemoved,onTilesChangedBatch,maybeStart,reset,recheckNeighborhood,afterPlacement,canSupportPlacement,isPlayerBuiltAt,spawnLoose,isSettledRubbleAt,heroRestingLoad,auditChunks,settleAll,snapshot,restore,metrics,protectStructure,protectBuild,unprotectBuild,isProtectedBuild,_debug};
 })();
 // ESM export (progressive migration)
 export const fallingSolids = (typeof window!=='undefined' && window.MM) ? window.MM.fallingSolids : undefined;

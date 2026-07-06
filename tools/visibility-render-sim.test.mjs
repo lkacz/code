@@ -295,9 +295,10 @@ assert.match(mainSource, /FALLING && FALLING\.auditChunks\) FALLING\.auditChunks
 assert.match(mainSource, /function clearDebugGases\(\)[\s\S]*const ref=normalizeWorldChunkRef\(k\)[\s\S]*originY=ref\.base \? 0 : worldSectionOriginY\(ref\.sy\)/, 'gas debug cleanup scans section-qualified sky and deep chunk arrays');
 assert.match(mainSource, /function debugRigCellsClear\(cells\)[\s\S]*worldYInBounds\(cell\.y\)/, 'debug rig placement accepts valid sky and deep world coordinates');
 assert.match(mainSource, /function nearestDebugDynamoSlot\(\)[\s\S]*Math\.max\(worldMinY\(\),cy-28\)[\s\S]*Math\.min\(worldMaxY\(\)-1,cy\+28\)/, 'debug power scans search around the hero across extended vertical bounds');
-assert.match(mainSource, /function drawSeamSafeChunkCanvas\(canvas, dx, dy\)/, 'chunk renderer has a seam-safe blit helper');
-assert.match(mainSource, /ctx\.drawImage\(canvas,0,0,1,sh,dx-overlap,dy,overlap,sh\);/, 'chunk renderer overlaps the left edge strip to hide subpixel gaps');
-assert.match(mainSource, /ctx\.drawImage\(canvas,sw-1,0,1,sh,dx\+sw,dy,overlap,sh\);/, 'chunk renderer overlaps the right edge strip to hide subpixel gaps');
+assert.match(mainSource, /function drawSeamSafeChunkCanvas\(canvas, dx, dy, clipX0, clipY0, clipX1, clipY1\)/, 'chunk renderer has a seam-safe blit helper that clips to the view window');
+assert.match(mainSource, /ctx\.drawImage\(canvas,sx0,sy0,sx1-sx0,sy1-sy0,dx\+sx0,dy\+sy0,sx1-sx0,sy1-sy0\);/, 'chunk blits submit only the visible sub-rect of each section canvas');
+assert.match(mainSource, /if\(sx0===0\) ctx\.drawImage\(canvas,0,sy0,1,sy1-sy0,dx-overlap,dy\+sy0,overlap,sy1-sy0\);/, 'chunk renderer overlaps the left edge strip to hide subpixel gaps');
+assert.match(mainSource, /if\(sx1===sw\) ctx\.drawImage\(canvas,sw-1,sy0,1,sy1-sy0,dx\+sw,dy\+sy0,overlap,sy1-sy0\);/, 'chunk renderer overlaps the right edge strip to hide subpixel gaps');
 assert.match(mainSource, /drawSeamSafeChunkCanvas\(entry\.canvas, localLayer\?\(cx\*CHUNK_W-camDrawX\)\*TILE:chunkXpx/, 'chunk blits use camera-local x coordinates when precision-safe rendering is active');
 assert.match(mainSource, /const chunkRenderDirty = new Map/, 'chunk cache tracks dirty row bands for small tile edits');
 assert.match(mainSource, /function markChunkRenderDirty\(cx,y,pad,baseVersion,nextVersion\)/, 'tile edits record a partial chunk-cache dirty band');

@@ -10,7 +10,7 @@
   <style>
     :root{ --cell:64px; --btn:48px; --mine:76px; }
     @media (max-height:700px),(max-width:420px){ :root{ --cell:56px; --btn:42px; --mine:64px; } }
-    html,body{ margin:0; padding:0; height:100%; background:#0b0f16; color:#e8e8e8; font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,'Helvetica Neue',Arial,'Noto Sans',sans-serif; touch-action:none; user-select:none; overscroll-behavior:none; }
+    html,body{ margin:0; padding:0; height:100%; background:#0b0f16; color:#e8e8e8; font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,'Helvetica Neue',Arial,'Noto Sans',sans-serif; touch-action:none; user-select:none; overscroll-behavior:none; -webkit-tap-highlight-color:rgba(0,0,0,0); }
     canvas{ display:block; width:100vw; height:100vh; }
     #ui{ position:fixed; inset:0; pointer-events:none; }
     #hud{ position:absolute; left:8px; right:8px; top:8px; display:grid; grid-template-columns:minmax(0,1fr) auto auto auto auto; gap:8px; align-items:start; }
@@ -37,11 +37,12 @@
   #menuPanel input{ background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 6px; font-size:12px; width:110px; }
   #menuPanel .hint{ font-size:11px; opacity:.75; }
     @media (max-width:760px){ #hud{ grid-template-columns:minmax(0,1fr) auto auto auto; } #taskPanel{ grid-column:1 / span 2; grid-row:2; max-width:min(520px,calc(100vw - 108px)); } }
-    #craft{ position:absolute; left:8px; top:54px; pointer-events:auto; display:flex; flex-direction:column; gap:8px; width:min(560px,calc(100vw - 16px)); max-height:calc(100vh - 92px); overflow:hidden; overscroll-behavior:contain; color:#eef4fb; background:rgba(13,17,24,.88); border:1px solid rgba(255,255,255,.14); border-radius:12px; padding:9px; font-size:12px; box-shadow:0 12px 30px rgba(0,0,0,.45); backdrop-filter:blur(10px); }
+    #craft{ position:absolute; left:8px; top:54px; pointer-events:auto; display:flex; flex-direction:column; gap:8px; width:min(560px,calc(100vw - 16px)); max-height:calc(100vh - 92px); overflow:hidden; overscroll-behavior:contain; color:#eef4fb; background:rgba(13,17,24,.9); border:1px solid rgba(255,255,255,.14); border-radius:14px; padding:9px; font-size:12px; box-shadow:0 12px 30px rgba(0,0,0,.45); backdrop-filter:blur(10px); }
     #craft .craftHeader{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin:-9px -9px 0; padding:9px; background:rgba(8,11,17,.82); border-bottom:1px solid rgba(255,255,255,.08); }
     #craft .craftTitleWrap{ display:flex; align-items:baseline; gap:8px; min-width:0; }
     #craft .craftTitle{ font-size:13px; white-space:nowrap; }
     #craft .craftSummary{ color:#aeb9c7; font-size:11px; white-space:nowrap; }
+    #craft .craftSummary.hasNew{ color:#ffd54a; font-weight:700; }
     #craft .craftBody{ display:flex; flex-direction:column; gap:7px; min-height:0; }
     #craftToggle{ min-width:32px; padding:3px 8px; line-height:1.1; }
     #craft[data-collapsed="true"]{ width:auto; overflow:hidden; }
@@ -49,39 +50,101 @@
     #craft .craftToolbar{ display:flex; gap:6px; }
     #craftSearch{ width:100%; min-width:0; background:rgba(255,255,255,.08); color:#f4f7fb; border:1px solid rgba(255,255,255,.16); border-radius:8px; padding:7px 9px; font-size:12px; outline:none; }
     #craftSearch:focus{ border-color:#58a6ff; box-shadow:0 0 0 2px rgba(88,166,255,.22); }
+    #craft .craftFilterBtn{ flex:0 0 auto; border:1px solid rgba(255,255,255,.16); border-radius:8px; background:rgba(255,255,255,.07); color:#cfdae7; padding:6px 9px; font-size:11px; font-weight:700; cursor:pointer; white-space:nowrap; transition:background .12s ease,color .12s ease; }
+    #craft .craftFilterBtn.on{ background:rgba(74,222,128,.22); border-color:rgba(91,206,143,.6); color:#b7f4cd; }
     #craft .craftTabs{ display:flex; gap:5px; overflow-x:auto; padding-bottom:2px; scrollbar-width:thin; }
-    #craft .craftTab{ flex:0 0 auto; border:1px solid rgba(255,255,255,.12); border-radius:8px; background:rgba(255,255,255,.07); color:#dce5ef; padding:5px 8px; font-size:11px; font-weight:700; cursor:pointer; }
+    #craft .craftTab{ position:relative; flex:0 0 auto; display:inline-flex; align-items:center; gap:5px; border:1px solid rgba(255,255,255,.12); border-radius:8px; background:rgba(255,255,255,.07); color:#dce5ef; padding:5px 8px; font-size:11px; font-weight:700; cursor:pointer; transition:background .12s ease; }
+    #craft .craftTab:hover{ background:rgba(255,255,255,.12); }
     #craft .craftTab.selected{ background:#2c7ef8; color:#fff; border-color:rgba(255,255,255,.26); }
+    #craft .craftTabCount{ display:inline-flex; align-items:center; justify-content:center; min-width:16px; height:15px; padding:0 4px; border-radius:999px; background:rgba(74,222,128,.28); color:#b7f4cd; font-size:10px; font-weight:800; }
+    #craft .craftTab.selected .craftTabCount{ background:rgba(255,255,255,.28); color:#fff; }
+    #craft .craftTabNew{ position:absolute; top:-3px; right:-3px; width:8px; height:8px; border-radius:50%; background:#ffd54a; box-shadow:0 0 6px rgba(255,213,74,.9); }
     #craft .craftContent{ display:grid; grid-template-columns:minmax(210px,1fr) minmax(190px,.9fr); gap:8px; min-height:0; }
-    #craft .craftList{ display:flex; flex-direction:column; gap:6px; min-height:0; max-height:min(54vh,430px); overflow-y:auto; padding-right:2px; }
-    #craft .craftRecipe{ display:flex; flex-direction:column; gap:5px; width:100%; min-height:58px; text-align:left; color:#e8eef6; background:rgba(255,255,255,.075); border:1px solid rgba(255,255,255,.12); border-radius:8px; padding:7px; box-shadow:none; cursor:pointer; }
+    #craft .craftList{ display:flex; flex-direction:column; gap:5px; min-height:0; max-height:min(56vh,460px); overflow-y:auto; padding-right:2px; scrollbar-width:thin; }
+    #craft .craftListSection{ position:sticky; top:0; z-index:1; margin-top:3px; padding:3px 6px; border-radius:6px; background:rgba(10,14,20,.94); color:#8fa1b5; font-size:10px; font-weight:800; letter-spacing:.6px; text-transform:uppercase; }
+    #craft .craftRecipe{ display:grid; grid-template-columns:30px minmax(0,1fr) auto; align-items:center; gap:7px; width:100%; text-align:left; color:#e8eef6; background:rgba(255,255,255,.075); border:1px solid rgba(255,255,255,.12); border-radius:9px; padding:6px 7px; box-shadow:none; cursor:pointer; transition:background .12s ease,border-color .12s ease,transform .1s ease; }
+    #craft .craftRecipe:hover{ background:rgba(255,255,255,.12); }
+    #craft .craftRecipe:active{ transform:scale(.99); }
     #craft .craftRecipe.available{ border-color:rgba(91,206,143,.55); background:rgba(42,111,71,.25); }
-    #craft .craftRecipe.done{ opacity:.72; }
+    #craft .craftRecipe.available:hover{ background:rgba(52,131,86,.33); }
+    #craft .craftRecipe.done{ opacity:.66; }
     #craft .craftRecipe.selected{ outline:2px solid #2c7ef8; outline-offset:-2px; }
-    #craft .craftRecipeTop{ display:grid; grid-template-columns:24px minmax(0,1fr) auto; align-items:center; gap:6px; }
-    #craft .craftIcon, #craft .craftDetailIcon{ display:inline-flex; align-items:center; justify-content:center; border-radius:7px; background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.14); color:#fff; font-weight:800; }
-    #craft .craftIcon{ width:24px; height:24px; font-size:12px; }
+    #craft .craftRecipe.fresh{ border-color:rgba(255,213,74,.6); box-shadow:0 0 10px -3px rgba(255,213,74,.55); }
+    #craft .craftRecipeMain{ display:flex; flex-direction:column; gap:4px; min-width:0; }
+    #craft .craftRecipeTop{ display:flex; align-items:center; gap:6px; min-width:0; }
+    #craft .craftIcon, #craft .craftDetailIcon{ display:inline-flex; align-items:center; justify-content:center; border-radius:8px; background:rgba(255,255,255,.1); border:1px solid rgba(255,255,255,.14); color:#fff; font-weight:800; }
+    #craft .craftIcon{ width:30px; height:30px; font-size:16px; }
     #craft .craftName{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:700; }
-    #craft .craftRecipeState{ color:#aab6c4; font-size:10px; text-transform:uppercase; }
+    #craft .craftNewBadge{ flex:0 0 auto; border-radius:5px; padding:1px 4px; background:#ffd54a; color:#20180a; font-size:9px; font-weight:900; letter-spacing:.4px; }
+    #craft .craftRecipeSide{ display:flex; flex-direction:column; align-items:flex-end; gap:2px; }
+    #craft .craftFavStar{ border:none; background:none; padding:0 2px; color:#8fa1b5; font-size:13px; line-height:1; cursor:pointer; }
+    #craft .craftFavStar:hover{ color:#ffd54a; }
+    #craft .craftFavStar.on{ color:#ffd54a; text-shadow:0 0 6px rgba(255,213,74,.55); }
+    #craft .craftRecipeState{ color:#8ee6ae; font-size:10px; font-weight:800; white-space:nowrap; }
+    #craft .craftRecipe.done .craftRecipeState{ color:#aab6c4; }
+    #craft .craftRowBar{ display:block; height:3px; border-radius:99px; background:rgba(255,255,255,.1); overflow:hidden; }
+    #craft .craftRowBar i{ display:block; height:100%; background:linear-gradient(90deg,#b8862c,#ffd54a); border-radius:99px; }
     #craft .craftCost, #craft .craftDetailCosts{ display:flex; flex-wrap:wrap; gap:4px; }
-    #craft .craftChip{ display:inline-flex; align-items:center; gap:4px; min-height:19px; max-width:100%; border:1px solid rgba(255,255,255,.11); border-radius:999px; background:rgba(255,255,255,.075); color:#dce5ef; padding:2px 6px; font-size:11px; }
-    #craft .craftChip i{ width:8px; height:8px; border-radius:2px; display:inline-block; flex:0 0 auto; box-shadow:0 0 0 1px rgba(0,0,0,.25); }
-    #craft .craftChip.missing{ color:#ffc3b8; border-color:rgba(255,107,79,.38); background:rgba(126,35,26,.25); }
-    #craft .craftDetail{ min-height:0; max-height:min(54vh,430px); overflow-y:auto; border:1px solid rgba(255,255,255,.11); border-radius:8px; background:rgba(255,255,255,.055); padding:9px; display:flex; flex-direction:column; gap:8px; }
-    #craft .craftDetailHeader{ display:grid; grid-template-columns:34px minmax(0,1fr); gap:8px; align-items:center; }
-    #craft .craftDetailIcon{ width:34px; height:34px; font-size:14px; }
+    #craft .craftChip, #craftTracker .craftChip{ display:inline-flex; align-items:center; gap:4px; min-height:19px; max-width:100%; border:1px solid rgba(255,255,255,.11); border-radius:999px; background:rgba(255,255,255,.075); color:#dce5ef; padding:2px 6px; font-size:11px; }
+    #craft .craftChip i, #craftTracker .craftChip i{ width:8px; height:8px; border-radius:2px; display:inline-block; flex:0 0 auto; box-shadow:0 0 0 1px rgba(0,0,0,.25); }
+    #craft .craftChip.missing, #craftTracker .craftChip.missing{ color:#ffc3b8; border-color:rgba(255,107,79,.38); background:rgba(126,35,26,.25); }
+    #craft .craftDetail{ min-height:0; max-height:min(56vh,460px); overflow-y:auto; border:1px solid rgba(255,255,255,.11); border-radius:9px; background:rgba(255,255,255,.055); padding:9px; display:flex; flex-direction:column; gap:8px; scrollbar-width:thin; }
+    #craft .craftDetail.flash{ animation:craftFlash .5s ease-out; }
+    @keyframes craftFlash{ 0%{ box-shadow:inset 0 0 0 2px rgba(74,222,128,.9), 0 0 22px rgba(74,222,128,.5); } 100%{ box-shadow:inset 0 0 0 0 rgba(74,222,128,0), 0 0 0 rgba(74,222,128,0); } }
+    #craft .craftDetailHeader{ display:grid; grid-template-columns:38px minmax(0,1fr) auto; gap:8px; align-items:center; }
+    #craft .craftDetailIcon{ width:38px; height:38px; font-size:20px; }
     #craft .craftDetailHeader strong{ display:block; font-size:13px; overflow-wrap:anywhere; }
     #craft .craftDetailHeader span span{ display:block; margin-top:2px; color:#aeb9c7; font-size:11px; }
+    #craft .craftFavBtn{ align-self:start; border:none; background:none; padding:2px 4px; color:#8fa1b5; font-size:17px; line-height:1; cursor:pointer; }
+    #craft .craftFavBtn:hover{ color:#ffd54a; }
+    #craft .craftFavBtn.on{ color:#ffd54a; text-shadow:0 0 8px rgba(255,213,74,.6); }
     #craft .craftDesc, #craft .craftStatus, #craft .craftEmpty{ color:#c8d3df; line-height:1.35; }
-    #craft .craftActions{ display:flex; gap:6px; margin-top:auto; }
-    #craft .craftPrimary, #craft .craftSecondary{ border:none; border-radius:8px; padding:7px 10px; color:#fff; font-weight:800; cursor:pointer; }
-    #craft .craftPrimary{ flex:1; background:#2c7ef8; }
+    #craft .craftStatus.ok{ color:#8ee6ae; font-weight:700; }
+    #craft .craftStatus.done{ color:#aab6c4; }
+    #craft .craftCrafted{ color:#8fa1b5; font-size:11px; }
+    #craft .craftIngs{ display:flex; flex-direction:column; gap:6px; }
+    #craft .craftIng{ display:flex; flex-direction:column; gap:3px; }
+    #craft .craftIngTop{ display:grid; grid-template-columns:10px minmax(0,1fr) auto; align-items:center; gap:6px; }
+    #craft .craftIngSwatch{ width:10px; height:10px; border-radius:3px; box-shadow:0 0 0 1px rgba(0,0,0,.3); }
+    #craft .craftIngLabel{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#dce5ef; }
+    #craft .craftIngVal{ font-size:11px; color:#8ee6ae; }
+    #craft .craftIng.short .craftIngVal{ color:#ffc3b8; }
+    #craft .craftIngBar{ height:4px; border-radius:99px; background:rgba(255,255,255,.1); overflow:hidden; }
+    #craft .craftIngBar i{ display:block; height:100%; border-radius:99px; background:linear-gradient(90deg,#2fae63,#4ade80); }
+    #craft .craftIng.short .craftIngBar i{ background:linear-gradient(90deg,#b8862c,#ffd54a); }
+    #craft .craftIngHint{ color:#8fa1b5; font-size:10px; line-height:1.3; padding-left:16px; }
+    #craft .craftActions{ display:flex; gap:6px; margin-top:auto; flex-wrap:wrap; }
+    #craft .craftPrimary, #craft .craftSecondary, #craft .craftTrackBtn{ border:none; border-radius:8px; padding:7px 10px; color:#fff; font-weight:800; cursor:pointer; }
+    #craft .craftPrimary{ flex:1; min-width:88px; background:#2c7ef8; box-shadow:0 2px 8px rgba(44,126,248,.35); }
+    #craft .craftPrimary:not(:disabled):hover{ filter:brightness(1.12); }
     #craft .craftSecondary{ background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.16); }
+    #craft .craftTrackBtn{ background:rgba(255,255,255,.1); border:1px solid rgba(255,255,255,.16); font-size:11px; }
+    #craft .craftTrackBtn.on{ background:rgba(255,213,74,.2); border-color:rgba(255,213,74,.55); color:#ffe9a8; }
     #craft .craftPrimary:disabled{ cursor:not-allowed; opacity:.45; filter:grayscale(.4); }
     #craft .req{ font-size:11px; opacity:.9; }
-    @media (max-width:680px){ #craft{ width:min(360px,calc(100vw - 16px)); } #craft .craftContent{ grid-template-columns:1fr; } #craft .craftList, #craft .craftDetail{ max-height:34vh; } }
+    /* HUD ingredient tracker for the 📌-pinned recipe */
+    #craftTracker{ position:absolute; right:8px; top:54px; z-index:40; pointer-events:auto; display:flex; flex-direction:column; gap:6px; width:min(240px,calc(100vw - 16px)); padding:8px 9px; border-radius:12px; border:1px solid rgba(255,255,255,.16); background:rgba(13,17,24,.88); color:#eef4fb; font-size:11px; box-shadow:0 8px 22px rgba(0,0,0,.4); backdrop-filter:blur(8px); }
+    #craftTracker.ready{ border-color:rgba(91,206,143,.65); box-shadow:0 0 18px -4px rgba(74,222,128,.55), 0 8px 22px rgba(0,0,0,.4); }
+    #craftTracker .craftTrackerHead{ display:flex; align-items:center; justify-content:space-between; gap:6px; }
+    #craftTracker .craftTrackerName{ flex:1; min-width:0; border:none; background:none; color:#fff; font-weight:800; font-size:11px; text-align:left; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:0; }
+    #craftTracker .craftTrackerName:hover{ text-decoration:underline; }
+    #craftTracker .craftTrackerClose{ flex:0 0 auto; border:none; background:rgba(255,255,255,.1); color:#cfdae7; width:18px; height:18px; border-radius:6px; line-height:1; font-size:12px; cursor:pointer; }
+    #craftTracker .craftTrackerChips{ display:flex; flex-wrap:wrap; gap:4px; }
+    #craftTracker .craftTrackerBar{ height:4px; border-radius:99px; background:rgba(255,255,255,.1); overflow:hidden; }
+    #craftTracker .craftTrackerBar i{ display:block; height:100%; border-radius:99px; background:linear-gradient(90deg,#2fae63,#4ade80); }
+    #craftTracker .craftTrackerCraft{ border:none; border-radius:8px; padding:6px 8px; background:#2c7ef8; color:#fff; font-weight:800; cursor:pointer; }
+    #craftTracker .craftTrackerCraft:disabled{ opacity:.4; cursor:not-allowed; filter:grayscale(.4); }
+    #craftTracker.ready .craftTrackerCraft{ background:#2fae63; box-shadow:0 0 12px rgba(74,222,128,.5); }
+    @media (max-width:680px){ #craft{ width:min(360px,calc(100vw - 16px)); } #craft .craftContent{ grid-template-columns:1fr; } #craft .craftList, #craft .craftDetail{ max-height:34vh; } #craftTracker{ top:auto; bottom:170px; } }
     #help{ position:absolute; left:8px; right:8px; top:140px; background:rgba(0,0,0,.65); border:1px solid rgba(255,255,255,.18); border-radius:12px; padding:10px 12px; font-size:12px; line-height:1.4; display:none; pointer-events:auto; }
-    #controls{ position:absolute; left:0; right:0; bottom:0; padding:12px; display:flex; justify-content:space-between; gap:12px; pointer-events:none; }
+    /* Touch-only clusters (.touchUi: movement pad, mining ring, fire/ult/radar).
+       engine/input_mode.js stamps data-input-mode="touch|pc" on <html> from live
+       input (last-input-wins on hybrids); the media query only covers the pre-JS
+       first paint. !important because the per-cluster #id rules would win otherwise. */
+    :root[data-input-mode='pc'] .touchUi{ display:none !important; }
+    @media (hover:hover) and (pointer:fine){ :root:not([data-input-mode]) .touchUi{ display:none !important; } }
+    /* Movement pad rides above the canvas vitals panel (bottom-left). */
+    #controls{ position:absolute; left:0; right:0; bottom:170px; padding:12px; display:flex; justify-content:space-between; gap:12px; pointer-events:none; }
     .pad{ pointer-events:auto; display:grid; gap:8px; grid-template-columns:var(--cell) var(--cell) var(--cell); grid-template-rows:var(--cell) var(--cell) var(--cell); }
     .btn{ width:var(--btn); height:var(--btn); border-radius:16px; background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.25); box-shadow:inset 0 1px 4px rgba(0,0,0,.6), 0 4px 16px rgba(0,0,0,.35); display:flex; align-items:center; justify-content:center; font-size:18px; color:#fff; }
     .btn.on, .btn:active{ background:rgba(255,255,255,.25); }
@@ -94,28 +157,104 @@
     #radarBtn{ position:absolute; right:8px; bottom:calc(8px + 3*var(--cell) + 10px); width:52px; height:52px; border-radius:14px; border:1px solid rgba(255,255,255,.3); background:rgba(255,255,255,.10); color:#fff; font-weight:700; box-shadow:inset 0 1px 4px rgba(0,0,0,.6),0 2px 12px rgba(0,0,0,.25); pointer-events:auto; }
     #fireBtn{ position:absolute; right:8px; bottom:calc(8px + 3*var(--cell) + 10px + 62px); width:52px; height:52px; border-radius:14px; border:1px solid rgba(255,160,60,.45); background:rgba(255,120,30,.14); color:#fff; font-size:22px; box-shadow:inset 0 1px 4px rgba(0,0,0,.6),0 2px 12px rgba(0,0,0,.25); pointer-events:auto; }
     #fireBtn.on, #fireBtn:active{ background:rgba(255,140,40,.42); box-shadow:0 0 16px rgba(255,140,40,.5), inset 0 1px 4px rgba(0,0,0,.6); }
+    /* Touch ult trigger (PPM equivalent): --ult 0..1 fills the button from the
+       bottom as the charge builds; pulses when a full ult is banked. */
+    #ultBtn{ position:absolute; right:8px; bottom:calc(8px + 3*var(--cell) + 10px + 124px); width:52px; height:52px; border-radius:14px; border:1px solid rgba(196,140,255,.45); color:#fff; font-size:22px; box-shadow:inset 0 1px 4px rgba(0,0,0,.6),0 2px 12px rgba(0,0,0,.25); pointer-events:auto; --ult:0; background:linear-gradient(to top, rgba(168,85,247,.50) calc(var(--ult)*100%), rgba(168,85,247,.10) calc(var(--ult)*100%)); }
+    #ultBtn.hidden{ display:none; }
+    #ultBtn:active{ filter:brightness(1.25); }
+    #ultBtn.ready{ animation:ultPulse 1.1s infinite alternate; border-color:#e9d5ff; }
+    @keyframes ultPulse{0%{ box-shadow:0 0 0 rgba(196,140,255,0), inset 0 1px 4px rgba(0,0,0,.6);}100%{ box-shadow:0 0 18px rgba(196,140,255,.65), inset 0 1px 4px rgba(0,0,0,.6);} }
+    /* Touch layout, portrait phones: the 272px vitals canvas owns the bottom-left,
+       so pad+ring ride the band above it and the tap-occasionally selection bars
+       (weapons, blocks, pinned recipe) dock under the top status pills. */
+    @media (max-width:560px){
+      :root[data-input-mode='touch'] #weaponBar{ bottom:auto; top:128px; }
+      :root[data-input-mode='touch'] #hotbarWrap{ bottom:auto; top:196px; }
+      :root[data-input-mode='touch'] #craftTracker{ top:260px; bottom:auto; right:auto; left:8px; }
+      :root[data-input-mode='touch'] #controls{ bottom:180px; }
+      :root[data-input-mode='touch'] #dirRing{ bottom:180px; }
+      :root[data-input-mode='touch'] #radarBtn{ bottom:calc(180px + 3*var(--cell) + 10px); }
+      :root[data-input-mode='touch'] #fireBtn{ bottom:calc(180px + 3*var(--cell) + 10px + 62px); }
+      :root[data-input-mode='touch'] #ultBtn{ bottom:calc(180px + 3*var(--cell) + 10px + 124px); }
+    }
+    /* Touch layout, landscape phones (short viewport): the stacked button column
+       would climb into the minimap, so it folds into a row above the mining ring;
+       the pad drops just above the vitals panel and the craft panel clears the pad. */
+    @media (max-height:560px){
+      :root[data-input-mode='touch'] #controls{ bottom:150px; }
+      :root[data-input-mode='touch'] #craft{ left:216px; }
+      :root[data-input-mode='touch'] #radarBtn{ bottom:calc(8px + 3*var(--cell) + 14px); right:calc(8px + 124px); }
+      :root[data-input-mode='touch'] #fireBtn{ bottom:calc(8px + 3*var(--cell) + 14px); right:calc(8px + 62px); }
+      :root[data-input-mode='touch'] #ultBtn{ bottom:calc(8px + 3*var(--cell) + 14px); right:8px; }
+      /* Selection bars center in the free band between the vitals panel (canvas,
+         x≤284) and the mining ring; weapon slots go icon-only to fit. */
+      :root[data-input-mode='touch'] #hotbarWrap{ left:296px; right:184px; transform:none; justify-content:center; }
+      :root[data-input-mode='touch'] #weaponBar{ left:296px; right:184px; transform:none; justify-content:center; }
+      :root[data-input-mode='touch'] #weaponBar .wname{ display:none; }
+    }
     #radarBtn.pulse{ animation:radarPulse .9s infinite alternate; border-color:#4dd0ff; }
     @keyframes radarPulse{0%{ background:rgba(77,208,255,.15); box-shadow:0 0 0 rgba(77,208,255,0),0 0 16px rgba(77,208,255,.25);}100%{ background:rgba(77,208,255,.35); box-shadow:0 0 18px rgba(77,208,255,.45),0 0 28px rgba(77,208,255,.35);} }
     .pill{ background:rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.12); border-radius:999px; padding:6px 10px; font-size:12px; }
     #errorBox{ position:absolute; left:8px; right:8px; top:50%; transform:translateY(-50%); background:#2b1e1e; color:#ffd7d7; border:1px solid #402b2b; border-radius:10px; padding:10px 12px; display:none; white-space:pre-wrap; font-family:ui-monospace,monospace; }
     #messages{ position:absolute; left:50%; top:8px; transform:translateX(-50%); max-width:min(60vw,520px); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:12px; background:rgba(0,0,0,.5); padding:4px 10px; border-radius:999px; pointer-events:none; }
-  #hoverInfo{ position:absolute; left:50%; bottom:112px; transform:translateX(-50%); pointer-events:none; opacity:0; transition:opacity .12s ease; display:flex; align-items:center; gap:6px; max-width:min(280px,70vw); padding:4px 9px; border-radius:999px; border:1px solid rgba(255,255,255,.16); background:rgba(4,9,16,.62); color:#f4f8ff; box-shadow:0 2px 10px rgba(0,0,0,.35); backdrop-filter:blur(4px); font-size:11px; line-height:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #hoverInfo{ position:absolute; left:50%; bottom:128px; transform:translateX(-50%); pointer-events:none; opacity:0; transition:opacity .12s ease; display:flex; align-items:center; gap:6px; max-width:min(280px,70vw); padding:4px 9px; border-radius:999px; border:1px solid rgba(255,255,255,.16); background:rgba(4,9,16,.62); color:#f4f8ff; box-shadow:0 2px 10px rgba(0,0,0,.35); backdrop-filter:blur(4px); font-size:11px; line-height:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   #hoverInfo::before{ content:""; width:8px; height:8px; flex:none; border-radius:2px; background:var(--hover-color,#9fb8d1); border:1px solid rgba(255,255,255,.35); box-shadow:0 0 8px var(--hover-glow,rgba(159,184,209,.35)); }
   #hoverInfo.show{ opacity:.92; }
   #hotbarWrap{ position:absolute; left:50%; bottom:10px; transform:translateX(-50%); display:flex; gap:6px; pointer-events:auto; }
-  .hotSlot{ width:46px; height:46px; border:1px solid rgba(255,255,255,.25); background:rgba(0,0,0,.45); border-radius:10px; display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:11px; position:relative; box-shadow:0 2px 8px rgba(0,0,0,.5); }
+  .hotSlot{ width:50px; height:50px; border:1px solid rgba(255,255,255,.25); background:rgba(0,0,0,.45); border-radius:10px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px; font-size:11px; position:relative; box-shadow:0 2px 8px rgba(0,0,0,.5); padding:2px 3px; }
   .hotSlot.sel{ outline:2px solid #2c7ef8; }
+  .hotSlot.depleted{ opacity:.55; }
   .hotSlot.bgMode{ border-color:rgba(120,220,255,.78); background:rgba(24,74,96,.48); }
   .hotSlot.bgMode.sel{ outline:2px solid #78dcff; }
   .hotSlot.bgMode::after{ content:"TŁO"; position:absolute; left:4px; bottom:2px; font-size:8px; font-weight:800; color:#bfefff; letter-spacing:.4px; text-shadow:0 1px 2px #00131f; }
-  .hotSlot .count{ font-weight:600; }
-  .hotSlot .key{ position:absolute; top:2px; right:4px; font-size:10px; opacity:.7; }
-  #weaponBar{ position:absolute; left:50%; bottom:62px; transform:translateX(-50%); display:flex; gap:6px; pointer-events:auto; }
-  .wepSlot{ min-width:46px; max-width:78px; height:40px; border:1px solid rgba(255,255,255,.25); background:rgba(0,0,0,.45); border-radius:10px; display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:13px; position:relative; box-shadow:0 2px 8px rgba(0,0,0,.5); cursor:pointer; padding:0 4px; }
-  .wepSlot.sel{ outline:2px solid #ffb84a; }
+  .hotSlot .lbl{ font-size:9px; line-height:1.1; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; opacity:.92; }
+  .hotSlot .count{ font-weight:700; font-size:11px; line-height:1.1; }
+  .hotSlot .count.low{ color:#ffd54a; }
+  .hotSlot .count.out{ color:#ff8d7a; }
+  .hotSlot .key{ position:absolute; top:2px; right:4px; font-size:9px; opacity:.7; }
+  #weaponBar{ position:absolute; left:50%; bottom:66px; transform:translateX(-50%); display:flex; gap:6px; align-items:flex-end; pointer-events:auto; }
+  .wepSlot{ min-width:58px; max-width:86px; height:54px; border:1px solid rgba(255,255,255,.25); background:rgba(0,0,0,.45); border-radius:10px; display:flex; flex-direction:column; align-items:center; justify-content:flex-start; gap:1px; font-size:13px; position:relative; box-shadow:0 2px 8px rgba(0,0,0,.5); cursor:pointer; padding:3px 6px 6px; overflow:hidden; }
+  .wepSlot.sel{ outline:2px solid #ffb84a; background:rgba(40,29,9,.55); }
   .wepSlot.empty{ opacity:.45; }
-  .wepSlot .key{ position:absolute; top:1px; right:4px; font-size:10px; opacity:.7; }
-  .wepSlot .wname{ font-size:8px; opacity:.85; max-width:70px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .wepSlot.out{ border-color:rgba(255,90,60,.55); }
+  .wepSlot .key{ position:absolute; top:2px; right:4px; font-size:9px; opacity:.7; }
+  .wepSlot .wcyc{ position:absolute; top:2px; left:4px; font-size:8px; opacity:.65; letter-spacing:.4px; }
+  .wepSlot .wicon{ font-size:14px; line-height:1.15; }
+  .wepSlot .wname{ font-size:9px; opacity:.9; max-width:80px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.1; }
+  .wepSlot .wsub{ display:flex; align-items:center; gap:3px; font-size:10px; font-weight:800; line-height:1.1; color:#cfe3f7; white-space:nowrap; max-width:100%; }
+  .wepSlot .wsub:empty{ display:none; }
+  .wepSlot .wsub .ammoDot{ width:7px; height:7px; border-radius:2px; flex:none; border:1px solid rgba(255,255,255,.35); }
+  .wepSlot.low .wsub{ color:#ffd54a; }
+  .wepSlot.out .wsub{ color:#ff8d7a; }
+  @keyframes ammoPulse{ 0%,100%{ opacity:1; } 50%{ opacity:.4; } }
+  .wepSlot.low .wsub .ammoDot, .wepSlot.out .wsub .ammoDot{ animation:ammoPulse 1.2s ease-in-out infinite; }
+  .wepSlot .wpips{ display:flex; gap:3px; margin-top:1px; }
+  .wepSlot .wpips:empty{ display:none; }
+  .wepSlot .wpips .pip{ width:9px; height:9px; border-radius:3px; border:1px solid rgba(255,255,255,.22); background:rgba(255,255,255,.07); padding:0; cursor:pointer; pointer-events:auto; }
+  .wepSlot .wpips .pip.on{ border-color:rgba(255,255,255,.55); }
+  .wepSlot .wpips .pip.act{ outline:1.5px solid #fff; outline-offset:1px; }
+  .wepSlot .wpips .pip.pin::after{ content:""; display:block; width:3px; height:3px; margin:2px auto 0; border-radius:50%; background:#fff; box-shadow:0 0 3px rgba(0,0,0,.8); }
+  .wepSlot .wgauge{ position:absolute; left:0; right:0; bottom:0; height:3px; background:rgba(255,255,255,.09); opacity:0; }
+  .wepSlot .wgauge.show{ opacity:1; }
+  .wepSlot .wgauge i{ display:block; height:100%; width:0%; background:linear-gradient(90deg,#b8862c,#ffd54a); transition:width .12s linear; }
+  .wepSlot .wgauge.ready i{ background:linear-gradient(90deg,#ffd54a,#fff3c0); box-shadow:0 0 8px rgba(255,213,74,.85); }
+  .wepSlot .wgauge.draw i{ background:linear-gradient(90deg,#37b6ff,#aef1ff); transition:none; }
+  .wepSlot .wgauge.dura i{ background:linear-gradient(90deg,#c2410c,#fb923c); transition:width .2s ease; }
+  /* Shared rich tooltip for the weapon bar + hotbar (built by main.js) */
+  #hudTip{ position:fixed; z-index:130; pointer-events:none; display:none; flex-direction:column; gap:5px; max-width:260px; padding:8px 10px; border-radius:10px; border:1px solid rgba(255,255,255,.18); background:rgba(10,14,22,.94); color:#eef4fb; font-size:11px; line-height:1.35; box-shadow:0 10px 26px rgba(0,0,0,.55); backdrop-filter:blur(6px); }
+  #hudTip.show{ display:flex; }
+  #hudTip .tipTitle{ display:flex; align-items:center; gap:6px; font-size:12px; font-weight:800; }
+  #hudTip .tipTitle .tdot{ width:9px; height:9px; border-radius:3px; flex:none; border:1px solid rgba(255,255,255,.4); }
+  #hudTip .tipSection{ color:#8fa1b5; font-size:9px; font-weight:800; letter-spacing:.6px; text-transform:uppercase; margin-top:2px; }
+  #hudTip .tipRow{ display:flex; align-items:center; gap:6px; }
+  #hudTip .tipRow .tdot{ width:8px; height:8px; border-radius:2px; flex:none; border:1px solid rgba(0,0,0,.35); }
+  #hudTip .tipRow.dim{ opacity:.5; }
+  #hudTip .tipRow .tval{ margin-left:auto; font-weight:800; }
+  #hudTip .tipRow .tmark{ font-weight:900; color:#8ee6ae; font-size:10px; }
+  #hudTip .tipChips{ display:flex; flex-wrap:wrap; gap:4px; }
+  #hudTip .tipChip{ border:1px solid rgba(255,255,255,.14); border-radius:999px; background:rgba(255,255,255,.07); padding:1px 6px; font-size:10px; white-space:nowrap; }
+  #hudTip .tipHint{ color:#9fb2c6; font-size:10px; }
+  #hudTip .tipWarn{ color:#ff8d7a; font-weight:700; }
   /* Chest excitement animations */
   @keyframes chestPulseC{0%{box-shadow:0 0 0 0 rgba(176,127,44,.0);}70%{box-shadow:0 0 14px 4px rgba(176,127,44,.45);}100%{box-shadow:0 0 0 0 rgba(176,127,44,0);} }
   @keyframes chestPulseR{0%{box-shadow:0 0 0 0 rgba(167,76,201,0);}70%{box-shadow:0 0 18px 6px rgba(167,76,201,.55);}100%{box-shadow:0 0 0 0 rgba(167,76,201,0);} }
@@ -193,7 +332,7 @@
             <button id="audioBtn" class="topbtn" role="menuitem" title="Wycisz/włącz dźwięk">🔊</button>
           </div>
           <div class="group seedRow"><label for="seedInput">Ziarno:</label><input id="seedInput" value="auto" /><button id="regenBtn">Nowy świat</button><button id="openWorldSettingsBtn" class="topbtn">Ustawienia świata…</button></div>
-          <div class="hint">Skróty: G=Bóg, I=Immune, M=Mapa, C=Centrum, H=Pomoc</div>
+          <div class="hint">Skróty: G=Bóg, I=Immune, M=Mapa, C=Centrum, T=Rzemiosło, H=Pomoc</div>
           <div class="group" style="flex-direction:column; align-items:stretch; margin-top:4px;">
             <label style="font-size:12px; display:flex; justify-content:space-between; gap:8px; align-items:center;">Szybkość gracza <span id="playerSpeedLabel">x2</span></label>
             <select id="playerSpeedDropdown" style="width:100%; background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 6px; font-size:12px;">
@@ -231,15 +370,15 @@
   <!-- topButtons replaced by dropdown menu; old markup removed -->
     <!-- Crafting panel is built dynamically from the RECIPES table in main.js -->
     <div id="craft"><strong>Rzemiosło</strong></div>
-    <div id="help">Sterowanie: A/D lub ←/→ ruch, W / ↑ / Spacja skok. LPM kopie klikniętą kratkę (zasięg 3) – przytrzymaj i przeciągaj, aby kopać dalej. Przycisk ⛏️ kopie w wybranym kierunku (przytrzymaj = kopanie ciągłe). PPM stawia blok (zasięg 5; wybór 5–9, 0 lub klik w pasek; drugi klik w wybrany slot zmienia typ). Kopanie wody zbiera ją do ekwipunku. Skróty broni: 1 = kilof/budowanie (kolejne wciśnięcia przełączają kilofy po craftingu), 2 = broń biała, 3 = łuki, 4 = miotacze (ogień/woda/gaz) — kolejne wciśnięcia przełączają bronie w kategorii; w Ekwipunku przyciskiem „Skrót" wybierasz, które bronie biorą udział w przełączaniu. Z cofa zmianę. E otwiera Ekwipunek (sprzęt, bronie, talizmany, surowce), I skrzynkę łupów, X używa skanera kraterów. Po wybraniu broni (2/3/4) LPM używa jej w kierunku kursora, a PPM odpala naładowany ult: broń biała tnie, łuk strzela strzałami (strzała przelatująca przez ogień płonie!), miotacz ognia podpala stwory i roślinność (ogień rozprzestrzenia się po trawie, drewnie i liściach; woda gasi). Żywioły: ogień gotuje wodę w parę zasilającą chmury, topi kamień w lawę i roztapia śnieg/lód w wodę; lawa PŁYNIE (wolniej niż woda, wyrównuje poziom), parzy i podpala, a osiadła na wolnym powietrzu z czasem zastyga w obsydian; wąż wodny gasi pożary, hartuje lawę w obsydian, rozmiękcza piasek w błoto (błoto spowalnia wszystkich o połowę) i podlewa rośliny; trujący gaz zabija organizmy, a w kontakcie z ogniem lub lawą EKSPLODUJE jak TNT (płonąca strzała też detonuje chmurę). Rośliny (słoneczniki, krzewy jagodowe, trzciny, paprocie, kaktusy) kiełkują przy wodzie, piją z sąsiednich kafli wody (czasem wchłaniając cały kafel!), z deszczu i z węża; rosną etapami, usychają bez wody i obumierają ze starości. Klik na dojrzały krzew jagodowy = +6 HP. M (Mapa) odsłania mgłę, N przełącza minimapę, B pauzuje. G (Bóg) natychmiastowe kopanie. C centruje kamerę. H pomoc. Zdobywasz XP i poziomy — punkty umiejętności wydasz w Ekwipunku (Rozwój); osiągnięcia nagradzają XP i skrzyniami. Rzemiosło: kilofy, pochodnie (światło nocą), miecz obsydianowy, talizman, totem odrodzenia (punkt respawnu), eliksiry (życie natychmiast; szybkość/siła to buffy 60 s widoczne przy pasku XP) i Róg przyzwania (wzywa bossa — drogo!). Nocą i w głębi czyhają też szkielety-łucznicy (kościane pociski!), a w jaskiniach pełzacze. Po śmierci połowa zasobów zostaje w nagrobku — kliknij go, by odzyskać. Nocą wychodzą upiory i nietoperze (o świcie płoną); szukaj też ruin na lądzie i wraków na dnie mórz. Drobne kamienne rumowiska, pieńki filarów lub resztki łuku na powierzchni zdradzają ZAKOPANE RUINY — kop pod nimi! Czasem to ciasna krypta ze skrzynią (albo sarkofag czy zawalisko), czasem piwnice, otwarta studnia lub bliźniacze komory, a czasem głęboka świątynia z krętym szybem, galeriami i jednym z trzech skarbców: obsydianowym sejfem, ołtarzem nad fosą lawy albo zatopionym relikwiarzem. Ruiny przejmują materiał biomu (lodowe ściany, piaskowiec, zalane podłogi). UWAGA: starożytni zostawili PUŁAPKI — uważny gracz wypatrzy lśniącą linkę w korytarzu (strzałki!), pulsujący runiczny krąg na płycie (mina!), zielone smużki nad skrzynią (grobowy gaz!), żar lub kapiącą wodę między blokami (zbrojony zwornik — wykop go, a lawa zaleje skarbiec!) i włosowate pęknięcia podłogi (zapadnia — na dnie lawa… albo bonusowa skrzynia). A jeśli znajdziesz samotny OBSYDIANOWY MONOLIT — kop wytrwale: głęboko przy dnie świata (1% ruin) czeka ZAKOPANE MIASTO — rozświetlona pochodniami kawerna z wieżami, mostem, fosą lawy, ogrodem kryształów i obsydianowym ziguratem kryjącym dwie epickie skrzynie. Mniej więcej co 7 dni gry świat przemierza ZŁOTY SPRINTER (ptak, biegacz albo ryjący kret) — lśniący, błyskawiczny i trudny do ubicia; znika po pół minuty, ale pokonany zostawia epicką skrzynię i diamenty. Co 2–3 dni nadlatuje też UFO: skanuje okolicę i próbuje porwać wiązką coś żywego — zwierzę, CIEBIE, a nawet bossa! Tarcza spodka pochłania ciosy, ale opada, gdy wiązka jest włączona — to moment na atak (łuk!). Zestrzelony zostawia ANTYMATERIĘ (receptura: Mikstura antygrawitacji) i czasem artefakt Obcych; porwany bohater zostaje wywieziony i wyrzucony daleko — chyba że w locie sam zestrzeli spodek. Zielony duch bloku = można postawić, czerwony = nie można. Na ekranie dotykowym szczypnięcie zmienia zoom. Ekwipunek i pasek szybkiego wyboru są zapisywane automatycznie.</div>
-    <div id="controls">
+    <div id="help">Sterowanie: A/D lub ←/→ ruch, W / ↑ / Spacja skok. LPM kopie klikniętą kratkę (zasięg 3) – przytrzymaj i przeciągaj, aby kopać dalej. Przycisk ⛏️ kopie w wybranym kierunku (przytrzymaj = kopanie ciągłe). PPM stawia blok (zasięg 5; wybór 5–9, 0 lub klik w pasek; drugi klik w wybrany slot zmienia typ). Kopanie wody zbiera ją do ekwipunku. Skróty broni: 1 = kilof/budowanie (kolejne wciśnięcia przełączają kilofy po craftingu), 2 = broń biała, 3 = łuki, 4 = miotacze (ogień/woda/gaz) — kolejne wciśnięcia przełączają bronie w kategorii; w Ekwipunku przyciskiem „Skrót" wybierasz, które bronie biorą udział w przełączaniu. Z cofa zmianę. E otwiera Ekwipunek (sprzęt, bronie, talizmany, surowce), T zwija/rozwija panel Rzemiosła, I skrzynkę łupów, X używa skanera kraterów. Po wybraniu broni (2/3/4) LPM używa jej w kierunku kursora, a PPM odpala naładowany ult: broń biała tnie, łuk strzela strzałami (strzała przelatująca przez ogień płonie!), miotacz ognia podpala stwory i roślinność (ogień rozprzestrzenia się po trawie, drewnie i liściach; woda gasi). Żywioły: ogień gotuje wodę w parę zasilającą chmury, topi kamień w lawę i roztapia śnieg/lód w wodę; lawa PŁYNIE (wolniej niż woda, wyrównuje poziom), parzy i podpala, a osiadła na wolnym powietrzu z czasem zastyga w obsydian; wąż wodny gasi pożary, hartuje lawę w obsydian, rozmiękcza piasek w błoto (błoto spowalnia wszystkich o połowę) i podlewa rośliny; trujący gaz zabija organizmy, a w kontakcie z ogniem lub lawą EKSPLODUJE jak TNT (płonąca strzała też detonuje chmurę). Rośliny (słoneczniki, krzewy jagodowe, trzciny, paprocie, kaktusy) kiełkują przy wodzie, piją z sąsiednich kafli wody (czasem wchłaniając cały kafel!), z deszczu i z węża; rosną etapami, usychają bez wody i obumierają ze starości. Klik na dojrzały krzew jagodowy = +6 HP. M (Mapa) odsłania mgłę, N przełącza minimapę, B pauzuje. G (Bóg) natychmiastowe kopanie. C centruje kamerę. H pomoc. Zdobywasz XP i poziomy — punkty umiejętności wydasz w Ekwipunku (Rozwój); osiągnięcia nagradzają XP i skrzyniami. Rzemiosło: kilofy, pochodnie (światło nocą), miecz obsydianowy, talizman, totem odrodzenia (punkt respawnu), eliksiry (życie natychmiast; szybkość/siła to buffy 60 s widoczne przy pasku XP) i Róg przyzwania (wzywa bossa — drogo!). W panelu Rzemiosła gwiazdka ★ przypina ulubione receptury na górze, przycisk 📌 „Śledź" zawiesza licznik składników wybranej receptury na ekranie (powiadomi, gdy wszystko zbierzesz), filtr „Dostępne" pokazuje tylko to, co możesz wytworzyć teraz, a przy brakującym surowcu zobaczysz podpowiedź, gdzie go szukać. Nocą i w głębi czyhają też szkielety-łucznicy (kościane pociski!), a w jaskiniach pełzacze. Po śmierci połowa zasobów zostaje w nagrobku — kliknij go, by odzyskać. Nocą wychodzą upiory i nietoperze (o świcie płoną); szukaj też ruin na lądzie i wraków na dnie mórz. Drobne kamienne rumowiska, pieńki filarów lub resztki łuku na powierzchni zdradzają ZAKOPANE RUINY — kop pod nimi! Czasem to ciasna krypta ze skrzynią (albo sarkofag czy zawalisko), czasem piwnice, otwarta studnia lub bliźniacze komory, a czasem głęboka świątynia z krętym szybem, galeriami i jednym z trzech skarbców: obsydianowym sejfem, ołtarzem nad fosą lawy albo zatopionym relikwiarzem. Ruiny przejmują materiał biomu (lodowe ściany, piaskowiec, zalane podłogi). UWAGA: starożytni zostawili PUŁAPKI — uważny gracz wypatrzy lśniącą linkę w korytarzu (strzałki!), pulsujący runiczny krąg na płycie (mina!), zielone smużki nad skrzynią (grobowy gaz!), żar lub kapiącą wodę między blokami (zbrojony zwornik — wykop go, a lawa zaleje skarbiec!) i włosowate pęknięcia podłogi (zapadnia — na dnie lawa… albo bonusowa skrzynia). A jeśli znajdziesz samotny OBSYDIANOWY MONOLIT — kop wytrwale: głęboko przy dnie świata (1% ruin) czeka ZAKOPANE MIASTO — rozświetlona pochodniami kawerna z wieżami, mostem, fosą lawy, ogrodem kryształów i obsydianowym ziguratem kryjącym dwie epickie skrzynie. Mniej więcej co 7 dni gry świat przemierza ZŁOTY SPRINTER (ptak, biegacz albo ryjący kret) — lśniący, błyskawiczny i trudny do ubicia; znika po pół minuty, ale pokonany zostawia epicką skrzynię i diamenty. Co 2–3 dni nadlatuje też UFO: skanuje okolicę i próbuje porwać wiązką coś żywego — zwierzę, CIEBIE, a nawet bossa! Tarcza spodka pochłania ciosy, ale opada, gdy wiązka jest włączona — to moment na atak (łuk!). Zestrzelony zostawia ANTYMATERIĘ (receptura: Mikstura antygrawitacji) i czasem artefakt Obcych; porwany bohater zostaje wywieziony i wyrzucony daleko — chyba że w locie sam zestrzeli spodek. Zielony duch bloku = można postawić, czerwony = nie można. Na ekranie dotykowym szczypnięcie zmienia zoom. Ekwipunek i pasek szybkiego wyboru są zapisywane automatycznie.</div>
+    <div id="controls" class="touchUi">
       <div class="pad" id="pad">
         <div></div><div data-key="ArrowUp" class="btn">↑</div><div></div>
         <div data-key="ArrowLeft" class="btn">←</div><div class="btn" style="opacity:.25"></div><div data-key="ArrowRight" class="btn">→</div>
         <div></div><div data-key="ArrowDown" class="btn">↓</div><div></div>
       </div>
     </div>
-    <div id="dirRing">
+    <div id="dirRing" class="touchUi">
       <div class="dircell"><button class="dirbtn" data-dx="-1" data-dy="-1">↖</button></div>
       <div class="dircell"><button class="dirbtn" data-dx="0" data-dy="-1">↑</button></div>
       <div class="dircell"><button class="dirbtn" data-dx="1" data-dy="-1">↗</button></div>
@@ -250,26 +389,29 @@
   <div class="dircell"><button class="dirbtn" data-dx="0" data-dy="1">↓</button></div>
       <div class="dircell"><button class="dirbtn" data-dx="1" data-dy="1">↘</button></div>
     </div>
-    <button id="fireBtn" title="Użyj broni">⚔️</button>
-    <button id="radarBtn" title="Radar diamentów (10×10)">💎</button>
+    <button id="fireBtn" class="touchUi" title="Użyj broni">⚔️</button>
+    <button id="ultBtn" class="touchUi" title="Ult – naładowany atak broni">💥</button>
+    <button id="radarBtn" class="touchUi" title="Radar diamentów (10×10)">💎</button>
     <div id="messages"></div>
     <div id="hoverInfo" aria-hidden="true"></div>
-    <div id="weaponBar" aria-label="Skróty broni (klawisze 1–4)">
-      <div class="wepSlot" data-wkey="1" title="Kilof — budowanie/niszczenie (1, kolejne wciśnięcia zmieniają kilof)"><span class="key">1</span><span class="wicon">⛏️</span><span class="wname"></span></div>
-      <div class="wepSlot" data-wkey="2" title="Broń biała (2, kolejne wciśnięcia przełączają)"><span class="key">2</span><span class="wicon">⚔️</span><span class="wname"></span></div>
-      <div class="wepSlot" data-wkey="3" title="Łuki i pociski (3, kolejne wciśnięcia przełączają)"><span class="key">3</span><span class="wicon">🏹</span><span class="wname"></span></div>
-      <div class="wepSlot" data-wkey="4" title="Miotacze: ogień/woda/gaz (4, kolejne wciśnięcia przełączają)"><span class="key">4</span><span class="wicon">🔥</span><span class="wname"></span></div>
+    <div id="weaponBar" role="toolbar" aria-label="Skróty broni (klawisze 1–4)">
+      <div class="wepSlot" data-wkey="1"><span class="key">1</span><span class="wcyc"></span><span class="wicon">⛏️</span><span class="wname"></span><span class="wsub"></span><span class="wgauge"><i></i></span></div>
+      <div class="wepSlot" data-wkey="2"><span class="key">2</span><span class="wcyc"></span><span class="wicon">⚔️</span><span class="wname"></span><span class="wsub"></span><span class="wgauge"><i></i></span></div>
+      <div class="wepSlot" data-wkey="3"><span class="key">3</span><span class="wcyc"></span><span class="wicon">🏹</span><span class="wname"></span><span class="wsub"></span><span class="wpips"></span><span class="wgauge"><i></i></span></div>
+      <div class="wepSlot" data-wkey="4"><span class="key">4</span><span class="wcyc"></span><span class="wicon">🔥</span><span class="wname"></span><span class="wsub"></span><span class="wgauge"><i></i></span></div>
     </div>
     <!-- Slot labels/colors/counts are synced from HOTBAR_ORDER by refreshHotbarDom()
          in main.js (slots are remappable, so static labels would go stale). -->
-    <div id="hotbarWrap" aria-label="Pasek szybkiego wyboru bloków">
-      <div class="hotSlot" data-key="5"><span class="key">5</span><span>trawa</span><span class="count">0</span></div>
-      <div class="hotSlot" data-key="6"><span class="key">6</span><span>piasek</span><span class="count">0</span></div>
-      <div class="hotSlot" data-key="7"><span class="key">7</span><span>kamień</span><span class="count">0</span></div>
-      <div class="hotSlot" data-key="8"><span class="key">8</span><span>drewno</span><span class="count">0</span></div>
-      <div class="hotSlot" data-key="9"><span class="key">9</span><span>liść</span><span class="count">0</span></div>
-      <div class="hotSlot" data-key="0"><span class="key">0</span><span>woda</span><span class="count">0</span></div>
+    <div id="hotbarWrap" role="toolbar" aria-label="Pasek szybkiego wyboru bloków">
+      <div class="hotSlot" data-key="5"><span class="key">5</span><span class="lbl">trawa</span><span class="count">0</span></div>
+      <div class="hotSlot" data-key="6"><span class="key">6</span><span class="lbl">piasek</span><span class="count">0</span></div>
+      <div class="hotSlot" data-key="7"><span class="key">7</span><span class="lbl">kamień</span><span class="count">0</span></div>
+      <div class="hotSlot" data-key="8"><span class="key">8</span><span class="lbl">drewno</span><span class="count">0</span></div>
+      <div class="hotSlot" data-key="9"><span class="key">9</span><span class="lbl">liść</span><span class="count">0</span></div>
+      <div class="hotSlot" data-key="0"><span class="key">0</span><span class="lbl">woda</span><span class="count">0</span></div>
     </div>
+    <!-- Rich hover tooltip shared by the weapon bar and hotbar (content built in main.js) -->
+    <div id="hudTip" role="tooltip"></div>
       <!-- Dynamic selection popover for remapping slot resource (includes chests in God mode) -->
     <div id="hotSelectMenu" style="position:absolute; display:none; flex-direction:column; z-index:1000; background:rgba(15,18,26,.96); border:1px solid rgba(255,255,255,.18); border-radius:12px; padding:6px 8px; box-shadow:0 8px 24px -4px rgba(0,0,0,.55); font-size:12px; min-width:220px; width:min(300px,calc(100vw - 16px)); max-width:300px; max-height:min(78vh,calc(100vh - 86px)); overflow:hidden; pointer-events:auto; box-sizing:border-box;">
         <div style="flex:0 0 auto; font-weight:600; margin:2px 0 6px; opacity:.9">Wybierz typ</div>
@@ -284,107 +426,141 @@
     <div class="items" id="lootPopupItems"></div>
     <div class="btnBar"><button id="lootEquipAll" class="sec">Wyposaż najlepsze</button><button id="lootKeepAll" class="sec">Zachowaj wszystko</button><button id="lootClose" class="sec">Zamknij</button></div>
   </div>
+  <!-- Classic script outside the module graph: reports a stalled/failed module load
+       instead of leaving the player on a silent black screen (see src/boot_watchdog.js) -->
+  <script defer src="src/boot_watchdog.js"></script>
   <script type="module" src="src/main.js"></script>
 
   <!-- Inventory overlay -->
   <style>
     #invOverlay,#invOverlay *{ box-sizing:border-box; }
-    #invOverlay{ position:fixed; inset:0; background:rgba(5,8,14,.70); backdrop-filter:blur(10px); display:none; z-index:60; color:#eee; font-size:13px; }
-    #invDialog{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:min(1000px,92vw); max-height:84vh; background:rgba(18,22,30,.95); border:1px solid rgba(255,255,255,.12); border-radius:18px; display:flex; gap:18px; padding:18px 20px 20px; box-shadow:0 12px 48px -8px rgba(0,0,0,.65); }
-    #invLeft{ width:260px; display:flex; flex-direction:column; gap:12px; overflow-y:auto; }
-    #invPreviewWrap{ position:relative; background:linear-gradient(180deg,#0d131c,#1b2532); border:1px solid rgba(255,255,255,.12); border-radius:14px; padding:12px; display:flex; align-items:center; justify-content:center; }
-    #invPreview{ width:200px; height:200px; image-rendering:pixelated; }
-    #invSlots{ display:flex; flex-direction:column; gap:6px; }
-    .invSlot{ position:relative; display:flex; align-items:center; gap:8px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.15); border-radius:10px; padding:6px 10px; cursor:pointer; }
-    .invSlot:hover{ background:rgba(255,255,255,.12); }
-    .invSlotLabel{ font-size:11px; opacity:.7; width:70px; flex:none; }
-    .invSlotVal{ font-size:12px; font-weight:600; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .invSlotUnequip{ background:rgba(255,255,255,.15); border:none; color:#fff; border-radius:6px; width:22px; height:22px; cursor:pointer; flex:none; }
-    #invTabs{ display:flex; gap:8px; flex-wrap:wrap; }
-    .invTabBtn{ background:#2c7ef8; color:#fff; border:none; border-radius:999px; padding:6px 14px; font-weight:600; cursor:pointer; font-size:12px; }
-    .invTabBtn.sel{ background:#21a366; }
-    #invRight{ flex:1; display:flex; flex-direction:column; min-width:0; gap:10px; }
-    #invToolbar{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-    .invSearchWrap{ flex:1 1 180px; min-width:140px; }
-    #invSearch,.invSelect,.invUndoBtn{ height:32px; border:1px solid rgba(255,255,255,.16); border-radius:8px; background:rgba(255,255,255,.08); color:#fff; font-size:12px; }
-    #invSearch{ width:100%; padding:0 10px; outline:none; }
+    #invOverlay{ position:fixed; inset:0; background:rgba(4,7,13,.72); backdrop-filter:blur(10px); display:none; z-index:60; color:#e8edf6; font-size:13px; }
+    @keyframes invPop{ from{ opacity:0; transform:translate(-50%,-50%) scale(.975); } to{ opacity:1; transform:translate(-50%,-50%) scale(1); } }
+    #invDialog{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:min(1020px,94vw); max-height:86vh; background:linear-gradient(165deg,rgba(22,28,40,.97),rgba(14,18,27,.97)); border:1px solid rgba(255,255,255,.12); border-radius:18px; display:flex; gap:18px; padding:16px 18px 16px; box-shadow:0 24px 64px -12px rgba(0,0,0,.7); animation:invPop .16s ease-out; }
+    @media (prefers-reduced-motion:reduce){ #invDialog{ animation:none; } }
+    #invLeft{ width:262px; flex:none; display:flex; flex-direction:column; gap:10px; overflow-y:auto; scrollbar-width:thin; padding-right:2px; }
+    #invLeft>*{ flex:none; } /* scroll container: children keep natural height (preview must not squash) */
+    #invPreviewWrap{ position:relative; background:radial-gradient(120% 90% at 50% 12%,#1c2736 0%,#0c121c 100%); border:1px solid rgba(255,255,255,.12); border-radius:14px; padding:10px; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+    #invPreviewWrap::after{ content:""; position:absolute; inset:auto 0 0 0; height:38%; background:linear-gradient(180deg,transparent,rgba(0,0,0,.28)); pointer-events:none; }
+    #invPreview{ width:168px; height:168px; image-rendering:pixelated; }
+    #invSlots{ display:flex; flex-direction:column; gap:5px; }
+    .invSlot{ position:relative; display:flex; align-items:center; gap:8px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.12); border-radius:10px; padding:6px 9px; cursor:pointer; transition:background .12s,border-color .12s; }
+    .invSlot:hover{ background:rgba(255,255,255,.10); border-color:rgba(255,255,255,.24); }
+    .invSlot:focus-visible{ outline:2px solid #7df9ff; outline-offset:1px; }
+    .invSlotIcon{ flex:none; width:18px; text-align:center; font-size:13px; opacity:.9; }
+    .invSlotLabel{ font-size:10px; opacity:.62; width:58px; flex:none; text-transform:uppercase; letter-spacing:.4px; }
+    .invSlotVal{ font-size:12px; font-weight:650; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .invSlotGo{ flex:none; opacity:.4; font-size:14px; line-height:1; }
+    .invSlot:hover .invSlotGo{ opacity:.85; }
+    .invSlotUnequip{ background:rgba(255,255,255,.12); border:none; color:#fff; border-radius:6px; width:22px; height:22px; cursor:pointer; flex:none; }
+    .invSlotUnequip:hover{ background:rgba(248,113,113,.35); }
+    #invTabs{ display:flex; gap:6px; flex-wrap:wrap; }
+    .invTabBtn{ position:relative; display:inline-flex; align-items:center; gap:6px; background:rgba(255,255,255,.07); color:#d7e0ef; border:1px solid rgba(255,255,255,.13); border-radius:10px; padding:6px 11px; font-weight:650; cursor:pointer; font-size:12px; transition:background .12s,border-color .12s,color .12s; }
+    .invTabBtn:hover{ background:rgba(255,255,255,.13); color:#fff; }
+    .invTabBtn.sel{ background:linear-gradient(180deg,#3486ff,#2668d8); border-color:rgba(150,200,255,.55); color:#fff; box-shadow:0 4px 14px -6px rgba(44,126,248,.9), inset 0 1px 0 rgba(255,255,255,.22); }
+    .invTabBtn .cnt{ font-size:10px; font-weight:800; background:rgba(0,0,0,.28); border-radius:8px; padding:1px 6px; color:rgba(255,255,255,.85); }
+    .invTabBtn .dotNew{ position:absolute; top:-3px; right:-3px; width:9px; height:9px; border-radius:50%; background:#7df9ff; border:2px solid #10151f; box-shadow:0 0 8px rgba(125,249,255,.9); }
+    #invRight{ flex:1; display:flex; flex-direction:column; min-width:0; gap:9px; }
+    #invToolbar{ display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+    .invSearchWrap{ flex:1 1 190px; min-width:150px; position:relative; }
+    .invSearchWrap::before{ content:"🔍"; position:absolute; left:9px; top:50%; transform:translateY(-50%); font-size:11px; opacity:.55; pointer-events:none; }
+    #invSearch,.invSelect,.invUndoBtn{ height:32px; border:1px solid rgba(255,255,255,.16); border-radius:9px; background:rgba(255,255,255,.07); color:#fff; font-size:12px; }
+    #invSearch{ width:100%; padding:0 10px 0 28px; outline:none; }
+    #invSearch::placeholder{ color:rgba(220,230,245,.45); }
     #invSearch:focus,.invSelect:focus,.invUndoBtn:focus{ border-color:#7df9ff; box-shadow:0 0 0 2px rgba(125,249,255,.18); }
-    .invSelect{ padding:0 8px; color:#eaf4ff; }
+    .invSelect{ padding:0 8px; color:#eaf4ff; cursor:pointer; }
     .invSelect option{ color:#101722; }
-    .invCapacity{ height:32px; min-width:54px; display:flex; align-items:center; justify-content:center; padding:0 9px; border:1px solid rgba(255,255,255,.16); border-radius:8px; background:rgba(255,255,255,.08); font-weight:800; font-size:11px; color:#cbd5e1; }
+    .invCapacity{ height:32px; min-width:54px; display:flex; align-items:center; gap:5px; justify-content:center; padding:0 10px; border:1px solid rgba(255,255,255,.16); border-radius:9px; background:rgba(255,255,255,.07); font-weight:800; font-size:11px; color:#cbd5e1; }
     .invCapacity.warn{ color:#ffcc66; border-color:rgba(255,204,102,.45); background:rgba(255,204,102,.10); }
-    .invUndoBtn{ padding:0 10px; font-weight:700; cursor:pointer; }
-    .invUndoBtn:disabled{ opacity:.45; cursor:default; }
-    #invNewReview{ border:1px solid rgba(125,249,255,.24); border-radius:8px; padding:10px; background:linear-gradient(135deg,rgba(125,249,255,.12),rgba(255,213,74,.08)); box-shadow:0 10px 28px -20px rgba(125,249,255,.65); }
-    .invNewReviewHead{ display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom:8px; }
-    .invNewReviewHead b{ display:block; font-size:13px; }
-    .invNewReviewHead span{ display:block; font-size:10px; color:#a7f3d0; margin-top:2px; }
+    .invUndoBtn{ padding:0 11px; font-weight:700; cursor:pointer; transition:background .12s; }
+    .invUndoBtn:hover:not(:disabled){ background:rgba(255,255,255,.14); }
+    .invUndoBtn:disabled{ opacity:.4; cursor:default; }
+    /* NEW-loot strip: one compact, dismissible line — the grid itself carries the badges */
+    #invNewReview{ border:1px solid rgba(125,249,255,.28); border-radius:10px; padding:7px 10px; background:linear-gradient(90deg,rgba(125,249,255,.10),rgba(255,213,74,.06) 70%,transparent); }
+    .invNewReviewHead{ display:flex; justify-content:space-between; gap:10px; align-items:center; }
+    .invNewReviewHead b{ font-size:12px; }
+    .invNewReviewHead span{ font-size:10.5px; color:#9fe8c5; margin-left:8px; }
     .invNewReviewHead>div:last-child{ display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
-    .invNewReviewHead button,.invReviewBtns button{ background:#2c7ef8; color:#fff; border:none; border-radius:7px; padding:5px 9px; font-size:10px; font-weight:800; cursor:pointer; }
-    .invNewReviewHead button.sec{ background:rgba(255,255,255,.14); }
-    .invNewReviewList{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px; }
-    .invReviewItem{ border:1px solid rgba(255,255,255,.16); border-radius:8px; padding:8px; background:rgba(10,15,24,.58); }
-    .invReviewItem.best{ border-color:rgba(255,213,74,.7); background:linear-gradient(135deg,rgba(255,213,74,.18),rgba(10,15,24,.58)); }
-    .invReviewItem.upgrade{ border-color:rgba(74,222,128,.58); background:linear-gradient(135deg,rgba(74,222,128,.13),rgba(10,15,24,.58)); }
-    .invReviewItem.worse{ opacity:.82; }
-    .invReviewTop{ display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
-    .invReviewTop b{ font-size:12px; line-height:1.2; }
-    .invReviewTop span,.invUpgradeBadge{ flex:none; border-radius:7px; padding:2px 6px; font-size:8px; font-weight:900; text-transform:uppercase; letter-spacing:.4px; color:#06121d; background:#cbd5e1; }
-    .invReviewTop span.best,.invUpgradeBadge.best{ background:#ffd54a; }
-    .invReviewTop span.upgrade,.invUpgradeBadge.upgrade{ background:#4ade80; }
-    .invReviewTop span.worse,.invUpgradeBadge.worse{ background:#f87171; color:#fff; }
-    .invReviewMeta{ margin:5px 0; font-size:10px; color:#cbd5e1; }
-    .invCompareBlock,.invCompareMini{ display:flex; flex-direction:column; gap:3px; }
-    .invCompareMini{ width:100%; font-size:8px; line-height:1.2; }
+    .invNewReviewHead button{ background:#2c7ef8; color:#fff; border:none; border-radius:7px; padding:5px 10px; font-size:10.5px; font-weight:800; cursor:pointer; }
+    .invNewReviewHead button:hover{ filter:brightness(1.12); }
+    .invNewReviewHead button.sec{ background:rgba(255,255,255,.13); }
+    .invCompareBlock,.invCompareMini{ display:flex; flex-direction:column; gap:2px; width:100%; }
+    .invCompareMini{ font-size:9px; line-height:1.25; border-top:1px dashed rgba(255,255,255,.14); padding-top:4px; }
     .invCompareLine{ display:flex; justify-content:space-between; gap:8px; color:#cbd5e1; }
-    .invCompareLine span{ opacity:.72; }
-    .invCompareLine b{ min-width:0; text-align:right; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .invCompareLine span{ opacity:.66; flex:none; }
+    .invCompareLine b{ min-width:0; text-align:right; }
     .invCompareLine.up b{ color:#4ade80; }
     .invCompareLine.down b{ color:#f87171; }
     .invCompareLine.eq b{ color:#e5e7eb; }
-    .invReviewBtns{ display:flex; gap:6px; margin-top:7px; flex-wrap:wrap; }
-    #invGrid{ flex:1; display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); grid-auto-rows:max-content; align-content:start; gap:10px; overflow:auto; padding-right:4px; }
-    .invItem{ position:relative; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:6px 6px 10px; display:flex; flex-direction:column; gap:4px; cursor:pointer; align-items:center; }
-    .invItem.sel{ outline:2px solid #2c7ef8; }
-    .invItem.new{ box-shadow:0 0 0 1px rgba(125,249,255,.35),0 0 18px -8px rgba(125,249,255,.75); }
-    .invItem.new.best{ box-shadow:0 0 0 1px rgba(255,213,74,.65),0 0 22px -7px rgba(255,213,74,.8); background:linear-gradient(180deg,rgba(255,213,74,.13),rgba(255,255,255,.06)); }
-    .invItem.new.upgrade{ box-shadow:0 0 0 1px rgba(74,222,128,.55),0 0 18px -8px rgba(74,222,128,.8); }
-    .invNewBadge{ position:absolute; top:4px; right:4px; z-index:1; font-size:8px; font-weight:800; letter-spacing:.4px; text-transform:uppercase; color:#041018; background:#7df9ff; padding:1px 5px; border-radius:7px; }
-    .invUpgradeBadge{ position:absolute; top:22px; right:4px; z-index:1; max-width:92px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .invItem canvas{ width:80px; height:80px; image-rendering:pixelated; }
-    .invItem .nm{ font-size:11px; font-weight:600; text-align:center; line-height:1.1; }
-    .invTier{ font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; }
-    .invDesc{ font-size:9px; opacity:.7; text-align:center; }
-    .invItemBtns{ display:flex; gap:4px; flex-wrap:wrap; justify-content:center; }
-    .invItemBtns button{ background:#2c7ef8; border:none; color:#fff; border-radius:6px; padding:3px 8px; font-size:10px; font-weight:600; cursor:pointer; }
-    .invItemBtns button.danger{ background:#c43232; }
-    .invEmpty{ opacity:.65; font-size:12px; padding:18px; text-align:center; grid-column:1/-1; }
-    .invResources{ display:flex; flex-direction:column; gap:6px; grid-column:1/-1; }
-    .invResRow{ display:flex; align-items:center; gap:10px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.12); border-radius:10px; padding:6px 10px; }
-    .invResDot{ width:14px; height:14px; border-radius:4px; border:1px solid rgba(255,255,255,.35); flex:none; }
-    .invResLabel{ flex:0 0 90px; }
-    .invResCount{ flex:1; }
+    #invGrid{ flex:1; display:grid; grid-template-columns:repeat(auto-fill,minmax(148px,1fr)); grid-auto-rows:max-content; align-content:start; gap:9px; overflow:auto; padding:2px 4px 6px 2px; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.28) transparent; }
+    #invGrid::-webkit-scrollbar{ width:6px; }
+    #invGrid::-webkit-scrollbar-thumb{ background:rgba(255,255,255,.22); border-radius:99px; }
+    /* Item card: tier accent flows from --tier (set by JS from TIER_COLORS) */
+    .invItem{ position:relative; --tier:#8fa3bd; background:rgba(255,255,255,.055); border:1px solid rgba(255,255,255,.14); border-top:2px solid var(--tier); border-radius:11px; padding:7px 7px 9px; display:flex; flex-direction:column; gap:4px; cursor:pointer; align-items:center; transition:transform .12s ease,box-shadow .12s ease,border-color .12s,background .12s; }
+    .invItem:hover{ transform:translateY(-2px); background:rgba(255,255,255,.085); border-color:rgba(255,255,255,.26); border-top-color:var(--tier); box-shadow:0 10px 22px -12px rgba(0,0,0,.8); }
+    .invItem:focus-visible{ outline:2px solid #7df9ff; outline-offset:1px; }
+    .invItem.sel{ outline:2px solid #2c7ef8; outline-offset:0; }
+    .invItem.new{ box-shadow:0 0 0 1px rgba(125,249,255,.30),0 0 16px -8px rgba(125,249,255,.7); }
+    .invItem.new.best{ box-shadow:0 0 0 1px rgba(255,213,74,.55),0 0 20px -7px rgba(255,213,74,.75); }
+    .invItem.new.upgrade{ box-shadow:0 0 0 1px rgba(74,222,128,.5),0 0 16px -8px rgba(74,222,128,.75); }
+    /* status badges sit in one flow row — never overlapping name or art */
+    /* always reserved (even empty) so thumbs align across a grid row */
+    .invBadges{ display:flex; gap:4px; flex-wrap:wrap; justify-content:center; min-height:16px; align-self:stretch; }
+    .invBadges span{ border-radius:7px; padding:1.5px 6px; font-size:8.5px; font-weight:900; text-transform:uppercase; letter-spacing:.4px; color:#06121d; background:#cbd5e1; white-space:nowrap; max-width:100%; overflow:hidden; text-overflow:ellipsis; }
+    .invBadges .bEq{ background:#2c7ef8; color:#fff; }
+    .invBadges .bNew{ background:#7df9ff; }
+    .invBadges .best{ background:#ffd54a; }
+    .invBadges .upgrade{ background:#4ade80; }
+    .invBadges .worse{ background:rgba(248,113,113,.9); color:#fff; }
+    .invBadges .match,.invBadges .option{ background:rgba(203,213,225,.85); }
+    .invThumb{ width:84px; height:84px; border-radius:10px; display:flex; align-items:center; justify-content:center; background:radial-gradient(80% 80% at 50% 35%, color-mix(in srgb, var(--tier) 26%, transparent), rgba(6,10,17,.5)); border:1px solid color-mix(in srgb, var(--tier) 45%, transparent); }
+    .invItem canvas{ width:76px; height:76px; image-rendering:pixelated; }
+    .invItem .nm{ font-size:12px; font-weight:700; text-align:center; line-height:1.18; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+    .invTier{ font-size:9px; font-weight:800; text-transform:uppercase; letter-spacing:.6px; }
+    .invDesc{ font-size:9.5px; opacity:.68; text-align:center; line-height:1.25; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+    .invItemBtns{ display:flex; gap:4px; flex-wrap:wrap; justify-content:center; margin-top:2px; }
+    .invItemBtns button{ background:#2c7ef8; border:1px solid transparent; color:#fff; border-radius:7px; padding:4px 10px; font-size:10.5px; font-weight:700; cursor:pointer; transition:filter .1s,background .12s; }
+    .invItemBtns button:hover{ filter:brightness(1.12); }
+    .invItemBtns button.ghost{ background:rgba(255,255,255,.10); border-color:rgba(255,255,255,.18); }
+    .invItemBtns button.tgl{ background:rgba(255,255,255,.08); border-color:rgba(255,184,74,.0); color:#dbe6f5; }
+    .invItemBtns button.tgl.on{ background:rgba(255,184,74,.14); border-color:rgba(255,184,74,.55); color:#ffd28a; }
+    .invItemBtns button.danger{ background:rgba(248,113,113,.12); border-color:rgba(248,113,113,.4); color:#ff9f9f; width:27px; padding:4px 0; }
+    .invItemBtns button.danger:hover{ background:#c43232; border-color:#c43232; color:#fff; filter:none; }
+    .invEmpty{ opacity:.75; font-size:12px; padding:26px 14px; text-align:center; grid-column:1/-1; display:flex; flex-direction:column; gap:6px; align-items:center; }
+    .invEmpty::before{ content:"🎒"; font-size:26px; opacity:.6; }
+    /* Resources: card grid, owned first; zero-count cards are dimmed */
+    .invResources{ display:flex; flex-direction:column; gap:8px; grid-column:1/-1; }
+    .invResGrid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(158px,1fr)); gap:7px; }
+    .invResCard{ display:flex; flex-direction:column; gap:6px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.12); border-radius:10px; padding:7px 9px; transition:background .12s,border-color .12s; }
+    .invResCard:hover{ background:rgba(255,255,255,.09); border-color:rgba(255,255,255,.22); }
+    .invResCard.zero{ opacity:.5; }
+    .invResTop{ display:flex; align-items:center; gap:7px; min-width:0; }
+    .invResDot{ width:15px; height:15px; border-radius:5px; border:1px solid rgba(255,255,255,.35); flex:none; }
+    .invResLabel{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11.5px; font-weight:650; }
+    .invResCount{ flex:none; font-size:12px; font-weight:800; color:#dfe8f5; }
     .invResBtns{ display:flex; gap:4px; }
-    .invResBtns button{ background:#2c7ef8; border:none; color:#fff; border-radius:6px; padding:3px 8px; font-size:10px; font-weight:600; cursor:pointer; }
-    .invResBtns button.danger{ background:#c43232; }
-    .invResBtns button:disabled{ opacity:.4; cursor:default; }
+    .invResBtns button{ background:rgba(255,255,255,.09); border:1px solid rgba(255,255,255,.16); color:#e6edf8; border-radius:6px; padding:3px 0; font-size:10px; font-weight:700; cursor:pointer; flex:1; }
+    .invResBtns button:hover:not(:disabled){ background:rgba(255,255,255,.16); }
+    .invResBtns button.danger{ background:rgba(248,113,113,.10); border-color:rgba(248,113,113,.35); color:#ff9f9f; }
+    .invResBtns button.danger:hover:not(:disabled){ background:rgba(196,50,50,.55); color:#fff; }
+    .invResBtns button:disabled{ opacity:.35; cursor:default; }
     .invHint{ font-size:11px; opacity:.7; line-height:1.4; }
     #invGrid .invHint{ grid-column:1/-1; }
-    /* Weapons tab section header (one per shortcut category) */
-    .invCatHead{ grid-column:1/-1; font-size:12px; font-weight:700; letter-spacing:.4px; opacity:.9; padding:6px 2px 0; border-bottom:1px solid rgba(255,255,255,.14); }
+    /* Weapons tab section header (one per shortcut category) — sticky while its section scrolls */
+    .invCatHead{ grid-column:1/-1; position:sticky; top:-2px; z-index:2; display:flex; align-items:center; gap:7px; font-size:12px; font-weight:750; letter-spacing:.4px; padding:7px 8px; margin-top:2px; border:1px solid rgba(255,255,255,.10); border-radius:9px; background:rgba(20,26,38,.96); }
+    .invCatHead .key{ margin-left:auto; font-size:9.5px; font-weight:800; color:#a9c6ff; background:rgba(44,126,248,.16); border:1px solid rgba(44,126,248,.45); border-radius:6px; padding:1.5px 7px; }
     /* Stat chips: green pill = bonus, red pill = malus; values are clean percents */
     .invChips{ display:flex; flex-wrap:wrap; gap:3px; justify-content:center; }
-    .chip{ font-size:9px; font-weight:600; padding:1px 5px; border-radius:8px; background:rgba(74,222,128,.16); color:#4ade80; border:1px solid rgba(74,222,128,.35); white-space:nowrap; }
-    .chip.chipBad{ background:rgba(248,113,113,.14); color:#f87171; border-color:rgba(248,113,113,.35); }
+    .chip{ font-size:9.5px; font-weight:650; padding:1.5px 6px; border-radius:8px; background:rgba(74,222,128,.15); color:#5ce88f; border:1px solid rgba(74,222,128,.35); white-space:nowrap; }
+    .chip.chipBad{ background:rgba(248,113,113,.13); color:#f87f7f; border-color:rgba(248,113,113,.35); }
     /* Power score: number + bar relative to the strongest owned item of the group */
     .invPower{ width:100%; padding:0 4px; }
-    .invPowerLine{ display:flex; justify-content:center; gap:6px; font-size:10px; font-weight:700; }
+    .invPowerLine{ display:flex; justify-content:center; gap:6px; font-size:10.5px; font-weight:750; }
     .invPowerBar{ height:4px; border-radius:3px; background:rgba(255,255,255,.12); overflow:hidden; margin-top:2px; }
     .invPowerBar div{ height:100%; background:linear-gradient(90deg,#2c7ef8,#7df9ff); border-radius:3px; }
     .invDeltaUp{ color:#4ade80; }
     .invDeltaDown{ color:#f87171; }
     .invDeltaEq{ color:#cbd5e1; opacity:.8; }
-    .invEqBadge{ position:absolute; top:4px; left:4px; font-size:8px; font-weight:800; letter-spacing:.4px; text-transform:uppercase; background:#2c7ef8; color:#fff; padding:1px 5px; border-radius:7px; z-index:1; }
     #invColors{ display:flex; flex-direction:column; gap:6px; }
     #invColors .swLabel{ font-size:11px; opacity:.75; }
     #invColors .swRow{ display:flex; gap:5px; flex-wrap:wrap; align-items:center; }
@@ -396,8 +572,11 @@
     #invActions button{ flex:1; background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.2); color:#fff; border-radius:8px; padding:5px 0; font-size:12px; font-weight:600; cursor:pointer; }
     #invActions button:hover{ background:rgba(255,255,255,.22); }
     #invHeader{ display:flex; align-items:center; justify-content:space-between; }
-    #invClose{ background:rgba(255,255,255,.18); border:none; color:#fff; width:40px; height:40px; border-radius:12px; font-size:18px; cursor:pointer; }
-    #invFooter{ display:flex; justify-content:space-between; font-size:11px; opacity:.8; gap:8px; }
+    #invHeader h2{ font-weight:800; letter-spacing:.2px; }
+    #invClose{ background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.14); color:#fff; width:36px; height:36px; border-radius:11px; font-size:17px; cursor:pointer; transition:background .12s,border-color .12s; }
+    #invClose:hover{ background:rgba(248,113,113,.30); border-color:rgba(248,113,113,.55); }
+    #invFooter{ display:flex; justify-content:space-between; align-items:center; font-size:10px; color:rgba(222,232,246,.62); gap:8px; white-space:nowrap; }
+    #invFooter kbd{ font:inherit; font-weight:750; color:#cfe0f6; background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.18); border-radius:4px; padding:0 4px; }
     @media (max-width:760px),(max-height:620px){
       #invDialog{ inset:10px; left:10px; top:10px; transform:none; width:auto; height:calc(100vh - 20px); max-height:none; flex-direction:column; gap:10px; padding:12px; overflow:hidden; }
       #invLeft{ width:auto; max-height:42vh; display:grid; grid-template-columns:minmax(116px,150px) minmax(0,1fr); gap:8px; overflow:auto; }
@@ -418,15 +597,10 @@
       .invSearchWrap{ flex-basis:100%; min-width:0; }
       .invSelect{ flex:1 1 110px; min-width:0; }
       .invUndoBtn{ flex:1 1 130px; min-width:0; }
-      #invNewReview{ padding:8px; }
+      #invNewReview{ padding:7px 8px; }
       .invNewReviewHead{ align-items:flex-start; }
-      .invNewReviewList{ grid-template-columns:1fr; max-height:210px; overflow:auto; }
-      .invCompareLine{ flex-direction:column; gap:1px; }
-      .invCompareLine b{ text-align:left; }
-      #invGrid{ grid-template-columns:repeat(auto-fill,minmax(104px,1fr)); gap:8px; }
-      .invResRow{ flex-wrap:wrap; }
-      .invResLabel{ flex:1 1 120px; }
-      .invResBtns{ width:100%; justify-content:flex-end; }
+      #invGrid{ grid-template-columns:repeat(auto-fill,minmax(124px,1fr)); gap:8px; }
+      .invResGrid{ grid-template-columns:repeat(auto-fill,minmax(136px,1fr)); }
     }
   /* World settings overlay (modal) */
   #worldSettingsOverlay{ position:fixed; inset:0; background:rgba(5,8,14,.70); backdrop-filter:blur(10px); display:none; z-index:70; color:#eee; font-size:13px; }

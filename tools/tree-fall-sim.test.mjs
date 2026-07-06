@@ -1191,6 +1191,92 @@ worldGen.randSeed = ()=>0;
 {
   resetTiles();
   resetTreeSystem();
+  const original={
+    surfaceHeight:worldGen.surfaceHeight,
+    biomeType:worldGen.biomeType,
+    column:worldGen.column,
+    valueNoise:worldGen.valueNoise,
+    randSeed:worldGen.randSeed,
+    settings:worldGen.settings
+  };
+  const surf=34;
+  const targetX=12;
+  const arr=new Uint8Array(CHUNK_W*WORLD_H);
+  for(let x=0;x<CHUNK_W;x++){
+    arr[surf*CHUNK_W+x]=T.GRASS;
+    for(let y=surf+1;y<WORLD_H;y++) arr[y*CHUNK_W+x]=T.STONE;
+  }
+  const approx=(a,b)=>Math.abs(a-b)<0.000001;
+  worldGen.surfaceHeight=()=>surf;
+  worldGen.biomeType=()=>1;
+  worldGen.column=()=>({row:surf,biome:1});
+  worldGen.valueNoise=()=>0.2;
+  worldGen.randSeed=(n)=>{
+    for(let x=0;x<CHUNK_W;x++){
+      if(approx(n,x*1.777)) return 0.99;
+      if(approx(n,x*2.917+19)) return x===targetX ? 0 : 0.99;
+    }
+    return 0.2;
+  };
+  worldGen.settings=Object.assign({}, original.settings, {forestDensityMul:1});
+  trees.populateChunk(arr,0);
+  const leaves=[];
+  let woodCount=0;
+  for(let x=0;x<CHUNK_W;x++){
+    for(let y=0;y<WORLD_H;y++){
+      const t=arr[y*CHUNK_W+x];
+      if(t===T.LEAF) leaves.push({x,y});
+      if(t===T.WOOD) woodCount++;
+    }
+  }
+  assert.equal(woodCount, 0, 'forced skipped tree roll does not create trunks');
+  assert.ok(leaves.some(cell=>Math.abs(cell.x-targetX)<=1 && cell.y>=surf-2 && cell.y<surf), 'tree population can create low leaf bushes');
+  assert.ok(leaves.every(cell=>cell.y>=surf-2 && cell.y<surf), 'generated bushes stay close to the surface');
+  assert.ok([...trees._tileTreeIds.keys()].some(k=>k.startsWith(targetX+',')), 'generated bush leaves are tracked for chunk cleanup');
+  worldGen.surfaceHeight=original.surfaceHeight;
+  worldGen.biomeType=original.biomeType;
+  worldGen.column=original.column;
+  worldGen.valueNoise=original.valueNoise;
+  worldGen.randSeed=original.randSeed;
+  worldGen.settings=original.settings;
+}
+
+{
+  resetTiles();
+  resetTreeSystem();
+  const original={
+    surfaceHeight:worldGen.surfaceHeight,
+    biomeType:worldGen.biomeType,
+    column:worldGen.column,
+    valueNoise:worldGen.valueNoise,
+    randSeed:worldGen.randSeed,
+    settings:worldGen.settings
+  };
+  const surf=34;
+  const arr=new Uint8Array(CHUNK_W*WORLD_H);
+  for(let x=0;x<CHUNK_W;x++){
+    arr[surf*CHUNK_W+x]=T.GRASS;
+    for(let y=surf+1;y<WORLD_H;y++) arr[y*CHUNK_W+x]=T.STONE;
+  }
+  worldGen.surfaceHeight=()=>surf;
+  worldGen.biomeType=()=>8;
+  worldGen.column=()=>({row:surf,biome:8,city:{center:0}});
+  worldGen.valueNoise=()=>1;
+  worldGen.randSeed=()=>0;
+  worldGen.settings=Object.assign({}, original.settings, {forestDensityMul:8});
+  trees.populateChunk(arr,0);
+  for(let i=0;i<arr.length;i++) assert.notEqual(arr[i], T.LEAF, 'city chunks do not receive procedural bushes');
+  worldGen.surfaceHeight=original.surfaceHeight;
+  worldGen.biomeType=original.biomeType;
+  worldGen.column=original.column;
+  worldGen.valueNoise=original.valueNoise;
+  worldGen.randSeed=original.randSeed;
+  worldGen.settings=original.settings;
+}
+
+{
+  resetTiles();
+  resetTreeSystem();
   for(let x=-2; x<=14; x++) setTile(x,12,T.STONE);
   for(let x=0; x<10; x++){
     setTile(x,11,T.WOOD);

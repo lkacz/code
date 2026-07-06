@@ -6,6 +6,13 @@ totem odrodzenia, Róg przyzwania) oraz refaktorach rozszerzalności
 (rejestr statusów, rejestr źródeł modyfikatorów, centralny `damageHero`,
 rejestr zasobów — patrz „Extension Points" w README).
 
+**Fabuła domknięta**: pełny łuk „Warstwy Symulacji" od tutorialu do finału —
+Zachód/Wschód → Trzeci Kret → Wieża Ambicji/Niebo (fałszywy finał) → Centrum
+(Guardian Macierzysty: mimik gracza z odwróconymi obrażeniami — cios rani
+zadającego; zwycięstwo przez przyjęcie ciosu) → epilog. Cele zawsze diegetyczne
+(story_progression.js: beaty świata + zadania ze wskaźnikami), patrz „Story Arc"
+w README.
+
 ## Tier 1 — następne w kolejce
 1. **Tylna warstwa bloków (backwall)** — umożliwia budowę domów z wnętrzem.
    Wymaga: drugiej tablicy na chunk (format zapisu v6 + migracja), pasa

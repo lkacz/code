@@ -100,6 +100,29 @@ for(const a of list){
   if(L.size === 'small') assert.ok(width <= 24, 'small alien probes stay compact ('+width+')');
   if(L.size === 'large') assert.ok(width >= 28, 'large alien vaults sprawl ('+width+')');
 }
+// --- 2b. Hermetic hull: any path into a vault must break UFO concrete ---
+// Invariant: every forced non-concrete cell (carved air, glyphs, cables, tech,
+// chests) is backed by forced ops on all 8 sides. First contact from untouched
+// ground is therefore always concrete — dirt can never touch the interior.
+const DIRS8=[[-1,-1],[0,-1],[1,-1],[-1,0],[1,0],[-1,1],[0,1],[1,1]];
+function assertHermetic(L){
+  const finalTiles=new Map();
+  for(const o of L.ops) if(o.f===1) finalTiles.set(o.x+','+o.y,o.t);
+  let interior=0;
+  for(const [k,t] of finalTiles){
+    if(t===T.UFO_CONCRETE) continue;
+    interior++;
+    const c=k.indexOf(',');
+    const x=+k.slice(0,c), y=+k.slice(c+1);
+    for(const [dx,dy] of DIRS8){
+      assert.ok(finalTiles.has((x+dx)+','+(y+dy)),
+        'hermetic hull: '+L.size+' vault n='+L.n+' cell '+k+' (t='+t+') leaks to raw ground at '+(x+dx)+','+(y+dy));
+    }
+  }
+  assert.ok(interior>10, 'vault has an interior to protect ('+interior+')');
+}
+for(const a of list) assertHermetic(alienRuins.layoutFor(a.n));
+
 assert.ok(sizes.small>0 && sizes.medium>0 && sizes.large>0, 'all main alien ruin tiers occur (S:'+sizes.small+' M:'+sizes.medium+' L:'+sizes.large+' XL:'+sizes.mega+')');
 assert.ok(variants.size >= 5, 'alien architecture varies across variants ('+variants.size+')');
 assert.ok(withChest >= Math.max(1, Math.floor(list.length * 0.25)), 'some alien ruins contain chests ('+withChest+')');
@@ -111,6 +134,7 @@ for(let n=0;n<8000 && !mega;n++){
   if(L && L.size === 'mega') mega = L;
 }
 assert.ok(mega, 'a mega alien nexus exists within a wide scan');
+assertHermetic(mega);
 assert.ok(mega.maxX - mega.minX >= 44, 'mega nexus has impressive width ('+(mega.maxX-mega.minX)+')');
 assert.ok(mega.ops.filter(o=>o.t===T.CHEST_EPIC).length >= 2, 'mega nexus carries epic vault loot');
 assert.ok(mega.tech.length >= 4, 'mega nexus has multiple tech nodes');

@@ -21,17 +21,30 @@ assert.equal(STORY_LORE.metaphor.order.length, 5, 'shared story lore defines the
 assert.match(STORY_LORE.metaphor.guardians.west_ice.reveal, /odtraceni|chlod/i, 'ice guardian metaphor is emotional rejection and coldness');
 assert.match(STORY_LORE.metaphor.guardians.east_fire.reveal, /namietnos|pozar/i, 'fire guardian metaphor is unfulfilled or destructive passion');
 assert.match(STORY_LORE.metaphor.guardians.mother_self.reveal, /soba|siebie/i, 'mother guardian metaphor is the fight with oneself');
+// Stage mapping is one act ahead of the fallen guardian: each heart unlocks the
+// reflection on what it meant AND the foreshadowing of the next node, so the
+// guidance arrives before the fight and closure after it.
 const earlyLoreRoot = {MM:{progress:{guardianHearts(){ return {}; }}}};
 const iceLoreRoot = {MM:{progress:{guardianHearts(){ return {ice:true}; }}}};
+const bothLoreRoot = {MM:{progress:{guardianHearts(){ return {ice:true,fire:true}; }}}};
 const earthLoreRoot = {MM:{progress:{guardianHearts(){ return {ice:true,fire:true,earth:true}; }}}};
+const airLoreRoot = {MM:{progress:{guardianHearts(){ return {ice:true,fire:true,earth:true,air:true}; }}}};
 const finalLoreRoot = {MM:{progress:{guardianHearts(){ return {ice:true,fire:true,earth:true,sky:true,mother:true}; }}}};
 assert.equal(storyRevealStage(earlyLoreRoot), 'start', 'lore reveal starts with observer unease before guardian spoilers');
 assert.equal(storyRevealStage(iceLoreRoot), 'west_ice', 'ice heart advances lore to rejection/coldness');
-assert.equal(storyRevealStage(earthLoreRoot), 'earth_mole', 'earth heart advances lore to hidden-memory stage');
+assert.equal(storyRevealStage(bothLoreRoot), 'earth_mole', 'both elemental hearts foreshadow the buried mole');
+assert.equal(storyRevealStage(earthLoreRoot), 'sky_ambition', 'earth heart foreshadows the false final above');
+assert.equal(storyRevealStage(airLoreRoot), 'mother_self', 'air heart turns the whispers toward the center and the mentor');
+assert.equal(storyRevealStage(finalLoreRoot), 'epilogue', 'mother heart closes the arc with the quiet epilogue stage');
 assert.ok(!storyWhispersForProgress(earlyLoreRoot).some(line=>/Macierzyst|Centrum swiata|Stary Kwadrat.*maska/i.test(line)), 'early whispers avoid final mentor/center spoilers');
 assert.ok(storyWhispersForProgress(iceLoreRoot).some(line=>/chlod|odtrac/i.test(line)), 'post-ice whispers reveal the rejection metaphor');
+assert.ok(storyWhispersForProgress(airLoreRoot).some(line=>/Centrum|Stary Kwadrat/i.test(line)), 'post-sky whispers mention center and mentor suspicion before the finale');
 assert.ok(storyWhispersForProgress(finalLoreRoot).some(line=>/Centrum|Stary Kwadrat/i.test(line)), 'late whispers can mention center and mentor suspicion');
-assert.ok(storyInvasionLinesForProgress('alien','rare',finalLoreRoot).some(line=>/lustrem|samym soba/i.test(line)), 'late rare alien lore can hint at self-confrontation');
+assert.ok(storyWhispersForProgress(finalLoreRoot).some(line=>/oddycha rowniej|paska ladowania|Przestalismy sprawdzac/i.test(line)), 'epilogue whispers describe the world breathing on its own');
+assert.ok(storyInvasionLinesForProgress('alien','rare',airLoreRoot).some(line=>/lustrem|samym soba/i.test(line)), 'post-sky rare alien lore hints at self-confrontation');
+assert.ok(STORY_LORE.center && Array.isArray(STORY_LORE.center.reveal) && STORY_LORE.center.reveal.length>=8, 'center lore carries the full mentor confession');
+assert.ok(Array.isArray(STORY_LORE.center.mirrorHints) && STORY_LORE.center.mirrorHints.length>=3, 'center lore teaches the reversed-damage rule diegetically');
+assert.match(STORY_LORE.center.reveal.join(' '), /kazdy cios nalezy do tego, kto go zadaje/i, 'the confession states the single rule of the final fight');
 
 const worldGen = {
   worldSeed:12345,

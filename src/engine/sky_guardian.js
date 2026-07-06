@@ -1,4 +1,4 @@
-import { CHUNK_W, WORLD_MIN_Y, WORLD_SECTION_H, T } from '../constants.js';
+import { CHUNK_W, WORLD_H, WORLD_MIN_Y, WORLD_SECTION_H, T } from '../constants.js';
 import { isGeneratedStructureReplaceableTile, isSolidCollisionTile as isSolid } from './material_physics.js';
 import { worldGen as WG } from './worldgen.js';
 
@@ -149,6 +149,53 @@ const skyGuardian = (function(){
       put(r.x-1,r.y-1,T.IRIDIUM,true);
       put(r.x+1,r.y-1,T.IRIDIUM,true);
     }
+    // Tower of Ambition: the climbable spire that binds the Sky Gate to the
+    // ground. It rises when the mole guardian falls (the arena materializes),
+    // making "up" a visible, walkable goal instead of a hidden coordinate.
+    // put() above intentionally rejects y>=0, so tower ops use their own guard.
+    // Ladders are infrastructure OVERLAYS (world.setInfrastructure), not base
+    // tiles: base ops carve the shaft, `ladders` lists the climb cells.
+    let towerBaseY = 60;
+    try{ towerBaseY = Math.max(6, Math.min(WORLD_H-8, Math.round(WG.surfaceHeight(ax)))); }catch(e){ towerBaseY = 60; }
+    const ladders = [];
+    function putTower(x,y,t,force){
+      x=Math.round(x); y=Math.round(y);
+      if(y<WORLD_MIN_Y+2 || y>=WORLD_H-3) return;
+      ops.push({x,y,t,f:force?1:0});
+      bound(x,y);
+    }
+    // Ladder cells are overlay-only: hasLadderAt() makes a cell climbable and
+    // passable regardless of its base tile, so the climb never needs to force
+    // AIR over arena decorations (materialize order stays op-consistent).
+    function ladderCell(x,y){
+      x=Math.round(x); y=Math.round(y);
+      if(y<WORLD_MIN_Y+2 || y>=WORLD_H-3) return;
+      ladders.push({x,y});
+    }
+    for(let y=floorY+1; y<=towerBaseY+1; y++){
+      const rest = (y-floorY)%16===0;
+      putTower(ax-2,y,rest?T.IRIDIUM:T.GLASS,true);
+      putTower(ax+2,y,rest?T.IRIDIUM:T.GLASS,true);
+      putTower(ax-1,y,rest?T.GLASS:T.AIR,true);
+      putTower(ax+1,y,rest?T.GLASS:T.AIR,true);
+      ladderCell(ax,y);
+      if(rest){
+        putTower(ax-1,y-1,T.TORCH,true);
+        putTower(ax+1,y-1,T.TORCH,true);
+      }
+    }
+    // Pass through the arena floor onto the gate platform: a steel hatch —
+    // hero physics opens trapdoors for upward motion, so the climb tops out
+    // through it without punching a hole in the platform.
+    putTower(ax,floorY,T.STEEL_TRAPDOOR,true);
+    // Grounded entry: a lit arch so the base reads from a distance.
+    putTower(ax-2,towerBaseY,T.IRIDIUM,true);
+    putTower(ax+2,towerBaseY,T.IRIDIUM,true);
+    putTower(ax-1,towerBaseY,T.AIR,true);
+    putTower(ax+1,towerBaseY,T.AIR,true);
+    ladderCell(ax,towerBaseY);
+    putTower(ax-2,towerBaseY-1,T.TORCH,true);
+    putTower(ax+2,towerBaseY-1,T.TORCH,true);
     const L = {
       kind:'air',
       schema:'sky_gate_cognitive_arena_v1',
@@ -158,6 +205,8 @@ const skyGuardian = (function(){
       gateY,
       bossX:ax,
       bossY:gateY-10,
+      towerBaseY,
+      ladders,
       minX:minX-4,
       maxX:maxX+4,
       minY:Math.max(WORLD_MIN_Y+2,minY-4),
@@ -194,6 +243,26 @@ const skyGuardian = (function(){
     }
     return changed;
   }
+  // The Tower of Ambition reaches into the surface chunk band (y >= 0), which
+  // regenerates through applyToChunk rather than the vertical-section path.
+  function applyToChunk(arr,cx){
+    if(!arr || !isUnlocked()) return 0;
+    const L=layoutFor();
+    const cmin=cx*CHUNK_W, cmax=cmin+CHUNK_W-1;
+    if(L.maxX<cmin || L.minX>cmax || L.maxY<0) return 0;
+    let changed=0;
+    for(const o of L.ops){
+      if(o.y<0 || o.y>=WORLD_H) continue;
+      if(o.x<cmin || o.x>cmax) continue;
+      const idx=o.y*CHUNK_W+(o.x-cmin);
+      const cur=arr[idx];
+      if(cur===o.t) continue;
+      if(!shouldReplace(cur,o.f===1)) continue;
+      arr[idx]=o.t;
+      changed++;
+    }
+    return changed;
+  }
   function materializeArena(getTile,setTile){
     if(typeof getTile==='function') lastGetTile=getTile;
     if(typeof setTile==='function') lastSetTile=setTile;
@@ -208,6 +277,16 @@ const skyGuardian = (function(){
       if(!shouldReplace(cur,o.f===1)) continue;
       try{ setTile(o.x,o.y,o.t); changed++; }catch(e){}
     }
+    // The tower's climb is an infrastructure overlay (persisted separately from
+    // chunk arrays), laid once the shaft exists.
+    try{
+      const worldApi=MM.world;
+      if(worldApi && typeof worldApi.setInfrastructure==='function' && Array.isArray(L.ladders)){
+        for(const cell of L.ladders){
+          if(worldApi.setInfrastructure(cell.x,cell.y,T.LADDER)) changed++;
+        }
+      }
+    }catch(e){}
     if(changed>0){
       state.materialized=true;
       markWorldChanged(true);
@@ -1385,6 +1464,7 @@ const skyGuardian = (function(){
     layoutFor,
     landingSpot,
     applyToSection,
+    applyToChunk,
     materializeArena,
     update,
     draw,

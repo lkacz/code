@@ -18,6 +18,7 @@ import { guardianLairs as GUARDIANS } from './guardian_lairs.js';
 import { undergroundBoss as UNDERGROUND } from './underground_boss.js';
 import { skyGuardian as SKY_GUARDIAN } from './sky_guardian.js';
 import { guardianAftermath as AFTERMATH } from './guardian_aftermath.js';
+import { centerGuardian as CENTER_GUARDIAN } from './center_guardian.js';
 window.MM = window.MM || {};
 (function(){
   const WG = WORLDGEN;
@@ -27,6 +28,12 @@ window.MM = window.MM || {};
   const modifiedChunks = new Set();
   const infrastructure = new Map(); // "x,y" -> overlay tile stack (wire / copper cable / water pipe / ladder)
   const constructionBackground = new Map(); // "x,y" -> passable building support/decor tile
+  // Generated interior backdrops (city building rooms, tunnels...) live in their
+  // own per-chunk layer: derived deterministically with the chunk, never saved
+  // (save-loaded chunks replay the pass), shown behind foreground air like
+  // player background builds. Player edits shadow it via constructionBackground,
+  // where an explicit T.AIR entry is a tombstone for a mined-out backdrop cell.
+  const generatedBackground = new Map(); // chunk key -> Uint8Array(CHUNK_W*WORLD_H)
   // Cache of surface heights per world column to avoid recomputing noise repeatedly
   const heightCache = new Map();
   // Cache of perched-lake water rows, computed per contiguous lake segment
@@ -273,11 +280,21 @@ window.MM = window.MM || {};
     return isRockStructuralMaterial(t) && isObjectFootingTile(t);
   }
 
-  function applyDevastatedCity(arr,cx){
+  function applyDevastatedCity(arr,cx,bgOnly){
     const WG=MM.worldGen; if(!WG || !WG.column) return;
+    if(bgOnly && generatedBackground.has(ck(cx))) return;
+    if(!bgOnly && generatedBackground.delete(ck(cx))) genBgInvalidate();
     const worldLeft=cx*CHUNK_W, worldRight=worldLeft+CHUNK_W-1;
+    let bgArr=null;
+    const putBg=(wx,y,t)=>{
+      if(wx<worldLeft || wx>worldRight || y<0 || y>=WORLD_H-3) return;
+      if(!isConstructionBackgroundTile(t)) return;
+      if(!bgArr){ bgArr=new Uint8Array(CHUNK_W*WORLD_H); generatedBackground.set(ck(cx),bgArr); genBgInvalidate(); }
+      bgArr[tileIndex(wx-worldLeft,y)]=t;
+    };
     const put=(wx,y,t,force)=>{
       if(wx<worldLeft || wx>worldRight || y<0 || y>=WORLD_H-3) return false;
+      if(bgOnly) return true; // background replay: keep builder flow, touch no foreground
       const lx=wx-worldLeft, idx=tileIndex(lx,y), cur=arr[idx];
       if(force || isGeneratedStructureReplaceableTile(cur)){
         arr[idx]=t;
@@ -286,17 +303,71 @@ window.MM = window.MM || {};
       return false;
     };
     const carve=(wx,y)=>{
+      if(bgOnly) return;
       if(wx<worldLeft || wx>worldRight || y<0 || y>=WORLD_H-3) return;
       const idx=tileIndex(wx-worldLeft,y), cur=arr[idx];
       if(cur!==T.LAVA && cur!==T.CHEST_COMMON && cur!==T.CHEST_RARE && cur!==T.CHEST_EPIC) arr[idx]=T.AIR;
     };
+    // Interior backdrop material keyed to the district's architecture school.
+    const cityBg=(arch)=>(arch===1||arch===2)?T.STEEL:T.STONE;
     const cityCol=(wx)=>{ const col=WG.column(wx); return col && col.biome===8 ? col : null; };
-    const cityTile=(wx,y,cell,heavy)=>{
+    // Architecture schools (worldgen picks one per district): 0 stone spires,
+    // 1 glass downtown (legacy palette), 2 foundry sprawl, 3 terraced ziggurats,
+    // 4 brutalist megablocks.
+    const cityArch=(city)=>{
+      const a=city ? city.arch : null;
+      return Number.isFinite(a) ? Math.max(0,Math.min(4,Math.floor(a))) : 1;
+    };
+    const cityTile=(wx,y,cell,heavy,arch)=>{
       const r=WG.randSeed(wx*4.171+y*0.613+cell*19.31);
-      if(heavy) return r<0.62 ? T.STEEL : T.STONE;
-      if(r<0.28) return T.STEEL;
-      if(r<0.82) return T.STONE;
-      return T.OBSIDIAN;
+      switch(arch){
+        case 0:
+          if(heavy) return r<0.30 ? T.STEEL : (r<0.80 ? T.STONE : T.OBSIDIAN);
+          return r<0.10 ? T.STEEL : (r<0.70 ? T.STONE : T.OBSIDIAN);
+        case 2:
+          if(heavy) return r<0.70 ? T.STEEL : (r<0.90 ? T.STONE : T.OBSIDIAN);
+          return r<0.42 ? T.STEEL : (r<0.80 ? T.STONE : T.OBSIDIAN);
+        case 3:
+          if(heavy) return r<0.22 ? T.STEEL : (r<0.68 ? T.STONE : T.OBSIDIAN);
+          return r<0.08 ? T.STEEL : (r<0.64 ? T.STONE : T.OBSIDIAN);
+        case 4:
+          if(heavy) return r<0.52 ? T.STEEL : T.STONE;
+          return r<0.20 ? T.STEEL : (r<0.90 ? T.STONE : T.OBSIDIAN);
+        default:
+          if(heavy) return r<0.62 ? T.STEEL : T.STONE;
+          if(r<0.28) return T.STEEL;
+          if(r<0.82) return T.STONE;
+          return T.OBSIDIAN;
+      }
+    };
+    // Height profile across the district so each city has a coherent skyline
+    // instead of uniform random towers: downtown core, twin peaks, terraces...
+    const skylineEnvelope=(city,wx)=>{
+      if(!city || !Number.isFinite(city.center) || !(city.radius>0)) return 1;
+      const rel=Math.min(1,Math.abs(wx-city.center)/city.radius);
+      const motif=Number.isFinite(city.motif)?city.motif:0.5;
+      let env;
+      switch(cityArch(city)){
+        case 0: env=0.60+0.62*Math.pow(1-rel,1.4); break;
+        case 2: env=0.74+0.18*Math.sin(rel*8.2+motif*6.3); break;
+        case 3: env=0.42+0.68*(Math.round((1-rel)*4)/4); break;
+        case 4: { const peak=0.34+motif*0.28; const d=rel-peak; env=0.56+0.72*Math.exp(-(d*d)/0.028); break; }
+        default: env=0.52+0.88*Math.pow(1-rel,1.8); break;
+      }
+      return Math.max(0.42,Math.min(1.45,env));
+    };
+    const CITY_STYLE_WEIGHTS={
+      0:[['spire',0.34],['block',0.26],['monument',0.14],['tower',0.14],['factory',0.12]],
+      1:[['tower',0.32],['block',0.30],['factory',0.14],['spire',0.12],['monument',0.12]],
+      2:[['factory',0.40],['block',0.26],['tower',0.16],['spire',0.09],['monument',0.09]],
+      3:[['ziggurat',0.36],['block',0.24],['monument',0.16],['spire',0.14],['tower',0.10]],
+      4:[['block',0.44],['tower',0.22],['factory',0.16],['ziggurat',0.09],['monument',0.09]]
+    };
+    const pickStyle=(arch,roll)=>{
+      const weights=CITY_STYLE_WEIGHTS[arch]||CITY_STYLE_WEIGHTS[1];
+      let acc=0;
+      for(const [style,w] of weights){ acc+=w; if(roll<acc) return style; }
+      return weights[0][0];
     };
     const maybeWire=(wx,y,seed,chance,force)=>{
       const p = typeof chance==='number' ? chance : 0.10;
@@ -310,6 +381,7 @@ window.MM = window.MM || {};
       const col=cityCol(anchor); if(!col) return;
       const ground=col.row;
       const city=col.city || {density:0.75,decay:0.6};
+      const arch=cityArch(city);
       const floorGap=style==='tower'?4:(style==='factory'?3:5);
       const beamGap=style==='tower'?3:(style==='factory'?5:4);
       for(let dx=0; dx<w; dx++){
@@ -330,11 +402,12 @@ window.MM = window.MM || {};
             const windowBand=(rel%floorGap)>=2 && (rel%floorGap)<=floorGap-1;
             const pane=(dx%3)!==0 && windowBand && damage>0.18+city.decay*0.12;
             if(pane) put(wx,y,T.GLASS,false);
+            else putBg(wx,y,cityBg(arch)); // hole in the wall face shows the room's back wall
             continue;
           }
-          const t=cityTile(wx,y,cell,edge||floor||beam);
+          const t=cityTile(wx,y,cell,edge||floor||beam,arch);
           put(wx,y,t,true);
-          if(!edge && floor && WG.randSeed(wx*6.3+y*0.41)>0.84) carve(wx,y-1);
+          if(!edge && floor && WG.randSeed(wx*6.3+y*0.41)>0.84){ carve(wx,y-1); putBg(wx,y-1,cityBg(arch)); }
           if(!edge && floor && rel>1 && dx>1 && dx<w-2){
             maybeWire(wx,y-1,wx*0.719+y*1.13+cell*2.31,style==='factory'?0.12:0.07,false);
             maybeElectronics(wx,y-1,wx*2.83+y*0.91+cell*5.7,style==='factory'?0.0025:0.0012);
@@ -346,11 +419,24 @@ window.MM = window.MM || {};
         for(let i=0;i<chimneys;i++){
           const wx=anchor+2+Math.floor(WG.randSeed(anchor*1.9+i*17)*Math.max(1,w-4));
           const base=ground-h+1+Math.floor(WG.randSeed(wx*0.7)*3);
+          // Chimney footing: decay can hole the roof rows the stack stands on.
+          put(wx,base,cityTile(wx,base,cell,true,arch),true);
           for(let y=base-1; y>=base-7; y--) put(wx,y,T.STEEL,true);
           put(wx,base-8,T.OBSIDIAN,true);
         }
       } else if(style==='tower'){
         const mastX=anchor+(w>>1);
+        // Solid service core under the mast: decay-holed crown rows otherwise
+        // leave the antenna standing on air and it sheds during the settle audit.
+        const mc=cityCol(mastX);
+        if(mc){
+          const mBase=Math.max(2,Math.min(ground,mc.row));
+          for(let rel=1; rel<=h; rel++){
+            const y=mBase-rel;
+            if(y<2) break;
+            put(mastX,y,cityTile(mastX,y,cell,true,arch),true);
+          }
+        }
         for(let y=ground-h-1; y>=ground-h-8; y--) put(mastX,y,T.STEEL,true);
         put(mastX-1,ground-h-5,T.STEEL,true); put(mastX+1,ground-h-5,T.STEEL,true);
       }
@@ -366,7 +452,7 @@ window.MM = window.MM || {};
         const rel=1+floorGap*Math.floor(WG.randSeed(anchor*3.07+cell)*floors);
         const vy=Math.max(2,ground-rel-1);
         if(cityCol(vx) && cityCol(vx-1) && cityCol(vx+1)){
-          put(vx,vy+1,cityTile(vx,vy+1,cell,true),true);
+          put(vx,vy+1,cityTile(vx,vy+1,cell,true,arch),true);
           carve(vx,vy-1);
           put(vx,vy,T.VENDING_MACHINE,true);
           maybeWire(vx-1,vy,anchor*0.41+cell,0.38,true);
@@ -381,6 +467,482 @@ window.MM = window.MM || {};
       for(let y=g-3; y>=g-9; y--) put(anchor,y,(y%2)?T.STEEL:T.STONE,true);
       put(anchor-1,g-6,T.STEEL,true); put(anchor+1,g-6,T.STEEL,true);
       if(WG.randSeed(anchor*0.27+cell)>0.72) put(anchor,g-10,T.DIAMOND,true);
+    };
+    // Tapering spire with buttress feet and lancet window slits. Every column is
+    // grounded on local terrain so the structural audit sees a supported mass.
+    const buildSpire=(anchor,h,cell,city)=>{
+      const col=cityCol(anchor); if(!col) return;
+      const arch=cityArch(city);
+      const half=2+Math.floor(WG.randSeed(cell*7.31+3.7)*2);
+      const decay=city && Number.isFinite(city.decay)?city.decay:0.5;
+      for(let dx=-half-1; dx<=half+1; dx++){
+        const wx=anchor+dx;
+        const c=cityCol(wx); if(!c) continue;
+        const baseY=Math.max(2,Math.min(col.row,c.row));
+        const a=Math.abs(dx);
+        if(a===half+1){
+          for(let rel=1; rel<=3; rel++) put(wx,baseY-rel,rel===3?T.OBSIDIAN:T.STONE,true);
+          continue;
+        }
+        const colH=Math.max(3,Math.round(h*(1-Math.pow(a/(half+1),1.25)*0.92)));
+        for(let rel=1; rel<=colH; rel++){
+          const y=baseY-rel;
+          if(y<2) break;
+          const edge=a===half || rel>=colH-1;
+          const damage=WG.randSeed(wx*1.77+y*3.19+cell*0.21);
+          if(!edge && rel>2 && (rel%4===2||rel%4===3) && damage>0.30+decay*0.15){
+            put(wx,y,T.GLASS,false);
+            continue;
+          }
+          put(wx,y,cityTile(wx,y,cell,edge,arch),true);
+        }
+      }
+      const tipY=col.row-h-1;
+      put(anchor,tipY,T.STEEL,true);
+      if(WG.randSeed(cell*3.91+1.1)>0.45) put(anchor,tipY-1,T.TORCH,true);
+    };
+    // Stepped ziggurat with obsidian tier trim and a lootable crown sanctum.
+    const buildZiggurat=(anchor,h,cell,city,grand)=>{
+      const col=cityCol(anchor); if(!col) return;
+      const arch=cityArch(city);
+      const decay=city && Number.isFinite(city.decay)?city.decay:0.5;
+      const tierH=3;
+      const half0=grand ? 10+Math.floor(WG.randSeed(cell*6.71+1.9)*4) : 5+Math.floor(WG.randSeed(cell*6.71+1.9)*4);
+      const tiers=Math.max(3,Math.min(grand?6:5,Math.floor(h/tierH)));
+      const step=Math.max(1,Math.ceil(half0/tiers));
+      for(let dx=-half0; dx<=half0; dx++){
+        const wx=anchor+dx;
+        const c=cityCol(wx); if(!c) continue;
+        const baseY=Math.max(2,Math.min(col.row,c.row));
+        const a=Math.abs(dx);
+        let tierOfCol=0;
+        for(let t=1;t<tiers;t++){ if(a<=half0-t*step) tierOfCol=t; }
+        const colH=(tierOfCol+1)*tierH;
+        for(let rel=1; rel<=colH; rel++){
+          const y=baseY-rel;
+          if(y<2) break;
+          const damage=WG.randSeed(wx*1.77+y*3.19+cell*0.21);
+          const cap=rel===colH;
+          if(cap && tierOfCol===tiers-1 && a!==0 && damage<decay*0.5) continue;
+          const trim=cap || a===half0;
+          put(wx,y,trim ? (damage<0.34?T.OBSIDIAN:T.STONE) : cityTile(wx,y,cell,false,arch),true);
+        }
+      }
+      const crownY=col.row-(tiers-1)*tierH-1;
+      carve(anchor-1,crownY); carve(anchor+1,crownY);
+      carve(anchor,crownY); carve(anchor,crownY-1);
+      for(const [sx,sy] of [[anchor-1,crownY],[anchor+1,crownY],[anchor,crownY],[anchor,crownY-1]]) putBg(sx,sy,T.STONE);
+      if(WG.randSeed(cell*4.87+2.3)>0.35) put(anchor,crownY,WG.randSeed(cell*8.6+0.7)>0.8?T.CHEST_EPIC:T.CHEST_RARE,true);
+      const apexY=col.row-tiers*tierH-1;
+      put(anchor,apexY,grand?T.DIAMOND:T.TORCH,true);
+    };
+    // ---- Abandoned civic lots ----------------------------------------------
+    // Empty lots between buildings used to collect loose rubble piles. They now
+    // read as pre-collapse civic life instead: dead malls, empty schools,
+    // churchyards, overgrown parks and the occasional fairground coaster. Every
+    // roll is a pure function of the lot cell so generation stays chunk-order
+    // independent, and every solid column is grounded for the stability audit.
+    const lotEmpty=(c,city)=>WG.randSeed(c*17.33+2.9)>city.density;
+    const civicKind=(c)=>{
+      const roll=WG.randSeed(c*7.77+5.13);
+      if(roll<0.10) return 'coaster';
+      if(roll<0.38) return 'mall';
+      if(roll<0.60) return 'school';
+      if(roll<0.80) return 'church';
+      return 'park';
+    };
+    const civicWide=(kind)=>kind==='mall'||kind==='coaster';
+    const civicDecay=(city)=>city && Number.isFinite(city.decay)?city.decay:0.5;
+    const civicDamage=(wx,y,cell)=>WG.randSeed(wx*1.77+y*3.19+cell*0.21);
+    const buildDeadTree=(tx,cell)=>{
+      const c=cityCol(tx); if(!c) return;
+      const th=3+Math.floor(WG.randSeed(tx*1.31+cell*0.77)*3);
+      for(let rel=1; rel<=th; rel++) put(tx,c.row-rel,T.WOOD,true);
+      for(let dy=0; dy<=1; dy++){
+        for(let dx=-1; dx<=1; dx++){
+          const lr=WG.randSeed(tx*3.7+dx*5.1+dy*7.3+cell);
+          if(lr<0.52) put(tx+dx,c.row-th-dy,lr<0.26?T.AUTUMN_LEAF_ORANGE:T.AUTUMN_LEAF_RED,false);
+        }
+      }
+    };
+    const buildRuinPark=(anchor,cell,city)=>{
+      const w=14+Math.floor(WG.randSeed(cell*3.83+0.7)*4);
+      const variant=WG.randSeed(cell*5.21+2.6);
+      for(let dx=0; dx<w; dx++){
+        const wx=anchor+dx;
+        const c=cityCol(wx); if(!c) continue;
+        const lawn=WG.randSeed(wx*2.93+cell*0.4);
+        put(wx,c.row,lawn<0.18?T.DIRT:T.GRASS,true);
+        if(lawn>0.88) put(wx,c.row-1,T.LEAF,false);
+      }
+      const trees=1+Math.floor(WG.randSeed(cell*9.4+1.2)*3);
+      for(let i=0;i<trees;i++) buildDeadTree(anchor+2+Math.floor(WG.randSeed(cell*11.3+i*4.7)*(w-4)),cell);
+      if(WG.randSeed(cell*2.11+1.8)>0.35){
+        const bx=anchor+2+Math.floor(WG.randSeed(cell*7.6+0.3)*(w-5));
+        const bc=cityCol(bx);
+        if(bc){ put(bx,bc.row-1,T.STONE,true); put(bx+1,bc.row-1,T.STONE,true); }
+      }
+      const lampX=anchor+(WG.randSeed(cell*4.9+2.2)>0.5?1:w-2);
+      const lc=cityCol(lampX);
+      if(lc){ for(let y=lc.row-1; y>=lc.row-3; y--) put(lampX,y,T.STEEL,true); put(lampX,lc.row-4,T.TORCH,true); }
+      const cx0=anchor+(w>>1);
+      const cc=cityCol(cx0);
+      if(cc){
+        if(variant<0.38){
+          // Dry fountain: stone basin holding a little stagnant rainwater.
+          for(let dx=-2; dx<=2; dx++){ const c=cityCol(cx0+dx); if(c) put(cx0+dx,c.row,T.STONE,true); }
+          put(cx0-2,cc.row-1,T.STONE,true); put(cx0+2,cc.row-1,T.STONE,true);
+          put(cx0,cc.row-1,T.STONE,true); put(cx0,cc.row-2,T.STONE,true);
+          put(cx0-1,cc.row-1,T.WATER,true); put(cx0+1,cc.row-1,T.WATER,true);
+        } else if(variant<0.68){
+          // Playground: trampoline pad and a small climbing frame with a ladder.
+          put(cx0,cc.row-1,T.SPRING_PLATFORM,false);
+          const fx=cx0+2;
+          const fc=cityCol(fx), fc3=cityCol(fx+3);
+          if(fc && fc3){
+            const fb=Math.max(2,Math.min(fc.row,fc3.row));
+            put(fx,fb-1,T.STEEL,true); put(fx,fb-2,T.STEEL,true);
+            put(fx+3,fb-1,T.STEEL,true); put(fx+3,fb-2,T.STEEL,true);
+            for(let dx=0; dx<=3; dx++) put(fx+dx,fb-3,T.STEEL,true);
+            put(fx+1,fb-1,T.LADDER,false); put(fx+1,fb-2,T.LADDER,false);
+          }
+        }
+      }
+      if(WG.randSeed(cell*6.6+3.1)<0.30){
+        const chx=anchor+3+Math.floor(WG.randSeed(cell*8.3+0.9)*(w-6));
+        const chc=cityCol(chx);
+        if(chc) put(chx,chc.row-1,T.CHEST_COMMON,true);
+      }
+    };
+    const buildRuinSchool=(anchor,cell,city)=>{
+      const col=cityCol(anchor); if(!col) return;
+      const decay=civicDecay(city);
+      const w=15+Math.floor(WG.randSeed(cell*4.13+1.5)*4);
+      const h=9, ground=col.row;
+      for(let dx=0; dx<w; dx++){
+        const wx=anchor+dx;
+        const c=cityCol(wx); if(!c) continue;
+        const baseY=Math.max(2,Math.min(ground,c.row));
+        for(let rel=1; rel<=h; rel++){
+          const y=baseY-rel; if(y<2) break;
+          const edge=dx===0||dx===w-1;
+          const slab=rel===1||rel===5;
+          const damage=civicDamage(wx,y,cell);
+          if(rel===h){ if(edge || damage>decay*0.5) put(wx,y,T.BRICK,true); continue; }
+          if(edge||slab){ put(wx,y,T.BRICK,true); continue; }
+          if(dx%4===0){ put(wx,y,T.BRICK,true); continue; }
+          const band=(rel>=2&&rel<=3)||(rel>=6&&rel<=7);
+          if(band && damage>0.20+decay*0.35){ put(wx,y,T.GLASS,false); continue; }
+          carve(wx,y);
+          putBg(wx,y,T.BRICK); // classroom back wall
+          if((rel===2||rel===6) && dx%3===1 && damage>0.45+decay*0.30) put(wx,y,T.STONE,false);
+        }
+      }
+      const bb=cityCol(anchor+2);
+      if(bb){ const b=Math.max(2,Math.min(ground,bb.row)); put(anchor+2,b-3,T.OBSIDIAN,false); put(anchor+2,b-7,T.OBSIDIAN,false); }
+      const doorC=cityCol(anchor);
+      if(doorC){ const b=Math.max(2,Math.min(ground,doorC.row)); put(anchor,b-2,T.WOOD_DOOR,true); carve(anchor,b-3); }
+      const mastX=anchor+w-3, mc=cityCol(mastX);
+      if(mc){
+        const b=Math.max(2,Math.min(ground,mc.row));
+        put(mastX,b-h,T.BRICK,true);
+        for(let y=b-h-1; y>=b-h-3; y--) put(mastX,y,T.STEEL,true);
+        put(mastX-1,b-h-3,T.WIRE,false);
+      }
+      if(WG.randSeed(cell*3.9+0.8)<0.45){
+        const vx=anchor+2+Math.floor(WG.randSeed(cell*5.7+2.4)*(w-4));
+        const vc=cityCol(vx);
+        if(vc && vx%4!==0){ const b=Math.max(2,Math.min(ground,vc.row)); carve(vx,b-3); put(vx,b-2,T.VENDING_MACHINE,true); }
+      }
+      if(WG.randSeed(cell*6.1+1.4)<0.60){
+        const chc=cityCol(anchor+w-3);
+        if(chc){ const b=Math.max(2,Math.min(ground,chc.row)); put(anchor+w-3,b-6,T.CHEST_COMMON,true); }
+      }
+      maybeElectronics(anchor+5,Math.max(2,ground-6),cell*9.77+2.5,0.25);
+    };
+    const buildRuinChurch=(anchor,cell,city)=>{
+      const col=cityCol(anchor); if(!col) return;
+      const decay=civicDecay(city);
+      const yardW=5, naveW=9, towerW=3;
+      const naveX=anchor+yardW, towerX=naveX+naveW;
+      for(let dx=0; dx<yardW; dx++){
+        const wx=anchor+dx;
+        const c=cityCol(wx); if(!c) continue;
+        put(wx,c.row,T.GRASS,true);
+        if(dx%2===1 && (dx===1 || WG.randSeed(wx*3.13+cell)<0.75)) put(wx,c.row-1,T.GRAVE,dx===1);
+      }
+      buildDeadTree(anchor+(WG.randSeed(cell*1.9+0.6)>0.5?0:2),cell+0.5);
+      const naveH=6;
+      for(let dx=0; dx<naveW; dx++){
+        const wx=naveX+dx;
+        const c=cityCol(wx); if(!c) continue;
+        const baseY=Math.max(2,Math.min(col.row,c.row));
+        const peak=((naveW-1)>>1)-Math.abs(dx-((naveW-1)>>1));
+        const hh=naveH+peak;
+        for(let rel=1; rel<=hh; rel++){
+          const y=baseY-rel; if(y<2) break;
+          const edge=dx===0||dx===naveW-1;
+          const damage=civicDamage(wx,y,cell);
+          if(rel>naveH){
+            // Two-thick sloped roof line so neighbouring columns stay 4-connected.
+            if(rel>=hh-1 && damage>decay*0.35) put(wx,y,T.STONE,true);
+            continue;
+          }
+          if(rel===1 || edge){ put(wx,y,T.STONE,true); continue; }
+          if(dx%3===1 && rel>=2 && rel<=4 && damage>0.15+decay*0.30){ put(wx,y,T.GLASS,false); continue; }
+          carve(wx,y);
+          putBg(wx,y,T.STONE); // nave back wall
+          if(rel===2 && dx>=2 && dx<=naveW-3 && dx%2===0 && damage>0.40+decay*0.25) put(wx,y,T.STONE,false);
+        }
+      }
+      const dc=cityCol(naveX);
+      if(dc){ const b=Math.max(2,Math.min(col.row,dc.row)); put(naveX,b-2,T.WOOD_DOOR,true); carve(naveX,b-3); }
+      const ac=cityCol(towerX-2);
+      if(ac){ const b=Math.max(2,Math.min(col.row,ac.row)); put(towerX-2,b-2,T.OBSIDIAN,true); put(towerX-2,b-3,T.TORCH,false); }
+      const towerH=11+Math.floor(WG.randSeed(cell*3.37+2.8)*3);
+      for(let dx=0; dx<towerW; dx++){
+        const wx=towerX+dx;
+        const c=cityCol(wx); if(!c) continue;
+        const baseY=Math.max(2,Math.min(col.row,c.row));
+        for(let rel=1; rel<=towerH; rel++){
+          const y=baseY-rel; if(y<2) break;
+          const damage=civicDamage(wx,y,cell);
+          if(dx===1 && rel>1 && rel<towerH-1){
+            if(rel%3===0 && damage>0.25+decay*0.30){ put(wx,y,T.GLASS,false); continue; }
+            carve(wx,y);
+            putBg(wx,y,T.STONE); // bell-tower shaft back wall
+            continue;
+          }
+          put(wx,y,damage<0.12?T.OBSIDIAN:T.STONE,true);
+        }
+      }
+      const tc=cityCol(towerX+1);
+      if(tc){
+        const b=Math.max(2,Math.min(col.row,tc.row));
+        for(let i=1;i<=3;i++) put(towerX+1,b-towerH-i,T.STEEL,true);
+        put(towerX,b-towerH-2,T.STEEL,true); put(towerX+2,b-towerH-2,T.STEEL,true);
+        if(WG.randSeed(cell*5.9+1.7)<0.50) put(towerX+1,b-2,T.CHEST_RARE,true);
+      }
+    };
+    const buildRuinMall=(anchor,cell,city,wide)=>{
+      const col=cityCol(anchor); if(!col) return;
+      const decay=civicDecay(city);
+      const w=wide?30+Math.floor(WG.randSeed(cell*3.31+2.2)*5):16;
+      const h=wide?13:9;
+      const ground=col.row;
+      const atrium=anchor+(w>>1);
+      for(let dx=0; dx<w; dx++){
+        const wx=anchor+dx;
+        const c=cityCol(wx); if(!c) continue;
+        const baseY=Math.max(2,Math.min(ground,c.row));
+        const inAtrium=wide && Math.abs(wx-atrium)<=1;
+        for(let rel=1; rel<=h; rel++){
+          const y=baseY-rel; if(y<2) break;
+          const edge=dx===0||dx===w-1;
+          const damage=civicDamage(wx,y,cell);
+          if(rel===h){
+            if(inAtrium){ put(wx,y,T.GLASS,true); continue; }
+            if(edge || damage>decay*0.45) put(wx,y,T.STEEL,true);
+            continue;
+          }
+          if(inAtrium && rel>1){ carve(wx,y); putBg(wx,y,wide?T.STEEL:T.STONE); continue; }
+          const slab=rel===1||(rel>1 && rel%4===1);
+          const pier=dx%6===3;
+          if(edge||pier){ put(wx,y,T.STEEL,true); continue; }
+          if(slab){ put(wx,y,T.STONE,true); continue; }
+          if(((rel>=2&&rel<=3)||(rel>=6&&rel<=7)) && damage>0.15+decay*0.30){ put(wx,y,T.GLASS,false); continue; }
+          carve(wx,y);
+          putBg(wx,y,wide?T.STEEL:T.STONE); // shopfloor back wall
+        }
+      }
+      if(wide){
+        // Dead escalator: a ladder run beside the galleria linking every level.
+        const lx=atrium+2, lc=cityCol(lx);
+        if(lc){
+          const b=Math.max(2,Math.min(ground,lc.row));
+          for(let rel=2; rel<=h-2; rel++){
+            const y=b-rel; if(y<2) break;
+            carve(lx,y);
+            put(lx,y,T.LADDER,false);
+          }
+        }
+      }
+      // Food court: counters on the middle slab, leftovers still on them.
+      for(let dx=2; dx<w-2; dx++){
+        if(dx%5!==1 && dx%5!==2) continue;
+        const wx=anchor+dx;
+        if(wide && Math.abs(wx-atrium)<=2) continue;
+        const c=cityCol(wx); if(!c) continue;
+        const b=Math.max(2,Math.min(ground,c.row));
+        const y=b-6; if(y<2) continue;
+        put(wx,y,T.STONE,true);
+        const mr=WG.randSeed(wx*5.9+cell*1.7);
+        if(mr<0.30) put(wx,y-1,T.MEAT,false);
+        else if(mr<0.55) put(wx,y-1,T.ROTTEN_MEAT,false);
+        else if(mr<0.70) put(wx,y-1,T.BAKED_MEAT,false);
+      }
+      const vends=wide?2:1;
+      for(let i=0;i<vends;i++){
+        const vx=anchor+3+Math.floor(WG.randSeed(cell*6.83+i*2.9)*(w-6));
+        if(wide && Math.abs(vx-atrium)<=1) continue;
+        const vc=cityCol(vx); if(!vc || vx%6===3) continue;
+        const b=Math.max(2,Math.min(ground,vc.row));
+        carve(vx,b-3);
+        put(vx,b-2,T.VENDING_MACHINE,true);
+        maybeWire(vx+1,b-2,vx*0.53+cell*1.9,0.40,true);
+      }
+      const topRel=wide?10:6;
+      const chc=cityCol(anchor+2);
+      if(chc){ const b=Math.max(2,Math.min(ground,chc.row)); put(anchor+2,b-topRel,T.CHEST_COMMON,true); }
+      if(WG.randSeed(cell*4.21+0.6)<0.45){
+        const c2=cityCol(anchor+w-3);
+        if(c2){ const b=Math.max(2,Math.min(ground,c2.row)); put(anchor+w-3,b-topRel,T.CHEST_RARE,true); }
+      }
+      maybeElectronics(anchor+4,Math.max(2,ground-2),cell*8.9+1.3,0.20);
+    };
+    const buildRuinCoaster=(anchor,cell,city)=>{
+      const col=cityCol(anchor); if(!col) return;
+      const decay=civicDecay(city);
+      const w=32+Math.floor(WG.randSeed(cell*2.93+3.4)*7);
+      const phase=WG.randSeed(cell*6.28+0.9)*6.28;
+      const amp=2+WG.randSeed(cell*4.44+1.6)*3;
+      const trackRow=(dx,c)=>{
+        const ty=Math.round(col.row-5-amp*(1+Math.sin(dx*0.33+phase)));
+        return Math.min(ty,c.row-3);
+      };
+      let lowDx=2, lowY=-Infinity;
+      for(let dx=0; dx<w; dx++){
+        const wx=anchor+dx;
+        const c=cityCol(wx); if(!c) continue;
+        const ty=trackRow(dx,c);
+        const pylon=dx%4===2 || dx===0 || dx===w-1;
+        if(pylon || civicDamage(wx,ty,cell)>decay*0.22) put(wx,ty,T.STEEL,true);
+        if(pylon) for(let y=ty+1; y<c.row; y++) put(wx,y,((c.row-y)%3===0)?T.STEEL:T.STONE,true);
+        if(ty>lowY && dx>3 && dx<w-3){ lowY=ty; lowDx=dx; }
+      }
+      // A stranded car resting in the dip of the track.
+      const carC=cityCol(anchor+lowDx);
+      if(carC){
+        const ty=trackRow(lowDx,carC);
+        put(anchor+lowDx,ty,T.STEEL,true);
+        put(anchor+lowDx,ty-1,T.OBSIDIAN,true);
+      }
+      // Ticket kiosk under the dip (mid-lot, clear of neighbouring frames) and a
+      // ladder up the nearest pylon.
+      let kxDx=lowDx+2;
+      if(kxDx%4===2) kxDx++; // never swallow a pylon footing
+      const kx=anchor+kxDx, kc=cityCol(kx);
+      if(kc){
+        put(kx,kc.row-1,T.VENDING_MACHINE,true);
+        put(kx+1,kc.row-1,T.TORCH,false);
+        if(WG.randSeed(cell*7.31+1.1)<0.40) put(kx-1,kc.row-1,T.CHEST_COMMON,true);
+      }
+      const pylDx=Math.max(2,lowDx-(((lowDx-2)%4)+4)%4);
+      const pc=cityCol(anchor+pylDx);
+      if(pc){
+        const ty=trackRow(pylDx,pc);
+        for(let y=ty; y<pc.row; y++) put(anchor+pylDx+1,y,T.LADDER,false);
+      }
+    };
+    const buildCivicLot=(cellIdx,anchor,city)=>{
+      const prevEmpty=lotEmpty(cellIdx-1,city);
+      // A wide ruin anchors only at the first cell of an empty run, so the cell
+      // right after such an anchor is its claimed tail and stays untouched.
+      if(prevEmpty && !lotEmpty(cellIdx-2,city) && civicWide(civicKind(cellIdx-1))) return;
+      let kind=civicKind(cellIdx);
+      if(civicWide(kind) && (prevEmpty || !lotEmpty(cellIdx+1,city))){
+        kind=kind==='mall'?'smallmall':'park';
+      }
+      if(kind==='park') buildRuinPark(anchor-2,cellIdx,city);
+      else if(kind==='school') buildRuinSchool(anchor-1,cellIdx,city);
+      else if(kind==='church') buildRuinChurch(anchor-2,cellIdx,city);
+      else if(kind==='smallmall') buildRuinMall(anchor-1,cellIdx,city,false);
+      else if(kind==='mall') buildRuinMall(anchor-1,cellIdx,city,true);
+      else buildRuinCoaster(anchor-2,cellIdx,city);
+    };
+    // One signature landmark per district, themed by its architecture school and
+    // offset from the center so it never fights the power plant for space.
+    const cityLandmarkSpec=(city)=>{
+      if(!city || !Number.isFinite(city.center)) return null;
+      const seed=(city.cell||0)*53.9+city.center*0.017;
+      const radius=Math.max(120,city.radius||180);
+      const dir=WG.randSeed(seed+0.7)>0.5?1:-1;
+      const off=Math.max(64,Math.min(radius-46, 80+Math.floor(WG.randSeed(seed+1.3)*radius*0.22)));
+      return {anchor:Math.round(city.center+dir*off), seed, arch:cityArch(city), city};
+    };
+    const collectCityLandmarks=()=>{
+      const found=new Map();
+      for(let wx=worldLeft; wx<=worldRight; wx+=4){
+        const col=cityCol(wx);
+        if(col && col.city && Number.isFinite(col.city.center)) found.set(col.city.cell+':'+col.city.center, col.city);
+      }
+      const out=[];
+      for(const city of found.values()){
+        const spec=cityLandmarkSpec(city);
+        if(spec && spec.anchor+26>=worldLeft-3 && spec.anchor-26<=worldRight+3) out.push(spec);
+      }
+      return out;
+    };
+    const buildLandmark=(spec)=>{
+      const anchor=spec.anchor, seed=spec.seed, arch=spec.arch, city=spec.city;
+      const col=cityCol(anchor); if(!col) return;
+      const cellKey=(city.cell||0)*13.7+Math.floor(anchor/17);
+      if(arch===0){
+        // Ruined cathedral: nave flanked by twin spires around a grand central one.
+        buildFrame(anchor-8,17,10,cellKey,'block');
+        buildSpire(anchor-7,20,cellKey+1,city);
+        buildSpire(anchor+7,20,cellKey+2,city);
+        buildSpire(anchor,32,cellKey+3,city);
+      } else if(arch===2){
+        // Blast-furnace dome with a stack cluster rising from its shell.
+        const R=8+Math.floor(WG.randSeed(seed+2.1)*3);
+        for(let dx=-R; dx<=R; dx++){
+          const wx=anchor+dx;
+          const c=cityCol(wx); if(!c) continue;
+          const baseY=Math.max(2,Math.min(col.row,c.row));
+          const dome=Math.round(Math.sqrt(Math.max(0,R*R-dx*dx)));
+          const colH=3+dome;
+          for(let rel=1; rel<=colH; rel++){
+            const y=baseY-rel;
+            if(y<2) break;
+            const r=WG.randSeed(wx*4.171+y*0.613+seed);
+            const shell=rel<=2 || rel>=colH-1 || Math.abs(dx)>=R-1;
+            if(!shell){ carve(wx,y); continue; }
+            put(wx,y,r<0.72?T.STEEL:T.OBSIDIAN,true);
+          }
+        }
+        for(let i=0;i<2;i++){
+          const sx=anchor-3+i*6;
+          const c=cityCol(sx); if(!c) continue;
+          const domeTop=Math.min(col.row,c.row)-3-Math.round(Math.sqrt(Math.max(0,R*R-(sx-anchor)*(sx-anchor))));
+          for(let y=domeTop-1; y>=Math.max(2,domeTop-6-Math.floor(WG.randSeed(seed+4.1+i)*4)); y--) put(sx,y,(y%3===0)?T.OBSIDIAN:T.STEEL,true);
+        }
+      } else if(arch===3){
+        buildZiggurat(anchor,18,cellKey,city,true);
+      } else if(arch===4){
+        // Arcology slab: a huge block cut by a full-height atrium, ringed by skyways.
+        buildFrame(anchor-16,33,26,cellKey,'block');
+        for(let y=col.row-24; y<=col.row-3; y++){
+          carve(anchor-1,y); carve(anchor,y); carve(anchor+1,y);
+        }
+        for(const by of [col.row-9, col.row-17]){
+          for(let dx=-24; dx<=24; dx++){
+            const wx=anchor+dx;
+            if(!cityCol(wx)) continue;
+            put(wx,by,T.STEEL,true);
+            if(dx%6===0) put(wx,by-1,T.STONE,true);
+          }
+        }
+        for(const px of [anchor-24,anchor+24]){
+          const c=cityCol(px);
+          if(!c) continue;
+          for(let y=col.row-16; y<c.row; y++) put(px,y,((col.row-y)%3===0)?T.STEEL:T.STONE,true);
+        }
+      } else {
+        // Supertower: the tallest needle in the glass downtown, with a lit crown.
+        buildFrame(anchor-6,13,40,cellKey,'tower');
+        put(anchor,col.row-49,T.TORCH,true);
+      }
     };
     function cityPowerPlantSpec(city){
       if(!city || !Number.isFinite(city.center)) return null;
@@ -475,6 +1037,7 @@ window.MM = window.MM || {};
             carve(wx,y);
             const windowBand=y>=roofY+3 && y<=roofY+5 && dx>3 && dx<w-4;
             if(windowBand && dx%4!==0 && WG.randSeed(wx*0.71+y*1.37+seed)>0.48) put(wx,y,T.GLASS,true);
+            else putBg(wx,y,T.STEEL); // turbine hall back wall
           }
         }
       }
@@ -533,7 +1096,7 @@ window.MM = window.MM || {};
       for(let y=tunnelY-2; y<=tunnelY+2; y++){
         if(y===tunnelY-2) put(wx,y,WG.randSeed(wx*1.03)>0.78?T.STEEL:T.STONE,true);
         else if(y===tunnelY+2) put(wx,y,WG.randSeed(wx*0.91)>0.66?T.STEEL:T.OBSIDIAN,true);
-        else carve(wx,y);
+        else { carve(wx,y); putBg(wx,y,T.STONE); } // lined subway bore
       }
       if(((wx+Math.floor(WG.worldSeed||0))%13)===0) maybeWire(wx,tunnelY-1,wx*0.119+17.3,0.45,true);
       if(WG.randSeed(wx*0.083+41.7)<0.0008) put(wx,tunnelY+1,T.ELECTRONICS,false);
@@ -555,25 +1118,32 @@ window.MM = window.MM || {};
       const city=col.city || {density:0.72,decay:0.6,skyline:0.5};
       const r=WG.randSeed(cell*17.33+2.9);
       if(r>city.density){
-        const rubble=3+Math.floor(WG.randSeed(cell*5.5)*7);
-        for(let i=0;i<rubble;i++){
-          const wx=anchor+Math.floor(WG.randSeed(cell*9.1+i*3.7)*pitch)-4;
-          const c=cityCol(wx); if(!c) continue;
-          const y=c.row-1-Math.floor(WG.randSeed(wx*2.7+i)*3);
-          put(wx,y,WG.randSeed(wx*4.4+i)>0.42?T.STONE:T.STEEL,true);
-        }
+        buildCivicLot(cell,anchor,city);
         continue;
       }
-      const styleRoll=WG.randSeed(cell*23.7+city.skyline);
-      const style=styleRoll>0.78?'tower':(styleRoll>0.55?'factory':(styleRoll>0.44?'monument':'block'));
+      const arch=cityArch(city);
+      const env=skylineEnvelope(city,anchor);
+      const styleRoll=WG.randSeed(cell*23.7+(city.skyline||0.5));
+      const style=pickStyle(arch,styleRoll);
       if(style==='monument'){ buildMonument(anchor,cell); continue; }
+      if(style==='spire'){
+        const sh=Math.max(10,Math.min(34,Math.round((16+WG.randSeed(cell*5.91)*16)*env)));
+        buildSpire(anchor,sh,cell,city);
+        continue;
+      }
+      if(style==='ziggurat'){
+        const zh=Math.max(9,Math.min(18,Math.round((12+WG.randSeed(cell*5.91)*6)*env)));
+        buildZiggurat(anchor,zh,cell,city,false);
+        continue;
+      }
       const wBase=style==='factory'?22:(style==='tower'?9:12);
       const hBase=style==='factory'?9:(style==='tower'?26:16);
       const w=wBase+Math.floor(WG.randSeed(cell*3.19)*10);
-      const h=Math.min(38,hBase+Math.floor(WG.randSeed(cell*5.91)*(18+city.skyline*10)));
+      const h=Math.max(6,Math.min(38,Math.round((hBase+Math.floor(WG.randSeed(cell*5.91)*(18+(city.skyline||0.5)*10)))*env)));
       buildFrame(anchor,w,h,cell,style);
       const ground=col.row;
-      if(WG.randSeed(cell*2.41)>0.54){
+      const bridgeChance=arch===4?0.62:(arch===1?0.52:(arch===2?0.42:(arch===0?0.30:0.22)));
+      if(WG.randSeed(cell*2.41)<bridgeChance){
         const bridgeY=ground-7-Math.floor(WG.randSeed(cell*1.61)*7);
         const len=10+Math.floor(WG.randSeed(cell*1.93)*14);
         for(let dx=w-1; dx<w+len; dx++){
@@ -582,6 +1152,15 @@ window.MM = window.MM || {};
           put(wx,bridgeY,T.STEEL,true);
           if(dx%4===0) put(wx,bridgeY-1,T.STONE,true);
           if(dx%9===0 && WG.randSeed(wx*0.51+bridgeY*1.7+cell)<0.25) put(wx,bridgeY-2,T.WIRE,false);
+        }
+        // Support pylons: an unpropped far end is a long cantilever and sheds
+        // during the settle audit instead of reading as an elevated skyway.
+        const pylons=[anchor+w+len-1];
+        if(len>12) pylons.push(anchor+w+(len>>1));
+        for(const px of pylons){
+          const c=cityCol(px);
+          if(!c || c.row<=bridgeY) continue;
+          for(let y=bridgeY+1; y<c.row; y++) put(px,y,((y-bridgeY)%3===0)?T.STEEL:T.STONE,true);
         }
       }
       if(WG.randSeed(cell*4.73)>0.50){
@@ -592,7 +1171,18 @@ window.MM = window.MM || {};
           put(lampX,c.row-5,T.TORCH,true);
         }
       }
+      if(arch===2 && WG.randSeed(cell*6.17+0.9)>0.55){
+        // Street-level pipe runs between foundry structures.
+        const pipeLen=4+Math.floor(WG.randSeed(cell*7.9+1.3)*5);
+        for(let dx=-pipeLen; dx<0; dx++){
+          const wx=anchor+dx;
+          const c=cityCol(wx); if(!c) continue;
+          put(wx,c.row-1,T.STEEL,true);
+          if(dx===-pipeLen || dx===-1) put(wx,c.row-2,T.OBSIDIAN,true);
+        }
+      }
     }
+    for(const lm of collectCityLandmarks()) buildLandmark(lm);
     for(const plant of collectCityPlants()) buildPowerPlant(plant);
   }
 
@@ -719,6 +1309,8 @@ window.MM = window.MM || {};
     reinforceVolcanoConduits(arr,cx);
     if(GUARDIANS && GUARDIANS.applyToChunk) GUARDIANS.applyToChunk(arr,cx);
     if(UNDERGROUND && UNDERGROUND.applyToChunk) UNDERGROUND.applyToChunk(arr,cx);
+    try{ if(SKY_GUARDIAN && SKY_GUARDIAN.applyToChunk) SKY_GUARDIAN.applyToChunk(arr,cx); }catch(e){}
+    try{ if(CENTER_GUARDIAN && CENTER_GUARDIAN.applyToChunk) CENTER_GUARDIAN.applyToChunk(arr,cx); }catch(e){}
     if(AFTERMATH && AFTERMATH.applyToChunk) AFTERMATH.applyToChunk(arr,cx);
     try{ if(MM.trees && MM.trees.pruneChunk) MM.trees.pruneChunk(arr,cx); }catch(e){}
     world.set(k,arr); markModifiedChunk(cx,0);
@@ -858,11 +1450,38 @@ window.MM = window.MM || {};
     if(infrastructure.size===0 || !isInfrastructureTile(t)) return false;
     return getInfrastructureStack(x,y).includes(t);
   }
+  // Hot path: called per visible tile by the renderer and per audited cell by the
+  // falling engine — keep the empty-layer exits allocation-free and cache the last
+  // chunk array lookup (render scans are column-sequential).
+  let genBgLastCx=NaN, genBgLastArr=null;
+  function genBgInvalidate(){ genBgLastCx=NaN; genBgLastArr=null; }
+  function genBackgroundAt(x,y){
+    if(generatedBackground.size===0) return T.AIR;
+    if(!isFinite(x) || !isFinite(y)) return T.AIR;
+    x=Math.floor(x); y=Math.floor(y);
+    if(y<0 || y>=WORLD_H || Math.abs(x)>MAX_COORD) return T.AIR;
+    const cx=Math.floor(x/CHUNK_W);
+    if(cx!==genBgLastCx){
+      genBgLastCx=cx;
+      genBgLastArr=generatedBackground.get(ck(cx))||null;
+    }
+    if(!genBgLastArr) return T.AIR;
+    const t=genBgLastArr[tileIndex(((x%CHUNK_W)+CHUNK_W)%CHUNK_W,y)];
+    return t || T.AIR;
+  }
   function getConstructionBackground(x,y){
-    if(constructionBackground.size===0) return T.AIR;
+    if(constructionBackground.size===0 && generatedBackground.size===0) return T.AIR;
     if(!worldYInBounds(y) || !isFinite(x) || Math.abs(x)>MAX_COORD) return T.AIR;
-    const t=constructionBackground.get(key(x,y));
-    return isConstructionBackgroundTile(t) ? t : T.AIR;
+    if(constructionBackground.size>0){
+      const k=key(x,y);
+      if(constructionBackground.has(k)){
+        // An explicit non-buildable entry (T.AIR) is a tombstone left where the
+        // player mined out a generated backdrop cell — it must stay empty.
+        const t=constructionBackground.get(k);
+        return isConstructionBackgroundTile(t) ? t : T.AIR;
+      }
+    }
+    return genBackgroundAt(x,y);
   }
   function getNetworkTile(x,y){
     const over=getInfrastructure(x,y);
@@ -943,7 +1562,10 @@ window.MM = window.MM || {};
     const k=key(x,y);
     const old=getConstructionBackground(x,y);
     if(old===item) return false;
-    if(item===T.AIR) constructionBackground.delete(k);
+    if(item===T.AIR){
+      if(genBackgroundAt(x,y)!==T.AIR) constructionBackground.set(k,T.AIR); // tombstone over generated backdrop
+      else constructionBackground.delete(k);
+    }
     else constructionBackground.set(k,item);
     if(!transient){
       markModifiedChunk(Math.floor(x/CHUNK_W),null,sectionYFor(y));
@@ -1014,13 +1636,13 @@ window.MM = window.MM || {};
   function snapshotConstructionBackground(){
     const list=[];
     for(const [k,t] of constructionBackground.entries()){
-      if(!isConstructionBackgroundTile(t)) continue;
       const comma=k.indexOf(',');
       const x=+k.slice(0,comma), y=+k.slice(comma+1);
-      list.push({x,y,t});
+      if(isConstructionBackgroundTile(t)) list.push({x,y,t});
+      else list.push({x,y,t:0}); // tombstone: mined-out generated backdrop stays empty
     }
     const clean=list
-      .filter(o=>isConstructionBackgroundTile(o.t) && isFinite(o.x) && isFinite(o.y) && worldYInBounds(o.y))
+      .filter(o=>(o.t===0 || isConstructionBackgroundTile(o.t)) && isFinite(o.x) && isFinite(o.y) && worldYInBounds(o.y))
       .sort((a,b)=>(a.x-b.x)||(a.y-b.y)||(a.t-b.t))
       .slice(0,40000);
     return {v:1,list:clean};
@@ -1029,18 +1651,25 @@ window.MM = window.MM || {};
     constructionBackground.clear();
     if(!data || !Array.isArray(data.list)) return;
     for(const raw of data.list){
-      if(!raw || !isConstructionBackgroundTile(raw.t)) continue;
+      if(!raw || !(raw.t===0 || isConstructionBackgroundTile(raw.t))) continue;
       if(!isFinite(raw.x) || !isFinite(raw.y)) continue;
       const x=Math.floor(raw.x), y=Math.floor(raw.y);
       if(!worldYInBounds(y) || Math.abs(x)>MAX_COORD) continue;
-      constructionBackground.set(key(x,y),raw.t);
+      constructionBackground.set(key(x,y),raw.t===0?T.AIR:raw.t);
       markModifiedChunk(Math.floor(x/CHUNK_W),null,sectionYFor(y));
     }
   }
-  function clearWorld(){ try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); sectionViews.clear(); versions.clear(); modifiedChunks.clear(); infrastructure.clear(); constructionBackground.clear(); heightCache.clear(); lakeLevels.clear(); if(WG.clearCaches) WG.clearCaches(); }
+  function clearWorld(){ try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); sectionViews.clear(); versions.clear(); modifiedChunks.clear(); infrastructure.clear(); constructionBackground.clear(); generatedBackground.clear(); genBgInvalidate(); heightCache.clear(); lakeLevels.clear(); if(WG.clearCaches) WG.clearCaches(); }
   // Save loading replaces whole chunk arrays: any cached section view over the
   // old array must be dropped or reads would silently hit the orphaned buffer.
-  function setChunkArray(key,arr){ world.set(key,arr); sectionViews.clear(); }
+  function setChunkArray(key,arr){
+    world.set(key,arr); sectionViews.clear();
+    // Save-loaded base chunks skip ensureChunk, so replay the deterministic
+    // city pass in background-only mode to rebuild interior backdrops.
+    if(typeof key==='string' && /^c-?\d+$/.test(key)){
+      try{ applyDevastatedCity(null,+key.slice(1),true); }catch(e){}
+    }
+  }
 
   worldAPI.ensureChunk = ensureChunk;
   worldAPI.ensureSection = ensureSection;

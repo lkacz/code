@@ -263,4 +263,105 @@ fallingSolids.settleAll();
 assert.equal(getTile(supportedDebris.x,supportedDebris.y),T.AIR,'settled rubble falls again when its real support is removed');
 assert.ok(countRegion(supportedDebris.x-8,supportedDebris.x+8,supportedDebris.y+1,95)>0 && oldType!==T.AIR,'released rubble lands lower as ordinary debris');
 
+// --- Back walls fall with the building ------------------------------------------
+// Construction-background panels behind a collapsing structure must leave the
+// background layer and land as ordinary foreground rubble, while panels behind
+// intact neighbours stay untouched.
+clear();
+const bgMap=new Map();
+MM.world={
+  getConstructionBackground(x,y){ const v=bgMap.get(x+','+y); return v===undefined?T.AIR:v; },
+  clearConstructionBackground(x,y){ bgMap.delete(x+','+y); return true; }
+};
+buildFrame();
+// Wider apron: the doubled debris pile (frame + peeled back walls) overflows the
+// frame's own 11-wide floor and must still land inside the counting window.
+for(let x=-9; x<=-3; x++) setTile(x,34,T.GRASS);
+for(let x=9; x<=15; x++) setTile(x,34,T.GRASS);
+for(let x=1; x<=5; x++){
+  for(let y=24; y<=33; y++) if(getTile(x,y)===T.AIR) bgMap.set(x+','+y,T.STONE);
+}
+bgMap.set('40,30',T.STONE); // far-away panel: must survive the collapse untouched
+const bgBefore=bgMap.size-1;
+const solidBefore=countRegion(-10,16,18,43);
+removeSupport(0);
+removeSupport(6);
+fallingSolids.settleAll();
+assert.equal(countOriginalFrameTop(), 0, 'backed frame still collapses');
+assert.equal(bgMap.get('40,30'), T.STONE, 'unrelated background panel is untouched by the collapse');
+assert.equal([...bgMap.keys()].filter(k=>k!=='40,30').length, 0, 'interior back walls peel off with the collapsing frame');
+const solidAfter=countRegion(-10,16,18,43);
+assert.ok(solidAfter>=solidBefore+bgBefore-6,
+  'released back walls land as additional foreground rubble ('+solidAfter+' vs '+solidBefore+'+'+bgBefore+')');
+delete MM.world;
+
+// --- Sky islands above city districts -----------------------------------------
+// Natural basalt/granite island fabric at y<0 must never inherit the city
+// collapse rules of the district far below it; player-built sky blocks still obey
+// ordinary physics.
+const skyTiles = new Map();
+function skyGet(x,y){
+  if(y>=WORLD_H) return T.STONE;
+  return skyTiles.get(key(x,y)) ?? T.AIR;
+}
+function skySet(x,y,t){
+  if(y>=WORLD_H) return;
+  const k=key(x,y);
+  if(t===T.AIR) skyTiles.delete(k);
+  else skyTiles.set(k,t);
+}
+function skyClear(){
+  skyTiles.clear();
+  delete MM.worldGen;
+  fallingSolids.reset();
+  fallingSolids.init(skyGet,skySet);
+}
+function skyCount(){
+  let n=0;
+  for(const k of skyTiles.keys()) if(parseCell(k).y<0) n++;
+  return n;
+}
+// stepFalling() re-binds the solver to the surface-world accessors; the sky
+// section needs its own stepper so updates keep reading the sky tile map.
+function stepSky(frames=240){
+  for(let i=0;i<frames;i++) fallingSolids.update(skyGet,skySet,1/60);
+}
+
+skyClear();
+MM.worldGen = { biomeType(){ return 8; }, surfaceHeight(){ return 80; } };
+for(let x=-30;x<=30;x++) skySet(x,80,T.STONE);
+for(let dx=-9;dx<=9;dx++){
+  const th=3+Math.round(2*Math.sqrt(Math.max(0,1-(dx/9)*(dx/9))));
+  for(let dy=0;dy<th;dy++) skySet(dx,-56-dy,((dx+dy)%3===0)?T.GRANITE:T.BASALT);
+}
+const islandBefore=skyCount();
+skySet(0,-56,T.AIR);
+fallingSolids.onTileRemoved(0,-56);
+for(const k of [...skyTiles.keys()]){ const c=parseCell(k); if(c.y<0) fallingSolids.maybeStart(c.x,c.y); }
+fallingSolids.settleAll();
+stepSky(240);
+assert.equal(skyCount(), islandBefore-1, 'natural sky island above a city district keeps floating when mined/disturbed');
+assert.equal(fallingSolids.metrics().active, 0, 'no island debris rains down onto the city');
+assert.equal(fallingSolids.metrics().queue, 0, 'sky island leaves no permanent structural queue');
+
+// Thin natural glass/dust ribbons and machine relics resting on island fabric
+// must also hold: fragile and rigid-object fall paths honor sky cohesion too.
+for(let x=-20;x<=-12;x++) skySet(x,-70,(x%3===0)?T.METEOR_DUST:T.GLASS);
+skySet(-2,-60,T.GLASS);           // island shell fabric
+skySet(-2,-61,T.SOLAR_BATTERY);   // relic machine resting on it
+const ribbonBefore=skyCount();
+for(let x=-20;x<=-12;x++) fallingSolids.maybeStart(x,-70);
+fallingSolids.maybeStart(-2,-61);
+fallingSolids.settleAll();
+stepSky(240);
+assert.equal(skyCount(), ribbonBefore, 'sky ribbons and island relics stay aloft when disturbed');
+
+const playerSkyBlocks=[[14,-40],[15,-40],[16,-40]];
+for(const [px,py] of playerSkyBlocks){ skySet(px,py,T.BASALT); fallingSolids.afterPlacement(px,py); }
+fallingSolids.settleAll();
+stepSky(240);
+for(const [px,py] of playerSkyBlocks){
+  assert.equal(skyGet(px,py), T.AIR, 'player-built floating basalt at '+px+','+py+' in the sky still falls');
+}
+
 console.log('city-collapse-sim: all assertions passed');

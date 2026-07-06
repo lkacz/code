@@ -66,7 +66,8 @@ function heapPop(){
 }
 
 export const DEFAULT_MOVE_CAPS = Object.freeze({
-  jumpUp: 2,      // tiles a unit can jump straight up onto
+  jumpUp: 2,      // tiles a unit can jump straight up onto with a normal jump
+  highJumpUp: 4,  // tiles reachable with a boosted "power jump" (costlier edge)
   jumpSpan: 3,    // tiles a unit can clear horizontally in one jump
   maxFall: 8,     // tiles a unit will deliberately drop
   maxNodes: 640   // A* expansion budget per query
@@ -143,16 +144,27 @@ export function createNav(world, caps){
       return v === 1;
     }
     function hCost(x,y){ return Math.abs(x - goalX) + Math.abs(y - goalY) * 0.6; }
+    // Best-effort endpoint scoring when the goal is unreachable: cells BELOW the
+    // goal line are penalized extra, so a partial path stops at a pit lip
+    // instead of pressing forward into the pit toward the hero.
+    function partialScore(x,y){
+      return Math.abs(x - goalX) + Math.abs(y - goalY) * 0.6 + Math.max(0, y - goalY) * 0.9;
+    }
+    const escape = opts.escape || null;
     // Jump edges are encoded in the parent link's high bits so the follower
-    // knows which waypoints need an actual jump instead of a walk.
+    // knows which waypoints need an actual jump instead of a walk. High jumps
+    // (boosted, above the normal jumpUp reach) get their own flag so the
+    // follower can charge the jump instead of bouncing off the wall forever.
     const JUMP_FLAG = 1 << 21;
-    function open(idx, from, cost, jumped){
+    const HIGH_FLAG = 1 << 22;
+    const hWeight = escape ? 0 : 1.12; // escape mode is direction-agnostic Dijkstra
+    function open(idx, from, cost, jumped, high){
       if(cellState[idx] === 2) return;
       const g = gScore[from] + cost;
       if(cellState[idx] === 1 && g >= gScore[idx]) return;
       gScore[idx] = g;
-      fScore[idx] = g + hCost(xOf(idx), yOf(idx)) * 1.12;
-      cameFrom[idx] = from | (jumped ? JUMP_FLAG : 0);
+      fScore[idx] = g + hCost(xOf(idx), yOf(idx)) * hWeight;
+      cameFrom[idx] = from | (jumped ? JUMP_FLAG : 0) | (high ? HIGH_FLAG : 0);
       if(cellState[idx] !== 1){ cellState[idx] = 1; heapPush(idx); }
       else heapPush(idx); // lazy decrease-key: stale entries skipped on pop
     }
@@ -167,7 +179,7 @@ export function createNav(world, caps){
     const budget = Math.max(64, opts.maxNodes || cfg.maxNodes);
     let expanded = 0;
     let bestIdx = startIdx;
-    let bestH = hCost(start.x, start.y);
+    let bestScore = partialScore(start.x, start.y);
     let reached = false;
 
     while(heapSize > 0 && expanded < budget){
@@ -176,20 +188,33 @@ export function createNav(world, caps){
       cellState[cur] = 2;
       expanded++;
       const cx = xOf(cur), cy = yOf(cur);
-      const h = hCost(cx,cy);
-      if(h < bestH){ bestH = h; bestIdx = cur; }
-      if(cx === goalX && cy === goalY){ bestIdx = cur; reached = true; break; }
+      if(escape){
+        // escape mode (Dijkstra): the "goal" is any reachable standable cell
+        // clearly above the start — the cheapest way out of a depression,
+        // regardless of direction (usually back the way the unit came).
+        if(cur !== startIdx && start.y - cy >= (escape.minRise || 2)){ bestIdx = cur; reached = true; break; }
+      } else {
+        const p = partialScore(cx,cy);
+        if(p < bestScore){ bestScore = p; bestIdx = cur; }
+        if(cx === goalX && cy === goalY){ bestIdx = cur; reached = true; break; }
+      }
 
       for(const dir of [-1,1]){
         const nx = cx + dir;
         // flat walk
         if(standable(nx,cy)) open(idxOf(nx,cy), cur, 1, false);
-        // step / jump up onto a ledge next to us
-        for(let up=1; up<=cfg.jumpUp; up++){
+        // step / jump up onto a ledge next to us; heights above jumpUp become
+        // costlier boosted "power jump" edges (pit walls, tall footings)
+        const upMax = Math.max(cfg.jumpUp, cfg.highJumpUp || cfg.jumpUp);
+        for(let up=1; up<=upMax; up++){
           let clear = true;
           for(let k=1;k<=up;k++){ if(!openAt(cx,cy-1-k)){ clear = false; break; } }
           if(!clear) break;
-          if(standable(nx,cy-up)){ open(idxOf(nx,cy-up), cur, 1.6 + up * 0.9, up > 1); break; }
+          if(standable(nx,cy-up)){
+            const high = up > cfg.jumpUp;
+            open(idxOf(nx,cy-up), cur, high ? 2.6 + up * 1.15 : 1.6 + up * 0.9, up > 1, high);
+            break;
+          }
         }
         // walk off the edge and drop
         if(openAt(nx,cy) && openAt(nx,cy-1) && !solidAt(nx,cy+1)){
@@ -200,11 +225,12 @@ export function createNav(world, caps){
             if(standable(nx,ny)){ open(idxOf(nx,ny), cur, 1 + down * 0.35, false); break; }
           }
         }
-        // jump across a gap (with optional lower landing)
+        // jump across a gap (with optional lower landing); the arc rises ~2
+        // tiles, so mid-flight columns also need headroom above the body
         for(let span=2; span<=cfg.jumpSpan; span++){
           let flyClear = true;
           for(let i=1;i<span;i++){
-            if(!openAt(cx+i*dir,cy) || !openAt(cx+i*dir,cy-1)){ flyClear = false; break; }
+            if(!openAt(cx+i*dir,cy) || !openAt(cx+i*dir,cy-1) || !openAt(cx+i*dir,cy-2)){ flyClear = false; break; }
           }
           if(!flyClear) break;
           const lx = cx + span * dir;
@@ -228,7 +254,11 @@ export function createNav(world, caps){
     while(cur >= 0 && guard-- > 0){
       const link = cameFrom[cur];
       const parent = link < 0 ? -1 : (link & (JUMP_FLAG - 1));
-      rev.push({x:xOf(cur), y:yOf(cur), jump:link >= 0 && (link & JUMP_FLAG) !== 0});
+      rev.push({
+        x:xOf(cur), y:yOf(cur),
+        jump:link >= 0 && (link & JUMP_FLAG) !== 0,
+        high:link >= 0 && (link & HIGH_FLAG) !== 0
+      });
       if(link < 0) break;
       cur = parent;
     }
@@ -266,7 +296,17 @@ export function createNav(world, caps){
     return null;
   }
 
-  return {caps:cfg, canStand, findStandableNear, findPath, los, findCoverSpot};
+  // Cheapest route OUT of the current depression (any standable cell minRise
+  // above the start), searched without goal bias so backtracking is natural.
+  function findEscapePath(sx,sy,opts){
+    opts = opts || {};
+    return findPath(sx, sy, sx, sy, {
+      escape:{minRise: Math.max(1, opts.minRise || 2)},
+      maxNodes: opts.maxNodes || cfg.maxNodes
+    });
+  }
+
+  return {caps:cfg, canStand, findStandableNear, findPath, findEscapePath, los, findCoverSpot, openAt, solidAt};
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +345,13 @@ export function makeTeamProfile(opts){
     moveCaps: Object.assign({}, DEFAULT_MOVE_CAPS, opts.moveCaps || {}),
     baseSpeed: Number(opts.baseSpeed) || 2.35,
     jumpVel: Number(opts.jumpVel) || 9.6,
+    // Horizontal impulse applied at gap-jump takeoff and the vy multiplier for
+    // boosted "power jumps" (pit walls above the normal jump reach).
+    jumpKick: Number(opts.jumpKick) || 4.8,
+    highJumpMult: Number(opts.highJumpMult) || 1.5,
+    // Solid scaffold tiles a team may fabricate for climbing ramps (separate
+    // from the engineer barricade buildCap).
+    rampBudget: Number.isFinite(opts.rampBudget) ? opts.rampBudget : 10,
     fireRange: Number(opts.fireRange) || 14,
     meleeRange: Number(opts.meleeRange) || 0.72,
     fleeHpFrac: Number.isFinite(opts.fleeHpFrac) ? opts.fleeHpFrac : 0.32,
@@ -317,6 +364,8 @@ export function makeTeamProfile(opts){
     strikeTokens: Number(opts.strikeTokens) || 0, // 0 = auto by squad size
     siegeAfter: Number(opts.siegeAfter) || 3.5,   // seconds without LoS/path
     breachRange: Number(opts.breachRange) || 12,
+    routeBreachAfter: Number.isFinite(opts.routeBreachAfter) ? Math.max(0.15, Number(opts.routeBreachAfter)) : 1.15,
+    routeBreachRange: Number(opts.routeBreachRange) || Math.max(14, Number(opts.breachRange) || 12),
     buildCap: Number.isFinite(opts.buildCap) ? opts.buildCap : 8,
     roles
   };
@@ -397,11 +446,13 @@ export function applySeparation(units, opts){
 // ---------------------------------------------------------------------------
 
 let pathBudgetThisFrame = 0;
-const PATH_QUERIES_PER_FRAME = 3;
+const DEFAULT_PATH_QUERIES_PER_FRAME = 3;
+const MAX_PATH_QUERIES_PER_FRAME = 12;
 
 // Host calls this once per engine tick, before updating brains.
-export function beginAIFrame(){
-  pathBudgetThisFrame = PATH_QUERIES_PER_FRAME;
+export function beginAIFrame(maxQueries){
+  const requested = Number(maxQueries);
+  pathBudgetThisFrame = Math.max(1, Math.min(MAX_PATH_QUERIES_PER_FRAME, Number.isFinite(requested) ? Math.floor(requested) : DEFAULT_PATH_QUERIES_PER_FRAME));
 }
 
 function freshAI(){
@@ -411,6 +462,7 @@ function freshAI(){
     path:null,
     pathI:0,
     pathReached:true,
+    pathFailT:0,
     repathIn:0,
     goalX:0, goalY:0,
     lastX:0, lastY:0, stuckT:0,
@@ -421,11 +473,20 @@ function freshAI(){
     repairUntil:0,
     repairCooldownUntil:0,
     buildX:0, buildY:0, buildStage:0, buildT:0,
-    breachX:0, breachY:0, hasBreach:false,
+    breachX:0, breachY:0, hasBreach:false, breachReason:'',
+    routeBlockX:0, routeBlockY:0, hasRouteBlock:false,
     supportId:'',
     token:false,
     hadLos:false,
-    intent:{moveX:0, jump:false, speedMult:1}
+    pitAssistAt:0,
+    detour:false,
+    detourCd:0,
+    rampDir:0,
+    rampFaceX:0,
+    rampFails:0,
+    relocateX:0, relocateY:0, hasRelocate:false,
+    giveUpT:6.5 + Math.random() * 2.5,
+    intent:{moveX:0, jump:false, jumpBoost:1, jumpKick:false, speedMult:1}
   };
 }
 
@@ -477,30 +538,138 @@ export function createSquadBrain(profile, nav){
     ai.stateT = 0;
     ai.path = null;
     ai.pathI = 0;
+    ai.detour = false;
+    ai.hasRelocate = false;
+    ai.buildT = 0;
+    ai.rampFaceX = 0;
     ai.repathIn = 0;
+  }
+
+  // Height of the solid stack blocking forward movement at foot level (0 = no
+  // wall). Lets every jump decision check whether jumping can even succeed.
+  function wallAheadHeight(u, dir){
+    if(!dir) return 0;
+    const fx = Math.floor(u.x) + dir;
+    const standCell = Math.floor(u.y) - 1;
+    let h = 0;
+    while(h < 15 && nav.solidAt(fx, standCell - h)) h++;
+    return h;
+  }
+  function jumpableWall(h){
+    return h > 0 && h <= (nav.caps.highJumpUp || 4);
+  }
+  function boostForWall(h){
+    if(h > 2) return profile.highJumpMult || 1.5;
+    return h > 1 ? 1.28 : 1;
+  }
+
+  function rememberRouteBlock(u, ai, gx, gy, res){
+    ai.hasRouteBlock = false;
+    if(!res || res.reached) return;
+    const path = res.path || [];
+    const end = path.length ? path[path.length - 1] : null;
+    const fromX = end ? end.x + 0.5 : u.x;
+    const fromY = end ? end.y - 0.45 : u.y - 0.55;
+    const block = nav.los(fromX, fromY, gx, gy - 0.5, profile.routeBreachRange || profile.breachRange || 14);
+    if(!block || block.clear || !Number.isFinite(block.tx) || !Number.isFinite(block.ty)) return;
+    ai.routeBlockX = block.tx;
+    ai.routeBlockY = block.ty;
+    ai.hasRouteBlock = true;
+  }
+
+  function routeBreachReady(ai, hooks){
+    if(!ai.hasRouteBlock || ai.pathReached) return false;
+    if(ai.pathFailT < (profile.routeBreachAfter || 1.15)) return false;
+    if(!hooks || typeof hooks.isBreachableTile !== 'function') return false;
+    if(!hooks.isBreachableTile(ai.routeBlockX, ai.routeBlockY)){
+      ai.hasRouteBlock = false;
+      return false;
+    }
+    ai.breachX = ai.routeBlockX;
+    ai.breachY = ai.routeBlockY;
+    ai.hasBreach = true;
+    ai.breachReason = 'route';
+    return true;
   }
 
   function requestPath(u, ai, gx, gy){
     ai.goalX = gx; ai.goalY = gy;
     if(pathBudgetThisFrame <= 0){ ai.repathIn = 0.12; return; }
     pathBudgetThisFrame--;
-    const res = nav.findPath(u.x, u.y, gx, gy);
+    ai.detour = false;
+    // context escalation: after sustained failure, spend a bigger node budget so
+    // detours that first lead AWAY from the goal are actually explored
+    const escalated = ai.pathFailT > 1.4;
+    const res = nav.findPath(u.x, u.y, gx, gy, escalated ? {maxNodes:Math.min(2400, (nav.caps.maxNodes || 640) * 2.5)} : undefined);
     ai.path = res && res.path.length ? res.path : null;
     ai.pathI = ai.path ? Math.min(1, ai.path.length - 1) : 0;
     ai.pathReached = !!(res && res.reached);
+    rememberRouteBlock(u, ai, gx, gy, res);
+    // still unreachable and the goal is not below us: back out of the current
+    // depression via the cheapest exit (usually behind us), then re-plan
+    if(!ai.pathReached && ai.pathFailT > 2.2 && (ai.detourCd || 0) <= 0 && gy < u.y + 2 && pathBudgetThisFrame > 0){
+      pathBudgetThisFrame--;
+      const esc = nav.findEscapePath(u.x, u.y, {minRise:2});
+      if(esc && esc.reached && esc.path.length > 1){
+        ai.path = esc.path;
+        ai.pathI = 1;
+        ai.detour = true;
+        ai.detourCd = 4.5;
+        ai.pathFailT = 0.9; // fresh runway: let the detour play out before dig assists
+      } else {
+        ai.detourCd = 1.6;
+      }
+    }
     ai.repathIn = 0.85 + Math.random() * 0.75;
   }
 
   function wantRepath(ai, gx, gy){
     if(!ai.path) return true;
+    if(ai.detour) return ai.pathI >= ai.path.length; // ride the detour to its end
     if(ai.repathIn <= 0) return true;
     const end = ai.path[ai.path.length - 1];
     return end ? (Math.abs(end.x + 0.5 - gx) + Math.abs(end.y - gy) > 4.5) : true;
   }
 
+  // Is there any floor to land on in this column within `depth` tiles below fy?
+  function floorWithin(x, fy, depth){
+    for(let d=0; d<=depth; d++){
+      if(nav.canStand(x, fy + d)) return true;
+    }
+    return false;
+  }
+  // The unit is on ground and about to walk over an edge with no near floor.
+  function gapAhead(u, dir){
+    if(!dir) return false;
+    const fy = Math.floor(u.y);
+    const nx = Math.floor(u.x) + dir;
+    if(nav.canStand(nx, fy) || nav.canStand(nx, fy - 1)) return false;
+    return !floorWithin(nx, fy, 2);
+  }
+  // Nearest landing column across a gap, within the team's jump span.
+  function gapLanding(u, dir){
+    const fy = Math.floor(u.y);
+    const cx = Math.floor(u.x);
+    const span = nav.caps.jumpSpan || 3;
+    for(let s=2; s<=span; s++){
+      const lx = cx + s * dir;
+      if(nav.canStand(lx, fy) || nav.canStand(lx, fy - 1) || nav.canStand(lx, fy + 1)) return lx;
+    }
+    return null;
+  }
+  function chargeJump(intent, u, wp){
+    intent.jump = true;
+    const rise = u.y - wp.y;
+    if(wp.high) intent.jumpBoost = profile.highJumpMult || 1.5;
+    else if(rise > 1.4) intent.jumpBoost = 1.28;      // full 2-tile ledges need commitment
+    else if(wp.y >= u.y - 1.4) intent.jumpBoost = 1.08; // gap hop: a touch more airtime
+    intent.jumpKick = wp.y >= u.y - 1.4;               // horizontal gaps get the kick
+  }
   function steerTo(u, ai, gx, gy, dt){
     const intent = ai.intent;
     if(wantRepath(ai, gx, gy)) requestPath(u, ai, gx, gy);
+    if(ai.pathReached) ai.pathFailT = 0;
+    else ai.pathFailT += Math.max(0, dt || 0);
     const path = ai.path;
     if(path && ai.pathI < path.length){
       let wp = path[ai.pathI];
@@ -513,12 +682,44 @@ export function createSquadBrain(profile, nav){
         // a unit standing on its waypoint cell has feet at wp.y + 1, so only
         // waypoints clearly above that need an actual jump
         const rise = u.y - wp.y;
-        if(u.onGround && (wp.jump || (rise > 1.7 && Math.abs(wp.x + 0.5 - u.x) < 2.0))) intent.jump = true;
+        if(u.onGround){
+          if(wp.jump && rise > 1.4){
+            // climb: take off close to the wall so the arc lands on the ledge
+            if(Math.abs(wp.x + 0.5 - u.x) < 2.0) chargeJump(intent, u, wp);
+          } else if(wp.jump || rise > 1.7){
+            // gap (or shallow rise): take off exactly at the lip, not early
+            if(gapAhead(u, intent.moveX) || (rise > 1.7 && Math.abs(wp.x + 0.5 - u.x) < 2.0)){
+              chargeJump(intent, u, wp);
+            }
+          } else if(intent.moveX && wp.y <= u.y + 1.1 && gapAhead(u, intent.moveX)){
+            // stale path safety: terrain changed under a walk edge — hop the gap
+            // if a landing exists, otherwise stop and replan instead of diving in
+            if(gapLanding(u, intent.moveX) != null){
+              chargeJump(intent, u, {x:wp.x, y:u.y, jump:true, high:false});
+            } else if(!floorWithin(Math.floor(u.x) + intent.moveX, Math.floor(u.y), nav.caps.maxFall || 8)){
+              intent.moveX = 0;
+              ai.repathIn = Math.min(ai.repathIn, 0.25);
+            }
+          }
+        }
         return;
       }
     }
-    // no path (or consumed): direct steering fallback
+    // no path (or consumed): direct steering fallback with pit protection —
+    // jump over jumpable gaps, refuse to blind-walk into deep pits
     intent.moveX = gx > u.x + 0.25 ? 1 : (gx < u.x - 0.25 ? -1 : 0);
+    if(intent.moveX && u.onGround && gapAhead(u, intent.moveX)){
+      const fy = Math.floor(u.y);
+      if(gy > u.y + 2 && floorWithin(Math.floor(u.x) + intent.moveX, fy, nav.caps.maxFall || 8)){
+        return; // goal is below and the drop is survivable: walking off is fine
+      }
+      if(gapLanding(u, intent.moveX) != null){
+        chargeJump(intent, u, {x:Math.floor(u.x) + intent.moveX, y:fy, jump:true, high:false});
+      } else if(!floorWithin(Math.floor(u.x) + intent.moveX, fy, nav.caps.maxFall || 8)){
+        intent.moveX = 0;
+        ai.repathIn = Math.min(ai.repathIn, 0.25);
+      }
+    }
   }
 
   function fleeing(u, ai, hero, now){
@@ -550,13 +751,20 @@ export function createSquadBrain(profile, nav){
     const ai = u._ai || (u._ai = freshAI());
     const role = roleOf(u);
     const intent = ai.intent;
-    const previousMoveX = intent.moveX || u.facing || 0;
+    // Only a real movement intent counts as "trying to move" — falling back to
+    // facing here made deliberately-holding units (gap lips, strike formation)
+    // trip the stuck watchdog and hop off ledges.
+    const previousMoveX = intent.moveX || 0;
     const wasMoving = previousMoveX !== 0;
+    const digDir = previousMoveX || u.facing || 1;
     intent.moveX = 0;
     intent.jump = false;
+    intent.jumpBoost = 1;
+    intent.jumpKick = false;
     intent.speedMult = role.speedMult || 1;
     ai.stateT += dt;
     ai.repathIn -= dt;
+    if(ai.detourCd > 0) ai.detourCd -= dt;
     const now = ctx.now;
     const dx = hero.x - u.x;
     const dist = Math.hypot(dx, hero.y - u.y) || 0.001;
@@ -570,7 +778,11 @@ export function createSquadBrain(profile, nav){
        Math.hypot(sight.tx + 0.5 - hero.x, sight.ty + 0.5 - hero.y) <= profile.breachRange &&
        hooks.isBreachableTile && hooks.isBreachableTile(sight.tx, sight.ty)){
       ai.breachX = sight.tx; ai.breachY = sight.ty; ai.hasBreach = true;
-    } else ai.hasBreach = false;
+      ai.breachReason = 'shelter';
+    } else if(ai.breachReason !== 'route') {
+      ai.hasBreach = false;
+      ai.breachReason = '';
+    }
     u.facing = dx >= 0 ? 1 : -1;
 
     // stuck watchdog: intending to move but not getting anywhere
@@ -579,12 +791,34 @@ export function createSquadBrain(profile, nav){
       ai.stuckT += dt;
       if(ai.stuckT > 0.7){
         ai.path = null; ai.repathIn = 0;
-        if(hooks.unstuck) hooks.unstuck(u, {dir:previousMoveX, reason:'stuck', now});
-        if(u.onGround) intent.jump = true;
+        if(hooks.unstuck) hooks.unstuck(u, {dir:digDir, reason:'stuck', now});
+        // only jump when the obstacle is actually clearable — endless hops at
+        // the base of a cliff read as broken AI and change nothing
+        const wall = wallAheadHeight(u, digDir);
+        if(u.onGround && jumpableWall(wall)){
+          intent.jump = true;
+          intent.jumpBoost = Math.max(1.3, boostForWall(wall));
+        }
         ai.stuckT = 0;
       }
     } else ai.stuckT = 0;
     ai.lastX = u.x; ai.lastY = u.y;
+    // pit-escape assist: the goal is well above and pathing keeps failing —
+    // power-jump at the wall and ask the host to dig (mole tunnels, alien
+    // lasers) so even shafts deeper than the high-jump reach open up over time
+    if(!ai.pathReached && ai.pathFailT > 3.0 && u.onGround && ai.goalY < u.y - 2.5 && now >= (ai.pitAssistAt || 0)){
+      ai.pitAssistAt = now + 1400;
+      if(hooks.unstuck) hooks.unstuck(u, {dir:digDir, reason:'pit', now});
+      // jump only at a wall the boosted jump can actually top, toward it
+      const wallF = wallAheadHeight(u, digDir);
+      const wallB = wallAheadHeight(u, -digDir);
+      if(jumpableWall(wallF)){
+        intent.jump = true; intent.jumpBoost = boostForWall(wallF);
+      } else if(jumpableWall(wallB)){
+        intent.moveX = -digDir;
+        intent.jump = true; intent.jumpBoost = boostForWall(wallB);
+      }
+    }
 
     // --- global overrides -------------------------------------------------
     if(ai.state !== 'repair' && wantsLanderRepair(team,u,ai,now)){
@@ -710,8 +944,18 @@ export function createSquadBrain(profile, nav){
         break;
       }
       case 'breach': {
-        if(brain.mode !== 'siege' || sight.clear){ setState(ai, 'approach'); break; }
+        const routeBreach = ai.breachReason === 'route';
+        if((!routeBreach && brain.mode !== 'siege') || (sight.clear && !routeBreach)){ setState(ai, 'approach'); break; }
         if(!ai.hasBreach){ setState(ai, 'approach'); break; }
+        if(hooks.isBreachableTile && !hooks.isBreachableTile(ai.breachX, ai.breachY)){
+          ai.hasBreach = false;
+          ai.breachReason = '';
+          ai.hasRouteBlock = false;
+          ai.path = null;
+          ai.repathIn = 0;
+          setState(ai, 'approach');
+          break;
+        }
         const bx = ai.breachX + 0.5, by = ai.breachY + 0.5;
         const bDist = Math.hypot(bx - u.x, by - (u.y - 0.45));
         if(role.breacher && bDist > 1.5){ steerTo(u, ai, bx, by, dt); break; }
@@ -725,7 +969,13 @@ export function createSquadBrain(profile, nav){
             hooks.fire(u, {aimX:bx, aimY:by, breach:true, damageMult:role.damageMult});
             u.attackCd = role.fireCd * (0.9 + Math.random() * 0.3);
           }
-          if(hooks.isBreachableTile && !hooks.isBreachableTile(ai.breachX, ai.breachY)) ai.hasBreach = false;
+          if(hooks.isBreachableTile && !hooks.isBreachableTile(ai.breachX, ai.breachY)){
+            ai.hasBreach = false;
+            ai.breachReason = '';
+            ai.hasRouteBlock = false;
+            ai.path = null;
+            ai.repathIn = 0;
+          }
         }
         break;
       }
@@ -746,9 +996,138 @@ export function createSquadBrain(profile, nav){
         }
         break;
       }
+      case 'ramp': {
+        // Fabricate a solid staircase up an unclimbable face: lay a step at
+        // foot level (ahead if open, else the zig cell behind), climb it, and
+        // repeat until the remaining crest is within power-jump reach.
+        const dir = ai.rampDir || (hero.x >= u.x ? 1 : -1);
+        if(!hooks.buildRamp || !hooks.canBuildRampAt || ai.stateT > 22){
+          ai.rampFails++;
+          setState(ai, ai.rampFails >= 2 ? 'relocate' : 'approach');
+          break;
+        }
+        if(!u.onGround) break;
+        const standCell = Math.floor(u.y) - 1;
+        // anchor the scaffold to the cliff face once: deriving columns from the
+        // unit's own x flip-flops at cell boundaries and dithers forever
+        if(!ai.rampFaceX){
+          for(let k=1; k<=3; k++){
+            if(nav.solidAt(Math.floor(u.x) + dir * k, standCell)){ ai.rampFaceX = Math.floor(u.x) + dir * k; break; }
+          }
+          if(!ai.rampFaceX){
+            if(ai.stateT > 6){ ai.rampFails++; setState(ai, 'approach'); }
+            else intent.moveX = dir;
+            break;
+          }
+        }
+        // remaining wall is always measured at the anchored face — measuring
+        // "one ahead of me" from atop the scaffold sees open air and walks the
+        // unit straight off its own construction
+        let faceWall = 0;
+        while(faceWall < 15 && nav.solidAt(ai.rampFaceX, standCell - faceWall)) faceWall++;
+        if(faceWall === 0){
+          setState(ai, 'approach'); // crest passed (or the face was dug away)
+          break;
+        }
+        if(jumpableWall(faceWall)){
+          intent.moveX = dir;
+          if(Math.floor(u.x) + dir === ai.rampFaceX){
+            intent.jump = true;
+            intent.jumpBoost = boostForWall(faceWall);
+          }
+          if(ai.stateT > 14){ ai.rampFails++; setState(ai, 'approach'); }
+          break;
+        }
+        // two-column zigzag tower against the face: stand on one column, add a
+        // block to the other, climb it, alternate — always filled bottom-up so
+        // every scaffold block rests on support
+        const colA = ai.rampFaceX - dir;
+        const colB = ai.rampFaceX - dir * 2;
+        const onA = Math.abs(u.x - (colA + 0.5)) <= Math.abs(u.x - (colB + 0.5));
+        const stand = onA ? colA : colB;
+        const tcol = onA ? colB : colA;
+        if(nav.solidAt(tcol, standCell)){
+          if(nav.openAt(tcol, standCell - 1) && nav.openAt(tcol, standCell - 2)){
+            intent.moveX = tcol > stand ? 1 : -1; // step already there: mount it
+          } else {
+            ai.rampFails++; // ceiling over the scaffold: this route is dead
+            setState(ai, ai.rampFails >= 2 ? 'relocate' : 'approach');
+          }
+          break;
+        }
+        if(!nav.openAt(tcol, standCell - 1) || !nav.openAt(tcol, standCell - 2)){
+          ai.rampFails++;
+          setState(ai, ai.rampFails >= 2 ? 'relocate' : 'approach');
+          break;
+        }
+        // build the lowest open cell of the target column (foundation first)
+        let stepY = standCell;
+        while(stepY < standCell + 4 && !nav.solidAt(tcol, stepY + 1)) stepY++;
+        // never fabricate into our own body: hold the stand-column center
+        if(Math.abs(u.x - (tcol + 0.5)) < 0.88){
+          const standCx = stand + 0.5;
+          intent.moveX = u.x > standCx + 0.08 ? -1 : (u.x < standCx - 0.08 ? 1 : 0);
+          ai.buildT = 0;
+          break;
+        }
+        ai.buildT = (ai.buildT || 0) + dt;
+        if(ai.buildT >= 0.55){
+          ai.buildT = 0;
+          if(hooks.canBuildRampAt(tcol, stepY) && hooks.buildRamp(u, tcol, stepY)){
+            if(stepY === standCell) intent.moveX = tcol > stand ? 1 : -1; // mount the fresh step
+          } else {
+            ai.rampFails++;
+            setState(ai, ai.rampFails >= 2 ? 'relocate' : 'approach');
+          }
+        }
+        break;
+      }
+      case 'relocate': {
+        // Everything here failed repeatedly: stop grinding and try our luck
+        // from a completely different spot instead of repeating dead actions.
+        if(!ai.hasRelocate){
+          const dir = Math.random() < 0.5 ? -1 : 1;
+          const distAway = 14 + Math.random() * 26;
+          const spot = nav.findStandableNear(u.x + dir * distAway, u.y, 10) ||
+                       nav.findStandableNear(u.x - dir * distAway, u.y, 10);
+          if(!spot){ ai.pathFailT = 0; setState(ai, 'approach'); break; }
+          ai.relocateX = spot.x + 0.5;
+          ai.relocateY = spot.y;
+          ai.hasRelocate = true;
+          ai.pathFailT = 0;
+        }
+        intent.speedMult = (role.speedMult || 1) * 1.12;
+        steerTo(u, ai, ai.relocateX, ai.relocateY, dt);
+        if(Math.abs(u.x - ai.relocateX) < 2.2 || ai.stateT > 11){
+          ai.rampFails = 0;
+          ai.pathFailT = 0;
+          ai.giveUpT = 6.5 + Math.random() * 2.5;
+          setState(ai, sight.clear ? 'strike' : 'approach');
+        }
+        break;
+      }
       case 'approach':
       default: {
         if(brain.mode === 'siege' && ai.hasBreach){ setState(ai, 'breach'); break; }
+        if(routeBreachReady(ai, hooks)){ setState(ai, 'breach'); break; }
+        // context escalation beyond digging: fabricate a ramp up an
+        // unclimbable face toward an elevated goal, or give up on this spot
+        // entirely and re-plan from somewhere else
+        const calmHere = !ai.hasBreach && !ai.hasRouteBlock && brain.mode !== 'siege';
+        if(calmHere && ai.pathFailT > 4.2 && ai.rampFails < 2 && ai.goalY < u.y - 2 &&
+           hooks.buildRamp && hooks.canBuildRampAt){
+          const dirToGoal = hero.x >= u.x ? 1 : -1;
+          const wall = wallAheadHeight(u, dirToGoal);
+          if(wall > (nav.caps.highJumpUp || 4) && wall < 15){
+            ai.rampDir = dirToGoal;
+            setState(ai, 'ramp');
+            break;
+          }
+        }
+        if(calmHere && !sight.clear && ai.pathFailT > ai.giveUpT){
+          setState(ai, 'relocate');
+          break;
+        }
         // builders fortify before they fight: they hold off the strike
         // transition until the squad's build budget is spent
         const wantsBuild = role.builder && brain.mode === 'assault' && dist > 4 && dist < 12 &&

@@ -213,6 +213,34 @@ const alienRuins = (function(){
         put(x,y,pick(r,[T.ELECTRONICS,T.WIRE,T.METEOR_DUST,T.TRANSISTOR]),true);
       }
     }
+    // Hermetic hull: the vault may only be entered by destroying UFO concrete.
+    // The oval shell band (d ≤ shellScale) is thinner than one tile along the
+    // top/bottom of typical radii, corridor dead-ends stop in raw dirt, and
+    // glyphs/cables/tech are soft, mineable materials — so every forced
+    // non-concrete cell gets its untouched 8-neighbourhood backed with concrete.
+    // Ops replay in order and this runs last, so it only fills cells no earlier
+    // op touched; the invariant is enforced by construction for every layout.
+    function sealHull(){
+      const finalTiles=new Map();
+      for(const op of ops) if(op.f) finalTiles.set(op.x+','+op.y, op.t);
+      const toSeal=[];
+      const planned=new Set();
+      for(const [k,t] of finalTiles){
+        if(t===WALL) continue;
+        const c=k.indexOf(',');
+        const x=+k.slice(0,c), y=+k.slice(c+1);
+        for(let dy=-1;dy<=1;dy++){
+          for(let dx=-1;dx<=1;dx++){
+            if(!dx && !dy) continue;
+            const nk=(x+dx)+','+(y+dy);
+            if(finalTiles.has(nk) || planned.has(nk)) continue;
+            planned.add(nk);
+            toSeal.push({x:x+dx,y:y+dy});
+          }
+        }
+      }
+      for(const cell of toSeal) solid(cell.x,cell.y,WALL);
+    }
 
     const roll = r();
     const size = roll<0.48 ? 'small' : (roll<0.82 ? 'medium' : (roll<CFG.MEGA_ROLL ? 'large' : 'mega'));
@@ -307,6 +335,7 @@ const alienRuins = (function(){
     }
 
     if(!tech.length) techAt(ax,s0+8,T.ELECTRONICS);
+    sealHull();
     return {n, ax, size, tier, variant, chests, tech, commanders, hints, ops, minX, maxX, minY, maxY};
   }
 

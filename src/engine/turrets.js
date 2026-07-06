@@ -371,6 +371,8 @@ const turrets = (function(){
 
   function damageAt(tx,ty,dmg){
     let hit=false;
+    // The center mirror reflects turret fire too: automated blows are still the hero's.
+    try{ if(MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,dmg,{source:'turret',kind:'turret'})){ return true; } }catch(e){}
     try{ if(MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
     try{ if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
     try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
