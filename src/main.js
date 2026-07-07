@@ -63,6 +63,7 @@ import { springPlatforms as SPRING_PLATFORMS } from './engine/spring_platforms.j
 import { vending as VENDING } from './engine/vending.js';
 import { trader as TRADER } from './engine/trader.js';
 import { fishing as FISHING } from './engine/fishing.js';
+import { altar as ALTAR } from './engine/altar.js';
 import { lighting as LIGHTING } from './engine/lighting.js';
 import { vitalsHud as VITALS_HUD } from './engine/vitals_hud.js';
 import './engine/ui.js';
@@ -7400,6 +7401,7 @@ canvas.addEventListener('pointerdown',e=>{
 		// Click an NPC (non-duel) to talk: they speak the next line in their repertoire.
 		if(NPCS && NPCS.interactAt && NPCS.interactAt(tx,ty,player,tutorialNpcCtx)) return;
 		if(tryUseVendingAt(tx,ty)) return;
+		if(ALTAR && ALTAR.tryUseAt && dxRange<=3 && dyRange<=3 && ALTAR.tryUseAt(tx,ty,{getTile,inv,player,gameDayFloat:tutorialNpcCtx.gameDayFloat,onInventoryChange:updateInventory,onChange:saveState})) return;
 		if(tryOpenChestAt(tx,ty)) return;
 		if(tryOpenInvasionCacheAt(tx,ty)) return;
 		if(dxRange<=3 && dyRange<=3 && tryOpenGraveAt(tx,ty)) return;

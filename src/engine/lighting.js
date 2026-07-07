@@ -32,6 +32,7 @@ import { T, INFO, WORLD_MIN_Y, WORLD_MAX_Y, isLeaf } from '../constants.js';
     [T.TORCH]: 13,
     [T.LAVA]: 12,
     [T.MOTHER_LAVA]: 12,
+    [T.ALTAR]: 8, // summoning altars smoulder visibly in the dark
     [T.CHEST_COMMON]: 4,
     [T.CHEST_RARE]: 5,
     [T.CHEST_EPIC]: 6

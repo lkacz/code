@@ -1397,10 +1397,20 @@ window.MM = window.MM || {};
       return;
     }
     if(col.biome===5||col.biome===6||col.biome===8||col.beach||col.ravine>0) return;
-    // ruin: broken stone pillars + a partial wall around a rare chest
     const s=col.row;
     const sL=WG.column(wx0-3).row, sR=WG.column(wx0+3).row;
     if(Math.abs(sL-s)>2 || Math.abs(sR-s)>2) return;            // flat ground only
+    if(WG.randSeed(cx*17.71+9.4)<0.14){
+      // summoning altar (~1.4% of chunks): torch-lit obsidian dais with the
+      // ritual stone — click it with the offering to call a gargantuan boss
+      // (engine/altar.js owns the ritual; the tile itself is indestructible)
+      for(let dx=-2;dx<=2;dx++) put(lx0+dx,s-1,T.OBSIDIAN);
+      put(lx0-2,s-2,T.OBSIDIAN); put(lx0+2,s-2,T.OBSIDIAN);
+      put(lx0-2,s-3,T.TORCH);    put(lx0+2,s-3,T.TORCH);
+      put(lx0,s-2,T.ALTAR);
+      return;
+    }
+    // ruin: broken stone pillars + a partial wall around a rare chest
     const h1=2+Math.floor(WG.randSeed(wx0*1.3)*3), h2=2+Math.floor(WG.randSeed(wx0*2.7)*3);
     for(let i=1;i<=h1;i++) put(lx0-3,s-i,T.STONE);
     for(let i=1;i<=h2;i++) put(lx0+3,s-i,T.STONE);

@@ -171,7 +171,13 @@ reversed damage → mutual fall → epilogue, snapshot/restore) and
   **pause** (B, simulation freezes while the scene keeps rendering), respawn totem.
 * **Structures** (`world.js placeStructures`): ~10% of chunks deterministically roll a
   ruined stone gateway with a rare/epic chest (flat land) or a wooden **shipwreck** with
-  an epic chest resting on the sea floor.
+  an epic chest resting on the sea floor. ~14% of the land rolls become a **Summoning
+  Altar** instead: a torch-lit obsidian dais with an indestructible ritual stone that
+  smoulders in the dark (lighting emitter). Click it holding the offering — 3 diamonds +
+  3 obsidian — and a GARGANTUAN boss answers (triple silhouette, double trample, a hoard
+  of epic chests on death). One ritual per altar per game day; a summon that finds no
+  ground refunds the offering (`engine/altar.js`, `npm run test:altar`,
+  `node tools/altar-qa.mjs`).
 * **Buried ruins** (`engine/ruins.js`): subtle surface traces (pillar stubs, rubble, an
   arch, a well ring) mark dig sites; below waits a crypt, a cellar complex, or a deep
   temple with one of three treasure rooms (obsidian vault / lava altar / flooded

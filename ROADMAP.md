@@ -32,8 +32,12 @@ w README.
    minimapa, język). Fundament pod i18n (PL/EN).
 5. **Podziemne biomy** — jaskinie lodowe / grzybowe komory (warianty caveAt
    per biom, nowe rośliny grzybowe przez rejestr PLANTS).
-6. **Boss przyzywany rytuałem na arenę** — Róg już jest; wariant „ołtarz" w
-   ruinach przyzywający wzmocnionego bossa z gwarantowanym epickim łupem.
+6. ~~**Boss przyzywany rytuałem na arenę**~~ ✅ done — `engine/altar.js` +
+   struktura w `world.js placeStructures` (~1,4% chunków): obsydianowy Ołtarz
+   Przyzwania z pochodniami (żarzy się w mroku przez lighting), klik z ofiarą
+   3💎+3 obsydian wzywa GARGANTUICZNEGO bossa (stos epickich skrzyń po
+   pokonaniu); cooldown 1 dzień/ołtarz, nieudany rytuał zwraca ofiarę.
+   Test `npm run test:altar`, QA `node tools/altar-qa.mjs`.
 7. ~~**Wędkarstwo**~~ ✅ done — `engine/fishing.js`: wędka (craft: drewno+trawa),
    F zarzuca do najbliższej wody, branie (❗) w oknie reakcji, duże ryby szarpią
    2–3 razy (za wczesne F płoszy); ryby → zupa rybna (+30 HP), złota rybka →
