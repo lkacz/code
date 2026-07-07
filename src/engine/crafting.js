@@ -54,7 +54,9 @@ const crafting = (function(){
     waterPipe: 'craft: stal + plastik (Maszyny)',
     dynamo: 'craft: stal + przewody (Maszyny)',
     torch: 'craft: drewno (Start)',
-    ladder: 'craft: drewno (Budowle)'
+    ladder: 'craft: drewno (Budowle)',
+    fish: 'wędkuj: F przy wodzie (potrzebna wędka)',
+    goldenFish: 'rzadki połów — wygraj walkę z dużą rybą'
   };
 
   function createCraftingModel(cfg){

@@ -34,8 +34,11 @@ w README.
    per biom, nowe rośliny grzybowe przez rejestr PLANTS).
 6. **Boss przyzywany rytuałem na arenę** — Róg już jest; wariant „ołtarz" w
    ruinach przyzywający wzmocnionego bossa z gwarantowanym epickim łupem.
-7. **Wędkarstwo** — woda jest wszędzie; prosta minigra rytmiczna, ryby jako
-   żywność (heal) i składnik mikstur.
+7. ~~**Wędkarstwo**~~ ✅ done — `engine/fishing.js`: wędka (craft: drewno+trawa),
+   F zarzuca do najbliższej wody, branie (❗) w oknie reakcji, duże ryby szarpią
+   2–3 razy (za wczesne F płoszy); ryby → zupa rybna (+30 HP), złota rybka →
+   Eliksir głębin, handlarz skupuje połów; XP za połów. Test `npm run
+   test:fishing`, QA `node tools/fishing-qa.mjs`.
 
 ## Tier 3 — horyzont
 8. **Pory roku** — temperatura już steruje biomami; sezonowy offset zmienia

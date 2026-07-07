@@ -220,6 +220,7 @@ import { T, INFO, WORLD_MIN_Y, WORLD_MAX_Y, isLeaf } from '../constants.js';
     }
     if(pixelsDirty){
       const px = imageData.data;
+      let maxA = 0;
       for(let j = 0; j < f.h; j++){
         const wy = f.y0 + j;
         for(let i = 0; i < f.w; i++){
@@ -228,15 +229,25 @@ import { T, INFO, WORLD_MIN_Y, WORLD_MAX_Y, isLeaf } from '../constants.js';
           const o = idx * 4;
           px[o] = 6; px[o + 1] = 8; px[o + 2] = 16; // cool cave black, not pure ink
           px[o + 3] = Math.round(a * 255);
+          if(a > maxA) maxA = a;
         }
       }
       canvasCtx.putImageData(imageData, 0, 0);
+      f.maxAlpha = maxA;
       pixelsDirty = false;
     }
+    if(!(f.maxAlpha > 0.004)) return; // whole view above ground: free frame
+    // Blit only the view-intersecting slice of the padded field (the margin
+    // exists for BFS correctness, not for the compositor to rasterize).
     const ox = (opts && opts.originX) || 0, oy = (opts && opts.originY) || 0;
+    const vx0 = Math.max(f.x0, Math.floor(sx) - 1), vy0 = Math.max(f.y0, Math.floor(sy) - 1);
+    const vx1 = Math.min(f.x0 + f.w, Math.ceil(sx + viewX) + 2), vy1 = Math.min(f.y0 + f.h, Math.ceil(sy + viewY) + 2);
+    if(vx1 <= vx0 || vy1 <= vy0) return;
     const prevSmooth = ctx.imageSmoothingEnabled;
     ctx.imageSmoothingEnabled = true; // 1px/tile → bilinear = smooth light falloff
-    ctx.drawImage(canvas, (f.x0 - ox) * TILE, (f.y0 - oy) * TILE, f.w * TILE, f.h * TILE);
+    ctx.drawImage(canvas,
+      vx0 - f.x0, vy0 - f.y0, vx1 - vx0, vy1 - vy0,
+      (vx0 - ox) * TILE, (vy0 - oy) * TILE, (vx1 - vx0) * TILE, (vy1 - vy0) * TILE);
     ctx.imageSmoothingEnabled = prevSmooth;
   }
 

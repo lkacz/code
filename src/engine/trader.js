@@ -49,7 +49,8 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
     {id:'coal',     label:'Węgiel ×8',          icon:'⚫', take:{coal:8},     pay:1},
     {id:'obsidian', label:'Obsydian ×4',        icon:'🟣', take:{obsidian:4}, pay:1},
     {id:'bakedMeat',label:'Pieczone mięso ×6',  icon:'🍖', take:{bakedMeat:6},pay:1},
-    {id:'glass',    label:'Szkło ×10',          icon:'🧊', take:{glass:10},   pay:1}
+    {id:'glass',    label:'Szkło ×10',          icon:'🧊', take:{glass:10},   pay:1},
+    {id:'fish',     label:'Ryby ×8',            icon:'🐟', take:{fish:8},     pay:1}
   ];
 
   const GREETINGS = [

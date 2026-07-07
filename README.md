@@ -145,6 +145,14 @@ reversed damage → mutual fall → epilogue, snapshot/restore) and
   Gameplay seam: `MM.lighting.lightAt(x,y)` — PELZACZE only spawn in the dark
   (>0.25 blocks), so torch-lit galleries are genuinely safe. Deterministic tests:
   `npm run test:lighting`; visual QA: `node tools/lighting-trader-qa.mjs`.
+* **Fishing** (`engine/fishing.js`): the calm counter-loop. Craft a rod (wood +
+  grass), stand near water, press F — the line arcs to the nearest surface. After
+  a seeded wait the bobber dips (❗ + splash): F inside the reaction window sets
+  the hook; bigger fish fight with 2–3 telegraphed pulls where an early press
+  spooks them and a late one loses them. Catches pay fish (soup recipe, +30 HP),
+  a rare golden fish (Eliksir głębin ingredient, trader money) and XP scaled by
+  the fight. Walking off or losing the water under the bobber reels in cleanly.
+  Deterministic tests: `npm run test:fishing`; visual QA: `node tools/fishing-qa.mjs`.
 * **Wandering trader** (`engine/trader.js`): the economy's closing loop. Every 2–3
   game days a hooded merchant pitches a striped-canopy stall on the surface near the
   player for about half a day (announced with a direction hint; a 💎 floats over the

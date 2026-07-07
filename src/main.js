@@ -62,6 +62,7 @@ import { turrets as TURRETS } from './engine/turrets.js';
 import { springPlatforms as SPRING_PLATFORMS } from './engine/spring_platforms.js';
 import { vending as VENDING } from './engine/vending.js';
 import { trader as TRADER } from './engine/trader.js';
+import { fishing as FISHING } from './engine/fishing.js';
 import { lighting as LIGHTING } from './engine/lighting.js';
 import { vitalsHud as VITALS_HUD } from './engine/vitals_hud.js';
 import './engine/ui.js';
@@ -2096,6 +2097,10 @@ const RECIPES=[
 	{id:'bio_companion_feed', name:'Dokarm bio-pomocnika', cost:{alienBiomass:1, meat:1}, make(){ return !!(COMPANIONS && COMPANIONS.feedNearest && COMPANIONS.feedNearest(player,1,{meat:1,refund:{alienBiomass:1,meat:1}})); }},
 	{id:'ufo_alien_companion', name:'Macierzysty alien-companion', cost:{motherIce:1}, make(){ const c=(COMPANIONS && COMPANIONS.spawnUfoAlienFromCraft) ? COMPANIONS.spawnUfoAlienFromCraft(player,{motherIce:1,getTile,refund:{motherIce:1}}) : null; return !!c; }},
 	{id:'leaf_monster', name:'Lisciany potworek', cost:{leaf:8, servantStone:1}, make(){ const c=(COMPANIONS && COMPANIONS.spawnLeafMonsterFromCraft) ? COMPANIONS.spawnLeafMonsterFromCraft(player,{leaves:8,servantStone:1,getTile,refund:{leaf:8,servantStone:1}}) : null; return !!c; }},
+	// Fishing (engine/fishing.js): rod unlocks the F-key minigame; fish feed soups
+	{id:'fishing_rod', name:'Wędka', cost:{wood:2, grass:4}, make(){ inv.fishingRod+=1; msg('🎣 Wędka +1 — stań nad wodą i naciśnij F. Gdy spławik drgnie (❗), F podcina!'); }},
+	{id:'fish_soup', name:'Zupa rybna', cost:{fish:2, water:1}, make(){ const before=player.hp; player.hp=Math.min(player.maxHp, player.hp+30); if(player.hp>before) notifyInvasionHeroAction('hero_heal',{amount:player.hp-before,source:'fish_soup'}); msg('🍲 Zupa rybna: +30 HP'); try{ if(MM.audio && MM.audio.play) MM.audio.play('heal'); }catch(e){} }},
+	{id:'potion_depths', name:'Eliksir głębin', cost:{goldenFish:1, water:2}, make(){ if(MM.progress && MM.progress.addBuff) MM.progress.addBuff({name:'Głębiny', icon:'🐠', dur:90, stats:{moveSpeedMult:1.25, jumpPowerMult:1.2}}); msg('🐠 Eliksir głębin: ruch +25%, skok +20% (90 s)'); try{ if(MM.audio && MM.audio.play) MM.audio.play('heal'); }catch(e){} }},
 	// Consumables: brewed and drunk on the spot (timed buffs ride the modifier-source registry)
 	{id:'potion_heal', name:'Eliksir życia', cost:{water:2, leaf:3}, make(){ const before=player.hp; player.hp=Math.min(player.maxHp, player.hp+40); if(player.hp>before) notifyInvasionHeroAction('hero_heal',{amount:player.hp-before,source:'potion_heal'}); msg('🧪 Eliksir życia: +40 HP'); try{ if(MM.audio && MM.audio.play) MM.audio.play('heal'); }catch(e){} }},
 	{id:'potion_speed', name:'Mikstura szybkości', cost:{water:1, leaf:2, diamond:1}, make(){ if(MM.progress && MM.progress.addBuff) MM.progress.addBuff({name:'Szybkość', icon:'💨', dur:60, stats:{moveSpeedMult:1.3, jumpPowerMult:1.15}}); msg('💨 Szybkość +30%, skok +15% (60 s)'); try{ if(MM.audio && MM.audio.play) MM.audio.play('heal'); }catch(e){} }},
@@ -2174,6 +2179,9 @@ const CRAFT_RECIPE_META={
 	bio_companion_feed:{group:'weapons',icon:'🍖',tint:'#bd5145',desc:'Wzmacnia najblizszego bio-pomocnika. Kazda porcja biomasy zwieksza jego maksymalne HP.'},
 	ufo_alien_companion:{group:'weapons',icon:'👽',tint:'#d8fbff',desc:'Tworzy elitarnego kompana z lodu macierzystego. Rola i wyglad pochodza z alien teamu.'},
 	leaf_monster:{group:'weapons',icon:'🍃',tint:'#2faa2f',desc:'Tworzy kruchego, bardzo szybkiego potworka z lisci i kamienia slugi. Lata, ale wiatr rzuca nim mocniej niz innymi.'},
+	fishing_rod:{group:'survival',icon:'🎣',out:'fishingRod',amount:1,desc:'Odblokowuje wędkowanie: F przy wodzie zarzuca, F przy braniu (❗) podcina. Duże ryby szarpią kilka razy!'},
+	fish_soup:{group:'alchemy',icon:'🍲',tint:'#6fb7d9',desc:'Sycące leczenie ze świeżego połowu.'},
+	potion_depths:{group:'alchemy',icon:'🐠',tint:'#ffd76a',desc:'Dar złotej rybki: długi buff ruchu i skoku.'},
 	potion_heal:{group:'alchemy',icon:'🧪',tint:'#ff5a5a',desc:'Natychmiastowe leczenie.'},
 	potion_speed:{group:'alchemy',icon:'💨',tint:'#a8d7ff',desc:'Czasowy buff ruchu i skoku.'},
 	potion_strength:{group:'alchemy',icon:'💪',tint:'#ffb84a',desc:'Czasowy buff obrazen.'},
@@ -5573,6 +5581,7 @@ window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if
 	if(k==='h'&&!keysOnce.has('h')){ toggleHelp(); keysOnce.add('h'); }
 	if(k==='v'&&!keysOnce.has('v')){ window.__mobDebug = !window.__mobDebug; msg('Mob debug '+(window.__mobDebug?'ON':'OFF')); keysOnce.add('v'); }
 	if(k==='x'&&!keysOnce.has('x')){ useCraterScanner(); keysOnce.add('x'); }
+	if(k==='f'&&!keysOnce.has('f')){ if(FISHING && FISHING.onKey) FISHING.onKey(player,getTile); keysOnce.add('f'); }
 	if(k==='o'&&!keysOnce.has('o')){ keysOnce.add('o'); if(VOLCANO && VOLCANO.forceMasterEruption) VOLCANO.forceMasterEruption(); }
 	if(k==='b'&&!keysOnce.has('b')){ paused=!paused; keysOnce.add('b'); }
 	if(k==='n'&&!keysOnce.has('n')){ showMinimap=!showMinimap; msg('Minimapa '+(showMinimap?'ON':'OFF')); keysOnce.add('n'); }
@@ -7502,6 +7511,8 @@ function draw(){ // Background first
  if(VISUAL.animations && GRASS && GRASS.drawOverlays){ GRASS.drawOverlays(ctx,'front', sx,sy,viewX,viewY,TILE,worldMaxY(),getTile,T,zoom,grassDensityScalar,grassHeightScalar,worldFxVisible,worldMinY()); }
  // Water overlay shimmer (after vegetation front to avoid overdraw? place before falling solids for clarity)
  if(WATER){ WATER.drawOverlay(ctx,TILE,getTile,sx,sy,viewX,viewY,worldFxVisible); }
+ // fishing line + bobber float on the finished water surface
+ if(FISHING && FISHING.draw) FISHING.draw(ctx,TILE,player,worldFxVisible);
  drawInfrastructureOverlays(sx,sy,viewX,viewY,{exclude:T.LADDER});
  // Draw falling solids after terrain so they appear on top
  if(FALLING){ FALLING.draw(ctx,TILE,worldFxVisible); }
@@ -7968,6 +7979,7 @@ function updateInventory(opts){
 window.updateInventoryHud = updateInventory;
 const tutorialNpcCtx = {damageHero:window.damageHero, onInventoryChange:updateInventory, onChange:saveState, worldGen:WORLDGEN, gameDayFloat:()=>{ const m=(SEASONS && SEASONS.metrics) ? SEASONS.metrics() : null; return m && Number.isFinite(Number(m.dayFloat)) ? Number(m.dayFloat) : 1; }};
 if(NPCS && NPCS.setContext) NPCS.setContext(tutorialNpcCtx);
+if(FISHING && FISHING.setContext) FISHING.setContext({onInventoryChange:updateInventory, onChange:saveState});
 // Wandering trader panel: DOM host for engine/trader.js. The module opens it
 // via the npc_system click dispatch and closes it on departure / walking away.
 (function(){
@@ -9996,6 +10008,7 @@ function runGameStep(dt,ts){
 	if(WEAPONS && WEAPONS.update) WEAPONS.update(dt, getTile, setTile);
 	if(GENERATED_NPCS && GENERATED_NPCS.update) GENERATED_NPCS.update(dt, player, getTile, setTile, tutorialNpcCtx);
 	if(NPCS && NPCS.update) NPCS.update(dt, player, getTile, setTile, tutorialNpcCtx);
+	if(FISHING && FISHING.update) FISHING.update(dt, player, getTile);
 	if(MEAT && MEAT.update) MEAT.update(dt, player, getTile, setTile);
 	volcanoLeakWakeT-=dt;
 	if(volcanoLeakWakeT<=0){
