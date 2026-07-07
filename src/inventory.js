@@ -215,6 +215,7 @@
     {key:'rottenMeat', label:'Zepsute mieso', color:'#647136', tile:'ROTTEN_MEAT'},
     {key:'bakedMeat', label:'Pieczone mieso', color:'#9b5a2e', tile:'BAKED_MEAT'},
     {key:'fish',    label:'Ryba',    color:'#6fb7d9', tile:null},
+    {key:'glowshroom', label:'Świecący grzyb', color:'#7de3a8', tile:'GLOWSHROOM'},
     {key:'goldenFish', label:'Złota rybka', color:'#ffd76a', tile:null},
     {key:'fishingRod', label:'Wędka', color:'#b98243', tile:null},
     {key:'wire',    label:'Przewody',color:'#c56f32', tile:'WIRE'},

@@ -2101,6 +2101,7 @@ const RECIPES=[
 	// Fishing (engine/fishing.js): rod unlocks the F-key minigame; fish feed soups
 	{id:'fishing_rod', name:'Wędka', cost:{wood:2, grass:4}, make(){ inv.fishingRod+=1; msg('🎣 Wędka +1 — stań nad wodą i naciśnij F. Gdy spławik drgnie (❗), F podcina!'); }},
 	{id:'fish_soup', name:'Zupa rybna', cost:{fish:2, water:1}, make(){ const before=player.hp; player.hp=Math.min(player.maxHp, player.hp+30); if(player.hp>before) notifyInvasionHeroAction('hero_heal',{amount:player.hp-before,source:'fish_soup'}); msg('🍲 Zupa rybna: +30 HP'); try{ if(MM.audio && MM.audio.play) MM.audio.play('heal'); }catch(e){} }},
+	{id:'mushroom_soup', name:'Zupa grzybowa', cost:{glowshroom:3, water:1}, make(){ const before=player.hp; player.hp=Math.min(player.maxHp, player.hp+25); if(player.hp>before) notifyInvasionHeroAction('hero_heal',{amount:player.hp-before,source:'mushroom_soup'}); msg('🍄 Zupa grzybowa: +25 HP'); try{ if(MM.audio && MM.audio.play) MM.audio.play('heal'); }catch(e){} }},
 	{id:'potion_depths', name:'Eliksir głębin', cost:{goldenFish:1, water:2}, make(){ if(MM.progress && MM.progress.addBuff) MM.progress.addBuff({name:'Głębiny', icon:'🐠', dur:90, stats:{moveSpeedMult:1.25, jumpPowerMult:1.2}}); msg('🐠 Eliksir głębin: ruch +25%, skok +20% (90 s)'); try{ if(MM.audio && MM.audio.play) MM.audio.play('heal'); }catch(e){} }},
 	// Consumables: brewed and drunk on the spot (timed buffs ride the modifier-source registry)
 	{id:'potion_heal', name:'Eliksir życia', cost:{water:2, leaf:3}, make(){ const before=player.hp; player.hp=Math.min(player.maxHp, player.hp+40); if(player.hp>before) notifyInvasionHeroAction('hero_heal',{amount:player.hp-before,source:'potion_heal'}); msg('🧪 Eliksir życia: +40 HP'); try{ if(MM.audio && MM.audio.play) MM.audio.play('heal'); }catch(e){} }},
@@ -2182,6 +2183,7 @@ const CRAFT_RECIPE_META={
 	leaf_monster:{group:'weapons',icon:'🍃',tint:'#2faa2f',desc:'Tworzy kruchego, bardzo szybkiego potworka z lisci i kamienia slugi. Lata, ale wiatr rzuca nim mocniej niz innymi.'},
 	fishing_rod:{group:'survival',icon:'🎣',out:'fishingRod',amount:1,desc:'Odblokowuje wędkowanie: F przy wodzie zarzuca, F przy braniu (❗) podcina. Duże ryby szarpią kilka razy!'},
 	fish_soup:{group:'alchemy',icon:'🍲',tint:'#6fb7d9',desc:'Sycące leczenie ze świeżego połowu.'},
+	mushroom_soup:{group:'alchemy',icon:'🍄',tint:'#7de3a8',desc:'Leczenie ze świecących grzybów jaskiniowych.'},
 	potion_depths:{group:'alchemy',icon:'🐠',tint:'#ffd76a',desc:'Dar złotej rybki: długi buff ruchu i skoku.'},
 	potion_heal:{group:'alchemy',icon:'🧪',tint:'#ff5a5a',desc:'Natychmiastowe leczenie.'},
 	potion_speed:{group:'alchemy',icon:'💨',tint:'#a8d7ff',desc:'Czasowy buff ruchu i skoku.'},

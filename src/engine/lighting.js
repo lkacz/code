@@ -33,6 +33,7 @@ import { T, INFO, WORLD_MIN_Y, WORLD_MAX_Y, isLeaf } from '../constants.js';
     [T.LAVA]: 12,
     [T.MOTHER_LAVA]: 12,
     [T.ALTAR]: 8, // summoning altars smoulder visibly in the dark
+    [T.GLOWSHROOM]: 9, // bioluminescent fungus — mushroom chambers glow teal
     [T.CHEST_COMMON]: 4,
     [T.CHEST_RARE]: 5,
     [T.CHEST_EPIC]: 6

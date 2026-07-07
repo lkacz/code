@@ -56,7 +56,8 @@ const crafting = (function(){
     torch: 'craft: drewno (Start)',
     ladder: 'craft: drewno (Budowle)',
     fish: 'wędkuj: F przy wodzie (potrzebna wędka)',
-    goldenFish: 'rzadki połów — wygraj walkę z dużą rybą'
+    goldenFish: 'rzadki połów — wygraj walkę z dużą rybą',
+    glowshroom: 'świecące jaskinie w lasach i na bagnach'
   };
 
   function createCraftingModel(cfg){

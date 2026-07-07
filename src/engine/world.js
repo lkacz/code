@@ -1300,6 +1300,7 @@ window.MM = window.MM || {};
         } } } }
     // Trees are populated after base terrain; tree code uses deterministic RNG so caching heights is safe
     if(MM.trees && MM.trees.populateChunk){ MM.trees.populateChunk(arr,cx); }
+    applyUndergroundBiomeDressing(arr,cx);
     applyDevastatedCity(arr,cx);
     placeStructures(arr,cx);
     // Buried ruin complexes are anchor-based (they may span chunk borders) and
@@ -1369,6 +1370,50 @@ window.MM = window.MM || {};
     }
     if(arr) sectionViews.set(vk,arr);
     return arr;
+  }
+
+  // --- Underground biome dressing: additive re-skin of freshly generated
+  // caves so the deep world inherits the surface biome's character. Runs
+  // before cities/structures/ruins (they overwrite where they build). Pure
+  // per-cell (worldSeed via WG.randSeed), chunk-local neighbor checks only —
+  // border columns dress slightly sparser, which reads as natural taper.
+  //   snow (2): cave-adjacent STONE frosts to ICE, ceilings sprout icicles.
+  //             Only STONE converts — granite/basalt/coal strata stay pinned.
+  //   forest (0) / swamp (4): mid-depth cave floors sprout GLOWSHROOMS —
+  //             bioluminescent lighting emitters, so mushroom chambers glow.
+  function applyUndergroundBiomeDressing(arr,cx){
+    const WG=MM.worldGen; if(!WG || !WG.column) return;
+    for(let lx=0; lx<CHUNK_W; lx++){
+      const wx=cx*CHUNK_W+lx;
+      const col=WG.column(wx);
+      if(col.volcano) continue;
+      const biome=col.biome;
+      const icy=biome===2, shroomy=(biome===0 || biome===4);
+      if(!icy && !shroomy) continue;
+      const s=col.row;
+      const at=(dlx,y)=>{ const x=lx+dlx; return (x>=0&&x<CHUNK_W&&y>=0&&y<WORLD_H) ? arr[tileIndex(x,y)] : -1; };
+      if(icy){
+        const y0=Math.max(0,s+3), y1=Math.min(WORLD_H-2,s+26);
+        for(let y=y0;y<=y1;y++){
+          const i=tileIndex(lx,y);
+          if(arr[i]===T.STONE){
+            if((at(-1,y)===T.AIR||at(1,y)===T.AIR||at(0,y-1)===T.AIR||at(0,y+1)===T.AIR) && WG.randSeed(wx*12.9898+y*78.233)<0.75) arr[i]=T.ICE;
+          } else if(arr[i]===T.AIR && at(0,y+1)===T.AIR){
+            const above=at(0,y-1);
+            if((above===T.ICE||above===T.STONE||above===T.SNOW) && WG.randSeed(wx*3.7717+y*41.117)<0.08) arr[i]=T.ICE; // hanging icicle
+          }
+        }
+      } else {
+        const y0=Math.max(0,s+6), y1=Math.min(WORLD_H-2,s+40);
+        for(let y=y0;y<=y1;y++){
+          const i=tileIndex(lx,y);
+          if(arr[i]!==T.AIR || at(0,y-1)!==T.AIR) continue; // needs floor headroom
+          const floor=at(0,y+1);
+          if(floor!==T.STONE && floor!==T.GRANITE && floor!==T.BASALT && floor!==T.DIRT && floor!==T.MUD && floor!==T.CLAY) continue;
+          if(WG.randSeed(wx*9.1131+y*57.719)<0.14) arr[i]=T.GLOWSHROOM;
+        }
+      }
+    }
   }
 
   // --- Procedural structures: rare deterministic ruins (land) and shipwrecks

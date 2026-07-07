@@ -30,8 +30,12 @@ w README.
 ## Tier 2 — następne w kolejce
 4. **Konfiguracja klawiszy + ekran tytułowy/pauzy z ustawieniami** (głośność,
    minimapa, język). Fundament pod i18n (PL/EN).
-5. **Podziemne biomy** — jaskinie lodowe / grzybowe komory (warianty caveAt
-   per biom, nowe rośliny grzybowe przez rejestr PLANTS).
+5. ~~**Podziemne biomy**~~ ✅ done — `world.js applyUndergroundBiomeDressing`
+   (pass addytywny przed miastami/ruinami, czysty per-komórka): biom śnieżny
+   szroni ściany jaskiń w LÓD (tylko STONE — warstwy granitu/bazaltu/węgla
+   nietknięte) + sople; lasy/bagna dostają ŚWIECĄCE GRZYBY (kafel 75, emiter
+   światła 9 → komory jarzą się w mroku, zbiór → zupa grzybowa +25 HP).
+   Test `npm run test:underground-biomes`.
 6. ~~**Boss przyzywany rytuałem na arenę**~~ ✅ done — `engine/altar.js` +
    struktura w `world.js placeStructures` (~1,4% chunków): obsydianowy Ołtarz
    Przyzwania z pochodniami (żarzy się w mroku przez lighting), klik z ofiarą
@@ -45,8 +49,9 @@ w README.
    test:fishing`, QA `node tools/fishing-qa.mjs`.
 
 ## Tier 3 — horyzont
-8. **Pory roku** — temperatura już steruje biomami; sezonowy offset zmienia
-   śnieg/roślinność/zachowanie mobów.
+8. ~~**Pory roku**~~ ✅ done — `engine/seasons.js`: pełny cykl wiosna/lato/
+   jesień/zima (jesienne liście, sezonowe zwierzęta-okazy z trofeami,
+   mnożniki spawnów, zimowe zamarzanie), test `npm run test:seasons`.
 9. **Tryb hardcore** (nagrobek = pełny drop, jedno życie) i **tryb kreatywny**
    (obecny god mode rozszerzony o paletę wszystkich kafli).
 10. **Współdzielenie świata** — eksport/import zapisu już istnieje; dodać

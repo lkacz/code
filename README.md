@@ -134,6 +134,14 @@ reversed damage → mutual fall → epilogue, snapshot/restore) and
   whose gain follows the weather. 🔊 menu button mutes; volume persists.
 * **Torches** (tile 16): crafted light sources; the fire.js viewport pass draws their
   flame and a radial glow that strengthens after dark.
+* **Underground biomes** (`world.js applyUndergroundBiomeDressing`): caves inherit
+  their surface biome's character via an additive dressing pass (runs before
+  cities/structures/ruins, pure per-cell from the world seed). Snow-biome caves
+  frost over — cave-adjacent STONE turns to ICE (granite/basalt/coal strata stay
+  untouched) and ceilings grow icicles; forest and swamp caverns sprout
+  **glowshrooms** (tile 75): bioluminescent lighting emitters that make mushroom
+  chambers glow in the dark, quick-harvest into a resource, and cook into
+  mushroom soup (+25 HP). Deterministic tests: `npm run test:underground-biomes`.
 * **Cave lighting** (`engine/lighting.js`): a windowed integer light field (0..15) —
   per-column skylight scan (roofs stop it, water/leaves attenuate) plus a bucket-queue
   BFS from emitters (torch 13, lava/fire 12, chests glow faintly); solid cells receive
