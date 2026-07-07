@@ -161,4 +161,16 @@ assert.equal(lighting.lightAt(0,0), 0, 'lightAt is safe before the first ensure'
 assert.equal(lighting.darkAlphaAt(0,0), 0, 'darkAlphaAt is safe before the first ensure');
 lighting.onTileChanged(0,0);
 
+// 16) pause-panel settings contract (source shape, like debug-settings-sim):
+// the lighting toggle must persist and be restored at boot
+{
+  const { readFileSync } = await import('node:fs');
+  const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+  assert.match(mainSrc, /const LIGHTING_OFF_KEY='mm_lighting_off_v1'/, 'lighting toggle uses one stable localStorage key');
+  assert.match(mainSrc, /localStorage\.getItem\(LIGHTING_OFF_KEY\)==='1'\) LIGHTING\.config\.enabled=false/, 'boot restores a persisted lighting-off choice');
+  assert.match(mainSrc, /localStorage\.setItem\(LIGHTING_OFF_KEY, light\.checked\?'0':'1'\)/, 'the pause panel persists the lighting toggle');
+  assert.match(mainSrc, /function setPaused\(v\)/, 'pause state flows through one setter (panel + B key)');
+  assert.match(mainSrc, /const MINIMAP_OFF_KEY='mm_minimap_off_v1'/, 'minimap toggle uses one stable localStorage key');
+}
+
 console.log('lighting-sim: all assertions passed');

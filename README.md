@@ -176,7 +176,10 @@ reversed damage → mutual fall → epilogue, snapshot/restore) and
 * **Death stakes**: all death paths route through `window.heroDied` — half of every
   resource is left in a GRAVE tile at the death spot; click it to recover the loss.
 * **QoL**: surface **minimap** (N) rebuilt twice a second from worldgen columns,
-  **pause** (B, simulation freezes while the scene keeps rendering), respawn totem.
+  respawn totem, and a **pause & settings panel** (B): the simulation freezes under
+  a dimmed scene while a card offers resume, a live volume slider + mute, and
+  persisted minimap / cave-lighting toggles (restored at boot; contract pinned in
+  `npm run test:lighting`). Esc or B resumes.
 * **Structures** (`world.js placeStructures`): ~10% of chunks deterministically roll a
   ruined stone gateway with a rare/epic chest (flat land) or a wooden **shipwreck** with
   an epic chest resting on the sea floor. ~14% of the land rolls become a **Summoning

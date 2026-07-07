@@ -321,6 +321,17 @@
   #traderPanel .tradeRow button:disabled{ opacity:.38; cursor:default; }
   #traderPanel .tradeFoot{ margin-top:8px; font-size:11px; opacity:.65; }
   @media (max-width:560px){ #traderPanel .tradeCols{ grid-template-columns:1fr; } }
+  /* Pause & settings panel (DOM built by main.js setPaused) */
+  #pausePanel{ position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); z-index:130; width:min(380px,calc(100vw - 24px)); color:#eef4fb; background:rgba(13,17,24,.95); border:1px solid rgba(255,255,255,.16); border-radius:14px; padding:14px; font-size:13px; box-shadow:0 14px 34px rgba(0,0,0,.55); backdrop-filter:blur(10px); pointer-events:auto; }
+  #pausePanel .pauseHead{ display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:10px; }
+  #pausePanel .pauseHead strong{ font-size:16px; }
+  #pausePanel .pauseResume{ background:#2b87c9; color:#fff; border:none; border-radius:8px; padding:6px 12px; font-weight:700; cursor:pointer; }
+  #pausePanel .pauseRow{ display:flex; justify-content:space-between; align-items:center; gap:10px; padding:7px 2px; }
+  #pausePanel .pauseRow + .pauseRow{ border-top:1px dashed rgba(255,255,255,.07); }
+  #pausePanel .pauseRow input[type=range]{ width:150px; }
+  #pausePanel .pauseRow input[type=checkbox]{ width:17px; height:17px; }
+  #pausePanel .pauseRow button{ background:rgba(255,255,255,.1); color:#eef4fb; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:5px 10px; cursor:pointer; }
+  #pausePanel .pauseFoot{ margin-top:10px; font-size:11px; opacity:.6; }
   </style>
 </head>
 <body>

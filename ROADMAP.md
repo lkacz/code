@@ -28,8 +28,10 @@ w README.
    test `npm run test:lighting`, QA `node tools/lighting-trader-qa.mjs`.
 
 ## Tier 2 — następne w kolejce
-4. **Konfiguracja klawiszy + ekran tytułowy/pauzy z ustawieniami** (głośność,
-   minimapa, język). Fundament pod i18n (PL/EN).
+4. **Konfiguracja klawiszy + ekran tytułowy z ustawieniami** — ✅ częściowo:
+   ekran pauzy (B) z ustawieniami jest (głośność/wyciszenie, minimapa,
+   oświetlenie jaskiń — persystowane, kontrakt w `test:lighting`). Zostaje:
+   rebinding klawiszy, ekran tytułowy, i18n (PL/EN).
 5. ~~**Podziemne biomy**~~ ✅ done — `world.js applyUndergroundBiomeDressing`
    (pass addytywny przed miastami/ruinami, czysty per-komórka): biom śnieżny
    szroni ściany jaskiń w LÓD (tylko STONE — warstwy granitu/bazaltu/węgla

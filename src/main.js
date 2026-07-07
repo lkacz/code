@@ -5114,6 +5114,79 @@ let backgroundBuildMode=false;
 let fireBtnHeld=false; // declared with the other input state — the blur handler below references it
 let paused=false;      // B toggles; the loop keeps drawing but freezes the simulation
 let showMinimap=true;  // N toggles the cross-section minimap
+// Player-facing settings persistence (the pause panel writes these; boot restores)
+const LIGHTING_OFF_KEY='mm_lighting_off_v1';
+const MINIMAP_OFF_KEY='mm_minimap_off_v1';
+try{ if(LIGHTING && localStorage.getItem(LIGHTING_OFF_KEY)==='1') LIGHTING.config.enabled=false; }catch(e){}
+try{ if(localStorage.getItem(MINIMAP_OFF_KEY)==='1') showMinimap=false; }catch(e){}
+// Pause panel: B freezes the simulation and raises a settings card — resume,
+// volume, minimap, cave lighting, help. DOM is built lazily on first pause.
+let pausePanel=null;
+function pausePanelVisible(){ return !!(pausePanel && !pausePanel.hidden); }
+function buildPauseRow(labelText){
+	const row=document.createElement('div'); row.className='pauseRow';
+	const label=document.createElement('span'); label.textContent=labelText; row.appendChild(label);
+	return row;
+}
+function ensurePausePanel(){
+	if(pausePanel) return pausePanel;
+	pausePanel=document.createElement('div'); pausePanel.id='pausePanel'; pausePanel.hidden=true;
+	const head=document.createElement('div'); head.className='pauseHead';
+	const title=document.createElement('strong'); title.textContent='⏸ Pauza';
+	const resume=document.createElement('button'); resume.type='button'; resume.className='pauseResume'; resume.textContent='▶ Wznów (B)';
+	resume.addEventListener('click',()=>setPaused(false));
+	head.appendChild(title); head.appendChild(resume); pausePanel.appendChild(head);
+	// volume slider rides the persisted WebAudio master gain
+	const volRow=buildPauseRow('🔊 Głośność');
+	const vol=document.createElement('input'); vol.type='range'; vol.min='0'; vol.max='100'; vol.step='5';
+	vol.value=String(Math.round(((MM.audio && MM.audio.getVolume)?MM.audio.getVolume():0.8)*100));
+	vol.addEventListener('input',()=>{ if(MM.audio && MM.audio.setVolume) MM.audio.setVolume((+vol.value)/100); });
+	volRow.appendChild(vol); pausePanel.appendChild(volRow);
+	const muteRow=buildPauseRow('🔇 Wycisz dźwięk');
+	const mute=document.createElement('input'); mute.type='checkbox';
+	mute.checked=!!(MM.audio && MM.audio.isMuted && MM.audio.isMuted());
+	mute.addEventListener('change',()=>{ if(MM.audio && MM.audio.setMute) MM.audio.setMute(mute.checked); });
+	muteRow.appendChild(mute); pausePanel.appendChild(muteRow);
+	const mapRow=buildPauseRow('🗺️ Minimapa (N)');
+	const map=document.createElement('input'); map.type='checkbox'; map.checked=showMinimap;
+	map.addEventListener('change',()=>{ showMinimap=map.checked; try{ localStorage.setItem(MINIMAP_OFF_KEY, showMinimap?'0':'1'); }catch(e){} });
+	mapRow.appendChild(map); pausePanel.appendChild(mapRow);
+	const lightRow=buildPauseRow('💡 Oświetlenie jaskiń');
+	const light=document.createElement('input'); light.type='checkbox'; light.checked=!!(LIGHTING && LIGHTING.config && LIGHTING.config.enabled);
+	light.addEventListener('change',()=>{ if(LIGHTING && LIGHTING.config) LIGHTING.config.enabled=light.checked; try{ localStorage.setItem(LIGHTING_OFF_KEY, light.checked?'0':'1'); }catch(e){} });
+	lightRow.appendChild(light); pausePanel.appendChild(lightRow);
+	const helpRow=buildPauseRow('❔ Sterowanie i porady');
+	const help=document.createElement('button'); help.type='button'; help.textContent='Pomoc (H)';
+	help.addEventListener('click',()=>{ setPaused(false); try{ toggleHelp(); }catch(e){} });
+	helpRow.appendChild(help); pausePanel.appendChild(helpRow);
+	const foot=document.createElement('div'); foot.className='pauseFoot';
+	foot.textContent='Świat stoi w miejscu, dopóki panel jest otwarty.';
+	pausePanel.appendChild(foot);
+	(document.getElementById('ui')||document.body).appendChild(pausePanel);
+	return pausePanel;
+}
+function pauseTrapKeydown(e){
+	if(!pausePanelVisible()) return;
+	if(e.key==='Escape'){ e.preventDefault(); e.stopImmediatePropagation(); setPaused(false); }
+}
+function setPaused(v){
+	paused=!!v;
+	const panel=ensurePausePanel();
+	if(paused){
+		// refresh live values each open (N/H/menu may have changed them meanwhile)
+		panel.querySelectorAll('.pauseRow input[type=checkbox]').forEach(chk=>{
+			const label=chk.parentElement && chk.parentElement.firstChild ? chk.parentElement.firstChild.textContent : '';
+			if(label.includes('Minimapa')) chk.checked=showMinimap;
+			else if(label.includes('Oświetlenie')) chk.checked=!!(LIGHTING && LIGHTING.config && LIGHTING.config.enabled);
+			else if(label.includes('Wycisz')) chk.checked=!!(MM.audio && MM.audio.isMuted && MM.audio.isMuted());
+		});
+		panel.hidden=false;
+		window.addEventListener('keydown',pauseTrapKeydown,true);
+	}else{
+		panel.hidden=true;
+		window.removeEventListener('keydown',pauseTrapKeydown,true);
+	}
+}
 const activePointers=new Map(); let pinch=null;
 let minePointerId=null;   // pointer that initiated cursor mining (left button / touch on canvas)
 let weaponPointerId=null; // pointer that is holding normal weapon fire on the canvas
@@ -5586,7 +5659,7 @@ window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if
 	if(k==='x'&&!keysOnce.has('x')){ useCraterScanner(); keysOnce.add('x'); }
 	if(k==='f'&&!keysOnce.has('f')){ if(FISHING && FISHING.onKey) FISHING.onKey(player,getTile); keysOnce.add('f'); }
 	if(k==='o'&&!keysOnce.has('o')){ keysOnce.add('o'); if(VOLCANO && VOLCANO.forceMasterEruption) VOLCANO.forceMasterEruption(); }
-	if(k==='b'&&!keysOnce.has('b')){ paused=!paused; keysOnce.add('b'); }
+	if(k==='b'&&!keysOnce.has('b')){ setPaused(!paused); keysOnce.add('b'); }
 	if(k==='n'&&!keysOnce.has('n')){ showMinimap=!showMinimap; msg('Minimapa '+(showMinimap?'ON':'OFF')); keysOnce.add('n'); }
 	if(['arrowup','arrowdown','w',' '].includes(k)) e.preventDefault(); });
 window.addEventListener('keyup',e=>{ if(modalInputOpen()){ releaseGameplayInput(); return; } noteSaveActivity(); const k=e.key.toLowerCase(); const code=(e.code||'').toLowerCase(); keys[k]=false; if(code) keys[code]=false; keysOnce.delete(k); });
@@ -10060,9 +10133,11 @@ let lastLoopErrAt=0; function loop(ts){
 		if(paused){
 			ctx.save();
 			ctx.fillStyle='rgba(5,8,14,0.45)'; ctx.fillRect(0,0,W,H);
-			ctx.fillStyle='#fff'; ctx.font='bold 28px system-ui'; ctx.textAlign='center';
-			ctx.fillText('⏸ PAUZA', W/2, H/2-8);
-			ctx.font='13px system-ui'; ctx.fillText('Naciśnij B, aby wznowić', W/2, H/2+18);
+			if(!pausePanelVisible()){
+				ctx.fillStyle='#fff'; ctx.font='bold 28px system-ui'; ctx.textAlign='center';
+				ctx.fillText('⏸ PAUZA', W/2, H/2-8);
+				ctx.font='13px system-ui'; ctx.fillText('Naciśnij B, aby wznowić', W/2, H/2+18);
+			}
 			ctx.restore();
 		}
 		if(MM.ui && MM.ui.setRadarPulsing) MM.ui.setRadarPulsing(ts<radarFlash); updateFps(ts); updateBiomeLabel(); updateStatusHud(ts); if(TASKS && TASKS.updateHud) TASKS.updateHud(player);
