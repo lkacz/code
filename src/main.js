@@ -61,6 +61,8 @@ import { meteorites as METEORITES } from './engine/meteorites.js';
 import { turrets as TURRETS } from './engine/turrets.js';
 import { springPlatforms as SPRING_PLATFORMS } from './engine/spring_platforms.js';
 import { vending as VENDING } from './engine/vending.js';
+import { trader as TRADER } from './engine/trader.js';
+import { lighting as LIGHTING } from './engine/lighting.js';
 import { vitalsHud as VITALS_HUD } from './engine/vitals_hud.js';
 import './engine/ui.js';
 import './inventory_ui.js';
@@ -497,6 +499,7 @@ MM.onTileRenderChanged=function(tx,ty,old,next){
 	if(!Number.isFinite(tx) || !Number.isFinite(ty) || !worldYInBounds(ty)) return;
 	tx=Math.floor(tx); ty=Math.floor(ty);
 	noteTileBuriesHero(tx,ty,next);
+	if(LIGHTING && LIGHTING.onTileChanged) LIGHTING.onTileChanged(tx,ty);
 	const cx=Math.floor(tx/CHUNK_W), sy=worldSectionY(ty);
 	const after=(WORLD && WORLD.chunkVersion) ? WORLD.chunkVersion(cx,sy) : undefined;
 	markChunkRenderDirty(cx,ty,2,Number.isFinite(after)?after-1:undefined,after);
@@ -4997,6 +5000,34 @@ function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk
 	if(VISUAL.animations && GRASS && GRASS.drawOverlays){ GRASS.drawOverlays(ctx,'back', sx,sy,viewX,viewY,TILE,worldMaxY(),getTile,T,zoom,grassDensityScalar,grassHeightScalar,worldFxVisible,worldMinY()); }
 }
 
+// Cave darkness: BFS light field from sky/torches/lava/fire, blitted as one
+// smoothed overlay. Drawn before the ghost preview + fog so mining/placement
+// indicators stay readable and undiscovered black still wins on top.
+function currentDaylight(){
+	try{
+		const ti=(BACKGROUND && BACKGROUND.timeInfo) ? BACKGROUND.timeInfo() : null;
+		if(ti){
+			const tDay=Math.max(0,Math.min(1,ti.tDay));
+			// day: solar arc; night: faint moonlight arc so surface never goes void-black
+			return ti.isDay ? Math.max(0,Math.sin(tDay*Math.PI)) : 0.10*Math.sin(tDay*Math.PI);
+		}
+	}catch(e){}
+	return 1;
+}
+function drawLightingOverlay(sx,sy,viewX,viewY,opts){
+	if(!(LIGHTING && LIGHTING.draw)) return;
+	const localLayer=beginPrecisionSafeWorldLayer(opts);
+	LIGHTING.draw(ctx, TILE, sx, sy, viewX, viewY, {
+		originX: localLayer ? opts.camX : 0,
+		originY: localLayer ? opts.camY : 0,
+		getTile,
+		surfaceHeight: (WORLDGEN && WORLDGEN.surfaceHeight) ? WORLDGEN.surfaceHeight : null,
+		daylight: currentDaylight(),
+		hero: player,
+		burningAt: (FIRE && FIRE.isBurning) ? FIRE.isBurning : null
+	});
+	if(localLayer) ctx.restore();
+}
 function drawFogOverlay(sx,sy,viewX,viewY,opts){
 	if(FOG && FOG.applyOverlay){
 		const localLayer=beginPrecisionSafeWorldLayer(opts);
@@ -7481,6 +7512,9 @@ function draw(){ // Background first
  if(TURRETS && TURRETS.draw) TURRETS.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getTile);
  if(SPRING_PLATFORMS && SPRING_PLATFORMS.draw) SPRING_PLATFORMS.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getElectricNetworkTile);
  if(VENDING && VENDING.draw) VENDING.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getTile,{dynamo:DYNAMO,solar:SOLAR,teleporters:TELEPORTERS,getElectricNetworkTile,gameDayFloat:currentGameDayFloat});
+ // Cave darkness overlay: darkens unlit underground before UI-ish indicators,
+ // so the ghost preview, mining progress and fog (final occlusion) stay on top.
+ drawLightingOverlay(sx,sy,viewX,viewY,{camX:camRenderX,camY:camRenderY,shake:meteorShake});
  // Ghost block preview — recomputed each frame so camera motion can't leave it stale.
  // Green = placement allowed right now; red = blocked (reach/support/no blocks).
  if(isToolMode() && lastPointer.has && !pinch && !mining){
@@ -7934,6 +7968,93 @@ function updateInventory(opts){
 window.updateInventoryHud = updateInventory;
 const tutorialNpcCtx = {damageHero:window.damageHero, onInventoryChange:updateInventory, onChange:saveState, worldGen:WORLDGEN, gameDayFloat:()=>{ const m=(SEASONS && SEASONS.metrics) ? SEASONS.metrics() : null; return m && Number.isFinite(Number(m.dayFloat)) ? Number(m.dayFloat) : 1; }};
 if(NPCS && NPCS.setContext) NPCS.setContext(tutorialNpcCtx);
+// Wandering trader panel: DOM host for engine/trader.js. The module opens it
+// via the npc_system click dispatch and closes it on departure / walking away.
+(function(){
+	if(!TRADER || !TRADER.setOpenHandler) return;
+	let panel=null;
+	const tradeCtx={
+		inv, player,
+		addBuff:(b)=>{ if(MM.progress && MM.progress.addBuff) MM.progress.addBuff(b); },
+		getTile, setTile,
+		notifyTileChanged:notifyStructureTileChanged,
+		onInventoryChange:()=>{ updateInventory(); updateHotbarCounts(); renderPanel(); },
+		onChange:saveState,
+		worldGen:WORLDGEN
+	};
+	function ensurePanel(){
+		if(panel) return panel;
+		panel=document.createElement('div'); panel.id='traderPanel'; panel.hidden=true;
+		(document.getElementById('ui')||document.body).appendChild(panel);
+		return panel;
+	}
+	function tradeRow(entry,kind){
+		const row=document.createElement('div'); row.className='tradeRow';
+		const name=document.createElement('span'); name.className='tName'; name.textContent=entry.icon+' '+entry.label; name.title=entry.label;
+		const price=document.createElement('span'); price.className='tPrice';
+		const btn=document.createElement('button'); btn.type='button';
+		if(kind==='buy'){
+			price.textContent=entry.cost+' 💎';
+			btn.textContent='Kup';
+			btn.disabled=(inv.diamond|0)<entry.cost;
+			btn.addEventListener('click',()=>{ const r=TRADER.tradeBuy(entry.id,tradeCtx); if(!r.ok && r.reason) msg('🧺 '+r.reason); renderPanel(); });
+		}else{
+			const needKey=Object.keys(entry.take)[0];
+			const needAmount=entry.take[needKey];
+			price.textContent='+'+entry.pay+' 💎';
+			btn.textContent='Sprzedaj';
+			btn.disabled=(inv[needKey]|0)<needAmount;
+			btn.addEventListener('click',()=>{ const r=TRADER.tradeSell(entry.id,tradeCtx); if(!r.ok && r.reason) msg('🧺 '+r.reason); renderPanel(); });
+		}
+		row.appendChild(name); row.appendChild(price); row.appendChild(btn);
+		return row;
+	}
+	function renderPanel(){
+		if(!panel || panel.hidden) return;
+		const stock=TRADER.stock();
+		if(!stock){ closePanel(); return; }
+		panel.innerHTML='';
+		const head=document.createElement('div'); head.className='tradeHead';
+		const title=document.createElement('strong'); title.textContent='🧺 Wędrowny Handlarz';
+		const wallet=document.createElement('span'); wallet.className='tradeWallet'; wallet.textContent='💎 × '+(inv.diamond|0);
+		const close=document.createElement('button'); close.className='tradeClose'; close.type='button'; close.textContent='✕'; close.title='Zamknij (Esc)';
+		close.addEventListener('click',closePanel);
+		head.appendChild(title); head.appendChild(wallet); head.appendChild(close);
+		panel.appendChild(head);
+		const cols=document.createElement('div'); cols.className='tradeCols';
+		const buySec=document.createElement('div'); buySec.className='tradeSection';
+		const buyTitle=document.createElement('b'); buyTitle.textContent='Na sprzedaż'; buySec.appendChild(buyTitle);
+		stock.offers.forEach(o=>buySec.appendChild(tradeRow(o,'buy')));
+		const sellSec=document.createElement('div'); sellSec.className='tradeSection';
+		const sellTitle=document.createElement('b'); sellTitle.textContent='Skupuję'; sellSec.appendChild(sellTitle);
+		stock.rates.forEach(r=>sellSec.appendChild(tradeRow(r,'sell')));
+		cols.appendChild(buySec); cols.appendChild(sellSec);
+		panel.appendChild(cols);
+		const foot=document.createElement('div'); foot.className='tradeFoot';
+		foot.textContent='Kram zwija się po pół dnia. Asortyment zmienia się z każdą wizytą.';
+		panel.appendChild(foot);
+	}
+	function trapKeydown(e){
+		if(!panel || panel.hidden) return;
+		if(e.key==='Escape'){ e.preventDefault(); e.stopImmediatePropagation(); closePanel(); }
+	}
+	function openPanel(){
+		ensurePanel();
+		if(!panel.hidden){ renderPanel(); return; }
+		panel.hidden=false;
+		renderPanel();
+		if(MM.modalInput && MM.modalInput.push) MM.modalInput.push('trader');
+		window.addEventListener('keydown',trapKeydown,true);
+	}
+	function closePanel(){
+		if(!panel || panel.hidden) return;
+		panel.hidden=true;
+		if(MM.modalInput && MM.modalInput.pop) MM.modalInput.pop('trader');
+		window.removeEventListener('keydown',trapKeydown,true);
+	}
+	TRADER.setOpenHandler(openPanel);
+	TRADER.setCloseHandler(closePanel);
+})();
 buildCraftPanel();
 // Menu / przyciski
 document.getElementById('mapBtn')?.addEventListener('click',toggleMap);

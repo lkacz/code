@@ -13,19 +13,21 @@ zadającego; zwycięstwo przez przyjęcie ciosu) → epilog. Cele zawsze diegety
 (story_progression.js: beaty świata + zadania ze wskaźnikami), patrz „Story Arc"
 w README.
 
-## Tier 1 — następne w kolejce
-1. **Tylna warstwa bloków (backwall)** — umożliwia budowę domów z wnętrzem.
-   Wymaga: drugiej tablicy na chunk (format zapisu v6 + migracja), pasa
-   renderowania za bytami, trybu stawiania (np. Shift+PPM), zbierania.
-   Największy pojedynczy zysk dla ekspresji budowania.
-2. **Handlarz NPC** — zlew na surowce i cel dla diamentów: wędrowny kramarz
-   (spawn jak struktura/moby), UI wymiany (kupno mikstur/skrzyń/pochodni za
-   diamenty), waluta = diament. Daje gospodarce domknięcie.
-3. **Oświetlenie jaskiń** — prosty grid światła (BFS od pochodni/lawy/powierzchni,
-   promień ~8) zaciemniający niewidoczne podziemia zamiast obecnego backdropu;
-   pochodnie zyskują funkcję, PEŁZACZE czają się w mroku.
+## Tier 1 — ✅ ukończone
+1. ~~**Tylna warstwa bloków (backwall)**~~ ✅ done — warstwa `constructionBackground`
+   (tryb budowy tła, ghost preview, zapis + tombstony nad generowanym tłem miast).
+2. ~~**Handlarz NPC**~~ ✅ done — `engine/trader.js`: wędrowny kramarz co 2–3 dni
+   (kram z markizą na powierzchni), UI wymiany w main.js (kupno pochodni/mikstur/
+   strzał/skrzyni epickiej, skup surowców), waluta = diament, asortyment losowany
+   per wizyta (seed świata), kontrakt anty-arbitrażowy przypięty testem
+   `npm run test:trader`; persystencja przez rejestr NPC.
+3. ~~**Oświetlenie jaskiń**~~ ✅ done — `engine/lighting.js`: okienkowy grid światła
+   0..15 (skylight skan kolumnowy + BFS od pochodni/lawy/ognia/skrzyń, ściany
+   światłoszczelne), overlay 1px/kafel blitowany z wygładzaniem; pochodnie mają
+   realną funkcję, PEŁZACZE spawnują tylko w mroku (`lightAt > 0.25` blokuje);
+   test `npm run test:lighting`, QA `node tools/lighting-trader-qa.mjs`.
 
-## Tier 2 — wkrótce potem
+## Tier 2 — następne w kolejce
 4. **Konfiguracja klawiszy + ekran tytułowy/pauzy z ustawieniami** (głośność,
    minimapa, język). Fundament pod i18n (PL/EN).
 5. **Podziemne biomy** — jaskinie lodowe / grzybowe komory (warianty caveAt

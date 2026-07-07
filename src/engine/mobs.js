@@ -926,6 +926,8 @@ const mobs = (function(){
     spawnTest(x,y,getTile){
       const here=getTile(x,y); if(here!==T.AIR) return false;
       const below=getTile(x,y+1); if(!(isRockFloor(below)||below===T.SAND)) return false;
+      // crawlers are creatures of the dark: torch-lit galleries stay safe
+      try{ const light=MM.lighting; if(light && light.lightAt && light.lightAt(x,y)>0.25) return false; }catch(e){}
       try{ const wg=MM.worldGen; if(wg && wg.surfaceHeight) return y>wg.surfaceHeight(x)+10; }catch(e){} // caves only
       return false;
     },

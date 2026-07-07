@@ -134,6 +134,27 @@ reversed damage → mutual fall → epilogue, snapshot/restore) and
   whose gain follows the weather. 🔊 menu button mutes; volume persists.
 * **Torches** (tile 16): crafted light sources; the fire.js viewport pass draws their
   flame and a radial glow that strengthens after dark.
+* **Cave lighting** (`engine/lighting.js`): a windowed integer light field (0..15) —
+  per-column skylight scan (roofs stop it, water/leaves attenuate) plus a bucket-queue
+  BFS from emitters (torch 13, lava/fire 12, chests glow faintly); solid cells receive
+  light for face rendering but never propagate it, so walls are light-tight. Unlit
+  underground darkens under a smooth 1px-per-tile overlay (drawn before the ghost
+  preview and fog, which stays the final occlusion); a faint hero glow keeps total
+  darkness navigable. The field recomputes only on tile edits in/above the window,
+  window moves, day-night bucket flips or a 500 ms heartbeat while fires burn.
+  Gameplay seam: `MM.lighting.lightAt(x,y)` — PELZACZE only spawn in the dark
+  (>0.25 blocks), so torch-lit galleries are genuinely safe. Deterministic tests:
+  `npm run test:lighting`; visual QA: `node tools/lighting-trader-qa.mjs`.
+* **Wandering trader** (`engine/trader.js`): the economy's closing loop. Every 2–3
+  game days a hooded merchant pitches a striped-canopy stall on the surface near the
+  player for about half a day (announced with a direction hint; a 💎 floats over the
+  stall). Clicking the stall (npc_system click dispatch) opens a trade panel: he
+  sells torches/arrows/materials/potions and one epic chest (5💎, plopped down as a
+  real tile beside the stall), and buys surplus resources for diamonds. Stock is
+  seeded per visit; prices obey a test-pinned anti-arbitrage contract (sell price
+  per unit > buy-back rate). State persists through the npcs save part; a buried
+  stall departs gracefully, a mined floor drops it one tile. Tests:
+  `npm run test:trader`.
 * **Night hostiles**: GHOUL (shambling, tough) and BAT (erratic flyer) spawn only after
   dark, are inherently aggressive, and **catch fire at sunrise**.
 * **Death stakes**: all death paths route through `window.heroDied` — half of every
