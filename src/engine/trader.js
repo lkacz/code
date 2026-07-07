@@ -1,5 +1,6 @@
 // Wandering trader ("Wędrowny Handlarz"): the economy's closing loop — a sink
-// for surplus resources and the first real purpose for diamonds as currency.
+// for surplus resources. Diamonds are the everyday tender; iridium is the
+// ultimate currency for the stall's premium stock.
 // Every ~2-3 game days he pitches a small canopy stall on the surface near the
 // player, stays for about half a day, and moves on. Clicking the stall (via
 // the npc_system click-to-talk dispatch) opens the trade panel hosted by
@@ -9,7 +10,7 @@
 //
 // Anti-arbitrage contract, pinned by tools/trader-sim.test.mjs: for any
 // resource both sold and bought, the trader's sell price per unit is strictly
-// higher than his buy-back rate, so no buy→sell cycle mints diamonds.
+// higher than his diamond buy-back rate, so no buy→sell cycle mints diamonds.
 import { T } from '../constants.js';
 import { npcRegistry } from './npc_system.js';
 import { isSolidCollisionTile as isSolid } from './material_physics.js';
@@ -25,21 +26,26 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
   const OFFER_COUNT = 4;         // seeded goods per visit (epic chest always joins)
   const RATE_COUNT = 3;          // seeded buy-back rates per visit
   const TALK_REACH = 4;          // tiles: how close the hero must be to trade
+  const CURRENCIES = {
+    diamond:{icon:'💎', name:'diamentów'},
+    iridium:{icon:'Ir', name:'irydu'}
+  };
 
-  // Goods the trader sells (cost in diamonds). `give` grants resources,
+  // Goods the trader sells. `cost` is explicit by resource so premium goods can
+  // use iridium while everyday supplies stay in diamonds. `give` grants resources,
   // `effect` runs a scripted payoff. Keep ids stable — they persist in saves.
   const GOODS = [
-    {id:'torches',  label:'Pochodnie ×6',              icon:'🔥', cost:1, give:{torch:6}},
-    {id:'wood',     label:'Drewno ×10',                icon:'🪵', cost:1, give:{wood:10}},
-    {id:'arrows',   label:'Strzały drewniane ×20',     icon:'🏹', cost:1, give:{arrowWood:20}},
-    {id:'glass',    label:'Szkło ×4',                  icon:'🧊', cost:1, give:{glass:4}},
-    {id:'steel',    label:'Stal ×3',                   icon:'⚙️', cost:2, give:{steel:3}},
-    {id:'obsidian', label:'Obsydian ×2',               icon:'🟣', cost:2, give:{obsidian:2}},
-    {id:'heal',     label:'Eliksir życia (+40 HP)',    icon:'🧪', cost:1, effect:'heal'},
-    {id:'speed',    label:'Mikstura szybkości (60 s)', icon:'💨', cost:1, effect:'speed'},
-    {id:'strength', label:'Mikstura siły (60 s)',      icon:'💪', cost:2, effect:'strength'}
+    {id:'torches',  label:'Pochodnie ×6',              icon:'🔥', cost:{diamond:1}, give:{torch:6}},
+    {id:'wood',     label:'Drewno ×10',                icon:'🪵', cost:{diamond:1}, give:{wood:10}},
+    {id:'arrows',   label:'Strzały drewniane ×20',     icon:'🏹', cost:{diamond:1}, give:{arrowWood:20}},
+    {id:'glass',    label:'Szkło ×4',                  icon:'🧊', cost:{diamond:1}, give:{glass:4}},
+    {id:'steel',    label:'Stal ×3',                   icon:'⚙️', cost:{iridium:1}, give:{steel:3}},
+    {id:'obsidian', label:'Obsydian ×2',               icon:'🟣', cost:{iridium:1}, give:{obsidian:2}},
+    {id:'heal',     label:'Eliksir życia (+40 HP)',    icon:'🧪', cost:{diamond:1}, effect:'heal'},
+    {id:'speed',    label:'Mikstura szybkości (60 s)', icon:'💨', cost:{diamond:1}, effect:'speed'},
+    {id:'strength', label:'Mikstura siły (60 s)',      icon:'💪', cost:{iridium:1}, effect:'strength'}
   ];
-  const EPIC_CHEST = {id:'chest', label:'Skrzynia handlarza (epicka)', icon:'🎁', cost:5, effect:'epicChest'};
+  const EPIC_CHEST = {id:'chest', label:'Skrzynia handlarza (epicka)', icon:'🎁', cost:{iridium:2}, effect:'epicChest'};
   // Buy-back rates (trader pays diamonds). Per-unit value must stay below the
   // sell side (see contract above): e.g. wood sells 10/💎, buys back 15/💎.
   const RATES = [
@@ -55,7 +61,7 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
 
   const GREETINGS = [
     'Świeży towar prosto z innych warstw symulacji!',
-    'Diamenty to jedyna waluta, której symulacja nie podrabia.',
+    'Diamenty są na drobiazgi. Iryd otwiera półkę z cudami.',
     'Kupuję wszystko, czego masz za dużo. Sprzedaję to, czego ci brak.',
     'Kram czynny do zmroku. Albo do najbliższej inwazji.'
   ];
@@ -149,7 +155,7 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
     S.leaveDay = day + VISIT_LENGTH;
     S.greeted = false;
     const dirWord = S.x > player.x ? 'na wschodzie ➡' : '⬅ na zachodzie';
-    say('🧺 Wędrowny handlarz rozbił kram '+dirWord+'! Diamenty mile widziane.');
+    say('🧺 Wędrowny handlarz rozbił kram '+dirWord+'! Diamenty na zapasy, iryd na rarytasy.');
     playSound('chest');
     if(ctx && ctx.onChange){ try{ ctx.onChange(); }catch(e){} }
     return true;
@@ -206,20 +212,59 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
   }
 
   function countOf(inv, key){ return (inv && typeof inv[key]==='number') ? (inv[key]|0) : 0; }
+  function normalizeCost(cost){
+    if(typeof cost==='number') return cost>0 ? {diamond:cost|0} : {};
+    if(!cost || typeof cost!=='object') return {};
+    const out={};
+    Object.keys(cost).forEach(k=>{
+      const n = Math.floor(Number(cost[k]));
+      if(n>0) out[k]=n;
+    });
+    return out;
+  }
+  function costEntries(cost){ return Object.entries(normalizeCost(cost)); }
+  function formatResourceAmount(key, amount){
+    const c = CURRENCIES[key] || {icon:key, name:key};
+    return amount+' '+c.icon;
+  }
+  function formatCost(cost){
+    const entries = costEntries(cost);
+    if(!entries.length) return '0';
+    return entries.map(([k,n])=>formatResourceAmount(k,n)).join(' + ');
+  }
+  function canAffordCost(inv, cost){
+    return costEntries(cost).every(([k,n])=>countOf(inv,k)>=n);
+  }
+  function missingCostReason(inv, cost){
+    const missing = costEntries(cost).filter(([k,n])=>countOf(inv,k)<n);
+    if(!missing.length) return '';
+    if(missing.length===1){
+      const [key] = missing[0];
+      const c = CURRENCIES[key] || {name:key};
+      return 'Za mało '+c.name;
+    }
+    return 'Za mało waluty';
+  }
+  function spendCost(inv, cost){
+    if(!canAffordCost(inv,cost)) return false;
+    costEntries(cost).forEach(([k,n])=>{ inv[k]=countOf(inv,k)-n; });
+    return true;
+  }
+  function diamondCost(cost){ return normalizeCost(cost).diamond || 0; }
 
-  // Buy `id` for diamonds. ctx: {inv, player, addBuff, getTile, setTile,
+  // Buy `id` for its explicit cost. ctx: {inv, player, addBuff, getTile, setTile,
   // onInventoryChange, onChange, notifyTileChanged}. Returns {ok, reason}.
   function tradeBuy(id, ctx){
     const offer = S.active && S.stock && S.stock.offers.includes(id) ? offerById(id) : null;
     if(!offer) return {ok:false, reason:'Brak towaru'};
     const inv = (ctx && ctx.inv) || root.inv;
     if(!inv) return {ok:false, reason:'Brak ekwipunku'};
-    if(countOf(inv,'diamond') < offer.cost) return {ok:false, reason:'Za mało diamentów'};
+    if(!canAffordCost(inv,offer.cost)) return {ok:false, reason:missingCostReason(inv,offer.cost)};
     if(offer.effect==='epicChest'){
       const placed = placeChestNearStall(ctx);
       if(!placed) return {ok:false, reason:'Brak miejsca na skrzynię'};
     }
-    inv.diamond -= offer.cost;
+    spendCost(inv,offer.cost);
     if(offer.give){ Object.keys(offer.give).forEach(k=>{ if(typeof inv[k]==='number') inv[k]+=offer.give[k]; else inv[k]=offer.give[k]; }); }
     if(offer.effect==='heal'){
       const p = (ctx && ctx.player) || root.player;
@@ -233,7 +278,7 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
         }catch(e){}
       }
     }
-    say('🧺 Kupiono: '+offer.label+' (−'+offer.cost+' 💎)');
+    say('🧺 Kupiono: '+offer.label+' (−'+formatCost(offer.cost)+')');
     playSound(offer.effect==='heal'||offer.effect==='speed'||offer.effect==='strength' ? 'heal' : 'chest');
     if(ctx && ctx.onInventoryChange){ try{ ctx.onInventoryChange(); }catch(e){} }
     if(ctx && ctx.onChange){ try{ ctx.onChange(); }catch(e){} }
@@ -304,12 +349,12 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
     ctx2d.fillRect(px-TILE*0.24, py-TILE*1.02+bob*0.5, 3, 3);
     ctx2d.fillStyle='#8a6432';
     ctx2d.fillRect(px-TILE*0.78, py-TILE*1.5, 2, TILE*1.5);
-    // floating diamond hint over the stall
+    // floating money hint over the stall
     const tw = Math.sin(S.bob*3)*0.5+0.5;
     ctx2d.globalAlpha = 0.75+0.25*tw;
     ctx2d.font = Math.round(TILE*0.6)+'px system-ui';
     ctx2d.textAlign='center';
-    ctx2d.fillText('💎', px, py-TILE*2.5-bob);
+    ctx2d.fillText(S.bob%4<2 ? '💎' : 'Ir', px, py-TILE*2.5-bob);
     ctx2d.restore();
   }
 
@@ -362,6 +407,8 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
       };
     },
     tradeBuy, tradeSell,
+    formatCost,
+    canAffordOffer: (offer, inv)=>!!offer && canAffordCost(inv,offer.cost),
     setOpenHandler(fn){ openHandler = typeof fn==='function' ? fn : null; },
     setCloseHandler(fn){ closeHandler = typeof fn==='function' ? fn : null; },
     talkReach: ()=>TALK_REACH,
@@ -371,6 +418,7 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
     _goods: ()=>GOODS.slice(),
     _epicChest: ()=>Object.assign({},EPIC_CHEST),
     _rates: ()=>RATES.slice(),
+    _diamondCost: diamondCost,
     forceArrive: (player,getTile,ctx)=>arrive(player,getTile,ctx),
     forceDepart: (ctx)=>depart(ctx)
   };

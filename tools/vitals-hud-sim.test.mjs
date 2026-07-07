@@ -84,7 +84,18 @@ function run(m, input, seconds){
 	assert.equal(dead.hp.low, false, 'dead (0 HP) does not heartbeat');
 }
 
-// --- 6. energy: spend chip, charging flag on regen, full flag at cap
+// --- 6. slow healing: fractional house-heal ticks accumulate into green numbers
+{
+	const m = createVitalsModel();
+	let hp = 70, st = m.update(inp({ hp }), DT);
+	for (let t = 0; t < 1.0; t += DT){ hp += 0.5 * DT; st = m.update(inp({ hp }), DT); }
+	assert.equal(st.deltas.length, 0, 'sub-1 HP slow healing waits instead of flashing +0');
+	for (let t = 0; t < 1.2; t += DT){ hp += 0.5 * DT; st = m.update(inp({ hp }), DT); }
+	assert.equal(st.deltas.length, 1, 'slow house-style healing emits once enough HP is restored');
+	assert.equal(Math.round(st.deltas[0].v), 1, 'slow healing number reports the accumulated restored HP');
+}
+
+// --- 7. energy: spend chip, charging flag on regen, full flag at cap
 {
 	const m = createVitalsModel();
 	m.update(inp({ en: 80 }), DT);
@@ -100,7 +111,7 @@ function run(m, input, seconds){
 	assert.equal(st.en.charging, false, 'steady full energy stops charging');
 }
 
-// --- 7. level-up: burst fires once, XP bar wraps to zero then refills
+// --- 8. level-up: burst fires once, XP bar wraps to zero then refills
 {
 	const m = createVitalsModel();
 	m.update(inp({ level: 10, xpInto: 1300, xpNeed: 1343 }), DT);
@@ -113,7 +124,7 @@ function run(m, input, seconds){
 	assert.ok(Math.abs(st.xp.fill - 0.5) < 0.02, 'XP bar refills toward the new fraction');
 }
 
-// --- 8. buff rings: frac tracks longest seen duration, expiring flag, pruning
+// --- 9. buff rings: frac tracks longest seen duration, expiring flag, pruning
 {
 	const m = createVitalsModel();
 	m.update(inp({ buffs: [{ name: 'Moc', icon: '✦', t: 60 }] }), DT);
@@ -128,7 +139,7 @@ function run(m, input, seconds){
 	assert.ok(Math.abs(st.buffs[0].frac - 1) < 0.01, 're-applied buff gets a fresh ring, not the stale max');
 }
 
-// --- 9. ambient trickle drains must not freeze the chip ghost (survival cold,
+// --- 10. ambient trickle drains must not freeze the chip ghost (survival cold,
 // beam upkeep etc. drain every frame; only discrete hits refresh the hold)
 {
 	const m = createVitalsModel();
@@ -139,7 +150,7 @@ function run(m, input, seconds){
 	assert.ok(st.en.chip - st.en.fill < 0.05, 'ambient energy drain: chip hugs the fill');
 }
 
-// --- 10. degenerate inputs stay finite
+// --- 11. degenerate inputs stay finite
 {
 	const m = createVitalsModel();
 	const st = m.update({ hp: 5, maxHp: 0, en: 3, enMax: 0, level: 1, xpInto: 0, xpNeed: 0, buffs: null }, DT);

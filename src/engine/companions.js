@@ -1715,6 +1715,26 @@ const companions = (function(){
     const below=y+0.05;
     return !passableForCompanion(tileAt(getTile,x-hw,below)) || !passableForCompanion(tileAt(getTile,x+hw,below));
   }
+  function launchCompanionFromSpring(c,getTile){
+    const spring=MM.springPlatforms;
+    if(!spring || typeof spring.launchEntity!=='function') return false;
+    const hw=companionBodyW(c)*0.38;
+    const footY=Math.floor(c.y+0.05);
+    const xs=[c.x-hw,c.x,c.x+hw];
+    for(const px of xs){
+      const tx=Math.floor(px);
+      if(tileAt(getTile,tx,footY)!==T.SPRING_PLATFORM) continue;
+      const launched=spring.launchEntity(c,tx,footY,getTile,{kind:'companion',facing:c.facing});
+      if(launched){
+        c.grounded=false;
+        c.stuckT=0;
+        c.pathJumpCd=Math.max(c.pathJumpCd||0,0.12);
+        return true;
+      }
+      return false;
+    }
+    return false;
+  }
   function navKey(x,y){ return x+','+y; }
   function navNodeFor(x,y){ return {x:Math.floor(x), y:Math.floor(y)}; }
   function navPos(node){ return {x:node.x+0.5, y:node.y+0.96}; }
@@ -3862,7 +3882,11 @@ const companions = (function(){
           }
           c.vx=0;
         }
-        else { if(inc>0) c.grounded=true; c.vy=0; }
+        else {
+          if(inc>0 && launchCompanionFromSpring(c,getTile)) return false;
+          if(inc>0) c.grounded=true;
+          c.vy=0;
+        }
         return false;
       }
     }
@@ -4114,6 +4138,11 @@ const companions = (function(){
   function companionAimY(c){
     return c.y-Math.min(0.72, companionBodyH(c)*0.46);
   }
+  function companionInWater(c,getTile){
+    if(!c || typeof getTile!=='function') return false;
+    const ay=companionAimY(c);
+    return tileAt(getTile,c.x,c.y-0.05)===T.WATER || tileAt(getTile,c.x,ay)===T.WATER || tileAt(getTile,c.x,(c.y+ay)*0.5)===T.WATER;
+  }
   function damageAtWorld(wx,wy,dmg,opts){
     wx=Number(wx); wy=Number(wy);
     if(!Number.isFinite(wx) || !Number.isFinite(wy)) return false;
@@ -4141,6 +4170,7 @@ const companions = (function(){
     for(const c of list){
       if(!enemyTargetable(c)) continue;
       if(opts && opts.excludeGolems && (isClayGolem(c) || isWaterGolem(c) || isMeatGolem(c) || isFriedMeatGolem(c))) continue;
+      if(opts && opts.inWater && !companionInWater(c,opts.getTile)) continue;
       const ax=c.x, ay=companionAimY(c);
       const dx=ax-wx, dy=ay-wy, d2=dx*dx+dy*dy;
       if(d2>bd) continue;

@@ -248,6 +248,9 @@ assert.equal(crushTickDamage(1e6), CRUSH_TUNING.DMG_MAX, 'tick damage is capped'
   assert.match(src, /continue; \/\/ embedded before the move/, 'embedded tiles are excluded from collision snapping');
   assert.match(src, /noteTileBuriesHero\(tx,ty,next\)/, 'world tile changes feed the burial set');
   assert.match(src, /cause:'crushed'/, 'crush damage routes through the central hero damage handler');
+  assert.match(src, /waterStackAboveY\(tileX,headY\)/, 'deep-water pressure is based on the water stack above the hero');
+  assert.match(src, /updateWaterPressure\([\s\S]*?MM\.activeModifiers[\s\S]*?crushResistBonus/, 'deep-water pressure reuses Twardość crushResistBonus');
+  assert.match(src, /cause:'water_pressure'/, 'pressure damage routes through the central hero damage handler');
   assert.match(src, /nearestOpenGraveCell\(gx,gy\)/, 'a buried death still finds a reachable gravestone');
   assert.match(src, /heroPileWeight=measureHeroPile\(\)/, 'resting-entity piles are measured every frame');
   assert.match(src, /heroPileWeight>0 && player\.vy<0/, 'a pile on the hero blocks upward movement');

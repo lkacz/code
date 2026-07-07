@@ -77,6 +77,7 @@ const mobs = (function(){
     FISH: {
   id: 'FISH', max: 24, hp: 4, dmg: 3, speed: 2.2, wanderInterval:[1,4], xp:3,
       sightRange: 14, pursueRange: 20,
+      body:{w:0.9,h:0.45},
       variant:{shift:2, from:'#4eb2f1', to:'#63c6ff'},
       spawnTest(x,y,getTile){ return canHostFishSpawn(x,y,getTile); },
       biome: 'any', aquatic:true,
@@ -84,6 +85,16 @@ const mobs = (function(){
       habitatUpdate(m, spec, getTile, dt){ enforceAquatic(m, spec, getTile, dt); }
     }
   };
+  let nextPiranhaAmbush = 0;
+  const PIRANHA_BAIT_SCAN_MS = 260;
+  const PIRANHA_BAIT_RADIUS = 18;
+  const PIRANHA_BAIT_ZONE_RADIUS = 22;
+  const PIRANHA_BAIT_BROADCAST_RADIUS = 15;
+  const PIRANHA_BAIT_ZONE_CAP = 12;
+  const PIRANHA_PREY_RANGE = 20;
+  const PIRANHA_MEAT_DROP_CHANCE = 0.03;
+  const PIRANHA_IGNORE_PREY = Object.freeze({PIRANHA:true,FISH:true,SHARK:true,EEL:true});
+  const piranhaBaitZones = [];
 
   // Additional biome-aware species
   // Helper biome query (0,1,2) fallback to 1 if missing
@@ -119,10 +130,10 @@ const mobs = (function(){
   const SEASON_ECOLOGY = {
     spring: {
       BIRD:1.28, SQUIRREL:1.35, DEER:1.45, RABBIT:1.55, ZABA:1.25, FISH:1.12,
-      BEAR:0.82, WOLF:0.72, GHOUL:0.82
+      PIRANHA:1.05, BEAR:0.82, WOLF:0.72, GHOUL:0.82
     },
     summer: {
-      FIREFLY:1.55, FISH:1.24, CRAB:1.30, JASZCZUR:1.42, ZABA:1.18, BIRD:1.10,
+      FIREFLY:1.55, FISH:1.24, PIRANHA:1.45, CRAB:1.30, JASZCZUR:1.42, ZABA:1.18, BIRD:1.10,
       WOLF:0.70, OWL:0.82
     },
     autumn: {
@@ -131,7 +142,7 @@ const mobs = (function(){
     },
     winter: {
       WOLF:1.65, GOAT:1.35, OWL:1.20, BEAR:0.72, FISH:0.58, CRAB:0.28,
-      RABBIT:0.34, DEER:0.24, BIRD:0.42, SQUIRREL:0.30, FIREFLY:0.06, ZABA:0.05, JASZCZUR:0.12
+      PIRANHA:0.62, RABBIT:0.34, DEER:0.24, BIRD:0.42, SQUIRREL:0.30, FIREFLY:0.06, ZABA:0.05, JASZCZUR:0.12
     }
   };
   function seasonHallmarkSpeciesId(id){
@@ -329,6 +340,7 @@ const mobs = (function(){
   registerSpecies({ // Deep water predator
   id:'SHARK', max:4, hp:40, dmg:14, speed:3.5, wanderInterval:[2,5], aquatic:true, xp:40,
   sightRange: 26, pursueRange: 34,
+  body:{w:2.4,h:0.7},
   variant:{shift:5, from:'#4d7690', to:'#5c87a2'},
     loot:[{item:'diamond', min:1, max:1, chance:0.15}],
     spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.WATER) return false; for(let d=1; d<=3; d++){ if(getTile(x,y+d)!==T.WATER) return false; } return getTile(x-2,y)===T.WATER && getTile(x+2,y)===T.WATER; },
@@ -339,9 +351,164 @@ const mobs = (function(){
     }
   });
 
+  registerSpecies({ // Sea/ocean horde predator: makes swimming crossings deadly
+    id:'PIRANHA', max:60, localMax:14, spawnBatch:6, spawnChance:0.96,
+    hp:5, dmg:8, speed:11.5, wanderInterval:[0.25,0.75], aquatic:true, strictWater:true, alwaysAggro:true, xp:5,
+    sightRange:24, pursueRange:34, body:{w:0.74,h:0.34},
+    contactInvulMs:260, contactKnockback:1.1, contactKnockbackY:-0.45, contactCause:'piranha',
+    boatDrag:0,
+    biome:'sea',
+    variant:{shift:1, from:'#7b2024', to:'#d33a2f'},
+    meatDropChance:PIRANHA_MEAT_DROP_CHANCE,
+    loot:[{item:'fish', min:1, max:1, chance:0.16}],
+    spawnTest(x,y,getTile){ return canHostPiranhaSpawn(x,y,getTile); },
+    onCreate(m, spec, getTile){
+      initWaterAnchor(m,getTile);
+      m.desiredDepth = Math.min(1, m.desiredDepth||0);
+      m.speedMul = Math.max(m.speedMul||1, 1.05 + Math.random()*0.18);
+      m._frenzy = 0;
+    },
+    habitatUpdate(m, spec, getTile, dt){ enforceAquatic(m, spec, getTile, dt); },
+    onUpdate(m,spec,{player,dt,getTile,setTile,aggressive,speed,now}){
+      const bait=piranhaBaitTarget(m,getTile,setTile,now);
+      if(bait){
+        m._frenzy=0;
+        const dx=bait.x-m.x, dy=bait.y-m.y;
+        const d=Math.hypot(dx,dy)||1;
+        const sp=(speed||spec.speed) * (d>0.95 ? 1.08 : 0.36);
+        if(d>0.72){
+          m.vx += (dx/d)*sp*dt*6.6;
+          m.vy += (dy/d)*sp*dt*4.8;
+          m.facing=dx>=0?1:-1;
+          if(getTile){
+            const col=waterColumnAt(Math.floor(bait.x),Math.floor(bait.y),getTile);
+            if(col) m.desiredDepth=Math.max(0,Math.min(col.depth-1,Math.round(bait.y-col.top)));
+          }
+        } else {
+          m.vx *= 0.78;
+          m.vy *= 0.78;
+          if(Math.random()<0.18){
+            const a=Math.random()*Math.PI*2;
+            m.vx += Math.cos(a)*0.24;
+            m.vy += Math.sin(a)*0.18;
+          }
+          m.shake=Math.max(m.shake||0,0.22);
+        }
+        return;
+      }
+      if(piranhaBoatAvoidance(m,dt,now,speed||spec.speed)) return;
+      const prey=piranhaPreyTarget(m,player,getTile,spec.pursueRange||PIRANHA_PREY_RANGE);
+      if(prey){
+        const point=piranhaTargetPoint(prey);
+        const dx=point.x-m.x, dy=point.y-m.y;
+        const d=Math.hypot(dx,dy)||1;
+        const preyFrenzy=prey.kind!=='hero';
+        if(preyFrenzy) m._frenzy=Math.max(m._frenzy||0,0.8);
+        const sp=(speed||spec.speed) * (preyFrenzy?1.18:1.25);
+        m.vx += (dx/d)*sp*(preyFrenzy?0.92:1.05)*dt*7.5;
+        m.vy += (dy/d)*sp*(preyFrenzy?0.66:0.76)*dt*5.8;
+        m.facing=dx>=0?1:-1;
+        if(getTile){
+          const col=waterColumnAt(Math.floor(m.x),Math.floor(m.y),getTile);
+          if(col){
+            const want=Math.max(0,Math.min(col.depth-1,Math.round((point.y-col.top)-0.1)));
+            m.desiredDepth=Math.min(2,want);
+          }
+        }
+        return;
+      }
+      const protectedHero=heroProtectedByBoat(player);
+      const wetHero=heroInSeaWater(player,getTile);
+      if(wetHero) m._frenzy = Math.max(m._frenzy||0, 1.15);
+      else if(m._frenzy>0) m._frenzy=Math.max(0,m._frenzy-dt);
+      const frenzy = wetHero || (m._frenzy>0);
+      const dx=player.x-m.x, dy=(player.y+0.12)-m.y;
+      const d=Math.hypot(dx,dy)||1;
+      if(!protectedHero && wetHero){
+        const sp=(speed||spec.speed) * (frenzy?1.25:1.0);
+        m.vx += (dx/d)*sp*(frenzy?1.05:0.62)*dt*7.5;
+        m.vy += (dy/d)*sp*(frenzy?0.76:0.46)*dt*5.8;
+        m.facing=dx>=0?1:-1;
+        if(frenzy && getTile){
+          const col=waterColumnAt(Math.floor(m.x),Math.floor(m.y),getTile);
+          if(col){
+            const want=Math.max(0,Math.min(col.depth-1, Math.round((player.y-col.top)-0.1)));
+            m.desiredDepth=Math.min(2,want);
+          }
+        }
+      } else {
+        const mate=nearestSameSpecies(m,5);
+        if(mate){
+          m.vx+=(mate.x-m.x)*0.025;
+          m.vy+=(mate.y-m.y)*0.018;
+        }
+        if(Math.random()<0.035){
+          const ang=Math.random()*Math.PI*2;
+          m.vx += Math.cos(ang)*(speed||spec.speed)*0.22;
+          m.vy += Math.sin(ang)*(speed||spec.speed)*0.12;
+        }
+      }
+    }
+  });
+
+  registerSpecies({ // Atlantis meduza: fast strict-water guardian around ocean-floor cities
+    id:'ATLANTIS_MEDUZA', displayName:'Atlantis meduza',
+    max:18, localMax:5, spawnBatch:2, spawnChance:0.78,
+    hp:28, dmg:12, speed:5.4, wanderInterval:[0.7,1.8], aquatic:true, strictWater:true, alwaysAggro:true, xp:38,
+    sightRange:22, pursueRange:30, body:{w:1.05,h:1.25},
+    contactInvulMs:420, contactKnockback:0.9, contactKnockbackY:-0.18, contactCause:'atlantis_meduza',
+    biome:'sea', piranhaIgnore:true, meat:false,
+    variant:{shift:3, from:'#55d7ff', to:'#c47bff'},
+    loot:[{item:'glowshroom', min:1, max:2, chance:0.58}, {item:'glass', min:1, max:3, chance:0.45}, {item:'iridium', min:1, max:1, chance:0.08}],
+    spawnTest(x,y,getTile){ return canHostAtlantisMeduzaSpawn(x,y,getTile); },
+    onCreate(m, spec, getTile){
+      initWaterAnchor(m,getTile);
+      const col=waterColumnAt(Math.floor(m.x),Math.floor(m.y),getTile);
+      if(col) m.desiredDepth=Math.max(2,Math.min(col.depth-2,3+Math.floor(Math.random()*4)));
+      m.speedMul=Math.max(m.speedMul||1,0.92+Math.random()*0.26);
+      m._meduzaPulse=0;
+    },
+    habitatUpdate(m, spec, getTile, dt){ enforceAquatic(m, spec, getTile, dt); },
+    onUpdate(m,spec,{player,dt,getTile,speed}){
+      const target=player;
+      const targetWet=target && target.kind ? piranhaExternalTargetInWater(target,getTile) : heroInSeaWater(target,getTile);
+      if(targetWet){
+        const point=target.kind ? piranhaTargetPoint(target) : {x:target.x,y:target.y+0.08};
+        const dx=point.x-m.x, dy=point.y-m.y;
+        const d=Math.hypot(dx,dy)||1;
+        const sp=(speed||spec.speed) * (d<2.4 ? 0.85 : 1.12);
+        m.vx += (dx/d)*sp*dt*5.8;
+        m.vy += (dy/d)*sp*dt*4.8;
+        m.facing=dx>=0?1:-1;
+        if(getTile){
+          const col=waterColumnAt(Math.floor(m.x),Math.floor(m.y),getTile);
+          if(col) m.desiredDepth=Math.max(1,Math.min(col.depth-1,Math.round((point.y-col.top)-0.2)));
+        }
+        return;
+      }
+      if(getTile && !nearAtlantisStructure(Math.floor(m.x),Math.floor(m.y),getTile)){
+        const home=nearestAtlantisWaterCell(Math.floor(m.x),Math.floor(m.y),getTile,13,8);
+        if(home){
+          m.vx += (home.x-m.x)*dt*2.8;
+          m.vy += (home.y-m.y)*dt*2.1;
+          m.facing=home.x>=m.x?1:-1;
+          return;
+        }
+      }
+      m._meduzaPulse=(m._meduzaPulse||0)+dt;
+      if(Math.random()<0.045 || m._meduzaPulse>1.2){
+        m._meduzaPulse=0;
+        const ang=Math.random()*Math.PI*2;
+        m.vx += Math.cos(ang)*(speed||spec.speed)*0.20;
+        m.vy += Math.sin(ang)*(speed||spec.speed)*0.16;
+      }
+    }
+  });
+
   registerSpecies({ // Deep eel: slower but agile vertical
     id:'EEL', max:10, hp:10, dmg:5, speed:2.6, wanderInterval:[1.5,4], aquatic:true, xp:11,
   sightRange: 14, pursueRange: 18,
+    body:{w:1.2,h:0.35},
     loot:[{item:'stone', min:1, max:1, chance:0.4}],
     spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.WATER) return false; let stone=false; for(let d=2; d<=5; d++){ const t=getTile(x,y+d); if(isRockFloor(t)){ stone=true; break; } if(t!==T.WATER) break; } if(!stone) return false; return true; },
     onCreate(m, spec, getTile){ initWaterAnchor(m,getTile); m.desiredDepth = 3; },
@@ -1242,8 +1409,8 @@ const mobs = (function(){
   if(!m.baseColor){
     const BASE = {
       SQUIRREL:'#b07040', DEER:'#9c6a39', RABBIT:'#dddddd', OWL:'#c8a860', CRAB:'#c23a2e',
-      EEL:'#2f8a4a', GOAT:'#c9c4b5', BEAR:'#6b4a30', WOLF:'#bcbcbc', FISH:'#4eb2f1',
-      BIRD:'#f5d16a', STRAZNIK:'#8f9aa6',
+      EEL:'#2f8a4a', PIRANHA:'#b72d2d', GOAT:'#c9c4b5', BEAR:'#6b4a30', WOLF:'#bcbcbc', FISH:'#4eb2f1',
+      BIRD:'#f5d16a', STRAZNIK:'#8f9aa6', ATLANTIS_MEDUZA:'#7bdcff',
       WIOSENNY_JELEN:'#bf8a4d', LETNI_ZUBR:'#8d5e32', JESIENNY_LOS:'#9a6737', ZIMOWY_NIEDZWIEDZ:'#e9f3f8'
     };
     const base = BASE[spec.id] || '#a8a8a8';
@@ -1288,6 +1455,285 @@ const mobs = (function(){
     if(above!==T.WATER && above!==T.AIR) return false;
     const pocket=waterPocketShape(x,y,getTile);
     return pocket.count>=8 && pocket.width>=3 && pocket.depth>=2;
+  }
+  function isSeaOrOceanColumn(x){
+    x=Math.floor(Number.isFinite(x)?x:0);
+    if(biomeAt(x)===5) return true;
+    try{ return !!(WORLDGEN && typeof WORLDGEN.oceanBasinAt==='function' && WORLDGEN.oceanBasinAt(x)); }catch(e){ return false; }
+  }
+  const ATLANTIS_GUARD_TILES = Object.freeze({
+    [T.GLASS]:true, [T.OBSIDIAN]:true, [T.STEEL]:true, [T.SOLAR_BATTERY]:true,
+    [T.ANTIGRAVITY_BEACON]:true, [T.IRIDIUM]:true, [T.METEORIC_IRON]:true,
+    [T.ANTIMATTER_CRYSTAL]:true, [T.GLOWSHROOM]:true, [T.CHEST_RARE]:true, [T.CHEST_EPIC]:true
+  });
+  function isAtlantisGuardTile(t){ return !!ATLANTIS_GUARD_TILES[t]; }
+  function canHostPiranhaSpawn(x,y,getTile){
+    x|=0; y|=0;
+    if(!isSeaOrOceanColumn(x)) return false;
+    if(readMobTile(getTile,x,y)!==T.WATER) return false;
+    const col=waterColumnAt(x,y,getTile);
+    if(!col || col.depth<3) return false;
+    const above=readMobTile(getTile,x,y-1);
+    if(above!==T.WATER && above!==T.AIR) return false;
+    const pocket=waterPocketShape(x,y,getTile);
+    return pocket.count>=16 && pocket.width>=4 && pocket.depth>=3;
+  }
+  function nearAtlantisStructure(x,y,getTile){
+    x|=0; y|=0;
+    if(!isSeaOrOceanColumn(x) || readMobTile(getTile,x,y)!==T.WATER) return false;
+    let signals=0, heavy=0;
+    for(let dy=-8; dy<=8; dy++){
+      for(let dx=-10; dx<=10; dx++){
+        const t=readMobTile(getTile,x+dx,y+dy);
+        if(!isAtlantisGuardTile(t)) continue;
+        signals++;
+        if(t===T.CHEST_EPIC || t===T.IRIDIUM || t===T.ANTIGRAVITY_BEACON || t===T.ANTIMATTER_CRYSTAL) heavy++;
+        if(signals>=3 || (signals>=2 && heavy>=1)) return true;
+      }
+    }
+    return false;
+  }
+  function canHostAtlantisMeduzaSpawn(x,y,getTile){
+    x|=0; y|=0;
+    if(!isSeaOrOceanColumn(x)) return false;
+    if(readMobTile(getTile,x,y)!==T.WATER) return false;
+    const col=waterColumnAt(x,y,getTile);
+    if(!col || col.depth<5 || y<col.top+1) return false;
+    const pocket=waterPocketShape(x,y,getTile);
+    if(pocket.count<22 || pocket.width<5 || pocket.depth<4) return false;
+    return nearAtlantisStructure(x,y,getTile);
+  }
+  function nearestAtlantisWaterCell(tx,ty,getTile,rx,ry){
+    const maxR=Math.max(rx||10,ry||8);
+    for(let r=0; r<=maxR; r++){
+      for(let dy=-Math.min(ry||8,r); dy<=Math.min(ry||8,r); dy++){
+        for(let dx=-Math.min(rx||10,r); dx<=Math.min(rx||10,r); dx++){
+          if(Math.max(Math.abs(dx),Math.abs(dy))!==r) continue;
+          const nx=tx+dx, ny=ty+dy;
+          if(canHostAtlantisMeduzaSpawn(nx,ny,getTile)) return {x:nx+0.5,y:ny+0.5,tileX:nx,tileY:ny};
+        }
+      }
+    }
+    return null;
+  }
+  function heroProtectedByBoat(player){
+    if(!player) return false;
+    try{
+      const api=MM && MM.boats;
+      const liveBoat=api && typeof api.heroOnBoat==='function' ? api.heroOnBoat(player) : null;
+      if(liveBoat && liveBoat.inWater && !liveBoat.grounded) return true;
+      const cachedBoat=api && typeof api.heroBoat==='function' ? api.heroBoat() : null;
+      return !!(cachedBoat && cachedBoat.inWater && !cachedBoat.grounded && heroNearBoatHull(player,cachedBoat));
+    }catch(e){ return false; }
+  }
+  function heroNearBoatHull(player,boat){
+    if(!player || !boat || !finiteCoord(boat.x) || !finiteCoord(boat.y) || !Array.isArray(boat.cells)) return false;
+    let minDx=Infinity,maxDx=-Infinity,minDy=Infinity,maxDy=-Infinity;
+    for(const c of boat.cells){
+      if(!c || !finiteNum(c.dx) || !finiteNum(c.dy)) continue;
+      minDx=Math.min(minDx,c.dx); maxDx=Math.max(maxDx,c.dx);
+      minDy=Math.min(minDy,c.dy); maxDy=Math.max(maxDy,c.dy);
+    }
+    if(!Number.isFinite(minDx)) return false;
+    const hw=(finiteNum(player.w)?player.w:0.7)/2;
+    const hh=(finiteNum(player.h)?player.h:0.95)/2;
+    const pad=0.45;
+    return player.x+hw > boat.x+minDx-pad && player.x-hw < boat.x+maxDx+1+pad &&
+      player.y+hh > boat.y+minDy-pad && player.y-hh < boat.y+maxDy+1+pad;
+  }
+  function heroInSeaWater(player,getTile){
+    if(!player || !finiteCoord(player.x) || !finiteCoord(player.y) || typeof getTile!=='function') return false;
+    if(heroProtectedByBoat(player)) return false;
+    const tx=Math.floor(player.x);
+    if(!isSeaOrOceanColumn(tx)) return false;
+    const h=finiteNum(player.h) ? player.h : 0.95;
+    const probes=[
+      Math.floor(player.y),
+      Math.floor(player.y+h*0.25),
+      Math.floor(player.y+h*0.48)
+    ];
+    return probes.some(ty=>readMobTile(getTile,tx,ty)===T.WATER);
+  }
+  function prunePiranhaBaitZones(now){
+    for(let i=piranhaBaitZones.length-1; i>=0; i--){
+      const z=piranhaBaitZones[i];
+      if(!z || !finiteCoord(z.x) || !finiteCoord(z.y) || !(z.until>now)) piranhaBaitZones.splice(i,1);
+    }
+  }
+  function currentPiranhaBait(m,now){
+    if(!m || m.id!=='PIRANHA' || !finiteCoord(m._baitX) || !finiteCoord(m._baitY) || !(m._baitUntil>now)) return null;
+    return {x:m._baitX,y:m._baitY,kind:m._baitKind||'meat',until:m._baitUntil};
+  }
+  function clearPiranhaBait(m){
+    if(!m) return;
+    delete m._baitX;
+    delete m._baitY;
+    delete m._baitUntil;
+    delete m._baitKind;
+  }
+  function piranhaIsDistracted(m,now){
+    return !!currentPiranhaBait(m,now);
+  }
+  function assignPiranhaBait(m,zone,now){
+    if(!m || m.id!=='PIRANHA' || !zone || !finiteCoord(zone.x) || !finiteCoord(zone.y) || !(zone.until>now)) return false;
+    const cur=currentPiranhaBait(m,now);
+    if(cur && cur.until>=zone.until && Math.hypot(cur.x-zone.x,cur.y-zone.y)<2) return false;
+    m._baitX=zone.x;
+    m._baitY=zone.y;
+    m._baitUntil=zone.until;
+    m._baitKind=zone.kind||'meat';
+    m._nextBaitScan=zone.until;
+    m._frenzy=0;
+    return true;
+  }
+  function nearestPiranhaBaitZone(m,now){
+    prunePiranhaBaitZones(now);
+    let best=null, bestD=PIRANHA_BAIT_ZONE_RADIUS*PIRANHA_BAIT_ZONE_RADIUS;
+    for(const z of piranhaBaitZones){
+      const dx=z.x-m.x, dy=z.y-m.y;
+      const d2=dx*dx+dy*dy;
+      if(d2<bestD){ best=z; bestD=d2; }
+    }
+    return best;
+  }
+  function broadcastPiranhaBait(zone,now){
+    const r2=PIRANHA_BAIT_BROADCAST_RADIUS*PIRANHA_BAIT_BROADCAST_RADIUS;
+    for(const other of mobs){
+      if(other.id!=='PIRANHA' || !validMobState(other) || other.hp<=0) continue;
+      const dx=other.x-zone.x, dy=other.y-zone.y;
+      if(dx*dx+dy*dy<=r2) assignPiranhaBait(other,zone,now);
+    }
+  }
+  function addPiranhaBaitZone(bait,now){
+    if(!bait) return null;
+    const duration=Math.max(1,Math.min(30,Number.isFinite(bait.duration)?bait.duration:5));
+    const zone={
+      x:Number.isFinite(bait.waterX)?bait.waterX:bait.x,
+      y:Number.isFinite(bait.waterY)?bait.waterY:bait.y,
+      kind:bait.kind||'meat',
+      until:now+duration*1000
+    };
+    if(!finiteCoord(zone.x) || !finiteCoord(zone.y)) return null;
+    piranhaBaitZones.push(zone);
+    piranhaBaitZones.sort((a,b)=>a.until-b.until);
+    while(piranhaBaitZones.length>PIRANHA_BAIT_ZONE_CAP) piranhaBaitZones.shift();
+    broadcastPiranhaBait(zone,now);
+    return zone;
+  }
+  function acquirePiranhaBait(m,getTile,setTile,now){
+    if(!m || m.id!=='PIRANHA' || typeof getTile!=='function') return null;
+    if(now < (m._nextBaitScan||0)) return null;
+    m._nextBaitScan = now + PIRANHA_BAIT_SCAN_MS + Math.random()*PIRANHA_BAIT_SCAN_MS;
+    const meatApi=MM && MM.meat;
+    if(!meatApi || typeof meatApi.nearestWaterBait!=='function') return null;
+    const bait=meatApi.nearestWaterBait(m.x,m.y,PIRANHA_BAIT_RADIUS,getTile);
+    if(!bait) return null;
+    if(typeof meatApi.consumeBaitAt==='function' && typeof setTile==='function'){
+      meatApi.consumeBaitAt(bait.tx,bait.ty,getTile,setTile);
+    }
+    return addPiranhaBaitZone(bait,now);
+  }
+  function piranhaBaitTarget(m,getTile,setTile,now){
+    now=Number.isFinite(now)?now:performance.now();
+    const cur=currentPiranhaBait(m,now);
+    if(cur) return cur;
+    clearPiranhaBait(m);
+    const zone=nearestPiranhaBaitZone(m,now) || acquirePiranhaBait(m,getTile,setTile,now);
+    if(zone && assignPiranhaBait(m,zone,now)) return currentPiranhaBait(m,now);
+    return zone || null;
+  }
+  function piranhaBoatAvoidance(m,dt,now,speed){
+    if(!m || !(m._boatAvoidUntil>now) || !finiteCoord(m._boatAvoidX) || !finiteCoord(m._boatAvoidY)) return false;
+    const dx=m.x-m._boatAvoidX, dy=m.y-m._boatAvoidY;
+    const d=Math.hypot(dx,dy)||1;
+    const sp=Math.max(4,Number(speed)||8);
+    m.vx += (dx/d)*sp*dt*8.5;
+    m.vy += (dy/d)*sp*dt*5.4;
+    m.facing=dx>=0?1:-1;
+    m._frenzy=0;
+    return true;
+  }
+  function piranhaIgnoresPrey(mob,spec){
+    if(!mob || !spec) return true;
+    if(PIRANHA_IGNORE_PREY[mob.id]) return true;
+    return !!spec.piranhaIgnore;
+  }
+  function piranhaWaterAt(getTile,x,y){
+    return typeof getTile==='function' && readMobTile(getTile,Math.floor(x),Math.floor(y))===T.WATER;
+  }
+  function piranhaMobInWater(m,spec,getTile){
+    if(!m || !spec || typeof getTile!=='function') return false;
+    const body=bodyHalfExtents(m,spec);
+    const ys=[m.y, m.y-body.halfH*0.22, m.y+body.halfH*0.28];
+    return ys.some(y=>piranhaWaterAt(getTile,m.x,y));
+  }
+  function piranhaExternalTargetInWater(t,getTile){
+    if(!t || typeof getTile!=='function') return false;
+    const aimY=t.aimY==null ? t.y : t.aimY;
+    const ys=[aimY,t.y,(aimY+t.y)*0.5,t.y+0.35];
+    return ys.some(y=>Number.isFinite(y) && piranhaWaterAt(getTile,t.x,y));
+  }
+  function piranhaTargetPoint(t){
+    if(!t) return {x:0,y:0};
+    if(t.kind==='hero') return {x:t.x,y:t.aimY==null ? t.y+0.12 : t.aimY};
+    if(t.kind==='mob') return {x:t.x,y:t.aimY==null ? t.y : t.aimY};
+    if(t.kind==='companion') return companionTargetPoint(t);
+    if(isInvasionTarget(t)) return alienTargetPoint(t);
+    return {x:t.x,y:t.aimY==null ? t.y : t.aimY};
+  }
+  function considerPiranhaPrey(best,m,target,limitD2){
+    if(!target) return best;
+    const p=piranhaTargetPoint(target);
+    const dx=p.x-m.x, dy=p.y-m.y;
+    const d2=dx*dx+dy*dy;
+    if(d2>limitD2) return best;
+    if(!best || d2<best.d2) return {target,d2};
+    return best;
+  }
+  function nearestPiranhaMobPrey(m,getTile,range,bestD2){
+    let best=null;
+    const limitD2=Math.max(0.1,Number.isFinite(bestD2)?bestD2:range*range);
+    for(const o of mobs){
+      if(o===m || !validMobState(o) || o.hp<=0) continue;
+      const ospec=SPECIES[o.id];
+      if(piranhaIgnoresPrey(o,ospec)) continue;
+      if(!piranhaMobInWater(o,ospec,getTile)) continue;
+      const body=bodyHalfExtents(o,ospec);
+      const target={kind:'mob', id:o.id, raw:o, x:o.x, y:o.y, aimY:o.y, tx:Math.floor(o.x), ty:Math.floor(o.y), hp:o.hp, maxHp:o.maxHp, vx:o.vx||0, vy:o.vy||0, touchRadius:Math.max(0.9,Math.min(1.55,0.65+Math.max(body.halfW,body.halfH)*0.55))};
+      best=considerPiranhaPrey(best,m,target,limitD2);
+    }
+    return best;
+  }
+  function piranhaPreyTarget(m,hero,getTile,range){
+    if(!m || m.id!=='PIRANHA' || typeof getTile!=='function') return null;
+    const r=Math.max(1,Number.isFinite(range)?range:PIRANHA_PREY_RANGE);
+    const limitD2=r*r;
+    let best=null;
+    if(heroInSeaWater(hero,getTile)){
+      best=considerPiranhaPrey(best,m,{kind:'hero', raw:hero, x:hero.x, y:hero.y, aimY:hero.y+0.12, hp:hero.hp, maxHp:hero.maxHp, vx:hero.vx||0, vy:hero.vy||0, touchRadius:0.9},limitD2);
+    }
+    const mobBest=nearestPiranhaMobPrey(m,getTile,r,best ? best.d2 : limitD2);
+    if(mobBest) best=mobBest;
+    const opts={source:'piranha',inWater:true,getTile};
+    const cmp=nearestCompanionTarget(m.x,m.y,r,opts);
+    if(cmp && piranhaExternalTargetInWater(cmp,getTile)) best=considerPiranhaPrey(best,m,Object.assign({touchRadius:1.05},cmp),best ? best.d2 : limitD2);
+    const alien=nearestAlienTarget(m.x,m.y,r,opts);
+    if(alien && piranhaExternalTargetInWater(alien,getTile)) best=considerPiranhaPrey(best,m,Object.assign({touchRadius:1.05},alien),best ? best.d2 : limitD2);
+    return best && best.target ? best.target : null;
+  }
+  function damagePiranhaPrey(target,dmg,srcX,srcY,cause){
+    if(!target) return false;
+    if(target.kind==='hero'){
+      damagePlayer(dmg,srcX,srcY,cause||'piranha',SPECIES.PIRANHA);
+      return true;
+    }
+    if(target.kind==='mob' && target.raw && target.raw.hp>0){
+      damageMob(target.raw,dmg,{source:'piranha',cause:cause||'piranha'});
+      return true;
+    }
+    if(target.kind==='companion') return damageCompanionTarget(target,dmg,srcX,srcY,cause||'piranha');
+    if(isInvasionTarget(target)) return damageAlienTarget(target,dmg,srcX,srcY,cause||'piranha','mob');
+    return false;
   }
   function waterColumnAt(tx,ty,getTile){
     if(readMobTile(getTile,tx,ty)!==T.WATER) return null;
@@ -1345,9 +1791,45 @@ const mobs = (function(){
     return true;
   }
 
+  function clampStrictAquaticColumn(m,spec,getTile,dt){
+    if(!spec || !spec.strictWater || typeof getTile!=='function') return false;
+    const tx=Math.floor(m.x), ty=Math.floor(m.y);
+    if(readMobTile(getTile,tx,ty)!==T.WATER){
+      const best=nearestWaterCell(tx,ty,getTile,10,10);
+      if(best){
+        m.x=best.x; m.y=best.y;
+        m.vx*=0.18; m.vy*=0.18;
+        if(m.vy<0) m.vy=0;
+        m.strandedTime=0;
+        initWaterAnchor(m,getTile);
+        return true;
+      }
+      m.strandedTime = ((typeof m.strandedTime==='number' && isFinite(m.strandedTime)) ? m.strandedTime : 0) + dt;
+      m.vx*=0.35;
+      if(m.vy<0) m.vy=0;
+      m.vy += 0.08;
+      if(m.strandedTime>0.5){ m.hp=0; m._naturalDeath=true; }
+      return false;
+    }
+    const col=waterColumnAt(tx,ty,getTile);
+    if(!col) return false;
+    const topLimit=col.top+0.24;
+    const bottomLimit=col.bottom+0.76;
+    m.waterTopY=col.top;
+    m.waterBottomY=col.bottom;
+    m.desiredDepth=Math.max(0, Math.min(m.desiredDepth||0, col.depth-1));
+    if(m.y<topLimit){ m.y=topLimit; if(m.vy<0) m.vy=0; }
+    if(m.y>bottomLimit){ m.y=bottomLimit; if(m.vy>0) m.vy=0; }
+    const stepDt=Math.max(0.016, Math.min(0.12, (dt>0 && isFinite(dt)) ? dt : 0.016));
+    if(m.vy<0 && m.y + m.vy*stepDt < topLimit) m.vy=0;
+    if(m.vy>0 && m.y + m.vy*stepDt > bottomLimit) m.vy=0;
+    return true;
+  }
+
   // Aquatic enforcement (moved earlier so it's definitely defined before any habitatUpdate calls)
   function enforceAquatic(m, spec, getTile, dt){
     const nowP = performance.now();
+    const strictWater=!!(spec && spec.strictWater);
     if(typeof m.waterTopY!=='number' || typeof m.nextWaterScan!=='number' || nowP>m.nextWaterScan){ initWaterAnchor(m,getTile); }
     const tx = Math.floor(m.x); const ty=Math.floor(m.y);
     const here = getTile(tx,ty);
@@ -1356,8 +1838,7 @@ const mobs = (function(){
       const best=nearestWaterCell(tx,ty,getTile,8,8);
       if(best){
         m.vx += (best.x - m.x)*3*dt; m.vy += (best.y - m.y)*3*dt;
-        if(best.d2>9 || m.strandedTime>0.35){ m.x=best.x; m.y=best.y; m.vx*=0.25; m.vy*=0.25; initWaterAnchor(m,getTile); }
-        m.strandedTime = 0;
+        if(strictWater || best.d2>9 || m.strandedTime>0.35){ m.x=best.x; m.y=best.y; m.vx*=0.25; m.vy*=0.25; if(strictWater && m.vy<0) m.vy=0; initWaterAnchor(m,getTile); m.strandedTime = 0; }
       } else {
         m.vx *= 0.6; m.vy += 0.15; if(m.strandedTime>1.6){ m.hp=0; m._naturalDeath=true; }
       }
@@ -1390,6 +1871,7 @@ const mobs = (function(){
       }
     }
   const maxS = (spec.speed * (m.speedMul||1)) * 1.2; const sp=Math.hypot(m.vx,m.vy); if(sp>maxS){ const s=maxS/sp; m.vx*=s; m.vy*=s; }
+    if(strictWater) clampStrictAquaticColumn(m,spec,getTile,dt);
   }
 
   function forceSpawn(specId, player, getTile){ const spec=SPECIES[specId]; if(!spec) return false; if((speciesCounts[specId]||0) >= spec.max) return false; // cap
@@ -1452,6 +1934,7 @@ const mobs = (function(){
     if(b==='desert') return biome===3?1:0.08;
     if(b==='swamp') return biome===4?1:0.08;
     if(b==='shore') return (biome===5 || biome===6 || biome===3)?0.75:0.04;
+    if(b==='sea') return biome===5?1:0.03;
     if(b==='mountain') return biome===7?1:0.08;
     if(b==='city') return biome===8?1:0.03;
     if(spec.aquatic) return (biome===5 || biome===6 || biome===4)?0.85:0.18;
@@ -1468,6 +1951,68 @@ const mobs = (function(){
       if(spec.spawnTest(tx,ty,getTile)) return {x:tx+0.5,y:ty+0.5};
     }
     return null;
+  }
+  function countSpeciesNear(id,x,y,radius){
+    const r2=radius*radius;
+    let n=0;
+    for(const m of mobs){
+      if(m.id!==id || !validMobState(m) || m.hp<=0) continue;
+      const dx=m.x-x, dy=m.y-y;
+      if(dx*dx+dy*dy<=r2) n++;
+    }
+    return n;
+  }
+  function findPiranhaAmbushSpawn(player,getTile){
+    const spec=SPECIES.PIRANHA;
+    if(!spec) return null;
+    for(let tries=0; tries<48; tries++){
+      const ang=Math.random()*Math.PI*2;
+      const r=3.5+Math.random()*11.5;
+      const tx=Math.floor(player.x+Math.cos(ang)*r);
+      const ty=Math.floor(player.y-1+Math.random()*5);
+      if(spec.spawnTest(tx,ty,getTile)) return {x:tx+0.5,y:ty+0.5};
+    }
+    const px=Math.floor(player.x), py=Math.floor(player.y);
+    for(let r=2; r<=13; r++){
+      for(let dy=-Math.min(4,r); dy<=Math.min(5,r); dy++){
+        for(let dx=-r; dx<=r; dx++){
+          if(Math.max(Math.abs(dx),Math.abs(dy))!==r) continue;
+          const tx=px+dx, ty=py+dy;
+          if(spec.spawnTest(tx,ty,getTile)) return {x:tx+0.5,y:ty+0.5};
+        }
+      }
+    }
+    return null;
+  }
+  function tryPiranhaAmbush(player,getTile,now){
+    const spec=SPECIES.PIRANHA;
+    if(!spec || typeof getTile!=='function' || !heroInSeaWater(player,getTile)) return;
+    if(now<spawnFreezeUntil) return;
+    if(now<nextPiranhaAmbush) return;
+    nextPiranhaAmbush=now+850+Math.random()*850;
+    const local=countSpeciesNear('PIRANHA',player.x,player.y,28);
+    const target=Math.max(6,Math.min(spec.localMax||12, 8+Math.floor(Math.random()*4)));
+    if(local>=target || countSpecies('PIRANHA')>=spec.max) return;
+    const localAll=localMobCounts(player,32);
+    const cap=Math.max(ECO_TOTAL_LOCAL_CAP+6, Math.round(ECO_TOTAL_LOCAL_CAP*1.25));
+    if(localAll.total>=cap) return;
+    const want=Math.min(spec.spawnBatch||6, target-local, spec.max-countSpecies('PIRANHA'), cap-localAll.total);
+    let born=0;
+    for(let i=0;i<want;i++){
+      const spot=findPiranhaAmbushSpawn(player,getTile);
+      if(!spot) break;
+      mobs.push(create(spec,spot.x,spot.y,getTile));
+      born++;
+    }
+    if(born>0){
+      setAggro('PIRANHA');
+      try{
+        if(window.msg && (!tryPiranhaAmbush._warnAt || now-tryPiranhaAmbush._warnAt>9000)){
+          tryPiranhaAmbush._warnAt=now;
+          window.msg('Piranie! Ocean zyje - uciekaj na lodz!');
+        }
+      }catch(e){}
+    }
   }
 
   let nextSpawnCheck = 0;
@@ -1608,13 +2153,14 @@ const mobs = (function(){
     }catch(e){}
     return false;
   }
-  function damageAlienTarget(t,dmg,srcX,srcY,cause){
+  function damageAlienTarget(t,dmg,srcX,srcY,cause,source){
     if(!t) return false;
     try{
       const api=MM.invasions;
       const wy=t.aimY==null ? t.y : t.aimY;
-      if(api && typeof api.damageAtWorld==='function') return !!api.damageAtWorld(t.x,wy,dmg,{source:'sentinel',cause:cause||'sentinel',srcX,srcY});
-      if(api && typeof api.damageAt==='function') return !!api.damageAt(t.tx==null ? Math.floor(t.x) : t.tx,t.ty==null ? Math.floor(wy) : t.ty,dmg,{source:'sentinel',cause:cause||'sentinel',srcX,srcY});
+      const src=source || (cause==='piranha' ? 'mob' : 'sentinel');
+      if(api && typeof api.damageAtWorld==='function') return !!api.damageAtWorld(t.x,wy,dmg,{source:src,cause:cause||'sentinel',srcX,srcY});
+      if(api && typeof api.damageAt==='function') return !!api.damageAt(t.tx==null ? Math.floor(t.x) : t.tx,t.ty==null ? Math.floor(wy) : t.ty,dmg,{source:src,cause:cause||'sentinel',srcX,srcY});
     }catch(e){}
     return false;
   }
@@ -2766,11 +3312,13 @@ const mobs = (function(){
     if(!(dt>0) || !isFinite(dt) || !player || !finiteCoord(player.x) || !finiteCoord(player.y) || typeof getTile!=='function') return;
     lastDeathFxGetTile=getTile;
     const now = performance.now(); frame++;
+    prunePiranhaBaitZones(now);
     updateSunriseBurnState(now);
     laserTraceCalls=0; laserTileChecks=0;
     sentinelShotsThisFrame=0; sentinelDeferredThisFrame=0;
     // Despawn far / off-screen old passive mobs (not aggro)
     for(let i=mobs.length-1;i>=0;i--){ const m=mobs[i]; if(!validMobState(m) || m.hp<=0){ removeFromGrid(m); mobs.splice(i,1); continue; } const dist = Math.abs(m.x-player.x); if(dist>220 && !isAggro(m.id)) { removeFromGrid(m); mobs.splice(i,1); continue; } }
+    tryPiranhaAmbush(player,getTile,now);
     // Spawn attempt occasionally
     trySpawnNearPlayer(player,getTile, now);
     // Golden sprinter visit clock (counts played time, persists across reloads)
@@ -2919,7 +3467,15 @@ const mobs = (function(){
         for(let y=minY; y<=maxY; y++){
           for(let x=minX; x<=maxX; x++){
             const t=getTile(x,y); if(isSolid && isSolid(t)){
-              if(m.vy>0){ m.y = y - halfH - 0.001; m.vy=0; m.onGround=true; }
+              if(m.vy>0){
+                m.y = y - halfH - 0.001;
+                const spring=MM.springPlatforms;
+                if(t===T.SPRING_PLATFORM && spring && typeof spring.launchEntity==='function' && spring.launchEntity(m,x,y,getTile,{kind:'mob',facing:m.facing})){
+                  m.onGround=false;
+                } else {
+                  m.vy=0; m.onGround=true;
+                }
+              }
               else if(m.vy<0){ m.y = y + 1 + halfH + 0.001; m.vy=0; }
               minY = Math.floor(m.y - halfH); maxY = Math.floor(m.y + halfH);
             }
@@ -2975,14 +3531,23 @@ const mobs = (function(){
       // Status effects: DoT, cures and movement side-effects, table-driven
       tickStatuses(m,getTile,dt);
       // Contact damage + bounce (touch) independent of attack cooldown
-  const touchCompanion = aggressive ? nearestCompanionTarget(m.x,m.y,1.15) : null;
-  const touchTarget = touchCompanion || player;
-  const touchPoint = touchCompanion ? companionTargetPoint(touchCompanion) : touchTarget;
+  const piranhaTouchTarget = m.id==='PIRANHA' ? piranhaPreyTarget(m,player,getTile,1.55) : null;
+  const touchCompanion = (m.id!=='PIRANHA' && aggressive) ? nearestCompanionTarget(m.x,m.y,1.15) : null;
+  const touchTarget = piranhaTouchTarget || (m.id==='PIRANHA' ? null : (touchCompanion || player));
+  if(!touchTarget) continue;
+  const touchPoint = piranhaTouchTarget ? piranhaTargetPoint(piranhaTouchTarget) : (touchCompanion ? companionTargetPoint(touchCompanion) : touchTarget);
   const dxP = touchPoint.x - m.x; const dyP = touchPoint.y - m.y; const distTouch = Math.hypot(dxP,dyP);
-      if(distTouch < 0.9){ // bounce push
+      const touchRadius=piranhaTouchTarget ? Math.max(0.85,Math.min(1.6,piranhaTouchTarget.touchRadius||1.0)) : 0.9;
+      if(distTouch < touchRadius){ // bounce push
         const nx=dxP/(distTouch||1); const ny=dyP/(distTouch||1);
-        if(!touchCompanion){ player.vx += nx*3*dt; player.vy += ny*2*dt; } // gentle continuous push
-        if(isAggro(m.id)||spec.alwaysAggro){ if(m.attackCd>0) m.attackCd-=dt; if(m.attackCd<=0){ if(touchCompanion) damageCompanionTarget(touchCompanion,spec.dmg*(m.dmgMult||1),m.x,m.y,'mob'); else damagePlayer(spec.dmg*(m.dmgMult||1), m.x, m.y); m.attackCd=(0.8 + Math.random()*0.5)*Math.max(0.55,Math.min(1.2,(m.attackCdMult||1))); } }
+        if(piranhaTouchTarget && piranhaTouchTarget.kind==='mob' && piranhaTouchTarget.raw){
+          piranhaTouchTarget.raw.vx += nx*2.5*dt;
+          piranhaTouchTarget.raw.vy += ny*1.5*dt;
+        } else if(!touchCompanion && (!piranhaTouchTarget || piranhaTouchTarget.kind==='hero')){
+          player.vx += nx*3*dt; player.vy += ny*2*dt;
+        } // gentle continuous push
+        const canBite=(isAggro(m.id)||spec.alwaysAggro) && !piranhaIsDistracted(m,now);
+        if(canBite){ if(m.attackCd>0) m.attackCd-=dt; if(m.attackCd<=0){ if(piranhaTouchTarget) damagePiranhaPrey(piranhaTouchTarget,spec.dmg*(m.dmgMult||1),m.x,m.y,spec.contactCause||'mob'); else if(touchCompanion) damageCompanionTarget(touchCompanion,spec.dmg*(m.dmgMult||1),m.x,m.y,spec.contactCause||'mob'); else damagePlayer(spec.dmg*(m.dmgMult||1), m.x, m.y, spec.contactCause||'mob', spec); m.attackCd=(0.8 + Math.random()*0.5)*Math.max(0.55,Math.min(1.2,(m.attackCdMult||1))); } }
       }
     }
     updateProjectiles(dt, player, getTile);
@@ -3239,6 +3804,29 @@ const mobs = (function(){
           ctx.fillStyle='#fff'; ctx.fillRect(screenX+(faceDir>0?1:-3), screenY-2,2,2); ctx.fillStyle='#000'; ctx.fillRect(screenX+(faceDir>0?1:-3), screenY-2,1,1);
           ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fillRect(screenX+(faceDir>0?-1:1), screenY-1,1,2); // gill slit
           break; }
+        case 'PIRANHA': {
+          const wag = Math.sin(phase*2.2)*2.6*faceDir;
+          const body = flashing? '#ffd6d6' : (m.baseColor||'#b72d2d');
+          box(screenX-7, screenY-3,14,6, body,'#4d1113');
+          ctx.fillStyle='#4d1113';
+          ctx.fillRect(screenX-1, screenY-5,5,2);
+          ctx.save();
+          ctx.translate(wag,0);
+          ctx.fillRect(screenX+(faceDir>0?7:-10), screenY-3,4,6);
+          ctx.restore();
+          ctx.fillStyle='#f6f0dc';
+          const mouthX=screenX+(faceDir>0?4:-8);
+          ctx.fillRect(mouthX,screenY+1,4,1);
+          ctx.fillRect(mouthX+faceDir*1,screenY+2,2,1);
+          ctx.fillStyle='#fff';
+          ctx.fillRect(screenX+(faceDir>0?2:-4), screenY-2,2,2);
+          ctx.fillStyle='#111';
+          ctx.fillRect(screenX+(faceDir>0?3:-3), screenY-2,1,1);
+          if(m._frenzy>0){
+            ctx.fillStyle='rgba(150,20,24,0.28)';
+            ctx.fillRect(screenX-10,screenY+4,20,2);
+          }
+          break; }
         case 'BEAR': { // large hulking (approx 2x1.2 tiles)
           const body = flashing? '#e8d5c0': (m.baseColor||'#6b4a30');
           const breathe = 1 + Math.sin(phase2)*0.1;
@@ -3350,6 +3938,45 @@ const mobs = (function(){
           for(let i=-10;i<=10;i+=4){ ctx.fillStyle= (i%8===0)? body : '#256d38'; ctx.fillRect(screenX+i, screenY-2,4,4); hpTop(screenY-2); }
           // head
           ctx.fillStyle=body; ctx.fillRect(screenX+10, screenY-3,5,6); ctx.fillStyle='#fff'; ctx.fillRect(screenX+13, screenY-2,2,2); ctx.fillStyle='#000'; ctx.fillRect(screenX+13, screenY-2,1,1);
+          break; }
+        case 'ATLANTIS_MEDUZA': {
+          const body = flashing? '#ecfbff':(m.baseColor||'#7bdcff');
+          const pulse = Math.sin(phase*1.6)*0.5+0.5;
+          const bob = Math.sin(phase2)*2;
+          ctx.save();
+          ctx.globalCompositeOperation='lighter';
+          ctx.globalAlpha=0.22+0.16*pulse;
+          ctx.fillStyle='#7be8ff';
+          ctx.beginPath();
+          ctx.ellipse(screenX,screenY-7+bob,18+pulse*4,15+pulse*3,0,0,Math.PI*2);
+          ctx.fill();
+          ctx.globalCompositeOperation='source-over';
+          ctx.globalAlpha=1;
+          const grad=ctx.createLinearGradient(screenX,screenY-20+bob,screenX,screenY+8+bob);
+          grad.addColorStop(0,body);
+          grad.addColorStop(1,'#7f5bd6');
+          ctx.fillStyle=grad;
+          ctx.beginPath();
+          ctx.ellipse(screenX,screenY-8+bob,11,9,0,Math.PI,Math.PI*2);
+          ctx.lineTo(screenX+10,screenY-4+bob);
+          ctx.quadraticCurveTo(screenX,screenY+4+bob,screenX-10,screenY-4+bob);
+          ctx.closePath();
+          ctx.fill();
+          ctx.strokeStyle='rgba(214,248,255,0.82)';
+          ctx.lineWidth=1.4;
+          for(let i=-4;i<=4;i+=2){
+            const sway=Math.sin(phase*2+i)*3;
+            ctx.beginPath();
+            ctx.moveTo(screenX+i*2,screenY-2+bob);
+            ctx.quadraticCurveTo(screenX+i*2+sway,screenY+8+bob,screenX+i*1.6-sway*0.4,screenY+19+bob+Math.abs(i));
+            ctx.stroke();
+          }
+          ctx.fillStyle='#f4ffff';
+          ctx.fillRect(screenX+faceDir*3-1,screenY-10+bob,2,2);
+          ctx.fillStyle='#1b3554';
+          ctx.fillRect(screenX+faceDir*3,screenY-10+bob,1,1);
+          ctx.restore();
+          hpTop(screenY-22+bob);
           break; }
         case 'GOAT': {
           const body = flashing? '#fafafa':(m.baseColor||'#c9c4b5');
@@ -3878,6 +4505,89 @@ const mobs = (function(){
   // Absolute-damage strike (projectiles): no base melee added
   function damageAt(tileX,tileY,dmg,opts){ const m=findAt(tileX,tileY); if(!m) return false; damageMob(m, Math.max(0.5, (typeof dmg==='number' && isFinite(dmg))? dmg:1), opts); setAggro(m.id); return true; }
 
+  function mobRect(m,spec){
+    const e=bodyHalfExtents(m,spec);
+    return {left:m.x-e.halfW, right:m.x+e.halfW, top:m.y-e.halfH, bottom:m.y+e.halfH};
+  }
+  function overlapRect(a,b){
+    const x=Math.min(a.right,b.right)-Math.max(a.left,b.left);
+    const y=Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top);
+    return {x,y,hit:x>0 && y>0};
+  }
+  function clampMobVelocity(v,max){
+    if(!finiteNum(v)) return 0;
+    const m=Number.isFinite(max) ? Math.max(0.1,max) : 8;
+    return Math.max(-m,Math.min(m,v));
+  }
+  // Rafts are physical hulls: they nudge fish and any other creature out of
+  // their plank cells instead of ghosting through living objects.
+  function collideBoat(boat, boatBounds, dt, opts){
+    if(!boat || !finiteCoord(boat.x) || !finiteCoord(boat.y) || !Array.isArray(boat.cells)) return {hits:0,aquatic:0,blockers:0,drag:0};
+    const frameDt=Math.max(0,Math.min(0.1,Number(dt)||0));
+    const getTile=opts && typeof opts.getTile==='function' ? opts.getTile : null;
+    const bx=boat.x, by=boat.y;
+    const bb=boatBounds || {minDx:0,maxDx:0,minDy:0,maxDy:0};
+    const hull={left:bx+bb.minDx, right:bx+bb.maxDx+1, top:by+bb.minDy, bottom:by+bb.maxDy+1};
+    const boatVx=finiteNum(boat.vx)?boat.vx:0;
+    const boatVy=finiteNum(boat.vy)?boat.vy:0;
+    let hits=0, aquatic=0, blockers=0, drag=0;
+    for(const m of mobs){
+      const spec=SPECIES[m.id];
+      if(!spec || !validMobState(m) || m.hp<=0) continue;
+      const mr=mobRect(m,spec);
+      if(!overlapRect(hull,mr).hit) continue;
+      let best=null;
+      for(const c of boat.cells){
+        if(!Number.isFinite(c.dx) || !Number.isFinite(c.dy)) continue;
+        const cr={left:bx+c.dx, right:bx+c.dx+1, top:by+c.dy, bottom:by+c.dy+1};
+        const ov=overlapRect(cr,mr);
+        if(!ov.hit) continue;
+        if(!best || ov.x*ov.y>best.x*best.y) best={x:ov.x,y:ov.y,cell:c};
+      }
+      if(!best) continue;
+      hits++;
+      if(spec.aquatic) aquatic++;
+      const dragWeight=Number.isFinite(spec.boatDrag) ? Math.max(0,spec.boatDrag) : 1;
+      if(dragWeight>0) blockers++;
+      drag+=dragWeight;
+      const nonBlocking=dragWeight<=0.001;
+      if(nonBlocking){
+        m._boatAvoidX=(hull.left+hull.right)*0.5;
+        m._boatAvoidY=(hull.top+hull.bottom)*0.5;
+        m._boatAvoidUntil=performance.now()+850;
+      }
+      const horizontalHullHit=Math.abs(boatVx)>0.15 && best.x<=best.y*3.5;
+      if(horizontalHullHit || best.x<=best.y*1.25){
+        const cellCenter=bx+best.cell.dx+0.5;
+        let dir=m.x<cellCenter ? -1 : 1;
+        if(Math.abs(m.x-cellCenter)<0.01) dir=boatVx<0 ? -1 : 1;
+        m.x+=dir*(best.x+(nonBlocking?0.18:0.025));
+        const kick=nonBlocking ? Math.max(1.8,Math.abs(boatVx)*1.1) : Math.max(0.45,Math.abs(boatVx)*0.65);
+        m.vx=clampMobVelocity((m.vx||0)+dir*kick,nonBlocking?14:10);
+      } else {
+        const cellCenter=by+best.cell.dy+0.5;
+        const dir=m.y<cellCenter ? -1 : 1;
+        m.y+=dir*(best.y+(nonBlocking?0.12:0.025));
+        const kick=nonBlocking ? Math.max(1.1,Math.abs(boatVy)*0.7+Math.abs(boatVx)*0.18) : Math.max(0.22,Math.abs(boatVy)*0.45+Math.abs(boatVx)*0.10);
+        m.vy=clampMobVelocity((m.vy||0)+dir*kick,nonBlocking?12:8);
+      }
+      if(spec.aquatic && getTile){
+        const tx=Math.floor(m.x), ty=Math.floor(m.y);
+        if(readMobTile(getTile,tx,ty)!==T.WATER){
+          const safe=nearestWaterCell(tx,ty,getTile,3,3);
+          if(safe){
+            m.x=safe.x; m.y=safe.y;
+            m.vx*=0.45; m.vy*=0.45;
+          }
+        }
+      }
+      m.shake=Math.max(m.shake||0,0.25+frameDt*1.5);
+      m.facing=(m.vx||0)>=0?1:-1;
+      updateGridCell(m);
+    }
+    return {hits,aquatic,blockers,drag};
+  }
+
   // --- Status effects (data-driven). Each entry declares cadence, gating, cures
   // and movement side-effects; a new effect ("freeze", "stun") is one table row
   // plus an optional draw branch — not another set of m.* field pairs copied
@@ -3925,6 +4635,40 @@ const mobs = (function(){
   function poisonRadius(wx,wy,r,opts){ let n=0; const r2=r*r; for(const m of mobs){ const dx=m.x-wx, dy=m.y-wy; if(dx*dx+dy*dy<=r2 && applyStatus(m,'poison',opts)) n++; } return n; }
   // Water hose: put out burning creatures in an area
   function douseRadius(wx,wy,r){ let n=0; const r2=r*r; for(const m of mobs){ if(!hasStatus(m,'burn')) continue; const dx=m.x-wx, dy=m.y-wy; if(dx*dx+dy*dy<=r2){ clearStatus(m,'burn'); n++; } } return n; }
+  function shockAquaticRadius(wx,wy,r,opts){
+    opts=opts||{};
+    const radius=Math.max(0,Number(r)||0);
+    const r2=radius*radius;
+    const damage=Math.max(1,Number(opts.damage)||999);
+    const getTile=typeof opts.getTile==='function' ? opts.getTile : null;
+    let hit=0, killed=0;
+    for(const m of mobs){
+      if(!validMobState(m) || m.hp<=0) continue;
+      const spec=SPECIES[m.id];
+      if(!spec || !spec.aquatic) continue;
+      const dx=m.x-wx, dy=m.y-wy;
+      const d2=dx*dx+dy*dy;
+      if(d2>r2) continue;
+      if(getTile && readMobTile(getTile,Math.floor(m.x),Math.floor(m.y))!==T.WATER) continue;
+      hit++;
+      const wasAlive=m.hp>0;
+      const oldNatural=m._naturalDeath;
+      const useNaturalDeath=opts.naturalDeath!==false;
+      if(useNaturalDeath) m._naturalDeath=true;
+      const d=Math.sqrt(d2);
+      damageMob(m, Math.max(1,damage*(1-d/(radius+0.5))), {source:opts.source||'lightning',cause:opts.cause||'electric'});
+      if(wasAlive && m.hp<=0) killed++;
+      if(!useNaturalDeath || m.hp>0) m._naturalDeath=oldNatural;
+      if(m.hp>0){
+        const push=2.5*(1-d/(radius+1));
+        m.vx+=(dx/(d||1))*push;
+        m.vy+=(dy/(d||1))*push;
+        m.shake=Math.max(m.shake||0,0.75);
+        updateGridCell(m);
+      }
+    }
+    return {hit,killed};
+  }
   // Explosion: distance-scaled area damage with knockback away from the center
   function blastRadius(wx,wy,r,dmg,opts){
     let n=0; const r2=r*r;
@@ -3942,11 +4686,11 @@ const mobs = (function(){
     return n;
   }
 
-  const NO_MEAT_DROP = { FIREFLY:true, GHOUL:true, SZKIELET:true, PELZACZ:true, STRAZNIK:true, ZLOTY:true };
+  const NO_MEAT_DROP = { FIREFLY:true, GHOUL:true, SZKIELET:true, PELZACZ:true, STRAZNIK:true, ZLOTY:true, ATLANTIS_MEDUZA:true };
   const MEAT_DROP_CHANCE = {
     BEAR:1, SHARK:1,
     DEER:0.75, WOLF:0.75, GOAT:0.65,
-    EEL:0.45, FISH:0.4, CRAB:0.35,
+    EEL:0.45, FISH:0.4, PIRANHA:PIRANHA_MEAT_DROP_CHANCE, CRAB:0.35,
     RABBIT:0.3, JASZCZUR:0.3, ZABA:0.25,
     BIRD:0.25, OWL:0.25,
     SQUIRREL:0.1, BAT:0.1
@@ -4008,11 +4752,18 @@ const mobs = (function(){
     if(typeof spec.onDeath==='function'){ try{ spec.onDeath(m); }catch(e){} }
   }
 
-  function damagePlayer(amount, srcX, srcY){
+  function damagePlayer(amount, srcX, srcY, cause, spec){
     const player = window.player; if(typeof player!=='object' || !player) return;
     // hero damage is centralized in main.js (i-frames, knockback, audio, death);
     // the inline fallback exists only for the DOM-less Node sims
-    if(typeof window.damageHero==='function'){ window.damageHero(amount,{srcX,srcY,cause:'mob'}); return; }
+    if(typeof window.damageHero==='function'){
+      const opts={srcX,srcY,cause:cause||'mob'};
+      if(spec && finiteNum(spec.contactInvulMs)) opts.invulMs=spec.contactInvulMs;
+      if(spec && finiteNum(spec.contactKnockback)) opts.kb=spec.contactKnockback;
+      if(spec && finiteNum(spec.contactKnockbackY)) opts.kbY=spec.contactKnockbackY;
+      window.damageHero(amount,opts);
+      return;
+    }
     if(player.hpInvul && performance.now()<player.hpInvul) return; player.hp -= amount; player.hpInvul = performance.now()+600;
     if(typeof srcX==='number' && typeof srcY==='number'){ const dx = (player.x - srcX); const dy=(player.y - srcY); const d = Math.hypot(dx,dy)||1; player.vx += (dx/d)*4; player.vy -= 2.5; }
     if(player.hp<=0){ player.hp=0; playerDead(); }
@@ -4074,6 +4825,7 @@ const mobs = (function(){
   function deserialize(data){ // clear
     for(const m of mobs) removeFromGrid(m); mobs.length=0; // reset live counts before rebuild
     mobDeathFx.length=0;
+    piranhaBaitZones.length=0;
     metrics.deathFx=0;
     for(const k in speciesCounts) delete speciesCounts[k];
     lastDayState = null;
@@ -4149,6 +4901,7 @@ const mobs = (function(){
       mobProjectiles.length = 0;
       mobLasers.length = 0;
       mobDeathFx.length = 0;
+      piranhaBaitZones.length = 0;
       sentinelVolleyStart = 0;
       sentinelVolleyShots = 0;
       sentinelShotsThisFrame = 0;
@@ -4175,6 +4928,7 @@ const mobs = (function(){
       goldenReset();
       // Push out next spawn check and freeze spawns for a short time
       nextSpawnCheck = performance.now() + 2000;
+      nextPiranhaAmbush = performance.now() + 2000;
       spawnFreezeUntil = performance.now() + 4000;
     }catch(e){
       // Fallback to deserialize empty if anything goes wrong
@@ -4248,7 +5002,7 @@ const mobs = (function(){
         lasers:mobLasers.map(l=>({x1:l.x1,y1:l.y1,x2:l.x2,y2:l.y2,dmg:l.dmg||0,hit:!!l.hit}))
       };
     }
-  const api = { update, draw, attackAt, damageAt, igniteAt, igniteRadius, poisonAt, poisonRadius, douseRadius, blastRadius, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, isHostile:isMobHostile, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat };
+  const api = { update, draw, attackAt, damageAt, collideBoat, igniteAt, igniteRadius, poisonAt, poisonRadius, douseRadius, shockAquaticRadius, blastRadius, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, isHostile:isMobHostile, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat };
   MM.mobs = api;
   try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
   return api;

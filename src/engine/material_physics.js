@@ -32,7 +32,8 @@ export const BUILD_MATERIAL_PROFILES = Object.freeze({
   [T.MUD]: Object.freeze({strength:6.5, weight:1.00, compression:0.42, lateral:1.15, flex:0.86, down:0.22, warn:0.25, fail:0.880, wind:0.045, rubbleRoll:3}),
   [T.CLAY]: Object.freeze({strength:7.2, weight:1.06, compression:0.48, lateral:1.18, flex:0.80, down:0.23, warn:0.24, fail:0.875, wind:0.040, rubbleRoll:3}),
   [T.WET_CLAY]: Object.freeze({strength:5.8, weight:1.12, compression:0.58, lateral:1.26, flex:0.74, down:0.25, warn:0.22, fail:0.835, wind:0.020, rubbleRoll:2}),
-  [T.BRICK]: Object.freeze({strength:12.6, support:10.2, weight:1.08, compression:0.36, lateral:1.00, flex:0.92, down:0.22, warn:0.27, fail:0.910, wind:0.018, rubbleRoll:4})
+  [T.BRICK]: Object.freeze({strength:12.6, support:10.2, weight:1.08, compression:0.36, lateral:1.00, flex:0.92, down:0.22, warn:0.27, fail:0.910, wind:0.018, rubbleRoll:4}),
+  [T.CHIMNEY]: Object.freeze({strength:10.9, support:8.8, weight:0.96, compression:0.34, lateral:0.98, flex:0.94, down:0.21, warn:0.29, fail:0.900, wind:0.021, rubbleRoll:4})
 });
 
 export function buildMaterialProfile(t){
@@ -202,7 +203,7 @@ export function isMeteorLifeSiteTile(t){
 export function isMeteorSettlementSiteTile(t){
   const info=INFO[t] || INFO[T.AIR];
   return !!(info && (info.machine || info.chestTier || info.cache || info.door || info.trapdoor)) ||
-    t===T.STEEL || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.LADDER;
+    t===T.STEEL || t===T.CHIMNEY || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.LADDER;
 }
 
 export function isCreatureRockFloorTile(t){
@@ -225,7 +226,7 @@ export function isUfoVaultMaterial(t){
 export function isStructuralMaterial(t){
   return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK ||
     t===T.STONE_DOOR || t===T.STONE_TRAPDOOR || t===T.STEEL || t===T.STEEL_DOOR || t===T.STEEL_TRAPDOOR ||
-    t===T.METEORIC_IRON || t===T.IRIDIUM || t===T.OBSIDIAN || t===T.BRICK;
+    t===T.METEORIC_IRON || t===T.IRIDIUM || t===T.OBSIDIAN || t===T.BRICK || t===T.CHIMNEY;
 }
 
 export function isMetalStructuralMaterial(t){
@@ -233,7 +234,7 @@ export function isMetalStructuralMaterial(t){
 }
 
 export function isRockStructuralMaterial(t){
-  return t===T.STONE || t===T.STONE_DOOR || t===T.STONE_TRAPDOOR || t===T.GRANITE || t===T.BASALT || t===T.OBSIDIAN || t===T.BRICK || t===T.BEDROCK;
+  return t===T.STONE || t===T.STONE_DOOR || t===T.STONE_TRAPDOOR || t===T.GRANITE || t===T.BASALT || t===T.OBSIDIAN || t===T.BRICK || t===T.CHIMNEY || t===T.BEDROCK;
 }
 
 export function isLightStructuralMaterial(t){

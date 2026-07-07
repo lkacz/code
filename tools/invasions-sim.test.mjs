@@ -27,7 +27,8 @@ const { invasions } = await import('../src/engine/invasions.js');
 MM.TILE = 20;
 MM.worldGen = {worldSeed:1234, surfaceHeight:()=>50};
 MM.background = {timeInfo:()=>({phase:'night', isDay:false, hour:23})};
-MM.seasons = {metrics:()=>({dayFloat:2})};
+let simDayFloat = 2;
+MM.seasons = {metrics:()=>({dayFloat:simDayFloat})};
 
 const overrides = new Map();
 function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
@@ -78,6 +79,39 @@ invasions.reset();
 const scalable = invasions.forceNightInvasion(player,getTile,setTile,{day:9,teams:3,alienCount:1});
 assert.equal(scalable.length, 3, 'force spawn can create several scalable invading teams');
 assert.equal(invasions.metrics().activeTeams, 3, 'all forced teams are active invasion pressure');
+
+// offscreen lifecycle: old alien and molekin pressure should vanish after a day
+// away from the active camera, cleaning their temporary invasion footprint.
+invasions.reset();
+overrides.clear();
+saveMarks = 0;
+simDayFloat = 2;
+const ttlAlien = invasions.forceNightInvasion(player,getTile,setTile,{day:10,teams:1,alienCount:1})[0];
+assert.ok(ttlAlien, 'setup creates an alien team for offscreen despawn');
+invasions.update(0.05, player, getTile, setTile, {...ctx, viewport:{x0:ttlAlien.x-8,y0:ttlAlien.y-8,x1:ttlAlien.x+8,y1:ttlAlien.y+8}});
+ttlAlien.builtTiles.push({x:33,y:49,tile:T.ALIEN_BIOMASS});
+setTile(33,49,T.ALIEN_BIOMASS);
+simDayFloat = 3.05;
+invasions.update(0.05, player, getTile, setTile, {...ctx, viewport:{x0:400,y0:20,x1:440,y1:80}});
+assert.equal(invasions.metrics().teams, 0, 'alien team disappears after one in-game day off camera');
+assert.equal(getTile(33,49), T.AIR, 'offscreen alien despawn removes temporary barricades');
+assert.ok(saveMarks >= 1, 'offscreen alien despawn marks the host save dirty');
+
+invasions.reset();
+overrides.clear();
+saveMarks = 0;
+simDayFloat = 2;
+const ttlMole = invasions.forceMolekinInvasion(player,getTile,setTile,{day:11,teams:1,alienCount:3})[0];
+assert.ok(ttlMole, 'setup creates a molekin team for offscreen despawn');
+invasions.update(0.05, player, getTile, setTile, {...ctx, viewport:{x0:ttlMole.x-8,y0:ttlMole.y-8,x1:ttlMole.x+8,y1:ttlMole.y+8}});
+ttlMole.builtTiles.push({x:34,y:49,tile:T.HOT_AIR});
+setTile(34,49,T.HOT_AIR);
+simDayFloat = 3.05;
+invasions.update(0.05, player, getTile, setTile, {...ctx, viewport:{x0:-440,y0:20,x1:-400,y1:80}});
+assert.equal(invasions.metrics().teams, 0, 'molekin team disappears after one in-game day off camera');
+assert.equal(getTile(34,49), T.AIR, 'offscreen molekin despawn removes temporary vents');
+assert.ok(saveMarks >= 1, 'offscreen molekin despawn marks the host save dirty');
+simDayFloat = 2;
 
 // player-level scaling keeps pressure visible: more squads, more aliens,
 // stronger visible grades/weapons, better XP and better reward odds.
@@ -367,14 +401,24 @@ clearSquadSpeech(actualSquad);
 player.hp = 20;
 actualSquad.heroHealthBand = 'mid';
 actualSquad.speechStartAt = performance.now() - 12000;
-invasions.update(0.1, player, getTile, setTile, ctx);
+invasions._debug.updateHeroAwareness(player,performance.now());
 assert.ok(squadSaid(actualSquad,'heroLowHp'), 'aliens notice when the hero is low on health');
+
+clearSquadSpeech(actualSquad);
+player.hp = 20;
+actualSquad.heroHealthBand = 'mid';
+actualSquad.speechStartAt = performance.now() - 9000;
+invasions._debug.updateHeroAwareness(player,performance.now());
+assert.equal(actualSquad.heroHealthBand,'mid', 'early low-health awareness does not mark the warning as already handled');
+actualSquad.speechStartAt = performance.now() - 12000;
+invasions._debug.updateHeroAwareness(player,performance.now());
+assert.ok(squadSaid(actualSquad,'heroLowHp'), 'delayed low-health awareness retries after the opening chatter window');
 
 clearSquadSpeech(actualSquad);
 player.hp = player.maxHp;
 actualSquad.heroHealthBand = 'mid';
 actualSquad.speechStartAt = performance.now() - 12000;
-invasions.update(0.1, player, getTile, setTile, ctx);
+invasions._debug.updateHeroAwareness(player,performance.now());
 assert.ok(squadSaid(actualSquad,'heroHighHp'), 'aliens notice when the hero is healthy');
 
 // roles survive save/load
@@ -663,6 +707,7 @@ assert.match(mainSrc, /tasks: timedSavePart\('tasks',[^\n]*TASKS && TASKS\.snaps
 assert.match(mainSrc, /INVASIONS\.restore\(data\.invasions,getTile,setTile\)/, 'load path restores invasion teams and caches');
 assert.match(mainSrc, /TASKS\.drawHUD\(ctx,W,H,camRenderX,camRenderY,zoom,TILE,worldFxVisible,player\)/, 'main gives task targets the shared red pointer before boss arrows');
 assert.match(mainSrc, /INVASIONS\.update\(dt, player, getTile, setTile/, 'main update loop advances invasions');
+assert.match(mainSrc, /INVASIONS\.update\(dt, player, getTile, setTile,[\s\S]*viewport:currentViewportState\(\)/, 'main passes the live camera viewport so old offscreen invasions can despawn');
 assert.match(mainSrc, /INVASIONS\.draw\(ctx,TILE,worldFxVisible\)/, 'main draw loop renders invasions');
 assert.match(mainSrc, /injectInvasionDebugPanel/, 'main wires the invasion debug panel into the menu');
 assert.match(mainSrc, /forceMolekinInvasion/, 'main exposes a debug action for forcing molekin night attacks');

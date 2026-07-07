@@ -14,6 +14,7 @@ const { chests } = await import('../src/engine/chests.js');
 
 const indexHtml = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+const weaponsSrc = readFileSync(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
 assert.match(indexHtml, /id="hotSelectMenu"[^>]*max-height:min\(78vh,calc\(100vh - 86px\)\)[^>]*overflow:hidden/, 'hotbar picker is height-bounded instead of growing behind the viewport');
 assert.match(indexHtml, /id="hotSelectOptions"[^>]*flex:1 1 auto[^>]*min-height:0[^>]*overflow-y:auto/, 'hotbar picker options list owns vertical scrolling');
 assert.match(indexHtml, /#craft\{[^}]*width:min\(560px,calc\(100vw - 16px\)\)[^}]*overflow:hidden/, 'crafting recipe book is viewport-bounded');
@@ -46,6 +47,11 @@ assert.equal(INFO[T.BEDROCK].drop, null, 'bedrock does not drop as a resource');
 assert.equal(INFO[T.CLAY].drop, 'clay', 'clay blocks drop clay');
 assert.equal(INFO[T.WET_CLAY].drop, 'clay', 'wet clay recovers as clay');
 assert.equal(INFO[T.BRICK].drop, 'brick', 'brick blocks drop brick');
+assert.equal(INFO[T.CHIMNEY].drop, 'chimney', 'chimneys drop the chimney resource');
+assert.equal(INFO[T.CHIMNEY].chimney, true, 'chimneys advertise vent semantics');
+assert.equal(INFO[T.RESPAWN_TOTEM].drop, 'respawnTotem', 'respawn totems drop back into a placeable item');
+assert.equal(INFO[T.RESPAWN_TOTEM].passable, true, 'respawn totems are passable fixtures');
+assert.equal(INFO[T.RESPAWN_TOTEM].respawnTotem, true, 'respawn totems advertise respawn semantics');
 assert.equal(INFO[T.LADDER].drop, 'ladder', 'ladders drop the ladder resource');
 assert.equal(INFO[T.BEDROCK].unmineable, true, 'bedrock is an unmineable world boundary');
 assert.equal(INFO[T.MOTHER_ICE].drop, 'motherIce', 'mother ice drops the crafting resource');
@@ -89,6 +95,8 @@ assert.equal(res('bakedMeat')?.tile, 'BAKED_MEAT', 'baked meat is tracked separa
 assert.equal(res('glass')?.tile, 'GLASS', 'glass is tracked as a placeable/recoverable resource');
 assert.equal(res('clay')?.tile, 'CLAY', 'clay is tracked as a primary placeable resource');
 assert.equal(res('brick')?.tile, 'BRICK', 'brick is tracked as a fired ceramic building resource');
+assert.equal(res('chimney')?.tile, 'CHIMNEY', 'chimneys are tracked as craftable vent blocks');
+assert.equal(res('respawnTotem')?.tile, 'RESPAWN_TOTEM', 'respawn totems are tracked as craftable placeable fixtures');
 assert.equal(res('ladder')?.tile, 'LADDER', 'ladder is tracked as a placeable climbing fixture');
 assert.equal(res('woodDoor')?.tile, 'WOOD_DOOR', 'wood door is a craftable placeable resource');
 assert.equal(res('stoneDoor')?.tile, 'STONE_DOOR', 'stone door is a craftable placeable resource');
@@ -155,6 +163,15 @@ assert.match(mainSrc, /id:'spring_platform'/, 'crafting exposes spring platforms
 assert.match(mainSrc, /id:'ladders'/, 'crafting exposes ladders outside the debug menu');
 assert.match(mainSrc, /tiles:\['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY','SPRING_PLATFORM'/, 'hotbar machine group includes solar panels and spring platforms');
 assert.match(mainSrc, /tiles:\['WIRE','COPPER_WIRE','WATER_PIPE','LADDER'/, 'hotbar utility group includes ladders with overlays');
+assert.match(mainSrc, /tiles:\['WIRE','COPPER_WIRE','WATER_PIPE','LADDER'[\s\S]*'RESPAWN_TOTEM'\]/, 'hotbar utility group includes respawn totems');
+assert.match(mainSrc, /function selectToolMode\(opts\)\{[\s\S]*INV\.unequip\('weapon'\)[\s\S]*updateWeaponBar\(\)/, 'selecting build mode holsters the active weapon and refreshes the weapon bar');
+assert.match(mainSrc, /function cycleHotbar\(idx,opts\)\{[\s\S]*selectToolMode\(\{quiet:true\}\)[\s\S]*updateHotbarSel\(\)/, 'choosing a hotbar resource immediately returns to pickaxe/build mode');
+assert.match(mainSrc, /assign\(slot,key\)\{[\s\S]*HOTBAR_ORDER\[slot\]=key; cycleHotbar\(slot\);/, 'inventory resource assignment goes through the hotbar selector');
+assert.match(mainSrc, /function collectLooseItemAt\(tx,ty,opts\)\{[\s\S]*isLooseItemTile\(t\)[\s\S]*const dropCtx=dropContextForTile\(t,tx,ty\);[\s\S]*setTile\(tx,ty,T\.AIR\);[\s\S]*const drops=awardTileDrops\(info,dropCtx\);[\s\S]*pushUndo\(tx,ty,t,T\.AIR,'break',drops\);[\s\S]*updateInventory\(\);/, 'loose item collection reuses tile drops, removal, undo, and inventory refresh');
+assert.match(mainSrc, /MM\.collectLooseItemAt=collectLooseItemAt;/, 'main exposes loose item collection for weapon hits');
+assert.match(weaponsSrc, /function collectLooseTarget\(tx,ty\)\{[\s\S]*MM\.collectLooseItemAt\(tx,ty,\{source:'melee_weapon',silent:true\}\)/, 'melee weapons delegate loose item hits to the shared collection helper');
+assert.match(weaponsSrc, /function fireMelee\(player, aimX, aimY\)\{[\s\S]*const collected=collectLooseTarget\(tx,ty\);[\s\S]*const hit=collected/, 'normal melee swings count loose item collection as a hit');
+assert.match(weaponsSrc, /function firePowerMelee\(player, aimX, aimY, w, charge\)\{[\s\S]*const collected=collectLooseTarget\(tx,ty\);[\s\S]*hit = !!\(collected \|\|/, 'charged melee swings can also collect loose items');
 
 // --- percent ladder snapping ---------------------------------------------
 assert.equal(INV.snapPct(1), 0, 'noise under 2.5% disappears');
@@ -185,6 +202,14 @@ assert.equal(INV.registerItem({id:'battery_charm_test', kind:'charm', name:'Akum
 assert.ok(INV.statChips(INV.getItem('battery_charm_test')).some(c => c.text === '+50E'), 'energy capacity appears as a stat chip');
 INV.equip('battery_charm_test');
 assert.equal(globalThis.MM.activeModifiers.energyCapacityBonus, 50, 'equipped capacity item contributes to modifiers');
+INV.unequip('charm');
+assert.equal(INV.STAT_LABELS.waterMoveSpeedMult, 'Ruch w wodzie', 'water movement has a player-facing stat label');
+assert.equal(INV.STAT_RULES.waterMoveSpeedMult, 'max', 'water movement keeps the best available value');
+assert.equal(globalThis.MM.activeModifiers.waterMoveSpeedMult, 0.5, 'default hero moves at half speed in water');
+assert.equal(INV.registerItem({id:'swim_charm_test', kind:'charm', name:'Pływak testowy', waterMoveSpeedMult:1}), true, 'water movement loot is registerable');
+assert.ok(INV.statChips(INV.getItem('swim_charm_test')).some(c => c.label === 'Ruch w wodzie' && c.text === '100%'), 'water movement appears as a stat chip');
+INV.equip('swim_charm_test');
+assert.equal(globalThis.MM.activeModifiers.waterMoveSpeedMult, 1, 'equipped swim charm contributes to modifiers');
 INV.unequip('charm');
 const questRewardSnap = INV.snapshot();
 const questBow = {id:'quest_bow_test', kind:'weapon', weaponType:'bow', name:'Quest Bow', attackDamage:4, fireCooldown:0.5, desc:'Test reward bow'};
@@ -315,7 +340,7 @@ assert.equal(INV.isShortcut('w_dirty'), true, 'opt-out entry cleaned up with the
 // --- chest generation: function-pure stats on the clean ladder, tiers superior ---
 const RNG = seed => { let st = seed >>> 0; return () => { st = (st * 1664525 + 1013904223) >>> 0; return (st >>> 8) / 0xFFFFFF; }; };
 const onLadder = m => { const p = (m - 1) * 100; return Math.abs(p - Math.round(p)) < 1e-6 && Math.round(p) % 5 === 0; };
-const NUM_FIELDS = ['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','crushResistBonus'];
+const NUM_FIELDS = ['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','crushResistBonus'];
 const KIND_ONE_STAT = new Set(['cape','eyes','outfit','charm']);
 const sums = { common: 0, rare: 0, epic: 0 }, counts = { common: 0, rare: 0, epic: 0 };
 for (let i = 0; i < 2000; i++) {
@@ -332,6 +357,7 @@ for (let i = 0; i < 2000; i++) {
   // Clean numbers
   for (const k of ['moveSpeedMult', 'jumpPowerMult', 'mineSpeedMult'])
     if (typeof item[k] === 'number') assert.ok(onLadder(item[k]), tier + ' ' + k + '=' + item[k] + ' off the 5% ladder');
+  if (typeof item.waterMoveSpeedMult === 'number') assert.ok([0.75, 1, 1.25].includes(item.waterMoveSpeedMult), tier + ' waterMoveSpeedMult=' + item.waterMoveSpeedMult + ' outside swim tiers');
   if (typeof item.fireRange === 'number') assert.equal(item.fireRange * 2, Math.round(item.fireRange * 2), 'fireRange in 0.5 steps');
   if (typeof item.energyCost === 'number') assert.equal(item.energyCost, Math.round(item.energyCost), 'energyCost integer');
   if (item.weaponType === 'electric') assert.ok(item.energyCost > 0, 'electric loot always has an energyCost');

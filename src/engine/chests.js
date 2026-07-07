@@ -33,24 +33,28 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   // one work/movement profile, weapons their class numbers, charms one passive.
   // Rarity buys BIGGER numbers of those same stats (ranges barely overlap so a
   // rare/epic find is obviously superior), never extra unrelated stats. Percent
-  // values sit on the clean 5% ladder; vision in whole tiles, range half-tiles.
+  // values sit on the clean 5% ladder; swim is an absolute water-speed fraction,
+  // vision in whole tiles, range half-tiles.
   const TIERS={
     common:{weight:70, rolls:[1,1], uniqueChance:0.02,
       airJumps:1, vision:[11,12],
       outfitPct:{mine:[10,15], move:[5,10],  jump:[5,10]},
       charmPct:{mine:[5,10],  move:[5],     jump:[5]},
+      swim:[0.75],
       meleeDmg:[2,3],  bowDmg:[3,4],  bowCd:[0.55,0.6],      dps:[4,6],   range:[5,6],
       energyCap:[15,20,25], crush:[1], eCost:[13,14]},
     rare:{weight:23, rolls:[1,2], uniqueChance:0.07,
       airJumps:2, vision:[13,14],
       outfitPct:{mine:[25,30,35], move:[10,15], jump:[10,15]},
       charmPct:{mine:[15,20], move:[10], jump:[10]},
+      swim:[1],
       meleeDmg:[4,6],  bowDmg:[5,7],  bowCd:[0.45,0.5],      dps:[7,10],  range:[6.5,7.5],
       energyCap:[30,40,50], crush:[2], eCost:[10,12]},
     epic:{weight:7, rolls:[2,3], uniqueChance:0.18,
       airJumps:3, vision:[15,17],
       outfitPct:{mine:[50,60,70], move:[20,25], jump:[20,25]},
       charmPct:{mine:[25,30], move:[15,20], jump:[15,20]},
+      swim:[1.25],
       meleeDmg:[8,12], bowDmg:[9,13], bowCd:[0.3,0.35,0.4],  dps:[12,16], range:[8,9],
       energyCap:[60,80,100], crush:[3,4], eCost:[8,9]}
   };
@@ -77,6 +81,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     if(item.kind==='outfit' || item.kind==='charm'){
       if(typeof item.crushResistBonus==='number'){ item.crushResistBonus+=1; return; }
       if(typeof item.energyCapacityBonus==='number'){ item.energyCapacityBonus+=25; return; }
+      if(typeof item.waterMoveSpeedMult==='number'){ item.waterMoveSpeedMult=Math.min(1.25, +(item.waterMoveSpeedMult+0.25).toFixed(2)); return; }
       for(const k of ['mineSpeedMult','moveSpeedMult','jumpPowerMult']){
         if(typeof item[k]==='number'){ addPct(item,k,10); return; }
       }
@@ -101,10 +106,11 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       else addPct(item, PROFILE_KEYS[p], pick(r, td.outfitPct[p]));
     }
     else if(kind==='charm'){
-      const pool= tier==='common'? ['mine','move','jump','energy'] : ['mine','move','jump','energy','crush'];
+      const pool= tier==='common'? ['mine','move','jump','energy','swim'] : ['mine','move','jump','energy','crush','swim'];
       const p=pick(r,pool);
       if(p==='energy') item.energyCapacityBonus=pick(r, td.energyCap);
       else if(p==='crush') item.crushResistBonus=pick(r, td.crush);
+      else if(p==='swim') item.waterMoveSpeedMult=pick(r, td.swim);
       else addPct(item, PROFILE_KEYS[p], pick(r, td.charmPct[p]));
     }
     else {

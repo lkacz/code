@@ -89,14 +89,17 @@ setTile(6,26,T.AIR);
 assert.equal(world.setConstructionBackground(6,26,T.BRICK),true,'background construction tile can be placed in its own layer');
 assert.equal(getTile(6,26),T.AIR,'background construction does not replace passable foreground terrain');
 assert.equal(world.getConstructionBackground(6,26),T.BRICK,'background construction getter returns the support/decor tile');
+assert.equal(world.getPlayerConstructionBackground(6,26),T.BRICK,'player background getter returns only explicitly built support tiles');
 assert.equal(world.isConstructionBackgroundTile(T.BRICK),true,'brick is eligible for construction background');
 assert.equal(world.isConstructionBackgroundTile(T.WATER_PIPE),false,'infrastructure is not eligible for construction background');
 let bgSnap=world.snapshotConstructionBackground();
 assert.deepEqual(bgSnap.list.map(o=>[o.x,o.y,o.t]),[[6,26,T.BRICK]],'background construction snapshot captures support tiles');
 assert.equal(world.clearConstructionBackground(6,26),true,'background construction tile can be cleared independently');
 assert.equal(getTile(6,26),T.AIR,'clearing background construction still preserves foreground terrain');
+assert.equal(world.getPlayerConstructionBackground(6,26),T.AIR,'player background getter ignores cleared/tombstoned background cells');
 world.restoreConstructionBackground(bgSnap);
 assert.equal(world.getConstructionBackground(6,26),T.BRICK,'background construction restore revives support tiles');
+assert.equal(world.getPlayerConstructionBackground(6,26),T.BRICK,'player background getter sees restored explicit support tiles');
 assert.equal(world.metrics().constructionBackground,1,'world metrics track construction background cells');
 
 reset();
@@ -204,6 +207,7 @@ assert.equal(getTile(-4,70),T.AIR,'pipe intake can pull a stranded water remnant
 assert.equal(getTile(0,75),T.WATER,'stranded remnant exits through the lower open pipe end');
 
 const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+const worldSrc = readFileSync(new URL('../src/engine/world.js', import.meta.url), 'utf8');
 const waterDrawIdx = mainSrc.indexOf('if(WATER){ WATER.drawOverlay');
 const playerDrawIdx = mainSrc.indexOf('drawPlayer();');
 const ladderBackDrawIdx = mainSrc.indexOf('drawInfrastructureOverlays(sx,sy,viewX,viewY,{only:T.LADDER});');
@@ -220,6 +224,14 @@ assert.match(mainSrc, /else if\(t===T\.LADDER\)\{\s+drawLadderOverlay\(ctx,cell\
 assert.match(mainSrc, /t===T\.LADDER \? 3/, 'render sorting keeps ladders above pipes and cables in stacked overlay cells');
 assert.match(mainSrc, /function canPlaceLadderAt\(tx,ty,cur\)/, 'main has ladder-specific placement rules');
 assert.match(mainSrc, /FALLING && FALLING\.isPlayerBuiltAt && FALLING\.isPlayerBuiltAt\(x,y\)/, 'ladder placement can distinguish player-built foreground from natural terrain');
+assert.match(worldSrc, /function getPlayerConstructionBackground\(x,y\)\{[\s\S]*constructionBackground\.get\(key\(x,y\)\)/, 'world exposes a player-only construction background getter');
+assert.match(worldSrc, /worldAPI\.getPlayerConstructionBackground = getPlayerConstructionBackground/, 'world API publishes the player-only background getter');
+assert.match(mainSrc, /function getPlayerConstructionBackgroundTile\(x,y\)/, 'main reads player-built backwalls separately from generated backdrops');
+assert.match(mainSrc, /if\(placeAllowed && tryToggleBlockLayerAt\(tx,ty\)\) return true;/, 'secondary right-click checks layer toggling before normal placement');
+assert.match(mainSrc, /function tryToggleBlockLayerAt\(tx,ty\)\{[\s\S]*getTile\(tx,ty\)===selected[\s\S]*getPlayerConstructionBackgroundTile\(tx,ty\)===selected/, 'layer toggle switches the selected foreground block or its explicit background copy');
+assert.match(mainSrc, /getConstructionBackgroundTile\(tx,ty\)!==T\.AIR\)\{ msg\('Tlo zajete'\); return true; \}/, 'foreground-to-background toggle refuses to overwrite visible generated/player backdrops');
+assert.match(mainSrc, /toggleForegroundToBackground/, 'undo tracks foreground-to-background layer toggles');
+assert.match(mainSrc, /toggleBackgroundToForeground/, 'undo tracks background-to-foreground layer toggles');
 assert.doesNotMatch(mainSrc, /if\(t===T\.WATER_PIPE\)\{[\s\S]{0,360}PUMPS\.drawPipeTile\(cctx/, 'chunk cache no longer bakes water pipes before water');
 
 console.log('infrastructure-overlay-sim: all assertions passed');

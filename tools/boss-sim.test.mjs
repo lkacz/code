@@ -35,6 +35,7 @@ const { companions } = await import('../src/engine/companions.js');
 const { bosses } = await import('../src/engine/bosses.js');
 assert.ok(bosses, 'bosses module exports');
 const CFG = bosses.config;
+assert.equal(CFG.FEED_BUILD_SPEED_MULT, 3, 'bosses feed/build themselves 3x faster');
 assert.equal(CFG.SATIATE_BITES, 12, 'bosses eat twice as many blocks per meal');
 assert.equal(CFG.GROWTH_CAP, 28, 'bosses can grow twice as much over their starting size');
 

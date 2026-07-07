@@ -79,6 +79,7 @@ const weaponItems={ flame:{weaponType:'flame', fireDps:6, fireRange:6.5},
                     hose:{weaponType:'hose', fireDps:2, fireRange:6},
                     gas:{weaponType:'gas', fireDps:5, fireRange:5.5},
                     electric:{weaponType:'electric', fireDps:12, fireRange:8, energyCost:10},
+                    melee:{weaponType:'melee', attackDamage:12},
                     bow:{weaponType:'bow', attackDamage:3, fireCooldown:0.25} };
 let equipped=null;
 MM.inventory={ equippedItem:()=>equipped, TIER_COLORS:{} };
@@ -107,6 +108,48 @@ weapons.update(-1,getTile,setTile);
 fire.update(getTile,setTile,NaN);
 assert.equal(weapons.metrics().puffs, 0, 'invalid stream ticks do not create or corrupt puffs');
 assert.equal(weapons.metrics().arrows, 0, 'invalid stream ticks do not create or corrupt arrows');
+
+{
+  const oldMobs=MM.mobs;
+  const oldMods=MM.activeModifiers;
+  const meleeCalls=[];
+  const powerCalls=[];
+  MM.activeModifiers={attackDamage:7};
+  MM.mobs={
+    attackAt(tx,ty,bonus,opts){
+      meleeCalls.push({tx,ty,bonus,opts});
+      return tx===1 && ty===0;
+    },
+    damageAt(tx,ty,dmg,opts){
+      powerCalls.push({tx,ty,dmg,opts});
+      return tx===1 && ty===0;
+    }
+  };
+  equipped=weaponItems.melee;
+  player.x=0.5; player.y=0.5; player.facing=1; player.atkCd=0;
+  weapons.reset();
+  assert.equal(weapons.fireHeld(player, 5.5, 0.5, 1/60), true, 'normal melee can hit the adjacent target when aiming far past it');
+  assert.deepEqual(meleeCalls.map(c=>[c.tx,c.ty]), [[1,0]], 'normal melee clamps aim to one-tile reach');
+  assert.equal(meleeCalls[0].bonus, 7, 'normal melee keeps the damage bonus instead of turning it into range');
+
+  meleeCalls.length=0; player.atkCd=0; weapons.reset();
+  MM.mobs.attackAt=(tx,ty,bonus,opts)=>{ meleeCalls.push({tx,ty,bonus,opts}); return tx===2 && ty===0; };
+  assert.equal(weapons.fireHeld(player, 2.5, 0.5, 1/60), false, 'normal melee cannot reach a target two tiles away');
+  assert.deepEqual(meleeCalls.map(c=>[c.tx,c.ty]), [[1,0]], 'two-tile normal melee aim is still clamped to one tile');
+
+  powerCalls.length=0; player.atkCd=0; weapons.reset();
+  assert.equal(weapons.fireUlt(player, 5.5, 0.5), true, 'charged melee can hit the same adjacent target when aiming far past it');
+  assert.deepEqual(powerCalls.map(c=>[c.tx,c.ty]), [[1,0]], 'charged melee uses the same one-tile reach as normal melee');
+  assert.ok(powerCalls[0].dmg>weaponItems.melee.attackDamage, 'charged melee increases damage rather than reach');
+
+  powerCalls.length=0; player.atkCd=0; weapons.reset();
+  MM.mobs.damageAt=(tx,ty,dmg,opts)=>{ powerCalls.push({tx,ty,dmg,opts}); return tx===2 && ty===0; };
+  assert.equal(weapons.fireUlt(player, 2.5, 0.5), false, 'charged melee cannot reach a target two tiles away');
+  assert.deepEqual(powerCalls.map(c=>[c.tx,c.ty]), [[1,0]], 'two-tile charged melee aim is still clamped to one tile');
+  MM.mobs=oldMobs;
+  if(oldMods===undefined) delete MM.activeModifiers;
+  else MM.activeModifiers=oldMods;
+}
 
 function withHeroDamageProbe(fn){
   let damage=0, cause=null;

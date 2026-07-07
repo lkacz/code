@@ -12,6 +12,13 @@ const meat = (function(){
   const SCAN_RY = 46;
   const MAX_RECORDS = 900;
   const HOT_AIR_COOK_CELLS = 5;
+  const PIRANHA_BAIT_SCAN_RADIUS = 18;
+  const PIRANHA_BAIT_PROFILES = Object.freeze({
+    [T.MEAT]: Object.freeze({kind:'raw', duration:12, priority:3}),
+    [T.BAKED_MEAT]: Object.freeze({kind:'baked', duration:8, priority:2}),
+    [T.ROTTEN_MEAT]: Object.freeze({kind:'rotten', duration:4, priority:1})
+  });
+  const WATER_TOUCH_OFFSETS = Object.freeze([[0,0],[0,-1],[-1,0],[1,0],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]]);
   const HEAT_NEIGHBORS = Object.freeze([[0,-1],[1,-1],[-1,-1],[1,0],[-1,0],[0,1],[1,1],[-1,1]]);
   const HOT_AIR_ABSORB_OFFSETS = Object.freeze((()=>{
     const out=[];
@@ -44,6 +51,75 @@ const meat = (function(){
     return isObjectFootingTile(t);
   }
   function nextGasDelay(){ return ROTTEN_GAS_INTERVAL; }
+  function baitProfileForTile(t){ return PIRANHA_BAIT_PROFILES[t] || null; }
+  function isPiranhaBaitTile(t){ return !!baitProfileForTile(t); }
+  function nearestTouchingWater(x,y,getTile){
+    if(typeof getTile!=='function') return null;
+    for(const [dx,dy] of WATER_TOUCH_OFFSETS){
+      const wx=x+dx, wy=y+dy;
+      if(getSafe(getTile,wx,wy,T.AIR)===T.WATER) return {x:wx+0.5,y:wy+0.5,tileX:wx,tileY:wy};
+    }
+    return null;
+  }
+  function nearestWaterBait(wx,wy,radius,getTile){
+    if(typeof getTile!=='function' || !Number.isFinite(wx) || !Number.isFinite(wy)) return null;
+    const r=Math.floor(Math.max(1,Math.min(48,Number.isFinite(radius)?radius:PIRANHA_BAIT_SCAN_RADIUS)));
+    const r2=r*r;
+    const checked=new Set();
+    let best=null;
+    function consider(x,y){
+      x=Math.floor(x); y=Math.floor(y);
+      if(!finiteTile(x,y)) return;
+      const k=key(x,y);
+      if(checked.has(k)) return;
+      checked.add(k);
+      const t=getSafe(getTile,x,y,T.AIR);
+      const profile=baitProfileForTile(t);
+      if(!profile) return;
+      const water=nearestTouchingWater(x,y,getTile);
+      if(!water) return;
+      const cx=x+0.5, cy=y+0.5;
+      const dx=cx-wx, dy=cy-wy;
+      const d2=dx*dx+dy*dy;
+      if(d2>r2) return;
+      if(!best || d2<best.d2-0.001 || (Math.abs(d2-best.d2)<=0.001 && profile.priority>best.priority)){
+        best={
+          kind:profile.kind,
+          tile:t,
+          tx:x,
+          ty:y,
+          x:cx,
+          y:cy,
+          waterX:water.x,
+          waterY:water.y,
+          waterTileX:water.tileX,
+          waterTileY:water.tileY,
+          duration:profile.duration,
+          priority:profile.priority,
+          d2
+        };
+      }
+    }
+    for(const rcd of records.values()){
+      if(!rcd) continue;
+      consider(rcd.x,rcd.y);
+    }
+    const cx=Math.floor(wx), cy=Math.floor(wy);
+    for(let y=cy-r; y<=cy+r; y++){
+      for(let x=cx-r; x<=cx+r; x++) consider(x,y);
+    }
+    return best;
+  }
+  function consumeBaitAt(x,y,getTile,setTile){
+    x=Math.floor(x); y=Math.floor(y);
+    if(typeof getTile!=='function' || typeof setTile!=='function' || !finiteTile(x,y)) return false;
+    const t=getSafe(getTile,x,y,T.AIR);
+    if(!isPiranhaBaitTile(t)) return false;
+    setTile(x,y,T.AIR);
+    removeMeat(x,y);
+    notifyTileRemoved(x,y,getTile);
+    return true;
+  }
 
   function noteMeat(x,y,opts){
     x=Math.floor(x); y=Math.floor(y);
@@ -405,7 +481,7 @@ const meat = (function(){
 
   function reset(){ records.clear(); scanAcc=0; }
 
-  const api={update,dropFromMob,noteMeat,removeMeat,onTileChanged,auditChunks,snapshot,restore,reset,metrics:()=>({tracked:records.size,rottenGasInterval:ROTTEN_GAS_INTERVAL,rottenVanishSec:ROTTEN_VANISH_SEC}),_debug:{records,ROTTEN_GAS_INTERVAL,ROTTEN_VANISH_SEC}};
+  const api={update,dropFromMob,noteMeat,removeMeat,onTileChanged,auditChunks,snapshot,restore,reset,baitProfileForTile,nearestWaterBait,consumeBaitAt,metrics:()=>({tracked:records.size,rottenGasInterval:ROTTEN_GAS_INTERVAL,rottenVanishSec:ROTTEN_VANISH_SEC}),_debug:{records,ROTTEN_GAS_INTERVAL,ROTTEN_VANISH_SEC,PIRANHA_BAIT_PROFILES,nearestTouchingWater}};
   MM.meat=api;
   return api;
 })();

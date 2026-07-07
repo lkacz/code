@@ -20,6 +20,7 @@ const springPlatforms = (function(){
   let launches = 0;
   let poweredLaunches = 0;
   let unpoweredLaunches = 0;
+  let entityLaunches = 0;
   const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
@@ -119,26 +120,37 @@ const springPlatforms = (function(){
     return {powered:true,spent,source};
   }
 
-  function launchHero(player,x,y,getTile,opts){
+  function launchEntity(entity,x,y,getTile,opts){
+    opts=opts||{};
     const m=ensureMachine(x,y,getTile);
     if(!m || m.cooldown>0) return null;
     const spent=spendLaunchEnergy(m,getTile,opts||{});
     const powered=!!spent.powered;
     const launch=powered ? POWERED_LAUNCH : UNPOWERED_LAUNCH;
     const forward=powered ? POWERED_FORWARD_KICK : UNPOWERED_FORWARD_KICK;
-    player.vy=Math.min(Number(player.vy)||0,launch);
-    const dir=(Math.abs(Number(player.vx)||0)>0.2 ? Math.sign(player.vx) : (Number(player.facing)||1)) || 1;
-    player.vx=clamp((Number(player.vx)||0)+dir*forward,-14,14);
-    player.onGround=false;
-    player.jumpCount=Math.max(1,Number(player.jumpCount)||0);
+    const e=entity || {};
+    e.vy=Math.min(Number(e.vy)||0,launch);
+    if(opts.forward!==false){
+      const dir=(Math.abs(Number(e.vx)||0)>0.2 ? Math.sign(e.vx) : (Number(opts.facing!=null ? opts.facing : e.facing)||1)) || 1;
+      e.vx=clamp((Number(e.vx)||0)+dir*forward,-14,14);
+    }
+    if('onGround' in e) e.onGround=false;
+    if('grounded' in e) e.grounded=false;
+    if(typeof e.jumpCount==='number') e.jumpCount=Math.max(1,Number(e.jumpCount)||0);
+    e._springLaunchT=nowMs();
     m.cooldown=COOLDOWN;
     m.pulse=1;
     m.lastLaunch=nowMs();
     m.lastPowered=powered;
+    m.lastLaunchKind=String(opts.kind || 'entity').slice(0,32);
     launches++;
+    if(opts.kind && opts.kind!=='hero') entityLaunches++;
     if(powered) poweredLaunches++;
     else unpoweredLaunches++;
     return {powered,launch,spent:spent.spent||0,source:spent.source||'spring'};
+  }
+  function launchHero(player,x,y,getTile,opts){
+    return launchEntity(player,x,y,getTile,Object.assign({kind:'hero'},opts||{}));
   }
 
   function update(dt,player,getTile,opts){
@@ -260,6 +272,7 @@ const springPlatforms = (function(){
     launches=0;
     poweredLaunches=0;
     unpoweredLaunches=0;
+    entityLaunches=0;
   }
   function metrics(){
     let storedEnergy=0, charged=0;
@@ -267,7 +280,7 @@ const springPlatforms = (function(){
       storedEnergy+=Math.max(0,m.energy||0);
       if((m.energy||0)>0.001) charged++;
     }
-    return {machines:machines.size,charged,storedEnergy:+storedEnergy.toFixed(2),launches,poweredLaunches,unpoweredLaunches};
+    return {machines:machines.size,charged,storedEnergy:+storedEnergy.toFixed(2),launches,poweredLaunches,unpoweredLaunches,entityLaunches};
   }
   function debugChargeAt(x,y,amount,getTile){
     const m=ensureMachine(x,y,getTile || (MM.world && MM.world.getTile));
@@ -285,7 +298,7 @@ const springPlatforms = (function(){
     return true;
   }
 
-  const api={isSpringPlatformTile,ensureMachine,launchHero,update,catchUp,draw,onTileChanged,snapshot,restore,reset,metrics,_debug:{machines,CAPACITY,CHARGE_RATE,LAUNCH_COST,POWERED_LAUNCH,UNPOWERED_LAUNCH,debugChargeAt,debugSetEnergyAt}};
+  const api={isSpringPlatformTile,ensureMachine,launchEntity,launchHero,update,catchUp,draw,onTileChanged,snapshot,restore,reset,metrics,_debug:{machines,CAPACITY,CHARGE_RATE,LAUNCH_COST,POWERED_LAUNCH,UNPOWERED_LAUNCH,debugChargeAt,debugSetEnergyAt}};
   MM.springPlatforms=api;
   return api;
 })();

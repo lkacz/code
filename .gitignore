@@ -43,6 +43,7 @@ coverage/
 *.swo
 ~$*
 *.tmp
+tools/boats-qa*.png
 
 # Credentials / Local overrides
 .git-credentials

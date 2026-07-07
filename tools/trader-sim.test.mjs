@@ -1,6 +1,6 @@
 // Wandering-trader regression tests: visit clock, stall scouting on real
-// terrain rules, seeded per-visit stock, diamond-currency trades (buy/sell,
-// effects, epic chest placement), the anti-arbitrage price contract and
+// terrain rules, seeded per-visit stock, dual-currency trades (diamonds for
+// supplies, iridium for premium goods), epic chest placement, anti-arbitrage and
 // snapshot/restore through the npc registry.
 import assert from 'node:assert/strict';
 
@@ -34,7 +34,7 @@ MM.worldGen = { worldSeed: 424242, surfaceHeight: ()=>SURF };
 
 const player={x:100,y:SURF-1,hp:40,maxHp:100};
 globalThis.player=player;
-globalThis.inv={diamond:0,torch:0,wood:0,stone:0,sand:0,coal:0,obsidian:0,glass:0,steel:0,bakedMeat:0,arrowWood:0};
+globalThis.inv={diamond:0,iridium:0,torch:0,wood:0,stone:0,sand:0,coal:0,obsidian:0,glass:0,steel:0,bakedMeat:0,arrowWood:0};
 
 let day=0;
 const ctx={
@@ -71,34 +71,43 @@ assert.equal(stock.rates.length, 3, 'three seeded buy-back rates');
   assert.notDeepEqual(a.offers, c.offers, 'different visits shuffle the shelves');
 }
 
-// 4) anti-arbitrage: every dual-listed resource sells dearer than it buys back
+// 4) premium stock uses iridium; diamond-priced goods remain anti-arbitrage safe
 {
   const goods=trader._goods(), rates=trader._rates();
+  assert.deepEqual(goods.find(g=>g.id==='steel').cost, {iridium:1}, 'premium steel bundle costs iridium, not diamonds');
+  assert.deepEqual(goods.find(g=>g.id==='obsidian').cost, {iridium:1}, 'premium obsidian bundle costs iridium, not diamonds');
+  assert.deepEqual(goods.find(g=>g.id==='strength').cost, {iridium:1}, 'premium strength potion costs iridium, not diamonds');
+  assert.deepEqual(trader._epicChest().cost, {iridium:2}, 'the epic trader chest is priced in iridium');
+  assert.equal(trader.formatCost({diamond:1,iridium:2}), '1 💎 + 2 Ir', 'mixed costs format both currencies');
+  assert.equal(trader.canAffordOffer({cost:{iridium:2}}, {diamond:99,iridium:1}), false, 'diamonds cannot pay an iridium offer');
   for(const g of goods){
     if(!g.give) continue;
     for(const rk of Object.keys(g.give)){
       const rate=rates.find(r=>r.take && r.take[rk]!=null);
       if(!rate) continue;
-      const sellPricePerUnit=g.cost/g.give[rk];       // diamonds per unit bought
+      const diamondCost=trader._diamondCost(g.cost);
+      if(!diamondCost) continue;
+      const sellPricePerUnit=diamondCost/g.give[rk];  // diamonds per unit bought
       const buyBackPerUnit=rate.pay/rate.take[rk];    // diamonds per unit sold
       assert.ok(sellPricePerUnit>buyBackPerUnit, 'no arbitrage on '+rk);
     }
   }
 }
 
-// 5) buying: rejects when broke, grants resources when paid
+// 5) buying: rejects when broke, grants resources when paid with the requested currency
 {
-  const offer=stock.offers.find(o=>o.give);
-  assert.ok(offer, 'seeded stock includes at least one resource good');
+  const offer=stock.offers.find(o=>o.give && o.cost && o.cost.diamond);
+  assert.ok(offer, 'seeded stock includes at least one diamond-priced resource good');
   inv.diamond=0;
+  inv.iridium=0;
   let r=trader.tradeBuy(offer.id, {inv, player, getTile, setTile});
-  assert.equal(r.ok, false, 'buying with no diamonds fails');
-  inv.diamond=offer.cost;
+  assert.equal(r.ok, false, 'buying with no requested currency fails');
+  Object.keys(offer.cost).forEach(k=>{ inv[k]=offer.cost[k]; });
   const giveKey=Object.keys(offer.give)[0];
   const before=inv[giveKey]|0;
   r=trader.tradeBuy(offer.id, {inv, player, getTile, setTile});
-  assert.equal(r.ok, true, 'buying with enough diamonds succeeds');
-  assert.equal(inv.diamond, 0, 'diamonds are spent');
+  assert.equal(r.ok, true, 'buying with enough requested currency succeeds');
+  Object.keys(offer.cost).forEach(k=>assert.equal(inv[k], 0, k+' is spent'));
   assert.equal(inv[giveKey], before+offer.give[giveKey], 'goods are delivered');
 }
 
@@ -124,9 +133,14 @@ assert.equal(trader.tradeSell('definitely-not-a-rate',{inv,player}).ok, false, '
 // 8) the epic chest lands as a real tile beside the stall
 {
   inv.diamond=5;
-  const r=trader.tradeBuy('chest', {inv, player, getTile, setTile});
+  inv.iridium=0;
+  let r=trader.tradeBuy('chest', {inv, player, getTile, setTile});
+  assert.equal(r.ok, false, 'diamonds no longer buy the premium chest');
+  inv.iridium=2;
+  r=trader.tradeBuy('chest', {inv, player, getTile, setTile});
   assert.equal(r.ok, true, 'epic chest purchase succeeds');
-  assert.equal(inv.diamond, 0, 'chest costs 5 diamonds');
+  assert.equal(inv.iridium, 0, 'chest costs iridium');
+  assert.equal(inv.diamond, 5, 'premium chest does not consume diamonds');
   const bx=Math.floor(trader.position().x);
   let found=false;
   for(let dx=-3;dx<=3;dx++) if(getTile(bx+dx,SURF-1)===T.CHEST_EPIC) found=true;
@@ -139,6 +153,7 @@ assert.equal(trader.tradeSell('definitely-not-a-rate',{inv,player}).ok, false, '
   MM.progress={ addBuff:(b)=>buffs.push(b) };
   const buyCtx={inv, player, getTile, setTile};
   inv.diamond=10;
+  inv.iridium=10;
   player.hp=80;
   const healOk=trader.tradeBuy('heal', buyCtx);
   // heal may not be in this visit's stock — only assert when it is

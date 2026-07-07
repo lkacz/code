@@ -19,6 +19,8 @@ globalThis.MM = {
   T, WORLD_H:140, WORLD_MIN_Y, WORLD_MAX_Y, TILE:20,
   INFO: {
     [T.AIR]: {passable:true},
+    [T.GRASS]: {passable:false, flammable:true},
+    [T.WOOD]: {passable:false, flammable:true},
     [T.LEAF]: {passable:true},
     [T.WATER]: {passable:true},
     [T.POISON_GAS]: {passable:true, gas:true},
@@ -58,9 +60,12 @@ function resetWorld(){
   CFG.BORDER_SPAWN = false;
   CFG.STORMS = false;
   CFG.LIGHTNING_TELEPORT_CHANCE = 0;
+  CFG.LIGHTNING_CHEST_CHANCE = 0;
   TEMP = 0.7;
   globalThis.player = {x:0};
   delete MM.dynamo;
+  delete MM.fire;
+  delete MM.mobs;
   clouds.setWindOverride(null);
   clouds.setCycleOverride({cycleT:0.25, isDay:true, tDay:0.5}); // midday by default
 }
@@ -174,7 +179,7 @@ clouds.setWindOverride(1.5);
 step(30*240); // 4 min: incoming spawn is probabilistic but virtually certain by now
 assert.ok(clouds.metrics().clouds >= 1, 'cloud drifted in from another region');
 
-// --- 9. Lightning strike: transmutes the hit tile into a chest, hurts a close hero ---
+// --- 9. Lightning strike: damage first, rare chests, ignition, water shock ---
 resetWorld();
 CFG.EVAP_BASE = 0;
 let chargedByLightning=0;
@@ -190,24 +195,69 @@ MM.heroEnergy = {
 };
 globalThis.player = {x:0, y:89, hp:100, maxHp:100, energy:10, maxEnergy:100};
 const sres = clouds.strike(0, getTile, setTile);
-assert.ok(sres && sres.chest, 'strike transmuted the impact tile');
-assert.ok(CHEST_IDS.includes(getTile(sres.x,sres.y)), 'impact tile is now a chest');
+assert.ok(sres && !sres.chest, 'ordinary lightning does not routinely transmute ground into a chest');
+assert.equal(getTile(sres.x,sres.y), T.STONE, 'ordinary struck stone remains stone');
 assert.ok(globalThis.player.hp < 100, `hero at ground zero was electrocuted (hp=${globalThis.player.hp})`);
 assert.equal(sres.energy, 50, 'lightning hit reports the hero energy charge');
 assert.equal(chargedByLightning, 50, 'lightning charges the hero by +50 energy');
 assert.equal(globalThis.player.energy, 60, 'hero energy meter increases by the lightning charge');
-assert.equal(clouds.metrics().chests, 1, 'strike counter tracks the chest');
+assert.equal(clouds.metrics().chests, 0, 'ordinary lightning did not increment the chest counter');
 const hpAfter = globalThis.player.hp;
 globalThis.player.hpInvul = 0; // drop i-frames so only distance protects the hero
 const far = clouds.strike(40, getTile, setTile);
-assert.ok(far && far.chest, 'distant strike still makes a chest');
+assert.ok(far && !far.chest, 'distant ordinary strike also avoids routine chest creation');
 assert.equal(globalThis.player.hp, hpAfter, 'distant strike cannot hurt the hero');
 assert.equal(chargedByLightning, 50, 'distant lightning does not grant free energy');
+resetWorld();
+CFG.EVAP_BASE = 0;
+CFG.LIGHTNING_CHEST_CHANCE = 1;
+const oldChestRandom = Math.random;
+Math.random = () => 0.5;
+try{
+  const rareChest = clouds.strike(20, getTile, setTile);
+  assert.ok(rareChest && rareChest.chest, 'forced rare lightning path can still create a chest');
+  assert.ok(CHEST_IDS.includes(getTile(rareChest.x,rareChest.y)), 'forced rare path places a chest tile');
+  assert.equal(clouds.metrics().chests, 1, 'forced rare path increments the chest counter');
+} finally {
+  Math.random = oldChestRandom;
+}
+resetWorld();
+CFG.EVAP_BASE = 0;
+CFG.LIGHTNING_CHEST_CHANCE = 1;
+setTile(5,89,T.WOOD);
+let ignition = null;
+MM.fire = {
+  ignite(x,y,gt){
+    ignition = {x,y,t:gt(x,y)};
+    return true;
+  }
+};
+const fireStrike = clouds.strike(5, getTile, setTile);
+assert.ok(fireStrike && fireStrike.ignited, 'flammable lightning target ignites before chest fallback');
+assert.equal(fireStrike.chest, false, 'ignited lightning target does not also become a chest');
+assert.deepEqual(ignition, {x:5,y:89,t:T.WOOD}, 'lightning asks the fire engine to ignite the struck wood');
+assert.equal(getTile(5,89), T.WOOD, 'ignition does not replace the struck wood immediately');
+assert.equal(clouds.metrics().chests, 0, 'ignition path does not increment chest counter');
+delete MM.fire;
+resetWorld();
+CFG.EVAP_BASE = 0;
+let shockCall = null;
+MM.mobs = {
+  shockAquaticRadius(x,y,r,opts){
+    shockCall = {x,y,r,opts};
+    return {hit:3,killed:2};
+  }
+};
 // water strike: no chest — the surface erupts instead
 for(let x=58;x<66;x++) setTile(x,89,T.WATER);
 const wres = clouds.strike(61, getTile, setTile);
 assert.ok(wres && !wres.chest, 'water strike does not create a chest');
 assert.equal(getTile(61,89), T.WATER, 'water tile is unchanged');
+assert.equal(wres.aquaticHit, 3, 'water strike reports shocked aquatic mobs');
+assert.equal(wres.aquaticKilled, 2, 'water strike reports killed aquatic mobs');
+assert.ok(shockCall && shockCall.r === CFG.LIGHTNING_WATER_SHOCK_RADIUS, 'water strike uses the configured fish-shock radius');
+assert.equal(shockCall.opts.cause, 'lightning_water', 'water shock is tagged for downstream systems');
+delete MM.mobs;
 delete MM.heroEnergy;
 
 resetWorld();
@@ -215,9 +265,9 @@ CFG.EVAP_BASE = 0;
 setTile(0,-40,T.STONE);
 globalThis.player = {x:0, y:-41, hp:100, maxHp:100, energy:0, maxEnergy:100};
 const skyStrike = clouds.strike(0, getTile, setTile);
-assert.ok(skyStrike && skyStrike.chest, 'debug lightning follows a sky-layer hero into the upper world');
+assert.ok(skyStrike && !skyStrike.chest, 'debug lightning follows a sky-layer hero into the upper world without routine chest creation');
 assert.equal(skyStrike.y, -40, 'sky-layer lightning hits the first sky-island surface');
-assert.ok(CHEST_IDS.includes(getTile(0,-40)), 'sky-layer lightning can transmute a sky-island tile');
+assert.equal(getTile(0,-40), T.STONE, 'sky-layer ordinary strike leaves the sky-island tile intact');
 assert.ok(globalThis.player.hp < 100, 'sky-layer lightning can damage a nearby hero');
 
 resetWorld();
@@ -248,7 +298,7 @@ resetWorld();
 CFG.EVAP_BASE = 0;
 setTile(0,50,T.POISON_GAS);
 const gasStrike = clouds.strike(0, getTile, setTile);
-assert.ok(gasStrike && gasStrike.chest, 'lightning ignores gas and still hits the first real surface');
+assert.ok(gasStrike && !gasStrike.chest, 'lightning ignores gas and still hits the first real surface without routine chest creation');
 assert.equal(gasStrike.y, 90, 'gas is not treated as a roof or strike target');
 assert.equal(getTile(0,50), T.POISON_GAS, 'lightning passing through gas leaves it in place');
 
@@ -329,7 +379,7 @@ try{
   Math.random = oldRandom;
 }
 
-// --- 10. Storm front: heavy rain, frequent lightning chests, then calm again ---
+// --- 10. Storm front: heavy rain, frequent lightning, then calm again ---
 resetWorld();
 CFG.EVAP_BASE = 0;
 globalThis.player = {x:0, y:89, hp:100, maxHp:100};
@@ -339,7 +389,7 @@ step(30*81); // ride out the front
 let sm = clouds.metrics();
 assert.ok(sm.rainMass > 3, `storm poured heavy rain (rainMass=${sm.rainMass.toFixed(2)})`);
 assert.ok(sm.strikes >= 1, `storm produced lightning (strikes=${sm.strikes})`);
-assert.ok(countChests() >= 1, `lightning transmuted tiles into chests (got ${countChests()})`);
+assert.equal(countChests(), 0, 'storm lightning no longer routinely transmuted tiles into chests');
 assert.ok(!sm.storm.active, 'storm blew over after its duration');
 
 // --- 11. Far-field pruning keeps the humidity/debt maps bounded for travellers ---

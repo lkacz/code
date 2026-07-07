@@ -838,6 +838,8 @@ import './inventory.js';
     statsBox.appendChild(statRow('Całkowite skoki', 1+(m.maxAirJumps||0), jumpLines));
     const moveLines=[]; sel.forEach(it=>{ if(typeof it.moveSpeedMult==='number' && it.moveSpeedMult!==1) moveLines.push(label(it)+': '+fmtMult(it.moveSpeedMult)); });
     statsBox.appendChild(statRow('Prędkość ruchu', fmtMult(m.moveSpeedMult||1), moveLines));
+    const waterMoveLines=[]; sel.forEach(it=>{ if(typeof it.waterMoveSpeedMult==='number' && it.waterMoveSpeedMult!==0.5) waterMoveLines.push(label(it)+': '+Math.round(it.waterMoveSpeedMult*100)+'%'); });
+    statsBox.appendChild(statRow('Ruch w wodzie', Math.round((m.waterMoveSpeedMult||0.5)*100)+'%', waterMoveLines));
     const jpLines=[]; sel.forEach(it=>{ if(typeof it.jumpPowerMult==='number' && it.jumpPowerMult!==1) jpLines.push(label(it)+': '+fmtMult(it.jumpPowerMult)); });
     statsBox.appendChild(statRow('Moc skoku', fmtMult(m.jumpPowerMult||1), jpLines));
     const mineLines=[]; sel.forEach(it=>{ if(typeof it.mineSpeedMult==='number' && it.mineSpeedMult!==1) mineLines.push(label(it)+': '+fmtMult(it.mineSpeedMult)); });
@@ -909,7 +911,7 @@ import './inventory.js';
       ['str','Siła', '+1 obrażeń', st.str],
       ['agi','Zwinność', '+2% ruch/skok', st.agi],
       ['cap','Pojemność', '+25 energii', st.cap||0],
-      ['hard','Twardość', '+1.5 udźwigu zawału', st.hard||0],
+      ['hard','Twardość', '+1.5 udźwigu / ciśnienie', st.hard||0],
     ];
     rows.forEach(([key,label,effect,val])=>{
       const row=document.createElement('div');

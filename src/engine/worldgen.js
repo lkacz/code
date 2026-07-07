@@ -204,6 +204,11 @@ function contSpline(c, oc){
 	return pts[pts.length-1][1];
 }
 
+// Abyssal ocean profile: extra floor drop applied to open-sea columns beyond the
+// legacy shelf clamp, so real oceans dive to within a few tiles of the sealed
+// bedrock basin instead of the old ~30-tile shelf.
+const ABYSS_MAX_EXTRA = 34;
+
 // Long continental lows can otherwise form multi-thousand-block oceans. These
 // deterministic shoal bands raise occasional archipelagos inside deep basins,
 // breaking crossings without removing seas altogether.
@@ -247,7 +252,7 @@ WG.aquiferAt = function(x, row, biome){
 // --- Column model -----------------------------------------------------------------
 // Everything derived from x is computed once per column and cached.
 const colCache = new Map();
-WG.clearCaches = function(){ colCache.clear(); volcanoCellCache.clear(); cityCellCache.clear(); };
+WG.clearCaches = function(){ colCache.clear(); volcanoCellCache.clear(); cityCellCache.clear(); oceanSegCache.clear(); };
 WG.column = function(x){
 	let c = colCache.get(x); if(c) return c;
 	if(colCache.size>80000) colCache.clear();
@@ -295,6 +300,17 @@ WG.column = function(x){
 	elev += rough;
 	let row = Math.round(sea-elev);
 	row = clamp(row, 8, Math.min(sea+31, WORLD_H-34));
+	// Abyssal deepening: real oceans plunge far below the old shelf cap, down toward
+	// the bedrock basin. Scaled by both continentalness (open sea vs coastal water)
+	// and the shelf's own depth so shorelines/islet shelves stay continuous — the
+	// profile reads beach → shelf → slope → abyss with no sudden underwater cliffs.
+	if(!island && elev<-3){
+		const openSea = 1 - smoothstep(S.oceanFrac*0.5, S.oceanFrac+0.04, cont);
+		const depthT = clamp((-elev-3)/22, 0, 1);
+		const trench = 0.85 + 0.30*fbm1(xw,700,2,977);
+		const abyssExtra = Math.pow(depthT,1.25)*openSea*ABYSS_MAX_EXTRA*trench;
+		if(abyssExtra>0.5) row = clamp(Math.round(row+abyssExtra), 8, WORLD_H-16);
+	}
 	let elevF = sea-row;
 	let city = null;
 	const cityCand = rawCityAt(x);
@@ -348,6 +364,47 @@ WG.column = function(x){
 };
 WG.surfaceHeight = function(x){ return WG.column(x).row; };
 WG.biomeType = function(x){ return WG.column(x).biome; };
+
+// --- Ocean bedrock basins -----------------------------------------------------
+// Every wide stretch of surface water sits in a sealed bedrock basin ("skała
+// macierzysta"): from a thin sediment bed under the ocean floor all the way to
+// the world bottom, every column of the segment generates as unmineable bedrock.
+// Crossing a real ocean therefore means going OVER the water (boats) — never
+// tunneling under it. Ponds and small seas below the span threshold stay open
+// underneath so ordinary spelunking around lakes keeps working.
+const OCEAN_SEAL_MIN_SPAN = 96;   // contiguous water columns needed to count as ocean
+const OCEAN_SEAL_SEDIMENT = 3;    // sand/clay bed rows kept between floor and bedrock
+const OCEAN_SEAL_SCAN_CAP = 4000; // per-direction scan bound (breakers cap real runs earlier)
+const oceanSegCache = new Map();  // x -> segment object (shared per run) or null
+WG.OCEAN_SEAL_MIN_SPAN = OCEAN_SEAL_MIN_SPAN;
+WG.OCEAN_SEAL_SEDIMENT = OCEAN_SEAL_SEDIMENT;
+WG.oceanBasinAt = function(x){
+	x = Math.round(x);
+	const hit = oceanSegCache.get(x);
+	if(hit!==undefined) return hit;
+	if(oceanSegCache.size>120000) oceanSegCache.clear();
+	const SEA = WG.settings.seaLevel;
+	if(!(WG.column(x).row>SEA)){ oceanSegCache.set(x,null); return null; }
+	let L=x, R=x;
+	while(x-L<OCEAN_SEAL_SCAN_CAP && WG.column(L-1).row>SEA) L--;
+	while(R-x<OCEAN_SEAL_SCAN_CAP && WG.column(R+1).row>SEA) R++;
+	const width = R-L+1;
+	// Only genuinely oceanic segments seal: wide flooded inland valleys (biome 6
+	// lakes) stay open underneath so spelunking around big lakes keeps working.
+	let openSeaCols = 0;
+	if(width>=OCEAN_SEAL_MIN_SPAN){
+		for(let i=L;i<=R;i++){ if(WG.column(i).biome===5) openSeaCols++; }
+	}
+	const seg = (width>=OCEAN_SEAL_MIN_SPAN && openSeaCols>=width*0.55) ? {left:L, right:R, width} : null;
+	for(let i=L;i<=R;i++) oceanSegCache.set(i,seg);
+	return seg;
+};
+// Row from which the basin bedrock jacket starts for a sealed ocean column
+// (null when the column is not part of a sealed basin).
+WG.oceanSealTop = function(x){
+	if(!WG.oceanBasinAt(x)) return null;
+	return WG.column(Math.round(x)).row + OCEAN_SEAL_SEDIMENT;
+};
 WG.cityAt = function(x){ const c=WG.column(Math.round(x)); return c && c.city ? c.city : null; };
 function biomeRunAt(x,biome,origin,limit){
 	x=Math.round(x); biome=biome|0;
@@ -495,13 +552,14 @@ WG.coalVeinAt = function(x,y,nearCave){
 	const body=fbm2(x,y,24,17,2,1801);
 	return body>0.57 || WG.randSeed(x*7.73+y*0.37)<chance*0.42;
 };
-// Diamond odds scale with absolute depth; world.js triples this beside cave walls.
-// The ramp eases off through the last rows above WORLD_H so ore density blends
-// into the deep-section pocket model instead of cliff-dropping at the contact.
+// Diamond odds now belong to the lowest legacy crust: most reachable diamonds
+// should be a bedrock-level expedition, not a routine mid-depth seam. world.js
+// still boosts exposed cave-wall rolls, but the base chance stays deliberately
+// lean until the final rows above the lower-world contact.
 WG.diamondChance = function(y){
-	const d=clamp((y-58)/80,0,1);
-	const contactEase=clamp((y-(WORLD_H-22))/22,0,1);
-	return 0.0006 + d*d*0.038*(1-contactEase*0.62);
+	const bedrockward=clamp((y-(WORLD_H-34))/28,0,1);
+	const contactEase=clamp((y-(WORLD_H-8))/10,0,1);
+	return (0.000015 + Math.pow(bedrockward,3.6)*0.0038) * (1-contactEase*0.40);
 };
 
 // Node sims import this module without a DOM; the seed input only exists in the browser

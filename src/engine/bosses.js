@@ -63,7 +63,8 @@ window.MM = window.MM || {};
     // --- feeding & growth ---
     HUNGER_RATE: 1/26,  // hunger units/sec; reaches 1 (peckish) in ~26 s
     FORAGE_RANGE: 7,    // columns scanned around the beast for edible blocks
-    BITE_TIME: 0.55,    // seconds to chew through one block
+    BITE_TIME: 0.55,    // baseline seconds to chew through one block
+    FEED_BUILD_SPEED_MULT: 3, // feeding/growth bites happen this many times faster
     GROW_PER_MEAL: 3,   // blocks eaten per accreted body part
     SATIATE_BITES: 12,  // blocks eaten before a meal ends and hunger resets
     GROWTH_CAP: 28,     // most parts a beast may accrete over its starting size
@@ -854,7 +855,8 @@ window.MM = window.MM || {};
     // in range: chew
     m.vx*=0.6; m.dir=m.feed.tx>=bx?1:-1;
     m.biteT+=dt;
-    if(m.biteT>=CFG.BITE_TIME){
+    const biteTime=CFG.BITE_TIME/Math.max(1,CFG.FEED_BUILD_SPEED_MULT||1);
+    if(m.biteT>=biteTime){
       m.biteT=0;
       const eaten=m.feed.t;
       setTile(m.feed.tx,m.feed.ty,T.AIR);

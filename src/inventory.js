@@ -5,7 +5,7 @@
 //
 // Rendering/engine contracts kept intact so cape.js / eyes.js / main.js keep working:
 //   MM.customization    {capeStyle,eyeStyle,outfitStyle,capeColor,outfitColor}
-//   MM.activeModifiers  {maxAirJumps,visionRadius,mineSpeedMult,moveSpeedMult,jumpPowerMult,attackDamage}
+//   MM.activeModifiers  {maxAirJumps,visionRadius,mineSpeedMult,moveSpeedMult,jumpPowerMult,waterMoveSpeedMult,attackDamage}
 //   MM.drawOutfit(ctx,x,y,w,h,style,cust)
 // Loot pipeline: window.updateDynamicCustomization syncs chest loot into the bag;
 // MM.recomputeModifiers / MM.getModifiers expose the stat engine.
@@ -76,10 +76,12 @@
       chips.push({icon:'⚡', label:'Zużycie energii', text:item.energyCost+'/s', good:false});
     if(typeof item.energyCapacityBonus==='number' && item.energyCapacityBonus)
       chips.push({icon:'⚡', label:'Pojemność energii', text:(item.energyCapacityBonus>0?'+':'')+item.energyCapacityBonus+'E', good:item.energyCapacityBonus>0});
+    if(typeof item.waterMoveSpeedMult==='number' && item.waterMoveSpeedMult)
+      chips.push({icon:'~', label:'Ruch w wodzie', text:Math.round(item.waterMoveSpeedMult*100)+'%', good:item.waterMoveSpeedMult>0.5});
     if(typeof item.airJumps==='number' && item.airJumps)
       chips.push({icon:'🪽', label:'Skoki', text:'+'+item.airJumps, good:item.airJumps>0});
     if(typeof item.crushResistBonus==='number' && item.crushResistBonus)
-      chips.push({icon:'🪨', label:'Udźwig zawału', text:'+'+item.crushResistBonus, good:item.crushResistBonus>0});
+      chips.push({icon:'🪨', label:'Udźwig/ciśnienie', text:'+'+item.crushResistBonus, good:item.crushResistBonus>0});
     if(typeof item.visionRadius==='number'){
       const p=snapPct((item.visionRadius-VISION_BASE)*100/VISION_BASE);
       if(p) chips.push({icon:'👁️', label:'Widzenie', text:fmtPct(p), good:p>0});
@@ -100,6 +102,7 @@
     if(typeof item.fireRange==='number') s+=item.fireRange*2;
     if(typeof item.energyCost==='number') s-=item.energyCost*0.45;
     if(typeof item.energyCapacityBonus==='number') s+=item.energyCapacityBonus*0.55;
+    if(typeof item.waterMoveSpeedMult==='number') s+=(item.waterMoveSpeedMult-0.5)*80;
     if(item.weaponType==='bow' && typeof item.fireCooldown==='number') s+=(0.6-item.fireCooldown)*40; // faster bow = stronger
     if(typeof item.airJumps==='number') s+=item.airJumps*12;
     if(typeof item.crushResistBonus==='number') s+=item.crushResistBonus*10;
@@ -118,6 +121,7 @@
     mineSpeedMult:'mul',
     moveSpeedMult:'mul',
     jumpPowerMult:'mul',
+    waterMoveSpeedMult:'max',
     attackDamage:'sum',
     energyCapacityBonus:'sum',
     crushResistBonus:'sum'
@@ -126,11 +130,12 @@
     maxAirJumps:'Skoki dodatkowe',
     visionRadius:'Zasięg widzenia',
     moveSpeedMult:'Prędkość ruchu',
+    waterMoveSpeedMult:'Ruch w wodzie',
     jumpPowerMult:'Moc skoku',
     mineSpeedMult:'Szybkość kopania',
     attackDamage:'Obrażenia',
     energyCapacityBonus:'Pojemność energii',
-    crushResistBonus:'Udźwig zawału'
+    crushResistBonus:'Udźwig/ciśnienie'
   };
   const BASE_ATTACK=3; // bare-handed melee damage
 
@@ -156,7 +161,7 @@
     {id:'miner',      kind:'outfit', name:'Górnik',  mineSpeedMult:1.5,  desc:'Strój do kopania'},
     {id:'mystic',     kind:'outfit', name:'Mistyk',  jumpPowerMult:1.15, desc:'Lekka szata wędrowca'},
     {id:'ninja',      kind:'outfit', name:'Ninja',   moveSpeedMult:1.20, desc:'Strój cichego zabójcy'},
-    {id:'ironperson', kind:'outfit', name:'Iron',    crushResistBonus:2, desc:'Pancerz udźwignie zawał'},
+    {id:'ironperson', kind:'outfit', name:'Iron',    crushResistBonus:2, desc:'Pancerz wzmacnia na zawały i głębiny'},
     // Weapons (starter set; better ones drop from chests).
     // weaponType: 'melee' (default) strikes the aimed tile, 'bow' shoots arrows,
     // 'flame'/'hose'/'gas' streams terrain effects; 'electric' fires an energy beam.
@@ -210,6 +215,8 @@
     {key:'obsidian',label:'Obsydian',color:'#7a5cc1', tile:'OBSIDIAN'},
     {key:'glass',   label:'Szklo',   color:'#9deeff', tile:'GLASS'},
     {key:'brick',   label:'Cegla',   color:'#a65a3a', tile:'BRICK'},
+    {key:'chimney', label:'Komin',   color:'#6b5548', tile:'CHIMNEY'},
+    {key:'respawnTotem', label:'Totem odrodzenia', color:'#e23b4e', tile:'RESPAWN_TOTEM'},
     {key:'steel',   label:'Stal',    color:'#8f9aa6', tile:'STEEL'},
     {key:'meat',    label:'Mieso',   color:'#bd5145', tile:'MEAT'},
     {key:'rottenMeat', label:'Zepsute mieso', color:'#647136', tile:'ROTTEN_MEAT'},
@@ -276,7 +283,7 @@
     cape:['airJumps'],
     eyes:['visionRadius'],
     outfit:['mineSpeedMult','moveSpeedMult','jumpPowerMult','crushResistBonus'],
-    charm:['energyCapacityBonus','mineSpeedMult','moveSpeedMult','jumpPowerMult','crushResistBonus']
+    charm:['energyCapacityBonus','waterMoveSpeedMult','mineSpeedMult','moveSpeedMult','jumpPowerMult','crushResistBonus']
   };
   const KIND_STAT_MAX={cape:1, eyes:1, outfit:1, charm:1};
   const WEAPON_TYPE_STATS={
@@ -295,7 +302,7 @@
   // Loot items come from localStorage (bag + dynamic-loot keys) — whitelist their
   // fields on ingest so tampered/corrupt entries can't smuggle objects or markup
   // into stat math and innerHTML-based displays downstream.
-  const ITEM_NUM_FIELDS=['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','crushResistBonus'];
+  const ITEM_NUM_FIELDS=['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','crushResistBonus'];
   const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType'];
   const ITEM_KINDS=new Set(['cape','eyes','outfit','weapon','charm']);
   function sanitizeLootItem(raw,fallbackKind){
@@ -311,6 +318,9 @@
     ['moveSpeedMult','jumpPowerMult','mineSpeedMult'].forEach(f=>{
       if(typeof it[f]==='number'){ const m=snapMult(it[f]); if(m===1) delete it[f]; else it[f]=m; }
     });
+    if(typeof it.waterMoveSpeedMult==='number'){
+      it.waterMoveSpeedMult=Math.max(0.25, Math.min(1.25, Math.round(it.waterMoveSpeedMult*20)/20));
+    }
     // Function purity (also the one-shot migration for pre-rework saves): keep only
     // the stats of this kind's job, at most KIND_STAT_MAX of them in priority order.
     const allowed=allowedStatsFor(kind, it.weaponType);
@@ -417,6 +427,7 @@
     if(typeof item.mineSpeedMult==='number') fn('mineSpeedMult', item.mineSpeedMult);
     if(typeof item.moveSpeedMult==='number') fn('moveSpeedMult', item.moveSpeedMult);
     if(typeof item.jumpPowerMult==='number') fn('jumpPowerMult', item.jumpPowerMult);
+    if(typeof item.waterMoveSpeedMult==='number') fn('waterMoveSpeedMult', item.waterMoveSpeedMult);
     if(typeof item.attackDamage==='number') fn('attackDamage', item.attackDamage);
     if(typeof item.energyCapacityBonus==='number') fn('energyCapacityBonus', item.energyCapacityBonus);
     if(typeof item.crushResistBonus==='number') fn('crushResistBonus', item.crushResistBonus);
@@ -436,6 +447,7 @@
     }
     // Defaults to keep the engine stable
     if(mods.moveSpeedMult==null) mods.moveSpeedMult=1;
+    if(mods.waterMoveSpeedMult==null) mods.waterMoveSpeedMult=0.5;
     if(mods.mineSpeedMult==null) mods.mineSpeedMult=1;
     if(mods.jumpPowerMult==null) mods.jumpPowerMult=1;
     if(mods.attackDamage==null) mods.attackDamage=0;
@@ -443,6 +455,7 @@
     if(mods.crushResistBonus==null) mods.crushResistBonus=0;
     // Safety clamps (future-proof against extreme stacking)
     mods.moveSpeedMult=clampRange(mods.moveSpeedMult, 0.3, 30);
+    mods.waterMoveSpeedMult=clampRange(mods.waterMoveSpeedMult, 0.25, 1.25);
     mods.jumpPowerMult=clampRange(mods.jumpPowerMult, 0.3, 3);
     mods.attackDamage=clampRange(mods.attackDamage, 0, 97);
     mods.energyCapacityBonus=clampRange(mods.energyCapacityBonus, 0, 10000);

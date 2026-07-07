@@ -61,6 +61,10 @@ window.MM = window.MM || {};
     LIGHTNING_ENERGY_CHARGE: 50,
     LIGHTNING_DYNAMO_ATTRACT_RADIUS: 7,
     LIGHTNING_DYNAMO_ATTRACT_CHANCE: 0.42,
+    LIGHTNING_CHEST_CHANCE: 0.006,
+    LIGHTNING_STORM_CHEST_MULT: 1.5,
+    LIGHTNING_WATER_SHOCK_RADIUS: 7,
+    LIGHTNING_WATER_SHOCK_DAMAGE: 999,
     STORMS: true,         // random storm fronts (the startStorm API works regardless)
     STORM_CHANCE: 0.028,  // per-10s chance a front rolls in (~1 storm / 6 min average)
     STORM_FEED: 0.6,      // mass/sec a storm pumps into clouds overhead
@@ -479,6 +483,35 @@ window.MM = window.MM || {};
   function lightningCanAlterTile(y,t){
     return y<WORLD_BOTTOM-3 && t!==T.BEDROCK;
   }
+  function lightningChestChance(){
+    const base=clamp(finiteNum(CFG.LIGHTNING_CHEST_CHANCE,0),0,1);
+    const mult=storm.active ? Math.max(0,finiteNum(CFG.LIGHTNING_STORM_CHEST_MULT,1)) : 1;
+    return clamp(base*mult,0,1);
+  }
+  function maybeCreateLightningChest(x,y,setTile){
+    if(Math.random()>=lightningChestChance()) return null;
+    const r=Math.random();
+    const id=r<0.70? T.CHEST_COMMON : (r<0.92? T.CHEST_RARE : T.CHEST_EPIC);
+    setTile(x,y,id);
+    chestsMade++;
+    return {id,tier:(id===T.CHEST_EPIC)?'epic':(id===T.CHEST_RARE)?'rare':'common'};
+  }
+  function igniteLightningTile(x,y,getTile,setTile){
+    try{
+      return !!(MM.fire && typeof MM.fire.ignite==='function' && MM.fire.ignite(x,y,getTile,setTile));
+    }catch(e){ return false; }
+  }
+  function shockWaterCreatures(x,y,getTile){
+    try{
+      const api=MM.mobs;
+      if(api && typeof api.shockAquaticRadius==='function'){
+        const r=Math.max(1,finiteNum(CFG.LIGHTNING_WATER_SHOCK_RADIUS,7));
+        const damage=Math.max(1,finiteNum(CFG.LIGHTNING_WATER_SHOCK_DAMAGE,999));
+        return api.shockAquaticRadius(x+0.5,y,r,{damage,getTile,source:'lightning',cause:'lightning_water',naturalDeath:true});
+      }
+    }catch(e){}
+    return {hit:0,killed:0};
+  }
   function findDynamoLightningTarget(x,fromRow,getTile){
     const radius=Math.max(0,Math.min(16,Math.floor(CFG.LIGHTNING_DYNAMO_ATTRACT_RADIUS||0)));
     if(radius<=0) return null;
@@ -546,16 +579,16 @@ window.MM = window.MM || {};
     if(bolts.length>=6) bolts.shift();
     bolts.push({pts,branches,t:0.34,max:0.34,ix,iy});
   }
-  // A strike hits the first blocking tile under x: solids transmute into a loot chest
-  // (the bolt's gift), water just erupts — and a hero standing too close is
-  // electrocuted (water conducts much further than ground).
+  // A strike hits the first blocking tile under x: water conducts into nearby
+  // aquatic creatures, flammables catch fire, and only a tiny leftover chance
+  // creates a loot chest. A hero standing too close is electrocuted.
   function strikeAt(x,fromRow,getTile,setTile){
     let xi=Math.round(x);
     let hit=findDynamoLightningTarget(xi,fromRow,getTile) || firstBlockingTile(xi,fromRow,getTile);
     if(!hit) return null;
     let ty=hit.y, tile=hit.t;
     strikes++;
-    const res={x:xi, y:ty, chest:false, tier:null, dmg:0, energy:0, teleport:null, dynamo:null};
+    const res={x:xi, y:ty, chest:false, tier:null, dmg:0, energy:0, teleport:null, dynamo:null, ignited:false, aquaticHit:0, aquaticKilled:0};
     if(hit.slot){
       xi=hit.x; ty=hit.y; tile=hit.t;
       res.x=xi; res.y=ty;
@@ -570,15 +603,19 @@ window.MM = window.MM || {};
         if(MM.water && MM.water.disturb){ MM.water.disturb(xi,280); MM.water.disturb(xi-1,180); MM.water.disturb(xi+1,180); }
         if(MM.particles && MM.particles.spawnSplash) MM.particles.spawnSplash((xi+0.5)*TILE, ty*TILE, 1);
       }catch(e){}
+      const shocked=shockWaterCreatures(xi,ty,getTile);
+      res.aquaticHit=(shocked && shocked.hit)|0;
+      res.aquaticKilled=(shocked && shocked.killed)|0;
     } else if(!isChest && lightningCanAlterTile(ty,tile) && applyElectricReaction(xi,ty,getTile,setTile)){
       res.reaction=true;
+    } else if(!isChest && lightningCanAlterTile(ty,tile) && igniteLightningTile(xi,ty,getTile,setTile)){
+      res.ignited=true;
     } else if(!isChest && lightningCanAlterTile(ty,tile)){ // never transmute the bedrock shelf
-      const r=Math.random();
-      const id=r<0.70? T.CHEST_COMMON : (r<0.92? T.CHEST_RARE : T.CHEST_EPIC);
-      setTile(xi,ty,id);
-      res.chest=true; res.tier=(id===T.CHEST_EPIC)?'epic':(id===T.CHEST_RARE)?'rare':'common';
-      chestsMade++;
-      try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((xi+0.5)*TILE,(ty+0.5)*TILE,res.tier); }catch(e){}
+      const chest=maybeCreateLightningChest(xi,ty,setTile);
+      if(chest){
+        res.chest=true; res.tier=chest.tier;
+        try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((xi+0.5)*TILE,(ty+0.5)*TILE,res.tier); }catch(e){}
+      }
     }
     const p=(typeof window!=='undefined' && window.player);
     if(p && isFinite(p.x) && isFinite(p.y)){

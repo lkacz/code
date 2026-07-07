@@ -158,7 +158,7 @@ window.MM = window.MM || {};
       jumpPowerMult: 1+state.agi*0.02,         // +2% jump per Zwinność
       maxHpBonus: state.vit*10,                // +10 HP per Witalność (applied in main)
       energyCapacityBonus: state.cap*25,       // +25 energy capacity per Pojemność
-      crushResistBonus: state.hard*1.5,        // +1.5 collapse-load capacity per Twardość (engine/hero_crush.js)
+      crushResistBonus: state.hard*1.5,        // +1.5 crush-load capacity per Twardość (cave-ins and deep-water pressure)
     };
   }
 
@@ -167,6 +167,7 @@ window.MM = window.MM || {};
   // recomputes. Session-scoped by design (a reload sobers the hero up).
   const buffs=[]; // {name,icon,t,stats}
   const MUL_KEYS=new Set(['moveSpeedMult','jumpPowerMult','mineSpeedMult']);
+  const MAX_KEYS=new Set(['waterMoveSpeedMult']);
   function addBuff(b){
     if(!b || !b.stats) return false;
     buffs.push({name:b.name||'Buff', icon:b.icon||'✦', t:Math.max(1,b.dur||30), stats:b.stats});
@@ -181,6 +182,7 @@ window.MM = window.MM || {};
       for(const k in b.stats){
         const v=b.stats[k]; if(typeof v!=='number' || !isFinite(v)) continue;
         if(MUL_KEYS.has(k)) out[k]=(out[k]==null?1:out[k])*v;
+        else if(MAX_KEYS.has(k)) out[k]=Math.max(out[k]||0,v);
         else out[k]=(out[k]||0)+v;
       }
     }

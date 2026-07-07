@@ -77,6 +77,18 @@ assert.equal(INFO[T.SPRING_PLATFORM].energyCapacity,70,'spring platform advertis
 
 {
   reset();
+  setTile(0,10,T.SPRING_PLATFORM);
+  const crate={x:0.5,y:9,vx:0,vy:4,facing:-1,grounded:true};
+  const launched=springPlatforms.launchEntity(crate,0,10,getTile,{kind:'crate'});
+  assert.ok(launched,'generic entities can be launched by spring platforms');
+  assert.equal(crate.vy,springPlatforms._debug.UNPOWERED_LAUNCH,'generic entities receive the tuned spring impulse');
+  assert.equal(crate.grounded,false,'generic launch clears grounded state');
+  assert.ok(crate.vx<0,'generic launch can add facing-based travel kick');
+  assert.equal(springPlatforms.metrics().entityLaunches,1,'metrics track non-hero spring launches');
+}
+
+{
+  reset();
   assert.ok(WORLD_MIN_Y<0 && WORLD_MAX_Y>WORLD_H,'spring-platform tests cover extended vertical sections');
   setTile(0,-20,T.SPRING_PLATFORM);
   springPlatforms._debug.debugChargeAt(0,-20,springPlatforms._debug.CAPACITY,getTile);
@@ -131,12 +143,21 @@ assert.equal(INFO[T.SPRING_PLATFORM].energyCapacity,70,'spring platform advertis
 
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const uiSrc = await readFile(new URL('../src/engine/ui.js', import.meta.url), 'utf8');
+const mobsSrc = await readFile(new URL('../src/engine/mobs.js', import.meta.url), 'utf8');
+const companionsSrc = await readFile(new URL('../src/engine/companions.js', import.meta.url), 'utf8');
+const fallingSrc = await readFile(new URL('../src/engine/falling.js', import.meta.url), 'utf8');
+const boatsSrc = await readFile(new URL('../src/engine/boats.js', import.meta.url), 'utf8');
 assert.match(mainSrc, /import \{ springPlatforms as SPRING_PLATFORMS \}/, 'main imports spring platform engine');
 assert.match(mainSrc, /springPlatforms:\s*timedSavePart\('springPlatforms',[^\n]*SPRING_PLATFORMS && SPRING_PLATFORMS\.snapshot/, 'main saves spring platform batteries');
 assert.match(mainSrc, /SPRING_PLATFORMS\.restore\(data\.springPlatforms,getTile\)/, 'main restores spring platform batteries');
 assert.match(mainSrc, /SPRING_PLATFORMS\.update\(dt, player, getElectricNetworkTile, \{dynamo:DYNAMO, teleporters:TELEPORTERS\}\)/, 'main updates spring platforms with the electric network');
 assert.match(mainSrc, /SPRING_PLATFORMS\.draw\(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getElectricNetworkTile\)/, 'main draws spring platform charge overlays');
 assert.match(mainSrc, /SPRING_PLATFORMS\.launchHero\(player,landingTile\.x,landingTile\.y,getElectricNetworkTile,\{dynamo:DYNAMO,teleporters:TELEPORTERS\}\)/, 'landing collision launches the hero from spring platforms');
+assert.match(mobsSrc, /launchEntity\(m,x,y,getTile,\{kind:'mob'/, 'ground mobs launch when they land on spring platforms');
+assert.match(companionsSrc, /launchEntity\(c,tx,footY,getTile,\{kind:'companion'/, 'companions launch when their feet touch spring platforms');
+assert.match(fallingSrc, /launchFromSpringEntity\(b,springAt\.x,springAt\.y,'falling'\)/, 'falling rigid objects launch from spring platforms');
+assert.match(fallingSrc, /launchFromSpringEntity\(s,springAt\.x,springAt\.y,'sand'\)/, 'falling sand objects launch from spring platforms');
+assert.match(boatsSrc, /launchBoatFromSpring\(b,tx,ty,getTile\)/, 'beached boats launch from spring platforms');
 assert.match(mainSrc, /id:'spring_platform'/, 'crafting exposes spring platforms outside debug');
 assert.match(mainSrc, /cost:\{steel:2,\s*copperWire:2,\s*transistor:1\}/, 'spring platform recipe consumes steel and electronics components');
 assert.match(mainSrc, /tiles:\['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY','SPRING_PLATFORM'/, 'hotbar machine group includes spring platforms');

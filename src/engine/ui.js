@@ -429,6 +429,24 @@ MM.ui = (function(){
       });
       wrap.appendChild(skyRow);
     }
+    if(typeof actions.atlantis==='function'){
+      const atlantisRow=document.createElement('div');
+      atlantisRow.style.cssText='display:flex; gap:4px; margin-top:4px;';
+      [[-1,'Atlantis <','travelDebugAtlantisLeft'],[1,'Atlantis >','travelDebugAtlantisRight']].forEach(([dir,label,id])=>{
+        const b=document.createElement('button');
+        b.id=id;
+        b.textContent=label;
+        b.title='Teleport to the nearest generated Atlantis city '+(dir<0?'to the left':'to the right');
+        b.style.cssText='flex:1 1 0; min-width:0; font-size:11px; padding:3px 6px; border:1px solid rgba(80,225,255,.75);';
+        b.addEventListener('click',()=>{
+          const r=actions.atlantis(dir);
+          if(r===false){ msg('Atlantis teleport failed'); return; }
+          syncFromPos(r);
+        });
+        atlantisRow.appendChild(b);
+      });
+      wrap.appendChild(atlantisRow);
+    }
     if(typeof actions.underground==='function'){
       const undergroundRow=document.createElement('div');
       undergroundRow.style.cssText='display:flex; gap:4px; margin-top:4px;';

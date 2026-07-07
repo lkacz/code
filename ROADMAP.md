@@ -50,6 +50,28 @@ w README.
    Eliksir głębin, handlarz skupuje połów; XP za połów. Test `npm run
    test:fishing`, QA `node tools/fishing-qa.mjs`.
 
+## Poza numeracją — ✅ Oceany i łodzie (2026-07)
+- **Oceany jako realna bariera**: prawdziwe oceany (segmenty wody ≥96 kolumn,
+  dominująco biom 5) opadają abisalnie do ~58 kafli głębokości i siedzą w
+  szczelnej **niecce ze skały macierzystej** (`WG.oceanBasinAt/oceanSealTop`,
+  pieczęć w `world.js applyOceanBasinSeal` + `world_layers.deepTile`) — nie da
+  się przekopać pod oceanem na żadnej głębokości; stawy i jeziora (biom 6)
+  pozostają otwarte od spodu. Test `npm run test:ocean-basin`.
+- **Wychłodzenie w wodzie** (`survival.js updateSwimChill`): pływanie w głębokiej
+  wodzie po 12 s gracji zaczyna odbierać zdrowie (rosnące tempo), więc oceanu
+  nie da się przepłynąć wpław; brodzenie po dnie i pokład łodzi są bezpieczne.
+- **Łodzie z drewna** (`engine/boats.js`): drewno położone na wodzie NIE tonie —
+  tworzy/rozbudowuje pływającą tratwę (encja, nie kafle). Tratwa dryfuje z
+  wiatrem (`wind.js speedAt`), wiosłuje się stuknięciami A/D na pokładzie
+  (impuls kosztuje energię bohatera — z pustą pulą wiosłuje się słabo), planki
+  rozbiera się kilofem (zwrot drewna; rozcięty kadłub dzieli się na dwie
+  tratwy). Napęd = rejestr providerów (`registerPropulsion`) → przyszłe
+  silniki/żagle bez zmian w rdzeniu. Zapis w save (part `boats`). Test
+  `npm run test:boats`.
+- **Motywacja**: wyspy na oceanie to wyspy skarbów (gęstsze, bogatsze skrzynie —
+  rzadkie/epickie), a pierwszy kontakt z brzegiem oceanu podpowiada budowę
+  łodzi (`mm_ocean_hint_v1`).
+
 ## Tier 3 — horyzont
 8. ~~**Pory roku**~~ ✅ done — `engine/seasons.js`: pełny cykl wiosna/lato/
    jesień/zima (jesienne liście, sezonowe zwierzęta-okazy z trofeami,

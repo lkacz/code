@@ -466,7 +466,7 @@ window.MM = window.MM || {};
       for(let dx=-2; dx<=2; dx++) put(anchor+dx,g-2,T.STONE,true);
       for(let y=g-3; y>=g-9; y--) put(anchor,y,(y%2)?T.STEEL:T.STONE,true);
       put(anchor-1,g-6,T.STEEL,true); put(anchor+1,g-6,T.STEEL,true);
-      if(WG.randSeed(anchor*0.27+cell)>0.72) put(anchor,g-10,T.DIAMOND,true);
+      if(WG.randSeed(anchor*0.27+cell)>0.72) put(anchor,g-10,T.GLASS,true);
     };
     // Tapering spire with buttress feet and lancet window slits. Every column is
     // grounded on local terrain so the structural audit sees a supported mass.
@@ -534,7 +534,7 @@ window.MM = window.MM || {};
       for(const [sx,sy] of [[anchor-1,crownY],[anchor+1,crownY],[anchor,crownY],[anchor,crownY-1]]) putBg(sx,sy,T.STONE);
       if(WG.randSeed(cell*4.87+2.3)>0.35) put(anchor,crownY,WG.randSeed(cell*8.6+0.7)>0.8?T.CHEST_EPIC:T.CHEST_RARE,true);
       const apexY=col.row-tiers*tierH-1;
-      put(anchor,apexY,grand?T.DIAMOND:T.TORCH,true);
+      put(anchor,apexY,grand?T.GLASS:T.TORCH,true);
     };
     // ---- Abandoned civic lots ----------------------------------------------
     // Empty lots between buildings used to collect loose rubble piles. They now
@@ -1186,6 +1186,278 @@ window.MM = window.MM || {};
     for(const plant of collectCityPlants()) buildPowerPlant(plant);
   }
 
+  // --- Atlantis: rare seed-driven cities on sealed ocean floors --------------
+  // These are deliberately built above WG.oceanSealTop(). The bedrock basin still
+  // owns everything below the sediment bed, while the city uses the water column
+  // and seabed as an explorable, boat-worthy destination.
+  const ATLANTIS_CELL_W = 720;
+  const ATLANTIS_SCAN_PAD = 84;
+  const ATLANTIS_SAFE_RADIUS = 700;
+  const ATLANTIS_MIN_DEPTH = 28;
+  const ATLANTIS_MIN_BASIN_WIDTH = 180;
+  function atlantisReplaceableTile(t){
+    return isGeneratedStructureReplaceableTile(t) ||
+      t===T.SAND || t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.CLAY || t===T.WET_CLAY ||
+      t===T.DIRT || t===T.MUD || t===T.COAL || t===T.ICE ||
+      t===T.GLASS || t===T.OBSIDIAN || t===T.STEEL || t===T.BRICK || t===T.CHIMNEY ||
+      t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.LADDER;
+  }
+  function protectedAtlantisTile(t){
+    return t===T.BEDROCK || t===T.LAVA || t===T.ALTAR || t===T.VOLCANO_MASTER_STONE ||
+      t===T.SERVANT_STONE || t===T.MOTHER_ICE || t===T.MOTHER_LAVA ||
+      t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC;
+  }
+  function atlantisCandidateForCell(cell){
+    const gen=MM.worldGen || WG;
+    if(!gen || !gen.column || !gen.oceanBasinAt || !gen.oceanSealTop || !gen.randSeed) return null;
+    if(gen.randSeed(cell*31.731+2401)<0.76) return null;
+    const center=Math.round((cell+0.5)*ATLANTIS_CELL_W + (gen.randSeed(cell*19.173+2402)-0.5)*ATLANTIS_CELL_W*0.56);
+    if(Math.abs(center)<ATLANTIS_SAFE_RADIUS) return null;
+    const sea=(gen.settings && gen.settings.seaLevel!==undefined) ? gen.settings.seaLevel : 62;
+    const basin=gen.oceanBasinAt(center);
+    if(!basin || basin.width<ATLANTIS_MIN_BASIN_WIDTH) return null;
+    if(center<basin.left+ATLANTIS_SCAN_PAD || center>basin.right-ATLANTIS_SCAN_PAD) return null;
+    const col=gen.column(center);
+    if(!col || col.volcano || col.biome!==5 || col.row<sea+ATLANTIS_MIN_DEPTH) return null;
+    let minFloor=Infinity, maxFloor=-Infinity, sumFloor=0, samples=0;
+    for(let dx=-36; dx<=36; dx+=4){
+      const wx=center+dx;
+      const c=gen.column(wx);
+      if(!c || c.biome!==5 || c.row<sea+ATLANTIS_MIN_DEPTH-5 || !gen.oceanBasinAt(wx)) return null;
+      minFloor=Math.min(minFloor,c.row);
+      maxFloor=Math.max(maxFloor,c.row);
+      sumFloor+=c.row;
+      samples++;
+    }
+    if(samples<8 || maxFloor-minFloor>10) return null;
+    const style=Math.floor(gen.randSeed(cell*7.317+2403)*3);
+    const width=56 + Math.floor(gen.randSeed(cell*11.113+2404)*22);
+    return {cell, center, basin, sea, baseFloor:Math.round(sumFloor/samples), radius:width, style};
+  }
+  function atlantisSiteWithTravelFields(site,origin,dir,distance){
+    const left=Math.round(site.center-site.radius);
+    const right=Math.round(site.center+site.radius);
+    const entry=dir<0 ? right : (dir>0 ? left : (origin<left ? left : (origin>right ? right : Math.round(site.center))));
+    return {cell:site.cell, center:site.center, left, right, entry, distance, basin:site.basin, sea:site.sea, baseFloor:site.baseFloor, radius:site.radius, style:site.style};
+  }
+  function atlantisDistanceForDirection(site,origin,dir){
+    const left=Math.round(site.center-site.radius);
+    const right=Math.round(site.center+site.radius);
+    if(dir<0) return right<origin-2 ? origin-right : null;
+    if(dir>0) return left>origin+2 ? left-origin : null;
+    if(origin<left) return left-origin;
+    if(origin>right) return origin-right;
+    return 0;
+  }
+  function nearestAtlantisSite(originX,dir,maxDistance){
+    const origin=Number.isFinite(originX) ? Math.round(originX) : 0;
+    dir=dir<0 ? -1 : (dir>0 ? 1 : 0);
+    const limit=(Number.isFinite(maxDistance) && maxDistance>0) ? Math.floor(maxDistance) : 120000;
+    const baseCell=Math.floor(origin/ATLANTIS_CELL_W);
+    const cellPad=Math.ceil(limit/ATLANTIS_CELL_W)+4;
+    let best=null;
+    for(let cell=baseCell-cellPad; cell<=baseCell+cellPad; cell++){
+      const site=atlantisCandidateForCell(cell);
+      if(!site) continue;
+      const distance=atlantisDistanceForDirection(site,origin,dir);
+      if(distance==null || distance>limit) continue;
+      if(!best || distance<best.distance || (distance===best.distance && Math.abs(site.center-origin)<Math.abs(best.center-origin))){
+        best=atlantisSiteWithTravelFields(site,origin,dir,distance);
+      }
+    }
+    return best;
+  }
+  function applyAtlantis(arr,cx){
+    const gen=MM.worldGen || WG;
+    if(!gen || !gen.column || !gen.oceanSealTop) return;
+    const worldLeft=cx*CHUNK_W;
+    const worldRight=worldLeft+CHUNK_W-1;
+    const minCell=Math.floor((worldLeft-ATLANTIS_CELL_W)/ATLANTIS_CELL_W)-1;
+    const maxCell=Math.floor((worldRight+ATLANTIS_CELL_W)/ATLANTIS_CELL_W)+1;
+    for(let cell=minCell; cell<=maxCell; cell++){
+      const site=atlantisCandidateForCell(cell);
+      if(!site || site.center+site.radius<worldLeft-2 || site.center-site.radius>worldRight+2) continue;
+      buildAtlantisSite(arr,cx,site);
+    }
+  }
+  function buildAtlantisSite(arr,cx,site){
+    const gen=MM.worldGen || WG;
+    const worldLeft=cx*CHUNK_W;
+    const floorAt=wx=>gen.column(wx).row;
+    const rand=(salt)=>gen.randSeed(site.cell*43.77+salt);
+    let bgArr=null;
+    const put=(wx,y,t,force)=>{
+      wx=Math.floor(wx); y=Math.floor(y);
+      const lx=wx-worldLeft;
+      if(lx<0 || lx>=CHUNK_W || y<0 || y>=WORLD_H) return false;
+      const sealTop=gen.oceanSealTop(wx);
+      if(sealTop==null || y>=sealTop) return false;
+      const i=tileIndex(lx,y);
+      const cur=arr[i];
+      if(protectedAtlantisTile(cur) || (force ? !atlantisReplaceableTile(cur) : !isGeneratedStructureReplaceableTile(cur))) return false;
+      arr[i]=t;
+      return true;
+    };
+    const putBg=(wx,y,t)=>{
+      wx=Math.floor(wx); y=Math.floor(y);
+      const lx=wx-worldLeft;
+      if(lx<0 || lx>=CHUNK_W || y<0 || y>=WORLD_H || !isConstructionBackgroundTile(t)) return false;
+      const sealTop=gen.oceanSealTop(wx);
+      if(sealTop==null || y>=sealTop) return false;
+      const front=arr[tileIndex(lx,y)];
+      if(front!==T.AIR && front!==T.WATER && front!==T.TORCH && front!==T.GLOWSHROOM && front!==T.WIRE && front!==T.COPPER_WIRE && front!==T.WATER_PIPE) return false;
+      if(!bgArr){
+        bgArr=generatedBackground.get(ck(cx));
+        if(!bgArr){ bgArr=new Uint8Array(CHUNK_W*WORLD_H); generatedBackground.set(ck(cx),bgArr); genBgInvalidate(); }
+      }
+      bgArr[tileIndex(lx,y)]=t;
+      return true;
+    };
+    const atlantisBackTile=(salt)=>{
+      if(site.style===0) return salt%3===0 ? T.OBSIDIAN : T.STONE;
+      if(site.style===1) return salt%2===0 ? T.STEEL : T.GLASS;
+      return salt%4===0 ? T.BRICK : T.STEEL;
+    };
+    const carve=(wx,y,bgSalt)=>{
+      const ok=put(wx,y,T.AIR,false);
+      if(ok) putBg(wx,y,atlantisBackTile(bgSalt==null ? wx+y : bgSalt));
+      return ok;
+    };
+    const domeShellTile=(dx,dy,edge)=>{
+      if(edge || Math.abs(dx)%7===0 || Math.abs(dy)%5===0) return T.OBSIDIAN;
+      return (site.style===1 && Math.abs(dx)%4===0) ? T.STEEL : T.GLASS;
+    };
+    const buildDome=(center,rx,ry,salt)=>{
+      for(let dx=-rx; dx<=rx; dx++){
+        const wx=center+dx;
+        const floor=floorAt(wx);
+        const baseY=floor-1;
+        for(let y=baseY-ry-1; y<=baseY; y++){
+          const ndx=dx/rx;
+          const ndy=(y-baseY)/ry;
+          const n=ndx*ndx+ndy*ndy;
+          if(y===baseY && Math.abs(dx)<=rx-1){
+            put(wx,y,(Math.abs(dx)>rx-3 || Math.abs(dx)%6===0) ? T.OBSIDIAN : T.STEEL,true);
+          }else if(n<=1.08 && n>=0.74){
+            put(wx,y,domeShellTile(dx,y-baseY,Math.abs(dx)>rx-2),true);
+          }else if(n<0.74){
+            carve(wx,y,salt+dx+y);
+          }
+        }
+        if(Math.abs(dx)===rx || dx===0 || (Math.abs(dx)+salt)%9===0){
+          for(let y=baseY+1; y<=floor+2; y++) put(wx,y,T.OBSIDIAN,true);
+        }
+      }
+    };
+    const buildTube=(x1,x2,drop,salt)=>{
+      const step=x1<=x2 ? 1 : -1;
+      for(let wx=x1; step>0 ? wx<=x2 : wx>=x2; wx+=step){
+        const floor=floorAt(wx);
+        const cy=Math.min(floor-4, site.baseFloor-drop);
+        put(wx,cy-1,((wx+salt)%6===0)?T.OBSIDIAN:T.GLASS,true);
+        carve(wx,cy,salt+wx);
+        put(wx,cy+1,((wx+salt)%5===0)?T.STEEL:T.GLASS,true);
+        if(Math.abs((wx-site.center+salt)%10)<=1){
+          for(let y=cy+2; y<=floor+2; y++) put(wx,y,T.OBSIDIAN,true);
+        }
+      }
+    };
+    const buildSpire=(wx,height,salt)=>{
+      const floor=floorAt(wx);
+      const top=floor-height;
+      for(let y=top; y<=floor-2; y++){
+        put(wx,y,(y+salt)%4===0?T.GLASS:T.OBSIDIAN,true);
+        if((y+salt)%5===0){
+          for(let dx=-3; dx<=3; dx++){
+            if(Math.abs(dx)===3 || dx===0) put(wx+dx,y,T.GLASS,true);
+          }
+        }
+      }
+      put(wx,top-1,rand(2500+salt)>0.74 ? T.ANTIGRAVITY_BEACON : T.SOLAR_BATTERY,true);
+    };
+    const buildVault=(wx,salt)=>{
+      const floor=floorAt(wx);
+      const baseY=floor-1;
+      const topY=baseY-8;
+      for(let dx=-10; dx<=10; dx++){
+        for(let y=topY; y<=baseY; y++){
+          const arch=Math.abs(dx)/10 + Math.max(0,(topY+3-y))/9;
+          const edge=Math.abs(dx)>=9 || y===topY || y===baseY || arch>1.03;
+          const pillar=(Math.abs(dx)===5 && y>=topY+2) || (Math.abs(dx)===1 && y>=topY+4 && y<=baseY-2);
+          if(edge || pillar) put(wx+dx,y,pillar?T.STEEL:T.OBSIDIAN,true);
+          else carve(wx+dx,y,700+salt+dx+y);
+        }
+      }
+      put(wx-10,baseY-3,T.STEEL_DOOR,true);
+      put(wx+10,baseY-3,T.STEEL_DOOR,true);
+      put(wx-6,baseY-2,T.GLOWSHROOM,false);
+      put(wx+6,baseY-2,T.GLOWSHROOM,false);
+      for(let y=topY-5; y<topY; y++) put(wx,y,(y+salt)%2===0?T.GLASS:T.OBSIDIAN,true);
+      put(wx,topY-6,T.ANTIGRAVITY_BEACON,true);
+    };
+    const buildOuterShrine=(wx,salt)=>{
+      const floor=floorAt(wx);
+      const top=floor-7-Math.floor(rand(4100+salt)*3);
+      for(let y=top; y<=floor-1; y++){
+        put(wx,y,(y+salt)%3===0?T.GLASS:T.OBSIDIAN,true);
+        if((y+salt)%4===0){ put(wx-2,y,T.GLASS,true); put(wx+2,y,T.GLASS,true); }
+      }
+      put(wx-1,floor-2,T.GLOWSHROOM,false);
+      put(wx+1,floor-2,T.GLOWSHROOM,false);
+      if(rand(4200+salt)>0.68) put(wx,floor-3,T.CHEST_RARE,true);
+    };
+    const c=site.center;
+    const domes=[
+      {x:c,rx:12+Math.floor(rand(1)*4),ry:11+Math.floor(rand(2)*3),salt:1},
+      {x:c-22-Math.floor(rand(3)*7),rx:8,ry:8,salt:2},
+      {x:c+23+Math.floor(rand(4)*7),rx:8+Math.floor(rand(5)*2),ry:8,salt:3},
+      {x:c-43-Math.floor(rand(6)*6),rx:6,ry:7,salt:4},
+      {x:c+44+Math.floor(rand(7)*6),rx:6,ry:7,salt:5}
+    ];
+    for(let i=0; i<domes.length-1; i++) buildTube(domes[i].x,domes[i+1].x,4+(i%2),i*3);
+    for(const d of domes) buildDome(d.x,d.rx,d.ry,d.salt);
+    buildVault(c,17);
+    for(let wx=c-site.radius; wx<=c+site.radius; wx++){
+      const floor=floorAt(wx);
+      const rel=Math.abs(wx-c)/Math.max(1,site.radius);
+      if(rel<=1 && rand(wx*0.017+9)>rel*0.42){
+        put(wx,floor-1,(Math.abs(wx-c)%11===0)?T.OBSIDIAN:T.STEEL,true);
+        if(Math.abs(wx-c)%13===0) put(wx,floor,T.OBSIDIAN,true);
+      }
+    }
+    buildSpire(c,18+Math.floor(rand(20)*5),0);
+    buildSpire(c-31,13+Math.floor(rand(21)*4),4);
+    buildSpire(c+33,14+Math.floor(rand(22)*4),8);
+    buildOuterShrine(c-site.radius+10,31);
+    buildOuterShrine(c+site.radius-10,37);
+    const treasureY=site.baseFloor-2;
+    put(c,treasureY,T.CHEST_EPIC,true);
+    put(c-3,treasureY,T.CHEST_RARE,true);
+    put(c+4,treasureY,T.CHEST_RARE,true);
+    put(c,treasureY-2,T.IRIDIUM,true);
+    put(c-7,treasureY-1,T.METEORIC_IRON,true);
+    put(c+8,treasureY-1,T.METEORIC_IRON,true);
+    if(rand(30)>0.52) put(c+13,treasureY-2,T.ANTIMATTER_CRYSTAL,true);
+    for(const d of domes){
+      const floor=floorAt(d.x);
+      put(d.x-2,floor-2,T.GLOWSHROOM,false);
+      put(d.x+2,floor-2,T.GLOWSHROOM,false);
+      if(rand(100+d.salt)>0.66) put(d.x,floor-3,T.CHEST_RARE,true);
+    }
+  }
+
+  // Sealed ocean basin: every column of a wide water segment turns to unmineable
+  // bedrock from a thin sediment bed under the sea floor down to the chunk bottom
+  // (world_layers.deepTile continues the same seal through the deep sections).
+  function applyOceanBasinSeal(arr,cx){
+    if(!WG.oceanSealTop) return;
+    for(let lx=0; lx<CHUNK_W; lx++){
+      const wx=cx*CHUNK_W+lx;
+      const sealTop=WG.oceanSealTop(wx);
+      if(sealTop==null) continue;
+      for(let y=Math.max(0,sealTop); y<WORLD_H; y++) arr[tileIndex(lx,y)]=T.BEDROCK;
+    }
+  }
   function ensureChunk(cx){ const k=ck(cx); if(world.has(k)) return world.get(k); const arr=new Uint8Array(CHUNK_W*WORLD_H);
     const S=WG.settings||{};
     const SEA=(S.seaLevel===undefined)?62:S.seaLevel;
@@ -1245,8 +1517,10 @@ window.MM = window.MM || {};
             const volcanicRock=volcanoRockTile(col,wx,y,ground,depth);
             if(volcanicRock!==undefined) t=volcanicRock;
             else if(depth<SURFACE_GRASS_DEPTH){
-            // Surface material
-            if((s>SEA || biome===5 || biome===6 || lakeRow!==Infinity) && biome!==4) t=T.SAND; // sea/lake bed
+            // Surface material. Shallow shelves keep sandy beds; abyssal ocean
+            // plains expose bare rock (deep-water habitat, e.g. eels den there).
+            if((s>SEA || biome===5 || biome===6 || lakeRow!==Infinity) && biome!==4)
+              t=(biome===5 && s-SEA>30 && WG.randSeed(wx*3.77)<0.65) ? T.STONE : T.SAND; // sea/lake bed
             else if(biome===8) t=citySurfaceTile(WG,wx,depth);
             else if(biome===4) t=swampGroundTile(wx,depth,poolDepth);
             else if(biome===3 || beach) t=T.SAND;
@@ -1262,7 +1536,7 @@ window.MM = window.MM || {};
             } else if(depth<SURFACE_GRASS_DEPTH+sandTh+dirtTh){
             t=biome===8 ? citySurfaceTile(WG,wx,depth) : T.DIRT;
             } else {
-            // Stone mass; diamonds stay rare/deep, coal forms more common seams
+            // Stone mass; diamonds stay rare and bedrockward, coal forms more common seams
             // through ordinary underground rock and is richer beside cave walls.
             const nearCave=(COL_CARVE[y-1]||COL_CARVE[y+1]);
             const chance=WG.diamondChance(y)*(nearCave?3:1);
@@ -1289,12 +1563,20 @@ window.MM = window.MM || {};
         }
       }
     }
-    // Chest placement on surface blocks (above ground) using chestPlace probability
-    if(MM.chests){ for(let lx=0; lx<CHUNK_W; lx++){ const wx=cx*CHUNK_W+lx; if(WG.chestPlace && WG.chestPlace(wx)){ const surface=colHeight(wx); const placeY=surface-1; if(placeY>=0){
+    // Chest placement on surface blocks (above ground) using chestPlace probability.
+    // Ocean islets are treasure islands: denser chests with far richer tiers, so
+    // crossing the sealed deep water by boat pays off.
+    if(MM.chests){ for(let lx=0; lx<CHUNK_W; lx++){ const wx=cx*CHUNK_W+lx;
+        const col=WG.column(wx);
+        const isle=!!(col.island && col.elev>-1);
+        const place=(WG.chestPlace && WG.chestPlace(wx)) || (isle && WG.chestNoise && WG.chestNoise(wx)>0.86);
+        if(place){ const surface=colHeight(wx); const placeY=surface-1; if(placeY>=0){
           const below=arr[tileIndex(lx,surface)];
           // only on solid land surfaces (skip water, pools, carved cave mouths)
           if(below===T.GRASS||below===T.SAND||below===T.SNOW||below===T.STONE){
-            const r=WG.chestNoise(wx); let chestT=T.CHEST_COMMON; if(r>0.985) chestT=T.CHEST_EPIC; else if(r>0.955) chestT=T.CHEST_RARE;
+            const r=WG.chestNoise(wx); let chestT=T.CHEST_COMMON;
+            if(isle){ chestT = r>0.93 ? T.CHEST_EPIC : T.CHEST_RARE; }
+            else if(r>0.985) chestT=T.CHEST_EPIC; else if(r>0.955) chestT=T.CHEST_RARE;
             const idx=tileIndex(lx,placeY); if(arr[idx]===T.AIR){ arr[idx]=chestT; }
           }
         } } } }
@@ -1303,10 +1585,16 @@ window.MM = window.MM || {};
     applyUndergroundBiomeDressing(arr,cx);
     applyDevastatedCity(arr,cx);
     placeStructures(arr,cx);
+    applyAtlantis(arr,cx);
     // Buried ruin complexes are anchor-based (they may span chunk borders) and
     // applied last: carved interiors and masonry win over terrain/trees/chests
     if(RUINS && RUINS.applyToChunk) RUINS.applyToChunk(arr,cx);
     if(ALIEN_RUINS && ALIEN_RUINS.applyToChunk) ALIEN_RUINS.applyToChunk(arr,cx);
+    // Ocean bedrock basins are reasserted over terrain, caves, dressing and ruins
+    // so nothing generated above can open a tunnel under a real ocean. Story
+    // guardian passes run later and may still win — a rare lair pocket beats a
+    // broken story beat, and a pocket is not a crossing.
+    applyOceanBasinSeal(arr,cx);
     reinforceVolcanoConduits(arr,cx);
     if(GUARDIANS && GUARDIANS.applyToChunk) GUARDIANS.applyToChunk(arr,cx);
     if(UNDERGROUND && UNDERGROUND.applyToChunk) UNDERGROUND.applyToChunk(arr,cx);
@@ -1538,6 +1826,12 @@ window.MM = window.MM || {};
     }
     return genBackgroundAt(x,y);
   }
+  function getPlayerConstructionBackground(x,y){
+    if(constructionBackground.size===0) return T.AIR;
+    if(!worldYInBounds(y) || !isFinite(x) || Math.abs(x)>MAX_COORD) return T.AIR;
+    const t=constructionBackground.get(key(x,y));
+    return isConstructionBackgroundTile(t) ? t : T.AIR;
+  }
   function getNetworkTile(x,y){
     const over=getInfrastructure(x,y);
     return over!==T.AIR ? over : getTile(x,y);
@@ -1744,6 +2038,7 @@ window.MM = window.MM || {};
   worldAPI.getInfrastructureStack = getInfrastructureStack;
   worldAPI.hasInfrastructure = hasInfrastructure;
   worldAPI.getConstructionBackground = getConstructionBackground;
+  worldAPI.getPlayerConstructionBackground = getPlayerConstructionBackground;
   worldAPI.getOverlay = getInfrastructure;
   worldAPI.getNetworkTile = getNetworkTile;
   worldAPI.peekTile = peekTile;
@@ -1764,6 +2059,7 @@ window.MM = window.MM || {};
   worldAPI.isConstructionBackgroundTile = isConstructionBackgroundTile;
   worldAPI.clear = clearWorld;
   worldAPI.clearHeights = ()=>{ heightCache.clear(); lakeLevels.clear(); if(WG.clearCaches) WG.clearCaches(); };
+  worldAPI.nearestAtlantis = nearestAtlantisSite;
   worldAPI.markModifiedChunk = markModifiedChunk;
   worldAPI.modifiedChunkIds = ()=>[...modifiedChunks]
     .map(id=>normalizeChunkRef(id))

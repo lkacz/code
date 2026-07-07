@@ -217,7 +217,7 @@ WG.clearCaches();
   assert.ok(upperSolid > upper.air + upper.water, 'upper deep transition remains a traversable rock mass, not an open horizontal band');
   assert.ok(upper.basalt > 7000 && upper.granite > 1200, 'upper deep transition continues mature basalt/granite crust instead of restarting as shallow stone');
   assert.ok(upper.stone < upper.basalt * 0.08, 'upper deep transition does not repeat the mid-world shallow stone strata');
-  assert.ok(upper.diamond > 60, 'upper deep transition keeps rare resource seams');
+  assert.ok(upper.diamond < 8, 'upper deep transition stays diamond-scarce so diamonds wait near bedrock (got '+upper.diamond+')');
 }
 
 {
@@ -382,7 +382,8 @@ WG.clearCaches();
 }
 
 {
-  // Ore systems cross the contact and pool into masses instead of uniform flecks.
+  // Coal systems cross the contact, while diamonds are now a sparse bedrock-level
+  // prize instead of an upper-deep transition resource.
   let coalAbove = 0, coalBelow = 0;
   for(let x=-384; x<=384; x++){
     for(let y=126; y<140; y++) if(world.getTile(x,y)===T.COAL) coalAbove++;
@@ -390,22 +391,20 @@ WG.clearCaches();
   }
   assert.ok(coalAbove >= 15 && coalBelow >= 30, 'coal seams continue across the mid/low contact (above '+coalAbove+', below '+coalBelow+')');
 
-  let diamonds = 0, clustered = 0;
+  let diamonds = 0, upperDiamonds = 0, midDiamonds = 0, bedrockDiamonds = 0;
   for(let x=-384; x<=384; x++){
     for(let y=150; y<270; y++){
       if(world.getTile(x,y)!==T.DIAMOND) continue;
       diamonds++;
-      let neighbor = false;
-      for(let dy=-1; dy<=1 && !neighbor; dy++){
-        for(let dx=-1; dx<=1; dx++){
-          if((dx||dy) && world.getTile(x+dx,y+dy)===T.DIAMOND){ neighbor = true; break; }
-        }
-      }
-      if(neighbor) clustered++;
+      if(y<WORLD_H+60) upperDiamonds++;
+      else if(y<WORLD_H+100) midDiamonds++;
+      else bedrockDiamonds++;
     }
   }
-  assert.ok(diamonds > 300, 'deep sections keep a meaningful diamond supply ('+diamonds+')');
-  assert.ok(clustered/Math.max(1,diamonds) > 0.18, 'deep ores cluster into pocket masses ('+(clustered/Math.max(1,diamonds)*100).toFixed(1)+'% adjacent)');
+  assert.ok(diamonds >= 45 && diamonds <= 140, 'deep sections keep a sparse diamond supply ('+diamonds+')');
+  assert.ok(upperDiamonds <= 4, 'upper deep band has almost no diamonds ('+upperDiamonds+')');
+  assert.ok(bedrockDiamonds > diamonds*0.65, 'most deep diamonds sit in the bedrockward band ('+bedrockDiamonds+'/'+diamonds+')');
+  assert.ok(bedrockDiamonds > midDiamonds*3, 'bedrockward diamonds dominate mid-depth diamonds ('+bedrockDiamonds+' vs '+midDiamonds+')');
 }
 
 {
@@ -461,7 +460,7 @@ assert.doesNotMatch(worldSource, /function geologyMix\(/, 'legacy terrain no lon
 assert.match(mainSource, /function ensureChunkAtY\(cx,y\)[\s\S]*WORLD\.ensureSection\(cx,sy\)/, 'main can eagerly load the chunk section matching a world y');
 assert.match(mainSource, /function teleportHeroTo\(x,y,opts\)[\s\S]*ensureChunkAtY\(Math\.floor\(x\/CHUNK_W\),y\)/, 'debug and scripted teleports load the destination vertical section');
 assert.match(mainSource, /function ensureChunks\(\)[\s\S]*ensureChunkAtY\(pcx\+d,player\.y\)/, 'runtime chunk warming follows the player vertical section');
-assert.match(mainSource, /function placePlayer\(skipMsg,opts\)[\s\S]*ensureChunkAtY\(Math\.floor\(respawnPoint\.x\/CHUNK_W\),respawnPoint\.y\)/, 'totem respawn placement warms the saved vertical section');
-assert.match(mainSource, /function deathRespawnTarget\(\)[\s\S]*ensureChunkAtY\(Math\.floor\(respawnPoint\.x\/CHUNK_W\),respawnPoint\.y\)/, 'death respawn target warms the saved vertical section');
+assert.match(mainSource, /function totemRespawnSpot\(tx,ty\)[\s\S]*ensureChunkAtY\(Math\.floor\(tx\/CHUNK_W\),ty\)/, 'totem respawn spot warms the saved vertical section');
+assert.match(mainSource, /function placePlayer\(skipMsg,opts\)[\s\S]*const spot=totemRespawnSpot\(totem\.x,totem\.y\);[\s\S]*ensureChunkAtY\(Math\.floor\(spot\.x\/CHUNK_W\),spot\.y\)/, 'totem respawn placement warms the chosen landing section');
 assert.match(mainSource, /function debugGasOrigin\(\)[\s\S]*ensureChunkAtY\(Math\.floor\(tx\/CHUNK_W\),ty\)/, 'debug gas placement probes the correct vertical section');
 assert.match(mainSource, /function debugRigCellsClear\(cells\)[\s\S]*ensureChunkAtY\(Math\.floor\(cell\.x\/CHUNK_W\),cell\.y\)/, 'debug rig placement validates cells in the correct vertical section');

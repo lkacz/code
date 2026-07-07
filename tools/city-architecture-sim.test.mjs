@@ -54,7 +54,7 @@ function ensureChunks(chunks,order='forward'){
 // dilute the palette/height signal.
 function aboveSurfaceStats(city){
   const radius=Math.max(80,city.radius||180);
-  const stats={steel:0,stone:0,obsidian:0,glass:0,diamond:0,coreHeights:[],edgeHeights:[]};
+  const stats={steel:0,stone:0,obsidian:0,glass:0,coreHeights:[],edgeHeights:[]};
   for(let x=Math.floor(city.center-radius); x<=Math.ceil(city.center+radius); x++){
     if(WG.biomeType(x)!==8) continue;
     const surf=WG.surfaceHeight(x);
@@ -67,7 +67,6 @@ function aboveSurfaceStats(city){
       else if(t===T.STONE) stats.stone++;
       else if(t===T.OBSIDIAN) stats.obsidian++;
       else if(t===T.GLASS) stats.glass++;
-      else if(t===T.DIAMOND) stats.diamond++;
     }
     const h=top===null?0:surf-top;
     const rel=Math.abs(x-city.center)/radius;
@@ -124,7 +123,7 @@ const foundryStats=generatedStats(foundry);
 const zigguratStats=generatedStats(ziggurat);
 assert.ok(steelShare(foundryStats) > steelShare(zigguratStats)+0.08,
   'foundry city is visibly more steel-heavy than ziggurat city ('+steelShare(foundryStats).toFixed(2)+' vs '+steelShare(zigguratStats).toFixed(2)+')');
-assert.ok(zigguratStats.diamond>=1, 'ziggurat district generates its grand-ziggurat landmark apex');
+assert.ok(zigguratStats.glass>=1, 'ziggurat district generates its glass landmark apex without exposed diamonds');
 
 // Skyline envelope: a downtown-core school city towers over its own outskirts.
 const cored=byArch.get(1)||byArch.get(0);
@@ -175,9 +174,13 @@ for(const [archId,pickAny] of byArch){
   assert.ok(moved/before.size < 0.08,
     'architecture school '+archId+' city keeps its structures through settling (moved '+(100*moved/before.size).toFixed(2)+'%)');
   if(archId===3){
-    let diamonds=0;
-    for(const t of after.values()) if(t===T.DIAMOND) diamonds++;
-    assert.ok(diamonds>=1, 'grand-ziggurat diamond apex survives structural settling');
+    let glass=0, diamonds=0;
+    for(const t of after.values()){
+      if(t===T.GLASS) glass++;
+      if(t===T.DIAMOND) diamonds++;
+    }
+    assert.ok(glass>=1, 'grand-ziggurat glass apex survives structural settling');
+    assert.equal(diamonds,0, 'city ziggurat no longer exposes diamond blocks');
   }
 }
 

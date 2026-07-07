@@ -142,6 +142,34 @@ assert.equal(getTile(0,19),T.WIRE,'gas motion does not overwrite passable wiring
 assert.equal(getTile(0,20),T.POISON_GAS,'blocked gas remains conserved below passable wiring');
 
 resetWorld();
+fill(-2,2,18,20,T.STONE);
+setTile(0,19,T.CHIMNEY);
+setTile(0,18,T.CHIMNEY);
+setTile(0,20,T.POISON_GAS);
+gases._debug.active.get('0,20').moveT=0;
+gases.update(0.05,getTile,setTile,{x:0,y:20});
+assert.equal(getTile(0,20),T.AIR,'gas entering an open chimney clears the source cell');
+assert.equal(getTile(0,17),T.POISON_GAS,'gas exits at the open chimney outlet');
+assert.equal(gases.metrics().poison,1,'chimney venting preserves one active gas record at the outlet');
+
+resetWorld();
+fill(-2,2,17,20,T.STONE);
+setTile(0,19,T.CHIMNEY);
+setTile(0,18,T.CHIMNEY);
+setTile(0,20,T.POISON_GAS);
+gases._debug.active.get('0,20').moveT=0;
+gases.update(0.05,getTile,setTile,{x:0,y:20});
+assert.equal(getTile(0,20),T.POISON_GAS,'a capped chimney does not delete blocked gas');
+assert.equal(getTile(0,17),T.STONE,'a capped chimney keeps its solid cap intact');
+
+resetWorld();
+fill(-1,1,18,20,T.STONE);
+setTile(0,19,T.CHIMNEY);
+setTile(0,18,T.CHIMNEY);
+assert.equal(gases.add('hot',0.5,20,{power:0.2,cells:1,getTile,setTile}),1,'fresh hot air can spawn through a chimney inlet');
+assert.equal(getTile(0,17),T.HOT_AIR,'fresh hot air appears at the chimney outlet');
+
+resetWorld();
 fill(-1,1,18,18,T.STONE);
 fill(-1,-1,19,20,T.STONE);
 fill(1,1,19,20,T.STONE);

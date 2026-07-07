@@ -1820,6 +1820,30 @@ window.MM = window.MM || {};
   }
 
   // --- Entity integration (swept, cell-by-cell — large dt cannot tunnel through floors) ---
+  function launchFromSpringEntity(entity,springX,springY,kind){
+    const spring=(typeof window!=='undefined' && window.MM) ? window.MM.springPlatforms : null;
+    if(!spring || typeof spring.launchEntity!=='function') return false;
+    return !!spring.launchEntity(entity,springX,springY,getTile,{kind,forward:false});
+  }
+
+  function moveFallingEntityUp(e,gt,dt){
+    if(!e || !(e.vy<0) || !(dt>0)) return false;
+    let remaining=Math.min(3.5, -e.vy*dt);
+    let moved=false;
+    while(remaining>0){
+      const yi=Math.floor(e.yFloat);
+      if(yi<=WORLD_TOP){ e.yFloat=WORLD_TOP; e.vy=0; break; }
+      const aboveY=yi-1;
+      if(!passable(gt(e.x,aboveY))){ e.vy=0; break; }
+      const frac=e.yFloat-yi;
+      const step=Math.min(remaining, frac>1e-5 ? frac : 1);
+      e.yFloat-=step;
+      remaining-=step;
+      moved=true;
+    }
+    return moved;
+  }
+
   function update(gt,st,dt){
     if(!(dt>0) || !isFinite(dt)) return;
     init(gt,st);
@@ -1841,19 +1865,24 @@ window.MM = window.MM || {};
       applyWindToFalling(b,b.type,dt,inWater);
       b.vy += (inWater?G_WATER:G_AIR)*dt;
       const cap=inWater?VMAX_WATER:VMAX_AIR; if(b.vy>cap) b.vy=cap;
+      if(b.vy<0){ moveFallingEntityUp(b,getTile,dt); continue; }
       // null = still falling; any finite row (including negative sky-section rows) = resting spot
-      let remaining=b.vy*dt, settledAt=null;
+      let remaining=b.vy*dt, settledAt=null, springAt=null;
       while(remaining>0){
         const yi=Math.floor(b.yFloat);
         if(yi>=WORLD_BOTTOM-1){ b.yFloat=WORLD_BOTTOM-1; settledAt=WORLD_BOTTOM-1; break; }
         let below=getTile(b.x,yi+1);
         if(b.rubble && isStructural(b.type) && crushTile(b.x,yi+1)) below=T.AIR;
-        if(!passable(below)){ settledAt=yi; break; }
+        if(!passable(below)){ settledAt=yi; if(below===T.SPRING_PLATFORM) springAt={x:b.x,y:yi+1}; break; }
         const dist=(yi+1)-b.yFloat;
         if(remaining<dist){ b.yFloat+=remaining; remaining=0; }
         else { b.yFloat=yi+1; remaining-=dist; }
       }
       if(settledAt!==null){
+        if(springAt && launchFromSpringEntity(b,springAt.x,springAt.y,'falling')){
+          b.yFloat=settledAt;
+          continue;
+        }
         if(playerBlocks(b.x,settledAt)){ b.vy=0; b.yFloat=settledAt; continue; } // rest on the player until they move
         if(isFragileFalling(b.type)){ breakFragile(b.x,settledAt); active.splice(i,1); continue; }
         // roll/stack target may land on the hero even when settledAt did not — hover, never bury
@@ -1871,18 +1900,24 @@ window.MM = window.MM || {};
       applyWindToFalling(s,T.SAND,dt,inWater);
       s.vy += (inWater?G_WATER:G_AIR)*dt;
       const cap=inWater?SAND_VMAX_WATER:SAND_VMAX_AIR; if(s.vy>cap) s.vy=cap;
+      if(s.vy<0){ moveFallingEntityUp(s,getTile,dt); continue; }
       // null = still falling; negative rows are valid resting spots in the sky sections
-      let remaining=s.vy*dt, blockedAt=null;
+      let remaining=s.vy*dt, blockedAt=null, springAt=null;
       while(remaining>0){
         const yi=Math.floor(s.yFloat);
         if(yi>=WORLD_BOTTOM-1){ s.yFloat=WORLD_BOTTOM-1; blockedAt=WORLD_BOTTOM-1; break; }
-        if(!passable(getTile(s.x,yi+1))){ blockedAt=yi; break; }
+        const below=getTile(s.x,yi+1);
+        if(!passable(below)){ blockedAt=yi; if(below===T.SPRING_PLATFORM) springAt={x:s.x,y:yi+1}; break; }
         const dist=(yi+1)-s.yFloat;
         if(remaining<dist){ s.yFloat+=remaining; remaining=0; }
         else { s.yFloat=yi+1; remaining-=dist; }
       }
       if(blockedAt===null) continue;
       const yi=blockedAt;
+      if(springAt && launchFromSpringEntity(s,springAt.x,springAt.y,'sand')){
+        s.yFloat=yi;
+        continue;
+      }
       if(yi<WORLD_BOTTOM-1){ // grain rolls down slopes (also under water)
         const canL = passable(getTile(s.x-1,yi)) && passable(getTile(s.x-1,yi+1));
         const canR = passable(getTile(s.x+1,yi)) && passable(getTile(s.x+1,yi+1));

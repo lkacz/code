@@ -158,6 +158,64 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
       poisonT:0.15+rand01(x,y,47)*0.35
     };
   }
+  function isChimneyTile(t){
+    return t===T.CHIMNEY;
+  }
+  function chimneyOutletFor(x,y,getTile){
+    x=Math.floor(x); y=Math.floor(y);
+    if(y<WORLD_TOP) return {x,y,sky:true,t:T.AIR};
+    if(!finiteTile(x,y) || !isChimneyTile(getSafe(getTile,x,y,T.STONE))) return null;
+    let cy=y;
+    let guard=0;
+    while(cy>=WORLD_TOP && cy<WORLD_BOTTOM && guard++<96 && isChimneyTile(getSafe(getTile,x,cy,T.STONE))) cy--;
+    if(cy<WORLD_TOP) return {x,y:cy,sky:true,t:T.AIR};
+    if(cy>=WORLD_BOTTOM) return null;
+    return {x,y:cy,sky:false,t:getSafe(getTile,x,cy,T.STONE)};
+  }
+  function chimneyOutletAcceptsGas(outlet){
+    return !!(outlet && (outlet.sky || outlet.t===T.AIR || isGasTile(outlet.t)));
+  }
+  function placeNewGasThroughChimney(tile,x,y,getTile,setTile){
+    const outlet=chimneyOutletFor(x,y,getTile);
+    if(!chimneyOutletAcceptsGas(outlet)) return false;
+    if(outlet.sky) return true;
+    if(outlet.t===T.AIR){
+      setGasTile(outlet.x,outlet.y,tile,setTile);
+      noteGas(outlet.x,outlet.y,tile,{age:0,moveT:moveDelay(tile,outlet.x,outlet.y)*0.35,setTile});
+      wakeWaterAt(outlet.x,outlet.y,getTile);
+      return true;
+    }
+    noteGas(outlet.x,outlet.y,outlet.t===tile ? tile : outlet.t,{age:outlet.t===tile?0:undefined,setTile});
+    return true;
+  }
+  function moveGasThroughChimney(g,x,y,getTile,setTile){
+    const outlet=chimneyOutletFor(x,y,getTile);
+    if(!chimneyOutletAcceptsGas(outlet)) return false;
+    const ox=g.x, oy=g.y;
+    const oldKey=key(ox,oy);
+    if(outlet.sky){
+      clearGasCell(ox,oy,getTile,setTile);
+      return true;
+    }
+    if(outlet.t===T.AIR){
+      const newKey=key(outlet.x,outlet.y);
+      if(typeof setTile==='function'){
+        setGasTile(ox,oy,T.AIR,setTile);
+        setGasTile(outlet.x,outlet.y,g.t,setTile);
+      }
+      active.delete(oldKey);
+      active.delete(newKey);
+      g.x=outlet.x; g.y=outlet.y; g.moveT=moveDelay(g.t,outlet.x,outlet.y); g._frame=frameSeq;
+      active.set(newKey,g);
+      try{ if(MM.water && MM.water.onTileChanged){ MM.water.onTileChanged(ox,oy,getTile); MM.water.onTileChanged(outlet.x,outlet.y,getTile); } }catch(e){}
+      return true;
+    }
+    if(typeof setTile==='function') setGasTile(ox,oy,T.AIR,setTile);
+    active.delete(oldKey);
+    noteGas(outlet.x,outlet.y,outlet.t===g.t ? g.t : outlet.t,{age:outlet.t===g.t?0:undefined,setTile});
+    try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(ox,oy,getTile); }catch(e){}
+    return true;
+  }
   function swapGasCells(g,nx,ny,dst,getTile,setTile){
     if(!canSwapThroughGas(g.t,dst) || typeof setTile!=='function') return false;
     const ox=g.x, oy=g.y;
@@ -202,6 +260,11 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
     active.set(newKey,g);
     try{ if(D.recordFlow && D.recordFlow(nx,ny,g.t,1,getTile)) maybeConsumePoweredGas(g,nx,ny,nx,ty,getTile,setTile); }catch(e){}
     return true;
+  }
+  function tryMoveGasThroughChimney(g,nx,ny,dx,dy,getTile,setTile){
+    if(dx!==0 || dy!==-1) return false;
+    if(!isChimneyTile(getSafe(getTile,nx,ny,T.STONE))) return false;
+    return moveGasThroughChimney(g,nx,ny,getTile,setTile);
   }
   function maybeConsumePoweredGas(g,slotX,slotY,outX,outY,getTile,setTile){
     if(!g || (g.t!==T.STEAM && g.t!==T.HOT_AIR)) return false;
@@ -428,6 +491,7 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
       if(ny>=WORLD_BOTTOM) continue;
       const dst=getSafe(getTile,nx,ny,T.AIR);
       if(tryMoveGasThroughDynamo(g,nx,ny,dx,dy,getTile,setTile)) return true;
+      if(tryMoveGasThroughChimney(g,nx,ny,dx,dy,getTile,setTile)) return true;
       if(swapGasCells(g,nx,ny,dst,getTile,setTile)) return true;
       if(!canReplaceWithGas(g.t,dst)) continue;
       const oldKey=key(g.x,g.y);
@@ -499,6 +563,7 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
       if(!finiteTile(tx,ty)) continue;
       const cur=getSafe(getTile,tx,ty,T.AIR);
       if(cur===tile){ noteGas(tx,ty,tile,{age:0,setTile}); placed++; continue; }
+      if(isChimneyTile(cur) && placeNewGasThroughChimney(tile,tx,ty,getTile,setTile)){ placed++; continue; }
       if(!canReplaceWithGas(tile,cur)) continue;
       if(cur===T.HOT_AIR) active.delete(key(tx,ty));
       setGasTile(tx,ty,tile,setTile);

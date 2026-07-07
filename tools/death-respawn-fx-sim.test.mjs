@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 
 const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const indexSource = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+const constantsSource = readFileSync(new URL('../src/constants.js', import.meta.url), 'utf8');
 
 assert.match(mainSource, /let deathTravelFx=null;/, 'death respawn transit has a single active state object');
 assert.match(mainSource, /function startDeathTravelFx\(cause\)[\s\S]*deathRespawnTarget\(\)[\s\S]*releaseGameplayInput\(\)[\s\S]*spawnEnergyAbsorb/, 'starting death transit locks input and emits energy toward the respawn target');
@@ -27,6 +28,14 @@ assert.match(mainSource, /route\.pathLen=deathTravelEstimatedPathLength\(route\)
 assert.ok(!/0\.9 \+ dist\*0\.018/.test(mainSource), 'death transit does not use the old capped distance fudge');
 assert.ok(!/DEATH_TRAVEL_MAX_DUR=2\.35/.test(mainSource), 'death transit no longer has the short max duration that made far flights too fast');
 assert.match(mainSource, /function placePlayer\(skipMsg,opts\)[\s\S]*if\(opts\.center===false\)\{ revealAround\(\); ensureChunks\(\); initScarf\(\); \}/, 'placePlayer supports a no-snap mode for smooth death transit handoff');
+assert.match(constantsSource, /RESPAWN_TOTEM:77/, 'respawn totem is a stable terrain tile rather than a virtual marker');
+assert.match(constantsSource, /77:\{hp:8,color:'#e23b4e',drop:'respawnTotem',passable:true,\s*respawnTotem:true\}/, 'respawn totem drops as a placeable passable fixture');
+assert.doesNotMatch(mainSource, /RESPAWN_TOTEM_MINE_ID/, 'respawn totem no longer uses a virtual mining target id');
+assert.match(mainSource, /function noteRespawnTotemTileChanged\(tx,ty,old,next\)[\s\S]*old!==T\.RESPAWN_TOTEM && next!==T\.RESPAWN_TOTEM[\s\S]*saveRespawnTotems\(\)/, 'real terrain tile changes keep the respawn totem index synchronized');
+assert.match(mainSource, /MM\.onTileRenderChanged=function\(tx,ty,old,next\)[\s\S]*noteRespawnTotemTileChanged\(tx,ty,old,next\)/, 'world tile lifecycle hook updates respawn totems for placement, mining and undo');
+assert.match(mainSource, /function nearestRespawnTotem\(\)[\s\S]*validRespawnTotemCells\(\)[\s\S]*if\(d<bestD\)\{ bestD=d; best=p; \}/, 'death respawn ranks all living totems by distance to the hero');
+assert.match(mainSource, /function deathRespawnTarget\(\)\{\s*const totem=nearestRespawnTotem\(\);\s*if\(totem\) return totemRespawnSpot\(totem\.x,totem\.y\);\s*return defaultRespawnTarget\(\);\s*\}/, 'death transit targets the nearest valid totem, then falls back to map start');
+assert.match(mainSource, /function placePlayer\(skipMsg,opts\)[\s\S]*const totem=nearestRespawnTotem\(\);[\s\S]*const spot=totemRespawnSpot\(totem\.x,totem\.y\);[\s\S]*ensureChunkAtY\(Math\.floor\(spot\.x\/CHUNK_W\),spot\.y\)/, 'final respawn placement warms the totem destination section and lands near the tile');
 
 const deathHandler = mainSource.match(/window\.heroDied=function\(cause\)\{([\s\S]*?)\n\};/);
 assert.ok(deathHandler, 'hero death handler is present');
@@ -47,6 +56,7 @@ assert.match(mainSource, /spawnEnergyAbsorb\([^\n]+quick:true,hue:'gold'\}/, 'de
 assert.match(mainSource, /function drawCape\(\)\{ if\(deathTravelFx\) return; CAPE\.draw\(ctx,TILE\); \}/, 'cape is hidden while the hero is transformed into energy');
 assert.match(mainSource, /function drawPlayer\(\)\{ if\(drawDeathTravelFx\(\)\) return;/, 'player body renderer is replaced by the death energy renderer during transit');
 assert.match(mainSource, /if\(!deathTravelFx && WEAPONS && WEAPONS\.drawHeld\) WEAPONS\.drawHeld\(ctx,TILE,player\);/, 'held weapon is hidden during death transit');
+assert.match(mainSource, /function drawBackground\(\)\{[\s\S]*const focus=deathTravelFx \? deathTravelCurrentPoint\(deathTravelFx\) : player;[\s\S]*BACKGROUND\.draw\(ctx, W, H, focus\.x, TILE, WORLDGEN, zoom\);/, 'background biome and parallax anchor follow the traveling energy during death transit');
 assert.match(mainSource, /function cameraCenterForPlayer\(\)\{[\s\S]*deathTravelFx \? deathTravelCurrentPoint\(deathTravelFx\) : player/, 'camera follows the traveling energy while death transit is active');
 assert.match(mainSource, /function updateCameraFollow\(dt\)[\s\S]*if\(deathTravelFx\)\{[\s\S]*camSX=c\.x; camSY=c\.y;[\s\S]*applyCameraFromCenter\(\);[\s\S]*return;/, 'death transit keeps the spirit centered instead of camera-lagging behind it');
 assert.match(mainSource, /function updateStatusHud\(ts\)[\s\S]*const travel=deathTravelHudMetrics\(\);[\s\S]*const pos=\(travel && travel\.pos\) \|\| player;[\s\S]*fmtStatusCoord\(pos\.x\)\+','\+fmtStatusCoord\(pos\.y\)/, 'status panel reports the traveling spirit position while death transit is active');

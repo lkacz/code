@@ -33,6 +33,9 @@ const invasions = (function(){
   const PLAYER_LEVEL_CAP = 99;
   const INVASION_MAX_TEAMS = 6;
   const INVASION_MAX_ALIENS = 18;
+  const OFFSCREEN_DESPAWN_DAYS = 1;
+  const OFFSCREEN_VIEW_PAD = 6;
+  const OFFSCREEN_FALLBACK_RADIUS = 88;
   const THREAT_GRADE_NAMES = ['scout','veteran','elite','ascendant'];
   const teams = [];
   const caches = [];
@@ -704,6 +707,7 @@ const invasions = (function(){
       forceRewardChance:Number.isFinite(opts.forceRewardChance) ? clamp(Number(opts.forceRewardChance),0,1) : undefined,
       xpReward:xpRewardForTeam(day,alienCount,playerLevel,threatLevel),
       startedAt:Date.now(),
+      lastSeenDay:Number.isFinite(opts.currentDayFloat) ? opts.currentDayFloat : currentDayInfo().dayFloat,
       defeatedAt:0,
       announced:false,
       builtTiles:[],
@@ -792,6 +796,7 @@ const invasions = (function(){
       forceRewardChance:Number.isFinite(opts.forceRewardChance) ? clamp(Number(opts.forceRewardChance),0,1) : undefined,
       xpReward:Math.round(xpRewardForTeam(day,alienCount,playerLevel,threatLevel) * 1.04),
       startedAt:Date.now(),
+      lastSeenDay:Number.isFinite(opts.currentDayFloat) ? opts.currentDayFloat : currentDayInfo().dayFloat,
       defeatedAt:0,
       announced:false,
       builtTiles:[],
@@ -851,7 +856,9 @@ const invasions = (function(){
   function spawnNightInvasion(player, getTile, setTile, opts){
     opts = opts || {};
     rememberWorldAccess(getTile,setTile,opts.ctx || {});
-    const day = Math.max(1, opts.day || currentDayInfo().dayIndex || 1);
+    const dayInfo = currentDayInfo();
+    const day = Math.max(1, opts.day || dayInfo.dayIndex || 1);
+    const currentDayFloat = Number.isFinite(opts.dayFloat) ? Number(opts.dayFloat) : dayInfo.dayFloat;
     const playerLevel = playerLevelFor(player,opts);
     const threatLevel = threatLevelFor(day,playerLevel,opts);
     const count = Math.max(1, Math.min(INVASION_MAX_TEAMS, opts.teams || teamCountForDay(day,playerLevel,threatLevel)));
@@ -870,7 +877,8 @@ const invasions = (function(){
         commanderChance:opts.commanderChance,
         forceCommander:!!opts.forceCommander,
         forceRewardTier:opts.forceRewardTier,
-        forceRewardChance:opts.forceRewardChance
+        forceRewardChance:opts.forceRewardChance,
+        currentDayFloat
       });
       teams.push(team);
       spawned.push(team);
@@ -2173,10 +2181,12 @@ const invasions = (function(){
       if(!team.speechStartAt) team.speechStartAt = now;
       if(team.heroHealthBand === undefined) team.heroHealthBand = '';
       if(team.heroHealthBand === band) continue;
-      team.heroHealthBand = band;
-      if(band === 'mid') continue;
+      if(band === 'mid'){
+        team.heroHealthBand = band;
+        continue;
+      }
       if(now < (team.speechStartAt || now) + 10000) continue;
-      triggerTeamSpeech(team,band === 'low' ? 'heroLowHp' : 'heroHighHp',{
+      const said = triggerTeamSpeech(team,band === 'low' ? 'heroLowHp' : 'heroHighHp',{
         x:player.x,
         y:player.y,
         now,
@@ -2185,6 +2195,7 @@ const invasions = (function(){
         keyCooldown:32000,
         override:false
       });
+      if(said) team.heroHealthBand = band;
     }
   }
   function shouldBreakBlockedTile(hit,player,range){
@@ -2397,6 +2408,79 @@ const invasions = (function(){
     team.builtTiles.length = 0;
     team.rampTiles = 0;
   }
+  function viewportContains(viewport,x,y,pad){
+    if(!viewport || !Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) return false;
+    const x0 = Number(viewport.x0), y0 = Number(viewport.y0), x1 = Number(viewport.x1), y1 = Number(viewport.y1);
+    if(!Number.isFinite(x0) || !Number.isFinite(y0) || !Number.isFinite(x1) || !Number.isFinite(y1)) return false;
+    const p = Math.max(0, Number(pad) || 0);
+    return x >= Math.min(x0,x1) - p && x <= Math.max(x0,x1) + p && y >= Math.min(y0,y1) - p && y <= Math.max(y0,y1) + p;
+  }
+  function teamContactPoints(team){
+    const pts = [];
+    if(team && Number.isFinite(Number(team.x)) && Number.isFinite(Number(team.y))) pts.push({x:Number(team.x),y:Number(team.y)});
+    const l = team && team.lander;
+    if(l && !l.invisible && Number.isFinite(Number(l.x)) && Number.isFinite(Number(l.y))) pts.push({x:Number(l.x),y:Number(l.y)});
+    const b = team && team.burrow;
+    if(b){
+      if(Number.isFinite(Number(b.x)) && Number.isFinite(Number(b.targetY))) pts.push({x:Number(b.x),y:Number(b.targetY)});
+      if(Number.isFinite(Number(b.x)) && Number.isFinite(Number(b.y))) pts.push({x:Number(b.x),y:Number(b.y)});
+    }
+    for(const a of (team && team.aliens) || []){
+      if(!a || a.dead || a.hp <= 0 || !Number.isFinite(Number(a.x)) || !Number.isFinite(Number(a.y))) continue;
+      pts.push({x:Number(a.x),y:Number(a.y)-0.45});
+    }
+    return pts;
+  }
+  function teamInActiveView(team,player,ctx){
+    const pts = teamContactPoints(team);
+    if(!pts.length) return false;
+    const viewport = ctx && ctx.viewport;
+    if(viewport && Number.isFinite(Number(viewport.x0)) && Number.isFinite(Number(viewport.y0)) && Number.isFinite(Number(viewport.x1)) && Number.isFinite(Number(viewport.y1))){
+      return pts.some(p=>viewportContains(viewport,p.x,p.y,OFFSCREEN_VIEW_PAD));
+    }
+    const px = Number(player && player.x), py = Number(player && player.y);
+    if(!Number.isFinite(px) || !Number.isFinite(py)) return false;
+    const radius = Math.max(24, Number(ctx && ctx.activeViewRadius) || OFFSCREEN_FALLBACK_RADIUS);
+    const r2 = radius * radius;
+    return pts.some(p=>{
+      const dx = p.x - px, dy = p.y - py;
+      return dx * dx + dy * dy <= r2;
+    });
+  }
+  function shouldDespawnOffscreenTeam(team,player,ctx,dayFloat){
+    if(!team || team.state === 'defeated' || team.state === 'retreat' || team.ruinCommanderKey) return false;
+    const day = Number.isFinite(Number(dayFloat)) ? Number(dayFloat) : currentDayInfo().dayFloat;
+    if(!Number.isFinite(day)) return false;
+    if(teamInActiveView(team,player,ctx)){
+      team.lastSeenDay = day;
+      team.lostContactDay = 0;
+      return false;
+    }
+    if(!Number.isFinite(Number(team.lastSeenDay))) team.lastSeenDay = day;
+    if(!Number.isFinite(Number(team.lostContactDay)) || team.lostContactDay <= 0) team.lostContactDay = Number(team.lastSeenDay);
+    const awayDays = day - Math.max(Number(team.lastSeenDay) || day, Number(team.lostContactDay) || day);
+    return awayDays >= OFFSCREEN_DESPAWN_DAYS - 0.0001;
+  }
+  function despawnOffscreenTeam(team,getTile,setTile,ctx){
+    if(!team) return false;
+    cleanupBuiltTiles(team,getTile,setTile,ctx);
+    brains.delete(team.id);
+    const idx = teams.indexOf(team);
+    if(idx >= 0) teams.splice(idx,1);
+    saveLocal();
+    markHostSave(ctx);
+    return true;
+  }
+  function cleanupOffscreenTeams(player,getTile,setTile,ctx,dayFloat){
+    let changed = false;
+    for(let i=teams.length-1;i>=0;i--){
+      const team = teams[i];
+      if(shouldDespawnOffscreenTeam(team,player,ctx,dayFloat)){
+        changed = despawnOffscreenTeam(team,getTile,setTile,ctx) || changed;
+      }
+    }
+    return changed;
+  }
   function teamHooks(team,player,getTile,setTile,ctx){
     return {
       fire:(a,opts)=>isMolekinTeam(team) ? fireMolekinAttack(a,team,player,getTile,setTile,ctx,opts) : fireAlienLaser(a,team,player,getTile,setTile,ctx,opts),
@@ -2574,6 +2658,8 @@ const invasions = (function(){
   }
   function updateTeams(dt,player,getTile,setTile,ctx){
     navWorld.getTileFn = getTile;
+    const dayInfo = currentDayInfo();
+    cleanupOffscreenTeams(player,getTile,setTile,ctx,dayInfo.dayFloat);
     let liveForNav = 0;
     for(const team of teams){
       if(!team || team.state === 'defeated' || team.state === 'retreat') continue;
@@ -2773,6 +2859,14 @@ const invasions = (function(){
   function alienAimY(a){
     return a ? (a.y - 0.45) : 0;
   }
+  function invasionTileAt(getTile,x,y){
+    try{ return typeof getTile==='function' ? getTile(floor(x),floor(y)) : T.AIR; }catch(e){ return T.AIR; }
+  }
+  function alienInWater(a,getTile){
+    if(!a || typeof getTile!=='function') return false;
+    const ay=alienAimY(a);
+    return invasionTileAt(getTile,a.x,a.y)===T.WATER || invasionTileAt(getTile,a.x,ay)===T.WATER || invasionTileAt(getTile,a.x,(a.y+ay)*0.5)===T.WATER;
+  }
   function alienTargetSnapshot(team,a){
     return {
       kind:isMolekinTeam(team) ? 'molekin' : 'alien',
@@ -2802,6 +2896,7 @@ const invasions = (function(){
       if(excludeTeamId && String(team.id) === excludeTeamId) continue;
       for(const a of team.aliens){
         if(!a || a.dead || a.hp <= 0) continue;
+        if(opts && opts.inWater && !alienInWater(a,opts.getTile)) continue;
         const ax = a.x;
         const ay = alienAimY(a);
         const dx = ax - wx, dy = ay - wy;
@@ -3870,7 +3965,7 @@ const invasions = (function(){
       forceRewardChance:Number.isFinite(Number(t.forceRewardChance)) ? clamp(Number(t.forceRewardChance),0,1) : undefined,
       rewardDropped:!!t.rewardDropped,
       ruinCommanderKey:t.ruinCommanderKey || '',
-      startedAt:t.startedAt, defeatedAt:t.defeatedAt, announced:t.announced,
+      startedAt:t.startedAt, lastSeenDay:t.lastSeenDay, lostContactDay:t.lostContactDay, defeatedAt:t.defeatedAt, announced:t.announced,
       builtTiles:Array.isArray(t.builtTiles) ? t.builtTiles.map(b=>({x:b.x,y:b.y})) : [],
       burrow:t.burrow ? Object.assign({}, t.burrow) : null,
       lander:t.lander ? Object.assign({}, t.lander) : null,
@@ -3980,6 +4075,8 @@ const invasions = (function(){
       ruinCommanderKey:typeof t.ruinCommanderKey === 'string' ? t.ruinCommanderKey : '',
       xpReward:Math.max(1, Number(t.xpReward)||xpRewardForTeam(day,alienCount||3,playerLevel,threatLevel)),
       startedAt:Number(t.startedAt)||Date.now(),
+      lastSeenDay:Number.isFinite(Number(t.lastSeenDay)) ? Number(t.lastSeenDay) : currentDayInfo().dayFloat,
+      lostContactDay:Number.isFinite(Number(t.lostContactDay)) ? Math.max(0, Number(t.lostContactDay)) : 0,
       defeatedAt:Number(t.defeatedAt)||0,
       announced:!!t.announced,
       builtTiles:normalizeBuiltTiles(t.builtTiles),
@@ -4124,6 +4221,7 @@ const invasions = (function(){
       ruinCommanderKey:key,
       xpReward:xpRewardForTeam(day,1,playerLevel,threatLevel),
       startedAt:Date.now(),
+      lastSeenDay:currentDayInfo().dayFloat,
       defeatedAt:0,
       announced:true,
       builtTiles:[],
@@ -4191,7 +4289,7 @@ const invasions = (function(){
     reset,
     metrics,
     state:()=>({teams:teams.map(serializeTeam), caches:caches.map(c=>deepCopy(c)), lastNightDay, seq}),
-    _debug:{teams,caches,lasers,tileDamage,brains,nav,traceLine,damageStructureTile,damageTeamTile,isMoleDiggableTile,fireMolekinAttack,unstuckAlien,alienEscapeCells,findCacheSpot,stealResources,stealGear,canPlaceBarricadeAt,placeBarricadeTile,canPlaceMoleVentAt,placeMoleVentTile,cleanupBuiltTiles,profileFor,playerLevelFor,threatLevelFor,gradeForThreat,teamCountForDay,alienCountForDay,molekinCountForDay,xpRewardForTeam,rewardProfileForTeam,westGuardianDefeated,eastGuardianDefeated,spawnRuinCommander,forceMolekinInvasion,forceAlienSpeech,triggerTeamSpeech,updateAlienSpeech,compactSpeechText,storyInvasionLinesForProgress,speechLines:ALIEN_SPEECH,moleSpeechLines:MOLEKIN_SPEECH,rareSpeechLines:ALIEN_RARE_SPEECH,moleRareSpeechLines:MOLEKIN_RARE_SPEECH,echoSpeechLines:ALIEN_ECHO_SPEECH,moleEchoSpeechLines:MOLEKIN_ECHO_SPEECH}
+    _debug:{teams,caches,lasers,tileDamage,brains,nav,traceLine,damageStructureTile,damageTeamTile,isMoleDiggableTile,fireMolekinAttack,unstuckAlien,alienEscapeCells,findCacheSpot,stealResources,stealGear,canPlaceBarricadeAt,placeBarricadeTile,canPlaceMoleVentAt,placeMoleVentTile,cleanupBuiltTiles,profileFor,playerLevelFor,threatLevelFor,gradeForThreat,teamCountForDay,alienCountForDay,molekinCountForDay,xpRewardForTeam,rewardProfileForTeam,westGuardianDefeated,eastGuardianDefeated,spawnRuinCommander,forceMolekinInvasion,forceAlienSpeech,triggerTeamSpeech,updateAlienSpeech,updateHeroAwareness,compactSpeechText,storyInvasionLinesForProgress,speechLines:ALIEN_SPEECH,moleSpeechLines:MOLEKIN_SPEECH,rareSpeechLines:ALIEN_RARE_SPEECH,moleRareSpeechLines:MOLEKIN_RARE_SPEECH,echoSpeechLines:ALIEN_ECHO_SPEECH,moleEchoSpeechLines:MOLEKIN_ECHO_SPEECH}
   };
   MM.invasions = api;
   return api;

@@ -107,7 +107,10 @@ assert.ok(count(samples[4],T.WATER)>=25, 'swamp keeps shallow pools');
 assert.ok(countAny(samples[4],[T.WOOD,T.LEAF])>=70, 'swamp generates sparse mangrove material');
 
 assert.ok(count(samples[5],T.WATER)>=650, 'sea representative contains open water');
-assert.ok(count(samples[5],T.SAND)>=250, 'sea representative has a sand bed');
+// Oceans now sit in sealed bedrock basins: a thin sand sediment bed over an
+// unmineable bedrock jacket (see ocean-basin-sim.test.mjs for the full contract).
+assert.ok(count(samples[5],T.SAND)>=120, 'sea representative keeps a sand sediment bed');
+assert.ok(count(samples[5],T.BEDROCK)>=300, 'sea representative rests on the sealed bedrock basin');
 
 assert.ok(count(samples[6],T.WATER)>=150, 'lake representative contains water');
 assert.ok(count(samples[6],T.SAND)>=200, 'lake representative has a sediment bed');
@@ -144,7 +147,8 @@ for(const biome of [0,1,2,3,4,6,7]){
   }
 }
 assert.ok(coal>=220, 'underground stone mass contains coal seams (got '+coal+')');
-assert.ok(coal>diamonds*2, 'coal is noticeably more common than diamonds (coal '+coal+', diamonds '+diamonds+')');
+assert.ok(diamonds<=40, 'legacy underground keeps diamonds scarce and bedrockward (got '+diamonds+')');
+assert.ok(coal>diamonds*50, 'coal is vastly more common than diamonds (coal '+coal+', diamonds '+diamonds+')');
 assert.ok(rockMass>coal*8, 'coal remains a resource seam, not the dominant underground material');
 assert.ok(granite>=120, 'deeper underground includes granite strata (got '+granite+')');
 assert.ok(basalt>=80, 'deep underground includes basalt strata (got '+basalt+')');

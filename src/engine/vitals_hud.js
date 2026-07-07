@@ -37,7 +37,7 @@ export function createVitalsModel(){
 		deltas:[],
 		buffs:[]
 	};
-	let lastHp=0, lastEn=0;
+	let lastHp=0, lastEn=0, pendingHealDelta=0;
 	const buffMax=new Map();
 
 	function approach(cur,target,rate,dt){ return cur+(target-cur)*(1-Math.exp(-rate*dt)); }
@@ -68,7 +68,18 @@ export function createVitalsModel(){
 		// HP: a discrete hit freezes the chip at the pre-hit fill; it holds, then
 		// drains toward the fill. Trickle losses just pull the fill (chip follows).
 		const dvHp=hp-lastHp;
-		if(dvHp<=-1 || dvHp>=1) pushDelta(dvHp);
+		if(dvHp<=-1){
+			pendingHealDelta=0;
+			pushDelta(dvHp);
+		}else if(dvHp>0){
+			pendingHealDelta+=dvHp;
+			if(dvHp>=1 || pendingHealDelta>=1){
+				pushDelta(pendingHealDelta);
+				pendingHealDelta=0;
+			}
+		}else if(dvHp<0){
+			pendingHealDelta=0;
+		}
 		if(maxHp>0 && -dvHp/maxHp>=DISCRETE_DROP_FRAC){
 			st.hp.chip=Math.max(st.hp.chip,st.hp.fill);
 			st.hp.holdT=CHIP_HOLD_S;

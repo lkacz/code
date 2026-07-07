@@ -85,6 +85,7 @@ try{
   assert.ok(smokeCalls.some(c=>c.opts && c.opts.tileX===1 && c.opts.tileY===3), 'burning wood emits smoke');
   assert.ok(smokeCalls.some(c=>c.opts && c.opts.tileX===2 && c.opts.tileY===3 && c.intensity>2), 'burning coal emits a heavier plume');
   assert.ok(smokeCalls.some(c=>c.opts && c.opts.tileX===4 && c.opts.tileY===3 && c.intensity>2), 'volcano lava emits a heavier plume');
+
   const fireSnap=fire.snapshot();
   assert.equal(fireSnap.list.length,2,'fire snapshot captures active burning tiles');
   fire.reset();
@@ -103,6 +104,20 @@ try{
   assert.equal(getTile(2,3), T.COAL, 'coal block is still present after almost twelve minutes of burning');
   fire.update(getTile,setTile,3);
   assert.equal(getTile(2,3), T.AIR, 'coal block burns away after about twelve minutes');
+
+  fire.reset();
+  smokeCalls=[];
+  const chimneyTiles=new Map();
+  const chimneyKey=(x,y)=>x+','+y;
+  const getChimneyTile=(x,y)=>chimneyTiles.get(chimneyKey(x,y)) ?? T.AIR;
+  const setChimneyTile=(x,y,t)=>chimneyTiles.set(chimneyKey(x,y),t);
+  setChimneyTile(2,5,T.COAL);
+  setChimneyTile(2,4,T.CHIMNEY);
+  setChimneyTile(2,3,T.CHIMNEY);
+  assert.ok(fire.ignite(2,5,getChimneyTile), 'coal under a chimney ignites');
+  fire.draw(makeCtx(),20,0,0,6,8,getChimneyTile,{visible:()=>true, seen:()=>true});
+  assert.ok(smokeCalls.some(c=>c.opts && c.opts.tileX===2 && c.opts.tileY===2 && c.intensity>2), 'coal smoke is emitted at the open chimney outlet');
+  assert.equal(smokeCalls.some(c=>c.opts && c.opts.tileX===2 && c.opts.tileY===5), false, 'chimney-routed coal smoke does not originate at the fuel cell');
 
   fire.reset();
   const verticalTiles=new Map();

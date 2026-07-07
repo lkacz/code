@@ -78,6 +78,8 @@ assert.equal(T.WET_CLAY,66,'wet clay tile id is appended for save stability');
 assert.equal(T.BRICK,67,'brick tile id is appended for save stability');
 assert.equal(T.LADDER,68,'ladder tile id is appended for save stability');
 assert.equal(T.SPRING_PLATFORM,69,'spring platform tile id is appended for save stability');
+assert.equal(T.CHIMNEY,76,'chimney tile id is appended for save stability');
+assert.equal(T.RESPAWN_TOTEM,77,'respawn totem tile id is appended for save stability');
 assert.equal(INFO[T.TRANSISTOR].drop,'transistor','placed transistors can be recovered');
 assert.equal(INFO[T.SOLAR_PANEL].powerSource,true,'solar panels are power sources');
 assert.equal(INFO[T.SOLAR_BATTERY].energyCapacity,120,'storage solar panel advertises its battery capacity');

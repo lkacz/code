@@ -150,6 +150,31 @@ try{
   assert.notEqual(rabbitDeath.signature,sentinelDeath.signature,'different mobs get different death signatures');
   mobs.clearAll();
 
+  function pondTile(x,y){
+    if(y<0 || y>140) return T.STONE;
+    if(x>=-4 && x<=4 && y>=30 && y<=31) return T.WATER;
+    if(y===32) return T.STONE;
+    return T.AIR;
+  }
+  mobs.deserialize({
+    v:4,
+    list:[
+      {id:'FISH',x:0.5,y:30.2,vx:0,vy:0,hp:4,state:'idle',facing:1,scale:1,speedMul:1,jumpMul:1},
+      {id:'PIRANHA',x:1.6,y:30.2,vx:0,vy:0,hp:5,state:'idle',facing:1,scale:1,speedMul:1,jumpMul:1},
+      {id:'RABBIT',x:2.4,y:29.2,vx:0,vy:0,hp:5,state:'idle',facing:1,scale:1,speedMul:1,jumpMul:1}
+    ],
+    aggro:{mode:'rel',m:{}}
+  });
+  mobs.freezeSpawns(10000);
+  const shock=mobs.shockAquaticRadius(0.5,30.2,4,{damage:999,getTile:pondTile,source:'lightning',cause:'lightning_water'});
+  assert.deepEqual(shock, {hit:2,killed:2}, 'lightning water shock kills aquatic mobs in range');
+  simNow += 50;
+  mobs.update(0.05,player,pondTile);
+  const afterShock=mobs.serialize().list;
+  assert.equal(afterShock.some(m=>m.id==='FISH'||m.id==='PIRANHA'), false, 'shocked aquatic mobs are removed after the update pass');
+  assert.equal(afterShock.some(m=>m.id==='RABBIT'), true, 'water shock leaves non-aquatic mobs alone');
+  mobs.clearAll();
+
   function tunnelGetTile(x,y){
     if(y<0 || y>140) return T.STONE;
     if(x>=-3 && x<=3 && y===29) return T.AIR;

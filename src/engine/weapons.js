@@ -24,6 +24,7 @@ import { reactions as REACTIONS } from './reactions.js';
   const BOW_OVERDRAW_ENERGY_PER_SEC=6;
   const MAX_PUFFS=220;
   const MAX_ELECTRIC_BEAMS=24;
+  const MELEE_REACH=1;
   // Per-kind stream tuning: emission count/frame, muzzle speed, vertical pull
   // (negative = rises like heat, positive = arcs down like water), lifetime factor
   // lifeMult compensates for in-flight friction so the actual reach matches the
@@ -328,6 +329,12 @@ import { reactions as REACTIONS } from './reactions.js';
   function notifyMeleeSwing(tx,ty,player){
     swing.t=swing.dur; swing.tx=tx; swing.ty=ty; swing.dir=(player && player.facing>=0)?1:-1;
   }
+  function collectLooseTarget(tx,ty){
+    try{
+      return !!(MM.collectLooseItemAt && MM.collectLooseItemAt(tx,ty,{source:'melee_weapon',silent:true}));
+    }catch(e){}
+    return false;
+  }
 
   // ---- Firing (called every frame while the fire input is held) ----
   function fireHeld(player, aimX, aimY, dt){
@@ -343,6 +350,13 @@ import { reactions as REACTIONS } from './reactions.js';
     let dx=aimX-player.x, dy=aimY-player.y;
     const d=Math.hypot(dx,dy)||1;
     return {dx:dx/d, dy:dy/d};
+  }
+  function meleeTargetTile(player, aimX, aimY){
+    const px=Math.floor(player.x), py=Math.floor(player.y);
+    let tx=Math.floor(aimX), ty=Math.floor(aimY);
+    tx=Math.max(px-MELEE_REACH, Math.min(px+MELEE_REACH, tx));
+    ty=Math.max(py-MELEE_REACH, Math.min(py+MELEE_REACH, ty));
+    return {px,py,tx,ty};
   }
   function consumeUltCharge(){
     if(ultCharge<0.35){
@@ -399,12 +413,12 @@ import { reactions as REACTIONS } from './reactions.js';
   }
   function fireMelee(player, aimX, aimY){
     if(meleeCd>0 || (player.atkCd && player.atkCd>0)) return false;
-    // Strike the aimed tile clamped to melee reach (matches click combat)
-    const px=Math.floor(player.x), py=Math.floor(player.y);
-    let tx=Math.floor(aimX), ty=Math.floor(aimY);
-    tx=Math.max(px-3, Math.min(px+3, tx)); ty=Math.max(py-3, Math.min(py+3, ty));
+    // Melee strength changes damage only; reach is always one tile.
+    const {px,tx,ty}=meleeTargetTile(player,aimX,aimY);
     const bonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
-    const hit=(MM.guardianLairs && MM.guardianLairs.attackAt && MM.guardianLairs.attackAt(tx,ty,bonus))
+    const collected=collectLooseTarget(tx,ty);
+    const hit=collected
+           || (MM.guardianLairs && MM.guardianLairs.attackAt && MM.guardianLairs.attackAt(tx,ty,bonus))
            || (MM.undergroundBoss && MM.undergroundBoss.attackAt && MM.undergroundBoss.attackAt(tx,ty,bonus))
            || (MM.skyGuardian && MM.skyGuardian.attackAt && MM.skyGuardian.attackAt(tx,ty,bonus))
            || (MM.bosses && MM.bosses.attackAt && MM.bosses.attackAt(tx,ty,bonus))
@@ -763,33 +777,25 @@ import { reactions as REACTIONS } from './reactions.js';
   }
   function firePowerMelee(player, aimX, aimY, w, charge){
     const v=aimVector(player,aimX,aimY);
-    const tx=Math.floor(player.x + v.dx*(2.4+charge*1.4));
-    const ty=Math.floor(player.y + v.dy*(2.4+charge*1.4));
+    const {tx,ty}=meleeTargetTile(player,aimX,aimY);
     const bonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
     const dmg=Math.round(5 + bonus + ((w && w.attackDamage)||3)*(1.7+charge*2.2));
-    const radius=1.1+charge*0.9;
     let hit=false;
-    const ri=Math.ceil(radius);
-    for(let dy=-ri;dy<=ri;dy++){
-      for(let dx=-ri;dx<=ri;dx++){
-        if(dx*dx+dy*dy>radius*radius) continue;
-        const x=tx+dx, y=ty+dy;
-        hit = !!((MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(x,y,dmg,{kind:'melee',source:'hero'}))
-          || (MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(x,y,dmg))
-          || (MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(x,y,dmg))
-          || (MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(x,y,dmg,{kind:'melee',source:'hero'}))
-          || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(x,y,dmg))
-          || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(x,y,dmg))
-          || (MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(x,y,dmg))
-          || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(x,y,dmg))
-          || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(x,y,dmg,{source:'hero'}))) || hit;
-      }
-    }
+    const collected=collectLooseTarget(tx,ty);
+    hit = !!(collected || (MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,dmg,{kind:'melee',source:'hero'}))
+      || (MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,dmg))
+      || (MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(tx,ty,dmg))
+      || (MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,dmg,{kind:'melee',source:'hero'}))
+      || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,dmg))
+      || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,dmg))
+      || (MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(tx,ty,dmg))
+      || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,dmg))
+      || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg,{source:'hero'})));
     player.facing = v.dx>=0?1:-1;
     meleeCd=Math.max(meleeCd,0.25);
     player.atkCd=Math.max(player.atkCd||0, 0.35);
     notifyMeleeSwing(tx,ty,player);
-    blastsFx.push({x:tx+0.5,y:ty+0.5,R:1.0+charge*0.65,t:0,max:0.35});
+    blastsFx.push({x:tx+0.5,y:ty+0.5,R:0.9,t:0,max:0.35});
     try{ if(MM.audio && MM.audio.play) MM.audio.play('swing'); }catch(e){}
     return hit;
   }

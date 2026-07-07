@@ -535,11 +535,18 @@ export function deepCaveProfile(WG,wx,y,strataOpt){
   return {open, flooded:flooded || legacyPocket, cavern, tunnel:Math.min(Math.abs(channel-0.5),Math.abs(branch-0.5)), shaft, waterLine};
 }
 
+function bedrockDiamondBias(y){
+  const rise=clamp01((y-(WORLD_MAX_Y-78))/56);
+  const floorFade=clamp01(1-(y-(WORLD_MAX_Y-18))/12);
+  return Math.pow(rise,1.7) * Math.max(0.12,floorFade);
+}
+
 function deepRockMaterialTile(WG,wx,y,strataOpt){
   const strata=strataOpt || deepStrataProfile(WG,wx,y);
   const env=strata.env;
   const deep=strata.deep;
   const ore=safeRand(WG,wx*8.17+y*0.47);
+  const diamondOre=safeRand(WG,wx*10.91+y*0.83+7459);
   const texture=fbm2D(WG,wx,y,22,16,2,7451);
   const vein=ridgeNoise(WG,wx,y,39,7452);
   const inMantle=strata.virtualDepth>strata.mantleLine;
@@ -549,13 +556,15 @@ function deepRockMaterialTile(WG,wx,y,strataOpt){
   // flecks; outside a pocket the same rolls run much leaner.
   const pocket=fbm2D(WG,wx+29,y+13,36,20,2,7455);
   const oreScale=0.42 + clamp01((pocket-0.58)/0.16)*1.9;
+  const diamondScale=0.06 + clamp01((pocket-0.61)/0.13)*3.1;
+  const diamondBias=bedrockDiamondBias(y);
   // Coal seams continue across the mid/low contact and taper out with depth
   if(deep<48 && safeCoalVein(WG,wx,y) && safeRand(WG,wx*3.37+y*0.61)<1-deep/48) return T.COAL;
   if(env.city>0.24 && ore>0.989-deep*0.00008 && vein>0.20) return T.METEORIC_IRON;
-  if(deep>18 && vein>0.88 && ore<(0.030+strata.crystal*0.050)*oreScale) return T.DIAMOND;
   if(deep>86 && ore<(0.006+strata.crystal*0.010)*oreScale) return T.ANTIMATTER_CRYSTAL;
   if(deep>52 && ore<(0.012+strata.crystal*0.022)*oreScale) return T.IRIDIUM;
-  if(deep>34 && ore<(0.018+strata.crystal*0.026)*oreScale && vein>0.68) return T.DIAMOND;
+  if(deep>72 && vein>0.91 && diamondOre<(0.006+strata.crystal*0.013)*diamondScale*diamondBias) return T.DIAMOND;
+  if(deep>96 && vein>0.70 && diamondOre<(0.003+strata.crystal*0.010)*diamondScale*diamondBias) return T.DIAMOND;
   if(deep>58 && env.volcanic>0 && ore<0.050+strata.igneous*0.090) return T.OBSIDIAN;
   if(inMantle) return texture<0.50+strata.igneous*0.20 || vein<0.15 ? T.BASALT : T.GRANITE;
   if(inBasalt) return (texture<0.54+strata.igneous*0.20 || vein<0.22) ? T.BASALT : T.GRANITE;
@@ -564,6 +573,10 @@ function deepRockMaterialTile(WG,wx,y,strataOpt){
 }
 
 export function deepTile(WG,wx,y){
+  // Sealed ocean bedrock basins ("skała macierzysta") continue through the whole
+  // deep world: no cave, ore pocket or tunnel may pass under a real ocean at any
+  // depth — crossing the water means going over it.
+  if(WG && typeof WG.oceanBasinAt==='function' && WG.oceanBasinAt(wx)) return T.BEDROCK;
   if(y>=WORLD_MAX_Y-3) return T.BEDROCK;
   // Ragged bedrock roof: the absolute floor rises a few tiles on a warped line
   // with scattered bedrock teeth above it, never a clean flat shelf.
