@@ -8,6 +8,7 @@
 // the world cache is cleared.
 // Run: node tools/ruins-sim.test.mjs
 import { strict as assert } from 'assert';
+import { readFileSync } from 'node:fs';
 
 globalThis.window = globalThis; // engine modules attach to window.MM
 globalThis.MM = {};
@@ -16,6 +17,7 @@ const { T, CHUNK_W } = await import('../src/constants.js');
 const { worldGen: WG } = await import('../src/engine/worldgen.js');
 const { ruins } = await import('../src/engine/ruins.js');
 const { world } = await import('../src/engine/world.js');
+const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 assert.ok(ruins && world, 'modules export');
 
 WG.worldSeed = 20260611; WG.clearCaches && WG.clearCaches();
@@ -66,7 +68,59 @@ assert.ok(sizes.small>0 && sizes.medium>0 && sizes.large>0,
   `all main size classes occur (S:${sizes.small} M:${sizes.medium} L:${sizes.large} XL:${sizes.mega})`);
 assert.ok(variants.size >= 5, 'architecture varies ('+variants.size+' distinct size:variant pairs)');
 
-// --- 2b. The Buried City (1 in 100): deep, vast, lit, and worth the dig ---
+// --- 2a. Large temples: procedural floorplans and event-addressable treasure ---
+const templeSamples=[];
+for(let n=-1400; n<=1400 && templeSamples.length<24; n++){
+  const L=ruins.layoutFor(n);
+  if(L && L.size==='large') templeSamples.push(L);
+}
+assert.ok(templeSamples.length>=8, 'sampled enough large temples to inspect variety ('+templeSamples.length+')');
+const templePlans=new Set(templeSamples.map(L=>L.plan));
+const templeSignatures=new Set(templeSamples.map(L=>L.signature));
+assert.ok(templePlans.size>=4, 'large temples use multiple floorplan families ('+[...templePlans].join(',')+')');
+assert.ok(templeSignatures.size>=Math.min(8,templeSamples.length), 'large temple signatures stay highly varied');
+const templeForLookup=templeSamples[0];
+const chestOp=templeForLookup.ops.find(o=>o.f===1 && (o.t===T.CHEST_COMMON||o.t===T.CHEST_RARE||o.t===T.CHEST_EPIC));
+const wallOp=templeForLookup.ops.find(o=>o.f===1 && (o.t===T.STONE||o.t===T.OBSIDIAN||o.t===T.TORCH));
+assert.ok(chestOp && wallOp, 'sample temple has both treasure and structure cells');
+const treasureHit=ruins.templeAt(chestOp.x,chestOp.y,{tile:chestOp.t});
+assert.ok(treasureHit && treasureHit.isTreasure && treasureHit.size==='large', 'templeAt identifies stolen temple treasure');
+const wallHit=ruins.templeAt(wallOp.x,wallOp.y,{tile:wallOp.t});
+assert.ok(wallHit && wallHit.isStructure && !wallHit.isTreasure, 'templeAt identifies damaged temple masonry');
+assert.equal(ruins.templeAt(chestOp.x,chestOp.y,{tile:T.AIR}), null, 'templeAt ignores already-empty cells unless old treasure tile is supplied');
+
+// --- 2b. Living surface tribal temples: above-ground, varied, guarded treasure ---
+assert.equal(typeof world.surfaceTempleLayoutsInRange, 'function', 'world exposes living surface temple layouts');
+assert.equal(typeof world.surfaceTempleAt, 'function', 'world exposes surface temple disturbance lookup');
+const surfaceTemples = world.surfaceTempleLayoutsInRange(-30000, 30000);
+assert.ok(surfaceTemples.length >= 8, 'living surface temples appear in jungle/swamp travel corridors ('+surfaceTemples.length+')');
+const surfaceSignatures = new Set(surfaceTemples.map(L=>L.variant+':'+L.tiers+':'+(L.maxX-L.minX)+':'+L.ops.length));
+assert.ok(surfaceSignatures.size >= 5, 'surface temples use varied procedural silhouettes ('+surfaceSignatures.size+' signatures)');
+const livingTemples = surfaceTemples.filter(L=>
+  L.ops.some(o=>o.t===T.CHEST_RARE || o.t===T.CHEST_EPIC) &&
+  L.ops.some(o=>o.t===T.LEAF) &&
+  L.ops.some(o=>o.t===T.GLOWSHROOM) &&
+  L.ops.some(o=>o.t===T.TORCH)
+);
+assert.ok(livingTemples.length >= 4, 'surface temples look inhabited: treasure, canopy, glowshrooms and torches');
+let surfaceTemple=null, surfaceChestOp=null, surfaceStructureOp=null;
+for(const Ls of livingTemples){
+  const chest=Ls.ops.find(o=>o.t===T.CHEST_RARE || o.t===T.CHEST_EPIC);
+  const structure=Ls.ops.find(o=>o.f===1 && (o.t===T.WOOD || o.t===T.STONE || o.t===T.OBSIDIAN));
+  if(chest && structure && world.getTile(chest.x,chest.y)===chest.t && world.getTile(structure.x,structure.y)===structure.t){
+    surfaceTemple=Ls; surfaceChestOp=chest; surfaceStructureOp=structure; break;
+  }
+}
+assert.ok(surfaceTemple && surfaceChestOp && surfaceStructureOp, 'a generated surface temple materializes treasure and structure cells');
+const surfaceTreasureHit = world.surfaceTempleAt(surfaceChestOp.x,surfaceChestOp.y,{tile:surfaceChestOp.t});
+assert.ok(surfaceTreasureHit && surfaceTreasureHit.surface && surfaceTreasureHit.isTreasure, 'surfaceTempleAt identifies stolen above-ground temple treasure');
+const surfaceStructureHit = world.surfaceTempleAt(surfaceStructureOp.x,surfaceStructureOp.y,{tile:surfaceStructureOp.t});
+assert.ok(surfaceStructureHit && surfaceStructureHit.surface && surfaceStructureHit.isStructure && !surfaceStructureHit.isTreasure, 'surfaceTempleAt identifies vandalized above-ground temple structure');
+assert.equal(world.surfaceTempleAt(surfaceChestOp.x,surfaceChestOp.y,{tile:T.AIR}), null, 'surfaceTempleAt ignores empty cells after treasure has been removed');
+assert.match(mainSource, /WORLD\.surfaceTempleAt\(tx,ty,\{tile:oldTile\}\)/, 'main temple alarm path checks living surface temples');
+assert.match(mainSource, /Straznicy swiatyni bronia budowli/, 'surface temple vandalism has a dedicated guard warning');
+
+// --- 2c. The Buried City (1 in 100): deep, vast, lit, and worth the dig ---
 let mega=null;
 for(let n2=0; n2<6000 && !mega; n2++){ const L2=ruins.layoutFor(n2); if(L2 && L2.size==='mega') mega=L2; }
 assert.ok(mega, 'a buried city exists within the scanned span');

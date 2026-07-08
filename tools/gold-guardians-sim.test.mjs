@@ -1,0 +1,125 @@
+// Gold guardian regression tests: exposed underground gold veins are defended
+// by high-stakes guardians instead of being unconditional free ore.
+import assert from 'node:assert/strict';
+
+globalThis.window = globalThis;
+globalThis.MM = {};
+globalThis.CustomEvent = class { constructor(type,opts){ this.type=type; this.detail=opts&&opts.detail; } };
+globalThis.dispatchEvent = () => true;
+globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+let simNow = 0;
+globalThis.performance = { now:()=>simNow };
+globalThis.msg = () => {};
+
+const { T } = await import('../src/constants.js');
+const { mobs } = await import('../src/engine/mobs.js');
+
+const originalRandom = Math.random;
+let seed = 246813579;
+function seededRandom(){
+  seed = (Math.imul(seed,1664525)+1013904223)>>>0;
+  return seed/4294967296;
+}
+
+function makeGoldCave(){
+  const cells = new Map();
+  const key=(x,y)=>Math.floor(x)+','+Math.floor(y);
+  for(let x=-3; x<=5; x++) cells.set(key(x,12), T.STONE);
+  [[-1,12],[0,12],[1,12],[2,12],[3,12],[0,13],[1,13],[2,13]].forEach(([x,y])=>cells.set(key(x,y),T.GOLD_ORE));
+  return {
+    getTile(x,y){
+      const k=key(x,y);
+      if(cells.has(k)) return cells.get(k);
+      return y>=12 ? T.STONE : T.AIR;
+    },
+    setTile(x,y,t){
+      const k=key(x,y);
+      if(t===T.AIR) cells.delete(k);
+      else cells.set(k,t);
+    }
+  };
+}
+
+function makeEmptyCave(){
+  return {
+    getTile(x,y){ return y>=12 ? T.STONE : T.AIR; },
+    setTile(){}
+  };
+}
+
+function resetPlayer(x=0.5,y=10.8){
+  const p={x,y,w:0.7,h:0.95,vx:0,vy:0,onGround:true,facing:1,hp:100,maxHp:100,hpInvul:0,xp:0};
+  globalThis.player=p;
+  return p;
+}
+
+function installDamageRecorder(player){
+  const hits=[];
+  globalThis.damageHero = (amount,opts)=>{
+    hits.push({amount,opts});
+    player.hp -= amount;
+    return true;
+  };
+  return hits;
+}
+
+try{
+  Math.random = seededRandom;
+  const species = mobs._debugSpecies();
+  assert.ok(species.GOLD_DRAGON && mobs.species.includes('GOLD_DRAGON'), 'gold dragon guardian species is registered');
+  assert.ok(species.GOLD_DWARF_GUARD && mobs.species.includes('GOLD_DWARF_GUARD'), 'gold dwarf guardian species is registered');
+  assert.ok(species.GOLD_DRAGON.hp >= 200 && species.GOLD_DRAGON.dmg >= 35 && species.GOLD_DRAGON.xp >= 260, 'gold dragons are tuned as major hoard guardians');
+  assert.ok(species.GOLD_DWARF_GUARD.hp >= 70 && species.GOLD_DWARF_GUARD.dmg >= 20 && species.GOLD_DWARF_GUARD.xp >= 80, 'gold dwarves are tuned as strong mine guardians');
+
+  const cave = makeGoldCave();
+  const empty = makeEmptyCave();
+  assert.equal(species.GOLD_DRAGON.spawnTest(1,11,cave.getTile), true, 'gold dragons can stand in a roomy cave beside exposed gold');
+  assert.equal(species.GOLD_DWARF_GUARD.spawnTest(1,11,cave.getTile), true, 'gold dwarves can stand in a cave beside exposed gold');
+  assert.equal(species.GOLD_DRAGON.spawnTest(1,11,empty.getTile), false, 'gold dragons do not spawn without a gold vein to guard');
+  assert.equal(species.GOLD_DWARF_GUARD.spawnTest(1,11,empty.getTile), false, 'gold dwarves do not spawn without a gold vein to guard');
+
+  let player = resetPlayer(1.2,10.8);
+  installDamageRecorder(player);
+  mobs.clearAll();
+  simNow += 5200;
+  mobs.update(0.16,player,cave.getTile,cave.setTile);
+  const autoGuards = mobs.serialize().list.filter(m=>m.id==='GOLD_DRAGON' || m.id==='GOLD_DWARF_GUARD');
+  assert.ok(autoGuards.length >= 1, 'an exposed nearby gold vein automatically gets a guardian');
+  assert.ok(autoGuards.every(m=>m.goldGuardKey && Number.isFinite(m.guardGoldX) && Number.isFinite(m.guardGoldY)), 'gold guardians remember which vein they defend');
+
+  const gasAdds=[];
+  const fireHits=[];
+  globalThis.MM.gases = { add(kind,x,y,opts){ gasAdds.push({kind,x,y,opts}); return 1; } };
+  globalThis.MM.fire = { ignite(x,y,getTile,setTile){ fireHits.push({x,y}); return true; } };
+  player = resetPlayer(6.5,10.7);
+  player.vx = 2.4;
+  installDamageRecorder(player);
+  mobs.clearAll();
+  simNow += 5200;
+  mobs.deserialize({v:5,list:[{
+    id:'GOLD_DRAGON',x:0.5,y:10.75,vx:0,vy:0,hp:210,maxHp:210,state:'hoard',facing:1,
+    scale:1,speedMul:1,jumpMul:1,attackCd:0,goldGuardKey:'0,1',guardGoldX:1.5,guardGoldY:12.5
+  }],aggro:{mode:'rel',m:{}}});
+  mobs.freezeSpawns(10000);
+  simNow += 2600;
+  mobs.update(0.12,player,cave.getTile,cave.setTile);
+  assert.ok(mobs.metrics().projectiles >= 1, 'gold dragons launch a visible fire breath projectile');
+  assert.ok(gasAdds.length >= 1, 'gold dragon breath or exhale emits dangerous cave gas');
+
+  player = resetPlayer(1.6,10.72);
+  const hits = installDamageRecorder(player);
+  mobs.clearAll();
+  simNow += 5200;
+  mobs.deserialize({v:5,list:[{
+    id:'GOLD_DWARF_GUARD',x:0.5,y:10.75,vx:0,vy:0,hp:76,maxHp:76,state:'guard',facing:1,
+    scale:1,speedMul:1,jumpMul:1,attackCd:0,goldGuardKey:'0,1',guardGoldX:1.5,guardGoldY:12.5
+  }],aggro:{mode:'rel',m:{}}});
+  mobs.freezeSpawns(10000);
+  simNow += 2400;
+  mobs.update(0.12,player,cave.getTile,cave.setTile);
+  assert.ok(hits.some(h=>h.opts && h.opts.cause==='gold_dwarf_hammer'), 'gold dwarf guards have an identifiable hammer strike');
+
+  console.log('gold-guardians-sim: all assertions passed');
+} finally {
+  Math.random = originalRandom;
+}

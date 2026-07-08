@@ -372,21 +372,22 @@ const alienRuins = (function(){
         if(t===T.AIR || t===T.WATER) continue;
         const px=h.x*TILE, py=h.y*TILE;
         const pulse=0.45+0.35*Math.sin(now*0.004+h.x*0.7+h.y*0.31);
-        ctx.strokeStyle='rgba(125,255,229,'+(0.22+pulse*0.24).toFixed(3)+')';
-        ctx.lineWidth=1.2;
-        ctx.strokeRect(px+2.5,py+2.5,TILE-5,TILE-5);
-        ctx.fillStyle='rgba(12,28,34,0.28)';
-        ctx.fillRect(px+4,py+4,TILE-8,TILE-8);
-        ctx.strokeStyle='rgba(255,226,118,'+(0.25+pulse*0.22).toFixed(3)+')';
+        const cx=px+TILE*0.5, cy=py+TILE*0.56;
+        ctx.lineCap='round';
+        ctx.strokeStyle='rgba(125,255,229,'+(0.14+pulse*0.12).toFixed(3)+')';
+        ctx.lineWidth=1.05;
         ctx.beginPath();
-        ctx.moveTo(px+TILE*0.28,py+TILE*0.5);
-        ctx.lineTo(px+TILE*0.72,py+TILE*0.5);
-        ctx.moveTo(px+TILE*0.5,py+TILE*0.28);
-        ctx.lineTo(px+TILE*0.5,py+TILE*0.72);
+        ctx.moveTo(px+TILE*0.24,py+TILE*0.66);
+        ctx.lineTo(px+TILE*0.76,py+TILE*0.66);
+        ctx.moveTo(px+TILE*0.34,py+TILE*0.52);
+        ctx.lineTo(px+TILE*0.66,py+TILE*0.52);
         ctx.stroke();
+        ctx.fillStyle='rgba(255,226,118,'+(0.18+pulse*0.16).toFixed(3)+')';
+        ctx.beginPath(); ctx.arc(cx,cy,TILE*0.055,0,Math.PI*2); ctx.fill();
         if(t===T.METEOR_DUST || t===T.WIRE || t===T.COPPER_WIRE){
-          ctx.fillStyle='rgba(130,255,236,'+(0.12+pulse*0.18).toFixed(3)+')';
-          ctx.beginPath(); ctx.arc(px+TILE/2,py+TILE/2,TILE*0.42,0,Math.PI*2); ctx.fill();
+          ctx.strokeStyle='rgba(130,255,236,'+(0.10+pulse*0.12).toFixed(3)+')';
+          ctx.lineWidth=1;
+          ctx.beginPath(); ctx.arc(cx,cy,TILE*0.23,now*0.001+h.x,now*0.001+h.x+Math.PI*1.35); ctx.stroke();
         }
       }
     }

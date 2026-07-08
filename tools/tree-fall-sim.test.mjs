@@ -382,10 +382,10 @@ worldGen.randSeed = ()=>0;
   setTileWithTreeHook(0,6,T.AIR);
   trees.updateFallingBlocks(getTile,setTileWithTreeHook,1/60);
 
-  assert.equal(getTile(-1,5), T.LEAF, 'unregistered canopy remains when only the top trunk block is removed');
-  assert.equal(getTile(0,5), T.LEAF, 'leaf directly above a removed top trunk is not treated as loose-crown cleanup');
-  assert.equal(getTile(1,5), T.LEAF, 'connected unregistered canopy does not disappear as a group');
-  assert.equal(trees._fallingBlocks.length, 0, 'top-trunk removal does not spawn hidden leaf debris');
+  assert.equal(getTile(-1,5), T.AIR, 'unregistered canopy releases when its top-trunk connector is removed');
+  assert.equal(getTile(0,5), T.AIR, 'leaf directly above a removed top trunk becomes loose crown debris');
+  assert.equal(getTile(1,5), T.AIR, 'connected unregistered canopy releases as a group');
+  assert.equal(trees._fallingBlocks.length, 3, 'top-trunk removal spawns leaf debris instead of leaving hovering leaves');
 }
 
 {
@@ -408,10 +408,10 @@ worldGen.randSeed = ()=>0;
   setTileWithTreeHook(0,6,T.AIR);
   trees.updateFallingBlocks(getTile,setTileWithTreeHook,1/60);
 
-  assert.equal(getTile(-1,5), T.LEAF, 'registered/generated canopy remains after top trunk loss');
-  assert.equal(getTile(0,5), T.LEAF, 'registered leaf above a removed top trunk remains visible');
-  assert.equal(getTile(1,5), T.LEAF, 'registered canopy sides are not bulk-deleted');
-  assert.equal(trees._fallingBlocks.length, 0, 'registered top-trunk loss does not create leaf debris');
+  assert.equal(getTile(-1,5), T.AIR, 'registered/generated canopy releases after top trunk loss');
+  assert.equal(getTile(0,5), T.AIR, 'registered leaf above a removed top trunk becomes debris');
+  assert.equal(getTile(1,5), T.AIR, 'registered canopy sides release with the disconnected crown');
+  assert.equal(trees._fallingBlocks.length, 3, 'registered top-trunk loss creates falling leaf debris');
 }
 
 {
@@ -434,6 +434,20 @@ worldGen.randSeed = ()=>0;
   assert.equal(getTile(1,8), T.LEAF, 'connected loose crown debris settles as leaf litter');
   assert.equal(trees._fallenTreeTiles.has('0,8'), true, 'loose crown litter is tracked as fallen tree debris');
   assert.equal(trees._fallenTreeTiles.has('1,8'), true, 'connected loose crown litter is tracked as fallen tree debris');
+}
+
+{
+  resetTiles();
+  resetTreeSystem();
+  worldGen.surfaceHeight = ()=>20;
+  MM.fallingSolids={ onTileRemoved(){}, afterPlacement(){} };
+  MM.water={};
+
+  setTile(0,6,T.WOOD);
+  setTile(0,10,T.STONE);
+  assert.equal(trees.startTreeFall(getTile,setTile,1,0,6), true, 'single wood block can be released');
+  assert.equal(trees._fallingTrees.length, 0, 'single wood block does not become a rotating tree body');
+  assert.equal(trees._fallingBlocks.length, 1, 'single wood block falls as loose debris');
 }
 
 {

@@ -160,6 +160,26 @@ try{
   assert.ok(collided.vx <= 0, 'wall collision reflects particle velocity');
 
   particles.reset();
+  particles.spawnImpactChips(80,70,{element:'fire',major:true,power:1.25,dir:1});
+  const chips=particles._debugSnapshot().filter(p=>p.kind==='impactChip');
+  assert.ok(chips.length>=8, 'important combat impacts emit physical chips');
+  assert.ok(chips.every(p=>Array.isArray(p.rgb) && p.size>0), 'impact chips carry material color and size');
+  const chipBefore=chips[0];
+  particles.update(0.12,20,()=>PT.AIR);
+  const chipAfter=particles._debugSnapshot().find(p=>p.kind==='impactChip');
+  assert.ok(chipAfter && Math.hypot(chipAfter.x-chipBefore.x, chipAfter.y-chipBefore.y)>0.5, 'impact chips fly under physical integration');
+  const chipCtx=makeCtx();
+  particles.draw(chipCtx,()=>true,20);
+  assert.ok(chipCtx.calls.includes('rotate') && chipCtx.calls.includes('fillRect'), 'impact chips draw as rotated falling debris');
+
+  particles.reset();
+  particles._debugAdd({kind:'impactChip',x:42,y:42,vx:0,vy:14,life:0,max:2,size:4,rgb:[255,205,86]});
+  for(let i=0;i<10;i++) particles.update(1/30,20,floorGetTile);
+  collided=particles._debugSnapshot()[0];
+  assert.ok(collided.y <= 60 - 1.1, 'impact chips collide with solid floors');
+  assert.ok(collided.vy <= 0.2 || collided.onGround, 'impact chips lose or reverse downward velocity on floor impact');
+
+  particles.reset();
   particles.spawnEnergyAbsorb(20,20,60,30,1);
   assert.ok(particles.count()>0, 'energy absorption emits a small particle batch');
   particles.update(0.08,20);

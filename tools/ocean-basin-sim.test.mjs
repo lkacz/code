@@ -70,11 +70,31 @@ for(const seed of seeds){
   if(deepest >= 40) sawDeepOcean = true;
 
   // --- Hermetic seal: sediment bed, then bedrock to the very world bottom ---
+  if(seg.width > WG.OCEAN_SEAL_EDGE_BLEND*2 + 8){
+    const edgeX = seg.left;
+    const coreX = seg.left + WG.OCEAN_SEAL_EDGE_BLEND + 4;
+    assert.ok(WG.oceanSealTop(edgeX) > WG.column(edgeX).row + WG.OCEAN_SEAL_SEDIMENT,
+      `seed ${seed}: coastline seal blends downward instead of starting on a ruler-straight vertical cut`);
+    assert.equal(WG.oceanSealTop(coreX), WG.column(coreX).row + WG.OCEAN_SEAL_SEDIMENT,
+      `seed ${seed}: deep ocean core keeps the thin sediment bed`);
+  }
+  for(const shoreX of [seg.left-1, seg.right+1]){
+    if(WG.column(shoreX).row <= sea){
+      const shoulderTop = WG.oceanSealTop(shoreX);
+      assert.ok(Number.isFinite(shoulderTop), `seed ${seed}: shore column ${shoreX} receives a bedrock shoulder from the ocean basin`);
+      if(shoulderTop < WORLD_H) assert.equal(world.getTile(shoreX,shoulderTop), T.BEDROCK, `seed ${seed}: shore shoulder ${shoreX} materializes as bedrock`);
+    }
+  }
   const step = Math.max(1, Math.floor(seg.width/48));
   for(let x=seg.left; x<=seg.right; x+=step){
     const sealTop = WG.oceanSealTop(x);
     assert.ok(Number.isFinite(sealTop), `seed ${seed}: sealed column ${x} exposes a seal top`);
-    assert.equal(sealTop, WG.column(x).row + WG.OCEAN_SEAL_SEDIMENT, `seed ${seed}: seal starts under a thin sediment bed`);
+    const coreSealTop = WG.column(x).row + WG.OCEAN_SEAL_SEDIMENT;
+    assert.ok(sealTop >= coreSealTop, `seed ${seed}: seal starts under the sediment bed or lower on blended edges`);
+    const edge = Math.min(Math.abs(x-seg.left), Math.abs(seg.right-x));
+    if(edge >= WG.OCEAN_SEAL_EDGE_BLEND){
+      assert.equal(sealTop, coreSealTop, `seed ${seed}: seal starts under a thin sediment bed away from coast edges`);
+    }
     // Surface section: every cell from the seal top to the section bottom is bedrock
     for(let y=sealTop; y<WORLD_H; y++){
       assert.equal(world.getTile(x,y), T.BEDROCK, `seed ${seed}: (${x},${y}) inside the basin jacket is bedrock`);

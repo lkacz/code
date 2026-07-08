@@ -40,6 +40,8 @@ for (const [tileId, info] of Object.entries(INFO)) {
   }
 }
 assert.equal(INFO[T.COAL].drop, 'coal', 'coal blocks drop coal');
+assert.equal(INFO[T.GOLD_ORE].drop, 'gold', 'gold ore blocks drop gold');
+assert.equal(INFO[T.GOLD_ORE].goldOre, true, 'gold ore advertises its mineral identity');
 assert.equal(INFO[T.DIRT].drop, 'dirt', 'dirt blocks drop dirt');
 assert.equal(INFO[T.GRANITE].drop, 'granite', 'granite blocks drop granite');
 assert.equal(INFO[T.BASALT].drop, 'basalt', 'basalt blocks drop basalt');
@@ -76,6 +78,8 @@ assert.equal(INFO[T.WOOD_TRAPDOOR].trapdoor, true, 'wood trapdoor advertises tra
 assert.equal(INFO[T.STONE_TRAPDOOR].trapdoor, true, 'stone trapdoor advertises trapdoor semantics');
 assert.equal(INFO[T.STEEL_TRAPDOOR].trapdoor, true, 'steel trapdoor advertises trapdoor semantics');
 assert.equal(res('coal')?.tile, 'COAL', 'coal is a placeable mined resource');
+assert.equal(res('gold')?.tile, 'GOLD_ORE', 'gold is a placeable mined ore resource');
+assert.equal(res('gold')?.color, '#f2b93b', 'gold resource uses the bright vein palette');
 assert.equal(res('dirt')?.tile, 'DIRT', 'dirt is a placeable mined resource');
 assert.equal(res('granite')?.tile, 'GRANITE', 'granite is a placeable mined resource');
 assert.equal(res('basalt')?.tile, 'BASALT', 'basalt is a placeable mined resource');

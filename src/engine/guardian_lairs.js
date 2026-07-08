@@ -1633,6 +1633,13 @@ const guardianLairs = (function(){
     else if(e.kind==='ice' && element==='fire') say(e.name+' fractures under the flame.');
     e.weakHint=2.0;
   }
+  function noteCombatEvent(detail){
+    try{
+      if(typeof window!=='undefined' && typeof window.dispatchEvent==='function' && typeof CustomEvent==='function'){
+        window.dispatchEvent(new CustomEvent('mm-combat-event',{detail}));
+      }
+    }catch(e){}
+  }
   function hitEntity(e,dmg,opts){
     if(!e || e.dead || !(dmg>0)) return false;
     let amount=Math.max(0.5,dmg);
@@ -1647,6 +1654,19 @@ const guardianLairs = (function(){
       amount*=weak;
       announceWeaknessHit(e,element);
       addEffect({type:'burst',kind:e.kind,x:e.x,y:e.y,t:0,max:0.32,r:(e.radius||1)*3.2});
+      noteCombatEvent({
+        kind:'elemental',
+        source:'hero',
+        target:'guardian',
+        x:e.x,
+        y:e.y-0.55,
+        amount,
+        element,
+        cause:element==='fire'?'heat_bonus':'water_bonus',
+        bonusDamagePct:Math.round((weak-1)*100),
+        major:true,
+        power:Math.max(1.15,Math.min(2.4,weak*0.55))
+      });
     }
     e.hp-=amount;
     e.hitFlash=0.18;

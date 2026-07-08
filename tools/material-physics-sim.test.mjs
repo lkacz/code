@@ -42,6 +42,7 @@ const {
   isMeteorSettlementSiteTile,
   isMeteorWaterSiteTile,
   isMountedFixtureTile,
+  isNaturalHazardMaterial,
   isNaturalFloatingAnchorTile,
   isNaturalFloatingCohesionTile,
   isCreatureOpenTile,
@@ -169,6 +170,13 @@ function assertRouteContract(row){
     assert.equal(isRubbleTrackedMaterial(t), false, name+' loose item is not structural rubble');
     return;
   }
+  if(route==='natural-hazard'){
+    assert.equal(isNaturalHazardMaterial(t), true, name+' natural-hazard route matches terrain hazard predicate');
+    assertNoSupportRole(name,t);
+    assert.equal(isPlayerBuiltMaterial(t), false, name+' natural hazard is not a player-built frame');
+    assert.equal(isRubbleTrackedMaterial(t), false, name+' natural hazard is not structural rubble');
+    return;
+  }
   if(route==='granular'){
     assert.equal(t, T.SAND, name+' is the granular tile handled by sand physics');
     assert.equal(isBuildAnchorTile(t), false, name+' granular route is not a build anchor');
@@ -231,7 +239,7 @@ for(const row of materialPhysicsCoverage()){
   assertRouteContract(row);
   routeCounts.set(row.route,(routeCounts.get(row.route)||0)+1);
 }
-for(const route of ['void','fluid','gas','foliage','rigid-object','mounted-fixture','loose-item','granular','bedrock','story','ufo-vault','build-material','passable-utility']){
+for(const route of ['void','fluid','gas','foliage','rigid-object','mounted-fixture','loose-item','natural-hazard','granular','bedrock','story','ufo-vault','build-material','passable-utility']){
   assert.ok(routeCounts.get(route)>0, 'canonical material route '+route+' is represented');
 }
 assert.equal(materialPhysicsRoute(T.AIR), 'void', 'air has the void material route');
@@ -256,7 +264,19 @@ assert.equal(isMeteorSettlementSiteTile(T.INVASION_CACHE), true, 'invasion recov
 assert.equal(isIridiumArrowPierceableTile(T.INVASION_CACHE), false, 'iridium arrows cannot pierce recovery caches');
 assert.equal(materialPhysicsRoute(T.COPPER_WIRE), 'passable-utility', 'thin infrastructure has the passable-utility material route');
 assert.equal(materialPhysicsRoute(T.RESPAWN_TOTEM), 'passable-utility', 'respawn totems have the passable-utility material route');
+assert.equal(materialPhysicsRoute(T.UNSTABLE_SAND), 'natural-hazard', 'unstable sand has the natural hazard material route');
+assert.equal(materialPhysicsRoute(T.UNSTABLE_GRASS), 'natural-hazard', 'unstable grass has the natural hazard material route');
+assert.equal(materialPhysicsRoute(T.QUICKSAND), 'natural-hazard', 'quicksand has the natural hazard material route');
+assert.equal(isBuildFoundationTile(T.UNSTABLE_SAND), false, 'unstable sand cannot anchor builds');
+assert.equal(isBuildFoundationTile(T.UNSTABLE_GRASS), false, 'unstable grass cannot anchor builds');
+assert.equal(isStableMachineSupportTile(T.QUICKSAND), false, 'quicksand cannot support machines');
 assert.equal(materialPhysicsRoute(T.STONE), 'build-material', 'stone has the build-material route');
+assert.equal(materialPhysicsRoute(T.GOLD_ORE), 'build-material', 'gold ore has a mined solid material route');
+assert.equal(isNonStructuralResourceMaterial(T.GOLD_ORE), true, 'gold ore is a non-structural mineral resource');
+assert.equal(isBuildAnchorTile(T.GOLD_ORE), false, 'gold ore veins are not lateral building anchors');
+assert.equal(isBuildFoundationTile(T.GOLD_ORE), false, 'gold ore veins are not terrain footing');
+assert.equal(isStableMachineSupportTile(T.GOLD_ORE), false, 'gold ore veins do not safely support machines');
+assert.equal(isObjectCrushableSupportTile(T.GOLD_ORE), true, 'gold ore can be crushed/settled like other mineral resource lumps');
 assert.equal(materialPhysicsRoute(T.CLAY), 'build-material', 'clay has the build-material route');
 assert.equal(materialPhysicsRoute(T.WET_CLAY), 'build-material', 'wet clay has the build-material route');
 assert.equal(materialPhysicsRoute(T.BRICK), 'build-material', 'brick has the build-material route');
@@ -300,7 +320,7 @@ for(const r of rows){
     classified.push([r.key,'nonstructural']);
     continue;
   }
-  if(['fluid','foliage','granular','passable-utility','story','loose-item','gas'].includes(route)){
+  if(['fluid','foliage','natural-hazard','granular','passable-utility','story','loose-item','gas'].includes(route)){
     if(id!==T.SAND && id!==T.VOLCANO_MASTER_STONE && id!==T.SERVANT_STONE) assert.ok(!isStableMachineSupportTile(id), r.tile+' non-structural resource does not support machines');
     classified.push([r.key,'nonstructural']);
     continue;
@@ -359,6 +379,7 @@ assert.equal(isBuildAnchorTile(T.GLASS), false, 'fragile glass is not a building
 assert.equal(isBuildAnchorTile(T.ELECTRONICS), false, 'electronics are not a building anchor');
 assert.equal(isBuildAnchorTile(T.DIRT), false, 'weak fill is not a lateral building anchor');
 assert.equal(isBuildAnchorTile(T.COAL), false, 'resource lumps are not building anchors');
+assert.equal(isBuildAnchorTile(T.GOLD_ORE), false, 'gold resource lumps are not building anchors');
 assert.equal(isBuildAnchorTile(T.RADIOACTIVE_ORE), false, 'ore is not a building anchor');
 assert.equal(isBuildAnchorTile(T.WOOD), true, 'wood is a light structural anchor');
 assert.equal(isBuildAnchorTile(T.STONE), true, 'stone remains a valid terrain/build anchor');
@@ -376,6 +397,7 @@ assert.equal(isBuildFoundationTile(T.CLAY), true, 'clay can act as simple vertic
 assert.equal(isBuildFoundationTile(T.WET_CLAY), true, 'wet clay can act as simple vertical footing');
 assert.equal(isBuildFoundationTile(T.CHIMNEY), true, 'chimneys can vertically support structures');
 assert.equal(isBuildFoundationTile(T.COAL), false, 'coal is tracked by physics but is not terrain footing');
+assert.equal(isBuildFoundationTile(T.GOLD_ORE), false, 'gold ore is tracked by physics but is not terrain footing');
 assert.equal(isBuildFoundationTile(T.ELECTRONICS), false, 'electronics are tracked by physics but are not terrain footing');
 assert.equal(isBuildFoundationTile(T.WATER_PUMP), false, 'machines are not terrain footing for buildings');
 assert.equal(isBuildFoundationTile(T.VENDING_MACHINE), false, 'vending machines are not terrain footing for buildings');
@@ -400,10 +422,12 @@ assert.equal(isBuildLoadTransferMaterial(T.CHIMNEY), true, 'chimneys transfer st
 assert.equal(isBuildLoadTransferMaterial(T.MOTHER_ICE), true, 'mother ice transfers structural load through its relic profile');
 assert.equal(isBuildLoadTransferMaterial(T.MOTHER_LAVA), true, 'mother lava transfers structural load through its relic profile');
 assert.equal(isBuildLoadTransferMaterial(T.RADIOACTIVE_ORE), false, 'ore does not transfer frame load');
+assert.equal(isBuildLoadTransferMaterial(T.GOLD_ORE), false, 'gold ore does not transfer frame load');
 assert.equal(isWeakFillMaterial(T.MUD), true, 'mud is classified as weak fill');
 assert.equal(isWeakFillMaterial(T.CLAY), true, 'clay is classified as weak fill before firing');
 assert.equal(isWeakFillMaterial(T.WET_CLAY), true, 'wet clay is classified as weak fill before drying');
 assert.equal(isNonStructuralResourceMaterial(T.COAL), true, 'coal is classified as non-structural resource');
+assert.equal(isNonStructuralResourceMaterial(T.GOLD_ORE), true, 'gold ore is classified as non-structural resource');
 assert.equal(isLooseRigidMaterial(T.COAL), true, 'untracked coal behaves as a loose rigid resource block');
 assert.equal(isLooseRigidMaterial(T.RADIOACTIVE_ORE), true, 'untracked radioactive ore behaves as a loose rigid resource block');
 assert.equal(isLooseRigidMaterial(T.BAKED_MEAT), true, 'cooked meat has generic loose-item falling because it has no decay timer');
@@ -605,7 +629,7 @@ assert.equal(isLavaExposureOpenTile(T.GRAVE), true, 'lava exposure keeps the gra
 assert.equal(isLavaExposureOpenTile(T.WIRE), false, 'lava exposure does not make wiring an open cell');
 assert.equal(isLavaExposureOpenTile(T.STONE), false, 'lava exposure treats terrain as closed');
 
-for(const t of [T.STONE,T.GRANITE,T.BASALT,T.COAL,T.DIAMOND,T.ALIEN_BIOMASS,T.ANTIMATTER_CRYSTAL,T.VOLCANO_MASTER_STONE]){
+for(const t of [T.STONE,T.GRANITE,T.BASALT,T.COAL,T.GOLD_ORE,T.DIAMOND,T.ALIEN_BIOMASS,T.ANTIMATTER_CRYSTAL,T.VOLCANO_MASTER_STONE]){
   assert.equal(isMeteorImpactGroundTile(t), true, 'meteor impacts treat '+(INFO[t]?.name || t)+' as terrain/resource ground');
 }
 for(const t of [T.STEEL,T.CHIMNEY,T.WOOD,T.WATER_PUMP,T.CHEST_COMMON,T.WIRE,T.WATER,T.LAVA,T.AIR]){
@@ -615,7 +639,7 @@ for(const t of [T.STONE,T.GRANITE,T.BASALT,T.BEDROCK]){
   assert.equal(isMeteorPickDenseRockMaterial(t), true, 'meteor pick dense-rock spark tier includes '+(INFO[t]?.name || t));
   assert.equal(isMeteorPickSparkMaterial(t), true, 'meteor pick spark materials include '+(INFO[t]?.name || t));
 }
-for(const t of [T.COAL,T.OBSIDIAN,T.METEORIC_IRON,T.RADIOACTIVE_ORE,T.ANTIMATTER_CRYSTAL]){
+for(const t of [T.COAL,T.GOLD_ORE,T.OBSIDIAN,T.METEORIC_IRON,T.RADIOACTIVE_ORE,T.ANTIMATTER_CRYSTAL]){
   assert.equal(isMeteorPickDenseRockMaterial(t), false, 'meteor pick treats '+(INFO[t]?.name || t)+' as mineral, not dense rock');
   assert.equal(isMeteorPickSparkMaterial(t), true, 'meteor pick spark materials include '+(INFO[t]?.name || t));
 }
@@ -626,7 +650,7 @@ for(const t of [T.DIRT,T.WOOD,T.STEEL,T.DIAMOND,T.IRIDIUM,T.WATER_PUMP,T.WIRE,T.
 for(const t of [T.AIR,T.CHEST_COMMON,T.CHEST_RARE,T.CHEST_EPIC,T.OBSIDIAN,T.DIAMOND,T.IRIDIUM,T.BEDROCK,T.VOLCANO_MASTER_STONE,T.SERVANT_STONE]){
   assert.equal(isBlastProtectedTile(t), true, 'blast protection preserves '+(INFO[t]?.name || t));
 }
-for(const t of [T.STONE,T.GRANITE,T.BASALT,T.STEEL,T.WOOD,T.COAL,T.ALIEN_BIOMASS,T.WATER_PUMP]){
+for(const t of [T.STONE,T.GRANITE,T.BASALT,T.STEEL,T.WOOD,T.COAL,T.GOLD_ORE,T.ALIEN_BIOMASS,T.WATER_PUMP]){
   assert.equal(isBlastProtectedTile(t), false, 'blast crater can affect '+(INFO[t]?.name || t));
 }
 for(const t of [T.CHEST_COMMON,T.CHEST_RARE,T.CHEST_EPIC,T.VOLCANO_MASTER_STONE,T.SERVANT_STONE,T.ANTIGRAVITY_BEACON,T.METEOR_SIREN,T.BEDROCK]){
@@ -657,13 +681,13 @@ for(const t of [T.STEEL,T.CHIMNEY,T.WOOD_DOOR,T.STONE_DOOR,T.STEEL_DOOR,T.WOOD_T
 for(const t of [T.AIR,T.STONE,T.SAND,T.COAL,T.WATER,T.ICE,T.WOOD,T.GRASS,T.ALIEN_BIOMASS]){
   assert.equal(isMeteorSettlementSiteTile(t), false, 'meteor consequence settlement sites exclude '+(INFO[t]?.name || t));
 }
-for(const t of [T.STONE,T.GRANITE,T.BASALT,T.BEDROCK,T.COAL]){
+for(const t of [T.STONE,T.GRANITE,T.BASALT,T.BEDROCK,T.COAL,T.GOLD_ORE]){
   assert.equal(isCreatureRockFloorTile(t), true, 'creature rock-floor substrate includes '+(INFO[t]?.name || t));
 }
 for(const t of [T.OBSIDIAN,T.DIAMOND,T.STEEL,T.SAND,T.DIRT,T.GRASS,T.WOOD,T.WATER,T.AIR]){
   assert.equal(isCreatureRockFloorTile(t), false, 'creature rock-floor substrate excludes '+(INFO[t]?.name || t));
 }
-for(const t of [T.STONE,T.GRANITE,T.BASALT,T.STEEL,T.WOOD,T.COAL,T.RADIOACTIVE_ORE]){
+for(const t of [T.STONE,T.GRANITE,T.BASALT,T.STEEL,T.WOOD,T.COAL,T.GOLD_ORE,T.RADIOACTIVE_ORE]){
   assert.equal(isIridiumArrowPierceableTile(t), true, 'iridium arrows can pierce ordinary solid '+(INFO[t]?.name || t));
 }
 for(const t of [T.AIR,T.WATER,T.LAVA,T.CHEST_COMMON,T.WATER_PUMP,T.OBSIDIAN,T.DIAMOND,T.IRIDIUM,T.BEDROCK,T.VOLCANO_MASTER_STONE,T.SERVANT_STONE]){

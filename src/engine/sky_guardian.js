@@ -828,6 +828,13 @@ const skyGuardian = (function(){
     }
     return best;
   }
+  function noteCombatEvent(detail){
+    try{
+      if(typeof root.dispatchEvent==='function' && typeof root.CustomEvent==='function'){
+        root.dispatchEvent(new root.CustomEvent('mm-combat-event',{detail}));
+      }
+    }catch(e){}
+  }
   function hitEntity(e,dmg,opts){
     if(!e || e.dead || !(dmg>0)) return false;
     const kind=damageKind(opts);
@@ -843,7 +850,22 @@ const skyGuardian = (function(){
       return 'shield';
     }
     let amount=Math.max(0.5,Number(dmg)||1);
-    if(kind==='electric' && e.resonator) amount*=1.45;
+    if(kind==='electric' && e.resonator){
+      amount*=1.45;
+      noteCombatEvent({
+        kind:'elemental',
+        source:'hero',
+        target:'guardian',
+        x:e.x,
+        y:e.y-0.45,
+        amount,
+        element:'electric',
+        cause:'shock_bonus',
+        bonusDamagePct:45,
+        major:true,
+        power:1.25
+      });
+    }
     if(kind==='gas' && e.boss) amount*=0.65;
     if(e.leafling && kind==='gas') amount*=0.75;
     e.hp-=amount;

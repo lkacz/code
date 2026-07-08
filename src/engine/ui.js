@@ -568,9 +568,10 @@ MM.ui = (function(){
     [xIn,yIn].forEach(i=> i.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); goBtn.click(); } }));
     syncFromPos();
   }
-  function injectMobSpawnPanel(spawnCb, menuPanel){
+  function injectMobSpawnPanel(spawnCb, menuPanel, actions){
     const panel = menuPanel || document.getElementById('menuPanel');
     if(!panel) return;
+    actions = actions || {};
     const mobBox=document.createElement('div'); mobBox.id='mobSpawnBox'; mobBox.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;';
     const label2=document.createElement('div'); label2.textContent='Spawn Moby:'; label2.style.cssText='width:100%; font-size:11px; opacity:.7;'; mobBox.appendChild(label2);
     const placeholder=document.createElement('div'); placeholder.textContent='(Ładowanie...)'; placeholder.style.cssText='font-size:11px; opacity:.5;'; mobBox.appendChild(placeholder);
@@ -655,18 +656,71 @@ MM.ui = (function(){
       const biomeLab=document.createElement('div'); biomeLab.textContent='Biom - skocz do (debug):'; biomeLab.style.cssText='width:100%; font-size:11px; opacity:.7; margin-top:4px;';
       box.appendChild(biomeLab);
       const BIOME_DEBUG_BUTTONS=[[0,'Las'],[1,'Rowniny'],[2,'Snieg'],[3,'Pustynia'],[4,'Bagno'],[5,'Morze'],[6,'Jezioro'],[7,'Gory'],[8,'Miasto']];
-      BIOME_DEBUG_BUTTONS.forEach(([id,label])=>{
-        const b=document.createElement('button');
-        b.textContent=label;
-        b.title='Teleportuj do najblizszego biomu: '+label;
-        b.style.cssText='flex:1 1 72px; font-size:11px; padding:3px 6px; border:1px solid rgba(90,180,255,.55);';
-        b.addEventListener('click',()=>{
-          try{
-            const hit=(typeof window.teleportHeroToNearestBiome==='function') ? window.teleportHeroToNearestBiome(id,0) : null;
-            if(!hit) msg('Nie znaleziono biomu: '+label);
-          }catch(e){}
+      function callBiomeTravel(id,dir,label){
+        const fn=(typeof actions.biome==='function') ? actions.biome : (typeof window.teleportHeroToNearestBiome==='function' ? window.teleportHeroToNearestBiome : null);
+        if(!fn){ msg('Teleport biomu niedostepny'); return null; }
+        const hit=fn(id,dir);
+        if(!hit) msg('Nie znaleziono biomu: '+label);
+        return hit;
+      }
+      function callBiomeThreat(key,dir,label){
+        const fn=(typeof actions.biomeThreat==='function') ? actions.biomeThreat : (typeof window.teleportHeroToBiomeThreat==='function' ? window.teleportHeroToBiomeThreat : null);
+        if(!fn){ msg('Teleport zagrozenia niedostepny'); return null; }
+        const hit=fn(key,dir);
+        if(!hit) msg('Nie znaleziono zagrozenia: '+label);
+        return hit;
+      }
+      function addDebugTravelRow(prefix,key,label,border,handler){
+        const row=document.createElement('div');
+        row.style.cssText='display:flex; gap:4px; flex:1 1 100%; min-width:0;';
+        [[-1,'<','Left','poprzedni'],[0,label,'Near','najblizszy'],[1,'>','Right','nastepny']].forEach(([dir,text,suffix,title])=>{
+          const b=document.createElement('button');
+          b.id=prefix+suffix+'_'+key;
+          b.textContent=text;
+          b.title=title+': '+label;
+          b.style.cssText=(dir===0
+            ? 'flex:1 1 auto; min-width:0; white-space:normal; overflow-wrap:anywhere;'
+            : 'flex:0 0 34px;')+'font-size:11px; padding:3px 6px; border:1px solid '+border+';';
+          b.addEventListener('click',()=>{ try{ handler(dir); }catch(e){} });
+          row.appendChild(b);
         });
-        box.appendChild(b);
+        box.appendChild(row);
+      }
+      BIOME_DEBUG_BUTTONS.forEach(([id,label])=>{
+        addDebugTravelRow('biomeDebug', id, label, 'rgba(90,180,255,.55)', (dir)=>callBiomeTravel(id,dir,label));
+      });
+      const threatLab=document.createElement('div'); threatLab.textContent='Biome threats - jump + spawn (debug):'; threatLab.style.cssText='width:100%; font-size:11px; opacity:.7; margin-top:4px;';
+      box.appendChild(threatLab);
+      const BIOME_THREAT_BUTTONS=[
+        ['forest_bear','Forest bear'],
+        ['forest_bramble','Forest bramble stalker'],
+        ['forest_grass_trap','Forest grass trap'],
+        ['forest_temple','Forest surface temple'],
+        ['plains_bison','Plains thunder bison'],
+        ['plains_grass_trap','Plains grass trap'],
+        ['plains_zubr','Plains zubr charge'],
+        ['snow_pack','Snow wolf pack'],
+        ['snow_wraith','Snow ice wraith'],
+        ['snow_golem','Snow stone golem'],
+        ['snow_yeti','Snow jackpot yeti'],
+        ['desert_worm','Desert sand worm'],
+        ['desert_scorpion','Desert giant scorpion'],
+        ['desert_sand_traps','Desert sand traps'],
+        ['swamp_lurker','Swamp bog lurkers'],
+        ['swamp_temple','Swamp surface temple'],
+        ['sea_piranhas','Sea piranha swarm'],
+        ['sea_shark','Sea shark'],
+        ['sea_whale','Sea jackpot whale'],
+        ['lake_eels','Lake eels'],
+        ['lake_serpent','Lake serpent'],
+        ['mountain_vulture','Mountain vulture nest'],
+        ['mountain_golem','Mountain stone golem'],
+        ['volcano_vulture','Volcano vulture nest'],
+        ['city_sentinels','City robot sentinels'],
+        ['city_atomic_bomb','City atomic bomb']
+      ];
+      BIOME_THREAT_BUTTONS.forEach(([key,label])=>{
+        addDebugTravelRow('biomeThreat', key, label, 'rgba(255,155,95,.62)', (dir)=>callBiomeThreat(key,dir,label));
       });
       // UFO debug: summon the saucer on demand (normally it visits every 2-3 in-game days)
       const ufoLab=document.createElement('div'); ufoLab.textContent='🛸 UFO (debug):'; ufoLab.style.cssText='width:100%; font-size:11px; opacity:.7; margin-top:4px;';

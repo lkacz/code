@@ -269,7 +269,7 @@ assert.match(mainSource, /function terrainTextureVariant\(t,wx,y,h\)/, 'terrain 
 assert.match(mainSource, /\(patch \^ \(h>>>7\) \^ \(t\*97\)\)>>>0/, 'terrain texture variant hashes stay unsigned');
 assert.match(mainSource, /function drawTerrainPattern\(g,t,px,py,wx,y,h\)/, 'chunk renderer has a cached terrain pattern pass');
 assert.match(mainSource, /t===T\.STONE \|\| t===T\.GRANITE \|\| t===T\.BASALT \|\| t===T\.BEDROCK/, 'hard-rock texture pass is budgeted for large underground masses');
-assert.match(mainSource, /return t===T\.SAND \|\| t===T\.CLAY \|\| t===T\.WET_CLAY \|\| t===T\.BRICK \|\| t===T\.CHIMNEY \|\| t===T\.DIRT \|\| t===T\.STONE \|\| t===T\.GRANITE \|\| t===T\.BASALT \|\| t===T\.BEDROCK \|\| t===T\.COAL \|\| t===T\.UFO_CONCRETE;/, 'sand, clay, brick, chimney, dirt, rock, coal and UFO concrete opt into characteristic pattern textures');
+assert.match(mainSource, /return t===T\.SAND \|\| t===T\.UNSTABLE_SAND \|\| t===T\.QUICKSAND \|\| t===T\.CLAY \|\| t===T\.WET_CLAY \|\| t===T\.BRICK \|\| t===T\.CHIMNEY \|\| t===T\.DIRT \|\| t===T\.STONE \|\| t===T\.GRANITE \|\| t===T\.BASALT \|\| t===T\.BEDROCK \|\| t===T\.COAL \|\| t===T\.UFO_CONCRETE;/, 'sand, sand hazards, clay, brick, chimney, dirt, rock, coal and UFO concrete opt into characteristic pattern textures');
 assert.match(mainSource, /drawTerrainPattern\(cctx,t,lx\*TILE,y\*TILE,wx,y,h\);/, 'visible chunk cache draws terrain patterns for real world tiles');
 assert.match(mainSource, /g\.drawImage\(terrainPatternCanvas\(t,variant\),px,py\);/, 'terrain patterns are blitted from a small cached atlas');
 assert.match(mainSource, /function drawTurretTilePixels\(g,t,px,py,h\)[\s\S]*Stepped barrel pixels keep the turret crisp/, 'turrets have a dedicated detailed pixel renderer');
@@ -288,7 +288,8 @@ assert.ok(turretRendererStart > 0 && turretRendererEnd > turretRendererStart, 't
 const turretRenderer = mainSource.slice(turretRendererStart, turretRendererEnd);
 assert.ok(!turretRenderer.includes('.arc('), 'turret renderer avoids soft circular shapes that read as low-detail scaling');
 assert.match(mainSource, /function beginPrecisionSafeWorldLayer\(opts\)/, 'main renderer has a camera-local layer path for large world coordinates');
-assert.match(mainSource, /drawWorldVisible\(sx,sy,viewX,viewY,\{camX:camRenderX,camY:camRenderY,shake:meteorShake\}\)/, 'cached terrain receives the render camera for precision-safe drawing');
+assert.match(mainSource, /const screenShake=combineScreenShakes\(meteorShake,combatShake\)/, 'combat impact shake is combined with meteor shake instead of replacing it');
+assert.match(mainSource, /drawWorldVisible\(sx,sy,viewX,viewY,\{camX:camRenderX,camY:camRenderY,shake:screenShake\}\)/, 'cached terrain receives the render camera and combined shake for precision-safe drawing');
 assert.match(mainSource, /const minSection=Math\.max\(worldMinSection\(\),worldSectionY\(Math\.floor\(sy\)-2\)\); const maxSection=Math\.min\(worldMaxSection\(\),worldSectionY\(Math\.ceil\(sy\+viewY\)\+2\)\)/, 'world renderer derives the visible vertical section range from the camera');
 assert.match(mainSource, /fallingAuditChunks=\[\], fallingAuditChunkSeen=new Set\(\)/, 'falling audits collect visible horizontal chunks even outside the legacy base section');
 assert.match(mainSource, /FALLING && FALLING\.auditChunks\) FALLING\.auditChunks\(fallingAuditChunks\)/, 'falling audits run for sky and deep section views, not only base-section views');
@@ -308,7 +309,7 @@ assert.match(mainSource, /function beginChunkCacheFrame\(\)[\s\S]*chunkCacheRebu
 assert.match(mainSource, /entry=\{canvas:c,ctx:cctx,version:-1,sy,chests:\[\],doorways:\[\]\}/, 'section chunk cache tracks door and trapdoor cells for metadata reuse');
 assert.match(mainSource, /function visibleDoorwayCellsFor\(sx,sy,viewX,viewY\)[\s\S]*collectDoorwayCellsInRange\(x0,x1,y0,y1,cells\)/, 'door overlay animation scans only the bounded visible section range');
 assert.match(mainSource, /window\.__mmPerf=\{[\s\S]*simMs[\s\S]*drawMs[\s\S]*chunks:\{rebuilt:chunkCacheRebuiltThisFrame,partial:chunkCachePartialRebuiltThisFrame,deferred:chunkCacheDeferredThisFrame/, 'frame profiler exposes sim/draw timing and full/partial chunk rebuild pressure');
-assert.match(mainSource, /drawFogOverlay\(sx,sy,viewX,viewY,\{camX:camRenderX,camY:camRenderY,shake:meteorShake\}\)/, 'fog overlay receives the render camera for precision-safe drawing');
+assert.match(mainSource, /drawFogOverlay\(sx,sy,viewX,viewY,\{camX:camRenderX,camY:camRenderY,shake:screenShake\}\)/, 'fog overlay receives the render camera and combined shake for precision-safe drawing');
 assert.match(mainSource, /originX: localLayer \? opts\.camX : 0/, 'fog overlay can draw in camera-local coordinates');
 assert.match(mainSource, /const MIN_ZOOM=0\.72, MAX_ZOOM=3;/, 'zoom-out is clamped at the former LOD threshold');
 assert.match(mainSource, /function clampZoom\(z\)\{ return Math\.min\(MAX_ZOOM, Math\.max\(MIN_ZOOM, z\)\); \}/, 'all zoom inputs obey the full-detail zoom bounds');
@@ -318,7 +319,7 @@ assert.doesNotMatch(mainSource, /currentRenderDetail\.grass && VISUAL\.animation
 assert.doesNotMatch(mainSource, /currentRenderDetail\.tier<2 && WIND/, 'wind overlay is no longer disabled by zoom detail mode');
 assert.match(mainSource, /function revealDebugTravelArea\(\)/, 'debug travel has a wider survey reveal for inspecting distant generated regions');
 assert.match(mainSource, /FOG\.revealRect\(x0,y0,x1,y1,opts\)/, 'debug travel reveal covers the visible viewport instead of only a tiny landing circle');
-const sandBranchStart = mainSource.indexOf('} else if(t===T.SAND){');
+const sandBranchStart = mainSource.indexOf('} else if(t===T.SAND || t===T.UNSTABLE_SAND || t===T.QUICKSAND){');
 const sandBranchEnd = mainSource.indexOf('} else if(t===T.CLAY || t===T.WET_CLAY){', sandBranchStart);
 assert.ok(sandBranchStart > 0 && sandBranchEnd > sandBranchStart, 'sand material branch is present');
 const sandBranch = mainSource.slice(sandBranchStart, sandBranchEnd);
@@ -326,8 +327,13 @@ assert.ok(!sandBranch.includes('drawBlockBevel'), 'sand does not draw explicit t
 assert.match(sandBranch, /drawSandGrains\(g,px,py,h\)/, 'sand branch uses dense grain detail');
 assert.match(mainSource, /function smoothTerrainNoise\(wx,y,scale\)/, 'continuous terrain uses smooth low-frequency shade noise');
 assert.match(mainSource, /function isContinuousTerrainTile\(t\)/, 'renderer can classify terrain that should not show per-tile borders');
+assert.match(mainSource, /t===T\.COAL \|\| t===T\.GOLD_ORE/, 'gold ore joins continuous underground terrain instead of drawing a hard grid');
 assert.match(mainSource, /if\(isContinuousTerrainTile\(t\)\)/, 'terrain shade avoids per-cell random jitter for natural masses');
-assert.match(mainSource, /if\(t===T\.SAND\) return 4;/, 'sand shade variance stays low enough to avoid block grid patches');
+assert.match(mainSource, /function drawGoldOreArt\(g,px,py,h\)/, 'gold ore has a dedicated shiny vein renderer');
+assert.match(mainSource, /if\(t===T\.GOLD_ORE\)\{[\s\S]*drawGoldOreArt\(cctx,lx\*TILE,y\*TILE,h\)/, 'chunk bake embeds gold as veins inside host rock');
+assert.match(grassSource, /leafTile\(t\) \|\| t===T\.DIAMOND \|\| t===T\.GOLD_ORE/, 'animated overlay pass can add gold glints');
+assert.match(grassSource, /pass==='back' && t===T\.GOLD_ORE[\s\S]*rgba\(255,202,58/, 'gold ore shimmer uses a warm metallic palette');
+assert.match(mainSource, /if\(t===T\.SAND \|\| t===T\.UNSTABLE_SAND \|\| t===T\.QUICKSAND\) return 4;/, 'sand shade variance stays low enough to avoid block grid patches');
 assert.match(mainSource, /if\(t===T\.DIRT\) return 5;/, 'dirt has a restrained continuous shade variance');
 assert.match(mainSource, /if\(t===T\.GRANITE\) return 6;/, 'granite has its own shade variance');
 assert.match(mainSource, /if\(t===T\.BASALT\) return 5;/, 'basalt has its own shade variance');

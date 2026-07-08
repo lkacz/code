@@ -248,9 +248,11 @@ window.MM = window.MM || {};
     // level-ups
     const L=levelFor(p.xp||0).level;
     if(L>state.lastLevel){
+      const gained=Math.max(1,L-state.lastLevel);
       state.lastLevel=L; save();
       say('⬆ Poziom '+L+'! Punkt umiejętności do wydania (E → Rozwój)');
       try{ if(MM.audio && MM.audio.play) MM.audio.play('levelup'); }catch(e){}
+      try{ window.dispatchEvent(new CustomEvent('mm-skill-point-gained',{detail:{level:L,points:points(),gained}})); }catch(e){}
       notify();
     }
     // milestones

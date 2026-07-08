@@ -109,6 +109,7 @@ try{
 
   mobs.clearAll();
   simNow = 5000;
+  player.x=0.5; player.y=11.4; player.vx=0; player.vy=0; player.hpInvul=0;
   mobs.update(0.05,player,seaTile,()=>{});
   let piranhas = mobs.serialize().list.filter(m=>m.id==='PIRANHA');
   assert.ok(piranhas.length>=6, 'a swimmer in sea water triggers a piranha horde quickly');

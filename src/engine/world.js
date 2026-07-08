@@ -268,10 +268,32 @@ window.MM = window.MM || {};
   }
   function dirtThickness(wx,biome,beach,desertF,waterF){
     if(biome===8) return 0;
-    if(biome===3 || beach || biome===5 || biome===6) return 0;
+    if(biome===5 || biome===6) return 4 + Math.floor(WG.randSeed(wx*0.57)*3);
+    if(biome===3 || beach) return 0;
     if(biome===4) return 2 + Math.floor(WG.randSeed(wx*0.53)*2);
     if(biome===7) return 1 + Math.floor(WG.randSeed(wx*0.61)*2);
     return 3 + Math.floor(WG.randSeed(wx*0.67)*3) + (desertF>0.10 || waterF>0.10 ? 1 : 0);
+  }
+  function naturalSurfaceHazardKind(wx,biome,beach,desertF,cold,slope,waterBed,lakeBed,poolDepth,volcano){
+    if(volcano || waterBed || lakeBed || poolDepth>0 || cold || biome===4 || biome===5 || biome===6 || biome===8) return null;
+    if(slope>=3) return null;
+    const sandish=biome===3 || beach || desertF>0.34;
+    if(sandish){
+      const qChance=(biome===3 ? 0.018 : 0.010) + (beach ? 0.006 : 0) + Math.max(0,desertF-0.35)*0.014;
+      if(WG.randSeed(wx*23.17+704.3)<qChance) return 'quicksand';
+      const trapChance=(biome===3 ? 0.014 : 0.007) + (beach ? 0.003 : 0);
+      if(WG.randSeed(wx*19.91+771.7)<trapChance) return 'unstable-sand';
+    }
+    const grassy=biome===0 || biome===1 || biome===7 || desertF<0.42;
+    if(grassy && WG.randSeed(wx*21.73+413.5)<(biome===1 ? 0.012 : 0.008)) return 'unstable-grass';
+    return null;
+  }
+  function applyNaturalSurfaceHazard(t,depth,hazard){
+    if(hazard==='quicksand' && t===T.SAND && depth<4) return T.QUICKSAND;
+    if(depth!==0) return t;
+    if(hazard==='unstable-sand' && t===T.SAND) return T.UNSTABLE_SAND;
+    if(hazard==='unstable-grass' && t===T.GRASS) return T.UNSTABLE_GRASS;
+    return t;
   }
   function geologyRockTile(wx,y,depth,biome){
     return WORLD_LAYERS.legacyGeologyRockTile(WG,wx,y,depth,biome);
@@ -1470,10 +1492,11 @@ window.MM = window.MM || {};
       const cold = biome===2 || bf[2]>0.35 || s < SNOW_LINE + Math.floor(WG.randSeed(wx*1.13)*5-2);
       const desertF=bf[3], waterF=bf[5]+bf[6];
       const beach=col.beach && biome!==5 && biome!==6;
-      // Subsoil sand thickness: deserts deep, beaches/sea floors medium, inland none/thin
+      // Subsoil sand thickness: deserts deep, beaches sandy, water beds clay/dirt from generation.
       let sandTh;
       if(biome===3) sandTh = SAND_DEPTH + Math.floor(WG.randSeed(wx*0.37)*4) - 1;
-      else if(beach || biome===5 || biome===6) sandTh = 3 + Math.floor(WG.randSeed(wx*0.41)*3);
+      else if(beach) sandTh = 3 + Math.floor(WG.randSeed(wx*0.41)*3);
+      else if(biome===5 || biome===6) sandTh = 0;
       else if(biome===4) sandTh = 3 + Math.floor(WG.randSeed(wx*0.47)*2);
       else if(biome===8) sandTh = 4;
       else sandTh = (desertF>0.15 || waterF>0.15)? 2 : 0;
@@ -1490,6 +1513,8 @@ window.MM = window.MM || {};
         else if(pool>0.47 && WG.valueNoise(wx,11,3306)>0.66) poolDepth=1;
       }
       const ground=s+poolDepth;
+      const waterBed=(s>SEA || biome===5 || biome===6) && biome!==4;
+      const surfaceHazard=naturalSurfaceHazardKind(wx,biome,beach,desertF,cold,slope,waterBed,lakeRow!==Infinity,poolDepth,!!col.volcano);
       // Cave carve pass for this column (includes ravines/entrances opening the surface)
       COL_CARVE.fill(0);
       for(let y=ground;y<WORLD_H;y++){ COL_CARVE[y]=WG.caveAt(wx,y,col); }
@@ -1517,10 +1542,10 @@ window.MM = window.MM || {};
             const volcanicRock=volcanoRockTile(col,wx,y,ground,depth);
             if(volcanicRock!==undefined) t=volcanicRock;
             else if(depth<SURFACE_GRASS_DEPTH){
-            // Surface material. Shallow shelves keep sandy beds; abyssal ocean
-            // plains expose bare rock (deep-water habitat, e.g. eels den there).
+            // Surface material. Water beds are born as clay/dirt so the player
+            // never sees sand flash in and then convert under lakes/seas.
             if((s>SEA || biome===5 || biome===6 || lakeRow!==Infinity) && biome!==4)
-              t=(biome===5 && s-SEA>30 && WG.randSeed(wx*3.77)<0.65) ? T.STONE : T.SAND; // sea/lake bed
+              t=(WG.randSeed(wx*4.19+depth*0.31)<(biome===6 || lakeRow!==Infinity ? 0.62 : 0.46)) ? T.CLAY : T.DIRT; // sea/lake bed
             else if(biome===8) t=citySurfaceTile(WG,wx,depth);
             else if(biome===4) t=swampGroundTile(wx,depth,poolDepth);
             else if(biome===3 || beach) t=T.SAND;
@@ -1529,10 +1554,12 @@ window.MM = window.MM || {};
             else if(biome===7) t=(WG.randSeed(wx*2.9)<0.5)?T.STONE:T.GRASS;     // rocky slopes
             else if(desertF>0.25) t=(WG.randSeed(wx*2.31)<Math.min(0.5,desertF*0.8))?T.SAND:T.GRASS;
             else t=T.GRASS;
+            t=applyNaturalSurfaceHazard(t,depth,surfaceHazard);
             } else if(depth<SURFACE_GRASS_DEPTH+sandTh){
             t=biome===8 ? citySurfaceTile(WG,wx,depth) : (biome===4 ? swampGroundTile(wx,depth,poolDepth) : ((cold && depth<3)? T.SNOW : T.SAND));
             if(t===T.SAND && depth>2 && WG.randSeed(wx*9.71+y*0.23)<0.18) t=T.STONE;
             if(t===T.SAND && depth>=2 && (biome===5 || biome===6 || lakeRow!==Infinity || waterF>0.35) && WG.randSeed(wx*4.19+y*0.31)<0.045) t=T.CLAY;
+            t=applyNaturalSurfaceHazard(t,depth,surfaceHazard);
             } else if(depth<SURFACE_GRASS_DEPTH+sandTh+dirtTh){
             t=biome===8 ? citySurfaceTile(WG,wx,depth) : T.DIRT;
             } else {
@@ -1542,6 +1569,7 @@ window.MM = window.MM || {};
             const chance=WG.diamondChance(y)*(nearCave?3:1);
             if(WG.randSeed(wx*13.37+y*0.7)<chance) t=T.DIAMOND;
             else if(WG.coalVeinAt && WG.coalVeinAt(wx,y,nearCave)) t=T.COAL;
+            else if(WG.goldVeinAt && WG.goldVeinAt(wx,y,nearCave)) t=T.GOLD_ORE;
             else t=geologyRockTile(wx,y,depth,biome);
             if(biome!==8 && t===T.STONE && depth<SURFACE_GRASS_DEPTH+sandTh+2 && WG.randSeed(wx*9.71+y*0.23)<(0.10+0.5*(desertF+waterF*0.5))) t=T.SAND;
             }
@@ -1584,6 +1612,7 @@ window.MM = window.MM || {};
     if(MM.trees && MM.trees.populateChunk){ MM.trees.populateChunk(arr,cx); }
     applyUndergroundBiomeDressing(arr,cx);
     applyDevastatedCity(arr,cx);
+    applySurfaceTemples(arr,cx);
     placeStructures(arr,cx);
     applyAtlantis(arr,cx);
     // Buried ruin complexes are anchor-based (they may span chunk borders) and
@@ -1669,17 +1698,48 @@ window.MM = window.MM || {};
   //             Only STONE converts — granite/basalt/coal strata stay pinned.
   //   forest (0) / swamp (4): mid-depth cave floors sprout GLOWSHROOMS —
   //             bioluminescent lighting emitters, so mushroom chambers glow.
+  function undergroundDressingRock(t){
+    return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.OBSIDIAN || t===T.DIRT || t===T.MUD || t===T.CLAY || t===T.WET_CLAY;
+  }
+  function undergroundDressingFloor(t){
+    return undergroundDressingRock(t) || t===T.SAND || t===T.SNOW || t===T.ICE || t===T.COAL || t===T.STEEL || t===T.BRICK;
+  }
+  function undergroundDressingOpen(t){
+    return t===T.AIR || t===T.WATER || t===T.LAVA || t===T.HOT_AIR || t===T.STEAM || t===T.POISON_GAS || t===T.FUEL_GAS || t===T.GLOWSHROOM;
+  }
   function applyUndergroundBiomeDressing(arr,cx){
     const WG=MM.worldGen; if(!WG || !WG.column) return;
     for(let lx=0; lx<CHUNK_W; lx++){
       const wx=cx*CHUNK_W+lx;
       const col=WG.column(wx);
-      if(col.volcano) continue;
       const biome=col.biome;
-      const icy=biome===2, shroomy=(biome===0 || biome===4);
-      if(!icy && !shroomy) continue;
+      const icy=biome===2;
+      const foresty=biome===0;
+      const desert=biome===3 || col.beach;
+      const swamp=biome===4;
+      const wet=biome===5 || biome===6;
+      const mountain=biome===7;
+      const city=biome===8 || !!col.city;
+      const volcanic=!!col.volcano;
+      if(!icy && !foresty && !desert && !swamp && !wet && !mountain && !city && !volcanic) continue;
       const s=col.row;
       const at=(dlx,y)=>{ const x=lx+dlx; return (x>=0&&x<CHUNK_W&&y>=0&&y<WORLD_H) ? arr[tileIndex(x,y)] : -1; };
+      const touchesOpen=(y)=> undergroundDressingOpen(at(-1,y)) || undergroundDressingOpen(at(1,y)) || undergroundDressingOpen(at(0,y-1)) || undergroundDressingOpen(at(0,y+1));
+      const touchesWater=(y)=> at(-1,y)===T.WATER || at(1,y)===T.WATER || at(0,y-1)===T.WATER || at(0,y+1)===T.WATER;
+      if(volcanic){
+        const y0=Math.max(0,s+4), y1=Math.min(WORLD_H-3,s+72);
+        for(let y=y0;y<=y1;y++){
+          const i=tileIndex(lx,y), t=arr[i];
+          if(t===T.AIR){
+            const above=at(0,y-1), below=at(0,y+1);
+            const r=WG.randSeed(wx*6.417+y*19.19);
+            if(undergroundDressingRock(above) && r<0.055) arr[i]=T.HOT_AIR;
+            else if((below===T.WATER || touchesWater(y)) && r>0.93) arr[i]=T.STEAM;
+          } else if(t===T.STONE && touchesOpen(y) && WG.randSeed(wx*8.191+y*31.77)<0.62){
+            arr[i]=WG.randSeed(wx*4.73+y*0.19)<0.16 ? T.OBSIDIAN : T.BASALT;
+          }
+        }
+      }
       if(icy){
         const y0=Math.max(0,s+3), y1=Math.min(WORLD_H-2,s+26);
         for(let y=y0;y<=y1;y++){
@@ -1691,17 +1751,200 @@ window.MM = window.MM || {};
             if((above===T.ICE||above===T.STONE||above===T.SNOW) && WG.randSeed(wx*3.7717+y*41.117)<0.08) arr[i]=T.ICE; // hanging icicle
           }
         }
-      } else {
+      }
+      if(foresty || swamp){
         const y0=Math.max(0,s+6), y1=Math.min(WORLD_H-2,s+40);
         for(let y=y0;y<=y1;y++){
           const i=tileIndex(lx,y);
-          if(arr[i]!==T.AIR || at(0,y-1)!==T.AIR) continue; // needs floor headroom
-          const floor=at(0,y+1);
-          if(floor!==T.STONE && floor!==T.GRANITE && floor!==T.BASALT && floor!==T.DIRT && floor!==T.MUD && floor!==T.CLAY) continue;
-          if(WG.randSeed(wx*9.1131+y*57.719)<0.14) arr[i]=T.GLOWSHROOM;
+          const t=arr[i];
+          if(t===T.AIR && at(0,y-1)===T.AIR){
+            const floor=at(0,y+1);
+            if(undergroundDressingFloor(floor) && WG.randSeed(wx*9.1131+y*57.719)<(swamp?0.17:0.14)) arr[i]=T.GLOWSHROOM;
+            if(swamp && arr[i]===T.AIR && undergroundDressingFloor(floor) && WG.randSeed(wx*5.619+y*73.13)<0.045) arr[i]=T.POISON_GAS;
+          } else if(swamp && (t===T.STONE || t===T.DIRT || t===T.CLAY) && touchesOpen(y) && WG.randSeed(wx*2.771+y*43.17)<0.13){
+            arr[i]=WG.randSeed(wx*11.9+y*0.67)<0.56 ? T.WET_CLAY : T.MUD;
+          }
+        }
+      }
+      if(desert){
+        const y0=Math.max(0,s+7), y1=Math.min(WORLD_H-3,s+52);
+        for(let y=y0;y<=y1;y++){
+          const i=tileIndex(lx,y), t=arr[i];
+          if(t===T.AIR && undergroundDressingFloor(at(0,y+1))){
+            const floorIdx=tileIndex(lx,y+1);
+            const r=WG.randSeed(wx*13.337+y*29.711);
+            if((arr[floorIdx]===T.STONE || arr[floorIdx]===T.GRANITE || arr[floorIdx]===T.BASALT || arr[floorIdx]===T.DIRT) && r<0.105){
+              arr[floorIdx]=r<0.023 ? T.UNSTABLE_SAND : T.SAND;
+            }
+            if(arr[i]===T.AIR && r>0.972) arr[i]=T.FUEL_GAS;
+          } else if(t===T.STONE && touchesOpen(y) && WG.randSeed(wx*4.517+y*61.71)<0.20){
+            arr[i]=T.SAND;
+          }
+        }
+      }
+      if(wet){
+        const y0=Math.max(0,s+4), y1=Math.min(WORLD_H-3,s+46);
+        for(let y=y0;y<=y1;y++){
+          const i=tileIndex(lx,y), t=arr[i];
+          if((t===T.STONE || t===T.GRANITE || t===T.DIRT) && (touchesWater(y) || touchesOpen(y)) && WG.randSeed(wx*7.019+y*37.113)<0.30){
+            arr[i]=WG.randSeed(wx*2.41+y*0.53)<0.58 ? T.WET_CLAY : T.CLAY;
+          }
+        }
+      }
+      if(mountain && !volcanic){
+        const y0=Math.max(0,s+5), y1=Math.min(WORLD_H-3,s+64);
+        for(let y=y0;y<=y1;y++){
+          const i=tileIndex(lx,y), t=arr[i];
+          if(t===T.STONE && touchesOpen(y) && WG.randSeed(wx*10.37+y*45.23)<0.34) arr[i]=T.GRANITE;
+          else if(t===T.GRANITE && touchesOpen(y) && WG.randSeed(wx*12.77+y*67.89)<0.035) arr[i]=T.DIAMOND;
+        }
+      }
+      if(city){
+        const y0=Math.max(0,s+6), y1=Math.min(WORLD_H-3,s+58);
+        for(let y=y0;y<=y1;y++){
+          const i=tileIndex(lx,y), t=arr[i];
+          const r=WG.randSeed(wx*17.37+y*41.91);
+          if(t===T.AIR && undergroundDressingFloor(at(0,y+1)) && r<0.040) arr[i]=T.POISON_GAS;
+          else if((t===T.STONE || t===T.GRANITE || t===T.BASALT) && touchesOpen(y)){
+            if(r>0.988) arr[i]=T.RADIOACTIVE_ORE;
+            else if(r>0.948) arr[i]=T.STEEL;
+          }
         }
       }
     }
+  }
+
+  const SURFACE_TEMPLE_SPACING = 240;
+  const SURFACE_TEMPLE_CACHE_CAP = 256;
+  const surfaceTempleCache = new Map();
+  const SURFACE_TEMPLE_TREASURE = Object.freeze({
+    [T.CHEST_RARE]:true, [T.CHEST_EPIC]:true, [T.GOLD_ORE]:true, [T.DIAMOND]:true
+  });
+  const SURFACE_TEMPLE_STRUCTURE = Object.freeze({
+    [T.STONE]:true, [T.OBSIDIAN]:true, [T.WOOD]:true, [T.LEAF]:true,
+    [T.TORCH]:true, [T.GLOWSHROOM]:true, [T.CHEST_RARE]:true, [T.CHEST_EPIC]:true,
+    [T.GOLD_ORE]:true, [T.DIAMOND]:true
+  });
+  function isSurfaceTempleTreasureTile(t){ return !!SURFACE_TEMPLE_TREASURE[t]; }
+  function isSurfaceTempleStructureTile(t){ return !!SURFACE_TEMPLE_STRUCTURE[t]; }
+  function surfaceTempleJungleColumn(col){
+    if(!col || col.volcano || col.city || col.beach || col.ravine>0) return false;
+    if(col.biome===4) return true;
+    return col.biome===0 && col.m>0.50 && col.t>0.42 && col.elev<22;
+  }
+  function surfaceTempleCellLayout(n){
+    n=Math.floor(n);
+    if(surfaceTempleCache.has(n)) return surfaceTempleCache.get(n);
+    if(surfaceTempleCache.size>SURFACE_TEMPLE_CACHE_CAP) surfaceTempleCache.clear();
+    const r=(salt)=>WG.randSeed(n*917.33+salt);
+    if(r(1.1)>0.72){ surfaceTempleCache.set(n,null); return null; }
+    const ax=Math.round(n*SURFACE_TEMPLE_SPACING + (r(2.2)-0.5)*SURFACE_TEMPLE_SPACING*0.48);
+    const col=WG.column(ax);
+    if(!surfaceTempleJungleColumn(col)){ surfaceTempleCache.set(n,null); return null; }
+    const width=21 + Math.floor(r(3.3)*10)*2;
+    const half=Math.floor(width/2);
+    let minS=999, maxS=-999;
+    for(let dx=-half-4; dx<=half+4; dx+=2){
+      const c=WG.column(ax+dx);
+      if(!surfaceTempleJungleColumn(c)){ surfaceTempleCache.set(n,null); return null; }
+      minS=Math.min(minS,c.row);
+      maxS=Math.max(maxS,c.row);
+    }
+    if(maxS-minS>3){ surfaceTempleCache.set(n,null); return null; }
+    const floor=Math.round((minS+maxS)/2)-1;
+    const tiers=2+Math.floor(r(4.4)*3);
+    const variant=Math.floor(r(5.5)*4);
+    const ops=[];
+    const put=(x,y,t,force=true)=>ops.push({x,y,t,f:force?1:0});
+    const archStep=variant===2?5:4;
+    for(let dx=-half; dx<=half; dx++){
+      const wx=ax+dx;
+      const local=Math.abs(dx);
+      const lip=(local>half-3)?1:0;
+      put(wx,floor+1,T.STONE,true);
+      put(wx,floor,T.STONE,true);
+      if((dx+half)%archStep===0 || Math.abs(dx)===half-1){
+        const ph=3+Math.floor(r(40+dx)*3);
+        for(let h=1; h<=ph; h++) put(wx,floor-h, h===ph && variant===1 ? T.OBSIDIAN : T.WOOD,true);
+        put(wx,floor-ph-1,T.LEAF,false);
+      } else if(lip && r(70+dx)>0.35){
+        put(wx,floor-1,T.LEAF,false);
+      } else if(r(80+dx)>0.78){
+        put(wx,floor-1,T.GLOWSHROOM,false);
+      }
+    }
+    for(let tier=0; tier<tiers; tier++){
+      const y=floor-2-tier*3;
+      const span=half-3-tier*3;
+      for(let dx=-span; dx<=span; dx++){
+        const roof=Math.abs(dx)>span-3;
+        if(roof || (dx+tier)%2===0) put(ax+dx,y, roof?T.LEAF:T.WOOD,false);
+      }
+      put(ax-span,y+1,T.TORCH,false);
+      put(ax+span,y+1,T.TORCH,false);
+      if(tier<tiers-1){
+        put(ax-span+2,y+1,T.WOOD,true);
+        put(ax+span-2,y+1,T.WOOD,true);
+      }
+    }
+    const altarY=floor-1;
+    for(let dx=-2; dx<=2; dx++) put(ax+dx,altarY,T.OBSIDIAN,true);
+    put(ax,altarY-1, r(11.1)>0.22 ? T.CHEST_EPIC : T.CHEST_RARE,true);
+    put(ax-1,altarY-1,T.TORCH,false);
+    put(ax+1,altarY-1,T.TORCH,false);
+    if(variant===3 || r(12.2)>0.72){
+      put(ax-3,altarY-1,T.GOLD_ORE,true);
+      put(ax+3,altarY-1,T.DIAMOND,true);
+    }
+    for(let i=0;i<4;i++){
+      const side=i<2?-1:1;
+      const dx=side*(half-3-Math.floor(r(90+i)*4));
+      const y=floor-2-Math.floor(r(95+i)*3);
+      put(ax+dx,y,T.LEAF,false);
+      put(ax+dx+side,y+1,T.GLOWSHROOM,false);
+    }
+    const L={n, ax, floor, variant, tiers, minX:ax-half, maxX:ax+half, minY:floor-2-tiers*3, maxY:floor+1, ops};
+    surfaceTempleCache.set(n,L);
+    return L;
+  }
+  function surfaceTempleLayoutsInRange(x0,x1){
+    const out=[];
+    const n0=Math.floor((x0-SURFACE_TEMPLE_SPACING)/SURFACE_TEMPLE_SPACING);
+    const n1=Math.floor((x1+SURFACE_TEMPLE_SPACING)/SURFACE_TEMPLE_SPACING);
+    for(let n=n0; n<=n1; n++){
+      const L=surfaceTempleCellLayout(n);
+      if(L && L.maxX>=x0 && L.minX<=x1) out.push(L);
+    }
+    return out;
+  }
+  function applySurfaceTemples(arr,cx){
+    const x0=cx*CHUNK_W, x1=x0+CHUNK_W-1;
+    for(const L of surfaceTempleLayoutsInRange(x0,x1)){
+      for(const op of L.ops){
+        if(op.x<x0 || op.x>x1 || op.y<0 || op.y>=WORLD_H) continue;
+        const idx=tileIndex(op.x-x0,op.y);
+        if(op.f || isReplaceableNaturalOpenTile(arr[idx],false) || arr[idx]===T.GRASS || arr[idx]===T.SAND || arr[idx]===T.MUD) arr[idx]=op.t;
+      }
+    }
+  }
+  function surfaceTempleAt(x,y,opts){
+    if(!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    x=Math.floor(x); y=Math.floor(y);
+    const layouts=surfaceTempleLayoutsInRange(x-1,x+1);
+    for(const L of layouts){
+      if(x<L.minX || x>L.maxX || y<L.minY || y>L.maxY) continue;
+      let hit=null;
+      for(const op of L.ops){ if(op.x===x && op.y===y){ hit=op; break; } }
+      if(!hit) continue;
+      const tile=(opts && typeof opts.tile==='number') ? opts.tile : hit.t;
+      if(!isSurfaceTempleStructureTile(tile)) continue;
+      return {
+        n:L.n, ax:L.ax, variant:L.variant, tiers:L.tiers, surface:true,
+        minX:L.minX, maxX:L.maxX, minY:L.minY, maxY:L.maxY,
+        opTile:hit.t, tile, isTreasure:isSurfaceTempleTreasureTile(tile), isStructure:isSurfaceTempleStructureTile(tile)
+      };
+    }
+    return null;
   }
 
   // --- Procedural structures: rare deterministic ruins (land) and shipwrecks
@@ -2008,7 +2251,7 @@ window.MM = window.MM || {};
       markModifiedChunk(Math.floor(x/CHUNK_W),null,sectionYFor(y));
     }
   }
-  function clearWorld(){ try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); sectionViews.clear(); versions.clear(); modifiedChunks.clear(); infrastructure.clear(); constructionBackground.clear(); generatedBackground.clear(); genBgInvalidate(); heightCache.clear(); lakeLevels.clear(); if(WG.clearCaches) WG.clearCaches(); }
+  function clearWorld(){ try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); sectionViews.clear(); versions.clear(); modifiedChunks.clear(); infrastructure.clear(); constructionBackground.clear(); generatedBackground.clear(); genBgInvalidate(); heightCache.clear(); lakeLevels.clear(); surfaceTempleCache.clear(); if(WG.clearCaches) WG.clearCaches(); }
   // Save loading replaces whole chunk arrays: any cached section view over the
   // old array must be dropped or reads would silently hit the orphaned buffer.
   function setChunkArray(key,arr){
@@ -2058,8 +2301,12 @@ window.MM = window.MM || {};
   worldAPI.isInfrastructureTile = isInfrastructureTile;
   worldAPI.isConstructionBackgroundTile = isConstructionBackgroundTile;
   worldAPI.clear = clearWorld;
-  worldAPI.clearHeights = ()=>{ heightCache.clear(); lakeLevels.clear(); if(WG.clearCaches) WG.clearCaches(); };
+  worldAPI.clearHeights = ()=>{ heightCache.clear(); lakeLevels.clear(); surfaceTempleCache.clear(); if(WG.clearCaches) WG.clearCaches(); };
   worldAPI.nearestAtlantis = nearestAtlantisSite;
+  worldAPI.surfaceTempleAt = surfaceTempleAt;
+  worldAPI.surfaceTempleLayoutsInRange = surfaceTempleLayoutsInRange;
+  worldAPI.isSurfaceTempleStructureTile = isSurfaceTempleStructureTile;
+  worldAPI.isSurfaceTempleTreasureTile = isSurfaceTempleTreasureTile;
   worldAPI.markModifiedChunk = markModifiedChunk;
   worldAPI.modifiedChunkIds = ()=>[...modifiedChunks]
     .map(id=>normalizeChunkRef(id))

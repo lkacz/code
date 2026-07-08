@@ -18,7 +18,7 @@ globalThis.window = globalThis;
 const WORLD_H = 140;
 const WORLD_MIN_Y = -140;
 const WORLD_MAX_Y = 280;
-globalThis.MM = { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, TILE:20, particles:{ spawnSplash(){}, spawnBubble(){} } };
+globalThis.MM = { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, TILE:20, waterDeterministicPressureBudget:true, particles:{ spawnSplash(){}, spawnBubble(){} } };
 
 const { water } = await import('../src/engine/water.js');
 assert.ok(water, 'water module exports');

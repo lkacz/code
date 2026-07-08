@@ -93,19 +93,32 @@ import { isSolidCollisionTile } from './material_physics.js';
     if(p.kind==='splash') return 1.5;
     if(p.kind==='spark') return Math.max(1.2, Math.min(3.5, (p.size||3)*0.48));
     if(p.kind==='glass') return Math.max(1.4, Math.min(4.2, (p.size||3)*0.58));
+    if(p.kind==='impactChip') return Math.max(1.5, Math.min(5.5, (p.size||3)*0.56));
     return 2;
   }
   function physicalParticleBounce(p){
     if(p.kind==='splash') return 0.10;
     if(p.kind==='spark') return 0.22;
     if(p.kind==='glass') return 0.36;
+    if(p.kind==='impactChip') return 0.32;
     return 0.28;
   }
   function physicalParticleFriction(p){
     if(p.kind==='glass') return 0.74;
     if(p.kind==='spark') return 0.68;
     if(p.kind==='splash') return 0.42;
+    if(p.kind==='impactChip') return 0.62;
     return 0.70;
+  }
+  function impactPalette(element,tier){
+    const e=String(element||tier||'').toLowerCase();
+    if(e.indexOf('fire')>=0 || e.indexOf('heat')>=0 || e.indexOf('lava')>=0 || e.indexOf('flame')>=0) return [[255,205,86],[255,112,48],[255,238,156]];
+    if(e.indexOf('electric')>=0 || e.indexOf('shock')>=0 || e.indexOf('lightning')>=0) return [[112,246,255],[228,255,255],[88,148,255]];
+    if(e.indexOf('water')>=0 || e.indexOf('hose')>=0 || e.indexOf('pressure')>=0) return [[122,214,255],[210,246,255],[74,137,255]];
+    if(e.indexOf('ice')>=0 || e.indexOf('chill')>=0 || e.indexOf('frost')>=0 || e.indexOf('cold')>=0) return [[198,244,255],[244,255,255],[126,190,255]];
+    if(e.indexOf('gas')>=0 || e.indexOf('poison')>=0) return [[151,246,116],[222,255,130],[82,188,94]];
+    if(e.indexOf('lucky')>=0 || e.indexOf('special')>=0 || e.indexOf('crit')>=0) return [[255,216,74],[255,248,185],[255,160,64]];
+    return [[221,185,116],[255,233,178],[154,122,76]];
   }
   function particleSolidTile(getTile,tx,ty){
     if(!getTile) return false;
@@ -271,6 +284,37 @@ import { isSolidCollisionTile } from './material_physics.js';
       const ang=Math.random()*Math.PI*2;
       const sp=1.0+Math.random()*2.0;
       particles.push({ kind:'spark', x, y, vx:Math.cos(ang)*sp, vy:Math.sin(ang)*sp*0.55-0.55, life:0, max:0.22+Math.random()*0.22, tier });
+    }
+  };
+
+  mod.spawnImpactChips = function(x,y,opts){
+    opts=opts||{};
+    const power=Math.max(0.35, Math.min(2.4, Number(opts.power)||1));
+    const major=!!(opts.major || opts.lucky || opts.critical);
+    const n=Math.max(3, Math.min(22, Math.round((major?8:5)+power*5)));
+    const dir=Number.isFinite(opts.dir) && opts.dir!==0 ? (opts.dir>0?1:-1) : 0;
+    const palette=impactPalette(opts.element, opts.tier || opts.kind);
+    for(let i=0;i<n;i++){
+      if(particles.length>=currentParticleCap()) break;
+      const base=dir ? (dir>0 ? 0 : Math.PI) : Math.random()*Math.PI*2;
+      const spread=(Math.random()-0.5)*(dir ? 1.35 : Math.PI*2);
+      const ang=base+spread;
+      const sp=(1.2+Math.random()*2.8)*power*(major?1.18:1);
+      const rgb=palette[i%palette.length];
+      particles.push({
+        kind:'impactChip',
+        x:x+(Math.random()-0.5)*8,
+        y:y+(Math.random()-0.5)*6,
+        vx:Math.cos(ang)*sp + (Math.random()-0.5)*0.45,
+        vy:Math.sin(ang)*sp*0.52 - (0.85+Math.random()*1.15)*power,
+        life:0,
+        max:(major?0.62:0.44)+Math.random()*0.30,
+        rot:Math.random()*Math.PI,
+        spin:(Math.random()-0.5)*(10+power*7),
+        size:(2.0+Math.random()*3.8)*(major?1.12:1),
+        rgb,
+        glow:!!(opts.lucky || opts.critical || opts.element)
+      });
     }
   };
 
@@ -443,6 +487,7 @@ import { isSolidCollisionTile } from './material_physics.js';
       } else {
         const worldWind=windAtParticle(p,tileSize,tileFn);
         p.vx += worldWind*windResponse(p.kind)*dt;
+        if(p.kind==='impactChip' || p.kind==='glass') p.rot=(p.rot||0)+(p.spin||0)*dt;
         integratePhysicalParticle(p,dt,tileSize,tileFn);
       }
       if(p.life>p.max){
@@ -516,6 +561,18 @@ import { isSolidCollisionTile } from './material_physics.js';
         const s=2.2+3.2*(1-age);
         ctx.fillRect(p.x-s*0.5,p.y-s*0.5,s,s);
         ctx.restore();
+      } else if(p.kind==='impactChip'){
+        const rgb=Array.isArray(p.rgb) ? p.rgb : [221,185,116];
+        const s=p.size||3;
+        ctx.save();
+        ctx.translate(p.x,p.y);
+        ctx.rotate(p.rot||0);
+        if(p.glow) ctx.globalCompositeOperation='lighter';
+        ctx.fillStyle='rgba('+rgb[0]+','+rgb[1]+','+rgb[2]+','+(alpha*0.88).toFixed(3)+')';
+        ctx.fillRect(-s*0.55,-Math.max(1,s*0.32),s*1.1,Math.max(1.5,s*0.64));
+        ctx.fillStyle='rgba(255,255,255,'+(alpha*0.34).toFixed(3)+')';
+        ctx.fillRect(-s*0.18,-s*0.48,Math.max(1,s*0.36),s*0.92);
+        ctx.restore();
       } else if(p.kind==='spark'){
         const electric = p.tier==='turbo' || p.tier==='electric';
         const s=p.size||3;
@@ -557,7 +614,7 @@ import { isSolidCollisionTile } from './material_physics.js';
       smokeAlphaScale:smokeDrawAlphaScale(ms,smokeCount)
     };
   };
-  mod._debugSnapshot = function(){ return particles.map(p=>({kind:p.kind,x:p.x,y:p.y,vx:p.vx,vy:p.vy,life:p.life,max:p.max,r:p.r,alpha:p.alpha,tileX:p.tileX,tileY:p.tileY,hue:p.hue,onGround:!!p.onGround})); };
+  mod._debugSnapshot = function(){ return particles.map(p=>({kind:p.kind,x:p.x,y:p.y,vx:p.vx,vy:p.vy,life:p.life,max:p.max,r:p.r,alpha:p.alpha,tileX:p.tileX,tileY:p.tileY,hue:p.hue,onGround:!!p.onGround,size:p.size,rgb:p.rgb,glow:!!p.glow})); };
   mod._debugAdd = function(p){
     if(!p || typeof p!=='object') return;
     particles.push(Object.assign({x:0,y:0,vx:0,vy:0,life:0,max:1,tier:'common'},p));

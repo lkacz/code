@@ -2057,10 +2057,11 @@ window.MM = window.MM || {};
     const processed=new Set(); // packed cell keys of bodies already handled this pass
     let bodies=0, stoppedAt=-1;
     const passT0=(typeof performance!=='undefined' && performance.now) ? performance.now() : 0;
+    const deterministicBudget=!!(typeof window!=='undefined' && window.MM && MM.waterDeterministicPressureBudget);
     for(let seedIdx=0; seedIdx<seeds.length; seedIdx++){
       // Body-count and wall-clock budget: whatever is left resumes next pass instead
       // of being dropped (dropped seeds froze settled-but-unleveled bodies for good).
-      if(bodies>=EQ_BODIES || (bodies>0 && passT0 && performance.now()-passT0>EQ_TIME_BUDGET_MS)){ stoppedAt=seedIdx; break; }
+      if(bodies>=EQ_BODIES || (!deterministicBudget && bodies>0 && passT0 && performance.now()-passT0>EQ_TIME_BUDGET_MS)){ stoppedAt=seedIdx; break; }
       const key=seeds[seedIdx];
       const ci0=key.indexOf(','); const sx=+key.slice(0,ci0), sy=+key.slice(ci0+1);
       if(processed.has(PK(sx,sy))) continue;

@@ -23,6 +23,8 @@ const DISCRETE_DROP_FRAC = 0.008; // per-frame loss that counts as a "hit" —
 // or the ghost bar freezes at the highest fill ever seen and never drains
 const DELTA_LIFE_S = 1.1;      // floating damage number lifetime
 const DELTA_MERGE_S = 0.3;     // rapid hits merge into one number
+const XP_DELTA_LIFE_S = 1.35;  // floating XP award lifetime
+const XP_DELTA_MERGE_S = 0.25; // rapid mob awards merge into one number
 const LOW_HP_FRAC = 0.3;       // heartbeat pulse threshold
 const LVL_BURST_S = 0.8;       // level-up ring burst duration
 const BUFF_EXPIRING_S = 10;    // buff chips turn urgent below this
@@ -35,6 +37,7 @@ export function createVitalsModel(){
 		en:{ fill:0, chip:0, holdT:0, chargeHold:0, charging:false, full:false, frac:0 },
 		xp:{ fill:0, lvlBurst:0, level:1 },
 		deltas:[],
+		xpDeltas:[],
 		buffs:[]
 	};
 	let lastHp=0, lastEn=0, pendingHealDelta=0;
@@ -48,6 +51,23 @@ export function createVitalsModel(){
 		if(last && last.t<DELTA_MERGE_S && (last.v<0)===(dv<0)){ last.v+=dv; last.t=0; return; }
 		st.deltas.push({v:dv,t:0});
 		if(st.deltas.length>4) st.deltas.shift();
+	}
+	function pushXpDelta(detail){
+		const raw=(detail && typeof detail==='object') ? detail.amount : detail;
+		const amount=Math.round(Number(raw)||0);
+		if(amount<=0) return false;
+		const special=!!(detail && typeof detail==='object' && detail.special);
+		const fatigueMult=(detail && typeof detail==='object' && Number.isFinite(Number(detail.fatigueMult))) ? Number(detail.fatigueMult) : 1;
+		const last=st.xpDeltas[st.xpDeltas.length-1];
+		if(last && last.t<XP_DELTA_MERGE_S && last.special===special){
+			last.v+=amount;
+			last.t=0;
+			last.fatigueMult=Math.min(last.fatigueMult||1,fatigueMult);
+			return true;
+		}
+		st.xpDeltas.push({v:amount,t:0,special,fatigueMult});
+		if(st.xpDeltas.length>4) st.xpDeltas.shift();
+		return true;
 	}
 
 	function update(inp,dt){
@@ -131,6 +151,10 @@ export function createVitalsModel(){
 			st.deltas[i].t+=dt;
 			if(st.deltas[i].t>DELTA_LIFE_S) st.deltas.splice(i,1);
 		}
+		for(let i=st.xpDeltas.length-1;i>=0;i--){
+			st.xpDeltas[i].t+=dt;
+			if(st.xpDeltas[i].t>XP_DELTA_LIFE_S) st.xpDeltas.splice(i,1);
+		}
 
 		// buff rings remember the longest duration seen per buff name
 		const buffs=Array.isArray(inp.buffs)? inp.buffs : [];
@@ -148,7 +172,7 @@ export function createVitalsModel(){
 		lastHp=hp; lastEn=en;
 		return st;
 	}
-	return { update, state:st };
+	return { update, state:st, pushXpDelta, noteXpAward:pushXpDelta };
 }
 
 // --- canvas renderer ---------------------------------------------------------
@@ -163,6 +187,13 @@ const FONT='system-ui, "Segoe UI", sans-serif';
 const model=createVitalsModel();
 let lastNow=0;
 const gradCache=new Map();
+
+function noteXpAward(detail){
+	return model.noteXpAward(detail);
+}
+if(typeof window!=='undefined' && window.addEventListener){
+	window.addEventListener('mm-xp-awarded',ev=>{ noteXpAward(ev && ev.detail); });
+}
 
 function roundedPath(ctx,x,y,w,h,r){
 	r=Math.min(r,h/2,w/2);
@@ -334,7 +365,7 @@ function draw(ctx,o){
 		ctx.font='600 9px '+FONT;
 		textShadowed(ctx,'EN',px+IN_X+21,enY+EN_H/2+3,'rgba(255,255,255,0.75)');
 		ctx.font='700 10px '+FONT;
-		const t=Math.round(o.energy)+' / '+Math.round(o.energyMax);
+		const t=Math.floor(Math.max(0,Number(o.energy)||0))+' / '+Math.round(o.energyMax);
 		textShadowed(ctx,t,px+IN_X+bw-8-ctx.measureText(t).width,enY+EN_H/2+3.5,'#eafaff');
 		// charging chevrons crawl at the fill edge while energy rises
 		if(s.en.charging && s.en.fill>0.01 && s.en.fill<0.99){
@@ -453,25 +484,8 @@ function draw(ctx,o){
 		}
 	}
 
-	// --- floating damage / heal numbers rise off the HP bar ---
-	if(s.deltas.length){
-		ctx.font='800 12px '+FONT;
-		for(const d of s.deltas){
-			const k=d.t/DELTA_LIFE_S;
-			const a=k<0.15? k/0.15 : 1-Math.max(0,(k-0.55)/0.45);
-			const val=Math.round(d.v);
-			if(!val) continue;
-			const txt=(val>0?'+':'')+val;
-			const dx=px+PANEL_W-14-ctx.measureText(txt).width;
-			const dy=py+IN_Y+8-k*26;
-			ctx.save();
-			ctx.globalAlpha=Math.max(0,Math.min(1,a));
-			textShadowed(ctx,txt,dx,dy,val<0?'#ff8577':'#7dff9a');
-			ctx.restore();
-		}
-	}
 	ctx.restore();
 }
 
-export const vitalsHud={ draw, createVitalsModel, model };
+export const vitalsHud={ draw, createVitalsModel, model, noteXpAward };
 MM.vitalsHud=vitalsHud;

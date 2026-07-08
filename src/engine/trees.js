@@ -111,6 +111,9 @@ window.MM = window.MM || {};
     queueStandingTreeCheck(x-1,y-1); queueStandingTreeCheck(x+1,y-1);
     queueStandingTreeCheck(x-1,y+1); queueStandingTreeCheck(x+1,y+1);
   }
+  function queueStandingTreeCanopyAroundRemoval(x,y){
+    for(let dy=-3; dy<=2; dy++) for(let dx=-3; dx<=3; dx++) queueStandingTreeCheck(x+dx,y+dy);
+  }
   function onTileChanged(x,y,oldTile,newTile){
     const tx=Math.floor(x), ty=Math.floor(y);
     const k=key(tx,ty);
@@ -124,6 +127,7 @@ window.MM = window.MM || {};
     if(oldTile!==newTile && oldTile!==undefined && newTile!==undefined){
       if(!suppressFallenQueue) queueStandingTreeAroundChange(tx,ty);
       if(!isTreeMaterial(newTile,tx,ty)){
+        if(!suppressFallenQueue && isTreeMaterial(oldTile,tx,ty)) queueStandingTreeCanopyAroundRemoval(tx,ty);
         if(!suppressFallenQueue) queueFallenTreeAroundRemoval(tx,ty);
       }
       else if(!suppressFallenQueue){ queueFallenTreeCheck(tx,ty); queueFallenTreeCheck(tx,ty-1); queueStandingTreeCheck(tx,ty); }
@@ -515,7 +519,21 @@ window.MM = window.MM || {};
     };
   }
 
-  function startTreeFall(getTile,setTile,playerFacing,x,y){ const collected=collectTreeTiles(getTile,setTile,x,y); const tiles=collected.tiles; if(!tiles.length) return false; tiles.forEach(tile=>notifyRemoved(getTile,tile.x,tile.y)); if(!collected.stem){ const dir=normalizeDir(playerFacing||1); tiles.forEach(tile=>{ if(fallsAsTreeDebris(tile.t)) fallingBlocks.push(makeFallingPiece(tile.x,tile.y,tile.t,dir)); }); return true; } const tree=makeRotatingTree(tiles,collected.stem,playerFacing||1); if(tree.tiles.length) fallingTrees.push(tree); while(fallingTrees.length>MAX_FALLING_TREES){ const old=fallingTrees.shift(); landTree(getTile,setTile,old,landedAngle(old)); } return true; }
+  function startTreeFall(getTile,setTile,playerFacing,x,y){
+    const collected=collectTreeTiles(getTile,setTile,x,y);
+    const tiles=collected.tiles;
+    if(!tiles.length) return false;
+    tiles.forEach(tile=>notifyRemoved(getTile,tile.x,tile.y));
+    if(!collected.stem || collected.stem.height<2){
+      const dir=normalizeDir(playerFacing||1);
+      tiles.forEach(tile=>{ if(fallsAsTreeDebris(tile.t)) fallingBlocks.push(makeFallingPiece(tile.x,tile.y,tile.t,dir)); });
+      return true;
+    }
+    const tree=makeRotatingTree(tiles,collected.stem,playerFacing||1);
+    if(tree.tiles.length) fallingTrees.push(tree);
+    while(fallingTrees.length>MAX_FALLING_TREES){ const old=fallingTrees.shift(); landTree(getTile,setTile,old,landedAngle(old)); }
+    return true;
+  }
 
   // Felled blocks share pass-through rules with rigid falling solids, but still
   // collide with standing foliage so wood can crush or slide off tree crowns.
@@ -955,7 +973,6 @@ window.MM = window.MM || {};
       if(!component.length) continue;
       const componentKeys=new Set(component.map(tile=>key(tile.x,tile.y)));
       componentKeys.forEach(ck=>processed.add(ck));
-      if(!component.some(tile=>tile.t===T.WOOD)) continue;
       if(!terrainSupportsTreeComponent(getTile,component,componentKeys)) releaseStandingComponent(getTile,setTile,component);
     }
   }

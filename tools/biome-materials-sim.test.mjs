@@ -87,7 +87,7 @@ for(let biome=0; biome<BIOME_NAMES.length; biome++){
   samples[biome] = Object.assign({run},sample);
 }
 
-assert.ok(count(samples[0],T.GRASS)>=40, 'forest exposes grass surface');
+assert.ok(count(samples[0],T.GRASS)>=35, 'forest exposes grass surface even when a surface temple lands in the sample');
 assert.ok(countAny(samples[0],[T.WOOD,T.LEAF])>=180, 'forest generates dense tree material');
 
 assert.ok(count(samples[1],T.GRASS)>=35, 'plains expose broad grassland');
@@ -107,13 +107,15 @@ assert.ok(count(samples[4],T.WATER)>=25, 'swamp keeps shallow pools');
 assert.ok(countAny(samples[4],[T.WOOD,T.LEAF])>=70, 'swamp generates sparse mangrove material');
 
 assert.ok(count(samples[5],T.WATER)>=650, 'sea representative contains open water');
-// Oceans now sit in sealed bedrock basins: a thin sand sediment bed over an
+// Oceans now sit in sealed bedrock basins: a clay/dirt floor over an
 // unmineable bedrock jacket (see ocean-basin-sim.test.mjs for the full contract).
-assert.ok(count(samples[5],T.SAND)>=120, 'sea representative keeps a sand sediment bed');
+assert.ok(countAny(samples[5],[T.CLAY,T.DIRT])>=120, 'sea representative keeps a clay/dirt water floor');
+assert.ok(count(samples[5],T.SAND)<80, 'sea representative no longer generates a visible sand floor');
 assert.ok(count(samples[5],T.BEDROCK)>=300, 'sea representative rests on the sealed bedrock basin');
 
 assert.ok(count(samples[6],T.WATER)>=150, 'lake representative contains water');
-assert.ok(count(samples[6],T.SAND)>=200, 'lake representative has a sediment bed');
+assert.ok(countAny(samples[6],[T.CLAY,T.DIRT])>=200, 'lake representative has a clay/dirt floor');
+assert.ok(count(samples[6],T.SAND)<80, 'lake representative no longer generates a visible sand bed');
 
 assert.ok(samples[7].avgElev>=30, 'mountain representative is high altitude');
 assert.ok(samples[7].rowSpan>=8, 'mountain representative has rugged relief');

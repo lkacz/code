@@ -61,6 +61,7 @@ assert.match(src, /turrets:\s*timedSavePart\('turrets',[^\n]*TURRETS && TURRETS\
 assert.match(src, /springPlatforms:\s*timedSavePart\('springPlatforms',[^\n]*SPRING_PLATFORMS && SPRING_PLATFORMS\.snapshot/, 'save payload includes spring platform battery state');
 assert.match(src, /vending:\s*timedSavePart\('vending',[^\n]*VENDING && VENDING\.snapshot/, 'save payload includes vending machine stock state');
 assert.match(src, /volcano:\s*timedSavePart\('volcano',[^\n]*VOLCANO && VOLCANO\.snapshot/, 'save payload includes volcano story-item and hazard state');
+assert.match(src, /atomicWinter:\s*timedSavePart\('atomicWinter',[^\n]*ATOMIC_WINTER && ATOMIC_WINTER\.snapshot/, 'save payload includes atomic winter fallout state');
 assert.match(src, /guardians:\s*timedSavePart\('guardians',[^\n]*GUARDIANS && GUARDIANS\.snapshot/, 'save payload includes elemental guardian state');
 assert.match(src, /undergroundBoss:\s*timedSavePart\('undergroundBoss',[^\n]*UNDERGROUND && UNDERGROUND\.snapshot/, 'save payload includes underground boss state');
 assert.match(src, /skyGuardian:\s*timedSavePart\('skyGuardian',[^\n]*SKY_GUARDIAN && SKY_GUARDIAN\.snapshot/, 'save payload includes Sky Gate guardian state');
@@ -101,6 +102,7 @@ assert.match(src, /TURRETS\.restore\(data\.turrets,getTile\)/, 'load path restor
 assert.match(src, /SPRING_PLATFORMS\.restore\(data\.springPlatforms,getTile\)/, 'load path restores spring platform batteries after terrain');
 assert.match(src, /VENDING\.restore\(data\.vending,getTile\)/, 'load path restores vending machine stock after terrain');
 assert.match(src, /VOLCANO\.restore\(data\.volcano,getTile\)/, 'load path restores volcano story-item timers after terrain');
+assert.match(src, /ATOMIC_WINTER\.restore\(data\.atomicWinter\)/, 'load path restores atomic winter fallout after terrain and weather');
 assert.match(src, /GUARDIANS\.restore\(data\.guardians\)/, 'load path restores guardian progression runtime state');
 assert.match(src, /UNDERGROUND\.restore\(data\.undergroundBoss\)/, 'load path restores underground boss runtime state');
 assert.match(src, /SKY_GUARDIAN\.restore\(data\.skyGuardian\)/, 'load path restores Sky Gate guardian runtime state');

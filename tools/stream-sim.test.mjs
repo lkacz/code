@@ -138,9 +138,15 @@ assert.equal(weapons.metrics().arrows, 0, 'invalid stream ticks do not create or
   assert.deepEqual(meleeCalls.map(c=>[c.tx,c.ty]), [[1,0]], 'two-tile normal melee aim is still clamped to one tile');
 
   powerCalls.length=0; player.atkCd=0; weapons.reset();
-  assert.equal(weapons.fireUlt(player, 5.5, 0.5), true, 'charged melee can hit the same adjacent target when aiming far past it');
+  const savedRandom=Math.random;
+  Math.random=()=>0.5;
+  try{
+    assert.equal(weapons.fireUlt(player, 5.5, 0.5), true, 'charged melee can hit the same adjacent target when aiming far past it');
+  } finally {
+    Math.random=savedRandom;
+  }
   assert.deepEqual(powerCalls.map(c=>[c.tx,c.ty]), [[1,0]], 'charged melee uses the same one-tile reach as normal melee');
-  assert.ok(powerCalls[0].dmg>weaponItems.melee.attackDamage, 'charged melee increases damage rather than reach');
+  assert.equal(powerCalls[0].dmg, (3+7+weaponItems.melee.attackDamage)*2, 'charged melee deals exactly 2x normal special damage when not lucky');
 
   powerCalls.length=0; player.atkCd=0; weapons.reset();
   MM.mobs.damageAt=(tx,ty,dmg,opts)=>{ powerCalls.push({tx,ty,dmg,opts}); return tx===2 && ty===0; };
@@ -401,6 +407,7 @@ heroEnergy=5;
 assert.equal(weapons.fireHeld(player, 6, 0.5, 1/60), true, 'electric gun fires when energy is available');
 assert.ok(heroEnergy<5, 'electric gun consumes stored hero energy');
 assert.ok(electricDamage>0, 'electric beam damages the first target on its line');
+const normalElectricDamage=electricDamage;
 assert.equal(weapons.metrics().electricBeams, 1, 'electric shot creates one short-lived beam effect');
 assert.ok(beamSounds>=1, 'electric shot uses the robot beam sound');
 assert.ok(sparks>=1, 'electric hit spawns spark feedback');
@@ -429,9 +436,17 @@ assert.equal(weapons.fireUlt(player, 6, 0.5), false, 'electric ult refuses to fi
 assert.equal(weapons.metrics().ultCharge, 1, 'failed no-energy electric ult does not spend ult charge');
 weapons.update(0.2, getTile, setTile);
 heroEnergy=30;
-assert.equal(weapons.fireUlt(player, 6, 0.5), true, 'electric ult fires when enough energy is stored');
+{
+  const savedRandom=Math.random;
+  Math.random=()=>0.5;
+  try{
+    assert.equal(weapons.fireUlt(player, 6, 0.5), true, 'electric ult fires when enough energy is stored');
+  } finally {
+    Math.random=savedRandom;
+  }
+}
 assert.ok(heroEnergy<12, 'electric ult spends a larger chunk of energy');
-assert.ok(electricDamage>10, 'electric ult is a distinct high-power beam');
+assert.ok(Math.abs(electricDamage-normalElectricDamage*2)<0.001, 'electric ult deals exactly 2x normal beam damage when not lucky');
 assert.ok(weapons.metrics().ultCharge<0.05, 'successful electric ult consumes ult charge');
 electricTarget=null;
 

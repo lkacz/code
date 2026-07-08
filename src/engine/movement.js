@@ -5,6 +5,7 @@ const TRACTION = Object.freeze({
   mud: Object.freeze({ speed: 0.5, accel: 1, friction: 1, kind: 'mud' }),
   snow: Object.freeze({ speed: 1, accel: 0.78, friction: 0.28, kind: 'snow' }),
   ice: Object.freeze({ speed: 1.04, accel: 0.34, friction: 0.055, kind: 'ice' }),
+  loose: Object.freeze({ speed: 0.92, accel: 0.78, friction: 0.72, kind: 'loose' }),
 });
 export const JUMP_ARC = Object.freeze({
   DOWN_CANCEL_FALL_TILES: 0.08,
@@ -16,6 +17,7 @@ function safePositive(n, fallback){
 
 export function surfaceTraction(tile){
   if(tile === T.MUD) return TRACTION.mud;
+  if(tile === T.UNSTABLE_SAND || tile === T.UNSTABLE_GRASS) return TRACTION.loose;
   if(tile === T.SNOW) return TRACTION.snow;
   if(tile === T.ICE) return TRACTION.ice;
   return NORMAL_TRACTION;

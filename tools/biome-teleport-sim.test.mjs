@@ -3,6 +3,7 @@
 // skips the current patch instead of returning a no-op location.
 // Run: node tools/biome-teleport-sim.test.mjs
 import { strict as assert } from 'assert';
+import { readFileSync } from 'node:fs';
 
 globalThis.window = globalThis;
 globalThis.MM = {};
@@ -68,5 +69,57 @@ assertNoCloserTarget(snowLeft, 2, -1);
 assert.equal(WG.nearestBiome(origin, -1, 0, MAX), null, 'invalid negative biome is rejected');
 assert.equal(WG.nearestBiome(origin, 9, 0, MAX), null, 'invalid high biome is rejected');
 assert.equal(WG.nearestBiome(origin, 1, 0, 10), null, 'too-small search range can miss a biome');
+
+const uiSrc = readFileSync(new URL('../src/engine/ui.js', import.meta.url), 'utf8');
+const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+assert.match(uiSrc, /\[-1,'<','Left'/, 'debug row builder includes previous buttons');
+assert.match(uiSrc, /\[0,label,'Near'/, 'debug row builder includes nearest buttons');
+assert.match(uiSrc, /\[1,'>','Right'/, 'debug row builder includes next buttons');
+assert.match(uiSrc, /addDebugTravelRow\('biomeDebug'/, 'debug menu builds biome travel rows');
+assert.match(uiSrc, /addDebugTravelRow\('biomeThreat'/, 'debug menu builds biome threat rows');
+assert.match(mainSrc, /function debugJumpBiomeThreat/, 'main exposes a biome threat debug jump helper');
+assert.match(mainSrc, /function placeDebugTerrainHazards/, 'biome threat debug jumps can materialize terrain hazards');
+assert.match(mainSrc, /function debugJumpSurfaceTemple/, 'main exposes a surface-temple debug jump helper');
+assert.match(mainSrc, /WORLD\.surfaceTempleLayoutsInRange/, 'surface-temple debug travel searches generated living temples');
+assert.match(mainSrc, /surfaceTempleBiome:0/, 'forest temple threat jumps to an actual surface temple');
+assert.match(mainSrc, /surfaceTempleBiome:4/, 'swamp temple threat jumps to an actual surface temple');
+assert.match(mainSrc, /window\.teleportHeroToBiomeThreat/, 'console debug hook can jump to biome threats');
+[
+  'SAND_WORM',
+  'GIANT_SCORPION',
+  'TEMPLE_GUARD',
+  'BRAMBLE_STALKER',
+  'THUNDER_BISON',
+  'LETNI_ZUBR',
+  'ICE_WRAITH',
+  'JACKPOT_YETI',
+  'BOG_LURKER',
+  'STONE_GOLEM',
+  'PIRANHA',
+  'SHARK',
+  'JACKPOT_WHALE',
+  'EEL',
+  'LAKE_SERPENT',
+  'VULTURE',
+  'STRAZNIK',
+  'ATOMIC_BOMB',
+  'RADIATION_COCKROACH',
+  'UNSTABLE_GRASS',
+  'UNSTABLE_SAND',
+  'QUICKSAND'
+].forEach(id=>assert.ok(mainSrc.includes(id), 'biome threat debug registry includes '+id));
+assert.match(uiSrc, /forest_bramble/, 'debug menu exposes the forest bramble-stalker threat jump');
+assert.match(uiSrc, /forest_grass_trap/, 'debug menu exposes the forest grass-trap threat jump');
+assert.match(uiSrc, /plains_grass_trap/, 'debug menu exposes the plains grass-trap threat jump');
+assert.match(uiSrc, /Forest surface temple/, 'debug menu labels the forest temple threat as a surface temple jump');
+assert.match(uiSrc, /plains_bison/, 'debug menu exposes the plains thunder-bison threat jump');
+assert.match(uiSrc, /snow_wraith/, 'debug menu exposes the snow ice-wraith threat jump');
+assert.match(uiSrc, /snow_yeti/, 'debug menu exposes the snow jackpot-yeti threat jump');
+assert.match(uiSrc, /desert_scorpion/, 'debug menu exposes the desert giant-scorpion threat jump');
+assert.match(uiSrc, /desert_sand_traps/, 'debug menu exposes desert sand-trap and quicksand threat jumps');
+assert.match(uiSrc, /sea_whale/, 'debug menu exposes the sea jackpot-whale threat jump');
+assert.match(uiSrc, /lake_serpent/, 'debug menu exposes the lake-serpent threat jump');
+assert.match(uiSrc, /city_atomic_bomb/, 'debug menu exposes the city atomic-bomb threat jump');
+assert.match(uiSrc, /Swamp surface temple/, 'debug menu labels the swamp temple threat as a surface temple jump');
 
 console.log('biome-teleport-sim: all assertions passed');

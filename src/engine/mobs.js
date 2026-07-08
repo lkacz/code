@@ -1,5 +1,5 @@
 import { T, MOVE, isLeaf, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
-import { isCreatureRockFloorTile, isSolidCollisionTile as isSolid } from './material_physics.js';
+import { isBlastProtectedTile, isCreatureRockFloorTile, isSolidCollisionTile as isSolid } from './material_physics.js';
 import WORLD from './world.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
 import { worldHostility as HOSTILITY } from './world_hostility.js';
@@ -95,6 +95,99 @@ const mobs = (function(){
   const PIRANHA_MEAT_DROP_CHANCE = 0.03;
   const PIRANHA_IGNORE_PREY = Object.freeze({PIRANHA:true,FISH:true,SHARK:true,EEL:true});
   const piranhaBaitZones = [];
+  const MOB_ATTACK_TELEGRAPH_MS = 420;
+  const MOB_ATTACK_STRIKE_MS = 360;
+  const MOB_ATTACK_RECOVER_MS = 620;
+  const SAND_WORM_CALM_MS = 9000;
+  const SAND_WORM_BAIT_SCAN_MS = 220;
+  const SAND_WORM_BAIT_RADIUS = 11;
+  const SAND_WORM_WAKE_MIN_RADIUS = 2.0;
+  const SAND_WORM_WAKE_MAX_RADIUS = 4.0;
+  const SAND_WORM_ALERT_RADIUS = 14;
+  const SAND_WORM_CIRCLE_DIST = 13.5;
+  const SAND_WORM_CIRCLE_DELAY_MS = 520;
+  const SAND_WORM_CIRCLE_COOLDOWN_MS = 3600;
+  const SAND_WORM_SPIT_RANGE = 17.5;
+  const SAND_WORM_SPIT_MIN_RANGE = 4.2;
+  const SAND_WORM_SPIT_COOLDOWN_MS = 1550;
+  const SAND_WORM_SPIT_SPEED = 13.6;
+  const JACKPOT_ALIEN_REVEAL_CHANCE = 0.10;
+  const GIANT_SCORPION_COMMANDER_CHANCE = JACKPOT_ALIEN_REVEAL_CHANCE;
+  const GIANT_SCORPION_STING_RANGE = 2.15;
+  const GIANT_SCORPION_STING_COOLDOWN_MS = 2450;
+  const GIANT_SCORPION_LUNGE_COOLDOWN_MS = 1650;
+  const JACKPOT_YETI_SLAM_RANGE = 2.65;
+  const JACKPOT_YETI_SLAM_COOLDOWN_MS = 2400;
+  const JACKPOT_YETI_LEAP_COOLDOWN_MS = 1750;
+  const JACKPOT_WHALE_RAM_RANGE = 3.65;
+  const JACKPOT_WHALE_RAM_COOLDOWN_MS = 2600;
+  const ATOMIC_BOMB_COCKROACH_INTERVAL_MS = 3800;
+  const ATOMIC_BOMB_COCKROACH_LOCAL_CAP = 6;
+  const ATOMIC_BOMB_CRATER_RX = 15;
+  const ATOMIC_BOMB_CRATER_RY = 10;
+  const SAND_WORM_BAIT_PROFILES = Object.freeze({
+    [T.MEAT]: Object.freeze({kind:'raw', duration:14, priority:3}),
+    [T.BAKED_MEAT]: Object.freeze({kind:'baked', duration:10, priority:2}),
+    [T.ROTTEN_MEAT]: Object.freeze({kind:'rotten', duration:5, priority:1})
+  });
+  const TEMPLE_GUARD_TILES = Object.freeze({
+    [T.STONE]:true, [T.OBSIDIAN]:true, [T.TORCH]:true, [T.DIAMOND]:true,
+    [T.CHEST_COMMON]:true, [T.CHEST_RARE]:true, [T.CHEST_EPIC]:true
+  });
+  const TEMPLE_GUARD_VIOLATION_AGGRO_MS = 90000;
+  const TEMPLE_GUARD_ALARM_RADIUS = 46;
+  const TEMPLE_GUARD_REINFORCE_RADIUS = 18;
+  const BRAMBLE_STALKER_TORCH_RADIUS = 5;
+  const BRAMBLE_STALKER_CALM_MS = 5200;
+  const BRAMBLE_STALKER_WAKE_RADIUS = 5.7;
+  const BRAMBLE_STALKER_LUNGE_COOLDOWN_MS = 1450;
+  const THUNDER_BISON_WARN_RADIUS = 8.4;
+  const THUNDER_BISON_CHARGE_RANGE = 11.5;
+  const THUNDER_BISON_CHARGE_MS = 1050;
+  const THUNDER_BISON_CHARGE_COOLDOWN_MS = 2600;
+  const THUNDER_BISON_STUN_MS = 780;
+  const BOG_LURKER_TORCH_RADIUS = 5;
+  const BOG_LURKER_CALM_MS = 4200;
+  const ICE_WRAITH_TORCH_RADIUS = 6;
+  const ICE_WRAITH_CALM_MS = 5200;
+  const ICE_WRAITH_WAKE_RADIUS = 8.5;
+  const ICE_WRAITH_BLINK_DIST = 10.5;
+  const ICE_WRAITH_BLINK_COOLDOWN_MS = 2600;
+  const LAKE_SERPENT_SHOCK_RANGE = 3.35;
+  const LAKE_SERPENT_SHOCK_COOLDOWN_MS = 1650;
+  const LAKE_SERPENT_CHARGE_RATE = 1.75;
+  const STONE_GOLEM_CALM_MS = 5200;
+  const STONE_GOLEM_ROCK_RANGE = 18;
+  const STONE_GOLEM_ROCK_MIN_RANGE = 4.2;
+  const STONE_GOLEM_ROCK_COOLDOWN_MS = 1850;
+  const STONE_GOLEM_ROCK_SPEED = 11.2;
+  const GOLD_GUARD_SCAN_MS = 850;
+  const GOLD_GUARD_SCAN_RX = 42;
+  const GOLD_GUARD_SCAN_RY = 28;
+  const GOLD_GUARD_CLUSTER_RX = 7;
+  const GOLD_GUARD_CLUSTER_RY = 5;
+  const GOLD_GUARD_KEY_W = 12;
+  const GOLD_GUARD_KEY_H = 10;
+  const GOLD_GUARD_LOCAL_CAP = 4;
+  const GOLD_DRAGON_BREATH_RANGE = 15.5;
+  const GOLD_DRAGON_BREATH_MIN_RANGE = 3.1;
+  const GOLD_DRAGON_BREATH_COOLDOWN_MS = 1850;
+  const GOLD_DRAGON_GAS_COOLDOWN_MS = 2600;
+  const GOLD_DWARF_HAMMER_RANGE = 2.25;
+  const GOLD_DWARF_HAMMER_COOLDOWN_MS = 1550;
+  const GOLD_DWARF_PICK_RANGE = 9.5;
+  const GOLD_DWARF_PICK_COOLDOWN_MS = 2300;
+  const VULTURE_NEST_RADIUS = 26;
+  const VULTURE_ATTACK_DECISION_MS = 3400;
+  const VULTURE_CAPTURE_HATCHLINGS = 3;
+  const VULTURE_CAPTURE_COOLDOWN_MS = 16000;
+  const XP_FATIGUE_STEP = 0.01;
+  const XP_FATIGUE_RESET_DAYS = 1;
+  const XP_FATIGUE_MIN_MULT = 0.1;
+  const XP_SPECIAL_BONUS_MULT = 1.2;
+  const THERMAL_DAMAGE_BONUS_MULT = 1.2;
+  const XP_FALLBACK_DAY_SECONDS = 600;
+  const xpFatigue = {}; // speciesId -> {kills,lastDay}
 
   // Additional biome-aware species
   // Helper biome query (0,1,2) fallback to 1 if missing
@@ -222,6 +315,1021 @@ const mobs = (function(){
     }
     return rock>=10 && air>=6;
   }
+  function isMuckTile(t){ return t===T.MUD || t===T.WATER || t===T.WET_CLAY || t===T.CLAY; }
+  function heroInMuck(player,getTile){
+    if(!player || typeof getTile!=='function') return false;
+    const x=Math.floor(player.x);
+    const y=Math.floor(player.y+(player.h||0.95)*0.5+0.08);
+    return isMuckTile(readMobTile(getTile,x,y)) || isMuckTile(readMobTile(getTile,x,y+1));
+  }
+  function nearTorch(x,y,getTile,radius){
+    if(typeof getTile!=='function') return false;
+    const r=Math.max(1,Math.min(12,radius||BOG_LURKER_TORCH_RADIUS));
+    x=Math.floor(x); y=Math.floor(y);
+    for(let dy=-r; dy<=r; dy++){
+      for(let dx=-r; dx<=r; dx++){
+        if(dx*dx+dy*dy>r*r) continue;
+        if(readMobTile(getTile,x+dx,y+dy)===T.TORCH) return true;
+      }
+    }
+    return false;
+  }
+  function nearForestTreeMass(x,y,getTile,radius){
+    if(typeof getTile!=='function') return false;
+    const r=Math.max(2,Math.min(12,radius||7));
+    x=Math.floor(x); y=Math.floor(y);
+    let wood=0, leaf=0;
+    for(let dy=-r; dy<=r; dy++){
+      for(let dx=-r; dx<=r; dx++){
+        if(dx*dx+dy*dy>r*r) continue;
+        const t=readMobTile(getTile,x+dx,y+dy);
+        if(t===T.WOOD) wood++;
+        else if(isLeaf(t)) leaf++;
+      }
+    }
+    return wood>=2 || (wood>=1 && leaf>=4) || leaf>=9;
+  }
+  function brambleStalkerSpawnCell(x,y,getTile){
+    if(biomeAt(x)!==0 || typeof getTile!=='function') return false;
+    x=Math.floor(x); y=Math.floor(y);
+    if(readMobTile(getTile,x,y)!==T.AIR || readMobTile(getTile,x,y-1)!==T.AIR) return false;
+    const below=readMobTile(getTile,x,y+1);
+    if(!(below===T.GRASS || below===T.WOOD || isLeaf(below))) return false;
+    return nearForestTreeMass(x,y,getTile,7);
+  }
+  function thunderBisonSpawnCell(x,y,getTile){
+    if(biomeAt(x)!==1 || typeof getTile!=='function') return false;
+    return bigAnimalSpawnCell(x,y,getTile,{halfWidth:1,height:3,floor:t=>t===T.GRASS});
+  }
+  function warnThunderBisonCharge(m,now){
+    if(!m || now<(m._nextBisonWarnAt||0)) return;
+    m._nextBisonWarnAt=now+360;
+    m.shake=Math.max(m.shake||0,0.42);
+    noteEntityNumber({kind:'danger', text:'!', x:m.x, y:m.y-1.35, target:'thunder_bison:'+Math.round(m.spawnT||0)});
+  }
+  function isSnowSurfaceTile(t){ return t===T.SNOW || t===T.ICE || t===T.GRASS || isRockFloor(t); }
+  function iceWraithSpawnCell(x,y,getTile){
+    if(biomeAt(x)!==2 || typeof getTile!=='function') return false;
+    x=Math.floor(x); y=Math.floor(y);
+    return readMobTile(getTile,x,y)===T.AIR &&
+      readMobTile(getTile,x,y-1)===T.AIR &&
+      isSnowSurfaceTile(readMobTile(getTile,x,y+1));
+  }
+  function findIceWraithBlinkSpot(player,m,getTile){
+    if(!player || typeof getTile!=='function') return null;
+    const dir=(Math.abs(player.vx||0)>0.35 ? Math.sign(player.vx) : (player.facing>=0?1:-1)) || 1;
+    const baseX=Math.floor(player.x);
+    const baseY=Math.floor(player.y);
+    const offsets=[];
+    for(let d=3; d<=9; d++) offsets.push(dir*d);
+    for(let d=2; d<=6; d++) offsets.push(-dir*d);
+    for(const ox of offsets){
+      const tx=baseX+ox;
+      if(biomeAt(tx)!==2) continue;
+      for(let dy=-4; dy<=5; dy++){
+        const ty=baseY+dy;
+        if(!iceWraithSpawnCell(tx,ty,getTile)) continue;
+        if(m && Math.hypot((tx+0.5)-m.x,(ty+0.35)-m.y)<2.2) continue;
+        return {x:tx+0.5,y:ty+0.35};
+      }
+    }
+    return null;
+  }
+  function isVolcanoColumn(x){
+    try{ return !!(WORLDGEN && typeof WORLDGEN.volcanoAt==='function' && WORLDGEN.volcanoAt(Math.round(x))); }catch(e){ return false; }
+  }
+  function isVultureColumn(x){
+    return biomeAt(x)===7 || isVolcanoColumn(x);
+  }
+  function isVultureFloorTile(t){
+    return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.OBSIDIAN ||
+      t===T.SNOW || t===T.GRASS || t===T.DIRT || t===T.WOOD;
+  }
+  function isVultureNestOpenTile(t){
+    return t===T.AIR || t===T.TORCH || t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED;
+  }
+  function findVultureFloorBelow(x,y,getTile,maxDrop){
+    if(typeof getTile!=='function') return null;
+    x=Math.floor(x); y=Math.floor(y);
+    const drop=Math.max(4,Math.min(28,maxDrop||18));
+    for(let yy=y; yy<=y+drop; yy++){
+      const here=readMobTile(getTile,x,yy);
+      const below=readMobTile(getTile,x,yy+1);
+      if(isVultureNestOpenTile(here) && isVultureFloorTile(below)) return {x,y:yy+1};
+    }
+    return null;
+  }
+  function findExistingVultureTree(x,y,getTile){
+    if(typeof getTile!=='function') return null;
+    x=Math.floor(x); y=Math.floor(y);
+    for(let r=0; r<=12; r++){
+      for(let dx=-r; dx<=r; dx++){
+        if(Math.abs(dx)!==r && r!==0) continue;
+        const tx=x+dx;
+        if(!isVultureColumn(tx)) continue;
+        for(let yy=y-12; yy<=y+10; yy++){
+          const t=readMobTile(getTile,tx,yy);
+          if(t!==T.WOOD && !isLeaf(t)) continue;
+          if(!isVultureNestOpenTile(readMobTile(getTile,tx,yy-1))) continue;
+          if(!isVultureNestOpenTile(readMobTile(getTile,tx,yy-2))) continue;
+          return {x:tx+0.5,y:yy-1.2,nestX:tx,nestY:yy,tree:true};
+        }
+      }
+    }
+    return null;
+  }
+  function findVultureNestSpot(x,y,getTile){
+    const tree=findExistingVultureTree(x,y,getTile);
+    if(tree) return tree;
+    x=Math.floor(x); y=Math.floor(y);
+    for(let r=0; r<=14; r++){
+      for(let dx=-r; dx<=r; dx++){
+        if(Math.abs(dx)!==r && r!==0) continue;
+        const tx=x+dx;
+        if(!isVultureColumn(tx)) continue;
+        const floor=findVultureFloorBelow(tx,y,getTile,24);
+        if(!floor) continue;
+        const nestY=floor.y-1;
+        if(nestY<3) continue;
+        if(!isVultureNestOpenTile(readMobTile(getTile,tx,nestY-1))) continue;
+        if(!isVultureNestOpenTile(readMobTile(getTile,tx,nestY-2))) continue;
+        return {x:tx+0.5,y:nestY-1.2,nestX:tx,nestY,tree:false,groundY:floor.y};
+      }
+    }
+    return null;
+  }
+  function placeVultureNestTile(x,y,t,getTile,setTile,forceWood){
+    if(typeof setTile!=='function' || typeof getTile!=='function') return false;
+    const cur=readMobTile(getTile,x,y);
+    if(forceWood){
+      if(cur===T.AIR || isLeaf(cur)) { setTile(x,y,t); return true; }
+      return cur===t;
+    }
+    if(cur===T.AIR || cur===T.TORCH || isLeaf(cur)){ setTile(x,y,t); return true; }
+    return cur===t;
+  }
+  function materializeVultureNest(m,getTile,setTile){
+    if(!m) return null;
+    if(!finiteCoord(m.nestX) || !finiteCoord(m.nestY)){
+      const spot=findVultureNestSpot(m.x,m.y,getTile);
+      if(!spot) return null;
+      m.nestX=spot.nestX;
+      m.nestY=spot.nestY;
+      m.homeX=spot.x;
+      m.homeY=spot.y;
+      m.nestTree=!!spot.tree;
+      if(finiteCoord(spot.groundY)) m.nestGroundY=spot.groundY;
+    }
+    const nx=Math.round(m.nestX), ny=Math.round(m.nestY);
+    let groundY=null;
+    const floor=findVultureFloorBelow(nx,ny+1,getTile,16);
+    if(floor) groundY=floor.y;
+    else groundY=finiteCoord(m.nestGroundY) ? m.nestGroundY : ny+1;
+    if(typeof setTile==='function' && typeof getTile==='function'){
+      for(let dx=-1; dx<=1; dx++) placeVultureNestTile(nx+dx,ny,T.WOOD,getTile,setTile,true);
+      for(let dx=-2; dx<=2; dx++) if(dx!==0) placeVultureNestTile(nx+dx,ny-1,T.LEAF,getTile,setTile,false);
+      placeVultureNestTile(nx-1,ny-2,T.LEAF,getTile,setTile,false);
+      placeVultureNestTile(nx+1,ny-2,T.LEAF,getTile,setTile,false);
+    }
+    m._nestReady=true;
+    return {x:nx+0.5,y:ny-1.05,nestX:nx,nestY:ny,groundY};
+  }
+  function spawnVultureHatchlings(m,getTile){
+    const spec=SPECIES.VULTURE_HATCHLING;
+    if(!m || !spec || !finiteCoord(m.nestX) || !finiteCoord(m.nestY)) return 0;
+    let born=0;
+    for(let i=0; i<VULTURE_CAPTURE_HATCHLINGS && countSpecies('VULTURE_HATCHLING')<spec.max; i++){
+      const ox=(i-1)*0.72;
+      const baby=create(spec, m.nestX+0.5+ox, m.nestY-1.55-(i%2)*0.15, getTile);
+      baby.homeX=m.nestX+0.5;
+      baby.homeY=m.nestY-1.3;
+      baby.nestX=m.nestX;
+      baby.nestY=m.nestY;
+      baby.state='defend';
+      baby.lifeEndAt=Math.max(baby.lifeEndAt||0, performance.now()+90000);
+      mobs.push(baby);
+      born++;
+    }
+    if(born>0) setAggro('VULTURE_HATCHLING');
+    return born;
+  }
+  function vultureCaptureHero(m,spec,player,getTile,setTile,now){
+    const spot=materializeVultureNest(m,getTile,setTile);
+    if(!spot || !player) return false;
+    damagePlayer(Math.max(3,(spec.dmg||8)*0.45*(m.dmgMult||1)), m.x, m.y, 'vulture_capture', spec);
+    m.state='carry';
+    m._carryTargetX=spot.x;
+    m._carryTargetY=spot.y-1.35;
+    m._carryReleaseAt=now+4200;
+    m._vultureCapture=null;
+    m.vx*=0.55; m.vy=-Math.abs(m.vy||0)-1.2;
+    markMobAttack(m,'vulture_capture',{target:player,power:1.35,strikeMs:460});
+    setAggro(m.id);
+    return true;
+  }
+  function finishVultureCarry(m,spec,player,getTile,setTile,now){
+    const spot=materializeVultureNest(m,getTile,setTile);
+    if(spot && player){
+      player.x=spot.x;
+      player.y=spot.y;
+      player.vx=0;
+      player.vy=0;
+    }
+    spawnVultureHatchlings(m,getTile);
+    m.state='return';
+    m._nextVultureDecisionAt=now+VULTURE_CAPTURE_COOLDOWN_MS;
+    m._carryTargetX=null;
+    m._carryTargetY=null;
+    m._carryReleaseAt=0;
+    m.vx*=0.35;
+    m.vy=-Math.abs(m.vy||0)-1.8;
+    try{ if(window.msg) window.msg('Vulture nest! Hatchlings swarm the ledge.'); }catch(e){}
+    return true;
+  }
+  function updateVultureCarry(m,spec,player,getTile,setTile,now,dt,speed){
+    const spot=materializeVultureNest(m,getTile,setTile);
+    if(!spot || !player){ m.state='return'; return false; }
+    const tx=finiteCoord(m._carryTargetX) ? m._carryTargetX : spot.x;
+    const ty=finiteCoord(m._carryTargetY) ? m._carryTargetY : spot.y-1.35;
+    const dx=tx-m.x, dy=ty-m.y;
+    const dist=Math.hypot(dx,dy)||1;
+    const sp=(speed||spec.speed||5)*1.18;
+    m.vx += (dx/dist)*sp*dt*8.4;
+    m.vy += (dy/dist)*sp*dt*8.0;
+    m.facing=dx>=0?1:-1;
+    player.x=m.x;
+    player.y=m.y+0.95;
+    player.vx=m.vx;
+    player.vy=m.vy;
+    player.onGround=false;
+    if(dist<0.9 || now>(m._carryReleaseAt||0)) finishVultureCarry(m,spec,player,getTile,setTile,now);
+    return true;
+  }
+  function vultureStrikeHero(m,spec,player,now){
+    damagePlayer((spec.dmg||8)*(m.dmgMult||1), m.x, m.y, 'vulture_talon', spec);
+    m.state='return';
+    m._nextVultureDecisionAt=now+3500+Math.random()*4200;
+    m._vultureCapture=null;
+    m.vx*=0.35; m.vy=-Math.abs(m.vy||0)-2.4;
+    markMobAttack(m,'vulture_talon',{target:player,power:1.25,strikeMs:360});
+    setAggro(m.id);
+    return true;
+  }
+  function vultureStartDive(m,aggressive,now,player){
+    m.state='dive';
+    m._vultureCapture = Math.random() < (aggressive ? 0.42 : 0.22);
+    m._nextVultureDecisionAt=now+2500;
+    if(player){
+      const side=Math.random()<0.5?-1:1;
+      m.x=player.x+side*(5.5+Math.random()*4.5);
+      m.y=player.y-(8.5+Math.random()*4.5);
+      const dx=player.x-m.x, dy=(player.y-0.35)-m.y;
+      const d=Math.hypot(dx,dy)||1;
+      m.vx=(dx/d)*(aggressive?8.6:7.2);
+      m.vy=(dy/d)*(aggressive?9.2:7.8)+1.4;
+      m.facing=dx>=0?1:-1;
+      markMobTelegraph(m,'talon',{target:player,power:1.15,ms:900});
+    }
+    markHeroAttack(m);
+  }
+  function nearSwampWater(x,y,getTile){
+    if(typeof getTile!=='function') return false;
+    x=Math.floor(x); y=Math.floor(y);
+    for(let dy=-2; dy<=2; dy++){
+      for(let dx=-4; dx<=4; dx++){
+        const t=readMobTile(getTile,x+dx,y+dy);
+        if(t===T.WATER || t===T.MUD || t===T.WET_CLAY) return true;
+      }
+    }
+    return false;
+  }
+  function mountainSignalScore(x,y,getTile){
+    if(typeof getTile!=='function') return 0;
+    let score=0;
+    x=Math.floor(x); y=Math.floor(y);
+    for(let dy=-4; dy<=4; dy++){
+      for(let dx=-6; dx<=6; dx++){
+        const t=readMobTile(getTile,x+dx,y+dy);
+        if(t===T.DIAMOND) score+=5;
+        else if(t===T.OBSIDIAN) score+=3;
+        else if(t===T.BASALT || t===T.GRANITE) score+=2;
+        else if(t===T.SNOW || t===T.ICE) score+=0.35;
+      }
+    }
+    return score;
+  }
+  function nearMountainMineral(x,y,getTile){
+    return mountainSignalScore(x,y,getTile)>=3;
+  }
+  function isGoldOreTile(t){ return t===T.GOLD_ORE; }
+  function isGoldGuardianId(id){ return id==='GOLD_DRAGON' || id==='GOLD_DWARF_GUARD'; }
+  function isGoldGuardianFloor(t){
+    return t===T.GOLD_ORE || t===T.COAL || t===T.OBSIDIAN || t===T.GRANITE || t===T.BASALT || isRockFloor(t);
+  }
+  function isGoldGuardianAir(t){
+    return t===T.AIR || t===T.HOT_AIR || t===T.STEAM || t===T.POISON_GAS || t===T.FUEL_GAS;
+  }
+  function goldGuardKeyFor(x,y){
+    return Math.floor(Math.floor(x)/GOLD_GUARD_KEY_W)+','+Math.floor(Math.floor(y)/GOLD_GUARD_KEY_H);
+  }
+  function goldOreTouchesOpenCave(x,y,getTile){
+    if(typeof getTile!=='function') return false;
+    return isGoldGuardianAir(readMobTile(getTile,x+1,y)) ||
+      isGoldGuardianAir(readMobTile(getTile,x-1,y)) ||
+      isGoldGuardianAir(readMobTile(getTile,x,y+1)) ||
+      isGoldGuardianAir(readMobTile(getTile,x,y-1));
+  }
+  function goldClusterSignal(x,y,getTile){
+    if(typeof getTile!=='function') return {gold:0,exposed:0,open:0,floor:0,score:0,qualifies:false};
+    x=Math.floor(x); y=Math.floor(y);
+    let gold=0, exposed=0, open=0, floor=0;
+    for(let dy=-GOLD_GUARD_CLUSTER_RY; dy<=GOLD_GUARD_CLUSTER_RY; dy++){
+      if(!inWorldY(y+dy,1,1)) continue;
+      for(let dx=-GOLD_GUARD_CLUSTER_RX; dx<=GOLD_GUARD_CLUSTER_RX; dx++){
+        const t=readMobTile(getTile,x+dx,y+dy);
+        if(isGoldOreTile(t)){
+          gold++;
+          if(goldOreTouchesOpenCave(x+dx,y+dy,getTile)) exposed++;
+        } else if(isGoldGuardianAir(t)){
+          open++;
+        } else if(isGoldGuardianFloor(t)){
+          floor++;
+        }
+      }
+    }
+    const score=gold*2 + exposed*5 + Math.min(open,18)*0.4 + Math.min(floor,20)*0.12;
+    return {gold,exposed,open,floor,score,qualifies:gold>=2 && exposed>=1 && open>=5};
+  }
+  function nearGoldVein(x,y,getTile){
+    return goldClusterSignal(x,y,getTile).qualifies;
+  }
+  function goldDwarfSpawnCell(x,y,getTile){
+    if(typeof getTile!=='function') return false;
+    x=Math.floor(x); y=Math.floor(y);
+    if(!nearGoldVein(x,y,getTile)) return false;
+    return readMobTile(getTile,x,y)===T.AIR &&
+      readMobTile(getTile,x,y-1)===T.AIR &&
+      isGoldGuardianFloor(readMobTile(getTile,x,y+1));
+  }
+  function goldDragonSpawnCell(x,y,getTile){
+    if(typeof getTile!=='function') return false;
+    return nearGoldVein(x,y,getTile) &&
+      bigAnimalSpawnCell(x,y,getTile,{halfWidth:2,height:3,floor:isGoldGuardianFloor});
+  }
+  function goldGuardianAlreadyForKey(key){
+    if(!key) return false;
+    for(const m of mobs){
+      if(!validMobState(m) || m.hp<=0 || !isGoldGuardianId(m.id)) continue;
+      if(m.goldGuardKey===key) return true;
+    }
+    return false;
+  }
+  function countGoldGuardiansNear(x,y,radius){
+    const r2=radius*radius;
+    let n=0;
+    for(const m of mobs){
+      if(!validMobState(m) || m.hp<=0 || !isGoldGuardianId(m.id)) continue;
+      const dx=m.x-x, dy=m.y-y;
+      if(dx*dx+dy*dy<=r2) n++;
+    }
+    return n;
+  }
+  function findGoldGuardianSpawnNear(gx,gy,getTile,kind){
+    const dragon=kind==='dragon';
+    const maxR=dragon ? 10 : 7;
+    const ok=dragon ? goldDragonSpawnCell : goldDwarfSpawnCell;
+    for(let r=1; r<=maxR; r++){
+      for(let dy=-r; dy<=r; dy++){
+        for(let dx=-r; dx<=r; dx++){
+          if(Math.max(Math.abs(dx),Math.abs(dy))!==r) continue;
+          const tx=Math.floor(gx+dx), ty=Math.floor(gy+dy);
+          if(ok(tx,ty,getTile)) return {x:tx+0.5,y:ty+0.5,tileX:tx,tileY:ty};
+        }
+      }
+    }
+    return null;
+  }
+  function scanGoldVeinNearPlayer(player,getTile){
+    if(!player || typeof getTile!=='function') return null;
+    const px=Math.floor(player.x), py=Math.floor(player.y);
+    let best=null;
+    for(let y=py-GOLD_GUARD_SCAN_RY; y<=py+GOLD_GUARD_SCAN_RY; y++){
+      if(!inWorldY(y,1,1)) continue;
+      for(let x=px-GOLD_GUARD_SCAN_RX; x<=px+GOLD_GUARD_SCAN_RX; x++){
+        if(!isGoldOreTile(readMobTile(getTile,x,y))) continue;
+        if(!goldOreTouchesOpenCave(x,y,getTile)) continue;
+        const signal=goldClusterSignal(x,y,getTile);
+        if(!signal.qualifies) continue;
+        const key=goldGuardKeyFor(x,y);
+        if(goldGuardianAlreadyForKey(key)) continue;
+        const dx=x+0.5-player.x, dy=y+0.5-player.y;
+        const d2=dx*dx+dy*dy;
+        const rank=signal.score - Math.sqrt(d2)*0.18;
+        if(!best || rank>best.rank) best={x,y,key,signal,rank,d2};
+      }
+    }
+    return best;
+  }
+  function goldGuardianKindForVein(vein){
+    if(!vein || !vein.signal) return 'dwarf';
+    const deep=vein.y>WORLD_H+20 || vein.y>WORLD_H*0.72;
+    if(vein.signal.gold>=7 && vein.signal.open>=12) return Math.random()<0.70 ? 'dragon' : 'dwarf';
+    if(deep && vein.signal.gold>=4) return Math.random()<0.48 ? 'dragon' : 'dwarf';
+    return Math.random()<0.18 ? 'dragon' : 'dwarf';
+  }
+  function attachGoldGuardState(m,vein,spot){
+    if(!m || !vein) return m;
+    m.goldGuardKey=vein.key || goldGuardKeyFor(vein.x,vein.y);
+    m.guardGoldX=vein.x+0.5;
+    m.guardGoldY=vein.y+0.5;
+    if(spot){
+      m.homeX=spot.x;
+      m.homeY=spot.y;
+    }
+    return m;
+  }
+  function sandWormBaitProfile(t){ return SAND_WORM_BAIT_PROFILES[t] || null; }
+  function nearestSandWormBait(m,getTile,now){
+    if(!m || typeof getTile!=='function') return null;
+    const t=(typeof now==='number' && isFinite(now)) ? now : performance.now();
+    if(m._nextSandWormBaitScanAt && t<m._nextSandWormBaitScanAt) return m._sandWormBait || null;
+    m._nextSandWormBaitScanAt=t+SAND_WORM_BAIT_SCAN_MS+Math.random()*SAND_WORM_BAIT_SCAN_MS;
+    const r=SAND_WORM_BAIT_RADIUS;
+    const r2=r*r;
+    const cx=Math.floor(m.x), cy=Math.floor(m.y);
+    let best=null;
+    for(let y=cy-r; y<=cy+r; y++){
+      if(!inWorldY(y)) continue;
+      for(let x=cx-r; x<=cx+r; x++){
+        const profile=sandWormBaitProfile(readMobTile(getTile,x,y));
+        if(!profile) continue;
+        const wx=x+0.5, wy=y+0.5;
+        const dx=wx-m.x, dy=wy-m.y;
+        const d2=dx*dx+dy*dy;
+        if(d2>r2) continue;
+        if(!best || d2<best.d2-0.001 || (Math.abs(d2-best.d2)<=0.001 && profile.priority>best.priority)){
+          best={x:wx,y:wy,tx:x,ty:y,d2,kind:profile.kind,duration:profile.duration,priority:profile.priority};
+        }
+      }
+    }
+    m._sandWormBait=best;
+    return best;
+  }
+  function consumeSandWormBait(bait,getTile,setTile){
+    if(!bait || typeof getTile!=='function' || typeof setTile!=='function') return false;
+    if(!sandWormBaitProfile(readMobTile(getTile,bait.tx,bait.ty))) return false;
+    try{
+      const meatApi=MM && MM.meat;
+      if(meatApi && typeof meatApi.consumeBaitAt==='function') return !!meatApi.consumeBaitAt(bait.tx,bait.ty,getTile,setTile);
+    }catch(e){}
+    setTile(bait.tx,bait.ty,T.AIR);
+    try{ if(MM.meat && MM.meat.removeMeat) MM.meat.removeMeat(bait.tx,bait.ty); }catch(e){}
+    try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(bait.tx,bait.ty,getTile); }catch(e){}
+    return true;
+  }
+  function pacifyMob(m,ms,reason,now){
+    if(!m) return false;
+    const t=(typeof now==='number' && isFinite(now)) ? now : performance.now();
+    m._pacifiedUntil=Math.max(m._pacifiedUntil||0,t+Math.max(1000,ms||SAND_WORM_CALM_MS));
+    m._pacifiedReason=reason||'calmed';
+    m.attackCd=Math.max(m.attackCd||0,0.55);
+    m.vx*=0.35;
+    m.vy=Math.min(m.vy||0,0);
+    return true;
+  }
+  function isMobPacified(m,now){
+    const t=(typeof now==='number' && isFinite(now) && now<1000000000) ? now : performance.now();
+    return !!(m && finiteNum(m._pacifiedUntil) && m._pacifiedUntil>t);
+  }
+  function pacifySandWorm(m,reason,now,source){
+    if(!m || m.id!=='SAND_WORM') return false;
+    m.state=reason==='water' ? 'doused' : 'fed';
+    if(reason==='water' && source){
+      if(finiteCoord(source.x)) m._pacifySourceX=source.x;
+      if(finiteCoord(source.y)) m._pacifySourceY=source.y;
+      m._waterDousedUntil=(typeof now==='number' && isFinite(now) ? now : performance.now())+SAND_WORM_CALM_MS;
+    }
+    m._sandWormBait=null;
+    return pacifyMob(m,SAND_WORM_CALM_MS,reason,now);
+  }
+  function sandWormDeepSandAt(x,y,getTile){
+    if(typeof getTile!=='function') return false;
+    x=Math.floor(x); y=Math.floor(y);
+    return readMobTile(getTile,x,y)===T.AIR &&
+      readMobTile(getTile,x,y-1)===T.AIR &&
+      readMobTile(getTile,x,y+1)===T.SAND &&
+      readMobTile(getTile,x,y+2)===T.SAND;
+  }
+  function sandWormCanBurrowAt(m,getTile){
+    if(!m || typeof getTile!=='function') return false;
+    const x=Math.floor(m.x), y=Math.floor(m.y);
+    return readMobTile(getTile,x,y)===T.AIR &&
+      (readMobTile(getTile,x,y+1)===T.SAND || readMobTile(getTile,x,y)===T.SAND || readMobTile(getTile,x,y+2)===T.SAND);
+  }
+  function sandWormWakeRadius(m){
+    if(!m) return 3;
+    if(!finiteNum(m._sandWormWakeRadius)){
+      m._sandWormWakeRadius=SAND_WORM_WAKE_MIN_RADIUS + Math.random()*(SAND_WORM_WAKE_MAX_RADIUS-SAND_WORM_WAKE_MIN_RADIUS);
+    }
+    return clampFinite(m._sandWormWakeRadius,3,SAND_WORM_WAKE_MIN_RADIUS,SAND_WORM_WAKE_MAX_RADIUS);
+  }
+  function sandWormWakeClose(m,player){
+    if(!m || !player) return false;
+    const dx=player.x-m.x, dy=player.y-m.y;
+    const radius=sandWormWakeRadius(m);
+    return Math.hypot(dx,dy)<=radius;
+  }
+  function giantScorpionSpawnCell(x,y,getTile){
+    if(biomeAt(x)!==3 || typeof getTile!=='function') return false;
+    return bigAnimalSpawnCell(x,y,getTile,{halfWidth:1,height:2,floor:t=>t===T.SAND || isRockFloor(t)});
+  }
+  function jackpotYetiSpawnCell(x,y,getTile){
+    if(biomeAt(x)!==2 || typeof getTile!=='function') return false;
+    return bigAnimalSpawnCell(x,y,getTile,{halfWidth:1,height:3,floor:t=>t===T.SNOW || t===T.ICE || isRockFloor(t)});
+  }
+  function cityThreatFloor(t){
+    return t===T.STEEL || t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.OBSIDIAN || t===T.BRICK || t===T.UFO_CONCRETE || isRockFloor(t);
+  }
+  function atomicBombSpawnCell(x,y,getTile){
+    if(biomeAt(x)!==8 || typeof getTile!=='function') return false;
+    return bigAnimalSpawnCell(x,y,getTile,{halfWidth:1,height:2,floor:cityThreatFloor});
+  }
+  function radiationCockroachSpawnCell(x,y,getTile){
+    if(biomeAt(x)!==8 || typeof getTile!=='function') return false;
+    return readMobTile(getTile,x,y)===T.AIR && cityThreatFloor(readMobTile(getTile,x,y+1));
+  }
+  function releaseJackpotCommander(m,kind,threatBonus,chance){
+    const revealChance=Number.isFinite(Number(chance)) ? Math.max(0,Math.min(1,Number(chance))) : JACKPOT_ALIEN_REVEAL_CHANCE;
+    if(!m || Math.random()>=revealChance) return false;
+    try{
+      const inv=MM && MM.invasions;
+      if(!inv || typeof inv.spawnRuinCommander!=='function') return false;
+      const gt=typeof lastDeathFxGetTile==='function' ? lastDeathFxGetTile : (WORLD && WORLD.getTile);
+      const st=WORLD && WORLD.setTile;
+      const prefix=String(kind||m.id||'jackpot').toLowerCase();
+      const key=prefix+':'+Math.round(Number(m.spawnT)||0)+':'+Math.floor(m.x)+','+Math.floor(m.y);
+      const team=inv.spawnRuinCommander(m.x,m.y-0.15,{
+        key,
+        forceAfterWestGuardian:true,
+        player:(typeof window!=='undefined' && window.player) ? window.player : null,
+        threatBonus:Math.max(0,Math.floor(Number(threatBonus)||10)),
+        getTile:gt,
+        setTile:st,
+        ctx:{}
+      });
+      if(!team) return false;
+      const tile=MM.TILE||20;
+      try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*tile,(m.y-0.35)*tile,'epic'); }catch(e){}
+      try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(m.x*tile,(m.y-0.35)*tile,'epic',14); }catch(e){}
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('warning'); }catch(e){}
+      return true;
+    }catch(e){ return false; }
+  }
+  function releaseGiantScorpionCommander(m){
+    return releaseJackpotCommander(m,'scorpion',10,GIANT_SCORPION_COMMANDER_CHANCE);
+  }
+  function releaseJackpotYetiCommander(m){ return releaseJackpotCommander(m,'yeti',12); }
+  function releaseJackpotWhaleCommander(m){ return releaseJackpotCommander(m,'whale',14); }
+  function spawnRadiationCockroachAt(x,y,getTile){
+    const spec=SPECIES.RADIATION_COCKROACH;
+    if(!spec) return false;
+    const gt=typeof getTile==='function' ? getTile : (WORLD && WORLD.getTile ? ((tx,ty)=>WORLD.getTile(tx,ty)) : null);
+    if(!gt) return false;
+    const bx=Math.floor(x), by=Math.floor(y);
+    for(let r=0; r<=7; r++){
+      for(let tries=0; tries<16; tries++){
+        const tx=bx+Math.floor((Math.random()*2-1)*r);
+        const ty=by+Math.floor((Math.random()*2-1)*Math.max(1,Math.min(3,r)));
+        if(!radiationCockroachSpawnCell(tx,ty,gt)) continue;
+        if((speciesCounts.RADIATION_COCKROACH||0)>=spec.max) return false;
+        mobs.push(create(spec,tx+0.5,ty+0.5,gt));
+        return true;
+      }
+    }
+    return false;
+  }
+  function spawnRadiationCockroachNearBomb(m,getTile){
+    if(!m) return false;
+    const near=countSpeciesNear('RADIATION_COCKROACH',m.x,m.y,14);
+    if(near>=ATOMIC_BOMB_COCKROACH_LOCAL_CAP) return false;
+    return spawnRadiationCockroachAt(m.x+(Math.random()*8-4),m.y+(Math.random()*4-1.5),getTile);
+  }
+  function notifyBombTileChanged(x,y,oldTile,newTile,getTile){
+    try{ if(MM.fallingSolids && MM.fallingSolids.onTileRemoved && oldTile!==T.AIR && newTile===T.AIR) MM.fallingSolids.onTileRemoved(x,y); }catch(e){}
+    try{ if(MM.fallingSolids && MM.fallingSolids.afterPlacement && newTile!==T.AIR) MM.fallingSolids.afterPlacement(x,y); }catch(e){}
+    try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(x,y,getTile); }catch(e){}
+  }
+  function detonateAtomicBomb(m){
+    if(!m || m._atomicDetonated) return false;
+    m._atomicDetonated=true;
+    const gt=(WORLD && WORLD.getTile) ? ((x,y)=>WORLD.getTile(x,y)) : null;
+    const st=(WORLD && WORLD.setTile) ? ((x,y,t)=>WORLD.setTile(x,y,t)) : null;
+    const cx=Math.floor(m.x);
+    const cy=Math.floor(m.y+1);
+    if(gt && st){
+      for(let dy=-ATOMIC_BOMB_CRATER_RY; dy<=ATOMIC_BOMB_CRATER_RY; dy++){
+        for(let dx=-ATOMIC_BOMB_CRATER_RX; dx<=ATOMIC_BOMB_CRATER_RX; dx++){
+          const nx=dx/ATOMIC_BOMB_CRATER_RX;
+          const ny=dy/ATOMIC_BOMB_CRATER_RY;
+          if(nx*nx+ny*ny>1) continue;
+          const tx=cx+dx;
+          const ty=cy+dy;
+          if(!inWorldY(ty,1,2)) continue;
+          const old=gt(tx,ty);
+          if(old===T.AIR || isBlastProtectedTile(old)) continue;
+          st(tx,ty,T.AIR);
+          notifyBombTileChanged(tx,ty,old,T.AIR,gt);
+        }
+      }
+    }
+    try{ blastRadius(m.x,m.y,14,72,{cause:'atomic_blast',source:'atomic_bomb',naturalDeath:false}); }catch(e){}
+    if(gt){
+      for(let i=0;i<12;i++) spawnRadiationCockroachAt(cx+(Math.random()*ATOMIC_BOMB_CRATER_RX*1.5-ATOMIC_BOMB_CRATER_RX*0.75),cy-2+Math.random()*5,gt);
+    }
+    try{
+      const pl=window.player;
+      if(pl && typeof window.damageHero==='function'){
+        const d=Math.hypot(pl.x-m.x,pl.y-m.y);
+        if(d<15) window.damageHero(Math.max(18,96*(1-d/16)),{srcX:m.x,srcY:m.y,kb:9,kbY:-6,launch:-7,cause:'atomic_blast',invulMs:1200});
+      }
+    }catch(e){}
+    const tile=MM.TILE||20;
+    try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*tile,m.y*tile,'epic'); }catch(e){}
+    try{ if(MM.particles && MM.particles.spawnSmoke) MM.particles.spawnSmoke(m.x*tile,m.y*tile,6,{tileX:cx,tileY:cy,tileSize:tile}); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('explosion'); }catch(e){}
+    try{ if(MM.atomicWinter && typeof MM.atomicWinter.trigger==='function') MM.atomicWinter.trigger({x:m.x,y:m.y}); }catch(e){}
+    return true;
+  }
+  function sandWormHeroAirborne(player,getTile){
+    if(!player) return false;
+    if(player.onGround===false) return true;
+    if(Math.abs(player.vy||0)>0.7) return true;
+    if(typeof getTile==='function'){
+      const x=Math.floor(player.x);
+      const footY=Math.floor(player.y+(player.h||0.95)*0.5+0.08);
+      const below=readMobTile(getTile,x,footY+1);
+      return below===T.AIR && Math.abs(player.vy||0)>0.15;
+    }
+    return false;
+  }
+  function sandWormApproachDir(m,player){
+    const vx=finiteNum(player && player.vx) ? player.vx : 0;
+    if(Math.abs(vx)>0.25) return vx>0?1:-1;
+    const dx=(player?player.x:0)-(m?m.x:0);
+    if(Math.abs(dx)>0.25) return dx>0?1:-1;
+    return player && player.facing<0 ? -1 : 1;
+  }
+  function findSandWormCircleSpot(m,player,getTile){
+    if(!player || typeof getTile!=='function') return null;
+    const dir=sandWormApproachDir(m,player);
+    const baseX=Math.floor(player.x);
+    const baseY=Math.floor(player.y);
+    const dirs=[dir,-dir];
+    const offsets=[5,6,7,4,8,9,3];
+    for(const d of dirs){
+      for(const off of offsets){
+        const tx=baseX+d*off;
+        for(let dy=-2; dy<=4; dy++){
+          const ty=baseY+dy;
+          if(sandWormDeepSandAt(tx,ty,getTile)) return {x:tx+0.5,y:ty+0.5,dir:d};
+        }
+      }
+    }
+    return null;
+  }
+  function sandWormStartCircle(m,player,now,getTile){
+    if(!m || !player || !sandWormCanBurrowAt(m,getTile)) return false;
+    m.state='circling';
+    m._wormCircleAt=now+SAND_WORM_CIRCLE_DELAY_MS+Math.random()*260;
+    m._wormCircleCooldownUntil=now+SAND_WORM_CIRCLE_COOLDOWN_MS+Math.random()*1200;
+    m._wormCircleDir=sandWormApproachDir(m,player);
+    m.vx*=0.08;
+    m.vy=0;
+    try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20),(m.y+0.35)*(MM.TILE||20),'common'); }catch(e){}
+    return true;
+  }
+  function sandWormFinishCircle(m,player,getTile,now,sp){
+    const spot=findSandWormCircleSpot(m,player,getTile);
+    if(!spot) return false;
+    m.x=spot.x;
+    m.y=spot.y;
+    const dx=player.x-m.x, dy=player.y-m.y;
+    const d=Math.hypot(dx,dy)||1;
+    m.state='ambush';
+    m.facing=dx>=0?1:-1;
+    m.vx=(dx/d)*(sp||SAND_WORM_SPIT_SPEED)*1.7;
+    m.vy=-2.5;
+    m._wormCircleCooldownUntil=Math.max(m._wormCircleCooldownUntil||0,now+SAND_WORM_CIRCLE_COOLDOWN_MS);
+    markMobTelegraph(m,'bite',{target:player,power:1.25,ms:520});
+    markHeroAttack(m);
+    setAggro(m.id);
+    try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20),(m.y+0.35)*(MM.TILE||20),'rare'); }catch(e){}
+    return true;
+  }
+  function shootSandWormSpit(m,target,speed,dmg){
+    if(!m || !target || mobProjectiles.length>=MOB_PROJ_CAP) return false;
+    const shotSpeed=(speed||SAND_WORM_SPIT_SPEED) * ((m && m.projectileSpeedMult) || 1);
+    const sx=m.x+(m.facing>=0?0.72:-0.72);
+    const sy=m.y-0.62;
+    const base=targetAimBase(target,-0.18);
+    const dist=Math.hypot(base.x-sx,base.y-sy)||1;
+    const travel=Math.max(0.35,Math.min(1.35,dist/Math.max(1,shotSpeed)));
+    const lead=Math.max(0.85,Math.min(1.16,Number(m.aimLead)||0.95));
+    const aimX=base.x+(finiteNum(target.vx)?target.vx:0)*travel*lead;
+    const aimY=base.y+(finiteNum(target.vy)?target.vy:0)*travel*lead*0.85;
+    const gravity=8.8;
+    let vx=(aimX-sx)/travel;
+    let vy=(aimY-sy-0.5*gravity*travel*travel)/travel;
+    const maxSpeed=shotSpeed*1.35;
+    const mag=Math.hypot(vx,vy)||1;
+    if(mag>maxSpeed){ const s=maxSpeed/mag; vx*=s; vy*=s; }
+    mobProjectiles.push({
+      x:sx, y:sy, vx, vy,
+      dmg:(dmg||10)*(m.dmgMult||1),
+      t:0,
+      spin:Math.random()*6.28,
+      lead,
+      type:'spit',
+      cause:'sand_worm_spit',
+      ownerId:'SAND_WORM',
+      gravity,
+      radius:0.68,
+      aimX,
+      aimY
+    });
+    markMobAttack(m,'spit',{target,power:1.15});
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('splash'); }catch(e){}
+    return true;
+  }
+  function shootStoneGolemRock(m,target,speed,dmg){
+    if(!m || !target || mobProjectiles.length>=MOB_PROJ_CAP) return false;
+    const shotSpeed=(speed||STONE_GOLEM_ROCK_SPEED) * ((m && m.projectileSpeedMult) || 1);
+    const sx=m.x+(m.facing>=0?0.58:-0.58);
+    const sy=m.y-1.18;
+    const base=targetAimBase(target,-0.28);
+    const dist=Math.hypot(base.x-sx,base.y-sy)||1;
+    const travel=Math.max(0.42,Math.min(1.55,dist/Math.max(1,shotSpeed)));
+    const lead=Math.max(0.24,Math.min(0.95,Number(m.aimLead)||0.45));
+    const aimX=base.x+(finiteNum(target.vx)?target.vx:0)*travel*lead;
+    const aimY=base.y+(finiteNum(target.vy)?target.vy:0)*travel*lead*0.45;
+    const gravity=12.8;
+    let vx=(aimX-sx)/travel;
+    let vy=(aimY-sy-0.5*gravity*travel*travel)/travel;
+    const maxSpeed=shotSpeed*1.25;
+    const mag=Math.hypot(vx,vy)||1;
+    if(mag>maxSpeed){ const s=maxSpeed/mag; vx*=s; vy*=s; }
+    mobProjectiles.push({
+      x:sx, y:sy, vx, vy,
+      dmg:(dmg||12)*(m.dmgMult||1),
+      t:0,
+      spin:Math.random()*6.28,
+      lead,
+      type:'rock',
+      cause:'stone_golem_rock',
+      ownerId:'STONE_GOLEM',
+      gravity,
+      radius:0.78,
+      aimX,
+      aimY
+    });
+    m.shake=Math.max(m.shake||0,0.35);
+    markMobAttack(m,'throw',{target,power:1.25});
+    try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(sx*(MM.TILE||20),sy*(MM.TILE||20),'common',5); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('thud'); }catch(e){}
+    return true;
+  }
+  function addGoldDragonGas(x,y,getTile,setTile,power,cells){
+    try{
+      if(!MM.gases || typeof MM.gases.add!=='function') return 0;
+      return MM.gases.add(Math.random()<0.72?'poison':'fuel',x,y,{power:power||0.65,cells:cells||2,getTile,setTile});
+    }catch(e){ return 0; }
+  }
+  function igniteGoldDragonBreath(x,y,getTile,setTile){
+    let lit=0;
+    try{
+      if(!MM.fire || typeof MM.fire.ignite!=='function' || typeof getTile!=='function') return 0;
+      const tx=Math.floor(x), ty=Math.floor(y);
+      for(let dy=-1; dy<=1; dy++){
+        for(let dx=-1; dx<=1; dx++){
+          if(Math.abs(dx)+Math.abs(dy)>1) continue;
+          if(MM.fire.ignite(tx+dx,ty+dy,getTile,setTile)) lit++;
+        }
+      }
+    }catch(e){}
+    return lit;
+  }
+  function dragonBreathImpact(pr,getTile,setTile){
+    if(!pr || pr.type!=='dragon_fire') return false;
+    addGoldDragonGas(pr.x,pr.y,getTile,setTile,0.88,3);
+    igniteGoldDragonBreath(pr.x,pr.y,getTile,setTile);
+    try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(pr.x*(MM.TILE||20),pr.y*(MM.TILE||20),'rare',8); }catch(e){}
+    return true;
+  }
+  function shootGoldDragonBreath(m,target,speed,dmg,getTile,setTile){
+    if(!m || !target || mobProjectiles.length>=MOB_PROJ_CAP) return false;
+    const shotSpeed=(speed||12.5) * ((m && m.projectileSpeedMult) || 1);
+    const sx=m.x+(m.facing>=0?1.38:-1.38);
+    const sy=m.y-1.16;
+    const base=targetAimBase(target,-0.22);
+    const dist=Math.hypot(base.x-sx,base.y-sy)||1;
+    const travel=Math.max(0.28,Math.min(1.18,dist/Math.max(1,shotSpeed)));
+    const lead=Math.max(0.34,Math.min(1.02,Number(m.aimLead)||0.58));
+    const aimX=base.x+(finiteNum(target.vx)?target.vx:0)*travel*lead;
+    const aimY=base.y+(finiteNum(target.vy)?target.vy:0)*travel*lead*0.45;
+    let vx=(aimX-sx)/travel;
+    let vy=(aimY-sy)/travel - 0.7;
+    const maxSpeed=shotSpeed*1.18;
+    const mag=Math.hypot(vx,vy)||1;
+    if(mag>maxSpeed){ const s=maxSpeed/mag; vx*=s; vy*=s; }
+    mobProjectiles.push({
+      x:sx, y:sy, vx, vy,
+      dmg:(dmg||24)*(m.dmgMult||1),
+      t:0,
+      spin:Math.random()*6.28,
+      lead,
+      type:'dragon_fire',
+      cause:'gold_dragon_fire',
+      ownerId:'GOLD_DRAGON',
+      gravity:1.4,
+      radius:0.86,
+      aimX,
+      aimY
+    });
+    addGoldDragonGas(sx,sy,getTile,setTile,0.42,2);
+    markMobAttack(m,'gold_dragon_fire',{target,power:1.55,strikeMs:460});
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('fire'); }catch(e){}
+    return true;
+  }
+  function shootGoldDwarfPick(m,target,speed,dmg){
+    if(!m || !target || mobProjectiles.length>=MOB_PROJ_CAP) return false;
+    const shotSpeed=(speed||9.8) * ((m && m.projectileSpeedMult) || 1);
+    const sx=m.x+(m.facing>=0?0.42:-0.42);
+    const sy=m.y-0.82;
+    const base=targetAimBase(target,-0.26);
+    const dist=Math.hypot(base.x-sx,base.y-sy)||1;
+    const travel=Math.max(0.32,Math.min(1.18,dist/Math.max(1,shotSpeed)));
+    const lead=Math.max(0.22,Math.min(0.78,Number(m.aimLead)||0.38));
+    const aimX=base.x+(finiteNum(target.vx)?target.vx:0)*travel*lead;
+    const aimY=base.y+(finiteNum(target.vy)?target.vy:0)*travel*lead*0.38;
+    const gravity=10.8;
+    let vx=(aimX-sx)/travel;
+    let vy=(aimY-sy-0.5*gravity*travel*travel)/travel;
+    const maxSpeed=shotSpeed*1.2;
+    const mag=Math.hypot(vx,vy)||1;
+    if(mag>maxSpeed){ const s=maxSpeed/mag; vx*=s; vy*=s; }
+    mobProjectiles.push({
+      x:sx, y:sy, vx, vy,
+      dmg:(dmg||10)*(m.dmgMult||1),
+      t:0,
+      spin:Math.random()*6.28,
+      lead,
+      type:'gold_pick',
+      cause:'gold_dwarf_pick',
+      ownerId:'GOLD_DWARF_GUARD',
+      gravity,
+      radius:0.56,
+      aimX,
+      aimY
+    });
+    markMobAttack(m,'gold_dwarf_pick',{target,power:1.05,strikeMs:340});
+    try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(sx*(MM.TILE||20),sy*(MM.TILE||20),'common',4); }catch(e){}
+    return true;
+  }
+  function pacifyStoneGolem(m,reason,now){
+    if(!m || m.id!=='STONE_GOLEM') return false;
+    m.state='cracked';
+    if(reason==='water' && m.hp>1) m.hp=Math.max(1,m.hp-6);
+    return pacifyMob(m,STONE_GOLEM_CALM_MS,reason||'cracked',now);
+  }
+  function isTempleGuardTile(t){ return !!TEMPLE_GUARD_TILES[t]; }
+  function templeSignalScore(x,y,getTile){
+    if(typeof getTile!=='function') return {score:0, treasure:0};
+    let score=0, treasure=0;
+    for(let dy=-5; dy<=5; dy++){
+      for(let dx=-8; dx<=8; dx++){
+        const t=readMobTile(getTile,x+dx,y+dy);
+        if(!isTempleGuardTile(t)) continue;
+        score += (t===T.CHEST_EPIC ? 5 : t===T.CHEST_RARE ? 4 : t===T.CHEST_COMMON ? 3 : t===T.DIAMOND ? 3 : t===T.OBSIDIAN ? 2 : t===T.TORCH ? 2 : 1);
+        if(t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC || t===T.DIAMOND) treasure++;
+      }
+    }
+    return {score,treasure};
+  }
+  function nearTempleStructure(x,y,getTile){
+    const s=templeSignalScore(x,y,getTile);
+    return s.score>=5 && s.treasure>=1;
+  }
+  function isTempleGuardAggro(m,now){
+    const t=(typeof now==='number' && isFinite(now) && now>1000000000) ? now : Date.now();
+    return !!(m && m.id==='TEMPLE_GUARD' && finiteNum(m.templeAggroUntil) && m.templeAggroUntil>t);
+  }
+  function markTempleGuardAlarm(m,wx,wy,kind,now){
+    if(!m || m.id!=='TEMPLE_GUARD') return false;
+    const t=(typeof now==='number' && isFinite(now) && now>1000000000) ? now : Date.now();
+    const dur = kind==='treasure' ? TEMPLE_GUARD_VIOLATION_AGGRO_MS : Math.round(TEMPLE_GUARD_VIOLATION_AGGRO_MS*0.72);
+    m.templeAggroUntil=Math.max(m.templeAggroUntil||0,t+dur);
+    m.templeAlarmX=finiteCoord(wx)?wx:m.x;
+    m.templeAlarmY=finiteCoord(wy)?wy:m.y;
+    m.templeAlarmKind=kind==='treasure'?'treasure':'structure';
+    m.state=kind==='treasure'?'relic_alarm':'structure_alarm';
+    m.attackCd=Math.min(m.attackCd||0,0.25);
+    markMobTelegraph(m,kind==='treasure'?'charge':'strike',{x:wx,y:wy,power:1.0,ms:650});
+    markHeroAttack(m);
+    return true;
+  }
+  function templeEventTouchesGuard(m,wx,wy,temple,range){
+    if(!m || m.id!=='TEMPLE_GUARD' || m.hp<=0) return false;
+    if(temple && Number.isFinite(temple.minX)){
+      const padX=14, padY=10;
+      if(m.x>=temple.minX-padX && m.x<=temple.maxX+padX && m.y>=temple.minY-padY && m.y<=temple.maxY+padY) return true;
+    }
+    const dx=m.x-wx, dy=m.y-wy;
+    return dx*dx+dy*dy <= range*range;
+  }
+  function findTempleGuardSpawnNear(wx,wy,getTile,range){
+    const spec=SPECIES.TEMPLE_GUARD;
+    if(!spec || typeof getTile!=='function') return null;
+    const cx=Math.floor(wx), cy=Math.floor(wy);
+    const maxR=Math.max(3,Math.min(28,range||TEMPLE_GUARD_REINFORCE_RADIUS));
+    for(let r=1; r<=maxR; r++){
+      for(let dy=-Math.min(r,10); dy<=Math.min(r,10); dy++){
+        for(let dx=-r; dx<=r; dx++){
+          if(Math.max(Math.abs(dx),Math.abs(dy))!==r) continue;
+          const x=cx+dx, y=cy+dy;
+          if(!inWorldY(y,1,1)) continue;
+          if(spec.spawnTest(x,y,getTile)) return {x:x+0.5,y:y+0.5};
+        }
+      }
+    }
+    return null;
+  }
+  function currentGameDayFloat(){
+    try{
+      const seasons=MM.seasons;
+      if(seasons && typeof seasons.metrics==='function'){
+        const m=seasons.metrics();
+        const day=Number(m && m.dayFloat);
+        if(isFinite(day) && day>0) return day;
+      }
+    }catch(e){}
+    try{
+      const now=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+      if(isFinite(now)) return 1 + Math.max(0,now) / (XP_FALLBACK_DAY_SECONDS*1000);
+    }catch(e){}
+    return 1;
+  }
+  function notifyTempleDisturbed(tx,ty,opts){
+    opts=opts||{};
+    const kind=opts.kind==='treasure' ? 'treasure' : 'structure';
+    const wx=(Number(tx)||0)+0.5, wy=(Number(ty)||0)+0.5;
+    const temple=opts.temple || null;
+    const getTile=typeof opts.getTile==='function' ? opts.getTile : (WORLD && WORLD.getTile);
+    const now=Date.now();
+    let alerted=0;
+    for(const m of mobs){
+      if(!validMobState(m) || !templeEventTouchesGuard(m,wx,wy,temple,TEMPLE_GUARD_ALARM_RADIUS)) continue;
+      if(markTempleGuardAlarm(m,wx,wy,kind,now)) alerted++;
+    }
+    const spec=SPECIES.TEMPLE_GUARD;
+    const wantsReinforcement = kind==='treasure' ? 2 : 1;
+    let spawned=0;
+    while(spec && spawned<wantsReinforcement && countSpecies('TEMPLE_GUARD')<spec.max && alerted+spawned<Math.max(1,wantsReinforcement)){
+      const spot=findTempleGuardSpawnNear(wx,wy,getTile,TEMPLE_GUARD_REINFORCE_RADIUS + spawned*4);
+      if(!spot) break;
+      const g=create(spec,spot.x,spot.y,getTile);
+      g.homeX=spot.x; g.homeY=spot.y;
+      markTempleGuardAlarm(g,wx,wy,kind,now);
+      mobs.push(g);
+      spawned++;
+    }
+    if(alerted || spawned){
+      try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(wx*(MM.TILE||20),wy*(MM.TILE||20),kind==='treasure'?'epic':'rare'); }catch(e){}
+    }
+    return {alerted,spawned};
+  }
+  function placeRewardChestNearMob(m,tier,chance){
+    if(!m || Math.random()>Math.max(0,Math.min(1,chance||0))) return false;
+    const W=MM.world || WORLD;
+    if(!W || typeof W.getTile!=='function' || typeof W.setTile!=='function') return false;
+    const chest=tier==='epic'?T.CHEST_EPIC:(tier==='rare'?T.CHEST_RARE:T.CHEST_COMMON);
+    const bx=Math.floor(m.x), by=Math.floor(m.y);
+    for(let r=0; r<=5; r++){
+      for(let dy=-2; dy<=4; dy++){
+        for(let dx=-r; dx<=r; dx++){
+          if(Math.max(Math.abs(dx),Math.abs(dy))!==r && r!==0) continue;
+          const x=bx+dx, y=by+dy;
+          const here=readMobTile(W.getTile,x,y);
+          const below=readMobTile(W.getTile,x,y+1);
+          if(here===T.AIR && below!==T.AIR && below!==T.WATER && below!==T.CHEST_COMMON && below!==T.CHEST_RARE && below!==T.CHEST_EPIC){
+            W.setTile(x,y,chest);
+            try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((x+0.5)*(MM.TILE||20),(y+0.5)*(MM.TILE||20),tier||'common'); }catch(e){}
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
 
   registerSpecies({ // Large forest predator near trees
   id:'BEAR', max:6, hp:30, dmg:10, speed:2.0, wanderInterval:[3,7], xp:25, ground:true,
@@ -238,6 +1346,68 @@ const mobs = (function(){
       const dx=player.x-m.x; const dist=Math.abs(dx)||1;
       if(dist<6){ m.vx += (dx/dist)*sp*0.4*dt*30; m.facing = dx>=0?1:-1; if(dist<1.7){ m.vx += (dx/dist)*sp*0.9; } }
       else if(Math.random()<0.005){ m.vx += (Math.random()*2-1)*0.6; }
+    }
+  });
+
+  registerSpecies({
+    id:'BRAMBLE_STALKER', displayName:'Bramble stalker',
+    max:8, localMax:3, spawnChance:0.56,
+    hp:24, dmg:9, speed:3.15, wanderInterval:[1.6,3.8], xp:36, ground:true,
+    sightRange:16, pursueRange:23,
+    move:{jumpVel:-5.0, maxClimb:2, avoidWater:true},
+    body:{w:1.15,h:1.22},
+    contactInvulMs:460, contactKnockback:1.15, contactKnockbackY:-0.9, contactCause:'bramble_thorns',
+    variant:{shift:3, from:'#315c2d', to:'#6b7f35'},
+    loot:[{item:'leaf', min:2, max:5, chance:0.9}, {item:'wood', min:1, max:3, chance:0.58}, {item:'glowshroom', min:1, max:1, chance:0.16}],
+    meat:false,
+    spawnTest(x,y,getTile){ return brambleStalkerSpawnCell(x,y,getTile); },
+    biome:'forest',
+    onCreate(m){
+      m.state='camouflaged';
+      m.scale=0.92+Math.random()*0.16;
+      m.speedMul=0.84+Math.random()*0.22;
+      m._nextBrambleLungeAt=performance.now()+800+Math.random()*1500;
+    },
+    onUpdate(m,spec,{player,dt,now,speed,aggressive,getTile}){
+      const torch=nearTorch(m.x,m.y,getTile,BRAMBLE_STALKER_TORCH_RADIUS);
+      if(torch || hasStatus(m,'burn')){
+        m.state='singed';
+        pacifyMob(m,BRAMBLE_STALKER_CALM_MS,torch?'torch':'fire',now);
+      }
+      if(isMobPacified(m,now)){
+        m.vx*=0.58;
+        if(m.onGround) m.vy=0;
+        return;
+      }
+      const dx=player.x-m.x, dy=player.y-m.y;
+      const dist=Math.hypot(dx,dy)||1;
+      const forestRisk=biomeAt(player.x)===0 || nearForestTreeMass(m.x,m.y,getTile,8);
+      if(!aggressive && forestRisk && dist<BRAMBLE_STALKER_WAKE_RADIUS){
+        if(m.state==='camouflaged') noteEntityNumber({kind:'danger', text:'!', x:m.x, y:m.y-1.25, target:'bramble_stalker:'+Math.round(m.spawnT||0)});
+        markMobTelegraph(m,'bite',{target:player,power:0.9,ms:520});
+        markHeroAttack(m);
+        m.state='unfurl';
+        m.shake=Math.max(m.shake||0,0.45);
+      }
+      if(aggressive || isHeroFocused(m) || m.state==='unfurl' || m.state==='snare'){
+        const dir=dx>=0?1:-1;
+        const sp=(speed||spec.speed)*(m.state==='snare'?1.18:0.92);
+        m.facing=dir;
+        m.vx += dir*sp*(dist<3.2?0.78:0.46)*dt*30;
+        if(m.onGround && now>(m._nextBrambleLungeAt||0) && Math.abs(dx)>1.0 && Math.abs(dy)<5.5){
+          m.state='snare';
+          markMobTelegraph(m,'bite',{target:player,power:1.05,ms:360});
+          m.vx += dir*sp*1.35;
+          m.vy=(spec.move.jumpVel||-5)*(m.jumpMul||1)*(dist<4?0.82:0.64);
+          m._nextBrambleLungeAt=now+BRAMBLE_STALKER_LUNGE_COOLDOWN_MS+Math.random()*850;
+        }
+      } else {
+        m.state='camouflaged';
+        if(m.onGround && Math.random()<0.006) m.vx += (Math.random()<0.5?-1:1)*(speed||spec.speed)*0.18;
+      }
+    },
+    onDeath(m){
+      placeRewardChestNearMob(m, Math.random()<0.20?'rare':'common', 0.22);
     }
   });
 
@@ -275,6 +1445,96 @@ const mobs = (function(){
     const dir = dx>0?-1:1; m.vx += dir*sp*0.6; m.facing = m.vx>=0?1:-1; } }
   });
 
+  registerSpecies({
+    id:'THUNDER_BISON', displayName:'Thunder bison',
+    max:7, localMax:3, spawnBatch:2, spawnChance:0.66,
+    hp:48, dmg:15, speed:3.15, wanderInterval:[2.0,4.8], xp:48, ground:true,
+    sightRange:18, pursueRange:27,
+    move:{jumpVel:-3.1, maxClimb:1, avoidWater:true},
+    body:{w:2.28,h:1.44},
+    contactInvulMs:520, contactKnockback:2.6, contactKnockbackY:-1.25, contactCause:'thunder_bison_charge',
+    variant:{shift:4, from:'#765033', to:'#a8753d'},
+    loot:[{item:'grass', min:2, max:5, chance:1}, {item:'wood', min:1, max:2, chance:0.34}, {item:'summerHorn', min:1, max:1, chance:0.10}],
+    meatDropChance:1,
+    spawnTest(x,y,getTile){ return thunderBisonSpawnCell(x,y,getTile); },
+    biome:'plains',
+    onCreate(m){
+      m.state='grazing';
+      m.scale=1.05+Math.random()*0.18;
+      m.speedMul=0.80+Math.random()*0.18;
+      m.jumpMul=0.72+Math.random()*0.14;
+      m._nextBisonChargeAt=performance.now()+1000+Math.random()*2400;
+    },
+    onUpdate(m,spec,{player,dt,now,speed,aggressive,getTile}){
+      const dx=player.x-m.x, dy=player.y-m.y;
+      const adx=Math.abs(dx), dist=Math.hypot(dx,dy)||1;
+      if(m.state==='stunned'){
+        m.vx*=0.62;
+        if(m.onGround) m.vy=0;
+        if(now>(m._bisonStunnedUntil||0)) m.state='grazing';
+        return;
+      }
+      if(m.state==='charge'){
+        const dir=m.facing>=0?1:-1;
+        const sp=(speed||spec.speed)*2.85;
+        m.vx += (dir*sp-m.vx)*Math.min(1,dt*7);
+        if(dist<1.95 && now>(m._lastBisonHitAt||0)){
+          markMobAttack(m,'thunder_bison_charge',{target:player,power:1.55,strikeMs:420});
+          damagePlayer((spec.dmg||12)*1.22*(m.dmgMult||1),m.x,m.y,'thunder_bison_charge',spec);
+          m._lastBisonHitAt=now+520;
+          m.attackCd=Math.max(m.attackCd||0,0.68);
+        }
+        const front=readMobTile(getTile,Math.floor(m.x+dir*1.45),Math.floor(m.y));
+        if(now>(m._bisonChargeUntil||0) || (front!==T.AIR && front!==T.TORCH && !isLeaf(front))){
+          m.state='stunned';
+          m._bisonStunnedUntil=now+THUNDER_BISON_STUN_MS;
+          m._nextBisonChargeAt=now+THUNDER_BISON_CHARGE_COOLDOWN_MS+Math.random()*1400;
+          m.vx*=0.22;
+          m.shake=Math.max(m.shake||0,0.65);
+        }
+        return;
+      }
+      if(m.state==='windup'){
+        m.vx*=0.58;
+        m.facing=dx>=0?1:-1;
+        warnThunderBisonCharge(m,now);
+        if(now>(m._bisonWindupUntil||0)){
+          m.state='charge';
+          m._bisonChargeUntil=now+THUNDER_BISON_CHARGE_MS;
+          m.vx=m.facing*(speed||spec.speed)*2.35;
+          m.shake=Math.max(m.shake||0,0.55);
+        }
+        return;
+      }
+      const heroProvokes = Math.abs(player.vx||0)>3.2 || aggressive || isHeroFocused(m);
+      if(adx<THUNDER_BISON_CHARGE_RANGE && Math.abs(dy)<3.2 && now>(m._nextBisonChargeAt||0) && (heroProvokes || adx<THUNDER_BISON_WARN_RADIUS)){
+        markMobTelegraph(m,'charge',{target:player,power:1.25,ms:650});
+        markHeroAttack(m);
+        m.state='windup';
+        m.facing=dx>=0?1:-1;
+        m._bisonWindupUntil=now+360+Math.random()*220;
+        warnThunderBisonCharge(m,now);
+        m.vx*=0.42;
+        return;
+      }
+      const herd=nearestSameSpecies(m,12);
+      if(herd && adx>=10){
+        const gap=herd.x-m.x;
+        m.vx += Math.sign(gap||m.facing)*(speed||spec.speed)*0.06*dt*30;
+      } else if(Math.random()<0.006){
+        m.vx += (Math.random()<0.5?-1:1)*(speed||spec.speed)*0.18;
+      }
+      if(adx<5 && !aggressive){
+        const dir=dx>0?-1:1;
+        m.vx += dir*(speed||spec.speed)*0.16*dt*30;
+        m.facing=dir;
+      }
+    },
+    onDeath(m){
+      placeRewardChestNearMob(m, Math.random()<0.18?'rare':'common', 0.20);
+    }
+  });
+
   registerSpecies({ // Snow biome predator (pack)
   id:'WOLF', max:10, hp:16, dmg:6, speed:3.4, wanderInterval:[2,5], xp:15, ground:true,
   sightRange: 20, pursueRange: 28,
@@ -294,6 +1554,79 @@ const mobs = (function(){
           m.vx *= 0.6; if(Math.abs(m.vx)<0.05) m.vx = 0; m.facing = dx>=0?1:-1; }
   if(adx<3) setAggro('WOLF');
       } else if(Math.random()<0.01){ m.vx += (Math.random()*2-1)*0.4 * (spd/ (spec.speed||1)); }
+    }
+  });
+
+  registerSpecies({
+    id:'ICE_WRAITH', displayName:'Ice wraith',
+    max:8, localMax:3, spawnChance:0.58,
+    hp:26, dmg:12, speed:4.6, wanderInterval:[1.4,3.0], xp:44,
+    flying:true, sightRange:18, pursueRange:30,
+    body:{w:0.9,h:1.35},
+    contactInvulMs:480, contactKnockback:2.3, contactKnockbackY:-1.15, contactCause:'ice_wraith_frost',
+    variant:{shift:2, from:'#bdefff', to:'#eefbff'},
+    meat:false,
+    loot:[{item:'snow', min:2, max:5, chance:0.85}, {item:'ice', min:1, max:3, chance:0.72}, {item:'diamond', min:1, max:1, chance:0.08}],
+    spawnTest(x,y,getTile){ return iceWraithSpawnCell(x,y,getTile); },
+    biome:'snow',
+    onCreate(m){
+      m.state='veiled';
+      m.scale=0.90+Math.random()*0.18;
+      m.speedMul=0.88+Math.random()*0.22;
+      m._nextBlinkAt=performance.now()+900+Math.random()*1600;
+    },
+    onUpdate(m,spec,{player,dt,now,speed,aggressive,getTile,distToPlayer}){
+      const torch = nearTorch(m.x,m.y,getTile,ICE_WRAITH_TORCH_RADIUS);
+      if(torch || hasStatus(m,'burn')){
+        m.state='melt';
+        pacifyMob(m,ICE_WRAITH_CALM_MS,torch?'torch':'fire',now);
+      }
+      if(isMobPacified(m,now)){
+        m.vx*=0.70;
+        m.vy += (Math.sin(now*0.003+m.spawnT*0.002)*0.12-m.vy)*Math.min(1,dt*3);
+        return;
+      }
+      const dx=player.x-m.x, dy=(player.y-0.35)-m.y;
+      const dist=Math.hypot(dx,dy)||1;
+      const inSnowRisk=biomeAt(player.x)===2 || biomeAt(m.x)===2;
+      if(!aggressive && inSnowRisk && dist<(distToPlayer<ICE_WRAITH_WAKE_RADIUS?ICE_WRAITH_WAKE_RADIUS:6.4)){
+        markMobTelegraph(m,'shock',{target:player,power:0.95,ms:540});
+        markHeroAttack(m);
+        m.state='manifest';
+        m.shake=Math.max(m.shake||0,0.34);
+      }
+      const hostile=aggressive || isHeroFocused(m) || m.state==='manifest' || m.state==='whiteout';
+      if(hostile && inSnowRisk){
+        if(dist>ICE_WRAITH_BLINK_DIST && now>(m._nextBlinkAt||0)){
+          const spot=findIceWraithBlinkSpot(player,m,getTile);
+          if(spot){
+            m.x=spot.x; m.y=spot.y;
+            m.vx*=0.18; m.vy*=0.18;
+            m.state='whiteout';
+            markMobTelegraph(m,'shock',{target:player,power:1.2,ms:460});
+            m._nextBlinkAt=now+ICE_WRAITH_BLINK_COOLDOWN_MS+Math.random()*1200;
+            m.shake=Math.max(m.shake||0,0.72);
+            try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20),m.y*(MM.TILE||20),'rare'); }catch(e){}
+          }
+        }
+        const tx=player.x, ty=player.y-0.25;
+        const vx=tx-m.x, vy=ty-m.y;
+        const d=Math.hypot(vx,vy)||1;
+        const sp=(speed||spec.speed)*(m.state==='whiteout'?1.12:0.95);
+        m.vx += (vx/d)*sp*dt*5.6;
+        m.vy += (vy/d)*sp*dt*4.2;
+        m.facing=vx>=0?1:-1;
+      } else {
+        m.state='veiled';
+        const bob=Math.sin(now*0.0026+m.spawnT*0.0017)*0.24;
+        m.vy += (bob-m.vy)*Math.min(1,dt*1.6);
+        if(Math.random()<0.015){
+          m.vx += (Math.random()*2-1)*(speed||spec.speed)*0.18;
+        }
+      }
+    },
+    onDeath(m){
+      placeRewardChestNearMob(m, Math.random()<0.30?'rare':'common', 0.24);
     }
   });
 
@@ -326,6 +1659,190 @@ const mobs = (function(){
     }
   });
 
+  registerSpecies({
+    id:'VULTURE', displayName:'Vulture',
+    max:3, localMax:1, spawnChance:0.18, hp:24, dmg:11, speed:6.8, wanderInterval:[2.4,5.5], xp:34, flying:true,
+    sightRange:24, pursueRange:34,
+    body:{w:1.45,h:0.78},
+    variant:{shift:5, from:'#46372e', to:'#6b5842'},
+    loot:[{item:'leaf', min:1, max:3, chance:0.55}, {item:'diamond', min:1, max:1, chance:0.12}],
+    meatDropChance:0.55,
+    spawnTest(x,y,getTile){
+      if(!isVultureColumn(x)) return false;
+      if(readMobTile(getTile,x,y)!==T.AIR || readMobTile(getTile,x,y-1)!==T.AIR) return false;
+      return !!findVultureNestSpot(x,y,getTile);
+    },
+    biome:'mountain',
+    onCreate(m,spec,getTile){
+      const spot=findVultureNestSpot(m.x,m.y,getTile);
+      if(spot){
+        m.nestX=spot.nestX;
+        m.nestY=spot.nestY;
+        m.nestTree=!!spot.tree;
+        if(finiteCoord(spot.groundY)) m.nestGroundY=spot.groundY;
+        m.x=spot.x;
+        m.y=spot.y;
+      }
+      m.homeX=finiteCoord(m.nestX) ? m.nestX+0.5 : m.x;
+      m.homeY=finiteCoord(m.nestY) ? m.nestY-1.2 : m.y;
+      m.state='perched';
+      m._nextVultureDecisionAt=performance.now()+2800+Math.random()*7000;
+      m.scale=1.02+Math.random()*0.18;
+      m.speedMul=1.02+Math.random()*0.24;
+    },
+    onUpdate(m,spec,{player,dt,now,speed,aggressive,getTile,setTile,distToPlayer}){
+      const nest=materializeVultureNest(m,getTile,setTile);
+      const homeX=nest ? nest.x : (finiteCoord(m.homeX)?m.homeX:m.x);
+      const homeY=nest ? nest.y-3.5 : (finiteCoord(m.homeY)?m.homeY:m.y-2);
+      const dx=player.x-m.x, dy=(player.y-0.35)-m.y;
+      const dist=Math.hypot(dx,dy)||1;
+      const heroInRisk = isVultureColumn(player.x) || (nest && Math.abs(player.x-nest.nestX)<VULTURE_NEST_RADIUS);
+      if(m.state==='carry'){
+        updateVultureCarry(m,spec,player,getTile,setTile,now,dt,speed);
+        return;
+      }
+      if(m.state==='dive' && dist<1.05){
+        if(m._vultureCapture===true) vultureCaptureHero(m,spec,player,getTile,setTile,now);
+        else vultureStrikeHero(m,spec,player,now);
+        return;
+      }
+      if(heroInRisk && distToPlayer<30 && now>(m._nextVultureDecisionAt||0)){
+        const nearNest=nest && Math.abs(player.x-nest.nestX)<9 && Math.abs(player.y-nest.nestY)<10;
+        const volcano=isVolcanoColumn(player.x);
+        const chance=(aggressive?0.48:(volcano?0.16:0.08)) + (nearNest?0.10:0);
+        m._nextVultureDecisionAt=now+VULTURE_ATTACK_DECISION_MS+Math.random()*4200;
+        if(Math.random()<Math.min(0.72,chance)) vultureStartDive(m,aggressive,now,player);
+      }
+      if(m.state==='dive'){
+        const sp=(speed||spec.speed)*1.38;
+        m.vx += (dx/dist)*sp*dt*8.6;
+        m.vy += (dy/dist)*sp*dt*8.2;
+        m.facing=dx>=0?1:-1;
+        return;
+      }
+      const returning=m.state==='return' || dist>34;
+      const orbit=now*0.0012+m.spawnT*0.003;
+      const tx=(returning?homeX:homeX+Math.sin(orbit)*5.5);
+      const ty=(returning?homeY:homeY-1.6+Math.cos(orbit*1.4)*2.1);
+      const hx=tx-m.x, hy=ty-m.y, hd=Math.hypot(hx,hy)||1;
+      m.vx += (hx/hd)*(speed||spec.speed)*(returning?0.32:0.16)*dt*5.5;
+      m.vy += (hy/hd)*(speed||spec.speed)*(returning?0.28:0.13)*dt*5.0;
+      m.facing=(Math.abs(hx)>0.4?hx:dx)>=0?1:-1;
+      if(returning && hd<2.2) m.state='perched';
+    },
+    onDeath(m){
+      placeRewardChestNearMob(m, Math.random()<0.18?'rare':'common', 0.20);
+    }
+  });
+
+  registerSpecies({
+    id:'VULTURE_HATCHLING', displayName:'Vulture hatchling',
+    max:18, localMax:6, spawnChance:0.04, hp:7, dmg:4, speed:4.1, wanderInterval:[0.9,2.0], xp:8,
+    flying:true, alwaysAggro:true, sightRange:16, pursueRange:22,
+    body:{w:0.72,h:0.48},
+    variant:{shift:2, from:'#6d5a42', to:'#9a7c54'},
+    meat:false,
+    spawnTest(x,y,getTile){
+      if(!isVultureColumn(x)) return false;
+      if(readMobTile(getTile,x,y)!==T.AIR) return false;
+      for(let dy=0; dy<=3; dy++){
+        for(let dx=-3; dx<=3; dx++){
+          const t=readMobTile(getTile,x+dx,y+dy);
+          if(t===T.WOOD || isLeaf(t)) return true;
+        }
+      }
+      return false;
+    },
+    biome:'mountain',
+    onCreate(m){
+      m.scale=0.86+Math.random()*0.18;
+      m.speedMul=0.90+Math.random()*0.28;
+    },
+    onUpdate(m,spec,{player,dt,now,speed,aggressive}){
+      const dx=player.x-m.x, dy=(player.y-0.25)-m.y;
+      const dist=Math.hypot(dx,dy)||1;
+      const homeX=finiteCoord(m.homeX)?m.homeX:m.x;
+      const homeY=finiteCoord(m.homeY)?m.homeY:m.y;
+      if(aggressive && dist<spec.pursueRange){
+        m.vx += (dx/dist)*(speed||spec.speed)*dt*6.0;
+        m.vy += (dy/dist)*(speed||spec.speed)*dt*4.4;
+        m.facing=dx>=0?1:-1;
+      } else {
+        const ox=homeX+Math.sin(now*0.004+m.spawnT)*1.8-m.x;
+        const oy=homeY+Math.cos(now*0.005+m.spawnT)*0.9-m.y;
+        const od=Math.hypot(ox,oy)||1;
+        m.vx += (ox/od)*(speed||spec.speed)*dt*2.2;
+        m.vy += (oy/od)*(speed||spec.speed)*dt*2.0;
+      }
+    }
+  });
+
+  registerSpecies({
+    id:'JACKPOT_YETI', displayName:'Jackpot yeti',
+    max:2, localMax:1, spawnChance:0.055, hp:152, dmg:34, speed:3.25, wanderInterval:[2.0,4.6], xp:185, ground:true,
+    sightRange:22, pursueRange:34, alwaysAggro:true,
+    move:{jumpVel:-5.2, maxClimb:2, avoidWater:true},
+    body:{w:2.25,h:2.15},
+    variant:{shift:2, from:'#dceaf0', to:'#f8fbff'},
+    contactInvulMs:560, contactKnockback:2.35, contactKnockbackY:-1.18, contactCause:'jackpot_yeti_claw',
+    loot:[
+      {item:'snow', min:10, max:18, chance:1},
+      {item:'ice', min:4, max:9, chance:0.82},
+      {item:'diamond', min:1, max:2, chance:0.30},
+      {item:'alienBiomass', min:1, max:2, chance:0.16}
+    ],
+    meatDropChance:0.2,
+    spawnTest(x,y,getTile){ return jackpotYetiSpawnCell(x,y,getTile); },
+    biome:'snow',
+    onCreate(m){
+      m.state='prowling';
+      m.scale=1.06+Math.random()*0.17;
+      m.speedMul=Math.max(m.speedMul||1,0.92+Math.random()*0.18);
+      m.jumpMul=Math.max(m.jumpMul||1,0.94+Math.random()*0.16);
+      m._nextYetiSlamAt=performance.now()+800+Math.random()*1300;
+      m._nextYetiLeapAt=performance.now()+700+Math.random()*1200;
+    },
+    onUpdate(m,spec,{player,dt,now,speed,aggressive,getTile}){
+      const sp=speed||spec.speed||3;
+      const dx=player.x-m.x, dy=player.y-m.y;
+      const dist=Math.hypot(dx,dy)||1;
+      const dir=dx>=0?1:-1;
+      m.facing=dir;
+      if(dist<JACKPOT_YETI_SLAM_RANGE && now>(m._nextYetiSlamAt||0)){
+        m.state='slam';
+        m.shake=Math.max(m.shake||0,0.92);
+        markMobAttack(m,'jackpot_yeti_slam',{target:player,power:1.75,strikeMs:520});
+        damagePlayer(spec.dmg*(1.05+Math.min(0.35,Math.abs(m.vx||0)*0.045))*(m.dmgMult||1),m.x,m.y-0.55,'jackpot_yeti_slam',spec);
+        m._nextYetiSlamAt=now+JACKPOT_YETI_SLAM_COOLDOWN_MS+Math.random()*900;
+        m._nextYetiLeapAt=Math.max(m._nextYetiLeapAt||0,now+520);
+        try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20),(m.y+0.2)*(MM.TILE||20),'rare'); }catch(e){}
+        return;
+      }
+      if((aggressive || dist<spec.sightRange) && dist<10.5 && dist>2.4 && m.onGround && now>(m._nextYetiLeapAt||0)){
+        m.state='leap';
+        markMobTelegraph(m,'slam',{target:player,power:1.2,ms:560});
+        m.vx += dir*sp*1.58;
+        m.vy=(spec.move.jumpVel||-5.2)*(m.jumpMul||1);
+        m._nextYetiLeapAt=now+JACKPOT_YETI_LEAP_COOLDOWN_MS+Math.random()*950;
+        return;
+      }
+      if(aggressive || dist<spec.sightRange){
+        m.state=dist<4?'threat':'prowling';
+        m.vx += dir*sp*(dist<5?0.52:0.34)*dt*30;
+        if(getTile && m.onGround && readMobTile(getTile,Math.floor(m.x+dir*0.8),Math.floor(m.y+0.55))===T.ICE){
+          m.vx += dir*sp*0.10*dt*30;
+        }
+      } else if(m.onGround && Math.random()<0.006){
+        m.state='watching';
+        m.vx += (Math.random()<0.5?-1:1)*sp*0.18;
+      }
+    },
+    onDeath(m){
+      placeRewardChestNearMob(m, Math.random()<0.26?'epic':'rare', 0.38);
+      releaseJackpotYetiCommander(m);
+    }
+  });
+
   registerSpecies({ // Sand-edge crustacean
     id:'CRAB', max:18, hp:6, dmg:3, speed:2.2, wanderInterval:[1.5,4.5], xp:5, ground:true,
   sightRange: 8, pursueRange: 10,
@@ -348,6 +1865,76 @@ const mobs = (function(){
     habitatUpdate(m, spec, getTile, dt){ enforceAquatic(m, spec, getTile, dt); },
     onUpdate(m,spec,{player,dt}){ // strong pursuit if player in water column horizontally
       const py=Math.floor(player.y); const my=Math.floor(m.y); if(Math.abs(player.x-m.x)<10 && Math.abs(py-my)<3){ const dx=player.x-m.x; const dist=Math.abs(dx)||1; m.vx += (dx/dist)*spec.speed*0.5; m.facing=dx>=0?1:-1; }
+    }
+  });
+
+  registerSpecies({
+    id:'JACKPOT_WHALE', displayName:'Jackpot whale',
+    max:2, localMax:1, spawnChance:0.035,
+    hp:220, dmg:42, speed:3.95, wanderInterval:[2.4,5.4], aquatic:true, strictWater:true, alwaysAggro:true, xp:235,
+    sightRange:30, pursueRange:42,
+    body:{w:4.8,h:1.38},
+    contactInvulMs:650, contactKnockback:3.2, contactKnockbackY:-0.42, contactCause:'jackpot_whale_ram',
+    boatDrag:3.4,
+    biome:'sea',
+    variant:{shift:3, from:'#466d88', to:'#6f9fba'},
+    meat:false,
+    loot:[
+      {item:'fish', min:5, max:12, chance:1},
+      {item:'iridium', min:1, max:2, chance:0.26},
+      {item:'diamond', min:1, max:2, chance:0.34},
+      {item:'alienBiomass', min:1, max:3, chance:0.18}
+    ],
+    spawnTest(x,y,getTile){ return canHostJackpotWhaleSpawn(x,y,getTile); },
+    onCreate(m,spec,getTile){
+      initWaterAnchor(m,getTile);
+      const col=waterColumnAt(Math.floor(m.x),Math.floor(m.y),getTile);
+      if(col) m.desiredDepth=Math.max(2,Math.min(col.depth-2,Math.floor(col.depth*0.62)));
+      m.scale=1.02+Math.random()*0.14;
+      m.speedMul=Math.max(m.speedMul||1,0.88+Math.random()*0.18);
+      m._nextWhaleRamAt=performance.now()+900+Math.random()*1600;
+      m._whaleCharge=0;
+    },
+    habitatUpdate(m,spec,getTile,dt){ enforceAquatic(m,spec,getTile,dt); },
+    onUpdate(m,spec,{player,dt,getTile,speed,now}){
+      const wetHero=heroInSeaWater(player,getTile);
+      const dx=player.x-m.x, dy=(player.y+0.12)-m.y;
+      const dist=Math.hypot(dx,dy)||1;
+      if(wetHero){
+        markHeroAttack(m);
+        m.state='ram';
+        m._whaleCharge=Math.min(1.45,(m._whaleCharge||0)+dt*(dist<12?1.08:0.72));
+        const sp=(speed||spec.speed)*(1+Math.min(0.52,(m._whaleCharge||0)*0.24));
+        m.vx += (dx/dist)*sp*dt*(dist<5?4.0:6.0);
+        m.vy += (dy/dist)*sp*dt*(dist<5?2.6:4.0);
+        m.facing=dx>=0?1:-1;
+        if(getTile){
+          const col=waterColumnAt(Math.floor(m.x),Math.floor(m.y),getTile);
+          if(col) m.desiredDepth=Math.max(1,Math.min(col.depth-2,Math.round((player.y-col.top)+0.6)));
+        }
+        if(dist<JACKPOT_WHALE_RAM_RANGE && now>(m._nextWhaleRamAt||0)){
+          const charge=Math.max(0.7,Math.min(1.45,m._whaleCharge||0.7));
+          markMobAttack(m,'jackpot_whale_ram',{target:player,power:1.8,strikeMs:540});
+          damagePlayer((spec.dmg||36)*(1+charge*0.34)*(m.dmgMult||1),m.x,m.y,'jackpot_whale_ram',spec);
+          m._nextWhaleRamAt=now+JACKPOT_WHALE_RAM_COOLDOWN_MS+Math.random()*1100;
+          m._whaleCharge=0.25;
+          m.shake=Math.max(m.shake||0,1.0);
+          try{ if(MM.water && MM.water.disturb) MM.water.disturb(Math.floor(m.x),420); }catch(e){}
+          try{ if(MM.particles && MM.particles.spawnSplash) MM.particles.spawnSplash(m.x*(MM.TILE||20),m.y*(MM.TILE||20),1.5); }catch(e){}
+        }
+      } else {
+        m.state='cruising';
+        m._whaleCharge=Math.max(0,(m._whaleCharge||0)-dt*0.4);
+        if(Math.random()<0.026){
+          const ang=Math.random()*Math.PI*2;
+          m.vx += Math.cos(ang)*(speed||spec.speed)*0.16;
+          m.vy += Math.sin(ang)*(speed||spec.speed)*0.10;
+        }
+      }
+    },
+    onDeath(m){
+      placeRewardChestNearMob(m, Math.random()<0.32?'epic':'rare', 0.42);
+      releaseJackpotWhaleCommander(m);
     }
   });
 
@@ -506,8 +2093,10 @@ const mobs = (function(){
   });
 
   registerSpecies({ // Deep eel: slower but agile vertical
-    id:'EEL', max:10, hp:10, dmg:5, speed:2.6, wanderInterval:[1.5,4], aquatic:true, xp:11,
-  sightRange: 14, pursueRange: 18,
+    id:'EEL', displayName:'Electric eel',
+    max:10, hp:10, dmg:7, speed:2.8, wanderInterval:[1.5,4], aquatic:true, alwaysAggro:true, xp:14,
+    sightRange: 14, pursueRange: 18,
+    contactInvulMs:380, contactKnockback:1.15, contactKnockbackY:-0.25, contactCause:'eel_shock',
     body:{w:1.2,h:0.35},
     loot:[{item:'stone', min:1, max:1, chance:0.4}],
     spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.WATER) return false; let stone=false; for(let d=2; d<=5; d++){ const t=getTile(x,y+d); if(isRockFloor(t)){ stone=true; break; } if(t!==T.WATER) break; } if(!stone) return false; return true; },
@@ -515,6 +2104,67 @@ const mobs = (function(){
     habitatUpdate(m,spec,getTile,dt){ enforceAquatic(m,spec,getTile,dt); },
     onUpdate(m,spec,{dt}){ // gentle sinusoidal slither
       m.vy += Math.sin(performance.now()*0.004 + m.spawnT*0.002)*0.02; }
+  });
+
+  registerSpecies({
+    id:'LAKE_SERPENT', displayName:'Lake serpent',
+    max:6, localMax:2, spawnChance:0.54,
+    hp:42, dmg:15, speed:4.4, wanderInterval:[1.1,2.8], aquatic:true, strictWater:true, alwaysAggro:true, xp:56,
+    sightRange:24, pursueRange:32,
+    body:{w:2.1,h:0.48},
+    contactInvulMs:420, contactKnockback:1.6, contactKnockbackY:-0.55, contactCause:'lake_serpent_bite',
+    variant:{shift:3, from:'#3b9d8e', to:'#6ae0d2'},
+    loot:[{item:'fish', min:1, max:3, chance:0.74}, {item:'iridium', min:1, max:1, chance:0.08}, {item:'diamond', min:1, max:1, chance:0.10}],
+    spawnTest(x,y,getTile){ return canHostLakeSerpentSpawn(x,y,getTile); },
+    onCreate(m,spec,getTile){
+      initWaterAnchor(m,getTile);
+      const col=waterColumnAt(Math.floor(m.x),Math.floor(m.y),getTile);
+      if(col) m.desiredDepth=Math.max(1,Math.min(col.depth-2,2+Math.floor(Math.random()*3)));
+      m.scale=1.00+Math.random()*0.16;
+      m.speedMul=Math.max(m.speedMul||1,0.92+Math.random()*0.24);
+      m._lakeCharge=0;
+      m._nextShockAt=performance.now()+600+Math.random()*1000;
+    },
+    habitatUpdate(m,spec,getTile,dt){ enforceAquatic(m,spec,getTile,dt); },
+    onUpdate(m,spec,{player,dt,getTile,speed,now}){
+      const wetHero=heroInLakeWater(player,getTile);
+      const dx=player.x-m.x, dy=(player.y+0.08)-m.y;
+      const dist=Math.hypot(dx,dy)||1;
+      if(wetHero){
+        markHeroAttack(m);
+        m.state='charged';
+        m._lakeCharge=Math.min(1.35,(m._lakeCharge||0)+dt*LAKE_SERPENT_CHARGE_RATE*(dist<9?1.16:0.72));
+        const sp=(speed||spec.speed)*(1+Math.min(0.55,m._lakeCharge*0.28));
+        m.vx += (dx/dist)*sp*dt*(dist<2.5?3.2:6.2);
+        m.vy += (dy/dist)*sp*dt*(dist<2.5?2.4:4.6);
+        m.facing=dx>=0?1:-1;
+        if(getTile){
+          const col=waterColumnAt(Math.floor(m.x),Math.floor(m.y),getTile);
+          if(col) m.desiredDepth=Math.max(0,Math.min(col.depth-1,Math.round((player.y-col.top)-0.1)));
+        }
+        if(dist<LAKE_SERPENT_SHOCK_RANGE && now>(m._nextShockAt||0) && (m._lakeCharge>=0.56 || dist<1.45)){
+          const charge=Math.max(0.56,Math.min(1.35,m._lakeCharge||0.56));
+          markMobAttack(m,'lake_serpent_shock',{target:player,power:1.45,strikeMs:420});
+          damagePlayer((spec.dmg||12)*(1+charge*0.38)*(m.dmgMult||1),m.x,m.y,'lake_serpent_shock',spec);
+          m._lakeCharge=0;
+          m._nextShockAt=now+LAKE_SERPENT_SHOCK_COOLDOWN_MS+Math.random()*900;
+          m.shake=Math.max(m.shake||0,0.8);
+          try{ if(MM.water && MM.water.disturb) MM.water.disturb(Math.floor(m.x),260); }catch(e){}
+          try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(m.x*(MM.TILE||20),m.y*(MM.TILE||20),'rare',10); }catch(e){}
+        }
+      } else {
+        m.state='patrol';
+        m._lakeCharge=Math.max(0,(m._lakeCharge||0)-dt*0.6);
+        if(Math.random()<0.035){
+          const ang=Math.random()*Math.PI*2;
+          m.vx += Math.cos(ang)*(speed||spec.speed)*0.20;
+          m.vy += Math.sin(ang)*(speed||spec.speed)*0.14;
+        }
+      }
+    },
+    onDeath(m){
+      placeRewardChestNearMob(m, Math.random()<0.34?'rare':'common', 0.22);
+    }
   });
 
   registerSpecies({ // Mountain goat: high elevation
@@ -525,6 +2175,77 @@ const mobs = (function(){
     loot:[{item:'snow', min:1, max:1, chance:0.3}],
     spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); if(!(isRockFloor(below)||below===T.SNOW)) return false; return y < 18; },
     biome:'mountain'
+  });
+
+  registerSpecies({
+    id:'STONE_GOLEM', displayName:'Stone golem',
+    max:6, localMax:2, spawnChance:0.62, hp:54, dmg:14, speed:2.1, wanderInterval:[2.6,5.8], xp:58, ground:true, organic:false,
+    sightRange:17, pursueRange:25,
+    move:{jumpVel:-4.2, maxClimb:2.2, avoidWater:false},
+    body:{w:1.45,h:1.75},
+    variant:{shift:3, from:'#6f7379', to:'#3c4148'},
+    loot:[{item:'granite', min:2, max:5, chance:0.85}, {item:'basalt', min:1, max:4, chance:0.65}, {item:'obsidian', min:1, max:1, chance:0.26}, {item:'diamond', min:1, max:1, chance:0.16}],
+    meat:false,
+    spawnTest(x,y,getTile){
+      const b=biomeAt(x);
+      if(b!==7 && b!==2) return false;
+      if(readMobTile(getTile,x,y)!==T.AIR || readMobTile(getTile,x,y-1)!==T.AIR) return false;
+      const below=readMobTile(getTile,x,y+1);
+      if(!(isRockFloor(below) || below===T.SNOW || below===T.ICE || below===T.GRANITE || below===T.BASALT || below===T.OBSIDIAN)) return false;
+      return nearMountainMineral(x,y,getTile) || y<18;
+    },
+    biome:'mountain',
+    onCreate(m,spec,getTile){
+      m.scale=1.03+Math.random()*0.16;
+      m.speedMul=0.76+Math.random()*0.18;
+      m.jumpMul=0.80+Math.random()*0.16;
+      m.aimLead=Math.max(m.aimLead||0,0.28+Math.random()*0.18);
+      m.state='dormant';
+      if(typeof getTile==='function'){
+        const floorY=Math.floor(m.y+1);
+        if(isSolidGround(readMobTile(getTile,Math.floor(m.x),floorY))){
+          const bodyH=((spec.body && spec.body.h) || 1) * (m.scale||1);
+          m.y=floorY - bodyH*0.5 - 0.001;
+        }
+      }
+    },
+    onUpdate(m,spec,{player,dt,now,speed,aggressive,getTile}){
+      const sp=speed||spec.speed||2;
+      if(isMobPacified(m,now)){
+        m.vx*=0.45;
+        if(m.onGround) m.vy=0;
+        return;
+      }
+      const dx=player.x-m.x, dy=player.y-m.y;
+      const dist=Math.hypot(dx,dy)||1;
+      const guarding=nearMountainMineral(Math.floor(m.x),Math.floor(m.y),getTile);
+      if(!aggressive && guarding && dist<8.5){
+        markMobTelegraph(m,'throw',{target:player,power:0.95,ms:640});
+        markHeroAttack(m);
+        m.state='waking';
+        m.shake=Math.max(m.shake||0,0.6);
+      }
+      if(aggressive || isHeroFocused(m) || (guarding && dist<7)){
+        const dir=dx>=0?1:-1;
+        m.state=m.state==='cracked'?'cracked':'charging';
+        m.facing=dir;
+        if(dist>STONE_GOLEM_ROCK_MIN_RANGE && dist<STONE_GOLEM_ROCK_RANGE && Math.abs(dy)<8 && now>(m._nextGolemRockAt||0)){
+          if(shootStoneGolemRock(m,player,STONE_GOLEM_ROCK_SPEED,spec.dmg*0.92)){
+            m._nextGolemRockAt=now+STONE_GOLEM_ROCK_COOLDOWN_MS+Math.random()*900;
+          }
+        }
+        m.vx += dir*sp*(dist<4?0.52:0.32)*dt*30;
+        if(m.onGround && now>(m._nextGolemLeapAt||0) && Math.abs(dx)>1.7 && Math.abs(dy)<5){
+          m.vy=(spec.move.jumpVel||-4)*(m.jumpMul||1);
+          m._nextGolemLeapAt=now+1200+Math.random()*900;
+        }
+      } else if(Math.random()<0.004){
+        m.vx += (Math.random()<0.5?-1:1)*0.22;
+      }
+    },
+    onDeath(m){
+      placeRewardChestNearMob(m, Math.random()<0.22?'rare':'common', 0.28);
+    }
   });
 
   registerSpecies({ // Firefly – ambience (low HP) over grass, pulsating
@@ -557,6 +2278,208 @@ const mobs = (function(){
   });
 
   registerSpecies({
+    id:'SAND_WORM', displayName:'Sand worm',
+    max:7, localMax:2, spawnChance:0.72, hp:46, dmg:24, speed:4.35, wanderInterval:[2.0,4.8], xp:54, ground:true,
+    sightRange:18, pursueRange:34,
+    move:{jumpVel:-7.2, maxClimb:1, avoidWater:true},
+    body:{w:1.85,h:0.92},
+    variant:{shift:2, from:'#8d6a34', to:'#c0964b'},
+    contactInvulMs:360, contactKnockback:1.65, contactKnockbackY:-0.9, contactCause:'sand_worm_bite',
+    loot:[{item:'sand', min:4, max:8, chance:1}, {item:'diamond', min:1, max:1, chance:0.28}, {item:'obsidian', min:1, max:1, chance:0.16}],
+    meatDropChance:1,
+    spawnTest(x,y,getTile){
+      if(biomeAt(x)!==3) return false;
+      return sandWormDeepSandAt(x,y,getTile);
+    },
+    biome:'desert',
+    onCreate(m){
+      m.state='buried';
+      m.scale=1.02+Math.random()*0.18;
+      m.speedMul=0.92+Math.random()*0.20;
+      m.jumpMul=1.05+Math.random()*0.20;
+      m.aimLead=Math.max(m.aimLead||0,0.88+Math.random()*0.16);
+      sandWormWakeRadius(m);
+    },
+    onUpdate(m,spec,{player,dt,now,speed,getTile,setTile,aggressive}){
+      const sp=speed||spec.speed||3;
+      const bait=nearestSandWormBait(m,getTile,now);
+      if(bait){
+        const dx=bait.x-m.x, dy=bait.y-m.y;
+        const dist=Math.hypot(dx,dy)||1;
+        m.state='baited';
+        m.facing=dx>=0?1:-1;
+        if(dist<1.25){
+          if(consumeSandWormBait(bait,getTile,setTile)){
+            pacifySandWorm(m,'meat',now);
+            try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20),m.y*(MM.TILE||20),'common'); }catch(e){}
+          }
+          return;
+        }
+        m.vx += (dx/dist)*sp*0.48*dt*30;
+        if(m.onGround && now>(m._nextWormJumpAt||0) && Math.abs(dx)>1.4){
+          m.vy=(spec.move.jumpVel||-6)*(m.jumpMul||1)*0.72;
+          m._nextWormJumpAt=now+900+Math.random()*700;
+        }
+        return;
+      }
+      if(isMobPacified(m,now)){
+        if(m._pacifiedReason==='water'){
+          const sx=finiteCoord(m._pacifySourceX) ? m._pacifySourceX : (player ? player.x : m.x-(m.facing||1));
+          const away=(m.x-sx)>=0 ? 1 : -1;
+          m.facing=away;
+          if(sandWormCanBurrowAt(m,getTile)){
+            m.state='buried';
+            m.vx*=0.10;
+            m.vy=Math.min(m.vy||0,0);
+            if(now>(m._waterBurrowFxAt||0)){
+              m._waterBurrowFxAt=now+750;
+              try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20),(m.y+0.35)*(MM.TILE||20),'common'); }catch(e){}
+            }
+          }else{
+            m.state='doused';
+            m.vx += away*sp*dt*20;
+            if(m.onGround && now>(m._nextWormJumpAt||0)){
+              m.vy=(spec.move.jumpVel||-7.2)*(m.jumpMul||1)*0.52;
+              m._nextWormJumpAt=now+620+Math.random()*520;
+            }
+          }
+          return;
+        }
+        m.vx*=0.62;
+        if(m.onGround) m.vy=0;
+        if(Math.random()<0.012) m.state='buried';
+        return;
+      }
+      const dx=player.x-m.x, dy=player.y-m.y;
+      const dist=Math.hypot(dx,dy)||1;
+      const close=sandWormWakeClose(m,player);
+      if(m.state==='buried'){
+        m.vx*=0.28;
+        m.vy=Math.min(m.vy||0,0);
+        if(close){
+          m.state='ambush';
+          m.facing=dx>=0?1:-1;
+          markMobTelegraph(m,'bite',{target:player,power:1.25,ms:420});
+          m.vx+=(dx/dist)*sp*2.1;
+          m.vy=(spec.move.jumpVel||-7.2)*(m.jumpMul||1);
+          setAggro(m.id);
+          try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20),(m.y+0.35)*(MM.TILE||20),'common'); }catch(e){}
+        }
+        return;
+      }
+      if(m.state==='circling'){
+        m.vx*=0.12;
+        m.vy=Math.min(m.vy||0,0);
+        if(now>(m._wormCircleAt||0)){
+          if(!sandWormFinishCircle(m,player,getTile,now,sp)) m.state='ambush';
+        }
+        return;
+      }
+      if(close || aggressive || dist<SAND_WORM_ALERT_RADIUS) setAggro(m.id);
+      const heroMovingAway = Math.sign(player.vx||0)===Math.sign(dx) && Math.abs(player.vx||0)>2.4;
+      const canCircle = dist>SAND_WORM_CIRCLE_DIST && dist<SAND_WORM_SPIT_RANGE+8 && now>(m._wormCircleCooldownUntil||0) && sandWormCanBurrowAt(m,getTile);
+      if((aggressive || m.state==='ambush') && canCircle && (heroMovingAway || Math.abs(dx)>SAND_WORM_CIRCLE_DIST+2)){
+        if(sandWormStartCircle(m,player,now,getTile)) return;
+      }
+      const airborne=sandWormHeroAirborne(player,getTile);
+      if((aggressive || m.state==='ambush') && airborne && dist>SAND_WORM_SPIT_MIN_RANGE && dist<SAND_WORM_SPIT_RANGE && Math.abs(dy)<10 && now>(m._nextWormSpitAt||0)){
+        m.facing=dx>=0?1:-1;
+        if(shootSandWormSpit(m,player,SAND_WORM_SPIT_SPEED,spec.dmg*0.72)){
+          m.state='spit';
+          m._nextWormSpitAt=now+SAND_WORM_SPIT_COOLDOWN_MS+Math.random()*900;
+        }
+      }
+      if(aggressive || dist<SAND_WORM_ALERT_RADIUS){
+        const dir=dx>=0?1:-1;
+        m.facing=dir;
+        m.vx += dir*sp*(dist<5?1.05:0.68)*dt*30;
+        if(m.onGround && now>(m._nextWormJumpAt||0)){
+          m.vy=(spec.move.jumpVel||-7.2)*(m.jumpMul||1)*(dist<5?1.12:0.94);
+          m._nextWormJumpAt=now+420+Math.random()*620;
+        }
+      } else if(m.onGround && Math.random()<0.008){
+        m.state='buried';
+        m.vx*=0.2;
+      }
+    },
+    onDeath(m){
+      placeRewardChestNearMob(m, Math.random()<0.16?'rare':'common', 0.32);
+    }
+  });
+
+  registerSpecies({
+    id:'GIANT_SCORPION', displayName:'Giant scorpion',
+    max:3, localMax:1, spawnChance:0.075, hp:126, dmg:31, speed:3.95, wanderInterval:[2.2,5.2], xp:155, ground:true,
+    sightRange:20, pursueRange:34, alwaysAggro:true,
+    move:{jumpVel:-5.7, maxClimb:2, avoidWater:true},
+    body:{w:2.35,h:1.10},
+    variant:{shift:2, from:'#5c3525', to:'#a35a31'},
+    contactInvulMs:520, contactKnockback:2.1, contactKnockbackY:-0.95, contactCause:'giant_scorpion_claw',
+    loot:[
+      {item:'sand', min:8, max:16, chance:1},
+      {item:'obsidian', min:1, max:2, chance:0.42},
+      {item:'diamond', min:1, max:1, chance:0.24},
+      {item:'alienBiomass', min:1, max:2, chance:0.14}
+    ],
+    meatDropChance:0.15,
+    spawnTest(x,y,getTile){ return giantScorpionSpawnCell(x,y,getTile); },
+    biome:'desert',
+    onCreate(m){
+      m.state='stalking';
+      m.scale=1.04+Math.random()*0.16;
+      m.speedMul=Math.max(m.speedMul||1,0.96+Math.random()*0.20);
+      m.jumpMul=Math.max(m.jumpMul||1,0.98+Math.random()*0.18);
+      m._nextScorpionStingAt=performance.now()+900+Math.random()*1400;
+      m._nextScorpionLungeAt=performance.now()+700+Math.random()*1100;
+    },
+    onUpdate(m,spec,{player,dt,now,speed,aggressive,getTile}){
+      const sp=speed||spec.speed||3.6;
+      const dx=player.x-m.x, dy=player.y-m.y;
+      const dist=Math.hypot(dx,dy)||1;
+      const dir=dx>=0?1:-1;
+      m.facing=dir;
+      if(getTile && readMobTile(getTile,Math.floor(m.x+dir*0.9),Math.floor(m.y+0.55))===T.WATER){
+        m.state='retreat';
+        m.vx -= dir*sp*dt*20;
+        return;
+      }
+      if(dist<GIANT_SCORPION_STING_RANGE && now>(m._nextScorpionStingAt||0)){
+        m.state='sting';
+        m.shake=Math.max(m.shake||0,0.55);
+        markMobAttack(m,'giant_scorpion_sting',{target:player,power:1.55,strikeMs:460});
+        damagePlayer(spec.dmg*0.82*(m.dmgMult||1),m.x+dir*0.55,m.y-0.25,'giant_scorpion_sting',spec);
+        m._nextScorpionStingAt=now+GIANT_SCORPION_STING_COOLDOWN_MS+Math.random()*900;
+        m._nextScorpionLungeAt=Math.max(m._nextScorpionLungeAt||0,now+650);
+        return;
+      }
+      if((aggressive || dist<spec.sightRange) && dist<9.5 && dist>2.2 && m.onGround && now>(m._nextScorpionLungeAt||0)){
+        m.state='lunge';
+        markMobTelegraph(m,'sting',{target:player,power:1.20,ms:420});
+        m.vx += dir*sp*1.75;
+        m.vy=(spec.move.jumpVel||-5.7)*(m.jumpMul||1)*0.66;
+        m.shake=Math.max(m.shake||0,0.24);
+        m._nextScorpionLungeAt=now+GIANT_SCORPION_LUNGE_COOLDOWN_MS+Math.random()*950;
+        return;
+      }
+      if(aggressive || dist<spec.sightRange){
+        m.state=dist<4.2?'menace':'stalking';
+        m.vx += dir*sp*(dist<5?0.72:0.44)*dt*30;
+        if(m.onGround && now>(m._nextScorpionHopAt||0) && Math.abs(dx)>1.6){
+          m.vy=(spec.move.jumpVel||-5.7)*(m.jumpMul||1)*0.38;
+          m._nextScorpionHopAt=now+950+Math.random()*1050;
+        }
+      } else if(m.onGround && Math.random()<0.006){
+        m.state='waiting';
+        m.vx += (Math.random()<0.5?-1:1)*sp*0.24;
+      }
+    },
+    onDeath(m){
+      placeRewardChestNearMob(m, Math.random()<0.22?'epic':'rare', 0.34);
+      releaseGiantScorpionCommander(m);
+    }
+  });
+
+  registerSpecies({
     id:'ZABA', max:18, hp:5, dmg:1, speed:3.0, wanderInterval:[0.8,2.0], xp:6, ground:true,
     sightRange:10, pursueRange:14,
     move:{jumpVel:-5.4, maxClimb:1, avoidWater:false},
@@ -584,6 +2507,135 @@ const mobs = (function(){
         m.vy=(spec.move.jumpVel||-5)*(0.75+Math.random()*0.35);
         m._nextJumpAt=now+700+Math.random()*900;
       }
+    }
+  });
+
+  registerSpecies({
+    id:'BOG_LURKER', displayName:'Bog lurker',
+    max:9, localMax:3, spawnChance:0.68, hp:28, dmg:8, speed:2.85, wanderInterval:[1.6,3.8], xp:38, ground:true,
+    sightRange:15, pursueRange:22,
+    move:{jumpVel:-4.9, maxClimb:1.4, avoidWater:false},
+    body:{w:1.25,h:0.95},
+    variant:{shift:3, from:'#384f2f', to:'#607242'},
+    contactInvulMs:420, contactKnockback:0.85, contactKnockbackY:-0.65, contactCause:'bog_poison',
+    loot:[{item:'clay', min:2, max:5, chance:0.9}, {item:'glowshroom', min:1, max:2, chance:0.42}, {item:'leaf', min:1, max:3, chance:0.52}],
+    meat:false,
+    spawnTest(x,y,getTile){
+      if(biomeAt(x)!==4) return false;
+      if(readMobTile(getTile,x,y)!==T.AIR || readMobTile(getTile,x,y-1)!==T.AIR) return false;
+      const below=readMobTile(getTile,x,y+1);
+      if(!(below===T.MUD || below===T.WET_CLAY || below===T.CLAY || below===T.GRASS)) return false;
+      return nearSwampWater(x,y,getTile);
+    },
+    biome:'swamp',
+    onCreate(m){
+      m.state='submerged';
+      m.scale=0.96+Math.random()*0.16;
+      m.speedMul=0.82+Math.random()*0.22;
+    },
+    onUpdate(m,spec,{player,dt,now,speed,getTile,aggressive}){
+      const sp=speed||spec.speed||2.8;
+      if(hasStatus(m,'burn') || nearTorch(Math.floor(m.x),Math.floor(m.y),getTile,BOG_LURKER_TORCH_RADIUS)){
+        pacifyMob(m,BOG_LURKER_CALM_MS,'fire',now);
+        m.state='smoked';
+      }
+      if(isMobPacified(m,now)){
+        m.vx*=0.55;
+        if(m.onGround) m.vy=0;
+        return;
+      }
+      const dx=player.x-m.x, dy=player.y-m.y;
+      const dist=Math.hypot(dx,dy)||1;
+      const sloppy=heroInMuck(player,getTile);
+      if(!aggressive && sloppy && dist<9.5){
+        markHeroAttack(m);
+        m.state='ambush';
+        m.facing=dx>=0?1:-1;
+        m.vx+=(dx/dist)*sp*0.95;
+        if(m.onGround && now>(m._nextBogLeapAt||0)){
+          m.vy=(spec.move.jumpVel||-4.8)*(m.jumpMul||1);
+          m._nextBogLeapAt=now+900+Math.random()*650;
+        }
+      }
+      if(aggressive || isHeroFocused(m) || (sloppy && dist<8)){
+        const dir=dx>=0?1:-1;
+        m.facing=dir;
+        m.vx += dir*sp*(dist<4?0.54:0.34)*dt*30;
+        if(m.onGround && now>(m._nextBogLeapAt||0) && Math.abs(dx)>1.1){
+          m.vy=(spec.move.jumpVel||-4.8)*(m.jumpMul||1)*(dist<4?1:0.75);
+          m._nextBogLeapAt=now+750+Math.random()*800;
+        }
+      } else if(m.onGround && Math.random()<0.007){
+        m.state='submerged';
+        m.vx*=0.25;
+      }
+    },
+    onDeath(m){
+      placeRewardChestNearMob(m, Math.random()<0.18?'rare':'common', 0.20);
+    }
+  });
+
+  registerSpecies({
+    id:'TEMPLE_GUARD', displayName:'Temple guard',
+    max:12, localMax:4, spawnChance:0.58, spawnBatch:2, hp:30, dmg:9, speed:3.0, wanderInterval:[1.4,3.6], xp:32, ground:true, organic:false,
+    sightRange:18, pursueRange:25,
+    move:{jumpVel:-4.8, maxClimb:2, avoidWater:false},
+    body:{w:0.92,h:1.55},
+    variant:{shift:2, from:'#4b7d43', to:'#9a7740'},
+    loot:[{item:'wood', min:1, max:3, chance:0.85}, {item:'obsidian', min:1, max:1, chance:0.28}, {item:'diamond', min:1, max:1, chance:0.22}],
+    spawnTest(x,y,getTile){
+      const b=biomeAt(x);
+      if(b!==0 && b!==4) return false;
+      if(readMobTile(getTile,x,y)!==T.AIR || readMobTile(getTile,x,y-1)!==T.AIR) return false;
+      const below=readMobTile(getTile,x,y+1);
+      if(!(below===T.GRASS || below===T.MUD || below===T.STONE || below===T.OBSIDIAN || below===T.WOOD)) return false;
+      return nearTempleStructure(x,y,getTile);
+    },
+    biome:'jungle',
+    onCreate(m){
+      m.homeX=m.x;
+      m.homeY=m.y;
+      m.scale=0.96+Math.random()*0.13;
+      m.speedMul=0.86+Math.random()*0.20;
+    },
+    onUpdate(m,spec,{player,dt,now,speed,aggressive,getTile}){
+      const sp=speed||spec.speed||3;
+      const dx=player.x-m.x, dy=player.y-m.y;
+      const dist=Math.hypot(dx,dy)||1;
+      if(!aggressive){
+        const homeX=finiteCoord(m.homeX)?m.homeX:m.x;
+        const homeDx=homeX-m.x;
+        if(dist<3.1 && nearTempleStructure(Math.floor(m.x),Math.floor(m.y),getTile)){
+          m.state='warning';
+          m.facing=dx>=0?1:-1;
+          m.vx += (dx>=0?-1:1)*sp*0.10*dt*30;
+          return;
+        }
+        m.state='patrol';
+        if(Math.abs(homeDx)>4) m.vx += Math.sign(homeDx)*sp*0.20*dt*30;
+        else if(now>(m._nextGuardPaceAt||0)){
+          m._nextGuardPaceAt=now+900+Math.random()*1600;
+          m.vx += (Math.random()<0.5?-1:1)*sp*0.24;
+        }
+        m.facing=(Math.abs(homeDx)>0.4?homeDx:m.vx)>=0?1:-1;
+        return;
+      }
+      if((m.state==='relic_alarm' || m.state==='structure_alarm') && finiteCoord(m.templeAlarmX) && dist>1.4 && Math.hypot((m.templeAlarmX||m.x)-m.x,(m.templeAlarmY||m.y)-m.y)>1.4){
+        const ax=m.templeAlarmX-m.x, ay=(m.templeAlarmY||m.y)-m.y;
+        const ad=Math.hypot(ax,ay)||1;
+        m.vx += (ax/ad)*sp*0.12*dt*30;
+      }
+      const dir=dx>=0?1:-1;
+      m.facing=dir;
+      if(dist>1.2) m.vx += dir*sp*(dist<4?0.62:0.38)*dt*30;
+      else m.vx*=0.55;
+      if(m.onGround && now>(m._nextGuardLeapAt||0) && Math.abs(dx)>1.4 && Math.abs(dy)<5){
+        m.vy=(spec.move.jumpVel||-4.6)*(m.jumpMul||1);
+        m._nextGuardLeapAt=now+850+Math.random()*650;
+      }
+    },
+    onDeath(m){
+      placeRewardChestNearMob(m, Math.random()<0.12?'epic':'rare', 0.22);
     }
   });
 
@@ -827,6 +2879,7 @@ const mobs = (function(){
     const dx=aim.x-m.x, dy=aim.y-m.y;
     const d=Math.hypot(dx,dy)||1;
     mobProjectiles.push({x:m.x, y:m.y-0.4, vx:dx/d*shotSpeed, vy:dy/d*shotSpeed-1.4, dmg:dmg*(m.dmgMult||1), t:0, spin:Math.random()*6.28, lead:m.aimLead||0});
+    markMobAttack(m,'throw',{target,power:0.9});
     try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
     return true;
   }
@@ -997,6 +3050,7 @@ const mobs = (function(){
     const clearLines=shotLines.filter(l=>l && l.end && l.end.clear);
     if(!clearLines.length) return false;
     const impacts=[];
+    markMobAttack(m,'laser',{target,power:1.1,strikeMs:300});
     for(const line of clearLines){
       const o=line.origin, end=line.end;
       if(!o || !end) continue;
@@ -1039,20 +3093,21 @@ const mobs = (function(){
     sentinelVolleyShots++;
     return true;
   }
-  function updateProjectiles(dt, player, getTile){
+  function updateProjectiles(dt, player, getTile, setTile){
     for(let i=mobProjectiles.length-1;i>=0;i--){
       const pr=mobProjectiles[i];
-      pr.t+=dt; pr.vy+=9*dt; applyWindToMobProjectile(pr,dt,getTile); pr.x+=pr.vx*dt; pr.y+=pr.vy*dt; pr.spin+=dt*8;
+      pr.t+=dt; pr.vy+=(finiteNum(pr.gravity)?pr.gravity:9)*dt; applyWindToMobProjectile(pr,dt,getTile); pr.x+=pr.vx*dt; pr.y+=pr.vy*dt; pr.spin+=dt*8;
       let dead=pr.t>4;
       if(!dead){
         const cmp=nearestCompanionTarget(pr.x,pr.y,0.75);
-        if(cmp && damageCompanionTarget(cmp,pr.dmg,pr.x-pr.vx*0.08,pr.y-pr.vy*0.08,'mob_projectile')) dead=true;
+        if(cmp && damageCompanionTarget(cmp,pr.dmg,pr.x-pr.vx*0.08,pr.y-pr.vy*0.08,pr.cause||'mob_projectile')) dead=true;
       }
-      if(!dead && player && Math.abs(player.x-pr.x)<0.6 && Math.abs(player.y-pr.y)<0.8){
-        damagePlayer(pr.dmg, pr.x, pr.y); dead=true;
+      const hitRadius=finiteNum(pr.radius) ? Math.max(0.35,Math.min(1.2,pr.radius)) : 0.6;
+      if(!dead && player && Math.abs(player.x-pr.x)<hitRadius && Math.abs(player.y-pr.y)<hitRadius+0.2){
+        damagePlayer(pr.dmg, pr.x, pr.y, pr.cause||'mob_projectile', SPECIES[pr.ownerId]); dead=true;
       }
       if(!dead && getTile){ const tt=getTile(Math.floor(pr.x),Math.floor(pr.y)); if(tt!==T.WATER && isSolid(tt)) dead=true; }
-      if(dead) mobProjectiles.splice(i,1);
+      if(dead){ dragonBreathImpact(pr,getTile,setTile); mobProjectiles.splice(i,1); }
     }
   }
   function updateLasers(dt){
@@ -1099,6 +3154,206 @@ const mobs = (function(){
       return false;
     },
     biome:'any'
+  });
+
+  registerSpecies({
+    id:'GOLD_DRAGON', displayName:'Gold dragon',
+    max:2, localMax:1, spawnChance:0, hp:210, dmg:38, speed:2.95, wanderInterval:[2.2,5.0], xp:285, ground:true, alwaysAggro:true,
+    sightRange:24, pursueRange:40,
+    move:{jumpVel:-4.8, maxClimb:2.2, avoidWater:true},
+    body:{w:3.35,h:2.35},
+    variant:{shift:2, from:'#8b5a2d', to:'#d0913b'},
+    contactInvulMs:640, contactKnockback:2.75, contactKnockbackY:-1.18, contactCause:'gold_dragon_claw',
+    loot:[
+      {item:'gold', min:10, max:22, chance:1},
+      {item:'diamond', min:1, max:3, chance:0.46},
+      {item:'obsidian', min:2, max:6, chance:0.64},
+      {item:'coal', min:4, max:10, chance:0.72}
+    ],
+    meat:false,
+    spawnTest(x,y,getTile){ return goldDragonSpawnCell(x,y,getTile); },
+    biome:'any',
+    onCreate(m,spec,getTile){
+      m.state='hoard';
+      m.scale=1.02+Math.random()*0.12;
+      m.speedMul=Math.max(m.speedMul||1,0.76+Math.random()*0.16);
+      m.jumpMul=Math.max(m.jumpMul||1,0.82+Math.random()*0.16);
+      m.aimLead=Math.max(m.aimLead||0,0.52+Math.random()*0.20);
+      m._nextDragonBreathAt=performance.now()+900+Math.random()*1100;
+      m._nextDragonGasAt=performance.now()+450+Math.random()*1400;
+      m._nextDragonBiteAt=performance.now()+700+Math.random()*1000;
+      if(!finiteCoord(m.guardGoldX) && typeof getTile==='function'){
+        const cx=Math.floor(m.x), cy=Math.floor(m.y);
+        let best=null, bd=Infinity;
+        for(let dy=-GOLD_GUARD_CLUSTER_RY; dy<=GOLD_GUARD_CLUSTER_RY; dy++){
+          for(let dx=-GOLD_GUARD_CLUSTER_RX; dx<=GOLD_GUARD_CLUSTER_RX; dx++){
+            const gx=cx+dx, gy=cy+dy;
+            if(readMobTile(getTile,gx,gy)!==T.GOLD_ORE) continue;
+            const d2=dx*dx+dy*dy;
+            if(d2<bd){ best={x:gx+0.5,y:gy+0.5,key:goldGuardKeyFor(gx,gy)}; bd=d2; }
+          }
+        }
+        if(best){
+          m.guardGoldX=best.x;
+          m.guardGoldY=best.y;
+          m.goldGuardKey=best.key;
+        }
+      }
+      m.homeX=finiteCoord(m.homeX)?m.homeX:m.x;
+      m.homeY=finiteCoord(m.homeY)?m.homeY:m.y;
+    },
+    onUpdate(m,spec,{player,dt,now,speed,aggressive,getTile,setTile,distToPlayer}){
+      const sp=speed||spec.speed||3;
+      const dx=player.x-m.x, dy=player.y-m.y;
+      const dist=Math.hypot(dx,dy)||1;
+      const dir=dx>=0?1:-1;
+      const homeX=finiteCoord(m.guardGoldX)?m.guardGoldX:(finiteCoord(m.homeX)?m.homeX:m.x);
+      const homeY=finiteCoord(m.guardGoldY)?m.guardGoldY:(finiteCoord(m.homeY)?m.homeY:m.y);
+      const farHome=Math.hypot(m.x-homeX,m.y-homeY)>18;
+      m.facing=dir;
+      if(dist<GOLD_DRAGON_BREATH_RANGE+2 || aggressive || distToPlayer<spec.sightRange) setAggro(m.id);
+      if(dist>GOLD_DRAGON_BREATH_MIN_RANGE && dist<GOLD_DRAGON_BREATH_RANGE && Math.abs(dy)<8.5 && now>(m._nextDragonBreathAt||0)){
+        m.state='breath';
+        if(shootGoldDragonBreath(m,player,12.8,spec.dmg*0.76,getTile,setTile)){
+          m._nextDragonBreathAt=now+GOLD_DRAGON_BREATH_COOLDOWN_MS*Math.max(0.58,Math.min(1.2,m.attackCdMult||1))+Math.random()*850;
+          m._nextDragonGasAt=Math.min(m._nextDragonGasAt||Infinity,now+180);
+        }
+      } else if((aggressive || dist<10.5) && now>(m._nextDragonGasAt||0)){
+        m.state='gas';
+        const mouthX=m.x+dir*1.15;
+        const mouthY=m.y-0.85;
+        addGoldDragonGas(mouthX,mouthY,getTile,setTile,0.74,3);
+        addGoldDragonGas(m.x,m.y-0.35,getTile,setTile,0.44,2);
+        m._nextDragonGasAt=now+GOLD_DRAGON_GAS_COOLDOWN_MS*Math.max(0.6,Math.min(1.2,m.attackCdMult||1))+Math.random()*1200;
+        markMobTelegraph(m,'gold_dragon_fire',{target:player,power:1.15,ms:380});
+      }
+      if(dist<2.85 && now>(m._nextDragonBiteAt||0)){
+        m.state='claw';
+        markMobAttack(m,'gold_dragon_claw',{target:player,power:1.85,strikeMs:540});
+        damagePlayer(spec.dmg*1.08*(m.dmgMult||1),m.x+dir*0.95,m.y-0.55,'gold_dragon_claw',spec);
+        m._nextDragonBiteAt=now+1750*Math.max(0.58,Math.min(1.2,m.attackCdMult||1))+Math.random()*900;
+      }
+      if(farHome && dist>5){
+        const hx=homeX-m.x, hy=homeY-m.y, hd=Math.hypot(hx,hy)||1;
+        m.state='return';
+        m.facing=hx>=0?1:-1;
+        m.vx+=(hx/hd)*sp*0.38*dt*30;
+        if(Math.abs(hy)>2.2 && m.onGround) m.vy=(spec.move.jumpVel||-4.8)*(m.jumpMul||1)*0.72;
+        return;
+      }
+      if(aggressive || dist<spec.sightRange){
+        m.state=m.state==='breath' || m.state==='gas' || m.state==='claw' ? m.state : 'guarding';
+        m.vx += dir*sp*(dist<5?0.46:0.30)*dt*30;
+        if(m.onGround && Math.abs(dx)>2.1 && Math.abs(dy)<5 && now>(m._nextDragonStepAt||0)){
+          m.vy=(spec.move.jumpVel||-4.8)*(m.jumpMul||1)*0.62;
+          m._nextDragonStepAt=now+1200+Math.random()*900;
+        }
+      } else {
+        const hx=(homeX+Math.sin(now*0.0012+m.spawnT)*2.2)-m.x;
+        m.vx += Math.max(-1,Math.min(1,hx))*sp*0.10*dt*30;
+        if(Math.random()<0.004) m.state='hoard';
+      }
+    },
+    onDeath(m){
+      placeRewardChestNearMob(m,'epic',0.52);
+    }
+  });
+
+  registerSpecies({
+    id:'GOLD_DWARF_GUARD', displayName:'Gold dwarf guard',
+    max:12, localMax:4, spawnChance:0, hp:76, dmg:22, speed:3.15, wanderInterval:[1.4,3.6], xp:88, ground:true, alwaysAggro:true,
+    sightRange:18, pursueRange:30,
+    move:{jumpVel:-4.9, maxClimb:2.2, avoidWater:true},
+    body:{w:0.95,h:1.28},
+    variant:{shift:2, from:'#6d5140', to:'#b57b3c'},
+    contactInvulMs:520, contactKnockback:1.65, contactKnockbackY:-0.88, contactCause:'gold_dwarf_axe',
+    loot:[
+      {item:'gold', min:3, max:8, chance:0.92},
+      {item:'coal', min:1, max:4, chance:0.55},
+      {item:'steel', min:1, max:2, chance:0.24},
+      {item:'diamond', min:1, max:1, chance:0.12}
+    ],
+    meat:false,
+    spawnTest(x,y,getTile){ return goldDwarfSpawnCell(x,y,getTile); },
+    biome:'any',
+    onCreate(m,spec,getTile){
+      m.state='guard';
+      m.scale=0.92+Math.random()*0.16;
+      m.speedMul=Math.max(m.speedMul||1,0.92+Math.random()*0.18);
+      m.jumpMul=Math.max(m.jumpMul||1,0.92+Math.random()*0.18);
+      m.aimLead=Math.max(m.aimLead||0,0.32+Math.random()*0.18);
+      m._nextDwarfHammerAt=performance.now()+650+Math.random()*900;
+      m._nextDwarfPickAt=performance.now()+900+Math.random()*1300;
+      if(!finiteCoord(m.guardGoldX) && typeof getTile==='function'){
+        const cx=Math.floor(m.x), cy=Math.floor(m.y);
+        let best=null, bd=Infinity;
+        for(let dy=-GOLD_GUARD_CLUSTER_RY; dy<=GOLD_GUARD_CLUSTER_RY; dy++){
+          for(let dx=-GOLD_GUARD_CLUSTER_RX; dx<=GOLD_GUARD_CLUSTER_RX; dx++){
+            const gx=cx+dx, gy=cy+dy;
+            if(readMobTile(getTile,gx,gy)!==T.GOLD_ORE) continue;
+            const d2=dx*dx+dy*dy;
+            if(d2<bd){ best={x:gx+0.5,y:gy+0.5,key:goldGuardKeyFor(gx,gy)}; bd=d2; }
+          }
+        }
+        if(best){
+          m.guardGoldX=best.x;
+          m.guardGoldY=best.y;
+          m.goldGuardKey=best.key;
+        }
+      }
+      m.homeX=finiteCoord(m.homeX)?m.homeX:m.x;
+      m.homeY=finiteCoord(m.homeY)?m.homeY:m.y;
+    },
+    onUpdate(m,spec,{player,dt,now,speed,aggressive,distToPlayer}){
+      const sp=speed||spec.speed||3;
+      const dx=player.x-m.x, dy=player.y-m.y;
+      const dist=Math.hypot(dx,dy)||1;
+      const dir=dx>=0?1:-1;
+      const homeX=finiteCoord(m.guardGoldX)?m.guardGoldX:(finiteCoord(m.homeX)?m.homeX:m.x);
+      const homeY=finiteCoord(m.guardGoldY)?m.guardGoldY:(finiteCoord(m.homeY)?m.homeY:m.y);
+      const farHome=Math.hypot(m.x-homeX,m.y-homeY)>14;
+      m.facing=dir;
+      if(aggressive || distToPlayer<spec.sightRange || dist<11) setAggro(m.id);
+      if(dist<GOLD_DWARF_HAMMER_RANGE && now>(m._nextDwarfHammerAt||0)){
+        m.state='hammer';
+        markMobAttack(m,'gold_dwarf_hammer',{target:player,power:1.55,strikeMs:430});
+        damagePlayer(spec.dmg*1.12*(m.dmgMult||1),m.x+dir*0.45,m.y-0.35,'gold_dwarf_hammer',spec);
+        m._nextDwarfHammerAt=now+GOLD_DWARF_HAMMER_COOLDOWN_MS*Math.max(0.6,Math.min(1.2,m.attackCdMult||1))+Math.random()*720;
+        m._nextDwarfPickAt=Math.max(m._nextDwarfPickAt||0,now+540);
+        try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(m.x*(MM.TILE||20),(m.y-0.2)*(MM.TILE||20),'common',6); }catch(e){}
+        return;
+      }
+      if((aggressive || dist<spec.sightRange) && dist>3.0 && dist<GOLD_DWARF_PICK_RANGE && Math.abs(dy)<5.5 && now>(m._nextDwarfPickAt||0)){
+        m.state='throw';
+        if(shootGoldDwarfPick(m,player,10.3,spec.dmg*0.56)){
+          m._nextDwarfPickAt=now+GOLD_DWARF_PICK_COOLDOWN_MS*Math.max(0.62,Math.min(1.2,m.attackCdMult||1))+Math.random()*850;
+        }
+      }
+      if(farHome && dist>4){
+        const hx=homeX-m.x, hy=homeY-m.y, hd=Math.hypot(hx,hy)||1;
+        m.state='return';
+        m.facing=hx>=0?1:-1;
+        m.vx+=(hx/hd)*sp*0.58*dt*30;
+        if(Math.abs(hy)>1.8 && m.onGround) m.vy=(spec.move.jumpVel||-4.9)*(m.jumpMul||1)*0.66;
+        return;
+      }
+      if(aggressive || dist<spec.sightRange){
+        m.state=dist<4.2?'threat':'rush';
+        m.vx += dir*sp*(dist<4.5?0.74:0.48)*dt*30;
+        if(m.onGround && dist>2.1 && dist<8.5 && now>(m._nextDwarfLeapAt||0)){
+          markMobTelegraph(m,'gold_dwarf_hammer',{target:player,power:1.15,ms:420});
+          m.vx += dir*sp*0.95;
+          m.vy=(spec.move.jumpVel||-4.9)*(m.jumpMul||1)*0.82;
+          m._nextDwarfLeapAt=now+1150+Math.random()*900;
+        }
+      } else {
+        const patrol=(homeX+Math.sin(now*0.0018+m.spawnT)*2.4)-m.x;
+        m.vx += Math.max(-1,Math.min(1,patrol))*sp*0.18*dt*30;
+      }
+    },
+    onDeath(m){
+      placeRewardChestNearMob(m, Math.random()<0.22?'rare':'common', 0.30);
+    }
   });
 
   registerSpecies({ // Rusted city sentinel: steel automaton still guarding the ruins
@@ -1186,6 +3441,78 @@ const mobs = (function(){
         if(Math.random()<0.003) m.vx += (Math.random()*2-1)*0.25;
       }
       if(Math.random()<0.006) m.vx += (Math.random()*2-1)*0.35;
+    }
+  });
+
+  registerSpecies({
+    id:'RADIATION_COCKROACH', displayName:'Radiation cockroach',
+    max:46, localMax:10, spawnChance:0.22, spawnBatch:2,
+    hp:9, dmg:18, speed:5.8, wanderInterval:[0.5,1.4], xp:18, ground:true, alwaysAggro:true,
+    sightRange:16, pursueRange:24,
+    move:{jumpVel:-4.6, maxClimb:1, avoidWater:false},
+    body:{w:0.78,h:0.38},
+    meat:false,
+    contactInvulMs:360, contactKnockback:1.45, contactKnockbackY:-0.75, contactCause:'radiation_cockroach',
+    loot:[{item:'alienBiomass', min:1, max:1, chance:0.10}, {item:'radioactiveOre', min:1, max:1, chance:0.08}],
+    variant:{shift:2, from:'#79cf42', to:'#c9f46b'},
+    spawnTest(x,y,getTile){ return radiationCockroachSpawnCell(x,y,getTile); },
+    biome:'city',
+    onCreate(m){
+      m.scale=0.82+Math.random()*0.22;
+      m.speedMul=Math.max(m.speedMul||1,1.04+Math.random()*0.28);
+    },
+    onUpdate(m,spec,{player,dt,now,speed}){
+      const dx=player.x-m.x, dy=player.y-m.y;
+      const d=Math.hypot(dx,dy)||1;
+      if(d<spec.pursueRange){
+        m.vx += (dx/d)*(speed||spec.speed)*dt*(d<3?6.5:4.8);
+        if(Math.abs(dy)>0.8) m.vy += (dy/d)*(speed||spec.speed)*dt*1.6;
+        m.facing=dx>=0?1:-1;
+        if(m.onGround && d<7 && now>(m._roachHopAt||0)){
+          m.vy=(spec.move.jumpVel||-4.6)*(m.jumpMul||1)*(0.75+Math.random()*0.35);
+          m._roachHopAt=now+520+Math.random()*760;
+        }
+      } else if(m.onGround && Math.random()<0.025){
+        m.vx += (Math.random()<0.5?-1:1)*(speed||spec.speed)*0.22;
+      }
+      if(Math.random()<dt*0.8){
+        try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(m.x*(MM.TILE||20),(m.y-0.1)*(MM.TILE||20),'common',2); }catch(e){}
+      }
+    }
+  });
+
+  registerSpecies({
+    id:'ATOMIC_BOMB', displayName:'Atomic bomb',
+    max:2, localMax:1, spawnChance:0.035, spawnBatch:1,
+    hp:120, dmg:0, speed:0.02, wanderInterval:[4,8], xp:150, ground:true, organic:false,
+    sightRange:0, pursueRange:0,
+    body:{w:1.75,h:1.55},
+    move:{jumpVel:0, maxClimb:0, avoidWater:true},
+    meat:false,
+    loot:[{item:'steel', min:4, max:8, chance:1}, {item:'electronics', min:2, max:4, chance:0.72}, {item:'radioactiveOre', min:2, max:5, chance:0.95}],
+    variant:{shift:1, from:'#59636b', to:'#7c8588'},
+    spawnTest(x,y,getTile){ return atomicBombSpawnCell(x,y,getTile); },
+    biome:'city',
+    onCreate(m){
+      m.state='armed';
+      m.scale=0.98+Math.random()*0.08;
+      m.lifeEndAt=performance.now()+1000*60*14;
+      m.decayStartAt=m.lifeEndAt+10000;
+      m._nextCockroachAt=performance.now()+1200+Math.random()*2400;
+    },
+    onUpdate(m,spec,{getTile,now}){
+      m.vx*=0.02;
+      m.vy=Math.min(m.vy||0,0.65);
+      if(now>(m._nextCockroachAt||0)){
+        spawnRadiationCockroachNearBomb(m,getTile);
+        m._nextCockroachAt=now+ATOMIC_BOMB_COCKROACH_INTERVAL_MS+Math.random()*2300;
+      }
+      if(Math.random()<0.018){
+        try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(m.x*(MM.TILE||20),(m.y-0.45)*(MM.TILE||20),'rare',3); }catch(e){}
+      }
+    },
+    onDeath(m){
+      detonateAtomicBomb(m);
     }
   });
 
@@ -1408,9 +3735,10 @@ const mobs = (function(){
   }
   if(!m.baseColor){
     const BASE = {
-      SQUIRREL:'#b07040', DEER:'#9c6a39', RABBIT:'#dddddd', OWL:'#c8a860', CRAB:'#c23a2e',
-      EEL:'#2f8a4a', PIRANHA:'#b72d2d', GOAT:'#c9c4b5', BEAR:'#6b4a30', WOLF:'#bcbcbc', FISH:'#4eb2f1',
-      BIRD:'#f5d16a', STRAZNIK:'#8f9aa6', ATLANTIS_MEDUZA:'#7bdcff',
+      SQUIRREL:'#b07040', DEER:'#9c6a39', THUNDER_BISON:'#8b5f34', RABBIT:'#dddddd', OWL:'#c8a860', CRAB:'#c23a2e',
+      EEL:'#2f8a4a', LAKE_SERPENT:'#45b9a8', JACKPOT_WHALE:'#5d86a0', PIRANHA:'#b72d2d', GOAT:'#c9c4b5', BEAR:'#6b4a30', BRAMBLE_STALKER:'#48672f', WOLF:'#bcbcbc', ICE_WRAITH:'#d5f6ff', JACKPOT_YETI:'#e6f2f6', FISH:'#4eb2f1',
+      BIRD:'#f5d16a', VULTURE:'#4e4036', VULTURE_HATCHLING:'#8a6e4b', STRAZNIK:'#8f9aa6', ATOMIC_BOMB:'#646f77', RADIATION_COCKROACH:'#79cf42', ATLANTIS_MEDUZA:'#7bdcff',
+      SAND_WORM:'#b38342', GIANT_SCORPION:'#6b3b28', TEMPLE_GUARD:'#6f7d43', BOG_LURKER:'#52643a', STONE_GOLEM:'#626870', GOLD_DRAGON:'#b26d32', GOLD_DWARF_GUARD:'#8f6240',
       WIOSENNY_JELEN:'#bf8a4d', LETNI_ZUBR:'#8d5e32', JESIENNY_LOS:'#9a6737', ZIMOWY_NIEDZWIEDZ:'#e9f3f8'
     };
     const base = BASE[spec.id] || '#a8a8a8';
@@ -1461,6 +3789,9 @@ const mobs = (function(){
     if(biomeAt(x)===5) return true;
     try{ return !!(WORLDGEN && typeof WORLDGEN.oceanBasinAt==='function' && WORLDGEN.oceanBasinAt(x)); }catch(e){ return false; }
   }
+  function isLakeColumn(x){
+    return biomeAt(Math.floor(Number.isFinite(x)?x:0))===6;
+  }
   const ATLANTIS_GUARD_TILES = Object.freeze({
     [T.GLASS]:true, [T.OBSIDIAN]:true, [T.STEEL]:true, [T.SOLAR_BATTERY]:true,
     [T.ANTIGRAVITY_BEACON]:true, [T.IRIDIUM]:true, [T.METEORIC_IRON]:true,
@@ -1477,6 +3808,28 @@ const mobs = (function(){
     if(above!==T.WATER && above!==T.AIR) return false;
     const pocket=waterPocketShape(x,y,getTile);
     return pocket.count>=16 && pocket.width>=4 && pocket.depth>=3;
+  }
+  function canHostJackpotWhaleSpawn(x,y,getTile){
+    x|=0; y|=0;
+    if(!isSeaOrOceanColumn(x)) return false;
+    if(readMobTile(getTile,x,y)!==T.WATER) return false;
+    const col=waterColumnAt(x,y,getTile);
+    if(!col || col.depth<7 || y<col.top+2) return false;
+    const pocket=waterPocketShape(x,y,getTile);
+    if(pocket.count<44 || pocket.width<8 || pocket.depth<6) return false;
+    for(let dx=-4; dx<=4; dx++){
+      if(readMobTile(getTile,x+dx,y)!==T.WATER) return false;
+    }
+    return true;
+  }
+  function canHostLakeSerpentSpawn(x,y,getTile){
+    x|=0; y|=0;
+    if(!isLakeColumn(x)) return false;
+    if(readMobTile(getTile,x,y)!==T.WATER) return false;
+    const col=waterColumnAt(x,y,getTile);
+    if(!col || col.depth<4 || y<col.top+1) return false;
+    const pocket=waterPocketShape(x,y,getTile);
+    return pocket.count>=22 && pocket.width>=5 && pocket.depth>=4;
   }
   function nearAtlantisStructure(x,y,getTile){
     x|=0; y|=0;
@@ -1546,6 +3899,19 @@ const mobs = (function(){
     if(heroProtectedByBoat(player)) return false;
     const tx=Math.floor(player.x);
     if(!isSeaOrOceanColumn(tx)) return false;
+    const h=finiteNum(player.h) ? player.h : 0.95;
+    const probes=[
+      Math.floor(player.y),
+      Math.floor(player.y+h*0.25),
+      Math.floor(player.y+h*0.48)
+    ];
+    return probes.some(ty=>readMobTile(getTile,tx,ty)===T.WATER);
+  }
+  function heroInLakeWater(player,getTile){
+    if(!player || !finiteCoord(player.x) || !finiteCoord(player.y) || typeof getTile!=='function') return false;
+    if(heroProtectedByBoat(player)) return false;
+    const tx=Math.floor(player.x);
+    if(!isLakeColumn(tx)) return false;
     const h=finiteNum(player.h) ? player.h : 0.95;
     const probes=[
       Math.floor(player.y),
@@ -1933,6 +4299,7 @@ const mobs = (function(){
     if(b==='snow') return biome===2?1:0.08;
     if(b==='desert') return biome===3?1:0.08;
     if(b==='swamp') return biome===4?1:0.08;
+    if(b==='jungle') return (biome===0 || biome===4)?1:0.06;
     if(b==='shore') return (biome===5 || biome===6 || biome===3)?0.75:0.04;
     if(b==='sea') return biome===5?1:0.03;
     if(b==='mountain') return biome===7?1:0.08;
@@ -2015,6 +4382,50 @@ const mobs = (function(){
     }
   }
 
+  let nextGoldGuardianScan = 0;
+  function spawnGoldGuardianGroup(vein,getTile){
+    if(!vein || typeof getTile!=='function') return 0;
+    let born=0;
+    let kind=goldGuardianKindForVein(vein);
+    if(kind==='dragon' && countSpecies('GOLD_DRAGON')>=((SPECIES.GOLD_DRAGON&&SPECIES.GOLD_DRAGON.max)||0)) kind='dwarf';
+    if(kind==='dragon'){
+      const spec=SPECIES.GOLD_DRAGON;
+      const spot=spec && findGoldGuardianSpawnNear(vein.x,vein.y,getTile,'dragon');
+      if(spot){
+        const m=attachGoldGuardState(create(spec,spot.x,spot.y,getTile),vein,spot);
+        mobs.push(m);
+        born++;
+      } else {
+        kind='dwarf';
+      }
+    }
+    if(kind==='dwarf'){
+      const spec=SPECIES.GOLD_DWARF_GUARD;
+      if(!spec) return born;
+      const want=Math.max(1,Math.min(3,2+Math.floor((vein.signal.gold||0)/5)));
+      for(let i=0; i<want && countSpecies('GOLD_DWARF_GUARD')<spec.max; i++){
+        const spot=findGoldGuardianSpawnNear(vein.x,vein.y,getTile,'dwarf');
+        if(!spot) break;
+        const m=attachGoldGuardState(create(spec,spot.x+(i-1)*0.18,spot.y,getTile),vein,spot);
+        mobs.push(m);
+        born++;
+      }
+    }
+    if(born>0){
+      setAggro(born===1 && kind==='dragon' ? 'GOLD_DRAGON' : 'GOLD_DWARF_GUARD');
+      try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks((vein.x+0.5)*(MM.TILE||20),(vein.y+0.5)*(MM.TILE||20),'epic',10); }catch(e){}
+    }
+    return born;
+  }
+  function tryGoldGuardianSpawn(player,getTile,now){
+    if(!player || typeof getTile!=='function' || now<spawnFreezeUntil || now<nextGoldGuardianScan) return;
+    nextGoldGuardianScan=now+GOLD_GUARD_SCAN_MS+Math.random()*GOLD_GUARD_SCAN_MS;
+    if(countGoldGuardiansNear(player.x,player.y,34)>=GOLD_GUARD_LOCAL_CAP) return;
+    const vein=scanGoldVeinNearPlayer(player,getTile);
+    if(!vein || goldGuardianAlreadyForKey(vein.key)) return;
+    spawnGoldGuardianGroup(vein,getTile);
+  }
+
   let nextSpawnCheck = 0;
   function trySpawnNearPlayer(player, getTile, now){
   if(!player || !finiteCoord(player.x) || !finiteCoord(player.y) || typeof getTile!=='function') return;
@@ -2087,6 +4498,18 @@ const mobs = (function(){
     const src=String(opts.source || opts.actor || opts.by || '').toLowerCase();
     return src==='hero' || src==='player';
   }
+  function combatElementFromOpts(opts){
+    if(!opts || typeof opts!=='object') return '';
+    const raw=String(opts.element || opts.cause || opts.kind || opts.type || opts.weaponType || '').toLowerCase();
+    if(!raw) return '';
+    if(raw.indexOf('fire')>=0 || raw.indexOf('flame')>=0 || raw.indexOf('burn')>=0 || raw.indexOf('heat')>=0 || raw.indexOf('lava')>=0) return 'fire';
+    if(raw.indexOf('electric')>=0 || raw.indexOf('shock')>=0 || raw.indexOf('lightning')>=0 || raw.indexOf('laser')>=0) return 'electric';
+    if(raw.indexOf('water')>=0 || raw.indexOf('hose')>=0 || raw.indexOf('drown')>=0 || raw.indexOf('pressure')>=0) return 'water';
+    if(raw.indexOf('ice')>=0 || raw.indexOf('frost')>=0 || raw.indexOf('chill')>=0 || raw.indexOf('cold')>=0) return 'ice';
+    if(raw.indexOf('gas')>=0 || raw.indexOf('poison')>=0 || raw.indexOf('toxic')>=0) return 'gas';
+    if(raw.indexOf('explosion')>=0 || raw.indexOf('blast')>=0 || raw.indexOf('meteor')>=0) return 'blast';
+    return '';
+  }
   function markHeroAttack(m){
     if(!m) return false;
     const now=Date.now();
@@ -2094,13 +4517,64 @@ const mobs = (function(){
     m.heroFocusAt=now;
     return true;
   }
+  function attackKindFromCause(cause,fallback){
+    const raw=String(cause||fallback||'strike').toLowerCase();
+    if(raw.indexOf('laser')>=0 || raw.indexOf('sentinel')>=0) return 'laser';
+    if(raw.indexOf('dragon')>=0 || raw.indexOf('breath')>=0 || raw.indexOf('fire')>=0) return 'spit';
+    if(raw.indexOf('spit')>=0) return 'spit';
+    if(raw.indexOf('pick')>=0 || raw.indexOf('rock')>=0 || raw.indexOf('throw')>=0) return 'throw';
+    if(raw.indexOf('sting')>=0 || raw.indexOf('poison')>=0) return 'sting';
+    if(raw.indexOf('shock')>=0 || raw.indexOf('electric')>=0) return 'shock';
+    if(raw.indexOf('ram')>=0 || raw.indexOf('charge')>=0) return 'charge';
+    if(raw.indexOf('hammer')>=0 || raw.indexOf('slam')>=0) return 'slam';
+    if(raw.indexOf('capture')>=0 || raw.indexOf('talon')>=0) return 'talon';
+    if(raw.indexOf('bite')>=0 || raw.indexOf('claw')>=0 || raw.indexOf('thorn')>=0) return 'bite';
+    return raw || 'strike';
+  }
+  function faceAttackTarget(m,target){
+    if(!m || !target || !finiteCoord(target.x)) return;
+    const dx=target.x-m.x;
+    if(Math.abs(dx)>0.05) m.facing=dx>=0?1:-1;
+  }
+  function markMobTelegraph(m,kind,opts){
+    if(!m) return false;
+    const now=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+    opts=opts||{};
+    const ms=clampFinite(opts.ms,MOB_ATTACK_TELEGRAPH_MS,90,1400);
+    m._attackKind=attackKindFromCause(kind,kind);
+    m._attackTelegraphUntil=Math.max(m._attackTelegraphUntil||0,now+ms);
+    m._attackPower=clampFinite(opts.power,m._attackPower||1,0.25,3);
+    if(opts.target) faceAttackTarget(m,opts.target);
+    if(finiteCoord(opts.x)) m._attackTargetX=opts.x;
+    if(finiteCoord(opts.y)) m._attackTargetY=opts.y;
+    return true;
+  }
+  function markMobAttack(m,kind,opts){
+    if(!m) return false;
+    const now=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+    opts=opts||{};
+    const attackKind=attackKindFromCause(kind,opts.cause);
+    m._attackKind=attackKind;
+    m._attackAt=now;
+    m._attackFlashUntil=now+clampFinite(opts.strikeMs,MOB_ATTACK_STRIKE_MS,120,900);
+    m._attackRecoverUntil=now+clampFinite(opts.recoverMs,MOB_ATTACK_RECOVER_MS,220,1600);
+    m._attackTelegraphUntil=Math.max(m._attackTelegraphUntil||0,now+120);
+    m._attackPower=clampFinite(opts.power,m._attackPower||1,0.25,3);
+    if(opts.target) faceAttackTarget(m,opts.target);
+    if(finiteCoord(opts.x)) m._attackTargetX=opts.x;
+    if(finiteCoord(opts.y)) m._attackTargetY=opts.y;
+    m.shake=Math.max(m.shake||0,Math.min(1.1,0.18+(m._attackPower||1)*0.18));
+    markHeroAttack(m);
+    return true;
+  }
   function isHeroFocused(m,now){
     return !!(m && finiteNum(m.heroFocusUntil) && m.heroFocusUntil>(now||Date.now()));
   }
   function isMobHostile(m,now){
     if(!m || m.hp<=0) return false;
+    if(isMobPacified(m,now)) return false;
     const spec=SPECIES[m.id];
-    return !!(spec && (spec.alwaysAggro || isAggro(m.id) || isHeroFocused(m,now)));
+    return !!(spec && (spec.alwaysAggro || isAggro(m.id) || isHeroFocused(m,now) || isTempleGuardAggro(m,now)));
   }
   function mobAllowedByOpts(m,opts){
     if(!m) return false;
@@ -2111,6 +4585,7 @@ const mobs = (function(){
   }
   function noteDamageSource(m,opts){
     if(!m) return;
+    const heroHit=sourceIsHero(opts);
     if(opts && typeof opts==='object'){
       const src=opts.source || opts.actor || opts.by;
       const cause=opts.cause || opts.element;
@@ -2119,7 +4594,10 @@ const mobs = (function(){
     } else if(opts===true) {
       m._lastDamageSource='hero';
     }
-    if(sourceIsHero(opts)) markHeroAttack(m);
+    m._lastHeroHitSpecial=heroHit ? !!(opts && typeof opts==='object' && opts.specialAttack) : false;
+    m._lastHeroHitLucky=heroHit ? !!(opts && typeof opts==='object' && opts.luckyStrike) : false;
+    m._lastHeroHitElement=heroHit ? combatElementFromOpts(opts) : '';
+    if(heroHit) markHeroAttack(m);
   }
   function nearestCompanionTarget(wx,wy,range,opts){
     try{
@@ -2177,7 +4655,7 @@ const mobs = (function(){
     return hero;
   }
 
-  let frame=0; let lastMetricsSample=0; let metrics={count:0, active:0, dtAvg:0, sunriseBurns:0};
+  let frame=0; let lastMetricsSample=0; let metrics={count:0, active:0, dtAvg:0, sunriseBurns:0, goldGuardians:0};
   function sunriseBurnOptions(spec){
     const cfg=spec && spec.sunriseBurn;
     const dur=(cfg && typeof cfg==='object' && finiteNum(cfg.dur)) ? cfg.dur : DEFAULT_SUNRISE_BURN.dur;
@@ -2245,7 +4723,7 @@ const mobs = (function(){
     };
   }
   function mobDeathStyle(m,spec,cause){
-    if(m && m.id==='ZLOTY') return 'gold';
+    if(m && (m.id==='ZLOTY' || m.id==='GOLD_DRAGON' || m.id==='GOLD_DWARF_GUARD')) return 'gold';
     if(cause==='burn' || cause==='fire' || cause==='flamethrower') return spec && spec.organic===false ? 'machine' : 'ash';
     if(spec && spec.aquatic) return 'splash';
     if(spec && spec.organic===false) return 'machine';
@@ -3319,6 +5797,7 @@ const mobs = (function(){
     // Despawn far / off-screen old passive mobs (not aggro)
     for(let i=mobs.length-1;i>=0;i--){ const m=mobs[i]; if(!validMobState(m) || m.hp<=0){ removeFromGrid(m); mobs.splice(i,1); continue; } const dist = Math.abs(m.x-player.x); if(dist>220 && !isAggro(m.id)) { removeFromGrid(m); mobs.splice(i,1); continue; } }
     tryPiranhaAmbush(player,getTile,now);
+    tryGoldGuardianSpawn(player,getTile,now);
     // Spawn attempt occasionally
     trySpawnNearPlayer(player,getTile, now);
     // Golden sprinter visit clock (counts played time, persists across reloads)
@@ -3336,8 +5815,9 @@ const mobs = (function(){
       metrics.mobSpawnMult = +(h.mobSpawnMult || 1).toFixed(3);
     }catch(e){}
     let active=0;
+    const nowEpoch=Date.now();
     for(let i=0;i<mobs.length;i++){
-      const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue; const aggressive=isAggro(m.id)||!!spec.alwaysAggro;
+      const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue; const aggressive=isMobHostile(m,nowEpoch) && !isMobPacified(m,now);
       // Natural lifespan: apply health decay when past decayStartAt; ensure it runs before far-sleep skip
       if(m.decayStartAt && now >= m.decayStartAt){
         const total = Math.max(0.5, ((m.lifeEndAt||now) - m.decayStartAt)/1000); // seconds window
@@ -3481,6 +5961,9 @@ const mobs = (function(){
             }
           }
         }
+        if(m.onGround && MM.terrainTraps && MM.terrainTraps.stepEntity){
+          MM.terrainTraps.stepEntity(m,getTile,setTile,{kind:'mob',species:m.id,halfW,halfH});
+        }
         if(m.onGround){
           // Stand friction
           if(Math.abs(m.vx)<0.02) m.vx=0; else m.vx*=0.86;
@@ -3546,11 +6029,21 @@ const mobs = (function(){
         } else if(!touchCompanion && (!piranhaTouchTarget || piranhaTouchTarget.kind==='hero')){
           player.vx += nx*3*dt; player.vy += ny*2*dt;
         } // gentle continuous push
-        const canBite=(isAggro(m.id)||spec.alwaysAggro) && !piranhaIsDistracted(m,now);
-        if(canBite){ if(m.attackCd>0) m.attackCd-=dt; if(m.attackCd<=0){ if(piranhaTouchTarget) damagePiranhaPrey(piranhaTouchTarget,spec.dmg*(m.dmgMult||1),m.x,m.y,spec.contactCause||'mob'); else if(touchCompanion) damageCompanionTarget(touchCompanion,spec.dmg*(m.dmgMult||1),m.x,m.y,spec.contactCause||'mob'); else damagePlayer(spec.dmg*(m.dmgMult||1), m.x, m.y, spec.contactCause||'mob', spec); m.attackCd=(0.8 + Math.random()*0.5)*Math.max(0.55,Math.min(1.2,(m.attackCdMult||1))); } }
+        const canBite=isMobHostile(m,nowEpoch) && !piranhaIsDistracted(m,now);
+        if(canBite){
+          if(m.attackCd>0) m.attackCd-=dt;
+          if(m.attackCd<=0){
+            const cause=spec.contactCause||'mob';
+            markMobAttack(m,cause,{target:touchPoint,power:piranhaTouchTarget?0.8:1});
+            if(piranhaTouchTarget) damagePiranhaPrey(piranhaTouchTarget,spec.dmg*(m.dmgMult||1),m.x,m.y,cause);
+            else if(touchCompanion) damageCompanionTarget(touchCompanion,spec.dmg*(m.dmgMult||1),m.x,m.y,cause);
+            else damagePlayer(spec.dmg*(m.dmgMult||1), m.x, m.y, cause, spec);
+            m.attackCd=(0.8 + Math.random()*0.5)*Math.max(0.55,Math.min(1.2,(m.attackCdMult||1)));
+          }
+        }
       }
     }
-    updateProjectiles(dt, player, getTile);
+    updateProjectiles(dt, player, getTile, setTile);
     updateLasers(dt);
     updateMobDeathFx(dt,getTile);
     metrics.projectiles = mobProjectiles.length;
@@ -3564,6 +6057,7 @@ const mobs = (function(){
     metrics.sentinelMeatCooked = sentinelMeatCooked;
     metrics.sentinelMeatDestroyed = sentinelMeatDestroyed;
     metrics.sentinelReloads = sentinelReloads;
+    metrics.goldGuardians = (speciesCounts.GOLD_DRAGON||0) + (speciesCounts.GOLD_DWARF_GUARD||0);
     metrics.active = active;
     if(now - lastMetricsSample > 1000){ metrics.dtAvg = (metrics.dtAvg*0.7 + dt*0.3); lastMetricsSample = now; if(window.__mobDebug){ window.__mobMetrics = {...metrics, frame}; } }
   } // end update()
@@ -3720,6 +6214,129 @@ const mobs = (function(){
     ctx.restore();
   }
 
+  function mobAttackVisual(m,spec,now){
+    if(!m || m.id==='ZLOTY') return null;
+    const strikeLeft=Math.max(0,(m._attackFlashUntil||0)-now);
+    const recoverLeft=Math.max(0,(m._attackRecoverUntil||0)-now);
+    const telegraphLeft=Math.max(0,(m._attackTelegraphUntil||0)-now);
+    const state=String(m.state||'');
+    const stateTelegraph = state==='windup' || state==='menace' || state==='warning' || state==='manifest' ||
+      state==='waking' || state==='unfurl' || state==='charged' || state==='ram' || state==='dive' ||
+      state==='spit' || state==='charging' || state==='relic_alarm' || state==='structure_alarm';
+    const stateStrike = state==='charge' || state==='slam' || state==='sting' || state==='lunge' ||
+      state==='snare' || state==='ambush' || state==='whiteout' || state==='carry';
+    if(strikeLeft<=0 && recoverLeft<=0 && telegraphLeft<=0 && !stateTelegraph && !stateStrike) return null;
+    const strike = strikeLeft>0 || stateStrike;
+    const telegraph = !strike && (telegraphLeft>0 || stateTelegraph);
+    const recover = !strike && !telegraph && recoverLeft>0;
+    const strikeK = strikeLeft>0 ? Math.max(0,Math.min(1,strikeLeft/MOB_ATTACK_STRIKE_MS)) : (strike ? 0.58 : 0);
+    const telegraphK = telegraphLeft>0 ? Math.max(0,Math.min(1,telegraphLeft/MOB_ATTACK_TELEGRAPH_MS)) : (telegraph ? 0.62 : 0);
+    const recoverK = recoverLeft>0 ? Math.max(0,Math.min(1,recoverLeft/MOB_ATTACK_RECOVER_MS)) : 0;
+    const kind=attackKindFromCause(m._attackKind,state);
+    const body=(spec && spec.body) || {w:1,h:1};
+    const power=clampFinite(m._attackPower,1,0.25,3);
+    return {strike,telegraph,recover,strikeK,telegraphK,recoverK,kind,power,body};
+  }
+  function attackAccent(kind,spec){
+    if(kind==='shock' || kind==='laser') return '#66f0ff';
+    if(kind==='spit' || kind==='poison' || kind==='sting') return '#c8ff5a';
+    if(kind==='throw' || kind==='slam') return '#ffd06a';
+    if(spec && spec.organic===false) return '#ffb65a';
+    return '#ff5c42';
+  }
+  function applyMobAttackPose(ctx,TILE,spec,screenX,screenY,faceDir,attack){
+    if(!attack) return;
+    const body=attack.body || (spec && spec.body) || {w:1,h:1};
+    const tall=Math.max(0.8,body.h||1);
+    const phase = attack.strike ? (1-attack.strikeK) : (attack.telegraph ? attack.telegraphK : attack.recoverK);
+    const snap = attack.strike ? Math.sin(Math.min(1,phase)*Math.PI) : 0;
+    const coil = attack.telegraph ? Math.sin((1-attack.telegraphK)*Math.PI)*0.55 : 0;
+    const settle = attack.recover ? attack.recoverK*0.35 : 0;
+    const lunge=(snap*0.19 - coil*0.08 + settle*0.035) * TILE * Math.min(2.2,attack.power);
+    const squash=attack.strike ? 1+snap*0.055 : 1-coil*0.026;
+    const stretch=attack.strike ? 1-snap*0.035 : 1+coil*0.020;
+    const anchorY=screenY + tall*TILE*0.28;
+    ctx.translate(faceDir*lunge, attack.strike ? -snap*TILE*0.028 : 0);
+    ctx.translate(screenX,anchorY);
+    ctx.scale(squash,stretch);
+    ctx.translate(-screenX,-anchorY);
+  }
+  function drawMobAttackIntent(ctx,TILE,spec,screenX,screenY,faceDir,phase,attack,hpTop){
+    if(!attack) return;
+    const body=attack.body || (spec && spec.body) || {w:1,h:1};
+    const bw=Math.max(10,(body.w||1)*TILE);
+    const bh=Math.max(9,(body.h||1)*TILE);
+    const aquatic=!!(spec && spec.aquatic);
+    const flying=!!(spec && spec.flying);
+    const accent=attackAccent(attack.kind,spec);
+    const headX=screenX+faceDir*bw*(aquatic?0.42:(flying?0.24:0.36));
+    const headY=screenY-bh*(aquatic?0.05:(flying?0.22:0.42));
+    const midY=screenY-bh*(aquatic?0.05:0.22);
+    const hot=attack.strike;
+    const pulse=hot ? Math.sin((1-attack.strikeK)*Math.PI) : Math.sin((1-attack.telegraphK)*Math.PI);
+    const alpha=Math.max(0.22,Math.min(0.92,(hot?0.68:0.46)+pulse*0.22));
+    ctx.save();
+    ctx.lineCap='round';
+    ctx.lineJoin='round';
+    if(attack.telegraph){
+      ctx.strokeStyle=rgbaHex(accent,0.34+0.18*pulse);
+      ctx.lineWidth=1.5;
+      ctx.beginPath();
+      ctx.arc(headX+faceDir*2,headY,4+pulse*3,0,Math.PI*2);
+      ctx.stroke();
+      ctx.fillStyle=rgbaHex(accent,0.22+0.16*pulse);
+      ctx.beginPath();
+      ctx.moveTo(headX+faceDir*(7+pulse*2),headY);
+      ctx.lineTo(headX+faceDir*(13+pulse*4),headY-4);
+      ctx.lineTo(headX+faceDir*(13+pulse*4),headY+4);
+      ctx.closePath();
+      ctx.fill();
+    }
+    if(hot){
+      ctx.strokeStyle=rgbaHex(accent,0.28+0.34*alpha);
+      ctx.lineWidth=3.2;
+      ctx.beginPath();
+      ctx.moveTo(screenX-faceDir*bw*0.46,midY+bh*0.12);
+      ctx.lineTo(screenX-faceDir*bw*0.16,midY+bh*0.06);
+      ctx.stroke();
+      ctx.strokeStyle=rgbaHex(accent,0.60);
+      ctx.lineWidth=2.0;
+      ctx.beginPath();
+      const ax=headX+faceDir*(5+bw*0.05);
+      ctx.moveTo(ax,headY-bh*0.18);
+      ctx.quadraticCurveTo(ax+faceDir*bw*0.22,headY,ax,headY+bh*0.18);
+      ctx.stroke();
+    }
+    const eyeCol = attack.kind==='shock' || attack.kind==='laser' ? '#eaffff' : '#fff2a8';
+    ctx.fillStyle=rgbaHex(accent,0.58);
+    ctx.fillRect(headX-faceDir*3-2,headY-3,4,4);
+    ctx.fillRect(headX-faceDir*8-2,headY-2,4,3);
+    ctx.fillStyle=eyeCol;
+    ctx.fillRect(headX-faceDir*3-1,headY-2,2,2);
+    ctx.fillRect(headX-faceDir*8-1,headY-1,2,1);
+    if(attack.kind==='bite' || attack.kind==='talon' || attack.kind==='sting' || attack.kind==='charge' || attack.kind==='slam'){
+      ctx.fillStyle='rgba(255,244,210,0.92)';
+      const mx=headX+faceDir*(6+Math.min(10,bw*0.12));
+      ctx.beginPath();
+      ctx.moveTo(mx,headY);
+      ctx.lineTo(mx-faceDir*6,headY-3);
+      ctx.lineTo(mx-faceDir*4,headY+4);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle=rgbaHex(accent,0.82);
+      ctx.fillRect(mx-faceDir*2,headY+4,faceDir*7,2);
+    } else if(attack.kind==='throw' || attack.kind==='spit' || attack.kind==='laser'){
+      ctx.strokeStyle=rgbaHex(accent,0.72);
+      ctx.lineWidth=2;
+      ctx.beginPath();
+      ctx.moveTo(headX,headY);
+      ctx.lineTo(headX+faceDir*(14+Math.min(12,bw*0.18)),headY-1+Math.sin(phase)*1.5);
+      ctx.stroke();
+    }
+    hpTop(headY-bh*0.18-8);
+    ctx.restore();
+  }
+
   // Pre-baked radial glow for the golden sprinter (per-frame gradients are costly)
   let _goldGlow=null;
   function goldGlowSprite(){
@@ -3775,6 +6392,8 @@ const mobs = (function(){
       // Small per-entity phase for anim variety
       const phase = (now*0.005 + m.spawnT*0.37) % (Math.PI*2);
       const phase2 = (now*0.003 + m.spawnT*0.19) % (Math.PI*2);
+      const attack=mobAttackVisual(m,spec,now);
+      applyMobAttackPose(ctx,TILE,spec,screenX,screenY,faceDir,attack);
       // Helper to draw outline rectangle
       function box(x,y,w,h,fill,stroke){ ctx.fillStyle=fill; ctx.fillRect(x,y,w,h); if(stroke){ ctx.strokeStyle=stroke; ctx.lineWidth=1; ctx.strokeRect(x+0.5,y+0.5,w-1,h-1);} hpTop(y); }
       function shade(x,y,w,h,col,alpha){ ctx.fillStyle=col; ctx.globalAlpha=alpha; ctx.fillRect(x,y,w,h); ctx.globalAlpha=1; }
@@ -3843,6 +6462,34 @@ const mobs = (function(){
           // legs (front/back)
           ctx.fillStyle='#4d3421'; const legY=screenY+2; ctx.fillRect(screenX-12, legY,5,6); ctx.fillRect(screenX-2, legY,5,6); ctx.fillRect(screenX+6, legY,5,6); ctx.fillRect(screenX+12-4, legY,5,6);
           break; }
+        case 'BRAMBLE_STALKER': {
+          const body = flashing? '#e8ffd9':(m.baseColor||'#48672f');
+          const camo = m.state==='camouflaged';
+          const snare = m.state==='snare' || m.state==='unfurl';
+          ctx.save();
+          ctx.globalAlpha = camo ? 0.62 : 1;
+          box(screenX-10, screenY-11,20,13, body,'#243818');
+          shade(screenX-10,screenY-7,20,4,'#000',0.16);
+          if(camo) ctx.globalAlpha=0.62;
+          ctx.fillStyle='#2d4b24';
+          ctx.fillRect(screenX-13,screenY-8,5,7);
+          ctx.fillRect(screenX+8,screenY-9,5,8);
+          ctx.fillStyle='#6c8a36';
+          for(let i=-8;i<=8;i+=4) ctx.fillRect(screenX+i,screenY-14-Math.abs(i%8),4,5);
+          ctx.strokeStyle=snare?'rgba(160,220,90,0.85)':'rgba(90,130,58,0.72)';
+          ctx.lineWidth=1.4;
+          for(let i=-2;i<=2;i++){
+            ctx.beginPath();
+            ctx.moveTo(screenX+i*4,screenY-3);
+            ctx.quadraticCurveTo(screenX+i*6+Math.sin(phase+i)*4,screenY+7,screenX+i*5,screenY+15+Math.abs(i));
+            ctx.stroke();
+          }
+          ctx.fillStyle=snare?'#e8ff90':'#13230f';
+          ctx.fillRect(screenX-4,screenY-8,2,2);
+          ctx.fillRect(screenX+3,screenY-8,2,2);
+          hpTop(screenY-16);
+          ctx.restore();
+          break; }
         case 'SQUIRREL': {
           const body = flashing? '#ffe3b5':(m.baseColor||'#b07040');
           box(screenX-6, screenY-7,12,8, body,'#6a3d18');
@@ -3871,6 +6518,52 @@ const mobs = (function(){
           // spots
           ctx.fillStyle='rgba(255,255,255,0.6)'; for(let i=-6;i<=6;i+=4){ ctx.fillRect(screenX+i, screenY-2,2,2); }
           break; }
+        case 'THUNDER_BISON': {
+          const body = flashing? '#ffe2ba':(m.baseColor||'#8b5f34');
+          const charging=m.state==='charge';
+          const windup=m.state==='windup';
+          const stunned=m.state==='stunned';
+          const bob=charging?Math.sin(phase*3)*1.5:0;
+          box(screenX-23,screenY-15+bob,46,16,body,'#4b301b');
+          shade(screenX-23,screenY-4+bob,46,4,'#000',0.13);
+          ctx.fillStyle='#5a391f';
+          ctx.fillRect(screenX-20,screenY+1+bob,7,8);
+          ctx.fillRect(screenX-5,screenY+1+bob,7,8);
+          ctx.fillRect(screenX+11,screenY+1+bob,7,8);
+          ctx.fillStyle=body;
+          ctx.fillRect(screenX+(faceDir>0?12:-26),screenY-20+bob,14,12);
+          hpTop(screenY-20+bob);
+          ctx.fillStyle='#e5d2a7';
+          if(faceDir>0){
+            ctx.fillRect(screenX+24,screenY-18+bob,7,3);
+            ctx.fillRect(screenX+22,screenY-14+bob,5,3);
+          } else {
+            ctx.fillRect(screenX-31,screenY-18+bob,7,3);
+            ctx.fillRect(screenX-27,screenY-14+bob,5,3);
+          }
+          ctx.fillStyle='#16100b';
+          ctx.fillRect(screenX+(faceDir>0?22:-16),screenY-16+bob,2,2);
+          if(charging || windup){
+            ctx.strokeStyle=charging?'rgba(255,220,140,0.82)':'rgba(255,185,90,0.62)';
+            ctx.lineWidth=charging?2:1.4;
+            ctx.beginPath();
+            ctx.moveTo(screenX-faceDir*30,screenY-7+bob);
+            ctx.lineTo(screenX-faceDir*16,screenY-7+bob);
+            ctx.stroke();
+            ctx.fillStyle='rgba(160,110,65,0.34)';
+            ctx.fillRect(screenX-faceDir*24,screenY+9,10,3);
+          }
+          if(stunned){
+            ctx.strokeStyle='rgba(255,236,150,0.9)';
+            ctx.lineWidth=1.2;
+            for(let i=-1;i<=1;i++){
+              ctx.beginPath();
+              ctx.moveTo(screenX+i*7,screenY-25);
+              ctx.lineTo(screenX+i*7+Math.sin(phase+i)*3,screenY-30);
+              ctx.stroke();
+            }
+          }
+          break; }
         case 'WOLF': {
           const body = flashing? '#f5f5f5': (m.baseColor||'#bcbcbc');
           box(screenX-12, screenY-7,24,9, body,'#555');
@@ -3884,6 +6577,75 @@ const mobs = (function(){
           ctx.save(); ctx.translate(wag*faceDir,0); ctx.fillStyle='#ddd'; ctx.fillRect(screenX-(faceDir>0?16:-0), screenY-5,6,3); ctx.restore();
           // darker back stripe
           shade(screenX-12, screenY-6,24,2,'#000',0.15);
+          break; }
+        case 'ICE_WRAITH': {
+          const body = flashing? '#ffffff':(m.baseColor||'#d5f6ff');
+          const veiled=m.state==='veiled' || m.state==='melt' || isMobPacified(m,now);
+          const pulse=Math.sin(phase*1.45)*0.5+0.5;
+          ctx.save();
+          ctx.globalAlpha=veiled ? 0.34+0.18*pulse : 0.70+0.20*pulse;
+          ctx.globalCompositeOperation='lighter';
+          ctx.fillStyle='rgba(180,236,255,0.34)';
+          ctx.beginPath();
+          ctx.ellipse(screenX,screenY-10,15+pulse*4,18+pulse*3,0,0,Math.PI*2);
+          ctx.fill();
+          ctx.globalCompositeOperation='source-over';
+          ctx.fillStyle=body;
+          ctx.beginPath();
+          ctx.moveTo(screenX,screenY-24);
+          ctx.quadraticCurveTo(screenX+12,screenY-13,screenX+6,screenY+2);
+          ctx.quadraticCurveTo(screenX+1,screenY-2,screenX-2,screenY+6);
+          ctx.quadraticCurveTo(screenX-5,screenY-1,screenX-10,screenY+2);
+          ctx.quadraticCurveTo(screenX-13,screenY-13,screenX,screenY-24);
+          ctx.fill();
+          hpTop(screenY-24);
+          ctx.fillStyle=veiled?'#dff8ff':'#78dfff';
+          ctx.fillRect(screenX-4,screenY-16,2,2);
+          ctx.fillRect(screenX+3,screenY-16,2,2);
+          ctx.strokeStyle='rgba(224,252,255,0.75)';
+          ctx.lineWidth=1.2;
+          for(let i=-2;i<=2;i+=2){
+            ctx.beginPath();
+            ctx.moveTo(screenX+i*2,screenY-3);
+            ctx.quadraticCurveTo(screenX+i*4+Math.sin(phase+i)*5,screenY+6,screenX+i*2,screenY+13+Math.abs(i));
+            ctx.stroke();
+          }
+          ctx.restore();
+          break; }
+        case 'JACKPOT_YETI': {
+          const body = flashing? '#ffffff':(m.baseColor||'#e6f2f6');
+          const dark=mixHexColor(body,'#59727d',0.48);
+          const slam=m.state==='slam';
+          const leap=m.state==='leap';
+          const bob=leap?-3:Math.sin(phase*1.4)*0.8;
+          box(screenX-16,screenY-34+bob,32,35,body,dark);
+          shade(screenX-14,screenY-34+bob,28,7,'#fff',0.14);
+          ctx.fillStyle=mixHexColor(body,'#b7d2dd',0.34);
+          ctx.fillRect(screenX-12,screenY-26+bob,24,11);
+          ctx.fillStyle=dark;
+          ctx.fillRect(screenX-8,screenY-29+bob,4,3);
+          ctx.fillRect(screenX+4,screenY-29+bob,4,3);
+          ctx.fillRect(screenX-3,screenY-23+bob,6,2);
+          ctx.fillStyle='#d8edf4';
+          ctx.fillRect(screenX-18,screenY-37+bob,8,7);
+          ctx.fillRect(screenX+10,screenY-37+bob,8,7);
+          hpTop(screenY-39+bob);
+          const swing=slam?5:Math.sin(phase*2.2)*3;
+          ctx.fillStyle=mixHexColor(body,'#c6dfe8',0.28);
+          ctx.fillRect(screenX-25,screenY-27+bob+swing,9,24);
+          ctx.fillRect(screenX+16,screenY-27+bob-swing,9,24);
+          ctx.fillStyle=dark;
+          ctx.fillRect(screenX-26,screenY-4+bob+swing,11,6);
+          ctx.fillRect(screenX+15,screenY-4+bob-swing,11,6);
+          ctx.fillRect(screenX-12,screenY+1,9,11);
+          ctx.fillRect(screenX+3,screenY+1,9,11);
+          if(slam){
+            ctx.strokeStyle='rgba(190,236,255,0.62)';
+            ctx.lineWidth=2;
+            ctx.beginPath();
+            ctx.ellipse(screenX,screenY+7,29,7,0,0,Math.PI*2);
+            ctx.stroke();
+          }
           break; }
         case 'RABBIT': {
           const body = flashing? '#ffffff':(m.baseColor||'#dddddd');
@@ -3905,6 +6667,45 @@ const mobs = (function(){
           ctx.fillStyle='#ffb94d'; ctx.fillRect(screenX-1, screenY-5,2,2);
           // wing flutter
           const f = Math.sin(phase)*2; ctx.fillStyle='#b99738'; ctx.fillRect(screenX-6, screenY-4+f,12,2);
+          break; }
+        case 'VULTURE': {
+          const body = flashing? '#fff3df':(m.baseColor||'#4e4036');
+          const flap=Math.sin(phase*1.6)*4;
+          const dive=m.state==='dive' || m.state==='carry';
+          ctx.fillStyle='#2a241f';
+          ctx.fillRect(screenX-20,screenY-5+flap*0.35,16,5);
+          ctx.fillRect(screenX+4,screenY-5-flap*0.35,16,5);
+          ctx.fillStyle=body;
+          ctx.fillRect(screenX-8,screenY-9,16,11);
+          ctx.fillStyle='#7a6650';
+          ctx.fillRect(screenX-6,screenY-6,12,5);
+          ctx.fillStyle='#d6c5a7';
+          ctx.fillRect(screenX+(faceDir>0?5:-10),screenY-12,7,6); hpTop(screenY-12);
+          ctx.fillStyle='#c78a34';
+          ctx.fillRect(screenX+(faceDir>0?11:-13),screenY-9,4,2);
+          ctx.fillStyle=dive?'#ffcf65':'#1b1110';
+          ctx.fillRect(screenX+(faceDir>0?7:-7),screenY-11,2,2);
+          ctx.fillStyle='#2a241f';
+          ctx.fillRect(screenX-(faceDir>0?13:-5),screenY-3,7,3);
+          if(dive){
+            ctx.fillStyle='rgba(255,210,90,0.28)';
+            ctx.fillRect(screenX-16,screenY+3,32,2);
+          }
+          break; }
+        case 'VULTURE_HATCHLING': {
+          const body = flashing? '#fff7e8':(m.baseColor||'#8a6e4b');
+          const flap=Math.sin(phase*2.8)*2.2;
+          ctx.fillStyle=body;
+          ctx.fillRect(screenX-5,screenY-6,10,8);
+          ctx.fillStyle='#5a4631';
+          ctx.fillRect(screenX-9,screenY-4+flap,5,4);
+          ctx.fillRect(screenX+4,screenY-4-flap,5,4);
+          ctx.fillStyle='#d1ba8b';
+          ctx.fillRect(screenX+(faceDir>0?3:-7),screenY-8,5,4); hpTop(screenY-8);
+          ctx.fillStyle='#1c120c';
+          ctx.fillRect(screenX+(faceDir>0?5:-5),screenY-7,1,1);
+          ctx.fillStyle='#c9832c';
+          ctx.fillRect(screenX+(faceDir>0?8:-9),screenY-6,2,1);
           break; }
         case 'CRAB': {
           const body = flashing? '#ffdddd':(m.baseColor||'#c23a2e');
@@ -3932,12 +6733,96 @@ const mobs = (function(){
           ctx.fillStyle='#000'; ctx.fillRect(screenX+(faceDir>0?18:-22), screenY-1,6,2); ctx.fillRect(screenX+(faceDir>0?12:-16), screenY-2,2,2);
           ctx.restore();
           break; }
+        case 'JACKPOT_WHALE': {
+          const body = flashing? '#dff7ff':(m.baseColor||'#5d86a0');
+          const charge=Math.max(0,Math.min(1.45,m._whaleCharge||0));
+          const sway=Math.sin(phase*0.7)*2.6*faceDir;
+          ctx.save();
+          ctx.translate(sway,0);
+          ctx.fillStyle=body;
+          ctx.beginPath();
+          ctx.ellipse(screenX-4*faceDir,screenY-3,48,15,0,0,Math.PI*2);
+          ctx.fill();
+          ctx.strokeStyle='#203746';
+          ctx.lineWidth=1.5;
+          ctx.stroke();
+          ctx.fillStyle='#d9eef4';
+          ctx.beginPath();
+          ctx.ellipse(screenX-8*faceDir,screenY+4,34,6,0,0,Math.PI*2);
+          ctx.fill();
+          ctx.fillStyle=mixHexColor(body,'#1d3342',0.46);
+          ctx.beginPath();
+          const tailX=screenX-faceDir*50;
+          ctx.moveTo(tailX,screenY-2);
+          ctx.lineTo(tailX-faceDir*18,screenY-15);
+          ctx.lineTo(tailX-faceDir*10,screenY-1);
+          ctx.lineTo(tailX-faceDir*18,screenY+13);
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle=mixHexColor(body,'#ffffff',0.18);
+          ctx.beginPath();
+          ctx.moveTo(screenX+faceDir*2,screenY-15);
+          ctx.lineTo(screenX-faceDir*8,screenY-28);
+          ctx.lineTo(screenX-faceDir*12,screenY-12);
+          ctx.closePath();
+          ctx.fill();
+          hpTop(screenY-30);
+          ctx.fillStyle='#0c1d28';
+          ctx.fillRect(screenX+faceDir*30-(faceDir>0?0:2),screenY-9,2,2);
+          ctx.fillStyle='rgba(230,250,255,0.74)';
+          for(let i=0;i<5;i++) ctx.fillRect(screenX+faceDir*(14+i*5),screenY+7+i%2,3,1);
+          if(charge>0.2){
+            ctx.strokeStyle='rgba(150,230,255,'+(0.24+0.34*Math.min(1,charge)).toFixed(3)+')';
+            ctx.lineWidth=2;
+            ctx.beginPath();
+            ctx.moveTo(screenX-faceDir*54,screenY-21);
+            ctx.lineTo(screenX-faceDir*30,screenY-21);
+            ctx.stroke();
+          }
+          ctx.restore();
+          break; }
         case 'EEL': {
           const body = flashing? '#e0ffe0':(m.baseColor||'#2f8a4a');
           // segmented body
           for(let i=-10;i<=10;i+=4){ ctx.fillStyle= (i%8===0)? body : '#256d38'; ctx.fillRect(screenX+i, screenY-2,4,4); hpTop(screenY-2); }
           // head
           ctx.fillStyle=body; ctx.fillRect(screenX+10, screenY-3,5,6); ctx.fillStyle='#fff'; ctx.fillRect(screenX+13, screenY-2,2,2); ctx.fillStyle='#000'; ctx.fillRect(screenX+13, screenY-2,1,1);
+          break; }
+        case 'LAKE_SERPENT': {
+          const body = flashing? '#dffffa':(m.baseColor||'#45b9a8');
+          const charge=Math.max(0,Math.min(1.25,m._lakeCharge||0));
+          const sway=Math.sin(phase*0.9)*4*faceDir;
+          ctx.save();
+          ctx.translate(sway,0);
+          for(let i=-22;i<=18;i+=5){
+            const wave=Math.sin(phase*1.1+i*0.35)*3;
+            ctx.fillStyle=(i%10===0)?body:'#2d827a';
+            ctx.fillRect(screenX+i,screenY-3+wave*0.22,7,6);
+            if(charge>0.12){
+              ctx.fillStyle='rgba(165,255,245,'+(0.22+0.36*Math.min(1,charge)).toFixed(3)+')';
+              ctx.fillRect(screenX+i+1,screenY-7+wave*0.22,4,2);
+            }
+            hpTop(screenY-8+wave*0.22);
+          }
+          ctx.fillStyle=body;
+          ctx.fillRect(screenX+19,screenY-5,11,9);
+          ctx.fillStyle='#d9fff8';
+          ctx.fillRect(screenX+24,screenY-3,2,2);
+          ctx.fillStyle='#07332f';
+          ctx.fillRect(screenX+24,screenY-3,1,1);
+          ctx.fillStyle='#1d675f';
+          ctx.fillRect(screenX-29,screenY-3,8,6);
+          if(charge>0.18){
+            ctx.strokeStyle='rgba(190,255,250,'+(0.35+0.45*Math.min(1,charge)).toFixed(3)+')';
+            ctx.lineWidth=1.4;
+            ctx.beginPath();
+            for(let i=-24;i<=28;i+=6){
+              const yy=screenY-10+Math.sin(phase*2+i)*3;
+              if(i===-24) ctx.moveTo(screenX+i,yy); else ctx.lineTo(screenX+i,yy);
+            }
+            ctx.stroke();
+          }
+          ctx.restore();
           break; }
         case 'ATLANTIS_MEDUZA': {
           const body = flashing? '#ecfbff':(m.baseColor||'#7bdcff');
@@ -3988,6 +6873,32 @@ const mobs = (function(){
           // beard
           ctx.fillStyle='#9b968a'; ctx.fillRect(screenX+(faceDir>0?14:-6), screenY-7,2,2);
           break; }
+        case 'STONE_GOLEM': {
+          const body = flashing? '#eef3f6':(m.baseColor||'#626870');
+          const calm=isMobPacified(m,now);
+          const wake=m.state==='waking' || m.state==='charging';
+          box(screenX-12,screenY-27,24,10,body,'#2f3439');
+          box(screenX-16,screenY-17,32,20,body,'#2f3439');
+          ctx.fillStyle=mixHexColor(body,'#ffffff',0.22);
+          ctx.fillRect(screenX-11,screenY-25,10,3);
+          ctx.fillRect(screenX+3,screenY-15,10,3);
+          ctx.fillStyle='#2f3439';
+          ctx.fillRect(screenX-20,screenY-13,6,15);
+          ctx.fillRect(screenX+14,screenY-13,6,15);
+          ctx.fillRect(screenX-12,screenY+2,8,8);
+          ctx.fillRect(screenX+4,screenY+2,8,8);
+          ctx.fillStyle=calm?'#75d8ff':(wake?'#ffce6a':'#9db3bd');
+          ctx.fillRect(screenX+faceDir*4-1,screenY-23,3,3);
+          ctx.fillRect(screenX-faceDir*3-1,screenY-22,3,2);
+          if(calm){
+            ctx.fillStyle='rgba(90,190,255,0.35)';
+            ctx.fillRect(screenX-15,screenY-30,30,2);
+          } else if(wake){
+            ctx.fillStyle='rgba(255,190,80,0.24)';
+            ctx.fillRect(screenX-18,screenY-31,36,3);
+          }
+          hpTop(screenY-30);
+          break; }
         case 'JASZCZUR': {
           const body = flashing? '#fff1c8':(m.baseColor||'#c79a45');
           const wiggle=Math.sin(phase*1.7)*2;
@@ -4014,6 +6925,163 @@ const mobs = (function(){
           ctx.fillStyle='#2f5e2c';
           ctx.fillRect(screenX-9, screenY+1,5,2);
           ctx.fillRect(screenX+4, screenY+1,5,2);
+          break; }
+        case 'BOG_LURKER': {
+          const body = flashing? '#e7ffd8':(m.baseColor||'#52643a');
+          const smoked=isMobPacified(m,now);
+          const hidden=m.state==='submerged';
+          const bob=Math.sin(phase*1.4)*1.2;
+          if(hidden){
+            ctx.fillStyle='#354327';
+            ctx.fillRect(screenX-13,screenY-2,26,5);
+            ctx.fillStyle='#6f7f49';
+            ctx.fillRect(screenX-8,screenY-6+bob,16,3);
+            ctx.fillStyle='rgba(38,54,28,0.35)';
+            ctx.fillRect(screenX-16,screenY+2,32,2);
+            hpTop(screenY-7);
+            break;
+          }
+          box(screenX-12,screenY-11+bob,24,11,body,'#25351f');
+          ctx.fillStyle=mixHexColor(body,'#b8d67a',0.28);
+          ctx.fillRect(screenX-7,screenY-17+bob,14,8);
+          hpTop(screenY-17+bob);
+          ctx.fillStyle=smoked?'#ffbe65':'#caff72';
+          ctx.fillRect(screenX+faceDir*4-1,screenY-15+bob,2,2);
+          ctx.fillRect(screenX-faceDir*2-1,screenY-14+bob,2,2);
+          ctx.fillStyle='#25351f';
+          for(let i=-10;i<=10;i+=5){
+            ctx.fillRect(screenX+i,screenY-1+Math.sin(phase+i)*2,3,6);
+          }
+          if(smoked){
+            ctx.fillStyle='rgba(255,160,70,0.30)';
+            ctx.fillRect(screenX-12,screenY-20,24,2);
+          }
+          break; }
+        case 'SAND_WORM': {
+          const body = flashing? '#ffe4b3':(m.baseColor||'#b38342');
+          const buried=m.state==='buried' || m.state==='circling';
+          const calm=isMobPacified(m,now);
+          const pulse=Math.sin(phase*1.8);
+          if(buried){
+            ctx.fillStyle='rgba(118,88,42,0.42)';
+            ctx.fillRect(screenX-11,screenY,22,3);
+            ctx.fillStyle='rgba(202,168,92,0.50)';
+            ctx.fillRect(screenX-5,screenY-2+pulse*0.4,10,2);
+            ctx.fillStyle='rgba(60,38,18,0.14)';
+            ctx.fillRect(screenX-15,screenY+2,30,1);
+            if(flashing) hpTop(screenY-6);
+            break;
+          }
+          const arc=Math.sin(phase*2.2)*2;
+          box(screenX-18,screenY-10+arc*0.25,36,11,body,'#5e3e19');
+          ctx.fillStyle=mixHexColor(body,'#fff4c8',0.24);
+          ctx.fillRect(screenX-14,screenY-13+arc,22,5);
+          hpTop(screenY-13+arc);
+          ctx.fillStyle='#5e3e19';
+          for(let i=-13;i<=12;i+=5) ctx.fillRect(screenX+i,screenY-1+Math.sin(phase+i)*1.5,3,4);
+          ctx.fillStyle=calm?'#6ad7ff':'#1d1208';
+          ctx.fillRect(screenX+faceDir*10-1,screenY-10+arc,2,2);
+          ctx.fillStyle='#f3e0b8';
+          const mx=screenX+faceDir*16;
+          ctx.fillRect(mx-faceDir*4,screenY-5,4,1);
+          ctx.fillRect(mx-faceDir*3,screenY-3,2,1);
+          if(calm){
+            ctx.fillStyle='rgba(84,185,255,0.32)';
+            ctx.fillRect(screenX-13,screenY-15,26,2);
+          }
+          break; }
+        case 'GIANT_SCORPION': {
+          const body = flashing? '#ffe4ce':(m.baseColor||'#6b3b28');
+          const dark=mixHexColor(body,'#1b0d08',0.58);
+          const plate=mixHexColor(body,'#f0b05e',0.24);
+          const sting=m.state==='sting';
+          const lunge=m.state==='lunge';
+          const menace=sting || m.state==='menace';
+          const bob=(lunge?-2:Math.sin(phase*2.2)*0.7);
+          const gait=Math.sin(phase*3.6);
+          ctx.fillStyle='rgba(73,43,20,0.22)';
+          ctx.fillRect(screenX-27,screenY+1,54,3);
+          ctx.strokeStyle=dark;
+          ctx.lineWidth=2;
+          for(let i=-2;i<=2;i++){
+            const lx=screenX+i*8;
+            const s=(i&1)?gait:-gait;
+            ctx.beginPath();
+            ctx.moveTo(lx,screenY-5+bob);
+            ctx.lineTo(lx-6,screenY+1+s);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(lx+2,screenY-5+bob);
+            ctx.lineTo(lx+7,screenY+1-s);
+            ctx.stroke();
+          }
+          box(screenX-22,screenY-14+bob,42,14,body,dark);
+          shade(screenX-20,screenY-14+bob,38,4,'#fff',0.12);
+          for(let i=-16;i<=13;i+=7){
+            ctx.fillStyle=mixHexColor(body,dark,0.18);
+            ctx.fillRect(screenX+i,screenY-13+bob,3,13);
+          }
+          const headX=screenX+faceDir*18;
+          box(headX-(faceDir>0?1:9),screenY-17+bob,10,9,plate,dark);
+          hpTop(screenY-34+bob);
+          ctx.fillStyle='#ffe18e';
+          ctx.fillRect(headX+faceDir*3-(faceDir>0?0:2),screenY-15+bob,2,2);
+          ctx.fillStyle=dark;
+          const clawX=screenX+faceDir*30;
+          const clawY=screenY-10+bob;
+          ctx.fillRect(clawX-faceDir*9,clawY+1,faceDir*9,3);
+          ctx.fillRect(clawX-faceDir*2,clawY-2,faceDir*7,4);
+          ctx.fillRect(clawX-faceDir*2,clawY+5,faceDir*6,4);
+          ctx.strokeStyle=dark;
+          ctx.lineWidth=4;
+          ctx.lineCap='round';
+          ctx.beginPath();
+          ctx.moveTo(screenX-faceDir*18,screenY-15+bob);
+          ctx.bezierCurveTo(
+            screenX-faceDir*30,screenY-(menace?28:23)+bob,
+            screenX-faceDir*8,screenY-(menace?38:30)+bob,
+            screenX+faceDir*(menace?8:1),screenY-(menace?31:24)+bob
+          );
+          ctx.stroke();
+          ctx.lineCap='butt';
+          ctx.fillStyle=sting?'#ffd05a':dark;
+          const tipX=screenX+faceDir*(menace?9:2), tipY=screenY-(menace?32:25)+bob;
+          ctx.beginPath();
+          ctx.moveTo(tipX,tipY);
+          ctx.lineTo(tipX-faceDir*8,tipY-3);
+          ctx.lineTo(tipX-faceDir*5,tipY+5);
+          ctx.closePath();
+          ctx.fill();
+          if(sting){
+            ctx.fillStyle='rgba(255,199,74,0.32)';
+            ctx.fillRect(tipX-faceDir*10,tipY-6,14,12);
+          }
+          break; }
+        case 'TEMPLE_GUARD': {
+          const body = flashing? '#f8ffe8':(m.baseColor||'#6f7d43');
+          const angry=isMobHostile(m,Date.now());
+          const sway=Math.sin(phase)*1.4;
+          box(screenX-7,screenY-22+sway*0.2,14,17,body,'#2e3f25');
+          shade(screenX-7,screenY-22,14,4,'#fff',0.10);
+          ctx.fillStyle='#8f6f39';
+          ctx.fillRect(screenX-5,screenY-28,10,7); hpTop(screenY-28);
+          ctx.fillStyle=angry?'#ffdf7a':'#b9ff93';
+          ctx.fillRect(screenX+(faceDir>0?2:-4),screenY-26,3,2);
+          ctx.fillRect(screenX+(faceDir>0?-2:2),screenY-25,3,2);
+          ctx.fillStyle='#31472c';
+          ctx.fillRect(screenX-9,screenY-17+sway,3,10);
+          ctx.fillRect(screenX+6,screenY-17-sway,3,10);
+          ctx.fillStyle='#4d2f20';
+          ctx.fillRect(screenX-5,screenY-5,3,7);
+          ctx.fillRect(screenX+2,screenY-5,3,7);
+          ctx.fillStyle='#b8934a';
+          ctx.fillRect(screenX-faceDir*12,screenY-18+sway,3,16);
+          ctx.fillStyle='#6f7d43';
+          ctx.fillRect(screenX-faceDir*15,screenY-21+sway,7,5);
+          if(angry){
+            ctx.fillStyle='rgba(255,205,92,0.28)';
+            ctx.fillRect(screenX-10,screenY-30,20,2);
+          }
           break; }
         case 'WIOSENNY_JELEN': {
           const body = flashing? '#fff7e8':(m.baseColor||'#bf8a4d');
@@ -4286,6 +7354,142 @@ const mobs = (function(){
           ctx.fillRect(screenX+(faceDir>0?5:-7), screenY-6, 2, 2); ctx.fillRect(screenX+(faceDir>0?8:-10), screenY-6, 2, 2);
           hpTop(screenY-7);
           break; }
+        case 'GOLD_DRAGON': {
+          const body = flashing? '#fff3d6' : (m.baseColor||'#b26d32');
+          const dark=mixHexColor(body,'#24120a',0.62);
+          const gold='#ffd45a';
+          const breath=m.state==='breath' || (attack && attack.kind==='spit');
+          const gas=m.state==='gas';
+          const claw=m.state==='claw';
+          const wingLift=Math.sin(phase*1.3)*2;
+          const prevComp=ctx.globalCompositeOperation;
+          ctx.globalCompositeOperation='lighter';
+          ctx.fillStyle='rgba(255,196,64,'+(breath?0.28:0.13)+')';
+          ctx.beginPath();
+          ctx.ellipse(screenX,screenY-18,38,22,0,0,Math.PI*2);
+          ctx.fill();
+          ctx.globalCompositeOperation=prevComp;
+          ctx.fillStyle=mixHexColor(body,'#5b2e16',0.28);
+          ctx.beginPath();
+          ctx.moveTo(screenX-faceDir*8,screenY-27+wingLift);
+          ctx.lineTo(screenX-faceDir*34,screenY-42+wingLift);
+          ctx.lineTo(screenX-faceDir*24,screenY-16);
+          ctx.closePath();
+          ctx.fill();
+          ctx.strokeStyle=dark;
+          ctx.lineWidth=2;
+          ctx.stroke();
+          box(screenX-28,screenY-31,52,26,body,dark);
+          shade(screenX-25,screenY-30,44,6,'#fff',0.12);
+          shade(screenX-27,screenY-13,50,8,'#000',0.13);
+          ctx.fillStyle=dark;
+          ctx.fillRect(screenX-21,screenY-6,9,13);
+          ctx.fillRect(screenX+9,screenY-6,9,13);
+          ctx.fillStyle=gold;
+          for(let i=-18;i<=14;i+=8) ctx.fillRect(screenX+i,screenY-34+Math.sin(phase+i)*1.2,5,7);
+          const neckX=screenX+faceDir*20;
+          ctx.fillStyle=body;
+          ctx.fillRect(neckX-(faceDir>0?1:13),screenY-38,14,18);
+          const headX=screenX+faceDir*31;
+          box(headX-(faceDir>0?2:18),screenY-47,20,15,body,dark);
+          hpTop(screenY-52);
+          ctx.fillStyle=gold;
+          ctx.fillRect(headX-(faceDir>0?1:7),screenY-53,7,7);
+          ctx.fillRect(headX-(faceDir>0?9:0),screenY-51,5,6);
+          ctx.fillStyle=breath?'#fff4a8':'#ffcf5a';
+          ctx.fillRect(headX+(faceDir>0?9:-11),screenY-43,3,3);
+          ctx.fillStyle=dark;
+          ctx.fillRect(headX+(faceDir>0?0:-14),screenY-38,12,3);
+          ctx.fillRect(headX+(faceDir>0?7:-19),screenY-35,7,3);
+          if(breath){
+            const flameX=headX+faceDir*15;
+            const flameY=screenY-38;
+            ctx.globalCompositeOperation='lighter';
+            for(let i=0;i<4;i++){
+              const len=18+i*8;
+              ctx.fillStyle=i%2?'rgba(255,98,35,0.42)':'rgba(255,224,82,0.55)';
+              ctx.beginPath();
+              ctx.moveTo(flameX,flameY-4+i);
+              ctx.lineTo(flameX+faceDir*len,flameY+Math.sin(phase+i)*4);
+              ctx.lineTo(flameX,flameY+5+i);
+              ctx.closePath();
+              ctx.fill();
+            }
+            ctx.globalCompositeOperation=prevComp;
+          }
+          if(gas){
+            ctx.fillStyle='rgba(126,210,91,0.34)';
+            for(let i=0;i<4;i++){
+              const gx=screenX-faceDir*(10+i*7);
+              const gy=screenY-24+Math.sin(phase+i)*5;
+              ctx.beginPath();
+              ctx.ellipse(gx,gy,6+i,4+i*0.5,0,0,Math.PI*2);
+              ctx.fill();
+            }
+          }
+          if(claw){
+            ctx.strokeStyle='rgba(255,232,132,0.78)';
+            ctx.lineWidth=2;
+            for(let i=-1;i<=1;i++){
+              ctx.beginPath();
+              ctx.moveTo(screenX+faceDir*21,screenY-12+i*4);
+              ctx.lineTo(screenX+faceDir*38,screenY-15+i*4);
+              ctx.stroke();
+            }
+          }
+          break; }
+        case 'GOLD_DWARF_GUARD': {
+          const body = flashing? '#fff1d2' : (m.baseColor||'#8f6240');
+          const dark=mixHexColor(body,'#1f140d',0.56);
+          const gold='#f3c64a';
+          const hammer=m.state==='hammer' || (attack && attack.kind==='slam');
+          const throwing=m.state==='throw';
+          const step=Math.sin(phase*2.8);
+          box(screenX-7,screenY-20,14,15,body,dark);
+          shade(screenX-7,screenY-20,14,4,'#fff',0.12);
+          ctx.fillStyle=gold;
+          ctx.fillRect(screenX-6,screenY-27,12,8);
+          ctx.fillStyle='#fff0a6';
+          ctx.fillRect(screenX-5,screenY-27,10,2);
+          hpTop(screenY-29);
+          ctx.fillStyle='#6a3d22';
+          ctx.fillRect(screenX-5,screenY-19,10,8);
+          ctx.fillStyle=hammer?'#ffe88a':'#11100d';
+          ctx.fillRect(screenX+(faceDir>0?2:-4),screenY-24,2,2);
+          ctx.fillRect(screenX+(faceDir>0?-2:2),screenY-24,2,2);
+          ctx.fillStyle='#3d281b';
+          ctx.fillRect(screenX-6,screenY-5,4,8);
+          ctx.fillRect(screenX+2,screenY-5,4,8);
+          ctx.fillStyle=dark;
+          ctx.fillRect(screenX-6+step*1.5,screenY+3,5,3);
+          ctx.fillRect(screenX+1-step*1.5,screenY+3,5,3);
+          const armY=screenY-15;
+          ctx.strokeStyle=dark;
+          ctx.lineWidth=3;
+          ctx.lineCap='round';
+          ctx.beginPath();
+          ctx.moveTo(screenX+faceDir*6,armY);
+          ctx.lineTo(screenX+faceDir*(hammer?18:throwing?15:11),armY+(hammer?-10:throwing?-6:2));
+          ctx.stroke();
+          ctx.lineCap='butt';
+          ctx.fillStyle='#4b3422';
+          const hx=screenX+faceDir*(hammer?21:throwing?18:13);
+          const hy=armY+(hammer?-13:throwing?-8:1);
+          ctx.fillRect(hx-(faceDir>0?2:5),hy,7,4);
+          ctx.fillStyle=gold;
+          ctx.fillRect(hx-(faceDir>0?1:8),hy-3,9,6);
+          if(hammer){
+            ctx.strokeStyle='rgba(255,216,82,0.62)';
+            ctx.lineWidth=2;
+            ctx.beginPath();
+            ctx.arc(screenX+faceDir*12,screenY-12,16,faceDir>0?-1.4:Math.PI-1.4,faceDir>0?0.4:Math.PI+0.4);
+            ctx.stroke();
+          }
+          if(throwing){
+            ctx.fillStyle='rgba(255,223,102,0.34)';
+            ctx.fillRect(screenX+faceDir*11,screenY-23,faceDir*16,2);
+          }
+          break; }
         case 'STRAZNIK': { // steel city automaton: riveted body, cyan sensor, cable limbs
           const body = flashing? '#f5fbff' : (m.baseColor||'#8f9aa6');
           const pulse=(Math.sin(now*0.008+m.spawnT*0.003)*0.5+0.5);
@@ -4338,11 +7542,79 @@ const mobs = (function(){
           ctx.fillStyle='#303842';
           for(let yy=screenY-18; yy<=screenY-10; yy+=4){ ctx.fillRect(screenX-4,yy,2,2); ctx.fillRect(screenX+2,yy,2,2); }
           break; }
+        case 'RADIATION_COCKROACH': {
+          const body = flashing? '#f4ffd6' : (m.baseColor||'#79cf42');
+          const glow=0.35+0.30*Math.sin(phase*2.2);
+          const skit=Math.sin(phase*4.2);
+          ctx.save();
+          ctx.globalCompositeOperation='lighter';
+          ctx.fillStyle='rgba(164,255,84,'+Math.max(0.16,glow).toFixed(3)+')';
+          ctx.beginPath();
+          ctx.ellipse(screenX,screenY-3,12,6,0,0,Math.PI*2);
+          ctx.fill();
+          ctx.restore();
+          box(screenX-8,screenY-6,16,7,body,'#263914');
+          ctx.fillStyle=mixHexColor(body,'#17300f',0.42);
+          ctx.fillRect(screenX-7,screenY-4,14,2);
+          ctx.strokeStyle='#263914';
+          ctx.lineWidth=1.4;
+          for(let i=-2;i<=2;i++){
+            const ox=i*3.2;
+            const lift=((i&1)?skit:-skit)*1.8;
+            ctx.beginPath(); ctx.moveTo(screenX+ox,screenY-1); ctx.lineTo(screenX+ox-4,screenY+3+lift); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(screenX+ox,screenY-1); ctx.lineTo(screenX+ox+4,screenY+3-lift); ctx.stroke();
+          }
+          ctx.fillStyle='#eaff8e';
+          ctx.fillRect(screenX+faceDir*6-(faceDir>0?0:2),screenY-5,2,2);
+          ctx.fillStyle='rgba(220,255,124,0.75)';
+          ctx.fillRect(screenX-faceDir*10,screenY-2,4,1);
+          hpTop(screenY-8);
+          break; }
+        case 'ATOMIC_BOMB': {
+          const body = flashing? '#eef6ff' : (m.baseColor||'#646f77');
+          const pulse=Math.sin(now*0.006+m.spawnT*0.004)*0.5+0.5;
+          const hot=0.36+0.42*pulse;
+          ctx.save();
+          ctx.globalCompositeOperation='lighter';
+          ctx.fillStyle='rgba(165,255,78,'+(0.12+hot*0.20).toFixed(3)+')';
+          ctx.beginPath();
+          ctx.ellipse(screenX,screenY-14,23,26,0,0,Math.PI*2);
+          ctx.fill();
+          ctx.restore();
+          ctx.fillStyle=body;
+          ctx.beginPath();
+          ctx.ellipse(screenX,screenY-12,15,19,0,0,Math.PI*2);
+          ctx.fill();
+          ctx.strokeStyle='#222a31';
+          ctx.lineWidth=2;
+          ctx.stroke();
+          shade(screenX-12,screenY-25,24,6,'#fff',0.12);
+          ctx.fillStyle='#2a3138';
+          ctx.fillRect(screenX-8,screenY+5,16,4);
+          ctx.fillRect(screenX-4,screenY+9,8,3);
+          ctx.strokeStyle='#2a3138';
+          ctx.lineWidth=2;
+          ctx.beginPath();
+          ctx.moveTo(screenX,screenY-31);
+          ctx.lineTo(screenX+Math.sin(phase)*6,screenY-40);
+          ctx.stroke();
+          ctx.fillStyle='rgba(210,255,95,'+(0.55+0.35*pulse).toFixed(3)+')';
+          ctx.fillRect(screenX-5,screenY-17,10,10);
+          ctx.fillStyle='#20282f';
+          ctx.fillRect(screenX-7,screenY-3,14,2);
+          ctx.fillRect(screenX-7,screenY-27,14,2);
+          ctx.fillStyle='#111820';
+          ctx.fillRect(screenX-12,screenY-10,24,2);
+          ctx.fillStyle='#eaff8e';
+          ctx.fillRect(screenX-2,screenY-14,4,4);
+          hpTop(screenY-42);
+          break; }
         default: {
           // fallback: small box
           box(screenX-4, screenY-4,8,8, flashing? '#ffffff':'#888', '#444');
         }
       }
+      drawMobAttackIntent(ctx,TILE,spec,screenX,screenY,faceDir,phase,attack,hpTop);
       drawMobThreatMarks(ctx,TILE,m,spec,screenX,screenY,faceDir,phase,hpTop);
       // HP bar (position above highest drawn pixel); species with bespoke bars
       // (golden sprinter) or hidden bodies (mole in rock) set m._hideBar
@@ -4438,8 +7710,48 @@ const mobs = (function(){
       if(visibleTile && !visibleTile(Math.floor(pr.x), Math.floor(pr.y))) continue;
       ctx.save();
       ctx.translate(pr.x*TILE, pr.y*TILE); ctx.rotate(pr.spin);
-      ctx.fillStyle='#e8e4d8'; ctx.fillRect(-5,-1.5,10,3);
-      ctx.fillStyle='#c9c2b0'; ctx.fillRect(-6,-2.5,3,5); ctx.fillRect(3,-2.5,3,5);
+      if(pr.type==='spit'){
+        ctx.fillStyle='rgba(154,114,47,0.92)';
+        ctx.beginPath(); ctx.ellipse(0,0,7,4,0,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='rgba(235,198,104,0.78)';
+        ctx.fillRect(-3,-2,5,3);
+        ctx.fillStyle='rgba(93,58,21,0.45)';
+        ctx.fillRect(-8,1,5,2);
+      } else if(pr.type==='rock'){
+        ctx.fillStyle='#5c6268';
+        ctx.beginPath();
+        ctx.moveTo(-7,-4); ctx.lineTo(-2,-7); ctx.lineTo(6,-5);
+        ctx.lineTo(8,2); ctx.lineTo(2,7); ctx.lineTo(-6,5);
+        ctx.closePath(); ctx.fill();
+        ctx.fillStyle='rgba(255,255,255,0.16)';
+        ctx.fillRect(-4,-4,5,2);
+        ctx.fillStyle='rgba(0,0,0,0.24)';
+        ctx.fillRect(1,3,5,2);
+      } else if(pr.type==='dragon_fire'){
+        const prevComp=ctx.globalCompositeOperation;
+        ctx.globalCompositeOperation='lighter';
+        ctx.fillStyle='rgba(255,94,35,0.82)';
+        ctx.beginPath();
+        ctx.ellipse(0,0,9,5,0,0,Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle='rgba(255,232,92,0.88)';
+        ctx.beginPath();
+        ctx.ellipse(2,0,5,3,0,0,Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle='rgba(116,216,78,0.28)';
+        ctx.fillRect(-10,2,8,3);
+        ctx.globalCompositeOperation=prevComp;
+      } else if(pr.type==='gold_pick'){
+        ctx.fillStyle='#f1c64d';
+        ctx.fillRect(-6,-1.5,12,3);
+        ctx.fillStyle='#4a3222';
+        ctx.fillRect(-1,-6,2,12);
+        ctx.fillStyle='rgba(255,255,255,0.22)';
+        ctx.fillRect(-5,-2.5,5,1);
+      } else {
+        ctx.fillStyle='#e8e4d8'; ctx.fillRect(-5,-1.5,10,3);
+        ctx.fillStyle='#c9c2b0'; ctx.fillRect(-6,-2.5,3,5); ctx.fillRect(3,-2.5,3,5);
+      }
       ctx.restore();
     }
     // Poisoned mobs: rising green wisps
@@ -4500,10 +7812,22 @@ const mobs = (function(){
     }
     return best; }
 
+  function sandWormWaterHitOpts(opts){
+    if(!opts || typeof opts!=='object') return false;
+    const element=String(opts.element||opts.kind||opts.type||opts.cause||'').toLowerCase();
+    return element==='water' || element==='hose' || element==='douse';
+  }
   function attackAt(tileX,tileY,dmgBonus,opts){ const m=findAt(tileX,tileY); if(!m) return false; const bonus=(typeof dmgBonus==='number' && isFinite(dmgBonus) && dmgBonus>0)? dmgBonus:0; damageMob(m, 3 + bonus, opts); setAggro(m.id); return true; }
 
   // Absolute-damage strike (projectiles): no base melee added
-  function damageAt(tileX,tileY,dmg,opts){ const m=findAt(tileX,tileY); if(!m) return false; damageMob(m, Math.max(0.5, (typeof dmg==='number' && isFinite(dmg))? dmg:1), opts); setAggro(m.id); return true; }
+  function damageAt(tileX,tileY,dmg,opts){
+    const m=findAt(tileX,tileY); if(!m) return false;
+    if(m.id==='SAND_WORM' && sandWormWaterHitOpts(opts)){
+      pacifySandWorm(m,'water',performance.now(),{x:tileX+0.5,y:tileY+0.5});
+      return true;
+    }
+    damageMob(m, Math.max(0.5, (typeof dmg==='number' && isFinite(dmg))? dmg:1), opts); setAggro(m.id); return true;
+  }
 
   function mobRect(m,spec){
     const e=bodyHalfExtents(m,spec);
@@ -4634,7 +7958,19 @@ const mobs = (function(){
   function poisonAt(tileX,tileY,opts){ const m=findAt(tileX,tileY); if(!m) return false; return applyStatus(m,'poison',opts); }
   function poisonRadius(wx,wy,r,opts){ let n=0; const r2=r*r; for(const m of mobs){ const dx=m.x-wx, dy=m.y-wy; if(dx*dx+dy*dy<=r2 && applyStatus(m,'poison',opts)) n++; } return n; }
   // Water hose: put out burning creatures in an area
-  function douseRadius(wx,wy,r){ let n=0; const r2=r*r; for(const m of mobs){ if(!hasStatus(m,'burn')) continue; const dx=m.x-wx, dy=m.y-wy; if(dx*dx+dy*dy<=r2){ clearStatus(m,'burn'); n++; } } return n; }
+  function douseRadius(wx,wy,r){
+    let n=0; const r2=r*r; const now=performance.now();
+    for(const m of mobs){
+      const dx=m.x-wx, dy=m.y-wy;
+      if(dx*dx+dy*dy>r2) continue;
+      let changed=false;
+      if(hasStatus(m,'burn')){ clearStatus(m,'burn'); changed=true; }
+      if(m.id==='SAND_WORM' && pacifySandWorm(m,'water',now,{x:wx,y:wy})) changed=true;
+      if(m.id==='STONE_GOLEM' && pacifyStoneGolem(m,'water',now)) changed=true;
+      if(changed) n++;
+    }
+    return n;
+  }
   function shockAquaticRadius(wx,wy,r,opts){
     opts=opts||{};
     const radius=Math.max(0,Number(r)||0);
@@ -4685,14 +8021,33 @@ const mobs = (function(){
     }
     return n;
   }
+  function healRadiationRain(centerX,radius,amount,opts){
+    const r=Math.max(1,Number(radius)||38);
+    const heal=Math.max(0.1,Number(amount)||1);
+    const rainAt=MM && MM.clouds && typeof MM.clouds.isRainingAt==='function' ? MM.clouds.isRainingAt : null;
+    const minX=Number.isFinite(centerX) ? centerX-r : -Infinity;
+    const maxX=Number.isFinite(centerX) ? centerX+r : Infinity;
+    let healed=0;
+    for(const m of mobs){
+      if(!validMobState(m) || m.hp<=0 || !(m.hp<m.maxHp)) continue;
+      if(m.x<minX || m.x>maxX) continue;
+      if(rainAt && !rainAt(Math.floor(m.x))) continue;
+      m.hp=Math.min(m.maxHp,m.hp+heal);
+      healed++;
+      if(healed<=3 && (!opts || opts.particles!==false)){
+        try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(m.x*(MM.TILE||20),(m.y-0.25)*(MM.TILE||20),'common',2); }catch(e){}
+      }
+    }
+    return healed;
+  }
 
-  const NO_MEAT_DROP = { FIREFLY:true, GHOUL:true, SZKIELET:true, PELZACZ:true, STRAZNIK:true, ZLOTY:true, ATLANTIS_MEDUZA:true };
+  const NO_MEAT_DROP = { FIREFLY:true, GHOUL:true, SZKIELET:true, PELZACZ:true, GOLD_DRAGON:true, GOLD_DWARF_GUARD:true, STRAZNIK:true, ATOMIC_BOMB:true, RADIATION_COCKROACH:true, ZLOTY:true, ATLANTIS_MEDUZA:true, VULTURE_HATCHLING:true };
   const MEAT_DROP_CHANCE = {
     BEAR:1, SHARK:1,
     DEER:0.75, WOLF:0.75, GOAT:0.65,
     EEL:0.45, FISH:0.4, PIRANHA:PIRANHA_MEAT_DROP_CHANCE, CRAB:0.35,
     RABBIT:0.3, JASZCZUR:0.3, ZABA:0.25,
-    BIRD:0.25, OWL:0.25,
+    BIRD:0.25, OWL:0.25, VULTURE:0.55,
     SQUIRREL:0.1, BAT:0.1
   };
   function inferredMeatDropChance(spec){
@@ -4723,7 +8078,144 @@ const mobs = (function(){
     return false;
   }
 
-  function damageMob(m,amount,opts){ if(m.hp<=0) return; noteDamageSource(m,opts); m.hp-=amount; m.hitFlashUntil = performance.now()+120; m.shake = 0.6; if(m.hp<=0){ m.hp=0; m.shake=1; spawnMobDeathFx(m,opts); onMobDeath(m); }
+  function noteEntityNumber(detail){
+    try{
+      if(typeof window.dispatchEvent==='function' && typeof CustomEvent==='function'){
+        window.dispatchEvent(new CustomEvent('mm-entity-number',{detail}));
+      }
+    }catch(e){}
+  }
+  function noteCombatEvent(detail){
+    try{
+      if(typeof window.dispatchEvent==='function' && typeof CustomEvent==='function'){
+        window.dispatchEvent(new CustomEvent('mm-combat-event',{detail}));
+      }
+    }catch(e){}
+  }
+  function mobThermalProfile(m,spec){
+    spec=spec || (m && SPECIES[m.id]) || {};
+    const id=String((m && m.id) || (spec && spec.id) || '').toLowerCase();
+    const cause=String((spec && (spec.contactCause || spec.damageCause || spec.element || spec.biome)) || '').toLowerCase();
+    const cold=(m && m.hostilitySide==='cold') ||
+      id.indexOf('ice')>=0 || id.indexOf('snow')>=0 || id.indexOf('wraith')>=0 || id.indexOf('zimow')>=0 ||
+      cause.indexOf('ice')>=0 || cause.indexOf('frost')>=0 || cause.indexOf('chill')>=0 || cause.indexOf('snow')>=0;
+    const hot=(m && m.hostilitySide==='hot') || hasStatus(m,'burn') ||
+      id.indexOf('fire')>=0 || id.indexOf('flame')>=0 || id.indexOf('lava')>=0 || id.indexOf('volcano')>=0 ||
+      cause.indexOf('fire')>=0 || cause.indexOf('flame')>=0 || cause.indexOf('lava')>=0 || cause.indexOf('burn')>=0;
+    return {hot,cold};
+  }
+  function mobThermalDamageBonus(m,spec,opts){
+    if(!m || !sourceIsHero(opts)) return null;
+    const element=combatElementFromOpts(opts);
+    if(!element) return null;
+    const profile=mobThermalProfile(m,spec);
+    const pct=Math.round((THERMAL_DAMAGE_BONUS_MULT-1)*100);
+    if(element==='fire' && profile.cold) return {mult:THERMAL_DAMAGE_BONUS_MULT,pct,kind:'heat',element:'fire'};
+    if((element==='water' || element==='ice') && profile.hot) return {mult:THERMAL_DAMAGE_BONUS_MULT,pct,kind:element==='ice'?'cold':'cool',element};
+    return null;
+  }
+  function noteMobCombatHit(m,dealt,opts,willDie,beforeHp,thermalBonus){
+    if(!m || !sourceIsHero(opts)) return;
+    const special=!!(opts && typeof opts==='object' && opts.specialAttack);
+    const lucky=!!(opts && typeof opts==='object' && opts.luckyStrike);
+    const element=combatElementFromOpts(opts);
+    const spec=SPECIES[m.id] || {};
+    const maxHp=Math.max(1,Number(m.maxHp)||Number(spec.hp)||Number(beforeHp)||1);
+    const major=dealt>=Math.max(7,maxHp*0.20);
+    const elemental=!!element;
+    const bonusPct=thermalBonus && thermalBonus.pct>0 ? thermalBonus.pct : 0;
+    const important=willDie || special || lucky || major || bonusPct>0 || (elemental && dealt>=Math.max(1.5,maxHp*0.055));
+    if(!important) return;
+    const now=performance.now();
+    if(!willDie && !special && !lucky && !major && now<(m._nextCombatEventAt||0)) return;
+    m._nextCombatEventAt=now+(elemental?360:260);
+    let kind='heavy';
+    if(lucky) kind='lucky';
+    else if(special) kind='special';
+    else if(elemental) kind='elemental';
+    noteCombatEvent({
+      kind,
+      source:'hero',
+      target:'mob',
+      x:finiteCoord(m.x)?m.x:undefined,
+      y:finiteCoord(m.y)?m.y-0.55:undefined,
+      amount:dealt,
+      species:m.id,
+      cause:opts && typeof opts==='object' ? (opts.cause || opts.kind || opts.type || opts.weaponType) : undefined,
+      element,
+      special,
+      lucky,
+      major,
+      bonusDamagePct:bonusPct || undefined,
+      thermalKind:thermalBonus && thermalBonus.kind,
+      finisher:!!willDie,
+      power:Math.max(0.65,Math.min(2.4,dealt/Math.max(6,maxHp*0.16))),
+      dir:(opts && typeof opts==='object' && finiteNum(opts.x)) ? (m.x>=opts.x?1:-1) : undefined
+    });
+  }
+  function damageMob(m,amount,opts){
+    if(m.hp<=0) return;
+    const spec=SPECIES[m.id] || {};
+    const thermalBonus=mobThermalDamageBonus(m,spec,opts);
+    const dealt=Math.max(0.5, (Number(amount)||0.5) * (thermalBonus ? thermalBonus.mult : 1));
+    const beforeHp=Number(m.hp)||0;
+    const willDie=beforeHp-dealt<=0;
+    noteDamageSource(m,opts);
+    m.hp-=dealt;
+    m.hitFlashUntil = performance.now()+120;
+    m.shake = 0.6;
+    noteMobCombatHit(m,dealt,opts,willDie,beforeHp,thermalBonus);
+    if(m.hp<=0){ m.hp=0; m.shake=1; spawnMobDeathFx(m,opts); onMobDeath(m); }
+  }
+
+  function cleanXpFatigueEntry(entry){
+    if(!entry || typeof entry!=='object') return null;
+    const kills=Number(entry.kills);
+    const lastDay=Number(entry.lastDay);
+    if(!isFinite(kills) || kills<0 || !isFinite(lastDay) || lastDay<=0) return null;
+    return {kills:Math.max(0,Math.min(10000,Math.floor(kills))), lastDay};
+  }
+  function xpFatigueMultiplier(specId,day){
+    const id=String(specId||'');
+    let entry=cleanXpFatigueEntry(xpFatigue[id]) || {kills:0,lastDay:day};
+    if(day-entry.lastDay>=XP_FATIGUE_RESET_DAYS) entry={kills:0,lastDay:day};
+    const mult=Math.max(XP_FATIGUE_MIN_MULT, 1-entry.kills*XP_FATIGUE_STEP);
+    return {entry,mult};
+  }
+  function noteXpAwardEvent(detail){
+    try{
+      if(typeof window.dispatchEvent==='function' && typeof CustomEvent==='function'){
+        window.dispatchEvent(new CustomEvent('mm-xp-awarded',{detail}));
+        return;
+      }
+    }catch(e){}
+    try{ if(MM.vitalsHud && typeof MM.vitalsHud.noteXpAward==='function') MM.vitalsHud.noteXpAward(detail); }catch(e){}
+  }
+  function awardMobXp(m,spec,player){
+    const base=Math.max(0,Math.round(Number(spec && spec.xp) || 1));
+    if(!player || typeof player.xp!=='number' || base<=0) return {amount:0,base,fatigueMult:1,special:false};
+    const day=currentGameDayFloat();
+    const fatigue=xpFatigueMultiplier(m.id,day);
+    const special=!!m._lastHeroHitSpecial;
+    const specialMult=special ? XP_SPECIAL_BONUS_MULT : 1;
+    const amount=Math.max(1,Math.round(base*fatigue.mult*specialMult));
+    player.xp += amount;
+    const next={kills:fatigue.entry.kills+1,lastDay:day};
+    xpFatigue[m.id]=next;
+    const detail={
+      amount,
+      base,
+      species:m.id,
+      fatigueKills:fatigue.entry.kills,
+      fatigueMult:+fatigue.mult.toFixed(3),
+      special,
+      specialMult,
+      day:+day.toFixed(3),
+      x:finiteCoord(m.x)?+m.x.toFixed(4):undefined,
+      y:finiteCoord(m.y)?+m.y.toFixed(4):undefined
+    };
+    noteXpAwardEvent(detail);
+    return detail;
   }
 
   function onMobDeath(m){
@@ -4734,7 +8226,7 @@ const mobs = (function(){
     const player = window.player;
     dropMeatForMob(m,spec);
     // XP gain
-    if(player && typeof player.xp==='number'){ player.xp += spec.xp||1; }
+    awardMobXp(m,spec,player);
     // Loot: resource drops go straight into the block inventory — the loot inbox
     // is for gear items ({id,kind,...}) and renders {item,qty} entries as garbage
     if(spec.loot && Array.isArray(spec.loot)){
@@ -4752,6 +8244,18 @@ const mobs = (function(){
     if(typeof spec.onDeath==='function'){ try{ spec.onDeath(m); }catch(e){} }
   }
 
+  function chargeHeroFromElectricHit(dealt, srcX, srcY, cause){
+    if(cause!=='eel_shock' || !(dealt>0)) return;
+    const player=window.player;
+    const he=MM && MM.heroEnergy;
+    if(!player || !he || typeof he.info!=='function' || typeof he.chargeExternal!=='function') return;
+    const maxHp=Math.max(1,Number(player.maxHp)||100);
+    const info=he.info() || {};
+    const maxEnergy=Math.max(1,Number(info.max)||0);
+    const gain=maxEnergy*Math.max(0,Number(dealt)||0)/maxHp;
+    if(gain>0) he.chargeExternal(gain,{cause:'eel_shock',source:{x:srcX,y:srcY},intensity:1.15});
+  }
+
   function damagePlayer(amount, srcX, srcY, cause, spec){
     const player = window.player; if(typeof player!=='object' || !player) return;
     // hero damage is centralized in main.js (i-frames, knockback, audio, death);
@@ -4761,10 +8265,18 @@ const mobs = (function(){
       if(spec && finiteNum(spec.contactInvulMs)) opts.invulMs=spec.contactInvulMs;
       if(spec && finiteNum(spec.contactKnockback)) opts.kb=spec.contactKnockback;
       if(spec && finiteNum(spec.contactKnockbackY)) opts.kbY=spec.contactKnockbackY;
-      window.damageHero(amount,opts);
+      const before=Number(player.hp)||0;
+      const hit=window.damageHero(amount,opts);
+      if(hit){
+        const after=Number(player.hp)||0;
+        chargeHeroFromElectricHit(Math.max(0,before-after),srcX,srcY,opts.cause);
+      }
       return;
     }
-    if(player.hpInvul && performance.now()<player.hpInvul) return; player.hp -= amount; player.hpInvul = performance.now()+600;
+    if(player.hpInvul && performance.now()<player.hpInvul) return;
+    const before=Number(player.hp)||0;
+    player.hp -= amount; player.hpInvul = performance.now()+600;
+    chargeHeroFromElectricHit(Math.max(0,before-(Number(player.hp)||0)),srcX,srcY,cause||'mob');
     if(typeof srcX==='number' && typeof srcY==='number'){ const dx = (player.x - srcX); const dy=(player.y - srcY); const d = Math.hypot(dx,dy)||1; player.vx += (dx/d)*4; player.vy -= 2.5; }
     if(player.hp<=0){ player.hp=0; playerDead(); }
   }
@@ -4809,19 +8321,63 @@ const mobs = (function(){
     if(typeof m.baseColor==='string') out.baseColor=m.baseColor;
     if(finiteNum(m.lifeEndAt)) out.lifeEndAt=m.lifeEndAt;
     if(finiteNum(m.decayStartAt)) out.decayStartAt=m.decayStartAt;
+    if(isMobPacified(m,performance.now())) out.pacifiedMs=Math.max(0,Math.round(m._pacifiedUntil-performance.now()));
+    if(finiteNum(m.homeX)) out.homeX=+m.homeX.toFixed(4);
+    if(finiteNum(m.homeY)) out.homeY=+m.homeY.toFixed(4);
+    if(isGoldGuardianId(m.id)){
+      if(typeof m.goldGuardKey==='string') out.goldGuardKey=m.goldGuardKey.slice(0,32);
+      if(finiteNum(m.guardGoldX)) out.guardGoldX=+m.guardGoldX.toFixed(4);
+      if(finiteNum(m.guardGoldY)) out.guardGoldY=+m.guardGoldY.toFixed(4);
+    }
     if(isHeroFocused(m)) out.heroFocusMs=Math.max(0,Math.round(m.heroFocusUntil-Date.now()));
+    if(isTempleGuardAggro(m)) out.templeAggroMs=Math.max(0,Math.round(m.templeAggroUntil-Date.now()));
+    if(finiteNum(m.templeAlarmX)) out.templeAlarmX=+m.templeAlarmX.toFixed(4);
+    if(finiteNum(m.templeAlarmY)) out.templeAlarmY=+m.templeAlarmY.toFixed(4);
+    if(m.templeAlarmKind==='treasure' || m.templeAlarmKind==='structure') out.templeAlarmKind=m.templeAlarmKind;
     if(m.id==='STRAZNIK'){
       if(finiteNum(m.sentinelReloadT)) out.sentinelReloadT=clampFinite(m.sentinelReloadT,0,0,SENTINEL_RELOAD_SECONDS);
       if(finiteNum(m.sentinelShotsUntilReload)) out.sentinelShotsUntilReload=clampFinite(m.sentinelShotsUntilReload,SENTINEL_BURST_MIN,0,SENTINEL_BURST_MAX);
+    }
+    if(m.id==='VULTURE' || m.id==='VULTURE_HATCHLING'){
+      if(finiteNum(m.nestX)) out.nestX=+m.nestX.toFixed(4);
+      if(finiteNum(m.nestY)) out.nestY=+m.nestY.toFixed(4);
+      if(m.id==='VULTURE' && typeof m._vultureCapture==='boolean') out.vultureCapture=m._vultureCapture?1:0;
+    }
+    if(m.id==='SAND_WORM' && finiteNum(m._sandWormWakeRadius)){
+      out.sandWormWakeRadius=+clampFinite(m._sandWormWakeRadius,3,SAND_WORM_WAKE_MIN_RADIUS,SAND_WORM_WAKE_MAX_RADIUS).toFixed(3);
     }
     return out;
   }
 
   const AGGRO_SKEW_GRACE_MS = 30000; // accept up to 30s negative skew
+  function serializeXpFatigue(){
+    const out={};
+    const day=currentGameDayFloat();
+    for(const id in xpFatigue){
+      const entry=cleanXpFatigueEntry(xpFatigue[id]);
+      if(!entry) continue;
+      if(day-entry.lastDay>=XP_FATIGUE_RESET_DAYS) continue;
+      out[id]={kills:entry.kills,lastDay:+entry.lastDay.toFixed(4)};
+    }
+    return out;
+  }
+  function restoreXpFatigue(src){
+    for(const id in xpFatigue) delete xpFatigue[id];
+    if(!src || typeof src!=='object') return;
+    const m=src.m && typeof src.m==='object' ? src.m : src;
+    const day=currentGameDayFloat();
+    for(const id in m){
+      if(!SPECIES[id]) continue;
+      const entry=cleanXpFatigueEntry(m[id]);
+      if(!entry) continue;
+      if(day-entry.lastDay>=XP_FATIGUE_RESET_DAYS) continue;
+      xpFatigue[id]=entry;
+    }
+  }
   function serialize(){ const now=Date.now(); const rel={}; for(const k in speciesAggro){ const rem = speciesAggro[k]-now; if(rem>0) rel[k]=rem; }
     // the golden sprinter is a transient event creature: its _g state isn't saved,
     // so restoring it would produce a broken husk — the visit just ends instead
-    return { v:4, list: mobs.map(serializeMob).filter(Boolean), aggro:{mode:'rel', m:rel}, golden:goldenSnapshot() }; }
+    return { v:5, list: mobs.map(serializeMob).filter(Boolean), aggro:{mode:'rel', m:rel}, golden:goldenSnapshot(), xpFatigue:{mode:'day',m:serializeXpFatigue()} }; }
   function deserialize(data){ // clear
     for(const m of mobs) removeFromGrid(m); mobs.length=0; // reset live counts before rebuild
     mobDeathFx.length=0;
@@ -4829,6 +8385,7 @@ const mobs = (function(){
     metrics.deathFx=0;
     for(const k in speciesCounts) delete speciesCounts[k];
     lastDayState = null;
+    restoreXpFatigue(data && data.xpFatigue);
     goldenRestore(data && data.golden);
     if(data && Array.isArray(data.list)){
       for(const r of data.list){
@@ -4869,10 +8426,35 @@ const mobs = (function(){
         }
         if(finiteNum(r.lifeEndAt)) m.lifeEndAt=r.lifeEndAt;
         if(finiteNum(r.decayStartAt)) m.decayStartAt=r.decayStartAt;
+        if(finiteNum(r.pacifiedMs) && r.pacifiedMs>0) m._pacifiedUntil=performance.now()+Math.min(r.pacifiedMs,60000);
+        if(finiteNum(r.homeX)) m.homeX=clampFinite(r.homeX,m.x,-10000000,10000000);
+        if(finiteNum(r.homeY)) m.homeY=clampFinite(r.homeY,m.y,WORLD_TOP,WORLD_BOTTOM);
+        if(isGoldGuardianId(r.id)){
+          if(typeof r.goldGuardKey==='string' && r.goldGuardKey.length<=64) m.goldGuardKey=r.goldGuardKey;
+          if(finiteNum(r.guardGoldX)) m.guardGoldX=clampFinite(r.guardGoldX,m.x,-10000000,10000000);
+          if(finiteNum(r.guardGoldY)) m.guardGoldY=clampFinite(r.guardGoldY,m.y,WORLD_TOP,WORLD_BOTTOM);
+          if(!m.goldGuardKey && finiteNum(m.guardGoldX) && finiteNum(m.guardGoldY)) m.goldGuardKey=goldGuardKeyFor(m.guardGoldX,m.guardGoldY);
+        }
         if(finiteNum(r.heroFocusMs) && r.heroFocusMs>0) m.heroFocusUntil=Date.now()+Math.min(r.heroFocusMs,HERO_FOCUS_MS);
+        if(finiteNum(r.templeAggroMs) && r.templeAggroMs>0) m.templeAggroUntil=Date.now()+Math.min(r.templeAggroMs,TEMPLE_GUARD_VIOLATION_AGGRO_MS);
+        if(finiteNum(r.templeAlarmX)) m.templeAlarmX=clampFinite(r.templeAlarmX,m.x,-10000000,10000000);
+        if(finiteNum(r.templeAlarmY)) m.templeAlarmY=clampFinite(r.templeAlarmY,m.y,WORLD_TOP,WORLD_BOTTOM);
+        if(r.templeAlarmKind==='treasure' || r.templeAlarmKind==='structure') m.templeAlarmKind=r.templeAlarmKind;
         if(r.id==='STRAZNIK'){
           if(finiteNum(r.sentinelReloadT)) m.sentinelReloadT=clampFinite(r.sentinelReloadT,0,0,SENTINEL_RELOAD_SECONDS);
           if(finiteNum(r.sentinelShotsUntilReload)) m.sentinelShotsUntilReload=clampFinite(r.sentinelShotsUntilReload,SENTINEL_BURST_MIN,0,SENTINEL_BURST_MAX);
+        }
+        if(r.id==='VULTURE' || r.id==='VULTURE_HATCHLING'){
+          if(finiteNum(r.nestX)) m.nestX=clampFinite(r.nestX,m.x,-10000000,10000000);
+          if(finiteNum(r.nestY)) m.nestY=clampFinite(r.nestY,m.y,WORLD_TOP,WORLD_BOTTOM);
+          if(finiteNum(m.nestX) && finiteNum(m.nestY)){
+            m.homeX=finiteNum(m.homeX)?m.homeX:m.nestX+0.5;
+            m.homeY=finiteNum(m.homeY)?m.homeY:m.nestY-1.2;
+          }
+          if(r.id==='VULTURE' && (r.vultureCapture===0 || r.vultureCapture===1 || typeof r.vultureCapture==='boolean')) m._vultureCapture=!!r.vultureCapture;
+        }
+        if(r.id==='SAND_WORM' && finiteNum(r.sandWormWakeRadius)){
+          m._sandWormWakeRadius=clampFinite(r.sandWormWakeRadius,3,SAND_WORM_WAKE_MIN_RADIUS,SAND_WORM_WAKE_MAX_RADIUS);
         }
         if(spec.aquatic){ if(finiteNum(r.waterTopY)) m.waterTopY=r.waterTopY; if(finiteNum(r.desiredDepth)) m.desiredDepth=r.desiredDepth; m.nextWaterScan = performance.now() + 3000; m.strandedTime=0; }
         mobs.push(m);
@@ -4921,14 +8503,17 @@ const mobs = (function(){
       metrics.sentinelMeatCooked = 0;
       metrics.sentinelMeatDestroyed = 0;
       metrics.sentinelReloads = 0;
+      metrics.goldGuardians = 0;
       metrics.sunriseBurns = 0;
       lastDayState = null;
       // Reset global aggro
       for(const k in speciesAggro){ delete speciesAggro[k]; }
+      for(const k in xpFatigue){ delete xpFatigue[k]; }
       goldenReset();
       // Push out next spawn check and freeze spawns for a short time
       nextSpawnCheck = performance.now() + 2000;
       nextPiranhaAmbush = performance.now() + 2000;
+      nextGoldGuardianScan = performance.now() + 2000;
       spawnFreezeUntil = performance.now() + 4000;
     }catch(e){
       // Fallback to deserialize empty if anything goes wrong
@@ -4998,11 +8583,11 @@ const mobs = (function(){
     }
     function debugCombat(){
       return {
-        projectiles:mobProjectiles.map(p=>({x:p.x,y:p.y,vx:p.vx,vy:p.vy,dmg:p.dmg,lead:p.lead||0})),
+        projectiles:mobProjectiles.map(p=>({x:p.x,y:p.y,vx:p.vx,vy:p.vy,dmg:p.dmg,lead:p.lead||0,type:p.type||'bone',cause:p.cause||'mob_projectile',ownerId:p.ownerId||'',aimX:p.aimX,aimY:p.aimY})),
         lasers:mobLasers.map(l=>({x1:l.x1,y1:l.y1,x2:l.x2,y2:l.y2,dmg:l.dmg||0,hit:!!l.hit}))
       };
     }
-  const api = { update, draw, attackAt, damageAt, collideBoat, igniteAt, igniteRadius, poisonAt, poisonRadius, douseRadius, shockAquaticRadius, blastRadius, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, isHostile:isMobHostile, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat };
+  const api = { update, draw, attackAt, damageAt, collideBoat, igniteAt, igniteRadius, poisonAt, poisonRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat };
   MM.mobs = api;
   try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
   return api;

@@ -12,13 +12,18 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   const MASTER_EJECTION_FORCE = 3;
   const MAX_ROCKS = 56;
   const MAX_MASTER_SHOTS = 8;
+  const MAX_LAVA_HANDS = 8;
+  const LAVA_HAND_AIRBORNE_CHANCE = 0.01;
+  const LAVA_HAND_CHECK_SECONDS = 0.75;
   const ROCK_DYNAMO_DESTROY_CHANCE = 0.20;
   const rocks = [];
   const masterShots = [];
+  const lavaHands = [];
   const masterTiles = new Map(); // "x,y" -> {x,y,t,stage}
   const volcanoState = new Map();
   let scanT = 0;
   let masterScanT = 0;
+  let lavaHandCheckT = 0;
   let activeVolcanoes = [];
 
   function wg(){ return (window.MM && MM.worldGen) || WORLDGEN; }
@@ -286,6 +291,67 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     if(dx*dx+dy*dy>0.65) return;
     window.damageHero(damage,{srcX:obj.x,srcY:obj.y,kb:4,kbY:-3,cause:'volcano'});
   }
+  function playerAirborneOverVolcano(player,v){
+    if(!player || !v) return false;
+    if(player.onGround!==false && Math.abs(player.vy||0)<0.35) return false;
+    const c=craterPoint(v);
+    const radius=Math.max(4,(v.crater||2)+Math.max(8,(v.radius||18)*0.34));
+    if(Math.abs(player.x-c.x)>radius) return false;
+    return player.y>c.y-28 && player.y<c.y+7;
+  }
+  function triggerLavaHand(player,v){
+    if(!player || !v) return false;
+    const c=craterPoint(v);
+    const move=Number.isFinite(player.vx) && Math.abs(player.vx)>0.12 ? player.vx : (player.facing||1);
+    const throwDir=move>=0 ? -1 : 1;
+    const fromX=player.x-throwDir*1.3;
+    if(lavaHands.length>=MAX_LAVA_HANDS) lavaHands.shift();
+    lavaHands.push({
+      x:fromX,
+      y:c.y+1.2,
+      tx:player.x,
+      ty:player.y,
+      dir:throwDir,
+      life:0,
+      max:1.05,
+      grabT:0.28
+    });
+    try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(player.x*(MM.TILE||20),(player.y+0.2)*(MM.TILE||20),'epic'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('explosion'); }catch(e){}
+    if(typeof window.damageHero==='function'){
+      try{ window.damageHero(16,{srcX:fromX,srcY:c.y,kb:0,kbY:-0.4,cause:'lava_hand',invulMs:720}); }catch(e){}
+    }
+    player.vx=throwDir*(10.5+Math.min(4,Math.abs(player.vx||0)*0.45));
+    player.vy=Math.min(player.vy||0,-8.2);
+    if(Number.isFinite(player.x)) player.x += throwDir*0.35;
+    return true;
+  }
+  function maybeTriggerLavaHand(dt,player){
+    lavaHandCheckT-=dt;
+    if(lavaHandCheckT>0 || !player) return false;
+    lavaHandCheckT=LAVA_HAND_CHECK_SECONDS;
+    if(!(Math.abs(player.vx||0)>0.18 || Math.abs(player.vy||0)>0.45)) return false;
+    const W=wg();
+    let v=null;
+    try{ if(W && W.volcanoAt) v=W.volcanoAt(Math.round(player.x)); }catch(e){ v=null; }
+    if(!v){
+      for(const cand of activeVolcanoes){
+        if(playerAirborneOverVolcano(player,cand)){ v=cand; break; }
+      }
+    }
+    if(!playerAirborneOverVolcano(player,v)) return false;
+    if(Math.random()>=LAVA_HAND_AIRBORNE_CHANCE) return false;
+    return triggerLavaHand(player,v);
+  }
+  function updateLavaHands(dt){
+    for(let i=lavaHands.length-1;i>=0;i--){
+      const h=lavaHands[i];
+      h.life+=dt;
+      if(h.life>=h.max){ lavaHands.splice(i,1); continue; }
+      const k=Math.max(0,Math.min(1,h.life/h.max));
+      h.ty += Math.sin(k*Math.PI)*0.02;
+    }
+  }
   function updateRocks(dt,getTile,setTile){
     for(let i=rocks.length-1;i>=0;i--){
       const r=rocks[i];
@@ -412,6 +478,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       const px=player && Number.isFinite(player.x) ? player.x : 0;
       activeVolcanoes=collectActiveVolcanoes(px);
     }
+    maybeTriggerLavaHand(dt,player);
     for(const v of activeVolcanoes){
       const s=stateFor(v);
       s.gasT-=dt; s.rockT-=dt; s.masterT-=dt; s.diamondT-=dt;
@@ -422,6 +489,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     }
     updateRocks(dt,getTile,setTile);
     updateMasterShots(dt,getTile,setTile);
+    updateLavaHands(dt);
     updateMasterTiles(dt,getTile,setTile);
     masterScanT-=dt;
     if(masterScanT<=0){
@@ -473,6 +541,45 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     const visibleTile=typeof canDrawTile==='function'?canDrawTile:null;
     const tileVisible=(x,y)=>!visibleTile || visibleTile(Math.floor(x),Math.floor(y));
     const now=(typeof performance!=='undefined' && performance.now)?performance.now():Date.now();
+    if(lavaHands.length){
+      ctx.save();
+      ctx.globalCompositeOperation='lighter';
+      for(const h of lavaHands){
+        if(!tileVisible(h.tx,h.ty)) continue;
+        const k=Math.max(0,Math.min(1,h.life/h.max));
+        const reach=Math.sin(Math.min(1,k*1.35)*Math.PI);
+        const curl=Math.sin(k*Math.PI*2)*0.25;
+        const baseX=h.x*TILE, baseY=h.y*TILE;
+        const palmX=(h.x + (h.tx-h.x)*(0.30+0.70*reach))*TILE;
+        const palmY=(h.y - 0.5 - Math.max(0,(h.y-h.ty))*reach)*TILE;
+        const alpha=Math.max(0,1-k);
+        const grad=ctx.createLinearGradient(baseX,baseY,palmX,palmY);
+        grad.addColorStop(0,'rgba(255,54,12,'+(0.72*alpha).toFixed(3)+')');
+        grad.addColorStop(0.45,'rgba(255,143,28,'+(0.88*alpha).toFixed(3)+')');
+        grad.addColorStop(1,'rgba(255,232,94,'+(0.96*alpha).toFixed(3)+')');
+        ctx.strokeStyle=grad;
+        ctx.lineWidth=Math.max(5,TILE*0.32);
+        ctx.lineCap='round';
+        ctx.beginPath();
+        ctx.moveTo(baseX,baseY);
+        ctx.quadraticCurveTo((baseX+palmX)*0.5+h.dir*TILE*(1.2+curl),baseY-TILE*(2.2+reach*3.2),palmX,palmY);
+        ctx.stroke();
+        ctx.fillStyle='rgba(255,214,88,'+(0.94*alpha).toFixed(3)+')';
+        ctx.beginPath();
+        ctx.ellipse(palmX,palmY,TILE*0.62,TILE*0.42,0,0,Math.PI*2);
+        ctx.fill();
+        ctx.strokeStyle='rgba(255,80,18,'+(0.92*alpha).toFixed(3)+')';
+        ctx.lineWidth=Math.max(2,TILE*0.11);
+        for(let i=-2;i<=2;i++){
+          const a=(-0.7+i*0.32)*h.dir;
+          ctx.beginPath();
+          ctx.moveTo(palmX+h.dir*TILE*0.12,palmY-TILE*0.04);
+          ctx.quadraticCurveTo(palmX+h.dir*TILE*(0.55+0.08*Math.abs(i)),palmY+TILE*(a*0.42),palmX+h.dir*TILE*(0.82+0.10*Math.abs(i)),palmY+TILE*(a*0.58));
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
     if(rocks.length){
       ctx.save();
       for(const r of rocks){
@@ -515,11 +622,13 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   function reset(){
     rocks.length=0;
     masterShots.length=0;
+    lavaHands.length=0;
     masterTiles.clear();
     volcanoState.clear();
     activeVolcanoes=[];
     scanT=0;
     masterScanT=0;
+    lavaHandCheckT=0;
   }
   function snapshotProjectile(p){
     return {
@@ -568,7 +677,19 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       .filter(p=>p && finiteNumber(p.x) && finiteNumber(p.y) && (p.life||0)>0)
       .slice(-MAX_ROCKS)
       .map(snapshotProjectile);
-    return {v:1,masterTiles:masterList,masterShots:shotList,rocks:rockList};
+    const handList=lavaHands
+      .filter(h=>h && finiteNumber(h.x) && finiteNumber(h.y) && finiteNumber(h.tx) && finiteNumber(h.ty) && (h.life||0)<(h.max||1.05))
+      .slice(-MAX_LAVA_HANDS)
+      .map(h=>({
+        x:+h.x.toFixed(3),
+        y:+h.y.toFixed(3),
+        tx:+h.tx.toFixed(3),
+        ty:+h.ty.toFixed(3),
+        dir:h.dir<0?-1:1,
+        life:+Math.max(0,h.life||0).toFixed(3),
+        max:+Math.max(0.1,h.max||1.05).toFixed(3)
+      }));
+    return {v:2,masterTiles:masterList,masterShots:shotList,rocks:rockList,lavaHands:handList,lavaHandCheckT:+Math.max(0,lavaHandCheckT||0).toFixed(3)};
   }
   function restore(data,getTile){
     reset();
@@ -599,6 +720,17 @@ import { worldGen as WORLDGEN } from './worldgen.js';
         if(p) rocks.push(p);
       }
     }
+    if(Array.isArray(data.lavaHands)){
+      for(const raw of data.lavaHands){
+        if(lavaHands.length>=MAX_LAVA_HANDS) break;
+        if(!raw || !finiteNumber(raw.x) || !finiteNumber(raw.y) || !finiteNumber(raw.tx) || !finiteNumber(raw.ty)) continue;
+        const max=clamp(Number(raw.max)||1.05,0.1,2);
+        const life=clamp(Number(raw.life)||0,0,max);
+        if(life>=max) continue;
+        lavaHands.push({x:+raw.x,y:+raw.y,tx:+raw.tx,ty:+raw.ty,dir:raw.dir<0?-1:1,life,max,grabT:0.28});
+      }
+    }
+    lavaHandCheckT=clamp(Number(data.lavaHandCheckT)||0,0,LAVA_HAND_CHECK_SECONDS);
   }
 
   // Registry lookup for other engines (companions rituals): every master/servant
@@ -623,8 +755,8 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     onTileChanged,
     trackMasterStone,
     masterStonesNear,
-    metrics:()=>({rocks:rocks.length, masterShots:masterShots.length, masterTiles:masterTiles.size, activeVolcanoes:activeVolcanoes.length}),
-    _debug:{emitGas,spawnRock,spawnMaster,consumeDiamondTriggers,updateMasterTiles,collectActiveVolcanoes,rocks,masterShots,masterTiles,maybeDestroyDynamoAt,explodeServantStone,MASTER_EJECTION_FORCE,SERVANT_FLOOR_SECONDS}
+    metrics:()=>({rocks:rocks.length, masterShots:masterShots.length, lavaHands:lavaHands.length, masterTiles:masterTiles.size, activeVolcanoes:activeVolcanoes.length}),
+    _debug:{emitGas,spawnRock,spawnMaster,consumeDiamondTriggers,updateMasterTiles,collectActiveVolcanoes,rocks,masterShots,lavaHands,masterTiles,maybeDestroyDynamoAt,explodeServantStone,triggerLavaHand,maybeTriggerLavaHand,MASTER_EJECTION_FORCE,SERVANT_FLOOR_SECONDS}
   };
   MM.volcano = api;
 })();

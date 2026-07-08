@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 globalThis.window = globalThis;
 globalThis.MM = {};
 
 const { survival } = await import('../src/engine/survival.js');
+const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 
 {
   const s=survival.createDrowningState();
@@ -102,6 +104,17 @@ const { survival } = await import('../src/engine/survival.js');
   out=survival.updateWaterPressure(fatal,1,90,0,false);
   assert.equal(out.damage, 0, 'leaving water clears pressure damage');
   assert.equal(fatal.damageAcc, 0, 'leaving water clears banked pressure damage');
+}
+
+{
+  assert.match(mainSource, /function triggerWaterDamageDistress\(cause,amount\)/, 'main has water-damage distress feedback');
+  assert.match(mainSource, /function updateWaterDistressFx\(dt,inWater,pressure\)/, 'main has ongoing water-pressure distress feedback');
+  assert.match(mainSource, /triggerWaterDamageDistress\(opts\.cause,dealt\)/, 'hero water damage triggers visual distress');
+  assert.match(mainSource, /pushWorldNumber\(\{kind:'damage',amount:-dealt[\s\S]*cause:opts\.cause\}\)/, 'pressure damage stays a normal hero damage number');
+  assert.match(mainSource, /if\(kind==='pressure' \|\| raw\.includes\('pressure'\)\) return 'pressure'/, 'pressure damage can still carry a compact pressure icon');
+  assert.match(mainSource, /waterPressureFx>0\.03/, 'drawPlayer renders pressure compression when pressure rises');
+  assert.match(mainSource, /waterPressureCriticalFx/, 'pressure feedback escalates toward a critical implosion state');
+  assert.match(mainSource, /PARTICLES\.spawnBubble/, 'water distress emits bubbles/drops around the hero');
 }
 
 console.log('survival-sim: all assertions passed');

@@ -30,6 +30,13 @@ const ruins = (function(){
   const MM = (typeof window!=='undefined')? (window.MM = window.MM || {}) : {};
   const CFG = { SPACING:160, GATE:0.55, MARGIN:34, CACHE_CAP:300, MEGA_ROLL:0.99 };
   const cache = new Map(); // `${worldSeed}:${cell}` -> layout | null
+  const TEMPLE_TREASURE_TILES = Object.freeze({
+    [T.CHEST_COMMON]:true, [T.CHEST_RARE]:true, [T.CHEST_EPIC]:true, [T.DIAMOND]:true
+  });
+  const TEMPLE_STRUCTURE_TILES = Object.freeze({
+    [T.STONE]:true, [T.OBSIDIAN]:true, [T.TORCH]:true,
+    [T.CHEST_COMMON]:true, [T.CHEST_RARE]:true, [T.CHEST_EPIC]:true, [T.DIAMOND]:true
+  });
 
   function mulberry32(a){ a=a>>>0; return function(){ a|=0; a=(a+0x6D2B79F5)|0; let t=Math.imul(a^(a>>>15),1|a); t=(t+Math.imul(t^(t>>>7),61|t))^t; return ((t^(t>>>14))>>>0)/4294967296; }; }
 
@@ -107,7 +114,7 @@ const ruins = (function(){
     // --- size & class ---
     const roll=r();
     const size = roll<0.50? 'small' : roll<0.84? 'medium' : roll<CFG.MEGA_ROLL? 'large' : 'mega';
-    let chests=0, variant='plain';
+    let chests=0, variant='plain', plan='plain', signature='';
 
     if(size==='small'){
       variant=pick(['plain','sarcophagus','collapsed']);
@@ -179,13 +186,14 @@ const ruins = (function(){
       // a buried temple: entry hall, grand (sometimes zigzag) shaft, side
       // galleries, and one of three treasure rooms at the bottom
       variant=pick(['vault','lavaAltar','flooded']);
+      plan=pick(['grandShaft','splitRoots','ringWalk','steppedShrine','brokenBridge','idolMask']);
       const hallW=ri(8,12), hallH=ri(4,5), top=s0+ri(3,5), hx0=ax-(hallW>>1);
       room(hx0,top,hallW,hallH,{dry:true});
       if(r()<0.5) for(let cx2=hx0+2; cx2<hx0+hallW-2; cx2+=3) for(let y=top+1;y<top+hallH-1;y++) put(cx2,y,wallT(),true); // colonnade
       torch(hx0+2,top+1); torch(hx0+hallW-3,top+1);
       const depth=ri(16,24);
       const shX0=ax+(r()<0.5?-1:1)*ri(0,2);
-      const shX=tunnelV(shX0, top+hallH-1, top+depth, r()<0.5);
+      const shX=tunnelV(shX0, top+hallH-1, top+depth, plan==='grandShaft' ? false : r()<0.66);
       const levels=ri(2,3);
       for(let i=0;i<levels;i++){
         const ly=top+((i+1)*Math.floor(depth/(levels+1)))+ri(0,2);
@@ -197,6 +205,52 @@ const ruins = (function(){
         if(r()<0.6){ chest(rx+(w>>1)+ri(-1,1), ly+h-2, r()<0.5? T.CHEST_COMMON : T.CHEST_RARE); chests++; }
         if(r()<0.7) torch(dir>0? rx+1 : rx+w-2, ly+1);
         if(i===0 && r()<0.7) trap('dart', dir>0? shX+2 : shX-1, ly+h-2, {dir}); // wire at the gallery mouth
+      }
+      if(plan==='splitRoots'){
+        const leftX=shX-ri(4,6), rightX=shX+ri(4,6);
+        const forkY=top+hallH+ri(2,4), joinY=top+depth-ri(3,5);
+        tunnelH(leftX,rightX,forkY);
+        tunnelV(leftX,forkY,joinY,true);
+        tunnelV(rightX,forkY+ri(1,2),joinY,true);
+        tunnelH(leftX,rightX,joinY);
+        if(r()<0.7){ chest(leftX, joinY-1, T.CHEST_RARE); chests++; }
+        trap('dart', rightX, forkY, {dir:-1});
+      } else if(plan==='ringWalk'){
+        const ringY=top+Math.floor(depth*0.55)+ri(-1,1);
+        const rw=ri(8,12);
+        tunnelH(shX-rw,shX+rw,ringY);
+        for(let dx=-rw; dx<=rw; dx+=4){
+          put(shX+dx,ringY-2,wallT(),true);
+          if(Math.abs(dx)>2 && r()<0.45) torch(shX+dx,ringY-1);
+        }
+        trap('boom', shX, ringY+1, {});
+      } else if(plan==='steppedShrine'){
+        const stairY=top+depth-ri(5,7);
+        for(let step=0; step<4; step++){
+          const y=stairY+step;
+          for(let x=shX-4+step; x<=shX+4-step; x++) put(x,y,wallT(),true);
+          put(shX,y-1,T.AIR,true);
+        }
+        torch(shX-4,stairY-1); torch(shX+4,stairY-1);
+      } else if(plan==='brokenBridge'){
+        const bridgeY=top+Math.floor(depth*0.72);
+        const gapDir=r()<0.5?-1:1;
+        for(let x=shX-9; x<=shX+9; x++){
+          if(Math.abs(x-shX-gapDir*2)<=1) continue;
+          put(x,bridgeY,wallT(),true);
+          put(x,bridgeY-1,T.AIR,true);
+        }
+        for(let x=shX-2; x<=shX+2; x++) put(x,bridgeY+4,T.LAVA,true);
+        trap('collapse', shX+gapDir*2, bridgeY-1, {w:3, surprise:'lava'});
+      } else if(plan==='idolMask'){
+        const faceY=top+Math.floor(depth*0.45);
+        for(let y=faceY-2; y<=faceY+2; y++){
+          put(shX-5,y,T.OBSIDIAN,true); put(shX+5,y,T.OBSIDIAN,true);
+        }
+        put(shX-2,faceY-1,T.DIAMOND,true); put(shX+2,faceY-1,T.DIAMOND,true);
+        put(shX,faceY+1,T.OBSIDIAN,true);
+        torch(shX-4,faceY); torch(shX+4,faceY);
+        if(r()<0.65) trap('boom', shX, faceY+2, {});
       }
       const vw=ri(7,9), vh=ri(4,5), vy=top+depth+1, vx=shX-(vw>>1);
       if(variant==='vault'){
@@ -226,6 +280,7 @@ const ruins = (function(){
         torch(shX, vy-1);
       }
       put(shX, vy, T.AIR, true); // the only breach in the roof, under the shaft
+      signature=plan+':'+variant+':'+hallW+'x'+hallH+':d'+depth+':l'+levels+':'+(shX-shX0);
     }
     else { // === mega (1 in 100): the Buried City ===
       variant='city';
@@ -320,7 +375,40 @@ const ruins = (function(){
       }
     }
 
-    return { n, ax, size, variant, chests, traps, hints, ops, minX, maxX, minY, maxY };
+    return { n, ax, size, variant, plan, signature, chests, traps, hints, ops, minX, maxX, minY, maxY };
+  }
+
+  function finalForcedOpAt(L,x,y){
+    if(!L || !Array.isArray(L.ops)) return null;
+    let hit=null;
+    x=Math.floor(x); y=Math.floor(y);
+    for(const op of L.ops){
+      if(op && op.f===1 && op.x===x && op.y===y) hit=op;
+    }
+    return hit;
+  }
+  function isTempleTreasureTile(t){ return !!TEMPLE_TREASURE_TILES[t]; }
+  function isTempleStructureTile(t){ return !!TEMPLE_STRUCTURE_TILES[t]; }
+  function templeAt(x,y,opts){
+    if(!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    x=Math.floor(x); y=Math.floor(y);
+    const includeMega=!!(opts && opts.includeMega);
+    const n0=Math.floor(x/CFG.SPACING);
+    for(let n=n0-2; n<=n0+2; n++){
+      const L=layoutFor(n);
+      if(!L || (L.size!=='large' && !(includeMega && L.size==='mega'))) continue;
+      if(x<L.minX || x>L.maxX || y<L.minY || y>L.maxY) continue;
+      const op=finalForcedOpAt(L,x,y);
+      if(!op) continue;
+      const tile=(opts && typeof opts.tile==='number') ? opts.tile : op.t;
+      if(!isTempleStructureTile(tile)) continue;
+      return {
+        n:L.n, ax:L.ax, size:L.size, variant:L.variant, plan:L.plan, signature:L.signature,
+        minX:L.minX, maxX:L.maxX, minY:L.minY, maxY:L.maxY,
+        opTile:op.t, tile, isTreasure:isTempleTreasureTile(tile), isStructure:isTempleStructureTile(tile)
+      };
+    }
+    return null;
   }
 
   // Write the slice of every nearby ruin that crosses chunk cx into its array
@@ -407,11 +495,11 @@ const ruins = (function(){
   function anchorsInRange(xa,xb){
     const out=[];
     const n0=Math.floor(xa/CFG.SPACING), n1=Math.floor(xb/CFG.SPACING);
-    for(let n=n0;n<=n1;n++){ const L=layoutFor(n); if(L && L.ax>=xa && L.ax<=xb) out.push({n:L.n, x:L.ax, size:L.size, variant:L.variant, chests:L.chests, minX:L.minX, maxX:L.maxX, minY:L.minY, maxY:L.maxY}); }
+    for(let n=n0;n<=n1;n++){ const L=layoutFor(n); if(L && L.ax>=xa && L.ax<=xb) out.push({n:L.n, x:L.ax, size:L.size, variant:L.variant, plan:L.plan, signature:L.signature, chests:L.chests, minX:L.minX, maxX:L.maxX, minY:L.minY, maxY:L.maxY}); }
     return out;
   }
 
-  const api={ applyToChunk, layoutFor, anchorFor, anchorsInRange, nearest, drawHints, config:CFG, clearCache:()=>cache.clear() };
+  const api={ applyToChunk, layoutFor, anchorFor, anchorsInRange, nearest, templeAt, isTempleStructureTile, isTempleTreasureTile, drawHints, config:CFG, clearCache:()=>cache.clear() };
   MM.ruins=api;
   return api;
 })();

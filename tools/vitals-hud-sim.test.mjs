@@ -4,9 +4,13 @@
 // longest seen duration. Renderer is exercised separately by
 // tools/vitals-hud-qa.mjs (CDP screenshots); this covers the state machine.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 globalThis.window = globalThis;
 const { createVitalsModel } = await import('../src/engine/vitals_hud.js');
+const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+const vitalsSource = readFileSync(new URL('../src/engine/vitals_hud.js', import.meta.url), 'utf8');
+const weaponsSource = readFileSync(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
 
 const DT = 1 / 60;
 const base = { hp: 100, maxHp: 100, en: 40, enMax: 112, level: 10, xpInto: 979, xpNeed: 1343, buffs: [] };
@@ -159,6 +163,30 @@ function run(m, input, seconds){
 	assert.equal(st.xp.fill, 0, 'zero xpNeed maps to empty, not NaN');
 	const st2 = m.update(inp({ hp: 50 }), 999);
 	assert.ok(isFinite(st2.hp.fill) && st2.hp.fill >= 0 && st2.hp.fill <= 1, 'huge dt is clamped');
+}
+
+// --- 12. concrete combat numbers render in-world above the entity, not on bars
+{
+	const drawSource = vitalsSource.slice(vitalsSource.indexOf('function draw('));
+	assert.ok(!/s\.(?:deltas|xpDeltas)/.test(drawSource), 'vitals renderer no longer draws damage/heal/XP numbers above HUD bars');
+	assert.match(mainSource, /const worldNumbers=\[\]/, 'main owns the world-space combat number queue');
+	assert.match(mainSource, /if\(kind!=='damage' && kind!=='heal' && kind!=='xp'\) return null;/, 'floating world numbers are allowlisted to hero damage, hero heal, and XP');
+	assert.match(mainSource, /window\.addEventListener\('mm-entity-number'[\s\S]*target==='hero'[\s\S]*target\.indexOf\('hero:'\)===0[\s\S]*kind==='damage' \|\| kind==='heal'/, 'entity-number events are filtered to hero damage/heal only');
+	assert.match(mainSource, /window\.addEventListener\('mm-xp-awarded'/, 'mob XP awards are routed to the world-space renderer');
+	assert.match(mainSource, /window\.addEventListener\('mm-combat-event'/, 'important combat events are routed to the world-space impact renderer');
+	assert.match(mainSource, /function drawCombatImpactFx\(\)/, 'main draws important hit rings in the world scene');
+	assert.match(mainSource, /heroBodyRecoilFx/, 'important combat events can physically recoil the hero body');
+	assert.match(mainSource, /function combatScreenShakeOffset\(/, 'important combat events can add a short local screen shake');
+	assert.match(mainSource, /function drawCombatScreenFx\(\)[\s\S]*heroCriticalHurtFx/, 'major hero hits get a screen-space danger flash');
+	assert.doesNotMatch(mainSource, /combatEventToken|target:'combat:'|target:"combat:"/, 'combat events do not create extra floating text over hit effects');
+	assert.match(mainSource, /else if\(n\.kind==='xp'\) color=n\.special \? '#ffd54a' : '#7dff9a'/, 'special XP bonus is shown by XP color, not by a second bubble');
+	assert.match(mainSource, /function drawWorldNumberIcon\([\s\S]*icon==='water'[\s\S]*icon==='xp'/, 'allowed floating numbers can carry compact cause/resource icons');
+	assert.doesNotMatch(mainSource, /LUCKY x4!|LUCKY FINISH!|POWER FINISH|FINISH!|DROWN!|SHOCKED!|HARD HIT!/, 'large combat billboard words are not used for world feedback');
+	assert.doesNotMatch(weaponsSource, /LUCKY x4!|mm-entity-number[\s\S]{0,160}lucky/, 'lucky strikes do not emit a text bubble from weapons');
+	assert.match(mainSource, /if\(fx\.finisher\)[\s\S]*finishR[\s\S]*rgba\(255,229,92/, 'finisher hits draw a dedicated golden reward ring');
+	assert.match(mainSource, /ctx\.strokeStyle='rgba\(4,6,10,0\.46\)'/, 'world number outline is softened so it does not dominate combat feedback');
+	assert.match(mainSource, /mm-skill-point-gained[\s\S]*triggerHeroBodyRecoil\('strike'[\s\S]*spawnSparks/, 'new skill points add a small physical celebration around the hero');
+	assert.match(mainSource, /drawWorldNumbers\(\);/, 'world-space combat numbers are drawn in the main scene');
 }
 
 console.log('vitals-hud-sim: all assertions passed');

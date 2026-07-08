@@ -535,6 +535,30 @@ export function deepCaveProfile(WG,wx,y,strataOpt){
   return {open, flooded:flooded || legacyPocket, cavern, tunnel:Math.min(Math.abs(channel-0.5),Math.abs(branch-0.5)), shaft, waterLine};
 }
 
+export function deepCaveDressingTile(WG,wx,y,caveOpt,strataOpt){
+  const strata=strataOpt || deepStrataProfile(WG,wx,y);
+  const cave=caveOpt || deepCaveProfile(WG,wx,y,strata);
+  if(!cave.open || cave.flooded) return null;
+  const env=strata.env;
+  const root=strata.root || volcanoRootProfile(WG,wx,y);
+  const above=deepCaveProfile(WG,wx,y-1);
+  const below=deepCaveProfile(WG,wx,y+1);
+  const ceiling=!above.open || above.flooded;
+  const floor=!below.open || below.flooded;
+  const roll=safeRand(WG,wx*14.91+y*0.73+7488);
+  if(root.active && roll>0.938) return roll>0.980 || root.lava ? T.STEAM : T.HOT_AIR;
+  if(ceiling && env.snow>0.55 && roll<0.040) return T.ICE;
+  if(floor && env.swamp>0.45){
+    if(roll<0.045) return T.POISON_GAS;
+    if(roll<0.112) return T.GLOWSHROOM;
+  }
+  if(floor && env.biome===0 && env.moisture>0.46 && roll<0.062) return T.GLOWSHROOM;
+  if(floor && env.desert>0.55 && roll>0.952) return T.FUEL_GAS;
+  if(env.city>0.24 && roll<0.048) return T.POISON_GAS;
+  if((env.volcanic>0.24 || env.mountain>0.68) && roll>0.966) return env.volcanic>0.24 ? T.HOT_AIR : T.STEAM;
+  return null;
+}
+
 function bedrockDiamondBias(y){
   const rise=clamp01((y-(WORLD_MAX_Y-78))/56);
   const floorFade=clamp01(1-(y-(WORLD_MAX_Y-18))/12);
@@ -546,9 +570,11 @@ function deepRockMaterialTile(WG,wx,y,strataOpt){
   const env=strata.env;
   const deep=strata.deep;
   const ore=safeRand(WG,wx*8.17+y*0.47);
+  const goldOre=safeRand(WG,wx*9.47+y*0.59+7460);
   const diamondOre=safeRand(WG,wx*10.91+y*0.83+7459);
   const texture=fbm2D(WG,wx,y,22,16,2,7451);
   const vein=ridgeNoise(WG,wx,y,39,7452);
+  const goldVein=ridgeNoise(WG,wx,y,51,7465);
   const inMantle=strata.virtualDepth>strata.mantleLine;
   const inBasalt=strata.virtualDepth>strata.basaltLine;
   const inGranite=strata.virtualDepth>strata.graniteLine;
@@ -556,11 +582,22 @@ function deepRockMaterialTile(WG,wx,y,strataOpt){
   // flecks; outside a pocket the same rolls run much leaner.
   const pocket=fbm2D(WG,wx+29,y+13,36,20,2,7455);
   const oreScale=0.42 + clamp01((pocket-0.58)/0.16)*1.9;
+  const goldPocket=fbm2D(WG,wx-19,y+7,54,24,2,7468);
+  const goldScale=0.35 + clamp01((goldPocket-0.54)/0.18)*2.4;
+  const goldBody=fbm2D(WG,wx+11,y-5,18,13,2,7469);
+  const goldThread=1-Math.abs(fbm2D(WG,wx+y*0.21,y-wx*0.08,44,15,2,7470)*2-1);
   const diamondScale=0.06 + clamp01((pocket-0.61)/0.13)*3.1;
   const diamondBias=bedrockDiamondBias(y);
   // Coal seams continue across the mid/low contact and taper out with depth
   if(deep<48 && safeCoalVein(WG,wx,y) && safeRand(WG,wx*3.37+y*0.61)<1-deep/48) return T.COAL;
+  if(deep<64 && (env.lake>0.5 || env.ocean>0.35) && ore<0.045 && texture>0.58) return ore<0.026 ? T.WET_CLAY : T.CLAY;
+  if(env.desert>0.55 && deep<58 && ore<0.040 && texture>0.70) return T.SAND;
+  if(env.snow>0.55 && deep<74 && ore>0.965 && vein>0.68) return T.ICE;
+  if(env.city>0.24 && deep>18 && ore>0.976 && vein>0.34) return T.RADIOACTIVE_ORE;
   if(env.city>0.24 && ore>0.989-deep*0.00008 && vein>0.20) return T.METEORIC_IRON;
+  if(deep>16 && deep<114 && goldPocket>0.605 && goldVein>0.80 && goldBody>0.625) return T.GOLD_ORE;
+  if(deep>28 && deep<110 && goldPocket>0.655 && goldThread>0.78 && goldBody>0.575) return T.GOLD_ORE;
+  if(deep>34 && deep<104 && goldVein>0.93 && goldPocket>0.56 && goldOre<(0.010+strata.crystal*0.016)*goldScale) return T.GOLD_ORE;
   if(deep>86 && ore<(0.006+strata.crystal*0.010)*oreScale) return T.ANTIMATTER_CRYSTAL;
   if(deep>52 && ore<(0.012+strata.crystal*0.022)*oreScale) return T.IRIDIUM;
   if(deep>72 && vein>0.91 && diamondOre<(0.006+strata.crystal*0.013)*diamondScale*diamondBias) return T.DIAMOND;
@@ -595,7 +632,10 @@ export function deepTile(WG,wx,y){
     if(root.dike) return safeRand(WG,wx*5.19+y*0.49)<0.78 ? T.BASALT : T.GRANITE;
   }
   const cave=deepCaveProfile(WG,wx,y,strata);
-  if(cave.open) return cave.flooded ? T.WATER : T.AIR;
+  if(cave.open){
+    const dressed=deepCaveDressingTile(WG,wx,y,cave,strata);
+    return dressed!=null ? dressed : (cave.flooded ? T.WATER : T.AIR);
+  }
   if(deep<38 && !lowerWorldDominatesContact(WG,wx,y)){
     return legacyGeologyRockCoreTile(WG,wx,y,strata.crustDepth,env.biome);
   }
@@ -620,6 +660,7 @@ export const worldLayers = Object.freeze({
   skyTile,
   deepStrataProfile,
   deepCaveProfile,
+  deepCaveDressingTile,
   deepTile
 });
 

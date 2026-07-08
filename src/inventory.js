@@ -187,6 +187,7 @@
     {key:'basalt',  label:'Bazalt',  color:'#30333a', tile:'BASALT'},
     {key:'stone',   label:'Skala',   color:'#888a90', tile:'STONE'},
     {key:'coal',    label:'Węgiel',  color:'#25272b', tile:'COAL'},
+    {key:'gold',    label:'Złoto',   color:'#f2b93b', tile:'GOLD_ORE'},
     {key:'diamond', label:'Diament', color:'#3ef',    tile:'DIAMOND'},
     {key:'iridium', label:'Iryd',    color:'#b8d7ff', tile:'IRIDIUM'},
     {key:'meteoricIron', label:'Żelazo meteorytowe', color:'#7f878d', tile:'METEORIC_IRON'},

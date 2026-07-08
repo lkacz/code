@@ -61,6 +61,7 @@ import { reactions as REACTIONS } from './reactions.js';
   const SELF_FLAME_ARM_SEC=0.16; // muzzle is safe; lingering/backflow flame burns
   const ELECTRIC_PULSE_INTERVAL=0.10;
   const ELECTRIC_DEFAULT_ENERGY_PER_SEC=10;
+  const SPECIAL_LUCKY_CHANCE=0.16;
   const HEAT_FORGED_GLASS_GRACE=0.55;
   const stoneHeat=new Map();    // key "x,y" -> {x,y,heat,gap}
   const sandHeat=new Map();     // key "x,y" -> {x,y,heat,gap}
@@ -71,6 +72,7 @@ import { reactions as REACTIONS } from './reactions.js';
   const warnAt=Object.create(null);
   let bowCd=0, meleeCd=0, bossAcc=0, ultCharge=1, electricCd=0;
   let heroFlameHitCd=0;
+  let lastWeaponCombatFxAt=0, lastWeaponCombatFxKey='', lastWeaponCombatFxX=0, lastWeaponCombatFxY=0;
   let iridiumPierces=0;
   let lastGetTile=null, lastSetTile=null;
   const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
@@ -329,6 +331,60 @@ import { reactions as REACTIONS } from './reactions.js';
   function notifyMeleeSwing(tx,ty,player){
     swing.t=swing.dur; swing.tx=tx; swing.ty=ty; swing.dir=(player && player.facing>=0)?1:-1;
   }
+  function combatElementFromOpts(opts){
+    const raw=String((opts && (opts.element || opts.cause || opts.kind || opts.type || opts.weaponType)) || '').toLowerCase();
+    if(raw.indexOf('fire')>=0 || raw.indexOf('flame')>=0 || raw.indexOf('heat')>=0 || raw.indexOf('lava')>=0) return 'fire';
+    if(raw.indexOf('electric')>=0 || raw.indexOf('shock')>=0 || raw.indexOf('lightning')>=0 || raw.indexOf('laser')>=0) return 'electric';
+    if(raw.indexOf('water')>=0 || raw.indexOf('hose')>=0 || raw.indexOf('pressure')>=0) return 'water';
+    if(raw.indexOf('ice')>=0 || raw.indexOf('frost')>=0 || raw.indexOf('chill')>=0 || raw.indexOf('cold')>=0) return 'ice';
+    if(raw.indexOf('gas')>=0 || raw.indexOf('poison')>=0 || raw.indexOf('toxic')>=0) return 'gas';
+    if(raw.indexOf('explosion')>=0 || raw.indexOf('blast')>=0) return 'blast';
+    return '';
+  }
+  function noteCombatEvent(detail){
+    try{
+      if(typeof window.dispatchEvent==='function' && typeof CustomEvent==='function'){
+        window.dispatchEvent(new CustomEvent('mm-combat-event',{detail}));
+      }
+    }catch(e){}
+  }
+  function noteWeaponCombatHit(x,y,amount,opts,extra){
+    opts=opts||{};
+    extra=extra||{};
+    const special=!!opts.specialAttack || !!extra.special;
+    const lucky=!!opts.luckyStrike || !!extra.lucky;
+    const element=combatElementFromOpts(opts);
+    const major=!!extra.major || lucky || special || Math.abs(Number(amount)||0)>=8;
+    if(!special && !lucky && !element && !major) return;
+    const t=nowMs();
+    const key=(lucky?'lucky':(special?'special':(element||'heavy')))+'|'+element;
+    if(!special && !lucky && t-lastWeaponCombatFxAt<320 && key===lastWeaponCombatFxKey && Math.hypot(x-lastWeaponCombatFxX,y-lastWeaponCombatFxY)<1.15) return;
+    lastWeaponCombatFxAt=t;
+    lastWeaponCombatFxKey=key;
+    lastWeaponCombatFxX=x;
+    lastWeaponCombatFxY=y;
+    noteCombatEvent(Object.assign({
+      kind:lucky?'lucky':(special?'special':(element?'elemental':'heavy')),
+      source:'hero',
+      target:'mob',
+      x:Number.isFinite(x)?x:undefined,
+      y:Number.isFinite(y)?y:undefined,
+      amount:Math.abs(Number(amount)||0),
+      element,
+      cause:opts.cause || opts.kind || opts.type || opts.weaponType,
+      special,
+      lucky,
+      major,
+      power:Math.max(0.7,Math.min(2.35,Number(extra.power)||((major?1.15:0.85)+Math.abs(Number(amount)||0)/18)))
+    },extra));
+  }
+  function noteLuckyStrike(){
+    return false;
+  }
+  function specialAttackRoll(){
+    const lucky=Math.random()<SPECIAL_LUCKY_CHANCE;
+    return {mult:lucky?4:2,lucky};
+  }
   function collectLooseTarget(tx,ty){
     try{
       return !!(MM.collectLooseItemAt && MM.collectLooseItemAt(tx,ty,{source:'melee_weapon',silent:true}));
@@ -377,15 +433,16 @@ import { reactions as REACTIONS } from './reactions.js';
         return false;
       }
       const plannedCharge=Math.min(1,ultCharge);
-      const plannedPower=2.4+plannedCharge*1.7;
-      const cost=electricShotEnergyCost(w,plannedPower,plannedCharge);
+      const roll=specialAttackRoll();
+      const plannedPower=roll.mult;
+      const cost=electricShotEnergyCost(w,2,plannedCharge);
       if(!heroEnergyAvailable(player,cost)){
         electricCd=Math.max(electricCd,0.18);
         try{ if(window.msg) window.msg('Za mało energii'); }catch(e){}
         return false;
       }
       const charge=consumeUltCharge();
-      return fireElectric(player, aimX, aimY, w, plannedPower, charge);
+      return fireElectric(player, aimX, aimY, w, plannedPower, charge, roll);
     }
     if(type==='bow' && !hasArrowAmmo()){
       warnNoArrows();
@@ -553,16 +610,18 @@ import { reactions as REACTIONS } from './reactions.js';
   function firePowerBow(player, aimX, aimY, w, charge){
     const tier=consumeArrowTier();
     if(!tier) return false;
+    const roll=specialAttackRoll();
     const v=spreadAim(aimVector(player,aimX,aimY),tier,0.45);
     const sp=ARROW_SPEED*tier.speed*(1.18+charge*0.28);
+    if(roll.lucky) noteLuckyStrike(player.x+v.dx*1.3,player.y-0.45+v.dy*1.3);
     pushArrow({
       x:player.x + v.dx*0.75,
       y:player.y - 0.15 + v.dy*0.75,
       vx:v.dx*sp,
       vy:v.dy*sp - 0.9,
-      dmg:Math.round(((w && w.attackDamage)||3)*tier.damage*(2.7+charge*2.3)),
+      dmg:Math.max(1,Math.round(((w && w.attackDamage)||3)*tier.damage*roll.mult)),
       life:ARROW_LIFE*tier.life*(1.05+charge*0.35), stuck:false, stuckT:ARROW_STUCK,
-      power:true, fire:charge>0.85,
+      power:true, specialAttack:true, luckyStrike:roll.lucky, fire:roll.lucky || charge>0.85,
       tier:tier.id, color:tier.color, headColor:tier.head, windCap:sp*1.25,
       pierceLeft:tier.id==='iridium' ? 5 : 0
     });
@@ -576,8 +635,11 @@ import { reactions as REACTIONS } from './reactions.js';
     if(n<=0) return true;
     try{ if(MM.heroEnergy && typeof MM.heroEnergy.spend==='function') return !!MM.heroEnergy.spend(n); }catch(e){}
     if(player && typeof player.energy==='number'){
-      if((player.energy||0)+1e-6<n) return false;
+      const energy=Math.max(0,player.energy||0);
+      const enough=n>=1 ? Math.floor(energy+1e-9)>=Math.ceil(n-1e-9) : (energy>=n && Math.floor(energy+1e-9)>=1);
+      if(!enough) return false;
       player.energy=Math.max(0,(player.energy||0)-n);
+      if(player.energy<0.0001) player.energy=0;
       return true;
     }
     return false;
@@ -586,12 +648,17 @@ import { reactions as REACTIONS } from './reactions.js';
     const n=Math.max(0, Number(amount)||0);
     if(n<=0) return true;
     try{
+      if(MM.heroEnergy && typeof MM.heroEnergy.canSpend==='function') return !!MM.heroEnergy.canSpend(n);
       if(MM.heroEnergy && typeof MM.heroEnergy.info==='function'){
         const info=MM.heroEnergy.info()||{};
-        return (Number(info.energy)||0)+1e-6>=n;
+        const energy=Math.max(0,Number(info.energy)||0);
+        return n>=1 ? Math.floor(energy+1e-9)>=Math.ceil(n-1e-9) : (energy>=n && Math.floor(energy+1e-9)>=1);
       }
     }catch(e){}
-    if(player && typeof player.energy==='number') return (player.energy||0)+1e-6>=n;
+    if(player && typeof player.energy==='number'){
+      const energy=Math.max(0,player.energy||0);
+      return n>=1 ? Math.floor(energy+1e-9)>=Math.ceil(n-1e-9) : (energy>=n && Math.floor(energy+1e-9)>=1);
+    }
     return true;
   }
   function electricShotEnergyCost(w,power,charge){
@@ -608,9 +675,10 @@ import { reactions as REACTIONS } from './reactions.js';
     if(electricBeams.length>=MAX_ELECTRIC_BEAMS) electricBeams.shift();
     electricBeams.push(b);
   }
-  function electricDamageAt(tx,ty,dmg){
-    try{ if(MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,dmg,{kind:'electric',source:'hero'})) return true; }catch(e){}
-    try{ if(MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg,{source:'hero'})) return true; }catch(e){}
+  function electricDamageAt(tx,ty,dmg,opts){
+    opts=Object.assign({kind:'electric',source:'hero'},opts||{});
+    try{ if(MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,dmg,opts)) return true; }catch(e){}
+    try{ if(MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg,opts)) return true; }catch(e){}
     try{ if(MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,dmg)) return true; }catch(e){}
     try{ if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,dmg)) return true; }catch(e){}
     try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(tx,ty,dmg)) return true; }catch(e){}
@@ -620,7 +688,7 @@ import { reactions as REACTIONS } from './reactions.js';
     try{ if(MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(tx,ty,dmg)) return true; }catch(e){}
     return false;
   }
-  function fireElectric(player, aimX, aimY, w, power, charge){
+  function fireElectric(player, aimX, aimY, w, power, charge, specialRoll){
     if(electricCd>0) return false;
     const v=aimVector(player,aimX,aimY);
     player.facing = v.dx>=0?1:-1;
@@ -635,7 +703,8 @@ import { reactions as REACTIONS } from './reactions.js';
     electricCd=cadence;
     const range=((w && w.fireRange)||8.5)*(power>1 ? Math.min(1.65,1+0.16*power) : 1);
     const baseDps=(w && w.fireDps)||10;
-    const dmg=charge ? Math.max(4, baseDps*(0.45+charge*0.85)*power) : Math.max(0.75, baseDps*cadence*power);
+    const roll=specialRoll || (charge ? {mult:2,lucky:false} : null);
+    const dmg=charge ? Math.max(2, baseDps*cadence*(roll ? roll.mult : 2)) : Math.max(0.75, baseDps*cadence*power);
     const sx=player.x + v.dx*0.62;
     const sy=player.y - 0.10 + v.dy*0.62;
     let ex=sx+v.dx*range, ey=sy+v.dy*range, hit=false, blocked=false;
@@ -667,8 +736,10 @@ import { reactions as REACTIONS } from './reactions.js';
         blocked=true;
         break;
       }
-      if(electricDamageAt(tx,ty,dmg)){ ex=x; ey=y; hit=true; break; }
+      if(electricDamageAt(tx,ty,dmg,{specialAttack:!!charge,luckyStrike:!!(roll&&roll.lucky)})){ ex=x; ey=y; hit=true; break; }
     }
+    if(hit && roll && roll.lucky) noteLuckyStrike(ex,ey-0.4);
+    if(hit && (charge || (roll && roll.lucky))) noteWeaponCombatHit(ex,ey-0.4,dmg,{kind:'electric',element:'electric',source:'hero',specialAttack:!!charge,luckyStrike:!!(roll&&roll.lucky)},{major:!!charge});
     pushElectricBeam({x1:sx,y1:sy,x2:ex,y2:ey,t:0,life:charge?0.28:0.18,hit,blocked,phase:Math.random()*Math.PI*2,power});
     try{ if(MM.audio && MM.audio.play) MM.audio.play('beam'); }catch(e){}
     try{
@@ -694,14 +765,16 @@ import { reactions as REACTIONS } from './reactions.js';
       for(const t of [0.35,0.6,0.85]){
         const sx=Math.floor(player.x + dx*range*t), sy=Math.floor(player.y + dy*range*t);
         const opts=streamDamageOpts(kind,{x:sx+0.5,y:sy+0.5});
-        if(MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(sx,sy, dps*0.2, opts)) break;
-        if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(sx,sy, dps*0.2, opts)) break;
-        if(kind==='flame' && MM.undergroundBoss && MM.undergroundBoss.heatAt && MM.undergroundBoss.heatAt(sx,sy,lastGetTile,lastSetTile,opts)) break;
-        if(kind==='gas' && MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy, dps*0.2, opts)) break;
-        if(kind!=='hose' && MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(sx,sy, dps*0.2, opts)) break;
-        if(kind!=='hose' && MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy, dps*0.2)) break;
-        if(kind!=='hose' && MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy, dps*0.2)) break;
-        if(kind!=='hose' && MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(sx,sy, dps*0.2)) break;
+        let hit=false;
+        if(MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(sx,sy, dps*0.2, opts)) hit=true;
+        else if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(sx,sy, dps*0.2, opts)) hit=true;
+        else if(kind==='flame' && MM.undergroundBoss && MM.undergroundBoss.heatAt && MM.undergroundBoss.heatAt(sx,sy,lastGetTile,lastSetTile,opts)) hit=true;
+        else if(kind==='gas' && MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy, dps*0.2, opts)) hit=true;
+        else if(kind!=='hose' && MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(sx,sy, dps*0.2, opts)) hit=true;
+        else if(kind!=='hose' && MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy, dps*0.2)) hit=true;
+        else if(kind!=='hose' && MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy, dps*0.2)) hit=true;
+        else if(kind!=='hose' && MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(sx,sy, dps*0.2)) hit=true;
+        if(hit){ noteWeaponCombatHit(sx+0.5,sy+0.2,dps*0.2,opts); break; }
       }
     }
     return true;
@@ -730,7 +803,9 @@ import { reactions as REACTIONS } from './reactions.js';
         life:range/cfg.speed*cfg.lifeMult*(0.9+Math.random()*0.25),
         total:range/cfg.speed*cfg.lifeMult,
         dps,
-        scale:Number(opts.scale)||1
+        scale:Number(opts.scale)||1,
+        specialAttack:!!opts.specialAttack,
+        luckyStrike:!!opts.luckyStrike
       });
       made++;
     }
@@ -741,9 +816,11 @@ import { reactions as REACTIONS } from './reactions.js';
     try{ if(MM.audio && MM.audio.play) MM.audio.play(kind==='flame'?'flame': kind==='hose'?'hose':'gas'); }catch(e){}
     const cfg=STREAMS[kind];
     const v=aimVector(player,aimX,aimY);
+    const roll=specialAttackRoll();
+    if(roll.lucky) noteLuckyStrike(player.x+v.dx*1.2,player.y-0.35+v.dy*1.2);
     player.facing = v.dx>=0?1:-1;
     const range=(w && w.fireRange)||6;
-    const dps=((w && w.fireDps)||(kind==='hose'?2:6))*(2.2+charge*2.4);
+    const dps=((w && w.fireDps)||(kind==='hose'?2:6))*roll.mult;
     const totalLife=range/cfg.speed*cfg.lifeMult*(1.2+charge*0.4);
     const n=Math.min(MAX_PUFFS-puffs.length, Math.round(16+charge*18));
     for(let i=0;i<n;i++){
@@ -758,20 +835,24 @@ import { reactions as REACTIONS } from './reactions.js';
         life:totalLife*(0.85+Math.random()*0.25),
         total:totalLife,
         dps,
-        scale:1.25+charge*0.75
+        scale:1.25+charge*0.75,
+        specialAttack:true,
+        luckyStrike:roll.lucky
       });
     }
     for(const t of [0.35,0.55,0.75,0.95]){
       const sx=Math.floor(player.x + v.dx*range*t), sy=Math.floor(player.y + v.dy*range*t);
-      const opts=streamDamageOpts(kind,{x:sx+0.5,y:sy+0.5});
-      if(MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(sx,sy,dps*0.18,opts)) break;
-      if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(sx,sy,dps*0.18,opts)) break;
-      if(kind==='flame' && MM.undergroundBoss && MM.undergroundBoss.heatAt && MM.undergroundBoss.heatAt(sx,sy,lastGetTile,lastSetTile,opts)) break;
-      if(kind==='gas' && MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy,dps*0.18,opts)) break;
-      if(kind!=='hose' && MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(sx,sy,dps*0.18,opts)) break;
-      if(kind!=='hose' && MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy,dps*0.18)) break;
-      if(kind!=='hose' && MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy,dps*0.18)) break;
-      if(kind!=='hose' && MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(sx,sy,dps*0.18)) break;
+      const opts=streamDamageOpts(kind,{x:sx+0.5,y:sy+0.5,specialAttack:true,luckyStrike:roll.lucky});
+      let hit=false;
+      if(MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(sx,sy,dps*0.18,opts)) hit=true;
+      else if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(sx,sy,dps*0.18,opts)) hit=true;
+      else if(kind==='flame' && MM.undergroundBoss && MM.undergroundBoss.heatAt && MM.undergroundBoss.heatAt(sx,sy,lastGetTile,lastSetTile,opts)) hit=true;
+      else if(kind==='gas' && MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy,dps*0.18,opts)) hit=true;
+      else if(kind!=='hose' && MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(sx,sy,dps*0.18,opts)) hit=true;
+      else if(kind!=='hose' && MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy,dps*0.18)) hit=true;
+      else if(kind!=='hose' && MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy,dps*0.18)) hit=true;
+      else if(kind!=='hose' && MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(sx,sy,dps*0.18)) hit=true;
+      if(hit){ noteWeaponCombatHit(sx+0.5,sy+0.2,dps*0.18,opts,{major:true}); break; }
     }
     return true;
   }
@@ -779,7 +860,9 @@ import { reactions as REACTIONS } from './reactions.js';
     const v=aimVector(player,aimX,aimY);
     const {tx,ty}=meleeTargetTile(player,aimX,aimY);
     const bonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
-    const dmg=Math.round(5 + bonus + ((w && w.attackDamage)||3)*(1.7+charge*2.2));
+    const roll=specialAttackRoll();
+    const chargeFx=Math.max(0,Math.min(1,Number(charge)||0));
+    const dmg=Math.max(1,Math.round((3 + bonus + ((w && w.attackDamage)||3))*roll.mult));
     let hit=false;
     const collected=collectLooseTarget(tx,ty);
     hit = !!(collected || (MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,dmg,{kind:'melee',source:'hero'}))
@@ -790,12 +873,14 @@ import { reactions as REACTIONS } from './reactions.js';
       || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,dmg))
       || (MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(tx,ty,dmg))
       || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,dmg))
-      || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg,{source:'hero'})));
+      || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky})));
+    if(hit && roll.lucky) noteLuckyStrike(tx+0.5,ty-0.15);
+    if(hit) noteWeaponCombatHit(tx+0.5,ty+0.15,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky},{major:true});
     player.facing = v.dx>=0?1:-1;
     meleeCd=Math.max(meleeCd,0.25);
     player.atkCd=Math.max(player.atkCd||0, 0.35);
     notifyMeleeSwing(tx,ty,player);
-    blastsFx.push({x:tx+0.5,y:ty+0.5,R:0.9,t:0,max:0.35});
+    blastsFx.push({x:tx+0.5,y:ty+0.5,R:0.82+chargeFx*0.12,t:0,max:0.35});
     try{ if(MM.audio && MM.audio.play) MM.audio.play('swing'); }catch(e){}
     return hit;
   }
@@ -1252,23 +1337,25 @@ import { reactions as REACTIONS } from './reactions.js';
         // Creature hit (mob, boss part or a hovering saucer)
         const hitDmg=arrowDamageAtRange(a);
         let undergroundResult=false;
+        const arrowOpts={source:'hero',kind:'arrow',x:a.x,y:a.y,vx:a.vx,vy:a.vy,tier:a.tier,fire:!!a.fire,specialAttack:!!a.specialAttack,luckyStrike:!!a.luckyStrike};
         if((a.ignoreUndergroundT||0)<=0 && MM.undergroundBoss && MM.undergroundBoss.damageAt){
-          undergroundResult=MM.undergroundBoss.damageAt(tx,ty,hitDmg,{source:'hero',kind:'arrow',x:a.x,y:a.y,vx:a.vx,vy:a.vy,tier:a.tier,fire:!!a.fire});
+          undergroundResult=MM.undergroundBoss.damageAt(tx,ty,hitDmg,arrowOpts);
           if(undergroundResult==='bounce'){
             bounceArrowFromUnderground(a,tx,ty);
             break;
           }
         }
-        if((MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,hitDmg,{source:'hero',kind:'arrow'}))
-        || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,hitDmg,{source:'hero'}))
+        if((MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,hitDmg,arrowOpts))
+        || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,hitDmg,arrowOpts))
         || (MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,hitDmg))
         || undergroundResult
-        || (MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,hitDmg,{source:'hero',kind:'arrow',x:a.x,y:a.y,vx:a.vx,vy:a.vy,tier:a.tier,fire:!!a.fire}))
+        || (MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,hitDmg,arrowOpts))
         || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,hitDmg))
         || (MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(tx,ty,hitDmg))
         || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,hitDmg))
         || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,hitDmg))){
-          if(a.fire && MM.mobs && MM.mobs.igniteAt) MM.mobs.igniteAt(tx,ty,{dur:2.5,dps:2,source:'hero'});
+          if(a.specialAttack || a.luckyStrike) noteWeaponCombatHit(a.x,a.y-0.18,hitDmg,arrowOpts,{major:!!a.power,tier:a.tier});
+          if(a.fire && MM.mobs && MM.mobs.igniteAt) MM.mobs.igniteAt(tx,ty,{dur:2.5,dps:2,source:'hero',specialAttack:!!a.specialAttack});
           arrows.splice(i,1); break;
         }
         const t=getTile(tx,ty);
@@ -1341,14 +1428,14 @@ import { reactions as REACTIONS } from './reactions.js';
           }
           puffs.splice(i,1); continue;
         }
-        if(Math.random()<0.3 && MM.mobs && MM.mobs.igniteRadius) MM.mobs.igniteRadius(p.x,p.y,0.9,{dur:2.5, dps:(p.dps||6)*0.6,source:'hero'});
+        if(Math.random()<0.3 && MM.mobs && MM.mobs.igniteRadius) MM.mobs.igniteRadius(p.x,p.y,0.9,{dur:2.5, dps:(p.dps||6)*0.6,source:'hero',specialAttack:!!p.specialAttack,luckyStrike:!!p.luckyStrike});
         if(Math.random()<0.25 && MM.plants && MM.plants.scorchAt) MM.plants.scorchAt(p.x,p.y,1.2);
       } else if(p.kind==='hose'){
         if(FIRE && FIRE.isBurning(tx,ty)) FIRE.extinguish(tx,ty);
         if(Math.random()<0.3 && MM.mobs && MM.mobs.douseRadius) MM.mobs.douseRadius(p.x,p.y,1.0);
         // watering can: the jet hydrates the garden it passes over
         if(Math.random()<0.3 && MM.plants && MM.plants.waterAt) MM.plants.waterAt(p.x,p.y,0.3,1.6);
-        if(Math.random()<0.10 && MM.mobs && MM.mobs.damageAt) MM.mobs.damageAt(tx,ty, Math.max(1,(p.dps||2)*0.5),{source:'hero'});
+        if(Math.random()<0.10 && MM.mobs && MM.mobs.damageAt) MM.mobs.damageAt(tx,ty, Math.max(1,(p.dps||2)*0.5),{source:'hero',kind:'hose',element:'water',specialAttack:!!p.specialAttack,luckyStrike:!!p.luckyStrike});
         if(t===T.LAVA){
           // quenching: molten rock hardens to obsidian under the jet
           if(typeof setTile==='function' && Math.random()<QUENCH_CHANCE){
@@ -1377,7 +1464,7 @@ import { reactions as REACTIONS } from './reactions.js';
           addWorldGas('poison',px0,py0,{power:0.18,cells:1,getTile,setTile});
           p.x=px0; p.y=py0; p.vx*=0.3; p.vy=-Math.abs(p.vy)*0.3;
         } // pools against walls
-        if(Math.random()<0.3 && MM.mobs && MM.mobs.poisonRadius) MM.mobs.poisonRadius(p.x,p.y,0.95,{dur:4, dps:(p.dps||5)*0.7,source:'hero'});
+        if(Math.random()<0.3 && MM.mobs && MM.mobs.poisonRadius) MM.mobs.poisonRadius(p.x,p.y,0.95,{dur:4, dps:(p.dps||5)*0.7,source:'hero',specialAttack:!!p.specialAttack,luckyStrike:!!p.luckyStrike});
       } else { // steam: purely cosmetic, fades on contact
         if(hitWall || t===T.WATER){ puffs.splice(i,1); continue; }
       }

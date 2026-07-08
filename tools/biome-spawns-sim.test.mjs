@@ -27,11 +27,21 @@ companions.reset();
 
 const SPECIES = mobs._debugSpecies();
 assert.ok(SPECIES.JASZCZUR && mobs.species.includes('JASZCZUR'), 'desert lizard is registered');
+assert.ok(SPECIES.GIANT_SCORPION && mobs.species.includes('GIANT_SCORPION'), 'desert giant scorpion is registered');
 assert.ok(SPECIES.ZABA && mobs.species.includes('ZABA'), 'swamp frog is registered');
 assert.ok(SPECIES.WIOSENNY_JELEN && mobs.species.includes('WIOSENNY_JELEN'), 'spring hallmark stag is registered');
 assert.ok(SPECIES.LETNI_ZUBR && mobs.species.includes('LETNI_ZUBR'), 'summer hallmark bison is registered');
 assert.ok(SPECIES.JESIENNY_LOS && mobs.species.includes('JESIENNY_LOS'), 'autumn hallmark moose is registered');
 assert.ok(SPECIES.ZIMOWY_NIEDZWIEDZ && mobs.species.includes('ZIMOWY_NIEDZWIEDZ'), 'winter hallmark bear is registered');
+assert.ok(SPECIES.VULTURE && mobs.species.includes('VULTURE'), 'mountain vulture is registered');
+assert.ok(SPECIES.ICE_WRAITH && mobs.species.includes('ICE_WRAITH'), 'snow ice wraith is registered');
+assert.ok(SPECIES.JACKPOT_YETI && mobs.species.includes('JACKPOT_YETI'), 'snow jackpot yeti is registered');
+assert.ok(SPECIES.LAKE_SERPENT && mobs.species.includes('LAKE_SERPENT'), 'lake serpent is registered');
+assert.ok(SPECIES.JACKPOT_WHALE && mobs.species.includes('JACKPOT_WHALE'), 'deep-water jackpot whale is registered');
+assert.ok(SPECIES.BRAMBLE_STALKER && mobs.species.includes('BRAMBLE_STALKER'), 'forest bramble stalker is registered');
+assert.ok(SPECIES.THUNDER_BISON && mobs.species.includes('THUNDER_BISON'), 'plains thunder bison is registered');
+assert.ok(SPECIES.ATOMIC_BOMB && mobs.species.includes('ATOMIC_BOMB'), 'city atomic bomb is registered');
+assert.ok(SPECIES.RADIATION_COCKROACH && mobs.species.includes('RADIATION_COCKROACH'), 'city radiation cockroach is registered');
 assert.equal(typeof mobs.spawnSeasonalHallmark, 'function', 'season debug can spawn the current hallmark animal');
 assert.ok(SPECIES.WIOSENNY_JELEN.loot.some(d=>d.item==='springAntler'), 'spring stag carries the spring trophy');
 assert.ok(SPECIES.LETNI_ZUBR.loot.some(d=>d.item==='summerHorn'), 'summer bison carries the summer trophy');
@@ -110,17 +120,27 @@ function findSpawn(spec,biome){
 
 const cases = [
   ['BEAR',0],
+  ['BRAMBLE_STALKER',0],
   ['SQUIRREL',0],
   ['DEER',1],
+  ['THUNDER_BISON',1],
   ['RABBIT',1],
   ['WOLF',2],
+  ['ICE_WRAITH',2],
+  ['JACKPOT_YETI',2],
   ['JASZCZUR',3],
+  ['GIANT_SCORPION',3],
   ['ZABA',4],
   ['FISH',5],
   ['SHARK',5],
+  ['JACKPOT_WHALE',5],
   ['EEL',5],
+  ['LAKE_SERPENT',6],
   ['GOAT',7],
-  ['STRAZNIK',8]
+  ['VULTURE',7],
+  ['STRAZNIK',8],
+  ['ATOMIC_BOMB',8],
+  ['RADIATION_COCKROACH',8]
 ];
 
 const hits = {};

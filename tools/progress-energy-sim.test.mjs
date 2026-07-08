@@ -51,6 +51,31 @@ assert.equal(progress.restore(snap), true, 'progress snapshot restores');
 assert.equal(progress.stats().cap, 1, 'restore brings back trained PojemnoĹ›Ä‡');
 assert.equal(sources.progress().energyCapacityBonus, 25, 'restored progress feeds modifier source again');
 
+let skillEvents=0;
+let skillEventLevel=0;
+let skillEventGained=0;
+globalThis.addEventListener('mm-skill-point-gained',ev=>{
+  skillEvents++;
+  skillEventLevel=ev.detail && ev.detail.level;
+  skillEventGained=ev.detail && ev.detail.gained;
+});
+progress.reset();
+globalThis.player = { xp:60, x:0, y:20 };
+progress.update(0.5);
+assert.equal(skillEvents, 1, 'level-up dispatches a skill-point feedback event');
+assert.equal(skillEventLevel, 2, 'skill-point event carries the new level');
+assert.equal(skillEventGained, 1, 'single-level event carries one gained point');
+
+skillEvents=0;
+skillEventLevel=0;
+skillEventGained=0;
+progress.reset();
+globalThis.player = { xp:220, x:0, y:20 };
+progress.update(0.5);
+assert.equal(skillEvents, 1, 'multi-level jump dispatches one consolidated feedback event');
+assert.equal(skillEventLevel, 3, 'multi-level event carries the final reached level');
+assert.equal(skillEventGained, 2, 'multi-level event carries all newly available points');
+
 progress.reset();
 globalThis.player = { xp:0, x:0, y:20 };
 globalThis.inv = { springAntler:1, summerHorn:1, autumnHeartwood:1, winterFur:1 };

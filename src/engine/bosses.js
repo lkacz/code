@@ -1503,13 +1503,6 @@ window.MM = window.MM || {};
         ctx.fill();
       }
     }
-    if(tier>=3){
-      const w=(m.maxDx-m.minDx+1)*TILE;
-      const h=(m.height||4)*TILE;
-      ctx.strokeStyle=rgbaHex(accent,0.18);
-      ctx.lineWidth=1;
-      ctx.strokeRect((bx+m.minDx)*TILE+0.5,(by-(m.height||4)+1)*TILE+wob+0.5,w,h);
-    }
   }
   function draw(ctx,TILE,canDrawTile){
     if(!monsters.length && !debris.length && !fallingBodyBlocks.length && !blasts.length && !projectiles.length) return;

@@ -375,9 +375,13 @@ WG.biomeType = function(x){ return WG.column(x).biome; };
 const OCEAN_SEAL_MIN_SPAN = 96;   // contiguous water columns needed to count as ocean
 const OCEAN_SEAL_SEDIMENT = 3;    // sand/clay bed rows kept between floor and bedrock
 const OCEAN_SEAL_SCAN_CAP = 4000; // per-direction scan bound (breakers cap real runs earlier)
+const OCEAN_SEAL_EDGE_BLEND = 18;  // softens the basin jacket near coastlines
+const OCEAN_SEAL_SHOULDER = 9;     // short bedrock tendrils under adjacent shore biomes
 const oceanSegCache = new Map();  // x -> segment object (shared per run) or null
 WG.OCEAN_SEAL_MIN_SPAN = OCEAN_SEAL_MIN_SPAN;
 WG.OCEAN_SEAL_SEDIMENT = OCEAN_SEAL_SEDIMENT;
+WG.OCEAN_SEAL_EDGE_BLEND = OCEAN_SEAL_EDGE_BLEND;
+WG.OCEAN_SEAL_SHOULDER = OCEAN_SEAL_SHOULDER;
 WG.oceanBasinAt = function(x){
 	x = Math.round(x);
 	const hit = oceanSegCache.get(x);
@@ -399,11 +403,42 @@ WG.oceanBasinAt = function(x){
 	for(let i=L;i<=R;i++) oceanSegCache.set(i,seg);
 	return seg;
 };
-// Row from which the basin bedrock jacket starts for a sealed ocean column
-// (null when the column is not part of a sealed basin).
+function oceanSealEdgeExtra(x,seg){
+	const edge=Math.min(Math.abs(x-seg.left),Math.abs(seg.right-x));
+	if(edge>=OCEAN_SEAL_EDGE_BLEND) return 0;
+	const k=1-smoothstep(0,OCEAN_SEAL_EDGE_BLEND,edge);
+	const n=WG.valueNoise(x,19,9661)*0.65 + WG.valueNoise(x,7,9667)*0.35;
+	const branch=(WG.valueNoise(x,31,9673)>0.58 ? 3 : 0);
+	return Math.round(k*(5+n*8+branch));
+}
+function oceanShoulderBasinAt(x){
+	const SEA=WG.settings.seaLevel;
+	const col=WG.column(x);
+	if(col.row>SEA) return null;
+	let best=null;
+	for(let d=1; d<=OCEAN_SEAL_SHOULDER; d++){
+		const l=WG.oceanBasinAt(x-d);
+		if(l && x>l.right && x-l.right===d){ best={seg:l,dist:d,side:1}; break; }
+		const r=WG.oceanBasinAt(x+d);
+		if(r && x<r.left && r.left-x===d){ best={seg:r,dist:d,side:-1}; break; }
+	}
+	return best;
+}
+// Row from which the basin bedrock jacket starts. Ocean core columns seal under a
+// thin sediment bed; coastline columns blend deeper, and nearby shore columns get
+// short underground shoulders so the seal reads as geology instead of a ruler cut.
 WG.oceanSealTop = function(x){
-	if(!WG.oceanBasinAt(x)) return null;
-	return WG.column(Math.round(x)).row + OCEAN_SEAL_SEDIMENT;
+	x=Math.round(x);
+	const seg=WG.oceanBasinAt(x);
+	if(seg){
+		return Math.min(WORLD_H-1, WG.column(x).row + OCEAN_SEAL_SEDIMENT + oceanSealEdgeExtra(x,seg));
+	}
+	const shoulder=oceanShoulderBasinAt(x);
+	if(!shoulder) return null;
+	const col=WG.column(x);
+	const shoreNoise=Math.round(WG.valueNoise(x,13,9689)*4);
+	const fade=shoulder.dist/OCEAN_SEAL_SHOULDER;
+	return Math.min(WORLD_H-1, Math.round(Math.max(col.row+8+shoulder.dist+shoreNoise, WG.settings.seaLevel+7+fade*13+shoreNoise)));
 };
 WG.cityAt = function(x){ const c=WG.column(Math.round(x)); return c && c.city ? c.city : null; };
 function biomeRunAt(x,biome,origin,limit){
@@ -551,6 +586,20 @@ WG.coalVeinAt = function(x,y,nearCave){
 	if(!seam) return false;
 	const body=fbm2(x,y,24,17,2,1801);
 	return body>0.57 || WG.randSeed(x*7.73+y*0.37)<chance*0.42;
+};
+WG.goldVeinChance = function(y, nearCave){
+	const d=clamp((y-48)/(WORLD_H-58),0,1);
+	const mid=clamp(1-Math.abs(d-0.58)*1.55,0,1);
+	return (0.006 + mid*0.030 + d*0.008) * (nearCave?1.22:1);
+};
+WG.goldVeinAt = function(x,y,nearCave){
+	const chance=WG.goldVeinChance(y,!!nearCave);
+	if(chance<=0) return false;
+	const ribbon=Math.abs(fbm2(x,y,84,21,3,1901)-0.5) < chance*0.30;
+	if(!ribbon) return false;
+	const body=fbm2(x+17,y-9,18,14,2,1902);
+	const sparkle=1-Math.abs(fbm2(x,y,33,15,2,1903)*2-1);
+	return body>0.60 || (sparkle>0.74 && WG.randSeed(x*5.79+y*0.43)<chance*0.70);
 };
 // Diamond odds now belong to the lowest legacy crust: most reachable diamonds
 // should be a bedrock-level expedition, not a routine mid-depth seam. world.js

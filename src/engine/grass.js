@@ -93,7 +93,7 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
             grassTiles++;
             tiles.push([x,y,t]);
           }
-        } else if(visible && (leafTile(t) || t===T.DIAMOND)){
+        } else if(visible && (leafTile(t) || t===T.DIAMOND || t===T.GOLD_ORE)){
           tiles.push([x,y,t]);
         }
       }
@@ -183,6 +183,8 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
         // Diamond shimmer + flash (back pass)
         if(pass==='back' && t===T.DIAMOND){ const h=hash32(x,y); const flash = Math.sin(now*0.006 + (h&1023))*0.5 + 0.5; if(flash>0.8){ const alpha=(flash-0.8)/0.2; ctx.fillStyle='rgba(255,255,255,'+(0.3*alpha)+')'; const cxp=x*TILE+TILE/2, cyp=y*TILE+TILE/2; ctx.fillRect(cxp-1,cyp-1,2,2); ctx.fillRect(cxp-3,cyp,6,1); ctx.fillRect(cxp,cyp-3,1,6); }
           ctx.fillStyle='rgba(255,255,255,'+(0.05+diamondPulse*0.07)+')'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); }
+        if(pass==='back' && t===T.GOLD_ORE){ const h=hash32(x,y); const flash = Math.sin(now*0.0048 + (h&1023))*0.5 + 0.5; if(flash>0.72){ const alpha=(flash-0.72)/0.28; ctx.fillStyle='rgba(255,235,118,'+(0.22*alpha)+')'; const cxp=x*TILE+TILE/2+(((h>>>5)&3)-1), cyp=y*TILE+TILE/2+(((h>>>9)&3)-1); ctx.fillRect(cxp-1,cyp,3,1); ctx.fillRect(cxp,cyp-1,1,3); }
+          ctx.fillStyle='rgba(255,202,58,'+(0.035+diamondPulse*0.045)+')'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); }
     }
   };
 

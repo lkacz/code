@@ -9,7 +9,8 @@ globalThis.localStorage = {getItem(){ return null; }, setItem(){}, removeItem(){
 globalThis.msg = ()=>{};
 globalThis.damageHero = (amount)=>{ if(globalThis.player) globalThis.player.hp-=amount; };
 globalThis.CustomEvent = class CustomEvent{ constructor(type,init){ this.type=type; this.detail=init && init.detail; } };
-globalThis.dispatchEvent = ()=>{};
+const combatEvents = [];
+globalThis.dispatchEvent = (ev)=>{ if(ev && ev.type==='mm-combat-event') combatEvents.push(ev.detail); return true; };
 
 const { T, CHUNK_W } = await import('../src/constants.js');
 const { STORY_LORE } = await import('../src/engine/story_lore.js');
@@ -122,6 +123,7 @@ rawIceBoss.hp = rawIceBoss.maxHp;
 const iceWeakHp = rawIceBoss.hp;
 assert.equal(guardianLairs.damageAt(Math.floor(rawIceBoss.x), Math.floor(rawIceBoss.y), 20, {kind:'flame',element:'fire',source:'hero'}), true, 'flame can hit the ice guardian');
 assert.ok(rawIceBoss.hp <= iceWeakHp-25, 'ice guardian takes amplified flame damage');
+assert.ok(combatEvents.some(e=>e && e.target==='guardian' && e.element==='fire' && e.bonusDamagePct>=100), 'ice guardian flame weakness emits a bonus combat event');
 rawIceBoss.hp = rawIceBoss.maxHp;
 const icePlainHp = rawIceBoss.hp;
 assert.equal(guardianLairs.damageAt(Math.floor(rawIceBoss.x), Math.floor(rawIceBoss.y), 20, {kind:'hose',element:'water',source:'hero'}), true, 'hose can hit the ice guardian without the flame bonus');
@@ -145,6 +147,7 @@ rawBoss.hp = rawBoss.maxHp;
 const fireWeakHp = rawBoss.hp;
 assert.equal(guardianLairs.damageAt(Math.floor(rawBoss.x), Math.floor(rawBoss.y), 20, {kind:'hose',element:'water',source:'hero'}), true, 'hose can hit the fire guardian');
 assert.ok(rawBoss.hp <= fireWeakHp-40, 'fire guardian takes amplified water damage');
+assert.ok(combatEvents.some(e=>e && e.target==='guardian' && e.element==='water' && e.bonusDamagePct>=200), 'fire guardian water weakness emits a bonus combat event');
 rawBoss.hp = rawBoss.maxHp;
 const firePlainHp = rawBoss.hp;
 assert.equal(guardianLairs.damageAt(Math.floor(rawBoss.x), Math.floor(rawBoss.y), 20, {kind:'flame',element:'fire',source:'hero'}), true, 'flame can hit the fire guardian without the water bonus');
