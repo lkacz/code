@@ -211,17 +211,24 @@ const hero = {x:2.2,y:1.8,w:0.7,h:0.95,hp:50,maxHp:200};
   const st = createHouseHealingState();
   const res = updateHouseHealing(st,1,p,w.get,{backgroundAt:w.bg});
   assert.equal(res.inside,true,'healing update recognizes the valid house');
+  assert.equal(res.entered,true,'first valid scan reports entering a healing house');
   assert.equal(res.healRateFrac,houseHealRateFrac(res.status),'healing update exposes the active size-scaled rate');
   assert.equal(p.hp,50 + p.maxHp*res.healRateFrac,'house healing restores the size-scaled fraction of max HP per second');
   p.hp=p.maxHp-0.2;
   updateHouseHealing(st,1,p,w.get,{backgroundAt:w.bg});
   assert.equal(p.hp,p.maxHp,'house healing clamps at max HP');
+  w.set(2,0,T.AIR);
+  const broken = updateHouseHealing(st,1,p,w.get,{backgroundAt:w.bg});
+  assert.equal(broken.inside,false,'breaking the shelter stops home healing');
+  assert.equal(broken.exited,true,'broken shelter reports exiting the healing-home state');
 }
 
 const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 assert.match(mainSource, /import \{ houseHealing as HOUSE_HEALING \} from '\.\/engine\/house_healing\.js';/, 'main imports the house healing system');
 assert.match(mainSource, /HOUSE_HEALING\.update\(houseHealingState,dt,player,getTile,\{[\s\S]*backgroundAt:getConstructionBackgroundTile[\s\S]*\}\)/, 'main evaluates house healing with foreground tiles and construction backwalls');
 assert.match(mainSource, /notifyInvasionHeroAction\('hero_heal',\{amount:res\.report,source:'house'\}\)/, 'reported passive house healing is routed through hero heal notifications');
+assert.match(mainSource, /if\(res && res\.entered && res\.status && res\.status\.ok\)[\s\S]*registerHealingShelterStatus\(res\.status\)/, 'entering a valid healing house registers it as a home respawn candidate');
+assert.match(mainSource, /if\(res && res\.exited\)[\s\S]*validateHealingShelters\(\{changed:\{x:Math\.floor\(player\.x\),y:Math\.floor\(player\.y\)\},signal:true\}\)/, 'leaving a broken healing house revalidates remembered homes for broken-heart feedback');
 assert.match(mainSource, /updateHouseHealing\(dt\);[\s\S]*if\(MEAT && MEAT\.update\)/, 'game step ticks house healing before later world systems');
 
 console.log('house-healing-sim: all assertions passed');

@@ -523,6 +523,25 @@ assert.ok(Array.isArray(levSnap.levels) && levSnap.levels.length>0, 'snapshot ca
 water.reset();
 water.restore(levSnap);
 assert.equal(volume(), volBeforeSnap, 'restore rehydrates sub-tile levels exactly');
+assert.deepEqual(water._debug().toxicWater, [], 'fresh restore without toxic payload has no toxic water');
+
+// --- 19c. Toxic water is an overlay state: it flows, saves, and clears after one game day ---
+resetWorld();
+setTile(0,99,T.WATER);
+water.onTileChanged(0,99,getTile);
+assert.equal(water.polluteAt(0,99,getTile,setTile,{source:'test',seconds:120}), true, 'water can be marked as toxic without changing its tile id');
+assert.equal(getTile(0,99), T.WATER, 'toxic water remains the normal water tile for gameplay systems');
+assert.equal(water.isToxicAt(0,99,getTile), true, 'toxic water state is queryable per cell');
+step(240);
+assert.ok(water._debug().toxicWater.some(([x,y])=>x!==0 && y===99), 'toxic water contamination travels with flowing water units');
+const toxicSnap=water.snapshot();
+assert.ok(Array.isArray(toxicSnap.toxic) && toxicSnap.toxic.length>0, 'water snapshot carries toxic-water cells');
+const toxicCell=toxicSnap.toxic[0];
+water.reset();
+water.restore(toxicSnap);
+assert.equal(water.isToxicAt(toxicCell[0],toxicCell[1],getTile), true, 'water restore rehydrates toxic-water cells');
+water.update(getTile,setTile,121);
+assert.equal(water.metrics().toxicWater, 0, 'toxic water clears back to ordinary water after its timer');
 
 // --- 20. displaceAt conserves volume when a solid enters water (engine contract) ---
 // This is the primitive the player-placement integration relies on: pushing the unit out

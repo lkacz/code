@@ -21,6 +21,7 @@ import { isHeroPassableTile } from './material_physics.js';
   const FLOW_MARK_INTERVAL_MS = 90;
   const WIRE_TTL = 0.62;
   const TELEPORT_COOLDOWN = 0.72;
+  const BUNKER_FAILSAFE_CONCRETE_MIN = 10;
   const PLAYER_SCAN_INTERVAL = 0.45;
   const VISIBLE_SCAN_INTERVAL_MS = 250;
   const CATCHUP_MAX_SECONDS = 900;
@@ -580,6 +581,28 @@ import { isHeroPassableTile } from './material_physics.js';
   function passableForPlayer(t){
     return isHeroPassableTile(t);
   }
+  function isAlienBunkerTeleporter(x,y,getTile){
+    x=Math.floor(x); y=Math.floor(y);
+    if(getSafe(getTile,x,y,T.AIR)!==T.TELEPORTER) return false;
+    let concrete=0, roof=false, floor=false, side=false;
+    for(let dy=-4; dy<=4; dy++){
+      for(let dx=-4; dx<=4; dx++){
+        const t=getSafe(getTile,x+dx,y+dy,T.AIR);
+        if(t!==T.UFO_CONCRETE) continue;
+        concrete++;
+        if(dy<0) roof=true;
+        if(dy>0) floor=true;
+        if(dx!==0) side=true;
+      }
+    }
+    return concrete>=BUNKER_FAILSAFE_CONCRETE_MIN && roof && floor && side;
+  }
+  function bunkerFailsafeSpent(origin,target,getTile){
+    if(!origin || !target) return null;
+    if(!isAlienBunkerTeleporter(origin.x,origin.y,getTile)) return null;
+    if(isAlienBunkerTeleporter(target.x,target.y,getTile)) return null;
+    return {storage:0,dynamo:0,hero:0,emergency:true};
+  }
   function canStandAt(player,x,y,getTile){
     const w=Math.max(0.5,Number(player && player.w)||0.7);
     const h=Math.max(0.7,Number(player && player.h)||0.95);
@@ -648,7 +671,8 @@ import { isHeroPassableTile } from './material_physics.js';
     if(!m || (m.cooldown||0)>0) return false;
     const target=nearestTeleporter(hit.x,hit.y,dir,getTile);
     if(!target) return false;
-    const spent=spendTravelEnergy(m,getTile,opts,player);
+    let spent=spendTravelEnergy(m,getTile,opts,player);
+    if(!spent) spent=bunkerFailsafeSpent(hit,target,getTile);
     if(!spent) return false;
     const dest=ensureMachine(target.x,target.y,getTile);
     const pos=exitPosition(target,dir,player,getTile);
@@ -670,7 +694,7 @@ import { isHeroPassableTile } from './material_physics.js';
         MM.particles.spawnEnergyAbsorb((hit.x+0.5)*TILE,(hit.y+0.5)*TILE,(target.x+0.5)*TILE,(target.y+0.5)*TILE,1.4);
       }
       if(MM.audio && MM.audio.play) MM.audio.play('charge');
-      if(MM.ui && MM.ui.msg) MM.ui.msg('Teleport '+(dir<0?'w lewo':'w prawo'));
+      if(MM.ui && MM.ui.msg) MM.ui.msg(spent.emergency ? 'Awaryjny powrot z bunkra UFO' : 'Teleport '+(dir<0?'w lewo':'w prawo'));
     }catch(e){}
     return true;
   }
@@ -900,7 +924,7 @@ import { isHeroPassableTile } from './material_physics.js';
     restore,
     reset,
     metrics,
-    _debug:{machines,networkCache,wireActivity,TELEPORTER_CAPACITY,MACHINE_CAP,TRAVEL_COST,CHARGE_RATE,CATCHUP_MAX_SECONDS,debugCharge,debugSetEnergy,ensureMachine,networkFor}
+    _debug:{machines,networkCache,wireActivity,TELEPORTER_CAPACITY,MACHINE_CAP,TRAVEL_COST,CHARGE_RATE,CATCHUP_MAX_SECONDS,debugCharge,debugSetEnergy,ensureMachine,networkFor,isAlienBunkerTeleporter}
   };
   MM.teleporters=api;
 })();

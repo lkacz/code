@@ -74,6 +74,7 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
     leaveDay:0,
     stock:null,          // {offers:[ids], rates:[ids]}
     greeted:false,
+    falloutNoted:false,
     bob:0
   };
   let openHandler = null;   // main.js: show the trade panel
@@ -104,6 +105,23 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
   }
   function say(t){ try{ if(root.msg) root.msg(t); }catch(e){} }
   function playSound(id){ try{ if(MM.audio && MM.audio.play) MM.audio.play(id); }catch(e){} }
+  function atomicWinterLine(ctx){
+    try{
+      const aw=MM.atomicWinter;
+      const list=(aw && typeof aw.contextLines==='function') ? aw.contextLines('npc') : [];
+      if(!Array.isArray(list) || !list.length) return '';
+      const salt=(S.visitIndex|0)*97 + Math.floor(dayFloat(ctx)*10);
+      return String(list[hash32(worldSeed(ctx),salt) % list.length] || '').trim();
+    }catch(e){ return ''; }
+  }
+  function mentionAtomicWinter(ctx){
+    if(S.falloutNoted) return false;
+    const line=atomicWinterLine(ctx);
+    if(!line) return false;
+    S.falloutNoted=true;
+    say('Handlarz: "'+line+'"');
+    return true;
+  }
 
   // Seeded per-visit stock: OFFER_COUNT goods + the epic chest, RATE_COUNT rates.
   function rollStock(visitIndex, seed){
@@ -154,6 +172,7 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
     S.stock = rollStock(S.visitIndex, worldSeed(ctx));
     S.leaveDay = day + VISIT_LENGTH;
     S.greeted = false;
+    S.falloutNoted = false;
     const dirWord = S.x > player.x ? 'na wschodzie ➡' : '⬅ na zachodzie';
     say('🧺 Wędrowny handlarz rozbił kram '+dirWord+'! Diamenty na zapasy, iryd na rarytasy.');
     playSound('chest');
@@ -192,6 +211,7 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
     }
     if(!S.greeted && Math.hypot(player.x-S.x, player.y-S.y) < 6){
       S.greeted = true;
+      if(mentionAtomicWinter(ctx)) return;
       say('🧺 Handlarz: „'+GREETINGS[hash32(worldSeed(ctx), S.visitIndex) % GREETINGS.length]+'"');
     }
     // hero wandered off mid-trade: close the panel
@@ -207,6 +227,7 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
       say('🧺 Podejdź bliżej do kramu, żeby handlować.');
       return true;
     }
+    mentionAtomicWinter(null);
     if(openHandler){ try{ openHandler(); }catch(e){} }
     return true;
   }
@@ -367,7 +388,8 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
       v:1, active:!!S.active, x:S.x, y:S.y,
       visitIndex:S.visitIndex|0, nextVisitDay:S.nextVisitDay,
       leaveDay:S.leaveDay, stock:S.stock ? {offers:S.stock.offers.slice(), rates:S.stock.rates.slice()} : null,
-      greeted:!!S.greeted
+      greeted:!!S.greeted,
+      falloutNoted:!!S.falloutNoted
     };
   }
   function restore(data){
@@ -379,6 +401,7 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
     S.nextVisitDay = Number.isFinite(data.nextVisitDay) ? data.nextVisitDay : FIRST_VISIT_DAY;
     S.leaveDay = Number.isFinite(data.leaveDay) ? data.leaveDay : 0;
     S.greeted = !!data.greeted;
+    S.falloutNoted = !!data.falloutNoted;
     S.stock = null;
     if(data.stock && Array.isArray(data.stock.offers) && Array.isArray(data.stock.rates)){
       S.stock = {
@@ -391,7 +414,7 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
   }
   function reset(){
     S.active=false; S.x=0; S.y=0; S.visitIndex=0; S.nextVisitDay=FIRST_VISIT_DAY;
-    S.leaveDay=0; S.stock=null; S.greeted=false; S.bob=0; S._fallbackDay=0;
+    S.leaveDay=0; S.stock=null; S.greeted=false; S.falloutNoted=false; S.bob=0; S._fallbackDay=0;
   }
 
   const api = {

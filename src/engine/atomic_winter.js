@@ -1,4 +1,6 @@
-// Persistent atomic winter world event: city bomb fallout, toxic rain, wind, NPC warning.
+// Persistent atomic winter world event: city bomb fallout, toxic rain, wind, shared dialogue context.
+import { isPlayerPassableTile } from './material_physics.js';
+
 (function(){
   const root = (typeof window!=='undefined') ? window : globalThis;
   const MM = root.MM = root.MM || {};
@@ -7,11 +9,37 @@
   const DAYS_PER_SEASON = 10;
   const SEASONS_PER_YEAR = 4;
   const YEAR_SECONDS = DAY_SECONDS * DAYS_PER_SEASON * SEASONS_PER_YEAR;
+  const WINTER_SECONDS = DAY_SECONDS * DAYS_PER_SEASON;
   const WIND_BOOST_SECONDS = DAY_SECONDS;
   const ENERGY_INTERVAL = 10;
-  const TOXIC_RAIN_DAMAGE = 3;
+  const TOXIC_RAIN_DAMAGE = 1;
+  const TOXIC_RAIN_INTERVAL = 4;
   const MOB_RAIN_HEAL = 2;
-  const MESSENGER_ID = 'atomic_winter_messenger';
+  const LEGACY_MESSENGER_ID = 'atomic_winter_messenger';
+  const NPC_CONTEXT_LINES = [
+    'Atomic winter trwa do konca zimy: zielony deszcz rani kazdego bez dachu.',
+    'W schronie pod solidnym dachem nie lapiesz opadu ani piorunow, ale piorun moze uszkodzic dach.',
+    'Radioaktywny deszcz leczy potwory, wiec walka na zewnatrz robi sie coraz gorsza.',
+    'Po detonacji wiatr jest trzykrotnie silniejszy przez jeden dzien i noc.',
+    'Hero dostaje 1 energie co 10 sekund, dopoki trwa atomic winter.',
+    'Kiedy zima minie, zielone chmury, toksyczny deszcz i dodatkowa energia wygasna.'
+  ];
+  const ALIEN_CONTEXT_LINES = [
+    'Fallout protokol: zielony deszcz rani Hero do konca zimy.',
+    'Schron blokuje opad i piorun, ale piorun moze wygryzc dach.',
+    'Deszcz radioaktywny karmi potwory. Zostawcie ich na powierzchni.',
+    'Wiatr po bombie ma potrojna sile przez jeden dzien i noc.',
+    'Hero laduje energie z opadu: 1 impuls co 10 sekund.',
+    'Gdy zima minie, chmury i toksyczny opad straca zasilanie.'
+  ];
+  const MOLEKIN_CONTEXT_LINES = [
+    'Zielony deszcz bije powierzchnie do konca zimy. Dach albo tunel.',
+    'Piorun nie trafi pod dachem, ale moze wyrwac kamien nad glowa.',
+    'Opad leczy stwory. Ziemia lubi, kiedy Hero zostaje na gorze.',
+    'Wiatr po bombie ryczy trzy razy mocniej przez dzien i noc.',
+    'Hero ssie energie z popiolu: jeden punkt co 10 sekund.',
+    'Kiedy zima pusci, radioaktywny deszcz ucichnie.'
+  ];
 
   const state = {
     active:false,
@@ -25,14 +53,12 @@
     stormRefresh:0,
     windRefresh:0,
     winterRefresh:0,
-    forcedWinter:false,
-    messenger:{active:false,x:0,y:0,talkUntil:0}
+    forcedWinter:false
   };
   const atomicClouds = [];
 
   function finite(v,fallback){ return (typeof v==='number' && isFinite(v)) ? v : fallback; }
   function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
-  function now(){ try{ return performance.now(); }catch(e){ return Date.now(); } }
   function dayLength(){
     try{
       const c=MM.seasons && MM.seasons.constants;
@@ -47,6 +73,14 @@
       const s=Number.isFinite(c && c.DAYS_PER_SEASON) ? c.DAYS_PER_SEASON : DAYS_PER_SEASON;
       return d * s * SEASONS_PER_YEAR;
     }catch(e){ return YEAR_SECONDS; }
+  }
+  function winterLength(){
+    try{
+      const c=MM.seasons && MM.seasons.constants;
+      const d=Number.isFinite(c && c.DAY_SECONDS) ? c.DAY_SECONDS : DAY_SECONDS;
+      const s=Number.isFinite(c && c.DAYS_PER_SEASON) ? c.DAYS_PER_SEASON : DAYS_PER_SEASON;
+      return d * s;
+    }catch(e){ return WINTER_SECONDS; }
   }
   function winterStartDay(day){
     const c=MM.seasons && MM.seasons.constants;
@@ -87,6 +121,9 @@
     if(c){
       c.raining=true;
       c.snowing=false;
+      c.atomic=true;
+      c.toxic=true;
+      c.spriteKey='';
       c.mass=Math.max(c.mass||0,62);
       atomicClouds.push(c);
       while(atomicClouds.length>32) atomicClouds.shift();
@@ -99,6 +136,8 @@
       if(!c || !(c.mass>0)){ atomicClouds.splice(i,1); continue; }
       c.raining=true;
       c.snowing=false;
+      c.atomic=true;
+      c.toxic=true;
       c.mass=Math.max(c.mass||0,18);
     }
   }
@@ -116,9 +155,60 @@
     for(let i=0;i<3;i++) addStormCloud(x+(Math.random()*120-60));
   }
   function toxicRainAt(x){
+    if(!state.active) return false;
     const wx=finite(x,state.x);
     try{ if(MM.clouds && typeof MM.clouds.isRainingAt==='function' && MM.clouds.isRainingAt(Math.floor(wx))) return true; }catch(e){}
     return state.active && Math.abs(wx-state.x)<190;
+  }
+  function contextLines(kind){
+    if(!state.active) return [];
+    const k=String(kind || 'npc').toLowerCase();
+    if(k === 'alien' || k === 'aliens') return ALIEN_CONTEXT_LINES.slice();
+    if(k === 'molekin' || k === 'mole' || k === 'underground') return MOLEKIN_CONTEXT_LINES.slice();
+    return NPC_CONTEXT_LINES.slice();
+  }
+  function contextLine(kind,seed){
+    const lines=contextLines(kind);
+    if(!lines.length) return '';
+    const n=Math.abs(Math.floor(finite(seed,state.tLeft) * 997 + state.tLeft + state.x * 13));
+    return lines[n % lines.length];
+  }
+  function announceStart(){
+    try{
+      if(root.msg) root.msg('Atomic winter: nuclear bomb detonated. Green poisonous rain lasts until winter ends; shelter under a roof blocks rain and lightning.');
+    }catch(e){}
+  }
+  function removeLegacyMessenger(){
+    try{
+      const reg=MM.npcSystem || MM.npcs;
+      if(reg && typeof reg.unregister==='function') reg.unregister(LEGACY_MESSENGER_ID);
+      else if(reg && typeof reg==='object') delete reg[LEGACY_MESSENGER_ID];
+      if(MM.npcs && typeof MM.npcs==='object') delete MM.npcs[LEGACY_MESSENGER_ID];
+    }catch(e){}
+  }
+  function falloutOpenTile(t){
+    return isPlayerPassableTile(t);
+  }
+  function roofOverColumn(x,y,getTile,depth){
+    if(typeof getTile!=='function') return false;
+    const top=y-Math.max(4,Math.floor(depth||22));
+    for(let yy=y; yy>=top; yy--){
+      let t;
+      try{ t=getTile(x,yy); }catch(e){ break; }
+      if(falloutOpenTile(t)) continue;
+      return true;
+    }
+    return false;
+  }
+  function shelteredFromFallout(player,getTile){
+    if(!player || !Number.isFinite(player.x) || !Number.isFinite(player.y)) return false;
+    const x=Math.floor(player.x);
+    const y=Math.floor(player.y)-1;
+    if(roofOverColumn(x,y,getTile,24)) return true;
+    let sideRoofs=0;
+    if(roofOverColumn(x-1,y,getTile,24)) sideRoofs++;
+    if(roofOverColumn(x+1,y,getTile,24)) sideRoofs++;
+    return sideRoofs>=2;
   }
   function chargeHeroEnergy(player){
     const energy=MM.heroEnergy;
@@ -130,102 +220,12 @@
       player.energy=Math.min(max,player.energy+1);
     }
   }
-  function findMessengerSpot(player,getTile){
-    const px=Math.floor(finite(player && player.x,state.x));
-    const py=Math.floor(finite(player && player.y,state.y));
-    for(const dx of [-4,4,-7,7,-10,10,0]){
-      const x=px+dx;
-      for(let y=py-5;y<=py+8;y++){
-        try{
-          if(getTile && getTile(x,y)===0 && getTile(x,y-1)===0 && getTile(x,y+1)!==0 && getTile(x,y+1)!==8 && getTile(x,y+1)!==13){
-            return {x:x+0.5,y:y+0.1};
-          }
-        }catch(e){}
-      }
-    }
-    return {x:finite(player && player.x,state.x)+3,y:finite(player && player.y,state.y)};
-  }
-  function messengerLine(){
-    return 'Atomic winter: one year of poisonous rain.';
-  }
-  function registerMessenger(){
-    const reg=MM.npcSystem || MM.npcs;
-    if(!reg || typeof reg.register!=='function') return false;
-    if(typeof reg.get==='function' && reg.get(MESSENGER_ID)) return true;
-    const api={
-      id:()=>MESSENGER_ID,
-      summary:()=>state.messenger.active ? {id:MESSENGER_ID,name:'Nuclear scout',kind:'warning',x:state.messenger.x,y:state.messenger.y} : null,
-      body:()=>state.messenger.active ? {x:state.messenger.x,y:state.messenger.y,w:0.75,h:1.65} : null,
-      nudge(dx){ if(state.messenger.active) state.messenger.x+=clamp(finite(dx,0),-0.2,0.2); },
-      update(dt,player,getTile){
-        if(!state.messenger.active) return;
-        const pl=player || root.player;
-        if(pl && Math.abs(state.messenger.x-pl.x)>18){
-          const spot=findMessengerSpot(pl,getTile);
-          state.messenger.x=spot.x; state.messenger.y=spot.y;
-        }
-      },
-      draw(ctx,tile,canDrawTile){
-        if(!state.messenger.active || !ctx) return;
-        const x=state.messenger.x, y=state.messenger.y;
-        if(canDrawTile && !canDrawTile(Math.floor(x),Math.floor(y))) return;
-        const px=x*tile, py=y*tile;
-        ctx.save();
-        ctx.fillStyle='rgba(0,0,0,0.22)';
-        ctx.beginPath(); ctx.ellipse(px,py+tile*0.42,tile*0.33,tile*0.10,0,0,Math.PI*2); ctx.fill();
-        ctx.fillStyle='#43515a'; ctx.fillRect(px-tile*0.23,py-tile*0.88,tile*0.46,tile*0.70);
-        ctx.fillStyle='#d8c2a4'; ctx.fillRect(px-tile*0.18,py-tile*1.14,tile*0.36,tile*0.28);
-        ctx.fillStyle='#d8e6ef'; ctx.fillRect(px-tile*0.20,py-tile*1.20,tile*0.40,tile*0.09);
-        ctx.fillStyle='#88ff4f'; ctx.fillRect(px+tile*0.03,py-tile*1.05,tile*0.06,tile*0.06);
-        ctx.fillStyle='#2f3940'; ctx.fillRect(px-tile*0.17,py-tile*0.18,tile*0.13,tile*0.58);
-        ctx.fillRect(px+tile*0.04,py-tile*0.18,tile*0.13,tile*0.58);
-        if(now()<state.messenger.talkUntil){
-          const text=messengerLine();
-          ctx.font=Math.max(10,Math.floor(tile*0.52))+'px sans-serif';
-          const w=Math.min(tile*15,Math.max(tile*7,ctx.measureText(text).width+tile));
-          const bx=px-w*0.5, by=py-tile*2.25;
-          ctx.fillStyle='rgba(18,24,28,0.82)';
-          ctx.fillRect(bx,by,w,tile*0.82);
-          ctx.fillStyle='#f4fbff';
-          ctx.fillText(text,bx+tile*0.35,by+tile*0.53);
-        }
-        ctx.restore();
-      },
-      interactAt(tx,ty){
-        if(!state.messenger.active) return false;
-        if(Math.abs((tx+0.5)-state.messenger.x)>1.2 || Math.abs((ty+0.5)-state.messenger.y)>1.8) return false;
-        state.messenger.talkUntil=now()+5500;
-        try{ if(root.msg) root.msg('Nuclear scout: '+messengerLine()); }catch(e){}
-        return true;
-      },
-      snapshot:()=>Object.assign({},state.messenger),
-      restore(src){
-        if(!src || typeof src!=='object') return false;
-        state.messenger.active=!!src.active;
-        state.messenger.x=finite(src.x,state.x);
-        state.messenger.y=finite(src.y,state.y);
-        state.messenger.talkUntil=finite(src.talkUntil,0);
-        return true;
-      },
-      reset(){ state.messenger.active=false; state.messenger.talkUntil=0; }
-    };
-    try{ reg.register(MESSENGER_ID,api); return true; }catch(e){ return false; }
-  }
-  function activateMessenger(player,getTile){
-    registerMessenger();
-    const spot=findMessengerSpot(player,getTile);
-    state.messenger.active=true;
-    state.messenger.x=spot.x;
-    state.messenger.y=spot.y;
-    state.messenger.talkUntil=now()+9000;
-    try{ if(root.msg) root.msg('Nuclear scout: A nuclear bomb was detonated. Atomic winter has started and will last one year.'); }catch(e){}
-  }
   function trigger(opts){
     opts=opts||{};
+    removeLegacyMessenger();
     const player=opts.player || root.player || null;
-    const getTile=opts.getTile || (MM.world && MM.world.getTile ? ((x,y)=>MM.world.getTile(x,y)) : null);
     state.active=true;
-    state.tLeft=yearLength();
+    state.tLeft=winterLength();
     state.windLeft=dayLength();
     state.x=finite(opts.x,finite(player && player.x,0));
     state.y=finite(opts.y,finite(player && player.y,0));
@@ -236,7 +236,7 @@
     state.winterRefresh=0;
     forceBeginningOfWinter();
     seedAtomicStorm(state.x);
-    activateMessenger(player,getTile);
+    announceStart();
     return true;
   }
   function updateWindBoost(dt,player){
@@ -265,25 +265,23 @@
     }
     const pl=player || root.player;
     const raining=pl && toxicRainAt(pl.x);
+    const sheltered=raining && shelteredFromFallout(pl,getTile);
     if(raining){
       state.rainAcc+=dt;
       state.healAcc+=dt;
-      while(state.rainAcc>=1){
-        state.rainAcc-=1;
-        try{ if(typeof root.damageHero==='function') root.damageHero(TOXIC_RAIN_DAMAGE,{cause:'radiation_rain',srcX:pl.x,srcY:pl.y-6,kb:0.6,kbY:-0.2,invulMs:260}); }catch(e){}
+      while(state.rainAcc>=TOXIC_RAIN_INTERVAL){
+        state.rainAcc-=TOXIC_RAIN_INTERVAL;
+        if(!sheltered){
+          try{ if(typeof root.damageHero==='function') root.damageHero(TOXIC_RAIN_DAMAGE,{cause:'radiation_rain',srcX:pl.x,srcY:pl.y-6,kb:0.6,kbY:-0.2,invulMs:260}); }catch(e){}
+        }
       }
       while(state.healAcc>=1){
         state.healAcc-=1;
         try{ if(MM.mobs && typeof MM.mobs.healRadiationRain==='function') MM.mobs.healRadiationRain(pl.x,90,MOB_RAIN_HEAL,{particles:true}); }catch(e){}
       }
     } else {
-      state.rainAcc=Math.min(state.rainAcc,0.95);
+      state.rainAcc=Math.min(state.rainAcc,TOXIC_RAIN_INTERVAL-0.05);
       state.healAcc=Math.min(state.healAcc,0.95);
-    }
-    if(state.messenger.active && pl && Math.hypot(state.messenger.x-pl.x,state.messenger.y-pl.y)>30){
-      const spot=findMessengerSpot(pl,getTile);
-      state.messenger.x=spot.x;
-      state.messenger.y=spot.y;
     }
   }
   function expire(){
@@ -296,13 +294,13 @@
     state.stormRefresh=0;
     state.windRefresh=0;
     state.winterRefresh=0;
-    state.messenger.active=false;
     atomicClouds.length=0;
     releaseWinter();
-    try{ if(root.msg) root.msg('Atomic winter ended as the next winter cycle began.'); }catch(e){}
+    try{ if(root.msg) root.msg('Atomic winter ended as winter passed.'); }catch(e){}
   }
   function reset(){
     const wasForced=state.forcedWinter;
+    removeLegacyMessenger();
     state.active=false;
     state.tLeft=0;
     state.windLeft=0;
@@ -314,10 +312,6 @@
     state.stormRefresh=0;
     state.windRefresh=0;
     state.winterRefresh=0;
-    state.messenger.active=false;
-    state.messenger.x=0;
-    state.messenger.y=0;
-    state.messenger.talkUntil=0;
     atomicClouds.length=0;
     if(wasForced) releaseWinter();
   }
@@ -330,34 +324,27 @@
       x:+finite(state.x,0).toFixed(3),
       y:+finite(state.y,0).toFixed(3),
       energyAcc:+clamp(finite(state.energyAcc,0),0,ENERGY_INTERVAL).toFixed(3),
-      rainAcc:+clamp(finite(state.rainAcc,0),0,1).toFixed(3),
+      rainAcc:+clamp(finite(state.rainAcc,0),0,TOXIC_RAIN_INTERVAL).toFixed(3),
       healAcc:+clamp(finite(state.healAcc,0),0,1).toFixed(3),
       stormRefresh:+clamp(finite(state.stormRefresh,0),0,60).toFixed(3),
       windRefresh:+clamp(finite(state.windRefresh,0),0,120).toFixed(3),
-      forcedWinter:!!state.forcedWinter,
-      messenger:Object.assign({},state.messenger)
+      forcedWinter:!!state.forcedWinter
     };
   }
   function restore(src){
     reset();
-    registerMessenger();
+    removeLegacyMessenger();
     if(!src || typeof src!=='object') return false;
     state.active=!!src.active && finite(src.tLeft,0)>0;
-    state.tLeft=state.active ? clamp(finite(src.tLeft,yearLength()),0,yearLength()) : 0;
+    state.tLeft=state.active ? clamp(finite(src.tLeft,winterLength()),0,winterLength()) : 0;
     state.windLeft=clamp(finite(src.windLeft,0),0,dayLength());
     state.x=finite(src.x,0);
     state.y=finite(src.y,0);
     state.energyAcc=clamp(finite(src.energyAcc,0),0,ENERGY_INTERVAL);
-    state.rainAcc=clamp(finite(src.rainAcc,0),0,1);
+    state.rainAcc=clamp(finite(src.rainAcc,0),0,TOXIC_RAIN_INTERVAL);
     state.healAcc=clamp(finite(src.healAcc,0),0,1);
     state.stormRefresh=clamp(finite(src.stormRefresh,0),0,60);
     state.windRefresh=clamp(finite(src.windRefresh,0),0,120);
-    if(src.messenger && typeof src.messenger==='object'){
-      state.messenger.active=!!src.messenger.active;
-      state.messenger.x=finite(src.messenger.x,state.x);
-      state.messenger.y=finite(src.messenger.y,state.y);
-      state.messenger.talkUntil=finite(src.messenger.talkUntil,0);
-    }
     if(state.active){
       state.forcedWinter=!!src.forcedWinter;
       holdWinter();
@@ -372,13 +359,12 @@
       windLeft:state.windLeft,
       x:state.x,
       y:state.y,
-      toxicRain:state.active,
-      messengerActive:!!state.messenger.active
+      toxicRain:state.active
     };
   }
 
-  registerMessenger();
-  const api={trigger,update,reset,snapshot,restore,metrics,isActive:()=>!!state.active,toxicRainAt,_debug:{state,YEAR_SECONDS,WIND_BOOST_SECONDS}};
+  removeLegacyMessenger();
+  const api={trigger,update,reset,snapshot,restore,metrics,isActive:()=>!!state.active,toxicRainAt,contextLines,contextLine,_debug:{state,YEAR_SECONDS,WINTER_SECONDS,WIND_BOOST_SECONDS,TOXIC_RAIN_DAMAGE,TOXIC_RAIN_INTERVAL,winterLength,yearLength,shelteredFromFallout,contextLines,contextLine}};
   MM.atomicWinter=api;
 })();
 

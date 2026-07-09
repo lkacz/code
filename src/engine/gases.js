@@ -70,6 +70,19 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
     }
     return true;
   }
+  function injectPoisonToWeather(x,y,amount,getTile){
+    try{
+      if(!MM.clouds || typeof MM.clouds.injectToxicVapor!=='function') return false;
+      if(typeof getTile==='function' && !skyExposed(x,y,getTile)) return false;
+      return !!MM.clouds.injectToxicVapor(x+0.5,Math.max(0.02,Number(amount)||0.2));
+    }catch(e){ return false; }
+  }
+  function ventGasToSky(g,getTile,setTile,amount){
+    if(!g) return false;
+    if(g && g.t===T.POISON_GAS) injectPoisonToWeather(g.x,g.y,amount||0.9,getTile);
+    clearGasCell(g.x,g.y,getTile,setTile);
+    return true;
+  }
   function tileFor(kind){
     if(isGasTile(kind)) return kind;
     if(typeof kind!=='string') return T.POISON_GAS;
@@ -178,7 +191,10 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
   function placeNewGasThroughChimney(tile,x,y,getTile,setTile){
     const outlet=chimneyOutletFor(x,y,getTile);
     if(!chimneyOutletAcceptsGas(outlet)) return false;
-    if(outlet.sky) return true;
+    if(outlet.sky){
+      if(tile===T.POISON_GAS) injectPoisonToWeather(x,y,0.9,getTile);
+      return true;
+    }
     if(outlet.t===T.AIR){
       setGasTile(outlet.x,outlet.y,tile,setTile);
       noteGas(outlet.x,outlet.y,tile,{age:0,moveT:moveDelay(tile,outlet.x,outlet.y)*0.35,setTile});
@@ -194,6 +210,7 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
     const ox=g.x, oy=g.y;
     const oldKey=key(ox,oy);
     if(outlet.sky){
+      if(g.t===T.POISON_GAS) injectPoisonToWeather(ox,oy,1.15,getTile);
       clearGasCell(ox,oy,getTile,setTile);
       return true;
     }
@@ -402,6 +419,7 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
   }
   function expireGas(g,getTile,setTile){
     if(g.t===T.STEAM){ condenseSteam(g,getTile,setTile); return; }
+    if(g.t===T.POISON_GAS) injectPoisonToWeather(g.x,g.y,0.55,getTile);
     clearGasCell(g.x,g.y,getTile,setTile);
   }
   function ignitionAt(x,y,getTile){
@@ -476,7 +494,7 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
     }
   }
   function moveGas(g,getTile,setTile){
-    if(g.y<=WORLD_TOP){ clearGasCell(g.x,g.y,getTile,setTile); return true; }
+    if(g.y<=WORLD_TOP){ return ventGasToSky(g,getTile,setTile,1.2); }
     const drift=windDriftFor(g,getTile);
     const windDir=drift>0.06 ? 1 : (drift<-0.06 ? -1 : 0);
     const sideFirst=windDir || ((hash32(g.x,g.y,Math.floor(g.age*3)+101)&1) ? -1 : 1);
@@ -487,7 +505,7 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
       : [[0,-1],[sideFirst,-1],[-sideFirst,-1],[sideFirst,0],[-sideFirst,0]];
     for(const [dx,dy] of dirs){
       const nx=g.x+dx, ny=g.y+dy;
-      if(ny<WORLD_TOP){ clearGasCell(g.x,g.y,getTile,setTile); return true; }
+      if(ny<WORLD_TOP){ return ventGasToSky(g,getTile,setTile,1.2); }
       if(ny>=WORLD_BOTTOM) continue;
       const dst=getSafe(getTile,nx,ny,T.AIR);
       if(tryMoveGasThroughDynamo(g,nx,ny,dx,dy,getTile,setTile)) return true;
@@ -562,12 +580,18 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
       const tx=bx+dx, ty=by+dy;
       if(!finiteTile(tx,ty)) continue;
       const cur=getSafe(getTile,tx,ty,T.AIR);
-      if(cur===tile){ noteGas(tx,ty,tile,{age:0,setTile}); placed++; continue; }
+      if(cur===tile){
+        noteGas(tx,ty,tile,{age:0,setTile});
+        if(tile===T.POISON_GAS && skyExposed(tx,ty,getTile)) injectPoisonToWeather(tx,ty,0.12*power,getTile);
+        placed++;
+        continue;
+      }
       if(isChimneyTile(cur) && placeNewGasThroughChimney(tile,tx,ty,getTile,setTile)){ placed++; continue; }
       if(!canReplaceWithGas(tile,cur)) continue;
       if(cur===T.HOT_AIR) active.delete(key(tx,ty));
       setGasTile(tx,ty,tile,setTile);
       noteGas(tx,ty,tile,{age:0,moveT:moveDelay(tile,tx,ty)*0.35,setTile});
+      if(tile===T.POISON_GAS && skyExposed(tx,ty,getTile)) injectPoisonToWeather(tx,ty,0.16*power,getTile);
       placed++;
     }
     return placed;

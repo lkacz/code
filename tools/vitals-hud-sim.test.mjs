@@ -170,7 +170,9 @@ function run(m, input, seconds){
 	const drawSource = vitalsSource.slice(vitalsSource.indexOf('function draw('));
 	assert.ok(!/s\.(?:deltas|xpDeltas)/.test(drawSource), 'vitals renderer no longer draws damage/heal/XP numbers above HUD bars');
 	assert.match(mainSource, /const worldNumbers=\[\]/, 'main owns the world-space combat number queue');
-	assert.match(mainSource, /if\(kind!=='damage' && kind!=='heal' && kind!=='xp'\) return null;/, 'floating world numbers are allowlisted to hero damage, hero heal, and XP');
+	assert.match(mainSource, /if\(kind!=='damage' && kind!=='heal' && kind!=='xp' && kind!=='energy' && kind!=='home'\) return null;/, 'floating world numbers are allowlisted to hero damage, hero heal, energy, XP, and icon-only home feedback');
+	assert.match(mainSource, /let text=kind==='home' \? '' : \(detail\.text!=null \? String\(detail\.text\) : ''\);/, 'home feedback cannot add another text bubble');
+	assert.match(mainSource, /function noteHeroEnergyDelta\(delta,opts\)[\s\S]*heroEnergyDeltaAcc\+=n[\s\S]*pushWorldNumber\(\{[\s\S]*kind:'energy'[\s\S]*target:'hero:energy'/, 'hero energy gains and spends are aggregated into compact world-space numbers');
 	assert.match(mainSource, /window\.addEventListener\('mm-entity-number'[\s\S]*target==='hero'[\s\S]*target\.indexOf\('hero:'\)===0[\s\S]*kind==='damage' \|\| kind==='heal'/, 'entity-number events are filtered to hero damage/heal only');
 	assert.match(mainSource, /window\.addEventListener\('mm-xp-awarded'/, 'mob XP awards are routed to the world-space renderer');
 	assert.match(mainSource, /window\.addEventListener\('mm-combat-event'/, 'important combat events are routed to the world-space impact renderer');
@@ -180,6 +182,7 @@ function run(m, input, seconds){
 	assert.match(mainSource, /function drawCombatScreenFx\(\)[\s\S]*heroCriticalHurtFx/, 'major hero hits get a screen-space danger flash');
 	assert.doesNotMatch(mainSource, /combatEventToken|target:'combat:'|target:"combat:"/, 'combat events do not create extra floating text over hit effects');
 	assert.match(mainSource, /else if\(n\.kind==='xp'\) color=n\.special \? '#ffd54a' : '#7dff9a'/, 'special XP bonus is shown by XP color, not by a second bubble');
+	assert.match(mainSource, /else if\(n\.kind==='energy'\) color='#ffd66b'/, 'energy gain and spend numbers use their own readable color');
 	assert.match(mainSource, /function drawWorldNumberIcon\([\s\S]*icon==='water'[\s\S]*icon==='xp'/, 'allowed floating numbers can carry compact cause/resource icons');
 	assert.doesNotMatch(mainSource, /LUCKY x4!|LUCKY FINISH!|POWER FINISH|FINISH!|DROWN!|SHOCKED!|HARD HIT!/, 'large combat billboard words are not used for world feedback');
 	assert.doesNotMatch(weaponsSource, /LUCKY x4!|mm-entity-number[\s\S]{0,160}lucky/, 'lucky strikes do not emit a text bubble from weapons');

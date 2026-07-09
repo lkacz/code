@@ -1553,6 +1553,93 @@ MM.ui = (function(){
     },1200);
     panel.appendChild(box);
   }
+  function injectMechDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('mechDebugBox')) return;
+    actions = actions || {};
+    const box=document.createElement('div');
+    box.id='mechDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(118,236,255,.16); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='Mechy (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+    const metrics=document.createElement('div');
+    metrics.id='mechDebugMetrics';
+    metrics.style.cssText='width:100%; min-height:30px; font-size:10px; line-height:1.35; opacity:.72;';
+    function fmt(v){ return Number.isFinite(v) ? Math.round(v) : '-'; }
+    function refreshMetrics(){
+      const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+      if(!m){ metrics.textContent='brak metryk mecha'; return; }
+      let text='mechy '+(m.count||0)+' | piloci '+(m.pilots||0)+' | puste '+(m.abandoned||0)+' | jazda '+(m.ridden?'tak':'nie')+' | pociski '+(m.projectiles||0);
+      const f=m.focus;
+      if(f){
+        text+=' | bliski '+(f.kind||'?')+' hp '+fmt(f.hp)+'/'+fmt(f.maxHp)+' pilot '+(f.pilotAlive?'zyje':'brak')+' '+fmt(f.pilot)+'/'+fmt(f.pilotMax);
+        text+=' E '+fmt(f.energy)+'/'+fmt(f.maxEnergy)+' F '+fmt(f.fuel)+'/'+fmt(f.maxFuel)+' blok '+fmt(f.blocked)+' skoki '+fmt(f.jumps);
+      }
+      metrics.textContent=text;
+    }
+    function run(id, okText, failText){
+      try{
+        const fn=actions[id];
+        const ok=(typeof fn==='function') ? fn() : false;
+        refreshMetrics();
+        msg(ok===false ? failText : okText);
+      }catch(e){
+        console.error(e);
+        refreshMetrics();
+        msg('Debug mecha: blad');
+      }
+    }
+    const buttons=[
+      ['zoneLeft','<- 6km snieg','Skocz do lewej strefy solar-mechow','Mech: lewa strefa','Mech: nie udalo sie skoczyc'],
+      ['zoneRight','6km ogien ->','Skocz do prawej strefy forge-mechow','Mech: prawa strefa','Mech: nie udalo sie skoczyc'],
+      ['procLeft','Strefa <-','Wymusza prawdziwy spawn prototypu w lewej strefie 5000m+','Strefowy solar-mech utworzony','Nie znaleziono wolnej lewej strefy'],
+      ['procRight','Strefa ->','Wymusza prawdziwy spawn prototypu w prawej strefie 5000m+','Strefowy forge-mech utworzony','Nie znaleziono wolnej prawej strefy'],
+      ['spawnSolar','Spawn solar','Wymusza solar-mecha przy graczu','Mech solarny przyzwany','Brak miejsca na solar-mecha'],
+      ['spawnForge','Spawn forge','Wymusza forge-mecha przy graczu','Forge-mech przyzwany','Brak miejsca na forge-mecha'],
+      ['spawnCrawler','Spawn gasienice','Wymusza forge crawlera z 3-blokowa realna gasienica TRACK','Crawler przyzwany','Brak miejsca na crawlera'],
+      ['killPilot','Pilot KO','Pokonuje pilota bez niszczenia kadluba','Pilot pokonany','Brak pilota do pokonania'],
+      ['board','Wsiadz/wyjdz','Przejmuje pustego mecha albo z niego wysiada','Przelaczono jazde mechem','Najpierw pokonaj pilota'],
+      ['capture','Przejmij','Pokonuje pilota i od razu wsiada','Mech przejety','Nie udalo sie przejac mecha'],
+      ['driveLeft','Krok <-','Symuluje lewy krok gracza w przejetym mechu','Mech ruszyl w lewo','Brak jazdy albo energii'],
+      ['driveRight','Krok ->','Symuluje prawy krok gracza w przejetym mechu','Mech ruszyl w prawo','Brak jazdy albo energii'],
+      ['jumpTest','Skok','Symuluje skok gracza w przejetym mechu','Mech wykonal skok','Brak jazdy, gruntu albo energii'],
+      ['fillPower','Energia max','Laduje baterie mecha','Energia mecha pelna','Brak mecha do ladowania'],
+      ['emptyPower','Energia 0','Rozladowuje baterie mecha','Energia mecha wyzerowana','Brak mecha do rozladowania'],
+      ['fuelFull','Paliwo max','Napelnia zbiornik forge-mecha','Paliwo mecha pelne','Ten mech nie uzywa paliwa'],
+      ['fuelEmpty','Paliwo 0','Oproznia zbiornik forge-mecha','Paliwo mecha wyzerowane','Ten mech nie uzywa paliwa'],
+      ['coal','Wegiel +20','Dodaje wegiel do realnego tankowania','Wegiel +20','Nie dodano wegla'],
+      ['powerRig','Zasil rig','Stawia realny lokalny rig zasilania dla przejetego mecha','Rig zasilania gotowy','Nie ustawiono zasilania'],
+      ['shield','Pancerz','Testuje pochloniecie obrazen bohatera przez pancerz mecha','Pancerz pochlonal obrazenia','Najpierw przejmij mecha'],
+      ['damage','Uszkodz','Zadaje kontrolowane obrazenia kadlubowi','Mech uszkodzony','Brak mecha do uszkodzenia'],
+      ['fireHit','Ogien','Testuje promien ognia na kadlubie','Mech trafiony ogniem','Brak mecha do trafienia'],
+      ['waterHit','Woda','Testuje strumien wody na kadlubie','Mech trafiony woda','Brak mecha do trafienia'],
+      ['destroy','Zniszcz','Niszczy kadlub i testuje drop czesci','Mech zniszczony','Brak mecha do zniszczenia'],
+      ['wall','Sciana','Buduje sciane/dom przed hostylnym mechem','Sciana testowa gotowa','Nie ustawiono sciany'],
+      ['trees','Drzewa','Stawia drzewa na trasie kroku','Drzewa testowe gotowe','Nie ustawiono drzew'],
+      ['pit','Dol','Buduje test dolu, przeskoku i wyjscia','Dol testowy gotowy','Nie ustawiono dolu'],
+      ['mob','Mob','Spawnuje moba przy mech-kolizji','Mob przy mech-kolizji','Nie przyzwano moba'],
+      ['saveLoad','Save/load','Snapshot i restore stanu mecha','Mech save/load OK','Mech save/load nie przeszedl'],
+      ['reset','Reset','Usuwa wszystkie mechy','Mechy zresetowane','Nie zresetowano mechow']
+    ];
+    buttons.forEach(([id,txt,title,okText,failText])=>{
+      const b=document.createElement('button');
+      b.id='mechDebug_'+id;
+      b.textContent=txt;
+      b.title=title;
+      b.style.cssText='flex:1 1 92px; min-width:0; font-size:11px; line-height:1.15; white-space:normal; padding:3px 6px; border:1px solid rgba(118,236,255,.62);';
+      b.addEventListener('click',()=>run(id, okText, failText));
+      box.appendChild(b);
+    });
+    box.appendChild(metrics);
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1200);
+    panel.appendChild(box);
+  }
   function injectPumpDebugPanel(actions, menuPanel){
     const panel = menuPanel || document.getElementById('menuPanel');
     if(!panel || document.getElementById('pumpDebugBox')) return;
@@ -1880,7 +1967,7 @@ MM.ui = (function(){
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectInvasionDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
+  const api = { msg, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectInvasionDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectMechDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;

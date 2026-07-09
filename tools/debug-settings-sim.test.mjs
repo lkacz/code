@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const uiSrc = await readFile(new URL('../src/engine/ui.js', import.meta.url), 'utf8');
+const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const meteoritesSrc = await readFile(new URL('../src/engine/meteorites.js', import.meta.url), 'utf8');
 
 assert.match(uiSrc, /const DEBUG_SETTINGS_KEY='mm_debug_menu_settings_v1'/, 'debug menu settings use one stable localStorage key');
@@ -42,6 +43,21 @@ assert.match(uiSrc, /debugNumber\('hostility','intensity',1,0,3\)/, 'hostility i
 assert.match(uiSrc, /debugNumber\('hostility','reach',1,0\.25,4\)/, 'hostility reach slider restores its saved value');
 assert.match(uiSrc, /debugSet\('hostility','intensity',readIntensity\(\)\)/, 'hostility intensity slider persists changes');
 assert.match(uiSrc, /debugSet\('hostility','reach',readReach\(\)\)/, 'hostility reach slider persists changes');
+
+assert.match(uiSrc, /function injectMechDebugPanel\(actions, menuPanel\)/, 'ui exposes a mech debug panel injector');
+assert.match(uiSrc, /\['spawnForge','Spawn forge'/, 'mech debug panel can force-spawn forge mechs');
+assert.match(uiSrc, /\['spawnCrawler','Spawn gasienice'/, 'mech debug panel can force-spawn tracked forge crawlers');
+assert.match(uiSrc, /\['procRight','Strefa ->'/, 'mech debug panel can force far-zone prototype mech spawns');
+assert.match(uiSrc, /\['capture','Przejmij'/, 'mech debug panel can capture a pilot-defeated mech');
+assert.match(uiSrc, /\['driveRight','Krok ->'/, 'mech debug panel can test rider movement power gating');
+assert.match(uiSrc, /\['powerRig','Zasil rig'/, 'mech debug panel can place authentic local power rigs');
+assert.match(uiSrc, /\['shield','Pancerz'/, 'mech debug panel can test armor absorption');
+assert.match(uiSrc, /\['pit','Dol'/, 'mech debug panel can set up pit jump/escape tests');
+assert.match(uiSrc, /\['wall','Sciana'/, 'mech debug panel can set up house/wall attack tests');
+assert.match(mainSrc, /injectMechDebugPanel\(\{/, 'main wires the mech debug panel into the menu');
+for(const action of ['zoneLeft','zoneRight','procLeft','procRight','spawnSolar','spawnForge','spawnCrawler','killPilot','board','capture','driveLeft','driveRight','jumpTest','fillPower','emptyPower','fuelFull','fuelEmpty','coal','powerRig','shield','damage','fireHit','waterHit','destroy','wall','trees','pit','mob','saveLoad','reset','metrics']){
+	assert.match(mainSrc, new RegExp(action+':'), 'main wires mech debug action '+action);
+}
 
 assert.match(meteoritesSrc, /const STORE_KEY = 'mm_meteorites_v1'/, 'meteorite debug toggle already has stable persisted settings');
 assert.match(meteoritesSrc, /localStorage\.setItem\(STORE_KEY/, 'meteorite debug toggle writes persisted settings');

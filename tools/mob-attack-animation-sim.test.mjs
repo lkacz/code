@@ -22,7 +22,7 @@ has(/markMobAttack\(m,cause,\{target:touchPoint,power:piranhaTouchTarget\?0\.8:1
   /function sentinelLaserAt\(m,target,dmg,getTile,setTile,lines\)[\s\S]*markMobAttack\(m,'laser',\{target,power:1\.1,strikeMs:300\}\);/,
   /function shootSandWormSpit\(m,target,speed,dmg\)[\s\S]*markMobAttack\(m,'spit',\{target,power:1\.15\}\);/,
   /function shootStoneGolemRock\(m,target,speed,dmg\)[\s\S]*markMobAttack\(m,'throw',\{target,power:1\.25\}\);/,
-  /function shootGoldDragonBreath\(m,target,speed,dmg,getTile,setTile\)[\s\S]*markMobAttack\(m,'gold_dragon_fire',\{target,power:1\.55,strikeMs:460\}\);/,
+  /function shootGoldDragonBreath\(m,target,speed,dmg,getTile,setTile\)[\s\S]*spawnExternalStream\('flame'[\s\S]*cause:'gold_dragon_fire'[\s\S]*markMobAttack\(m,'gold_dragon_fire',\{target,power:1\.55,strikeMs:460\}\);/,
   /function shootGoldDwarfPick\(m,target,speed,dmg\)[\s\S]*markMobAttack\(m,'gold_dwarf_pick',\{target,power:1\.05,strikeMs:340\}\);/
 ].forEach((pattern) => has(pattern, 'ranged mob attacks should trigger attack visuals'));
 

@@ -263,6 +263,13 @@ const steamCtx={
 gases.draw(steamCtx,20,9,10,3,4,()=>true);
 assert.ok(steamAlpha!=null && steamAlpha<0.04,'near-expired steam is barely visible instead of a hard square (alpha '+steamAlpha+')');
 
+resetWorld();
+let toxicWeather = 0;
+MM.clouds = { injectToxicVapor(x,amount){ toxicWeather += amount; assert.equal(Number.isFinite(x), true, 'toxic weather injection has a finite x'); return true; } };
+assert.ok(gases.add('poison',12,12,{power:2,cells:3,getTile:getVerticalTile,setTile:setVerticalTile})>0,'open-air poison gas can be emitted through the gas API');
+assert.ok(toxicWeather>0,'open-air poison gas emission injects toxic vapor into the weather layer');
+delete MM.clouds;
+
 // 8) Add API is capped and machine-friendly.
 resetWorld();
 const placed=gases.add('fuel',10,40,{power:5,cells:20,getTile,setTile});

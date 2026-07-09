@@ -53,6 +53,7 @@ const crafting = (function(){
     solarPanel: 'craft: szkło + przewody (Maszyny)',
     waterPipe: 'craft: stal + plastik (Maszyny)',
     dynamo: 'craft: stal + przewody (Maszyny)',
+    track: 'craft: stal + wegiel (Maszyny)',
     torch: 'craft: drewno (Start)',
     ladder: 'craft: drewno (Budowle)',
     fish: 'wędkuj: F przy wodzie (potrzebna wędka)',

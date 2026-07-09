@@ -61,6 +61,13 @@ const meat = (function(){
     }
     return null;
   }
+  function polluteTouchingWater(x,y,getTile,setTile){
+    try{
+      const water=nearestTouchingWater(x,y,getTile);
+      if(!water || !MM.water || typeof MM.water.polluteAt!=='function') return false;
+      return !!MM.water.polluteAt(water.tileX,water.tileY,getTile,setTile,{source:'rotten_meat',radius:1});
+    }catch(e){ return false; }
+  }
   function nearestWaterBait(wx,wy,radius,getTile){
     if(typeof getTile!=='function' || !Number.isFinite(wx) || !Number.isFinite(wy)) return null;
     const r=Math.floor(Math.max(1,Math.min(48,Number.isFinite(radius)?radius:PIRANHA_BAIT_SCAN_RADIUS)));
@@ -434,6 +441,7 @@ const meat = (function(){
       } else {
         r.age=DECAY_SEC;
         r.rotAge=(r.rotAge||0)+dt;
+        polluteTouchingWater(r.x,r.y,getTile,setTile);
         if(r.rotAge>=ROTTEN_VANISH_SEC && typeof setTile==='function'){
           setTile(r.x,r.y,T.AIR);
           records.delete(k);

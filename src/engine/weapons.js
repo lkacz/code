@@ -468,6 +468,19 @@ import { reactions as REACTIONS } from './reactions.js';
     if(extra && typeof extra==='object') Object.assign(opts,extra);
     return opts;
   }
+  function puffStreamDamageOpts(kind,p,extra){
+    const meta={};
+    if(p && p.source) meta.source=p.source;
+    if(p && p.cause) meta.cause=p.cause;
+    if(p && p.ownerId) {
+      meta.ownerId=p.ownerId;
+      meta.exclude=[p.ownerId];
+    }
+    if(p && p.specialAttack) meta.specialAttack=true;
+    if(p && p.luckyStrike) meta.luckyStrike=true;
+    if(extra && typeof extra==='object') Object.assign(meta,extra);
+    return streamDamageOpts(kind,meta);
+  }
   function fireMelee(player, aimX, aimY){
     if(meleeCd>0 || (player.atkCd && player.atkCd>0)) return false;
     // Melee strength changes damage only; reach is always one tile.
@@ -481,6 +494,7 @@ import { reactions as REACTIONS } from './reactions.js';
            || (MM.bosses && MM.bosses.attackAt && MM.bosses.attackAt(tx,ty,bonus))
            || (MM.ufo && MM.ufo.attackAt && MM.ufo.attackAt(tx,ty,bonus))
            || (MM.invasions && MM.invasions.attackAt && MM.invasions.attackAt(tx,ty,bonus))
+           || (MM.mechs && MM.mechs.attackAt && MM.mechs.attackAt(tx,ty,bonus,{source:'hero'}))
            || (MM.npcSystem && MM.npcSystem.attackAt && MM.npcSystem.attackAt(tx,ty,bonus))
            || (MM.mobs && MM.mobs.attackAt && MM.mobs.attackAt(tx,ty,bonus,{source:'hero'}));
     meleeCd=0.35; player.atkCd=Math.max(player.atkCd||0, 0.35);
@@ -678,6 +692,7 @@ import { reactions as REACTIONS } from './reactions.js';
   function electricDamageAt(tx,ty,dmg,opts){
     opts=Object.assign({kind:'electric',source:'hero'},opts||{});
     try{ if(MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,dmg,opts)) return true; }catch(e){}
+    try{ if(MM.mechs && MM.mechs.damageAt && MM.mechs.damageAt(tx,ty,dmg,opts)) return true; }catch(e){}
     try{ if(MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg,opts)) return true; }catch(e){}
     try{ if(MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,dmg)) return true; }catch(e){}
     try{ if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,dmg)) return true; }catch(e){}
@@ -760,13 +775,14 @@ import { reactions as REACTIONS } from './reactions.js';
     // Elemental streams tick direct damage into boss bodies along the ray.
     // Guardian-specific weaknesses are resolved by guardian_lairs.damageAt.
     bossAcc+=dt;
-    if(bossAcc>=0.2 && ((MM.guardianLairs && MM.guardianLairs.damageAt) || (MM.undergroundBoss && MM.undergroundBoss.damageAt) || (MM.skyGuardian && MM.skyGuardian.damageAt) || (MM.bosses && MM.bosses.damageAt) || (MM.ufo && MM.ufo.damageAt) || (MM.invasions && MM.invasions.damageAt))){
+    if(bossAcc>=0.2 && ((MM.guardianLairs && MM.guardianLairs.damageAt) || (MM.undergroundBoss && MM.undergroundBoss.damageAt) || (MM.skyGuardian && MM.skyGuardian.damageAt) || (MM.bosses && MM.bosses.damageAt) || (MM.ufo && MM.ufo.damageAt) || (MM.invasions && MM.invasions.damageAt) || (MM.mechs && MM.mechs.damageAt))){
       bossAcc=0;
       for(const t of [0.35,0.6,0.85]){
         const sx=Math.floor(player.x + dx*range*t), sy=Math.floor(player.y + dy*range*t);
         const opts=streamDamageOpts(kind,{x:sx+0.5,y:sy+0.5});
         let hit=false;
         if(MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(sx,sy, dps*0.2, opts)) hit=true;
+        else if(MM.mechs && MM.mechs.damageAt && MM.mechs.damageAt(sx,sy, dps*0.2, opts)) hit=true;
         else if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(sx,sy, dps*0.2, opts)) hit=true;
         else if(kind==='flame' && MM.undergroundBoss && MM.undergroundBoss.heatAt && MM.undergroundBoss.heatAt(sx,sy,lastGetTile,lastSetTile,opts)) hit=true;
         else if(kind==='gas' && MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy, dps*0.2, opts)) hit=true;
@@ -804,6 +820,9 @@ import { reactions as REACTIONS } from './reactions.js';
         total:range/cfg.speed*cfg.lifeMult,
         dps,
         scale:Number(opts.scale)||1,
+        source:opts.source || undefined,
+        cause:opts.cause || undefined,
+        ownerId:opts.ownerId || undefined,
         specialAttack:!!opts.specialAttack,
         luckyStrike:!!opts.luckyStrike
       });
@@ -845,6 +864,7 @@ import { reactions as REACTIONS } from './reactions.js';
       const opts=streamDamageOpts(kind,{x:sx+0.5,y:sy+0.5,specialAttack:true,luckyStrike:roll.lucky});
       let hit=false;
       if(MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(sx,sy,dps*0.18,opts)) hit=true;
+      else if(MM.mechs && MM.mechs.damageAt && MM.mechs.damageAt(sx,sy,dps*0.18,opts)) hit=true;
       else if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(sx,sy,dps*0.18,opts)) hit=true;
       else if(kind==='flame' && MM.undergroundBoss && MM.undergroundBoss.heatAt && MM.undergroundBoss.heatAt(sx,sy,lastGetTile,lastSetTile,opts)) hit=true;
       else if(kind==='gas' && MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy,dps*0.18,opts)) hit=true;
@@ -872,6 +892,7 @@ import { reactions as REACTIONS } from './reactions.js';
       || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,dmg))
       || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,dmg))
       || (MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(tx,ty,dmg))
+      || (MM.mechs && MM.mechs.damageAt && MM.mechs.damageAt(tx,ty,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky}))
       || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,dmg))
       || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky})));
     if(hit && roll.lucky) noteLuckyStrike(tx+0.5,ty-0.15);
@@ -945,6 +966,7 @@ import { reactions as REACTIONS } from './reactions.js';
     }
     // creatures, bosses, plants
     try{ if(MM.mobs && MM.mobs.blastRadius) MM.mobs.blastRadius(wx,wy,R+1.5,14,{source:'hero'}); }catch(e){}
+    try{ if(MM.mechs && MM.mechs.blastRadius) MM.mechs.blastRadius(wx,wy,R+1.5,14,{source:'hero'}); }catch(e){}
     try{ if(MM.centerGuardian && MM.centerGuardian.damageAt){ const mirrorOpts={kind:'explosion',source:'hero'}; MM.centerGuardian.damageAt(bx,by,14,mirrorOpts); MM.centerGuardian.damageAt(bx+1,by,9,mirrorOpts); MM.centerGuardian.damageAt(bx-1,by,9,mirrorOpts); } }catch(e){}
     try{ if(MM.guardianLairs && MM.guardianLairs.damageAt){ MM.guardianLairs.damageAt(bx,by,14); MM.guardianLairs.damageAt(bx+1,by,9); MM.guardianLairs.damageAt(bx-1,by,9); MM.guardianLairs.damageAt(bx,by-1,9); } }catch(e){}
     try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt){ const gasOpts=streamDamageOpts('gas',{x:wx,y:wy,type:'gasExplosion'}); MM.undergroundBoss.damageAt(bx,by,14,gasOpts); MM.undergroundBoss.damageAt(bx+1,by,9,gasOpts); MM.undergroundBoss.damageAt(bx-1,by,9,gasOpts); MM.undergroundBoss.damageAt(bx,by-1,9,gasOpts); } }catch(e){}
@@ -1098,6 +1120,12 @@ import { reactions as REACTIONS } from './reactions.js';
   }
   function noteWaterHeat(tx,ty,touched){
     touched.add(tileKey(tx,ty));
+    // Flame particles jitter across a water surface; conduct a little heat through
+    // the immediate pool so sustained spray boils water mass, not one lucky pixel.
+    touched.add(tileKey(tx-1,ty));
+    touched.add(tileKey(tx+1,ty));
+    touched.add(tileKey(tx,ty-1));
+    touched.add(tileKey(tx,ty+1));
   }
   function waterHeatRatioAt(tx,ty){
     const h=waterHeat.get(tileKey(tx,ty));
@@ -1281,7 +1309,7 @@ import { reactions as REACTIONS } from './reactions.js';
       srcX:p.x, srcY:p.y,
       kb:1.8, kbY:-1.2,
       invulMs:260,
-      cause:'flamethrower'
+      cause:p.cause || 'flamethrower'
     });
     if(ok) heroFlameHitCd=0.22;
     return !!ok;
@@ -1346,6 +1374,7 @@ import { reactions as REACTIONS } from './reactions.js';
           }
         }
         if((MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,hitDmg,arrowOpts))
+        || (MM.mechs && MM.mechs.damageAt && MM.mechs.damageAt(tx,ty,hitDmg,arrowOpts))
         || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,hitDmg,arrowOpts))
         || (MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,hitDmg))
         || undergroundResult
@@ -1416,8 +1445,8 @@ import { reactions as REACTIONS } from './reactions.js';
           puffs.splice(i,1); continue;
         }
         if(t===T.MEAT && cookMeatAt(tx,ty,getTile,setTile)){ puffs.splice(i,1); continue; }
-        if(MM.companions && MM.companions.heatAt && MM.companions.heatAt(tx,ty,getTile,setTile,{source:'hero',element:'fire'})){ puffs.splice(i,1); continue; }
-        if(MM.undergroundBoss && MM.undergroundBoss.heatAt && MM.undergroundBoss.heatAt(tx,ty,getTile,setTile,{source:'hero',element:'fire'})){ puffs.splice(i,1); continue; }
+        if(MM.companions && MM.companions.heatAt && MM.companions.heatAt(tx,ty,getTile,setTile,puffStreamDamageOpts('flame',p))){ puffs.splice(i,1); continue; }
+        if(MM.undergroundBoss && MM.undergroundBoss.heatAt && MM.undergroundBoss.heatAt(tx,ty,getTile,setTile,puffStreamDamageOpts('flame',p))){ puffs.splice(i,1); continue; }
         if(info && info.flammable && Math.random()<0.22 && FIRE) FIRE.ignite(tx,ty,getTile,setTile);
         if(hitWall){
           // sustained flame melts bare rock into a lava pool; snow and ice thaw to water
@@ -1428,14 +1457,16 @@ import { reactions as REACTIONS } from './reactions.js';
           }
           puffs.splice(i,1); continue;
         }
-        if(Math.random()<0.3 && MM.mobs && MM.mobs.igniteRadius) MM.mobs.igniteRadius(p.x,p.y,0.9,{dur:2.5, dps:(p.dps||6)*0.6,source:'hero',specialAttack:!!p.specialAttack,luckyStrike:!!p.luckyStrike});
+        if(Math.random()<0.3 && MM.mobs && MM.mobs.igniteRadius) MM.mobs.igniteRadius(p.x,p.y,0.9,puffStreamDamageOpts('flame',p,{dur:2.5, dps:(p.dps||6)*0.6}));
+        if(Math.random()<0.3 && MM.mechs && MM.mechs.igniteRadius) MM.mechs.igniteRadius(p.x,p.y,0.9,puffStreamDamageOpts('flame',p,{dur:2.5, dps:(p.dps||6)*0.6}));
         if(Math.random()<0.25 && MM.plants && MM.plants.scorchAt) MM.plants.scorchAt(p.x,p.y,1.2);
       } else if(p.kind==='hose'){
         if(FIRE && FIRE.isBurning(tx,ty)) FIRE.extinguish(tx,ty);
         if(Math.random()<0.3 && MM.mobs && MM.mobs.douseRadius) MM.mobs.douseRadius(p.x,p.y,1.0);
         // watering can: the jet hydrates the garden it passes over
         if(Math.random()<0.3 && MM.plants && MM.plants.waterAt) MM.plants.waterAt(p.x,p.y,0.3,1.6);
-        if(Math.random()<0.10 && MM.mobs && MM.mobs.damageAt) MM.mobs.damageAt(tx,ty, Math.max(1,(p.dps||2)*0.5),{source:'hero',kind:'hose',element:'water',specialAttack:!!p.specialAttack,luckyStrike:!!p.luckyStrike});
+        if(Math.random()<0.10 && MM.mobs && MM.mobs.damageAt) MM.mobs.damageAt(tx,ty, Math.max(1,(p.dps||2)*0.5),puffStreamDamageOpts('hose',p));
+        if(Math.random()<0.10 && MM.mechs && MM.mechs.damageAt) MM.mechs.damageAt(tx,ty, Math.max(1,(p.dps||2)*0.5),puffStreamDamageOpts('hose',p));
         if(t===T.LAVA){
           // quenching: molten rock hardens to obsidian under the jet
           if(typeof setTile==='function' && Math.random()<QUENCH_CHANCE){
@@ -1464,7 +1495,7 @@ import { reactions as REACTIONS } from './reactions.js';
           addWorldGas('poison',px0,py0,{power:0.18,cells:1,getTile,setTile});
           p.x=px0; p.y=py0; p.vx*=0.3; p.vy=-Math.abs(p.vy)*0.3;
         } // pools against walls
-        if(Math.random()<0.3 && MM.mobs && MM.mobs.poisonRadius) MM.mobs.poisonRadius(p.x,p.y,0.95,{dur:4, dps:(p.dps||5)*0.7,source:'hero',specialAttack:!!p.specialAttack,luckyStrike:!!p.luckyStrike});
+        if(Math.random()<0.3 && MM.mobs && MM.mobs.poisonRadius) MM.mobs.poisonRadius(p.x,p.y,0.95,puffStreamDamageOpts('gas',p,{dur:4, dps:(p.dps||5)*0.7}));
       } else { // steam: purely cosmetic, fades on contact
         if(hitWall || t===T.WATER){ puffs.splice(i,1); continue; }
       }

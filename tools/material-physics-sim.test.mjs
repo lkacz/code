@@ -752,6 +752,7 @@ assert.match(mainSource, /function meteorPickSparkTile\(t\)\{\s*return isMeteorP
 assert.match(mainSource, /emitMeteorPickSpark\(tx,ty,isMeteorPickDenseRockMaterial\(tId\)\?7:5\);/, 'meteor pick dense-rock intensity uses shared material predicates');
 assert.match(mainSource, /return isReplaceableNaturalOpenTile\(cur,false\) && \(slot \|\| cur!==T\.WATER\);/, 'dynamo placement uses shared natural-open replacement rules');
 assert.match(mainSource, /function isStableConstructionSupportAt\(x,y\)\{[\s\S]*isStableMachineSupport\(getTile\(x,y\)\)[\s\S]*isStableMachineSupport\(getConstructionBackgroundTile\(x,y\)\)[\s\S]*\}/, 'non-structural placement fallback uses the same stable support predicate including background construction');
+assert.match(mainSource, /function isBackgroundBuildTileId\(t\)\{ return isPlayerBuiltMaterial\(t\) && !isDoorTile\(t\) && !isTrapdoorTile\(t\) && !!TILE_TO_RES\[t\]; \}/, 'background construction selector excludes foreground-only doors and trapdoors');
 assert.match(mainSource, /const BACKGROUND_BUILD_SHADE_DELTA=-30;/, 'background construction tiles use a darker material shade than foreground blocks');
 assert.match(mainSource, /const BACKGROUND_BUILD_PATTERN_DARKEN='rgba\(0,0,0,0\.10\)';/, 'background construction tile patterns get a subtle dark wash for contrast');
 assert.match(mainSource, /function drawBackgroundBuildTile\(g,t,px,py,wx,y,h\)\{[\s\S]*g\.globalAlpha=1;[\s\S]*drawTerrainPattern\(g,t,px,py,wx,y,h\);[\s\S]*g\.fillStyle=BACKGROUND_BUILD_PATTERN_DARKEN;[\s\S]*\}/, 'background construction tiles render opaque and darker while staying passable');
@@ -794,7 +795,7 @@ assert.match(windSource, /isWindPorousTile/, 'wind open-cell checks use shared m
 assert.match(windSource, /fallingWindResponseForMaterial/, 'wind visuals reuse material wind response profiles');
 assert.match(windSource, /isVisualOpenFluidTile/, 'wind surface material sampling uses shared visual-open fluid predicates');
 assert.match(windSource, /function isLeafTile\(t\)\{ return isFoliageTile\(t\); \}/, 'wind particle material descriptors use shared foliage predicates');
-assert.match(cloudSource, /import \{ isFoliageTile, isSkyOpenTile, isWaterOpenTile \} from '\.\/material_physics\.js'/, 'cloud weather imports shared sky and water-open predicates');
+assert.match(cloudSource, /import \{\s*isBlastProtectedTile,\s*isDoorTile,\s*isFoliageTile,\s*isPlayerPassableTile,\s*isSkyOpenTile,\s*isTrapdoorTile,\s*isWaterOpenTile\s*\} from '\.\/material_physics\.js'/, 'cloud weather imports shared blast, passability, sky, and water-open predicates');
 assert.match(cloudSource, /function skyOpenTile\(t\)\{\s*return isSkyOpenTile\(t\);\s*\}/, 'cloud weather uses shared sky-open predicates');
 assert.match(cloudSource, /isWaterOpenTile\(pt\)/, 'rain deposition uses shared water-open predicates');
 assert.match(seasonSource, /import \{ isSkyOpenTile \} from '\.\/material_physics\.js'/, 'seasonal terrain effects import shared sky-open predicates');

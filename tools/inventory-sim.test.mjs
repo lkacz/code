@@ -108,6 +108,8 @@ assert.equal(res('steelDoor')?.tile, 'STEEL_DOOR', 'steel door is a craftable pl
 assert.equal(res('woodTrapdoor')?.tile, 'WOOD_TRAPDOOR', 'wood trapdoor is a craftable placeable resource');
 assert.equal(res('stoneTrapdoor')?.tile, 'STONE_TRAPDOOR', 'stone trapdoor is a craftable placeable resource');
 assert.equal(res('steelTrapdoor')?.tile, 'STEEL_TRAPDOOR', 'steel trapdoor is a craftable placeable resource');
+assert.equal(res('track')?.tile, 'TRACK', 'track is a craftable placeable crawler resource');
+assert.equal(INFO[T.TRACK].drop, 'track', 'track blocks drop back into the placeable track resource');
 assert.equal(res('wire')?.tile, 'WIRE', 'wire is a placeable salvaged resource');
 assert.equal(res('plastic')?.tile, null, 'plastic is tracked as a non-placeable component');
 assert.equal(res('copper')?.tile, null, 'copper is tracked as a non-placeable component');

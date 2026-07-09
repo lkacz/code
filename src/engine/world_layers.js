@@ -565,16 +565,42 @@ function bedrockDiamondBias(y){
   return Math.pow(rise,1.7) * Math.max(0.12,floorFade);
 }
 
+function shortGoldLineAt(WG,wx,y,cellW,cellH,salt,chanceForY){
+  wx=Math.floor(Number(wx)||0);
+  y=Math.floor(Number(y)||0);
+  const gx0=Math.floor((wx-7)/cellW), gx1=Math.floor((wx+7)/cellW);
+  const gy0=Math.floor((y-1)/cellH), gy1=Math.floor((y+1)/cellH);
+  for(let gy=gy0; gy<=gy1; gy++){
+    for(let gx=gx0; gx<=gx1; gx++){
+      const ay=gy*cellH + 2 + Math.floor(safeRand(WG,gx*31.47+gy*73.91+salt+1)*Math.max(1,cellH-4));
+      const chance=Math.max(0,Math.min(0.48,Number(chanceForY(ay))||0));
+      if(safeRand(WG,gx*113.19+gy*271.43+salt)>=chance) continue;
+      const len=3 + Math.floor(safeRand(WG,gx*41.73+gy*67.39+salt+2)*5);
+      const span=Math.max(1,cellW-len-3);
+      const ax=gx*cellW + 2 + Math.floor(safeRand(WG,gx*59.17+gy*89.11+salt+3)*span);
+      if(y===ay && wx>=ax && wx<ax+len) return true;
+    }
+  }
+  return false;
+}
+
+export function deepGoldVeinAt(WG,wx,y){
+  const deep=Math.max(0,Number(y)-WORLD_H);
+  if(!(deep>16 && deep<114)) return false;
+  const mid=clamp01(1-Math.abs((deep-64)/56));
+  const lower=clamp01((deep-22)/76);
+  const chance=0.13 + mid*0.19 + lower*0.04;
+  return shortGoldLineAt(WG,wx,y,17,10,7466,()=>chance);
+}
+
 function deepRockMaterialTile(WG,wx,y,strataOpt){
   const strata=strataOpt || deepStrataProfile(WG,wx,y);
   const env=strata.env;
   const deep=strata.deep;
   const ore=safeRand(WG,wx*8.17+y*0.47);
-  const goldOre=safeRand(WG,wx*9.47+y*0.59+7460);
   const diamondOre=safeRand(WG,wx*10.91+y*0.83+7459);
   const texture=fbm2D(WG,wx,y,22,16,2,7451);
   const vein=ridgeNoise(WG,wx,y,39,7452);
-  const goldVein=ridgeNoise(WG,wx,y,51,7465);
   const inMantle=strata.virtualDepth>strata.mantleLine;
   const inBasalt=strata.virtualDepth>strata.basaltLine;
   const inGranite=strata.virtualDepth>strata.graniteLine;
@@ -582,10 +608,6 @@ function deepRockMaterialTile(WG,wx,y,strataOpt){
   // flecks; outside a pocket the same rolls run much leaner.
   const pocket=fbm2D(WG,wx+29,y+13,36,20,2,7455);
   const oreScale=0.42 + clamp01((pocket-0.58)/0.16)*1.9;
-  const goldPocket=fbm2D(WG,wx-19,y+7,54,24,2,7468);
-  const goldScale=0.35 + clamp01((goldPocket-0.54)/0.18)*2.4;
-  const goldBody=fbm2D(WG,wx+11,y-5,18,13,2,7469);
-  const goldThread=1-Math.abs(fbm2D(WG,wx+y*0.21,y-wx*0.08,44,15,2,7470)*2-1);
   const diamondScale=0.06 + clamp01((pocket-0.61)/0.13)*3.1;
   const diamondBias=bedrockDiamondBias(y);
   // Coal seams continue across the mid/low contact and taper out with depth
@@ -595,9 +617,7 @@ function deepRockMaterialTile(WG,wx,y,strataOpt){
   if(env.snow>0.55 && deep<74 && ore>0.965 && vein>0.68) return T.ICE;
   if(env.city>0.24 && deep>18 && ore>0.976 && vein>0.34) return T.RADIOACTIVE_ORE;
   if(env.city>0.24 && ore>0.989-deep*0.00008 && vein>0.20) return T.METEORIC_IRON;
-  if(deep>16 && deep<114 && goldPocket>0.605 && goldVein>0.80 && goldBody>0.625) return T.GOLD_ORE;
-  if(deep>28 && deep<110 && goldPocket>0.655 && goldThread>0.78 && goldBody>0.575) return T.GOLD_ORE;
-  if(deep>34 && deep<104 && goldVein>0.93 && goldPocket>0.56 && goldOre<(0.010+strata.crystal*0.016)*goldScale) return T.GOLD_ORE;
+  if(deepGoldVeinAt(WG,wx,y)) return T.GOLD_ORE;
   if(deep>86 && ore<(0.006+strata.crystal*0.010)*oreScale) return T.ANTIMATTER_CRYSTAL;
   if(deep>52 && ore<(0.012+strata.crystal*0.022)*oreScale) return T.IRIDIUM;
   if(deep>72 && vein>0.91 && diamondOre<(0.006+strata.crystal*0.013)*diamondScale*diamondBias) return T.DIAMOND;
@@ -661,6 +681,7 @@ export const worldLayers = Object.freeze({
   deepStrataProfile,
   deepCaveProfile,
   deepCaveDressingTile,
+  deepGoldVeinAt,
   deepTile
 });
 

@@ -3,12 +3,14 @@ import { CHUNK_W, WORLD_H, WORLD_SECTION_H, WORLD_MIN_SECTION, WORLD_MAX_SECTION
 import {
   generatedCityStructuralTile,
   generatedCitySupportTile,
+  isDoorTile,
   isGeneratedStructureReplaceableTile,
   isLavaExposureOpenTile,
   isObjectFootingTile,
   isPlayerBuiltMaterial,
   isReplaceableNaturalOpenTile,
-  isRockStructuralMaterial
+  isRockStructuralMaterial,
+  isTrapdoorTile
 } from './material_physics.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
 import { worldLayers as WORLD_LAYERS } from './world_layers.js';
@@ -104,7 +106,7 @@ window.MM = window.MM || {};
   function tileIndex(x,y){ return y*CHUNK_W+x; }
   function getTileRaw(arr,lx,y){ return arr[tileIndex(lx,y)]; }
   function isInfrastructureTile(t){ return t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.LADDER; }
-  function isConstructionBackgroundTile(t){ return isPlayerBuiltMaterial(t); }
+  function isConstructionBackgroundTile(t){ return isPlayerBuiltMaterial(t) && !isDoorTile(t) && !isTrapdoorTile(t); }
   function markModifiedChunk(cx,version,sy){
     if(!isFinite(cx)) return;
     const keyRef=normalizeChunkRef({cx, sy:Number.isFinite(sy) ? sy : null});
@@ -2150,7 +2152,8 @@ window.MM = window.MM || {};
   function setConstructionBackgroundInternal(x,y,v,transient){
     if(!worldYInBounds(y) || !isFinite(x) || Math.abs(x)>MAX_COORD) return false;
     x=Math.floor(x); y=Math.floor(y);
-    const item=isConstructionBackgroundTile(v) ? v : T.AIR;
+    if(v!==T.AIR && !isConstructionBackgroundTile(v)) return false;
+    const item=v===T.AIR ? T.AIR : v;
     const k=key(x,y);
     const old=getConstructionBackground(x,y);
     if(old===item) return false;

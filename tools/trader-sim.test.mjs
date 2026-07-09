@@ -58,6 +58,24 @@ assert.ok(Math.abs(pos.x-player.x)>=17 && Math.abs(pos.x-player.x)<=41, 'stall p
 assert.ok(Math.abs(pos.y-(SURF-1)-0.5)<0.51, 'stall stands on the surface');
 assert.ok(messages.some(m=>m.includes('handlarz')||m.includes('Handlarz')), 'arrival is announced');
 
+MM.atomicWinter = {
+  contextLines(kind){
+    return kind === 'npc' ? ['Atomic winter lasts until winter ends: roof blocks green rain.'] : [];
+  }
+};
+messages.length = 0;
+const playerStart = {x:player.x, y:player.y};
+player.x = pos.x;
+player.y = pos.y;
+trader._state().greeted = false;
+trader._state().falloutNoted = false;
+trader.update(0.016, player, getTile, setTile, ctx);
+assert.ok(messages.some(m=>/Atomic winter/.test(m)), 'wandering trader mentions atomic winter through existing NPC dialogue');
+assert.equal(trader.snapshot().falloutNoted, true, 'trader remembers the fallout line for this visit');
+delete MM.atomicWinter;
+player.x = playerStart.x;
+player.y = playerStart.y;
+
 // 3) stock: epic chest always present + seeded goods/rates, deterministic
 const stock=trader.stock();
 assert.ok(stock, 'active trader exposes stock');

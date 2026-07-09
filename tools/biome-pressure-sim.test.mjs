@@ -2,6 +2,7 @@
 // Verifies desert sand worms and forest/swamp temple guards add survivable,
 // rewarded biome-specific threats with readable counters.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 globalThis.window = globalThis;
 globalThis.MM = {};
@@ -20,6 +21,7 @@ const { T } = await import('../src/constants.js');
 const { worldGen } = await import('../src/engine/worldgen.js');
 const { meat } = await import('../src/engine/meat.js');
 const { mobs } = await import('../src/engine/mobs.js');
+const mobsSource = readFileSync(new URL('../src/engine/mobs.js', import.meta.url), 'utf8');
 
 const originalBiomeType = worldGen.biomeType;
 const originalVolcanoAt = worldGen.volcanoAt;
@@ -102,8 +104,30 @@ try{
   assert.ok(species.LAKE_SERPENT.xp >= 50, 'lake serpents pay meaningful XP for surviving lake pressure');
   assert.ok(species.STONE_GOLEM.xp >= 50, 'stone golems pay meaningful XP for surviving mountain pressure');
   assert.ok(species.VULTURE.xp >= 30, 'vultures pay meaningful XP for surviving a nest attack');
-  assert.ok(species.ATOMIC_BOMB.xp >= 120, 'destroying an atomic bomb pays high-risk XP');
+  assert.equal(species.ATOMIC_BOMB.xp, 6000, 'destroying an atomic bomb pays a massive high-risk XP jackpot');
   assert.ok(species.RADIATION_COCKROACH.dmg >= 16, 'radiation cockroaches are poisonous enough to pressure city survival');
+  assert.match(mobsSource, /const ATOMIC_BOMB_CRATER_RX = 45;/, 'atomic bomb crater is tripled horizontally into a massive 90-block blast bowl');
+  assert.match(mobsSource, /const ATOMIC_BOMB_CRATER_RY = 30;/, 'atomic bomb crater is tripled vertically into a deep blast bowl');
+  assert.match(mobsSource, /blastRadius\(m\.x,m\.y,ATOMIC_BOMB_BLAST_RADIUS,96/, 'atomic bomb shockwave scales with the enlarged crater');
+
+  let player;
+  let hits;
+  worldGen.biomeType = () => 8;
+  player = resetPlayer(80,9.15);
+  installDamageRecorder(player);
+  mobs.clearAll();
+  let bombFatigue = {mode:'day',m:{}};
+  const bombRewards = [];
+  for(let i=0;i<5;i++){
+    mobs.deserialize({v:5,list:[{id:'ATOMIC_BOMB',x:0.5,y:9.124,vx:0,vy:0,hp:120,maxHp:120,state:'armed',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}},xpFatigue:bombFatigue});
+    mobs.freezeSpawns(10000);
+    const beforeXp = player.xp;
+    const opts = i===2 ? {source:'hero',specialAttack:true} : {source:'hero'};
+    assert.equal(mobs.damageAt(0,9,999,opts), true, 'atomic bombs can be detonated through the normal mob damage API');
+    bombRewards.push(player.xp-beforeXp);
+    bombFatigue = mobs.serialize().xpFatigue;
+  }
+  assert.deepEqual(bombRewards, [6000,3000,1500,750,375], 'repeat atomic bomb detonations halve their XP jackpot each time');
 
   worldGen.biomeType = () => 3;
   const desert = makeTileWorld(T.SAND);
@@ -114,8 +138,8 @@ try{
   assert.equal(species.GIANT_SCORPION.spawnTest(0,9,desert.getTile), false, 'giant scorpions reject non-desert sand');
 
   worldGen.biomeType = () => 3;
-  let player = resetPlayer(7.1,9.15);
-  let hits = installDamageRecorder(player);
+  player = resetPlayer(7.1,9.15);
+  hits = installDamageRecorder(player);
   mobs.clearAll();
   mobs.deserialize({v:4,list:[{id:'SAND_WORM',x:0.5,y:9.5,vx:0,vy:0,hp:46,maxHp:46,state:'buried',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}}});
   mobs.freezeSpawns(10000);
@@ -680,6 +704,23 @@ try{
   const divingVulture=mobs.nearestHostileLiving(6.5,5.8,40);
   assert.equal(divingVulture?.id, 'VULTURE', 'a passive vulture can opportunistically start a hostile dive in mountain territory');
 
+  const legacyVultureNest = makeTileWorld(T.STONE, {
+    '4,8':T.WOOD, '5,8':T.WOOD, '6,8':T.WOOD,
+    '3,7':T.LEAF, '4,7':T.LEAF, '6,7':T.LEAF, '7,7':T.LEAF,
+    '4,6':T.LEAF, '6,6':T.LEAF
+  });
+  player = resetPlayer(5.5,8.5);
+  mobs.clearAll();
+  mobs.deserialize({v:5,list:[{id:'VULTURE',x:5.5,y:6.8,vx:0,vy:0,hp:24,maxHp:24,state:'perched',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0,nestX:5,nestY:8}],aggro:{mode:'rel',m:{}}});
+  mobs.freezeSpawns(10000);
+  simNow += 120;
+  mobs.update(0.08,player,legacyVultureNest.getTile,legacyVultureNest.setTile);
+  const repairedVulture=mobs.serialize().list.find(m=>m.id==='VULTURE');
+  assert.equal(repairedVulture?.nestY, 9, 'legacy floating vulture nests are snapped down onto the nearest stable ledge');
+  assert.equal(legacyVultureNest.getTile(5,8), T.AIR, 'old unsupported vulture nest wood is cleaned instead of becoming a second layer');
+  assert.equal(legacyVultureNest.getTile(5,9), T.WOOD, 'repaired vulture nest has one supported platform row');
+  assert.equal(legacyVultureNest.getTile(5,10), T.STONE, 'repaired vulture platform rests directly over mountain rock');
+
   player = resetPlayer(0.5,8.5);
   hits = installDamageRecorder(player);
   mobs.clearAll();
@@ -705,8 +746,9 @@ try{
     if(mobs.serialize().list.filter(m=>m.id==='VULTURE_HATCHLING').length>=3) break;
   }
   assert.ok(Math.abs(player.x-5.5)<0.25 && player.y<8, 'the carry flight releases the hero at the vulture nest');
-  assert.equal(vultureSlope.getTile(5,8), T.WOOD, 'capture materializes a solid nest platform without a tall wooden tower');
-  assert.equal(vultureSlope.getTile(5,9), T.AIR, 'vulture nests do not build an unstable vertical wood column under the platform');
+  assert.equal(vultureSlope.getTile(5,9), T.WOOD, 'capture materializes a supported nest platform without a tall wooden tower');
+  assert.notEqual(vultureSlope.getTile(5,8), T.WOOD, 'vulture nests do not leave a second wooden platform above the supported row');
+  assert.equal(mobs.serialize().list.find(m=>m.id==='VULTURE')?.nestGroundY, 10, 'vulture nest ground anchor is persisted for stable save/load');
   const afterNest=mobs.serialize().list;
   const hatchling=afterNest.find(m=>m.id==='VULTURE_HATCHLING');
   assert.ok(afterNest.filter(m=>m.id==='VULTURE_HATCHLING').length>=3, 'capture spawns hatchlings in the nest');

@@ -84,6 +84,12 @@ try{
   assert.ok(coldBefore-coldAfter >= 11.9, 'cold biome threats take the 20% thermal fire bonus');
   assert.ok(combatEvents.some(e=>e && e.species===coldId && e.bonusDamagePct===20 && e.element==='fire'), 'thermal mob bonus emits HEAT +20% combat feedback');
 
+  assert.equal(kill({source:'hero_mech'}), baseXp, 'kills from a captured mech are credited as hero XP');
+  mobs.deserialize({v:5,list:[],aggro:{mode:'rel',m:{}},xpFatigue:{mode:'day',m:{}}});
+  player.xp=0;
+  events.length=0;
+  combatEvents.length=0;
+
   assert.equal(kill(), baseXp, 'first same-species kill pays full XP');
   assert.equal(kill(), Math.round(baseXp*0.99), 'second same-species kill pays 1% less');
   assert.equal(kill({specialAttack:true}), Math.round(baseXp*0.98*1.2), 'special killing blow adds 20% after fatigue');

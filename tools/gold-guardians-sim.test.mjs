@@ -12,6 +12,7 @@ globalThis.performance = { now:()=>simNow };
 globalThis.msg = () => {};
 
 const { T } = await import('../src/constants.js');
+const { weapons } = await import('../src/engine/weapons.js');
 const { mobs } = await import('../src/engine/mobs.js');
 
 const originalRandom = Math.random;
@@ -95,6 +96,7 @@ try{
   player.vx = 2.4;
   installDamageRecorder(player);
   mobs.clearAll();
+  weapons.reset();
   simNow += 5200;
   mobs.deserialize({v:5,list:[{
     id:'GOLD_DRAGON',x:0.5,y:10.75,vx:0,vy:0,hp:210,maxHp:210,state:'hoard',facing:1,
@@ -103,7 +105,9 @@ try{
   mobs.freezeSpawns(10000);
   simNow += 2600;
   mobs.update(0.12,player,cave.getTile,cave.setTile);
-  assert.ok(mobs.metrics().projectiles >= 1, 'gold dragons launch a visible fire breath projectile');
+  const dragonFlames = weapons._debug.puffs.filter(p=>p.kind==='flame' && p.cause==='gold_dragon_fire' && p.ownerId==='GOLD_DRAGON');
+  assert.ok(dragonFlames.length >= 1, 'gold dragons emit the shared flamethrower-style flame stream');
+  assert.equal(mobs.metrics().projectiles, 0, 'gold dragon fire breath no longer needs a separate projectile');
   assert.ok(gasAdds.length >= 1, 'gold dragon breath or exhale emits dangerous cave gas');
 
   player = resetPlayer(1.6,10.72);

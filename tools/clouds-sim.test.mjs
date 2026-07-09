@@ -13,6 +13,7 @@ globalThis.window = globalThis; // clouds.js attaches to window.MM
 
 // Mutable climate knob so individual tests can freeze/thaw the world
 let TEMP = 0.7;
+let toxicWaterPollutions = 0;
 const WORLD_MIN_Y = -140;
 const WORLD_MAX_Y = 280;
 globalThis.MM = {
@@ -36,6 +37,7 @@ globalThis.MM = {
   },
   water: {
     addSource(x,y,gt,st){ const t=gt(x,y); if(t===T.AIR || t===T.POISON_GAS || t===T.FUEL_GAS){ st(x,y,T.WATER); return true; } return false; },
+    polluteAt(x,y,gt,st,opts){ if(opts && opts.source==='toxic_rain') toxicWaterPollutions++; return true; },
     onTileChanged(){}, disturb(){},
   },
   particles: { spawnSplash(){}, spawnBubble(){} },
@@ -61,6 +63,7 @@ function resetWorld(){
   CFG.STORMS = false;
   CFG.LIGHTNING_TELEPORT_CHANCE = 0;
   CFG.LIGHTNING_CHEST_CHANCE = 0;
+  toxicWaterPollutions = 0;
   TEMP = 0.7;
   globalThis.player = {x:0};
   delete MM.dynamo;
@@ -172,6 +175,50 @@ assert.ok(clouds.metrics().rainMass > 0, 'snow sheds cloud mass');
 assert.equal(countWater(), 0, 'snow does not deposit water tiles');
 assert.ok(clouds.metrics().vapor > 0, 'snowed mass sublimated back to vapor');
 
+// --- 7b. Atomic winter clouds render and fall as glowing toxic rain, not snow ---
+resetWorld();
+CFG.BORDER_SPAWN = false; CFG.EVAP_BASE = 0;
+TEMP = 0.05;
+MM.atomicWinter = {
+  isActive(){ return true; },
+  toxicRainAt(){ return true; }
+};
+const atomicCloud = clouds.addCloud(0, 70, 40);
+assert.ok(atomicCloud, 'atomic test cloud was created');
+step(30);
+const atomicDebug = clouds._debug();
+assert.equal(clouds.metrics().atomicClouds, 1, 'atomic winter clouds are counted separately for rendering');
+assert.equal(atomicDebug.clouds[0].atomic, true, 'atomic winter marks the cloud for radioactive rendering');
+assert.equal(atomicDebug.clouds[0].toxic, true, 'atomic winter marks the cloud as toxic');
+assert.equal(atomicDebug.clouds[0].raining, true, 'atomic winter cloud rains');
+assert.equal(atomicDebug.clouds[0].snowing, false, 'atomic winter rain does not silently become snow in winter temperatures');
+delete MM.atomicWinter;
+
+// --- 7c. Open-air poison gas can taint weather into toxic rain ---
+resetWorld();
+CFG.BORDER_SPAWN = false; CFG.EVAP_BASE = 0;
+TEMP = 0.7;
+let toxicRainHits = 0;
+globalThis.player = {x:0, y:89, hp:100, maxHp:100};
+globalThis.damageHero = (amount,opts)=>{
+  toxicRainHits++;
+  assert.equal(amount, 1, 'gas-born toxic rain is a light nuisance tick');
+  assert.equal(opts && opts.cause, 'toxic_rain', 'gas-born toxic rain damage is tagged');
+  globalThis.player.hp -= amount;
+  return true;
+};
+assert.equal(clouds.injectToxicVapor(0, 6), true, 'poison gas can inject toxic vapor into the weather layer');
+const toxicCloud = clouds.addCloud(0,70,40);
+assert.ok(toxicCloud, 'toxic vapor has a cloud to contaminate');
+step(30*2);
+assert.ok(clouds._debug().clouds[0].toxicLoad >= CFG.TOXIC_CLOUD_THRESHOLD, 'cloud absorbs poison gas into a toxic load');
+assert.equal(clouds.toxicRainAt(0), true, 'poison-contaminated clouds produce toxic rain');
+step(30*5);
+assert.ok(toxicRainHits >= 1, 'gas-born toxic rain can damage the exposed hero');
+assert.ok(toxicRainHits <= 2, 'gas-born toxic rain damage stays rare and non-destructive');
+assert.ok(toxicWaterPollutions >= 1, 'gas-born toxic rain marks deposited water as toxic');
+delete globalThis.damageHero;
+
 // --- 8. New weather blows in from beyond the simulated band ---
 resetWorld();
 CFG.EVAP_BASE = 0; CFG.BORDER_SPAWN = true;
@@ -208,6 +255,17 @@ const far = clouds.strike(40, getTile, setTile);
 assert.ok(far && !far.chest, 'distant ordinary strike also avoids routine chest creation');
 assert.equal(globalThis.player.hp, hpAfter, 'distant strike cannot hurt the hero');
 assert.equal(chargedByLightning, 50, 'distant lightning does not grant free energy');
+resetWorld();
+CFG.EVAP_BASE = 0;
+globalThis.player = {x:0.5, y:89, hp:100, maxHp:100, energy:0, maxEnergy:100};
+for(let x=-1;x<=1;x++) setTile(x,86,T.WOOD);
+const shelterStrike = clouds.strike(0, getTile, setTile);
+assert.ok(shelterStrike && shelterStrike.sheltered, 'a roofed shelter blocks lightning damage to the hero');
+assert.equal(shelterStrike.dmg, 0, 'sheltered hero takes no direct lightning damage');
+assert.equal(shelterStrike.energy, 0, 'sheltered lightning does not award direct-hit energy');
+assert.equal(globalThis.player.hp, 100, 'hero health stays intact under a shelter roof');
+assert.equal(shelterStrike.shelterDamaged, true, 'lightning still damages the shelter it hits');
+assert.equal(getTile(shelterStrike.x,shelterStrike.y), T.AIR, 'the struck shelter tile is destroyed');
 resetWorld();
 CFG.EVAP_BASE = 0;
 CFG.LIGHTNING_CHEST_CHANCE = 1;
@@ -257,6 +315,10 @@ assert.equal(wres.aquaticHit, 3, 'water strike reports shocked aquatic mobs');
 assert.equal(wres.aquaticKilled, 2, 'water strike reports killed aquatic mobs');
 assert.ok(shockCall && shockCall.r === CFG.LIGHTNING_WATER_SHOCK_RADIUS, 'water strike uses the configured fish-shock radius');
 assert.equal(shockCall.opts.cause, 'lightning_water', 'water shock is tagged for downstream systems');
+globalThis.player = {x:61.5, y:89, hp:100, maxHp:100, energy:0, maxEnergy:100};
+const waterHeroStrike = clouds.strike(61, getTile, setTile);
+assert.ok(waterHeroStrike && waterHeroStrike.dmg>0, 'water over the hero is not treated as a shelter roof against lightning');
+assert.ok(globalThis.player.hp < 100, 'hero in struck water is still shocked by lightning');
 delete MM.mobs;
 delete MM.heroEnergy;
 
@@ -443,6 +505,8 @@ clouds.injectVapor(96, 3.25);
 const savedCloud = clouds.addCloud(8, 70, 12);
 savedCloud.depAcc = 0.6;
 savedCloud.raining = true;
+savedCloud.atomic = true;
+savedCloud.toxic = true;
 clouds.startStorm(45, 0.7);
 step(10);
 const snap = clouds.snapshot();
@@ -463,6 +527,8 @@ assert.ok(restored.storm.active, 'weather restore resumes the active storm');
 const restoredCloud = clouds._debug().clouds[0];
 assert.ok(Array.isArray(restoredCloud.puffs) && restoredCloud.puffs.length > 0, 'weather restore rebuilds cloud puff art from seeds');
 assert.equal(restoredCloud.sprite, null, 'weather restore does not persist canvas sprite caches');
+assert.equal(restoredCloud.atomic, true, 'weather restore preserves atomic cloud rendering state');
+assert.equal(restoredCloud.toxic, true, 'weather restore preserves toxic cloud rendering state');
 assert.equal(clouds.restore(null), false, 'weather restore rejects missing payloads without throwing');
 
 // --- 15. API safety: junk input never throws ---

@@ -129,6 +129,29 @@ const repeatFirst = repeatNpc._debug().line;
 assert.equal(repeatNpc.talk(player), true, 'repeat NPC can talk again');
 assert.notEqual(repeatNpc._debug().line, repeatFirst, 'NPC talk avoids repeating the same line twice in a row when variants exist');
 
+globalThis.MM.atomicWinter = {
+  contextLines(kind){
+    return kind === 'npc' ? ['Atomic winter lasts until winter ends: roof blocks toxic rain.'] : [];
+  }
+};
+const falloutNpc = createQuestNpc({
+  id:'qa_fallout_talker',
+  displayName:'QA Fallout Talker',
+  initialPhase:'done',
+  steps:[{id:'done',kind:'done',prompt:'Normal town line'}]
+});
+falloutNpc.placeNearWorldStart(getTile,worldGen);
+const falloutState = falloutNpc._debug();
+player.x = falloutState.x;
+player.y = falloutState.y;
+let falloutLineSeen = false;
+for(let i=0;i<4;i++){
+  assert.equal(falloutNpc.talk(player), true, 'fallout NPC can talk through the normal interaction flow');
+  falloutLineSeen = falloutLineSeen || /Atomic winter/.test(falloutNpc._debug().line);
+}
+assert.ok(falloutLineSeen, 'regular NPCs mention atomic winter while the event is active');
+delete globalThis.MM.atomicWinter;
+
 const observer = createQuestNpc({
   id:'qa_observer',
   displayName:'QA Observer',

@@ -105,7 +105,63 @@ try{
   assert.equal(mobs.damageAt(NaN,29,999), false, 'invalid mob hit x is ignored');
   assert.equal(mobs.attackAt(1,Infinity,999), false, 'invalid mob melee y is ignored');
   assert.equal(mobs.serialize().list[0].hp, restored[0].hp, 'invalid hit coordinates cannot damage mobs');
+
   mobs.clearAll();
+  mobs.deserialize({
+    v:4,
+    list:[{id:'WOLF',x:0.5,y:29,vx:0,vy:0,hp:16,state:'idle',facing:1,scale:1,speedMul:1,jumpMul:1}],
+    aggro:{mode:'rel',m:{}}
+  });
+  mobs.freezeSpawns(10000);
+  const twitchPlayer={x:-2.0,y:29,hp:100,maxHp:100,vx:0,vy:0};
+  for(let i=0;i<6;i++){
+    twitchPlayer.x = i%2===0 ? -2.0 : 2.0;
+    simNow += 30;
+    mobs.update(0.03,twitchPlayer,getTile);
+    const wolf=mobs.nearestLiving(0.5,29,8,{species:['WOLF']});
+    assert.ok(wolf && wolf.facing===1, 'rapid left/right target jitter does not flip mob facing on frame '+i);
+  }
+  twitchPlayer.x = -2.0;
+  for(let i=0;i<7;i++){
+    simNow += 30;
+    mobs.update(0.03,twitchPlayer,getTile);
+  }
+  const settledWolf=mobs.nearestLiving(0.5,29,8,{species:['WOLF']});
+  assert.ok(settledWolf && settledWolf.facing===-1, 'mob facing changes after the new direction is held long enough');
+  mobs.clearAll();
+
+  const previousHealingShelters=MM.healingShelters;
+  try{
+    MM.healingShelters = { isBarrierAt(x,y){ return x===1 && y===20; } };
+    mobs.deserialize({
+      v:4,
+      list:[{id:'BIRD',x:0.2,y:20,vx:8,vy:0,hp:6,state:'idle',facing:1,scale:1,speedMul:1,jumpMul:1}],
+      aggro:{mode:'rel',m:{}}
+    });
+    mobs.freezeSpawns(10000);
+    simNow += 400;
+    mobs.update(0.4,{x:20,y:20,hp:100,maxHp:100,vx:0,vy:0},getTile);
+    let flyer=mobs.serialize().list.find(m=>m.id==='BIRD');
+    assert.ok(flyer && flyer.x<0.55, 'flying mobs cannot pass through a healing-shelter wall tile');
+    assert.equal(flyer.vx, 0, 'flying mob horizontal motion is stopped by the shelter wall');
+
+    mobs.clearAll();
+    MM.healingShelters = { isBarrierAt(){ return false; } };
+    mobs.deserialize({
+      v:4,
+      list:[{id:'BIRD',x:0.2,y:20,vx:8,vy:0,hp:6,state:'idle',facing:1,scale:1,speedMul:1,jumpMul:1}],
+      aggro:{mode:'rel',m:{}}
+    });
+    mobs.freezeSpawns(10000);
+    simNow += 400;
+    mobs.update(0.4,{x:20,y:20,hp:100,maxHp:100,vx:0,vy:0},getTile);
+    flyer=mobs.serialize().list.find(m=>m.id==='BIRD');
+    assert.ok(flyer && flyer.x>1.1, 'flying mobs can still enter through an actual open shelter gap');
+  } finally {
+    mobs.clearAll();
+    if(previousHealingShelters===undefined) delete MM.healingShelters;
+    else MM.healingShelters=previousHealingShelters;
+  }
 
   function killMobForDeathFx(id,opts){
     mobs.clearAll();

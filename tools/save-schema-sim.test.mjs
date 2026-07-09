@@ -261,11 +261,14 @@ assert.match(src, /function renderCraftPanel\(\)/, 'crafting renders through the
 assert.match(src, /search\.addEventListener\('input',\(\)=>\{ craftQuery=search\.value\|\|''; renderCraftPanel\(\); \}\)/, 'crafting search updates the visible recipe list');
 assert.match(src, /respawnTotems: timedSavePart\('respawnTotems',\(\)=>snapshotRespawnTotems\(\),perf\)/, 'save file persists placed respawn totem indexes');
 assert.match(src, /restoreRespawnTotems\(data\.respawnTotems \|\| \{seed:WORLDGEN\.worldSeed,list:respawnTotems\}\)/, 'load path restores respawn totem indexes after terrain chunks');
+assert.match(src, /healingShelters: timedSavePart\('healingShelters',\(\)=>snapshotHealingShelters\(\),perf\)/, 'save file persists healing shelter respawn indexes');
+assert.match(src, /restoreHealingShelters\(data\.healingShelters \|\| \{seed:WORLDGEN\.worldSeed,list:healingShelters\}\)/, 'load path restores healing shelter indexes after house backwalls');
 
 const sameSeedRegen = src.match(/window\.regenWorldSameSeed = function\(\)\{ try\{([\s\S]*?)window\.addEventListener\('mm-regen-same-seed'/)?.[1] || '';
 assert.match(sameSeedRegen, /player\.xp=0/, 'same-seed regeneration resets hero XP');
 assert.match(sameSeedRegen, /PROGRESS && PROGRESS\.reset/, 'same-seed regeneration resets progression milestones and trophy history');
 assert.match(sameSeedRegen, /clearRespawnTotems\(\)/, 'same-seed regeneration clears stale respawn totem indexes');
+assert.match(sameSeedRegen, /clearHealingShelters\(\)/, 'same-seed regeneration clears stale healing shelter indexes');
 assert.match(sameSeedRegen, /grave=null/, 'same-seed regeneration clears stale graves');
 assert.match(sameSeedRegen, /if\(godMode\)/, 'same-seed regeneration preserves debug god-mode resource stacks after reset');
 assert.match(indexSrc, /id="taskPanel"/, 'HUD exposes a compact task tracker panel');

@@ -448,6 +448,20 @@ assert.ok(world.hasInfrastructure(7, -6, T.COPPER_WIRE), 'sky infrastructure res
 assert.equal(world.setConstructionBackground(8, 150, T.BRICK), true, 'background construction can live in deep sections');
 const bgSnap = world.snapshotConstructionBackground();
 assert.ok(bgSnap.list.some(o => o.x === 8 && o.y === 150 && o.t === T.BRICK), 'deep construction background is persisted');
+assert.equal(world.isConstructionBackgroundTile(T.WOOD_DOOR), false, 'doors cannot exist as construction background tiles');
+assert.equal(world.isConstructionBackgroundTile(T.WOOD_TRAPDOOR), false, 'trapdoors cannot exist as construction background tiles');
+assert.equal(world.setConstructionBackground(9, 150, T.WOOD_DOOR), false, 'doors cannot be placed into construction background');
+assert.equal(world.setConstructionBackground(10, 150, T.WOOD_TRAPDOOR), false, 'trapdoors cannot be placed into construction background');
+world.restoreConstructionBackground({v:1,list:[
+  {x:11,y:150,t:T.STONE_DOOR},
+  {x:12,y:150,t:T.STONE_TRAPDOOR},
+  {x:13,y:150,t:T.BRICK}
+]});
+assert.equal(world.getConstructionBackground(11,150), T.AIR, 'restoring old saves drops background doors');
+assert.equal(world.getConstructionBackground(12,150), T.AIR, 'restoring old saves drops background trapdoors');
+assert.equal(world.getConstructionBackground(13,150), T.BRICK, 'restoring old saves keeps valid background walls');
+assert.equal(world.setConstructionBackground(13, 150, T.STONE_DOOR), false, 'invalid background doors do not clear an existing background wall');
+assert.equal(world.getConstructionBackground(13,150), T.BRICK, 'invalid background door attempts leave existing background walls intact');
 
 assert.equal(world.getTile(0, WORLD_MIN_Y - 1), T.AIR, 'above extended bounds is void air');
 assert.equal(world.getTile(0, WORLD_MAX_Y), T.BEDROCK, 'below extended bounds is hard bedrock');
@@ -461,6 +475,7 @@ assert.match(mainSource, /function ensureChunkAtY\(cx,y\)[\s\S]*WORLD\.ensureSec
 assert.match(mainSource, /function teleportHeroTo\(x,y,opts\)[\s\S]*ensureChunkAtY\(Math\.floor\(x\/CHUNK_W\),y\)/, 'debug and scripted teleports load the destination vertical section');
 assert.match(mainSource, /function ensureChunks\(\)[\s\S]*ensureChunkAtY\(pcx\+d,player\.y\)/, 'runtime chunk warming follows the player vertical section');
 assert.match(mainSource, /function totemRespawnSpot\(tx,ty\)[\s\S]*ensureChunkAtY\(Math\.floor\(tx\/CHUNK_W\),ty\)/, 'totem respawn spot warms the saved vertical section');
-assert.match(mainSource, /function placePlayer\(skipMsg,opts\)[\s\S]*const spot=totemRespawnSpot\(totem\.x,totem\.y\);[\s\S]*ensureChunkAtY\(Math\.floor\(spot\.x\/CHUNK_W\),spot\.y\)/, 'totem respawn placement warms the chosen landing section');
+assert.match(mainSource, /function healingShelterRespawnSpot\(rec\)[\s\S]*ensureChunkAtY\(Math\.floor\(rec\.x\/CHUNK_W\),rec\.y\)/, 'healing shelter respawn spot warms the saved vertical section');
+assert.match(mainSource, /function placePlayer\(skipMsg,opts\)[\s\S]*const dest=nearestRespawnDestination\(\);[\s\S]*const spot=dest\.spot;[\s\S]*ensureChunkAtY\(Math\.floor\(spot\.x\/CHUNK_W\),spot\.y\)/, 'respawn placement warms the chosen totem or shelter landing section');
 assert.match(mainSource, /function debugGasOrigin\(\)[\s\S]*ensureChunkAtY\(Math\.floor\(tx\/CHUNK_W\),ty\)/, 'debug gas placement probes the correct vertical section');
 assert.match(mainSource, /function debugRigCellsClear\(cells\)[\s\S]*ensureChunkAtY\(Math\.floor\(cell\.x\/CHUNK_W\),cell\.y\)/, 'debug rig placement validates cells in the correct vertical section');

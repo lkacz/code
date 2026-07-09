@@ -328,6 +328,38 @@ const invasions = (function(){
     }
     return {x:tx+0.5, y:clamp(floor(s)-1, WORLD_TOP+3, WORLD_BOTTOM-4)};
   }
+  function findLocalStandSpot(x, nearY, getTile){
+    const tx = floor(x);
+    const cy = Number.isFinite(Number(nearY)) ? Number(nearY) : surfaceY(tx,60);
+    const spans = [
+      [cy - 8, cy + 14],
+      [cy - 22, cy + 30]
+    ];
+    for(const span of spans){
+      const start = clamp(floor(span[0]), WORLD_TOP + 3, WORLD_BOTTOM - 5);
+      const end = clamp(floor(span[1]), WORLD_TOP + 3, WORLD_BOTTOM - 4);
+      for(let y=start; y<=end; y++){
+        if(canStandAt(tx,y,getTile)) return {x:tx+0.5,y};
+      }
+    }
+    return findSurfaceStandSpot(x, cy, getTile);
+  }
+  function forcedVisibleSpot(player, side, index, kind, getTile){
+    const px = floor(player && Number.isFinite(player.x) ? player.x : 0);
+    const py = player && Number.isFinite(player.y) ? player.y : surfaceY(px,60);
+    const base = (kind === 'molekin' ? 5 : 7) + index * (kind === 'molekin' ? 3 : 4);
+    const offsets = [base, base + 2, Math.max(3, base - 2), base + 4, base + 7];
+    const candidates = [];
+    for(let i=0; i<offsets.length; i++){
+      const dir = i % 2 === 0 ? side : -side;
+      candidates.push(px + dir * offsets[i]);
+    }
+    for(const x of candidates){
+      const spot = findLocalStandSpot(x, py, getTile);
+      if(canStandAt(floor(spot.x), floor(spot.y), getTile)) return spot;
+    }
+    return findLocalStandSpot(px + side * base, py, getTile);
+  }
   function findLandingSpot(player, side, index, getTile){
     const px = floor(player && Number.isFinite(player.x) ? player.x : 0);
     const py = player && Number.isFinite(player.y) ? player.y : surfaceY(px,60);
@@ -418,6 +450,11 @@ const invasions = (function(){
     const byThreat = 1 + Math.floor(Math.max(0,threat - 1) / 9);
     const byPlayer = playerLevel >= 18 ? 3 : (playerLevel >= 9 ? 2 : 1);
     return Math.max(1, Math.min(INVASION_MAX_TEAMS, Math.max(byDay,byThreat,byPlayer)));
+  }
+  function requestedTeamCountForNight(opts,day,playerLevel,threatLevel){
+    const requested = opts && opts.teams ? Number(opts.teams) : teamCountForDay(day,playerLevel,threatLevel);
+    const cap = opts && opts.natural ? 2 : INVASION_MAX_TEAMS;
+    return Math.max(1, Math.min(cap, Math.floor(Number(requested) || 1)));
   }
   function alienCountForDay(day,index,playerLevel,threatLevel){
     const d = Math.max(1, Math.floor(Number(day) || 1));
@@ -834,6 +871,12 @@ const invasions = (function(){
     if(k === 'alien' || k === 'aliens' || k === 'ufo') return 'aliens';
     return '';
   }
+  function wantsVisibleForcedSpawn(opts){
+    return !!(opts && (opts.forceVisible || opts.debugVisible || opts.debugSpawn));
+  }
+  function wantsImmediateForcedSpawn(opts){
+    return !!(opts && (opts.immediate || opts.instant || opts.debugImmediate));
+  }
   function canNightSpawnKind(kind,opts){
     opts = opts || {};
     if(kind === 'molekin') return !(opts.natural && eastGuardianDefeated());
@@ -861,16 +904,20 @@ const invasions = (function(){
     const currentDayFloat = Number.isFinite(opts.dayFloat) ? Number(opts.dayFloat) : dayInfo.dayFloat;
     const playerLevel = playerLevelFor(player,opts);
     const threatLevel = threatLevelFor(day,playerLevel,opts);
-    const count = Math.max(1, Math.min(INVASION_MAX_TEAMS, opts.teams || teamCountForDay(day,playerLevel,threatLevel)));
+    const count = requestedTeamCountForNight(opts,day,playerLevel,threatLevel);
+    const forceVisible = wantsVisibleForcedSpawn(opts);
+    const immediate = wantsImmediateForcedSpawn(opts);
     const spawned = [];
     for(let i=0; i<count; i++){
       const kind = chooseNightTeamKind(i,count,Object.assign({},opts,{day}));
       if(!kind) continue;
+      const side = i%2===0 ? (kind === 'molekin' ? 1 : -1) : (kind === 'molekin' ? -1 : 1);
       const makeTeam = kind === 'molekin' ? makeMolekinTeam : makeAlienTeam;
       const team = makeTeam(player, getTile, {
         day,
         index:i,
-        side:i%2===0 ? (kind === 'molekin' ? 1 : -1) : (kind === 'molekin' ? -1 : 1),
+        side,
+        spot:opts.spot || (forceVisible ? forcedVisibleSpot(player, side, i, kind, getTile) : undefined),
         alienCount:opts.alienCount,
         playerLevel,
         threatLevel,
@@ -880,6 +927,7 @@ const invasions = (function(){
         forceRewardChance:opts.forceRewardChance,
         currentDayFloat
       });
+      if(immediate) materializeTeamNow(team,getTile,setTile,opts.ctx || {});
       teams.push(team);
       spawned.push(team);
     }
@@ -887,7 +935,11 @@ const invasions = (function(){
       lastNightDay = Math.max(lastNightDay, day);
       const alienN = spawned.filter(t=>isAlienTeam(t)).length;
       const moleN = spawned.filter(t=>isMolekinTeam(t)).length;
-      if(alienN && moleN) say('Nocna inwazja: obcy laduja, a kretoludzie przebijaja sie spod ziemi.');
+      if(immediate && !opts.natural){
+        if(alienN && moleN) say('Wymuszona inwazja: obcy i kretoludzie sa juz obok bohatera.');
+        else if(moleN) say(moleN > 1 ? 'Wymuszona inwazja: '+moleN+' oddzialy kretoludzi wyszly obok bohatera.' : 'Wymuszona inwazja: kretoludzie wyszli obok bohatera.');
+        else say(alienN > 1 ? 'Wymuszona inwazja: '+alienN+' oddzialy obcych sa juz obok bohatera.' : 'Wymuszona inwazja: alien team jest juz obok bohatera.');
+      } else if(alienN && moleN) say('Nocna inwazja: obcy laduja, a kretoludzie przebijaja sie spod ziemi.');
       else if(moleN) say(moleN > 1 ? 'Nocny atak: '+moleN+' tunele kretoludzi otwieraja sie w okolicy.' : 'Nocny atak: kretoludzie przebijaja sie spod ziemi.');
       else say(alienN > 1 ? 'Nocna inwazja: '+alienN+' oddzialy obcych laduja w okolicy.' : 'Nocna inwazja: obcy laduja w okolicy.');
       play('warning');
@@ -1010,6 +1062,18 @@ const invasions = (function(){
       team.lander.invisible = true;
     }
     triggerTeamSpeech(team,'landing',{now,force:true,cooldown:1500,keyCooldown:4800});
+  }
+  function materializeTeamNow(team,getTile,setTile,ctx){
+    if(!team || team.state === 'defeated') return;
+    if(isMolekinTeam(team)){
+      spawnMolekin(team,getTile,setTile,ctx);
+      return;
+    }
+    if(team.lander){
+      team.lander.y = Number.isFinite(team.lander.targetY) ? team.lander.targetY : team.y;
+      team.lander.vy = 0;
+    }
+    spawnAliens(team);
   }
   function alienHitboxCells(a,x,y){
     const scale = clamp(Number(a && a.hitboxScale) || 1,0.78,1.36);
@@ -1983,6 +2047,14 @@ const invasions = (function(){
   function echoSpeechTableFor(team){
     return isMolekinTeam(team) ? MOLEKIN_ECHO_SPEECH : ALIEN_ECHO_SPEECH;
   }
+  function atomicWinterSpeechLines(team){
+    try{
+      const aw=MM.atomicWinter;
+      if(!aw || typeof aw.contextLines!=='function') return [];
+      const kind=isMolekinTeam(team) ? 'molekin' : 'alien';
+      return aw.contextLines(kind).map(compactSpeechText).filter(Boolean);
+    }catch(e){ return []; }
+  }
   function speechLinesFor(table,key,team,opts){
     let lines = Array.isArray(table && table[key]) ? table[key].map(compactSpeechText).filter(Boolean) : [];
     if(key === 'lore'){
@@ -1990,6 +2062,7 @@ const invasions = (function(){
       const rarity = opts && opts.rare ? 'rare' : 'base';
       lines = lines.concat(storyInvasionLinesForProgress(kind,rarity,root).map(compactSpeechText).filter(Boolean));
     }
+    if(key === 'atomicWinter') lines = lines.concat(atomicWinterSpeechLines(team));
     const seen = new Set();
     lines = lines.filter(line=>{
       if(!line || seen.has(line)) return false;
@@ -2115,8 +2188,10 @@ const invasions = (function(){
   }
   function triggerTeamSpeech(team,key,opts){
     opts = opts || {};
+    if(!team || !key) return '';
     const table = speechTableFor(team);
-    if(!team || !key || !table[key]) return '';
+    if(!(table && table[key]) && key !== 'atomicWinter') return '';
+    if(key === 'atomicWinter' && !atomicWinterSpeechLines(team).length) return '';
     const now = Number.isFinite(opts.now) ? opts.now : nowMs();
     ensureReactionState(team);
     const force = !!opts.force;
@@ -2196,6 +2271,32 @@ const invasions = (function(){
         override:false
       });
       if(said) team.heroHealthBand = band;
+    }
+  }
+  function updateAtomicWinterAwareness(player,now){
+    if(!player) return;
+    let active=false;
+    try{
+      const aw=MM.atomicWinter;
+      active=!!(aw && typeof aw.isActive==='function' && aw.isActive());
+    }catch(e){ active=false; }
+    if(!active) return;
+    for(const team of activeInvasionTeams()){
+      if(!team || !team.aliens || !team.aliens.length) continue;
+      ensureReactionState(team);
+      if(!team.speechStartAt) team.speechStartAt = now;
+      if(!Number.isFinite(team.nextAtomicWinterSpeechAt)) team.nextAtomicWinterSpeechAt = now + 3500 + Math.random() * 3500;
+      if(now < (team.speechStartAt || now) + 4500) continue;
+      if(now < team.nextAtomicWinterSpeechAt) continue;
+      const said = triggerTeamSpeech(team,'atomicWinter',{
+        x:player.x,
+        y:player.y,
+        now,
+        cooldown:9000,
+        keyCooldown:30000,
+        override:false
+      });
+      team.nextAtomicWinterSpeechAt = now + (said ? 32000 + Math.random() * 18000 : 7000 + Math.random() * 5000);
     }
   }
   function shouldBreakBlockedTile(hit,player,range){
@@ -2690,6 +2791,7 @@ const invasions = (function(){
       if(team.state === 'active' && alive <= 0) defeatTeam(team,player,ctx,getTile,setTile);
     }
     updateHeroAwareness(player,now);
+    updateAtomicWinterAwareness(player,now);
     // Units shoulder each other (and the hero) aside instead of stacking.
     applySeparation(allUnits, {
       radius:0.30,
@@ -4289,7 +4391,7 @@ const invasions = (function(){
     reset,
     metrics,
     state:()=>({teams:teams.map(serializeTeam), caches:caches.map(c=>deepCopy(c)), lastNightDay, seq}),
-    _debug:{teams,caches,lasers,tileDamage,brains,nav,traceLine,damageStructureTile,damageTeamTile,isMoleDiggableTile,fireMolekinAttack,unstuckAlien,alienEscapeCells,findCacheSpot,stealResources,stealGear,canPlaceBarricadeAt,placeBarricadeTile,canPlaceMoleVentAt,placeMoleVentTile,cleanupBuiltTiles,profileFor,playerLevelFor,threatLevelFor,gradeForThreat,teamCountForDay,alienCountForDay,molekinCountForDay,xpRewardForTeam,rewardProfileForTeam,westGuardianDefeated,eastGuardianDefeated,spawnRuinCommander,forceMolekinInvasion,forceAlienSpeech,triggerTeamSpeech,updateAlienSpeech,updateHeroAwareness,compactSpeechText,storyInvasionLinesForProgress,speechLines:ALIEN_SPEECH,moleSpeechLines:MOLEKIN_SPEECH,rareSpeechLines:ALIEN_RARE_SPEECH,moleRareSpeechLines:MOLEKIN_RARE_SPEECH,echoSpeechLines:ALIEN_ECHO_SPEECH,moleEchoSpeechLines:MOLEKIN_ECHO_SPEECH}
+    _debug:{teams,caches,lasers,tileDamage,brains,nav,traceLine,damageStructureTile,damageTeamTile,isMoleDiggableTile,fireMolekinAttack,unstuckAlien,alienEscapeCells,findCacheSpot,stealResources,stealGear,canPlaceBarricadeAt,placeBarricadeTile,canPlaceMoleVentAt,placeMoleVentTile,cleanupBuiltTiles,profileFor,playerLevelFor,threatLevelFor,gradeForThreat,teamCountForDay,alienCountForDay,molekinCountForDay,xpRewardForTeam,rewardProfileForTeam,westGuardianDefeated,eastGuardianDefeated,spawnRuinCommander,forceMolekinInvasion,forceAlienSpeech,triggerTeamSpeech,updateAlienSpeech,updateHeroAwareness,updateAtomicWinterAwareness,atomicWinterSpeechLines,compactSpeechText,storyInvasionLinesForProgress,speechLines:ALIEN_SPEECH,moleSpeechLines:MOLEKIN_SPEECH,rareSpeechLines:ALIEN_RARE_SPEECH,moleRareSpeechLines:MOLEKIN_RARE_SPEECH,echoSpeechLines:ALIEN_ECHO_SPEECH,moleEchoSpeechLines:MOLEKIN_ECHO_SPEECH}
   };
   MM.invasions = api;
   return api;

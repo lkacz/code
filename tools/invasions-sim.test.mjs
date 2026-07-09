@@ -52,6 +52,15 @@ invasions.update(0.016, player, getTile, setTile, ctx);
 assert.equal(invasions.metrics().teams, 1, 'same night does not spawn duplicate teams');
 
 invasions.reset();
+player.xp = 60000;
+simDayFloat = 25;
+const highPressureNatural = invasions.forceNightInvasion(player,getTile,setTile,{day:25,natural:true});
+assert.ok(highPressureNatural.length >= 1, 'late natural night still creates pressure');
+assert.ok(highPressureNatural.length <= 2, 'natural night pressure is capped at one or two invasion teams');
+player.xp = 0;
+simDayFloat = 2;
+
+invasions.reset();
 MM.guardianLairs = {status:()=>({defeated:{fire:false, ice:true}})};
 invasions.update(0.016, player, getTile, setTile, ctx);
 assert.equal(invasions.metrics().alienTeams, 0, 'natural alien teams stop spawning after the western ice guardian is defeated');
@@ -79,6 +88,27 @@ invasions.reset();
 const scalable = invasions.forceNightInvasion(player,getTile,setTile,{day:9,teams:3,alienCount:1});
 assert.equal(scalable.length, 3, 'force spawn can create several scalable invading teams');
 assert.equal(invasions.metrics().activeTeams, 3, 'all forced teams are active invasion pressure');
+
+invasions.reset();
+overrides.clear();
+player.x = 0; player.y = 49; player.xp = 0;
+const visibleAlienDebug = invasions.forceNightInvasion(player,getTile,setTile,{day:4,teams:1,kind:'aliens',alienCount:2,forceVisible:true,immediate:true});
+assert.equal(visibleAlienDebug.length, 1, 'visible debug summon creates a UFO team');
+assert.equal(visibleAlienDebug[0].state, 'active', 'visible debug UFO team is active immediately');
+assert.ok(visibleAlienDebug[0].lander && visibleAlienDebug[0].lander.landed, 'visible debug UFO has a landed saucer immediately');
+assert.ok(visibleAlienDebug[0].aliens.length >= 2, 'visible debug UFO deploys live aliens immediately');
+assert.ok(Math.abs(visibleAlienDebug[0].x - player.x) <= 12, 'visible debug UFO lands close enough to be seen near the hero');
+assert.ok(invasions.metrics().aliens >= 2, 'visible debug UFO counts as visible alien pressure right away');
+
+invasions.reset();
+overrides.clear();
+const visibleMoleDebug = invasions.forceMolekinInvasion(player,getTile,setTile,{day:4,teams:1,alienCount:3,forceVisible:true,immediate:true});
+assert.equal(visibleMoleDebug.length, 1, 'visible debug summon creates a molekin team');
+assert.equal(visibleMoleDebug[0].state, 'active', 'visible debug molekin team is active immediately');
+assert.ok(visibleMoleDebug[0].burrow && visibleMoleDebug[0].burrow.open, 'visible debug molekin burrow is open immediately');
+assert.ok(visibleMoleDebug[0].aliens.length >= 3, 'visible debug molekin summon deploys live kretoludzie immediately');
+assert.ok(Math.abs(visibleMoleDebug[0].x - player.x) <= 10, 'visible debug molekin emerge close enough to be seen near the hero');
+assert.ok(invasions.metrics().molekin >= 3, 'visible debug molekin count as visible pressure right away');
 
 // offscreen lifecycle: old alien and molekin pressure should vanish after a day
 // away from the active camera, cleaning their temporary invasion footprint.
@@ -317,6 +347,7 @@ function clearSquadSpeech(team){
   team.recentSpeechLines = [];
   team.speechEventCounts = {};
   team.nextEchoSpeechAt = 0;
+  team.nextAtomicWinterSpeechAt = 0;
 }
 function squadSaid(team,key){
   const table = team && team.kind === 'molekin' ? invasions._debug.moleSpeechLines : invasions._debug.speechLines;
@@ -371,6 +402,31 @@ try{
   Math.random = originalRandom;
 }
 assert.ok(actualSquad.aliens.filter(a=>a.speechText).length >= 2, 'rare team echo can create a surprising second reaction without ambient chatter');
+
+MM.atomicWinter = {
+  isActive(){ return true; },
+  contextLines(kind){
+    if(kind === 'alien') return [
+      'Green rain hurts Hero until winter ends.',
+      'Shelter roof blocks rain and lightning.',
+      'Toxic rain heals mobs outside.'
+    ];
+    if(kind === 'molekin') return ['Tunnel waits until green rain ends.'];
+    return [];
+  }
+};
+clearSquadSpeech(actualSquad);
+const atomicSaid = invasions._debug.triggerTeamSpeech(actualSquad,'atomicWinter',{force:true,now:performance.now()+6400,cooldown:0,keyCooldown:0,override:true});
+assert.ok(/Green rain|Shelter roof|Toxic rain/.test(atomicSaid), 'alien teams can speak atomic winter consequence lines');
+assert.ok(actualSquad.aliens.some(a=>a.speechText === atomicSaid), 'atomic winter speech appears above an existing alien, not a special NPC');
+
+clearSquadSpeech(actualSquad);
+const atomicAwarenessNow = performance.now()+7200;
+actualSquad.speechStartAt = atomicAwarenessNow - 12000;
+actualSquad.nextAtomicWinterSpeechAt = 0;
+invasions._debug.updateAtomicWinterAwareness(player,atomicAwarenessNow);
+assert.ok(actualSquad.aliens.some(a=>/Green rain|Shelter roof|Toxic rain/.test(a.speechText)), 'active alien teams periodically mention atomic winter while it lasts');
+delete MM.atomicWinter;
 
 // team chatter reacts to battle events and hero behavior
 clearSquadSpeech(actualSquad);
@@ -711,6 +767,8 @@ assert.match(mainSrc, /INVASIONS\.update\(dt, player, getTile, setTile,[\s\S]*vi
 assert.match(mainSrc, /INVASIONS\.draw\(ctx,TILE,worldFxVisible\)/, 'main draw loop renders invasions');
 assert.match(mainSrc, /injectInvasionDebugPanel/, 'main wires the invasion debug panel into the menu');
 assert.match(mainSrc, /forceMolekinInvasion/, 'main exposes a debug action for forcing molekin night attacks');
+assert.match(mainSrc, /forceNightInvasion\(player,getTile,setTile,\{teams:1,kind:'aliens',forceVisible:true,immediate:true/, 'UFO debug button requests immediate visible pressure');
+assert.match(mainSrc, /forceMolekinInvasion\(player,getTile,setTile,\{teams:1,forceVisible:true,immediate:true/, 'molekin debug button requests immediate visible pressure');
 assert.match(mainSrc, /tryOpenInvasionCacheAt/, 'main has a dedicated invasion cache opener');
 assert.match(mainSrc, /const invasionHitCause = opts\.cause==='alien_invasion' \|\| opts\.cause==='molekin_invasion';[\s\S]*notifyInvasionHeroAction\(invasionHitCause\?'hero_hit':'hero_hurt'/, 'successful invasion hero damage notifies team chatter');
 assert.match(mainSrc, /notifyInvasionHeroAction\('hero_mine'/, 'successful mining notifies alien chatter');

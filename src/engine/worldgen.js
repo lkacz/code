@@ -590,16 +590,27 @@ WG.coalVeinAt = function(x,y,nearCave){
 WG.goldVeinChance = function(y, nearCave){
 	const d=clamp((y-48)/(WORLD_H-58),0,1);
 	const mid=clamp(1-Math.abs(d-0.58)*1.55,0,1);
-	return (0.006 + mid*0.030 + d*0.008) * (nearCave?1.22:1);
+	return Math.min(0.34, (0.105 + mid*0.145 + d*0.035) * (nearCave?1.08:1));
 };
 WG.goldVeinAt = function(x,y,nearCave){
-	const chance=WG.goldVeinChance(y,!!nearCave);
-	if(chance<=0) return false;
-	const ribbon=Math.abs(fbm2(x,y,84,21,3,1901)-0.5) < chance*0.30;
-	if(!ribbon) return false;
-	const body=fbm2(x+17,y-9,18,14,2,1902);
-	const sparkle=1-Math.abs(fbm2(x,y,33,15,2,1903)*2-1);
-	return body>0.60 || (sparkle>0.74 && WG.randSeed(x*5.79+y*0.43)<chance*0.70);
+	void nearCave;
+	x=Math.floor(Number(x)||0);
+	y=Math.floor(Number(y)||0);
+	const cellW=16, cellH=9;
+	const gx0=Math.floor((x-7)/cellW), gx1=Math.floor((x+7)/cellW);
+	const gy0=Math.floor((y-1)/cellH), gy1=Math.floor((y+1)/cellH);
+	for(let gy=gy0; gy<=gy1; gy++){
+		for(let gx=gx0; gx<=gx1; gx++){
+			const ay=gy*cellH + 2 + Math.floor(WG.randSeed(gx*29.31+gy*77.17+1905)*Math.max(1,cellH-4));
+			const chance=WG.goldVeinChance(ay,false);
+			if(WG.randSeed(gx*101.13+gy*283.71+1904)>=chance) continue;
+			const len=3 + Math.floor(WG.randSeed(gx*43.19+gy*61.73+1906)*5);
+			const span=Math.max(1,cellW-len-3);
+			const ax=gx*cellW + 2 + Math.floor(WG.randSeed(gx*53.77+gy*97.31+1907)*span);
+			if(y===ay && x>=ax && x<ax+len) return true;
+		}
+	}
+	return false;
 };
 // Diamond odds now belong to the lowest legacy crust: most reachable diamonds
 // should be a bedrock-level expedition, not a routine mid-depth seam. world.js

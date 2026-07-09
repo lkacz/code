@@ -163,6 +163,26 @@ assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source end
 
 {
   reset();
+  setTile(0,10,T.TELEPORTER);
+  setTile(8,10,T.TELEPORTER);
+  for(let dx=-3; dx<=3; dx++){
+    setTile(dx,8,T.UFO_CONCRETE);
+    setTile(dx,12,T.UFO_CONCRETE);
+  }
+  for(let dy=8; dy<=12; dy++){
+    setTile(-3,dy,T.UFO_CONCRETE);
+    setTile(3,dy,T.UFO_CONCRETE);
+  }
+  assert.equal(teleporters._debug.isAlienBunkerTeleporter(0,10,getTile), true, 'sealed UFO-concrete teleporter is recognized as an alien bunker exit point');
+  assert.equal(teleporters._debug.isAlienBunkerTeleporter(8,10,getTile), false, 'outside teleporter is not considered a bunker');
+  const player={x:0.5,y:10.5,w:0.7,h:0.95,vx:3,vy:0,energy:0,maxEnergy:80};
+  tick(0.05,player);
+  assert.ok(player.x>8, 'drained hero can use an emergency outbound teleport from a sealed alien bunker');
+  assert.equal(player.energy,0, 'bunker failsafe does not create hero energy');
+}
+
+{
+  reset();
   setTile(5,5,T.COPPER_WIRE);
   setTile(4,5,T.COPPER_WIRE);
   setTile(6,5,T.TELEPORTER);

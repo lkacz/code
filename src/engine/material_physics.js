@@ -7,6 +7,7 @@ export const BUILD_MATERIAL_PROFILES = Object.freeze({
   [T.MOTHER_LAVA]: Object.freeze({strength:25, support:17, weight:1.18, compression:0.28, lateral:1.08, flex:0.90, down:0.26, warn:0.22, fail:0.905, wind:0.010, rubbleRoll:3}),
   [T.METEORIC_IRON]: Object.freeze({strength:26, support:17, weight:1.45, compression:0.17, lateral:0.93, flex:1.18, down:0.27, warn:0.36, fail:0.975, wind:0.007, rubbleRoll:4}),
   [T.STEEL]: Object.freeze({strength:24, support:18, weight:1.35, compression:0.18, lateral:1.02, flex:1.18, down:0.27, warn:0.34, fail:0.970, wind:0.006, rubbleRoll:5}),
+  [T.TRACK]: Object.freeze({strength:22, support:16, weight:1.42, compression:0.20, lateral:0.98, flex:1.12, down:0.27, warn:0.34, fail:0.960, wind:0.008, rubbleRoll:5}),
   [T.STEEL_DOOR]: Object.freeze({strength:16.8, support:12.8, weight:1.04, compression:0.26, lateral:0.92, flex:1.08, down:0.24, warn:0.34, fail:0.940, wind:0.022, rubbleRoll:4}),
   [T.STEEL_TRAPDOOR]: Object.freeze({strength:15.6, support:11.9, weight:0.98, compression:0.28, lateral:0.88, flex:1.06, down:0.23, warn:0.35, fail:0.935, wind:0.026, rubbleRoll:4}),
   [T.ANTIMATTER_CRYSTAL]: Object.freeze({strength:22, weight:1.05, compression:0.24, lateral:1.18, flex:0.72, down:0.28, warn:0.20, fail:0.860, wind:0.010, rubbleRoll:3}),

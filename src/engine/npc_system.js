@@ -612,6 +612,16 @@ function createQuestNpc(def){
       if(text) lines.push(text);
     }
   }
+  function atomicWinterTalkLine(){
+    try{
+      const aw=MM.atomicWinter;
+      const list=(aw && typeof aw.contextLines==='function') ? aw.contextLines('npc') : [];
+      if(!Array.isArray(list) || !list.length) return '';
+      const seed=id+':'+state.phase+':'+(state.talkIdx|0)+':atomic';
+      const text=String(list[hashStr(seed) % list.length] || '').trim();
+      return text;
+    }catch(e){ return ''; }
+  }
   function jobStatus(){
     const step=currentStep();
     if(!step) return 'unknown';
@@ -838,6 +848,8 @@ function createQuestNpc(def){
       if(state.data.lore) lines.push(tag(state.data.lore));
       if(state.data.moral) lines.push(state.data.moral);
     }
+    const atomicLine=atomicWinterTalkLine();
+    if(atomicLine) lines.push(tag(atomicLine));
     return lines.map(l=>String(l||'').trim()).filter(Boolean);
   }
   // Make the NPC speak: turn to the player and surface the next line in its repertoire.

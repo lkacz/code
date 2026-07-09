@@ -11,6 +11,7 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
 
   const CFG = {
     MAX_SPEED: 7.2,              // tiles/sec, rare gales/squalls can approach this
+    RITUAL_GALE_MULT: 3,         // shaman-scale weather can exceed the natural cap briefly
     HERO_AIR_ACCEL: 1.85,        // horizontal acceleration multiplier while airborne
     HERO_AIRBORNE_BOOST: 1.45,
     HERO_JUMPING_BOOST: 3.60,    // upward jumps catch the wind much more than grounded movement
@@ -39,6 +40,7 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
   let visualAcc = 0;
   let particles = [];
   const squall = {t:0, max:0, amp:0, dir:1};
+  const ritualGale = {t:0, max:0, amp:0, dir:1, ownerId:null};
   let lastEnv = {night:0, sun:0, cloudiness:0, thermal:0, storm:0};
   const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
@@ -161,6 +163,41 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
     squall.dir=d;
     return true;
   }
+  function ritualOwnerMatches(ownerId){
+    if(ownerId==null || ownerId==='') return true;
+    return String(ritualGale.ownerId||'')===String(ownerId);
+  }
+  function forceRitualGale(dir,seconds,ownerId,mult){
+    const d = dir<0 ? -1 : 1;
+    const duration = clamp((typeof seconds === 'number' && isFinite(seconds)) ? seconds : 50, 1, 180);
+    const m = clamp((typeof mult === 'number' && isFinite(mult)) ? mult : CFG.RITUAL_GALE_MULT, 1, 4);
+    ritualGale.t=duration;
+    ritualGale.max=duration;
+    ritualGale.amp=CFG.MAX_SPEED*m;
+    ritualGale.dir=d;
+    ritualGale.ownerId=ownerId==null ? null : String(ownerId).slice(0,64);
+    return true;
+  }
+  function stopRitualGale(ownerId){
+    if(!ritualOwnerMatches(ownerId)) return false;
+    ritualGale.t=0;
+    ritualGale.max=0;
+    ritualGale.amp=0;
+    ritualGale.ownerId=null;
+    return true;
+  }
+  function updateRitualGale(dt){
+    if(!(ritualGale.t>0)){
+      if(ritualGale.amp!==0) ritualGale.amp=0;
+      return;
+    }
+    ritualGale.t=Math.max(0,ritualGale.t-dt);
+    if(ritualGale.t<=0){
+      ritualGale.max=0;
+      ritualGale.amp=0;
+      ritualGale.ownerId=null;
+    }
+  }
   function squallFactor(){
     if(!(squall.t>0) || !(squall.max>0)) return 0;
     const age=clamp(1-squall.t/squall.max,0,1);
@@ -170,6 +207,9 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
   }
   function squallSpeed(){
     return squall.dir*squall.amp*squallFactor();
+  }
+  function ritualGaleSpeed(){
+    return ritualGale.t>0 ? ritualGale.dir*ritualGale.amp : 0;
   }
   function computeTarget(env){
     const seed=((root.MM && root.MM.worldGen && root.MM.worldGen.worldSeed) || 1) % 100000;
@@ -183,7 +223,8 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
   }
   function currentSpeed(){
     const base=override!=null ? override : wind;
-    return clamp(base+squallSpeed(),-CFG.MAX_SPEED,CFG.MAX_SPEED);
+    const cap=ritualGale.t>0 ? CFG.MAX_SPEED*Math.max(1,CFG.RITUAL_GALE_MULT) : CFG.MAX_SPEED;
+    return clamp(base+squallSpeed()+ritualGaleSpeed(),-cap,cap);
   }
   function altitudeMultiplier(y){
     if(typeof y !== 'number' || !isFinite(y)) return 1;
@@ -406,6 +447,7 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
     const env=computeEnvironment(cycleInfo(),cloudMetrics(opts));
     lastEnv=env;
     maybeStartSquall(dt,env);
+    updateRitualGale(dt);
     target=override!=null ? override : computeTarget(env);
     const smooth=override!=null ? 1 : Math.min(1,dt*(0.42+env.storm*0.55+env.thermal*0.30));
     wind += (target-wind)*smooth;
@@ -522,6 +564,7 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
   function reset(){
     simT=0; wind=0; target=0; override=null; cycleOverride=null; cloudOverride=null; weatherProfile=null; visualAcc=0; particles.length=0;
     squall.t=0; squall.max=0; squall.amp=0; squall.dir=1;
+    ritualGale.t=0; ritualGale.max=0; ritualGale.amp=0; ritualGale.dir=1; ritualGale.ownerId=null;
     lastEnv = {night:0, sun:0, cloudiness:0, thermal:0, storm:0};
   }
   function cleanNumber(v,min,max,fallback){
@@ -538,6 +581,13 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
         max:+squall.max.toFixed(3),
         amp:+squall.amp.toFixed(3),
         dir:squall.dir<0 ? -1 : 1
+      },
+      ritualGale:{
+        t:+ritualGale.t.toFixed(3),
+        max:+ritualGale.max.toFixed(3),
+        amp:+ritualGale.amp.toFixed(3),
+        dir:ritualGale.dir<0 ? -1 : 1,
+        ownerId:ritualGale.ownerId||null
       },
       env:{
         night:+lastEnv.night.toFixed(3),
@@ -561,6 +611,15 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
       squall.amp=cleanNumber(s.amp,0,CFG.MAX_SPEED,0);
       squall.dir=s.dir<0 ? -1 : 1;
       if(squall.t<=0 || squall.max<=0){ squall.t=0; squall.max=0; squall.amp=0; }
+    }
+    const rg=data.ritualGale;
+    if(rg && typeof rg === 'object'){
+      ritualGale.t=cleanNumber(rg.t,0,180,0);
+      ritualGale.max=cleanNumber(rg.max,0,180,ritualGale.t);
+      ritualGale.amp=cleanNumber(rg.amp,0,CFG.MAX_SPEED*4,0);
+      ritualGale.dir=rg.dir<0 ? -1 : 1;
+      ritualGale.ownerId=typeof rg.ownerId==='string' ? rg.ownerId.slice(0,64) : null;
+      if(ritualGale.t<=0 || ritualGale.max<=0){ ritualGale.t=0; ritualGale.max=0; ritualGale.amp=0; ritualGale.ownerId=null; }
     }
     const e=data.env;
     if(e && typeof e === 'object'){
@@ -589,16 +648,17 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
       thermal:+lastEnv.thermal.toFixed(3),
       storm:+lastEnv.storm.toFixed(3),
       seasonWindMult:+seasonNumber('windMult',1).toFixed(3),
-      squall:{active:squall.t>0, tLeft:+squall.t.toFixed(2), amp:+squall.amp.toFixed(3), dir:squall.dir<0?-1:1, speed:+squallSpeed().toFixed(3)}
+      squall:{active:squall.t>0, tLeft:+squall.t.toFixed(2), amp:+squall.amp.toFixed(3), dir:squall.dir<0?-1:1, speed:+squallSpeed().toFixed(3)},
+      ritualGale:{active:ritualGale.t>0, tLeft:+ritualGale.t.toFixed(2), amp:+ritualGale.amp.toFixed(3), dir:ritualGale.dir<0?-1:1, ownerId:ritualGale.ownerId||null, speed:+ritualGaleSpeed().toFixed(3)}
     };
   }
 
   const api={
     update, draw, reset, snapshot, restore, metrics, speed:currentSpeed, speedAt, gasDrift,
     exposureAt, applyToHero, setOverride, setCycleOverride, setCloudMetricsOverride,
-    setWeatherProfile, forceSquall,
+    setWeatherProfile, forceSquall, forceRitualGale, stopRitualGale,
     config:CFG,
-    _debug:{particles, squall, computeEnvironment, computeTarget, exposureAt, heroExposureAt, heroWindSample, altitudeMultiplier, squallSpeed, heroStrongWindMultiplier, isWindBlocker, materialDescriptor}
+    _debug:{particles, squall, ritualGale, computeEnvironment, computeTarget, exposureAt, heroExposureAt, heroWindSample, altitudeMultiplier, squallSpeed, ritualGaleSpeed, heroStrongWindMultiplier, isWindBlocker, materialDescriptor}
   };
   root.MM.wind=api;
 })();

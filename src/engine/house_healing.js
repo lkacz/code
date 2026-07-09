@@ -213,7 +213,7 @@ export function updateHouseHealing(state,dt,player,getTile,opts={}){
   }
   const started=healed>0 && !state.wasHealing;
   state.wasHealing=healed>0;
-  return {inside:state.inside, entered:state.inside && !wasInside, started, healed, report, healRateFrac:houseHealRateFrac(state.last), status:state.last};
+  return {inside:state.inside, entered:state.inside && !wasInside, exited:!state.inside && wasInside, started, healed, report, healRateFrac:houseHealRateFrac(state.last), status:state.last};
 }
 
 export const houseHealing = {

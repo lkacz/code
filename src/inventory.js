@@ -219,6 +219,7 @@
     {key:'chimney', label:'Komin',   color:'#6b5548', tile:'CHIMNEY'},
     {key:'respawnTotem', label:'Totem odrodzenia', color:'#e23b4e', tile:'RESPAWN_TOTEM'},
     {key:'steel',   label:'Stal',    color:'#8f9aa6', tile:'STEEL'},
+    {key:'track',   label:'Gasienica', color:'#48515b', tile:'TRACK'},
     {key:'meat',    label:'Mieso',   color:'#bd5145', tile:'MEAT'},
     {key:'rottenMeat', label:'Zepsute mieso', color:'#647136', tile:'ROTTEN_MEAT'},
     {key:'bakedMeat', label:'Pieczone mieso', color:'#9b5a2e', tile:'BAKED_MEAT'},

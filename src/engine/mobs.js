@@ -98,6 +98,10 @@ const mobs = (function(){
   const MOB_ATTACK_TELEGRAPH_MS = 420;
   const MOB_ATTACK_STRIKE_MS = 360;
   const MOB_ATTACK_RECOVER_MS = 620;
+  const MOB_FACING_FLIP_MIN_MS = 150;
+  const MOB_FACING_CONFIRM_MS = 90;
+  const MOB_FACING_FAST_CONFIRM_MS = 45;
+  const MOB_FACING_ATTACK_CONFIRM_MS = 30;
   const SAND_WORM_CALM_MS = 9000;
   const SAND_WORM_BAIT_SCAN_MS = 220;
   const SAND_WORM_BAIT_RADIUS = 11;
@@ -123,8 +127,10 @@ const mobs = (function(){
   const JACKPOT_WHALE_RAM_COOLDOWN_MS = 2600;
   const ATOMIC_BOMB_COCKROACH_INTERVAL_MS = 3800;
   const ATOMIC_BOMB_COCKROACH_LOCAL_CAP = 6;
-  const ATOMIC_BOMB_CRATER_RX = 15;
-  const ATOMIC_BOMB_CRATER_RY = 10;
+  const ATOMIC_BOMB_CRATER_RX = 45;
+  const ATOMIC_BOMB_CRATER_RY = 30;
+  const ATOMIC_BOMB_BLAST_RADIUS = Math.round(ATOMIC_BOMB_CRATER_RX*0.93);
+  const ATOMIC_BOMB_HERO_BLAST_RADIUS = ATOMIC_BOMB_CRATER_RX;
   const SAND_WORM_BAIT_PROFILES = Object.freeze({
     [T.MEAT]: Object.freeze({kind:'raw', duration:14, priority:3}),
     [T.BAKED_MEAT]: Object.freeze({kind:'baked', duration:10, priority:2}),
@@ -153,6 +159,15 @@ const mobs = (function(){
   const ICE_WRAITH_WAKE_RADIUS = 8.5;
   const ICE_WRAITH_BLINK_DIST = 10.5;
   const ICE_WRAITH_BLINK_COOLDOWN_MS = 2600;
+  const WEATHER_SHAMAN_MIN_ABS_X = 1200;
+  const WEATHER_SHAMAN_RITUAL_MIN_MS = 5200;
+  const WEATHER_SHAMAN_RITUAL_MAX_MS = 8200;
+  const WEATHER_SHAMAN_EFFECT_MIN_SEC = 40;
+  const WEATHER_SHAMAN_EFFECT_MAX_SEC = 60;
+  const WEATHER_SHAMAN_FLEE_MIN_MS = 8500;
+  const WEATHER_SHAMAN_FLEE_MAX_MS = 13000;
+  const WEATHER_SHAMAN_RECOVERY_MIN_MS = 12000;
+  const WEATHER_SHAMAN_RECOVERY_MAX_MS = 19000;
   const LAKE_SERPENT_SHOCK_RANGE = 3.35;
   const LAKE_SERPENT_SHOCK_COOLDOWN_MS = 1650;
   const LAKE_SERPENT_CHARGE_RATE = 1.75;
@@ -181,9 +196,11 @@ const mobs = (function(){
   const VULTURE_ATTACK_DECISION_MS = 3400;
   const VULTURE_CAPTURE_HATCHLINGS = 3;
   const VULTURE_CAPTURE_COOLDOWN_MS = 16000;
+  const VULTURE_NEST_REPAIR_MS = 8500;
   const XP_FATIGUE_STEP = 0.01;
   const XP_FATIGUE_RESET_DAYS = 1;
   const XP_FATIGUE_MIN_MULT = 0.1;
+  const ATOMIC_BOMB_XP_DECAY = 0.5;
   const XP_SPECIAL_BONUS_MULT = 1.2;
   const THERMAL_DAMAGE_BONUS_MULT = 1.2;
   const XP_FALLBACK_DAY_SECONDS = 600;
@@ -395,6 +412,144 @@ const mobs = (function(){
     }
     return null;
   }
+  function isWeatherShamanId(id){
+    return id==='ICE_SHAMAN' || id==='FIRE_SHAMAN';
+  }
+  function weatherShamanSideFromId(id){
+    return id==='FIRE_SHAMAN' ? 1 : -1;
+  }
+  function weatherShamanTowardCenterDir(m){
+    if(m && finiteCoord(m.x) && Math.abs(m.x)>1) return m.x<0 ? 1 : -1;
+    return weatherShamanSideFromId(m && m.id) < 0 ? 1 : -1;
+  }
+  function weatherShamanOwnerId(m){
+    if(!m) return 'weather-shaman';
+    if(typeof m._shamanWeatherOwner==='string' && m._shamanWeatherOwner) return m._shamanWeatherOwner;
+    const base='shaman:'+String(m.id||'WEATHER')+':'+Math.round(finiteNum(m.spawnT)?m.spawnT:performance.now())+':'+Math.floor(finiteCoord(m.x)?m.x:0);
+    m._shamanWeatherOwner=base.slice(0,64);
+    return m._shamanWeatherOwner;
+  }
+  function weatherShamanSpawnCell(x,y,getTile,side){
+    if(typeof getTile!=='function') return false;
+    x=Math.floor(x); y=Math.floor(y);
+    if(side<0 && x>-WEATHER_SHAMAN_MIN_ABS_X) return false;
+    if(side>0 && x<WEATHER_SHAMAN_MIN_ABS_X) return false;
+    const biome=biomeAt(x);
+    const floorOk = side<0
+      ? (t)=> t===T.SNOW || t===T.ICE || t===T.GRASS || t===T.STONE || t===T.GRANITE
+      : (t)=> t===T.SAND || t===T.BASALT || t===T.OBSIDIAN || t===T.STONE || t===T.GRANITE || t===T.DIRT || t===T.GRASS;
+    if(!bigAnimalSpawnCell(x,y,getTile,{halfWidth:1,height:3,floor:floorOk})) return false;
+    const below=readMobTile(getTile,x,y+1);
+    if(side<0) return biome===2 || below===T.SNOW || below===T.ICE;
+    return biome===3 || isVolcanoColumn(x) || below===T.BASALT || below===T.OBSIDIAN || below===T.SAND;
+  }
+  function scheduleWeatherShamanRitual(m,now,extraMs){
+    if(!m) return;
+    const base=WEATHER_SHAMAN_RITUAL_MIN_MS + Math.random()*(WEATHER_SHAMAN_RITUAL_MAX_MS-WEATHER_SHAMAN_RITUAL_MIN_MS);
+    m._shamanRitualEndAt=(now||performance.now()) + base + Math.max(0,Number(extraMs)||0);
+  }
+  function stopWeatherShamanEffect(m){
+    if(!m) return false;
+    const owner=weatherShamanOwnerId(m);
+    let stopped=false;
+    try{
+      if(MM.wind && typeof MM.wind.stopRitualGale==='function') stopped=!!MM.wind.stopRitualGale(owner) || stopped;
+    }catch(e){}
+    try{
+      if(MM.clouds && typeof MM.clouds.stopStorm==='function') stopped=!!MM.clouds.stopStorm({source:'weather_shaman', ownerId:owner}) || stopped;
+    }catch(e){}
+    m._shamanWeatherActive=false;
+    m._shamanWeatherUntil=0;
+    return stopped;
+  }
+  function beginWeatherShamanEffect(m,spec,now){
+    if(!m || m._shamanWeatherActive) return false;
+    const duration=WEATHER_SHAMAN_EFFECT_MIN_SEC + Math.random()*(WEATHER_SHAMAN_EFFECT_MAX_SEC-WEATHER_SHAMAN_EFFECT_MIN_SEC);
+    const owner=weatherShamanOwnerId(m);
+    const dir=weatherShamanTowardCenterDir(m);
+    m._shamanWeatherActive=true;
+    m._shamanWeatherUntil=now + duration*1000;
+    m.state='channeling';
+    m.facing=dir;
+    m.shake=Math.max(m.shake||0,0.8);
+    try{
+      if(MM.wind && typeof MM.wind.forceRitualGale==='function') MM.wind.forceRitualGale(dir,duration,owner,3);
+      else if(MM.wind && typeof MM.wind.forceSquall==='function') MM.wind.forceSquall(dir,7.2,duration);
+    }catch(e){}
+    try{
+      if(MM.clouds && typeof MM.clouds.startStorm==='function') MM.clouds.startStorm(duration,1,{source:'weather_shaman', ownerId:owner});
+      if(MM.clouds && typeof MM.clouds.addCloud==='function'){
+        MM.clouds.addCloud(m.x,70,44);
+        MM.clouds.addCloud(m.x+dir*48,68,32);
+      }
+    }catch(e){}
+    try{
+      if(window.msg && (!beginWeatherShamanEffect._lastMsg || now-beginWeatherShamanEffect._lastMsg>5000)){
+        beginWeatherShamanEffect._lastMsg=now;
+        window.msg((spec && spec.id==='FIRE_SHAMAN' ? 'Fire' : 'Ice')+' shaman calls a storm toward the center!');
+      }
+    }catch(e){}
+    try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20),(m.y-1.2)*(MM.TILE||20),spec && spec.id==='FIRE_SHAMAN'?'epic':'rare'); }catch(e){}
+    return true;
+  }
+  function updateWeatherShaman(m,spec,{player,dt,now,speed}){
+    if(!m || !player) return;
+    if(!finiteNum(m._shamanRitualEndAt)) scheduleWeatherShamanRitual(m,now,300);
+    const fleeing=finiteNum(m._shamanFleeUntil) && m._shamanFleeUntil>now;
+    if(m._shamanWeatherActive && now>=m._shamanWeatherUntil){
+      m._shamanWeatherActive=false;
+      m._shamanWeatherUntil=0;
+      m.state='spent';
+      scheduleWeatherShamanRitual(m,now,WEATHER_SHAMAN_RECOVERY_MIN_MS+Math.random()*(WEATHER_SHAMAN_RECOVERY_MAX_MS-WEATHER_SHAMAN_RECOVERY_MIN_MS));
+    }
+    if(fleeing){
+      const dx=player.x-m.x;
+      const dir=dx>=0 ? -1 : 1;
+      m.state='flee';
+      m.facing=dir;
+      m.vx += dir*(speed||spec.speed||2.4)*0.54*dt*30;
+      if(m.onGround && now>(m._nextShamanHopAt||0) && Math.abs(dx)<9){
+        m.vy=(spec.move && spec.move.jumpVel ? spec.move.jumpVel : -4.2)*(m.jumpMul||1)*0.72;
+        m._nextShamanHopAt=now+720+Math.random()*520;
+      }
+      if(!m._shamanWeatherActive) m._shamanRitualEndAt=Math.max(m._shamanRitualEndAt||0,now+1800);
+      return;
+    }
+    if(finiteNum(m._shamanFleeUntil) && m._shamanFleeUntil>0 && m._shamanFleeUntil<=now){
+      m._shamanFleeUntil=0;
+      if(!m._shamanWeatherActive) scheduleWeatherShamanRitual(m,now,1600);
+    }
+    if(!m._shamanWeatherActive && now>=m._shamanRitualEndAt) beginWeatherShamanEffect(m,spec,now);
+    if(m._shamanWeatherActive){
+      m.state='channeling';
+      m.facing=weatherShamanTowardCenterDir(m);
+      m.vx*=0.68;
+      if(m.onGround) m.vy=0;
+      return;
+    }
+    const waiting = (m._shamanRitualEndAt||0)-now;
+    if(waiting>WEATHER_SHAMAN_RITUAL_MAX_MS+WEATHER_SHAMAN_RECOVERY_MIN_MS*0.5){
+      m.state='spent';
+      if(now>m.tNext){
+        m.tNext=now+1200+Math.random()*2200;
+        m.vx=(Math.random()<0.5?-1:1)*(speed||spec.speed||2.4)*0.16;
+      }
+    } else {
+      m.state='praying';
+      m.facing=weatherShamanTowardCenterDir(m);
+      m.vx*=0.52;
+      if(m.onGround) m.vy=0;
+    }
+  }
+  function damageWeatherShaman(m,spec,{now,opts}){
+    if(!m) return;
+    if(opts && !sourceIsHero(opts)) return;
+    m._shamanFleeUntil=now + WEATHER_SHAMAN_FLEE_MIN_MS + Math.random()*(WEATHER_SHAMAN_FLEE_MAX_MS-WEATHER_SHAMAN_FLEE_MIN_MS);
+    m.state='flee';
+    m.shake=Math.max(m.shake||0,0.7);
+    if(!m._shamanWeatherActive) scheduleWeatherShamanRitual(m,now,WEATHER_SHAMAN_FLEE_MIN_MS);
+    try{ noteEntityNumber({kind:'danger', text:'!', x:m.x, y:m.y-1.35, target:'weather_shaman:'+Math.round(m.spawnT||0)}); }catch(e){}
+  }
   function isVolcanoColumn(x){
     try{ return !!(WORLDGEN && typeof WORLDGEN.volcanoAt==='function' && WORLDGEN.volcanoAt(Math.round(x))); }catch(e){ return false; }
   }
@@ -403,10 +558,39 @@ const mobs = (function(){
   }
   function isVultureFloorTile(t){
     return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.OBSIDIAN ||
-      t===T.SNOW || t===T.GRASS || t===T.DIRT || t===T.WOOD;
+      t===T.SNOW || t===T.GRASS || t===T.DIRT;
   }
   function isVultureNestOpenTile(t){
     return t===T.AIR || t===T.TORCH || t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED;
+  }
+  function isVultureTreeTile(t){ return t===T.WOOD || isLeaf(t); }
+  function vultureNestHasSupport(x,y,getTile,allowTreeSupport=true){
+    if(typeof getTile!=='function') return false;
+    const below=readMobTile(getTile,x,y+1);
+    if(isVultureFloorTile(below)) return true;
+    if(!allowTreeSupport) return false;
+    if(isVultureTreeTile(below)) return true;
+    for(let dx=-1; dx<=1; dx++){
+      if(isVultureTreeTile(readMobTile(getTile,x+dx,y+1))) return true;
+    }
+    return false;
+  }
+  function vultureNestOpenAbove(x,y,getTile){
+    return isVultureNestOpenTile(readMobTile(getTile,x,y-1)) &&
+      isVultureNestOpenTile(readMobTile(getTile,x,y-2));
+  }
+  function vultureNestOpenAboveAfterCleanup(x,y,oldY,getTile){
+    for(let yy=y-1; yy>=y-2; yy--){
+      const t=readMobTile(getTile,x,yy);
+      if(isVultureNestOpenTile(t)) continue;
+      if(Number.isFinite(oldY) && yy===oldY && t===T.WOOD && !vultureNestHasSupport(x,oldY,getTile,false)) continue;
+      return false;
+    }
+    return true;
+  }
+  function vultureNestFootprintReady(x,y,getTile,allowTreeSupport=true){
+    if(typeof getTile!=='function') return false;
+    return readMobTile(getTile,x,y)===T.WOOD && vultureNestHasSupport(x,y,getTile,allowTreeSupport) && vultureNestOpenAbove(x,y,getTile);
   }
   function findVultureFloorBelow(x,y,getTile,maxDrop){
     if(typeof getTile!=='function') return null;
@@ -468,30 +652,103 @@ const mobs = (function(){
     if(cur===T.AIR || cur===T.TORCH || isLeaf(cur)){ setTile(x,y,t); return true; }
     return cur===t;
   }
+  function assignVultureNestSpot(m,spot){
+    if(!m || !spot) return null;
+    m.nestX=spot.nestX;
+    m.nestY=spot.nestY;
+    m.homeX=spot.x;
+    m.homeY=spot.y;
+    m.nestTree=!!spot.tree;
+    if(finiteCoord(spot.groundY)) m.nestGroundY=spot.groundY;
+    else if(!spot.tree) m.nestGroundY=spot.nestY+1;
+    m._nestReady=false;
+    return spot;
+  }
+  function clearUnsupportedVultureNestFootprint(x,y,getTile,setTile){
+    if(typeof getTile!=='function' || typeof setTile!=='function' || !Number.isFinite(y)) return 0;
+    x=Math.round(x); y=Math.round(y);
+    if(vultureNestHasSupport(x,y,getTile,false)) return 0;
+    let cleared=0;
+    for(let dx=-1; dx<=1; dx++){
+      if(readMobTile(getTile,x+dx,y)===T.WOOD){ setTile(x+dx,y,T.AIR); cleared++; }
+    }
+    for(let dx=-2; dx<=2; dx++){
+      if(dx!==0 && isLeaf(readMobTile(getTile,x+dx,y-1))){ setTile(x+dx,y-1,T.AIR); cleared++; }
+    }
+    for(const dx of [-1,1]){
+      if(isLeaf(readMobTile(getTile,x+dx,y-2))){ setTile(x+dx,y-2,T.AIR); cleared++; }
+    }
+    return cleared;
+  }
+  function normalizeVultureNestSpot(m,getTile){
+    if(!m || typeof getTile!=='function') return null;
+    if(!finiteCoord(m.nestX) || !finiteCoord(m.nestY)){
+      return assignVultureNestSpot(m,findVultureNestSpot(m.x,m.y,getTile));
+    }
+    let nx=Math.round(m.nestX), ny=Math.round(m.nestY);
+    if(!isVultureColumn(nx)){
+      return assignVultureNestSpot(m,findVultureNestSpot(m.x,m.y,getTile));
+    }
+    const allowTreeSupport=!!m.nestTree;
+    if(vultureNestHasSupport(nx,ny,getTile,allowTreeSupport) && vultureNestOpenAbove(nx,ny,getTile)){
+      return {x:nx+0.5,y:ny-1.05,nestX:nx,nestY:ny,groundY:finiteCoord(m.nestGroundY)?m.nestGroundY:ny+1,tree:!!m.nestTree};
+    }
+    if(!allowTreeSupport && readMobTile(getTile,nx,ny+1)===T.WOOD && isVultureFloorTile(readMobTile(getTile,nx,ny+2)) && vultureNestOpenAboveAfterCleanup(nx,ny+1,ny,getTile)){
+      const oldY=ny;
+      ny=ny+1;
+      m.nestX=nx;
+      m.nestY=ny;
+      m.nestTree=false;
+      m.nestGroundY=ny+1;
+      m.homeX=nx+0.5;
+      m.homeY=ny-1.2;
+      m._nestReady=false;
+      m._vultureCleanupY=oldY;
+      return {x:nx+0.5,y:ny-1.05,nestX:nx,nestY:ny,groundY:ny+1,tree:false};
+    }
+    // Legacy saves could carry a platform one or more cells above the ledge. That
+    // made the tree-fall audit drop the wood, then the vulture rebuilt it again,
+    // eventually producing a tall wooden artifact. Snap ground nests onto support.
+    let floor=findVultureFloorBelow(nx,Math.max(WORLD_TOP,ny),getTile,24);
+    if(!floor) floor=findVultureFloorBelow(nx,Math.max(WORLD_TOP,ny-8),getTile,32);
+    if(floor && vultureNestOpenAboveAfterCleanup(nx,floor.y-1,ny,getTile)){
+      const oldY=ny;
+      ny=floor.y-1;
+      m.nestX=nx;
+      m.nestY=ny;
+      m.nestTree=false;
+      m.nestGroundY=floor.y;
+      m.homeX=nx+0.5;
+      m.homeY=ny-1.2;
+      m._nestReady=false;
+      if(oldY<ny) m._vultureCleanupY=oldY;
+      return {x:nx+0.5,y:ny-1.05,nestX:nx,nestY:ny,groundY:floor.y,tree:false};
+    }
+    return assignVultureNestSpot(m,findVultureNestSpot(m.x,m.y,getTile));
+  }
   function materializeVultureNest(m,getTile,setTile){
     if(!m) return null;
-    if(!finiteCoord(m.nestX) || !finiteCoord(m.nestY)){
-      const spot=findVultureNestSpot(m.x,m.y,getTile);
-      if(!spot) return null;
-      m.nestX=spot.nestX;
-      m.nestY=spot.nestY;
-      m.homeX=spot.x;
-      m.homeY=spot.y;
-      m.nestTree=!!spot.tree;
-      if(finiteCoord(spot.groundY)) m.nestGroundY=spot.groundY;
-    }
+    const normalized=normalizeVultureNestSpot(m,getTile);
+    if(!normalized) return null;
     const nx=Math.round(m.nestX), ny=Math.round(m.nestY);
-    let groundY=null;
-    const floor=findVultureFloorBelow(nx,ny+1,getTile,16);
-    if(floor) groundY=floor.y;
-    else groundY=finiteCoord(m.nestGroundY) ? m.nestGroundY : ny+1;
+    const groundY=finiteCoord(m.nestGroundY) ? m.nestGroundY : (normalized.groundY||ny+1);
+    const ready=vultureNestFootprintReady(nx,ny,getTile,!!m.nestTree);
+    const now=performance.now();
+    if(ready){ m._nestReady=true; return {x:nx+0.5,y:ny-1.05,nestX:nx,nestY:ny,groundY}; }
+    if(m._nestReady && m._nextNestRepairAt && now<m._nextNestRepairAt) return {x:nx+0.5,y:ny-1.05,nestX:nx,nestY:ny,groundY};
     if(typeof setTile==='function' && typeof getTile==='function'){
+      if(Number.isFinite(m._vultureCleanupY)){
+        clearUnsupportedVultureNestFootprint(nx,m._vultureCleanupY,getTile,setTile);
+        m._vultureCleanupY=null;
+      }
+      if(!vultureNestHasSupport(nx,ny,getTile,!!m.nestTree)) return {x:nx+0.5,y:ny-1.05,nestX:nx,nestY:ny,groundY};
       for(let dx=-1; dx<=1; dx++) placeVultureNestTile(nx+dx,ny,T.WOOD,getTile,setTile,true);
       for(let dx=-2; dx<=2; dx++) if(dx!==0) placeVultureNestTile(nx+dx,ny-1,T.LEAF,getTile,setTile,false);
       placeVultureNestTile(nx-1,ny-2,T.LEAF,getTile,setTile,false);
       placeVultureNestTile(nx+1,ny-2,T.LEAF,getTile,setTile,false);
     }
     m._nestReady=true;
+    m._nextNestRepairAt=now+VULTURE_NEST_REPAIR_MS;
     return {x:nx+0.5,y:ny-1.05,nestX:nx,nestY:ny,groundY};
   }
   function spawnVultureHatchlings(m,getTile){
@@ -942,7 +1199,7 @@ const mobs = (function(){
         }
       }
     }
-    try{ blastRadius(m.x,m.y,14,72,{cause:'atomic_blast',source:'atomic_bomb',naturalDeath:false}); }catch(e){}
+    try{ blastRadius(m.x,m.y,ATOMIC_BOMB_BLAST_RADIUS,96,{cause:'atomic_blast',source:'atomic_bomb',naturalDeath:false}); }catch(e){}
     if(gt){
       for(let i=0;i<12;i++) spawnRadiationCockroachAt(cx+(Math.random()*ATOMIC_BOMB_CRATER_RX*1.5-ATOMIC_BOMB_CRATER_RX*0.75),cy-2+Math.random()*5,gt);
     }
@@ -950,12 +1207,12 @@ const mobs = (function(){
       const pl=window.player;
       if(pl && typeof window.damageHero==='function'){
         const d=Math.hypot(pl.x-m.x,pl.y-m.y);
-        if(d<15) window.damageHero(Math.max(18,96*(1-d/16)),{srcX:m.x,srcY:m.y,kb:9,kbY:-6,launch:-7,cause:'atomic_blast',invulMs:1200});
+        if(d<ATOMIC_BOMB_HERO_BLAST_RADIUS) window.damageHero(Math.max(18,132*(1-d/(ATOMIC_BOMB_HERO_BLAST_RADIUS+1))),{srcX:m.x,srcY:m.y,kb:12,kbY:-7,launch:-8,cause:'atomic_blast',invulMs:1400});
       }
     }catch(e){}
     const tile=MM.TILE||20;
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*tile,m.y*tile,'epic'); }catch(e){}
-    try{ if(MM.particles && MM.particles.spawnSmoke) MM.particles.spawnSmoke(m.x*tile,m.y*tile,6,{tileX:cx,tileY:cy,tileSize:tile}); }catch(e){}
+    try{ if(MM.particles && MM.particles.spawnSmoke) MM.particles.spawnSmoke(m.x*tile,m.y*tile,16,{tileX:cx,tileY:cy,tileSize:tile}); }catch(e){}
     try{ if(MM.audio && MM.audio.play) MM.audio.play('explosion'); }catch(e){}
     try{ if(MM.atomicWinter && typeof MM.atomicWinter.trigger==='function') MM.atomicWinter.trigger({x:m.x,y:m.y}); }catch(e){}
     return true;
@@ -1126,7 +1383,7 @@ const mobs = (function(){
     return true;
   }
   function shootGoldDragonBreath(m,target,speed,dmg,getTile,setTile){
-    if(!m || !target || mobProjectiles.length>=MOB_PROJ_CAP) return false;
+    if(!m || !target) return false;
     const shotSpeed=(speed||12.5) * ((m && m.projectileSpeedMult) || 1);
     const sx=m.x+(m.facing>=0?1.38:-1.38);
     const sy=m.y-1.16;
@@ -1141,9 +1398,35 @@ const mobs = (function(){
     const maxSpeed=shotSpeed*1.18;
     const mag=Math.hypot(vx,vy)||1;
     if(mag>maxSpeed){ const s=maxSpeed/mag; vx*=s; vy*=s; }
+    const breathDmg=(dmg||24)*(m.dmgMult||1);
+    try{
+      const streamApi=MM && MM.weapons;
+      if(streamApi && typeof streamApi.spawnExternalStream==='function'){
+        const made=streamApi.spawnExternalStream('flame',sx,sy,aimX-sx,aimY-sy,{
+          range:Math.max(4,Math.min(GOLD_DRAGON_BREATH_RANGE+1,dist+1.35)),
+          dps:Math.max(10,breathDmg*0.82),
+          emitScale:3.2,
+          spread:0.31,
+          muzzle:0.46,
+          speedMult:1.10,
+          vyKick:-0.24,
+          scale:1.36,
+          source:'mob',
+          cause:'gold_dragon_fire',
+          ownerId:'GOLD_DRAGON'
+        });
+        if(made>0){
+          addGoldDragonGas(sx,sy,getTile,setTile,0.42,2);
+          markMobAttack(m,'gold_dragon_fire',{target,power:1.55,strikeMs:460});
+          try{ if(MM.audio && MM.audio.play) MM.audio.play('fire'); }catch(e){}
+          return true;
+        }
+      }
+    }catch(e){}
+    if(mobProjectiles.length>=MOB_PROJ_CAP) return false;
     mobProjectiles.push({
       x:sx, y:sy, vx, vy,
-      dmg:(dmg||24)*(m.dmgMult||1),
+      dmg:breathDmg,
       t:0,
       spin:Math.random()*6.28,
       lead,
@@ -1627,6 +1910,62 @@ const mobs = (function(){
     },
     onDeath(m){
       placeRewardChestNearMob(m, Math.random()<0.30?'rare':'common', 0.24);
+    }
+  });
+
+  registerSpecies({
+    id:'ICE_SHAMAN', displayName:'Ice shaman',
+    max:2, localMax:1, spawnChance:0.024,
+    hp:42, dmg:0, speed:2.35, wanderInterval:[3.2,6.8], xp:72, ground:true, neverAggro:true,
+    sightRange:0, pursueRange:0,
+    move:{jumpVel:-4.4, maxClimb:1.5, avoidWater:true},
+    body:{w:1.05,h:1.48},
+    variant:{shift:3, from:'#9fe8ff', to:'#f0fbff'},
+    meat:false,
+    loot:[{item:'snow', min:3, max:7, chance:1}, {item:'ice', min:2, max:5, chance:0.82}, {item:'diamond', min:1, max:1, chance:0.10}],
+    spawnTest(x,y,getTile){ return weatherShamanSpawnCell(x,y,getTile,-1); },
+    biome:'any',
+    onCreate(m){
+      m.state='praying';
+      m.scale=0.94+Math.random()*0.12;
+      m.speedMul=0.66+Math.random()*0.12;
+      m.jumpMul=0.82+Math.random()*0.10;
+      m.homeX=m.x; m.homeY=m.y;
+      scheduleWeatherShamanRitual(m,performance.now(),Math.random()*2400);
+    },
+    onUpdate:updateWeatherShaman,
+    onDamaged:damageWeatherShaman,
+    onDeath(m){
+      stopWeatherShamanEffect(m);
+      placeRewardChestNearMob(m, Math.random()<0.20?'rare':'common', 0.18);
+    }
+  });
+
+  registerSpecies({
+    id:'FIRE_SHAMAN', displayName:'Fire shaman',
+    max:2, localMax:1, spawnChance:0.024,
+    hp:46, dmg:0, speed:2.45, wanderInterval:[3.0,6.4], xp:78, ground:true, neverAggro:true,
+    sightRange:0, pursueRange:0,
+    move:{jumpVel:-4.2, maxClimb:1.5, avoidWater:true},
+    body:{w:1.08,h:1.50},
+    variant:{shift:3, from:'#ff8f4a', to:'#ffd36a'},
+    meat:false,
+    loot:[{item:'coal', min:2, max:5, chance:0.92}, {item:'basalt', min:2, max:5, chance:0.76}, {item:'obsidian', min:1, max:2, chance:0.34}],
+    spawnTest(x,y,getTile){ return weatherShamanSpawnCell(x,y,getTile,1); },
+    biome:'any',
+    onCreate(m){
+      m.state='praying';
+      m.scale=0.96+Math.random()*0.13;
+      m.speedMul=0.68+Math.random()*0.12;
+      m.jumpMul=0.80+Math.random()*0.10;
+      m.homeX=m.x; m.homeY=m.y;
+      scheduleWeatherShamanRitual(m,performance.now(),Math.random()*2400);
+    },
+    onUpdate:updateWeatherShaman,
+    onDamaged:damageWeatherShaman,
+    onDeath(m){
+      stopWeatherShamanEffect(m);
+      placeRewardChestNearMob(m, Math.random()<0.24?'rare':'common', 0.16);
     }
   });
 
@@ -3484,7 +3823,7 @@ const mobs = (function(){
   registerSpecies({
     id:'ATOMIC_BOMB', displayName:'Atomic bomb',
     max:2, localMax:1, spawnChance:0.035, spawnBatch:1,
-    hp:120, dmg:0, speed:0.02, wanderInterval:[4,8], xp:150, ground:true, organic:false,
+    hp:120, dmg:0, speed:0.02, wanderInterval:[4,8], xp:6000, ground:true, organic:false,
     sightRange:0, pursueRange:0,
     body:{w:1.75,h:1.55},
     move:{jumpVel:0, maxClimb:0, avoidWater:true},
@@ -3662,7 +4001,7 @@ const mobs = (function(){
   function registerSpecies(def){
     if(!def || !def.id) return false; if(SPECIES[def.id]) return false; // already exists
     // Fill defaults
-    def.max = def.max||10; def.hp = def.hp||5; def.dmg= def.dmg||1; def.speed=def.speed||2.5; def.wanderInterval = def.wanderInterval||[2,5];
+    def.max = def.max||10; def.hp = def.hp||5; if(def.dmg==null) def.dmg=1; def.speed=def.speed||2.5; def.wanderInterval = def.wanderInterval||[2,5];
     SPECIES[def.id]=def; return true;
   }
 
@@ -3718,7 +4057,7 @@ const mobs = (function(){
     const now = performance.now();
   const h=mobHostilityAt(x);
   const maxHp=mobMaxHp(spec,x);
-  const m={ id: spec.id, x, y, vx:0, vy:0, hp: maxHp, maxHp, baseHp: spec.hp, hostility:+h.hostility.toFixed(3), hostilitySide:h.side, dmgMult:mobDamageMult(spec,x), state:'idle', tNext: now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000, facing:1, spawnT: now, attackCd:0, hitFlashUntil:0, shake:0, tickMod: (Math.random()<0.5?1:0), sleepUntil:0 };
+  const m={ id: spec.id, x, y, vx:0, vy:0, hp: maxHp, maxHp, baseHp: spec.hp, hostility:+h.hostility.toFixed(3), hostilitySide:h.side, dmgMult:mobDamageMult(spec,x), state:'idle', tNext: now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000, facing:1, _stableFacing:1, _stableFacingChangedAt:now, _pendingFacing:0, _pendingFacingSince:0, spawnT: now, attackCd:0, hitFlashUntil:0, shake:0, tickMod: (Math.random()<0.5?1:0), sleepUntil:0 };
   // Per-entity variability
   m.scale = 0.75 + Math.random()*0.25; // 0.75..1.0 visual & collider scaling
   m.speedMul = (0.75 + Math.random()*0.25) * (h.mobSpeedMult || 1); // regional speed pressure + per-mob variance
@@ -3736,7 +4075,7 @@ const mobs = (function(){
   if(!m.baseColor){
     const BASE = {
       SQUIRREL:'#b07040', DEER:'#9c6a39', THUNDER_BISON:'#8b5f34', RABBIT:'#dddddd', OWL:'#c8a860', CRAB:'#c23a2e',
-      EEL:'#2f8a4a', LAKE_SERPENT:'#45b9a8', JACKPOT_WHALE:'#5d86a0', PIRANHA:'#b72d2d', GOAT:'#c9c4b5', BEAR:'#6b4a30', BRAMBLE_STALKER:'#48672f', WOLF:'#bcbcbc', ICE_WRAITH:'#d5f6ff', JACKPOT_YETI:'#e6f2f6', FISH:'#4eb2f1',
+      EEL:'#2f8a4a', LAKE_SERPENT:'#45b9a8', JACKPOT_WHALE:'#5d86a0', PIRANHA:'#b72d2d', GOAT:'#c9c4b5', BEAR:'#6b4a30', BRAMBLE_STALKER:'#48672f', WOLF:'#bcbcbc', ICE_WRAITH:'#d5f6ff', ICE_SHAMAN:'#bff3ff', FIRE_SHAMAN:'#ff9a4f', JACKPOT_YETI:'#e6f2f6', FISH:'#4eb2f1',
       BIRD:'#f5d16a', VULTURE:'#4e4036', VULTURE_HATCHLING:'#8a6e4b', STRAZNIK:'#8f9aa6', ATOMIC_BOMB:'#646f77', RADIATION_COCKROACH:'#79cf42', ATLANTIS_MEDUZA:'#7bdcff',
       SAND_WORM:'#b38342', GIANT_SCORPION:'#6b3b28', TEMPLE_GUARD:'#6f7d43', BOG_LURKER:'#52643a', STONE_GOLEM:'#626870', GOLD_DRAGON:'#b26d32', GOLD_DWARF_GUARD:'#8f6240',
       WIOSENNY_JELEN:'#bf8a4d', LETNI_ZUBR:'#8d5e32', JESIENNY_LOS:'#9a6737', ZIMOWY_NIEDZWIEDZ:'#e9f3f8'
@@ -3746,7 +4085,71 @@ const mobs = (function(){
   }
     if(typeof spec.onCreate==='function') spec.onCreate(m, spec, getTile);
     applyMobProgressionTraits(m,spec,h);
+    initMobFacingStability(m,now);
     addToGrid(m); speciesCounts[spec.id]=(speciesCounts[spec.id]||0)+1; return m; }
+
+  function normalizeMobFacing(m){
+    return m && m.facing<0 ? -1 : 1;
+  }
+  function mobFacingUrgent(m,now){
+    if(!m) return false;
+    if((m._attackFlashUntil||0)>now || (m._attackTelegraphUntil||0)>now) return true;
+    const state=String(m.state||'');
+    return state==='charge' || state==='slam' || state==='sting' || state==='lunge' ||
+      state==='snare' || state==='ambush' || state==='whiteout' || state==='carry' ||
+      state==='spit' || state==='charging' || state==='breath' || state==='hammer';
+  }
+  function initMobFacingStability(m,now){
+    if(!m) return;
+    const dir=normalizeMobFacing(m);
+    m.facing=dir;
+    m._stableFacing=dir;
+    m._stableFacingChangedAt=Number.isFinite(now)?now:performance.now();
+    m._pendingFacing=0;
+    m._pendingFacingSince=0;
+  }
+  function stabilizeMobFacing(m,spec,now){
+    if(!m) return 1;
+    const desired=normalizeMobFacing(m);
+    if(m.id==='ZLOTY'){
+      m._stableFacing=desired;
+      m._stableFacingChangedAt=now;
+      return desired;
+    }
+    if(m._stableFacing!==1 && m._stableFacing!==-1) initMobFacingStability(m,now);
+    const stable=m._stableFacing<0?-1:1;
+    if(desired===stable){
+      m._pendingFacing=0;
+      m._pendingFacingSince=0;
+      m.facing=stable;
+      return stable;
+    }
+    if(m._pendingFacing!==desired){
+      m._pendingFacing=desired;
+      m._pendingFacingSince=now;
+    }
+    const speed=Math.abs(Number(m.vx)||0);
+    const baseSpeed=Math.max(0.5, Number(spec && spec.speed) || 1);
+    const decisive=speed>Math.max(0.28,baseSpeed*0.18);
+    const urgent=mobFacingUrgent(m,now);
+    const holdMs=urgent ? MOB_FACING_ATTACK_CONFIRM_MS : (decisive ? MOB_FACING_FLIP_MIN_MS*0.72 : MOB_FACING_FLIP_MIN_MS);
+    const confirmMs=urgent ? MOB_FACING_ATTACK_CONFIRM_MS : (decisive ? MOB_FACING_FAST_CONFIRM_MS : MOB_FACING_CONFIRM_MS);
+    const last=Number.isFinite(m._stableFacingChangedAt) ? m._stableFacingChangedAt : 0;
+    const pendingSince=Number.isFinite(m._pendingFacingSince) ? m._pendingFacingSince : now;
+    if(now-last>=holdMs && now-pendingSince>=confirmMs){
+      m._stableFacing=desired;
+      m._stableFacingChangedAt=now;
+      m._pendingFacing=0;
+      m._pendingFacingSince=0;
+    }
+    m.facing=m._stableFacing<0?-1:1;
+    return m.facing;
+  }
+  function mobFacingForDraw(m,now){
+    if(!m) return 1;
+    if(m._stableFacing!==1 && m._stableFacing!==-1) initMobFacingStability(m,now);
+    return m._stableFacing<0?-1:1;
+  }
 
   // --- Aquatic helpers (fish) ---
   function readMobTile(getTile,x,y){
@@ -4496,7 +4899,7 @@ const mobs = (function(){
     if(!opts || typeof opts!=='object') return false;
     if(opts.hero===true) return true;
     const src=String(opts.source || opts.actor || opts.by || '').toLowerCase();
-    return src==='hero' || src==='player';
+    return src==='hero' || src==='player' || src==='hero_mech' || src==='player_mech';
   }
   function combatElementFromOpts(opts){
     if(!opts || typeof opts!=='object') return '';
@@ -4574,6 +4977,7 @@ const mobs = (function(){
     if(!m || m.hp<=0) return false;
     if(isMobPacified(m,now)) return false;
     const spec=SPECIES[m.id];
+    if(spec && spec.neverAggro) return false;
     return !!(spec && (spec.alwaysAggro || isAggro(m.id) || isHeroFocused(m,now) || isTempleGuardAggro(m,now)));
   }
   function mobAllowedByOpts(m,opts){
@@ -5741,6 +6145,50 @@ const mobs = (function(){
     const stepDt = dt / steps;
     for(let s=0; s<steps; s++) integrateFloatingTerrainStep(m,spec,getTile,stepDt);
   }
+  function healingShelterBarrierAt(x,y,getTile){
+    try{
+      const api=MM.healingShelters;
+      if(api && typeof api.isBarrierAt==='function') return !!api.isBarrierAt(Math.floor(x),Math.floor(y),getTile);
+    }catch(e){}
+    return false;
+  }
+  function integrateFloatingShelterBarrierStep(m,spec,getTile,dt){
+    const {halfW,halfH}=bodyHalfExtents(m,spec);
+    if(m.vx) m.x += m.vx*dt;
+    let minX = Math.floor(m.x - halfW), maxX = Math.floor(m.x + halfW);
+    let minY = Math.floor(m.y - halfH), maxY = Math.floor(m.y + halfH);
+    for(let y=minY; y<=maxY; y++){
+      for(let x=minX; x<=maxX; x++){
+        if(healingShelterBarrierAt(x,y,getTile)){
+          if(m.vx>0) m.x = x - halfW - 0.001;
+          else if(m.vx<0) m.x = x + 1 + halfW + 0.001;
+          m.vx = 0;
+          minX = Math.floor(m.x - halfW);
+          maxX = Math.floor(m.x + halfW);
+        }
+      }
+    }
+    if(m.vy) m.y += m.vy*dt;
+    minX = Math.floor(m.x - halfW); maxX = Math.floor(m.x + halfW);
+    minY = Math.floor(m.y - halfH); maxY = Math.floor(m.y + halfH);
+    for(let y=minY; y<=maxY; y++){
+      for(let x=minX; x<=maxX; x++){
+        if(healingShelterBarrierAt(x,y,getTile)){
+          if(m.vy>0) m.y = y - halfH - 0.001;
+          else if(m.vy<0) m.y = y + 1 + halfH + 0.001;
+          m.vy = 0;
+          minY = Math.floor(m.y - halfH);
+          maxY = Math.floor(m.y + halfH);
+        }
+      }
+    }
+  }
+  function integrateFloatingWithShelterBarriers(m,spec,getTile,dt){
+    const maxMove = Math.max(Math.abs(m.vx*dt), Math.abs(m.vy*dt));
+    const steps = Math.max(1, Math.ceil(maxMove/0.35));
+    const stepDt = dt / steps;
+    for(let s=0; s<steps; s++) integrateFloatingShelterBarrierStep(m,spec,getTile,stepDt);
+  }
   function windSpeedAt(x,y,getTile){
     try{
       const W=MM.wind;
@@ -5795,7 +6243,13 @@ const mobs = (function(){
     laserTraceCalls=0; laserTileChecks=0;
     sentinelShotsThisFrame=0; sentinelDeferredThisFrame=0;
     // Despawn far / off-screen old passive mobs (not aggro)
-    for(let i=mobs.length-1;i>=0;i--){ const m=mobs[i]; if(!validMobState(m) || m.hp<=0){ removeFromGrid(m); mobs.splice(i,1); continue; } const dist = Math.abs(m.x-player.x); if(dist>220 && !isAggro(m.id)) { removeFromGrid(m); mobs.splice(i,1); continue; } }
+    for(let i=mobs.length-1;i>=0;i--){
+      const m=mobs[i];
+      if(!validMobState(m) || m.hp<=0){ removeFromGrid(m); mobs.splice(i,1); continue; }
+      const dist = Math.abs(m.x-player.x);
+      const keepWeatherShaman = isWeatherShamanId(m.id) && !!m._shamanWeatherActive;
+      if(dist>220 && !keepWeatherShaman && !isAggro(m.id)) { removeFromGrid(m); mobs.splice(i,1); continue; }
+    }
     tryPiranhaAmbush(player,getTile,now);
     tryGoldGuardianSpawn(player,getTile,now);
     // Spawn attempt occasionally
@@ -5990,6 +6444,8 @@ const mobs = (function(){
         if(m.onGround && !wasGround){ /* landing hook placeholder */ }
       } else if(spec.collideTerrain){
         integrateFloatingWithTerrain(m,spec,getTile,dt);
+      } else if(spec.flying){
+        integrateFloatingWithShelterBarriers(m,spec,getTile,dt);
       } else {
         // Non-ground ambient movement for pass-through creatures (fish, birds, fireflies).
         m.x += m.vx*dt; m.y += m.vy*dt;
@@ -6013,6 +6469,7 @@ const mobs = (function(){
       }
       // Status effects: DoT, cures and movement side-effects, table-driven
       tickStatuses(m,getTile,dt);
+      stabilizeMobFacing(m,spec,now);
       // Contact damage + bounce (touch) independent of attack cooldown
   const piranhaTouchTarget = m.id==='PIRANHA' ? piranhaPreyTarget(m,player,getTile,1.55) : null;
   const touchCompanion = (m.id!=='PIRANHA' && aggressive) ? nearestCompanionTarget(m.x,m.y,1.15) : null;
@@ -6388,7 +6845,7 @@ const mobs = (function(){
       const flashing= now < m.hitFlashUntil;
   let topY=screenY; // track highest pixel for HP bar positioning after scaling
   function hpTop(y){ const yy = screenY + (y - screenY) * (m.scale||1); if(yy<topY) topY=yy; }
-      const faceDir = m.facing>0?1:-1;
+      const faceDir = mobFacingForDraw(m,now);
       // Small per-entity phase for anim variety
       const phase = (now*0.005 + m.spawnT*0.37) % (Math.PI*2);
       const phase2 = (now*0.003 + m.spawnT*0.19) % (Math.PI*2);
@@ -7609,6 +8066,82 @@ const mobs = (function(){
           ctx.fillRect(screenX-2,screenY-14,4,4);
           hpTop(screenY-42);
           break; }
+        case 'ICE_SHAMAN':
+        case 'FIRE_SHAMAN': {
+          const fire=m.id==='FIRE_SHAMAN';
+          const body=flashing ? '#ffffff' : (m.baseColor || (fire?'#ff9a4f':'#bff3ff'));
+          const dark=fire ? '#552414' : '#24576a';
+          const glow=fire ? '#ffcf69' : '#dffaff';
+          const active=m.state==='channeling' || !!m._shamanWeatherActive;
+          const praying=m.state==='praying' || active;
+          const fleeing=m.state==='flee';
+          const pulse=Math.sin(phase*1.8)*0.5+0.5;
+          ctx.save();
+          if(praying){
+            ctx.globalCompositeOperation='lighter';
+            ctx.fillStyle=fire ? 'rgba(255,104,28,'+(0.12+0.16*pulse).toFixed(3)+')' : 'rgba(130,230,255,'+(0.12+0.16*pulse).toFixed(3)+')';
+            ctx.beginPath();
+            ctx.ellipse(screenX,screenY-18,active?24:18,active?30:22,0,0,Math.PI*2);
+            ctx.fill();
+            ctx.globalCompositeOperation='source-over';
+          }
+          box(screenX-8,screenY-22,16,23,body,dark);
+          shade(screenX-8,screenY-5,16,6,'#000',0.15);
+          ctx.fillStyle=dark;
+          ctx.fillRect(screenX-6,screenY+1,5,8);
+          ctx.fillRect(screenX+1,screenY+1,5,8);
+          ctx.fillStyle=body;
+          ctx.fillRect(screenX-7,screenY-31,14,11);
+          hpTop(screenY-34);
+          ctx.fillStyle=glow;
+          ctx.fillRect(screenX+(faceDir>0?2:-4),screenY-27,2,2);
+          ctx.fillRect(screenX+(faceDir>0?-3:3),screenY-27,2,2);
+          ctx.fillStyle=fire ? '#2b1008' : '#12313d';
+          ctx.fillRect(screenX-3,screenY-22,6,3);
+          const armLift=praying ? -16-Math.sin(phase*2)*2 : (fleeing ? -2+Math.sin(phase*4)*2 : 1);
+          const armSpread=praying ? 13 : 10;
+          ctx.strokeStyle=fire ? '#7a3216' : '#2f7184';
+          ctx.lineWidth=3;
+          ctx.lineCap='round';
+          ctx.beginPath();
+          ctx.moveTo(screenX-7,screenY-17);
+          ctx.lineTo(screenX-armSpread,screenY-15+armLift);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(screenX+7,screenY-17);
+          ctx.lineTo(screenX+armSpread,screenY-15+armLift);
+          ctx.stroke();
+          ctx.lineCap='butt';
+          ctx.fillStyle=glow;
+          ctx.fillRect(screenX-armSpread-2,screenY-16+armLift,4,4);
+          ctx.fillRect(screenX+armSpread-2,screenY-16+armLift,4,4);
+          const staffX=screenX-faceDir*12;
+          ctx.strokeStyle=fire ? '#3a1a10' : '#24414b';
+          ctx.lineWidth=2;
+          ctx.beginPath();
+          ctx.moveTo(staffX,screenY-29);
+          ctx.lineTo(staffX,screenY+5);
+          ctx.stroke();
+          ctx.fillStyle=glow;
+          ctx.fillRect(staffX-3,screenY-33,6,6);
+          if(active){
+            ctx.strokeStyle=fire ? 'rgba(255,218,105,0.82)' : 'rgba(224,252,255,0.86)';
+            ctx.lineWidth=1.4;
+            for(let i=0;i<4;i++){
+              const x=screenX-18+i*12+Math.sin(phase+i)*2;
+              ctx.beginPath();
+              ctx.moveTo(x,screenY-42-i%2*3);
+              ctx.lineTo(x+weatherShamanTowardCenterDir(m)*8,screenY-53-i%2*4);
+              ctx.stroke();
+            }
+          }
+          if(fleeing){
+            ctx.fillStyle='rgba(255,255,255,0.36)';
+            ctx.fillRect(screenX-faceDir*13,screenY-8,10,2);
+            ctx.fillRect(screenX-faceDir*18,screenY-3,12,2);
+          }
+          ctx.restore();
+          break; }
         default: {
           // fallback: small box
           box(screenX-4, screenY-4,8,8, flashing? '#ffffff':'#888', '#444');
@@ -7911,6 +8444,58 @@ const mobs = (function(){
     }
     return {hits,aquatic,blockers,drag};
   }
+  function collideMech(mech, mechBounds, dt, opts){
+    if(!mech || !finiteCoord(mech.x) || !finiteCoord(mech.y) || !Array.isArray(mech.cells)) return {hits:0,damaged:0,blockers:0};
+    const frameDt=Math.max(0,Math.min(0.1,Number(dt)||0));
+    const hull=mechBounds || {left:mech.x,right:mech.x+1,top:mech.y,bottom:mech.y+1};
+    const vx=finiteNum(mech.vx)?mech.vx:0;
+    const vy=finiteNum(mech.vy)?mech.vy:0;
+    const speed=Math.hypot(vx,vy);
+    const now=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+    const baseDamage=Math.max(2,Number(opts && opts.damage)||12);
+    let hits=0, damaged=0, blockers=0;
+    for(const mob of mobs){
+      const spec=SPECIES[mob.id];
+      if(!spec || !validMobState(mob) || mob.hp<=0) continue;
+      const mr=mobRect(mob,spec);
+      if(!overlapRect(hull,mr).hit) continue;
+      let best=null;
+      for(const c of mech.cells){
+        if(!Number.isFinite(c.dx) || !Number.isFinite(c.dy)) continue;
+        const cr={left:mech.x+c.dx,right:mech.x+c.dx+1,top:mech.y+c.dy,bottom:mech.y+c.dy+1};
+        const ov=overlapRect(cr,mr);
+        if(!ov.hit) continue;
+        if(!best || ov.x*ov.y>best.x*best.y) best={x:ov.x,y:ov.y,cell:c};
+      }
+      if(!best) continue;
+      hits++;
+      blockers++;
+      const cellCx=mech.x+best.cell.dx+0.5;
+      const cellCy=mech.y+best.cell.dy+0.5;
+      const horizontal=Math.abs(vx)>0.08 && best.x<=best.y*2.8;
+      if(horizontal || best.x<=best.y){
+        let dir=mob.x<cellCx ? -1 : 1;
+        if(Math.abs(mob.x-cellCx)<0.01) dir=vx<0 ? -1 : 1;
+        mob.x+=dir*(best.x+0.055);
+        mob.vx=clampMobVelocity((mob.vx||0)+dir*Math.max(1.4,Math.abs(vx)*1.35+1.1),14);
+      }else{
+        const dir=mob.y<cellCy ? -1 : 1;
+        mob.y+=dir*(best.y+0.045);
+        mob.vy=clampMobVelocity((mob.vy||0)+dir*Math.max(0.9,Math.abs(vy)*0.9+Math.abs(vx)*0.25),12);
+      }
+      if(now>(mob._mechHitUntil||0)){
+        const crush=baseDamage*(0.45+Math.min(1.4,speed*0.28));
+        damageMob(mob,crush,{source:(opts && opts.source)||'mech',cause:'mech_collision',srcX:cellCx,srcY:cellCy});
+        setAggro(mob.id);
+        mob._mechHitUntil=now+520;
+        damaged++;
+      }
+      mob.shake=Math.max(mob.shake||0,0.35+frameDt*1.8);
+      mob.facing=(mob.vx||0)>=0?1:-1;
+      updateGridCell(mob);
+    }
+    return {hits,damaged,blockers};
+  }
 
   // --- Status effects (data-driven). Each entry declares cadence, gating, cures
   // and movement side-effects; a new effect ("freeze", "stun") is one table row
@@ -8165,6 +8750,9 @@ const mobs = (function(){
     m.hitFlashUntil = performance.now()+120;
     m.shake = 0.6;
     noteMobCombatHit(m,dealt,opts,willDie,beforeHp,thermalBonus);
+    if(typeof spec.onDamaged==='function'){
+      try{ spec.onDamaged(m,spec,{amount:dealt,beforeHp,opts,now:performance.now(),willDie}); }catch(e){}
+    }
     if(m.hp<=0){ m.hp=0; m.shake=1; spawnMobDeathFx(m,opts); onMobDeath(m); }
   }
 
@@ -8179,7 +8767,9 @@ const mobs = (function(){
     const id=String(specId||'');
     let entry=cleanXpFatigueEntry(xpFatigue[id]) || {kills:0,lastDay:day};
     if(day-entry.lastDay>=XP_FATIGUE_RESET_DAYS) entry={kills:0,lastDay:day};
-    const mult=Math.max(XP_FATIGUE_MIN_MULT, 1-entry.kills*XP_FATIGUE_STEP);
+    const mult=id==='ATOMIC_BOMB'
+      ? Math.pow(ATOMIC_BOMB_XP_DECAY,Math.min(30,entry.kills))
+      : Math.max(XP_FATIGUE_MIN_MULT, 1-entry.kills*XP_FATIGUE_STEP);
     return {entry,mult};
   }
   function noteXpAwardEvent(detail){
@@ -8196,7 +8786,7 @@ const mobs = (function(){
     if(!player || typeof player.xp!=='number' || base<=0) return {amount:0,base,fatigueMult:1,special:false};
     const day=currentGameDayFloat();
     const fatigue=xpFatigueMultiplier(m.id,day);
-    const special=!!m._lastHeroHitSpecial;
+    const special=!!m._lastHeroHitSpecial && m.id!=='ATOMIC_BOMB';
     const specialMult=special ? XP_SPECIAL_BONUS_MULT : 1;
     const amount=Math.max(1,Math.round(base*fatigue.mult*specialMult));
     player.xp += amount;
@@ -8341,10 +8931,20 @@ const mobs = (function(){
     if(m.id==='VULTURE' || m.id==='VULTURE_HATCHLING'){
       if(finiteNum(m.nestX)) out.nestX=+m.nestX.toFixed(4);
       if(finiteNum(m.nestY)) out.nestY=+m.nestY.toFixed(4);
+      if(finiteNum(m.nestGroundY)) out.nestGroundY=+m.nestGroundY.toFixed(4);
+      if(m.id==='VULTURE' && m.nestTree) out.nestTree=1;
       if(m.id==='VULTURE' && typeof m._vultureCapture==='boolean') out.vultureCapture=m._vultureCapture?1:0;
     }
     if(m.id==='SAND_WORM' && finiteNum(m._sandWormWakeRadius)){
       out.sandWormWakeRadius=+clampFinite(m._sandWormWakeRadius,3,SAND_WORM_WAKE_MIN_RADIUS,SAND_WORM_WAKE_MAX_RADIUS).toFixed(3);
+    }
+    if(isWeatherShamanId(m.id)){
+      const nowP=performance.now();
+      if(finiteNum(m._shamanRitualEndAt)) out.shamanRitualMs=Math.max(0,Math.round(m._shamanRitualEndAt-nowP));
+      if(finiteNum(m._shamanFleeUntil) && m._shamanFleeUntil>nowP) out.shamanFleeMs=Math.max(0,Math.round(m._shamanFleeUntil-nowP));
+      if(m._shamanWeatherActive && finiteNum(m._shamanWeatherUntil)) out.shamanWeatherMs=Math.max(0,Math.round(m._shamanWeatherUntil-nowP));
+      if(typeof m._shamanWeatherOwner==='string') out.shamanWeatherOwner=m._shamanWeatherOwner.slice(0,64);
+      if(m._shamanWeatherActive) out.shamanWeatherActive=1;
     }
     return out;
   }
@@ -8405,6 +9005,7 @@ const mobs = (function(){
         }
         m.state=typeof r.state==='string'?r.state:'idle';
         m.facing=r.facing<0?-1:1;
+        initMobFacingStability(m,performance.now());
         m.spawnT=clampFinite(r.spawnT,performance.now(),0,Number.MAX_SAFE_INTEGER);
         m.attackCd=clampFinite(r.attackCd,0,0,60);
         if(finiteNum(r.scale)) m.scale=clampFinite(r.scale,1,0.35,3);
@@ -8447,6 +9048,8 @@ const mobs = (function(){
         if(r.id==='VULTURE' || r.id==='VULTURE_HATCHLING'){
           if(finiteNum(r.nestX)) m.nestX=clampFinite(r.nestX,m.x,-10000000,10000000);
           if(finiteNum(r.nestY)) m.nestY=clampFinite(r.nestY,m.y,WORLD_TOP,WORLD_BOTTOM);
+          if(finiteNum(r.nestGroundY)) m.nestGroundY=clampFinite(r.nestGroundY,m.y,WORLD_TOP,WORLD_BOTTOM);
+          if(r.id==='VULTURE') m.nestTree=!!r.nestTree;
           if(finiteNum(m.nestX) && finiteNum(m.nestY)){
             m.homeX=finiteNum(m.homeX)?m.homeX:m.nestX+0.5;
             m.homeY=finiteNum(m.homeY)?m.homeY:m.nestY-1.2;
@@ -8455,6 +9058,17 @@ const mobs = (function(){
         }
         if(r.id==='SAND_WORM' && finiteNum(r.sandWormWakeRadius)){
           m._sandWormWakeRadius=clampFinite(r.sandWormWakeRadius,3,SAND_WORM_WAKE_MIN_RADIUS,SAND_WORM_WAKE_MAX_RADIUS);
+        }
+        if(isWeatherShamanId(r.id)){
+          const nowP=performance.now();
+          if(finiteNum(r.shamanRitualMs)) m._shamanRitualEndAt=nowP+clampFinite(r.shamanRitualMs,0,0,120000);
+          if(finiteNum(r.shamanFleeMs) && r.shamanFleeMs>0) m._shamanFleeUntil=nowP+clampFinite(r.shamanFleeMs,0,0,60000);
+          if(finiteNum(r.shamanWeatherMs) && r.shamanWeatherMs>0){
+            m._shamanWeatherActive=!!r.shamanWeatherActive;
+            m._shamanWeatherUntil=nowP+clampFinite(r.shamanWeatherMs,0,0,90000);
+          }
+          if(typeof r.shamanWeatherOwner==='string') m._shamanWeatherOwner=r.shamanWeatherOwner.slice(0,64);
+          if(!finiteNum(m._shamanRitualEndAt)) scheduleWeatherShamanRitual(m,nowP,800);
         }
         if(spec.aquatic){ if(finiteNum(r.waterTopY)) m.waterTopY=r.waterTopY; if(finiteNum(r.desiredDepth)) m.desiredDepth=r.desiredDepth; m.nextWaterScan = performance.now() + 3000; m.strandedTime=0; }
         mobs.push(m);
@@ -8474,7 +9088,7 @@ const mobs = (function(){
   function clearAll(){
     try{
       // Remove all live mobs and detach from spatial grid
-      for(const m of mobs){ removeFromGrid(m); }
+      for(const m of mobs){ if(isWeatherShamanId(m.id)) stopWeatherShamanEffect(m); removeFromGrid(m); }
       mobs.length = 0;
       // Reset species counts
       for(const k in speciesCounts){ delete speciesCounts[k]; }
@@ -8587,7 +9201,7 @@ const mobs = (function(){
         lasers:mobLasers.map(l=>({x1:l.x1,y1:l.y1,x2:l.x2,y2:l.y2,dmg:l.dmg||0,hit:!!l.hit}))
       };
     }
-  const api = { update, draw, attackAt, damageAt, collideBoat, igniteAt, igniteRadius, poisonAt, poisonRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat };
+  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat };
   MM.mobs = api;
   try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
   return api;

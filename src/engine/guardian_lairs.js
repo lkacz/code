@@ -572,6 +572,17 @@ const guardianLairs = (function(){
     L = L || layoutFor(kind);
     return Math.abs(player.x-L.ax)<=CFG.LEASH_RADIUS && Math.abs((player.y||L.floorY)-L.floorY)<=CFG.LEASH_Y;
   }
+  function playerInsideGuardianArena(kind,player,L){
+    if(!player || !Number.isFinite(player.x) || !Number.isFinite(player.y)) return false;
+    L = L || layoutFor(kind);
+    if(!L) return false;
+    const hw=Math.max(0.35, finite(player.w,0.7)*0.5);
+    const top=player.y-finite(player.h,0.95);
+    const bottom=player.y;
+    const padX=4, padTop=8, padBottom=6;
+    return player.x+hw>=L.minX-padX && player.x-hw<=L.maxX+padX
+      && bottom>=L.minY-padTop && top<=L.maxY+padBottom;
+  }
   function sleepGuardian(kind){
     if(!SPEC[kind]) return false;
     const had=state.awakened[kind] || activeKind(kind) || hasHazards(kind);
@@ -1738,7 +1749,7 @@ const guardianLairs = (function(){
         const L=layoutFor(kind);
         const sideDistance=player.x*spec.dir;
         if((state.awakened[kind] || activeBoss(kind)) && !inGuardianNeighbourhood(kind,player,L)) sleepGuardian(kind);
-        if(!isDefeated(kind) && Math.abs(player.x-L.ax)<=CFG.AWAKEN_RADIUS && Math.abs((player.y||L.floorY)-L.floorY)<52) awaken(kind);
+        if(!isDefeated(kind) && playerInsideGuardianArena(kind,player,L)) awaken(kind);
         if(!isDefeated(kind) && sideDistance>=CFG.DISTANCE && !activeKind(kind)){
           const depth=clamp((sideDistance-CFG.DISTANCE)/9000,0,1);
           state.ambientCd[kind]-=dt*(0.55+depth*1.8);

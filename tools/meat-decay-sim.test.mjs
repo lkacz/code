@@ -9,7 +9,9 @@ globalThis.MM = {};
 
 const { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, WORLD_SECTION_H } = await import('../src/constants.js');
 let gasUnits = 0;
+let toxicPollutions = [];
 MM.gases = { add(kind,x,y,opts){ gasUnits += opts && opts.cells ? opts.cells : 1; return opts && opts.cells ? opts.cells : 1; } };
+MM.water = { polluteAt(x,y,getTile,setTile,opts){ toxicPollutions.push({x,y,source:opts && opts.source,radius:opts && opts.radius}); return true; } };
 
 const { meat } = await import('../src/engine/meat.js');
 const { fire } = await import('../src/engine/fire.js');
@@ -89,6 +91,7 @@ function setTile(x,y,t){
 function clear(){
   tiles = new Map();
   gasUnits = 0;
+  toxicPollutions = [];
   meat.reset();
 }
 function advance(sec,player){
@@ -138,10 +141,12 @@ assert.equal(getTile(20,11),T.MEAT,'meat that lands on snow still does not rot')
 
 clear();
 setTile(4,9,T.GRASS);
+setTile(5,8,T.WATER);
 setTile(4,8,T.ROTTEN_MEAT);
 meat.restore({v:1,list:[{x:4,y:8,age:60,gasT:0.01}]},getTile);
 meat.update(0.1,{x:4,y:8},getTile,setTile);
 assert.equal(gasUnits,1,'rotten meat emits exactly one green gas unit');
+assert.deepEqual(toxicPollutions[0], {x:5,y:8,source:'rotten_meat',radius:1}, 'rotten meat touching water marks that water as toxic');
 advance(9.9,{x:4,y:8});
 assert.equal(gasUnits,1,'rotten meat waits ten seconds between gas units');
 advance(0.1,{x:4,y:8});

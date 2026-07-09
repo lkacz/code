@@ -100,10 +100,15 @@ globalThis.MM.clouds = {
   strike(){ weather.strikes++; return {x:0,y:0}; },
   metrics(){ return {clouds:weather.clouds, storm:{active:weather.storms>0,intensity:weather.lastStorm?weather.lastStorm.intensity:0,tLeft:weather.lastStorm?weather.lastStorm.duration:0}}; }
 };
-globalThis.player = {x:fire2.ax,y:fire2.floorY-4,hp:500,maxHp:500,vx:0,vy:0};
+globalThis.player = {x:fire2.minX-8,y:fire2.floorY-4,hp:500,maxHp:500,vx:0,vy:0,w:0.7,h:0.95};
 guardianLairs.reset();
 guardianLairs.update(0.05, globalThis.player, world.getTile, world.setTile);
 let status = guardianLairs.status();
+assert.equal(status.entities.filter(e=>e.kind==='fire' && e.boss).length, 0, 'standing near but outside the fire arena does not awaken the guardian');
+globalThis.player.x = fire2.ax;
+globalThis.player.y = fire2.floorY-4;
+guardianLairs.update(0.05, globalThis.player, world.getTile, world.setTile);
+status = guardianLairs.status();
 assert.equal(status.entities.filter(e=>e.kind==='fire' && e.boss).length, 1, 'entering fire lair awakens one boss');
 assert.equal(status.entities.filter(e=>e.kind==='fire' && !e.boss).length, 2, 'entering fire lair guarantees both sidekicks');
 assert.ok(weather.storms >= 1, 'guardian fight start forces cloudy storm weather');
@@ -272,6 +277,7 @@ assert.match(guardianSrc, /isSolidCollisionTile as isSolid/, 'guardian engine us
 assert.match(guardianSrc, /function moveEntityPhysical/, 'guardian entities use collision-aware movement');
 assert.match(guardianSrc, /function entityCollidesTerrainAt/, 'guardian entities test body circles against terrain');
 assert.match(guardianSrc, /function clipLineToSolid/, 'guardian beam attacks clip against terrain instead of drawing through blocks');
+assert.match(guardianSrc, /function playerInsideGuardianArena\(kind,player,L\)/, 'guardian awakening is tied to entering the generated arena bounds');
 assert.match(guardianSrc, /function guardianWeaknessMultiplier/, 'guardian fights resolve elemental weapon weaknesses inside the guardian engine');
 assert.match(guardianSrc, /function spawnGuardianGhost/, 'guardian death spawns a released story ghost');
 assert.match(guardianSrc, /function enableUndergroundGate/, 'both guardian hearts enable the underground gate');
