@@ -1571,11 +1571,11 @@ MM.ui = (function(){
     function refreshMetrics(){
       const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
       if(!m){ metrics.textContent='brak metryk mecha'; return; }
-      let text='mechy '+(m.count||0)+' | piloci '+(m.pilots||0)+' | puste '+(m.abandoned||0)+' | jazda '+(m.ridden?'tak':'nie')+' | pociski '+(m.projectiles||0);
+      let text='mechy '+(m.count||0)+' | piloci '+(m.pilots||0)+' | puste '+(m.abandoned||0)+' | jazda '+(m.ridden?'tak':'nie')+' | wieze '+(m.mountedTurrets||0);
       const f=m.focus;
       if(f){
         text+=' | bliski '+(f.kind||'?')+' hp '+fmt(f.hp)+'/'+fmt(f.maxHp)+' pilot '+(f.pilotAlive?'zyje':'brak')+' '+fmt(f.pilot)+'/'+fmt(f.pilotMax);
-        text+=' E '+fmt(f.energy)+'/'+fmt(f.maxEnergy)+' F '+fmt(f.fuel)+'/'+fmt(f.maxFuel)+' blok '+fmt(f.blocked)+' skoki '+fmt(f.jumps);
+        text+=' E '+fmt(f.energy)+'/'+fmt(f.maxEnergy)+' F '+fmt(f.fuel)+'/'+fmt(f.maxFuel)+' obwod '+(f.trackCircuit?'tak':'brak')+' blok '+fmt(f.blocked)+' skoki '+fmt(f.jumps);
       }
       metrics.textContent=text;
     }

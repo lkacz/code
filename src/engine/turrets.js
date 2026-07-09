@@ -155,6 +155,19 @@ const turrets = (function(){
   function targetEntity(target){
     return target && (target.raw || target.mob || target.boss || null);
   }
+  function normalizeExternalTarget(target){
+    if(!target) return null;
+    if(target.kind==='hero' || target.hero){
+      const hero=target.hero || target.raw || target;
+      const x=Number.isFinite(Number(target.x)) ? Number(target.x) : Number(hero && hero.x);
+      const y=Number.isFinite(Number(target.y)) ? Number(target.y) : Number(hero && hero.y);
+      if(!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      const hp=Number.isFinite(Number(target.hp)) ? Number(target.hp) : (Number.isFinite(Number(hero && hero.hp)) ? Number(hero.hp) : 1);
+      if(!(hp>0)) return null;
+      return wrapTarget('hero',hero,x,y,hp,{hero,tx:Math.floor(x),ty:Math.floor(y),source:target.source||'mounted_turret'});
+    }
+    return target;
+  }
   function targetDistance2(m,target){
     const c=targetCoords(target);
     if(!c) return Infinity;
@@ -356,6 +369,16 @@ const turrets = (function(){
       target.x=x; target.y=y; target.tx=Math.floor(x); target.ty=Math.floor(y); target.hp=craft.hp; target.ufo=craft; target.raw=craft;
       return target;
     }
+    if(target.kind==='hero'){
+      const hero=target.hero || target.raw || (typeof window!=='undefined' ? window.player : null);
+      if(!hero) return null;
+      const hp=Number.isFinite(Number(hero.hp)) ? Number(hero.hp) : target.hp;
+      if(!(hp>0)) return null;
+      const x=Number(hero.x), y=Number.isFinite(Number(target.y)) ? Number(target.y) : Number(hero.y);
+      if(!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      target.x=x; target.y=y; target.tx=Math.floor(x); target.ty=Math.floor(y); target.hp=hp; target.hero=hero; target.raw=hero;
+      return target;
+    }
     return target;
   }
   function targetStillValid(m,target,getTile){
@@ -380,6 +403,27 @@ const turrets = (function(){
     try{ if(MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
     try{ if(MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
     return hit;
+  }
+  function damageTargetAt(target,tx,ty,dmg,sx,sy,kind){
+    if(target && target.kind==='hero'){
+      const element=kind==='fire' ? 'fire' : (kind==='water' ? 'water' : 'electric');
+      const cause=kind==='fire' ? 'alien_mech_fire_turret' : (kind==='water' ? 'alien_mech_water_turret' : 'alien_mech_turret');
+      let hit=false;
+      try{
+        if(typeof window.damageHero === 'function'){
+          hit = window.damageHero(dmg,{cause,srcX:sx,srcY:sy,kb:kind==='water'?1.4:3.4,kbY:kind==='fire'?-1.6:-2.1,element,source:'turret'}) !== false;
+        }
+      }catch(e){}
+      if(!hit){
+        const hero=target.hero || target.raw;
+        if(hero && typeof hero.hp === 'number'){
+          hero.hp=Math.max(0,hero.hp-Math.max(1,Math.round(Number(dmg)||1)));
+          hit=true;
+        }
+      }
+      return hit;
+    }
+    return damageAt(tx,ty,dmg);
   }
 
   function pushShot(fx){
@@ -468,7 +512,7 @@ const turrets = (function(){
     const tx=coords.fire ? target.tx : coords.tx;
     const ty=coords.fire ? target.ty : coords.ty;
     const specialHit=applySpecial(m.kind,target,tx,ty,sx,sy,dx,dy);
-    const hit=coords.fire ? specialHit : damageAt(tx,ty,cfg.damage);
+    const hit=coords.fire ? specialHit : damageTargetAt(target,tx,ty,cfg.damage,sx,sy,m.kind);
     if(hit) totalHits++;
     totalShots++;
     m.energy=clampEnergy((m.energy||0)-cfg.cost);
@@ -487,6 +531,38 @@ const turrets = (function(){
       }
     }catch(e){}
     return true;
+  }
+  function fireMountedAt(tile,state,dt,mount,target,getTile){
+    const kind=kindForTile(tile);
+    if(!kind || !state || !(dt>0) || !Number.isFinite(dt)) return {fired:false, energy:mount && Number(mount.energy)||0};
+    const cfg=cfgFor(kind);
+    state.kind=kind;
+    state.x=Number.isFinite(Number(mount && mount.x)) ? Number(mount.x) : 0;
+    state.y=Number.isFinite(Number(mount && mount.y)) ? Number(mount.y) : 0;
+    state.energy=clampEnergy(mount && mount.energy);
+    state.cooldown=Math.max(0,(Number(state.cooldown)||0)-dt);
+    state.scanT=Math.max(0,(Number(state.scanT)||0)-dt);
+    state.pulse=Math.max(0,(Number(state.pulse)||0)-dt*2.8);
+    state.activeT=Math.max(0,(Number(state.activeT)||0)-dt);
+    if(kind==='water'){
+      const water=Number.isFinite(Number(mount && mount.water)) ? Number(mount.water) : state.water;
+      state.water=clampWater(Number.isFinite(Number(water)) ? water : WATER_TURRET_START_WATER,state);
+    }else{
+      delete state.water;
+    }
+    const out={fired:false, energy:state.energy, water:state.water, cooldown:state.cooldown, kind};
+    const t=normalizeExternalTarget(target);
+    if(!t || state.cooldown>0 || state.energy+1e-6<cfg.cost || !hasWaterForShot(state)) return out;
+    const c=targetCoords(t);
+    if(!c) return out;
+    const dx=c.x-(state.x+0.5), dy=c.y-(state.y+0.5);
+    const d=Math.hypot(dx,dy);
+    if(d>cfg.range+0.35 || !targetStillValid(state,t,getTile)) return out;
+    out.fired=fireAt(state,t,getTile);
+    out.energy=state.energy;
+    out.water=state.water;
+    out.cooldown=state.cooldown;
+    return out;
   }
 
   function updateFx(dt){
@@ -821,6 +897,7 @@ const turrets = (function(){
     metrics,
     receiveWaterAt,
     waterNeedAt,
+    fireMountedAt,
     _debug:{machines,shots,puffs,TURRET_CAPACITY,CHARGE_RATE,CATCHUP_MAX_SECONDS,CFG,WATER_TURRET_TANK,WATER_TURRET_START_WATER,WATER_TURRET_WATER_PER_SHOT,debugChargeAt,debugSetEnergyAt,debugSetWaterAt,ensureMachine,nearestMobTarget,nearestBossTarget,nearestUfoTarget,nearestHostileTarget}
   };
   MM.turrets=api;

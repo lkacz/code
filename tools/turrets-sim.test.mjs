@@ -198,6 +198,33 @@ assert.equal(INFO[T.TURRET].passable,false,'turrets are solid defensive machines
 
 {
   reset();
+  globalThis.player={x:6.5,y:10.5,hp:40,w:0.7,h:0.95};
+  let heroHits=0;
+  globalThis.damageHero=(amount,opts)=>{
+    heroHits++;
+    assert.equal(opts.source,'turret');
+    globalThis.player.hp-=Math.max(1,Math.round(Number(amount)||1));
+    return true;
+  };
+  const mounted={};
+  const res=turrets.fireMountedAt(
+    T.FIRE_TURRET,
+    mounted,
+    1,
+    {x:0,y:10,energy:turrets._debug.TURRET_CAPACITY},
+    {kind:'hero',hero:globalThis.player,x:globalThis.player.x,y:globalThis.player.y-0.25,hp:globalThis.player.hp,source:'alien_mech'},
+    getTile
+  );
+  assert.equal(res.fired,true,'a mounted mech fire turret can fire through the shared turret engine');
+  assert.ok(heroHits>0 && globalThis.player.hp<40,'mounted turret damages the hero through damageHero');
+  assert.ok(res.energy<turrets._debug.TURRET_CAPACITY,'mounted turret spends standard turret energy cost');
+  assert.equal(turrets.metrics().machines,0,'mounted turret does not create a fake stationary world machine');
+  assert.ok(turrets.metrics().shots>0,'mounted turret contributes to normal turret shot metrics');
+  delete globalThis.damageHero;
+}
+
+{
+  reset();
   setTile(0,10,T.TURRET);
   turrets._debug.debugChargeAt(0,10,turrets._debug.TURRET_CAPACITY,getTile);
   const {part,state}=fakeBossAt(6.5,10.5,32);

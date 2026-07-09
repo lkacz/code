@@ -1,10 +1,11 @@
 // Block-built alien mech prototypes for the far left/right world bands.
 // They are entities made from real game tiles: the world grid stays editable,
 // while the mech can move, fight, be boarded after the pilot is defeated, and
-// salvage into the same resources players use for their own machines.
+// collapse back into the same blocks players use for their own machines.
 import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
-import { isFoliageTile, isPlayerPassableTile, isSolidCollisionTile, isSunTransparentTile } from './material_physics.js';
+import { isFoliageTile, isPlayerPassableTile, isReplaceableNaturalOpenTile, isSolidCollisionTile, isSunTransparentTile } from './material_physics.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
+import { turrets as TURRETS } from './turrets.js';
 
 (function(){
   const root = typeof window !== 'undefined' ? window : globalThis;
@@ -49,24 +50,25 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     ENERGY_FORGE_CAP: 75,
     RIDER_WALK_ENERGY: 1.65,
     RIDER_JUMP_ENERGY: 7.5,
+    HERO_TRACK_ENERGY_MULT: 1.18,
     SOLAR_PANEL_CHARGE: 0.42,
     FORGE_CHARGE: 2.45,
     FORGE_FUEL_PER_SEC: 0.045,
     FORGE_COAL_FUEL: 34,
-    EXTERNAL_DRAIN_RADIUS: 4.5,
-    PROJECTILE_CAP: 28
+    EXTERNAL_DRAIN_RADIUS: 4.5
   };
 
   const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
   let mechs = [];
-  let projectiles = [];
   let usedZones = new Set();
   let nextId = 1;
   let scanT = 0;
   let simT = 0;
   let riderMechId = null;
   let spawnFreezeT = 0;
+  let lastGetTile = null;
+  let lastSetTile = null;
 
   function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
   function finite(v){ return Number.isFinite(Number(v)); }
@@ -77,6 +79,17 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   function setSafe(setTile,x,y,t){
     if(typeof setTile !== 'function') return false;
     try{ setTile(Math.floor(x),Math.floor(y),t); return true; }catch(e){ return false; }
+  }
+  function rememberWorldFns(getTile,setTile){
+    if(typeof getTile === 'function') lastGetTile=getTile;
+    if(typeof setTile === 'function') lastSetTile=setTile;
+  }
+  function worldFns(opts){
+    const w=root.MM && root.MM.world;
+    return {
+      getTile:(opts && opts.getTile) || lastGetTile || (w && w.getTile) || null,
+      setTile:(opts && opts.setTile) || lastSetTile || (w && w.setTile) || null
+    };
   }
   function seedNum(){
     try{ return (WORLDGEN && Number.isFinite(WORLDGEN.worldSeed)) ? WORLDGEN.worldSeed|0 : 12345; }catch(e){ return 12345; }
@@ -101,6 +114,14 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   }
   function play(id){
     try{ if(root.MM.audio && root.MM.audio.play) root.MM.audio.play(id); }catch(e){}
+  }
+  function playMech(m,id,cooldown){
+    if(!m) return play(id);
+    const cd=Math.max(0,Number(cooldown)||0);
+    const k='_sound_'+String(id||'fx');
+    if(cd>0 && Number.isFinite(m[k]) && simT-m[k]<cd) return;
+    m[k]=simT;
+    play(id);
   }
   function notifyResources(key,n){
     try{
@@ -167,8 +188,13 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     const info=INFO[t] || {};
     return Math.max(1.5, Number(info.hp)||3);
   }
-  function pushCell(cells,x,y,t,role){
-    cells.push({dx:x,dy:y,t,role:role||'',hp:durabilityForCell(t,role||'')});
+  function pushCell(cells,x,y,t,role,wireConn){
+    const cell={dx:x,dy:y,t,role:role||'',hp:durabilityForCell(t,role||'')};
+    if(wireConn){
+      cell.wire=T.COPPER_WIRE;
+      cell.wireConn=Object.assign({left:false,right:false,up:false,down:false},wireConn);
+    }
+    cells.push(cell);
   }
   function makeForgeBaseCells(trackDrive){
     const cells=[];
@@ -176,27 +202,28 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     pushCell(cells,1,0,T.STEEL_TRAPDOOR,'hatch');
     pushCell(cells,2,0,T.STEEL,'roof');
     pushCell(cells,0,1,T.GLASS,'cockpit');
-    pushCell(cells,2,1,T.DYNAMO,'dynamo');
+    pushCell(cells,2,1,T.DYNAMO,'dynamo',trackDrive?{down:true}:null);
     pushCell(cells,3,1,T.DYNAMO_SLOT,'dynamoSlot');
     pushCell(cells,4,1,T.DYNAMO,'dynamo');
     pushCell(cells,0,2,T.STEEL,'body');
     pushCell(cells,1,2,T.STEEL,'body');
-    pushCell(cells,2,2,T.STEEL,'body');
+    pushCell(cells,2,2,T.STEEL,'body',trackDrive?{up:true,down:true}:null);
+    pushCell(cells,4,2,T.FIRE_TURRET,'turret');
     pushCell(cells,0,3,T.STEEL,'body');
     pushCell(cells,1,3,T.STEEL,'body');
-    pushCell(cells,2,3,T.STEEL,'body');
+    pushCell(cells,2,3,T.STEEL,'body',trackDrive?{up:true,down:true}:null);
     pushCell(cells,3,3,T.COAL,'coal');
     pushCell(cells,4,3,T.STEEL,'body');
     pushCell(cells,0,4,T.STEEL,'body');
     pushCell(cells,1,4,T.STEEL,'body');
-    pushCell(cells,2,4,T.STEEL,'body');
+    pushCell(cells,2,4,T.STEEL,'body',trackDrive?{up:true,down:true}:null);
     pushCell(cells,3,4,T.STEEL,'body');
     pushCell(cells,4,4,T.STEEL,'body');
     const baseRole=trackDrive ? 'track' : 'leg';
     const baseTile=trackDrive ? T.TRACK : T.STEEL;
-    pushCell(cells,1,5,baseTile,baseRole);
-    pushCell(cells,2,5,baseTile,baseRole);
-    pushCell(cells,3,5,baseTile,baseRole);
+    pushCell(cells,1,5,baseTile,baseRole,trackDrive?{right:true}:null);
+    pushCell(cells,2,5,baseTile,baseRole,trackDrive?{left:true,right:true,up:true}:null);
+    pushCell(cells,3,5,baseTile,baseRole,trackDrive?{left:true}:null);
     return cells;
   }
   function makeForgeLegCells(seed){
@@ -226,7 +253,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     pushCell(cells,1,2,T.STEEL,'floor');
     pushCell(cells,2,2,T.STEEL,'floor');
     pushCell(cells,3,2,T.STEEL,'floor');
-    pushCell(cells,4,2,T.COPPER_WIRE,'wire');
+    pushCell(cells,4,2,T.TURRET,'turret');
     pushCell(cells,1,3,T.ELECTRONICS,'electronics');
     pushCell(cells,2,3,T.COPPER_WIRE,'wire');
     pushCell(cells,3,3,T.SOLAR_BATTERY,'power');
@@ -279,16 +306,41 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   function cellWorld(m,c,x,y){
     return {x:Math.floor((x==null?m.x:x)+c.dx),y:Math.floor((y==null?m.y:y)+c.dy)};
   }
-  function supportAt(m,x,y,getTile){
-    const b=bounds(m);
-    const yy=Math.floor(y+b.maxY+1);
-    const x0=Math.floor(x+b.minX);
-    const x1=Math.floor(x+b.maxX);
-    for(let xx=x0; xx<=x1; xx++){
-      const t=getSafe(getTile,xx,yy,T.AIR);
-      if(isSupportTile(t)) return true;
+  function supportCells(m){
+    const byX=new Map();
+    for(const c of (m && m.cells) || []){
+      if(!c || c.t===T.AIR) continue;
+      const prev=byX.get(c.dx);
+      if(!prev || c.dy>prev.dy) byX.set(c.dx,c);
     }
-    return false;
+    return [...byX.values()];
+  }
+  function supportSnapY(m,x,y,getTile){
+    let target=null;
+    for(const c of supportCells(m)){
+      const sx=Math.floor(x+c.dx);
+      const sy=Math.floor(y+c.dy+1);
+      if(!inWorldY(sy)) continue;
+      if(!isSupportTile(getSafe(getTile,sx,sy,T.AIR))) continue;
+      const ty=sy-c.dy-1;
+      target = target==null ? ty : Math.min(target,ty);
+    }
+    if(target==null || Math.abs(target-y)>1.05) return null;
+    return canFitAt(m,x,target,getTile) ? target : null;
+  }
+  function supportAt(m,x,y,getTile){
+    return supportSnapY(m,x,y,getTile)!=null;
+  }
+  function snapToGround(m,getTile){
+    const y=supportSnapY(m,m.x,m.y,getTile);
+    if(y==null){
+      m.onGround=false;
+      return false;
+    }
+    m.y=y;
+    m.onGround=true;
+    if((m.vy||0)>0) m.vy=0;
+    return true;
   }
   function headClearAt(m,x,y,getTile,clearance){
     const dy=Math.max(1,Math.min(4,Number(clearance)||2));
@@ -405,7 +457,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     }
     if(cleared>0){
       m.crushFx=Math.min(1,(m.crushFx||0)+0.35);
-      play('break');
+      playMech(m,'break',0.18);
     }
     return cleared;
   }
@@ -446,8 +498,19 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       if(breakObstacleAt(m,c.x,c.y,c.t,setTile,getTile)) broken++;
     }
     m.crushFx=Math.min(1,(m.crushFx||0)+0.28);
-    play(broken?'break':'hit');
+    playMech(m,broken?'break':'hit',broken?0.18:0.32);
     return broken;
+  }
+  function verticalCollisionSnapY(m,ny,sign,getTile){
+    let target=null;
+    for(const c of m.cells){
+      const p=cellWorld(m,c,m.x,ny);
+      if(!inWorldY(p.y)) continue;
+      if(!isBlockingTile(getSafe(getTile,p.x,p.y,T.AIR))) continue;
+      const limit=sign>0 ? p.y-c.dy-1 : p.y-c.dy+1;
+      target = target==null ? limit : (sign>0 ? Math.min(target,limit) : Math.max(target,limit));
+    }
+    return target;
   }
   function horizontalMove(m,dt,getTile,setTile,dir){
     if(Math.abs(m.vx||0)<0.001) return;
@@ -484,6 +547,8 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       if(canFitAt(m,m.x,ny,getTile)){
         m.y=ny;
       }else{
+        const snap=verticalCollisionSnapY(m,ny,sign,getTile);
+        if(snap!=null && canFitAt(m,m.x,snap,getTile)) m.y=snap;
         if(sign>0) m.onGround=true;
         m.vy=0;
         break;
@@ -493,6 +558,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   }
   function updatePhysics(m,dt,getTile,setTile,desiredDir,jump){
     desiredDir = desiredDir<0 ? -1 : (desiredDir>0 ? 1 : 0);
+    snapToGround(m,getTile);
     if(desiredDir) m.facing=desiredDir;
     const springDrive=hasSpringDrive(m);
     const trackDrive=hasTrackDrive(m);
@@ -529,36 +595,54 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     }
     if(jump && m.onGround){
       m.vy=springDrive ? CFG.SPRING_JUMP : CFG.JUMP;
+      m.onGround=false;
       if(springDrive){
         m.hopCd=m.rider ? CFG.HOP_INTERVAL_RIDER : CFG.HOP_INTERVAL_AI;
         m.springT=1;
       }
     }
-    m.vy=clamp((m.vy||0)+CFG.GRAV*dt,-24,22);
+    const rested=m.onGround && (m.vy||0)>=0 && supportAt(m,m.x,m.y,getTile);
+    m.vy=rested ? 0 : clamp((m.vy||0)+CFG.GRAV*dt,-24,22);
     horizontalMove(m,dt,getTile,setTile,m.facing||1);
-    verticalMove(m,dt,getTile,setTile);
+    if((m.vy||0)>=0 && snapToGround(m,getTile)){
+      m.vy=0;
+    }else{
+      if((m.vy||0)===0) m.vy=clamp(CFG.GRAV*dt,-24,22);
+      verticalMove(m,dt,getTile,setTile);
+      if((m.vy||0)>=0) snapToGround(m,getTile);
+    }
   }
-  function projectileKind(m){ return m.kind==='solar' ? 'electric' : 'fire'; }
-  function shootAt(m,target){
-    if(projectiles.length>=CFG.PROJECTILE_CAP) projectiles.shift();
-    const cx=centerX(m), cy=m.y+1.2;
-    const dx=(target.x||cx)-cx;
-    const dy=((target.y||cy)-0.25)-cy;
-    const d=Math.hypot(dx,dy)||1;
-    const kind=projectileKind(m);
-    const sp=kind==='electric' ? 15 : 10.5;
-    projectiles.push({
-      x:cx,y:cy,
-      vx:dx/d*sp,
-      vy:dy/d*sp + (kind==='fire'?-0.55:0),
-      life:kind==='electric'?1.15:2.4,
-      kind,
-      dmg:kind==='electric'?12:10,
-      owner:m.id
-    });
-    m.recoilT=0.18;
-    play(kind==='electric'?'charge':'flame');
-    emit('mm-combat-event',{kind:kind==='electric'?'laser':'fire',target:'hero',source:'alien_mech',x:cx,y:cy,element:kind,amount:8,power:0.75});
+  function isMountedTurretTile(t){
+    return TURRETS && typeof TURRETS.isTurretTile === 'function'
+      ? TURRETS.isTurretTile(t)
+      : (t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET);
+  }
+  function mountedTurretCell(m){
+    if(!m || !Array.isArray(m.cells)) return null;
+    return m.cells.find(c=>c && c.role==='turret' && isMountedTurretTile(c.t)) || m.cells.find(c=>c && isMountedTurretTile(c.t)) || null;
+  }
+  function fireMountedTurretAtHero(m,player,dt,getTile){
+    if(!m || !m.pilotAlive || m.rider || !player || !TURRETS || typeof TURRETS.fireMountedAt !== 'function') return false;
+    const cell=mountedTurretCell(m);
+    if(!cell) return false;
+    m.turretState=m.turretState || {};
+    const beforeEnergy=Math.max(0,Number(m.energy)||0);
+    const res=TURRETS.fireMountedAt(
+      cell.t,
+      m.turretState,
+      dt,
+      {x:m.x+cell.dx,y:m.y+cell.dy,energy:beforeEnergy},
+      {kind:'hero',hero:player,x:player.x,y:(Number(player.y)||0)-0.25,hp:Number.isFinite(Number(player.hp))?Number(player.hp):1,source:'alien_mech'},
+      getTile
+    );
+    if(res && Number.isFinite(Number(res.energy))) m.energy=clamp(Number(res.energy),0,m.maxEnergy||mechMaxEnergy(m.kind));
+    if(res && res.fired){
+      m.recoilT=0.18;
+      m.powerPulse=Math.min(1,(m.powerPulse||0)+0.2);
+      emit('mm-combat-event',{kind:cell.t===T.FIRE_TURRET?'fire':'laser',target:'hero',source:'alien_mech_turret',x:m.x+cell.dx+0.5,y:m.y+cell.dy+0.5,element:cell.t===T.FIRE_TURRET?'fire':'electric',amount:cell.t===T.FIRE_TURRET?3.2:5.5,power:0.75});
+      return true;
+    }
+    return false;
   }
   function decideAiJump(m,dir,getTile,dt){
     if(!dir || !m.onGround) return false;
@@ -592,11 +676,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     const dist=Math.hypot(dx,dy);
     if(dist>CFG.HOSTILE_WAKE) return {dir:0,jump:false};
     const dir=Math.abs(dx)>3.2 ? (dx>0?1:-1) : 0;
-    m.aimT=(m.aimT||0)-dt;
-    if(dist<CFG.HOSTILE_SIGHT && Math.abs(dy)<12 && m.aimT<=0){
-      m.aimT=(m.kind==='solar'?1.35:1.65)+hash01(m.id,Math.floor(simT*3))*0.35;
-      shootAt(m,player);
-    }
+    if(dist<CFG.HOSTILE_SIGHT && Math.abs(dy)<12) fireMountedTurretAtHero(m,player,dt,getTile);
     return {dir,jump:decideAiJump(m,dir,getTile,dt)};
   }
   function playerOverlapsMech(m,player,pad){
@@ -646,6 +726,40 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   function hasTrackDrive(m){
     return countCells(m,c=>c.t===T.TRACK || (c.role==='track' && c.t===T.STEEL))>0;
   }
+  function cableCells(m){
+    return (m.cells||[]).filter(c=>c && c.wire===T.COPPER_WIRE);
+  }
+  function mechTrackCircuitConnected(m){
+    if(!hasTrackDrive(m)) return false;
+    const wires=cableCells(m);
+    if(!wires.length) return false;
+    const byPos=new Map(wires.map(c=>[c.dx+','+c.dy,c]));
+    const queue=[];
+    const seen=new Set();
+    for(const c of wires){
+      if(c.t===T.DYNAMO || c.t===T.DYNAMO_SLOT){
+        const key=c.dx+','+c.dy;
+        seen.add(key);
+        queue.push(c);
+      }
+    }
+    if(!queue.length) return false;
+    let reachesTrack=false;
+    for(let i=0;i<queue.length;i++){
+      const c=queue[i];
+      if(c.t===T.TRACK || c.role==='track') reachesTrack=true;
+      for(const d of [[1,0],[-1,0],[0,1],[0,-1]]){
+        const nx=c.dx+d[0], ny=c.dy+d[1], key=nx+','+ny;
+        if(seen.has(key) || !byPos.has(key)) continue;
+        seen.add(key);
+        queue.push(byPos.get(key));
+      }
+    }
+    return reachesTrack;
+  }
+  function trackDriveReady(m){
+    return !hasTrackDrive(m) || mechTrackCircuitConnected(m);
+  }
   function solarCharge(m,dt,getTile){
     const sun=daylight();
     if(sun<=0.01) return 0;
@@ -669,6 +783,11 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   }
   function forgeCharge(m,dt){
     if(m.kind!=='forge') return 0;
+    // The firebox idles once the reserve is full: keep burning stored fuel (and
+    // pulling coal from the rider's pack) only when there is headroom to charge,
+    // otherwise a parked full mech silently wastes fuel and eats inventory coal.
+    const cap=Number.isFinite(m.maxEnergy) ? m.maxEnergy : mechMaxEnergy(m.kind);
+    if((m.energy||0)>=cap-0.01) return 0;
     const hasDynamo=countCells(m,c=>c.t===T.DYNAMO)>=2 && countCells(m,c=>c.t===T.DYNAMO_SLOT)>=1;
     const hasCoal=countCells(m,c=>c.t===T.COAL)>0;
     if(!hasDynamo || !hasCoal) return 0;
@@ -700,6 +819,20 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     }
     return 0;
   }
+  function externalPowerDrainNear(m,amount,getTile){
+    const need=Math.max(0,Number(amount)||0);
+    if(need<=0 || typeof getTile !== 'function') return 0;
+    let gained=0;
+    try{
+      const dyn=root.MM.dynamo;
+      if(dyn && typeof dyn.absorbNear==='function'){
+        const got=dyn.absorbNear(centerX(m),centerY(m),need,getTile,CFG.EXTERNAL_DRAIN_RADIUS);
+        if(got && got.amount>0) gained+=Math.min(need,Number(got.amount)||0);
+      }
+    }catch(e){}
+    if(gained<need) gained+=externalSolarDrainNear(m,need-gained,getTile);
+    return Math.max(0,Math.min(need,gained));
+  }
   function externalCharge(m,dt,getTile){
     if(!m.rider) return 0;
     const need=Math.max(0,(m.maxEnergy||mechMaxEnergy(m.kind))-(m.energy||0));
@@ -729,57 +862,145 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     m.heatPulse=Math.max(0,(m.heatPulse||0)-dt*2.2);
     return gain;
   }
-  function consumeRiderEnergy(m,dt,dir,jump){
+  function heroEnergyFor(ctx){
+    return (ctx && ctx.heroEnergy) || (root.MM && root.MM.heroEnergy) || null;
+  }
+  function spendHeroEnergyForTrack(amount,ctx){
+    const n=Math.max(0,Number(amount)||0);
+    if(n<=0) return true;
+    if(ctx && ctx.godMode) return true;
+    const api=heroEnergyFor(ctx);
+    if(!api || typeof api.spend!=='function') return false;
+    try{ return api.spend(n)!==false; }catch(e){ return false; }
+  }
+  function spendMechOrHeroTrackEnergy(m,amount,ctx,getTile){
+    const want=Math.max(0,Number(amount)||0);
+    if(want<=0) return true;
+    const have=Math.max(0,Number(m.energy)||0);
+    if(have+0.00001>=want){
+      m.energy=Math.max(0,have-want);
+      return true;
+    }
+    let remaining=Math.max(0,want-have);
+    if(remaining<=0.00001) return true;
+    if(hasTrackDrive(m) && mechTrackCircuitConnected(m)){
+      const external=externalPowerDrainNear(m,remaining,getTile);
+      if(external>0){
+        m.energy=0;
+        m.powerPulse=Math.min(1,(m.powerPulse||0)+0.24+external*0.04);
+        remaining=Math.max(0,remaining-external);
+        if(remaining<=0.00001) return true;
+      }
+      const heroCost=remaining*CFG.HERO_TRACK_ENERGY_MULT;
+      if(spendHeroEnergyForTrack(heroCost,ctx)){
+        m.energy=0;
+        m.heroPowerPulse=Math.min(1,(m.heroPowerPulse||0)+0.35+heroCost*0.025);
+        m.powerPulse=Math.min(1,(m.powerPulse||0)+0.18);
+        return true;
+      }
+    }
+    return false;
+  }
+  function consumeRiderEnergy(m,dt,dir,jump,ctx,getTile){
     if(!m.rider) return {dir,jump};
+    if(hasTrackDrive(m) && !mechTrackCircuitConnected(m)){
+      m.vx=0;
+      m.noPowerT=0.8;
+      return {dir:0,jump:false};
+    }
     const moving=dir!==0;
-    let want=Math.max(0,moving ? CFG.RIDER_WALK_ENERGY*dt : 0);
+    const walkCost=Math.max(0,moving ? CFG.RIDER_WALK_ENERGY*dt : 0);
+    let want=walkCost;
     let allowJump=!!jump;
     if(allowJump && m.onGround) want+=CFG.RIDER_JUMP_ENERGY;
     if(want<=0) return {dir,jump:false};
     const have=Math.max(0,Number(m.energy)||0);
-    if(have<=0.02){
+    const canPayWalk=!moving || have>=walkCost || (hasTrackDrive(m) && mechTrackCircuitConnected(m));
+    if(!canPayWalk || (have<=0.02 && !hasTrackDrive(m))){
       m.energy=0;
       m.vx=0;
       m.noPowerT=0.8;
       return {dir:0,jump:false};
     }
-    const canJump=!allowJump || !m.onGround || have>=want;
+    const canJump=!allowJump || !m.onGround || have>=want || (hasTrackDrive(m) && mechTrackCircuitConnected(m));
     if(moving){
-      const take=Math.min(have,CFG.RIDER_WALK_ENERGY*dt);
-      m.energy=Math.max(0,have-take);
+      if(!spendMechOrHeroTrackEnergy(m,walkCost,ctx,getTile)){
+        m.vx=0;
+        m.noPowerT=0.8;
+        return {dir:0,jump:false};
+      }
     }
     if(allowJump && m.onGround && canJump){
-      m.energy=Math.max(0,(m.energy||0)-CFG.RIDER_JUMP_ENERGY);
+      if(!spendMechOrHeroTrackEnergy(m,CFG.RIDER_JUMP_ENERGY,ctx,getTile)){
+        allowJump=false;
+      }
     } else {
       allowJump=false;
     }
     return {dir:moving?dir:0,jump:allowJump};
   }
-  function consumeTrackStandEnergy(m,dt,dir){
+  function consumeTrackStandEnergy(m,dt,dir,ctx,getTile){
     dir=dir<0?-1:(dir>0?1:0);
     if(!dir || !hasTrackDrive(m)) return 0;
-    const want=Math.max(0.02,CFG.RIDER_WALK_ENERGY*dt*0.9);
-    const have=Math.max(0,Number(m.energy)||0);
-    if(have<want){
-      m.energy=Math.max(0,have);
+    if(!mechTrackCircuitConnected(m)){
       m.vx=0;
       m.noPowerT=0.8;
       return 0;
     }
-    m.energy=Math.max(0,have-want);
+    const want=Math.max(0.02,CFG.RIDER_WALK_ENERGY*dt*0.9);
+    if(!spendMechOrHeroTrackEnergy(m,want,ctx,getTile)){
+      m.vx=0;
+      m.noPowerT=0.8;
+      return 0;
+    }
     return dir;
   }
-  function playerStandingOnMech(m,player){
+  function standingTrackTop(m,player,tolerance){
     if(!player || !m || !hasTrackDrive(m)) return false;
     const pr=heroRect(player);
     if((player.vy||0)<-0.05) return false;
+    const tol=Math.max(0.02,Number(tolerance)||0.22);
+    let top=null;
     for(const c of m.cells||[]){
       const left=m.x+c.dx, right=left+1;
-      const top=m.y+c.dy;
+      const cy=m.y+c.dy;
       if(pr.right<=left+0.06 || pr.left>=right-0.06) continue;
-      if(Math.abs(pr.bottom-top)<=0.22) return true;
+      if(Math.abs(pr.bottom-cy)<=tol) top = top==null ? cy : Math.min(top,cy);
     }
-    return false;
+    return top;
+  }
+  function playerStandingOnMech(m,player){
+    return standingTrackTop(m,player,0.22)!==false;
+  }
+  function snapStandingTrackHero(m,player,dx){
+    if(!player || !m) return false;
+    if(Math.abs(Number(dx)||0)>0) player.x+=(Number(dx)||0);
+    const top=standingTrackTop(m,player,0.42);
+    if(top===false) return false;
+    player.y=top-((player.h||0.95)/2)-0.012;
+    player.vx=0;
+    if((player.vy||0)>0) player.vy=0;
+    player.onGround=true;
+    if(typeof player.jumpCount === 'number') player.jumpCount=0;
+    return true;
+  }
+  function heroOnTracks(player){
+    for(const m of mechs){
+      if(!m || m.rider || m.pilotAlive || !hasTrackDrive(m) || m.hp<=0) continue;
+      if(playerStandingOnMech(m,player)) return m;
+    }
+    return null;
+  }
+  function releaseStandingTrackHero(m,player){
+    if(!player || !m) return false;
+    const top=standingTrackTop(m,player,0.28);
+    if(top!==false) player.y=top-((player.h||0.95)/2)-0.012;
+    player.vy=Math.min(Number(player.vy)||0,CFG.JUMP*0.82);
+    player.vx=(Number(player.vx)||0)+(Number(m.vx)||0)*0.22;
+    player.onGround=false;
+    if(typeof player.jumpCount === 'number') player.jumpCount=Math.max(1,player.jumpCount||0);
+    m.standingReleaseT=0.2;
+    return true;
   }
   function collideMobs(m,dt,getTile){
     try{
@@ -789,32 +1010,6 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       if(res && res.blockers>0 && Math.abs(m.vx)>0.05) m.vx*=Math.max(0.4,1-res.blockers*0.08);
       return res;
     }catch(e){ return null; }
-  }
-  function updateProjectiles(dt,getTile){
-    const player=root.player;
-    for(let i=projectiles.length-1;i>=0;i--){
-      const p=projectiles[i];
-      p.life-=dt;
-      if(p.kind==='fire') p.vy+=5.5*dt;
-      p.x+=p.vx*dt;
-      p.y+=p.vy*dt;
-      const tx=Math.floor(p.x), ty=Math.floor(p.y);
-      let dead=p.life<=0 || !inWorldY(ty);
-      if(!dead && player && Math.hypot(player.x-p.x,player.y-p.y)<0.75){
-        if(typeof root.damageHero === 'function'){
-          root.damageHero(p.dmg,{cause:p.kind==='electric'?'alien_mech_laser':'alien_mech_fire',srcX:p.x,srcY:p.y,kb:p.kind==='electric'?3.5:4.5,kbY:-2.6,element:p.kind});
-        }
-        dead=true;
-      }
-      if(!dead){
-        const t=getSafe(getTile,tx,ty,T.AIR);
-        if(t!==T.AIR && t!==T.WATER && t!==T.LAVA && isSolidCollisionTile(t)) dead=true;
-      }
-      if(dead){
-        emit('mm-combat-event',{kind:p.kind==='electric'?'shock':'fire',target:'hero',source:'alien_mech',x:p.x,y:p.y,element:p.kind,amount:p.dmg,power:0.9});
-        projectiles.splice(i,1);
-      }
-    }
   }
   function syncRider(player){
     const m=findRiderMech();
@@ -833,7 +1028,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     let dir=0;
     if(controls.left) dir--;
     if(controls.right) dir++;
-    const gated=consumeRiderEnergy(m,dt,dir,!!controls.jump);
+    const gated=consumeRiderEnergy(m,dt,dir,!!controls.jump,ctx,getTile);
     updatePhysics(m,dt,getTile,setTile,gated.dir,gated.jump);
     if(gated.dir && m.blockedDir===gated.dir) attackObstacles(m,dt,getTile,setTile,gated.dir);
     syncRider(player);
@@ -841,25 +1036,26 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   function updateStandingTrackMech(m,dt,player,getTile,setTile,ctx){
     if(m.rider || m.pilotAlive || !hasTrackDrive(m) || !playerStandingOnMech(m,player)) return false;
     const controls=(ctx && ctx.controls) || {};
+    if(controls.jump){
+      releaseStandingTrackHero(m,player);
+      return true;
+    }
     let dir=0;
     if(controls.left) dir--;
     if(controls.right) dir++;
-    dir=consumeTrackStandEnergy(m,dt,dir);
-    if(!dir) return false;
+    dir=consumeTrackStandEnergy(m,dt,dir,ctx,getTile);
     const beforeX=m.x;
     updatePhysics(m,dt,getTile,setTile,dir,false);
     if(dir && m.blockedDir===dir) attackObstacles(m,dt,getTile,setTile,dir);
     const dx=m.x-beforeX;
-    if(Math.abs(dx)>0){
-      player.x+=dx;
-      player.vx=m.vx||0;
-      player.onGround=true;
-    }
+    snapStandingTrackHero(m,player,dx);
     return true;
   }
   function updateMech(m,dt,player,getTile,setTile,ctx){
     if(m.hp<=0) return;
+    m.trackCircuitOk=trackDriveReady(m);
     updateEnergy(m,dt,getTile);
+    m.heroPowerPulse=Math.max(0,(m.heroPowerPulse||0)-dt*2.6);
     if(m.crushFx>0) m.crushFx=Math.max(0,m.crushFx-dt*1.9);
     if(m.recoilT>0) m.recoilT=Math.max(0,m.recoilT-dt);
     if(m.noPowerT>0) m.noPowerT=Math.max(0,m.noPowerT-dt);
@@ -884,14 +1080,21 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     const h=bp && bp.bounds ? bp.bounds.h : 6;
     const probe={cells:(bp && Array.isArray(bp.cells)) ? bp.cells : [{dx:0,dy:0}],_bounds:bp && bp.bounds};
     const base=s-h;
+    const candidates=[];
     for(let off=0; off<=28; off++){
       const y=base-off;
       if(y<WORLD_TOP+1) break;
-      if(canFitAt(probe,x,y,getTile)) return y;
+      candidates.push(y);
     }
     for(let off=1; off<=8; off++){
       const y=base+off;
       if(y>=WORLD_BOTTOM-h-1) break;
+      candidates.push(y);
+    }
+    for(const y of candidates){
+      if(canFitAt(probe,x,y,getTile) && supportAt(probe,x,y,getTile)) return y;
+    }
+    for(const y of candidates){
       if(canFitAt(probe,x,y,getTile)) return y;
     }
     return null;
@@ -982,6 +1185,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   }
   function update(dt,player,getTile,setTile,ctx){
     if(!(dt>0) || !isFinite(dt)) return;
+    rememberWorldFns(getTile,setTile);
     dt=Math.min(0.1,dt);
     simT+=dt;
     spawnFreezeT=Math.max(0,spawnFreezeT-dt);
@@ -990,7 +1194,6 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       scanT=CFG.SCAN_INTERVAL;
       if(spawnFreezeT<=0) scanSpawns(player,getTile);
     }
-    updateProjectiles(dt,getTile);
     for(const m of mechs) updateMech(m,dt,player,getTile,setTile,ctx||{});
     for(let i=mechs.length-1;i>=0;i--){
       const m=mechs[i];
@@ -1013,42 +1216,86 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       power:Math.max(0.65,Math.min(1.9,amount/10))
     });
   }
-  function tileLootFor(t,bag){
-    if(t===T.DYNAMO || t===T.DYNAMO_SLOT){ bag.dynamo=(bag.dynamo||0)+1; return; }
-    if(t===T.SOLAR_PANEL){ bag.solarPanel=(bag.solarPanel||0)+1; return; }
-    if(t===T.SOLAR_BATTERY){ bag.solarBattery=(bag.solarBattery||0)+1; return; }
-    if(t===T.FIRE_TURRET){ bag.fireTurret=(bag.fireTurret||0)+1; return; }
-    if(t===T.TURRET){ bag.turret=(bag.turret||0)+1; return; }
-    if(t===T.SPRING_PLATFORM){ bag.springPlatform=(bag.springPlatform||0)+1; return; }
-    const info=INFO[t] || {};
-    if(info.drop) bag[info.drop]=(bag[info.drop]||0)+1;
-    if(Array.isArray(info.drops)){
-      for(const d of info.drops){
-        if(!d || !d.item) continue;
-        const chance=typeof d.chance==='number' ? d.chance : 1;
-        if(chance<1 && hash01(t,Math.round(simT*1000))>chance) continue;
-        const min=Math.max(0,d.min==null?1:d.min|0);
-        const max=Math.max(min,d.max==null?min:d.max|0);
-        bag[d.item]=(bag[d.item]||0)+min+(max>min?Math.floor(hash01(max,t)*(max-min+1)):0);
-      }
-    }
-  }
   function awardPilotLoot(m){
     addResource('alienBiomass',1+(hash01(m.id,991)>0.55?1:0));
     addXp(m.kind==='solar'?90:105,centerX(m),m.y,'ALIEN_MECH_PILOT');
   }
-  function awardSalvage(m){
-    const bag={};
-    const seenPower=new Set();
-    for(const c of m.cells){
-      if((c.t===T.DYNAMO || c.t===T.DYNAMO_SLOT) && seenPower.has('dynamo')) continue;
-      if(c.t===T.DYNAMO || c.t===T.DYNAMO_SLOT) seenPower.add('dynamo');
-      tileLootFor(c.t,bag);
+  function collapseOffsets(){
+    const out=[[0,0]];
+    for(let r=1;r<=5;r++){
+      for(let dy=-r; dy<=r; dy++){
+        for(let dx=-r; dx<=r; dx++){
+          if(Math.abs(dx)+Math.abs(dy)!==r) continue;
+          out.push([dx,dy]);
+        }
+      }
     }
-    if(m.pilotAlive) bag.alienBiomass=(bag.alienBiomass||0)+1;
-    const keys=Object.keys(bag).filter(k=>bag[k]>0).sort();
-    for(const k of keys) addResource(k,bag[k]);
-    say('Z wraku mecha odzyskano: '+keys.map(k=>bag[k]+'x '+k).join(', '));
+    return out;
+  }
+  const COLLAPSE_OFFSETS = collapseOffsets();
+  function collapseCellOpen(x,y,getTile,occupied){
+    x=Math.floor(x); y=Math.floor(y);
+    if(!inWorldY(y)) return false;
+    const k=x+','+y;
+    if(occupied && occupied.has(k)) return false;
+    const t=getSafe(getTile,x,y,T.AIR);
+    return isReplaceableNaturalOpenTile(t,true);
+  }
+  function findCollapseSpot(x,y,getTile,occupied){
+    for(const [dx,dy] of COLLAPSE_OFFSETS){
+      const px=Math.floor(x+dx), py=Math.floor(y+dy);
+      if(collapseCellOpen(px,py,getTile,occupied)) return {x:px,y:py};
+    }
+    return null;
+  }
+  function collapseTileViaPhysics(x,y,t,setTile){
+    const falling=root.MM && root.MM.fallingSolids;
+    try{
+      if(falling && typeof falling.spawnLoose === 'function' && falling.spawnLoose(x,y,t)) return true;
+    }catch(e){}
+    if(!setSafe(setTile,x,y,t)) return false;
+    try{ if(falling && typeof falling.afterPlacement === 'function') falling.afterPlacement(x,y); }catch(e){}
+    try{ if(root.MM.water && root.MM.water.onTileChanged) root.MM.water.onTileChanged(x,y,worldFns().getTile); }catch(e){}
+    return true;
+  }
+  function collapseMaterialList(c){
+    const out=[];
+    if(c && c.t!=null && c.t!==T.AIR) out.push(c.t);
+    if(c && c.wire===T.COPPER_WIRE) out.push(T.COPPER_WIRE);
+    return out;
+  }
+  function collapseMechBlocks(m,opts){
+    const fns=worldFns(opts);
+    const getTile=fns.getTile;
+    const setTile=fns.setTile;
+    if(typeof getTile !== 'function' || typeof setTile !== 'function') return {placed:0,total:0};
+    const occupied=new Set();
+    let placed=0,total=0;
+    const cells=(m.cells||[]).slice().sort((a,b)=>(b.dy-a.dy)||(a.dx-b.dx));
+    for(const c of cells){
+      const p=cellWorld(m,c);
+      for(const t of collapseMaterialList(c)){
+        total++;
+        const spot=findCollapseSpot(p.x,p.y,getTile,occupied);
+        if(!spot) continue;
+        if(collapseTileViaPhysics(spot.x,spot.y,t,setTile)){
+          occupied.add(spot.x+','+spot.y);
+          placed++;
+        }
+      }
+    }
+    try{
+      const falling=root.MM && root.MM.fallingSolids;
+      if(falling && typeof falling.recheckNeighborhood === 'function'){
+        for(const raw of occupied){
+          const comma=raw.indexOf(',');
+          falling.recheckNeighborhood(+raw.slice(0,comma),+raw.slice(comma+1));
+        }
+      }
+    }catch(e){}
+    if(placed>0) say('Wrak mecha rozsypal sie na '+placed+' blokow.');
+    else say('Wrak mecha rozpadl sie, ale nie mial wolnego miejsca na bloki.');
+    return {placed,total};
   }
   function killPilot(m){
     if(!m.pilotAlive) return false;
@@ -1064,7 +1311,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     if(m.destroyed) return false;
     m.destroyed=true;
     m.hp=0;
-    awardSalvage(m);
+    collapseMechBlocks(m,opts||{});
     addXp(m.kind==='solar'?130:155,centerX(m),m.y,'ALIEN_MECH');
     damageNumbers(m,22,'blast',Object.assign({source:'hero',element:'blast'},opts||{}));
     play('explosion');
@@ -1332,6 +1579,48 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     ctx.fillRect(px+TILE*0.14,py+TILE*0.12,TILE*0.12,TILE*0.60);
     ctx.restore();
   }
+  function drawCopperWireOverlay(ctx,TILE,px,py,conn,alpha,powered){
+    conn=conn||{};
+    ctx.save();
+    ctx.globalAlpha=alpha*(powered?0.98:0.84);
+    ctx.lineCap='round';
+    ctx.lineJoin='round';
+    const cx=px+TILE*0.5, cy=py+TILE*0.5;
+    const ends=[];
+    if(conn.left) ends.push([px+TILE*0.12,cy]);
+    if(conn.right) ends.push([px+TILE*0.88,cy]);
+    if(conn.up) ends.push([cx,py+TILE*0.12]);
+    if(conn.down) ends.push([cx,py+TILE*0.88]);
+    if(!ends.length) ends.push([px+TILE*0.16,cy],[px+TILE*0.84,cy]);
+    ctx.strokeStyle='rgba(44,24,10,0.72)';
+    ctx.lineWidth=Math.max(2,TILE*0.14);
+    ctx.beginPath();
+    for(const e of ends){ ctx.moveTo(cx,cy); ctx.lineTo(e[0],e[1]); }
+    ctx.stroke();
+    ctx.strokeStyle=powered?'#ffc35d':'#d68535';
+    ctx.lineWidth=Math.max(1,TILE*0.075);
+    ctx.beginPath();
+    for(const e of ends){ ctx.moveTo(cx,cy); ctx.lineTo(e[0],e[1]); }
+    ctx.stroke();
+    ctx.fillStyle=powered?'#fff0a8':'#f0a34b';
+    ctx.beginPath();
+    ctx.arc(cx,cy,TILE*(powered?0.085:0.065),0,Math.PI*2);
+    ctx.fill();
+    if(powered){
+      ctx.globalAlpha=alpha*0.32;
+      ctx.strokeStyle='rgba(255,240,150,0.82)';
+      ctx.lineWidth=Math.max(1,TILE*0.025);
+      ctx.beginPath();
+      for(const e of ends){ ctx.moveTo(cx,cy); ctx.lineTo(e[0],e[1]); }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  function drawCellWireOverlay(ctx,TILE,m,c,px,py,alpha){
+    if(!c || c.wire!==T.COPPER_WIRE) return;
+    const powered=!!(m && (m.powerPulse>0.05 || m.heroPowerPulse>0.05 || (hasTrackDrive(m) && mechTrackCircuitConnected(m) && ((m.energy||0)>0 || (m.fuel||0)>0))));
+    drawCopperWireOverlay(ctx,TILE,px,py,c.wireConn,alpha,powered);
+  }
   function drawCellLegacy(ctx,TILE,m,c,px,py,alpha){
     const info=INFO[c.t] || {};
     const role=c.role||'';
@@ -1503,6 +1792,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       ctx.fillRect(px+TILE*0.16,py+TILE*0.82,TILE*0.68,TILE*0.12);
     }
 
+    drawCellWireOverlay(ctx,TILE,m,c,px,py,alpha);
     ctx.restore();
   }
   function drawCellOccupantOverlay(ctx,TILE,m,c,px,py,alpha){
@@ -1521,6 +1811,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       const phase=((simT*4+(m.x||0)*0.8)%1+1)%1;
       try{
         drawTile(ctx,c.t,px,py,Math.floor(m.x+c.dx),Math.floor(m.y+c.dy),{alpha,trackPhase:phase});
+        drawCellWireOverlay(ctx,TILE,m,c,px,py,alpha);
         drawCellOccupantOverlay(ctx,TILE,m,c,px,py,alpha);
         return;
       }catch(e){}
@@ -1573,15 +1864,6 @@ import { worldGen as WORLDGEN } from './worldgen.js';
         ctx.strokeRect((m.x+c.dx)*TILE+2,(m.y+c.dy+bob)*TILE+2,TILE-4,TILE-4);
       }
       drawBar(ctx,TILE,m);
-    }
-    for(const p of projectiles){
-      if(visible && !visible(Math.floor(p.x),Math.floor(p.y))) continue;
-      ctx.globalCompositeOperation='lighter';
-      ctx.fillStyle=p.kind==='electric'?'#bffcff':'#ff9a3d';
-      ctx.beginPath();
-      ctx.arc(p.x*TILE,p.y*TILE,TILE*(p.kind==='electric'?0.16:0.22),0,Math.PI*2);
-      ctx.fill();
-      ctx.globalCompositeOperation='source-over';
     }
     ctx.restore();
   }
@@ -1652,7 +1934,6 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   }
   function reset(opts){
     mechs=[];
-    projectiles=[];
     usedZones=new Set();
     riderMechId=null;
     nextId=1;
@@ -1660,7 +1941,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     simT=0;
     spawnFreezeT=Math.max(0,Math.min(20,Number(opts&&opts.suppressSpawns)||0));
   }
-  function forceSpawn(kind,player,getTile){
+  function forceSpawn(kind,player,getTile,setTile){
     const requested=String(kind||'');
     const normalized=requested==='solar'?'solar':'forge';
     const base=player && finite(player.x) ? player.x : (normalized==='solar'?-CFG.MIN_DISTANCE:CFG.MIN_DISTANCE);
@@ -1671,10 +1952,13 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       for(let i=0;i<12 && forgeVariantForSeed(x)!==want;i++) x+=dir;
     }
     let m=makeMech(normalized,x,getTile,null);
+    rememberWorldFns(getTile,setTile);
     if(!m){
       const seed=Math.floor(x);
       const bp=makeBlueprint(normalized,seed);
-      m=buildMech(normalized,x,standingSurfaceY(x)-bp.bounds.h,bp,null,seed);
+      const y=spawnYFor(x,getTile,bp);
+      if(!Number.isFinite(y)) return null;
+      m=buildMech(normalized,x,y,bp,null,seed);
     }
     mechs.push(m);
     return m;
@@ -1686,7 +1970,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       pilots:mechs.filter(m=>m.pilotAlive).length,
       abandoned:mechs.filter(m=>!m.pilotAlive && !m.rider).length,
       energy:+mechs.reduce((n,m)=>n+(m.energy||0),0).toFixed(2),
-      projectiles:projectiles.length,
+      mountedTurrets:mechs.filter(m=>!!mountedTurretCell(m)).length,
       usedZones:usedZones.size,
       spawnFreeze:+spawnFreezeT.toFixed(2)
     };
@@ -1695,8 +1979,8 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   const api={
     update,draw,attackAt,damageAt,damageRadius,blastRadius,igniteRadius,douseRadius,
     toggleBoard,heroMech,syncRider,absorbHeroDamage,cellAt,findAt,
-    snapshot,restore,reset,forceSpawn,metrics,
-    _debug:{mechs:()=>mechs,projectiles:()=>projectiles,makeBlueprint,trySpawnZone,zoneShouldSpawn,zoneSpawnX,CFG}
+    snapshot,restore,reset,forceSpawn,metrics,heroOnTracks,
+    _debug:{mechs:()=>mechs,mountedTurretCell,makeBlueprint,trySpawnZone,zoneShouldSpawn,zoneSpawnX,CFG}
   };
   root.MM.mechs=api;
 })();

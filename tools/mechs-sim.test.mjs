@@ -1,7 +1,7 @@
 // Alien mech simulation contract.
 // Far-world mechs are block machines with real power-source parts,
 // separate pilot/hull defeat paths, boarding, armor absorption, tree crushing,
-// salvage drops and save/restore support.
+// block collapse, pilot loot and save/restore support.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
@@ -14,9 +14,19 @@ globalThis.msg = text => { events.push({type:'msg',detail:{text}}); };
 globalThis.inv = {
   alienBiomass:0, dynamo:0, steel:0, track:0, copperWire:0, transistor:0,
   fireTurret:0, turret:0, solarPanel:0, solarBattery:0, springPlatform:0,
-  steelTrapdoor:0, glass:0, coal:5
+  waterTurret:0, steelTrapdoor:0, glass:0, coal:5
 };
-globalThis.player = {x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,hp:100,maxHp:100,xp:0};
+globalThis.player = {x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,hp:100,maxHp:100,xp:0,energy:0,maxEnergy:120};
+globalThis.MM.heroEnergy = {
+  info(){ return {energy:globalThis.player.energy||0, max:globalThis.player.maxEnergy||120}; },
+  canSpend(n){ return (globalThis.player.energy||0)+1e-6 >= Math.max(0,Number(n)||0); },
+  spend(n){
+    const cost=Math.max(0,Number(n)||0);
+    if((globalThis.player.energy||0)+1e-6 < cost) return false;
+    globalThis.player.energy=Math.max(0,(globalThis.player.energy||0)-cost);
+    return true;
+  }
+};
 globalThis.damageHero = (amount,opts) => {
   globalThis.player.hp -= Math.round(amount);
   events.push({type:'damageHero',detail:{amount,opts}});
@@ -32,6 +42,8 @@ assert.match(mechsSource, /function drawAlienTeamPilotMini/, 'cockpit renders a 
 assert.match(mechsSource, /function drawCockpitGlassForeground/, 'cockpit keeps a normal glass pane in front of the pilot');
 assert.match(mechsSource, /cx:1\.22/, 'pilot is rendered in the empty cabin bay behind the front glass block');
 assert.doesNotMatch(mechsSource, /ctx\.arc\(cx,cy,TILE\*\(role==='cockpit'\?0\.18:0\.22\)/, 'old circular cockpit icon is not used');
+assert.match(mechsSource, /TURRETS\.fireMountedAt/, 'hostile mech weapons delegate to the existing turret engine');
+assert.doesNotMatch(mechsSource, /\bprojectiles\b|PROJECTILE_CAP|function shootAt|function updateProjectiles/, 'mechs do not keep a special projectile/bullet system');
 
 worldGen.surfaceHeight = () => 20;
 const tiles=new Map();
@@ -58,12 +70,25 @@ function tileAt(cells,x,y){
 function roleAt(cells,x,y){
   return (cells.find(c=>c.dx===x && c.dy===y) || {}).role || '';
 }
+function wireAt(cells,x,y){
+  return (cells.find(c=>c.dx===x && c.dy===y) || {}).wire ?? T.AIR;
+}
+function countTileNear(t,cx,cy,r=8){
+  let n=0;
+  for(const [raw,v] of tiles){
+    if(v!==t) continue;
+    const comma=raw.indexOf(',');
+    const x=+raw.slice(0,comma), y=+raw.slice(comma+1);
+    if(Math.abs(x-cx)<=r && Math.abs(y-cy)<=r) n++;
+  }
+  return n;
+}
 function assertForgeMatrix(bp,baseRole){
   const baseTile=baseRole==='track' ? T.TRACK : T.STEEL;
   const rows=[
     [T.STEEL,T.STEEL_TRAPDOOR,T.STEEL,T.AIR,T.AIR],
     [T.GLASS,T.AIR,T.DYNAMO,T.DYNAMO_SLOT,T.DYNAMO],
-    [T.STEEL,T.STEEL,T.STEEL,T.AIR,T.AIR],
+    [T.STEEL,T.STEEL,T.STEEL,T.AIR,T.FIRE_TURRET],
     [T.STEEL,T.STEEL,T.STEEL,T.COAL,T.STEEL],
     [T.STEEL,T.STEEL,T.STEEL,T.STEEL,T.STEEL],
     [T.AIR,baseTile,baseTile,baseTile,T.AIR]
@@ -77,6 +102,7 @@ function assertForgeMatrix(bp,baseRole){
   }
   assert.equal(roleAt(bp.cells,1,0),'hatch', 'top middle is the existing steel hatch block');
   assert.equal(roleAt(bp.cells,0,1),'cockpit', 'glass block is the cockpit with the alien inside');
+  assert.equal(roleAt(bp.cells,4,2),'turret', 'side weapon is a real turret block, not a mech-only gun');
   for(const x of [1,2,3]) assert.equal(roleAt(bp.cells,x,5),baseRole, `bottom drive block ${x} is ${baseRole}`);
 }
 
@@ -88,32 +114,55 @@ assertForgeMatrix(forgeBp,'leg');
 assert.equal(forgeBp.cells.filter(c=>c.t===T.DYNAMO).length,2, 'forge mech uses the two real dynamo casing blocks');
 assert.equal(forgeBp.cells.filter(c=>c.t===T.DYNAMO_SLOT).length,1, 'forge mech uses the real middle dynamo slot');
 assert.equal(forgeBp.cells.filter(c=>c.t===T.COAL).length,1, 'forge mech uses one existing coal block as burning fuel');
+assert.equal(forgeBp.cells.filter(c=>c.role==='turret' && c.t===T.FIRE_TURRET).length,1, 'forge mech mounts the existing craftable fire turret');
 assert.equal(forgeBp.cells.some(c=>c.t===T.SPRING_PLATFORM), false, 'forge primary design does not hide a special spring block');
 assert.equal(forgeBp.cells.some(c=>c.t===T.LAVA), false, 'forge mech no longer fakes heat with a lava block');
 assert.equal(forgeBp.cells.some(c=>c.t===T.ELECTRONICS || c.t===T.COPPER_WIRE || c.t===T.WIRE), false, 'forge prototype has no hidden electronics or wires');
-assert.equal(forgeBp.cells.some(c=>['pilot','electronics','wire','rotor','power','frontPlate','rightFrame','engine','burner','spring'].includes(c.role)), false, 'forge prototype has no mech-only fake subsystem roles');
+assert.equal(forgeBp.cells.some(c=>['pilot','electronics','wire','rotor','power','frontPlate','rightFrame','engine','burner','spring','gun','weapon'].includes(c.role)), false, 'forge prototype has no mech-only fake subsystem roles');
 const crawlerBp=mechs._debug.makeBlueprint('forge',6000);
 assert.equal(crawlerBp.name,'Forge crawler', 'some forge seeds create a tracked crawler variant');
 assertForgeMatrix(crawlerBp,'track');
 assert.equal(crawlerBp.cells.filter(c=>c.role==='track' && c.t===T.TRACK).length,3, 'crawler uses a three-block real track base');
+assert.equal(crawlerBp.cells.filter(c=>c.wire===T.COPPER_WIRE).length,7, 'crawler overlays a real copper-wire harness from dynamo to tracks');
+assert.equal(tileAt(crawlerBp.cells,2,3),T.STEEL, 'crawler wire can run over a normal steel body block');
+assert.equal(wireAt(crawlerBp.cells,2,3),T.COPPER_WIRE, 'crawler body block carries copper wire as an overlay, not a fake tile');
+assert.equal(wireAt(crawlerBp.cells,2,1),T.COPPER_WIRE, 'crawler wire starts on the real dynamo casing');
+assert.equal(wireAt(crawlerBp.cells,2,5),T.COPPER_WIRE, 'crawler wire reaches the real center track block');
 assert.equal(crawlerBp.cells.some(c=>c.t===T.SPRING_PLATFORM), false, 'crawler tracks are track blocks, not a hidden spring machine');
 assert.equal(INFO[T.TRACK].drop,'track', 'tracked crawler base salvages into the same placeable track resource');
-assert.ok(crawlerBp.cells.every(c=>[T.STEEL,T.STEEL_TRAPDOOR,T.TRACK,T.GLASS,T.COAL,T.DYNAMO,T.DYNAMO_SLOT].includes(c.t)), 'crawler is made only from exact placeable prototype blocks');
+assert.ok(crawlerBp.cells.every(c=>[T.STEEL,T.STEEL_TRAPDOOR,T.TRACK,T.GLASS,T.COAL,T.DYNAMO,T.DYNAMO_SLOT,T.FIRE_TURRET].includes(c.t)), 'crawler is made only from exact placeable prototype blocks');
 globalThis.player.x=6000;
 globalThis.player.y=15;
-let debugForge=mechs.forceSpawn('forge',globalThis.player,getTile);
+let debugForge=mechs.forceSpawn('forge',globalThis.player,getTile,setTile);
 assert.equal(debugForge.name,'Forge mech', 'debug spawn forge always gives the leg prototype');
 assertForgeMatrix({cells:debugForge.cells,bounds:debugForge._bounds},'leg');
 mechs.reset();
+globalThis.player.x=6300;
+globalThis.player.y=15;
+const instantDebugForge=mechs.forceSpawn('forge',globalThis.player,getTile,setTile);
+const instantCx=Math.floor(instantDebugForge.x+2.5), instantCy=Math.floor(instantDebugForge.y+2.5);
+const instantDynamoBefore=countTileNear(T.DYNAMO,instantCx,instantCy);
+const instantBody=cellOf(instantDebugForge,'body');
+mechs.damageAt(Math.floor(instantDebugForge.x+instantBody.dx),Math.floor(instantDebugForge.y+instantBody.dy),999,{source:'debug'});
+assert.equal(instantDebugForge.destroyed,true, 'debug-spawned mech can be destroyed before its first update tick');
+assert.ok(countTileNear(T.DYNAMO,instantCx,instantCy)>instantDynamoBefore, 'immediately destroyed debug mech still collapses into real dynamo blocks');
+mechs.reset();
 globalThis.player.x=5990;
-debugForge=mechs.forceSpawn('forge_tracks',globalThis.player,getTile);
+debugForge=mechs.forceSpawn('forge_tracks',globalThis.player,getTile,setTile);
 assert.equal(debugForge.name,'Forge crawler', 'debug spawn crawler always gives the tracked prototype');
 assertForgeMatrix({cells:debugForge.cells,bounds:debugForge._bounds},'track');
+const groundTrack=debugForge.cells.find(c=>c.role==='track');
+const groundTrackBottom0=debugForge.y+groundTrack.dy+1;
+assert.equal(groundTrackBottom0,20, 'crawler tracks spawn exactly on top of the terrain tile');
+settle(180,globalThis.player,{});
+assert.equal(+(debugForge.y+groundTrack.dy+1).toFixed(4),20, 'idle crawler tracks do not sink fractionally into the terrain under gravity');
+assert.equal(getTile(Math.floor(debugForge.x+groundTrack.dx),Math.floor(debugForge.y+groundTrack.dy+1)),T.STONE, 'crawler track has solid support immediately below it');
 mechs.reset();
 const solarBp=mechs._debug.makeBlueprint('solar',-6100);
 assert.equal(solarBp.name,'Solar hopper', 'solar prototype follows the same hopper chassis');
 assert.ok(solarBp.cells.filter(c=>c.t===T.SOLAR_PANEL).length>=4, 'solar mech carries exposed solar panels');
 assert.ok(solarBp.cells.some(c=>c.t===T.SOLAR_BATTERY), 'solar mech has a solar battery power core');
+assert.ok(solarBp.cells.some(c=>c.role==='turret' && c.t===T.TURRET), 'solar mech mounts the existing craftable standard turret');
 assert.ok(solarBp.cells.some(c=>c.role==='spring' && c.t===T.SPRING_PLATFORM), 'solar mech also uses the spring jumper chassis');
 
 // Deterministic far-zone spawn gate.
@@ -148,6 +197,24 @@ mechs.reset();
 globalThis.player.x=mechs._debug.zoneSpawnX(leftZone)-mechs._debug.CFG.PLAYER_SPAWN_GAP-5;
 settle(120);
 assert.equal(mechs._debug.mechs()[0].kind,'solar', 'left-side far spawn is solar powered');
+
+// Hostile mech weaponry is a real mounted turret, not a bespoke mech bullet.
+mechs.reset();
+if(globalThis.MM.turrets && globalThis.MM.turrets.reset) globalThis.MM.turrets.reset();
+globalThis.player.hp=100;
+globalThis.player.x=6000;
+globalThis.player.y=15;
+const gunner=mechs.forceSpawn('forge',globalThis.player,getTile);
+settle(30);
+globalThis.player.x=gunner.x+8;
+globalThis.player.y=gunner.y+2.1;
+const hpBeforeTurret=globalThis.player.hp;
+const shotsBeforeTurret=globalThis.MM.turrets.metrics().shots;
+settle(180);
+assert.ok(globalThis.MM.turrets.metrics().shots>shotsBeforeTurret, 'hostile mech fires through the shared turret engine');
+assert.ok(globalThis.player.hp<hpBeforeTurret, 'mounted turret damages the hero through the normal damageHero path');
+assert.ok(gunner.energy<gunner.maxEnergy, 'mounted turret spends the mech energy reserve');
+globalThis.player.hp=100;
 
 // Pilot defeat leaves the hull boardable.
 mechs.reset();
@@ -184,15 +251,29 @@ let remainingWood=0;
 for(let y=15;y<=19;y++) if(getTile(treeX,y)===T.WOOD) remainingWood++;
 assert.equal(remainingWood,0, 'ridden mech crushes trees in its path');
 
-// Leaving, destroying and salvaging the hull.
+// Leaving and destroying the hull collapses it into its real blocks.
 assert.equal(mechs.toggleBoard(globalThis.player,getTile), true, 'interaction key exits the mech');
 assert.equal(mechs.heroMech(), null, 'hero is no longer riding after exit');
+const collapseCx=Math.floor(mech.x+2.5), collapseCy=Math.floor(mech.y+2.5);
+const invBeforeCollapse={dynamo:globalThis.inv.dynamo,steel:globalThis.inv.steel,fireTurret:globalThis.inv.fireTurret};
+const beforeCollapse={
+  steel:countTileNear(T.STEEL,collapseCx,collapseCy),
+  dynamo:countTileNear(T.DYNAMO,collapseCx,collapseCy),
+  hatch:countTileNear(T.STEEL_TRAPDOOR,collapseCx,collapseCy),
+  glass:countTileNear(T.GLASS,collapseCx,collapseCy),
+  coal:countTileNear(T.COAL,collapseCx,collapseCy),
+  turret:countTileNear(T.FIRE_TURRET,collapseCx,collapseCy)
+};
 mechs.blastRadius(mech.x+2.5,mech.y+2.5,8,999,{source:'hero'});
-assert.ok(globalThis.inv.dynamo>=1, 'destroyed forge mech salvages a usable dynamo');
-assert.ok(globalThis.inv.steel>=1, 'destroyed forge mech salvages its structural steel blocks');
-assert.ok(globalThis.inv.steelTrapdoor>=1, 'destroyed forge mech salvages its real steel hatch block');
-assert.ok(globalThis.inv.glass>=1, 'destroyed forge mech salvages its real glass cockpit block');
-assert.ok(globalThis.inv.coal>=1, 'destroyed forge mech salvages remaining coal fuel');
+assert.equal(globalThis.inv.dynamo,invBeforeCollapse.dynamo, 'destroyed forge mech no longer grants a dynamo directly to inventory');
+assert.equal(globalThis.inv.steel,invBeforeCollapse.steel, 'destroyed forge mech no longer grants structural steel directly to inventory');
+assert.equal(globalThis.inv.fireTurret,invBeforeCollapse.fireTurret, 'destroyed forge mech no longer grants its turret directly to inventory');
+assert.ok(countTileNear(T.STEEL,collapseCx,collapseCy)>beforeCollapse.steel, 'destroyed forge mech collapses into real steel world blocks');
+assert.ok(countTileNear(T.DYNAMO,collapseCx,collapseCy)>beforeCollapse.dynamo, 'destroyed forge mech leaves real dynamo casing blocks in the world');
+assert.ok(countTileNear(T.STEEL_TRAPDOOR,collapseCx,collapseCy)>beforeCollapse.hatch, 'destroyed forge mech leaves its real steel hatch block in the world');
+assert.ok(countTileNear(T.GLASS,collapseCx,collapseCy)>beforeCollapse.glass, 'destroyed forge mech leaves its real glass cockpit block in the world');
+assert.ok(countTileNear(T.COAL,collapseCx,collapseCy)>beforeCollapse.coal, 'destroyed forge mech leaves its coal block in the world');
+assert.ok(countTileNear(T.FIRE_TURRET,collapseCx,collapseCy)>beforeCollapse.turret, 'destroyed forge mech leaves the real fire turret block in the world');
 settle(1);
 assert.equal(mechs.metrics().count,0, 'destroyed hull is removed from active simulation');
 
@@ -218,10 +299,22 @@ powerless.fuel=20;
 settle(80,globalThis.player,{right:true});
 assert.ok(powerless.x>stuckX+0.2, 'captured forge mech walks again once its real fuel charges reserve');
 assert.ok(powerless.energy<mechs._debug.CFG.ENERGY_FORGE_CAP, 'walking spends the captured mech reserve');
+// A captured forge mech parked with a FULL reserve must idle its firebox: it may
+// not silently burn stored fuel or pull coal from the rider's pack for no charge.
+powerless.energy=powerless.maxEnergy;
+powerless.fuel=Math.min(powerless.maxFuel,mechs._debug.CFG.FORGE_COAL_FUEL*0.45-1);
+globalThis.inv.coal=6;
+const parkedFuel=powerless.fuel, parkedCoal=globalThis.inv.coal;
+settle(600,globalThis.player,{});
+assert.equal(globalThis.inv.coal,parkedCoal, 'full-energy parked mech does not consume inventory coal');
+assert.equal(+powerless.fuel.toFixed(4),+parkedFuel.toFixed(4), 'full-energy parked mech does not waste stored fuel');
 globalThis.inv.coal=savedCoal;
 assert.equal(mechs.toggleBoard(globalThis.player,getTile), true, 'power test exits captured mech');
 
-// A tracked abandoned mech can be driven like a boat by standing on it, but only with power.
+// A tracked abandoned mech can be driven like a boat by standing on it.
+// The crawler itself must have a real copper-wire circuit from dynamo to tracks;
+// when the mech battery is empty, the hero can still pay the track cost from
+// stored hero energy, matching other electric devices.
 mechs.reset();
 globalThis.player.x=5990;
 globalThis.player.y=15;
@@ -235,19 +328,78 @@ globalThis.player.x=crawler.x+deck.dx+0.5;
 globalThis.player.y=crawler.y+deck.dy-(globalThis.player.h||0.95)/2+0.03;
 globalThis.player.vx=0;
 globalThis.player.vy=0;
+assert.equal(mechs.heroOnTracks(globalThis.player),crawler, 'live track query detects the hero standing on the crawler deck');
 crawler.energy=0;
 crawler.fuel=0;
 const crawlerCoal=globalThis.inv.coal;
 globalThis.inv.coal=0;
+globalThis.player.energy=0;
 const crawlerStuckX=crawler.x;
 settle(80,globalThis.player,{right:true});
-assert.ok(Math.abs(crawler.x-crawlerStuckX)<0.05, 'standing on a powerless crawler does not move it for free');
-crawler.fuel=20;
+assert.ok(Math.abs(crawler.x-crawlerStuckX)<0.05, 'standing on an empty crawler does not move it for free without hero energy');
+globalThis.player.energy=20;
 globalThis.player.x=crawler.x+deck.dx+0.5;
 globalThis.player.y=crawler.y+deck.dy-(globalThis.player.h||0.95)/2+0.03;
+const heroEnergyBeforeTracks=globalThis.player.energy;
 settle(120,globalThis.player,{right:true});
-assert.ok(crawler.x>crawlerStuckX+0.15, 'standing on a powered crawler drives it horizontally like a boat');
+assert.ok(crawler.x>crawlerStuckX+0.15, 'standing on a wired crawler can spend hero energy to drive tracks like a boat');
+assert.ok(globalThis.player.energy<heroEnergyBeforeTracks, 'hero energy is consumed by standalone track driving');
 assert.ok(globalThis.player.x>crawlerStuckX+deck.dx+0.55, 'standing rider is carried along with the tracked mech');
+crawler.energy=5;
+crawler.fuel=0;
+globalThis.player.energy=30;
+globalThis.player.x=crawler.x+deck.dx+0.5;
+globalThis.player.y=crawler.y+deck.dy-(globalThis.player.h||0.95)/2+0.03;
+const mechReserveX=crawler.x, heroEnergyBeforeReserve=globalThis.player.energy, crawlerEnergyBeforeReserve=crawler.energy;
+settle(80,globalThis.player,{right:true});
+assert.ok(crawler.x>mechReserveX+0.1, 'standing track drive first uses the crawler reserve when it is available');
+assert.equal(globalThis.player.energy,heroEnergyBeforeReserve, 'standing track drive does not spend hero energy while crawler reserve can pay');
+assert.ok(crawler.energy<crawlerEnergyBeforeReserve, 'crawler reserve is actually consumed by standing track drive');
+const oldDynamo=globalThis.MM.dynamo;
+let externalTrackDrain=0;
+globalThis.MM.dynamo={
+  absorbNear(x,y,need,gt,radius){
+    externalTrackDrain+=Math.max(0,Number(need)||0);
+    return {amount:Math.max(0,Number(need)||0)};
+  }
+};
+crawler.energy=0;
+crawler.fuel=0;
+globalThis.player.energy=30;
+globalThis.player.x=crawler.x+deck.dx+0.5;
+globalThis.player.y=crawler.y+deck.dy-(globalThis.player.h||0.95)/2+0.03;
+const externalDriveX=crawler.x, heroEnergyBeforeExternal=globalThis.player.energy;
+settle(80,globalThis.player,{left:true});
+assert.ok(crawler.x<externalDriveX-0.1, 'standing track drive can draw from an external power source before hero energy');
+assert.equal(globalThis.player.energy,heroEnergyBeforeExternal, 'external track power prevents hero-energy drain');
+assert.ok(externalTrackDrain>0, 'external dynamo source is queried for standing track drive');
+globalThis.MM.dynamo=oldDynamo;
+crawler.energy=8;
+globalThis.player.energy=30;
+globalThis.player.x=crawler.x+deck.dx+0.5;
+globalThis.player.y=crawler.y+deck.dy-(globalThis.player.h||0.95)/2+0.03;
+globalThis.player.vx=0;
+globalThis.player.vy=0;
+globalThis.player.onGround=true;
+const jumpOffX=crawler.x;
+settle(2,globalThis.player,{right:true,jump:true});
+assert.ok(Math.abs(crawler.x-jumpOffX)<0.03, 'jump while standing on tracks does not jump or drive the crawler');
+assert.ok(globalThis.player.vy< -0.1 && !globalThis.player.onGround, 'jump while standing on tracks releases the hero from the crawler');
+assert.equal(mechs.heroOnTracks(globalThis.player),null, 'after jumping off, the hero is no longer considered to be riding the tracks');
+const brokenWire=crawler.cells.find(c=>c.dx===2 && c.dy===4);
+delete brokenWire.wire;
+crawler.energy=40;
+crawler.vx=0;
+crawler.vy=0;
+globalThis.player.energy=40;
+globalThis.player.x=crawler.x+deck.dx+0.5;
+globalThis.player.y=crawler.y+deck.dy-(globalThis.player.h||0.95)/2+0.03;
+globalThis.player.vx=0;
+globalThis.player.vy=0;
+globalThis.player.onGround=true;
+const brokenCircuitX=crawler.x;
+settle(100,globalThis.player,{right:true});
+assert.ok(Math.abs(crawler.x-brokenCircuitX)<0.05, 'crawler tracks refuse movement when copper wire no longer joins dynamo to tracks');
 globalThis.inv.coal=crawlerCoal;
 
 // Hostile mechs can batter through a simple house wall while chasing the hero.
@@ -301,7 +453,7 @@ settle(20);
 assert.ok(mobCollisions>0, 'mech update calls mob collision hook');
 globalThis.MM.mobs=oldMobs;
 
-// A ridden mech that breaks under incoming damage ejects once and salvages once.
+// A ridden mech that breaks under incoming damage ejects once and collapses once.
 mechs.reset();
 globalThis.player.x=6000;
 globalThis.player.y=15;
@@ -313,13 +465,18 @@ globalThis.player.x=armored.x+2.5;
 globalThis.player.y=armored.y+2.2;
 assert.equal(mechs.toggleBoard(globalThis.player,getTile), true, 'abandoned armor can be captured for destruction regression');
 const dynBeforeBreak=globalThis.inv.dynamo;
+const armorCx=Math.floor(armored.x+2.5), armorCy=Math.floor(armored.y+2.5);
+const worldDynBeforeBreak=countTileNear(T.DYNAMO,armorCx,armorCy);
 const brokenGuard=mechs.absorbHeroDamage(10000,{cause:'stress'},globalThis.player);
 assert.ok(brokenGuard && brokenGuard.absorbed>0, 'ridden armor absorbs the fatal stress hit');
 assert.equal(mechs.heroMech(), null, 'destroyed ridden mech ejects the hero immediately');
 const dynAfterBreak=globalThis.inv.dynamo;
-assert.ok(dynAfterBreak>dynBeforeBreak, 'destroyed ridden mech salvages once');
+assert.equal(dynAfterBreak,dynBeforeBreak, 'destroyed ridden mech does not grant direct inventory salvage');
+assert.ok(countTileNear(T.DYNAMO,armorCx,armorCy)>worldDynBeforeBreak, 'destroyed ridden mech collapses its dynamo blocks into the world');
+const worldDynAfterBreak=countTileNear(T.DYNAMO,armorCx,armorCy);
 mechs.blastRadius(armored.x+2.5,armored.y+2.5,8,999,{source:'hero'});
 assert.equal(globalThis.inv.dynamo,dynAfterBreak, 'already-destroyed mech cannot award duplicate salvage');
+assert.equal(countTileNear(T.DYNAMO,armorCx,armorCy),worldDynAfterBreak, 'already-destroyed mech cannot collapse duplicate blocks');
 settle(1);
 
 // Saving while mounted keeps the captured mech mounted after restore.

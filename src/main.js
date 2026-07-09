@@ -8004,6 +8004,7 @@ function physics(dt){
 	// hero slowly across the deck. Beached rafts walk like ordinary ground.
 	const heroBoatNow=BOATS ? (BOATS.heroOnBoat ? BOATS.heroOnBoat(player) : (BOATS.heroBoat ? BOATS.heroBoat() : null)) : null;
 	const ridingFloatingBoat = !!(heroBoatNow && heroBoatNow.inWater && !heroBoatNow.grounded);
+	const heroTrackNow=MECHS && MECHS.heroOnTracks ? MECHS.heroOnTracks(player) : null;
 	if(ridingFloatingBoat){
 		const leftNow=!!(keys['a']||keys['arrowleft']);
 		const rightNow=!!(keys['d']||keys['arrowright']);
@@ -8011,7 +8012,10 @@ function physics(dt){
 		if(rightNow && !rowPrevRight) heroRowStroke(1);
 		rowPrevLeft=leftNow; rowPrevRight=rightNow;
 		input*=0.45;
-	} else { rowPrevLeft=false; rowPrevRight=false; }
+	} else {
+		rowPrevLeft=false; rowPrevRight=false;
+		if(heroTrackNow) input=0;
+	}
 	const climbUpInput=!!(keys['w']||keys['arrowup']);
 	const climbDownInput=!!(keys['s']||keys['arrowdown']);
 	const ladderContact=heroTouchesLadder();
@@ -11749,6 +11753,7 @@ function debugMechFocus(){
 		maxEnergy:+(m.maxEnergy||0).toFixed(1),
 		fuel:+(m.fuel||0).toFixed(1),
 		maxFuel:+(m.maxFuel||0).toFixed(1),
+		trackCircuit:m.trackCircuitOk!==false,
 		onGround:!!m.onGround,
 		blocked:+(m.blockedT||m.obstacleStrikeT||0).toFixed(1),
 		jumps:m.uncertainJumpTries||0
@@ -11768,7 +11773,7 @@ function debugStepMechs(frames,controls){
 	if(!MECHS || !MECHS.update) return false;
 	const n=Math.max(1,Math.min(180,frames|0));
 	for(let i=0;i<n;i++){
-		MECHS.update(1/60,player,getTile,setTile,{controls:controls||companionControlState(),godMode});
+		MECHS.update(1/60,player,getTile,setTile,{controls:controls||companionControlState(),godMode,heroEnergy:MM.heroEnergy});
 		if(MECHS.syncRider) MECHS.syncRider(player);
 	}
 	return true;
@@ -11776,7 +11781,7 @@ function debugStepMechs(frames,controls){
 function spawnDebugMech(kind){
 	if(!MECHS || !MECHS.forceSpawn) return false;
 	const spawnKind=kind==='solar' ? 'solar' : (kind==='forge_tracks' ? 'forge_tracks' : 'forge');
-	const m=MECHS.forceSpawn(spawnKind,player,getTile);
+	const m=MECHS.forceSpawn(spawnKind,player,getTile,setTile);
 	if(!m) return false;
 	debugStepMechs(18,{});
 	centerOnPlayer();
@@ -13216,7 +13221,7 @@ function runGameStep(dt,ts){
 	if(VOLCANO && VOLCANO.update) VOLCANO.update(dt, player, getTile, setTile);
 	if(WIND && WIND.update) WIND.update(dt, player, getTile, {clouds:CLOUDS, worldGen:WORLDGEN, background:BACKGROUND});
 	if(BOATS && BOATS.update) BOATS.update(dt, player, getTile, {wind:WIND, water:WATER, heroEnergy:MM.heroEnergy, mobs:MOBS});
-	if(MECHS && MECHS.update) MECHS.update(dt, player, getTile, setTile, {controls:companionControlState(), godMode});
+	if(MECHS && MECHS.update) MECHS.update(dt, player, getTile, setTile, {controls:companionControlState(), godMode, heroEnergy:MM.heroEnergy});
 	if(GASES && GASES.update) GASES.update(dt, getTile, setTile, player);
 	if(PLANTS && PLANTS.update) PLANTS.update(getTile, setTile, dt);
 	if(PROGRESS && PROGRESS.update) PROGRESS.update(dt);
