@@ -36,6 +36,7 @@ globalThis.damageHero = (amount,opts) => {
 const { T, INFO } = await import('../src/constants.js');
 const { worldGen } = await import('../src/engine/worldgen.js');
 const { mechs } = await import('../src/engine/mechs.js');
+await import('../src/engine/dynamo.js'); // mech dynamos charge through the shared machine
 
 const mechsSource = readFileSync(new URL('../src/engine/mechs.js', import.meta.url),'utf8');
 assert.match(mechsSource, /function drawAlienTeamPilotMini/, 'cockpit renders a real alien-team-style pilot, not a placeholder icon');
@@ -113,7 +114,7 @@ assert.equal(forgeBp.name,'Forge mech', 'forge prototype is the hard-coded prima
 assertForgeMatrix(forgeBp,'leg');
 assert.equal(forgeBp.cells.filter(c=>c.t===T.DYNAMO).length,2, 'forge mech uses the two real dynamo casing blocks');
 assert.equal(forgeBp.cells.filter(c=>c.t===T.DYNAMO_SLOT).length,1, 'forge mech uses the real middle dynamo slot');
-assert.equal(forgeBp.cells.filter(c=>c.t===T.COAL).length,1, 'forge mech uses one existing coal block as burning fuel');
+assert.equal(forgeBp.cells.filter(c=>c.t===T.COAL).length,1, 'forge mech carries one coal block as cargo/salvage (dynamos are flow-powered, coal never burns for energy)');
 assert.equal(forgeBp.cells.filter(c=>c.role==='turret' && c.t===T.FIRE_TURRET).length,1, 'forge mech mounts the existing craftable fire turret');
 assert.equal(forgeBp.cells.some(c=>c.t===T.SPRING_PLATFORM), false, 'forge primary design does not hide a special spring block');
 assert.equal(forgeBp.cells.some(c=>c.t===T.LAVA), false, 'forge mech no longer fakes heat with a lava block');
@@ -216,6 +217,41 @@ assert.ok(globalThis.player.hp<hpBeforeTurret, 'mounted turret damages the hero 
 assert.ok(gunner.energy<gunner.maxEnergy, 'mounted turret spends the mech energy reserve');
 globalThis.player.hp=100;
 
+// The gun is a real turret block wired into the mech's own dynamo/solar network:
+// it draws power the same way a placed turret does, never from a private pool.
+assert.equal(mechs._debug.mechTurretCircuitConnected(gunner), true, 'forge turret is powered by the dynamo casing it is bolted to');
+const gunnerDynamo=gunner.cells.find(c=>c.dx===4 && c.dy===1);
+assert.equal(gunnerDynamo.t,T.DYNAMO, 'a real dynamo casing sits directly above the turret block');
+gunnerDynamo.t=T.STEEL;                       // steel neither conducts nor generates
+assert.equal(mechs._debug.mechTurretCircuitConnected(gunner), false, 'a turret cut off from every power source loses its circuit');
+globalThis.MM.turrets.reset();
+gunner.energy=gunner.maxEnergy;
+globalThis.player.x=gunner.x+8;
+globalThis.player.y=gunner.y+2.1;
+const shotsStranded=globalThis.MM.turrets.metrics().shots;
+settle(200);
+assert.equal(globalThis.MM.turrets.metrics().shots,shotsStranded, 'a stranded turret cannot fire off the hull reserve');
+assert.equal(globalThis.player.hp,100, 'a stranded turret cannot hurt the hero');
+gunnerDynamo.wire=T.COPPER_WIRE;              // existing tech: run copper wire back to the dynamo bank
+assert.equal(mechs._debug.mechTurretCircuitConnected(gunner), true, 'copper wire re-links the turret to the dynamo bank');
+const shotsRewired=globalThis.MM.turrets.metrics().shots;
+settle(220);
+assert.ok(globalThis.MM.turrets.metrics().shots>shotsRewired, 'a re-wired turret fires again');
+globalThis.player.hp=100;
+
+// Solar hopper: the same rule, fed by its solar battery instead of a dynamo.
+mechs.reset();
+globalThis.player.x=-6200;
+globalThis.player.y=15;
+const solarGun=mechs.forceSpawn('solar',globalThis.player,getTile);
+settle(20);
+const solarBattery=solarGun.cells.find(c=>c.dx===4 && c.dy===1);
+assert.equal(solarBattery.t,T.SOLAR_BATTERY, 'solar battery sits directly above the solar turret');
+assert.equal(mechs._debug.mechTurretCircuitConnected(solarGun), true, 'solar turret is powered by its battery');
+solarBattery.t=T.STEEL;
+assert.equal(mechs._debug.mechTurretCircuitConnected(solarGun), false, 'solar turret dies when its battery is gone');
+globalThis.player.hp=100;
+
 // Pilot defeat leaves the hull boardable.
 mechs.reset();
 globalThis.player.x=6000;
@@ -233,6 +269,27 @@ assert.equal(mech.pilotAlive,false, 'cockpit hits can defeat the alien pilot');
 assert.ok(mech.hp>0 && mech.hp<hpBefore, 'pilot defeat leaves a damaged but intact hull');
 assert.ok(globalThis.inv.alienBiomass>=1, 'pilot drops alien biomass');
 assert.ok(globalThis.player.xp>0, 'pilot defeat grants XP');
+
+// A pilotless hull that still has a live turret circuit turns the gun on the
+// nearest hostile, exactly like a placed turret defending the base.
+{
+  const savedMobs=globalThis.MM.mobs;
+  let defMobHp=70, defMobDmg=0;
+  globalThis.MM.mobs={
+    nearestLiving(){ return defMobHp>0 ? {x:mech.x+5.5,y:mech.y+2.2,hp:defMobHp,species:'ZOMBIE'} : null; },
+    damageAt(tx,ty,d){ defMobHp-=d; defMobDmg+=d; return true; },
+    collideMech(){ return null; }
+  };
+  if(globalThis.MM.turrets && globalThis.MM.turrets.reset) globalThis.MM.turrets.reset();
+  mech.energy=mech.maxEnergy;
+  globalThis.player.x=mech.x-40; // hero far away: only the mob is a target
+  const defShots=globalThis.MM.turrets.metrics().shots;
+  settle(240);
+  assert.ok(globalThis.MM.turrets.metrics().shots>defShots, 'captured hull turret engages a hostile mob on its own');
+  assert.ok(defMobDmg>0, 'captured hull turret damages the mob through the shared engine');
+  assert.ok(mech.energy<mech.maxEnergy, 'defensive fire spends the captured hull reserve');
+  globalThis.MM.mobs=savedMobs;
+}
 globalThis.player.x=mech.x+2.5;
 globalThis.player.y=mech.y+2.2;
 assert.equal(mechs.toggleBoard(globalThis.player,getTile), true, 'empty hull can be boarded with the interaction key path');
@@ -289,26 +346,28 @@ globalThis.player.x=powerless.x+2.5;
 globalThis.player.y=powerless.y+2.2;
 assert.equal(mechs.toggleBoard(globalThis.player,getTile), true, 'power test boards an abandoned mech');
 powerless.energy=0;
-powerless.fuel=0;
-const savedCoal=globalThis.inv.coal;
-globalThis.inv.coal=0;
 const stuckX=powerless.x;
 settle(80,globalThis.player,{right:true});
-assert.ok(Math.abs(powerless.x-stuckX)<0.05, 'captured mech does not walk with no energy or fuel');
-powerless.fuel=20;
+assert.ok(Math.abs(powerless.x-stuckX)<0.05, 'captured mech does not walk with an empty reserve');
+// The mech-mounted dynamo IS the world machine: steam/water flow recorded
+// through the shared DYNAMO.recordFlow path lands in the hull battery.
+const powerSlot=powerless.cells.find(c=>c.t===T.DYNAMO_SLOT);
+let flowHits=0;
+for(let i=0;i<24;i++){
+  if(globalThis.MM.dynamo.recordFlow(Math.floor(powerless.x+powerSlot.dx),Math.floor(powerless.y+powerSlot.dy),T.STEAM,2,getTile)) flowHits++;
+}
+assert.ok(flowHits>0, 'steam flow through the mech slot drives the shared dynamo implementation');
+assert.ok(powerless.energy>1, 'recorded flow charges the mech battery');
 settle(80,globalThis.player,{right:true});
-assert.ok(powerless.x>stuckX+0.2, 'captured forge mech walks again once its real fuel charges reserve');
+assert.ok(powerless.x>stuckX+0.2, 'captured forge mech walks again once flow recharges its reserve');
 assert.ok(powerless.energy<mechs._debug.CFG.ENERGY_FORGE_CAP, 'walking spends the captured mech reserve');
-// A captured forge mech parked with a FULL reserve must idle its firebox: it may
-// not silently burn stored fuel or pull coal from the rider's pack for no charge.
+// Full battery: the turbine still passes flow (gas can be consumed) but never overfills,
+// and no phantom WORLD machine record accumulates energy at the mech slot.
 powerless.energy=powerless.maxEnergy;
-powerless.fuel=Math.min(powerless.maxFuel,mechs._debug.CFG.FORGE_COAL_FUEL*0.45-1);
-globalThis.inv.coal=6;
-const parkedFuel=powerless.fuel, parkedCoal=globalThis.inv.coal;
-settle(600,globalThis.player,{});
-assert.equal(globalThis.inv.coal,parkedCoal, 'full-energy parked mech does not consume inventory coal');
-assert.equal(+powerless.fuel.toFixed(4),+parkedFuel.toFixed(4), 'full-energy parked mech does not waste stored fuel');
-globalThis.inv.coal=savedCoal;
+const fullSlotX=Math.floor(powerless.x+powerSlot.dx), fullSlotY=Math.floor(powerless.y+powerSlot.dy);
+assert.equal(globalThis.MM.dynamo.recordFlow(fullSlotX,fullSlotY,T.WATER,3,getTile), true, 'flow still passes a full mech dynamo');
+assert.equal(powerless.energy,powerless.maxEnergy, 'full mech reserve is clamped, never overfilled');
+assert.equal(globalThis.MM.dynamo.energyAt(fullSlotX,fullSlotY,getTile), 0, 'no world machine record shadows the mech-carried slot');
 assert.equal(mechs.toggleBoard(globalThis.player,getTile), true, 'power test exits captured mech');
 
 // A tracked abandoned mech can be driven like a boat by standing on it.
@@ -330,9 +389,6 @@ globalThis.player.vx=0;
 globalThis.player.vy=0;
 assert.equal(mechs.heroOnTracks(globalThis.player),crawler, 'live track query detects the hero standing on the crawler deck');
 crawler.energy=0;
-crawler.fuel=0;
-const crawlerCoal=globalThis.inv.coal;
-globalThis.inv.coal=0;
 globalThis.player.energy=0;
 const crawlerStuckX=crawler.x;
 settle(80,globalThis.player,{right:true});
@@ -346,7 +402,6 @@ assert.ok(crawler.x>crawlerStuckX+0.15, 'standing on a wired crawler can spend h
 assert.ok(globalThis.player.energy<heroEnergyBeforeTracks, 'hero energy is consumed by standalone track driving');
 assert.ok(globalThis.player.x>crawlerStuckX+deck.dx+0.55, 'standing rider is carried along with the tracked mech');
 crawler.energy=5;
-crawler.fuel=0;
 globalThis.player.energy=30;
 globalThis.player.x=crawler.x+deck.dx+0.5;
 globalThis.player.y=crawler.y+deck.dy-(globalThis.player.h||0.95)/2+0.03;
@@ -364,7 +419,6 @@ globalThis.MM.dynamo={
   }
 };
 crawler.energy=0;
-crawler.fuel=0;
 globalThis.player.energy=30;
 globalThis.player.x=crawler.x+deck.dx+0.5;
 globalThis.player.y=crawler.y+deck.dy-(globalThis.player.h||0.95)/2+0.03;
@@ -400,7 +454,6 @@ globalThis.player.onGround=true;
 const brokenCircuitX=crawler.x;
 settle(100,globalThis.player,{right:true});
 assert.ok(Math.abs(crawler.x-brokenCircuitX)<0.05, 'crawler tracks refuse movement when copper wire no longer joins dynamo to tracks');
-globalThis.inv.coal=crawlerCoal;
 
 // Hostile mechs can batter through a simple house wall while chasing the hero.
 mechs.reset();
@@ -497,16 +550,13 @@ assert.equal(mechs.restore(mountedSnap,getTile), true, 'mounted snapshot restore
 assert.ok(mechs.heroMech(), 'restore keeps the player attached to the captured mech');
 const restoredMounted=mechs.heroMech();
 restoredMounted.energy=0;
-restoredMounted.fuel=0;
-const mountedSavedCoal=globalThis.inv.coal;
-globalThis.inv.coal=0;
 const mountedStuckX=restoredMounted.x;
 settle(70,globalThis.player,{right:true});
 assert.ok(Math.abs(restoredMounted.x-mountedStuckX)<0.05, 'restored mounted mech still refuses free movement without power');
-restoredMounted.fuel=20;
+const restoredSlot=restoredMounted.cells.find(c=>c.t===T.DYNAMO_SLOT);
+for(let i=0;i<24;i++) globalThis.MM.dynamo.recordFlow(Math.floor(restoredMounted.x+restoredSlot.dx),Math.floor(restoredMounted.y+restoredSlot.dy),T.STEAM,2,getTile);
 settle(90,globalThis.player,{right:true});
-assert.ok(restoredMounted.x>mountedStuckX+0.2, 'restored mounted forge mech uses real fuel after load');
-globalThis.inv.coal=mountedSavedCoal;
+assert.ok(restoredMounted.x>mountedStuckX+0.2, 'restored mounted forge mech recharges through the shared dynamo after load');
 mechs.reset();
 
 // Snapshot/restore keeps abandoned machines and used spawn zones.

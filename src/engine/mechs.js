@@ -3,7 +3,7 @@
 // while the mech can move, fight, be boarded after the pilot is defeated, and
 // collapse back into the same blocks players use for their own machines.
 import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
-import { isFoliageTile, isPlayerPassableTile, isReplaceableNaturalOpenTile, isSolidCollisionTile, isSunTransparentTile } from './material_physics.js';
+import { isChairTile, isFoliageTile, isPlayerPassableTile, isReplaceableNaturalOpenTile, isSolidCollisionTile, isSunTransparentTile } from './material_physics.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
 import { turrets as TURRETS } from './turrets.js';
 
@@ -52,11 +52,26 @@ import { turrets as TURRETS } from './turrets.js';
     RIDER_JUMP_ENERGY: 7.5,
     HERO_TRACK_ENERGY_MULT: 1.18,
     SOLAR_PANEL_CHARGE: 0.42,
-    FORGE_CHARGE: 2.45,
-    FORGE_FUEL_PER_SEC: 0.045,
-    FORGE_COAL_FUEL: 34,
-    EXTERNAL_DRAIN_RADIUS: 4.5
+    EXTERNAL_DRAIN_RADIUS: 4.5,
+    // Player-built mechs: a chair-crowned block machine assembled straight from
+    // the world grid (see the "built mech" section below). Their dynamos are
+    // powered exactly like the placed machine (engine/dynamo.js): wind through
+    // a vertical slot plus water/steam/hot-air flow — never coal or lava.
+    BUILT_MAX_CELLS: 150,
+    BUILT_MAX_W: 15,
+    BUILT_MAX_H: 15,
+    BUILT_MIN_TRACKS: 2,
+    BUILT_BASE_ENERGY: 30,
+    BUILT_BATTERY_ENERGY: 60,
+    BUILT_DYNAMO_ENERGY: 20,
+    BUILT_PANEL_ENERGY: 8,
+    BUILT_MAX_ENERGY_CAP: 300,
+    BUILT_SEAT_SCAN_COOLDOWN: 0.9,
+    BUILT_SEAT_JUMP_GRACE: 0.35
   };
+  // Chair material sets how efficiently the seated hero's own energy reaches the
+  // drive: steel is a clean link, wood wastes the most.
+  const CHAIR_ENERGY_MULT={wood:1.38, stone:1.18, steel:1.0};
 
   const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
@@ -159,6 +174,40 @@ import { turrets as TURRETS } from './turrets.js';
   function isSupportTile(t){
     if(t===T.WATER || t===T.LAVA) return false;
     return isSolidCollisionTile(t);
+  }
+  // Tiles a player-built mech may be assembled from. Natural terrain is excluded
+  // so the chair scan never swallows the ground the machine parks on; positional
+  // registries (teleporter pairs, vending stock, respawn totems) stay out too.
+  const MECH_COMPONENT_TILES=new Set([
+    T.TRACK,T.STEEL,T.GLASS,T.WOOD,T.BRICK,T.OBSIDIAN,T.COAL,
+    T.ELECTRONICS,T.TRANSISTOR,T.DYNAMO,T.DYNAMO_SLOT,
+    T.SOLAR_PANEL,T.SOLAR_BATTERY,T.TURRET,T.FIRE_TURRET,T.WATER_TURRET,
+    T.SPRING_PLATFORM,T.COPPER_WIRE,T.WIRE,T.WATER_PIPE,T.TORCH,T.CHIMNEY,
+    T.WOOD_DOOR,T.STONE_DOOR,T.STEEL_DOOR,
+    T.WOOD_TRAPDOOR,T.STONE_TRAPDOOR,T.STEEL_TRAPDOOR,
+    T.LADDER,T.CHAIR_WOOD,T.CHAIR_STONE,T.CHAIR_STEEL
+  ]);
+  function isMechComponentTile(t){ return MECH_COMPONENT_TILES.has(t); }
+  // Infrastructure overlays (copper wire, ladders, pipes) ride on the world's
+  // overlay layer; aboard a mech they become per-cell `infra` lists.
+  function worldApi(){ return (root.MM && root.MM.world) || null; }
+  function infraStackAt(x,y){
+    const w=worldApi();
+    if(!w || typeof w.getInfrastructureStack !== 'function') return [];
+    try{
+      const s=w.getInfrastructureStack(Math.floor(x),Math.floor(y));
+      return Array.isArray(s) ? s.filter(t=>t!==T.AIR) : [];
+    }catch(e){ return []; }
+  }
+  function clearInfraAt(x,y,t){
+    const w=worldApi();
+    if(!w || typeof w.clearInfrastructure !== 'function') return false;
+    try{ w.clearInfrastructure(Math.floor(x),Math.floor(y),t); return true; }catch(e){ return false; }
+  }
+  function setInfraAt(x,y,t){
+    const w=worldApi();
+    if(!w || typeof w.setInfrastructure !== 'function') return false;
+    try{ w.setInfrastructure(Math.floor(x),Math.floor(y),t); return true; }catch(e){ return false; }
   }
   function canBreakObstacleTile(t){
     if(t===T.AIR || t===T.WATER || t===T.LAVA) return false;
@@ -284,7 +333,10 @@ import { turrets as TURRETS } from './turrets.js';
     };
   }
   function cockpitCell(m){
-    return (m.cells||[]).find(c=>c.role==='cockpit') || (m.cells||[]).find(c=>c.t===T.GLASS) || {dx:2,dy:1};
+    return (m.cells||[]).find(c=>c.role==='chair') || (m.cells||[]).find(c=>c.role==='cockpit') || (m.cells||[]).find(c=>c.t===T.GLASS) || {dx:2,dy:1};
+  }
+  function chairCell(m){
+    return (m.cells||[]).find(c=>c.role==='chair') || null;
   }
   function bounds(m){
     if(!m._bounds) m._bounds=normalizeCells(m.cells||[]);
@@ -416,6 +468,47 @@ import { turrets as TURRETS } from './turrets.js';
       }
     }
     return null;
+  }
+  // World-position index of live mech cells, consumed by engine/dynamo.js as a
+  // tile overlay: a mech-carried [casing|slot|casing] stack validates, catches
+  // wind and receives water/steam/hot-air recordFlow exactly like the placed
+  // machine. Rebuilt lazily — mechs move every update tick. Numeric keys keep
+  // the water/gas hot paths allocation-free (see the getTile-allocation-tax
+  // perf note: string keys per tile read once collapsed the frame rate).
+  let cellIndex=new Map();
+  let cellIndexDirty=true;
+  function markCellIndexDirty(){ cellIndexDirty=true; }
+  function overlayKey(x,y){ return Math.floor(x)*2048+(Math.floor(y)+520); }
+  function liveCellIndex(){
+    if(cellIndexDirty){
+      cellIndexDirty=false;
+      cellIndex.clear();
+      for(const m of mechs){
+        if(!m || m.hp<=0) continue;
+        for(const c of m.cells||[]){
+          if(!c || c.t===T.AIR) continue;
+          cellIndex.set(overlayKey(m.x+c.dx,m.y+c.dy),{m,c});
+        }
+      }
+    }
+    return cellIndex;
+  }
+  function tileOverlayAt(x,y){
+    if(!mechs.length) return null; // fast path: no live mechs, no overlay
+    const hit=liveCellIndex().get(overlayKey(x,y));
+    return hit ? hit.c.t : null;
+  }
+  // engine/dynamo.js pushes flow gains here when water/steam/hot-air passes a
+  // mech-carried slot: same media, same gain numbers, hull battery as the store.
+  function absorbDynamoFlow(x,y,kind,energy){
+    const hit=liveCellIndex().get(overlayKey(x,y));
+    if(!hit || hit.c.t!==T.DYNAMO_SLOT || hit.m.hp<=0) return false;
+    const m=hit.m;
+    const gain=Math.max(0,Number(energy)||0);
+    if(!Number.isFinite(m.maxEnergy)) m.maxEnergy=mechMaxEnergy(m.kind);
+    m.energy=Math.min(m.maxEnergy,(Number(m.energy)||0)+gain);
+    m.powerPulse=Math.min(1,(m.powerPulse||0)+0.14+gain*0.05);
+    return true;
   }
   function findAt(tx,ty){ const hit=cellAt(tx,ty); return hit ? hit.mech : null; }
   function findRiderMech(){
@@ -621,28 +714,61 @@ import { turrets as TURRETS } from './turrets.js';
     if(!m || !Array.isArray(m.cells)) return null;
     return m.cells.find(c=>c && c.role==='turret' && isMountedTurretTile(c.t)) || m.cells.find(c=>c && isMountedTurretTile(c.t)) || null;
   }
-  function fireMountedTurretAtHero(m,player,dt,getTile){
-    if(!m || !m.pilotAlive || m.rider || !player || !TURRETS || typeof TURRETS.fireMountedAt !== 'function') return false;
-    const cell=mountedTurretCell(m);
-    if(!cell) return false;
-    m.turretState=m.turretState || {};
-    const beforeEnergy=Math.max(0,Number(m.energy)||0);
-    const res=TURRETS.fireMountedAt(
-      cell.t,
-      m.turretState,
-      dt,
-      {x:m.x+cell.dx,y:m.y+cell.dy,energy:beforeEnergy},
-      {kind:'hero',hero:player,x:player.x,y:(Number(player.y)||0)-0.25,hp:Number.isFinite(Number(player.hp))?Number(player.hp):1,source:'alien_mech'},
-      getTile
-    );
-    if(res && Number.isFinite(Number(res.energy))) m.energy=clamp(Number(res.energy),0,m.maxEnergy||mechMaxEnergy(m.kind));
-    if(res && res.fired){
-      m.recoilT=0.18;
-      m.powerPulse=Math.min(1,(m.powerPulse||0)+0.2);
-      emit('mm-combat-event',{kind:cell.t===T.FIRE_TURRET?'fire':'laser',target:'hero',source:'alien_mech_turret',x:m.x+cell.dx+0.5,y:m.y+cell.dy+0.5,element:cell.t===T.FIRE_TURRET?'fire':'electric',amount:cell.t===T.FIRE_TURRET?3.2:5.5,power:0.75});
-      return true;
+  function mountedTurretCells(m){
+    if(!m || !Array.isArray(m.cells)) return [];
+    return m.cells.filter(c=>c && isMountedTurretTile(c.t));
+  }
+  // Every turret block draws from the hull reserve only through the mech's own
+  // electric network, each with its own cooldown state (two guns of different
+  // kinds must not share a fire clock). `target` of null lets the shared turret
+  // engine pick the nearest hostile, exactly like a turret placed on the ground.
+  function fireMountedTurret(m,dt,getTile,target,source){
+    if(!m || !TURRETS || typeof TURRETS.fireMountedAt !== 'function') return false;
+    const cells=mountedTurretCells(m);
+    if(!cells.length) return false;
+    const energised=energisedCells(m);
+    m.turretStates=m.turretStates || {};
+    let firedAny=false;
+    for(const cell of cells){
+      if(!cellPowered(cell,energised)) continue;
+      const key=cell.dx+','+cell.dy;
+      const state=m.turretStates[key]=m.turretStates[key] || {};
+      const beforeEnergy=Math.max(0,Number(m.energy)||0);
+      const res=TURRETS.fireMountedAt(
+        cell.t,
+        state,
+        dt,
+        {x:m.x+cell.dx,y:m.y+cell.dy,energy:beforeEnergy},
+        target,
+        getTile
+      );
+      // Subtract only what the shot consumed: the engine's working copy is
+      // clamped to placed-turret capacity, while a mech battery bank can hold
+      // far more — adopting the clamped total would wipe the excess reserve.
+      const spent=(res && Number.isFinite(Number(res.spent))) ? Math.max(0,Number(res.spent)) : 0;
+      if(spent>0) m.energy=Math.max(0,beforeEnergy-spent);
+      if(res && res.fired){
+        firedAny=true;
+        m.recoilT=0.18;
+        m.powerPulse=Math.min(1,(m.powerPulse||0)+0.2);
+        const fire=cell.t===T.FIRE_TURRET;
+        emit('mm-combat-event',{kind:fire?'fire':'laser',target:target?'hero':'mob',source:source||'mech_turret',x:m.x+cell.dx+0.5,y:m.y+cell.dy+0.5,element:fire?'fire':'electric',amount:fire?3.2:5.5,power:0.75});
+      }
     }
-    return false;
+    return firedAny;
+  }
+  function fireMountedTurretAtHero(m,player,dt,getTile){
+    if(!m || !m.pilotAlive || m.rider || !player) return false;
+    const hp=Number.isFinite(Number(player.hp)) ? Number(player.hp) : 1;
+    return fireMountedTurret(m,dt,getTile,
+      {kind:'hero',hero:player,x:player.x,y:(Number(player.y)||0)-0.25,hp,source:'alien_mech'},
+      'alien_mech_turret');
+  }
+  // No alien pilot left: the block is just a turret, and it defends whoever
+  // powers it — the same auto-targeting a placed turret uses.
+  function fireMountedTurretDefensive(m,dt,getTile){
+    if(!m || m.pilotAlive) return false;
+    return fireMountedTurret(m,dt,getTile,null,'mech_turret');
   }
   function decideAiJump(m,dir,getTile,dt){
     if(!dir || !m.onGround) return false;
@@ -726,36 +852,78 @@ import { turrets as TURRETS } from './turrets.js';
   function hasTrackDrive(m){
     return countCells(m,c=>c.t===T.TRACK || (c.role==='track' && c.t===T.STEEL))>0;
   }
-  function cableCells(m){
-    return (m.cells||[]).filter(c=>c && c.wire===T.COPPER_WIRE);
+  // A cell conducts when it carries a copper-wire overlay or is made of a
+  // conductive/power-source block (tracks, panels, batteries, dynamo casings).
+  function isPowerSourceCell(c){
+    const info=INFO[c && c.t] || {};
+    return !!info.powerSource;
   }
-  function mechTrackCircuitConnected(m){
-    if(!hasTrackDrive(m)) return false;
-    const wires=cableCells(m);
-    if(!wires.length) return false;
-    const byPos=new Map(wires.map(c=>[c.dx+','+c.dy,c]));
-    const queue=[];
+  function isConductorCell(c){
+    if(!c) return false;
+    if(c.wire===T.COPPER_WIRE) return true;
+    if(Array.isArray(c.infra) && c.infra.includes(T.COPPER_WIRE)) return true;
+    const info=INFO[c.t] || {};
+    return !!(info.conductor || info.powerSource);
+  }
+  const CIRCUIT_DIRS=[[1,0],[-1,0],[0,1],[0,-1]];
+  function isTrackCell(c){ return !!c && (c.t===T.TRACK || c.role==='track'); }
+  // Flood the conductor graph out from every power-source cell and return the
+  // keys of the cells the current reaches. Same shape as the placed-machine
+  // network in engine/teleporters.js networkFor(): copper wire (block or
+  // overlay) and conductive machine blocks carry the current, dynamo casings /
+  // slots / panels / batteries feed it.
+  function energisedCells(m){
     const seen=new Set();
-    for(const c of wires){
-      if(c.t===T.DYNAMO || c.t===T.DYNAMO_SLOT){
-        const key=c.dx+','+c.dy;
-        seen.add(key);
-        queue.push(c);
-      }
+    const nodes=(m && m.cells || []).filter(isConductorCell);
+    if(!nodes.length) return seen;
+    const byPos=new Map(nodes.map(c=>[c.dx+','+c.dy,c]));
+    const queue=[];
+    for(const c of nodes){
+      if(!isPowerSourceCell(c)) continue;
+      const key=c.dx+','+c.dy;
+      if(seen.has(key)) continue;
+      seen.add(key);
+      queue.push(c);
     }
-    if(!queue.length) return false;
-    let reachesTrack=false;
     for(let i=0;i<queue.length;i++){
       const c=queue[i];
-      if(c.t===T.TRACK || c.role==='track') reachesTrack=true;
-      for(const d of [[1,0],[-1,0],[0,1],[0,-1]]){
-        const nx=c.dx+d[0], ny=c.dy+d[1], key=nx+','+ny;
+      for(const d of CIRCUIT_DIRS){
+        const key=(c.dx+d[0])+','+(c.dy+d[1]);
         if(seen.has(key) || !byPos.has(key)) continue;
         seen.add(key);
         queue.push(byPos.get(key));
       }
     }
-    return reachesTrack;
+    return seen;
+  }
+  // A non-conductive consumer (a turret housing) is powered when it sits on the
+  // live network or a live node touches it — the neighbour scan networkFor()
+  // runs for a placed turret. So a turret bolted straight onto a dynamo casing
+  // needs no extra wire, and a stranded one stays dead until copper wire
+  // reaches it. Conductive consumers (tracks) simply have to be on the network.
+  function cellPowered(cell,energised){
+    if(!cell || !energised || !energised.size) return false;
+    if(energised.has(cell.dx+','+cell.dy)) return true;
+    for(const d of CIRCUIT_DIRS){
+      if(energised.has((cell.dx+d[0])+','+(cell.dy+d[1]))) return true;
+    }
+    return false;
+  }
+  function mechTrackCircuitConnected(m){
+    if(!hasTrackDrive(m)) return false;
+    const energised=energisedCells(m);
+    if(!energised.size) return false;
+    return (m.cells||[]).some(c=>isTrackCell(c) && energised.has(c.dx+','+c.dy));
+  }
+  // The mounted guns are real turret blocks: one only shoots while the same
+  // dynamo/solar network that drives the tracks actually reaches it. True when
+  // ANY turret cell is powered — each cell is still gated individually when
+  // firing, so a stranded first turret cannot silence a wired second one.
+  function mechTurretCircuitConnected(m){
+    const cells=mountedTurretCells(m);
+    if(!cells.length) return false;
+    const energised=energisedCells(m);
+    return cells.some(c=>cellPowered(c,energised));
   }
   function trackDriveReady(m){
     return !hasTrackDrive(m) || mechTrackCircuitConnected(m);
@@ -771,32 +939,20 @@ import { turrets as TURRETS } from './turrets.js';
     }
     return exposed>0 ? exposed*CFG.SOLAR_PANEL_CHARGE*sun*dt : 0;
   }
-  function consumeForgeInventoryFuel(m){
-    if(!m.rider || m.kind!=='forge' || (m.fuel||0)>CFG.FORGE_COAL_FUEL*0.45) return 0;
-    const inv=root.inv;
-    if(!inv || !(inv.coal>0)) return 0;
-    inv.coal-=1;
-    notifyResources('coal',-1);
-    m.fuel=Math.min(m.maxFuel||CFG.FORGE_COAL_FUEL*2,(m.fuel||0)+CFG.FORGE_COAL_FUEL);
-    say('Dorzucasz wegiel do paleniska mecha.');
-    return CFG.FORGE_COAL_FUEL;
-  }
-  function forgeCharge(m,dt){
-    if(m.kind!=='forge') return 0;
-    // The firebox idles once the reserve is full: keep burning stored fuel (and
-    // pulling coal from the rider's pack) only when there is headroom to charge,
-    // otherwise a parked full mech silently wastes fuel and eats inventory coal.
-    const cap=Number.isFinite(m.maxEnergy) ? m.maxEnergy : mechMaxEnergy(m.kind);
-    if((m.energy||0)>=cap-0.01) return 0;
-    const hasDynamo=countCells(m,c=>c.t===T.DYNAMO)>=2 && countCells(m,c=>c.t===T.DYNAMO_SLOT)>=1;
-    const hasCoal=countCells(m,c=>c.t===T.COAL)>0;
-    if(!hasDynamo || !hasCoal) return 0;
-    if(m.rider) consumeForgeInventoryFuel(m);
-    if(!(m.fuel>0)) return 0;
-    const burn=Math.min(m.fuel,CFG.FORGE_FUEL_PER_SEC*dt);
-    m.fuel=Math.max(0,m.fuel-burn);
-    m.heatPulse=Math.min(1,(m.heatPulse||0)+0.34);
-    return CFG.FORGE_CHARGE*dt;
+  // Mech-mounted dynamos ARE the placed machine: engine/dynamo.js reads mech
+  // cells through tileOverlayAt, so slot validation, wind response and
+  // water/steam/hot-air recordFlow all follow the one world implementation.
+  // Flow energy arrives via absorbDynamoFlow (pushed by water.js/gases.js
+  // through DYNAMO.recordFlow); only the per-tick wind sample is pulled here.
+  function dynamoWindCharge(m,dt,getTile){
+    const dyn=root.MM && root.MM.dynamo;
+    if(!dyn || typeof dyn.windEnergyPerSecAt!=='function') return 0;
+    let gain=0;
+    for(const c of m.cells||[]){
+      if(c.t!==T.DYNAMO_SLOT) continue;
+      try{ gain+=dyn.windEnergyPerSecAt(Math.floor(m.x+c.dx),Math.floor(m.y+c.dy),getTile)*dt; }catch(e){}
+    }
+    return gain;
   }
   function externalSolarDrainNear(m,amount,getTile){
     const api=root.MM.solar;
@@ -851,9 +1007,8 @@ import { turrets as TURRETS } from './turrets.js';
   function updateEnergy(m,dt,getTile){
     if(!Number.isFinite(m.maxEnergy)) m.maxEnergy=mechMaxEnergy(m.kind);
     if(!Number.isFinite(m.energy)) m.energy=m.pilotAlive ? m.maxEnergy*0.65 : m.maxEnergy*0.28;
-    if(m.kind==='forge' && !Number.isFinite(m.maxFuel)) m.maxFuel=CFG.FORGE_COAL_FUEL*(countCells(m,c=>c.t===T.COAL)+1.5);
-    if(m.kind==='forge' && !Number.isFinite(m.fuel)) m.fuel=m.maxFuel*0.65;
-    const gain=(m.kind==='solar' ? solarCharge(m,dt,getTile) : forgeCharge(m,dt))+externalCharge(m,dt,getTile);
+    const solarGain=(m.kind==='solar' || m.kind==='built') ? solarCharge(m,dt,getTile) : 0;
+    const gain=solarGain+dynamoWindCharge(m,dt,getTile)+externalCharge(m,dt,getTile);
     if(gain>0){
       m.energy=Math.min(m.maxEnergy,(m.energy||0)+gain);
       m.powerPulse=Math.min(1,(m.powerPulse||0)+gain*0.08);
@@ -1002,6 +1157,381 @@ import { turrets as TURRETS } from './turrets.js';
     m.standingReleaseT=0.2;
     return true;
   }
+
+  // ===== Player-built mechs ==================================================
+  // The world grid stays the editor: build any machine from manufactured blocks,
+  // crown it with a pilot chair and give it a full bottom row of tracks (or
+  // spring platforms). Standing in the chair lifts the connected structure out
+  // of the grid into a drivable mech; jumping out of the chair parks it back
+  // into the exact same blocks, ready for mining and rebuilding.
+  let seatBlock=null;        // chair pos the hero must step off before auto-reseating
+  let lastSeatTry=null;      // failed-scan throttle {x,y,t}
+  let seatHintAt=-99;
+  function seatHint(text){
+    if(simT-seatHintAt<2.2) return;
+    seatHintAt=simT;
+    say(text);
+  }
+  function builtRoleFor(t){
+    if(isChairTile(t)) return 'chair';
+    if(t===T.TRACK) return 'track';
+    if(t===T.SPRING_PLATFORM) return 'spring';
+    if(isMountedTurretTile(t)) return 'turret';
+    if(t===T.SOLAR_PANEL) return 'solar';
+    if(t===T.SOLAR_BATTERY) return 'power';
+    if(t===T.DYNAMO) return 'dynamo';
+    if(t===T.DYNAMO_SLOT) return 'dynamoSlot';
+    if(t===T.COAL) return 'coal';
+    if(t===T.COPPER_WIRE) return 'wire';
+    return '';
+  }
+  function builtMemberAt(x,y,getTile){
+    if(!inWorldY(y)) return null;
+    const t=getSafe(getTile,x,y,T.AIR);
+    const infra=infraStackAt(x,y);
+    if(isMechComponentTile(t)) return {t,infra};
+    // bare overlays (a wire run through air) still join the machine, but the
+    // base tile itself (air/water) is never carved into the mech
+    if(infra.length && isPlayerPassableTile(t)) return {t:T.AIR,infra};
+    return null;
+  }
+  function isDriveTile(t){ return t===T.TRACK || t===T.SPRING_PLATFORM; }
+  function scanBuiltStructure(sx,sy,getTile){
+    sx=Math.floor(sx); sy=Math.floor(sy);
+    if(!isChairTile(getSafe(getTile,sx,sy,T.AIR))) return {ok:false,reason:'chair'};
+    const seen=new Set([sx+','+sy]);
+    const stack=[[sx,sy]];
+    const cells=[];
+    // sawDrive marks "this construction was meant to be a mech" — hints stay
+    // silent for plain furniture chairs in houses (no tracks anywhere)
+    let sawDrive=false;
+    let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+    while(stack.length){
+      const [x,y]=stack.pop();
+      const member=builtMemberAt(x,y,getTile);
+      if(!member) continue;
+      cells.push({x,y,t:member.t,infra:member.infra});
+      if(isDriveTile(member.t)) sawDrive=true;
+      if(cells.length>CFG.BUILT_MAX_CELLS) return {ok:false,reason:'too_big',sawDrive};
+      minX=Math.min(minX,x); maxX=Math.max(maxX,x);
+      minY=Math.min(minY,y); maxY=Math.max(maxY,y);
+      if(maxX-minX+1>CFG.BUILT_MAX_W || maxY-minY+1>CFG.BUILT_MAX_H) return {ok:false,reason:'too_big',sawDrive};
+      for(const d of [[1,0],[-1,0],[0,1],[0,-1]]){
+        const nx=x+d[0], ny=y+d[1], key=nx+','+ny;
+        if(seen.has(key)) continue;
+        if(!builtMemberAt(nx,ny,getTile)) continue;
+        seen.add(key);
+        stack.push([nx,ny]);
+      }
+    }
+    return {ok:true,cells,sawDrive,minX,minY,maxX,maxY};
+  }
+  function analyzeBuiltCells(cells){
+    let chairs=0, maxY=-Infinity;
+    for(const c of cells){
+      if(isChairTile(c.t)) chairs++;
+      if(c.t!==T.AIR) maxY=Math.max(maxY,c.y);
+    }
+    if(!chairs) return {ok:false,reason:'chair'};
+    const bottom=cells.filter(c=>c.t!==T.AIR && c.y===maxY);
+    const tracks=bottom.filter(c=>c.t===T.TRACK).length;
+    const springs=bottom.filter(c=>c.t===T.SPRING_PLATFORM).length;
+    let drive=null;
+    if(tracks===bottom.length && tracks>=CFG.BUILT_MIN_TRACKS) drive='tracks';
+    else if(springs===bottom.length && springs>=1) drive='springs';
+    if(!drive) return {ok:false,reason:'platform'};
+    return {ok:true,drive};
+  }
+  function computeBuiltWireConn(cells){
+    const byPos=new Map(cells.map(c=>[c.dx+','+c.dy,c]));
+    const links=(a,b)=>{
+      if(!b) return false;
+      const aw=a.wire===T.COPPER_WIRE, bw=b.wire===T.COPPER_WIRE;
+      if(aw && bw) return true;
+      return (aw && isConductorCell(b)) || (bw && isConductorCell(a));
+    };
+    for(const c of cells){
+      if(c.wire!==T.COPPER_WIRE) continue;
+      c.wireConn={
+        left:links(c,byPos.get((c.dx-1)+','+c.dy)),
+        right:links(c,byPos.get((c.dx+1)+','+c.dy)),
+        up:links(c,byPos.get(c.dx+','+(c.dy-1))),
+        down:links(c,byPos.get(c.dx+','+(c.dy+1)))
+      };
+    }
+  }
+  function makeBuiltMechFromCells(cells,x,y,drive){
+    if(!Array.isArray(cells) || !cells.length) return null;
+    computeBuiltWireConn(cells);
+    const bounds=normalizeCells(cells);
+    const hp=Math.round(cells.reduce((n,c)=>n+(c.hp||2),0)*2.4);
+    const batteries=cells.filter(c=>c.t===T.SOLAR_BATTERY).length;
+    const dynamos=cells.filter(c=>c.t===T.DYNAMO).length;
+    const panels=cells.filter(c=>c.t===T.SOLAR_PANEL).length;
+    const maxEnergy=clamp(
+      CFG.BUILT_BASE_ENERGY+batteries*CFG.BUILT_BATTERY_ENERGY+dynamos*CFG.BUILT_DYNAMO_ENERGY+panels*CFG.BUILT_PANEL_ENERGY,
+      20,CFG.BUILT_MAX_ENERGY_CAP);
+    return {
+      id:nextId++,
+      kind:'built',
+      variant:drive||'tracks',
+      name:'Wlasny mech',
+      x:+x, y:+y, vx:0, vy:0, facing:1,
+      cells,
+      _bounds:bounds,
+      hp, maxHp:hp,
+      pilotHp:0, pilotMaxHp:1, pilotAlive:false,
+      rider:false,
+      energy:0, maxEnergy,
+      zone:null, aimT:999, onGround:false, spawnT:simT, salvageSeed:0
+    };
+  }
+  function builtCellFromScan(sc,minX,minY){
+    const role=builtRoleFor(sc.t);
+    const cell={dx:sc.x-minX,dy:sc.y-minY,t:sc.t,role,hp:durabilityForCell(sc.t,role)};
+    if(Array.isArray(sc.infra) && sc.infra.length){
+      cell.infra=sc.infra.slice(0,3);
+      if(cell.infra.includes(T.COPPER_WIRE)) cell.wire=T.COPPER_WIRE;
+    }
+    return cell;
+  }
+  function afterWorldTileRemoved(x,y,getTile){
+    try{ if(root.MM.water && root.MM.water.onTileChanged) root.MM.water.onTileChanged(x,y,getTile); }catch(e){}
+    try{ if(root.MM.fallingSolids && root.MM.fallingSolids.onTileRemoved) root.MM.fallingSolids.onTileRemoved(x,y); }catch(e){}
+    try{ if(root.__mmMarkWorldChanged) root.__mmMarkWorldChanged(x,y); }catch(e){}
+  }
+  function carveBuiltCells(scanCells,getTile,setTile){
+    // top-down so any falling recheck sees the upper blocks already gone
+    const ordered=scanCells.slice().sort((a,b)=>(a.y-b.y)||(a.x-b.x));
+    for(const c of ordered){
+      for(const it of c.infra||[]) clearInfraAt(c.x,c.y,it);
+      if(c.t!==T.AIR && getSafe(getTile,c.x,c.y,T.AIR)===c.t){
+        setSafe(setTile,c.x,c.y,T.AIR);
+        afterWorldTileRemoved(c.x,c.y,getTile);
+      }
+    }
+  }
+  function chairEnergyMult(m){
+    const c=chairCell(m);
+    const mat=c && INFO[c.t] && INFO[c.t].chairMaterial;
+    return CHAIR_ENERGY_MULT[mat] || CHAIR_ENERGY_MULT.wood;
+  }
+  // Drive power order: onboard reserve through the wire circuit, then nearby
+  // external sources, then the seated hero's own energy through the chair (the
+  // chair itself is the hero-energy link, so an unwired machine still drives).
+  function spendBuiltDriveEnergy(m,amount,ctx,getTile){
+    const want=Math.max(0,Number(amount)||0);
+    if(want<=0) return true;
+    let remaining=want;
+    if(mechTrackCircuitConnected(m)){
+      const have=Math.max(0,Number(m.energy)||0);
+      const used=Math.min(have,remaining);
+      if(used>0){
+        m.energy=have-used;
+        remaining-=used;
+        m.powerPulse=Math.min(1,(m.powerPulse||0)+0.10);
+      }
+      if(remaining>0.00001){
+        const external=externalPowerDrainNear(m,remaining,getTile);
+        if(external>0){
+          remaining=Math.max(0,remaining-external);
+          m.powerPulse=Math.min(1,(m.powerPulse||0)+0.18+external*0.04);
+        }
+      }
+      if(remaining<=0.00001) return true;
+    }
+    if(spendHeroEnergyForTrack(remaining*chairEnergyMult(m),ctx)){
+      m.heroPowerPulse=Math.min(1,(m.heroPowerPulse||0)+0.3);
+      return true;
+    }
+    // partial reserves stay spent: the machine sputters instead of refunding
+    return false;
+  }
+  function boardBuiltMech(m,player){
+    m.rider=true;
+    m._seatT=simT;
+    riderMechId=m.id;
+    syncRider(player);
+  }
+  function assembleBuiltMechAt(cx,cy,player,getTile,setTile){
+    if(typeof getTile!=='function' || typeof setTile!=='function') return null;
+    const scan=scanBuiltStructure(cx,cy,getTile);
+    if(!scan.ok){
+      // chairs are ordinary furniture: only nag when tracks show mech intent
+      if(scan.reason==='too_big' && scan.sawDrive) seatHint('Konstrukcja jest za duza na mecha (limit '+CFG.BUILT_MAX_CELLS+' blokow, '+CFG.BUILT_MAX_W+'x'+CFG.BUILT_MAX_H+').');
+      return null;
+    }
+    const analysis=analyzeBuiltCells(scan.cells);
+    if(!analysis.ok){
+      if(analysis.reason==='platform' && scan.sawDrive) seatHint('Fotel jest, ale brakuje podwozia: caly dolny rzad musza tworzyc gasienice (min. '+CFG.BUILT_MIN_TRACKS+') albo platformy sprezynowe.');
+      return null;
+    }
+    const cells=scan.cells.map(sc=>builtCellFromScan(sc,scan.minX,scan.minY));
+    const m=makeBuiltMechFromCells(cells,scan.minX,scan.minY,analysis.drive);
+    if(!m) return null;
+    carveBuiltCells(scan.cells,getTile,setTile);
+    mechs.push(m);
+    markCellIndexDirty();
+    boardBuiltMech(m,player);
+    const hasSource=countCells(m,isPowerSourceCell)>0;
+    if(analysis.drive==='tracks' && !hasSource){
+      say('Mech zlozony! Ruszy na twojej energii - dynamo, panele lub bateria odciaza bohatera.');
+    } else if(analysis.drive==='tracks' && hasSource && !mechTrackCircuitConnected(m)){
+      say('Mech zlozony, ale zrodlo energii nie laczy sie przewodem z gasienicami - naped pojdzie z energii bohatera.');
+    } else {
+      say('Zasiadasz w fotelu pilota. A/D prowadzi mecha, skok wysiada.');
+    }
+    play('charge');
+    emit('mm-mech-built',{id:m.id,cells:m.cells.length,drive:analysis.drive});
+    return m;
+  }
+  function builtParkOrigins(m){
+    const bx=Math.round(m.x), by=Math.round(m.y);
+    return [[bx,by],[bx,by-1],[bx-1,by],[bx+1,by],[bx,by+1],[bx-1,by-1],[bx+1,by-1]];
+  }
+  function canParkAt(m,ox,oy,getTile){
+    for(const c of m.cells){
+      const x=Math.floor(ox+c.dx), y=Math.floor(oy+c.dy);
+      if(!inWorldY(y)) return false;
+      if(c.t===T.AIR) continue;
+      if(!isReplaceableNaturalOpenTile(getSafe(getTile,x,y,T.AIR),false)) return false;
+    }
+    return true;
+  }
+  function writeParkedCell(x,y,c,getTile,setTile){
+    let ok=true;
+    if(c.t!==T.AIR){
+      if(getSafe(getTile,x,y,T.AIR)===T.WATER){
+        try{ if(root.MM.water && root.MM.water.displaceAt) root.MM.water.displaceAt(x,y,getTile,setTile); }catch(e){}
+      }
+      ok=setSafe(setTile,x,y,c.t);
+      if(ok){
+        try{ if(root.MM.water && root.MM.water.onTileChanged) root.MM.water.onTileChanged(x,y,getTile); }catch(e){}
+        try{ if(root.MM.fallingSolids && root.MM.fallingSolids.afterPlacement) root.MM.fallingSolids.afterPlacement(x,y); }catch(e){}
+        try{ if(root.__mmMarkWorldChanged) root.__mmMarkWorldChanged(x,y); }catch(e){}
+      }
+    }
+    if(ok) for(const it of c.infra||[]) setInfraAt(x,y,it);
+    return ok;
+  }
+  function parkBuiltMech(m,player,getTile,setTile,opts){
+    if(!m || m.kind!=='built' || m._parked) return false;
+    const fns=worldFns({getTile,setTile});
+    if(typeof fns.getTile!=='function' || typeof fns.setTile!=='function') return false;
+    let origin=null;
+    for(const [ox,oy] of builtParkOrigins(m)){
+      if(canParkAt(m,ox,oy,fns.getTile)){ origin=[ox,oy]; break; }
+    }
+    if(origin){
+      // bottom-up so every written block already has its support row below
+      const ordered=m.cells.slice().sort((a,b)=>(b.dy-a.dy)||(a.dx-b.dx));
+      for(const c of ordered) writeParkedCell(origin[0]+c.dx,origin[1]+c.dy,c,fns.getTile,fns.setTile);
+    } else {
+      collapseMechBlocks(m,{getTile:fns.getTile,setTile:fns.setTile});
+    }
+    const chair=chairCell(m);
+    m.rider=false;
+    if(riderMechId===m.id) riderMechId=null;
+    if(player){
+      player.x=(origin?origin[0]:Math.round(m.x))+(chair?chair.dx:0)+0.5;
+      player.y=(origin?origin[1]:Math.round(m.y))+(chair?chair.dy:0)+0.30;
+      player.vx=0;
+      player.vy=(opts && opts.hop) ? -6.4 : 0;
+      player.onGround=false;
+    }
+    if(origin && chair) seatBlock={x:origin[0]+chair.dx,y:origin[1]+chair.dy};
+    m._parked=true;
+    m.destroyed=true; // parked hulls must never ALSO collapse into duplicate blocks
+    m.hp=0;
+    markCellIndexDirty();
+    say(origin ? 'Mech zaparkowany - bloki wrocily do swiata. Stan na fotelu, by znow ruszyc.' : 'Brak miejsca na rowne parkowanie - mech rozsypal sie na bloki obok.');
+    play('charge');
+    emit('mm-mech-parked',{id:m.id,ok:!!origin});
+    return true;
+  }
+  function updateSeatedBuiltMech(m,dt,player,getTile,setTile,ctx){
+    const controls=(ctx && ctx.controls) || {};
+    if(controls.jump && simT-(m._seatT||0)>CFG.BUILT_SEAT_JUMP_GRACE){
+      parkBuiltMech(m,player,getTile,setTile,{hop:true});
+      return;
+    }
+    let dir=0;
+    if(controls.left) dir--;
+    if(controls.right) dir++;
+    if(dir){
+      const cost=Math.max(0.015,CFG.RIDER_WALK_ENERGY*dt);
+      if(!spendBuiltDriveEnergy(m,cost,ctx,getTile)){
+        dir=0;
+        m.vx=0;
+        m.noPowerT=0.8;
+        if(simT-(m._noPowerMsgT||-9)>2.5){
+          m._noPowerMsgT=simT;
+          say('Brak energii do napedu: przepusc wode, pare lub wiatr przez dynamo, wystaw panele albo naladuj energie bohatera.');
+        }
+      }
+    }
+    updatePhysics(m,dt,getTile,setTile,dir,false);
+    if(dir && m.blockedDir===dir) attackObstacles(m,dt,getTile,setTile,dir);
+    syncRider(player);
+  }
+  function findHeroChairTile(player,getTile){
+    if(!player || !finite(player.x) || !finite(player.y)) return null;
+    const hh=((player.h)||0.95)/2;
+    const checks=[[player.x,player.y+hh-0.25],[player.x,player.y],[player.x,player.y-hh+0.25]];
+    const seen=new Set();
+    for(const [x,y] of checks){
+      const tx=Math.floor(x), ty=Math.floor(y);
+      const key=tx+','+ty;
+      if(seen.has(key)) continue;
+      seen.add(key);
+      if(isChairTile(getSafe(getTile,tx,ty,T.AIR))) return {x:tx,y:ty};
+    }
+    return null;
+  }
+  // True when the interaction key (E) should go to the mech system instead of
+  // other E-bound UI: while riding, next to a boardable hull, or standing on a
+  // chair that actually crowns a valid machine. A plain furniture chair (in a
+  // house, at a campfire) never claims E — the wardrobe keeps working there.
+  function wantsInteractKey(player){
+    player=player || root.player;
+    if(!player) return false;
+    if(findRiderMech()) return true;
+    if(nearestBoardable(player)) return true;
+    const fns=worldFns(null);
+    if(typeof fns.getTile!=='function') return false;
+    const chair=findHeroChairTile(player,fns.getTile);
+    if(!chair) return false;
+    const scan=scanBuiltStructure(chair.x,chair.y,fns.getTile);
+    return !!(scan.ok && analyzeBuiltCells(scan.cells).ok);
+  }
+  // Called every frame from the hero physics step: standing in a world chair
+  // tries to assemble the machine under it. Failed scans are throttled and a
+  // freshly-parked chair stays inert until the hero steps off it once
+  // (or forces re-entry with the interaction key).
+  function trySeatFromWorld(player,getTile,setTile,opts){
+    if(!player || findRiderMech()) return false;
+    rememberWorldFns(getTile,setTile);
+    const fns=worldFns({getTile,setTile});
+    if(typeof fns.getTile!=='function' || typeof fns.setTile!=='function') return false;
+    const chair=findHeroChairTile(player,fns.getTile);
+    if(!chair){
+      // only a grounded step off the chair releases the reseat block — the
+      // eject hop itself leaves the tile mid-air and must not re-arm the seat
+      if(player.onGround) seatBlock=null;
+      return false;
+    }
+    if(seatBlock && (seatBlock.x!==chair.x || seatBlock.y!==chair.y)) seatBlock=null;
+    const force=!!(opts && opts.force);
+    if(seatBlock && !force) return false;
+    if(!force && lastSeatTry && lastSeatTry.x===chair.x && lastSeatTry.y===chair.y && simT-lastSeatTry.t<CFG.BUILT_SEAT_SCAN_COOLDOWN) return false;
+    lastSeatTry={x:chair.x,y:chair.y,t:simT};
+    const m=assembleBuiltMechAt(chair.x,chair.y,player,fns.getTile,fns.setTile);
+    if(!m) return false;
+    seatBlock=null;
+    return true;
+  }
+  // ===== end player-built mechs =============================================
+
   function collideMobs(m,dt,getTile){
     try{
       const api=root.MM.mobs;
@@ -1054,12 +1584,17 @@ import { turrets as TURRETS } from './turrets.js';
   function updateMech(m,dt,player,getTile,setTile,ctx){
     if(m.hp<=0) return;
     m.trackCircuitOk=trackDriveReady(m);
+    m.turretCircuitOk=mechTurretCircuitConnected(m);
     updateEnergy(m,dt,getTile);
     m.heroPowerPulse=Math.max(0,(m.heroPowerPulse||0)-dt*2.6);
     if(m.crushFx>0) m.crushFx=Math.max(0,m.crushFx-dt*1.9);
     if(m.recoilT>0) m.recoilT=Math.max(0,m.recoilT-dt);
     if(m.noPowerT>0) m.noPowerT=Math.max(0,m.noPowerT-dt);
-    if(m.rider) updateRiderMech(m,dt,player,getTile,setTile,ctx);
+    if(m.rider && m.kind==='built'){
+      updateSeatedBuiltMech(m,dt,player,getTile,setTile,ctx);
+      if(m._parked) return;
+    }
+    else if(m.rider) updateRiderMech(m,dt,player,getTile,setTile,ctx);
     else if(updateStandingTrackMech(m,dt,player,getTile,setTile,ctx)){
       updateContactDamage(m,player);
     }
@@ -1069,6 +1604,9 @@ import { turrets as TURRETS } from './turrets.js';
       if(ai.dir && m.blockedDir===ai.dir) attackObstacles(m,dt,getTile,setTile,ai.dir);
       updateContactDamage(m,player);
     }
+    // A pilotless hull (captured alien or the player's own build) turns its
+    // mounted turret on the nearest hostile once the circuit is live.
+    if(!m.pilotAlive) fireMountedTurretDefensive(m,dt,getTile);
     collideMobs(m,dt,getTile);
   }
   function standingSurfaceY(x){
@@ -1102,8 +1640,6 @@ import { turrets as TURRETS } from './turrets.js';
   function buildMech(kind,x,y,bp,zone,seed){
     const hp=Math.round(bp.maxHp*(0.92+hash01(seed,91)*0.18));
     const maxEnergy=mechMaxEnergy(kind);
-    const coalCells=bp.cells.filter(c=>c.t===T.COAL).length;
-    const maxFuel=kind==='forge' ? CFG.FORGE_COAL_FUEL*(coalCells+1.5) : 0;
     return {
       id:nextId++,
       kind,
@@ -1124,8 +1660,6 @@ import { turrets as TURRETS } from './turrets.js';
       rider:false,
       energy:maxEnergy*(kind==='solar'?0.38:0.52),
       maxEnergy,
-      fuel:maxFuel*0.7,
-      maxFuel,
       zone:zone||null,
       aimT:0.8+hash01(seed,17)*0.9,
       onGround:false,
@@ -1202,6 +1736,7 @@ import { turrets as TURRETS } from './turrets.js';
         mechs.splice(i,1);
       }
     }
+    markCellIndexDirty();
   }
   function damageNumbers(m,amount,kind,opts){
     emit('mm-combat-event',{
@@ -1261,7 +1796,9 @@ import { turrets as TURRETS } from './turrets.js';
   function collapseMaterialList(c){
     const out=[];
     if(c && c.t!=null && c.t!==T.AIR) out.push(c.t);
-    if(c && c.wire===T.COPPER_WIRE) out.push(T.COPPER_WIRE);
+    const infra=(c && Array.isArray(c.infra) && c.infra.length) ? c.infra : null;
+    if(infra){ for(const it of infra){ if(it!==T.AIR) out.push(it); } }
+    else if(c && c.wire===T.COPPER_WIRE) out.push(T.COPPER_WIRE);
     return out;
   }
   function collapseMechBlocks(m,opts){
@@ -1311,6 +1848,7 @@ import { turrets as TURRETS } from './turrets.js';
     if(m.destroyed) return false;
     m.destroyed=true;
     m.hp=0;
+    markCellIndexDirty();
     collapseMechBlocks(m,opts||{});
     addXp(m.kind==='solar'?130:155,centerX(m),m.y,'ALIEN_MECH');
     damageNumbers(m,22,'blast',Object.assign({source:'hero',element:'blast'},opts||{}));
@@ -1441,8 +1979,13 @@ import { turrets as TURRETS } from './turrets.js';
   }
   function toggleBoard(player,getTile){
     const current=findRiderMech();
-    if(current) return ejectRider(current,player,getTile);
-    return boardMech(nearestBoardable(player),player);
+    if(current){
+      if(current.kind==='built') return parkBuiltMech(current,player,getTile,null,{});
+      return ejectRider(current,player,getTile);
+    }
+    if(boardMech(nearestBoardable(player),player)) return true;
+    // E on a world chair force-assembles even while the auto-reseat block holds
+    return trySeatFromWorld(player,getTile,null,{force:true});
   }
   function absorbHeroDamage(amount,opts,player){
     const m=findRiderMech();
@@ -1618,10 +2161,15 @@ import { turrets as TURRETS } from './turrets.js';
   }
   function drawCellWireOverlay(ctx,TILE,m,c,px,py,alpha){
     if(!c || c.wire!==T.COPPER_WIRE) return;
-    const powered=!!(m && (m.powerPulse>0.05 || m.heroPowerPulse>0.05 || (hasTrackDrive(m) && mechTrackCircuitConnected(m) && ((m.energy||0)>0 || (m.fuel||0)>0))));
+    const powered=!!(m && (m.powerPulse>0.05 || m.heroPowerPulse>0.05 || (hasTrackDrive(m) && mechTrackCircuitConnected(m) && (m.energy||0)>0)));
     drawCopperWireOverlay(ctx,TILE,px,py,c.wireConn,alpha,powered);
   }
   function drawCellLegacy(ctx,TILE,m,c,px,py,alpha){
+    if(c.t===T.AIR){
+      // bare-overlay cell (a wire run through open air): no body square
+      drawCellWireOverlay(ctx,TILE,m,c,px,py,alpha);
+      return;
+    }
     const info=INFO[c.t] || {};
     const role=c.role||'';
     let col=info.color || '#8f9aa6';
@@ -1731,7 +2279,8 @@ import { turrets as TURRETS } from './turrets.js';
     }
 
     if(c.t===T.COAL && m.kind==='forge'){
-      const hot=(m.fuel||0)>0 ? 1 : 0.28;
+      // coal is inert cargo now (dynamos are flow-powered); keep a dim ember look
+      const hot=0.28;
       const pulse=0.75+0.25*Math.sin(simT*12+m.id);
       ctx.fillStyle='#101010';
       ctx.beginPath();
@@ -1773,6 +2322,14 @@ import { turrets as TURRETS } from './turrets.js';
       ctx.moveTo(px+TILE*0.13,py+TILE*0.5);
       ctx.lineTo(px+TILE*0.87,py+TILE*0.5);
       ctx.stroke();
+    }
+
+    if(role==='chair'){
+      ctx.fillStyle='rgba(12,16,20,0.35)';
+      ctx.fillRect(px+TILE*0.15,py+TILE*0.85,TILE*0.7,TILE*0.08);
+      ctx.fillStyle='rgba(255,255,255,0.30)';
+      ctx.fillRect(px+TILE*0.2,py+TILE*0.55,TILE*0.6,TILE*0.14);
+      ctx.fillRect(px+TILE*0.16,py+TILE*0.18,TILE*0.16,TILE*0.5);
     }
 
     if(role==='spring'){
@@ -1869,30 +2426,65 @@ import { turrets as TURRETS } from './turrets.js';
   }
   function snapshot(){
     return {
-      v:1,
+      v:2,
       used:[...usedZones].slice(0,2400),
-      list:mechs.filter(m=>m && m.hp>0).map(m=>({
-        id:m.id,
-        kind:m.kind,
-        x:+m.x.toFixed(3),
-        y:+m.y.toFixed(3),
-        vx:+(m.vx||0).toFixed(3),
-        vy:+(m.vy||0).toFixed(3),
-        hp:+(m.hp||0).toFixed(2),
-        maxHp:+(m.maxHp||1).toFixed(2),
-        pilotHp:+(m.pilotHp||0).toFixed(2),
-        pilotMaxHp:+(m.pilotMaxHp||1).toFixed(2),
-        pilotAlive:!!m.pilotAlive,
-        energy:+(m.energy||0).toFixed(2),
-        maxEnergy:+(m.maxEnergy||mechMaxEnergy(m.kind)).toFixed(2),
-        fuel:+(m.fuel||0).toFixed(2),
-        maxFuel:+(m.maxFuel||0).toFixed(2),
-        facing:m.facing<0?-1:1,
-        zone:m.zone||null,
-        rider:!!m.rider,
-        salvageSeed:m.salvageSeed||0
-      }))
+      list:mechs.filter(m=>m && m.hp>0).map(m=>{
+        const out={
+          id:m.id,
+          kind:m.kind,
+          x:+m.x.toFixed(3),
+          y:+m.y.toFixed(3),
+          vx:+(m.vx||0).toFixed(3),
+          vy:+(m.vy||0).toFixed(3),
+          hp:+(m.hp||0).toFixed(2),
+          maxHp:+(m.maxHp||1).toFixed(2),
+          pilotHp:+(m.pilotHp||0).toFixed(2),
+          pilotMaxHp:+(m.pilotMaxHp||1).toFixed(2),
+          pilotAlive:!!m.pilotAlive,
+          energy:+(m.energy||0).toFixed(2),
+          maxEnergy:+(m.maxEnergy||mechMaxEnergy(m.kind)).toFixed(2),
+          facing:m.facing<0?-1:1,
+          zone:m.zone||null,
+          rider:!!m.rider,
+          salvageSeed:m.salvageSeed||0
+        };
+        if(m.kind==='built'){
+          // built hulls have no blueprint seed: the actual cells are the save
+          out.cells=(m.cells||[]).slice(0,CFG.BUILT_MAX_CELLS).map(c=>{
+            const cell={dx:c.dx,dy:c.dy,t:c.t};
+            if(c.role) cell.role=c.role;
+            if(Array.isArray(c.infra) && c.infra.length) cell.infra=c.infra.slice(0,3);
+            return cell;
+          });
+          out.variant=m.variant||'tracks';
+        }
+        return out;
+      })
     };
+  }
+  function sanitizeSavedBuiltCells(rawCells){
+    const out=[];
+    const seen=new Set();
+    const INFRA_OK=new Set([T.COPPER_WIRE,T.WIRE,T.WATER_PIPE,T.LADDER]);
+    for(const rc of rawCells.slice(0,CFG.BUILT_MAX_CELLS)){
+      if(!rc) continue;
+      const dx=Number(rc.dx), dy=Number(rc.dy), t=Number(rc.t);
+      if(!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(t)) continue;
+      if(t!==T.AIR && !INFO[t]) continue;
+      const key=(dx|0)+','+(dy|0);
+      if(seen.has(key)) continue;
+      seen.add(key);
+      const infra=Array.isArray(rc.infra) ? rc.infra.filter(it=>INFRA_OK.has(it)).slice(0,3) : [];
+      if(t===T.AIR && !infra.length) continue;
+      const role=builtRoleFor(t|0);
+      const cell={dx:dx|0,dy:dy|0,t:t|0,role,hp:durabilityForCell(t|0,role)};
+      if(infra.length){
+        cell.infra=infra;
+        if(infra.includes(T.COPPER_WIRE)) cell.wire=T.COPPER_WIRE;
+      }
+      out.push(cell);
+    }
+    return out;
   }
   function restore(data,getTile){
     reset();
@@ -1901,10 +2493,18 @@ import { turrets as TURRETS } from './turrets.js';
     if(Array.isArray(data.list)){
       for(const raw of data.list.slice(0,CFG.MAX_ACTIVE)){
         if(!raw || !finite(raw.x) || !finite(raw.y)) continue;
-        const kind=raw.kind==='solar'?'solar':'forge';
-        const seed=Number.isFinite(Number(raw.salvageSeed)) ? Number(raw.salvageSeed)|0 : Math.floor(Number(raw.x));
-        const bp=makeBlueprint(kind,seed);
-        const m=buildMech(kind,Number(raw.x),Number(raw.y),bp,raw.zone||null,seed);
+        let m=null;
+        let seed=Number.isFinite(Number(raw.salvageSeed)) ? Number(raw.salvageSeed)|0 : Math.floor(Number(raw.x));
+        if(raw.kind==='built' && Array.isArray(raw.cells)){
+          const cells=sanitizeSavedBuiltCells(raw.cells);
+          m=makeBuiltMechFromCells(cells,Number(raw.x),Number(raw.y),raw.variant==='springs'?'springs':'tracks');
+          if(!m) continue;
+          seed=0;
+        } else {
+          const kind=raw.kind==='solar'?'solar':'forge';
+          const bp=makeBlueprint(kind,seed);
+          m=buildMech(kind,Number(raw.x),Number(raw.y),bp,raw.zone||null,seed);
+        }
         m.id=Number.isFinite(raw.id)?Math.max(1,raw.id|0):nextId++;
         nextId=Math.max(nextId,m.id+1);
         m.x=Number(raw.x);
@@ -1920,9 +2520,6 @@ import { turrets as TURRETS } from './turrets.js';
         m.maxEnergy=Math.max(1,Number(raw.maxEnergy)||m.maxEnergy||mechMaxEnergy(m.kind));
         m.energy=clamp(Number(raw.energy),0,m.maxEnergy);
         if(!Number.isFinite(raw.energy)) m.energy=Math.min(m.maxEnergy,m.energy||m.maxEnergy*0.3);
-        m.maxFuel=Math.max(0,Number(raw.maxFuel)||m.maxFuel||0);
-        m.fuel=clamp(Number(raw.fuel),0,m.maxFuel||0);
-        if(!Number.isFinite(raw.fuel)) m.fuel=Math.min(m.maxFuel||0,m.fuel||0);
         m.rider=!!raw.rider && !m.pilotAlive && m.hp>0 && riderMechId==null;
         if(m.rider) riderMechId=m.id;
         m.facing=raw.facing<0?-1:1;
@@ -1939,6 +2536,10 @@ import { turrets as TURRETS } from './turrets.js';
     nextId=1;
     scanT=0;
     simT=0;
+    seatBlock=null;
+    lastSeatTry=null;
+    seatHintAt=-99;
+    markCellIndexDirty();
     spawnFreezeT=Math.max(0,Math.min(20,Number(opts&&opts.suppressSpawns)||0));
   }
   function forceSpawn(kind,player,getTile,setTile){
@@ -1961,6 +2562,7 @@ import { turrets as TURRETS } from './turrets.js';
       m=buildMech(normalized,x,y,bp,null,seed);
     }
     mechs.push(m);
+    markCellIndexDirty();
     return m;
   }
   function metrics(){
@@ -1969,8 +2571,10 @@ import { turrets as TURRETS } from './turrets.js';
       ridden:!!findRiderMech(),
       pilots:mechs.filter(m=>m.pilotAlive).length,
       abandoned:mechs.filter(m=>!m.pilotAlive && !m.rider).length,
+      built:mechs.filter(m=>m.kind==='built').length,
       energy:+mechs.reduce((n,m)=>n+(m.energy||0),0).toFixed(2),
       mountedTurrets:mechs.filter(m=>!!mountedTurretCell(m)).length,
+      poweredTurrets:mechs.filter(m=>mechTurretCircuitConnected(m)).length,
       usedZones:usedZones.size,
       spawnFreeze:+spawnFreezeT.toFixed(2)
     };
@@ -1980,7 +2584,13 @@ import { turrets as TURRETS } from './turrets.js';
     update,draw,attackAt,damageAt,damageRadius,blastRadius,igniteRadius,douseRadius,
     toggleBoard,heroMech,syncRider,absorbHeroDamage,cellAt,findAt,
     snapshot,restore,reset,forceSpawn,metrics,heroOnTracks,
-    _debug:{mechs:()=>mechs,mountedTurretCell,makeBlueprint,trySpawnZone,zoneShouldSpawn,zoneSpawnX,CFG}
+    trySeatFromWorld,wantsInteractKey,tileOverlayAt,absorbDynamoFlow,
+    _debug:{
+      mechs:()=>mechs,mountedTurretCell,makeBlueprint,trySpawnZone,zoneShouldSpawn,zoneSpawnX,CFG,
+      isMechComponentTile,scanBuiltStructure,analyzeBuiltCells,assembleBuiltMechAt,parkBuiltMech,
+      mechTrackCircuitConnected,mechTurretCircuitConnected,energisedCells,chairEnergyMult,
+      seatState:()=>({block:seatBlock,lastTry:lastSeatTry})
+    }
   };
   root.MM.mechs=api;
 })();

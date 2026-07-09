@@ -1050,7 +1050,16 @@ import './inventory.js';
       return;
     }
     if(isEditableTarget(e.target)) return;
-    if(e.key.toLowerCase()==='e' && !e.ctrlKey && !e.metaKey && !e.altKey){ toggle(); }
+    if(e.key.toLowerCase()==='e' && !e.ctrlKey && !e.metaKey && !e.altKey){
+      // Machine context wins the interaction key: riding a mech, standing next
+      // to a boardable hull or on a pilot chair routes E to the mech handler
+      // (main.js keydown) — the wardrobe only opens away from machines.
+      try{
+        const mechs=window.MM && MM.mechs;
+        if(mechs && mechs.wantsInteractKey && mechs.wantsInteractKey(window.player)) return;
+      }catch(err){ /* mech module absent: plain toggle */ }
+      toggle();
+    }
   });
 
   buildTabs();

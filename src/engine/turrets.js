@@ -13,6 +13,7 @@ const turrets = (function(){
   const SHOT_FX_CAP = 90;
   const PUFF_CAP = 120;
   const PLAYER_SCAN_INTERVAL = 0.45;
+  const MOUNTED_SCAN_INTERVAL = 0.2;
   const VISIBLE_SCAN_INTERVAL_MS = 220;
   const WATER_TURRET_TANK = 24;
   const WATER_TURRET_START_WATER = 18;
@@ -534,12 +535,16 @@ const turrets = (function(){
   }
   function fireMountedAt(tile,state,dt,mount,target,getTile){
     const kind=kindForTile(tile);
-    if(!kind || !state || !(dt>0) || !Number.isFinite(dt)) return {fired:false, energy:mount && Number(mount.energy)||0};
+    if(!kind || !state || !(dt>0) || !Number.isFinite(dt)) return {fired:false, spent:0, energy:mount && Number(mount.energy)||0};
     const cfg=cfgFor(kind);
     state.kind=kind;
     state.x=Number.isFinite(Number(mount && mount.x)) ? Number(mount.x) : 0;
     state.y=Number.isFinite(Number(mount && mount.y)) ? Number(mount.y) : 0;
     state.energy=clampEnergy(mount && mount.energy);
+    // The mount's reserve may exceed a placed turret's capacity (mech battery
+    // banks); the working copy is clamped, so report `spent` and let the mount
+    // subtract it from its own store instead of adopting the clamped total.
+    const energyIn=state.energy;
     state.cooldown=Math.max(0,(Number(state.cooldown)||0)-dt);
     state.scanT=Math.max(0,(Number(state.scanT)||0)-dt);
     state.pulse=Math.max(0,(Number(state.pulse)||0)-dt*2.8);
@@ -550,15 +555,24 @@ const turrets = (function(){
     }else{
       delete state.water;
     }
-    const out={fired:false, energy:state.energy, water:state.water, cooldown:state.cooldown, kind};
-    const t=normalizeExternalTarget(target);
-    if(!t || state.cooldown>0 || state.energy+1e-6<cfg.cost || !hasWaterForShot(state)) return out;
+    const out={fired:false, spent:0, energy:state.energy, water:state.water, cooldown:state.cooldown, kind};
+    if(state.cooldown>0 || state.energy+1e-6<cfg.cost || !hasWaterForShot(state)) return out;
+    // No caller-supplied target: acquire like a placed turret does, throttled so
+    // a mounted gun does not rescan the mob list every frame.
+    let t=normalizeExternalTarget(target);
+    if(!t){
+      if(state.scanT>0) return out;
+      state.scanT=MOUNTED_SCAN_INTERVAL;
+      t=nearestHostileTarget(state,getTile);
+    }
+    if(!t) return out;
     const c=targetCoords(t);
     if(!c) return out;
     const dx=c.x-(state.x+0.5), dy=c.y-(state.y+0.5);
     const d=Math.hypot(dx,dy);
     if(d>cfg.range+0.35 || !targetStillValid(state,t,getTile)) return out;
     out.fired=fireAt(state,t,getTile);
+    out.spent=Math.max(0,energyIn-state.energy);
     out.energy=state.energy;
     out.water=state.water;
     out.cooldown=state.cooldown;

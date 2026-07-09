@@ -1515,6 +1515,9 @@ Object.assign(TILE_LABELS,{
 	[T.WATER_TURRET]:'Wiezyczka wodna',
 	[T.SPRING_PLATFORM]:'Platforma sprezynowa',
 	[T.TRACK]:'Gasienica',
+	[T.CHAIR_WOOD]:'Fotel drewniany',
+	[T.CHAIR_STONE]:'Fotel kamienny',
+	[T.CHAIR_STEEL]:'Fotel stalowy',
 	[T.WATER_PIPE]:'Rura fluidowa',
 	[T.WATER_PUMP]:'Pompa fluidowa',
 	[T.METEOR_SIREN]:'Syrena meteorytowa',
@@ -1528,6 +1531,7 @@ Object.assign(TILE_LABELS,{
 	[T.QUICKSAND]:'Ruchome piaski'
 });
 function tileLabel(t){ return TILE_LABELS[t] || 'Nieznany blok'; }
+function isChairTileId(t){ return !!(INFO[t] && INFO[t].chair); }
 function tileHoverColor(t){ return t===T.AIR ? '#9fb8d1' : ((INFO[t]&&INFO[t].color) || '#9fb8d1'); }
 function isGasTileId(t){ return isGasTile(t); }
 function isLooseItemTile(t){ return isLooseItemMaterial(t); }
@@ -3430,6 +3434,9 @@ const RECIPES=[
 	{id:'solar_battery', name:'Panel sloneczny z bateria', cost:{solarPanel:2, transistor:1, copperWire:2}, make(){ inv.solarBattery+=1; msg('Panel sloneczny z bateria +1 - powoli magazynuje energie dla sieci'); }},
 	{id:'spring_platform', name:'Platforma sprezynowa', cost:{steel:2, copperWire:2, transistor:1}, make(){ inv.springPlatform+=1; msg('Platforma sprezynowa +1 - zasil ja dla pelnego wybicia'); }},
 	{id:'tracks', name:'Gasienice x3', cost:{steel:2, coal:1}, make(){ inv.track+=3; msg('Gasienice +3 - modul napedu dla ciezkich konstrukcji'); }},
+	{id:'chair_wood', name:'Fotel drewniany', cost:{wood:3}, make(){ inv.chairWood+=1; msg('Fotel drewniany +1 - mebel: w domu przyspiesza leczenie, na maszynie z gasienicami sterujesz nia jak mechem'); }},
+	{id:'chair_stone', name:'Fotel kamienny', cost:{stone:4, wood:1}, make(){ inv.chairStone+=1; msg('Fotel kamienny +1 - trwalszy mebel do domu i kabiny mecha'); }},
+	{id:'chair_steel', name:'Fotel stalowy', cost:{steel:2, copperWire:1}, make(){ inv.chairSteel+=1; msg('Fotel stalowy +1 - mebel; jako fotel pilota najlepiej przenosi energie bohatera na naped'); }},
 	{id:'water_pipe', name:'Rury fluidowe x6', cost:{steel:1, plastic:1}, make(){ inv.waterPipe+=6; msg('Rury fluidowe +6 - prowadza wode, pare, gorace powietrze i gazy'); }},
 	{id:'water_pump', name:'Pompa fluidowa', cost:{steel:3, copperWire:2, transistor:1}, make(){ inv.waterPump+=1; msg('Pompa fluidowa +1 - R obraca wejscie/wyjscie dla wody i gazow'); }},
 	{id:'vending_machine', name:'Automat vendingowy', cost:{steel:4, glass:2, copperWire:3, waterPipe:1, transistor:2}, make(){ inv.vendingMachine+=1; msg('Automat vendingowy +1 - podlacz do zasilania i licz na szczescie'); }},
@@ -3515,6 +3522,9 @@ const CRAFT_RECIPE_META={
 	solar_battery:{group:'machines',icon:'🔋',out:'solarBattery',amount:1,desc:'Slaby panel z magazynem; laduje sie tylko w czystym sloncu.'},
 	spring_platform:{group:'machines',icon:'⏫',out:'springPlatform',amount:1,desc:'Wybija bardzo wysoko po zasileniu; bez energii daje tylko jedna trzecia wysokosci.'},
 	tracks:{group:'machines',icon:'=',out:'track',amount:3,desc:'Trzyblokowy modul napedu gasienicowego.'},
+	chair_wood:{group:'building',icon:'🪑',out:'chairWood',amount:1,desc:'Zwykly mebel: w oswietlonym domu przyspiesza leczenie. Postawiony na maszynie z gasienicami staje sie fotelem pilota (drewno slabo przenosi energie bohatera).'},
+	chair_stone:{group:'building',icon:'🪑',out:'chairStone',amount:1,desc:'Trwalszy mebel do domu i kabiny mecha; lepiej przenosi energie bohatera.'},
+	chair_steel:{group:'building',icon:'🪑',out:'chairSteel',amount:1,desc:'Najtrwalszy fotel: komfort w domu, a jako fotel pilota pelne przeniesienie energii bohatera na naped.'},
 	water_pipe:{group:'machines',icon:'🚰',out:'waterPipe',amount:6,desc:'Prowadzi wode, pare, gorace powietrze i gazy.'},
 	water_pump:{group:'machines',icon:'🌀',out:'waterPump',amount:1,desc:'Wymusza przeplyw fluidow i gazow przez rury.'},
 	vending_machine:{group:'machines',icon:'🎰',out:'vendingMachine',amount:1,desc:'Losowy automat do baz: cenny lup albo kompletne rozczarowanie.'},
@@ -4943,6 +4953,50 @@ function drawRespawnTotemTile(g,px,py){
 	g.lineWidth=1;
 	g.strokeRect(px+7.5,py+TILE-7.5,6,4);
 }
+// Mech pilot chair: passable seat fixture drawn as a side-view armchair glyph.
+// Material (wood/stone/steel) only recolors the same silhouette.
+const CHAIR_TILE_SKINS={
+	wood:  {body:'#a9743c', dark:'#6e4a22', pad:'#8a5c2e', glint:'rgba(255,224,170,0.35)'},
+	stone: {body:'#8d939c', dark:'#565c66', pad:'#767d88', glint:'rgba(235,242,250,0.30)'},
+	steel: {body:'#9fb0bd', dark:'#5f6f7c', pad:'#7d93a4', glint:'rgba(240,250,255,0.45)'}
+};
+function drawChairTile(g,px,py,t){
+	const mat=(INFO[t] && INFO[t].chairMaterial) || 'wood';
+	const skin=CHAIR_TILE_SKINS[mat] || CHAIR_TILE_SKINS.wood;
+	g.save();
+	// floor shadow
+	g.fillStyle='rgba(8,12,16,0.30)';
+	g.fillRect(px+3,py+TILE-3,TILE-6,2);
+	// legs / base
+	g.fillStyle=skin.dark;
+	g.fillRect(px+5,py+TILE-7,2,5);
+	g.fillRect(px+TILE-6,py+TILE-7,2,5);
+	// seat plank
+	g.fillStyle=skin.body;
+	g.fillRect(px+4,py+TILE-9,TILE-7,3);
+	// backrest (left side, slight lean)
+	g.beginPath();
+	g.moveTo(px+4,py+TILE-8);
+	g.lineTo(px+3,py+4);
+	g.lineTo(px+7,py+3);
+	g.lineTo(px+8,py+TILE-8);
+	g.closePath();
+	g.fill();
+	// seat + backrest padding
+	g.fillStyle=skin.pad;
+	g.fillRect(px+5,py+TILE-10,TILE-9,2);
+	g.fillRect(px+4.5,py+5,3,TILE-15);
+	// armrest stub on the open side
+	g.fillStyle=skin.dark;
+	g.fillRect(px+TILE-7,py+TILE-12,4,2);
+	// material glint
+	g.fillStyle=skin.glint;
+	g.fillRect(px+4,py+4,2,3);
+	g.strokeStyle='rgba(10,14,18,0.45)';
+	g.lineWidth=1;
+	g.strokeRect(px+3.5,py+3.5,4,TILE-11);
+	g.restore();
+}
 function meatPath(g,px,py,pad){
 	g.beginPath();
 	g.moveTo(px+pad+2,py+pad+2);
@@ -6069,6 +6123,12 @@ function drawEntityTile(g,t,px,py,wx,wy,opts){
 	g.save();
 	const oldAlpha=g.globalAlpha;
 	if(opts && Number.isFinite(Number(opts.alpha))) g.globalAlpha=oldAlpha*Number(opts.alpha);
+	if(isChairTileId(t)){
+		// chairs are open fixtures: glyph only, never a filled block square
+		drawChairTile(g,px,py,t);
+		g.restore();
+		return true;
+	}
 	if(t===T.GOLD_ORE){
 		const host=(h&2)?T.GRANITE:T.STONE;
 		const rockCol=shadeColor(INFO[host].color, terrainShadeDelta(host,wx,wy,h));
@@ -6168,12 +6228,12 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 				const bgT=(WORLD && WORLD.getConstructionBackground) ? WORLD.getConstructionBackground(wx,y) : T.AIR;
 				const hasBg=bgT!==T.AIR && INFO[bgT] && INFO[bgT].color;
 				if(hasBg){
-					if((t===T.AIR || t===T.WATER || t===T.TORCH || t===T.GRAVE || t===T.RESPAWN_TOTEM || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || gasTile) && y>surf && !(gasTile && gasSkyExposedTile(wx,y))){
+					if((t===T.AIR || t===T.WATER || t===T.TORCH || t===T.GRAVE || t===T.RESPAWN_TOTEM || isChairTileId(t) || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || gasTile) && y>surf && !(gasTile && gasSkyExposedTile(wx,y))){
 						drawUndergroundBackdrop(cctx,lx*TILE,y*TILE,wx,y,surf);
 					}
 					drawBackgroundBuildTile(cctx,bgT,lx*TILE,y*TILE,wx,y,hash32(wx,y));
 				}
-				if(t===T.AIR || t===T.WATER || t===T.TORCH || t===T.GRAVE || t===T.RESPAWN_TOTEM || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || gasTile){
+				if(t===T.AIR || t===T.WATER || t===T.TORCH || t===T.GRAVE || t===T.RESPAWN_TOTEM || isChairTileId(t) || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || gasTile){
 					// Water is rendered by the dynamic fluid layer (springs/waves/caustics), not
 					// baked here — only its backdrop is. Underground air or water = carved cave /
 					// aquifer: paint a dark rock backdrop so the sky parallax never shows through
@@ -6190,6 +6250,7 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 					}
 					if(t===T.GRAVE) drawGraveTile(cctx, lx*TILE, y*TILE);
 					if(t===T.RESPAWN_TOTEM) drawRespawnTotemTile(cctx, lx*TILE, y*TILE);
+					if(isChairTileId(t)) drawChairTile(cctx, lx*TILE, y*TILE, t);
 					if(t===T.WIRE){
 						const px=lx*TILE, py=y*TILE, h=hash32(wx,y);
 						const y1=py+9+((h>>4)&2);
@@ -7680,7 +7741,8 @@ function updateHouseHealing(dt){
 		const now=performance.now();
 		if(now-houseHealMsgAt>14000){
 			houseHealMsgAt=now;
-			msg('Dom: dach, sciany i swiatlo powoli lecza rany');
+			const chairs=(res.status && res.status.chairs)|0;
+			msg(chairs>0 ? 'Dom: fotel przy swietle - odpoczywasz i leczysz sie szybciej' : 'Dom: dach, sciany i swiatlo powoli lecza rany');
 		}
 	}
 }
@@ -7994,6 +8056,13 @@ function physics(dt){
 	updateHeroCrush(dt);
 	if(MECHS && MECHS.heroMech && MECHS.heroMech(player)){
 		if(MECHS.syncRider) MECHS.syncRider(player);
+		ensureChunks();
+		return;
+	}
+	// Standing in a pilot chair assembles the block machine under it into a
+	// drivable mech (engine/mechs.js validates chassis + energy and carves the
+	// blocks out of the grid). Once seated, the branch above takes over.
+	if(MECHS && MECHS.trySeatFromWorld && MECHS.trySeatFromWorld(player,getTile,setTile)){
 		ensureChunks();
 		return;
 	}
@@ -9698,7 +9767,7 @@ function openHotSelect(slot,anchorEl){ if(!hotSelectMenu) return; hotSelectOptio
 const HOT_SELECT_GROUPS=[
 	{id:'basic',label:'Podstawowe',tiles:['GRASS','SAND','CLAY','DIRT','STONE','WOOD','LEAF','SNOW','WATER']},
 	{id:'rock',label:'Skały i rudy',tiles:['GRANITE','BASALT','COAL','GOLD_ORE','OBSIDIAN','DIAMOND','IRIDIUM','METEORIC_IRON','RADIOACTIVE_ORE','METEOR_DUST','ANTIMATTER_CRYSTAL']},
-	{id:'build',label:'Budulce',tiles:['BRICK','CHIMNEY','GLASS','WOOD_DOOR','STONE_DOOR','STEEL_DOOR','WOOD_TRAPDOOR','STONE_TRAPDOOR','STEEL_TRAPDOOR','STEEL','ALIEN_BIOMASS','VOLCANO_MASTER_STONE','SERVANT_STONE']},
+	{id:'build',label:'Budulce',tiles:['BRICK','CHIMNEY','GLASS','WOOD_DOOR','STONE_DOOR','STEEL_DOOR','WOOD_TRAPDOOR','STONE_TRAPDOOR','STEEL_TRAPDOOR','STEEL','CHAIR_WOOD','CHAIR_STONE','CHAIR_STEEL','ALIEN_BIOMASS','VOLCANO_MASTER_STONE','SERVANT_STONE']},
 		{id:'machine',label:'Maszyny',tiles:['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY','SPRING_PLATFORM','TRACK','VENDING_MACHINE','TELEPORTER','ANTIGRAVITY_BEACON','METEOR_SIREN','TURRET','FIRE_TURRET','WATER_TURRET']},
 	{id:'utility',label:'Instalacje',tiles:['WIRE','COPPER_WIRE','WATER_PIPE','LADDER','WATER_PUMP','TRANSISTOR','TORCH','RESPAWN_TOTEM']},
 	{id:'food',label:'Jedzenie',tiles:['MEAT','ROTTEN_MEAT','BAKED_MEAT']},
@@ -10218,6 +10287,7 @@ function minimapTileColor(t){
 	if(t===T.STEEL_TRAPDOOR) return '#91a0ad';
 	if(t===T.STEEL) return '#8f9aa6';
 	if(t===T.TRACK) return '#48515b';
+	if(isChairTileId(t)) return (INFO[t] && INFO[t].color) || '#a9743c';
 	if(t===T.GLASS) return '#9deeff';
 	if(t===T.WIRE) return '#c56f32';
 	if(t===T.COPPER_WIRE) return '#d68535';
@@ -10268,7 +10338,7 @@ function minimapTileColor(t){
 	return '#686d78';
 }
 function minimapConcealsUndiscovered(t){
-	return t===T.WATER || t===T.LAVA || t===T.GOLD_ORE || t===T.DIAMOND || t===T.IRIDIUM || t===T.UFO_CONCRETE || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.OBSIDIAN || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.TRACK || t===T.GLASS || t===T.BRICK || t===T.CHIMNEY || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || t===T.GRAVE || t===T.RESPAWN_TOTEM || t===T.INVASION_CACHE || t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC;
+	return t===T.WATER || t===T.LAVA || t===T.GOLD_ORE || t===T.DIAMOND || t===T.IRIDIUM || t===T.UFO_CONCRETE || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.OBSIDIAN || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.TRACK || isChairTileId(t) || t===T.GLASS || t===T.BRICK || t===T.CHIMNEY || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || t===T.GRAVE || t===T.RESPAWN_TOTEM || t===T.INVASION_CACHE || t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC;
 }
 function minimapWorldYToPixel(row,mh,minY,maxY){
 	const span=Math.max(1,maxY-minY-1);
@@ -10353,7 +10423,7 @@ function drawMinimap(){
 							continue;
 						}
 						const c=minimapTileColor(t);
-						if(t===T.WATER || t===T.LAVA || t===T.GOLD_ORE || t===T.DIAMOND || t===T.IRIDIUM || t===T.UFO_CONCRETE || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.TRACK || t===T.GLASS || t===T.CHIMNEY || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || t===T.RESPAWN_TOTEM || INFO[t].chestTier || INFO[t].cache){ color=c; priority=true; wx=wx1+1; break; }
+						if(t===T.WATER || t===T.LAVA || t===T.GOLD_ORE || t===T.DIAMOND || t===T.IRIDIUM || t===T.UFO_CONCRETE || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.TRACK || isChairTileId(t) || t===T.GLASS || t===T.CHIMNEY || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || t===T.RESPAWN_TOTEM || INFO[t].chestTier || INFO[t].cache){ color=c; priority=true; wx=wx1+1; break; }
 						if(!color) color=outsideLegacyBand && !discovered ? 'rgba(120,145,176,0.58)' : c;
 					}
 				}
@@ -11754,6 +11824,8 @@ function debugMechFocus(){
 		fuel:+(m.fuel||0).toFixed(1),
 		maxFuel:+(m.maxFuel||0).toFixed(1),
 		trackCircuit:m.trackCircuitOk!==false,
+		hasTurret:!!(MECHS && MECHS._debug && MECHS._debug.mountedTurretCell && MECHS._debug.mountedTurretCell(m)),
+		turretCircuit:!!m.turretCircuitOk,
 		onGround:!!m.onGround,
 		blocked:+(m.blockedT||m.obstacleStrikeT||0).toFixed(1),
 		jumps:m.uncertainJumpTries||0
@@ -11893,22 +11965,6 @@ function setDebugMechEnergy(full){
 	m.energy=full ? m.maxEnergy : 0;
 	m.noPowerT=full ? 0 : 0.8;
 	return markDebugMechChanged();
-}
-function setDebugMechFuel(full){
-	const m=debugNearestMech(160);
-	if(!m || m.kind!=='forge') return false;
-	const cfg=(MECHS && MECHS._debug && MECHS._debug.CFG) || {};
-	m.maxFuel=Math.max(1,Number(m.maxFuel)||Number(cfg.FORGE_COAL_FUEL)||34);
-	m.fuel=full ? m.maxFuel : 0;
-	return markDebugMechChanged();
-}
-function giveDebugMechCoal(){
-	inv.coal=(inv.coal||0)+20;
-	updateInventory();
-	updateHotbarCounts();
-	noteSaveActivity();
-	saveState();
-	return 20;
 }
 function placeDebugMechPowerRig(){
 	let m=debugNearestMech(180);
@@ -12268,9 +12324,6 @@ if(MM.ui && MM.ui.injectMechDebugPanel) MM.ui.injectMechDebugPanel({
 	jumpTest:jumpDebugMech,
 	fillPower:()=>setDebugMechEnergy(true),
 	emptyPower:()=>setDebugMechEnergy(false),
-	fuelFull:()=>setDebugMechFuel(true),
-	fuelEmpty:()=>setDebugMechFuel(false),
-	coal:giveDebugMechCoal,
 	powerRig:placeDebugMechPowerRig,
 	shield:shieldDebugMech,
 	damage:damageDebugMech,

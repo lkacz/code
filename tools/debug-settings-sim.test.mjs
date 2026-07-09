@@ -55,7 +55,7 @@ assert.match(uiSrc, /\['shield','Pancerz'/, 'mech debug panel can test armor abs
 assert.match(uiSrc, /\['pit','Dol'/, 'mech debug panel can set up pit jump/escape tests');
 assert.match(uiSrc, /\['wall','Sciana'/, 'mech debug panel can set up house/wall attack tests');
 assert.match(mainSrc, /injectMechDebugPanel\(\{/, 'main wires the mech debug panel into the menu');
-for(const action of ['zoneLeft','zoneRight','procLeft','procRight','spawnSolar','spawnForge','spawnCrawler','killPilot','board','capture','driveLeft','driveRight','jumpTest','fillPower','emptyPower','fuelFull','fuelEmpty','coal','powerRig','shield','damage','fireHit','waterHit','destroy','wall','trees','pit','mob','saveLoad','reset','metrics']){
+for(const action of ['zoneLeft','zoneRight','procLeft','procRight','spawnSolar','spawnForge','spawnCrawler','killPilot','board','capture','driveLeft','driveRight','jumpTest','fillPower','emptyPower','powerRig','shield','damage','fireHit','waterHit','destroy','wall','trees','pit','mob','saveLoad','reset','metrics']){
 	assert.match(mainSrc, new RegExp(action+':'), 'main wires mech debug action '+action);
 }
 

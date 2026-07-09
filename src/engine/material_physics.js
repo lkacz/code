@@ -54,6 +54,13 @@ export function isFoliageTile(t){
   return t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED;
 }
 
+// Pilot chairs are ordinary furniture: passable fixtures placeable anywhere.
+// Inside a healing shelter they add comfort (house_healing.js); crowning a
+// tracked machine they become the control seat (mechs.js).
+export function isChairTile(t){
+  return !!(INFO[t] && INFO[t].chair);
+}
+
 export function isAirOrGasTile(t){
   return t===T.AIR || isGasTile(t);
 }

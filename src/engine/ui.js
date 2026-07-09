@@ -1571,11 +1571,13 @@ MM.ui = (function(){
     function refreshMetrics(){
       const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
       if(!m){ metrics.textContent='brak metryk mecha'; return; }
-      let text='mechy '+(m.count||0)+' | piloci '+(m.pilots||0)+' | puste '+(m.abandoned||0)+' | jazda '+(m.ridden?'tak':'nie')+' | wieze '+(m.mountedTurrets||0);
+      let text='mechy '+(m.count||0)+' | piloci '+(m.pilots||0)+' | puste '+(m.abandoned||0)+' | jazda '+(m.ridden?'tak':'nie')+' | wieze '+(m.mountedTurrets||0)+' (zasil '+(m.poweredTurrets||0)+')';
       const f=m.focus;
       if(f){
         text+=' | bliski '+(f.kind||'?')+' hp '+fmt(f.hp)+'/'+fmt(f.maxHp)+' pilot '+(f.pilotAlive?'zyje':'brak')+' '+fmt(f.pilot)+'/'+fmt(f.pilotMax);
-        text+=' E '+fmt(f.energy)+'/'+fmt(f.maxEnergy)+' F '+fmt(f.fuel)+'/'+fmt(f.maxFuel)+' obwod '+(f.trackCircuit?'tak':'brak')+' blok '+fmt(f.blocked)+' skoki '+fmt(f.jumps);
+        text+=' E '+fmt(f.energy)+'/'+fmt(f.maxEnergy)+' F '+fmt(f.fuel)+'/'+fmt(f.maxFuel)+' obwod '+(f.trackCircuit?'tak':'brak');
+        if(f.hasTurret) text+=' dzialo '+(f.turretCircuit?'zasilone':'martwe');
+        text+=' blok '+fmt(f.blocked)+' skoki '+fmt(f.jumps);
       }
       metrics.textContent=text;
     }
@@ -1607,9 +1609,6 @@ MM.ui = (function(){
       ['jumpTest','Skok','Symuluje skok gracza w przejetym mechu','Mech wykonal skok','Brak jazdy, gruntu albo energii'],
       ['fillPower','Energia max','Laduje baterie mecha','Energia mecha pelna','Brak mecha do ladowania'],
       ['emptyPower','Energia 0','Rozladowuje baterie mecha','Energia mecha wyzerowana','Brak mecha do rozladowania'],
-      ['fuelFull','Paliwo max','Napelnia zbiornik forge-mecha','Paliwo mecha pelne','Ten mech nie uzywa paliwa'],
-      ['fuelEmpty','Paliwo 0','Oproznia zbiornik forge-mecha','Paliwo mecha wyzerowane','Ten mech nie uzywa paliwa'],
-      ['coal','Wegiel +20','Dodaje wegiel do realnego tankowania','Wegiel +20','Nie dodano wegla'],
       ['powerRig','Zasil rig','Stawia realny lokalny rig zasilania dla przejetego mecha','Rig zasilania gotowy','Nie ustawiono zasilania'],
       ['shield','Pancerz','Testuje pochloniecie obrazen bohatera przez pancerz mecha','Pancerz pochlonal obrazenia','Najpierw przejmij mecha'],
       ['damage','Uszkodz','Zadaje kontrolowane obrazenia kadlubowi','Mech uszkodzony','Brak mecha do uszkodzenia'],

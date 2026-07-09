@@ -28,7 +28,22 @@ import { isWindExposureBlockerTile } from './material_physics.js';
 
   function key(x,y){ return (Math.floor(x))+','+(Math.floor(y)); }
   function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=WORLD_TOP && y<WORLD_BOTTOM; }
+  // Mech-mounted dynamos: live mechs (engine/mechs.js) are entities whose cells
+  // are not world tiles, so every tile read here consults the mech overlay
+  // first. A [casing|slot|casing] stack carried by a mech therefore validates,
+  // catches wind and swallows fluid/gas flow EXACTLY like a placed machine.
+  function mechTileAt(x,y){
+    try{
+      const mechs=(typeof window!=='undefined' && window.MM) ? MM.mechs : null;
+      if(!mechs || typeof mechs.tileOverlayAt!=='function') return null;
+      const t=mechs.tileOverlayAt(x,y);
+      return Number.isFinite(t) ? t : null;
+    }catch(e){ return null; }
+  }
+  function mechOwnsSlot(x,y){ return mechTileAt(x,y)===T.DYNAMO_SLOT; }
   function getSafe(getTile,x,y,fallback){
+    const overlay=mechTileAt(x,y);
+    if(overlay!=null) return overlay;
     try{ return typeof getTile==='function' ? getTile(x,y) : fallback; }catch(e){ return fallback; }
   }
   function isCasing(t){ return t===T.DYNAMO; }
@@ -139,6 +154,9 @@ import { isWindExposureBlockerTile } from './material_physics.js';
   }
   function ensureMachine(x,y,getTile,kind){
     x=Math.floor(x); y=Math.floor(y);
+    // mech-carried slots never become world machine records: they move with
+    // the mech and their energy lives in the hull battery instead
+    if(mechOwnsSlot(x,y)) return null;
     if(!isValidSlot(x,y,getTile || (MM.world && MM.world.getTile))) return null;
     const k=key(x,y);
     let m=machines.get(k);
@@ -156,9 +174,17 @@ import { isWindExposureBlockerTile } from './material_physics.js';
     if(!isValidSlot(x,y,getTile || (MM.world && MM.world.getTile))) return false;
     const src=sourcePower(medium);
     if(!src) return false;
+    const gain=src.gain*Math.max(0.25, Math.min(4, Number.isFinite(amount)?amount:1));
+    // flow through a mech-carried slot: identical media and gains, but the
+    // energy is deposited straight into that mech's battery
+    if(mechOwnsSlot(x,y)){
+      try{
+        if(MM.mechs && typeof MM.mechs.absorbDynamoFlow==='function' && MM.mechs.absorbDynamoFlow(x,y,src.kind,gain)) return true;
+      }catch(e){}
+      return false;
+    }
     const m=ensureMachine(x,y,getTile,src.kind);
     if(!m) return false;
-    const gain=src.gain*Math.max(0.25, Math.min(4, Number.isFinite(amount)?amount:1));
     m.power=Math.min(MAX_POWER, (m.power||0)+gain*18);
     m.energy=Math.min(ENERGY_CAPACITY, Math.max(0, (m.energy||0)+gain));
     m.pulse=1;
@@ -232,8 +258,16 @@ import { isWindExposureBlockerTile } from './material_physics.js';
   function machineAt(x,y,getTile){
     const gt=getTile || (MM.world && MM.world.getTile);
     const c=slotCenterFor(x,y,gt);
-    if(!c || !isValidSlot(c.x,c.y,gt)) return null;
+    if(!c || mechOwnsSlot(c.x,c.y) || !isValidSlot(c.x,c.y,gt)) return null;
     return ensureMachine(c.x,c.y,gt);
+  }
+  // Wind response for one slot position, on the exact same curve as the world
+  // machines in update() — exported so mech-mounted dynamos charge identically.
+  function windEnergyPerSecAt(x,y,getTile){
+    const sp=windSpeedForSlot({x:Math.floor(x),y:Math.floor(y)},getTile);
+    if(sp<WIND_MIN_SPEED) return 0;
+    const k=Math.max(0,Math.min(1,(sp-WIND_MIN_SPEED)/(WIND_RATED_SPEED-WIND_MIN_SPEED)));
+    return WIND_MAX_ENERGY_PER_SEC*k*k;
   }
   function energyAt(x,y,getTile){
     const m=machineAt(x,y,getTile);
@@ -491,7 +525,7 @@ import { isWindExposureBlockerTile } from './material_physics.js';
     return {machines:machines.size, active, currentPower:+currentPower.toFixed(2), storedEnergy:+storedEnergy.toFixed(2), rotorSpeed:+rotorSpeed.toFixed(2)};
   }
 
-  const api={isCasing,isSlot,isValidSlot,slotOrientation,plannedCells,structureCellsAt,recordFlow,absorbNear,energyAt,drainAt,onTileChanged,update,catchUp,draw,snapshot,restore,reset,metrics,_debug:{machines,MAX_POWER,ENERGY_CAPACITY,MACHINE_CAP,windSpeedForSlot,WIND_MIN_SPEED,WIND_RATED_SPEED,WIND_MAX_ENERGY_PER_SEC,CATCHUP_MAX_SECONDS}};
+  const api={isCasing,isSlot,isValidSlot,slotOrientation,plannedCells,structureCellsAt,recordFlow,absorbNear,energyAt,drainAt,windEnergyPerSecAt,onTileChanged,update,catchUp,draw,snapshot,restore,reset,metrics,_debug:{machines,MAX_POWER,ENERGY_CAPACITY,MACHINE_CAP,windSpeedForSlot,WIND_MIN_SPEED,WIND_RATED_SPEED,WIND_MAX_ENERGY_PER_SEC,CATCHUP_MAX_SECONDS}};
   MM.dynamo=api;
 })();
 

@@ -10,8 +10,11 @@ const {
   HOUSE_HEAL_RATE_MAX_FRAC,
   HOUSE_HEAL_RATE_MIN_SIZE,
   HOUSE_HEAL_RATE_FULL_SIZE,
+  HOUSE_CHAIR_COMFORT_BONUS,
+  HOUSE_CHAIR_COMFORT_MAX_CHAIRS,
   analyzeHouseAt,
   createHouseHealingState,
+  houseComfortMult,
   houseHealRateFrac,
   houseHealRateFracForSize,
   updateHouseHealing
@@ -202,6 +205,41 @@ const hero = {x:2.2,y:1.8,w:0.7,h:0.95,hp:50,maxHp:200};
   const doorwayHero = {...hero, x:0.5, y:2.0};
   const res = analyzeHouseAt(doorwayHero,w.get,{backgroundAt:w.bg});
   assert.equal(res.ok,true,'standing in a door tile still counts as inside the sealed lit house');
+}
+
+// Chairs are ordinary furniture: placed inside a shelter they never break the
+// seal, count as a built signal, and add resting comfort to the heal rate.
+{
+  const w = makeWorld();
+  buildHouse(w);
+  const bare = analyzeHouseAt(hero,w.get,{backgroundAt:w.bg});
+  assert.equal(bare.ok,true,'baseline shelter is valid before furnishing');
+  assert.equal(bare.chairs,0,'an unfurnished shelter reports zero chairs');
+  w.set(1,2,T.CHAIR_WOOD);
+  const furnished = analyzeHouseAt(hero,w.get,{backgroundAt:w.bg});
+  assert.equal(furnished.ok,true,'a chair inside the room is furniture, not a seal breaker');
+  assert.equal(furnished.chairs,1,'the shelter counts its chair');
+  assert.equal(furnished.healRateFrac,bare.healRateFrac*houseComfortMult(1),'one chair speeds healing by the comfort bonus');
+  assert.equal(houseComfortMult(1),1+HOUSE_CHAIR_COMFORT_BONUS,'one chair applies the configured comfort bonus');
+  w.set(3,2,T.CHAIR_STEEL);
+  const twoChairs = analyzeHouseAt(hero,w.get,{backgroundAt:w.bg});
+  assert.equal(twoChairs.chairs,2,'each chair material counts the same as furniture');
+  assert.equal(twoChairs.healRateFrac,bare.healRateFrac*houseComfortMult(2),'a second chair stacks comfort once more');
+  assert.equal(houseComfortMult(HOUSE_CHAIR_COMFORT_MAX_CHAIRS+3),houseComfortMult(HOUSE_CHAIR_COMFORT_MAX_CHAIRS),'comfort stops stacking past the chair cap');
+  const p = {...hero, hp:50, maxHp:200};
+  const st = createHouseHealingState();
+  const res = updateHouseHealing(st,1,p,w.get,{backgroundAt:w.bg});
+  assert.equal(res.inside,true,'furnished shelter still heals');
+  assert.equal(p.hp,50 + p.maxHp*twoChairs.healRateFrac,'healing ticks at the comfort-boosted rate');
+}
+
+// A chair alone in the open is just furniture — no shelter, no healing.
+{
+  const w = makeWorld();
+  w.set(10,10,T.CHAIR_WOOD);
+  const camper = {x:10.5,y:10.3,w:0.7,h:0.95,hp:10,maxHp:100};
+  const res = analyzeHouseAt(camper,w.get,{backgroundAt:w.bg});
+  assert.equal(res.ok,false,'sitting on a chair under the open sky is not a healing shelter');
 }
 
 {

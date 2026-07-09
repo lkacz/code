@@ -1,5 +1,6 @@
 import { T } from '../constants.js';
 import {
+  isChairTile,
   isDoorTile,
   isGasTile,
   isPlayerBuiltMaterial,
@@ -15,6 +16,11 @@ export const HOUSE_SCAN_INTERVAL = 0.45;
 export const HOUSE_MAX_CELLS = 900;
 export const HOUSE_MAX_RADIUS_X = 36;
 export const HOUSE_MAX_RADIUS_Y = 24;
+// Chairs are ordinary furniture: standing in a shelter that has a chair heals
+// faster (resting comfort). Each chair adds a bonus, capped so chair-spam
+// cannot stack forever.
+export const HOUSE_CHAIR_COMFORT_BONUS = 0.5;
+export const HOUSE_CHAIR_COMFORT_MAX_CHAIRS = 2;
 
 const DIRS = Object.freeze([[1,0],[-1,0],[0,1],[0,-1]]);
 const LIGHT_SOURCE_TILES = new Set([T.TORCH, T.LAVA, T.MOTHER_LAVA, T.ALTAR, T.GLOWSHROOM]);
@@ -44,7 +50,7 @@ function safeBackground(opts,x,y){
 export function isHouseInteriorTile(t){
   return t===T.AIR || t===T.TORCH || t===T.LAVA || t===T.MOTHER_LAVA ||
     t===T.GLOWSHROOM || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE ||
-    t===T.LADDER || isGasTile(t);
+    t===T.LADDER || isChairTile(t) || isGasTile(t);
 }
 
 export function isHouseSealTile(t){
@@ -92,9 +98,14 @@ export function houseHealRateFracForSize(totalCells){
   return HOUSE_HEAL_RATE_MIN_FRAC + (HOUSE_HEAL_RATE_MAX_FRAC-HOUSE_HEAL_RATE_MIN_FRAC)*t;
 }
 
+export function houseComfortMult(chairs){
+  const n=Math.max(0,Math.min(HOUSE_CHAIR_COMFORT_MAX_CHAIRS,Number(chairs)||0));
+  return 1+HOUSE_CHAIR_COMFORT_BONUS*n;
+}
+
 export function houseHealRateFrac(status){
   if(!status || !status.ok) return 0;
-  return houseHealRateFracForSize(status.totalCells || status.cells || 0);
+  return houseHealRateFracForSize(status.totalCells || status.cells || 0)*houseComfortMult(status.chairs);
 }
 
 function playerSampleTiles(player){
@@ -140,7 +151,7 @@ export function analyzeHouseAt(player,getTile,opts={}){
   const q=[start];
   const seen=new Set([key(start.x,start.y)]);
   const sealCells=new Set();
-  let qi=0, light=false, crafted=false, seals=0, missingBackwall=null;
+  let qi=0, light=false, crafted=false, seals=0, missingBackwall=null, chairs=0;
   let left=start.x, right=start.x, top=start.y, bottom=start.y;
 
   while(qi<q.length){
@@ -151,6 +162,7 @@ export function analyzeHouseAt(player,getTile,opts={}){
 
     const t=safeTile(getTile,c.x,c.y);
     if(!isHouseInteriorTile(t)) return {ok:false, reason:'blocked_start'};
+    if(isChairTile(t)){ chairs++; crafted=true; } // furniture: resting comfort + a clear built signal
     if(isHouseLightSourceTile(t,c.x,c.y,opts) || noteAdjacentLight(c.x,c.y,getTile,opts)) light=true;
     const bg=safeBackground(opts,c.x,c.y);
     if(isPlayerBuiltMaterial(bg)) crafted=true;
@@ -175,12 +187,12 @@ export function analyzeHouseAt(player,getTile,opts={}){
 
   const footprintCells=(right-left+3)*(bottom-top+3);
   const totalCells=countHouseSizeCells(seen,sealCells,getTile);
-  const healRateFrac=houseHealRateFracForSize(totalCells);
+  const healRateFrac=houseHealRateFracForSize(totalCells)*houseComfortMult(chairs);
   if(!seals) return {ok:false, reason:'unsealed', cells:q.length};
   if(missingBackwall) return {ok:false, reason:'no_background', x:missingBackwall.x, y:missingBackwall.y, cells:q.length, seals};
   if(!crafted) return {ok:false, reason:'not_built', cells:q.length, seals};
   if(!light) return {ok:false, reason:'dark', cells:q.length, seals};
-  return {ok:true, reason:'house', cells:q.length, sealCells:sealCells.size, footprintCells, totalCells, healRateFrac, seals, lit:light, built:crafted, bounds:{left,right,top,bottom}};
+  return {ok:true, reason:'house', cells:q.length, sealCells:sealCells.size, footprintCells, totalCells, healRateFrac, chairs, comfortMult:houseComfortMult(chairs), seals, lit:light, built:crafted, bounds:{left,right,top,bottom}};
 }
 
 export function createHouseHealingState(){
@@ -221,6 +233,7 @@ export const houseHealing = {
   createState:createHouseHealingState,
   healRateFrac:houseHealRateFrac,
   healRateFracForSize:houseHealRateFracForSize,
+  comfortMult:houseComfortMult,
   update:updateHouseHealing,
   config:Object.freeze({
     healRateFrac:HOUSE_HEAL_RATE_FRAC,
@@ -228,6 +241,8 @@ export const houseHealing = {
     healRateMaxFrac:HOUSE_HEAL_RATE_MAX_FRAC,
     healRateMinSize:HOUSE_HEAL_RATE_MIN_SIZE,
     healRateFullSize:HOUSE_HEAL_RATE_FULL_SIZE,
+    chairComfortBonus:HOUSE_CHAIR_COMFORT_BONUS,
+    chairComfortMaxChairs:HOUSE_CHAIR_COMFORT_MAX_CHAIRS,
     scanInterval:HOUSE_SCAN_INTERVAL,
     maxCells:HOUSE_MAX_CELLS,
     maxRadiusX:HOUSE_MAX_RADIUS_X,
