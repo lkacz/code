@@ -14,7 +14,7 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
   let grassThinningFactor = 1; // dynamic 0..1
   let grassBladeTarget = 3;
   let grassBudgetInfo = '';
-  let overlayCache = {key:'', tiles:[], grassTiles:0};
+  let overlayCache = {key:'', ver:-1, at:-1e9, tiles:[], grassTiles:0};
 
   function hash32(x,y){ let h = (x|0)*374761393 + (y|0)*668265263; h = (h^(h>>>13))*1274126177; h = h^(h>>>16); return h>>>0; }
   function openAbove(t){ return isAirOrGasTile(t); }
@@ -26,7 +26,7 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
     grassThinningFactor = 1;
     grassBladeTarget = 3;
     grassBudgetInfo = '';
-    overlayCache = {key:'', tiles:[], grassTiles:0};
+    overlayCache = {key:'', ver:-1, at:-1e9, tiles:[], grassTiles:0};
   };
 
   function leafTile(t){ return isFoliageTile(t); }
@@ -109,9 +109,14 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
     const wind = readWindFrame(now);
     const diamondPulse = (Math.sin(now*0.005)+1)/2;
     const key=overlayKey(sx,sy,viewX,viewY,minY,maxY,visibleTile);
-    if(pass==='back' || overlayCache.key!==key){
+    // Cross-frame candidate cache: the full-viewport scan used to rerun every
+    // frame (the 'back' pass forced it). Rebuild on camera move, on any world
+    // change (MM.worldRenderVersion stamp from main), or after 400ms as a net
+    // for visibility drift (fog reveals without tile changes).
+    const ver=(window.MM && Number.isFinite(window.MM.worldRenderVersion)) ? window.MM.worldRenderVersion : 0;
+    if(overlayCache.key!==key || overlayCache.ver!==ver || now-overlayCache.at>400){
       const next=buildOverlayCandidates(sx,sy,viewX,viewY,minY,maxY,getTile,T,visibleTile);
-      overlayCache={key, tiles:next.tiles, grassTiles:next.grassTiles};
+      overlayCache={key, ver, at:now, tiles:next.tiles, grassTiles:next.grassTiles};
     }
     const candidates=overlayCache.tiles;
 

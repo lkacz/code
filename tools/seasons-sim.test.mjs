@@ -103,6 +103,24 @@ seasons.scanNow(getTile, setTile, {x:96, y:9});
 assert.equal(getTile(0, 10), T.ICE, 'winter freezes exposed water near the active world');
 assert.ok(waterWakes > 0, 'freezing wakes adjacent water simulation');
 
+// Freezing must be volume-true: partial sub-tile surface cells go through
+// water.solidifyAt first (top the cell up from the body below), and cells that
+// cannot be made full (thin films) stay liquid instead of minting volume as ice.
+resetTiles();
+setTile(0, 10, T.WATER);
+setTile(0, 11, T.STONE);
+let solidifyCalls = 0;
+MM.water.solidifyAt = () => { solidifyCalls++; return false; };
+seasons.forceSeason('winter');
+// scanNow sweeps a rotating column cursor: loop until the water column is visited
+for(let i = 0; i < 12 && solidifyCalls === 0; i++) seasons.scanNow(getTile, setTile, {x:96, y:9});
+assert.ok(solidifyCalls > 0, 'freeze consults water.solidifyAt before converting a cell to ice');
+assert.equal(getTile(0, 10), T.WATER, 'water that cannot be solidified volume-true stays liquid');
+MM.water.solidifyAt = () => true;
+for(let i = 0; i < 12 && getTile(0, 10) !== T.ICE; i++) seasons.scanNow(getTile, setTile, {x:96, y:9});
+assert.equal(getTile(0, 10), T.ICE, 'solidifiable water still freezes normally');
+delete MM.water.solidifyAt;
+
 resetTiles();
 setTile(0, 10, T.WATER);
 setTile(0, 11, T.STONE);

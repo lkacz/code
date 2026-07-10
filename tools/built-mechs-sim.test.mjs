@@ -424,6 +424,73 @@ const splitMech=mechs.heroMech();
 }
 mechs.reset();
 
+// --- Scenario 6c: water turret plumbing — the mech intake mirrors the world
+// pump. WATER_PIPE cells form the intake run; a live water source touching the
+// run refills the connected water-turret tank at pump rate, paying the pump's
+// energy-per-water from the hull reserve. The water hose tops up the same tank.
+assert.match(mechsSource, /function updateWaterIntake/, 'mech plumbing intake exists');
+assert.match(mechsSource, /function refillMountedWaterAt/, 'hose refill entry point exists on mechs');
+const weaponsSource=readFileSync(new URL('../src/engine/weapons.js', import.meta.url),'utf8');
+assert.match(weaponsSource, /refillMountedWaterAt\(tx,ty,HOSE_TURRET_REFILL\)/, 'hose puffs top up mech-mounted water turrets');
+assert.match(weaponsSource, /receiveWaterAt\(tx,ty,HOSE_TURRET_REFILL,getTile\)/, 'hose puffs top up placed water turrets through the shared tank API');
+// chair(651,16) / battery beside the turret (electric) / pipe below it (plumbing)
+setTile(651,16,T.CHAIR_STEEL);
+setTile(650,17,T.WATER_TURRET); setTile(651,17,T.SOLAR_BATTERY); setTile(652,17,T.STEEL);
+setTile(650,18,T.WATER_PIPE);   setTile(651,18,T.STEEL);         setTile(652,18,T.STEEL);
+for(let x=650;x<=652;x++) setTile(x,19,T.TRACK);
+setTile(649,18,T.WATER); // the pool the intake drinks from (player-built stone basin etc.)
+sitAt(651,16);
+assert.equal(seat(), true, 'plumbed water-turret machine assembles');
+const tanker=mechs.heroMech();
+tanker.energy=40;
+settle(1,{});
+const tankState=tanker.turretStates && tanker.turretStates['0,1'];
+assert.ok(tankState, 'submerged intake creates the turret tank state');
+tankState.water=2;
+const tankEnergy0=tanker.energy;
+settle(300,{});
+assert.ok(tankState.water>23.9, 'wet intake pipes fill the water-turret tank to capacity');
+assert.ok(tanker.energy<tankEnergy0-10, 'the intake pays hull energy like a pump (0.7 per water)');
+// the filled tank feeds real water shots once the pool is gone
+tiles.delete(K(649,18));
+{
+  let mobHp=200, mobDmg=0;
+  globalThis.MM.mobs={
+    nearestLiving(){ return mobHp>0 ? {x:tanker.x+4.5,y:tanker.y+1.5,hp:mobHp,species:'ZOMBIE'} : null; },
+    damageAt(tx,ty,d){ mobHp-=d; mobDmg+=d; return true; },
+    collideMech(){ return null; }
+  };
+  if(globalThis.MM.turrets && globalThis.MM.turrets.reset) globalThis.MM.turrets.reset();
+  tanker.energy=tanker.maxEnergy;
+  const waterBeforeShots=tankState.water;
+  settle(240,{});
+  assert.ok(mobDmg>0, 'the mounted water turret fires off its refilled tank');
+  assert.ok(tankState.water<waterBeforeShots, 'water shots drain the mounted tank');
+  globalThis.MM.mobs=null;
+}
+// dry pipes never refill, and an empty hull reserve cannot pump
+tankState.water=5;
+settle(120,{});
+assert.equal(+tankState.water.toFixed(3), 5, 'a dry intake adds no water');
+// At night (no solar trickle into the hull battery) an empty reserve cannot
+// pump: moving water costs energy, exactly like the world pump.
+setTile(649,18,T.WATER);
+tanker.energy=0;
+globalThis.MM.background={ timeInfo:()=>({isDay:false,tDay:0}) };
+settle(120,{});
+globalThis.MM.background=null;
+assert.equal(+tankState.water.toFixed(3), 5, 'an empty hull reserve cannot pump water aboard');
+// hose refill API: clamps at tank capacity and reports accepted water
+let hosePoured=0;
+const hoseTx=Math.floor(tanker.x), hoseTy=Math.floor(tanker.y+1);
+for(let i=0;i<100;i++) hosePoured+=mechs.refillMountedWaterAt(hoseTx,hoseTy,0.35);
+assert.ok(Math.abs(tankState.water-24)<0.001, 'hose refill fills the mounted tank to capacity');
+assert.ok(Math.abs(hosePoured-19)<0.01, 'hose refill reports exactly the accepted water');
+assert.equal(mechs.refillMountedWaterAt(hoseTx,hoseTy,1), 0, 'a full mounted tank accepts nothing');
+assert.equal(mechs.refillMountedWaterAt(hoseTx+1,hoseTy,1), 0, 'a non-turret mech cell accepts no hose water');
+mechs._debug.parkBuiltMech(tanker,globalThis.player,getTile,setTile,{});
+mechs.reset();
+
 // --- Scenario 7: save/restore keeps the built mech and its rider -------------
 mechs.reset();
 setTile(241,16,T.CHAIR_WOOD);

@@ -115,13 +115,18 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
       open++;
     }
     let sky=0;
-    for(let yy=y-1; yy>=WORLD_TOP; yy--){
+    // Bounded sky probe: past ~18 open rows the blocker distance no longer changes
+    // the result tier, so anything beyond 64 rows counts as open sky. The full walk
+    // to WORLD_TOP cost up to ~400 getTile calls per sample on open ground (the
+    // common case), and the hero alone samples 9 cells per frame.
+    const skyLimit=Math.max(WORLD_TOP, y-64);
+    for(let yy=y-1; yy>=skyLimit; yy--){
       if(isWindBlocker(getSafe(getTile,x,yy,T.STONE))){
         const gap=y-yy;
         sky=gap>18 ? 0.48 : (gap>7 ? 0.22 : 0.06);
         break;
       }
-      if(yy===WORLD_TOP) sky=1;
+      if(yy===skyLimit) sky=1;
     }
     const local=open/12;
     if(sky>=0.98) return clamp(local,0,1);
@@ -418,7 +423,9 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
     if(mag>0.04){
       const cap=particleCap();
       const rate=clamp(1.8 + mag*7.0 + Math.max(0,mag-2.2)*5.5,1.8,42);
-      visualAcc += rate*dt;
+      // Clamp the accumulator: when spawning keeps failing (hero sheltered deep
+      // underground) it must not bank an unbounded burst for the moment they surface.
+      visualAcc = Math.min(visualAcc + rate*dt, 6);
       while(visualAcc>=1 && particles.length<cap){
         visualAcc-=1;
         if(!spawnVisualParticle(player,getTile)) break;

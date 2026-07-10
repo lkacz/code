@@ -72,23 +72,24 @@ const meat = (function(){
     if(typeof getTile!=='function' || !Number.isFinite(wx) || !Number.isFinite(wy)) return null;
     const r=Math.floor(Math.max(1,Math.min(48,Number.isFinite(radius)?radius:PIRANHA_BAIT_SCAN_RADIUS)));
     const r2=r*r;
-    const checked=new Set();
     let best=null;
+    // Ordered cheapest-first and allocation-free: the old version built a string
+    // key + Set entry per visited cell BEFORE checking the tile — the area sweep
+    // below visits ~1369 cells per call, and a school of piranhas polls every
+    // ~0.3s. Re-considering a cell is idempotent (a candidate cannot beat itself),
+    // so no dedupe is needed.
     function consider(x,y){
       x=Math.floor(x); y=Math.floor(y);
       if(!finiteTile(x,y)) return;
-      const k=key(x,y);
-      if(checked.has(k)) return;
-      checked.add(k);
       const t=getSafe(getTile,x,y,T.AIR);
       const profile=baitProfileForTile(t);
       if(!profile) return;
-      const water=nearestTouchingWater(x,y,getTile);
-      if(!water) return;
       const cx=x+0.5, cy=y+0.5;
       const dx=cx-wx, dy=cy-wy;
       const d2=dx*dx+dy*dy;
       if(d2>r2) return;
+      const water=nearestTouchingWater(x,y,getTile);
+      if(!water) return;
       if(!best || d2<best.d2-0.001 || (Math.abs(d2-best.d2)<=0.001 && profile.priority>best.priority)){
         best={
           kind:profile.kind,
@@ -111,6 +112,8 @@ const meat = (function(){
       if(!rcd) continue;
       consider(rcd.x,rcd.y);
     }
+    // Area sweep stays: bait touching water is a valid lure even when it never
+    // entered decay tracking (pinned by the piranha suite).
     const cx=Math.floor(wx), cy=Math.floor(wy);
     for(let y=cy-r; y<=cy+r; y++){
       for(let x=cx-r; x<=cx+r; x++) consider(x,y);

@@ -11,25 +11,32 @@ window.MM = window.MM || {};
   function saveSettings(){ try{ localStorage.setItem(VOL_KEY, JSON.stringify(settings)); }catch(e){} }
 
   let noiseBuf=null;
+  let ctxFailed=false; // creation failed (no device/headless): retry only on a user gesture
   function ensureCtx(){
-    if(ctx || typeof window==='undefined') return ctx;
+    if(ctx || ctxFailed || typeof window==='undefined') return ctx;
     const AC=window.AudioContext||window.webkitAudioContext;
-    if(!AC) return null;
-    ctx=new AC();
-    master=ctx.createGain(); master.gain.value=settings.mute?0:settings.vol; master.connect(ctx.destination);
-    // shared 1s noise buffer
-    noiseBuf=ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
-    const d=noiseBuf.getChannelData(0); for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
-    // rain bed: looped noise through a lowpass, silent until weather says otherwise
-    const src=ctx.createBufferSource(); src.buffer=noiseBuf; src.loop=true;
-    const lp=ctx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=900; lp.Q.value=0.4;
-    rainGain=ctx.createGain(); rainGain.gain.value=0;
-    src.connect(lp); lp.connect(rainGain); rainGain.connect(master); src.start();
+    if(!AC){ ctxFailed=true; return null; }
+    try{
+      ctx=new AC();
+      master=ctx.createGain(); master.gain.value=settings.mute?0:settings.vol; master.connect(ctx.destination);
+      // shared 1s noise buffer
+      noiseBuf=ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+      const d=noiseBuf.getChannelData(0); for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+      // rain bed: looped noise through a lowpass, silent until weather says otherwise
+      const src=ctx.createBufferSource(); src.buffer=noiseBuf; src.loop=true;
+      const lp=ctx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=900; lp.Q.value=0.4;
+      rainGain=ctx.createGain(); rainGain.gain.value=0;
+      src.connect(lp); lp.connect(rainGain); rainGain.connect(master); src.start();
+    }catch(e){
+      // Without the latch every SFX call re-attempted construction (and threw)
+      // each frame on machines with no audio backend.
+      ctx=null; master=null; noiseBuf=null; rainGain=null; ctxFailed=true;
+    }
     return ctx;
   }
-  // unlock on the first gesture
+  // unlock on the first gesture (a real gesture may succeed where autoplay failed)
   if(typeof window!=='undefined' && window.addEventListener){
-    const unlock=()=>{ const c=ensureCtx(); if(c && c.state==='suspended') c.resume(); };
+    const unlock=()=>{ ctxFailed=false; const c=ensureCtx(); if(c && c.state==='suspended') c.resume(); };
     window.addEventListener('pointerdown',unlock,{once:false});
     window.addEventListener('keydown',unlock,{once:false});
   }

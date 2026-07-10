@@ -13,10 +13,12 @@ const springPlatforms = (function(){
   const COOLDOWN = 0.18;
   const MACHINE_CAP = 520;
   const VISIBLE_SCAN_INTERVAL_MS = 220;
+  const PLAYER_SCAN_INTERVAL = 2.5; // discovery-only sweep (see update)
 
   const machines = new Map();
   let visibleScanKey = '';
   let visibleScanAt = 0;
+  let scanT = 0;
   let launches = 0;
   let poweredLaunches = 0;
   let unpoweredLaunches = 0;
@@ -57,13 +59,17 @@ const springPlatforms = (function(){
 
   function scanNearby(player,getTile){
     if(!player || typeof getTile!=='function') return;
+    // Raw world reads: discovery only needs base tiles, not the electric-network
+    // accessor the caller hands us (three lookups per probe).
+    const w=MM.world;
+    const read=(w && typeof w.peekTile==='function') ? (x,y)=>w.peekTile(x,y,T.AIR) : (x,y)=>getSafe(getTile,x,y,T.AIR);
     const cx=Math.floor(Number(player.x)||0);
     const cy=Math.floor(Number(player.y)||0);
     const rx=42, ry=26;
     const y0=Math.max(WORLD_TOP,cy-ry), y1=Math.min(WORLD_BOTTOM-1,cy+ry);
     for(let y=y0; y<=y1; y++){
       for(let x=cx-rx; x<=cx+rx; x++){
-        if(getSafe(getTile,x,y,T.AIR)===T.SPRING_PLATFORM) ensureMachine(x,y,getTile);
+        if(read(x,y)===T.SPRING_PLATFORM) ensureMachine(x,y,getTile);
       }
     }
   }
@@ -155,7 +161,14 @@ const springPlatforms = (function(){
 
   function update(dt,player,getTile,opts){
     if(!(dt>0) || typeof getTile!=='function') return;
-    scanNearby(player,getTile);
+    // Discovery-only cadence: placements register via onTileChanged and landing on
+    // a platform registers via launchEntity->ensureMachine. Scanning every frame
+    // was ~270k probes/s at idle through the electric-network accessor (x3 lookups).
+    scanT-=dt;
+    if(scanT<=0){
+      scanT=PLAYER_SCAN_INTERVAL;
+      scanNearby(player,getTile);
+    }
     for(const [raw,m] of machines){
       if(!m || getSafe(getTile,m.x,m.y,T.AIR)!==T.SPRING_PLATFORM){
         machines.delete(raw);

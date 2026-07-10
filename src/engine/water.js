@@ -39,9 +39,9 @@ window.MM = window.MM || {};
   // non-negative for y-1 probes at WORLD_TOP; world spans <504 rows so 512 slots per
   // column cannot alias. Numeric keys avoid string churn on hot paths.
   const LPK = (x,y)=> x*512 + (y-WORLD_TOP+8);
-  const active = new Set(); // 'x,y'
+  const active = new Set(); // packed LPK cell keys
   // Cells that settled laterally but may still need pressure leveling (consumed per pass)
-  const pressureSeeds = new Set();
+  const pressureSeeds = new Set(); // packed LPK cell keys
   let passiveScanOffset = 0;
   const PASSIVE_SCAN_RADIUS = 240;
   const PASSIVE_SCAN_SPAN = PASSIVE_SCAN_RADIUS*2+1;
@@ -68,6 +68,9 @@ window.MM = window.MM || {};
   let pressureAcc = 0;
   let pressureLastMs = 0;
   let pressureMaxMs = 0;
+  // Round-robin cursor for the leveling pass (last packed seed key attempted):
+  // keeps EQ_BODIES-per-pass budgets fair across the whole seeded span.
+  let pressureSweepKey = -Infinity;
   // Vertical scan bound (displacement search)
   const MAX_VERTICAL_SCAN = 48;
   const WATER_REACTION_BUDGET_BASE = 48;
@@ -117,7 +120,14 @@ window.MM = window.MM || {};
   let overlayFullRenders = 0;
 
   function k(x,y){ return x+","+y; }
-  function mark(x,y){ active.add(k(x,y)); }
+  // Hot-path sets (active/next/pressureSeeds) use packed numeric LPK keys: 'x,y'
+  // strings allocated per mark/neighbor were thousands of short-lived allocations
+  // per tick under flow, and their lexicographic sort dominated the tick order cost.
+  // The y guard keeps out-of-world marks from aliasing another column's packed slot
+  // (they were silent no-ops as strings, and stay no-ops here).
+  const PK_MIN_Y=WORLD_TOP-4, PK_MAX_Y=WORLD_BOTTOM+4;
+  function pkToStr(pk){ const x=Math.floor(pk/512); return x+','+(pk-x*512+WORLD_TOP-8); }
+  function mark(x,y){ if(y>=PK_MIN_Y && y<=PK_MAX_Y) active.add(LPK(x,y)); }
   function isGas(t){ return isGasTile(t); }
   function isLeaf(t){ return isFoliageTile(t); }
   function isAir(t){ return isWaterOpenTile(t); }
@@ -218,7 +228,9 @@ window.MM = window.MM || {};
   function updateToxicWater(getTile,dt){
     if(!toxicWater.size) return;
     let changed=false;
-    for(const [pk,ttl] of [...toxicWater]){
+    // Deleting the current entry / overwriting existing keys during Map iteration
+    // is safe; the previous copy-spread allocated the whole map every tick.
+    for(const [pk,ttl] of toxicWater){
       const x=Math.floor(pk/512), y=pk-x*512+WORLD_TOP-8;
       const alive=validTile(x,y) && getSafe(getTile,x,y,T.STONE)===T.WATER;
       const next=(Number.isFinite(ttl)?ttl:0)-dt;
@@ -347,10 +359,10 @@ window.MM = window.MM || {};
       const lvl=levelUnits(getTile,sx,y);
       if(lvl<=0) continue;
       moveUnits(sx,y,x,y,lvl,getTile,setTile);
-      next.add(k(x,y));
+      next.add(LPK(x,y));
       markNeighbors(next,x,y);
       markNeighbors(next,sx,y);
-      if(pressureSeeds.size<2000) pressureSeeds.add(k(x,y));
+      if(pressureSeeds.size<2000) pressureSeeds.add(LPK(x,y));
       pressureAcc=Math.max(pressureAcc, pressureIntervalCurrent*0.7);
       disturb(x, 36);
       return true;
@@ -665,13 +677,14 @@ window.MM = window.MM || {};
     materialScanOffset=(materialScanOffset+columns)%MATERIAL_SCAN_SPAN;
     return queued;
   }
+  // The material processors iterate their Maps directly (insertion order — still
+  // deterministic): snapshotting + lexicographically sorting up to 2400 keys per
+  // map per tick was pure allocation/sort overhead for a budget of 56 entries.
+  // Entries are only deleted (safe mid-iteration) or moved to a DIFFERENT map.
   function processWetSand(getTile,setTile,dt,budget){
-    const keys=[...wetSand.keys()].sort();
     let left=budget;
-    for(const kk of keys){
+    for(const [kk,rec] of wetSand){
       if(left--<=0) break;
-      const rec=wetSand.get(kk);
-      if(!rec){ continue; }
       if(getSafe(getTile,rec.x,rec.y,T.AIR)!==T.SAND){ wetSand.delete(kk); continue; }
       const water=countAdjacentWater(rec.x,rec.y,getTile);
       if(water<=0){
@@ -686,12 +699,9 @@ window.MM = window.MM || {};
     return Math.max(0,left);
   }
   function processWetClay(getTile,setTile,dt,budget){
-    const keys=[...wetClay.keys()].sort();
     let left=budget;
-    for(const kk of keys){
+    for(const [kk,rec] of wetClay){
       if(left--<=0) break;
-      const rec=wetClay.get(kk);
-      if(!rec){ continue; }
       if(getSafe(getTile,rec.x,rec.y,T.AIR)!==T.CLAY){ wetClay.delete(kk); continue; }
       const water=countAdjacentWater(rec.x,rec.y,getTile);
       if(water<=0){
@@ -706,12 +716,9 @@ window.MM = window.MM || {};
     return Math.max(0,left);
   }
   function processDryMud(getTile,setTile,dt,budget,sun){
-    const keys=[...dryMud.keys()].sort();
     let left=budget;
-    for(const kk of keys){
+    for(const [kk,rec] of dryMud){
       if(left--<=0) break;
-      const rec=dryMud.get(kk);
-      if(!rec){ continue; }
       if(getSafe(getTile,rec.x,rec.y,T.AIR)!==T.MUD){ dryMud.delete(kk); continue; }
       if(sun<SUN_DRY_MIN || !skyExposedToSun(rec.x,rec.y,getTile)){
         rec.dry=Math.max(0,(rec.dry||0)-dt*0.45);
@@ -725,12 +732,9 @@ window.MM = window.MM || {};
     return Math.max(0,left);
   }
   function processDryClay(getTile,setTile,dt,budget,sun){
-    const keys=[...dryClay.keys()].sort();
     let left=budget;
-    for(const kk of keys){
+    for(const [kk,rec] of dryClay){
       if(left--<=0) break;
-      const rec=dryClay.get(kk);
-      if(!rec){ continue; }
       if(getSafe(getTile,rec.x,rec.y,T.AIR)!==T.WET_CLAY){ dryClay.delete(kk); continue; }
       if(sun<SUN_DRY_MIN || !skyExposedToSun(rec.x,rec.y,getTile)){
         rec.dry=Math.max(0,(rec.dry||0)-dt*0.45);
@@ -887,11 +891,11 @@ window.MM = window.MM || {};
       for(const [cx,val] of lateralCooldown){ const nv=val-dt; if(nv<=0) lateralCooldown.delete(cx); else lateralCooldown.set(cx,nv); }
     }
     let processed=0; const next=new Set();
-    const keys=[...active]; keys.sort();
+    const keys=[...active]; keys.sort((a,b)=>a-b);
     lateralAcc += dt; const lateralStep = lateralAcc >= LATERAL_INTERVAL; if(lateralStep) lateralAcc=0;
     for(const key of keys){
       if(processed++>MAX){ next.add(key); continue; }
-      const ci=key.indexOf(','); const sx=+key.slice(0,ci), sy=+key.slice(ci+1);
+      const sx=Math.floor(key/512), sy=key-sx*512+WORLD_TOP-8;
       const lvl=levelUnits(getTile,sx,sy);
       if(lvl<=0) continue;
       // Downward compaction: water below with headroom swallows this cell's units —
@@ -900,7 +904,7 @@ window.MM = window.MM || {};
         const bLvl=levelUnits(getTile,sx,sy+1);
         if(bLvl<UNITS){
           moveUnits(sx,sy,sx,sy+1,Math.min(lvl,UNITS-bLvl),getTile,setTile);
-          next.add(k(sx,sy+1)); markNeighbors(next,sx,sy+1); markNeighbors(next,sx,sy);
+          next.add(LPK(sx,sy+1)); markNeighbors(next,sx,sy+1); markNeighbors(next,sx,sy);
           if(levelUnits(getTile,sx,sy)>0) next.add(key);
           continue;
         }
@@ -910,7 +914,7 @@ window.MM = window.MM || {};
       if(fall){
         const ny=fall.y;
         moveUnits(sx,sy,sx,ny,lvl,getTile,setTile);
-        next.add(k(sx,ny)); markNeighbors(next,sx,ny); markNeighbors(next,sx,sy);
+        next.add(LPK(sx,ny)); markNeighbors(next,sx,ny); markNeighbors(next,sx,sy);
         recordDynamoWater(sx,fall.slotY,getTile,lvl);
         if(ny-sy>=2 && lvl>=3) noteFall(sx,sy,ny);
         if(ny-sy>=2) pullAdjacentIntoDrainMouth(sx,sy,next,getTile,setTile);
@@ -921,10 +925,10 @@ window.MM = window.MM || {};
         const inlet=sideDrainInletTarget(sx,sy,getTile);
         if(inlet){
           moveUnits(sx,sy,inlet.x,inlet.y,lvl,getTile,setTile);
-          next.add(k(inlet.x,inlet.y));
+          next.add(LPK(inlet.x,inlet.y));
           markNeighbors(next,inlet.x,inlet.y);
           markNeighbors(next,sx,sy);
-          if(pressureSeeds.size<2000) pressureSeeds.add(k(inlet.x,inlet.y));
+          if(pressureSeeds.size<2000) pressureSeeds.add(LPK(inlet.x,inlet.y));
           pressureAcc=Math.max(pressureAcc, pressureIntervalCurrent*0.55);
           disturb(inlet.x, 34);
           continue;
@@ -937,11 +941,11 @@ window.MM = window.MM || {};
           const flow=sideDynamoFlowTarget(sx,sy,dx,getTile);
           if(!flow) continue;
           moveUnits(sx,sy,flow.outX,flow.outY,lvl,getTile,setTile);
-          next.add(k(flow.outX,flow.outY));
+          next.add(LPK(flow.outX,flow.outY));
           markNeighbors(next,flow.outX,flow.outY);
           markNeighbors(next,sx,sy);
           recordDynamoSideWater(flow.slotX,flow.slotY,getTile,lvl);
-          if(pressureSeeds.size<2000) pressureSeeds.add(k(flow.outX,flow.outY));
+          if(pressureSeeds.size<2000) pressureSeeds.add(LPK(flow.outX,flow.outY));
           pressureAcc=Math.max(pressureAcc, pressureIntervalCurrent*0.6);
           disturb(flow.outX, 52);
           moved=true;
@@ -970,7 +974,7 @@ window.MM = window.MM || {};
           let order=[];
             if(leftBelowAir && rightBelowAir){ const dl=dropDepth(sx-1); const dr=dropDepth(sx+1); order = dl>dr?[-1,1]:dr>dl?[1,-1]:(((sx+sy)&1)?[-1,1]:[1,-1]); }
             else order = leftBelowAir?[-1]:[1];
-          for(const dx of order){ if(canFill(getTile(sx+dx,sy)) && canFill(getTile(sx+dx,sy+1))){ moveUnits(sx,sy,sx+dx,sy+1,lvl,getTile,setTile); next.add(k(sx+dx,sy+1)); markNeighbors(next,sx+dx,sy+1); disturb(sx+dx,46); moved=true; break; } }
+          for(const dx of order){ if(canFill(getTile(sx+dx,sy)) && canFill(getTile(sx+dx,sy+1))){ moveUnits(sx,sy,sx+dx,sy+1,lvl,getTile,setTile); next.add(LPK(sx+dx,sy+1)); markNeighbors(next,sx+dx,sy+1); disturb(sx+dx,46); moved=true; break; } }
           if(moved) continue;
         }
         // Diagonal top-up: a lower neighboring surface with headroom directly below a
@@ -983,7 +987,7 @@ window.MM = window.MM || {};
             const bLvl=levelUnits(getTile,sx+dx,sy+1);
             if(bLvl>=UNITS) continue;
             moveUnits(sx,sy,sx+dx,sy+1,Math.min(lvl,UNITS-bLvl),getTile,setTile);
-            next.add(k(sx+dx,sy+1)); markNeighbors(next,sx+dx,sy+1); markNeighbors(next,sx,sy);
+            next.add(LPK(sx+dx,sy+1)); markNeighbors(next,sx+dx,sy+1); markNeighbors(next,sx,sy);
             disturb(sx+dx, 22);
             moved=true;
             break;
@@ -1003,7 +1007,7 @@ window.MM = window.MM || {};
             const d=lvl-levelUnits(getTile,nx,sy);
             if(d<2) continue;
             moveUnits(sx,sy,nx,sy,Math.floor(d/2),getTile,setTile);
-            next.add(key); next.add(k(nx,sy)); markNeighbors(next,nx,sy);
+            next.add(key); next.add(LPK(nx,sy)); markNeighbors(next,nx,sy);
             moved=true;
             break;
           }
@@ -1013,8 +1017,8 @@ window.MM = window.MM || {};
             if(canFill(nb)) continue; // a drop: spill logic owns it
             if(nb===T.WATER && levelUnits(getTile,nx,sy+1)<UNITS) continue; // top-up owns it
             moveUnits(sx,sy,nx,sy,Math.floor(lvl/2),getTile,setTile);
-            next.add(key); next.add(k(nx,sy)); markNeighbors(next,nx,sy);
-            if(pressureSeeds.size<2000) pressureSeeds.add(k(nx,sy));
+            next.add(key); next.add(LPK(nx,sy)); markNeighbors(next,nx,sy);
+            if(pressureSeeds.size<2000) pressureSeeds.add(LPK(nx,sy));
             disturb(nx, 18);
             moved=true;
             break;
@@ -1041,7 +1045,7 @@ window.MM = window.MM || {};
         }
         if(candidates.length){
           candidates.sort((a,b)=> b.score - a.score || (((sx+sy)&1)? b.dx - a.dx : a.dx - b.dx));
-          const best=candidates[0]; if(best.score>0){ moveUnits(sx,sy,sx+best.dx,sy,lvl,getTile,setTile); next.add(k(sx+best.dx,sy)); markNeighbors(next,sx+best.dx,sy); moved=true; }
+          const best=candidates[0]; if(best.score>0){ moveUnits(sx,sy,sx+best.dx,sy,lvl,getTile,setTile); next.add(LPK(sx+best.dx,sy)); markNeighbors(next,sx+best.dx,sy); moved=true; }
         }
         // Pressurized sideways push: a cell with hydraulic head (water directly above)
         // seeps into a same-level opening even with no drop in range — quick local
@@ -1055,8 +1059,8 @@ window.MM = window.MM || {};
             if(!isAir(getTile(nx,sy))) continue;
             if(!(sy+1<WORLD_BOTTOM) || canFill(getTile(nx,sy+1))) continue; // a drop: spill logic owns it
             moveUnits(sx,sy,nx,sy,lvl,getTile,setTile);
-            next.add(k(nx,sy)); markNeighbors(next,sx,sy); markNeighbors(next,nx,sy);
-            if(pressureSeeds.size<2000) pressureSeeds.add(k(nx,sy));
+            next.add(LPK(nx,sy)); markNeighbors(next,sx,sy); markNeighbors(next,nx,sy);
+            if(pressureSeeds.size<2000) pressureSeeds.add(LPK(nx,sy));
             // bring the next leveling pass forward so the new column rises promptly
             pressureAcc=Math.max(pressureAcc, pressureIntervalCurrent*0.6);
             disturb(nx, 30);
@@ -1109,10 +1113,10 @@ window.MM = window.MM || {};
             if(ty!=null){
               if(getTile(x,ty)===T.WATER){
                 while(ty-1>=WORLD_TOP && getTile(x,ty-1)===T.WATER) ty--;
-                active.add(k(x,ty));
+                active.add(LPK(x,ty));
               } else { // touched cell drained dry: the column's water sits below it
                 const stop=Math.min(WORLD_BOTTOM, ty+64);
-                for(let y=ty+1; y<stop; y++){ if(getTile(x,y)===T.WATER){ active.add(k(x,y)); break; } }
+                for(let y=ty+1; y<stop; y++){ if(getTile(x,y)===T.WATER){ active.add(LPK(x,y)); break; } }
               }
             }
             // gentle alternating wave kick so leveling reads as sloshing, not teleporting
@@ -1134,15 +1138,20 @@ window.MM = window.MM || {};
     }
   }
 
-  function markNeighbors(set,x,y){ set.add(k(x-1,y)); set.add(k(x+1,y)); set.add(k(x,y-1)); set.add(k(x,y+1)); }
+  function markNeighbors(set,x,y){
+    set.add(LPK(x-1,y)); set.add(LPK(x+1,y));
+    if(y-1>=PK_MIN_Y) set.add(LPK(x,y-1));
+    if(y+1<=PK_MAX_Y) set.add(LPK(x,y+1));
+  }
   function hurrySolver(){
     lateralAcc=Math.max(lateralAcc,LATERAL_INTERVAL);
     pressureAcc=Math.max(pressureAcc,pressureIntervalCurrent*0.88);
   }
   function wakeWaterCell(x,y,includeNeighbors){
+    if(y<PK_MIN_Y || y>PK_MAX_Y) return;
     mark(x,y);
     if(includeNeighbors) markNeighbors(active,x,y);
-    if(pressureSeeds.size<2400) pressureSeeds.add(k(x,y));
+    if(pressureSeeds.size<2400) pressureSeeds.add(LPK(x,y));
   }
   function wakeWaterAround(x,y,getTile,rx,ry){
     if(typeof getTile!=='function') return false;
@@ -1270,6 +1279,31 @@ window.MM = window.MM || {};
       }
     }
     return false; // fully sealed pocket — the units are lost
+  }
+  // A weather system wants to turn the water at (x,y) into a solid FULL block
+  // (e.g. seasonal ice). Leveled surfaces are usually partial cells, and freezing
+  // a 4/10 cell into ice that later thaws back to a 10/10 water block would mint
+  // volume every winter. Make the cell volume-true first: top it up by borrowing
+  // the deficit from the full water directly below (the new ice sheet visibly
+  // "draws down" the body it freezes over). Returns false when that is impossible
+  // (thin films with nothing below) — such cells should stay liquid.
+  function solidifyAt(x,y,getTile,setTile){
+    x=Math.floor(x); y=Math.floor(y);
+    if(!validTile(x,y) || typeof getTile!=='function' || typeof setTile!=='function') return false;
+    const u=levelUnits(getTile,x,y);
+    if(u<=0) return false;
+    if(u>=UNITS) return true;
+    const deficit=UNITS-u;
+    if(y+1<WORLD_BOTTOM && getTile(x,y+1)===T.WATER){
+      const below=levelUnits(getTile,x,y+1);
+      if(below>deficit){ // keep at least one unit so the row below stays water
+        moveUnits(x,y+1,x,y,deficit,getTile,setTile);
+        wakeWaterCell(x,y+1,true);
+        hurrySolver();
+        return true;
+      }
+    }
+    return false;
   }
 
   // ---------------- Rendering ----------------
@@ -1697,6 +1731,7 @@ window.MM = window.MM || {};
     pressureAcc=0;
     pressureLastMs=0;
     pressureMaxMs=0;
+    pressureSweepKey=-Infinity;
     reactionBudget=0;
     wetSand.clear();
     wetClay.clear();
@@ -1709,11 +1744,10 @@ window.MM = window.MM || {};
   function snapshot(){
     try{
       const activeList=[];
-      for(const raw of active){
-        const kk=parseRestoreKey(raw);
-        if(!kk) continue;
-        const ix=kk.indexOf(',');
-        activeList.push([+kk.slice(0,ix),+kk.slice(ix+1)]);
+      for(const pk of active){
+        const x=Math.floor(pk/512), y=pk-Math.floor(pk/512)*512+WORLD_TOP-8;
+        if(!validRestoreCoord(x,y)) continue;
+        activeList.push([x,y]);
         if(activeList.length>=RESTORE_ACTIVE_CAP) break;
       }
       const lateral=[];
@@ -1786,7 +1820,10 @@ window.MM = window.MM || {};
     if(Array.isArray(s.active)){
       for(const a of s.active){
         const kk=parseRestoreKey(a);
-        if(kk && active.size<RESTORE_ACTIVE_CAP) active.add(kk);
+        if(kk && active.size<RESTORE_ACTIVE_CAP){
+          const ix=kk.indexOf(',');
+          active.add(LPK(+kk.slice(0,ix),+kk.slice(ix+1)));
+        }
       }
     }
     // v1 saves carried ripple visuals; replay them as gentle wave kicks
@@ -2178,7 +2215,7 @@ window.MM = window.MM || {};
         budget-=done; moved+=done;
         mark(s.x,s.top); mark(d.x,d.top);
         markNeighbors(active,d.x,d.top); markNeighbors(active,s.x,s.top);
-        if(pressureSeeds.size<2000){ pressureSeeds.add(k(s.x,s.top)); pressureSeeds.add(k(d.x,d.top)); }
+        if(pressureSeeds.size<2000){ pressureSeeds.add(LPK(s.x,s.top)); pressureSeeds.add(LPK(d.x,d.top)); }
         noteTouched(s.x,s.top); noteTouched(d.x,d.top);
         if(s.fill<=0) hi++;
         if((UNITS-d.fill)+(d.openAbove?UNITS:0)<=0) lo++;
@@ -2186,18 +2223,30 @@ window.MM = window.MM || {};
       noteMoved(moved);
     };
     const seedSet=new Set(active); for(const kk of pressureSeeds) seedSet.add(kk); pressureSeeds.clear();
-    const seeds=[...seedSet]; if(!seeds.length) return null; seeds.sort();
+    const seeds=[...seedSet]; if(!seeds.length) return null; seeds.sort((a,b)=>a-b);
+    // Fair sweep: only EQ_BODIES bodies run per pass, so a fixed left-to-right order
+    // would let westernmost ±EQ_WINDOW bodies starve everything east of them (a
+    // breach 200 columns away would never get solver attention). Resume each pass
+    // just past the last seed the previous pass attempted, wrapping around.
+    let startIdx=0;
+    if(pressureSweepKey>-Infinity){
+      let lo=0, hi=seeds.length;
+      while(lo<hi){ const mid=(lo+hi)>>1; if(seeds[mid]<=pressureSweepKey) lo=mid+1; else hi=mid; }
+      startIdx=lo>=seeds.length ? 0 : lo;
+    }
     const processed=new Set(); // packed cell keys of bodies already handled this pass
     let bodies=0, stoppedAt=-1;
     const passT0=(typeof performance!=='undefined' && performance.now) ? performance.now() : 0;
     const deterministicBudget=!!(typeof window!=='undefined' && window.MM && MM.waterDeterministicPressureBudget);
-    for(let seedIdx=0; seedIdx<seeds.length; seedIdx++){
+    for(let n=0; n<seeds.length; n++){
+      const seedIdx=(startIdx+n)%seeds.length;
       // Body-count and wall-clock budget: whatever is left resumes next pass instead
       // of being dropped (dropped seeds froze settled-but-unleveled bodies for good).
-      if(bodies>=EQ_BODIES || (!deterministicBudget && bodies>0 && passT0 && performance.now()-passT0>EQ_TIME_BUDGET_MS)){ stoppedAt=seedIdx; break; }
+      if(bodies>=EQ_BODIES || (!deterministicBudget && bodies>0 && passT0 && performance.now()-passT0>EQ_TIME_BUDGET_MS)){ stoppedAt=n; break; }
       const key=seeds[seedIdx];
-      const ci0=key.indexOf(','); const sx=+key.slice(0,ci0), sy=+key.slice(ci0+1);
-      if(processed.has(PK(sx,sy))) continue;
+      pressureSweepKey=key;
+      if(processed.has(key)) continue; // seed keys ARE packed cell keys (module LPK)
+      const sx=Math.floor(key/512), sy=key-Math.floor(key/512)*512+WORLD_TOP-8;
       // Previous body's transfers mutated tiles: start each body from a fresh view.
       tileCache.clear();
       if(readTile(sx,sy)!==T.WATER) continue;
@@ -2225,12 +2274,11 @@ window.MM = window.MM || {};
       if(bounded && !singleRow) bandLevel(sx,sy);
     }
     if(stoppedAt>=0){
-      for(let r=stoppedAt; r<seeds.length && pressureSeeds.size<2000; r++){
-        const rk=seeds[r];
-        const rc=rk.indexOf(',');
-        if(!processed.has(PK(+rk.slice(0,rc),+rk.slice(rc+1)))) pressureSeeds.add(rk);
+      for(let n=stoppedAt; n<seeds.length && pressureSeeds.size<2000; n++){
+        const rk=seeds[(startIdx+n)%seeds.length];
+        if(!processed.has(rk)) pressureSeeds.add(rk);
       }
-    }
+    } else pressureSweepKey=-Infinity; // full sweep completed: restart from the west
     return {touchedXs, touchedTops, variance, hadTransfers};
   }
 
@@ -2241,7 +2289,7 @@ window.MM = window.MM || {};
     for(const [pk,u] of partial){ const x=Math.floor(pk/512), y=pk-x*512+WORLD_TOP-8; levels.push([x,y,u]); }
     const toxic=[];
     for(const [pk,ttl] of toxicWater){ const x=Math.floor(pk/512), y=pk-x*512+WORLD_TOP-8; toxic.push([x,y,ttl]); }
-    return {active:[...active], seeds:[...pressureSeeds], cooldown:[...lateralCooldown.entries()], levels, toxicWater:toxic, wetSand:[...wetSand.values()], wetClay:[...wetClay.values()], dryMud:[...dryMud.values()], dryClay:[...dryClay.values()], pressureAcc, pressureIntervalCurrent, pressureLastMs, pressureMaxMs, passiveScanAcc, passiveScanOffset, passiveScanLastColumns, passiveScanTotalColumns, materialScanAcc, materialScanOffset};
+    return {active:[...active].map(pkToStr), seeds:[...pressureSeeds].map(pkToStr), cooldown:[...lateralCooldown.entries()], levels, toxicWater:toxic, wetSand:[...wetSand.values()], wetClay:[...wetClay.values()], dryMud:[...dryMud.values()], dryClay:[...dryClay.values()], pressureAcc, pressureIntervalCurrent, pressureLastMs, pressureMaxMs, passiveScanAcc, passiveScanOffset, passiveScanLastColumns, passiveScanTotalColumns, materialScanAcc, materialScanOffset};
   }
   // Sub-tile fill of a cell in units of 1/UNITS block (0 = no water, UNITS = full).
   function levelAt(x,y,getTile){
@@ -2249,7 +2297,7 @@ window.MM = window.MM || {};
     return levelUnits(getTile,Math.floor(x),Math.floor(y));
   }
 
-  MM.water = {update, addSource, drawOverlay, onTileChanged, onTilesChangedBatch, displaceAt, disturb, noteChunkGenerated, reset, snapshot, restore, metrics, levelAt, polluteAt, isToxicAt, UNITS, _debug};
+  MM.water = {update, addSource, drawOverlay, onTileChanged, onTilesChangedBatch, displaceAt, solidifyAt, disturb, noteChunkGenerated, reset, snapshot, restore, metrics, levelAt, polluteAt, isToxicAt, UNITS, _debug};
 })();
 // ESM export (progressive migration)
 export const water = (typeof window!=='undefined' && window.MM) ? window.MM.water : undefined;

@@ -85,6 +85,12 @@ run(4, player);
 assert.equal(guardianAftermath.status().falling, 0, 'ice remnant collides with terrain instead of hovering forever');
 assert.ok(countTiles(t=>t === T.SNOW || t === T.ICE) > 0, 'ice aftermath leaves snow/ice blocks in the world');
 assert.equal(guardianAftermath._debug().motherCoreTile('ice'), T.MOTHER_ICE, 'ice aftermath maps to mother ice cores');
+// A remnant that randomly lands inside a protected lair box deposits nothing (by
+// design); retry with fresh remnants so the assertion pins behavior, not one roll.
+for(let i=0; i<8 && countTiles(t=>t === T.MOTHER_ICE) === 0; i++){
+  guardianAftermath.start('ice', {immediate:true});
+  run(4, player);
+}
 assert.ok(countTiles(t=>t === T.MOTHER_ICE) > 0, 'ice aftermath falling remnants contain mother ice');
 assert.ok(fallingBatchCalls > 0, 'ice impact wakes falling-solid physics');
 assert.ok(waterBatchCalls > 0, 'ice impact wakes water/ice neighborhood logic');
@@ -96,6 +102,10 @@ guardianAftermath.update(0.1, player, getTile, setTile);
 run(4, player);
 assert.ok(countTiles(t=>t === T.COAL || t === T.LAVA || t === T.BASALT || t === T.HOT_AIR || t === T.METEOR_DUST) > 0, 'fire aftermath leaves burning/charred blocks in the world');
 assert.equal(guardianAftermath._debug().motherCoreTile('fire'), T.MOTHER_LAVA, 'fire aftermath maps to mother lava cores');
+for(let i=0; i<8 && countTiles(t=>t === T.MOTHER_LAVA) === 0; i++){
+  guardianAftermath.start('fire', {immediate:true});
+  run(4, player);
+}
 assert.ok(countTiles(t=>t === T.MOTHER_LAVA) > 0, 'fire aftermath falling remnants contain mother lava');
 assert.ok(igniteCalls > 0 || lavaNotes > 0, 'fire aftermath uses the fire/lava wake hooks');
 

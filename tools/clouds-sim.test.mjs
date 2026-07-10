@@ -109,6 +109,27 @@ clouds.setCycleOverride({cycleT:0.75, isDay:false, tDay:0.5});
 step(600);
 assert.equal(clouds.metrics().evapMass, 0, 'no evaporation at night');
 
+// --- 3b. Partial sub-tile surfaces are charged their TRUE volume ---
+// Leveled lake surfaces are usually partial cells (e.g. 4/10 of a block). Removing
+// one must cost 0.4 of evaporation debt, not 1.0 — otherwise every removal mints
+// the difference into the water cycle and the world's water grows on its own.
+resetWorld();
+CFG.BORDER_SPAWN = false; CFG.EVAP_BASE = 0.5; CFG.HUM_CAP = 200;
+MM.water.levelAt = () => 4;   // fluid sim reports a 4/10-full surface cell
+MM.water.UNITS = 10;
+assert.equal(clouds._debug().waterTileCost(0, 89, getTile), 0.4, 'partial cell costs its sub-tile volume');
+setTile(0, 89, T.WATER);      // a single partial surface tile
+let partialRemovedAt = null;
+for(let i=0; i<30*30 && partialRemovedAt===null; i++){
+  clouds.update(getTile, setTile, 1/30);
+  if(getTile(0,89) !== T.WATER) partialRemovedAt = clouds.metrics().evapMass;
+}
+assert.ok(partialRemovedAt !== null, 'partial surface tile eventually evaporates');
+assert.ok(partialRemovedAt < 0.85, `removal charged the true sub-tile volume, not a full tile of debt (evapMass=${partialRemovedAt && partialRemovedAt.toFixed(3)})`);
+delete MM.water.levelAt;
+delete MM.water.UNITS;
+assert.equal(clouds._debug().waterTileCost(0, 89, getTile), 1, 'without a sub-tile API, tiles cost one full unit');
+
 // --- 4. A very large cloud rains and deposits real water tiles below ---
 resetWorld();
 CFG.BORDER_SPAWN = false; CFG.EVAP_BASE = 0; // isolate the rain path
@@ -197,6 +218,7 @@ delete MM.atomicWinter;
 // --- 7c. Open-air poison gas can taint weather into toxic rain ---
 resetWorld();
 CFG.BORDER_SPAWN = false; CFG.EVAP_BASE = 0;
+CFG.LIGHTNING_BASE = 0; // this section pins toxic-rain ticks; a random bolt from the heavy cloud would electrocute the hero mid-assert
 TEMP = 0.7;
 let toxicRainHits = 0;
 globalThis.player = {x:0, y:89, hp:100, maxHp:100};
@@ -530,6 +552,33 @@ assert.equal(restoredCloud.sprite, null, 'weather restore does not persist canva
 assert.equal(restoredCloud.atomic, true, 'weather restore preserves atomic cloud rendering state');
 assert.equal(restoredCloud.toxic, true, 'weather restore preserves toxic cloud rendering state');
 assert.equal(clouds.restore(null), false, 'weather restore rejects missing payloads without throwing');
+
+// --- 14b. Save/restore stays moisture-balanced past the row caps ---
+// A wide ocean carries evaporation debt on ~400 columns while the save keeps only
+// 192 rows per map. Dropped vapor must rejoin the reserve and dropped DEBT must be
+// paid out of it — otherwise every save/reload mints the difference into the world.
+// Balance currency: farBudget + vapor − evaporation debt.
+resetWorld();
+CFG.BORDER_SPAWN = false; CFG.EVAP_BASE = DEF.EVAP_BASE*30; CFG.HUM_CAP = 200;
+for(let x=-160;x<160;x++) setTile(x,89,T.WATER); // 320 debt columns > 192 save rows
+step(30*20); // 20 s of midday sun: every column carries fractional removal debt
+{
+  const d = clouds._debug();
+  assert.ok(d.evapAcc.size > 192, `scenario exceeds the save row cap (${d.evapAcc.size} debt columns)`);
+  const balance = (dbg,fb)=>{
+    let v=0; for(const m of dbg.vapor.values()) v+=m;
+    let e=0; for(const a of dbg.evapAcc.values()) e+=a;
+    return fb + v - e;
+  };
+  const before = balance(d, d.farBudget);
+  const capSnap = clouds.snapshot();
+  assert.ok(capSnap.evapAcc.length <= 192, 'saved evaporation debt respects the row cap');
+  clouds.restore(capSnap);
+  const d2 = clouds._debug();
+  const after = balance(d2, d2.farBudget);
+  assert.ok(Math.abs(before-after) < 0.05,
+    `save/reload conserves the moisture balance across capped maps (before=${before.toFixed(3)} after=${after.toFixed(3)})`);
+}
 
 // --- 15. API safety: junk input never throws ---
 clouds.setWindOverride('junk'); clouds.setWindOverride(null);

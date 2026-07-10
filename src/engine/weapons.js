@@ -58,6 +58,7 @@ import { reactions as REACTIONS } from './reactions.js';
   const WATER_HEAT_GRACE=0.45;  // water flickers/splashes, so allow a little stream jitter
   const QUENCH_CHANCE=0.5;      // hose hardens lava → obsidian
   const MUD_CHANCE=0.25;        // hose soaks sand → mud
+  const HOSE_TURRET_REFILL=0.35; // tank water per hose puff swallowed by a water turret
   const SELF_FLAME_ARM_SEC=0.16; // muzzle is safe; lingering/backflow flame burns
   const ELECTRIC_PULSE_INTERVAL=0.10;
   const ELECTRIC_DEFAULT_ENERGY_PER_SEC=10;
@@ -1461,6 +1462,15 @@ import { reactions as REACTIONS } from './reactions.js';
         if(Math.random()<0.3 && MM.mechs && MM.mechs.igniteRadius) MM.mechs.igniteRadius(p.x,p.y,0.9,puffStreamDamageOpts('flame',p,{dur:2.5, dps:(p.dps||6)*0.6}));
         if(Math.random()<0.25 && MM.plants && MM.plants.scorchAt) MM.plants.scorchAt(p.x,p.y,1.2);
       } else if(p.kind==='hose'){
+        // A water turret under the jet drinks it: the hose tops up placed
+        // turret tanks and mech-mounted ones through the same tank APIs the
+        // pump network uses, so the spray is a portable refill line.
+        if(t===T.WATER_TURRET && MM.turrets && MM.turrets.receiveWaterAt && MM.turrets.receiveWaterAt(tx,ty,HOSE_TURRET_REFILL,getTile)>0){
+          puffs.splice(i,1); continue;
+        }
+        if(MM.mechs && MM.mechs.refillMountedWaterAt && MM.mechs.refillMountedWaterAt(tx,ty,HOSE_TURRET_REFILL)>0){
+          puffs.splice(i,1); continue;
+        }
         if(FIRE && FIRE.isBurning(tx,ty)) FIRE.extinguish(tx,ty);
         if(Math.random()<0.3 && MM.mobs && MM.mobs.douseRadius) MM.mobs.douseRadius(p.x,p.y,1.0);
         // watering can: the jet hydrates the garden it passes over

@@ -727,12 +727,10 @@ import { turrets as TURRETS } from './turrets.js';
     const cells=mountedTurretCells(m);
     if(!cells.length) return false;
     const energised=energisedCells(m);
-    m.turretStates=m.turretStates || {};
     let firedAny=false;
     for(const cell of cells){
       if(!cellPowered(cell,energised)) continue;
-      const key=cell.dx+','+cell.dy;
-      const state=m.turretStates[key]=m.turretStates[key] || {};
+      const state=turretStateFor(m,cell);
       const beforeEnergy=Math.max(0,Number(m.energy)||0);
       const res=TURRETS.fireMountedAt(
         cell.t,
@@ -769,6 +767,103 @@ import { turrets as TURRETS } from './turrets.js';
   function fireMountedTurretDefensive(m,dt,getTile){
     if(!m || m.pilotAlive) return false;
     return fireMountedTurret(m,dt,getTile,null,'mech_turret');
+  }
+  function turretStateFor(m,cell){
+    m.turretStates=m.turretStates || {};
+    const key=cell.dx+','+cell.dy;
+    return m.turretStates[key]=m.turretStates[key] || {};
+  }
+  function turretWaterCapacity(){
+    const info=INFO[T.WATER_TURRET] || {};
+    return Math.max(1,Number(info.waterCapacity)||24);
+  }
+  function turretStartWater(){
+    const dbg=TURRETS && TURRETS._debug;
+    const start=dbg && Number(dbg.WATER_TURRET_START_WATER);
+    return Math.min(turretWaterCapacity(),Number.isFinite(start)?start:18);
+  }
+  function turretWaterLevel(state){
+    return Number.isFinite(Number(state && state.water)) ? Math.max(0,Number(state.water)) : turretStartWater();
+  }
+  function addTurretWater(m,cell,amount){
+    const add=Math.max(0,Number(amount)||0);
+    if(!m || !cell || add<=0) return 0;
+    const state=turretStateFor(m,cell);
+    const cur=turretWaterLevel(state);
+    const next=Math.min(turretWaterCapacity(),cur+add);
+    state.water=next;
+    return next-cur;
+  }
+  // The water hose (and anything else that sprays water) can top up a
+  // mech-mounted water turret exactly like the placed machine's tank.
+  function refillMountedWaterAt(tx,ty,amount){
+    tx=Math.floor(tx); ty=Math.floor(ty);
+    if(tileOverlayAt(tx,ty)!==T.WATER_TURRET) return 0;
+    const hit=cellAt(tx,ty);
+    if(!hit || hit.cell.t!==T.WATER_TURRET) return 0;
+    return addTurretWater(hit.mech,hit.cell,amount);
+  }
+  // Mech plumbing mirrors the powered world pump feeding a placed water
+  // turret (engine/pumps.js pumpTransfer): a live water source touching the
+  // intake pipes lets the tank refill at PUMP_RATE, paying the pump's
+  // ENERGY_PER_WATER from the machine's own energy — here the hull reserve.
+  const WATER_INTAKE_RATE=8;       // pumps.js PUMP_RATE
+  const WATER_INTAKE_ENERGY=0.7;   // pumps.js ENERGY_PER_WATER
+  function pipeIntakeWet(m,c,getTile){
+    const p=cellWorld(m,c);
+    if(getSafe(getTile,p.x,p.y,T.AIR)===T.WATER) return true;
+    for(const d of CIRCUIT_DIRS){
+      if(getSafe(getTile,p.x+d[0],p.y+d[1],T.AIR)===T.WATER) return true;
+    }
+    return false;
+  }
+  // Flood the pipe run out from every submerged intake; a water turret on or
+  // beside the wet run can drink, same adjacency rule as the electric circuit.
+  function wettedPipeCells(m,getTile){
+    const seen=new Set();
+    const pipes=(m && m.cells || []).filter(c=>c && c.t===T.WATER_PIPE);
+    if(!pipes.length) return seen;
+    const byPos=new Map(pipes.map(c=>[c.dx+','+c.dy,c]));
+    const queue=[];
+    for(const c of pipes){
+      if(!pipeIntakeWet(m,c,getTile)) continue;
+      const key=c.dx+','+c.dy;
+      if(seen.has(key)) continue;
+      seen.add(key);
+      queue.push(c);
+    }
+    for(let i=0;i<queue.length;i++){
+      const c=queue[i];
+      for(const d of CIRCUIT_DIRS){
+        const key=(c.dx+d[0])+','+(c.dy+d[1]);
+        if(seen.has(key) || !byPos.has(key)) continue;
+        seen.add(key);
+        queue.push(byPos.get(key));
+      }
+    }
+    return seen;
+  }
+  function updateWaterIntake(m,dt,getTile){
+    const tanks=(m.cells||[]).filter(c=>c && c.t===T.WATER_TURRET);
+    if(!tanks.length) return 0;
+    const wet=wettedPipeCells(m,getTile);
+    if(!wet.size) return 0;
+    let moved=0;
+    for(const cell of tanks){
+      if(!cellPowered(cell,wet)) continue;
+      const state=turretStateFor(m,cell);
+      const cur=turretWaterLevel(state);
+      const need=turretWaterCapacity()-cur;
+      if(need<=0.001) continue;
+      const energy=Math.max(0,Number(m.energy)||0);
+      const want=Math.min(need,WATER_INTAKE_RATE*dt,energy/WATER_INTAKE_ENERGY);
+      if(want<=0.0001) continue;
+      state.water=cur+want;
+      m.energy=Math.max(0,energy-want*WATER_INTAKE_ENERGY);
+      moved+=want;
+    }
+    if(moved>0) m.powerPulse=Math.min(1,(m.powerPulse||0)+0.1);
+    return moved;
   }
   function decideAiJump(m,dir,getTile,dt){
     if(!dir || !m.onGround) return false;
@@ -1586,6 +1681,7 @@ import { turrets as TURRETS } from './turrets.js';
     m.trackCircuitOk=trackDriveReady(m);
     m.turretCircuitOk=mechTurretCircuitConnected(m);
     updateEnergy(m,dt,getTile);
+    updateWaterIntake(m,dt,getTile);
     m.heroPowerPulse=Math.max(0,(m.heroPowerPulse||0)-dt*2.6);
     if(m.crushFx>0) m.crushFx=Math.max(0,m.crushFx-dt*1.9);
     if(m.recoilT>0) m.recoilT=Math.max(0,m.recoilT-dt);
@@ -2585,6 +2681,7 @@ import { turrets as TURRETS } from './turrets.js';
     toggleBoard,heroMech,syncRider,absorbHeroDamage,cellAt,findAt,
     snapshot,restore,reset,forceSpawn,metrics,heroOnTracks,
     trySeatFromWorld,wantsInteractKey,tileOverlayAt,absorbDynamoFlow,
+    refillMountedWaterAt,
     _debug:{
       mechs:()=>mechs,mountedTurretCell,makeBlueprint,trySpawnZone,zoneShouldSpawn,zoneSpawnX,CFG,
       isMechComponentTile,scanBuiltStructure,analyzeBuiltCells,assembleBuiltMechAt,parkBuiltMech,

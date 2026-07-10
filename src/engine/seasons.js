@@ -442,7 +442,22 @@ function hostilityAdjustedProfile(base, x){
   return Object.freeze(out);
 }
 
-function profile(){ return enabled ? hostilityAdjustedProfile(currentState().profile) : DISABLED_PROFILE; }
+// profile() is polled many times per frame (wind target + squalls, every cloud's
+// rain/storm multipliers, terrain scans). Rebuilding + freezing the hostility-mixed
+// object each call was measurable allocation churn; memoize per (sim time, player
+// column, forced season) — everything the result depends on.
+let profileCacheKey = '';
+let profileCacheValue = null;
+function profile(){
+  if(!enabled) return DISABLED_PROFILE;
+  // worldSeed is part of the key: hostility varies per world, and a reload can
+  // land on the same sim time / player column as the previous world.
+  const key = elapsedSeconds + '|' + Math.round(activeWorldX(0)) + '|' + (forcedSeason || '') + '|' + worldSeed();
+  if(profileCacheValue && profileCacheKey === key) return profileCacheValue;
+  profileCacheValue = hostilityAdjustedProfile(currentState().profile);
+  profileCacheKey = key;
+  return profileCacheValue;
+}
 
 function emit(type, payload){
   const ev = Object.freeze(Object.assign({
@@ -541,6 +556,16 @@ function skyExposed(x, y, getTile, maxScan){
 function wakeWater(x, y, getTile){
   try{ if(root.MM.water && root.MM.water.onTileChanged) root.MM.water.onTileChanged(x, y, getTile); }catch(e){}
 }
+// Freezing converts a water cell into one FULL block of ice, but leveled surfaces
+// are usually partial sub-tile cells — freezing 4/10 of a block into ice that later
+// thaws back to 10/10 would mint volume every winter. water.solidifyAt tops the cell
+// up from the body below first (volume-true) or reports that it cannot; without the
+// fluid sim (headless stubs) cells are full by definition and freezing proceeds.
+function solidifyWaterForFreeze(x, y, getTile, setTile){
+  const w = root.MM && root.MM.water;
+  if(!w || typeof w.solidifyAt !== 'function') return true;
+  try{ return !!w.solidifyAt(x, y, getTile, setTile); }catch(e){ return true; }
+}
 function notifyTileChanged(x, y, old, tile, getTile){
   if(old === T.WATER || tile === T.WATER || old === T.ICE || tile === T.ICE) wakeWater(x, y, getTile);
 }
@@ -619,6 +644,7 @@ function applyFreezeColumn(x, getTile, setTile, prof, ctx, epochSeconds){
     const above = getTile(x, y - 1);
     if(!skyOpenTile(above) && above !== T.SNOW) continue;
     if(columnTemp(x, y, prof, ctx) > freezeTemperatureLimit(strength)) return false;
+    if(!solidifyWaterForFreeze(x, y, getTile, setTile)) return false;
     return replaceTile(x, y, T.ICE, getTile, setTile);
   }
   return false;
@@ -1101,6 +1127,10 @@ function applyTerrainPlan(getTile, setTile, player, s, sc, opts){
     skippedPlayer += picked.skippedPlayer || 0;
     const {op, visible} = picked;
     if(getTile(op.x, op.y) !== op.from){
+      dropped++;
+      continue;
+    }
+    if(op.type === 'freeze' && !solidifyWaterForFreeze(op.x, op.y, getTile, setTile)){
       dropped++;
       continue;
     }

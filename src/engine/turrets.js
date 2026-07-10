@@ -12,7 +12,8 @@ const turrets = (function(){
   const MACHINE_CAP = 260;
   const SHOT_FX_CAP = 90;
   const PUFF_CAP = 120;
-  const PLAYER_SCAN_INTERVAL = 0.45;
+  // Discovery-only cadence (placements register instantly via onTileChanged).
+  const PLAYER_SCAN_INTERVAL = 2.5;
   const MOUNTED_SCAN_INTERVAL = 0.2;
   const VISIBLE_SCAN_INTERVAL_MS = 220;
   const WATER_TURRET_TANK = 24;

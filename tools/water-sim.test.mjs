@@ -560,6 +560,42 @@ step(200);
   assert.equal(volume(), before, 'placing a solid into water displaces the units instead of deleting them');
 }
 
+// --- 20b. solidifyAt: freezing weather makes a cell volume-true before icing it ---
+// Seasonal freeze turns a water cell into one FULL ice block; partial surface cells
+// must first borrow their deficit from the body below (no volume minted at thaw).
+resetWorld();
+for(let x=80;x<100;x++) for(let y=100;y<105;y++) setTile(x,y,T.AIR);
+for(let x=80;x<100;x++) for(let y=102;y<105;y++) setTile(x,y,T.WATER); // 3-deep pool
+water.addSource(90,100,getTile,setTile); // one extra block → leveling leaves a partial top row
+step(1200);
+let pcell=null;
+for(let x=80;x<100 && !pcell;x++){
+  for(let y=100;y<105;y++){
+    if(getTile(x,y)!==T.WATER) continue;
+    const u=water.levelAt(x,y,getTile);
+    if(u>0 && u<UNITS && getTile(x,y+1)===T.WATER) pcell={x,y};
+    break;
+  }
+}
+assert.ok(pcell, 'pool has a partial surface cell over deeper water');
+{
+  const before=volume();
+  assert.equal(water.solidifyAt(pcell.x,pcell.y,getTile,setTile), true, 'solidifyAt can make a deep-pool surface cell full');
+  assert.equal(volume(), before, 'solidifyAt conserves volume (borrows from below)');
+  assert.equal(water.levelAt(pcell.x,pcell.y,getTile), UNITS, 'solidified cell is a full block');
+}
+resetWorld();
+setTile(50,99,T.WATER);
+water.onTileChanged(50,99,getTile);
+step(800); // spreads into a sub-tile film on bedrock
+let filmCell=null;
+for(let x=40;x<60 && !filmCell;x++){
+  const u=water.levelAt(x,99,getTile);
+  if(u>0 && u<UNITS) filmCell={x,y:99};
+}
+assert.ok(filmCell, 'spread film has partial cells');
+assert.equal(water.solidifyAt(filmCell.x,filmCell.y,getTile,setTile), false, 'thin films cannot be made full volume-true and must stay liquid');
+
 // --- 21. Integration: player block placement uses displaceAt (industry-standard, volume-conserving) ---
 // The player's own placement path must displace water like every other solid-placement path,
 // not just wake neighbors and let the overwrite delete the cell.

@@ -121,7 +121,12 @@ window.MM = window.MM || {};
   function cycleInfo(){
     if(cycleOverride) return cycleOverride;
     const bg=MM.background;
-    if(bg && bg.getCycleInfo) return bg.getCycleInfo();
+    if(bg && typeof bg.getCycleInfo==='function'){
+      // Same shape check as setCycleOverride: malformed info would feed NaN through
+      // airTemp/capacity and silently freeze all weather.
+      const c=bg.getCycleInfo();
+      if(c && typeof c.isDay==='boolean' && typeof c.tDay==='number' && isFinite(c.tDay)) return c;
+    }
     return {cycleT:0.25, isDay:true, tDay:0.5};
   }
   function sunIntensity(){ const c=cycleInfo(); return c.isDay? Math.sin(clamp(c.tDay,0,1)*Math.PI) : 0; }
@@ -137,6 +142,18 @@ window.MM = window.MM || {};
     return (typeof v==='number' && isFinite(v)) ? v : fallback;
   }
   function seaLevel(){ const wg=MM.worldGen; return (wg && wg.settings && wg.settings.seaLevel!=null)? wg.settings.seaLevel : 62; }
+  // True volume of the water tile at (x,y) in whole-tile units (0..1]. Falls back
+  // to 1 when the fluid sim (or its sub-tile API) is absent — headless test stubs.
+  function waterTileCost(x,y,getTile){
+    try{
+      const w=MM.water;
+      if(w && typeof w.levelAt==='function' && Number.isFinite(w.UNITS) && w.UNITS>0){
+        const u=Number(w.levelAt(x,y,getTile));
+        if(Number.isFinite(u) && u>0) return clamp(u/w.UNITS,0.1,1);
+      }
+    }catch(e){}
+    return 1;
+  }
   // Terrain surface for weather purposes: oceans count from the waterline, not the seabed
   function effSurf(x){
     const wg=MM.worldGen;
@@ -272,9 +289,14 @@ window.MM = window.MM || {};
       const amt=rate*sweepDt;
       addVapor(reg, amt); evapMass+=amt;          // vapor responds immediately…
       const acc=(evapAcc.get(wx)||0)+amt;         // …tile removal is deferred debt
-      if(acc>=1){
+      // Leveled lake surfaces are usually PARTIAL sub-tile cells: charging a full
+      // 1.0 of debt for removing one would credit the sky more water than left the
+      // world (each removal minting up to 0.9 tiles into the cycle — oceans slowly
+      // rise on their own). Charge the cell's true volume instead.
+      const cost=waterTileCost(wx,yTop,getTile);
+      if(acc>=cost){
         setTile(wx,yTop,T.AIR);
-        evapAcc.set(wx,acc-1);
+        evapAcc.set(wx,acc-cost);
         try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(wx,yTop,getTile); }catch(e){}
       } else evapAcc.set(wx,acc);
       // morning-mist wisps over actively evaporating water near the player
@@ -1411,11 +1433,44 @@ window.MM = window.MM || {};
       spriteKey:'',
     };
   }
+  // Mass a capped mapSnapshot left out of the save rows. The books must balance
+  // across save/load exactly like condenseTick's far-field pruning: dropped vapor
+  // rejoins the off-band reserve, dropped evaporation DEBT stays owed (a wide
+  // ocean carries ~400 debt columns against the 192-row cap — silently dropping
+  // the rest let every save/reload mint the difference into the world).
+  function mapDroppedMass(map,rows){
+    let total=0;
+    for(const v of map.values()){ if(typeof v==='number' && isFinite(v) && v>0) total+=v; }
+    let kept=0;
+    for(const r of rows) kept+=r[1];
+    return Math.max(0,total-kept);
+  }
+  // Debt is per-column but volume-fungible: fold what the cap dropped into the kept
+  // rows (restore clamps each at 8, so 192 rows hold far more than any live total).
+  // The removals just land on other water columns of the same ocean.
+  function foldDroppedDebt(rows,dropped,rowCap){
+    let left=dropped;
+    for(const r of rows){
+      if(left<=0.0001) break;
+      const room=rowCap-r[1];
+      if(room<=0) continue;
+      const add=Math.min(room,left);
+      r[1]=roundSave(r[1]+add,4);
+      left-=add;
+    }
+    return Math.max(0,left);
+  }
   function snapshot(){
+    const vaporRows=mapSnapshot(vapor,SAVE_MAP_LIMIT);
+    const evapRows=mapSnapshot(evapAcc,SAVE_MAP_LIMIT);
+    const evapUnfolded=foldDroppedDebt(evapRows,mapDroppedMass(evapAcc,evapRows),8);
+    // Any debt that even folding cannot hold (not reachable in practice) is paid
+    // out of the reserve; dropped vapor always rejoins it.
+    const savedFarBudget=clamp(farBudget + mapDroppedMass(vapor,vaporRows) - evapUnfolded,0,200);
     return {
       v:1,
       simT: roundSave(simT,3),
-      farBudget: roundSave(farBudget,3),
+      farBudget: roundSave(savedFarBudget,3),
       evapOffset: evapOffset|0,
       regionAcc: roundSave(regionAcc,3),
       mergeAcc: roundSave(mergeAcc,3),
@@ -1436,9 +1491,9 @@ window.MM = window.MM || {};
         source: storm.source || null,
         ownerId: storm.ownerId || null,
       },
-      vapor: mapSnapshot(vapor,SAVE_MAP_LIMIT),
+      vapor: vaporRows,
       toxicVapor: mapSnapshot(toxicVapor,SAVE_MAP_LIMIT),
-      evapAcc: mapSnapshot(evapAcc,SAVE_MAP_LIMIT),
+      evapAcc: evapRows,
       clouds: clouds.slice(-CFG.CLOUD_CAP).map(snapshotCloud),
     };
   }
@@ -1483,7 +1538,7 @@ window.MM = window.MM || {};
   }
   function _debug(){
     let depFrac=0; for(const c of clouds) depFrac+=c.depAcc;
-    return {clouds, vapor, toxicVapor, evapAcc, depFrac, farBudget, simT, bolts, storm};
+    return {clouds, vapor, toxicVapor, evapAcc, depFrac, farBudget, simT, bolts, storm, waterTileCost};
   }
 
   MM.clouds={update, draw, reset, addCloud, injectVapor, injectToxicVapor, isRainingAt, toxicRainAt, metrics, setWindOverride, setCycleOverride,

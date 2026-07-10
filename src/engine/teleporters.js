@@ -22,7 +22,11 @@ import { isHeroPassableTile } from './material_physics.js';
   const WIRE_TTL = 0.62;
   const TELEPORT_COOLDOWN = 0.72;
   const BUNKER_FAILSAFE_CONCRETE_MIN = 10;
-  const PLAYER_SCAN_INTERVAL = 0.45;
+  // Discovery-only cadence: placements register instantly via onTileChanged and
+  // stepping on a teleporter registers via tryTeleport, so this sweep only picks
+  // up worldgen/chunk-load machines. At 0.45s it burned ~70k tile lookups per
+  // second at idle (145x73 cells through the electric-network accessor).
+  const PLAYER_SCAN_INTERVAL = 2.5;
   const VISIBLE_SCAN_INTERVAL_MS = 250;
   const CATCHUP_MAX_SECONDS = 900;
 
@@ -652,12 +656,17 @@ import { isHeroPassableTile } from './material_physics.js';
   }
   function scanNearbyTeleporters(player,getTile){
     if(!player) return;
+    // Raw world reads: the caller hands us the electric-network accessor (three
+    // lookups per probe) but discovery only needs base tiles; peekTile also avoids
+    // forcing chunk generation at the sweep edges.
+    const w=(typeof window!=='undefined' && window.MM) ? MM.world : null;
+    const read=(w && typeof w.peekTile==='function') ? (x,y)=>w.peekTile(x,y,T.AIR) : (x,y)=>getSafe(getTile,x,y,T.AIR);
     const cx=Math.floor(player.x), cy=Math.floor(player.y);
     const x0=cx-72, x1=cx+72;
     const y0=Math.max(WORLD_TOP,cy-36), y1=Math.min(WORLD_BOTTOM-1,cy+36);
     for(let y=y0; y<=y1; y++){
       for(let x=x0; x<=x1; x++){
-        if(getSafe(getTile,x,y,T.AIR)===T.TELEPORTER) ensureMachine(x,y,getTile);
+        if(read(x,y)===T.TELEPORTER) ensureMachine(x,y,getTile);
       }
     }
   }

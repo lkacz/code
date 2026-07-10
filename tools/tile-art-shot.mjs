@@ -83,13 +83,14 @@ function sceneScript(){
 		}
 		window.__mmDebugHero(ox, MM.worldGen && MM.worldGen.surfaceHeight ? MM.worldGen.surfaceHeight(ox)-3 : 50);
 		await sleep(${settleMs});
-		let n=0, sum=0, max=0, rebuilt=0, partial=0;
+		let n=0, sum=0, max=0, rebuilt=0, partial=0, simSum=0, simMax=0, simN=0;
 		for(let i=0;i<30;i++){
 			await sleep(100);
 			const p=window.__mmPerf;
 			if(p && Number.isFinite(p.drawMs)){ n++; sum+=p.drawMs; max=Math.max(max,p.drawMs); if(p.chunks){ rebuilt+=p.chunks.rebuilt||0; partial+=p.chunks.partial||0; } }
+			if(p && Number.isFinite(p.simMs)){ simN++; simSum+=p.simMs; simMax=Math.max(simMax,p.simMs); }
 		}
-		return 'ok:idleperf x='+ox+' avgDrawMs='+(n?(sum/n).toFixed(1):'?')+' maxDrawMs='+max.toFixed(1)+' rebuiltSamples='+rebuilt+' partialSamples='+partial+' n='+n;
+		return 'ok:idleperf x='+ox+' avgDrawMs='+(n?(sum/n).toFixed(1):'?')+' maxDrawMs='+max.toFixed(1)+' avgSimMs='+(simN?(simSum/simN).toFixed(2):'?')+' maxSimMs='+simMax.toFixed(1)+' rebuiltSamples='+rebuilt+' partialSamples='+partial+' n='+n;
 	})()`;
 	if (scene === 'jump') return `(async()=>{ ${common}
 		MM.background.importState({cycleT:0.25});
