@@ -278,6 +278,12 @@ window.MM = window.MM || {};
     jump:   (o)=>{ noise({...o,dur:0.1,peak:0.04,fLo:500,fHi:1300,f1:1600,attack:0.02}); },
     land:   (o)=>{ noise({...o,dur:0.08,peak:Math.min(0.2,0.06+(o&&o.impact||0)*0.01),fLo:110,fHi:340,buf:'brown'}); tone({...o,type:'sine',f0:150,f1:70,dur:0.08,peak:Math.min(0.12,0.03+(o&&o.impact||0)*0.006)}); },
     thunder:(o)=>thunder((o&&o.dist)||10,o),
+    // ceremony voices (title_screen.js / finale.js): the dismiss click is the
+    // gesture that unlocks the ctx, so titleStart doubles as the world's first sound
+    titleStart:(o)=>{ [262,392,523].forEach((f,i)=>tone({...o,type:'sine',f0:f,f1:f*1.01,dur:0.5,peak:0.09,delay:i*0.12,send:0.3})); noise({...o,dur:0.5,peak:0.02,fLo:2400,fHi:7000,ftype:'highpass',delay:0.2}); },
+    finaleFanfare:(o)=>{ [523,659,784,1047].forEach((f,i)=>tone({...o,type:'triangle',f0:f,f1:f,dur:0.3,peak:0.13,delay:i*0.14,send:0.3,priority:true}));
+                   [262,330,392].forEach((f)=>tone({...o,type:'sine',f0:f,f1:f,dur:1.4,peak:0.05,delay:0.62,attack:0.2,send:0.35}));
+                   tone({...o,type:'sine',f0:131,f1:131,dur:1.6,peak:0.06,delay:0.62,attack:0.25,send:0.3}); },
     uiClick:(o)=>{ tone({...o,bus:'ui',type:'sine',f0:900,f1:700,dur:0.05,peak:0.06,send:0}); },
     uiOpen: (o)=>{ tone({...o,bus:'ui',type:'sine',f0:520,f1:760,dur:0.09,peak:0.07,send:0}); },
     uiClose:(o)=>{ tone({...o,bus:'ui',type:'sine',f0:760,f1:500,dur:0.09,peak:0.06,send:0}); },

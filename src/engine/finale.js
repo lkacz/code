@@ -231,7 +231,7 @@ const finale = (function(){
       try{ document.body.classList.add('mmFinaleOpen'); }catch(e){} // hides the HUD under the ceremony
       root.addEventListener('keydown', onKeyDown, true);
     }
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('milestone'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('finaleFanfare'); }catch(e){}
     return true;
   }
   function close(){

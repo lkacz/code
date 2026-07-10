@@ -158,7 +158,9 @@ const titleScreen = (function(){
       else { try{ el.remove(); }catch(e){} }
       state.el = null; state.splashEl = null;
     }
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('uiClose'); }catch(e){}
+    // the dismissing click/keypress is the first user gesture: the rising sting
+    // is literally the first sound the simulation makes
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('titleStart'); }catch(e){}
     return true;
   }
   function isOpen(){ return state.open; }
