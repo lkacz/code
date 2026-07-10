@@ -76,6 +76,8 @@ import { mechs as MECHS } from './engine/mechs.js';
 import { altar as ALTAR } from './engine/altar.js';
 import { lighting as LIGHTING } from './engine/lighting.js';
 import { vitalsHud as VITALS_HUD } from './engine/vitals_hud.js';
+import { titleScreen as TITLE_SCREEN } from './engine/title_screen.js';
+import { finale as FINALE } from './engine/finale.js';
 import './engine/ui.js';
 import './inventory_ui.js';
 // Bind global MM into a module-scoped constant for convenience
@@ -2467,6 +2469,8 @@ function notifyInvasionMining(tId,tx,ty){
 window.heroDied=function(cause){
 	if(deathTravelFx) return;
 	if(immunityMode){ player.hp=player.maxHp; return; }
+	// finale.js keeps the lifetime deaths tally off this event
+	try{ window.dispatchEvent(new CustomEvent('mm-hero-died',{detail:{cause:String(cause||'damage')}})); }catch(e){}
 	if(HERO_STATUS && HERO_STATUS.clearAll) HERO_STATUS.clearAll(); // death sheds every elemental status
 	player.hurtFlashUntil=Math.max(player.hurtFlashUntil||0, performance.now()+HURT_FLASH_MS);
 	if(cause==='alien_invasion' && INVASIONS && INVASIONS.onHeroKilled){
@@ -3489,6 +3493,18 @@ function startNewGame(){
 	}
 	window.location.reload();
 	return true;
+}
+// The game's bookends: the title overlay greets a human boot (auto-skips under
+// headless QA — see title_screen.js contract) and the finale report needs the
+// same startNewGame for its "Nowa warstwa" button. Both freeze the sim via the
+// uiOverlayHold() gate in the main loop.
+try{
+	TITLE_SCREEN.boot({ hasSave: !!localStorage.getItem(SAVE_KEY), onNewGame: startNewGame });
+	FINALE.wire({ onNewGame: startNewGame });
+}catch(e){ console.warn('title/finale boot failed', e); }
+function uiOverlayHold(){
+	return !!((TITLE_SCREEN && TITLE_SCREEN.isOpen && TITLE_SCREEN.isOpen()) ||
+		(FINALE && FINALE.isOpen && FINALE.isOpen()));
 }
 // --- Crafting (data-driven: a recipe is cost + effect; the panel renders itself;
 // ingredient labels come from the resource registry RES_LABEL) ---
@@ -10567,8 +10583,10 @@ function draw(){ // Background first
 	if(SKY_GUARDIAN && SKY_GUARDIAN.drawHUD) SKY_GUARDIAN.drawHUD(ctx,W,H,camRenderX,camRenderY,zoom,TILE,worldFxVisible);
 	if(CENTER_GUARDIAN && CENTER_GUARDIAN.drawHUD) CENTER_GUARDIAN.drawHUD(ctx,W,H,camRenderX,camRenderY,zoom,TILE,worldFxVisible);
 	// HUD: vitals cluster (HP / energy / level+XP / buffs) — engine/vitals_hud.js
+	// (canvas-drawn HUD steps aside for the title/finale ceremonies, like the DOM HUD)
+	const ceremonyHold=uiOverlayHold();
 	ctx.save();
-	{
+	if(!ceremonyHold){
 		const lv=(MM.progress && MM.progress.level)? MM.progress.level() : {level:1,into:player.xp||0,need:60};
 		const pts=(MM.progress && MM.progress.points)? MM.progress.points():0;
 		const bf=(MM.progress && MM.progress.getBuffs)? MM.progress.getBuffs():[];
@@ -10592,7 +10610,7 @@ function draw(){ // Background first
 	}
 	ctx.restore();
 
-	drawMinimap();
+	if(!ceremonyHold) drawMinimap();
 	// Optional Performance HUD
 	if(showPerfHud){
 		const vx=Math.ceil(W/(TILE*zoom));
@@ -13733,7 +13751,7 @@ function runGameStep(dt,ts){
 	if(GASES && GASES.update) GASES.update(dt, getTile, setTile, player);
 	if(PLANTS && PLANTS.update) PLANTS.update(getTile, setTile, dt);
 	if(PROGRESS && PROGRESS.update) PROGRESS.update(dt);
-updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(ATOMIC_WINTER && ATOMIC_WINTER.update) ATOMIC_WINTER.update(dt, player, getTile, setTile); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(SKY_GUARDIAN && SKY_GUARDIAN.update) SKY_GUARDIAN.update(dt, player, getTile, setTile); if(CENTER_GUARDIAN && CENTER_GUARDIAN.update) CENTER_GUARDIAN.update(dt, player, getTile, setTile); if(STORY_PROGRESSION && STORY_PROGRESSION.update) STORY_PROGRESSION.update(dt, player, getTile, setTile); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, viewport:currentViewportState(), resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(ALIEN_RUINS && ALIEN_RUINS.update) ALIEN_RUINS.update(dt, player, getTile, setTile, {saveState, msg}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(TERRAIN_TRAPS && TERRAIN_TRAPS.update) TERRAIN_TRAPS.update(dt); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
+updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(ATOMIC_WINTER && ATOMIC_WINTER.update) ATOMIC_WINTER.update(dt, player, getTile, setTile); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(SKY_GUARDIAN && SKY_GUARDIAN.update) SKY_GUARDIAN.update(dt, player, getTile, setTile); if(CENTER_GUARDIAN && CENTER_GUARDIAN.update) CENTER_GUARDIAN.update(dt, player, getTile, setTile); if(STORY_PROGRESSION && STORY_PROGRESSION.update) STORY_PROGRESSION.update(dt, player, getTile, setTile); if(FINALE && FINALE.update) FINALE.update(dt); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, viewport:currentViewportState(), resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(ALIEN_RUINS && ALIEN_RUINS.update) ALIEN_RUINS.update(dt, player, getTile, setTile, {saveState, msg}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(TERRAIN_TRAPS && TERRAIN_TRAPS.update) TERRAIN_TRAPS.update(dt); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
 }
 let lastLoopErrAt=0; function loop(ts){
 	if(shouldSkipFrameForCap(ts)){ requestAnimationFrame(loop); return; }
@@ -13747,9 +13765,11 @@ let lastLoopErrAt=0; function loop(ts){
 	// the rAF chain with an uncaught error (e.g. a cache blowing its size limit)
 	try{
 		let simMs=0, drawMs=0;
-		if(!paused && rawDt-frameDt>0.25) catchUpPowerSystems(rawDt-frameDt);
+		// title/finale overlays hold the world still exactly like pause, minus the pause card
+		const overlayHold=uiOverlayHold();
+		if(!paused && !overlayHold && rawDt-frameDt>0.25) catchUpPowerSystems(rawDt-frameDt);
 		if(Math.abs(zoomTarget-zoom)>0.0001){ zoom += (zoomTarget-zoom)*Math.min(1, frameDt*8); applyCameraFromCenter(); }
-		if(!paused){
+		if(!paused && !overlayHold){
 			const simT=framePerfNow();
 			runGameStep(frameDt,ts);
 			updateCameraFollow(frameDt);

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <!-- Defense-in-depth: no remote code; inline styles are used throughout the hand-built UI -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; object-src 'none'; base-uri 'none'">
-  <title>Mini Miner – styl Diamonds Explorer</title>
+  <title>Mini Miner – Warstwy Symulacji</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='8' fill='%2387ceeb'/%3E%3Crect y='8' width='16' height='2' fill='%232e8b2e'/%3E%3Crect y='10' width='16' height='6' fill='%23665544'/%3E%3Crect x='6' y='12' width='2' height='2' fill='%233ef'/%3E%3C/svg%3E">
   <style>
     :root{ --cell:64px; --btn:48px; --mine:76px; }
@@ -207,6 +207,58 @@
   #dropPreview .dpChip{ border:1px solid rgba(255,255,255,.14); border-radius:999px; background:rgba(255,255,255,.07); padding:1px 6px; font-size:10px; white-space:nowrap; }
   #dropPreview .dpDesc{ font-size:10px; font-style:italic; opacity:.75; }
   #dropPreview .dpHint{ font-size:10px; color:#9fb2c6; }
+  /* --- Game bookends: title screen (title_screen.js) & finale report (finale.js) --- */
+  #titleScreen{ position:absolute; inset:0; z-index:200; pointer-events:auto; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; background:radial-gradient(ellipse at 50% 38%, rgba(10,16,28,.55) 0%, rgba(6,10,18,.82) 62%, rgba(3,6,12,.94) 100%); opacity:0; transition:opacity .45s ease; }
+  #titleScreen.show{ opacity:1; }
+  #titleScreen.leaving{ opacity:0; }
+  .tsInner{ display:flex; flex-direction:column; align-items:center; gap:10px; padding:20px; animation:tsRise .8s ease both; }
+  .tsKicker{ font-size:11px; letter-spacing:.35em; text-transform:uppercase; color:#7e93ad; }
+  .tsTitle{ margin:0; font-size:clamp(44px,9vw,92px); font-weight:900; letter-spacing:.08em; line-height:1; color:#f2f7ff; text-shadow:0 4px 24px rgba(44,126,248,.45), 0 1px 0 rgba(0,0,0,.6); }
+  .tsSub{ font-size:clamp(14px,2.4vw,20px); letter-spacing:.5em; text-transform:uppercase; color:#9b8cff; text-shadow:0 2px 12px rgba(155,140,255,.5); }
+  .tsSplash{ margin-top:8px; min-height:20px; font-size:14px; font-style:italic; color:#ffd76a; text-shadow:0 1px 6px rgba(0,0,0,.7); animation:tsPulse 2.6s ease-in-out infinite; max-width:min(520px,86vw); }
+  .tsButtons{ display:flex; flex-direction:column; gap:10px; margin-top:18px; align-items:center; }
+  .tsPrimary{ font-size:18px; font-weight:800; padding:12px 34px; border:none; border-radius:14px; background:#2c7ef8; color:#fff; cursor:pointer; box-shadow:0 4px 18px rgba(44,126,248,.55); }
+  .tsPrimary:hover{ filter:brightness(1.12); }
+  .tsSecondary{ font-size:13px; font-weight:600; padding:8px 18px; border:1px solid rgba(255,255,255,.22); border-radius:10px; background:rgba(12,18,30,.6); color:#cfe0f4; cursor:pointer; }
+  .tsSecondary:hover{ background:rgba(30,42,64,.7); }
+  .tsHint{ margin-top:14px; font-size:11px; color:#8296ac; }
+  .tsFoot{ position:absolute; bottom:14px; left:0; right:0; text-align:center; font-size:11px; font-style:italic; color:#5f7189; }
+  @keyframes tsRise{ from{ transform:translateY(16px); opacity:0; } to{ transform:none; opacity:1; } }
+  @keyframes tsPulse{ 0%,100%{ opacity:.75; } 50%{ opacity:1; } }
+  #finaleScreen{ position:absolute; inset:0; z-index:200; pointer-events:auto; display:flex; align-items:center; justify-content:center; padding:16px; background:radial-gradient(ellipse at 50% 30%, rgba(20,18,31,.72) 0%, rgba(6,8,16,.9) 70%); opacity:0; transition:opacity .45s ease; }
+  #finaleScreen.show{ opacity:1; }
+  #finaleScreen.leaving{ opacity:0; }
+  .fnCard{ width:min(520px,94vw); max-height:92vh; overflow-y:auto; overscroll-behavior:contain; background:rgba(13,16,26,.94); border:1px solid rgba(155,140,255,.35); border-radius:18px; padding:22px 24px; text-align:center; box-shadow:0 12px 48px rgba(0,0,0,.6), 0 0 42px rgba(155,140,255,.18); animation:tsRise .7s ease both; }
+  .fnKicker{ font-size:10px; letter-spacing:.3em; text-transform:uppercase; color:#7e93ad; }
+  .fnTitle{ margin:6px 0 2px; font-size:clamp(28px,6vw,44px); font-weight:900; letter-spacing:.1em; color:#f2f7ff; text-shadow:0 3px 18px rgba(155,140,255,.5); }
+  .fnSub{ font-size:12px; letter-spacing:.2em; text-transform:uppercase; color:#9b8cff; margin-bottom:14px; }
+  .fnGuardians{ display:flex; flex-direction:column; gap:6px; margin:10px 0 14px; text-align:left; }
+  .fnGuardian{ display:flex; align-items:center; gap:10px; padding:6px 10px; border-radius:10px; border:1px solid rgba(255,255,255,.09); background:rgba(255,255,255,.03); opacity:.55; }
+  .fnGuardian.done{ opacity:1; border-color:rgba(155,140,255,.3); }
+  .fnGIcon{ font-size:18px; flex:none; }
+  .fnGText{ min-width:0; flex:1; }
+  .fnGName{ font-size:13px; font-weight:700; color:#eef2fb; }
+  .fnGSymbol{ font-size:11px; color:#93a5bd; }
+  .fnGMark{ flex:none; font-weight:800; color:#8be28b; }
+  .fnStats{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:12px 0; }
+  .fnStat{ background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08); border-radius:10px; padding:8px 4px; }
+  .fnStatVal{ font-size:20px; font-weight:800; color:#ffd76a; }
+  .fnStatLabel{ font-size:10px; color:#8ea1b8; margin-top:2px; }
+  .fnCredits{ margin:14px 0 4px; padding-top:10px; border-top:1px solid rgba(255,255,255,.1); display:flex; flex-direction:column; gap:3px; }
+  .fnCredit{ display:flex; justify-content:space-between; gap:14px; font-size:11.5px; }
+  .fnCreditRole{ color:#8ea1b8; text-align:left; }
+  .fnCreditName{ color:#dfe8f5; text-align:right; flex:1; }
+  .fnCredit .fnCreditName:only-child{ text-align:center; font-style:italic; color:#ffd76a; margin-top:4px; }
+  .fnButtons{ display:flex; gap:10px; justify-content:center; margin-top:16px; flex-wrap:wrap; }
+  .fnPrimary{ font-size:14px; font-weight:800; padding:10px 22px; border:none; border-radius:12px; background:#2c7ef8; color:#fff; cursor:pointer; box-shadow:0 3px 14px rgba(44,126,248,.5); }
+  .fnPrimary:hover{ filter:brightness(1.12); }
+  .fnSecondary{ font-size:12px; font-weight:600; padding:9px 16px; border:1px solid rgba(255,255,255,.22); border-radius:10px; background:rgba(12,18,30,.6); color:#cfe0f4; cursor:pointer; }
+  .fnSecondary:hover{ background:rgba(30,42,64,.7); }
+  .fnHint{ margin-top:10px; font-size:10px; color:#66788e; }
+  #finaleBanner{ position:absolute; left:50%; top:52px; transform:translateX(-50%); z-index:90; pointer-events:auto; border:1px solid rgba(155,140,255,.5); border-radius:999px; background:rgba(20,18,34,.92); color:#e8e4ff; font-size:12px; font-weight:600; padding:8px 16px; cursor:pointer; box-shadow:0 4px 18px rgba(155,140,255,.35); animation:tsPulse 2.4s ease-in-out infinite; }
+  /* the ceremonies clear the stage: only the world (canvas) shows underneath */
+  body.mmTitleOpen #ui > :not(#titleScreen):not(#finaleScreen){ visibility:hidden; }
+  body.mmFinaleOpen #ui > :not(#finaleScreen):not(#titleScreen){ visibility:hidden; }
   #hotbarWrap{ position:absolute; left:50%; bottom:10px; transform:translateX(-50%); display:flex; gap:6px; pointer-events:auto; }
   .hotSlot{ width:50px; height:50px; border:1px solid rgba(255,255,255,.25); background:rgba(0,0,0,.45); border-radius:10px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px; font-size:11px; position:relative; box-shadow:0 2px 8px rgba(0,0,0,.5); padding:2px 3px; }
   .hotSlot.sel{ outline:2px solid #2c7ef8; }
@@ -398,6 +450,8 @@
           <div class="group" style="flex-direction:column; align-items:stretch; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;">
             <button id="openInv" class="topbtn" role="menuitem" title="Ekwipunek (przytrzymaj E)">Ekwipunek…</button>
             <div class="hint">Sprzęt, bronie, talizmany i surowce (przytrzymaj E; krótkie E zbiera łupy z ziemi).</div>
+            <!-- revealed by finale.js once the Guardian Macierzysty has fallen -->
+            <button id="openFinale" class="topbtn" role="menuitem" hidden title="Raport zamknięcia warstwy">🎬 Zakończenie…</button>
           </div>
         </div>
       </div>
