@@ -525,7 +525,7 @@ const turrets = (function(){
     if(m.kind==='fire') spawnFirePuffs(sx,sy,dx,dy,dist);
     else pushShot({kind:m.kind,x1:sx,y1:sy,x2:ex,y2:ey,t:0,life:m.kind==='water'?0.18:0.14,hit,phase:Math.random()*Math.PI*2,power:clamp((m.energy||0)/TURRET_CAPACITY,0,1)});
     if(m.kind==='water') spawnWaterPuffs(sx,sy,dx,dy,dist);
-    try{ if(MM.audio && MM.audio.play) MM.audio.play(cfg.sound); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play(cfg.sound,{x:sx,y:sy}); }catch(e){}
     try{
       if(hit && MM.particles && MM.particles.spawnSparks){
         const TILE=MM.TILE||20;

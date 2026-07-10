@@ -18,7 +18,7 @@ function safePositive(n, fallback){
 export function surfaceTraction(tile){
   if(tile === T.MUD) return TRACTION.mud;
   if(tile === T.UNSTABLE_SAND || tile === T.UNSTABLE_GRASS) return TRACTION.loose;
-  if(tile === T.SNOW) return TRACTION.snow;
+  if(tile === T.SNOW || tile === T.TOXIC_SNOW || tile === T.GRASS_SNOW) return TRACTION.snow;
   if(tile === T.ICE) return TRACTION.ice;
   return NORMAL_TRACTION;
 }

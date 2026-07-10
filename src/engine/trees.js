@@ -181,7 +181,8 @@ window.MM = window.MM || {};
   }
 
   function canPlantSurfaceTile(t){
-    return t===T.GRASS || t===T.SNOW || t===T.SAND || t===T.STONE || t===T.MUD;
+    return t===T.GRASS || t===T.GRASS_SNOW || t===T.SNOW || t===T.SAND || t===T.STONE || t===T.MUD ||
+      t===T.FROZEN_DIRT || t===T.FROZEN_SAND || t===T.FROZEN_CLAY;
   }
   function bushChanceFor(biome,island,s,patch){
     if(island) return 0.10;

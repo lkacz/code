@@ -297,6 +297,24 @@ window.MM = window.MM || {};
     if(hazard==='unstable-grass' && t===T.GRASS) return T.UNSTABLE_GRASS;
     return t;
   }
+  // Permafrost active layer of the deep-cold west: how many tiles below the
+  // surface the soil generates frozen. Zero above the climate gate, deepening
+  // toward absolute cold; flooded columns stay unfrozen (water insulates).
+  const GROUND_FROST_CLIMATE_GATE=0.24;
+  function groundFrostDepth(col,wx){
+    const t=col && Number.isFinite(col.t) ? col.t : 0.5;
+    if(t>=GROUND_FROST_CLIMATE_GATE) return 0;
+    const k=(GROUND_FROST_CLIMATE_GATE-t)/GROUND_FROST_CLIMATE_GATE;
+    return Math.max(1, Math.round(3 + k*7 + (WG.randSeed(wx*3.77+911.3)-0.5)*2));
+  }
+  // Frost binds loose earth into its permafrost variant; hazards freeze solid too
+  // (no quicksand in permafrost). Rock, snow and city materials pass through.
+  function frostBindTile(t){
+    if(t===T.SAND || t===T.UNSTABLE_SAND || t===T.QUICKSAND) return T.FROZEN_SAND;
+    if(t===T.DIRT || t===T.MUD) return T.FROZEN_DIRT;
+    if(t===T.CLAY || t===T.WET_CLAY) return T.FROZEN_CLAY;
+    return t;
+  }
   function geologyRockTile(wx,y,depth,biome){
     return WORLD_LAYERS.legacyGeologyRockTile(WG,wx,y,depth,biome);
   }
@@ -1516,6 +1534,7 @@ window.MM = window.MM || {};
       }
       const ground=s+poolDepth;
       const waterBed=(s>SEA || biome===5 || biome===6) && biome!==4;
+      const frostDepth=waterBed || lakeRow!==Infinity ? 0 : groundFrostDepth(col,wx);
       const surfaceHazard=naturalSurfaceHazardKind(wx,biome,beach,desertF,cold,slope,waterBed,lakeRow!==Infinity,poolDepth,!!col.volcano);
       // Cave carve pass for this column (includes ravines/entrances opening the surface)
       COL_CARVE.fill(0);
@@ -1575,6 +1594,7 @@ window.MM = window.MM || {};
             else t=geologyRockTile(wx,y,depth,biome);
             if(biome!==8 && t===T.STONE && depth<SURFACE_GRASS_DEPTH+sandTh+2 && WG.randSeed(wx*9.71+y*0.23)<(0.10+0.5*(desertF+waterF*0.5))) t=T.SAND;
             }
+            if(frostDepth>0 && depth<frostDepth) t=frostBindTile(t);
           }
         }
         arr[tileIndex(lx,y)]=t;
@@ -1603,7 +1623,7 @@ window.MM = window.MM || {};
         if(place){ const surface=colHeight(wx); const placeY=surface-1; if(placeY>=0){
           const below=arr[tileIndex(lx,surface)];
           // only on solid land surfaces (skip water, pools, carved cave mouths)
-          if(below===T.GRASS||below===T.SAND||below===T.SNOW||below===T.STONE){
+          if(below===T.GRASS||below===T.GRASS_SNOW||below===T.SAND||below===T.FROZEN_SAND||below===T.FROZEN_DIRT||below===T.SNOW||below===T.STONE){
             const r=WG.chestNoise(wx); let chestT=T.CHEST_COMMON;
             if(isle){ chestT = r>0.93 ? T.CHEST_EPIC : T.CHEST_RARE; }
             else if(r>0.985) chestT=T.CHEST_EPIC; else if(r>0.955) chestT=T.CHEST_RARE;
@@ -1704,7 +1724,8 @@ window.MM = window.MM || {};
     return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.OBSIDIAN || t===T.DIRT || t===T.MUD || t===T.CLAY || t===T.WET_CLAY;
   }
   function undergroundDressingFloor(t){
-    return undergroundDressingRock(t) || t===T.SAND || t===T.SNOW || t===T.ICE || t===T.COAL || t===T.STEEL || t===T.BRICK;
+    return undergroundDressingRock(t) || t===T.SAND || t===T.SNOW || t===T.ICE || t===T.COAL || t===T.STEEL || t===T.BRICK ||
+      t===T.FROZEN_DIRT || t===T.FROZEN_SAND || t===T.FROZEN_CLAY;
   }
   function undergroundDressingOpen(t){
     return t===T.AIR || t===T.WATER || t===T.LAVA || t===T.HOT_AIR || t===T.STEAM || t===T.POISON_GAS || t===T.FUEL_GAS || t===T.GLOWSHROOM;
@@ -1750,7 +1771,7 @@ window.MM = window.MM || {};
             if((at(-1,y)===T.AIR||at(1,y)===T.AIR||at(0,y-1)===T.AIR||at(0,y+1)===T.AIR) && WG.randSeed(wx*12.9898+y*78.233)<0.75) arr[i]=T.ICE;
           } else if(arr[i]===T.AIR && at(0,y+1)===T.AIR){
             const above=at(0,y-1);
-            if((above===T.ICE||above===T.STONE||above===T.SNOW) && WG.randSeed(wx*3.7717+y*41.117)<0.08) arr[i]=T.ICE; // hanging icicle
+            if((above===T.ICE||above===T.STONE||above===T.SNOW||above===T.FROZEN_DIRT||above===T.FROZEN_SAND||above===T.FROZEN_CLAY) && WG.randSeed(wx*3.7717+y*41.117)<0.08) arr[i]=T.ICE; // hanging icicle
           }
         }
       }
@@ -1925,7 +1946,7 @@ window.MM = window.MM || {};
       for(const op of L.ops){
         if(op.x<x0 || op.x>x1 || op.y<0 || op.y>=WORLD_H) continue;
         const idx=tileIndex(op.x-x0,op.y);
-        if(op.f || isReplaceableNaturalOpenTile(arr[idx],false) || arr[idx]===T.GRASS || arr[idx]===T.SAND || arr[idx]===T.MUD) arr[idx]=op.t;
+        if(op.f || isReplaceableNaturalOpenTile(arr[idx],false) || arr[idx]===T.GRASS || arr[idx]===T.GRASS_SNOW || arr[idx]===T.SAND || arr[idx]===T.FROZEN_SAND || arr[idx]===T.MUD) arr[idx]=op.t;
       }
     }
   }

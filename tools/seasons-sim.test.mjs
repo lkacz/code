@@ -169,14 +169,48 @@ setTile(0, 12, T.GRASS);
 setTile(0, 13, T.STONE);
 seasons.forceSeason('winter');
 seasons.scanNow(getTile, setTile, {x:96, y:9});
-assert.equal(getTile(0, 12), T.SNOW, 'winter lays exposed snow over grass near the active world');
+assert.equal(getTile(0, 12), T.GRASS_SNOW, 'winter dusts exposed grass into winter turf (SNOW blocks come only from real snowfall)');
 
 resetTiles();
-setTile(0, 12, T.SNOW);
+setTile(0, 12, T.GRASS_SNOW);
 setTile(0, 13, T.STONE);
 seasons.forceSeason('summer');
 seasons.scanNow(getTile, setTile, {x:96, y:9});
-assert.equal(getTile(0, 12), T.GRASS, 'warm seasons melt exposed seasonal snow back to grass');
+assert.equal(getTile(0, 12), T.GRASS, 'warm seasons melt winter turf back to living grass');
+
+// Deposited snowpack is volume-true: it melts into real water (runoff), and the
+// turf below thaws only after its cap is gone. The one legacy exception is snow
+// capping bare DIRT (the old converted-lawn contract) which restores GRASS.
+resetTiles();
+setTile(0, 11, T.SNOW);
+setTile(0, 12, T.GRASS_SNOW);
+setTile(0, 13, T.STONE);
+seasons.forceSeason('summer');
+for(let i = 0; i < 12 && !(getTile(0, 11) === T.WATER && getTile(0, 12) === T.GRASS); i++) seasons.scanNow(getTile, setTile, {x:96, y:9});
+assert.equal(getTile(0, 11), T.WATER, 'deposited snowpack melts into real water');
+assert.equal(getTile(0, 12), T.GRASS, 'winter turf thaws once its snow cap is gone');
+
+resetTiles();
+setTile(0, 12, T.SNOW);
+setTile(0, 13, T.DIRT);
+seasons.forceSeason('summer');
+seasons.scanNow(getTile, setTile, {x:96, y:9});
+assert.equal(getTile(0, 12), T.GRASS, 'legacy snow capping bare dirt melts back to grass');
+
+// Permafrost active layer: deep-cold winters bind exposed soil, warm seasons thaw it.
+resetTiles();
+setTile(0, 12, T.DIRT);
+setTile(0, 13, T.STONE);
+seasons.forceSeason('winter');
+seasons.scanNow(getTile, setTile, {x:96, y:9});
+assert.equal(getTile(0, 12), T.FROZEN_DIRT, 'deep-cold winter binds exposed soil into permafrost');
+
+resetTiles();
+setTile(0, 12, T.FROZEN_SAND);
+setTile(0, 13, T.STONE);
+seasons.forceSeason('summer');
+seasons.scanNow(getTile, setTile, {x:96, y:9});
+assert.equal(getTile(0, 12), T.SAND, 'warm seasons thaw the exposed permafrost surface back to loose soil');
 
 resetTiles();
 setTile(0, 12, T.WOOD);

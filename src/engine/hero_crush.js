@@ -27,6 +27,9 @@ export const CRUSH_TUNING = Object.freeze({
 // (wood 0.72 … meteoric iron 1.45); sand has no profile because it is granular.
 export function heroLoadWeight(t){
   if(t===T.BEDROCK) return Infinity; // never survivable — no amount of Twardość shoulders bedrock
+  // Snow buries, it does not crush: a hero swallowed by a blizzard drift has to
+  // dig out, but even a storm-deep snow column stays under the base capacity.
+  if(t===T.SNOW || t===T.TOXIC_SNOW) return 0.15;
   const p=buildMaterialProfile(t);
   if(p && Number.isFinite(p.weight)) return p.weight;
   if(t===T.SAND) return 0.9;

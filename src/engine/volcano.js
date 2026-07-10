@@ -263,7 +263,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     }
     sparkBurst(x+0.5,y+0.5,'epic');
     smokeAt(x+0.5,y+0.4,4.0);
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('explosion'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('explosion',{x:x+0.5,y:y+0.5}); }catch(e){}
     return true;
   }
   function explodeServantStone(m,getTile,setTile){

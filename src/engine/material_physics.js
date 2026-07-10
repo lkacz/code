@@ -29,8 +29,16 @@ export const BUILD_MATERIAL_PROFILES = Object.freeze({
   [T.ELECTRONICS]: Object.freeze({strength:3.2, weight:0.72, compression:0.64, lateral:1.50, flex:0.55, down:0.24, warn:0.18, fail:0.760, wind:0.090, rubbleRoll:2}),
   [T.ICE]: Object.freeze({strength:6.4, weight:0.82, compression:0.48, lateral:1.18, flex:0.78, down:0.24, warn:0.22, fail:0.860, wind:0.045, rubbleRoll:3}),
   [T.SNOW]: Object.freeze({strength:4.8, weight:0.72, compression:0.54, lateral:1.22, flex:0.78, down:0.22, warn:0.22, fail:0.830, wind:0.075, rubbleRoll:3}),
+  // Gas-tainted snowpack packs slightly denser (chemical crust) but behaves like snow.
+  [T.TOXIC_SNOW]: Object.freeze({strength:4.9, weight:0.74, compression:0.54, lateral:1.22, flex:0.78, down:0.22, warn:0.22, fail:0.830, wind:0.070, rubbleRoll:3}),
   [T.DIRT]: Object.freeze({strength:6.5, weight:1.00, compression:0.42, lateral:1.15, flex:0.86, down:0.22, warn:0.25, fail:0.880, wind:0.065, rubbleRoll:3}),
   [T.GRASS]: Object.freeze({strength:6.5, weight:1.00, compression:0.42, lateral:1.15, flex:0.86, down:0.22, warn:0.25, fail:0.880, wind:0.065, rubbleRoll:3}),
+  [T.GRASS_SNOW]: Object.freeze({strength:6.5, weight:1.00, compression:0.42, lateral:1.15, flex:0.86, down:0.22, warn:0.25, fail:0.880, wind:0.065, rubbleRoll:3}),
+  // Permafrost binds soil grains with ice: markedly stiffer than the thawed base,
+  // slightly heavier, and it sheds wind erosion like rock instead of loose earth.
+  [T.FROZEN_DIRT]: Object.freeze({strength:11.5, support:9, weight:1.08, compression:0.36, lateral:1.10, flex:0.90, down:0.23, warn:0.25, fail:0.905, wind:0.014, rubbleRoll:3}),
+  [T.FROZEN_SAND]: Object.freeze({strength:10.2, support:8, weight:1.02, compression:0.38, lateral:1.12, flex:0.88, down:0.23, warn:0.25, fail:0.900, wind:0.016, rubbleRoll:3}),
+  [T.FROZEN_CLAY]: Object.freeze({strength:11.0, support:8.6, weight:1.12, compression:0.37, lateral:1.10, flex:0.86, down:0.23, warn:0.24, fail:0.900, wind:0.014, rubbleRoll:3}),
   [T.MUD]: Object.freeze({strength:6.5, weight:1.00, compression:0.42, lateral:1.15, flex:0.86, down:0.22, warn:0.25, fail:0.880, wind:0.045, rubbleRoll:3}),
   [T.CLAY]: Object.freeze({strength:7.2, weight:1.06, compression:0.48, lateral:1.18, flex:0.80, down:0.23, warn:0.24, fail:0.875, wind:0.040, rubbleRoll:3}),
   [T.WET_CLAY]: Object.freeze({strength:5.8, weight:1.12, compression:0.58, lateral:1.26, flex:0.74, down:0.25, warn:0.22, fail:0.835, wind:0.020, rubbleRoll:2}),
@@ -168,7 +176,8 @@ export function isLavaExposureOpenTile(t){
 export function isMeteorImpactGroundTile(t){
   return t===T.GRASS || t===T.SAND || t===T.UNSTABLE_GRASS ||
     t===T.UNSTABLE_SAND || t===T.QUICKSAND || t===T.DIRT || t===T.STONE ||
-    t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.SNOW ||
+    t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.SNOW || t===T.TOXIC_SNOW ||
+    t===T.GRASS_SNOW || t===T.FROZEN_DIRT || t===T.FROZEN_SAND || t===T.FROZEN_CLAY ||
     t===T.ICE || t===T.MUD || t===T.CLAY || t===T.WET_CLAY ||
     t===T.BRICK || t===T.OBSIDIAN || t===T.COAL ||
     t===T.GOLD_ORE || t===T.UFO_CONCRETE || t===T.MOTHER_ICE || t===T.MOTHER_LAVA ||
@@ -211,7 +220,7 @@ export function isMeteorForestSiteTile(t){
 }
 
 export function isMeteorLifeSiteTile(t){
-  return t===T.GRASS || t===T.UNSTABLE_GRASS || t===T.MUD || t===T.ALIEN_BIOMASS;
+  return t===T.GRASS || t===T.GRASS_SNOW || t===T.UNSTABLE_GRASS || t===T.MUD || t===T.ALIEN_BIOMASS;
 }
 
 export function isMeteorSettlementSiteTile(t){
@@ -256,9 +265,9 @@ export function isLightStructuralMaterial(t){
 }
 
 export function isWeakFillMaterial(t){
-  return t===T.DIRT || t===T.GRASS || t===T.UNSTABLE_GRASS ||
+  return t===T.DIRT || t===T.GRASS || t===T.GRASS_SNOW || t===T.UNSTABLE_GRASS ||
     t===T.UNSTABLE_SAND || t===T.QUICKSAND || t===T.MUD || t===T.CLAY ||
-    t===T.WET_CLAY || t===T.SNOW;
+    t===T.WET_CLAY || t===T.SNOW || t===T.TOXIC_SNOW;
 }
 
 export function isNonStructuralResourceMaterial(t){

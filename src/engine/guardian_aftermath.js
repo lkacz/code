@@ -145,8 +145,9 @@ const guardianAftermath = (function(){
   function canSurfaceReplace(t){
     if(isProtected(t)) return false;
     if(isOpenForImpact(t)) return true;
-    return t === T.GRASS || t === T.SAND || t === T.DIRT || t === T.MUD ||
+    return t === T.GRASS || t === T.GRASS_SNOW || t === T.SAND || t === T.DIRT || t === T.MUD ||
       t === T.CLAY || t === T.WET_CLAY || t === T.SNOW || t === T.ICE ||
+      t === T.FROZEN_DIRT || t === T.FROZEN_SAND || t === T.FROZEN_CLAY ||
       t === T.STONE || t === T.GRANITE || t === T.BASALT || t === T.COAL ||
       t === T.METEOR_DUST || t === T.ALIEN_BIOMASS;
   }

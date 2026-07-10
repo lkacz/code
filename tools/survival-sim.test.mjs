@@ -107,6 +107,51 @@ const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf
 }
 
 {
+  // Thermal exposure: deep-cold west / scorching east. Mode selection first.
+  assert.equal(survival.thermalExposureMode({climate:0.1, temp:0.0}), 'cold', 'deep-cold climate at freezing temperature chills');
+  assert.equal(survival.thermalExposureMode({climate:0.1, temp:0.0, nearWarmth:true}), 'none', 'a nearby fire breaks the cold drain');
+  assert.equal(survival.thermalExposureMode({climate:0.1, temp:0.0, sheltered:true}), 'none', 'a roof/cave shelters from the cold');
+  assert.equal(survival.thermalExposureMode({climate:0.1, temp:0.0, inWater:true}), 'none', 'water hands the cold case to swim chill (no double drain)');
+  assert.equal(survival.thermalExposureMode({climate:0.5, temp:0.0}), 'none', 'a mild climate band never deep-freezes the hero');
+  assert.equal(survival.thermalExposureMode({climate:0.9, temp:0.95}), 'heat', 'scorching climate at extreme temperature overheats');
+  assert.equal(survival.thermalExposureMode({climate:0.9, temp:0.95, inWater:true}), 'none', 'a dip in water breaks the heat drain');
+  assert.equal(survival.thermalExposureMode({climate:0.9, temp:0.95, sheltered:true}), 'none', 'shade/underground shelters from the heat');
+  assert.equal(survival.thermalExposureMode({climate:0.9, temp:0.6}), 'none', 'a cool desert night does not overheat');
+  assert.equal(survival.thermalExposureMode({}), 'none', 'missing climate data never drains');
+
+  const s=survival.createThermalState();
+  let out=null;
+  assert.equal(survival.THERMAL_GRACE, 22, 'thermal grace is 22 seconds');
+  for(let i=0;i<21;i++) out=survival.updateThermalExposure(s,1,'cold');
+  assert.equal(out.damage, 0, 'cold inside the grace window causes no damage');
+  assert.equal(out.warn, false, 'no warning inside the thermal grace window');
+  out=survival.updateThermalExposure(s,1.2,'cold');
+  assert.equal(out.warn, true, 'thermal drain warns once the grace expires');
+  assert.equal(out.mode, 'cold', 'the warning carries the active mode');
+  assert.ok(out.damage>=1, 'thermal damage begins as soon as grace expires');
+  const firstRate=out.rate;
+  survival.consumeThermalDamage(s,out.damage);
+  for(let i=0;i<40;i++) out=survival.updateThermalExposure(s,1,'cold');
+  assert.ok(out.rate>firstRate, 'thermal drain ramps with continued exposure');
+  assert.ok(out.rate<=survival.THERMAL_RATE_MAX, 'thermal drain rate is capped');
+  out=survival.updateThermalExposure(s,1,'none');
+  assert.equal(out.damage, 0, 'stepping into shelter pauses the drain');
+  assert.ok(s.exposure>survival.THERMAL_GRACE, 'one sheltered second does not erase a long freeze');
+  for(let i=0;i<60;i++) out=survival.updateThermalExposure(s,1,'none');
+  assert.equal(s.exposure, 0, 'a long warm rest fully recovers the hero');
+  assert.equal(s.damageAcc, 0, 'full recovery clears banked thermal damage');
+  out=survival.updateThermalExposure(s,1,'heat');
+  assert.equal(out.damage, 0, 'a fresh heat exposure starts a fresh grace window');
+  assert.equal(s.mode, 'heat', 'the state tracks which side is draining');
+
+  // main.js wiring pins
+  assert.match(mainSource, /SURVIVAL\.updateThermalExposure\(thermalState, dt, thermalModeCached\)/, 'main drives the thermal state machine');
+  assert.match(mainSource, /sampleThermalMode\(tileX,inWater\)/, 'main samples the thermal environment (throttled)');
+  assert.match(mainSource, /cause:thermal\.mode==='cold' \? 'deep_frost' : 'heat_stroke'/, 'thermal damage carries frost/heat causes');
+  assert.match(mainSource, /function heroNearWarmth\(cx,cy\)/, 'main scans for torches/fire/lava as cold mitigation');
+}
+
+{
   assert.match(mainSource, /function triggerWaterDamageDistress\(cause,amount\)/, 'main has water-damage distress feedback');
   assert.match(mainSource, /function updateWaterDistressFx\(dt,inWater,pressure\)/, 'main has ongoing water-pressure distress feedback');
   assert.match(mainSource, /triggerWaterDamageDistress\(opts\.cause,dealt\)/, 'hero water damage triggers visual distress');

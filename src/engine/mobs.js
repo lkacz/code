@@ -271,7 +271,7 @@ const mobs = (function(){
   }
   function bigAnimalSpawnCell(x,y,getTile,opts){
     opts=opts||{};
-    const floor=opts.floor || function(t){ return t===T.GRASS || t===T.SNOW || t===T.MUD || t===T.SAND || isRockFloor(t); };
+    const floor=opts.floor || function(t){ return t===T.GRASS || t===T.GRASS_SNOW || t===T.SNOW || t===T.MUD || t===T.SAND || isRockFloor(t); };
     const half=opts.halfWidth==null ? 1 : Math.max(0, opts.halfWidth|0);
     const height=opts.height==null ? 2 : Math.max(1, opts.height|0);
     for(let dx=-half; dx<=half; dx++){
@@ -384,7 +384,7 @@ const mobs = (function(){
     m.shake=Math.max(m.shake||0,0.42);
     noteEntityNumber({kind:'danger', text:'!', x:m.x, y:m.y-1.35, target:'thunder_bison:'+Math.round(m.spawnT||0)});
   }
-  function isSnowSurfaceTile(t){ return t===T.SNOW || t===T.ICE || t===T.GRASS || isRockFloor(t); }
+  function isSnowSurfaceTile(t){ return t===T.SNOW || t===T.ICE || t===T.GRASS || t===T.GRASS_SNOW || t===T.FROZEN_DIRT || t===T.FROZEN_SAND || t===T.FROZEN_CLAY || isRockFloor(t); }
   function iceWraithSpawnCell(x,y,getTile){
     if(biomeAt(x)!==2 || typeof getTile!=='function') return false;
     x=Math.floor(x); y=Math.floor(y);
@@ -436,11 +436,11 @@ const mobs = (function(){
     if(side>0 && x<WEATHER_SHAMAN_MIN_ABS_X) return false;
     const biome=biomeAt(x);
     const floorOk = side<0
-      ? (t)=> t===T.SNOW || t===T.ICE || t===T.GRASS || t===T.STONE || t===T.GRANITE
+      ? (t)=> t===T.SNOW || t===T.ICE || t===T.GRASS || t===T.GRASS_SNOW || t===T.FROZEN_DIRT || t===T.FROZEN_SAND || t===T.FROZEN_CLAY || t===T.STONE || t===T.GRANITE
       : (t)=> t===T.SAND || t===T.BASALT || t===T.OBSIDIAN || t===T.STONE || t===T.GRANITE || t===T.DIRT || t===T.GRASS;
     if(!bigAnimalSpawnCell(x,y,getTile,{halfWidth:1,height:3,floor:floorOk})) return false;
     const below=readMobTile(getTile,x,y+1);
-    if(side<0) return biome===2 || below===T.SNOW || below===T.ICE;
+    if(side<0) return biome===2 || below===T.SNOW || below===T.ICE || below===T.GRASS_SNOW || below===T.FROZEN_DIRT || below===T.FROZEN_SAND || below===T.FROZEN_CLAY;
     return biome===3 || isVolcanoColumn(x) || below===T.BASALT || below===T.OBSIDIAN || below===T.SAND;
   }
   function scheduleWeatherShamanRitual(m,now,extraMs){
@@ -558,7 +558,7 @@ const mobs = (function(){
   }
   function isVultureFloorTile(t){
     return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.OBSIDIAN ||
-      t===T.SNOW || t===T.GRASS || t===T.DIRT;
+      t===T.SNOW || t===T.GRASS || t===T.GRASS_SNOW || t===T.DIRT || t===T.FROZEN_DIRT;
   }
   function isVultureNestOpenTile(t){
     return t===T.AIR || t===T.TORCH || t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED;
@@ -1102,7 +1102,7 @@ const mobs = (function(){
   }
   function jackpotYetiSpawnCell(x,y,getTile){
     if(biomeAt(x)!==2 || typeof getTile!=='function') return false;
-    return bigAnimalSpawnCell(x,y,getTile,{halfWidth:1,height:3,floor:t=>t===T.SNOW || t===T.ICE || isRockFloor(t)});
+    return bigAnimalSpawnCell(x,y,getTile,{halfWidth:1,height:3,floor:t=>t===T.SNOW || t===T.GRASS_SNOW || t===T.ICE || t===T.FROZEN_DIRT || t===T.FROZEN_SAND || isRockFloor(t)});
   }
   function cityThreatFloor(t){
     return t===T.STEEL || t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.OBSIDIAN || t===T.BRICK || t===T.UFO_CONCRETE || isRockFloor(t);
@@ -1138,7 +1138,7 @@ const mobs = (function(){
       const tile=MM.TILE||20;
       try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*tile,(m.y-0.35)*tile,'epic'); }catch(e){}
       try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(m.x*tile,(m.y-0.35)*tile,'epic',14); }catch(e){}
-      try{ if(MM.audio && MM.audio.play) MM.audio.play('warning'); }catch(e){}
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('warning',{x:m.x,y:m.y}); }catch(e){}
       return true;
     }catch(e){ return false; }
   }
@@ -1213,7 +1213,7 @@ const mobs = (function(){
     const tile=MM.TILE||20;
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*tile,m.y*tile,'epic'); }catch(e){}
     try{ if(MM.particles && MM.particles.spawnSmoke) MM.particles.spawnSmoke(m.x*tile,m.y*tile,16,{tileX:cx,tileY:cy,tileSize:tile}); }catch(e){}
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('explosion'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('explosion',{x:m.x,y:m.y}); }catch(e){}
     try{ if(MM.atomicWinter && typeof MM.atomicWinter.trigger==='function') MM.atomicWinter.trigger({x:m.x,y:m.y}); }catch(e){}
     return true;
   }
@@ -1315,7 +1315,7 @@ const mobs = (function(){
       aimY
     });
     markMobAttack(m,'spit',{target,power:1.15});
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('splash'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('splash',{x:m.x,y:m.y}); }catch(e){}
     return true;
   }
   function shootStoneGolemRock(m,target,speed,dmg){
@@ -1352,7 +1352,7 @@ const mobs = (function(){
     m.shake=Math.max(m.shake||0,0.35);
     markMobAttack(m,'throw',{target,power:1.25});
     try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(sx*(MM.TILE||20),sy*(MM.TILE||20),'common',5); }catch(e){}
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('thud'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('thud',{x:m.x,y:m.y}); }catch(e){}
     return true;
   }
   function addGoldDragonGas(x,y,getTile,setTile,power,cells){
@@ -1418,7 +1418,7 @@ const mobs = (function(){
         if(made>0){
           addGoldDragonGas(sx,sy,getTile,setTile,0.42,2);
           markMobAttack(m,'gold_dragon_fire',{target,power:1.55,strikeMs:460});
-          try{ if(MM.audio && MM.audio.play) MM.audio.play('fire'); }catch(e){}
+          try{ if(MM.audio && MM.audio.play) MM.audio.play('fire',{x:m.x,y:m.y}); }catch(e){}
           return true;
         }
       }
@@ -1440,7 +1440,7 @@ const mobs = (function(){
     });
     addGoldDragonGas(sx,sy,getTile,setTile,0.42,2);
     markMobAttack(m,'gold_dragon_fire',{target,power:1.55,strikeMs:460});
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('fire'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('fire',{x:m.x,y:m.y}); }catch(e){}
     return true;
   }
   function shootGoldDwarfPick(m,target,speed,dmg){
@@ -1825,7 +1825,7 @@ const mobs = (function(){
   variant:{shift:4, from:'#bcbcbc', to:'#d6d6d6'},
   body:{w:1.4,h:1.0},
     loot:[{item:'snow', min:1, max:2, chance:0.5}],
-    spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); return below===T.SNOW || (below===T.GRASS && biomeAt(x)===2); },
+    spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); return below===T.SNOW || below===T.GRASS_SNOW || ((below===T.GRASS || below===T.FROZEN_DIRT) && biomeAt(x)===2); },
     biome:'snow',
     onUpdate(m,spec,{player,aggressive,dt,speed}){ const spd=(speed||spec.speed||2); const dx=player.x-m.x; const adx=Math.abs(dx)||1; const biteGap=0.9; // stop at ~1 tile distance
       if(aggressive || adx<8){
@@ -2164,6 +2164,21 @@ const mobs = (function(){
         m.vy=(spec.move.jumpVel||-5.2)*(m.jumpMul||1);
         m._nextYetiLeapAt=now+JACKPOT_YETI_LEAP_COOLDOWN_MS+Math.random()*950;
         return;
+      }
+      // Snowball fight: at mid range the yeti scoops a snowball and lobs it —
+      // low damage, but a hit briefly slows the hero (see updateProjectiles).
+      if((aggressive || dist<spec.sightRange) && dist>3.4 && dist<12 && now>(m._nextSnowballAt||0)){
+        m._nextSnowballAt=now+2100+Math.random()*1100;
+        m.state='throw';
+        markMobAttack(m,'throw',{target:player,power:0.85});
+        const d=dist||1;
+        mobProjectiles.push({
+          x:m.x, y:m.y-0.8,
+          vx:dx/d*9.5, vy:dy/d*9.5-2.4,
+          dmg:2*(m.dmgMult||1), t:0, spin:Math.random()*6.28, lead:0,
+          type:'snowball', cause:'yeti_snowball', ownerId:m.id, gravity:10, radius:0.55
+        });
+        try{ if(MM.audio && MM.audio.play) MM.audio.play('bow',{x:m.x,y:m.y}); }catch(e){}
       }
       if(aggressive || dist<spec.sightRange){
         m.state=dist<4?'threat':'prowling';
@@ -2512,7 +2527,7 @@ const mobs = (function(){
   move:{jumpVel:-5.2, maxClimb:2.2, avoidWater:true},
   body:{w:1.2,h:1.0},
     loot:[{item:'snow', min:1, max:1, chance:0.3}],
-    spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); if(!(isRockFloor(below)||below===T.SNOW)) return false; return y < 18; },
+    spawnTest(x,y,getTile){ const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); if(!(isRockFloor(below)||below===T.SNOW||below===T.GRASS_SNOW)) return false; return y < 18; },
     biome:'mountain'
   });
 
@@ -3084,7 +3099,7 @@ const mobs = (function(){
       if(!seasonActive('winter')) return false;
       const b=biomeAt(x);
       if(b!==2 && b!==7) return false;
-      return bigAnimalSpawnCell(x,y,getTile,{halfWidth:1,height:3,floor:t=>t===T.SNOW || t===T.ICE || isRockFloor(t)});
+      return bigAnimalSpawnCell(x,y,getTile,{halfWidth:1,height:3,floor:t=>t===T.SNOW || t===T.GRASS_SNOW || t===T.ICE || t===T.FROZEN_DIRT || t===T.FROZEN_SAND || isRockFloor(t)});
     },
     biome:'snow',
     onCreate(m){ m.scale=1.12+Math.random()*0.16; m.speedMul=0.82+Math.random()*0.15; m.jumpMul=0.78+Math.random()*0.12; },
@@ -3115,7 +3130,7 @@ const mobs = (function(){
     sightRange:22, pursueRange:30, alwaysAggro:true, sunriseBurn:{dur:8,dps:6},
     move:{jumpVel:-4.6, maxClimb:2, avoidWater:true},
     body:{w:0.9,h:1.6},
-    spawnTest(x,y,getTile){ if(!isNight()) return false; const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); return below===T.GRASS||below===T.SAND||below===T.SNOW||isRockFloor(below)||below===T.MUD; },
+    spawnTest(x,y,getTile){ if(!isNight()) return false; const here=getTile(x,y); if(here!==T.AIR) return false; const below=getTile(x,y+1); return below===T.GRASS||below===T.GRASS_SNOW||below===T.SAND||below===T.SNOW||below===T.FROZEN_DIRT||below===T.FROZEN_SAND||isRockFloor(below)||below===T.MUD; },
     biome:'any',
     // habitatUpdate runs AFTER the default chase AI (onUpdate would replace it)
     habitatUpdate(m){ if(!isNight()) applyStatus(m,'burn',{dur:2.5,dps:4}); }
@@ -3219,7 +3234,7 @@ const mobs = (function(){
     const d=Math.hypot(dx,dy)||1;
     mobProjectiles.push({x:m.x, y:m.y-0.4, vx:dx/d*shotSpeed, vy:dy/d*shotSpeed-1.4, dmg:dmg*(m.dmgMult||1), t:0, spin:Math.random()*6.28, lead:m.aimLead||0});
     markMobAttack(m,'throw',{target,power:0.9});
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('bow',{x:m.x,y:m.y}); }catch(e){}
     return true;
   }
   function laserBlocked(t){ return t!==T.AIR && t!==T.WATER && isSolid(t); }
@@ -3404,7 +3419,7 @@ const mobs = (function(){
     else if(isInvasionTarget(target)) damageAlienTarget(target,dmg*(m.dmgMult||1),m.x,m.y-0.6,'sentinel');
     else if(target.kind==='companion') damageCompanionTarget(target,dmg*(m.dmgMult||1),m.x,m.y-0.6,'sentinel');
     else damagePlayer(dmg*(m.dmgMult||1), m.x, m.y-0.6);
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('beam'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('beam',{x:m.x,y:m.y}); }catch(e){}
     try{
       const p=MM.particles;
       if(p){
@@ -3437,13 +3452,41 @@ const mobs = (function(){
       const pr=mobProjectiles[i];
       pr.t+=dt; pr.vy+=(finiteNum(pr.gravity)?pr.gravity:9)*dt; applyWindToMobProjectile(pr,dt,getTile); pr.x+=pr.vx*dt; pr.y+=pr.vy*dt; pr.spin+=dt*8;
       let dead=pr.t>4;
-      if(!dead){
+      if(!dead && !pr.reflected){
         const cmp=nearestCompanionTarget(pr.x,pr.y,0.75);
         if(cmp && damageCompanionTarget(cmp,pr.dmg,pr.x-pr.vx*0.08,pr.y-pr.vy*0.08,pr.cause||'mob_projectile')) dead=true;
       }
       const hitRadius=finiteNum(pr.radius) ? Math.max(0.35,Math.min(1.2,pr.radius)) : 0.6;
-      if(!dead && player && Math.abs(player.x-pr.x)<hitRadius && Math.abs(player.y-pr.y)<hitRadius+0.2){
-        damagePlayer(pr.dmg, pr.x, pr.y, pr.cause||'mob_projectile', SPECIES[pr.ownerId]); dead=true;
+      if(!dead && !pr.reflected && player && Math.abs(player.x-pr.x)<hitRadius && Math.abs(player.y-pr.y)<hitRadius+0.2){
+        // A PERFECT block (defense started within the parry window) bats the
+        // projectile straight back — it now flies for the hero and hits mobs.
+        const parryFn=(typeof window!=='undefined') ? window.heroPerfectParry : null;
+        if(typeof parryFn==='function' && parryFn()){
+          pr.reflected=true;
+          pr.t=0;
+          pr.vx=-pr.vx*1.15;
+          pr.vy=-Math.abs(pr.vy)*0.35-1.2;
+          pr.cause='parried_'+(pr.cause||'mob_projectile');
+          try{ if(MM.weapons && MM.weapons.addUltCharge) MM.weapons.addUltCharge(0.25); }catch(e){}
+          try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('parry','Perfekcyjna parada odbija pociski wrogów!'); }catch(e){}
+          try{ if(MM.audio && MM.audio.play) MM.audio.play('charge',{x:pr.x,y:pr.y}); }catch(e){}
+          try{ const p=MM.particles; if(p && p.spawnSparks) p.spawnSparks(pr.x*(MM.TILE||20),pr.y*(MM.TILE||20),'lucky',10); }catch(e){}
+        } else {
+          damagePlayer(pr.dmg, pr.x, pr.y, pr.cause||'mob_projectile', SPECIES[pr.ownerId]); dead=true;
+          if(pr.type==='snowball'){
+            // a face full of yeti snow: brief slow instead of heavy damage
+            try{ if(typeof window!=='undefined' && typeof window.noteHeroChill==='function') window.noteHeroChill(1400); }catch(e){}
+            try{ const p=MM.particles; if(p && p.spawnImpactChips) p.spawnImpactChips(pr.x*(MM.TILE||20),pr.y*(MM.TILE||20),{power:0.7,element:'chill_splat'}); }catch(e){}
+          }
+        }
+      }
+      if(!dead && pr.reflected){
+        const m2=findAt(Math.floor(pr.x),Math.floor(pr.y));
+        if(m2 && m2.hp>0){
+          damageMob(m2, Math.max(2,(pr.dmg||2)*1.5), {source:'hero',kind:'reflected',cause:'parry'});
+          setAggro(m2.id);
+          dead=true;
+        }
       }
       if(!dead && getTile){ const tt=getTile(Math.floor(pr.x),Math.floor(pr.y)); if(tt!==T.WATER && isSolid(tt)) dead=true; }
       if(dead){ dragonBreathImpact(pr,getTile,setTile); mobProjectiles.splice(i,1); }
@@ -3465,7 +3508,7 @@ const mobs = (function(){
     spawnTest(x,y,getTile){
       const here=getTile(x,y); if(here!==T.AIR) return false;
       const below=getTile(x,y+1);
-      if(!(below===T.GRASS||below===T.SAND||below===T.SNOW||isRockFloor(below)||below===T.MUD)) return false;
+      if(!(below===T.GRASS||below===T.GRASS_SNOW||below===T.SAND||below===T.SNOW||below===T.FROZEN_DIRT||below===T.FROZEN_SAND||isRockFloor(below)||below===T.MUD)) return false;
       if(isNight()) return true;
       try{ const wg=MM.worldGen; if(wg && wg.surfaceHeight) return y>wg.surfaceHeight(x)+8; }catch(e){} // daylight: underground only
       return false;
@@ -6466,6 +6509,21 @@ const mobs = (function(){
         else if(F && F.isBurning && (F.isBurning(cx,cy) || F.isBurning(cx,fy))){
           applyStatus(m,'burn',{dur:3,dps:2});
         }
+        else if(getTile && (getTile(cx,cy)===T.WATER || getTile(cx,fy)===T.WATER)){
+          applyStatus(m,'wet',{dur:8}); // soaked while swimming — combo fuel for the elemental matrix
+        } else {
+          // rain soaks creatures under the open sky (throttled: clouds + roof scan)
+          m.rainAcc=(m.rainAcc||0)+1;
+          if(m.rainAcc>=7){
+            m.rainAcc=0;
+            try{
+              if(MM.clouds && MM.clouds.isRainingAt && MM.clouds.isRainingAt(m.x) &&
+                 (!MM.gases || !MM.gases.skyExposed || MM.gases.skyExposed(cx,cy,getTile))){
+                applyStatus(m,'wet',{dur:8});
+              }
+            }catch(e){}
+          }
+        }
       }
       // Status effects: DoT, cures and movement side-effects, table-driven
       tickStatuses(m,getTile,dt);
@@ -8321,6 +8379,52 @@ const mobs = (function(){
       ctx.closePath(); ctx.fill();
       if(Math.random()<0.3){ ctx.fillStyle='rgba(255,230,140,0.9)'; ctx.fillRect(px+(Math.random()*2-1)*6, baseY-h-Math.random()*4, 2,2); }
     }
+    // Chilled mobs: frosty shimmer + drifting flakes so the slow reads visually
+    for(const m of mobs){
+      if(!hasStatus(m,'chill')) continue;
+      if(!disableCull && (m.x < viewL || m.x > viewR || m.y < viewT || m.y > viewB)) continue;
+      if(!mobVisible(m)) continue;
+      const px=m.x*TILE, py=m.y*TILE;
+      const r=TILE*0.55*(m.scale||1);
+      ctx.fillStyle='rgba(150,220,255,0.16)';
+      ctx.beginPath(); ctx.arc(px,py,r,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='rgba(230,250,255,0.85)';
+      const tw=now*0.006 + (m.spawnT||0)*0.01;
+      for(let i=0;i<3;i++){
+        const a=tw+i*2.1;
+        ctx.fillRect(px+Math.cos(a)*r*0.8, py+Math.sin(a*1.3)*r*0.7, 2,2);
+      }
+    }
+    // Frozen mobs: a translucent ice shell so the hard CC is unmistakable
+    for(const m of mobs){
+      if(!hasStatus(m,'frozen')) continue;
+      if(!disableCull && (m.x < viewL || m.x > viewR || m.y < viewT || m.y > viewB)) continue;
+      if(!mobVisible(m)) continue;
+      const spec=SPECIES[m.id]||{};
+      const bw=Math.max(12,((spec.body && spec.body.w)||1)*TILE*(m.scale||1))+6;
+      const bh=Math.max(12,((spec.body && spec.body.h)||1)*TILE*(m.scale||1))+6;
+      const px=m.x*TILE, py=m.y*TILE;
+      ctx.fillStyle='rgba(140,214,255,0.34)';
+      ctx.fillRect(px-bw*0.5,py-bh*0.55,bw,bh);
+      ctx.strokeStyle='rgba(226,246,255,0.75)';
+      ctx.lineWidth=1.5;
+      ctx.strokeRect(px-bw*0.5,py-bh*0.55,bw,bh);
+      ctx.fillStyle='rgba(255,255,255,0.65)';
+      ctx.fillRect(px-bw*0.34,py-bh*0.42,3,3);
+      ctx.fillRect(px+bw*0.16,py+bh*0.10,2,2);
+    }
+    // Soaked mobs: a couple of dripping droplets
+    for(const m of mobs){
+      if(!hasStatus(m,'wet') || hasStatus(m,'frozen')) continue;
+      if(!disableCull && (m.x < viewL || m.x > viewR || m.y < viewT || m.y > viewB)) continue;
+      if(!mobVisible(m)) continue;
+      const px=m.x*TILE, py=m.y*TILE;
+      ctx.fillStyle='rgba(120,190,255,0.68)';
+      for(let i=0;i<2;i++){
+        const drop=((now*0.03 + i*53 + (m.spawnT||0))%(TILE*0.9));
+        ctx.fillRect(px-5+i*9, py-2+drop, 2, 3);
+      }
+    }
     for(const fx of mobDeathFx){
       if(!disableCull && (fx.x < viewL || fx.x > viewR || fx.y < viewT || fx.y > viewB)) continue;
       drawMobDeathFx(ctx,TILE,fx,visibleTile);
@@ -8407,6 +8511,13 @@ const mobs = (function(){
         ctx.fillRect(-1,-6,2,12);
         ctx.fillStyle='rgba(255,255,255,0.22)';
         ctx.fillRect(-5,-2.5,5,1);
+      } else if(pr.type==='snowball'){
+        ctx.fillStyle=pr.reflected ? '#ffe9a8' : '#f2f9ff';
+        ctx.beginPath(); ctx.arc(0,0,4.4,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='rgba(255,255,255,0.9)';
+        ctx.beginPath(); ctx.arc(-1.2,-1.4,1.8,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='rgba(150,190,230,0.5)';
+        ctx.fillRect(0.8,1.2,2,1.4);
       } else {
         ctx.fillStyle='#e8e4d8'; ctx.fillRect(-5,-1.5,10,3);
         ctx.fillStyle='#c9c2b0'; ctx.fillRect(-6,-2.5,3,5); ctx.fillRect(3,-2.5,3,5);
@@ -8479,13 +8590,33 @@ const mobs = (function(){
   function attackAt(tileX,tileY,dmgBonus,opts){ const m=findAt(tileX,tileY); if(!m) return false; const bonus=(typeof dmgBonus==='number' && isFinite(dmgBonus) && dmgBonus>0)? dmgBonus:0; damageMob(m, 3 + bonus, opts); setAggro(m.id); return true; }
 
   // Absolute-damage strike (projectiles): no base melee added
+  // Chain lightning: electricity into a soaked creature amplifies and arcs to
+  // every other wet creature nearby. _chained stops arcs from re-arcing forever.
+  function chainShockFromMob(src,dmg,opts){
+    const r2=3*3; let hops=0;
+    for(const o of mobs){
+      if(o===src || o.hp<=0 || !hasStatus(o,'wet')) continue;
+      const dx=o.x-src.x, dy=o.y-src.y;
+      if(dx*dx+dy*dy>r2) continue;
+      damageMob(o, Math.max(1,dmg), Object.assign({},opts,{_chained:true,cause:'chain_shock'}));
+      reactionFxAt(o,'electric_arc',0.8);
+      if(++hops>=4) break;
+    }
+    if(hops>0) noteStatusReaction(src,'chain',opts,'Prąd skacze łańcuchem po mokrych celach!');
+    return hops;
+  }
   function damageAt(tileX,tileY,dmg,opts){
     const m=findAt(tileX,tileY); if(!m) return false;
     if(m.id==='SAND_WORM' && sandWormWaterHitOpts(opts)){
       pacifySandWorm(m,'water',performance.now(),{x:tileX+0.5,y:tileY+0.5});
       return true;
     }
-    damageMob(m, Math.max(0.5, (typeof dmg==='number' && isFinite(dmg))? dmg:1), opts); setAggro(m.id); return true;
+    let amount=Math.max(0.5, (typeof dmg==='number' && isFinite(dmg))? dmg:1);
+    if(!(opts && opts._chained) && hasStatus(m,'wet') && combatElementFromOpts(opts)==='electric'){
+      amount*=1.5;
+      chainShockFromMob(m, amount*0.6, opts);
+    }
+    damageMob(m, amount, opts); setAggro(m.id); return true;
   }
 
   function mobRect(m,spec){
@@ -8631,16 +8762,87 @@ const mobs = (function(){
   const STATUS={
     burn:  { tickEvery:0.5, organicOnly:true, curedByWater:true,  panic:2.5 },
     poison:{ tickEvery:0.6, organicOnly:true, curedByWater:false, slowRate:0.5 },
+    // Frost slow (toxic snowballs, future ice weapons): no damage of its own,
+    // just a hard movement damp — works on golems/machines too (not organicOnly).
+    chill: { tickEvery:0.5, organicOnly:false, curedByWater:false, slowRate:2.4, defaultDps:0 },
+    // Soaked: no damage of its own — pure combo fuel for the elemental matrix
+    // (electricity amplifies + chains, frost freezes solid, fire fizzles out).
+    wet:   { tickEvery:0.75, organicOnly:false, curedByWater:false, defaultDps:0 },
+    // Frozen solid: hard CC minted only by the wet+chill reaction (weapons never
+    // apply it raw). Immobile, takes halved damage; fire melts the shell.
+    frozen:{ tickEvery:0.5, organicOnly:false, curedByWater:false, defaultDps:0, immobile:true, armor:0.5 },
   };
+  // ---- Elemental status matrix -------------------------------------------------
+  // Applying a status onto certain existing statuses REACTS instead of stacking.
+  // Every reaction is visible (particles), charges the hero ult when he caused it,
+  // and unlocks a discovery toast the first time it happens.
+  const REACTION_LOCK_MS=350; // one reaction per target per beat, so sprays can't cascade every frame
+  function reactionFxAt(m,element,power){
+    try{
+      const p=MM.particles, tile=MM.TILE||20;
+      if(p && p.spawnImpactChips) p.spawnImpactChips(m.x*tile,(m.y-0.2)*tile,{power:power||0.9,element});
+    }catch(e){}
+  }
+  function noteStatusReaction(m,kind,opts,discoveryText){
+    if(opts && opts.source==='hero'){
+      try{ if(MM.weapons && MM.weapons.addUltCharge) MM.weapons.addUltCharge(0.2); }catch(e){}
+    }
+    try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('react_'+kind, discoveryText); }catch(e){}
+  }
+  function freezeSolidMob(m,opts){
+    const st=m.status || (m.status={});
+    st.frozen={t:2.5,dps:0,acc:0,source:(opts && opts.source)||'',cause:'frozen'};
+    m.vx=0; m.vy=Math.min(m.vy||0,0.5);
+    reactionFxAt(m,'chill_freeze',1.1);
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('charge',{x:m.x,y:m.y}); }catch(e){}
+    noteStatusReaction(m,'freeze',opts,'Mokry wróg + mróz = bryła lodu!');
+  }
+  function thermalShockMob(m,opts){
+    reactionFxAt(m,'steam_shock',1.2);
+    noteStatusReaction(m,'thermal',opts,'Szok termiczny: ogień na zmrożonym celu!');
+    damageMob(m,8,{source:(opts && opts.source)||'reaction',cause:'thermal_shock'});
+  }
+  function toxicIgniteMob(m,opts){
+    reactionFxAt(m,'poison_blast',1.3);
+    noteStatusReaction(m,'toxic',opts,'Toksyczny zapłon: ogień detonuje truciznę!');
+    damageMob(m,6,{source:(opts && opts.source)||'reaction',cause:'toxic_ignite'});
+    igniteRadius(m.x,m.y,1.7,{dur:2.2,dps:3,source:(opts && opts.source)||'reaction',cause:'toxic_ignite'});
+  }
+  // Returns true when the application was consumed by a reaction.
+  function statusReaction(m,id,opts){
+    if(!m.status) return false;
+    const now=performance.now();
+    const locked=now<(m._reactionLockUntil||0);
+    if(id==='burn'){
+      if(hasStatus(m,'frozen')){ clearStatus(m,'frozen'); reactionFxAt(m,'steam',0.8); return true; } // fire melts the shell
+      if(hasStatus(m,'wet')){ clearStatus(m,'wet'); reactionFxAt(m,'steam',0.7); return true; }       // fizzle on soaked hide
+      if(!locked && hasStatus(m,'chill')){ clearStatus(m,'chill'); m._reactionLockUntil=now+REACTION_LOCK_MS; thermalShockMob(m,opts); return true; }
+      if(!locked && hasStatus(m,'poison')){ clearStatus(m,'poison'); m._reactionLockUntil=now+REACTION_LOCK_MS; toxicIgniteMob(m,opts); return false; } // burn still lands
+    }
+    if(id==='chill'){
+      if(!locked && hasStatus(m,'wet')){ clearStatus(m,'wet'); m._reactionLockUntil=now+REACTION_LOCK_MS; freezeSolidMob(m,opts); return true; }
+      if(!locked && hasStatus(m,'burn')){ clearStatus(m,'burn'); m._reactionLockUntil=now+REACTION_LOCK_MS; thermalShockMob(m,opts); return true; }
+    }
+    if(id==='wet'){
+      if(hasStatus(m,'burn')){ clearStatus(m,'burn'); reactionFxAt(m,'steam',0.8); } // doused; the soak still applies
+      if(!locked && hasStatus(m,'chill')){ clearStatus(m,'chill'); m._reactionLockUntil=now+REACTION_LOCK_MS; freezeSolidMob(m,opts); return true; }
+    }
+    if(id==='poison'){
+      if(!locked && hasStatus(m,'burn')){ m._reactionLockUntil=now+REACTION_LOCK_MS; toxicIgniteMob(m,opts); return true; }
+    }
+    return false;
+  }
   function applyStatus(m,id,opts){
     const def=STATUS[id]; if(!def) return false;
     if(!mobAllowedByOpts(m,opts)) return false;
     const spec=SPECIES[m.id];
     if(def.organicOnly && (!spec || spec.organic===false)) return false;
+    if(statusReaction(m,id,opts)) return true; // the application became a reaction
     const st=m.status || (m.status={});
     const s=st[id] || (st[id]={t:0,dps:0,acc:0});
     s.t=Math.max(s.t, (opts && opts.dur)||3);
-    s.dps=Math.max(s.dps, (opts && opts.dps)||2);
+    const fallbackDps=Number.isFinite(def.defaultDps) ? def.defaultDps : 2;
+    s.dps=Math.max(s.dps, (opts && Number.isFinite(opts.dps)) ? opts.dps : fallbackDps);
     if(opts && typeof opts==='object'){
       if(opts.source!=null) s.source=String(opts.source);
       if(opts.cause!=null || opts.element!=null) s.cause=String(opts.cause || opts.element);
@@ -8658,9 +8860,10 @@ const mobs = (function(){
       if(!def || !(s.t>0)){ delete st[id]; continue; }
       if(def.curedByWater && getTile && getTile(Math.floor(m.x),Math.floor(m.y))===T.WATER){ delete st[id]; continue; }
       s.t-=dt; s.acc+=dt;
-      if(s.acc>=def.tickEvery){ s.acc-=def.tickEvery; damageMob(m, s.dps*def.tickEvery,{source:s.source||id,cause:s.cause||id}); }
+      if(s.acc>=def.tickEvery){ s.acc-=def.tickEvery; if(s.dps>0) damageMob(m, s.dps*def.tickEvery,{source:s.source||id,cause:s.cause||id}); }
       if(def.panic && Math.random()<0.08){ m.vx+=(Math.random()*2-1)*def.panic; m.facing=m.vx>=0?1:-1; }
       if(def.slowRate) m.vx*=Math.max(0,1-dt*def.slowRate);
+      if(def.immobile){ m.vx=0; if(m.vy<0) m.vy=0; } // frozen solid: no walking, no jumping (gravity still applies)
     }
   }
   // Public point/area applicators (weapons & tile fire use these)
@@ -8668,6 +8871,10 @@ const mobs = (function(){
   function igniteRadius(wx,wy,r,opts){ let n=0; const r2=r*r; for(const m of mobs){ const dx=m.x-wx, dy=m.y-wy; if(dx*dx+dy*dy<=r2 && applyStatus(m,'burn',opts)) n++; } return n; }
   function poisonAt(tileX,tileY,opts){ const m=findAt(tileX,tileY); if(!m) return false; return applyStatus(m,'poison',opts); }
   function poisonRadius(wx,wy,r,opts){ let n=0; const r2=r*r; for(const m of mobs){ const dx=m.x-wx, dy=m.y-wy; if(dx*dx+dy*dy<=r2 && applyStatus(m,'poison',opts)) n++; } return n; }
+  function chillAt(tileX,tileY,opts){ const m=findAt(tileX,tileY); if(!m) return false; return applyStatus(m,'chill',opts); }
+  function chillRadius(wx,wy,r,opts){ let n=0; const r2=r*r; for(const m of mobs){ const dx=m.x-wx, dy=m.y-wy; if(dx*dx+dy*dy<=r2 && applyStatus(m,'chill',opts)) n++; } return n; }
+  function wetAt(tileX,tileY,opts){ const m=findAt(tileX,tileY); if(!m) return false; return applyStatus(m,'wet',opts); }
+  function wetRadius(wx,wy,r,opts){ let n=0; const r2=r*r; for(const m of mobs){ const dx=m.x-wx, dy=m.y-wy; if(dx*dx+dy*dy<=r2 && applyStatus(m,'wet',opts)) n++; } return n; }
   // Water hose: put out burning creatures in an area
   function douseRadius(wx,wy,r){
     let n=0; const r2=r*r; const now=performance.now();
@@ -8676,6 +8883,7 @@ const mobs = (function(){
       if(dx*dx+dy*dy>r2) continue;
       let changed=false;
       if(hasStatus(m,'burn')){ clearStatus(m,'burn'); changed=true; }
+      if(applyStatus(m,'wet',{dur:6})) changed=true; // hose spray soaks — sets up freeze/chain-shock combos
       if(m.id==='SAND_WORM' && pacifySandWorm(m,'water',now,{x:wx,y:wy})) changed=true;
       if(m.id==='STONE_GOLEM' && pacifyStoneGolem(m,'water',now)) changed=true;
       if(changed) n++;
@@ -8868,7 +9076,9 @@ const mobs = (function(){
     if(m.hp<=0) return;
     const spec=SPECIES[m.id] || {};
     const thermalBonus=mobThermalDamageBonus(m,spec,opts);
-    const dealt=Math.max(0.5, (Number(amount)||0.5) * (thermalBonus ? thermalBonus.mult : 1));
+    let dealt=Math.max(0.5, (Number(amount)||0.5) * (thermalBonus ? thermalBonus.mult : 1));
+    // Frozen shell shields the creature — crack it (or melt it with fire) first.
+    if(m.status && m.status.frozen && m.status.frozen.t>0) dealt*=STATUS.frozen.armor||1;
     const beforeHp=Number(m.hp)||0;
     const willDie=beforeHp-dealt<=0;
     noteDamageSource(m,opts);
@@ -9327,7 +9537,7 @@ const mobs = (function(){
         lasers:mobLasers.map(l=>({x1:l.x1,y1:l.y1,x2:l.x2,y2:l.y2,dmg:l.dmg||0,hit:!!l.hit}))
       };
     }
-  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat };
+  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, chillAt, chillRadius, wetAt, wetRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat };
   MM.mobs = api;
   try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
   return api;

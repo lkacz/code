@@ -460,7 +460,7 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
     }catch(e){}
     try{
       if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(wx*(MM.TILE||20),wy*(MM.TILE||20),'epic');
-      if(MM.audio && MM.audio.play) MM.audio.play('explosion');
+      if(MM.audio && MM.audio.play) MM.audio.play('explosion',{x:wx,y:wy});
     }catch(e){}
     return true;
   }

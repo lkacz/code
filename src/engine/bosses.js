@@ -107,7 +107,7 @@ window.MM = window.MM || {};
   for(const k of Object.keys(EAT_GROW)) HEAL_EAT[EAT_GROW[k]] = +k;
   HEAL_EAT[T.LEAF] = T.LEAF;
   // Loose surface blocks a beast can rip out of the terrain and hurl at the hero
-  const THROWABLE = new Set([T.SAND, T.GRASS, T.SNOW, T.WOOD, T.LEAF, T.AUTUMN_LEAF_ORANGE, T.AUTUMN_LEAF_RED, T.STONE, T.ICE]);
+  const THROWABLE = new Set([T.SAND, T.GRASS, T.GRASS_SNOW, T.SNOW, T.WOOD, T.LEAF, T.AUTUMN_LEAF_ORANGE, T.AUTUMN_LEAF_RED, T.STONE, T.ICE]);
   // Block palette a body is built from, so beasts read as made of the game's own tiles
   const BODY_BLOCKS = [T.STONE, T.SAND, T.GRASS, T.SNOW, T.WOOD];
   function infoColor(t){ try{ const I=MM.INFO; if(I && I[t] && I[t].color) return I[t].color; }catch(e){} return null; }
@@ -440,7 +440,7 @@ window.MM = window.MM || {};
         monsters.push(m); spawnedTotal++;
         const dirTxt=(m.x>=px)? 'na wschodzie':'na zachodzie';
         say((m.gargantuan? '⚠ GARGANTUICZNY wodny potwór ':'🌊 Wodny potwór ')+m.name+' wynurzył się '+dirTxt+'!');
-        try{ if(MM.audio && MM.audio.play) MM.audio.play('roar'); }catch(e){}
+        try{ if(MM.audio && MM.audio.play) MM.audio.play('roar',{x:m.x,y:m.y}); }catch(e){}
         return m;
       }
       if(biome===6 && !(opts && typeof opts.x==='number')) continue;
@@ -455,7 +455,7 @@ window.MM = window.MM || {};
       monsters.push(m); spawnedTotal++;
       const dirTxt=(m.x>=px)? 'na wschodzie':'na zachodzie';
       say((m.gargantuan? '⚠ GARGANTUICZNY potwór ':'⚠ Potwór ')+m.name+' pojawił się '+dirTxt+'!');
-      try{ if(MM.audio && MM.audio.play) MM.audio.play('roar'); }catch(e){}
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('roar',{x:m.x,y:m.y}); }catch(e){}
       return m;
     }
     return null;
@@ -1070,7 +1070,7 @@ window.MM = window.MM || {};
     releaseBodyAsBlocks(m);
     const bx=Math.round(m.x)+(m.core?m.core.dx:0), by=Math.round(m.y)+(m.core?m.core.dy:0);
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((bx+0.5)*(MM.TILE||20),(by+0.5)*(MM.TILE||20),'rare'); }catch(e){}
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('warning'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('warning',{x:bx,y:by}); }catch(e){}
     say('Serce '+m.name+' kona i puchnie od energii - uciekaj!');
     return true;
   }
@@ -1204,7 +1204,7 @@ window.MM = window.MM || {};
     const TILE=MM.TILE||20;
     blasts.push({x:(bx+0.5)*TILE, y:(by+0.5)*TILE, R:R*TILE, t:0, max:0.7});
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((bx+0.5)*TILE,(by+0.5)*TILE,'epic'); }catch(e){}
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('explosion'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('explosion',{x:bx+0.5,y:by+0.5}); }catch(e){}
     const p=playerRef();
     if(p && isFinite(p.x) && isFinite(p.y)){
       const d=Math.max(Math.abs(p.x-bx), Math.abs(p.y-by));

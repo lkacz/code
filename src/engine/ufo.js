@@ -120,7 +120,7 @@ const ufo = (function(){
   function clearActive(){ craft=null; }
 
   function say(t){ try{ if(typeof window!=='undefined' && window.msg) window.msg(t); }catch(e){} }
-  function sfx(n){ try{ if(MM.audio && MM.audio.play) MM.audio.play(n); }catch(e){} }
+  function sfx(n,o){ try{ if(MM.audio && MM.audio.play) MM.audio.play(n,o); }catch(e){} }
   function surfaceY(x, fallback){ try{ const wg=MM.worldGen; if(wg && wg.surfaceHeight) return wg.surfaceHeight(Math.round(x)); }catch(e){} return (typeof fallback==='number'? fallback : 60); }
   function burst(x,y,tier){ try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(x*(MM.TILE||20), y*(MM.TILE||20), tier||'epic'); }catch(e){} }
   function drainHeroEnergy(pl){
@@ -437,7 +437,7 @@ const ufo = (function(){
     const bioMsg=bioCompanion ? ' i bio-pomocnik!' : '';
     if(pl && typeof pl.xp==='number') pl.xp+=120;
     burst(c.x,c.y,'epic'); burst(c.x-1.5,c.y+0.5,'epic'); burst(c.x+1.5,c.y+0.5,'epic');
-    sfx('explosion');
+    sfx('explosion',{x:c.x,y:c.y});
     say('💥 '+c.look.name+' zestrzelony! Antymateria ×'+n+artMsg+bioMsg+' (+120 XP)');
     if(typeof window!=='undefined' && window.updateInventoryHud) try{ window.updateInventoryHud(); }catch(e){}
     craft=null;
@@ -494,7 +494,7 @@ const ufo = (function(){
     }
     else if(c.phase==='beam'){
       const v=c.victim;
-      c.beamHum+=dt; if(c.beamHum>0.5){ c.beamHum=0; sfx('beam'); }
+      c.beamHum+=dt; if(c.beamHum>0.5){ c.beamHum=0; sfx('beam',{x:c.x,y:c.y}); }
       if(!v){ c.phase='scan'; c.phaseT=0; }
       else if(v.kind==='mob'){
         const m=v.mob;

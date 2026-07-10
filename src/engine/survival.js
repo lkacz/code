@@ -101,6 +101,74 @@ window.MM = window.MM || {};
     state.damageAcc = Math.max(0, state.damageAcc - amount);
   }
 
+  // Thermal exposure: deep-cold air on the far west chills an unprotected hero,
+  // scorching far-east air overheats him. Same grace/ramp/bank shape as swim
+  // chill; the caller decides the mode from climate + mitigations so this state
+  // machine stays deterministic and headless-testable.
+  const THERMAL_GRACE = 22;
+  const THERMAL_RATE_BASE = 1.2;
+  const THERMAL_RATE_RAMP = 0.10;
+  const THERMAL_RATE_MAX = 8;
+  const THERMAL_RECOVERY = 3.4;
+  const THERMAL_BANK_MAX = 20;
+  const COLD_EXPOSURE_TEMP = 0.05;  // temperatureAt() at/below this chills...
+  const COLD_CLIMATE_GATE = 0.25;   // ...but only in genuinely cold climate bands
+  const HEAT_EXPOSURE_TEMP = 0.93;  // temperatureAt() at/above this scorches...
+  const HEAT_CLIMATE_GATE = 0.75;   // ...only in genuinely hot climate bands
+
+  // climate: WG.temperature(x) (0..1 band), temp: seasons.temperatureAt(x,y)
+  // (unclamped, includes season/day-night/altitude). Shelter (roof/underground)
+  // blocks both; warmth (torch/fire/lava nearby) blocks cold; water blocks heat
+  // and hands the cold case over to swim chill so the drains never stack.
+  function thermalExposureMode(env){
+    env=env||{};
+    const climate=Number(env.climate);
+    const temp=Number(env.temp);
+    if(!Number.isFinite(climate) || !Number.isFinite(temp)) return 'none';
+    if(env.sheltered || env.inWater) return 'none';
+    if(climate<=COLD_CLIMATE_GATE && temp<=COLD_EXPOSURE_TEMP && !env.nearWarmth) return 'cold';
+    if(climate>=HEAT_CLIMATE_GATE && temp>=HEAT_EXPOSURE_TEMP) return 'heat';
+    return 'none';
+  }
+
+  function createThermalState(){
+    return {exposure:0, damageAcc:0, warned:false, mode:'none'};
+  }
+
+  function resetThermal(state){
+    if(!state) return;
+    state.exposure=0;
+    state.damageAcc=0;
+    state.warned=false;
+    state.mode='none';
+  }
+
+  function updateThermalExposure(state, dt, mode){
+    if(!state) state=createThermalState();
+    if(!(dt>0)) return {state, damage:Math.floor(state.damageAcc), rate:0, warn:false, mode:state.mode};
+    if(mode!=='cold' && mode!=='heat'){
+      state.exposure=Math.max(0, state.exposure - THERMAL_RECOVERY*dt);
+      if(state.exposure<THERMAL_GRACE*0.5){ state.warned=false; state.damageAcc=0; state.mode='none'; }
+      return {state, damage:0, rate:0, warn:false, mode:'none', graceLeft:Math.max(0,THERMAL_GRACE-state.exposure)};
+    }
+    if(state.mode!==mode){ state.mode=mode; state.warned=false; }
+    state.exposure += dt;
+    if(state.exposure < THERMAL_GRACE){
+      return {state, damage:0, rate:0, warn:false, mode, graceLeft:THERMAL_GRACE-state.exposure};
+    }
+    const over = state.exposure - THERMAL_GRACE;
+    const rate = Math.min(THERMAL_RATE_MAX, THERMAL_RATE_BASE + over*THERMAL_RATE_RAMP);
+    state.damageAcc = Math.min(THERMAL_BANK_MAX, state.damageAcc + rate*dt);
+    const warn = !state.warned;
+    state.warned = true;
+    return {state, damage:Math.floor(state.damageAcc), rate, warn, mode, graceLeft:0};
+  }
+
+  function consumeThermalDamage(state, amount){
+    if(!state || !(amount>0)) return;
+    state.damageAcc = Math.max(0, state.damageAcc - amount);
+  }
+
   function createUnderwaterEnergyState(){
     return {damageAcc:0};
   }
@@ -192,6 +260,17 @@ window.MM = window.MM || {};
     resetSwimChill,
     updateSwimChill,
     consumeSwimChillDamage,
+    THERMAL_GRACE,
+    THERMAL_RATE_MAX,
+    COLD_EXPOSURE_TEMP,
+    COLD_CLIMATE_GATE,
+    HEAT_EXPOSURE_TEMP,
+    HEAT_CLIMATE_GATE,
+    thermalExposureMode,
+    createThermalState,
+    resetThermal,
+    updateThermalExposure,
+    consumeThermalDamage,
     createUnderwaterEnergyState,
     resetUnderwaterEnergyShock,
     updateUnderwaterEnergyShock,

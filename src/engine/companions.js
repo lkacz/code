@@ -3700,7 +3700,7 @@ const companions = (function(){
     const info=INFO[t];
     if(!info || t===T.AIR || passableForCompanion(t) || info.unmineable || info.chestTier || info.machine || info.story || info.cache || isGasTile(t)) return false;
     if(isDoorTile(t) || info.door || info.trapdoor) return false;
-    return !!(info.geology || info.hardRock || t===T.STONE || t===T.GRASS || t===T.SAND || t===T.SNOW || t===T.ICE || t===T.MUD || t===T.CLAY || t===T.WET_CLAY || t===T.OBSIDIAN || t===T.BRICK);
+    return !!(info.geology || info.hardRock || t===T.STONE || t===T.GRASS || t===T.GRASS_SNOW || t===T.SAND || t===T.SNOW || t===T.ICE || t===T.MUD || t===T.CLAY || t===T.WET_CLAY || t===T.FROZEN_SAND || t===T.FROZEN_CLAY || t===T.OBSIDIAN || t===T.BRICK);
   }
   function clayGolemFrontBlockers(c,nx,ny,dir,getTile){
     const out=[];

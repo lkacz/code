@@ -1,6 +1,6 @@
 // Nowy styl / pełny ekran inspirowany Diamonds Explorer
 // Module entry: import constants (also hydrates window.MM via shim) and side-effect engine modules
-import { CHUNK_W, WORLD_H, WORLD_SECTION_H, WORLD_MIN_SECTION, WORLD_MAX_SECTION, WORLD_MIN_Y, WORLD_MAX_Y, TILE, T, INFO, MOVE, isAutumnLeaf, isLeaf } from './constants.js';
+import { CHUNK_W, WORLD_H, WORLD_SECTION_H, WORLD_MIN_SECTION, WORLD_MAX_SECTION, WORLD_MIN_Y, WORLD_MAX_Y, TILE, T, INFO, MOVE, isAutumnLeaf, isLeaf, isFrozenEarth } from './constants.js';
 // Ensure worldgen initializes before world (world.js reads MM.worldGen on load)
 import { worldGen as WORLDGEN } from './engine/worldgen.js';
 import world from './engine/world.js';
@@ -51,6 +51,7 @@ import { atomicWinter as ATOMIC_WINTER } from './engine/atomic_winter.js';
 import { plants as PLANTS } from './engine/plants.js';
 import { progress as PROGRESS } from './engine/progress.js';
 import { survival as SURVIVAL } from './engine/survival.js';
+import { discovery as DISCOVERY } from './engine/discovery.js';
 import { houseHealing as HOUSE_HEALING } from './engine/house_healing.js';
 import { audio as AUDIO } from './engine/audio.js';
 import { ufo as UFO } from './engine/ufo.js';
@@ -1543,7 +1544,12 @@ Object.assign(TILE_LABELS,{
 	[T.ANTIMATTER_CRYSTAL]:'Krysztal antymaterii',
 	[T.UNSTABLE_SAND]:'Niestabilny piasek',
 	[T.UNSTABLE_GRASS]:'Niestabilna trawa',
-	[T.QUICKSAND]:'Ruchome piaski'
+	[T.QUICKSAND]:'Ruchome piaski',
+	[T.GRASS_SNOW]:'Trawa zimowa',
+	[T.FROZEN_DIRT]:'Zmarzlina',
+	[T.FROZEN_SAND]:'Zmarzniety piasek',
+	[T.FROZEN_CLAY]:'Zmarznieta glina',
+	[T.TOXIC_SNOW]:'Toksyczny snieg'
 });
 function tileLabel(t){ return TILE_LABELS[t] || 'Nieznany blok'; }
 function isChairTileId(t){ return !!(INFO[t] && INFO[t].chair); }
@@ -2233,10 +2239,19 @@ function heroDefenseCanAbsorb(opts){
 function heroDefending(now){
 	return heroDefendHeld || now<heroDefendUntil;
 }
+// Perfect parry: a block STARTED within this window bats mob projectiles back
+// (mobs.js consults heroPerfectParry from its projectile update).
+const PARRY_WINDOW_MS=150;
+let heroDefendStartAt=0;
+window.heroPerfectParry=function(){
+	const now=performance.now();
+	return heroDefending(now) && (now-heroDefendStartAt)<=PARRY_WINDOW_MS;
+};
 function beginHeroDefense(pointerId){
 	const it=activeWeaponItem();
 	if(!it || deathTravelFx) return false;
 	const now=performance.now();
+	if(!heroDefending(now)) heroDefendStartAt=now; // a fresh block opens the parry window
 	heroDefendPointerId=pointerId==null ? null : pointerId;
 	heroDefendHeld=true;
 	heroDefendUntil=Math.max(heroDefendUntil, now+DEFEND_TAP_GRACE_MS);
@@ -3431,6 +3446,12 @@ const RECIPES=[
 	{id:'arrows_obsidian_bulk', name:'Strzaly obsydianowe x100', cost:{wood:10, obsidian:1}, make(){ inv.arrowObsidian+=100; msg('Strzaly obsydianowe +100'); }},
 	{id:'arrows_diamond_bulk', name:'Strzaly diamentowe x100', cost:{wood:10, diamond:1}, make(){ inv.arrowDiamond+=100; msg('Strzaly diamentowe +100'); }},
 	{id:'arrows_iridium_bulk', name:'Strzaly irydowe x100', cost:{wood:10, iridium:1}, make(){ inv.arrowIridium+=100; msg('Strzaly irydowe +100'); }},
+	{id:'toxic_snowballs', name:'Toksyczne snieżki x8', cost:{toxicSnow:2}, make(){ inv.toxicSnowball+=8; msg('Toksyczne snieżki +8 - amunicja do luku; spowalnia i zatruwa cel'); }},
+	{id:'snowballs', name:'Snieżki x8', cost:{snow:2}, make(){ inv.snowball+=8; msg('Snieżki +8 - rzut z reki (klawisz 3); chwilowo spowalniaja cel'); }},
+	{id:'throwing_stones', name:'Kamienie do rzucania x6', cost:{stone:2}, make(){ inv.throwingStone+=6; msg('Kamienie do rzucania +6 - ciezki rzut z reki (klawisz 3)'); }},
+	{id:'water_balloons', name:'Balony wodne x4', cost:{water:2}, make(){ inv.waterBalloon+=4; msg('Balony wodne +4 - mocza wrogow (kombo: prad, mroz), gasza ogien'); }},
+	{id:'gas_grenades', name:'Granaty gazowe x3', cost:{rottenMeat:2, clay:1}, make(){ inv.gasGrenade+=3; msg('Granaty gazowe +3 - trujacy oblok; ogien go detonuje'); }},
+	{id:'sticky_bombs', name:'Lepkie bomby x2', cost:{clay:1, coal:1}, make(){ inv.stickyBomb+=2; msg('Lepkie bomby +2 - przyklejaja sie i wybuchaja po chwili'); }},
 	{id:'obsidian_sword', name:'Miecz obsydianowy', cost:{obsidian:4, wood:2}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Miecz obsydianowy',attackDamage:6,tier:'rare',desc:'Wykuty z hartowanej lawy'}); }},
 	{id:'lucky_charm', name:'Talizman diamentowy', cost:{diamond:3}, make(){ grantCraftedItem({kind:'charm',name:'Talizman diamentowy',mineSpeedMult:1.15,visionRadius:12,tier:'rare',desc:'Diament oszlifowany w talizman'}); }},
 	{id:'spring_antler_charm', name:'Wieniec wiosny', cost:{springAntler:1, leaf:6, wood:2}, make(){ grantCraftedItem({kind:'charm',name:'Wieniec wiosny',moveSpeedMult:1.10,visionRadius:14,tier:'epic',desc:'Trofeum wiosennego jelenia; lekki krok i czujne oczy'}); }},
@@ -3519,6 +3540,12 @@ const CRAFT_RECIPE_META={
 	arrows_obsidian_bulk:{group:'weapons',icon:'🏹',out:'arrowObsidian',amount:100,desc:'Ostre groty z wulkanicznego szkla.'},
 	arrows_diamond_bulk:{group:'weapons',icon:'🏹',out:'arrowDiamond',amount:100,desc:'Droga, precyzyjna amunicja.'},
 	arrows_iridium_bulk:{group:'weapons',icon:'🏹',out:'arrowIridium',amount:100,desc:'Amunicja z materialu meteorytowego.'},
+	toxic_snowballs:{group:'weapons',icon:'❄️',out:'toxicSnowball',amount:8,desc:'Snieżki ze skazonego sniegu: cel dostaje spowolnienie i zatrucie.'},
+	snowballs:{group:'weapons',icon:'⚪',out:'snowball',amount:8,desc:'Zwykle snieżki do rzucania: lekkie trafienie i krotki chlod.'},
+	throwing_stones:{group:'weapons',icon:'🪨',out:'throwingStone',amount:6,desc:'Dobrane w dloni kamienie: mocny rzut po stromym luku.'},
+	water_balloons:{group:'weapons',icon:'💧',out:'waterBalloon',amount:4,desc:'Moczy cel: mokry wrog przewodzi prad i zamarza od mrozu.'},
+	gas_grenades:{group:'weapons',icon:'☠️',out:'gasGrenade',amount:3,desc:'Przenosny oblok trucizny - podpal go dla eksplozji.'},
+	sticky_bombs:{group:'weapons',icon:'🧨',out:'stickyBomb',amount:2,desc:'Klei sie do scian i mobow; krotki lont, maly krater.'},
 	obsidian_sword:{group:'weapons',icon:'🗡️',tint:'#7a5cc1',desc:'Craftowany ekwipunek trafia do torby i od razu sie zaklada.'},
 	lucky_charm:{group:'relics',icon:'🍀',tint:'#3ef',desc:'Pasywny talizman z klasycznego rzadkiego surowca.'},
 	spring_antler_charm:{group:'relics',icon:'🦌',tint:'#d8a96b',desc:'Sezonowe trofeum zamienione w staly bonus.'},
@@ -4453,12 +4480,15 @@ function smoothTerrainNoise(wx,y,scale){
 	return lerp(a,b,ty);
 }
 function isContinuousTerrainTile(t){
-	return t===T.GRASS || t===T.UNSTABLE_GRASS || t===T.SAND || t===T.UNSTABLE_SAND || t===T.QUICKSAND || t===T.CLAY || t===T.WET_CLAY || t===T.BRICK || t===T.CHIMNEY || t===T.DIRT || t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL || t===T.GOLD_ORE || t===T.SNOW || t===T.ICE || t===T.MOTHER_ICE || t===T.MOTHER_LAVA || t===T.MUD || t===T.OBSIDIAN || t===T.WOOD || t===T.STEEL || t===T.TRACK || t===T.UFO_CONCRETE || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.GLASS || isLeaf(t) || t===T.LAVA;
+	return t===T.GRASS || t===T.GRASS_SNOW || t===T.UNSTABLE_GRASS || t===T.SAND || t===T.UNSTABLE_SAND || t===T.QUICKSAND || t===T.CLAY || t===T.WET_CLAY || t===T.BRICK || t===T.CHIMNEY || t===T.DIRT || t===T.FROZEN_DIRT || t===T.FROZEN_SAND || t===T.FROZEN_CLAY || t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL || t===T.GOLD_ORE || t===T.SNOW || t===T.TOXIC_SNOW || t===T.ICE || t===T.MOTHER_ICE || t===T.MOTHER_LAVA || t===T.MUD || t===T.OBSIDIAN || t===T.WOOD || t===T.STEEL || t===T.TRACK || t===T.UFO_CONCRETE || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.GLASS || isLeaf(t) || t===T.LAVA;
 }
 function tileShadeAmp(t){
 	if(t===T.DIRT) return 5;
 	if(t===T.CLAY) return 5;
 	if(t===T.WET_CLAY) return 4;
+	if(t===T.FROZEN_DIRT || t===T.FROZEN_CLAY) return 4;
+	if(t===T.FROZEN_SAND) return 3;
+	if(t===T.GRASS_SNOW) return 5;
 	if(t===T.BRICK || t===T.CHIMNEY) return 6;
 	if(t===T.STONE) return 5;
 	if(t===T.GRANITE) return 6;
@@ -4482,7 +4512,7 @@ function tileShadeAmp(t){
 	if(isLeaf(t)) return 9;
 	if(t===T.MUD) return 6;
 	if(t===T.LAVA) return 10;
-	if(t===T.SNOW) return 3;
+	if(t===T.SNOW || t===T.TOXIC_SNOW) return 3;
 	if(t===T.ICE) return 4;
 	if(t===T.MOTHER_ICE) return 3;
 	if(t===T.MOTHER_LAVA) return 8;
@@ -4503,7 +4533,7 @@ function terrainShadeDelta(t,wx,y,h){
 	const amp=tileShadeAmp(t);
 	if(!amp) return 0;
 	if(isContinuousTerrainTile(t)){
-		const scale = t===T.SNOW || t===T.ICE || t===T.MOTHER_ICE ? 9 : (t===T.COAL || t===T.OBSIDIAN || t===T.BASALT || t===T.BEDROCK || t===T.MOTHER_LAVA ? 6 : 7);
+		const scale = t===T.SNOW || t===T.TOXIC_SNOW || t===T.ICE || t===T.MOTHER_ICE ? 9 : (t===T.COAL || t===T.OBSIDIAN || t===T.BASALT || t===T.BEDROCK || t===T.MOTHER_LAVA ? 6 : 7);
 		// two octaves: small-scale grain plus broad patchiness so large rock/soil
 		// masses show natural light variation instead of a uniform wash. Rock keeps
 		// the macro octave gentle — worldgen already interleaves granite/basalt there
@@ -4562,9 +4592,10 @@ function tileEdgeFamily(t){
 	switch(t){
 		case T.STONE: case T.GRANITE: case T.BASALT: case T.BEDROCK: case T.COAL: case T.GOLD_ORE: case T.DIAMOND:
 		case T.OBSIDIAN: case T.VOLCANO_MASTER_STONE: case T.SERVANT_STONE: return EDGE_ROCK;
-		case T.DIRT: case T.GRASS: case T.UNSTABLE_GRASS: case T.MUD: case T.CLAY: case T.WET_CLAY: return EDGE_EARTH;
+		case T.DIRT: case T.GRASS: case T.GRASS_SNOW: case T.UNSTABLE_GRASS: case T.MUD: case T.CLAY: case T.WET_CLAY:
+		case T.FROZEN_DIRT: case T.FROZEN_SAND: case T.FROZEN_CLAY: return EDGE_EARTH;
 		case T.SAND: case T.UNSTABLE_SAND: case T.QUICKSAND: return EDGE_SAND;
-		case T.SNOW: case T.ICE: return EDGE_FROST;
+		case T.SNOW: case T.TOXIC_SNOW: case T.ICE: return EDGE_FROST;
 		case T.WOOD: return EDGE_WOOD;
 		case T.LEAF: case T.AUTUMN_LEAF_ORANGE: case T.AUTUMN_LEAF_RED: return EDGE_LEAF;
 		case T.STEEL: case T.TRACK: case T.BRICK: case T.CHIMNEY: return EDGE_BUILT;
@@ -4641,6 +4672,41 @@ function drawGrassTurfCap(g,px,py,h,x0,x1,openL,openR,sun){
 		g.fillRect(px+TILE-1,py+5,1,3);
 	}
 }
+// Winter turf: a snow blanket caps the tile, with a few dulled blades and the
+// turf drape peeking through so it still reads as living grass under the cover.
+function drawSnowyTurfCap(g,px,py,h,x0,x1,openL,openR,sun){
+	// under-lip shade grounds the blanket on the soil
+	g.fillStyle='rgba(30,52,64,'+(0.22*sun).toFixed(3)+')';
+	g.fillRect(px+x0,py+5,x1-x0,2);
+	// snow blanket: bright crest over softer packed rows
+	g.fillStyle='rgba(255,255,255,'+(0.88*sun).toFixed(3)+')';
+	g.fillRect(px+x0,py,x1-x0,2);
+	g.fillStyle='rgba(226,240,255,'+(0.66*sun).toFixed(3)+')';
+	g.fillRect(px+x0,py+2,x1-x0,2);
+	g.fillStyle='rgba(196,218,242,'+(0.30*sun).toFixed(3)+')';
+	g.fillRect(px+x0,py+4,x1-x0,1);
+	// sparse chilled blades poking through the blanket
+	for(let i=0;i<4;i++){
+		const r=hash32(h+i*53,i*97);
+		const bx=px+2+((r>>>3)%16);
+		g.fillStyle=(r&1)?'rgba(74,120,86,0.55)':'rgba(96,146,102,0.45)';
+		g.fillRect(bx,py+1,1,2+((r>>>8)%2));
+	}
+	// glinting ice crystals on the crest
+	if((h%13)<4){
+		g.fillStyle='rgba(255,255,255,0.95)';
+		g.fillRect(px+3+((h>>>9)%13),py,1,1);
+	}
+	// snow drapes a few pixels down exposed sides
+	if(openL){
+		g.fillStyle='rgba(240,248,255,'+(0.55*sun).toFixed(3)+')';
+		g.fillRect(px,py,1,5);
+	}
+	if(openR){
+		g.fillStyle='rgba(240,248,255,'+(0.55*sun).toFixed(3)+')';
+		g.fillRect(px+TILE-1,py,1,5);
+	}
+}
 // The main edge pass: called last for every bakeable terrain tile.
 function drawTerrainEdgeFX(g,t,arr,cx,lx,y,originY,sectionH,wx,px,py,h,surf){
 	if(window.__mmNoEdgeFX) return;
@@ -4656,20 +4722,31 @@ function drawTerrainEdgeFX(g,t,arr,cx,lx,y,originY,sectionH,wx,px,py,h,surf){
 	const sun=Math.max(0.35, 1-Math.max(0,y-surf)/26);
 	// silhouette rounding for soft materials against the sky / cave air above
 	let notchL=false, notchR=false;
-	if(oU && nU===T.AIR && (fam===EDGE_EARTH || fam===EDGE_SAND || t===T.SNOW)){
-		const deep=t===T.SNOW;
+	if(oU && nU===T.AIR && (fam===EDGE_EARTH || fam===EDGE_SAND || t===T.SNOW || t===T.TOXIC_SNOW)){
+		const deep=t===T.SNOW || t===T.TOXIC_SNOW;
 		if(oL){ cutTopCornerNotch(g,px,py,true,deep,wx,y,surf); notchL=true; }
 		if(oR){ cutTopCornerNotch(g,px,py,false,deep,wx,y,surf); notchR=true; }
 	}
-	const x0=notchL?(t===T.SNOW?3:2):0;
-	const x1=TILE-(notchR?(t===T.SNOW?3:2):0);
+	const x0=notchL?((t===T.SNOW||t===T.TOXIC_SNOW)?3:2):0;
+	const x1=TILE-(notchR?((t===T.SNOW||t===T.TOXIC_SNOW)?3:2):0);
 	if(oU){
 		if(t===T.GRASS || t===T.UNSTABLE_GRASS){
 			drawGrassTurfCap(g,px,py,h,x0,x1,oL,oR,sun);
+		}else if(t===T.GRASS_SNOW){
+			drawSnowyTurfCap(g,px,py,h,x0,x1,oL,oR,sun);
+		}else if(isFrozenEarth(t)){
+			// frost sheen: pale icy rim instead of the warm earth cap
+			g.fillStyle='rgba(224,240,255,'+(0.34*sun).toFixed(3)+')'; g.fillRect(px+x0,py,x1-x0,1);
+			g.fillStyle='rgba(198,224,248,'+(0.16*sun).toFixed(3)+')'; g.fillRect(px+x0,py+1,x1-x0,1);
+			if((h&3)===0){ g.fillStyle='rgba(255,255,255,0.6)'; g.fillRect(px+3+((h>>>6)%13),py+1,1,1); }
 		}else if(t===T.SNOW){
 			g.fillStyle='rgba(255,255,255,'+(0.40*sun).toFixed(3)+')'; g.fillRect(px+x0,py,x1-x0,1);
 			g.fillStyle='rgba(255,255,255,'+(0.22*sun).toFixed(3)+')'; g.fillRect(px+x0,py+1,x1-x0,1);
 			g.fillStyle='rgba(255,255,255,'+(0.10*sun).toFixed(3)+')'; g.fillRect(px+x0,py+2,x1-x0,1);
+		}else if(t===T.TOXIC_SNOW){
+			g.fillStyle='rgba(224,255,204,'+(0.42*sun).toFixed(3)+')'; g.fillRect(px+x0,py,x1-x0,1);
+			g.fillStyle='rgba(178,240,150,'+(0.24*sun).toFixed(3)+')'; g.fillRect(px+x0,py+1,x1-x0,1);
+			g.fillStyle='rgba(140,220,110,'+(0.12*sun).toFixed(3)+')'; g.fillRect(px+x0,py+2,x1-x0,1);
 		}else if(t===T.ICE){
 			g.fillStyle='rgba(255,255,255,'+(0.32*sun).toFixed(3)+')'; g.fillRect(px,py,TILE,1);
 			g.fillStyle='rgba(214,240,255,'+(0.14*sun).toFixed(3)+')'; g.fillRect(px,py+1,TILE,1);
@@ -4712,6 +4789,8 @@ function drawTerrainEdgeFX(g,t,arr,cx,lx,y,originY,sectionH,wx,px,py,h,surf){
 			g.fillStyle='rgba(40,90,160,0.16)'; g.fillRect(px,py+TILE-3,TILE,3);
 		}else if(t===T.SNOW){
 			g.fillStyle='rgba(110,140,195,0.16)'; g.fillRect(px,py+TILE-2,TILE,2);
+		}else if(t===T.TOXIC_SNOW){
+			g.fillStyle='rgba(74,142,86,0.20)'; g.fillRect(px,py+TILE-2,TILE,2);
 		}else{
 			const deep=fam===EDGE_ROCK||fam===EDGE_BUILT||fam===EDGE_METEOR;
 			g.fillStyle='rgba(6,8,16,'+(deep?0.26:0.20)+')'; g.fillRect(px,py+TILE-1,TILE,1);
@@ -5359,7 +5438,7 @@ function drawSandGrains(g,px,py,h){
 const terrainPatternCache = new Map();
 const TERRAIN_PATTERN_VARIANTS = 6;
 function hasTerrainPattern(t){
-	return t===T.SAND || t===T.UNSTABLE_SAND || t===T.QUICKSAND || t===T.CLAY || t===T.WET_CLAY || t===T.BRICK || t===T.CHIMNEY || t===T.DIRT || t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL || t===T.UFO_CONCRETE;
+	return t===T.SAND || t===T.UNSTABLE_SAND || t===T.QUICKSAND || t===T.CLAY || t===T.WET_CLAY || t===T.BRICK || t===T.CHIMNEY || t===T.DIRT || t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL || t===T.UFO_CONCRETE || t===T.FROZEN_DIRT || t===T.FROZEN_SAND || t===T.FROZEN_CLAY;
 }
 function terrainTextureVariant(t,wx,y,h){
 	const patch=hash32(Math.floor(wx/2),Math.floor(y/2));
@@ -5451,6 +5530,26 @@ function terrainPatternCanvas(t,variant){
 			g.strokeStyle=i===0?'rgba(42,30,18,0.28)':'rgba(132,96,56,0.16)';
 			const x=2+((rnd()*12)|0), y=5+((rnd()*10)|0);
 			g.beginPath(); g.moveTo(x,y); g.lineTo(x+3+((rnd()*5)|0),y+((rnd()*3)|0)); g.stroke();
+		}
+	} else if(t===T.FROZEN_DIRT || t===T.FROZEN_SAND || t===T.FROZEN_CLAY){
+		// permafrost: cool-toned soil grains locked in ice, laced with pale frost veins
+		const grains=t===T.FROZEN_SAND
+			? ['rgba(96,96,84,0.24)','rgba(140,140,120,0.20)','rgba(210,214,206,0.20)','rgba(66,74,88,0.16)']
+			: ['rgba(52,50,64,0.26)','rgba(96,88,104,0.22)','rgba(168,176,196,0.18)','rgba(38,44,60,0.16)'];
+		for(let i=0;i<13;i++){
+			g.fillStyle=grains[(rnd()*grains.length)|0];
+			const x=1+((rnd()*17)|0), y=2+((rnd()*16)|0);
+			g.fillRect(x,y,1+((rnd()*2)|0),1+((rnd()*2)|0));
+		}
+		g.strokeStyle='rgba(214,236,255,0.30)';
+		g.lineWidth=1;
+		for(let i=0;i<3;i++){
+			const x=2+((rnd()*12)|0), y=3+((rnd()*13)|0);
+			g.beginPath(); g.moveTo(x,y); g.lineTo(x+3+((rnd()*5)|0),y+((rnd()*3)|0)-1); g.stroke();
+		}
+		g.fillStyle='rgba(255,255,255,0.55)';
+		for(let i=0;i<3;i++){
+			g.fillRect(2+((rnd()*16)|0),2+((rnd()*15)|0),1,1);
 		}
 	} else if(t===T.STONE){
 		const chips=['rgba(33,37,44,0.20)','rgba(102,107,116,0.18)','rgba(225,231,238,0.13)'];
@@ -6155,7 +6254,7 @@ function drawEntityTile(g,t,px,py,wx,wy,opts){
 		g.fillStyle=rockCol; g.fillRect(px,py,TILE,TILE);
 		drawTerrainPattern(g,T.STONE,px,py,wx,wy,h);
 		drawDiamondOreArt(g,px,py,h);
-	}else if(t===T.GRASS){
+	}else if(t===T.GRASS || t===T.GRASS_SNOW){
 		const delta=terrainShadeDelta(t,wx,wy,h);
 		drawGrassBodyGradient(g,px,py,delta?shadeColor(info.color,delta):info.color);
 	}else{
@@ -6333,7 +6432,7 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 					cctx.fillStyle=rockCol; cctx.fillRect(lx*TILE,y*TILE,TILE,TILE);
 					drawTerrainPattern(cctx,T.STONE,lx*TILE,y*TILE,wx,y,h);
 					drawDiamondOreArt(cctx,lx*TILE,y*TILE,h);
-				}else if(t===T.GRASS){
+				}else if(t===T.GRASS || t===T.GRASS_SNOW){
 					const delta = terrainShadeDelta(t,wx,y,h)+depthDelta;
 					drawGrassBodyGradient(cctx,lx*TILE,y*TILE,delta?shadeColor(base,delta):base);
 				}else{
@@ -6523,6 +6622,11 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 						cctx.fillStyle='rgba(255,255,255,0.18)';
 						cctx.fillRect(lx*TILE+4+((h>>5)&8), y*TILE+6+((h>>10)&6), 3, 1);
 					}
+				}
+				// Toxic snow: sickly speckle so the contamination reads inside the mass
+				if(t===T.TOXIC_SNOW && (h&3)===0){
+					cctx.fillStyle='rgba(120,210,90,0.34)';
+					cctx.fillRect(lx*TILE+3+((h>>5)&9), y*TILE+4+((h>>10)&8), 2, 2);
 				}
 				// Ice reads glossy, not grainy: deterministic diagonal glint pair
 				// (snow stays matte for contrast); crown/depth shading is edge-pass work
@@ -7081,6 +7185,15 @@ function ensurePausePanel(){
 	vol.value=String(Math.round(((MM.audio && MM.audio.getVolume)?MM.audio.getVolume():0.8)*100));
 	vol.addEventListener('input',()=>{ if(MM.audio && MM.audio.setVolume) MM.audio.setVolume((+vol.value)/100); });
 	volRow.appendChild(vol); pausePanel.appendChild(volRow);
+	// per-bus mixer sliders (persisted alongside the master volume)
+	const busRows=[['🔔 Efekty','sfx'],['🌦 Otoczenie','ambience'],['🎵 Muzyka','music']];
+	for(const [label,bus] of busRows){
+		const row=buildPauseRow(label);
+		const s=document.createElement('input'); s.type='range'; s.min='0'; s.max='100'; s.step='5'; s.dataset.bus=bus;
+		s.value=String(Math.round(((MM.audio && MM.audio.getBusVolume)?MM.audio.getBusVolume(bus):1)*100));
+		s.addEventListener('input',()=>{ if(MM.audio && MM.audio.setBusVolume) MM.audio.setBusVolume(bus,(+s.value)/100); });
+		row.appendChild(s); pausePanel.appendChild(row);
+	}
 	const muteRow=buildPauseRow('🔇 Wycisz dźwięk');
 	const mute=document.createElement('input'); mute.type='checkbox';
 	mute.checked=!!(MM.audio && MM.audio.isMuted && MM.audio.isMuted());
@@ -7119,10 +7232,15 @@ function setPaused(v){
 			else if(label.includes('Oświetlenie')) chk.checked=!!(LIGHTING && LIGHTING.config && LIGHTING.config.enabled);
 			else if(label.includes('Wycisz')) chk.checked=!!(MM.audio && MM.audio.isMuted && MM.audio.isMuted());
 		});
+		panel.querySelectorAll('.pauseRow input[type=range][data-bus]').forEach(s=>{
+			if(MM.audio && MM.audio.getBusVolume) s.value=String(Math.round(MM.audio.getBusVolume(s.dataset.bus)*100));
+		});
 		panel.hidden=false;
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('uiOpen'); }catch(e){}
 		window.addEventListener('keydown',pauseTrapKeydown,true);
 	}else{
 		panel.hidden=true;
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('uiClose'); }catch(e){}
 		window.removeEventListener('keydown',pauseTrapKeydown,true);
 	}
 }
@@ -7188,7 +7306,22 @@ function toggleImmunity(){
 }
 function toggleMap(){ const on = (FOG && FOG.toggleRevealAll)? FOG.toggleRevealAll(): false; if(MM.ui && MM.ui.updateMapButton) MM.ui.updateMapButton(on); msg('Mapa '+(on?'ON':'OFF')); }
 function centerCam(){ snapCameraToPlayer(); msg('Wyśrodkowano'); }
-function toggleHelp(){ const h=document.getElementById('help'); const show=h.style.display!=='block'; h.style.display=show?'block':'none'; document.getElementById('helpBtn').setAttribute('aria-expanded', String(show)); }
+function toggleHelp(){
+	const h=document.getElementById('help');
+	const show=h.style.display!=='block';
+	if(show) updateHelpDiscoveries();
+	h.style.display=show?'block':'none';
+	document.getElementById('helpBtn').setAttribute('aria-expanded', String(show));
+}
+// Discovery journal readout at the top of the help panel: found secrets by name
+// plus how many interactions are still waiting to be stumbled upon.
+function updateHelpDiscoveries(){
+	const el=document.getElementById('helpDiscoveries');
+	if(!el || !MM.discovery || !MM.discovery.progress) return;
+	const p=MM.discovery.progress();
+	const names=p.found.map(f=>f.label).join(' • ');
+	el.textContent='🧪 Odkrycia '+p.count+'/'+p.total+(p.count?': '+names:' — eksperymentuj z żywiołami, bronią i światem!')+' ⸺ ';
+}
 // Keyboard events targeting editable controls (seed input, sliders, selects) must not drive the game
 function isEditableTarget(t){ if(!t || !t.tagName) return false; const tag=t.tagName; return tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||t.isContentEditable; }
 function activeWeaponItem(){ const INV=MM.inventory; return (INV && INV.equippedItem)? INV.equippedItem('weapon'):null; }
@@ -7351,12 +7484,22 @@ function updateWeaponBar(){
 			}else if(c.id==='melee'){
 				setWepSub(slot, typeof preview.attackDamage==='number' ? ['+'+preview.attackDamage+' obr.'] : []);
 			}else if(c.id==='bow'){
-				const info=(WEAPONS && WEAPONS.arrowInfo)? WEAPONS.arrowInfo():null;
-				if(info){
-					const act=info.tiers.find(t=>t.active);
-					if(act){ setWepSub(slot,[{dot:act.color},String(act.count)]); low=act.count<AMMO_LOW; }
-					else { setWepSub(slot,['Brak strzał']); out=true; }
-					updateArrowPips(slot,info);
+				if(preview.weaponType==='thrown'){
+					// throw technique in the ranged slot: plain ammo counter, no arrow pips
+					const tinfo=(WEAPONS && WEAPONS.thrownInfo)? WEAPONS.thrownInfo(preview.thrownKind):null;
+					if(tinfo){
+						setWepSub(slot,[{dot:tinfo.color},String(tinfo.count)]);
+						out=tinfo.count<=0; low=!out && tinfo.count<AMMO_LOW;
+					}else setWepSub(slot,[]);
+					if(slot.pips) updateArrowPips(slot,null);
+				}else{
+					const info=(WEAPONS && WEAPONS.arrowInfo)? WEAPONS.arrowInfo():null;
+					if(info){
+						const act=info.tiers.find(t=>t.active);
+						if(act){ setWepSub(slot,[{dot:act.color},String(act.count)]); low=act.count<AMMO_LOW; }
+						else { setWepSub(slot,['Brak strzał']); out=true; }
+						updateArrowPips(slot,info);
+					}
 				}
 			}else{ // throwers: fuel resource, or hero energy for the electric beam
 				const kind=preview.weaponType;
@@ -7749,8 +7892,45 @@ const drowningState = SURVIVAL && SURVIVAL.createDrowningState ? SURVIVAL.create
 const underwaterEnergyState = SURVIVAL && SURVIVAL.createUnderwaterEnergyState ? SURVIVAL.createUnderwaterEnergyState() : {damageAcc:0};
 const swimChillState = SURVIVAL && SURVIVAL.createSwimChillState ? SURVIVAL.createSwimChillState() : {exposure:0, damageAcc:0, warned:false};
 const waterPressureState = SURVIVAL && SURVIVAL.createWaterPressureState ? SURVIVAL.createWaterPressureState() : {damageAcc:0, warned:false};
+const thermalState = SURVIVAL && SURVIVAL.createThermalState ? SURVIVAL.createThermalState() : {exposure:0, damageAcc:0, warned:false, mode:'none'};
 const houseHealingState = HOUSE_HEALING && HOUSE_HEALING.createState ? HOUSE_HEALING.createState() : {scanT:0, inside:false, last:null, reportAcc:0, wasHealing:false};
 let houseHealMsgAt=0, waterPressureMsgAt=0;
+// Thermal exposure env is throttled: temperature and shelter change slowly, so the
+// mode is re-sampled a few times a second instead of scanning tiles every frame.
+let thermalEnvAcc=1, thermalModeCached='none';
+// Discovery journal is engine-owned; expose it for QA drivers and the debug console.
+window.mmDiscovery=DISCOVERY;
+// A yeti snowball to the face briefly slows the hero (mobs.js reports the hit).
+let heroChillUntil=0;
+window.noteHeroChill=function(ms){
+	const d=Math.max(200,Math.min(4000,Number(ms)||1200));
+	heroChillUntil=Math.max(heroChillUntil, performance.now()+d);
+};
+function heroChillMoveMult(){
+	return performance.now()<heroChillUntil ? 0.55 : 1;
+}
+function heroNearWarmth(cx,cy){
+	for(let dy=-2;dy<=2;dy++){
+		for(let dx=-3;dx<=3;dx++){
+			const t=getTile(cx+dx,cy+dy);
+			if(t===T.TORCH || t===T.LAVA || t===T.CHIMNEY) return true;
+			if(FIRE && FIRE.isBurning && FIRE.isBurning(cx+dx,cy+dy)) return true;
+		}
+	}
+	return false;
+}
+function sampleThermalMode(cx,inWater){
+	if(!SURVIVAL || !SURVIVAL.thermalExposureMode) return 'none';
+	const cy=Math.floor(player.y);
+	let climate=0.5, temp=0.5;
+	try{ climate=WORLDGEN && WORLDGEN.temperature ? WORLDGEN.temperature(cx) : 0.5; }catch(e){}
+	try{ temp=(SEASONS && SEASONS.temperatureAt) ? SEASONS.temperatureAt(cx, cy) : climate; }catch(e){ temp=climate; }
+	const sheltered=!gasSkyExposedTile(cx, cy-1);
+	return SURVIVAL.thermalExposureMode({
+		climate, temp, sheltered, inWater,
+		nearWarmth: heroNearWarmth(cx, cy)
+	});
+}
 function updateHouseHealing(dt){
 	if(!HOUSE_HEALING || !HOUSE_HEALING.update) return;
 	const res=HOUSE_HEALING.update(houseHealingState,dt,player,getTile,{
@@ -7805,7 +7985,7 @@ function groundTileUnderPlayer(){
 	for(const sx of samples){
 		const t=getTile(Math.floor(sx),y);
 		if(t===T.ICE) return T.ICE;
-		if(t===T.SNOW) ground=T.SNOW;
+		if(t===T.SNOW || t===T.TOXIC_SNOW || t===T.GRASS_SNOW) ground=T.SNOW;
 		else if(t===T.MUD && ground!==T.SNOW) ground=T.MUD;
 		else if(ground===T.AIR && t!==T.AIR) ground=t;
 	}
@@ -8141,7 +8321,7 @@ function physics(dt){
 	// Combine all movement multipliers, including dropdown, turbo and water drag.
 	// Ground material affects traction: mud slows, snow slides, ice slides hard.
 	const waterMoveMult = (inWater && !ridingFloatingBoat) ? heroWaterMoveSpeedMult() : 1;
-	const moveMult = ((MM.activeModifiers && MM.activeModifiers.moveSpeedMult)||1) * (window.playerSpeedMultiplier || 2) * turboSpeedMult * waterMoveMult;
+	const moveMult = ((MM.activeModifiers && MM.activeModifiers.moveSpeedMult)||1) * (window.playerSpeedMultiplier || 2) * turboSpeedMult * waterMoveMult * heroChillMoveMult();
 	if(TERRAIN_TRAPS && TERRAIN_TRAPS.stepEntity) TERRAIN_TRAPS.stepEntity(player,getTile,setTile,{kind:'hero'});
 	const groundTile = groundTileUnderPlayer();
 	const groundTraction = surfaceTraction(groundTile);
@@ -8205,6 +8385,24 @@ function physics(dt){
 			}
 		}
 	}
+	// Thermal exposure: the far-west deep cold chills an unsheltered hero, the
+	// far-east scorch overheats him. A roof, a cave, a torch/campfire (cold) or
+	// a dip in water (heat) breaks the drain; the grace window keeps short trips safe.
+	if(SURVIVAL && SURVIVAL.updateThermalExposure){
+		thermalEnvAcc+=dt;
+		if(thermalEnvAcc>=0.5){
+			thermalEnvAcc=0;
+			thermalModeCached=godMode ? 'none' : sampleThermalMode(tileX,inWater);
+		}
+		const thermal=SURVIVAL.updateThermalExposure(thermalState, dt, thermalModeCached);
+		if(thermal.warn) msg(thermal.mode==='cold' ? '🥶 Mróz przenika do kości — rozpal ogień albo znajdź schronienie!' : '🥵 Upał wysusza — schłodź się w wodzie albo w cieniu!');
+		if(thermal.damage>0 && (!player.hpInvul || performance.now()>=player.hpInvul)){
+			const dmg=Math.min(6, thermal.damage);
+			if(window.damageHero(dmg, {cause:thermal.mode==='cold' ? 'deep_frost' : 'heat_stroke', invulMs:700})){
+				if(SURVIVAL.consumeThermalDamage) SURVIVAL.consumeThermalDamage(thermalState, dmg);
+			}
+		}
+	}
 	const diveInput = climbDownInput && !ladderContact;
 	const jumpNow=jumpHeldEarly;
 	const groundedSolidInWater = inWater && player.onGround && groundTile!==T.AIR && groundTile!==T.WATER && isSolid(groundTile);
@@ -8250,6 +8448,8 @@ function physics(dt){
 		}
 	}
 	wasInWater=inWater;
+	// audio reads submersion for splashes, underwater muffle and the bubble bed
+	try{ if(AUDIO && AUDIO.setHeroWater) AUDIO.setHeroWater(inWater, subFrac); }catch(e){}
 
 	if(inWater){
 		// Water drag scales with immersion and adds subtle variation
@@ -10360,6 +10560,11 @@ function minimapTileColor(t){
 	if(t===T.FUEL_GAS) return '#a79a64';
 	if(t===T.ICE) return '#a9e4ff';
 	if(t===T.SNOW) return '#dceeff';
+	if(t===T.TOXIC_SNOW) return '#b8e6a0';
+	if(t===T.GRASS_SNOW) return '#bcd8c4';
+	if(t===T.FROZEN_DIRT) return '#6d6472';
+	if(t===T.FROZEN_SAND) return '#a8a794';
+	if(t===T.FROZEN_CLAY) return '#7e7a86';
 	if(t===T.UNSTABLE_SAND) return '#a99155';
 	if(t===T.QUICKSAND) return '#9f8551';
 	if(t===T.SAND) return '#c8b772';
@@ -12461,7 +12666,7 @@ function regenWorld(){
 	resetCraftingAvailability();
 	updateInventory({noCraftNotify:true}); updateHotbarSel(); placePlayer(true); try{ if(TUTORIAL_NPC && TUTORIAL_NPC.placeNearWorldStart) TUTORIAL_NPC.placeNearWorldStart(getTile,WORLDGEN); }catch(e){} saveState(); msg('Nowy świat seed '+worldSeed); }
 document.getElementById('centerBtn').addEventListener('click',()=>{ snapCameraToPlayer(); });
-document.getElementById('helpBtn').addEventListener('click',()=>{ const h=document.getElementById('help'); const show=h.style.display!=='block'; h.style.display=show?'block':'none'; document.getElementById('helpBtn').setAttribute('aria-expanded', String(show)); });
+document.getElementById('helpBtn').addEventListener('click',()=>toggleHelp());
 const radarBtn=document.getElementById('radarBtn'); radarBtn.addEventListener('click',()=>{ radarFlash=performance.now()+1500; }); let radarFlash=0;
 // Listen for UI-dispatched radar pulse from the menu
 window.addEventListener('mm-radar-pulse',()=>{ radarFlash=performance.now()+1500; });

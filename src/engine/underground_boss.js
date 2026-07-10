@@ -419,6 +419,7 @@ const undergroundBoss = (function(){
     if(isGeneratedStructureReplaceableTile(t) || isReplaceableNaturalOpenTile(t,true)) return true;
     return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.DIRT || t===T.GRASS ||
       t===T.MUD || t===T.CLAY || t===T.WET_CLAY || t===T.SNOW || t===T.ICE || t===T.COAL ||
+      t===T.GRASS_SNOW || t===T.FROZEN_DIRT || t===T.FROZEN_SAND || t===T.FROZEN_CLAY ||
       t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL;
   }
   function applyOpsToArray(arr,cx,originY,height){

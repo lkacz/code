@@ -1340,6 +1340,7 @@ const invasions = (function(){
     return isAttackableStructureTile(t) ||
       t === T.DIRT || t === T.STONE || t === T.GRANITE || t === T.BASALT ||
       t === T.SAND || t === T.MUD || t === T.CLAY || t === T.WET_CLAY ||
+      t === T.FROZEN_DIRT || t === T.FROZEN_SAND || t === T.FROZEN_CLAY || t === T.GRASS_SNOW ||
       t === T.SNOW || t === T.ICE || t === T.OBSIDIAN || t === T.COAL;
   }
   function isBreachableByTeam(team,t){

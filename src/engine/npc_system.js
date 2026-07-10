@@ -913,7 +913,7 @@ function createQuestNpc(def){
   }
   // --- Roaming physics + procedural behaviour -------------------------------
   const NPC_GRAV=26, NPC_MAXV=13, NPC_WALK=1.9, NPC_JUMP=-8.2, NPC_HOME_RADIUS=7, NPC_SIM_RADIUS=72;
-  const DIGGABLE=new Set([T.DIRT,T.GRASS,T.SAND,T.STONE,T.SNOW]);
+  const DIGGABLE=new Set([T.DIRT,T.GRASS,T.GRASS_SNOW,T.SAND,T.STONE,T.SNOW,T.FROZEN_DIRT,T.FROZEN_SAND,T.FROZEN_CLAY]);
   function tileAt(getTile,x,y){ try{ return getTile(Math.floor(x),Math.floor(y)); }catch(e){ return T.AIR; } }
   function solidNpc(getTile,x,y,axis){
     if(y>=WORLD_H) return true;

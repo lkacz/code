@@ -1,4 +1,4 @@
-import { CHUNK_W, T, WORLD_H, isAutumnLeaf } from '../constants.js';
+import { CHUNK_W, T, WORLD_H, isAutumnLeaf, frozenEarthVariant, thawedEarthVariant, isFrozenEarth } from '../constants.js';
 import { isSkyOpenTile } from './material_physics.js';
 import { worldHostility as HOSTILITY } from './world_hostility.js';
 
@@ -166,6 +166,11 @@ const CFG = {
   thawTemp: 0.43,
   snowTemp: 0.30,
   snowMeltTemp: 0.46,
+  // Ground frost binds exposed soil into permafrost only in genuinely deep cold
+  // (far-west winters); it thaws back well before water ice does, so the digging
+  // tax reads as frost, not as a second ice system.
+  groundFrostTemp: 0.10,
+  groundThawTemp: 0.34,
   maxOpsPerTick: 6,
   maxLeafOpsPerTick: 2,
   relocationMaxLeafOpsPerTick: 3,
@@ -237,7 +242,7 @@ function emptyScanMetrics(){
     relocation: false,
     deferred: false,
     deferReason: '',
-    changed: {freeze: 0, thaw: 0, snow: 0, snowMelt: 0, leafGrow: 0, leafDrop: 0},
+    changed: {freeze: 0, thaw: 0, snow: 0, snowMelt: 0, dustMelt: 0, groundFreeze: 0, groundThaw: 0, leafGrow: 0, leafDrop: 0},
   };
 }
 function scanConfig(){
@@ -568,6 +573,17 @@ function solidifyWaterForFreeze(x, y, getTile, setTile){
 }
 function notifyTileChanged(x, y, old, tile, getTile){
   if(old === T.WATER || tile === T.WATER || old === T.ICE || tile === T.ICE) wakeWater(x, y, getTile);
+  // Toxic snowpack melts into POLLUTED water, never clean runoff.
+  if(old === T.TOXIC_SNOW && tile === T.WATER){
+    try{
+      const w = root.MM.water;
+      if(w && w.polluteAt) w.polluteAt(x, y, getTile, null, {source:'toxic_snow'});
+    }catch(e){}
+  }
+  // Ground thaw can mint loose SAND mid-slope; let the falling system re-inspect it.
+  if(tile === T.SAND){
+    try{ if(root.MM.fallingSolids && root.MM.fallingSolids.afterPlacement) root.MM.fallingSolids.afterPlacement(x, y); }catch(e){}
+  }
 }
 function replaceTile(x, y, tile, getTile, setTile){
   if(!Number.isFinite(x) || !Number.isFinite(y) || y < 0 || y >= WORLD_H) return false;
@@ -642,7 +658,7 @@ function applyFreezeColumn(x, getTile, setTile, prof, ctx, epochSeconds){
     if(getTile(x, y) !== T.WATER) continue;
     if(getTile(x, y - 1) === T.WATER) continue;
     const above = getTile(x, y - 1);
-    if(!skyOpenTile(above) && above !== T.SNOW) continue;
+    if(!skyOpenTile(above) && above !== T.SNOW && above !== T.TOXIC_SNOW) continue;
     if(columnTemp(x, y, prof, ctx) > freezeTemperatureLimit(strength)) return false;
     if(!solidifyWaterForFreeze(x, y, getTile, setTile)) return false;
     return replaceTile(x, y, T.ICE, getTile, setTile);
@@ -666,6 +682,9 @@ function applyThawColumn(x, getTile, setTile, prof, ctx, epochSeconds){
   return false;
 }
 
+// Winter dusting: living turf whitens into GRASS_SNOW. Real SNOW tiles are NOT
+// minted here — they come only from cloud deposition (engine/clouds.js), which
+// keeps the water ledger volume-true: every SNOW block is backed by cloud mass.
 function applySnowColumn(x, getTile, setTile, prof, ctx, epochSeconds){
   prof = prof || profile();
   const strength = clamp(finiteNumber(prof.snowStrength, 0), 0, 1);
@@ -673,13 +692,20 @@ function applySnowColumn(x, getTile, setTile, prof, ctx, epochSeconds){
   const surf = resolveSurface(x, getTile, ctx);
   const y = Math.max(1, Math.min(WORLD_H - 2, Math.floor(surf)));
   const t = getTile(x, y);
-  if(t !== T.GRASS && t !== T.MUD) return false;
+  if(t !== T.GRASS) return false;
   if(!skyExposed(x, y, getTile, 42)) return false;
   if(columnTemp(x, y, prof, ctx) > CFG.snowTemp + (1 - strength) * 0.06) return false;
   if(!seasonalPass(strength, x, y, 151, 0.05, 0.46, epochSeconds)) return false;
-  return replaceTile(x, y, T.SNOW, getTile, setTile);
+  return replaceTile(x, y, T.GRASS_SNOW, getTile, setTile);
 }
 
+// Deposited snowpack melts into real water (runoff/spring floods); the one legacy
+// exception is a snow tile capping bare DIRT — that was the old converted-lawn
+// contract, so it melts back to GRASS instead of leaving mud pits behind.
+function snowMeltResult(below){
+  if(below === T.DIRT) return T.GRASS;
+  return T.WATER;
+}
 function applySnowMeltColumn(x, getTile, setTile, prof, ctx, epochSeconds){
   prof = prof || profile();
   const strength = clamp(finiteNumber(prof.snowMeltStrength, 0), 0, 1);
@@ -687,13 +713,68 @@ function applySnowMeltColumn(x, getTile, setTile, prof, ctx, epochSeconds){
   const surf = resolveSurface(x, getTile, ctx);
   const {y0, y1} = scanBounds(surf, 3, 5);
   for(let y = y0; y <= y1; y++){
-    if(getTile(x, y) !== T.SNOW) continue;
+    const t = getTile(x, y);
+    if(t !== T.SNOW && t !== T.TOXIC_SNOW) continue;
     if(!skyExposed(x, y, getTile, 40)) continue;
     if(columnTemp(x, y, prof, ctx) < CFG.snowMeltTemp - strength * 0.06) continue;
     if(!seasonalPass(strength, x, y, 251, 0.06, 0.44, epochSeconds)) return false;
-    const below = getTile(x, y + 1);
-    const next = below === T.WATER || below === T.ICE ? T.WATER : T.GRASS;
-    return replaceTile(x, y, next, getTile, setTile);
+    return replaceTile(x, y, t === T.TOXIC_SNOW ? T.WATER : snowMeltResult(getTile(x, y + 1)), getTile, setTile);
+  }
+  return false;
+}
+
+// Spring dust-melt: once the snow cap above is gone, winter turf thaws back to grass.
+function applyDustMeltColumn(x, getTile, setTile, prof, ctx, epochSeconds){
+  prof = prof || profile();
+  const strength = clamp(finiteNumber(prof.snowMeltStrength, 0), 0, 1);
+  if(strength <= 0.05) return false;
+  const surf = resolveSurface(x, getTile, ctx);
+  const {y0, y1} = scanBounds(surf, 3, 5);
+  for(let y = y0; y <= y1; y++){
+    if(getTile(x, y) !== T.GRASS_SNOW) continue;
+    if(getTile(x, y - 1) === T.SNOW || getTile(x, y - 1) === T.TOXIC_SNOW) continue;
+    if(!skyExposed(x, y, getTile, 40)) continue;
+    if(columnTemp(x, y, prof, ctx) < CFG.snowMeltTemp - strength * 0.06) continue;
+    if(!seasonalPass(strength, x, y, 269, 0.06, 0.44, epochSeconds)) return false;
+    return replaceTile(x, y, T.GRASS, getTile, setTile);
+  }
+  return false;
+}
+
+// Permafrost active layer: deep-cold exposed soil freezes over (digging tax),
+// and thaws back when the column warms. Worldgen owns the deep frozen band;
+// the scanner only works the surface tile so the seasonal edge stays cheap.
+function groundFreezeTarget(t){
+  if(t === T.MUD) return T.FROZEN_DIRT;
+  if(t === T.WET_CLAY) return T.FROZEN_CLAY;
+  return frozenEarthVariant(t);
+}
+function applyGroundFreezeColumn(x, getTile, setTile, prof, ctx, epochSeconds){
+  prof = prof || profile();
+  const strength = clamp(finiteNumber(prof.freezeStrength, 0), 0, 1);
+  if(strength <= 0.04) return false;
+  const surf = resolveSurface(x, getTile, ctx);
+  const y = Math.max(1, Math.min(WORLD_H - 2, Math.floor(surf)));
+  const target = groundFreezeTarget(getTile(x, y));
+  if(target == null) return false;
+  if(!skyExposed(x, y, getTile, 42)) return false;
+  if(columnTemp(x, y, prof, ctx) > CFG.groundFrostTemp + strength * 0.04) return false;
+  if(!seasonalPass(strength, x, y, 421, 0.05, 0.42, epochSeconds)) return false;
+  return replaceTile(x, y, target, getTile, setTile);
+}
+function applyGroundThawColumn(x, getTile, setTile, prof, ctx, epochSeconds){
+  prof = prof || profile();
+  const strength = clamp(finiteNumber(prof.thawStrength, 0), 0, 1);
+  if(strength <= 0.04) return false;
+  const surf = resolveSurface(x, getTile, ctx);
+  const {y0, y1} = scanBounds(surf, 2, 3);
+  for(let y = y0; y <= y1; y++){
+    const t = getTile(x, y);
+    if(!isFrozenEarth(t)) continue;
+    if(!skyExposed(x, y, getTile, 40)) continue;
+    if(columnTemp(x, y, prof, ctx) < CFG.groundThawTemp - strength * 0.05) continue;
+    if(!seasonalPass(strength, x, y, 433, 0.06, 0.42, epochSeconds)) return false;
+    return replaceTile(x, y, thawedEarthVariant(t), getTile, setTile);
   }
   return false;
 }
@@ -761,7 +842,7 @@ function emptyTerrainPlan(){
     lastAction: 'idle',
     deferReason: '',
     relocation: false,
-    changed: {freeze: 0, thaw: 0, snow: 0, snowMelt: 0, leafGrow: 0, leafDrop: 0},
+    changed: {freeze: 0, thaw: 0, snow: 0, snowMelt: 0, dustMelt: 0, groundFreeze: 0, groundThaw: 0, leafGrow: 0, leafDrop: 0},
   };
 }
 
@@ -831,7 +912,7 @@ function planFreezeColumn(x, getTile, prof, ctx, epochSeconds){
     if(getTile(x, y) !== T.WATER) continue;
     if(getTile(x, y - 1) === T.WATER) continue;
     const above = getTile(x, y - 1);
-    if(!skyOpenTile(above) && above !== T.SNOW) continue;
+    if(!skyOpenTile(above) && above !== T.SNOW && above !== T.TOXIC_SNOW) continue;
     if(columnTemp(x, y, prof, ctx) > freezeTemperatureLimit(strength)) return null;
     return terrainCandidate('freeze', x, y, T.WATER, T.ICE);
   }
@@ -859,11 +940,11 @@ function planSnowColumn(x, getTile, prof, ctx, epochSeconds){
   const surf = resolveSurface(x, getTile, ctx);
   const y = Math.max(1, Math.min(WORLD_H - 2, Math.floor(surf)));
   const t = getTile(x, y);
-  if(t !== T.GRASS && t !== T.MUD) return null;
+  if(t !== T.GRASS) return null;
   if(!skyExposed(x, y, getTile, 42)) return null;
   if(columnTemp(x, y, prof, ctx) > CFG.snowTemp + (1 - strength) * 0.06) return null;
   if(!seasonalPass(strength, x, y, 151, 0.05, 0.46, epochSeconds)) return null;
-  return terrainCandidate('snow', x, y, t, T.SNOW);
+  return terrainCandidate('snow', x, y, t, T.GRASS_SNOW);
 }
 
 function planSnowMeltColumn(x, getTile, prof, ctx, epochSeconds){
@@ -872,13 +953,58 @@ function planSnowMeltColumn(x, getTile, prof, ctx, epochSeconds){
   const surf = resolveSurface(x, getTile, ctx);
   const {y0, y1} = scanBounds(surf, 3, 5);
   for(let y = y0; y <= y1; y++){
-    if(getTile(x, y) !== T.SNOW) continue;
+    const t = getTile(x, y);
+    if(t !== T.SNOW && t !== T.TOXIC_SNOW) continue;
     if(!skyExposed(x, y, getTile, 40)) continue;
     if(columnTemp(x, y, prof, ctx) < CFG.snowMeltTemp - strength * 0.06) continue;
     if(!seasonalPass(strength, x, y, 251, 0.06, 0.44, epochSeconds)) return null;
-    const below = getTile(x, y + 1);
-    const next = below === T.WATER || below === T.ICE ? T.WATER : T.GRASS;
-    return terrainCandidate('snowMelt', x, y, T.SNOW, next);
+    return terrainCandidate('snowMelt', x, y, t, t === T.TOXIC_SNOW ? T.WATER : snowMeltResult(getTile(x, y + 1)));
+  }
+  return null;
+}
+
+function planDustMeltColumn(x, getTile, prof, ctx, epochSeconds){
+  const strength = clamp(finiteNumber(prof.snowMeltStrength, 0), 0, 1);
+  if(strength <= 0.05) return null;
+  const surf = resolveSurface(x, getTile, ctx);
+  const {y0, y1} = scanBounds(surf, 3, 5);
+  for(let y = y0; y <= y1; y++){
+    if(getTile(x, y) !== T.GRASS_SNOW) continue;
+    if(getTile(x, y - 1) === T.SNOW || getTile(x, y - 1) === T.TOXIC_SNOW) continue;
+    if(!skyExposed(x, y, getTile, 40)) continue;
+    if(columnTemp(x, y, prof, ctx) < CFG.snowMeltTemp - strength * 0.06) continue;
+    if(!seasonalPass(strength, x, y, 269, 0.06, 0.44, epochSeconds)) return null;
+    return terrainCandidate('dustMelt', x, y, T.GRASS_SNOW, T.GRASS);
+  }
+  return null;
+}
+
+function planGroundFreezeColumn(x, getTile, prof, ctx, epochSeconds){
+  const strength = clamp(finiteNumber(prof.freezeStrength, 0), 0, 1);
+  if(strength <= 0.04) return null;
+  const surf = resolveSurface(x, getTile, ctx);
+  const y = Math.max(1, Math.min(WORLD_H - 2, Math.floor(surf)));
+  const from = getTile(x, y);
+  const target = groundFreezeTarget(from);
+  if(target == null) return null;
+  if(!skyExposed(x, y, getTile, 42)) return null;
+  if(columnTemp(x, y, prof, ctx) > CFG.groundFrostTemp + strength * 0.04) return null;
+  if(!seasonalPass(strength, x, y, 421, 0.05, 0.42, epochSeconds)) return null;
+  return terrainCandidate('groundFreeze', x, y, from, target);
+}
+
+function planGroundThawColumn(x, getTile, prof, ctx, epochSeconds){
+  const strength = clamp(finiteNumber(prof.thawStrength, 0), 0, 1);
+  if(strength <= 0.04) return null;
+  const surf = resolveSurface(x, getTile, ctx);
+  const {y0, y1} = scanBounds(surf, 2, 3);
+  for(let y = y0; y <= y1; y++){
+    const t = getTile(x, y);
+    if(!isFrozenEarth(t)) continue;
+    if(!skyExposed(x, y, getTile, 40)) continue;
+    if(columnTemp(x, y, prof, ctx) < CFG.groundThawTemp - strength * 0.05) continue;
+    if(!seasonalPass(strength, x, y, 433, 0.06, 0.42, epochSeconds)) return null;
+    return terrainCandidate('groundThaw', x, y, t, thawedEarthVariant(t));
   }
   return null;
 }
@@ -925,6 +1051,12 @@ function terrainCandidatesForColumn(x, getTile, prof, ctx, epochSeconds){
   if(snow) out.push(snow);
   const snowMelt = planSnowMeltColumn(x, getTile, prof, ctx, epochSeconds);
   if(snowMelt) out.push(snowMelt);
+  const dustMelt = planDustMeltColumn(x, getTile, prof, ctx, epochSeconds);
+  if(dustMelt) out.push(dustMelt);
+  const groundFreeze = planGroundFreezeColumn(x, getTile, prof, ctx, epochSeconds);
+  if(groundFreeze) out.push(groundFreeze);
+  const groundThaw = planGroundThawColumn(x, getTile, prof, ctx, epochSeconds);
+  if(groundThaw) out.push(groundThaw);
   const leafGrow = planSpringLeavesColumn(x, getTile, prof, ctx, epochSeconds);
   if(leafGrow) out.push(leafGrow);
   const leafDrop = planAutumnLeavesColumn(x, getTile, prof, ctx, epochSeconds);
@@ -941,7 +1073,10 @@ function terrainOpPriority(op){
   if(op.type === 'freeze') return 0;
   if(op.type === 'thaw') return 1;
   if(op.type === 'snowMelt') return 2;
+  if(op.type === 'dustMelt') return 2;
+  if(op.type === 'groundThaw') return 2;
   if(op.type === 'snow') return 3;
+  if(op.type === 'groundFreeze') return 3;
   return 4;
 }
 
@@ -1235,6 +1370,9 @@ function runScan(getTile, setTile, player, opts){
     if(ops < maxOps && applyThawColumn(wx, getTile, setTile, prof, ctx, sc.epochSeconds)){ ops++; metrics.changed.thaw++; }
     if(ops < maxOps && applySnowColumn(wx, getTile, setTile, prof, ctx, sc.epochSeconds)){ ops++; metrics.changed.snow++; }
     if(ops < maxOps && applySnowMeltColumn(wx, getTile, setTile, prof, ctx, sc.epochSeconds)){ ops++; metrics.changed.snowMelt++; }
+    if(ops < maxOps && applyDustMeltColumn(wx, getTile, setTile, prof, ctx, sc.epochSeconds)){ ops++; metrics.changed.dustMelt++; }
+    if(ops < maxOps && applyGroundFreezeColumn(wx, getTile, setTile, prof, ctx, sc.epochSeconds)){ ops++; metrics.changed.groundFreeze++; }
+    if(ops < maxOps && applyGroundThawColumn(wx, getTile, setTile, prof, ctx, sc.epochSeconds)){ ops++; metrics.changed.groundThaw++; }
     if(ops < maxOps && leafOps < maxLeafOps && applySpringLeavesColumn(wx, getTile, setTile, prof, ctx, sc.epochSeconds)){ ops++; leafOps++; metrics.changed.leafGrow++; }
     if(ops < maxOps && leafOps < maxLeafOps && applyAutumnLeavesColumn(wx, getTile, setTile, prof, ctx, sc.epochSeconds)){ ops++; leafOps++; metrics.changed.leafDrop++; }
     if(ops >= maxOps) break;

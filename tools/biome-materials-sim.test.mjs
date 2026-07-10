@@ -185,4 +185,33 @@ assert.ok(count(samples[8],T.OBSIDIAN)>=40, 'devastated city contains hardened r
 assert.ok(count(samples[8],T.GLASS)>=20, 'devastated city contains window glass');
 assert.ok(count(samples[8],T.WIRE)>=6 && count(samples[8],T.WIRE)<=25, 'devastated city contains sparse dismantlable wires');
 
+// --- Permafrost active layer: deep-cold western soil generates frozen; warm center stays loose ---
+{
+  const FROZEN=[T.FROZEN_DIRT,T.FROZEN_SAND,T.FROZEN_CLAY];
+  // find a dry, deep-cold far-west stretch (climate temperature under the frost gate)
+  let coldX=null;
+  for(let wx=-40000; wx>=-59000 && coldX===null; wx-=97){
+    const col=WG.column(wx);
+    if(col.t<0.16 && col.row<WG.settings.seaLevel-2 && col.biome!==5 && col.biome!==6) coldX=wx;
+  }
+  assert.ok(coldX!==null, 'the far west offers deep-cold dry land');
+  let frozen=0, looseSoil=0;
+  for(let wx=coldX-24; wx<=coldX+24; wx++){
+    const col=WG.column(wx);
+    if(col.row>=WG.settings.seaLevel-1 || col.biome===5 || col.biome===6) continue;
+    world.ensureChunk(Math.floor(wx/CHUNK_W));
+    for(let y=col.row; y<col.row+10; y++){
+      const t=world.getTile(wx,y);
+      if(FROZEN.includes(t)) frozen++;
+      else if(t===T.DIRT || t===T.SAND || t===T.CLAY) looseSoil++;
+    }
+  }
+  assert.ok(frozen>=25, 'deep-cold columns generate a frozen soil band (got '+frozen+')');
+  assert.ok(frozen>looseSoil, 'permafrost dominates loose soil in the deep-cold active layer ('+frozen+' vs '+looseSoil+')');
+  // warm central biomes never generate permafrost
+  for(const biome of [0,1,3,4]){
+    assert.equal(countAny(samples[biome],FROZEN), 0, BIOME_NAMES[biome]+' generates no permafrost');
+  }
+}
+
 console.log('biome-materials-sim: all assertions passed for seed '+SEED);

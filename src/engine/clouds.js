@@ -52,6 +52,8 @@ window.MM = window.MM || {};
     RAIN_RATE_BASE: 0.08, // mass/sec shed at the rain threshold
     RAIN_RATE_GAIN: 0.018,// extra mass/sec per unit of excess over capacity
     DEPOSIT_RADIUS: 240,  // rain materializes as tiles only this close to the player
+    SNOW_STACK_MAX: 3,    // deposited SNOW tiles a column holds in ordinary snowfall
+    SNOW_STACK_STORM: 6,  // blizzard cap (storms + weather-shaman rituals drift deep)
     ABSORB_RATE: 0.06,    // mass/sec a cloud drinks from the vapor under it
     DISSIPATE: 0.10,      // mass/sec a starved cloud re-evaporates
     BORDER_SPAWN: true,   // clouds drifting in from unsimulated regions
@@ -95,6 +97,7 @@ window.MM = window.MM || {};
   let evapOffset = 0;
   let regionAcc = 0, mergeAcc = 0, spawnAcc = 0, stormCheckAcc = 0;
   let evapMass = 0, rainMass = 0; // lifetime counters (metrics/conservation tests)
+  let snowMass = 0, snowTiles = 0; // lifetime snow-tile deposition (1 mass == 1 SNOW tile)
   let strikes = 0, chestsMade = 0;
   let cloudSeq = 1;
   let toxicRainAcc = 0;
@@ -102,7 +105,6 @@ window.MM = window.MM || {};
   const bolts = [];             // live lightning visuals {pts,branches,t,max,ix,iy}
   let viewFlash = 0;            // whole-screen lightning flash intensity
   const storm = {active:false, tLeft:0, intensity:0, cooldown:0, source:null, ownerId:null};
-  let audioCtx = null;
   const SAVE_MAP_LIMIT = 192;
 
   function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
@@ -206,6 +208,12 @@ window.MM = window.MM || {};
   function isRainingAt(x){
     if(typeof x!=='number'||!isFinite(x)) return false;
     for(const c of clouds){ if(c.raining && !c.snowing && Math.abs(c.x-x)<=c.r*1.15*cloudVisualScaleX()) return true; }
+    return false;
+  }
+  // Is snow falling over column x right now? (ambience, HUD, exposure systems)
+  function isSnowingAt(x){
+    if(typeof x!=='number'||!isFinite(x)) return false;
+    for(const c of clouds){ if(c.snowing && Math.abs(c.x-x)<=c.r*1.15*cloudVisualScaleX()) return true; }
     return false;
   }
   function toxicRainAt(x){
@@ -358,62 +366,11 @@ window.MM = window.MM || {};
   }
 
   // ---------------- Lightning ----------------
-  // Distant low rumble: one shared noise tail (generated lazily, pitch-varied per
-  // strike), delayed and attenuated by distance. Throttled so storm volleys can't
-  // stack dozens of sources or re-allocate buffers every strike.
-  let thunderBuf=null, thunderBuild=null, lastThunderMs=-1e9;
-  function queueThunderBuildStep(fn){
-    if(typeof window!=='undefined' && typeof window.requestIdleCallback==='function') window.requestIdleCallback(fn,{timeout:500});
-    else if(typeof window!=='undefined') window.setTimeout(()=>fn(null),0);
-  }
-  function ensureThunderBuffer(){
-    if(thunderBuf || thunderBuild || !audioCtx) return;
-    const sampleRate=audioCtx.sampleRate||44100;
-    const len=Math.floor(sampleRate*2.0);
-    const buf=audioCtx.createBuffer(1, len, sampleRate);
-    thunderBuild={buf, data:buf.getChannelData(0), i:0, len};
-    const step=(deadline)=>{
-      const b=thunderBuild;
-      if(!b || b.buf!==buf) return;
-      const start=(typeof performance!=='undefined') ? performance.now() : Date.now();
-      while(b.i<b.len){
-        const f=b.i/b.len;
-        b.data[b.i]=(Math.random()*2-1)*Math.pow(1-f,1.6);
-        b.i++;
-        if((b.i&511)===0){
-          const elapsed=((typeof performance!=='undefined') ? performance.now() : Date.now())-start;
-          const idleLeft=deadline && typeof deadline.timeRemaining==='function' ? deadline.timeRemaining() : 0;
-          if(elapsed>2 || (idleLeft>0 && idleLeft<1)) break;
-        }
-      }
-      if(b.i>=b.len){ thunderBuf=b.buf; thunderBuild=null; }
-      else queueThunderBuildStep(step);
-    };
-    queueThunderBuildStep(step);
-  }
+  // Thunder goes through the shared mixer (MM.audio.thunder handles the
+  // distance delay/attenuation and ducking). The private AudioContext this
+  // module once owned bypassed master volume/mute — never resurrect it.
   function playThunder(distTiles){
-    try{
-      if(typeof window==='undefined' || !(window.AudioContext||window.webkitAudioContext)) return;
-      const nowMs=(typeof performance!=='undefined')? performance.now() : 0;
-      if(nowMs-lastThunderMs<350) return;
-      lastThunderMs=nowMs;
-      if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)();
-      if(audioCtx.state==='suspended'){ try{ audioCtx.resume(); }catch(e){} }
-      if(!thunderBuf){ ensureThunderBuffer(); return; }
-      const t0=audioCtx.currentTime + Math.min(2.5, distTiles*0.012); // sound lags the flash
-      const dur=thunderBuf.duration;
-      const src=audioCtx.createBufferSource(); src.buffer=thunderBuf;
-      src.playbackRate.value=0.8+Math.random()*0.4;
-      const lp=audioCtx.createBiquadFilter(); lp.type='lowpass';
-      lp.frequency.setValueAtTime(420,t0); lp.frequency.exponentialRampToValueAtTime(90,t0+dur);
-      const g=audioCtx.createGain();
-      const vol=Math.max(0.04, 0.5*Math.exp(-distTiles/120));
-      g.gain.setValueAtTime(0.0001,t0);
-      g.gain.exponentialRampToValueAtTime(vol,t0+0.03);
-      g.gain.exponentialRampToValueAtTime(0.0001,t0+dur);
-      src.connect(lp); lp.connect(g); g.connect(audioCtx.destination);
-      src.start(t0); src.stop(t0+dur+0.05);
-    }catch(e){}
+    try{ if(MM.audio && MM.audio.thunder) MM.audio.thunder(distTiles); }catch(e){}
   }
   // Mirror of mobs.damagePlayer: respect i-frames, knock the hero away, respawn at 0.
   function damageHero(amount, srcX){
@@ -702,7 +659,7 @@ window.MM = window.MM || {};
       const TILE=MM.TILE||20;
       if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks((x+0.5)*TILE,(y+0.5)*TILE,'epic',34);
       else if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((x+0.5)*TILE,(y+0.5)*TILE,'epic');
-      if(MM.audio && MM.audio.play) MM.audio.play('charge');
+      if(MM.audio && MM.audio.play) MM.audio.play('charge',{x:x+0.5,y:y+0.5});
     }catch(e){}
     return {slotX:slot.x, slotY:slot.y, hitRole:slot.hitRole, drained};
   }
@@ -897,6 +854,95 @@ window.MM = window.MM || {};
     return false;                                  // blocked (e.g. column brim-full)
   }
 
+  // ---------------- Snow deposition ----------------
+  // Snowfall is volume-true like rain, but it materializes in two stages: the first
+  // unit to reach living turf only dusts it (GRASS -> GRASS_SNOW, mass sublimates
+  // back to vapor), later units become real SNOW tiles stacking on the surface up
+  // to a cap (deeper while a storm rages -> drifts). Snow over open water melts in
+  // as ordinary water. Returns:
+  //   'placed'  - a SNOW tile now holds this unit of mass
+  //   'water'   - the unit melted into the fluid sim (landed on open water)
+  //   'dusted'  - turf got its snow cover; the mass goes back to vapor
+  //   false     - blocked (capped drift, hero underneath, out of world)
+  function snowStackCap(){
+    return storm.active ? CFG.SNOW_STACK_STORM : CFG.SNOW_STACK_MAX;
+  }
+  function heroBlocksSnowAt(cx,py){
+    const p=window.player;
+    if(!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return false;
+    // never solidify snow inside (or one tile around) the hero: burial comes from
+    // the drift closing in around him, not from tiles minted into his hitbox
+    return Math.abs(cx+0.5-p.x)<1.6 && Math.abs(py+0.5-p.y)<2.4;
+  }
+  function snowLandingCell(cx,fromRow,getTile){
+    let ty=null;
+    for(let y=Math.max(WORLD_TOP+1,Math.floor(fromRow));y<WORLD_BOTTOM;y++){
+      const t=getTile(cx,y);
+      if(skyOpenTile(t)) continue;
+      ty=y; break;
+    }
+    if(ty===null || ty<=WORLD_TOP+1) return null;
+    let py=ty-1;
+    while(py>WORLD_TOP+1 && isLeafTile(getTile(cx,py))) py--; // settle on top of a canopy
+    return {py, support:getTile(cx,py+1)};
+  }
+  function isSnowpackTile(t){ return t===T.SNOW || t===T.TOXIC_SNOW; }
+  function snowDepthAt(cx,py,getTile){
+    let d=0;
+    for(let y=py+1; d<=CFG.SNOW_STACK_STORM+1 && isSnowpackTile(getTile(cx,y)); y++) d++;
+    return d;
+  }
+  function placeSnowTileAt(cx,py,getTile,setTile,tile){
+    if(heroBlocksSnowAt(cx,py)) return false;
+    setTile(cx,py,tile);
+    if(getTile(cx,py)!==tile) return false;
+    return true;
+  }
+  function depositSnowUnit(cx,fromRow,getTile,setTile,opts){
+    const toxic=!!(opts && opts.toxic);
+    const tile=toxic ? T.TOXIC_SNOW : T.SNOW;
+    const land=snowLandingCell(cx,fromRow,getTile);
+    if(!land) return false;
+    const {py,support}=land;
+    if(support===T.WATER){
+      try{
+        if(MM.water && MM.water.addSource && isWaterOpenTile(getTile(cx,py))){
+          const ok=MM.water.addSource(cx,py,getTile,setTile);
+          if(ok && toxic && MM.water.polluteAt) MM.water.polluteAt(cx,py,getTile,setTile,{source:'toxic_snow'});
+          return ok ? 'water' : false;
+        }
+      }catch(e){}
+      return false;
+    }
+    if(support===T.GRASS){
+      setTile(cx,py+1,T.GRASS_SNOW);
+      return getTile(cx,py+1)===T.GRASS_SNOW ? 'dusted' : false;
+    }
+    const cap=snowStackCap();
+    // drift shaping: land in the lowest nearby column so hollows fill first and
+    // capped crests shed sideways instead of refusing the mass outright
+    let bestX=cx, bestY=py;
+    for(const nx of [cx-1,cx+1]){
+      const alt=snowLandingCell(nx,fromRow,getTile);
+      if(!alt || alt.support===T.WATER || alt.support===T.GRASS) continue;
+      if(alt.py>bestY && snowDepthAt(nx,alt.py,getTile)<cap){ bestX=nx; bestY=alt.py; }
+    }
+    if(bestX===cx && snowDepthAt(cx,py,getTile)>=cap){
+      for(const nx of [cx-1,cx+1]){
+        const alt=snowLandingCell(nx,fromRow,getTile);
+        if(!alt || alt.support===T.WATER) continue;
+        if(alt.support===T.GRASS){
+          setTile(nx,alt.py+1,T.GRASS_SNOW);
+          if(getTile(nx,alt.py+1)===T.GRASS_SNOW) return 'dusted';
+          continue;
+        }
+        if(snowDepthAt(nx,alt.py,getTile)<cap && placeSnowTileAt(nx,alt.py,getTile,setTile,tile)) return 'placed';
+      }
+      return false;
+    }
+    return placeSnowTileAt(bestX,bestY,getTile,setTile,tile) ? 'placed' : false;
+  }
+
   // ---------------- Per-cloud update ----------------
   function updateCloud(c,getTile,setTile,px,wind,dt){
     // drift with the wind (slight per-cloud shear), settle toward cruising altitude
@@ -928,31 +974,40 @@ window.MM = window.MM || {};
     if(atomicCloud){
       if(c.atomic || atomicWeatherAt(c.x)) c.atomic=true;
       c.toxic=true;
-      c.snowing=false;
+      // Radioactive event clouds always shed their glowing fallout as rain; a
+      // merely gas-tainted cloud (volcano plume, poison gas) keeps snowing in
+      // cold air — its precipitation settles as TOXIC_SNOW tiles instead.
+      if(c.atomic) c.snowing=false;
     }
+    const toxicSnowing=c.snowing && atomicCloud;
     if(c.raining){
       const excess=Math.max(0,c.mass-capC*0.6);
       const rateBase=(CFG.RAIN_RATE_BASE+excess*CFG.RAIN_RATE_GAIN)*seasonNumber('rainRateMult',1);
       const rate=Math.min(storm.active? 0.9*seasonNumber('stormFeedMult',1) : 0.55*seasonNumber('rainRateMult',1), rateBase);
       const amt=Math.min(c.mass, rate*dt);
       c.mass-=amt; rainMass+=amt;
-      if(c.snowing){
-        addVapor(reg, amt);                        // snow sublimates back (no ice tiles)
-      } else {
-        c.depAcc+=amt;
-        while(c.depAcc>=1){
-          c.depAcc-=1;
-          const cx=Math.round(c.x+(Math.random()+Math.random()-1)*c.r*0.8*cloudVisualScaleX());
-          if(Math.abs(cx-px)>CFG.DEPOSIT_RADIUS || !depositUnit(cx,c.alt,getTile,setTile,{toxic:atomicCloud})){
-            farBudget=Math.min(200, farBudget+1);  // off-band / blocked rain rejoins the reserve
-          }
+      c.depAcc+=amt;
+      while(c.depAcc>=1){
+        c.depAcc-=1;
+        const cx=Math.round(c.x+(Math.random()+Math.random()-1)*c.r*0.8*cloudVisualScaleX());
+        if(Math.abs(cx-px)>CFG.DEPOSIT_RADIUS){
+          farBudget=Math.min(200, farBudget+1);    // off-band precipitation rejoins the reserve
+          continue;
+        }
+        if(c.snowing){
+          const res=depositSnowUnit(cx,c.alt,getTile,setTile,{toxic:toxicSnowing});
+          if(res==='placed'){ snowMass+=1; snowTiles+=1; }
+          else if(res==='dusted') addVapor(regionOf(cx),1); // turf dusting is cosmetic: mass sublimates back
+          else if(res!=='water') farBudget=Math.min(200, farBudget+1);
+        } else if(!depositUnit(cx,c.alt,getTile,setTile,{toxic:atomicCloud})){
+          farBudget=Math.min(200, farBudget+1);    // blocked rain rejoins the reserve
         }
       }
       // cosmetic precipitation near the viewport (denser budget while a storm rages)
       if(Math.abs(c.x-px)<110){
         const TILE=MM.TILE||20;
         const dropCap=CFG.DROP_CAP*(storm.active?1.6:1);
-        let n=amt*350; if(c.snowing) n*=0.6;
+        let n=amt*350; if(c.snowing) n*=(storm.active?1.5:0.6); // blizzards read as a wall of flakes
         for(; n>0 && drops.length<dropCap; n--){
           if(n<1 && Math.random()>n) break;
           const dx=(Math.random()+Math.random()-1)*c.r*0.85*cloudVisualScaleX();
@@ -1314,9 +1369,16 @@ window.MM = window.MM || {};
       if(anyAtomic) ctx.stroke();
       ctx.fillStyle='rgba(255,255,255,0.80)';
       for(const d of drops){
-        if(!d.snow) continue;
+        if(!d.snow || isAtomicDrop(d)) continue;
         if(d.x<x0px-40||d.x>x1px+40) continue;
         ctx.fillRect(d.x-1.1,d.y-1.1,2.2,2.2);
+      }
+      // gas-tainted flakes glow a sickly green so a toxic blizzard reads at a glance
+      ctx.fillStyle='rgba(150,244,120,0.85)';
+      for(const d of drops){
+        if(!d.snow || !isAtomicDrop(d)) continue;
+        if(d.x<x0px-40||d.x>x1px+40) continue;
+        ctx.fillRect(d.x-1.2,d.y-1.2,2.4,2.4);
       }
       ctx.restore();
     }
@@ -1336,7 +1398,7 @@ window.MM = window.MM || {};
     clouds=[]; vapor.clear(); toxicVapor.clear(); evapAcc.clear();
     drops.length=0; wisps.length=0; bolts.length=0;
     farBudget=24; simT=0; evapOffset=0; regionAcc=mergeAcc=spawnAcc=stormCheckAcc=0;
-    evapMass=0; rainMass=0; strikes=0; chestsMade=0; viewFlash=0; toxicRainAcc=0;
+    evapMass=0; rainMass=0; snowMass=0; snowTiles=0; strikes=0; chestsMade=0; viewFlash=0; toxicRainAcc=0;
     storm.active=false; storm.tLeft=0; storm.intensity=0; storm.cooldown=0; storm.source=null; storm.ownerId=null;
   }
   function metrics(){
@@ -1348,7 +1410,7 @@ window.MM = window.MM || {};
       if(isAtomicCloud(c)) atomicCount++;
     }
     return {clouds:clouds.length, cloudMass:cm, vapor:vap, drops:drops.length,
-            toxicVapor:tox, evapMass, rainMass, farBudget, wind:windAt(),
+            toxicVapor:tox, evapMass, rainMass, snowMass, snowTiles, farBudget, wind:windAt(),
             strikes, chests:chestsMade, atomicClouds:atomicCount,
             storm:{active:storm.active, intensity:storm.intensity, tLeft:storm.tLeft, source:storm.source||null, ownerId:storm.ownerId||null}};
   }
@@ -1541,7 +1603,7 @@ window.MM = window.MM || {};
     return {clouds, vapor, toxicVapor, evapAcc, depFrac, farBudget, simT, bolts, storm, waterTileCost};
   }
 
-  MM.clouds={update, draw, reset, addCloud, injectVapor, injectToxicVapor, isRainingAt, toxicRainAt, metrics, setWindOverride, setCycleOverride,
+  MM.clouds={update, draw, reset, addCloud, injectVapor, injectToxicVapor, isRainingAt, isSnowingAt, toxicRainAt, metrics, setWindOverride, setCycleOverride,
              startStorm, stopStorm, strike, snapshot, restore, config:CFG, _debug};
 })();
 // ESM export (progressive migration)

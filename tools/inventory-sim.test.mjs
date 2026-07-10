@@ -315,10 +315,27 @@ INV.unequip('weapon');
 assert.equal(INV.cycleWeaponCategory('melee').id, 'w_dirty');
 assert.equal(INV.cycleWeaponCategory('melee').id, 'spear', 'opted-out weapon is skipped');
 INV.setShortcut('stone_blade', true);
-assert.equal(INV.cycleWeaponCategory('bow').id, 'bow_wood', 'bow category reachable');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'bow_wood', 'ranged category reachable (bow first: throws rank below any real bow)');
+// The ranged slot rotates bows AND hand-thrown techniques, strongest first
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_stone', 'second press rotates into the heaviest throw');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_toxic', 'third press = toxic snowballs');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_sticky', 'fourth press = sticky bombs');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_snowball', 'fifth press = plain snowballs');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_balloon', 'sixth press = water balloons');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_gas', 'seventh press = gas grenades');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'bow_wood', 'rotation wraps back to the bow');
+// Session memory: after leaving for melee, the ranged key returns to the LAST
+// USED ranged weapon instead of restarting at the strongest.
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_stone', 'advance to a thrown weapon');
+INV.cycleWeaponCategory('melee');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_stone', 're-entering the ranged slot restores the last-used weapon');
+const THROW_IDS=['throw_stone','throw_toxic','throw_sticky','throw_snowball','throw_balloon','throw_gas'];
 INV.setShortcut('bow_wood', false);
+THROW_IDS.forEach(id => INV.setShortcut(id, false));
+INV.unequip('weapon');
 assert.equal(INV.cycleWeaponCategory('bow'), null, 'empty category yields null');
 INV.setShortcut('bow_wood', true);
+THROW_IDS.forEach(id => INV.setShortcut(id, true));
 assert.equal((INV.weaponCategory(INV.getItem('flamethrower')) || {}).id, 'stream', 'flame maps to stream category');
 assert.equal((INV.weaponCategory(INV.getItem('electric_gun')) || {}).id, 'stream', 'electric maps to stream category');
 INV.unequip('weapon');

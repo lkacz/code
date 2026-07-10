@@ -218,6 +218,36 @@ import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
     resultTile:'BRICK',
     mirror:false
   });
+  // Permafrost thaw: heat unbinds frozen soil back into its diggable base.
+  // Higher priority than clay firing so a heated FROZEN_CLAY first becomes CLAY
+  // (a second application can then fire the clay into brick).
+  register({
+    id:'heat_thaw_frozen_dirt',
+    stimulus:'heat',
+    priority:2,
+    pattern:['F'],
+    map:{F:'FROZEN_DIRT'},
+    resultTile:'DIRT',
+    mirror:false
+  });
+  register({
+    id:'heat_thaw_frozen_sand',
+    stimulus:'heat',
+    priority:2,
+    pattern:['F'],
+    map:{F:'FROZEN_SAND'},
+    resultTile:'SAND',
+    mirror:false
+  });
+  register({
+    id:'heat_thaw_frozen_clay',
+    stimulus:'heat',
+    priority:2,
+    pattern:['F'],
+    map:{F:'FROZEN_CLAY'},
+    resultTile:'CLAY',
+    mirror:false
+  });
 
   const api={
     register,

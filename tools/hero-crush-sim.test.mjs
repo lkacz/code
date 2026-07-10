@@ -73,6 +73,18 @@ assert.equal(crushTickDamage(1e6), CRUSH_TUNING.DMG_MAX, 'tick damage is capped'
   assert.equal(res.eject[0].y, 8);
 }
 
+// --- Snow buries, it does not crush: even a storm-deep drift stays under capacity ---
+{
+  assert.ok(heroLoadWeight(T.SNOW)<=0.2, 'snow is featherweight for the crush resolver');
+  tiles.clear(); heroAt(0.5,8.5);
+  setTile(0,8,T.SNOW);
+  for(let y=8-CRUSH_TUNING.OVERBURDEN_ROWS;y<8;y++) setTile(0,y,T.SNOW); // full overburden walk of snow
+  const res=resolve(new Set([key(0,8)]));
+  assert.equal(res.status, 'rest', 'a blizzard-deep snow column buries the hero without crush damage');
+  assert.ok(res.load<heroCrushCapacity(0), 'the deepest tracked snow drift stays under base capacity');
+  assert.equal(res.eject.length, 1, 'the buried snow cell is re-loosened so he can dig out');
+}
+
 // --- Heavy burial: loose overburden pins and crushes; Twardość points survive it ---
 {
   tiles.clear(); heroAt(0.5,8.5);

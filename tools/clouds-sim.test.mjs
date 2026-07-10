@@ -1,13 +1,14 @@
 // Deterministic Node test for the weather / water-cycle core (no browser needed).
 // Verifies: sun-driven evaporation with mass conservation, condensation into clouds,
 // oversized clouds raining and depositing real water tiles, temperature-drop (night)
-// rain triggering, cloud merging ("cumulation"), snow in cold climates (no tile
-// deposit — mass sublimates back to vapor), incoming border clouds, lightning strikes
-// (chest transmutation + hero electrocution), the storm front lifecycle, and API safety.
+// rain triggering, cloud merging ("cumulation"), snow in cold climates (volume-true
+// SNOW tile deposition: turf dusting sublimates, settled tiles carry the mass, stack
+// caps + storm drifts), incoming border clouds, lightning strikes (chest transmutation
+// + hero electrocution), the storm front lifecycle, and API safety.
 // Run: node tools/clouds-sim.test.mjs
 import { strict as assert } from 'assert';
 
-const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,POISON_GAS:28,FUEL_GAS:29,DYNAMO:30,DYNAMO_SLOT:31};
+const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,POISON_GAS:28,FUEL_GAS:29,DYNAMO:30,DYNAMO_SLOT:31,GRASS_SNOW:86,TOXIC_SNOW:90};
 const CHEST_IDS = [T.CHEST_COMMON,T.CHEST_RARE,T.CHEST_EPIC];
 globalThis.window = globalThis; // clouds.js attaches to window.MM
 
@@ -21,6 +22,9 @@ globalThis.MM = {
   INFO: {
     [T.AIR]: {passable:true},
     [T.GRASS]: {passable:false, flammable:true},
+    [T.GRASS_SNOW]: {passable:false},
+    [T.SNOW]: {passable:false},
+    [T.TOXIC_SNOW]: {passable:false},
     [T.WOOD]: {passable:false, flammable:true},
     [T.LEAF]: {passable:true},
     [T.WATER]: {passable:true},
@@ -184,17 +188,69 @@ m = clouds.metrics();
 assert.equal(m.clouds, 1, 'overlapping clouds merged into one');
 assert.ok(Math.abs(m.cloudMass-12) < 0.2, `merged mass conserved (got ${m.cloudMass.toFixed(2)})`);
 
-// --- 7. Cold climate: precipitation falls as snow, no water tiles deposited ---
+// --- 7. Cold climate: snowfall settles as real SNOW tiles (volume-true) ---
 resetWorld();
 CFG.BORDER_SPAWN = false; CFG.EVAP_BASE = 0;
 TEMP = 0.05;
 clouds.addCloud(0, 70, 30);
-step(30*10);
+step(30*20);
 const d7 = clouds._debug();
 assert.ok(d7.clouds[0].raining && d7.clouds[0].snowing, 'cold storm snows');
-assert.ok(clouds.metrics().rainMass > 0, 'snow sheds cloud mass');
-assert.equal(countWater(), 0, 'snow does not deposit water tiles');
-assert.ok(clouds.metrics().vapor > 0, 'snowed mass sublimated back to vapor');
+m = clouds.metrics();
+assert.ok(m.rainMass > 0, 'snow sheds cloud mass');
+assert.equal(countWater(), 0, 'snowfall deposits no water tiles on dry ground');
+let snowTileCount = 0;
+const snowDepths = new Map();
+for(const [k,v] of tiles){
+  if(v!==T.SNOW) continue;
+  snowTileCount++;
+  const x=+k.split(',')[0];
+  snowDepths.set(x,(snowDepths.get(x)||0)+1);
+}
+assert.ok(snowTileCount >= 1, `snowfall settled as SNOW tiles (got ${snowTileCount})`);
+assert.equal(m.snowTiles, snowTileCount, 'snow-tile metric matches the world');
+for(const [x,d] of snowDepths) assert.ok(d <= CFG.SNOW_STACK_MAX, `column ${x} respects the calm-weather stack cap (depth=${d})`);
+
+// --- 7a. Living turf gets dusted first (GRASS -> GRASS_SNOW, mass sublimates back) ---
+resetWorld();
+CFG.BORDER_SPAWN = false; CFG.EVAP_BASE = 0; CFG.CLOUD_VISUAL_X = 1; // concentrate the fall so turf sees repeat hits
+TEMP = 0.05;
+for(let x=-200; x<=200; x++) setTile(x,90,T.GRASS);
+clouds.addCloud(0, 70, 30);
+step(30*45);
+let dusted = 0, snowOnTurf = 0;
+for(const [k,v] of tiles){
+  if(v===T.GRASS_SNOW) dusted++;
+  else if(v===T.SNOW) snowOnTurf++;
+}
+assert.ok(dusted >= 1, `snowfall dusted living turf into GRASS_SNOW (got ${dusted})`);
+assert.ok(snowOnTurf >= 1, `continued snowfall stacked SNOW over the dusted turf (got ${snowOnTurf})`);
+assert.ok(clouds.metrics().vapor > 0, 'turf-dusting mass sublimated back to vapor');
+for(const [k,v] of tiles){
+  if(v!==T.SNOW) continue;
+  const [x,y]=k.split(',').map(Number);
+  const below=getTile(x,y+1);
+  assert.ok(below!==T.GRASS, `SNOW never sits on bare GRASS (dusting comes first) at ${k}`);
+}
+
+// --- 7t. Gas-contaminated clouds snow TOXIC snow in cold air (volcano plumes etc.) ---
+resetWorld();
+CFG.BORDER_SPAWN = false; CFG.EVAP_BASE = 0; CFG.LIGHTNING_BASE = 0; CFG.CLOUD_VISUAL_X = 1;
+TEMP = 0.05;
+assert.equal(clouds.injectToxicVapor(0, 8), true, 'poison gas taints the weather layer');
+clouds.addCloud(0, 70, 30);
+step(30*20);
+const d7t = clouds._debug();
+assert.ok(d7t.clouds[0].toxicLoad >= CFG.TOXIC_CLOUD_THRESHOLD || d7t.clouds[0].toxic, 'the cold cloud absorbed the toxic aerosol');
+assert.equal(d7t.clouds[0].snowing, true, 'a gas-tainted cloud still snows in cold air (only radioactive event clouds force rain)');
+let toxicSnowTiles = 0, cleanSnowTiles = 0;
+for(const v of tiles.values()){
+  if(v===T.TOXIC_SNOW) toxicSnowTiles++;
+  else if(v===T.SNOW) cleanSnowTiles++;
+}
+assert.ok(toxicSnowTiles >= 1, `contaminated snowfall settles as TOXIC_SNOW tiles (got ${toxicSnowTiles})`);
+assert.equal(cleanSnowTiles, 0, 'a fully tainted cloud sheds no clean snow');
+assert.equal(countWater(), 0, 'toxic snowfall deposits no water tiles on dry ground');
 
 // --- 7b. Atomic winter clouds render and fall as glowing toxic rain, not snow ---
 resetWorld();

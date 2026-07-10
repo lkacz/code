@@ -673,7 +673,7 @@ const meteorites = (function(){
       },MAX_EMBERS);
     }
     try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(x*(MM.TILE||20),y*(MM.TILE||20),'rare',12); }catch(e){}
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('beam'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('beam',{x,y}); }catch(e){}
     return true;
   }
   function inverseGravityAt(x,y){

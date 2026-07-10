@@ -33,7 +33,8 @@
   // category is one entry here — input handling and the UI badge follow.
   const WEAPON_CATEGORIES=[
     {id:'melee',  key:'2', label:'Broń biała', icon:'⚔️', types:['melee']},
-    {id:'bow',    key:'3', label:'Łuki',       icon:'🏹', types:['bow']},
+    // Ranged slot: bows AND hand-thrown projectiles (snowballs, stones) rotate here
+    {id:'bow',    key:'3', label:'Dystansowe', icon:'🏹', types:['bow','thrown']},
     {id:'stream', key:'4', label:'Miotacze',   icon:'🔥', types:['flame','hose','gas','electric']}
   ];
 
@@ -110,6 +111,9 @@
     ['moveSpeedMult','jumpPowerMult','mineSpeedMult'].forEach(k=>{
       if(typeof item[k]==='number') s+=pctOf(item[k])*0.6;
     });
+    // Hand-thrown techniques rank below any real bow, so the ranged shortcut's
+    // first press always picks the bow and later presses rotate into the throws.
+    if(item.weaponType==='thrown') s*=0.35;
     return Math.max(0, Math.round(s));
   }
 
@@ -169,6 +173,14 @@
     {id:'stone_blade',  kind:'weapon', weaponType:'melee', name:'Ostrze kamienne', attackDamage:3, desc:'Ciężkie, ale skuteczne'},
     {id:'spear',        kind:'weapon', weaponType:'melee', name:'Włócznia',        attackDamage:2, desc:'Lekka i poręczna'},
     {id:'bow_wood',     kind:'weapon', weaponType:'bow',   name:'Łuk myśliwski',   attackDamage:4, fireCooldown:0.55, desc:'LPM strzela strzałami; PPM odpala naładowany ult'},
+    // Hand-thrown projectiles: always-known techniques (the AMMO gates their use).
+    // They share the ranged shortcut (key 3) with bows — the key rotates through them.
+    {id:'throw_snowball', kind:'weapon', weaponType:'thrown', thrownKind:'snowball',      name:'Rzut: Śnieżki',            attackDamage:2, fireCooldown:0.38, desc:'Ciskasz śnieżkami (LPM): lekkie trafienie chwilowo spowalnia cel; PPM = salwa'},
+    {id:'throw_toxic',    kind:'weapon', weaponType:'thrown', thrownKind:'toxicSnowball', name:'Rzut: Toksyczne śnieżki',  attackDamage:3, fireCooldown:0.42, desc:'Skażone śnieżki: rozprysk spowalnia i zatruwa; PPM = salwa'},
+    {id:'throw_stone',    kind:'weapon', weaponType:'thrown', thrownKind:'stone',         name:'Rzut: Kamienie',           attackDamage:6, fireCooldown:0.60, desc:'Ciężki kamień po stromym łuku: mocne pojedyncze trafienie; PPM = salwa'},
+    {id:'throw_balloon',  kind:'weapon', weaponType:'thrown', thrownKind:'waterBalloon',  name:'Rzut: Balony wodne',       attackDamage:1, fireCooldown:0.45, desc:'Rozprysk moczy wrogów (paliwo komb: prąd, mróz), gasi ogień i podlewa uprawy'},
+    {id:'throw_gas',      kind:'weapon', weaponType:'thrown', thrownKind:'gasGrenade',    name:'Rzut: Granaty gazowe',     attackDamage:1, fireCooldown:0.65, desc:'Uwalnia trujący obłok tam, gdzie upadnie — ogień go detonuje'},
+    {id:'throw_sticky',   kind:'weapon', weaponType:'thrown', thrownKind:'stickyBomb',    name:'Rzut: Lepkie bomby',       attackDamage:3, fireCooldown:0.75, desc:'Przykleja się do ściany i po chwili wybucha — otwiera skały i gniazda'},
     {id:'flamethrower', kind:'weapon', weaponType:'flame', name:'Miotacz ognia',   fireDps:6, fireRange:6.5, desc:'Strumień ognia (przytrzymaj LPM): podpala wrogów, trawę i drzewa; PPM = ult'},
     {id:'water_hose',   kind:'weapon', weaponType:'hose',  name:'Wąż wodny',       fireDps:2, fireRange:6,   desc:'Strumień wody (przytrzymaj LPM): gasi ogień, czasem zostawia wodę; PPM = ult'},
     {id:'gas_emitter',  kind:'weapon', weaponType:'gas',   name:'Emiter gazu',     fireDps:5, fireRange:5.5, desc:'Trujący obłok (przytrzymaj LPM): zatruwa żywe stworzenia; PPM = ult'},
@@ -212,6 +224,13 @@
     {key:'arrowIridium', label:'Strzaly irydowe', color:'#b8d7ff', tile:null},
     {key:'leaf',    label:'Liść',    color:'#2faa2f', tile:'LEAF'},
     {key:'snow',    label:'Śnieg',   color:'#e6f1ff', tile:'SNOW'},
+    {key:'toxicSnow', label:'Toksyczny śnieg', color:'#9fe08a', tile:'TOXIC_SNOW'},
+    {key:'toxicSnowball', label:'Toksyczne śnieżki', color:'#7fd86e', tile:null},
+    {key:'snowball', label:'Śnieżki', color:'#e8f4ff', tile:null},
+    {key:'throwingStone', label:'Kamienie do rzucania', color:'#9aa0a8', tile:null},
+    {key:'waterBalloon', label:'Balony wodne', color:'#7cc4ff', tile:null},
+    {key:'gasGrenade', label:'Granaty gazowe', color:'#9dbf5a', tile:null},
+    {key:'stickyBomb', label:'Lepkie bomby', color:'#b0703c', tile:null},
     {key:'water',   label:'Woda',    color:'#2477ff', tile:'WATER'},
     {key:'obsidian',label:'Obsydian',color:'#7a5cc1', tile:'OBSIDIAN'},
     {key:'glass',   label:'Szklo',   color:'#9deeff', tile:'GLASS'},
@@ -294,6 +313,7 @@
   const WEAPON_TYPE_STATS={
     melee:['attackDamage'],
     bow:['attackDamage','fireCooldown'],
+    thrown:['attackDamage','fireCooldown'],
     flame:['fireDps','fireRange'],
     hose:['fireDps','fireRange'],
     gas:['fireDps','fireRange'],
@@ -376,13 +396,23 @@
     notifyChange({key:'shortcut', value:itemId});
     return true;
   }
-  // Equip the next enabled weapon of the category (wraps; entering from another
-  // category or from bare hands starts at the first). Returns the item or null.
+  // Equip the next enabled weapon of the category (wraps). Entering a category
+  // from another weapon or bare hands returns to the weapon LAST USED there
+  // (session memory) instead of always restarting at the strongest — so a
+  // player fighting with snowballs gets them back on one key press.
+  const lastUsedPerCategory={};
   function cycleWeaponCategory(catId){
     const list=categoryWeapons(catId);
     if(!list.length) return null;
     const idx=list.findIndex(i=>i.id===state.equipped.weapon);
-    const next=list[(idx+1)%list.length]; // idx -1 → list[0]
+    let next;
+    if(idx<0){
+      const remembered=lastUsedPerCategory[catId];
+      next=(remembered && list.find(i=>i.id===remembered)) || list[0];
+    } else {
+      next=list[(idx+1)%list.length];
+    }
+    lastUsedPerCategory[catId]=next.id;
     equip(next.id);
     return next;
   }

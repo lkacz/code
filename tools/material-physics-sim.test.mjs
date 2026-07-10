@@ -338,7 +338,8 @@ for(const [raw] of Object.entries(BUILD_MATERIAL_PROFILES)){
   }
   assertProfileShape(name,t);
 }
-const intentionalProfileAliases=new Set(['DIRT/GRASS']);
+// Winter turf is the same soil as grass/dirt — only its surface state differs.
+const intentionalProfileAliases=new Set(['DIRT/GRASS','GRASS/GRASS_SNOW']);
 const profileSignatureFields=['strength','support','weight','compression','lateral','flex','down','warn','fail','wind','rubbleWind','rubbleRoll'];
 const profileSignatures=new Map();
 for(const [raw,p] of Object.entries(BUILD_MATERIAL_PROFILES)){

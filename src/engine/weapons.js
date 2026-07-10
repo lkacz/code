@@ -7,7 +7,7 @@
 //   'gas'   — toxic cloud: poisons living (organic) creatures; lingers and pools
 //   'electric' — spends hero energy to fire a straight robot-style beam
 // The equipped weapon comes from MM.inventory.
-import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
+import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, thawedEarthVariant, isFrozenEarth } from '../constants.js';
 import { fire as FIRE } from './fire.js';
 import { isBlastProtectedTile, isCondensedWaterTargetTile, isHeatRayPassableTile, isIridiumArrowPierceableTile, isSolidCollisionTile as isSolid } from './material_physics.js';
 import { reactions as REACTIONS } from './reactions.js';
@@ -17,7 +17,7 @@ import { reactions as REACTIONS } from './reactions.js';
   const arrows=[]; // {x,y,vx,vy,dmg,life,stuck,stuckT,travel,maxTravel}
   const puffs=[];  // {kind,x,y,vx,vy,life,total,dps}
   const electricBeams=[]; // {x1,y1,x2,y2,t,life,hit,blocked,phase}
-  const ARROW_SPEED=22, ARROW_GRAV=14, ARROW_LIFE=5, ARROW_STUCK=4, MAX_ARROWS=64;
+  const ARROW_SPEED=22, ARROW_GRAV=14, ARROW_LIFE=5, ARROW_STUCK=4, ARROW_RECOVER_SECONDS=12, MAX_ARROWS=64;
   const ARROW_DAMAGE_FALLOFF={close:1, mid:0.6, long:0.33};
   const BOW_CHARGE_SECONDS=4;
   const BOW_MAX_CHARGE_MULT=2;
@@ -41,13 +41,38 @@ import { reactions as REACTIONS } from './reactions.js';
     hose: {key:'water', label:'wody', rate:1},
     gas:  {key:'rottenMeat', label:'zepsutego miesa', rate:1}
   };
+  // Every tier carries ONE identity beyond its numbers, so ammo choice is a
+  // tactical decision, not just a bigger multiplier:
+  //   iridium — pierces BLOCKS (unchanged classic)
+  //   diamond — pierces CREATURES (overpenetration, up to 3 targets)
+  //   obsidian — ignites when fired at FULL draw (volcanic glass edge)
+  //   stone — staggers: the hit target briefly stops (hard chill tap)
+  //   wood — cheap and recoverable: most stuck arrows can be picked back up
   const ARROW_TIERS=[
     {id:'iridium',  key:'arrowIridium',  label:'irydowe',     damage:2.80, speed:1.32, life:1.55, spread:0.004, color:'#b8d7ff', head:'#f0f7ff'},
-    {id:'diamond',  key:'arrowDiamond',  label:'diamentowe',  damage:2.15, speed:1.18, life:1.35, spread:0.012, color:'#48f1ff', head:'#dffcff'},
-    {id:'obsidian', key:'arrowObsidian', label:'obsydianowe', damage:1.65, speed:1.08, life:1.15, spread:0.020, color:'#7a5cc1', head:'#c7b8ff'},
-    {id:'stone',    key:'arrowStone',    label:'kamienne',    damage:1.25, speed:1.00, life:1.00, spread:0.032, color:'#9aa0a8', head:'#e1e5ea'},
-    {id:'wood',     key:'arrowWood',     label:'drewniane',   damage:1.00, speed:0.92, life:0.85, spread:0.050, color:'#caa472', head:'#dfe6f1'}
+    {id:'diamond',  key:'arrowDiamond',  label:'diamentowe',  damage:2.15, speed:1.18, life:1.35, spread:0.012, color:'#48f1ff', head:'#dffcff', mobPierce:3},
+    {id:'obsidian', key:'arrowObsidian', label:'obsydianowe', damage:1.65, speed:1.08, life:1.15, spread:0.020, color:'#7a5cc1', head:'#c7b8ff', igniteOnFull:true},
+    {id:'stone',    key:'arrowStone',    label:'kamienne',    damage:1.25, speed:1.00, life:1.00, spread:0.032, color:'#9aa0a8', head:'#e1e5ea', stagger:0.6},
+    {id:'wood',     key:'arrowWood',     label:'drewniane',   damage:1.00, speed:0.92, life:0.85, spread:0.050, color:'#caa472', head:'#dfe6f1', recover:0.6},
+    // Utility ammo, deliberately below wood so 'auto' never wastes real arrows on
+    // it — pin it from the HUD pips. Splats on impact: poison + chill instead of
+    // raw damage (crafted from TOXIC_SNOW mined under gas-tainted blizzards).
+    {id:'toxicSnowball', key:'toxicSnowball', label:'toksyczne śnieżki', damage:0.55, speed:0.82, life:0.90, spread:0.055, color:'#8fdd7f', head:'#d9ffd0', snowball:true}
   ];
+  // Hand-thrown projectiles (weaponType 'thrown', rotated in the ranged slot with
+  // bows). Slower and lobbier than arrows; each kind carries its own splat:
+  //   snow  — white puff + a brief chill (slow) on creatures caught in it
+  //   toxic — the toxic-snowball cloud (poison + hard chill)
+  //   rock  — plain stone chips; the damage is in the direct hit itself
+  const THROWN_KINDS={
+    snowball:      {key:'snowball',      label:'Śnieżki',           color:'#eef7ff', head:'#ffffff', speed:15.5, lob:-2.2, life:2.4, splat:'snow', ball:true},
+    toxicSnowball: {key:'toxicSnowball', label:'Toksyczne śnieżki', color:'#8fdd7f', head:'#d9ffd0', speed:15.0, lob:-2.2, life:2.4, splat:'toxic', ball:true},
+    stone:         {key:'throwingStone', label:'Kamienie',          color:'#9aa0a8', head:'#c9ced6', speed:16.5, lob:-2.8, life:2.6, splat:'rock', rock:true},
+    // Combo enablers for the elemental matrix and area control:
+    waterBalloon:  {key:'waterBalloon',  label:'Balony wodne',      color:'#7cc4ff', head:'#dff2ff', speed:14.5, lob:-2.0, life:2.4, splat:'wet', ball:true},
+    gasGrenade:    {key:'gasGrenade',    label:'Granaty gazowe',    color:'#9dbf5a', head:'#e2f0b8', speed:14.0, lob:-2.4, life:2.6, splat:'gascloud', ball:true},
+    stickyBomb:    {key:'stickyBomb',    label:'Lepkie bomby',      color:'#b0703c', head:'#ffd9a8', speed:14.5, lob:-2.4, life:3.0, splat:'bomb', ball:true, sticky:true, fuse:1.5}
+  };
   const WATER_CONDENSE_CHANCE=0.008; // per dying hose puff (~1 tile per second of spray)
   // Elemental conversions use sustained contact so one lucky puff cannot reshape terrain.
   const WATER_BOIL_SECONDS=2.8; // flame must hold on water before it boils into steam
@@ -71,7 +96,7 @@ import { reactions as REACTIONS } from './reactions.js';
   const flameHeatRays=[];
   const streamFuelDebt={flame:0,hose:0,gas:0};
   const warnAt=Object.create(null);
-  let bowCd=0, meleeCd=0, bossAcc=0, ultCharge=1, electricCd=0;
+  let bowCd=0, meleeCd=0, bossAcc=0, ultCharge=1, electricCd=0, throwCd=0;
   let heroFlameHitCd=0;
   let lastWeaponCombatFxAt=0, lastWeaponCombatFxKey='', lastWeaponCombatFxX=0, lastWeaponCombatFxY=0;
   let iridiumPierces=0;
@@ -399,6 +424,7 @@ import { reactions as REACTIONS } from './reactions.js';
     const type=weaponType(w);
     if(type==='bow') return updateBowCharge(player, aimX, aimY, w, dt||0.016);
     if(bowCharge.active) cancelHeld();
+    if(type==='thrown') return fireThrown(player, aimX, aimY, w);
     if(type==='electric') return fireElectric(player, aimX, aimY, w, 1);
     if(STREAMS[type]) return fireStream(player, aimX, aimY, w, dt||0.016, type);
     return fireMelee(player, aimX, aimY);
@@ -423,6 +449,13 @@ import { reactions as REACTIONS } from './reactions.js';
     const charge=Math.min(1,ultCharge);
     ultCharge=0;
     return charge;
+  }
+  // Combat feeds the ult on top of the passive timer: +8% per landed hit,
+  // +20% when the hero triggers an elemental reaction (mobs.js calls this).
+  function addUltCharge(v){
+    const n=Number(v);
+    if(!Number.isFinite(n) || n<=0) return;
+    ultCharge=Math.min(1, ultCharge+n);
   }
   function fireUlt(player, aimX, aimY){
     const w=equippedWeapon();
@@ -449,6 +482,13 @@ import { reactions as REACTIONS } from './reactions.js';
       warnNoArrows();
       return false;
     }
+    if(type==='thrown'){
+      const spec=thrownSpec(w);
+      if(!spec || !canSpendResource(spec.key,1)){
+        sayLimited('thrown_empty_'+(spec?spec.key:'none'),'Brak: '+(spec?spec.label:'amunicji'));
+        return false;
+      }
+    }
     if(STREAMS[type] && ultCharge>=0.35){
       const spec=STREAM_FUEL[type];
       const plannedCost=streamBurstFuelCost(type,Math.min(1,ultCharge));
@@ -460,6 +500,7 @@ import { reactions as REACTIONS } from './reactions.js';
     const charge=consumeUltCharge();
     if(!charge) return false;
     if(type==='bow') return firePowerBow(player, aimX, aimY, w, charge);
+    if(type==='thrown') return firePowerThrown(player, aimX, aimY, w, charge);
     if(STREAMS[type]) return firePowerStream(player, aimX, aimY, w, type, charge);
     return firePowerMelee(player, aimX, aimY, w, charge);
   }
@@ -501,6 +542,7 @@ import { reactions as REACTIONS } from './reactions.js';
     meleeCd=0.35; player.atkCd=Math.max(player.atkCd||0, 0.35);
     player.facing = tx>=px? 1 : -1;
     notifyMeleeSwing(tx,ty,player);
+    if(hit && !collected) addUltCharge(0.08);
     try{ if(MM.audio && MM.audio.play) MM.audio.play('swing'); }catch(e){}
     return !!hit;
   }
@@ -599,7 +641,12 @@ import { reactions as REACTIONS } from './reactions.js';
       dmg:Math.max(1,Math.round(baseDamage*bowDamageMult(ratio))),
       life:ARROW_LIFE*tier.life, stuck:false, stuckT:ARROW_STUCK,
       charged:ratio>0.01, fullDraw:full,
-      tier:tier.id, color:full?'#f5d66a':tier.color, headColor:full?'#fff1a8':tier.head, windCap:sp*1.35,
+      fire:!!(full && tier.igniteOnFull), // obsidian edge ignites on a full draw
+      tier:tier.id, snowball:!!tier.snowball, splat:tier.snowball?'toxic':undefined,
+      stagger:tier.stagger||0,
+      mobPierce:tier.mobPierce||0,
+      recoverable:!!(tier.recover && Math.random()<tier.recover),
+      color:(full && !tier.snowball)?'#f5d66a':tier.color, headColor:(full && !tier.snowball)?'#fff1a8':tier.head, windCap:sp*1.35,
       pierceLeft:tier.id==='iridium' ? 3 : 0
     });
     player.facing = v.dx>=0?1:-1;
@@ -636,8 +683,12 @@ import { reactions as REACTIONS } from './reactions.js';
       vy:v.dy*sp - 0.9,
       dmg:Math.max(1,Math.round(((w && w.attackDamage)||3)*tier.damage*roll.mult)),
       life:ARROW_LIFE*tier.life*(1.05+charge*0.35), stuck:false, stuckT:ARROW_STUCK,
-      power:true, specialAttack:true, luckyStrike:roll.lucky, fire:roll.lucky || charge>0.85,
-      tier:tier.id, color:tier.color, headColor:tier.head, windCap:sp*1.25,
+      power:true, specialAttack:true, luckyStrike:roll.lucky, fire:(roll.lucky || charge>0.85 || tier.igniteOnFull) && !tier.snowball,
+      tier:tier.id, snowball:!!tier.snowball, splat:tier.snowball?'toxic':undefined,
+      stagger:tier.stagger||0,
+      mobPierce:tier.mobPierce ? tier.mobPierce+1 : 0,
+      recoverable:!!(tier.recover && Math.random()<tier.recover),
+      color:tier.color, headColor:tier.head, windCap:sp*1.25,
       pierceLeft:tier.id==='iridium' ? 5 : 0
     });
     player.facing = v.dx>=0?1:-1;
@@ -752,7 +803,23 @@ import { reactions as REACTIONS } from './reactions.js';
         blocked=true;
         break;
       }
-      if(electricDamageAt(tx,ty,dmg,{specialAttack:!!charge,luckyStrike:!!(roll&&roll.lucky)})){ ex=x; ey=y; hit=true; break; }
+      // Water conducts: the beam ends at the surface and electrifies the whole
+      // pool — every aquatic creature in it takes the shock (like lightning).
+      if(t===T.WATER){
+        ex=x; ey=y; hit=true;
+        try{
+          if(MM.mobs && MM.mobs.shockAquaticRadius){
+            const res=MM.mobs.shockAquaticRadius(x,y,4.5,{damage:Math.max(6,dmg*4),getTile:tileGetter,source:'hero',cause:'electric_water',naturalDeath:false});
+            if(res && res.hit>0){
+              try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('electric_water','Prąd elektryzuje całą taflę wody!'); }catch(e2){}
+            }
+          }
+        }catch(e){}
+        try{ if(MM.mobs && MM.mobs.wetRadius) MM.mobs.wetRadius(x,y,2.5,{dur:6}); }catch(e){}
+        try{ const p=MM.particles, TILE=MM.TILE||20; if(p && p.spawnSparks) p.spawnSparks(x*TILE,y*TILE,'rare',12); }catch(e){}
+        break;
+      }
+      if(electricDamageAt(tx,ty,dmg,{specialAttack:!!charge,luckyStrike:!!(roll&&roll.lucky)})){ ex=x; ey=y; hit=true; addUltCharge(0.08); break; }
     }
     if(hit && roll && roll.lucky) noteLuckyStrike(ex,ey-0.4);
     if(hit && (charge || (roll && roll.lucky))) noteWeaponCombatHit(ex,ey-0.4,dmg,{kind:'electric',element:'electric',source:'hero',specialAttack:!!charge,luckyStrike:!!(roll&&roll.lucky)},{major:!!charge});
@@ -791,7 +858,7 @@ import { reactions as REACTIONS } from './reactions.js';
         else if(kind!=='hose' && MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy, dps*0.2)) hit=true;
         else if(kind!=='hose' && MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy, dps*0.2)) hit=true;
         else if(kind!=='hose' && MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(sx,sy, dps*0.2)) hit=true;
-        if(hit){ noteWeaponCombatHit(sx+0.5,sy+0.2,dps*0.2,opts); break; }
+        if(hit){ noteWeaponCombatHit(sx+0.5,sy+0.2,dps*0.2,opts); addUltCharge(0.03); break; }
       }
     }
     return true;
@@ -943,7 +1010,8 @@ import { reactions as REACTIONS } from './reactions.js';
       if(dx*dx+dy*dy<=9){ puffs.splice(i,1); consumed++; }
     }
     try{ if(MM.gases && MM.gases.consumeRadius) consumed += MM.gases.consumeRadius('fuel',wx,wy,3,getTile,setTile); }catch(e){}
-    const R=2.2+Math.min(1.6, consumed*0.06);
+    const R=(opts.radius && Number.isFinite(opts.radius)) ? Math.max(0.8,Math.min(4,opts.radius)) : 2.2+Math.min(1.6, consumed*0.06);
+    try{ if(MM.discovery && MM.discovery.note && consumed>0) MM.discovery.note('gas_boom','Obłok gazu można zdetonować ogniem!'); }catch(e){}
     const bx=Math.round(wx), by=Math.round(wy);
     // crater: soft tiles blasted out; precious and blast-resistant tiles survive
     const Ri=Math.ceil(R);
@@ -988,7 +1056,7 @@ import { reactions as REACTIONS } from './reactions.js';
     // FX: expanding ring + spark burst + scattered short flames
     blastsFx.push({x:wx,y:wy,R,t:0,max:0.5});
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(wx*(MM.TILE||20),wy*(MM.TILE||20),'epic'); }catch(e){}
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('explosion'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('explosion',{x:wx,y:wy}); }catch(e){}
     for(let k=0;k<8 && puffs.length<MAX_PUFFS;k++){
       const a=Math.random()*6.283, sp=4+Math.random()*5;
       puffs.push({kind:'flame', x:wx, y:wy, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp-1, life:0.3+Math.random()*0.3, total:0.55, dps:5});
@@ -1012,6 +1080,9 @@ import { reactions as REACTIONS } from './reactions.js';
     if(typeof setTile!=='function') return false;
     if(FIRE && FIRE.thawAt) return FIRE.thawAt(tx,ty,getTile,setTile);
     const t=getTile(tx,ty);
+    if(t===T.GRASS_SNOW){ setTile(tx,ty,T.GRASS); return true; }
+    const thawed=thawedEarthVariant(t);
+    if(thawed!=null){ setTile(tx,ty,thawed); return true; }
     if(t!==T.SNOW && t!==T.ICE) return false;
     setTile(tx,ty,T.WATER);
     try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(tx,ty,getTile); }catch(e){}
@@ -1023,6 +1094,132 @@ import { reactions as REACTIONS } from './reactions.js';
     if(FIRE && FIRE.cookAt) return FIRE.cookAt(tx,ty,getTile,setTile);
     if(getTile(tx,ty)!==T.MEAT) return false;
     setTile(tx,ty,T.BAKED_MEAT);
+    return true;
+  }
+  // Toxic snowball impact: the ball bursts into a small poison+chill cloud —
+  // creatures caught in it are slowed hard (chill) and poisoned over time.
+  const SNOWBALL_SPLAT={radius:1.5, poisonDur:5, poisonDps:2, chillDur:4};
+  function splatToxicSnowball(a){
+    try{
+      if(MM.mobs){
+        if(MM.mobs.poisonRadius) MM.mobs.poisonRadius(a.x,a.y,SNOWBALL_SPLAT.radius,{dur:SNOWBALL_SPLAT.poisonDur,dps:SNOWBALL_SPLAT.poisonDps,source:'hero',cause:'toxic_snowball'});
+        if(MM.mobs.chillRadius) MM.mobs.chillRadius(a.x,a.y,SNOWBALL_SPLAT.radius,{dur:SNOWBALL_SPLAT.chillDur,source:'hero',cause:'toxic_snowball'});
+      }
+    }catch(e){}
+    try{
+      const p=MM.particles, tile=MM.TILE||20;
+      if(p && p.spawnImpactChips){
+        p.spawnImpactChips(a.x*tile,a.y*tile,{power:0.9,element:'poison_splat'});
+        p.spawnImpactChips(a.x*tile,a.y*tile,{power:0.6,element:'chill_splat'});
+      }
+    }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('splash'); }catch(e){}
+  }
+  // Impact router for every splatting projectile (never sticks like an arrow).
+  function splatProjectile(a,getTile,setTile){
+    if(a.splat==='toxic') return splatToxicSnowball(a);
+    const tile=MM.TILE||20;
+    if(a.splat==='snow'){
+      // plain snowball: a face full of snow — brief slow, no lasting damage cloud
+      try{ if(MM.mobs && MM.mobs.chillRadius) MM.mobs.chillRadius(a.x,a.y,1.1,{dur:1.4,source:'hero',cause:'snowball_chill'}); }catch(e){}
+      try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:0.7,element:'chill_splat'}); }catch(e){}
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('splash'); }catch(e){}
+      return;
+    }
+    if(a.splat==='rock'){
+      try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:1.1}); }catch(e){}
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('dig'); }catch(e){}
+      return;
+    }
+    if(a.splat==='wet'){
+      // water balloon: soaks everything in the burst, douses flames, waters crops
+      try{
+        if(MM.mobs){
+          if(MM.mobs.wetRadius) MM.mobs.wetRadius(a.x,a.y,1.8,{dur:8,source:'hero',cause:'water_balloon'});
+          if(MM.mobs.douseRadius) MM.mobs.douseRadius(a.x,a.y,1.8);
+        }
+      }catch(e){}
+      try{
+        if(FIRE && FIRE.isBurning && FIRE.extinguish){
+          const bx=Math.floor(a.x), by=Math.floor(a.y);
+          for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){ if(FIRE.isBurning(bx+dx,by+dy)) FIRE.extinguish(bx+dx,by+dy); }
+        }
+      }catch(e){}
+      try{ if(MM.plants && MM.plants.waterAt) MM.plants.waterAt(a.x,a.y,1.6,2.2); }catch(e){}
+      try{ if(MM.particles && MM.particles.spawnSplash) MM.particles.spawnSplash(a.x*tile,a.y*tile,0.7); }catch(e){}
+      try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:0.8,element:'water_splat'}); }catch(e){}
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('splash'); }catch(e){}
+      return;
+    }
+    if(a.splat==='gascloud'){
+      // gas grenade: releases a poison cloud where it lands (fire detonates it)
+      spawnGasCloud(a.x,a.y,1.6);
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('gas'); }catch(e){}
+      return;
+    }
+    if(a.splat==='bomb'){
+      const gt=(typeof getTile==='function') ? getTile : lastGetTile;
+      const st=(typeof setTile==='function') ? setTile : lastSetTile;
+      if(gt && st) explodeAt(a.x,a.y,gt,st,{force:true,radius:1.6});
+      return;
+    }
+  }
+  function thrownSpec(w){ return (w && THROWN_KINDS[w.thrownKind]) || null; }
+  // HUD readout for the ranged slot when a throw technique is selected.
+  function thrownInfo(kind){
+    const s=THROWN_KINDS[kind];
+    if(!s) return null;
+    return {kind, key:s.key, label:s.label, count:resourceCount(s.key), color:s.color};
+  }
+  function pushThrownProjectile(player,dx,dy,spec,w,opts){
+    opts=opts||{};
+    const sp=spec.speed*(opts.speedMult||1);
+    return pushArrow({
+      x:player.x + dx*0.6,
+      y:player.y - 0.2 + dy*0.6,
+      vx:dx*sp,
+      vy:dy*sp + spec.lob,
+      dmg:Math.max(1,Math.round(((w && w.attackDamage)||2)*(opts.dmgMult||1))),
+      life:spec.life, stuck:false, stuckT:ARROW_STUCK,
+      thrown:true, snowball:!!spec.ball, rock:!!spec.rock, splat:spec.splat,
+      stickyFuse:spec.sticky ? (spec.fuse||1.5) : 0,
+      specialAttack:!!opts.specialAttack, luckyStrike:!!opts.luckyStrike,
+      tier:'thrown', color:spec.color, headColor:spec.head, windCap:sp*1.3
+    });
+  }
+  function fireThrown(player, aimX, aimY, w){
+    if(throwCd>0) return false;
+    const spec=thrownSpec(w);
+    if(!spec) return false;
+    if(!spendResource(spec.key,1)){ sayLimited('thrown_empty_'+spec.key,'Brak: '+spec.label); return false; }
+    throwCd=Math.max(0.2,(w && w.fireCooldown)||0.45);
+    const v=aimVector(player,aimX,aimY);
+    pushThrownProjectile(player,v.dx,v.dy,spec,w);
+    player.facing=v.dx>=0?1:-1;
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
+    return true;
+  }
+  // Ult: a fanned volley — up to 3 projectiles (5 on a nearly full charge).
+  function firePowerThrown(player, aimX, aimY, w, charge){
+    const spec=thrownSpec(w);
+    if(!spec) return false;
+    const roll=specialAttackRoll();
+    const v=aimVector(player,aimX,aimY);
+    const count=charge>0.85 ? 5 : 3;
+    let thrown=0;
+    for(let i=0;i<count;i++){
+      if(!spendResource(spec.key,1)) break;
+      const ang=(i-(count-1)/2)*0.09;
+      const ca=Math.cos(ang), sa=Math.sin(ang);
+      pushThrownProjectile(player, v.dx*ca-v.dy*sa, v.dx*sa+v.dy*ca, spec, w,
+        {speedMult:1.05+charge*0.22, dmgMult:roll.mult, specialAttack:true, luckyStrike:roll.lucky && i===0});
+      thrown++;
+    }
+    if(!thrown){ sayLimited('thrown_empty_'+spec.key,'Brak: '+spec.label); return false; }
+    if(roll.lucky) noteLuckyStrike(player.x+v.dx*1.3,player.y-0.45+v.dy*1.3);
+    player.facing=v.dx>=0?1:-1;
+    throwCd=Math.max(throwCd,0.3);
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
     return true;
   }
   function shatterGlassAt(tx,ty,setTile,getTile,opts){
@@ -1147,6 +1344,7 @@ import { reactions as REACTIONS } from './reactions.js';
         try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(x,y,getTile); }catch(e){}
         try{ if(MM.clouds && MM.clouds.injectVapor) MM.clouds.injectVapor(x,1); }catch(e){}
         emitSteam(x+0.5,y+0.25,3,getTile,setTile);
+        try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('water_boil','Płomień gotuje wodę w parę!'); }catch(e){}
       } else {
         waterHeat.set(k,h);
       }
@@ -1181,6 +1379,7 @@ import { reactions as REACTIONS } from './reactions.js';
         stoneHeat.delete(k);
         if(FIRE && FIRE.noteLava) FIRE.noteLava(x,y);
         try{ if(MM.fallingSolids && MM.fallingSolids.onTileRemoved) MM.fallingSolids.onTileRemoved(x,y); }catch(e){}
+        try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('stone_melt','Długi płomień topi kamień w lawę!'); }catch(e){}
       } else {
         stoneHeat.set(k,h);
       }
@@ -1215,6 +1414,7 @@ import { reactions as REACTIONS } from './reactions.js';
         heatForgedGlass.set(k,{x,y,cool:HEAT_FORGED_GLASS_GRACE});
         sandHeat.delete(k);
         try{ if(MM.fallingSolids && MM.fallingSolids.onTileRemoved) MM.fallingSolids.onTileRemoved(x,y); }catch(e){}
+        try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('sand_glass','Rozgrzany piasek wytapia się w szkło!'); }catch(e){}
       } else {
         sandHeat.set(k,h);
       }
@@ -1325,6 +1525,7 @@ import { reactions as REACTIONS } from './reactions.js';
     if(bowCd>0) bowCd-=dt;
     if(meleeCd>0) meleeCd-=dt;
     if(electricCd>0) electricCd-=dt;
+    if(throwCd>0) throwCd-=dt;
     if(swing.t>0) swing.t-=dt;
     if(explodeCd>0) explodeCd-=dt;
     if(heroFlameHitCd>0) heroFlameHitCd=Math.max(0,heroFlameHitCd-dt);
@@ -1340,7 +1541,27 @@ import { reactions as REACTIONS } from './reactions.js';
     // Arrows
     for(let i=arrows.length-1;i>=0;i--){
       const a=arrows[i];
-      if(a.stuck){ a.stuckT-=dt; if(a.stuckT<=0) arrows.splice(i,1); continue; }
+      if(a.stuck){
+        a.stuckT-=dt;
+        // wood arrows are recoverable: walk over one before it despawns to take it back
+        if(a.recoverable){
+          const p=(typeof window!=='undefined') ? window.player : null;
+          if(p && Math.abs(p.x-a.x)<1.1 && Math.abs(p.y-a.y)<1.3){
+            if(addResource('arrowWood',1)){
+              try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(a.x*(MM.TILE||20),a.y*(MM.TILE||20),'common',4); }catch(e){}
+              try{ if(MM.audio && MM.audio.play) MM.audio.play('harvest'); }catch(e){}
+              try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('arrow_recover','Wbite drewniane strzały można podnieść z powrotem!'); }catch(e){}
+              arrows.splice(i,1); continue;
+            }
+          }
+        }
+        if(a.stuckT<=0){
+          // a clung sticky bomb detonates when its fuse runs out
+          if(a.stickyFuse){ splatProjectile(a,getTile,setTile); }
+          arrows.splice(i,1);
+        }
+        continue;
+      }
       a.life-=dt; if(a.life<=0){ arrows.splice(i,1); continue; }
       a.ignoreUndergroundT=Math.max(0,(Number(a.ignoreUndergroundT)||0)-dt);
       // a burning arrow flying into a gas cloud detonates it
@@ -1374,7 +1595,8 @@ import { reactions as REACTIONS } from './reactions.js';
             break;
           }
         }
-        if((MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,hitDmg,arrowOpts))
+        const creatureGate=(Number(a.pierceGate)||0)<= (a.travel||0);
+        if(creatureGate && ((MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,hitDmg,arrowOpts))
         || (MM.mechs && MM.mechs.damageAt && MM.mechs.damageAt(tx,ty,hitDmg,arrowOpts))
         || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,hitDmg,arrowOpts))
         || (MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,hitDmg))
@@ -1383,9 +1605,19 @@ import { reactions as REACTIONS } from './reactions.js';
         || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,hitDmg))
         || (MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(tx,ty,hitDmg))
         || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,hitDmg))
-        || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,hitDmg))){
+        || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,hitDmg)))){
           if(a.specialAttack || a.luckyStrike) noteWeaponCombatHit(a.x,a.y-0.18,hitDmg,arrowOpts,{major:!!a.power,tier:a.tier});
           if(a.fire && MM.mobs && MM.mobs.igniteAt) MM.mobs.igniteAt(tx,ty,{dur:2.5,dps:2,source:'hero',specialAttack:!!a.specialAttack});
+          if(a.stagger && MM.mobs && MM.mobs.chillAt) MM.mobs.chillAt(tx,ty,{dur:a.stagger,source:'hero',cause:'stagger'}); // stone arrows stop the target in its tracks
+          if(a.splat) splatProjectile(a,getTile,setTile);
+          addUltCharge(0.08);
+          // diamond arrows overpenetrate: keep flying through up to 3 creatures
+          if((a.mobPierce||0)>0){
+            a.mobPierce--;
+            a.dmg=Math.max(1,Math.round(a.dmg*0.7));
+            a.pierceGate=(a.travel||0)+1.2; // clear the current body before the next hit registers
+            continue;
+          }
           arrows.splice(i,1); break;
         }
         const t=getTile(tx,ty);
@@ -1398,8 +1630,23 @@ import { reactions as REACTIONS } from './reactions.js';
             if(a.fire && FIRE) FIRE.ignite(tx,ty,getTile,setTile);
             continue;
           }
+          // sticky bombs cling to the wall and detonate after their fuse
+          if(a.stickyFuse){
+            a.x-=a.vx*sdt*0.4; a.y-=a.vy*sdt*0.4;
+            a.stuck=true;
+            a.stuckT=a.stickyFuse;
+            break;
+          }
+          // thrown projectiles never stick in a wall — they burst on impact
+          if(a.snowball || a.rock){
+            a.x-=a.vx*sdt*0.5; a.y-=a.vy*sdt*0.5;
+            splatProjectile(a,getTile,setTile);
+            arrows.splice(i,1);
+            break;
+          }
           a.x-=a.vx*sdt*0.6; a.y-=a.vy*sdt*0.6; // sit at the surface, not inside
           a.stuck=true;
+          if(a.recoverable) a.stuckT=ARROW_RECOVER_SECONDS; // wood arrows wait to be picked back up
           if(a.fire && FIRE){ FIRE.ignite(tx,ty,getTile,setTile); FIRE.ignite(Math.floor(a.x),Math.floor(a.y),getTile,setTile); }
           break;
         }
@@ -1453,7 +1700,7 @@ import { reactions as REACTIONS } from './reactions.js';
           // sustained flame melts bare rock into a lava pool; snow and ice thaw to water
           if(t===T.STONE && typeof setTile==='function'){
             noteStoneHeat(tx,ty,heatedStoneTiles);
-          } else if((t===T.SNOW||t===T.ICE) && Math.random()<0.3 && thawColdTile(tx,ty,getTile,setTile)){
+          } else if((t===T.SNOW||t===T.TOXIC_SNOW||t===T.ICE||t===T.GRASS_SNOW||isFrozenEarth(t)) && Math.random()<0.3 && thawColdTile(tx,ty,getTile,setTile)){
             emitSteam(p.x,p.y-0.2,1,getTile,setTile);
           }
           puffs.splice(i,1); continue;
@@ -1580,6 +1827,38 @@ import { reactions as REACTIONS } from './reactions.js';
       ctx.save();
       for(const a of arrows){
         if(!tileVisible(a.x,a.y)) continue;
+        if(a.rock){
+          // thrown stone: a tumbling grey chunk
+          const px=a.x*TILE, py=a.y*TILE;
+          a.rot=(a.rot||0)+0.22;
+          ctx.save();
+          ctx.translate(px,py); ctx.rotate(a.rot);
+          ctx.fillStyle=a.color||'#9aa0a8';
+          ctx.beginPath();
+          ctx.moveTo(-TILE*0.20,-TILE*0.14);
+          ctx.lineTo(TILE*0.14,-TILE*0.20);
+          ctx.lineTo(TILE*0.24,TILE*0.06);
+          ctx.lineTo(TILE*0.04,TILE*0.20);
+          ctx.lineTo(-TILE*0.20,TILE*0.10);
+          ctx.closePath(); ctx.fill();
+          ctx.fillStyle=a.headColor||'#c9ced6';
+          ctx.fillRect(-TILE*0.06,-TILE*0.10,TILE*0.10,TILE*0.08);
+          ctx.restore();
+          continue;
+        }
+        if(a.snowball){
+          // toxic snowball: a tumbling sickly-green ball with a faint drip trail
+          const px=a.x*TILE, py=a.y*TILE;
+          ctx.save();
+          ctx.fillStyle='rgba(140,220,110,0.28)';
+          ctx.beginPath(); ctx.arc(px-(a.vx||0)*0.012*TILE, py-(a.vy||0)*0.012*TILE, TILE*0.16, 0, Math.PI*2); ctx.fill();
+          ctx.fillStyle=a.color||'#8fdd7f';
+          ctx.beginPath(); ctx.arc(px, py, TILE*0.20, 0, Math.PI*2); ctx.fill();
+          ctx.fillStyle=a.headColor||'#d9ffd0';
+          ctx.beginPath(); ctx.arc(px-TILE*0.05, py-TILE*0.06, TILE*0.09, 0, Math.PI*2); ctx.fill();
+          ctx.restore();
+          continue;
+        }
         const ang=a.stuck? a.ang||0 : Math.atan2(a.vy,a.vx);
         if(!a.stuck) a.ang=ang;
         ctx.save();
@@ -1742,6 +2021,28 @@ import { reactions as REACTIONS } from './reactions.js';
       const ex=Math.cos(1.15)*6*facing, ey=Math.sin(1.15)*6;
       const pull=-facing*(1.2+draw*7.2);
       ctx.beginPath(); ctx.moveTo(ex,-2-ey); ctx.lineTo(pull,-2); ctx.lineTo(ex,-2+ey); ctx.stroke();
+      // wind readout while aiming: arrows really drift with the wind, so show it
+      if(draw>0.05){
+        let windSp=0;
+        try{ if(MM.wind && typeof MM.wind.speed==='function') windSp=Number(MM.wind.speed())||0; }catch(e){}
+        if(Math.abs(windSp)>=0.25){
+          const wlen=Math.max(3,Math.min(14,Math.abs(windSp)*3.2));
+          const wdir=windSp>=0?1:-1;
+          const wy=-14;
+          ctx.save();
+          ctx.globalAlpha=0.85;
+          ctx.strokeStyle=Math.abs(windSp)>3.5?'#ffb84a':'#bfe3ff';
+          ctx.lineWidth=1.4;
+          ctx.beginPath(); ctx.moveTo(-wdir*wlen*0.5,wy); ctx.lineTo(wdir*wlen*0.5,wy); ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(wdir*wlen*0.5,wy);
+          ctx.lineTo(wdir*(wlen*0.5-3),wy-2.4);
+          ctx.moveTo(wdir*wlen*0.5,wy);
+          ctx.lineTo(wdir*(wlen*0.5-3),wy+2.4);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
       if(draw>0.03){
         ctx.strokeStyle=full?'#fff7c7':'#dfe6f1';
         ctx.lineWidth=1.2+draw*0.6;
@@ -1752,6 +2053,23 @@ import { reactions as REACTIONS } from './reactions.js';
         ctx.lineTo(facing*(5.9+draw*1.1),-4.2);
         ctx.lineTo(facing*(5.9+draw*1.1),0.2);
         ctx.closePath(); ctx.fill();
+      }
+    } else if(type==='thrown'){
+      // a throw-ready projectile bobbing in the raised hand
+      const spec=thrownSpec(it);
+      const bob=Math.sin(nowMs()*0.006)*0.8;
+      ctx.translate(facing*1.5, -4+bob);
+      if(spec && spec.rock){
+        ctx.fillStyle=(spec && spec.color)||'#9aa0a8';
+        ctx.beginPath();
+        ctx.moveTo(-3.4,-2.2); ctx.lineTo(2.4,-3.2); ctx.lineTo(4,1); ctx.lineTo(0.8,3.2); ctx.lineTo(-3.4,1.6);
+        ctx.closePath(); ctx.fill();
+        ctx.fillStyle=(spec && spec.head)||'#c9ced6'; ctx.fillRect(-1,-1.6,1.8,1.4);
+      }else{
+        ctx.fillStyle=(spec && spec.color)||'#eef7ff';
+        ctx.beginPath(); ctx.arc(0,0,3.4,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle=(spec && spec.head)||'#ffffff';
+        ctx.beginPath(); ctx.arc(-1,-1.1,1.5,0,Math.PI*2); ctx.fill();
       }
     } else {
       // stream device: body + nozzle tinted by class, with a faint idle wisp
@@ -1812,9 +2130,9 @@ import { reactions as REACTIONS } from './reactions.js';
       energySpent:+(bowCharge.energySpent||0).toFixed(3)
     };
   }
-  function reset(){ arrows.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; meleeCd=0; electricCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; resetBowCharge(); }
+  function reset(){ arrows.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; meleeCd=0; electricCd=0; throwCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; resetBowCharge(); }
   MM.weapons={fireHeld,releaseHeld,cancelHeld,fireUlt,update,draw,drawHeld,notifyMeleeSwing,reset,explodeAt,spawnGasCloud,spawnExternalStream,
-    arrowInfo,setArrowPref,fuelInfo,hudStatus,
+    arrowInfo,setArrowPref,fuelInfo,thrownInfo,hudStatus,addUltCharge,
     metrics:()=>({arrows:arrows.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),ultCharge,bowCharge:bowChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
     _debug:{arrows,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,waterHeat}};
 })();

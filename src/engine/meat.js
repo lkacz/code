@@ -433,7 +433,8 @@ const meat = (function(){
       if(t===T.MEAT && cookFromEnvironment(k,r,getTile,setTile)) continue;
       if(settleUnsupportedRecord(k,r,t,getTile,setTile)) continue;
       if(t===T.MEAT){
-        if(getSafe(getTile,r.x,r.y+1)===T.SNOW) continue;
+        const below=getSafe(getTile,r.x,r.y+1);
+        if(below===T.SNOW || below===T.ICE || below===T.GRASS_SNOW) continue; // cold shelf: no decay
         r.age=(r.age||0)+dt;
         if(r.age>=DECAY_SEC && typeof setTile==='function'){
           setTile(r.x,r.y,T.ROTTEN_MEAT);

@@ -33,7 +33,7 @@ assert.equal(INFO[T.ALIEN_BIOMASS].biological, true, 'biological meteor biomass 
 assert.equal(INFO[T.METEOR_DUST].dust, true, 'meteor dust is flagged as strange residue');
 assert.equal(INFO[T.ANTIMATTER_CRYSTAL].antimatter, true, 'antimatter meteor crystals are flagged');
 assert.match(worldSrc, /MM\.meteorites && MM\.meteorites\.onTileChanged/, 'world lifecycle keeps the meteor beacon index synchronized');
-assert.match(audioSrc, /alarm:\s*\(\)=>/, 'meteor sirens have an actual procedural alarm audio effect');
+assert.match(audioSrc, /alarm:\s*\(o\)=>/, 'meteor sirens have an actual procedural alarm audio effect');
 assert.match(fallingSrc, /onTilesChangedBatch/, 'falling solids expose a batched terrain wake path for crater-sized edits');
 assert.match(waterSrc, /onTilesChangedBatch/, 'water exposes a batched terrain wake path for crater-sized edits');
 

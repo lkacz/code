@@ -14,7 +14,7 @@
 // only at tile boundaries (LAVA+WATER→OBSIDIAN here; water never enters a LAVA
 // cell because it is not T.AIR), so the seam is one conversion rule, not a
 // shared engine. Revisit only if lava ever needs waves/pressure of its own.
-import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, TILE as TILE_PX } from '../constants.js';
+import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, TILE as TILE_PX, thawedEarthVariant, isFrozenEarth } from '../constants.js';
 import { isLavaExposureOpenTile, isLavaVentOpenTile } from './material_physics.js';
 import { reactions as REACTIONS } from './reactions.js';
 (function(){
@@ -54,9 +54,25 @@ import { reactions as REACTIONS } from './reactions.js';
     x|=0; y|=0;
     if(!finiteTile(x,y)) return false;
     const t=getTile(x,y);
-    if(t!==T.SNOW && t!==T.ICE) return false;
+    // Snow-dusted turf dries back to plain grass (no meltwater in a thin cover)
+    if(t===T.GRASS_SNOW){
+      setTile(x,y,T.GRASS);
+      return true;
+    }
+    // Permafrost unbinds into its diggable base soil
+    const thawed=thawedEarthVariant(t);
+    if(thawed!=null){
+      setTile(x,y,thawed);
+      try{ if(MM.fallingSolids && MM.fallingSolids.afterPlacement) MM.fallingSolids.afterPlacement(x,y); }catch(e){}
+      return true;
+    }
+    if(t!==T.SNOW && t!==T.ICE && t!==T.TOXIC_SNOW) return false;
     setTile(x,y,T.WATER);
     try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(x,y,getTile); }catch(e){}
+    // toxic snowpack never melts clean: the meltwater carries the contamination
+    if(t===T.TOXIC_SNOW){
+      try{ if(MM.water && MM.water.polluteAt) MM.water.polluteAt(x,y,getTile,setTile,{source:'toxic_snow'}); }catch(e){}
+    }
     try{ if(MM.water && MM.water.disturb) MM.water.disturb(x,80); }catch(e){}
     try{ if(MM.fallingSolids && MM.fallingSolids.onTileRemoved) MM.fallingSolids.onTileRemoved(x,y); }catch(e){}
     return true;
@@ -178,7 +194,7 @@ import { reactions as REACTIONS } from './reactions.js';
             if(nt===T.GRASS) p*=0.3; // grass chains reluctantly — fire favours trees
             p*=spreadInMultiplier(nInfo);
             if(Math.random()<p) ignite(nx,ny,getTile,setTile);
-          } else if((nt===T.SNOW || nt===T.ICE) && Math.random()<0.5) thawAt(nx,ny,getTile,setTile);
+          } else if((nt===T.SNOW || nt===T.TOXIC_SNOW || nt===T.ICE || nt===T.GRASS_SNOW || isFrozenEarth(nt)) && Math.random()<0.5) thawAt(nx,ny,getTile,setTile);
         }
       }
       // (Creatures catching fire from tiles: mobs.js polls MM.fire.isBurning —

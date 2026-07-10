@@ -8,7 +8,7 @@ export const WORLD_MAX_Y = (WORLD_MAX_SECTION + 1) * WORLD_SECTION_H;
 export const TILE = 20;
 export const SURFACE_GRASS_DEPTH = 1;
 export const SAND_DEPTH = 8;
-export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,LAVA:13,MUD:14,OBSIDIAN:15,TORCH:16,GRAVE:17,VOLCANO_MASTER_STONE:18,STEEL:19,MEAT:20,ROTTEN_MEAT:21,GLASS:22,WIRE:23,ELECTRONICS:24,COAL:25,HOT_AIR:26,STEAM:27,POISON_GAS:28,FUEL_GAS:29,DYNAMO:30,DYNAMO_SLOT:31,BAKED_MEAT:32,COPPER_WIRE:33,TELEPORTER:34,TRANSISTOR:35,SOLAR_PANEL:36,SOLAR_BATTERY:37,SERVANT_STONE:38,AUTUMN_LEAF_ORANGE:39,AUTUMN_LEAF_RED:40,IRIDIUM:41,METEORIC_IRON:42,ANTIGRAVITY_BEACON:43,TURRET:44,FIRE_TURRET:45,WATER_TURRET:46,WATER_PIPE:47,WATER_PUMP:48,METEOR_SIREN:49,RADIOACTIVE_ORE:50,ALIEN_BIOMASS:51,METEOR_DUST:52,ANTIMATTER_CRYSTAL:53,DIRT:54,GRANITE:55,BASALT:56,BEDROCK:57,WOOD_DOOR:58,STONE_DOOR:59,STEEL_DOOR:60,VENDING_MACHINE:61,WOOD_TRAPDOOR:62,STONE_TRAPDOOR:63,STEEL_TRAPDOOR:64,CLAY:65,WET_CLAY:66,BRICK:67,LADDER:68,SPRING_PLATFORM:69,INVASION_CACHE:70,UFO_CONCRETE:71,MOTHER_ICE:72,MOTHER_LAVA:73,ALTAR:74,GLOWSHROOM:75,CHIMNEY:76,RESPAWN_TOTEM:77,UNSTABLE_SAND:78,UNSTABLE_GRASS:79,QUICKSAND:80,GOLD_ORE:81,TRACK:82,CHAIR_WOOD:83,CHAIR_STONE:84,CHAIR_STEEL:85};
+export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,LAVA:13,MUD:14,OBSIDIAN:15,TORCH:16,GRAVE:17,VOLCANO_MASTER_STONE:18,STEEL:19,MEAT:20,ROTTEN_MEAT:21,GLASS:22,WIRE:23,ELECTRONICS:24,COAL:25,HOT_AIR:26,STEAM:27,POISON_GAS:28,FUEL_GAS:29,DYNAMO:30,DYNAMO_SLOT:31,BAKED_MEAT:32,COPPER_WIRE:33,TELEPORTER:34,TRANSISTOR:35,SOLAR_PANEL:36,SOLAR_BATTERY:37,SERVANT_STONE:38,AUTUMN_LEAF_ORANGE:39,AUTUMN_LEAF_RED:40,IRIDIUM:41,METEORIC_IRON:42,ANTIGRAVITY_BEACON:43,TURRET:44,FIRE_TURRET:45,WATER_TURRET:46,WATER_PIPE:47,WATER_PUMP:48,METEOR_SIREN:49,RADIOACTIVE_ORE:50,ALIEN_BIOMASS:51,METEOR_DUST:52,ANTIMATTER_CRYSTAL:53,DIRT:54,GRANITE:55,BASALT:56,BEDROCK:57,WOOD_DOOR:58,STONE_DOOR:59,STEEL_DOOR:60,VENDING_MACHINE:61,WOOD_TRAPDOOR:62,STONE_TRAPDOOR:63,STEEL_TRAPDOOR:64,CLAY:65,WET_CLAY:66,BRICK:67,LADDER:68,SPRING_PLATFORM:69,INVASION_CACHE:70,UFO_CONCRETE:71,MOTHER_ICE:72,MOTHER_LAVA:73,ALTAR:74,GLOWSHROOM:75,CHIMNEY:76,RESPAWN_TOTEM:77,UNSTABLE_SAND:78,UNSTABLE_GRASS:79,QUICKSAND:80,GOLD_ORE:81,TRACK:82,CHAIR_WOOD:83,CHAIR_STONE:84,CHAIR_STEEL:85,GRASS_SNOW:86,FROZEN_DIRT:87,FROZEN_SAND:88,FROZEN_CLAY:89,TOXIC_SNOW:90};
 export const INFO = {
   0:{hp:0,color:null,drop:null,passable:true},
   // flammable/burnTime drive the fire system (engine/fire.js): seconds a tile burns
@@ -129,7 +129,19 @@ export const INFO = {
  // how efficiently the seated hero's own energy can drive the tracks.
  83:{hp:4,color:'#a9743c',drop:'chairWood',passable:true, chair:true, chairMaterial:'wood', flammable:true, burnTime:30},
  84:{hp:7,color:'#8d939c',drop:'chairStone',passable:true, chair:true, chairMaterial:'stone'},
- 85:{hp:9,color:'#9fb0bd',drop:'chairSteel',passable:true, chair:true, chairMaterial:'steel'}
+ 85:{hp:9,color:'#9fb0bd',drop:'chairSteel',passable:true, chair:true, chairMaterial:'steel'},
+ // Winter grass: living turf dusted by snowfall (clouds deposit / seasonal dusting).
+ // First stage of accumulation — melts back to GRASS, mines like grass. Too damp to burn.
+ 86:{hp:2,color:'#7fa06b',drop:'grass',passable:false, snowyGrass:true},
+ // Permafrost: frozen soil band of the deep-cold west. Mines several times slower
+ // than its thawed base; heat (flamethrower, fire, torch) thaws it back first.
+ 87:{hp:12,color:'#6d6472',drop:'dirt',passable:false, geology:true, frozenEarth:true},
+ 88:{hp:10,color:'#a8a794',drop:'sand',passable:false, frozenEarth:true},
+ 89:{hp:11,color:'#7e7a86',drop:'clay',passable:false, frozenEarth:true},
+ // Toxic snow: snowfall from a gas-contaminated cloud (volcano plumes, poison gas).
+ // Mines into the toxicSnow resource (crafts into bow snowballs); melts into
+ // polluted water instead of clean runoff.
+ 90:{hp:2,color:'#c9e8ba',drop:'toxicSnow',passable:false, toxicSnow:true}
 };
 // Rows above (i.e. numerically below) this line get snow cover; tuned for the v2
 // terrain where sea level sits at row ~62 and peaks reach row ~10
@@ -141,6 +153,15 @@ export const BLINK_DUR = 160;
 export const isSolid = t => t !== T.AIR && !INFO[t].passable;
 export const isAutumnLeaf = t => t === T.AUTUMN_LEAF_ORANGE || t === T.AUTUMN_LEAF_RED;
 export const isLeaf = t => t === T.LEAF || isAutumnLeaf(t);
+// Temperature-system tile families. Frozen earth is the permafrost variant of a
+// diggable soil; both directions of the mapping stay here so worldgen, seasons,
+// fire and reactions never invent their own pairs.
+export const FROZEN_EARTH_BY_BASE = Object.freeze({[T.DIRT]:T.FROZEN_DIRT, [T.SAND]:T.FROZEN_SAND, [T.CLAY]:T.FROZEN_CLAY});
+export const THAWED_EARTH_BY_FROZEN = Object.freeze({[T.FROZEN_DIRT]:T.DIRT, [T.FROZEN_SAND]:T.SAND, [T.FROZEN_CLAY]:T.CLAY});
+export const isFrozenEarth = t => t === T.FROZEN_DIRT || t === T.FROZEN_SAND || t === T.FROZEN_CLAY;
+export const frozenEarthVariant = t => FROZEN_EARTH_BY_BASE[t] !== undefined ? FROZEN_EARTH_BY_BASE[t] : null;
+export const thawedEarthVariant = t => THAWED_EARTH_BY_FROZEN[t] !== undefined ? THAWED_EARTH_BY_FROZEN[t] : null;
+export const isSnowyGrass = t => t === T.GRASS_SNOW;
 
 // Backward-compatibility shim: populate window.MM so legacy engine files keep working
 if (typeof window !== 'undefined') {
@@ -165,5 +186,9 @@ if (typeof window !== 'undefined') {
     isSolid,
     isAutumnLeaf,
     isLeaf,
+    isFrozenEarth,
+    frozenEarthVariant,
+    thawedEarthVariant,
+    isSnowyGrass,
   });
 }
