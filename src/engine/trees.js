@@ -291,11 +291,15 @@ window.MM = window.MM || {};
     if(variant==='conifer'){
       const trunkH=5+Math.floor(randSeed(wx+10)*4);
       for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,T.WOOD); }
-      const crownH=trunkH+1; for(let dy=0; dy<crownH; dy++){ const radius=Math.max(0, Math.floor((crownH-dy)/3)); const cy=s-1-trunkH+1 - dy; if(cy<0) break; for(let dx=-radius; dx<=radius; dx++){ if(randSeed(wx*3.1 + dy*7 + dx*11) < 0.85){ put(lx+dx,cy, (snowy && dy<2)?T.SNOW:T.LEAF); } } }
+      // Solid interior with a jittered rim only, and just a one-row snow dusting:
+      // random interior holes + a two-row white cap used to read as a beheaded
+      // crown with floating leaf chunks against a bright winter sky.
+      const crownH=trunkH+1; for(let dy=0; dy<crownH; dy++){ const radius=Math.max(0, Math.floor((crownH-dy)/3)); const cy=s-1-trunkH+1 - dy; if(cy<0) break; for(let dx=-radius; dx<=radius; dx++){ if(Math.abs(dx)<radius || randSeed(wx*3.1 + dy*7 + dx*11) < 0.85){ put(lx+dx,cy, (snowy && dy<1)?T.SNOW:T.LEAF); } } }
       if(snowy) put(lx, s-1-trunkH, T.SNOW);
     } else if(variant==='megaOak'){
       const trunkH=6+Math.floor(randSeed(wx+20)*5); for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,T.WOOD); }
-      const spread=3+Math.floor(randSeed(wx+40)*2); const top=s-1-trunkH; for(let dy=-spread; dy<=spread; dy++){ for(let dx=-spread; dx<=spread; dx++){ const dist=Math.abs(dx)+Math.abs(dy)*0.7; if(dist<=spread+ (randSeed(wx+dx*13+dy*17)-0.5)){ put(lx+dx, top+dy, T.LEAF); } } }
+      // dist<=spread-1 keeps the canopy core solid; jitter shapes only the rim
+      const spread=3+Math.floor(randSeed(wx+40)*2); const top=s-1-trunkH; for(let dy=-spread; dy<=spread; dy++){ for(let dx=-spread; dx<=spread; dx++){ const dist=Math.abs(dx)+Math.abs(dy)*0.7; if(dist<=spread-1 || dist<=spread+ (randSeed(wx+dx*13+dy*17)-0.35)){ put(lx+dx, top+dy, T.LEAF); } } }
     } else if(variant==='tallOak'){
       const trunkH=7+Math.floor(randSeed(wx+60)*4); for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,T.WOOD); }
       const top=s-1-trunkH; const spread=2; for(let dy=-2; dy<=2; dy++){ for(let dx=-spread; dx<=spread; dx++){ if(Math.abs(dx)+Math.abs(dy)*0.9<=spread+0.3){ put(lx+dx, top+dy, T.LEAF); } } }
@@ -310,7 +314,7 @@ window.MM = window.MM || {};
       for(let dy=-3; dy<=2; dy++){
         for(let dx=-4; dx<=4; dx++){
           const dist=Math.abs(dx)*0.68+Math.abs(dy)*0.88;
-          if(dist<=3.05+(randSeed(wx+dx*23+dy*29)-0.42)) put(lx+dx,top+dy,T.LEAF);
+          if(dist<=1.8 || dist<=3.05+(randSeed(wx+dx*23+dy*29)-0.42)) put(lx+dx,top+dy,T.LEAF);
         }
       }
     } else if(variant==='palm'){
@@ -328,7 +332,7 @@ window.MM = window.MM || {};
       }
     } else { // oak
       const trunkH=4+Math.floor(randSeed(wx+80)*3); for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,T.WOOD); }
-      const top=s-1-trunkH; const spread=2; for(let dy=-2; dy<=2; dy++){ for(let dx=-spread; dx<=spread; dx++){ if(Math.abs(dx)+Math.abs(dy)*0.8<=spread+ (randSeed(wx+dx*31+dy*19)-0.4)){ put(lx+dx, top+dy, T.LEAF); } } }
+      const top=s-1-trunkH; const spread=2; for(let dy=-2; dy<=2; dy++){ for(let dx=-spread; dx<=spread; dx++){ const dist=Math.abs(dx)+Math.abs(dy)*0.8; if(dist<=spread-1 || dist<=spread+ (randSeed(wx+dx*31+dy*19)-0.25)){ put(lx+dx, top+dy, T.LEAF); } } }
     }
   }
 

@@ -20,7 +20,9 @@ const pumps = (function(){
   const CONSUMER_CHECK_CAP = 48;
   const SOURCE_CHECK_CAP = 64;
   const PIPE_TTL = 0.72;
-  const PLAYER_SCAN_INTERVAL = 0.50;
+  // Discovery-only cadence (placements register instantly via onTileChanged);
+  // 0.5s burned ~50k fluid-network lookups/s at idle hunting rare machines.
+  const PLAYER_SCAN_INTERVAL = 2.5;
   const VISIBLE_SCAN_INTERVAL_MS = 260;
   const OUTLET_CANDIDATE_CAP = 48;
   const OUTLET_TILES_PER_UPDATE = 2;
@@ -925,6 +927,15 @@ const pumps = (function(){
 
   function scanNearby(player,getTile){
     if(!player || typeof getTile!=='function') return;
+    // Raw world reads for discovery: the fluid-network accessor costs three
+    // lookups per probe. Pumps are base tiles, but pipes live on the
+    // infrastructure OVERLAY — a raw base-tile peek alone never sees them
+    // (which silently killed passive siphons re-seeded from saves), so pair
+    // the peek with the overlay map lookup.
+    const w=(typeof window!=='undefined' && window.MM) ? MM.world : null;
+    const raw=!!(w && typeof w.peekTile==='function' && typeof w.hasInfrastructure==='function');
+    const read=raw ? (x,y)=>w.peekTile(x,y,T.AIR) : (x,y)=>getSafe(getTile,x,y,T.AIR);
+    const pipeAt=raw ? (x,y)=>w.hasInfrastructure(x,y,T.WATER_PIPE) : null;
     const cx=Math.floor(Number(player.x)||0);
     const cy=Math.floor(Number(player.y)||0);
     const rx=58, ry=36;
@@ -932,9 +943,9 @@ const pumps = (function(){
     let pipeSeeds=0;
     for(let y=y0; y<=y1; y++){
       for(let x=cx-rx; x<=cx+rx; x++){
-        const t=getSafe(getTile,x,y,T.AIR);
+        const t=read(x,y);
         if(t===T.WATER_PUMP) ensureMachine(x,y,getTile);
-        else if(t===T.WATER_PIPE && pipeSeeds<PASSIVE_SCAN_SEEDS){
+        else if((t===T.WATER_PIPE || (pipeAt && pipeAt(x,y))) && pipeSeeds<PASSIVE_SCAN_SEEDS){
           enqueuePassivePipe(x,y,getTile);
           pipeSeeds++;
         }

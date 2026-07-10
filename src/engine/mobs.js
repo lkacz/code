@@ -6854,6 +6854,20 @@ const mobs = (function(){
       // Helper to draw outline rectangle
       function box(x,y,w,h,fill,stroke){ ctx.fillStyle=fill; ctx.fillRect(x,y,w,h); if(stroke){ ctx.strokeStyle=stroke; ctx.lineWidth=1; ctx.strokeRect(x+0.5,y+0.5,w-1,h-1);} hpTop(y); }
       function shade(x,y,w,h,col,alpha){ ctx.fillStyle=col; ctx.globalAlpha=alpha; ctx.fillRect(x,y,w,h); ctx.globalAlpha=1; }
+      // Shared quadruped legs with a diagonal-gait swing so walkers stop sliding
+      // around like boards (2026-07 art audit: DEER/WOLF/GOAT had no legs at all).
+      // hipY is the top of the leg; feet land at hipY+legH, which callers align
+      // with the sprite baseline (screenY+1 for small bodies, +2 for tall ones).
+      function quadLegs(cx,hipY,span,legW,legH,color){
+        const moving=Math.abs(m.vx)>0.08;
+        const swing=moving? Math.sin(now*0.014 + m.spawnT*0.37)*Math.min(2.4,1.1+Math.abs(m.vx)*0.35) : 0;
+        ctx.fillStyle=color;
+        for(let i=0;i<4;i++){
+          const lx=cx-(span>>1)+Math.round(i*(span-legW)/3);
+          const sw=Math.round((i===0||i===2)?swing:-swing);
+          ctx.fillRect(lx+sw,hipY,legW,legH);
+        }
+      }
       switch(m.id){
         case 'BIRD': { // enlarged with wings + beak + eye
           const flap = Math.sin(phase)*2; // wing flap
@@ -6916,8 +6930,8 @@ const mobs = (function(){
           ctx.fillStyle='#000'; ctx.fillRect(screenX+(faceDir>0?16:-11), screenY-9,2,2);
           // ears
           ctx.fillStyle='#3e2918'; ctx.fillRect(screenX+(faceDir>0?6:-9), screenY-16,3,3); ctx.fillRect(screenX+(faceDir>0?12:-3), screenY-16,3,3);
-          // legs (front/back)
-          ctx.fillStyle='#4d3421'; const legY=screenY+2; ctx.fillRect(screenX-12, legY,5,6); ctx.fillRect(screenX-2, legY,5,6); ctx.fillRect(screenX+6, legY,5,6); ctx.fillRect(screenX+12-4, legY,5,6);
+          // legs (front/back) with a lumbering gait
+          quadLegs(screenX,screenY+2,25,5,6,'#4d3421');
           break; }
         case 'BRAMBLE_STALKER': {
           const body = flashing? '#e8ffd9':(m.baseColor||'#48672f');
@@ -6963,17 +6977,23 @@ const mobs = (function(){
           break; }
         case 'DEER': {
           const body = flashing? '#fff2e0':(m.baseColor||'#9c6a39');
-          box(screenX-10, screenY-9,20,10, body,'#664422');
-          // head
-          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?8:-12), screenY-13,8,6); hpTop(screenY-13);
-          // muzzle
-          ctx.fillStyle='#d9c3a5'; ctx.fillRect(screenX+(faceDir>0?15:-12), screenY-10,3,3);
-          ctx.fillStyle='#000'; ctx.fillRect(screenX+(faceDir>0?16:-11), screenY-9,1,1);
+          quadLegs(screenX,screenY-5,15,2,7,'#6d4726');
+          box(screenX-10, screenY-13,20,9, body,'#664422');
+          shade(screenX-10, screenY-6,20,2,'#000',0.10);
+          // neck + head
+          ctx.fillStyle=body;
+          ctx.fillRect(screenX+(faceDir>0?7:-10), screenY-16,3,4);
+          ctx.fillRect(screenX+(faceDir>0?8:-16), screenY-19,8,6); hpTop(screenY-19);
+          // ear, muzzle, eye
+          ctx.fillStyle='#7a5530'; ctx.fillRect(screenX+(faceDir>0?8:-9), screenY-21,2,3);
+          ctx.fillStyle='#d9c3a5'; ctx.fillRect(screenX+(faceDir>0?15:-18), screenY-17,3,3);
+          ctx.fillStyle='#000'; ctx.fillRect(screenX+(faceDir>0?12:-13), screenY-18,1,1);
           // antlers
-          ctx.fillStyle='#ccb28a'; const ax=screenX+(faceDir>0?9:-5); const baseY=screenY-13; ctx.fillRect(ax, baseY-5,2,5); ctx.fillRect(ax+4*faceDir, baseY-4,2,5);
-          ctx.fillRect(ax+2*faceDir, baseY-8,2,3); ctx.fillRect(ax+6*faceDir, baseY-7,2,3);
-          // spots
-          ctx.fillStyle='rgba(255,255,255,0.6)'; for(let i=-6;i<=6;i+=4){ ctx.fillRect(screenX+i, screenY-2,2,2); }
+          ctx.fillStyle='#ccb28a'; const ax=screenX+(faceDir>0?10:-12); const baseY=screenY-19; ctx.fillRect(ax, baseY-5,2,5); ctx.fillRect(ax+3*faceDir, baseY-4,2,4);
+          ctx.fillRect(ax+1*faceDir, baseY-8,2,3); ctx.fillRect(ax+5*faceDir, baseY-7,2,3); hpTop(baseY-8);
+          // pale tail nub + rump spots
+          ctx.fillStyle='#e8d8bd'; ctx.fillRect(screenX-(faceDir>0?11:-9), screenY-13,2,3);
+          ctx.fillStyle='rgba(255,255,255,0.6)'; for(let i=-6;i<=2;i+=4){ ctx.fillRect(screenX+i*faceDir, screenY-10,2,2); }
           break; }
         case 'THUNDER_BISON': {
           const body = flashing? '#ffe2ba':(m.baseColor||'#8b5f34');
@@ -6981,15 +7001,27 @@ const mobs = (function(){
           const windup=m.state==='windup';
           const stunned=m.state==='stunned';
           const bob=charging?Math.sin(phase*3)*1.5:0;
+          quadLegs(screenX,screenY+1+bob,34,6,8,'#5a391f');
           box(screenX-23,screenY-15+bob,46,16,body,'#4b301b');
           shade(screenX-23,screenY-4+bob,46,4,'#000',0.13);
-          ctx.fillStyle='#5a391f';
-          ctx.fillRect(screenX-20,screenY+1+bob,7,8);
-          ctx.fillRect(screenX-5,screenY+1+bob,7,8);
-          ctx.fillRect(screenX+11,screenY+1+bob,7,8);
+          // shaggy storm-charged hump over the shoulders
+          ctx.fillStyle='#4b301b';
+          ctx.fillRect(screenX-faceDir*4-10,screenY-19+bob,20,5);
+          ctx.fillStyle='#3a2513';
+          for(let i=-9;i<=8;i+=4) ctx.fillRect(screenX-faceDir*4+i,screenY-15+bob,2,3);
+          hpTop(screenY-19+bob);
+          // faint static crackle on the hump (it is a THUNDER bison)
+          if(Math.sin(phase*3.1)>0.62){
+            ctx.strokeStyle='rgba(170,215,255,0.75)'; ctx.lineWidth=1;
+            const zx=screenX-faceDir*4+Math.sin(phase2*5)*6;
+            ctx.beginPath(); ctx.moveTo(zx,screenY-22+bob); ctx.lineTo(zx+2,screenY-19+bob); ctx.lineTo(zx,screenY-17+bob); ctx.stroke();
+          }
           ctx.fillStyle=body;
           ctx.fillRect(screenX+(faceDir>0?12:-26),screenY-20+bob,14,12);
           hpTop(screenY-20+bob);
+          // dark forelock over the face
+          ctx.fillStyle='#4b301b';
+          ctx.fillRect(screenX+(faceDir>0?12:-26),screenY-20+bob,14,3);
           ctx.fillStyle='#e5d2a7';
           if(faceDir>0){
             ctx.fillRect(screenX+24,screenY-18+bob,7,3);
@@ -7023,17 +7055,21 @@ const mobs = (function(){
           break; }
         case 'WOLF': {
           const body = flashing? '#f5f5f5': (m.baseColor||'#bcbcbc');
-          box(screenX-12, screenY-7,24,9, body,'#555');
+          quadLegs(screenX,screenY-4,18,2,5,'#8a8a8a');
+          box(screenX-12, screenY-11,24,8, body,'#555');
+          // darker back stripe + pale belly
+          shade(screenX-12, screenY-11,24,2,'#000',0.22);
+          shade(screenX-12, screenY-5,24,2,'#fff',0.18);
           // head + ears
-          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?8:-14), screenY-11,10,8); hpTop(screenY-11);
-          ctx.fillStyle='#888'; ctx.fillRect(screenX+(faceDir>0?8:-14), screenY-11,3,3); ctx.fillRect(screenX+(faceDir>0?15:-7), screenY-11,3,3);
-          // snout
-          ctx.fillStyle='#ddd'; ctx.fillRect(screenX+(faceDir>0?16:-10), screenY-7,4,3); ctx.fillStyle='#222'; ctx.fillRect(screenX+(faceDir>0?18:-10), screenY-6,2,2);
-          // tail
+          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?8:-14), screenY-15,10,8); hpTop(screenY-15);
+          ctx.fillStyle='#777'; ctx.fillRect(screenX+(faceDir>0?8:-14), screenY-17,3,4); ctx.fillRect(screenX+(faceDir>0?13:-9), screenY-17,3,4);
+          // snout + nose + eye
+          ctx.fillStyle='#ddd'; ctx.fillRect(screenX+(faceDir>0?16:-20), screenY-12,4,3);
+          ctx.fillStyle='#222'; ctx.fillRect(screenX+(faceDir>0?19:-20), screenY-12,2,2);
+          ctx.fillStyle='#3a2c18'; ctx.fillRect(screenX+(faceDir>0?12:-13), screenY-13,2,2);
+          // bushy tail wags while trotting
           const wag = Math.sin(phase*1.5)*2;
-          ctx.save(); ctx.translate(wag*faceDir,0); ctx.fillStyle='#ddd'; ctx.fillRect(screenX-(faceDir>0?16:-0), screenY-5,6,3); ctx.restore();
-          // darker back stripe
-          shade(screenX-12, screenY-6,24,2,'#000',0.15);
+          ctx.fillStyle='#9c9c9c'; ctx.fillRect(screenX-(faceDir>0?17:-11), screenY-13+wag,6,3);
           break; }
         case 'ICE_WRAITH': {
           const body = flashing? '#ffffff':(m.baseColor||'#d5f6ff');
@@ -7056,6 +7092,18 @@ const mobs = (function(){
           ctx.quadraticCurveTo(screenX-13,screenY-13,screenX,screenY-24);
           ctx.fill();
           hpTop(screenY-24);
+          // cold rim + inner shade so the wraith is a figure, not a soft blot
+          ctx.strokeStyle=veiled?'rgba(180,232,255,0.35)':'rgba(120,208,255,0.65)';
+          ctx.lineWidth=1.2;
+          ctx.stroke();
+          ctx.fillStyle='rgba(96,164,205,0.30)';
+          ctx.beginPath();
+          ctx.ellipse(screenX,screenY-9,4.5,7,0,0,Math.PI*2);
+          ctx.fill();
+          // sunken eye hollows behind the glow
+          ctx.fillStyle='rgba(30,72,96,0.55)';
+          ctx.fillRect(screenX-5,screenY-17,4,4);
+          ctx.fillRect(screenX+2,screenY-17,4,4);
           ctx.fillStyle=veiled?'#dff8ff':'#78dfff';
           ctx.fillRect(screenX-4,screenY-16,2,2);
           ctx.fillRect(screenX+3,screenY-16,2,2);
@@ -7079,10 +7127,22 @@ const mobs = (function(){
           shade(screenX-14,screenY-34+bob,28,7,'#fff',0.14);
           ctx.fillStyle=mixHexColor(body,'#b7d2dd',0.34);
           ctx.fillRect(screenX-12,screenY-26+bob,24,11);
-          ctx.fillStyle=dark;
-          ctx.fillRect(screenX-8,screenY-29+bob,4,3);
-          ctx.fillRect(screenX+4,screenY-29+bob,4,3);
-          ctx.fillRect(screenX-3,screenY-23+bob,6,2);
+          // deep-set sockets with icy pupils and a real mouth — the old low
+          // contrast face washed out to a blank marshmallow from two tiles away
+          ctx.fillStyle='#2d4550';
+          ctx.fillRect(screenX-9,screenY-30+bob,6,4);
+          ctx.fillRect(screenX+3,screenY-30+bob,6,4);
+          ctx.fillStyle='#9fe8ff';
+          ctx.fillRect(screenX-7,screenY-29+bob,2,2);
+          ctx.fillRect(screenX+5,screenY-29+bob,2,2);
+          ctx.fillStyle='#2d4550';
+          ctx.fillRect(screenX-5,screenY-24+bob,10,3);
+          ctx.fillStyle='#e8f6fa';
+          ctx.fillRect(screenX-4,screenY-24+bob,2,2);
+          ctx.fillRect(screenX+2,screenY-24+bob,2,2);
+          // fur combing streaks
+          ctx.fillStyle='rgba(89,114,125,0.30)';
+          for(let i=-13;i<=9;i+=6) ctx.fillRect(screenX+i,screenY-14+bob,2,10);
           ctx.fillStyle='#d8edf4';
           ctx.fillRect(screenX-18,screenY-37+bob,8,7);
           ctx.fillRect(screenX+10,screenY-37+bob,8,7);
@@ -7116,14 +7176,22 @@ const mobs = (function(){
         case 'OWL': {
           const body = flashing? '#ffffff':(m.baseColor||'#c8a860');
           box(screenX-6, screenY-10,12,12, body,'#6a551e');
-          // facial disk
-          ctx.fillStyle='#ead5a0'; ctx.fillRect(screenX-4, screenY-8,8,6); hpTop(screenY-10);
-          // eyes
-          ctx.fillStyle='#000'; ctx.fillRect(screenX-2, screenY-7,2,2); ctx.fillRect(screenX+0, screenY-7,2,2);
+          // ear tufts give the silhouette its owl-ness
+          ctx.fillStyle='#8a6f2e'; ctx.fillRect(screenX-6, screenY-13,3,4); ctx.fillRect(screenX+3, screenY-13,3,4); hpTop(screenY-13);
+          // facial disk, darker-rimmed
+          ctx.fillStyle='#ead5a0'; ctx.fillRect(screenX-4, screenY-9,8,6);
+          ctx.fillStyle='#8a6f2e'; ctx.fillRect(screenX-4, screenY-9,8,1);
+          // big amber eyes with pupils
+          ctx.fillStyle='#ffb020'; ctx.fillRect(screenX-3, screenY-7,3,3); ctx.fillRect(screenX+1, screenY-7,3,3);
+          ctx.fillStyle='#1b1206'; ctx.fillRect(screenX-2, screenY-6,1,1); ctx.fillRect(screenX+2, screenY-6,1,1);
           // beak
-          ctx.fillStyle='#ffb94d'; ctx.fillRect(screenX-1, screenY-5,2,2);
-          // wing flutter
-          const f = Math.sin(phase)*2; ctx.fillStyle='#b99738'; ctx.fillRect(screenX-6, screenY-4+f,12,2);
+          ctx.fillStyle='#ffb94d'; ctx.fillRect(screenX-1, screenY-4,2,2);
+          // folded-wing hatch + flutter
+          const f = Math.sin(phase)*2;
+          ctx.fillStyle='#b99738'; ctx.fillRect(screenX-6, screenY-3+f,12,2);
+          ctx.fillStyle='rgba(0,0,0,0.14)'; ctx.fillRect(screenX-6, screenY-1,3,3); ctx.fillRect(screenX+3, screenY-1,3,3);
+          // talons
+          ctx.fillStyle='#8a6a20'; ctx.fillRect(screenX-3, screenY+2,2,2); ctx.fillRect(screenX+1, screenY+2,2,2);
           break; }
         case 'VULTURE': {
           const body = flashing? '#fff3df':(m.baseColor||'#4e4036');
@@ -7136,6 +7204,9 @@ const mobs = (function(){
           ctx.fillRect(screenX-8,screenY-9,16,11);
           ctx.fillStyle='#7a6650';
           ctx.fillRect(screenX-6,screenY-6,12,5);
+          // pale neck ruff under the bald head — the vulture signature
+          ctx.fillStyle='#efe6d2';
+          ctx.fillRect(screenX+(faceDir>0?4:-9),screenY-7,6,2);
           ctx.fillStyle='#d6c5a7';
           ctx.fillRect(screenX+(faceDir>0?5:-10),screenY-12,7,6); hpTop(screenY-12);
           ctx.fillStyle='#c78a34';
@@ -7176,18 +7247,38 @@ const mobs = (function(){
         case 'SHARK': {
           const body = flashing? '#d0f4ff': (m.baseColor||'#4d7690');
           const sway = Math.sin(phase*0.8)*3*faceDir;
+          const tailWag = Math.sin(phase*2.4)*2;
           ctx.save(); ctx.translate(sway,0);
-          box(screenX-24, screenY-6,48,12, body,'#223b48'); // body
-          // white belly stripe
-          ctx.fillStyle='#e9f6fa'; ctx.fillRect(screenX-24, screenY+2,48,4);
-          // dorsal fin
-          ctx.fillStyle='#2a4a5a'; ctx.fillRect(screenX-4, screenY-12,6,6); hpTop(screenY-12);
-          // tail
-          ctx.fillRect(screenX+(faceDir>0?24:-30), screenY-4,6,8);
-          ctx.fillRect(screenX+(faceDir>0?28:-34), screenY-8,4,6);
-          ctx.fillRect(screenX+(faceDir>0?28:-34), screenY+2,4,6);
-          // mouth & eye
-          ctx.fillStyle='#000'; ctx.fillRect(screenX+(faceDir>0?18:-22), screenY-1,6,2); ctx.fillRect(screenX+(faceDir>0?12:-16), screenY-2,2,2);
+          // tapered silhouette: slim tail stock and nose caps over the core slab
+          box(screenX-20, screenY-6,40,12, body,'#223b48');
+          ctx.fillStyle=body;
+          ctx.fillRect(screenX+(faceDir>0?20:-26), screenY-4,6,9);   // nose taper
+          ctx.fillRect(screenX-(faceDir>0?26:-20), screenY-3,6,6);   // tail stock
+          // white countershaded belly following the taper
+          ctx.fillStyle='#e9f6fa';
+          ctx.fillRect(screenX-18, screenY+2,36,4);
+          ctx.fillRect(screenX+(faceDir>0?18:-24), screenY+2,6,3);
+          // dorsal fin: two stacked steps make a real fin shape
+          ctx.fillStyle='#2a4a5a';
+          ctx.fillRect(screenX-5, screenY-10,7,4);
+          ctx.fillRect(screenX-3, screenY-14,4,5); hpTop(screenY-14);
+          // pectoral fin
+          ctx.fillRect(screenX-faceDir*2-3, screenY+5,6,3);
+          // crescent tail on a wagging joint
+          ctx.save(); ctx.translate(0,tailWag);
+          ctx.fillRect(screenX+(faceDir>0?-30:24), screenY-9,4,8);
+          ctx.fillRect(screenX+(faceDir>0?-30:24), screenY+3,4,7);
+          ctx.fillRect(screenX+(faceDir>0?-27:23), screenY-3,4,6);
+          ctx.restore();
+          // gill slits
+          ctx.fillStyle='rgba(10,28,38,0.55)';
+          for(let i=0;i<3;i++) ctx.fillRect(screenX+faceDir*(8-i*3)-1, screenY-3,1,6);
+          // eye with a white ring + jagged mouth
+          ctx.fillStyle='#e9f6fa'; ctx.fillRect(screenX+(faceDir>0?13:-16), screenY-4,3,3);
+          ctx.fillStyle='#0a141b'; ctx.fillRect(screenX+(faceDir>0?14:-15), screenY-3,1,1);
+          ctx.fillStyle='#0a141b'; ctx.fillRect(screenX+(faceDir>0?16:-22), screenY+1,7,2);
+          ctx.fillStyle='#fff';
+          for(let i=0;i<3;i++) ctx.fillRect(screenX+(faceDir>0?17+i*2:-21+i*2), screenY+1,1,1);
           ctx.restore();
           break; }
         case 'JACKPOT_WHALE': {
@@ -7322,13 +7413,22 @@ const mobs = (function(){
           break; }
         case 'GOAT': {
           const body = flashing? '#fafafa':(m.baseColor||'#c9c4b5');
-          box(screenX-10, screenY-8,20,9, body,'#8d8779');
-          // head
-          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?8:-12), screenY-12,8,6); hpTop(screenY-12);
-          // horns
-          ctx.fillStyle='#9b968a'; ctx.fillRect(screenX+(faceDir>0?8:-12), screenY-14,2,4); ctx.fillRect(screenX+(faceDir>0?14:-6), screenY-14,2,4);
-          // beard
-          ctx.fillStyle='#9b968a'; ctx.fillRect(screenX+(faceDir>0?14:-6), screenY-7,2,2);
+          quadLegs(screenX,screenY-4,14,2,5,'#8d8779');
+          box(screenX-9, screenY-11,18,8, body,'#8d8779');
+          shade(screenX-9, screenY-5,18,2,'#000',0.10);
+          // head raised on a short neck
+          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?7:-13), screenY-16,7,6); hpTop(screenY-16);
+          // curved-back horns (two stacked nubs) + ear
+          ctx.fillStyle='#6f6a5d';
+          ctx.fillRect(screenX+(faceDir>0?7:-9), screenY-18,3,2);
+          ctx.fillRect(screenX+(faceDir>0?5:-7), screenY-20,3,2);
+          ctx.fillStyle='#a9a496'; ctx.fillRect(screenX+(faceDir>0?6:-8), screenY-15,2,2);
+          // eye, muzzle, beard
+          ctx.fillStyle='#2c2c26'; ctx.fillRect(screenX+(faceDir>0?11:-11), screenY-15,1,1);
+          ctx.fillStyle='#b3ada0'; ctx.fillRect(screenX+(faceDir>0?12:-14), screenY-13,2,3);
+          ctx.fillStyle='#9b968a'; ctx.fillRect(screenX+(faceDir>0?12:-13), screenY-10,2,3);
+          // tail nub
+          ctx.fillStyle='#b3ada0'; ctx.fillRect(screenX-(faceDir>0?10:-8), screenY-11,2,2);
           break; }
         case 'STONE_GOLEM': {
           const body = flashing? '#eef3f6':(m.baseColor||'#626870');
@@ -7520,8 +7620,21 @@ const mobs = (function(){
           const sway=Math.sin(phase)*1.4;
           box(screenX-7,screenY-22+sway*0.2,14,17,body,'#2e3f25');
           shade(screenX-7,screenY-22,14,4,'#fff',0.10);
+          // carved stone plates + a glowing chest rune so the golem reads as
+          // temple-work instead of an olive slab
+          ctx.strokeStyle='rgba(30,42,24,0.55)'; ctx.lineWidth=1;
+          ctx.beginPath();
+          ctx.moveTo(screenX-7,screenY-16+sway*0.2); ctx.lineTo(screenX+7,screenY-16+sway*0.2);
+          ctx.moveTo(screenX-7,screenY-11+sway*0.2); ctx.lineTo(screenX+7,screenY-11+sway*0.2);
+          ctx.moveTo(screenX,screenY-16+sway*0.2); ctx.lineTo(screenX,screenY-5+sway*0.2);
+          ctx.stroke();
+          ctx.fillStyle=angry?'rgba(255,205,92,0.85)':'rgba(157,224,120,0.75)';
+          ctx.fillRect(screenX-1,screenY-20+sway*0.2,3,4);
+          // heavier bronze mask with a carved brow ledge
           ctx.fillStyle='#8f6f39';
-          ctx.fillRect(screenX-5,screenY-28,10,7); hpTop(screenY-28);
+          ctx.fillRect(screenX-6,screenY-29,12,8); hpTop(screenY-29);
+          ctx.fillStyle='#6d5227';
+          ctx.fillRect(screenX-6,screenY-29,12,2);
           ctx.fillStyle=angry?'#ffdf7a':'#b9ff93';
           ctx.fillRect(screenX+(faceDir>0?2:-4),screenY-26,3,2);
           ctx.fillRect(screenX+(faceDir>0?-2:2),screenY-25,3,2);
@@ -7657,19 +7770,32 @@ const mobs = (function(){
         case 'GHOUL': { // gaunt hunched night stalker with glowing eyes
           const body = flashing? '#e8ffe8' : (m.baseColor||'#4a5d49');
           const lurch=Math.sin(phase)*1.5;
+          // hunched spine bump behind the head sells the shamble
+          ctx.fillStyle=mixHexColor(body,'#222d22',0.35);
+          ctx.fillRect(screenX-(faceDir>0?7:-1), screenY-24+lurch*0.4, 6, 5);
           box(screenX-6, screenY-22+lurch*0.4, 12, 18, body, '#222d22');           // torso (hunched)
-          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?2:-8), screenY-28+lurch*0.6, 7, 7); hpTop(screenY-28);
-          ctx.fillStyle='#0c100c'; ctx.fillRect(screenX-6, screenY-16, 12, 2);     // rags
-          // dangling arms swing with the shamble
+          // head thrust low and forward
+          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?3:-10), screenY-27+lurch*0.6, 7, 7); hpTop(screenY-27);
+          // ragged hem: torn strips instead of a flat band
+          ctx.fillStyle='#0c100c';
+          ctx.fillRect(screenX-6, screenY-16, 12, 2);
+          for(let i=-6;i<=8;i+=4) ctx.fillRect(screenX+i-2, screenY-14, 2, 2+((i&4)?1:0));
+          // dangling arms swing with the shamble; claw tips
           ctx.fillStyle=body;
           ctx.fillRect(screenX-8, screenY-18+lurch, 3, 12);
           ctx.fillRect(screenX+5, screenY-18-lurch, 3, 12);
+          ctx.fillStyle='#d9e6c8';
+          ctx.fillRect(screenX-8, screenY-6+lurch, 3, 1);
+          ctx.fillRect(screenX+5, screenY-6-lurch, 3, 1);
           // legs
+          ctx.fillStyle=body;
           ctx.fillRect(screenX-4, screenY-4, 3, 5); ctx.fillRect(screenX+1, screenY-4, 3, 5);
-          // glowing eyes
+          // glowing eyes with a faint halo so the stare reads at night
+          ctx.fillStyle='rgba(216,255,154,0.25)';
+          ctx.fillRect(screenX+(faceDir>0?3:-7), screenY-26+lurch*0.6, 6, 4);
           ctx.fillStyle='#d8ff9a';
-          ctx.fillRect(screenX+(faceDir>0?4:-6), screenY-26+lurch*0.6, 2, 2);
-          ctx.fillRect(screenX+(faceDir>0?7:-3), screenY-26+lurch*0.6, 2, 2);
+          ctx.fillRect(screenX+(faceDir>0?4:-6), screenY-25+lurch*0.6, 2, 2);
+          ctx.fillRect(screenX+(faceDir>0?7:-3), screenY-25+lurch*0.6, 2, 2);
           break; }
         case 'BAT': { // small flapping silhouette with red eyes
           const body = flashing? '#fff' : (m.baseColor||'#2b2533');

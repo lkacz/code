@@ -357,7 +357,28 @@ WG.column = function(x){
 	const rv = WG.ridge(xw,1300,801);
 	const rvGate = 1-0.035*Math.max(0.0001,S.ravineFreq);
 	let ravine=0, ravineDepth=0;
-	if(S.ravineFreq>0 && rv>rvGate && elevF>2 && !beach && !island && biome!==8){ ravine=(rv-rvGate)/(1-rvGate); ravineDepth=16+48*ravine; }
+	if(S.ravineFreq>0 && rv>rvGate && elevF>2 && !beach && !island && biome!==8){
+		// The domain warp can cancel x movement (dwarp/dx ≈ -1) and hold the ridge
+		// noise at its peak for hundreds of columns, so the raw gate used to carve
+		// box canyons that swallowed the whole screen (seed 6862 near x=1600:
+		// ~150 columns wide, ~54 deep — rendered as a black void). Trace the gated
+		// span and shape an explicit V profile with a hard half-width cap instead.
+		const rvAt=(xi)=>{ const w=(fbm1(xi,760,2,901)-0.5)*240 + (WG.valueNoise(xi,140,902)-0.5)*36; return WG.ridge(xi+w,1300,801); };
+		const RAVINE_HALF_MAX=14, RAVINE_SPAN_MAX=44, TRACE=RAVINE_SPAN_MAX+2;
+		let L=x, R=x;
+		for(let i=0;i<TRACE && rvAt(L-1)>rvGate;i++) L--;
+		for(let i=0;i<TRACE && rvAt(R+1)>rvGate;i++) R++;
+		// A span wider than any legit ravine is the warp plateau — no canyon at all.
+		if(R-L<=RAVINE_SPAN_MAX){
+			const center=(L+R)/2;
+			const lateral=Math.abs(x-center)/Math.max(1,Math.min((R-L)/2,RAVINE_HALF_MAX));
+			if(lateral<1){
+				const peak=(rv-rvGate)/(1-rvGate);
+				ravine=clamp(peak*(1-lateral*lateral),0,1);
+				ravineDepth=ravine>0 ? 16+48*ravine : 0;
+			}
+		}
+	}
 	const aquifer = WG.aquiferAt(x, row, biome);
 	c = {row,biome,elev:sea-row,cont,ero,pv,mountainMask,valleyDepth,t,m,beach,island,entrance,ravine,ravineDepth,aquifer,volcano,city};
 	colCache.set(x,c); return c;

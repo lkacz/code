@@ -1482,7 +1482,7 @@
     const now=performance.now();
     const debugEnabled = window.__timeOverrideActive===true;
     const manualT = debugEnabled? (window.__timeOverrideValue||0): null;
-    const rawCycleT = ((now-cycleStart)%CYCLE_DURATION)/CYCLE_DURATION;
+    const rawCycleT = (((now-cycleStart)%CYCLE_DURATION)+CYCLE_DURATION)%CYCLE_DURATION/CYCLE_DURATION;
     const cycleT = debugEnabled? manualT : rawCycleT;
     if(!debugEnabled && window.__timeSliderEl && !window.__timeSliderLocked){ window.__timeSliderEl.value = cycleT.toFixed(4); }
     const blend=cachedBiomeBlend(playerX, WORLDGEN); const cols=skyGradientFromPalette(blend.pal,cycleT);
@@ -1568,16 +1568,22 @@
     const twilight=info.twilightBand;
     let a=0, col='#000';
     if(info.isDay){
+      // Twilight grading strong enough to actually read on the world layer —
+      // at 0.10 the terrain and tree canopies kept full noon saturation against
+      // a sepia sky, which made dusk look like a skybox swap instead of evening.
       if(info.tDay<twilight){
-        a = (1 - (info.tDay/twilight)) * 0.10;
+        a = (1 - (info.tDay/twilight)) * 0.20;
         col='#ff9a4a';
       } else if(info.tDay>1-twilight){
-        a = ((info.tDay-(1-twilight))/twilight) * 0.10;
+        a = ((info.tDay-(1-twilight))/twilight) * 0.20;
         col='#ff8240';
       }
     } else {
+      // Night dims the whole scene noticeably (max ~0.42) so torches, windows
+      // and glow actually carry the mood; the old 0.12–0.25 read as daytime
+      // with a dark skybox.
       const nightT = (info.cycleT - dayFrac)/(1-dayFrac);
-      a = 0.12 + 0.13 * Math.sin(nightT*Math.PI);
+      a = 0.22 + 0.20 * Math.sin(nightT*Math.PI);
       col = '#061425';
     }
     if(a>0.001){

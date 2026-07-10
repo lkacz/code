@@ -531,9 +531,24 @@ function setTile(x,y,v){
 // seasons). Recording the dirty band here keeps chunk-cache redraws partial;
 // before this hook those paths only bumped the version, forcing full-section
 // rebakes (the dominant frame cost whenever water/rain/growth was active).
+// Monotonic world-change stamps for cross-frame viewport caches. The global
+// stamp moves on every render-affecting tile change (grass candidacy and fog
+// sightlines can depend on ANY tile); the per-overlay stamps only move when a
+// relevant tile id is involved, so ambient churn (water, fire, growth) doesn't
+// force door/infrastructure rescans every frame near an active ocean.
+let worldRenderChangeCounter=1;
+let doorwayChangeCounter=1;
+let infraOverlayChangeCounter=1;
+MM.worldRenderVersion=1;
 MM.onTileRenderChanged=function(tx,ty,old,next){
 	if(window.__mmNoRenderHook) return;
 	if(!Number.isFinite(tx) || !Number.isFinite(ty) || !worldYInBounds(ty)) return;
+	worldRenderChangeCounter++;
+	MM.worldRenderVersion=worldRenderChangeCounter;
+	if(isDoorTile(old) || isDoorTile(next) || isTrapdoorTile(old) || isTrapdoorTile(next)) doorwayChangeCounter++;
+	// Infrastructure-layer edits arrive as an (AIR,AIR) sentinel; base-tile
+	// infrastructure ids (loose wire, pipes, ladders) are checked directly.
+	if((old===T.AIR && next===T.AIR) || isInfrastructureTileId(old) || isInfrastructureTileId(next)) infraOverlayChangeCounter++;
 	tx=Math.floor(tx); ty=Math.floor(ty);
 	noteRespawnTotemTileChanged(tx,ty,old,next);
 	noteHealingShelterTileChanged(tx,ty);
@@ -6709,10 +6724,15 @@ function collectInfrastructureOverlayCells(sx,sy,viewX,viewY){
 	return cells;
 }
 function infrastructureOverlayCellsFor(sx,sy,viewX,viewY){
+	// Cross-frame cache: a full-viewport scan per frame (~3600 stacked-layer reads)
+	// almost always finds the same cells. Rebuild on camera move, on any world
+	// change (stamp), or after 400ms (fog reveal progresses without tile changes).
 	const key=infrastructureOverlayCacheKey(sx,sy,viewX,viewY);
-	if(infrastructureOverlayFrameCache && infrastructureOverlayFrameCache.key===key) return infrastructureOverlayFrameCache.cells;
+	const now=performance.now();
+	const c=infrastructureOverlayFrameCache;
+	if(c && c.key===key && c.ver===infraOverlayChangeCounter && now-c.at<400) return c.cells;
 	const cells=collectInfrastructureOverlayCells(sx,sy,viewX,viewY) || [];
-	infrastructureOverlayFrameCache={key,cells};
+	infrastructureOverlayFrameCache={key,cells,ver:infraOverlayChangeCounter,at:now};
 	return cells;
 }
 function drawInfrastructureOverlays(sx,sy,viewX,viewY,opts){
@@ -6775,12 +6795,23 @@ function collectDoorwayCellsInRange(x0,x1,y0,y1,cells){
 		}
 	}
 }
+let doorwayCellsCache=null;
 function visibleDoorwayCellsFor(sx,sy,viewX,viewY){
 	const x0=Math.floor(sx)-2, x1=Math.ceil(sx+viewX)+2;
 	const y0=Math.max(worldMinY(),Math.floor(sy)-2), y1=Math.min(worldMaxY()-1,Math.ceil(sy+viewY)+2);
+	// Cross-frame cache: this was a full-viewport getTile sweep per frame hunting
+	// doors that usually don't exist. Open/close animation state is derived per
+	// frame from the cached cell list, so only placement/mining (world stamp) and
+	// camera movement change the set; the TTL covers fog-reveal visibility drift.
+	const key=x0+','+x1+','+y0+','+y1;
+	const now=performance.now();
+	const c=doorwayCellsCache;
+	if(c && c.key===key && c.ver===doorwayChangeCounter && now-c.at<400) return c.view;
 	const cells=[];
 	collectDoorwayCellsInRange(x0,x1,y0,y1,cells);
-	return {cells,x0,x1,y0,y1};
+	const view={cells,x0,x1,y0,y1};
+	doorwayCellsCache={key,ver:doorwayChangeCounter,at:now,view};
+	return view;
 }
 function drawDoorOpenOverlays(sx,sy,viewX,viewY){
 	const doorwayView=visibleDoorwayCellsFor(sx,sy,viewX,viewY);
@@ -8453,12 +8484,25 @@ function visionPiercesBlocks(){
 	return id==='glow' || id==='gold' || (eye && eye.unique==='alien_sight');
 }
 function visionRemembersMap(){ return true; }
+let revealMemo={key:'',x:1e9,y:1e9,at:-1e9,ver:-1};
 function revealAround(){
 	const m=MM.activeModifiers||{};
 	const r = (typeof m.visionRadius==='number')? m.visionRadius : 10;
+	const los = !visionPiercesBlocks();
+	const remember = visionRemembersMap();
+	// The reveal disc (~314 cells, each with an LOS raycast) recomputed every frame
+	// even when nothing could have changed. Skip while the player hasn't moved,
+	// no tile changed (world stamp — mining opens sightlines), vision modifiers
+	// are the same, and the last pass is fresh.
+	const now=performance.now();
+	const key=r+'|'+los+'|'+remember;
+	if(revealMemo.key===key && revealMemo.ver===worldRenderChangeCounter &&
+		Math.abs(player.x-revealMemo.x)+Math.abs(player.y-revealMemo.y)<0.35 &&
+		now-revealMemo.at<120) return;
+	revealMemo={key,x:player.x,y:player.y,at:now,ver:worldRenderChangeCounter};
 	if(FOG && FOG.revealAround) FOG.revealAround(player.x, player.y, r, {
-		lineOfSight: !visionPiercesBlocks(),
-		rememberSeen: visionRemembersMap(),
+		lineOfSight: los,
+		rememberSeen: remember,
 		getTile,
 		blocksSight: (t)=>isSolid(t)
 	});
@@ -9946,7 +9990,7 @@ function draw(){ // Background first
  // removes subpixel shimmer without snapping the camera to whole tile pixels.
  const camRenderX = renderCam.x;
  const camRenderY = renderCam.y;
- const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const renderDetail=renderDetailFor(zoom,viewX,viewY); publishRenderDetail(renderDetail,zoom); const sx=Math.floor(camRenderX)-1; const sy=Math.floor(camRenderY)-1; infrastructureOverlayFrameCache=null; ctx.save(); if(screenShake && (screenShake.x || screenShake.y)) ctx.translate(screenShake.x,screenShake.y); ctx.scale(zoom,zoom);
+ const viewX=Math.ceil(W/(TILE*zoom)); const viewY=Math.ceil(H/(TILE*zoom)); const renderDetail=renderDetailFor(zoom,viewX,viewY); publishRenderDetail(renderDetail,zoom); const sx=Math.floor(camRenderX)-1; const sy=Math.floor(camRenderY)-1; ctx.save(); if(screenShake && (screenShake.x || screenShake.y)) ctx.translate(screenShake.x,screenShake.y); ctx.scale(zoom,zoom);
  ctx.translate(-camRenderX*TILE,-camRenderY*TILE);
  ctx.imageSmoothingEnabled=false; // avoid anti-alias gaps
  try {
@@ -10418,13 +10462,16 @@ function drawMinimap(){
 						const outsideLegacyBand = wy<0 || wy>=WORLD_H;
 						const discovered=worldTileDiscovered(wx,wy);
 						if((wy>surf || outsideLegacyBand) && !discovered && minimapConcealsUndiscovered(t)){
+							// Undiscovered sky-island fabric (wy<0) stays invisible — a gray
+							// placeholder up there reads as static noise across the sky band.
+							if(wy<0) continue;
 							if(isPlayerPassableTile(t) || t===T.TORCH) cave=true;
 							else if(!color) color=outsideLegacyBand?'rgba(99,121,148,0.62)':'#686d78';
 							continue;
 						}
 						const c=minimapTileColor(t);
 						if(t===T.WATER || t===T.LAVA || t===T.GOLD_ORE || t===T.DIAMOND || t===T.IRIDIUM || t===T.UFO_CONCRETE || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.TRACK || isChairTileId(t) || t===T.GLASS || t===T.CHIMNEY || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || t===T.RESPAWN_TOTEM || INFO[t].chestTier || INFO[t].cache){ color=c; priority=true; wx=wx1+1; break; }
-						if(!color) color=outsideLegacyBand && !discovered ? 'rgba(120,145,176,0.58)' : c;
+						if(!color && !(wy<0 && !discovered)) color=outsideLegacyBand && !discovered ? 'rgba(120,145,176,0.58)' : c;
 					}
 				}
 				const pxColor=priority?color:(cave?'rgba(2,5,10,0.72)':(color||null));
