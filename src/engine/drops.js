@@ -35,6 +35,8 @@ const drops = (function(){
   const RADIUS=0.18;            // collision half-extent in tiles
   const PICKUP_RADIUS=1.75;     // manual E reach
   const AUTO_RADIUS=2.35;       // auto-pickup magnet reach
+  const MOUSE_HIT=0.55;         // cursor-over-drop hit radius (hover preview)
+  const MOUSE_PICKUP_RADIUS=3.0;// click-to-take reach (mirrors cursor mining)
   const COLLECT_DIST=0.55;
   const MAGNET_SPEED=9.5;       // tiles/s toward the hero while vacuumed
   const MERGE_DIST=0.85;        // settled same-resource piles merge
@@ -446,6 +448,42 @@ const drops = (function(){
     return !!nearestInReach(player,PICKUP_RADIUS);
   }
 
+  // --- cursor pickup (PC): hover previews a drop, a click takes exactly it ---
+  // opts.visible gates fog: an undiscovered drop neither previews nor grabs.
+  let hoverDrop=null; // draw() highlights this one (set fresh each frame by hoverAt)
+  function dropAtPoint(wx,wy,opts){
+    if(!finiteNum(wx) || !finiteNum(wy)) return null;
+    const r2=MOUSE_HIT*MOUSE_HIT;
+    let best=null, bestD=Infinity;
+    for(const d of list){
+      const dx=d.x-wx, dy=d.y-wy;
+      const dd=dx*dx+dy*dy;
+      if(dd<=r2 && dd<bestD){ bestD=dd; best=d; }
+    }
+    if(best && opts && typeof opts.visible==='function' && !opts.visible(Math.floor(best.x),Math.floor(best.y))) return null;
+    return best;
+  }
+  // Preview payload for the corner panel: enough to render name/tier/stats
+  // without handing the caller the live entity.
+  function hoverAt(wx,wy,player,opts){
+    const d=dropAtPoint(wx,wy,opts);
+    hoverDrop=d;
+    if(!d) return null;
+    const inReach=!!(player && finiteNum(player.x) && dist2ToPlayer(d,player)<=MOUSE_PICKUP_RADIUS*MOUSE_PICKUP_RADIUS);
+    const info={id:d.id, kind:d.kind, tier:d.tier, x:d.x, y:d.y, qty:d.qty, inReach};
+    if(d.kind==='gear') info.item=Object.assign({},d.item);
+    else { info.res=d.res; info.label=resourceLabel(d.res); info.glyph=d.glyph; info.color=d.color; }
+    return info;
+  }
+  // Selective grab: 'picked' consumed the click, 'far' means walk closer
+  // (the caller lets the click fall through to mining/attacking), null = no drop.
+  function pickupAt(wx,wy,player,opts){
+    const d=dropAtPoint(wx,wy,opts);
+    if(!d) return null;
+    if(!player || !finiteNum(player.x) || dist2ToPlayer(d,player)>MOUSE_PICKUP_RADIUS*MOUSE_PICKUP_RADIUS) return 'far';
+    return collect(d) ? 'picked' : null;
+  }
+
   // --- simulation -----------------------------------------------------------
   function stepPhysics(d,dt,getTile){
     const here=getSafe(getTile,d.x,d.y);
@@ -700,6 +738,12 @@ const drops = (function(){
         ctx.fillRect(-s/2+2,-s/2+2,s-4,3);
       }
       ctx.restore();
+      // cursor hover: a breathing ring says "this one previews in the corner"
+      if(hoverDrop===d){
+        const hr=s*0.95+Math.sin(now*0.008)*1.2;
+        ctx.strokeStyle='rgba(255,255,255,0.85)'; ctx.lineWidth=1.5;
+        ctx.beginPath(); ctx.arc(px,py,hr,0,Math.PI*2); ctx.stroke();
+      }
       // ticking-bomb bar: rare+ gear wears its remaining time on its sleeve
       if(d.kind==='gear' && d.tier!=='common'){
         const frac=Math.max(0,Math.min(1,left/lifetime));
@@ -785,19 +829,19 @@ const drops = (function(){
       }
     }
   }
-  function reset(){ list.length=0; mergeT=0; dry=0; sacrificeDry=0; }
+  function reset(){ list.length=0; mergeT=0; dry=0; sacrificeDry=0; hoverDrop=null; }
 
   const api={
     update,draw,
     spawnResource,spawnGear,rollGearDrop,rollGuardianDrop,
-    pickupNearest,wantsInteractKey,
+    pickupNearest,wantsInteractKey,hoverAt,pickupAt,
     autoPickup,setAutoPickup,
     snapshot,restore,reset,
     metrics:()=>({active:list.length, autoPickup:autoPickup()}),
     _debug:{list, GEAR_LOOT, GUARDIAN_LOOT, dangerFor, rollTier, setRandom:(fn)=>{ rand=typeof fn==='function'?fn:Math.random; }, collect, nearestInReach,
       dryStreak:()=>dry, setDryStreak:(n)=>{ dry=Math.max(0,Math.floor(Number(n)||0)); },
       sacrificeDry:()=>sacrificeDry,
-      config:{MAX_DROPS,DESPAWN_SEC,GEAR_LIFE,GUARDIAN_RELIC_LIFE,PICKUP_RADIUS,AUTO_RADIUS,COLLECT_DIST,MERGE_DIST,SIDEKICK_DROP_CHANCE,SIDEKICK_EPIC_CHANCE,PITY_KILLS,SACRIFICE_BASE,SACRIFICE_STEP,SACRIFICE_MAX}}
+      config:{MAX_DROPS,DESPAWN_SEC,GEAR_LIFE,GUARDIAN_RELIC_LIFE,PICKUP_RADIUS,AUTO_RADIUS,COLLECT_DIST,MERGE_DIST,MOUSE_HIT,MOUSE_PICKUP_RADIUS,SIDEKICK_DROP_CHANCE,SIDEKICK_EPIC_CHANCE,PITY_KILLS,SACRIFICE_BASE,SACRIFICE_STEP,SACRIFICE_MAX}}
   };
   MM.drops=api;
   return api;

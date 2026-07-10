@@ -1084,6 +1084,22 @@ import './inventory.js';
   if(closeBtn) closeBtn.addEventListener('click',close);
   overlay.addEventListener('click',e=>{ if(e.target===overlay) close(); });
   function isEditableTarget(t){ if(!t || !t.tagName) return false; const tag=t.tagName; return tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||t.isContentEditable; }
+  // Hold-to-open: a short E tap belongs to the world (ground-drop sweep, mech
+  // boarding — see the precedence probes below), but HOLDING E for a beat
+  // always lands in the wardrobe, so loot underfoot can't lock the player out.
+  const E_HOLD_MS=450;
+  let eHoldTimer=null;
+  function cancelEHold(){ if(eHoldTimer!=null){ clearTimeout(eHoldTimer); eHoldTimer=null; } }
+  function armEHold(){
+    cancelEHold();
+    eHoldTimer=setTimeout(()=>{
+      eHoldTimer=null;
+      // fire only into a free screen: another modal (loot inbox, trader…) wins
+      if(!isOpen() && !(MM.modalInput && MM.modalInput.isOpen())) open();
+    },E_HOLD_MS);
+  }
+  window.addEventListener('keyup',e=>{ if(e.key.toLowerCase()==='e') cancelEHold(); });
+  window.addEventListener('blur',cancelEHold);
   window.addEventListener('keydown',e=>{
     if(isOpen()){
       if(e.key==='Escape'){
@@ -1094,7 +1110,8 @@ import './inventory.js';
         } else close();
         e.stopImmediatePropagation(); return;
       }
-      if(!isEditableTarget(e.target) && e.key.toLowerCase()==='e' && !e.ctrlKey && !e.metaKey && !e.altKey){ e.preventDefault(); close(); e.stopImmediatePropagation(); return; }
+      // !repeat: the still-held E that hold-opened the panel must not close it
+      if(!isEditableTarget(e.target) && !e.repeat && e.key.toLowerCase()==='e' && !e.ctrlKey && !e.metaKey && !e.altKey){ e.preventDefault(); close(); e.stopImmediatePropagation(); return; }
       if(!isEditableTarget(e.target) && e.key==='/'){
         e.preventDefault();
         if(searchInput){ searchInput.focus(); searchInput.select(); }
@@ -1111,7 +1128,8 @@ import './inventory.js';
       return;
     }
     if(isEditableTarget(e.target)) return;
-    if(e.key.toLowerCase()==='e' && !e.ctrlKey && !e.metaKey && !e.altKey){
+    if(!e.repeat && e.key.toLowerCase()==='e' && !e.ctrlKey && !e.metaKey && !e.altKey){
+      armEHold(); // holding past the tap window opens the wardrobe regardless
       // Machine context wins the interaction key: riding a mech, standing next
       // to a boardable hull or on a pilot chair routes E to the mech handler
       // (main.js keydown) — the wardrobe only opens away from machines.
@@ -1123,6 +1141,7 @@ import './inventory.js';
         const drops=window.MM && MM.drops;
         if(drops && drops.wantsInteractKey && drops.wantsInteractKey(window.player)) return;
       }catch(err){ /* mech module absent: plain toggle */ }
+      cancelEHold(); // a plain tap opens right away — no need for the hold
       toggle();
     }
   });

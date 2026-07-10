@@ -7727,7 +7727,7 @@ function buildWeaponTip(k){
 	if(!preview){
 		frag.appendChild(hudTipTitle(c.icon+' '+c.label));
 		frag.appendChild(hudTipNode('tipWarn','Brak broni w skrócie'));
-		frag.appendChild(hudTipNode('tipHint','Zaznacz „Skrót" przy broni w Ekwipunku (E)'));
+		frag.appendChild(hudTipNode('tipHint','Zaznacz „Skrót" przy broni w Ekwipunku (przytrzymaj E)'));
 		return frag;
 	}
 	frag.appendChild(hudTipTitle(c.icon+' '+(preview.name||preview.id), tierColors[preview.tier]||null));
@@ -8933,6 +8933,52 @@ function updateHoverInfo(){
 	hoverInfoEl.textContent=info.label;
 	hoverInfoEl.style.setProperty('--hover-color',info.color);
 	hoverInfoEl.classList.add('show');
+}
+// --- Ground-drop hover preview (PC): corner card for the loot under the cursor ---
+// drops.hoverAt runs once per frame here — it also drives the in-world highlight
+// ring; the card itself rebuilds only when the hovered drop/reach state changes.
+const dropPreviewEl=document.getElementById('dropPreview');
+let dropPreviewKey='';
+function hideDropPreview(){
+	if(dropPreviewKey!==''){ dropPreviewKey=''; dropPreviewEl.classList.remove('show'); dropPreviewEl.textContent=''; }
+}
+function dropPreviewNode(cls,text){ const n=document.createElement('div'); n.className=cls; if(text) n.textContent=text; return n; }
+function updateDropPreview(){
+	if(!dropPreviewEl || !DROPS || !DROPS.hoverAt) return;
+	const touch=document.documentElement.dataset.inputMode==='touch';
+	if(touch || !lastPointer.has || pinch || modalInputOpen()){
+		DROPS.hoverAt(NaN,NaN); // also clears the in-world highlight ring
+		hideDropPreview();
+		return;
+	}
+	const aim=screenToWorld(lastPointer.x,lastPointer.y);
+	const info=DROPS.hoverAt(aim.x,aim.y,player,{visible:worldFxVisible});
+	if(!info){ hideDropPreview(); return; }
+	const key=info.id+':'+(info.qty||1)+':'+(info.inReach?1:0);
+	if(key===dropPreviewKey) return;
+	dropPreviewKey=key;
+	dropPreviewEl.textContent='';
+	const INV=MM.inventory;
+	const tierColor=(INV && INV.TIER_COLORS && INV.TIER_COLORS[info.tier])||'#b07f2c';
+	dropPreviewEl.style.setProperty('--drop-tier',tierColor);
+	if(info.kind==='gear'){
+		const it=info.item||{};
+		const KIND_ICON={cape:'🧥', eyes:'👁️', outfit:'👕', weapon:'⚔️', charm:'🔮'};
+		const KIND_NAME={cape:'peleryna', eyes:'oczy', outfit:'strój', weapon:'broń', charm:'talizman'};
+		const TIER_NAME={common:'zwykły', rare:'rzadki', epic:'epicki'};
+		dropPreviewEl.appendChild(dropPreviewNode('dpTitle',(KIND_ICON[it.kind]||'🎁')+' '+(it.name||it.id||'Przedmiot')));
+		dropPreviewEl.appendChild(dropPreviewNode('dpSub',(KIND_NAME[it.kind]||it.kind||'')+' · '+(TIER_NAME[info.tier]||info.tier)+(INV&&INV.itemScore?' · Moc '+INV.itemScore(it):'')));
+		if(INV && INV.statChips){
+			const chips=document.createElement('div'); chips.className='dpChips';
+			INV.statChips(it).forEach(ch=>{ const c=document.createElement('span'); c.className='dpChip'; c.title=ch.label; c.textContent=ch.icon+' '+ch.text; chips.appendChild(c); });
+			if(chips.childNodes.length) dropPreviewEl.appendChild(chips);
+		}
+		if(it.desc) dropPreviewEl.appendChild(dropPreviewNode('dpDesc',it.desc));
+	} else {
+		dropPreviewEl.appendChild(dropPreviewNode('dpTitle',(info.glyph||'📦')+' '+(info.label||info.res)+(info.qty>1?' ×'+info.qty:'')));
+	}
+	dropPreviewEl.appendChild(dropPreviewNode('dpHint',info.inReach?'LPM podnosi · E zbiera wszystko w zasięgu':'Podejdź bliżej, aby podnieść'));
+	dropPreviewEl.classList.add('show');
 }
 // Kopanie (kierunkowe + wskazywane kursorem)
 const MINE_REACH=3; // Chebyshev tile distance for cursor mining
@@ -10279,6 +10325,13 @@ canvas.addEventListener('pointerdown',e=>{
 	const {tx,ty}=screenToWorldTile(e.clientX,e.clientY);
 	const weaponMode=!isToolMode();
 	if(e.button===0){
+		// Cursor loot grab (PC): clicking the hovered ground drop takes exactly that
+		// one (the corner preview announces it first). 'far' falls through, so the
+		// click still mines/fires toward a drop that's out of reach.
+		if(e.pointerType!=='touch' && DROPS && DROPS.pickupAt){
+			const aim=screenToWorld(e.clientX,e.clientY);
+			if(DROPS.pickupAt(aim.x,aim.y,player,{visible:worldFxVisible})==='picked'){ noteSaveActivity(); return; }
+		}
 		if(assignCompanionHarvestTargetAt(tx,ty)) return;
 		if(weaponMode){
 			weaponPointerId=e.pointerId;
@@ -13709,6 +13762,7 @@ let lastLoopErrAt=0; function loop(ts){
 		drawMs=framePerfNow()-drawT;
 		recordFramePerf(lastFrameMs,simMs,drawMs);
 		updateHoverInfo();
+		updateDropPreview();
 		updateWeaponGauges();
 		if(paused){
 			ctx.save();

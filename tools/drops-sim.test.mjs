@@ -4,6 +4,9 @@
 //     falling when the ground under them is mined away)
 //   * manual mode: E collects the nearest drop in reach (wantsInteractKey
 //     claims the interact key from the wardrobe); auto mode vacuums drops
+//   * cursor pickup (PC): hoverAt previews the drop under the pointer (fog-
+//     gated, copies the item), pickupAt click-grabs exactly one within reach;
+//     holding E (E_HOLD_MS) always opens the wardrobe
 //   * resource pickups add to window.inv; gear pickups ride the chest-loot
 //     pipeline (MM.dynamicLoot + MM.onLootGained inbox celebration)
 //   * themed species gear rolls (GEAR_LOOT): kind/weapon class forced through
@@ -90,6 +93,36 @@ drops.spawnResource(30.5, SURF - 1, 'coal', 1, { vx: 0, vy: 0 });
 player.x = 30.5 + CFG.PICKUP_RADIUS + 0.5;
 assert.equal(drops.wantsInteractKey(player), false, 'drop beyond reach does not claim E');
 player.x = 500;
+
+// --- cursor pickup: hover previews, a click takes exactly one -----------------
+drops.reset(); msgs.length = 0; inv.coal = 0;
+const hovGear = drops.spawnGear(60.5, SURF - 1, { id: 'cape_drop_hov', kind: 'cape', name: 'Peleryna pod kursorem', tier: 'rare', airJumps: 1 }, { vx: 0, vy: 0 });
+const hovRes = drops.spawnResource(62.5, SURF - 1, 'coal', 2, { vx: 0, vy: 0 });
+advance(0.5);
+player.x = 61.0; player.y = SURF - 1;
+const hovInfo = drops.hoverAt(hovGear.x, hovGear.y, player);
+assert.ok(hovInfo && hovInfo.kind === 'gear' && hovInfo.item && hovInfo.item.id === 'cape_drop_hov',
+  'hover over a gear drop returns its item payload');
+assert.equal(hovInfo.inReach, true, 'hover reports click reach from the hero');
+assert.notEqual(hovInfo.item, hovGear.item, 'hover hands out a copy, not the live item');
+const hovRes2 = drops.hoverAt(hovRes.x, hovRes.y, player);
+assert.ok(hovRes2 && hovRes2.kind === 'resource' && hovRes2.label && hovRes2.qty === 2,
+  'hover over a resource drop returns label and count');
+assert.equal(drops.hoverAt(hovGear.x, hovGear.y - CFG.MOUSE_HIT - 0.3, player), null,
+  'cursor beyond the hit radius previews nothing');
+assert.equal(drops.hoverAt(hovGear.x, hovGear.y, player, { visible: () => false }), null,
+  'fog-hidden drops neither preview nor highlight');
+// selective grab: the click takes ONLY the pointed drop, its neighbor stays
+assert.equal(drops.pickupAt(hovRes.x, hovRes.y, player), 'picked', 'click within reach takes the drop');
+assert.equal(inv.coal, 2, 'clicked resource lands in the inventory');
+assert.equal(drops.metrics().active, 1, 'the neighboring drop is untouched');
+player.x = hovGear.x + CFG.MOUSE_PICKUP_RADIUS + 0.5;
+assert.equal(drops.pickupAt(hovGear.x, hovGear.y, player), 'far', 'click beyond reach asks to walk closer');
+assert.equal(drops.pickupAt(hovGear.x, hovGear.y, player, { visible: () => false }), null,
+  'fog-hidden drops cannot be click-grabbed');
+assert.equal(drops.metrics().active, 1, 'a too-far click leaves the drop in the world');
+player.x = 500;
+drops.hoverAt(NaN, NaN); // main.js clears the hover highlight this way each gated frame
 
 // --- auto-pickup: vacuum without a key ----------------------------------------
 drops.reset();
@@ -390,12 +423,19 @@ assert.match(mainSrc, /MECHS\.wantsInteractKey\(player\)/, 'machine context stil
 assert.match(mainSrc, /id:'meat_block', name:'Blok miesa', cost:\{meatScrap:3\}/, 'meat scraps meld into a MEAT block at the bench');
 assert.match(mainSrc, /Auto-zbieranie łupów/, 'pause panel exposes the auto-pickup toggle');
 assert.match(mainSrc, /if\(DROPS && DROPS\.reset\) DROPS\.reset\(\)/, 'world resets clear lingering drops');
+assert.match(mainSrc, /DROPS\.pickupAt\(aim\.x,aim\.y,player,\{visible:worldFxVisible\}\)==='picked'/, 'left click grabs the hovered drop (fog-gated)');
+assert.match(mainSrc, /updateDropPreview\(\);/, 'frame loop refreshes the corner drop preview');
+assert.match(mainSrc, /DROPS\.hoverAt\(aim\.x,aim\.y,player,\{visible:worldFxVisible\}\)/, 'hover preview asks drops.hoverAt with the fog gate');
 const mobsSrc = readFileSync(new URL('../src/engine/mobs.js', import.meta.url), 'utf8');
 assert.match(mobsSrc, /MM\.drops && MM\.drops\.spawnResource/, 'mob deaths route loot through physical drops');
 assert.match(mobsSrc, /MM\.drops\.rollGearDrop\(m\)/, 'mob deaths roll themed gear drops');
 assert.match(mobsSrc, /meatScrapCountFor/, 'meat kills shed size-scaled scrap counts');
 const invUiSrc = readFileSync(new URL('../src/inventory_ui.js', import.meta.url), 'utf8');
 assert.match(invUiSrc, /drops\.wantsInteractKey/, 'wardrobe yields E to a drop in reach');
+assert.match(invUiSrc, /const E_HOLD_MS=\d+/, 'holding E opens the wardrobe past the tap window');
+assert.match(invUiSrc, /!e\.repeat && e\.key\.toLowerCase\(\)==='e'/, 'auto-repeat E never toggles the wardrobe');
+const indexSrc = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+assert.match(indexSrc, /id="dropPreview"/, 'index.html carries the corner drop-preview card');
 const craftingSrc = readFileSync(new URL('../src/engine/crafting.js', import.meta.url), 'utf8');
 assert.match(craftingSrc, /meatScrap:/, 'crafting source hints cover meat scraps');
 const lairsSrc = readFileSync(new URL('../src/engine/guardian_lairs.js', import.meta.url), 'utf8');

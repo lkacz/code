@@ -8,6 +8,10 @@
 //                         [E] pickup hint over the nearest drop
 //   tools/drops-qa-b.png  right after an E sweep (aggregated pickup toast,
 //                         loot-inbox indicator lit)
+//   tools/drops-qa-c.png  cursor hover over a rare drop: corner preview card
+//                         (#dropPreview) + in-world highlight ring; the scene
+//                         also click-grabs it, verifies far-click refusal and
+//                         hold-E opening the wardrobe over loot underfoot
 // Usage: node tools/drops-qa.mjs [--url=http://127.0.0.1:8123/index.html] [--size=1600x900]
 import { spawn, execFile } from 'node:child_process';
 import { writeFile, mkdtemp, rm, readFile } from 'node:fs/promises';
@@ -23,6 +27,7 @@ const url = opt('url', 'http://127.0.0.1:8123/index.html');
 const [winW, winH] = opt('size', '1600x900').split('x').map(Number);
 const outA = opt('out', 'tools/drops-qa.png');
 const outB = outA.replace(/\.png$/, '-b.png');
+const outC = outA.replace(/\.png$/, '-c.png');
 
 const EDGE_CANDIDATES = [
 	'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
@@ -74,6 +79,79 @@ const SWEEP = `(async()=>{
 	const took=MM.drops.pickupNearest(window.player);
 	await sleep(350); // toast + inbox indicator render
 	return 'ok:swept took='+took+' left='+MM.drops.metrics().active;
+})()`;
+
+// world→screen assumes the camera rests centered on the hero (the scene snaps
+// it with C and waits out the follow smoothing first — free-play-qa recipe).
+const HOVER = `(async()=>{
+	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+	const canvas=document.querySelector('canvas');
+	MM.drops.reset();
+	const gear={id:'weapon_qa_hover1',kind:'weapon',weaponType:'melee',tier:'rare',name:'Miecz pod kursorem QA',attackDamage:6,desc:'QA: podglad pod kursorem.'};
+	MM.drops.spawnGear(player.x+1.6, player.y-1.5, gear, {vx:0,vy:0,announce:false});
+	MM.drops.spawnResource(player.x+9.0, player.y-1.5, 'coal', 2, {vx:0,vy:0});
+	window.dispatchEvent(new KeyboardEvent('keydown',{key:'c'})); window.dispatchEvent(new KeyboardEvent('keyup',{key:'c'}));
+	await sleep(1000); // settle + camera snap
+	const zoom=(window.__mmRenderDetail && window.__mmRenderDetail.zoom)||1;
+	const t=(MM.TILE||20)*zoom;
+	const r=canvas.getBoundingClientRect();
+	const near=MM.drops._debug.list.find(d=>d.kind==='gear');
+	const sx=r.left+r.width/2+(near.x-(player.x+player.w/2))*t;
+	const sy=r.top+r.height/2+(near.y-(player.y+player.h/2))*t;
+	canvas.dispatchEvent(new PointerEvent('pointermove',{pointerId:7,pointerType:'mouse',isPrimary:true,clientX:sx,clientY:sy,bubbles:true}));
+	await sleep(400); // a few real frames: updateDropPreview builds the card
+	const card=document.getElementById('dropPreview');
+	return 'ok:hover shown='+(card && card.classList.contains('show'))
+		+' text='+(card ? card.textContent.slice(0,90) : '(none)');
+})()`;
+
+const GRAB = `(async()=>{
+	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+	const canvas=document.querySelector('canvas');
+	const card=document.getElementById('dropPreview');
+	const out=[];
+	const zoom=(window.__mmRenderDetail && window.__mmRenderDetail.zoom)||1;
+	const t=(MM.TILE||20)*zoom;
+	const r=canvas.getBoundingClientRect();
+	const toScreen=d=>[r.left+r.width/2+(d.x-(player.x+player.w/2))*t, r.top+r.height/2+(d.y-(player.y+player.h/2))*t];
+	const pm=(x,y)=>canvas.dispatchEvent(new PointerEvent('pointermove',{pointerId:7,pointerType:'mouse',isPrimary:true,clientX:x,clientY:y,bubbles:true}));
+	const click=(x,y)=>{
+		canvas.dispatchEvent(new PointerEvent('pointerdown',{pointerId:7,pointerType:'mouse',isPrimary:true,button:0,buttons:1,clientX:x,clientY:y,bubbles:true,cancelable:true}));
+		window.dispatchEvent(new PointerEvent('pointerup',{pointerId:7,pointerType:'mouse',isPrimary:true,clientX:x,clientY:y,bubbles:true}));
+	};
+	// 1) click the hovered rare drop: exactly it is taken (the coal stays)
+	const near=MM.drops._debug.list.find(d=>d.kind==='gear');
+	let p=toScreen(near);
+	click(p[0],p[1]);
+	await sleep(250);
+	out.push('clickGrab='+(MM.drops.metrics().active===1 && !!(MM.dynamicLoot && MM.dynamicLoot.weapons.some(i=>i && i.id==='weapon_qa_hover1'))));
+	// 2) far drop: preview asks to walk closer, the click leaves it in the world
+	const far=MM.drops._debug.list.find(d=>d.kind==='resource');
+	p=toScreen(far);
+	pm(p[0],p[1]);
+	await sleep(300);
+	out.push('farHint='+(card && card.textContent.indexOf('Podejdź bliżej')>=0));
+	click(p[0],p[1]);
+	await sleep(200);
+	out.push('farKept='+(MM.drops.metrics().active===1));
+	// 3) empty sky hides the card
+	pm(r.left+r.width/2, r.top+40);
+	await sleep(300);
+	out.push('hideOnMiss='+(card && !card.classList.contains('show')));
+	// 4) tap E with loot underfoot: sweeps the drop, wardrobe stays shut
+	MM.drops.spawnResource(player.x, player.y-1.2, 'coal', 1, {vx:0,vy:0});
+	await sleep(400);
+	window.dispatchEvent(new KeyboardEvent('keydown',{key:'e',bubbles:true}));
+	window.dispatchEvent(new KeyboardEvent('keyup',{key:'e',bubbles:true}));
+	await sleep(200);
+	out.push('tapSweeps='+(MM.drops.metrics().active===1)+' tapKeepsShut='+!(MM.inventoryUI && MM.inventoryUI.isOpen()));
+	// 5) HOLD E: past the tap window the wardrobe opens no matter the loot
+	window.dispatchEvent(new KeyboardEvent('keydown',{key:'e',bubbles:true}));
+	await sleep(700);
+	out.push('holdOpens='+!!(MM.inventoryUI && MM.inventoryUI.isOpen()));
+	window.dispatchEvent(new KeyboardEvent('keyup',{key:'e',bubbles:true}));
+	try{ MM.inventoryUI.close(); }catch(e){}
+	return 'ok:'+out.join(' ');
 })()`;
 
 async function main(){
@@ -142,6 +220,15 @@ async function main(){
 		shot = await send(ws, 'Page.captureScreenshot', { format: 'png' });
 		await writeFile(outB, Buffer.from(shot.data, 'base64'));
 		console.log('wrote', outB);
+
+		const hovered = await send(ws, 'Runtime.evaluate', { expression: HOVER, awaitPromise: true, returnByValue: true, timeout: 30000 });
+		console.log('hover:', hovered && hovered.result ? hovered.result.value : '(no result)');
+		shot = await send(ws, 'Page.captureScreenshot', { format: 'png' });
+		await writeFile(outC, Buffer.from(shot.data, 'base64'));
+		console.log('wrote', outC);
+
+		const grabbed = await send(ws, 'Runtime.evaluate', { expression: GRAB, awaitPromise: true, returnByValue: true, timeout: 30000 });
+		console.log('grab:', grabbed && grabbed.result ? grabbed.result.value : '(no result)');
 
 		if (pageErrors.length) console.log('pageErrors:', pageErrors.slice(0, 5).join('\n---\n'));
 	} finally {
