@@ -15,7 +15,6 @@ import { isSolidCollisionTile } from './material_physics.js';
   const particles = [];
   const smokeSprites = new Map();
   let smokeCount = 0;
-  let audioCtx = null;
   let fxPressure = 0;
   function frameMs(){
     return (typeof window!=='undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
@@ -246,20 +245,12 @@ import { isSolidCollisionTile } from './material_physics.js';
     return c;
   }
 
-  function playChestSound(tier){
+  function playChestSound(tier,x,y){
     try{
-      if(!audioCtx) audioCtx = new (window.AudioContext||window.webkitAudioContext)();
-      const o = audioCtx.createOscillator();
-      const g = audioCtx.createGain();
-      o.type = 'triangle';
-      let base = tier==='epic'?660 : tier==='rare'?520 : 420;
-      o.frequency.setValueAtTime(base,audioCtx.currentTime);
-      o.frequency.linearRampToValueAtTime(base + (tier==='epic'?240 : tier==='rare'?160 : 80), audioCtx.currentTime+0.25);
-      g.gain.setValueAtTime(0.001, audioCtx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.3, audioCtx.currentTime+0.03);
-      g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime+0.5);
-      o.connect(g); g.connect(audioCtx.destination);
-      o.start(); o.stop(audioCtx.currentTime+0.52);
+      if(!MM.audio || !MM.audio.play) return;
+      const tile=MM.TILE||20;
+      const opts=Number.isFinite(x)&&Number.isFinite(y)?{x:x/tile,y:y/tile}:undefined;
+      MM.audio.play(tier==='epic'?'golden':'chest',opts);
     }catch(e){ /* ignore */ }
   }
 
@@ -272,7 +263,7 @@ import { isSolidCollisionTile } from './material_physics.js';
       const sp = (Math.random()*2 + 1.5) * (tier==='epic'?1.6 : tier==='rare'?1.3 : 1);
       particles.push({ x, y, vx:Math.cos(ang)*sp, vy:Math.sin(ang)*sp*0.6-1, life:0, max:0.9+Math.random()*0.5, tier });
     }
-    if(opts.sound) playChestSound(tier);
+    if(opts.sound) playChestSound(tier,x,y);
   };
 
   // Lightweight visual-only sparks for frequent combat impacts. Unlike chest

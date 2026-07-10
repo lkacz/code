@@ -104,7 +104,11 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
     return S._fallbackDay || 0;
   }
   function say(t){ try{ if(root.msg) root.msg(t); }catch(e){} }
-  function playSound(id){ try{ if(MM.audio && MM.audio.play) MM.audio.play(id); }catch(e){} }
+  function playSound(id,x,y){
+    try{
+      if(MM.audio && MM.audio.play) MM.audio.play(id,Number.isFinite(x)&&Number.isFinite(y)?{x,y}:undefined);
+    }catch(e){}
+  }
   function atomicWinterLine(ctx){
     try{
       const aw=MM.atomicWinter;
@@ -175,7 +179,7 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
     S.falloutNoted = false;
     const dirWord = S.x > player.x ? 'na wschodzie ➡' : '⬅ na zachodzie';
     say('🧺 Wędrowny handlarz rozbił kram '+dirWord+'! Diamenty na zapasy, iryd na rarytasy.');
-    playSound('chest');
+    playSound('chest',S.x,S.y);
     if(ctx && ctx.onChange){ try{ ctx.onChange(); }catch(e){} }
     return true;
   }
@@ -300,7 +304,8 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
       }
     }
     say('🧺 Kupiono: '+offer.label+' (−'+formatCost(offer.cost)+')');
-    playSound(offer.effect==='heal'||offer.effect==='speed'||offer.effect==='strength' ? 'heal' : 'chest');
+    const playerEffect=offer.effect==='heal'||offer.effect==='speed'||offer.effect==='strength';
+    playSound(playerEffect ? 'heal' : 'chest',playerEffect?undefined:S.x,playerEffect?undefined:S.y);
     if(ctx && ctx.onInventoryChange){ try{ ctx.onInventoryChange(); }catch(e){} }
     if(ctx && ctx.onChange){ try{ ctx.onChange(); }catch(e){} }
     return {ok:true};
@@ -331,7 +336,7 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
     Object.keys(rate.take).forEach(k=>{ inv[k]-=rate.take[k]; });
     inv.diamond = countOf(inv,'diamond') + rate.pay;
     say('🧺 Sprzedano: '+rate.label+' (+'+rate.pay+' 💎)');
-    playSound('chest');
+    playSound('chest',S.x,S.y);
     if(ctx && ctx.onInventoryChange){ try{ ctx.onInventoryChange(); }catch(e){} }
     if(ctx && ctx.onChange){ try{ ctx.onChange(); }catch(e){} }
     return {ok:true};

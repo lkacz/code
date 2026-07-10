@@ -192,24 +192,74 @@ function lastVoicePeak(from){
   assert.ok(far < near * 0.55, 'distance rolls volume off (near ' + near.toFixed(3) + ' vs far ' + far.toFixed(3) + ')');
   const panner = lastCtx.nodes.slice(from).find(n => n.kind === 'panner');
   assert.ok(panner && panner.pan.value > 0.4, 'a source to the east pans right');
+  assert.ok(reaches(panner, lastCtx.destination) && reachesKind(panner, 'compressor'),
+    'the stereo panner remains routed through the mixer and limiter');
+  nowMs += 8000;
+  from = nodeCount();
+  A.playAt('step', -10, 0);
+  const leftPanner = lastCtx.nodes.slice(from).find(n => n.kind === 'panner');
+  assert.ok(leftPanner && Math.abs(leftPanner.pan.value + 0.5) < 1e-9, 'a source to the west pans left');
+  nowMs += 8000;
+  player.x = 20;
+  from = nodeCount();
+  A.playAt('step', 10, 0);
+  const movedListenerPanner = lastCtx.nodes.slice(from).find(n => n.kind === 'panner');
+  assert.ok(movedListenerPanner && Math.abs(movedListenerPanner.pan.value + 0.5) < 1e-9,
+    'pan is relative to the moving listener, not absolute world x');
+  player.x = 0;
+  nowMs += 8000;
+  from = nodeCount();
+  A.playAt('step', -40, 0);
+  const clampedLeft = lastCtx.nodes.slice(from).find(n => n.kind === 'panner');
+  assert.equal(clampedLeft && clampedLeft.pan.value, -0.85, 'far-left pan is safely clamped');
+  // Identical chatty effects on opposite sides must not suppress each other.
+  nowMs += 8000;
+  A.playAt('spark', -8, 0);
+  const afterLeftSpark = nodeCount();
+  A.playAt('spark', 8, 0);
+  assert.ok(nodeCount() > afterLeftSpark, 'left and right effects have independent throttle buckets');
   nowMs += 8000;
   from = nodeCount();
   A.playAt('step', 80, 0);
   assert.equal(nodeCount(), from, 'sources beyond the cull distance spawn no voices');
+
+  const createStereoPanner = lastCtx.createStereoPanner;
+  lastCtx.createStereoPanner = undefined;
+  nowMs += 8000;
+  from = nodeCount();
+  assert.doesNotThrow(() => A.playAt('step', 8, 0), 'positional audio falls back when StereoPanner is unavailable');
+  const fallbackVoice = lastCtx.nodes.slice(from).find(n => n.kind === 'bufsrc');
+  assert.ok(fallbackVoice && reaches(fallbackVoice, lastCtx.destination), 'fallback voice still reaches the output');
+  lastCtx.createStereoPanner = createStereoPanner;
 }
 
 // ---------------- scene → ambience beds ------------------------------------
 MM.background = { getCycleInfo: () => ({ cycleT: 0.3, isDay: true, tDay: 0.5 }) };
 MM.worldGen = { surfaceHeight: () => 10 };
-MM.clouds = { metrics: () => ({ drops: 120, wind: 2.0, storm: { active: true, intensity: 0.8 } }) };
+let precipitationField = { rain: 1, snow: 0, pan: -0.6 };
+MM.clouds = {
+  metrics: () => ({ drops: 120, wind: 2.0, storm: { active: true, intensity: 0.8 } }),
+  precipitationAudioAt: () => precipitationField,
+};
 player.y = 8; // above ground
 A.update(0.3); // one scene tick
 {
   const d = A.debugState();
   assert.ok(d.scene.ready, 'scene sensing ran');
   assert.ok(d.beds.rain > 0.02, 'rain bed follows the weather (got ' + d.beds.rain + ')');
+  assert.equal(d.beds.stereoRain, true, 'both continuous rain layers use StereoPanner nodes');
+  assert.equal(d.beds.rainPan, -0.6, 'rain wash follows precipitation on the left');
+  assert.equal(d.beds.patterPan, -0.6, 'droplet patter follows precipitation on the left');
   assert.ok(d.beds.wind > 0.02, 'storm wind raises the wind bed');
   assert.equal(d.beds.cave, 0, 'no cave bed on the surface');
+  const pannerCount = lastCtx.nodes.filter(n => n.kind === 'panner').length;
+  precipitationField = { rain: 0.8, snow: 0, pan: 0.65 };
+  A.update(0.3);
+  const moved = A.debugState();
+  assert.equal(moved.beds.rainPan, 0.65, 'the existing rain wash moves smoothly to the right');
+  assert.equal(moved.beds.patterPan, 0.65, 'the existing patter layer moves smoothly to the right');
+  assert.equal(lastCtx.nodes.filter(n => n.kind === 'panner').length, pannerCount,
+    'moving weather reuses its persistent panners');
 }
 // dive: the master lowpass sweeps down and the underwater bed rises
 {
@@ -286,9 +336,17 @@ A.update(0.3); // one scene tick
 // ---------------- thunder + settings persistence ---------------------------
 {
   nowMs += 8000;
-  const before = nodeCount();
-  A.thunder(40);
+  let before = nodeCount();
+  A.thunder(40, { pan: -0.7 });
   assert.ok(nodeCount() > before, 'thunder synthesizes through the shared mixer');
+  let thunderPanners = lastCtx.nodes.slice(before).filter(n => n.kind === 'panner');
+  assert.ok(thunderPanners.length >= 2 && thunderPanners.every(n => n.pan.value === -0.7),
+    'thunder to the west stays in the left channel');
+  before = nodeCount();
+  A.thunder(40, { pan: 0.7 });
+  thunderPanners = lastCtx.nodes.slice(before).filter(n => n.kind === 'panner');
+  assert.ok(thunderPanners.length >= 2 && thunderPanners.every(n => n.pan.value === 0.7),
+    'a simultaneous thunderclap to the east stays in the right channel');
   A.setBusVolume('ambience', 0.25);
   A.setMute(true);
   const blob = JSON.parse(store['mm_audio_v1']);
@@ -307,6 +365,9 @@ const cloudsSrc = fs.readFileSync(path.join(SRC, 'engine', 'clouds.js'), 'utf8')
 assert.ok(!/new\s*\(window\.AudioContext/.test(cloudsSrc) && !/\baudioCtx\b/.test(cloudsSrc),
   'clouds.js has no private AudioContext (thunder rides MM.audio.thunder)');
 assert.match(cloudsSrc, /MM\.audio\.thunder/, 'clouds.js delegates thunder to the shared mixer');
+const particlesSrc = fs.readFileSync(path.join(SRC, 'engine', 'particles.js'), 'utf8');
+assert.ok(!/AudioContext/.test(particlesSrc), 'particle effects never bypass the shared mixer with a private AudioContext');
+assert.match(particlesSrc, /MM\.audio\.play/, 'opt-in particle sounds use the shared positional mixer');
 // main.js keeps feeding submersion + exposes the per-bus mixer sliders
 const mainSrc = fs.readFileSync(path.join(SRC, 'main.js'), 'utf8');
 assert.match(mainSrc, /AUDIO\.setHeroWater\(inWater,\s*subFrac\)/, 'physics publishes hero submersion to the audio scene');

@@ -44,8 +44,8 @@ import './inventory.js';
 
   // --- Tabs: one per item kind + resources ---
   const TABS=MM.inventory.SLOTS.map(s=>({key:s.accepts, label:INV.KIND_LABELS[s.accepts]||s.accepts, kind:s.accepts}))
-    .concat([{key:'resources', label:'Surowce'}]);
-  const TAB_ICONS={cape:'🧥', eyes:'👁️', outfit:'👕', weapon:'⚔️', charm:'🧿', resources:'📦'};
+    .concat([{key:'resources', label:'Surowce'},{key:'discovery', label:'Odkrycia'}]);
+  const TAB_ICONS={cape:'🧥', eyes:'👁️', outfit:'👕', weapon:'⚔️', charm:'🧿', resources:'📦', discovery:'🧪'};
   let activeTab=TABS[0];
   let searchText='';
   let tierFilter='all';
@@ -82,9 +82,10 @@ import './inventory.js';
       const tab=TABS.find(t=>t.key===b.dataset.key); if(!tab) return;
       const cnt=b.querySelector('.cnt');
       if(cnt){
-        const n=tab.kind? INV.items(tab.kind).length : 0;
+        let n=tab.kind? INV.items(tab.kind).length : 0;
+        if(tab.key==='discovery' && MM.discovery && MM.discovery.count) n=MM.discovery.count();
         cnt.textContent=n;
-        cnt.style.display=(tab.kind && n)? '' : 'none';
+        cnt.style.display=((tab.kind || tab.key==='discovery') && n)? '' : 'none';
       }
       const has=!!tab.kind && news.some(i=>i.kind===tab.kind);
       let dot=b.querySelector('.dotNew');
@@ -144,18 +145,27 @@ import './inventory.js';
   function updateToolbar(){
     ensureToolbar();
     if(!toolbarEl) return;
-    const itemTab=activeTab.key!=='resources';
+    const itemTab=activeTab.key!=='resources' && activeTab.key!=='discovery';
     searchInput.parentElement.style.display='';
-    searchInput.placeholder=itemTab? 'Szukaj przedmiotów…  ( / )' : 'Szukaj surowców…  ( / )';
+    searchInput.placeholder=itemTab? 'Szukaj przedmiotów…  ( / )'
+      : (activeTab.key==='discovery' ? 'Szukaj odkryć…  ( / )' : 'Szukaj surowców…  ( / )');
     tierSelect.style.display=itemTab?'':'none';
     sortSelect.style.display=itemTab?'':'none';
     tierSelect.value=tierFilter;
     sortSelect.value=sortMode;
-    const cap=INV.capacity? INV.capacity():null;
-    if(cap){
-      capEl.textContent='🎒 '+cap.used+'/'+cap.max;
-      capEl.classList.toggle('warn', cap.warning);
-      capEl.title=cap.full?'Torba pelna':(cap.free+' wolnych miejsc');
+    if(activeTab.key==='discovery' && MM.discovery && MM.discovery.progress){
+      // journal progress replaces the bag counter on this tab
+      const dp=MM.discovery.progress();
+      capEl.textContent='🧪 '+dp.count+'/'+dp.total;
+      capEl.classList.remove('warn');
+      capEl.title='Odkryte sekrety świata';
+    } else {
+      const cap=INV.capacity? INV.capacity():null;
+      if(cap){
+        capEl.textContent='🎒 '+cap.used+'/'+cap.max;
+        capEl.classList.toggle('warn', cap.warning);
+        capEl.title=cap.full?'Torba pelna':(cap.free+' wolnych miejsc');
+      }
     }
     undoBtn.disabled=!(INV.discardUndoCount && INV.discardUndoCount()>0);
     updateTabMeta();
@@ -275,7 +285,7 @@ import './inventory.js';
     if(!newReviewEl) return;
     const cmps=newComparisons();
     newReviewEl.innerHTML='';
-    if(!cmps.length || activeTab.key==='resources'){ newReviewEl.style.display='none'; return; }
+    if(!cmps.length || activeTab.key==='resources' || activeTab.key==='discovery'){ newReviewEl.style.display='none'; return; }
     newReviewEl.style.display='block';
     const upgrades=cmps.filter(c=>c.isNewBest || c.isEquippedUpgrade).length;
     const head=document.createElement('div'); head.className='invNewReviewHead';
@@ -443,6 +453,7 @@ import './inventory.js';
     updateToolbar();
     grid.innerHTML='';
     if(activeTab.key==='resources'){ buildResourcesGrid(); return; }
+    if(activeTab.key==='discovery'){ buildDiscoveryGrid(); return; }
     const kind=activeTab.kind;
     const list=sortItems(INV.items(kind).filter(matchesFilters));
     if(!list.length){
@@ -535,6 +546,56 @@ import './inventory.js';
     const owned=['podstawowy'].concat(inv.tools && inv.tools.stone?['kamienny']:[], inv.tools && inv.tools.meteor?['meteorytowy']:[], inv.tools && inv.tools.diamond?['diamentowy']:[], inv.tools && inv.tools.bedrock && bedrockDur>0?['macierzysty '+bedrockDur+'/10']:[]);
     tools.textContent='Kilofy: '+owned.join(', ')+' (klawisz 1 przełącza, craft w panelu Rzemiosło). Aktywny: '+((window.player&&window.player.tool)||'basic');
     wrap.appendChild(tools);
+    grid.appendChild(wrap);
+  }
+
+  // --- Discovery journal tab: the world's secret interactions. Found entries
+  // carry their full label; unfound ones show as "???" with only the category
+  // and a foggy hint. Cards reuse the resources-grid styling.
+  function buildDiscoveryGrid(){
+    const wrap=document.createElement('div'); wrap.className='invResources';
+    const hint=document.createElement('div'); hint.className='invHint';
+    hint.textContent='Dziennik odkryć — sekrety świata zapisują się, gdy naprawdę się wydarzą. Każde nowe odkrycie: +'
+      +((MM.discovery && MM.discovery.DISCOVERY_XP)||40)+' XP.';
+    wrap.appendChild(hint);
+    const all=(MM.discovery && MM.discovery.entries)? MM.discovery.entries():[];
+    let list=all;
+    if(searchText) list=list.filter(e=>String((e.label||'')+' '+e.cat+' '+e.hint).toLowerCase().includes(searchText));
+    if(!list.length){
+      const empty=document.createElement('div'); empty.className='invEmpty';
+      empty.textContent=all.length? 'Brak odkryć pasujących do wyszukiwania' : 'Dziennik jest pusty';
+      wrap.appendChild(empty);
+      grid.appendChild(wrap);
+      return;
+    }
+    const cats=[];
+    for(const e of list) if(!cats.includes(e.cat)) cats.push(e.cat);
+    for(const cat of cats){
+      const head=document.createElement('div'); head.className='invCatHead';
+      const hl=document.createElement('span'); hl.textContent=cat;
+      head.appendChild(hl);
+      wrap.appendChild(head);
+      const cards=document.createElement('div'); cards.className='invResGrid';
+      for(const e of list){
+        if(e.cat!==cat) continue;
+        const card=document.createElement('div'); card.className='invResCard'+(e.found?'':' zero');
+        const top=document.createElement('div'); top.className='invResTop';
+        const dot=document.createElement('span'); dot.className='invResDot';
+        dot.style.background=e.found? '#7de3a8' : '#4a5262';
+        const lab=document.createElement('span'); lab.className='invResLabel';
+        lab.textContent=e.found? e.label : '???';
+        lab.title=e.found? e.label : 'Jeszcze nieodkryte';
+        const cnt=document.createElement('b'); cnt.className='invResCount'; cnt.textContent=e.found?'✓':'?';
+        top.appendChild(dot); top.appendChild(lab); top.appendChild(cnt);
+        card.appendChild(top);
+        const sub=document.createElement('span'); sub.className='invDiscHint'+(e.found?' found':'');
+        sub.textContent=e.found? 'Odkryte' : e.hint;
+        sub.title=e.found? e.label : e.hint;
+        card.appendChild(sub);
+        cards.appendChild(card);
+      }
+      wrap.appendChild(cards);
+    }
     grid.appendChild(wrap);
   }
 

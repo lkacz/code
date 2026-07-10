@@ -461,7 +461,7 @@ const meteorites = (function(){
     queueSirenPulse(s,m);
     screenFlash=Math.max(screenFlash,0.20);
     try{ if(typeof window.msg==='function') window.msg('Syrena meteorytowa: wykryto meteoryt '+(classProfile(m.classId).label||'')); }catch(e){}
-    try{ if(MM.audio && MM.audio.play && (!MM.audio.isReady || MM.audio.isReady())) MM.audio.play('alarm'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play && (!MM.audio.isReady || MM.audio.isReady())) MM.audio.play('alarm',{x:s.x,y:s.y}); }catch(e){}
     return true;
   }
   function surfaceNear(x,guessY,getTile){
@@ -597,9 +597,9 @@ const meteorites = (function(){
       else if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(x*(MM.TILE||20),y*(MM.TILE||20),tier||'epic');
     }catch(e){}
   }
-  function playReadyAudio(name){
+  function playReadyAudio(name,opts){
     try{
-      if(MM.audio && MM.audio.play && MM.audio.isReady && MM.audio.isReady()) MM.audio.play(name);
+      if(MM.audio && MM.audio.play && MM.audio.isReady && MM.audio.isReady()) MM.audio.play(name,opts);
     }catch(e){}
   }
   function splashAt(x,y,intensity){
@@ -745,7 +745,7 @@ const meteorites = (function(){
     startShake(0.22,3.2);
     burstAt(b.x,b.y,'epic',14);
     try{ if(typeof window.msg==='function') window.msg('Beacon antygrawitacyjny odchylil meteoryt'); }catch(e){}
-    playReadyAudio('charge');
+    playReadyAudio('charge',{x:b.x,y:b.y});
   }
   function bounceDirection(m,b){
     const vx=Number(m && m.vx)||0;
@@ -1682,8 +1682,8 @@ const meteorites = (function(){
     for(let i=0;i<4;i++) smokeAt(cx+rand(-3.4,3.4),cy+rand(-1.4,1.4),2.1+intensity*0.55);
     burstAt(cx,cy,'epic',28);
     try{ if(MM.gases && MM.gases.add) MM.gases.add('hot',cx,cy-0.6,{power:2.6+intensity*0.55,cells:12}); }catch(e){}
-    playReadyAudio('meteor');
-    playReadyAudio('explosion');
+    playReadyAudio('meteor',{x:cx,y:cy});
+    playReadyAudio('explosion',{x:cx,y:cy});
     try{
       if(typeof window.msg==='function'){
         const displaced=opts.deflected ? ' (odbity: '+(site||'teren')+')' : '';

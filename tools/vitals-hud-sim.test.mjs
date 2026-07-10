@@ -141,6 +141,11 @@ function run(m, input, seconds){
 	assert.equal(st.buffs.length, 0, 'expired buffs drop out');
 	st = m.update(inp({ buffs: [{ name: 'Moc', icon: '✦', t: 20 }] }), DT);
 	assert.ok(Math.abs(st.buffs[0].frac - 1) < 0.01, 're-applied buff gets a fresh ring, not the stale max');
+	// hero elemental statuses ride the same chip row flagged as debuffs (red
+	// accent in the renderer); plain buffs must never inherit the flag
+	st = m.update(inp({ buffs: [{ name: 'Moc', icon: '✦', t: 20 }, { name: 'Mokry', icon: '💧', t: 6, debuff: true }] }), DT);
+	assert.equal(st.buffs[0].debuff, false, 'a potion buff carries no debuff flag');
+	assert.equal(st.buffs[1].debuff, true, 'a hero status chip keeps its debuff flag through the model');
 }
 
 // --- 10. ambient trickle drains must not freeze the chip ghost (survival cold,

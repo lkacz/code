@@ -458,6 +458,9 @@ const mobs = (function(){
     try{
       if(MM.clouds && typeof MM.clouds.stopStorm==='function') stopped=!!MM.clouds.stopStorm({source:'weather_shaman', ownerId:owner}) || stopped;
     }catch(e){}
+    try{
+      if(MM.sandstorm && typeof MM.sandstorm.stopStorm==='function') stopped=!!MM.sandstorm.stopStorm({source:'weather_shaman', ownerId:owner}) || stopped;
+    }catch(e){}
     m._shamanWeatherActive=false;
     m._shamanWeatherUntil=0;
     return stopped;
@@ -483,6 +486,13 @@ const mobs = (function(){
         MM.clouds.addCloud(m.x+dir*48,68,32);
       }
     }catch(e){}
+    // Mirror ritual: the fire shaman's gale scours the desert into a great
+    // sandstorm — the hot-east counterpart of the ice shaman's blizzard.
+    if(spec && spec.id==='FIRE_SHAMAN'){
+      try{
+        if(MM.sandstorm && typeof MM.sandstorm.startStorm==='function') MM.sandstorm.startStorm(duration,1,{source:'weather_shaman', ownerId:owner});
+      }catch(e){}
+    }
     try{
       if(window.msg && (!beginWeatherShamanEffect._lastMsg || now-beginWeatherShamanEffect._lastMsg>5000)){
         beginWeatherShamanEffect._lastMsg=now;
@@ -3469,7 +3479,7 @@ const mobs = (function(){
           pr.cause='parried_'+(pr.cause||'mob_projectile');
           try{ if(MM.weapons && MM.weapons.addUltCharge) MM.weapons.addUltCharge(0.25); }catch(e){}
           try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('parry','Perfekcyjna parada odbija pociski wrogów!'); }catch(e){}
-          try{ if(MM.audio && MM.audio.play) MM.audio.play('charge',{x:pr.x,y:pr.y}); }catch(e){}
+          try{ if(MM.audio && MM.audio.play) MM.audio.play('parry',{x:pr.x,y:pr.y}); }catch(e){}
           try{ const p=MM.particles; if(p && p.spawnSparks) p.spawnSparks(pr.x*(MM.TILE||20),pr.y*(MM.TILE||20),'lucky',10); }catch(e){}
         } else {
           damagePlayer(pr.dmg, pr.x, pr.y, pr.cause||'mob_projectile', SPECIES[pr.ownerId]); dead=true;
@@ -3923,7 +3933,7 @@ const mobs = (function(){
     mobs.push(m);
     const NAME={bird:'Złoty ptak', runner:'Złoty biegacz', mole:'Złoty kret'};
     goldenSay('✨ '+(NAME[f]||'Złoty sprinter')+' przemierza okolicę! Złap go, zanim umknie!');
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('golden'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('golden',{x:m.x,y:m.y}); }catch(e){}
     return m;
   }
   function goldenTick(dt, player){
@@ -4037,7 +4047,7 @@ const mobs = (function(){
       }catch(e){}
       try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20), m.y*(MM.TILE||20),'epic'); }catch(e){}
       goldenSay('🏆 Złoty sprinter pokonany! Zostawił epicką skrzynię.');
-      try{ if(MM.audio && MM.audio.play) MM.audio.play('milestone'); }catch(e){}
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('milestone',{x:m.x,y:m.y}); }catch(e){}
     }
   });
 
@@ -8602,7 +8612,10 @@ const mobs = (function(){
       reactionFxAt(o,'electric_arc',0.8);
       if(++hops>=4) break;
     }
-    if(hops>0) noteStatusReaction(src,'chain',opts,'Prąd skacze łańcuchem po mokrych celach!');
+    if(hops>0){
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('chainShock',{x:src.x,y:src.y}); }catch(e){}
+      noteStatusReaction(src,'chain',opts,'Prąd skacze łańcuchem po mokrych celach!');
+    }
     return hops;
   }
   function damageAt(tileX,tileY,dmg,opts){
@@ -8794,16 +8807,18 @@ const mobs = (function(){
     st.frozen={t:2.5,dps:0,acc:0,source:(opts && opts.source)||'',cause:'frozen'};
     m.vx=0; m.vy=Math.min(m.vy||0,0.5);
     reactionFxAt(m,'chill_freeze',1.1);
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('charge',{x:m.x,y:m.y}); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('freeze',{x:m.x,y:m.y}); }catch(e){}
     noteStatusReaction(m,'freeze',opts,'Mokry wróg + mróz = bryła lodu!');
   }
   function thermalShockMob(m,opts){
     reactionFxAt(m,'steam_shock',1.2);
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('thermalShock',{x:m.x,y:m.y}); }catch(e){}
     noteStatusReaction(m,'thermal',opts,'Szok termiczny: ogień na zmrożonym celu!');
     damageMob(m,8,{source:(opts && opts.source)||'reaction',cause:'thermal_shock'});
   }
   function toxicIgniteMob(m,opts){
     reactionFxAt(m,'poison_blast',1.3);
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('toxicIgnite',{x:m.x,y:m.y}); }catch(e){}
     noteStatusReaction(m,'toxic',opts,'Toksyczny zapłon: ogień detonuje truciznę!');
     damageMob(m,6,{source:(opts && opts.source)||'reaction',cause:'toxic_ignite'});
     igniteRadius(m.x,m.y,1.7,{dur:2.2,dps:3,source:(opts && opts.source)||'reaction',cause:'toxic_ignite'});

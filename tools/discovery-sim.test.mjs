@@ -53,6 +53,32 @@ assert.ok(p.found.some(f => f.id === 'react_freeze' && /lodu/i.test(f.label)), '
 assert.equal(discovery.note('', 'x'), false, 'empty id refused');
 assert.equal(discovery.note(123, 'x'), false, 'non-string id refused');
 
+// --- journal-tab view: entries() masks unfound ids to ??? + category hint ----
+{
+  const all = discovery.entries();
+  assert.equal(all.length, discovery.total(), 'entries() covers the whole catalog');
+  const found = all.find(e => e.id === 'stone_melt');
+  assert.equal(found.found, true, 'found entries are flagged');
+  assert.equal(found.label, discovery.CATALOG.stone_melt, 'found entries expose their label');
+  const hidden = all.find(e => e.id === 'sandstorm');
+  assert.equal(hidden.found, false, 'unfound entries stay masked');
+  assert.equal(hidden.label, null, 'no label leaks before the discovery');
+  assert.ok(hidden.cat && hidden.cat.length > 2, 'every entry carries a category');
+  assert.ok(hidden.hint && hidden.hint.length > 8, 'unfound entries carry a foggy hint');
+  for(const e of all) assert.ok(discovery.HINTS[e.id], `catalog id "${e.id}" has a journal hint entry`);
+}
+
+// --- +XP on every fresh discovery (progress.js turns player.xp into levels) --
+{
+  globalThis.player = { xp: 100 };
+  assert.equal(discovery.note('sandstorm', 'test'), true, 'fresh discovery lands');
+  assert.equal(globalThis.player.xp, 100 + discovery.DISCOVERY_XP, 'a fresh discovery pays +' + discovery.DISCOVERY_XP + ' XP');
+  assert.equal(discovery.note('sandstorm', 'test'), false, 'repeat is silent');
+  assert.equal(globalThis.player.xp, 100 + discovery.DISCOVERY_XP, 'repeats never re-pay the XP');
+  assert.ok(toasts.some(t => t.includes('+' + discovery.DISCOVERY_XP + ' XP')), 'the toast advertises the XP award');
+  delete globalThis.player;
+}
+
 discovery.reset();
 assert.equal(discovery.count(), 0, 'reset clears the journal');
 

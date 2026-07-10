@@ -1,6 +1,7 @@
 import { CHUNK_W, WORLD_H, WORLD_MIN_Y, WORLD_SECTION_H, T } from '../constants.js';
 import { isGeneratedStructureReplaceableTile, isSolidCollisionTile as isSolid } from './material_physics.js';
 import { worldGen as WG } from './worldgen.js';
+import { applyBossStatus, bossElectricDamageMult, bossStatusFor, tickBossStatus } from './boss_status.js';
 
 const skyGuardian = (function(){
   const root = (typeof window !== 'undefined') ? window : globalThis;
@@ -54,7 +55,7 @@ const skyGuardian = (function(){
   const tileIndex = (lx,ly)=>ly*CHUNK_W+lx;
 
   function say(t){ try{ if(root.msg) root.msg(t); }catch(e){} }
-  function sfx(id){ try{ if(MM.audio && MM.audio.play) MM.audio.play(id); }catch(e){} }
+  function sfx(id,opts){ try{ if(MM.audio && MM.audio.play) MM.audio.play(id,opts); }catch(e){} }
   function nowMs(){
     try{ if(root.performance && typeof root.performance.now === 'function') return root.performance.now(); }catch(e){}
     try{ return Date.now(); }catch(e){ return 0; }
@@ -470,7 +471,7 @@ const skyGuardian = (function(){
     spawnResonators(1,L);
     spawnLeaflings(1,L,L.bossX+5,L.bossY+1,0);
     say('Sky Gate opens: Astrael reads the shape of your ambition.');
-    sfx('warning');
+    sfx('warning',{x:boss.x,y:boss.y});
     return true;
   }
   function sleep(){
@@ -778,7 +779,7 @@ const skyGuardian = (function(){
     if(!e || e.dead) return;
     e.dead=true;
     addEffect({type:'ring',kind:'air',x:e.x,y:e.y,t:0,max:e.boss?1.8:0.72,r:e.boss?38:9});
-    sfx(e.boss?'explosion':'spark');
+    sfx(e.boss?'explosion':'spark',{x:e.x,y:e.y});
     if(e.boss){
       awardHeart();
       for(const other of entities) other.dead=true;
@@ -850,6 +851,8 @@ const skyGuardian = (function(){
       return 'shield';
     }
     let amount=Math.max(0.5,Number(dmg)||1);
+    // weakened elemental matrix (boss_status.js): a soaked target conducts
+    if(kind==='electric') amount*=bossElectricDamageMult(e._elemStatus);
     if(kind==='electric' && e.resonator){
       amount*=1.45;
       noteCombatEvent({
@@ -935,13 +938,24 @@ const skyGuardian = (function(){
     if(!state.awakened && !activeBoss() && player && nearAwaken(player,L) && !isDefeated()){
       awaken({getTile,setTile});
     }
+    // weakened matrix tick (boss_status.js): burn = half DoT, chill slows the
+    // whole entity 20% by scaling its behaviour dt; freeze never lands here
+    let bossDtMult=1;
+    for(const e of entities){
+      if(e.dead) continue;
+      const elem=tickBossStatus(bossStatusFor(e),dt);
+      if(elem.damage>0) hitEntity(e,elem.damage,{kind:'status',cause:'burn_dot'});
+      e._statusDtMult=elem.speedMult;
+      if(e.boss) bossDtMult=elem.speedMult;
+    }
     const boss=activeBoss();
-    if(boss) updateBoss(boss,player,getTile,setTile,dt,L);
+    if(boss) updateBoss(boss,player,getTile,setTile,dt*bossDtMult,L);
     const leaflingCount=activeLeaflingCount();
     for(const e of entities){
       if(e.dead || e.boss) continue;
-      if(e.resonator) updateResonator(e,player,dt);
-      else if(e.leafling) updateLeafling(e,player,dt,L,leaflingCount,boss);
+      const edt=dt*(e._statusDtMult||1);
+      if(e.resonator) updateResonator(e,player,edt);
+      else if(e.leafling) updateLeafling(e,player,edt,L,leaflingCount,boss);
     }
     updateHazards(dt,player,L);
     collideHero(player,dt);
@@ -1509,6 +1523,24 @@ const skyGuardian = (function(){
   };
   MM.skyGuardian=api;
   MM.airBoss=api;
+  // weakened-matrix registry adapter (shared boss_status helper)
+  try{
+    if(MM.bossStatus && MM.bossStatus.registerSystem){
+      MM.bossStatus.registerSystem('skyGuardian',{
+        applyRadius(wx,wy,r,kind,opts){
+          let n=0;
+          for(const e of entities){
+            if(!e || e.dead) continue;
+            const rr=r+(e.radius||1);
+            const dx=e.x-wx, dy=e.y-wy;
+            if(dx*dx+dy*dy>rr*rr) continue;
+            if(applyBossStatus(bossStatusFor(e),kind,opts)) n++;
+          }
+          return n;
+        }
+      });
+    }
+  }catch(e){}
   return api;
 })();
 

@@ -28,7 +28,31 @@ const discovery = (function(){
     react_chain:    'Porażenie łańcuchowe po mokrych celach',
     arrow_recover:  'Wbite drewniane strzały da się podnieść',
     parry:          'Perfekcyjna parada odbija pociski',
+    sandstorm:      'Pustynna wichura usypuje wydmy',
+    hero_conduct:   'Mokry bohater przewodzi prąd (x1.5)',
+    hero_frozen:    'Mokry + zziębnięty na mrozie = zamarzasz',
+    hero_fizzle:    'Ogień gaśnie na przemoczonym bohaterze',
   };
+  // Undiscovered entries show as "???" in the Ekwipunek journal tab, with only
+  // the category and a foggy hint — enough to hunt, not enough to spoil.
+  const HINTS = {
+    stone_melt:     {cat:'🔥 Żywioły i teren',   hint:'Bardzo gorący strumień zmienia twardą skałę w coś płynnego…'},
+    sand_glass:     {cat:'🔥 Żywioły i teren',   hint:'Pustynny materiał pod długim żarem robi się przezroczysty…'},
+    water_boil:     {cat:'🔥 Żywioły i teren',   hint:'Płomień nad taflą nie zostaje bez odpowiedzi…'},
+    gas_boom:       {cat:'🔥 Żywioły i teren',   hint:'Pewien obłok bardzo nie lubi otwartego ognia…'},
+    electric_water: {cat:'⚗️ Reakcje bojowe',    hint:'Prąd puszczony w pewien żywioł niesie się dalej, niż celujesz…'},
+    react_freeze:   {cat:'⚗️ Reakcje bojowe',    hint:'Dwa zimne i mokre statusy na jednym celu dają coś twardego…'},
+    react_thermal:  {cat:'⚗️ Reakcje bojowe',    hint:'Skrajne temperatury zderzone na jednym celu bolą podwójnie…'},
+    react_toxic:    {cat:'⚗️ Reakcje bojowe',    hint:'Trucizna w żyłach + iskra z zewnątrz…'},
+    react_chain:    {cat:'⚗️ Reakcje bojowe',    hint:'Kilka przemoczonych celów blisko siebie i odrobina prądu…'},
+    arrow_recover:  {cat:'🏹 Techniki',          hint:'Nie każdy wystrzelony pocisk ginie bezpowrotnie…'},
+    parry:          {cat:'🏹 Techniki',          hint:'Obrona podniesiona w idealnym momencie robi coś więcej…'},
+    sandstorm:      {cat:'🌪 Pogoda',            hint:'Wschodnia pustynia przy naprawdę silnym wietrze…'},
+    hero_conduct:   {cat:'🧍 Na własnej skórze', hint:'Przemocz się i stań na drodze porażenia…'},
+    hero_frozen:    {cat:'🧍 Na własnej skórze', hint:'Dwa zimna naraz, daleko na zachodzie, pod gołym niebem…'},
+    hero_fizzle:    {cat:'🧍 Na własnej skórze', hint:'Dobrze przemoczony możesz wejść tam, gdzie zwykle parzy…'},
+  };
+  const DISCOVERY_XP = 40; // every fresh journal entry pays experience (progress.js levels off player.xp)
 
   const seen = new Set();
   try{
@@ -48,14 +72,24 @@ const discovery = (function(){
   }
 
   // Report that a discoverable interaction just happened. Returns true only the
-  // first time (callers can key extra celebration off it).
+  // first time (callers can key extra celebration off it). A fresh entry pays
+  // DISCOVERY_XP straight into player.xp (progress.js turns xp into levels).
   function note(id, text){
     if(typeof id !== 'string' || !id) return false;
     if(seen.has(id)) return false;
     seen.add(id);
     persist();
     try{
-      if(root.msg && typeof text === 'string' && text) root.msg('🧪 Odkrycie: ' + text);
+      if(root.msg && typeof text === 'string' && text) root.msg('🧪 Odkrycie: ' + text + ' (+' + DISCOVERY_XP + ' XP)');
+    }catch(e){ /* headless */ }
+    try{
+      const p = root.player;
+      if(p && typeof p === 'object'){
+        p.xp = (Number(p.xp) || 0) + DISCOVERY_XP;
+        if(typeof root.dispatchEvent === 'function' && typeof root.CustomEvent === 'function'){
+          root.dispatchEvent(new root.CustomEvent('mm-xp-awarded', {detail:{amount:DISCOVERY_XP, special:true, source:'discovery'}}));
+        }
+      }
     }catch(e){ /* headless */ }
     try{
       if(root.MM.audio && root.MM.audio.play) root.MM.audio.play('chest');
@@ -73,9 +107,18 @@ const discovery = (function(){
     const found = [...seen].filter(id => CATALOG[id]).map(id => ({id, label: CATALOG[id]}));
     return {count: found.length, total: total(), found};
   }
+  // Journal-tab view (Ekwipunek → Odkrycia): every catalog entry, found ones
+  // with their label, unfound ones masked to "???" + category hint.
+  function entries(){
+    return Object.keys(CATALOG).map(id => {
+      const found = seen.has(id);
+      const h = HINTS[id] || {};
+      return {id, found, label: found ? CATALOG[id] : null, cat: h.cat || '❔ Sekrety', hint: h.hint || ''};
+    });
+  }
   function reset(){ seen.clear(); persist(); }
 
-  const api = { note, has, count, list, total, label, progress, CATALOG, reset };
+  const api = { note, has, count, list, total, label, progress, entries, CATALOG, HINTS, DISCOVERY_XP, reset };
   MM.discovery = api;
   return api;
 })();

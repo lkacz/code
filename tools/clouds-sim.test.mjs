@@ -105,6 +105,31 @@ assert.ok(m.clouds >= 1, `vapor condensed into a cloud (clouds=${m.clouds})`);
 const dbg = clouds._debug();
 assert.ok(dbg.clouds.some(c=>Math.abs(c.x)<150), 'cloud formed over the evaporating region');
 
+// --- 2b. Acoustic weather field preserves the side of nearby rain ----------
+resetWorld();
+let acousticCloud = clouds.addCloud(-18, 70, 40);
+acousticCloud.raining = true;
+let acoustic = clouds.precipitationAudioAt(0);
+assert.ok(acoustic.rain > 0 && acoustic.pan < -0.4, 'rain west of the listener reports a left pan');
+resetWorld();
+acousticCloud = clouds.addCloud(18, 70, 40);
+acousticCloud.raining = true;
+acoustic = clouds.precipitationAudioAt(0);
+assert.ok(acoustic.rain > 0 && acoustic.pan > 0.4, 'rain east of the listener reports a right pan');
+resetWorld();
+const leftAcousticCloud = clouds.addCloud(-18, 70, 40);
+const rightAcousticCloud = clouds.addCloud(18, 70, 40);
+leftAcousticCloud.raining = true;
+rightAcousticCloud.raining = true;
+acoustic = clouds.precipitationAudioAt(0);
+assert.ok(acoustic.rain > 0 && Math.abs(acoustic.pan) < 0.02, 'balanced rain on both sides stays centered');
+leftAcousticCloud.snowing = true;
+rightAcousticCloud.snowing = true;
+acoustic = clouds.precipitationAudioAt(0);
+assert.equal(acoustic.rain, 0, 'snow does not drive the liquid-rain wash');
+assert.ok(acoustic.snow > 0, 'snow remains available to other ambience layers');
+assert.deepEqual(clouds.precipitationAudioAt(NaN), {rain:0,snow:0,pan:0}, 'invalid listeners fail closed');
+
 // --- 3. Night: no sun, no evaporation ---
 resetWorld();
 CFG.BORDER_SPAWN = false; CFG.EVAP_BASE = DEF.EVAP_BASE*30;
@@ -303,6 +328,19 @@ CFG.EVAP_BASE = 0; CFG.BORDER_SPAWN = true;
 clouds.setWindOverride(1.5);
 step(30*240); // 4 min: incoming spawn is probabilistic but virtually certain by now
 assert.ok(clouds.metrics().clouds >= 1, 'cloud drifted in from another region');
+
+// --- 8b. Thunder keeps the signed side of the strike -----------------------
+resetWorld();
+CFG.EVAP_BASE = 0;
+const thunderCalls = [];
+MM.audio = { thunder(dist,opts){ thunderCalls.push({dist,opts}); } };
+globalThis.player = {x:0, y:89, hp:100, maxHp:100};
+clouds.strike(-20, getTile, setTile);
+clouds.strike(20, getTile, setTile);
+assert.equal(thunderCalls.length, 2, 'each lightning strike delegates one thunderclap');
+assert.ok(thunderCalls[0].dist > 0 && thunderCalls[0].opts.pan < 0, 'western lightning produces left-panned thunder');
+assert.ok(thunderCalls[1].dist > 0 && thunderCalls[1].opts.pan > 0, 'eastern lightning produces right-panned thunder');
+delete MM.audio;
 
 // --- 9. Lightning strike: damage first, rare chests, ignition, water shock ---
 resetWorld();

@@ -42,6 +42,7 @@
 // The sim core runs headless; Node tests stub MM (see tools/boss-sim.test.mjs).
 import { isBlastProtectedTile, isCreatureOpenTile, isFoliageTile } from './material_physics.js';
 import { worldHostility as HOSTILITY } from './world_hostility.js';
+import { applyBossStatus, bossElectricDamageMult, bossStatusFor, tickBossStatus } from './boss_status.js';
 
 window.MM = window.MM || {};
 (function(){
@@ -1283,15 +1284,31 @@ window.MM = window.MM || {};
     return strikeAt(tx,ty,dmg);
   }
   // Absolute-damage strike (arrows / flame): bypasses tool scaling
-  function damageAt(tx,ty,dmg){
-    return strikeAt(tx,ty, Math.max(0.5,(typeof dmg==='number' && isFinite(dmg))? dmg:1));
+  function damageAt(tx,ty,dmg,opts){
+    return strikeAt(tx,ty, Math.max(0.5,(typeof dmg==='number' && isFinite(dmg))? dmg:1), opts);
   }
-  function strikeAt(tx,ty,dmg){
+  // Burn-DoT hurt path (weakened matrix): chews the first exposed part; the
+  // sealed heart is architecture — status fire never bypasses the plating.
+  function applyStatusDot(m,dmg,getTile,setTile){
+    if(!m || m.dead || m.dying || !(dmg>0) || !Array.isArray(m.parts) || !m.parts.length) return false;
+    let target=null;
+    for(const p of m.parts){ if(p!==m.core && p.hp>0){ target=p; break; } }
+    if(!target && m.core && m.core.hp>0 && !coreProtected(m)) target=m.core;
+    if(!target) return false;
+    target.hp-=dmg;
+    target.hitT=Math.max(target.hitT||0,0.12);
+    if(target.hp<=0) destroyPart(m,target,getTile,setTile);
+    return true;
+  }
+  function strikeAt(tx,ty,dmg,opts){
     if(typeof tx!=='number' || typeof ty!=='number' || !isFinite(tx) || !isFinite(ty)) return false;
     const w=MM.world;
     const getTile=(w && w.getTile)||(()=>T.AIR), setTile=(w && w.setTile)||(()=>{});
+    const electric=!!opts && /electric|shock|laser|lightning/.test(String(opts.element||opts.kind||opts.cause||'').toLowerCase());
     for(const m of monsters){
       if(tx<m.x+m.minDx-1 || tx>m.x+m.maxDx+1 || ty<m.y-m.height || ty>m.y+2) continue;
+      // weakened elemental matrix: a soaked beast conducts electricity
+      const hitDmg=electric ? dmg*bossElectricDamageMult(m._elemStatus) : dmg;
       // the body sits at a fractional position, so a clicked tile can overlap up to
       // four parts — strike the one covering most of the tile (matches the visuals)
       const sealed=coreProtected(m);
@@ -1306,7 +1323,7 @@ window.MM = window.MM || {};
         if(ov>bestOv){ bestOv=ov; best=p; }
       }
       if(best){
-        best.hp-=dmg; best.hitT=0.18;
+        best.hp-=hitDmg; best.hitT=0.18;
         // a struck beast stops grazing and turns to fight (a blind one only frets)
         m.feed=null; if(m.state==='feed') m.state = m.hasEye? 'hunt':'roam'; m.hunger=Math.min(m.hunger,0.8);
         if(best.hp<=0) destroyPart(m,best,getTile,setTile);
@@ -1374,9 +1391,17 @@ window.MM = window.MM || {};
         updateHeartAgony(m,dt,getTile,setTile);
         continue;
       }
+      // weakened elemental matrix (boss_status.js): burn = half DoT, chill = 20%
+      // slow (temporary speed scale — never persisted), freeze downgrades to chill
+      const elem=tickBossStatus(bossStatusFor(m),dt);
+      if(elem.damage>0) applyStatusDot(m,elem.damage,getTile,setTile);
+      if(m.dying){ updateHeartAgony(m,dt,getTile,setTile); continue; }
+      const baseSpeed=m.speed;
+      if(elem.speedMult<1 && Number.isFinite(baseSpeed)) m.speed=baseSpeed*elem.speedMult;
       if(!m.frozen) stepBehavior(m,getTile,dt);
       if(!m.frozen) applyWindToMonster(m,getTile,dt);
       stepPhysics(m,getTile,dt);
+      m.speed=baseSpeed;
       // a ridden beast throws a fit: it shakes, and a hero still standing on its
       // back through the fit is hurt and hurled off (knockback via damageHero)
       if(m.shakeCd>0) m.shakeCd-=dt;
@@ -1680,6 +1705,27 @@ window.MM = window.MM || {};
 
   MM.bosses={update, draw, drawHUD, attackAt, damageAt, forceSpawn, killNearest, collideHero, clearAll, reset, metrics,
              nearestForAbduction, nearestForTurret, targetsForTurret, abduct, setCycleOverride, config:CFG, _debug};
+  // weakened-matrix registry adapter (shared boss_status helper): splats and
+  // streams reach roaming bosses through MM.bossStatus.applyRadius
+  try{
+    if(MM.bossStatus && MM.bossStatus.registerSystem){
+      MM.bossStatus.registerSystem('bosses',{
+        applyRadius(wx,wy,r,kind,opts){
+          let n=0;
+          for(const m of monsters){
+            if(!m || m.dead || m.dying) continue;
+            const cx=m.x+((m.minDx||0)+(m.maxDx||0)+1)/2;
+            const cy=m.y-(m.height||2)/2;
+            const rr=r+Math.max((m.maxDx||0)-(m.minDx||0), m.height||2)*0.5+0.5;
+            const dx=cx-wx, dy=cy-wy;
+            if(dx*dx+dy*dy>rr*rr) continue;
+            if(applyBossStatus(bossStatusFor(m),kind,opts)) n++;
+          }
+          return n;
+        }
+      });
+    }
+  }catch(e){}
 })();
 // ESM export (progressive migration)
 export const bosses = (typeof window!=='undefined' && window.MM) ? window.MM.bosses : undefined;

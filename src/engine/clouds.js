@@ -216,6 +216,34 @@ window.MM = window.MM || {};
     for(const c of clouds){ if(c.snowing && Math.abs(c.x-x)<=c.r*1.15*cloudVisualScaleX()) return true; }
     return false;
   }
+  // Directional precipitation field for the audio mixer. A raining cloud is
+  // audible across its footprint and fades for a short distance beyond it;
+  // signed pan is weighted by the cloud's side relative to the listener.
+  // Snow is reported separately so the rain wash does not play during a quiet
+  // snowfall (wind remains responsible for blizzard ambience).
+  function precipitationAudioAt(x){
+    if(typeof x!=='number'||!isFinite(x)) return {rain:0,snow:0,pan:0};
+    const audibleBeyond=56;
+    let rain=0, snow=0, panSum=0, rainWeight=0;
+    for(const c of clouds){
+      if(!c.raining || !Number.isFinite(c.x)) continue;
+      const dx=c.x-x;
+      const footprint=Math.max(4,(Number(c.r)||0)*1.15*cloudVisualScaleX());
+      const edgeDistance=Math.max(0,Math.abs(dx)-footprint);
+      if(edgeDistance>=audibleBeyond) continue;
+      const proximity=1-edgeDistance/audibleBeyond;
+      const weight=proximity*clamp((Number(c.mass)||0)/20,0.25,1.4);
+      if(c.snowing){ snow+=weight; continue; }
+      rain+=weight;
+      panSum+=clamp(dx/32,-0.9,0.9)*weight;
+      rainWeight+=weight;
+    }
+    return {
+      rain:clamp(rain,0,1.5),
+      snow:clamp(snow,0,1.5),
+      pan:rainWeight>0?clamp(panSum/rainWeight,-0.9,0.9):0,
+    };
+  }
   function toxicRainAt(x){
     if(typeof x!=='number'||!isFinite(x)) return false;
     for(const c of clouds){ if(c.raining && !c.snowing && isAtomicCloud(c) && Math.abs(c.x-x)<=c.r*1.15*cloudVisualScaleX()) return true; }
@@ -369,8 +397,8 @@ window.MM = window.MM || {};
   // Thunder goes through the shared mixer (MM.audio.thunder handles the
   // distance delay/attenuation and ducking). The private AudioContext this
   // module once owned bypassed master volume/mute — never resurrect it.
-  function playThunder(distTiles){
-    try{ if(MM.audio && MM.audio.thunder) MM.audio.thunder(distTiles); }catch(e){}
+  function playThunder(distTiles,pan){
+    try{ if(MM.audio && MM.audio.thunder) MM.audio.thunder(distTiles,Number.isFinite(pan)?{pan:clamp(pan,-0.9,0.9)}:undefined); }catch(e){}
   }
   // Mirror of mobs.damagePlayer: respect i-frames, knock the hero away, respawn at 0.
   function damageHero(amount, srcX){
@@ -750,7 +778,8 @@ window.MM = window.MM || {};
           }
         }
       }
-      playThunder(Math.abs(pxBefore-xi));
+      const thunderDx=xi+0.5-pxBefore;
+      playThunder(Math.abs(thunderDx),clamp(thunderDx/20,-0.9,0.9));
     } else playThunder(0);
     return res;
   }
@@ -1603,7 +1632,7 @@ window.MM = window.MM || {};
     return {clouds, vapor, toxicVapor, evapAcc, depFrac, farBudget, simT, bolts, storm, waterTileCost};
   }
 
-  MM.clouds={update, draw, reset, addCloud, injectVapor, injectToxicVapor, isRainingAt, isSnowingAt, toxicRainAt, metrics, setWindOverride, setCycleOverride,
+  MM.clouds={update, draw, reset, addCloud, injectVapor, injectToxicVapor, isRainingAt, isSnowingAt, precipitationAudioAt, toxicRainAt, metrics, setWindOverride, setCycleOverride,
              startStorm, stopStorm, strike, snapshot, restore, config:CFG, _debug};
 })();
 // ESM export (progressive migration)

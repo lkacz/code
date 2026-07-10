@@ -165,7 +165,9 @@ export function createVitalsModel(){
 			seen.add(name);
 			const max=Math.max(buffMax.get(name)||0,t);
 			buffMax.set(name,max);
-			st.buffs.push({name,icon:b.icon||'✦',t,frac:max>0?t/max:0,expiring:t<BUFF_EXPIRING_S});
+			// debuff chips (hero elemental statuses) keep the same ring mechanics
+			// but the renderer paints them with a red accent instead of amber
+			st.buffs.push({name,icon:b.icon||'✦',t,frac:max>0?t/max:0,expiring:t<BUFF_EXPIRING_S,debuff:!!b.debuff});
 		}
 		for(const k of buffMax.keys()) if(!seen.has(k)) buffMax.delete(k);
 
@@ -457,12 +459,13 @@ function draw(ctx,o){
 	if(s.buffs.length){
 		let cx0=px;
 		for(const b of s.buffs){
-			const urgent=b.expiring;
+			const urgent=b.expiring && !b.debuff;
 			const pul=urgent? 0.5+0.5*Math.sin(s.pulseT*5) : 0;
 			roundedPath(ctx,cx0,rowY,28,36,8);
-			ctx.fillStyle='rgba(9,13,21,0.72)'; ctx.fill();
+			ctx.fillStyle=b.debuff? 'rgba(28,9,12,0.78)' : 'rgba(9,13,21,0.72)'; ctx.fill();
 			roundedPath(ctx,cx0+0.5,rowY+0.5,27,35,7.5);
-			ctx.strokeStyle=urgent? 'rgba(255,176,86,'+(0.5+0.4*pul).toFixed(3)+')' : 'rgba(255,255,255,0.14)';
+			ctx.strokeStyle=b.debuff? 'rgba(255,96,80,0.62)'
+				: (urgent? 'rgba(255,176,86,'+(0.5+0.4*pul).toFixed(3)+')' : 'rgba(255,255,255,0.14)');
 			ctx.lineWidth=1; ctx.stroke();
 			ctx.save();
 			ctx.textAlign='center';
@@ -471,14 +474,14 @@ function draw(ctx,o){
 			ctx.fillText(b.icon,cx0+14,rowY+18);
 			// remaining-duration ring sweeps around the icon
 			if(b.frac>0){
-				ctx.strokeStyle=urgent? '#ffb056' : '#ffd968';
+				ctx.strokeStyle=b.debuff? '#ff6157' : (urgent? '#ffb056' : '#ffd968');
 				ctx.lineWidth=1.8;
 				ctx.beginPath();
 				ctx.arc(cx0+14,rowY+14,10.5,-Math.PI/2,-Math.PI/2+Math.PI*2*b.frac);
 				ctx.stroke();
 			}
 			ctx.font='600 8px '+FONT;
-			textShadowed(ctx,Math.ceil(b.t)+'s',cx0+14,rowY+31.5,urgent?'#ffcf9a':'rgba(255,255,255,0.78)');
+			textShadowed(ctx,Math.ceil(b.t)+'s',cx0+14,rowY+31.5,b.debuff?'#ffb4a8':(urgent?'#ffcf9a':'rgba(255,255,255,0.78)'));
 			ctx.restore();
 			cx0+=33;
 		}

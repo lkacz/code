@@ -3,26 +3,8 @@
 import { strict as assert } from 'assert';
 
 globalThis.window = globalThis;
-globalThis.MM = { TILE:20 };
-let audioStarts=0;
-globalThis.AudioContext = class {
-  constructor(){ this.currentTime=0; this.destination={}; }
-  createOscillator(){
-    return {
-      type:'triangle',
-      frequency:{ setValueAtTime(){}, linearRampToValueAtTime(){} },
-      connect(){},
-      start(){ audioStarts++; },
-      stop(){}
-    };
-  }
-  createGain(){
-    return {
-      gain:{ setValueAtTime(){}, exponentialRampToValueAtTime(){} },
-      connect(){}
-    };
-  }
-};
+const audioCalls=[];
+globalThis.MM = { TILE:20, audio:{ play(name,opts){ audioCalls.push({name,opts}); } } };
 
 function makeCtx(){
   const calls=[];
@@ -65,9 +47,10 @@ Math.random=()=>0.5;
 try{
   particles.reset();
   particles.spawnBurst(40,40,'common');
-  assert.equal(audioStarts,0, 'generic visual burst does not play chest audio');
+  assert.equal(audioCalls.length,0, 'generic visual burst does not play chest audio');
   particles.spawnBurst(40,40,'rare',{sound:true});
-  assert.equal(audioStarts,1, 'burst sound is opt-in for explicit chest-like use');
+  assert.deepEqual(audioCalls,[{name:'chest',opts:{x:2,y:2}}],
+    'opt-in burst sound uses the shared positional mixer at the particle source');
   particles.reset();
   particles.spawnSmoke(100,100,4,{tileSize:20,tileX:5,tileY:5});
   const before=particles._debugSnapshot().filter(p=>p.kind==='smoke');

@@ -112,10 +112,11 @@ window.MM = window.MM || {};
   // hero-relative stereo pan + distance rolloff; null = fully culled
   const CULL_DIST=52;
   function spatial(o){
-    if(!o || typeof o.x!=='number') return {g:1, pan:(o&&typeof o.pan==='number')?o.pan:0};
+    if(!o || !Number.isFinite(o.x)) return {g:1, pan:(o&&Number.isFinite(o.pan))?clamp(o.pan,-1,1):0};
     let p=null; try{ p=window.player; }catch(e){}
-    if(!p || typeof p.x!=='number') return {g:1, pan:0}; // no listener → non-spatial
-    const hx=o.x-p.x, hy=((typeof o.y==='number')?o.y:p.y)-p.y;
+    if(!p || !Number.isFinite(p.x)) return {g:1, pan:0}; // no listener → non-spatial
+    const py=Number.isFinite(p.y)?p.y:0;
+    const hx=o.x-p.x, hy=(Number.isFinite(o.y)?o.y:py)-py;
     const d=Math.hypot(hx,hy);
     if(d>CULL_DIST) return null;
     return {g:1/(1+d*0.09), pan:clamp(hx/20,-0.85,0.85)};
@@ -176,7 +177,16 @@ window.MM = window.MM || {};
 
   // throttle very chatty effects so streams/digging don't machine-gun the mixer
   const lastAt={};
-  function throttled(name,ms){ const now=Date.now(); if(lastAt[name] && now-lastAt[name]<ms) return true; lastAt[name]=now; return false; }
+  function throttleKey(name,o){
+    let side='';
+    if(o && Number.isFinite(o.x)){
+      let listenerX=0; try{ if(window.player && Number.isFinite(window.player.x)) listenerX=window.player.x; }catch(e){}
+      const dx=o.x-listenerX;
+      side=dx<-2?':left':(dx>2?':right':':center');
+    }else if(o && Number.isFinite(o.pan)) side=o.pan<-0.1?':left':(o.pan>0.1?':right':':center');
+    return name+side;
+  }
+  function throttled(name,ms,o){ const key=throttleKey(name,o), now=Date.now(); if(lastAt[key] && now-lastAt[key]<ms) return true; lastAt[key]=now; return false; }
 
   // heavy events dip ambience+music for a moment so the impact owns the mix
   function duck(amount,recover){
@@ -196,27 +206,27 @@ window.MM = window.MM || {};
   // ---------------- one-shot effects ----------------
   // Each entry takes opts o (may carry {x,y} tile coords) and layers 1-4 voices.
   const FX={
-    dig:    (o)=>{ if(throttled('dig',70)) return; noise({...o,dur:0.06,peak:0.18,fLo:500,fHi:1800}); noise({...o,dur:0.03,peak:0.07,fLo:rand(1800,3200),fHi:rand(3600,5200),delay:0.012}); },
+    dig:    (o)=>{ if(throttled('dig',70,o)) return; noise({...o,dur:0.06,peak:0.18,fLo:500,fHi:1800}); noise({...o,dur:0.03,peak:0.07,fLo:rand(1800,3200),fHi:rand(3600,5200),delay:0.012}); },
     break:  (o)=>{ noise({...o,dur:0.14,peak:0.3,fLo:250,fHi:1200}); tone({...o,type:'triangle',f0:180,f1:90,dur:0.12,peak:0.12});
                    noise({...o,dur:0.05,peak:0.09,fLo:900,fHi:2600,delay:0.05}); noise({...o,dur:0.04,peak:0.06,fLo:1400,fHi:3600,delay:0.1}); },
     place:  (o)=>{ noise({...o,dur:0.05,peak:0.2,fLo:900,fHi:2600}); tone({...o,type:'sine',f0:230,f1:170,dur:0.06,peak:0.07}); },
     hurt:   (o)=>{ tone({...o,type:'sawtooth',f0:280,f1:110,dur:0.22,peak:0.25}); noise({...o,dur:0.1,peak:0.1,fLo:150,fHi:600,buf:'brown',ftype:'lowpass'}); },
     heal:   (o)=>{ tone({...o,type:'sine',f0:440,f1:720,dur:0.18,peak:0.16,send:0.22}); tone({...o,type:'sine',f0:660,f1:990,dur:0.22,peak:0.1,delay:0.05,send:0.22}); },
     bow:    (o)=>{ tone({...o,type:'square',f0:220,f1:640,dur:0.1,peak:0.12,bend:0.05}); noise({...o,dur:0.07,peak:0.1,fLo:1200,fHi:3200}); tone({...o,type:'triangle',f0:1180,f1:820,dur:0.05,peak:0.05}); },
-    swing:  (o)=>{ if(throttled('swing',150)) return; noise({...o,dur:0.1,peak:0.14,fLo:700,fHi:2400,f1:520,ftype:'bandpass'}); },
-    flame:  (o)=>{ if(throttled('flame',160)) return; noise({...o,dur:0.16,peak:0.07,fLo:300,fHi:1400,ftype:'lowpass'}); noise({...o,dur:0.05,peak:0.03,fLo:rand(1400,2600),fHi:rand(3000,4600),delay:rand(0.01,0.07)}); },
-    hose:   (o)=>{ if(throttled('hose',160)) return; noise({...o,dur:0.16,peak:0.06,fLo:1000,fHi:4200}); },
-    gas:    (o)=>{ if(throttled('gas',200)) return; noise({...o,dur:0.2,peak:0.045,fLo:600,fHi:1600,ftype:'lowpass'}); },
+    swing:  (o)=>{ if(throttled('swing',150,o)) return; noise({...o,dur:0.1,peak:0.14,fLo:700,fHi:2400,f1:520,ftype:'bandpass'}); },
+    flame:  (o)=>{ if(throttled('flame',160,o)) return; noise({...o,dur:0.16,peak:0.07,fLo:300,fHi:1400,ftype:'lowpass'}); noise({...o,dur:0.05,peak:0.03,fLo:rand(1400,2600),fHi:rand(3000,4600),delay:rand(0.01,0.07)}); },
+    hose:   (o)=>{ if(throttled('hose',160,o)) return; noise({...o,dur:0.16,peak:0.06,fLo:1000,fHi:4200}); },
+    gas:    (o)=>{ if(throttled('gas',200,o)) return; noise({...o,dur:0.2,peak:0.045,fLo:600,fHi:1600,ftype:'lowpass'}); },
     chest:  (o)=>{ tone({...o,type:'triangle',f0:520,f1:780,dur:0.12,peak:0.14,send:0.2}); tone({...o,type:'triangle',f0:780,f1:1170,dur:0.18,peak:0.12,delay:0.09,send:0.2}); noise({...o,dur:0.2,peak:0.03,fLo:3800,fHi:8200,ftype:'highpass',delay:0.12}); },
     craft:  (o)=>{ noise({...o,dur:0.06,peak:0.14,fLo:1500,fHi:4200}); tone({...o,type:'square',f0:330,f1:330,dur:0.08,peak:0.08}); tone({...o,type:'triangle',f0:660,f1:640,dur:0.14,peak:0.05,delay:0.05}); },
-    alarm:  (o)=>{ if(throttled('alarm',900)) return; flagDanger();
+    alarm:  (o)=>{ if(throttled('alarm',900,o)) return; flagDanger();
                    tone({...o,type:'square',f0:880,f1:660,dur:0.2,peak:0.13,bend:0.12,priority:true});
                    tone({...o,type:'square',f0:880,f1:660,dur:0.2,peak:0.12,bend:0.12,delay:0.26,priority:true});
                    noise({...o,dur:0.16,peak:0.035,fLo:1800,fHi:5200}); },
-    warning:(o)=>{ if(throttled('warning',400)) return; flagDanger();
+    warning:(o)=>{ if(throttled('warning',400,o)) return; flagDanger();
                    tone({...o,type:'square',f0:620,f1:930,dur:0.11,peak:0.11,bend:0.09,priority:true});
                    tone({...o,type:'square',f0:740,f1:1110,dur:0.13,peak:0.1,bend:0.1,delay:0.15,priority:true}); },
-    charge: (o)=>{ if(throttled('charge',240)) return; tone({...o,type:'sine',f0:660,f1:1320,dur:0.18,peak:0.055,bend:0.11}); tone({...o,type:'triangle',f0:1480,f1:940,dur:0.22,peak:0.035,bend:0.18}); noise({...o,dur:0.1,peak:0.022,fLo:4200,fHi:9000,ftype:'highpass'}); },
+    charge: (o)=>{ if(throttled('charge',240,o)) return; tone({...o,type:'sine',f0:660,f1:1320,dur:0.18,peak:0.055,bend:0.11}); tone({...o,type:'triangle',f0:1480,f1:940,dur:0.22,peak:0.035,bend:0.18}); noise({...o,dur:0.1,peak:0.022,fLo:4200,fHi:9000,ftype:'highpass'}); },
     harvest:(o)=>{ tone({...o,type:'sine',f0:520,f1:650,dur:0.1,peak:0.12}); noise({...o,dur:0.03,peak:0.05,fLo:1600,fHi:3400,delay:0.02}); },
     levelup:(o)=>{ [392,494,587,784].forEach((f,i)=>tone({...o,type:'triangle',f0:f,f1:f,dur:0.18,peak:0.16,delay:i*0.09,send:0.28,priority:true}));
                    tone({...o,type:'sine',f0:196,f1:196,dur:0.6,peak:0.05,attack:0.1,send:0.3}); },
@@ -225,23 +235,45 @@ window.MM = window.MM || {};
     masterstone:(o)=>{ [1760,2349,3136,4186].forEach((f,i)=>tone({...o,type:i%2?'triangle':'sine',f0:f,f1:f*1.08,dur:0.34,peak:0.09,delay:i*0.045,send:0.3,priority:true}));
                    tone({...o,type:'square',f0:3520,f1:1408,dur:0.22,peak:0.045,bend:0.18,delay:0.08}); noise({...o,dur:0.28,peak:0.028,fLo:5200,fHi:11000,ftype:'highpass'}); },
     ufo:    (o)=>{ flagDanger(); tone({...o,type:'sine',f0:520,f1:820,dur:0.9,peak:0.09,bend:0.45}); tone({...o,type:'sine',f0:820,f1:470,dur:0.9,peak:0.08,bend:0.5,delay:0.45}); }, // theremin wobble
-    beam:   (o)=>{ if(throttled('beam',450)) return; tone({...o,type:'sawtooth',f0:95,f1:110,dur:0.5,peak:0.05,bend:0.4}); noise({...o,dur:0.45,peak:0.03,fLo:1800,fHi:4200}); },
-    laser:  (o)=>{ if(throttled('laser',120)) return; flagDanger(); tone({...o,type:'square',f0:1400,f1:220,dur:0.16,peak:0.09,bend:0.14}); noise({...o,dur:0.06,peak:0.04,fLo:3200,fHi:7800,ftype:'highpass'}); },
+    beam:   (o)=>{ if(throttled('beam',450,o)) return; tone({...o,type:'sawtooth',f0:95,f1:110,dur:0.5,peak:0.05,bend:0.4}); noise({...o,dur:0.45,peak:0.03,fLo:1800,fHi:4200}); },
+    laser:  (o)=>{ if(throttled('laser',120,o)) return; flagDanger(); tone({...o,type:'square',f0:1400,f1:220,dur:0.16,peak:0.09,bend:0.14}); noise({...o,dur:0.06,peak:0.04,fLo:3200,fHi:7800,ftype:'highpass'}); },
     roar:   (o)=>{ flagDanger(); duck(0.3,0.9); tone({...o,type:'sawtooth',f0:90,f1:45,dur:0.8,peak:0.22,bend:0.6,priority:true}); noise({...o,dur:0.7,peak:0.12,fLo:80,fHi:400,ftype:'lowpass',buf:'brown',priority:true}); tone({...o,type:'sine',f0:55,f1:30,dur:0.9,peak:0.14,bend:0.8}); },
     explosion:(o)=>{ duck(0.3,0.8); noise({...o,dur:0.5,peak:0.5,fLo:60,fHi:900,ftype:'lowpass',buf:'brown',priority:true}); tone({...o,type:'sine',f0:120,f1:32,dur:0.6,peak:0.4,bend:0.45,priority:true});
                    noise({...o,dur:0.12,peak:0.1,fLo:1200,fHi:4200,delay:0.09}); noise({...o,dur:0.09,peak:0.06,fLo:900,fHi:3200,delay:0.21}); },
-    meteor: (o)=>{ if(throttled('meteor',900)) return; duck(0.35,0.8); noise({...o,dur:0.75,peak:0.36,fLo:55,fHi:620,ftype:'lowpass',buf:'brown',priority:true}); tone({...o,type:'sawtooth',f0:95,f1:28,dur:0.9,peak:0.26,bend:0.65,priority:true}); noise({...o,dur:0.22,peak:0.14,fLo:1600,fHi:6200,delay:0.08}); },
-    splash: (o)=>{ if(throttled('splash',250)) return; noise({...o,dur:0.18,peak:0.16,fLo:400,fHi:2400}); tone({...o,type:'sine',f0:300,f1:120,dur:0.12,peak:0.06}); },
+    meteor: (o)=>{ if(throttled('meteor',900,o)) return; duck(0.35,0.8); noise({...o,dur:0.75,peak:0.36,fLo:55,fHi:620,ftype:'lowpass',buf:'brown',priority:true}); tone({...o,type:'sawtooth',f0:95,f1:28,dur:0.9,peak:0.26,bend:0.65,priority:true}); noise({...o,dur:0.22,peak:0.14,fLo:1600,fHi:6200,delay:0.08}); },
+    splash: (o)=>{ if(throttled('splash',250,o)) return; noise({...o,dur:0.18,peak:0.16,fLo:400,fHi:2400}); tone({...o,type:'sine',f0:300,f1:120,dur:0.12,peak:0.06}); },
     splashIn:(o)=>{ noise({...o,dur:0.22,peak:0.18,fLo:300,fHi:1900,f1:420}); tone({...o,type:'sine',f0:260,f1:90,dur:0.16,peak:0.08}); },
     splashOut:(o)=>{ noise({...o,dur:0.16,peak:0.12,fLo:500,fHi:2600,f1:2100}); },
     grave:  (o)=>{ tone({...o,type:'sine',f0:196,f1:98,dur:0.5,peak:0.2,send:0.35}); tone({...o,type:'sine',f0:294,f1:147,dur:0.55,peak:0.08,delay:0.03,send:0.35}); },
-    thud:   (o)=>{ if(throttled('thud',120)) return; noise({...o,dur:0.09,peak:0.16,fLo:90,fHi:280,ftype:'lowpass',buf:'brown'}); tone({...o,type:'sine',f0:140,f1:60,dur:0.1,peak:0.1}); },
-    fire:   (o)=>{ if(throttled('fire',140)) return; noise({...o,dur:0.25,peak:0.08,fLo:250,fHi:1100,ftype:'lowpass'});
+    thud:   (o)=>{ if(throttled('thud',120,o)) return; noise({...o,dur:0.09,peak:0.16,fLo:90,fHi:280,ftype:'lowpass',buf:'brown'}); tone({...o,type:'sine',f0:140,f1:60,dur:0.1,peak:0.1}); },
+    fire:   (o)=>{ if(throttled('fire',140,o)) return; noise({...o,dur:0.25,peak:0.08,fLo:250,fHi:1100,ftype:'lowpass'});
                    noise({...o,dur:0.03,peak:0.05,fLo:rand(900,1800),fHi:rand(2000,3400),delay:rand(0.02,0.09)});
                    noise({...o,dur:0.025,peak:0.04,fLo:rand(1200,2200),fHi:rand(2600,4200),delay:rand(0.1,0.18)}); },
-    spark:  (o)=>{ if(throttled('spark',90)) return; noise({...o,dur:0.04,peak:0.07,fLo:3200,fHi:8600,ftype:'highpass'}); tone({...o,type:'square',f0:1800,f1:900,dur:0.06,peak:0.05,bend:0.05}); },
-    hit:    (o)=>{ if(throttled('hit',90)) return; noise({...o,dur:0.05,peak:0.13,fLo:600,fHi:1400}); tone({...o,type:'sine',f0:260,f1:120,dur:0.08,peak:0.09}); },
-    wind:   (o)=>{ if(throttled('wind',300)) return; noise({...o,dur:0.5,peak:0.09,fLo:300,fHi:900,f1:380,attack:0.12}); },
+    spark:  (o)=>{ if(throttled('spark',90,o)) return; noise({...o,dur:0.04,peak:0.07,fLo:3200,fHi:8600,ftype:'highpass'}); tone({...o,type:'square',f0:1800,f1:900,dur:0.06,peak:0.05,bend:0.05}); },
+    hit:    (o)=>{ if(throttled('hit',90,o)) return; noise({...o,dur:0.05,peak:0.13,fLo:600,fHi:1400}); tone({...o,type:'sine',f0:260,f1:120,dur:0.08,peak:0.09}); },
+    wind:   (o)=>{ if(throttled('wind',300,o)) return; noise({...o,dur:0.5,peak:0.09,fLo:300,fHi:900,f1:380,attack:0.12}); },
+    // sandstorm front: a long grit-laden howl (low moan + hissing sand sheet)
+    sandstorm:(o)=>{ if(throttled('sandstorm',1200,o)) return; duck(0.5,1.0);
+                   noise({...o,dur:1.9,peak:0.16,fLo:180,fHi:640,f1:260,ftype:'bandpass',buf:'brown',rate:0.7,attack:0.25,priority:true});
+                   noise({...o,dur:1.5,peak:0.07,fLo:2400,fHi:6200,ftype:'highpass',attack:0.35,delay:0.2});
+                   tone({...o,type:'sine',f0:110,f1:70,dur:1.6,peak:0.05,bend:1.2,attack:0.3}); },
+    // elemental reactions (mobs.js status matrix): each reads as its element
+    freeze: (o)=>{ if(throttled('freeze',200,o)) return; tone({...o,type:'sine',f0:1240,f1:520,dur:0.22,peak:0.11,bend:0.16,send:0.3});
+                   noise({...o,dur:0.14,peak:0.07,fLo:3600,fHi:9200,ftype:'highpass'});
+                   tone({...o,type:'triangle',f0:2200,f1:2600,dur:0.08,peak:0.05,delay:0.05}); },
+    thermalShock:(o)=>{ if(throttled('thermalShock',200,o)) return; noise({...o,dur:0.28,peak:0.14,fLo:900,fHi:3400,f1:600});
+                   tone({...o,type:'square',f0:340,f1:120,dur:0.18,peak:0.09,bend:0.12});
+                   noise({...o,dur:0.1,peak:0.06,fLo:4200,fHi:9000,ftype:'highpass',delay:0.06}); },
+    toxicIgnite:(o)=>{ if(throttled('toxicIgnite',200,o)) return; noise({...o,dur:0.3,peak:0.16,fLo:220,fHi:1200,ftype:'lowpass',buf:'brown'});
+                   tone({...o,type:'sawtooth',f0:190,f1:60,dur:0.26,peak:0.09,bend:0.2});
+                   noise({...o,dur:0.12,peak:0.05,fLo:1800,fHi:4600,delay:0.08}); },
+    chainShock:(o)=>{ if(throttled('chainShock',150,o)) return; tone({...o,type:'square',f0:1600,f1:420,dur:0.12,peak:0.08,bend:0.1});
+                   tone({...o,type:'square',f0:1900,f1:560,dur:0.1,peak:0.06,bend:0.08,delay:0.07});
+                   noise({...o,dur:0.08,peak:0.05,fLo:3800,fHi:8600,ftype:'highpass'}); },
+    // perfect parry: a bright metallic ping that cuts through combat noise
+    parry:  (o)=>{ tone({...o,type:'triangle',f0:1560,f1:2080,dur:0.14,peak:0.14,bend:0.06,send:0.25,priority:true});
+                   tone({...o,type:'sine',f0:3120,f1:2600,dur:0.1,peak:0.06,delay:0.03});
+                   noise({...o,dur:0.05,peak:0.05,fLo:5200,fHi:11000,ftype:'highpass'}); },
     step:   (o)=>{ noise({...o,dur:0.04,peak:0.055,fLo:120,fHi:380,buf:'brown'}); },
     jump:   (o)=>{ noise({...o,dur:0.1,peak:0.04,fLo:500,fHi:1300,f1:1600,attack:0.02}); },
     land:   (o)=>{ noise({...o,dur:0.08,peak:Math.min(0.2,0.06+(o&&o.impact||0)*0.01),fLo:110,fHi:340,buf:'brown'}); tone({...o,type:'sine',f0:150,f1:70,dur:0.08,peak:Math.min(0.12,0.03+(o&&o.impact||0)*0.006)}); },
@@ -258,7 +290,7 @@ window.MM = window.MM || {};
   // (which bypassed master volume/mute entirely).
   function thunder(distTiles,opts){
     const c=ensureCtx(); if(!c||c.state!=='running') return;
-    if(throttled('thunder',600)) return;
+    if(throttled('thunder',600,opts)) return;
     const d=Math.max(0,distTiles||0);
     const delay=Math.min(2.5,d*0.012);
     const vol=Math.max(0.05,0.5*Math.exp(-d/120));
@@ -271,7 +303,7 @@ window.MM = window.MM || {};
   // Live game state snapshot, refreshed at 4 Hz by update(). Everything is read
   // defensively — any subsystem may be absent (tests, boot order).
   const scene={isDay:true, tDay:0.5, depth:0, underground:false, submerged:0, inWater:false,
-               rain:0, storm:0, wind:0, ready:false};
+               rain:0, rainLevel:0, rainPan:0, snow:0, storm:0, wind:0, sandstorm:0, ready:false};
   let heroWater={inWater:false, subFrac:0};
   function setHeroWater(inWater,subFrac){
     const wasIn=heroWater.inWater;
@@ -289,8 +321,31 @@ window.MM = window.MM || {};
     }catch(e){}
     scene.underground=scene.depth>6;
     scene.submerged=heroWater.subFrac; scene.inWater=heroWater.inWater;
+    scene.rain=0; scene.rainLevel=0; scene.rainPan=0; scene.snow=0; scene.storm=0; scene.wind=0; scene.sandstorm=0;
+    try{
+      const p=window.player;
+      if(MM.sandstorm && MM.sandstorm.intensityAt && p && Number.isFinite(p.x)){
+        scene.sandstorm=clamp(Number(MM.sandstorm.intensityAt(p.x))||0,0,1);
+      }
+    }catch(e){}
     try{ const cm=MM.clouds && MM.clouds.metrics && MM.clouds.metrics();
-      if(cm){ scene.rain=cm.drops||0; scene.storm=(cm.storm&&cm.storm.active)?(cm.storm.intensity||0.5):0; scene.wind=Math.abs(cm.wind||0); }
+      if(cm){
+        scene.rain=Number.isFinite(cm.drops)?Math.max(0,cm.drops):0;
+        scene.storm=(cm.storm&&cm.storm.active)?(cm.storm.intensity||0.5):0;
+        scene.wind=Math.abs(cm.wind||0);
+      }
+      const p=window.player;
+      const field=MM.clouds && MM.clouds.precipitationAudioAt && p && Number.isFinite(p.x)
+        ? MM.clouds.precipitationAudioAt(p.x) : null;
+      if(field){
+        scene.rainLevel=clamp(Number(field.rain)||0,0,1.5);
+        scene.snow=clamp(Number(field.snow)||0,0,1.5);
+        scene.rainPan=scene.rainLevel>0?clamp(Number(field.pan)||0,-0.9,0.9):0;
+      }else if(scene.rain>0){
+        // Compatibility for older/custom weather providers that only expose the
+        // cosmetic drop count. Direction is unknown, so keep that bed centered.
+        scene.rainLevel=clamp(scene.rain/100,0,1.5);
+      }
     }catch(e){}
     scene.ready=true;
   }
@@ -299,19 +354,27 @@ window.MM = window.MM || {};
   // Looping noise beds whose gains chase scene-driven targets. Built once with
   // the context; silent until the scene says otherwise.
   const beds={};
-  function makeBed(buf,ftype,freq,Q){
+  function makeBed(buf,ftype,freq,Q,spatialized){
     const src=ctx.createBufferSource(); src.buffer=buf; src.loop=true;
     const f=ctx.createBiquadFilter(); f.type=ftype; f.frequency.value=freq; f.Q.value=Q;
     const g=ctx.createGain(); g.gain.value=0;
-    src.connect(f); f.connect(g); g.connect(buses.ambience); src.start();
-    return {src,f,g};
+    let panner=null;
+    if(spatialized && typeof ctx.createStereoPanner==='function'){
+      try{ panner=ctx.createStereoPanner(); panner.pan.value=0; }catch(e){ panner=null; }
+    }
+    src.connect(f); f.connect(g);
+    if(panner){ g.connect(panner); panner.connect(buses.ambience); }
+    else g.connect(buses.ambience);
+    src.start();
+    return {src,f,g,panner};
   }
   function buildAmbienceBeds(){
-    beds.rain=makeBed(noiseBuf,'lowpass',900,0.4);
-    beds.patter=makeBed(noiseBuf,'highpass',2600,0.5);   // droplet sizzle over the low wash
+    beds.rain=makeBed(noiseBuf,'lowpass',900,0.4,true);
+    beds.patter=makeBed(noiseBuf,'highpass',2600,0.5,true);   // droplet sizzle over the low wash
     beds.wind=makeBed(noiseBuf,'bandpass',420,0.6);
     beds.cave=makeBed(brownBuf,'lowpass',130,0.4);
     beds.water=makeBed(brownBuf,'bandpass',480,0.8);     // underwater murk
+    beds.sand=makeBed(noiseBuf,'bandpass',760,0.7);      // sandstorm grit hiss over the wind bed
   }
   function driveBeds(){
     if(!ctx||!beds.rain) return;
@@ -320,12 +383,18 @@ window.MM = window.MM || {};
     const muffle=sub?0.25:1; // surface weather fades when the hero dives
     // surface weather bleeds a few tiles into the ground, then dies out entirely
     const ug=scene.underground? Math.max(0, 1-(scene.depth-6)/18)*0.35 : 1;
-    const rainT=(scene.rain>0? Math.min(0.16,0.02+scene.rain*0.0006):0)*(1+scene.storm*0.6)*ug*muffle;
+    const rainT=(scene.rainLevel>0? Math.min(0.16,0.02+scene.rainLevel*0.07):0)*(1+scene.storm*0.6)*ug*muffle;
     beds.rain.g.gain.setTargetAtTime(rainT,t,0.4);
     beds.patter.g.gain.setTargetAtTime(rainT>0.04? (rainT-0.04)*0.5:0, t,0.5);
-    const windT=(Math.min(0.09,0.015+scene.wind*0.012)+scene.storm*0.05)*(scene.underground?ug*0.6:1)*muffle;
+    if(beds.rain.panner) beds.rain.panner.pan.setTargetAtTime(scene.rainPan,t,0.25);
+    if(beds.patter.panner) beds.patter.panner.pan.setTargetAtTime(scene.rainPan,t,0.25);
+    const windT=(Math.min(0.09,0.015+scene.wind*0.012)+scene.storm*0.05+scene.sandstorm*0.04)*(scene.underground?ug*0.6:1)*muffle;
     beds.wind.g.gain.setTargetAtTime(windT,t,0.9);
-    beds.wind.f.frequency.setTargetAtTime(380+rand(-60,120)+scene.storm*160, t, 1.2); // slow organic drift
+    beds.wind.f.frequency.setTargetAtTime(380+rand(-60,120)+scene.storm*160+scene.sandstorm*120, t, 1.2); // slow organic drift
+    // sandstorm bed: hissing grit riding the wind howl (dies out underground)
+    const sandT=scene.sandstorm>0.05 ? Math.min(0.13,0.02+scene.sandstorm*0.11)*(scene.underground?ug*0.5:1)*muffle : 0;
+    beds.sand.g.gain.setTargetAtTime(sandT,t,0.7);
+    if(sandT>0) beds.sand.f.frequency.setTargetAtTime(700+rand(-80,140), t, 0.9);
     const caveT=scene.underground? Math.min(0.11,0.04+scene.depth*0.0012)*muffle : 0;
     beds.cave.g.gain.setTargetAtTime(caveT,t,1.0);
     beds.water.g.gain.setTargetAtTime(sub?0.12:0, t,0.35);
@@ -360,7 +429,7 @@ window.MM = window.MM || {};
     }
     if(scene.storm>0 && !scene.underground && nowMs>=sched.rumble){
       sched.rumble=nowMs+rand(9000,26000);
-      noise({bus:'ambience',dur:rand(1.2,2.2),peak:0.05+scene.storm*0.04,fLo:50,fHi:300,ftype:'lowpass',buf:'brown',rate:rand(0.4,0.7),attack:0.4,send:0.4});
+      noise({bus:'ambience',dur:rand(1.2,2.2),peak:0.05+scene.storm*0.04,fLo:50,fHi:300,ftype:'lowpass',buf:'brown',rate:rand(0.4,0.7),attack:0.4,pan:rand(-0.65,0.65),send:0.4});
     }
   }
 
@@ -475,7 +544,12 @@ window.MM = window.MM || {};
       ctx: !!ctx, state: ctx?ctx.state:'none', failed: ctxFailed, voices,
       buses:{sfx:settings.sfx, ambience:settings.ambience, music:settings.music, ui:settings.ui},
       scene:{...scene}, musicMode:music.mode, danger:Date.now()<dangerUntil,
-      beds: beds.rain? {rain:beds.rain.g.gain.value, wind:beds.wind.g.gain.value, cave:beds.cave.g.gain.value, water:beds.water.g.gain.value} : null,
+      beds: beds.rain? {rain:beds.rain.g.gain.value, patter:beds.patter.g.gain.value,
+        rainPan:beds.rain.panner?beds.rain.panner.pan.value:0,
+        patterPan:beds.patter.panner?beds.patter.panner.pan.value:0,
+        stereoRain:!!(beds.rain.panner&&beds.patter.panner),
+        wind:beds.wind.g.gain.value, cave:beds.cave.g.gain.value, water:beds.water.g.gain.value,
+        sand:beds.sand?beds.sand.g.gain.value:0} : null,
     };
   }
 

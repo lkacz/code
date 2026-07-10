@@ -19,7 +19,7 @@ import { T } from '../constants.js';
   const usedAt = new Map(); // "x,y" -> gameDayFloat of last successful ritual
 
   function say(t){ try{ if(root.msg) root.msg(t); }catch(e){} }
-  function playSound(id){ try{ if(MM.audio && MM.audio.play) MM.audio.play(id); }catch(e){} }
+  function playSound(id,x,y){ try{ if(MM.audio && MM.audio.play) MM.audio.play(id,{x,y}); }catch(e){} }
   function costText(){ return Object.entries(COST).map(([k,n])=>n+'× '+(k==='diamond'?'diament':k)).join(', '); }
 
   // Click dispatch from main.js. Returns true when the click was an altar
@@ -45,7 +45,7 @@ import { T } from '../constants.js';
     const forceSpawn = ctx.forceSpawn || (MM.bosses && MM.bosses.forceSpawn);
     if(typeof forceSpawn !== 'function'){ say('🕯️ Ołtarz milczy.'); return true; }
     Object.keys(COST).forEach(key=>{ inv[key] -= COST[key]; });
-    playSound('masterstone');
+    playSound('masterstone',tx+0.5,ty+0.5);
     say('🕯️ Ofiara przyjęta… ziemia drży.');
     const px = (ctx.player && Number.isFinite(ctx.player.x)) ? ctx.player.x : tx;
     const side = px >= tx ? 1 : -1; // call the beast to the shrine's far side

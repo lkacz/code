@@ -349,7 +349,7 @@ const ufo = (function(){
       trophy:null,
     };
     say('🛸 '+look.name+' nadlatuje! Coś skanuje okolicę...');
-    sfx('ufo');
+    sfx('ufo',{x:craft.x,y:craft.y});
     return craft;
   }
 
@@ -488,7 +488,7 @@ const ufo = (function(){
           c.victim=v; c.phase='beam'; c.phaseT=0; c.charge=0;
           const what=v.kind==='boss'? 'GIGANTYCZNY OKAZ' : v.kind==='hero'? 'CIEBIE' : 'zwierzę';
           say('🛸 Wiązka namierzyła '+what+'! (tarcza opuszczona — ognia!)');
-          sfx('beam');
+          sfx('beam',{x:c.x,y:c.y});
         }
       }
     }

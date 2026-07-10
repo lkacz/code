@@ -161,7 +161,7 @@ import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
       const tile=MM.TILE||20;
       if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks((cx+0.5)*tile,(cy+0.5)*tile,'rare',18);
       else if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((cx+0.5)*tile,(cy+0.5)*tile,'rare');
-      if(MM.audio && MM.audio.play) MM.audio.play('charge');
+      if(MM.audio && MM.audio.play) MM.audio.play('charge',{x:cx+0.5,y:cy+0.5});
     }catch(e){}
     return {recipe:recipe.id, stimulus:recipe.stimulus, anchor:match.anchor, changed};
   }

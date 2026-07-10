@@ -7,6 +7,7 @@ import {
 } from './material_physics.js';
 import { worldGen as WG } from './worldgen.js';
 import { guardianLairs as GUARDIANS } from './guardian_lairs.js';
+import { applyBossStatus, bossElectricDamageMult, bossStatusFor, tickBossStatus } from './boss_status.js';
 
 const undergroundBoss = (function(){
   const root = (typeof window !== 'undefined') ? window : globalThis;
@@ -82,7 +83,7 @@ const undergroundBoss = (function(){
   const HAS_DEEP_WORLD = WORLD_BOTTOM > WORLD_H + 24;
 
   function say(t){ try{ if(root.msg) root.msg(t); }catch(e){} }
-  function sfx(id){ try{ if(MM.audio && MM.audio.play) MM.audio.play(id); }catch(e){} }
+  function sfx(id,opts){ try{ if(MM.audio && MM.audio.play) MM.audio.play(id,opts); }catch(e){} }
   function nowMs(){
     try{ if(root.performance && typeof root.performance.now === 'function') return root.performance.now(); }catch(e){}
     try{ return Date.now(); }catch(e){ return 0; }
@@ -600,7 +601,7 @@ const undergroundBoss = (function(){
     addEffect({type:'burst',kind:'earth',x:z.x,y:z.y-0.55,t:0,max:0.80,r:7});
     addEffect({type:'sparks',kind:'earth',x:z.x,y:z.y-0.55,t:0,max:0.55,r:5});
     say('Zombi golem zostal upieczony i odwraca sie przeciwko Nyxolithowi.');
-    sfx('fire');
+    sfx('fire',{x:z.x,y:z.y});
     return true;
   }
   function activeCore(){ return entities.find(e=>e && !e.dead && e.boss); }
@@ -673,7 +674,7 @@ const undergroundBoss = (function(){
     state.debugRematch = !!opts.debug;
     addEffect({type:'burst',x:L.bossX,y:L.bossY,kind:'earth',t:0,max:1.4,r:18});
     say(SPEC.bossName+' starts cutting tunnels beneath the alien gate.');
-    sfx('explosion');
+    sfx('explosion',{x:L.bossX,y:L.bossY});
     return true;
   }
   function sleep(){
@@ -780,7 +781,7 @@ const undergroundBoss = (function(){
     if(changed>0){
       state.tunnelsCarved += changed;
       addEffect({type:'tunnel',kind:'earth',x,y,t:0,max:0.55,r:radius+2});
-      if(opts.noise!==false && changed>4) sfx('dig');
+      if(opts.noise!==false && changed>4) sfx('dig',{x,y});
       markWorldChanged(false);
     }
     return changed;
@@ -951,20 +952,22 @@ const undergroundBoss = (function(){
     const room=Math.max(0,CFG.ZOMBIE_GOLEM_MAX_ACTIVE-activeZombieGolemCount());
     const n=Math.min(CFG.ZOMBIE_GOLEM_WAVE_SIZE,room);
     if(n<=0) return 0;
-    let spawned=0;
+    let spawned=0, soundX=0, soundY=0;
     for(let i=0;i<n;i++){
       const spot=findZombieSpawnSpot(p,L,getTile,i);
       const z=makeZombieGolem(spot,i);
       z.vx=(p && p.x<z.x ? -1 : 1)*(1.2+Math.random()*0.9);
       z.vy=-2.4-Math.random()*1.2;
       entities.push(z);
+      soundX+=z.x;
+      soundY+=z.y;
       spawned++;
       addEffect({type:'burst',kind:'earth',x:z.x,y:z.y-0.5,t:0,max:0.75,r:6});
       addEffect({type:'sparks',kind:'earth',x:z.x,y:z.y-0.6,t:0,max:0.48,r:4});
     }
     if(spawned>0){
       say('Zombie golemy wyrywaja sie z tuneli Nyxolithu.');
-      sfx('hurt');
+      sfx('hurt',{x:soundX/spawned,y:soundY/spawned});
     }
     return spawned;
   }
@@ -997,14 +1000,14 @@ const undergroundBoss = (function(){
       say('Nyxolith chokes on the gas and dives for cleaner stone.');
       state.hintCd=2.2;
     }
-    sfx('dig');
+    sfx('dig',{x:core.x,y:core.y});
     return true;
   }
   function detonateBurrowBomb(h,p,getTile,setTile,L){
     if(!h || h.exploded) return 0;
     h.exploded=true;
     addEffect({type:'bomb',kind:'earth',x:h.x,y:h.y,t:0,max:0.72,r:h.r+2});
-    sfx('explosion');
+    sfx('explosion',{x:h.x,y:h.y});
     if(p && !h.hit && Math.hypot(finite(p.x,0)-h.x,finite(p.y,0)-h.y)<h.r+0.9){
       h.hit=true;
       damageHero(h.dmg,h.x,h.y,'earth_burrow_bomb');
@@ -1460,7 +1463,7 @@ const undergroundBoss = (function(){
     if(!e || e.dead) return;
     e.dead=true;
     addEffect({type:'burst',kind:'earth',x:e.x,y:e.y,t:0,max:e.boss?1.5:0.8,r:e.boss?16:7});
-    sfx(e.boss?'explosion':'spark');
+    sfx(e.boss?'explosion':'spark',{x:e.x,y:e.y});
     if(e.boss){
       deathBlast(e,lastGetTile,lastSetTile);
       awardHeart();
@@ -1489,12 +1492,15 @@ const undergroundBoss = (function(){
       say('Strzala odbija sie od pancerza Nyxolithu.');
       state.hintCd=1.8;
     }
-    sfx('spark');
+    sfx('spark',{x,y});
     return 'bounce';
   }
   function hitEntity(e,dmg,opts){
     if(!e || e.dead || !(dmg>0)) return false;
     let amount=Math.max(0.5,Number(dmg)||1);
+    // weakened elemental matrix (boss_status.js): a soaked target conducts
+    const elemRaw=String((opts && (opts.element||opts.kind||opts.cause))||'').toLowerCase();
+    if(/electric|shock|laser|lightning/.test(elemRaw)) amount*=bossElectricDamageMult(e._elemStatus);
     if(e.boss && isArrowDamage(opts)) return deflectArrow(e,opts);
     if(e.boss && isGasDamage(opts)){
       scareCoreFromGas(e,opts && opts.x,opts && opts.y,layoutFor());
@@ -1611,16 +1617,28 @@ const undergroundBoss = (function(){
     if(!state.awakened && !activeCore() && player && nearAwaken(player,L) && !isDefeated()){
       awaken({getTile,setTile});
     }
+    // weakened matrix tick (boss_status.js): burn = half DoT, chill slows the
+    // whole entity 20% by scaling its behaviour dt; freeze never lands here
+    let coreDtMult=1;
+    for(const e of entities){
+      if(e.dead) continue;
+      const elem=tickBossStatus(bossStatusFor(e),dt);
+      // a burrowed core is under the rock: no DoT ticks (and no hint spam)
+      if(elem.damage>0 && !(e.boss && !coreVulnerable(e))) hitEntity(e,elem.damage,{kind:'status',cause:'burn_dot'});
+      e._statusDtMult=elem.speedMult;
+      if(e.boss) coreDtMult=elem.speedMult;
+    }
     const core = activeCore();
     if(core){
-      updateCore(core,player,getTile,setTile,dt,L);
+      updateCore(core,player,getTile,setTile,dt*coreDtMult,L);
       updateZombieGolemSpawner(core,player,dt,L,getTile);
     }
     for(const e of entities){
       if(e.dead || e.boss) continue;
-      if(e.role==='drone') updateDrone(e,player,getTile,setTile,dt,L);
-      else if(e.role==='zombieGolem') updateZombieGolem(e,player,getTile,setTile,dt,L);
-      else if(e.role==='friedGolem') updateFriedGolem(e,player,getTile,setTile,dt,L);
+      const edt=dt*(e._statusDtMult||1);
+      if(e.role==='drone') updateDrone(e,player,getTile,setTile,edt,L);
+      else if(e.role==='zombieGolem') updateZombieGolem(e,player,getTile,setTile,edt,L);
+      else if(e.role==='friedGolem') updateFriedGolem(e,player,getTile,setTile,edt,L);
     }
     updateHazards(dt,player,getTile,setTile,L);
     collideHero(player,dt);
@@ -2378,6 +2396,25 @@ const undergroundBoss = (function(){
   };
   MM.undergroundBoss=api;
   MM.earthBoss=api;
+  // weakened-matrix registry adapter (shared boss_status helper)
+  try{
+    if(MM.bossStatus && MM.bossStatus.registerSystem){
+      MM.bossStatus.registerSystem('undergroundBoss',{
+        applyRadius(wx,wy,r,kind,opts){
+          let n=0;
+          for(const e of entities){
+            if(!e || e.dead || e.friendly) continue;
+            if(e.boss && !coreVulnerable(e)) continue; // burrowed: splashes glance off the rock
+            const rr=r+(e.radius||1);
+            const dx=e.x-wx, dy=e.y-wy;
+            if(dx*dx+dy*dy>rr*rr) continue;
+            if(applyBossStatus(bossStatusFor(e),kind,opts)) n++;
+          }
+          return n;
+        }
+      });
+    }
+  }catch(e){}
   return api;
 })();
 

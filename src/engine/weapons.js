@@ -304,15 +304,20 @@ import { reactions as REACTIONS } from './reactions.js';
     return null;
   }
   // HUD contract: everything the weapon bar shows about the bow in one call.
+  // The five REAL arrow tiers always render as pips; utility ammo (toxic
+  // snowballs) only joins the row while the player owns some or pinned it —
+  // an empty novelty tier must not widen the bar (pinned in stream-sim).
   function arrowInfo(){
     const active=pickArrowTier();
     let total=0;
-    const tiers=ARROW_TIERS.map(t=>{
+    const tiers=[];
+    for(const t of ARROW_TIERS){
       const count=resourceCount(t.key);
       total+=count;
-      return {id:t.id, key:t.key, label:t.label, color:t.color, damage:t.damage,
-        count, active:!!(active && active.id===t.id), pinned:arrowPref===t.id};
-    });
+      if(t.snowball && count<=0 && arrowPref!==t.id) continue;
+      tiers.push({id:t.id, key:t.key, label:t.label, color:t.color, damage:t.damage,
+        count, active:!!(active && active.id===t.id), pinned:arrowPref===t.id});
+    }
     return {tiers, activeId:active?active.id:null, pref:arrowPref, total};
   }
   function fuelInfo(kind){
@@ -747,10 +752,11 @@ import { reactions as REACTIONS } from './reactions.js';
     try{ if(MM.mechs && MM.mechs.damageAt && MM.mechs.damageAt(tx,ty,dmg,opts)) return true; }catch(e){}
     try{ if(MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg,opts)) return true; }catch(e){}
     try{ if(MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,dmg)) return true; }catch(e){}
-    try{ if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,dmg)) return true; }catch(e){}
-    try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(tx,ty,dmg)) return true; }catch(e){}
-    try{ if(MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,dmg)) return true; }catch(e){}
-    try{ if(MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,dmg)) return true; }catch(e){}
+    // boss families take opts too: a soaked (wet) boss conducts — x1.25 (boss_status.js)
+    try{ if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,dmg,opts)) return true; }catch(e){}
+    try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(tx,ty,dmg,opts)) return true; }catch(e){}
+    try{ if(MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,dmg,opts)) return true; }catch(e){}
+    try{ if(MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,dmg,opts)) return true; }catch(e){}
     try{ if(MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,dmg)) return true; }catch(e){}
     try{ if(MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(tx,ty,dmg)) return true; }catch(e){}
     return false;
@@ -819,7 +825,9 @@ import { reactions as REACTIONS } from './reactions.js';
         try{ const p=MM.particles, TILE=MM.TILE||20; if(p && p.spawnSparks) p.spawnSparks(x*TILE,y*TILE,'rare',12); }catch(e){}
         break;
       }
-      if(electricDamageAt(tx,ty,dmg,{specialAttack:!!charge,luckyStrike:!!(roll&&roll.lucky)})){ ex=x; ey=y; hit=true; addUltCharge(0.08); break; }
+      // ordinary beam hits feed the ult; the ult's own hits must NOT refund it
+      // (a successful ult consumes the whole charge — pinned in stream-sim)
+      if(electricDamageAt(tx,ty,dmg,{specialAttack:!!charge,luckyStrike:!!(roll&&roll.lucky)})){ ex=x; ey=y; hit=true; if(!charge) addUltCharge(0.08); break; }
     }
     if(hit && roll && roll.lucky) noteLuckyStrike(ex,ey-0.4);
     if(hit && (charge || (roll && roll.lucky))) noteWeaponCombatHit(ex,ey-0.4,dmg,{kind:'electric',element:'electric',source:'hero',specialAttack:!!charge,luckyStrike:!!(roll&&roll.lucky)},{major:!!charge});
@@ -1106,6 +1114,7 @@ import { reactions as REACTIONS } from './reactions.js';
         if(MM.mobs.chillRadius) MM.mobs.chillRadius(a.x,a.y,SNOWBALL_SPLAT.radius,{dur:SNOWBALL_SPLAT.chillDur,source:'hero',cause:'toxic_snowball'});
       }
     }catch(e){}
+    try{ if(MM.bossStatus && MM.bossStatus.applyRadius) MM.bossStatus.applyRadius(a.x,a.y,SNOWBALL_SPLAT.radius,'chill',{dur:SNOWBALL_SPLAT.chillDur,source:'hero',cause:'toxic_snowball'}); }catch(e){}
     try{
       const p=MM.particles, tile=MM.TILE||20;
       if(p && p.spawnImpactChips){
@@ -1113,7 +1122,7 @@ import { reactions as REACTIONS } from './reactions.js';
         p.spawnImpactChips(a.x*tile,a.y*tile,{power:0.6,element:'chill_splat'});
       }
     }catch(e){}
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('splash'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('splash',{x:a.x,y:a.y}); }catch(e){}
   }
   // Impact router for every splatting projectile (never sticks like an arrow).
   function splatProjectile(a,getTile,setTile){
@@ -1122,13 +1131,14 @@ import { reactions as REACTIONS } from './reactions.js';
     if(a.splat==='snow'){
       // plain snowball: a face full of snow — brief slow, no lasting damage cloud
       try{ if(MM.mobs && MM.mobs.chillRadius) MM.mobs.chillRadius(a.x,a.y,1.1,{dur:1.4,source:'hero',cause:'snowball_chill'}); }catch(e){}
+      try{ if(MM.bossStatus && MM.bossStatus.applyRadius) MM.bossStatus.applyRadius(a.x,a.y,1.1,'chill',{dur:1.4,source:'hero',cause:'snowball_chill'}); }catch(e){}
       try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:0.7,element:'chill_splat'}); }catch(e){}
-      try{ if(MM.audio && MM.audio.play) MM.audio.play('splash'); }catch(e){}
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('splash',{x:a.x,y:a.y}); }catch(e){}
       return;
     }
     if(a.splat==='rock'){
       try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:1.1}); }catch(e){}
-      try{ if(MM.audio && MM.audio.play) MM.audio.play('dig'); }catch(e){}
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('dig',{x:a.x,y:a.y}); }catch(e){}
       return;
     }
     if(a.splat==='wet'){
@@ -1139,6 +1149,7 @@ import { reactions as REACTIONS } from './reactions.js';
           if(MM.mobs.douseRadius) MM.mobs.douseRadius(a.x,a.y,1.8);
         }
       }catch(e){}
+      try{ if(MM.bossStatus && MM.bossStatus.applyRadius) MM.bossStatus.applyRadius(a.x,a.y,1.8,'wet',{dur:8,source:'hero',cause:'water_balloon'}); }catch(e){}
       try{
         if(FIRE && FIRE.isBurning && FIRE.extinguish){
           const bx=Math.floor(a.x), by=Math.floor(a.y);
@@ -1148,13 +1159,13 @@ import { reactions as REACTIONS } from './reactions.js';
       try{ if(MM.plants && MM.plants.waterAt) MM.plants.waterAt(a.x,a.y,1.6,2.2); }catch(e){}
       try{ if(MM.particles && MM.particles.spawnSplash) MM.particles.spawnSplash(a.x*tile,a.y*tile,0.7); }catch(e){}
       try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:0.8,element:'water_splat'}); }catch(e){}
-      try{ if(MM.audio && MM.audio.play) MM.audio.play('splash'); }catch(e){}
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('splash',{x:a.x,y:a.y}); }catch(e){}
       return;
     }
     if(a.splat==='gascloud'){
       // gas grenade: releases a poison cloud where it lands (fire detonates it)
       spawnGasCloud(a.x,a.y,1.6);
-      try{ if(MM.audio && MM.audio.play) MM.audio.play('gas'); }catch(e){}
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('gas',{x:a.x,y:a.y}); }catch(e){}
       return;
     }
     if(a.splat==='bomb'){
@@ -1306,7 +1317,7 @@ import { reactions as REACTIONS } from './reactions.js';
       const p=MM.particles, tile=MM.TILE||20;
       if(p && p.spawnSparks) p.spawnSparks((tx+0.5)*tile,(ty+0.5)*tile,'common',7);
     }catch(e){}
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('spark'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('spark',{x:tx+0.5,y:ty+0.5}); }catch(e){}
     return true;
   }
   function tileKey(x,y){ return x+','+y; }
@@ -1707,6 +1718,8 @@ import { reactions as REACTIONS } from './reactions.js';
         }
         if(Math.random()<0.3 && MM.mobs && MM.mobs.igniteRadius) MM.mobs.igniteRadius(p.x,p.y,0.9,puffStreamDamageOpts('flame',p,{dur:2.5, dps:(p.dps||6)*0.6}));
         if(Math.random()<0.3 && MM.mechs && MM.mechs.igniteRadius) MM.mechs.igniteRadius(p.x,p.y,0.9,puffStreamDamageOpts('flame',p,{dur:2.5, dps:(p.dps||6)*0.6}));
+        // bosses/guardians accept the weakened matrix: burn ticks at half dps
+        if(Math.random()<0.3 && MM.bossStatus && MM.bossStatus.applyRadius) MM.bossStatus.applyRadius(p.x,p.y,0.9,'burn',puffStreamDamageOpts('flame',p,{dur:2.5, dps:(p.dps||6)*0.6}));
         if(Math.random()<0.25 && MM.plants && MM.plants.scorchAt) MM.plants.scorchAt(p.x,p.y,1.2);
       } else if(p.kind==='hose'){
         // A water turret under the jet drinks it: the hose tops up placed
@@ -1720,6 +1733,8 @@ import { reactions as REACTIONS } from './reactions.js';
         }
         if(FIRE && FIRE.isBurning(tx,ty)) FIRE.extinguish(tx,ty);
         if(Math.random()<0.3 && MM.mobs && MM.mobs.douseRadius) MM.mobs.douseRadius(p.x,p.y,1.0);
+        // soaking a boss primes the conduction combo (electric x1.25)
+        if(Math.random()<0.3 && MM.bossStatus && MM.bossStatus.applyRadius) MM.bossStatus.applyRadius(p.x,p.y,1.0,'wet',{dur:6,source:'hero',cause:'hose'});
         // watering can: the jet hydrates the garden it passes over
         if(Math.random()<0.3 && MM.plants && MM.plants.waterAt) MM.plants.waterAt(p.x,p.y,0.3,1.6);
         if(Math.random()<0.10 && MM.mobs && MM.mobs.damageAt) MM.mobs.damageAt(tx,ty, Math.max(1,(p.dps||2)*0.5),puffStreamDamageOpts('hose',p));

@@ -151,7 +151,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     });
     sparkBurst(c.x+0.5,c.y-1,'epic');
     smokeAt(c.x+0.5,c.y-0.7,3.2);
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('masterstone'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('masterstone',{x:c.x+0.5,y:c.y-1}); }catch(e){}
     if(reason==='diamond') say('Wulkan przyjal diament i wyrzucil kamien mistrza!');
     else if(reason==='debug') say('Debug: wulkan wyrzucil kamien mistrza');
     else say('Wulkan wyrzucil kamien mistrza!');
@@ -317,7 +317,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       grabT:0.28
     });
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(player.x*(MM.TILE||20),(player.y+0.2)*(MM.TILE||20),'epic'); }catch(e){}
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('explosion'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('explosion',{x:fromX,y:player.y}); }catch(e){}
     if(typeof window.damageHero==='function'){
       try{ window.damageHero(16,{srcX:fromX,srcY:c.y,kb:0,kbY:-0.4,cause:'lava_hand',invulMs:720}); }catch(e){}
     }

@@ -44,7 +44,11 @@ import { T } from '../constants.js';
   let ctxHooks = null;           // {onInventoryChange, onChange}
 
   function say(t){ try{ if(root.msg) root.msg(t); }catch(e){} }
-  function playSound(id){ try{ if(MM.audio && MM.audio.play) MM.audio.play(id); }catch(e){} }
+  function playSound(id,x,y){
+    try{
+      if(MM.audio && MM.audio.play) MM.audio.play(id,Number.isFinite(x)&&Number.isFinite(y)?{x,y}:undefined);
+    }catch(e){}
+  }
   function splash(x, power){ try{ if(MM.water && MM.water.disturb) MM.water.disturb(Math.floor(x), power); }catch(e){} }
   function invRef(){ return root.inv || null; }
 
@@ -84,7 +88,7 @@ import { T } from '../constants.js';
     if(player && typeof player.xp === 'number') player.xp += f.xp;
     S.anim = {t:0, fromX:S.x, fromY:S.y, icon:f.icon, golden:!!f.golden};
     say('🎣 Złowiono: '+f.label+'! (+'+f.xp+' XP)');
-    playSound(f.golden ? 'golden' : 'harvest');
+    playSound(f.golden ? 'golden' : 'harvest',S.x,S.y);
     splash(S.x, 140);
     if(ctxHooks && ctxHooks.onInventoryChange){ try{ ctxHooks.onInventoryChange(); }catch(e){} }
     if(ctxHooks && ctxHooks.onChange){ try{ ctxHooks.onChange(); }catch(e){} }
@@ -98,7 +102,7 @@ import { T } from '../constants.js';
     S.hooksDone++;
     const f = S.fish || FISH[0];
     if(S.hooksDone >= f.hooks){ land(player); return; }
-    playSound('splash');
+    playSound('splash',S.x,S.y);
     splash(S.x, 110);
     beginPullPhase();
   }
@@ -119,7 +123,7 @@ import { T } from '../constants.js';
       S.fish=rollFish();
       S.biteAt = TUNING.biteMin + rng() * TUNING.biteSpan;
       splash(S.x, 70);
-      playSound('splash');
+      playSound('splash',S.x,S.y);
       return true;
     }
     if(S.phase === 'waiting'){ say('🎣 Zwinięto żyłkę.'); reset(); return true; }
@@ -138,7 +142,7 @@ import { T } from '../constants.js';
       S.t += dt;
       if(S.t >= S.biteAt){
         S.phase='bite'; S.windowT=TUNING.hookWindow;
-        playSound('splash'); splash(S.x, 150);
+        playSound('splash',S.x,S.y); splash(S.x, 150);
       }
       return;
     }
@@ -151,7 +155,7 @@ import { T } from '../constants.js';
       S.windowT -= dt;
       if(S.windowT <= 0){
         S.phase='pullWindow'; S.windowT=TUNING.hookWindow;
-        playSound('splash'); splash(S.x, 130);
+        playSound('splash',S.x,S.y); splash(S.x, 130);
       }
     }
   }

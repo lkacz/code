@@ -48,6 +48,12 @@ MM.background = {getCycleInfo(){ return {cycleT:0.75, isDay:false, tDay:0.5}; }}
 const nightTemp = seasons.temperatureAt(0, 62, 0.55, springProfile);
 assert.ok(seasons.metrics().diurnalTemperatureDelta < -0.12, 'season metrics expose cold midnight terrain temperature');
 assert.ok(noonTemp - nightTemp > 0.20, 'seasonal terrain temperature follows the day/night cycle');
+assert.equal(seasons.temperatureCelsius(0), -18, 'deep-winter simulation temperature maps to readable Celsius');
+assert.equal(seasons.temperatureCelsius(0.3), 0, 'the snow cutoff maps to water freezing temperature');
+assert.equal(seasons.temperatureCelsius(0.5), 12, 'mild simulation temperature maps to readable Celsius');
+assert.equal(seasons.temperatureCelsius(1), 42, 'extreme-heat simulation temperature maps to readable Celsius');
+assert.ok(Math.abs(seasons.temperatureCelsius(0.93)-37.8)<1e-9, 'the heat-exposure threshold reads as dangerous real-world heat');
+assert.equal(seasons.temperatureCelsius(null), null, 'missing temperature does not render a misleading reading');
 MM.background = oldBackground;
 
 let tiles;
@@ -539,6 +545,9 @@ const mobSrc = await readFile(new URL('../src/engine/mobs.js', import.meta.url),
 const uiSrc = await readFile(new URL('../src/engine/ui.js', import.meta.url), 'utf8');
 const seasonSrc = await readFile(new URL('../src/engine/seasons.js', import.meta.url), 'utf8');
 assert.match(mainSrc, /import \{ seasons as SEASONS \}/, 'main imports the seasons engine');
+assert.match(mainSrc, /function sampleAmbientTemperature\(x,y,baseClimate\)[\s\S]*SEASONS\.temperatureAt\(cx,cy,climate\)/, 'main exposes one canonical ambient-temperature sampler');
+assert.match(mainSrc, /function localTemperatureC\(pos\)[\s\S]*sampleAmbientTemperature\(pos\.x,pos\.y\)/, 'world-status thermometer samples temperature at the displayed hero position');
+assert.match(mainSrc, /parts\.push\('🌡️ '\+fmtStatusTemperature\(temperature\)\)/, 'world status displays the local temperature with a thermometer and Celsius unit');
 assert.match(mainSrc, /seasons:\s*timedSavePart\('seasons',[^\n]*SEASONS && SEASONS\.snapshot/, 'save payload includes seasons');
 assert.match(mainSrc, /SEASONS\.restore\(data\.seasons\)/, 'load path restores seasons');
 assert.match(mainSrc, /SEASONS\.update\(dt, getTile, setTile, player, seasonUpdateContext\(\)\)/, 'main loop updates seasons with viewport safety context before weather systems');

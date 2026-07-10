@@ -30,9 +30,11 @@ export function heroLoadWeight(t){
   // Snow buries, it does not crush: a hero swallowed by a blizzard drift has to
   // dig out, but even a storm-deep snow column stays under the base capacity.
   if(t===T.SNOW || t===T.TOXIC_SNOW) return 0.15;
+  // Granular sand family shares one weight: heavier than snow (a sandstorm dune
+  // presses harder than a snowdrift) yet still survivable at base capacity.
+  if(t===T.SAND || t===T.UNSTABLE_SAND || t===T.QUICKSAND) return 0.9;
   const p=buildMaterialProfile(t);
   if(p && Number.isFinite(p.weight)) return p.weight;
-  if(t===T.SAND) return 0.9;
   return 1;
 }
 

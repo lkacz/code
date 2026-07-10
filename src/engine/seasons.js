@@ -9,6 +9,12 @@ const DAY_SECONDS = 600;
 const DAYS_PER_SEASON = 10;
 const TRANSITION_DAYS = 2;
 const HALF_TRANSITION_DAYS = TRANSITION_DAYS / 2;
+// User-facing calibration for the simulation's open-ended temperature scale.
+// The weather model's snow cutoff (0.30) maps to 0°C; 0.5 is mild weather
+// (12°C), and 1.0 is extreme heat (42°C). Seasonal/day-night extremes may
+// exceed that range in either direction.
+const TEMPERATURE_C_MIN = -18;
+const TEMPERATURE_C_SPAN = 60;
 
 const SEASON_ORDER = ['spring', 'summer', 'autumn', 'winter'];
 const SEASON_ALIASES = {
@@ -544,6 +550,11 @@ function temperatureAt(x, row, baseTemp, prof, dayTempDelta){
   const p = prof || profile();
   const daily = Number.isFinite(dayTempDelta) ? dayTempDelta : currentDiurnalTemperatureDelta();
   return clim + finiteNumber(p.temperatureDelta, 0) + daily - lapse;
+}
+function temperatureCelsius(value){
+  return typeof value === 'number' && Number.isFinite(value)
+    ? TEMPERATURE_C_MIN + value * TEMPERATURE_C_SPAN
+    : null;
 }
 
 function skyOpenTile(t){
@@ -1723,6 +1734,7 @@ const api = {
   profile,
   metrics,
   temperatureAt,
+  temperatureCelsius,
   forceSeason,
   setEnabled,
   isEnabled,
@@ -1733,7 +1745,7 @@ const api = {
   scanNow,
   subscribe,
   config: CFG,
-  constants: {DAY_SECONDS, DAYS_PER_SEASON, TRANSITION_DAYS},
+  constants: {DAY_SECONDS, DAYS_PER_SEASON, TRANSITION_DAYS, TEMPERATURE_C_MIN, TEMPERATURE_C_SPAN},
   _debug: {
     stateAtDays,
     seasonOrder: SEASON_ORDER,

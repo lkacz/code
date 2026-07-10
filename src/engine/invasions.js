@@ -67,7 +67,16 @@ const invasions = (function(){
   function getWorldSeed(){ try{ return (MM.worldGen && MM.worldGen.worldSeed) || 0; }catch(e){ return 0; } }
   function nowMs(){ return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
   function say(text){ try{ if(root.msg) root.msg(text); }catch(e){} }
-  function play(name){ try{ if(MM.audio && MM.audio.play) MM.audio.play(name); }catch(e){} }
+  function play(name,opts){
+    try{
+      if(MM.audio && MM.audio.play){
+        const spatial=opts && Number.isFinite(Number(opts.x)) && Number.isFinite(Number(opts.y))
+          ? Object.assign({},opts,{x:Number(opts.x),y:Number(opts.y)})
+          : opts;
+        MM.audio.play(name,spatial);
+      }
+    }catch(e){}
+  }
   function burst(x,y,tier){
     try{
       if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(x*(MM.TILE || DEFAULT_TILE), y*(MM.TILE || DEFAULT_TILE), tier || 'rare');
@@ -942,7 +951,7 @@ const invasions = (function(){
       } else if(alienN && moleN) say('Nocna inwazja: obcy laduja, a kretoludzie przebijaja sie spod ziemi.');
       else if(moleN) say(moleN > 1 ? 'Nocny atak: '+moleN+' tunele kretoludzi otwieraja sie w okolicy.' : 'Nocny atak: kretoludzie przebijaja sie spod ziemi.');
       else say(alienN > 1 ? 'Nocna inwazja: '+alienN+' oddzialy obcych laduja w okolicy.' : 'Nocna inwazja: obcy laduja w okolicy.');
-      play('warning');
+      play('warning',spawned[0]);
       maybeSave(99);
       markHostSave(opts.ctx);
     }
@@ -2697,7 +2706,7 @@ const invasions = (function(){
       l.y = l.targetY;
       spawnAliens(team);
       say('Obcy wyszli z ladowiska i namierzaja bohatera.');
-      play('laser');
+      play('laser',l);
     }
   }
   function markBurrowCrack(team,getTile,setTile,ctx,stage){
@@ -2729,7 +2738,7 @@ const invasions = (function(){
     if(!b.warned && b.progress >= 0.18){
       b.warned = true;
       say('Pod ziemia cos ryje tunel. Czuc goracy popiol ze wschodu.');
-      play('warning');
+      play('warning',team);
     }
     const stage = b.progress >= 0.72 ? 2 : (b.progress >= 0.38 ? 1 : 0);
     if(stage > (b.crackStage || 0)){
@@ -2739,7 +2748,7 @@ const invasions = (function(){
     if(b.progress >= 1){
       spawnMolekin(team,getTile,setTile,ctx);
       say('Kretoludzie wyszli z tunelu i ida po bohatera.');
-      play('flame');
+      play('flame',team);
     }
   }
   function defeatTeam(team,player,ctx,getTile,setTile){
@@ -2753,7 +2762,7 @@ const invasions = (function(){
     const chests = dropTeamRewardChests(team,player,{ctx,getTile,setTile});
     const chestText = chests.length ? ', zdobyto '+describeChestDrops(chests) : '';
     say('Oddzial '+teamDisplayName(team)+' pokonany: +'+reward+' XP'+chestText+'.');
-    play('milestone');
+    play('milestone',team);
     burst(team.x,team.y-1,'epic');
     markHostSave(ctx);
     return true;
@@ -2898,7 +2907,7 @@ const invasions = (function(){
       if(chest) drops.push(chest);
     }
     if(drops.length){
-      play(drops.some(c=>c.tile === T.CHEST_EPIC) ? 'golden' : 'chest');
+      play(drops.some(c=>c.tile === T.CHEST_EPIC) ? 'golden' : 'chest',drops[0]);
       saveLocal();
     }
     return drops;
@@ -2931,7 +2940,7 @@ const invasions = (function(){
     if(!writeTile(setTile,spot.x,spot.y,T.CHEST_EPIC)) return false;
     wakeTileChanged(ctx,spot.x,spot.y,oldTile,T.CHEST_EPIC);
     burst(spot.x+0.5,spot.y+0.5,'epic');
-    play('golden');
+    play('golden',{x:spot.x+0.5,y:spot.y+0.5});
     say('Zloty alien commander pokonany. Zostawil zlota skrzynie.');
     saveLocal();
     markHostSave(ctx);
@@ -3978,7 +3987,7 @@ const invasions = (function(){
     syncCacheTask(cache);
     burst(spot.x+0.5,spot.y+0.5,'epic');
     say('Obcy zabrali lup i ukryli skrytke gdzies w okolicy.');
-    play('grave');
+    play('grave',cache);
     saveLocal();
     markHostSave(ctx);
     return {handled:true,cache,resources:totalResources,gear:totalGear};
@@ -4023,7 +4032,7 @@ const invasions = (function(){
     const restored = restoreCacheLoot(cache,ctx);
     try{ if(typeof ctx.updateInventory === 'function') ctx.updateInventory(); }catch(e){}
     burst(tx+0.5,ty+0.5,'epic');
-    play('chest');
+    play('chest',{x:tx+0.5,y:ty+0.5});
     const parts = [];
     if(restored.resourceUnits) parts.push(restored.resourceUnits+' zasobow');
     if(restored.gearCount) parts.push(restored.gearCount+' przedm.');
@@ -4356,7 +4365,7 @@ const invasions = (function(){
     teams.push(team);
     triggerTeamSpeech(team,'commanderSight',{speaker:alien,now,force:true,cooldown:900,keyCooldown:3800});
     say('Zloty alien commander strzeze reliktu Hero-Prostokata.');
-    play('warning');
+    play('warning',team);
     saveLocal();
     markHostSave(opts.ctx);
     return team;

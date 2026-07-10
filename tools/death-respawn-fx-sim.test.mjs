@@ -65,6 +65,8 @@ assert.match(mainSource, /function cameraCenterForPlayer\(\)\{[\s\S]*deathTravel
 assert.match(mainSource, /function updateCameraFollow\(dt\)[\s\S]*if\(deathTravelFx\)\{[\s\S]*camSX=c\.x; camSY=c\.y;[\s\S]*applyCameraFromCenter\(\);[\s\S]*return;/, 'death transit keeps the spirit centered instead of camera-lagging behind it');
 assert.match(mainSource, /function updateStatusHud\(ts\)[\s\S]*const travel=deathTravelHudMetrics\(\);[\s\S]*const pos=\(travel && travel\.pos\) \|\| player;[\s\S]*fmtStatusCoord\(pos\.x\)\+','\+fmtStatusCoord\(pos\.y\)/, 'status panel reports the traveling spirit position while death transit is active');
 assert.match(mainSource, /function updateStatusHud\(ts\)[\s\S]*if\(travel\)\{[\s\S]*fmtStatusDistance\(travel\.distanceLeft\)[\s\S]*fmtStatusSeconds\(travel\.secondsLeft\)/, 'status panel adds remaining distance and ETA during death transit');
+assert.match(mainSource, /function updateStatusHud\(ts\)[\s\S]*const pos=\(travel && travel\.pos\) \|\| player;[\s\S]*localTemperatureC\(pos\)/, 'status thermometer follows the same displayed position during death transit');
+assert.match(indexSource, /id="worldStatus"[^>]*title="[^"]*temperatura[^"]*"/, 'status tooltip advertises the local temperature reading');
 assert.match(mainSource, /CLOUDS\.isRainingAt\) \? CLOUDS\.isRainingAt\(Math\.floor\(pos\.x\)\)/, 'status panel weather lookup follows the live displayed position during death transit');
 assert.match(indexSource, /#worldStatusPanel\{[^}]*max-width:min\(520px,58vw\)[^}]*overflow:hidden/, 'status panel is bounded so death transit HUD details do not break the top bar');
 assert.match(indexSource, /#worldStatus\{[^}]*white-space:nowrap[^}]*text-overflow:ellipsis/, 'status text remains a single trimmed line on narrow screens');

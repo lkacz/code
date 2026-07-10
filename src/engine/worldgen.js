@@ -9,9 +9,10 @@
 // generated as basins and oceans as dry plateaus.)
 import { WORLD_H } from '../constants.js';
 import { worldHostility as HOSTILITY } from './world_hostility.js';
+import { consumeFreshWorldSeed } from './new_game.js';
 window.MM = window.MM || {};
 const WG = {};
-WG.worldSeed = 12345;
+WG.worldSeed = consumeFreshWorldSeed(typeof sessionStorage!=='undefined' ? sessionStorage : null) || 12345;
 
 // Persistent world generation settings (tunable via UI). v2 storage key — v1 values
 // belong to the old inverted height model and must not leak into this one.

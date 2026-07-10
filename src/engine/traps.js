@@ -32,7 +32,7 @@ const traps = (function(){
   let scanAcc=1;
 
   function say(t){ try{ if(typeof window!=='undefined' && window.msg) window.msg(t); }catch(e){} }
-  function sfx(n){ try{ if(MM.audio && MM.audio.play) MM.audio.play(n); }catch(e){} }
+  function sfx(n,o){ try{ if(MM.audio && MM.audio.play) MM.audio.play(n,o); }catch(e){} }
   function heroHit(amount,opts){
     if(typeof window!=='undefined' && typeof window.damageHero==='function'){ window.damageHero(amount,opts); return; }
     const p=(typeof window!=='undefined' && window.player)||null;
@@ -67,15 +67,15 @@ const traps = (function(){
       let sx=d.x-d.dir*6;
       for(let i=1;i<=8;i++){ if(isSolid(getTile(d.x-d.dir*i, d.y))){ sx=d.x-d.dir*i+d.dir; break; } }
       volleys.push({x:sx+0.5, y:cy, dir:d.dir, n:5+((Math.random()*3)|0), t:0});
-      say('🏹 Trach — linka! Strzałki ze ściany!'); sfx('bow');
+      say('🏹 Trach — linka! Strzałki ze ściany!'); sfx('bow',{x:sx+0.5,y:cy});
     } else if(d.kind==='gas'){
       clouds.push({x:cx, y:cy, t:6, r:d.r||2.6, acc:0});
       try{ if(MM.gases && MM.gases.add) MM.gases.add('poison',cx,cy,{power:1.3,cells:6,getTile,setTile}); }catch(e){}
       try{ if(MM.mobs && MM.mobs.poisonRadius) MM.mobs.poisonRadius(cx,cy,d.r||2.6,{dur:3,dps:2}); }catch(e){}
-      say('☠️ Grobowy gaz! Wstrzymaj oddech i uciekaj!'); sfx('gas');
+      say('☠️ Grobowy gaz! Wstrzymaj oddech i uciekaj!'); sfx('gas',{x:cx,y:cy});
     } else if(d.kind==='boom'){
       if(MM.weapons && MM.weapons.explodeAt && setTile) MM.weapons.explodeAt(cx, cy-1, getTile, setTile);
-      else { heroHit(14,{srcX:cx,srcY:cy,cause:'trap'}); burst(d.x,d.y-1,'epic'); sfx('explosion'); }
+      else { heroHit(14,{srcX:cx,srcY:cy,cause:'trap'}); burst(d.x,d.y-1,'epic'); sfx('explosion',{x:cx,y:cy-1}); }
       say('💥 Runiczna mina! Kto to tu zostawił?!');
     } else if(d.kind==='keystone'){
       for(const w of it.watch){
@@ -83,12 +83,12 @@ const traps = (function(){
         try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(w.x,w.y,getTile); }catch(e){}
       }
       say(d.fluid==='water'? '🌊 Zwornik puścił — woda!' : '🌋 Zwornik puścił — LAWA! Ratuj skarb!');
-      sfx(d.fluid==='water'? 'splash' : 'flame');
+      sfx(d.fluid==='water'? 'splash' : 'flame',{x:cx,y:cy});
     } else if(d.kind==='collapse'){
       const half=(d.w||3)>>1;
       for(let x=d.x-half;x<=d.x+half;x++){ if(setTile) setTile(x,d.y,T.AIR); burst(x,d.y,'common'); }
       say(d.surprise==='chest'? '🕳️ Podłoga runęła… o, skrzynia na dnie!' : '🕳️ Podłoga runęła!');
-      sfx('break');
+      sfx('break',{x:cx,y:cy});
     }
   }
 

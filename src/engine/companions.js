@@ -154,7 +154,16 @@ const companions = (function(){
     sayMemory[key] = text;
     say(text);
   }
-  function sfx(name){ try{ if(MM.audio && MM.audio.play) MM.audio.play(name); }catch(e){} }
+  function sfx(name,source){
+    try{
+      if(MM.audio && MM.audio.play){
+        const opts=source && Number.isFinite(Number(source.x)) && Number.isFinite(Number(source.y))
+          ? {x:Number(source.x),y:Number(source.y)}
+          : source;
+        MM.audio.play(name,opts);
+      }
+    }catch(e){}
+  }
   function burst(x,y,tier){
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(x*(MM.TILE||20), y*(MM.TILE||20), tier||'rare'); }catch(e){}
   }
@@ -2288,7 +2297,7 @@ const companions = (function(){
       list.push(golem);
       burst(golem.x,golem.y-0.7,'epic');
       sparks(golem.x,golem.y-0.72,'rare',22);
-      sfx('charge');
+      sfx('charge',golem);
       sayVariant('clay_ritual',[
         '{name} wstal z mokrej gliny i kamienia mistrza.',
         '{name} ulepil sie przy tobie i od razu wyglada, jakby znal regulamin tarczy.',
@@ -2330,7 +2339,7 @@ const companions = (function(){
       list.push(leaf);
       burst(leaf.x,leaf.y-0.38,'rare');
       sparks(leaf.x,leaf.y-0.42,'common',20);
-      sfx('wind');
+      sfx('wind',leaf);
       sayVariant('leaf_ritual',[
         '{name} zawirowal z lisci i kamienia slugi.',
         '{name} wyskoczyl z lisci, jakby wiatr przez chwile mial plan.',
@@ -2376,7 +2385,7 @@ const companions = (function(){
       deathFx.push({x:golem.x,y:golem.y-0.55,t:0,max:0.55,color:(golem.genome && golem.genome.highlight) || '#b8f3ff', fill:'rgba(64,184,255,0.22)'});
       if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
       sparks(golem.x,golem.y-0.56,'rare',24);
-      sfx('hose');
+      sfx('hose',golem);
       sayVariant('water_ritual',[
         '{name} wynurzyl sie z wody i kamienia mistrza.',
         '{name} zebral sie w jedna postac, choc przez moment wygladal jak ambitna kaluza.',
@@ -2427,7 +2436,7 @@ const companions = (function(){
       deathFx.push({x:mole.x,y:mole.y-0.48,t:0,max:0.58,color:(mole.genome && mole.genome.accent) || '#ff8b35', fill:'rgba(255,94,34,0.22)'});
       if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
       sparks(mole.x,mole.y-0.45,role==='tank'?'epic':'rare',24);
-      sfx('fire');
+      sfx('fire',mole);
       sayVariant('molekin_ritual',[
         '{name} wylazl z lawy macierzystej po upadku Wschodniego Guardiana. Teraz klania sie Hero-Prostokatowi.',
         '{name} wyszedl z lawy macierzystej, otrzepal popiol i uznal Hero-Prostokat za cieplejszy rozkaz.',
@@ -2473,7 +2482,7 @@ const companions = (function(){
       deathFx.push({x:golem.x,y:golem.y-0.55,t:0,max:0.48,color:(golem.genome && golem.genome.highlight) || '#f18a78', fill:'rgba(190,62,55,0.20)'});
       if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
       sparks(golem.x,golem.y-0.58,'rare',22);
-      sfx('charge');
+      sfx('charge',golem);
       sayVariant('meat_ritual',[
         '{name} zerwal sie z miesa i kamienia mistrza. Za piec minut zgnije.',
         '{name} poskladal sie z miesa z niepokojaca determinacja. Zegar gnicia juz tyka.',
@@ -2518,7 +2527,7 @@ const companions = (function(){
     const c=makeCompanion({x:spot.x,y:spot.y,biomass,facing:(player && player.facing)||1});
     list.push(c);
     burst(c.x,c.y-0.4,'rare');
-    sfx('charge');
+    sfx('charge',c);
     sayVariant('bio_craft',[
       '{name} dolaczyl do ciebie. Karm biomasa, jesli ma rosnac.',
       '{name} spojrzal na bohatera jak na chodzaca instrukcje przetrwania.',
@@ -2550,7 +2559,7 @@ const companions = (function(){
     deathFx.push({x:c.x,y:c.y-0.52,t:0,max:0.58,color:(c.genome && c.genome.glow) || '#7cf7ff', fill:'rgba(83,105,119,0.24)'});
     if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
     sparks(c.x,c.y-0.52,c.ufoRole==='commander'?'epic':'rare',24);
-    sfx('charge');
+    sfx('charge',c);
     sayVariant('ufo_alien_craft',[
       '{name} uznal Hero-Prostokat za nowy oltarz. To najsilniejszy typ kompana.',
       '{name} przelaczyl kult na Hero-Prostokat i udaje, ze nigdy nie lubil starych rozkazow.',
@@ -2573,7 +2582,7 @@ const companions = (function(){
     list.push(c);
     burst(c.x,c.y-0.35,'rare');
     sparks(c.x,c.y-0.35,'common',18);
-    sfx('wind');
+    sfx('wind',c);
     say(c.name+' zaszelescil przy tobie. Jest szybki, ale kruchy.');
     return c;
   }
@@ -2633,7 +2642,7 @@ const companions = (function(){
     }
     growCompanion(c,amount);
     sparks(c.x,c.y-0.55,'rare',14);
-    sfx('heal');
+    sfx('heal',c);
     say(c.name+' wchlonal biomase. HP '+Math.round(c.hp)+'/'+Math.round(c.maxHp)+'.');
     return true;
   }
@@ -2821,7 +2830,7 @@ const companions = (function(){
     });
     if(lasers.length>40) lasers.splice(0,lasers.length-40);
     sparks(target.x,target.y,hit?'rare':'common',hit?10:4);
-    sfx('beam');
+    sfx('beam',c);
   }
   function ufoAlienSupport(c,dt,player){
     if(!isUfoAlien(c) || ufoAlienRole(c)!=='healer') return false;
@@ -2855,7 +2864,7 @@ const companions = (function(){
     lasers.push({kind:'heal',x1:c.x,y1:c.y-0.62,x2:tx,y2:ty,life:0,max:0.30,hit:true,color:(c.genome && c.genome.laser) || '#d8ffe8',seed:(c.seed ^ Math.floor(nowMs()) ^ 0x0f0a11e9)>>>0});
     if(lasers.length>48) lasers.splice(0,lasers.length-48);
     sparks(tx,ty,'rare',6);
-    sfx('heal');
+    sfx('heal',c);
     c.attackCd=1.20;
     c.laserCd=Math.max(c.laserCd||0,0.16);
     return true;
@@ -2901,7 +2910,7 @@ const companions = (function(){
     lasers.push({kind:'mole_heal',x1:c.x,y1:c.y-0.58,x2:tx,y2:ty,life:0,max:0.30,hit:true,color:(c.genome && c.genome.ember) || '#ffc96f',seed:(c.seed ^ Math.floor(nowMs()) ^ 0xea57111)>>>0});
     if(lasers.length>48) lasers.splice(0,lasers.length-48);
     sparks(tx,ty,'rare',7);
-    sfx('heal');
+    sfx('heal',c);
     c.attackCd=1.05;
     c.laserCd=Math.max(c.laserCd||0,0.14);
     return true;
@@ -2952,7 +2961,7 @@ const companions = (function(){
     });
     if(lasers.length>48) lasers.splice(0,lasers.length-48);
     sparks(target.x,target.y,hit?'common':'common',hit?8:3);
-    sfx('hose');
+    sfx('hose',c);
     return hit;
   }
   function molekinFireStrike(c,target,getTile,setTile){
@@ -2981,7 +2990,7 @@ const companions = (function(){
     });
     if(lasers.length>48) lasers.splice(0,lasers.length-48);
     sparks(target.x,target.y,hit?'rare':'common',hit?(heavy?12:9):4);
-    sfx('fire');
+    sfx('fire',c);
     return hit;
   }
   function updateMolekinAction(c,dt,player,getTile,setTile){
@@ -3038,7 +3047,7 @@ const companions = (function(){
     deathFx.push({x:c.x,y:c.y-0.42,t:0,max:0.46,color:'#ffd08a',fill:'rgba(255,156,58,0.20)'});
     if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
     sparks(c.x,c.y-0.42,'common',wasRotten?16:12);
-    sfx('fire');
+    sfx('fire',c);
     say((wasRotten?'Zombi golem':'Miesny golem')+' upiekl sie i staje po stronie bohatera.');
     try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_FRIED_MEAT_GOLEM,reason:reason||'heat'}})); }catch(e){}
     return true;
@@ -3068,7 +3077,7 @@ const companions = (function(){
     deathFx.push({x:c.x,y:c.y-0.52,t:0,max:0.52,color:(c.genome && c.genome.rot) || '#6f7f35',fill:'rgba(82,112,45,0.22)',leaf:true});
     if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
     sparks(c.x,c.y-0.52,'common',18);
-    sfx('hurt');
+    sfx('hurt',c);
     say(c.name+' zgnil i rzucil sie na bohatera.');
     try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_ROTTEN_MEAT_GOLEM}})); }catch(e){}
     return true;
@@ -3090,7 +3099,7 @@ const companions = (function(){
     c.vy=Math.min(c.vy||0,-1.2);
     c.feedPulse=Math.max(c.feedPulse||0,0.16);
     sparks(target.x,target.y,hit?'rare':'common',hit?10:4);
-    sfx('hit');
+    sfx('hit',target);
     return hit;
   }
   function updateMeatGolemAction(c,dt,player,getTile){
@@ -3127,7 +3136,7 @@ const companions = (function(){
       c.feedPulse=Math.max(c.feedPulse||0,0.20);
       c.lastTarget={x:player.x,y:player.y-0.45,t:0.45};
       sparks(player.x,player.y-0.55,'common',8);
-      sfx('hurt');
+      sfx('hurt',c);
     }
     return ok;
   }
@@ -3162,7 +3171,7 @@ const companions = (function(){
     deathFx.push({x:c.x,y:c.y-0.48,t:0,max:0.42,color:'#ffd98c',fill:'rgba(255,210,122,0.18)'});
     if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
     sparks(c.x,c.y-0.48,'rare',12);
-    sfx('heal');
+    sfx('heal',c);
     say('Pieczony golem: +' + Math.round(player.hp-before) + ' HP.');
     try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_FRIED_MEAT_GOLEM,consumed:true,heal:Math.round(player.hp-before)}})); }catch(e){}
     return true;
@@ -3376,14 +3385,14 @@ const companions = (function(){
       deathFx.push({x:c.x,y:c.y-0.48,t:0,max:0.50,color:rotten ? ((c.genome && c.genome.rot) || '#6f7f35') : ((c.genome && c.genome.highlight) || '#f18a78'), fill:rotten ? 'rgba(82,112,45,0.22)' : 'rgba(190,62,55,0.18)'});
       if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
       sparks(c.x,c.y-0.44,'common',rotten?14:12);
-      sfx('hurt');
+      sfx('hurt',c);
       return true;
     }
     if(isWaterGolem(c)){
       deathFx.push({x:c.x,y:c.y-0.48,t:0,max:0.52,color:(c.genome && c.genome.highlight) || '#b8f3ff', fill:'rgba(64,184,255,0.20)'});
       if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
       sparks(c.x,c.y-0.42,'common',18);
-      sfx('splash');
+      sfx('splash',c);
       say(c.name+' rozlal sie w plytka kaluze.');
       return;
     }
@@ -3392,7 +3401,7 @@ const companions = (function(){
       if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
       burst(c.x,c.y-0.30,'common');
       sparks(c.x,c.y-0.34,'common',14);
-      sfx('break');
+      sfx('break',c);
       say(c.name+' rozsypal sie w suche liscie.');
       return;
     }
@@ -3400,7 +3409,7 @@ const companions = (function(){
       deathFx.push({x:c.x,y:c.y-0.58,t:0,max:0.65,color:(c.genome && c.genome.core) || '#ff7b2f', fill:'rgba(120,82,48,0.24)'});
       if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
       burst(c.x,c.y-0.45,'rare');
-      sfx('break');
+      sfx('break',c);
       say(c.name+' opadl w ciezkie bryly mokrej gliny.');
       return;
     }
@@ -3408,7 +3417,7 @@ const companions = (function(){
       deathFx.push({x:c.x,y:c.y-0.52,t:0,max:0.62,color:(c.genome && c.genome.glow) || '#7cf7ff', fill:'rgba(83,105,119,0.24)'});
       if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
       sparks(c.x,c.y-0.45,c.ufoRole==='commander'?'epic':'rare',20);
-      sfx('break');
+      sfx('break',c);
       say(c.name+' pekl w odlamki lodu macierzystego.');
       return;
     }
@@ -3416,7 +3425,7 @@ const companions = (function(){
       deathFx.push({x:c.x,y:c.y-0.46,t:0,max:0.58,color:(c.genome && c.genome.accent) || '#ff8b35', fill:'rgba(255,90,28,0.22)'});
       if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
       sparks(c.x,c.y-0.42,'rare',18);
-      sfx('fire');
+      sfx('fire',c);
       say(c.name+' zapadl sie w goracy popiol.');
       return;
     }
@@ -3427,7 +3436,7 @@ const companions = (function(){
     deathFx.push({x:c.x,y:c.y-0.45,t:0,max:0.55,color:c.genome.glow});
     if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
     burst(c.x,c.y-0.35,'epic');
-    sfx('explosion');
+    sfx('explosion',c);
     say(c.name+' rozpadl sie w zielonym blysku.');
   }
   function clayGolemStrike(c,target){
@@ -3439,7 +3448,7 @@ const companions = (function(){
     c.guardCd=traits.laserCooldown*(0.82+Math.random()*0.28);
     c.feedPulse=Math.max(c.feedPulse||0,0.16);
     sparks(target.x,target.y,hit?'rare':'common',hit?9:4);
-    sfx('break');
+    sfx('break',target);
     return hit;
   }
   function updateClayGolemGuard(c,dt,player,getTile){
@@ -3751,7 +3760,7 @@ const companions = (function(){
         c.feedPulse=Math.max(c.feedPulse||0,0.14);
         c.lastTarget={x:b.x+0.5,y:b.y+0.5,t:0.22};
         sparks(b.x+0.5,b.y+0.5,'common',6);
-        sfx('break');
+        sfx('break',{x:b.x+0.5,y:b.y+0.5});
         return true;
       }
     }
@@ -3775,7 +3784,7 @@ const companions = (function(){
         sparks(b.x+0.5,b.y+0.5,'common',5);
         if(molekinRole(c)==='sapper' || molekinRole(c)==='engineer') c.pathBreakCd=0.08;
         if(traits.guardAbsorb>0) c.shieldPulse=Math.max(c.shieldPulse||0,0.10);
-        sfx('break');
+        sfx('break',{x:b.x+0.5,y:b.y+0.5});
         return true;
       }
     }
@@ -4189,7 +4198,7 @@ const companions = (function(){
     const c=makeCompanion({x:spot.x,y:spot.y,biomass:mass,facing:(player && player.facing)||1});
     list.push(c);
     burst(c.x,c.y-0.4,'rare');
-    sfx('charge');
+    sfx('charge',c);
     say(c.name+' dolaczyl do debugowej druzyny.');
     try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_BIO,debug:true}})); }catch(e){}
     return c;
@@ -4204,7 +4213,7 @@ const companions = (function(){
     list.push(c);
     burst(c.x,c.y-0.55,'epic');
     sparks(c.x,c.y-0.72,'rare',18);
-    sfx('charge');
+    sfx('charge',c);
     say(c.name+' dolaczyl do debugowej druzyny.');
     try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_CLAY_GOLEM,debug:true}})); }catch(e){}
     return c;
@@ -4219,7 +4228,7 @@ const companions = (function(){
     list.push(c);
     burst(c.x,c.y-0.35,'rare');
     sparks(c.x,c.y-0.35,'common',18);
-    sfx('wind');
+    sfx('wind',c);
     say(c.name+' dolaczyl do debugowej druzyny.');
     try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_LEAF_MONSTER,debug:true}})); }catch(e){}
     return c;
@@ -4234,7 +4243,7 @@ const companions = (function(){
     list.push(c);
     deathFx.push({x:c.x,y:c.y-0.45,t:0,max:0.42,color:(c.genome && c.genome.highlight) || '#b8f3ff',fill:'rgba(64,184,255,0.18)'});
     sparks(c.x,c.y-0.45,'common',18);
-    sfx('hose');
+    sfx('hose',c);
     say(c.name+' dolaczyl do debugowej druzyny.');
     try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_WATER_GOLEM,debug:true}})); }catch(e){}
     return c;
@@ -4250,7 +4259,7 @@ const companions = (function(){
     deathFx.push({x:c.x,y:c.y-0.48,t:0,max:0.42,color:(c.genome && c.genome.highlight) || '#f18a78',fill:'rgba(190,62,55,0.18)'});
     if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
     sparks(c.x,c.y-0.48,'rare',18);
-    sfx('charge');
+    sfx('charge',c);
     say(c.name+' dolaczyl do debugowej druzyny.');
     try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_MEAT_GOLEM,debug:true}})); }catch(e){}
     return c;
@@ -4267,7 +4276,7 @@ const companions = (function(){
     deathFx.push({x:c.x,y:c.y-0.52,t:0,max:0.48,color:(c.genome && c.genome.glow) || '#7cf7ff',fill:'rgba(83,105,119,0.22)'});
     if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
     sparks(c.x,c.y-0.52,c.ufoRole==='commander'?'epic':'rare',22);
-    sfx('charge');
+    sfx('charge',c);
     say(c.name+' dolaczyl do debugowej druzyny.');
     try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_UFO_ALIEN,role:c.ufoRole,debug:true}})); }catch(e){}
     return c;
@@ -4284,7 +4293,7 @@ const companions = (function(){
     deathFx.push({x:c.x,y:c.y-0.44,t:0,max:0.46,color:(c.genome && c.genome.accent) || '#ff8b35',fill:'rgba(255,90,28,0.18)'});
     if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
     sparks(c.x,c.y-0.44,'rare',20);
-    sfx('fire');
+    sfx('fire',c);
     say(c.name+' dolaczyl do debugowej druzyny.');
     try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_MOLEKIN,role:c.moleRole,debug:true}})); }catch(e){}
     return c;
@@ -4443,7 +4452,7 @@ const companions = (function(){
     c.feedPulse=Math.max(c.feedPulse||0,0.25);
     c.guardCd=0;
     sparks(c.x,c.y-0.75,'rare',10);
-    sfx('charge');
+    sfx('charge',c);
     return true;
   }
   function debugForceGolemStrike(player,getTile){

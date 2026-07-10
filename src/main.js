@@ -1,6 +1,7 @@
 // Nowy styl / pełny ekran inspirowany Diamonds Explorer
 // Module entry: import constants (also hydrates window.MM via shim) and side-effect engine modules
 import { CHUNK_W, WORLD_H, WORLD_SECTION_H, WORLD_MIN_SECTION, WORLD_MAX_SECTION, WORLD_MIN_Y, WORLD_MAX_Y, TILE, T, INFO, MOVE, isAutumnLeaf, isLeaf, isFrozenEarth } from './constants.js';
+import { clearActiveGameStorage, queueFreshWorldSeed } from './engine/new_game.js';
 // Ensure worldgen initializes before world (world.js reads MM.worldGen on load)
 import { worldGen as WORLDGEN } from './engine/worldgen.js';
 import world from './engine/world.js';
@@ -33,6 +34,8 @@ import { eyes as EYES } from './engine/eyes.js';
 import { particles as PARTICLES } from './engine/particles.js';
 import { clouds as CLOUDS } from './engine/clouds.js';
 import { wind as WIND } from './engine/wind.js';
+import { sandstorm as SANDSTORM } from './engine/sandstorm.js';
+import { heroStatus as HERO_STATUS } from './engine/hero_status.js';
 import { bosses as BOSSES } from './engine/bosses.js';
 import { guardianLairs as GUARDIANS } from './engine/guardian_lairs.js';
 import { undergroundBoss as UNDERGROUND } from './engine/underground_boss.js';
@@ -221,6 +224,27 @@ function fmtStatusSeconds(v){
 	if(n>=10) return Math.ceil(n)+'s';
 	return n.toFixed(1)+'s';
 }
+function sampleAmbientTemperature(x,y,baseClimate){
+	const cx=Math.floor(x), cy=Math.floor(y);
+	let climate=Number.isFinite(baseClimate) ? baseClimate : null;
+	if(!Number.isFinite(climate)) try{ climate=(WORLDGEN && WORLDGEN.temperature) ? WORLDGEN.temperature(cx) : null; }catch(e){}
+	let temperature=climate;
+	try{ temperature=(SEASONS && SEASONS.temperatureAt) ? SEASONS.temperatureAt(cx,cy,climate) : climate; }catch(e){ temperature=climate; }
+	return Number.isFinite(temperature) ? temperature : null;
+}
+function localTemperatureC(pos){
+	if(!pos) return null;
+	const temperature=sampleAmbientTemperature(pos.x,pos.y);
+	if(!Number.isFinite(temperature)) return null;
+	const celsius=(SEASONS && SEASONS.temperatureCelsius)
+		? SEASONS.temperatureCelsius(temperature)
+		: -18 + temperature*60;
+	return Number.isFinite(celsius) ? celsius : null;
+}
+function fmtStatusTemperature(value){
+	const rounded=Math.round(value);
+	return (Object.is(rounded,-0)?0:rounded)+'°C';
+}
 function deathTravelRemainingPathLength(fx,progress){
 	if(!fx) return 0;
 	const start=deathClamp01(progress);
@@ -275,6 +299,10 @@ function updateStatusHud(ts){
 		}
 	}catch(e){}
 	try{
+		const temperature=localTemperatureC(pos);
+		if(Number.isFinite(temperature)) parts.push('🌡️ '+fmtStatusTemperature(temperature));
+	}catch(e){}
+	try{
 		const wm=(WIND && WIND.metrics) ? WIND.metrics() : null;
 		const cm=(CLOUDS && CLOUDS.metrics) ? CLOUDS.metrics() : null;
 		const raining=(CLOUDS && CLOUDS.isRainingAt) ? CLOUDS.isRainingAt(Math.floor(pos.x)) : false;
@@ -295,7 +323,7 @@ function updateStatusHud(ts){
 		if(seasonIcon) parts.push(seasonIcon);
 	}catch(e){}
 	const text=parts.join('  ·  ');
-	const title=travel ? 'Podroz po smierci: aktualna pozycja, pozostaly dystans i szacowany czas' : 'Pozycja bohatera, zegar, pogoda i pora roku';
+	const title=travel ? 'Podróż po śmierci: pozycja, dystans, czas i temperatura otoczenia' : 'Pozycja bohatera, zegar, temperatura, pogoda i pora roku';
 	if(text!==_lastStatusText){ _lastStatusText=text; el.textContent=text; }
 	if(el.title!==title) el.title=title;
 }
@@ -2303,6 +2331,17 @@ window.damageHero=function(amount, opts){
 	if(immunityMode){ player.hp=player.maxHp; return false; }
 	const now=performance.now();
 	if(player.hpInvul && now<player.hpInvul) return false;
+	// Elemental matrix against the player: a soaked hero conducts electricity
+	// (EEL shocks, robot lasers, lightning all hit x1.5 while wet).
+	const incomingElement=combatElementFromDetail(opts);
+	if(incomingElement==='electric' && HERO_STATUS && HERO_STATUS.damageInMult){
+		const condMult=HERO_STATUS.damageInMult('electric');
+		if(condMult>1){
+			amount*=condMult;
+			try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('hero_conduct','Mokry bohater przewodzi prąd — porażenia bolą mocniej!'); }catch(e){}
+			try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(player.x*TILE,(player.y-0.3)*TILE,{power:1.1,element:'electric_arc'}); }catch(e){}
+		}
+	}
 	if(MECHS && MECHS.absorbHeroDamage){
 		const mechGuard=MECHS.absorbHeroDamage(amount,opts,player);
 		if(mechGuard && mechGuard.absorbed>0){
@@ -2348,6 +2387,11 @@ window.damageHero=function(amount, opts){
 	player.hp-=dealt;
 	player.hpInvul=now+(opts.invulMs||600);
 	player.hurtFlashUntil=now+HURT_FLASH_MS;
+	// Fire-elemental hits ignite the hero (unless he is soaked — then the flame
+	// fizzles inside heroStatus.apply). The burn's own ticks must not re-ignite.
+	if(dealt>0 && incomingElement==='fire' && opts.cause!=='hero_burn' && HERO_STATUS && HERO_STATUS.apply){
+		HERO_STATUS.apply('burn',{dur:3,dps:2});
+	}
 	pushWorldNumber({kind:'damage',amount:-dealt,x:player.x,y:player.y-player.h*0.72,target:'hero',cause:opts.cause});
 	triggerWaterDamageDistress(opts.cause,dealt);
 	{
@@ -2422,6 +2466,7 @@ function notifyInvasionMining(tId,tx,ty){
 window.heroDied=function(cause){
 	if(deathTravelFx) return;
 	if(immunityMode){ player.hp=player.maxHp; return; }
+	if(HERO_STATUS && HERO_STATUS.clearAll) HERO_STATUS.clearAll(); // death sheds every elemental status
 	player.hurtFlashUntil=Math.max(player.hurtFlashUntil||0, performance.now()+HURT_FLASH_MS);
 	if(cause==='alien_invasion' && INVASIONS && INVASIONS.onHeroKilled){
 		const stolen=INVASIONS.onHeroKilled({player, inv, resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, getTile, setTile, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst});
@@ -2491,7 +2536,7 @@ function tryOpenGraveAt(tx,ty){
 		for(const k in grave.res){ if(typeof inv[k]==='number'){ inv[k]+=grave.res[k]; got.push(grave.res[k]+'× '+(RES_LABEL[k]||k)); } }
 		grave=null; saveGrave();
 		msg('🪦 Odzyskano: '+got.join(', '));
-		try{ if(MM.audio && MM.audio.play) MM.audio.play('chest'); }catch(e){}
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('chest',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 		updateInventory();
 	} else msg('🪦 Pusty nagrobek');
 	return true;
@@ -2637,6 +2682,7 @@ function publishSavePerf(perf){
 // request a save before later DOM setup code has finished running.
 let _saveStateT=null, _autoSaveWorkT=null, _autoSaveJob=null, _lastAutoSaveAt=Date.now(), _saveDirty=false, _lastSaveActivityAt=Date.now(), _saveRevision=0, _saveFailureCount=0, _nextAutoSaveRetryAt=0, _lastSaveError='';
 let _lastCriticalSaveAt=0, _lastCriticalSaveSignature='', _criticalSaveFailureCount=0;
+let _startingNewGame=false;
 const AUTO_SAVE_IDLE_CHECK_MS=3000;
 const AUTO_SAVE_IDLE_REQUIRED_MS=12000;
 const AUTO_SAVE_MIN_GAP_MS=90000;
@@ -2849,6 +2895,7 @@ function criticalStateSignature(state){
 	return stableStringify(criticalStateComparable(state));
 }
 function saveCriticalState(reason,force){
+	if(_startingNewGame) return false;
 	try{
 		const now=Date.now();
 		if(!force && now-_lastCriticalSaveAt<CRITICAL_SAVE_INTERVAL_MS) return false;
@@ -3383,6 +3430,7 @@ function scheduleDirtySave(delay){
 	}, Math.max(baseDelay,retryDelay));
 }
 function saveState(){
+	if(_startingNewGame) return;
 	_saveDirty=true;
 	_saveRevision++;
 	saveCriticalState('dirty');
@@ -3401,6 +3449,12 @@ window.__mmDebugHero = function(x,y){
 	return {x:player.x, y:player.y};
 };
 function flushPendingSave(){
+	if(_startingNewGame){
+		// Other modules may have their own earlier pagehide handlers; purge once more
+		// after they run so no fragment of the abandoned profile survives navigation.
+		try{ clearActiveGameStorage(localStorage); }catch(e){}
+		return;
+	}
 	if(_saveStateT){ clearTimeout(_saveStateT); _saveStateT=null; }
 	if(_autoSaveWorkT){ clearTimeout(_autoSaveWorkT); _autoSaveWorkT=null; }
 	_autoSaveJob=null;
@@ -3410,6 +3464,28 @@ function flushPendingSave(){
 window.addEventListener('pagehide',flushPendingSave);
 window.addEventListener('beforeunload',flushPendingSave);
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden') flushPendingSave(); });
+
+function startNewGame(){
+	if(_startingNewGame) return false;
+	_startingNewGame=true;
+	paused=true;
+	_saveDirty=false;
+	if(_saveStateT){ clearTimeout(_saveStateT); _saveStateT=null; }
+	if(_autoSaveWorkT){ clearTimeout(_autoSaveWorkT); _autoSaveWorkT=null; }
+	_autoSaveJob=null;
+	try{
+		if(PLANTS && PLANTS.reset) PLANTS.reset();
+		clearActiveGameStorage(localStorage);
+		queueFreshWorldSeed(typeof sessionStorage!=='undefined' ? sessionStorage : null);
+	}catch(e){
+		_startingNewGame=false;
+		console.warn('New game reset failed',e);
+		msg('Nie udało się wyczyścić bieżącej gry');
+		return false;
+	}
+	window.location.reload();
+	return true;
+}
 // --- Crafting (data-driven: a recipe is cost + effect; the panel renders itself;
 // ingredient labels come from the resource registry RES_LABEL) ---
 // Crafted gear flows through the chest-loot pipeline (dynamicLoot → inventory bag),
@@ -7211,6 +7287,20 @@ function ensurePausePanel(){
 	const help=document.createElement('button'); help.type='button'; help.textContent='Pomoc (H)';
 	help.addEventListener('click',()=>{ setPaused(false); try{ toggleHelp(); }catch(e){} });
 	helpRow.appendChild(help); pausePanel.appendChild(helpRow);
+	const newGameRow=buildPauseRow('Nowa gra'); newGameRow.classList.add('pauseDangerRow');
+	const newGameLabel=newGameRow.firstElementChild; newGameLabel.className='pauseDangerCopy';
+	const newGameHint=document.createElement('small');
+	newGameHint.textContent='Czyści bieżący świat, ekwipunek, postęp i statystyki.';
+	newGameLabel.appendChild(newGameHint);
+	const newGame=document.createElement('button'); newGame.type='button'; newGame.className='pauseDanger';
+	newGame.textContent='Rozpocznij od nowa';
+	newGame.addEventListener('click',()=>{
+		const confirmed=window.confirm('Rozpocząć nową grę?\n\nBieżący świat, ekwipunek, postęp i statystyki zostaną usunięte. Ręczne zapisy i ustawienia zostaną zachowane.');
+		if(!confirmed) return;
+		newGame.disabled=true; newGame.textContent='Uruchamiam…';
+		if(!startNewGame()){ newGame.disabled=false; newGame.textContent='Rozpocznij od nowa'; }
+	});
+	newGameRow.appendChild(newGame); pausePanel.appendChild(newGameRow);
 	const foot=document.createElement('div'); foot.className='pauseFoot';
 	foot.textContent='Świat stoi w miejscu, dopóki panel jest otwarty.';
 	pausePanel.appendChild(foot);
@@ -7898,16 +7988,44 @@ let houseHealMsgAt=0, waterPressureMsgAt=0;
 // Thermal exposure env is throttled: temperature and shelter change slowly, so the
 // mode is re-sampled a few times a second instead of scanning tiles every frame.
 let thermalEnvAcc=1, thermalModeCached='none';
+// Hero-status env samples share the thermal cadence (warmth scan + rain check
+// are tile walks — 2 Hz is plenty for drying/soaking transitions).
+let heroWarmthCached=false, heroRainWetCached=false;
 // Discovery journal is engine-owned; expose it for QA drivers and the debug console.
 window.mmDiscovery=DISCOVERY;
-// A yeti snowball to the face briefly slows the hero (mobs.js reports the hit).
-let heroChillUntil=0;
+// A yeti snowball to the face briefly slows the hero. The timer now lives in
+// the unified hero status system (engine/hero_status.js) — this shim keeps the
+// mobs.js contract (window.noteHeroChill(ms)) intact.
 window.noteHeroChill=function(ms){
 	const d=Math.max(200,Math.min(4000,Number(ms)||1200));
-	heroChillUntil=Math.max(heroChillUntil, performance.now()+d);
+	if(HERO_STATUS && HERO_STATUS.apply) HERO_STATUS.apply('chill',{dur:d/1000});
 };
 function heroChillMoveMult(){
-	return performance.now()<heroChillUntil ? 0.55 : 1;
+	return (HERO_STATUS && HERO_STATUS.moveMult) ? HERO_STATUS.moveMult() : 1;
+}
+// Sandstorm exposure: sampled on the same slow cadence as thermal mode. A hero
+// under the yellow wall without eye protection is slowed; squinted eyes (the
+// "Wąskie" pair — visionRadius ≤ 8) count as goggles, trading sight for grit.
+let sandSlowActive=false, sandMsgAt=0; // sampled on the thermal 0.5 s cadence
+function heroSandShield(){
+	try{
+		const it=MM.inventory && MM.inventory.equippedItem ? MM.inventory.equippedItem('eyes') : null;
+		return !!(it && Number(it.visionRadius)<=8);
+	}catch(e){ return false; }
+}
+function heroSandMoveMult(){
+	return sandSlowActive ? 0.62 : 1;
+}
+function sampleSandExposure(cx){
+	if(!SANDSTORM || !SANDSTORM.intensityAt || godMode){ sandSlowActive=false; return; }
+	const power=SANDSTORM.intensityAt(player.x);
+	const exposed=power>0.3 && gasSkyExposedTile(cx, Math.floor(player.y)-1);
+	if(exposed){ try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('sandstorm','Pustynny wiatr niesie ścianę piasku i usypuje wydmy!'); }catch(e){} }
+	sandSlowActive=exposed && !heroSandShield();
+	if(sandSlowActive){
+		const now=performance.now();
+		if(now-sandMsgAt>14000){ sandMsgAt=now; msg('🌪 Piasek siecze po oczach — zmruż oczy albo znajdź osłonę!'); }
+	}
 }
 function heroNearWarmth(cx,cy){
 	for(let dy=-2;dy<=2;dy++){
@@ -7922,9 +8040,10 @@ function heroNearWarmth(cx,cy){
 function sampleThermalMode(cx,inWater){
 	if(!SURVIVAL || !SURVIVAL.thermalExposureMode) return 'none';
 	const cy=Math.floor(player.y);
-	let climate=0.5, temp=0.5;
+	let climate=0.5;
 	try{ climate=WORLDGEN && WORLDGEN.temperature ? WORLDGEN.temperature(cx) : 0.5; }catch(e){}
-	try{ temp=(SEASONS && SEASONS.temperatureAt) ? SEASONS.temperatureAt(cx, cy) : climate; }catch(e){ temp=climate; }
+	const sampled=sampleAmbientTemperature(cx,cy,climate);
+	const temp=Number.isFinite(sampled) ? sampled : climate;
 	const sheltered=!gasSkyExposedTile(cx, cy-1);
 	return SURVIVAL.thermalExposureMode({
 		climate, temp, sheltered, inWater,
@@ -8321,7 +8440,7 @@ function physics(dt){
 	// Combine all movement multipliers, including dropdown, turbo and water drag.
 	// Ground material affects traction: mud slows, snow slides, ice slides hard.
 	const waterMoveMult = (inWater && !ridingFloatingBoat) ? heroWaterMoveSpeedMult() : 1;
-	const moveMult = ((MM.activeModifiers && MM.activeModifiers.moveSpeedMult)||1) * (window.playerSpeedMultiplier || 2) * turboSpeedMult * waterMoveMult * heroChillMoveMult();
+	const moveMult = ((MM.activeModifiers && MM.activeModifiers.moveSpeedMult)||1) * (window.playerSpeedMultiplier || 2) * turboSpeedMult * waterMoveMult * heroChillMoveMult() * heroSandMoveMult();
 	if(TERRAIN_TRAPS && TERRAIN_TRAPS.stepEntity) TERRAIN_TRAPS.stepEntity(player,getTile,setTile,{kind:'hero'});
 	const groundTile = groundTileUnderPlayer();
 	const groundTraction = surfaceTraction(groundTile);
@@ -8393,6 +8512,9 @@ function physics(dt){
 		if(thermalEnvAcc>=0.5){
 			thermalEnvAcc=0;
 			thermalModeCached=godMode ? 'none' : sampleThermalMode(tileX,inWater);
+			heroWarmthCached=heroNearWarmth(tileX, Math.floor(player.y));
+			heroRainWetCached=!godMode && !inWater && gasSkyExposedTile(tileX, Math.floor(player.y)-1) && !!(CLOUDS && CLOUDS.isRainingAt && CLOUDS.isRainingAt(tileX));
+			sampleSandExposure(tileX);
 		}
 		const thermal=SURVIVAL.updateThermalExposure(thermalState, dt, thermalModeCached);
 		if(thermal.warn) msg(thermal.mode==='cold' ? '🥶 Mróz przenika do kości — rozpal ogień albo znajdź schronienie!' : '🥵 Upał wysusza — schłodź się w wodzie albo w cieniu!');
@@ -8402,6 +8524,27 @@ function physics(dt){
 				if(SURVIVAL.consumeThermalDamage) SURVIVAL.consumeThermalDamage(thermalState, dmg);
 			}
 		}
+	}
+	// Unified hero statuses (mokry/podpalony/zziębnięty/zamarznięty): water and
+	// rain soak, warmth dries, deep frost can flash-freeze the wet+chilled hero.
+	if(HERO_STATUS && HERO_STATUS.update){
+		if(inWater && !godMode) HERO_STATUS.apply('wet',{dur:8});
+		else if(heroRainWetCached) HERO_STATUS.apply('wet',{dur:5});
+		const heroSt=HERO_STATUS.update(dt,{
+			deepFrost:thermalModeCached==='cold',
+			nearWarmth:heroWarmthCached,
+			inWater,
+			godMode
+		});
+		if(heroSt.frozeNow){
+			player.vx=0; player.vy=Math.max(player.vy,0);
+			msg('🧊 Zamarzasz! Mokry i zziębnięty na głębokim mrozie');
+			try{ if(MM.audio && MM.audio.play) MM.audio.play('freeze'); }catch(e){}
+		}
+		if(heroSt.burnDamage>0 && (!player.hpInvul || performance.now()>=player.hpInvul)){
+			window.damageHero(Math.min(6,heroSt.burnDamage), {cause:'hero_burn', invulMs:450});
+		}
+		if(HERO_STATUS.isFrozen()){ player.vx=0; }
 	}
 	const diveInput = climbDownInput && !ladderContact;
 	const jumpNow=jumpHeldEarly;
@@ -8460,7 +8603,8 @@ function physics(dt){
 		player.vx -= player.vx * Math.min(1, drag*dt);
 	}
 	// Buffer the press (rising edge) and tick the assist timers
-	if(jumpPressedNow && !(quicksandState && quicksandState.inQuicksand)) jumpBufferT=JUMP_BUFFER; else if(jumpBufferT>0) jumpBufferT=Math.max(0, jumpBufferT-dt);
+	// (a flash-frozen hero cannot start a jump — the block melts in ~1.5 s)
+	if(jumpPressedNow && !(quicksandState && quicksandState.inQuicksand) && !(HERO_STATUS && HERO_STATUS.isFrozen && HERO_STATUS.isFrozen())) jumpBufferT=JUMP_BUFFER; else if(jumpBufferT>0) jumpBufferT=Math.max(0, jumpBufferT-dt);
 	if(player.onGround) coyoteT=COYOTE_TIME; else if(coyoteT>0) coyoteT=Math.max(0, coyoteT-dt);
 	let ladderJumped=false;
 	if(jumpBufferT>0){
@@ -8815,7 +8959,7 @@ function breakBoatPlank(){
 	awardTileDrops(INFO[T.WOOD]);
 	spawnBurst(p.x*TILE,p.y*TILE,0,{color:'#8b5a2b'});
 	updateInventory(); updateHotbarCounts(); saveState();
-	try{ if(MM.audio && MM.audio.play) MM.audio.play('break'); }catch(e){}
+	try{ if(MM.audio && MM.audio.play) MM.audio.play('break',{x:p.x,y:p.y}); }catch(e){}
 	stopMining();
 	return true;
 }
@@ -8826,7 +8970,7 @@ function updateBoatMining(dt){
 	if(!withinReach(mineTx,mineTy,MINE_REACH)){ stopMining(); return; }
 	if(!canPhysicallyTargetTile(mineTx,mineTy)){ stopMining(); resumeHeldMining(); return; }
 	if(godMode){ breakBoatPlank(); return; }
-	try{ if(MM.audio && MM.audio.play) MM.audio.play('dig'); }catch(e){}
+	try{ if(MM.audio && MM.audio.play) MM.audio.play('dig',{x:p.x,y:p.y}); }catch(e){}
 	const mineMult=(MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1;
 	mineTimer += dt * tools[player.tool] * mineMult;
 	if(mineTimer>=Math.max(0.1,INFO[T.WOOD].hp/6)) breakBoatPlank();
@@ -8862,7 +9006,7 @@ function tryOpenChestAt(tx,ty){
 	const res=CHESTS.openChestAt(tx,ty);
 	if(res){
 		notifyTempleDisturbance('treasure',tx,ty,oldTile,T.AIR);
-		try{ if(MM.audio && MM.audio.play) MM.audio.play('chest'); }catch(e){}
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('chest',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 		lastChestOpen={t:performance.now(),x:tx,y:ty};
 		if(!MM.onLootGained && window.updateDynamicCustomization) window.updateDynamicCustomization();
 		const ownedItems=(MM.inventory && MM.inventory.getItem) ? res.items.filter(it=>MM.inventory.getItem(it.id)) : res.items;
@@ -8889,7 +9033,7 @@ function tryOpenInvasionCacheAt(tx,ty){
 	if(getTile(tx,ty)!==T.INVASION_CACHE || !INVASIONS || !INVASIONS.openCacheAt) return false;
 	const ok=INVASIONS.openCacheAt(tx,ty,{inv, inventory:MM.inventory, getTile, setTile, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst});
 	if(ok){
-		try{ if(MM.audio && MM.audio.play) MM.audio.play('chest'); }catch(e){}
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('chest',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 		noteSaveActivity();
 		saveState();
 	}
@@ -8930,7 +9074,7 @@ function tryUseVendingAt(tx,ty){
 	const next=res.powered && !res.broke ? ' | nastepne losowanie jutro' : '';
 	const tail=res.broke ? ' | automat pekl i wyplul zlomy' : (next+' | zapas '+res.usesLeft+'/'+(VENDING.MAX_USES||10));
 	msg((res.powered?'Automat':'Stary automat')+': '+prize+tail);
-	try{ if(MM.audio && MM.audio.play) MM.audio.play(res.broke?'break':'chest'); }catch(e){}
+	try{ if(MM.audio && MM.audio.play) MM.audio.play(res.broke?'break':'chest',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 	spawnBurst((tx+0.5)*TILE,(ty+0.5)*TILE,res.loot && res.loot.tier==='rare'?'epic':(res.loot && res.loot.tier==='value'?'rare':'common'));
 	updateInventory();
 	noteSaveActivity();
@@ -9142,7 +9286,7 @@ function collectLooseItemAt(tx,ty,opts){
 	pushUndo(tx,ty,t,T.AIR,'break',drops);
 	updateInventory();
 	try{
-		if(!(opts && opts.silent) && MM.audio && MM.audio.play) MM.audio.play('harvest');
+		if(!(opts && opts.silent) && MM.audio && MM.audio.play) MM.audio.play('harvest',{x:tx+0.5,y:ty+0.5});
 	}catch(e){}
 	return true;
 }
@@ -9327,7 +9471,7 @@ function updateMining(dt){
 	if(activeMineId===T.AIR || isGasTileId(activeMineId) || !canMineTileWithCurrentTool(activeMineId,mineTx,mineTy)){ stopMining(); resumeHeldMining(); if(!mining) return; }
 	if(!canPhysicallyTargetTile(mineTx,mineTy)){ stopMining(); resumeHeldMining(); if(!mining) return; }
 	if(godMode){ instantBreak(); return; }
-	try{ if(MM.audio && MM.audio.play) MM.audio.play('dig'); }catch(e){}
+	try{ if(MM.audio && MM.audio.play) MM.audio.play('dig',{x:mineTx+0.5,y:mineTy+0.5}); }catch(e){}
 	// Drag mining: if the held cursor moved to a different tile, re-target immediately
 	if(minePointerId!=null && !mineBtnHeld && lastPointer.has){
 		const p=screenToWorldTile(lastPointer.x,lastPointer.y);
@@ -9341,7 +9485,7 @@ function updateMining(dt){
 	updateMeteorPickMiningFx(dt,curId);
 	mineTimer += dt * tools[player.tool] * mineMult;
 	const need=curId===T.BEDROCK ? BEDROCK_MINE_NEED : Math.max(0.1, info.hp/6);
-	if(mineTimer>=need && breakMinedTile()){ stopMining(); try{ if(MM.audio && MM.audio.play) MM.audio.play('break'); }catch(e){} resumeHeldMining(); } }
+	if(mineTimer>=need && breakMinedTile()){ stopMining(); try{ if(MM.audio && MM.audio.play) MM.audio.play('break',{x:mineTx+0.5,y:mineTy+0.5}); }catch(e){} resumeHeldMining(); } }
 
 // --- Placement ---
 // Suppress accidental placement immediately after opening a chest with right-click
@@ -9493,7 +9637,7 @@ function tryToggleForegroundToBackgroundAt(tx,ty,id){
 	wakeConstructionBackgroundChanged(tx,ty);
 	saveState();
 	msg('Blok przeniesiony do tla');
-	try{ if(MM.audio && MM.audio.play) MM.audio.play('place'); }catch(e){}
+	try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 	return true;
 }
 function canToggleBackgroundToForegroundAt(tx,ty,id){
@@ -9531,7 +9675,7 @@ function tryToggleBackgroundToForegroundAt(tx,ty,id){
 	wakeConstructionBackgroundChanged(tx,ty);
 	saveState();
 	msg('Blok przeniesiony na pierwszy plan');
-	try{ if(MM.audio && MM.audio.play) MM.audio.play('place'); }catch(e){}
+	try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 	return true;
 }
 function tryToggleBlockLayerAt(tx,ty){
@@ -9693,7 +9837,7 @@ function placeDynamoStructure(v){
 	consumeFor(T.DYNAMO);
 	pushUndo(cells[1].x,cells[1].y,T.AIR,T.DYNAMO,'placeDynamo',null,{cells:undoCells});
 	updateInventory(); updateHotbarCounts(); saveState();
-	try{ if(MM.audio && MM.audio.play) MM.audio.play('place'); }catch(e){}
+	try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:cells[1].x+0.5,y:cells[1].y+0.5}); }catch(e){}
 	if(FALLING && FALLING.afterPlacement) cells.forEach(cell=>FALLING.afterPlacement(cell.x,cell.y));
 	return true;
 }
@@ -9776,7 +9920,7 @@ function tryPlace(tx,ty){
 		if(!placed || !placed.ok){ if(placed && placed.reason) msg(placed.reason); return false; }
 		consumeFor(id); updateInventory(); updateHotbarCounts(); saveState();
 		if(placed.created) msg('⛵ Drewno nie tonie — masz tratwę! Dokładaj drewno, by ją powiększyć');
-		try{ if(MM.audio && MM.audio.play) MM.audio.play('place'); }catch(e){}
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 		return true;
 	}
 	if(v.structure==='dynamo') return placeDynamoStructure(v);
@@ -9786,7 +9930,7 @@ function tryPlace(tx,ty){
 		else setTile(tx,ty,id);
 		pushUndo(tx,ty,oldOver,id,'placeOverlay');
 		consumeFor(id); updateInventory(); updateHotbarCounts(); saveState();
-		try{ if(MM.audio && MM.audio.play) MM.audio.play('place'); }catch(e){}
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 		return true;
 	}
 	if(v.background){
@@ -9795,7 +9939,7 @@ function tryPlace(tx,ty){
 		pushUndo(tx,ty,oldBg,id,'placeBackground');
 		consumeFor(id); updateInventory(); updateHotbarCounts(); saveState();
 		wakeConstructionBackgroundChanged(tx,ty);
-		try{ if(MM.audio && MM.audio.play) MM.audio.play('place'); }catch(e){}
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 		return true;
 	}
 	pushUndo(tx,ty,prev,id,'place');
@@ -9806,7 +9950,7 @@ function tryPlace(tx,ty){
 	if(id===T.SPRING_PLATFORM && SPRING_PLATFORMS && SPRING_PLATFORMS.onTileChanged) SPRING_PLATFORMS.onTileChanged(tx,ty,prev,id,getTile);
 	if(VOLCANO && VOLCANO.onTileChanged) VOLCANO.onTileChanged(tx,ty,id,getTile,setTile); consumeFor(id); updateInventory(); updateHotbarCounts(); saveState();
 	if(id===T.WATER_PUMP && PUMPS && PUMPS.setOrientationAt) PUMPS.setOrientationAt(tx,ty,pumpOrientation,getTile);
-	try{ if(MM.audio && MM.audio.play) MM.audio.play('place'); }catch(e){}
+	try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 	if(WATER){ if(id===T.WATER) WATER.addSource(tx,ty,getTile,setTile); else if(v.replacedWater && WATER.onTileChanged) WATER.onTileChanged(tx,ty,getTile); }
 	if(FIRE){
 		if(id===T.TORCH){
@@ -10144,7 +10288,7 @@ canvas.addEventListener('pointerdown',e=>{
 		if(tryOpenInvasionCacheAt(tx,ty)) return;
 		if(dxRange<=3 && dyRange<=3 && tryOpenGraveAt(tx,ty)) return;
 		// plants: harvest ripe berries / clear vegetation before digging the tile behind it
-		if(dxRange<=3 && dyRange<=3 && PLANTS && PLANTS.harvestAt && PLANTS.harvestAt(tx,ty)){ try{ if(MM.audio && MM.audio.play) MM.audio.play('harvest'); }catch(e){} return; }
+		if(dxRange<=3 && dyRange<=3 && PLANTS && PLANTS.harvestAt && PLANTS.harvestAt(tx,ty)){ try{ if(MM.audio && MM.audio.play) MM.audio.play('harvest',{x:tx+0.5,y:ty+0.5}); }catch(e){} return; }
 		startMineAt(tx,ty,{quiet:true});
 		if(e.pointerType==='touch') armTouchHold(e); // hold in place → block placement (iOS-safe)
 	} else if(e.button===2){
@@ -10219,6 +10363,8 @@ function draw(){ // Background first
  if(GASES && GASES.draw) GASES.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible);
  // visible wind: bounded dust/snow streaks, hidden by fog
  if(WIND && WIND.draw) WIND.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible);
+ // sandstorm haze: the yellow visibility wall of a desert blow (screen-space bands)
+ if(SANDSTORM && SANDSTORM.draw) SANDSTORM.draw(ctx,TILE,sx,sy,viewX,viewY);
  // ruin surface markers dressed as worked masonry (mortar, moss, etched rune)
  if(RUINS && RUINS.drawHints) RUINS.drawHints(ctx,TILE,worldFxVisible);
  if(ALIEN_RUINS && ALIEN_RUINS.drawHints) ALIEN_RUINS.drawHints(ctx,TILE,worldFxVisible);
@@ -10354,11 +10500,13 @@ function draw(){ // Background first
 		const lv=(MM.progress && MM.progress.level)? MM.progress.level() : {level:1,into:player.xp||0,need:60};
 		const pts=(MM.progress && MM.progress.points)? MM.progress.points():0;
 		const bf=(MM.progress && MM.progress.getBuffs)? MM.progress.getBuffs():[];
+		// hero elemental statuses render as red-ringed debuff chips in the same row
+		const debuffs=(HERO_STATUS && HERO_STATUS.list)? HERO_STATUS.list():[];
 		VITALS_HUD.draw(ctx,{
 			W,H,
 			hp:player.hp, maxHp:player.maxHp,
 			energy:player.energy||0, energyMax:player.maxEnergy||heroEnergyCapacity(),
-			level:lv, points:pts, buffs:bf
+			level:lv, points:pts, buffs:bf.concat(debuffs)
 		});
 	}
 	// damage flash overlay
@@ -10705,28 +10853,9 @@ function drawMinimap(){
 	ctx.restore();
 }
 // UI aktualizacja
-// Build the HUD resource counters from the registry so every collectable resource
-// (including ones added later) gets a counter with the canonical swatch color —
-// the old hand-written HTML list had drifted (missing leaf, stale snow color).
-function buildResourceHud(){
-	const panel=document.getElementById('inv'); if(!panel) return;
-	const anchor=panel.firstElementChild; // resource items go before the biome/pick pills
-	RESOURCE_DEFS.forEach(r=>{
-		if(document.getElementById(r.key)) return; // already present (idempotent)
-		const s=document.createElement('span'); s.className='item';
-		const dot=document.createElement('span'); dot.className='dot'; dot.style.background=r.color;
-		const b=document.createElement('b'); b.id=r.key; b.textContent='0';
-		s.appendChild(dot); s.appendChild(document.createTextNode(' '+r.label.toLowerCase()+': ')); s.appendChild(b);
-		panel.insertBefore(s, anchor);
-	});
-}
-buildResourceHud();
-const el={pick:document.getElementById('pick'),fps:document.getElementById('fps'),msg:document.getElementById('messages')};
-RESOURCE_KEYS.forEach(k=>{ el[k]=document.getElementById(k); }); // HUD counters share the resource keys as element ids
+const el={fps:document.getElementById('fps'),msg:document.getElementById('messages')};
 function updateInventory(opts){
 	opts=opts||{};
-	RESOURCE_KEYS.forEach(k=>{ if(el[k]) el[k].textContent=inv[k]; });
-	el.pick.textContent=pickLabel(player.tool);
 	checkCraftingAvailability({silent:!!opts.noCraftNotify});
 	updateCraftButtons();
 	updateHotbarCounts();
@@ -13525,6 +13654,7 @@ function runGameStep(dt,ts){
 	if(FIRE && FIRE.update) FIRE.update(getTile, setTile, dt);
 	if(VOLCANO && VOLCANO.update) VOLCANO.update(dt, player, getTile, setTile);
 	if(WIND && WIND.update) WIND.update(dt, player, getTile, {clouds:CLOUDS, worldGen:WORLDGEN, background:BACKGROUND});
+	if(SANDSTORM && SANDSTORM.update) SANDSTORM.update(getTile, setTile, dt);
 	if(BOATS && BOATS.update) BOATS.update(dt, player, getTile, {wind:WIND, water:WATER, heroEnergy:MM.heroEnergy, mobs:MOBS});
 	if(MECHS && MECHS.update) MECHS.update(dt, player, getTile, setTile, {controls:companionControlState(), godMode, heroEnergy:MM.heroEnergy});
 	if(GASES && GASES.update) GASES.update(dt, getTile, setTile, player);

@@ -127,8 +127,8 @@ import { turrets as TURRETS } from './turrets.js';
   function say(text){
     try{ if(typeof root.msg === 'function') root.msg(text); }catch(e){}
   }
-  function play(id){
-    try{ if(root.MM.audio && root.MM.audio.play) root.MM.audio.play(id); }catch(e){}
+  function play(id,opts){
+    try{ if(root.MM.audio && root.MM.audio.play) root.MM.audio.play(id,opts); }catch(e){}
   }
   function playMech(m,id,cooldown){
     if(!m) return play(id);
@@ -136,7 +136,7 @@ import { turrets as TURRETS } from './turrets.js';
     const k='_sound_'+String(id||'fx');
     if(cd>0 && Number.isFinite(m[k]) && simT-m[k]<cd) return;
     m[k]=simT;
-    play(id);
+    play(id,{x:centerX(m),y:centerY(m)});
   }
   function notifyResources(key,n){
     try{
@@ -1937,7 +1937,7 @@ import { turrets as TURRETS } from './turrets.js';
     m.aimT=999;
     awardPilotLoot(m);
     say('Alien-pilot pokonany. Kadlub mecha jest pusty - podejdz i nacisnij E.');
-    play('hurt');
+    play('hurt',{x:centerX(m),y:centerY(m)});
     return true;
   }
   function destroyMech(m,opts){
@@ -1948,7 +1948,7 @@ import { turrets as TURRETS } from './turrets.js';
     collapseMechBlocks(m,opts||{});
     addXp(m.kind==='solar'?130:155,centerX(m),m.y,'ALIEN_MECH');
     damageNumbers(m,22,'blast',Object.assign({source:'hero',element:'blast'},opts||{}));
-    play('explosion');
+    play('explosion',{x:centerX(m),y:centerY(m)});
     return true;
   }
   function damageMech(m,cell,dmg,opts){

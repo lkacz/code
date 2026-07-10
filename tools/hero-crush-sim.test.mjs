@@ -49,6 +49,11 @@ const resolve=(buried, opts={})=>resolveHeroBurial({
 
 // --- Weights, capacity, eject eligibility ---
 assert.equal(heroLoadWeight(T.SAND), 0.9, 'sand is lighter than the 1.0 default');
+// Sandstorm dunes bury like snowdrifts but press harder: the whole granular
+// family shares the 0.9 weight — heavier than snow (0.15), survivable at base.
+assert.equal(heroLoadWeight(T.UNSTABLE_SAND), 0.9, 'sandstorm dunes (UNSTABLE_SAND) share the sand weight');
+assert.equal(heroLoadWeight(T.QUICKSAND), 0.9, 'quicksand shares the granular sand weight');
+assert.ok(heroLoadWeight(T.UNSTABLE_SAND)>heroLoadWeight(T.SNOW), 'a sand burial presses harder than a snowdrift');
 assert.ok(heroLoadWeight(T.STONE)>1 && heroLoadWeight(T.STONE)<1.1, 'stone weight comes from the material profile');
 assert.ok(heroLoadWeight(T.BEDROCK)>CRUSH_TUNING.BASE_CAPACITY*10, 'bedrock always exceeds any trained capacity');
 assert.equal(heroCrushCapacity(0), CRUSH_TUNING.BASE_CAPACITY, 'untrained capacity is the base');

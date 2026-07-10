@@ -113,7 +113,7 @@ const centerGuardian = (function(){
   const dist2 = (ax,ay,bx,by)=>{ const dx=ax-bx, dy=ay-by; return dx*dx+dy*dy; };
 
   function say(t){ try{ if(root.msg) root.msg(t); }catch(e){} }
-  function sfx(id){ try{ if(MM.audio && MM.audio.play) MM.audio.play(id); }catch(e){} }
+  function sfx(id,opts){ try{ if(MM.audio && MM.audio.play) MM.audio.play(id,opts); }catch(e){} }
   function playerRef(){ return root.player || null; }
   function markWorldChanged(){
     try{
@@ -397,7 +397,7 @@ const centerGuardian = (function(){
     say(LORE.transform || 'Lustro wstaje.');
     scheduleLines(LORE.battleStart||[],1.6,2.4);
     addEffect({type:'ring',x:mimic.x,y:mimic.y,t:0,max:1.4,r:9});
-    sfx('charge');
+    sfx('charge',{x:mimic.x,y:mimic.y});
     markWorldChanged();
   }
   function recordReplay(p,dt){
@@ -456,7 +456,7 @@ const centerGuardian = (function(){
       state.stallStreak=0;
       mimic.sinceContact=0;
       selfDrain(dmg,'strike');
-      sfx('spark');
+      sfx('spark',{x:sx,y:sy});
       if(mimic.hp<=0 && !mimic.finale){
         mimic.finale=CFG.FINALE_PAUSE;
         say((LORE.finale && LORE.finale[0]) || 'Ostatni cios jest wspolny.');
@@ -498,7 +498,7 @@ const centerGuardian = (function(){
       });
     }
     addEffect({type:'ring',x:mimic.x,y:mimic.y,t:0,max:2.2,r:15});
-    sfx('explosion');
+    sfx('explosion',{x:mimic.x,y:mimic.y});
   }
   function awardHeart(){
     let newly=true, handled=false;
@@ -631,7 +631,7 @@ const centerGuardian = (function(){
       state.revealIdx++;
       say('Stary Kwadrat: '+line);
       speakAt(line,anchor.x,anchor.y,6.5);
-      sfx('spark');
+      sfx('spark',{x:anchor.x,y:anchor.y});
       markWorldChanged();
       if(state.revealIdx>=lines.length){
         schedule(1.6,()=>beginBattle());

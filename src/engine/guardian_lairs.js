@@ -6,6 +6,7 @@ import { CHUNK_W, WORLD_H, T } from '../constants.js';
 import { isBlastProtectedTile, isGeneratedStructureReplaceableTile, isReplaceableNaturalOpenTile, isSolidCollisionTile as isSolid } from './material_physics.js';
 import { STORY_LORE } from './story_lore.js';
 import { worldGen as WG } from './worldgen.js';
+import { applyBossStatus, bossElectricDamageMult, bossStatusFor, tickBossStatus } from './boss_status.js';
 
 const guardianLairs = (function(){
   const root = (typeof window !== 'undefined') ? window : globalThis;
@@ -101,7 +102,7 @@ const guardianLairs = (function(){
   function mulberry32(a){ a=a>>>0; return function(){ a|=0; a=(a+0x6D2B79F5)|0; let t=Math.imul(a^(a>>>15),1|a); t=(t+Math.imul(t^(t>>>7),61|t))^t; return ((t^(t>>>14))>>>0)/4294967296; }; }
   function seedFor(kind,x){ return (((WG.worldSeed||1) ^ Math.imul(Math.round(x)|0, kind==='fire'?0x9e3779b1:0x85ebca6b))>>>0); }
   function say(t){ try{ if(root.msg) root.msg(t); }catch(e){} }
-  function sfx(id){ try{ if(MM.audio && MM.audio.play) MM.audio.play(id); }catch(e){} }
+  function sfx(id,opts){ try{ if(MM.audio && MM.audio.play) MM.audio.play(id,opts); }catch(e){} }
   function playerRef(){ return root.player || null; }
   function progressHearts(){
     try{ if(MM.progress && MM.progress.guardianHearts) return MM.progress.guardianHearts() || {}; }catch(e){}
@@ -616,7 +617,7 @@ const guardianLairs = (function(){
     const e=makeEntity(kind,role,x,y,opts);
     entities.push(e);
     addEffect({type:'spawn',kind,x:e.x,y:e.y,t:0,max:1.1,r:boss?8:4});
-    sfx(boss?'roar':'spark');
+    sfx(boss?'roar':'spark',{x:e.x,y:e.y});
     return e;
   }
   function awaken(kind,opts){
@@ -1135,7 +1136,7 @@ const guardianLairs = (function(){
       if(h.kind==='fire' && MM.particles && MM.particles.spawnSmoke) MM.particles.spawnSmoke(h.x*tile,h.y*tile,1.2,{tileX:Math.floor(h.x),tileY:Math.floor(h.y),tileSize:tile});
     }catch(e){}
     if(state.stormImpactSfxCd[h.kind]<=0){
-      sfx('explosion');
+      sfx('explosion',{x:h.x,y:h.y});
       state.stormImpactSfxCd[h.kind]=0.18;
     }
   }
@@ -1606,7 +1607,7 @@ const guardianLairs = (function(){
     if(!e || e.dead) return;
     e.dead=true;
     addEffect({type:'burst',kind:e.kind,x:e.x,y:e.y,t:0,max:e.boss?1.35:0.8,r:e.boss?14:6});
-    sfx(e.boss?'explosion':'spark');
+    sfx(e.boss?'explosion':'spark',{x:e.x,y:e.y});
     if(e.boss){
       guardianDeathBlast(e);
       awardHeart(e.kind);
@@ -1660,6 +1661,9 @@ const guardianLairs = (function(){
       if(mult<0.95 && e.shieldHint<=0){ say(e.name+' is shielded by its sidekicks.'); e.shieldHint=2.5; }
     }
     const element=weaponElement(opts);
+    // weakened elemental matrix (boss_status.js): a soaked guardian conducts
+    const conduct=/electric|shock|laser|lightning/.test(element) ? bossElectricDamageMult(e._elemStatus) : 1;
+    if(conduct>1) amount*=conduct;
     const weak=guardianWeaknessMultiplier(e,opts);
     if(weak>1){
       amount*=weak;
@@ -1764,7 +1768,12 @@ const guardianLairs = (function(){
       const e=entities[i];
       if(e.dead){ entities.splice(i,1); continue; }
       if(e.shieldHint>0) e.shieldHint-=dt;
-      updateEntity(e,player,getTile,setTile,dt);
+      // weakened matrix tick: burn = half DoT, chill = 20% slow (scaled dt —
+      // guardians never hard-freeze; boss_status downgrades freeze to chill)
+      const elem=tickBossStatus(bossStatusFor(e),dt);
+      if(elem.damage>0 && !e.dead) hitEntity(e,elem.damage,{source:'status',cause:'burn_dot'});
+      if(e.dead){ entities.splice(i,1); continue; }
+      updateEntity(e,player,getTile,setTile,dt*elem.speedMult);
       if(e.dead) entities.splice(i,1);
     }
     const fireBoss=activeBoss('fire'), iceBoss=activeBoss('ice');
@@ -2335,6 +2344,25 @@ const guardianLairs = (function(){
     clearCache:()=>cache.clear(), _debug};
   MM.guardianLairs=api;
   MM.guardians=api;
+  // weakened-matrix registry: weapons splash statuses into guardians through
+  // MM.bossStatus.applyRadius (shared with every other boss family)
+  try{
+    if(MM.bossStatus && MM.bossStatus.registerSystem){
+      MM.bossStatus.registerSystem('guardianLairs',{
+        applyRadius(wx,wy,r,kind,opts){
+          let n=0;
+          for(const e of entities){
+            if(!e || e.dead) continue;
+            const rr=r+(e.radius||1);
+            const dx=e.x-wx, dy=e.y-wy;
+            if(dx*dx+dy*dy>rr*rr) continue;
+            if(applyBossStatus(bossStatusFor(e),kind,opts)) n++;
+          }
+          return n;
+        }
+      });
+    }
+  }catch(e){}
   return api;
 })();
 
