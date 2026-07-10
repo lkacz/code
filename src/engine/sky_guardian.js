@@ -784,8 +784,13 @@ const skyGuardian = (function(){
       awardHeart();
       for(const other of entities) other.dead=true;
       hazards.length=0;
+      // Signature relics fall from the crown (engine/drops.js)
+      try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop('air',e.x,e.y,{boss:true}); }catch(err){}
     }else if(e.resonator){
       say(e.name+' falls silent.');
+      // Leaflings split when cut and stay lootless on purpose (no mow farming);
+      // only the resonators carry a relic roll.
+      try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop('air',e.x,e.y,{role:'resonator'}); }catch(err){}
     }else if(e.leafling){
       const born=spawnLeaflings(2,layoutFor(),e.x,e.y,(e.generation||0)+1);
       if(born.length && state.hintCd<=0){

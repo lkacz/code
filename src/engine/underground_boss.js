@@ -1469,10 +1469,14 @@ const undergroundBoss = (function(){
       awardHeart();
       for(const other of entities) other.dead=true;
       hazards.length=0;
+      // Signature relics rain from the felled excavator (engine/drops.js)
+      try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop('earth',e.x,e.y,{boss:true}); }catch(err){}
     }else if(e.role==='zombieGolem'){
       say(e.name+' rozpada sie na zgnily gruz.');
+      try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop('earth',e.x,e.y,{role:'zombieGolem'}); }catch(err){}
     }else{
       say(e.name+' fractures.');
+      try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop('earth',e.x,e.y,{role:e.role}); }catch(err){}
     }
   }
   function isArrowDamage(opts){

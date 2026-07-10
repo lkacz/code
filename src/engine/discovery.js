@@ -32,6 +32,9 @@ const discovery = (function(){
     hero_conduct:   'Mokry bohater przewodzi prąd (x1.5)',
     hero_frozen:    'Mokry + zziębnięty na mrozie = zamarzasz',
     hero_fizzle:    'Ogień gaśnie na przemoczonym bohaterze',
+    mob_gear:       'Pokonane stwory gubią swoje rzemiosło',
+    epic_drop:      'Epicki łup ogłasza się słupem światła',
+    volcano_sacrifice: 'Wulkan przyjmuje ofiary i oddaje z nawiązką',
   };
   // Undiscovered entries show as "???" in the Ekwipunek journal tab, with only
   // the category and a foggy hint — enough to hunt, not enough to spoil.
@@ -51,6 +54,9 @@ const discovery = (function(){
     hero_conduct:   {cat:'🧍 Na własnej skórze', hint:'Przemocz się i stań na drodze porażenia…'},
     hero_frozen:    {cat:'🧍 Na własnej skórze', hint:'Dwa zimna naraz, daleko na zachodzie, pod gołym niebem…'},
     hero_fizzle:    {cat:'🧍 Na własnej skórze', hint:'Dobrze przemoczony możesz wejść tam, gdzie zwykle parzy…'},
+    mob_gear:       {cat:'🎁 Łupy',              hint:'To, czym stwór walczy albo czym jest, może po nim zostać…'},
+    epic_drop:      {cat:'🎁 Łupy',              hint:'Na krańcach świata spadają skarby, których nie sposób przegapić…'},
+    volcano_sacrifice: {cat:'🎁 Łupy',           hint:'Zwykły przedmiot wrzucony w ogień góry czasem wraca lepszy…'},
   };
   const DISCOVERY_XP = 40; // every fresh journal entry pays experience (progress.js levels off player.xp)
 

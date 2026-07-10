@@ -1118,6 +1118,10 @@ import './inventory.js';
       try{
         const mechs=window.MM && MM.mechs;
         if(mechs && mechs.wantsInteractKey && mechs.wantsInteractKey(window.player)) return;
+        // A ground drop in reach also claims E (manual pickup, drops.js) —
+        // the wardrobe only opens with nothing to grab nearby.
+        const drops=window.MM && MM.drops;
+        if(drops && drops.wantsInteractKey && drops.wantsInteractKey(window.player)) return;
       }catch(err){ /* mech module absent: plain toggle */ }
       toggle();
     }

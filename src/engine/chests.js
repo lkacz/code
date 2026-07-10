@@ -92,9 +92,11 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     item.fireRange=Math.min(10,(item.fireRange||5)+1);
   }
 
-  function genItem(r,tier){
+  function genItem(r,tier,opts){
+    opts=opts||{};
     const kinds=['cape','eyes','outfit','weapon','charm'];
-    const kind=kinds[randInt(r,0,kinds.length-1)];
+    // Species-themed drops (drops.js) force the kind/weapon class; chest rolls stay random.
+    const kind=kinds.includes(opts.kind) ? opts.kind : kinds[randInt(r,0,kinds.length-1)];
     const item={kind, id:kind+'_'+Math.random().toString(36).slice(2,7), tier};
     const td=TIERS[tier];
     if(kind==='cape'){ item.airJumps=td.airJumps; }
@@ -117,14 +119,16 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       // Weapon class roll: melee strike, bow (arrows), or a stream weapon
       // (flame/hose/gas terrain streams, electric energy beam) — class numbers only.
       const wRoll=r();
-      if(wRoll<0.40){ item.weaponType='melee'; item.attackDamage=randInt(r, td.meleeDmg[0], td.meleeDmg[1]); }
-      else if(wRoll<0.65){ item.weaponType='bow'; item.attackDamage=randInt(r, td.bowDmg[0], td.bowDmg[1]); item.fireCooldown=pick(r, td.bowCd); }
+      const forced=['melee','bow','flame','hose','gas','electric'].includes(opts.weaponType) ? opts.weaponType : null;
+      const wType= forced || (wRoll<0.40? 'melee' : wRoll<0.65? 'bow' : wRoll<0.78? 'flame' : wRoll<0.87? 'hose' : wRoll<0.95? 'gas' : 'electric');
+      item.weaponType=wType;
+      if(wType==='melee'){ item.attackDamage=randInt(r, td.meleeDmg[0], td.meleeDmg[1]); }
+      else if(wType==='bow'){ item.attackDamage=randInt(r, td.bowDmg[0], td.bowDmg[1]); item.fireCooldown=pick(r, td.bowCd); }
       else {
-        item.weaponType= wRoll<0.78? 'flame' : wRoll<0.87? 'hose' : wRoll<0.95? 'gas' : 'electric';
         const dps=randInt(r, td.dps[0], td.dps[1]);
-        item.fireDps= item.weaponType==='hose'? Math.max(1,Math.round(dps/2)) : item.weaponType==='electric'? dps+2 : dps;
+        item.fireDps= wType==='hose'? Math.max(1,Math.round(dps/2)) : wType==='electric'? dps+2 : dps;
         item.fireRange=Math.round(randRange(r, td.range[0], td.range[1])*2)/2; // 0.5-tile steps
-        if(item.weaponType==='electric'){
+        if(wType==='electric'){
           item.fireRange=Math.min(10, item.fireRange+1);
           item.energyCost=randInt(r, td.eCost[0], td.eCost[1]);
         }
@@ -132,7 +136,8 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     }
     const nameBase = kind==='weapon'? (WEAPON_NAME_BASES[item.weaponType]||'Ostrze') : (NAME_BASES[kind]||'Przedmiot');
     item.name = nameBase + ' ' + NAME_SUFFIXES[randInt(r,0,NAME_SUFFIXES.length-1)];
-    if(r()<td.uniqueChance) applyUniqueBoost(item);
+    // Guardian relics (drops.js) are always unique finds; chest rolls stay a chance.
+    if(opts.forceUnique || r()<td.uniqueChance) applyUniqueBoost(item);
     return item;
   }
 

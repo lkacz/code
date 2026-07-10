@@ -242,6 +242,7 @@
     {key:'chairWood',  label:'Fotel drewniany', color:'#a9743c', tile:'CHAIR_WOOD'},
     {key:'chairStone', label:'Fotel kamienny',  color:'#8d939c', tile:'CHAIR_STONE'},
     {key:'chairSteel', label:'Fotel stalowy',   color:'#9fb0bd', tile:'CHAIR_STEEL'},
+    {key:'meatScrap', label:'Skrawki miesa', color:'#d06a54', tile:null}, // mob drops; meld into MEAT blocks at the craft bench
     {key:'meat',    label:'Mieso',   color:'#bd5145', tile:'MEAT'},
     {key:'rottenMeat', label:'Zepsute mieso', color:'#647136', tile:'ROTTEN_MEAT'},
     {key:'bakedMeat', label:'Pieczone mieso', color:'#9b5a2e', tile:'BAKED_MEAT'},
@@ -633,6 +634,17 @@
     // FIFO cap (Sets iterate in insertion order): ids of long-gone loot expire first
     if(state.discarded.size>MAX_DISCARDED){ state.discarded.delete(state.discarded.values().next().value); }
     const bi=state.bag.findIndex(i=>i.id===itemId); if(bi>=0) state.bag.splice(bi,1);
+    // A discarded item is THROWN OUT, not vaporized: it lands at the hero's feet
+    // as a physical ground drop (engine/drops.js). A fresh id keeps it clear of
+    // the discard blacklist, so regret-grabs work — and commons can be carried
+    // to the volcano crater and offered to the lava (drops.js sacrifice roll).
+    try{
+      const drops=MM.drops, p=window.player;
+      if(drops && drops.spawnGear && p && typeof p.x==='number' && typeof p.y==='number'){
+        const thrown=Object.assign({}, item, {id:item.id+'_out_'+Date.now().toString(36)});
+        drops.spawnGear(p.x, p.y-0.3, thrown, {announce:false});
+      }
+    }catch(e){ /* drops engine absent (menus/DOM-less tests): plain discard */ }
     // Mirror removal into the chest loot pools so it never re-syncs back
     if(MM.dynamicLoot){
       Object.keys(MM.dynamicLoot).forEach(k=>{

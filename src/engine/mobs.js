@@ -9006,8 +9006,22 @@ const mobs = (function(){
     const chance = Math.max(0,Math.min(1,meatDropChanceFor(m,spec)));
     return chance>=1 || Math.random()<=chance;
   }
+  function meatScrapCountFor(spec){
+    const hp=(typeof spec.hp==='number' && isFinite(spec.hp)) ? spec.hp : 5;
+    return 1 + (hp>=14?1:0) + (hp>=28?1:0);
+  }
   function dropMeatForMob(m,spec){
     if(!shouldDropMeat(m,spec)) return false;
+    // Physical scrap pickups (engine/drops.js): the player melds scraps back
+    // into MEAT blocks at the craft bench; the tile fallback keeps the DOM-less
+    // Node sims (and any load order without drops) on the old block drop.
+    try{
+      if(MM.drops && MM.drops.spawnResource){
+        const n=meatScrapCountFor(spec);
+        for(let i=0;i<n;i++) MM.drops.spawnResource(m.x,m.y-0.2,'meatScrap',1);
+        return true;
+      }
+    }catch(e){}
     try{ if(MM.meat && MM.meat.dropFromMob) return !!MM.meat.dropFromMob(m,WORLD.getTile,WORLD.setTile); }catch(e){}
     return false;
   }
@@ -9168,11 +9182,14 @@ const mobs = (function(){
     dropMeatForMob(m,spec);
     // XP gain
     awardMobXp(m,spec,player);
-    // Loot: resource drops go straight into the block inventory — the loot inbox
-    // is for gear items ({id,kind,...}) and renders {item,qty} entries as garbage
+    // Loot: resource rolls become physical ground pickups (engine/drops.js) the
+    // player collects with E / auto-pickup; without the drops module they fall
+    // back to the old straight-into-inventory path (DOM-less Node sims).
     if(spec.loot && Array.isArray(spec.loot)){
       const drops=[]; for(const entry of spec.loot){ if(Math.random() <= (entry.chance||1)){ const count = entry.min + ((entry.max && entry.max>entry.min)? (Math.random()*(entry.max-entry.min+1))|0 : 0); drops.push({item:entry.item, qty: count||entry.min||1}); } }
-      if(drops.length && window.inv){
+      if(drops.length && MM.drops && MM.drops.spawnResource){
+        for(const d of drops) MM.drops.spawnResource(m.x,m.y-0.2,d.item,d.qty);
+      } else if(drops.length && window.inv){
         const inv=window.inv; let gained=[];
         for(const d of drops){ if(typeof inv[d.item]==='number'){ inv[d.item]+=d.qty; gained.push(d.item+' ×'+d.qty); } }
         if(gained.length){
@@ -9181,6 +9198,9 @@ const mobs = (function(){
         }
       }
     }
+    // Thematic gear drops: species-bound equipment falls as a glowing pickup
+    // (a bat may shed a cape, an owl its eyes — see drops.js GEAR_LOOT)
+    try{ if(MM.drops && MM.drops.rollGearDrop) MM.drops.rollGearDrop(m); }catch(e){}
     // Species-specific death ceremony (golden sprinter's chest, future rares)
     if(typeof spec.onDeath==='function'){ try{ spec.onDeath(m); }catch(e){} }
   }

@@ -1616,7 +1616,12 @@ const guardianLairs = (function(){
       resetStorm(e.kind);
       resetWeather(e.kind);
       for(const other of entities){ if(other.kind===e.kind) other.dead=true; }
-    }else say(e.name+' breaks.');
+      // Signature relics rain from the felled guardian (engine/drops.js)
+      try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop(e.kind,e.x,e.y,{boss:true}); }catch(err){}
+    }else{
+      say(e.name+' breaks.');
+      try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop(e.kind,e.x,e.y,{role:e.role}); }catch(err){}
+    }
   }
   function weaponElement(opts){
     if(!opts) return '';

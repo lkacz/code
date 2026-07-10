@@ -47,6 +47,7 @@ import { grass as GRASS } from './engine/grass.js';
 import { fire as FIRE } from './engine/fire.js';
 import { weapons as WEAPONS } from './engine/weapons.js';
 import { meat as MEAT } from './engine/meat.js';
+import { drops as DROPS } from './engine/drops.js';
 import { companions as COMPANIONS } from './engine/companions.js';
 import { food as FOOD } from './engine/food.js';
 import { volcano as VOLCANO } from './engine/volcano.js';
@@ -2991,6 +2992,7 @@ function buildSaveObject(opts){
 	constructionBackground: timedSavePart('constructionBackground',()=>((WORLD && WORLD.snapshotConstructionBackground) ? WORLD.snapshotConstructionBackground() : null),perf),
 	falling: timedSavePart('falling',()=>((FALLING && FALLING.snapshot) ? FALLING.snapshot() : null),perf),
 	meat: timedSavePart('meat',()=>((MEAT && MEAT.snapshot) ? MEAT.snapshot() : null),perf),
+	drops: timedSavePart('drops',()=>((DROPS && DROPS.snapshot) ? DROPS.snapshot() : null),perf),
 	gases: timedSavePart('gases',()=>((GASES && GASES.snapshot) ? GASES.snapshot() : null),perf),
 	fire: timedSavePart('fire',()=>((FIRE && FIRE.snapshot) ? FIRE.snapshot() : null),perf),
 	boats: timedSavePart('boats',()=>((BOATS && BOATS.snapshot) ? BOATS.snapshot() : null),perf),
@@ -3102,6 +3104,7 @@ function loadGame(opts){
 	try{ if(FIRE && FIRE.reset) FIRE.reset(); }catch(e){}
 	try{ if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); }catch(e){}
 	try{ if(MEAT && MEAT.reset) MEAT.reset(); }catch(e){}
+	try{ if(DROPS && DROPS.reset) DROPS.reset(); }catch(e){}
 	try{ if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); }catch(e){}
 	try{ if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); }catch(e){}
 	try{ if(SOLAR && SOLAR.reset) SOLAR.reset(); }catch(e){}
@@ -3147,6 +3150,7 @@ function loadGame(opts){
 	try{ if(FALLING && FALLING.restore) FALLING.restore(data.falling); }catch(e){}
 	try{ if(FALLING && FALLING.auditChunks) FALLING.auditChunks(restoredBaseChunks,{force:true}); }catch(e){}
 	try{ if(MEAT && MEAT.restore) MEAT.restore(data.meat,getTile); }catch(e){}
+	try{ if(DROPS && DROPS.restore) DROPS.restore(data.drops); }catch(e){}
 	try{ if(GASES && GASES.restore) GASES.restore(data.gases,getTile,setTile); }catch(e){}
 	try{ if(GASES && GASES.auditChunks) GASES.auditChunks(restoredBaseChunks,getTile); }catch(e){}
 	try{ if(FIRE && FIRE.restore) FIRE.restore(data.fire,getTile); }catch(e){}
@@ -3559,6 +3563,7 @@ const RECIPES=[
 	{id:'turret', name:'Wiezyczka', cost:{steel:4, copperWire:3, transistor:1}, make(){ inv.turret+=1; msg('Wiezyczka +1 - laduje sie z przewodow i strzela do wrogow'); }},
 	{id:'fire_turret', name:'Wiezyczka ogniowa', cost:{steel:4, copperWire:4, transistor:1, coal:3}, make(){ inv.fireTurret+=1; msg('Wiezyczka ogniowa +1 - podpala nadchodzacych wrogow'); }},
 	{id:'water_turret', name:'Wiezyczka wodna', cost:{steel:4, copperWire:4, transistor:1, water:4}, make(){ inv.waterTurret+=1; msg('Wiezyczka wodna +1 - gasi i odpycha cele strumieniem wody'); }},
+	{id:'meat_block', name:'Blok miesa', cost:{meatScrap:3}, make(){ inv.meat+=1; msg('Blok miesa +1 - zlozony ze skrawkow; poloz go jako zapas, przynete lub upiecz przy ogniu'); }},
 	{id:'bio_companion', name:'Bio-pomocnik', cost:{alienBiomass:3, meat:2}, make(){ const c=(COMPANIONS && COMPANIONS.spawnFromCraft) ? COMPANIONS.spawnFromCraft(player,{biomass:3,meat:2,getTile,refund:{alienBiomass:3,meat:2}}) : null; return !!c; }},
 	{id:'bio_companion_feed', name:'Dokarm bio-pomocnika', cost:{alienBiomass:1, meat:1}, make(){ return !!(COMPANIONS && COMPANIONS.feedNearest && COMPANIONS.feedNearest(player,1,{meat:1,refund:{alienBiomass:1,meat:1}})); }},
 	{id:'ufo_alien_companion', name:'Macierzysty alien-companion', cost:{motherIce:1}, make(){ const c=(COMPANIONS && COMPANIONS.spawnUfoAlienFromCraft) ? COMPANIONS.spawnUfoAlienFromCraft(player,{motherIce:1,getTile,refund:{motherIce:1}}) : null; return !!c; }},
@@ -3653,6 +3658,7 @@ const CRAFT_RECIPE_META={
 	turret:{group:'machines',icon:'🗼',out:'turret',amount:1,desc:'Podstawowa obrona zasilanej bazy.'},
 	fire_turret:{group:'machines',icon:'🔥',out:'fireTurret',amount:1,desc:'Obrona ogniowa do walki z falami wrogow.'},
 	water_turret:{group:'machines',icon:'💦',out:'waterTurret',amount:1,desc:'Obrona wodna, gaszenie i kontrola terenu.'},
+	meat_block:{group:'survival',icon:'🍖',out:'meat',amount:1,desc:'Skleja skrawki z upolowanej zwierzyny w pelny blok miesa — zapas, przyneta albo pieczen.'},
 	bio_companion:{group:'weapons',icon:'🐾',tint:'#79c95d',desc:'Tworzy proceduralnego pomocnika z biomasy i surowego miesa; chodzi za bohaterem, strzela laserem i emituje trucizne.'},
 	bio_companion_feed:{group:'weapons',icon:'🍖',tint:'#bd5145',desc:'Wzmacnia najblizszego bio-pomocnika. Kazda porcja biomasy zwieksza jego maksymalne HP.'},
 	ufo_alien_companion:{group:'weapons',icon:'👽',tint:'#d8fbff',desc:'Tworzy elitarnego kompana z lodu macierzystego. Rola i wyglad pochodza z alien teamu.'},
@@ -7283,6 +7289,12 @@ function ensurePausePanel(){
 	const light=document.createElement('input'); light.type='checkbox'; light.checked=!!(LIGHTING && LIGHTING.config && LIGHTING.config.enabled);
 	light.addEventListener('change',()=>{ if(LIGHTING && LIGHTING.config) LIGHTING.config.enabled=light.checked; try{ localStorage.setItem(LIGHTING_OFF_KEY, light.checked?'0':'1'); }catch(e){} });
 	lightRow.appendChild(light); pausePanel.appendChild(lightRow);
+	// ground-loot pickup mode: unchecked = walk up and press E (drops.js owns persistence)
+	const lootModeRow=buildPauseRow('🧲 Auto-zbieranie łupów');
+	const lootMode=document.createElement('input'); lootMode.type='checkbox';
+	lootMode.checked=!!(DROPS && DROPS.autoPickup && DROPS.autoPickup());
+	lootMode.addEventListener('change',()=>{ if(DROPS && DROPS.setAutoPickup) DROPS.setAutoPickup(lootMode.checked); });
+	lootModeRow.appendChild(lootMode); pausePanel.appendChild(lootModeRow);
 	const helpRow=buildPauseRow('❔ Sterowanie i porady');
 	const help=document.createElement('button'); help.type='button'; help.textContent='Pomoc (H)';
 	help.addEventListener('click',()=>{ setPaused(false); try{ toggleHelp(); }catch(e){} });
@@ -7844,7 +7856,12 @@ window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if
 	if(k==='r'&&!keysOnce.has('r') && isBackgroundBuildTileId(selectedTileId())){ toggleBackgroundBuildMode(); keysOnce.add('r'); e.preventDefault(); }
 	if(k==='e'&&!keysOnce.has('e')){
 		keysOnce.add('e');
-		if(MECHS && MECHS.toggleBoard && MECHS.toggleBoard(player,getTile)){
+		// Machine context keeps the interact key (board/unboard); otherwise E
+		// collects the nearest ground drop before falling through to the wardrobe.
+		const mechWants=!!(MECHS && MECHS.wantsInteractKey && MECHS.wantsInteractKey(player));
+		if(!mechWants && DROPS && DROPS.pickupNearest && DROPS.pickupNearest(player)){
+			noteSaveActivity();
+		} else if(MECHS && MECHS.toggleBoard && MECHS.toggleBoard(player,getTile)){
 			noteSaveActivity();
 			saveState();
 		}
@@ -10372,6 +10389,8 @@ function draw(){ // Background first
  if(TRAPS && TRAPS.draw) TRAPS.draw(ctx,TILE,worldFxVisible);
  if(TERRAIN_TRAPS && TERRAIN_TRAPS.draw) TERRAIN_TRAPS.draw(ctx,TILE,worldFxVisible);
  if(AFTERMATH && AFTERMATH.draw) AFTERMATH.draw(ctx,TILE,worldFxVisible,camRenderX,camRenderY,W,H,zoom);
+ // ground loot pickups (under creatures, over terrain — tier glow included)
+ if(DROPS && DROPS.draw) DROPS.draw(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible,player);
  // mobs
  if(MOBS && MOBS.draw) MOBS.draw(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible);
  if(INVASIONS && INVASIONS.draw) INVASIONS.draw(ctx,TILE,worldFxVisible);
@@ -12783,7 +12802,7 @@ function regenWorld(){
 	try{ if(FOG && FOG.importSeen) FOG.importSeen([]); if(FOG && FOG.setRevealAll) FOG.setRevealAll(false); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); }catch(e){}
 
 	// Reset transient systems
-	mining=false; if(FALLING && FALLING.reset) FALLING.reset(); if(BOATS && BOATS.reset) BOATS.reset(); if(MECHS && MECHS.reset) MECHS.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(SPRING_PLATFORMS && SPRING_PLATFORMS.reset) SPRING_PLATFORMS.reset(); if(VENDING && VENDING.reset) VENDING.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GUARDIANS && GUARDIANS.reset) GUARDIANS.reset(); if(UNDERGROUND && UNDERGROUND.reset) UNDERGROUND.reset(); if(SKY_GUARDIAN && SKY_GUARDIAN.reset) SKY_GUARDIAN.reset(); if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); if(NPCS && NPCS.reset) NPCS.reset(); if(GENERATED_NPCS && GENERATED_NPCS.reset) GENERATED_NPCS.reset(); if(COMPANIONS && COMPANIONS.reset) COMPANIONS.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(ATOMIC_WINTER && ATOMIC_WINTER.reset) ATOMIC_WINTER.reset(); if(TERRAIN_TRAPS && TERRAIN_TRAPS.reset) TERRAIN_TRAPS.reset(); if(UFO && UFO.reset) UFO.reset(); if(TASKS && TASKS.reset) TASKS.reset(); if(INVASIONS && INVASIONS.reset) INVASIONS.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
+	mining=false; if(FALLING && FALLING.reset) FALLING.reset(); if(BOATS && BOATS.reset) BOATS.reset(); if(MECHS && MECHS.reset) MECHS.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(SPRING_PLATFORMS && SPRING_PLATFORMS.reset) SPRING_PLATFORMS.reset(); if(VENDING && VENDING.reset) VENDING.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GUARDIANS && GUARDIANS.reset) GUARDIANS.reset(); if(UNDERGROUND && UNDERGROUND.reset) UNDERGROUND.reset(); if(SKY_GUARDIAN && SKY_GUARDIAN.reset) SKY_GUARDIAN.reset(); if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); if(NPCS && NPCS.reset) NPCS.reset(); if(GENERATED_NPCS && GENERATED_NPCS.reset) GENERATED_NPCS.reset(); if(COMPANIONS && COMPANIONS.reset) COMPANIONS.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(DROPS && DROPS.reset) DROPS.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(ATOMIC_WINTER && ATOMIC_WINTER.reset) ATOMIC_WINTER.reset(); if(TERRAIN_TRAPS && TERRAIN_TRAPS.reset) TERRAIN_TRAPS.reset(); if(UFO && UFO.reset) UFO.reset(); if(TASKS && TASKS.reset) TASKS.reset(); if(INVASIONS && INVASIONS.reset) INVASIONS.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
 
 	// Reset inventory/tools/hotbar
 	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.meteor=inv.tools.diamond=inv.tools.bedrock=false; inv.bedrockPickDurability=0; player.tool='basic'; hotbarIndex=0; // if god mode active, restore 100 stack after reset
@@ -13644,6 +13663,7 @@ function runGameStep(dt,ts){
 	updateOceanHint(dt);
 	updateHouseHealing(dt);
 	if(MEAT && MEAT.update) MEAT.update(dt, player, getTile, setTile);
+	if(DROPS && DROPS.update) DROPS.update(dt, player, getTile);
 	volcanoLeakWakeT-=dt;
 	if(volcanoLeakWakeT<=0){
 		const slowLavaWake=lastFrameMs>32;
@@ -13917,7 +13937,7 @@ if(!window.__lootPopupInit){
 }
 
 // Regenerate world using the CURRENT seed (do not change WG.worldSeed)
-window.regenWorldSameSeed = function(){ try{ if(MOBS && MOBS.clearAll) try{ MOBS.clearAll(); }catch(e){} if(COMPANIONS && COMPANIONS.reset) try{ COMPANIONS.reset(); }catch(e){} if(WORLD && WORLD.clear) WORLD.clear(); if(typeof chunkCanvases!=='undefined') chunkCanvases.clear(); if(typeof chunkRenderDirty!=='undefined') chunkRenderDirty.clear(); if(WORLD && WORLD.clearHeights) WORLD.clearHeights(); if(FALLING && FALLING.reset) FALLING.reset(); if(MECHS && MECHS.reset) MECHS.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(SPRING_PLATFORMS && SPRING_PLATFORMS.reset) SPRING_PLATFORMS.reset(); if(VENDING && VENDING.reset) VENDING.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GUARDIANS && GUARDIANS.reset) GUARDIANS.reset(); if(UNDERGROUND && UNDERGROUND.reset) UNDERGROUND.reset(); if(SKY_GUARDIAN && SKY_GUARDIAN.reset) SKY_GUARDIAN.reset(); if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); if(NPCS && NPCS.reset) NPCS.reset(); if(GENERATED_NPCS && GENERATED_NPCS.reset) GENERATED_NPCS.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(ATOMIC_WINTER && ATOMIC_WINTER.reset) ATOMIC_WINTER.reset(); if(TERRAIN_TRAPS && TERRAIN_TRAPS.reset) TERRAIN_TRAPS.reset(); if(UFO && UFO.reset) UFO.reset(); if(TASKS && TASKS.reset) TASKS.reset(); if(INVASIONS && INVASIONS.reset) INVASIONS.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
+window.regenWorldSameSeed = function(){ try{ if(MOBS && MOBS.clearAll) try{ MOBS.clearAll(); }catch(e){} if(COMPANIONS && COMPANIONS.reset) try{ COMPANIONS.reset(); }catch(e){} if(WORLD && WORLD.clear) WORLD.clear(); if(typeof chunkCanvases!=='undefined') chunkCanvases.clear(); if(typeof chunkRenderDirty!=='undefined') chunkRenderDirty.clear(); if(WORLD && WORLD.clearHeights) WORLD.clearHeights(); if(FALLING && FALLING.reset) FALLING.reset(); if(MECHS && MECHS.reset) MECHS.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(SPRING_PLATFORMS && SPRING_PLATFORMS.reset) SPRING_PLATFORMS.reset(); if(VENDING && VENDING.reset) VENDING.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GUARDIANS && GUARDIANS.reset) GUARDIANS.reset(); if(UNDERGROUND && UNDERGROUND.reset) UNDERGROUND.reset(); if(SKY_GUARDIAN && SKY_GUARDIAN.reset) SKY_GUARDIAN.reset(); if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); if(NPCS && NPCS.reset) NPCS.reset(); if(GENERATED_NPCS && GENERATED_NPCS.reset) GENERATED_NPCS.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(DROPS && DROPS.reset) DROPS.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(ATOMIC_WINTER && ATOMIC_WINTER.reset) ATOMIC_WINTER.reset(); if(TERRAIN_TRAPS && TERRAIN_TRAPS.reset) TERRAIN_TRAPS.reset(); if(UFO && UFO.reset) UFO.reset(); if(TASKS && TASKS.reset) TASKS.reset(); if(INVASIONS && INVASIONS.reset) INVASIONS.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
 	// Reset fog-of-war as well
 	try{ if(FOG && FOG.importSeen) FOG.importSeen([]); if(FOG && FOG.setRevealAll) FOG.setRevealAll(false); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); }catch(e){}
 	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.meteor=inv.tools.diamond=inv.tools.bedrock=false; inv.bedrockPickDurability=0; player.tool='basic'; hotbarIndex=0; player.xp=0; player.energy=0; if(PROGRESS && PROGRESS.reset) PROGRESS.reset(); applyProgressHp(); applyHeroEnergyCapacity(); clearRespawnTotems(); clearHealingShelters(); grave=null; saveGrave();
