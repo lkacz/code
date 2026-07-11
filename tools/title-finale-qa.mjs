@@ -103,7 +103,17 @@ const FINALE_CLOSE = `(async()=>{
 	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 	window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
 	await sleep(600);
-	return 'ok:closed='+!MM.finale.isOpen()+' seen='+MM.finale.metrics().seen;
+	return 'ok:closed='+!MM.finale.isOpen()+' seen='+MM.finale.metrics().seen
+		+' layers='+MM.finale.layers().completions;
+})()`;
+
+// Scene 4: the closed layer follows the observer to the next title screen.
+const VETERAN_CHECK = `(()=>{
+	const el=document.getElementById('titleScreen');
+	const kicker=el ? (el.querySelector('.tsKicker')||{}).textContent : '(none)';
+	return 'ok:layers='+MM.finale.layers().completions
+		+' kicker='+JSON.stringify(kicker)
+		+' veteranKicker='+(String(kicker).indexOf('zamknięte warstwy: 1')>=0);
 })()`;
 
 async function main(){
@@ -190,6 +200,11 @@ async function main(){
 		console.log('wrote', outFinale);
 		const closeRes = await send(ws, 'Runtime.evaluate', { expression: FINALE_CLOSE, awaitPromise: true, returnByValue: true, timeout: 30000 });
 		console.log('close:', closeRes.result.value);
+
+		// Scene 4: reboot to the title — the finished layer shows on the kicker
+		console.log('boot(veteran):', await navigate(url + '?title=1&veteran=1'));
+		const vetRes = await send(ws, 'Runtime.evaluate', { expression: VETERAN_CHECK, returnByValue: true });
+		console.log('veteran:', vetRes.result.value);
 
 		if (pageErrors.length) console.log('pageErrors:', pageErrors.slice(0, 5).join('\n---\n'));
 	} finally {

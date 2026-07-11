@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   NEW_GAME_PREFERENCE_KEYS,
+  NEW_GAME_KNOWLEDGE_KEYS,
   clearActiveGameStorage,
   consumeFreshWorldSeed,
   queueFreshWorldSeed
@@ -29,11 +30,12 @@ const storage=new MemoryStorage([
 ]);
 
 for(const key of NEW_GAME_PREFERENCE_KEYS) storage.setItem(key,'preference');
+for(const key of NEW_GAME_KNOWLEDGE_KEYS) storage.setItem(key,'knowledge');
 const gameplayKeys=[
   'mm_save_v7','mm_save_v6','mm_save_v5','mm_save_v4','mm_save_v3','mm_save_v2',
   'mm_save_critical_v1','mm_last_slot_v1','mm_inventory_v1','mm_custom_inv_v1',
   'mm_discarded_loot_v1','mm_dynamic_loot_v1','mm_progress_v1','mm_plants_v1',
-  'mm_invasions_v1','mm_ufo_v1','mm_golden_v1','mm_discoveries_v1',
+  'mm_invasions_v1','mm_ufo_v1','mm_golden_v1','mm_finale_v1',
   'mm_alien_ruin_commanders_v1:123','mm_respawn_v1','mm_respawn_totems_v1',
   'mm_healing_shelters_v1','mm_grave_v1','mm_loot_inbox_v1','mm_ocean_hint_v1'
 ];
@@ -46,6 +48,11 @@ assert.equal(storage.getItem('mm_save_v7_chunk_active_2'),null,'second consecuti
 assert.ok(removed.includes('mm_last_slot_v1'),'fresh game detaches from the previously loaded named slot');
 
 for(const key of NEW_GAME_PREFERENCE_KEYS) assert.equal(storage.getItem(key),'preference',key+' preference survives');
+// Player knowledge crosses worlds: the discovery journal keeps what was learned
+// (discovery.js design note) and the closed-layer tally is the point of NG+.
+for(const key of NEW_GAME_KNOWLEDGE_KEYS) assert.equal(storage.getItem(key),'knowledge',key+' knowledge survives');
+assert.ok(NEW_GAME_KNOWLEDGE_KEYS.includes('mm_discoveries_v1'),'the discovery journal is knowledge');
+assert.ok(NEW_GAME_KNOWLEDGE_KEYS.includes('mm_layers_v1'),'the closed-layer tally is knowledge');
 assert.equal(storage.getItem('foreign_app_data'),'keep','unrelated origin data survives');
 assert.ok(storage.getItem('mm_save_slots_meta_v1'),'named-save metadata survives');
 assert.ok(storage.getItem('mm_slot_inline'),'inline named save survives');

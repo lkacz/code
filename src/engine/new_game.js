@@ -24,7 +24,16 @@ export const NEW_GAME_PREFERENCE_KEYS = Object.freeze([
   'mm_world_settings_v2'
 ]);
 
-const PREFERENCE_KEYS = new Set(NEW_GAME_PREFERENCE_KEYS);
+// Player KNOWLEDGE (not world state) also survives a reset: the discovery
+// journal explicitly promises "starting a new world keeps what the player
+// already learned" (discovery.js), and the closed-layer tally is the whole
+// point of starting another layer (finale.js).
+export const NEW_GAME_KNOWLEDGE_KEYS = Object.freeze([
+  'mm_discoveries_v1',
+  'mm_layers_v1'
+]);
+
+const PREFERENCE_KEYS = new Set([...NEW_GAME_PREFERENCE_KEYS, ...NEW_GAME_KNOWLEDGE_KEYS]);
 
 export function queueFreshWorldSeed(storage,random=Math.random){
   if(!storage || typeof storage.setItem!=='function') return null;

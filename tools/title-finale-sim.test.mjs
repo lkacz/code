@@ -110,6 +110,7 @@ assert.ok(cred.length >= 8, 'a proper credits roll');
 assert.ok(cred.every(c => Array.isArray(c) && c.length === 2), 'credits are [role, name] pairs');
 assert.ok(cred.some(c => c[1].includes('424242')), 'the seed gets a scenography credit');
 assert.ok(cred.some(c => /dziękujemy/i.test(c[1])), 'the simulation says thank you');
+assert.ok(cred.some(c => c[0] === 'Zamknięte warstwy'), 'the credits count the closed layers');
 
 // --- finale: reset + new-game sweep clear the profile -------------------------
 finale.reset();
@@ -118,9 +119,22 @@ const { clearActiveGameStorage, NEW_GAME_PREFERENCE_KEYS } = await import('../sr
 assert.ok(!NEW_GAME_PREFERENCE_KEYS.includes('mm_finale_v1'), 'finale history is game state, not a preference');
 store.set('mm_finale_v1', JSON.stringify({v: 1, deaths: 5, unlocked: true, seen: true}));
 store.set('mm_audio_v1', '{"volume":0.5}');
+store.set('mm_discoveries_v1', '["parry"]');
 clearActiveGameStorage(globalThis.localStorage);
 assert.equal(store.has('mm_finale_v1'), false, 'a new game clears the finale history');
 assert.equal(store.has('mm_audio_v1'), true, 'preferences survive a new game');
+assert.equal(store.has('mm_discoveries_v1'), true, 'the discovery journal crosses worlds');
+assert.equal(store.has('mm_layers_v1'), true, 'the closed-layer tally crosses worlds');
+
+// --- layers: each finished world closes exactly one, forever -----------------
+assert.equal(finale.layers().completions, 1, 'the finished story closed layer #1');
+globalThis.dispatchEvent(new CustomEvent('mm-guardian-defeated', {detail: {kind: 'mother'}}));
+assert.equal(finale.layers().completions, 2, 'a fresh world can close the next layer');
+globalThis.dispatchEvent(new CustomEvent('mm-guardian-defeated', {detail: {kind: 'mother'}}));
+assert.equal(finale.layers().completions, 2, 'the same world never double-counts');
+// Veterancy reaches the title: the splash pool grows once a layer is closed.
+const vetLine = titleScreen.pickSplash(() => 0.9999);
+assert.ok(!titleScreen.SPLASHES.includes(vetLine), 'a veteran-only splash joins the rotation: ' + vetLine);
 
 // --- wiring pins: main.js + index.html keep the bookends installed ------------
 const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');

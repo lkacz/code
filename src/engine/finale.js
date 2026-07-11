@@ -14,6 +14,9 @@ const finale = (function(){
   const root = (typeof window !== 'undefined') ? window : globalThis;
   const MM = root.MM = root.MM || {};
   const KEY = 'mm_finale_v1';
+  // Closed-layer tally: player knowledge, so it SURVIVES a new game (kept by
+  // NEW_GAME_KNOWLEDGE_KEYS in new_game.js) — each finished world adds one.
+  const LAYERS_KEY = 'mm_layers_v1';
 
   // The center guardian's epilogue speech runs ~20 s after the killing blow
   // (finale + epilogueArrival lines at 2.6–2.8 s spacing) — the banner slips
@@ -63,6 +66,22 @@ const finale = (function(){
   }
   load();
 
+  function completions(){
+    try{
+      if(typeof localStorage === 'undefined') return 0;
+      const d = JSON.parse(localStorage.getItem(LAYERS_KEY));
+      return Math.max(0, Math.floor(Number(d && d.completions) || 0));
+    }catch(e){ return 0; }
+  }
+  function addCompletion(){
+    try{
+      if(typeof localStorage === 'undefined') return;
+      localStorage.setItem(LAYERS_KEY, JSON.stringify({v: 1, completions: completions() + 1}));
+    }catch(e){ /* ignore */ }
+  }
+  // Cross-world veterancy for the title screen and the credits roll.
+  function layers(){ return {completions: completions()}; }
+
   // --- report model (Node-tested; every source is optional) ------------------
   // ctx overrides exist for tests; live callers pass nothing and the model
   // pulls from MM.progress / MM.discovery / MM.seasons / worldgen.
@@ -98,7 +117,9 @@ const finale = (function(){
   // Credits stay diegetic: the simulation thanks its own subsystems.
   function credits(rep){
     const r = rep || report();
+    const closed = completions();
     return [
+      ['Zamknięte warstwy', closed > 1 ? closed + ' (licząc tę — wprawa widoczna)' : (closed === 1 ? '1 (ta pierwsza boli najbardziej)' : 'wciąż otwarta')],
       ['Hero-Prostokąt', 'w roli Obserwatora — Ty'],
       ['Stary Kwadrat', 'w roli Guardiana Macierzystego (rola życia)'],
       ['Trzeci Kret', 'grał siebie, przez sen'],
@@ -253,7 +274,11 @@ const finale = (function(){
   function unlocked(){ return state.unlocked; }
 
   function unlock(){
-    if(!state.unlocked){ state.unlocked = true; persist(); }
+    if(!state.unlocked){
+      state.unlocked = true;
+      persist();
+      addCompletion(); // exactly once per world: the layer counts as closed
+    }
     syncMenuButton();
     if(!state.seen){
       state.bannerT = BANNER_DELAY;
@@ -302,7 +327,7 @@ const finale = (function(){
     });
   }
 
-  const api = { report, credits, open, close, isOpen, unlocked, unlock, update, wire, reset, metrics,
+  const api = { report, credits, open, close, isOpen, unlocked, unlock, update, wire, reset, metrics, layers,
     config: {BANNER_DELAY, AUTO_OPEN_DELAY},
     _debug: {state} };
   MM.finale = api;

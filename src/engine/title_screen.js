@@ -42,6 +42,15 @@ const titleScreen = (function(){
     'Ocean ma dno, żebyś miał gdzie szukać wraków.',
     'Wulkan przyjmuje ofiary. Zwrotów nie przewidziano.'
   ];
+  // Extra lines for observers who have already closed a layer (finale.layers):
+  // the simulation remembers being watched and gets a little self-conscious.
+  const VETERAN_SPLASHES = [
+    'Znowu ty? Warstwa czuje się obserwowana.',
+    'Drzewa już nie udają. Wiedzą, że wiesz.',
+    'Stary Kwadrat poprosi o wodę. Tym razem naprawdę chce pić.',
+    'Nowa warstwa, stare nawyki kursora.',
+    'Symulacja przygotowała się na twoje spojrzenie. Trochę.'
+  ];
 
   const state = {
     open: false,
@@ -67,12 +76,20 @@ const titleScreen = (function(){
     if(/headless/i.test(String(e.ua || ''))) return true;
     return false;
   }
+  function closedLayers(){
+    try{ return Math.max(0, Math.floor(Number(MM.finale && MM.finale.layers && MM.finale.layers().completions) || 0)); }
+    catch(e){ return 0; }
+  }
+  function splashPool(){
+    return closedLayers() > 0 ? SPLASHES.concat(VETERAN_SPLASHES) : SPLASHES;
+  }
   function pickSplash(rand){
     const r = (typeof rand === 'function') ? rand : Math.random;
-    let idx = Math.floor(Math.max(0, Math.min(0.999999, Number(r()) || 0)) * SPLASHES.length);
-    if(idx === state.splashIdx) idx = (idx + 1) % SPLASHES.length; // never repeat back-to-back
+    const pool = splashPool();
+    let idx = Math.floor(Math.max(0, Math.min(0.999999, Number(r()) || 0)) * pool.length);
+    if(idx === state.splashIdx) idx = (idx + 1) % pool.length; // never repeat back-to-back
     state.splashIdx = idx;
-    return SPLASHES[idx];
+    return pool[idx];
   }
 
   // --- DOM -------------------------------------------------------------------
@@ -86,7 +103,10 @@ const titleScreen = (function(){
     if(state.el || typeof document === 'undefined') return state.el;
     const el = node('div'); el.id = 'titleScreen';
     const inner = node('div', 'tsInner');
-    inner.appendChild(node('div', 'tsKicker', 'symulacja uruchomiona · warstwa nieznana'));
+    const closed = closedLayers();
+    inner.appendChild(node('div', 'tsKicker', closed > 0
+      ? 'symulacja uruchomiona · zamknięte warstwy: ' + closed
+      : 'symulacja uruchomiona · warstwa nieznana'));
     inner.appendChild(node('h1', 'tsTitle', 'MINI MINER'));
     inner.appendChild(node('div', 'tsSub', '· Warstwy Symulacji ·'));
     state.splashEl = node('div', 'tsSplash', pickSplash());
