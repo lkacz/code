@@ -284,6 +284,23 @@ window.MM = window.MM || {};
     finaleFanfare:(o)=>{ [523,659,784,1047].forEach((f,i)=>tone({...o,type:'triangle',f0:f,f1:f,dur:0.3,peak:0.13,delay:i*0.14,send:0.3,priority:true}));
                    [262,330,392].forEach((f)=>tone({...o,type:'sine',f0:f,f1:f,dur:1.4,peak:0.05,delay:0.62,attack:0.2,send:0.35}));
                    tone({...o,type:'sine',f0:131,f1:131,dur:1.6,peak:0.06,delay:0.62,attack:0.25,send:0.3}); },
+    // finale ceremony 2.0 (finale.js staged acts): de-rez rumble, per-guardian
+    // rising chime (opts.step 0..4), verdict seal, upper-layer glitch, re-rez
+    finaleShatter:(o)=>{ duck(0.4,1.2); noise({...o,dur:1.6,peak:0.18,fLo:180,fHi:2600,f1:220,ftype:'lowpass',buf:'brown',attack:0.05,send:0.3,priority:true});
+                   tone({...o,type:'sine',f0:220,f1:55,dur:1.8,peak:0.12,bend:0.9,send:0.35,priority:true});
+                   noise({...o,dur:0.5,peak:0.06,fLo:2800,fHi:9000,ftype:'highpass',delay:0.15}); },
+    finaleGuardian:(o)=>{ const st=Math.max(0,Math.min(5,(o&&o.step)||0)); const f=392*Math.pow(1.1225,st);
+                   tone({...o,type:'triangle',f0:f,f1:f*1.005,dur:0.35,peak:0.1,send:0.35});
+                   tone({...o,type:'sine',f0:f*2,f1:f*2,dur:0.22,peak:0.04,delay:0.04,send:0.3}); },
+    finaleSeal:(o)=>{ tone({...o,type:'triangle',f0:660,f1:990,dur:0.4,peak:0.12,send:0.35,priority:true});
+                   tone({...o,type:'sine',f0:1320,f1:1320,dur:0.5,peak:0.05,delay:0.1,send:0.4});
+                   noise({...o,dur:0.12,peak:0.05,fLo:3600,fHi:9800,ftype:'highpass'}); },
+    finaleGlitch:(o)=>{ tone({...o,type:'square',f0:180,f1:2400,dur:0.14,peak:0.07,bend:0.02});
+                   noise({...o,dur:0.2,peak:0.09,fLo:900,fHi:7600,f1:400});
+                   tone({...o,type:'square',f0:1200,f1:90,dur:0.12,peak:0.06,delay:0.12}); },
+    finaleRerez:(o)=>{ tone({...o,type:'sine',f0:70,f1:240,dur:0.9,peak:0.1,bend:0.5,send:0.3});
+                   noise({...o,dur:0.8,peak:0.1,fLo:300,fHi:3200,f1:2600,attack:0.3,send:0.25});
+                   [523,784].forEach((f,i)=>tone({...o,type:'triangle',f0:f,f1:f,dur:0.25,peak:0.06,delay:0.5+i*0.12,send:0.35})); },
     uiClick:(o)=>{ tone({...o,bus:'ui',type:'sine',f0:900,f1:700,dur:0.05,peak:0.06,send:0}); },
     uiOpen: (o)=>{ tone({...o,bus:'ui',type:'sine',f0:520,f1:760,dur:0.09,peak:0.07,send:0}); },
     uiClose:(o)=>{ tone({...o,bus:'ui',type:'sine',f0:760,f1:500,dur:0.09,peak:0.06,send:0}); },

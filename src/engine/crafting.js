@@ -73,8 +73,14 @@ const crafting = (function(){
 
     const favorites = new Set();      // recipe ids pinned by the player
     const seenAvailable = new Set();  // ids that have EVER been craftable (toast bookkeeping)
-    const fresh = new Set();          // newly craftable, not yet viewed in the panel (NEW badges)
+    const fresh = new Set();          // newly craftable/unlocked, not yet viewed in the panel (NEW badges)
     const counts = new Map();         // id -> times crafted (lifetime, rides the save)
+    // Progressive recipe discovery: a recipe stays HIDDEN until the player has
+    // touched every ingredient type at least once (knownMaterials = resource
+    // keys ever held) or has seen the crafted result standing in the world
+    // (seenResults, fed by the viewport scan in main.js). Both ride the save.
+    const knownMaterials = new Set(); // resource keys the player has ever owned
+    const seenResults = new Set();    // recipe ids whose result was spotted in the world
     let trackedId = null;             // the one recipe pinned to the HUD tracker
     let trackedReadyAnnounced = false; // edge detector: announce "ready" once per dip
 
@@ -154,6 +160,62 @@ const crafting = (function(){
     }
     function totalCrafts(){ let t=0; counts.forEach(v=>{ t+=v; }); return t; }
 
+    // --- Recipe discovery (progressive unlocks) ---
+    function costKeys(r){ return costEntries(r).map(([k])=>k); }
+    function isKnownMaterial(key){ return knownMaterials.has(key); }
+    // Unlocked = the player has a reason to know this recipe exists:
+    // crafted it, could once afford it, saw its result in the world, or has
+    // handled every ingredient type it needs (amounts don't matter here).
+    function isUnlocked(idOrRecipe){
+      const r = typeof idOrRecipe==='string' ? byId(idOrRecipe) : idOrRecipe;
+      if(!r) return false;
+      if(done(r)) return true;
+      if((counts.get(r.id)|0) > 0) return true;
+      if(seenAvailable.has(r.id)) return true;
+      if(seenResults.has(r.id)) return true;
+      const keys = costKeys(r);
+      if(!keys.length) return true;
+      return keys.every(k=>knownMaterials.has(k));
+    }
+    function unlockedRecipes(){ return recipes.filter(isUnlocked); }
+    function lockedCount(){ return recipes.length - unlockedRecipes().length; }
+    // Feed the set of currently-held resource keys. Returns the recipes that
+    // just crossed into unlocked (they also get a NEW badge); opts.silent
+    // seeds knowledge without badges or announcements (boot / legacy saves).
+    function noteMaterials(keys, opts){
+      const silent = !!(opts && opts.silent);
+      const before = silent ? null : new Set(recipes.filter(isUnlocked).map(r=>r.id));
+      let added = false;
+      for(const k of (keys||[])){
+        if(typeof k==='string' && k && !knownMaterials.has(k)){ knownMaterials.add(k); added=true; }
+      }
+      if(silent || !added) return [];
+      const newly = recipes.filter(r=>!before.has(r.id) && isUnlocked(r));
+      newly.forEach(r=>fresh.add(r.id));
+      return newly;
+    }
+    // The crafted result was spotted standing in the world (NPC house, ruin…).
+    // Returns the recipe when this sighting is what unlocked it.
+    function noteSeenResult(id){
+      const r = byId(id);
+      if(!r || seenResults.has(r.id)) return null;
+      const was = isUnlocked(r);
+      seenResults.add(r.id);
+      if(was) return null;
+      fresh.add(r.id);
+      return r;
+    }
+    // Legacy saves / fresh worlds: silently mark every currently-held resource
+    // and every ingredient of once-craftable recipes as known.
+    function seedKnown(){
+      for(const r of recipes){
+        for(const k of costKeys(r)){
+          if(have(k)>0) knownMaterials.add(k);
+        }
+        if(seenAvailable.has(r.id)) costKeys(r).forEach(k=>knownMaterials.add(k));
+      }
+    }
+
     // --- Availability tracking (toasts + NEW badges) ---
     // Returns the recipes that just became craftable for the first time.
     function syncAvailability(){
@@ -176,6 +238,7 @@ const crafting = (function(){
     // --- Persistence ---
     function reset(){
       favorites.clear(); seenAvailable.clear(); fresh.clear(); counts.clear();
+      knownMaterials.clear(); seenResults.clear();
       trackedId=null; trackedReadyAnnounced=false;
     }
     function snapshot(){
@@ -186,17 +249,25 @@ const crafting = (function(){
         fresh:[...fresh].filter(known),
         favorites:[...favorites].filter(known),
         tracked: known(trackedId) ? trackedId : null,
-        counts: countsObj
+        counts: countsObj,
+        knownMaterials:[...knownMaterials],
+        seenResults:[...seenResults].filter(known)
       };
     }
     function restore(src){
       reset();
       if(!src || typeof src!=='object' || !Array.isArray(src.seenAvailable)){
         seedSeen();
+        seedKnown();
         return false;
       }
       src.seenAvailable.forEach(id=>{ if(known(id)) seenAvailable.add(id); });
       if(Array.isArray(src.fresh)) src.fresh.forEach(id=>{ if(known(id) && seenAvailable.has(id)) fresh.add(id); });
+      if(Array.isArray(src.knownMaterials)) src.knownMaterials.forEach(k=>{ if(typeof k==='string' && k) knownMaterials.add(k); });
+      // Pre-discovery saves carry no material knowledge: seed it silently so
+      // long-standing recipes don't vanish from a veteran's panel.
+      else seedKnown();
+      if(Array.isArray(src.seenResults)) src.seenResults.forEach(id=>{ if(known(id)) seenResults.add(id); });
       if(Array.isArray(src.favorites)) src.favorites.forEach(id=>{ if(known(id)) favorites.add(id); });
       if(known(src.tracked)) trackedId=src.tracked;
       if(src.counts && typeof src.counts==='object'){
@@ -215,6 +286,8 @@ const crafting = (function(){
       setTracked, toggleTracked, trackedId:getTrackedId, trackedStatus,
       countOf, recordCraft, totalCrafts,
       syncAvailability, isFresh, markSeen, freshCount, freshIds, seedSeen,
+      isUnlocked, unlockedRecipes, lockedCount, noteMaterials, noteSeenResult,
+      isKnownMaterial, seedKnown,
       reset, snapshot, restore
     };
   }

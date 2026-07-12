@@ -110,6 +110,86 @@ assert.equal(model.freshCount(), 0, 'silent seeding never creates NEW badges');
 assert.equal(model.syncAvailability().length, 0, 'seeded availability matches current inventory');
 assert.equal(model.restore({seenAvailable:'junk'}), false, 'corrupt snapshot falls back to seeding');
 
+// --- Progressive recipe discovery (unlock gating) ---------------------------
+// A recipe stays hidden until the player has touched every ingredient type
+// (knownMaterials), has seen the crafted result in the world (seenResults),
+// once could afford it (seenAvailable), or has crafted it before.
+{
+  const inv2 = { wood:0, stone:0, coal:0, diamond:0 };
+  const m2 = createCraftingModel({ recipes, getHave:k=>inv2[k]||0, isDone:()=>false });
+  assert.equal(m2.isUnlocked('free'), true, 'costless recipes are always known');
+  assert.equal(m2.isUnlocked('torch'), false, 'untouched materials keep the recipe hidden');
+  assert.equal(m2.lockedCount(), 3, 'all costed recipes start locked');
+
+  // Touching ONE of two ingredients is not enough; the full set unlocks.
+  assert.deepEqual(m2.noteMaterials(['coal']).map(r=>r.id), [], 'partial ingredient knowledge stays locked');
+  assert.equal(m2.isUnlocked('sword'), false, 'sword still needs diamond knowledge');
+  assert.deepEqual(m2.noteMaterials(['diamond']).map(r=>r.id), ['sword'], 'covering every ingredient unlocks the recipe');
+  assert.equal(m2.isFresh('sword'), true, 'a fresh unlock carries the NEW badge');
+  assert.deepEqual(m2.noteMaterials(['diamond']), [], 'already-known materials unlock nothing new');
+
+  // Seeing the result standing in the world unlocks without any materials.
+  assert.equal(m2.noteSeenResult('torch').id, 'torch', 'world sighting unlocks the recipe');
+  assert.equal(m2.noteSeenResult('torch'), null, 'a second sighting is not a new unlock');
+  assert.equal(m2.isUnlocked('torch'), true, 'sighted recipe is unlocked');
+  assert.equal(m2.noteSeenResult('sword'), null, 'sighting an already-unlocked recipe returns nothing');
+
+  // Silent seeding (boot path) adds knowledge without badges.
+  const m3 = createCraftingModel({ recipes, getHave:k=>inv2[k]||0, isDone:()=>false });
+  m3.noteMaterials(['stone'], {silent:true});
+  assert.equal(m3.isKnownMaterial('stone'), true, 'silent noteMaterials records knowledge');
+  assert.equal(m3.freshCount(), 0, 'silent noteMaterials never badges');
+  assert.equal(m3.isUnlocked('pick'), true, 'silently-seeded material still unlocks');
+
+  // Snapshot round-trip carries knownMaterials + seenResults.
+  const snap2 = m2.snapshot();
+  assert.ok(snap2.knownMaterials.includes('coal'), 'snapshot persists material knowledge');
+  assert.ok(snap2.seenResults.includes('torch'), 'snapshot persists world sightings');
+  const m4 = createCraftingModel({ recipes, getHave:k=>inv2[k]||0, isDone:()=>false });
+  m4.restore(snap2);
+  assert.equal(m4.isUnlocked('sword'), true, 'material knowledge survives the roundtrip');
+  assert.equal(m4.isUnlocked('torch'), true, 'world sightings survive the roundtrip');
+
+  // Legacy saves (no knownMaterials field) seed silently: currently-held
+  // resources + ingredients of once-craftable recipes count as known.
+  const inv3 = { wood:5, stone:0, coal:0, diamond:0 };
+  const m5 = createCraftingModel({ recipes, getHave:k=>inv3[k]||0, isDone:()=>false });
+  m5.restore({ seenAvailable:['pick'], fresh:[], favorites:[], tracked:null, counts:{} });
+  assert.equal(m5.isUnlocked('torch'), true, 'legacy migration counts held resources as known');
+  assert.equal(m5.isUnlocked('pick'), true, 'once-craftable recipes stay visible after migration');
+  assert.equal(m5.isUnlocked('sword'), false, 'legacy migration does not leak untouched recipes');
+}
+
+// --- Recipe visibility gating is wired into the panel (source pins) ---------
+{
+  const mainSrcPin = await import('node:fs').then(fs=>fs.readFileSync(new URL('../src/main.js', import.meta.url), 'utf8'));
+  assert.match(mainSrcPin, /function craftRecipeVisible\(r\)\{ return godMode \|\| CRAFT_MODEL\.isUnlocked\(r\); \}/, 'craft panel gates recipes on discovery (god mode sees all)');
+  assert.match(mainSrcPin, /let list=visibleCraftRecipes\(\)/, 'filteredCraftRecipes lists only discovered recipes');
+  assert.match(mainSrcPin, /msg\('🔓 Odblokowany przepis: '\+shownU\+extraU\)/, 'newly unlocked recipes announce themselves');
+  assert.match(mainSrcPin, /function scanCraftablesInView\(dt\)/, 'viewport sweep teaches recipes from world sightings');
+  assert.match(mainSrcPin, /function resourceDiscovered\(key\)/, 'hotbar picker gates blocks on discovery');
+  assert.match(mainSrcPin, /RESOURCE_DEFS\.filter\(r=>r\.tile && resourceDiscovered\(r\.key\)\)/, 'hot picker catalog filters undiscovered resources');
+
+  // Category discovery: every real craft group / picker group has a journal
+  // entry, and main.js reports first-of-category unlocks through it.
+  assert.match(mainSrcPin, /function noteCategoryDiscoveries\(opts\)/, 'category unlocks flow through the discovery journal');
+  const { discovery } = await import('../src/engine/discovery.js');
+  const groupsBlock = mainSrcPin.slice(mainSrcPin.indexOf('const CRAFT_GROUPS=['), mainSrcPin.indexOf('const CRAFT_GROUP_LABELS'));
+  const craftGroupIds = [...groupsBlock.matchAll(/\{id:'(\w+)',label:/g)].map(m=>m[1]).filter(id=>!['all','other'].includes(id));
+  assert.ok(craftGroupIds.length >= 7, 'sanity: craft group scan found the shipped groups');
+  for(const gid of craftGroupIds){
+    assert.ok(discovery.CATALOG['craft_cat_'+gid], 'craft group "'+gid+'" has a discovery-journal entry');
+    assert.ok(discovery.HINTS['craft_cat_'+gid], 'craft group "'+gid+'" has a journal hint');
+  }
+  const hotBlock = mainSrcPin.slice(mainSrcPin.indexOf('const HOT_SELECT_GROUPS=['), mainSrcPin.indexOf('function hotSelectCatalog('));
+  const hotGroupIds = [...hotBlock.matchAll(/\{id:'(\w+)',label:/g)].map(m=>m[1]).filter(id=>!['chest','other'].includes(id));
+  assert.ok(hotGroupIds.length >= 5, 'sanity: hot-picker group scan found the shipped groups');
+  for(const gid of hotGroupIds){
+    assert.ok(discovery.CATALOG['block_cat_'+gid], 'block group "'+gid+'" has a discovery-journal entry');
+    assert.ok(discovery.HINTS['block_cat_'+gid], 'block group "'+gid+'" has a journal hint');
+  }
+}
+
 // --- Source hints cover every ingredient the shipped recipes use ---
 const mainSrc = await import('node:fs').then(fs=>fs.readFileSync(new URL('../src/main.js', import.meta.url), 'utf8'));
 const recipesBlock = mainSrc.slice(mainSrc.indexOf('const RECIPES=['), mainSrc.indexOf('const CRAFT_GROUPS='));

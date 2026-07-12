@@ -28,7 +28,7 @@ const drops = (function(){
   const DESPAWN_SEC=180;        // resources linger
   // Ticking bomb: the better the find, the faster it burns out. Rare+ gear
   // shows a countdown bar; the final seconds of an epic tick audibly.
-  const GEAR_LIFE={common:150, rare:75, epic:30};
+  const GEAR_LIFE={common:150, uncommon:110, rare:75, epic:30, legendary:20};
   const GUARDIAN_RELIC_LIFE=120; // one-shot arc trophies get a merciful clock
   const BLINK_SEC=12;           // despawn warning window (capped at 25% of life)
   const GRAVITY=22, TERMINAL=17, BOUNCE=0.34;
@@ -41,10 +41,15 @@ const drops = (function(){
   const MAGNET_SPEED=9.5;       // tiles/s toward the hero while vacuumed
   const MERGE_DIST=0.85;        // settled same-resource piles merge
   const POP_VX=3.2, POP_VY_MIN=3.4, POP_VY_MAX=6.8;
+  const UPGRADE_RECHECK_SEC=1.2;// lying drops re-judge vs equipment on this clock
+  const _EXCITE_RADIUS=7.5;      // hero "big eyes" reaction range (tiles)
 
   // Mirrors inventory.js TIER_COLORS (single source there is DOM-side; the
   // engine keeps its own copy so Node sims render/spawn without the UI).
-  const TIER_COLORS={common:'#b07f2c', rare:'#a74cc9', epic:'#e0b341'};
+  const TIER_COLORS={common:'#b07f2c', uncommon:'#3fa650', rare:'#a74cc9', epic:'#e0b341', legendary:'#58e0d8'};
+  const TIER_RANK={common:0, uncommon:1, rare:2, epic:3, legendary:4};
+  // Epic+ tiers get the full "come get me" treatment (beam, lava immunity, buff)
+  const isHighTier=t=>t==='epic'||t==='legendary';
   const KIND_GLYPH={cape:'🧥', eyes:'👁️', outfit:'👕', weapon:'⚔️', charm:'🔮'};
   const RES_GLYPH={meatScrap:'🍖', fish:'🐟', goldenFish:'🐠', springAntler:'🦌', summerHorn:'🐂', autumnHeartwood:'🌳', winterFur:'🐻'};
 
@@ -115,7 +120,25 @@ const drops = (function(){
     WIOSENNY_JELEN:{chance:0.22, tiers:T_CHAMPION, options:[{kind:'charm',name:'Amulet wiosny',desc:'Pachnie świeżą trawą i nowym startem.'}]},
     LETNI_ZUBR:{chance:0.22, tiers:T_CHAMPION, options:[{kind:'charm',name:'Amulet lata',desc:'Ciepły jak południe, którego strzegł.'}]},
     JESIENNY_LOS:{chance:0.22, tiers:T_CHAMPION, options:[{kind:'charm',name:'Amulet jesieni',desc:'Szeleści przy każdym kroku.'}]},
-    JACKPOT_WHALE:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'charm',name:'Serce głębin',desc:'Bije rytmem przypływów.'},{kind:'eyes',name:'Oczy lewiatana',desc:'Widziały dno oceanu. I ciebie.'}]}
+    JACKPOT_WHALE:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'charm',name:'Serce głębin',desc:'Bije rytmem przypływów.'},{kind:'eyes',name:'Oczy lewiatana',desc:'Widziały dno oceanu. I ciebie.'}]},
+    // Sky biome grunts: the heavens' patrols shed sky-craft (mobs.js sky fauna)
+    CLOUD_RAY: {chance:0.11, tiers:T_ELITE, options:[{kind:'cape',name:'Peleryna obłocznej płaszczki',desc:'Szybuje lepiej niż jej właścicielka skończyła.'},{kind:'eyes',name:'Oczy przestworzy',desc:'Widzą prądy powietrza. I okazje.'}]},
+    HARPY:     {chance:0.11, tiers:T_ELITE, options:[{kind:'cape',name:'Peleryna harpii',desc:'Pióra wciąż pamiętają nurkowanie.'},{kind:'weapon',weaponType:'melee',name:'Szpony harpii',desc:'Manikiur odradzamy.'}]},
+    VOLT_WISP: {chance:0.12, tiers:T_ELITE, options:[{kind:'weapon',weaponType:'electric',name:'Iskra burzowego wispa',desc:'Trzeszczy z wyrzutem, ale strzela.'},{kind:'charm',name:'Zamknięty piorun',desc:'W słoiku. Mniej więcej.'}]},
+    SPORE_DRIFTER:{chance:0.11, tiers:T_ELITE, options:[{kind:'weapon',weaponType:'gas',name:'Miech zarodnikowy',desc:'Rafa w wersji kieszonkowej.'},{kind:'charm',name:'Świecący zarodnik',desc:'Kiełkuje wyłącznie w ciemności.'}]},
+    CINDER_HAWK:{chance:0.11, tiers:T_ELITE, options:[{kind:'weapon',weaponType:'flame',name:'Lotka popielnego jastrzębia',desc:'Wciąż się tli. To celowe.'},{kind:'eyes',name:'Żarowe oczy',desc:'Patrzą przez dym jak przez szybę.'}]},
+    // Sky biome bosses: every regional terror pays out like the legend it is
+    SKY_SERAPH:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'cape',name:'Peleryna Serafina Wyżyn',desc:'Świeci nawet w plecaku.'},{kind:'weapon',weaponType:'bow',name:'Promienny łuk wyżyn',desc:'Strzały same szukają światła.'},{kind:'charm',name:'Aureola serafina',desc:'Trochę zgięta. Walka była zacięta.'}]},
+    SKYGROVE_WARDEN:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'outfit',name:'Kora Strażnika Puszczy',desc:'Pancerz, który kiedyś był lasem.'},{kind:'weapon',weaponType:'melee',name:'Konar strażnika',desc:'Cała puszcza w jednym zamachu.'}]},
+    BALLOON_TYRANT:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'cape',name:'Czasza tyrana gaju',desc:'Opada wolniej, niż spadałeś przed nią.'},{kind:'charm',name:'Węzeł balonowy',desc:'Nie do rozwiązania. Sprawdzano.'}]},
+    STORM_HERALD:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'weapon',weaponType:'electric',name:'Młot Herolda Burzy',desc:'Kuty piorunami, oddaje z nawiązką.'},{kind:'charm',name:'Kowadło chmur',desc:'Cięższe, niż wygląda. A wygląda jak chmura.'}]},
+    AURORA_WYRM:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'weapon',weaponType:'hose',name:'Oddech zorzowego żmija',desc:'Zamieć na życzenie.'},{kind:'eyes',name:'Oczy zorzy',desc:'Noc polarna przestaje być ciemna.'},{kind:'cape',name:'Łuska zorzy',desc:'Mieni się wszystkimi kolorami mrozu.'}]},
+    MIRAGE_DJINN:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'charm',name:'Lampa dżina',desc:'Życzeń brak. Dżin też już nie życzy.'},{kind:'weapon',weaponType:'gas',name:'Tchnienie fatamorgany',desc:'Wróg widzi wszystko. Poza prawdą.'}]},
+    CORSAIR_AUTOMATON:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'outfit',name:'Kadłub korsarza wraków',desc:'Nitowany na wieczność. Prawie.'},{kind:'weapon',weaponType:'bow',name:'Harpunnik flotylli',desc:'Trafia i przyciąga. Kolejność dowolna.'}]},
+    SPORE_MOTHER:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'weapon',weaponType:'gas',name:'Płuca Matki Zarodników',desc:'Oddychają za ciebie. W obie strony.'},{kind:'outfit',name:'Kapelusz rafy',desc:'Grzybobranie od środka.'}]},
+    GRAVITY_COLOSSUS:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'charm',name:'Rdzeń grawitacji',desc:'Kieszeń ciągnie w dół. Cała reszta też.'},{kind:'outfit',name:'Płyty kolosa',desc:'Nic cię nie ruszy. Dosłownie.'}]},
+    HARPY_QUEEN:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'cape',name:'Skrzydła Królowej Harpii',desc:'Korona spadła razem z resztą.'},{kind:'weapon',weaponType:'melee',name:'Królewskie szpony',desc:'Dworski ceremoniał: cięcie, ukłon.'}]},
+    EMBER_PHOENIX:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'weapon',weaponType:'flame',name:'Ostatni płomień feniksa',desc:'Tym razem naprawdę ostatni.'},{kind:'cape',name:'Pióropusz żaru',desc:'Ciepły. Wiecznie.'},{kind:'charm',name:'Popiół odrodzenia',desc:'Feniksowi starczył raz. Tobie może też.'}]}
     // (ATOMIC_BOMB deliberately absent: a walking bomb leaves a crater, not loot)
   };
 
@@ -143,6 +166,7 @@ const drops = (function(){
   };
   const SIDEKICK_DROP_CHANCE=0.38;
   const SIDEKICK_EPIC_CHANCE=0.42;
+  const SIDEKICK_LEGENDARY_CHANCE=0.07; // carved from below the epic band
   // Bad-luck insurance: after this many eligible kills without a gear drop the
   // next one is guaranteed and never lands below rare — the wait itself paid.
   const PITY_KILLS=25;
@@ -150,6 +174,7 @@ const drops = (function(){
   // be flung back out upgraded; every refused offering ratchets the odds.
   const SACRIFICE_BASE=0.01, SACRIFICE_STEP=0.0025, SACRIFICE_MAX=0.05;
   const SACRIFICE_EPIC_CHANCE=0.15;
+  const SACRIFICE_LEGENDARY_CHANCE=0.04; // the volcano, too, can hand back a legend
 
   const list=[];
   let seq=1;
@@ -183,7 +208,7 @@ const drops = (function(){
     return isSolidCollisionTile(getSafe(getTile,x,y));
   }
 
-  function tierRank(t){ return t==='epic'?2 : t==='rare'?1 : 0; }
+  function tierRank(t){ return TIER_RANK[t]||0; }
   function evictForRoom(){
     if(list.length<MAX_DROPS) return true;
     // Oldest, least precious first: resources before gear, low tiers before high
@@ -226,20 +251,44 @@ const drops = (function(){
     if(!d || d.tier==='common') return;
     const px=d.x*(MM.TILE||20), py=d.y*(MM.TILE||20);
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(px,py,d.tier); }catch(e){}
-    try{ if(MM.audio && MM.audio.play) MM.audio.play(d.tier==='epic'?'golden':'chest',{x:d.x,y:d.y}); }catch(e){}
-    if(d.tier==='epic'){
-      try{ if(typeof window.msg==='function') window.msg('✨ Coś wyjątkowego upadło na ziemię!'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play(isHighTier(d.tier)?'golden':'chest',{x:d.x,y:d.y}); }catch(e){}
+    if(isHighTier(d.tier)){
+      try{ if(typeof window.msg==='function') window.msg(d.tier==='legendary' ? '🌟 Legendarny łup spadł na ziemię!' : '✨ Coś wyjątkowego upadło na ziemię!'); }catch(e){}
       try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('epic_drop','Epicki łup ogłasza się słupem światła — nie da się go przegapić!'); }catch(e){}
     }
   }
+  // "Better than worn": the drop outclasses the item the hero actually WEARS
+  // in its group — or fills a group where nothing comparable is worn AND beats
+  // everything owned. That's the find worth gawking at before touching it.
+  function isWornUpgrade(d){
+    if(d.kind!=='gear' || !d.item) return false;
+    const inv=MM.inventory;
+    if(!inv || typeof inv.compareItem!=='function') return false;
+    let cmp=null;
+    try{ cmp=inv.compareItem(d.item); }catch(e){ return false; }
+    if(!cmp) return false;
+    if(cmp.isEquippedUpgrade) return true;
+    return !cmp.equippedComparable && cmp.isNewBest && cmp.score>0;
+  }
   function spawnGear(x,y,item,opts){
     if(!item || typeof item!=='object' || typeof item.id!=='string') return null;
-    const tier=(item.tier==='rare'||item.tier==='epic') ? item.tier : 'common';
+    const tier=TIER_RANK[item.tier]!==undefined ? item.tier : 'common';
     const d=makeDrop(x,y,{kind:'gear', item:Object.assign({},item), qty:1, tier, life:GEAR_LIFE[tier]||GEAR_LIFE.common},opts);
-    if(d && (!opts || opts.announce!==false)) announceDrop(d);
+    if(d){
+      d.upgrade=isWornUpgrade(d);
+      d._cmpT=rand()*UPGRADE_RECHECK_SEC; // staggered re-judge clock
+      if(!opts || opts.announce!==false) announceDrop(d);
+    }
     return d;
   }
 
+  // The species tables stay 3-tier (their weight sums are test-pinned); the
+  // roll itself spans the FULL 5-tier ladder: a slice of every common roll
+  // upgrades to uncommon and a slice of every epic roll ascends to legendary —
+  // so something amazing is possible from ANY kill, just less likely at home.
+  const UNCOMMON_SHARE=0.30;          // fraction of the common weight that upgrades
+  const LEGENDARY_BASE_SHARE=0.15;    // fraction of the epic weight that ascends…
+  const LEGENDARY_DANGER_BONUS=0.25;  // …growing further in hostile lands
   function rollTier(tiers,danger){
     let c=Math.max(0,Number(tiers && tiers.common)||0);
     let r=Math.max(0,Number(tiers && tiers.rare)||0);
@@ -248,12 +297,16 @@ const drops = (function(){
     // while common stays flat, so the far east/west visibly pays out.
     const d=Math.max(0,Math.min(1,Number(danger)||0));
     if(d>0){ r*=1+2.2*d; e*=1+5*d; }
-    const total=c+r+e;
+    const u=c*UNCOMMON_SHARE; c-=u;
+    const l=e*(LEGENDARY_BASE_SHARE+LEGENDARY_DANGER_BONUS*d); e-=l;
+    const total=c+u+r+e+l;
     if(!(total>0)) return 'common';
     let roll=rand()*total;
     if((roll-=c)<0) return 'common';
+    if((roll-=u)<0) return 'uncommon';
     if((roll-=r)<0) return 'rare';
-    return 'epic';
+    if((roll-=e)<0) return 'epic';
+    return 'legendary';
   }
   // Land danger 0..1 for a kill position: the mob's own rolled hostility wins
   // (it already encodes the shared world gradient), the gradient is the fallback.
@@ -297,7 +350,7 @@ const drops = (function(){
     const options=Array.isArray(table.options)&&table.options.length ? table.options : [{kind:'charm'}];
     const def=options[Math.min(options.length-1,Math.floor(rand()*options.length))];
     let tier=rollTier(table.tiers, pity ? Math.min(1,danger+0.35) : danger);
-    if(pity && tier==='common') tier='rare';
+    if(pity && tierRank(tier)<TIER_RANK.rare) tier='rare';
     const item=genThemedItem(def,tier);
     if(!item) return null;
     item.id=makeGearId(def.kind,m.id);
@@ -325,7 +378,9 @@ const drops = (function(){
     const def=table.sidekicks && table.sidekicks[opts.role];
     if(!def) return null;
     if(!(rand()<=SIDEKICK_DROP_CHANCE)) return null;
-    const tier=rand()<SIDEKICK_EPIC_CHANCE ? 'epic' : 'rare';
+    const tr=rand();
+    const tier= tr<SIDEKICK_LEGENDARY_CHANCE ? 'legendary'
+      : tr<SIDEKICK_LEGENDARY_CHANCE+SIDEKICK_EPIC_CHANCE ? 'epic' : 'rare';
     const item=genThemedItem(def,tier);
     if(!item) return null;
     item.id=makeGearId(def.kind,'guardian_'+kind+'_'+String(opts.role||''));
@@ -369,7 +424,8 @@ const drops = (function(){
     }catch(e){}
     // The aha beat: the first creature-shed gear teaches the rule that loot
     // mirrors the creature — and sends the player theorizing about the rest.
-    if(d.source){
+    // (chest/volcano-sourced drops don't teach that rule, so they don't note it)
+    if(d.source==='mob' || d.source==='guardian'){
       try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('mob_gear','Pokonane stwory gubią swoje rzemiosło — każdy nosi coś swojego!'); }catch(e){}
     }
     return true;
@@ -380,8 +436,8 @@ const drops = (function(){
     if(!ok) return false;
     const idx=list.indexOf(d);
     if(idx>=0) list.splice(idx,1);
-    // snatching an epic is a rush — a short euphoria buff makes the body agree
-    if(d.kind==='gear' && d.tier==='epic'){
+    // snatching an epic+ find is a rush — a short euphoria buff makes the body agree
+    if(d.kind==='gear' && isHighTier(d.tier)){
       try{ if(MM.progress && MM.progress.addBuff) MM.progress.addBuff({name:'Euforia', icon:'✨', dur:12, stats:{moveSpeedMult:1.15, jumpPowerMult:1.1}}); }catch(e){}
     }
     const px=d.x*(MM.TILE||20), py=d.y*(MM.TILE||20);
@@ -391,7 +447,7 @@ const drops = (function(){
     if(!silent){
       try{
         if(MM.audio && MM.audio.play){
-          const snd=d.tier==='epic' ? 'golden' : d.tier==='rare' ? 'chest' : 'harvest';
+          const snd=isHighTier(d.tier) ? 'golden' : tierRank(d.tier)>0 ? 'chest' : 'harvest';
           MM.audio.play(snd,{x:d.x,y:d.y});
         }
       }catch(e){}
@@ -436,7 +492,7 @@ const drops = (function(){
     }
     try{
       if(MM.audio && MM.audio.play){
-        MM.audio.play(best==='epic'?'golden':best==='rare'?'chest':'harvest',{x:player.x,y:player.y});
+        MM.audio.play(isHighTier(best)?'golden':tierRank(best)>0?'chest':'harvest',{x:player.x,y:player.y});
       }
     }catch(e){}
     return true;
@@ -536,6 +592,10 @@ const drops = (function(){
     }
   }
   let mergeT=0;
+  // Hero reaction state: the nearest worn-upgrade drop in sight range makes the
+  // hero go wide-eyed (drawPlayer reads this). t counts seconds since spotting
+  // THIS drop, so the face can pop at first glimpse and then hold the stare.
+  let _excite=null; // {id,x,y,tier,t}
   function update(dt,player,getTile){
     if(!(dt>0) || !isFinite(dt)) return;
     dt=Math.min(0.25,dt);
@@ -544,11 +604,17 @@ const drops = (function(){
       const d=list[i];
       d.age+=dt;
       if(d._lavaGraceT>0) d._lavaGraceT-=dt;
+      // equipment changes while loot lies on the ground: re-judge on a
+      // staggered clock, never per frame (compareItem scans the bag)
+      if(d.kind==='gear'){
+        d._cmpT=(d._cmpT||0)-dt;
+        if(d._cmpT<=0){ d._cmpT=UPGRADE_RECHECK_SEC; d.upgrade=isWornUpgrade(d); }
+      }
       // ticking bomb: the better the find, the shorter its clock (d.life)
       const lifetime=finiteNum(d.life) ? d.life : DESPAWN_SEC;
       if(d.age>=lifetime){ list.splice(i,1); continue; }
-      // an epic's final seconds tick audibly — the bomb is heard, not just seen
-      if(d.kind==='gear' && d.tier==='epic'){
+      // an epic+'s final seconds tick audibly — the bomb is heard, not just seen
+      if(d.kind==='gear' && isHighTier(d.tier)){
         const tickLeft=lifetime-d.age;
         if(tickLeft<8){
           const sec=Math.ceil(tickLeft);
@@ -598,7 +664,9 @@ const drops = (function(){
     if(!(rand()<chance)){ sacrificeDry++; return null; }
     const kinds=['cape','eyes','outfit','weapon','charm'];
     const kind=kinds[Math.min(kinds.length-1,Math.floor(rand()*kinds.length))];
-    const tier=rand()<SACRIFICE_EPIC_CHANCE ? 'epic' : 'rare';
+    const tr=rand();
+    const tier= tr<SACRIFICE_LEGENDARY_CHANCE ? 'legendary'
+      : tr<SACRIFICE_LEGENDARY_CHANCE+SACRIFICE_EPIC_CHANCE ? 'epic' : 'rare';
     const item=genThemedItem({kind, name:'Dar wulkanu', desc:'Wulkan przyjął ofiarę. Wypluł resztę.'},tier);
     if(!item) return null;
     item.id=makeGearId(kind,'volcano');
@@ -614,7 +682,7 @@ const drops = (function(){
   // Lava eats dropped loot — walk into the volcano for your prize or lose it.
   // Epic finds are the exception: they sit IN the lava, glowing, daring you.
   function burnInLava(i,d){
-    if(d.tier==='epic') return false;
+    if(isHighTier(d.tier)) return false;
     if(d._lavaGraceT>0) return false; // a fresh volcano gift arcs over its cradle
     if(d.kind==='gear' && d.tier==='common') volcanoSacrifice(d);
     list.splice(i,1);
@@ -694,18 +762,20 @@ const drops = (function(){
         const halo=haloSprite(TIER_COLORS[d.tier]||TIER_COLORS.common);
         if(halo){
           const pulse=0.65+0.35*Math.sin(now*0.005+d.id);
-          const haloR=TILE*(d.tier==='epic'?1.05:d.tier==='rare'?0.85:0.6);
-          ctx.globalAlpha=(d.tier==='epic'?0.34:d.tier==='rare'?0.28:0.16)*pulse;
+          const rank=tierRank(d.tier);
+          const haloR=TILE*(d.tier==='legendary'?1.2:d.tier==='epic'?1.05:rank===2?0.85:rank===1?0.72:0.6);
+          ctx.globalAlpha=(d.tier==='legendary'?0.4:d.tier==='epic'?0.34:rank===2?0.28:rank===1?0.22:0.16)*pulse;
           ctx.drawImage(halo,px-haloR,py-haloR,haloR*2,haloR*2);
           ctx.globalAlpha=1;
         }
       }
-      if(d.tier==='epic'){
+      if(isHighTier(d.tier)){
         // vertical light beam: "something great fell HERE" — tall, breathing,
         // with a slow-orbiting glint so it reads even at the screen's edge
-        const beam=beamSprite(TIER_COLORS.epic);
+        const beam=beamSprite(TIER_COLORS[d.tier]||TIER_COLORS.epic);
         if(beam){
-          const beamH=TILE*3.4, beamW=Math.max(3,TILE*0.24);
+          const tall=d.tier==='legendary'?4.2:3.4;
+          const beamH=TILE*tall, beamW=Math.max(3,TILE*(d.tier==='legendary'?0.3:0.24));
           ctx.globalAlpha=0.24+0.12*Math.sin(now*0.004+d.id);
           ctx.drawImage(beam,px-beamW/2,py-beamH,beamW,beamH);
         }
@@ -745,7 +815,8 @@ const drops = (function(){
         ctx.beginPath(); ctx.arc(px,py,hr,0,Math.PI*2); ctx.stroke();
       }
       // ticking-bomb bar: rare+ gear wears its remaining time on its sleeve
-      if(d.kind==='gear' && d.tier!=='common'){
+      // (uncommon still burns slow enough that a bar would be standing noise)
+      if(d.kind==='gear' && tierRank(d.tier)>=2){
         const frac=Math.max(0,Math.min(1,left/lifetime));
         const bw=TILE*0.9, bh=Math.max(2,TILE*0.12), bx=px-bw/2, by=py-TILE*0.55;
         ctx.fillStyle='rgba(10,12,16,0.72)';
@@ -815,7 +886,7 @@ const drops = (function(){
     for(const r of data.list){
       if(list.length>=MAX_DROPS) break;
       if(!r || !finiteNum(r.x) || !finiteNum(r.y)) continue;
-      const tier=(r.tier==='rare'||r.tier==='epic') ? r.tier : 'common';
+      const tier=TIER_RANK[r.tier]!==undefined ? r.tier : 'common';
       const age=Math.max(0,Math.min(9999,Number(r.age)||0));
       const life=finiteNum(r.life) ? Math.max(5,Math.min(3600,r.life)) : null;
       if(r.kind==='gear'){
@@ -841,7 +912,7 @@ const drops = (function(){
     _debug:{list, GEAR_LOOT, GUARDIAN_LOOT, dangerFor, rollTier, setRandom:(fn)=>{ rand=typeof fn==='function'?fn:Math.random; }, collect, nearestInReach,
       dryStreak:()=>dry, setDryStreak:(n)=>{ dry=Math.max(0,Math.floor(Number(n)||0)); },
       sacrificeDry:()=>sacrificeDry,
-      config:{MAX_DROPS,DESPAWN_SEC,GEAR_LIFE,GUARDIAN_RELIC_LIFE,PICKUP_RADIUS,AUTO_RADIUS,COLLECT_DIST,MERGE_DIST,MOUSE_HIT,MOUSE_PICKUP_RADIUS,SIDEKICK_DROP_CHANCE,SIDEKICK_EPIC_CHANCE,PITY_KILLS,SACRIFICE_BASE,SACRIFICE_STEP,SACRIFICE_MAX}}
+      config:{MAX_DROPS,DESPAWN_SEC,GEAR_LIFE,GUARDIAN_RELIC_LIFE,PICKUP_RADIUS,AUTO_RADIUS,COLLECT_DIST,MERGE_DIST,MOUSE_HIT,MOUSE_PICKUP_RADIUS,SIDEKICK_DROP_CHANCE,SIDEKICK_EPIC_CHANCE,SIDEKICK_LEGENDARY_CHANCE,PITY_KILLS,SACRIFICE_BASE,SACRIFICE_STEP,SACRIFICE_MAX,SACRIFICE_LEGENDARY_CHANCE,UNCOMMON_SHARE,LEGENDARY_BASE_SHARE,LEGENDARY_DANGER_BONUS}}
   };
   MM.drops=api;
   return api;

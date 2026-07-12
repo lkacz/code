@@ -32,6 +32,7 @@ import {
   structuralSupportStrengthForMaterial
 } from './material_physics.js';
 import { heroLoadWeight } from './hero_crush.js';
+import { skyBiomeNaturalFabricTile } from './world_layers.js';
 window.MM = window.MM || {};
 (function(){
   const G_AIR = 60,  G_WATER = 25;            // gravity (tiles/s^2); buoyancy reduces it in water
@@ -173,7 +174,13 @@ window.MM = window.MM || {};
   function isMountedFixture(t){ return isMountedFixtureTile(t); }
   function isPlayerBuiltMaterial(t){ return sharedPlayerBuiltMaterial(t); }
   function isNaturalSkyCohesionAt(x,y,t){
-    return y<0 && isNaturalFloatingCohesionTile(t) && !isTrackedPlayerBuild(x,y);
+    if(y>=0 || isTrackedPlayerBuild(x,y)) return false;
+    if(isNaturalFloatingCohesionTile(t)) return true;
+    // Themed sky biome fabric (world_layers SKY_BIOMES): mirage sand, wreck
+    // steel, ember coal etc. are natural island mass in THEIR region only —
+    // the same materials keep full physics everywhere else (incl. the neutral
+    // home sky), and player-placed tiles are already excluded above.
+    try{ return skyBiomeNaturalFabricTile(window.MM && MM.worldGen, x, t); }catch(e){ return false; }
   }
   function naturalFloatingAnchorAt(x,y,t){
     return y<0 && isNaturalFloatingAnchorTile(t);

@@ -25,7 +25,7 @@
   ];
   const KIND_LABELS={cape:'Peleryny', eyes:'Oczy', outfit:'Stroje', weapon:'Bronie', charm:'Talizmany'};
   // Loot-tier accent colors (single source — UI badges, held-weapon tinting, …)
-  const TIER_COLORS={common:'#b07f2c', rare:'#a74cc9', epic:'#e0b341'};
+  const TIER_COLORS={common:'#b07f2c', uncommon:'#3fa650', rare:'#a74cc9', epic:'#e0b341', legendary:'#58e0d8'};
 
   // --- Weapon shortcut categories (number keys; key 1 = pickaxe, lives in main.js) ---
   // Pressing a category's key cycles through the owned weapons of its types that the
@@ -73,6 +73,8 @@
     }
     if(typeof item.fireRange==='number')
       chips.push({icon:'↔️', label:'Zasięg', text:String(item.fireRange), good:true});
+    if(item.meleeEffect && MELEE_EFFECT_LABELS[item.meleeEffect])
+      chips.push({icon:item.meleeEffect==='bleed'?'🩸':item.meleeEffect==='stun'?'💫':'😱', label:'Efekt', text:MELEE_EFFECT_LABELS[item.meleeEffect]+' (szansa)', good:true});
     if(typeof item.energyCost==='number' && item.energyCost>0)
       chips.push({icon:'⚡', label:'Zużycie energii', text:item.energyCost+'/s', good:false});
     if(typeof item.energyCapacityBonus==='number' && item.energyCapacityBonus)
@@ -108,6 +110,7 @@
     if(typeof item.airJumps==='number') s+=item.airJumps*12;
     if(typeof item.crushResistBonus==='number') s+=item.crushResistBonus*10;
     if(typeof item.visionRadius==='number') s+=(item.visionRadius-VISION_BASE)*3;
+    if(item.meleeEffect && MELEE_EFFECT_LABELS[item.meleeEffect]) s+=4; // a material identity beats a plain blade of equal damage
     ['moveSpeedMult','jumpPowerMult','mineSpeedMult'].forEach(k=>{
       if(typeof item[k]==='number') s+=pctOf(item[k])*0.6;
     });
@@ -171,7 +174,7 @@
     // 'flame'/'hose'/'gas' streams terrain effects; 'electric' fires an energy beam.
     {id:'stick',        kind:'weapon', weaponType:'melee', name:'Kij',             attackDamage:1, desc:'Prosty kij na początek'},
     {id:'stone_blade',  kind:'weapon', weaponType:'melee', name:'Ostrze kamienne', attackDamage:3, desc:'Ciężkie, ale skuteczne'},
-    {id:'spear',        kind:'weapon', weaponType:'melee', name:'Włócznia',        attackDamage:2, desc:'Lekka i poręczna'},
+    {id:'spear',        kind:'weapon', weaponType:'melee', name:'Włócznia',        attackDamage:2, fireRange:2, desc:'Lekka i poręczna — dźga o tile dalej niż inne bronie'},
     {id:'bow_wood',     kind:'weapon', weaponType:'bow',   name:'Łuk myśliwski',   attackDamage:4, fireCooldown:0.55, desc:'LPM strzela strzałami; PPM odpala naładowany ult'},
     // Hand-thrown projectiles: always-known techniques (the AMMO gates their use).
     // They share the ranged shortcut (key 3) with bows — the key rotates through them.
@@ -181,6 +184,8 @@
     {id:'throw_balloon',  kind:'weapon', weaponType:'thrown', thrownKind:'waterBalloon',  name:'Rzut: Balony wodne',       attackDamage:1, fireCooldown:0.45, desc:'Rozprysk moczy wrogów (paliwo komb: prąd, mróz), gasi ogień i podlewa uprawy'},
     {id:'throw_gas',      kind:'weapon', weaponType:'thrown', thrownKind:'gasGrenade',    name:'Rzut: Granaty gazowe',     attackDamage:1, fireCooldown:0.65, desc:'Uwalnia trujący obłok tam, gdzie upadnie — ogień go detonuje'},
     {id:'throw_sticky',   kind:'weapon', weaponType:'thrown', thrownKind:'stickyBomb',    name:'Rzut: Lepkie bomby',       attackDamage:3, fireCooldown:0.75, desc:'Przykleja się do ściany i po chwili wybucha — otwiera skały i gniazda'},
+    {id:'throw_sand',     kind:'weapon', weaponType:'thrown', thrownKind:'sand',          name:'Rzut: Piasek w oczy',      attackDamage:1, fireCooldown:0.40, desc:'Garść piasku w ślepia: ledwo boli, ale oślepiony wróg traci cię z widoku'},
+    {id:'throw_spit',     kind:'weapon', weaponType:'thrown', thrownKind:'spit',          name:'Rzut: Plucie wodą',        attackDamage:1, fireCooldown:0.50, desc:'Nabierz wody i pluj: moczy cel, a czasem okazuje się toksyczne'},
     {id:'flamethrower', kind:'weapon', weaponType:'flame', name:'Miotacz ognia',   fireDps:6, fireRange:6.5, desc:'Strumień ognia (przytrzymaj LPM): podpala wrogów, trawę i drzewa; PPM = ult'},
     {id:'water_hose',   kind:'weapon', weaponType:'hose',  name:'Wąż wodny',       fireDps:2, fireRange:6,   desc:'Strumień wody (przytrzymaj LPM): gasi ogień, czasem zostawia wodę; PPM = ult'},
     {id:'gas_emitter',  kind:'weapon', weaponType:'gas',   name:'Emiter gazu',     fireDps:5, fireRange:5.5, desc:'Trujący obłok (przytrzymaj LPM): zatruwa żywe stworzenia; PPM = ult'},
@@ -256,6 +261,8 @@
     {key:'copperWire', label:'Przewod miedziany', color:'#d68535', tile:'COPPER_WIRE'},
     {key:'waterPipe', label:'Rura fluidowa', color:'#2d8ec9', tile:'WATER_PIPE'},
     {key:'waterPump', label:'Pompa fluidowa', color:'#58d4ff', tile:'WATER_PUMP'},
+    {key:'steamBoiler', label:'Kocioł parowy', color:'#c89a5b', tile:'STEAM_BOILER'},
+    {key:'steamJet', label:'Dysza parowa', color:'#9fd4e8', tile:'STEAM_JET'},
     {key:'transistor', label:'Tranzystor', color:'#47d18c', tile:'TRANSISTOR'},
     {key:'dynamo',  label:'Dynamo',  color:'#ffd24a', tile:'DYNAMO'},
     {key:'vendingMachine', label:'Automat vendingowy', color:'#55d7ff', tile:'VENDING_MACHINE'},
@@ -312,7 +319,9 @@
   };
   const KIND_STAT_MAX={cape:1, eyes:1, outfit:1, charm:1};
   const WEAPON_TYPE_STATS={
-    melee:['attackDamage'],
+    // melee may carry fireRange as its REACH in whole tiles (spears strike from
+    // two tiles out); plus an optional material identity string (meleeEffect)
+    melee:['attackDamage','fireRange'],
     bow:['attackDamage','fireCooldown'],
     thrown:['attackDamage','fireCooldown'],
     flame:['fireDps','fireRange'],
@@ -329,7 +338,10 @@
   // fields on ingest so tampered/corrupt entries can't smuggle objects or markup
   // into stat math and innerHTML-based displays downstream.
   const ITEM_NUM_FIELDS=['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','crushResistBonus'];
-  const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType'];
+  const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType','meleeEffect'];
+  // Material identity of a crafted hand weapon (weapons.js MELEE_EFFECTS holds
+  // the numbers) — anything else smuggled into meleeEffect is dropped on ingest.
+  const MELEE_EFFECT_LABELS={bleed:'Krwawienie', stun:'Ogłuszenie', panic:'Panika'};
   const ITEM_KINDS=new Set(['cape','eyes','outfit','weapon','charm']);
   function sanitizeLootItem(raw,fallbackKind){
     if(!raw || typeof raw!=='object') return null;
@@ -339,6 +351,7 @@
     const it={id:raw.id, kind};
     ITEM_NUM_FIELDS.forEach(f=>{ const v=raw[f]; if(typeof v==='number' && isFinite(v)) it[f]=v; });
     ITEM_STR_FIELDS.forEach(f=>{ const v=raw[f]; if(typeof v==='string' && v.length<=80) it[f]=v; });
+    if(it.meleeEffect && (kind!=='weapon' || (it.weaponType||'melee')!=='melee' || !MELEE_EFFECT_LABELS[it.meleeEffect])) delete it.meleeEffect;
     // Normalize multipliers onto the clean percent ladder: pre-rework loot carries
     // raw rolls like 1.0437 — snapped here once, so every stored item reads clean.
     ['moveSpeedMult','jumpPowerMult','mineSpeedMult'].forEach(f=>{
@@ -859,6 +872,7 @@
 
   MM.inventory={
     SLOTS, KIND_LABELS, TIER_COLORS, STAT_LABELS, STAT_RULES, RESOURCES, BASE_ATTACK,
+    MELEE_EFFECT_LABELS,
     WEAPON_CATEGORIES, KIND_STAT_PRIORITY, WEAPON_TYPE_STATS, allowedStatsFor,
     weaponCategory, categoryWeapons, isShortcut, setShortcut, cycleWeaponCategory,
     statChips, itemScore, snapPct, fmtPct, VISION_BASE,

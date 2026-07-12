@@ -1,8 +1,10 @@
-import { T, MOVE, isLeaf, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
+import { T, INFO, MOVE, isLeaf, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 import { isBlastProtectedTile, isCreatureRockFloorTile, isSolidCollisionTile as isSolid } from './material_physics.js';
 import WORLD from './world.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
 import { worldHostility as HOSTILITY } from './world_hostility.js';
+import { worldLayers as WORLD_LAYERS } from './world_layers.js';
+import { threatLook as THREAT_LOOK } from './threat_look.js';
 
 // Basic mob / animal system (birds, fish) with aggression propagation.
 // Exposes MM.mobs API (legacy) and ESM exports.
@@ -138,7 +140,7 @@ const mobs = (function(){
   });
   const TEMPLE_GUARD_TILES = Object.freeze({
     [T.STONE]:true, [T.OBSIDIAN]:true, [T.TORCH]:true, [T.DIAMOND]:true,
-    [T.CHEST_COMMON]:true, [T.CHEST_RARE]:true, [T.CHEST_EPIC]:true
+    [T.CHEST_COMMON]:true, [T.CHEST_UNCOMMON]:true, [T.CHEST_RARE]:true, [T.CHEST_EPIC]:true, [T.CHEST_LEGENDARY]:true
   });
   const TEMPLE_GUARD_VIOLATION_AGGRO_MS = 90000;
   const TEMPLE_GUARD_ALARM_RADIUS = 46;
@@ -1502,8 +1504,8 @@ const mobs = (function(){
       for(let dx=-8; dx<=8; dx++){
         const t=readMobTile(getTile,x+dx,y+dy);
         if(!isTempleGuardTile(t)) continue;
-        score += (t===T.CHEST_EPIC ? 5 : t===T.CHEST_RARE ? 4 : t===T.CHEST_COMMON ? 3 : t===T.DIAMOND ? 3 : t===T.OBSIDIAN ? 2 : t===T.TORCH ? 2 : 1);
-        if(t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC || t===T.DIAMOND) treasure++;
+        score += (t===T.CHEST_LEGENDARY ? 6 : t===T.CHEST_EPIC ? 5 : t===T.CHEST_RARE ? 4 : t===T.CHEST_UNCOMMON ? 3 : t===T.CHEST_COMMON ? 3 : t===T.DIAMOND ? 3 : t===T.OBSIDIAN ? 2 : t===T.TORCH ? 2 : 1);
+        if(INFO[t] && INFO[t].chestTier || t===T.DIAMOND) treasure++;
       }
     }
     return {score,treasure};
@@ -1604,7 +1606,7 @@ const mobs = (function(){
     if(!m || Math.random()>Math.max(0,Math.min(1,chance||0))) return false;
     const W=MM.world || WORLD;
     if(!W || typeof W.getTile!=='function' || typeof W.setTile!=='function') return false;
-    const chest=tier==='epic'?T.CHEST_EPIC:(tier==='rare'?T.CHEST_RARE:T.CHEST_COMMON);
+    const chest=tier==='legendary'?T.CHEST_LEGENDARY:tier==='epic'?T.CHEST_EPIC:(tier==='rare'?T.CHEST_RARE:tier==='uncommon'?T.CHEST_UNCOMMON:T.CHEST_COMMON);
     const bx=Math.floor(m.x), by=Math.floor(m.y);
     for(let r=0; r<=5; r++){
       for(let dy=-2; dy<=4; dy++){
@@ -1613,7 +1615,7 @@ const mobs = (function(){
           const x=bx+dx, y=by+dy;
           const here=readMobTile(W.getTile,x,y);
           const below=readMobTile(W.getTile,x,y+1);
-          if(here===T.AIR && below!==T.AIR && below!==T.WATER && below!==T.CHEST_COMMON && below!==T.CHEST_RARE && below!==T.CHEST_EPIC){
+          if(here===T.AIR && below!==T.AIR && below!==T.WATER && !(INFO[below] && INFO[below].chestTier)){
             W.setTile(x,y,chest);
             try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((x+0.5)*(MM.TILE||20),(y+0.5)*(MM.TILE||20),tier||'common'); }catch(e){}
             return true;
@@ -1926,7 +1928,7 @@ const mobs = (function(){
   registerSpecies({
     id:'ICE_SHAMAN', displayName:'Ice shaman',
     max:2, localMax:1, spawnChance:0.024,
-    hp:42, dmg:0, speed:2.35, wanderInterval:[3.2,6.8], xp:72, ground:true, neverAggro:true,
+    hp:42, dmg:0, speed:2.35, wanderInterval:[3.2,6.8], xp:72, ground:true, neverAggro:true, menaceBias:8,
     sightRange:0, pursueRange:0,
     move:{jumpVel:-4.4, maxClimb:1.5, avoidWater:true},
     body:{w:1.05,h:1.48},
@@ -1954,7 +1956,7 @@ const mobs = (function(){
   registerSpecies({
     id:'FIRE_SHAMAN', displayName:'Fire shaman',
     max:2, localMax:1, spawnChance:0.024,
-    hp:46, dmg:0, speed:2.45, wanderInterval:[3.0,6.4], xp:78, ground:true, neverAggro:true,
+    hp:46, dmg:0, speed:2.45, wanderInterval:[3.0,6.4], xp:78, ground:true, neverAggro:true, menaceBias:8,
     sightRange:0, pursueRange:0,
     move:{jumpVel:-4.2, maxClimb:1.5, avoidWater:true},
     body:{w:1.08,h:1.50},
@@ -3487,6 +3489,17 @@ const mobs = (function(){
             // a face full of yeti snow: brief slow instead of heavy damage
             try{ if(typeof window!=='undefined' && typeof window.noteHeroChill==='function') window.noteHeroChill(1400); }catch(e){}
             try{ const p=MM.particles; if(p && p.spawnImpactChips) p.spawnImpactChips(pr.x*(MM.TILE||20),pr.y*(MM.TILE||20),{power:0.7,element:'chill_splat'}); }catch(e){}
+          } else if(pr.type==='iceshard'){
+            // aurora wyrm shards carry the blizzard with them
+            try{ if(typeof window!=='undefined' && typeof window.noteHeroChill==='function') window.noteHeroChill(1700); }catch(e){}
+            try{ const p=MM.particles; if(p && p.spawnImpactChips) p.spawnImpactChips(pr.x*(MM.TILE||20),pr.y*(MM.TILE||20),{power:0.8,element:'chill_splat'}); }catch(e){}
+          } else if(pr.type==='harpoon' && finiteNum(pr.hookX) && finiteNum(pr.hookY)){
+            // the corsair reels its catch in toward the firing position
+            const hx=pr.hookX-player.x, hy=pr.hookY-player.y;
+            const hd=Math.hypot(hx,hy)||1;
+            player.vx += (hx/hd)*8.5;
+            player.vy += (hy/hd)*5 - 1;
+            try{ if(MM.audio && MM.audio.play) MM.audio.play('hit',{x:pr.x,y:pr.y}); }catch(e){}
           }
         }
       }
@@ -3499,7 +3512,7 @@ const mobs = (function(){
         }
       }
       if(!dead && getTile){ const tt=getTile(Math.floor(pr.x),Math.floor(pr.y)); if(tt!==T.WATER && isSolid(tt)) dead=true; }
-      if(dead){ dragonBreathImpact(pr,getTile,setTile); mobProjectiles.splice(i,1); }
+      if(dead){ dragonBreathImpact(pr,getTile,setTile); skyProjectileImpact(pr,getTile,setTile); mobProjectiles.splice(i,1); }
     }
   }
   function updateLasers(dt){
@@ -3876,7 +3889,7 @@ const mobs = (function(){
   registerSpecies({
     id:'ATOMIC_BOMB', displayName:'Atomic bomb',
     max:2, localMax:1, spawnChance:0.035, spawnBatch:1,
-    hp:120, dmg:0, speed:0.02, wanderInterval:[4,8], xp:6000, ground:true, organic:false,
+    hp:120, dmg:0, speed:0.02, wanderInterval:[4,8], xp:6000, ground:true, organic:false, menaceBias:30,
     sightRange:0, pursueRange:0,
     body:{w:1.75,h:1.55},
     move:{jumpVel:0, maxClimb:0, avoidWater:true},
@@ -4051,6 +4064,740 @@ const mobs = (function(){
     }
   });
 
+  // ==========================================================================
+  // Sky biome fauna ("podniebne krainy", world_layers.js SKY_BIOMES).
+  // The themed sky beyond |x| >= SKY_BIOME_START is deliberately DEADLIER than
+  // the ground below it: crossing the heavens toward the east/west guardians
+  // must never be the easy route. Grunts hunt anything airborne; each biome
+  // region keeps one living boss. Both stop chasing below the sky floor rows,
+  // so landing is always the escape hatch.
+  // ==========================================================================
+  const SKY_PRESSURE_MIN_Y = -6;        // hero rows above this (more negative) count as "in the sky"
+  const SKY_GRUNT_FLOOR_Y = 14;         // grunts never chase below this row
+  const SKY_BOSS_FLOOR_Y = 2;           // bosses hold even higher
+  const SKY_PRESSURE_INTERVAL_MS = 2600;
+  const SKY_PRESSURE_LOCAL_RADIUS = 44;
+  const SKY_BOSS_SCAN_MS = 4200;
+  const SKY_BOSS_RESPAWN_MS = 8*60*1000; // a slain region boss stays down long enough to loot & leave
+  const skyBossDefeats = new Map();      // regionKey -> epoch ms when the boss may return
+  const skyBiomesSeen = new Set();       // session banner/journal throttle
+  let nextSkyPressureAt = 0;
+  let nextSkyBossScanAt = 0;
+
+  function skyRegionForX(x){
+    try{ return WORLD_LAYERS.skyBiomeAt(WORLDGEN, finiteCoord(x)?x:0); }catch(e){ return null; }
+  }
+  function heroInBiomeSky(player){
+    return !!player && finiteCoord(player.y) && player.y < SKY_PRESSURE_MIN_Y;
+  }
+  function nearSkyGuardianArena(x,y){
+    try{
+      const sg=MM.skyGuardian;
+      if(!sg || typeof sg.layoutFor!=='function') return false;
+      const L=sg.layoutFor();
+      if(!L) return false;
+      return x>L.minX-48 && x<L.maxX+48 && y>L.minY-32 && y<L.maxY+32;
+    }catch(e){ return false; }
+  }
+  // Steer a flyer toward (tx,ty) but never below its sky floor.
+  function skySteer(m,dt,tx,ty,accel,floorY){
+    const cy=Math.min(ty, (floorY==null?SKY_GRUNT_FLOOR_Y:floorY)-2);
+    const dx=tx-m.x, dy=cy-m.y, d=Math.hypot(dx,dy)||1;
+    m.vx += (dx/d)*accel*dt;
+    m.vy += (dy/d)*accel*dt;
+    if(Math.abs(dx)>0.3) m.facing = dx>=0?1:-1;
+    return d;
+  }
+  function skyGruntSpawnCell(x,y,getTile,gruntId){
+    if(y>=-4) return false;
+    if(readMobTile(getTile,x,y)!==T.AIR || readMobTile(getTile,x,y-1)!==T.AIR) return false;
+    const region=skyRegionForX(x);
+    return !!region && region.grunt===gruntId;
+  }
+  function shootSkyBolt(m,player,opts){
+    if(!m || !player || mobProjectiles.length>=MOB_PROJ_CAP) return false;
+    const o=opts||{};
+    const sx=m.x+(m.facing>=0?1:-1)*(o.muzzle==null?0.9:o.muzzle);
+    const sy=m.y+(o.muzzleY||0);
+    const speed=(o.speed||12)*((m.projectileSpeedMult)||1);
+    const lead=Math.max(0.2,Math.min(1.0,Number(m.aimLead)||0.5));
+    const dx=player.x-sx, dy=(player.y+(o.aimYOff||0))-sy;
+    const dist=Math.hypot(dx,dy)||1;
+    const travel=Math.max(0.18,dist/Math.max(1,speed));
+    const aimX=player.x+(finiteNum(player.vx)?player.vx:0)*travel*lead+(o.spreadX||0);
+    const aimY=player.y+(finiteNum(player.vy)?player.vy:0)*travel*lead*0.5+(o.aimYOff||0)+(o.spreadY||0);
+    let vx=(aimX-sx)/travel, vy=(aimY-sy)/travel-(o.arc||0);
+    const mag=Math.hypot(vx,vy)||1;
+    if(mag>speed*1.2){ const s=speed*1.2/mag; vx*=s; vy*=s; }
+    mobProjectiles.push({
+      x:sx, y:sy, vx, vy,
+      dmg:(o.dmg||10)*(m.dmgMult||1), t:0, spin:Math.random()*6.28, lead,
+      type:o.type||'bone', cause:o.cause||'sky_bolt', ownerId:m.id,
+      gravity:(o.gravity==null?0:o.gravity), radius:o.radius||0.6,
+      hookX:o.hook?m.x:undefined, hookY:o.hook?m.y:undefined, aimX, aimY
+    });
+    markMobAttack(m,o.attackKind||'throw',{target:player,power:o.power||1});
+    try{ if(MM.audio && MM.audio.play) MM.audio.play(o.sound||'bow',{x:m.x,y:m.y}); }catch(e){}
+    return true;
+  }
+  // Projectile terrain-impact dressing for the new sky ammunition types.
+  function skyProjectileImpact(pr,getTile,setTile){
+    if(!pr) return false;
+    if(pr.type==='sporeburst'){
+      try{
+        const bx=Math.floor(pr.x-pr.vx*0.05), by=Math.floor(pr.y-pr.vy*0.05);
+        if(typeof setTile==='function' && typeof getTile==='function' && getTile(bx,by)===T.AIR) setTile(bx,by,T.POISON_GAS);
+      }catch(e){}
+      try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(pr.x*(MM.TILE||20),pr.y*(MM.TILE||20),'uncommon'); }catch(e){}
+      return true;
+    }
+    if(pr.type==='skybomb' || pr.type==='voidbolt'){
+      try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(pr.x*(MM.TILE||20),pr.y*(MM.TILE||20),'rare'); }catch(e){}
+      return true;
+    }
+    return false;
+  }
+  function markSkyBossDefeat(m){
+    if(m && m._skyRegionKey) skyBossDefeats.set(m._skyRegionKey, Date.now()+SKY_BOSS_RESPAWN_MS);
+  }
+  function skyBossDeathPayout(m,name){
+    markSkyBossDefeat(m);
+    placeRewardChestNearMob(m, Math.random()<0.35?'legendary':'epic', 1);
+    try{ if(window.msg) window.msg('🏆 '+name+' pokonany! Kraina na chwilę oddycha.'); }catch(e){}
+    try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20),m.y*(MM.TILE||20),'legendary'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('milestone',{x:m.x,y:m.y}); }catch(e){}
+  }
+  function findSkySpawnSpot(getTile,player,minR,maxR,opts){
+    for(let a=0;a<26;a++){
+      const side=Math.random()<0.5?-1:1;
+      const dx=side*(minR+Math.random()*(maxR-minR));
+      const dy=-10+Math.random()*16;
+      const tx=Math.floor(player.x+dx), ty=Math.floor(player.y+dy);
+      if(ty>=-4 || ty<WORLD_TOP+3) continue;
+      if(opts && opts.grounded){
+        if(readMobTile(getTile,tx,ty)!==T.AIR) continue;
+        let footing=false;
+        for(let k=1;k<=10;k++){
+          const t=readMobTile(getTile,tx,ty+k);
+          if(t!==T.AIR){ footing=isSolidGround(t); break; }
+        }
+        if(!footing) continue;
+        return {x:tx+0.5,y:ty+0.5};
+      }
+      let clear=true;
+      for(let oy=-1;oy<=1 && clear;oy++) for(let ox=-1;ox<=1;ox++){
+        if(readMobTile(getTile,tx+ox,ty+oy)!==T.AIR){ clear=false; break; }
+      }
+      if(clear) return {x:tx+0.5,y:ty+0.5};
+    }
+    return null;
+  }
+  // The heavens push back: biome grunts harry any airborne hero, and each
+  // themed region fields its boss. Called from update() beside the other
+  // opportunistic spawners.
+  function trySkyEncounters(player,getTile,now){
+    if(!player || typeof getTile!=='function') return;
+    if(now<spawnFreezeUntil) return;
+    if(!heroInBiomeSky(player)) return;
+    const region=skyRegionForX(player.x);
+    if(!region) return;                                   // calm home sky stays calm
+    if(nearSkyGuardianArena(player.x,player.y)) return;   // Astrael's arena is his alone
+    if(!skyBiomesSeen.has(region.regionKey)){
+      skyBiomesSeen.add(region.regionKey);
+      try{
+        // dynamic id: one catalog entry per SKY_BIOMES key (sky_biome_<key>)
+        const noteId='sky_biome_'.concat(region.key);
+        if(MM.discovery && MM.discovery.note) MM.discovery.note(noteId,'Podniebna kraina: '+region.name+'!');
+      }catch(e){}
+      try{ if(window.msg) window.msg('☁️ '+region.name+' — to niebo ma kły. Uważaj!'); }catch(e){}
+    }
+    if(now>=nextSkyPressureAt){
+      nextSkyPressureAt=now+SKY_PRESSURE_INTERVAL_MS+Math.random()*1400;
+      const spec=SPECIES[region.grunt];
+      if(spec){
+        const local=countSpeciesNear(spec.id,player.x,player.y,SKY_PRESSURE_LOCAL_RADIUS);
+        const host=mobHostilityAt(player.x);
+        const cap=Math.min(spec.localMax||5, 3+Math.round((host.hostility||0)*2)+(player.y<-70?1:0));
+        if(local<cap && countSpecies(spec.id)<spec.max){
+          let born=0;
+          for(let i=0;i<Math.min(2,cap-local);i++){
+            const spot=findSkySpawnSpot(getTile,player,10,22);
+            if(!spot) break;
+            mobs.push(create(spec,spot.x,spot.y,getTile));
+            born++;
+          }
+          if(born>0) setAggro(spec.id);
+        }
+      }
+    }
+    if(now>=nextSkyBossScanAt){
+      nextSkyBossScanAt=now+SKY_BOSS_SCAN_MS+Math.random()*1800;
+      const bossSpec=SPECIES[region.boss];
+      if(bossSpec && countSpecies(bossSpec.id)<bossSpec.max && Date.now()>=(skyBossDefeats.get(region.regionKey)||0)){
+        const spot=findSkySpawnSpot(getTile,player,14,26,{grounded:!!bossSpec.ground});
+        if(spot){
+          const m=create(bossSpec,spot.x,spot.y,getTile);
+          m._skyRegionKey=region.regionKey;
+          m._skyRegionName=region.name;
+          mobs.push(m);
+          setAggro(bossSpec.id);
+          try{ noteEntityNumber({kind:'danger', text:'!', x:m.x, y:m.y-1.6, target:region.boss+':'+Math.round(m.spawnT||0)}); }catch(e){}
+          try{ if(window.msg) window.msg('👑 '+(bossSpec.displayName||region.boss)+' strzeże krainy '+region.name+'!'); }catch(e){}
+          try{ if(MM.audio && MM.audio.play) MM.audio.play('golden',{x:m.x,y:m.y}); }catch(e){}
+        }
+      }
+    }
+  }
+
+  // --- Sky grunts: the reason the sky is not a free highway ------------------
+  registerSpecies({ // Heaven/frost/mirage hunter: builds height, then dives clean through
+    id:'CLOUD_RAY', displayName:'Obłoczna płaszczka',
+    max:10, localMax:5, spawnChance:0.30, hp:62, dmg:16, speed:7.4, wanderInterval:[1.4,3.0], xp:44,
+    flying:true, alwaysAggro:true, sightRange:30, pursueRange:46, lifeSpanSec:220,
+    body:{w:1.5,h:0.6},
+    contactInvulMs:420, contactKnockback:1.5, contactKnockbackY:-0.7, contactCause:'cloud_ray_wing',
+    variant:{shift:3, from:'#9fc8e8', to:'#d5ecff'},
+    loot:[{item:'meteorDust', min:1, max:3, chance:0.7}, {item:'glass', min:1, max:2, chance:0.4}],
+    meatDropChance:0.35,
+    spawnTest(x,y,getTile){ return skyGruntSpawnCell(x,y,getTile,'CLOUD_RAY'); },
+    biome:'sky',
+    onCreate(m){ m.state='soar'; m._rayDiveAt=performance.now()+900+Math.random()*1400; },
+    onUpdate(m,spec,{player,dt,now,speed}){
+      const sp=speed||spec.speed;
+      const dist=Math.hypot(player.x-m.x,player.y-m.y)||1;
+      if(m.state==='dive'){
+        skySteer(m,dt,player.x,player.y,sp*9.5,SKY_GRUNT_FLOOR_Y);
+        if(dist<1.2 || m.y>SKY_GRUNT_FLOOR_Y-3 || now>(m._rayDiveUntil||0)) m.state='soar';
+        return;
+      }
+      // circle 6 tiles above the hero, then strike
+      const orbit=now*0.0016+m.spawnT*0.002;
+      skySteer(m,dt,player.x+Math.sin(orbit)*5.5,player.y-6.5,sp*3.2,SKY_GRUNT_FLOOR_Y);
+      if(dist<20 && now>(m._rayDiveAt||0)){
+        m.state='dive';
+        m._rayDiveUntil=now+1500;
+        m._rayDiveAt=now+2600+Math.random()*1600;
+        markMobTelegraph(m,'charge',{target:player,power:1.0,ms:340});
+      }
+    }
+  });
+
+  registerSpecies({ // Skywood/balloon/roost raptor: screeching talon dashes
+    id:'HARPY', displayName:'Harpia',
+    max:10, localMax:5, spawnChance:0.30, hp:70, dmg:18, speed:6.4, wanderInterval:[1.4,3.2], xp:52,
+    flying:true, alwaysAggro:true, sightRange:30, pursueRange:46, lifeSpanSec:220,
+    body:{w:1.2,h:1.0},
+    contactInvulMs:460, contactKnockback:1.7, contactKnockbackY:-1.0, contactCause:'harpy_talons',
+    variant:{shift:2, from:'#a3743e', to:'#caa06b'},
+    loot:[{item:'leaf', min:1, max:3, chance:0.6}, {item:'wood', min:1, max:2, chance:0.4}],
+    meatDropChance:0.55,
+    spawnTest(x,y,getTile){ return skyGruntSpawnCell(x,y,getTile,'HARPY'); },
+    biome:'sky',
+    onCreate(m){ m.state='stalk'; m._harpyDashAt=performance.now()+700+Math.random()*1200; },
+    onUpdate(m,spec,{player,dt,now,speed}){
+      const sp=speed||spec.speed;
+      const dist=Math.hypot(player.x-m.x,player.y-m.y)||1;
+      if(m.state==='dash'){
+        skySteer(m,dt,player.x,player.y-0.3,sp*8.6,SKY_GRUNT_FLOOR_Y);
+        if(dist<1.1 || now>(m._harpyDashUntil||0)) m.state='stalk';
+        return;
+      }
+      skySteer(m,dt,player.x+(m.spawnT%2?4:-4),player.y-4.2,sp*3.4,SKY_GRUNT_FLOOR_Y);
+      if(dist<16 && now>(m._harpyDashAt||0)){
+        m.state='dash';
+        m._harpyDashUntil=now+1200;
+        m._harpyDashAt=now+2200+Math.random()*1500;
+        markMobTelegraph(m,'talon',{target:player,power:1.05,ms:380});
+        try{ if(MM.audio && MM.audio.play) MM.audio.play('swing',{x:m.x,y:m.y}); }catch(e){}
+      }
+    }
+  });
+
+  registerSpecies({ // Storm/wreck/void spark: erratic orbits, ranged jolts
+    id:'VOLT_WISP', displayName:'Burzowy wisp',
+    max:9, localMax:5, spawnChance:0.28, hp:55, dmg:15, speed:6.8, wanderInterval:[1.0,2.4], xp:50,
+    flying:true, alwaysAggro:true, organic:false, sightRange:28, pursueRange:44, lifeSpanSec:200,
+    body:{w:0.9,h:0.9},
+    contactInvulMs:420, contactKnockback:1.2, contactKnockbackY:-0.6, contactCause:'wisp_shock',
+    variant:{shift:4, from:'#7fd0ff', to:'#c9ecff'},
+    loot:[{item:'copper', min:1, max:2, chance:0.55}, {item:'wire', min:1, max:2, chance:0.35}],
+    meat:false,
+    spawnTest(x,y,getTile){ return skyGruntSpawnCell(x,y,getTile,'VOLT_WISP'); },
+    biome:'sky',
+    onUpdate(m,spec,{player,dt,now,speed}){
+      const sp=speed||spec.speed;
+      const jitter=Math.sin(now*0.006+m.spawnT)*3.4;
+      const dist=skySteer(m,dt,player.x+jitter,player.y-3.5+Math.cos(now*0.004+m.spawnT)*2.2,sp*4.2,SKY_GRUNT_FLOOR_Y);
+      if(dist>3 && dist<18 && now>(m._wispBoltAt||0)){
+        m._wispBoltAt=now+2400+Math.random()*900;
+        shootSkyBolt(m,player,{type:'stormbolt',cause:'wisp_bolt',dmg:12,speed:14,attackKind:'shock',sound:'spark',power:0.9});
+      }
+    }
+  });
+
+  registerSpecies({ // Spore reef drone: slow, spits rot, detonates into gas
+    id:'SPORE_DRIFTER', displayName:'Zarodnikowy dryfun',
+    max:8, localMax:5, spawnChance:0.28, hp:66, dmg:14, speed:4.6, wanderInterval:[1.6,3.4], xp:46,
+    flying:true, alwaysAggro:true, sightRange:26, pursueRange:40, lifeSpanSec:220,
+    body:{w:1.1,h:1.1},
+    contactInvulMs:520, contactKnockback:1.1, contactKnockbackY:-0.5, contactCause:'spore_touch',
+    variant:{shift:3, from:'#6fbf8a', to:'#a5e6b8'},
+    loot:[{item:'glowshroom', min:1, max:3, chance:0.8}, {item:'clay', min:1, max:2, chance:0.35}],
+    meat:false,
+    spawnTest(x,y,getTile){ return skyGruntSpawnCell(x,y,getTile,'SPORE_DRIFTER'); },
+    biome:'sky',
+    onUpdate(m,spec,{player,dt,now,speed}){
+      const sp=speed||spec.speed;
+      const bob=Math.sin(now*0.003+m.spawnT)*1.6;
+      const dist=skySteer(m,dt,player.x,player.y-2.5+bob,sp*3.0,SKY_GRUNT_FLOOR_Y);
+      if(dist>2.5 && dist<14 && now>(m._sporeSpitAt||0)){
+        m._sporeSpitAt=now+2800+Math.random()*1100;
+        shootSkyBolt(m,player,{type:'sporeburst',cause:'spore_spit',dmg:11,speed:10,gravity:3,attackKind:'spit',power:0.85});
+      }
+    },
+    onDeath(m){
+      // rupture: the reef reclaims its own with a puff of poison
+      try{
+        const W=MM.world || WORLD;
+        if(W && W.getTile && W.setTile){
+          const bx=Math.floor(m.x), by=Math.floor(m.y);
+          for(const [ox,oy] of [[0,0],[1,0],[-1,0]]){
+            if(W.getTile(bx+ox,by+oy)===T.AIR){ W.setTile(bx+ox,by+oy,T.POISON_GAS); break; }
+          }
+        }
+      }catch(e){}
+    }
+  });
+
+  registerSpecies({ // Ember arch raptor: flaming dives
+    id:'CINDER_HAWK', displayName:'Popielny jastrząb',
+    max:8, localMax:5, spawnChance:0.28, hp:64, dmg:17, speed:7.8, wanderInterval:[1.2,2.8], xp:50,
+    flying:true, alwaysAggro:true, sightRange:30, pursueRange:46, lifeSpanSec:200,
+    body:{w:1.3,h:0.8},
+    contactInvulMs:440, contactKnockback:1.5, contactKnockbackY:-0.8, contactCause:'cinder_fire',
+    variant:{shift:2, from:'#b8502e', to:'#e08a3c'},
+    loot:[{item:'coal', min:1, max:3, chance:0.7}, {item:'gold', min:1, max:1, chance:0.10}],
+    meatDropChance:0.4,
+    spawnTest(x,y,getTile){ return skyGruntSpawnCell(x,y,getTile,'CINDER_HAWK'); },
+    biome:'sky',
+    onCreate(m){ m.state='circle'; m._hawkDiveAt=performance.now()+800+Math.random()*1300; },
+    onUpdate(m,spec,{player,dt,now,speed}){
+      const sp=speed||spec.speed;
+      const dist=Math.hypot(player.x-m.x,player.y-m.y)||1;
+      if(m.state==='dive'){
+        skySteer(m,dt,player.x,player.y,sp*10,SKY_GRUNT_FLOOR_Y);
+        if(dist<1.1 || now>(m._hawkDiveUntil||0)) m.state='circle';
+        return;
+      }
+      const orbit=now*0.002+m.spawnT*0.003;
+      skySteer(m,dt,player.x+Math.cos(orbit)*6,player.y-5.5,sp*3.4,SKY_GRUNT_FLOOR_Y);
+      if(dist<18 && now>(m._hawkDiveAt||0)){
+        m.state='dive';
+        m._hawkDiveUntil=now+1400;
+        m._hawkDiveAt=now+2500+Math.random()*1400;
+        markMobTelegraph(m,'charge',{target:player,power:1.05,ms:320});
+        try{ if(MM.audio && MM.audio.play) MM.audio.play('fire',{x:m.x,y:m.y}); }catch(e){}
+      }
+    }
+  });
+
+  // --- Sky biome bosses: one named terror per themed region ------------------
+  registerSpecies({ // Rajskie Wyżyny: radiant lancer
+    id:'SKY_SERAPH', displayName:'Serafin Wyżyn',
+    max:1, localMax:1, spawnChance:0, hp:540, dmg:30, speed:7.0, wanderInterval:[2,4], xp:340,
+    flying:true, alwaysAggro:true, sightRange:34, pursueRange:52, lifeSpanSec:480,
+    body:{w:1.8,h:2.2},
+    contactInvulMs:560, contactKnockback:2.2, contactKnockbackY:-1.1, contactCause:'seraph_lance',
+    loot:[{item:'gold', min:4, max:8, chance:1}, {item:'diamond', min:2, max:4, chance:0.8}, {item:'iridium', min:3, max:6, chance:0.9}],
+    meat:false,
+    spawnTest(){ return false; }, // sky boss scheduler only
+    biome:'sky',
+    onCreate(m){ m.state='orbit'; m._volleyAt=performance.now()+1400; m._lanceAt=performance.now()+4200; },
+    onUpdate(m,spec,{player,dt,now,speed}){
+      const sp=speed||spec.speed;
+      const dist=Math.hypot(player.x-m.x,player.y-m.y)||1;
+      if(m.state==='lance'){
+        skySteer(m,dt,m._lanceX,m._lanceY,sp*11,SKY_BOSS_FLOOR_Y);
+        if(now>(m._lanceUntil||0) || Math.hypot(m._lanceX-m.x,m._lanceY-m.y)<1.4) m.state='orbit';
+        return;
+      }
+      const orbit=now*0.0012+m.spawnT*0.001;
+      skySteer(m,dt,player.x+Math.sin(orbit)*7,player.y-7,sp*3.4,SKY_BOSS_FLOOR_Y);
+      if(dist<26 && now>(m._volleyAt||0)){
+        m._volleyAt=now+2600+Math.random()*800;
+        for(let i=-1;i<=1;i++) shootSkyBolt(m,player,{type:'radiant',cause:'seraph_bolt',dmg:14,speed:15,spreadX:i*1.6,attackKind:'laser',sound:'beam',power:1.1});
+      }
+      if(dist<20 && now>(m._lanceAt||0)){
+        m.state='lance';
+        m._lanceX=player.x+(player.vx||0)*0.5;
+        m._lanceY=Math.min(player.y,SKY_BOSS_FLOOR_Y-3);
+        m._lanceUntil=now+1500;
+        m._lanceAt=now+6800+Math.random()*2200;
+        markMobTelegraph(m,'charge',{target:player,power:1.6,ms:520});
+        try{ if(MM.audio && MM.audio.play) MM.audio.play('beam',{x:m.x,y:m.y}); }catch(e){}
+      }
+    },
+    onDeath(m){ skyBossDeathPayout(m,'Serafin Wyżyn'); }
+  });
+
+  registerSpecies({ // Podniebna Puszcza: island-walking treant
+    id:'SKYGROVE_WARDEN', displayName:'Strażnik Podniebnej Puszczy',
+    max:1, localMax:1, spawnChance:0, hp:700, dmg:40, speed:3.4, wanderInterval:[2,4], xp:380, ground:true,
+    alwaysAggro:true, sightRange:30, pursueRange:44, lifeSpanSec:480,
+    move:{jumpVel:-6.6, maxClimb:3, avoidWater:true},
+    body:{w:2.4,h:2.4},
+    contactInvulMs:620, contactKnockback:2.6, contactKnockbackY:-1.3, contactCause:'warden_roots',
+    loot:[{item:'wood', min:8, max:14, chance:1}, {item:'leaf', min:6, max:12, chance:1}, {item:'glowshroom', min:2, max:4, chance:0.5}],
+    meat:false,
+    spawnTest(){ return false; },
+    biome:'sky',
+    onCreate(m){ m._rootThrowAt=performance.now()+1600; m._wardenSlamAt=performance.now()+1200; },
+    onUpdate(m,spec,{player,dt,now,speed}){
+      const sp=speed||spec.speed;
+      const dx=player.x-m.x, dy=player.y-m.y;
+      const dist=Math.hypot(dx,dy)||1;
+      const dir=dx>=0?1:-1;
+      m.facing=dir;
+      if(dist<3.0 && now>(m._wardenSlamAt||0)){
+        m._wardenSlamAt=now+2600+Math.random()*900;
+        m.state='slam';
+        m.shake=Math.max(m.shake||0,1.0);
+        markMobAttack(m,'slam',{target:player,power:1.9,strikeMs:560});
+        damagePlayer(spec.dmg*(m.dmgMult||1),m.x,m.y-0.6,'warden_slam',spec);
+        try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20),(m.y+0.6)*(MM.TILE||20),'rare'); }catch(e){}
+        return;
+      }
+      if(dist>3.5 && dist<22 && Math.abs(dy)<14 && now>(m._rootThrowAt||0)){
+        m._rootThrowAt=now+2300+Math.random()*900;
+        m.state='throw';
+        shootSkyBolt(m,player,{type:'rock',cause:'warden_root',dmg:18,speed:13,gravity:9,arc:2.2,muzzleY:-1.2,attackKind:'throw',power:1.3});
+      }
+      m.vx += dir*sp*(dist<6?0.6:0.4)*dt*30;
+      if(m.onGround && dist<11 && Math.abs(dy)>3 && dy<0 && Math.random()<0.02){
+        m.vy=(spec.move.jumpVel||-6.6)*(m.jumpMul||1);
+      }
+    },
+    onDeath(m){ skyBossDeathPayout(m,'Strażnik Podniebnej Puszczy'); }
+  });
+
+  registerSpecies({ // Balonowy Gaj: floating bombardier
+    id:'BALLOON_TYRANT', displayName:'Tyran Balonowego Gaju',
+    max:1, localMax:1, spawnChance:0, hp:560, dmg:30, speed:5.2, wanderInterval:[2,4], xp:340,
+    flying:true, alwaysAggro:true, sightRange:32, pursueRange:50, lifeSpanSec:480,
+    body:{w:2.6,h:2.2},
+    contactInvulMs:600, contactKnockback:2.0, contactKnockbackY:-1.0, contactCause:'tyrant_crush',
+    loot:[{item:'wood', min:6, max:10, chance:1}, {item:'leaf', min:6, max:12, chance:1}, {item:'gold', min:2, max:4, chance:0.5}],
+    meatDropChance:0.5,
+    spawnTest(){ return false; },
+    biome:'sky',
+    onCreate(m){ m._bombAt=performance.now()+1500; m._gustAt=performance.now()+3200; },
+    onUpdate(m,spec,{player,dt,now,speed}){
+      const sp=speed||spec.speed;
+      const sway=Math.sin(now*0.0016+m.spawnT)*4;
+      const dist=skySteer(m,dt,player.x+sway,player.y-7.5,sp*3.0,SKY_BOSS_FLOOR_Y);
+      if(Math.abs(player.x-m.x)<7 && player.y>m.y && dist<16 && now>(m._bombAt||0)){
+        m._bombAt=now+2100+Math.random()*700;
+        shootSkyBolt(m,player,{type:'skybomb',cause:'tyrant_bomb',dmg:24,speed:7,gravity:13,muzzleY:1.0,radius:0.8,attackKind:'throw',power:1.4});
+      }
+      if(dist<6.5 && now>(m._gustAt||0)){
+        m._gustAt=now+4200+Math.random()*1200;
+        m.state='gust';
+        markMobAttack(m,'charge',{target:player,power:1.2,strikeMs:420});
+        const away=player.x>=m.x?1:-1;
+        player.vx += away*9;
+        player.vy -= 2.2;
+        try{ if(MM.audio && MM.audio.play) MM.audio.play('wind',{x:m.x,y:m.y}); }catch(e){}
+      }
+    },
+    onDeath(m){ skyBossDeathPayout(m,'Tyran Balonowego Gaju'); }
+  });
+
+  registerSpecies({ // Burzowa Kuźnia: blinking bolt-smith
+    id:'STORM_HERALD', displayName:'Herold Burzy',
+    max:1, localMax:1, spawnChance:0, hp:520, dmg:32, speed:6.6, wanderInterval:[2,4], xp:340,
+    flying:true, alwaysAggro:true, organic:false, sightRange:34, pursueRange:52, lifeSpanSec:480,
+    body:{w:1.8,h:2.0},
+    contactInvulMs:560, contactKnockback:2.0, contactKnockbackY:-1.0, contactCause:'herald_shock',
+    loot:[{item:'copper', min:4, max:8, chance:1}, {item:'wire', min:3, max:6, chance:0.9}, {item:'transistor', min:1, max:2, chance:0.4}],
+    meat:false,
+    spawnTest(){ return false; },
+    biome:'sky',
+    onCreate(m){ m._boltAt=performance.now()+1400; m._blinkAt=performance.now()+5200; },
+    onUpdate(m,spec,{player,dt,now,speed}){
+      const sp=speed||spec.speed;
+      const dist=skySteer(m,dt,player.x+(m.facing>=0?-5:5),player.y-5.5,sp*3.4,SKY_BOSS_FLOOR_Y);
+      if(dist<26 && now>(m._boltAt||0)){
+        m._boltAt=now+2200+Math.random()*700;
+        shootSkyBolt(m,player,{type:'stormbolt',cause:'herald_bolt',dmg:16,speed:16,attackKind:'shock',sound:'spark',power:1.3});
+        shootSkyBolt(m,player,{type:'stormbolt',cause:'herald_bolt',dmg:16,speed:16,spreadY:1.4,attackKind:'shock',sound:'spark',power:1.3});
+      }
+      if(now>(m._blinkAt||0) && dist<30){
+        m._blinkAt=now+7600+Math.random()*2400;
+        const side=Math.random()<0.5?-1:1;
+        const nx=player.x+side*(5+Math.random()*4);
+        const ny=Math.min(player.y-4-Math.random()*3,SKY_BOSS_FLOOR_Y-4);
+        try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(m.x*(MM.TILE||20),m.y*(MM.TILE||20),'rare',10); }catch(e){}
+        m.x=nx; m.y=ny; m.vx=0; m.vy=0;
+        try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(nx*(MM.TILE||20),ny*(MM.TILE||20),'rare',10); }catch(e){}
+        try{ if(MM.audio && MM.audio.play) MM.audio.play('chainShock',{x:nx,y:ny}); }catch(e){}
+      }
+    },
+    onDeath(m){ skyBossDeathPayout(m,'Herold Burzy'); }
+  });
+
+  registerSpecies({ // Lodowa Korona: serpentine blizzard
+    id:'AURORA_WYRM', displayName:'Zorzowy Żmij',
+    max:1, localMax:1, spawnChance:0, hp:600, dmg:30, speed:8.2, wanderInterval:[2,4], xp:360,
+    flying:true, alwaysAggro:true, sightRange:34, pursueRange:52, lifeSpanSec:480,
+    body:{w:2.8,h:1.0},
+    contactInvulMs:520, contactKnockback:2.2, contactKnockbackY:-1.0, contactCause:'wyrm_frost',
+    loot:[{item:'ice', min:6, max:12, chance:1}, {item:'snow', min:8, max:14, chance:1}, {item:'diamond', min:1, max:3, chance:0.6}],
+    meatDropChance:0.4,
+    spawnTest(){ return false; },
+    biome:'sky',
+    onCreate(m){ m._shardAt=performance.now()+1500; m._trail=[]; },
+    onUpdate(m,spec,{player,dt,now,speed}){
+      const sp=speed||spec.speed;
+      const dist=Math.hypot(player.x-m.x,player.y-m.y)||1;
+      // serpentine weave around the hero's altitude
+      const weave=Math.sin(now*0.004+m.spawnT)*4.5;
+      skySteer(m,dt,player.x+(m.facing>=0?7:-7)*(dist<5?-1:1),player.y-2.5+weave,sp*(dist<8?6.2:3.6),SKY_BOSS_FLOOR_Y);
+      if(dist<24 && now>(m._shardAt||0)){
+        m._shardAt=now+2700+Math.random()*900;
+        for(let i=-1;i<=1;i++) shootSkyBolt(m,player,{type:'iceshard',cause:'wyrm_shard',dmg:12,speed:13,spreadY:i*1.4,gravity:2,attackKind:'throw',power:1.15});
+      }
+      m._trail=m._trail||[];
+      if(!m._trailAcc || (m._trailAcc+=dt)>0.05){ m._trailAcc=0; m._trail.push({x:m.x,y:m.y}); if(m._trail.length>10) m._trail.shift(); }
+    },
+    onDeath(m){ skyBossDeathPayout(m,'Zorzowy Żmij'); }
+  });
+
+  registerSpecies({ // Ogrody Fatamorgany: blinking trickster
+    id:'MIRAGE_DJINN', displayName:'Dżin Fatamorgany',
+    max:1, localMax:1, spawnChance:0, hp:500, dmg:28, speed:6.0, wanderInterval:[2,4], xp:340,
+    flying:true, alwaysAggro:true, sightRange:32, pursueRange:50, lifeSpanSec:480,
+    body:{w:1.6,h:2.0},
+    contactInvulMs:520, contactKnockback:1.8, contactKnockbackY:-0.9, contactCause:'djinn_scourge',
+    loot:[{item:'sand', min:8, max:14, chance:1}, {item:'gold', min:3, max:6, chance:0.9}, {item:'glass', min:3, max:6, chance:0.7}],
+    meat:false,
+    spawnTest(){ return false; },
+    biome:'sky',
+    onCreate(m){ m._blinkAt=performance.now()+2600; m._sandAt=performance.now()+1400; },
+    onUpdate(m,spec,{player,dt,now,speed}){
+      const sp=speed||spec.speed;
+      const dist=skySteer(m,dt,player.x+(m.facing>=0?-4.5:4.5),player.y-4,sp*3.2,SKY_BOSS_FLOOR_Y);
+      if(dist<22 && now>(m._sandAt||0)){
+        m._sandAt=now+2400+Math.random()*800;
+        for(let i=0;i<3;i++) shootSkyBolt(m,player,{type:'sandburst',cause:'djinn_sand',dmg:14,speed:12,spreadX:(i-1)*1.8,gravity:4,attackKind:'spit',power:1.1});
+      }
+      if(now>(m._blinkAt||0) && dist<28){
+        m._blinkAt=now+3400+Math.random()*1300;
+        const ang=Math.random()*Math.PI*2;
+        const r=4.5+Math.random()*3.5;
+        try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20),m.y*(MM.TILE||20),'uncommon'); }catch(e){}
+        m.x=player.x+Math.cos(ang)*r;
+        m.y=Math.min(player.y-Math.abs(Math.sin(ang))*r-1.5,SKY_BOSS_FLOOR_Y-4);
+        m.vx=0; m.vy=0;
+        markMobTelegraph(m,'bite',{target:player,power:1.2,ms:420});
+        try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20),m.y*(MM.TILE||20),'uncommon'); }catch(e){}
+      }
+    },
+    onDeath(m){ skyBossDeathPayout(m,'Dżin Fatamorgany'); }
+  });
+
+  registerSpecies({ // Rdzawa Flotylla: harpoon automaton
+    id:'CORSAIR_AUTOMATON', displayName:'Korsarz Wraków',
+    max:1, localMax:1, spawnChance:0, hp:640, dmg:36, speed:5.4, wanderInterval:[2,4], xp:360,
+    flying:true, alwaysAggro:true, organic:false, sightRange:34, pursueRange:52, lifeSpanSec:480,
+    body:{w:2.2,h:1.8},
+    contactInvulMs:600, contactKnockback:2.4, contactKnockbackY:-1.1, contactCause:'corsair_anchor',
+    loot:[{item:'steel', min:4, max:8, chance:1}, {item:'wire', min:2, max:5, chance:0.8}, {item:'transistor', min:1, max:2, chance:0.5}],
+    meat:false,
+    spawnTest(){ return false; },
+    biome:'sky',
+    onCreate(m){ m._harpoonAt=performance.now()+1800; m._anchorAt=performance.now()+1200; },
+    onUpdate(m,spec,{player,dt,now,speed}){
+      const sp=speed||spec.speed;
+      const dx=player.x-m.x, dy=player.y-m.y;
+      const dist=Math.hypot(dx,dy)||1;
+      if(dist<2.6 && now>(m._anchorAt||0)){
+        m._anchorAt=now+2400+Math.random()*800;
+        m.state='slam';
+        markMobAttack(m,'slam',{target:player,power:1.7,strikeMs:520});
+        damagePlayer(spec.dmg*(m.dmgMult||1),m.x,m.y-0.4,'corsair_anchor',spec);
+        return;
+      }
+      skySteer(m,dt,player.x+(dx>=0?-6:6),player.y-4.5,sp*3.2,SKY_BOSS_FLOOR_Y);
+      if(dist>4 && dist<24 && now>(m._harpoonAt||0)){
+        m._harpoonAt=now+3400+Math.random()*1000;
+        shootSkyBolt(m,player,{type:'harpoon',cause:'corsair_harpoon',dmg:18,speed:17,hook:true,attackKind:'throw',sound:'bow',power:1.5});
+      }
+    },
+    onDeath(m){ skyBossDeathPayout(m,'Korsarz Wraków'); }
+  });
+
+  registerSpecies({ // Zarodnikowa Rafa: brood mother
+    id:'SPORE_MOTHER', displayName:'Matka Zarodników',
+    max:1, localMax:1, spawnChance:0, hp:720, dmg:26, speed:3.6, wanderInterval:[2,4], xp:380,
+    flying:true, alwaysAggro:true, sightRange:30, pursueRange:46, lifeSpanSec:480,
+    body:{w:3.0,h:2.6},
+    contactInvulMs:640, contactKnockback:1.8, contactKnockbackY:-0.8, contactCause:'mother_spores',
+    loot:[{item:'glowshroom', min:6, max:12, chance:1}, {item:'clay', min:4, max:8, chance:0.8}, {item:'toxicSnow', min:2, max:4, chance:0.4}],
+    meat:false,
+    spawnTest(){ return false; },
+    biome:'sky',
+    onCreate(m){ m._burstAt=performance.now()+1600; m._broodAt=performance.now()+4200; },
+    onUpdate(m,spec,{player,dt,now,speed,getTile}){
+      const sp=speed||spec.speed;
+      const bob=Math.sin(now*0.0018+m.spawnT)*2.4;
+      const dist=skySteer(m,dt,player.x,player.y-5.5+bob,sp*2.6,SKY_BOSS_FLOOR_Y);
+      if(dist<20 && now>(m._burstAt||0)){
+        m._burstAt=now+2900+Math.random()*900;
+        for(let i=-1;i<=1;i++) shootSkyBolt(m,player,{type:'sporeburst',cause:'mother_spore',dmg:12,speed:9,spreadX:i*2.2,gravity:3,attackKind:'spit',power:1.1});
+      }
+      if(dist<30 && now>(m._broodAt||0)){
+        m._broodAt=now+8600+Math.random()*2400;
+        const spec2=SPECIES.SPORE_DRIFTER;
+        if(spec2 && countSpeciesNear('SPORE_DRIFTER',m.x,m.y,26)<3 && countSpecies('SPORE_DRIFTER')<spec2.max){
+          const kid=create(spec2,m.x+(Math.random()*2-1)*1.5,m.y+1.2,getTile);
+          mobs.push(kid);
+          setAggro('SPORE_DRIFTER');
+          markMobAttack(m,'spit',{target:player,power:0.9});
+          try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20),(m.y+1)*(MM.TILE||20),'uncommon'); }catch(e){}
+        }
+      }
+    },
+    onDeath(m){ skyBossDeathPayout(m,'Matka Zarodników'); }
+  });
+
+  registerSpecies({ // Grawitacyjna Otchłań: monolith with a gravity well
+    id:'GRAVITY_COLOSSUS', displayName:'Kolos Grawitacji',
+    max:1, localMax:1, spawnChance:0, hp:760, dmg:44, speed:3.0, wanderInterval:[2,4], xp:420,
+    flying:true, alwaysAggro:true, organic:false, sightRange:32, pursueRange:48, lifeSpanSec:480,
+    body:{w:2.6,h:3.0},
+    contactInvulMs:700, contactKnockback:2.8, contactKnockbackY:-1.4, contactCause:'colossus_slam',
+    loot:[{item:'obsidian', min:6, max:10, chance:1}, {item:'antimatter', min:1, max:2, chance:0.6}, {item:'iridium', min:2, max:5, chance:0.8}],
+    meat:false,
+    spawnTest(){ return false; },
+    biome:'sky',
+    onCreate(m){ m._voidAt=performance.now()+2000; },
+    onUpdate(m,spec,{player,dt,now,speed}){
+      const sp=speed||spec.speed;
+      const dx=player.x-m.x, dy=player.y-m.y;
+      const dist=Math.hypot(dx,dy)||1;
+      skySteer(m,dt,player.x,player.y-3,sp*2.4,SKY_BOSS_FLOOR_Y);
+      // gravity well: the closer you drift, the harder it drags you in
+      if(dist<10 && player.y<SKY_GRUNT_FLOOR_Y){
+        const pull=(1-dist/10)*22;
+        player.vx -= (dx/dist)*pull*dt;
+        player.vy -= (dy/dist)*pull*dt;
+      }
+      if(dist<24 && now>(m._voidAt||0)){
+        m._voidAt=now+3800+Math.random()*1200;
+        shootSkyBolt(m,player,{type:'voidbolt',cause:'colossus_bolt',dmg:22,speed:8,radius:0.9,attackKind:'throw',power:1.6});
+      }
+    },
+    onDeath(m){ skyBossDeathPayout(m,'Kolos Grawitacji'); }
+  });
+
+  registerSpecies({ // Gniazdowisko: matriarch of the flock
+    id:'HARPY_QUEEN', displayName:'Królowa Harpii',
+    max:1, localMax:1, spawnChance:0, hp:520, dmg:32, speed:7.6, wanderInterval:[2,4], xp:340,
+    flying:true, alwaysAggro:true, sightRange:34, pursueRange:52, lifeSpanSec:480,
+    body:{w:2.0,h:1.4},
+    contactInvulMs:520, contactKnockback:2.3, contactKnockbackY:-1.2, contactCause:'queen_talons',
+    loot:[{item:'leaf', min:4, max:8, chance:1}, {item:'wood', min:3, max:6, chance:0.8}, {item:'gold', min:2, max:4, chance:0.5}],
+    meatDropChance:0.6,
+    spawnTest(){ return false; },
+    biome:'sky',
+    onCreate(m){ m.state='circle'; m._diveAt=performance.now()+1500; m._screechAt=performance.now()+4600; },
+    onUpdate(m,spec,{player,dt,now,speed,getTile}){
+      const sp=speed||spec.speed;
+      const dist=Math.hypot(player.x-m.x,player.y-m.y)||1;
+      if(m.state==='dive'){
+        skySteer(m,dt,player.x,player.y,sp*10.5,SKY_BOSS_FLOOR_Y);
+        if(dist<1.3 || now>(m._diveUntil||0)) m.state='circle';
+        return;
+      }
+      const orbit=now*0.0018+m.spawnT*0.002;
+      skySteer(m,dt,player.x+Math.sin(orbit)*7.5,player.y-6.5,sp*3.4,SKY_BOSS_FLOOR_Y);
+      if(dist<20 && now>(m._diveAt||0)){
+        m.state='dive';
+        m._diveUntil=now+1500;
+        m._diveAt=now+3000+Math.random()*1400;
+        markMobTelegraph(m,'talon',{target:player,power:1.5,ms:420});
+        try{ if(MM.audio && MM.audio.play) MM.audio.play('swing',{x:m.x,y:m.y}); }catch(e){}
+      }
+      if(dist<30 && now>(m._screechAt||0)){
+        m._screechAt=now+8200+Math.random()*2600;
+        const spec2=SPECIES.HARPY;
+        if(spec2 && countSpeciesNear('HARPY',m.x,m.y,28)<3 && countSpecies('HARPY')<spec2.max){
+          const kid=create(spec2,m.x+(Math.random()*2-1)*2,m.y-1,getTile);
+          mobs.push(kid);
+          setAggro('HARPY');
+          markMobAttack(m,'talon',{target:player,power:1.0});
+          try{ if(MM.audio && MM.audio.play) MM.audio.play('swing',{x:m.x,y:m.y}); }catch(e){}
+        }
+      }
+    },
+    onDeath(m){ skyBossDeathPayout(m,'Królowa Harpii'); }
+  });
+
+  registerSpecies({ // Żarowe Łuki: the bird that refuses to die (once)
+    id:'EMBER_PHOENIX', displayName:'Feniks Żaru',
+    max:2, localMax:1, spawnChance:0, hp:540, dmg:32, speed:8.0, wanderInterval:[2,4], xp:360,
+    flying:true, alwaysAggro:true, sightRange:34, pursueRange:52, lifeSpanSec:480,
+    body:{w:2.4,h:1.6},
+    contactInvulMs:500, contactKnockback:2.2, contactKnockbackY:-1.1, contactCause:'phoenix_fire',
+    loot:[{item:'coal', min:6, max:10, chance:1}, {item:'gold', min:2, max:5, chance:0.7}, {item:'obsidian', min:2, max:4, chance:0.5}],
+    meat:false,
+    spawnTest(){ return false; },
+    biome:'sky',
+    onCreate(m){ m.state='blaze'; m._flameAt=performance.now()+1400; m._diveAt=performance.now()+3600; },
+    onUpdate(m,spec,{player,dt,now,speed}){
+      const frenzy=m._reborn?1.22:1;
+      const sp=(speed||spec.speed)*frenzy;
+      const dist=Math.hypot(player.x-m.x,player.y-m.y)||1;
+      if(m.state==='dive'){
+        skySteer(m,dt,player.x,player.y,sp*10,SKY_BOSS_FLOOR_Y);
+        if(dist<1.2 || now>(m._diveUntil||0)) m.state='blaze';
+        return;
+      }
+      const orbit=now*0.002+m.spawnT*0.002;
+      skySteer(m,dt,player.x+Math.cos(orbit)*7,player.y-6,sp*3.4,SKY_BOSS_FLOOR_Y);
+      if(dist<24 && now>(m._flameAt||0)){
+        m._flameAt=now+(2400-(m._reborn?500:0))+Math.random()*700;
+        for(let i=-1;i<=1;i++) shootSkyBolt(m,player,{type:'dragon_fire',cause:'phoenix_fire',dmg:15,speed:12,spreadX:i*1.5,gravity:1.4,radius:0.8,attackKind:'spit',sound:'fire',power:1.3});
+      }
+      if(dist<18 && now>(m._diveAt||0)){
+        m.state='dive';
+        m._diveUntil=now+1400;
+        m._diveAt=now+3600+Math.random()*1500;
+        markMobTelegraph(m,'charge',{target:player,power:1.5,ms:380});
+        try{ if(MM.audio && MM.audio.play) MM.audio.play('fire',{x:m.x,y:m.y}); }catch(e){}
+      }
+    },
+    onDeath(m){
+      if(!m._reborn && !m._naturalDeath){
+        // rebirth: the pyre IS the telegraph — one more life, angrier
+        try{
+          const reborn=create(SPECIES.EMBER_PHOENIX,m.x,Math.min(m.y-2,SKY_BOSS_FLOOR_Y-4),null);
+          reborn._reborn=true;
+          reborn.hp=Math.round(reborn.maxHp*0.45);
+          reborn._skyRegionKey=m._skyRegionKey;
+          reborn._skyRegionName=m._skyRegionName;
+          mobs.push(reborn);
+          setAggro('EMBER_PHOENIX');
+          try{ if(window.msg) window.msg('🔥 Feniks Żaru powstaje z popiołów!'); }catch(e){}
+          try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20),m.y*(MM.TILE||20),'epic'); }catch(e){}
+          try{ if(MM.audio && MM.audio.play) MM.audio.play('fire',{x:m.x,y:m.y}); }catch(e){}
+        }catch(e){}
+        return;
+      }
+      skyBossDeathPayout(m,'Feniks Żaru');
+    }
+  });
+
   function registerSpecies(def){
     if(!def || !def.id) return false; if(SPECIES[def.id]) return false; // already exists
     // Fill defaults
@@ -4131,13 +4878,17 @@ const mobs = (function(){
       EEL:'#2f8a4a', LAKE_SERPENT:'#45b9a8', JACKPOT_WHALE:'#5d86a0', PIRANHA:'#b72d2d', GOAT:'#c9c4b5', BEAR:'#6b4a30', BRAMBLE_STALKER:'#48672f', WOLF:'#bcbcbc', ICE_WRAITH:'#d5f6ff', ICE_SHAMAN:'#bff3ff', FIRE_SHAMAN:'#ff9a4f', JACKPOT_YETI:'#e6f2f6', FISH:'#4eb2f1',
       BIRD:'#f5d16a', VULTURE:'#4e4036', VULTURE_HATCHLING:'#8a6e4b', STRAZNIK:'#8f9aa6', ATOMIC_BOMB:'#646f77', RADIATION_COCKROACH:'#79cf42', ATLANTIS_MEDUZA:'#7bdcff',
       SAND_WORM:'#b38342', GIANT_SCORPION:'#6b3b28', TEMPLE_GUARD:'#6f7d43', BOG_LURKER:'#52643a', STONE_GOLEM:'#626870', GOLD_DRAGON:'#b26d32', GOLD_DWARF_GUARD:'#8f6240',
-      WIOSENNY_JELEN:'#bf8a4d', LETNI_ZUBR:'#8d5e32', JESIENNY_LOS:'#9a6737', ZIMOWY_NIEDZWIEDZ:'#e9f3f8'
+      WIOSENNY_JELEN:'#bf8a4d', LETNI_ZUBR:'#8d5e32', JESIENNY_LOS:'#9a6737', ZIMOWY_NIEDZWIEDZ:'#e9f3f8',
+      CLOUD_RAY:'#b8d9ef', HARPY:'#b08a52', VOLT_WISP:'#9fdcff', SPORE_DRIFTER:'#8ccf9e', CINDER_HAWK:'#cf6a34',
+      SKY_SERAPH:'#f4e6b8', SKYGROVE_WARDEN:'#5f7a3d', BALLOON_TYRANT:'#e08a4e', STORM_HERALD:'#6f88a8', AURORA_WYRM:'#a8e6de',
+      MIRAGE_DJINN:'#d9b35e', CORSAIR_AUTOMATON:'#7d8a96', SPORE_MOTHER:'#7fbf94', GRAVITY_COLOSSUS:'#4a3f5e', HARPY_QUEEN:'#c19a5e', EMBER_PHOENIX:'#ff8a3c'
     };
     const base = BASE[spec.id] || '#a8a8a8';
     m.baseColor = jitterColor(base, {h:12, s:0.14, l:0.10});
   }
     if(typeof spec.onCreate==='function') spec.onCreate(m, spec, getTile);
     applyMobProgressionTraits(m,spec,h);
+    THREAT_LOOK.applySpawnLook(m,spec); // menace grade → allometric scale + body palette
     initMobFacingStability(m,now);
     addToGrid(m); speciesCounts[spec.id]=(speciesCounts[spec.id]||0)+1; return m; }
 
@@ -4251,7 +5002,7 @@ const mobs = (function(){
   const ATLANTIS_GUARD_TILES = Object.freeze({
     [T.GLASS]:true, [T.OBSIDIAN]:true, [T.STEEL]:true, [T.SOLAR_BATTERY]:true,
     [T.ANTIGRAVITY_BEACON]:true, [T.IRIDIUM]:true, [T.METEORIC_IRON]:true,
-    [T.ANTIMATTER_CRYSTAL]:true, [T.GLOWSHROOM]:true, [T.CHEST_RARE]:true, [T.CHEST_EPIC]:true
+    [T.ANTIMATTER_CRYSTAL]:true, [T.GLOWSHROOM]:true, [T.CHEST_RARE]:true, [T.CHEST_EPIC]:true, [T.CHEST_LEGENDARY]:true
   });
   function isAtlantisGuardTile(t){ return !!ATLANTIS_GUARD_TILES[t]; }
   function canHostPiranhaSpawn(x,y,getTile){
@@ -4296,7 +5047,7 @@ const mobs = (function(){
         const t=readMobTile(getTile,x+dx,y+dy);
         if(!isAtlantisGuardTile(t)) continue;
         signals++;
-        if(t===T.CHEST_EPIC || t===T.IRIDIUM || t===T.ANTIGRAVITY_BEACON || t===T.ANTIMATTER_CRYSTAL) heavy++;
+        if(t===T.CHEST_EPIC || t===T.CHEST_LEGENDARY || t===T.IRIDIUM || t===T.ANTIGRAVITY_BEACON || t===T.ANTIMATTER_CRYSTAL) heavy++;
         if(signals>=3 || (signals>=2 && heavy>=1)) return true;
       }
     }
@@ -4760,6 +5511,10 @@ const mobs = (function(){
     if(b==='sea') return biome===5?1:0.03;
     if(b==='mountain') return biome===7?1:0.08;
     if(b==='city') return biome===8?1:0.03;
+    // Sky fauna ignores the surface biome entirely: spawnTest gates on altitude
+    // and the themed region roster, so the eco spawner just offers a steady bid
+    // that only lands while the hero is actually airborne in a biome.
+    if(b==='sky') return 0.75;
     if(spec.aquatic) return (biome===5 || biome===6 || biome===4)?0.85:0.18;
     return 0.35;
   }
@@ -6305,6 +7060,7 @@ const mobs = (function(){
     }
     tryPiranhaAmbush(player,getTile,now);
     tryGoldGuardianSpawn(player,getTile,now);
+    trySkyEncounters(player,getTile,now);
     // Spawn attempt occasionally
     trySpawnNearPlayer(player,getTile, now);
     // Golden sprinter visit clock (counts played time, persists across reloads)
@@ -6324,7 +7080,7 @@ const mobs = (function(){
     let active=0;
     const nowEpoch=Date.now();
     for(let i=0;i<mobs.length;i++){
-      const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue; const aggressive=isMobHostile(m,nowEpoch) && !isMobPacified(m,now);
+      const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue; const aggressive=isMobHostile(m,nowEpoch) && !isMobPacified(m,now) && !hasStatus(m,'blind');
       // Natural lifespan: apply health decay when past decayStartAt; ensure it runs before far-sleep skip
       if(m.decayStartAt && now >= m.decayStartAt){
         const total = Math.max(0.5, ((m.lifeEndAt||now) - m.decayStartAt)/1000); // seconds window
@@ -6347,7 +7103,11 @@ const mobs = (function(){
   const shouldPursue = distToPlayer <= pursue;
   const aggroNow = aggressive && (canSee || shouldPursue);
   m._combatTarget=aggroNow ? (combatTarget && combatTarget.kind==='companion' ? Object.assign({},combatTarget,{y:combatTarget.aimY==null ? combatTarget.y : combatTarget.aimY}) : combatTarget) : player;
-  updateMob(m, spec, {dt, now, aggressive: aggroNow, player:m._combatTarget, getTile, setTile, distToPlayer});
+  // Blinded (sand in the eyes): the AI perceives its target impossibly far away,
+  // so even species with proximity-hunt fallbacks (wolf adx<8 …) stop closing in.
+  // Physical contact still hurts — a blind wolf that stumbles into you bites.
+  const blindMob=hasStatus(m,'blind');
+  updateMob(m, spec, {dt, now, aggressive: aggroNow, player:(blindMob ? {x:m.x-10000, y:m.y} : m._combatTarget), getTile, setTile, distToPlayer:(blindMob ? 10000 : distToPlayer)});
       if(isGroundMob){
         // Interpret AI changes: any upward impulse (vy<-1) becomes a jump intent
         if(m.vy < -1){ m._wantJump=true; }
@@ -6613,131 +7373,6 @@ const mobs = (function(){
     }
   }
 
-  function drawMobThreatMarks(ctx,TILE,m,spec,screenX,screenY,faceDir,phase,hpTop){
-    const tier=Math.max(0,Math.min(4,(m && m.hostilityTier)||0));
-    if(tier<=0 || !m || m.id==='ZLOTY') return;
-    const accent=hostilityAccentColor(m);
-    if(!accent) return;
-    const body=(spec && spec.body) || {w:1,h:1};
-    const bw=Math.max(9,(body.w||1)*TILE);
-    const bh=Math.max(8,(body.h||1)*TILE);
-    const top=screenY - bh*0.58 - (spec && spec.ground ? 2 : 0);
-    const midY=top+bh*0.38;
-    const alpha=Math.min(0.72,0.20+tier*0.10);
-    const hot=m.hostilitySide==='hot';
-    const cold=m.hostilitySide==='cold';
-    ctx.save();
-    ctx.globalAlpha=1;
-    function tri(points,color){
-      ctx.fillStyle=color;
-      ctx.beginPath();
-      ctx.moveTo(points[0][0],points[0][1]);
-      for(let i=1;i<points.length;i++) ctx.lineTo(points[i][0],points[i][1]);
-      ctx.closePath();
-      ctx.fill();
-    }
-    function pixel(x,y,w,h,color){ ctx.fillStyle=color; ctx.fillRect(x,y,w,h); }
-    function bodyPlate(x,y,w,h,a){
-      pixel(x,y,w,h,rgbaHex(accent,a==null?alpha:a));
-      pixel(x,y,w,Math.max(1,h*0.28),rgbaHex(mixHexColor(accent,'#ffffff',0.34),Math.min(0.82,(a==null?alpha:a)+0.12)));
-    }
-    function eye(x,y,s){
-      const glow=rgbaHex(mixHexColor(accent,'#ffffff',0.40),Math.min(0.88,alpha+0.18));
-      pixel(x-s*0.5,y-s*0.5,s,s,glow);
-      if(tier>=3) pixel(x-s*0.2,y-s*0.2,Math.max(1,s*0.4),Math.max(1,s*0.4),'#fff6d0');
-    }
-    function backSpines(count,x0,x1,y,up){
-      const n=Math.max(1,count|0);
-      for(let i=0;i<n;i++){
-        const t=n===1?0.5:i/(n-1);
-        const x=x0+(x1-x0)*t;
-        const h=(3+tier*1.4)*(0.75+0.35*Math.sin(phase+i));
-        tri([[x-2,y+1],[x+2,y+1],[x,y-up*h]],rgbaHex(accent,alpha));
-      }
-    }
-    function sideFang(x,y,dir,len){
-      tri([[x,y],[x+dir*(3+len),y+2],[x+dir*1.5,y+5]],rgbaHex(mixHexColor(accent,'#ffffff',0.18),alpha+0.04));
-    }
-    const plateN=Math.min(4,1+tier);
-    const plateW=Math.max(3,bw*0.12);
-    for(let i=0;i<plateN;i++){
-      const t=plateN===1?0.5:i/(plateN-1);
-      const x=screenX-bw*0.25+bw*0.50*t-plateW*0.5;
-      const y=top+bh*0.22+Math.sin(phase+i)*0.6;
-      bodyPlate(x,y,plateW,Math.max(2,bh*0.08),alpha*0.82);
-    }
-
-    const id=m.id;
-    if(id==='STRAZNIK'){
-      const finY=top+bh*0.18;
-      bodyPlate(screenX-bw*0.22,top+bh*0.08,bw*0.44,Math.max(2,bh*0.08),alpha+0.06);
-      pixel(screenX-faceDir*bw*0.42,midY-3,Math.max(3,bw*0.12),6,rgbaHex(accent,alpha+0.08));
-      pixel(screenX+faceDir*bw*0.26,finY-4,Math.max(3,bw*0.12),4,rgbaHex(accent,alpha+0.02));
-      eye(screenX+faceDir*bw*0.18,top+bh*0.12,3.2);
-      if(tier>=3) pixel(screenX-bw*0.32,screenY-bh*0.05,bw*0.64,2,rgbaHex(accent,0.22));
-    } else if(id==='SZKIELET'){
-      eye(screenX+faceDir*3,top+bh*0.10,2.6);
-      eye(screenX-faceDir*1,top+bh*0.11,2.2);
-      for(let i=0;i<tier;i++) pixel(screenX-bw*0.16+i*3,top+bh*0.38+i%2,2,Math.max(5,bh*0.18),rgbaHex(accent,0.28+0.05*tier));
-      if(tier>=2) sideFang(screenX+faceDir*bw*0.26,top+bh*0.26,faceDir,2+tier);
-    } else if(id==='GHOUL'){
-      eye(screenX+faceDir*bw*0.18,top+bh*0.12,3);
-      eye(screenX+faceDir*bw*0.30,top+bh*0.14,2.4);
-      for(let i=0;i<2+tier;i++){
-        const x=screenX-bw*0.32+i*bw/(2+tier);
-        pixel(x,top+bh*0.46+(i%2)*2,Math.max(2,bw*0.08),Math.max(4,bh*0.24),rgbaHex(accent,0.18+0.05*tier));
-      }
-      if(tier>=3) backSpines(3,screenX-bw*0.22,screenX+bw*0.16,top+bh*0.10,1);
-    } else if(spec && spec.aquatic){
-      backSpines(Math.min(5,2+tier),screenX-bw*0.28,screenX+bw*0.28,top+bh*0.14,1);
-      pixel(screenX-faceDir*bw*0.38,midY-2,Math.max(3,bw*0.16),Math.max(3,bh*0.18),rgbaHex(accent,alpha));
-      eye(screenX+faceDir*bw*0.34,top+bh*0.34,2.5);
-      if(tier>=3){
-        tri([[screenX+faceDir*bw*0.12,top+bh*0.02],[screenX+faceDir*bw*0.24,top-bh*0.18],[screenX+faceDir*bw*0.32,top+bh*0.08]],rgbaHex(accent,alpha*0.7));
-      }
-    } else if(spec && spec.flying){
-      const flap=Math.sin(phase*2.1);
-      eye(screenX+faceDir*bw*0.12,top+bh*0.28,2.2);
-      for(let sgn=-1;sgn<=1;sgn+=2){
-        const wx=screenX+sgn*bw*0.34;
-        tri([[wx,midY],[wx+sgn*(4+tier*2),midY+flap*2],[wx+sgn*2,midY+bh*0.22]],rgbaHex(accent,0.22+0.06*tier));
-        if(tier>=3) tri([[wx+sgn*(3+tier),midY+bh*0.08],[wx+sgn*(8+tier*2),midY+bh*0.14],[wx+sgn*(4+tier),midY+bh*0.22]],rgbaHex(accent,0.26));
-      }
-      if(hot) pixel(screenX-faceDir*bw*0.22,top+bh*0.58,Math.max(4,bw*0.18),2,rgbaHex(accent,0.30));
-    } else {
-      const hornCol=rgbaHex(mixHexColor(accent,cold?'#ffffff':'#ffe1a5',0.28),alpha+0.04);
-      if(id==='DEER' || id==='WIOSENNY_JELEN' || id==='JESIENNY_LOS' || id==='GOAT'){
-        const hx=screenX+faceDir*bw*0.22, hy=top+bh*0.06;
-        for(let i=0;i<Math.min(3,tier);i++){
-          pixel(hx+faceDir*i*3,hy-i*2,2,Math.max(5,bh*0.18)+i*2,hornCol);
-          pixel(hx+faceDir*(i*3+2),hy-i*3,Math.max(3,bw*0.11),2,hornCol);
-        }
-        if(tier>=3) backSpines(3,screenX-bw*0.16,screenX+bw*0.18,top+bh*0.10,1);
-      } else if(id==='WOLF' || id==='BEAR' || id==='ZIMOWY_NIEDZWIEDZ'){
-        backSpines(Math.min(5,2+tier),screenX-bw*0.28,screenX+bw*0.20,top+bh*0.12,1);
-        sideFang(screenX+faceDir*bw*0.38,top+bh*0.30,faceDir,2+tier);
-        bodyPlate(screenX-bw*0.34,top+bh*0.34,bw*0.24,Math.max(3,bh*0.12),alpha+0.02);
-        eye(screenX+faceDir*bw*0.34,top+bh*0.23,2.8);
-      } else if(id==='CRAB' || id==='PELZACZ'){
-        for(let i=0;i<Math.min(5,2+tier);i++){
-          const x=screenX-bw*0.34+i*bw*0.17;
-          tri([[x,midY],[x-3,midY+4+tier],[x+3,midY+3]],rgbaHex(accent,alpha));
-        }
-        eye(screenX+faceDir*bw*0.28,top+bh*0.28,2.4);
-      } else {
-        backSpines(Math.min(4,1+tier),screenX-bw*0.22,screenX+bw*0.18,top+bh*0.14,1);
-        eye(screenX+faceDir*bw*0.28,top+bh*0.22,2.4);
-      }
-    }
-    if(tier>=4){
-      ctx.fillStyle=rgbaHex(accent,0.14);
-      ctx.beginPath();
-      ctx.ellipse(screenX,screenY+Math.min(8,bh*0.22),bw*0.34,bw*0.08,0,0,Math.PI*2);
-      ctx.fill();
-    }
-    hpTop(top-Math.max(3,tier*4));
-    ctx.restore();
-  }
 
   function mobAttackVisual(m,spec,now){
     if(!m || m.id==='ZLOTY') return null;
@@ -6919,6 +7554,8 @@ const mobs = (function(){
       const phase2 = (now*0.003 + m.spawnT*0.19) % (Math.PI*2);
       const attack=mobAttackVisual(m,spec,now);
       applyMobAttackPose(ctx,TILE,spec,screenX,screenY,faceDir,attack);
+      // menace posture: allometric bulk + forward lean for high threat grades
+      THREAT_LOOK.drawPre(ctx,TILE,m,spec,screenX,screenY,faceDir);
       // Helper to draw outline rectangle
       function box(x,y,w,h,fill,stroke){ ctx.fillStyle=fill; ctx.fillRect(x,y,w,h); if(stroke){ ctx.strokeStyle=stroke; ctx.lineWidth=1; ctx.strokeRect(x+0.5,y+0.5,w-1,h-1);} hpTop(y); }
       function shade(x,y,w,h,col,alpha){ ctx.fillStyle=col; ctx.globalAlpha=alpha; ctx.fillRect(x,y,w,h); ctx.globalAlpha=1; }
@@ -8336,13 +8973,296 @@ const mobs = (function(){
           }
           ctx.restore();
           break; }
+        // --- Sky biome fauna -------------------------------------------------
+        case 'CLOUD_RAY': { // wide manta gliding on rippling wings
+          const body=flashing?'#ffffff':(m.baseColor||'#b8d9ef');
+          const flap=Math.sin(phase*1.6)*4;
+          ctx.fillStyle=body;
+          ctx.beginPath();
+          ctx.moveTo(screenX-15,screenY+flap*0.4);
+          ctx.lineTo(screenX,screenY-5);
+          ctx.lineTo(screenX+15,screenY+flap*0.4);
+          ctx.lineTo(screenX+faceDir*4,screenY+4);
+          ctx.closePath(); ctx.fill(); hpTop(screenY-6);
+          ctx.fillStyle='rgba(90,140,190,0.85)';
+          ctx.fillRect(screenX-faceDir*13,screenY+1,faceDir*8,1.6); // tail whip
+          ctx.fillStyle='#1d3550';
+          ctx.fillRect(screenX+faceDir*4-1,screenY-3,2,2);
+          ctx.fillRect(screenX+faceDir*7-1,screenY-2,2,2);
+          break; }
+        case 'HARPY': case 'HARPY_QUEEN': { // feathered raptor; the queen is larger and crowned
+          const queen=m.id==='HARPY_QUEEN';
+          const s=queen?1.5:1;
+          const body=flashing?'#ffe9c8':(m.baseColor||'#b08a52');
+          const flap=Math.sin(phase*2.1)*(queen?6:4);
+          ctx.fillStyle='#7a5c34';
+          ctx.beginPath(); // wings
+          ctx.moveTo(screenX-4*s,screenY-2*s); ctx.lineTo(screenX-16*s,screenY-6*s-flap); ctx.lineTo(screenX-9*s,screenY+2*s); ctx.closePath(); ctx.fill();
+          ctx.beginPath();
+          ctx.moveTo(screenX+4*s,screenY-2*s); ctx.lineTo(screenX+16*s,screenY-6*s+flap); ctx.lineTo(screenX+9*s,screenY+2*s); ctx.closePath(); ctx.fill();
+          box(screenX-5*s,screenY-6*s,10*s,12*s,body,'#5d4426'); // torso
+          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?2:-6)*s,screenY-10*s,5*s,5*s); hpTop(screenY-10*s); // head
+          ctx.fillStyle='#e8b93c'; ctx.fillRect(screenX+(faceDir>0?7:-9)*s,screenY-8*s,3*s,2); // beak
+          ctx.fillStyle='#38200e'; ctx.fillRect(screenX+(faceDir>0?4:-4)*s,screenY-9*s,2,2); // eye
+          ctx.fillStyle='#5d4426';
+          ctx.fillRect(screenX-3*s,screenY+6*s,2,4*s); ctx.fillRect(screenX+2*s,screenY+6*s,2,4*s); // talons
+          if(queen){
+            ctx.fillStyle='#ffd24a';
+            for(let i=0;i<3;i++) ctx.fillRect(screenX+(faceDir>0?2:-6)*s+i*2.4*s,screenY-13*s,1.6,3); // crown
+            hpTop(screenY-13*s);
+          }
+          break; }
+        case 'VOLT_WISP': { // crackling spark orb
+          const prevComp=ctx.globalCompositeOperation;
+          ctx.globalCompositeOperation='lighter';
+          const pulse=2.4+Math.sin(phase*3)*1.2;
+          ctx.fillStyle='rgba(120,200,255,0.35)';
+          ctx.beginPath(); ctx.arc(screenX,screenY,9+pulse,0,Math.PI*2); ctx.fill();
+          ctx.fillStyle=flashing?'#ffffff':'rgba(200,240,255,0.95)';
+          ctx.beginPath(); ctx.arc(screenX,screenY,4.5,0,Math.PI*2); ctx.fill(); hpTop(screenY-10);
+          ctx.strokeStyle='rgba(170,225,255,0.9)'; ctx.lineWidth=1.4;
+          for(let i=0;i<3;i++){
+            const a=phase*2+i*2.1;
+            ctx.beginPath();
+            ctx.moveTo(screenX+Math.cos(a)*5,screenY+Math.sin(a)*5);
+            ctx.lineTo(screenX+Math.cos(a)*11+Math.sin(phase*7+i)*2,screenY+Math.sin(a)*11);
+            ctx.stroke();
+          }
+          ctx.globalCompositeOperation=prevComp;
+          break; }
+        case 'SPORE_DRIFTER': { // drifting cap with hanging tendrils
+          const body=flashing?'#eaffea':(m.baseColor||'#8ccf9e');
+          ctx.fillStyle=body;
+          ctx.beginPath(); ctx.arc(screenX,screenY-2,8,Math.PI,0); ctx.fill(); hpTop(screenY-10);
+          ctx.fillRect(screenX-8,screenY-2,16,3);
+          ctx.fillStyle='rgba(90,150,100,0.9)';
+          for(let i=0;i<4;i++){
+            const sway=Math.sin(phase*1.4+i)*2;
+            ctx.fillRect(screenX-6+i*4+sway,screenY+1,1.6,5+((i*7)%3));
+          }
+          ctx.fillStyle='rgba(210,255,190,0.8)';
+          ctx.fillRect(screenX-3,screenY-7,2,2); ctx.fillRect(screenX+2,screenY-5,2,2); // glow pores
+          break; }
+        case 'CINDER_HAWK': { // dark hawk trailing embers
+          const body=flashing?'#ffd9b8':(m.baseColor||'#cf6a34');
+          const flap=Math.sin(phase*2.4)*4;
+          const prevComp=ctx.globalCompositeOperation;
+          ctx.globalCompositeOperation='lighter';
+          ctx.fillStyle='rgba(255,120,40,0.30)';
+          ctx.beginPath(); ctx.arc(screenX-faceDir*8,screenY+1,5,0,Math.PI*2); ctx.fill(); // ember wake
+          ctx.globalCompositeOperation=prevComp;
+          ctx.fillStyle='#5a2c16';
+          ctx.fillRect(screenX-9,screenY-4-flap,7,5); ctx.fillRect(screenX+2,screenY-4+flap,7,5); // wings
+          box(screenX-5,screenY-4,10,7,body,'#61301a');
+          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?3:-6),screenY-7,4,4); hpTop(screenY-7);
+          ctx.fillStyle='#ffd24a'; ctx.fillRect(screenX+(faceDir>0?7:-8),screenY-5,2,1.6);
+          ctx.fillStyle='#2b1208'; ctx.fillRect(screenX+(faceDir>0?4:-4),screenY-6,1.6,1.6);
+          break; }
+        case 'SKY_SERAPH': { // radiant winged figure with a halo
+          const body=flashing?'#ffffff':(m.baseColor||'#f4e6b8');
+          const prevComp=ctx.globalCompositeOperation;
+          ctx.globalCompositeOperation='lighter';
+          ctx.fillStyle='rgba(255,235,160,0.22)';
+          ctx.beginPath(); ctx.arc(screenX,screenY-4,22,0,Math.PI*2); ctx.fill();
+          ctx.globalCompositeOperation=prevComp;
+          const spread=Math.sin(phase*1.4)*3;
+          ctx.fillStyle='rgba(255,246,210,0.9)';
+          for(const side of [-1,1]){ // twin blade-wings
+            ctx.beginPath();
+            ctx.moveTo(screenX+side*4,screenY-8);
+            ctx.lineTo(screenX+side*(20+spread),screenY-16);
+            ctx.lineTo(screenX+side*8,screenY+4);
+            ctx.closePath(); ctx.fill();
+          }
+          box(screenX-6,screenY-12,12,24,body,'#c9a94f'); // robe
+          ctx.fillStyle='#fff4cf'; ctx.fillRect(screenX-4,screenY-18,8,7); hpTop(screenY-24);
+          ctx.strokeStyle='#ffd24a'; ctx.lineWidth=2;
+          ctx.beginPath(); ctx.arc(screenX,screenY-21,6,0,Math.PI*2); ctx.stroke(); // halo
+          ctx.fillStyle='#7a5a18';
+          ctx.fillRect(screenX+(faceDir>0?-2:0),screenY-16,2,2); ctx.fillRect(screenX+(faceDir>0?2:-4),screenY-16,2,2);
+          break; }
+        case 'SKYGROVE_WARDEN': { // island-striding treant
+          const bark=flashing?'#cfe0b8':(m.baseColor||'#5f7a3d');
+          const sway=Math.sin(phase2)*2;
+          ctx.fillStyle='#4a3520';
+          ctx.fillRect(screenX-12,screenY+8,8,14); ctx.fillRect(screenX+4,screenY+8,8,14); // root legs
+          box(screenX-14,screenY-14,28,24,bark,'#33421f'); // trunk torso
+          ctx.fillStyle='#4a3520';
+          ctx.fillRect(screenX-20,screenY-8+sway,7,16); ctx.fillRect(screenX+13,screenY-8-sway,7,16); // arms
+          ctx.fillStyle='#3f7d2e'; // leaf crown
+          ctx.beginPath(); ctx.arc(screenX-8,screenY-18,7,0,Math.PI*2); ctx.arc(screenX+2,screenY-23,9,0,Math.PI*2); ctx.arc(screenX+11,screenY-17,6,0,Math.PI*2); ctx.fill();
+          hpTop(screenY-32);
+          ctx.fillStyle='#ffe27a';
+          ctx.fillRect(screenX+(faceDir>0?-4:0),screenY-8,3,3); ctx.fillRect(screenX+(faceDir>0?4:-8),screenY-8,3,3); // glowing eyes
+          break; }
+        case 'BALLOON_TYRANT': { // striped gasbag with a fanged gondola
+          const skin=flashing?'#ffe6c8':(m.baseColor||'#e08a4e');
+          const bob=Math.sin(phase2)*2;
+          ctx.fillStyle=skin;
+          ctx.beginPath(); ctx.ellipse(screenX,screenY-10+bob,20,14,0,0,Math.PI*2); ctx.fill(); hpTop(screenY-24+bob);
+          ctx.fillStyle='rgba(140,60,20,0.55)';
+          for(let i=-2;i<=2;i++) ctx.fillRect(screenX+i*7-1.4,screenY-22+bob,2.8,24); // stripes
+          ctx.fillStyle='#5a3a1e';
+          ctx.fillRect(screenX-8,screenY+5+bob,16,8); // gondola jaw
+          ctx.fillStyle='#fff';
+          for(let i=0;i<4;i++) ctx.fillRect(screenX-6+i*4,screenY+5+bob,2,3); // teeth
+          ctx.fillStyle='#2b1208';
+          ctx.fillRect(screenX+(faceDir>0?2:-6),screenY-14+bob,4,4); // eye
+          ctx.strokeStyle='rgba(90,58,30,0.8)'; ctx.lineWidth=1.4;
+          for(const sx of [-14,14]){ // rigging
+            ctx.beginPath(); ctx.moveTo(screenX+sx,screenY-2+bob); ctx.lineTo(screenX+sx*0.5,screenY+6+bob); ctx.stroke();
+          }
+          break; }
+        case 'STORM_HERALD': { // thundercloud smith with a lightning core
+          const cloud=flashing?'#e8f2fa':(m.baseColor||'#6f88a8');
+          ctx.fillStyle=cloud;
+          ctx.beginPath();
+          ctx.arc(screenX-9,screenY-6,8,0,Math.PI*2);
+          ctx.arc(screenX+2,screenY-11,10,0,Math.PI*2);
+          ctx.arc(screenX+11,screenY-5,7,0,Math.PI*2);
+          ctx.fill(); hpTop(screenY-21);
+          ctx.fillStyle='rgba(40,55,75,0.9)';
+          ctx.fillRect(screenX-13,screenY-4,26,10); // anvil base
+          const prevComp=ctx.globalCompositeOperation;
+          ctx.globalCompositeOperation='lighter';
+          ctx.strokeStyle='rgba(160,220,255,0.95)'; ctx.lineWidth=2;
+          ctx.beginPath();
+          ctx.moveTo(screenX,screenY-8);
+          ctx.lineTo(screenX+faceDir*3,screenY-1);
+          ctx.lineTo(screenX-faceDir*1,screenY+2);
+          ctx.lineTo(screenX+faceDir*4,screenY+9);
+          ctx.stroke(); // core bolt
+          ctx.globalCompositeOperation=prevComp;
+          ctx.fillStyle='#ffe27a';
+          ctx.fillRect(screenX+(faceDir>0?4:-7),screenY-11,3,2.4); // furnace eye
+          break; }
+        case 'AURORA_WYRM': { // ribbon serpent trailing aurora light
+          const trail=m._trail||[];
+          const prevComp=ctx.globalCompositeOperation;
+          ctx.globalCompositeOperation='lighter';
+          for(let i=0;i<trail.length;i++){
+            const seg=trail[i];
+            const a=(i+1)/trail.length;
+            ctx.fillStyle='rgba('+(90+Math.sin(phase+i)*60|0)+',220,'+(190+Math.cos(phase+i)*40|0)+','+(0.16+a*0.22)+')';
+            ctx.beginPath(); ctx.arc(seg.x*TILE,seg.y*TILE,3+a*5,0,Math.PI*2); ctx.fill();
+          }
+          ctx.globalCompositeOperation=prevComp;
+          const body=flashing?'#ffffff':(m.baseColor||'#a8e6de');
+          box(screenX-12,screenY-5,24,10,body,'#3f7d78'); // head/foreseg
+          ctx.fillStyle='#3f7d78';
+          ctx.beginPath(); ctx.moveTo(screenX-faceDir*12,screenY); ctx.lineTo(screenX-faceDir*20,screenY-4); ctx.lineTo(screenX-faceDir*20,screenY+4); ctx.closePath(); ctx.fill(); // fin
+          ctx.fillStyle='#123c3c';
+          ctx.fillRect(screenX+faceDir*6-1,screenY-3,3,3); // eye
+          ctx.fillStyle='rgba(255,255,255,0.85)';
+          ctx.fillRect(screenX+faceDir*10-2,screenY-1,4,2); // frost breath shimmer
+          hpTop(screenY-8);
+          break; }
+        case 'MIRAGE_DJINN': { // half-real trickster on a sand vortex
+          const body=flashing?'#fff2cf':(m.baseColor||'#d9b35e');
+          ctx.globalAlpha=0.55+Math.sin(phase*2.2)*0.25; // shimmer in and out
+          ctx.fillStyle='rgba(210,170,90,0.8)';
+          ctx.beginPath(); // vortex tail
+          ctx.moveTo(screenX-8,screenY+2);
+          ctx.lineTo(screenX+8,screenY+2);
+          ctx.lineTo(screenX+Math.sin(phase*3)*3,screenY+16);
+          ctx.closePath(); ctx.fill();
+          box(screenX-7,screenY-12,14,15,body,'#8a6a2a'); // torso
+          ctx.fillStyle=body; ctx.fillRect(screenX-4,screenY-18,9,7); hpTop(screenY-22);
+          ctx.fillStyle='#5d3f14';
+          ctx.fillRect(screenX-5,screenY-20,11,3); // turban
+          ctx.fillStyle='#e04848'; ctx.fillRect(screenX,screenY-21,2,2); // jewel
+          ctx.fillStyle='#2b1c08';
+          ctx.fillRect(screenX+(faceDir>0?1:-3),screenY-15,2,2);
+          ctx.globalAlpha=1;
+          break; }
+        case 'CORSAIR_AUTOMATON': { // riveted hull with a single red visor
+          const hull=flashing?'#dfe8ef':(m.baseColor||'#7d8a96');
+          box(screenX-13,screenY-12,26,22,hull,'#3d4750');
+          ctx.fillStyle='#3d4750';
+          for(let i=0;i<4;i++) ctx.fillRect(screenX-10+i*6,screenY-10,2,2); // rivets
+          ctx.fillStyle='#c23a2e';
+          ctx.fillRect(screenX+(faceDir>0?1:-9),screenY-7,8,3); hpTop(screenY-14); // visor
+          ctx.fillStyle='rgba(255,120,90,0.8)';
+          ctx.fillRect(screenX+(faceDir>0?3:-7)+Math.sin(phase*4)*1.5,screenY-6.6,2,1.8); // scanning glint
+          ctx.fillStyle='#5b6771';
+          ctx.fillRect(screenX+faceDir*13-(faceDir>0?0:6),screenY-2,6,4); // harpoon arm
+          ctx.fillStyle='#9aa8b5';
+          ctx.fillRect(screenX+faceDir*17-(faceDir>0?0:8),screenY-1,8,2);
+          ctx.fillStyle='#2e3840';
+          ctx.fillRect(screenX-9,screenY+10,5,5); ctx.fillRect(screenX+4,screenY+10,5,5); // thruster feet
+          break; }
+        case 'SPORE_MOTHER': { // vast gilled cap venting spores
+          const cap=flashing?'#eaffea':(m.baseColor||'#7fbf94');
+          const bob=Math.sin(phase2)*2;
+          ctx.fillStyle=cap;
+          ctx.beginPath(); ctx.arc(screenX,screenY-4+bob,22,Math.PI,0); ctx.fill(); hpTop(screenY-26+bob);
+          ctx.fillRect(screenX-22,screenY-4+bob,44,6);
+          ctx.fillStyle='rgba(70,120,80,0.9)';
+          for(let i=0;i<6;i++) ctx.fillRect(screenX-18+i*6.4,screenY+2+bob,3,8+Math.sin(phase+i)*2); // gills
+          const prevComp=ctx.globalCompositeOperation;
+          ctx.globalCompositeOperation='lighter';
+          ctx.fillStyle='rgba(160,255,170,0.5)';
+          for(let i=0;i<4;i++){
+            const sx=screenX-14+i*9+Math.sin(phase*1.6+i*2)*3;
+            const sYy=screenY-14+bob-((now*0.02+i*23)%16);
+            ctx.fillRect(sx,sYy,2.4,2.4); // rising spores
+          }
+          ctx.globalCompositeOperation=prevComp;
+          ctx.fillStyle='#2f4f38';
+          ctx.fillRect(screenX+(faceDir>0?4:-10),screenY-9+bob,6,3); // brooding eye slit
+          break; }
+        case 'GRAVITY_COLOSSUS': { // obsidian monolith with orbiting debris
+          const rock=flashing?'#c8bce0':(m.baseColor||'#4a3f5e');
+          box(screenX-13,screenY-18,26,36,rock,'#241d33'); hpTop(screenY-18);
+          const prevComp=ctx.globalCompositeOperation;
+          ctx.globalCompositeOperation='lighter';
+          ctx.fillStyle='rgba(190,120,255,0.75)';
+          ctx.beginPath(); ctx.arc(screenX,screenY-2,5+Math.sin(phase*2)*1.4,0,Math.PI*2); ctx.fill(); // core
+          ctx.globalCompositeOperation=prevComp;
+          ctx.fillStyle='#241d33';
+          ctx.fillRect(screenX-9,screenY-14,5,4); ctx.fillRect(screenX+5,screenY-12,4,3); // cracks
+          for(let i=0;i<3;i++){ // orbiting shards
+            const a=phase*1.2+i*2.09;
+            const ox=Math.cos(a)*20, oy=Math.sin(a)*9;
+            ctx.fillStyle='#5e5378';
+            ctx.fillRect(screenX+ox-2,screenY-2+oy-2,4,4);
+          }
+          break; }
+        case 'EMBER_PHOENIX': { // the burning bird; brighter after its rebirth
+          const reborn=!!m._reborn;
+          const prevComp=ctx.globalCompositeOperation;
+          ctx.globalCompositeOperation='lighter';
+          ctx.fillStyle=reborn?'rgba(255,150,40,0.4)':'rgba(255,120,40,0.28)';
+          ctx.beginPath(); ctx.arc(screenX,screenY,16,0,Math.PI*2); ctx.fill();
+          const flap=Math.sin(phase*2.6)*5;
+          ctx.fillStyle='rgba(255,170,60,0.85)';
+          for(const side of [-1,1]){ // flame wings
+            ctx.beginPath();
+            ctx.moveTo(screenX+side*3,screenY-2);
+            ctx.lineTo(screenX+side*18,screenY-8-side*flap*0.4-flap*0.5);
+            ctx.lineTo(screenX+side*9,screenY+4);
+            ctx.closePath(); ctx.fill();
+          }
+          ctx.fillStyle='rgba(255,220,120,0.6)';
+          for(let i=0;i<3;i++){ // trailing tail plumes
+            const tx=screenX-faceDir*(10+i*6)-Math.sin(phase+i)*2;
+            ctx.beginPath(); ctx.arc(tx,screenY+3+i*2,3.4-i*0.8,0,Math.PI*2); ctx.fill();
+          }
+          ctx.globalCompositeOperation=prevComp;
+          const body=flashing?'#ffffff':(m.baseColor||'#ff8a3c');
+          box(screenX-6,screenY-5,12,10,body,'#a33d10');
+          ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?4:-8),screenY-9,5,5); hpTop(screenY-11);
+          ctx.fillStyle='#ffd24a'; ctx.fillRect(screenX+(faceDir>0?9:-10),screenY-7,2.6,1.8); // beak
+          ctx.fillStyle='#3a1404'; ctx.fillRect(screenX+(faceDir>0?6:-6),screenY-8,1.8,1.8);
+          break; }
         default: {
           // fallback: small box
           box(screenX-4, screenY-4,8,8, flashing? '#ffffff':'#888', '#444');
         }
       }
       drawMobAttackIntent(ctx,TILE,spec,screenX,screenY,faceDir,phase,attack,hpTop);
-      drawMobThreatMarks(ctx,TILE,m,spec,screenX,screenY,faceDir,phase,hpTop);
+      // threat-look feature layers anchored on the actual drawn art (topY)
+      THREAT_LOOK.drawPost(ctx,TILE,m,spec,screenX,screenY,faceDir,phase,topY,hpTop);
       // HP bar (position above highest drawn pixel); species with bespoke bars
       // (golden sprinter) or hidden bodies (mole in rock) set m._hideBar
       if(!m._hideBar && m.hp < (m.maxHp || SPECIES[m.id]?.hp || 1)){
@@ -8528,6 +9448,60 @@ const mobs = (function(){
         ctx.beginPath(); ctx.arc(-1.2,-1.4,1.8,0,Math.PI*2); ctx.fill();
         ctx.fillStyle='rgba(150,190,230,0.5)';
         ctx.fillRect(0.8,1.2,2,1.4);
+      } else if(pr.type==='radiant'){
+        const prevComp=ctx.globalCompositeOperation;
+        ctx.globalCompositeOperation='lighter';
+        ctx.fillStyle='rgba(255,240,170,0.9)';
+        ctx.fillRect(-8,-1.5,16,3);
+        ctx.fillStyle='rgba(255,255,255,0.85)';
+        ctx.fillRect(-4,-0.8,10,1.6);
+        ctx.globalCompositeOperation=prevComp;
+      } else if(pr.type==='stormbolt'){
+        const prevComp=ctx.globalCompositeOperation;
+        ctx.globalCompositeOperation='lighter';
+        ctx.strokeStyle='rgba(150,220,255,0.95)';
+        ctx.lineWidth=2;
+        ctx.beginPath(); ctx.moveTo(-7,-2); ctx.lineTo(-2,1); ctx.lineTo(2,-2); ctx.lineTo(7,2); ctx.stroke();
+        ctx.fillStyle='rgba(220,245,255,0.8)';
+        ctx.fillRect(-1.5,-1.5,3,3);
+        ctx.globalCompositeOperation=prevComp;
+      } else if(pr.type==='iceshard'){
+        ctx.fillStyle='#bfeaff';
+        ctx.beginPath(); ctx.moveTo(-6,0); ctx.lineTo(0,-3); ctx.lineTo(6,0); ctx.lineTo(0,3); ctx.closePath(); ctx.fill();
+        ctx.fillStyle='rgba(255,255,255,0.7)';
+        ctx.fillRect(-2,-1,4,1);
+      } else if(pr.type==='sandburst'){
+        ctx.fillStyle='rgba(224,190,110,0.9)';
+        ctx.beginPath(); ctx.arc(0,0,4,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='rgba(190,150,80,0.7)';
+        for(let i=0;i<4;i++) ctx.fillRect(-5+i*3, i%2? -4:3, 2,2);
+      } else if(pr.type==='harpoon'){
+        ctx.fillStyle='#9aa8b5';
+        ctx.fillRect(-8,-1,16,2);
+        ctx.beginPath(); ctx.moveTo(8,0); ctx.lineTo(3,-3.4); ctx.lineTo(3,3.4); ctx.closePath(); ctx.fill();
+        ctx.strokeStyle='rgba(120,130,140,0.6)';
+        ctx.lineWidth=1;
+        ctx.beginPath(); ctx.moveTo(-8,0); ctx.lineTo(-16,1.5); ctx.stroke();
+      } else if(pr.type==='skybomb'){
+        ctx.fillStyle='#3d3a33';
+        ctx.beginPath(); ctx.arc(0,0,5,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='#c8b070';
+        ctx.fillRect(-1,-7,2,3);
+        ctx.fillStyle='rgba(255,150,60,0.9)';
+        ctx.fillRect(-1,-8,2,1.4);
+      } else if(pr.type==='sporeburst'){
+        ctx.fillStyle='rgba(140,210,130,0.85)';
+        ctx.beginPath(); ctx.arc(0,0,4.4,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='rgba(90,160,90,0.8)';
+        for(let i=0;i<3;i++) ctx.fillRect(-4+i*3.4,-5+(i%2)*9,2,2);
+      } else if(pr.type==='voidbolt'){
+        const prevComp=ctx.globalCompositeOperation;
+        ctx.globalCompositeOperation='lighter';
+        ctx.fillStyle='rgba(150,80,220,0.75)';
+        ctx.beginPath(); ctx.arc(0,0,6,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='rgba(230,190,255,0.9)';
+        ctx.beginPath(); ctx.arc(0,0,2.6,0,Math.PI*2); ctx.fill();
+        ctx.globalCompositeOperation=prevComp;
       } else {
         ctx.fillStyle='#e8e4d8'; ctx.fillRect(-5,-1.5,10,3);
         ctx.fillStyle='#c9c2b0'; ctx.fillRect(-6,-2.5,3,5); ctx.fillRect(3,-2.5,3,5);
@@ -8546,6 +9520,53 @@ const mobs = (function(){
         const wx=px + Math.sin(ph+i)*5;
         ctx.fillStyle='rgba(120,220,80,'+(0.55-0.025*((wy-py+22)|0)).toFixed(2)+')';
         ctx.fillRect(wx, wy, 3, 3);
+      }
+    }
+    // Bleeding mobs: red drips running down the body
+    for(const m of mobs){
+      if(!hasStatus(m,'bleed')) continue;
+      if(!disableCull && (m.x < viewL || m.x > viewR || m.y < viewT || m.y > viewB)) continue;
+      if(!mobVisible(m)) continue;
+      const px=m.x*TILE, py=m.y*TILE;
+      ctx.fillStyle='rgba(216,42,42,0.8)';
+      for(let i=0;i<2;i++){
+        const drop=((now*0.03 + i*71 + (m.spawnT||0))%(TILE*0.8));
+        ctx.fillRect(px-4+i*8, py-3+drop, 2, 3);
+      }
+    }
+    // Stunned mobs: golden sparks orbiting over the head
+    for(const m of mobs){
+      if(!hasStatus(m,'stun')) continue;
+      if(!disableCull && (m.x < viewL || m.x > viewR || m.y < viewT || m.y > viewB)) continue;
+      if(!mobVisible(m)) continue;
+      const px=m.x*TILE, py=m.y*TILE - TILE*0.8*(m.scale||1);
+      ctx.fillStyle='rgba(255,214,74,0.9)';
+      const ph=now*0.012 + (m.spawnT||0)*0.01;
+      for(let i=0;i<3;i++){
+        const a=ph+i*2.1;
+        ctx.fillRect(px+Math.cos(a)*7, py+Math.sin(a)*2.6, 2, 2);
+      }
+    }
+    // Panicked mobs: an amber exclamation mark popping over the head
+    for(const m of mobs){
+      if(!hasStatus(m,'panic')) continue;
+      if(!disableCull && (m.x < viewL || m.x > viewR || m.y < viewT || m.y > viewB)) continue;
+      if(!mobVisible(m)) continue;
+      const px=m.x*TILE, py=m.y*TILE - TILE*(0.9+0.06*Math.sin(now*0.02))*(m.scale||1);
+      ctx.fillStyle='rgba(255,176,52,0.95)';
+      ctx.fillRect(px-1, py-7, 2, 5);
+      ctx.fillRect(px-1, py, 2, 2);
+    }
+    // Blinded mobs: dark dust specks hanging at eye level
+    for(const m of mobs){
+      if(!hasStatus(m,'blind')) continue;
+      if(!disableCull && (m.x < viewL || m.x > viewR || m.y < viewT || m.y > viewB)) continue;
+      if(!mobVisible(m)) continue;
+      const px=m.x*TILE, py=m.y*TILE - TILE*0.22*(m.scale||1);
+      ctx.fillStyle='rgba(120,104,74,0.75)';
+      const tw=now*0.005 + (m.spawnT||0)*0.01;
+      for(let i=0;i<3;i++){
+        ctx.fillRect(px-5+i*5 + Math.sin(tw+i*1.7)*1.5, py+Math.cos(tw*1.2+i)*2, 2, 2);
       }
     }
     ctx.restore();
@@ -8784,6 +9805,15 @@ const mobs = (function(){
     // Frozen solid: hard CC minted only by the wet+chill reaction (weapons never
     // apply it raw). Immobile, takes halved damage; fire melts the shell.
     frozen:{ tickEvery:0.5, organicOnly:false, curedByWater:false, defaultDps:0, immobile:true, armor:0.5 },
+    // Hand-weapon material identities (weapons.js MELEE_EFFECTS): metal edges cut
+    // (bleed DoT), stone mass concusses (short stun), a diamond flash terrifies
+    // (panic: the creature bolts away from the hero at fleeSpeed).
+    bleed: { tickEvery:0.5, organicOnly:true,  curedByWater:false },
+    stun:  { tickEvery:0.5, organicOnly:false, curedByWater:false, defaultDps:0, immobile:true },
+    panic: { tickEvery:0.5, organicOnly:true,  curedByWater:false, defaultDps:0, fleeSpeed:3.4 },
+    // A face full of thrown sand: the creature can't see the hero — the per-frame
+    // aggro gate in update() treats a blinded mob as non-aggressive. Water rinses it.
+    blind: { tickEvery:0.5, organicOnly:true,  curedByWater:true,  defaultDps:0 },
   };
   // ---- Elemental status matrix -------------------------------------------------
   // Applying a status onto certain existing statuses REACTS instead of stacking.
@@ -8879,9 +9909,20 @@ const mobs = (function(){
       if(def.panic && Math.random()<0.08){ m.vx+=(Math.random()*2-1)*def.panic; m.facing=m.vx>=0?1:-1; }
       if(def.slowRate) m.vx*=Math.max(0,1-dt*def.slowRate);
       if(def.immobile){ m.vx=0; if(m.vy<0) m.vy=0; } // frozen solid: no walking, no jumping (gravity still applies)
+      // Panicked: bolt away from the hero (runs after species AI, so it overrides pursuit)
+      if(def.fleeSpeed){
+        const pl=(typeof window!=='undefined' && window.player) || null;
+        const away=pl && Number.isFinite(pl.x) ? (m.x<pl.x ? -1 : 1) : -(m.facing||1);
+        m.vx=away*def.fleeSpeed;
+        m.facing=away>=0?1:-1;
+      }
     }
   }
   // Public point/area applicators (weapons & tile fire use these)
+  // Generic pair for the non-elemental statuses (bleed/stun/panic/blind ride
+  // these from weapons.js); the elemental ones keep their named wrappers.
+  function statusAt(tileX,tileY,id,opts){ const m=findAt(tileX,tileY); if(!m) return false; return applyStatus(m,id,opts); }
+  function statusRadius(wx,wy,r,id,opts){ let n=0; const r2=r*r; for(const m of mobs){ const dx=m.x-wx, dy=m.y-wy; if(dx*dx+dy*dy<=r2 && applyStatus(m,id,opts)) n++; } return n; }
   function igniteAt(tileX,tileY,opts){ const m=findAt(tileX,tileY); if(!m) return false; return applyStatus(m,'burn',opts); }
   function igniteRadius(wx,wy,r,opts){ let n=0; const r2=r*r; for(const m of mobs){ const dx=m.x-wx, dy=m.y-wy; if(dx*dx+dy*dy<=r2 && applyStatus(m,'burn',opts)) n++; } return n; }
   function poisonAt(tileX,tileY,opts){ const m=findAt(tileX,tileY); if(!m) return false; return applyStatus(m,'poison',opts); }
@@ -9290,6 +10331,10 @@ const mobs = (function(){
       if(finiteNum(m.guardGoldX)) out.guardGoldX=+m.guardGoldX.toFixed(4);
       if(finiteNum(m.guardGoldY)) out.guardGoldY=+m.guardGoldY.toFixed(4);
     }
+    // Sky biome bosses: keep the region binding (kill-after-reload must still
+    // arm the respawn lockout) and the phoenix's spent rebirth.
+    if(typeof m._skyRegionKey==='string') out.skyRegionKey=m._skyRegionKey.slice(0,48);
+    if(m._reborn) out.reborn=1;
     if(isHeroFocused(m)) out.heroFocusMs=Math.max(0,Math.round(m.heroFocusUntil-Date.now()));
     if(isTempleGuardAggro(m)) out.templeAggroMs=Math.max(0,Math.round(m.templeAggroUntil-Date.now()));
     if(finiteNum(m.templeAlarmX)) out.templeAlarmX=+m.templeAlarmX.toFixed(4);
@@ -9407,6 +10452,8 @@ const mobs = (function(){
           if(finiteNum(r.guardGoldY)) m.guardGoldY=clampFinite(r.guardGoldY,m.y,WORLD_TOP,WORLD_BOTTOM);
           if(!m.goldGuardKey && finiteNum(m.guardGoldX) && finiteNum(m.guardGoldY)) m.goldGuardKey=goldGuardKeyFor(m.guardGoldX,m.guardGoldY);
         }
+        if(typeof r.skyRegionKey==='string' && r.skyRegionKey.length<=64) m._skyRegionKey=r.skyRegionKey;
+        if(r.reborn) m._reborn=true;
         if(finiteNum(r.heroFocusMs) && r.heroFocusMs>0) m.heroFocusUntil=Date.now()+Math.min(r.heroFocusMs,HERO_FOCUS_MS);
         if(finiteNum(r.templeAggroMs) && r.templeAggroMs>0) m.templeAggroUntil=Date.now()+Math.min(r.templeAggroMs,TEMPLE_GUARD_VIOLATION_AGGRO_MS);
         if(finiteNum(r.templeAlarmX)) m.templeAlarmX=clampFinite(r.templeAlarmX,m.x,-10000000,10000000);
@@ -9572,7 +10619,7 @@ const mobs = (function(){
         lasers:mobLasers.map(l=>({x1:l.x1,y1:l.y1,x2:l.x2,y2:l.y2,dmg:l.dmg||0,hit:!!l.hit}))
       };
     }
-  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, chillAt, chillRadius, wetAt, wetRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat };
+  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, chillAt, chillRadius, wetAt, wetRadius, statusAt, statusRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat };
   MM.mobs = api;
   try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
   return api;

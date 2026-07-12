@@ -31,11 +31,11 @@ const ruins = (function(){
   const CFG = { SPACING:160, GATE:0.55, MARGIN:34, CACHE_CAP:300, MEGA_ROLL:0.99 };
   const cache = new Map(); // `${worldSeed}:${cell}` -> layout | null
   const TEMPLE_TREASURE_TILES = Object.freeze({
-    [T.CHEST_COMMON]:true, [T.CHEST_RARE]:true, [T.CHEST_EPIC]:true, [T.DIAMOND]:true
+    [T.CHEST_COMMON]:true, [T.CHEST_UNCOMMON]:true, [T.CHEST_RARE]:true, [T.CHEST_EPIC]:true, [T.CHEST_LEGENDARY]:true, [T.DIAMOND]:true
   });
   const TEMPLE_STRUCTURE_TILES = Object.freeze({
     [T.STONE]:true, [T.OBSIDIAN]:true, [T.TORCH]:true,
-    [T.CHEST_COMMON]:true, [T.CHEST_RARE]:true, [T.CHEST_EPIC]:true, [T.DIAMOND]:true
+    [T.CHEST_COMMON]:true, [T.CHEST_UNCOMMON]:true, [T.CHEST_RARE]:true, [T.CHEST_EPIC]:true, [T.CHEST_LEGENDARY]:true, [T.DIAMOND]:true
   });
 
   function mulberry32(a){ a=a>>>0; return function(){ a|=0; a=(a+0x6D2B79F5)|0; let t=Math.imul(a^(a>>>15),1|a); t=(t+Math.imul(t^(t>>>7),61|t))^t; return ((t^(t>>>14))>>>0)/4294967296; }; }

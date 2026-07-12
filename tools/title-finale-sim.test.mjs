@@ -112,6 +112,31 @@ assert.ok(cred.some(c => c[1].includes('424242')), 'the seed gets a scenography 
 assert.ok(cred.some(c => /dziękujemy/i.test(c[1])), 'the simulation says thank you');
 assert.ok(cred.some(c => c[0] === 'Zamknięte warstwy'), 'the credits count the closed layers');
 
+// --- finale: the layer verdict is earned and priority-ordered ------------------
+// (deathless > stubbornness > curiosity > completionism > speed > depth > default)
+const v = finale.verdict;
+assert.equal(v({...rep, deaths: 0}).key, 'untouched', 'a deathless run outranks everything');
+assert.equal(v({...rep, deaths: 14, discoveries: {count: 18, total: 18}}).key, 'phoenix', 'stubbornness beats curiosity');
+assert.equal(v({...rep, deaths: 3, discoveries: {count: 15, total: 18}}).key, 'cartographer', '80%+ discoveries earn the cartographer');
+assert.equal(v({deaths: 2, day: 9, level: 9, discoveries: {count: 1, total: 18}, milestones: {done: 4, total: 4}}).key, 'protocol', 'a full milestone sheet beats speed');
+assert.equal(v({deaths: 2, day: 9, level: 9, discoveries: {count: 1, total: 18}, milestones: {done: 1, total: 4}}).key, 'sprint', 'a fast layer earns the sprint');
+assert.equal(v({deaths: 2, day: 30, level: 16, discoveries: {count: 1, total: 18}, milestones: {done: 1, total: 4}}).key, 'veteran', 'depth earns the veteran');
+assert.equal(v({deaths: 2, day: 30, level: 5, discoveries: {count: 1, total: 18}, milestones: {done: 1, total: 4}}).key, 'observer', 'the default verdict stays warm');
+assert.ok(v(rep).title.length > 4 && v(rep).note.length > 10, 'verdicts carry a title and a note');
+
+// --- finale: ceremony mode mirrors the title automation contract ---------------
+const inst = finale.shouldInstant;
+assert.equal(inst({webdriver: true}), true, 'webdriver gets the instant ceremony');
+assert.equal(inst({ua: 'Mozilla/5.0 HeadlessEdg/126.0'}), true, 'headless UA gets the instant ceremony');
+assert.equal(inst({reducedMotion: true}), true, 'prefers-reduced-motion gets the instant ceremony');
+assert.equal(inst({}), false, 'a human browser gets the staged ceremony');
+assert.equal(inst({webdriver: true, search: '?seed=42&ceremony=1'}), false, '?ceremony=1 forces staged even under automation');
+assert.equal(inst({search: '?ceremony=0'}), true, '?ceremony=0 forces instant for humans');
+const acts = finale.config.CEREMONY;
+assert.ok(acts.card < acts.title && acts.title < acts.guardians && acts.guardians < acts.stats
+  && acts.stats < acts.verdict && acts.verdict < acts.credits && acts.credits < acts.glitch
+  && acts.glitch < acts.meta && acts.meta < acts.buttons, 'the acts play in story order');
+
 // --- finale: reset + new-game sweep clear the profile -------------------------
 finale.reset();
 assert.deepEqual(finale.metrics(), {deaths: 0, unlocked: false, seen: false, open: false}, 'reset zeroes everything');
@@ -132,6 +157,10 @@ globalThis.dispatchEvent(new CustomEvent('mm-guardian-defeated', {detail: {kind:
 assert.equal(finale.layers().completions, 2, 'a fresh world can close the next layer');
 globalThis.dispatchEvent(new CustomEvent('mm-guardian-defeated', {detail: {kind: 'mother'}}));
 assert.equal(finale.layers().completions, 2, 'the same world never double-counts');
+const lastVerdict = finale.layers().lastVerdict;
+assert.ok(lastVerdict && typeof lastVerdict.key === 'string' && lastVerdict.title.length > 3,
+  'the closing verdict is stamped into mm_layers_v1 for the next title screen');
+assert.equal(finale.souvenir(), null, 'no canvas in Node: the souvenir declines gracefully');
 // Veterancy reaches the title: the splash pool grows once a layer is closed.
 const vetLine = titleScreen.pickSplash(() => 0.9999);
 assert.ok(!titleScreen.SPLASHES.includes(vetLine), 'a veteran-only splash joins the rotation: ' + vetLine);
@@ -152,5 +181,9 @@ assert.ok(/id="openFinale"[^>]*hidden/.test(htmlSrc), 'the menu ships a hidden Z
 assert.ok(/#titleScreen\{[^}]*z-index:200/.test(htmlSrc), 'title screen styles installed above the HUD');
 assert.ok(/#finaleScreen\{[^}]*z-index:200/.test(htmlSrc), 'finale styles installed above the HUD');
 assert.ok(/#finaleBanner\{[^}]*z-index:90/.test(htmlSrc), 'the finale banner sits under the overlays');
+assert.ok(/#finaleScreen\.staged \.fnAct\{/.test(htmlSrc), 'staged acts start hidden (instant mode shows all by default)');
+assert.ok(/\.fnVerdict\{/.test(htmlSrc) && /\.fnMeta\{/.test(htmlSrc), 'the verdict seal and the upper-layer transmission are styled');
+assert.ok(/@keyframes fnGlitch\{/.test(htmlSrc), 'the glitch beat has its keyframes');
+assert.ok(/prefers-reduced-motion/.test(htmlSrc), 'reduced motion silences the ceremony animations');
 
 console.log('title-finale-sim: all assertions passed');

@@ -1,5 +1,5 @@
 // World storage & chunk generation
-import { CHUNK_W, WORLD_H, WORLD_SECTION_H, WORLD_MIN_SECTION, WORLD_MAX_SECTION, WORLD_MIN_Y, WORLD_MAX_Y, T, SNOW_LINE, SURFACE_GRASS_DEPTH, SAND_DEPTH } from '../constants.js';
+import { CHUNK_W, WORLD_H, WORLD_SECTION_H, WORLD_MIN_SECTION, WORLD_MAX_SECTION, WORLD_MIN_Y, WORLD_MAX_Y, T, INFO, SNOW_LINE, SURFACE_GRASS_DEPTH, SAND_DEPTH } from '../constants.js';
 import {
   generatedCityStructuralTile,
   generatedCitySupportTile,
@@ -348,7 +348,7 @@ window.MM = window.MM || {};
       if(bgOnly) return;
       if(wx<worldLeft || wx>worldRight || y<0 || y>=WORLD_H-3) return;
       const idx=tileIndex(wx-worldLeft,y), cur=arr[idx];
-      if(cur!==T.LAVA && cur!==T.CHEST_COMMON && cur!==T.CHEST_RARE && cur!==T.CHEST_EPIC) arr[idx]=T.AIR;
+      if(cur!==T.LAVA && !(INFO[cur] && INFO[cur].chestTier)) arr[idx]=T.AIR;
     };
     // Interior backdrop material keyed to the district's architecture school.
     const cityBg=(arch)=>(arch===1||arch===2)?T.STEEL:T.STONE;
@@ -485,7 +485,8 @@ window.MM = window.MM || {};
       if(WG.randSeed(anchor*0.93+cell)>0.82){
         const chestX=anchor+2+Math.floor(WG.randSeed(anchor*2.17+cell)*Math.max(1,w-4));
         const chestY=ground-2-Math.floor(WG.randSeed(anchor*2.71+cell)*Math.min(5,Math.max(1,h-2)));
-        put(chestX,chestY,WG.randSeed(anchor*3.33+cell)>0.83?T.CHEST_EPIC:T.CHEST_RARE,true);
+        const chestRoll=WG.randSeed(anchor*3.33+cell);
+        put(chestX,chestY,chestRoll>0.965?T.CHEST_LEGENDARY:chestRoll>0.83?T.CHEST_EPIC:T.CHEST_RARE,true);
       }
       const vendingChance=style==='factory'?0.34:(style==='tower'?0.16:0.23);
       if(w>=7 && h>=6 && WG.randSeed(anchor*1.37+cell*0.61)<vendingChance){
@@ -574,7 +575,10 @@ window.MM = window.MM || {};
       carve(anchor-1,crownY); carve(anchor+1,crownY);
       carve(anchor,crownY); carve(anchor,crownY-1);
       for(const [sx,sy] of [[anchor-1,crownY],[anchor+1,crownY],[anchor,crownY],[anchor,crownY-1]]) putBg(sx,sy,T.STONE);
-      if(WG.randSeed(cell*4.87+2.3)>0.35) put(anchor,crownY,WG.randSeed(cell*8.6+0.7)>0.8?T.CHEST_EPIC:T.CHEST_RARE,true);
+      if(WG.randSeed(cell*4.87+2.3)>0.35){
+        const crownRoll=WG.randSeed(cell*8.6+0.7);
+        put(anchor,crownY,crownRoll>0.96?T.CHEST_LEGENDARY:crownRoll>0.8?T.CHEST_EPIC:T.CHEST_RARE,true);
+      }
       const apexY=col.row-tiers*tierH-1;
       put(anchor,apexY,grand?T.GLASS:T.TORCH,true);
     };
@@ -653,7 +657,7 @@ window.MM = window.MM || {};
       if(WG.randSeed(cell*6.6+3.1)<0.30){
         const chx=anchor+3+Math.floor(WG.randSeed(cell*8.3+0.9)*(w-6));
         const chc=cityCol(chx);
-        if(chc) put(chx,chc.row-1,T.CHEST_COMMON,true);
+        if(chc) put(chx,chc.row-1,WG.randSeed(cell*9.4+1.7)>0.6?T.CHEST_UNCOMMON:T.CHEST_COMMON,true);
       }
     };
     const buildRuinSchool=(anchor,cell,city)=>{
@@ -698,7 +702,7 @@ window.MM = window.MM || {};
       }
       if(WG.randSeed(cell*6.1+1.4)<0.60){
         const chc=cityCol(anchor+w-3);
-        if(chc){ const b=Math.max(2,Math.min(ground,chc.row)); put(anchor+w-3,b-6,T.CHEST_COMMON,true); }
+        if(chc){ const b=Math.max(2,Math.min(ground,chc.row)); put(anchor+w-3,b-6,WG.randSeed(cell*7.9+2.2)>0.6?T.CHEST_UNCOMMON:T.CHEST_COMMON,true); }
       }
       maybeElectronics(anchor+5,Math.max(2,ground-6),cell*9.77+2.5,0.25);
     };
@@ -1625,8 +1629,8 @@ window.MM = window.MM || {};
           // only on solid land surfaces (skip water, pools, carved cave mouths)
           if(below===T.GRASS||below===T.GRASS_SNOW||below===T.SAND||below===T.FROZEN_SAND||below===T.FROZEN_DIRT||below===T.SNOW||below===T.STONE){
             const r=WG.chestNoise(wx); let chestT=T.CHEST_COMMON;
-            if(isle){ chestT = r>0.93 ? T.CHEST_EPIC : T.CHEST_RARE; }
-            else if(r>0.985) chestT=T.CHEST_EPIC; else if(r>0.955) chestT=T.CHEST_RARE;
+            if(isle){ chestT = r>0.975 ? T.CHEST_LEGENDARY : r>0.93 ? T.CHEST_EPIC : T.CHEST_RARE; }
+            else if(r>0.997) chestT=T.CHEST_LEGENDARY; else if(r>0.985) chestT=T.CHEST_EPIC; else if(r>0.955) chestT=T.CHEST_RARE; else if(r>0.948) chestT=T.CHEST_UNCOMMON;
             const idx=tileIndex(lx,placeY); if(arr[idx]===T.AIR){ arr[idx]=chestT; }
           }
         } } } }
@@ -2126,6 +2130,7 @@ window.MM = window.MM || {};
     try{ if(MM.solar && MM.solar.onTileChanged) MM.solar.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.teleporters && MM.teleporters.onTileChanged) MM.teleporters.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.pumps && MM.pumps.onTileChanged) MM.pumps.onTileChanged(x,y,old,v); }catch(e){}
+    try{ if(MM.steamMachines && MM.steamMachines.onTileChanged) MM.steamMachines.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.turrets && MM.turrets.onTileChanged) MM.turrets.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.meteorites && MM.meteorites.onTileChanged) MM.meteorites.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.companions && MM.companions.onTileChanged) MM.companions.onTileChanged(x,y,old,v,getTile,setTile); }catch(e){}

@@ -104,9 +104,16 @@ const titleScreen = (function(){
     const el = node('div'); el.id = 'titleScreen';
     const inner = node('div', 'tsInner');
     const closed = closedLayers();
-    inner.appendChild(node('div', 'tsKicker', closed > 0
+    // veterans get greeted by the epithet their LAST layer earned (finale.js
+    // stamps it into mm_layers_v1 next to the tally)
+    let kick = closed > 0
       ? 'symulacja uruchomiona · zamknięte warstwy: ' + closed
-      : 'symulacja uruchomiona · warstwa nieznana'));
+      : 'symulacja uruchomiona · warstwa nieznana';
+    try{
+      const lv = closed > 0 && MM.finale && MM.finale.layers && MM.finale.layers().lastVerdict;
+      if(lv && lv.title) kick += ' · ostatni werdykt: ' + lv.title;
+    }catch(e){ /* the kicker survives without it */ }
+    inner.appendChild(node('div', 'tsKicker', kick));
     inner.appendChild(node('h1', 'tsTitle', 'MINI MINER'));
     inner.appendChild(node('div', 'tsSub', '· Warstwy Symulacji ·'));
     state.splashEl = node('div', 'tsSplash', pickSplash());

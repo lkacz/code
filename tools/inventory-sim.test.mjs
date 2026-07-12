@@ -323,13 +323,15 @@ assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_sticky', 'fourth press = 
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_snowball', 'fifth press = plain snowballs');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_balloon', 'sixth press = water balloons');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_gas', 'seventh press = gas grenades');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_sand', 'eighth press = sand in the eyes');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_spit', 'ninth press = water spit');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'bow_wood', 'rotation wraps back to the bow');
 // Session memory: after leaving for melee, the ranged key returns to the LAST
 // USED ranged weapon instead of restarting at the strongest.
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_stone', 'advance to a thrown weapon');
 INV.cycleWeaponCategory('melee');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_stone', 're-entering the ranged slot restores the last-used weapon');
-const THROW_IDS=['throw_stone','throw_toxic','throw_sticky','throw_snowball','throw_balloon','throw_gas'];
+const THROW_IDS=['throw_stone','throw_toxic','throw_sticky','throw_snowball','throw_balloon','throw_gas','throw_sand','throw_spit'];
 INV.setShortcut('bow_wood', false);
 THROW_IDS.forEach(id => INV.setShortcut(id, false));
 INV.unequip('weapon');
@@ -365,9 +367,9 @@ const RNG = seed => { let st = seed >>> 0; return () => { st = (st * 1664525 + 1
 const onLadder = m => { const p = (m - 1) * 100; return Math.abs(p - Math.round(p)) < 1e-6 && Math.round(p) % 5 === 0; };
 const NUM_FIELDS = ['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','crushResistBonus'];
 const KIND_ONE_STAT = new Set(['cape','eyes','outfit','charm']);
-const sums = { common: 0, rare: 0, epic: 0 }, counts = { common: 0, rare: 0, epic: 0 };
-for (let i = 0; i < 2000; i++) {
-  const tier = ['common', 'rare', 'epic'][i % 3];
+const sums = { common: 0, uncommon: 0, rare: 0, epic: 0, legendary: 0 }, counts = { common: 0, uncommon: 0, rare: 0, epic: 0, legendary: 0 };
+for (let i = 0; i < 3500; i++) {
+  const tier = ['common', 'uncommon', 'rare', 'epic', 'legendary'][i % 5];
   const item = chests.genItem(RNG(i * 7919 + 1), tier);
   // Function purity: only the kind's job stats, and non-weapons carry exactly ONE
   const allowed = INV.allowedStatsFor(item.kind, item.weaponType);
@@ -387,13 +389,15 @@ for (let i = 0; i < 2000; i++) {
   if (typeof item.visionRadius === 'number') assert.equal(item.visionRadius, Math.round(item.visionRadius), 'vision in whole tiles');
   if (typeof item.attackDamage === 'number') assert.equal(item.attackDamage, Math.round(item.attackDamage), 'damage integer');
   // Rarity = clearly superior magnitude of the SAME stat (unique boost included in bounds)
-  if (item.kind === 'cape'){ if (tier === 'common') assert.ok(item.airJumps <= 2, 'common cape jumps bounded'); if (tier === 'epic') assert.ok(item.airJumps >= 3, 'epic cape clearly superior'); }
-  if (item.kind === 'eyes'){ if (tier === 'common') assert.ok(item.visionRadius <= 14, 'common eyes bounded'); if (tier === 'epic') assert.ok(item.visionRadius >= 15, 'epic eyes clearly superior'); }
-  if (item.weaponType === 'melee'){ if (tier === 'common') assert.ok(item.attackDamage <= 6, 'common melee bounded'); if (tier === 'epic') assert.ok(item.attackDamage >= 8, 'epic melee clearly superior'); }
+  if (item.kind === 'cape'){ if (tier === 'common') assert.ok(item.airJumps <= 2, 'common cape jumps bounded'); if (tier === 'epic') assert.ok(item.airJumps >= 3, 'epic cape clearly superior'); if (tier === 'legendary') assert.ok(item.airJumps >= 4, 'legendary cape crowns the ladder'); }
+  if (item.kind === 'eyes'){ if (tier === 'common') assert.ok(item.visionRadius <= 14, 'common eyes bounded'); if (tier === 'epic') assert.ok(item.visionRadius >= 15, 'epic eyes clearly superior'); if (tier === 'legendary') assert.ok(item.visionRadius >= 18, 'legendary eyes crown the ladder'); }
+  if (item.weaponType === 'melee'){ if (tier === 'common') assert.ok(item.attackDamage <= 6, 'common melee bounded'); if (tier === 'epic') assert.ok(item.attackDamage >= 8, 'epic melee clearly superior'); if (tier === 'legendary') assert.ok(item.attackDamage >= 13, 'legendary melee crowns the ladder'); }
   sums[tier] += INV.itemScore(item); counts[tier]++;
 }
+assert.ok(sums.legendary / counts.legendary > sums.epic / counts.epic, 'legendary loot averages stronger than epic');
 assert.ok(sums.epic / counts.epic > sums.rare / counts.rare, 'epic loot averages stronger than rare');
-assert.ok(sums.rare / counts.rare > sums.common / counts.common, 'rare loot averages stronger than common');
+assert.ok(sums.rare / counts.rare > sums.uncommon / counts.uncommon, 'rare loot averages stronger than uncommon');
+assert.ok(sums.uncommon / counts.uncommon > sums.common / counts.common, 'uncommon loot averages stronger than common');
 
 // --- save snapshots carry the exact equipped look and shortcut state -------
 INV.equip('ninja');
@@ -426,5 +430,5 @@ assert.equal(INV.isNew('restore_ok'), true, 'new marker for existing restored lo
 assert.equal(INV.isNew('missing_item'), false, 'new marker for absent loot is dropped');
 INV.restore(cleanSnap, { persist: false, silent: true });
 
-console.log('inventory-sim: all assertions passed (avg Moc common/rare/epic: '
-  + [(sums.common / counts.common).toFixed(1), (sums.rare / counts.rare).toFixed(1), (sums.epic / counts.epic).toFixed(1)].join('/') + ')');
+console.log('inventory-sim: all assertions passed (avg Moc common/uncommon/rare/epic/legendary: '
+  + [(sums.common / counts.common).toFixed(1), (sums.uncommon / counts.uncommon).toFixed(1), (sums.rare / counts.rare).toFixed(1), (sums.epic / counts.epic).toFixed(1), (sums.legendary / counts.legendary).toFixed(1)].join('/') + ')');

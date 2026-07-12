@@ -2837,21 +2837,27 @@ const invasions = (function(){
   }
   function chestTileForTier(tier){
     const key = String(tier || '').toLowerCase();
+    if(key === 'legendary') return T.CHEST_LEGENDARY;
     if(key === 'epic' || key === 'gold' || key === 'golden') return T.CHEST_EPIC;
     if(key === 'rare') return T.CHEST_RARE;
+    if(key === 'uncommon') return T.CHEST_UNCOMMON;
     return T.CHEST_COMMON;
   }
   function tierForChestTile(tile){
+    if(tile === T.CHEST_LEGENDARY) return 'legendary';
     if(tile === T.CHEST_EPIC) return 'epic';
     if(tile === T.CHEST_RARE) return 'rare';
+    if(tile === T.CHEST_UNCOMMON) return 'uncommon';
     return 'common';
   }
   function describeChestDrops(chests){
-    const counts = {common:0, rare:0, epic:0};
+    const counts = {common:0, uncommon:0, rare:0, epic:0, legendary:0};
     for(const c of chests) counts[tierForChestTile(c && c.tile)]++;
     const parts = [];
+    if(counts.legendary) parts.push(counts.legendary+'x legendarna skrzynia');
     if(counts.epic) parts.push(counts.epic+'x epicka skrzynia');
     if(counts.rare) parts.push(counts.rare+'x rzadka skrzynia');
+    if(counts.uncommon) parts.push(counts.uncommon+'x niezwykla skrzynia');
     if(counts.common) parts.push(counts.common+'x zwykla skrzynia');
     return parts.join(', ');
   }
@@ -2871,11 +2877,17 @@ const invasions = (function(){
   }
   function rollRewardChestTier(team,profile){
     const forced = team && typeof team.forceRewardTier === 'string' ? team.forceRewardTier.toLowerCase() : '';
-    if(forced === 'common' || forced === 'rare' || forced === 'epic') return forced;
+    if(forced === 'common' || forced === 'uncommon' || forced === 'rare' || forced === 'epic' || forced === 'legendary') return forced;
+    // Full ladder on one deterministic roll: a legendary sliver rides on top of
+    // the epic chance, and a third of the leftover commons upgrade to uncommon.
     const r = Math.random();
-    if(r < profile.epicChance) return 'epic';
-    if(r < profile.epicChance + profile.rareChance) return 'rare';
-    return 'common';
+    const legendaryChance = profile.epicChance * 0.15;
+    if(r < legendaryChance) return 'legendary';
+    if(r < legendaryChance + profile.epicChance) return 'epic';
+    if(r < legendaryChance + profile.epicChance + profile.rareChance) return 'rare';
+    const rest = (r - legendaryChance - profile.epicChance - profile.rareChance)
+      / Math.max(0.0001, 1 - legendaryChance - profile.epicChance - profile.rareChance);
+    return rest < 0.33 ? 'uncommon' : 'common';
   }
   function dropRewardChestNear(x,y,tier,opts){
     opts = opts || {};

@@ -250,17 +250,17 @@ import { isSolidCollisionTile } from './material_physics.js';
       if(!MM.audio || !MM.audio.play) return;
       const tile=MM.TILE||20;
       const opts=Number.isFinite(x)&&Number.isFinite(y)?{x:x/tile,y:y/tile}:undefined;
-      MM.audio.play(tier==='epic'?'golden':'chest',opts);
+      MM.audio.play((tier==='epic'||tier==='legendary')?'golden':'chest',opts);
     }catch(e){ /* ignore */ }
   }
 
   mod.spawnBurst = function(x,y,tier,opts){
     opts=opts||{};
-    const count = 24 + (tier==='epic'?24 : tier==='rare'?12 : 0);
+    const count = 24 + (tier==='legendary'?32 : tier==='epic'?24 : tier==='rare'?12 : tier==='uncommon'?6 : 0);
     for(let i=0;i<count;i++){
       if(particles.length>=currentParticleCap()) break;
       const ang = Math.random()*Math.PI*2;
-      const sp = (Math.random()*2 + 1.5) * (tier==='epic'?1.6 : tier==='rare'?1.3 : 1);
+      const sp = (Math.random()*2 + 1.5) * (tier==='legendary'?1.75 : tier==='epic'?1.6 : tier==='rare'?1.3 : tier==='uncommon'?1.15 : 1);
       particles.push({ x, y, vx:Math.cos(ang)*sp, vy:Math.sin(ang)*sp*0.6-1, life:0, max:0.9+Math.random()*0.5, tier });
     }
     if(opts.sound) playChestSound(tier,x,y);
@@ -571,7 +571,7 @@ import { isSolidCollisionTile } from './material_physics.js';
         if(electric) ctx.globalCompositeOperation='lighter';
         ctx.fillStyle = electric
           ? 'rgba(155,248,255,'+(alpha*0.95)+')'
-          : (p.tier==='epic'? 'rgba(224,179,65,'+alpha+')' : (p.tier==='rare'? 'rgba(167,76,201,'+alpha+')' : 'rgba(176,127,44,'+alpha+')'));
+          : (p.tier==='legendary'? 'rgba(88,224,216,'+alpha+')' : p.tier==='epic'? 'rgba(224,179,65,'+alpha+')' : p.tier==='rare'? 'rgba(167,76,201,'+alpha+')' : p.tier==='uncommon'? 'rgba(63,166,80,'+alpha+')' : 'rgba(176,127,44,'+alpha+')');
         ctx.fillRect(p.x - s*0.5, p.y - s*0.5, s, s);
         if(electric){
           ctx.fillStyle='rgba(255,255,255,'+(alpha*0.78)+')';
@@ -581,7 +581,7 @@ import { isSolidCollisionTile } from './material_physics.js';
         }
         ctx.restore();
       } else {
-        ctx.fillStyle = p.tier==='epic'? 'rgba(224,179,65,'+alpha+')' : (p.tier==='rare'? 'rgba(167,76,201,'+alpha+')' : 'rgba(176,127,44,'+alpha+')');
+        ctx.fillStyle = p.tier==='legendary'? 'rgba(88,224,216,'+alpha+')' : p.tier==='epic'? 'rgba(224,179,65,'+alpha+')' : p.tier==='rare'? 'rgba(167,76,201,'+alpha+')' : p.tier==='uncommon'? 'rgba(63,166,80,'+alpha+')' : 'rgba(176,127,44,'+alpha+')';
         ctx.fillRect(p.x -2, p.y -2, 4, 4);
       }
     }

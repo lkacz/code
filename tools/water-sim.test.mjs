@@ -15,7 +15,13 @@ globalThis.window = globalThis; // water.js attaches to window.MM
 const WORLD_H = 140;
 const WORLD_MIN_Y = -140;
 const WORLD_MAX_Y = 280;
-globalThis.MM = { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, TILE:20, particles:{ spawnSplash(){}, spawnBubble(){} } };
+// waterDeterministicPressureBudget: the leveling pass normally stops early past a
+// 3ms wall-clock budget and (since the fair-sweep cursor) resumes ROTATED — which
+// body gets solver attention then depends on machine load, so convergence-rate
+// assertions (e.g. "shore settles within 12000 steps") become load-flaky. The flag
+// disables only the wall-clock stop (EQ_BODIES still applies), making every pass
+// deterministic — same convention as water-scale-sim.test.mjs.
+globalThis.MM = { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, TILE:20, waterDeterministicPressureBudget:true, particles:{ spawnSplash(){}, spawnBubble(){} } };
 
 const { water } = await import('../src/engine/water.js');
 assert.ok(water, 'water module exports');

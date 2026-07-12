@@ -71,7 +71,12 @@ import { reactions as REACTIONS } from './reactions.js';
     // Combo enablers for the elemental matrix and area control:
     waterBalloon:  {key:'waterBalloon',  label:'Balony wodne',      color:'#7cc4ff', head:'#dff2ff', speed:14.5, lob:-2.0, life:2.4, splat:'wet', ball:true},
     gasGrenade:    {key:'gasGrenade',    label:'Granaty gazowe',    color:'#9dbf5a', head:'#e2f0b8', speed:14.0, lob:-2.4, life:2.6, splat:'gascloud', ball:true},
-    stickyBomb:    {key:'stickyBomb',    label:'Lepkie bomby',      color:'#b0703c', head:'#ffd9a8', speed:14.5, lob:-2.4, life:3.0, splat:'bomb', ball:true, sticky:true, fuse:1.5}
+    stickyBomb:    {key:'stickyBomb',    label:'Lepkie bomby',      color:'#b0703c', head:'#ffd9a8', speed:14.5, lob:-2.4, life:3.0, splat:'bomb', ball:true, sticky:true, fuse:1.5},
+    // Improvised throws: barely any damage, a status identity instead —
+    //   sand — a fistful in the eyes: chance to BLIND (the mob loses the hero)
+    //   spit — a gulp of inventory water spat back out: soaks, chance of poison
+    sand:          {key:'sand',          label:'Piasek w oczy',     color:'#c2b280', head:'#e8dcb8', speed:13.5, lob:-1.7, life:1.6, splat:'sand', ball:true},
+    spit:          {key:'water',         label:'Plucie wodą',       color:'#7cc4ff', head:'#dff2ff', speed:14.0, lob:-1.9, life:1.7, splat:'spit', ball:true}
   };
   const WATER_CONDENSE_CHANCE=0.008; // per dying hose puff (~1 tile per second of spray)
   // Elemental conversions use sustained contact so one lucky puff cannot reshape terrain.
@@ -439,11 +444,12 @@ import { reactions as REACTIONS } from './reactions.js';
     const d=Math.hypot(dx,dy)||1;
     return {dx:dx/d, dy:dy/d};
   }
-  function meleeTargetTile(player, aimX, aimY){
+  function meleeTargetTile(player, aimX, aimY, reach){
     const px=Math.floor(player.x), py=Math.floor(player.y);
+    const R=Math.max(1, reach||MELEE_REACH);
     let tx=Math.floor(aimX), ty=Math.floor(aimY);
-    tx=Math.max(px-MELEE_REACH, Math.min(px+MELEE_REACH, tx));
-    ty=Math.max(py-MELEE_REACH, Math.min(py+MELEE_REACH, ty));
+    tx=Math.max(px-R, Math.min(px+R, tx));
+    ty=Math.max(py-R, Math.min(py+R, ty));
     return {px,py,tx,ty};
   }
   function consumeUltCharge(){
@@ -530,8 +536,10 @@ import { reactions as REACTIONS } from './reactions.js';
   }
   function fireMelee(player, aimX, aimY){
     if(meleeCd>0 || (player.atkCd && player.atkCd>0)) return false;
-    // Melee strength changes damage only; reach is always one tile.
-    const {px,tx,ty}=meleeTargetTile(player,aimX,aimY);
+    // Melee strength changes damage only; reach is one tile unless the weapon
+    // carries fireRange (spears poke from two tiles out — see meleeReach).
+    const w=equippedWeapon();
+    const {px,tx,ty}=meleeTargetTile(player,aimX,aimY,meleeReach(w));
     const bonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
     const collected=collectLooseTarget(tx,ty);
     const hit=collected
@@ -547,7 +555,7 @@ import { reactions as REACTIONS } from './reactions.js';
     meleeCd=0.35; player.atkCd=Math.max(player.atkCd||0, 0.35);
     player.facing = tx>=px? 1 : -1;
     notifyMeleeSwing(tx,ty,player);
-    if(hit && !collected) addUltCharge(0.08);
+    if(hit && !collected){ addUltCharge(0.08); rollMeleeEffect(w,tx,ty); }
     try{ if(MM.audio && MM.audio.play) MM.audio.play('swing'); }catch(e){}
     return !!hit;
   }
@@ -954,7 +962,7 @@ import { reactions as REACTIONS } from './reactions.js';
   }
   function firePowerMelee(player, aimX, aimY, w, charge){
     const v=aimVector(player,aimX,aimY);
-    const {tx,ty}=meleeTargetTile(player,aimX,aimY);
+    const {tx,ty}=meleeTargetTile(player,aimX,aimY,meleeReach(w));
     const bonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
     const roll=specialAttackRoll();
     const chargeFx=Math.max(0,Math.min(1,Number(charge)||0));
@@ -973,6 +981,7 @@ import { reactions as REACTIONS } from './reactions.js';
       || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky})));
     if(hit && roll.lucky) noteLuckyStrike(tx+0.5,ty-0.15);
     if(hit) noteWeaponCombatHit(tx+0.5,ty+0.15,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky},{major:true});
+    if(hit && !collected) rollMeleeEffect(w,tx,ty,{chanceMult:1.5}); // a charged blow procs its material more often
     player.facing = v.dx>=0?1:-1;
     meleeCd=Math.max(meleeCd,0.25);
     player.atkCd=Math.max(player.atkCd||0, 0.35);
@@ -1107,6 +1116,42 @@ import { reactions as REACTIONS } from './reactions.js';
   // Toxic snowball impact: the ball bursts into a small poison+chill cloud —
   // creatures caught in it are slowed hard (chill) and poisoned over time.
   const SNOWBALL_SPLAT={radius:1.5, poisonDur:5, poisonDps:2, chillDur:4};
+  const SAND_BLIND_CHANCE=0.65, SAND_BLIND_DUR=4.5;
+  const SPIT_TOXIC_CHANCE=0.45;
+  // Crafted hand-weapon material identities (recipes in main.js): mirroring the
+  // arrow-tier philosophy, each material carries ONE on-hit effect chance —
+  // metal cuts (bleed DoT), stone concusses (short stun), diamond terrifies
+  // (panic: the creature bolts). The item only names its identity (meleeEffect);
+  // the numbers live here so every weapon of a material behaves the same.
+  const MELEE_EFFECTS={
+    bleed:{chance:0.35, dur:4,   dps:2, note:['melee_bleed','Metalowa krawędź otwiera rany — cel krwawi!']},
+    stun: {chance:0.25, dur:1.1, dps:0, note:['melee_stun','Kamienny cios oszałamia cel!']},
+    panic:{chance:0.30, dur:3.0, dps:0, note:['melee_panic','Błysk diamentu sieje panikę — wróg ucieka!']}
+  };
+  // Spears strike further: a melee weapon may carry fireRange (whole tiles) as
+  // its reach; everything else keeps the classic one-tile arc.
+  function meleeReach(w){
+    const r=Number(w && w.fireRange);
+    return Number.isFinite(r) ? Math.max(1, Math.min(3, Math.round(r))) : MELEE_REACH;
+  }
+  function rollMeleeEffect(w,tx,ty,opts){
+    const spec=w && MELEE_EFFECTS[w.meleeEffect];
+    if(!spec) return false;
+    if(Math.random()>=spec.chance*((opts && opts.chanceMult)||1)) return false;
+    let applied=false;
+    try{
+      if(MM.mobs && MM.mobs.statusAt){
+        applied=!!MM.mobs.statusAt(tx,ty,w.meleeEffect,{dur:spec.dur,dps:spec.dps,source:'hero',cause:'melee_'+w.meleeEffect});
+      }
+    }catch(e){}
+    if(!applied) return false;
+    try{ if(MM.discovery && MM.discovery.note) MM.discovery.note(spec.note[0],spec.note[1]); }catch(e){}
+    try{
+      const p=MM.particles, tile=MM.TILE||20;
+      if(p && p.spawnImpactChips) p.spawnImpactChips((tx+0.5)*tile,(ty+0.2)*tile,{power:0.85});
+    }catch(e){}
+    return true;
+  }
   function splatToxicSnowball(a){
     try{
       if(MM.mobs){
@@ -1139,6 +1184,33 @@ import { reactions as REACTIONS } from './reactions.js';
     if(a.splat==='rock'){
       try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:1.1}); }catch(e){}
       try{ if(MM.audio && MM.audio.play) MM.audio.play('dig',{x:a.x,y:a.y}); }catch(e){}
+      return;
+    }
+    if(a.splat==='sand'){
+      // a fistful of sand in the eyes: barely hurts, but a blinded creature
+      // loses sight of the hero (aggro gate in mobs.js) until it wears off
+      try{
+        if(Math.random()<SAND_BLIND_CHANCE && MM.mobs && MM.mobs.statusRadius
+           && MM.mobs.statusRadius(a.x,a.y,1.25,'blind',{dur:SAND_BLIND_DUR,source:'hero',cause:'sand_blind'})>0){
+          try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('sand_blind','Piasek w oczy: oślepiony wróg traci cię z widoku!'); }catch(e2){}
+        }
+      }catch(e){}
+      try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:0.7}); }catch(e){}
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('dig',{x:a.x,y:a.y}); }catch(e){}
+      return;
+    }
+    if(a.splat==='spit'){
+      // a gulp of water spat back out: soaks a little — and sometimes it turns
+      // out the hero's saliva is, well, toxic
+      try{ if(MM.mobs && MM.mobs.wetRadius) MM.mobs.wetRadius(a.x,a.y,0.9,{dur:3,source:'hero',cause:'spit'}); }catch(e){}
+      try{
+        if(Math.random()<SPIT_TOXIC_CHANCE && MM.mobs && MM.mobs.poisonRadius
+           && MM.mobs.poisonRadius(a.x,a.y,1.1,{dur:4,dps:1.5,source:'hero',cause:'toxic_spit'})>0){
+          try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('spit_toxic','Plucie wodą bywa toksyczne — cel zatruty!'); }catch(e2){}
+        }
+      }catch(e){}
+      try{ if(MM.particles && MM.particles.spawnSplash) MM.particles.spawnSplash(a.x*tile,a.y*tile,0.4); }catch(e){}
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('splash',{x:a.x,y:a.y}); }catch(e){}
       return;
     }
     if(a.splat==='wet'){
@@ -2149,7 +2221,7 @@ import { reactions as REACTIONS } from './reactions.js';
   MM.weapons={fireHeld,releaseHeld,cancelHeld,fireUlt,update,draw,drawHeld,notifyMeleeSwing,reset,explodeAt,spawnGasCloud,spawnExternalStream,
     arrowInfo,setArrowPref,fuelInfo,thrownInfo,hudStatus,addUltCharge,
     metrics:()=>({arrows:arrows.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),ultCharge,bowCharge:bowChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
-    _debug:{arrows,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,waterHeat}};
+    _debug:{arrows,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,waterHeat,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS}};
 })();
 // ESM export (progressive migration)
 export const weapons = (typeof window!=='undefined' && window.MM) ? window.MM.weapons : undefined;

@@ -7,13 +7,14 @@ import { worldGen as WORLDGEN } from './engine/worldgen.js';
 import world from './engine/world.js';
 import { trees as TREES } from './engine/trees.js';
 import { fallingSolids as FALLING } from './engine/falling.js';
-import { isAirOrGasTile, isDoorTile, isGasTile, isHeroPassableTile, isLooseItemMaterial, isMeteorPickDenseRockMaterial, isMeteorPickSparkMaterial, isPlayerBuiltMaterial, isPlayerPassableTile, isReplaceableNaturalOpenTile, isSafeLandingFloorTile, isSolidCollisionTile as isSolid, isStableMachineSupportTile, isTrapdoorTile } from './engine/material_physics.js';
+import { isAirOrGasTile, isDoorTile, isGasTile, isHeroPassableTile, isLooseItemMaterial, isMeteorPickDenseRockMaterial, isMeteorPickSparkMaterial, isPlayerBuiltMaterial, isReplaceableNaturalOpenTile, isSafeLandingFloorTile, isSolidCollisionTile as isSolid, isStableMachineSupportTile, isTrapdoorTile } from './engine/material_physics.js';
 import { water as WATER } from './engine/water.js';
 import { gases as GASES } from './engine/gases.js';
 import { dynamo as DYNAMO } from './engine/dynamo.js';
 import { solar as SOLAR } from './engine/solar.js';
 import { teleporters as TELEPORTERS } from './engine/teleporters.js';
 import { pumps as PUMPS } from './engine/pumps.js';
+import { steamMachines as STEAM_MACHINES } from './engine/steam_machines.js';
 import { canPlaceLadderFixture, ladderConnections } from './engine/ladders.js';
 import { applyHorizontalMovement, applyJumpArcControl, surfaceTraction } from './engine/movement.js';
 import './engine/input_mode.js'; // stamps data-input-mode on <html>; touch clusters gate off it
@@ -22,6 +23,7 @@ import { cape as CAPE } from './engine/cape.js';
 import { necklace as NECKLACE } from './engine/necklace.js';
 import { chests as CHESTS } from './engine/chests.js';
 import { createCraftingModel, SOURCE_HINTS as CRAFT_SOURCE_HINTS } from './engine/crafting.js';
+import { createHotPickerModel, createHotPicker } from './engine/hot_picker.js';
 import './inventory.js';
 import { mobs as MOBS } from './engine/mobs.js';
 import { tutorialNpc as TUTORIAL_NPC } from './engine/tutorial_npc.js';
@@ -1526,8 +1528,10 @@ Object.assign(TILE_LABELS,{
 	[T.STONE]:'Skala',
 	[T.BEDROCK]:'Skala macierzysta',
 	[T.CHEST_COMMON]:'Skrzynia zwykla',
+	[T.CHEST_UNCOMMON]:'Skrzynia niezwykla',
 	[T.CHEST_RARE]:'Skrzynia rzadka',
 	[T.CHEST_EPIC]:'Skrzynia epicka',
+	[T.CHEST_LEGENDARY]:'Skrzynia legendarna',
 	[T.ICE]:'Lod',
 	[T.LAVA]:'Lawa',
 	[T.MUD]:'Bloto',
@@ -1567,6 +1571,8 @@ Object.assign(TILE_LABELS,{
 	[T.CHAIR_STEEL]:'Fotel stalowy',
 	[T.WATER_PIPE]:'Rura fluidowa',
 	[T.WATER_PUMP]:'Pompa fluidowa',
+	[T.STEAM_BOILER]:'Kociol parowy',
+	[T.STEAM_JET]:'Dysza parowa',
 	[T.METEOR_SIREN]:'Syrena meteorytowa',
 	[T.VENDING_MACHINE]:'Automat vendingowy',
 	[T.RADIOACTIVE_ORE]:'Ruda radioaktywna',
@@ -1609,7 +1615,15 @@ const HOTBAR_ORDER=['GRASS','SAND','STONE','WOOD','LEAF','WATER'];
 let hotbarIndex=0; // 0..length-1
 function hotbarKeyLabel(slot){ return slot===HOTBAR_ORDER.length-1? '0' : String(slot+5); }
 function selectedTileId(){ const name=HOTBAR_ORDER[hotbarIndex]; return T[name]; }
-function isChestSelection(name){ return name==='CHEST_COMMON'||name==='CHEST_RARE'||name==='CHEST_EPIC'; }
+function isChestSelection(name){ return name==='CHEST_COMMON'||name==='CHEST_UNCOMMON'||name==='CHEST_RARE'||name==='CHEST_EPIC'||name==='CHEST_LEGENDARY'; }
+// Chest tier UI single source: label + accent color per CHEST_* selection name
+const CHEST_SELECTION_META={
+	CHEST_COMMON:{label:'Skrzynia zwykła', color:'#b07f2c'},
+	CHEST_UNCOMMON:{label:'Skrzynia niezwykła', color:'#3fa650'},
+	CHEST_RARE:{label:'Skrzynia rzadka', color:'#a74cc9'},
+	CHEST_EPIC:{label:'Skrzynia epicka', color:'#e0b341'},
+	CHEST_LEGENDARY:{label:'Skrzynia legendarna', color:'#58e0d8'}
+};
 function cycleHotbar(idx,opts){
 	if(idx<0||idx>=HOTBAR_ORDER.length) return;
 	hotbarIndex=idx;
@@ -3008,6 +3022,7 @@ function buildSaveObject(opts){
 	solar: timedSavePart('solar',()=>((SOLAR && SOLAR.snapshot) ? SOLAR.snapshot() : null),perf),
 	teleporters: timedSavePart('teleporters',()=>((TELEPORTERS && TELEPORTERS.snapshot) ? TELEPORTERS.snapshot() : null),perf),
 	pumps: timedSavePart('pumps',()=>((PUMPS && PUMPS.snapshot) ? PUMPS.snapshot() : null),perf),
+	steamMachines: timedSavePart('steamMachines',()=>((STEAM_MACHINES && STEAM_MACHINES.snapshot) ? STEAM_MACHINES.snapshot() : null),perf),
 	turrets: timedSavePart('turrets',()=>((TURRETS && TURRETS.snapshot) ? TURRETS.snapshot() : null),perf),
 	springPlatforms: timedSavePart('springPlatforms',()=>((SPRING_PLATFORMS && SPRING_PLATFORMS.snapshot) ? SPRING_PLATFORMS.snapshot() : null),perf),
 	vending: timedSavePart('vending',()=>((VENDING && VENDING.snapshot) ? VENDING.snapshot() : null),perf),
@@ -3114,6 +3129,7 @@ function loadGame(opts){
 	try{ if(SOLAR && SOLAR.reset) SOLAR.reset(); }catch(e){}
 	try{ if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); }catch(e){}
 	try{ if(PUMPS && PUMPS.reset) PUMPS.reset(); }catch(e){}
+	try{ if(STEAM_MACHINES && STEAM_MACHINES.reset) STEAM_MACHINES.reset(); }catch(e){}
 	try{ if(TURRETS && TURRETS.reset) TURRETS.reset(); }catch(e){}
 	try{ if(SPRING_PLATFORMS && SPRING_PLATFORMS.reset) SPRING_PLATFORMS.reset(); }catch(e){}
 	try{ if(VENDING && VENDING.reset) VENDING.reset(); }catch(e){}
@@ -3167,6 +3183,7 @@ function loadGame(opts){
 	try{ if(SOLAR && SOLAR.restore) SOLAR.restore(data.solar,getTile); }catch(e){}
 	try{ if(TELEPORTERS && TELEPORTERS.restore) TELEPORTERS.restore(data.teleporters,getTile); }catch(e){}
 	try{ if(PUMPS && PUMPS.restore) PUMPS.restore(data.pumps,getTile); }catch(e){}
+	try{ if(STEAM_MACHINES && STEAM_MACHINES.restore) STEAM_MACHINES.restore(data.steamMachines,getTile); }catch(e){}
 	try{ if(TURRETS && TURRETS.restore) TURRETS.restore(data.turrets,getTile); }catch(e){}
 	try{ if(SPRING_PLATFORMS && SPRING_PLATFORMS.restore) SPRING_PLATFORMS.restore(data.springPlatforms,getTile); }catch(e){}
 	try{ if(VENDING && VENDING.restore) VENDING.restore(data.vending,getTile); }catch(e){}
@@ -3549,6 +3566,20 @@ const RECIPES=[
 	{id:'gas_grenades', name:'Granaty gazowe x3', cost:{rottenMeat:2, clay:1}, make(){ inv.gasGrenade+=3; msg('Granaty gazowe +3 - trujacy oblok; ogien go detonuje'); }},
 	{id:'sticky_bombs', name:'Lepkie bomby x2', cost:{clay:1, coal:1}, make(){ inv.stickyBomb+=2; msg('Lepkie bomby +2 - przyklejaja sie i wybuchaja po chwili'); }},
 	{id:'obsidian_sword', name:'Miecz obsydianowy', cost:{obsidian:4, wood:2}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Miecz obsydianowy',attackDamage:6,tier:'rare',desc:'Wykuty z hartowanej lawy'}); }},
+	// --- Hand-weapon ladder: the MATERIAL is the identity (weapons.js MELEE_EFFECTS)
+	// — drewno bije, kamień ogłusza, metal tnie do krwi, diament sieje panikę.
+	// Dzidy (fireRange:2) oddają część obrażeń za zasięg; miecze to szczyt materiału.
+	{id:'stick_weapon', name:'Patyk', cost:{wood:1}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Patyk',attackDamage:1,desc:'Najprostsza broń świata: kawałek drewna na pierwsze noce'}); }},
+	{id:'club_wood', name:'Maczuga', cost:{wood:4}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Maczuga',attackDamage:3,desc:'Wiązka patyków zbita w ciężką pałę'}); }},
+	{id:'axe_stone', name:'Topór kamienny', cost:{wood:2, stone:3}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Topór kamienny',attackDamage:4,meleeEffect:'stun',desc:'Kamienny obuch: szansa, że oszołomi trafionego'}); }},
+	{id:'axe_metal', name:'Topór metalowy', cost:{wood:2, steel:2}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Topór metalowy',attackDamage:6,meleeEffect:'bleed',tier:'rare',desc:'Stalowe ostrze otwiera krwawiące rany'}); }},
+	{id:'axe_diamond', name:'Topór diamentowy', cost:{wood:2, diamond:3}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Topór diamentowy',attackDamage:8,meleeEffect:'panic',tier:'epic',desc:'Błysk diamentu sieje panikę — trafieni uciekają'}); }},
+	{id:'spear_stone', name:'Dzida kamienna', cost:{wood:3, stone:2}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Dzida kamienna',attackDamage:3,fireRange:2,meleeEffect:'stun',desc:'Dźga o tile dalej; kamienny grot oszałamia'}); }},
+	{id:'spear_metal', name:'Dzida metalowa', cost:{wood:3, steel:2}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Dzida metalowa',attackDamage:5,fireRange:2,meleeEffect:'bleed',tier:'rare',desc:'Zasięg dzidy i stalowy grot, który tnie do krwi'}); }},
+	{id:'spear_diamond', name:'Dzida diamentowa', cost:{wood:3, diamond:2}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Dzida diamentowa',attackDamage:7,fireRange:2,meleeEffect:'panic',tier:'epic',desc:'Diamentowy grot z dystansu — wrogowie pierzchają'}); }},
+	{id:'sword_steel', name:'Miecz stalowy', cost:{steel:3, wood:1}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Miecz stalowy',attackDamage:7,meleeEffect:'bleed',tier:'rare',desc:'Klasyczna klinga: głębokie, krwawiące cięcia'}); }},
+	{id:'sword_diamond', name:'Miecz diamentowy', cost:{diamond:4, steel:1}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Miecz diamentowy',attackDamage:9,meleeEffect:'panic',tier:'epic',desc:'Olśniewające ostrze — trafieni uciekają w popłochu'}); }},
+	{id:'sword_iridium', name:'Miecz irydowy', cost:{iridium:3, steel:2}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Miecz irydowy',attackDamage:11,meleeEffect:'bleed',tier:'epic',desc:'Meteorytowy metal: najcięższe, krwawiące ciosy'}); }},
 	{id:'lucky_charm', name:'Talizman diamentowy', cost:{diamond:3}, make(){ grantCraftedItem({kind:'charm',name:'Talizman diamentowy',mineSpeedMult:1.15,visionRadius:12,tier:'rare',desc:'Diament oszlifowany w talizman'}); }},
 	{id:'spring_antler_charm', name:'Wieniec wiosny', cost:{springAntler:1, leaf:6, wood:2}, make(){ grantCraftedItem({kind:'charm',name:'Wieniec wiosny',moveSpeedMult:1.10,visionRadius:14,tier:'epic',desc:'Trofeum wiosennego jelenia; lekki krok i czujne oczy'}); }},
 	{id:'summer_horn_charm', name:'Rog letniego zubra', cost:{summerHorn:1, grass:8, copper:1}, make(){ grantCraftedItem({kind:'charm',name:'Rog letniego zubra',attackDamage:3,energyCapacityBonus:40,tier:'epic',desc:'Ciezki talizman sily, ciepla i zapasu energii'}); }},
@@ -3571,6 +3602,8 @@ const RECIPES=[
 	{id:'chair_steel', name:'Fotel stalowy', cost:{steel:2, copperWire:1}, make(){ inv.chairSteel+=1; msg('Fotel stalowy +1 - mebel; jako fotel pilota najlepiej przenosi energie bohatera na naped'); }},
 	{id:'water_pipe', name:'Rury fluidowe x6', cost:{steel:1, plastic:1}, make(){ inv.waterPipe+=6; msg('Rury fluidowe +6 - prowadza wode, pare, gorace powietrze i gazy'); }},
 	{id:'water_pump', name:'Pompa fluidowa', cost:{steel:3, copperWire:2, transistor:1}, make(){ inv.waterPump+=1; msg('Pompa fluidowa +1 - R obraca wejscie/wyjscie dla wody i gazow'); }},
+	{id:'steam_boiler', name:'Kociol parowy', cost:{steel:4, copperWire:2, brick:2}, make(){ inv.steamBoiler+=1; msg('Kociol parowy +1 - pije wode, grzeje sie energia lub zarem i robi pare'); }},
+	{id:'steam_jet', name:'Dysza parowa', cost:{steel:3, brick:1, transistor:1}, make(){ inv.steamJet+=1; msg('Dysza parowa +1 - kolumna pary unosi; rzad dysz pod kadlubem to naped latajacego mecha'); }},
 	{id:'vending_machine', name:'Automat vendingowy', cost:{steel:4, glass:2, copperWire:3, waterPipe:1, transistor:2}, make(){ inv.vendingMachine+=1; msg('Automat vendingowy +1 - podlacz do zasilania i licz na szczescie'); }},
 	{id:'teleporter', name:'Teleporter', cost:{steel:6, copperWire:6, transistor:2, diamond:1, dynamo:1}, make(){ inv.teleporter+=1; msg('Teleporter +1 - wejdz w lewo/prawo, aby skoczyc do kolejnego'); }},
 	{id:'antigravity_beacon', name:'Beacon antygrawitacyjny', cost:{antimatter:1, iridium:2, meteoricIron:4, copperWire:4, transistor:1}, make(){ inv.antigravityBeacon+=1; msg('Beacon antygrawitacyjny +1 - odchyla nadlatujace meteoryty'); }},
@@ -3644,6 +3677,17 @@ const CRAFT_RECIPE_META={
 	gas_grenades:{group:'weapons',icon:'☠️',out:'gasGrenade',amount:3,desc:'Przenosny oblok trucizny - podpal go dla eksplozji.'},
 	sticky_bombs:{group:'weapons',icon:'🧨',out:'stickyBomb',amount:2,desc:'Klei sie do scian i mobow; krotki lont, maly krater.'},
 	obsidian_sword:{group:'weapons',icon:'🗡️',tint:'#7a5cc1',desc:'Craftowany ekwipunek trafia do torby i od razu sie zaklada.'},
+	stick_weapon:{group:'weapons',icon:'🪵',tint:'#8b5a2b',desc:'Najtansza bron na pierwsze noce.'},
+	club_wood:{group:'weapons',icon:'🏏',tint:'#a9743c',desc:'Wiecej patykow, wiecej masy w zamachu.'},
+	axe_stone:{group:'weapons',icon:'🪓',tint:'#9aa0a8',desc:'Kamien oszalamia: trafiony wrog staje na chwile.'},
+	axe_metal:{group:'weapons',icon:'🪓',tint:'#9aa8b5',desc:'Metal tnie: szansa na krwawienie po kazdym ciosie.'},
+	axe_diamond:{group:'weapons',icon:'🪓',tint:'#3ef',desc:'Diament straszy: trafieni panikuja i uciekaja.'},
+	spear_stone:{group:'weapons',icon:'🔱',tint:'#9aa0a8',desc:'Dzida siega o tile dalej; kamienny grot oglusza.'},
+	spear_metal:{group:'weapons',icon:'🔱',tint:'#9aa8b5',desc:'Dzida siega o tile dalej; stalowy grot tnie do krwi.'},
+	spear_diamond:{group:'weapons',icon:'🔱',tint:'#3ef',desc:'Dzida siega o tile dalej; diamentowy grot sieje panike.'},
+	sword_steel:{group:'weapons',icon:'🗡️',tint:'#9aa8b5',desc:'Mocna klinga do zwarcia; rany krwawia.'},
+	sword_diamond:{group:'weapons',icon:'🗡️',tint:'#3ef',desc:'Szczyt zwarcia: najwyzsze obrazenia i panika wrogow.'},
+	sword_iridium:{group:'weapons',icon:'🗡️',tint:'#b8d7ff',desc:'Najciezszy miecz z meteorytowego irydu.'},
 	lucky_charm:{group:'relics',icon:'🍀',tint:'#3ef',desc:'Pasywny talizman z klasycznego rzadkiego surowca.'},
 	spring_antler_charm:{group:'relics',icon:'🦌',tint:'#d8a96b',desc:'Sezonowe trofeum zamienione w staly bonus.'},
 	summer_horn_charm:{group:'relics',icon:'🐂',tint:'#9b6b38',desc:'Ciezki talizman sily i energii.'},
@@ -3666,6 +3710,8 @@ const CRAFT_RECIPE_META={
 	chair_steel:{group:'building',icon:'🪑',out:'chairSteel',amount:1,desc:'Najtrwalszy fotel: komfort w domu, a jako fotel pilota pelne przeniesienie energii bohatera na naped.'},
 	water_pipe:{group:'machines',icon:'🚰',out:'waterPipe',amount:6,desc:'Prowadzi wode, pare, gorace powietrze i gazy.'},
 	water_pump:{group:'machines',icon:'🌀',out:'waterPump',amount:1,desc:'Wymusza przeplyw fluidow i gazow przez rury.'},
+	steam_boiler:{group:'machines',icon:'♨️',out:'steamBoiler',amount:1,desc:'Zamienia wode i cieplo (energia albo zar lawy) w pare pod cisnieniem; nadmiar wypuszcza jako prawdziwa pare.'},
+	steam_jet:{group:'machines',icon:'💨',out:'steamJet',amount:1,desc:'Zasilana para dysza: na ziemi winda z pary, pod kadlubem mecha - naped lotu (W wznosi).'},
 	vending_machine:{group:'machines',icon:'🎰',out:'vendingMachine',amount:1,desc:'Losowy automat do baz: cenny lup albo kompletne rozczarowanie.'},
 	teleporter:{group:'machines',icon:'🌌',out:'teleporter',amount:1,desc:'Paruje odlegle punkty podrozy.'},
 	antigravity_beacon:{group:'machines',icon:'🛸',out:'antigravityBeacon',amount:1,desc:'Ochrona przed meteorytami dla dojrzalszych baz.'},
@@ -3746,10 +3792,57 @@ function snapshotCrafting(){
 function restoreCraftingAvailability(src){
 	CRAFT_MODEL.restore(src);
 }
+function heldResourceKeys(){
+	return Object.keys(inv).filter(k=>typeof inv[k]==='number' && inv[k]>0);
+}
+// --- Category discovery: the FIRST unlocked recipe of a craft group / first
+// held block of a picker group opens that category — its tab/chip appears and
+// the journal (discovery.js) celebrates it once per profile, paying XP.
+// silent = record without fanfare (boot / legacy-save migration).
+let blockGroupResourceKeys=null; // hot-picker group id -> [resource keys] (lazy: groups live further down)
+function noteCategoryDiscoveries(opts){
+	const D=MM.discovery;
+	if(!D || !D.note || !D.CATALOG) return;
+	const silent=!!(opts&&opts.silent);
+	for(const r of visibleCraftRecipes()){
+		const g=recipeGroup(r);
+		const id='craft_cat_'+g;
+		if(!D.CATALOG[id] || D.has(id)) continue;
+		D.note(id, silent?'':('Nowy dział Rzemiosła: '+(CRAFT_GROUP_LABELS[g]||g)));
+	}
+	if(!blockGroupResourceKeys){
+		const byTile=new Map(RESOURCE_DEFS.filter(r=>r.tile).map(r=>[r.tile,r.key]));
+		blockGroupResourceKeys={};
+		HOT_SELECT_GROUPS.forEach(g=>{
+			if(!D.CATALOG['block_cat_'+g.id]) return; // chest/other: no catalog entry on purpose
+			blockGroupResourceKeys[g.id]=g.tiles.map(t=>byTile.get(t)).filter(Boolean);
+		});
+	}
+	for(const gid in blockGroupResourceKeys){
+		const id='block_cat_'+gid;
+		if(D.has(id)) continue;
+		if(blockGroupResourceKeys[gid].some(resourceEverHeld)){
+			const label=(HOT_SELECT_GROUPS.find(g=>g.id===gid)||{}).label||gid;
+			D.note(id, silent?'':('Nowa kategoria bloków: '+label));
+		}
+	}
+}
 function checkCraftingAvailability(opts){
 	const silent=!!(opts&&opts.silent);
-	if(silent){ CRAFT_MODEL.seedSeen(); return; }
+	if(silent){ CRAFT_MODEL.noteMaterials(heldResourceKeys(),{silent:true}); CRAFT_MODEL.seedSeen(); noteCategoryDiscoveries({silent:true}); return; }
+	// Progressive discovery: touching a new material can UNLOCK recipes (they
+	// appear in the panel); gathering enough of everything makes them CRAFTABLE.
+	const unlocked=CRAFT_MODEL.noteMaterials(heldResourceKeys());
 	const newly=CRAFT_MODEL.syncAvailability();
+	const newlyIds=new Set(newly.map(r=>r.id));
+	const unlockedOnly=unlocked.filter(r=>!newlyIds.has(r.id));
+	if(unlockedOnly.length){
+		const shownU=unlockedOnly.slice(0,3).map(r=>r.name||r.id).join(', ');
+		const extraU=unlockedOnly.length>3 ? ' (+'+(unlockedOnly.length-3)+')' : '';
+		msg('🔓 Odblokowany przepis: '+shownU+extraU);
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('craft'); }catch(e){}
+	}
+	noteCategoryDiscoveries({});
 	if(!newly.length) return;
 	const shown=newly.slice(0,3).map(r=>r.name||r.id).join(', ');
 	const extra=newly.length>3 ? ' (+'+(newly.length-3)+')' : '';
@@ -3795,9 +3888,14 @@ function recipeSearchText(r){
 	recipeCostEntries(r).forEach(([k])=>parts.push(k,RES_LABEL[k]||''));
 	return parts.join(' ').toLowerCase();
 }
+// Recipe visibility: hidden until discovered (see crafting.js isUnlocked) —
+// the panel only ever lists what the player has earned the knowledge of.
+// God mode lifts the veil for debugging.
+function craftRecipeVisible(r){ return godMode || CRAFT_MODEL.isUnlocked(r); }
+function visibleCraftRecipes(){ return RECIPES.filter(craftRecipeVisible); }
 function filteredCraftRecipes(){
 	const q=craftQuery.trim().toLowerCase();
-	let list=RECIPES.filter(r=> craftGroup==='fav' ? CRAFT_MODEL.isFavorite(r.id) : (craftGroup==='all' || recipeGroup(r)===craftGroup));
+	let list=visibleCraftRecipes().filter(r=> craftGroup==='fav' ? CRAFT_MODEL.isFavorite(r.id) : (craftGroup==='all' || recipeGroup(r)===craftGroup));
 	if(craftAvailOnly) list=list.filter(r=>canCraft(r) && !recipeDone(r));
 	if(q) list=list.filter(r=>recipeSearchText(r).includes(q));
 	return list.sort((a,b)=>{
@@ -3863,11 +3961,15 @@ function renderCraftTabs(){
 	const favIds=new Set(CRAFT_MODEL.favoriteIds());
 	const defs=CRAFT_GROUPS.slice();
 	if(favIds.size) defs.splice(1,0,{id:'fav',label:'★'});
-	const known=new Set(defs.map(g=>g.id));
-	if(!known.has(craftGroup)) craftGroup='all';
+	const visible=visibleCraftRecipes();
+	const membersOf=g=> g.id==='all' ? visible : (g.id==='fav' ? visible.filter(r=>favIds.has(r.id)) : visible.filter(r=>recipeGroup(r)===g.id));
+	// A tab exists only once its category is DISCOVERED (has a visible recipe);
+	// if the selected group just lost its tab (filter/new world), fall back to all.
+	const renderable=new Set(defs.filter(g=>g.id==='all' || membersOf(g).length).map(g=>g.id));
+	if(!renderable.has(craftGroup)) craftGroup='all';
 	defs.forEach(g=>{
-		const members=g.id==='all' ? RECIPES : (g.id==='fav' ? RECIPES.filter(r=>favIds.has(r.id)) : RECIPES.filter(r=>recipeGroup(r)===g.id));
-		if(g.id!=='all' && !members.length) return;
+		if(!renderable.has(g.id)) return;
+		const members=membersOf(g);
 		const avail=members.filter(canCraft).length;
 		const hasFresh=members.some(r=>CRAFT_MODEL.isFresh(r.id));
 		const b=document.createElement('button');
@@ -3888,7 +3990,9 @@ function renderCraftDetail(r){
 	detail.innerHTML='';
 	detail.classList.remove('flash');
 	if(!r){
-		const empty=document.createElement('div'); empty.className='craftEmpty'; empty.textContent='Brak receptur dla filtra.'; detail.appendChild(empty); return;
+		const empty=document.createElement('div'); empty.className='craftEmpty';
+		empty.textContent=visibleCraftRecipes().length ? 'Brak receptur dla filtra.' : 'Każdy nowy surowiec i każda podpatrzona konstrukcja odblokowuje przepisy.';
+		detail.appendChild(empty); return;
 	}
 	if(craftFlashId===r.id){ detail.classList.add('flash'); craftFlashId=null; }
 	const done=recipeDone(r);
@@ -4000,7 +4104,8 @@ function renderCraftList(){
 	list.innerHTML='';
 	if(!recipes.length){
 		const empty=document.createElement('div'); empty.className='craftEmpty';
-		empty.textContent=craftAvailOnly ? 'Nic do wytworzenia - zbierz surowce albo wyłącz filtr „Dostępne".' : 'Brak receptur dla filtra.';
+		empty.textContent=craftAvailOnly ? 'Nic do wytworzenia - zbierz surowce albo wyłącz filtr „Dostępne".'
+			: (!visibleCraftRecipes().length ? 'Nie znasz jeszcze żadnych receptur — zbieraj surowce i podglądaj przedmioty w świecie.' : 'Brak receptur dla filtra.');
 		list.appendChild(empty);
 	}
 	let lastSection=null;
@@ -4021,9 +4126,11 @@ function renderCraftPanel(){
 	const host=document.getElementById('craft'); if(!host) return;
 	const summary=document.getElementById('craftSummary');
 	if(summary){
-		const available=RECIPES.filter(canCraft).length;
+		const visible=visibleCraftRecipes();
+		const available=visible.filter(canCraft).length;
 		const freshN=CRAFT_MODEL.freshCount();
-		summary.textContent=available+' dostępnych'+(freshN?' · '+freshN+' NOWE':'');
+		const hidden=RECIPES.length-visible.length;
+		summary.textContent=available+' dostępnych'+(freshN?' · '+freshN+' NOWE':'')+(hidden?' · '+hidden+' do odkrycia':'');
 		summary.classList.toggle('hasNew', freshN>0);
 	}
 	renderCraftTabs();
@@ -5245,61 +5352,108 @@ function drawMeatTile(g,px,py,state,h){
 	g.fillStyle=baked?'rgba(99,45,20,0.38)':rotten?'rgba(74,83,39,0.45)':'rgba(181,92,63,0.38)';
 	g.beginPath(); g.ellipse(spotX,spotY,1.1,0.8,0,0,Math.PI*2); g.fill();
 }
+// Chest pixel art: one drawing routine, five tier dresses. The silhouette stays
+// identical across tiers (rounded lid, banded body, lock plate) so a chest is
+// instantly readable; the DRESS escalates — wood → iron-banded green → violet
+// filigree → gilded crown → cyan-runed reliquary — so rarity reads at a glance.
+const CHEST_TILE_PALETTES={
+	[T.CHEST_COMMON]:{tier:0,
+		body:'#9b5c2a', body2:'#623819', lid:'#c77b31', lid2:'#7c481f',
+		trim:'#d7a957', trim2:'#8a6a33', dark:'#311b0b', gem:'#ffd970', glint:'rgba(255,244,180,0.58)'},
+	[T.CHEST_UNCOMMON]:{tier:1,
+		body:'#4c7a3a', body2:'#2d4c21', lid:'#6da24c', lid2:'#3f6428',
+		trim:'#c6cdd4', trim2:'#7d8790', dark:'#16260f', gem:'#b8ffb0', glint:'rgba(214,255,205,0.6)'},
+	[T.CHEST_RARE]:{tier:2,
+		body:'#57307b', body2:'#321744', lid:'#8c48bb', lid2:'#5a287f',
+		trim:'#d7a2ff', trim2:'#8c5cc0', dark:'#1c0d28', gem:'#79f6ff', glint:'rgba(255,255,255,0.62)'},
+	[T.CHEST_EPIC]:{tier:3,
+		body:'#a76a13', body2:'#6b4109', lid:'#f1be38', lid2:'#b87b16',
+		trim:'#ffe58a', trim2:'#c99a3a', dark:'#3b2408', gem:'#54f7ff', glint:'rgba(255,255,255,0.80)'},
+	[T.CHEST_LEGENDARY]:{tier:4,
+		body:'#0f5c66', body2:'#083a44', lid:'#2ba7b4', lid2:'#14707c',
+		trim:'#9df2ff', trim2:'#3fb9c9', dark:'#04222a', gem:'#ffffff', glint:'rgba(157,242,255,0.9)'}
+};
 function drawChestTile(g,px,py,t,h){
-	const epic=t===T.CHEST_EPIC;
-	const rare=t===T.CHEST_RARE;
-	const p=epic
-		? {body:'#a76a13', body2:'#6b4109', lid:'#f1be38', lid2:'#b87b16', trim:'#ffe58a', dark:'#3b2408', gem:'#54f7ff', inset:'#8c3fd1'}
-		: rare
-			? {body:'#57307b', body2:'#321744', lid:'#8c48bb', lid2:'#5a287f', trim:'#d7a2ff', dark:'#1c0d28', gem:'#79f6ff', inset:'#b05cff'}
-			: {body:'#9b5c2a', body2:'#623819', lid:'#c77b31', lid2:'#7c481f', trim:'#d7a957', dark:'#311b0b', gem:'#ffd970', inset:'#f0b456'};
+	const p=CHEST_TILE_PALETTES[t]||CHEST_TILE_PALETTES[T.CHEST_COMMON];
+	const tier=p.tier;
 	g.save();
+	// ground shadow
 	g.fillStyle='rgba(0,0,0,0.30)';
 	g.fillRect(px+3,py+TILE-3,TILE-6,2);
+	// dark outline mass
 	g.fillStyle=p.dark;
 	g.fillRect(px+2,py+7,TILE-4,TILE-8);
 	g.fillRect(px+3,py+5,TILE-6,4);
+	g.fillRect(px+4,py+4,TILE-8,2);
+	// lid: rounded cap with a bright rim light
 	g.fillStyle=p.lid2;
 	g.fillRect(px+3,py+7,TILE-6,4);
 	g.fillStyle=p.lid;
 	g.fillRect(px+4,py+5,TILE-8,3);
 	g.fillRect(px+5,py+4,TILE-10,2);
-	g.fillStyle='rgba(255,255,255,0.24)';
-	g.fillRect(px+5,py+5,TILE-10,1);
+	g.fillStyle='rgba(255,255,255,0.28)';
+	g.fillRect(px+5,py+4,TILE-10,1);
+	g.fillStyle='rgba(255,255,255,0.12)';
+	g.fillRect(px+4,py+6,2,1);
+	// body: two-tone panels with a plank seam
 	g.fillStyle=p.body2;
 	g.fillRect(px+3,py+11,TILE-6,6);
 	g.fillStyle=p.body;
 	g.fillRect(px+4,py+10,TILE-8,5);
 	g.fillStyle='rgba(255,255,255,0.14)';
 	g.fillRect(px+5,py+10,TILE-10,1);
-	g.fillStyle='rgba(0,0,0,0.22)';
+	g.fillStyle='rgba(0,0,0,0.18)';
+	g.fillRect(px+4,py+13,TILE-8,1);
+	g.fillStyle='rgba(0,0,0,0.25)';
 	g.fillRect(px+4,py+15,TILE-8,2);
-	g.fillStyle=p.trim;
+	// metal furniture: corner caps + twin straps + lid hinge line
+	g.fillStyle=p.trim2;
 	g.fillRect(px+4,py+8,2,8);
 	g.fillRect(px+14,py+8,2,8);
+	g.fillStyle=p.trim;
+	g.fillRect(px+4,py+8,2,2);
+	g.fillRect(px+14,py+8,2,2);
+	g.fillRect(px+4,py+14,2,2);
+	g.fillRect(px+14,py+14,2,2);
 	g.fillRect(px+3,py+9,TILE-6,1);
 	g.fillRect(px+3,py+12,TILE-6,1);
+	// central clasp strap + lock plate with the tier gem
+	g.fillStyle=p.trim2;
 	g.fillRect(px+9,py+5,2,12);
-	g.fillStyle=p.dark;
-	g.fillRect(px+9,py+8,2,2);
 	g.fillStyle=p.trim;
-	g.fillRect(px+8,py+11,4,4);
+	g.fillRect(px+9,py+5,2,3);
+	g.fillStyle=p.dark;
+	g.fillRect(px+8,py+10,4,5);
+	g.fillStyle=p.trim;
+	g.fillRect(px+8,py+10,4,1);
 	g.fillStyle=p.gem;
 	g.fillRect(px+9,py+12,2,2);
-	g.fillStyle=epic?'rgba(255,255,255,0.80)':rare?'rgba(255,255,255,0.62)':'rgba(255,244,180,0.58)';
+	// keyhole notch under the gem
+	g.fillStyle=p.dark;
+	g.fillRect(px+9,py+14,2,1);
+	// corner rivets glint per tier
+	g.fillStyle=p.glint;
 	g.fillRect(px+5,py+8,1,1);
 	g.fillRect(px+14,py+8,1,1);
 	g.fillRect(px+5,py+14,1,1);
 	g.fillRect(px+14,py+14,1,1);
-	if(rare || epic){
+	if(tier===1){
+		// uncommon: riveted iron bands — sturdier, clearly above plain wood
+		g.fillStyle=p.trim;
+		g.fillRect(px+6,py+9,1,1); g.fillRect(px+13,py+9,1,1);
+		g.fillRect(px+6,py+12,1,1); g.fillRect(px+13,py+12,1,1);
+	}
+	if(tier>=2){
+		// rare+: filigree insets along the lower band
 		g.fillStyle='rgba(255,255,255,0.20)';
 		g.fillRect(px+4,py+4,2,1);
 		g.fillRect(px+14,py+5,2,1);
-		g.fillStyle=p.inset;
+		g.fillStyle=p.gem;
 		g.fillRect(px+6,py+14,2,1);
 		g.fillRect(px+12,py+14,2,1);
 	}
-	if(epic){
+	if(tier===3){
+		// epic: gilded crown spikes on the lid + drifting sparkle
 		g.fillStyle=p.trim;
 		g.fillRect(px+5,py+3,2,2);
 		g.fillRect(px+9,py+2,2,3);
@@ -5310,6 +5464,20 @@ function drawChestTile(g,px,py,t,h){
 			g.fillStyle='rgba(84,247,255,0.72)';
 			g.fillRect(px+7+((h>>>4)&6),py+6+((h>>>10)&1),2,1);
 		}
+	} else if(tier===4){
+		// legendary: rune-lit reliquary — glowing sigils orbit the lid crest
+		g.fillStyle=p.trim;
+		g.fillRect(px+9,py+2,2,3);
+		g.fillRect(px+6,py+3,1,2);
+		g.fillRect(px+13,py+3,1,2);
+		g.fillStyle='rgba(157,242,255,0.85)';
+		g.fillRect(px+4+((h>>>3)&2),py+6,1,1);
+		g.fillRect(px+13+((h>>>6)&2),py+6,1,1);
+		g.fillRect(px+6,py+11,1,1);
+		g.fillRect(px+13,py+11,1,1);
+		g.fillStyle='rgba(255,255,255,0.9)';
+		g.fillRect(px+10,py+2,1,1);
+		g.fillRect(px+9,py+12,2,1);
 	} else if(((h>>>11)&7)===0){
 		g.fillStyle='rgba(255,255,255,0.62)';
 		g.fillRect(px+6+((h>>>3)&6),py+6,2,1);
@@ -6165,6 +6333,34 @@ function _drawMaterialTile(g,t,px,py,h){
 		if(PUMPS && PUMPS.drawPipeTile) PUMPS.drawPipeTile(g,TILE,px,py,conn,h);
 	} else if(t===T.WATER_PUMP){
 		if(PUMPS && PUMPS.drawPumpTile) PUMPS.drawPumpTile(g,TILE,px,py,'east',0.15,0,0);
+	} else if(t===T.STEAM_BOILER){
+		drawBlockBevel(g,px,py,'rgba(255,214,150,0.22)','rgba(24,10,2,0.45)');
+		g.fillStyle='#7a5636';
+		g.fillRect(px+2,py+3,TILE-4,TILE-6);
+		g.fillStyle='#a4744a';
+		g.fillRect(px+3,py+4,TILE-6,4);
+		g.fillStyle='rgba(60,150,220,0.75)';
+		g.fillRect(px+4,py+TILE-8,5,4);
+		g.strokeStyle='rgba(30,16,6,0.6)';
+		g.lineWidth=1;
+		g.strokeRect(px+3.5,py+TILE-8.5,6,5);
+		g.fillStyle='#3a2a1a';
+		for(let ri=0;ri<3;ri++) g.fillRect(px+4+ri*6,py+2,2,2);
+		g.fillStyle='#c9cdd2';
+		g.fillRect(px+TILE-7,py,4,4);
+	} else if(t===T.STEAM_JET){
+		drawBlockBevel(g,px,py,'rgba(200,230,245,0.20)','rgba(8,14,20,0.42)');
+		g.fillStyle='#8a97a2';
+		g.fillRect(px+3,py+2,TILE-6,6);
+		g.fillStyle='#6d7a85';
+		g.beginPath();
+		g.moveTo(px+4,py+8); g.lineTo(px+TILE-4,py+8);
+		g.lineTo(px+TILE-7,py+TILE-3); g.lineTo(px+7,py+TILE-3);
+		g.closePath(); g.fill();
+		g.fillStyle='rgba(223,232,238,0.55)';
+		g.fillRect(px+8,py+TILE-3,TILE-16,2);
+		g.fillStyle='rgba(255,255,255,0.25)';
+		g.fillRect(px+5,py+9,2,6);
 	} else if(t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET){
 		drawTurretTilePixels(g,t,px,py,h);
 	} else if(t===T.ANTIGRAVITY_BEACON){
@@ -6684,6 +6880,38 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 					const dir=(PUMPS && PUMPS.orientationAt) ? PUMPS.orientationAt(wx,y,(qx,qy)=> (WORLD && WORLD.peekTile) ? WORLD.peekTile(qx,qy,T.AIR) : getTile(qx,qy)) : 'east';
 					if(PUMPS && PUMPS.drawPumpTile) PUMPS.drawPumpTile(cctx,TILE,px,py,dir,0.15,0,0);
 				}
+				if(t===T.STEAM_BOILER){
+					const px=lx*TILE, py=y*TILE;
+					drawBlockBevel(cctx,px,py,'rgba(255,214,150,0.22)','rgba(24,10,2,0.45)');
+					cctx.fillStyle='#7a5636';
+					cctx.fillRect(px+2,py+3,TILE-4,TILE-6);
+					cctx.fillStyle='#a4744a';
+					cctx.fillRect(px+3,py+4,TILE-6,4);
+					cctx.fillStyle='rgba(60,150,220,0.75)';
+					cctx.fillRect(px+4,py+TILE-8,5,4);
+					cctx.strokeStyle='rgba(30,16,6,0.6)';
+					cctx.lineWidth=1;
+					cctx.strokeRect(px+3.5,py+TILE-8.5,6,5);
+					cctx.fillStyle='#3a2a1a';
+					for(let ri=0;ri<3;ri++) cctx.fillRect(px+4+ri*6,py+2,2,2);
+					cctx.fillStyle='#c9cdd2';
+					cctx.fillRect(px+TILE-7,py,4,4);
+				}
+				if(t===T.STEAM_JET){
+					const px=lx*TILE, py=y*TILE;
+					drawBlockBevel(cctx,px,py,'rgba(200,230,245,0.20)','rgba(8,14,20,0.42)');
+					cctx.fillStyle='#8a97a2';
+					cctx.fillRect(px+3,py+2,TILE-6,6);
+					cctx.fillStyle='#6d7a85';
+					cctx.beginPath();
+					cctx.moveTo(px+4,py+8); cctx.lineTo(px+TILE-4,py+8);
+					cctx.lineTo(px+TILE-7,py+TILE-3); cctx.lineTo(px+7,py+TILE-3);
+					cctx.closePath(); cctx.fill();
+					cctx.fillStyle='rgba(223,232,238,0.55)';
+					cctx.fillRect(px+8,py+TILE-3,TILE-16,2);
+					cctx.fillStyle='rgba(255,255,255,0.25)';
+					cctx.fillRect(px+5,py+9,2,6);
+				}
 				if(t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET){
 					const px=lx*TILE, py=y*TILE;
 					drawTurretTilePixels(cctx,t,px,py,h);
@@ -6804,7 +7032,7 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 					}
 				}
 				// Chest highlight & tier flair
-				if(t===T.CHEST_COMMON||t===T.CHEST_RARE||t===T.CHEST_EPIC){
+				if(INFO[t] && INFO[t].chestTier){
 					entry.chests.push({x:wx,y,t});
 					drawChestTile(cctx,lx*TILE,y*TILE,t,h);
 				}
@@ -7136,7 +7364,7 @@ function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk
 					const cxp=(localLayer?(wx-camDrawX):wx)*TILE+TILE/2;
 					const cyp=(localLayer?(y-camDrawY):y)*TILE+TILE/2;
 					const g=ctx.createRadialGradient(cxp,cyp,rad*0.2,cxp,cyp,rad);
-					const col = t===T.CHEST_EPIC? 'rgba(224,179,65,' : (t===T.CHEST_RARE? 'rgba(167,76,201,' : 'rgba(176,127,44,');
+					const col = t===T.CHEST_LEGENDARY? 'rgba(88,224,216,' : t===T.CHEST_EPIC? 'rgba(224,179,65,' : t===T.CHEST_RARE? 'rgba(167,76,201,' : t===T.CHEST_UNCOMMON? 'rgba(63,166,80,' : 'rgba(176,127,44,';
 					g.addColorStop(0,col+(0.45+0.35*pulse)+(chestDebug?0.15:0)+')');
 					g.addColorStop(1,col+'0)');
 					ctx.fillStyle=g;
@@ -7395,7 +7623,7 @@ function countChestsInChunk(cx){
 	let c=0;
 	for(let i=0; i<arr.length; i++){
 		const t=arr[i];
-		if(t===T.CHEST_COMMON||t===T.CHEST_RARE||t===T.CHEST_EPIC) c++;
+		if(INFO[t] && INFO[t].chestTier) c++;
 	}
 	return c; 
 }
@@ -7792,8 +8020,8 @@ function buildHotbarTip(i){
 	if(!name) return frag;
 	const res=RESOURCE_DEFS.find(r=>r.tile===name);
 	const chest=isChestSelection(name);
-	const label=res? res.label : (chest? ({CHEST_COMMON:'Skrzynia zwykła',CHEST_RARE:'Skrzynia rzadka',CHEST_EPIC:'Skrzynia epicka'})[name] : name);
-	const color=res? res.color : (chest? ({CHEST_COMMON:'#b07f2c',CHEST_RARE:'#a74cc9',CHEST_EPIC:'#e0b341'})[name] : '#888');
+	const label=res? res.label : (chest? (CHEST_SELECTION_META[name]||{}).label||name : name);
+	const color=res? res.color : (chest? (CHEST_SELECTION_META[name]||{}).color||'#888' : '#888');
 	frag.appendChild(hudTipTitle(label,color));
 	const key=TILE_TO_RES[T[name]];
 	if(key) frag.appendChild(hudTipRow(null,'W plecaku','×'+(inv[key]|0)));
@@ -7861,9 +8089,9 @@ window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if
 	if(k==='p'&&!keysOnce.has('p')){ chestDebug=!chestDebug; msg('Chest debug '+(chestDebug?'ON':'OFF')); keysOnce.add('p'); }
 	if(k==='j'&&!keysOnce.has('j')){ keysOnce.add('j'); const pcx=Math.floor(player.x/CHUNK_W); msg('Skrzynie w pobliżu: '+countChestsAround(pcx,4)); }
 	if(k==='k'&&!keysOnce.has('k')){ // force spawn a chest at feet (cycle tiers)
-		keysOnce.add('k'); const px=Math.floor(player.x); const py=Math.floor(player.y)-1; const tiers=[T.CHEST_COMMON,T.CHEST_RARE,T.CHEST_EPIC]; const cur=getTile(px,py); if(cur===T.AIR){ const idx=Math.floor(performance.now()/1000)%tiers.length; setTile(px,py,tiers[idx]); msg('Debug: wstawiono skrzynię '+(idx===2?'epicką':idx===1?'rzadką':'zwykłą')); } }
+		keysOnce.add('k'); const px=Math.floor(player.x); const py=Math.floor(player.y)-1; const tiers=[T.CHEST_COMMON,T.CHEST_UNCOMMON,T.CHEST_RARE,T.CHEST_EPIC,T.CHEST_LEGENDARY]; const names=['zwykłą','niezwykłą','rzadką','epicką','legendarną']; const cur=getTile(px,py); if(cur===T.AIR){ const idx=Math.floor(performance.now()/1000)%tiers.length; setTile(px,py,tiers[idx]); msg('Debug: wstawiono skrzynię '+names[idx]); } }
 	// Debug chest placement (L)
-	if(k==='l'&&!keysOnce.has('l')){ keysOnce.add('l'); const px=Math.floor(player.x); const py=Math.floor(player.y); const below=py; if(getTile(px,below)===T.AIR){ const r=Math.random(); let cid=T.CHEST_COMMON; if(r>0.9) cid=T.CHEST_RARE; if(r>0.97) cid=T.CHEST_EPIC; setTile(px,below,cid); msg('Postawiono skrzynię ('+(cid===T.CHEST_EPIC?'epicka':cid===T.CHEST_RARE?'rzadka':'zwykła')+')'); } }
+	if(k==='l'&&!keysOnce.has('l')){ keysOnce.add('l'); const px=Math.floor(player.x); const py=Math.floor(player.y); const below=py; if(getTile(px,below)===T.AIR){ const r=Math.random(); let cid=T.CHEST_COMMON; if(r>0.99) cid=T.CHEST_LEGENDARY; else if(r>0.95) cid=T.CHEST_EPIC; else if(r>0.85) cid=T.CHEST_RARE; else if(r>0.65) cid=T.CHEST_UNCOMMON; setTile(px,below,cid); msg('Postawiono skrzynię ('+((INFO[cid]&&INFO[cid].chestTier)||'zwykla')+')'); } }
 	if(k==='m'&&!keysOnce.has('m')){ toggleMap(); keysOnce.add('m'); }
 	if(k==='c'&&!keysOnce.has('c')){ centerCam(); keysOnce.add('c'); }
 	if(k==='t'&&!keysOnce.has('t')){ toggleCraftPanel(); keysOnce.add('t'); }
@@ -8981,7 +9209,7 @@ function updateDropPreview(){
 		const it=info.item||{};
 		const KIND_ICON={cape:'🧥', eyes:'👁️', outfit:'👕', weapon:'⚔️', charm:'🔮'};
 		const KIND_NAME={cape:'peleryna', eyes:'oczy', outfit:'strój', weapon:'broń', charm:'talizman'};
-		const TIER_NAME={common:'zwykły', rare:'rzadki', epic:'epicki'};
+		const TIER_NAME={common:'zwykły', uncommon:'niezwykły', rare:'rzadki', epic:'epicki', legendary:'legendarny'};
 		dropPreviewEl.appendChild(dropPreviewNode('dpTitle',(KIND_ICON[it.kind]||'🎁')+' '+(it.name||it.id||'Przedmiot')));
 		dropPreviewEl.appendChild(dropPreviewNode('dpSub',(KIND_NAME[it.kind]||it.kind||'')+' · '+(TIER_NAME[info.tier]||info.tier)+(INV&&INV.itemScore?' · Moc '+INV.itemScore(it):'')));
 		if(INV && INV.statChips){
@@ -8995,6 +9223,53 @@ function updateDropPreview(){
 	}
 	dropPreviewEl.appendChild(dropPreviewNode('dpHint',info.inReach?'LPM podnosi · E zbiera wszystko w zasięgu':'Podejdź bliżej, aby podnieść'));
 	dropPreviewEl.classList.add('show');
+}
+// --- Seen-in-world recipe discovery -----------------------------------------
+// Spotting a crafted thing standing in the world (a torch in an NPC house, a
+// vending machine in a ruin…) unlocks its recipe even without the materials.
+// Cheap staggered sweep of the visible viewport (2.5s cadence, fog-gated),
+// modeled on the machines' periodic raw-peekTile sweeps.
+const CRAFT_SEEN_TILE_RECIPES=(()=>{ // numeric tile id -> [recipe,...]
+	const map=new Map();
+	RECIPES.forEach(r=>{
+		if(!r.out) return;
+		const def=RESOURCE_DEFS.find(d=>d.key===r.out && d.tile);
+		if(!def || T[def.tile]==null) return;
+		const id=T[def.tile];
+		if(!map.has(id)) map.set(id,[]);
+		map.get(id).push(r);
+	});
+	return map;
+})();
+let craftSeenScanT=1.2; // first sweep shortly after boot, then every 2.5s
+function scanCraftablesInView(dt){
+	craftSeenScanT-=dt;
+	if(craftSeenScanT>0) return;
+	craftSeenScanT=2.5;
+	const tl=screenToWorldTile(0,0), br=screenToWorldTile(W,H);
+	// hard cap the sweep at max zoom-out: a fully unzoomed 4K viewport must not
+	// turn one scan tick into a 100k-getTile frame spike
+	const ccx=(tl.tx+br.tx)>>1, ccy=(tl.ty+br.ty)>>1;
+	const sx0=Math.max(tl.tx,ccx-90), sx1=Math.min(br.tx,ccx+90);
+	const sy0=Math.max(tl.ty,ccy-50), sy1=Math.min(br.ty,ccy+50);
+	const unlocked=[];
+	for(let ty=sy0; ty<=sy1; ty++){
+		for(let tx=sx0; tx<=sx1; tx++){
+			const recipes=CRAFT_SEEN_TILE_RECIPES.get(getTile(tx,ty));
+			if(!recipes) continue;
+			if(!worldFxVisible(tx,ty)) continue;
+			for(const r of recipes){
+				const nr=CRAFT_MODEL.noteSeenResult(r.id);
+				if(nr) unlocked.push(nr.name||nr.id);
+			}
+		}
+	}
+	if(unlocked.length){
+		msg('🔍 Podpatrzony przepis: '+unlocked.slice(0,3).join(', ')+(unlocked.length>3?' (+'+(unlocked.length-3)+')':''));
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('craft'); }catch(e){}
+		noteCategoryDiscoveries({});
+		renderCraftPanel();
+	}
 }
 // Kopanie (kierunkowe + wskazywane kursorem)
 const MINE_REACH=3; // Chebyshev tile distance for cursor mining
@@ -9088,22 +9363,16 @@ function tryOpenChestAt(tx,ty){
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('chest',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 		lastChestOpen={t:performance.now(),x:tx,y:ty};
 		if(!MM.onLootGained && window.updateDynamicCustomization) window.updateDynamicCustomization();
-		const ownedItems=(MM.inventory && MM.inventory.getItem) ? res.items.filter(it=>MM.inventory.getItem(it.id)) : res.items;
-		let upgradeText='';
-		if(MM.inventory && MM.inventory.compareItem){
-			const best=ownedItems.map(it=>MM.inventory.compareItem(it.id)).filter(Boolean).sort((a,b)=>{
-				const ar=Math.max(a.bestDelta==null?999:a.bestDelta, a.equippedDelta==null?-999:a.equippedDelta);
-				const br=Math.max(b.bestDelta==null?999:b.bestDelta, b.equippedDelta==null?-999:b.equippedDelta);
-				return br-ar;
-			})[0];
-			if(best && (best.bestDelta==null || best.bestDelta>0 || best.isEquippedUpgrade)){
-				const delta=best.bestDelta!=null ? best.bestDelta : best.equippedDelta;
-				upgradeText=delta==null ? ' | Nowa najlepsza opcja: '+(best.item.name||best.item.id) : ' | Ulepszenie '+(delta>0?'+'+delta:'')+': '+(best.item.name||best.item.id);
-			}
+		const CHEST_TIER_PL={common:'zwykła', uncommon:'niezwykła', rare:'rzadka', epic:'epicka', legendary:'legendarna'};
+		const tierPl=CHEST_TIER_PL[info.chestTier]||info.chestTier;
+		if(res.spawned>0){
+			// The chest burst open and its loot lies on the ground as physical drops.
+			msg('Skrzynia '+tierPl+' wyrzuciła '+res.spawned+' przedm. — podnieś je (E / klik)!');
+		} else {
+			// Fallback path: loot went straight to the bag (no drops module).
+			const ownedItems=(MM.inventory && MM.inventory.getItem) ? res.items.filter(it=>MM.inventory.getItem(it.id)) : res.items;
+			msg('Skrzynia '+tierPl+': +'+ownedItems.length+' przedm. (I aby zobaczyć)');
 		}
-		msg((ownedItems.length===res.items.length
-			? 'Skrzynia '+info.chestTier+': +'+ownedItems.length+' przedm. (I aby zobaczyć)'
-			: 'Skrzynia '+info.chestTier+': torba pełna, dodano '+ownedItems.length+'/'+res.items.length)+upgradeText);
 		spawnBurst((tx+0.5)*TILE,(ty+0.5)*TILE, info.chestTier);
 	}
 	return !!res;
@@ -9852,7 +10121,7 @@ function canPlaceInfrastructureAt(tx,ty,id){
 	if(hasInfrastructureTile(tx,ty,id)) return {ok:false, id, overlay:true, reason:'Juz jest taka instalacja'};
 	if(INFO[cur] && INFO[cur].chestTier) return {ok:false, id, overlay:true, reason:'Skrzynia blokuje instalacje'};
 	if(INFO[cur] && INFO[cur].cache) return {ok:false, id, overlay:true, reason:'Skrytka blokuje instalacje'};
-	if(cur===T.DYNAMO || cur===T.DYNAMO_SLOT || cur===T.TELEPORTER || cur===T.WATER_PUMP || cur===T.VENDING_MACHINE || cur===T.TURRET || cur===T.FIRE_TURRET || cur===T.WATER_TURRET || cur===T.SPRING_PLATFORM || cur===T.SOLAR_PANEL || cur===T.SOLAR_BATTERY || cur===T.ANTIGRAVITY_BEACON || cur===T.METEOR_SIREN) return {ok:false, id, overlay:true, reason:'Maszyna blokuje instalacje'};
+	if(cur===T.DYNAMO || cur===T.DYNAMO_SLOT || cur===T.TELEPORTER || cur===T.WATER_PUMP || cur===T.STEAM_BOILER || cur===T.STEAM_JET || cur===T.VENDING_MACHINE || cur===T.TURRET || cur===T.FIRE_TURRET || cur===T.WATER_TURRET || cur===T.SPRING_PLATFORM || cur===T.SOLAR_PANEL || cur===T.SOLAR_BATTERY || cur===T.ANTIGRAVITY_BEACON || cur===T.METEOR_SIREN) return {ok:false, id, overlay:true, reason:'Maszyna blokuje instalacje'};
 	if(!godMode && !withinReach(tx,ty,PLACE_REACH)) return {ok:false, id, overlay:true, reason:'Za daleko'};
 	const blocked=blockedTargetReason(tx,ty);
 	if(blocked) return {ok:false, id, overlay:true, reason:blocked};
@@ -10075,8 +10344,10 @@ function updateHotbarCounts(){
 // Chest pseudo-entries for hotbar dressing (label + tier accent color)
 const HOTBAR_CHEST_DEFS={
 	CHEST_COMMON:{label:'skrzynia', color:'#b07f2c'},
+	CHEST_UNCOMMON:{label:'skrz. niezwykła', color:'#3fa650'},
 	CHEST_RARE:{label:'skrz. rzadka', color:'#a74cc9'},
-	CHEST_EPIC:{label:'skrz. epicka', color:'#e0b341'}
+	CHEST_EPIC:{label:'skrz. epicka', color:'#e0b341'},
+	CHEST_LEGENDARY:{label:'skrz. legendarna', color:'#58e0d8'}
 };
 // Sync each slot's label + color accent with HOTBAR_ORDER. The old static HTML
 // labels went stale the moment a slot was remapped to another block type.
@@ -10223,98 +10494,72 @@ window.addEventListener('keydown',ev=>{ if(isEditableTarget(ev.target) || modalI
 // Hotbar slot click: select OR (Shift/click again) open type remap popup
 const hotSelectMenu=document.getElementById('hotSelectMenu');
 const hotSelectOptions=document.getElementById('hotSelectOptions');
-function closeHotSelect(){ if(hotSelectMenu){ hotSelectMenu.style.display='none'; } }
+function closeHotSelect(){ if(HOTPICKER) HOTPICKER.close(); else if(hotSelectMenu){ hotSelectMenu.style.display='none'; } }
 function openHotSelect(slot,anchorEl){ if(!hotSelectMenu) return; hotSelectOptions.innerHTML='';
 	if(MM.groupedHotSelect) return MM.groupedHotSelect(slot,anchorEl);
-	const baseTypes=RESOURCE_DEFS.filter(r=>r.tile).map(r=>({k:r.tile, label:r.label}));
+	const baseTypes=RESOURCE_DEFS.filter(r=>r.tile && resourceDiscovered(r.key)).map(r=>({k:r.tile, label:r.label}));
 	let types=[...baseTypes];
-	if(godMode){ types.push({k:'CHEST_COMMON',label:'Skrzynia zwykła',col:'#b07f2c'}); types.push({k:'CHEST_RARE',label:'Skrzynia rzadka',col:'#a74cc9'}); types.push({k:'CHEST_EPIC',label:'Skrzynia epicka',col:'#e0b341'}); }
+	if(godMode){ Object.keys(CHEST_SELECTION_META).forEach(k=>{ const m=CHEST_SELECTION_META[k]; types.push({k, label:m.label, col:m.color}); }); }
 	types.forEach(t=>{ const b=document.createElement('button'); b.textContent=t.label; const baseBg='rgba(255,255,255,.08)'; const rareBg=t.col? t.col+'33': baseBg; const border=t.col? t.col+'88':'rgba(255,255,255,.15)'; b.style.cssText='text-align:left; background:'+rareBg+'; border:1px solid '+border+'; color:#fff; border-radius:8px; padding:4px 8px; cursor:pointer; font-size:12px;'; if(HOTBAR_ORDER[slot]===t.k) b.style.outline='2px solid #2c7ef8'; b.addEventListener('click',()=>{ HOTBAR_ORDER[slot]=t.k; closeHotSelect(); cycleHotbar(slot); msg('Slot '+hotbarKeyLabel(slot)+' -> '+t.label); }); hotSelectOptions.appendChild(b); });
 	const rect=anchorEl.getBoundingClientRect(); hotSelectMenu.style.display='block'; hotSelectMenu.style.left=(rect.left + rect.width/2)+'px'; hotSelectMenu.style.top=(rect.top - 8)+'px'; hotSelectMenu.style.transform='translate(-50%,-100%)'; }
 const HOT_SELECT_GROUPS=[
-	{id:'basic',label:'Podstawowe',tiles:['GRASS','SAND','CLAY','DIRT','STONE','WOOD','LEAF','SNOW','WATER']},
-	{id:'rock',label:'Skały i rudy',tiles:['GRANITE','BASALT','COAL','GOLD_ORE','OBSIDIAN','DIAMOND','IRIDIUM','METEORIC_IRON','RADIOACTIVE_ORE','METEOR_DUST','ANTIMATTER_CRYSTAL']},
+	{id:'basic',label:'Podstawowe',tiles:['GRASS','SAND','CLAY','DIRT','STONE','WOOD','LEAF','SNOW','TOXIC_SNOW','WATER']},
+	{id:'rock',label:'Skały i rudy',tiles:['GRANITE','BASALT','COAL','GOLD_ORE','OBSIDIAN','DIAMOND','IRIDIUM','METEORIC_IRON','RADIOACTIVE_ORE','METEOR_DUST','ANTIMATTER_CRYSTAL','MOTHER_ICE','MOTHER_LAVA']},
 	{id:'build',label:'Budulce',tiles:['BRICK','CHIMNEY','GLASS','WOOD_DOOR','STONE_DOOR','STEEL_DOOR','WOOD_TRAPDOOR','STONE_TRAPDOOR','STEEL_TRAPDOOR','STEEL','CHAIR_WOOD','CHAIR_STONE','CHAIR_STEEL','ALIEN_BIOMASS','VOLCANO_MASTER_STONE','SERVANT_STONE']},
-		{id:'machine',label:'Maszyny',tiles:['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY','SPRING_PLATFORM','TRACK','VENDING_MACHINE','TELEPORTER','ANTIGRAVITY_BEACON','METEOR_SIREN','TURRET','FIRE_TURRET','WATER_TURRET']},
+		{id:'machine',label:'Maszyny',tiles:['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY','SPRING_PLATFORM','TRACK','STEAM_BOILER','STEAM_JET','VENDING_MACHINE','TELEPORTER','ANTIGRAVITY_BEACON','METEOR_SIREN','TURRET','FIRE_TURRET','WATER_TURRET']},
 	{id:'utility',label:'Instalacje',tiles:['WIRE','COPPER_WIRE','WATER_PIPE','LADDER','WATER_PUMP','TRANSISTOR','TORCH','RESPAWN_TOTEM']},
-	{id:'food',label:'Jedzenie',tiles:['MEAT','ROTTEN_MEAT','BAKED_MEAT']},
-	{id:'chest',label:'Skrzynie',tiles:['CHEST_COMMON','CHEST_RARE','CHEST_EPIC']},
+	{id:'food',label:'Jedzenie',tiles:['MEAT','ROTTEN_MEAT','BAKED_MEAT','GLOWSHROOM']},
+	{id:'chest',label:'Skrzynie',tiles:['CHEST_COMMON','CHEST_UNCOMMON','CHEST_RARE','CHEST_EPIC','CHEST_LEGENDARY']},
 	{id:'other',label:'Inne',tiles:[]}
 ];
-const HOT_SELECT_GROUP_BY_TILE=new Map();
-HOT_SELECT_GROUPS.forEach(g=>g.tiles.forEach(t=>HOT_SELECT_GROUP_BY_TILE.set(t,g.id)));
-function hotSelectGroupId(tileKey){ return HOT_SELECT_GROUP_BY_TILE.get(tileKey) || 'other'; }
-function hotSelectCount(t){
-	if(t.chest) return godMode ? '\u221e' : '';
-	if(!t.resKey) return '';
-	return godMode ? '\u221e' : String(inv[t.resKey]||0);
+// The picker itself (searchable icon grid, recents, keyboard flow) lives in
+// engine/hot_picker.js; main.js only supplies the game bindings: catalog with
+// live counts, god-mode chest entries, real tile art and the assign action.
+// Slot picker lists only DISCOVERED blocks: a resource the player holds now or
+// has ever held (crafting-model knowledge, rides the save). Blocks the player
+// has never touched stay hidden — discovery is the reward. God mode sees all.
+function resourceEverHeld(key){
+	return (typeof inv[key]==='number' && inv[key]>0) || (CRAFT_MODEL.isKnownMaterial && CRAFT_MODEL.isKnownMaterial(key));
 }
-function makeHotSelectButton(t,slot){
-	const b=document.createElement('button');
-	const baseBg='rgba(255,255,255,.075)';
-	const rareBg=t.col? t.col+'2e':baseBg;
-	const border=t.col? t.col+'78':'rgba(255,255,255,.13)';
-	b.style.cssText='display:flex; align-items:center; justify-content:space-between; gap:10px; text-align:left; background:'+rareBg+'; border:1px solid '+border+'; color:#fff; border-radius:8px; padding:5px 8px; cursor:pointer; font-size:12px; min-height:28px;';
-	if(HOTBAR_ORDER[slot]===t.k) b.style.outline='2px solid #2c7ef8';
-	const lab=document.createElement('span');
-	lab.textContent=t.label;
-	lab.style.cssText='min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
-	b.appendChild(lab);
-	const count=hotSelectCount(t);
-	if(count){
-		const qty=document.createElement('span');
-		qty.textContent=count;
-		qty.style.cssText='font-size:11px; opacity:.72; flex:0 0 auto;';
-		b.appendChild(qty);
-	}
-	b.addEventListener('click',()=>{ HOTBAR_ORDER[slot]=t.k; closeHotSelect(); cycleHotbar(slot); msg('Slot '+hotbarKeyLabel(slot)+' -> '+t.label); });
-	return b;
+function resourceDiscovered(key){
+	return godMode || resourceEverHeld(key);
 }
-function appendHotSelectGroup(group,items,slot,isOpen){
-	if(!items.length) return;
-	const section=document.createElement('details');
-	section.open=!!isOpen;
-	section.style.cssText='border:1px solid rgba(255,255,255,.10); border-radius:9px; background:rgba(255,255,255,.045); overflow:hidden;';
-	const summary=document.createElement('summary');
-	summary.textContent=group.label+' ('+items.length+')';
-	summary.style.cssText='cursor:pointer; padding:6px 8px; font-weight:600; color:#fff; opacity:.9; user-select:none;';
-	section.appendChild(summary);
-	const body=document.createElement('div');
-	body.style.cssText='display:flex; flex-direction:column; gap:4px; padding:0 6px 6px;';
-	items.forEach(t=>body.appendChild(makeHotSelectButton(t,slot)));
-	section.appendChild(body);
-	section.addEventListener('toggle',()=>{
-		if(section.open && hotSelectOptions){
-			requestAnimationFrame(()=>section.scrollIntoView({block:'nearest'}));
-		}
-	});
-	hotSelectOptions.appendChild(section);
-}
-function openHotSelectGrouped(slot,anchorEl){ if(!hotSelectMenu) return; hotSelectOptions.innerHTML='';
-	const baseTypes=RESOURCE_DEFS.filter(r=>r.tile).map(r=>({k:r.tile,label:r.label,col:r.color,resKey:r.key}));
-	const types=[...baseTypes];
+function hotSelectCatalog(){
+	const types=RESOURCE_DEFS.filter(r=>r.tile && resourceDiscovered(r.key)).map(r=>({k:r.tile,label:r.label,col:r.color,resKey:r.key}));
 	if(godMode){
-		types.push({k:'CHEST_COMMON',label:'Skrzynia zwykła',col:'#b07f2c',chest:true});
-		types.push({k:'CHEST_RARE',label:'Skrzynia rzadka',col:'#a74cc9',chest:true});
-		types.push({k:'CHEST_EPIC',label:'Skrzynia epicka',col:'#e0b341',chest:true});
+		Object.keys(CHEST_SELECTION_META).forEach(k=>{ const m=CHEST_SELECTION_META[k]; types.push({k, label:m.label, col:m.color, chest:true}); });
 	}
-	const grouped=new Map(HOT_SELECT_GROUPS.map(g=>[g.id,[]]));
-	types.forEach(t=>{
-		const gid=hotSelectGroupId(t.k);
-		if(!grouped.has(gid)) grouped.set(gid,[]);
-		grouped.get(gid).push(t);
-	});
-	const currentGroup=hotSelectGroupId(HOTBAR_ORDER[slot]);
-	let opened=false;
-	HOT_SELECT_GROUPS.forEach(g=>{
-		const items=grouped.get(g.id)||[];
-		const open=!opened && (g.id===currentGroup || (currentGroup==='other' && g.id==='basic'));
-		if(items.length && open) opened=true;
-		appendHotSelectGroup(g,items,slot,open);
-	});
-	const rect=anchorEl.getBoundingClientRect(); hotSelectMenu.style.display='flex'; hotSelectMenu.style.left=(rect.left + rect.width/2)+'px'; hotSelectMenu.style.top=(rect.top - 8)+'px'; hotSelectMenu.style.transform='translate(-50%,-100%)'; }
-MM.groupedHotSelect=openHotSelectGrouped;
-document.addEventListener('click',e=>{ if(hotSelectMenu && hotSelectMenu.style.display!=='none'){ if(!hotSelectMenu.contains(e.target) && !(e.target.closest && e.target.closest('.hotSlot'))){ closeHotSelect(); } }});
+	return types;
+}
+const HOTPICKER=createHotPicker({
+	menu:hotSelectMenu,
+	options:hotSelectOptions,
+	title:document.getElementById('hotSelectTitle'),
+	foot:document.getElementById('hotSelectFoot'),
+	groups:HOT_SELECT_GROUPS,
+	model:createHotPickerModel({groups:HOT_SELECT_GROUPS, catalog:hotSelectCatalog}),
+	count(t){
+		if(godMode) return {text:'∞',n:Infinity};
+		if(t.chest) return {text:'',n:0};
+		return {text:String(inv[t.resKey]||0),n:inv[t.resKey]||0};
+	},
+	drawTile(g,item){
+		const id=T[item.k];
+		if(id==null) return false;
+		// fixed pseudo-coords: stable art variation, independent of the world
+		return !!(MM.drawEntityTile && MM.drawEntityTile(g,id,0,0,7,11));
+	},
+	current:slot=>HOTBAR_ORDER[slot],
+	assign(slot,item){ HOTBAR_ORDER[slot]=item.k; cycleHotbar(slot); msg('Slot '+hotbarKeyLabel(slot)+' → '+item.label); },
+	keyLabel:hotbarKeyLabel,
+	isGod:()=>godMode,
+	isTouch:()=>document.documentElement.dataset.inputMode==='touch'
+});
+if(HOTPICKER) MM.groupedHotSelect=HOTPICKER.open;
+// Dismiss on POINTERDOWN, not click: chip/card clicks re-render the picker mid
+// bubble, so by the time a 'click' reaches the document its target is detached
+// and contains() lies — the popup vanished on every category chip press.
+document.addEventListener('pointerdown',e=>{ if(hotSelectMenu && hotSelectMenu.style.display!=='none'){ if(!hotSelectMenu.contains(e.target) && !(e.target.closest && e.target.closest('.hotSlot'))){ closeHotSelect(); } }});
 // Shift+click or a second click/tap on the already-selected slot opens the remap menu
 // (previously Shift-only outside god mode, which made remapping impossible on touch)
 document.querySelectorAll('.hotSlot').forEach((el,i)=>{ el.addEventListener('click',e=>{ if(e.shiftKey || hotbarIndex===i) { openHotSelect(i,el); } else { cycleHotbar(i); } }); });
@@ -10497,6 +10742,7 @@ function draw(){ // Background first
  if(PUMPS && PUMPS.draw) PUMPS.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getFluidNetworkTile);
  if(TURRETS && TURRETS.draw) TURRETS.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getTile);
  if(SPRING_PLATFORMS && SPRING_PLATFORMS.draw) SPRING_PLATFORMS.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getElectricNetworkTile);
+ if(STEAM_MACHINES && STEAM_MACHINES.draw) STEAM_MACHINES.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible);
  if(VENDING && VENDING.draw) VENDING.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getTile,{dynamo:DYNAMO,solar:SOLAR,teleporters:TELEPORTERS,getElectricNetworkTile,gameDayFloat:currentGameDayFloat});
  // Cave darkness overlay: darkens unlit underground before UI-ish indicators,
  // so the ghost preview, mining progress and fog (final occlusion) stay on top.
@@ -10757,7 +11003,7 @@ function minimapTileColor(t){
 	if(t===T.COAL) return '#25272b';
 	if(t===T.VOLCANO_MASTER_STONE) return '#ff6a21';
 	if(t===T.SERVANT_STONE) return '#8b2d17';
-	if(t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC) return '#dba33a';
+	if(INFO[t] && INFO[t].chestTier) return '#dba33a';
 	if(t===T.INVASION_CACHE) return '#7dffdc';
 	if(t===T.TORCH) return '#ffc24b';
 	if(t===T.OBSIDIAN) return '#4a3b66';
@@ -10776,6 +11022,8 @@ function minimapTileColor(t){
 	if(t===T.WATER_PIPE) return '#2d8ec9';
 	if(t===T.VENDING_MACHINE) return '#55d7ff';
 	if(t===T.WATER_PUMP) return '#58d4ff';
+	if(t===T.STEAM_BOILER) return '#c89a5b';
+	if(t===T.STEAM_JET) return '#9fd4e8';
 	if(t===T.ELECTRONICS) return '#47d18c';
 	if(t===T.TRANSISTOR) return '#47d18c';
 	if(t===T.DYNAMO) return '#ffd24a';
@@ -10823,9 +11071,6 @@ function minimapTileColor(t){
 	if(t===T.GRAVE) return '#a8adb8';
 	if(t===T.RESPAWN_TOTEM) return '#e23b4e';
 	return '#686d78';
-}
-function minimapConcealsUndiscovered(t){
-	return t===T.WATER || t===T.LAVA || t===T.GOLD_ORE || t===T.DIAMOND || t===T.IRIDIUM || t===T.UFO_CONCRETE || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || t===T.OBSIDIAN || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.TRACK || isChairTileId(t) || t===T.GLASS || t===T.BRICK || t===T.CHIMNEY || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || t===T.GRAVE || t===T.RESPAWN_TOTEM || t===T.INVASION_CACHE || t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC;
 }
 function minimapWorldYToPixel(row,mh,minY,maxY){
 	const span=Math.max(1,maxY-minY-1);
@@ -10897,24 +11142,18 @@ function drawMinimap(){
 				for(let wx=wx0; wx<=wx1; wx++){
 					const surf=surfaceAt(wx);
 					for(let wy=y0; wy<=y1; wy++){
+						// Only discovered terrain appears; the M-key map reveal flips
+						// worldTileDiscovered() to always-true, so the debug full map
+						// falls out of the same gate.
+						if(!worldTileDiscovered(wx,wy)) continue;
 						const t=getTile(wx,wy);
 						if(t===T.AIR){
 							if(wy>surf) cave=true;
 							continue;
 						}
-						const outsideLegacyBand = wy<0 || wy>=WORLD_H;
-						const discovered=worldTileDiscovered(wx,wy);
-						if((wy>surf || outsideLegacyBand) && !discovered && minimapConcealsUndiscovered(t)){
-							// Undiscovered sky-island fabric (wy<0) stays invisible — a gray
-							// placeholder up there reads as static noise across the sky band.
-							if(wy<0) continue;
-							if(isPlayerPassableTile(t) || t===T.TORCH) cave=true;
-							else if(!color) color=outsideLegacyBand?'rgba(99,121,148,0.62)':'#686d78';
-							continue;
-						}
 						const c=minimapTileColor(t);
-						if(t===T.WATER || t===T.LAVA || t===T.GOLD_ORE || t===T.DIAMOND || t===T.IRIDIUM || t===T.UFO_CONCRETE || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.TRACK || isChairTileId(t) || t===T.GLASS || t===T.CHIMNEY || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || t===T.RESPAWN_TOTEM || INFO[t].chestTier || INFO[t].cache){ color=c; priority=true; wx=wx1+1; break; }
-						if(!color && !(wy<0 && !discovered)) color=outsideLegacyBand && !discovered ? 'rgba(120,145,176,0.58)' : c;
+						if(t===T.WATER || t===T.LAVA || t===T.GOLD_ORE || t===T.DIAMOND || t===T.IRIDIUM || t===T.UFO_CONCRETE || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.TRACK || isChairTileId(t) || t===T.GLASS || t===T.CHIMNEY || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.STEAM_BOILER || t===T.STEAM_JET || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || t===T.RESPAWN_TOTEM || INFO[t].chestTier || INFO[t].cache){ color=c; priority=true; wx=wx1+1; break; }
+						if(!color) color=c;
 					}
 				}
 				const pxColor=priority?color:(cave?'rgba(2,5,10,0.72)':(color||null));
@@ -13254,7 +13493,7 @@ function biomeLandingSpot(hit,biomeId){
 function atlantisSignatureTile(t){
 	return t===T.GLASS || t===T.OBSIDIAN || t===T.STEEL || t===T.TRACK || t===T.SOLAR_BATTERY ||
 		t===T.ANTIGRAVITY_BEACON || t===T.IRIDIUM || t===T.METEORIC_IRON ||
-		t===T.ANTIMATTER_CRYSTAL || t===T.CHEST_RARE || t===T.CHEST_EPIC ||
+		t===T.ANTIMATTER_CRYSTAL || t===T.CHEST_RARE || t===T.CHEST_EPIC || t===T.CHEST_LEGENDARY ||
 		t===T.STEEL_DOOR || t===T.GLOWSHROOM;
 }
 function atlantisSignatureNear(tx,ty){
@@ -13751,7 +13990,7 @@ function runGameStep(dt,ts){
 	if(GASES && GASES.update) GASES.update(dt, getTile, setTile, player);
 	if(PLANTS && PLANTS.update) PLANTS.update(getTile, setTile, dt);
 	if(PROGRESS && PROGRESS.update) PROGRESS.update(dt);
-updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(ATOMIC_WINTER && ATOMIC_WINTER.update) ATOMIC_WINTER.update(dt, player, getTile, setTile); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(SKY_GUARDIAN && SKY_GUARDIAN.update) SKY_GUARDIAN.update(dt, player, getTile, setTile); if(CENTER_GUARDIAN && CENTER_GUARDIAN.update) CENTER_GUARDIAN.update(dt, player, getTile, setTile); if(STORY_PROGRESSION && STORY_PROGRESSION.update) STORY_PROGRESSION.update(dt, player, getTile, setTile); if(FINALE && FINALE.update) FINALE.update(dt); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, viewport:currentViewportState(), resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(ALIEN_RUINS && ALIEN_RUINS.update) ALIEN_RUINS.update(dt, player, getTile, setTile, {saveState, msg}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(TERRAIN_TRAPS && TERRAIN_TRAPS.update) TERRAIN_TRAPS.update(dt); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
+updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(STEAM_MACHINES && STEAM_MACHINES.update) STEAM_MACHINES.update(dt, player, getTile, setTile); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(ATOMIC_WINTER && ATOMIC_WINTER.update) ATOMIC_WINTER.update(dt, player, getTile, setTile); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(SKY_GUARDIAN && SKY_GUARDIAN.update) SKY_GUARDIAN.update(dt, player, getTile, setTile); if(CENTER_GUARDIAN && CENTER_GUARDIAN.update) CENTER_GUARDIAN.update(dt, player, getTile, setTile); if(STORY_PROGRESSION && STORY_PROGRESSION.update) STORY_PROGRESSION.update(dt, player, getTile, setTile); if(FINALE && FINALE.update) FINALE.update(dt); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, viewport:currentViewportState(), resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(ALIEN_RUINS && ALIEN_RUINS.update) ALIEN_RUINS.update(dt, player, getTile, setTile, {saveState, msg}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(TERRAIN_TRAPS && TERRAIN_TRAPS.update) TERRAIN_TRAPS.update(dt); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
 }
 let lastLoopErrAt=0; function loop(ts){
 	if(shouldSkipFrameForCap(ts)){ requestAnimationFrame(loop); return; }
@@ -13774,6 +14013,7 @@ let lastLoopErrAt=0; function loop(ts){
 			runGameStep(frameDt,ts);
 			updateCameraFollow(frameDt);
 			revealAround();
+			scanCraftablesInView(frameDt);
 			simMs=framePerfNow()-simT;
 		}
 		if(AUDIO && AUDIO.update) AUDIO.update(frameDt);
@@ -13840,7 +14080,7 @@ if(!window.__lootPopupInit){
 	const lootCloseBtn=document.getElementById('lootClose');
 	let lootPrevFocus=null;
 	function persistInbox(){ window.lootInbox=ownedGearItems(window.lootInbox); lootInboxUnread=Math.min(lootInboxUnread, window.lootInbox.length); try{ localStorage.setItem(LOOT_INBOX_KEY, JSON.stringify({items:window.lootInbox, unread:lootInboxUnread})); }catch(e){} }
-	function updateLootInboxIndicator(){ const count=lootInboxUnread; if(!lootInboxBtn) return; if(count>0){ lootInboxBtn.style.display='inline-block'; lootInboxCount.textContent=''+count; lootInboxBtn.classList.add('pulseNew'); } else { lootInboxBtn.style.display='none'; lootInboxCount.textContent=''; lootInboxBtn.classList.remove('pulseNew'); } }
+	function updateLootInboxIndicator(){ const count=lootInboxUnread; if(!lootInboxBtn) return; if(count>0){ lootInboxBtn.style.display='inline-flex'; lootInboxCount.textContent=''+count; lootInboxBtn.classList.add('pulseNew'); } else { lootInboxBtn.style.display='none'; lootInboxCount.textContent=''; lootInboxBtn.classList.remove('pulseNew'); } }
 	window.updateLootInboxIndicator=updateLootInboxIndicator;
 	function removeInboxItem(id){ window.lootInbox=window.lootInbox.filter(it=>it && it.id!==id); lootInboxUnread=Math.min(lootInboxUnread, window.lootInbox.length); persistInbox(); updateLootInboxIndicator(); }
 	function clearInbox(){ window.lootInbox=[]; lootInboxUnread=0; persistInbox(); updateLootInboxIndicator(); }
@@ -13864,6 +14104,63 @@ if(!window.__lootPopupInit){
 		if(cmp.isNewBest) rank+=1000;
 		return rank;
 	}
+	// --- Upgrade notice: the corner card that says "this beats what you wear" ---
+	// Replaces the old bare "!" button as the immediate signal. Fires only for a
+	// GENUINE upgrade over the equipped item (same weapon class) or for the first
+	// item of an empty slot; everything else stays a quiet toast + inbox entry.
+	const upgradeNoticeEl=document.getElementById('upgradeNotice');
+	let upgradeNoticeTimer=null;
+	function hideUpgradeNotice(){
+		if(!upgradeNoticeEl) return;
+		upgradeNoticeEl.classList.remove('show');
+		upgradeNoticeEl.textContent='';
+		if(upgradeNoticeTimer){ clearTimeout(upgradeNoticeTimer); upgradeNoticeTimer=null; }
+	}
+	function upgradeNode(cls,text){ const n=document.createElement('div'); n.className=cls; if(text) n.textContent=text; return n; }
+	function isUpgradeWorthy(cmp){
+		if(!cmp) return false;
+		if(cmp.equippedComparable && cmp.equippedDelta!=null && cmp.equippedDelta>0) return true;
+		if(!cmp.equipped) return true; // empty slot: anything beats bare skin
+		return false;
+	}
+	function showUpgradeNotice(item,cmp){
+		if(!upgradeNoticeEl) return false;
+		const INV=MM.inventory;
+		hideUpgradeNotice();
+		const KIND_NAME={cape:'peleryna', eyes:'oczy', outfit:'strój', weapon:'broń', charm:'talizman'};
+		const TIER_NAME={common:'zwykły', uncommon:'niezwykły', rare:'rzadki', epic:'epicki', legendary:'legendarny'};
+		const tierColor=(INV && INV.TIER_COLORS && INV.TIER_COLORS[item.tier])||'#4ade80';
+		upgradeNoticeEl.style.setProperty('--up-tier',tierColor);
+		upgradeNoticeEl.appendChild(upgradeNode('upKicker','⬆ Znaleziono lepszy przedmiot'));
+		upgradeNoticeEl.appendChild(upgradeNode('upTitle',item.name||item.id));
+		upgradeNoticeEl.appendChild(upgradeNode('upSub',(KIND_NAME[item.kind]||item.kind)+' · '+(TIER_NAME[item.tier]||item.tier||'zwykły')+(INV&&INV.itemScore?' · Moc '+INV.itemScore(item):'')));
+		const deltaText=(cmp.equippedComparable && cmp.equippedDelta!=null)
+			? '▲ +'+cmp.equippedDelta+' Moc vs noszone: '+lootNoticeName(cmp.equipped)
+			: 'Pierwszy przedmiot do tego slotu';
+		upgradeNoticeEl.appendChild(upgradeNode('upDelta',deltaText));
+		if(INV && INV.statChips){
+			const chips=document.createElement('div'); chips.className='upChips';
+			INV.statChips(item).forEach(ch=>{ const c=document.createElement('span'); c.className='upChip'; c.title=ch.label; c.textContent=ch.icon+' '+ch.text; chips.appendChild(c); });
+			if(chips.childNodes.length) upgradeNoticeEl.appendChild(chips);
+		}
+		const btns=document.createElement('div'); btns.className='upBtns';
+		const eq=document.createElement('button'); eq.type='button'; eq.className='upEquip'; eq.textContent='Załóż';
+		eq.addEventListener('click',()=>{
+			if(MM.inventory && MM.inventory.equip && MM.inventory.equip(item.id)){
+				msg('Założono: '+(item.name||item.id));
+				removeInboxItem(item.id);
+			} else msg('Nie można założyć (przedmiot odrzucony?)');
+			hideUpgradeNotice();
+		});
+		const later=document.createElement('button'); later.type='button'; later.className='upLater'; later.textContent='Później';
+		later.title='Przedmiot czeka w skrzynce łupów (I)';
+		later.addEventListener('click',hideUpgradeNotice);
+		btns.appendChild(eq); btns.appendChild(later);
+		upgradeNoticeEl.appendChild(btns);
+		upgradeNoticeEl.classList.add('show');
+		upgradeNoticeTimer=setTimeout(hideUpgradeNotice,14000);
+		return true;
+	}
 	function notifyFreshLoot(fresh){
 		const INV=MM.inventory;
 		if(!INV || !INV.compareItem || !fresh || !fresh.length) return;
@@ -13871,6 +14168,10 @@ if(!window.__lootPopupInit){
 		if(!rows.length) return;
 		rows.sort((a,b)=>lootNoticeRank(b)-lootNoticeRank(a));
 		const top=rows[0];
+		// The best fresh find that beats the worn gear gets the corner card with a
+		// one-click "Załóż"; anything less stays a quiet toast.
+		const upgrade=rows.find(row=>isUpgradeWorthy(row.cmp));
+		if(upgrade && showUpgradeNotice(upgrade.item,upgrade.cmp)) return;
 		const extra=fresh.length>1 ? ' (+'+(fresh.length-1)+')' : '';
 		msg('Nowy przedmiot: '+lootNoticeName(top.item)+lootNoticeSuffix(top.cmp)+extra);
 	}
@@ -13969,7 +14270,7 @@ if(!window.__lootPopupInit){
 				discard.addEventListener('click',()=>{ if(MM.inventory) MM.inventory.discard(it.id); resolveRow(); });
 			btns.appendChild(equip); btns.appendChild(keep); btns.appendChild(discard); row.appendChild(btns); lootItemsBox.appendChild(row); row.__item=it; });
 	}
-	function openInbox(){ if(lootPopup.classList.contains('show')) return; window.lootInbox=ownedGearItems(window.lootInbox); if(!window.lootInbox.length){ msg('Brak przedmiotów'); persistInbox(); updateLootInboxIndicator(); return; } buildRows(window.lootInbox); lootInboxUnread=0; updateLootInboxIndicator(); persistInbox(); lootPopup.classList.add('show'); lootDim.style.display='block'; if(MM.modalInput) MM.modalInput.push('loot'); lootPrevFocus=document.activeElement; installTrap(); const first=lootPopup.querySelector('button'); if(first) first.focus(); }
+	function openInbox(){ if(lootPopup.classList.contains('show')) return; hideUpgradeNotice(); window.lootInbox=ownedGearItems(window.lootInbox); if(!window.lootInbox.length){ msg('Brak przedmiotów'); persistInbox(); updateLootInboxIndicator(); return; } buildRows(window.lootInbox); lootInboxUnread=0; updateLootInboxIndicator(); persistInbox(); lootPopup.classList.add('show'); lootDim.style.display='block'; if(MM.modalInput) MM.modalInput.push('loot'); lootPrevFocus=document.activeElement; installTrap(); const first=lootPopup.querySelector('button'); if(first) first.focus(); }
 	function closeInbox(){ if(!lootPopup.classList.contains('show')) return; lootPopup.classList.remove('show'); lootDim.style.display='none'; if(MM.modalInput) MM.modalInput.pop('loot'); removeTrap(); if(lootPrevFocus && lootPrevFocus.focus) lootPrevFocus.focus(); }
 	function installTrap(){ removeTrap(); function handler(e){ if(!lootPopup.classList.contains('show')) return; if(e.key==='Escape'){ e.preventDefault(); closeInbox(); e.stopImmediatePropagation(); return; } if(e.key==='Tab'){ const f=[...lootPopup.querySelectorAll('button')].filter(b=>!b.disabled); if(!f.length) return; const first=f[0], last=f[f.length-1]; if(e.shiftKey){ if(document.activeElement===first){ e.preventDefault(); last.focus(); } } else { if(document.activeElement===last){ e.preventDefault(); first.focus(); } } e.stopImmediatePropagation(); } } window.addEventListener('keydown',handler); lootPopup.__trapHandler=handler; }
 	function removeTrap(){ if(lootPopup.__trapHandler){ window.removeEventListener('keydown', lootPopup.__trapHandler); lootPopup.__trapHandler=null; } }

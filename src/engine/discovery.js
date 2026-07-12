@@ -28,6 +28,11 @@ const discovery = (function(){
     react_chain:    'Porażenie łańcuchowe po mokrych celach',
     arrow_recover:  'Wbite drewniane strzały da się podnieść',
     parry:          'Perfekcyjna parada odbija pociski',
+    melee_bleed:    'Metalowe ostrza otwierają krwawiące rany',
+    melee_stun:     'Kamienny obuch potrafi oszołomić',
+    melee_panic:    'Błysk diamentu sieje panikę',
+    sand_blind:     'Piasek w oczy oślepia wroga',
+    spit_toxic:     'Plucie wodą bywa toksyczne',
     sandstorm:      'Pustynna wichura usypuje wydmy',
     hero_conduct:   'Mokry bohater przewodzi prąd (x1.5)',
     hero_frozen:    'Mokry + zziębnięty na mrozie = zamarzasz',
@@ -35,6 +40,39 @@ const discovery = (function(){
     mob_gear:       'Pokonane stwory gubią swoje rzemiosło',
     epic_drop:      'Epicki łup ogłasza się słupem światła',
     volcano_sacrifice: 'Wulkan przyjmuje ofiary i oddaje z nawiązką',
+    // Category discoveries (main.js noteCategoryDiscoveries): the FIRST unlocked
+    // recipe of a craft group / first held block of a picker group opens the
+    // category — tab/chip appears and the journal pays the discovery XP.
+    craft_cat_survival:   'Dział Rzemiosła: Start',
+    craft_cat_tools:      'Dział Rzemiosła: Narzędzia',
+    craft_cat_building:   'Dział Rzemiosła: Budowle',
+    craft_cat_processing: 'Dział Rzemiosła: Przerób',
+    craft_cat_weapons:    'Dział Rzemiosła: Walka',
+    craft_cat_machines:   'Dział Rzemiosła: Maszyny',
+    craft_cat_alchemy:    'Dział Rzemiosła: Eliksiry',
+    craft_cat_relics:     'Dział Rzemiosła: Relikty',
+    block_cat_basic:      'Katalog bloków: Podstawowe',
+    block_cat_rock:       'Katalog bloków: Skały i rudy',
+    block_cat_build:      'Katalog bloków: Budulce',
+    block_cat_machine:    'Katalog bloków: Maszyny',
+    block_cat_utility:    'Katalog bloków: Instalacje',
+    block_cat_food:       'Katalog bloków: Jedzenie',
+    // Sky biomes (world_layers.js SKY_BIOMES): first flight into each themed
+    // region of the high heavens is a discovery (mobs.js sky pressure notes it).
+    sky_biome_heaven:  'Podniebna kraina: Rajskie Wyżyny',
+    sky_biome_skywood: 'Podniebna kraina: Podniebna Puszcza',
+    sky_biome_balloon: 'Podniebna kraina: Balonowy Gaj',
+    sky_biome_storm:   'Podniebna kraina: Burzowa Kuźnia',
+    sky_biome_frost:   'Podniebna kraina: Lodowa Korona',
+    sky_biome_mirage:  'Podniebna kraina: Ogrody Fatamorgany',
+    sky_biome_wreck:   'Podniebna kraina: Rdzawa Flotylla',
+    sky_biome_spore:   'Podniebna kraina: Zarodnikowa Rafa',
+    sky_biome_void:    'Podniebna kraina: Grawitacyjna Otchłań',
+    sky_biome_roost:   'Podniebna kraina: Gniazdowisko Harpii',
+    sky_biome_ember:   'Podniebna kraina: Żarowe Łuki',
+    // Steam circuit (engine/steam_machines.js + mech flight in engine/mechs.js)
+    steam_lift:   'Kolumna pary unosi wszystko nad dyszą',
+    steam_flight: 'Parowy mech wzbija się w powietrze',
   };
   // Undiscovered entries show as "???" in the Ekwipunek journal tab, with only
   // the category and a foggy hint — enough to hunt, not enough to spoil.
@@ -50,6 +88,11 @@ const discovery = (function(){
     react_chain:    {cat:'⚗️ Reakcje bojowe',    hint:'Kilka przemoczonych celów blisko siebie i odrobina prądu…'},
     arrow_recover:  {cat:'🏹 Techniki',          hint:'Nie każdy wystrzelony pocisk ginie bezpowrotnie…'},
     parry:          {cat:'🏹 Techniki',          hint:'Obrona podniesiona w idealnym momencie robi coś więcej…'},
+    melee_bleed:    {cat:'🏹 Techniki',          hint:'Broń z pewnego kruszcu zostawia rany, które nie chcą się zamknąć…'},
+    melee_stun:     {cat:'🏹 Techniki',          hint:'Ciężki, tępy materiał czasem zatrzymuje cel w miejscu…'},
+    melee_panic:    {cat:'🏹 Techniki',          hint:'Najtwardszy klejnot świata budzi w stworach czysty strach…'},
+    sand_blind:     {cat:'🏹 Techniki',          hint:'Garść czegoś sypkiego rzucona w ślepia…'},
+    spit_toxic:     {cat:'🏹 Techniki',          hint:'Nabierz łyk i spróbuj splunąć w stwora — bywa gorzej niż mokro…'},
     sandstorm:      {cat:'🌪 Pogoda',            hint:'Wschodnia pustynia przy naprawdę silnym wietrze…'},
     hero_conduct:   {cat:'🧍 Na własnej skórze', hint:'Przemocz się i stań na drodze porażenia…'},
     hero_frozen:    {cat:'🧍 Na własnej skórze', hint:'Dwa zimna naraz, daleko na zachodzie, pod gołym niebem…'},
@@ -57,6 +100,33 @@ const discovery = (function(){
     mob_gear:       {cat:'🎁 Łupy',              hint:'To, czym stwór walczy albo czym jest, może po nim zostać…'},
     epic_drop:      {cat:'🎁 Łupy',              hint:'Na krańcach świata spadają skarby, których nie sposób przegapić…'},
     volcano_sacrifice: {cat:'🎁 Łupy',           hint:'Zwykły przedmiot wrzucony w ogień góry czasem wraca lepszy…'},
+    craft_cat_survival:   {cat:'📚 Katalogi', hint:'Pierwsze deski i pierwsza noc otwierają najprostszy dział…'},
+    craft_cat_tools:      {cat:'📚 Katalogi', hint:'Twardszy surowiec w plecaku podpowiada lepsze narzędzia…'},
+    craft_cat_building:   {cat:'📚 Katalogi', hint:'Zapas budulca budzi w głowie plany konstrukcji…'},
+    craft_cat_processing: {cat:'📚 Katalogi', hint:'Niektóre surowce chcą być wypalone w coś nowego…'},
+    craft_cat_weapons:    {cat:'📚 Katalogi', hint:'Materiał na grot i drzewce to początek arsenału…'},
+    craft_cat_machines:   {cat:'📚 Katalogi', hint:'Metal, przewody i części z ruin miast składają się w maszyny…'},
+    craft_cat_alchemy:    {cat:'📚 Katalogi', hint:'Woda i coś żywego — tak zaczynają się eliksiry…'},
+    craft_cat_relics:     {cat:'📚 Katalogi', hint:'Trofea i klejnoty proszą się o oprawę…'},
+    block_cat_basic:      {cat:'📚 Katalogi', hint:'Pierwszy wykopany blok otwiera katalog podstaw…'},
+    block_cat_rock:       {cat:'📚 Katalogi', hint:'Pod powierzchnią czekają skały i kruszce…'},
+    block_cat_build:      {cat:'📚 Katalogi', hint:'Przetworzone materiały tworzą półkę budulców…'},
+    block_cat_machine:    {cat:'📚 Katalogi', hint:'Złożone urządzenia trafiają na osobną półkę…'},
+    block_cat_utility:    {cat:'📚 Katalogi', hint:'Drabiny, rury, przewody — infrastruktura ma swoją kartę…'},
+    block_cat_food:       {cat:'📚 Katalogi', hint:'Zapasy jedzenia zasługują na własną spiżarnię…'},
+    sky_biome_heaven:  {cat:'🌌 Podniebne krainy', hint:'Gdzieś wysoko lśnią białe wyspy ze złotem w sercu…'},
+    sky_biome_skywood: {cat:'🌌 Podniebne krainy', hint:'Ponoć las potrafi rosnąć nawet bez ziemi pod korzeniami…'},
+    sky_biome_balloon: {cat:'🌌 Podniebne krainy', hint:'Drzewa o koronach lekkich jak balony unoszą całe wyspy…'},
+    sky_biome_storm:   {cat:'🌌 Podniebne krainy', hint:'Nad chmurami ktoś wykuwa pioruny na bazaltowych kowadłach…'},
+    sky_biome_frost:   {cat:'🌌 Podniebne krainy', hint:'Najzimniejszy lód świata wcale nie leży na ziemi…'},
+    sky_biome_mirage:  {cat:'🌌 Podniebne krainy', hint:'Szklane kopuły i złoto pośród piasku, który nie powinien latać…'},
+    sky_biome_wreck:   {cat:'🌌 Podniebne krainy', hint:'Cała flotylla stalowych kadłubów dryfuje bez załogi…'},
+    sky_biome_spore:   {cat:'🌌 Podniebne krainy', hint:'Świecąca rafa unosi się w powietrzu i oddycha trującym pyłem…'},
+    sky_biome_void:    {cat:'🌌 Podniebne krainy', hint:'Obsydianowe bryły krążą wokół czegoś, co wygina grawitację…'},
+    sky_biome_roost:   {cat:'🌌 Podniebne krainy', hint:'Wielkie gniazda z kości i drewna. Coś je uwiło. Coś dużego…'},
+    sky_biome_ember:   {cat:'🌌 Podniebne krainy', hint:'Łuki żaru i lawy płoną wysoko nad wschodnimi pustkowiami…'},
+    steam_lift:   {cat:'⚙️ Maszyny parowe', hint:'Woda, żar i dysza skierowana w niebo — stań nad nią…'},
+    steam_flight: {cat:'⚙️ Maszyny parowe', hint:'Kadłub z fotelem, kocioł z wodą i rząd dysz od spodu…'},
   };
   const DISCOVERY_XP = 40; // every fresh journal entry pays experience (progress.js levels off player.xp)
 
@@ -80,17 +150,21 @@ const discovery = (function(){
   // Report that a discoverable interaction just happened. Returns true only the
   // first time (callers can key extra celebration off it). A fresh entry pays
   // DISCOVERY_XP straight into player.xp (progress.js turns xp into levels).
+  // An empty text = SILENT entry (no toast, no jingle) — used when seeding
+  // knowledge a loaded save already earned (category migration).
   function note(id, text){
     if(typeof id !== 'string' || !id) return false;
     if(seen.has(id)) return false;
     seen.add(id);
     persist();
+    const loud = typeof text === 'string' && !!text;
     try{
-      if(root.msg && typeof text === 'string' && text) root.msg('🧪 Odkrycie: ' + text + ' (+' + DISCOVERY_XP + ' XP)');
+      if(root.msg && loud) root.msg('🧪 Odkrycie: ' + text + ' (+' + DISCOVERY_XP + ' XP)');
     }catch(e){ /* headless */ }
     try{
+      // silent (migration) entries record knowledge without paying XP again
       const p = root.player;
-      if(p && typeof p === 'object'){
+      if(loud && p && typeof p === 'object'){
         p.xp = (Number(p.xp) || 0) + DISCOVERY_XP;
         if(typeof root.dispatchEvent === 'function' && typeof root.CustomEvent === 'function'){
           root.dispatchEvent(new root.CustomEvent('mm-xp-awarded', {detail:{amount:DISCOVERY_XP, special:true, source:'discovery'}}));
@@ -98,7 +172,7 @@ const discovery = (function(){
       }
     }catch(e){ /* headless */ }
     try{
-      if(root.MM.audio && root.MM.audio.play) root.MM.audio.play('chest');
+      if(loud && root.MM.audio && root.MM.audio.play) root.MM.audio.play('chest');
     }catch(e){ /* no audio */ }
     return true;
   }

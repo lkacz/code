@@ -609,10 +609,11 @@ window.MM = window.MM || {};
   function maybeCreateLightningChest(x,y,setTile){
     if(Math.random()>=lightningChestChance()) return null;
     const r=Math.random();
-    const id=r<0.70? T.CHEST_COMMON : (r<0.92? T.CHEST_RARE : T.CHEST_EPIC);
+    const id=r<0.55? T.CHEST_COMMON : (r<0.78? T.CHEST_UNCOMMON : (r<0.93? T.CHEST_RARE : (r<0.99? T.CHEST_EPIC : T.CHEST_LEGENDARY)));
     setTile(x,y,id);
     chestsMade++;
-    return {id,tier:(id===T.CHEST_EPIC)?'epic':(id===T.CHEST_RARE)?'rare':'common'};
+    const tier=(id===T.CHEST_LEGENDARY)?'legendary':(id===T.CHEST_EPIC)?'epic':(id===T.CHEST_RARE)?'rare':(id===T.CHEST_UNCOMMON)?'uncommon':'common';
+    return {id,tier};
   }
   function igniteLightningTile(x,y,getTile,setTile){
     try{
@@ -736,7 +737,7 @@ window.MM = window.MM || {};
       shelterHit=shelteredHit && lightningHitIsShelterForHero(p,xi,ty,tile);
     }
     const TILE=MM.TILE||20;
-    const isChest=(tile===T.CHEST_COMMON||tile===T.CHEST_RARE||tile===T.CHEST_EPIC);
+    const isChest=(tile===T.CHEST_COMMON||tile===T.CHEST_UNCOMMON||tile===T.CHEST_RARE||tile===T.CHEST_EPIC||tile===T.CHEST_LEGENDARY);
     const dynamoHit=strikeVerticalDynamo(xi,ty,getTile,setTile);
     if(dynamoHit){
       res.dynamo=dynamoHit;

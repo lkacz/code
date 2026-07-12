@@ -432,6 +432,17 @@ const ufo = (function(){
         artMsg=' i '+item.name+'!';
       }catch(e){}
     }
+    // Rare bonus beat: a downed saucer can free a LEGENDARY alien relic as a
+    // physical ground drop (beam + ticking clock) — the ceiling exists here too.
+    try{
+      if(MM.drops && MM.drops.spawnGear && MM.chests && MM.chests.genItem && Math.random()<0.06){
+        const relic=MM.chests.genItem(Math.random,'legendary',{forceUnique:true});
+        relic.id='ufo_legend_'+c.look.seed.toString(36)+'_'+Date.now().toString(36);
+        relic.name='Relikt Obcych: '+relic.name;
+        relic.desc='Technologia spoza tego świata. Działa aż za dobrze.';
+        MM.drops.spawnGear(c.x, c.y-0.5, relic);
+      }
+    }catch(e){}
     artMsg=scrapMsg+artMsg;
     const bioCompanion=dropBioCompanion(c,pl);
     const bioMsg=bioCompanion ? ' i bio-pomocnik!' : '';

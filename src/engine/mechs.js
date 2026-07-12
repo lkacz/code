@@ -2,10 +2,11 @@
 // They are entities made from real game tiles: the world grid stays editable,
 // while the mech can move, fight, be boarded after the pilot is defeated, and
 // collapse back into the same blocks players use for their own machines.
-import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
+import { T, INFO, TILE, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 import { isChairTile, isFoliageTile, isPlayerPassableTile, isReplaceableNaturalOpenTile, isSolidCollisionTile, isSunTransparentTile } from './material_physics.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
 import { turrets as TURRETS } from './turrets.js';
+import { steamMachines as STEAM_MACHINES } from './steam_machines.js';
 
 (function(){
   const root = typeof window !== 'undefined' ? window : globalThis;
@@ -61,7 +62,9 @@ import { turrets as TURRETS } from './turrets.js';
     BUILT_MAX_W: 15,
     BUILT_MAX_H: 15,
     BUILT_MIN_TRACKS: 2,
+    BUILT_MIN_JETS: 2,
     BUILT_BASE_ENERGY: 30,
+    BUILT_BOILER_ENERGY: 40,
     BUILT_BATTERY_ENERGY: 60,
     BUILT_DYNAMO_ENERGY: 20,
     BUILT_PANEL_ENERGY: 8,
@@ -185,7 +188,8 @@ import { turrets as TURRETS } from './turrets.js';
     T.SPRING_PLATFORM,T.COPPER_WIRE,T.WIRE,T.WATER_PIPE,T.TORCH,T.CHIMNEY,
     T.WOOD_DOOR,T.STONE_DOOR,T.STEEL_DOOR,
     T.WOOD_TRAPDOOR,T.STONE_TRAPDOOR,T.STEEL_TRAPDOOR,
-    T.LADDER,T.CHAIR_WOOD,T.CHAIR_STONE,T.CHAIR_STEEL
+    T.LADDER,T.CHAIR_WOOD,T.CHAIR_STONE,T.CHAIR_STEEL,
+    T.STEAM_BOILER,T.STEAM_JET
   ]);
   function isMechComponentTile(t){ return MECH_COMPONENT_TILES.has(t); }
   // Infrastructure overlays (copper wire, ladders, pipes) ride on the world's
@@ -220,6 +224,8 @@ import { turrets as TURRETS } from './turrets.js';
   function durabilityForTile(t){
     const info=INFO[t] || {};
     if(t===T.DYNAMO || t===T.DYNAMO_SLOT) return 14;
+    if(t===T.STEAM_BOILER) return 12;
+    if(t===T.STEAM_JET) return 10;
     if(t===T.SOLAR_BATTERY) return 11;
     if(t===T.SOLAR_PANEL) return 8;
     if(t===T.FIRE_TURRET || t===T.TURRET || t===T.WATER_TURRET) return 13;
@@ -1271,6 +1277,8 @@ import { turrets as TURRETS } from './turrets.js';
     if(isChairTile(t)) return 'chair';
     if(t===T.TRACK) return 'track';
     if(t===T.SPRING_PLATFORM) return 'spring';
+    if(t===T.STEAM_BOILER) return 'boiler';
+    if(t===T.STEAM_JET) return 'jet';
     if(isMountedTurretTile(t)) return 'turret';
     if(t===T.SOLAR_PANEL) return 'solar';
     if(t===T.SOLAR_BATTERY) return 'power';
@@ -1331,10 +1339,14 @@ import { turrets as TURRETS } from './turrets.js';
     const bottom=cells.filter(c=>c.t!==T.AIR && c.y===maxY);
     const tracks=bottom.filter(c=>c.t===T.TRACK).length;
     const springs=bottom.filter(c=>c.t===T.SPRING_PLATFORM).length;
+    const jets=bottom.filter(c=>c.t===T.STEAM_JET).length;
     let drive=null;
     if(tracks===bottom.length && tracks>=CFG.BUILT_MIN_TRACKS) drive='tracks';
     else if(springs===bottom.length && springs>=1) drive='springs';
+    else if(jets===bottom.length && jets>=CFG.BUILT_MIN_JETS) drive='steam';
     if(!drive) return {ok:false,reason:'platform'};
+    // a steam airship needs its boiler aboard — the jets alone are dead pipes
+    if(drive==='steam' && !cells.some(c=>c.t===T.STEAM_BOILER)) return {ok:false,reason:'boiler'};
     return {ok:true,drive};
   }
   function computeBuiltWireConn(cells){
@@ -1363,8 +1375,9 @@ import { turrets as TURRETS } from './turrets.js';
     const batteries=cells.filter(c=>c.t===T.SOLAR_BATTERY).length;
     const dynamos=cells.filter(c=>c.t===T.DYNAMO).length;
     const panels=cells.filter(c=>c.t===T.SOLAR_PANEL).length;
+    const boilers=cells.filter(c=>c.t===T.STEAM_BOILER).length;
     const maxEnergy=clamp(
-      CFG.BUILT_BASE_ENERGY+batteries*CFG.BUILT_BATTERY_ENERGY+dynamos*CFG.BUILT_DYNAMO_ENERGY+panels*CFG.BUILT_PANEL_ENERGY,
+      CFG.BUILT_BASE_ENERGY+batteries*CFG.BUILT_BATTERY_ENERGY+dynamos*CFG.BUILT_DYNAMO_ENERGY+panels*CFG.BUILT_PANEL_ENERGY+boilers*CFG.BUILT_BOILER_ENERGY,
       20,CFG.BUILT_MAX_ENERGY_CAP);
     return {
       id:nextId++,
@@ -1458,18 +1471,40 @@ import { turrets as TURRETS } from './turrets.js';
     }
     const analysis=analyzeBuiltCells(scan.cells);
     if(!analysis.ok){
-      if(analysis.reason==='platform' && scan.sawDrive) seatHint('Fotel jest, ale brakuje podwozia: caly dolny rzad musza tworzyc gasienice (min. '+CFG.BUILT_MIN_TRACKS+') albo platformy sprezynowe.');
+      if(analysis.reason==='platform' && scan.sawDrive) seatHint('Fotel jest, ale brakuje podwozia: caly dolny rzad musza tworzyc gasienice (min. '+CFG.BUILT_MIN_TRACKS+'), platformy sprezynowe albo dysze parowe (min. '+CFG.BUILT_MIN_JETS+').');
+      if(analysis.reason==='boiler') seatHint('Dysze parowe sa, ale statek nie ma kotla: wbuduj kociol parowy w kadlub.');
       return null;
     }
     const cells=scan.cells.map(sc=>builtCellFromScan(sc,scan.minX,scan.minY));
+    // steam continuity: lift the world boilers' tanks into the hull BEFORE the
+    // carve wipes their tiles (parking pours the state back out). The world
+    // entry is zeroed after the read — the tank now lives in the hull, and an
+    // emptied entry can't leak a duplicate charge through the registry's
+    // orphan-tank stash when the carve removes the tile.
+    const primedBoilers={};
+    try{
+      const sm=STEAM_MACHINES || (root.MM && root.MM.steamMachines);
+      if(sm && typeof sm.boilerAt==='function'){
+        for(const sc of scan.cells){
+          if(sc.t!==T.STEAM_BOILER) continue;
+          const b=sm.boilerAt(sc.x,sc.y);
+          if(!b) continue;
+          primedBoilers[(sc.x-scan.minX)+','+(sc.y-scan.minY)]={water:b.water||0,steam:b.steam||0};
+          b.water=0; b.steam=0;
+        }
+      }
+    }catch(e){}
     const m=makeBuiltMechFromCells(cells,scan.minX,scan.minY,analysis.drive);
     if(!m) return null;
+    if(Object.keys(primedBoilers).length) m.boilerStates=primedBoilers;
     carveBuiltCells(scan.cells,getTile,setTile);
     mechs.push(m);
     markCellIndexDirty();
     boardBuiltMech(m,player);
     const hasSource=countCells(m,isPowerSourceCell)>0;
-    if(analysis.drive==='tracks' && !hasSource){
+    if(analysis.drive==='steam'){
+      say('Parowy statek zlozony! W wznosi (pali pare z kotla), A/D steruje, skok wysiada. Kociol pije wode i grzeje sie energia lub zarem.');
+    } else if(analysis.drive==='tracks' && !hasSource){
       say('Mech zlozony! Ruszy na twojej energii - dynamo, panele lub bateria odciaza bohatera.');
     } else if(analysis.drive==='tracks' && hasSource && !mechTrackCircuitConnected(m)){
       say('Mech zlozony, ale zrodlo energii nie laczy sie przewodem z gasienicami - naped pojdzie z energii bohatera.');
@@ -1521,6 +1556,18 @@ import { turrets as TURRETS } from './turrets.js';
       // bottom-up so every written block already has its support row below
       const ordered=m.cells.slice().sort((a,b)=>(b.dy-a.dy)||(a.dx-b.dx));
       for(const c of ordered) writeParkedCell(origin[0]+c.dx,origin[1]+c.dy,c,fns.getTile,fns.setTile);
+      // steam continuity: pour the hull boilers' tanks back into the parked
+      // world machines (assembleBuiltMechAt lifted them out the same way)
+      try{
+        const sm=STEAM_MACHINES || (root.MM && root.MM.steamMachines);
+        if(sm && typeof sm.primeBoilerAt==='function' && m.boilerStates){
+          for(const c of m.cells){
+            if(c.t!==T.STEAM_BOILER) continue;
+            const st=m.boilerStates[c.dx+','+c.dy];
+            if(st) sm.primeBoilerAt(origin[0]+c.dx,origin[1]+c.dy,st.water,st.steam);
+          }
+        }
+      }catch(e){}
     } else {
       collapseMechBlocks(m,{getTile:fns.getTile,setTile:fns.setTile});
     }
@@ -1544,6 +1591,137 @@ import { turrets as TURRETS } from './turrets.js';
     emit('mm-mech-parked',{id:m.id,ok:!!origin});
     return true;
   }
+  // ===== steam flight (Kocioł parowy + Dysza parowa aboard a built hull) ====
+  // The physics chain is honest: the boiler tanks REAL water tiles, heat is
+  // paid in the mech's own energy (or taken free from lava/embers beside the
+  // hull), pressure is burned by the jets for lift, and the exhaust is REAL
+  // T.STEAM gas the world keeps simulating. Rates come from the shared
+  // steam_machines CFG (direct import — one physics table, no drift) so a
+  // parked boiler and a flying one obey the same math.
+  function steamCfg(){
+    const sm=STEAM_MACHINES || (root.MM && root.MM.steamMachines);
+    return (sm && sm.CFG) || null;
+  }
+  function steamBoilerCells(m){ return (m.cells||[]).filter(c=>c && c.t===T.STEAM_BOILER); }
+  function steamJetCells(m){ return (m.cells||[]).filter(c=>c && c.t===T.STEAM_JET); }
+  // Steam flight belongs to the steam drive alone: the assembly gate (a FULL
+  // bottom row of >=BUILT_MIN_JETS jets plus a boiler in the hull) is the
+  // balance knob. A jet bolted mid-hull onto a tracks/springs mech is cargo,
+  // not a thruster — its boiler stays dormant and keeps its tank for parking.
+  // Thrust is per-hull, not per-jet: more jets don't lift harder, the gate
+  // only decides whether the hull flies at all.
+  function hasSteamDrive(m){
+    return !!m && m.variant==='steam';
+  }
+  function boilerStateFor(m,cell){
+    m.boilerStates=m.boilerStates||{};
+    const k=cell.dx+','+cell.dy;
+    return m.boilerStates[k]=m.boilerStates[k]||{water:0,steam:0};
+  }
+  function mechSteamTotal(m){
+    let s=0;
+    for(const c of steamBoilerCells(m)) s+=Math.max(0,Number(boilerStateFor(m,c).steam)||0);
+    return s;
+  }
+  function burnMechSteam(m,amount){
+    let left=Math.max(0,amount);
+    for(const c of steamBoilerCells(m)){
+      if(left<=0) break;
+      const st=boilerStateFor(m,c);
+      const take=Math.min(Math.max(0,Number(st.steam)||0),left);
+      st.steam=Math.max(0,(st.steam||0)-take);
+      left-=take;
+    }
+    return Math.max(0,amount-left);
+  }
+  function updateMechBoilers(m,dt,getTile,setTile){
+    const cfg=steamCfg();
+    if(!cfg) return;
+    const cells=steamBoilerCells(m);
+    if(!cells.length) return;
+    for(const cell of cells){
+      const st=boilerStateFor(m,cell);
+      const wx=Math.floor(m.x+cell.dx), wy=Math.floor(m.y+cell.dy);
+      // drink: a hull parked or wading in water tanks whole tiles (volume-true)
+      if(st.water<=cfg.BOILER_WATER_CAP-cfg.WATER_PER_TILE){
+        st.drinkT=Math.max(0,(st.drinkT||0)-dt);
+        if(st.drinkT<=0){
+          st.drinkT=0.9;
+          for(const [dx,dy] of [[0,0],[0,1],[-1,0],[1,0]]){
+            if(getSafe(getTile,wx+dx,wy+dy,T.AIR)!==T.WATER) continue;
+            if(!setSafe(setTile,wx+dx,wy+dy,T.AIR)) continue;
+            st.water=Math.min(cfg.BOILER_WATER_CAP,st.water+cfg.WATER_PER_TILE);
+            m.powerPulse=Math.min(1,(m.powerPulse||0)+0.15);
+            break;
+          }
+        }
+      }
+      if(st.water<=0.01 || st.steam>=cfg.BOILER_STEAM_CAP-0.01) continue;
+      // heat: lava/hot air beside the hull is a free firebox; otherwise the
+      // boiler must sit on the mech's electric circuit and drink its reserve
+      let heat=0, lavaNear=false;
+      for(let dy=-1;dy<=1 && !lavaNear;dy++){
+        for(let dx=-1;dx<=1;dx++){
+          const t=getSafe(getTile,wx+dx,wy+dy,T.AIR);
+          if(t===T.LAVA || t===T.HOT_AIR){ lavaNear=true; break; }
+        }
+      }
+      if(lavaNear) heat=1;
+      else {
+        // electric heat straight from the hull reserve (panels, dynamo flow
+        // and external charge all land there — the reserve IS the circuit)
+        const want=cfg.BOIL_ENERGY_PER_SEC*dt;
+        const have=Math.max(0,Number(m.energy)||0);
+        const got=Math.min(want,have);
+        if(got>0){ m.energy=have-got; heat=want>0?got/want:0; }
+      }
+      if(heat<=0) continue;
+      const boiled=Math.min(cfg.BOIL_RATE*heat*dt, st.water*cfg.STEAM_PER_WATER, cfg.BOILER_STEAM_CAP-st.steam);
+      if(boiled>0){
+        st.water=Math.max(0,st.water-boiled/cfg.STEAM_PER_WATER);
+        st.steam+=boiled;
+        m.heatPulse=Math.min(1,(m.heatPulse||0)+boiled*0.03);
+      }
+    }
+  }
+  function applySteamThrust(m,dt,getTile,setTile){
+    const cfg=steamCfg();
+    if(!cfg) return false;
+    const burned=burnMechSteam(m,cfg.MECH_THRUST_BURN*dt);
+    if(burned<=0.0001){
+      if(simT-(m._noSteamMsgT||-9)>2.5){
+        m._noSteamMsgT=simT;
+        say('Brak pary: kociol potrzebuje wody w zbiorniku i ciepla (energia mecha albo zar przy kadlubie).');
+      }
+      return false;
+    }
+    const frac=burned/Math.max(0.0001,cfg.MECH_THRUST_BURN*dt);
+    m.vy=Math.max(-cfg.MECH_MAX_ASCENT,(m.vy||0)-cfg.MECH_THRUST_ACCEL*frac*dt);
+    m.onGround=false;
+    m.steamT=Math.min(1,(m.steamT||0)+dt*5);
+    m._exhaustT=Math.max(0,(m._exhaustT||0)-dt);
+    if(m._exhaustT<=0){
+      m._exhaustT=0.12;
+      const TILE_PX=TILE;
+      for(const c of steamJetCells(m)){
+        try{
+          const p=root.MM.particles;
+          if(p && p.spawnSmoke) p.spawnSmoke((m.x+c.dx+0.5)*TILE_PX,(m.y+c.dy+1.25)*TILE_PX,0.6,{});
+        }catch(e){}
+        if(Math.random()<0.25){
+          const jx=Math.floor(m.x+c.dx), jy=Math.floor(m.y+c.dy)+1;
+          try{
+            const g=root.MM.gases;
+            if(g && g.add && getSafe(getTile,jx,jy,T.AIR)===T.AIR) g.add('steam',jx,jy,{getTile,setTile,power:0.4});
+          }catch(e){}
+        }
+      }
+    }
+    try{ if(root.MM.discovery && root.MM.discovery.note) root.MM.discovery.note('steam_flight','Parowy mech wzbija się w powietrze!'); }catch(e){}
+    return true;
+  }
+  // ===== end steam flight ====================================================
+
   function updateSeatedBuiltMech(m,dt,player,getTile,setTile,ctx){
     const controls=(ctx && ctx.controls) || {};
     if(controls.jump && simT-(m._seatT||0)>CFG.BUILT_SEAT_JUMP_GRACE){
@@ -1565,7 +1743,11 @@ import { turrets as TURRETS } from './turrets.js';
         }
       }
     }
+    const steam=hasSteamDrive(m);
+    if(steam) updateMechBoilers(m,dt,getTile,setTile);
     updatePhysics(m,dt,getTile,setTile,dir,false);
+    if(steam && controls.up) applySteamThrust(m,dt,getTile,setTile);
+    if(m.steamT>0 && !(steam && controls.up)) m.steamT=Math.max(0,m.steamT-dt*2.4);
     if(dir && m.blockedDir===dir) attackObstacles(m,dt,getTile,setTile,dir);
     syncRider(player);
   }
@@ -2553,6 +2735,19 @@ import { turrets as TURRETS } from './turrets.js';
             return cell;
           });
           out.variant=m.variant||'tracks';
+          // hull boiler tanks ride the save too: without this a steam airship
+          // reloads dry and falls out of the sky (world boilers are covered by
+          // steam_machines.snapshot, but only once the hull is parked back)
+          if(m.boilerStates){
+            const tanks={};
+            for(const c of m.cells||[]){
+              if(!c || c.t!==T.STEAM_BOILER) continue;
+              const st=m.boilerStates[c.dx+','+c.dy];
+              if(!st || ((st.water||0)<=0.01 && (st.steam||0)<=0.01)) continue;
+              tanks[c.dx+','+c.dy]={w:+(st.water||0).toFixed(2), s:+(st.steam||0).toFixed(2)};
+            }
+            if(Object.keys(tanks).length) out.boilers=tanks;
+          }
         }
         return out;
       })
@@ -2593,9 +2788,26 @@ import { turrets as TURRETS } from './turrets.js';
         let seed=Number.isFinite(Number(raw.salvageSeed)) ? Number(raw.salvageSeed)|0 : Math.floor(Number(raw.x));
         if(raw.kind==='built' && Array.isArray(raw.cells)){
           const cells=sanitizeSavedBuiltCells(raw.cells);
-          m=makeBuiltMechFromCells(cells,Number(raw.x),Number(raw.y),raw.variant==='springs'?'springs':'tracks');
+          m=makeBuiltMechFromCells(cells,Number(raw.x),Number(raw.y),raw.variant==='springs'?'springs':(raw.variant==='steam'?'steam':'tracks'));
           if(!m) continue;
           seed=0;
+          // hull boiler tanks: clamp against the shared physics table and only
+          // accept entries that still map to a boiler cell of this hull
+          if(raw.boilers && typeof raw.boilers==='object'){
+            const cfg=steamCfg();
+            const waterCap=cfg?cfg.BOILER_WATER_CAP:30, steamCap=cfg?cfg.BOILER_STEAM_CAP:60;
+            const tanks={};
+            for(const c of m.cells||[]){
+              if(!c || c.t!==T.STEAM_BOILER) continue;
+              const r=raw.boilers[c.dx+','+c.dy];
+              if(!r) continue;
+              tanks[c.dx+','+c.dy]={
+                water:clamp(Number(r.w)||0,0,waterCap),
+                steam:clamp(Number(r.s)||0,0,steamCap)
+              };
+            }
+            if(Object.keys(tanks).length) m.boilerStates=tanks;
+          }
         } else {
           const kind=raw.kind==='solar'?'solar':'forge';
           const bp=makeBlueprint(kind,seed);
@@ -2681,6 +2893,7 @@ import { turrets as TURRETS } from './turrets.js';
     toggleBoard,heroMech,syncRider,absorbHeroDamage,cellAt,findAt,
     snapshot,restore,reset,forceSpawn,metrics,heroOnTracks,
     trySeatFromWorld,wantsInteractKey,tileOverlayAt,absorbDynamoFlow,
+    steamTotal:mechSteamTotal,hasSteamDrive,
     refillMountedWaterAt,
     _debug:{
       mechs:()=>mechs,mountedTurretCell,makeBlueprint,trySpawnZone,zoneShouldSpawn,zoneSpawnX,CFG,

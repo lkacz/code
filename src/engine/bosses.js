@@ -1188,8 +1188,8 @@ window.MM = window.MM || {};
     const chestN = m.gargantuan? 3 : 1;
     for(let c=0;c<chestN;c++){
       const tx=bx + (c===0?0: c===1?-2:2) + Math.round((Math.random()-0.5)*2);
-      const tier = m.gargantuan? T.CHEST_EPIC
-                 : (Math.random()<0.15? T.CHEST_EPIC : Math.random()<0.65? T.CHEST_RARE : T.CHEST_COMMON);
+      const tier = m.gargantuan? (Math.random()<0.25? T.CHEST_LEGENDARY : T.CHEST_EPIC)
+                 : (Math.random()<0.15? T.CHEST_EPIC : Math.random()<0.55? T.CHEST_RARE : Math.random()<0.5? T.CHEST_UNCOMMON : T.CHEST_COMMON);
       let placed=false;
       for(let ty=Math.max(2,by-2); ty<WORLD_H-3; ty++){
         const tt=getTile(tx,ty);

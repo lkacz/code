@@ -425,7 +425,7 @@ export function isLoadBearingSupportTile(t){
   if(isWeakFillMaterial(t) || isNonStructuralResourceMaterial(t)) return false;
   if(isUfoVaultMaterial(t)) return true;
   if(t===T.DYNAMO_SLOT) return false;
-  if(t===T.CHEST_COMMON || t===T.CHEST_RARE || t===T.CHEST_EPIC) return false;
+  if(info && info.chestTier) return false;
   if(t===T.INVASION_CACHE) return false;
   if(t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) return false;
   if(info && (info.machine || info.cache || isLooseItemMaterial(t) || info.gas)) return false;

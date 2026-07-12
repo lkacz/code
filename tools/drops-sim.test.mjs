@@ -216,6 +216,12 @@ drops._debug.setRandom(rng([0.9]));
 assert.equal(drops._debug.rollTier({ common: 0.80, rare: 0.17, epic: 0.03 }, 0), 'rare', 'a 0.9 roll at home is merely rare');
 drops._debug.setRandom(rng([0.9]));
 assert.equal(drops._debug.rollTier({ common: 0.80, rare: 0.17, epic: 0.03 }, 1), 'epic', 'the same 0.9 roll in a hostile land is epic');
+// the FULL ladder rides on every 3-tier table: a slice of common upgrades to
+// uncommon, a slice of epic ascends to legendary — amazing is possible anywhere
+drops._debug.setRandom(rng([0.7]));
+assert.equal(drops._debug.rollTier({ common: 0.80, rare: 0.17, epic: 0.03 }, 0), 'uncommon', 'the upper edge of the common band upgrades to uncommon');
+drops._debug.setRandom(rng([0.999]));
+assert.equal(drops._debug.rollTier({ common: 0.80, rare: 0.17, epic: 0.03 }, 0), 'legendary', 'the very top of the epic band ascends to legendary — even at home');
 // danger also raises the drop chance itself: 0.12 fails BAT's base 0.09 but
 // passes the danger-boosted 0.162
 drops._debug.setRandom(rng([0.12]));
@@ -309,7 +315,7 @@ advance(0.6);
 const gift = drops._debug.list.find(d => d.source === 'volcano');
 assert.ok(gift, 'a lucky offering is flung back out upgraded');
 assert.equal(gift.item.name, 'Dar wulkanu', 'the volcano signs its gift');
-assert.ok(gift.tier === 'rare' || gift.tier === 'epic', 'the gift always beats the offering');
+assert.ok(gift.tier === 'rare' || gift.tier === 'epic' || gift.tier === 'legendary', 'the gift always beats the offering');
 assert.ok(gift._lavaGraceT > 0, 'the newborn gift arcs over the lava it rose from');
 assert.equal(drops._debug.sacrificeDry(), 0, 'a payout resets the ratchet');
 assert.ok(msgs.some(m => m.includes('Wulkan')), 'the eruption is announced');
@@ -375,6 +381,66 @@ assert.equal(played.length, 0, 'restored drops do not replay the fanfare');
     const free = chests.genItem(RNG(i * 13 + 1), 'common');
     assert.ok(['cape', 'eyes', 'outfit', 'weapon', 'charm'].includes(free.kind), 'unforced roll still picks any kind');
   }
+}
+
+// --- chests burst into PHYSICAL drops (loot must be picked up) ---------------------
+{
+  const world = (await import('../src/engine/world.js')).default;
+  const { T: TT } = await import('../src/constants.js');
+  drops.reset();
+  MM.dynamicLoot = { capes: [], eyes: [], outfits: [], weapons: [], charms: [] };
+  const gainedNow = []; MM.onLootGained = (items) => gainedNow.push(...items);
+  const cx = 3000, cy = 20; // above any generated terrain: clean landing spot
+  world.setTile(cx, cy, TT.CHEST_EPIC);
+  const res = MM.chests.openChestAt(cx, cy);
+  assert.ok(res && res.tier === 'epic', 'opening reports the chest tier');
+  assert.ok(res.items.length >= 2, 'epic chest rolls multiple items');
+  assert.equal(res.spawned, res.items.length, 'every rolled item became a physical drop');
+  assert.equal(world.getTile(cx, cy), TT.AIR, 'the chest tile is consumed');
+  assert.equal(drops.metrics().active, res.items.length, 'the loot lies on the ground');
+  assert.equal(gainedNow.length, 0, 'nothing lands in the bag before pickup');
+  const chestDrop = drops._debug.list.find(d => d.kind === 'gear');
+  assert.equal(chestDrop.source, 'chest', 'chest drops carry their source');
+  // Picking one up routes it through the classic chest pipeline (bag + inbox).
+  player.x = chestDrop.x; player.y = chestDrop.y;
+  drops.pickupNearest(player);
+  assert.ok(gainedNow.length >= 1, 'pickup routes chest loot into the bag pipeline');
+  delete MM.onLootGained; MM.dynamicLoot = { capes: [], eyes: [], outfits: [], weapons: [], charms: [] };
+  drops.reset(); player.x = 500;
+}
+
+// --- every chest tier can surprise: mixes are normalized and reach legendary -------
+{
+  const MIX = MM.chests.CHEST_TIER_MIX;
+  for(const tier of ['common', 'uncommon', 'rare', 'epic', 'legendary']){
+    const rows = MIX[tier];
+    assert.ok(Array.isArray(rows) && rows.length, tier + ' chest has an item-tier mix');
+    const sum = rows.reduce((s, [, w]) => s + w, 0);
+    assert.ok(Math.abs(sum - 1) < 1e-9, tier + ' chest mix sums to 1 (got ' + sum + ')');
+    assert.ok(rows.some(([t, w]) => t === 'legendary' && w > 0), tier + ' chest keeps a legendary chance — amazing is possible anywhere');
+  }
+  // scripted rolls: the top of a COMMON chest's mix is legendary, the floor of a
+  // LEGENDARY chest never dips below epic
+  assert.equal(MM.chests.rollChestItemTier(() => 0.999, 'common'), 'legendary', 'a plain wooden chest can pay out a legend');
+  assert.equal(MM.chests.rollChestItemTier(() => 0.0, 'legendary'), 'epic', 'a legendary chest never rolls below epic');
+}
+
+// --- extended rarity ladder: uncommon/legendary ride the same drop machinery -------
+{
+  drops.reset();
+  const leg = drops.spawnGear(96.5, SURF - 1, { id: 'leg1', kind: 'charm', name: 'L', tier: 'legendary' }, { vx: 0, vy: 0, announce: false });
+  const unc = drops.spawnGear(97.5, SURF - 1, { id: 'unc1', kind: 'charm', name: 'U', tier: 'uncommon' }, { vx: 0, vy: 0, announce: false });
+  assert.equal(leg.tier, 'legendary', 'legendary tier is preserved');
+  assert.equal(unc.tier, 'uncommon', 'uncommon tier is preserved');
+  assert.equal(leg.life, CFG.GEAR_LIFE.legendary, 'legendary carries its own (shortest) clock');
+  assert.ok(CFG.GEAR_LIFE.legendary < CFG.GEAR_LIFE.epic, 'legendary burns out faster than epic');
+  assert.ok(CFG.GEAR_LIFE.uncommon < CFG.GEAR_LIFE.common && CFG.GEAR_LIFE.uncommon > CFG.GEAR_LIFE.rare, 'uncommon clock sits between common and rare');
+  const snapT = drops.snapshot();
+  drops.reset();
+  drops.restore(snapT);
+  const tiers = drops._debug.list.map(d => d.tier).sort();
+  assert.deepEqual(tiers, ['legendary', 'uncommon'], 'extended tiers survive the save roundtrip');
+  drops.reset();
 }
 
 // --- settled piles merge --------------------------------------------------------

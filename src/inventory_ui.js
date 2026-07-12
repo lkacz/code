@@ -40,7 +40,7 @@ import './inventory.js';
   const pctx=previewCanvas.getContext('2d');
 
   const TIER_COLORS=INV.TIER_COLORS||{common:'#b07f2c', rare:'#a74cc9', epic:'#e0b341'};
-  const TIER_LABELS={common:'zwykły', rare:'rzadki', epic:'epicki'};
+  const TIER_LABELS={common:'zwykły', uncommon:'niezwykły', rare:'rzadki', epic:'epicki', legendary:'legendarny'};
 
   // --- Tabs: one per item kind + resources ---
   const TABS=MM.inventory.SLOTS.map(s=>({key:s.accepts, label:INV.KIND_LABELS[s.accepts]||s.accepts, kind:s.accepts}))
@@ -111,7 +111,7 @@ import './inventory.js';
     searchWrap.appendChild(searchInput);
     tierSelect=document.createElement('select');
     tierSelect.className='invSelect';
-    [['all','Wszystkie'],['new','Nowe'],['common','Zwykle'],['rare','Rzadkie'],['epic','Epickie']].forEach(([v,t])=>{
+    [['all','Wszystkie'],['new','Nowe'],['common','Zwykle'],['uncommon','Niezwykle'],['rare','Rzadkie'],['epic','Epickie'],['legendary','Legendarne']].forEach(([v,t])=>{
       const o=document.createElement('option'); o.value=v; o.textContent=t; tierSelect.appendChild(o);
     });
     tierSelect.addEventListener('change',()=>{ tierFilter=tierSelect.value; buildGrid(); });
@@ -303,7 +303,7 @@ import './inventory.js';
     actions.appendChild(show); actions.appendChild(seen);
     head.appendChild(title); head.appendChild(actions); newReviewEl.appendChild(head);
   }
-  function tierRank(item){ return item.tier==='epic'?3:item.tier==='rare'?2:item.tier==='common'?1:0; }
+  function tierRank(item){ return item.tier==='legendary'?5:item.tier==='epic'?4:item.tier==='rare'?3:item.tier==='uncommon'?2:item.tier==='common'?1:0; }
   function itemSearchText(item){
     return [
       item.id, item.name, item.tier, item.unique, item.weaponType, item.desc,
@@ -312,7 +312,7 @@ import './inventory.js';
   }
   function matchesFilters(item){
     if(tierFilter==='new' && !(INV.isNew && INV.isNew(item.id))) return false;
-    if(['common','rare','epic'].includes(tierFilter) && item.tier!==tierFilter) return false;
+    if(['common','uncommon','rare','epic','legendary'].includes(tierFilter) && item.tier!==tierFilter) return false;
     if(searchText && !itemSearchText(item).includes(searchText)) return false;
     return true;
   }
@@ -329,7 +329,7 @@ import './inventory.js';
   }
   function discardItem(item){
     if(!item || !INV.discard) return;
-    const valuable=item.tier==='rare' || item.tier==='epic' || item.unique;
+    const valuable=item.tier==='rare' || item.tier==='epic' || item.tier==='legendary' || item.unique;
     if(valuable && !window.confirm('Wyrzucic '+displayName(item)+'?')) return;
     if(INV.discard(item.id) && window.msg) window.msg('Wyrzucono '+displayName(item)+' - mozna cofnac');
   }

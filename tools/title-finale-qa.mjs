@@ -95,6 +95,10 @@ const FINALE_OPEN = `(async()=>{
 	out.push('guardians='+(el ? el.querySelectorAll('.fnGuardian').length : 0));
 	out.push('stats='+(el ? el.querySelectorAll('.fnStat').length : 0));
 	out.push('credits='+(el ? el.querySelectorAll('.fnCredit').length : 0));
+	out.push('mode='+MM.finale.ceremony().mode);
+	out.push('verdict='+JSON.stringify(el ? ((el.querySelector('.fnVerdictTitle')||{}).textContent||'(none)') : '(none)'));
+	out.push('metaLive='+/kursor/.test(el ? ((el.querySelector('.fnMetaLive')||{}).textContent||'') : ''));
+	out.push('souvenir='+String(MM.finale.souvenir()||'(null)').slice(0,14));
 	out.push('menuEntry='+(document.getElementById('openFinale') && !document.getElementById('openFinale').hidden));
 	return 'ok:'+out.join(' ');
 })()`;
@@ -107,7 +111,43 @@ const FINALE_CLOSE = `(async()=>{
 		+' layers='+MM.finale.layers().completions;
 })()`;
 
-// Scene 4: the closed layer follows the observer to the next title screen.
+// Scene 4: ?ceremony=1 forces the STAGED ceremony even headless — the acts
+// reveal over ~13 s (fx canvas de-rez, cascading guardians, counting stats),
+// a first key fast-forwards instead of closing, a second Escape closes with
+// the re-rez exit. Screenshot lands mid-cascade → tools/finale-ceremony-qa.png
+const CEREMONY_OPEN = `(async()=>{
+	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+	const out=[];
+	MM.finale.open();
+	await sleep(400);
+	const el=document.getElementById('finaleScreen');
+	const c0=MM.finale.ceremony();
+	out.push('mode='+c0.mode);
+	out.push('staged='+(el && el.classList.contains('staged')));
+	out.push('fx='+c0.fx);
+	await sleep(3800);
+	const c1=MM.finale.ceremony();
+	out.push('midActs='+c1.actsFired+'/'+c1.acts);
+	out.push('midDone='+c1.done);
+	return 'ok:'+out.join(' ');
+})()`;
+
+const CEREMONY_SKIP = `(async()=>{
+	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+	const out=[];
+	window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+	await sleep(300);
+	out.push('skipNotClose='+(MM.finale.isOpen() && MM.finale.ceremony().done));
+	out.push('statVals='+[...document.querySelectorAll('.fnStatVal')].filter(n=>n.textContent!=='0').length);
+	out.push('metaLive='+/kursor/.test((document.querySelector('.fnMetaLive')||{}).textContent||''));
+	window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+	await sleep(1500);
+	out.push('closed='+!MM.finale.isOpen());
+	out.push('removed='+!document.getElementById('finaleScreen'));
+	return 'ok:'+out.join(' ');
+})()`;
+
+// Scene 5: the closed layer follows the observer to the next title screen.
 const VETERAN_CHECK = `(()=>{
 	const el=document.getElementById('titleScreen');
 	const kicker=el ? (el.querySelector('.tsKicker')||{}).textContent : '(none)';
@@ -201,7 +241,18 @@ async function main(){
 		const closeRes = await send(ws, 'Runtime.evaluate', { expression: FINALE_CLOSE, awaitPromise: true, returnByValue: true, timeout: 30000 });
 		console.log('close:', closeRes.result.value);
 
-		// Scene 4: reboot to the title — the finished layer shows on the kicker
+		// Scene 4: the forced staged ceremony (acts, fx canvas, skip contract)
+		console.log('boot(?ceremony=1):', await navigate(url + '?ceremony=1'));
+		const cerRes = await send(ws, 'Runtime.evaluate', { expression: CEREMONY_OPEN, awaitPromise: true, returnByValue: true, timeout: 30000 });
+		console.log('ceremony:', cerRes.result.value);
+		shot = await send(ws, 'Page.captureScreenshot', { format: 'png' });
+		const outCeremony = outTitle.replace(/title-qa\.png$/, 'finale-ceremony-qa.png');
+		await writeFile(outCeremony, Buffer.from(shot.data, 'base64'));
+		console.log('wrote', outCeremony);
+		const skipRes2 = await send(ws, 'Runtime.evaluate', { expression: CEREMONY_SKIP, awaitPromise: true, returnByValue: true, timeout: 30000 });
+		console.log('ceremonySkip:', skipRes2.result.value);
+
+		// Scene 5: reboot to the title — the finished layer shows on the kicker
 		console.log('boot(veteran):', await navigate(url + '?title=1&veteran=1'));
 		const vetRes = await send(ws, 'Runtime.evaluate', { expression: VETERAN_CHECK, returnByValue: true });
 		console.log('veteran:', vetRes.result.value);

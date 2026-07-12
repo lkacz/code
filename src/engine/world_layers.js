@@ -371,6 +371,22 @@ export function skyIslandDescriptor(WG,cell,sy,cfg){
   return {cell,center,cy,rx,thickness,crown,traits,profile};
 }
 
+// Column-wise island profile shared by the tile generator and the biome
+// dressers: identical math to the historical inline version so existing
+// worlds regenerate byte-identically.
+export function skyIslandSpanAt(WG,d,wx,sy){
+  const nx=(wx-d.center)/Math.max(1,d.rx);
+  if(Math.abs(nx)>1) return null;
+  const cap=Math.max(0,1-nx*nx);
+  const edge=Math.pow(cap,0.54);
+  const crown=Math.pow(cap,0.78);
+  const jag=0.75 + (d.traits ? d.traits.jag*0.75 : 0.25);
+  const serr=((safeNoise(WG,wx,11,7211+sy*31+d.cell*3)-0.5)*3.1 + (safeNoise(WG,wx,29,7212+sy*37+d.cell*5)-0.5)*2.2) * jag;
+  const top=Math.round(d.cy - d.crown*crown + serr);
+  const bottom=Math.round(d.cy + d.thickness*edge + Math.abs(nx)*5 + (safeNoise(WG,wx,17,7213+sy*41+d.cell*7)-0.5)*4);
+  return {nx,cap,edge,crown,top,bottom};
+}
+
 export function skyIslandBody(WG,wx,y,sy){
   const cfg=skyLayerConfig(sy);
   const cell=Math.floor(wx/cfg.spacing);
@@ -378,19 +394,26 @@ export function skyIslandBody(WG,wx,y,sy){
   for(let dc=-1; dc<=1; dc++){
     const d=skyIslandDescriptor(WG,cell+dc,sy,cfg);
     if(!d) continue;
-    const nx=(wx-d.center)/Math.max(1,d.rx);
-    if(Math.abs(nx)>1) continue;
-    const cap=Math.max(0,1-nx*nx);
-    const edge=Math.pow(cap,0.54);
-    const crown=Math.pow(cap,0.78);
-    const jag=0.75 + (d.traits ? d.traits.jag*0.75 : 0.25);
-    const serr=((safeNoise(WG,wx,11,7211+sy*31+d.cell*3)-0.5)*3.1 + (safeNoise(WG,wx,29,7212+sy*37+d.cell*5)-0.5)*2.2) * jag;
-    const top=Math.round(d.cy - d.crown*crown + serr);
-    const bottom=Math.round(d.cy + d.thickness*edge + Math.abs(nx)*5 + (safeNoise(WG,wx,17,7213+sy*41+d.cell*7)-0.5)*4);
-    if(y<top || y>bottom) continue;
-    const depth=(y-top)/Math.max(1,bottom-top);
-    const core=(1-Math.abs(depth-0.55)*1.6)*edge;
-    if(!best || core>best.core) best={desc:d,top,bottom,core,depth,nx,cfg};
+    const s=skyIslandSpanAt(WG,d,wx,sy);
+    if(!s || y<s.top || y>s.bottom) continue;
+    const depth=(y-s.top)/Math.max(1,s.bottom-s.top);
+    const core=(1-Math.abs(depth-0.55)*1.6)*s.edge;
+    if(!best || core>best.core) best={desc:d,top:s.top,bottom:s.bottom,core,depth,nx:s.nx,cfg};
+  }
+  return best;
+}
+
+// Best island column at wx regardless of y (for surface-anchored dressing).
+export function skyIslandColumn(WG,wx,sy){
+  const cfg=skyLayerConfig(sy);
+  const cell=Math.floor(wx/cfg.spacing);
+  let best=null;
+  for(let dc=-1; dc<=1; dc++){
+    const d=skyIslandDescriptor(WG,cell+dc,sy,cfg);
+    if(!d) continue;
+    const s=skyIslandSpanAt(WG,d,wx,sy);
+    if(!s) continue;
+    if(!best || s.edge>best.edge) best={desc:d,cfg,nx:s.nx,edge:s.edge,top:s.top,bottom:s.bottom};
   }
   return best;
 }
@@ -445,11 +468,374 @@ export function skyRelicTile(WG,body,wx,y,fleck,shellTop,shellBottom){
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Sky biomes ("podniebne krainy"): beyond the calm home sky (|wx| < START) the
+// heavens split into large themed regions. Every cycle of N consecutive
+// regions on a side contains each biome exactly once (seeded permutation), so
+// long flights are guaranteed variety. The center stays the classic neutral
+// meteor-glass sky — all pinned early-game worldgen invariants live there.
+// Mob rosters/bosses for these keys live in mobs.js; discovery ids in
+// discovery.js are 'sky_biome_<key>'.
+// ---------------------------------------------------------------------------
+export const SKY_REGION_W = 352;
+export const SKY_BIOME_START = 600;
+export const SKY_BIOMES = Object.freeze([
+  Object.freeze({id:0,  key:'heaven',  name:'Rajskie Wyżyny',       boss:'SKY_SERAPH',        grunt:'CLOUD_RAY',     accent:'#ffe9a8'}),
+  Object.freeze({id:1,  key:'skywood', name:'Podniebna Puszcza',    boss:'SKYGROVE_WARDEN',   grunt:'HARPY',         accent:'#63c05c'}),
+  Object.freeze({id:2,  key:'balloon', name:'Balonowy Gaj',         boss:'BALLOON_TYRANT',    grunt:'HARPY',         accent:'#ff9a55'}),
+  Object.freeze({id:3,  key:'storm',   name:'Burzowa Kuźnia',       boss:'STORM_HERALD',      grunt:'VOLT_WISP',     accent:'#8fd0ff'}),
+  Object.freeze({id:4,  key:'frost',   name:'Lodowa Korona',        boss:'AURORA_WYRM',       grunt:'CLOUD_RAY',     accent:'#bfeaff'}),
+  Object.freeze({id:5,  key:'mirage',  name:'Ogrody Fatamorgany',   boss:'MIRAGE_DJINN',      grunt:'CLOUD_RAY',     accent:'#ffd76b'}),
+  Object.freeze({id:6,  key:'wreck',   name:'Rdzawa Flotylla',      boss:'CORSAIR_AUTOMATON', grunt:'VOLT_WISP',     accent:'#9aa8b5'}),
+  Object.freeze({id:7,  key:'spore',   name:'Zarodnikowa Rafa',     boss:'SPORE_MOTHER',      grunt:'SPORE_DRIFTER', accent:'#7de3a8'}),
+  Object.freeze({id:8,  key:'void',    name:'Grawitacyjna Otchłań', boss:'GRAVITY_COLOSSUS',  grunt:'VOLT_WISP',     accent:'#d36bff'}),
+  Object.freeze({id:9,  key:'roost',   name:'Gniazdowisko Harpii',  boss:'HARPY_QUEEN',       grunt:'HARPY',         accent:'#c9a06a'}),
+  Object.freeze({id:10, key:'ember',   name:'Żarowe Łuki',          boss:'EMBER_PHOENIX',     grunt:'CINDER_HAWK',   accent:'#ff7a33'})
+]);
+
+export function skyRegionAt(wx){
+  wx=Number(wx)||0;
+  const a=Math.abs(wx);
+  if(a<SKY_BIOME_START) return null;
+  const band=Math.floor((a-SKY_BIOME_START)/SKY_REGION_W);
+  const side=wx<0?-1:1;
+  return {side, band, index:side<0 ? -(band+1) : band};
+}
+
+const skyBiomeMemo=new Map(); // seed:side:band -> region descriptor (hot path: tiles AND falling physics)
+export function skyBiomeAt(WG,wx){
+  const region=skyRegionAt(wx);
+  if(!region) return null;
+  const seed=(WG && Number.isFinite(WG.worldSeed)) ? WG.worldSeed : 0;
+  const memoKey=seed+':'+region.side+':'+region.band;
+  const hit=skyBiomeMemo.get(memoKey);
+  if(hit) return hit;
+  const n=SKY_BIOMES.length;
+  const cycle=Math.floor(region.band/n);
+  const slot=region.band%n;
+  const perm=[];
+  for(let i=0;i<n;i++) perm.push(i);
+  for(let i=n-1;i>0;i--){
+    const j=Math.floor(safeRand(WG, cycle*97.31 + i*13.7 + region.side*41.9 + 9317)*(i+1));
+    const t=perm[i]; perm[i]=perm[j]; perm[j]=t;
+  }
+  const biome=SKY_BIOMES[perm[slot]];
+  const start=region.side>0
+    ? SKY_BIOME_START + region.band*SKY_REGION_W
+    : -(SKY_BIOME_START + (region.band+1)*SKY_REGION_W);
+  const out={
+    biome,
+    key:biome.key,
+    name:biome.name,
+    boss:biome.boss,
+    grunt:biome.grunt,
+    accent:biome.accent,
+    side:region.side,
+    band:region.band,
+    index:region.index,
+    regionKey:biome.key+':'+region.index,
+    x0:start,
+    x1:start+SKY_REGION_W,
+    center:start+SKY_REGION_W*0.5
+  };
+  if(skyBiomeMemo.size>512) skyBiomeMemo.clear();
+  skyBiomeMemo.set(memoKey,out);
+  return out;
+}
+
+// Fall-physics provenance: every solid a themed sky region GENERATES beyond the
+// classic glass/dust/basalt/granite set. falling.js consults this so natural
+// island fabric (mirage sand, wreck steel, ember coal...) never rains down when
+// disturbed, while the SAME materials stay fully physical everywhere else —
+// including the neutral home sky and anything the player places (tracked
+// player builds are excluded at the falling.js call sites).
+const SKY_BIOME_EXTRA_FABRIC={
+  heaven:  [T.SNOW, T.GOLD_ORE, T.BRICK, T.GRASS],
+  skywood: [T.GRASS, T.DIRT, T.STONE, T.WOOD],
+  balloon: [T.GRASS, T.DIRT, T.WOOD],
+  storm:   [T.OBSIDIAN, T.ELECTRONICS, T.COAL, T.TRACK],
+  frost:   [T.SNOW, T.ICE],
+  mirage:  [T.SAND, T.GOLD_ORE],
+  wreck:   [T.STEEL, T.TRACK, T.BRICK, T.ELECTRONICS],
+  spore:   [T.MUD, T.CLAY],
+  void:    [T.OBSIDIAN],
+  roost:   [T.DIRT, T.GRASS, T.WOOD, T.MEAT],
+  ember:   [T.OBSIDIAN, T.COAL, T.GOLD_ORE]
+};
+const SKY_BIOME_FABRIC_SETS={};
+for(const k in SKY_BIOME_EXTRA_FABRIC) SKY_BIOME_FABRIC_SETS[k]=new Set(SKY_BIOME_EXTRA_FABRIC[k]);
+export function skyBiomeNaturalFabricTile(WG,wx,t){
+  const region=skyBiomeAt(WG,wx);
+  if(!region) return false;
+  const set=SKY_BIOME_FABRIC_SETS[region.key];
+  return !!set && set.has(t);
+}
+
+// Nearby island descriptors for structure dressing (trunks, masts, pillars).
+function skyDescriptorsNear(WG,wx,sy){
+  const cfg=skyLayerConfig(sy);
+  const cell=Math.floor(wx/cfg.spacing);
+  const list=[];
+  for(let dc=-1; dc<=1; dc++){
+    const d=skyIslandDescriptor(WG,cell+dc,sy,cfg);
+    if(d) list.push(d);
+  }
+  return {cfg,list};
+}
+
+// Per-descriptor structure anchors: k deterministic interior columns.
+function skyAnchorColumns(WG,d,count,salt){
+  const out=[];
+  for(let i=0;i<count;i++){
+    const u=safeRand(WG,d.cell*77.31 + i*29.93 + salt);
+    out.push({i, tx:Math.round(d.center + (u*2-1)*d.rx*0.62)});
+  }
+  return out;
+}
+
+// Crown structures rise above island tops, keel structures hang below the
+// bottoms. All pure functions of (wx,y): trunks/masts anchor to the SAME span
+// math the island body uses, so nothing ever floats beside a gap.
+function skyBiomeStructureTile(WG,def,wx,y,sy){
+  const key=def.key;
+  // Own-column dressing (turf, icicles, spires) first: one column compute.
+  const col=skyIslandColumn(WG,wx,sy);
+  const roll=safeRand(WG,wx*7.91+y*1.37+sy*53.7+9321);
+  if(col && col.edge>0.12){
+    const above=col.top-y;          // 1 = directly on the surface
+    const below=y-col.bottom;       // 1 = directly under the keel
+    if(key==='spore'){
+      if(above===1 && roll<0.30) return T.GLOWSHROOM;
+      if(below>=1 && below<=2 && roll<0.12) return T.GLOWSHROOM;
+    } else if(key==='frost'){
+      const len=1+Math.floor(safeRand(WG,wx*3.71+sy*11.3+9322)*2.6);
+      if(below>=1 && below<=len && roll<0.55-below*0.14) return T.ICE;
+    } else if(key==='void'){
+      const len=1+Math.floor(safeRand(WG,wx*4.63+sy*13.1+9323)*3.2);
+      if(below>=1 && below<=len){
+        if(below===len && roll>0.94) return T.ANTIGRAVITY_BEACON;
+        if(roll<0.42-below*0.09) return T.OBSIDIAN;
+      }
+    } else if(key==='ember'){
+      const len=1+Math.floor(safeRand(WG,wx*5.87+sy*17.9+9324)*2.4);
+      if(below>=1 && below<=len){
+        if(below===len && roll>0.90) return T.LAVA;
+        if(roll<0.40-below*0.10) return T.OBSIDIAN;
+      }
+    } else if(key==='wreck'){
+      if(below>=1 && below<=3 && roll<0.14) return T.WIRE;
+    } else if(key==='skywood'){
+      if(above===1 && roll<0.16) return T.LEAF;
+    } else if(key==='heaven'){
+      if(above===1 && roll<0.08) return T.GRASS;
+    }
+  }
+  // Anchored crowns: trees, balloons, pillars, nests, domes, rods, masts.
+  const near=skyDescriptorsNear(WG,wx,sy);
+  for(const d of near.list){
+    if(Math.abs(wx-d.center)>d.rx+6) continue;
+    if(key==='skywood' || key==='balloon'){
+      const balloon=key==='balloon';
+      const anchors=skyAnchorColumns(WG,d,balloon?2:3,9331);
+      for(const a of anchors){
+        const dx=wx-a.tx;
+        if(Math.abs(dx)>4) continue;
+        const span=skyIslandSpanAt(WG,d,a.tx,sy);
+        if(!span || span.edge<0.30) continue;
+        const h=(balloon?5:3)+Math.floor(safeRand(WG,d.cell*31.7+a.i*7.9+9332)*(balloon?4:4));
+        const baseY=span.top-1;
+        if(dx===0 && y<=baseY && y>baseY-h) return T.WOOD;
+        const cy=baseY-h-1;
+        const r=balloon?2.6:2.2;
+        const ddx=dx, ddy=(y-cy)*(balloon?0.92:1.15);
+        if(ddx*ddx+ddy*ddy<=r*r){
+          if(balloon) return safeRand(WG,d.cell*13.7+a.i*5.3+9333)<0.5 ? T.AUTUMN_LEAF_ORANGE : T.AUTUMN_LEAF_RED;
+          return T.LEAF;
+        }
+      }
+    } else if(key==='heaven'){
+      const anchors=skyAnchorColumns(WG,d,2,9334);
+      for(const a of anchors){
+        if(wx!==a.tx) continue;
+        const span=skyIslandSpanAt(WG,d,a.tx,sy);
+        if(!span || span.edge<0.34) continue;
+        const h=3+Math.floor(safeRand(WG,d.cell*23.1+a.i*11.7+9335)*3);
+        const baseY=span.top-1;
+        if(y<=baseY && y>baseY-h) return T.BRICK;
+        if(y===baseY-h) return T.GLASS;
+      }
+    } else if(key==='roost'){
+      const anchors=skyAnchorColumns(WG,d,1,9336);
+      for(const a of anchors){
+        const dx=wx-a.tx;
+        if(Math.abs(dx)>2) continue;
+        const span=skyIslandSpanAt(WG,d,a.tx,sy);
+        if(!span || span.edge<0.30) continue;
+        const baseY=span.top-1;
+        if(y===baseY && Math.abs(dx)<=2) return T.WOOD;
+        if(y===baseY-1 && Math.abs(dx)===2) return T.WOOD;
+        if(y===baseY-1 && dx===0 && safeRand(WG,d.cell*17.3+9337)<0.5) return T.MEAT;
+      }
+    } else if(key==='mirage'){
+      const span=skyIslandSpanAt(WG,d,Math.round(d.center),sy);
+      if(!span) continue;
+      const R=3+safeRand(WG,d.cell*19.7+9338)*2.5;
+      const dx=wx-d.center;
+      const dy=(y-(span.top-1))*1.15;
+      if(y<span.top && Math.abs(Math.hypot(dx,dy)-R)<0.72) return T.GLASS;
+    } else if(key==='storm'){
+      const anchors=skyAnchorColumns(WG,d,2,9339);
+      for(const a of anchors){
+        if(wx!==a.tx) continue;
+        const span=skyIslandSpanAt(WG,d,a.tx,sy);
+        if(!span || span.edge<0.34) continue;
+        const h=2+Math.floor(safeRand(WG,d.cell*29.3+a.i*13.1+9341)*2);
+        const baseY=span.top-1;
+        if(y<=baseY && y>baseY-h) return T.TRACK;
+        if(y===baseY-h) return T.ELECTRONICS;
+      }
+    } else if(key==='wreck'){
+      const anchors=skyAnchorColumns(WG,d,1,9342);
+      for(const a of anchors){
+        const dx=wx-a.tx;
+        if(Math.abs(dx)>2) continue;
+        const span=skyIslandSpanAt(WG,d,a.tx,sy);
+        if(!span || span.edge<0.34) continue;
+        const h=4+Math.floor(safeRand(WG,d.cell*37.9+9343)*3);
+        const baseY=span.top-1;
+        if(dx===0 && y<=baseY && y>baseY-h) return T.STEEL;
+        if(y===baseY-h+1 && Math.abs(dx)<=2) return T.TRACK;
+      }
+    }
+  }
+  return null;
+}
+
+// Debris-ribbon re-skin: the drifting shard trails take the biome's palette.
+function skyBiomeRibbonTile(WG,def,wx,y,base){
+  if(base===T.IRIDIUM) return base; // rare flecks stay rewards everywhere
+  const key=def.key;
+  const r=safeRand(WG,wx*6.13+y*1.91+9345);
+  if(key==='frost') return base===T.GLASS ? T.ICE : (r<0.5 ? T.SNOW : base);
+  if(key==='ember') return base===T.GLASS ? T.BASALT : (r<0.30 ? T.COAL : base);
+  if(key==='wreck') return base===T.GLASS ? (r<0.55 ? T.STEEL : base) : (r<0.22 ? T.TRACK : base);
+  if(key==='storm') return base===T.GLASS && r<0.25 ? T.ELECTRONICS : base;
+  if(key==='spore') return base===T.METEOR_DUST && r<0.25 ? T.GLOWSHROOM : base;
+  if(key==='heaven') return base===T.METEOR_DUST && r<0.5 ? T.SNOW : base;
+  if(key==='mirage') return base===T.GLASS && r<0.45 ? T.SAND : base;
+  if(key==='void') return base===T.GLASS && r<0.4 ? T.OBSIDIAN : base;
+  if(key==='skywood' || key==='balloon' || key==='roost') return base===T.METEOR_DUST && r<0.20 ? T.LEAF : base;
+  return base;
+}
+
+// Carved interior pockets: some biomes fill their hollows with hazards.
+function skyBiomeHollowTile(WG,def,wx,y){
+  const r=safeRand(WG,wx*8.47+y*2.13+9346);
+  if(def.key==='spore') return r<0.26 ? T.POISON_GAS : T.AIR;
+  if(def.key==='ember') return r<0.30 ? T.HOT_AIR : T.AIR;
+  if(def.key==='storm') return r<0.10 ? T.STEAM : T.AIR;
+  return T.AIR;
+}
+
+// Island-body re-skin: base material families (dust/glass tops, basalt keels)
+// become the biome's fabric; ore rewards are biased per theme.
+function skyBiomeBodyTile(WG,def,wx,y,base,ctx){
+  const key=def.key;
+  const r=safeRand(WG,wx*9.13+y*1.57+9347);
+  const core=ctx.body.core;
+  if(key==='heaven'){
+    if(!ctx.shellTop && !ctx.shellBottom && core>0.42 && r<0.045) return T.GOLD_ORE;
+    if(base===T.METEOR_DUST) return T.SNOW;
+    if(base===T.BASALT && r<0.55) return T.GRANITE;
+    return base;
+  }
+  if(key==='skywood'){
+    if(ctx.shellTop) return T.GRASS;
+    if(base===T.METEOR_DUST) return T.DIRT;
+    if(base===T.GLASS) return r<0.72 ? T.DIRT : T.STONE;
+    return base;
+  }
+  if(key==='balloon'){
+    if(ctx.shellTop) return r<0.75 ? T.GRASS : T.WOOD;
+    if(base===T.METEOR_DUST) return r<0.30 ? T.WOOD : T.DIRT;
+    if(base===T.GLASS) return T.DIRT;
+    return base;
+  }
+  if(key==='storm'){
+    if(!ctx.shellTop && !ctx.shellBottom && core>0.40 && r<0.06) return T.ELECTRONICS;
+    if(!ctx.shellTop && !ctx.shellBottom && r<0.10) return T.COAL;
+    if(base===T.GLASS) return T.BASALT;
+    if(ctx.shellTop && base===T.METEOR_DUST) return r<0.5 ? T.BASALT : T.OBSIDIAN;
+    return base;
+  }
+  if(key==='frost'){
+    if(ctx.shellTop) return T.SNOW;
+    if(base===T.GLASS) return T.ICE;
+    if(base===T.METEOR_DUST) return r<0.6 ? T.SNOW : T.ICE;
+    if(base===T.BASALT) return r<0.45 ? T.ICE : T.GRANITE;
+    return base;
+  }
+  if(key==='mirage'){
+    if(ctx.shellTop) return r<0.07 ? T.QUICKSAND : T.SAND;
+    if(!ctx.shellBottom && core>0.42 && r<0.05) return T.GOLD_ORE;
+    if(base===T.METEOR_DUST) return T.SAND;
+    if(base===T.GLASS) return r<0.5 ? T.SAND : T.GLASS;
+    return base;
+  }
+  if(key==='wreck'){
+    if(!ctx.shellTop && !ctx.shellBottom && core>0.5 && r>0.9965) return r>0.9988 ? T.CHEST_RARE : T.CHEST_UNCOMMON;
+    const band=safeNoise(WG,wx+y*0.31,9,9348);
+    if(ctx.shellTop) return r<0.5 ? T.STEEL : T.TRACK;
+    if(ctx.shellBottom) return r<0.4 ? T.STEEL : base;
+    if(base===T.GLASS) return band<0.34 ? T.STEEL : (band<0.5 ? T.BRICK : T.GLASS);
+    if(base===T.METEOR_DUST) return band<0.4 ? T.STEEL : (r<0.16 ? T.ELECTRONICS : T.BRICK);
+    return base;
+  }
+  if(key==='spore'){
+    if(ctx.shellTop) return r<0.55 ? T.MUD : T.CLAY;
+    if(base===T.METEOR_DUST) return r<0.6 ? T.CLAY : T.MUD;
+    if(base===T.GLASS) return T.CLAY;
+    if(base===T.BASALT && r<0.4) return T.CLAY;
+    return base;
+  }
+  if(key==='void'){
+    if(!ctx.shellTop && !ctx.shellBottom && core>0.5 && ctx.fleck<0.030) return T.ANTIMATTER_CRYSTAL;
+    if(ctx.shellTop) return r<0.4 ? T.OBSIDIAN : T.METEOR_DUST;
+    if(ctx.shellBottom) return r<0.55 ? T.OBSIDIAN : base;
+    if(base===T.GLASS) return r<0.35 ? T.OBSIDIAN : T.GLASS;
+    return base;
+  }
+  if(key==='roost'){
+    if(ctx.shellTop) return r<0.45 ? T.DIRT : T.GRASS;
+    if(base===T.METEOR_DUST && r<0.20) return T.DIRT;
+    return base;
+  }
+  if(key==='ember'){
+    if(!ctx.shellTop && !ctx.shellBottom && core>0.5 && r<0.05) return T.LAVA;
+    if(!ctx.shellTop && !ctx.shellBottom && r<0.09) return T.COAL;
+    if(!ctx.shellTop && !ctx.shellBottom && core>0.42 && r>0.975) return T.GOLD_ORE;
+    if(ctx.shellTop) return r<0.6 ? T.BASALT : T.OBSIDIAN;
+    if(ctx.shellBottom) return r<0.4 ? T.OBSIDIAN : T.BASALT;
+    if(base===T.GLASS) return T.BASALT;
+    if(base===T.METEOR_DUST) return r<0.72 ? T.BASALT : T.COAL;
+    if(base===T.IRIDIUM && r<0.72) return T.BASALT; // scorched: iridium stays a find, not the fabric
+    return base;
+  }
+  return base;
+}
+
 export function skyTile(WG,wx,y,sy){
+  const region=skyBiomeAt(WG,wx);
   const body=skyIslandBody(WG,wx,y,sy);
   if(!body){
+    if(region){
+      const st=skyBiomeStructureTile(WG,region,wx,y,sy);
+      if(st!=null) return st;
+    }
     const transition=sy===-1 ? skyTransitionTile(WG,wx,y) : T.AIR;
-    return transition!==T.AIR ? transition : skyRibbonTile(WG,wx,y,sy);
+    const base=transition!==T.AIR ? transition : skyRibbonTile(WG,wx,y,sy);
+    if(base===T.AIR || !region) return base;
+    return skyBiomeRibbonTile(WG,region,wx,y,base);
   }
   const env=layerEnvelope(WG,wx,y);
   const fleck=safeRand(WG,wx*5.31+y*0.73+sy*91.7);
@@ -459,15 +845,18 @@ export function skyTile(WG,wx,y,sy){
   if(relic!=null) return relic;
   if(!shellTop && !shellBottom && body.depth>0.24 && body.depth<0.82 && body.core>0.34){
     const hollow=safeNoise(WG,wx+y*0.73,19,7221+sy*43) + safeNoise(WG,wx-y*0.41,8,7222+sy*47);
-    if(hollow>1.34 && fleck<0.72) return T.AIR;
+    if(hollow>1.34 && fleck<0.72) return region ? skyBiomeHollowTile(WG,region,wx,y) : T.AIR;
   }
   if(Math.abs(wx-body.desc.center)<1.35 && Math.abs(y-body.desc.cy)<1.35 && fleck<0.50+env.skyFlux*0.18) return T.ANTIGRAVITY_BEACON;
   if(body.core>0.76 && fleck<(body.cfg.high?0.012:0.007)+env.crystalBias*0.012) return T.ANTIMATTER_CRYSTAL;
   if(body.core>0.54 && fleck<0.038+env.crystalBias*0.034) return T.IRIDIUM;
-  if(shellBottom) return fleck<0.46+env.basaltBias*0.28+env.mountain*0.08-env.ocean*0.05 ? T.BASALT : T.GRANITE;
-  if(shellTop) return fleck<0.14+env.skyFlux*0.16+env.desert*0.04 ? T.METEOR_DUST : T.GLASS;
-  if(fleck<0.24+env.skyFlux*0.18) return T.METEOR_DUST;
-  return body.cfg.high && fleck<0.38+env.crystalBias*0.16 ? T.IRIDIUM : T.GLASS;
+  let base;
+  if(shellBottom) base=fleck<0.46+env.basaltBias*0.28+env.mountain*0.08-env.ocean*0.05 ? T.BASALT : T.GRANITE;
+  else if(shellTop) base=fleck<0.14+env.skyFlux*0.16+env.desert*0.04 ? T.METEOR_DUST : T.GLASS;
+  else if(fleck<0.24+env.skyFlux*0.18) base=T.METEOR_DUST;
+  else base=body.cfg.high && fleck<0.38+env.crystalBias*0.16 ? T.IRIDIUM : T.GLASS;
+  if(!region) return base;
+  return skyBiomeBodyTile(WG,region,wx,y,base,{body,env,fleck,shellTop,shellBottom});
 }
 
 export function deepStrataProfile(WG,wx,y){
@@ -673,11 +1062,19 @@ export const worldLayers = Object.freeze({
   skyLayerConfig,
   skyCellTraits,
   skyIslandDescriptor,
+  skyIslandSpanAt,
   skyIslandBody,
+  skyIslandColumn,
   skyRibbonTile,
   skyTransitionTile,
   skyRelicTile,
   skyTile,
+  SKY_REGION_W,
+  SKY_BIOME_START,
+  SKY_BIOMES,
+  skyRegionAt,
+  skyBiomeAt,
+  skyBiomeNaturalFabricTile,
   deepStrataProfile,
   deepCaveProfile,
   deepCaveDressingTile,

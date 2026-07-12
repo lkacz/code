@@ -36,28 +36,61 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   // values sit on the clean 5% ladder; swim is an absolute water-speed fraction,
   // vision in whole tiles, range half-tiles.
   const TIERS={
-    common:{weight:70, rolls:[1,1], uniqueChance:0.02,
+    common:{weight:58, rolls:[1,1], uniqueChance:0.02,
       airJumps:1, vision:[11,12],
       outfitPct:{mine:[10,15], move:[5,10],  jump:[5,10]},
       charmPct:{mine:[5,10],  move:[5],     jump:[5]},
       swim:[0.75],
       meleeDmg:[2,3],  bowDmg:[3,4],  bowCd:[0.55,0.6],      dps:[4,6],   range:[5,6],
       energyCap:[15,20,25], crush:[1], eCost:[13,14]},
-    rare:{weight:23, rolls:[1,2], uniqueChance:0.07,
+    uncommon:{weight:20, rolls:[1,2], uniqueChance:0.04,
+      airJumps:2, vision:[12,13],
+      outfitPct:{mine:[20,25], move:[10], jump:[10]},
+      charmPct:{mine:[10,15], move:[5,10], jump:[5,10]},
+      swim:[0.75,1],
+      meleeDmg:[3,5],  bowDmg:[4,6],  bowCd:[0.5,0.55],      dps:[5,8],   range:[6,6.5],
+      energyCap:[20,30,35], crush:[1,2], eCost:[12,13]},
+    rare:{weight:15, rolls:[1,2], uniqueChance:0.07,
       airJumps:2, vision:[13,14],
       outfitPct:{mine:[25,30,35], move:[10,15], jump:[10,15]},
       charmPct:{mine:[15,20], move:[10], jump:[10]},
       swim:[1],
       meleeDmg:[4,6],  bowDmg:[5,7],  bowCd:[0.45,0.5],      dps:[7,10],  range:[6.5,7.5],
       energyCap:[30,40,50], crush:[2], eCost:[10,12]},
-    epic:{weight:7, rolls:[2,3], uniqueChance:0.18,
+    epic:{weight:5, rolls:[2,3], uniqueChance:0.18,
       airJumps:3, vision:[15,17],
       outfitPct:{mine:[50,60,70], move:[20,25], jump:[20,25]},
       charmPct:{mine:[25,30], move:[15,20], jump:[15,20]},
       swim:[1.25],
       meleeDmg:[8,12], bowDmg:[9,13], bowCd:[0.3,0.35,0.4],  dps:[12,16], range:[8,9],
-      energyCap:[60,80,100], crush:[3,4], eCost:[8,9]}
+      energyCap:[60,80,100], crush:[3,4], eCost:[8,9]},
+    legendary:{weight:2, rolls:[2,4], uniqueChance:0.30,
+      airJumps:4, vision:[18,20],
+      outfitPct:{mine:[80,90,100], move:[30,35], jump:[30,35]},
+      charmPct:{mine:[35,40], move:[20,25], jump:[20,25]},
+      swim:[1.25],
+      meleeDmg:[13,16], bowDmg:[14,18], bowCd:[0.22,0.25], dps:[18,22], range:[9,10],
+      energyCap:[120,150], crush:[5,6], eCost:[6,7]}
   };
+  const TIER_ORDER=['common','uncommon','rare','epic','legendary'];
+  const TIER_INDEX={}; TIER_ORDER.forEach((t,i)=>{ TIER_INDEX[t]=i; });
+
+  // Every chest can surprise: the tile's tier sets the CENTER of the item-tier
+  // distribution, not a ceiling — even a plain wooden chest holds a sliver of
+  // a legendary roll, while high chests keep a floor so they never feel cheap.
+  const CHEST_TIER_MIX={
+    common:   [['common',0.70],['uncommon',0.21],['rare',0.07],['epic',0.017],['legendary',0.003]],
+    uncommon: [['common',0.30],['uncommon',0.47],['rare',0.17],['epic',0.05],['legendary',0.01]],
+    rare:     [['uncommon',0.28],['rare',0.55],['epic',0.145],['legendary',0.025]],
+    epic:     [['rare',0.33],['epic',0.60],['legendary',0.07]],
+    legendary:[['epic',0.70],['legendary',0.30]]
+  };
+  function rollChestItemTier(r,chestTier){
+    const mix=CHEST_TIER_MIX[chestTier]||CHEST_TIER_MIX.common;
+    let roll=r();
+    for(const [t,w] of mix){ if((roll-=w)<0) return t; }
+    return mix[mix.length-1][0];
+  }
 
   // Procedural display names: "<base> <suffix>" (tier shown separately in the UI)
   const NAME_BASES={cape:'Peleryna', eyes:'Oczy', outfit:'Strój', weapon:'Ostrze', charm:'Talizman'};
@@ -102,13 +135,15 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     if(kind==='cape'){ item.airJumps=td.airJumps; }
     else if(kind==='eyes'){ item.visionRadius=randInt(r, td.vision[0], td.vision[1]); }
     else if(kind==='outfit'){
-      const pool= tier==='common'? ['mine','move','jump'] : ['mine','move','jump','crush'];
+      const low= tier==='common' || tier==='uncommon';
+      const pool= low? ['mine','move','jump'] : ['mine','move','jump','crush'];
       const p=pick(r,pool);
       if(p==='crush') item.crushResistBonus=pick(r, td.crush);
       else addPct(item, PROFILE_KEYS[p], pick(r, td.outfitPct[p]));
     }
     else if(kind==='charm'){
-      const pool= tier==='common'? ['mine','move','jump','energy','swim'] : ['mine','move','jump','energy','crush','swim'];
+      const low= tier==='common' || tier==='uncommon';
+      const pool= low? ['mine','move','jump','energy','swim'] : ['mine','move','jump','energy','crush','swim'];
       const p=pick(r,pool);
       if(p==='energy') item.energyCapacityBonus=pick(r, td.energyCap);
       else if(p==='crush') item.crushResistBonus=pick(r, td.crush);
@@ -146,19 +181,39 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     WORLD.setTile(x,y,T.AIR);
     const r=RNG( (x*73856093) ^ (y*19349663) ^ WORLDGEN.worldSeed );
     const tier=info.chestTier;
-    const tierDef=TIERS[tier];
+    const tierDef=TIERS[tier]||TIERS.common;
     const rolls=randInt(r,tierDef.rolls[0], tierDef.rolls[1]);
-    const items=[]; for(let i=0;i<rolls;i++) items.push(genItem(r,tier));
-    // Add to player's loot pools -> synced into the inventory bag (inventory.js)
-    if(!MM.dynamicLoot){ MM.dynamicLoot={capes:[],eyes:[],outfits:[],weapons:[],charms:[]}; }
-    ['capes','eyes','outfits','weapons','charms'].forEach(k=>{ if(!Array.isArray(MM.dynamicLoot[k])) MM.dynamicLoot[k]=[]; });
-    items.forEach(it=>{ if(it.kind==='cape') MM.dynamicLoot.capes.push(it); else if(it.kind==='eyes') MM.dynamicLoot.eyes.push(it); else if(it.kind==='outfit') MM.dynamicLoot.outfits.push(it); else if(it.kind==='weapon') MM.dynamicLoot.weapons.push(it); else if(it.kind==='charm') MM.dynamicLoot.charms.push(it); });
-    saveDynamicLoot();
-    if(MM.onLootGained) MM.onLootGained(items,tier);
-    return {tier,items};
+    // Item tiers draw from the chest's mix, so any chest can pay above its
+    // station (and the best ones never pay far below it).
+    const items=[]; for(let i=0;i<rolls;i++) items.push(genItem(r, rollChestItemTier(r,tier)));
+    // The chest bursts open: its loot pops out as PHYSICAL drops the player has
+    // to pick up (drops.js pipeline — same as creature loot). Picking a drop up
+    // is what routes it into dynamicLoot + the inventory bag.
+    const drops=MM.drops;
+    let spawned=0;
+    if(drops && typeof drops.spawnGear==='function'){
+      items.forEach((it,i)=>{
+        // A roll ABOVE the chest's own tier is a jackpot moment — that one gets
+        // the full spawn fanfare (burst + golden sting + toast); expected-tier
+        // loot stays quiet, the chest-open sound already covered it.
+        const surprise=(TIER_INDEX[it.tier]||0)>(TIER_INDEX[tier]||0);
+        const d=drops.spawnGear(x+0.5, y+0.35, it, {vx:(r()*2-1)*2.8, vy:-(4.2+r()*2.4), announce:surprise});
+        if(d){ d.source='chest'; spawned++; }
+      });
+    }
+    if(spawned<items.length){
+      // Fallback (DOM-less sims / drops module missing): straight to the bag.
+      if(!MM.dynamicLoot){ MM.dynamicLoot={capes:[],eyes:[],outfits:[],weapons:[],charms:[]}; }
+      ['capes','eyes','outfits','weapons','charms'].forEach(k=>{ if(!Array.isArray(MM.dynamicLoot[k])) MM.dynamicLoot[k]=[]; });
+      const leftovers=items.slice(spawned);
+      leftovers.forEach(it=>{ if(it.kind==='cape') MM.dynamicLoot.capes.push(it); else if(it.kind==='eyes') MM.dynamicLoot.eyes.push(it); else if(it.kind==='outfit') MM.dynamicLoot.outfits.push(it); else if(it.kind==='weapon') MM.dynamicLoot.weapons.push(it); else if(it.kind==='charm') MM.dynamicLoot.charms.push(it); });
+      saveDynamicLoot();
+      if(MM.onLootGained) MM.onLootGained(leftovers,tier);
+    }
+    return {tier,items,spawned};
   }
 
-  MM.chests={openChestAt,TIERS,genItem,saveDynamicLoot};
+  MM.chests={openChestAt,TIERS,TIER_ORDER,CHEST_TIER_MIX,rollChestItemTier,genItem,saveDynamicLoot};
 })();
 // ESM export (progressive migration)
 export const chests = (typeof window!=='undefined' && window.MM) ? window.MM.chests : undefined;
