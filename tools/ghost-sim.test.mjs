@@ -430,6 +430,33 @@ assert.ok(/if\(pl\.act\) markActive\(entry\);/.test(hostSrc) && /ACT_POSE_TTL_MS
 assert.ok(/NET\.socialBoosts\(active\)/.test(hostSrc), 'the host derives boosts from ACTIVE watchers only');
 assert.ok(/lastInputAt = nowMs\(\)/.test(clientSrc) && /nowMs\(\) - lastInputAt < NET\.SOCIAL_RULES\.IDLE_MS/.test(clientSrc),
 	'the client derives its active flag from real input recency');
+// A never-touched watcher must start INACTIVE. This only holds because nowMs() is the
+// epoch clock: with a monotonic page clock, `nowMs() - 0 < 30000` would read TRUE for
+// the first 30 s of the page's life and a freshly joined idle tab would silently pay
+// boosts. Pin the clock choice, not just the comparison.
+assert.ok(/function nowMs\(\)\{ return Date\.now\(\); \}/.test(clientSrc),
+	'the activity clock is epoch-based, so lastInputAt=0 reads as ancient (a fresh watcher is idle, never active)');
+
+// --- social-facilitation meter: the payout is VISIBLE, and idleness is visible too ------------
+assert.ok(/function ensureMeter\(btn\)/.test(hostSrc) && /m\.id = 'ghostMeter'/.test(hostSrc)
+	&& /btn\.parentNode\.insertBefore\(m, btn\)/.test(hostSrc),
+	'the host builds a social-facilitation meter beside the 👁 button');
+assert.ok(/function renderMeter\(boost, viewers, active\)/.test(hostSrc)
+	&& /if\(!session \|\| viewers <= 0\)\{ ui\.meter\.hidden = true; return; \}/.test(hostSrc),
+	'the meter hides itself with no session and no audience');
+assert.ok(/const idle = active <= 0;/.test(hostSrc) && /ui\.meter\.classList\.toggle\('idle', idle\)/.test(hostSrc)
+	&& /idle\s*\?\s*'brak premii'/.test(hostSrc),
+	'an all-idle audience reads as "brak premii" (passive watchers pay nothing, and the meter says so)');
+assert.ok(/renderMeter\(boost, list\.length, active\)/.test(hostSrc),
+	'the meter refreshes on every updateUi pass, before the panel-only early returns');
+assert.ok(/function pct\(mult\)\{ return Math\.round\(\(mult - 1\) \* 100\); \}/.test(hostSrc),
+	'meter percentages come from one derivation helper');
+// the numbers must be DERIVED from the live boost — a hardcoded "+10% XP" in the panel
+// would quietly lie the moment SOCIAL_RULES changes
+assert.ok(!/\+10% XP/.test(hostSrc), 'no hardcoded boost percentages survive in the host UI');
+assert.ok(/'\+' \+ pct\(boost\.xp\) \+ '% XP/.test(hostSrc), 'the panel head derives its percentages from the live boost');
+assert.ok(/#ghostMeter\{/.test(html) && /#ghostMeter\.idle\{/.test(html),
+	'index.html styles the meter, including the dimmed idle state');
 
 // --- moderation pins ---------------------------------------------------------------------------
 assert.ok(/s\.banned\.has\(entry\.gid\)/.test(hostSrc) && /function banViewer\(gid\)/.test(hostSrc),

@@ -1163,7 +1163,11 @@ const ghostClient = (function(){
 
 	const api = { boot, frame, active: () => !!WATCH && state !== 'idle', state: () => state, drawSpirits, sendBuff, sendChat, sendPower, sendPing, sendAssist, setAvatar, setFollow, setCam, noteInput, leave, metrics,
 		openProgress: () => toggleProgPanel(),
-		_debugConnLost: scheduleReconnect }; // QA: exercises the real drop→rejoin→resnapshot cycle
+		_debugConnLost: scheduleReconnect, // QA: exercises the real drop→rejoin→resnapshot cycle
+		// QA: age this watcher's last input past IDLE_MS without waiting 30 real seconds.
+		// It rewinds the SAME stamp isActive() reads, so the idle path under test is the
+		// production one (next pose vouches act=0 → the host's TTL lapses → boosts drop).
+		_idleForTest: () => { lastInputAt = 0; } };
 	if(MMR) MMR.ghostClient = api;
 	return api;
 })();

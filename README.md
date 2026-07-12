@@ -198,6 +198,24 @@ reversed damage → mutual fall → epilogue, snapshot/restore) and
   controls/arrows stay fixed aliases. Persisted in `mm_keybinds_v1` (tampered
   blobs fail closed to defaults). Tests: `npm run test:keybinds`; visual QA:
   `node tools/keybinds-qa.mjs`.
+* **Spectators & social facilitation** (`engine/ghost_host.js` / `ghost_client.js` /
+  `ghost_net.js`): the 👁 button opens a stream — friends join via `?watch=ROOM` as
+  **ghosts** who see the live world, spook creatures, chat, bless and (with the host's
+  permission) act as assistants. An audience makes the hero measurably stronger:
+  **+10% XP and +1% move / jump / damage per watcher**, published as `MM.socialBoost`
+  and multiplied into mob XP, the movement/jump multipliers and hero attack rolls
+  (neutral 1.0 in solo play and Node sims). **Only ACTIVE watchers pay**: the watcher
+  vouches for its own recent input (real keys/clicks/wheel within 30 s), each pose
+  re-vouches, and the host expires that vouch after 6 s — so a parked tab on a second
+  machine stops counting within seconds of its human walking away. Nothing auto-marks a
+  watcher active, and the activity clock is epoch-based so a freshly joined, untouched
+  tab starts *idle* rather than counting for its first 30 seconds. The host sees all of
+  this in a **social-facilitation meter** beside the 👁 button (`#ghostMeter`): active/total
+  watchers, the cumulative bonus, and a fill bar — dimmed and reading "brak premii" when
+  every ghost is idle, so a passive audience is visibly worth nothing rather than
+  silently worth +0%. All percentages in the UI are derived from `SOCIAL_RULES`, never
+  retyped. Tests: `npm run test:ghost`; live two-tab QA: `node tools/ghost-qa.mjs`
+  (drives a real host + watcher over CDP, including the active → idle → recovery cycle).
 * **Structures** (`world.js placeStructures`): ~10% of chunks deterministically roll a
   ruined stone gateway with a rare/epic chest (flat land) or a wooden **shipwreck** with
   an epic chest resting on the sea floor. ~14% of the land rolls become a **Summoning

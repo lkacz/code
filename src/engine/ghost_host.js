@@ -965,6 +965,49 @@ const ghostHost = (function(){
 		updateUi();
 		return approvalMode;
 	}
+	// --- social-facilitation meter: the audience's payout, always on screen ----------------
+	// The boosts existed but lived in a hover tooltip, so the host never saw what an
+	// audience was worth. The meter sits beside the 👁 button (inside #menuWrap, which
+	// ghost mode hides wholesale — so it stays host-only for free) and states the
+	// CUMULATIVE bonus. It is deliberately explicit about idleness: watchers who
+	// haven't touched anything in 30 s pay nothing, and the meter says so rather than
+	// quietly showing +0%.
+	function ensureMeter(btn){
+		if(ui.meter || typeof document === 'undefined' || !btn || !btn.parentNode) return;
+		const m = document.createElement('button');
+		m.type = 'button'; m.id = 'ghostMeter'; m.className = 'topbtn'; m.hidden = true;
+		m.setAttribute('aria-label', 'Facylitacja społeczna — premia od aktywnych widzów');
+		const cnt = document.createElement('span'); cnt.id = 'ghostMeterCount';
+		const val = document.createElement('span'); val.id = 'ghostMeterVal';
+		const bar = document.createElement('span'); bar.id = 'ghostMeterBar';
+		const fill = document.createElement('span'); fill.id = 'ghostMeterFill';
+		bar.appendChild(fill);
+		m.append(cnt, val, bar);
+		m.addEventListener('click', () => togglePanel(true)); // the meter is a door to the panel
+		btn.parentNode.insertBefore(m, btn);
+		ui.meter = m; ui.meterCount = cnt; ui.meterVal = val; ui.meterFill = fill;
+	}
+	function pct(mult){ return Math.round((mult - 1) * 100); }
+	function renderMeter(boost, viewers, active){
+		if(!ui.meter) return;
+		// no session, no audience → the meter has nothing to say
+		if(!session || viewers <= 0){ ui.meter.hidden = true; return; }
+		ui.meter.hidden = false;
+		const idle = active <= 0;
+		ui.meter.classList.toggle('idle', idle);
+		ui.meterCount.textContent = '⚡' + active + '/' + viewers;
+		ui.meterVal.textContent = idle
+			? 'brak premii'
+			: '+' + pct(boost.xp) + '% XP · +' + pct(boost.move) + '%';
+		// the fill reads "how much of my audience is actually with me"
+		ui.meterFill.style.width = Math.round((active / Math.max(1, viewers)) * 100) + '%';
+		ui.meter.title = idle
+			? 'Facylitacja społeczna: ' + viewers + ' ' + (viewers === 1 ? 'duch jest bezczynny' : 'duchów jest bezczynnych')
+				+ ' — bierny widz nie daje nic. Premia wraca, gdy widz znów coś zrobi (ruch kamerą, czat, moc).'
+			: 'Facylitacja społeczna — ' + active + ' z ' + viewers + ' ' + (viewers === 1 ? 'ducha' : 'duchów') + ' aktywnych:\n'
+				+ '+' + pct(boost.xp) + '% XP · +' + pct(boost.move) + '% szybkości · +' + pct(boost.jump) + '% wysokości skoku · +' + pct(boost.dmg) + '% obrażeń\n'
+				+ 'Liczą się tylko widzowie, którzy coś robili w ciągu ostatnich 30 s.';
+	}
 	function mountEntryPoint(){
 		if(typeof document === 'undefined') return;
 		mountSayKey();
@@ -973,6 +1016,7 @@ const ghostHost = (function(){
 			if(!btn || ui.menuBtn) return !!ui.menuBtn;
 			btn.addEventListener('click', () => togglePanel(!panelOpen()));
 			ui.menuBtn = btn;
+			ensureMeter(btn);
 			updateUi();
 			return true;
 		};
@@ -1176,6 +1220,9 @@ const ghostHost = (function(){
 					+ (active ? ' (+' + Math.round((boost.xp - 1) * 100) + '% XP, +' + Math.round((boost.move - 1) * 100) + '% szybkość/skok/obrażenia)' : '')
 					+ (pending ? ' · ⏳' + pending + ' propozycji asystentów czeka' : '');
 		}
+		// the meter is a HUD surface, not panel chrome — it must refresh even when the
+		// panel is shut or the host is mid-edit inside it (both early-return below)
+		renderMeter(boost, list.length, active);
 		const el = ui.panel;
 		// A hidden panel gets no body refresh (the HUD button is the only live surface),
 		// and neither does one the host is actively USING: the periodic rebuild would
@@ -1200,7 +1247,10 @@ const ghostHost = (function(){
 			el.querySelector('#ghostPanelQueue').style.display = 'none';
 			toggle.textContent = 'Rozpocznij transmisję';
 			toggle.style.background = '#21a366';
-			perks.textContent = 'Aktywny widz (ruszał się w ciągu 30 s) daje +10% XP oraz +1% szybkości, skoku i obrażeń. Bezczynne duchy nic nie dają.';
+			// derived from SOCIAL_RULES (via a one-viewer sample), so the pitch can never
+			// drift away from what the engine actually pays
+			perks.textContent = 'Aktywny widz (zrobił coś w ciągu ' + Math.round(NET.SOCIAL_RULES.IDLE_MS / 1000) + ' s) daje +'
+				+ pct(NET.socialBoosts(1).xp) + '% XP oraz +' + pct(NET.socialBoosts(1).move) + '% szybkości, skoku i obrażeń. Bezczynne duchy nic nie dają.';
 			return;
 		}
 		linkRow.style.display = 'flex';
@@ -1235,8 +1285,12 @@ const ghostHost = (function(){
 			viewers.textContent = 'Czekam na duchy… wyślij link.';
 		} else {
 			const head = document.createElement('div');
-			head.style.cssText = 'color:#9fd6ae;margin-bottom:2px;';
-			head.textContent = 'Duchy (' + list.length + ')' + (active ? ' — ⚡' + active + ' aktywnych: +10% XP, +' + active + '% szybkość/skok/obrażenia' : ' — wszystkie bezczynne');
+			// percentages are DERIVED from the live boost — never retyped here, or a
+			// tweak to SOCIAL_RULES would leave the panel quietly lying to the host
+			head.style.cssText = 'margin-bottom:2px;color:' + (active ? '#9fd6ae' : '#8d99a8') + ';';
+			head.textContent = 'Duchy (' + list.length + ')' + (active
+				? ' — ⚡' + active + ' aktywnych: +' + pct(boost.xp) + '% XP, +' + pct(boost.move) + '% szybkość/skok/obrażenia'
+				: ' — wszystkie bezczynne, brak premii');
 			viewers.appendChild(head);
 			for(const entry of list) viewers.appendChild(viewerRow(entry, t));
 		}

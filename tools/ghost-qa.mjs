@@ -305,6 +305,51 @@ async function main(){
 		if(Math.abs(applied - 1.01) > 1e-9) throw new Error('MM.socialBoost not published to the engine: ' + applied);
 		console.log('social boost: ok (active=1 → move/jump/dmg ×1.01, xp ×1.10)');
 
+		// --- Scene 8a: the meter — the host can SEE the payout, and see when there is none -----------
+		const readMeter = `(()=>{ const m=document.getElementById('ghostMeter');
+			if(!m) return {missing:true};
+			return { hidden:!!m.hidden, idle:m.classList.contains('idle'),
+				count:m.querySelector('#ghostMeterCount').textContent,
+				val:m.querySelector('#ghostMeterVal').textContent,
+				fill:m.querySelector('#ghostMeterFill').style.width,
+				title:m.title, rects:m.getClientRects().length }; })()`;
+		const meterLive = await host.eval(readMeter);
+		if(meterLive.missing) throw new Error('social-facilitation meter never mounted');
+		if(meterLive.hidden || meterLive.rects !== 1) throw new Error('meter not on screen while streaming: ' + JSON.stringify(meterLive));
+		if(meterLive.idle) throw new Error('meter reads idle despite an active watcher: ' + JSON.stringify(meterLive));
+		if(meterLive.count !== '⚡1/1' || !/\+10% XP/.test(meterLive.val) || !/\+1%/.test(meterLive.val)) {
+			throw new Error('meter shows the wrong payout: ' + JSON.stringify(meterLive));
+		}
+		if(meterLive.fill !== '100%') throw new Error('meter fill should be full with every watcher active: ' + meterLive.fill);
+		console.log('meter (active): ok — ' + meterLive.count + ' ' + meterLive.val);
+		// Now let the watcher go idle: rewind its last-input stamp past IDLE_MS so the
+		// next pose vouches act=0, and the host's 6 s TTL lapses. A passive audience must
+		// pay NOTHING — and the meter must say so instead of quietly showing +0%.
+		await ghost.eval(`MM.ghostClient._idleForTest()`);
+		// Poll the PUBLISHED boost, not metrics(): metrics recomputes activity live, while
+		// MM.socialBoost — the object the engine actually reads — is republished on the
+		// presence tick. Racing on metrics() would trip on that publication lag, which is
+		// immaterial next to the deliberate 6 s activity grace but is not zero.
+		await host.poll(`MM.socialBoost.move`, v => v === 1, 'published boost returns to neutral', 80, 250);
+		const idleBoost = await host.eval(`MM.socialBoost`);
+		if(!(idleBoost.move === 1 && idleBoost.xp === 1 && idleBoost.jump === 1 && idleBoost.dmg === 1)) {
+			throw new Error('an idle audience still boosts the hero: ' + JSON.stringify(idleBoost));
+		}
+		if(idleBoost.active !== 0) throw new Error('idle watcher still counted as active: ' + JSON.stringify(idleBoost));
+		if(idleBoost.viewers !== 1) throw new Error('the idle watcher should still COUNT as present: ' + JSON.stringify(idleBoost));
+		await host.poll(`document.getElementById('ghostMeter').classList.contains('idle')`, v => v === true, 'meter flips to idle', 40, 250);
+		const meterIdle = await host.eval(readMeter);
+		if(meterIdle.hidden || meterIdle.count !== '⚡0/1' || meterIdle.val !== 'brak premii') {
+			throw new Error('idle meter should stay visible and say "brak premii": ' + JSON.stringify(meterIdle));
+		}
+		if(meterIdle.fill !== '0%') throw new Error('idle meter fill should be empty: ' + meterIdle.fill);
+		console.log('meter (idle): ok — passive watcher pays nothing, meter says "brak premii"');
+		// …and it comes straight back when the human touches something again
+		await ghost.eval(`MM.ghostClient.noteInput()`);
+		await host.poll(`MM.socialBoost.move`, v => Math.abs(v - 1.01) < 1e-9, 'boost returns on real input', 40, 250);
+		await host.poll(`!document.getElementById('ghostMeter').classList.contains('idle')`, v => v === true, 'meter lights back up', 40, 250);
+		console.log('meter (recovery): ok — real input restores the payout');
+
 		// --- Scene 9: chat — filtered, relayed, rendered ----------------------------------------------
 		const chatSent = await ghost.eval(`MM.ghostClient.sendChat('ale kurwa super gra!')`);
 		if(!chatSent) throw new Error('chat refused despite full permissions');
