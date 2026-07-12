@@ -10501,6 +10501,53 @@ const mobs = (function(){
     }
   }
 
+  // --- Ghost spectator sync (ghost_host.js / ghost_client.js) -----------------
+  // Watchers render mobs through the normal draw path for full threat-look
+  // fidelity: composition changes ride the existing serialize/deserialize codec,
+  // while a light pose roster (x/y/facing/hp/state per living mob) streams at
+  // ~10 Hz. The roster is index-aligned with serialize()'s filter, so both ends
+  // agree on ordering; a signature mismatch means the client must ask for a
+  // fresh full list instead of guessing.
+  function ghostLiveMobs(){
+    const out=[];
+    for(const m of mobs){
+      if(!validMobState(m) || m.id==='ZLOTY' || !SPECIES[m.id]) continue;
+      out.push(m);
+    }
+    return out;
+  }
+  function ghostRoster(){
+    const live=ghostLiveMobs();
+    return {
+      sig: live.map(m=>m.id).join('|'),
+      poses: live.map(m=>[+m.x.toFixed(3), +m.y.toFixed(3), m.facing<0?-1:1, finiteNum(m.hp)?+m.hp.toFixed(2):0, typeof m.state==='string'?m.state:'idle'])
+    };
+  }
+  function ghostApplyRoster(roster){
+    if(!roster || typeof roster.sig!=='string' || !Array.isArray(roster.poses)) return false;
+    const live=ghostLiveMobs();
+    if(live.map(m=>m.id).join('|')!==roster.sig) return false;
+    for(let i=0;i<live.length;i++){
+      const p=roster.poses[i];
+      if(!Array.isArray(p) || !finiteNum(p[0]) || !finiteNum(p[1])) continue;
+      const m=live[i];
+      m._ghostTX=+p[0]; m._ghostTY=+p[1];
+      m.facing=p[2]<0?-1:1;
+      if(finiteNum(p[3])) m.hp=Math.max(0,Math.min(m.maxHp||p[3],p[3]));
+      if(typeof p[4]==='string') m.state=p[4];
+    }
+    return true;
+  }
+  function ghostLerp(dt){
+    const k=Math.min(1, Math.max(0,dt)*9);
+    for(const m of mobs){
+      if(!finiteNum(m._ghostTX) || !finiteNum(m._ghostTY)) continue;
+      const dx=m._ghostTX-m.x, dy=m._ghostTY-m.y;
+      if(Math.abs(dx)>4 || Math.abs(dy)>4){ m.x=m._ghostTX; m.y=m._ghostTY; continue; } // teleport, don't glide
+      m.x+=dx*k; m.y+=dy*k;
+    }
+  }
+
   // External helpers to control spawns and clearing
   function freezeSpawns(ms){ const base = performance.now(); const n=finiteNum(ms)?Math.max(0,ms):0; spawnFreezeUntil = Math.max(spawnFreezeUntil, base + n); }
   function clearAll(){
@@ -10619,7 +10666,7 @@ const mobs = (function(){
         lasers:mobLasers.map(l=>({x1:l.x1,y1:l.y1,x2:l.x2,y2:l.y2,dmg:l.dmg||0,hit:!!l.hit}))
       };
     }
-  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, chillAt, chillRadius, wetAt, wetRadius, statusAt, statusRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat };
+  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, chillAt, chillRadius, wetAt, wetRadius, statusAt, statusRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, ghostRoster, ghostApplyRoster, ghostLerp, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat };
   MM.mobs = api;
   try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
   return api;

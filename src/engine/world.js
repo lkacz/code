@@ -2123,6 +2123,7 @@ window.MM = window.MM || {};
     return peekTile(x,y,fallback);
   }
   function notifyTileChanged(x,y,old,v){
+    try{ if(MM.ghostHostTile) MM.ghostHostTile(x,y,old,v); }catch(e){} // spectator diff capture (ghost_host.js)
     try{ if(MM.trees && MM.trees.onTileChanged) MM.trees.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.meat && MM.meat.onTileChanged) MM.meat.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.gases && MM.gases.onTileChanged) MM.gases.onTileChanged(x,y,old,v); }catch(e){}

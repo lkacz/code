@@ -80,6 +80,10 @@ import { lighting as LIGHTING } from './engine/lighting.js';
 import { vitalsHud as VITALS_HUD } from './engine/vitals_hud.js';
 import { titleScreen as TITLE_SCREEN } from './engine/title_screen.js';
 import { finale as FINALE } from './engine/finale.js';
+// Ghost spectator mode (link-join watchers): ghost_client flips MM.ghostMode at
+// import time when the URL carries ?watch=ROOM — everything below honors it.
+import { ghostHost as GHOST_HOST } from './engine/ghost_host.js';
+import { ghostClient as GHOST_CLIENT } from './engine/ghost_client.js';
 import './engine/ui.js';
 import './inventory_ui.js';
 // Bind global MM into a module-scoped constant for convenience
@@ -2915,6 +2919,7 @@ function criticalStateSignature(state){
 }
 function saveCriticalState(reason,force){
 	if(_startingNewGame) return false;
+	if(MM.ghostMode) return false; // watchers replicate a foreign world — never persist it
 	try{
 		const now=Date.now();
 		if(!force && now-_lastCriticalSaveAt<CRITICAL_SAVE_INTERVAL_MS) return false;
@@ -3053,6 +3058,7 @@ function buildSaveObject(opts){
 	savedAt: Date.now()
 }; }
 function saveGameCore(manual){
+	if(MM.ghostMode) return false; // ghost sessions never write saves
 	try{
 		const t0=savePerfNow();
 		const perf={parts:[]};
@@ -3091,6 +3097,17 @@ function loadGame(opts){
 	const data=JSON.parse(raw);
 	if(!data|| typeof data!=='object') return false;
 	const hashInfo=verifyHash(data); if(!hashInfo.ok){ msg('UWAGA: uszkodzony zapis (hash)'); console.warn('Hash mismatch',hashInfo); }
+	return applyGameData(data,opts);
+ }catch(e){ console.warn('Load failed',e); return false; }
+}
+// Applies a parsed save object to the LIVE session: resets volatile systems,
+// swaps the seed if needed and restores every snapshot part. Shared by
+// loadGame (localStorage) and the ghost spectator join (the host's save object
+// streamed over ghost_net) — the wire format IS the save format.
+function applyGameData(data,opts){
+ opts=opts||{};
+ try{
+	if(!data|| typeof data!=='object') return false;
 	const ver=data.v||5; // proceed even if hash mismatch
 	const criticalState=loadCriticalStateForSave(data,opts);
 	// Saves older than v6 store chunks from the previous (inverted) terrain model;
@@ -3456,6 +3473,7 @@ function scheduleDirtySave(delay){
 }
 function saveState(){
 	if(_startingNewGame) return;
+	if(MM.ghostMode) return; // ghost sessions never write saves
 	_saveDirty=true;
 	_saveRevision++;
 	saveCriticalState('dirty');
@@ -3516,7 +3534,7 @@ function startNewGame(){
 // same startNewGame for its "Nowa warstwa" button. Both freeze the sim via the
 // uiOverlayHold() gate in the main loop.
 try{
-	TITLE_SCREEN.boot({ hasSave: !!localStorage.getItem(SAVE_KEY), onNewGame: startNewGame });
+	if(!MM.ghostMode) TITLE_SCREEN.boot({ hasSave: !!localStorage.getItem(SAVE_KEY), onNewGame: startNewGame }); // watchers skip straight to the stream
 	FINALE.wire({ onNewGame: startNewGame });
 }catch(e){ console.warn('title/finale boot failed', e); }
 function uiOverlayHold(){
@@ -10707,6 +10725,9 @@ function draw(){ // Background first
  if(DROPS && DROPS.draw) DROPS.draw(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible,player);
  // mobs
  if(MOBS && MOBS.draw) MOBS.draw(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible);
+ // spectator spirits: the host sees its watchers, each watcher sees the others
+ if(MM.ghostMode){ if(GHOST_CLIENT && GHOST_CLIENT.drawSpirits) GHOST_CLIENT.drawSpirits(ctx,TILE); }
+ else if(GHOST_HOST && GHOST_HOST.active()) GHOST_HOST.drawSpirits(ctx,TILE);
  if(INVASIONS && INVASIONS.draw) INVASIONS.draw(ctx,TILE,worldFxVisible);
  if(MECHS && MECHS.draw) MECHS.draw(ctx,TILE,worldFxVisible);
  if(COMPANIONS && COMPANIONS.draw) COMPANIONS.draw(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible);
@@ -13891,9 +13912,39 @@ function debugNpcMetrics(){
 }
 window.teleportHeroToNextNpc = function(dir){ return jumpDebugNpc(dir); };
 window.teleportHeroToNearestNpc = function(){ return jumpDebugNearestNpc(); };
-const loaded=loadGame();
+const loaded=MM.ghostMode ? false : loadGame(); // watchers boot blank and stream the host's world instead
 if(!loaded){ placePlayer(); } else { centerOnPlayer(); }
-updateInventory({noCraftNotify:true}); updateGodBtn(); updateImmunityBtn(); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); updateHotbarSel(); refreshHotbarDom(); updateWeaponBar(); if(!loaded) msg('Sterowanie: A/D/W. 1=kilof: LPM kopie, PPM stawia. 2/3/4=broń: LPM strzela/atakuje, PPM ult/obrona. E=Ekwipunek, G=Bóg, I=Immune, M=Mapa, C=Centrum, H=Pomoc'); else msg('Wczytano zapis – miłej gry!');
+updateInventory({noCraftNotify:true}); updateGodBtn(); updateImmunityBtn(); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); updateHotbarSel(); refreshHotbarDom(); updateWeaponBar(); if(MM.ghostMode){ /* the ghost veil owns the first paint */ } else if(!loaded) msg('Sterowanie: A/D/W. 1=kilof: LPM kopie, PPM stawia. 2/3/4=broń: LPM strzela/atakuje, PPM ult/obrona. E=Ekwipunek, G=Bóg, I=Immune, M=Mapa, C=Centrum, H=Pomoc'); else msg('Wczytano zapis – miłej gry!');
+// Ghost spectator bridge: the one sanctioned window into main.js internals for
+// ghost_host.js / ghost_client.js — snapshot codec, world access, camera and
+// hero touch-points. Hosting streams THROUGH it; watching replays INTO it.
+MM.ghostBridge={
+	applyGameData:(data,opts)=>applyGameData(data,Object.assign({ignoreCritical:true},opts||{})),
+	buildSave:()=>buildSaveObject({perf:{parts:[]}}),
+	player,
+	getTile,
+	setTile,
+	revealAround:()=>revealAround(),
+	snapCameraToPlayer:()=>snapCameraToPlayer(),
+	getCamCenter:()=>({x:camSX,y:camSY}),
+	setCamCenter:(x,y)=>{ if(Number.isFinite(x)&&Number.isFinite(y)){ camSX=x; camSY=y; applyCameraFromCenter(); } },
+	getZoom:()=>zoom,
+	nudgeZoom:(f)=>nudgeZoom(f),
+	msg,
+	healHero:(n)=>{ player.hp=Math.min(player.maxHp,player.hp+Math.max(0,Number(n)||0)); },
+	addHeroEnergy:(n)=>{ try{ if(MM.heroEnergy&&MM.heroEnergy.add) MM.heroEnergy.add(Math.max(0,Number(n)||0)); }catch(e){} },
+	stepCosmetics:(dt)=>{ try{ if(PARTICLES&&PARTICLES.update) PARTICLES.update(dt,TILE,getTile); }catch(e){} },
+	snapshotDrops:()=>((DROPS&&DROPS.snapshot)?DROPS.snapshot():null),
+	restoreDrops:(d)=>{ try{ if(DROPS&&DROPS.restore) DROPS.restore(d); }catch(e){} },
+	snapshotSeasons:()=>((SEASONS&&SEASONS.snapshot)?SEASONS.snapshot():null),
+	restoreSeasons:(d)=>{ try{ if(SEASONS&&SEASONS.restore) SEASONS.restore(d); }catch(e){} },
+	snapshotInfra:()=>((WORLD&&WORLD.snapshotInfrastructure)?WORLD.snapshotInfrastructure():null),
+	restoreInfra:(d)=>{ try{ if(WORLD&&WORLD.restoreInfrastructure) WORLD.restoreInfrastructure(d); }catch(e){} },
+	snapshotConstructionBackground:()=>((WORLD&&WORLD.snapshotConstructionBackground)?WORLD.snapshotConstructionBackground():null),
+	restoreConstructionBackground:(d)=>{ try{ if(WORLD&&WORLD.restoreConstructionBackground) WORLD.restoreConstructionBackground(d); }catch(e){} }
+};
+if(MM.ghostMode){ try{ GHOST_CLIENT.boot(MM.ghostBridge); }catch(e){ console.warn('ghost client boot failed',e); } }
+else { try{ GHOST_HOST.wire(MM.ghostBridge); }catch(e){ console.warn('ghost host wire failed',e); } }
 // (Ghost preview is computed per-frame in draw() from lastPointer — see canPlaceAt)
 
 // Robustly initialize both grass and player speed controls after DOM is ready
@@ -14006,14 +14057,21 @@ let lastLoopErrAt=0; function loop(ts){
 		let simMs=0, drawMs=0;
 		// title/finale overlays hold the world still exactly like pause, minus the pause card
 		const overlayHold=uiOverlayHold();
-		if(!paused && !overlayHold && rawDt-frameDt>0.25) catchUpPowerSystems(rawDt-frameDt);
+		// ghost watchers never run the sim: their frame applies the host's stream instead
+		const ghostHold=!!MM.ghostMode;
+		if(!paused && !overlayHold && !ghostHold && rawDt-frameDt>0.25) catchUpPowerSystems(rawDt-frameDt);
 		if(Math.abs(zoomTarget-zoom)>0.0001){ zoom += (zoomTarget-zoom)*Math.min(1, frameDt*8); applyCameraFromCenter(); }
-		if(!paused && !overlayHold){
+		if(!paused && !overlayHold && !ghostHold){
 			const simT=framePerfNow();
 			runGameStep(frameDt,ts);
 			updateCameraFollow(frameDt);
 			revealAround();
 			scanCraftablesInView(frameDt);
+			if(GHOST_HOST && GHOST_HOST.active()) GHOST_HOST.frame(frameDt,ts);
+			simMs=framePerfNow()-simT;
+		} else if(ghostHold && GHOST_CLIENT && GHOST_CLIENT.frame){
+			const simT=framePerfNow();
+			GHOST_CLIENT.frame(frameDt,ts);
 			simMs=framePerfNow()-simT;
 		}
 		if(AUDIO && AUDIO.update) AUDIO.update(frameDt);

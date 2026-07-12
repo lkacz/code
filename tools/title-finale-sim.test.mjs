@@ -173,7 +173,7 @@ assert.ok(/new CustomEvent\('mm-hero-died'/.test(mainSrc), 'heroDied dispatches 
 assert.ok(/TITLE_SCREEN\.boot\(\{ hasSave: !!localStorage\.getItem\(SAVE_KEY\), onNewGame: startNewGame \}\)/.test(mainSrc), 'title boots with the autosave probe and startNewGame');
 assert.ok(/FINALE\.wire\(\{ onNewGame: startNewGame \}\)/.test(mainSrc), 'finale gets the new-game hook');
 assert.ok(/function uiOverlayHold\(\)/.test(mainSrc), 'the overlay hold gate exists');
-assert.ok(/if\(!paused && !overlayHold\)\{/.test(mainSrc), 'the sim step gates on the overlay hold');
+assert.ok(/if\(!paused && !overlayHold && !ghostHold\)\{/.test(mainSrc), 'the sim step gates on the overlay hold (and the ghost-spectator hold)');
 assert.ok(/if\(FINALE && FINALE\.update\) FINALE\.update\(dt\);/.test(mainSrc), 'the finale timers tick inside runGameStep');
 const htmlSrc = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 assert.ok(/<title>Mini Miner – Warstwy Symulacji<\/title>/.test(htmlSrc), 'the page carries the real game title');
