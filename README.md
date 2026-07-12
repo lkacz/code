@@ -131,7 +131,15 @@ reversed damage → mutual fall → epilogue, snapshot/restore) and
 * **Audio** (`engine/audio.js`): every effect is synthesized with WebAudio — zero asset
   files, CSP-safe; context unlocks on first gesture. Digging, breaking, placing, bows,
   swings, streams, explosions, chests, level-ups, boss roars, plus a looping rain bed
-  whose gain follows the weather. 🔊 menu button mutes; volume persists.
+  whose gain follows the weather. 🔊 menu button mutes; volume persists. The generative
+  **music director** rotates five themes (wędrowiec/chorał/skoczny/nokturn/dryf — same
+  scene scales, different voice/tempo/register writing): a theme plays ~2–3 min, rests
+  in a silent ~0.5–1 min break, then a different theme takes over (shuffled bag, no
+  immediate repeat). A guardian boss near the hero flips the director into a **boss
+  score** (driving ostinato, timpani hits, rising minor stabs) that escalates as the
+  guardian's heart drains, sensed through the guardian modules' turret queries plus the
+  center mimic's battle phase — combat music plays even through a rotation break. The
+  pause panel's music switch (persisted `musicOn`) silences the director entirely.
 * **Torches** (tile 16): crafted light sources; the fire.js viewport pass draws their
   flame and a radial glow that strengthens after dark.
 * **Underground biomes** (`world.js applyUndergroundBiomeDressing`): caves inherit
@@ -177,9 +185,19 @@ reversed damage → mutual fall → epilogue, snapshot/restore) and
   resource is left in a GRAVE tile at the death spot; click it to recover the loss.
 * **QoL**: surface **minimap** (N) rebuilt twice a second from worldgen columns,
   respawn totem, and a **pause & settings panel** (B): the simulation freezes under
-  a dimmed scene while a card offers resume, a live volume slider + mute, and
+  a dimmed scene while a card offers resume, a live volume slider + mute, a music
+  on/off switch, a **fullscreen toggle** (also on the rebindable U key), and
   persisted minimap / cave-lighting toggles (restored at boot; contract pinned in
   `npm run test:lighting`). Esc or B resumes.
+* **Key rebinding** (`engine/keybinds.js`): every letter-key action (movement,
+  interact, craft, fishing, pause… plus the debug keys) is rebindable from the
+  pause panel's ⌨ editor — click a key chip, press the new key; conflicts swap so
+  every action always keeps exactly one key. The model is a pure key→key
+  permutation layered *under* the existing handlers (`KEYBINDS.translate` in the
+  keydown/keyup listeners), so read sites keep checking default keys and touch
+  controls/arrows stay fixed aliases. Persisted in `mm_keybinds_v1` (tampered
+  blobs fail closed to defaults). Tests: `npm run test:keybinds`; visual QA:
+  `node tools/keybinds-qa.mjs`.
 * **Structures** (`world.js placeStructures`): ~10% of chunks deterministically roll a
   ruined stone gateway with a rare/epic chest (flat land) or a wooden **shipwreck** with
   an epic chest resting on the sea floor. ~14% of the land rolls become a **Summoning

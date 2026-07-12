@@ -18,6 +18,7 @@ import { steamMachines as STEAM_MACHINES } from './engine/steam_machines.js';
 import { canPlaceLadderFixture, ladderConnections } from './engine/ladders.js';
 import { applyHorizontalMovement, applyJumpArcControl, surfaceTraction } from './engine/movement.js';
 import './engine/input_mode.js'; // stamps data-input-mode on <html>; touch clusters gate off it
+import { keybinds as KEYBINDS } from './engine/keybinds.js';
 import { CRUSH_TUNING, crushTickDamage, heroCrushCapacity, heroEmbeddedTiles, resolveHeroBurial } from './engine/hero_crush.js';
 import { cape as CAPE } from './engine/cape.js';
 import { necklace as NECKLACE } from './engine/necklace.js';
@@ -7517,6 +7518,28 @@ try{ if(localStorage.getItem(MINIMAP_OFF_KEY)==='1') showMinimap=false; }catch(e
 // volume, minimap, cave lighting, help. DOM is built lazily on first pause.
 let pausePanel=null;
 function pausePanelVisible(){ return !!(pausePanel && !pausePanel.hidden); }
+// Fullscreen: pause-panel button + rebindable key (default U). requestFullscreen
+// needs a user gesture — keydown/click both qualify; rejections stay silent
+// except for a HUD hint so a blocked toggle isn't a dead key.
+function fullscreenActive(){ return !!document.fullscreenElement; }
+function toggleFullscreen(){
+	try{
+		if(fullscreenActive()){
+			const p=document.exitFullscreen && document.exitFullscreen();
+			if(p && p.catch) p.catch(()=>{});
+		}else if(document.documentElement.requestFullscreen){
+			const p=document.documentElement.requestFullscreen();
+			if(p && p.catch) p.catch(()=>{ try{ msg('Pełny ekran zablokowany przez przeglądarkę'); }catch(e){} });
+		}else msg('Pełny ekran nieobsługiwany w tej przeglądarce');
+	}catch(e){}
+}
+function fullscreenBtnLabel(){
+	const key=KEYBINDS ? KEYBINDS.displayKey(KEYBINDS.keyFor('fullscreen')) : 'U';
+	return (fullscreenActive()?'Wyłącz':'Włącz')+' ('+key+')';
+}
+document.addEventListener('fullscreenchange',()=>{
+	try{ const b=pausePanel && pausePanel.querySelector('.pauseFullscreenBtn'); if(b) b.textContent=fullscreenBtnLabel(); }catch(e){}
+});
 function buildPauseRow(labelText){
 	const row=document.createElement('div'); row.className='pauseRow';
 	const label=document.createElement('span'); label.textContent=labelText; row.appendChild(label);
@@ -7545,6 +7568,13 @@ function ensurePausePanel(){
 		s.addEventListener('input',()=>{ if(MM.audio && MM.audio.setBusVolume) MM.audio.setBusVolume(bus,(+s.value)/100); });
 		row.appendChild(s); pausePanel.appendChild(row);
 	}
+	// music on/off is separate from the music volume slider: off silences the
+	// generative director entirely (theme rotation + combat scores)
+	const musicOnRow=buildPauseRow('🎼 Muzyka włączona');
+	const musicOn=document.createElement('input'); musicOn.type='checkbox';
+	musicOn.checked=!(MM.audio && MM.audio.isMusicOn && !MM.audio.isMusicOn());
+	musicOn.addEventListener('change',()=>{ if(MM.audio && MM.audio.setMusicOn) MM.audio.setMusicOn(musicOn.checked); });
+	musicOnRow.appendChild(musicOn); pausePanel.appendChild(musicOnRow);
 	const muteRow=buildPauseRow('🔇 Wycisz dźwięk');
 	const mute=document.createElement('input'); mute.type='checkbox';
 	mute.checked=!!(MM.audio && MM.audio.isMuted && MM.audio.isMuted());
@@ -7564,6 +7594,15 @@ function ensurePausePanel(){
 	lootMode.checked=!!(DROPS && DROPS.autoPickup && DROPS.autoPickup());
 	lootMode.addEventListener('change',()=>{ if(DROPS && DROPS.setAutoPickup) DROPS.setAutoPickup(lootMode.checked); });
 	lootModeRow.appendChild(lootMode); pausePanel.appendChild(lootModeRow);
+	const fsRow=buildPauseRow('⛶ Pełny ekran');
+	const fs=document.createElement('button'); fs.type='button'; fs.className='pauseFullscreenBtn';
+	fs.textContent=fullscreenBtnLabel();
+	fs.addEventListener('click',()=>{ toggleFullscreen(); });
+	fsRow.appendChild(fs); pausePanel.appendChild(fsRow);
+	const kbRow=buildPauseRow('⌨ Klawisze sterowania');
+	const kb=document.createElement('button'); kb.type='button'; kb.textContent='Zmień…';
+	kb.addEventListener('click',()=>{ openKeybindPanel(); });
+	kbRow.appendChild(kb); pausePanel.appendChild(kbRow);
 	const helpRow=buildPauseRow('❔ Sterowanie i porady');
 	const help=document.createElement('button'); help.type='button'; help.textContent='Pomoc (H)';
 	help.addEventListener('click',()=>{ setPaused(false); try{ toggleHelp(); }catch(e){} });
@@ -7590,6 +7629,7 @@ function ensurePausePanel(){
 }
 function pauseTrapKeydown(e){
 	if(!pausePanelVisible()) return;
+	if(keybindPanelVisible()) return; // the keybind panel owns the keyboard while open
 	if(e.key==='Escape'){ e.preventDefault(); e.stopImmediatePropagation(); setPaused(false); }
 }
 function setPaused(v){
@@ -7602,10 +7642,16 @@ function setPaused(v){
 			if(label.includes('Minimapa')) chk.checked=showMinimap;
 			else if(label.includes('Oświetlenie')) chk.checked=!!(LIGHTING && LIGHTING.config && LIGHTING.config.enabled);
 			else if(label.includes('Wycisz')) chk.checked=!!(MM.audio && MM.audio.isMuted && MM.audio.isMuted());
+			else if(label.includes('Muzyka włączona')) chk.checked=!(MM.audio && MM.audio.isMusicOn && !MM.audio.isMusicOn());
 		});
 		panel.querySelectorAll('.pauseRow input[type=range][data-bus]').forEach(s=>{
 			if(MM.audio && MM.audio.getBusVolume) s.value=String(Math.round(MM.audio.getBusVolume(s.dataset.bus)*100));
 		});
+		try{
+			const fsBtn=panel.querySelector('.pauseFullscreenBtn'); if(fsBtn) fsBtn.textContent=fullscreenBtnLabel();
+			const resumeBtn=panel.querySelector('.pauseResume');
+			if(resumeBtn && KEYBINDS) resumeBtn.textContent='▶ Wznów ('+KEYBINDS.displayKey(KEYBINDS.keyFor('pause'))+')';
+		}catch(e){}
 		panel.hidden=false;
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('uiOpen'); }catch(e){}
 		window.addEventListener('keydown',pauseTrapKeydown,true);
@@ -7613,7 +7659,112 @@ function setPaused(v){
 		panel.hidden=true;
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('uiClose'); }catch(e){}
 		window.removeEventListener('keydown',pauseTrapKeydown,true);
+		if(keybindPanelVisible()) closeKeybindPanel();
 	}
+}
+// Keybind panel: opened from the pause card. Lists every rebindable action by
+// group; clicking a key button arms capture — the next keydown becomes the
+// binding (Esc cancels), conflicts swap keys (keybinds.js model). While the
+// panel is open a capture-phase trap owns the whole keyboard so no game or
+// pause shortcut can fire mid-rebind.
+let keybindPanel=null, keybindCapture=null, keybindNote=null;
+const KEYBIND_HINT='Kliknij przycisk klawisza i naciśnij nowy. Esc anuluje. Konflikt zamienia klawisze miejscami.';
+function keybindPanelVisible(){ return !!(keybindPanel && !keybindPanel.hidden); }
+function setKeybindNote(text){ if(keybindNote) keybindNote.textContent=text; }
+function refreshKeybindRows(){
+	if(!keybindPanel || !KEYBINDS) return;
+	keybindPanel.querySelectorAll('button.kbKey').forEach(btn=>{
+		const id=btn.dataset.action;
+		const capturing=keybindCapture===id;
+		btn.classList.toggle('capturing',capturing);
+		btn.textContent=capturing ? 'Naciśnij…' : KEYBINDS.displayKey(KEYBINDS.keyFor(id));
+	});
+}
+function ensureKeybindPanel(){
+	if(keybindPanel) return keybindPanel;
+	keybindPanel=document.createElement('div'); keybindPanel.id='keybindPanel'; keybindPanel.hidden=true;
+	const head=document.createElement('div'); head.className='kbHead';
+	const title=document.createElement('strong'); title.textContent='⌨ Klawisze sterowania';
+	const close=document.createElement('button'); close.type='button'; close.className='kbClose'; close.textContent='✕ Zamknij';
+	close.addEventListener('click',()=>closeKeybindPanel());
+	head.appendChild(title); head.appendChild(close); keybindPanel.appendChild(head);
+	keybindNote=document.createElement('div'); keybindNote.className='kbNote'; keybindNote.textContent=KEYBIND_HINT;
+	keybindPanel.appendChild(keybindNote);
+	const list=document.createElement('div'); list.className='kbList';
+	for(const g of KEYBINDS.GROUPS){
+		const actions=KEYBINDS.ACTIONS.filter(a=>a.group===g.id);
+		if(!actions.length) continue;
+		const gh=document.createElement('div'); gh.className='kbGroup'; gh.textContent=g.label; list.appendChild(gh);
+		for(const a of actions){
+			const row=document.createElement('div'); row.className='kbRow';
+			const label=document.createElement('span'); label.textContent=a.label;
+			if(a.aliases && a.aliases.length){
+				const al=document.createElement('small');
+				al.textContent=' (też: '+a.aliases.map(k=>KEYBINDS.displayKey(k)).join(', ')+')';
+				label.appendChild(al);
+			}
+			const btn=document.createElement('button'); btn.type='button'; btn.className='kbKey'; btn.dataset.action=a.id;
+			btn.addEventListener('click',()=>{
+				keybindCapture = keybindCapture===a.id ? null : a.id;
+				setKeybindNote(keybindCapture ? ('Nowy klawisz dla: '+a.label) : KEYBIND_HINT);
+				refreshKeybindRows();
+			});
+			row.appendChild(label); row.appendChild(btn); list.appendChild(row);
+		}
+	}
+	keybindPanel.appendChild(list);
+	const foot=document.createElement('div'); foot.className='kbFoot';
+	const reset=document.createElement('button'); reset.type='button'; reset.textContent='Przywróć domyślne';
+	reset.addEventListener('click',()=>{
+		KEYBINDS.resetAll(); keybindCapture=null;
+		setKeybindNote('Przywrócono domyślne klawisze.');
+		refreshKeybindRows();
+	});
+	foot.appendChild(reset); keybindPanel.appendChild(foot);
+	(document.getElementById('ui')||document.body).appendChild(keybindPanel);
+	return keybindPanel;
+}
+function keybindTrapKeydown(e){
+	if(!keybindPanelVisible()) return;
+	const k=e.key.toLowerCase();
+	if(keybindCapture){
+		e.preventDefault(); e.stopImmediatePropagation();
+		if(e.repeat) return;
+		if(k==='escape'){ keybindCapture=null; setKeybindNote(KEYBIND_HINT); refreshKeybindRows(); return; }
+		const r=KEYBINDS.setBinding(keybindCapture,k);
+		if(!r.ok){ setKeybindNote('Ten klawisz jest zarezerwowany — wybierz literę lub znak.'); return; }
+		setKeybindNote(r.swapped ? ('Zamiana: „'+r.swapped.label+'” przechodzi na '+KEYBINDS.displayKey(r.swapped.key)+'.') : KEYBIND_HINT);
+		keybindCapture=null; refreshKeybindRows();
+		return;
+	}
+	if(k==='escape'){ e.preventDefault(); e.stopImmediatePropagation(); closeKeybindPanel(); return; }
+	// swallow listener-driven shortcuts (game/pause) but keep browser defaults
+	// (Tab/Enter/Space) so the panel stays keyboard-navigable
+	e.stopImmediatePropagation();
+}
+function openKeybindPanel(){
+	const panel=ensureKeybindPanel();
+	keybindCapture=null;
+	setKeybindNote(KEYBIND_HINT);
+	refreshKeybindRows();
+	panel.hidden=false;
+	try{ if(MM.audio && MM.audio.play) MM.audio.play('uiOpen'); }catch(e){}
+	window.addEventListener('keydown',keybindTrapKeydown,true);
+}
+function closeKeybindPanel(){
+	if(!keybindPanel) return;
+	keybindPanel.hidden=true;
+	keybindCapture=null;
+	window.removeEventListener('keydown',keybindTrapKeydown,true);
+	try{ if(MM.audio && MM.audio.play) MM.audio.play('uiClose'); }catch(e){}
+	// rebinding may have moved the pause/fullscreen keys — refresh their labels
+	try{
+		if(pausePanel){
+			const resumeBtn=pausePanel.querySelector('.pauseResume');
+			if(resumeBtn && KEYBINDS) resumeBtn.textContent='▶ Wznów ('+KEYBINDS.displayKey(KEYBINDS.keyFor('pause'))+')';
+			const fsBtn=pausePanel.querySelector('.pauseFullscreenBtn'); if(fsBtn) fsBtn.textContent=fullscreenBtnLabel();
+		}
+	}catch(e){}
 }
 const activePointers=new Map(); let pinch=null;
 let minePointerId=null;   // pointer that initiated cursor mining (left button / touch on canvas)
@@ -8098,7 +8249,7 @@ document.querySelectorAll('#hotbarWrap .hotSlot').forEach((el,i)=>{
 	bindHudTip(el,()=>buildHotbarTip(i));
 });
 window.addEventListener('mm-resources-change',()=>{ if(hudTipAnchor) refreshHudTip(); });
-window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if(modalInputOpen()){ releaseGameplayInput(); return; } noteSaveActivity(); const k=e.key.toLowerCase(); const code=(e.code||'').toLowerCase(); keys[k]=true; if(code) keys[code]=true; if(!e.repeat) queueJumpInput(k); if(k==='s' || k==='arrowdown') trapdoorDropBufferT=TRAPDOOR_DROP_BUFFER; if(k==='escape'){ closeHotSelect(); }
+window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if(modalInputOpen()){ releaseGameplayInput(); return; } noteSaveActivity(); const k=KEYBINDS.translate(e.key.toLowerCase()); const code=(e.code||'').toLowerCase(); keys[k]=true; if(code) keys[code]=true; if(!e.repeat) queueJumpInput(k); if(k==='s' || k==='arrowdown') trapdoorDropBufferT=TRAPDOOR_DROP_BUFFER; if(k==='escape'){ closeHotSelect(); }
  if(!e.repeat && NPCS && NPCS.handleKey && NPCS.handleKey(e.key,player,tutorialNpcCtx)){ e.preventDefault(); return; }
  // Weapon shortcuts: 1 = pickaxe/build mode (cycles owned tiers), 2/3/4 cycle weapon categories
  if(!e.repeat && ['1','2','3','4'].includes(e.key)){ selectWeaponKey(e.key); }
@@ -8142,8 +8293,9 @@ window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if
 	if(k==='o'&&!keysOnce.has('o')){ keysOnce.add('o'); if(VOLCANO && VOLCANO.forceMasterEruption) VOLCANO.forceMasterEruption(); }
 	if(k==='b'&&!keysOnce.has('b')){ setPaused(!paused); keysOnce.add('b'); }
 	if(k==='n'&&!keysOnce.has('n')){ showMinimap=!showMinimap; msg('Minimapa '+(showMinimap?'ON':'OFF')); keysOnce.add('n'); }
+	if(k==='u'&&!keysOnce.has('u')){ toggleFullscreen(); keysOnce.add('u'); }
 	if(['arrowup','arrowdown','w',' '].includes(k)) e.preventDefault(); });
-window.addEventListener('keyup',e=>{ if(modalInputOpen()){ releaseGameplayInput(); return; } noteSaveActivity(); const k=e.key.toLowerCase(); const code=(e.code||'').toLowerCase(); keys[k]=false; if(code) keys[code]=false; keysOnce.delete(k); });
+window.addEventListener('keyup',e=>{ if(modalInputOpen()){ releaseGameplayInput(); return; } noteSaveActivity(); const k=KEYBINDS.translate(e.key.toLowerCase()); const code=(e.code||'').toLowerCase(); keys[k]=false; if(code) keys[code]=false; keysOnce.delete(k); });
 // Losing focus while keys are held would leave the player running forever — release everything
 window.addEventListener('blur',releaseGameplayInput);
 
@@ -10515,7 +10667,7 @@ function undoLastChange(){
 	saveState();
 	msg('Cofnięto');
 }
-window.addEventListener('keydown',ev=>{ if(isEditableTarget(ev.target) || modalInputOpen() || ev.repeat) return; if(ev.key==='z' && !ev.ctrlKey && !ev.metaKey){ undoLastChange(); } });
+window.addEventListener('keydown',ev=>{ if(isEditableTarget(ev.target) || modalInputOpen() || ev.repeat) return; if(KEYBINDS.translate(ev.key.toLowerCase())==='z' && !ev.ctrlKey && !ev.metaKey){ undoLastChange(); } });
 // (legacy saveState/loadState removed – unified saveGame/loadGame used everywhere)
 // Hotbar slot click: select OR (Shift/click again) open type remap popup
 const hotSelectMenu=document.getElementById('hotSelectMenu');
@@ -10705,6 +10857,10 @@ function draw(){ // Background first
  // cape behind player body but above tiles
  drawCape();
  if(GENERATED_NPCS && GENERATED_NPCS.draw) GENERATED_NPCS.draw(ctx,TILE,worldFxVisible,getTile,WORLDGEN);
+ // spectator spirit BODIES glide behind the player (hovering above when parked on it) —
+ // their names, bubbles and action feedback come later in the 'text' pass
+ if(MM.ghostMode){ if(GHOST_CLIENT && GHOST_CLIENT.drawSpirits) GHOST_CLIENT.drawSpirits(ctx,TILE,'body'); }
+ else if(GHOST_HOST && GHOST_HOST.active()) GHOST_HOST.drawSpirits(ctx,TILE,'body');
  // player body + overlays (back pass for vegetation done earlier)
  drawPlayer();
  // equipped weapon in hand (melee blades sweep during a swing)
@@ -10733,9 +10889,10 @@ function draw(){ // Background first
  if(DROPS && DROPS.draw) DROPS.draw(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible,player);
  // mobs
  if(MOBS && MOBS.draw) MOBS.draw(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible);
- // spectator spirits: the host sees its watchers, each watcher sees the others
- if(MM.ghostMode){ if(GHOST_CLIENT && GHOST_CLIENT.drawSpirits) GHOST_CLIENT.drawSpirits(ctx,TILE); }
- else if(GHOST_HOST && GHOST_HOST.active()) GHOST_HOST.drawSpirits(ctx,TILE);
+ // spectator overlay text: spirit names, chat bubbles (incl. the host's own words
+ // over the hero), pings and action feedback — readable over the creature layer
+ if(MM.ghostMode){ if(GHOST_CLIENT && GHOST_CLIENT.drawSpirits) GHOST_CLIENT.drawSpirits(ctx,TILE,'text'); }
+ else if(GHOST_HOST && GHOST_HOST.active()) GHOST_HOST.drawSpirits(ctx,TILE,'text');
  if(INVASIONS && INVASIONS.draw) INVASIONS.draw(ctx,TILE,worldFxVisible);
  if(MECHS && MECHS.draw) MECHS.draw(ctx,TILE,worldFxVisible);
  if(COMPANIONS && COMPANIONS.draw) COMPANIONS.draw(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible);
@@ -13939,6 +14096,10 @@ MM.ghostBridge={
 	getZoom:()=>zoom,
 	nudgeZoom:(f)=>nudgeZoom(f),
 	msg,
+	// opening the host chat box mid-run must drop held movement keys — the keyup
+	// that would release them is swallowed once an input owns the focus
+	releaseInput:()=>{ try{ releaseGameplayInput(); }catch(e){} },
+	overlayHold:()=>{ try{ return uiOverlayHold(); }catch(e){ return false; } },
 	healHero:(n)=>{ player.hp=Math.min(player.maxHp,player.hp+Math.max(0,Number(n)||0)); },
 	addHeroEnergy:(n)=>{ try{ if(MM.heroEnergy&&MM.heroEnergy.add) MM.heroEnergy.add(Math.max(0,Number(n)||0)); }catch(e){} },
 	stepCosmetics:(dt)=>{ try{ if(PARTICLES&&PARTICLES.update) PARTICLES.update(dt,TILE,getTile); }catch(e){} },
@@ -13967,31 +14128,58 @@ MM.ghostBridge={
 				hits=MOBS.statusRadius ? MOBS.statusRadius(x,y,r,'panic',{dur:5,source:'ghost'}) : 0;
 			}
 		}catch(e){ return 0; }
-		try{ if(PARTICLES && PARTICLES.spawnBurst) PARTICLES.spawnBurst(x,y,kind==='smite'?'legendary':'epic',{}); }catch(e){}
-		try{ if(AUDIO && AUDIO.play) AUDIO.play(kind==='frost'?'freeze':kind==='smite'?'chainShock':'roar'); }catch(e){}
+		// no fx here: the burst/sound/ring live in ghost_host under the host's
+		// "działania" toggle — this bridge entry is mechanics only
 		return hits;
 	},
 	// Assistant delegate: may only run recipes the hero can already afford and
 	// equip gear the hero already owns. No resource creation, no world edits.
+	// The assistant sees what the PLAYER sees: every visible recipe with its group,
+	// favorite mark and live have/need, the whole gear bag, and the resource pouch.
+	// Same discovery gates as the local panel — an undiscovered recipe stays hidden.
 	ghostAssistState:()=>{
-		const recipes=RECIPES.filter(r=>craftRecipeVisible(r) && !recipeDone(r)).slice(0,60).map(r=>({
+		const recipes=RECIPES.filter(r=>craftRecipeVisible(r) && !recipeDone(r)).slice(0,140).map(r=>({
 			id:r.id, name:r.name||r.id, can:!!canCraft(r),
+			g:CRAFT_GROUP_LABELS[recipeGroup(r)]||'Inne',
+			fav:!!(CRAFT_MODEL && CRAFT_MODEL.isFavorite && CRAFT_MODEL.isFavorite(r.id)),
 			cost:Object.keys(r.cost||{}).map(k=>({k, need:r.cost[k], have:Math.floor(Number(inv[k])||0)}))
 		}));
-		const items=(MM.inventory && MM.inventory.bagItems) ? MM.inventory.bagItems().slice(0,80).map(i=>({
+		const items=(MM.inventory && MM.inventory.bagItems) ? MM.inventory.bagItems().slice(0,100).map(i=>({
 			id:i.id, name:i.name||i.id, kind:i.kind, tier:i.tier||'common',
+			moc:(MM.inventory.itemScore? MM.inventory.itemScore(i) : 0),
 			equipped:!!(MM.inventory.isEquipped && MM.inventory.isEquipped(i.id))
 		})) : [];
-		return {recipes, items, hp:Math.round(player.hp), maxHp:Math.round(player.maxHp)};
+		const resources=RESOURCE_DEFS.map(d=>({k:d.key, name:d.label, n:Math.floor(Number(inv[d.key])||0)})).filter(r=>r.n>0);
+		return {recipes, items, resources, hp:Math.round(player.hp), maxHp:Math.round(player.maxHp),
+			en:Math.round(player.energy||0), maxEn:Math.round(player.maxEnergy||0)};
 	},
-	ghostAssist:(action,id)=>{
+	// Approval rows must never render client-authored text — the host derives the
+	// label itself, and an unknown id is refused before it can reach the queue.
+	ghostAssistLabel:(action,id,n)=>{
+		if(action==='craft'){
+			const r=RECIPES.find(x=>x.id===id);
+			if(!r || !craftRecipeVisible(r)) return null;
+			return 'Wytwórz: '+(r.name||r.id)+(n>1?' ×'+n:'');
+		}
+		if(action==='equip' || action==='unequip'){
+			const it=(MM.inventory && MM.inventory.getItem) ? MM.inventory.getItem(id) : null;
+			if(!it) return null;
+			return (action==='equip'?'Załóż: ':'Zdejmij: ')+(it.name||id);
+		}
+		return null;
+	},
+	ghostAssist:(action,id,n)=>{
 		if(action==='craft'){
 			const r=RECIPES.find(x=>x.id===id);
 			if(!r) return {ok:false, reason:'unknown'};
 			if(!craftRecipeVisible(r)) return {ok:false, reason:'locked'};
-			if(!canCraft(r)) return {ok:false, reason:'cost'};
-			doCraft(r,1);
-			return {ok:true, label:'wykonał '+(r.name||r.id)};
+			// batch: craft as many as affordable up to n — a rival assistant may have
+			// drained the pouch a moment ago, so partial success is reported honestly
+			let made=0;
+			const want=Math.max(1,Math.min(10,Math.floor(Number(n)||1)));
+			while(made<want && canCraft(r)){ doCraft(r,1); made++; }
+			if(!made) return {ok:false, reason:'cost'};
+			return {ok:true, made, label:'wykonał '+(r.name||r.id)+(made>1?' ×'+made:'')};
 		}
 		if(action==='equip' || action==='unequip'){
 			if(!MM.inventory) return {ok:false, reason:'noinv'};
@@ -14161,24 +14349,17 @@ let lastLoopErrAt=0; function loop(ts){
 		if(ts-lastLoopErrAt>2000){ lastLoopErrAt=ts; console.error('game loop error (frame skipped):', err); }
 	}
 	requestAnimationFrame(loop); } requestAnimationFrame(loop);
-// (Re)define loot popup helpers if not already present (guard for reloads)
-// Deferred loot inbox system
-if(!window.__lootPopupInit){
-	window.__lootPopupInit=true;
-	window.lootInbox = window.lootInbox || [];
-	let lootInboxUnread = 0; // separate unread counter so viewing doesn't erase items
-	const LOOT_INBOX_KEY='mm_loot_inbox_v1';
-	// Inbox rows need gear shape ({id,kind,...}); older saves may also contain
-	// resource-drop entries ({item,qty}) which rendered as broken rows — drop them.
+// (Re)define loot notice helpers if not already present (guard for reloads)
+// Fresh-loot signal. Picked-up gear is ALREADY in the bag by the time we hear
+// about it, so this only has to answer "is it worth stopping for?": a genuine
+// upgrade gets the corner card with a one-click Załóż, everything else a quiet
+// toast. The modal loot inbox ("Nowe przedmioty") that used to live here was a
+// second, worse copy of the Ekwipunek panel — retired.
+if(!window.__lootNoticeInit){
+	window.__lootNoticeInit=true;
+	try{ localStorage.removeItem('mm_loot_inbox_v1'); }catch(e){}
+	const announcedLoot=new Set(); // one signal per item, however many times it is reported
 	function isGearItem(it){ return !!(it && typeof it==='object' && typeof it.id==='string' && typeof it.kind==='string'); }
-	function dedupeGearItems(items){
-		const seen=new Set(), out=[];
-		(items||[]).forEach(it=>{
-			if(!isGearItem(it) || seen.has(it.id)) return;
-			seen.add(it.id); out.push(it);
-		});
-		return out;
-	}
 	function ownedGearItems(items){
 		const INV=MM.inventory;
 		const seen=new Set(), out=[];
@@ -14190,21 +14371,6 @@ if(!window.__lootPopupInit){
 		});
 		return out;
 	}
-	try{ const saved=localStorage.getItem(LOOT_INBOX_KEY); if(saved){ const parsed=JSON.parse(saved); if(Array.isArray(parsed.items)){ window.lootInbox = dedupeGearItems(parsed.items); lootInboxUnread = Math.min(parsed.unread|0, window.lootInbox.length); } } }catch(e){}
-	const lootInboxBtn=document.getElementById('lootInboxBtn');
-	const lootInboxCount=document.getElementById('lootInboxCount');
-	const lootPopup=document.getElementById('lootPopup');
-	const lootDim=document.getElementById('lootDim');
-	const lootItemsBox=document.getElementById('lootPopupItems');
-	const lootEquipAllBtn=document.getElementById('lootEquipAll');
-	const lootKeepAllBtn=document.getElementById('lootKeepAll');
-	const lootCloseBtn=document.getElementById('lootClose');
-	let lootPrevFocus=null;
-	function persistInbox(){ window.lootInbox=ownedGearItems(window.lootInbox); lootInboxUnread=Math.min(lootInboxUnread, window.lootInbox.length); try{ localStorage.setItem(LOOT_INBOX_KEY, JSON.stringify({items:window.lootInbox, unread:lootInboxUnread})); }catch(e){} }
-	function updateLootInboxIndicator(){ const count=lootInboxUnread; if(!lootInboxBtn) return; if(count>0){ lootInboxBtn.style.display='inline-flex'; lootInboxCount.textContent=''+count; lootInboxBtn.classList.add('pulseNew'); } else { lootInboxBtn.style.display='none'; lootInboxCount.textContent=''; lootInboxBtn.classList.remove('pulseNew'); } }
-	window.updateLootInboxIndicator=updateLootInboxIndicator;
-	function removeInboxItem(id){ window.lootInbox=window.lootInbox.filter(it=>it && it.id!==id); lootInboxUnread=Math.min(lootInboxUnread, window.lootInbox.length); persistInbox(); updateLootInboxIndicator(); }
-	function clearInbox(){ window.lootInbox=[]; lootInboxUnread=0; persistInbox(); updateLootInboxIndicator(); }
 	function lootNoticeName(it){ return it ? (it.name||it.id) : 'brak'; }
 	function lootNoticeSigned(n){ return n>0? '+'+n : String(n); }
 	function lootNoticeSuffix(cmp){
@@ -14226,9 +14392,9 @@ if(!window.__lootPopupInit){
 		return rank;
 	}
 	// --- Upgrade notice: the corner card that says "this beats what you wear" ---
-	// Replaces the old bare "!" button as the immediate signal. Fires only for a
-	// GENUINE upgrade over the equipped item (same weapon class) or for the first
-	// item of an empty slot; everything else stays a quiet toast + inbox entry.
+	// The only interruption loot is allowed to make. Fires for a GENUINE upgrade
+	// over the equipped item (same weapon class) or for the first item of an empty
+	// slot; everything else stays a quiet toast and waits in the Ekwipunek.
 	const upgradeNoticeEl=document.getElementById('upgradeNotice');
 	let upgradeNoticeTimer=null;
 	function hideUpgradeNotice(){
@@ -14267,14 +14433,12 @@ if(!window.__lootPopupInit){
 		const btns=document.createElement('div'); btns.className='upBtns';
 		const eq=document.createElement('button'); eq.type='button'; eq.className='upEquip'; eq.textContent='Załóż';
 		eq.addEventListener('click',()=>{
-			if(MM.inventory && MM.inventory.equip && MM.inventory.equip(item.id)){
-				msg('Założono: '+(item.name||item.id));
-				removeInboxItem(item.id);
-			} else msg('Nie można założyć (przedmiot odrzucony?)');
+			if(MM.inventory && MM.inventory.equip && MM.inventory.equip(item.id)) msg('Założono: '+(item.name||item.id));
+			else msg('Nie można założyć (przedmiot odrzucony?)');
 			hideUpgradeNotice();
 		});
 		const later=document.createElement('button'); later.type='button'; later.className='upLater'; later.textContent='Później';
-		later.title='Przedmiot czeka w skrzynce łupów (I)';
+		later.title='Przedmiot czeka w torbie — Ekwipunek (przytrzymaj E)';
 		later.addEventListener('click',hideUpgradeNotice);
 		btns.appendChild(eq); btns.appendChild(later);
 		upgradeNoticeEl.appendChild(btns);
@@ -14296,140 +14460,16 @@ if(!window.__lootPopupInit){
 		const extra=fresh.length>1 ? ' (+'+(fresh.length-1)+')' : '';
 		msg('Nowy przedmiot: '+lootNoticeName(top.item)+lootNoticeSuffix(top.cmp)+extra);
 	}
-	function addInboxItems(items){
-		const before=new Set(window.lootInbox.map(it=>it.id));
-		const fresh=ownedGearItems(items).filter(it=>!before.has(it.id));
+	// Gear is already in the bag when this fires (drops/chests add it, then report it),
+	// so the only job left is the signal — and only once per item.
+	MM.onLootGained = function(items){
+		if(window.updateDynamicCustomization) window.updateDynamicCustomization();
+		const fresh=ownedGearItems(items).filter(it=>!announcedLoot.has(it.id));
 		if(!fresh.length) return 0;
-		window.lootInbox.push(...fresh);
-		lootInboxUnread += fresh.length;
-		persistInbox(); updateLootInboxIndicator();
+		fresh.forEach(it=>announcedLoot.add(it.id));
 		notifyFreshLoot(fresh);
 		return fresh.length;
-	}
-	function buildRows(items){ lootItemsBox.innerHTML='';
-		const INV=MM.inventory;
-		const KIND_NAME={cape:'peleryna', eyes:'oczy', outfit:'strój', weapon:'broń', charm:'talizman'};
-		// Benchmark = the equipped item this loot would replace; weapons only compare
-		// within their own shortcut category (a bow is never judged against a sword).
-		function benchmarkFor(it){
-			if(!INV) return null;
-			const slot=INV.slotForKind? INV.slotForKind(it.kind):null;
-			const eq=slot? INV.equippedItem(slot.id):null;
-			if(!eq) return null;
-			if(it.kind==='weapon' && INV.weaponCategory){
-				const c1=INV.weaponCategory(it), c2=INV.weaponCategory(eq);
-				if(!c1 || !c2 || c1.id!==c2.id) return null;
-			}
-			return eq;
-		}
-		function itemName(it){ return it ? (it.name||it.id) : 'brak'; }
-		function signed(n){ return n>0? '+'+n : String(n); }
-		function relationClass(cmp){
-			if(!cmp) return 'option';
-			if(cmp.bestDelta==null || cmp.bestDelta>0) return 'best';
-			if(cmp.equippedDelta!=null && cmp.equippedDelta>0) return 'upgrade';
-			if(cmp.bestDelta===0) return 'match';
-			return 'worse';
-		}
-		function verdictText(cmp){
-			if(!cmp) return 'Nowa opcja';
-			if(cmp.bestDelta==null) return 'Pierwszy taki przedmiot';
-			if(cmp.bestDelta>0) return 'NAJLEPSZE W TORBIE '+signed(cmp.bestDelta);
-			if(cmp.equippedDelta!=null && cmp.equippedDelta>0) return 'LEPSZE OD NOSZONEGO '+signed(cmp.equippedDelta);
-			if(cmp.bestDelta===0) return 'REMIS Z NAJLEPSZYM';
-			return 'SŁABSZE OD NAJLEPSZEGO '+signed(cmp.bestDelta);
-		}
-		function addCompareRow(box,label,item,delta,score){
-			const row=document.createElement('div'); row.className='lootCompareRow '+(delta>0?'up':delta<0?'down':'eq');
-			const l=document.createElement('span'); l.textContent=label;
-			const v=document.createElement('b'); v.textContent=item ? itemName(item)+' · Moc '+score+(delta==null?'':' · '+signed(delta)) : 'brak';
-			row.appendChild(l); row.appendChild(v); box.appendChild(row);
-		}
-		items.forEach(raw=>{ if(!isGearItem(raw)) return; const it=(INV && INV.getItem && INV.getItem(raw.id)) || raw; if(!isGearItem(it)) return; const row=document.createElement('div'); row.className='lootRow '+(typeof it.tier==='string'? it.tier:''); const left=document.createElement('div'); const title=document.createElement('div'); title.style.fontWeight='600'; title.textContent=(it.name||it.id)+' · '+(KIND_NAME[it.kind]||it.kind); if(it.unique){ const b=document.createElement('span'); b.textContent='★ '+it.unique; b.style.marginLeft='6px'; b.style.fontSize='10px'; b.style.color='#ffd54a'; title.appendChild(b); }
-			left.appendChild(title);
-			if(INV && INV.compareItem){
-				const cmp=INV.compareItem(it.id);
-				const verdict=document.createElement('div'); verdict.className='lootVerdict '+relationClass(cmp); verdict.textContent=verdictText(cmp);
-				left.appendChild(verdict);
-				if(cmp){
-					const comp=document.createElement('div'); comp.className='lootCompare';
-					if(cmp.equipped) addCompareRow(comp, cmp.equippedComparable?'Noszone':'Noszone (inna rola)', cmp.equipped, cmp.equippedDelta, cmp.equippedScore);
-					else addCompareRow(comp,'Noszone',null,null,null);
-					if(cmp.bestExisting) addCompareRow(comp,'Najlepsze w torbie',cmp.bestExisting,cmp.bestDelta,cmp.bestScore);
-					else addCompareRow(comp,'Najlepsze w torbie',null,null,null);
-					left.appendChild(comp);
-				}
-			}
-			// Same presentation as the inventory grid: "Moc" + ▲/▼ vs equipped, then stat chips
-			if(INV && INV.itemScore){
-				const score=INV.itemScore(it); const eq=benchmarkFor(it);
-				const power=document.createElement('div'); power.className='invPowerLine'; power.style.margin='3px 0';
-				const lab=document.createElement('span'); lab.textContent='Moc '+score; power.appendChild(lab);
-				if(eq){
-					const d=score-INV.itemScore(eq);
-					const di=document.createElement('span');
-					di.className= d>0?'invDeltaUp': d<0?'invDeltaDown':'invDeltaEq';
-					di.textContent= d>0? '▲ +'+d+' (lepsza)' : d<0? '▼ '+d+' (gorsza)' : '= jak założona';
-					power.appendChild(di);
-				}
-				left.appendChild(power);
-			}
-			if(INV && INV.statChips){
-				const chips=document.createElement('div'); chips.className='invChips';
-				INV.statChips(it).forEach(ch=>{
-					const c=document.createElement('span'); c.className='chip'+(ch.good?'':' chipBad');
-					c.title=ch.label; c.textContent=ch.icon+' '+ch.text; chips.appendChild(c);
-				});
-				if(chips.childNodes.length) left.appendChild(chips);
-			}
-			row.appendChild(left);
-			const btns=document.createElement('div'); btns.style.display='flex'; btns.style.flexDirection='column'; btns.style.gap='6px';
-			const equip=document.createElement('button'); equip.textContent='Wyposaż'; const keep=document.createElement('button'); keep.textContent='Zachowaj'; keep.className='sec'; const discard=document.createElement('button'); discard.textContent='Odrzuć'; discard.className='danger';
-			function resolveRow(){ removeInboxItem(it.id); row.remove(); if(!lootItemsBox.children.length) closeInbox(); }
-				equip.addEventListener('click',()=>{ if(MM.inventory && !MM.inventory.equip(it.id)){ msg('Nie można założyć (przedmiot odrzucony?)'); return; } resolveRow(); });
-				keep.addEventListener('click',resolveRow);
-				discard.addEventListener('click',()=>{ if(MM.inventory) MM.inventory.discard(it.id); resolveRow(); });
-			btns.appendChild(equip); btns.appendChild(keep); btns.appendChild(discard); row.appendChild(btns); lootItemsBox.appendChild(row); row.__item=it; });
-	}
-	function openInbox(){ if(lootPopup.classList.contains('show')) return; hideUpgradeNotice(); window.lootInbox=ownedGearItems(window.lootInbox); if(!window.lootInbox.length){ msg('Brak przedmiotów'); persistInbox(); updateLootInboxIndicator(); return; } buildRows(window.lootInbox); lootInboxUnread=0; updateLootInboxIndicator(); persistInbox(); lootPopup.classList.add('show'); lootDim.style.display='block'; if(MM.modalInput) MM.modalInput.push('loot'); lootPrevFocus=document.activeElement; installTrap(); const first=lootPopup.querySelector('button'); if(first) first.focus(); }
-	function closeInbox(){ if(!lootPopup.classList.contains('show')) return; lootPopup.classList.remove('show'); lootDim.style.display='none'; if(MM.modalInput) MM.modalInput.pop('loot'); removeTrap(); if(lootPrevFocus && lootPrevFocus.focus) lootPrevFocus.focus(); }
-	function installTrap(){ removeTrap(); function handler(e){ if(!lootPopup.classList.contains('show')) return; if(e.key==='Escape'){ e.preventDefault(); closeInbox(); e.stopImmediatePropagation(); return; } if(e.key==='Tab'){ const f=[...lootPopup.querySelectorAll('button')].filter(b=>!b.disabled); if(!f.length) return; const first=f[0], last=f[f.length-1]; if(e.shiftKey){ if(document.activeElement===first){ e.preventDefault(); last.focus(); } } else { if(document.activeElement===last){ e.preventDefault(); first.focus(); } } e.stopImmediatePropagation(); } } window.addEventListener('keydown',handler); lootPopup.__trapHandler=handler; }
-	function removeTrap(){ if(lootPopup.__trapHandler){ window.removeEventListener('keydown', lootPopup.__trapHandler); lootPopup.__trapHandler=null; } }
-	lootInboxBtn?.addEventListener('click',openInbox);
-	lootCloseBtn?.addEventListener('click',closeInbox); lootDim?.addEventListener('click',closeInbox);
-	// "Wyposaż najlepsze": equip the highest-Moc inbox item per kind, and only if it
-	// actually beats what's equipped; never auto-switches the weapon class (a new epic
-	// bow stays in the bag when a sword is in hand — the player picks weapon roles).
-	lootEquipAllBtn?.addEventListener('click',()=>{
-		const INV=MM.inventory;
-		if(!INV || !INV.itemScore){ closeInbox(); return; }
-		const best={}; // kind -> strongest inbox item
-		[...lootItemsBox.querySelectorAll('.lootRow')].forEach(r=>{
-			const it=r.__item; if(!it) return;
-			if(!best[it.kind] || INV.itemScore(it)>INV.itemScore(best[it.kind])) best[it.kind]=it;
-		});
-		let n=0;
-		Object.values(best).forEach(it=>{
-			const slot=INV.slotForKind(it.kind); if(!slot) return;
-			const eq=INV.equippedItem(slot.id);
-			if(eq){
-				if(INV.itemScore(it)<=INV.itemScore(eq)) return; // not an upgrade
-				if(it.kind==='weapon' && INV.weaponCategory){
-					const c1=INV.weaponCategory(it), c2=INV.weaponCategory(eq);
-					if(!c1 || !c2 || c1.id!==c2.id) return;
-				}
-			}
-			if(INV.equip(it.id)) n++;
-		});
-		msg(n? 'Założono '+n+' lepszych przedmiotów' : 'Nic nie przebija obecnego wyposażenia');
-		clearInbox(); closeInbox();
-	});
-	lootKeepAllBtn?.addEventListener('click',()=>{ clearInbox(); closeInbox(); });
-	window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if(MM.modalInput && MM.modalInput.isOpen() && !lootPopup.classList.contains('show')) return; if(e.key.toLowerCase()==='i'){ e.preventDefault(); e.stopImmediatePropagation(); if(lootPopup.classList.contains('show')) closeInbox(); else openInbox(); } });
-	MM.onLootGained = function(items){ if(window.updateDynamicCustomization) window.updateDynamicCustomization(); addInboxItems(items); };
-	// Initial indicator on load (if persisted)
-	persistInbox();
-	updateLootInboxIndicator();
+	};
 }
 
 // Regenerate world using the CURRENT seed (do not change WG.worldSeed)

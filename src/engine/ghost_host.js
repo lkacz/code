@@ -31,7 +31,7 @@ if(MMR && !MMR.ghostDreadAt){
 	};
 }
 
-const CAD = { hero: 66, mobs: 120, mobsFull: 3000, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 10000 };
+const CAD = { hero: 66, mobs: 120, mobsFull: 3000, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 10000, prog: 1000 };
 const CHAT_MIN_MS = 4000; // per-peer chat floor
 const ACT_POSE_TTL_MS = 6000; // an "active" pose vouches for the watcher this long
 const TILE_RESYNC_LIMIT = 3000;
@@ -45,11 +45,11 @@ const BUFF_FX = { cheer: { tier: 'rare', sound: 'milestone' }, bless: { tier: 'e
 const ghostHost = (function(){
 	let bridge = null;
 	let session = null; // {room, name, listen, peers:Map(peerObj->entry), ledger, timers...}
-	let ui = { badge: null, panel: null, menuBtn: null };
+	let ui = { panel: null, menuBtn: null };
 
 	function now(){ return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
 
-	function wire(b){ bridge = b; injectMenuButton(); }
+	function wire(b){ bridge = b; mountEntryPoint(); }
 
 	function start(opts){
 		opts = opts || {};
@@ -69,19 +69,27 @@ const ghostHost = (function(){
 			snapCacheAt: 0,
 			sinceCache: [],
 			lastSnapAt: 0,
-			last: { hero: 0, heroKeepalive: 0, mobs: 0, mobsFull: 0, drops: 0, seasons: 0, infra: 0, presence: 0, reap: 0 },
+			last: { hero: 0, heroKeepalive: 0, mobs: 0, mobsFull: 0, drops: 0, seasons: 0, infra: 0, presence: 0, reap: 0, prog: 0 },
+			auraOwners: [],
 			lastMobSig: null,
 			lastDropsJson: null,
 			lastHeroSent: null,
 			infraDirty: true,
 			prevRenderHook: null,
-			stats: { tileMsgs: 0, snapshots: 0, buffs: 0, chats: 0, powers: 0, assists: 0 },
+			stats: { tileMsgs: 0, snapshots: 0, buffs: 0, chats: 0, powers: 0, assists: 0, pings: 0 },
+			hiddenGids: new Set(), // per-watcher mute: THIS host's display only, never the relay
+			actionFx: [], // visible feedback for watcher deeds: labels, rings, ping markers
+			assistQueue: NET.createAssistQueue(),
+			assistStateCache: null,
+			assistStateAt: 0,
 			lastChargeAt: 0,
 			listen: null
 		};
 		s.listen = NET.hostListen(room, { rtc: opts.rtc !== false, onPeer: (peer) => onPeer(s, peer) });
 		// world.js notifyTileChanged fans out to this global when hosting
 		if(MMR) MMR.ghostHostTile = (x, y, old, v) => { captureTile(s, x, y, v); };
+		// mobs.js credits a fright to the spirit that caused it (watcher progression)
+		if(MMR) MMR.ghostSpook = (i) => { noteSpook(i); };
 		// infra edits surface only as the (AIR,AIR) sentinel on the render hook
 		if(MMR && typeof MMR.onTileRenderChanged === 'function'){
 			s.prevRenderHook = MMR.onTileRenderChanged;
@@ -104,10 +112,13 @@ const ghostHost = (function(){
 	function stop(){
 		if(!session) return;
 		broadcast({ t: 'hostGone' });
+		closeSayBox();
+		hostChat = null;
 		if(session.pump) clearInterval(session.pump);
 		try{ session.listen.stop(); }catch(e){ /* fine */ }
 		if(MMR){
 			MMR.ghostHostTile = null;
+			MMR.ghostSpook = null;
 			if(session.prevRenderHook) MMR.onTileRenderChanged = session.prevRenderHook;
 		}
 		session = null;
@@ -132,11 +143,17 @@ const ghostHost = (function(){
 			room: session ? session.room : null,
 			ghosts: entries().length,
 			activeGhosts: session ? entries().filter(e => e.actUntil > t).length : 0,
-			viewers: session ? entries().map(e => ({ gid: e.gid, name: e.name, mode: e.mode, avatar: e.avatar, active: e.actUntil > t, charge: +(e.charge || 0).toFixed(1), assistant: !!e.assistant })) : [],
+			viewers: session ? entries().map(e => ({ gid: e.gid, name: e.name, mode: e.mode, avatar: e.avatar, active: e.actUntil > t, charge: +(e.charge || 0).toFixed(1), assistant: !!e.assistant, level: e.level || 1 })) : [],
 			aura: (MMR && MMR.ghostAura) ? MMR.ghostAura.spirits.length : 0,
 			banned: session ? session.banned.size : 0,
 			boost: (MMR && MMR.socialBoost) ? Object.assign({}, MMR.socialBoost) : null,
 			transports: session ? session.listen.transports : null,
+			approval: approvalMode,
+			queue: session ? session.assistQueue.list() : [],
+			view: Object.assign({}, viewPrefs),
+			hidden: session ? Array.from(session.hiddenGids) : [],
+			hostChat: (hostChat && hostChat.until > t) ? hostChat.text : null,
+			actionFx: session ? session.actionFx.length : 0,
 			stats: session ? Object.assign({}, session.stats) : null
 		};
 	}
@@ -146,8 +163,9 @@ const ghostHost = (function(){
 		const entry = {
 			peer, gid: peer.id, name: null, cam: null, camPos: null, hello: false, lastSeen: now(),
 			rateT: 0, rateN: 0, lastMobsReq: 0, lastChatAt: 0,
-			mode: 'full', avatar: 'duszek', actUntil: 0, lastChat: null,
-			charge: 0, powerCd: {}, assistant: false, lastAssistAt: 0, lastChargeSentAt: 0
+			mode: defaultMode, avatar: 'duszek', actUntil: 0, lastChat: null,
+			charge: 0, powerCd: {}, assistant: false, lastAssistAt: 0, lastChargeSentAt: 0,
+			level: 1, watchT: 0, chatXpAt: 0, spookN: 0
 		};
 		s.peers.set(peer, entry);
 		peer.onMessage = (pl) => onPeerMessage(s, entry, pl);
@@ -177,16 +195,28 @@ const ghostHost = (function(){
 				s.watchers++;
 				entry.name = String(pl.name || 'Duch').slice(0, 24);
 				if(NET.validAvatar(pl.avatar)) entry.avatar = pl.avatar;
+				if(Number.isFinite(pl.lvl)) entry.level = Math.max(1, Math.min(NET.PROG.MAX_LEVEL, Math.floor(pl.lvl)));
 				entry.peer.send({ t: 'welcome', proto: NET.GHOST_PROTO, host: s.name, room: s.room, mode: entry.mode });
 				entry.lastSnapAt = now();
 				sendSnapshot(s, entry.peer);
+				sendDeed(entry, 'join', 1);
 				try{ bridge.msg('👻 ' + entry.name + ' obserwuje twoją warstwę'); }catch(e){ /* fine */ }
 				updateUi();
+			}
+		} else if(pl.t === 'prog'){
+			// the watcher's claimed rank — shown in the viewer list, trusted for NOTHING.
+			// Refresh the DOM only on an actual change: a hostile ghost spamming this
+			// at the message-rate cap must not buy 120 panel rebuilds a second.
+			if(Number.isFinite(pl.lvl)){
+				const lvl = Math.max(1, Math.min(NET.PROG.MAX_LEVEL, Math.floor(pl.lvl)));
+				if(lvl !== entry.level){ entry.level = lvl; updateUi(); }
 			}
 		} else if(pl.t === 'avatar'){
 			if(NET.validAvatar(pl.a)){ entry.avatar = pl.a; markActive(entry); }
 		} else if(pl.t === 'chat'){
 			handleChat(s, entry, pl);
+		} else if(pl.t === 'ping'){
+			handlePing(s, entry);
 		} else if(pl.t === 'power'){
 			handlePower(s, entry, pl);
 		} else if(pl.t === 'assist'){
@@ -300,6 +330,7 @@ const ghostHost = (function(){
 		if(t - s.last.seasons >= CAD.seasons) seasonTick(s, t);
 		if(s.infraDirty && t - s.last.infra >= CAD.infra) infraTick(s, t);
 		if(t - s.last.presence >= CAD.presence) presenceTick(s, t);
+		if(t - s.last.prog >= CAD.prog) progTick(s, t);
 		chargeTick(s, t);
 		for(const entry of entries()){ if(entry.assistant) sendAssistState(s, entry, false); }
 		if(t - s.last.reap >= CAD.reap) reap(s, t);
@@ -374,11 +405,17 @@ const ghostHost = (function(){
 		try{
 			if(rule.heal) bridge.healHero(rule.heal);
 			if(rule.energy) bridge.addHeroEnergy(rule.energy);
-			if(MMR && MMR.particles && MMR.particles.spawnBurst) MMR.particles.spawnBurst(p.x + p.w / 2, p.y + p.h / 2, fx.tier, {});
-			if(MMR && MMR.audio && MMR.audio.play) MMR.audio.play(fx.sound);
+			// the world feedback (burst, sound, floating label) obeys the host's FX toggle;
+			// the mechanical effect and the log line never do
+			if(viewPrefs.fx){
+				if(MMR && MMR.particles && MMR.particles.spawnBurst) MMR.particles.spawnBurst(p.x + p.w / 2, p.y + p.h / 2, fx.tier, {});
+				if(MMR && MMR.audio && MMR.audio.play) MMR.audio.play(fx.sound);
+			}
+			noteActionFx(s, { kind: 'buff', hero: 1, text: (pl.kind === 'cheer' ? '✨' : pl.kind === 'bless' ? '💚' : '⚡') + ' ' + rule.label + ' — ' + (entry.name || 'Duch') });
 			bridge.msg('👻 ' + (entry.name || 'Duch') + ': ' + rule.label + (rule.heal ? ' (+' + rule.heal + ' HP)' : rule.energy ? ' (+' + rule.energy + ' energii)' : '') + '!');
 		}catch(e){ /* fx are best-effort */ }
 		broadcast({ t: 'fx', kind: pl.kind, name: entry.name || 'Duch' });
+		sendDeed(entry, pl.kind, 1); // cheer | bless | energy — only once the ledger said yes
 	}
 
 	// --- short texts (host-moderated, profanity-filtered) --------------------------------
@@ -392,8 +429,48 @@ const ghostHost = (function(){
 		entry.lastChatAt = t;
 		entry.lastChat = { text: res.text, until: t + 6000 };
 		s.stats.chats++;
-		try{ bridge.msg('💬 ' + (entry.name || 'Duch') + ': ' + res.text); }catch(e){ /* fine */ }
+		// a per-watcher mute silences THIS host's log and bubble — fellow watchers
+		// still get the relay (the mute is a display preference, not moderation;
+		// that's what the permission ladder and the ban are for)
+		if(!s.hiddenGids.has(entry.gid)){ try{ bridge.msg('💬 ' + (entry.name || 'Duch') + ': ' + res.text); }catch(e){ /* fine */ } }
 		broadcast({ t: 'chat', gid: entry.gid, name: entry.name || 'Duch', text: res.text });
+		// chatting pays, but on its own slower clock — the 4 s send floor must not
+		// become an XP faucet
+		if(t - (entry.chatXpAt || 0) >= NET.PROG.CHAT_XP_MS){ entry.chatXpAt = t; sendDeed(entry, 'chat', 1); }
+	}
+
+	// --- pings: a watcher points at a spot ------------------------------------------------
+	// The marker lands at the SPIRIT's own tracked pose — the payload carries no
+	// coordinates and none would be trusted. Communication-tier permission suffices.
+	function handlePing(s, entry){
+		markActive(entry);
+		const t = now();
+		if(!entry.hello || entry.mode === 'watch' || !entry.cam) return;
+		if(t - (entry.lastPingAt || 0) < NET.PING.MIN_MS) return;
+		entry.lastPingAt = t;
+		s.stats.pings++;
+		broadcast({ t: 'ping', gid: entry.gid, name: entry.name || 'Duch', x: +entry.cam.x.toFixed(2), y: +entry.cam.y.toFixed(2) });
+		if(!s.hiddenGids.has(entry.gid)){
+			noteActionFx(s, { kind: 'ping', x: entry.cam.x, y: entry.cam.y, text: '📍 ' + (entry.name || 'Duch'), ttl: NET.PING.TTL_MS });
+			try{ bridge.msg('📍 ' + (entry.name || 'Duch') + ' wskazuje miejsce'); }catch(e){ /* fine */ }
+		}
+	}
+
+	// --- the host's own voice: a bubble over the hero, mirrored to every watcher ------------
+	// Same profanity filter and length cap as watcher chat — the host's text lands in
+	// OTHER people's browsers, so it plays by the same rules it enforces.
+	let hostChat = null, lastSayAt = 0;
+	function say(raw){
+		if(!session) return false;
+		const t = now();
+		if(t - lastSayAt < 800) return false; // Enter-spam must not flood the peers
+		const res = NET.filterChat(raw);
+		if(res.empty) return false;
+		lastSayAt = t;
+		hostChat = { text: res.text, until: t + 6000 };
+		broadcast({ t: 'hostChat', text: res.text });
+		try{ bridge.msg('🗨 Ty: ' + res.text); }catch(e){ /* fine */ }
+		return true;
 	}
 
 	// --- watcher powers: strike the world at the spirit's own position -------------------
@@ -417,9 +494,19 @@ const ghostHost = (function(){
 		if(!entry.powerCd) entry.powerCd = {};
 		entry.powerCd[kind] = t + rule.cd;
 		s.stats.powers++;
+		// the blast is real either way — the ring, burst and sound obey the FX toggle
+		if(viewPrefs.fx){
+			try{
+				if(MMR && MMR.particles && MMR.particles.spawnBurst) MMR.particles.spawnBurst(entry.cam.x, entry.cam.y, kind === 'smite' ? 'legendary' : 'epic', {});
+				if(MMR && MMR.audio && MMR.audio.play) MMR.audio.play(kind === 'frost' ? 'freeze' : kind === 'smite' ? 'chainShock' : 'roar');
+			}catch(e){ /* fx are best-effort */ }
+		}
+		noteActionFx(s, { kind: 'power', power: kind, x: entry.cam.x, y: entry.cam.y, text: rule.icon + ' ' + rule.label + ' — ' + (entry.name || 'Duch') });
 		entry.peer.send({ t: 'powerAck', kind, ok: true, waitMs: rule.cd, charge: entry.charge, hits });
 		broadcast({ t: 'powerFx', kind, x: +entry.cam.x.toFixed(2), y: +entry.cam.y.toFixed(2), name: entry.name || 'Duch', hits });
 		try{ bridge.msg('👻 ' + (entry.name || 'Duch') + ': ' + rule.icon + ' ' + rule.label + (hits ? ' — ' + hits + ' celów!' : '')); }catch(e){ /* fine */ }
+		sendDeed(entry, kind, 1);
+		if(hits > 0) sendDeed(entry, 'hit', hits); // marksmanship pays extra (capped client-side)
 	}
 	function chargeTick(s, t){
 		const dt = Math.min(2, (t - (s.lastChargeAt || t)) / 1000);
@@ -437,50 +524,113 @@ const ghostHost = (function(){
 		}
 	}
 
-	// --- assistant: a delegated watcher may craft and manage the hero's gear ---------------
+	// --- assistants: delegated watchers craft and manage the hero's gear -------------------
+	// SEVERAL may hold the seat at once. Requests are executed serially right here, so
+	// two assistants racing for the last resources resolve naturally: first one wins,
+	// the second gets an honest 'cost' ack. With approvals ON nothing executes at all —
+	// requests wait in the bounded queue until the host clicks Zatwierdź.
 	function handleAssist(s, entry, pl){
 		markActive(entry);
+		const t = now();
 		if(!entry.assistant || entry.mode !== 'full'){ entry.peer.send({ t: 'assistAck', ok: false, reason: 'perm' }); return; }
 		if(!NET.validAssistAction(pl.a)){ entry.peer.send({ t: 'assistAck', ok: false, reason: 'action' }); return; }
+		if(t - (entry.lastAssistActAt || 0) < NET.ASSIST_LIMITS.RATE_MS){ entry.peer.send({ t: 'assistAck', ok: false, reason: 'rate', a: pl.a }); return; }
+		entry.lastAssistActAt = t;
 		const id = typeof pl.id === 'string' ? pl.id.slice(0, 64) : '';
 		if(!id){ entry.peer.send({ t: 'assistAck', ok: false, reason: 'id' }); return; }
+		const n = pl.a === 'craft' ? NET.clampCraftCount(pl.n) : 1;
+		if(approvalMode){
+			// host-derived label only — and deriving it validates the id up front
+			let label = null;
+			try{ label = bridge.ghostAssistLabel(pl.a, id, n); }catch(e){ /* fall through */ }
+			if(!label){ entry.peer.send({ t: 'assistAck', ok: false, reason: 'unknown', a: pl.a, id }); return; }
+			const q = s.assistQueue.push({ gid: entry.gid, name: entry.name || 'Duch', a: pl.a, id, n, label }, t);
+			entry.peer.send({ t: 'assistAck', ok: q.ok, queued: q.ok, reason: q.reason, a: pl.a, id, qid: q.qid });
+			if(q.ok){
+				try{ bridge.msg('⏳ ' + (entry.name || 'Duch') + ' proponuje: ' + label + ' — zatwierdź w panelu 👁'); }catch(e){ /* fine */ }
+				updateUi();
+			}
+			return;
+		}
 		let res = null;
-		try{ res = bridge.ghostAssist(pl.a, id); }catch(e){ res = { ok: false, reason: 'error' }; }
+		try{ res = bridge.ghostAssist(pl.a, id, n); }catch(e){ res = { ok: false, reason: 'error' }; }
 		s.stats.assists += res && res.ok ? 1 : 0;
-		entry.peer.send({ t: 'assistAck', ok: !!(res && res.ok), reason: res && res.reason, a: pl.a, id });
+		entry.peer.send({ t: 'assistAck', ok: !!(res && res.ok), reason: res && res.reason, a: pl.a, id, made: res && res.made });
 		if(res && res.ok){
 			try{ bridge.msg('🛠 ' + (entry.name || 'Duch') + ' (asystent): ' + res.label); }catch(e){ /* fine */ }
-			sendAssistState(s, entry, true);
+			noteActionFx(s, { kind: 'assist', hero: 1, text: '🛠 ' + res.label + ' — ' + (entry.name || 'Duch') });
+			s.assistStateAt = 0; // the pouch just changed — rebuild the shared state now
+			for(const e of entries()){ if(e.assistant) sendAssistState(s, e, true); }
+			sendDeed(entry, pl.a, res.made || 1); // craft | equip | unequip
 		}
+	}
+	// One serialization serves every assistant on the tick — N assistants must not
+	// cost N ghostAssistState() calls per 1.5 s.
+	function assistStateShared(s, t){
+		if(!s.assistStateCache || t - (s.assistStateAt || 0) > 1000){
+			s.assistStateCache = bridge.ghostAssistState();
+			s.assistStateAt = t;
+		}
+		return s.assistStateCache;
 	}
 	function sendAssistState(s, entry, force){
 		const t = now();
 		if(!entry.assistant) return;
 		if(!force && t - (entry.lastAssistAt || 0) < 1500) return;
 		entry.lastAssistAt = t;
-		try{ entry.peer.send({ t: 'assistState', data: bridge.ghostAssistState() }); }catch(e){ /* skip tick */ }
+		try{ entry.peer.send({ t: 'assistState', data: assistStateShared(s, t), approval: approvalMode ? 1 : 0 }); }catch(e){ /* skip tick */ }
 	}
 	function setAssistant(gid, on){
 		if(!session) return false;
 		let hit = false;
 		for(const entry of entries()){
-			if(entry.gid === gid){
-				if(on && entry.mode !== 'full') return false; // an assistant must be allowed to influence
-				entry.assistant = !!on;
-				entry.peer.send({ t: 'assistant', on: !!on });
-				if(entry.assistant) sendAssistState(session, entry, true);
-				hit = true;
-			} else if(on && entry.assistant){
-				// exactly one assistant at a time — the seat is handed over, not shared
-				entry.assistant = false;
-				entry.peer.send({ t: 'assistant', on: false });
-			}
+			if(entry.gid !== gid) continue;
+			if(on && entry.mode !== 'full') return false; // an assistant must be allowed to influence
+			entry.assistant = !!on;
+			entry.peer.send({ t: 'assistant', on: !!on });
+			if(entry.assistant) sendAssistState(session, entry, true);
+			hit = true;
 		}
 		if(hit){
 			try{ bridge.msg(on ? '🛠 Asystent wyznaczony' : '🛠 Asystent odwołany'); }catch(e){ /* fine */ }
 			updateUi();
 		}
 		return hit;
+	}
+	// --- the approval desk ------------------------------------------------------------------
+	function notifyAssistDone(gid, payload){
+		for(const entry of entries()){ if(entry.gid === gid){ try{ entry.peer.send(payload); }catch(e){ /* gone */ } } }
+	}
+	function approveAssist(qid){
+		const s = session;
+		if(!s) return false;
+		const q = s.assistQueue.take(qid);
+		if(!q) return false;
+		// approval re-validates NOW: the world moved while the request sat in the queue
+		let res = null;
+		try{ res = bridge.ghostAssist(q.a, q.id, q.n); }catch(e){ res = { ok: false, reason: 'error' }; }
+		s.stats.assists += res && res.ok ? 1 : 0;
+		try{ bridge.msg(res && res.ok ? '🛠 Zatwierdzono: ' + res.label : '🛠 Nie udało się: ' + q.label); }catch(e){ /* fine */ }
+		notifyAssistDone(q.gid, { t: 'assistDone', qid, ok: !!(res && res.ok), reason: res && res.reason, label: q.label });
+		if(res && res.ok){
+			noteActionFx(s, { kind: 'assist', hero: 1, text: '🛠 ' + res.label + ' — ' + q.name });
+			s.assistStateAt = 0;
+			for(const e of entries()){
+				if(e.assistant) sendAssistState(s, e, true);
+				if(e.gid === q.gid) sendDeed(e, q.a, res.made || 1);
+			}
+		}
+		updateUi();
+		return !!(res && res.ok);
+	}
+	function rejectAssist(qid){
+		const s = session;
+		if(!s) return false;
+		const q = s.assistQueue.take(qid);
+		if(!q) return false;
+		notifyAssistDone(q.gid, { t: 'assistDone', qid, ok: false, reason: 'rejected', label: q.label });
+		updateUi();
+		return true;
 	}
 
 	// --- social facilitation: ACTIVE watchers strengthen the hero -------------------------
@@ -491,21 +641,61 @@ const ghostHost = (function(){
 		const t = now();
 		let active = 0;
 		const spirits = [];
+		const owners = []; // index-aligned with spirits: who gets credit for a fright
 		if(session){
 			for(const e of session.peers.values()){
 				if(!e.hello || e.actUntil <= t) continue;
 				active++;
 				// only ACTIVE watchers haunt the world (idle tabs are furniture)
-				if(e.cam) spirits.push({ x: e.cam.x, y: e.cam.y });
+				if(e.cam){ spirits.push({ x: e.cam.x, y: e.cam.y }); owners.push(e); }
 			}
 		}
 		const boost = NET.socialBoosts(active);
 		boost.viewers = session ? entries().length : 0;
+		if(session) session.auraOwners = owners;
 		if(MMR){
 			MMR.socialBoost = boost;
 			MMR.ghostAura.spirits = spirits;
 		}
 		return boost;
+	}
+
+	// --- watcher progression: the host mints the deeds ------------------------------------------
+	// The viewer's career is stored in THEIR browser, but only the host can say what
+	// really happened — so every XP-bearing deed originates here, right where the
+	// event was validated. The claimed level that comes back is display-only: nothing
+	// on this side (permissions, charge, cooldowns, the assistant seat) ever reads it.
+	function sendDeed(entry, k, n){
+		if(!entry || !entry.hello || !NET.validDeed(k)) return;
+		try{ entry.peer.send({ t: 'deed', k, n: Math.max(1, Math.floor(n || 1)) }); }catch(e){ /* peer is going away */ }
+	}
+	// A creature bolting from a spirit credits its owner (mobs.js calls this once per
+	// fright episode, with the spirit index dreadAt reported).
+	function noteSpook(i){
+		const s = session;
+		if(!s || !Array.isArray(s.auraOwners)) return;
+		const entry = s.auraOwners[i | 0];
+		if(!entry) return;
+		entry.spookN = (entry.spookN || 0) + 1;
+	}
+	function progTick(s, t){
+		s.last.prog = t;
+		// stale approval requests quietly expire — tell the assistant, refresh the desk
+		const dead = s.assistQueue.expire(t);
+		for(const q of dead) notifyAssistDone(q.gid, { t: 'assistDone', qid: q.qid, ok: false, reason: 'expired', label: q.label });
+		if(dead.length) updateUi();
+		for(const entry of entries()){
+			// active watching is the only time that pays — an idle tab earns nothing,
+			// exactly like the social boosts it mirrors
+			if(entry.actUntil > t && t - (entry.watchT || 0) >= NET.PROG.WATCH_TICK_MS){
+				entry.watchT = t;
+				sendDeed(entry, 'watch', 1);
+			}
+			if(entry.spookN){
+				sendDeed(entry, 'spook', Math.min(50, entry.spookN));
+				entry.spookN = 0;
+			}
+		}
 	}
 
 	// --- moderation ---------------------------------------------------------------------------
@@ -520,6 +710,15 @@ const ghostHost = (function(){
 		}
 		if(hit) updateUi();
 		return hit;
+	}
+	// Per-watcher hide: THIS host stops seeing the avatar, the bubbles and the log
+	// lines of one spirit — a display mute, not moderation. The relay to fellow
+	// watchers and the ghost's mechanics (dread, boosts, buffs) are untouched.
+	function setViewerHidden(gid, on){
+		if(!session || typeof gid !== 'string') return false;
+		if(on) session.hiddenGids.add(gid); else session.hiddenGids.delete(gid);
+		updateUi();
+		return true;
 	}
 	function banViewer(gid){
 		if(!session || typeof gid !== 'string') return false;
@@ -603,21 +802,29 @@ const ghostHost = (function(){
 			ctx.beginPath(); ctx.ellipse(0, 0, r, r * 0.4, -0.5, 0, Math.PI * 2); ctx.stroke();
 		}
 	};
-	function paintSpirit(ctx, TILE, x, y, name, t, self, avatar, active, chat){
+	// Two-pass painter: main.js calls pass 'body' BEFORE drawPlayer (spirits glide
+	// behind the hero, never over its actions) and pass 'text' after the creature
+	// layer (names, bubbles and action feedback stay readable over everything).
+	// No pass argument = both, so any legacy caller still gets a whole spirit.
+	function paintSpirit(ctx, TILE, x, y, name, t, self, avatar, active, chat, pass){
+		const wantBody = pass !== 'text';
+		const wantText = pass !== 'body';
 		const bob = Math.sin((t || 0) / 480 + (x + y) * 1.7) * 0.05;
 		const px = x * TILE, py = (y + bob) * TILE;
 		const r = TILE * SPIRIT_R;
 		ctx.save();
 		ctx.globalAlpha = (self ? 0.35 : SPIRIT_ALPHA) * (active === false ? 0.55 : 1);
-		const grad = ctx.createRadialGradient(px, py, r * 0.2, px, py, r * 2.2);
-		grad.addColorStop(0, 'rgba(190,225,255,0.55)');
-		grad.addColorStop(1, 'rgba(120,170,255,0)');
-		ctx.fillStyle = grad;
-		ctx.beginPath(); ctx.arc(px, py, r * 2.2, 0, Math.PI * 2); ctx.fill();
-		ctx.translate(px, py);
-		(AVATAR_PAINTERS[avatar] || AVATAR_PAINTERS.duszek)(ctx, r);
-		ctx.translate(-px, -py);
-		if(name){
+		if(wantBody){
+			const grad = ctx.createRadialGradient(px, py, r * 0.2, px, py, r * 2.2);
+			grad.addColorStop(0, 'rgba(190,225,255,0.55)');
+			grad.addColorStop(1, 'rgba(120,170,255,0)');
+			ctx.fillStyle = grad;
+			ctx.beginPath(); ctx.arc(px, py, r * 2.2, 0, Math.PI * 2); ctx.fill();
+			ctx.translate(px, py);
+			(AVATAR_PAINTERS[avatar] || AVATAR_PAINTERS.duszek)(ctx, r);
+			ctx.translate(-px, -py);
+		}
+		if(wantText && name){
 			ctx.font = 'bold ' + Math.max(7, TILE * 0.16) + 'px system-ui';
 			ctx.textAlign = 'center';
 			ctx.fillStyle = '#cfe6ff';
@@ -626,71 +833,240 @@ const ghostHost = (function(){
 			ctx.strokeText(name, px, py - r * 2.1);
 			ctx.fillText(name, px, py - r * 2.1);
 		}
-		if(chat && chat.until > (Date.now ? Date.now() : 0) && chat.text){
-			const line = String(chat.text).slice(0, 40);
-			ctx.font = Math.max(8, TILE * 0.17) + 'px system-ui';
-			const w = ctx.measureText(line).width + TILE * 0.3;
-			const bx = px - w / 2, by = py - r * 4.4, bh = TILE * 0.36;
-			ctx.globalAlpha = 0.82;
-			ctx.fillStyle = 'rgba(10,16,26,0.92)';
-			ctx.beginPath();
-			if(ctx.roundRect) ctx.roundRect(bx, by, w, bh, TILE * 0.1); else ctx.rect(bx, by, w, bh);
-			ctx.fill();
-			ctx.fillStyle = '#eaf3ff';
-			ctx.textAlign = 'center';
-			ctx.fillText(line, px, by + bh * 0.72);
+		if(wantText && chat && chat.until > (Date.now ? Date.now() : 0) && chat.text){
+			paintChatBubble(ctx, TILE, x, y + bob - SPIRIT_R * 4.4, chat.text);
 		}
 		ctx.restore();
 	}
-	function drawSpirits(ctx, TILE){
+	// Shared bubble painter (tile coords; y = the bubble TOP). The client reuses it
+	// for fellow spirits and for the host's own words over the hero replica.
+	function paintChatBubble(ctx, TILE, x, y, text){
+		const line = String(text).slice(0, 40);
+		const px = x * TILE;
+		ctx.save();
+		ctx.font = Math.max(8, TILE * 0.17) + 'px system-ui';
+		const w = ctx.measureText(line).width + TILE * 0.3;
+		const bx = px - w / 2, by = y * TILE, bh = TILE * 0.36;
+		ctx.globalAlpha = 0.82;
+		ctx.fillStyle = 'rgba(10,16,26,0.92)';
+		ctx.beginPath();
+		if(ctx.roundRect) ctx.roundRect(bx, by, w, bh, TILE * 0.1); else ctx.rect(bx, by, w, bh);
+		ctx.fill();
+		ctx.fillStyle = '#eaf3ff';
+		ctx.textAlign = 'center';
+		ctx.fillText(line, px, by + bh * 0.72);
+		ctx.restore();
+	}
+	// Action feedback: floating labels over the hero (buffs, assistant work), power
+	// rings and ping pulses at the spirit that acted. All of it obeys the FX toggle
+	// at PAINT time, so flipping the switch silences even in-flight markers.
+	function drawActionFx(ctx, TILE, t, p){
+		const s = session;
+		for(let i = s.actionFx.length - 1; i >= 0; i--){
+			const f = s.actionFx[i];
+			const age = (t - f.at) / (f.ttl || 2200);
+			if(age >= 1){ s.actionFx.splice(i, 1); continue; }
+			let px = f.x, py = f.y - age * 0.3;
+			if(f.hero && p){ px = p.x; py = p.y - (p.h || 1) / 2 - 0.9 - age * 0.8; }
+			if(!Number.isFinite(px) || !Number.isFinite(py)) continue;
+			ctx.save();
+			ctx.globalAlpha = age < 0.15 ? age / 0.15 : Math.max(0, 1 - Math.max(0, age - 0.6) / 0.4);
+			if(f.kind === 'ping'){
+				ctx.strokeStyle = '#ffd76a';
+				ctx.lineWidth = 2.5;
+				ctx.beginPath(); ctx.arc(f.x * TILE, f.y * TILE, TILE * (0.5 + (age * 2 % 1) * 0.9), 0, Math.PI * 2); ctx.stroke();
+			} else if(f.kind === 'power'){
+				const rule = NET.POWER_RULES[f.power];
+				ctx.strokeStyle = f.power === 'frost' ? '#9be8ff' : f.power === 'smite' ? '#ffe9a8' : '#d9a8ff';
+				ctx.lineWidth = 3;
+				ctx.beginPath(); ctx.arc(f.x * TILE, f.y * TILE, (rule ? rule.r : 3) * TILE * (0.4 + age * 0.8), 0, Math.PI * 2); ctx.stroke();
+			}
+			if(f.text){
+				ctx.font = 'bold ' + Math.max(8, TILE * 0.2) + 'px system-ui';
+				ctx.textAlign = 'center';
+				ctx.strokeStyle = 'rgba(6,12,20,0.85)';
+				ctx.lineWidth = 3;
+				ctx.fillStyle = '#ffe9a8';
+				ctx.strokeText(f.text, px * TILE, py * TILE);
+				ctx.fillText(f.text, px * TILE, py * TILE);
+			}
+			ctx.restore();
+		}
+	}
+	function noteActionFx(s, fx){
+		fx.at = now();
+		s.actionFx.push(fx);
+		if(s.actionFx.length > 10) s.actionFx.shift();
+	}
+	function drawSpirits(ctx, TILE, pass){
 		if(!session) return;
+		const wantBody = pass !== 'text';
+		const wantText = pass !== 'body';
 		const t = now();
 		const ease = Math.min(1, (t - (session.lastSpiritDrawT || t)) / 1000 * 9);
-		session.lastSpiritDrawT = t;
+		session.lastSpiritDrawT = t; // the second pass of a frame sees dt≈0 — no double-glide
+		const p = bridge ? bridge.player : null;
 		for(const entry of entries()){
 			if(!entry.cam) continue;
 			// eased display position — pose packets land at ~6 Hz, the glide hides it
 			if(!entry.camPos) entry.camPos = { x: entry.cam.x, y: entry.cam.y };
 			entry.camPos.x += (entry.cam.x - entry.camPos.x) * ease;
 			entry.camPos.y += (entry.cam.y - entry.camPos.y) * ease;
-			paintSpirit(ctx, TILE, entry.camPos.x, entry.camPos.y, entry.name, t, false, entry.avatar, entry.actUntil > t, entry.lastChat);
+			if(!viewPrefs.spirits || session.hiddenGids.has(entry.gid)) continue;
+			// displayed hovering over the hero when the true pose would cover it
+			const lift = p ? NET.spiritLift(entry.camPos.x, entry.camPos.y, p.x, p.y) : 0;
+			if(wantBody) paintSpirit(ctx, TILE, entry.camPos.x, entry.camPos.y - lift, entry.name, t, false, entry.avatar, entry.actUntil > t, null, 'body');
+			if(wantText) paintSpirit(ctx, TILE, entry.camPos.x, entry.camPos.y - lift, entry.name, t, false, entry.avatar, entry.actUntil > t, viewPrefs.bubbles ? entry.lastChat : null, 'text');
+		}
+		if(wantText){
+			if(hostChat && hostChat.until > t && viewPrefs.bubbles && p) paintChatBubble(ctx, TILE, p.x, p.y - (p.h || 1) / 2 - 0.5, hostChat.text);
+			if(viewPrefs.fx) drawActionFx(ctx, TILE, t, p);
 		}
 	}
 
-	// --- host UI (menu entry + badge + share panel) --------------------------------------
-	function injectMenuButton(){
+	// --- host UI (top-bar 👁 icon + viewers panel) ----------------------------------------
+	// Inviting an audience is a headline feature, not a debug switch: the entry point is a
+	// permanent HUD button (#ghostBtn, next to ≡ in index.html) that doubles as the live
+	// indicator — viewer count while streaming, boost strength in its tooltip.
+	const PERM_KEY = 'mm_ghost_perm_v1';
+	const APPROVE_KEY = 'mm_ghost_approve_v1';
+	const VIEW_KEY = 'mm_ghost_view_v1';
+	const MODE_LABEL = { watch: 'tylko ogląda', chat: '+ czat', full: '+ czat i wpływ' };
+	let defaultMode = 'full'; // what a viewer gets on join, until the host says otherwise
+	let approvalMode = false; // ON: assistant requests wait for the host's Zatwierdź
+	// what of the audience the host wants ON SCREEN — display only, mechanics never care
+	const viewPrefs = { spirits: true, bubbles: true, fx: true };
+	try{
+		const saved = (typeof localStorage !== 'undefined') ? localStorage.getItem(PERM_KEY) : null;
+		if(NET.validPermissionMode(saved)) defaultMode = saved;
+		approvalMode = (typeof localStorage !== 'undefined') && localStorage.getItem(APPROVE_KEY) === '1';
+		const view = (typeof localStorage !== 'undefined') ? JSON.parse(localStorage.getItem(VIEW_KEY) || 'null') : null;
+		if(view && typeof view === 'object'){ for(const k of Object.keys(viewPrefs)){ if(k in view) viewPrefs[k] = !!view[k]; } }
+	}catch(e){ /* storage may be locked down */ }
+	function setViewPref(key, on){
+		if(!Object.prototype.hasOwnProperty.call(viewPrefs, key)) return false;
+		viewPrefs[key] = !!on;
+		try{ localStorage.setItem(VIEW_KEY, JSON.stringify(viewPrefs)); }catch(e){ /* fine */ }
+		updateUi();
+		return viewPrefs[key];
+	}
+	function setDefaultMode(mode){
+		if(!NET.validPermissionMode(mode)) return false;
+		defaultMode = mode;
+		try{ localStorage.setItem(PERM_KEY, mode); }catch(e){ /* storage may be locked down */ }
+		updateUi();
+		return true;
+	}
+	function setApprovalMode(on){
+		approvalMode = !!on;
+		try{ localStorage.setItem(APPROVE_KEY, approvalMode ? '1' : '0'); }catch(e){ /* fine */ }
+		// flipping the switch mid-session must reach the assistants' panels promptly
+		if(session){ session.assistStateAt = 0; for(const e of entries()){ if(e.assistant) sendAssistState(session, e, true); } }
+		updateUi();
+		return approvalMode;
+	}
+	function mountEntryPoint(){
 		if(typeof document === 'undefined') return;
-		const tryInject = () => {
-			const menu = document.getElementById('menuPanel');
-			if(!menu || ui.menuBtn) return !!ui.menuBtn;
-			const group = document.createElement('div');
-			group.className = 'group';
-			const btn = document.createElement('button');
-			btn.id = 'ghostShareBtn';
-			btn.textContent = '👁 Obserwatorzy';
-			btn.addEventListener('click', () => { togglePanel(true); });
-			group.appendChild(btn);
-			menu.appendChild(group);
+		mountSayKey();
+		const tryMount = () => {
+			const btn = document.getElementById('ghostBtn');
+			if(!btn || ui.menuBtn) return !!ui.menuBtn;
+			btn.addEventListener('click', () => togglePanel(!panelOpen()));
 			ui.menuBtn = btn;
+			updateUi();
 			return true;
 		};
-		if(!tryInject()){
-			const iv = setInterval(() => { if(tryInject()) clearInterval(iv); }, 1000);
+		if(!tryMount()){
+			const iv = setInterval(() => { if(tryMount()) clearInterval(iv); }, 1000);
 			setTimeout(() => clearInterval(iv), 20000);
 		}
+	}
+	// The host's chat line: Enter opens a small input over the hotbar; Enter again
+	// sends (say → bubble + broadcast), Esc abandons. Only while streaming, never in
+	// ghost mode, never over a focused field or an open modal — and held movement
+	// keys are released first so the hero doesn't keep walking while the host types.
+	function mountSayKey(){
+		if(ui.sayKeyMounted || typeof window === 'undefined') return;
+		ui.sayKeyMounted = true;
+		window.addEventListener('keydown', (e) => {
+			if(e.key !== 'Enter' || e.repeat) return;
+			if(!session || (MMR && MMR.ghostMode)) return;
+			if(bridge && bridge.overlayHold && bridge.overlayHold()) return; // title/finale own the keys
+			if(MMR && MMR.modalInput && MMR.modalInput.isOpen && MMR.modalInput.isOpen()) return;
+			const a = document.activeElement;
+			if(a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || a.isContentEditable)) return;
+			openSayBox();
+			e.preventDefault();
+		});
+	}
+	function ensureSayBox(){
+		if(ui.sayBox || typeof document === 'undefined') return ui.sayBox;
+		const box = document.createElement('div');
+		box.id = 'hostSay';
+		box.style.cssText = 'position:fixed; left:50%; bottom:118px; transform:translateX(-50%); z-index:150; display:none; align-items:center; gap:6px;'
+			+ ' padding:7px 9px; border-radius:12px; border:1px solid rgba(140,190,255,.4); background:rgba(10,15,24,.94); box-shadow:0 8px 24px rgba(0,0,0,.5); pointer-events:auto;';
+		const inp = document.createElement('input');
+		inp.id = 'hostSayInput';
+		inp.maxLength = 90;
+		inp.placeholder = 'Powiedz coś widzom… [Enter]';
+		inp.autocomplete = 'off';
+		inp.style.cssText = 'width:min(300px,60vw);background:rgba(20,26,36,.92);border:1px solid rgba(255,255,255,.2);border-radius:9px;color:#e6f0fb;padding:6px 9px;font:11.5px system-ui;outline:none;';
+		inp.addEventListener('keydown', (e) => {
+			if(e.key === 'Enter'){ if(say(inp.value)) inp.value = ''; closeSayBox(); e.preventDefault(); }
+			else if(e.key === 'Escape'){ closeSayBox(); e.preventDefault(); }
+			e.stopPropagation();
+		});
+		box.appendChild(inp);
+		document.body.appendChild(box);
+		ui.sayBox = box;
+		return box;
+	}
+	function openSayBox(){
+		const box = ensureSayBox();
+		if(!box) return;
+		try{ if(bridge && bridge.releaseInput) bridge.releaseInput(); }catch(e){ /* fine */ }
+		box.style.display = 'flex';
+		const inp = box.querySelector('#hostSayInput');
+		inp.value = '';
+		inp.focus();
+	}
+	function closeSayBox(){
+		if(!ui.sayBox) return;
+		ui.sayBox.style.display = 'none';
+		try{ ui.sayBox.querySelector('#hostSayInput').blur(); }catch(e){ /* fine */ }
+	}
+	function styledButton(label, css){
+		const b = document.createElement('button');
+		b.type = 'button';
+		b.textContent = label;
+		b.style.cssText = css;
+		return b;
 	}
 	function ensurePanel(){
 		if(ui.panel || typeof document === 'undefined') return ui.panel;
 		const el = document.createElement('div');
 		el.id = 'ghostSharePanel';
-		el.style.cssText = 'position:fixed; right:12px; top:56px; z-index:120; width:min(340px,calc(100vw - 24px)); display:none; flex-direction:column; gap:9px; padding:12px 14px; border-radius:14px; border:1px solid rgba(140,190,255,.35); background:rgba(12,17,26,.95); color:#e8f1fb; font:12px system-ui; box-shadow:0 10px 30px rgba(0,0,0,.55); pointer-events:auto;';
+		el.style.cssText = 'position:fixed; right:12px; top:56px; z-index:120; width:min(360px,calc(100vw - 24px)); max-height:calc(100vh - 76px); overflow-y:auto; overscroll-behavior:contain; display:none; flex-direction:column; gap:9px; padding:12px 14px; border-radius:14px; border:1px solid rgba(140,190,255,.35); background:rgba(12,17,26,.95); color:#e8f1fb; font:12px system-ui; box-shadow:0 10px 30px rgba(0,0,0,.55); pointer-events:auto;';
 		el.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;">'
 			+ '<b style="font-size:13px;">👁 Duchy Warstwy</b>'
 			+ '<button id="ghostPanelClose" style="border:none;background:rgba(255,255,255,.12);color:#fff;width:24px;height:24px;border-radius:8px;cursor:pointer;">×</button></div>'
-			+ '<div id="ghostPanelInfo" style="line-height:1.45;color:#b9c9dc;">Udostępnij link, a znajomi będą oglądać twoją grę na żywo jako duchy — mogą dopingować i błogosławić, ale nie zmienią świata.</div>'
-			+ '<div id="ghostPanelLinkRow" style="display:none;gap:6px;"><input id="ghostPanelLink" readonly style="flex:1;min-width:0;background:rgba(20,26,36,.9);border:1px solid rgba(255,255,255,.2);border-radius:8px;color:#d5e6ff;padding:6px 8px;font-size:11px;">'
-			+ '<button id="ghostPanelCopy" style="border:none;border-radius:8px;background:#2c7ef8;color:#fff;font-weight:700;padding:6px 10px;cursor:pointer;">Kopiuj</button></div>'
+			+ '<div id="ghostPanelInfo" style="line-height:1.45;color:#b9c9dc;">Wyślij link, a znajomi wejdą do twojego świata jako DUCHY: oglądają grę na żywo, płoszą stwory i wzmacniają cię samą obecnością — ale nie ruszą ani jednego kafla.</div>'
+			+ '<div id="ghostPanelLinkRow" style="display:none;gap:6px;"><input id="ghostPanelLink" readonly aria-label="Link dla widzów" style="flex:1;min-width:0;background:rgba(20,26,36,.9);border:1px solid rgba(255,255,255,.2);border-radius:8px;color:#d5e6ff;padding:6px 8px;font-size:11px;">'
+			+ '<button id="ghostPanelCopy" style="border:none;border-radius:8px;background:#2c7ef8;color:#fff;font-weight:700;padding:6px 10px;cursor:pointer;">Kopiuj</button>'
+			+ '<button id="ghostPanelShare" style="display:none;border:none;border-radius:8px;background:rgba(255,255,255,.14);color:#fff;font-weight:700;padding:6px 10px;cursor:pointer;">Wyślij</button></div>'
+			+ '<label id="ghostPanelDefaultRow" style="display:none;align-items:center;gap:6px;color:#b9c9dc;">Nowi widzowie: '
+			+ '<select id="ghostPanelDefault" style="flex:1;background:rgba(20,26,36,.9);color:#d5e6ff;border:1px solid rgba(255,255,255,.2);border-radius:6px;font-size:11px;padding:3px;"></select></label>'
+			+ '<label id="ghostPanelApproveRow" style="display:none;align-items:center;gap:6px;color:#b9c9dc;cursor:pointer;">'
+			+ '<input id="ghostPanelApprove" type="checkbox" style="width:auto;margin:0;">Zatwierdzam działania asystentów (kolejka propozycji)</label>'
+			+ '<div id="ghostPanelViewRow" style="display:none;gap:10px;flex-wrap:wrap;color:#b9c9dc;">'
+			+ '<label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input data-pref="spirits" type="checkbox" style="width:auto;margin:0;">duchy</label>'
+			+ '<label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input data-pref="bubbles" type="checkbox" style="width:auto;margin:0;">dymki</label>'
+			+ '<label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input data-pref="fx" type="checkbox" style="width:auto;margin:0;">działania</label></div>'
+			+ '<div id="ghostPanelSayRow" style="display:none;gap:6px;"><input id="ghostPanelSay" maxlength="90" autocomplete="off" placeholder="Powiedz coś widzom… [Enter]" aria-label="Wiadomość do widzów" style="flex:1;min-width:0;background:rgba(20,26,36,.9);border:1px solid rgba(255,255,255,.2);border-radius:8px;color:#d5e6ff;padding:6px 8px;font-size:11px;">'
+			+ '<button id="ghostPanelSayBtn" style="border:none;border-radius:8px;background:rgba(255,255,255,.14);color:#fff;font-weight:700;padding:6px 10px;cursor:pointer;">🗨</button></div>'
+			+ '<div id="ghostPanelQueue" style="display:none;flex-direction:column;gap:4px;"></div>'
 			+ '<div id="ghostPanelViewers" style="color:#9fd6ae;"></div>'
+			+ '<div id="ghostPanelPerks" style="line-height:1.45;color:#8fa4bb;font-size:11px;"></div>'
 			+ '<button id="ghostPanelToggle" style="border:none;border-radius:10px;background:#21a366;color:#fff;font-weight:800;padding:9px 12px;cursor:pointer;">Rozpocznij transmisję</button>';
 		document.body.appendChild(el);
 		el.querySelector('#ghostPanelClose').addEventListener('click', () => togglePanel(false));
@@ -700,6 +1076,33 @@ const ghostHost = (function(){
 			try{ navigator.clipboard.writeText(inp.value); }catch(e){ try{ document.execCommand('copy'); }catch(e2){ /* manual copy */ } }
 			if(bridge) bridge.msg('Link skopiowany — wyślij go widzom!');
 		});
+		const share = el.querySelector('#ghostPanelShare');
+		if(typeof navigator !== 'undefined' && navigator.share){
+			share.style.display = 'inline-block';
+			share.addEventListener('click', () => {
+				try{ navigator.share({ title: 'Warstwy Symulacji', text: 'Popatrz na moją warstwę jako duch:', url: link() }); }catch(e){ /* user cancelled */ }
+			});
+		}
+		const def = el.querySelector('#ghostPanelDefault');
+		for(const val of NET.PERMISSION_MODES){
+			const o = document.createElement('option');
+			o.value = val; o.textContent = MODE_LABEL[val] || val;
+			def.appendChild(o);
+		}
+		def.addEventListener('change', () => setDefaultMode(def.value));
+		const approve = el.querySelector('#ghostPanelApprove');
+		approve.addEventListener('change', () => {
+			// blur FIRST, or the INPUT-focus guard skips the refresh setApprovalMode triggers
+			approve.blur();
+			setApprovalMode(approve.checked);
+		});
+		for(const cb of el.querySelectorAll('#ghostPanelViewRow input[data-pref]')){
+			cb.addEventListener('change', () => { cb.blur(); setViewPref(cb.dataset.pref, cb.checked); });
+		}
+		const sayInp = el.querySelector('#ghostPanelSay');
+		const doSay = () => { if(say(sayInp.value)) sayInp.value = ''; sayInp.blur(); };
+		sayInp.addEventListener('keydown', (e) => { if(e.key === 'Enter'){ doSay(); e.preventDefault(); } e.stopPropagation(); });
+		el.querySelector('#ghostPanelSayBtn').addEventListener('click', doSay);
 		el.querySelector('#ghostPanelToggle').addEventListener('click', () => {
 			if(session) stop(); else start({});
 			updateUi();
@@ -707,93 +1110,140 @@ const ghostHost = (function(){
 		ui.panel = el;
 		return el;
 	}
+	function panelOpen(){ return !!(ui.panel && ui.panel.style.display === 'flex'); }
 	function togglePanel(show){
 		const el = ensurePanel();
 		if(!el) return;
 		el.style.display = show ? 'flex' : 'none';
+		if(ui.menuBtn) ui.menuBtn.setAttribute('aria-expanded', show ? 'true' : 'false');
 		if(show) updateUi();
 	}
-	function ensureBadge(){
-		if(ui.badge || typeof document === 'undefined') return ui.badge;
-		const b = document.createElement('button');
-		b.id = 'ghostHostBadge';
-		b.style.cssText = 'position:fixed; left:8px; top:44px; z-index:60; display:none; border:1px solid rgba(140,190,255,.4); border-radius:999px; background:rgba(12,17,26,.85); color:#cfe6ff; font:11px system-ui; font-weight:700; padding:5px 10px; cursor:pointer; pointer-events:auto;';
-		b.addEventListener('click', () => togglePanel(true));
-		document.body.appendChild(b);
-		ui.badge = b;
-		return b;
+	function viewerRow(entry, t){
+		const row = document.createElement('div');
+		row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 0;border-top:1px solid rgba(255,255,255,.08);';
+		const dot = document.createElement('span');
+		dot.textContent = entry.actUntil > t ? '⚡' : '💤';
+		dot.title = entry.actUntil > t ? 'aktywny (wzmacnia)' : 'bezczynny >30 s (nie wzmacnia)';
+		const nm = document.createElement('span');
+		nm.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700;';
+		nm.textContent = entry.name || entry.gid;
+		// the watcher's own career, as THEY report it — a badge, never a permission
+		const rank = NET.rankFor(entry.level || 1);
+		const badge = document.createElement('span');
+		badge.style.cssText = 'font-size:10px;font-weight:800;white-space:nowrap;color:' + rank.color + ';';
+		badge.textContent = 'Poz. ' + (entry.level || 1);
+		badge.title = rank.name + ' — postępy widza (jego własne, nie dają mu żadnych uprawnień)';
+		const sel = document.createElement('select');
+		sel.style.cssText = 'background:rgba(20,26,36,.9);color:#d5e6ff;border:1px solid rgba(255,255,255,.2);border-radius:6px;font-size:10px;padding:2px;';
+		for(const val of NET.PERMISSION_MODES){
+			const o = document.createElement('option');
+			o.value = val; o.textContent = MODE_LABEL[val] || val; o.selected = entry.mode === val;
+			sel.appendChild(o);
+		}
+		sel.addEventListener('change', () => setViewerMode(entry.gid, sel.value));
+		const asst = styledButton(entry.assistant ? '🛠 Asystent' : '🛠',
+			'border:none;border-radius:6px;background:' + (entry.assistant ? 'rgba(255,184,74,.55)' : 'rgba(255,255,255,.12)') + ';color:#fff;font-size:10px;font-weight:700;padding:3px 7px;cursor:pointer;');
+		asst.title = 'Asystent: może craftować i zarządzać twoim ekwipunkiem (wymaga trybu „+ czat i wpływ”)';
+		asst.addEventListener('click', () => setAssistant(entry.gid, !entry.assistant));
+		const hid = session.hiddenGids.has(entry.gid);
+		const mute = styledButton(hid ? '🙈' : '👁',
+			'border:none;border-radius:6px;background:' + (hid ? 'rgba(196,120,50,.5)' : 'rgba(255,255,255,.12)') + ';color:#fff;font-size:10px;font-weight:700;padding:3px 7px;cursor:pointer;');
+		mute.title = hid ? 'Ukryty u ciebie — kliknij, by znów widzieć awatar i wiadomości tego widza'
+			: 'Ukryj awatar i wiadomości tego widza (tylko na twoim ekranie; jego wpływ na grę zostaje)';
+		mute.addEventListener('click', () => setViewerHidden(entry.gid, !hid));
+		const ban = styledButton('Banuj', 'border:none;border-radius:6px;background:rgba(196,50,50,.5);color:#fff;font-size:10px;font-weight:700;padding:3px 7px;cursor:pointer;');
+		ban.title = 'Wyrzuć i zablokuj tego widza do końca sesji';
+		ban.addEventListener('click', () => banViewer(entry.gid));
+		row.append(dot, nm, badge, sel, asst, mute, ban);
+		return row;
 	}
 	function updateUi(){
 		if(typeof document === 'undefined') return;
-		const badge = ensureBadge();
 		const boost = updateSocialBoost();
-		if(badge){
-			if(session){
-				badge.style.display = 'inline-block';
-				badge.textContent = '👁 ' + entries().length + (boost.active ? ' • ⚡' + boost.active : '') + ' • ' + session.room;
-				badge.title = boost.active
-					? 'Aktywne duchy wzmacniają: +' + Math.round((boost.xp - 1) * 100) + '% XP, +' + Math.round((boost.move - 1) * 100) + '% szybkość/skok/obrażenia'
-					: 'Duchy obserwują — aktywni widzowie wzmacniają bohatera';
-			} else badge.style.display = 'none';
+		const list = entries();
+		const t = now();
+		const active = list.filter(e => e.actUntil > t).length;
+		const pending = session ? session.assistQueue.size() : 0;
+		const btn = ui.menuBtn;
+		if(btn){
+			const count = btn.querySelector('#ghostBtnCount');
+			if(count) count.textContent = session && (list.length || pending)
+				? String(list.length) + (pending ? ' ⏳' + pending : '') : '';
+			btn.classList.toggle('live', !!session);
+			btn.title = !session
+				? 'Obserwatorzy — zaproś widzów do swojej warstwy'
+				: 'Transmisja: pokój ' + session.room + ' · ' + list.length + ' duchów, ' + active + ' aktywnych'
+					+ (active ? ' (+' + Math.round((boost.xp - 1) * 100) + '% XP, +' + Math.round((boost.move - 1) * 100) + '% szybkość/skok/obrażenia)' : '')
+					+ (pending ? ' · ⏳' + pending + ' propozycji asystentów czeka' : '');
 		}
 		const el = ui.panel;
-		if(!el) return;
+		// A hidden panel gets no body refresh (the HUD button is the only live surface),
+		// and neither does one the host is actively USING: the periodic rebuild would
+		// yank an open permission dropdown shut or collapse a text selection in the
+		// link input mid-copy.
+		if(!el || el.style.display !== 'flex') return;
+		const focusedTag = el.contains(document.activeElement) ? document.activeElement.tagName : null;
+		if(focusedTag === 'SELECT' || focusedTag === 'INPUT') return;
 		const linkRow = el.querySelector('#ghostPanelLinkRow');
+		const defaultRow = el.querySelector('#ghostPanelDefaultRow');
 		const toggle = el.querySelector('#ghostPanelToggle');
 		const viewers = el.querySelector('#ghostPanelViewers');
+		const perks = el.querySelector('#ghostPanelPerks');
+		el.querySelector('#ghostPanelDefault').value = defaultMode;
 		viewers.textContent = '';
-		if(session){
-			linkRow.style.display = 'flex';
-			el.querySelector('#ghostPanelLink').value = link();
-			toggle.textContent = 'Zakończ transmisję';
-			toggle.style.background = '#c43232';
-			const list = entries();
-			if(!list.length){
-				viewers.textContent = 'Czekam na duchy… wyślij link.';
-			} else {
-				const t = now();
-				const head = document.createElement('div');
-				head.style.cssText = 'color:#9fd6ae;margin-bottom:2px;';
-				head.textContent = 'Duchy (' + list.length + ')' + (boost.active ? ' — ⚡' + boost.active + ' aktywnych: +10% XP, +' + boost.active + '% szybkość/skok/obrażenia' : '');
-				viewers.appendChild(head);
-				for(const entry of list){
-					const row = document.createElement('div');
-					row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 0;border-top:1px solid rgba(255,255,255,.08);';
-					const dot = document.createElement('span');
-					dot.textContent = entry.actUntil > t ? '⚡' : '💤';
-					dot.title = entry.actUntil > t ? 'aktywny (wzmacnia)' : 'bezczynny >30 s (nie wzmacnia)';
-					const nm = document.createElement('span');
-					nm.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700;';
-					nm.textContent = entry.name || entry.gid;
-					const sel = document.createElement('select');
-					sel.style.cssText = 'background:rgba(20,26,36,.9);color:#d5e6ff;border:1px solid rgba(255,255,255,.2);border-radius:6px;font-size:10px;padding:2px;';
-					for(const [val, label] of [['watch', 'tylko ogląda'], ['chat', '+czat'], ['full', '+czat i wpływ']]){
-						const o = document.createElement('option');
-						o.value = val; o.textContent = label; o.selected = entry.mode === val;
-						sel.appendChild(o);
-					}
-					sel.addEventListener('change', () => setViewerMode(entry.gid, sel.value));
-					const asst = document.createElement('button');
-					asst.textContent = entry.assistant ? '🛠 Asystent' : '🛠';
-					asst.title = 'Asystent: może craftować i zarządzać twoim ekwipunkiem (wymaga trybu „+czat i wpływ”)';
-					asst.style.cssText = 'border:none;border-radius:6px;background:' + (entry.assistant ? 'rgba(255,184,74,.55)' : 'rgba(255,255,255,.12)') + ';color:#fff;font-size:10px;font-weight:700;padding:3px 7px;cursor:pointer;';
-					asst.addEventListener('click', () => setAssistant(entry.gid, !entry.assistant));
-					const ban = document.createElement('button');
-					ban.textContent = 'Banuj';
-					ban.style.cssText = 'border:none;border-radius:6px;background:rgba(196,50,50,.5);color:#fff;font-size:10px;font-weight:700;padding:3px 7px;cursor:pointer;';
-					ban.addEventListener('click', () => banViewer(entry.gid));
-					row.append(dot, nm, sel, asst, ban);
-					viewers.appendChild(row);
-				}
-			}
-		} else {
+		if(!session){
 			linkRow.style.display = 'none';
+			defaultRow.style.display = 'none';
+			el.querySelector('#ghostPanelApproveRow').style.display = 'none';
+			el.querySelector('#ghostPanelViewRow').style.display = 'none';
+			el.querySelector('#ghostPanelSayRow').style.display = 'none';
+			el.querySelector('#ghostPanelQueue').style.display = 'none';
 			toggle.textContent = 'Rozpocznij transmisję';
 			toggle.style.background = '#21a366';
+			perks.textContent = 'Aktywny widz (ruszał się w ciągu 30 s) daje +10% XP oraz +1% szybkości, skoku i obrażeń. Bezczynne duchy nic nie dają.';
+			return;
 		}
+		linkRow.style.display = 'flex';
+		defaultRow.style.display = 'flex';
+		el.querySelector('#ghostPanelApproveRow').style.display = 'flex';
+		el.querySelector('#ghostPanelApprove').checked = approvalMode;
+		el.querySelector('#ghostPanelViewRow').style.display = 'flex';
+		for(const cb of el.querySelectorAll('#ghostPanelViewRow input[data-pref]')) cb.checked = !!viewPrefs[cb.dataset.pref];
+		el.querySelector('#ghostPanelSayRow').style.display = 'flex';
+		el.querySelector('#ghostPanelLink').value = link();
+		toggle.textContent = 'Zakończ transmisję';
+		toggle.style.background = '#c43232';
+		// the approval desk: every pending assistant request with its own verdict pair
+		const queueBox = el.querySelector('#ghostPanelQueue');
+		queueBox.textContent = '';
+		const pendingRows = session.assistQueue.list();
+		queueBox.style.display = pendingRows.length ? 'flex' : 'none';
+		for(const q of pendingRows){
+			const row = document.createElement('div');
+			row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:8px;background:rgba(255,184,74,.12);border:1px solid rgba(255,184,74,.35);';
+			const lbl = document.createElement('span');
+			lbl.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;';
+			lbl.textContent = '⏳ ' + q.name + ': ' + q.label;
+			const ok = styledButton('Zatwierdź', 'border:none;border-radius:6px;background:#21a366;color:#fff;font-size:10px;font-weight:700;padding:3px 8px;cursor:pointer;');
+			ok.addEventListener('click', () => approveAssist(q.qid));
+			const no = styledButton('Odrzuć', 'border:none;border-radius:6px;background:rgba(196,50,50,.5);color:#fff;font-size:10px;font-weight:700;padding:3px 8px;cursor:pointer;');
+			no.addEventListener('click', () => rejectAssist(q.qid));
+			row.append(lbl, ok, no);
+			queueBox.appendChild(row);
+		}
+		if(!list.length){
+			viewers.textContent = 'Czekam na duchy… wyślij link.';
+		} else {
+			const head = document.createElement('div');
+			head.style.cssText = 'color:#9fd6ae;margin-bottom:2px;';
+			head.textContent = 'Duchy (' + list.length + ')' + (active ? ' — ⚡' + active + ' aktywnych: +10% XP, +' + active + '% szybkość/skok/obrażenia' : ' — wszystkie bezczynne');
+			viewers.appendChild(head);
+			for(const entry of list) viewers.appendChild(viewerRow(entry, t));
+		}
+		perks.textContent = 'Uprawnienia: „tylko ogląda” = sama obecność (płoszy stwory, wzmacnia). „+ czat” dopuszcza krótkie wiadomości i wskazywanie miejsc 📍 (filtr wulgaryzmów). „+ czat i wpływ” odblokowuje doping, błogosławieństwa i moce (popłoch/mróz/grom). 🛠 mianuje asystentów (może być kilku — gdy rywalizują o surowce, wygrywa szybszy), z zatwierdzaniem ich propozycje czekają na twoje Zatwierdź. Widok: „duchy/dymki/działania” chowają awatary, teksty i efekty (👁/🙈 przy widzu chowa jednego); Enter = szybka wiadomość do widzów.';
 	}
 
-	const api = { wire, start, stop, active, link, frame, metrics, drawSpirits, paintSpirit, setViewerMode, banViewer, setAssistant, socialBoost: updateSocialBoost, openPanel: () => togglePanel(true) };
+	const api = { wire, start, stop, active, link, frame, metrics, drawSpirits, paintSpirit, paintChatBubble, say, setViewerMode, banViewer, setAssistant, setDefaultMode, setApprovalMode, setViewPref, setViewerHidden, approveAssist, rejectAssist, socialBoost: updateSocialBoost, openPanel: () => togglePanel(true) };
 	if(MMR) MMR.ghostHost = api;
 	if(typeof window !== 'undefined'){
 		window.__mmGhostHostStart = (room, opts) => start(Object.assign({ room }, opts || {}));

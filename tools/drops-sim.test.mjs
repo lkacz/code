@@ -499,9 +499,18 @@ assert.match(mobsSrc, /meatScrapCountFor/, 'meat kills shed size-scaled scrap co
 const invUiSrc = readFileSync(new URL('../src/inventory_ui.js', import.meta.url), 'utf8');
 assert.match(invUiSrc, /drops\.wantsInteractKey/, 'wardrobe yields E to a drop in reach');
 assert.match(invUiSrc, /const E_HOLD_MS=\d+/, 'holding E opens the wardrobe past the tap window');
-assert.match(invUiSrc, /!e\.repeat && e\.key\.toLowerCase\(\)==='e'/, 'auto-repeat E never toggles the wardrobe');
+assert.match(invUiSrc, /!e\.repeat && logicalKey\(e\)==='e'/, 'auto-repeat E never toggles the wardrobe (logicalKey honors rebinds)');
 const indexSrc = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 assert.match(indexSrc, /id="dropPreview"/, 'index.html carries the corner drop-preview card');
+// The modal loot inbox ("Nowe przedmioty") is RETIRED: found gear lands in the bag,
+// the upgrade card is the only interruption, and Ekwipunek reviews the rest. Keep it
+// buried — a reintroduced popup would double up on the inventory panel again.
+assert.ok(!/id="lootPopup"|id="lootInboxBtn"|id="lootDim"/.test(indexSrc), 'no loot inbox popup/button survives in index.html');
+assert.match(indexSrc, /id="upgradeNotice"/, 'the upgrade-notice card is the loot signal');
+assert.match(mainSrc, /window\.__lootNoticeInit=true;/, 'loot signal block replaced the inbox block');
+assert.ok(!/lootInbox|openInbox|lootPopup/.test(mainSrc), 'main.js keeps no inbox machinery');
+assert.match(mainSrc, /const fresh=ownedGearItems\(items\)\.filter\(it=>!announcedLoot\.has\(it\.id\)\);/, 'each found item is signalled exactly once');
+assert.match(mainSrc, /if\(upgrade && showUpgradeNotice\(upgrade\.item,upgrade\.cmp\)\) return;/, 'only a real upgrade interrupts; the rest is a toast');
 const craftingSrc = readFileSync(new URL('../src/engine/crafting.js', import.meta.url), 'utf8');
 assert.match(craftingSrc, /meatScrap:/, 'crafting source hints cover meat scraps');
 const lairsSrc = readFileSync(new URL('../src/engine/guardian_lairs.js', import.meta.url), 'utf8');

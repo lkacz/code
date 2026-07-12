@@ -12,7 +12,10 @@
 //  - aposematism   : deadly organics advertise with dark warning chevrons
 //  - history       : veterans carry pale battle scars and broken horn tips,
 //                    seeded per individual so no two look alike
-//  - eyes          : glow ramp amber → orange → red → white-hot apex stare
+//  - eyes          : NATIVE only — each species' own art eye pixels are tinted
+//                    toward hot red via menaceEyeColor(); no overlay eyeball is
+//                    ever drawn on top of a face (that template stare was
+//                    rejected: every mob wore the same strange eyes)
 //  - tools         : tool-users upgrade gear with grade (bone → forged → ornate → runic)
 //  - presence      : apex-only aura halo, rim-light pulse and breath motes
 //
@@ -79,13 +82,13 @@ export function menaceScore(st){
 // thicker, its eyes catch more light (tapetum shine), it breathes visibly, it
 // plants heavier. Nothing is a badge, a chevron or a spike-row stuck on top.
 export const GRADE_FX=[
-  //          silhouette                    build            hide      keratin                 face          presence               tools
-  {size:0.94, minScale:0,    bulk:1.00, lean:0,     hump:0,    weather:0, horn:0, claw:0, fang:0, fin:0,    eye:0, breath:0, dust:0, shadow:0,    gear:0},
-  {size:1.00, minScale:0,    bulk:1.00, lean:0,     hump:0,    weather:0, horn:0, claw:0, fang:0, fin:0,    eye:0, breath:0, dust:0, shadow:0,    gear:0},
-  {size:1.06, minScale:0.86, bulk:1.02, lean:0.015, hump:0.30, weather:1, horn:1, claw:1, fang:0, fin:0.35, eye:1, breath:0, dust:0, shadow:0.18, gear:0},
-  {size:1.13, minScale:0.94, bulk:1.05, lean:0.035, hump:0.55, weather:2, horn:2, claw:2, fang:1, fin:0.60, eye:2, breath:0, dust:0, shadow:0.30, gear:1},
-  {size:1.21, minScale:1.02, bulk:1.09, lean:0.055, hump:0.80, weather:3, horn:3, claw:3, fang:2, fin:0.82, eye:3, breath:1, dust:1, shadow:0.42, gear:2},
-  {size:1.32, minScale:1.10, bulk:1.14, lean:0.080, hump:1.00, weather:4, horn:4, claw:3, fang:3, fin:1.00, eye:4, breath:2, dust:2, shadow:0.55, gear:3}
+  //          silhouette                    build            hide      keratin                 presence               tools
+  {size:0.94, minScale:0,    bulk:1.00, lean:0,     hump:0,    weather:0, horn:0, claw:0, fang:0, fin:0,    breath:0, dust:0, shadow:0,    gear:0},
+  {size:1.00, minScale:0,    bulk:1.00, lean:0,     hump:0,    weather:0, horn:0, claw:0, fang:0, fin:0,    breath:0, dust:0, shadow:0,    gear:0},
+  {size:1.06, minScale:0.86, bulk:1.02, lean:0.015, hump:0.30, weather:1, horn:1, claw:1, fang:0, fin:0.35, breath:0, dust:0, shadow:0.18, gear:0},
+  {size:1.13, minScale:0.94, bulk:1.05, lean:0.035, hump:0.55, weather:2, horn:2, claw:2, fang:1, fin:0.60, breath:0, dust:0, shadow:0.30, gear:1},
+  {size:1.21, minScale:1.02, bulk:1.09, lean:0.055, hump:0.80, weather:3, horn:3, claw:3, fang:2, fin:0.82, breath:1, dust:1, shadow:0.42, gear:2},
+  {size:1.32, minScale:1.10, bulk:1.14, lean:0.080, hump:1.00, weather:4, horn:4, claw:3, fang:3, fin:1.00, breath:2, dust:2, shadow:0.55, gear:3}
 ];
 // body-palette grading per grade: prey pale/drab, apex dark/saturated
 export const GRADE_PALETTE=[
@@ -96,91 +99,27 @@ export const GRADE_PALETTE=[
   {sMul:1.32, lAdd:-0.10},
   {sMul:1.40, lAdd:-0.13}
 ];
-// Eye-shine ramp: a wolf's tapetum at dusk → a predator's hot red stare.
-// The eye escalates in COLOUR ONLY. Its drawn size is fixed (EYE_R) — an eye
-// that grows with the grade stops reading as an eye and starts reading as a
-// lamp bolted to the head.
+// Native menace eyes. The engine draws NO eye of its own — every face keeps
+// exactly the eyes its hand-drawn art gave it (an owl's amber discs, a wolf's
+// brown fleck, a skeleton's dark sockets). What the grade controls is only the
+// COLOUR of those existing pixels: the art's own base colour is pulled toward
+// an unmistakable hot red as the menace climbs. Identity at the bottom of the
+// ladder (every species starts from its own art colour), pure danger at the
+// top. Grades 0–1 return the art colour untouched.
 //
-// But no two species share an eye. Each iris starts from the SPECIES' own
-// tint (a ghoul's grave-lime, a yeti's glacier blue, a dragon's gold) and is
-// pulled toward the menace red as the grade climbs — identity at the bottom
-// of the ladder, unmistakable danger at the top.
+// mobs.js wires this per species via its draw-loop eyeTint() helper — the ONE
+// overlay this must never become again is a shared eyeball template stamped
+// over the art.
 const EYE_COLORS=[null,null,'#e9922e','#f4571c','#fa1f0c','#ff0400'];
-const EYE_MENACE_MIX=[0,0,0.45,0.65,0.82,0.94];
-const EYE_TINTS_FAMILY={
-  beast:'#c98a3a', cervid:'#6b5638', aquatic:'#3c4a56', serpent:'#c2b23c',
-  dragon:'#ffc23c', humanoid:'#cfa25a', avian:'#f0b83c', arthropod:'#2a2018',
-  amorph:'#9adf6a', construct:'#8ad8ff', wisp:'#dff4ff', jelly:'#bcd8e8'
-};
-const EYE_R=1.55;          // iris orb radius, in pixels, at every grade
-const EYE_HALO_R=3.4;      // catch-light radius, likewise fixed
-// The one place the eye's geometry is decided. Size is constant by construction;
-// only alpha may climb, so "scarier" can never mean "bigger".
-export function eyeRender(grade){
-  const g=Math.max(0,Math.min(5,Number(grade)||0));
-  return { r:EYE_R, haloR:EYE_HALO_R, haloAlpha: g>=5 ? 0.34 : (g>=4 ? 0.22 : 0) };
-}
-// Every transform the eye is nested inside by the time drawPost runs. Keep these
-// in step with the mobs.js draw loop (ctx.scale(m.scale)) and drawThreatLookPre
-// (horizontal bulk) — they are what the eye's radius must be divided by to hold a
-// constant SCREEN size, and what the tests multiply back to verify it.
-export function eyeScaleY(m){ return Math.max(0.05, Number(m&&m.scale)||1); }
-export function eyeScaleX(m,look){ return eyeScaleY(m) * ((look&&look.grade>=2) ? look.bulk : 1); }
-
-// ---------------------------------------------------------------------------
-// Eye anatomy. Once an eye is bigger than a dot it has to read as a living
-// EYE, not a lamp: a lidded opening in the skull, a dark warm sclera, a shaded
-// iris, a pupil shaped by the animal's diet (slits hunt, bars graze, rounds
-// think), a moist catch-light — and it blinks. Species too small for that
-// detail keep the ember dot; arachnids get a cluster of ocelli; bone, masks
-// and machines have no lids and never blink.
-const EYE_LID_COVER=[0,0,0.10,0.16,0.24,0.30]; // resting glare: lids narrow with grade
-
-// Deterministic per-individual blink: a 150ms sweep every 3.0–5.6s.
-// Returns lid closure 0..1. Pure, so the tests can pin the rhythm.
-export function blinkState(seed,tMs){
-  const s=((seed>>>0)||1);
-  const period=3.0+((s>>>4)%1024)/1024*2.6;
-  const local=((tMs*0.001)+(s%97)*0.131)%period;
-  if(local>=0.15) return 0;
-  return Math.sin((local/0.15)*Math.PI);
-}
-
-// What kind of eye this creature can even have. Pure — pinned by tests.
-// A mob drawn facing the screen (humanoids, owls, the yeti's flat face) shows
-// TWO eyes; a mob drawn in profile (beasts, fish, serpents, the dragon) shows
-// ONE. Aspect, brow weight and sclera darkness vary by family so the eye
-// belongs to the animal instead of being one template stamped on everything.
-export function eyeGeometry(m,spec,look){
-  if(!look || look.grade<2) return {mode:'none'};
-  const fam=look.family;
-  if(fam==='construct'||fam==='wisp'||fam==='jelly') return {mode:'none'};
-  const meta=look.meta||{};
-  if(meta.noEye) return {mode:'none'};                 // sand worms hunt blind
-  const body=(spec&&spec.body)||{w:1,h:1};
-  // eye size follows the SPECIES' anatomy (a dragon's eye out-sizes a wolf's),
-  // never the grade — the grade may only recolour it
-  const r=typeof meta.eyeR==='number' ? meta.eyeR
-    : Math.max(1.4, Math.min(4.2, 1.1+Math.sqrt(Math.max(0.1,(body.w||1)*(body.h||1)))*1.05));
-  const twin=Array.isArray(meta.eyes) || fam==='humanoid';
-  if(fam==='arthropod') return {mode:'compound', r:Math.min(r,2.6), blink:false, twin:false};
-  const aspect=typeof meta.eyeAspect==='number' ? meta.eyeAspect
-    : fam==='cervid' ? 1.30                            // the soft almond of a grazer
-    : (fam==='beast'&&!meta.pred) ? 1.20
-    : fam==='humanoid' ? 1.05
-    : 1.0;
-  const sclera=fam==='aquatic' ? '#11161c' : '#3b2d20'; // a shark's eye is a black bead
-  const brow=typeof meta.brow==='number' ? meta.brow
-    : fam==='dragon' ? 1.0
-    : (fam==='beast'&&meta.pred) ? 0.6
-    : fam==='humanoid' ? 0.5
-    : fam==='cervid' ? 0.25
-    : 0;
-  if(meta.lidless || r<2.1) return {mode:'dot', r, blink:false, twin};
-  const pupil=(fam==='serpent'||fam==='dragon') ? 'slit'
-    : (fam==='beast'||fam==='cervid') ? (meta.pred?'slit':'bar')
-    : 'round';
-  return {mode:'complex', r, pupil, blink:true, twin, aspect, sclera, brow};
+const EYE_MENACE_MIX=[0,0,0.45,0.65,0.82,0.96];
+export function menaceEyeColor(look,baseHex){
+  let base=typeof baseHex==='string' ? baseHex : '#000000';
+  // the art writes short hex ('#fff') which the mixer would misread
+  if(/^#[0-9a-fA-F]{3}$/.test(base)) base='#'+base[1]+base[1]+base[2]+base[2]+base[3]+base[3];
+  if(!look) return base;
+  const g=Math.max(0,Math.min(5,Number(look.grade)||0));
+  if(!EYE_COLORS[g]) return base;
+  return mixHex(base,EYE_COLORS[g],EYE_MENACE_MIX[g]);
 }
 // keratin ages the way real horn does: pale and thin when young, dark, dense
 // and yellowed at the base when old
@@ -199,7 +138,9 @@ function breathColor(side){
 // wolf never grows antlers; a jellyfish grows neither). The anchors pin the
 // features onto the hand-drawn art instead of onto a guessed bounding box.
 //
-//   eye     [forwardPx, upPx]  from (sx,sy); forward is flipped by faceDir
+//   eye     [forwardPx, upPx]  from (sx,sy); forward is flipped by faceDir.
+//           This is the HEAD anchor (fangs and breath hang off it) — the eyes
+//           themselves live in each species' own art, never in this engine
 //   withers [forwardPx, topPx] the shoulder line where muscle mass piles up
 //   pred    carnivore: may grow claws and fangs
 //   horns   grows horn even though it is not a cervid (goat, bison)
@@ -210,7 +151,7 @@ export const SPECIES_LOOK={
   JASZCZUR:{family:'beast', pred:true, eye:[5,-7], withers:[2,-6], jaw:[8,-4]},
   FISH:{family:'aquatic'},
   BIRD:{family:'avian', eye:[5,-6]},
-  OWL:{family:'avian', pred:true, eyes:[[-1.5,-5.5],[2.5,-5.5]], eyeTint:'#ffb020'}, // owls face you
+  OWL:{family:'avian', pred:true},
   CRAB:{family:'arthropod', pred:true}, BAT:{family:'avian', pred:true, eye:[1,-2]},
   // --- beasts of the wild ----------------------------------------------------
   DEER:{family:'cervid', eye:[12,-18], hornX:10, hornY:-19, withers:[4,-13]},
@@ -224,32 +165,32 @@ export const SPECIES_LOOK={
   LETNI_ZUBR:{family:'beast', horns:true, eye:[28,-13], hornX:16, hornY:-22, withers:[3,-24]},
   // --- water: fins, not spines ------------------------------------------------
   PIRANHA:{family:'aquatic', pred:true, eye:[3,-2], fin:[-1,-3]},
-  SHARK:{family:'aquatic', pred:true, fin:[0,-5], eyeTint:'#46525c'},
+  SHARK:{family:'aquatic', pred:true, fin:[0,-5]},
   EEL:{family:'serpent', pred:true, fin:[0,-3]},
   LAKE_SERPENT:{family:'serpent', pred:true, fin:[0,-4]},
-  JACKPOT_WHALE:{family:'aquatic', pred:true, fin:[-4,-12], eyeR:2.2},
+  JACKPOT_WHALE:{family:'aquatic', pred:true, fin:[-4,-12]},
   ATLANTIS_MEDUZA:{family:'jelly'},
   // --- desert / swamp / mountain ----------------------------------------------
-  SAND_WORM:{family:'serpent', pred:true, fin:[-2,-8], noEye:true},
+  SAND_WORM:{family:'serpent', pred:true, fin:[-2,-8]},
   GIANT_SCORPION:{family:'arthropod', pred:true, eye:[14,-16]},
-  BOG_LURKER:{family:'amorph', pred:true, eyes:[[4,-14],[-2,-13]], eyeTint:'#d8c86a'},
-  BRAMBLE_STALKER:{family:'amorph', pred:true, eyes:[[-3,-7],[4,-7]], eyeTint:'#8adf5a'},
+  BOG_LURKER:{family:'amorph', pred:true},
+  BRAMBLE_STALKER:{family:'amorph', pred:true},
   STONE_GOLEM:{family:'construct'},
   VULTURE:{family:'avian', pred:true}, VULTURE_HATCHLING:{family:'avian'},
-  JACKPOT_YETI:{family:'humanoid', pred:true, withers:[0,-30], eyes:[[-6,-28],[6,-28]], eyeTint:'#9fe8ff'},
+  JACKPOT_YETI:{family:'humanoid', pred:true, withers:[0,-30]},
   // --- night & undead ----------------------------------------------------------
-  GHOUL:{family:'humanoid', pred:true, eye:[5,-25], eyes:[[5,-24],[8,-24]], eyeTint:'#b8e86a', withers:[0,-22], jaw:[8,-21], paw:[8,-1]},
-  SZKIELET:{family:'humanoid', eye:[1,-24], eyes:[[0,-24],[3,-24]], eyeTint:'#cfe89a', withers:[0,-20], gear:'bow', lidless:true},
+  GHOUL:{family:'humanoid', pred:true, eye:[5,-25], withers:[0,-22], jaw:[8,-21], paw:[8,-1]},
+  SZKIELET:{family:'humanoid', eye:[1,-24], withers:[0,-20], gear:'bow'},
   PELZACZ:{family:'arthropod', pred:true},
   ICE_WRAITH:{family:'wisp'},
   // --- tool users & guardians ---------------------------------------------------
-  TEMPLE_GUARD:{family:'humanoid', eye:[3,-25], eyes:[[3.5,-25],[-0.5,-24]], eyeTint:'#b9ff93', withers:[0,-22], gear:'halberd', handX:-12, handY:-18, lidless:true},
-  GOLD_DWARF_GUARD:{family:'humanoid', eye:[2,-23], eyes:[[3,-23],[-1,-23]], eyeTint:'#ffd24a', withers:[0,-20], gear:'hammer', handX:13, handY:-14},
-  ICE_SHAMAN:{family:'humanoid', eye:[2,-26], eyes:[[3,-26],[-2,-26]], eyeTint:'#bfe8ff', withers:[0,-22], gear:'staff', handX:-12, handY:-33},
-  FIRE_SHAMAN:{family:'humanoid', eye:[2,-26], eyes:[[3,-26],[-2,-26]], eyeTint:'#ffc46a', withers:[0,-22], gear:'staff', handX:-12, handY:-33},
+  TEMPLE_GUARD:{family:'humanoid', eye:[3,-25], withers:[0,-22], gear:'halberd', handX:-12, handY:-18},
+  GOLD_DWARF_GUARD:{family:'humanoid', eye:[2,-23], withers:[0,-20], gear:'hammer', handX:13, handY:-14},
+  ICE_SHAMAN:{family:'humanoid', eye:[2,-26], withers:[0,-22], gear:'staff', handX:-12, handY:-33},
+  FIRE_SHAMAN:{family:'humanoid', eye:[2,-26], withers:[0,-22], gear:'staff', handX:-12, handY:-33},
   STRAZNIK:{family:'construct'}, ATOMIC_BOMB:{family:'construct'},
   RADIATION_COCKROACH:{family:'arthropod'},
-  GOLD_DRAGON:{family:'dragon', pred:true, eye:[40,-42], eyeTint:'#ffc23c', hornX:33, hornY:-51, withers:[6,-31], jaw:[46,-34], paw:[18,-1]},
+  GOLD_DRAGON:{family:'dragon', pred:true, eye:[40,-42], hornX:33, hornY:-51, withers:[6,-31], jaw:[46,-34], paw:[18,-1]},
   // --- sky ------------------------------------------------------------------------
   CLOUD_RAY:{family:'aquatic', fin:[0,-6]}, HARPY:{family:'avian', pred:true},
   VOLT_WISP:{family:'wisp'}, SPORE_DRIFTER:{family:'jelly'},
@@ -304,10 +245,6 @@ export function buildLook(input){
     name:THREAT_GRADE_NAMES[grade],
     size:fx.size, minScale:fx.minScale, bulk:fx.bulk, lean:fx.lean,
     fx, sMul:pal.sMul, lAdd:pal.lAdd,
-    // each species keeps its own iris tint, pulled toward menace red with grade
-    eyeCol:EYE_COLORS[grade]
-      ? mixHex((meta&&meta.eyeTint)||EYE_TINTS_FAMILY[family]||'#c98a3a', EYE_COLORS[grade], EYE_MENACE_MIX[grade])
-      : null,
     keratin:KERATIN[grade],
     breath:breathColor(side),
     patches,
@@ -432,125 +369,6 @@ function glowSprite(col){
 }
 
 // ---------------------------------------------------------------------------
-// The living eye. Everything is drawn through kx/ky, dividing out the mob's
-// scale and bulk transforms, so the eye's SCREEN size never grows with the
-// grade — only its colour, its glare and its glow do.
-const PI2=Math.PI*2;
-// anchors: one [x,y] for profile species, two for mobs that face the screen
-function drawEyeAnatomy(ctx,m,look,g,geo,anchors,faceDir,baseCol,phase){
-  const er=eyeRender(g);
-  const col=look.eyeCol;
-  const kx=1/(eyeScaleX(m,look)||1), ky=1/(eyeScaleY(m)||1);
-  const twinDim=anchors.length>1?0.75:1;     // paired halos overlap; keep the sum calm
-  const haloAt=(hx,hy)=>{
-    if(er.haloAlpha<=0) return;
-    const s=glowSprite(col);
-    if(!s) return;
-    const hw=er.haloR*kx, hh=er.haloR*ky;
-    const prev=ctx.globalCompositeOperation;
-    ctx.globalCompositeOperation='lighter';
-    ctx.globalAlpha=(er.haloAlpha+0.06*Math.sin(phase*1.6))*twinDim;
-    ctx.drawImage(s,hx-hw,hy-hh,hw*2,hh*2);
-    ctx.globalAlpha=1;
-    ctx.globalCompositeOperation=prev;
-  };
-  if(geo.mode==='dot'){
-    // ember in a socket: bone, masks and the too-small-to-detail
-    for(const [ex,ey] of anchors){
-      ctx.fillStyle='rgba(12,9,7,0.78)';
-      ctx.beginPath(); ctx.ellipse(ex,ey,(er.r+0.9)*kx,(er.r+0.9)*ky,0,0,PI2); ctx.fill();
-      ctx.fillStyle=col;
-      ctx.beginPath(); ctx.ellipse(ex,ey,er.r*kx,er.r*ky,0,0,PI2); ctx.fill();
-      haloAt(ex,ey);
-    }
-    return;
-  }
-  if(geo.mode==='compound'){
-    // an arachnid face: one principal ocellus and two lesser ones, no lids
-    const [ex,ey]=anchors[0];
-    const r=geo.r;
-    ctx.fillStyle='rgba(12,9,7,0.72)';
-    ctx.beginPath(); ctx.ellipse(ex,ey,r*0.72*kx,r*0.72*ky,0,0,PI2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(ex-faceDir*r*0.85*kx,ey+r*0.30*ky,r*0.45*kx,r*0.45*ky,0,0,PI2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(ex+faceDir*r*0.60*kx,ey-r*0.45*ky,r*0.40*kx,r*0.40*ky,0,0,PI2); ctx.fill();
-    ctx.fillStyle=col;
-    ctx.beginPath(); ctx.ellipse(ex,ey,r*0.50*kx,r*0.50*ky,0,0,PI2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(ex-faceDir*r*0.85*kx,ey+r*0.30*ky,r*0.26*kx,r*0.26*ky,0,0,PI2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(ex+faceDir*r*0.60*kx,ey-r*0.45*ky,r*0.22*kx,r*0.22*ky,0,0,PI2); ctx.fill();
-    haloAt(ex,ey);
-    return;
-  }
-  // --- complex: full anatomy, once per visible eye ----------------------------
-  const r=geo.r;
-  const rx=v=>v*kx, ry=v=>v*ky;
-  const aspect=geo.aspect||1;
-  const scleraCol=g>=4 ? mixHex(geo.sclera||'#3b2d20','#7a1812',0.5) : (geo.sclera||'#3b2d20');
-  const tMs=(typeof performance!=='undefined'&&performance.now)?performance.now():phase*200;
-  const blink=geo.blink?blinkState(look.seed,tMs):0;  // both eyes blink as one
-  const coverU=Math.min(1,EYE_LID_COVER[g]+blink);
-  const coverL=blink*0.34;
-  const lidCol=mixHex(baseCol,'#0d0906',0.34);
-  const midX=anchors.length>1 ? (anchors[0][0]+anchors[1][0])*0.5 : null;
-  for(const [ex,ey] of anchors){
-    // a front-facing pair frowns toward the nose (the angry V-brow);
-    // a profile eye slants against the facing direction
-    const slant=midX==null ? -faceDir*0.16 : (ex<midX ? 0.16 : -0.16);
-    // socket shadow seats the eye in the skull instead of floating on the fur
-    ctx.fillStyle='rgba(10,7,5,0.38)';
-    ctx.beginPath(); ctx.ellipse(ex,ey,rx(r*1.22*aspect),ry(r*1.22),0,0,PI2); ctx.fill();
-    // everything else lives inside the visible eyeball
-    ctx.save();
-    ctx.beginPath(); ctx.ellipse(ex,ey,rx(r*aspect),ry(r),0,0,PI2); ctx.clip();
-    // sclera: family-dark (a shark's is nearly black) — bloodshot from koszmarny up
-    ctx.fillStyle=scleraCol;
-    ctx.fillRect(ex-r*3,ey-r*3,r*6,r*6);
-    // iris disc, darker at the rim, warmer around the pupil
-    ctx.fillStyle=col;
-    ctx.beginPath(); ctx.ellipse(ex,ey,rx(r*0.74),ry(r*0.74),0,0,PI2); ctx.fill();
-    ctx.fillStyle=mixHex(col,'#ffe2a8',0.42);
-    ctx.beginPath(); ctx.ellipse(ex,ey+ry(r*0.06),rx(r*0.40),ry(r*0.40),0,0,PI2); ctx.fill();
-    // the pupil is the diet: slits hunt, bars graze, rounds think
-    ctx.fillStyle='#0c0806';
-    ctx.beginPath();
-    if(geo.pupil==='slit') ctx.ellipse(ex+faceDir*rx(r*0.04),ey,rx(r*0.17),ry(r*0.60),0,0,PI2);
-    else if(geo.pupil==='bar') ctx.ellipse(ex,ey,rx(r*0.56),ry(r*0.21),0,0,PI2);
-    else ctx.ellipse(ex,ey,rx(r*0.34),ry(r*0.34),0,0,PI2);
-    ctx.fill();
-    // moist catch-light — the same light direction for both eyes of a pair
-    ctx.fillStyle='rgba(255,250,238,0.85)';
-    ctx.beginPath();
-    ctx.ellipse(ex-faceDir*rx(r*0.26),ey-ry(r*0.30),rx(Math.max(0.5,r*0.15)),ry(Math.max(0.5,r*0.15)),0,0,PI2);
-    ctx.fill();
-    // lids: the resting glare narrows with the grade, and the eye BLINKS.
-    // The iris is always drawn and the lids close OVER it, so a mid-blink frame
-    // still carries the full anatomy underneath.
-    if(coverU>0.01){
-      ctx.fillStyle=lidCol;
-      ctx.save();
-      ctx.translate(ex,ey);
-      ctx.rotate(slant);
-      ctx.fillRect(-r*3,-ry(r)+ry(2*r)*coverU-r*6,r*6,r*6);
-      ctx.restore();
-    }
-    if(coverL>0.01){
-      ctx.fillStyle=lidCol;
-      ctx.fillRect(ex-r*3,ey+ry(r)-ry(2*r)*coverL,r*6,r*6);
-    }
-    ctx.restore();
-    // brow ridge: the heavier the species' brow, the deeper the eye sits
-    if(geo.brow>0){
-      ctx.fillStyle=rgba(mixHex(baseCol,'#0a0705',0.5),0.30+geo.brow*0.28);
-      ctx.save();
-      ctx.translate(ex,ey-ry(r*0.95));
-      ctx.rotate(slant*0.7);
-      ctx.beginPath(); ctx.ellipse(0,0,rx(r*(0.95+0.25*geo.brow)*aspect),ry(r*0.30),0,0,PI2); ctx.fill();
-      ctx.restore();
-    }
-    haloAt(ex,ey);
-  }
-}
-
-// ---------------------------------------------------------------------------
 // pre-draw: allometric bulk + a forward-weighted stance. Feet stay planted.
 export function drawThreatLookPre(ctx,TILE,m,spec,sx,sy,faceDir){
   const look=lookFor(m,spec);
@@ -569,7 +387,7 @@ export function drawThreatLookPre(ctx,TILE,m,spec,sx,sy,faceDir){
 export function drawThreatLookPost(ctx,TILE,m,spec,sx,sy,faceDir,phase,artTop,hpTop){
   const look=lookFor(m,spec);
   if(!look || look.grade<2) return;
-  const fx=look.fx, g=look.grade, fam=look.family, meta=look.meta;
+  const fx=look.fx, fam=look.family, meta=look.meta;
   const body=(spec&&spec.body)||{w:1,h:1};
   const bw=Math.max(10,(body.w||1)*TILE);
   const colH=(body.h||1)*TILE;                 // collider height ≈ the torso
@@ -701,20 +519,9 @@ export function drawThreatLookPost(ctx,TILE,m,spec,sx,sy,faceDir,phase,artTop,hp
     hpTop(fy0-3-fx.fin*(3+bh*0.10));
   }
 
-  // -- eye-shine: the tapetum of a hunter. It reads by CONTRAST — a dark socket
-  //    around a small hot pupil — not by bloom. A big additive halo just washes
-  //    the animal out against a bright sky and hides the very mass we built.
-  if(fx.eye>0 && look.eyeCol){
-    const geo=eyeGeometry(m,spec,look);
-    if(geo.mode!=='none'){
-      // two eyes for a face that meets yours, one for a profile
-      const anchors=(meta&&Array.isArray(meta.eyes))
-        ? [[sx+faceDir*meta.eyes[0][0],sy+meta.eyes[0][1]],[sx+faceDir*meta.eyes[1][0],sy+meta.eyes[1][1]]]
-        : geo.twin ? [[headX-2.1,headY],[headX+2.3,headY]]
-        : [[headX,headY]];
-      drawEyeAnatomy(ctx,m,look,g,geo,anchors,faceDir,base,phase);
-    }
-  }
+  // (The eyes are NOT drawn here. Each species' art owns its eyes; the draw
+  //  loop in mobs.js tints those pixels via menaceEyeColor — an engine-drawn
+  //  eyeball over the art read as the same alien stare on every mob.)
 
   // -- breath: a big warm body in cold air; a furnace on the hot side --------------
   if(fx.breath>0 && organic && fam!=='wisp' && fam!=='jelly'){
@@ -848,7 +655,7 @@ function drawGear(ctx,look,meta,m,sx,sy,faceDir,phase,hpTop,dark){
 // ---------------------------------------------------------------------------
 const threatLook={
   menacePower, menaceScore, buildLook, lookFor, refreshLook, applySpawnLook,
-  gradeBodyColor, eyeRender, eyeScaleX, eyeScaleY, eyeGeometry, blinkState,
+  gradeBodyColor, menaceEyeColor,
   drawPre:drawThreatLookPre, drawPost:drawThreatLookPost,
   GRADE_FX, GRADE_PALETTE, SPECIES_LOOK,
   THREAT_GRADE_NAMES, THREAT_GRADE_THRESHOLDS

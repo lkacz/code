@@ -19,12 +19,13 @@ window.MM = window.MM || {};
   let ctx=null, master=null, limiter=null, mixBus=null, wetFilter=null, duckGain=null;
   let reverb=null, reverbReturn=null;
   const buses={sfx:null, ambience:null, music:null, ui:null};
-  let settings={vol:0.5, mute:false, sfx:1, ambience:0.8, music:0.55, ui:0.9};
+  let settings={vol:0.5, mute:false, sfx:1, ambience:0.8, music:0.55, ui:0.9, musicOn:true};
   try{ const raw=localStorage.getItem(VOL_KEY); if(raw){ const d=JSON.parse(raw); if(d&&typeof d==='object'){
     if(typeof d.vol==='number') settings.vol=Math.min(1,Math.max(0,d.vol));
     settings.mute=!!d.mute;
     // per-bus fields are new — older blobs simply lack them and keep defaults
     for(const k of ['sfx','ambience','music','ui']) if(typeof d[k]==='number') settings[k]=Math.min(1,Math.max(0,d[k]));
+    if(typeof d.musicOn==='boolean') settings.musicOn=d.musicOn;
   } } }catch(e){}
   function saveSettings(){ try{ localStorage.setItem(VOL_KEY, JSON.stringify(settings)); }catch(e){} }
   function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
@@ -326,7 +327,7 @@ window.MM = window.MM || {};
   // Live game state snapshot, refreshed at 4 Hz by update(). Everything is read
   // defensively — any subsystem may be absent (tests, boot order).
   const scene={isDay:true, tDay:0.5, depth:0, underground:false, submerged:0, inWater:false,
-               rain:0, rainLevel:0, rainPan:0, snow:0, storm:0, wind:0, sandstorm:0, ready:false};
+               rain:0, rainLevel:0, rainPan:0, snow:0, storm:0, wind:0, sandstorm:0, bossLevel:0, ready:false};
   let heroWater={inWater:false, subFrac:0};
   function setHeroWater(inWater,subFrac){
     const wasIn=heroWater.inWater;
@@ -370,7 +371,50 @@ window.MM = window.MM || {};
         scene.rainLevel=clamp(scene.rain/100,0,1.5);
       }
     }catch(e){}
+    scene.bossLevel=senseBossFight();
     scene.ready=true;
+  }
+
+  // Guardian-fight sensing: an awakened guardian boss near the hero flips the
+  // music director into 'boss' mode. Reuses the turret target queries the four
+  // guardian modules already expose (no fight-state plumbing), onlyBoss so the
+  // ambient sidekick skirmishes around a dormant lair stay on plain danger.
+  // Level 0 = no fight, else 0.6..1 escalating as the guardian's heart drains.
+  const BOSS_SENSE_RANGE=56;
+  function senseBossFight(){
+    let p=null; try{ p=window.player; }catch(e){}
+    if(!p || !Number.isFinite(p.x)) return 0;
+    let level=0;
+    for(const name of ['guardianLairs','skyGuardian','undergroundBoss']){
+      try{
+        const m=MM[name];
+        if(!m || !m.nearestForTurret) continue;
+        let t=m.nearestForTurret(p.x,p.y,BOSS_SENSE_RANGE,true);
+        if(!t && name==='skyGuardian' && m.targetsForTurret){
+          // a shielded sky boss hides from turret queries; live resonators
+          // exist only mid-fight, so they mark the shield phase instead
+          const list=m.targetsForTurret(p.x,p.y,BOSS_SENSE_RANGE,false)||[];
+          t=list.find(e=>e && e.raw && (e.raw.resonator||e.raw.boss))||null;
+        }
+        if(t){
+          const raw=t.raw||t;
+          const frac=(raw && raw.maxHp>0)? clamp(raw.hp/raw.maxHp,0,1) : 1;
+          level=Math.max(level, 0.6+0.4*(1-frac));
+        }
+      }catch(e){}
+    }
+    try{
+      const cg=MM.centerGuardian;
+      if(cg && cg.status){
+        const s=cg.status();
+        if(s && s.phase==='battle'){
+          const mi=s.mimic;
+          const frac=(mi && mi.maxHp>0)? clamp(mi.hp/mi.maxHp,0,1) : 1;
+          level=Math.max(level, 0.65+0.35*(1-frac));
+        }
+      }
+    }catch(e){}
+    return level;
   }
 
   // ---------------- ambience beds ----------------
@@ -458,16 +502,68 @@ window.MM = window.MM || {};
 
   // ---------------- generative music director ----------------
   // Sparse procedural score: pentatonic plucks + soft pads. Mode follows the
-  // scene (day/night/cave) and recent alarms flip it to danger. Deliberately
-  // quiet — it colors the world, it must never compete with gameplay audio.
+  // scene (day/night/cave), recent alarms flip it to danger, and a guardian
+  // boss near the hero flips it to boss. Deliberately quiet — it colors the
+  // world, it must never compete with gameplay audio.
+  //
+  // Theme rotation: peaceful modes cycle through five personalities so the
+  // score never loops one idea — a theme plays ~2-3 min, rests in a silent
+  // break ~0.5-1 min, then the next theme (shuffled bag, no immediate repeat)
+  // takes over. Danger/boss phrases ignore the breaks: combat always sounds.
   const SCALES={
     day:   [0,2,4,7,9],      // major pentatonic
     night: [0,3,5,7,10],     // minor pentatonic
     cave:  [0,3,7,10],       // dark, sparse
     danger:[0,1,5,6,10],     // tense clusters
+    boss:  [0,2,3,5,7,8,11], // harmonic minor — heroic dread
   };
+  // Five personalities: same scales, different voice/tempo/register writing.
+  const THEMES=[
+    {id:'wedrowiec', pluck:'triangle', pad:'sine',    oct:0,  stepsMul:1.0,  durMul:1.0,  gapMul:1.0,  padEvery:2, peak:1.0,  roots:[196,220,246.94,164.81]},
+    {id:'choral',    pluck:'sine',     pad:'sine',    oct:0,  stepsMul:0.6,  durMul:1.9,  gapMul:1.4,  padEvery:1, peak:0.85, roots:[174.61,196,146.83,220]},
+    {id:'skoczny',   pluck:'square',   pad:'triangle',oct:1,  stepsMul:1.6,  durMul:0.55, gapMul:0.7,  padEvery:3, peak:0.7,  roots:[220,261.63,196,293.66]},
+    {id:'nokturn',   pluck:'sine',     pad:'sine',    oct:-1, stepsMul:0.8,  durMul:1.5,  gapMul:1.25, padEvery:2, peak:0.9,  roots:[130.81,146.83,164.81,110]},
+    {id:'dryf',      pluck:'triangle', pad:'triangle',oct:0,  stepsMul:0.5,  durMul:2.2,  gapMul:1.7,  padEvery:1, peak:0.8,  roots:[164.81,185,207.65,155.56]},
+  ];
+  const PLAY_MS=[120000,180000], BREAK_MS=[28000,48000];
+  const rotation={bag:[], theme:null, phase:'play', until:0};
+  function nextTheme(){
+    if(!rotation.bag.length){
+      rotation.bag=THEMES.map((_,i)=>i);
+      for(let i=rotation.bag.length-1;i>0;i--){ const j=Math.random()*(i+1)|0; const t=rotation.bag[i]; rotation.bag[i]=rotation.bag[j]; rotation.bag[j]=t; }
+      // a reshuffle must not replay the theme that just ended
+      if(rotation.theme!=null && THEMES[rotation.bag[0]].id===rotation.theme && rotation.bag.length>1){
+        const t=rotation.bag[0]; rotation.bag[0]=rotation.bag[1]; rotation.bag[1]=t;
+      }
+    }
+    return THEMES[rotation.bag.shift()];
+  }
+  function startPlay(nowMs){
+    rotation.theme=nextTheme().id;
+    rotation.phase='play';
+    rotation.until=nowMs+rand(PLAY_MS[0],PLAY_MS[1]);
+  }
+  function currentTheme(){ return THEMES.find(t=>t.id===rotation.theme)||THEMES[0]; }
+  // Advances the play/break clock and answers "may a phrase sound right now?"
+  // Combat (danger window or boss level) always sounds; silence would deflate
+  // exactly the moments the score exists for.
+  function musicGate(nowMs){
+    if(!settings.musicOn || settings.mute || settings.music<=0.001) return false;
+    if(!rotation.until){ startPlay(nowMs); }
+    else if(nowMs>=rotation.until){
+      if(rotation.phase==='play'){
+        const overshoot=nowMs-rotation.until;
+        // slept through the whole break (tab away, long pause) → fresh theme
+        if(overshoot>BREAK_MS[1]) startPlay(nowMs);
+        else { rotation.phase='break'; rotation.until=nowMs+rand(BREAK_MS[0],BREAK_MS[1]); }
+      }else startPlay(nowMs);
+    }
+    const combat=scene.bossLevel>0 || Date.now()<dangerUntil;
+    return combat || rotation.phase==='play';
+  }
   const music={mode:'day', nextAt:0, root:220, phrase:0};
   function musicMode(){
+    if(scene.bossLevel>0) return 'boss';
     if(Date.now()<dangerUntil) return 'danger';
     if(scene.underground) return 'cave';
     return scene.isDay? 'day':'night';
@@ -477,10 +573,34 @@ window.MM = window.MM || {};
     const mode=musicMode();
     if(mode!==music.mode){ music.mode=mode; music.phrase=0; }
     const scale=SCALES[mode];
-    // roots drift between phrases (A minor-ish center, wanders a fourth)
-    if(music.phrase%4===0) music.root=[196,220,246.94,164.81][Math.random()*4|0];
+    const th=currentTheme();
+    // roots drift between phrases (theme picks its tonal neighbourhood)
+    if(music.phrase%4===0) music.root=th.roots[Math.random()*th.roots.length|0];
     const o={bus:'music',send:0.4};
-    if(mode==='danger'){
+    if(mode==='boss'){
+      // Guardian fight: driving low ostinato, timpani hits, rising minor
+      // stabs. level (0.6..1) escalates tempo, density and register as the
+      // guardian's heart drains — the fight audibly comes to a head.
+      const level=clamp(scene.bossLevel,0.6,1);
+      const root=music.root/2;
+      const pulse=0.30-0.12*level;                     // ostinato tightens
+      const pulses=8+Math.round(4*level);
+      for(let i=0;i<pulses;i++){
+        tone({...o,type:'sawtooth',f0:root,f1:root,dur:0.13,peak:0.04,delay:i*pulse,attack:0.008});
+        if(i%4===0) noise({...o,dur:0.22,peak:0.05+0.03*level,fLo:55,fHi:220,ftype:'lowpass',buf:'brown',delay:i*pulse}); // timpani
+      }
+      // rising stabs over the pulse — more and higher as level climbs
+      const stabs=2+Math.round(2.2*level);
+      let deg=0;
+      for(let i=0;i<stabs;i++){
+        deg+=1+(Math.random()*2|0);
+        const f=noteHz(music.root,scale,deg,level>0.85&&i===stabs-1?1:0);
+        tone({...o,type:'square',f0:f,f1:f,dur:0.24,peak:0.032+0.02*level,delay:0.3+i*pulse*2,attack:0.012});
+      }
+      // dark fifth pad under everything
+      for(const f of [root, root*1.498]) tone({...o,type:'triangle',f0:f,f1:f,dur:pulse*pulses,peak:0.016,attack:0.5,send:0.5});
+      music.nextAt=nowMs+Math.round(pulse*pulses*1000)+rand(0,300);
+    }else if(mode==='danger'){
       // low pulse ostinato + a tense pad
       for(let i=0;i<6;i++) tone({...o,type:'sawtooth',f0:music.root/2,f1:music.root/2,dur:0.14,peak:0.032,delay:i*0.32,attack:0.01});
       tone({...o,type:'triangle',f0:noteHz(music.root,scale,1,0),f1:noteHz(music.root,scale,1,0),dur:1.8,peak:0.02,attack:0.5});
@@ -488,25 +608,27 @@ window.MM = window.MM || {};
     }else if(mode==='cave'){
       // lone bell every phrase, long tail into the cave reverb
       const f=noteHz(music.root,scale,Math.random()*4|0,Math.random()<0.4?1:0);
-      tone({...o,type:'sine',f0:f,f1:f*0.995,dur:2.2,peak:0.035,attack:0.02,send:0.8});
-      tone({...o,type:'sine',f0:f*2.02,f1:f*2,dur:1.4,peak:0.012,attack:0.02,send:0.8});
-      music.nextAt=nowMs+rand(7000,13000);
+      tone({...o,type:'sine',f0:f,f1:f*0.995,dur:2.2*th.durMul,peak:0.035*th.peak,attack:0.02,send:0.8});
+      tone({...o,type:'sine',f0:f*2.02,f1:f*2,dur:1.4*th.durMul,peak:0.012*th.peak,attack:0.02,send:0.8});
+      music.nextAt=nowMs+rand(7000,13000)*th.gapMul;
     }else{
       const night=mode==='night';
-      // a short pluck run…
-      const steps=night?2+(Math.random()*2|0):3+(Math.random()*3|0);
+      // a short pluck run — voice, register and cadence come from the theme…
+      const baseSteps=night?2+(Math.random()*2|0):3+(Math.random()*3|0);
+      const steps=Math.max(1,Math.round(baseSteps*th.stepsMul));
       let deg=Math.random()*5|0;
       for(let i=0;i<steps;i++){
         deg+=(Math.random()<0.5?-1:1)*(1+(Math.random()*2|0));
-        const f=noteHz(music.root,scale,deg,night?0:(Math.random()<0.3?1:0));
-        tone({...o,type:'triangle',f0:f,f1:f,dur:night?0.5:0.35,peak:night?0.028:0.038,delay:i*(night?0.6:0.42),attack:0.01});
+        const oct=th.oct+(night?0:(Math.random()<0.3?1:0));
+        const f=noteHz(music.root,scale,deg,oct);
+        tone({...o,type:th.pluck,f0:f,f1:f,dur:(night?0.5:0.35)*th.durMul,peak:(night?0.028:0.038)*th.peak,delay:i*(night?0.6:0.42)*th.durMul,attack:0.01});
       }
       // …over an occasional soft pad chord
-      if(music.phrase%2===1){
+      if(music.phrase%th.padEvery===th.padEvery-1){
         const pad=[0,2,4].map(d=>noteHz(music.root/2,scale,d,0));
-        for(const f of pad) tone({...o,type:'sine',f0:f,f1:f,dur:3.5,peak:0.016,attack:0.9,send:0.5});
+        for(const f of pad) tone({...o,type:th.pad,f0:f,f1:f,dur:3.5*th.durMul,peak:0.016*th.peak,attack:0.9,send:0.5});
       }
-      music.nextAt=nowMs+(night?rand(5200,9500):rand(3400,6800));
+      music.nextAt=nowMs+(night?rand(5200,9500):rand(3400,6800))*th.gapMul;
     }
     music.phrase++;
   }
@@ -546,7 +668,7 @@ window.MM = window.MM || {};
       driveBeds();
       const nowMs=Date.now();
       driveWildlife(nowMs);
-      if(settings.music>0.001 && !settings.mute && nowMs>=music.nextAt) scheduleMusicPhrase(nowMs);
+      if(musicGate(nowMs) && nowMs>=music.nextAt) scheduleMusicPhrase(nowMs);
     }catch(e){}
   }
 
@@ -560,6 +682,8 @@ window.MM = window.MM || {};
     saveSettings();
   }
   function getBusVolume(name){ return (name in settings)? settings[name] : 0; }
+  function setMusicOn(v){ settings.musicOn=!!v; saveSettings(); }
+  function isMusicOn(){ return !!settings.musicOn; }
 
   // QA/test snapshot: no live nodes leak out, only plain numbers
   function debugState(){
@@ -567,6 +691,8 @@ window.MM = window.MM || {};
       ctx: !!ctx, state: ctx?ctx.state:'none', failed: ctxFailed, voices,
       buses:{sfx:settings.sfx, ambience:settings.ambience, music:settings.music, ui:settings.ui},
       scene:{...scene}, musicMode:music.mode, danger:Date.now()<dangerUntil,
+      musicOn:!!settings.musicOn, bossLevel:scene.bossLevel,
+      rotation:{theme:rotation.theme, phase:rotation.phase, until:rotation.until},
       beds: beds.rain? {rain:beds.rain.g.gain.value, patter:beds.patter.g.gain.value,
         rainPan:beds.rain.panner?beds.rain.panner.pan.value:0,
         patterPan:beds.patter.panner?beds.patter.panner.pan.value:0,
@@ -577,7 +703,7 @@ window.MM = window.MM || {};
   }
 
   MM.audio={ play, playAt, thunder, update, setHeroWater,
-    setVolume, setMute, setBusVolume, getBusVolume,
+    setVolume, setMute, setBusVolume, getBusVolume, setMusicOn, isMusicOn,
     getVolume:()=>settings.vol, isMuted:()=>settings.mute,
     isReady:()=>!!(ctx && ctx.state==='running'), debugState };
 })();

@@ -7560,6 +7560,13 @@ const mobs = (function(){
       applyMobAttackPose(ctx,TILE,spec,screenX,screenY,faceDir,attack);
       // menace posture: allometric bulk + forward lean for high threat grades
       THREAT_LOOK.drawPre(ctx,TILE,m,spec,screenX,screenY,faceDir);
+      // Native menace eyes: every face keeps the eyes its OWN art drew below —
+      // eyeTint only pulls that art colour toward hot red as the instance's
+      // menace grade climbs (grades 0-1 pass the colour through untouched).
+      // Species whose "eyes" are sensors or glow (automatons, wisps, the blind
+      // sand worm) simply never call it. No engine eyeball is layered on top.
+      const mobLook=THREAT_LOOK.lookFor(m,spec);
+      const eyeTint=(base)=>THREAT_LOOK.menaceEyeColor(mobLook,base);
       // Helper to draw outline rectangle
       function box(x,y,w,h,fill,stroke){ ctx.fillStyle=fill; ctx.fillRect(x,y,w,h); if(stroke){ ctx.strokeStyle=stroke; ctx.lineWidth=1; ctx.strokeRect(x+0.5,y+0.5,w-1,h-1);} hpTop(y); }
       function shade(x,y,w,h,col,alpha){ ctx.fillStyle=col; ctx.globalAlpha=alpha; ctx.fillRect(x,y,w,h); ctx.globalAlpha=1; }
@@ -7589,7 +7596,7 @@ const mobs = (function(){
           // head & beak
           ctx.fillStyle=bodyCol; ctx.fillRect(screenX+(faceDir>0?2:-4), screenY-8,4,4); hpTop(screenY-8);
           ctx.fillStyle='#ff9b00'; ctx.fillRect(screenX+(faceDir>0?6:-6), screenY-6,3,2);
-          ctx.fillStyle='#222'; ctx.fillRect(screenX+(faceDir>0?4:-4), screenY-7,2,2);
+          ctx.fillStyle=eyeTint('#222'); ctx.fillRect(screenX+(faceDir>0?4:-4), screenY-7,2,2);
           break; }
         case 'FISH': { // add dorsal/ventral fins + tail pattern
           const wag = Math.sin(phase)*2*faceDir;
@@ -7600,7 +7607,7 @@ const mobs = (function(){
           // tail (wag)
           ctx.fillStyle='#1d6b9c'; ctx.save(); ctx.translate(wag,0); ctx.fillRect(screenX+(faceDir>0?9:-11), screenY-3,3,6); ctx.restore();
           // eye & gill
-          ctx.fillStyle='#fff'; ctx.fillRect(screenX+(faceDir>0?1:-3), screenY-2,2,2); ctx.fillStyle='#000'; ctx.fillRect(screenX+(faceDir>0?1:-3), screenY-2,1,1);
+          ctx.fillStyle=eyeTint('#fff'); ctx.fillRect(screenX+(faceDir>0?1:-3), screenY-2,2,2); ctx.fillStyle='#000'; ctx.fillRect(screenX+(faceDir>0?1:-3), screenY-2,1,1);
           ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fillRect(screenX+(faceDir>0?-1:1), screenY-1,1,2); // gill slit
           break; }
         case 'PIRANHA': {
@@ -7617,7 +7624,7 @@ const mobs = (function(){
           const mouthX=screenX+(faceDir>0?4:-8);
           ctx.fillRect(mouthX,screenY+1,4,1);
           ctx.fillRect(mouthX+faceDir*1,screenY+2,2,1);
-          ctx.fillStyle='#fff';
+          ctx.fillStyle=eyeTint('#fff');
           ctx.fillRect(screenX+(faceDir>0?2:-4), screenY-2,2,2);
           ctx.fillStyle='#111';
           ctx.fillRect(screenX+(faceDir>0?3:-3), screenY-2,1,1);
@@ -7637,6 +7644,8 @@ const mobs = (function(){
           // snout
           ctx.fillStyle='#c4ad97'; ctx.fillRect(screenX+(faceDir>0?14:-11), screenY-10,4,4);
           ctx.fillStyle='#000'; ctx.fillRect(screenX+(faceDir>0?16:-11), screenY-9,2,2);
+          // eye set back from the snout (bears had none before the native-eye pass)
+          ctx.fillStyle=eyeTint('#1c0f08'); ctx.fillRect(screenX+(faceDir>0?10:-7), screenY-13,2,2);
           // ears
           ctx.fillStyle='#3e2918'; ctx.fillRect(screenX+(faceDir>0?6:-9), screenY-16,3,3); ctx.fillRect(screenX+(faceDir>0?12:-3), screenY-16,3,3);
           // legs (front/back) with a lumbering gait
@@ -7664,7 +7673,7 @@ const mobs = (function(){
             ctx.quadraticCurveTo(screenX+i*6+Math.sin(phase+i)*4,screenY+7,screenX+i*5,screenY+15+Math.abs(i));
             ctx.stroke();
           }
-          ctx.fillStyle=snare?'#e8ff90':'#13230f';
+          ctx.fillStyle=snare?'#e8ff90':eyeTint('#13230f');
           ctx.fillRect(screenX-4,screenY-8,2,2);
           ctx.fillRect(screenX+3,screenY-8,2,2);
           hpTop(screenY-16);
@@ -7696,7 +7705,7 @@ const mobs = (function(){
           // ear, muzzle, eye
           ctx.fillStyle='#7a5530'; ctx.fillRect(screenX+(faceDir>0?8:-9), screenY-21,2,3);
           ctx.fillStyle='#d9c3a5'; ctx.fillRect(screenX+(faceDir>0?15:-18), screenY-17,3,3);
-          ctx.fillStyle='#000'; ctx.fillRect(screenX+(faceDir>0?12:-13), screenY-18,1,1);
+          ctx.fillStyle=eyeTint('#000'); ctx.fillRect(screenX+(faceDir>0?12:-13), screenY-18,1,1);
           // antlers
           ctx.fillStyle='#ccb28a'; const ax=screenX+(faceDir>0?10:-12); const baseY=screenY-19; ctx.fillRect(ax, baseY-5,2,5); ctx.fillRect(ax+3*faceDir, baseY-4,2,4);
           ctx.fillRect(ax+1*faceDir, baseY-8,2,3); ctx.fillRect(ax+5*faceDir, baseY-7,2,3); hpTop(baseY-8);
@@ -7739,7 +7748,7 @@ const mobs = (function(){
             ctx.fillRect(screenX-31,screenY-18+bob,7,3);
             ctx.fillRect(screenX-27,screenY-14+bob,5,3);
           }
-          ctx.fillStyle='#16100b';
+          ctx.fillStyle=eyeTint('#16100b');
           ctx.fillRect(screenX+(faceDir>0?22:-16),screenY-16+bob,2,2);
           if(charging || windup){
             ctx.strokeStyle=charging?'rgba(255,220,140,0.82)':'rgba(255,185,90,0.62)';
@@ -7775,7 +7784,7 @@ const mobs = (function(){
           // snout + nose + eye
           ctx.fillStyle='#ddd'; ctx.fillRect(screenX+(faceDir>0?16:-20), screenY-12,4,3);
           ctx.fillStyle='#222'; ctx.fillRect(screenX+(faceDir>0?19:-20), screenY-12,2,2);
-          ctx.fillStyle='#3a2c18'; ctx.fillRect(screenX+(faceDir>0?12:-13), screenY-13,2,2);
+          ctx.fillStyle=eyeTint('#3a2c18'); ctx.fillRect(screenX+(faceDir>0?12:-13), screenY-13,2,2);
           // bushy tail wags while trotting
           const wag = Math.sin(phase*1.5)*2;
           ctx.fillStyle='#9c9c9c'; ctx.fillRect(screenX-(faceDir>0?17:-11), screenY-13+wag,6,3);
@@ -7841,7 +7850,7 @@ const mobs = (function(){
           ctx.fillStyle='#2d4550';
           ctx.fillRect(screenX-9,screenY-30+bob,6,4);
           ctx.fillRect(screenX+3,screenY-30+bob,6,4);
-          ctx.fillStyle='#9fe8ff';
+          ctx.fillStyle=eyeTint('#9fe8ff');
           ctx.fillRect(screenX-7,screenY-29+bob,2,2);
           ctx.fillRect(screenX+5,screenY-29+bob,2,2);
           ctx.fillStyle='#2d4550';
@@ -7891,7 +7900,7 @@ const mobs = (function(){
           ctx.fillStyle='#ead5a0'; ctx.fillRect(screenX-4, screenY-9,8,6);
           ctx.fillStyle='#8a6f2e'; ctx.fillRect(screenX-4, screenY-9,8,1);
           // big amber eyes with pupils
-          ctx.fillStyle='#ffb020'; ctx.fillRect(screenX-3, screenY-7,3,3); ctx.fillRect(screenX+1, screenY-7,3,3);
+          ctx.fillStyle=eyeTint('#ffb020'); ctx.fillRect(screenX-3, screenY-7,3,3); ctx.fillRect(screenX+1, screenY-7,3,3);
           ctx.fillStyle='#1b1206'; ctx.fillRect(screenX-2, screenY-6,1,1); ctx.fillRect(screenX+2, screenY-6,1,1);
           // beak
           ctx.fillStyle='#ffb94d'; ctx.fillRect(screenX-1, screenY-4,2,2);
@@ -7920,7 +7929,7 @@ const mobs = (function(){
           ctx.fillRect(screenX+(faceDir>0?5:-10),screenY-12,7,6); hpTop(screenY-12);
           ctx.fillStyle='#c78a34';
           ctx.fillRect(screenX+(faceDir>0?11:-13),screenY-9,4,2);
-          ctx.fillStyle=dive?'#ffcf65':'#1b1110';
+          ctx.fillStyle=dive?'#ffcf65':eyeTint('#1b1110');
           ctx.fillRect(screenX+(faceDir>0?7:-7),screenY-11,2,2);
           ctx.fillStyle='#2a241f';
           ctx.fillRect(screenX-(faceDir>0?13:-5),screenY-3,7,3);
@@ -7939,7 +7948,7 @@ const mobs = (function(){
           ctx.fillRect(screenX+4,screenY-4-flap,5,4);
           ctx.fillStyle='#d1ba8b';
           ctx.fillRect(screenX+(faceDir>0?3:-7),screenY-8,5,4); hpTop(screenY-8);
-          ctx.fillStyle='#1c120c';
+          ctx.fillStyle=eyeTint('#1c120c');
           ctx.fillRect(screenX+(faceDir>0?5:-5),screenY-7,1,1);
           ctx.fillStyle='#c9832c';
           ctx.fillRect(screenX+(faceDir>0?8:-9),screenY-6,2,1);
@@ -7983,7 +7992,7 @@ const mobs = (function(){
           ctx.fillStyle='rgba(10,28,38,0.55)';
           for(let i=0;i<3;i++) ctx.fillRect(screenX+faceDir*(8-i*3)-1, screenY-3,1,6);
           // eye with a white ring + jagged mouth
-          ctx.fillStyle='#e9f6fa'; ctx.fillRect(screenX+(faceDir>0?13:-16), screenY-4,3,3);
+          ctx.fillStyle=eyeTint('#e9f6fa'); ctx.fillRect(screenX+(faceDir>0?13:-16), screenY-4,3,3);
           ctx.fillStyle='#0a141b'; ctx.fillRect(screenX+(faceDir>0?14:-15), screenY-3,1,1);
           ctx.fillStyle='#0a141b'; ctx.fillRect(screenX+(faceDir>0?16:-22), screenY+1,7,2);
           ctx.fillStyle='#fff';
@@ -8024,7 +8033,7 @@ const mobs = (function(){
           ctx.closePath();
           ctx.fill();
           hpTop(screenY-30);
-          ctx.fillStyle='#0c1d28';
+          ctx.fillStyle=eyeTint('#0c1d28');
           ctx.fillRect(screenX+faceDir*30-(faceDir>0?0:2),screenY-9,2,2);
           ctx.fillStyle='rgba(230,250,255,0.74)';
           for(let i=0;i<5;i++) ctx.fillRect(screenX+faceDir*(14+i*5),screenY+7+i%2,3,1);
@@ -8043,7 +8052,7 @@ const mobs = (function(){
           // segmented body
           for(let i=-10;i<=10;i+=4){ ctx.fillStyle= (i%8===0)? body : '#256d38'; ctx.fillRect(screenX+i, screenY-2,4,4); hpTop(screenY-2); }
           // head
-          ctx.fillStyle=body; ctx.fillRect(screenX+10, screenY-3,5,6); ctx.fillStyle='#fff'; ctx.fillRect(screenX+13, screenY-2,2,2); ctx.fillStyle='#000'; ctx.fillRect(screenX+13, screenY-2,1,1);
+          ctx.fillStyle=body; ctx.fillRect(screenX+10, screenY-3,5,6); ctx.fillStyle=eyeTint('#fff'); ctx.fillRect(screenX+13, screenY-2,2,2); ctx.fillStyle='#000'; ctx.fillRect(screenX+13, screenY-2,1,1);
           break; }
         case 'LAKE_SERPENT': {
           const body = flashing? '#dffffa':(m.baseColor||'#45b9a8');
@@ -8063,7 +8072,7 @@ const mobs = (function(){
           }
           ctx.fillStyle=body;
           ctx.fillRect(screenX+19,screenY-5,11,9);
-          ctx.fillStyle='#d9fff8';
+          ctx.fillStyle=eyeTint('#d9fff8');
           ctx.fillRect(screenX+24,screenY-3,2,2);
           ctx.fillStyle='#07332f';
           ctx.fillRect(screenX+24,screenY-3,1,1);
@@ -8133,7 +8142,7 @@ const mobs = (function(){
           ctx.fillRect(screenX+(faceDir>0?5:-7), screenY-20,3,2);
           ctx.fillStyle='#a9a496'; ctx.fillRect(screenX+(faceDir>0?6:-8), screenY-15,2,2);
           // eye, muzzle, beard
-          ctx.fillStyle='#2c2c26'; ctx.fillRect(screenX+(faceDir>0?11:-11), screenY-15,1,1);
+          ctx.fillStyle=eyeTint('#2c2c26'); ctx.fillRect(screenX+(faceDir>0?11:-11), screenY-15,1,1);
           ctx.fillStyle='#b3ada0'; ctx.fillRect(screenX+(faceDir>0?12:-14), screenY-13,2,3);
           ctx.fillStyle='#9b968a'; ctx.fillRect(screenX+(faceDir>0?12:-13), screenY-10,2,3);
           // tail nub
@@ -8174,7 +8183,7 @@ const mobs = (function(){
           ctx.fillStyle='#6d4f22';
           ctx.fillRect(screenX-(faceDir>0?13:-9)-wiggle*faceDir, screenY-2,6,2);
           for(let i=-6;i<=6;i+=4) ctx.fillRect(screenX+i, screenY+1,2,3);
-          ctx.fillStyle='#111'; ctx.fillRect(screenX+(faceDir>0?10:-10), screenY-5,1,1);
+          ctx.fillStyle=eyeTint('#111'); ctx.fillRect(screenX+(faceDir>0?10:-10), screenY-5,1,1);
           break; }
         case 'ZABA': {
           const body = flashing? '#e8ffd8':(m.baseColor||'#4c9a3f');
@@ -8182,7 +8191,7 @@ const mobs = (function(){
           box(screenX-6, screenY-5+squat,12,7, body,'#2f5e2c');
           ctx.fillStyle=body;
           ctx.fillRect(screenX-5, screenY-9+squat,10,5); hpTop(screenY-9);
-          ctx.fillStyle='#f4ffe8';
+          ctx.fillStyle=eyeTint('#f4ffe8');
           ctx.fillRect(screenX-4, screenY-8+squat,3,2);
           ctx.fillRect(screenX+1, screenY-8+squat,3,2);
           ctx.fillStyle='#111';
@@ -8211,7 +8220,7 @@ const mobs = (function(){
           ctx.fillStyle=mixHexColor(body,'#b8d67a',0.28);
           ctx.fillRect(screenX-7,screenY-17+bob,14,8);
           hpTop(screenY-17+bob);
-          ctx.fillStyle=smoked?'#ffbe65':'#caff72';
+          ctx.fillStyle=smoked?'#ffbe65':eyeTint('#caff72');
           ctx.fillRect(screenX+faceDir*4-1,screenY-15+bob,2,2);
           ctx.fillRect(screenX-faceDir*2-1,screenY-14+bob,2,2);
           ctx.fillStyle='#25351f';
@@ -8290,7 +8299,7 @@ const mobs = (function(){
           const headX=screenX+faceDir*18;
           box(headX-(faceDir>0?1:9),screenY-17+bob,10,9,plate,dark);
           hpTop(screenY-34+bob);
-          ctx.fillStyle='#ffe18e';
+          ctx.fillStyle=eyeTint('#ffe18e');
           ctx.fillRect(headX+faceDir*3-(faceDir>0?0:2),screenY-15+bob,2,2);
           ctx.fillStyle=dark;
           const clawX=screenX+faceDir*30;
@@ -8344,7 +8353,7 @@ const mobs = (function(){
           ctx.fillRect(screenX-6,screenY-29,12,8); hpTop(screenY-29);
           ctx.fillStyle='#6d5227';
           ctx.fillRect(screenX-6,screenY-29,12,2);
-          ctx.fillStyle=angry?'#ffdf7a':'#b9ff93';
+          ctx.fillStyle=angry?'#ffdf7a':eyeTint('#b9ff93');
           ctx.fillRect(screenX+(faceDir>0?2:-4),screenY-26,3,2);
           ctx.fillRect(screenX+(faceDir>0?-2:2),screenY-25,3,2);
           ctx.fillStyle='#31472c';
@@ -8373,7 +8382,7 @@ const mobs = (function(){
           ctx.fillRect(screenX+(faceDir>0?10:-19),screenY-23,10,9); hpTop(screenY-23);
           ctx.fillStyle='#ead9b8';
           ctx.fillRect(screenX+(faceDir>0?18:-22),screenY-18,5,4);
-          ctx.fillStyle='#1b1209';
+          ctx.fillStyle=eyeTint('#1b1209');
           ctx.fillRect(screenX+(faceDir>0?19:-21),screenY-17,2,2);
           ctx.strokeStyle='#7a5b31'; ctx.lineWidth=2; ctx.lineCap='round';
           const ax=screenX+(faceDir>0?13:-13);
@@ -8401,7 +8410,7 @@ const mobs = (function(){
           ctx.fillRect(screenX+(faceDir>0?14:-28),screenY-19,16,11);
           ctx.fillStyle='#f1d5a0';
           ctx.fillRect(screenX+(faceDir>0?26:-30),screenY-15,5,4);
-          ctx.fillStyle='#1b0f08';
+          ctx.fillStyle=eyeTint('#1b0f08');
           ctx.fillRect(screenX+(faceDir>0?27:-29),screenY-14,2,2);
           ctx.fillStyle='#efe1bd';
           ctx.fillRect(screenX+(faceDir>0?11:-23),screenY-23,8,3);
@@ -8424,7 +8433,7 @@ const mobs = (function(){
           ctx.fillRect(screenX+(faceDir>0?11:-23),screenY-26,12,11); hpTop(screenY-31);
           ctx.fillStyle='#d7b37a';
           ctx.fillRect(screenX+(faceDir>0?21:-27),screenY-20,6,5);
-          ctx.fillStyle='#1d1208';
+          ctx.fillStyle=eyeTint('#1d1208');
           ctx.fillRect(screenX+(faceDir>0?22:-26),screenY-19,2,2);
           ctx.strokeStyle='#8a6a3c'; ctx.lineWidth=3; ctx.lineCap='round';
           const ax=screenX+(faceDir>0?13:-13);
@@ -8454,7 +8463,7 @@ const mobs = (function(){
           ctx.fillRect(screenX+(faceDir>0?12:-27),screenY-23,15,12); hpTop(screenY-23);
           ctx.fillStyle='#c8d8e0';
           ctx.fillRect(screenX+(faceDir>0?24:-29),screenY-18,6,5);
-          ctx.fillStyle='#0c1820';
+          ctx.fillStyle=eyeTint('#0c1820');
           ctx.fillRect(screenX+(faceDir>0?26:-29),screenY-16,2,2);
           ctx.fillStyle='#dceaf0';
           ctx.fillRect(screenX+(faceDir>0?14:-24),screenY-24,4,4);
@@ -8500,9 +8509,9 @@ const mobs = (function(){
           ctx.fillStyle=body;
           ctx.fillRect(screenX-4, screenY-4, 3, 5); ctx.fillRect(screenX+1, screenY-4, 3, 5);
           // glowing eyes with a faint halo so the stare reads at night
-          ctx.fillStyle='rgba(216,255,154,0.25)';
+          ctx.fillStyle=rgbaHex(eyeTint('#d8ff9a'),0.25);
           ctx.fillRect(screenX+(faceDir>0?3:-7), screenY-26+lurch*0.6, 6, 4);
-          ctx.fillStyle='#d8ff9a';
+          ctx.fillStyle=eyeTint('#d8ff9a');
           ctx.fillRect(screenX+(faceDir>0?4:-6), screenY-25+lurch*0.6, 2, 2);
           ctx.fillRect(screenX+(faceDir>0?7:-3), screenY-25+lurch*0.6, 2, 2);
           break; }
@@ -8514,7 +8523,7 @@ const mobs = (function(){
           ctx.beginPath(); ctx.moveTo(screenX-3,screenY); ctx.lineTo(screenX-11,screenY-2+flap); ctx.lineTo(screenX-4,screenY+3); ctx.closePath(); ctx.fill();
           ctx.beginPath(); ctx.moveTo(screenX+3,screenY); ctx.lineTo(screenX+11,screenY-2-flap); ctx.lineTo(screenX+4,screenY+3); ctx.closePath(); ctx.fill();
           hpTop(screenY-6);
-          ctx.fillStyle='#ff5a5a';
+          ctx.fillStyle=eyeTint('#ff5a5a');
           ctx.fillRect(screenX+(faceDir>0?0:-2), screenY-2, 1.6, 1.6);
           ctx.fillRect(screenX+(faceDir>0?2:-4), screenY-2, 1.6, 1.6);
           break; }
@@ -8524,7 +8533,7 @@ const mobs = (function(){
           box(screenX-5, screenY-20, 10, 14, bone, '#8c8674');             // ribcage
           ctx.fillStyle='#8c8674'; for(let r=0;r<3;r++) ctx.fillRect(screenX-5, screenY-18+r*4, 10, 1.4); // ribs
           ctx.fillStyle=bone; ctx.fillRect(screenX-4, screenY-27, 8, 7); hpTop(screenY-27); // skull
-          ctx.fillStyle='#1c1c22'; ctx.fillRect(screenX+(faceDir>0?-1:-3), screenY-25, 2, 2); ctx.fillRect(screenX+(faceDir>0?2:0), screenY-25, 2, 2);
+          ctx.fillStyle=eyeTint('#1c1c22'); ctx.fillRect(screenX+(faceDir>0?-1:-3), screenY-25, 2, 2); ctx.fillRect(screenX+(faceDir>0?2:0), screenY-25, 2, 2);
           ctx.fillStyle=bone; ctx.fillRect(screenX-3, screenY-6, 2.4, 6); ctx.fillRect(screenX+1, screenY-6, 2.4, 6); // legs
           // bow arm
           ctx.strokeStyle='#9a6a32'; ctx.lineWidth=1.6; ctx.lineCap='round';
@@ -8642,7 +8651,7 @@ const mobs = (function(){
             ctx.beginPath(); ctx.moveTo(lx, screenY-2); ctx.lineTo(lx-2, screenY+2+lift); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(lx+1, screenY-2); ctx.lineTo(lx+3, screenY+2-lift); ctx.stroke();
           }
-          ctx.fillStyle='#cfe8a8';
+          ctx.fillStyle=eyeTint('#cfe8a8');
           ctx.fillRect(screenX+(faceDir>0?5:-7), screenY-6, 2, 2); ctx.fillRect(screenX+(faceDir>0?8:-10), screenY-6, 2, 2);
           hpTop(screenY-7);
           break; }
@@ -8688,7 +8697,7 @@ const mobs = (function(){
           ctx.fillStyle=gold;
           ctx.fillRect(headX-(faceDir>0?1:7),screenY-53,7,7);
           ctx.fillRect(headX-(faceDir>0?9:0),screenY-51,5,6);
-          ctx.fillStyle=breath?'#fff4a8':'#ffcf5a';
+          ctx.fillStyle=breath?'#fff4a8':eyeTint('#ffcf5a');
           ctx.fillRect(headX+(faceDir>0?9:-11),screenY-43,3,3);
           ctx.fillStyle=dark;
           ctx.fillRect(headX+(faceDir>0?0:-14),screenY-38,12,3);
@@ -8746,7 +8755,7 @@ const mobs = (function(){
           hpTop(screenY-29);
           ctx.fillStyle='#6a3d22';
           ctx.fillRect(screenX-5,screenY-19,10,8);
-          ctx.fillStyle=hammer?'#ffe88a':'#11100d';
+          ctx.fillStyle=hammer?'#ffe88a':eyeTint('#11100d');
           ctx.fillRect(screenX+(faceDir>0?2:-4),screenY-24,2,2);
           ctx.fillRect(screenX+(faceDir>0?-2:2),screenY-24,2,2);
           ctx.fillStyle='#3d281b';
@@ -8856,7 +8865,7 @@ const mobs = (function(){
             ctx.beginPath(); ctx.moveTo(screenX+ox,screenY-1); ctx.lineTo(screenX+ox-4,screenY+3+lift); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(screenX+ox,screenY-1); ctx.lineTo(screenX+ox+4,screenY+3-lift); ctx.stroke();
           }
-          ctx.fillStyle='#eaff8e';
+          ctx.fillStyle=eyeTint('#eaff8e');
           ctx.fillRect(screenX+faceDir*6-(faceDir>0?0:2),screenY-5,2,2);
           ctx.fillStyle='rgba(220,255,124,0.75)';
           ctx.fillRect(screenX-faceDir*10,screenY-2,4,1);
@@ -8928,7 +8937,7 @@ const mobs = (function(){
           ctx.fillStyle=body;
           ctx.fillRect(screenX-7,screenY-31,14,11);
           hpTop(screenY-34);
-          ctx.fillStyle=glow;
+          ctx.fillStyle=eyeTint(glow);
           ctx.fillRect(screenX+(faceDir>0?2:-4),screenY-27,2,2);
           ctx.fillRect(screenX+(faceDir>0?-3:3),screenY-27,2,2);
           ctx.fillStyle=fire ? '#2b1008' : '#12313d';
@@ -8990,7 +8999,7 @@ const mobs = (function(){
           ctx.closePath(); ctx.fill(); hpTop(screenY-6);
           ctx.fillStyle='rgba(90,140,190,0.85)';
           ctx.fillRect(screenX-faceDir*13,screenY+1,faceDir*8,1.6); // tail whip
-          ctx.fillStyle='#1d3550';
+          ctx.fillStyle=eyeTint('#1d3550');
           ctx.fillRect(screenX+faceDir*4-1,screenY-3,2,2);
           ctx.fillRect(screenX+faceDir*7-1,screenY-2,2,2);
           break; }
@@ -9007,7 +9016,7 @@ const mobs = (function(){
           box(screenX-5*s,screenY-6*s,10*s,12*s,body,'#5d4426'); // torso
           ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?2:-6)*s,screenY-10*s,5*s,5*s); hpTop(screenY-10*s); // head
           ctx.fillStyle='#e8b93c'; ctx.fillRect(screenX+(faceDir>0?7:-9)*s,screenY-8*s,3*s,2); // beak
-          ctx.fillStyle='#38200e'; ctx.fillRect(screenX+(faceDir>0?4:-4)*s,screenY-9*s,2,2); // eye
+          ctx.fillStyle=eyeTint('#38200e'); ctx.fillRect(screenX+(faceDir>0?4:-4)*s,screenY-9*s,2,2); // eye
           ctx.fillStyle='#5d4426';
           ctx.fillRect(screenX-3*s,screenY+6*s,2,4*s); ctx.fillRect(screenX+2*s,screenY+6*s,2,4*s); // talons
           if(queen){
@@ -9060,7 +9069,7 @@ const mobs = (function(){
           box(screenX-5,screenY-4,10,7,body,'#61301a');
           ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?3:-6),screenY-7,4,4); hpTop(screenY-7);
           ctx.fillStyle='#ffd24a'; ctx.fillRect(screenX+(faceDir>0?7:-8),screenY-5,2,1.6);
-          ctx.fillStyle='#2b1208'; ctx.fillRect(screenX+(faceDir>0?4:-4),screenY-6,1.6,1.6);
+          ctx.fillStyle=eyeTint('#2b1208'); ctx.fillRect(screenX+(faceDir>0?4:-4),screenY-6,1.6,1.6);
           break; }
         case 'SKY_SERAPH': { // radiant winged figure with a halo
           const body=flashing?'#ffffff':(m.baseColor||'#f4e6b8');
@@ -9082,7 +9091,7 @@ const mobs = (function(){
           ctx.fillStyle='#fff4cf'; ctx.fillRect(screenX-4,screenY-18,8,7); hpTop(screenY-24);
           ctx.strokeStyle='#ffd24a'; ctx.lineWidth=2;
           ctx.beginPath(); ctx.arc(screenX,screenY-21,6,0,Math.PI*2); ctx.stroke(); // halo
-          ctx.fillStyle='#7a5a18';
+          ctx.fillStyle=eyeTint('#7a5a18');
           ctx.fillRect(screenX+(faceDir>0?-2:0),screenY-16,2,2); ctx.fillRect(screenX+(faceDir>0?2:-4),screenY-16,2,2);
           break; }
         case 'SKYGROVE_WARDEN': { // island-striding treant
@@ -9096,7 +9105,7 @@ const mobs = (function(){
           ctx.fillStyle='#3f7d2e'; // leaf crown
           ctx.beginPath(); ctx.arc(screenX-8,screenY-18,7,0,Math.PI*2); ctx.arc(screenX+2,screenY-23,9,0,Math.PI*2); ctx.arc(screenX+11,screenY-17,6,0,Math.PI*2); ctx.fill();
           hpTop(screenY-32);
-          ctx.fillStyle='#ffe27a';
+          ctx.fillStyle=eyeTint('#ffe27a');
           ctx.fillRect(screenX+(faceDir>0?-4:0),screenY-8,3,3); ctx.fillRect(screenX+(faceDir>0?4:-8),screenY-8,3,3); // glowing eyes
           break; }
         case 'BALLOON_TYRANT': { // striped gasbag with a fanged gondola
@@ -9110,7 +9119,7 @@ const mobs = (function(){
           ctx.fillRect(screenX-8,screenY+5+bob,16,8); // gondola jaw
           ctx.fillStyle='#fff';
           for(let i=0;i<4;i++) ctx.fillRect(screenX-6+i*4,screenY+5+bob,2,3); // teeth
-          ctx.fillStyle='#2b1208';
+          ctx.fillStyle=eyeTint('#2b1208');
           ctx.fillRect(screenX+(faceDir>0?2:-6),screenY-14+bob,4,4); // eye
           ctx.strokeStyle='rgba(90,58,30,0.8)'; ctx.lineWidth=1.4;
           for(const sx of [-14,14]){ // rigging
@@ -9155,7 +9164,7 @@ const mobs = (function(){
           box(screenX-12,screenY-5,24,10,body,'#3f7d78'); // head/foreseg
           ctx.fillStyle='#3f7d78';
           ctx.beginPath(); ctx.moveTo(screenX-faceDir*12,screenY); ctx.lineTo(screenX-faceDir*20,screenY-4); ctx.lineTo(screenX-faceDir*20,screenY+4); ctx.closePath(); ctx.fill(); // fin
-          ctx.fillStyle='#123c3c';
+          ctx.fillStyle=eyeTint('#123c3c');
           ctx.fillRect(screenX+faceDir*6-1,screenY-3,3,3); // eye
           ctx.fillStyle='rgba(255,255,255,0.85)';
           ctx.fillRect(screenX+faceDir*10-2,screenY-1,4,2); // frost breath shimmer
@@ -9175,7 +9184,7 @@ const mobs = (function(){
           ctx.fillStyle='#5d3f14';
           ctx.fillRect(screenX-5,screenY-20,11,3); // turban
           ctx.fillStyle='#e04848'; ctx.fillRect(screenX,screenY-21,2,2); // jewel
-          ctx.fillStyle='#2b1c08';
+          ctx.fillStyle=eyeTint('#2b1c08');
           ctx.fillRect(screenX+(faceDir>0?1:-3),screenY-15,2,2);
           ctx.globalAlpha=1;
           break; }
@@ -9212,7 +9221,7 @@ const mobs = (function(){
             ctx.fillRect(sx,sYy,2.4,2.4); // rising spores
           }
           ctx.globalCompositeOperation=prevComp;
-          ctx.fillStyle='#2f4f38';
+          ctx.fillStyle=eyeTint('#2f4f38');
           ctx.fillRect(screenX+(faceDir>0?4:-10),screenY-9+bob,6,3); // brooding eye slit
           break; }
         case 'GRAVITY_COLOSSUS': { // obsidian monolith with orbiting debris
@@ -9257,7 +9266,7 @@ const mobs = (function(){
           box(screenX-6,screenY-5,12,10,body,'#a33d10');
           ctx.fillStyle=body; ctx.fillRect(screenX+(faceDir>0?4:-8),screenY-9,5,5); hpTop(screenY-11);
           ctx.fillStyle='#ffd24a'; ctx.fillRect(screenX+(faceDir>0?9:-10),screenY-7,2.6,1.8); // beak
-          ctx.fillStyle='#3a1404'; ctx.fillRect(screenX+(faceDir>0?6:-6),screenY-8,1.8,1.8);
+          ctx.fillStyle=eyeTint('#3a1404'); ctx.fillRect(screenX+(faceDir>0?6:-6),screenY-8,1.8,1.8);
           break; }
         default: {
           // fallback: small box
@@ -10225,7 +10234,7 @@ const mobs = (function(){
     const spec = SPECIES[m.id]; if(!spec) return;
     // Natural death: no loot or XP, just silently despawn
     if(m._naturalDeath){ return; }
-    // main.js state is reached via explicit window bridges (player/inv/lootInbox)
+    // main.js state is reached via explicit window bridges (player/inv/MM.onLootGained)
     const player = window.player;
     dropMeatForMob(m,spec);
     // XP gain
@@ -10521,7 +10530,11 @@ const mobs = (function(){
     m.facing=d.awayX>=0?1:-1;
     if(m.onGround && d.power>0.6 && Math.random()<0.05*dt*60) m.vy=-4.4; // a startled hop
     m.state='flee';
-    m._ghostSpookUntil=performance.now()+900;
+    const now=performance.now();
+    // credit the watcher ONCE per fright, not once per frame: a fresh episode is one
+    // whose previous spook already lapsed (d.i names the spirit that caused it)
+    if(!(finiteNum(m._ghostSpookUntil) && m._ghostSpookUntil>now) && MM.ghostSpook) { try{ MM.ghostSpook(d.i); }catch(e){} }
+    m._ghostSpookUntil=now+900;
     return true;
   }
   function isGhostSpooked(m){ return finiteNum(m._ghostSpookUntil) && m._ghostSpookUntil>performance.now(); }

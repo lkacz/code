@@ -3,7 +3,9 @@
 // game over CDP and captures three lineup screenshots proving the visual
 // menace ladder:
 //   A  tools/threat-look-qa-a.png  one species (WOLF) forced through all six
-//      grades — size, bulk, palette, spines, scars, eyes must escalate left→right
+//      grades — size, bulk, palette, keratin and the mob's own art eyes must
+//      escalate left→right (eyes recolour natively via menaceEyeColor; the
+//      engine never draws an eyeball of its own)
 //   B  tools/threat-look-qa-b.png  natural bestiary ladder (SQUIRREL → GOLD_DRAGON)
 //   C  tools/threat-look-qa-c.png  tool users at apex gear tier (runic weapons)
 // The page also asserts the grade/scale ladders are monotone; a broken ladder
@@ -186,9 +188,9 @@ const CLOSEUP_HORNED = JSON.stringify([
 	{ id: 'THUNDER_BISON', force: { hp: 340, dmgMult: 2.6, tier: 3, side: 'hot', baseColor: '#8b5f34' } },
 	{ id: 'THUNDER_BISON', force: { hp: 900, dmgMult: 4, tier: 4, side: 'hot', baseColor: '#8b5f34' } }
 ]);
-// eye-anatomy close-up: a grazer's bar pupil (goat), a hunter's slit (bear),
-// the reptile eye of the dragon — and the screen-facing TWIN eyes of the yeti
-// (glacier blue) and the ghoul (grave lime)
+// native-eye close-up: every face keeps its OWN art eyes (goat fleck, bear
+// eye, ghoul lime pair, yeti glacier pair, dragon gold) — only their colour
+// runs hotter with the grade; no overlay eyeball may appear on any of them
 const CLOSEUP_EYES = JSON.stringify([
 	{ id: 'GOAT', force: { hp: 200, dmgMult: 2, tier: 2, side: 'center' } },
 	{ id: 'BEAR', force: { hp: 400, dmgMult: 3, tier: 3, side: 'hot' } },

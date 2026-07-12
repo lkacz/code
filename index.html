@@ -15,26 +15,46 @@
     html,body{ margin:0; padding:0; height:100%; background:#0b0f16; color:#e8e8e8; font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,'Helvetica Neue',Arial,'Noto Sans',sans-serif; touch-action:none; user-select:none; overscroll-behavior:none; -webkit-tap-highlight-color:rgba(0,0,0,0); }
     canvas{ display:block; width:100vw; height:100vh; }
     #ui{ position:fixed; inset:0; pointer-events:none; }
-    #hud{ position:absolute; left:8px; right:8px; top:8px; display:grid; grid-template-columns:minmax(0,1fr) auto auto auto auto; gap:8px; align-items:start; }
+    /* Top bar: three zones — world telemetry + objective on the LEFT (above the
+       craft panel), transient toasts in the free CENTER, system cluster (fps,
+       viewers, menu) on the RIGHT anchored above the minimap. One shared glass
+       language: 34px pills, 11px radius, no per-frame backdrop blur (perf). */
+    #hud{ position:absolute; left:8px; right:8px; top:8px; display:grid; grid-template-columns:auto auto minmax(0,1fr) auto auto; gap:8px; align-items:center; }
     #hudSpacer{ min-width:0; }
-    #hud .panel{ pointer-events:auto; background:rgba(0,0,0,.48); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:6px 10px; display:inline-flex; align-items:center; gap:10px; font-size:12px; contain:layout paint; }
-    #worldStatusPanel{ min-width:0; max-width:min(520px,58vw); overflow:hidden; }
-    #worldStatus{ display:block; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    #taskPanel{ min-width:0; max-width:min(300px,34vw); overflow:hidden; border-color:rgba(255,80,100,.26); }
-    #taskStatus{ display:block; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    #fps{ min-width:56px; text-align:right; opacity:.85; }
+    #hud .panel{ pointer-events:auto; height:34px; background:rgba(8,12,20,.66); border:1px solid rgba(255,255,255,.10); border-radius:11px; padding:0 12px; display:inline-flex; align-items:center; gap:10px; font-size:12px; box-shadow:0 2px 10px rgba(0,0,0,.28); contain:layout paint; }
+    #worldStatusPanel{ min-width:0; max-width:min(520px,58vw); overflow:hidden; justify-self:start; }
+    #worldStatus{ display:block; min-width:0; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    #taskPanel{ min-width:0; max-width:min(300px,34vw); overflow:hidden; border-color:rgba(255,196,74,.32); gap:7px; }
+    #taskPanel::before{ content:"🎯"; flex:none; font-size:12px; }
+    #taskStatus{ display:block; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#ffe3ac; }
+    #fpsPanel{ padding:0 10px; }
+    #fps{ min-width:52px; text-align:right; opacity:.7; font-size:11px; font-variant-numeric:tabular-nums; letter-spacing:.2px; }
     #seedPanel input{ pointer-events:auto; background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 8px; font-size:12px; width:130px; }
     #seedPanel button, .topbtn, .craftBtn{ pointer-events:auto; background:#2c7ef8; color:#fff; border:none; border-radius:10px; padding:6px 10px; font-weight:600; font-size:12px; box-shadow:0 2px 6px rgba(44,126,248,.35); cursor:pointer; }
     .topbtn.toggled{ background:#21a366; box-shadow:0 2px 10px rgba(33,163,102,.45); }
-  #menuWrap{ position:relative; pointer-events:auto; z-index:80; }
-  #menuBtn{ pointer-events:auto; background:#2c7ef8; color:#fff; border:none; border-radius:10px; padding:6px 12px; min-width:40px; min-height:32px; font-weight:600; font-size:14px; box-shadow:0 2px 6px rgba(44,126,248,.35); cursor:pointer; }
+  #menuWrap{ position:relative; pointer-events:auto; z-index:80; display:flex; gap:6px; align-items:center; }
+  /* System buttons match the glass pills; color only carries STATE (menu open =
+     accent blue, transmission live = green via the #ghostBtn.live rule below). */
+  #menuWrap .topbtn, #menuBtn{ background:rgba(8,12,20,.66); color:#e8eef8; border:1px solid rgba(255,255,255,.14); border-radius:11px; height:34px; min-height:0; padding:0 12px; font-weight:600; font-size:14px; box-shadow:0 2px 10px rgba(0,0,0,.28); cursor:pointer; transition:background .12s ease,border-color .12s ease; }
+  #menuWrap .topbtn:hover, #menuBtn:hover{ background:rgba(34,46,66,.82); border-color:rgba(255,255,255,.28); }
+  #menuBtn{ min-width:44px; }
+  /* the glass override above out-specifies .topbtn.toggled — restate the ON state
+     (this also covers the open menu: ui.js stamps menuBtn with .topbtn.toggled) */
+  #menuWrap .topbtn.toggled{ background:#21a366; border-color:rgba(255,255,255,.22); box-shadow:0 2px 10px rgba(33,163,102,.45); }
+  #ghostBtn[aria-expanded="true"]{ border-color:rgba(255,255,255,.35); }
   #menuPanel{ position:absolute; right:0; top:110%; min-width:230px; z-index:50; max-height:calc(100vh - 70px); overflow-y:auto; overscroll-behavior:contain; background:rgba(15,18,26,.92); border:1px solid rgba(255,255,255,.15); border-radius:14px; padding:10px 10px 12px; display:flex; flex-direction:column; gap:10px; box-shadow:0 8px 28px -6px rgba(0,0,0,.6); backdrop-filter:blur(8px); }
   #menuPanel[hidden]{ display:none !important; }
   #menuPanel .group{ display:flex; flex-wrap:wrap; gap:6px; }
   #menuPanel .seedRow{ align-items:center; gap:6px; font-size:12px; }
   #menuPanel input{ background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 6px; font-size:12px; width:110px; }
   #menuPanel .hint{ font-size:11px; opacity:.75; }
-    @media (max-width:760px){ #hud{ grid-template-columns:minmax(0,1fr) auto auto auto; } #taskPanel{ grid-column:1 / span 2; grid-row:2; max-width:min(520px,calc(100vw - 108px)); } }
+    @media (max-width:760px){
+      #hud{ grid-template-columns:minmax(0,1fr) auto auto; }
+      #hudSpacer{ display:none; }
+      #taskPanel{ grid-column:1 / -1; grid-row:2; justify-self:start; max-width:min(520px,calc(100vw - 16px)); }
+    }
+    /* phones: the FPS readout is a diagnostic — give its width back to the status line */
+    @media (max-width:560px){ #fpsPanel{ display:none; } }
     #craft{ position:absolute; left:8px; top:54px; pointer-events:auto; display:flex; flex-direction:column; gap:8px; width:min(560px,calc(100vw - 16px)); max-height:calc(100vh - 92px); overflow:hidden; overscroll-behavior:contain; color:#eef4fb; background:rgba(13,17,24,.9); border:1px solid rgba(255,255,255,.14); border-radius:14px; padding:9px; font-size:12px; box-shadow:0 12px 30px rgba(0,0,0,.45); backdrop-filter:blur(10px); }
     #craft .craftHeader{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin:-9px -9px 0; padding:9px; background:rgba(8,11,17,.82); border-bottom:1px solid rgba(255,255,255,.08); }
     #craft .craftTitleWrap{ display:flex; align-items:baseline; gap:8px; min-width:0; }
@@ -122,6 +142,9 @@
     #craft .req{ font-size:11px; opacity:.9; }
     /* HUD ingredient tracker for the 📌-pinned recipe */
     #craftTracker{ position:absolute; right:8px; top:54px; z-index:40; pointer-events:auto; display:flex; flex-direction:column; gap:6px; width:min(240px,calc(100vw - 16px)); padding:8px 9px; border-radius:12px; border:1px solid rgba(255,255,255,.16); background:rgba(13,17,24,.88); color:#eef4fb; font-size:11px; box-shadow:0 8px 22px rgba(0,0,0,.4); backdrop-filter:blur(8px); }
+    /* the explicit display:flex above would defeat the [hidden] attribute (an empty
+       tracker then paints as a bare dark bar over the minimap) — same guard as #menuPanel */
+    #craftTracker[hidden]{ display:none !important; }
     #craftTracker.ready{ border-color:rgba(91,206,143,.65); box-shadow:0 0 18px -4px rgba(74,222,128,.55), 0 8px 22px rgba(0,0,0,.4); }
     #craftTracker .craftTrackerHead{ display:flex; align-items:center; justify-content:space-between; gap:6px; }
     #craftTracker .craftTrackerName{ flex:1; min-width:0; border:none; background:none; color:#fff; font-weight:800; font-size:11px; text-align:left; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:0; }
@@ -194,7 +217,8 @@
     @keyframes radarPulse{0%{ background:rgba(77,208,255,.15); box-shadow:0 0 0 rgba(77,208,255,0),0 0 16px rgba(77,208,255,.25);}100%{ background:rgba(77,208,255,.35); box-shadow:0 0 18px rgba(77,208,255,.45),0 0 28px rgba(77,208,255,.35);} }
     .pill{ background:rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.12); border-radius:999px; padding:6px 10px; font-size:12px; }
     #errorBox{ position:absolute; left:8px; right:8px; top:50%; transform:translateY(-50%); background:#2b1e1e; color:#ffd7d7; border:1px solid #402b2b; border-radius:10px; padding:10px 12px; display:none; white-space:pre-wrap; font-family:ui-monospace,monospace; }
-    #messages{ position:absolute; left:50%; top:8px; transform:translateX(-50%); max-width:min(60vw,520px); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:12px; background:rgba(0,0,0,.5); padding:4px 10px; border-radius:999px; pointer-events:none; }
+    #messages{ position:absolute; left:50%; top:8px; transform:translateX(-50%); z-index:6; max-width:min(60vw,520px); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:12px; line-height:22px; color:#f2f7ff; background:rgba(8,12,20,.78); border:1px solid rgba(255,255,255,.14); box-shadow:0 2px 10px rgba(0,0,0,.28); padding:5px 14px; border-radius:999px; pointer-events:none; }
+    #messages:empty{ display:none; }
   #hoverInfo{ position:absolute; left:50%; bottom:128px; transform:translateX(-50%); pointer-events:none; opacity:0; transition:opacity .12s ease; display:flex; align-items:center; gap:6px; max-width:min(280px,70vw); padding:4px 9px; border-radius:999px; border:1px solid rgba(255,255,255,.16); background:rgba(4,9,16,.62); color:#f4f8ff; box-shadow:0 2px 10px rgba(0,0,0,.35); backdrop-filter:blur(4px); font-size:11px; line-height:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   #hoverInfo::before{ content:""; width:8px; height:8px; flex:none; border-radius:2px; background:var(--hover-color,#9fb8d1); border:1px solid rgba(255,255,255,.35); box-shadow:0 0 8px var(--hover-glow,rgba(159,184,209,.35)); }
   #hoverInfo.show{ opacity:.92; }
@@ -390,52 +414,13 @@
   .chest-pulse-common{ animation:chestPulseC 2.8s ease-in-out infinite; }
   .chest-pulse-rare{ animation:chestPulseR 2.8s ease-in-out infinite; }
   .chest-pulse-epic{ animation:chestPulseE 2.8s ease-in-out infinite; }
-  /* Loot popup */
-  #lootPopup,#lootPopup *{ box-sizing:border-box; }
-  #lootPopup{ position:fixed; left:50%; top:50%; transform:translate(-50%,-50%) scale(.9); background:rgba(15,18,26,.96); border:1px solid rgba(255,255,255,.18); border-radius:18px; padding:18px 22px 20px; width:min(540px,90vw); max-height:80vh; display:none; flex-direction:column; gap:14px; box-shadow:0 18px 60px -10px rgba(0,0,0,.7); z-index:120; color:#e8e8e8; font-size:13px; }
-  #lootPopup.show{ display:flex; animation:lootIn .35s cubic-bezier(.22,.9,.3,1.1); }
-  @keyframes lootIn{0%{opacity:0; transform:translate(-50%,-50%) scale(.75);}100%{opacity:1; transform:translate(-50%,-50%) scale(1);} }
-  #lootPopup h3{ margin:0 0 4px; font-size:18px; }
-  #lootPopup .items{ display:flex; flex-direction:column; gap:10px; overflow:auto; max-height:40vh; }
-  #lootPopup .lootRow{ display:grid; grid-template-columns:1fr auto; gap:12px; padding:10px 12px; background:linear-gradient(140deg,rgba(255,255,255,.08),rgba(255,255,255,.04)); border:1px solid rgba(255,255,255,.12); border-radius:8px; position:relative; }
-  #lootPopup .lootRow.legendary{ border-color:rgba(88,224,216,.65); box-shadow:0 0 0 1px rgba(88,224,216,.45),0 0 30px -4px rgba(88,224,216,.55); }
-  #lootPopup .lootRow.epic{ border-color:rgba(224,179,65,.6); box-shadow:0 0 0 1px rgba(224,179,65,.4),0 0 26px -4px rgba(224,179,65,.5); }
-  #lootPopup .lootRow.rare{ border-color:rgba(167,76,201,.55); box-shadow:0 0 0 1px rgba(167,76,201,.38),0 0 18px -4px rgba(167,76,201,.45); }
-  #lootPopup .lootRow.uncommon{ border-color:rgba(63,166,80,.5); }
-  #lootPopup .lootRow.common{ border-color:rgba(176,127,44,.45); }
-  #lootPopup .lootStats{ font-size:11px; line-height:1.35; opacity:.9; }
-  #lootPopup .curTag{ font-size:10px; background:rgba(255,255,255,.14); border-radius:6px; padding:2px 6px; margin-left:6px; }
-  #lootPopup .diffPlus{ color:#4ade80; font-weight:600; }
-  #lootPopup .diffMinus{ color:#ef4444; font-weight:600; }
-  #lootPopup .lootVerdict{ display:inline-flex; width:max-content; max-width:100%; margin-top:5px; border-radius:7px; padding:3px 7px; font-size:10px; font-weight:900; letter-spacing:.4px; color:#06121d; background:#cbd5e1; }
-  #lootPopup .lootVerdict.best{ background:#ffd54a; }
-  #lootPopup .lootVerdict.upgrade{ background:#4ade80; }
-  #lootPopup .lootVerdict.worse{ background:#f87171; color:#fff; }
-  #lootPopup .lootCompare{ display:flex; flex-direction:column; gap:3px; margin-top:6px; padding:6px 8px; border-radius:8px; background:rgba(0,0,0,.18); }
-  #lootPopup .lootCompareRow{ display:flex; justify-content:space-between; gap:10px; font-size:10px; color:#cbd5e1; }
-  #lootPopup .lootCompareRow span{ opacity:.72; }
-  #lootPopup .lootCompareRow b{ min-width:0; text-align:right; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  #lootPopup .lootCompareRow.up b{ color:#4ade80; }
-  #lootPopup .lootCompareRow.down b{ color:#f87171; }
-  #lootPopup .btnBar{ display:flex; gap:10px; flex-wrap:wrap; }
-  #lootPopup button{ background:#2c7ef8; color:#fff; border:none; border-radius:10px; padding:8px 14px; font-weight:600; cursor:pointer; font-size:12px; box-shadow:0 3px 12px rgba(44,126,248,.4); }
-  #lootPopup button.sec{ background:rgba(255,255,255,.14); box-shadow:none; }
-  #lootPopup button.danger{ background:#c43232; }
-  @media (max-width:520px){
-    #lootPopup{ width:min(94vw,540px); padding:14px; border-radius:12px; max-height:86vh; }
-    #lootPopup .lootRow{ grid-template-columns:1fr; }
-    #lootPopup .lootRow>div:last-child{ flex-direction:row !important; flex-wrap:wrap; }
-    #lootPopup .lootRow button{ flex:1 1 92px; }
-    #lootPopup .items{ max-height:52vh; }
-  }
-  #lootDim{ position:fixed; inset:0; background:rgba(0,0,0,.55); backdrop-filter:blur(4px); display:none; z-index:110; }
-  /* Loot inbox indicator */
-  #lootInboxBtn{ pointer-events:auto; display:none; align-items:center; gap:5px; background:rgba(13,17,24,.88); color:#eef4fb; border:1px solid rgba(224,179,65,.55); border-radius:999px; padding:5px 12px; font-weight:700; font-size:12px; box-shadow:0 2px 10px rgba(0,0,0,.4); cursor:pointer; backdrop-filter:blur(6px); }
-  #lootInboxBtn:hover{ background:rgba(30,38,52,.92); border-color:rgba(224,179,65,.85); }
-  #lootInboxBtn #lootInboxCount{ background:#e0b341; color:#141414; border-radius:999px; min-width:16px; padding:1px 5px; font-size:11px; text-align:center; }
-  #lootInboxBtn.pulseNew{ animation:lootPulse 1.05s ease-in-out infinite; }
-  #lootInboxBtn span{ margin-left:4px; }
-  @keyframes lootPulse{0%{transform:scale(1); box-shadow:0 0 0 0 rgba(224,179,65,0.4);}50%{transform:scale(1.12); box-shadow:0 0 16px 4px rgba(224,179,65,0.55);}100%{transform:scale(1); box-shadow:0 0 0 0 rgba(224,179,65,0.4);} }
+  /* Viewers (Duchy Warstwy) — first-class top-bar entry point, panel lives in engine/ghost_host.js.
+     The loot inbox popup that used to sit here is gone: found gear goes straight to the bag,
+     the upgrade card (#upgradeNotice) flags a genuine upgrade and Ekwipunek reviews the rest. */
+  #ghostBtn{ display:inline-flex; align-items:center; gap:4px; }
+  #ghostBtn.live{ background:#21a366; box-shadow:0 2px 10px rgba(33,163,102,.45); }
+  #ghostBtn #ghostBtnCount{ background:rgba(0,0,0,.35); border-radius:999px; min-width:15px; padding:0 5px; font-size:11px; font-weight:700; text-align:center; }
+  #ghostBtn #ghostBtnCount:empty{ display:none; }
   /* Wandering trader trade panel (DOM built by main.js, model in engine/trader.js) */
   #traderPanel{ position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); z-index:120; width:min(540px,calc(100vw - 24px)); max-height:min(72vh,580px); overflow:auto; overscroll-behavior:contain; color:#eef4fb; background:rgba(13,17,24,.94); border:1px solid rgba(255,255,255,.16); border-radius:14px; padding:12px; font-size:13px; box-shadow:0 14px 34px rgba(0,0,0,.5); backdrop-filter:blur(10px); pointer-events:auto; }
   #traderPanel .tradeHead{ display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
@@ -470,17 +455,35 @@
   #pausePanel .pauseRow button.pauseDanger:hover{ background:rgba(204,53,53,.48); }
   #pausePanel .pauseRow button.pauseDanger:disabled{ opacity:.55; cursor:wait; }
   #pausePanel .pauseFoot{ margin-top:10px; font-size:11px; opacity:.6; }
+  /* Keybind panel: layered over the pause card (z 130 → 140) */
+  #keybindPanel{ position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); z-index:140; width:min(420px,calc(100vw - 24px)); max-height:min(82vh,640px); display:flex; flex-direction:column; color:#eef4fb; background:rgba(13,17,24,.97); border:1px solid rgba(255,255,255,.16); border-radius:14px; padding:14px; font-size:13px; box-shadow:0 14px 34px rgba(0,0,0,.6); backdrop-filter:blur(10px); pointer-events:auto; }
+  #keybindPanel[hidden]{ display:none; }
+  #keybindPanel .kbHead{ display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px; }
+  #keybindPanel .kbHead strong{ font-size:16px; }
+  #keybindPanel .kbClose{ background:rgba(255,255,255,.1); color:#eef4fb; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:5px 10px; cursor:pointer; }
+  #keybindPanel .kbNote{ min-height:28px; font-size:11px; line-height:1.35; color:#a9c6e8; margin-bottom:6px; }
+  #keybindPanel .kbList{ overflow-y:auto; flex:1; padding-right:4px; }
+  #keybindPanel .kbGroup{ margin:9px 0 3px; font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:#7fa3c8; }
+  #keybindPanel .kbRow{ display:flex; justify-content:space-between; align-items:center; gap:10px; padding:5px 2px; }
+  #keybindPanel .kbRow + .kbRow{ border-top:1px dashed rgba(255,255,255,.07); }
+  #keybindPanel .kbRow small{ color:#8d99a8; font-size:10px; }
+  #keybindPanel button.kbKey{ min-width:74px; background:rgba(255,255,255,.1); color:#eef4fb; border:1px solid rgba(255,255,255,.22); border-radius:8px; padding:5px 10px; font-weight:700; cursor:pointer; }
+  #keybindPanel button.kbKey.capturing{ background:rgba(43,135,201,.4); border-color:#57b1ec; animation:kbPulse 1s ease-in-out infinite; }
+  @keyframes kbPulse{ 0%,100%{ box-shadow:0 0 0 0 rgba(87,177,236,.4); } 50%{ box-shadow:0 0 0 5px rgba(87,177,236,.12); } }
+  #keybindPanel .kbFoot{ margin-top:10px; display:flex; justify-content:flex-end; }
+  #keybindPanel .kbFoot button{ background:rgba(255,255,255,.08); color:#cfd9e6; border:1px solid rgba(255,255,255,.16); border-radius:8px; padding:5px 10px; cursor:pointer; }
   </style>
 </head>
 <body>
   <canvas id="game" aria-label="Mini Miner"></canvas>
   <div id="ui">
     <div id="hud">
-      <div id="hudSpacer" aria-hidden="true"></div>
-      <div class="panel" id="taskPanel" hidden><span id="taskStatus" title="Zadania">Zadania -</span></div>
       <div class="panel" id="worldStatusPanel"><span id="worldStatus" title="Pozycja bohatera · zegar · temperatura · pogoda · pora roku">📍 —</span></div>
-      <div class="panel"><span id="fps">— FPS</span></div>
+      <div class="panel" id="taskPanel" hidden><span id="taskStatus" title="Zadania">Zadania -</span></div>
+      <div id="hudSpacer" aria-hidden="true"></div>
+      <div class="panel" id="fpsPanel"><span id="fps">— FPS</span></div>
       <div id="menuWrap">
+  <button id="ghostBtn" class="topbtn" aria-haspopup="dialog" aria-expanded="false" title="Obserwatorzy — zaproś widzów do swojej warstwy" aria-label="Obserwatorzy">👁<span id="ghostBtnCount"></span></button>
   <button id="menuBtn" class="topbtn" aria-haspopup="true" aria-expanded="false" title="Menu" aria-label="Menu główne">≡</button>
         <div id="menuPanel" role="menu" aria-label="Menu" hidden>
           <div class="group">
@@ -492,7 +495,7 @@
             <button id="radarMenuBtn" class="topbtn" role="menuitem" title="Radar diamentów">Radar 💎</button>
             <button id="audioBtn" class="topbtn" role="menuitem" title="Wycisz/włącz dźwięk">🔊</button>
           </div>
-          <div class="group seedRow"><label for="seedInput">Ziarno:</label><input id="seedInput" value="auto" /><button id="regenBtn">Nowy świat</button><button id="openWorldSettingsBtn" class="topbtn">Ustawienia świata…</button></div>
+          <div class="group seedRow"><label for="seedInput">Ziarno:</label><input id="seedInput" value="auto" /><button id="regenBtn" class="topbtn">Nowy świat</button><button id="openWorldSettingsBtn" class="topbtn">Ustawienia świata…</button></div>
           <div class="hint">Skróty: G=Bóg, I=Immune, M=Mapa, C=Centrum, T=Rzemiosło, H=Pomoc</div>
           <div class="group" style="flex-direction:column; align-items:stretch; margin-top:4px;">
             <label style="font-size:12px; display:flex; justify-content:space-between; gap:8px; align-items:center;">Szybkość gracza <span id="playerSpeedLabel">x2</span></label>
@@ -528,12 +531,11 @@
           </div>
         </div>
       </div>
-  <button id="lootInboxBtn" title="Skrzynka łupów (I)" aria-label="Skrzynka łupów">🎁 <span id="lootInboxCount"></span></button>
     </div>
   <!-- topButtons replaced by dropdown menu; old markup removed -->
     <!-- Crafting panel is built dynamically from the RECIPES table in main.js -->
     <div id="craft"><strong>Rzemiosło</strong></div>
-    <div id="help"><b id="helpDiscoveries"></b>Sterowanie: A/D lub ←/→ ruch, W / ↑ / Spacja skok. LPM kopie klikniętą kratkę (zasięg 3) – przytrzymaj i przeciągaj, aby kopać dalej. Przycisk ⛏️ kopie w wybranym kierunku (przytrzymaj = kopanie ciągłe). PPM stawia blok (zasięg 5; wybór 5–9, 0 lub klik w pasek; drugi klik w wybrany slot zmienia typ). Kopanie wody zbiera ją do ekwipunku. Skróty broni: 1 = kilof/budowanie (kolejne wciśnięcia przełączają kilofy po craftingu), 2 = broń biała, 3 = DYSTANSOWE: łuki oraz rzuty z ręki (śnieżki, toksyczne śnieżki, kamienie, balony wodne, granaty gazowe, lepkie bomby) — kolejne wciśnięcia rotują, a klawisz pamięta ostatnio używaną broń, 4 = miotacze (ogień/woda/gaz) — kolejne wciśnięcia przełączają bronie w kategorii; w Ekwipunku przyciskiem „Skrót" wybierasz, które bronie biorą udział w przełączaniu. MATRYCA ŻYWIOŁÓW: MOKRY wróg (pływanie, deszcz, wąż, balon wodny) mocniej przewodzi prąd (a porażenie SKACZE łańcuchem po innych mokrych!) i ZAMARZA W BRYŁĘ od mrozu (np. śnieżek); ogień na zmrożonym = szok termiczny, ogień + trucizna = toksyczny zapłon, na mokrym ogień syczy i gaśnie, a wiązka elektryczna trafiając wodę elektryzuje CAŁĄ taflę. RODZAJE STRZAŁ mają charaktery: drewniane często da się podnieść z powrotem, kamienne ogłuszają, obsydianowe płoną przy pełnym naciągu, diamentowe przeszywają kilku wrogów, irydowe przebijają bloki (pip w pasku broni przypina typ). Trafienia i reakcje żywiołów ładują ULT szybciej; PPM tuż przed pociskiem wroga = PERFEKCYJNA PARADA (odbija pocisk!). Przy naciąganiu łuku strzałka nad głową pokazuje WIATR — znosi strzały. Z cofa zmianę. PRZYTRZYMAJ E, aby otworzyć Ekwipunek (sprzęt, bronie, talizmany, surowce) — krótkie E zbiera leżące łupy w zasięgu i obsługuje mecha. Najedź kursorem na leżący przedmiot: w lewym górnym rogu pojawi się podgląd (nazwa, rzadkość, statystyki), a LPM podnosi dokładnie ten jeden (zasięg 3). T zwija/rozwija panel Rzemiosła, I skrzynkę łupów, X używa skanera kraterów. Po wybraniu broni (2/3/4) LPM używa jej w kierunku kursora, a PPM odpala naładowany ult: broń biała tnie, łuk strzela strzałami (strzała przelatująca przez ogień płonie!), miotacz ognia podpala stwory i roślinność (ogień rozprzestrzenia się po trawie, drewnie i liściach; woda gasi). Żywioły: ogień gotuje wodę w parę zasilającą chmury, topi kamień w lawę i roztapia śnieg/lód w wodę; lawa PŁYNIE (wolniej niż woda, wyrównuje poziom), parzy i podpala, a osiadła na wolnym powietrzu z czasem zastyga w obsydian; wąż wodny gasi pożary, hartuje lawę w obsydian, rozmiękcza piasek w błoto (błoto spowalnia wszystkich o połowę) i podlewa rośliny; trujący gaz zabija organizmy, a w kontakcie z ogniem lub lawą EKSPLODUJE jak TNT (płonąca strzała też detonuje chmurę). WĘDKOWANIE: wytwórz wędkę (drewno + trawa), stań nad wodą i naciśnij F — gdy spławik drgnie (❗), F podcina; duże ryby szarpią 2–3 razy (F tylko przy ❗, za wczesne szarpnięcie płoszy!). Ryby = zupa rybna (+30 HP), złota rybka = Eliksir głębin; handlarz skupuje połów. Rośliny (słoneczniki, krzewy jagodowe, trzciny, paprocie, kaktusy) kiełkują przy wodzie, piją z sąsiednich kafli wody (czasem wchłaniając cały kafel!), z deszczu i z węża; rosną etapami, usychają bez wody i obumierają ze starości. Klik na dojrzały krzew jagodowy = +6 HP. M (Mapa) odsłania mgłę, N przełącza minimapę, B pauzuje. G (Bóg) natychmiastowe kopanie. C centruje kamerę. H pomoc. Zdobywasz XP i poziomy — punkty umiejętności wydasz w Ekwipunku (Rozwój); osiągnięcia nagradzają XP i skrzyniami. Rzemiosło: kilofy, pochodnie (światło nocą), miecz obsydianowy, talizman, totem odrodzenia (punkt respawnu), eliksiry (życie natychmiast; szybkość/siła to buffy 60 s widoczne przy pasku XP) i Róg przyzwania (wzywa bossa — drogo!). W panelu Rzemiosła gwiazdka ★ przypina ulubione receptury na górze, przycisk 📌 „Śledź" zawiesza licznik składników wybranej receptury na ekranie (powiadomi, gdy wszystko zbierzesz), filtr „Dostępne" pokazuje tylko to, co możesz wytworzyć teraz, a przy brakującym surowcu zobaczysz podpowiedź, gdzie go szukać. RECEPTURY ODKRYWASZ STOPNIOWO: przepis pojawia się w panelu, gdy zdobędziesz choć po sztuce każdego potrzebnego surowca (toast „🔓 Odblokowany przepis") albo podpatrzysz gotowy przedmiot stojący w świecie — np. drabinę czy pochodnię w domku NPC (toast „🔍 Podpatrzony przepis"); licznik „do odkrycia" mówi, ile przepisów jeszcze przed tobą, a pasek szybkiego wyboru bloków pokazuje tylko surowce, które kiedykolwiek miałeś. Odkrywasz też CAŁE KATEGORIE: pierwsza odblokowana receptura z działu (Narzędzia, Maszyny…) i pierwszy blok z grupy (Skały i rudy, Budulce…) dodają zakładkę/kategorię ORAZ wpis w Dzienniku Odkryć (+40 XP). SKRZYNIE mają pięć rzadkości (zwykła, niezwykła, rzadka, epicka, legendarna — po kolorze poznasz z daleka) i po otwarciu WYRZUCAJĄ łup fizycznie na ziemię — podnieś go jak inne dropy (E / klik). Gdy podniesiesz przedmiot lepszy od założonego, w prawym górnym rogu pojawi się karta „Znaleziono lepszy przedmiot" z przyciskiem Załóż. Nocą i w głębi czyhają też szkielety-łucznicy (kościane pociski!), a w jaskiniach pełzacze. Jaskinie są CIEMNE — światło dociera tylko z powierzchni, pochodni, lawy i ognia; pełzacze lęgną się wyłącznie w mroku, więc oświetlona pochodniami galeria jest bezpieczna. Podziemia dziedziczą charakter biomu: w śnieżnych krainach jaskinie szronieją lodem i soplami, a w lasach i na bagnach komory jaskiniowe porastają ŚWIECĄCE GRZYBY — zbieraj je (zupa grzybowa +25 HP) albo zostaw jako naturalne latarnie. Co 2–3 dni na powierzchni rozbija kram WĘDROWNY HANDLARZ (szukaj pasiastej markizy i lśniącego 💎): kliknij kram, by kupować pochodnie, strzały, mikstury i epicką skrzynię oraz sprzedawać nadmiar surowców — walutą jest diament. Po śmierci połowa zasobów zostaje w nagrobku — kliknij go, by odzyskać. Nocą wychodzą upiory i nietoperze (o świcie płoną); szukaj też ruin na lądzie i wraków na dnie mórz. Drobne kamienne rumowiska, pieńki filarów lub resztki łuku na powierzchni zdradzają ZAKOPANE RUINY — kop pod nimi! Czasem to ciasna krypta ze skrzynią (albo sarkofag czy zawalisko), czasem piwnice, otwarta studnia lub bliźniacze komory, a czasem głęboka świątynia z krętym szybem, galeriami i jednym z trzech skarbców: obsydianowym sejfem, ołtarzem nad fosą lawy albo zatopionym relikwiarzem. Ruiny przejmują materiał biomu (lodowe ściany, piaskowiec, zalane podłogi). UWAGA: starożytni zostawili PUŁAPKI — uważny gracz wypatrzy lśniącą linkę w korytarzu (strzałki!), pulsujący runiczny krąg na płycie (mina!), zielone smużki nad skrzynią (grobowy gaz!), żar lub kapiącą wodę między blokami (zbrojony zwornik — wykop go, a lawa zaleje skarbiec!) i włosowate pęknięcia podłogi (zapadnia — na dnie lawa… albo bonusowa skrzynia). A jeśli znajdziesz samotny OBSYDIANOWY MONOLIT — kop wytrwale: głęboko przy dnie świata (1% ruin) czeka ZAKOPANE MIASTO — rozświetlona pochodniami kawerna z wieżami, mostem, fosą lawy, ogrodem kryształów i obsydianowym ziguratem kryjącym dwie epickie skrzynie. Na powierzchni trafisz też na obsydianowy OŁTARZ PRZYZWANIA (dwie pochodnie, żarzy się nocą): kliknij go z ofiarą 3 diamentów i 3 obsydianu, a przybędzie GARGANTUICZNY boss — pokonany zostawia stos epickich skrzyń (jeden rytuał na ołtarz dziennie). Mniej więcej co 7 dni gry świat przemierza ZŁOTY SPRINTER (ptak, biegacz albo ryjący kret) — lśniący, błyskawiczny i trudny do ubicia; znika po pół minuty, ale pokonany zostawia epicką skrzynię i diamenty. Co 2–3 dni nadlatuje też UFO: skanuje okolicę i próbuje porwać wiązką coś żywego — zwierzę, CIEBIE, a nawet bossa! Tarcza spodka pochłania ciosy, ale opada, gdy wiązka jest włączona — to moment na atak (łuk!). Zestrzelony zostawia ANTYMATERIĘ (receptura: Mikstura antygrawitacji) i czasem artefakt Obcych; porwany bohater zostaje wywieziony i wyrzucony daleko — chyba że w locie sam zestrzeli spodek. Zielony duch bloku = można postawić, czerwony = nie można. Na ekranie dotykowym szczypnięcie zmienia zoom. Ekwipunek i pasek szybkiego wyboru są zapisywane automatycznie.</div>
+    <div id="help"><b id="helpDiscoveries"></b>Sterowanie: A/D lub ←/→ ruch, W / ↑ / Spacja skok. LPM kopie klikniętą kratkę (zasięg 3) – przytrzymaj i przeciągaj, aby kopać dalej. Przycisk ⛏️ kopie w wybranym kierunku (przytrzymaj = kopanie ciągłe). PPM stawia blok (zasięg 5; wybór 5–9, 0 lub klik w pasek; drugi klik w wybrany slot zmienia typ). Kopanie wody zbiera ją do ekwipunku. Skróty broni: 1 = kilof/budowanie (kolejne wciśnięcia przełączają kilofy po craftingu), 2 = broń biała, 3 = DYSTANSOWE: łuki oraz rzuty z ręki (śnieżki, toksyczne śnieżki, kamienie, balony wodne, granaty gazowe, lepkie bomby) — kolejne wciśnięcia rotują, a klawisz pamięta ostatnio używaną broń, 4 = miotacze (ogień/woda/gaz) — kolejne wciśnięcia przełączają bronie w kategorii; w Ekwipunku przyciskiem „Skrót" wybierasz, które bronie biorą udział w przełączaniu. MATRYCA ŻYWIOŁÓW: MOKRY wróg (pływanie, deszcz, wąż, balon wodny) mocniej przewodzi prąd (a porażenie SKACZE łańcuchem po innych mokrych!) i ZAMARZA W BRYŁĘ od mrozu (np. śnieżek); ogień na zmrożonym = szok termiczny, ogień + trucizna = toksyczny zapłon, na mokrym ogień syczy i gaśnie, a wiązka elektryczna trafiając wodę elektryzuje CAŁĄ taflę. RODZAJE STRZAŁ mają charaktery: drewniane często da się podnieść z powrotem, kamienne ogłuszają, obsydianowe płoną przy pełnym naciągu, diamentowe przeszywają kilku wrogów, irydowe przebijają bloki (pip w pasku broni przypina typ). Trafienia i reakcje żywiołów ładują ULT szybciej; PPM tuż przed pociskiem wroga = PERFEKCYJNA PARADA (odbija pocisk!). Przy naciąganiu łuku strzałka nad głową pokazuje WIATR — znosi strzały. Z cofa zmianę. PRZYTRZYMAJ E, aby otworzyć Ekwipunek (sprzęt, bronie, talizmany, surowce) — krótkie E zbiera leżące łupy w zasięgu i obsługuje mecha. Najedź kursorem na leżący przedmiot: w lewym górnym rogu pojawi się podgląd (nazwa, rzadkość, statystyki), a LPM podnosi dokładnie ten jeden (zasięg 3). T zwija/rozwija panel Rzemiosła, X używa skanera kraterów. Po wybraniu broni (2/3/4) LPM używa jej w kierunku kursora, a PPM odpala naładowany ult: broń biała tnie, łuk strzela strzałami (strzała przelatująca przez ogień płonie!), miotacz ognia podpala stwory i roślinność (ogień rozprzestrzenia się po trawie, drewnie i liściach; woda gasi). Żywioły: ogień gotuje wodę w parę zasilającą chmury, topi kamień w lawę i roztapia śnieg/lód w wodę; lawa PŁYNIE (wolniej niż woda, wyrównuje poziom), parzy i podpala, a osiadła na wolnym powietrzu z czasem zastyga w obsydian; wąż wodny gasi pożary, hartuje lawę w obsydian, rozmiękcza piasek w błoto (błoto spowalnia wszystkich o połowę) i podlewa rośliny; trujący gaz zabija organizmy, a w kontakcie z ogniem lub lawą EKSPLODUJE jak TNT (płonąca strzała też detonuje chmurę). WĘDKOWANIE: wytwórz wędkę (drewno + trawa), stań nad wodą i naciśnij F — gdy spławik drgnie (❗), F podcina; duże ryby szarpią 2–3 razy (F tylko przy ❗, za wczesne szarpnięcie płoszy!). Ryby = zupa rybna (+30 HP), złota rybka = Eliksir głębin; handlarz skupuje połów. Rośliny (słoneczniki, krzewy jagodowe, trzciny, paprocie, kaktusy) kiełkują przy wodzie, piją z sąsiednich kafli wody (czasem wchłaniając cały kafel!), z deszczu i z węża; rosną etapami, usychają bez wody i obumierają ze starości. Klik na dojrzały krzew jagodowy = +6 HP. M (Mapa) odsłania mgłę, N przełącza minimapę, B pauzuje. G (Bóg) natychmiastowe kopanie. C centruje kamerę. H pomoc. Zdobywasz XP i poziomy — punkty umiejętności wydasz w Ekwipunku (Rozwój); osiągnięcia nagradzają XP i skrzyniami. Rzemiosło: kilofy, pochodnie (światło nocą), miecz obsydianowy, talizman, totem odrodzenia (punkt respawnu), eliksiry (życie natychmiast; szybkość/siła to buffy 60 s widoczne przy pasku XP) i Róg przyzwania (wzywa bossa — drogo!). W panelu Rzemiosła gwiazdka ★ przypina ulubione receptury na górze, przycisk 📌 „Śledź" zawiesza licznik składników wybranej receptury na ekranie (powiadomi, gdy wszystko zbierzesz), filtr „Dostępne" pokazuje tylko to, co możesz wytworzyć teraz, a przy brakującym surowcu zobaczysz podpowiedź, gdzie go szukać. RECEPTURY ODKRYWASZ STOPNIOWO: przepis pojawia się w panelu, gdy zdobędziesz choć po sztuce każdego potrzebnego surowca (toast „🔓 Odblokowany przepis") albo podpatrzysz gotowy przedmiot stojący w świecie — np. drabinę czy pochodnię w domku NPC (toast „🔍 Podpatrzony przepis"); licznik „do odkrycia" mówi, ile przepisów jeszcze przed tobą, a pasek szybkiego wyboru bloków pokazuje tylko surowce, które kiedykolwiek miałeś. Odkrywasz też CAŁE KATEGORIE: pierwsza odblokowana receptura z działu (Narzędzia, Maszyny…) i pierwszy blok z grupy (Skały i rudy, Budulce…) dodają zakładkę/kategorię ORAZ wpis w Dzienniku Odkryć (+40 XP). SKRZYNIE mają pięć rzadkości (zwykła, niezwykła, rzadka, epicka, legendarna — po kolorze poznasz z daleka) i po otwarciu WYRZUCAJĄ łup fizycznie na ziemię — podnieś go jak inne dropy (E / klik). Gdy podniesiesz przedmiot lepszy od założonego, w prawym górnym rogu pojawi się karta „Znaleziono lepszy przedmiot" z przyciskiem Załóż; słabsze znaleziska trafiają po cichu do torby — obejrzysz je w Ekwipunku (pasek „✨ Nowe przedmioty"). OBSERWATORZY: przycisk 👁 na górnym pasku otwiera panel transmisji — rozpocznij ją, wyślij link znajomym, a oni dołączą jako DUCHY (oglądają twoją grę na żywo, nie zmienią świata). Aktywni widzowie wzmacniają bohatera (+10% XP, +1% szybkości/skoku/obrażeń za każdego), płoszą stwory samą obecnością, a za aktywność ładują moce (popłoch/mróz/grom). W panelu 👁 nadajesz każdemu widzowi uprawnienia (tylko ogląda / +czat / +wpływ), możesz go zbanować albo mianować ASYSTENTEM (może być ich kilku!) — asystent widzi twoje receptury z podziałem na działy, ekwipunek i zasoby, więc craftuje i zarządza sprzętem jak ty; gdy dwóch rywalizuje o te same surowce, wygrywa szybszy. Jeśli wolisz mieć kontrolę, włącz ZATWIERDZANIE: propozycje asystentów (np. „Wytwórz: Strzały irydowe ×5") czekają w panelu 👁, aż klikniesz Zatwierdź albo Odrzuć (niezatwierdzone wygasają po 3 min). Każdy widz ma też WŁASNĄ karierę ducha: za aktywną obserwację, doping, moce, płoszenie stworów i pracę asystenta zdobywa XP, poziomy, rangi (Gapiowicz → … → Strażnik Warstwy) i osiągnięcia — jego postępy zapisują się w jego przeglądarce, więc czekają na niego przy następnym linku (w twoim panelu widzisz przy nim odznakę „Poz. N"; to tylko wyróżnienie, nie daje mu żadnych dodatkowych uprawnień). ROZMOWA I WIDOCZNOŚĆ: Enter otwiera szybki czat gospodarza — twoje słowa lecą dymkiem nad bohaterem (u ciebie i u widzów), wiadomości duchów wiszą dymkami nad ich awatarami, a duch może wskazać miejsce 📍 (klawisz P) pulsującym znacznikiem widocznym dla wszystkich. Duchy unoszą się ZA bohaterem, a zaparkowane na nim — nad jego głową, więc nigdy nie zasłaniają akcji; doping, moce i praca asystentów zostawiają widoczny ślad w świecie (pierścienie, unoszące się napisy). W panelu 👁 przełączniki „duchy/dymki/działania" chowają awatary, teksty i efekty, a 👁/🙈 przy konkretnym widzu wycisza tylko jego — wyłącznie na twoim ekranie, jego wpływ na grę zostaje. Nocą i w głębi czyhają też szkielety-łucznicy (kościane pociski!), a w jaskiniach pełzacze. Jaskinie są CIEMNE — światło dociera tylko z powierzchni, pochodni, lawy i ognia; pełzacze lęgną się wyłącznie w mroku, więc oświetlona pochodniami galeria jest bezpieczna. Podziemia dziedziczą charakter biomu: w śnieżnych krainach jaskinie szronieją lodem i soplami, a w lasach i na bagnach komory jaskiniowe porastają ŚWIECĄCE GRZYBY — zbieraj je (zupa grzybowa +25 HP) albo zostaw jako naturalne latarnie. Co 2–3 dni na powierzchni rozbija kram WĘDROWNY HANDLARZ (szukaj pasiastej markizy i lśniącego 💎): kliknij kram, by kupować pochodnie, strzały, mikstury i epicką skrzynię oraz sprzedawać nadmiar surowców — walutą jest diament. Po śmierci połowa zasobów zostaje w nagrobku — kliknij go, by odzyskać. Nocą wychodzą upiory i nietoperze (o świcie płoną); szukaj też ruin na lądzie i wraków na dnie mórz. Drobne kamienne rumowiska, pieńki filarów lub resztki łuku na powierzchni zdradzają ZAKOPANE RUINY — kop pod nimi! Czasem to ciasna krypta ze skrzynią (albo sarkofag czy zawalisko), czasem piwnice, otwarta studnia lub bliźniacze komory, a czasem głęboka świątynia z krętym szybem, galeriami i jednym z trzech skarbców: obsydianowym sejfem, ołtarzem nad fosą lawy albo zatopionym relikwiarzem. Ruiny przejmują materiał biomu (lodowe ściany, piaskowiec, zalane podłogi). UWAGA: starożytni zostawili PUŁAPKI — uważny gracz wypatrzy lśniącą linkę w korytarzu (strzałki!), pulsujący runiczny krąg na płycie (mina!), zielone smużki nad skrzynią (grobowy gaz!), żar lub kapiącą wodę między blokami (zbrojony zwornik — wykop go, a lawa zaleje skarbiec!) i włosowate pęknięcia podłogi (zapadnia — na dnie lawa… albo bonusowa skrzynia). A jeśli znajdziesz samotny OBSYDIANOWY MONOLIT — kop wytrwale: głęboko przy dnie świata (1% ruin) czeka ZAKOPANE MIASTO — rozświetlona pochodniami kawerna z wieżami, mostem, fosą lawy, ogrodem kryształów i obsydianowym ziguratem kryjącym dwie epickie skrzynie. Na powierzchni trafisz też na obsydianowy OŁTARZ PRZYZWANIA (dwie pochodnie, żarzy się nocą): kliknij go z ofiarą 3 diamentów i 3 obsydianu, a przybędzie GARGANTUICZNY boss — pokonany zostawia stos epickich skrzyń (jeden rytuał na ołtarz dziennie). Mniej więcej co 7 dni gry świat przemierza ZŁOTY SPRINTER (ptak, biegacz albo ryjący kret) — lśniący, błyskawiczny i trudny do ubicia; znika po pół minuty, ale pokonany zostawia epicką skrzynię i diamenty. Co 2–3 dni nadlatuje też UFO: skanuje okolicę i próbuje porwać wiązką coś żywego — zwierzę, CIEBIE, a nawet bossa! Tarcza spodka pochłania ciosy, ale opada, gdy wiązka jest włączona — to moment na atak (łuk!). Zestrzelony zostawia ANTYMATERIĘ (receptura: Mikstura antygrawitacji) i czasem artefakt Obcych; porwany bohater zostaje wywieziony i wyrzucony daleko — chyba że w locie sam zestrzeli spodek. Zielony duch bloku = można postawić, czerwony = nie można. Na ekranie dotykowym szczypnięcie zmienia zoom. Ekwipunek i pasek szybkiego wyboru są zapisywane automatycznie.</div>
     <div id="controls" class="touchUi">
       <div class="pad" id="pad">
         <div></div><div data-key="ArrowUp" class="btn">↑</div><div></div>
@@ -586,12 +588,6 @@
         <div id="hotSelectFoot" style="margin-top:6px; font-size:10px; opacity:.6;">Skrzynie dostępne tylko w trybie Boga.</div>
       </div>
     <div id="errorBox" role="alert"></div>
-  </div>
-  <div id="lootDim"></div>
-  <div id="lootPopup" role="dialog" aria-modal="true" aria-labelledby="lootTitle">
-    <h3 id="lootTitle">Nowe przedmioty</h3>
-    <div class="items" id="lootPopupItems"></div>
-    <div class="btnBar"><button id="lootEquipAll" class="sec">Wyposaż najlepsze</button><button id="lootKeepAll" class="sec">Zachowaj wszystko</button><button id="lootClose" class="sec">Zamknij</button></div>
   </div>
   <!-- Classic script outside the module graph: reports a stalled/failed module load
        instead of leaving the player on a silent black screen (see src/boot_watchdog.js) -->

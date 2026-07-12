@@ -56,10 +56,24 @@ class Tab {
 			}
 		};
 	}
-	send(method, params){
+	// Every CDP call races a local deadline. Without it a request issued while the page
+	// is tearing down (a navigation destroys the execution context mid-`awaitPromise`)
+	// simply never gets a response and the whole driver wedges forever.
+	send(method, params, deadlineMs){
 		const id = ++this.msgId;
 		this.ws.send(JSON.stringify({ id, method, params: params || {} }));
-		return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject, method }));
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				if(!this.pending.has(id)) return;
+				this.pending.delete(id);
+				reject(new Error(this.label + ' CDP timeout: ' + method));
+			}, deadlineMs || 45000);
+			this.pending.set(id, {
+				resolve: v => { clearTimeout(timer); resolve(v); },
+				reject: e => { clearTimeout(timer); reject(e); },
+				method
+			});
+		});
 	}
 	async init(){
 		await this.ready;
@@ -68,17 +82,22 @@ class Tab {
 		await this.send('Emulation.setDeviceMetricsOverride', { width: winW, height: winH, deviceScaleFactor: 1, mobile: false });
 	}
 	async eval(expression, timeoutMs){
-		const res = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true, timeout: timeoutMs || 30000 });
+		const budget = timeoutMs || 30000;
+		const res = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true, timeout: budget }, budget + 15000);
 		if(res.exceptionDetails) throw new Error(this.label + ' eval failed: ' + JSON.stringify(res.exceptionDetails).slice(0, 400));
 		return res.result ? res.result.value : undefined;
 	}
 	async poll(expression, predicate, label, tries, delayMs){
+		let last = null;
 		for(let i = 0; i < (tries || 60); i++){
-			const v = await this.eval(expression);
+			// a failed eval is a "not ready yet", not a crash: right after a reload the
+			// context can still be swapping out
+			let v;
+			try{ v = await this.eval(expression); }catch(e){ last = e; v = undefined; }
 			if(predicate(v)) return v;
 			await sleep(delayMs || 250);
 		}
-		throw new Error(this.label + ' poll timeout: ' + label);
+		throw new Error(this.label + ' poll timeout: ' + label + (last ? ' (last eval error: ' + last.message + ')' : ''));
 	}
 	async shot(path){
 		const s = await this.send('Page.captureScreenshot', { format: 'png' });
@@ -141,6 +160,24 @@ async function main(){
 		await host.init();
 		await host.send('Page.navigate', { url });
 		console.log('host boot:', await host.eval(BOOT_WAIT, 60000));
+		// The audience lives behind a HUD icon, not a row in the ≡ menu: the button
+		// must exist, open the panel, and carry the whole permission ladder.
+		const entry = await host.eval(`(()=>{
+			const btn=document.getElementById('ghostBtn');
+			if(!btn) return {ok:false, why:'no #ghostBtn in the HUD'};
+			btn.click();
+			const panel=document.getElementById('ghostSharePanel');
+			const open=!!(panel && panel.style.display==='flex');
+			const perms=panel ? [...panel.querySelectorAll('#ghostPanelDefault option')].map(o=>o.value) : [];
+			const toggle=panel ? panel.querySelector('#ghostPanelToggle').textContent : null;
+			btn.click();
+			return {ok:open, closed:panel.style.display==='none', perms, toggle,
+				strayMenuEntry: !!document.querySelector('#menuPanel #ghostShareBtn')};
+		})()`);
+		console.log('viewers entry:', JSON.stringify(entry));
+		if(!entry.ok || !entry.closed) throw new Error('the 👁 HUD icon does not toggle the viewers panel: ' + JSON.stringify(entry));
+		if(entry.strayMenuEntry) throw new Error('viewers still hiding in the debug menu');
+		if(entry.perms.join(',') !== 'watch,chat,full') throw new Error('permission ladder missing from the panel: ' + entry.perms);
 		const room = await host.eval(`window.__mmGhostHostStart('${ROOM}', {rtc:false, name:'Gospodarz-QA'})`);
 		console.log('host stream:', 'room=' + room, JSON.stringify(await host.eval('MM.ghostHost.metrics()')));
 		if(room !== ROOM) throw new Error('host did not adopt the QA room');
@@ -239,7 +276,24 @@ async function main(){
 		await host.poll(`MM.ghostHost.metrics().ghosts`, v => v === 1, 'host sees one ghost', 30, 250);
 		await sleep(1200); // pose + presence cadence
 		const ghostsSeen = await ghost.eval('MM.ghostClient.metrics().others');
-		console.log('presence: host ghosts=1, ghost sees others=' + ghostsSeen);
+		// the HUD icon doubles as the live indicator, and the panel lists the viewer
+		const hudLive = await host.eval(`(()=>{
+			const btn=document.getElementById('ghostBtn');
+			document.getElementById('ghostSharePanel') || btn.click();
+			MM.ghostHost.openPanel();
+			const panel=document.getElementById('ghostSharePanel');
+			return {live:btn.classList.contains('live'), count:btn.querySelector('#ghostBtnCount').textContent,
+				link:panel.querySelector('#ghostPanelLink').value,
+				rows:panel.querySelectorAll('#ghostPanelViewers select').length,
+				title:btn.title};
+		})()`);
+		console.log('presence: host ghosts=1, ghost sees others=' + ghostsSeen + ', hud=' + JSON.stringify(hudLive));
+		if(!hudLive.live || hudLive.count !== '1' || hudLive.rows !== 1) throw new Error('HUD icon/panel does not reflect the live audience: ' + JSON.stringify(hudLive));
+		if(!hudLive.link.includes('watch=' + ROOM)) throw new Error('share link missing from the panel: ' + hudLive.link);
+		// (the button is inside #menuWrap, which ghost mode hides wholesale — so ask
+		// whether it RENDERS, not what its own display computes to)
+		const ghostViewOfHud = await ghost.eval(`(()=>{ const b=document.getElementById('ghostBtn'); return b ? b.getClientRects().length : -1; })()`);
+		if(ghostViewOfHud !== 0) throw new Error('a watcher must not see the host-only viewers button (rects=' + ghostViewOfHud + ')');
 
 		// --- Scene 8: social facilitation — ACTIVE watchers strengthen the hero ---------------------
 		// (the blessing above already counted as real input; noteInput re-vouches)
@@ -276,33 +330,69 @@ async function main(){
 		// the front: the ghost keeps streaming from its companion pump regardless.
 		// Park the spirit on a mob; it must bolt away and stop being aggressive.
 		await host.front();
-		// a land mob near the hero (aquatic/buried species can't demonstrate a land rout)
+		// A land mob near the hero (aquatic/buried species can't demonstrate a land rout).
+		// Prefer a species with exactly ONE live instance: in a flock, any probe keyed on
+		// species can silently swap individuals mid-scene and fake an "approach".
 		const mobPos = await host.eval(`(()=>{
 			const skip=new Set(['FISH','PIRANHA','EEL','SAND_WORM']);
 			const p=window.player;
 			const l=MM.mobs.serialize().list.filter(m=>!skip.has(m.id) && m.state!=='buried');
 			if(!l.length) return null;
-			l.sort((a,b)=>Math.hypot(a.x-p.x,a.y-p.y)-Math.hypot(b.x-p.x,b.y-p.y));
-			return {id:l[0].id, x:l[0].x, y:l[0].y};
+			const byId={}; l.forEach(m=>{ byId[m.id]=(byId[m.id]||0)+1; });
+			l.sort((a,b)=>{
+				const ua=byId[a.id]===1?0:1, ub=byId[b.id]===1?0:1;
+				if(ua!==ub) return ua-ub;
+				return Math.hypot(a.x-p.x,a.y-p.y)-Math.hypot(b.x-p.x,b.y-p.y);
+			});
+			return {id:l[0].id, x:l[0].x, y:l[0].y, flock:byId[l[0].id]};
 		})()`);
 		if(!mobPos) throw new Error('no land mob to test dread against');
+		// leave follow mode FIRST — a following camera drags the spirit back toward the
+		// hero every frame, shrinking the measured distance without the creature ever
+		// stepping toward it (the screenshot scene above switched follow on)
+		await ghost.eval(`MM.ghostClient.setFollow(false)`);
 		await ghost.eval(`MM.ghostClient.setCam(${mobPos.x}, ${mobPos.y}); MM.ghostClient.noteInput();`);
 		await host.poll(`MM.ghostHost.metrics().aura`, v => v === 1, 'active spirit publishes an aura', 40, 250);
-		// the contract: the creature breaks off (state=flee) and NEVER closes on the spirit
-		const spookProbe = `(()=>{
-			const s=MM.ghostAura.spirits[0];
-			if(!s) return null;
-			const l=MM.mobs.serialize().list.filter(m=>m.id==='${mobPos.id}');
-			let best=null;
-			for(const m of l){ const d=Math.hypot(m.x-s.x, m.y-s.y); if(!best || d<best.d) best={d:+d.toFixed(2), state:m.state}; }
-			return best;
-		})()`;
-		const spooked = await host.poll(spookProbe, v => v && v.state === 'flee', 'the creature breaks off and panics at the spirit', 80, 250);
+		// The contract: THE spooked creature breaks off (state=flee) and never closes
+		// on the spirit. Track that ONE individual by positional continuity — measuring
+		// the species minimum let an unspooked flock-mate wander in and fail the run.
+		let trackX = mobPos.x, trackY = mobPos.y;
+		const probeSpook = async () => {
+			const v = await host.eval(`(()=>{
+				const s=MM.ghostAura.spirits[0];
+				if(!s) return null;
+				const l=MM.mobs.serialize().list.filter(m=>m.id==='${mobPos.id}');
+				let best=null;
+				for(const m of l){
+					const dp=Math.hypot(m.x-(${trackX}), m.y-(${trackY}));
+					if(!best || dp<best.dp) best={dp:+dp.toFixed(2), x:m.x, y:m.y, state:m.state, d:+Math.hypot(m.x-s.x, m.y-s.y).toFixed(2)};
+				}
+				return best;
+			})()`);
+			if(v){ trackX = v.x; trackY = v.y; }
+			return v;
+		};
+		let spooked = null;
+		for(let i = 0; i < 80 && !spooked; i++){
+			const v = await probeSpook();
+			if(v && v.state === 'flee'){ spooked = v; break; }
+			// the creature wanders — keep the phantom parked on top of it (updated by
+			// the probe) until it panics, exactly like a watcher chasing a mob would
+			await ghost.eval(`MM.ghostClient.setCam((${trackX}), (${trackY})); MM.ghostClient.noteInput();`);
+			await sleep(250);
+		}
+		if(!spooked) throw new Error('the creature never panicked at the spirit');
+		// sample fast: at flee speed the creature covers ~0.65 tiles per 200 ms, so the
+		// continuity match stays glued to the same individual between samples
 		const d0 = spooked.d;
-		await sleep(900);
-		const after = await host.eval(spookProbe);
-		if(!(after && after.d >= d0 - 0.05)) throw new Error('a spooked creature closed on the spirit: ' + d0 + ' → ' + (after && after.d));
-		console.log('dread: ok (' + mobPos.id + ' spooked at ' + d0 + ' tiles, retreated to ' + after.d + ')');
+		let dMax = d0;
+		for(let i = 0; i < 6; i++){
+			await sleep(200);
+			const v = await probeSpook();
+			if(v && v.d > dMax) dMax = v.d;
+		}
+		if(!(dMax >= d0 - 0.05)) throw new Error('a spooked creature closed on the spirit: ' + d0 + ' → max ' + dMax);
+		console.log('dread: ok (' + mobPos.id + (mobPos.flock > 1 ? ' [stado ' + mobPos.flock + ']' : '') + ' spooked at ' + d0 + ' tiles, max dist ' + dMax + ')');
 
 		// --- Scene 10c: watcher powers — earned by activity, land on creatures only ---------------------
 		// Charge accrues at 1/s ONLY while active, so the watcher must keep signalling.
@@ -348,6 +438,156 @@ async function main(){
 		const refused = await ghost.eval(`MM.ghostClient.sendAssist('craft','pick_stone')`);
 		if(refused) throw new Error('a revoked assistant still sent an assist action');
 		console.log('assistant: ok (crafted for the host, revocation enforced)');
+
+		// --- Scene 10d2: the approval desk — proposals wait for the host's verdict ------------------
+		await host.eval(`MM.ghostHost.setAssistant('${gid0}', true)`);
+		await ghost.poll(`MM.ghostClient.metrics().assistant`, v => v === true, 'assistant re-appointed', 30, 250);
+		await host.eval(`MM.ghostHost.setApprovalMode(true)`);
+		await ghost.poll(`MM.ghostClient.metrics().assistApproval`, v => v === true, 'assistant learns approvals are on', 30, 250);
+		await host.eval(`(()=>{ window.inv.wood=(window.inv.wood|0)+6; window.updateInventoryHud(); return window.inv.wood; })()`);
+		const torches0 = await host.eval(`window.inv.torch|0`);
+		await sleep(350); // respect the per-assistant rate floor — the polls above can all pass first-try
+		const sentQ = await ghost.eval(`MM.ghostClient.sendAssist('craft','torches',1)`);
+		let qlen = 0;
+		for(let i = 0; i < 30 && qlen !== 1; i++){ qlen = await host.eval(`MM.ghostHost.metrics().queue.length`); if(qlen !== 1) await sleep(250); }
+		if(qlen !== 1){
+			throw new Error('proposal never queued: ' + JSON.stringify({
+				sentQ, qlen,
+				ack: await ghost.eval(`MM.ghostClient.metrics().lastAssistAck`),
+				approval: await host.eval(`MM.ghostHost.metrics().approval`),
+				label: await host.eval(`(()=>{ try{ return MM.ghostBridge.ghostAssistLabel('craft','torches',1); }catch(e){ return 'ERR '+e; } })()`),
+				hostErrs: host.pageErrors.slice(0, 3)
+			}));
+		}
+		if((await host.eval(`window.inv.torch|0`)) !== torches0) throw new Error('a QUEUED proposal must not execute');
+		const qRow = (await host.eval(`MM.ghostHost.metrics().queue`))[0];
+		if(!/Pochodnie/.test(qRow.label)) throw new Error('queue label is not host-derived: ' + qRow.label);
+		await host.eval(`MM.ghostHost.approveAssist('${qRow.qid}')`);
+		await host.poll(`window.inv.torch|0`, v => v === torches0 + 4, 'approval crafts the torches', 30, 250);
+		await ghost.poll(`(MM.ghostClient.metrics().lastAssistAck||{}).done`, v => v === true, 'the assistant hears the verdict', 30, 250);
+		// rejection: queued, refused, nothing crafted
+		await sleep(350);
+		await ghost.eval(`MM.ghostClient.sendAssist('craft','torches',1)`);
+		await host.poll(`MM.ghostHost.metrics().queue.length`, v => v === 1, 'second proposal queued', 30, 250);
+		const qRow2 = (await host.eval(`MM.ghostHost.metrics().queue`))[0];
+		await host.eval(`MM.ghostHost.rejectAssist('${qRow2.qid}')`);
+		if((await host.eval(`MM.ghostHost.metrics().queue.length`)) !== 0) throw new Error('rejection left the queue dirty');
+		if((await host.eval(`window.inv.torch|0`)) !== torches0 + 4) throw new Error('a REJECTED proposal executed');
+		await host.eval(`MM.ghostHost.setApprovalMode(false)`);
+		console.log('approvals: ok (queued → approved crafts, rejected does not)');
+
+		// --- Scene 10d3: two assistants, first-wins — the host executes serially --------------------
+		const g2url = url + `?watch=${ROOM}&via=bc&name=Widmo2`;
+		const created2 = await host.send('Target.createTarget', { url: g2url });
+		let ghost2Ws = null;
+		for(let i = 0; i < 40 && !ghost2Ws; i++){
+			await sleep(250);
+			const list = await (await fetch(`http://127.0.0.1:${dtPort}/json/list`)).json();
+			const t2 = list.find(x => x.id === created2.targetId);
+			if(t2) ghost2Ws = t2.webSocketDebuggerUrl;
+		}
+		const ghost2 = new Tab(ghost2Ws, 'ghost2');
+		await ghost2.init();
+		await ghost2.eval(BOOT_WAIT, 60000);
+		await ghost2.poll(`MM.ghostClient.metrics().state`, v => v === 'live', 'second ghost joins', 80, 250);
+		const gid2 = (await host.eval(`MM.ghostHost.metrics().viewers`)).find(v => v.name === 'Widmo2').gid;
+		await host.eval(`MM.ghostHost.setAssistant('${gid2}', true)`);
+		await ghost2.poll(`MM.ghostClient.metrics().assistant`, v => v === true, 'second assistant appointed', 30, 250);
+		const seats = (await host.eval(`MM.ghostHost.metrics().viewers`)).filter(v => v.assistant).length;
+		if(seats !== 2) throw new Error('expected TWO simultaneous assistant seats, got ' + seats);
+		// exactly one craft affordable — whoever lands first wins, the other hears 'cost'
+		await host.eval(`(()=>{ window.inv.wood=2; window.updateInventoryHud(); return 1; })()`);
+		const torchesRace = await host.eval(`window.inv.torch|0`);
+		await Promise.all([
+			ghost.eval(`MM.ghostClient.sendAssist('craft','torches',1)`),
+			ghost2.eval(`MM.ghostClient.sendAssist('craft','torches',1)`)
+		]);
+		await host.poll(`window.inv.torch|0`, v => v === torchesRace + 4, 'exactly one batch crafted', 30, 250);
+		await sleep(800); // the losing ack needs a beat to land
+		if((await host.eval(`window.inv.wood|0`)) !== 0) throw new Error('race left the pouch inconsistent');
+		if((await host.eval(`window.inv.torch|0`)) !== torchesRace + 4) throw new Error('both crafts executed — serialization broke');
+		const [ack1, ack2] = await Promise.all([
+			ghost.eval(`MM.ghostClient.metrics().lastAssistAck`),
+			ghost2.eval(`MM.ghostClient.metrics().lastAssistAck`)
+		]);
+		const wins = [ack1, ack2].filter(a => a && a.ok).length;
+		const losses = [ack1, ack2].filter(a => a && a.reason === 'cost').length;
+		if(!(wins === 1 && losses === 1)) throw new Error('first-wins arbitration off: ' + JSON.stringify([ack1, ack2]));
+		// the workbench mirrors the player's panels: groups, resources, search skeleton
+		// (the panel DOM is built lazily — open it the way an assistant would, via 🛠)
+		const bench = await ghost2.eval(`(()=>{ const m=MM.ghostClient.metrics();
+			const b=document.getElementById('gbAssist'); if(b) b.click();
+			const p=document.getElementById('ghostAssist');
+			return { recipes:m.assistRecipes,
+				search:!!(p&&p.querySelector('#gaSearch')),
+				vitals:(p&&p.querySelector('#gaVitals'))?p.querySelector('#gaVitals').textContent:'',
+				rows:p?p.querySelectorAll('#gaBody *').length:0 }; })()`);
+		if(!(bench.recipes > 0 && bench.search && bench.rows > 10 && /HP/.test(bench.vitals))) throw new Error('workbench is missing the player view: ' + JSON.stringify(bench));
+		// retire the second ghost so the later single-viewer scenes see one entry
+		await ghost2.eval(`MM.ghostClient.leave()`);
+		await host.poll(`MM.ghostHost.metrics().ghosts`, v => v === 1, 'second ghost retired', 40, 250);
+		ghost2.close();
+		console.log('two assistants: ok (first won, second heard "cost", workbench mirrors the player)');
+
+		// --- Scene 10f: the watcher's own career — earned from host deeds, and PERSISTENT ------------
+		// Everything above (join, blessing, powers, assist work, active watching) should
+		// already have banked XP. The real question is whether it survives the browser:
+		// the profile lives in the WATCHER's localStorage, so a full reload of the ghost
+		// tab must find it again.
+		const progBefore = await ghost.poll(`MM.ghostClient.metrics().prog`, p => p && p.xp > 0, 'the watcher banks XP from host-minted deeds', 40, 250);
+		if(!progBefore.counts.join) throw new Error('the join deed never landed: ' + JSON.stringify(progBefore.counts));
+		if(!progBefore.done.includes('first_watch')) throw new Error('the first achievement did not unlock: ' + JSON.stringify(progBefore.done));
+		if(!(progBefore.counts.bless || progBefore.counts.cheer || progBefore.counts.energy)) throw new Error('blessings did not pay');
+		if(!(progBefore.counts.banish || progBefore.counts.frost || progBefore.counts.smite)) throw new Error('powers did not pay');
+		if(!progBefore.counts.craft) throw new Error('assistant work did not pay');
+		if(progBefore.days !== 1) throw new Error('the day stamp is missing');
+		const hostSawLevel = (await host.eval(`MM.ghostHost.metrics().viewers`))[0].level;
+		if(!(hostSawLevel >= 1)) throw new Error('the host never learned the viewer rank');
+		console.log('progression: ok (xp=' + progBefore.xp + ' level=' + progBefore.level + ' "' + progBefore.rank + '" '
+			+ 'osiągnięcia=' + progBefore.done.length + ', host widzi Poz. ' + hostSawLevel + ')');
+		// Reload the ghost tab from scratch — same browser profile, brand-new page.
+		// Never eval an awaited promise across the navigation: the old execution context
+		// dies mid-flight and that CDP request would never answer. Poll a plain
+		// expression until the NEW context has booted instead.
+		await ghost.send('Page.navigate', { url: ghostUrl });
+		await ghost.poll(`(()=>{ try{ return !!(window.MM && MM.ghostBridge && MM.ghostClient); }catch(e){ return false; } })()`,
+			v => v === true, 'the reloaded ghost boots', 120, 500);
+		await ghost.poll(`MM.ghostClient.metrics().state`, v => v === 'live', 'the reloaded ghost re-joins', 80, 250);
+		const progAfter = await ghost.eval(`MM.ghostClient.metrics().prog`);
+		if(progAfter.xp < progBefore.xp) throw new Error('progress was LOST across a reload: ' + progBefore.xp + ' → ' + progAfter.xp);
+		if(!progAfter.done.includes('first_watch')) throw new Error('achievements were lost across a reload');
+		if(progAfter.counts.craft !== progBefore.counts.craft) throw new Error('deed counters were lost across a reload');
+		console.log('persistence: ok (reloaded the ghost tab — xp ' + progBefore.xp + ' → ' + progAfter.xp + ', trophies kept)');
+
+		// --- Scene 10g: voices & manners — host chat, pings, per-watcher mute, view toggles -------------
+		// The host speaks: bubble over the hero on BOTH sides of the wire.
+		await host.front(); // the bubble rides the rAF draw loop — wake the host canvas
+		const said = await host.eval(`MM.ghostHost.say('Czesc duchy!')`);
+		if(!said) throw new Error('host say() refused');
+		if((await host.eval(`MM.ghostHost.metrics().hostChat`)) !== 'Czesc duchy!') throw new Error('host does not see its own words');
+		await ghost.poll(`MM.ghostClient.metrics().hostChat`, v => v === 'Czesc duchy!', 'the watcher hears the host speak', 30, 250);
+		// A ping: no coordinates on the wire, marker echoes back to every watcher (incl. the sender).
+		const pinged = await ghost.eval(`MM.ghostClient.sendPing()`);
+		if(!pinged) throw new Error('watcher ping refused despite chat permissions');
+		await host.poll(`MM.ghostHost.metrics().stats.pings`, v => v >= 1, 'host resolved the ping', 30, 250);
+		await ghost.poll(`MM.ghostClient.metrics().pings`, v => v >= 1, 'the ping marker echoed back to the watcher', 30, 250);
+		await host.shot('tools/ghost-qa-voices.png');
+		// Per-watcher mute: the chat still relays and counts (display preference, not
+		// moderation) but stays out of THIS host's message log.
+		const gidV = (await host.eval(`MM.ghostHost.metrics().viewers`))[0].gid;
+		await host.eval(`MM.ghostHost.setViewerHidden('${gidV}', true)`);
+		if(!(await host.eval(`MM.ghostHost.metrics().hidden`)).includes(gidV)) throw new Error('hide roundtrip failed');
+		const chatsV0 = await host.eval(`MM.ghostHost.metrics().stats.chats`);
+		if(!(await ghost.eval(`MM.ghostClient.sendChat('sekretny szept')`))) throw new Error('muted watcher could not chat (mute must not block the relay)');
+		await host.poll(`MM.ghostHost.metrics().stats.chats`, v => v === chatsV0 + 1, 'muted chat still counted/relayed', 30, 250);
+		if(/sekretny szept/.test(await host.eval(`document.getElementById('messages').textContent`))) throw new Error('a muted watcher still reached the host log');
+		await host.eval(`MM.ghostHost.setViewerHidden('${gidV}', false)`);
+		if((await host.eval(`MM.ghostHost.metrics().hidden`)).length !== 0) throw new Error('unhide roundtrip failed');
+		// View toggles: persisted display prefs, roundtrip through the api.
+		await host.eval(`MM.ghostHost.setViewPref('spirits', false)`);
+		if((await host.eval(`MM.ghostHost.metrics().view`)).spirits !== false) throw new Error('view pref roundtrip failed');
+		await host.eval(`MM.ghostHost.setViewPref('spirits', true)`);
+		console.log('voices: ok (host bubble on both ends, ping echoed, mute keeps relay but silences the log, view prefs roundtrip)');
 
 		// --- Scene 10e: transport loss → automatic reconnect --------------------------------------------
 		// _debugConnLost runs the REAL recovery path: close conn (bye), fresh join,

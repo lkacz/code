@@ -22,7 +22,9 @@ if(WATCH && MMR){
 	// every localStorage write except the ghost's own display name, so watching
 	// a friend can never contaminate this browser's single-player state.
 	try{
-		const allow = new Set(['mm_ghost_name_v1', 'mm_ghost_avatar_v1']);
+		// (the ghost's OWN profile is on this list: name, avatar and career — the
+		// career is what makes progression survive a reload and a fresh invite link)
+		const allow = new Set(['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET.PROG_KEY]);
 		const origSet = Storage.prototype.setItem;
 		const origRemove = Storage.prototype.removeItem;
 		Storage.prototype.setItem = function(k, v){
@@ -68,7 +70,13 @@ const ghostClient = (function(){
 	let charge = 0; // earned by staying ACTIVE; spent on powers (host is authoritative)
 	const powerWait = {};
 	let assistant = false, assistState = null, assistPanel = null;
+	let assistApproval = false, assistSig = '', lastAssistAck = null;
 	const powerFx = []; // {x,y,kind,t}
+	let hostChat = null; // the host's own words, rendered over the hero replica
+	const pings = []; // {x,y,name,t} — spots fellow spirits (or we) pointed at
+	let lastPingSentAt = 0;
+	let prog = NET.createProgress(); // the watcher's own career (persisted in THEIR browser)
+	let progPanel = null;
 
 	function nowMs(){ return Date.now(); }
 	// Remote strings (host name, fellow-ghost names) render into innerHTML in the
@@ -96,11 +104,65 @@ const ghostClient = (function(){
 		updateBar();
 	}
 
+	// --- the watcher's own career -----------------------------------------------------
+	// Persisted HERE, in the viewer's own browser (NET.PROG_KEY), which is why the
+	// profile outlives a reload, a new invite link and a different host — no server,
+	// no account. The host mints the deeds; this side only banks them, celebrates, and
+	// tells the host its level so the viewer list can show a rank badge (display only).
+	function loadProgress(){
+		try{ prog = NET.normalizeProgress(JSON.parse(localStorage.getItem(NET.PROG_KEY) || 'null')); }
+		catch(e){ prog = NET.createProgress(); }
+	}
+	// Persistence rides a throttle: a hostile host can spam deed messages at the
+	// rate cap, and each write is a JSON.stringify + localStorage.setItem. Dirty
+	// state is flushed at most every 2 s (the bar tick drives the trailing write)
+	// and unconditionally on leave/unload so nothing earned is ever dropped.
+	let progDirty = false, lastProgSaveAt = 0;
+	function flushProgress(force){
+		if(!progDirty) return;
+		const t = nowMs();
+		if(!force && t - lastProgSaveAt < 2000) return;
+		lastProgSaveAt = t;
+		progDirty = false;
+		try{ localStorage.setItem(NET.PROG_KEY, JSON.stringify(prog)); }catch(e){ /* storage full/blocked — the session still counts */ }
+	}
+	function today(){
+		const d = new Date();
+		const p = n => String(n).padStart(2, '0');
+		return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+	}
+	function bankDeeds(deeds, opts){
+		const before = prog;
+		const res = NET.progressAfter(prog, deeds, opts);
+		// "changed" must see count-only and day-only mutations too: the crowd deed is
+		// worth 0 XP and a day stamp moves no counter, yet both must reach disk
+		const changed = res.state.xp !== before.xp
+			|| res.unlocked.length > 0
+			|| res.state.days.length !== before.days.length
+			|| JSON.stringify(res.state.counts) !== JSON.stringify(before.counts);
+		prog = res.state;
+		if(!changed) return res;
+		progDirty = true;
+		flushProgress();
+		if(res.leveled){
+			const rank = NET.rankFor(res.level);
+			try{ bridge && bridge.msg('⬆ Poziom ' + res.level + ' — ' + rank.name + '!'); }catch(e){ /* fine */ }
+			if(conn) conn.send({ t: 'prog', lvl: res.level });
+		}
+		for(const a of res.unlocked){
+			try{ bridge && bridge.msg('🏆 Osiągnięcie: ' + a.icon + ' ' + a.name + ' (+' + a.xp + ' XP)'); }catch(e){ /* fine */ }
+		}
+		updateBar();
+		renderProgress();
+		return res;
+	}
+
 	// --- boot --------------------------------------------------------------------
 	function boot(b){
 		if(!WATCH) return false;
 		bridge = b;
 		loadAvatar();
+		loadProgress();
 		document.body.classList.add('mmGhostMode');
 		injectCss();
 		showVeil('Łączenie z warstwą <b>' + WATCH.room + '</b>…');
@@ -108,8 +170,10 @@ const ghostClient = (function(){
 		state = 'connect';
 		conn = makeConn();
 		sendHello();
-		// prompt goodbye on tab close — otherwise the host only reaps after 15 s
-		window.addEventListener('beforeunload', () => { try{ if(conn) conn.close(); }catch(e){ /* fine */ } });
+		// prompt goodbye on tab close — otherwise the host only reaps after 15 s;
+		// and flush the career so a deed banked seconds before the close survives
+		window.addEventListener('beforeunload', () => { flushProgress(true); try{ if(conn) conn.close(); }catch(e){ /* fine */ } });
+		window.addEventListener('pagehide', () => flushProgress(true));
 		// Companion pump (mirror of ghost_host's): keeps hello retries, queue
 		// drain and the pose keepalive alive while this tab is backgrounded and
 		// rAF is frozen. All paths inside frame() are cadence-gated/idempotent.
@@ -124,7 +188,7 @@ const ghostClient = (function(){
 			onSignalFail: () => { if(state === 'connect') showVeil('Nie mogę dosięgnąć serwerów sygnałowych.<br>Spróbuj ponownie za chwilę.'); }
 		});
 	}
-	function sendHello(){ if(conn) conn.send({ t: 'hello', gid, name: ghostName(), avatar, proto: NET.GHOST_PROTO }); }
+	function sendHello(){ if(conn) conn.send({ t: 'hello', gid, name: ghostName(), avatar, proto: NET.GHOST_PROTO, lvl: NET.levelFor(prog.xp).level }); }
 	// Transport loss ≠ the host saying goodbye: rebuild the connection and let the
 	// normal hello → welcome → snapshot flow re-base the world. hostGone stays final.
 	function scheduleReconnect(){
@@ -149,6 +213,7 @@ const ghostClient = (function(){
 	}
 	function leave(){
 		state = 'ended';
+		flushProgress(true); // nothing earned may be lost on the way out
 		if(pump){ clearInterval(pump); pump = null; }
 		if(barTick){ clearInterval(barTick); barTick = null; }
 		if(bar) bar.style.display = 'none';
@@ -192,6 +257,16 @@ const ghostClient = (function(){
 			}
 			return;
 		}
+		if(pl.t === 'deed'){
+			// XP is only ever minted by the host — this side banks what it is told
+			if(!NET.validDeed(pl.k)) return;
+			// Join XP pays once per day: every reload re-joins, and +5 per F5 would
+			// out-earn honest watching. The first ever join is always on a fresh day,
+			// so the "first_watch" achievement is untouched.
+			if(pl.k === 'join' && prog.days.includes(today())) return;
+			bankDeeds([{ k: pl.k, n: pl.n }], { day: today() });
+			return;
+		}
 		if(pl.t === 'chunk'){
 			const done = assembler.push(pl);
 			if(done && done.kind === 'snap') applySnapshot(done.data);
@@ -231,11 +306,31 @@ const ghostClient = (function(){
 		}
 		if(pl.t === 'assistState'){
 			assistState = pl.data && typeof pl.data === 'object' ? pl.data : null;
-			renderAssist();
+			assistApproval = !!pl.approval;
+			// identical ticks skip the DOM rebuild — the panel refreshes every 1.5 s
+			// and most ticks change nothing under the assistant's cursor
+			const sig = JSON.stringify(assistState) + '|' + (assistApproval ? 1 : 0);
+			if(sig !== assistSig){ assistSig = sig; renderAssist(); }
 			return;
 		}
 		if(pl.t === 'assistAck'){
-			if(!pl.ok) bridge.msg('🛠 Nie udało się: ' + (pl.reason === 'cost' ? 'brak surowców' : pl.reason === 'perm' ? 'brak uprawnień' : pl.reason || 'błąd'));
+			lastAssistAck = { ok: !!pl.ok, queued: !!pl.queued, reason: pl.reason || null, a: pl.a || null, at: nowMs() };
+			if(pl.queued) bridge.msg('⏳ Propozycja wysłana — gospodarz musi ją zatwierdzić');
+			else if(!pl.ok) bridge.msg('🛠 Nie udało się: ' + (pl.reason === 'cost' ? 'zabrakło surowców (ktoś był szybszy?)'
+				: pl.reason === 'perm' ? 'brak uprawnień'
+				: pl.reason === 'rate' ? 'za szybko — odczekaj chwilę'
+				: pl.reason === 'full' ? 'kolejka propozycji jest pełna'
+				: pl.reason === 'yours' ? 'masz już komplet propozycji w kolejce'
+				: pl.reason || 'błąd'));
+			return;
+		}
+		if(pl.t === 'assistDone'){
+			lastAssistAck = { ok: !!pl.ok, done: true, reason: pl.reason || null, at: nowMs() };
+			const what = typeof pl.label === 'string' ? pl.label.slice(0, 60) : 'propozycję';
+			bridge.msg(pl.ok ? '✅ Gospodarz zatwierdził: ' + what
+				: pl.reason === 'rejected' ? '🚫 Gospodarz odrzucił: ' + what
+				: pl.reason === 'expired' ? '⌛ Propozycja wygasła: ' + what
+				: '🛠 Nie udało się wykonać: ' + what);
 			return;
 		}
 		queue.push(pl);
@@ -262,7 +357,7 @@ const ghostClient = (function(){
 		cam.mode = 'follow';
 		bridge.snapCameraToPlayer();
 		hideVeil();
-		bridge.msg('👁 Obserwujesz warstwę gracza ' + (hostName || '…') + ' — ' + (isTouchUi() ? 'przeciągnij palcem, aby latać duchem' : 'WASD/przeciąganie = lot ducha, F = podążaj') + '. Twoja aktywność wzmacnia gracza!');
+		bridge.msg('👁 Obserwujesz warstwę gracza ' + (hostName || '…') + ' — ' + (isTouchUi() ? 'przeciągnij palcem, aby latać duchem' : 'WASD/przeciąganie = lot ducha, F = podążaj, P = 📍 wskaż miejsce') + '. Twoja aktywność wzmacnia gracza!');
 		updateBar();
 	}
 	function drainQueue(){
@@ -326,6 +421,9 @@ const ghostClient = (function(){
 						o.tx = g.x; o.ty = g.y;
 					}
 					for(let i = others.length - 1; i >= 0; i--){ if(!seen.has(others[i].id)) others.splice(i, 1); }
+					// "W tłumie": read straight off the host's presence relay, so it is
+					// still the host's word — just observed here instead of minted there
+					if(others.length >= 3 && !prog.counts.crowd) bankDeeds([{ k: 'crowd', n: 1 }], { day: today() });
 					updateBar();
 				} else if(pl.t === 'chat'){
 					const name = String(pl.name || 'Duch').slice(0, 24);
@@ -335,6 +433,18 @@ const ghostClient = (function(){
 						const o = others.find(v => v.id === pl.gid);
 						if(o) o.chat = { text, until: nowMs() + 6000 };
 						else if(pl.gid === gid) selfChat = { text, until: nowMs() + 6000 };
+					}
+				} else if(pl.t === 'hostChat'){
+					const text = NET.filterChat(pl.text).text; // defense in depth — the host filters its own words too
+					if(text){
+						hostChat = { text, until: nowMs() + 6000 };
+						bridge.msg('💬 ' + (hostName || 'Gospodarz') + ': ' + text);
+					}
+				} else if(pl.t === 'ping'){
+					if(Number.isFinite(pl.x) && Number.isFinite(pl.y)){
+						pings.push({ x: pl.x, y: pl.y, name: String(pl.name || 'Duch').slice(0, 24), t: nowMs() });
+						if(pings.length > 8) pings.shift();
+						if(pl.gid !== gid) bridge.msg('📍 ' + String(pl.name || 'Duch').slice(0, 24) + ' wskazuje miejsce');
 					}
 				} else if(pl.t === 'powerFx' && NET.validPowerKind(pl.kind)){
 					if(Number.isFinite(pl.x) && Number.isFinite(pl.y)){
@@ -443,34 +553,74 @@ const ghostClient = (function(){
 	}
 
 	// --- spirits: the watcher's own flying avatar + fellow watchers -----------------------
+	// Two passes mirroring the host painter: 'body' runs before the hero replica is
+	// drawn (spirits stay behind the player), 'text' runs over the creature layer
+	// (names, bubbles, pings and blast rings stay readable). Spirits parked on the
+	// hero — your own in follow mode, always — are DISPLAYED lifted above its head.
 	let lastSpiritT = 0;
-	function drawSpirits(ctx, TILE){
+	function drawSpirits(ctx, TILE, pass){
 		const painter = MMR && MMR.ghostHost && MMR.ghostHost.paintSpirit;
 		if(!painter || state !== 'live') return;
+		const wantBody = pass !== 'text';
+		const wantText = pass !== 'body';
 		const t = (typeof performance !== 'undefined') ? performance.now() : 0;
 		const ease = Math.min(1, Math.max(0, (t - lastSpiritT) / 1000) * 9);
-		lastSpiritT = t;
+		lastSpiritT = t; // the second pass of a frame sees dt≈0 — no double-glide
+		const p = bridge.player;
+		const hx = p ? p.x : NaN, hy = p ? p.y : NaN;
 		for(const g of others){
 			if(Number.isFinite(g.tx)){ g.x += (g.tx - g.x) * ease; g.y += (g.ty - g.y) * ease; }
-			painter(ctx, TILE, g.x, g.y, g.name, t, false, g.avatar, g.act, g.chat);
+			const lift = NET.spiritLift(g.x, g.y, hx, hy);
+			if(wantBody) painter(ctx, TILE, g.x, g.y - lift, g.name, t, false, g.avatar, g.act, null, 'body');
+			if(wantText) painter(ctx, TILE, g.x, g.y - lift, g.name, t, false, g.avatar, g.act, g.chat, 'text');
 		}
 		// your own spirit rides the camera — dragging/WASD IS the ghost flying
 		const c = bridge.getCamCenter();
 		if(selfChat && selfChat.until < nowMs()) selfChat = null;
-		// dread ring: what your presence scares away right now (only while active)
-		if(isActive()){
+		const selfLift = NET.spiritLift(c.x, c.y, hx, hy);
+		if(wantBody){
+			// dread ring: what your presence scares away right now (only while active);
+			// anchored at the TRUE position — the lift is display-only, dread is not
+			if(isActive()){
+				ctx.save();
+				ctx.globalAlpha = 0.10;
+				ctx.strokeStyle = '#9fd6ff';
+				ctx.lineWidth = 1.5;
+				ctx.beginPath();
+				ctx.arc(c.x * TILE, c.y * TILE, NET.DREAD.R * TILE, 0, Math.PI * 2);
+				ctx.stroke();
+				ctx.restore();
+			}
+			painter(ctx, TILE, c.x, c.y - selfLift, ghostName(), t, true, avatar, isActive(), null, 'body');
+		}
+		if(!wantText) return;
+		painter(ctx, TILE, c.x, c.y - selfLift, ghostName(), t, true, avatar, isActive(), selfChat, 'text');
+		// the host's own words hover over the hero replica
+		const bubble = MMR && MMR.ghostHost && MMR.ghostHost.paintChatBubble;
+		if(hostChat && hostChat.until > nowMs() && bubble && p) bubble(ctx, TILE, p.x, p.y - (p.h || 1) / 2 - 0.5, hostChat.text);
+		const now = nowMs();
+		// pointed spots pulse for a few seconds
+		for(let i = pings.length - 1; i >= 0; i--){
+			const f = pings[i];
+			const age = (now - f.t) / NET.PING.TTL_MS;
+			if(age >= 1){ pings.splice(i, 1); continue; }
 			ctx.save();
-			ctx.globalAlpha = 0.10;
-			ctx.strokeStyle = '#9fd6ff';
-			ctx.lineWidth = 1.5;
+			ctx.globalAlpha = 0.85 * (1 - age * 0.6);
+			ctx.strokeStyle = '#ffd76a';
+			ctx.lineWidth = 2.5;
 			ctx.beginPath();
-			ctx.arc(c.x * TILE, c.y * TILE, NET.DREAD.R * TILE, 0, Math.PI * 2);
+			ctx.arc(f.x * TILE, f.y * TILE, TILE * (0.5 + (age * 2 % 1) * 0.9), 0, Math.PI * 2);
 			ctx.stroke();
+			ctx.font = 'bold ' + Math.max(8, TILE * 0.18) + 'px system-ui';
+			ctx.textAlign = 'center';
+			ctx.strokeStyle = 'rgba(6,12,20,0.85)';
+			ctx.lineWidth = 3;
+			ctx.fillStyle = '#ffd76a';
+			ctx.strokeText('📍 ' + f.name, f.x * TILE, (f.y - 0.8) * TILE);
+			ctx.fillText('📍 ' + f.name, f.x * TILE, (f.y - 0.8) * TILE);
 			ctx.restore();
 		}
-		painter(ctx, TILE, c.x, c.y, ghostName(), t, true, avatar, isActive(), selfChat);
 		// power blasts fade out over ~600 ms
-		const now = nowMs();
 		for(let i = powerFx.length - 1; i >= 0; i--){
 			const f = powerFx[i];
 			const age = (now - f.t) / 600;
@@ -506,10 +656,22 @@ const ghostClient = (function(){
 		updateBar();
 		return true;
 	}
-	function sendAssist(action, id){
+	function sendAssist(action, id, n){
 		if(state !== 'live' || !assistant || !NET.validAssistAction(action)) return false;
-		conn.send({ t: 'assist', a: action, id: String(id).slice(0, 64) });
+		conn.send({ t: 'assist', a: action, id: String(id).slice(0, 64), n: NET.clampCraftCount(n) });
 		noteInput();
+		return true;
+	}
+	// Pings carry no coordinates — the host stamps the marker at the pose it tracked
+	// for this spirit, so where you FLEW is where you point.
+	function sendPing(){
+		if(state !== 'live' || mode === 'watch') return false;
+		const t = nowMs();
+		if(t - lastPingSentAt < NET.PING.MIN_MS) return false;
+		lastPingSentAt = t;
+		conn.send({ t: 'ping' });
+		noteInput();
+		updateBar();
 		return true;
 	}
 
@@ -525,6 +687,7 @@ const ghostClient = (function(){
 			const k = (e.key || '').toLowerCase();
 			if(PAN_KEYS[k]){ held.add(k); if(cam.mode === 'follow') setFollow(false); e.preventDefault(); }
 			else if(k === 'f'){ setFollow(cam.mode !== 'follow'); e.preventDefault(); }
+			else if(k === 'p'){ sendPing(); e.preventDefault(); }
 			else if(k === '+' || k === '=' || k === ']'){ bridge && bridge.nudgeZoom(1.1); e.preventDefault(); }
 			else if(k === '-' || k === '['){ bridge && bridge.nudgeZoom(1 / 1.1); e.preventDefault(); }
 			e.stopImmediatePropagation();
@@ -586,6 +749,20 @@ const ghostClient = (function(){
 			+ '#ghostBar #gbAvatarRow{ align-items:center; }'
 			+ '#ghostBar #gbAvatarRow button{ padding:4px 6px; font-size:14px; }'
 			+ '#ghostBar #gbAvatar{ font-size:14px; padding:5px 8px; }'
+			+ '#ghostBar #gbRank{ display:flex; flex-direction:column; gap:2px; min-width:104px; cursor:pointer; }'
+			+ '#ghostBar #gbRank .gbRankLine{ font-weight:800; font-size:11px; white-space:nowrap; }'
+			+ '#ghostBar #gbRank .gbXpBar{ height:4px; border-radius:99px; background:rgba(255,255,255,.14); overflow:hidden; }'
+			+ '#ghostBar #gbRank .gbXpFill{ height:100%; border-radius:99px; transition:width .35s ease; }'
+			+ '#ghostProg{ position:fixed; right:12px; top:56px; z-index:150; width:min(340px,calc(100vw - 24px)); max-height:min(74vh,600px); overflow:auto;'
+			+ ' display:none; flex-direction:column; gap:8px; padding:12px 13px; border-radius:14px; border:1px solid rgba(140,190,255,.4);'
+			+ ' background:rgba(12,17,26,.96); color:#eef4fb; font:12px system-ui; box-shadow:0 12px 32px rgba(0,0,0,.6); pointer-events:auto; }'
+			+ '#ghostProg .gpAch{ display:flex; gap:8px; align-items:center; border-top:1px solid rgba(255,255,255,.08); padding:5px 0; }'
+			+ '#ghostProg .gpAch.locked{ opacity:.5; }'
+			+ '#ghostProg .gpIcon{ font-size:16px; width:22px; text-align:center; }'
+			+ '#ghostProg .gpName{ flex:1; min-width:0; }'
+			+ '#ghostProg .gpName b{ display:block; font-size:11.5px; }'
+			+ '#ghostProg .gpName span{ font-size:10px; color:#9fb2c6; }'
+			+ '#ghostProg .gpTick{ font-size:10px; font-weight:800; white-space:nowrap; color:#9fd6ae; }'
 			+ '#ghostVeil{ position:fixed; inset:0; z-index:290; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;'
 			+ ' background:radial-gradient(ellipse at 50% 40%, rgba(14,20,34,.92), rgba(4,7,13,.98)); color:#dcebff; font:14px system-ui; text-align:center; pointer-events:auto; }'
 			+ '#ghostVeil .gvIcon{ font-size:44px; animation:gvFloat 2.6s ease-in-out infinite; }'
@@ -613,6 +790,7 @@ const ghostClient = (function(){
 		bar = document.createElement('div');
 		bar.id = 'ghostBar';
 		bar.innerHTML = '<span class="gbTag">👁 Duch Warstwy</span><span class="gbInfo" id="gbInfo"></span>'
+			+ '<span id="gbRank" title="Twoja kariera ducha — kliknij, by zobaczyć osiągnięcia"><span class="gbRankLine"></span><span class="gbXpBar"><span class="gbXpFill"></span></span></span>'
 			+ '<span class="gbActivity" id="gbActivity" title="Aktywni widzowie wzmacniają gracza (+XP, szybkość, skok, obrażenia). Bezczynność >30 s wyłącza wzmocnienie."></span>'
 			+ '<button id="gbAvatar" title="Zmień awatara"></button>'
 			+ '<span id="gbAvatarRow" style="display:none;gap:3px;"></span>'
@@ -624,14 +802,17 @@ const ghostClient = (function(){
 			+ '<button class="gbPower" data-kind="banish">💀 Popłoch</button>'
 			+ '<button class="gbPower" data-kind="frost">❄️ Mróz</button>'
 			+ '<button class="gbPower" data-kind="smite">⚡ Grom</button>'
+			+ '<button id="gbPing">📍 Wskaż</button>'
 			+ '<button id="gbAssist" style="display:none;">🛠 Asystent</button>'
 			+ '<button id="gbZoomOut" title="Oddal">➖</button>'
 			+ '<button id="gbZoomIn" title="Przybliż">➕</button>'
 			+ '<button class="gbFollow on" id="gbFollow"></button>'
 			+ '<button class="gbLeave" id="gbLeave">Opuść</button>';
 		document.body.appendChild(bar);
+		bar.querySelector('#gbRank').addEventListener('click', () => { noteInput(); toggleProgPanel(); });
 		bar.querySelectorAll('.gbBuff').forEach(btn => btn.addEventListener('click', () => sendBuff(btn.dataset.kind)));
 		bar.querySelectorAll('.gbPower').forEach(btn => btn.addEventListener('click', () => sendPower(btn.dataset.kind)));
+		bar.querySelector('#gbPing').addEventListener('click', () => sendPing());
 		bar.querySelector('#gbAssist').addEventListener('click', () => { noteInput(); toggleAssistPanel(); });
 		bar.querySelector('#gbFollow').addEventListener('click', () => { noteInput(); setFollow(cam.mode !== 'follow'); });
 		bar.querySelector('#gbLeave').addEventListener('click', leave);
@@ -663,9 +844,21 @@ const ghostClient = (function(){
 		updateBar();
 	}
 	function updateBar(){
+		flushProgress(); // the 500 ms bar tick doubles as the trailing-write driver
 		if(!bar) return;
 		const info = bar.querySelector('#gbInfo');
 		info.textContent = (hostName ? hostName : '…') + (others.length ? ' • duchy: ' + (others.length + 1) : '');
+		const lv = NET.levelFor(prog.xp);
+		const rank = NET.rankFor(lv.level);
+		const rankEl = bar.querySelector('#gbRank');
+		rankEl.querySelector('.gbRankLine').textContent = '🏆 ' + lv.level + ' · ' + rank.name;
+		rankEl.querySelector('.gbRankLine').style.color = rank.color;
+		const fill = rankEl.querySelector('.gbXpFill');
+		fill.style.width = (lv.need ? Math.round(100 * lv.into / lv.need) : 100) + '%';
+		fill.style.background = rank.color;
+		rankEl.title = lv.need
+			? 'Poziom ' + lv.level + ' (' + rank.name + ') · ' + lv.into + '/' + lv.need + ' XP do awansu — kliknij po osiągnięcia'
+			: 'Maksymalny poziom — kliknij po osiągnięcia';
 		bar.querySelector('#gbActivity').textContent = isActive() ? '⚡ wzmacniasz' : '💤 rusz się!';
 		bar.querySelector('#gbAvatar').textContent = AVATAR_ICONS[avatar] || '👻';
 		const t = nowMs();
@@ -689,6 +882,11 @@ const ghostClient = (function(){
 			btn.textContent = wait > 1000 ? rule.icon + ' ' + Math.ceil(wait / 1000) + 's' : rule.icon + ' ' + rule.label;
 			btn.title = rule.label + ' — koszt ' + rule.cost + ' energii ducha, działa wokół twojego ducha' + (poor ? ' (za mało energii: bądź aktywny!)' : '');
 		});
+		const ping = bar.querySelector('#gbPing');
+		ping.style.display = mode === 'watch' ? 'none' : 'inline-block';
+		ping.disabled = state !== 'live' || nowMs() - lastPingSentAt < NET.PING.MIN_MS;
+		ping.title = isTouchUi() ? 'Wskaż widzom i graczowi miejsce, nad którym unosi się twój duch'
+			: 'Wskaż miejsce, nad którym unosi się twój duch [P]';
 		const asst = bar.querySelector('#gbAssist');
 		asst.style.display = assistant ? 'inline-block' : 'none';
 		const chat = bar.querySelector('#gbChat');
@@ -702,14 +900,117 @@ const ghostClient = (function(){
 		fol.title = isTouchUi() ? 'Przeciągnij po ekranie, aby latać duchem' : 'WASD/strzałki lub przeciąganie = lot ducha';
 	}
 
-	// --- assistant workbench: craft for the host, manage their gear ---------------------
+	// --- trophy case: the watcher's level, rank and achievements ------------------------
+	function toggleProgPanel(){
+		if(!progPanel){
+			progPanel = document.createElement('div');
+			progPanel.id = 'ghostProg';
+			document.body.appendChild(progPanel);
+		}
+		progPanel.style.display = (progPanel.style.display === 'none' || !progPanel.style.display) ? 'flex' : 'none';
+		renderProgress();
+	}
+	function progStat(label, value){
+		const row = document.createElement('div');
+		row.style.cssText = 'display:flex;justify-content:space-between;gap:8px;font-size:11px;color:#9fb2c6;';
+		const l = document.createElement('span'); l.textContent = label;
+		const v = document.createElement('b'); v.style.color = '#dcebff'; v.textContent = value;
+		row.append(l, v);
+		return row;
+	}
+	function renderProgress(){
+		const el = progPanel;
+		if(!el || el.style.display === 'none') return;
+		const lv = NET.levelFor(prog.xp);
+		const rank = NET.rankFor(lv.level);
+		const c = prog.counts || {};
+		el.textContent = '';
+		const head = document.createElement('div');
+		head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;';
+		const title = document.createElement('b');
+		title.style.color = rank.color;
+		title.textContent = '🏆 Poziom ' + lv.level + ' · ' + rank.name;
+		const close = document.createElement('button');
+		close.textContent = '×';
+		close.style.cssText = 'border:none;background:rgba(255,255,255,.12);color:#fff;width:22px;height:22px;border-radius:7px;cursor:pointer;';
+		close.addEventListener('click', () => { el.style.display = 'none'; });
+		head.append(title, close);
+		el.appendChild(head);
+		const sub = document.createElement('div');
+		sub.style.cssText = 'font-size:11px;color:#9fb2c6;line-height:1.45;';
+		sub.textContent = lv.need
+			? lv.into + ' / ' + lv.need + ' XP do następnego poziomu (łącznie ' + prog.xp + ' XP). Postępy zapisują się w tej przeglądarce — wrócisz linkiem i będą czekać.'
+			: 'Maksymalny poziom osiągnięty (' + prog.xp + ' XP).';
+		el.appendChild(sub);
+		el.appendChild(progStat('Aktywna obserwacja', Math.round((c.watch || 0) * NET.PROG.WATCH_TICK_MS / 60000) + ' min'));
+		el.appendChild(progStat('Błogosławieństwa', String((c.cheer || 0) + (c.bless || 0) + (c.energy || 0))));
+		el.appendChild(progStat('Rzucone moce', String((c.banish || 0) + (c.frost || 0) + (c.smite || 0))));
+		el.appendChild(progStat('Spłoszone stwory', String(c.spook || 0)));
+		el.appendChild(progStat('Praca asystenta', String((c.craft || 0) + (c.equip || 0) + (c.unequip || 0))));
+		el.appendChild(progStat('Dni z warstwami', String((prog.days || []).length)));
+		const list = NET.achievementProgress(prog);
+		const doneN = list.filter(a => a.done).length;
+		const aHead = document.createElement('div');
+		aHead.style.cssText = 'font-weight:800;color:#9fb2c6;font-size:10px;letter-spacing:.6px;text-transform:uppercase;margin-top:6px;';
+		aHead.textContent = 'Osiągnięcia ' + doneN + '/' + list.length;
+		el.appendChild(aHead);
+		for(const a of list){
+			const row = document.createElement('div');
+			row.className = 'gpAch' + (a.done ? '' : ' locked');
+			const icon = document.createElement('span');
+			icon.className = 'gpIcon';
+			icon.textContent = a.done ? a.def.icon : '🔒';
+			const name = document.createElement('span');
+			name.className = 'gpName';
+			const b = document.createElement('b'); b.textContent = a.def.name;
+			const d = document.createElement('span'); d.textContent = a.def.desc;
+			name.append(b, d);
+			const tick = document.createElement('span');
+			tick.className = 'gpTick';
+			tick.textContent = a.done ? '✔ +' + a.def.xp : a.have + '/' + a.need;
+			row.append(icon, name, tick);
+			el.appendChild(row);
+		}
+	}
+
+	// --- assistant workbench: the player's own crafting & Ekwipunek view, remoted ---------
+	// The skeleton (header, HP line, search box) is built ONCE and persists; only the
+	// body rerenders on state ticks — otherwise every 1.5 s refresh would steal the
+	// focus (and the letters) out of the search box mid-typing.
+	let assistSearch = '';
 	function ensureAssistPanel(){
 		if(assistPanel || typeof document === 'undefined') return assistPanel;
 		const el = document.createElement('div');
 		el.id = 'ghostAssist';
-		el.style.cssText = 'position:fixed; left:12px; top:56px; z-index:150; width:min(340px,calc(100vw - 24px)); max-height:min(70vh,560px); overflow:auto; display:none; flex-direction:column; gap:8px;'
+		el.style.cssText = 'position:fixed; left:12px; top:56px; z-index:150; width:min(380px,calc(100vw - 24px)); max-height:min(76vh,640px); display:none; flex-direction:column; gap:8px;'
 			+ ' padding:12px 13px; border-radius:14px; border:1px solid rgba(255,184,74,.45); background:rgba(12,17,26,.96); color:#eef4fb; font:12px system-ui;'
 			+ ' box-shadow:0 12px 32px rgba(0,0,0,.6); pointer-events:auto;';
+		const head = document.createElement('div');
+		head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;';
+		const title = document.createElement('b');
+		title.textContent = '🛠 Warsztat asystenta';
+		const approvalChip = document.createElement('span');
+		approvalChip.id = 'gaApproval';
+		approvalChip.style.cssText = 'display:none;font-size:10px;font-weight:800;color:#ffb84a;white-space:nowrap;';
+		approvalChip.textContent = '⏳ gospodarz zatwierdza';
+		const close = document.createElement('button');
+		close.textContent = '×';
+		close.style.cssText = 'border:none;background:rgba(255,255,255,.12);color:#fff;width:22px;height:22px;border-radius:7px;cursor:pointer;';
+		close.addEventListener('click', () => { el.style.display = 'none'; });
+		head.append(title, approvalChip, close);
+		const vitals = document.createElement('div');
+		vitals.id = 'gaVitals';
+		vitals.style.cssText = 'color:#9fd6ae;font-size:11px;';
+		const search = document.createElement('input');
+		search.id = 'gaSearch';
+		search.placeholder = 'Szukaj receptur, sprzętu, zasobów…';
+		search.style.cssText = 'background:rgba(20,26,36,.92);border:1px solid rgba(255,255,255,.2);border-radius:9px;color:#e6f0fb;padding:6px 8px;font-size:11.5px;outline:none;';
+		search.addEventListener('input', () => { assistSearch = search.value.trim().toLowerCase(); noteInput(); renderAssistBody(); });
+		search.addEventListener('keydown', e => e.stopPropagation());
+		const body = document.createElement('div');
+		body.id = 'gaBody';
+		body.style.cssText = 'display:flex;flex-direction:column;gap:6px;overflow-y:auto;overscroll-behavior:contain;min-height:0;';
+		el.append(head, vitals, search, body);
 		document.body.appendChild(el);
 		assistPanel = el;
 		return el;
@@ -720,76 +1021,110 @@ const ghostClient = (function(){
 		el.style.display = el.style.display === 'none' || !el.style.display ? 'flex' : 'none';
 		renderAssist();
 	}
+	function gaSection(box, label){
+		const h = document.createElement('div');
+		h.style.cssText = 'font-weight:800;color:#9fb2c6;font-size:10px;letter-spacing:.6px;text-transform:uppercase;margin-top:5px;';
+		h.textContent = label;
+		box.appendChild(h);
+	}
+	function gaMatches(text){ return !assistSearch || String(text).toLowerCase().includes(assistSearch); }
 	function renderAssist(){
 		updateBar();
 		const el = assistPanel;
 		if(!el || el.style.display === 'none') return;
 		if(!assistant){ el.style.display = 'none'; return; }
-		el.textContent = '';
-		const head = document.createElement('div');
-		head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;';
-		const title = document.createElement('b');
-		title.textContent = '🛠 Warsztat asystenta';
-		const close = document.createElement('button');
-		close.textContent = '×';
-		close.style.cssText = 'border:none;background:rgba(255,255,255,.12);color:#fff;width:22px;height:22px;border-radius:7px;cursor:pointer;';
-		close.addEventListener('click', () => { el.style.display = 'none'; });
-		head.append(title, close);
-		el.appendChild(head);
-		if(!assistState){
-			const wait = document.createElement('div');
-			wait.style.color = '#9fb2c6';
-			wait.textContent = 'Czekam na stan gracza…';
-			el.appendChild(wait);
-			return;
+		el.querySelector('#gaApproval').style.display = assistApproval ? 'inline' : 'none';
+		el.querySelector('#gaVitals').textContent = assistState
+			? 'Gracz: ' + assistState.hp + '/' + assistState.maxHp + ' HP · ⚡ ' + (assistState.en || 0) + '/' + (assistState.maxEn || 0)
+			: 'Czekam na stan gracza…';
+		renderAssistBody();
+	}
+	function renderAssistBody(){
+		const el = assistPanel;
+		if(!el || el.style.display === 'none') return;
+		const box = el.querySelector('#gaBody');
+		box.textContent = '';
+		if(!assistState) return;
+		// Recipes: favorites first, then the player's own group order — the assistant
+		// reads the same catalogue the host's Rzemiosło panel shows
+		const recipes = (Array.isArray(assistState.recipes) ? assistState.recipes : [])
+			.filter(r => gaMatches((r.name || r.id) + ' ' + (r.g || '')));
+		const groups = new Map();
+		for(const r of recipes){
+			const g = r.fav ? '★ Ulubione' : (r.g || 'Inne');
+			if(!groups.has(g)) groups.set(g, []);
+			groups.get(g).push(r);
 		}
-		const hp = document.createElement('div');
-		hp.style.cssText = 'color:#9fd6ae;';
-		hp.textContent = 'Gracz: ' + assistState.hp + '/' + assistState.maxHp + ' HP';
-		el.appendChild(hp);
-		const rHead = document.createElement('div');
-		rHead.style.cssText = 'font-weight:800;color:#9fb2c6;font-size:10px;letter-spacing:.6px;text-transform:uppercase;margin-top:4px;';
-		rHead.textContent = 'Receptury';
-		el.appendChild(rHead);
-		const recipes = Array.isArray(assistState.recipes) ? assistState.recipes : [];
-		if(!recipes.length){
-			const none = document.createElement('div');
-			none.style.color = '#9fb2c6';
-			none.textContent = 'Brak dostępnych receptur.';
-			el.appendChild(none);
+		const groupNames = [...groups.keys()].sort((a, b) => (a === '★ Ulubione' ? -1 : b === '★ Ulubione' ? 1 : 0));
+		if(!recipes.length && (!assistSearch || !recipes.length)) gaSection(box, 'Receptury — ' + (assistSearch ? 'brak trafień' : 'brak odkrytych'));
+		for(const g of groupNames){
+			gaSection(box, g);
+			for(const r of groups.get(g)){
+				const row = document.createElement('div');
+				row.style.cssText = 'display:flex;gap:6px;align-items:center;border:1px solid rgba(255,255,255,.12);border-radius:9px;padding:5px 7px;'
+					+ 'background:' + (r.can ? 'rgba(42,111,71,.28)' : 'rgba(255,255,255,.05)') + ';';
+				const nm = document.createElement('span');
+				nm.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700;font-size:11.5px;';
+				nm.textContent = String(r.name || r.id).slice(0, 40);
+				nm.title = (Array.isArray(r.cost) ? r.cost : []).map(c => c.k + ' ' + c.have + '/' + c.need).join(' · ');
+				const cost = document.createElement('span');
+				cost.style.cssText = 'font-size:9.5px;color:#aeb9c7;white-space:nowrap;max-width:104px;overflow:hidden;text-overflow:ellipsis;';
+				cost.textContent = (Array.isArray(r.cost) ? r.cost : []).map(c => c.have + '/' + c.need + ' ' + c.k).join(' ');
+				// with approvals on, an unaffordable recipe may still be PROPOSED — the
+				// host approves later, when the pouch may look different
+				const usable = r.can || assistApproval;
+				const mk = (label, count) => {
+					const b = document.createElement('button');
+					b.textContent = label;
+					b.disabled = !usable;
+					b.style.cssText = 'border:none;border-radius:7px;background:' + (usable ? (assistApproval ? 'rgba(255,184,74,.5)' : '#21a366') : 'rgba(255,255,255,.1)')
+						+ ';color:#fff;font-size:10px;font-weight:700;padding:4px 7px;cursor:' + (usable ? 'pointer' : 'not-allowed') + ';';
+					b.addEventListener('click', () => { sendAssist('craft', r.id, count); flashBtn(b); });
+					return b;
+				};
+				row.append(nm, cost, mk(assistApproval ? '⏳ ×1' : '⚒ ×1', 1), mk(assistApproval ? '⏳ ×5' : '⚒ ×5', 5));
+				box.appendChild(row);
+			}
 		}
-		for(const r of recipes.slice(0, 40)){
-			const row = document.createElement('button');
-			row.disabled = !r.can;
-			row.style.cssText = 'display:flex;justify-content:space-between;gap:8px;align-items:center;border:1px solid rgba(255,255,255,.14);border-radius:9px;'
-				+ 'background:' + (r.can ? 'rgba(42,111,71,.35)' : 'rgba(255,255,255,.05)') + ';color:#e8eef6;padding:6px 8px;font-size:11.5px;cursor:' + (r.can ? 'pointer' : 'not-allowed') + ';opacity:' + (r.can ? '1' : '.55') + ';';
-			const nm = document.createElement('span');
-			nm.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;font-weight:700;';
-			nm.textContent = String(r.name || r.id).slice(0, 40);
-			const cost = document.createElement('span');
-			cost.style.cssText = 'font-size:10px;color:#aeb9c7;white-space:nowrap;';
-			cost.textContent = (Array.isArray(r.cost) ? r.cost : []).map(c => c.k + ' ' + c.have + '/' + c.need).join(' · ').slice(0, 46);
-			row.append(nm, cost);
-			row.addEventListener('click', () => sendAssist('craft', r.id));
-			el.appendChild(row);
+		const items = (Array.isArray(assistState.items) ? assistState.items : []).filter(i => gaMatches(i.name || i.id));
+		if(items.length){
+			gaSection(box, 'Ekwipunek gracza');
+			const TIER_COLORS = { common: '#b07f2c', uncommon: '#3fa650', rare: '#a74cc9', epic: '#e0b341', legendary: '#58e0d8' };
+			for(const i of items){
+				const row = document.createElement('div');
+				row.style.cssText = 'display:flex;gap:6px;align-items:center;border-top:1px solid rgba(255,255,255,.08);padding:4px 0;';
+				const nm = document.createElement('span');
+				nm.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;color:' + (TIER_COLORS[i.tier] || '#e8eef6') + ';';
+				nm.textContent = (i.equipped ? '✔ ' : '') + String(i.name || i.id).slice(0, 34);
+				const moc = document.createElement('span');
+				moc.style.cssText = 'font-size:10px;color:#9fb2c6;white-space:nowrap;';
+				moc.textContent = i.moc ? 'Moc ' + i.moc : '';
+				const btn = document.createElement('button');
+				btn.textContent = (assistApproval ? '⏳ ' : '') + (i.equipped ? 'Zdejmij' : 'Załóż');
+				btn.style.cssText = 'border:none;border-radius:7px;background:' + (i.equipped ? 'rgba(255,255,255,.14)' : (assistApproval ? 'rgba(255,184,74,.5)' : '#2c7ef8')) + ';color:#fff;font-size:10.5px;font-weight:700;padding:4px 9px;cursor:pointer;';
+				btn.addEventListener('click', () => { sendAssist(i.equipped ? 'unequip' : 'equip', i.id, 1); flashBtn(btn); });
+				row.append(nm, moc, btn);
+				box.appendChild(row);
+			}
 		}
-		const iHead = document.createElement('div');
-		iHead.style.cssText = 'font-weight:800;color:#9fb2c6;font-size:10px;letter-spacing:.6px;text-transform:uppercase;margin-top:6px;';
-		iHead.textContent = 'Ekwipunek';
-		el.appendChild(iHead);
-		for(const i of (Array.isArray(assistState.items) ? assistState.items : []).slice(0, 40)){
-			const row = document.createElement('div');
-			row.style.cssText = 'display:flex;gap:6px;align-items:center;border-top:1px solid rgba(255,255,255,.08);padding:4px 0;';
-			const nm = document.createElement('span');
-			nm.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-			nm.textContent = (i.equipped ? '✔ ' : '') + String(i.name || i.id).slice(0, 34);
-			const btn = document.createElement('button');
-			btn.textContent = i.equipped ? 'Zdejmij' : 'Załóż';
-			btn.style.cssText = 'border:none;border-radius:7px;background:' + (i.equipped ? 'rgba(255,255,255,.14)' : '#2c7ef8') + ';color:#fff;font-size:10.5px;font-weight:700;padding:4px 9px;cursor:pointer;';
-			btn.addEventListener('click', () => sendAssist(i.equipped ? 'unequip' : 'equip', i.id));
-			row.append(nm, btn);
-			el.appendChild(row);
+		const res = (Array.isArray(assistState.resources) ? assistState.resources : []).filter(r => gaMatches(r.name || r.k));
+		if(res.length){
+			gaSection(box, 'Zasoby gracza');
+			const grid = document.createElement('div');
+			grid.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;';
+			for(const r of res){
+				const chip = document.createElement('span');
+				chip.style.cssText = 'border:1px solid rgba(255,255,255,.14);border-radius:999px;background:rgba(255,255,255,.06);padding:2px 8px;font-size:10.5px;white-space:nowrap;';
+				chip.textContent = (r.name || r.k) + ' ' + r.n;
+				grid.appendChild(chip);
+			}
+			box.appendChild(grid);
 		}
+	}
+	function flashBtn(b){
+		const prev = b.style.filter;
+		b.style.filter = 'brightness(1.6)';
+		setTimeout(() => { b.style.filter = prev; }, 220);
 	}
 
 	if(WATCH) ownInput();
@@ -807,14 +1142,27 @@ const ghostClient = (function(){
 			isActive: isActive(),
 			charge,
 			assistant,
+			assistApproval,
+			lastAssistAck: lastAssistAck ? Object.assign({}, lastAssistAck) : null,
+			prog: {
+				xp: prog.xp,
+				level: NET.levelFor(prog.xp).level,
+				rank: NET.rankFor(NET.levelFor(prog.xp).level).name,
+				counts: Object.assign({}, prog.counts),
+				done: prog.done.slice(),
+				days: prog.days.length
+			},
 			assistRecipes: assistState && Array.isArray(assistState.recipes) ? assistState.recipes.length : 0,
+			hostChat: (hostChat && hostChat.until > nowMs()) ? hostChat.text : null,
+			pings: pings.length,
 			stats: Object.assign({}, stats),
 			queued: queue.length,
 			barTick: !!barTick
 		};
 	}
 
-	const api = { boot, frame, active: () => !!WATCH && state !== 'idle', state: () => state, drawSpirits, sendBuff, sendChat, sendPower, sendAssist, setAvatar, setFollow, setCam, noteInput, leave, metrics,
+	const api = { boot, frame, active: () => !!WATCH && state !== 'idle', state: () => state, drawSpirits, sendBuff, sendChat, sendPower, sendPing, sendAssist, setAvatar, setFollow, setCam, noteInput, leave, metrics,
+		openProgress: () => toggleProgPanel(),
 		_debugConnLost: scheduleReconnect }; // QA: exercises the real drop→rejoin→resnapshot cycle
 	if(MMR) MMR.ghostClient = api;
 	return api;

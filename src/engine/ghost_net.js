@@ -62,14 +62,16 @@ export function dreadAt(spirits, x, y, radius){
 	const r = Number.isFinite(radius) ? radius : DREAD.R;
 	const r2 = r * r;
 	let best = null, bestD2 = r2;
-	for(const s of spirits){
+	for(let i = 0; i < spirits.length; i++){
+		const s = spirits[i];
 		if(!s || !Number.isFinite(s.x) || !Number.isFinite(s.y)) continue;
 		const dx = x - s.x, dy = y - s.y;
 		const d2 = dx * dx + dy * dy;
 		if(d2 > bestD2) continue;
 		bestD2 = d2;
 		const d = Math.sqrt(d2) || 0.0001;
-		best = { x: s.x, y: s.y, dist: d, awayX: dx / d, awayY: dy / d, power: 1 - d / r };
+		// `i` credits the fright to the spirit that caused it (watcher progression)
+		best = { i, x: s.x, y: s.y, dist: d, awayX: dx / d, awayY: dy / d, power: 1 - d / r };
 	}
 	return best;
 }
@@ -91,15 +93,254 @@ export function chargeAfter(charge, dtSec, active){
 	return Math.max(0, Math.min(POWER_CHARGE.MAX, c + POWER_CHARGE.PER_SEC * Math.max(0, dtSec || 0)));
 }
 
-// --- assistant role: one watcher may craft & manage gear for the host ------------
-// Strictly a delegate: it can only run recipes and equip items the HOST already
-// owns — it can never place blocks, move the hero, or conjure resources.
+// --- assistant role: appointed watchers craft & manage gear for the host ----------
+// Strictly delegates: they can only run recipes and equip items the HOST already
+// owns — never place blocks, move the hero, or conjure resources. SEVERAL may hold
+// the seat at once; the host executes requests serially, so "first to act wins" is
+// the natural arbitration — the second request simply fails its cost check.
 export const ASSIST_ACTIONS = ['craft', 'equip', 'unequip'];
 export function validAssistAction(a){ return ASSIST_ACTIONS.includes(a); }
+export const ASSIST_LIMITS = {
+	CRAFT_MAX: 10,        // one request may batch at most this many crafts
+	RATE_MS: 200,         // per-assistant floor between requests (double-click guard)
+	QUEUE_MAX: 12,        // approval queue: total pending ceiling
+	QUEUE_PER_GHOST: 3,   // approval queue: one assistant may hold this many slots
+	QUEUE_TTL_MS: 180000  // an unapproved request quietly expires after 3 min
+};
+export function clampCraftCount(n){
+	const c = Math.floor(Number(n));
+	return Number.isFinite(c) ? Math.max(1, Math.min(ASSIST_LIMITS.CRAFT_MAX, c)) : 1;
+}
+// Approval queue (pure): when the host turns approvals on, assistant requests wait
+// here until the host clicks Zatwierdź/Odrzuć. Bounded on both axes so a spamming
+// assistant can neither bury the host in rows nor starve the other assistants.
+export function createAssistQueue(){
+	let seq = 0;
+	const list = [];
+	return {
+		push(req, t){
+			if(list.length >= ASSIST_LIMITS.QUEUE_MAX) return { ok: false, reason: 'full' };
+			let mine = 0;
+			for(const q of list){ if(q.gid === req.gid) mine++; }
+			if(mine >= ASSIST_LIMITS.QUEUE_PER_GHOST) return { ok: false, reason: 'yours' };
+			const q = { qid: 'q' + (++seq), at: Number(t) || 0, gid: req.gid, name: req.name, a: req.a, id: req.id, n: req.n, label: req.label };
+			list.push(q);
+			return { ok: true, qid: q.qid };
+		},
+		take(qid){
+			const i = list.findIndex(q => q.qid === qid);
+			return i < 0 ? null : list.splice(i, 1)[0];
+		},
+		expire(t){
+			const dead = [];
+			for(let i = list.length - 1; i >= 0; i--){
+				if(t - list[i].at > ASSIST_LIMITS.QUEUE_TTL_MS) dead.push(list.splice(i, 1)[0]);
+			}
+			return dead;
+		},
+		list(){ return list.slice(); },
+		size(){ return list.length; }
+	};
+}
 
 // Spirit avatar registry — ids ride hello/presence; painters live in ghost_host.
 export const AVATARS = ['duszek', 'iskra', 'gwiazdka', 'kotek', 'sowa', 'orbita'];
 export function validAvatar(a){ return AVATARS.includes(a); }
+
+// --- spirit lift: a ghost never covers the hero -----------------------------------
+// A spirit whose display position drifts onto the hero (follow mode parks the
+// camera exactly there) is DISPLAYED hovering above the hero's head instead; the
+// true position (dread, powers, presence) is untouched. The lift is continuous in
+// every direction so a passing spirit glides over the hero instead of popping.
+export const SPIRIT_AVOID = { RX: 0.95, RY: 1.4, CLEAR: 1.05 };
+export function spiritLift(sx, sy, hx, hy){
+	if(!Number.isFinite(sx) || !Number.isFinite(sy) || !Number.isFinite(hx) || !Number.isFinite(hy)) return 0;
+	const adx = Math.abs(sx - hx);
+	if(adx >= SPIRIT_AVOID.RX) return 0;
+	const hover = hy - SPIRIT_AVOID.CLEAR; // the hover line above the hero's head
+	if(sy <= hover) return 0;              // already clear of the hero
+	const below = sy - hy;
+	if(below >= SPIRIT_AVOID.RY) return 0; // far under the hero's feet — leave it
+	const wx = 1 - adx / SPIRIT_AVOID.RX;
+	const wy = below > 0 ? 1 - below / SPIRIT_AVOID.RY : 1;
+	return (sy - hover) * wx * wy;
+}
+
+// --- pings: a watcher points at a spot -------------------------------------------
+// Communication, not influence: the marker lands at the SPIRIT's own tracked pose
+// (the host never trusts client coordinates), is rate-limited per watcher, and
+// earns no XP — a pointer, not a faucet.
+export const PING = { MIN_MS: 2500, TTL_MS: 4000 };
+
+// --- watcher progression (the ghost's own career) ---------------------------------
+// A viewer levels up for the things they actually DO. Two rules shape the design:
+//
+//   1. The HOST mints every XP deed. Only it knows what really landed (the blessing
+//      passed the ledger, the power hit 4 creatures, the craft succeeded), so the
+//      client never invents XP — it receives deeds and banks them.
+//   2. The profile is stored in the WATCHER's own localStorage, which is why it
+//      survives a reload, a fresh invite link, and even a different host. It is
+//      therefore FORGEABLE — so progression is a REWARD, never an AUTHORITY. No
+//      host-side gate (buff, power, charge, assistant seat) may read a level or an
+//      achievement. Faking your own trophy case hurts nobody.
+//
+// Idle time earns nothing: the watch deed only ticks while the viewer is active,
+// the same anti-fake-watcher rule that gates the social boosts.
+export const PROG_KEY = 'mm_ghost_prog_v1';
+export const PROG = {
+	WATCH_TICK_MS: 10000, // one watch deed per 10 s of ACTIVE presence
+	CHAT_XP_MS: 20000,    // chat XP floor (chat itself is already rate-limited at 4 s)
+	MAX_LEVEL: 40,
+	HIT_CAP: 6,           // creatures counted from a single power blast
+	MAX_DAYS: 400
+};
+// deed key -> XP each. The host sends {t:'deed', k, n}; the client scores it here.
+export const DEED_XP = {
+	watch: 1,                          // per 10 s of active watching
+	cheer: 2, bless: 6, energy: 6,     // blessings that passed the host ledger
+	banish: 8, frost: 10, smite: 12,   // powers the host actually cast
+	hit: 2,                            // per creature caught in a power (capped)
+	spook: 1,                          // a creature bolted from your spirit
+	craft: 6, equip: 2, unequip: 1,    // assistant work
+	chat: 1,
+	join: 5,                           // showing up at a layer
+	crowd: 0                           // watched alongside a crowd (achievement only)
+};
+export function validDeed(k){ return typeof k === 'string' && Object.prototype.hasOwnProperty.call(DEED_XP, k); }
+export function deedXp(k, n){
+	if(!validDeed(k)) return 0;
+	const count = Math.max(1, Math.min(k === 'hit' ? PROG.HIT_CAP : 50, Math.floor(Number(n) || 1)));
+	return DEED_XP[k] * count;
+}
+// A gentle curve: ~60 XP for the first level, ×1.22 per step. Pure watching earns
+// 6 XP/min, so level 10 is a few attentive evenings — faster if you actually help.
+export function xpForLevel(level){
+	const l = Math.max(1, Math.floor(level) || 1);
+	if(l >= PROG.MAX_LEVEL) return 0;
+	return Math.round(60 * Math.pow(1.22, l - 1));
+}
+export function levelFor(xp){
+	let rest = Math.max(0, Math.floor(Number(xp) || 0));
+	let level = 1;
+	while(level < PROG.MAX_LEVEL){
+		const need = xpForLevel(level);
+		if(rest < need) break;
+		rest -= need;
+		level++;
+	}
+	return { level, into: rest, need: xpForLevel(level) };
+}
+export const RANKS = [
+	{ at: 1, name: 'Gapiowicz', color: '#9db4cc' },
+	{ at: 3, name: 'Cień', color: '#8fc7ff' },
+	{ at: 6, name: 'Widmo', color: '#66e0c8' },
+	{ at: 10, name: 'Duch Warstwy', color: '#9be36b' },
+	{ at: 15, name: 'Zjawa', color: '#ffd54a' },
+	{ at: 22, name: 'Upiór', color: '#ff9f5a' },
+	{ at: 30, name: 'Strażnik Warstwy', color: '#d7a1ff' }
+];
+export function rankFor(level){
+	const l = Math.max(1, Math.floor(Number(level) || 1));
+	let best = RANKS[0];
+	for(const r of RANKS){ if(l >= r.at) best = r; }
+	return best;
+}
+// Achievements read a stat view (raw deed counters + derived level/days/wardrobe),
+// so adding one is a table edit, not a code path.
+export const ACHIEVEMENTS = [
+	{ id: 'first_watch', icon: '👁', name: 'Pierwsze spojrzenie', desc: 'Wejdź do cudzej warstwy', stat: 'join', need: 1, xp: 10 },
+	{ id: 'cheerleader', icon: '✨', name: 'Kibic', desc: '10 dopingów', stat: 'cheer', need: 10, xp: 20 },
+	{ id: 'healer', icon: '💚', name: 'Uzdrowiciel', desc: '10 błogosławieństw', stat: 'bless', need: 10, xp: 40 },
+	{ id: 'dynamo', icon: '⚡', name: 'Iskra', desc: '10 × energia dla gracza', stat: 'energy', need: 10, xp: 40 },
+	{ id: 'watchful', icon: '🕰', name: 'Czujny', desc: '30 minut aktywnej obserwacji', stat: 'watch', need: 180, xp: 50 },
+	{ id: 'marathon', icon: '🌙', name: 'Maratończyk', desc: '3 godziny aktywnej obserwacji', stat: 'watch', need: 1080, xp: 150 },
+	{ id: 'boo', icon: '😱', name: 'Straszak', desc: 'Spłosz 25 stworów', stat: 'spook', need: 25, xp: 30 },
+	{ id: 'poltergeist', icon: '👻', name: 'Poltergeist', desc: 'Spłosz 200 stworów', stat: 'spook', need: 200, xp: 90 },
+	{ id: 'first_power', icon: '💀', name: 'Pierwsza moc', desc: 'Rzuć Popłoch', stat: 'banish', need: 1, xp: 15 },
+	{ id: 'frostbite', icon: '❄️', name: 'Mroźny oddech', desc: '10 × Mróz', stat: 'frost', need: 10, xp: 50 },
+	{ id: 'thunder', icon: '🌩', name: 'Gromowładny', desc: '10 × Grom', stat: 'smite', need: 10, xp: 60 },
+	{ id: 'sniper', icon: '🎯', name: 'Celny duch', desc: 'Dosięgnij mocami 50 stworów', stat: 'hit', need: 50, xp: 60 },
+	{ id: 'artisan', icon: '🛠', name: 'Rzemieślnik', desc: 'Wytwórz 10 przedmiotów jako asystent', stat: 'craft', need: 10, xp: 60 },
+	{ id: 'valet', icon: '🎽', name: 'Garderobiany', desc: '10 zmian ekwipunku gracza', stat: 'wardrobe', need: 10, xp: 30 },
+	{ id: 'chatter', icon: '💬', name: 'Gaduła', desc: '25 wiadomości', stat: 'chat', need: 25, xp: 25 },
+	{ id: 'crowd', icon: '👥', name: 'W tłumie', desc: 'Oglądaj razem z 3 innymi duchami', stat: 'crowd', need: 1, xp: 40 },
+	{ id: 'regular', icon: '📅', name: 'Stały bywalec', desc: 'Oglądaj w 3 różne dni', stat: 'days', need: 3, xp: 80 },
+	{ id: 'veteran', icon: '🏅', name: 'Weteran warstwy', desc: 'Osiągnij 10. poziom', stat: 'level', need: 10, xp: 100 }
+];
+export function achievementById(id){ return ACHIEVEMENTS.find(a => a.id === id) || null; }
+export function createProgress(){ return { v: 1, xp: 0, counts: {}, done: [], days: [] }; }
+// Everything here comes off disk, so treat it as hostile input: an edited profile may
+// not crash the watcher's page or smuggle keys into the counters via __proto__.
+export function normalizeProgress(raw){
+	const s = createProgress();
+	if(!raw || typeof raw !== 'object') return s;
+	const xp = Number(raw.xp);
+	s.xp = Number.isFinite(xp) ? Math.max(0, Math.min(1e9, Math.floor(xp))) : 0;
+	const counts = (raw.counts && typeof raw.counts === 'object') ? raw.counts : {};
+	for(const k of Object.keys(DEED_XP)){
+		if(!Object.prototype.hasOwnProperty.call(counts, k)) continue;
+		const n = Number(counts[k]);
+		if(Number.isFinite(n) && n > 0) s.counts[k] = Math.min(1e7, Math.floor(n));
+	}
+	const done = Array.isArray(raw.done) ? raw.done : [];
+	for(const a of ACHIEVEMENTS){ if(done.includes(a.id)) s.done.push(a.id); }
+	const days = Array.isArray(raw.days) ? raw.days : [];
+	for(const d of days){
+		if(typeof d !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+		if(!s.days.includes(d)) s.days.push(d);
+		if(s.days.length >= PROG.MAX_DAYS) break;
+	}
+	return s;
+}
+export function statView(state){
+	const s = normalizeProgress(state);
+	const view = Object.assign({}, s.counts);
+	view.level = levelFor(s.xp).level;
+	view.days = s.days.length;
+	view.wardrobe = (s.counts.equip || 0) + (s.counts.unequip || 0);
+	return view;
+}
+export function achievementProgress(state){
+	const view = statView(state);
+	const done = new Set(normalizeProgress(state).done);
+	return ACHIEVEMENTS.map(a => ({
+		def: a,
+		done: done.has(a.id),
+		have: Math.min(a.need, Math.floor(view[a.stat] || 0)),
+		need: a.need
+	}));
+}
+// The one mutation point: fold deeds into a profile, then settle achievements. The
+// settle loop repeats because achievement XP can itself push a level threshold that
+// another achievement watches ('veteran').
+export function progressAfter(state, deeds, opts){
+	const s = normalizeProgress(state);
+	const before = levelFor(s.xp).level;
+	const day = opts && typeof opts.day === 'string' ? opts.day : null;
+	if(day && /^\d{4}-\d{2}-\d{2}$/.test(day) && !s.days.includes(day) && s.days.length < PROG.MAX_DAYS) s.days.push(day);
+	for(const d of (Array.isArray(deeds) ? deeds : [])){
+		if(!d || !validDeed(d.k)) continue;
+		const n = Math.max(1, Math.min(50, Math.floor(Number(d.n) || 1)));
+		s.counts[d.k] = Math.min(1e7, (s.counts[d.k] || 0) + n);
+		s.xp = Math.min(1e9, s.xp + deedXp(d.k, n));
+	}
+	const unlocked = [];
+	for(let pass = 0; pass < 4; pass++){
+		const view = statView(s);
+		let any = false;
+		for(const a of ACHIEVEMENTS){
+			if(s.done.includes(a.id)) continue;
+			if((view[a.stat] || 0) < a.need) continue;
+			s.done.push(a.id);
+			s.xp = Math.min(1e9, s.xp + a.xp);
+			unlocked.push(a);
+			any = true;
+		}
+		if(!any) break;
+	}
+	const after = levelFor(s.xp);
+	return { state: s, unlocked, level: after.level, leveled: after.level > before, from: before };
+}
 
 // --- chat profanity filter (pure) ---------------------------------------------
 // Token-wise masking: fold diacritics + leetspeak, then match against vulgarity
@@ -545,12 +786,19 @@ export function joinRoom(room, opts){
 	return api;
 }
 
+// The engine consumes THIS object (`import { ghostNet as NET }`), not the module
+// namespace — a named export missing from here is simply undefined at runtime while
+// every Node test still passes. ghost-sim pins the two lists against each other.
 const api = {
 	GHOST_PROTO, BUFF_RULES, MQTT_BROKERS,
 	SOCIAL_RULES, socialBoosts, PERMISSION_MODES, validPermissionMode, AVATARS, validAvatar, filterChat,
+	SPIRIT_AVOID, spiritLift, PING,
 	DREAD, dreadAt, POWER_RULES, POWER_CHARGE, validPowerKind, chargeAfter, ASSIST_ACTIONS, validAssistAction,
+	ASSIST_LIMITS, clampCraftCount, createAssistQueue,
 	roomCode, normalizeRoom, watchLink, parseWatch, validBuffKind,
 	chunkPayload, createAssembler, createCooldownLedger,
+	PROG_KEY, PROG, DEED_XP, validDeed, deedXp, xpForLevel, levelFor, RANKS, rankFor,
+	ACHIEVEMENTS, achievementById, achievementProgress, createProgress, normalizeProgress, statView, progressAfter,
 	hostListen, joinRoom
 };
 if(typeof window !== 'undefined' && window.MM) window.MM.ghostNet = api;

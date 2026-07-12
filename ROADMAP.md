@@ -28,10 +28,14 @@ w README.
    test `npm run test:lighting`, QA `node tools/lighting-trader-qa.mjs`.
 
 ## Tier 2 — następne w kolejce
-4. **Konfiguracja klawiszy + ekran tytułowy z ustawieniami** — ✅ częściowo:
-   ekran pauzy (B) z ustawieniami jest (głośność/wyciszenie, minimapa,
-   oświetlenie jaskiń — persystowane, kontrakt w `test:lighting`). Zostaje:
-   rebinding klawiszy, ekran tytułowy, i18n (PL/EN).
+4. **Konfiguracja klawiszy + ekran tytułowy z ustawieniami** — ✅ prawie w całości:
+   ekran pauzy (B) z ustawieniami (głośność/wyciszenie/przełącznik muzyki,
+   minimapa, oświetlenie jaskiń — persystowane), **rebinding klawiszy**
+   (`engine/keybinds.js`: permutacja klawiszy pod istniejącymi handlerami,
+   swap przy konflikcie, panel ⌨ w pauzie, `npm run test:keybinds`,
+   QA `node tools/keybinds-qa.mjs`), **pełny ekran** (przycisk w pauzie +
+   klawisz U) i **ekran tytułowy** (`engine/title_screen.js`) są.
+   Zostaje: i18n (PL/EN).
 5. ~~**Podziemne biomy**~~ ✅ done — `world.js applyUndergroundBiomeDressing`
    (pass addytywny przed miastami/ruinami, czysty per-komórka): biom śnieżny
    szroni ściany jaskiń w LÓD (tylko STONE — warstwy granitu/bazaltu/węgla

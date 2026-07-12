@@ -1098,7 +1098,14 @@ import './inventory.js';
       if(!isOpen() && !(MM.modalInput && MM.modalInput.isOpen())) open();
     },E_HOLD_MS);
   }
-  window.addEventListener('keyup',e=>{ if(e.key.toLowerCase()==='e') cancelEHold(); });
+  // the interact key is rebindable (keybinds.js): compare against the logical
+  // key so a remapped E follows the player's binding
+  function logicalKey(e){
+    const k=String(e.key||'').toLowerCase();
+    try{ if(window.MM && MM.keybinds && MM.keybinds.translate) return MM.keybinds.translate(k); }catch(err){}
+    return k;
+  }
+  window.addEventListener('keyup',e=>{ if(logicalKey(e)==='e') cancelEHold(); });
   window.addEventListener('blur',cancelEHold);
   window.addEventListener('keydown',e=>{
     if(isOpen()){
@@ -1111,7 +1118,7 @@ import './inventory.js';
         e.stopImmediatePropagation(); return;
       }
       // !repeat: the still-held E that hold-opened the panel must not close it
-      if(!isEditableTarget(e.target) && !e.repeat && e.key.toLowerCase()==='e' && !e.ctrlKey && !e.metaKey && !e.altKey){ e.preventDefault(); close(); e.stopImmediatePropagation(); return; }
+      if(!isEditableTarget(e.target) && !e.repeat && logicalKey(e)==='e' && !e.ctrlKey && !e.metaKey && !e.altKey){ e.preventDefault(); close(); e.stopImmediatePropagation(); return; }
       if(!isEditableTarget(e.target) && e.key==='/'){
         e.preventDefault();
         if(searchInput){ searchInput.focus(); searchInput.select(); }
@@ -1128,7 +1135,7 @@ import './inventory.js';
       return;
     }
     if(isEditableTarget(e.target)) return;
-    if(!e.repeat && e.key.toLowerCase()==='e' && !e.ctrlKey && !e.metaKey && !e.altKey){
+    if(!e.repeat && logicalKey(e)==='e' && !e.ctrlKey && !e.metaKey && !e.altKey){
       armEHold(); // holding past the tap window opens the wardrobe regardless
       // Machine context wins the interaction key: riding a mech, standing next
       // to a boardable hull or on a pilot chair routes E to the mech handler

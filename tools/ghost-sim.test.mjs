@@ -194,6 +194,104 @@ assert.ok(NET.filterChat('skurwysyństwo').filtered, 'diacritic-folded compound 
 assert.ok(NET.filterChat('bez kurew!').filtered, 'inflected PL form caught');
 assert.equal(NET.filterChat('x'.repeat(500)).text.length <= 90, true, 'chat length is capped');
 
+// --- the aggregate must carry EVERY named export -----------------------------------------
+// The engine imports `{ ghostNet as NET }`, not the module namespace: a function that is
+// exported but missing from that object is silently `undefined` in the browser while every
+// Node test (which imports the namespace) still passes. That trap cost a wedged page once.
+{
+	const agg = NET.ghostNet;
+	// module-internal plumbing the engine only reaches through hostListen/joinRoom
+	const internal = new Set(['ASSEMBLER_MAX_CHUNKS', 'ASSEMBLER_MAX_CHUNK_LEN', 'createMqttDecoder',
+		'mqttEncodeConnect', 'mqttEncodePing', 'mqttEncodePublish', 'mqttEncodeSubscribe']);
+	for(const name of Object.keys(NET)){
+		if(name === 'default' || name === 'ghostNet' || internal.has(name)) continue;
+		assert.ok(Object.prototype.hasOwnProperty.call(agg, name),
+			'ghostNet aggregate is missing the named export "' + name + '" — the engine would see undefined');
+	}
+	// and everything the two engine modules actually dereference off NET must be there
+	const usedByEngine = new Set();
+	for(const file of ['../src/engine/ghost_host.js', '../src/engine/ghost_client.js']){
+		const src = readFileSync(new URL(file, import.meta.url), 'utf8');
+		for(const m of src.matchAll(/\bNET\.([A-Za-z_$][\w$]*)/g)) usedByEngine.add(m[1]);
+	}
+	for(const name of usedByEngine){
+		assert.ok(Object.prototype.hasOwnProperty.call(agg, name),
+			'the engine dereferences NET.' + name + ' but the ghostNet aggregate does not export it');
+	}
+	assert.ok(usedByEngine.has('levelFor') && usedByEngine.has('PROG'), 'sanity: the scan actually found the progression calls');
+}
+
+// --- watcher progression: pure core ------------------------------------------------------
+// XP curve: strictly increasing cost, and levelFor is the exact inverse of the ladder
+{
+	assert.equal(NET.levelFor(0).level, 1, 'a fresh ghost starts at level 1');
+	let acc = 0;
+	for(let l = 1; l < 12; l++){
+		const need = NET.xpForLevel(l);
+		assert.ok(need > 0 && need >= NET.xpForLevel(l - 1 || 1), 'level cost never shrinks (level ' + l + ')');
+		assert.equal(NET.levelFor(acc + need - 1).level, l, 'one XP short of the threshold stays at level ' + l);
+		acc += need;
+		assert.equal(NET.levelFor(acc).level, l + 1, 'hitting the threshold exactly promotes to ' + (l + 1));
+	}
+	assert.equal(NET.levelFor(1e9).level, NET.PROG.MAX_LEVEL, 'the ladder is capped');
+	assert.equal(NET.xpForLevel(NET.PROG.MAX_LEVEL), 0, 'no cost past the cap (no infinite bar)');
+	assert.equal(NET.rankFor(1).name, 'Gapiowicz', 'the first rank is the newcomer');
+	assert.ok(NET.rankFor(NET.PROG.MAX_LEVEL).at >= 30, 'the top rank needs a real career');
+	// deed scoring is table-driven and clamps hostile counts
+	assert.equal(NET.deedXp('bless', 1), NET.DEED_XP.bless, 'a blessing scores its table value');
+	assert.equal(NET.deedXp('hit', 999), NET.DEED_XP.hit * NET.PROG.HIT_CAP, 'a single blast credits at most HIT_CAP creatures');
+	assert.equal(NET.deedXp('nonsense', 5), 0, 'unknown deeds are worth nothing');
+	assert.equal(NET.deedXp('__proto__', 5), 0, 'prototype keys are not deeds');
+}
+// deeds accumulate, achievements settle, and achievement XP can itself promote
+{
+	let p = NET.createProgress();
+	const cheers = Array.from({ length: 10 }, () => ({ k: 'cheer', n: 1 }));
+	const r = NET.progressAfter(p, cheers, { day: '2026-07-12' });
+	p = r.state;
+	assert.equal(p.counts.cheer, 10, 'ten cheers counted');
+	assert.ok(r.unlocked.some(a => a.id === 'cheerleader'), 'the cheerleader achievement fired at its threshold');
+	assert.equal(p.xp, 10 * NET.DEED_XP.cheer + NET.achievementById('cheerleader').xp, 'XP = deeds + achievement bonus');
+	assert.deepEqual(p.days, ['2026-07-12'], 'the day was stamped');
+	// a big haul promotes AND settles the level-gated achievement in the same pass
+	const big = NET.progressAfter(p, Array.from({ length: 1200 }, () => ({ k: 'watch', n: 1 })), { day: '2026-07-12' });
+	assert.ok(big.leveled && big.level >= 10, 'a long attentive session levels the watcher up');
+	assert.ok(big.unlocked.some(a => a.id === 'veteran'), 'the level-10 achievement settles from the same fold');
+	assert.deepEqual(big.state.days, ['2026-07-12'], 'the same day is not counted twice');
+}
+// the profile comes off disk: treat it as hostile input
+{
+	const dirty = JSON.parse('{"xp":"1e999","counts":{"bless":-5,"evil":99,"hit":"NaN"},"done":["cheerleader","made_up"],"days":["2026-07-12","junk","2026-07-12"]}');
+	dirty.counts.__proto__ = 7; // eslint-disable-line no-proto
+	const clean = NET.normalizeProgress(dirty);
+	assert.equal(clean.xp, 0, 'a non-finite XP claim is discarded');
+	assert.ok(!('evil' in clean.counts) && !('bless' in clean.counts), 'unknown and negative counters are dropped');
+	assert.ok(!Object.prototype.hasOwnProperty.call(clean.counts, '__proto__'), 'no prototype smuggling through counts');
+	assert.deepEqual(clean.done, ['cheerleader'], 'only real achievement ids survive');
+	assert.deepEqual(clean.days, ['2026-07-12'], 'day stamps are validated and de-duped');
+	assert.equal(NET.normalizeProgress(null).xp, 0, 'a missing profile is a fresh one');
+	assert.equal(NET.normalizeProgress('nope').xp, 0, 'a garbage profile is a fresh one');
+}
+// every achievement watches a stat the system can actually produce
+{
+	const derived = new Set(['level', 'days', 'wardrobe']);
+	for(const a of NET.ACHIEVEMENTS){
+		assert.ok(NET.validDeed(a.stat) || derived.has(a.stat), 'achievement ' + a.id + ' watches a real stat (' + a.stat + ')');
+		assert.ok(a.need > 0 && a.xp > 0 && a.icon && a.name && a.desc, 'achievement ' + a.id + ' is fully described');
+	}
+	const view = NET.statView({ xp: 0, counts: { equip: 4, unequip: 3 } });
+	assert.equal(view.wardrobe, 7, 'wardrobe work sums equips and unequips');
+	const prog = NET.achievementProgress(NET.createProgress());
+	assert.equal(prog.length, NET.ACHIEVEMENTS.length, 'the trophy case lists every achievement');
+	assert.ok(prog.every(a => !a.done), 'a fresh ghost has an empty trophy case');
+	assert.equal(prog.find(a => a.def.id === 'cheerleader').have, 0, 'and no progress on the deed-driven ones');
+}
+// dread names the spirit that caused the fright (so the right watcher gets credit)
+{
+	const d = NET.dreadAt([{ x: 100, y: 0 }, { x: 1.5, y: 0 }], 2, 0, 6);
+	assert.equal(d.i, 1, 'the NEAREST spirit is the one credited');
+}
+
 // --- broker allowlist stays in lockstep with the CSP ------------------------------------
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(html);
@@ -235,7 +333,20 @@ for(const key of ['applyGameData:', 'buildSave:', 'snapshotDrops:', 'restoreDrop
 }
 assert.ok(/GHOST_CLIENT\.boot\(MM\.ghostBridge\)/.test(mainSrc), 'ghost client boots with the bridge');
 assert.ok(/GHOST_HOST\.wire\(MM\.ghostBridge\)/.test(mainSrc), 'ghost host wires the bridge');
-assert.ok(/GHOST_CLIENT\.drawSpirits\(ctx,TILE\)/.test(mainSrc) && /GHOST_HOST\.drawSpirits\(ctx,TILE\)/.test(mainSrc), 'spirit painters ride the draw pass');
+// two-pass spirit painting: bodies BEHIND the player, text over the creature layer
+for(const who of ['GHOST_CLIENT', 'GHOST_HOST']){
+	for(const pass of ['body', 'text']){
+		assert.ok(mainSrc.includes(who + `.drawSpirits(ctx,TILE,'${pass}')`), who + ' runs the ' + pass + ' pass');
+	}
+}
+{
+	const bodyAt = mainSrc.indexOf(".drawSpirits(ctx,TILE,'body')");
+	const playerAt = mainSrc.indexOf('drawPlayer();', bodyAt);
+	const textAt = mainSrc.indexOf(".drawSpirits(ctx,TILE,'text')");
+	const mobsAt = mainSrc.indexOf('MOBS.draw(ctx,TILE');
+	assert.ok(bodyAt > 0 && playerAt > 0 && bodyAt < playerAt, 'spirit BODIES are painted before the player (behind, never obscuring)');
+	assert.ok(mobsAt > 0 && textAt > mobsAt, 'spirit TEXT (names, bubbles, action fx) is painted over the creature layer');
+}
 assert.ok(/buildSaveObject\(\{perf:\{parts:\[\]\}\}\)/.test(mainSrc), 'bridge snapshot inlines chunks (no external autosave refs on the wire)');
 
 // --- source pins: world.js diff capture --------------------------------------------------------
@@ -247,8 +358,9 @@ assert.ok(/function notifyTileChanged\(x,y,old,v\)\{\s*try\{ if\(MM\.ghostHostTi
 const clientSrc = readFileSync(new URL('../src/engine/ghost_client.js', import.meta.url), 'utf8');
 assert.ok(/MMR\.ghostMode = true;/.test(clientSrc), 'client stamps MM.ghostMode at import time');
 assert.ok(/NET\.parseWatch\(location\.search\)/.test(clientSrc), 'watch param comes from the URL');
-assert.ok(!/localStorage\.setItem\((?!'mm_ghost_(name|avatar)_v1')/.test(clientSrc), 'client persists nothing but its display name and avatar');
-assert.ok(/Storage\.prototype\.setItem = function/.test(clientSrc) && /allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1'\]\)/.test(clientSrc),
+assert.ok(!/localStorage\.setItem\((?!'mm_ghost_(name|avatar)_v1'|NET\.PROG_KEY)/.test(clientSrc),
+	'client persists nothing but its display name, avatar and own career');
+assert.ok(/Storage\.prototype\.setItem = function/.test(clientSrc) && /allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY\]\)/.test(clientSrc),
 	'ghost mode locks down ALL localStorage writes (side stores like dynamic loot must not leak into the watcher’s own world)');
 // hardening pins (post-review): hostile hosts, transport races, throttling floods
 assert.ok(/function esc\(s\)/.test(clientSrc) && /esc\(hostName\)/.test(clientSrc),
@@ -339,14 +451,14 @@ for(const a of NET.AVATARS) assert.ok(new RegExp('\\b' + a + '\\(ctx, r\\)').tes
 assert.ok(/entry\.camPos\.x \+= \(entry\.cam\.x - entry\.camPos\.x\) \* ease;/.test(hostSrc), 'host spirits glide (interpolated), not teleport');
 assert.ok(/g\.x \+= \(g\.tx - g\.x\) \* ease;/.test(clientSrc), 'client spirits glide too');
 assert.ok(/POSE_MS = 150/.test(clientSrc) && /presence: 200/.test(hostSrc), 'pose/presence cadences are tight enough for smooth spirits');
-assert.ok(/painter\(ctx, TILE, c\.x, c\.y, ghostName\(\), t, true, avatar, isActive\(\), selfChat\);/.test(clientSrc),
-	'the watcher sees their own flying avatar at the camera');
+assert.ok(/painter\(ctx, TILE, c\.x, c\.y - selfLift, ghostName\(\), t, true, avatar, isActive\(\), selfChat, 'text'\);/.test(clientSrc),
+	'the watcher sees their own flying avatar at the camera (lifted off the hero, text pass)');
 
 // --- ghost dread integration: four creature systems flee the spirits -------------------------------
 assert.ok(/if\(MMR && !MMR\.ghostAura\)/.test(hostSrc) && /MMR\.ghostDreadAt = function/.test(hostSrc),
 	'the host publishes the aura + the single dread lookup every creature system calls');
-assert.ok(/if\(!e\.hello \|\| e\.actUntil <= t\) continue;[\s\S]*if\(e\.cam\) spirits\.push/.test(hostSrc),
-	'ONLY active watchers haunt the world (an idle tab is furniture, not a phantom)');
+assert.ok(/if\(!e\.hello \|\| e\.actUntil <= t\) continue;[\s\S]*if\(e\.cam\)\{ spirits\.push\(\{ x: e\.cam\.x, y: e\.cam\.y \}\); owners\.push\(e\); \}/.test(hostSrc),
+	'ONLY active watchers haunt the world (an idle tab is furniture, not a phantom), and each spirit remembers its owner');
 assert.ok(/function applyGhostDread\(m,dt\)/.test(mobsSrc) && /applyGhostDread\(m,dt\);/.test(mobsSrc), 'mobs flee spirits');
 assert.ok(/!hasStatus\(m,'blind'\) && !isGhostSpooked\(m\)/.test(mobsSrc), 'a spooked mob stops being aggressive');
 const invSrc = readFileSync(new URL('../src/engine/invasions.js', import.meta.url), 'utf8');
@@ -374,16 +486,223 @@ assert.ok(!/ghostPower[\s\S]{0,900}setTile\(/.test(mainSrc), 'NO ghost power may
 assert.ok(/MOBS\.chillRadius/.test(mainSrc) && /MOBS\.blastRadius/.test(mainSrc) && /MOBS\.statusRadius\(x,y,r,'panic'/.test(mainSrc),
 	'frost/smite/banish route through the existing mob AoE APIs');
 
-// --- assistant: a delegate, not a second player --------------------------------------------------------
-assert.ok(/function setAssistant\(gid, on\)/.test(hostSrc), 'the host appoints the assistant');
+// --- assistants: delegates, not second players ----------------------------------------------------------
+assert.ok(/function setAssistant\(gid, on\)/.test(hostSrc), 'the host appoints assistants');
 assert.ok(/if\(on && entry\.mode !== 'full'\) return false;/.test(hostSrc), 'an assistant must hold full permissions');
-assert.ok(/\} else if\(on && entry\.assistant\)\{/.test(hostSrc), 'exactly one assistant at a time — the seat is handed over');
+assert.ok(!/else if\(on && entry\.assistant\)/.test(hostSrc), 'the single-seat handover is GONE — several assistants may serve at once');
 assert.ok(/if\(!entry\.assistant \|\| entry\.mode !== 'full'\)\{ entry\.peer\.send\(\{ t: 'assistAck', ok: false, reason: 'perm' \}\); return; \}/.test(hostSrc),
 	'non-assistants cannot run assistant actions');
-assert.ok(/ghostAssistState:\(\)=>\{/.test(mainSrc) && /ghostAssist:\(action,id\)=>\{/.test(mainSrc), 'the bridge exposes the assistant surface');
-assert.ok(/if\(!canCraft\(r\)\) return \{ok:false, reason:'cost'\};/.test(mainSrc), 'the assistant cannot craft what the hero cannot afford');
+assert.ok(/ghostAssistState:\(\)=>\{/.test(mainSrc) && /ghostAssist:\(action,id,n\)=>\{/.test(mainSrc), 'the bridge exposes the assistant surface');
+assert.ok(/if\(!made\) return \{ok:false, reason:'cost'\};/.test(mainSrc), 'the assistant cannot craft what the hero cannot afford');
 assert.ok(/if\(!craftRecipeVisible\(r\)\) return \{ok:false, reason:'locked'\};/.test(mainSrc), 'the assistant cannot craft undiscovered recipes');
-assert.ok(/sendAssist\('craft', r\.id\)/.test(clientSrc) && /sendAssist\(i\.equipped \? 'unequip' : 'equip', i\.id\)/.test(clientSrc),
+assert.ok(/while\(made<want && canCraft\(r\)\)\{ doCraft\(r,1\); made\+\+; \}/.test(mainSrc),
+	'batch crafting re-checks affordability per unit — partial success is honest when a rival drained the pouch');
+assert.ok(/sendAssist\('craft', r\.id, count\)/.test(clientSrc) && /sendAssist\(i\.equipped \? 'unequip' : 'equip', i\.id, 1\)/.test(clientSrc),
 	'the assistant workbench drives craft/equip/unequip only');
+// the assistant sees what the player sees: groups, favorites, gear scores, resources
+assert.ok(/g:CRAFT_GROUP_LABELS\[recipeGroup\(r\)\]/.test(mainSrc) && /fav:!!\(CRAFT_MODEL && CRAFT_MODEL\.isFavorite/.test(mainSrc),
+	'assist state carries the player’s own group labels and favorites');
+assert.ok(/resources=RESOURCE_DEFS\.map\(d=>\(\{k:d\.key, name:d\.label, n:Math\.floor\(Number\(inv\[d\.key\]\)\|\|0\)\}\)\)\.filter\(r=>r\.n>0\)/.test(mainSrc),
+	'assist state carries the live resource pouch');
+assert.ok(/search\.addEventListener\('input'/.test(clientSrc) && /el\.append\(head, vitals, search, body\)/.test(clientSrc),
+	'the workbench search box lives in the persistent skeleton — a state tick must not steal focus mid-typing');
+assert.ok(/if\(sig !== assistSig\)\{ assistSig = sig; renderAssist\(\); \}/.test(clientSrc),
+	'identical state ticks skip the DOM rebuild');
+// first-wins arbitration: requests execute serially on the host; the loser hears the truth
+assert.ok(/t - \(entry\.lastAssistActAt \|\| 0\) < NET\.ASSIST_LIMITS\.RATE_MS/.test(hostSrc), 'per-assistant rate floor (double-click guard)');
+assert.ok(/zabrakło surowców \(ktoś był szybszy\?\)/.test(clientSrc), 'the losing assistant is told why the craft failed');
+assert.ok(/const n = pl\.a === 'craft' \? NET\.clampCraftCount\(pl\.n\) : 1;/.test(hostSrc), 'craft batch size is clamped host-side');
+assert.ok(/function assistStateShared\(s, t\)/.test(hostSrc) && /t - \(s\.assistStateAt \|\| 0\) > 1000/.test(hostSrc),
+	'one serialization serves every assistant on the tick (N assistants ≠ N ghostAssistState calls)');
+// the approval desk: with approvals ON nothing executes until the host clicks Zatwierdź
+assert.ok(/if\(approvalMode\)\{/.test(hostSrc) && /s\.assistQueue\.push\(/.test(hostSrc), 'approval mode queues instead of executing');
+assert.ok(/label = bridge\.ghostAssistLabel\(pl\.a, id, n\)/.test(hostSrc) && /if\(!label\)\{ entry\.peer\.send\(\{ t: 'assistAck', ok: false, reason: 'unknown'/.test(hostSrc),
+	'approval rows carry HOST-derived labels only — client text never reaches the host UI');
+assert.ok(/function approveAssist\(qid\)/.test(hostSrc) && /res = bridge\.ghostAssist\(q\.a, q\.id, q\.n\)/.test(hostSrc),
+	'approval re-validates and executes through the same guarded bridge path');
+assert.ok(/function rejectAssist\(qid\)/.test(hostSrc) && /reason: 'rejected'/.test(hostSrc), 'rejection notifies the proposing assistant');
+assert.ok(/s\.assistQueue\.expire\(t\)/.test(hostSrc) && /reason: 'expired'/.test(hostSrc), 'stale proposals expire and the assistant hears about it');
+assert.ok(/localStorage\.setItem\(APPROVE_KEY, approvalMode \? '1' : '0'\)/.test(hostSrc), 'the approval switch is remembered across sessions');
+assert.ok(/id="ghostPanelApprove"/.test(hostSrc) && /approveAssist\(q\.qid\)/.test(hostSrc) && /rejectAssist\(q\.qid\)/.test(hostSrc),
+	'the host panel carries the toggle and per-request verdict buttons');
+// approval-queue pure core: bounded on both axes, FIFO of what the host sees
+{
+	const q = NET.createAssistQueue();
+	const t0 = 1000;
+	for(let i = 0; i < NET.ASSIST_LIMITS.QUEUE_PER_GHOST; i++){
+		assert.ok(q.push({ gid: 'gA', name: 'A', a: 'craft', id: 'r' + i, n: 1, label: 'L' + i }, t0).ok, 'assistant A fills its slots');
+	}
+	assert.equal(q.push({ gid: 'gA', name: 'A', a: 'craft', id: 'rX', n: 1, label: 'LX' }, t0).reason, 'yours',
+		'one assistant cannot hog the queue past its per-ghost cap');
+	let n = q.size();
+	for(let i = 0; n < NET.ASSIST_LIMITS.QUEUE_MAX; i++, n++){
+		assert.ok(q.push({ gid: 'g' + i, name: 'G', a: 'craft', id: 'q' + i, n: 1, label: 'Q' + i }, t0).ok, 'other assistants still fit');
+	}
+	assert.equal(q.push({ gid: 'gZ', name: 'Z', a: 'craft', id: 'z', n: 1, label: 'Z' }, t0).reason, 'full', 'the queue has a hard ceiling');
+	const first = q.list()[0];
+	assert.equal(q.take(first.qid).qid, first.qid, 'take removes exactly the addressed request');
+	assert.equal(q.take(first.qid), null, 'a taken request cannot be approved twice');
+	const dead = q.expire(t0 + NET.ASSIST_LIMITS.QUEUE_TTL_MS + 1);
+	assert.equal(dead.length + q.size(), NET.ASSIST_LIMITS.QUEUE_MAX - 1, 'expiry sweeps every stale request, loses none');
+	assert.equal(q.size(), 0, 'nothing outlives the TTL');
+	assert.equal(NET.clampCraftCount(999), NET.ASSIST_LIMITS.CRAFT_MAX, 'craft batches are capped');
+	assert.equal(NET.clampCraftCount(-3), 1, 'craft batches have a floor');
+	assert.equal(NET.clampCraftCount('nonsense'), 1, 'garbage counts fold to one');
+}
+
+// --- watcher progression: host mints, client banks, nobody is trusted with authority ------------
+assert.ok(/function sendDeed\(entry, k, n\)/.test(hostSrc), 'the host owns deed minting');
+for(const [event, deed] of [['handleBuff', "sendDeed\\(entry, pl\\.kind, 1\\)"], ['handlePower', "sendDeed\\(entry, kind, 1\\)"], ['handleAssist', "sendDeed\\(entry, pl\\.a, res\\.made \\|\\| 1\\)"], ['handleChat', "sendDeed\\(entry, 'chat', 1\\)"]]){
+	assert.ok(new RegExp(deed).test(hostSrc), event + ' mints its deed only after the event was validated');
+}
+assert.ok(/if\(hits > 0\) sendDeed\(entry, 'hit', hits\);/.test(hostSrc), 'power hits pay extra');
+assert.ok(/if\(entry\.actUntil > t && t - \(entry\.watchT \|\| 0\) >= NET\.PROG\.WATCH_TICK_MS\)/.test(hostSrc),
+	'watch XP ticks ONLY while the viewer is active — an idle tab earns nothing (same anti-fake-watcher rule as the boosts)');
+assert.ok(/t - \(entry\.chatXpAt \|\| 0\) >= NET\.PROG\.CHAT_XP_MS/.test(hostSrc), 'chat XP has its own slower clock (the 4 s send floor is not an XP faucet)');
+assert.ok(/MMR\.ghostSpook = \(i\) =>/.test(hostSrc) && /function noteSpook\(i\)/.test(hostSrc) && /s\.auraOwners\[i \| 0\]/.test(hostSrc),
+	'a fright is credited to the spirit that caused it');
+assert.ok(/if\(!\(finiteNum\(m\._ghostSpookUntil\) && m\._ghostSpookUntil>now\) && MM\.ghostSpook\)/.test(mobsSrc),
+	'a creature credits ONE spook per fright episode, not one per frame');
+// THE contract: the profile lives in the watcher's browser, so it is forgeable — and
+// therefore may never open a door on the host side.
+const authorityGates = [
+	hostSrc.slice(hostSrc.indexOf('function handlePower'), hostSrc.indexOf('function chargeTick')),
+	hostSrc.slice(hostSrc.indexOf('function handleBuff'), hostSrc.indexOf('function handleChat')),
+	hostSrc.slice(hostSrc.indexOf('function handleAssist'), hostSrc.indexOf('function sendAssistState')),
+	hostSrc.slice(hostSrc.indexOf('function setAssistant'), hostSrc.indexOf('function setAssistant') + 700)
+];
+for(const gate of authorityGates){
+	assert.ok(gate.length > 40, 'gate slice found');
+	assert.ok(!/\.level|achiev|prog\b/i.test(gate), 'NO host-side gate reads the watcher’s level/achievements — progression is a reward, never an authority');
+}
+assert.ok(/entry\.level = Math\.max\(1, Math\.min\(NET\.PROG\.MAX_LEVEL, Math\.floor\(pl\.lvl\)\)\)/.test(hostSrc),
+	'the claimed level is clamped and used for display only');
+// client: persists in the WATCHER's own browser — that is what survives a reload
+assert.ok(/allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY\]\)/.test(clientSrc),
+	'the ghost profile is on the storage allowlist (the lockdown would otherwise silently drop it)');
+assert.ok(/localStorage\.setItem\(NET\.PROG_KEY, JSON\.stringify\(prog\)\)/.test(clientSrc) && /function loadProgress\(\)/.test(clientSrc),
+	'the career is written to and read from the watcher’s own localStorage');
+assert.ok(/if\(!NET\.validDeed\(pl\.k\)\) return;[\s\S]{0,400}bankDeeds\(\[\{ k: pl\.k, n: pl\.n \}\]/.test(clientSrc), 'the client banks host-minted deeds only');
+assert.ok(/conn\.send\(\{ t: 'prog', lvl: res\.level \}\)/.test(clientSrc), 'a promotion is reported to the host for the rank badge');
+assert.ok(/lvl: NET\.levelFor\(prog\.xp\)\.level/.test(clientSrc), 'hello carries the level so a returning ghost shows its rank immediately');
+// hardening pass (2nd review): farming, floods and refresh-vs-interaction races
+assert.ok(/if\(pl\.k === 'join' && prog\.days\.includes\(today\(\)\)\) return;/.test(clientSrc),
+	'join XP pays once per day — reload-farming must not out-earn honest watching');
+assert.ok(/function flushProgress\(force\)/.test(clientSrc) && /t - lastProgSaveAt < 2000/.test(clientSrc),
+	'profile writes are throttled (a deed-spamming host cannot buy a localStorage write per message)');
+assert.ok(/window\.addEventListener\('pagehide', \(\) => flushProgress\(true\)\)/.test(clientSrc) && /flushProgress\(true\); \/\/ nothing earned/.test(clientSrc),
+	'dirty progress is force-flushed on leave and unload — the throttle may never lose an earned deed');
+assert.ok(/JSON\.stringify\(res\.state\.counts\) !== JSON\.stringify\(before\.counts\)/.test(clientSrc)
+	&& /res\.state\.days\.length !== before\.days\.length/.test(clientSrc),
+	'count-only and day-only changes persist too (the 0-XP crowd deed and day stamps must reach disk)');
+assert.ok(/if\(lvl !== entry\.level\)\{ entry\.level = lvl; updateUi\(\); \}/.test(hostSrc),
+	'prog spam cannot drive host DOM rebuilds — updateUi only fires on an actual level change');
+assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
+	&& /focusedTag === 'SELECT' \|\| focusedTag === 'INPUT'/.test(hostSrc),
+	'the periodic panel refresh skips a hidden panel and never yanks an open dropdown/selection from the host');
+
+// --- entry point: a first-class HUD icon, not a row in the ≡ menu ------------------------------------
+assert.ok(/id="ghostBtn"/.test(html) && /id="ghostBtnCount"/.test(html), 'index.html carries the 👁 viewers button with its live count');
+assert.ok(/<div id="menuWrap">[\s\S]{0,400}id="ghostBtn"/.test(html), 'the viewers button sits in the top bar next to the menu');
+assert.ok(/function mountEntryPoint\(\)/.test(hostSrc) && /document\.getElementById\('ghostBtn'\)/.test(hostSrc),
+	'the host binds the HUD button (the panel is no longer buried in the debug menu)');
+assert.ok(!/getElementById\('menuPanel'\)/.test(hostSrc), 'no menu-panel injection survives');
+assert.ok(/body\.mmGhostMode #menuWrap/.test(clientSrc), 'a watcher never sees the host-only viewers button (menuWrap is hidden in ghost mode)');
+// per-session default permission for newcomers — the host decides the door policy once
+assert.ok(/let defaultMode = 'full';/.test(hostSrc) && /mode: defaultMode,/.test(hostSrc), 'joining ghosts inherit the host-chosen default mode');
+assert.ok(/function setDefaultMode\(mode\)/.test(hostSrc) && /localStorage\.setItem\(PERM_KEY, mode\)/.test(hostSrc), 'the default mode is settable and remembered');
+
+// --- spirit lift: a ghost never covers the hero (pure) ---------------------------------------------
+{
+	const A = NET.SPIRIT_AVOID;
+	assert.ok(A.RX > 0 && A.RY > 0 && A.CLEAR >= 1, 'avoidance box is sane (CLEAR reaches above a ~1-tile hero)');
+	const centered = NET.spiritLift(10, 20, 10, 20);
+	assert.ok(Math.abs(centered - A.CLEAR) < 1e-9, 'a spirit parked ON the hero is displayed a full CLEAR above its head');
+	assert.ok(NET.spiritLift(10 + A.RX, 20, 10, 20) < 1e-9, 'horizontally clear of the hero = no lift');
+	assert.ok(NET.spiritLift(10, 20 - A.CLEAR - 0.01, 10, 20) < 1e-9, 'already above the hover line = no lift');
+	assert.ok(NET.spiritLift(10, 20 + A.RY, 10, 20) < 1e-9, 'far below the feet = no lift (no 2-tile teleports)');
+	// continuity: the lift fades smoothly at every edge of the avoidance box
+	assert.ok(NET.spiritLift(10 + A.RX - 0.01, 20, 10, 20) < 0.05, 'lift fades to ~0 at the horizontal edge');
+	assert.ok(NET.spiritLift(10, 20 + A.RY - 0.01, 10, 20) < 0.05, 'lift fades to ~0 at the lower edge');
+	const near = NET.spiritLift(10.2, 20, 10, 20), far = NET.spiritLift(10.7, 20, 10, 20);
+	assert.ok(near > far && far > 0, 'lift is monotonic in horizontal distance');
+	assert.equal(NET.spiritLift(NaN, 20, 10, 20), 0, 'garbage coordinates are inert');
+	// the lift is display-only: both engine painters subtract it from the DRAWN y…
+	assert.ok(/NET\.spiritLift\(entry\.camPos\.x, entry\.camPos\.y, p\.x, p\.y\)/.test(hostSrc), 'host lifts each spirit against the hero');
+	assert.ok(/NET\.spiritLift\(g\.x, g\.y, hx, hy\)/.test(clientSrc) && /NET\.spiritLift\(c\.x, c\.y, hx, hy\)/.test(clientSrc),
+		'client lifts fellow spirits and its own avatar against the hero replica');
+	// …and never the pose that feeds dread/powers/presence
+	assert.ok(/spirits\.push\(\{ x: e\.cam\.x, y: e\.cam\.y \}\)/.test(hostSrc), 'the dread aura reads the TRUE pose, not the lifted display');
+	assert.ok(/ctx\.arc\(c\.x \* TILE, c\.y \* TILE, NET\.DREAD\.R \* TILE/.test(clientSrc), 'the dread ring is anchored at the TRUE pose too');
+}
+
+// --- voices: the host speaks, everyone reads --------------------------------------------------------
+assert.ok(/function say\(raw\)/.test(hostSrc) && /const res = NET\.filterChat\(raw\);/.test(hostSrc.slice(hostSrc.indexOf('function say('))),
+	'the host’s own words pass the same profanity filter it enforces on watchers');
+assert.ok(/t - lastSayAt < 800\) return false;/.test(hostSrc), 'host chat has a send floor (Enter-spam must not flood the peers)');
+assert.ok(/broadcast\(\{ t: 'hostChat', text: res\.text \}\)/.test(hostSrc), 'host words ride the wire to every watcher');
+assert.ok(/paintChatBubble\(ctx, TILE, p\.x, p\.y - \(p\.h \|\| 1\) \/ 2 - 0\.5, hostChat\.text\)/.test(hostSrc),
+	'the host sees its own bubble over the hero');
+assert.ok(/pl\.t === 'hostChat'/.test(clientSrc) && /const text = NET\.filterChat\(pl\.text\)\.text; \/\/ defense in depth — the host filters its own words too/.test(clientSrc),
+	'the client re-filters host words before showing them');
+assert.ok(/bubble\(ctx, TILE, p\.x, p\.y - \(p\.h \|\| 1\) \/ 2 - 0\.5, hostChat\.text\)/.test(clientSrc),
+	'the watcher sees the host bubble over the hero replica');
+assert.ok(/function mountSayKey\(\)/.test(hostSrc) && /e\.key !== 'Enter' \|\| e\.repeat/.test(hostSrc), 'Enter opens the host chat line');
+assert.ok(/bridge\.overlayHold && bridge\.overlayHold\(\)/.test(hostSrc), 'the say key defers to title/finale overlays');
+assert.ok(/bridge\.releaseInput\(\)/.test(hostSrc) && /releaseInput:\(\)=>\{ try\{ releaseGameplayInput\(\); \}catch\(e\)\{\} \}/.test(mainSrc),
+	'opening the chat line releases held movement keys (the swallowed keyup would keep the hero walking)');
+assert.ok(/id="ghostPanelSay"/.test(hostSrc), 'the panel carries a say row for touch hosts');
+
+// --- pings: a watcher points, nobody aims -----------------------------------------------------------
+assert.ok(NET.PING.MIN_MS >= 2000 && NET.PING.TTL_MS > 0, 'pings are rate-limited and transient');
+{
+	const pingSlice = hostSrc.slice(hostSrc.indexOf('function handlePing'), hostSrc.indexOf("--- the host's own voice"));
+	assert.ok(pingSlice.length > 40, 'handlePing found');
+	assert.ok(/entry\.mode === 'watch' \|\| !entry\.cam\) return;/.test(pingSlice), 'pings need at least chat permission and a tracked pose');
+	assert.ok(/t - \(entry\.lastPingAt \|\| 0\) < NET\.PING\.MIN_MS\) return;/.test(pingSlice), 'pings are rate-limited per watcher');
+	assert.ok(/x: \+entry\.cam\.x\.toFixed\(2\), y: \+entry\.cam\.y\.toFixed\(2\)/.test(pingSlice) && !/pl\.x|pl\.y/.test(pingSlice),
+		'the marker lands at the HOST-tracked pose — client coordinates are never read');
+	assert.ok(!/sendDeed/.test(pingSlice), 'pings earn no XP (a pointer, not a faucet)');
+}
+assert.ok(/function sendPing\(\)/.test(clientSrc) && /t - lastPingSentAt < NET\.PING\.MIN_MS\) return false;/.test(clientSrc),
+	'the client rate-limits its own pings too');
+assert.ok(/k === 'p'\)\{ sendPing\(\); e\.preventDefault\(\); \}/.test(clientSrc) && /id="gbPing"/.test(clientSrc),
+	'pings ride the P key and a bar button');
+assert.ok(/conn\.send\(\{ t: 'ping' \}\);/.test(clientSrc), 'the ping payload carries NO coordinates');
+
+// --- audience visibility: the host decides what it SEES, never what happens -------------------------
+assert.ok(/const viewPrefs = \{ spirits: true, bubbles: true, fx: true \};/.test(hostSrc), 'the three display toggles default to visible');
+assert.ok(/localStorage\.setItem\(VIEW_KEY, JSON\.stringify\(viewPrefs\)\)/.test(hostSrc), 'display toggles are remembered across sessions');
+assert.ok(/if\(!viewPrefs\.spirits \|\| session\.hiddenGids\.has\(entry\.gid\)\) continue;/.test(hostSrc),
+	'hidden spirits (global or per-watcher) skip the painter AFTER the glide update — mechanics untouched');
+assert.ok(/viewPrefs\.bubbles \? entry\.lastChat : null/.test(hostSrc), 'the bubble toggle silences watcher bubbles');
+assert.ok(/function setViewerHidden\(gid, on\)/.test(hostSrc) && /session\.hiddenGids\.add\(gid\)/.test(hostSrc), 'per-watcher hide is host-settable');
+assert.ok(/if\(!s\.hiddenGids\.has\(entry\.gid\)\)\{ try\{ bridge\.msg\('💬 '/.test(hostSrc),
+	'a muted watcher’s chat stays out of the host log (but still reaches fellow watchers — the broadcast is unconditional)');
+{
+	const chatSlice = hostSrc.slice(hostSrc.indexOf('function handleChat'), hostSrc.indexOf('function handlePing'));
+	assert.ok(/broadcast\(\{ t: 'chat'/.test(chatSlice) && chatSlice.indexOf('hiddenGids') < chatSlice.indexOf("broadcast({ t: 'chat'"),
+		'the mute guards only the local msg — the relay to other watchers is unconditional');
+}
+// per-watcher hide is a DISPLAY preference: no gate in the buff/power/assist paths reads it
+for(const fn of ['function handleBuff', 'function handlePower', 'function handleAssist']){
+	const at = hostSrc.indexOf(fn);
+	const slice = hostSrc.slice(at, hostSrc.indexOf('function', at + 20));
+	assert.ok(!/hiddenGids/.test(slice), fn + ' ignores the mute — hiding a watcher never blocks its (validated) influence');
+}
+
+// --- action feedback: watcher deeds leave a visible trace, under one switch --------------------------
+assert.ok(/function noteActionFx\(s, fx\)/.test(hostSrc) && /s\.actionFx\.length > 10\) s\.actionFx\.shift\(\)/.test(hostSrc),
+	'the action feed exists and is bounded');
+for(const [ev, pat] of [['buff', /noteActionFx\(s, \{ kind: 'buff', hero: 1/], ['power', /noteActionFx\(s, \{ kind: 'power', power: kind, x: entry\.cam\.x/], ['assist', /noteActionFx\(s, \{ kind: 'assist', hero: 1/], ['ping', /noteActionFx\(s, \{ kind: 'ping', x: entry\.cam\.x/]]){
+	assert.ok(pat.test(hostSrc), ev + ' actions feed the visible trace');
+}
+assert.ok(/if\(viewPrefs\.fx\) drawActionFx\(ctx, TILE, t, p\);/.test(hostSrc), 'the whole trace obeys the „działania” toggle at paint time');
+assert.ok(/if\(viewPrefs\.fx\)\{\s*\n?\s*if\(MMR && MMR\.particles/.test(hostSrc), 'buff bursts and sounds obey the toggle too');
+assert.ok(!/ghostPower[\s\S]{0,900}spawnBurst/.test(mainSrc),
+	'bridge.ghostPower is mechanics-only — its fx moved host-side under the toggle');
+assert.ok(/paintSpirit\(ctx, TILE, x, y, name, t, self, avatar, active, chat, pass\)/.test(hostSrc)
+	&& /function paintChatBubble\(ctx, TILE, x, y, text\)/.test(hostSrc),
+	'the painter splits body/text passes and shares one bubble painter with the client');
 
 console.log('ghost-sim: all assertions passed');

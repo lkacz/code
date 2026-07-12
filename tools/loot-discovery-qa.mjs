@@ -109,7 +109,7 @@ const SCENE_C = `(async()=>{
 	return 'ok:C probe=['+probe+'] tier='+(res&&res.tier)+' items='+(res&&res.items.length)+' spawned='+(res&&res.spawned)+' active='+m.active;
 })()`;
 
-// D: pick the drops up — inbox + upgrade-notice corner card
+// D: pick the drops up — the upgrade card is the ONLY popup loot may raise
 const SCENE_D = `(async()=>{
 	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 	const list=MM.drops._debug.list.slice();
@@ -124,8 +124,10 @@ const SCENE_D = `(async()=>{
 	const card=document.getElementById('upgradeNotice');
 	const shown=!!(card && card.classList.contains('show'));
 	const title=shown ? (card.querySelector('.upTitle')||{}).textContent : '';
-	const inboxBtn=document.getElementById('lootInboxBtn');
-	return 'ok:D picked='+picked+' card='+shown+' title="'+(title||'')+'" inboxVisible='+(inboxBtn && inboxBtn.style.display!=='none');
+	// the retired "Nowe przedmioty" inbox must not come back from the dead
+	const inbox=document.getElementById('lootPopup')||document.getElementById('lootInboxBtn');
+	const bagged=MM.inventory.bagItems().length;
+	return 'ok:D picked='+picked+' card='+shown+' title="'+(title||'')+'" inbox='+(!!inbox)+' bagged='+bagged;
 })()`;
 
 // E: close-up of the remaining chest tiers (art check) — zoom in, panel closed

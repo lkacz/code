@@ -291,7 +291,7 @@ A.update(0.3); // one scene tick
 // ---------------- music director -------------------------------------------
 {
   player.y = 8; // back to the surface, daytime
-  nowMs += 20000;
+  nowMs += 30000; // clears even the slowest theme's phrase gap (13 s × dryf 1.7)
   const before = nodeCount();
   A.update(0.3);
   assert.ok(nodeCount() > before, 'music director schedules phrases on its own');
@@ -313,6 +313,86 @@ A.update(0.3); // one scene tick
   const grew = lastCtx.nodes.slice(quiet).filter(n => n.kind === 'osc').length;
   assert.equal(grew, 0, 'music volume 0 stops the director scheduling notes');
   A.setBusVolume('music', 0.5);
+}
+
+// ---------------- music on/off + theme rotation ----------------------------
+// (heavy rain stays configured above, so the wildlife scheduler adds no
+//  oscillators of its own — any osc growth below is the music director)
+function oscGrowthAfterUpdate(){
+  const before = nodeCount();
+  A.update(0.3);
+  return lastCtx.nodes.slice(before).filter(n => n.kind === 'osc').length;
+}
+{
+  // the explicit music switch beats volume: off = no scheduling at all
+  nowMs += 30000; // clear the alarm danger window
+  A.setMusicOn(false);
+  assert.equal(A.isMusicOn(), false, 'setMusicOn(false) reads back');
+  assert.equal(JSON.parse(store['mm_audio_v1']).musicOn, false, 'music switch persists');
+  nowMs += 15000;
+  assert.equal(oscGrowthAfterUpdate(), 0, 'music off: the director schedules nothing');
+  A.setMusicOn(true);
+  nowMs += 600000; // far past any window: the gate re-anchors into a fresh play window
+  assert.ok(oscGrowthAfterUpdate() > 0, 'music back on: scheduling resumes');
+}
+{
+  // rotation: a theme plays for a window, rests in a silent break, then the
+  // NEXT theme takes over — never the same one twice in a row
+  const d0 = A.debugState();
+  assert.equal(d0.rotation.phase, 'play', 'rotation starts in a play window');
+  const THEME_IDS = ['wedrowiec','choral','skoczny','nokturn','dryf'];
+  assert.ok(THEME_IDS.includes(d0.rotation.theme), 'an active theme is one of the five');
+  nowMs = d0.rotation.until + 1000; // just past the play window
+  A.update(0.3);
+  const d1 = A.debugState();
+  assert.equal(d1.rotation.phase, 'break', 'the play window ends in a break');
+  nowMs += 5000;
+  assert.equal(oscGrowthAfterUpdate(), 0, 'breaks are silent (no phrases scheduled)');
+  nowMs = d1.rotation.until + 1;
+  A.update(0.3);
+  const d2 = A.debugState();
+  assert.equal(d2.rotation.phase, 'play', 'the break ends into the next play window');
+  assert.notEqual(d2.rotation.theme, d0.rotation.theme, 'the next window picks a different theme');
+  // long absence (tab away / long pause): re-anchor into a fresh play window
+  nowMs = d2.rotation.until + 600000;
+  A.update(0.3);
+  assert.equal(A.debugState().rotation.phase, 'play', 'a long gap re-anchors into play instead of a stale break');
+}
+{
+  // guardian fights: a boss near the hero flips the director into 'boss' mode,
+  // which sounds even through a break and outranks plain danger
+  const dPlay = A.debugState();
+  nowMs = dPlay.rotation.until + 1000;
+  A.update(0.3);
+  assert.equal(A.debugState().rotation.phase, 'break', 'setup: rotation rests in a break');
+  MM.guardianLairs = { nearestForTurret: (x, y, r, onlyBoss) => (onlyBoss ? { raw: { hp: 30, maxHp: 100 } } : null) };
+  nowMs += 8000;
+  assert.ok(oscGrowthAfterUpdate() > 0, 'a guardian fight sounds even during a rotation break');
+  const db = A.debugState();
+  assert.equal(db.musicMode, 'boss', 'guardian fight selects the boss score');
+  assert.ok(Math.abs(db.bossLevel - 0.88) < 1e-9, 'boss level escalates as the guardian heart drains (0.6+0.4*(1-hp/max))');
+  A.play('alarm'); // plain danger must not displace the boss score
+  nowMs += 8000;
+  A.update(0.3);
+  assert.equal(A.debugState().musicMode, 'boss', 'boss mode outranks the danger window');
+  // the center mimic battle reports through status().phase instead
+  MM.guardianLairs = undefined;
+  MM.centerGuardian = { status: () => ({ phase: 'battle', mimic: { hp: 50, maxHp: 100 } }) };
+  nowMs += 8000;
+  A.update(0.3);
+  const dc = A.debugState();
+  assert.equal(dc.musicMode, 'boss', 'the center mimic battle also selects the boss score');
+  assert.ok(Math.abs(dc.bossLevel - 0.825) < 1e-9, 'mimic escalation follows its heart (0.65+0.35*(1-hp/max))');
+  MM.centerGuardian = undefined;
+  // the music switch silences even an active boss fight
+  MM.guardianLairs = { nearestForTurret: () => ({ raw: { hp: 30, maxHp: 100 } }) };
+  A.setMusicOn(false);
+  nowMs += 8000;
+  assert.equal(oscGrowthAfterUpdate(), 0, 'music off silences even a boss fight');
+  A.setMusicOn(true);
+  MM.guardianLairs = undefined;
+  nowMs += 30000; // let the alarm danger window lapse before the next sections
+  A.update(0.3);
 }
 
 // ---------------- movement foley -------------------------------------------
