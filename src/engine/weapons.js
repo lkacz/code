@@ -419,7 +419,10 @@ import { reactions as REACTIONS } from './reactions.js';
   }
   function specialAttackRoll(){
     const lucky=Math.random()<SPECIAL_LUCKY_CHANCE;
-    return {mult:lucky?4:2,lucky};
+    // social facilitation: an active ghost audience sharpens every hero attack
+    // that rolls here (melee, arrows, charged streams) — neutral 1.0 when solo
+    const social=(MM.socialBoost && Number.isFinite(MM.socialBoost.dmg) && MM.socialBoost.dmg>0) ? MM.socialBoost.dmg : 1;
+    return {mult:(lucky?4:2)*social,lucky};
   }
   function collectLooseTarget(tx,ty){
     try{

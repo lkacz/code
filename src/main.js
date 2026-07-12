@@ -88,6 +88,13 @@ import './engine/ui.js';
 import './inventory_ui.js';
 // Bind global MM into a module-scoped constant for convenience
 const MM = window.MM;
+// Social facilitation (ghost_host.js maintains MM.socialBoost from ACTIVE
+// watchers): neutral 1.0 in solo play, so every formula below can multiply it in.
+function socialBoostMult(part){
+	const b=MM.socialBoost;
+	const v=b && b[part];
+	return (Number.isFinite(v) && v>0) ? v : 1;
+}
 // Game init
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d', {alpha:false});
@@ -8719,7 +8726,7 @@ function physics(dt){
 	// Combine all movement multipliers, including dropdown, turbo and water drag.
 	// Ground material affects traction: mud slows, snow slides, ice slides hard.
 	const waterMoveMult = (inWater && !ridingFloatingBoat) ? heroWaterMoveSpeedMult() : 1;
-	const moveMult = ((MM.activeModifiers && MM.activeModifiers.moveSpeedMult)||1) * (window.playerSpeedMultiplier || 2) * turboSpeedMult * waterMoveMult * heroChillMoveMult() * heroSandMoveMult();
+	const moveMult = ((MM.activeModifiers && MM.activeModifiers.moveSpeedMult)||1) * (window.playerSpeedMultiplier || 2) * turboSpeedMult * waterMoveMult * heroChillMoveMult() * heroSandMoveMult() * socialBoostMult('move');
 	if(TERRAIN_TRAPS && TERRAIN_TRAPS.stepEntity) TERRAIN_TRAPS.stepEntity(player,getTile,setTile,{kind:'hero'});
 	const groundTile = groundTileUnderPlayer();
 	const groundTraction = surfaceTraction(groundTile);
@@ -8889,7 +8896,8 @@ function physics(dt){
 	if(jumpBufferT>0){
 		const maxAir = (MM.activeModifiers && typeof MM.activeModifiers.maxAirJumps==='number')? MM.activeModifiers.maxAirJumps : 0; // additional beyond ground jump
 		const totalAllowed = 1 + maxAir; // total sequential presses allowed while airborne
-		const jumpMult = ((MM.activeModifiers && MM.activeModifiers.jumpPowerMult)||1) * (window.playerSpeedMultiplier || 2) * turboJumpMult;
+		// social boost stores the HEIGHT multiplier; velocity gets its square root (h ∝ v²)
+		const jumpMult = ((MM.activeModifiers && MM.activeModifiers.jumpPowerMult)||1) * (window.playerSpeedMultiplier || 2) * turboJumpMult * Math.sqrt(socialBoostMult('jump'));
 		if(ladderContact && keys[' ']){
 			player.vy=MOVE.JUMP * jumpMult * 0.78; player.onGround=false; player.jumpCount=1; jumpBufferT=0; coyoteT=0; ladderJumped=true; ladderReleaseT=0.2;
 		}
@@ -13941,7 +13949,62 @@ MM.ghostBridge={
 	snapshotInfra:()=>((WORLD&&WORLD.snapshotInfrastructure)?WORLD.snapshotInfrastructure():null),
 	restoreInfra:(d)=>{ try{ if(WORLD&&WORLD.restoreInfrastructure) WORLD.restoreInfrastructure(d); }catch(e){} },
 	snapshotConstructionBackground:()=>((WORLD&&WORLD.snapshotConstructionBackground)?WORLD.snapshotConstructionBackground():null),
-	restoreConstructionBackground:(d)=>{ try{ if(WORLD&&WORLD.restoreConstructionBackground) WORLD.restoreConstructionBackground(d); }catch(e){} }
+	restoreConstructionBackground:(d)=>{ try{ if(WORLD&&WORLD.restoreConstructionBackground) WORLD.restoreConstructionBackground(d); }catch(e){} },
+	// Watcher powers land on CREATURES ONLY — a spectator can never edit a tile,
+	// so no ghost power can reshape, bury or grief the host's world.
+	ghostPower:(kind,x,y,rule)=>{
+		if(!MOBS || !Number.isFinite(x) || !Number.isFinite(y)) return 0;
+		const r=Math.max(1,Math.min(8,Number(rule&&rule.r)||4));
+		let hits=0;
+		try{
+			if(kind==='frost'){
+				hits=MOBS.chillRadius ? MOBS.chillRadius(x,y,r,{dur:4,source:'ghost'}) : 0;
+				if(MOBS.statusRadius) MOBS.statusRadius(x,y,r,'frozen',{dur:1.5,source:'ghost'});
+			} else if(kind==='smite'){
+				const dmg=Math.max(1,Math.min(30,Number(rule&&rule.dmg)||10));
+				hits=MOBS.blastRadius ? MOBS.blastRadius(x,y,r,dmg,{source:'ghost',kind:'shock'}) : 0;
+			} else if(kind==='banish'){
+				hits=MOBS.statusRadius ? MOBS.statusRadius(x,y,r,'panic',{dur:5,source:'ghost'}) : 0;
+			}
+		}catch(e){ return 0; }
+		try{ if(PARTICLES && PARTICLES.spawnBurst) PARTICLES.spawnBurst(x,y,kind==='smite'?'legendary':'epic',{}); }catch(e){}
+		try{ if(AUDIO && AUDIO.play) AUDIO.play(kind==='frost'?'freeze':kind==='smite'?'chainShock':'roar'); }catch(e){}
+		return hits;
+	},
+	// Assistant delegate: may only run recipes the hero can already afford and
+	// equip gear the hero already owns. No resource creation, no world edits.
+	ghostAssistState:()=>{
+		const recipes=RECIPES.filter(r=>craftRecipeVisible(r) && !recipeDone(r)).slice(0,60).map(r=>({
+			id:r.id, name:r.name||r.id, can:!!canCraft(r),
+			cost:Object.keys(r.cost||{}).map(k=>({k, need:r.cost[k], have:Math.floor(Number(inv[k])||0)}))
+		}));
+		const items=(MM.inventory && MM.inventory.bagItems) ? MM.inventory.bagItems().slice(0,80).map(i=>({
+			id:i.id, name:i.name||i.id, kind:i.kind, tier:i.tier||'common',
+			equipped:!!(MM.inventory.isEquipped && MM.inventory.isEquipped(i.id))
+		})) : [];
+		return {recipes, items, hp:Math.round(player.hp), maxHp:Math.round(player.maxHp)};
+	},
+	ghostAssist:(action,id)=>{
+		if(action==='craft'){
+			const r=RECIPES.find(x=>x.id===id);
+			if(!r) return {ok:false, reason:'unknown'};
+			if(!craftRecipeVisible(r)) return {ok:false, reason:'locked'};
+			if(!canCraft(r)) return {ok:false, reason:'cost'};
+			doCraft(r,1);
+			return {ok:true, label:'wykonał '+(r.name||r.id)};
+		}
+		if(action==='equip' || action==='unequip'){
+			if(!MM.inventory) return {ok:false, reason:'noinv'};
+			const it=MM.inventory.getItem ? MM.inventory.getItem(id) : null;
+			if(!it) return {ok:false, reason:'unknown'};
+			if(action==='equip'){ MM.inventory.equip(id); return {ok:true, label:'założył '+(it.name||id)}; }
+			const slot=MM.inventory.slotForKind ? MM.inventory.slotForKind(it.kind) : null;
+			if(!slot) return {ok:false, reason:'noslot'};
+			MM.inventory.unequip(slot.id||slot);
+			return {ok:true, label:'zdjął '+(it.name||id)};
+		}
+		return {ok:false, reason:'action'};
+	}
 };
 if(MM.ghostMode){ try{ GHOST_CLIENT.boot(MM.ghostBridge); }catch(e){ console.warn('ghost client boot failed',e); } }
 else { try{ GHOST_HOST.wire(MM.ghostBridge); }catch(e){ console.warn('ghost host wire failed',e); } }

@@ -134,6 +134,66 @@ const two = new Uint8Array([...NET.mqttEncodePublish('a', '1'), ...NET.mqttEncod
 const out4 = dec4.push(two);
 assert.deepEqual(out4.map(p => p.topic), ['a', 'b'], 'coalesced frames split into packets');
 
+// --- social facilitation rules ------------------------------------------------------
+assert.equal(NET.SOCIAL_RULES.IDLE_MS, 30000, 'watcher counts as active for 30 s after real input');
+let b = NET.socialBoosts(0);
+assert.deepEqual([b.xp, b.move, b.jump, b.dmg], [1, 1, 1, 1], 'no active audience = fully neutral');
+b = NET.socialBoosts(3);
+assert.equal(b.xp, 1.10, 'any active audience grants the flat +10% XP');
+assert.ok(Math.abs(b.move - 1.03) < 1e-9 && Math.abs(b.jump - 1.03) < 1e-9 && Math.abs(b.dmg - 1.03) < 1e-9, '+1% per active viewer on move/jump/dmg');
+assert.equal(NET.socialBoosts(-5).move, 1, 'negative counts clamp to neutral');
+
+// --- ghost dread: creatures flee an ACTIVE spirit ---------------------------------------
+assert.equal(NET.dreadAt([], 0, 0), null, 'no spirits = no dread (solo play is untouched)');
+assert.equal(NET.dreadAt([{ x: 100, y: 0 }], 0, 0), null, 'a distant spirit does not haunt');
+let d = NET.dreadAt([{ x: 5, y: 0 }], 8, 0);
+assert.ok(d && d.awayX === 1, 'a creature right of the spirit flees right');
+assert.ok(Math.abs(d.dist - 3) < 1e-9, 'distance measured');
+assert.ok(d.power > 0 && d.power < 1, 'dread power falls off with distance');
+d = NET.dreadAt([{ x: 5, y: 0 }], 2, 0);
+assert.equal(d.awayX, -1, 'a creature left of the spirit flees left');
+d = NET.dreadAt([{ x: 0, y: 0 }, { x: 7, y: 0 }], 6, 0);
+assert.ok(Math.abs(d.x - 7) < 1e-9, 'the NEAREST spirit wins');
+assert.ok(NET.dreadAt([{ x: 0, y: 0 }], 0.2, 0).power > 0.9, 'a spirit on top of a creature is maximally terrifying');
+assert.equal(NET.dreadAt([{ x: NaN, y: 0 }], 0, 0), null, 'garbage spirit coords are ignored');
+
+// --- watcher powers: charge is EARNED by activity ------------------------------------------
+assert.equal(NET.chargeAfter(0, 10, false), 0, 'an idle watcher earns nothing');
+assert.equal(NET.chargeAfter(0, 10, true), 10, 'an active watcher earns 1/s');
+assert.equal(NET.chargeAfter(NET.POWER_CHARGE.MAX, 100, true), NET.POWER_CHARGE.MAX, 'charge is capped');
+assert.equal(NET.chargeAfter(50, 5, false), 50, 'idling keeps (but does not grow) charge');
+assert.ok(NET.validPowerKind('frost') && NET.validPowerKind('smite') && NET.validPowerKind('banish'), 'the three powers exist');
+assert.ok(!NET.validPowerKind('nuke') && !NET.validPowerKind('__proto__'), 'unknown/prototype powers rejected');
+for(const k of Object.keys(NET.POWER_RULES)){
+	const r = NET.POWER_RULES[k];
+	assert.ok(r.cost > 0 && r.cd > 0 && r.r > 0, k + ' has a cost, a cooldown and a radius');
+	assert.ok(r.cost <= NET.POWER_CHARGE.MAX, k + ' is affordable within a full charge bar');
+}
+assert.ok(NET.POWER_RULES.smite.cost > NET.POWER_RULES.banish.cost, 'damage costs more than a scare');
+
+// --- assistant actions -----------------------------------------------------------------------
+assert.deepEqual(NET.ASSIST_ACTIONS, ['craft', 'equip', 'unequip'], 'the assistant may craft and manage gear — nothing else');
+assert.ok(!NET.validAssistAction('setTile') && !NET.validAssistAction('teleport'), 'world-editing actions are not assistant actions');
+
+// --- permission ladder & avatars ------------------------------------------------------
+assert.deepEqual(NET.PERMISSION_MODES, ['watch', 'chat', 'full'], 'the three-mode ladder');
+assert.ok(NET.validPermissionMode('watch') && !NET.validPermissionMode('admin'), 'mode validation');
+assert.ok(NET.AVATARS.length >= 6 && NET.validAvatar('duszek') && !NET.validAvatar('<img>'), 'avatar registry validates');
+
+// --- chat profanity filter ----------------------------------------------------------------
+assert.deepEqual(NET.filterChat('   '), { text: '', filtered: false, empty: true }, 'blank chat is empty');
+assert.equal(NET.filterChat('dobra robota!').text, 'dobra robota!', 'clean text passes untouched');
+assert.equal(NET.filterChat('dobra robota!').filtered, false, 'clean text is not flagged');
+let f = NET.filterChat('ale kurwa mać');
+assert.ok(f.filtered && !/kurwa/i.test(f.text) && /\*/.test(f.text), 'PL vulgarity masked');
+f = NET.filterChat('what the FUCK');
+assert.ok(f.filtered && !/fuck/i.test(f.text), 'EN vulgarity masked case-insensitively');
+assert.ok(NET.filterChat('kurwiszcze').filtered, 'stem inside a longer token caught');
+assert.ok(NET.filterChat('sh1t happens').filtered, 'leetspeak folded before matching');
+assert.ok(NET.filterChat('skurwysyństwo').filtered, 'diacritic-folded compound caught');
+assert.ok(NET.filterChat('bez kurew!').filtered, 'inflected PL form caught');
+assert.equal(NET.filterChat('x'.repeat(500)).text.length <= 90, true, 'chat length is capped');
+
 // --- broker allowlist stays in lockstep with the CSP ------------------------------------
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(html);
@@ -187,8 +247,8 @@ assert.ok(/function notifyTileChanged\(x,y,old,v\)\{\s*try\{ if\(MM\.ghostHostTi
 const clientSrc = readFileSync(new URL('../src/engine/ghost_client.js', import.meta.url), 'utf8');
 assert.ok(/MMR\.ghostMode = true;/.test(clientSrc), 'client stamps MM.ghostMode at import time');
 assert.ok(/NET\.parseWatch\(location\.search\)/.test(clientSrc), 'watch param comes from the URL');
-assert.ok(!/localStorage\.setItem\((?!'mm_ghost_name_v1')/.test(clientSrc), 'client persists nothing but its display name');
-assert.ok(/Storage\.prototype\.setItem = function/.test(clientSrc) && /allow = new Set\(\['mm_ghost_name_v1'\]\)/.test(clientSrc),
+assert.ok(!/localStorage\.setItem\((?!'mm_ghost_(name|avatar)_v1')/.test(clientSrc), 'client persists nothing but its display name and avatar');
+assert.ok(/Storage\.prototype\.setItem = function/.test(clientSrc) && /allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1'\]\)/.test(clientSrc),
 	'ghost mode locks down ALL localStorage writes (side stores like dynamic loot must not leak into the watcher’s own world)');
 // hardening pins (post-review): hostile hosts, transport races, throttling floods
 assert.ok(/function esc\(s\)/.test(clientSrc) && /esc\(hostName\)/.test(clientSrc),
@@ -241,5 +301,89 @@ assert.ok(/pong-timeout/.test(netSrc) && /Date\.now\(\) - lastPong > 80000/.test
 	'a silently dead MQTT socket is detected by the pong watchdog');
 assert.ok(/conn\.onMessage\(\{ t: 'connLost' \}\)/.test(netSrc),
 	'a dropped DataChannel surfaces as connLost (reconnectable), not hostGone (final)');
+
+// --- social facilitation integration pins ---------------------------------------------------
+assert.ok(/const socialMult=\(MM\.socialBoost && Number\.isFinite\(MM\.socialBoost\.xp\)\) \? MM\.socialBoost\.xp : 1;/.test(mobsSrc)
+	&& /base\*fatigue\.mult\*specialMult\*socialMult/.test(mobsSrc),
+	'mob XP multiplies the social boost (neutral 1 in solo/Node)');
+assert.ok(/function socialBoostMult\(part\)/.test(mainSrc), 'main.js social boost reader exists');
+assert.ok(/heroSandMoveMult\(\) \* socialBoostMult\('move'\)/.test(mainSrc), 'movement speed multiplies the social boost');
+assert.ok(/turboJumpMult \* Math\.sqrt\(socialBoostMult\('jump'\)\)/.test(mainSrc), 'jump velocity takes the square root of the HEIGHT boost');
+const weaponsSrc = readFileSync(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
+assert.ok(/mult:\(lucky\?4:2\)\*social,lucky/.test(weaponsSrc), 'hero attack rolls multiply the social boost');
+assert.ok(/if\(MMR && !MMR\.socialBoost\) MMR\.socialBoost = \{ viewers: 0, active: 0, xp: 1, move: 1, jump: 1, dmg: 1 \};/.test(hostSrc),
+	'MM.socialBoost is neutral from the first frame');
+assert.ok(/if\(pl\.act\) markActive\(entry\);/.test(hostSrc) && /ACT_POSE_TTL_MS/.test(hostSrc),
+	'watcher activity is vouched by poses and times out fast (anti fake-watcher)');
+assert.ok(/NET\.socialBoosts\(active\)/.test(hostSrc), 'the host derives boosts from ACTIVE watchers only');
+assert.ok(/lastInputAt = nowMs\(\)/.test(clientSrc) && /nowMs\(\) - lastInputAt < NET\.SOCIAL_RULES\.IDLE_MS/.test(clientSrc),
+	'the client derives its active flag from real input recency');
+
+// --- moderation pins ---------------------------------------------------------------------------
+assert.ok(/s\.banned\.has\(entry\.gid\)/.test(hostSrc) && /function banViewer\(gid\)/.test(hostSrc),
+	'banned ghosts are rejected at hello and evictable live');
+assert.ok(/entry\.mode !== 'full'\)\{ entry\.peer\.send\(\{ t: 'buffAck', kind: pl\.kind, ok: false, waitMs: 0, reason: 'perm' \}\)/.test(hostSrc),
+	'buffs require the full permission mode');
+assert.ok(/entry\.mode !== 'chat' && entry\.mode !== 'full'\)\) return;/.test(hostSrc), 'chat requires at least the chat mode');
+assert.ok(/CHAT_MIN_MS/.test(hostSrc) && /NET\.filterChat\(pl\.text\)/.test(hostSrc), 'host chat is rate-limited and profanity-filtered');
+assert.ok(/function setViewerMode\(gid, mode\)/.test(hostSrc), 'per-viewer permission modes are host-settable');
+assert.ok(/pl\.t === 'banned'/.test(clientSrc) && /pl\.t === 'perm'/.test(clientSrc), 'client honors ban and permission downgrades');
+assert.ok(/mode === 'watch'\) return false;/.test(clientSrc), 'watch-only clients refuse to send chat locally too');
+assert.ok(/NET\.filterChat\(pl\.text\)\.text; \/\/ defense in depth/.test(clientSrc), 'incoming chat is re-filtered client-side');
+
+// --- spirit look contract: small and translucent, never dominating the stage ---------------------
+assert.ok(/SPIRIT_R = 0\.16/.test(hostSrc), 'spirit body radius stays ≤1/3 of the hero frame');
+assert.ok(/SPIRIT_ALPHA = 0\.5/.test(hostSrc), 'spirits render at ~50% opacity');
+assert.ok(/AVATAR_PAINTERS = \{/.test(hostSrc), 'procedural avatar painters exist');
+for(const a of NET.AVATARS) assert.ok(new RegExp('\\b' + a + '\\(ctx, r\\)').test(hostSrc), 'painter covers avatar ' + a);
+assert.ok(/entry\.camPos\.x \+= \(entry\.cam\.x - entry\.camPos\.x\) \* ease;/.test(hostSrc), 'host spirits glide (interpolated), not teleport');
+assert.ok(/g\.x \+= \(g\.tx - g\.x\) \* ease;/.test(clientSrc), 'client spirits glide too');
+assert.ok(/POSE_MS = 150/.test(clientSrc) && /presence: 200/.test(hostSrc), 'pose/presence cadences are tight enough for smooth spirits');
+assert.ok(/painter\(ctx, TILE, c\.x, c\.y, ghostName\(\), t, true, avatar, isActive\(\), selfChat\);/.test(clientSrc),
+	'the watcher sees their own flying avatar at the camera');
+
+// --- ghost dread integration: four creature systems flee the spirits -------------------------------
+assert.ok(/if\(MMR && !MMR\.ghostAura\)/.test(hostSrc) && /MMR\.ghostDreadAt = function/.test(hostSrc),
+	'the host publishes the aura + the single dread lookup every creature system calls');
+assert.ok(/if\(!e\.hello \|\| e\.actUntil <= t\) continue;[\s\S]*if\(e\.cam\) spirits\.push/.test(hostSrc),
+	'ONLY active watchers haunt the world (an idle tab is furniture, not a phantom)');
+assert.ok(/function applyGhostDread\(m,dt\)/.test(mobsSrc) && /applyGhostDread\(m,dt\);/.test(mobsSrc), 'mobs flee spirits');
+assert.ok(/!hasStatus\(m,'blind'\) && !isGhostSpooked\(m\)/.test(mobsSrc), 'a spooked mob stops being aggressive');
+const invSrc = readFileSync(new URL('../src/engine/invasions.js', import.meta.url), 'utf8');
+assert.ok(/const dread = MM\.ghostDreadAt \? MM\.ghostDreadAt\(a\.x, a\.y\) : null;/.test(invSrc), 'invasion aliens consult the dread');
+assert.ok(/const desired = dread \? dread\.awayX \* speed \* 1\.2 :/.test(invSrc), 'a spooked alien squad routs away from the spirit');
+assert.ok(/if\(dread\) a\.attackCd = Math\.max\(a\.attackCd, 0\.6\);/.test(invSrc), 'routed aliens hold their fire');
+const lairSrc = readFileSync(new URL('../src/engine/guardian_lairs.js', import.meta.url), 'utf8');
+assert.ok(/const dread = MM\.ghostDreadAt \? MM\.ghostDreadAt\(e\.x, e\.y\) : null;/.test(lairSrc), 'guardian sidekicks consult the dread');
+assert.ok(/function updateSidekick\(e,p,getTile,setTile,dt,L\)[\s\S]{0,600}if\(dread\)\{[\s\S]{0,300}return;/.test(lairSrc),
+	'a spooked sidekick retreats instead of attacking (and the BOSS is deliberately immune)');
+const compSrc = readFileSync(new URL('../src/engine/companions.js', import.meta.url), 'utf8');
+assert.ok(/function updateMolekinAction[\s\S]{0,400}MM\.ghostDreadAt\(c\.x,c\.y\)/.test(compSrc), 'kretoludzie (molekin) consult the dread');
+assert.ok(/c\.laserCd=Math\.max\(c\.laserCd\|\|0,0\.6\);[\s\S]{0,80}return true;/.test(compSrc), 'a spooked molekin holds its fire and scatters');
+
+// --- watcher powers: host-authoritative, creatures-only ---------------------------------------------
+assert.ok(/function handlePower\(s, entry, pl\)/.test(hostSrc), 'the host owns power resolution');
+assert.ok(/if\(entry\.mode !== 'full'\)\{ entry\.peer\.send\(\{ t: 'powerAck', kind, ok: false, reason: 'perm'/.test(hostSrc), 'powers need the full permission mode');
+assert.ok(/if\(entry\.charge < rule\.cost\)/.test(hostSrc) && /entry\.charge -= rule\.cost;/.test(hostSrc), 'powers cost earned charge');
+assert.ok(/const hits = bridge\.ghostPower\(kind, entry\.cam\.x, entry\.cam\.y, rule\);/.test(hostSrc),
+	'a power strikes at the SPIRIT position the host tracked — never at client-chosen coordinates');
+assert.ok(/function chargeTick\(s, t\)/.test(hostSrc) && /NET\.chargeAfter\(entry\.charge, dt, wasActive\)/.test(hostSrc),
+	'charge accrues only while the watcher is active');
+assert.ok(/ghostPower:\(kind,x,y,rule\)=>\{/.test(mainSrc), 'the bridge exposes ghostPower');
+assert.ok(!/ghostPower[\s\S]{0,900}setTile\(/.test(mainSrc), 'NO ghost power may edit a tile — creatures only, so a watcher can never grief the world');
+assert.ok(/MOBS\.chillRadius/.test(mainSrc) && /MOBS\.blastRadius/.test(mainSrc) && /MOBS\.statusRadius\(x,y,r,'panic'/.test(mainSrc),
+	'frost/smite/banish route through the existing mob AoE APIs');
+
+// --- assistant: a delegate, not a second player --------------------------------------------------------
+assert.ok(/function setAssistant\(gid, on\)/.test(hostSrc), 'the host appoints the assistant');
+assert.ok(/if\(on && entry\.mode !== 'full'\) return false;/.test(hostSrc), 'an assistant must hold full permissions');
+assert.ok(/\} else if\(on && entry\.assistant\)\{/.test(hostSrc), 'exactly one assistant at a time — the seat is handed over');
+assert.ok(/if\(!entry\.assistant \|\| entry\.mode !== 'full'\)\{ entry\.peer\.send\(\{ t: 'assistAck', ok: false, reason: 'perm' \}\); return; \}/.test(hostSrc),
+	'non-assistants cannot run assistant actions');
+assert.ok(/ghostAssistState:\(\)=>\{/.test(mainSrc) && /ghostAssist:\(action,id\)=>\{/.test(mainSrc), 'the bridge exposes the assistant surface');
+assert.ok(/if\(!canCraft\(r\)\) return \{ok:false, reason:'cost'\};/.test(mainSrc), 'the assistant cannot craft what the hero cannot afford');
+assert.ok(/if\(!craftRecipeVisible\(r\)\) return \{ok:false, reason:'locked'\};/.test(mainSrc), 'the assistant cannot craft undiscovered recipes');
+assert.ok(/sendAssist\('craft', r\.id\)/.test(clientSrc) && /sendAssist\(i\.equipped \? 'unequip' : 'equip', i\.id\)/.test(clientSrc),
+	'the assistant workbench drives craft/equip/unequip only');
 
 console.log('ghost-sim: all assertions passed');

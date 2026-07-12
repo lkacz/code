@@ -127,8 +127,8 @@ assert.match(mainSource, /function turboKeyHeld\(\)\{ return !!\(keys\['shift'\]
 assert.match(mainSource, /const ridingFloatingBoat = !!\(heroBoatNow && heroBoatNow\.inWater && !heroBoatNow\.grounded\);/, 'water movement drag ignores floating boats');
 assert.match(mainSource, /const boatPrevX=player\.x;\s+const boatPrevY=player\.y;[\s\S]*BOATS\.collideHero\(player, dt\)[\s\S]*if\(Math\.abs\(player\.x-boatPrevX\)>1e-6\) collide\('x',boatPrevX\);[\s\S]*if\(Math\.abs\(player\.y-boatPrevY\)>1e-6\) collide\('y',boatPrevY\);/, 'boat-carried hero movement sweeps both axes through terrain');
 assert.match(mainSource, /const waterMoveMult = \(inWater && !ridingFloatingBoat\) \? heroWaterMoveSpeedMult\(\) : 1;/, 'open-water movement uses the swim-speed stat');
-assert.match(mainSource, /moveMult = [^;]*\* turboSpeedMult \* waterMoveMult \* heroChillMoveMult\(\) \* heroSandMoveMult\(\);/, 'turbo, water, chill and sandstorm multipliers feed horizontal movement together');
-assert.match(mainSource, /jumpMult = [^;]*\* turboJumpMult;/, 'turbo jump feeds jump impulse');
+assert.match(mainSource, /moveMult = [^;]*\* turboSpeedMult \* waterMoveMult \* heroChillMoveMult\(\) \* heroSandMoveMult\(\) \* socialBoostMult\('move'\);/, 'turbo, water, chill, sandstorm and ghost-audience multipliers feed horizontal movement together');
+assert.match(mainSource, /jumpMult = [^;]*\* turboJumpMult \* Math\.sqrt\(socialBoostMult\('jump'\)\);/, 'turbo jump and the ghost-audience height boost feed jump impulse');
 assert.match(mainSource, /spendTurboEnergy\(dt\)/, 'turbo consumes hero energy while active');
 assert.match(mainSource, /turboRechargePauseT=Math\.max\(turboRechargePauseT,0\.18\)/, 'turbo spending briefly blocks passive recharge so cost is visible');
 assert.match(mainSource, /if\(!turboRechargeBlocked && DYNAMO && typeof DYNAMO\.absorbNear==='function'/, 'passive dynamo recharge does not immediately erase turbo spending');

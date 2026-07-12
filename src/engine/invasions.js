@@ -2653,7 +2653,15 @@ const invasions = (function(){
       a.buriedT = 0;
     }
     const speed = (profile.baseSpeed + Math.min(1.4, threat * 0.055) + grade * 0.08) * (Number(a.speedMult) || 1) * (intent ? (intent.speedMult || 1) : 1);
-    const desired = intent ? intent.moveX * speed : 0;
+    // Ghost dread (ghost_host.js publishes MM.ghostAura from ACTIVE watchers): not
+    // even a landing party keeps its nerve with a phantom overhead — the squad
+    // breaks formation and runs, and the rout gate below holds their fire.
+    const dread = MM.ghostDreadAt ? MM.ghostDreadAt(a.x, a.y) : null;
+    if(dread){
+      a._ghostSpookUntil = (typeof performance!=='undefined' ? performance.now() : Date.now()) + 900;
+      a.state = 'rout';
+    }
+    const desired = dread ? dread.awayX * speed * 1.2 : (intent ? intent.moveX * speed : 0);
     // Weak air control: jump-kick impulses must carry across gaps instead of
     // decaying back to walk speed mid-flight.
     a.vx += (desired - (a.vx || 0)) * Math.min(1, dt * (a.onGround ? 5.8 : 1.5));
@@ -2687,7 +2695,8 @@ const invasions = (function(){
       }
     }
     a.attackCd = Math.max(0, (a.attackCd || 0) - dt);
-    if(dist < profile.meleeRange && Math.abs(dy) < 1.0 && a.attackCd <= 0.15){
+    if(dread) a.attackCd = Math.max(a.attackCd, 0.6); // routed troops don't press the attack
+    if(!dread && dist < profile.meleeRange && Math.abs(dy) < 1.0 && a.attackCd <= 0.15){
       const cause = isMolekinTeam(team) ? 'molekin_invasion' : 'alien_invasion';
       const baseDmg = isMolekinTeam(team) ? 4 : 3;
       try{ if(root.damageHero) root.damageHero(Math.max(1,Math.round(baseDmg * (Number(a.damageMult) || 1))),{srcX:a.x,srcY:a.y,kb:isMolekinTeam(team)?2.1:2.4,invulMs:500,cause}); }catch(e){}

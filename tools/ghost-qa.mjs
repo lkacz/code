@@ -85,6 +85,10 @@ class Tab {
 		await writeFile(path, Buffer.from(s.data, 'base64'));
 		console.log('wrote', path);
 	}
+	// A backgrounded tab has its rAF frozen, so its GAME SIM stops (the ghost
+	// stream survives on the companion pump, but mobs/physics do not step). Scenes
+	// that need the host world actually running must foreground the host first.
+	async front(){ await this.send('Page.bringToFront'); await sleep(400); }
 	close(){ try{ this.ws.close(); }catch(e){ /* fine */ } }
 }
 
@@ -171,7 +175,7 @@ async function main(){
 		// the snapshot must carry the marker tile and the hero position
 		const snapCheck = await ghost.eval(`(()=>{
 			const p=window.player;
-			return { tile: MM.ghostBridge.getTile(${marker.tx},${marker.ty}), dx: Math.abs(p.x-${marker.px}), ghostMode: !!MM.ghostMode,
+			return { tile: MM.ghostBridge.getTile(${marker.tx},${marker.ty}), dx: Math.abs(p.x-(${marker.px})), ghostMode: !!MM.ghostMode,
 				veilHidden: (document.getElementById('ghostVeil')||{style:{display:'none'}}).style.display==='none',
 				bar: !!document.getElementById('ghostBar'), hudHidden: getComputedStyle(document.getElementById('hotbarWrap')).display==='none' };
 		})()`);
@@ -179,6 +183,11 @@ async function main(){
 		if(snapCheck.tile !== marker.stone) throw new Error('marker tile missing after snapshot join');
 		if(!(snapCheck.dx < 1.5)) throw new Error('hero replica far from host hero after join: dx=' + snapCheck.dx);
 		if(!snapCheck.veilHidden || !snapCheck.bar || !snapCheck.hudHidden) throw new Error('ghost UI contract broken: ' + JSON.stringify(snapCheck));
+		// before ANY real watcher input, the audience must not boost the hero
+		await sleep(800); // let a couple of (inactive) poses land
+		const idle = await host.eval(`MM.ghostHost.metrics()`);
+		if(idle.activeGhosts !== 0 || (idle.boost && idle.boost.move !== 1)) throw new Error('idle watcher wrongly boosts: ' + JSON.stringify({ a: idle.activeGhosts, b: idle.boost }));
+		console.log('idle watcher: no boost (ok)');
 
 		// --- Scene 3: live tile diff (into the ground; toggled to whatever the cell
 		// is NOT, so a naturally-stone cell can't turn the write into a no-op) --------
@@ -232,13 +241,115 @@ async function main(){
 		const ghostsSeen = await ghost.eval('MM.ghostClient.metrics().others');
 		console.log('presence: host ghosts=1, ghost sees others=' + ghostsSeen);
 
-		// --- Scene 8: screenshots ------------------------------------------------------------------
-		await ghost.eval(`MM.ghostClient.setFollow(true)`);
+		// --- Scene 8: social facilitation — ACTIVE watchers strengthen the hero ---------------------
+		// (the blessing above already counted as real input; noteInput re-vouches)
+		await ghost.eval(`MM.ghostClient.noteInput()`);
+		await host.poll(`MM.ghostHost.metrics().activeGhosts`, v => v === 1, 'active watcher recognized', 30, 250);
+		const boosted = await host.eval(`MM.ghostHost.metrics().boost`);
+		if(!(Math.abs(boosted.move - 1.01) < 1e-9 && boosted.xp === 1.10 && Math.abs(boosted.dmg - 1.01) < 1e-9)) throw new Error('boost math off: ' + JSON.stringify(boosted));
+		const applied = await host.eval(`MM.socialBoost.move`);
+		if(Math.abs(applied - 1.01) > 1e-9) throw new Error('MM.socialBoost not published to the engine: ' + applied);
+		console.log('social boost: ok (active=1 → move/jump/dmg ×1.01, xp ×1.10)');
+
+		// --- Scene 9: chat — filtered, relayed, rendered ----------------------------------------------
+		const chatSent = await ghost.eval(`MM.ghostClient.sendChat('ale kurwa super gra!')`);
+		if(!chatSent) throw new Error('chat refused despite full permissions');
+		await host.poll(`document.getElementById('messages').textContent`, v => v.includes('💬') && !/kurwa/i.test(v), 'host sees the filtered chat toast', 30, 250);
+		const chats = await host.eval(`MM.ghostHost.metrics().stats.chats`);
+		if(chats !== 1) throw new Error('host chat counter expected 1, got ' + chats);
+		const spamBlocked = await ghost.eval(`(async()=>{ return MM.ghostClient.sendChat('spam1') && (MM.ghostHost, true); })()`);
+		void spamBlocked; // rate limit is host-side; counter must not move within the floor
 		await sleep(700);
+		const chats2 = await host.eval(`MM.ghostHost.metrics().stats.chats`);
+		if(chats2 !== 1) throw new Error('host chat rate limit failed: ' + chats2);
+		console.log('chat: ok (profanity masked, rate limit holds)');
+
+		// --- Scene 10: screenshots (avatar + chat bubble in frame) ------------------------------------
+		await ghost.eval(`MM.ghostClient.setAvatar('sowa')`);
+		await ghost.eval(`MM.ghostClient.setFollow(true)`);
+		await sleep(900);
 		await ghost.shot('tools/ghost-qa.png');
 		await host.shot('tools/ghost-qa-host.png');
 
-		// --- Scene 9: transport loss → automatic reconnect ---------------------------------------------
+		// --- Scene 10a: ghost dread — creatures flee an ACTIVE spirit ---------------------------------
+		// The host sim only runs while its tab is foregrounded (rAF), so bring it to
+		// the front: the ghost keeps streaming from its companion pump regardless.
+		// Park the spirit on a mob; it must bolt away and stop being aggressive.
+		await host.front();
+		// a land mob near the hero (aquatic/buried species can't demonstrate a land rout)
+		const mobPos = await host.eval(`(()=>{
+			const skip=new Set(['FISH','PIRANHA','EEL','SAND_WORM']);
+			const p=window.player;
+			const l=MM.mobs.serialize().list.filter(m=>!skip.has(m.id) && m.state!=='buried');
+			if(!l.length) return null;
+			l.sort((a,b)=>Math.hypot(a.x-p.x,a.y-p.y)-Math.hypot(b.x-p.x,b.y-p.y));
+			return {id:l[0].id, x:l[0].x, y:l[0].y};
+		})()`);
+		if(!mobPos) throw new Error('no land mob to test dread against');
+		await ghost.eval(`MM.ghostClient.setCam(${mobPos.x}, ${mobPos.y}); MM.ghostClient.noteInput();`);
+		await host.poll(`MM.ghostHost.metrics().aura`, v => v === 1, 'active spirit publishes an aura', 40, 250);
+		// the contract: the creature breaks off (state=flee) and NEVER closes on the spirit
+		const spookProbe = `(()=>{
+			const s=MM.ghostAura.spirits[0];
+			if(!s) return null;
+			const l=MM.mobs.serialize().list.filter(m=>m.id==='${mobPos.id}');
+			let best=null;
+			for(const m of l){ const d=Math.hypot(m.x-s.x, m.y-s.y); if(!best || d<best.d) best={d:+d.toFixed(2), state:m.state}; }
+			return best;
+		})()`;
+		const spooked = await host.poll(spookProbe, v => v && v.state === 'flee', 'the creature breaks off and panics at the spirit', 80, 250);
+		const d0 = spooked.d;
+		await sleep(900);
+		const after = await host.eval(spookProbe);
+		if(!(after && after.d >= d0 - 0.05)) throw new Error('a spooked creature closed on the spirit: ' + d0 + ' → ' + (after && after.d));
+		console.log('dread: ok (' + mobPos.id + ' spooked at ' + d0 + ' tiles, retreated to ' + after.d + ')');
+
+		// --- Scene 10c: watcher powers — earned by activity, land on creatures only ---------------------
+		// Charge accrues at 1/s ONLY while active, so the watcher must keep signalling.
+		const need = await ghost.eval(`MM.ghostNet.POWER_RULES.banish.cost`);
+		const keepActive = setInterval(() => { ghost.eval(`MM.ghostClient.noteInput()`).catch(() => {}); }, 3000);
+		let chargeBefore = 0;
+		try{
+			// poll the CLIENT's mirrored charge: the host ledger runs ~1 s ahead of it,
+			// and the client refuses to cast on a stale balance (as it should)
+			await ghost.poll(`MM.ghostClient.metrics().charge`, v => v >= need, 'watcher earns power charge while active', 200, 500);
+			chargeBefore = await host.eval(`MM.ghostHost.metrics().viewers[0].charge`);
+		} finally { clearInterval(keepActive); }
+		const casted = await ghost.eval(`MM.ghostClient.sendPower('banish')`);
+		if(!casted) throw new Error('power refused despite charge + permissions');
+		await host.poll(`MM.ghostHost.metrics().stats.powers`, v => v === 1, 'host resolved the power', 40, 250);
+		const chargeAfter = await host.eval(`MM.ghostHost.metrics().viewers[0].charge`);
+		if(!(chargeAfter <= chargeBefore - need + 2)) throw new Error('charge was not spent: ' + chargeBefore + ' → ' + chargeAfter);
+		const worldUntouched = await host.eval(`MM.ghostBridge.getTile(${diff.tx},${diff.ty})`);
+		if(worldUntouched !== diff.want) throw new Error('a ghost power edited a tile — powers must be creature-only');
+		console.log('powers: ok (banish cast, charge ' + chargeBefore.toFixed(0) + '→' + chargeAfter.toFixed(0) + ', world tiles untouched)');
+
+		// --- Scene 10d: assistant — crafts and equips for the host ---------------------------------------
+		// The assistant only ever sees what the HOST has discovered, so first give
+		// the host stone and let the discovery sweep unlock the stone-pick recipe.
+		const unlocked = await host.eval(`(()=>{
+			window.inv.stone = 40;
+			window.updateInventoryHud();
+			return MM.ghostBridge.ghostAssistState().recipes.filter(r=>r.id==='pick_stone').map(r=>({id:r.id,can:r.can}));
+		})()`);
+		if(!unlocked.length || !unlocked[0].can) throw new Error('stone pick did not unlock for the host: ' + JSON.stringify(unlocked));
+		const gid0 = (await host.eval(`MM.ghostHost.metrics().viewers`))[0].gid;
+		await host.eval(`MM.ghostHost.setAssistant('${gid0}', true)`);
+		await ghost.poll(`MM.ghostClient.metrics().assistant`, v => v === true, 'client learns it is the assistant', 30, 250);
+		await ghost.poll(`MM.ghostClient.metrics().assistRecipes`, v => v > 0, 'assistant receives the recipe list', 40, 250);
+		const craftOk = await ghost.eval(`MM.ghostClient.sendAssist('craft','pick_stone')`);
+		if(!craftOk) throw new Error('assistant could not send the craft');
+		await host.poll(`!!window.inv.tools.stone`, v => v === true, 'the assistant crafted the stone pick FOR the host', 40, 250);
+		const assists = await host.eval(`MM.ghostHost.metrics().stats.assists`);
+		if(assists !== 1) throw new Error('assist counter expected 1, got ' + assists);
+		// a non-assistant must be refused — revoke, then retry
+		await host.eval(`MM.ghostHost.setAssistant('${gid0}', false)`);
+		await ghost.poll(`MM.ghostClient.metrics().assistant`, v => v === false, 'assistant revoked', 30, 250);
+		const refused = await ghost.eval(`MM.ghostClient.sendAssist('craft','pick_stone')`);
+		if(refused) throw new Error('a revoked assistant still sent an assist action');
+		console.log('assistant: ok (crafted for the host, revocation enforced)');
+
+		// --- Scene 10e: transport loss → automatic reconnect --------------------------------------------
 		// _debugConnLost runs the REAL recovery path: close conn (bye), fresh join,
 		// hello → welcome → fresh snapshot re-bases the world mid-session.
 		await ghost.eval(`MM.ghostClient._debugConnLost()`);
@@ -246,16 +357,29 @@ async function main(){
 		const rec = await ghost.eval(`MM.ghostClient.metrics()`);
 		if(rec.stats.snapsApplied < 2) throw new Error('reconnect did not re-base from a fresh snapshot: ' + JSON.stringify(rec.stats));
 		if(rec.reconnects !== 0) throw new Error('reconnect budget was not refreshed after a successful re-join');
-		// the world must still be coherent after the re-base
 		const postTile = await ghost.eval(`MM.ghostBridge.getTile(${diff.tx},${diff.ty})`);
 		if(postTile !== diff.want) throw new Error('world state diverged across the reconnect');
 		await host.poll(`MM.ghostHost.metrics().ghosts`, v => v === 1, 'host still sees exactly one ghost after reconnect', 40, 250);
 		console.log('reconnect: ok (snaps=' + rec.stats.snapsApplied + ', world coherent)');
 
-		// --- Scene 10: the ghost leaves ----------------------------------------------------------------
-		await ghost.eval(`MM.ghostClient.leave()`);
-		await host.poll(`MM.ghostHost.metrics().ghosts`, v => v === 0, 'viewer count drops on leave', 30, 250);
-		console.log('leave: ok');
+		// --- Scene 11: permission downgrade — watch-only means watch-only ------------------------------
+		const gidOnHost = (await host.eval(`MM.ghostHost.metrics().viewers`))[0].gid;
+		await host.eval(`MM.ghostHost.setViewerMode('${gidOnHost}', 'watch')`);
+		await ghost.poll(`MM.ghostClient.metrics().mode`, v => v === 'watch', 'client learns the downgrade', 30, 250);
+		const buffRefused = await ghost.eval(`MM.ghostClient.sendBuff('cheer')`);
+		const chatRefused = await ghost.eval(`MM.ghostClient.sendChat('halo?')`);
+		if(buffRefused || chatRefused) throw new Error('watch-only client still sent buff/chat');
+		const buffsAfter = await host.eval(`MM.ghostHost.metrics().stats.buffs`);
+		if(buffsAfter !== 1) throw new Error('host accepted influence from a watch-only ghost');
+		console.log('permissions: ok (watch-only blocks chat and buffs on both ends)');
+
+		// --- Scene 12: ban — final on both ends ----------------------------------------------------------
+		await host.eval(`MM.ghostHost.banViewer('${gidOnHost}')`);
+		await ghost.poll(`MM.ghostClient.metrics().state`, v => v === 'ended', 'banned ghost session ends', 30, 250);
+		await host.poll(`MM.ghostHost.metrics().ghosts`, v => v === 0, 'banned ghost removed from the host', 30, 250);
+		const bannedCount = await host.eval(`MM.ghostHost.metrics().banned`);
+		if(bannedCount !== 1) throw new Error('ban list not recorded');
+		console.log('ban: ok');
 
 		if(host.pageErrors.length) console.log('host pageErrors:', host.pageErrors.slice(0, 5).join('\n---\n'));
 		if(ghost.pageErrors.length) console.log('ghost pageErrors:', ghost.pageErrors.slice(0, 5).join('\n---\n'));

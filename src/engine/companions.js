@@ -2995,6 +2995,18 @@ const companions = (function(){
   }
   function updateMolekinAction(c,dt,player,getTile,setTile){
     if(!isMolekin(c)) return false;
+    // Ghost dread (MM.ghostAura, ACTIVE watchers only): the kretoludzie are brave
+    // underground, but a hovering phantom breaks their nerve — they scatter away
+    // from the spirit and hold their fire while spooked.
+    const dread = MM.ghostDreadAt ? MM.ghostDreadAt(c.x,c.y) : null;
+    if(dread){
+      c._ghostSpookUntil=(typeof performance!=='undefined'?performance.now():Date.now())+900;
+      c.vx=dread.awayX*3.0;
+      c.facing=dread.awayX>=0?1:-1;
+      c.laserCd=Math.max(c.laserCd||0,0.6);
+      c.lastTarget=null;
+      return true;
+    }
     if(molekinSupport(c,dt,player)) return true;
     c.laserCd=Math.max(0,(c.laserCd||0)-dt);
     const target=nearestHostile(c,player,getTile);

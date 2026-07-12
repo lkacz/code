@@ -16,8 +16,24 @@
 import { ghostNet as NET } from './ghost_net.js';
 
 const MMR = (typeof window !== 'undefined' && window.MM) ? window.MM : null;
+// Neutral from the first frame: every consumer (mobs XP, movement, weapons)
+// multiplies these in unconditionally, hosting or not.
+if(MMR && !MMR.socialBoost) MMR.socialBoost = { viewers: 0, active: 0, xp: 1, move: 1, jump: 1, dmg: 1 };
+// Ghost dread: the ONE lookup every creature system calls (mobs, invasion aliens,
+// guardian sidekicks, molekin companions). Empty aura = null = zero cost, so solo
+// play and the Node sims never even allocate.
+if(MMR && !MMR.ghostAura) MMR.ghostAura = { spirits: [], r: NET.DREAD.R };
+if(MMR && !MMR.ghostDreadAt){
+	MMR.ghostDreadAt = function(x, y, radius){
+		const aura = MMR.ghostAura;
+		if(!aura || !aura.spirits.length) return null;
+		return NET.dreadAt(aura.spirits, x, y, radius || aura.r);
+	};
+}
 
-const CAD = { hero: 66, mobs: 120, mobsFull: 3000, drops: 1000, seasons: 5000, infra: 1500, presence: 500, reap: 4000, resnap: 10000 };
+const CAD = { hero: 66, mobs: 120, mobsFull: 3000, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 10000 };
+const CHAT_MIN_MS = 4000; // per-peer chat floor
+const ACT_POSE_TTL_MS = 6000; // an "active" pose vouches for the watcher this long
 const TILE_RESYNC_LIMIT = 3000;
 const MAX_GHOSTS = 12; // every join serializes a full snapshot — cap the flood surface
 const SNAP_REQ_MIN_MS = 5000; // per-peer floor for needSnap re-sends
@@ -44,6 +60,7 @@ const ghostHost = (function(){
 			room,
 			name: String(opts.name || 'Gospodarz').slice(0, 24),
 			peers: new Map(),
+			banned: new Set(),
 			watchers: 0,
 			ledger: NET.createCooldownLedger(),
 			pendingTiles: new Map(),
@@ -58,7 +75,8 @@ const ghostHost = (function(){
 			lastHeroSent: null,
 			infraDirty: true,
 			prevRenderHook: null,
-			stats: { tileMsgs: 0, snapshots: 0, buffs: 0 },
+			stats: { tileMsgs: 0, snapshots: 0, buffs: 0, chats: 0, powers: 0, assists: 0 },
+			lastChargeAt: 0,
 			listen: null
 		};
 		s.listen = NET.hostListen(room, { rtc: opts.rtc !== false, onPeer: (peer) => onPeer(s, peer) });
@@ -93,6 +111,7 @@ const ghostHost = (function(){
 			if(session.prevRenderHook) MMR.onTileRenderChanged = session.prevRenderHook;
 		}
 		session = null;
+		updateSocialBoost(); // back to neutral 1.0 — no audience, no facilitation
 		updateUi();
 	}
 
@@ -107,10 +126,16 @@ const ghostHost = (function(){
 	function entries(){ return session ? Array.from(session.peers.values()).filter(e => e.hello) : []; }
 
 	function metrics(){
+		const t = now();
 		return {
 			active: !!session,
 			room: session ? session.room : null,
 			ghosts: entries().length,
+			activeGhosts: session ? entries().filter(e => e.actUntil > t).length : 0,
+			viewers: session ? entries().map(e => ({ gid: e.gid, name: e.name, mode: e.mode, avatar: e.avatar, active: e.actUntil > t, charge: +(e.charge || 0).toFixed(1), assistant: !!e.assistant })) : [],
+			aura: (MMR && MMR.ghostAura) ? MMR.ghostAura.spirits.length : 0,
+			banned: session ? session.banned.size : 0,
+			boost: (MMR && MMR.socialBoost) ? Object.assign({}, MMR.socialBoost) : null,
 			transports: session ? session.listen.transports : null,
 			stats: session ? Object.assign({}, session.stats) : null
 		};
@@ -118,10 +143,16 @@ const ghostHost = (function(){
 
 	// --- peers -----------------------------------------------------------------
 	function onPeer(s, peer){
-		const entry = { peer, gid: peer.id, name: null, cam: null, hello: false, lastSeen: now(), rateT: 0, rateN: 0, lastMobsReq: 0 };
+		const entry = {
+			peer, gid: peer.id, name: null, cam: null, camPos: null, hello: false, lastSeen: now(),
+			rateT: 0, rateN: 0, lastMobsReq: 0, lastChatAt: 0,
+			mode: 'full', avatar: 'duszek', actUntil: 0, lastChat: null,
+			charge: 0, powerCd: {}, assistant: false, lastAssistAt: 0, lastChargeSentAt: 0
+		};
 		s.peers.set(peer, entry);
 		peer.onMessage = (pl) => onPeerMessage(s, entry, pl);
 	}
+	function markActive(entry){ entry.actUntil = now() + ACT_POSE_TTL_MS; }
 	function onPeerMessage(s, entry, pl){
 		if(!pl || typeof pl.t !== 'string') return;
 		const t = now();
@@ -131,6 +162,12 @@ const ghostHost = (function(){
 		if(++entry.rateN > PEER_MSG_MAX){ dropPeer(s, entry, true); return; }
 		if(pl.t === 'hello'){
 			if(!entry.hello){
+				if(typeof pl.gid === 'string') entry.gid = pl.gid.slice(0, 40);
+				if(s.banned.has(entry.gid)){
+					entry.peer.send({ t: 'banned' });
+					dropPeer(s, entry, true);
+					return;
+				}
 				if(entries().length >= MAX_GHOSTS){
 					entry.peer.send({ t: 'full' });
 					dropPeer(s, entry, true);
@@ -139,13 +176,21 @@ const ghostHost = (function(){
 				entry.hello = true;
 				s.watchers++;
 				entry.name = String(pl.name || 'Duch').slice(0, 24);
-				if(typeof pl.gid === 'string') entry.gid = pl.gid.slice(0, 40);
-				entry.peer.send({ t: 'welcome', proto: NET.GHOST_PROTO, host: s.name, room: s.room });
+				if(NET.validAvatar(pl.avatar)) entry.avatar = pl.avatar;
+				entry.peer.send({ t: 'welcome', proto: NET.GHOST_PROTO, host: s.name, room: s.room, mode: entry.mode });
 				entry.lastSnapAt = now();
 				sendSnapshot(s, entry.peer);
 				try{ bridge.msg('👻 ' + entry.name + ' obserwuje twoją warstwę'); }catch(e){ /* fine */ }
 				updateUi();
 			}
+		} else if(pl.t === 'avatar'){
+			if(NET.validAvatar(pl.a)){ entry.avatar = pl.a; markActive(entry); }
+		} else if(pl.t === 'chat'){
+			handleChat(s, entry, pl);
+		} else if(pl.t === 'power'){
+			handlePower(s, entry, pl);
+		} else if(pl.t === 'assist'){
+			handleAssist(s, entry, pl);
 		} else if(pl.t === 'needSnap'){
 			// a watcher whose snapshot transfer got lost asks for a restart —
 			// honored at most once per SNAP_REQ_MIN_MS per peer
@@ -155,6 +200,9 @@ const ghostHost = (function(){
 			}
 		} else if(pl.t === 'pose'){
 			if(Number.isFinite(pl.x) && Number.isFinite(pl.y)) entry.cam = { x: +pl.x, y: +pl.y };
+			// the watcher vouches for its own recent input; the flag times out fast,
+			// so a parked tab stops counting toward social boosts within seconds
+			if(pl.act) markActive(entry);
 		} else if(pl.t === 'buff'){
 			handleBuff(s, entry, pl);
 		} else if(pl.t === 'needMobs'){
@@ -252,6 +300,8 @@ const ghostHost = (function(){
 		if(t - s.last.seasons >= CAD.seasons) seasonTick(s, t);
 		if(s.infraDirty && t - s.last.infra >= CAD.infra) infraTick(s, t);
 		if(t - s.last.presence >= CAD.presence) presenceTick(s, t);
+		chargeTick(s, t);
+		for(const entry of entries()){ if(entry.assistant) sendAssistState(s, entry, false); }
 		if(t - s.last.reap >= CAD.reap) reap(s, t);
 	}
 	function heroTick(s, t){
@@ -297,8 +347,10 @@ const ghostHost = (function(){
 	}
 	function presenceTick(s, t){
 		s.last.presence = t;
-		const list = entries().filter(e => e.cam).map(e => ({ id: e.gid, name: e.name, x: +e.cam.x.toFixed(2), y: +e.cam.y.toFixed(2) }));
+		updateSocialBoost();
+		const list = entries().filter(e => e.cam).map(e => ({ id: e.gid, name: e.name, x: +e.cam.x.toFixed(2), y: +e.cam.y.toFixed(2), a: e.avatar, act: e.actUntil > t ? 1 : 0 }));
 		broadcast({ t: 'ghosts', list });
+		if(t - (s.lastBadgeAt || 0) > 900){ s.lastBadgeAt = t; updateUi(); } // active-count on the badge stays fresh
 	}
 	function reap(s, t){
 		s.last.reap = t;
@@ -310,6 +362,8 @@ const ghostHost = (function(){
 	// --- blessings -------------------------------------------------------------------
 	function handleBuff(s, entry, pl){
 		if(!NET.validBuffKind(pl.kind)){ entry.peer.send({ t: 'buffAck', kind: pl.kind, ok: false, waitMs: 0 }); return; }
+		markActive(entry);
+		if(entry.mode !== 'full'){ entry.peer.send({ t: 'buffAck', kind: pl.kind, ok: false, waitMs: 0, reason: 'perm' }); return; }
 		const verdict = s.ledger.tryUse(entry.gid, pl.kind, Date.now());
 		entry.peer.send({ t: 'buffAck', kind: pl.kind, ok: verdict.ok, waitMs: verdict.waitMs });
 		if(!verdict.ok) return;
@@ -327,46 +381,279 @@ const ghostHost = (function(){
 		broadcast({ t: 'fx', kind: pl.kind, name: entry.name || 'Duch' });
 	}
 
+	// --- short texts (host-moderated, profanity-filtered) --------------------------------
+	function handleChat(s, entry, pl){
+		markActive(entry);
+		if(!entry.hello || (entry.mode !== 'chat' && entry.mode !== 'full')) return;
+		const t = now();
+		if(t - entry.lastChatAt < CHAT_MIN_MS) return;
+		const res = NET.filterChat(pl.text);
+		if(res.empty) return;
+		entry.lastChatAt = t;
+		entry.lastChat = { text: res.text, until: t + 6000 };
+		s.stats.chats++;
+		try{ bridge.msg('💬 ' + (entry.name || 'Duch') + ': ' + res.text); }catch(e){ /* fine */ }
+		broadcast({ t: 'chat', gid: entry.gid, name: entry.name || 'Duch', text: res.text });
+	}
+
+	// --- watcher powers: strike the world at the spirit's own position -------------------
+	// Authority stays here: the host validates the mode, the charge (accrued only
+	// while the watcher was ACTIVE), the cooldown, and — critically — that the blow
+	// lands at the spirit's OWN camera, never at coordinates the client picked.
+	// Powers only ever touch MOBS, never tiles: a watcher cannot reshape the world.
+	function handlePower(s, entry, pl){
+		markActive(entry);
+		const kind = pl.kind;
+		if(!NET.validPowerKind(kind)) return;
+		const rule = NET.POWER_RULES[kind];
+		const t = now();
+		if(entry.mode !== 'full'){ entry.peer.send({ t: 'powerAck', kind, ok: false, reason: 'perm', charge: entry.charge }); return; }
+		if(!entry.cam){ entry.peer.send({ t: 'powerAck', kind, ok: false, reason: 'nopos', charge: entry.charge }); return; }
+		if(entry.charge < rule.cost){ entry.peer.send({ t: 'powerAck', kind, ok: false, reason: 'charge', charge: entry.charge }); return; }
+		const readyAt = (entry.powerCd && entry.powerCd[kind]) || 0;
+		if(t < readyAt){ entry.peer.send({ t: 'powerAck', kind, ok: false, reason: 'cd', waitMs: Math.ceil(readyAt - t), charge: entry.charge }); return; }
+		const hits = bridge.ghostPower(kind, entry.cam.x, entry.cam.y, rule);
+		entry.charge -= rule.cost;
+		if(!entry.powerCd) entry.powerCd = {};
+		entry.powerCd[kind] = t + rule.cd;
+		s.stats.powers++;
+		entry.peer.send({ t: 'powerAck', kind, ok: true, waitMs: rule.cd, charge: entry.charge, hits });
+		broadcast({ t: 'powerFx', kind, x: +entry.cam.x.toFixed(2), y: +entry.cam.y.toFixed(2), name: entry.name || 'Duch', hits });
+		try{ bridge.msg('👻 ' + (entry.name || 'Duch') + ': ' + rule.icon + ' ' + rule.label + (hits ? ' — ' + hits + ' celów!' : '')); }catch(e){ /* fine */ }
+	}
+	function chargeTick(s, t){
+		const dt = Math.min(2, (t - (s.lastChargeAt || t)) / 1000);
+		s.lastChargeAt = t;
+		for(const entry of entries()){
+			const wasActive = entry.actUntil > t;
+			const next = NET.chargeAfter(entry.charge, dt, wasActive);
+			if(next !== entry.charge){
+				entry.charge = next;
+				if(t - (entry.lastChargeSentAt || 0) > 1000){
+					entry.lastChargeSentAt = t;
+					entry.peer.send({ t: 'charge', charge: +entry.charge.toFixed(1), active: wasActive ? 1 : 0 });
+				}
+			}
+		}
+	}
+
+	// --- assistant: a delegated watcher may craft and manage the hero's gear ---------------
+	function handleAssist(s, entry, pl){
+		markActive(entry);
+		if(!entry.assistant || entry.mode !== 'full'){ entry.peer.send({ t: 'assistAck', ok: false, reason: 'perm' }); return; }
+		if(!NET.validAssistAction(pl.a)){ entry.peer.send({ t: 'assistAck', ok: false, reason: 'action' }); return; }
+		const id = typeof pl.id === 'string' ? pl.id.slice(0, 64) : '';
+		if(!id){ entry.peer.send({ t: 'assistAck', ok: false, reason: 'id' }); return; }
+		let res = null;
+		try{ res = bridge.ghostAssist(pl.a, id); }catch(e){ res = { ok: false, reason: 'error' }; }
+		s.stats.assists += res && res.ok ? 1 : 0;
+		entry.peer.send({ t: 'assistAck', ok: !!(res && res.ok), reason: res && res.reason, a: pl.a, id });
+		if(res && res.ok){
+			try{ bridge.msg('🛠 ' + (entry.name || 'Duch') + ' (asystent): ' + res.label); }catch(e){ /* fine */ }
+			sendAssistState(s, entry, true);
+		}
+	}
+	function sendAssistState(s, entry, force){
+		const t = now();
+		if(!entry.assistant) return;
+		if(!force && t - (entry.lastAssistAt || 0) < 1500) return;
+		entry.lastAssistAt = t;
+		try{ entry.peer.send({ t: 'assistState', data: bridge.ghostAssistState() }); }catch(e){ /* skip tick */ }
+	}
+	function setAssistant(gid, on){
+		if(!session) return false;
+		let hit = false;
+		for(const entry of entries()){
+			if(entry.gid === gid){
+				if(on && entry.mode !== 'full') return false; // an assistant must be allowed to influence
+				entry.assistant = !!on;
+				entry.peer.send({ t: 'assistant', on: !!on });
+				if(entry.assistant) sendAssistState(session, entry, true);
+				hit = true;
+			} else if(on && entry.assistant){
+				// exactly one assistant at a time — the seat is handed over, not shared
+				entry.assistant = false;
+				entry.peer.send({ t: 'assistant', on: false });
+			}
+		}
+		if(hit){
+			try{ bridge.msg(on ? '🛠 Asystent wyznaczony' : '🛠 Asystent odwołany'); }catch(e){ /* fine */ }
+			updateUi();
+		}
+		return hit;
+	}
+
+	// --- social facilitation: ACTIVE watchers strengthen the hero -------------------------
+	// MM.socialBoost is read by mobs.awardMobXp (xp), the main.js movement/jump
+	// multipliers (move/jump) and weapons.specialAttackRoll (dmg) — all default
+	// to neutral 1.0 when this never runs (solo play, Node sims).
+	function updateSocialBoost(){
+		const t = now();
+		let active = 0;
+		const spirits = [];
+		if(session){
+			for(const e of session.peers.values()){
+				if(!e.hello || e.actUntil <= t) continue;
+				active++;
+				// only ACTIVE watchers haunt the world (idle tabs are furniture)
+				if(e.cam) spirits.push({ x: e.cam.x, y: e.cam.y });
+			}
+		}
+		const boost = NET.socialBoosts(active);
+		boost.viewers = session ? entries().length : 0;
+		if(MMR){
+			MMR.socialBoost = boost;
+			MMR.ghostAura.spirits = spirits;
+		}
+		return boost;
+	}
+
+	// --- moderation ---------------------------------------------------------------------------
+	function setViewerMode(gid, mode){
+		if(!session || !NET.validPermissionMode(mode)) return false;
+		let hit = false;
+		for(const entry of entries()){
+			if(entry.gid !== gid) continue;
+			entry.mode = mode;
+			entry.peer.send({ t: 'perm', mode });
+			hit = true;
+		}
+		if(hit) updateUi();
+		return hit;
+	}
+	function banViewer(gid){
+		if(!session || typeof gid !== 'string') return false;
+		session.banned.add(gid);
+		for(const entry of Array.from(session.peers.values())){
+			if(entry.gid !== gid) continue;
+			try{ entry.peer.send({ t: 'banned' }); }catch(e){ /* fine */ }
+			dropPeer(session, entry, true);
+		}
+		try{ bridge.msg('🚫 Duch zablokowany'); }catch(e){ /* fine */ }
+		updateSocialBoost();
+		updateUi();
+		return true;
+	}
+
 	// --- spirits (shared painter — the client reuses it for fellow watchers) ------------
-	function paintSpirit(ctx, TILE, x, y, name, t, self){
-		const bob = Math.sin((t || 0) / 480 + (x + y) * 1.7) * 0.12;
+	// Contract: a spirit is SMALL (≤1/3 of the hero's ~1-tile frame → r=0.16 tile)
+	// and ~50% translucent, so a full room of watchers can't clutter the stage or
+	// obscure play. Avatar variants are procedural; idle watchers dim further.
+	const SPIRIT_R = 0.16; // body radius in tiles (hero is ~0.95 tall)
+	const SPIRIT_ALPHA = 0.5;
+	const AVATAR_PAINTERS = {
+		duszek(ctx, r){
+			ctx.fillStyle = '#dceeff';
+			ctx.beginPath();
+			ctx.arc(0, -r * 0.25, r * 0.95, Math.PI, 0);
+			ctx.lineTo(r * 0.95, r * 0.85);
+			ctx.quadraticCurveTo(r * 0.5, r * 0.45, r * 0.05, r * 0.85);
+			ctx.quadraticCurveTo(-r * 0.5, r * 0.45, -r * 0.95, r * 0.85);
+			ctx.closePath(); ctx.fill();
+			ctx.fillStyle = '#31465f';
+			ctx.beginPath(); ctx.arc(-r * 0.32, -r * 0.28, r * 0.14, 0, Math.PI * 2); ctx.fill();
+			ctx.beginPath(); ctx.arc(r * 0.32, -r * 0.28, r * 0.14, 0, Math.PI * 2); ctx.fill();
+		},
+		iskra(ctx, r){
+			ctx.fillStyle = '#ffe9a8';
+			ctx.beginPath();
+			ctx.moveTo(0, -r * 1.1);
+			ctx.quadraticCurveTo(r * 0.9, -r * 0.1, 0, r * 0.95);
+			ctx.quadraticCurveTo(-r * 0.9, -r * 0.1, 0, -r * 1.1);
+			ctx.fill();
+			ctx.fillStyle = '#fff7dd';
+			ctx.beginPath(); ctx.arc(0, r * 0.1, r * 0.4, 0, Math.PI * 2); ctx.fill();
+		},
+		gwiazdka(ctx, r){
+			ctx.fillStyle = '#ffd76a';
+			ctx.beginPath();
+			for(let i = 0; i < 10; i++){
+				const rr = i % 2 ? r * 0.45 : r;
+				const a = -Math.PI / 2 + i * Math.PI / 5;
+				ctx[i ? 'lineTo' : 'moveTo'](Math.cos(a) * rr, Math.sin(a) * rr);
+			}
+			ctx.closePath(); ctx.fill();
+		},
+		kotek(ctx, r){
+			ctx.fillStyle = '#cfd8ea';
+			ctx.beginPath(); ctx.arc(0, 0, r * 0.85, 0, Math.PI * 2); ctx.fill();
+			ctx.beginPath(); ctx.moveTo(-r * 0.8, -r * 0.35); ctx.lineTo(-r * 0.55, -r * 1.05); ctx.lineTo(-r * 0.2, -r * 0.6); ctx.closePath(); ctx.fill();
+			ctx.beginPath(); ctx.moveTo(r * 0.8, -r * 0.35); ctx.lineTo(r * 0.55, -r * 1.05); ctx.lineTo(r * 0.2, -r * 0.6); ctx.closePath(); ctx.fill();
+			ctx.fillStyle = '#2b3a52';
+			ctx.beginPath(); ctx.arc(-r * 0.3, -r * 0.1, r * 0.12, 0, Math.PI * 2); ctx.fill();
+			ctx.beginPath(); ctx.arc(r * 0.3, -r * 0.1, r * 0.12, 0, Math.PI * 2); ctx.fill();
+		},
+		sowa(ctx, r){
+			ctx.fillStyle = '#c9b28f';
+			ctx.beginPath(); ctx.arc(0, 0, r * 0.9, 0, Math.PI * 2); ctx.fill();
+			ctx.fillStyle = '#fff';
+			ctx.beginPath(); ctx.arc(-r * 0.32, -r * 0.15, r * 0.3, 0, Math.PI * 2); ctx.fill();
+			ctx.beginPath(); ctx.arc(r * 0.32, -r * 0.15, r * 0.3, 0, Math.PI * 2); ctx.fill();
+			ctx.fillStyle = '#2b3a52';
+			ctx.beginPath(); ctx.arc(-r * 0.32, -r * 0.15, r * 0.13, 0, Math.PI * 2); ctx.fill();
+			ctx.beginPath(); ctx.arc(r * 0.32, -r * 0.15, r * 0.13, 0, Math.PI * 2); ctx.fill();
+			ctx.fillStyle = '#e8a13c';
+			ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-r * 0.12, r * 0.28); ctx.lineTo(r * 0.12, r * 0.28); ctx.closePath(); ctx.fill();
+		},
+		orbita(ctx, r){
+			ctx.fillStyle = '#9be8ff';
+			ctx.beginPath(); ctx.arc(0, 0, r * 0.45, 0, Math.PI * 2); ctx.fill();
+			ctx.strokeStyle = '#9be8ff';
+			ctx.lineWidth = Math.max(1, r * 0.18);
+			ctx.beginPath(); ctx.ellipse(0, 0, r, r * 0.4, -0.5, 0, Math.PI * 2); ctx.stroke();
+		}
+	};
+	function paintSpirit(ctx, TILE, x, y, name, t, self, avatar, active, chat){
+		const bob = Math.sin((t || 0) / 480 + (x + y) * 1.7) * 0.05;
 		const px = x * TILE, py = (y + bob) * TILE;
+		const r = TILE * SPIRIT_R;
 		ctx.save();
-		ctx.globalAlpha = self ? 0.28 : 0.42;
-		const grad = ctx.createRadialGradient(px, py, TILE * 0.05, px, py, TILE * 0.75);
-		grad.addColorStop(0, 'rgba(190,225,255,0.95)');
+		ctx.globalAlpha = (self ? 0.35 : SPIRIT_ALPHA) * (active === false ? 0.55 : 1);
+		const grad = ctx.createRadialGradient(px, py, r * 0.2, px, py, r * 2.2);
+		grad.addColorStop(0, 'rgba(190,225,255,0.55)');
 		grad.addColorStop(1, 'rgba(120,170,255,0)');
 		ctx.fillStyle = grad;
-		ctx.beginPath(); ctx.arc(px, py, TILE * 0.75, 0, Math.PI * 2); ctx.fill();
-		ctx.globalAlpha = self ? 0.5 : 0.8;
-		ctx.fillStyle = '#dceeff';
-		ctx.beginPath();
-		ctx.arc(px, py - TILE * 0.12, TILE * 0.3, Math.PI, 0);
-		ctx.quadraticCurveTo(px + TILE * 0.3, py + TILE * 0.32, px + TILE * 0.18, py + TILE * 0.3);
-		ctx.quadraticCurveTo(px + TILE * 0.06, py + TILE * 0.2, px, py + TILE * 0.3);
-		ctx.quadraticCurveTo(px - TILE * 0.06, py + TILE * 0.2, px - TILE * 0.18, py + TILE * 0.3);
-		ctx.quadraticCurveTo(px - TILE * 0.3, py + TILE * 0.32, px - TILE * 0.3, py - TILE * 0.12);
-		ctx.fill();
-		ctx.fillStyle = '#31465f';
-		ctx.beginPath(); ctx.arc(px - TILE * 0.1, py - TILE * 0.12, TILE * 0.045, 0, Math.PI * 2); ctx.fill();
-		ctx.beginPath(); ctx.arc(px + TILE * 0.1, py - TILE * 0.12, TILE * 0.045, 0, Math.PI * 2); ctx.fill();
+		ctx.beginPath(); ctx.arc(px, py, r * 2.2, 0, Math.PI * 2); ctx.fill();
+		ctx.translate(px, py);
+		(AVATAR_PAINTERS[avatar] || AVATAR_PAINTERS.duszek)(ctx, r);
+		ctx.translate(-px, -py);
 		if(name){
-			ctx.globalAlpha = 0.85;
-			ctx.font = 'bold ' + Math.max(9, TILE * 0.22) + 'px system-ui';
+			ctx.font = 'bold ' + Math.max(7, TILE * 0.16) + 'px system-ui';
 			ctx.textAlign = 'center';
 			ctx.fillStyle = '#cfe6ff';
 			ctx.strokeStyle = 'rgba(6,12,20,0.8)';
-			ctx.lineWidth = 3;
-			ctx.strokeText(name, px, py - TILE * 0.55);
-			ctx.fillText(name, px, py - TILE * 0.55);
+			ctx.lineWidth = 2.5;
+			ctx.strokeText(name, px, py - r * 2.1);
+			ctx.fillText(name, px, py - r * 2.1);
+		}
+		if(chat && chat.until > (Date.now ? Date.now() : 0) && chat.text){
+			const line = String(chat.text).slice(0, 40);
+			ctx.font = Math.max(8, TILE * 0.17) + 'px system-ui';
+			const w = ctx.measureText(line).width + TILE * 0.3;
+			const bx = px - w / 2, by = py - r * 4.4, bh = TILE * 0.36;
+			ctx.globalAlpha = 0.82;
+			ctx.fillStyle = 'rgba(10,16,26,0.92)';
+			ctx.beginPath();
+			if(ctx.roundRect) ctx.roundRect(bx, by, w, bh, TILE * 0.1); else ctx.rect(bx, by, w, bh);
+			ctx.fill();
+			ctx.fillStyle = '#eaf3ff';
+			ctx.textAlign = 'center';
+			ctx.fillText(line, px, by + bh * 0.72);
 		}
 		ctx.restore();
 	}
 	function drawSpirits(ctx, TILE){
 		if(!session) return;
 		const t = now();
+		const ease = Math.min(1, (t - (session.lastSpiritDrawT || t)) / 1000 * 9);
+		session.lastSpiritDrawT = t;
 		for(const entry of entries()){
-			if(entry.cam) paintSpirit(ctx, TILE, entry.cam.x, entry.cam.y, entry.name, t, false);
+			if(!entry.cam) continue;
+			// eased display position — pose packets land at ~6 Hz, the glide hides it
+			if(!entry.camPos) entry.camPos = { x: entry.cam.x, y: entry.cam.y };
+			entry.camPos.x += (entry.cam.x - entry.camPos.x) * ease;
+			entry.camPos.y += (entry.cam.y - entry.camPos.y) * ease;
+			paintSpirit(ctx, TILE, entry.camPos.x, entry.camPos.y, entry.name, t, false, entry.avatar, entry.actUntil > t, entry.lastChat);
 		}
 	}
 
@@ -439,10 +726,14 @@ const ghostHost = (function(){
 	function updateUi(){
 		if(typeof document === 'undefined') return;
 		const badge = ensureBadge();
+		const boost = updateSocialBoost();
 		if(badge){
 			if(session){
 				badge.style.display = 'inline-block';
-				badge.textContent = '👁 ' + entries().length + ' • ' + session.room;
+				badge.textContent = '👁 ' + entries().length + (boost.active ? ' • ⚡' + boost.active : '') + ' • ' + session.room;
+				badge.title = boost.active
+					? 'Aktywne duchy wzmacniają: +' + Math.round((boost.xp - 1) * 100) + '% XP, +' + Math.round((boost.move - 1) * 100) + '% szybkość/skok/obrażenia'
+					: 'Duchy obserwują — aktywni widzowie wzmacniają bohatera';
 			} else badge.style.display = 'none';
 		}
 		const el = ui.panel;
@@ -450,22 +741,59 @@ const ghostHost = (function(){
 		const linkRow = el.querySelector('#ghostPanelLinkRow');
 		const toggle = el.querySelector('#ghostPanelToggle');
 		const viewers = el.querySelector('#ghostPanelViewers');
+		viewers.textContent = '';
 		if(session){
 			linkRow.style.display = 'flex';
 			el.querySelector('#ghostPanelLink').value = link();
 			toggle.textContent = 'Zakończ transmisję';
 			toggle.style.background = '#c43232';
 			const list = entries();
-			viewers.textContent = list.length ? ('Duchy (' + list.length + '): ' + list.map(e => e.name || e.gid).join(', ')) : 'Czekam na duchy… wyślij link.';
+			if(!list.length){
+				viewers.textContent = 'Czekam na duchy… wyślij link.';
+			} else {
+				const t = now();
+				const head = document.createElement('div');
+				head.style.cssText = 'color:#9fd6ae;margin-bottom:2px;';
+				head.textContent = 'Duchy (' + list.length + ')' + (boost.active ? ' — ⚡' + boost.active + ' aktywnych: +10% XP, +' + boost.active + '% szybkość/skok/obrażenia' : '');
+				viewers.appendChild(head);
+				for(const entry of list){
+					const row = document.createElement('div');
+					row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 0;border-top:1px solid rgba(255,255,255,.08);';
+					const dot = document.createElement('span');
+					dot.textContent = entry.actUntil > t ? '⚡' : '💤';
+					dot.title = entry.actUntil > t ? 'aktywny (wzmacnia)' : 'bezczynny >30 s (nie wzmacnia)';
+					const nm = document.createElement('span');
+					nm.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700;';
+					nm.textContent = entry.name || entry.gid;
+					const sel = document.createElement('select');
+					sel.style.cssText = 'background:rgba(20,26,36,.9);color:#d5e6ff;border:1px solid rgba(255,255,255,.2);border-radius:6px;font-size:10px;padding:2px;';
+					for(const [val, label] of [['watch', 'tylko ogląda'], ['chat', '+czat'], ['full', '+czat i wpływ']]){
+						const o = document.createElement('option');
+						o.value = val; o.textContent = label; o.selected = entry.mode === val;
+						sel.appendChild(o);
+					}
+					sel.addEventListener('change', () => setViewerMode(entry.gid, sel.value));
+					const asst = document.createElement('button');
+					asst.textContent = entry.assistant ? '🛠 Asystent' : '🛠';
+					asst.title = 'Asystent: może craftować i zarządzać twoim ekwipunkiem (wymaga trybu „+czat i wpływ”)';
+					asst.style.cssText = 'border:none;border-radius:6px;background:' + (entry.assistant ? 'rgba(255,184,74,.55)' : 'rgba(255,255,255,.12)') + ';color:#fff;font-size:10px;font-weight:700;padding:3px 7px;cursor:pointer;';
+					asst.addEventListener('click', () => setAssistant(entry.gid, !entry.assistant));
+					const ban = document.createElement('button');
+					ban.textContent = 'Banuj';
+					ban.style.cssText = 'border:none;border-radius:6px;background:rgba(196,50,50,.5);color:#fff;font-size:10px;font-weight:700;padding:3px 7px;cursor:pointer;';
+					ban.addEventListener('click', () => banViewer(entry.gid));
+					row.append(dot, nm, sel, asst, ban);
+					viewers.appendChild(row);
+				}
+			}
 		} else {
 			linkRow.style.display = 'none';
 			toggle.textContent = 'Rozpocznij transmisję';
 			toggle.style.background = '#21a366';
-			viewers.textContent = '';
 		}
 	}
 
-	const api = { wire, start, stop, active, link, frame, metrics, drawSpirits, paintSpirit, openPanel: () => togglePanel(true) };
+	const api = { wire, start, stop, active, link, frame, metrics, drawSpirits, paintSpirit, setViewerMode, banViewer, setAssistant, socialBoost: updateSocialBoost, openPanel: () => togglePanel(true) };
 	if(MMR) MMR.ghostHost = api;
 	if(typeof window !== 'undefined'){
 		window.__mmGhostHostStart = (room, opts) => start(Object.assign({ room }, opts || {}));

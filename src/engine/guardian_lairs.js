@@ -865,6 +865,16 @@ const guardianLairs = (function(){
   function updateSidekick(e,p,getTile,setTile,dt,L){
     L = L || layoutFor(e.kind);
     e.attackCd-=dt;
+    // Ghost dread (MM.ghostAura, ACTIVE watchers only): even a guardian's minion
+    // flinches from a phantom — it breaks off and retreats instead of attacking.
+    // The BOSS itself is unmoved; only the sidekicks can be spooked.
+    const dread = MM.ghostDreadAt ? MM.ghostDreadAt(e.x, e.y) : null;
+    if(dread){
+      e.attackCd = Math.max(e.attackCd, 0.9);
+      e._ghostSpookUntil = e.t + 0.9;
+      moveToward(e, e.x + dread.awayX*7, clamp(e.y + dread.awayY*4, L.floorY-17, L.floorY-2), dt, 3.4, 2.8, 8.2, getTile);
+      return;
+    }
     const aim=targetPoint(p,0.3);
     if(e.kind==='fire' && e.role==='flare'){
       moveToward(e, aim.x - e.dir*9 + Math.sin(e.t*2.2)*4, clamp(aim.y-4,L.floorY-16,L.floorY-5), dt, 2.2, 2.4, 6.5,getTile);

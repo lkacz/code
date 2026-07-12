@@ -7080,7 +7080,7 @@ const mobs = (function(){
     let active=0;
     const nowEpoch=Date.now();
     for(let i=0;i<mobs.length;i++){
-      const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue; const aggressive=isMobHostile(m,nowEpoch) && !isMobPacified(m,now) && !hasStatus(m,'blind');
+      const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue; const aggressive=isMobHostile(m,nowEpoch) && !isMobPacified(m,now) && !hasStatus(m,'blind') && !isGhostSpooked(m);
       // Natural lifespan: apply health decay when past decayStartAt; ensure it runs before far-sleep skip
       if(m.decayStartAt && now >= m.decayStartAt){
         const total = Math.max(0.5, ((m.lifeEndAt||now) - m.decayStartAt)/1000); // seconds window
@@ -7297,6 +7297,10 @@ const mobs = (function(){
       }
       // Status effects: DoT, cures and movement side-effects, table-driven
       tickStatuses(m,getTile,dt);
+      // Ghost dread: a watcher's spirit hovering nearby breaks the creature off
+      // whatever it was doing and sends it bolting. Runs AFTER the species AI, so
+      // it overrides pursuit exactly like panic does. No aura (solo/Node) = no-op.
+      applyGhostDread(m,dt);
       stabilizeMobFacing(m,spec,now);
       // Contact damage + bounce (touch) independent of attack cooldown
   const piranhaTouchTarget = m.id==='PIRANHA' ? piranhaPreyTarget(m,player,getTile,1.55) : null;
@@ -10194,7 +10198,10 @@ const mobs = (function(){
     const fatigue=xpFatigueMultiplier(m.id,day);
     const special=!!m._lastHeroHitSpecial && m.id!=='ATOMIC_BOMB';
     const specialMult=special ? XP_SPECIAL_BONUS_MULT : 1;
-    const amount=Math.max(1,Math.round(base*fatigue.mult*specialMult));
+    // social facilitation: an ACTIVE ghost audience grants bonus XP (ghost_host.js
+    // maintains MM.socialBoost; absent/neutral in solo play and Node sims)
+    const socialMult=(MM.socialBoost && Number.isFinite(MM.socialBoost.xp)) ? MM.socialBoost.xp : 1;
+    const amount=Math.max(1,Math.round(base*fatigue.mult*specialMult*socialMult));
     player.xp += amount;
     const next={kills:fatigue.entry.kills+1,lastDay:day};
     xpFatigue[m.id]=next;
@@ -10500,6 +10507,24 @@ const mobs = (function(){
       }
     }
   }
+
+  // --- Ghost dread (ghost_host.js publishes MM.ghostAura from ACTIVE watchers) ---
+  // Creatures feel a spirit hovering over them and bolt. The hero is untouched:
+  // this only ever moves the creature AWAY from the phantom, and the attack gate
+  // in update() reads _ghostSpookUntil so a fleeing beast doesn't keep swinging.
+  function applyGhostDread(m,dt){
+    if(!MM.ghostDreadAt || !validMobState(m)) return false;
+    const d=MM.ghostDreadAt(m.x,m.y);
+    if(!d) return false;
+    const speed=3.2*(0.55+0.45*d.power);
+    m.vx=d.awayX*speed;
+    m.facing=d.awayX>=0?1:-1;
+    if(m.onGround && d.power>0.6 && Math.random()<0.05*dt*60) m.vy=-4.4; // a startled hop
+    m.state='flee';
+    m._ghostSpookUntil=performance.now()+900;
+    return true;
+  }
+  function isGhostSpooked(m){ return finiteNum(m._ghostSpookUntil) && m._ghostSpookUntil>performance.now(); }
 
   // --- Ghost spectator sync (ghost_host.js / ghost_client.js) -----------------
   // Watchers render mobs through the normal draw path for full threat-look

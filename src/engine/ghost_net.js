@@ -24,6 +24,115 @@ export const BUFF_RULES = {
 };
 export function validBuffKind(k){ return typeof k === 'string' && Object.prototype.hasOwnProperty.call(BUFF_RULES, k); }
 
+// Social facilitation: ACTIVE watchers strengthen the hero. Activity means real
+// input on the watcher side within IDLE_MS — parked tabs on a second computer
+// stop counting half a minute after their human walks away. XP is a flat bonus
+// for having an audience at all; the per-viewer lanes stack linearly.
+export const SOCIAL_RULES = {
+	IDLE_MS: 30000,
+	XP_WITH_AUDIENCE: 1.10, // any active watcher present
+	MOVE_PER_VIEWER: 0.01,
+	JUMP_PER_VIEWER: 0.01, // jump HEIGHT (velocity gets the square root)
+	DMG_PER_VIEWER: 0.01
+};
+export function socialBoosts(activeViewers){
+	const n = Math.max(0, activeViewers | 0);
+	return {
+		active: n,
+		xp: n > 0 ? SOCIAL_RULES.XP_WITH_AUDIENCE : 1,
+		move: 1 + SOCIAL_RULES.MOVE_PER_VIEWER * n,
+		jump: 1 + SOCIAL_RULES.JUMP_PER_VIEWER * n,
+		dmg: 1 + SOCIAL_RULES.DMG_PER_VIEWER * n
+	};
+}
+
+// Watcher permission ladder (host-controlled, per viewer):
+//   watch — presence only; chat — may also send short texts; full — may also buff
+export const PERMISSION_MODES = ['watch', 'chat', 'full'];
+export function validPermissionMode(m){ return PERMISSION_MODES.includes(m); }
+
+// --- ghost dread: creatures shy away from an ACTIVE spirit ----------------------
+// The living world can feel a watcher hovering: within DREAD_R the creature
+// breaks off what it was doing and bolts the other way. Only ACTIVE watchers
+// haunt (an idle parked tab is furniture, not a phantom) — same anti-abuse
+// principle as the social boosts. Pure: the entity systems call dreadAt().
+export const DREAD = { R: 6.5, FLEE_SPEED: 3.2, DISTRACT_MS: 900 };
+export function dreadAt(spirits, x, y, radius){
+	if(!Array.isArray(spirits) || !spirits.length || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+	const r = Number.isFinite(radius) ? radius : DREAD.R;
+	const r2 = r * r;
+	let best = null, bestD2 = r2;
+	for(const s of spirits){
+		if(!s || !Number.isFinite(s.x) || !Number.isFinite(s.y)) continue;
+		const dx = x - s.x, dy = y - s.y;
+		const d2 = dx * dx + dy * dy;
+		if(d2 > bestD2) continue;
+		bestD2 = d2;
+		const d = Math.sqrt(d2) || 0.0001;
+		best = { x: s.x, y: s.y, dist: d, awayX: dx / d, awayY: dy / d, power: 1 - d / r };
+	}
+	return best;
+}
+
+// --- watcher powers: earned by ACTIVITY, spent on the world ---------------------
+// Charge accrues only while the watcher is active (CHARGE_PER_SEC), so powers are
+// literally a reward for watching attentively; idling both stops the accrual and
+// (via the social gate) the host's boosts.
+export const POWER_CHARGE = { PER_SEC: 1, MAX: 120 };
+export const POWER_RULES = {
+	frost:  { cost: 45, cd: 30000, r: 4.5, label: 'Mroźna aura', icon: '❄️' },
+	smite:  { cost: 60, cd: 45000, r: 3.2, dmg: 14, label: 'Grom', icon: '⚡' },
+	banish: { cost: 30, cd: 20000, r: 5.5, label: 'Popłoch', icon: '💀' }
+};
+export function validPowerKind(k){ return typeof k === 'string' && Object.prototype.hasOwnProperty.call(POWER_RULES, k); }
+export function chargeAfter(charge, dtSec, active){
+	const c = Number.isFinite(charge) ? charge : 0;
+	if(!active) return Math.max(0, Math.min(POWER_CHARGE.MAX, c));
+	return Math.max(0, Math.min(POWER_CHARGE.MAX, c + POWER_CHARGE.PER_SEC * Math.max(0, dtSec || 0)));
+}
+
+// --- assistant role: one watcher may craft & manage gear for the host ------------
+// Strictly a delegate: it can only run recipes and equip items the HOST already
+// owns — it can never place blocks, move the hero, or conjure resources.
+export const ASSIST_ACTIONS = ['craft', 'equip', 'unequip'];
+export function validAssistAction(a){ return ASSIST_ACTIONS.includes(a); }
+
+// Spirit avatar registry — ids ride hello/presence; painters live in ghost_host.
+export const AVATARS = ['duszek', 'iskra', 'gwiazdka', 'kotek', 'sowa', 'orbita'];
+export function validAvatar(a){ return AVATARS.includes(a); }
+
+// --- chat profanity filter (pure) ---------------------------------------------
+// Token-wise masking: fold diacritics + leetspeak, then match against vulgarity
+// stems (PL + EN). Over-masking an innocent compound beats letting slurs through.
+const CHAT_MAX_LEN = 90;
+const PROFANITY_STEMS = [
+	'kurw', 'kurew', 'chuj', 'huj', 'pierd', 'jeb', 'pizd', 'cip', 'fiut', 'kutas', 'dziwk', 'szmat', 'debil', 'cwel',
+	'fuck', 'shit', 'bitch', 'cunt', 'dick', 'asshole', 'bastard', 'nigg', 'fag', 'whore', 'slut', 'retard'
+];
+const LEET = { '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's', '!': 'i' };
+const FOLD = { 'ą': 'a', 'ć': 'c', 'ę': 'e', 'ł': 'l', 'ń': 'n', 'ó': 'o', 'ś': 's', 'ż': 'z', 'ź': 'z', 'v': 'w' };
+function foldChatToken(tok){
+	let out = '';
+	for(const ch of tok.toLowerCase()){
+		const c = LEET[ch] || FOLD[ch] || ch;
+		if(c >= 'a' && c <= 'z') out += c;
+	}
+	return out;
+}
+export function filterChat(raw){
+	const text = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim().slice(0, CHAT_MAX_LEN);
+	if(!text) return { text: '', filtered: false, empty: true };
+	let filtered = false;
+	const out = text.replace(/[^\s]+/g, (tok) => {
+		const folded = foldChatToken(tok);
+		for(const stem of PROFANITY_STEMS){
+			if(folded.includes(stem)){ filtered = true; return '*'.repeat(Math.min(8, Math.max(3, tok.length))); }
+		}
+		return tok;
+	});
+	return { text: out, filtered, empty: false };
+}
+
 // Room codes avoid lookalike glyphs (0/O, 1/I/L) — they get read out loud.
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
 export function roomCode(rng){
@@ -438,6 +547,8 @@ export function joinRoom(room, opts){
 
 const api = {
 	GHOST_PROTO, BUFF_RULES, MQTT_BROKERS,
+	SOCIAL_RULES, socialBoosts, PERMISSION_MODES, validPermissionMode, AVATARS, validAvatar, filterChat,
+	DREAD, dreadAt, POWER_RULES, POWER_CHARGE, validPowerKind, chargeAfter, ASSIST_ACTIONS, validAssistAction,
 	roomCode, normalizeRoom, watchLink, parseWatch, validBuffKind,
 	chunkPayload, createAssembler, createCooldownLedger,
 	hostListen, joinRoom

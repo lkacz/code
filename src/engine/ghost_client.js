@@ -22,7 +22,7 @@ if(WATCH && MMR){
 	// every localStorage write except the ghost's own display name, so watching
 	// a friend can never contaminate this browser's single-player state.
 	try{
-		const allow = new Set(['mm_ghost_name_v1']);
+		const allow = new Set(['mm_ghost_name_v1', 'mm_ghost_avatar_v1']);
 		const origSet = Storage.prototype.setItem;
 		const origRemove = Storage.prototype.removeItem;
 		Storage.prototype.setItem = function(k, v){
@@ -37,7 +37,7 @@ if(WATCH && MMR){
 }
 
 const PAN_KEYS = { w: [0, -1], a: [-1, 0], s: [0, 1], d: [1, 0], arrowup: [0, -1], arrowleft: [-1, 0], arrowdown: [0, 1], arrowright: [1, 0] };
-const HELLO_MS = 1200, POSE_MS = 400, NEEDMOBS_MS = 600;
+const HELLO_MS = 1200, POSE_MS = 150, NEEDMOBS_MS = 600;
 
 const ghostClient = (function(){
 	let bridge = null;
@@ -49,7 +49,8 @@ const ghostClient = (function(){
 	const queue = [];
 	const heroTarget = { has: false, x: 0, y: 0, vx: 0, vy: 0, at: 0 };
 	const cam = { mode: 'follow', x: 0, y: 0 };
-	const others = []; // fellow spirits from presence relay
+	const others = []; // fellow spirits from presence relay (eased toward tx/ty by the painter)
+	let selfChat = null; // own last message, rendered over the own avatar
 	const held = new Set();
 	const stats = { tilesApplied: 0, tileMsgs: 0, mobRosters: 0, mobFulls: 0, snapsApplied: 0, fx: 0 };
 	const buffWait = {}; // kind -> readyAtMs (UI countdown)
@@ -61,6 +62,13 @@ const ghostClient = (function(){
 	let syncSince = 0, lastSnapReq = 0;
 	let lastRafAt = 0;
 	let reconnecting = false, reconnects = 0;
+	let mode = 'full'; // host-granted permission ladder: watch | chat | full
+	let lastInputAt = 0; // real watcher input — powers the social-facilitation "active" signal
+	let avatar = 'duszek';
+	let charge = 0; // earned by staying ACTIVE; spent on powers (host is authoritative)
+	const powerWait = {};
+	let assistant = false, assistState = null, assistPanel = null;
+	const powerFx = []; // {x,y,kind,t}
 
 	function nowMs(){ return Date.now(); }
 	// Remote strings (host name, fellow-ghost names) render into innerHTML in the
@@ -74,11 +82,25 @@ const ghostClient = (function(){
 			return n;
 		}catch(e){ return 'Duch'; }
 	}
+	function noteInput(){ lastInputAt = nowMs(); }
+	function isActive(){ return nowMs() - lastInputAt < NET.SOCIAL_RULES.IDLE_MS; }
+	function loadAvatar(){
+		try{ const a = localStorage.getItem('mm_ghost_avatar_v1'); if(NET.validAvatar(a)) avatar = a; }catch(e){ /* default */ }
+	}
+	function setAvatar(a){
+		if(!NET.validAvatar(a)) return;
+		avatar = a;
+		try{ localStorage.setItem('mm_ghost_avatar_v1', a); }catch(e){ /* fine */ }
+		if(conn) conn.send({ t: 'avatar', a });
+		noteInput();
+		updateBar();
+	}
 
 	// --- boot --------------------------------------------------------------------
 	function boot(b){
 		if(!WATCH) return false;
 		bridge = b;
+		loadAvatar();
 		document.body.classList.add('mmGhostMode');
 		injectCss();
 		showVeil('Łączenie z warstwą <b>' + WATCH.room + '</b>…');
@@ -102,7 +124,7 @@ const ghostClient = (function(){
 			onSignalFail: () => { if(state === 'connect') showVeil('Nie mogę dosięgnąć serwerów sygnałowych.<br>Spróbuj ponownie za chwilę.'); }
 		});
 	}
-	function sendHello(){ if(conn) conn.send({ t: 'hello', gid, name: ghostName(), proto: NET.GHOST_PROTO }); }
+	function sendHello(){ if(conn) conn.send({ t: 'hello', gid, name: ghostName(), avatar, proto: NET.GHOST_PROTO }); }
 	// Transport loss ≠ the host saying goodbye: rebuild the connection and let the
 	// normal hello → welcome → snapshot flow re-base the world. hostGone stays final.
 	function scheduleReconnect(){
@@ -145,6 +167,7 @@ const ghostClient = (function(){
 				state = 'sync';
 				syncSince = nowMs();
 				hostName = String(pl.host || 'Gospodarz').slice(0, 24);
+				if(NET.validPermissionMode(pl.mode)) mode = pl.mode;
 				lockedConn = c;
 				api.lock(c);
 				showVeil('Połączono z warstwą gracza <b>' + esc(hostName) + '</b>.<br>Pobieram świat…');
@@ -154,6 +177,19 @@ const ghostClient = (function(){
 		if(pl.t === 'full'){
 			state = 'ended';
 			showVeil('Ta warstwa ma już komplet duchów.<br>Spróbuj ponownie za chwilę.');
+			return;
+		}
+		if(pl.t === 'banned'){
+			state = 'ended';
+			showVeil('Gospodarz zablokował twój dostęp do tej warstwy.');
+			return;
+		}
+		if(pl.t === 'perm'){
+			if(NET.validPermissionMode(pl.mode)){
+				mode = pl.mode;
+				bridge.msg(mode === 'watch' ? '👁 Gospodarz: możesz teraz tylko oglądać' : mode === 'chat' ? '💬 Gospodarz: możesz pisać, bez wpływu na grę' : '⚡ Gospodarz: pełne uprawnienia ducha');
+				updateBar();
+			}
 			return;
 		}
 		if(pl.t === 'chunk'){
@@ -171,6 +207,37 @@ const ghostClient = (function(){
 			return;
 		}
 		if(pl.t === 'buffAck'){ noteBuffAck(pl); return; }
+		if(pl.t === 'charge'){
+			if(Number.isFinite(pl.charge)) charge = Math.max(0, Math.min(NET.POWER_CHARGE.MAX, pl.charge));
+			updateBar();
+			return;
+		}
+		if(pl.t === 'powerAck'){
+			if(Number.isFinite(pl.charge)) charge = Math.max(0, Math.min(NET.POWER_CHARGE.MAX, pl.charge));
+			if(NET.validPowerKind(pl.kind)){
+				const wait = Math.min(300000, Math.max(0, Number(pl.waitMs) || 0));
+				powerWait[pl.kind] = nowMs() + (pl.ok ? wait : (pl.reason === 'cd' ? wait : 0));
+				if(!pl.ok && pl.reason === 'charge') bridge.msg('👻 ' + NET.POWER_RULES[pl.kind].label + ': za mało energii ducha — bądź aktywny!');
+				if(!pl.ok && pl.reason === 'perm') bridge.msg('👻 Gospodarz wyłączył wpływ na grę');
+			}
+			updateBar();
+			return;
+		}
+		if(pl.t === 'assistant'){
+			assistant = !!pl.on;
+			bridge.msg(assistant ? '🛠 Gospodarz mianował cię ASYSTENTEM — możesz craftować i zarządzać ekwipunkiem' : '🛠 Nie jesteś już asystentem');
+			renderAssist();
+			return;
+		}
+		if(pl.t === 'assistState'){
+			assistState = pl.data && typeof pl.data === 'object' ? pl.data : null;
+			renderAssist();
+			return;
+		}
+		if(pl.t === 'assistAck'){
+			if(!pl.ok) bridge.msg('🛠 Nie udało się: ' + (pl.reason === 'cost' ? 'brak surowców' : pl.reason === 'perm' ? 'brak uprawnień' : pl.reason || 'błąd'));
+			return;
+		}
 		queue.push(pl);
 		// Overflow means the drain slept through a flood (e.g. intensive background
 		// throttling). Tile diffs are CUMULATIVE — dropping any would desync the
@@ -195,7 +262,8 @@ const ghostClient = (function(){
 		cam.mode = 'follow';
 		bridge.snapCameraToPlayer();
 		hideVeil();
-		bridge.msg('👁 Obserwujesz warstwę gracza ' + (hostName || '…') + ' — WASD/przeciąganie = kamera, F = podążaj');
+		bridge.msg('👁 Obserwujesz warstwę gracza ' + (hostName || '…') + ' — ' + (isTouchUi() ? 'przeciągnij palcem, aby latać duchem' : 'WASD/przeciąganie = lot ducha, F = podążaj') + '. Twoja aktywność wzmacnia gracza!');
+		updateBar();
 	}
 	function drainQueue(){
 		for(const pl of queue.splice(0)){
@@ -245,11 +313,37 @@ const ghostClient = (function(){
 					if(pl.data) bridge.restoreInfra(pl.data);
 					if(pl.bg) bridge.restoreConstructionBackground(pl.bg);
 				} else if(pl.t === 'ghosts' && Array.isArray(pl.list)){
-					others.length = 0;
+					// keep object identity per gid so the painter can glide, not teleport
+					const seen = new Set();
 					for(const g of pl.list.slice(0, 16)){
-						if(g && g.id !== gid && Number.isFinite(g.x) && Number.isFinite(g.y)) others.push({ id: g.id, name: String(g.name || 'Duch').slice(0, 24), x: g.x, y: g.y });
+						if(!g || g.id === gid || !Number.isFinite(g.x) || !Number.isFinite(g.y)) continue;
+						seen.add(g.id);
+						let o = others.find(v => v.id === g.id);
+						if(!o){ o = { id: g.id, x: g.x, y: g.y, chat: null }; others.push(o); }
+						o.name = String(g.name || 'Duch').slice(0, 24);
+						o.avatar = NET.validAvatar(g.a) ? g.a : 'duszek';
+						o.act = !!g.act;
+						o.tx = g.x; o.ty = g.y;
 					}
+					for(let i = others.length - 1; i >= 0; i--){ if(!seen.has(others[i].id)) others.splice(i, 1); }
 					updateBar();
+				} else if(pl.t === 'chat'){
+					const name = String(pl.name || 'Duch').slice(0, 24);
+					const text = NET.filterChat(pl.text).text; // defense in depth — the host already filtered
+					if(text){
+						bridge.msg('💬 ' + name + ': ' + text);
+						const o = others.find(v => v.id === pl.gid);
+						if(o) o.chat = { text, until: nowMs() + 6000 };
+						else if(pl.gid === gid) selfChat = { text, until: nowMs() + 6000 };
+					}
+				} else if(pl.t === 'powerFx' && NET.validPowerKind(pl.kind)){
+					if(Number.isFinite(pl.x) && Number.isFinite(pl.y)){
+						powerFx.push({ x: pl.x, y: pl.y, kind: pl.kind, t: nowMs() });
+						if(powerFx.length > 12) powerFx.shift();
+						try{ if(MMR && MMR.particles && MMR.particles.spawnBurst) MMR.particles.spawnBurst(pl.x, pl.y, pl.kind === 'smite' ? 'legendary' : 'epic', {}); }catch(e){ /* fine */ }
+					}
+					const r = NET.POWER_RULES[pl.kind];
+					bridge.msg('👻 ' + String(pl.name || 'Duch').slice(0, 24) + ': ' + r.icon + ' ' + r.label + (pl.hits ? ' — ' + (pl.hits | 0) + ' celów!' : ''));
 				} else if(pl.t === 'fx' && NET.validBuffKind(pl.kind)){
 					// validBuffKind also guards the BUFF_RULES lookup against '__proto__' keys
 					stats.fx++;
@@ -300,7 +394,7 @@ const ghostClient = (function(){
 		if(t - timers.pose > POSE_MS){
 			timers.pose = t;
 			const c = bridge.getCamCenter();
-			conn.send({ t: 'pose', x: +c.x.toFixed(2), y: +c.y.toFixed(2) });
+			conn.send({ t: 'pose', x: +c.x.toFixed(2), y: +c.y.toFixed(2), act: isActive() ? 1 : 0 });
 		}
 	}
 	function updateCamera(dt){
@@ -331,7 +425,8 @@ const ghostClient = (function(){
 
 	// --- buffs -----------------------------------------------------------------------
 	function sendBuff(kind){
-		if(state !== 'live' || !NET.validBuffKind(kind)) return false;
+		if(state !== 'live' || !NET.validBuffKind(kind) || mode !== 'full') return false;
+		noteInput();
 		if((buffWait[kind] || 0) > nowMs()) return false;
 		buffWait[kind] = nowMs() + 1500; // pessimistic lock until the ack lands
 		conn.send({ t: 'buff', kind });
@@ -347,12 +442,75 @@ const ghostClient = (function(){
 		updateBar();
 	}
 
-	// --- spirits of fellow watchers ------------------------------------------------------
+	// --- spirits: the watcher's own flying avatar + fellow watchers -----------------------
+	let lastSpiritT = 0;
 	function drawSpirits(ctx, TILE){
 		const painter = MMR && MMR.ghostHost && MMR.ghostHost.paintSpirit;
-		if(!painter) return;
+		if(!painter || state !== 'live') return;
 		const t = (typeof performance !== 'undefined') ? performance.now() : 0;
-		for(const g of others) painter(ctx, TILE, g.x, g.y, g.name, t, false);
+		const ease = Math.min(1, Math.max(0, (t - lastSpiritT) / 1000) * 9);
+		lastSpiritT = t;
+		for(const g of others){
+			if(Number.isFinite(g.tx)){ g.x += (g.tx - g.x) * ease; g.y += (g.ty - g.y) * ease; }
+			painter(ctx, TILE, g.x, g.y, g.name, t, false, g.avatar, g.act, g.chat);
+		}
+		// your own spirit rides the camera — dragging/WASD IS the ghost flying
+		const c = bridge.getCamCenter();
+		if(selfChat && selfChat.until < nowMs()) selfChat = null;
+		// dread ring: what your presence scares away right now (only while active)
+		if(isActive()){
+			ctx.save();
+			ctx.globalAlpha = 0.10;
+			ctx.strokeStyle = '#9fd6ff';
+			ctx.lineWidth = 1.5;
+			ctx.beginPath();
+			ctx.arc(c.x * TILE, c.y * TILE, NET.DREAD.R * TILE, 0, Math.PI * 2);
+			ctx.stroke();
+			ctx.restore();
+		}
+		painter(ctx, TILE, c.x, c.y, ghostName(), t, true, avatar, isActive(), selfChat);
+		// power blasts fade out over ~600 ms
+		const now = nowMs();
+		for(let i = powerFx.length - 1; i >= 0; i--){
+			const f = powerFx[i];
+			const age = (now - f.t) / 600;
+			if(age >= 1){ powerFx.splice(i, 1); continue; }
+			const rule = NET.POWER_RULES[f.kind];
+			ctx.save();
+			ctx.globalAlpha = 0.55 * (1 - age);
+			ctx.strokeStyle = f.kind === 'frost' ? '#9be8ff' : f.kind === 'smite' ? '#ffe9a8' : '#d9a8ff';
+			ctx.lineWidth = 3;
+			ctx.beginPath();
+			ctx.arc(f.x * TILE, f.y * TILE, rule.r * TILE * (0.4 + age * 0.8), 0, Math.PI * 2);
+			ctx.stroke();
+			ctx.restore();
+		}
+	}
+	function sendChat(raw){
+		if(state !== 'live' || mode === 'watch') return false;
+		const res = NET.filterChat(raw);
+		if(res.empty) return false;
+		conn.send({ t: 'chat', text: res.text });
+		noteInput();
+		return true;
+	}
+	// Powers strike at the SPIRIT's position — the host re-derives it from the last
+	// pose, so the client cannot aim them anywhere it hasn't actually flown.
+	function sendPower(kind){
+		if(state !== 'live' || mode !== 'full' || !NET.validPowerKind(kind)) return false;
+		const rule = NET.POWER_RULES[kind];
+		if(charge < rule.cost || (powerWait[kind] || 0) > nowMs()) return false;
+		conn.send({ t: 'power', kind });
+		noteInput();
+		powerWait[kind] = nowMs() + 800; // optimistic lock until the ack lands
+		updateBar();
+		return true;
+	}
+	function sendAssist(action, id){
+		if(state !== 'live' || !assistant || !NET.validAssistAction(action)) return false;
+		conn.send({ t: 'assist', a: action, id: String(id).slice(0, 64) });
+		noteInput();
+		return true;
 	}
 
 	// --- input ownership: watchers must not reach the game's handlers ---------------------
@@ -361,6 +519,7 @@ const ghostClient = (function(){
 		const isOurs = (e) => e.target && e.target.closest && e.target.closest('#ghostBar, #ghostVeil');
 		window.addEventListener('keydown', (e) => {
 			if(!MMR || !MMR.ghostMode) return;
+			noteInput(); // any real keystroke keeps this watcher "active" for the boosts
 			if(e.ctrlKey || e.metaKey || e.altKey) return; // browser shortcuts stay browser shortcuts
 			if(isOurs(e)) return;
 			const k = (e.key || '').toLowerCase();
@@ -377,6 +536,7 @@ const ghostClient = (function(){
 		}, true);
 		const swallowPointer = (e) => {
 			if(!MMR || !MMR.ghostMode) return;
+			if(e.type === 'pointerdown' || e.type === 'mousedown') noteInput();
 			if(isOurs(e)) return;
 			const onCanvas = e.target && e.target.id === 'game';
 			if(e.type === 'pointerdown' && onCanvas){
@@ -395,6 +555,7 @@ const ghostClient = (function(){
 		for(const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'mousedown', 'mouseup', 'click', 'contextmenu']){
 			window.addEventListener(type, swallowPointer, true);
 		}
+		window.addEventListener('wheel', () => { if(MMR && MMR.ghostMode) noteInput(); }, { capture: true, passive: true });
 	}
 
 	// --- UI -------------------------------------------------------------------------------
@@ -416,6 +577,15 @@ const ghostClient = (function(){
 			+ '#ghostBar button.gbBuff{ background:rgba(44,126,248,.35); }'
 			+ '#ghostBar button.gbFollow.on{ background:rgba(33,163,102,.5); }'
 			+ '#ghostBar button.gbLeave{ background:rgba(196,50,50,.4); }'
+			+ '#ghostBar .gbActivity{ font-weight:800; font-size:11px; color:#ffe9a8; white-space:nowrap; }'
+			+ '#ghostBar .gbCharge{ font-weight:800; font-size:11px; color:#c9a8ff; white-space:nowrap; }'
+			+ '#ghostBar button.gbPower{ background:rgba(150,80,220,.4); }'
+			+ '#ghostBar #gbAssist{ background:rgba(255,184,74,.4); }'
+			+ '#ghostBar #gbChat{ width:min(180px,34vw); background:rgba(20,26,36,.92); border:1px solid rgba(255,255,255,.2); border-radius:9px; color:#e6f0fb; padding:6px 8px; font-size:11.5px; outline:none; }'
+			+ '#ghostBar #gbChat:focus{ border-color:#58a6ff; }'
+			+ '#ghostBar #gbAvatarRow{ align-items:center; }'
+			+ '#ghostBar #gbAvatarRow button{ padding:4px 6px; font-size:14px; }'
+			+ '#ghostBar #gbAvatar{ font-size:14px; padding:5px 8px; }'
 			+ '#ghostVeil{ position:fixed; inset:0; z-index:290; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;'
 			+ ' background:radial-gradient(ellipse at 50% 40%, rgba(14,20,34,.92), rgba(4,7,13,.98)); color:#dcebff; font:14px system-ui; text-align:center; pointer-events:auto; }'
 			+ '#ghostVeil .gvIcon{ font-size:44px; animation:gvFloat 2.6s ease-in-out infinite; }'
@@ -434,37 +604,192 @@ const ghostClient = (function(){
 		veil.querySelector('.gvText').innerHTML = html;
 	}
 	function hideVeil(){ if(veil) veil.style.display = 'none'; }
+	const AVATAR_ICONS = { duszek: '👻', iskra: '✨', gwiazdka: '⭐', kotek: '🐱', sowa: '🦉', orbita: '🪐' };
+	function isTouchUi(){
+		try{ return document.documentElement.getAttribute('data-input-mode') === 'touch'; }catch(e){ return false; }
+	}
 	function buildBar(){
 		if(bar) return;
 		bar = document.createElement('div');
 		bar.id = 'ghostBar';
 		bar.innerHTML = '<span class="gbTag">👁 Duch Warstwy</span><span class="gbInfo" id="gbInfo"></span>'
+			+ '<span class="gbActivity" id="gbActivity" title="Aktywni widzowie wzmacniają gracza (+XP, szybkość, skok, obrażenia). Bezczynność >30 s wyłącza wzmocnienie."></span>'
+			+ '<button id="gbAvatar" title="Zmień awatara"></button>'
+			+ '<span id="gbAvatarRow" style="display:none;gap:3px;"></span>'
+			+ '<input id="gbChat" maxlength="90" placeholder="Napisz coś… [Enter]" autocomplete="off">'
 			+ '<button class="gbBuff" data-kind="cheer">✨ Doping</button>'
 			+ '<button class="gbBuff" data-kind="bless">💚 Błogosławieństwo</button>'
 			+ '<button class="gbBuff" data-kind="energy">⚡ Energia</button>'
-			+ '<button class="gbFollow on" id="gbFollow">🎥 Podążaj [F]</button>'
+			+ '<span class="gbCharge" id="gbCharge" title="Energia ducha rośnie, gdy jesteś aktywny — wydajesz ją na moce"></span>'
+			+ '<button class="gbPower" data-kind="banish">💀 Popłoch</button>'
+			+ '<button class="gbPower" data-kind="frost">❄️ Mróz</button>'
+			+ '<button class="gbPower" data-kind="smite">⚡ Grom</button>'
+			+ '<button id="gbAssist" style="display:none;">🛠 Asystent</button>'
+			+ '<button id="gbZoomOut" title="Oddal">➖</button>'
+			+ '<button id="gbZoomIn" title="Przybliż">➕</button>'
+			+ '<button class="gbFollow on" id="gbFollow"></button>'
 			+ '<button class="gbLeave" id="gbLeave">Opuść</button>';
 		document.body.appendChild(bar);
 		bar.querySelectorAll('.gbBuff').forEach(btn => btn.addEventListener('click', () => sendBuff(btn.dataset.kind)));
-		bar.querySelector('#gbFollow').addEventListener('click', () => setFollow(cam.mode !== 'follow'));
+		bar.querySelectorAll('.gbPower').forEach(btn => btn.addEventListener('click', () => sendPower(btn.dataset.kind)));
+		bar.querySelector('#gbAssist').addEventListener('click', () => { noteInput(); toggleAssistPanel(); });
+		bar.querySelector('#gbFollow').addEventListener('click', () => { noteInput(); setFollow(cam.mode !== 'follow'); });
 		bar.querySelector('#gbLeave').addEventListener('click', leave);
+		bar.querySelector('#gbZoomIn').addEventListener('click', () => { noteInput(); bridge && bridge.nudgeZoom(1.15); });
+		bar.querySelector('#gbZoomOut').addEventListener('click', () => { noteInput(); bridge && bridge.nudgeZoom(1 / 1.15); });
+		const avatarBtn = bar.querySelector('#gbAvatar');
+		const avatarRow = bar.querySelector('#gbAvatarRow');
+		for(const a of NET.AVATARS){
+			const b = document.createElement('button');
+			b.textContent = AVATAR_ICONS[a] || '👻';
+			b.title = a;
+			b.addEventListener('click', () => { setAvatar(a); avatarRow.style.display = 'none'; });
+			avatarRow.appendChild(b);
+		}
+		avatarBtn.addEventListener('click', () => {
+			noteInput();
+			avatarRow.style.display = avatarRow.style.display === 'none' ? 'inline-flex' : 'none';
+		});
+		const chat = bar.querySelector('#gbChat');
+		chat.addEventListener('keydown', (e) => {
+			noteInput();
+			if(e.key === 'Enter'){
+				if(sendChat(chat.value)) chat.value = '';
+				e.preventDefault();
+			}
+			e.stopPropagation();
+		});
 		barTick = setInterval(updateBar, 500);
+		updateBar();
 	}
 	function updateBar(){
 		if(!bar) return;
 		const info = bar.querySelector('#gbInfo');
 		info.textContent = (hostName ? hostName : '…') + (others.length ? ' • duchy: ' + (others.length + 1) : '');
+		bar.querySelector('#gbActivity').textContent = isActive() ? '⚡ wzmacniasz' : '💤 rusz się!';
+		bar.querySelector('#gbAvatar').textContent = AVATAR_ICONS[avatar] || '👻';
 		const t = nowMs();
 		bar.querySelectorAll('.gbBuff').forEach(btn => {
 			const wait = (buffWait[btn.dataset.kind] || 0) - t;
-			btn.disabled = state !== 'live' || wait > 0;
+			btn.disabled = state !== 'live' || wait > 0 || mode !== 'full';
 			const rule = NET.BUFF_RULES[btn.dataset.kind];
 			const base = btn.dataset.kind === 'cheer' ? '✨ Doping' : btn.dataset.kind === 'bless' ? '💚 Błogosławieństwo' : '⚡ Energia';
 			btn.textContent = wait > 1000 ? base + ' (' + Math.ceil(wait / 1000) + 's)' : base;
-			btn.title = rule ? rule.label : '';
+			btn.title = mode !== 'full' ? 'Gospodarz wyłączył wpływ na grę' : (rule ? rule.label : '');
 		});
+		// powers: charge is earned by staying active, then spent
+		bar.querySelector('#gbCharge').textContent = mode === 'full' ? '🔮 ' + Math.floor(charge) + '/' + NET.POWER_CHARGE.MAX : '';
+		bar.querySelectorAll('.gbPower').forEach(btn => {
+			const kind = btn.dataset.kind;
+			const rule = NET.POWER_RULES[kind];
+			const wait = (powerWait[kind] || 0) - t;
+			const poor = charge < rule.cost;
+			btn.style.display = mode === 'full' ? 'inline-block' : 'none';
+			btn.disabled = state !== 'live' || wait > 0 || poor;
+			btn.textContent = wait > 1000 ? rule.icon + ' ' + Math.ceil(wait / 1000) + 's' : rule.icon + ' ' + rule.label;
+			btn.title = rule.label + ' — koszt ' + rule.cost + ' energii ducha, działa wokół twojego ducha' + (poor ? ' (za mało energii: bądź aktywny!)' : '');
+		});
+		const asst = bar.querySelector('#gbAssist');
+		asst.style.display = assistant ? 'inline-block' : 'none';
+		const chat = bar.querySelector('#gbChat');
+		chat.style.display = mode === 'watch' ? 'none' : 'inline-block';
+		chat.disabled = state !== 'live';
 		const fol = bar.querySelector('#gbFollow');
 		fol.classList.toggle('on', cam.mode === 'follow');
+		fol.textContent = isTouchUi()
+			? (cam.mode === 'follow' ? '🎥 Podążam' : '🎥 Podążaj')
+			: (cam.mode === 'follow' ? '🎥 Podążam [F]' : '🎥 Podążaj [F]');
+		fol.title = isTouchUi() ? 'Przeciągnij po ekranie, aby latać duchem' : 'WASD/strzałki lub przeciąganie = lot ducha';
+	}
+
+	// --- assistant workbench: craft for the host, manage their gear ---------------------
+	function ensureAssistPanel(){
+		if(assistPanel || typeof document === 'undefined') return assistPanel;
+		const el = document.createElement('div');
+		el.id = 'ghostAssist';
+		el.style.cssText = 'position:fixed; left:12px; top:56px; z-index:150; width:min(340px,calc(100vw - 24px)); max-height:min(70vh,560px); overflow:auto; display:none; flex-direction:column; gap:8px;'
+			+ ' padding:12px 13px; border-radius:14px; border:1px solid rgba(255,184,74,.45); background:rgba(12,17,26,.96); color:#eef4fb; font:12px system-ui;'
+			+ ' box-shadow:0 12px 32px rgba(0,0,0,.6); pointer-events:auto;';
+		document.body.appendChild(el);
+		assistPanel = el;
+		return el;
+	}
+	function toggleAssistPanel(){
+		const el = ensureAssistPanel();
+		if(!el) return;
+		el.style.display = el.style.display === 'none' || !el.style.display ? 'flex' : 'none';
+		renderAssist();
+	}
+	function renderAssist(){
+		updateBar();
+		const el = assistPanel;
+		if(!el || el.style.display === 'none') return;
+		if(!assistant){ el.style.display = 'none'; return; }
+		el.textContent = '';
+		const head = document.createElement('div');
+		head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;';
+		const title = document.createElement('b');
+		title.textContent = '🛠 Warsztat asystenta';
+		const close = document.createElement('button');
+		close.textContent = '×';
+		close.style.cssText = 'border:none;background:rgba(255,255,255,.12);color:#fff;width:22px;height:22px;border-radius:7px;cursor:pointer;';
+		close.addEventListener('click', () => { el.style.display = 'none'; });
+		head.append(title, close);
+		el.appendChild(head);
+		if(!assistState){
+			const wait = document.createElement('div');
+			wait.style.color = '#9fb2c6';
+			wait.textContent = 'Czekam na stan gracza…';
+			el.appendChild(wait);
+			return;
+		}
+		const hp = document.createElement('div');
+		hp.style.cssText = 'color:#9fd6ae;';
+		hp.textContent = 'Gracz: ' + assistState.hp + '/' + assistState.maxHp + ' HP';
+		el.appendChild(hp);
+		const rHead = document.createElement('div');
+		rHead.style.cssText = 'font-weight:800;color:#9fb2c6;font-size:10px;letter-spacing:.6px;text-transform:uppercase;margin-top:4px;';
+		rHead.textContent = 'Receptury';
+		el.appendChild(rHead);
+		const recipes = Array.isArray(assistState.recipes) ? assistState.recipes : [];
+		if(!recipes.length){
+			const none = document.createElement('div');
+			none.style.color = '#9fb2c6';
+			none.textContent = 'Brak dostępnych receptur.';
+			el.appendChild(none);
+		}
+		for(const r of recipes.slice(0, 40)){
+			const row = document.createElement('button');
+			row.disabled = !r.can;
+			row.style.cssText = 'display:flex;justify-content:space-between;gap:8px;align-items:center;border:1px solid rgba(255,255,255,.14);border-radius:9px;'
+				+ 'background:' + (r.can ? 'rgba(42,111,71,.35)' : 'rgba(255,255,255,.05)') + ';color:#e8eef6;padding:6px 8px;font-size:11.5px;cursor:' + (r.can ? 'pointer' : 'not-allowed') + ';opacity:' + (r.can ? '1' : '.55') + ';';
+			const nm = document.createElement('span');
+			nm.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;font-weight:700;';
+			nm.textContent = String(r.name || r.id).slice(0, 40);
+			const cost = document.createElement('span');
+			cost.style.cssText = 'font-size:10px;color:#aeb9c7;white-space:nowrap;';
+			cost.textContent = (Array.isArray(r.cost) ? r.cost : []).map(c => c.k + ' ' + c.have + '/' + c.need).join(' · ').slice(0, 46);
+			row.append(nm, cost);
+			row.addEventListener('click', () => sendAssist('craft', r.id));
+			el.appendChild(row);
+		}
+		const iHead = document.createElement('div');
+		iHead.style.cssText = 'font-weight:800;color:#9fb2c6;font-size:10px;letter-spacing:.6px;text-transform:uppercase;margin-top:6px;';
+		iHead.textContent = 'Ekwipunek';
+		el.appendChild(iHead);
+		for(const i of (Array.isArray(assistState.items) ? assistState.items : []).slice(0, 40)){
+			const row = document.createElement('div');
+			row.style.cssText = 'display:flex;gap:6px;align-items:center;border-top:1px solid rgba(255,255,255,.08);padding:4px 0;';
+			const nm = document.createElement('span');
+			nm.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+			nm.textContent = (i.equipped ? '✔ ' : '') + String(i.name || i.id).slice(0, 34);
+			const btn = document.createElement('button');
+			btn.textContent = i.equipped ? 'Zdejmij' : 'Załóż';
+			btn.style.cssText = 'border:none;border-radius:7px;background:' + (i.equipped ? 'rgba(255,255,255,.14)' : '#2c7ef8') + ';color:#fff;font-size:10.5px;font-weight:700;padding:4px 9px;cursor:pointer;';
+			btn.addEventListener('click', () => sendAssist(i.equipped ? 'unequip' : 'equip', i.id));
+			row.append(nm, btn);
+			el.appendChild(row);
+		}
 	}
 
 	if(WATCH) ownInput();
@@ -477,13 +802,19 @@ const ghostClient = (function(){
 			camMode: cam.mode,
 			others: others.length,
 			reconnects,
+			mode,
+			avatar,
+			isActive: isActive(),
+			charge,
+			assistant,
+			assistRecipes: assistState && Array.isArray(assistState.recipes) ? assistState.recipes.length : 0,
 			stats: Object.assign({}, stats),
 			queued: queue.length,
 			barTick: !!barTick
 		};
 	}
 
-	const api = { boot, frame, active: () => !!WATCH && state !== 'idle', state: () => state, drawSpirits, sendBuff, setFollow, setCam, leave, metrics,
+	const api = { boot, frame, active: () => !!WATCH && state !== 'idle', state: () => state, drawSpirits, sendBuff, sendChat, sendPower, sendAssist, setAvatar, setFollow, setCam, noteInput, leave, metrics,
 		_debugConnLost: scheduleReconnect }; // QA: exercises the real drop→rejoin→resnapshot cycle
 	if(MMR) MMR.ghostClient = api;
 	return api;
