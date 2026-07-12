@@ -449,6 +449,28 @@ let pathBudgetThisFrame = 0;
 const DEFAULT_PATH_QUERIES_PER_FRAME = 3;
 const MAX_PATH_QUERIES_PER_FRAME = 12;
 
+// --- beyond self-rescue -----------------------------------------------------
+// The dig-assist and the ramp/relocate ladder open most terrain, but a squad
+// that tumbles down a shaft with a bedrock floor and sheer walls can grind at
+// the same wall until the night ends: the invasion never resolves and the
+// player never sees those units again. These thresholds detect real
+// confinement — pinned well below the hero, no line of sight, and covering no
+// ground — and the brain then asks the HOST for an extraction (a beam back to
+// the saucer, a burrow to the surface). The brain never teleports anything
+// itself; it only reports that this unit is past saving itself.
+// What counts as "not trapped" is PROGRESS, not motion. Two earlier heuristics both
+// failed on real terrain: straight-line displacement was wiped out by the dig-assist
+// shoving the unit up and down its shaft, and horizontal span was defeated by a unit
+// lasering a tunnel sideways and back — thrashing in place while getting nowhere. So
+// the timer only resets when the unit actually closes on the hero (its best distance
+// improves) or regains sight of him. A marching squad reduces the gap every second; a
+// squad down a hole never does.
+const TRAP_PROGRESS = 3;      // tiles of genuine closing that clear the timer
+const TRAP_DEPTH = 3.2;       // tiles below the hero before a pit counts as a pit
+const TRAP_BASE_S = 12;       // patience before calling for extraction…
+const TRAP_JITTER_S = 5;      // …jittered per unit so a squad never pops out in lockstep
+const TRAP_RETRY_S = 6;       // a refused extraction must not re-ask every frame
+
 // Host calls this once per engine tick, before updating brains.
 export function beginAIFrame(maxQueries){
   const requested = Number(maxQueries);
@@ -486,6 +508,10 @@ function freshAI(){
     rampFails:0,
     relocateX:0, relocateY:0, hasRelocate:false,
     giveUpT:6.5 + Math.random() * 2.5,
+    trapT:0,
+    trapLimit:TRAP_BASE_S + Math.random() * TRAP_JITTER_S,
+    trapBest:NaN,
+    extractCd:0,
     intent:{moveX:0, jump:false, jumpBoost:1, jumpKick:false, speedMult:1}
   };
 }
@@ -817,6 +843,34 @@ export function createSquadBrain(profile, nav){
       } else if(jumpableWall(wallB)){
         intent.moveX = -digDir;
         intent.jump = true; intent.jumpBoost = boostForWall(wallB);
+      }
+    }
+
+    // --- past saving itself: hand the unit to the host ---------------------
+    // Confinement, not mere slowness: the unit must be covering no ground, sunk
+    // well below the hero and blind to it. A squad chasing the hero across the
+    // surface re-anchors every window and never accumulates, and regaining line
+    // of sight drains the timer faster than it fills — so only a genuine dead
+    // end (deep shaft, sealed pocket) ever reaches the limit.
+    if(ai.extractCd > 0) ai.extractCd -= dt;
+    if(!Number.isFinite(ai.trapBest)) ai.trapBest = dist;
+    if(dist < ai.trapBest - TRAP_PROGRESS){ ai.trapBest = dist; ai.trapT = 0; } // real ground gained
+    // Deliberately NOT gated on onGround: a trapped unit spends much of its time in
+    // the air — the dig-assist and the stuck watchdog keep hurling it at the walls —
+    // and hopping at a cliff you cannot clear is the very symptom of being stuck, not
+    // evidence of escape. Requiring both feet on the floor held the timer at an
+    // equilibrium it could never climb out of, and the extraction never fired.
+    const sunk = (u.y - hero.y) > TRAP_DEPTH; // y grows downward: the unit is down a hole
+    if(sunk && !sight.clear) ai.trapT += dt;
+    else ai.trapT = Math.max(0, ai.trapT - dt * 1.5); // sight of the hero drains it fast
+    if(ai.trapT >= ai.trapLimit && ai.extractCd <= 0 && hooks.extract){
+      ai.extractCd = TRAP_RETRY_S;
+      // The host answers false when there is no way home (the saucer is a
+      // wreck) — then the unit stays where it is and keeps digging, and we
+      // simply ask again later instead of every frame.
+      if(hooks.extract(u, {reason:'pit', now, depth:u.y - hero.y})){
+        ai.trapT = 0;
+        return; // the host owns this unit until the extraction finishes
       }
     }
 

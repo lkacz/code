@@ -1267,6 +1267,127 @@ const invasions = (function(){
     }
     return true;
   }
+  // --- extraction: nobody is left down a hole forever ------------------------
+  // The squad brain (invasion_ai.js) reports a unit that is genuinely walled in
+  // — sunk below the hero, blind to it, going nowhere for a dozen seconds. It
+  // never moves the unit itself; the route home belongs here, and it differs by
+  // species:
+  //   aliens  — the saucer pulls them up in a tractor beam. No saucer, no beam:
+  //             wrecking the lander really does strand the landing party, which
+  //             is the point of shooting it.
+  //   molekin — no ship to call, but they are diggers: they chew back into the
+  //             rock and surface again near the tunnel mouth they came out of.
+  // The unit is frozen for the length of the sequence (skipped by the brain and
+  // by physics), so nothing can shove it mid-teleport.
+  const EXTRACT_OUT_S = { beam:1.15, burrow:1.30 };
+  const EXTRACT_IN_S  = { beam:0.45, burrow:0.55 };
+  const EXTRACT_EMERGE_SPREAD = 7; // "somewhere up top nearer the mouth", not on it
+  // A surface perch near x that a unit can actually stand on.
+  function findSurfaceStandable(x,getTile,spread){
+    const span = Math.max(0, floor(spread) || 0);
+    for(let step=0; step<=span; step++){
+      for(const sx of (step === 0 ? [floor(x)] : [floor(x)-step, floor(x)+step])){
+        const surf = floor(surfaceY(sx, 60));
+        // the ground line moves with digging and snow, so sweep a little around it
+        for(let dy=-3; dy<=4; dy++){
+          const ty = surf + dy;
+          if(canStandAt(sx,ty,getTile)) return {x:sx + 0.5, y:ty};
+        }
+      }
+    }
+    return null;
+  }
+  function extractionPlan(team,a,getTile){
+    if(isMolekinTeam(team)){
+      const b = team.burrow;
+      if(!b || !Number.isFinite(b.x)) return null;
+      // Emerge NEAR the mouth they dug, not exactly on it: a squad that all pops
+      // out of one hole reads as a glitch, a scatter around it reads as digging.
+      const side = Math.random() < 0.5 ? -1 : 1;
+      const wanted = b.x + side * randRange(1.5, EXTRACT_EMERGE_SPREAD);
+      const spot = findSurfaceStandable(wanted,getTile,EXTRACT_EMERGE_SPREAD) ||
+                   findSurfaceStandable(b.x,getTile,EXTRACT_EMERGE_SPREAD * 2);
+      if(!spot) return null;
+      return {kind:'burrow', x:spot.x, y:spot.y};
+    }
+    const l = team.lander;
+    if(!l || l.destroyed || l.invisible) return null; // no ship: no ride home
+    const side = Math.random() < 0.5 ? -1 : 1;
+    const spot = findSurfaceStandable(l.x + side * randRange(1.2, 3.2),getTile,6) ||
+                 findSurfaceStandable(l.x,getTile,8);
+    if(!spot) return null;
+    return {kind:'beam', x:spot.x, y:spot.y};
+  }
+  function beginExtraction(team,a,opts,getTile,setTile,ctx){
+    if(!a || a.dead || a.hp <= 0 || a.extract) return false;
+    if(!team || team.state === 'defeated' || team.state === 'retreat') return false;
+    const plan = extractionPlan(team,a,getTile);
+    if(!plan) return false;
+    const now = (opts && Number.isFinite(opts.now)) ? opts.now : nowMs();
+    a.extract = {
+      kind:plan.kind,
+      phase:'out',
+      t:0,
+      outDur:EXTRACT_OUT_S[plan.kind] || 1.2,
+      inDur:EXTRACT_IN_S[plan.kind] || 0.5,
+      sx:a.x, sy:a.y,
+      tx:plan.x, ty:plan.y,
+      fxT:0
+    };
+    a.vx = 0; a.vy = 0;
+    a.onGround = false;
+    a._ai = null; // it re-plans from wherever it lands, with a clean slate
+    burst(a.x, a.y - 0.4, plan.kind === 'beam' ? 'epic' : 'rare');
+    play(plan.kind === 'beam' ? 'charge' : 'dig', {x:a.x, y:a.y});
+    if(now > (team.extractSpeechAt || 0)){
+      team.extractSpeechAt = now + 20000;
+      say(plan.kind === 'beam'
+        ? 'Obcy utknal w rozpadlinie — spodek wciaga go promieniem.'
+        : 'Kretoludzie wgryzaja sie w skale i wracaja na powierzchnie.');
+      triggerTeamSpeech(team,'trapped',{speaker:a,now,force:true,cooldown:6200,keyCooldown:20000});
+    }
+    markHostSave(ctx);
+    return true;
+  }
+  // Runs INSTEAD of the normal brain + physics step while a unit is in transit.
+  function updateExtraction(a,team,dt,getTile,ctx){
+    const e = a.extract;
+    if(!e) return;
+    a.vx = 0; a.vy = 0;
+    e.t += Math.max(0, dt || 0);
+    e.fxT -= Math.max(0, dt || 0);
+    const beam = e.kind === 'beam';
+    if(e.phase === 'out'){
+      const k = clamp(e.t / e.outDur, 0, 1);
+      // hauled up into the light, or chewing down into the rock
+      a.y = e.sy + (beam ? -1.5 * k * k : 1.25 * k);
+      if(e.fxT <= 0){
+        e.fxT = 0.1;
+        burst(a.x + randRange(-0.25,0.25), a.y + (beam ? randRange(-0.3,0.3) : 0.35), beam ? 'epic' : 'common');
+      }
+      if(k >= 1){
+        a.x = e.tx; a.y = e.ty;
+        e.phase = 'in'; e.t = 0;
+        burst(a.x, a.y - 0.4, beam ? 'epic' : 'rare');
+        play(beam ? 'beam' : 'thud', {x:a.x, y:a.y});
+      }
+      return;
+    }
+    const k = clamp(e.t / e.inDur, 0, 1);
+    // set down out of the beam / heaved up out of the soil
+    a.y = e.ty + (beam ? -1.2 * (1 - k) * (1 - k) : 1.0 * (1 - k));
+    if(e.fxT <= 0){
+      e.fxT = 0.12;
+      burst(a.x + randRange(-0.3,0.3), a.y + (beam ? 0 : 0.4), beam ? 'rare' : 'common');
+    }
+    if(k >= 1){
+      a.x = e.tx; a.y = e.ty;
+      a.vx = 0; a.vy = 0;
+      a.onGround = false; // let the normal physics re-seat it on the ground
+      a.extract = null;
+      markHostSave(ctx);
+    }
+  }
   function moveAlien(a,dt,getTile){
     if(alienCollidesAt(a,a.x,a.y,getTile)) return;
     const stepDt = Math.max(0, Math.min(0.05, dt || 0));
@@ -2598,6 +2719,7 @@ const invasions = (function(){
       heal:(a,target,amount)=>healAlien(team,a,target,amount),
       repairAtLander:(a,amount)=>isMolekinTeam(team) ? repairMolekinAtBurrow(team,a,amount) : repairAlienAtLander(team,a,amount),
       unstuck:(a,opts)=>unstuckAlien(team,a,opts,getTile,setTile,ctx),
+      extract:(a,opts)=>beginExtraction(team,a,opts,getTile,setTile,ctx),
       tileAttack:(a,tx,ty,mult)=>{
         burst(tx+0.5,ty+0.5,isMolekinTeam(team) ? 'rare' : 'common');
         const threat = teamThreatLevel(team);
@@ -2796,16 +2918,25 @@ const invasions = (function(){
         defeatTeam(team,player,ctx,getTile,setTile);
         continue;
       }
-      if(team.aliens.length && player){
+      // A unit in transit is out of the squad's hands: it steers nothing, it is
+      // not pushed around by separation, and physics must not drag it back down
+      // the shaft mid-beam. Everything else about it (hp, speech, being shot)
+      // keeps working.
+      const steerable = team.aliens.filter(a => a && !a.dead && a.hp > 0 && !a.extract);
+      if(steerable.length && player){
         const brain = ensureBrain(team);
-        brain.update(team, team.aliens, dt, player, teamHooks(team,player,getTile,setTile,ctx), {now});
+        brain.update(team, steerable, dt, player, teamHooks(team,player,getTile,setTile,ctx), {now});
       }
       let alive = 0;
       for(const a of team.aliens){
         if(!a || a.dead || a.hp <= 0) continue;
-        updateAlien(a,team,dt,player,getTile,setTile,ctx);
+        if(a.extract) updateExtraction(a,team,dt,getTile,ctx);
+        else updateAlien(a,team,dt,player,getTile,setTile,ctx);
         updateAlienSpeech(a,team,now);
-        if(a.hp > 0 && !a.dead){ alive++; allUnits.push(a); }
+        if(a.hp > 0 && !a.dead){
+          alive++;
+          if(!a.extract) allUnits.push(a);
+        }
       }
       if(team.state === 'active' && alive <= 0) defeatTeam(team,player,ctx,getTile,setTile);
     }
@@ -3830,6 +3961,79 @@ const invasions = (function(){
     drawAlienSpeech(ctx,a,px,foot-T2*1.05*heightScale,T2,now);
     if(a.hp < a.maxHp) drawHealthBar(ctx,px,foot-T2*0.98*heightScale,T2*0.66*bodyScale,a.hp/a.maxHp);
   }
+  // Transit FX. Beam: a tapered column of light standing over the unit, brightest
+  // at the moment of the snatch, with a matching shaft where it sets down. Burrow:
+  // a churning mound of spoil around the unit as it chews in and heaves back out.
+  // The unit itself fades through the middle of the sequence, so the swap of
+  // position happens behind the brightest/dirtiest frame rather than in plain view.
+  function extractFade(e){
+    if(!e) return 1;
+    const k = clamp(e.t / (e.phase === 'out' ? e.outDur : e.inDur), 0, 1);
+    return e.phase === 'out' ? Math.max(0.12, 1 - k * 0.95) : Math.min(1, 0.15 + k * 1.1);
+  }
+  function drawExtractionFx(ctx,a,TILE_SIZE,now){
+    const e = a.extract;
+    if(!e) return;
+    const T2 = TILE_SIZE;
+    const px = a.x * T2, foot = a.y * T2;
+    const k = clamp(e.t / (e.phase === 'out' ? e.outDur : e.inDur), 0, 1);
+    // strongest at the hand-off (end of 'out', start of 'in')
+    const power = e.phase === 'out' ? k : 1 - k;
+    ctx.save();
+    if(e.kind === 'beam'){
+      const h = T2 * 15;
+      const topW = T2 * (0.55 + power * 0.5);
+      const botW = T2 * (1.05 + power * 0.95);
+      const grad = ctx.createLinearGradient(px, foot - h, px, foot + T2 * 0.2);
+      grad.addColorStop(0, 'rgba(150,255,220,0)');
+      grad.addColorStop(0.55, 'rgba(140,255,210,' + (0.10 + power * 0.20).toFixed(3) + ')');
+      grad.addColorStop(1, 'rgba(220,255,240,' + (0.20 + power * 0.42).toFixed(3) + ')');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(px - topW, foot - h);
+      ctx.lineTo(px + topW, foot - h);
+      ctx.lineTo(px + botW, foot + T2 * 0.18);
+      ctx.lineTo(px - botW, foot + T2 * 0.18);
+      ctx.closePath();
+      ctx.fill();
+      // rungs of light sliding up the shaft
+      ctx.strokeStyle = 'rgba(200,255,235,' + (0.12 + power * 0.28).toFixed(3) + ')';
+      ctx.lineWidth = Math.max(1, T2 * 0.06);
+      for(let i=0;i<4;i++){
+        const slide = ((now * 0.0016 + i * 0.25) % 1);
+        const yy = foot + T2 * 0.18 - slide * h;
+        const w = botW + (topW - botW) * slide;
+        ctx.globalAlpha = (1 - slide) * (0.5 + power * 0.5);
+        ctx.beginPath();
+        ctx.moveTo(px - w, yy);
+        ctx.lineTo(px + w, yy);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      // ground pool under the column
+      ctx.fillStyle = 'rgba(190,255,230,' + (0.10 + power * 0.30).toFixed(3) + ')';
+      ctx.beginPath();
+      ctx.ellipse(px, foot + T2 * 0.1, botW * 0.9, T2 * 0.22, 0, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      // spoil heap + flying clods
+      const r = T2 * (0.5 + power * 0.55);
+      ctx.fillStyle = 'rgba(96,68,44,' + (0.35 + power * 0.45).toFixed(3) + ')';
+      ctx.beginPath();
+      ctx.ellipse(px, foot + T2 * 0.12, r * 1.5, r * 0.55, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(140,102,66,' + (0.30 + power * 0.42).toFixed(3) + ')';
+      for(let i=0;i<7;i++){
+        const ang = (now * 0.004 + i * 0.9) % (Math.PI * 2);
+        const rad = r * (0.6 + ((i * 7919 % 100) / 100) * 0.9);
+        const cx = px + Math.cos(ang) * rad * 1.4;
+        const cy = foot + T2 * 0.05 - Math.abs(Math.sin(ang)) * rad * (0.5 + power);
+        const s = T2 * (0.07 + ((i * 104729 % 100) / 100) * 0.09);
+        ctx.fillRect(cx - s / 2, cy - s / 2, s, s);
+      }
+    }
+    ctx.restore();
+  }
   function draw(ctx,tileSize,canDrawTile){
     const TILE_SIZE = tileSize || DEFAULT_TILE;
     const visible = (x,y)=> typeof canDrawTile === 'function' ? !!canDrawTile(Math.floor(x),Math.floor(y)) : true;
@@ -3850,8 +4054,12 @@ const invasions = (function(){
       if(!team || team.state === 'defeated') continue;
       for(const a of team.aliens){
         if(!a || a.dead || a.hp <= 0 || !visible(a.x,a.y)) continue;
+        if(a.extract) drawExtractionFx(ctx,a,TILE_SIZE,now);
+        const fade = extractFade(a.extract);
+        if(fade < 1) ctx.globalAlpha = fade;
         if(isMolekinTeam(team)) drawMolekin(ctx,a,TILE_SIZE,now);
         else drawAlien(ctx,a,TILE_SIZE,now);
+        if(fade < 1) ctx.globalAlpha = 1;
       }
     }
     ctx.restore();
@@ -4399,9 +4607,98 @@ const invasions = (function(){
     }
   }catch(e){}
 
+  // --- ghost mirror: invasions, seen from the cheap seats ---------------------
+  // A watcher never runs invasions.update() (it must not spawn, dig or steal), so
+  // its squads used to stand frozen wherever the last full snapshot found them —
+  // the landing party looked like statuary. Same contract as the mob plane in
+  // mobs.js: a light roster of poses at high cadence, keyed by a signature, with
+  // a full snapshot whenever the roster's shape changes. Slow props (a saucer
+  // settling, a burrow grinding open) ride along so those animate too.
+  function ghostLiveUnits(){
+    const out=[];
+    for(const team of teams){
+      if(!team || team.state === 'defeated') continue;
+      for(const a of team.aliens){ if(a && !a.dead && a.hp > 0) out.push(a); }
+    }
+    return out;
+  }
+  function ghostRoster(){
+    const live=ghostLiveUnits();
+    const live4=teams.filter(t=>t && t.state !== 'defeated');
+    return {
+      sig: live.map(a=>a.id).join('|'),
+      poses: live.map(a=>[
+        +a.x.toFixed(3), +a.y.toFixed(3), a.facing < 0 ? -1 : 1, +(Number(a.hp)||0).toFixed(2),
+        // in transit: kind (1 beam / 2 burrow), elapsed, phase — so the beam and
+        // the spoil heap play out on the watcher's screen too
+        a.extract ? (a.extract.kind === 'beam' ? 1 : 2) : 0,
+        a.extract ? +(a.extract.t||0).toFixed(2) : 0,
+        a.extract && a.extract.phase === 'in' ? 1 : 0
+      ]),
+      props: live4.map(t=>[
+        String(t.id),
+        t.lander ? +(Number(t.lander.y)||0).toFixed(2) : 0,
+        t.burrow ? +(Number(t.burrow.progress)||0).toFixed(2) : 0,
+        t.burrow && t.burrow.open ? 1 : 0
+      ])
+    };
+  }
+  function ghostApplyRoster(roster){
+    if(!roster || typeof roster.sig !== 'string' || !Array.isArray(roster.poses)) return false;
+    const live=ghostLiveUnits();
+    if(live.map(a=>a.id).join('|') !== roster.sig) return false; // shape drifted: wait for the full sync
+    for(let i=0;i<live.length;i++){
+      const p=roster.poses[i];
+      if(!Array.isArray(p) || !Number.isFinite(Number(p[0])) || !Number.isFinite(Number(p[1]))) continue;
+      const a=live[i];
+      a._ghostTX=Number(p[0]); a._ghostTY=Number(p[1]);
+      a.facing=Number(p[2]) < 0 ? -1 : 1;
+      if(Number.isFinite(Number(p[3]))) a.hp=Math.max(0, Math.min(a.maxHp || Number(p[3]), Number(p[3])));
+      const kindCode=Number(p[4])|0;
+      if(kindCode){
+        const kind=kindCode === 1 ? 'beam' : 'burrow';
+        const phase=Number(p[6]) ? 'in' : 'out';
+        a.extract=Object.assign(a.extract || {}, {
+          kind, phase, t:Math.max(0, Number(p[5])||0),
+          outDur:EXTRACT_OUT_S[kind] || 1.2, inDur:EXTRACT_IN_S[kind] || 0.5,
+          sx:a.x, sy:a.y, tx:a.x, ty:a.y, fxT:0
+        });
+      } else a.extract=null;
+    }
+    if(Array.isArray(roster.props)){
+      for(const p of roster.props){
+        if(!Array.isArray(p)) continue;
+        const team=teams.find(t=>t && String(t.id) === String(p[0]));
+        if(!team) continue;
+        if(team.lander && Number.isFinite(Number(p[1]))) team.lander.y=Number(p[1]);
+        if(team.burrow){
+          if(Number.isFinite(Number(p[2]))) team.burrow.progress=Number(p[2]);
+          team.burrow.open=!!Number(p[3]);
+        }
+      }
+    }
+    return true;
+  }
+  // Cosmetic glide toward the streamed pose — never physics, never AI.
+  function ghostLerp(dt){
+    const k=Math.min(1, Math.max(0, Number(dt)||0) * 9);
+    for(const team of teams){
+      if(!team || team.state === 'defeated') continue;
+      for(const a of team.aliens){
+        if(!a || !Number.isFinite(a._ghostTX) || !Number.isFinite(a._ghostTY)) continue;
+        const dx=a._ghostTX - a.x, dy=a._ghostTY - a.y;
+        if(Math.abs(dx) > 4 || Math.abs(dy) > 4){ a.x=a._ghostTX; a.y=a._ghostTY; continue; } // a beam is a jump, not a glide
+        a.x += dx * k; a.y += dy * k;
+      }
+    }
+  }
+
   const api = {
     update,
     draw,
+    ghostRoster,
+    ghostApplyRoster,
+    ghostLerp,
     attackAt,
     damageAt,
     damageAtWorld,
@@ -4422,7 +4719,7 @@ const invasions = (function(){
     reset,
     metrics,
     state:()=>({teams:teams.map(serializeTeam), caches:caches.map(c=>deepCopy(c)), lastNightDay, seq}),
-    _debug:{teams,caches,lasers,tileDamage,brains,nav,traceLine,damageStructureTile,damageTeamTile,isMoleDiggableTile,fireMolekinAttack,unstuckAlien,alienEscapeCells,findCacheSpot,stealResources,stealGear,canPlaceBarricadeAt,placeBarricadeTile,canPlaceMoleVentAt,placeMoleVentTile,cleanupBuiltTiles,profileFor,playerLevelFor,threatLevelFor,gradeForThreat,teamCountForDay,alienCountForDay,molekinCountForDay,xpRewardForTeam,rewardProfileForTeam,westGuardianDefeated,eastGuardianDefeated,spawnRuinCommander,forceMolekinInvasion,forceAlienSpeech,triggerTeamSpeech,updateAlienSpeech,updateHeroAwareness,updateAtomicWinterAwareness,atomicWinterSpeechLines,compactSpeechText,storyInvasionLinesForProgress,speechLines:ALIEN_SPEECH,moleSpeechLines:MOLEKIN_SPEECH,rareSpeechLines:ALIEN_RARE_SPEECH,moleRareSpeechLines:MOLEKIN_RARE_SPEECH,echoSpeechLines:ALIEN_ECHO_SPEECH,moleEchoSpeechLines:MOLEKIN_ECHO_SPEECH}
+    _debug:{teams,caches,lasers,tileDamage,brains,nav,traceLine,damageStructureTile,damageTeamTile,isMoleDiggableTile,fireMolekinAttack,unstuckAlien,beginExtraction,updateExtraction,extractionPlan,findSurfaceStandable,alienEscapeCells,findCacheSpot,stealResources,stealGear,canPlaceBarricadeAt,placeBarricadeTile,canPlaceMoleVentAt,placeMoleVentTile,cleanupBuiltTiles,profileFor,playerLevelFor,threatLevelFor,gradeForThreat,teamCountForDay,alienCountForDay,molekinCountForDay,xpRewardForTeam,rewardProfileForTeam,westGuardianDefeated,eastGuardianDefeated,spawnRuinCommander,forceMolekinInvasion,forceAlienSpeech,triggerTeamSpeech,updateAlienSpeech,updateHeroAwareness,updateAtomicWinterAwareness,atomicWinterSpeechLines,compactSpeechText,storyInvasionLinesForProgress,speechLines:ALIEN_SPEECH,moleSpeechLines:MOLEKIN_SPEECH,rareSpeechLines:ALIEN_RARE_SPEECH,moleRareSpeechLines:MOLEKIN_RARE_SPEECH,echoSpeechLines:ALIEN_ECHO_SPEECH,moleEchoSpeechLines:MOLEKIN_ECHO_SPEECH}
   };
   MM.invasions = api;
   return api;

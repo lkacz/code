@@ -2221,7 +2221,100 @@ import { reactions as REACTIONS } from './reactions.js';
     };
   }
   function reset(){ arrows.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; meleeCd=0; electricCd=0; throwCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; resetBowCharge(); }
+
+  // --- ghost mirror: the hero's weapons, seen from the cheap seats ------------
+  // A watcher runs the full renderer but no simulation, so its weapons module
+  // stayed empty and the hero appeared to fight thin air — walking, but never
+  // swinging, shooting or burning. The host ships a compact snapshot of the
+  // COSMETIC state only (no damage, no ammo, no tile writes; draw() is already
+  // read-only), and the watcher integrates it locally between packets so arrows
+  // keep flying smoothly instead of teleporting once per network tick.
+  const GHOST_FX_CAP={arrows:24, puffs:80, beams:8, blasts:8};
+  const FX_STUCK=1, FX_POWER=2, FX_ROCK=4, FX_SNOW=8;
+  function ghostFxState(){
+    const st={};
+    if(swing.t>0) st.sw=[+swing.t.toFixed(3), swing.tx, swing.ty, swing.dir, +swing.dur.toFixed(3)];
+    if(arrows.length) st.ar=arrows.slice(-GHOST_FX_CAP.arrows).map(a=>[
+      +a.x.toFixed(2), +a.y.toFixed(2), +(a.vx||0).toFixed(2), +(a.vy||0).toFixed(2),
+      (a.stuck?FX_STUCK:0)|(a.power?FX_POWER:0)|(a.rock?FX_ROCK:0)|(a.snowball?FX_SNOW:0),
+      +(a.ang||0).toFixed(3), a.color||'', a.headColor||''
+    ]);
+    if(puffs.length) st.pf=puffs.slice(-GHOST_FX_CAP.puffs).map(p=>[
+      p.kind, +p.x.toFixed(2), +p.y.toFixed(2), +(p.vx||0).toFixed(2), +(p.vy||0).toFixed(2),
+      +(p.life||0).toFixed(2), +(p.total||0).toFixed(2)
+    ]);
+    if(electricBeams.length) st.eb=electricBeams.slice(-GHOST_FX_CAP.beams).map(b=>[
+      +b.x1.toFixed(2), +b.y1.toFixed(2), +b.x2.toFixed(2), +b.y2.toFixed(2),
+      +(b.t||0).toFixed(3), +(b.life||0.2).toFixed(3), b.hit?1:0, b.blocked?1:0, +(b.phase||0).toFixed(2)
+    ]);
+    if(blastsFx.length) st.bl=blastsFx.slice(-GHOST_FX_CAP.blasts).map(b=>[
+      +b.x.toFixed(2), +b.y.toFixed(2), +(b.R||1).toFixed(2), +(b.t||0).toFixed(3), +(b.max||0.4).toFixed(3)
+    ]);
+    return st;
+  }
+  const num=(v,d)=>Number.isFinite(Number(v))?Number(v):(d||0);
+  function ghostApplyFx(st){
+    if(!st || typeof st!=='object') return false;
+    // A hostile host must not be able to blow the watcher's frame budget.
+    const sw=Array.isArray(st.sw)?st.sw:null;
+    swing.t=sw?Math.max(0,Math.min(2,num(sw[0]))):0;
+    if(sw){ swing.tx=num(sw[1]); swing.ty=num(sw[2]); swing.dir=num(sw[3])<0?-1:1; swing.dur=Math.max(0.05,Math.min(2,num(sw[4],0.2))); }
+    arrows.length=0;
+    for(const a of (Array.isArray(st.ar)?st.ar.slice(0,GHOST_FX_CAP.arrows):[])){
+      if(!Array.isArray(a)) continue;
+      const f=num(a[4])|0;
+      arrows.push({x:num(a[0]), y:num(a[1]), vx:num(a[2]), vy:num(a[3]),
+        stuck:!!(f&FX_STUCK), power:!!(f&FX_POWER), rock:!!(f&FX_ROCK), snowball:!!(f&FX_SNOW),
+        ang:num(a[5]), color:typeof a[6]==='string'?a[6].slice(0,24):'', headColor:typeof a[7]==='string'?a[7].slice(0,24):'',
+        life:9, stuckT:9, travel:0, maxTravel:1e9, ghost:true});
+    }
+    puffs.length=0;
+    for(const p of (Array.isArray(st.pf)?st.pf.slice(0,GHOST_FX_CAP.puffs):[])){
+      if(!Array.isArray(p)) continue;
+      puffs.push({kind:typeof p[0]==='string'?p[0].slice(0,12):'flame', x:num(p[1]), y:num(p[2]),
+        vx:num(p[3]), vy:num(p[4]), life:Math.max(0,num(p[5])), total:Math.max(0.05,num(p[6],0.5)), dps:0, ghost:true});
+    }
+    electricBeams.length=0;
+    for(const b of (Array.isArray(st.eb)?st.eb.slice(0,GHOST_FX_CAP.beams):[])){
+      if(!Array.isArray(b)) continue;
+      electricBeams.push({x1:num(b[0]), y1:num(b[1]), x2:num(b[2]), y2:num(b[3]),
+        t:num(b[4]), life:Math.max(0.05,num(b[5],0.2)), hit:!!num(b[6]), blocked:!!num(b[7]), phase:num(b[8]), ghost:true});
+    }
+    blastsFx.length=0;
+    for(const b of (Array.isArray(st.bl)?st.bl.slice(0,GHOST_FX_CAP.blasts):[])){
+      if(!Array.isArray(b)) continue;
+      blastsFx.push({x:num(b[0]), y:num(b[1]), R:Math.max(0.2,num(b[2],1)), t:num(b[3]), max:Math.max(0.05,num(b[4],0.4)), ghost:true});
+    }
+    return true;
+  }
+  // Cosmetic-only integration between packets. Deliberately NOT update(): no
+  // damage, no ignition, no pickups, no tile writes — a watcher may never change
+  // the world it is watching.
+  function ghostStepFx(dt){
+    const d=Math.max(0, Math.min(0.1, Number(dt)||0));
+    if(!d) return;
+    if(swing.t>0) swing.t-=d;
+    for(let i=arrows.length-1;i>=0;i--){
+      const a=arrows[i];
+      if(a.stuck) continue;
+      a.x+=a.vx*d; a.y+=a.vy*d; a.vy+=ARROW_GRAV*d;
+    }
+    for(let i=puffs.length-1;i>=0;i--){
+      const p=puffs[i];
+      p.life-=d; p.x+=(p.vx||0)*d; p.y+=(p.vy||0)*d;
+      if(p.life<=0) puffs.splice(i,1);
+    }
+    for(let i=electricBeams.length-1;i>=0;i--){
+      const b=electricBeams[i]; b.t+=d;
+      if(b.t>=b.life) electricBeams.splice(i,1);
+    }
+    for(let i=blastsFx.length-1;i>=0;i--){
+      const b=blastsFx[i]; b.t+=d;
+      if(b.t>b.max) blastsFx.splice(i,1);
+    }
+  }
   MM.weapons={fireHeld,releaseHeld,cancelHeld,fireUlt,update,draw,drawHeld,notifyMeleeSwing,reset,explodeAt,spawnGasCloud,spawnExternalStream,
+    ghostFxState,ghostApplyFx,ghostStepFx,
     arrowInfo,setArrowPref,fuelInfo,thrownInfo,hudStatus,addUltCharge,
     metrics:()=>({arrows:arrows.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),ultCharge,bowCharge:bowChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
     _debug:{arrows,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,waterHeat,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS}};

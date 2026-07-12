@@ -31,7 +31,7 @@ if(MMR && !MMR.ghostDreadAt){
 	};
 }
 
-const CAD = { hero: 66, mobs: 120, mobsFull: 3000, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 10000, prog: 1000 };
+const CAD = { hero: 66, wfx: 66, mobs: 120, mobsFull: 3000, inv: 120, invFull: 3000, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 10000, prog: 1000 };
 const CHAT_MIN_MS = 4000; // per-peer chat floor
 const ACT_POSE_TTL_MS = 6000; // an "active" pose vouches for the watcher this long
 const TILE_RESYNC_LIMIT = 3000;
@@ -69,9 +69,12 @@ const ghostHost = (function(){
 			snapCacheAt: 0,
 			sinceCache: [],
 			lastSnapAt: 0,
-			last: { hero: 0, heroKeepalive: 0, mobs: 0, mobsFull: 0, drops: 0, seasons: 0, infra: 0, presence: 0, reap: 0, prog: 0 },
+			last: { hero: 0, heroKeepalive: 0, wfx: 0, mobs: 0, mobsFull: 0, inv: 0, invFull: 0, drops: 0, seasons: 0, infra: 0, presence: 0, reap: 0, prog: 0 },
 			auraOwners: [],
 			lastMobSig: null,
+			lastInvSig: null,
+			invIdle: false,
+			wfxBusy: false,
 			lastDropsJson: null,
 			lastHeroSent: null,
 			infraDirty: true,
@@ -199,6 +202,8 @@ const ghostHost = (function(){
 				entry.peer.send({ t: 'welcome', proto: NET.GHOST_PROTO, host: s.name, room: s.room, mode: entry.mode });
 				entry.lastSnapAt = now();
 				sendSnapshot(s, entry.peer);
+				sendInvFull(s, entry.peer); // the world save carries invasions, but a fresh
+				                            // roster sig is what unlocks the live pose plane
 				sendDeed(entry, 'join', 1);
 				try{ bridge.msg('👻 ' + entry.name + ' obserwuje twoją warstwę'); }catch(e){ /* fine */ }
 				updateUi();
@@ -290,6 +295,19 @@ const ghostHost = (function(){
 			s.last.mobsFull = now();
 		}catch(e){ /* mob codec hiccup — next tick retries */ }
 	}
+	// Invasions ride their own plane, exactly like the mobs: the watcher never runs
+	// invasions.update() (a spectator must not spawn, dig or steal), so without this
+	// the landing party stood frozen wherever the last full snapshot caught it.
+	function sendInvFull(s, peer){
+		try{
+			const I = MMR && MMR.invasions;
+			if(!I || !I.snapshot) return;
+			const pl = { t: 'invFull', data: I.snapshot() };
+			if(peer) peer.send(pl); else broadcast(pl);
+			s.lastInvSig = (I.ghostRoster ? I.ghostRoster().sig : null);
+			s.last.invFull = now();
+		}catch(e){ /* next tick retries */ }
+	}
 
 	// --- live planes ---------------------------------------------------------------
 	// Numeric cell key: y spans [-140,280], so (y+512) stays inside one thousand-slot
@@ -325,7 +343,9 @@ const ghostHost = (function(){
 			}
 		}
 		if(t - s.last.hero >= CAD.hero) heroTick(s, t);
+		if(t - s.last.wfx >= CAD.wfx) weaponTick(s, t);
 		if(t - s.last.mobs >= CAD.mobs) mobTick(s, t);
+		if(t - s.last.inv >= CAD.inv) invTick(s, t);
 		if(t - s.last.drops >= CAD.drops) dropTick(s, t);
 		if(t - s.last.seasons >= CAD.seasons) seasonTick(s, t);
 		if(s.infraDirty && t - s.last.infra >= CAD.infra) infraTick(s, t);
@@ -350,6 +370,32 @@ const ghostHost = (function(){
 		const roster = M.ghostRoster();
 		if(roster.sig !== s.lastMobSig || t - s.last.mobsFull > CAD.mobsFull){ sendMobsFull(s, null); }
 		else broadcast({ t: 'mobs', sig: roster.sig, poses: roster.poses });
+	}
+	function invTick(s, t){
+		s.last.inv = t;
+		const I = MMR && MMR.invasions;
+		if(!I || !I.ghostRoster) return;
+		const roster = I.ghostRoster();
+		// nothing invading: send one empty sync so a watcher's stale squad clears
+		if(!roster.sig && !s.lastInvSig && s.invIdle) return;
+		s.invIdle = !roster.sig;
+		if(roster.sig !== s.lastInvSig || t - s.last.invFull > CAD.invFull){ sendInvFull(s, null); }
+		else broadcast({ t: 'inv', sig: roster.sig, poses: roster.poses, props: roster.props });
+	}
+	// The hero's weapons: cosmetic FX only (swing arc, arrows, stream puffs, beams,
+	// blasts). Without this the watcher saw the hero walk around and never land a
+	// blow. Sent at hero cadence and only while something is actually happening —
+	// plus one trailing packet to clear the watcher's screen when it stops.
+	function weaponTick(s, t){
+		s.last.wfx = t;
+		const W = MMR && MMR.weapons;
+		if(!W || !W.ghostFxState) return;
+		let st = null;
+		try{ st = W.ghostFxState(); }catch(e){ return; }
+		const busy = !!(st && (st.sw || st.ar || st.pf || st.eb || st.bl));
+		if(!busy && !s.wfxBusy) return; // idle → silence
+		s.wfxBusy = busy;
+		broadcast({ t: 'wfx', fx: st || {} });
 	}
 	function dropTick(s, t){
 		s.last.drops = t;

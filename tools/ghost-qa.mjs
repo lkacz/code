@@ -370,6 +370,134 @@ async function main(){
 		await ghost.shot('tools/ghost-qa.png');
 		await host.shot('tools/ghost-qa-host.png');
 
+		// --- Scene 10b: the watcher sees the INVASION MOVE ---------------------------------------------
+		// Invasions used to reach the watcher only inside full world snapshots, so the
+		// landing party stood frozen like statuary between them. The host now streams a
+		// live pose plane (same contract as the mobs). The host tab must be in front —
+		// its simulation is rAF-driven, and frozen invaders would prove nothing.
+		await host.front();
+		const invSpawn = await host.eval(`(()=>{
+			MM.invasions.reset();
+			const t1=MM.invasions.forceNightInvasion(player,(x,y)=>MM.world.getTile(x,y),(x,y,v)=>MM.world.setTile(x,y,v),
+				{day:6,teams:1,kind:'aliens',alienCount:3,forceVisible:true,immediate:true});
+			const t2=MM.invasions.forceMolekinInvasion(player,(x,y)=>MM.world.getTile(x,y),(x,y,v)=>MM.world.setTile(x,y,v),
+				{day:6,teams:1,alienCount:3,forceVisible:true,immediate:true});
+			const units=[];
+			for(const t of MM.invasions._debug.teams) for(const a of t.aliens) units.push({id:a.id,kind:a.kind});
+			return {aliens:(t1&&t1.length)||0, moles:(t2&&t2.length)||0, units:units.length,
+				kinds:[...new Set(units.map(u=>u.kind))].sort().join('+')};
+		})()`);
+		if(!(invSpawn.units >= 4)) throw new Error('setup: not enough invaders spawned: ' + JSON.stringify(invSpawn));
+		if(invSpawn.kinds !== 'aliens+molekin') throw new Error('setup: need BOTH aliens and kretoludzie, got ' + invSpawn.kinds);
+		// the watcher must receive the roster at all…
+		await ghost.poll(`MM.ghostClient.metrics().stats.invFulls`, v => v >= 1, 'watcher receives the invasion roster', 60, 250);
+		await ghost.poll(`(()=>{ let n=0; for(const t of MM.invasions._debug.teams) n+=t.aliens.length; return n; })()`,
+			v => v >= 4, 'watcher materializes the squads', 60, 250);
+		// …and they must MOVE on its screen. Squads that have already closed on the hero
+		// stand still and shoot, which proves nothing — so walk the hero away and make
+		// them chase. Sampling is driver-side (the watcher tab is backgrounded while the
+		// host holds the front, so its in-page timers are throttled to ~1 Hz).
+		const snapUnits = `(()=>{ const m={};
+			for(const t of MM.invasions._debug.teams) for(const a of t.aliens){ if(a && !a.dead) m[a.id]={x:+a.x.toFixed(2), y:+a.y.toFixed(2), k:a.kind}; }
+			return m; })()`;
+		await host.eval(`(()=>{ player.x += 26; player.vx=0; player.vy=0; return player.x; })()`);
+		await sleep(900); // let the squads pick up the chase
+		const hostA2 = await host.eval(snapUnits);
+		const ghostA2 = await ghost.eval(snapUnits);
+		await sleep(3000);
+		const hostB2 = await host.eval(snapUnits);
+		const ghostB2 = await ghost.eval(snapUnits);
+		const movedIn = (a, b, kind) => Object.keys(a).filter(id => b[id] && a[id].k === kind &&
+			Math.hypot(b[id].x - a[id].x, b[id].y - a[id].y) > 0.5).length;
+		const hostMovedAliens = movedIn(hostA2, hostB2, 'aliens');
+		const hostMovedMoles = movedIn(hostA2, hostB2, 'molekin');
+		const ghostMovedAliens = movedIn(ghostA2, ghostB2, 'aliens');
+		const ghostMovedMoles = movedIn(ghostA2, ghostB2, 'molekin');
+		// how far the watcher's copy sits from the host's truth for the same unit
+		let worstDrift = 0, compared = 0;
+		for(const id in hostB2){
+			if(!ghostB2[id]) continue;
+			compared++;
+			worstDrift = Math.max(worstDrift, Math.hypot(ghostB2[id].x - hostB2[id].x, ghostB2[id].y - hostB2[id].y));
+		}
+		const rosters = await ghost.eval(`MM.ghostClient.metrics().stats.invRosters`);
+		if(!(hostMovedAliens > 0 && hostMovedMoles > 0)){
+			throw new Error('setup: the squads never moved on the HOST either: ' +
+				JSON.stringify({hostMovedAliens, hostMovedMoles, units:Object.keys(hostA2).length}));
+		}
+		if(!(rosters > 0)) throw new Error('watcher got no live invasion poses at all');
+		if(!(ghostMovedAliens > 0)) throw new Error('aliens are frozen on the watcher screen: ' +
+			JSON.stringify({ghostMovedAliens, hostMovedAliens, rosters, compared}));
+		if(!(ghostMovedMoles > 0)) throw new Error('kretoludzie are frozen on the watcher screen: ' +
+			JSON.stringify({ghostMovedMoles, hostMovedMoles, rosters, compared}));
+		if(!(compared > 0 && worstDrift < 6)) throw new Error('the watcher squads drifted away from the host truth: ' +
+			JSON.stringify({compared, worstDrift:+worstDrift.toFixed(2)}));
+		console.log('invasion plane: ok (watcher sees ' + ghostMovedAliens + ' aliens and ' + ghostMovedMoles +
+			' kretoludzie moving; ' + rosters + ' pose packets, worst drift from host ' + worstDrift.toFixed(2) + ' tiles)');
+
+		// --- Scene 10c: the watcher sees the hero ATTACK ------------------------------------------------
+		// The watcher renders but never simulates, so its weapons module was empty: the
+		// hero was seen walking, never swinging or shooting. The host now mirrors the
+		// cosmetic FX (swing arc, arrows, stream puffs, beams, blasts).
+		const heroSwing = await host.eval(`(()=>{
+			// a melee swing, aimed at the ground beside the hero
+			const tx=Math.floor(player.x)+1, ty=Math.floor(player.y);
+			MM.weapons.notifyMeleeSwing(tx,ty,player);
+			return {tx,ty, swing:MM.weapons.ghostFxState().sw ? 1 : 0};
+		})()`);
+		if(!heroSwing.swing) throw new Error('host did not register its own swing');
+		// NOTE: the host tab is in front (its sim is rAF-driven), so the GHOST tab is
+		// backgrounded — in-page timers there are throttled to ~1 Hz. All waiting and
+		// sampling therefore happens driver-side, in real time; the watcher's evals stay
+		// single, instant reads. Its message handling is event-driven, so the mirrored
+		// state keeps updating even while its rAF is frozen.
+		await ghost.poll(`MM.ghostClient.metrics().stats.wfx`, v => v > 0, 'watcher receives the hero weapon FX', 60, 250);
+		// Arrows are the visible, MOVING proof. Loose them high over the hero's head so
+		// they arc through open air instead of burying themselves in the ground within a
+		// frame (a stuck arrow is mirrored correctly but proves no motion).
+		const readArrows = `(()=>{ const ar=MM.weapons._debug.arrows;
+			return {n:ar.length, maxX:ar.length?Math.max(...ar.map(a=>a.x)):null, stuck:ar.filter(a=>a.stuck).length}; })()`;
+		// Carve a clear flight lane first. Two gotchas, both learned the hard way: an
+		// arrow spawned inside rock sticks on its very first step, and arrows fall
+		// (ARROW_GRAV) — a shallow lane drops them into the floor within ~0.3 s. A stuck
+		// arrow mirrors perfectly while proving no motion at all, so the lane is long AND
+		// tall, and the sampling happens right after the volley.
+		// The lane must also be DEEP: a backgrounded watcher drains its message queue on
+		// its throttled pump (~1 Hz), so the arrows have to still be airborne a second
+		// after the volley or the watcher only ever sees them already stuck.
+		await host.eval(`(()=>{
+			const y0=Math.floor(player.y)-3, x0=Math.floor(player.x);
+			for(let x=x0; x<x0+200; x++) for(let y=y0-9; y<=y0+14; y++) MM.world.setTile(x,y,0);
+			const w=MM.weapons._debug;
+			w.arrows.length=0;
+			for(let i=0;i<4;i++) w.arrows.push({x:x0+0.5+i*0.2, y:y0-4, vx:14, vy:-6, dmg:1, life:5, travel:0, maxTravel:260});
+			return w.arrows.length;
+		})()`);
+		await ghost.poll(`(()=>MM.weapons._debug.arrows.length)()`, v => v > 0, 'the volley reaches the watcher', 40, 60);
+		const hostA = await host.eval(readArrows);
+		const shotA = await ghost.eval(readArrows);
+		// The gap must clear one throttled pump cycle: a backgrounded watcher applies
+		// packets on its ~1 Hz pump, so two reads 300 ms apart land inside the SAME tick
+		// and look frozen even though the mirror is working perfectly.
+		await sleep(1500);
+		const hostB = await host.eval(readArrows);
+		const shotB = await ghost.eval(readArrows);
+		const flewHost = (hostA.maxX !== null && hostB.maxX !== null) ? (hostB.maxX - hostA.maxX) : 0;
+		const flew = (shotA.maxX !== null && shotB.maxX !== null) ? (shotB.maxX - shotA.maxX) : 0;
+		if(!(flewHost > 2)){
+			const diag = await host.eval(`(()=>({frameMs:window.__mmFrameMs, hp:player.hp, y:+player.y.toFixed(1),
+				ult:+MM.weapons.metrics().ultCharge.toFixed(3), n:MM.weapons._debug.arrows.length,
+				a0:MM.weapons._debug.arrows[0] ? {x:+MM.weapons._debug.arrows[0].x.toFixed(2), vx:MM.weapons._debug.arrows[0].vx, life:+(MM.weapons._debug.arrows[0].life||0).toFixed(2), stuck:!!MM.weapons._debug.arrows[0].stuck} : null}))()`);
+			throw new Error('setup: the arrows never flew on the HOST either: ' + JSON.stringify({hostA, hostB, diag}));
+		}
+		if(!(shotA.n > 0)) throw new Error('the hero fired arrows the watcher never saw: ' + JSON.stringify(shotA));
+		if(!(flew > 2)) throw new Error('mirrored arrows are frozen on the watcher screen: ' +
+			JSON.stringify({a:shotA, b:shotB, flew, flewHost}));
+		const arrowsFly = {peak:Math.max(shotA.n, shotB.n), span:+flew.toFixed(2), wfx:await ghost.eval(`MM.ghostClient.metrics().stats.wfx`)};
+		console.log('weapon plane: ok (watcher saw the swing + ' + arrowsFly.peak + ' arrows in flight, ' + arrowsFly.wfx + ' fx packets)');
+		await ghost.shot('tools/ghost-qa-combat.png');
+		await host.eval(`MM.invasions.reset(); MM.weapons.reset();`);
+
 		// --- Scene 10a: ghost dread — creatures flee an ACTIVE spirit ---------------------------------
 		// The host sim only runs while its tab is foregrounded (rAF), so bring it to
 		// the front: the ghost keeps streaming from its companion pump regardless.

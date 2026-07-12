@@ -777,4 +777,96 @@ assert.match(weaponsSrc, /MM\.invasions && MM\.invasions\.attackAt/, 'melee weap
 assert.match(weaponsSrc, /MM\.invasions && MM\.invasions\.damageAt/, 'ranged and stream weapons can damage invasion enemies');
 assert.match(weaponsSrc, /MM\.invasions && MM\.invasions\.blastRadius/, 'gas explosions damage invasion enemies');
 
+// --- extraction: nobody is abandoned down a hole ----------------------------
+// The squad brain reports a walled-in unit (invasion-ai-sim covers that side);
+// here the HOST decides the way out. Aliens ride the saucer's beam; kretoludzie
+// have no ship but can dig, so they surface near the tunnel mouth they came from.
+{
+  const D = invasions._debug;
+  invasions.reset();
+  overrides.clear();
+
+  // aliens: beamed up to the saucer
+  const team = invasions.forceNightInvasion(player,getTile,setTile,{day:5,teams:1,kind:'aliens',alienCount:2,forceVisible:true,immediate:true})[0];
+  assert.ok(team && team.lander && !team.lander.destroyed, 'setup: a live saucer stands on the surface');
+  const a = team.aliens[0];
+  a.x = team.lander.x + 30; a.y = 70; // dumped at the bottom of a far shaft
+  a._ai = {intent:{}};
+  const plan = D.extractionPlan(team,a,getTile);
+  assert.ok(plan && plan.kind === 'beam', 'a stranded alien with a live saucer gets a beam');
+  assert.ok(Math.abs(plan.x - team.lander.x) < 10, 'the beam sets it down beside its ship');
+  assert.ok(D.beginExtraction(team,a,{now:1000},getTile,setTile,ctx), 'the extraction starts');
+  assert.ok(a.extract && a.extract.kind === 'beam', 'the unit is flagged in transit');
+  assert.equal(a._ai, null, 'a unit in transit drops its stale plan — it re-thinks where it lands');
+  // …and the world must not touch it while it rides the beam
+  const shaftY = a.y;
+  invasions.update(0.05, player, getTile, setTile, ctx);
+  assert.ok(a.extract, 'still in transit one frame later');
+  assert.ok(a.vx === 0 && a.vy === 0, 'physics does not drag a unit back down mid-beam');
+  void shaftY;
+  // run the sequence out
+  for(let i=0;i<80 && a.extract;i++) invasions.update(0.05, player, getTile, setTile, ctx);
+  assert.equal(a.extract, null, 'the beam sequence completes');
+  assert.ok(Math.abs(a.x - team.lander.x) < 10, 'the alien arrives at its saucer (x=' + a.x.toFixed(1) + ')');
+  assert.ok(a.y < 60, 'the alien is back up on the surface, not still down the shaft (y=' + a.y.toFixed(1) + ')');
+  assert.ok(a.hp > 0 && !a.dead, 'extraction rescues the unit — it does not quietly kill it');
+}
+{
+  const D = invasions._debug;
+  invasions.reset();
+  overrides.clear();
+  // wrecking the saucer really does strand the landing party
+  const team = invasions.forceNightInvasion(player,getTile,setTile,{day:5,teams:1,kind:'aliens',alienCount:2,forceVisible:true,immediate:true})[0];
+  team.lander.destroyed = true;
+  const a = team.aliens[0];
+  a.x = team.lander.x + 30; a.y = 70;
+  assert.equal(D.extractionPlan(team,a,getTile), null, 'no saucer, no ride home');
+  assert.equal(D.beginExtraction(team,a,{now:1000},getTile,setTile,ctx), false, 'the host refuses the extraction');
+  assert.ok(!a.extract, 'a stranded alien stays where it is and keeps digging');
+}
+{
+  const D = invasions._debug;
+  invasions.reset();
+  overrides.clear();
+  // kretoludzie: no ship — they chew back up to their own tunnel mouth
+  const team = invasions.forceMolekinInvasion(player,getTile,setTile,{day:6,teams:1,alienCount:3,forceVisible:true,immediate:true})[0];
+  assert.ok(team && team.burrow, 'setup: the molekin team has a burrow mouth');
+  const mouthX = team.burrow.x;
+  const a = team.aliens[0];
+  a.x = mouthX + 40; a.y = 78; // deep and far from home
+  const plan = D.extractionPlan(team,a,getTile);
+  assert.ok(plan && plan.kind === 'burrow', 'a walled-in molekin digs instead of calling a ship');
+  assert.ok(Math.abs(plan.x - mouthX) <= 9,
+    'it surfaces NEAR its original exit, not on top of it and not where it was stuck (x=' + plan.x + ' vs mouth ' + mouthX + ')');
+  assert.ok(plan.y <= 51, 'it comes out up top, on the surface');
+  assert.ok(D.beginExtraction(team,a,{now:1000},getTile,setTile,ctx), 'the dig-out starts');
+  for(let i=0;i<80 && a.extract;i++) invasions.update(0.05, player, getTile, setTile, ctx);
+  assert.equal(a.extract, null, 'the dig-out completes');
+  assert.ok(Math.abs(a.x - mouthX) <= 9, 'the molekin resurfaces near the mouth it came out of');
+  assert.ok(a.y <= 51, 'and it is on the surface, not still buried (y=' + a.y.toFixed(1) + ')');
+  assert.ok(a.hp > 0 && !a.dead, 'the dig-out rescues it');
+}
+{
+  // the AI hook is actually wired: a team's hooks must offer extraction
+  const D = invasions._debug;
+  invasions.reset();
+  overrides.clear();
+  const team = invasions.forceNightInvasion(player,getTile,setTile,{day:5,teams:1,kind:'aliens',alienCount:1,forceVisible:true,immediate:true})[0];
+  const a = team.aliens[0];
+  a.x = team.lander.x + 26; a.y = 72;
+  // drive the real update loop with the unit sealed under rock and the hero far
+  // away up top: the brain must eventually reach for the hook on its own
+  for(let x=team.lander.x + 20; x <= team.lander.x + 32; x++){
+    for(let y=50; y<80; y++) setTile(x,y,T.STONE);
+  }
+  for(let y=60; y<73; y++) setTile(Math.floor(a.x),y,T.AIR); // the shaft it fell down
+  let sawTransit = false;
+  for(let i=0;i<900 && !sawTransit;i++){
+    invasions.update(0.05, player, getTile, setTile, ctx);
+    if(a.extract || a.y < 60) sawTransit = true;
+  }
+  assert.ok(sawTransit, 'left to itself, a unit sealed in a shaft is eventually pulled out (no more forever-stuck squads)');
+  void D;
+}
+
 console.log('invasions-sim: all assertions passed');

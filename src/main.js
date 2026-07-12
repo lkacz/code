@@ -11274,6 +11274,15 @@ function drawMinimapBands(g,mw,mh,minY,maxY){
 	g.strokeStyle='rgba(120,96,82,0.32)';
 	g.beginPath(); g.moveTo(0.5,deep+0.5); g.lineTo(mw-0.5,deep+0.5); g.stroke();
 }
+// Minimap corner. On a PC it sits bottom-right: that corner is empty (vitals own
+// bottom-left, the hotbar the bottom-center), and it clears the top-right, which
+// the craft tracker and the drop-preview card already share. Touch keeps it
+// top-right — the bottom-right corner there is the mining ring + fire/ult/radar
+// stack, so a minimap under them would be both hidden and un-tappable.
+function minimapOrigin(mw,mh){
+	const touch=!!(MM.inputMode && MM.inputMode.isTouch && MM.inputMode.isTouch());
+	return { x:W-mw-12, y: touch ? 44 : Math.max(44, H-mh-12) };
+}
 function drawMinimap(){
 	if(!showMinimap) return;
 	const MW=MINIMAP_W, MH=MINIMAP_H, RANGE=MINIMAP_RANGE;
@@ -11283,7 +11292,7 @@ function drawMinimap(){
 	const rebuildEvery = lastFrameMs>40 ? 3200 : (lastFrameMs>24 ? 1800 : 900);
 	if(frameLoaded && mmLastBuild>0 && now-mmLastBuild<rebuildEvery*1.75){
 		ctx.save();
-		const mx=W-MW-12, my=44;
+		const {x:mx,y:my}=minimapOrigin(MW,MH);
 		const pointerOver=lastPointer.has && lastPointer.x>=mx && lastPointer.x<=mx+MW && lastPointer.y>=my && lastPointer.y<=my+MH;
 		const alpha=pointerOver ? MINIMAP_POINTER_ALPHA : MINIMAP_ALPHA;
 		ctx.fillStyle='rgba(6,10,18,'+(MINIMAP_BACKDROP_ALPHA*(alpha/MINIMAP_ALPHA)).toFixed(3)+')';
@@ -11356,7 +11365,7 @@ function drawMinimap(){
 		g.fillRect(MW/2-1, Math.max(2,py-3), 3, 5);
 	}
 	ctx.save();
-	const mx=W-MW-12, my=44;
+	const {x:mx,y:my}=minimapOrigin(MW,MH);
 	const pointerOver=lastPointer.has && lastPointer.x>=mx && lastPointer.x<=mx+MW && lastPointer.y>=my && lastPointer.y<=my+MH;
 	const alpha=pointerOver ? MINIMAP_POINTER_ALPHA : MINIMAP_ALPHA;
 	ctx.fillStyle='rgba(6,10,18,'+(MINIMAP_BACKDROP_ALPHA*(alpha/MINIMAP_ALPHA)).toFixed(3)+')';

@@ -599,4 +599,137 @@ for(let x=12; x<40; x++) for(let y=38; y<50; y++) setSolid(x,y);
   assert.ok(track.states.has('relocate'), 'the unit gives up on the dead spot and relocates');
 }
 
+// --- past saving itself: the brain asks the host for an extraction ----------
+// A squad that tumbles down a sealed shaft used to grind at the wall until the
+// night ended. The brain now reports genuine confinement and the HOST decides
+// the way out (beam to the saucer / burrow to the surface) — the brain must
+// never move the unit itself, and must never cry for help while a unit is
+// simply slow, fighting, or covering ground.
+
+// Runs a unit that is physically penned into a shaft: intent still steers it,
+// but walls clamp it, exactly like the real collision would.
+function simulatePenned(brainTeam, unit, hero, hooks, seconds, dt, bounds){
+  let now = 1000;
+  for(let t=0; t<seconds; t+=dt){
+    now += dt*1000;
+    beginAIFrame();
+    brain0Update(brainTeam, [unit], dt, hero, hooks, now);
+    const intent = unit._ai ? unit._ai.intent : null;
+    if(intent){
+      unit.x += intent.moveX * 2.5 * (intent.speedMult||1) * dt;
+      if(bounds){ unit.x = Math.max(bounds.lo, Math.min(bounds.hi, unit.x)); }
+    }
+    unit.onGround = true; // pinned on the shaft floor
+  }
+  return now;
+}
+function brain0Update(brainTeam, units, dt, hero, hooks, now){
+  brainTeam.brain.update(brainTeam.team, units, dt, hero, hooks, {now});
+}
+function pitHooks(extractCalls, answer){
+  return {
+    fire:()=>({clear:false}),
+    tileAttack:()=>false,          // bedrock: digging never opens the shaft
+    isBreachableTile:()=>false,
+    canBuildAt:()=>false,
+    build:()=>false,
+    unstuck:()=>false,
+    extract:(u,opts)=>{ extractCalls.push({x:u.x, y:u.y, opts:opts||{}}); return !!answer; }
+  };
+}
+// A sealed shaft at x=20: solid rock everywhere below the surface except the
+// shaft column, so a unit on its floor is blind to a hero standing far away.
+function digSealedShaft(){
+  resetWorld();
+  for(let y=50; y<62; y++) clearSolid(20,y);   // the shaft itself is open air
+  for(let y=50; y<62; y++){ setSolid(19,y); setSolid(21,y); } // sheer walls
+  for(let x=15; x<26; x++) setSolid(x,62);     // floor
+}
+{
+  digSealedShaft();
+  const team = {id:'trap1', builtTiles:[]};
+  const brain = createSquadBrain(profile, nav);
+  const unit = makeUnit('trapped', 20.5, 'rusher');
+  unit.y = 61; // standing on the shaft floor, 12 tiles under the surface
+  const hero = {x:5.5, y:49, vx:0, vy:0}; // far away, up on the surface
+  const calls = [];
+  simulatePenned({team, brain}, unit, hero, pitHooks(calls, true), 30, 0.1, {lo:20.1, hi:20.9});
+  assert.ok(calls.length >= 1, 'a unit sealed in a deep shaft asks the host to extract it');
+  assert.equal(calls[0].opts.reason, 'pit', 'the extraction request names the dead end');
+  assert.ok(calls[0].opts.depth > 3, 'the request reports how far below the hero the unit is sunk');
+  assert.ok(Math.abs(unit.x - 20.5) < 1.5 && unit.y === 61,
+    'the brain never teleports the unit itself — the host owns the escape');
+  // Granting resets the patience timer. (This test's unit stays down the shaft —
+  // the real host moves it — so the timer refills and it eventually asks again;
+  // what matters is that it must re-earn the full window, not re-ask on the
+  // short refusal cooldown.)
+  assert.ok(calls.length <= 2, 'a granted extraction resets the timer (got ' + calls.length + ' calls in 30s)');
+}
+{
+  // Refused (the saucer is a wreck): keep asking, but on a cooldown — never
+  // once per frame.
+  digSealedShaft();
+  const team = {id:'trap2', builtTiles:[]};
+  const brain = createSquadBrain(profile, nav);
+  const unit = makeUnit('stranded', 20.5, 'rusher');
+  unit.y = 61;
+  const calls = [];
+  simulatePenned({team, brain}, unit, {x:5.5, y:49, vx:0, vy:0}, pitHooks(calls, false), 40, 0.1, {lo:20.1, hi:20.9});
+  assert.ok(calls.length >= 2, 'a refused unit keeps asking as its situation never improves');
+  assert.ok(calls.length <= 8, 'refusals are rate-limited, not retried every frame (got ' + calls.length + ' in 40s)');
+}
+{
+  // In the same shaft, but the hero is standing at its mouth in plain sight:
+  // these units can shoot back, so they are fighting, not trapped.
+  digSealedShaft();
+  const team = {id:'trap3', builtTiles:[]};
+  const brain = createSquadBrain(profile, nav);
+  const unit = makeUnit('seen', 20.5, 'rusher');
+  unit.y = 61;
+  const calls = [];
+  const hooks = pitHooks(calls, true);
+  hooks.fire = ()=>({clear:true});
+  simulatePenned({team, brain}, unit, {x:20.5, y:49, vx:0, vy:0}, hooks, 30, 0.1, {lo:20.1, hi:20.9});
+  assert.equal(calls.length, 0, 'a unit that can see the hero up the shaft is fighting, not trapped');
+}
+{
+  // Deep underground and blind (a rock ceiling seals the gallery from the surface
+  // hero) — but CLOSING ON HIM. Lack of progress is the trigger, not depth or
+  // blindness, so a unit marching down a long tunnel toward the hero must never be
+  // yanked out from under the player. The march is driven here rather than left to
+  // the AI's mood, so the gate itself is what's under test.
+  resetWorld();
+  for(let x=-60; x<60; x++) for(let y=54; y<58; y++) clearSolid(x,y); // gallery under rock
+  const team = {id:'trap4', builtTiles:[]};
+  const brain = createSquadBrain(profile, nav);
+  const unit = makeUnit('marcher', 45.5, 'rusher');
+  unit.y = 57;
+  const startX = unit.x;
+  const calls = [];
+  const hooks = pitHooks(calls, true);
+  let now = 1000;
+  for(let t=0; t<25; t+=0.1){
+    now += 100;
+    beginAIFrame();
+    brain.update(team, [unit], 0.1, {x:-50.5, y:49, vx:0, vy:0}, hooks, {now});
+    unit.x -= 3.0 * 0.1; // genuinely covering ground, at a normal march pace
+    unit.onGround = true;
+  }
+  assert.equal(calls.length, 0, 'a unit still covering ground is never treated as trapped');
+  assert.ok(startX - unit.x > 60, 'the marcher really did cross the map (sanity)');
+  assert.ok(unit._ai.trapT < unit._ai.trapLimit,
+    'its patience timer never even approached the limit (trapT=' + unit._ai.trapT.toFixed(1) + ')');
+}
+{
+  // Shallow: standing a step below the hero is not a hole.
+  resetWorld();
+  const team = {id:'trap5', builtTiles:[]};
+  const brain = createSquadBrain(profile, nav);
+  const unit = makeUnit('shallow', 12.5, 'rusher');
+  unit.y = 50;
+  const calls = [];
+  simulatePenned({team, brain}, unit, {x:12.5, y:48, vx:0, vy:0}, pitHooks(calls, true), 30, 0.1, {lo:12.1, hi:12.9});
+  assert.equal(calls.length, 0, 'a unit level with the hero is never "down a hole"');
+}
+
 console.log('invasion-ai-sim: all assertions passed');

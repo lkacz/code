@@ -183,12 +183,31 @@ reversed damage → mutual fall → epilogue, snapshot/restore) and
   dark, are inherently aggressive, and **catch fire at sunrise**.
 * **Death stakes**: all death paths route through `window.heroDied` — half of every
   resource is left in a GRAVE tile at the death spot; click it to recover the loss.
-* **QoL**: surface **minimap** (N) rebuilt twice a second from worldgen columns,
+* **QoL**: surface **minimap** (N) rebuilt twice a second from worldgen columns — it sits
+  **bottom-right** on a PC (that corner is empty; the top-right is already shared by the
+  craft tracker and the drop-preview card) and stays top-right on touch, where the
+  bottom-right corner belongs to the mining ring and the fire/ult/radar stack. Plus the
   respawn totem, and a **pause & settings panel** (B): the simulation freezes under
   a dimmed scene while a card offers resume, a live volume slider + mute, a music
   on/off switch, a **fullscreen toggle** (also on the rebindable U key), and
   persisted minimap / cave-lighting toggles (restored at boot; contract pinned in
   `npm run test:lighting`). Esc or B resumes.
+* **Nobody is left down a hole** (`engine/invasion_ai.js` + `invasions.js`): a squad that
+  tumbled into a sealed shaft used to grind at the wall until the night ended — the
+  invasion never resolved and the player never saw those units again. The squad brain now
+  detects genuine **confinement** (sunk well below the hero, blind to it, and covering no
+  ground for a dozen-odd seconds — jittered per unit, so a squad never pops out in
+  lockstep) and hands the unit to the host; it never teleports anything itself. The host
+  owns the way out, and it differs by species: **aliens** are hauled up in the saucer's
+  **tractor beam** (a column of light with rungs sliding up it) — and if the player has
+  *wrecked* the lander there is no ride home, so shooting the ship really does strand the
+  landing party. **Kretoludzie** have no ship to call but they are diggers: they chew back
+  into the rock and **surface near the tunnel mouth** they originally came out of. A unit
+  in transit is frozen — out of the brain's hands, out of separation, untouched by physics
+  — so nothing can shove it mid-beam. Tests: `npm run test:invasion-ai` (the trap detector,
+  including the negatives: a unit that can *see* the hero is fighting, not trapped, and one
+  still covering ground is never yanked out) and `npm run test:invasions` (both routes end
+  to end); visual QA: `node tools/invasion-escape-qa.mjs`.
 * **Key rebinding** (`engine/keybinds.js`): every letter-key action (movement,
   interact, craft, fishing, pause… plus the debug keys) is rebindable from the
   pause panel's ⌨ editor — click a key chip, press the new key; conflicts swap so
@@ -216,6 +235,20 @@ reversed damage → mutual fall → epilogue, snapshot/restore) and
   silently worth +0%. All percentages in the UI are derived from `SOCIAL_RULES`, never
   retyped. Tests: `npm run test:ghost`; live two-tab QA: `node tools/ghost-qa.mjs`
   (drives a real host + watcher over CDP, including the active → idle → recovery cycle).
+* **What a watcher sees** — a spectator runs the full renderer but *no simulation*, so
+  anything that only exists in a system's own live state used to be invisible to it.
+  Three planes now stream from the host, each cadence-gated and cosmetic-only (a watcher
+  can never change the world it watches):
+  * **mobs** — pose roster keyed by a signature, full list on any shape change (`mobs.js`);
+  * **invasions** — the same contract in `invasions.js` (`ghostRoster` / `ghostApplyRoster` /
+    `ghostLerp`), so alien landing parties and kretoludzie actually *walk* on the watcher's
+    screen instead of standing frozen between world snapshots. Slow props (a saucer
+    settling onto its legs, a burrow grinding open) ride the roster so they animate too;
+  * **the hero's weapons** — `weapons.js` mirrors the cosmetic FX (swing arc, arrows,
+    stream puffs, electric beams, blast rings) at hero cadence. The watcher integrates
+    them locally between packets (`ghostStepFx`: positions and timers only — no damage,
+    no ignition, no tile writes), so arrows keep flying smoothly rather than stepping once
+    per network tick. Before this the hero was seen walking around swinging at nothing.
 * **Structures** (`world.js placeStructures`): ~10% of chunks deterministically roll a
   ruined stone gateway with a rare/epic chest (flat land) or a wooden **shipwreck** with
   an epic chest resting on the sea floor. ~14% of the land rolls become a **Summoning

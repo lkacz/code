@@ -54,7 +54,7 @@ const ghostClient = (function(){
 	const others = []; // fellow spirits from presence relay (eased toward tx/ty by the painter)
 	let selfChat = null; // own last message, rendered over the own avatar
 	const held = new Set();
-	const stats = { tilesApplied: 0, tileMsgs: 0, mobRosters: 0, mobFulls: 0, snapsApplied: 0, fx: 0 };
+	const stats = { tilesApplied: 0, tileMsgs: 0, mobRosters: 0, mobFulls: 0, invRosters: 0, invFulls: 0, wfx: 0, snapsApplied: 0, fx: 0 };
 	const buffWait = {}; // kind -> readyAtMs (UI countdown)
 	let timers = { hello: 0, pose: 0, needMobs: 0 };
 	let veil = null, bar = null, barTick = null;
@@ -174,10 +174,21 @@ const ghostClient = (function(){
 		// and flush the career so a deed banked seconds before the close survives
 		window.addEventListener('beforeunload', () => { flushProgress(true); try{ if(conn) conn.close(); }catch(e){ /* fine */ } });
 		window.addEventListener('pagehide', () => flushProgress(true));
+		// Backgrounding the tab is the one moment a watcher is most likely to never
+		// come back to it — bank the career to disk right there, before the browser
+		// starts throttling everything this page does.
+		try{ document.addEventListener('visibilitychange', () => { if(document.hidden) flushProgress(true); }); }catch(e){ /* no document: Node sims */ }
 		// Companion pump (mirror of ghost_host's): keeps hello retries, queue
 		// drain and the pose keepalive alive while this tab is backgrounded and
 		// rAF is frozen. All paths inside frame() are cadence-gated/idempotent.
-		pump = setInterval(() => { try{ frame(0.5, (typeof performance !== 'undefined') ? performance.now() : Date.now(), true); }catch(e){ /* next tick */ } }, 500);
+		// It also carries the trailing profile write: deeds keep arriving in a
+		// background tab (watching still pays), and flushProgress only writes when
+		// the 2 s throttle allows — without a heartbeat here, a burst of deeds
+		// could sit dirty in memory until the tab was closed and be lost.
+		pump = setInterval(() => {
+			try{ frame(0.5, (typeof performance !== 'undefined') ? performance.now() : Date.now(), true); }catch(e){ /* next tick */ }
+			try{ flushProgress(); }catch(e){ /* storage blocked */ }
+		}, 500);
 		return true;
 	}
 	function makeConn(){
@@ -400,6 +411,22 @@ const ghostClient = (function(){
 						M.deserialize(pl.data);
 						stats.mobFulls++;
 					}
+				} else if(pl.t === 'inv'){
+					// live invasion poses; a signature mismatch just waits for the next
+					// full sync (the host resends one every few seconds anyway)
+					const I = MMR && MMR.invasions;
+					if(I && I.ghostApplyRoster && I.ghostApplyRoster(pl)) stats.invRosters++;
+				} else if(pl.t === 'invFull'){
+					const I = MMR && MMR.invasions;
+					if(I && I.restore && pl.data && typeof pl.data === 'object'){
+						if(Array.isArray(pl.data.teams) && pl.data.teams.length > 24) pl.data.teams.length = 24;
+						I.restore(pl.data);
+						stats.invFulls++;
+					}
+				} else if(pl.t === 'wfx'){
+					// the hero's swings, arrows, streams and blasts — cosmetic only
+					const W = MMR && MMR.weapons;
+					if(W && W.ghostApplyFx && W.ghostApplyFx(pl.fx || {})) stats.wfx++;
 				} else if(pl.t === 'drops'){
 					bridge.restoreDrops(pl.data);
 				} else if(pl.t === 'seasons'){
@@ -496,6 +523,10 @@ const ghostClient = (function(){
 			p.vx = heroTarget.vx; p.vy = heroTarget.vy; // drives the walk animation
 		}
 		try{ if(MMR && MMR.mobs && MMR.mobs.ghostLerp) MMR.mobs.ghostLerp(dt); }catch(e){ /* fine */ }
+		// invaders glide between streamed poses, exactly like the mobs
+		try{ if(MMR && MMR.invasions && MMR.invasions.ghostLerp) MMR.invasions.ghostLerp(dt); }catch(e){ /* fine */ }
+		// the hero's arrows keep flying and his swing keeps decaying between packets
+		try{ if(MMR && MMR.weapons && MMR.weapons.ghostStepFx) MMR.weapons.ghostStepFx(dt); }catch(e){ /* fine */ }
 		// fog mirrors the host: the replica player position feeds the normal reveal
 		try{ bridge.revealAround(); }catch(e){ /* fine */ }
 		try{ bridge.stepCosmetics(dt); }catch(e){ /* fine */ }

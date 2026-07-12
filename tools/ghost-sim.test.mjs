@@ -314,6 +314,7 @@ assert.ok(/live\.map\(m=>m\.id\)\.join\('\|'\)!==roster\.sig\) return false;/.te
 assert.ok(/m\.id==='ZLOTY'/.test(mobsSrc.slice(mobsSrc.indexOf('function ghostLiveMobs'))),
 	'ghost roster filter mirrors the serialize filter (golden sprinter excluded)');
 
+
 // --- source pins: main.js wiring ------------------------------------------------------------
 const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 assert.ok(/function applyGameData\(data,opts\)/.test(mainSrc), 'applyGameData extracted from loadGame');
@@ -422,6 +423,47 @@ assert.ok(/function socialBoostMult\(part\)/.test(mainSrc), 'main.js social boos
 assert.ok(/heroSandMoveMult\(\) \* socialBoostMult\('move'\)/.test(mainSrc), 'movement speed multiplies the social boost');
 assert.ok(/turboJumpMult \* Math\.sqrt\(socialBoostMult\('jump'\)\)/.test(mainSrc), 'jump velocity takes the square root of the HEIGHT boost');
 const weaponsSrc = readFileSync(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
+// --- source pins: the invasion plane -------------------------------------------------------
+// A watcher never runs invasions.update() (no spawning, digging or stealing from
+// the cheap seats), so without a live pose plane the landing party stood frozen
+// between full snapshots — the bug this plane exists to kill.
+const invasionsSrc = readFileSync(new URL('../src/engine/invasions.js', import.meta.url), 'utf8');
+assert.ok(/function ghostRoster\(\)/.test(invasionsSrc) && /function ghostApplyRoster\(roster\)/.test(invasionsSrc)
+	&& /function ghostLerp\(dt\)/.test(invasionsSrc), 'invasions ships the same ghost sync trio as the mobs');
+assert.ok(/ghostRoster,\s*\n?\s*ghostApplyRoster,\s*\n?\s*ghostLerp,/.test(invasionsSrc),
+	'the ghost sync trio is exposed on the invasions api');
+assert.ok(/if\(live\.map\(a=>a\.id\)\.join\('\|'\) !== roster\.sig\) return false;/.test(invasionsSrc),
+	'a roster signature mismatch refuses the pose apply (wait for the full sync)');
+assert.ok(/props:/.test(invasionsSrc),
+	'slow props (a saucer settling, a burrow grinding open) ride the roster so they animate too');
+assert.ok(/function invTick\(s, t\)/.test(hostSrc) && /function sendInvFull\(s, peer\)/.test(hostSrc),
+	'the host drives an invasion tick and a full invasion sync');
+assert.ok(/if\(t - s\.last\.inv >= CAD\.inv\) invTick\(s, t\);/.test(hostSrc),
+	'the invasion tick is wired into the host frame');
+assert.ok(/sendInvFull\(s, entry\.peer\);/.test(hostSrc),
+	'a joining watcher gets the current squads immediately, not on the next sig change');
+assert.ok(/pl\.t === 'inv'/.test(clientSrc) && /pl\.t === 'invFull'/.test(clientSrc),
+	'the watcher handles both invasion planes');
+assert.ok(/MMR\.invasions\.ghostLerp\(dt\)/.test(clientSrc),
+	'invaders glide between streamed poses instead of stepping once per packet');
+
+// --- source pins: the hero's weapons, mirrored to the watcher --------------------------------
+// The watcher runs the renderer but no simulation, so its weapons module was empty
+// and the hero appeared to fight thin air.
+assert.ok(/function ghostFxState\(\)/.test(weaponsSrc) && /function ghostApplyFx\(st\)/.test(weaponsSrc)
+	&& /function ghostStepFx\(dt\)/.test(weaponsSrc), 'weapons ships a cosmetic FX mirror');
+assert.ok(/ghostFxState,ghostApplyFx,ghostStepFx,/.test(weaponsSrc), 'the FX mirror is exposed on the weapons api');
+// THE contract: a watcher must never change the world it is watching. The mirror
+// integrates positions and ages timers — it may not damage, ignite or write tiles.
+const stepFx = weaponsSrc.slice(weaponsSrc.indexOf('function ghostStepFx'), weaponsSrc.indexOf('MM.weapons={'));
+assert.ok(!/setTile|damageAt|explodeAt|addResource|ignite|applyStatus/.test(stepFx),
+	'the watcher-side FX step is cosmetic only — no damage, no ignition, no tile writes');
+assert.ok(/function weaponTick\(s, t\)/.test(hostSrc) && /if\(t - s\.last\.wfx >= CAD\.wfx\) weaponTick\(s, t\);/.test(hostSrc),
+	'the host streams weapon FX at hero cadence');
+assert.ok(/if\(!busy && !s\.wfxBusy\) return;/.test(hostSrc),
+	'an idle hero streams no FX packets (but one trailing packet clears the watcher screen)');
+assert.ok(/pl\.t === 'wfx'/.test(clientSrc) && /MMR\.weapons\.ghostStepFx\(dt\)/.test(clientSrc),
+	'the watcher applies the FX snapshot and integrates it between packets');
 assert.ok(/mult:\(lucky\?4:2\)\*social,lucky/.test(weaponsSrc), 'hero attack rolls multiply the social boost');
 assert.ok(/if\(MMR && !MMR\.socialBoost\) MMR\.socialBoost = \{ viewers: 0, active: 0, xp: 1, move: 1, jump: 1, dmg: 1 \};/.test(hostSrc),
 	'MM.socialBoost is neutral from the first frame');
