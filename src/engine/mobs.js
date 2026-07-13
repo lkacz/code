@@ -9612,6 +9612,10 @@ const mobs = (function(){
     return true;
   }
 
+  function isLiving(m){
+    return !!(m && m.hp>0 && mobs.indexOf(m)>=0);
+  }
+
   function findAt(x,y){ // tile space coords using spatial grid
     if(!finiteCoord(x) || !finiteCoord(y)) return null;
     // Mobs within hit range can live in a neighbouring cell when the click lands near a
@@ -9654,6 +9658,12 @@ const mobs = (function(){
   }
   function damageAt(tileX,tileY,dmg,opts){
     const m=findAt(tileX,tileY); if(!m) return false;
+    // Projectile systems may keep a cosmetic attachment on the exact creature
+    // they struck. The callback receives the live entity by reference; callers
+    // must not mutate it.
+    if(opts && typeof opts.onTarget==='function'){
+      try{ opts.onTarget(m); }catch(e){}
+    }
     if(m.id==='SAND_WORM' && sandWormWaterHitOpts(opts)){
       pacifySandWorm(m,'water',performance.now(),{x:tileX+0.5,y:tileY+0.5});
       return true;
@@ -10704,7 +10714,7 @@ const mobs = (function(){
         lasers:mobLasers.map(l=>({x1:l.x1,y1:l.y1,x2:l.x2,y2:l.y2,dmg:l.dmg||0,hit:!!l.hit}))
       };
     }
-  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, chillAt, chillRadius, wetAt, wetRadius, statusAt, statusRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, ghostRoster, ghostApplyRoster, ghostLerp, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat };
+  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, chillAt, chillRadius, wetAt, wetRadius, statusAt, statusRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, ghostRoster, ghostApplyRoster, ghostLerp, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, isLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat };
   MM.mobs = api;
   try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
   return api;
@@ -10713,4 +10723,3 @@ const mobs = (function(){
 export { mobs };
 export default mobs;
 // (File end)
-

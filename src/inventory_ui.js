@@ -905,6 +905,16 @@ import './inventory.js';
     statsBox.appendChild(statRow('Moc skoku', fmtMult(m.jumpPowerMult||1), jpLines));
     const mineLines=[]; sel.forEach(it=>{ if(typeof it.mineSpeedMult==='number' && it.mineSpeedMult!==1) mineLines.push(label(it)+': '+fmtMult(it.mineSpeedMult)); });
     statsBox.appendChild(statRow('Szybkość kopania', fmtMult(m.mineSpeedMult||1), mineLines));
+    const defensePct=Math.round(Math.max(0,Math.min(0.45,Number(m.damageReductionBonus)||0))*100);
+    const defenseLines=[];
+    if(MM.progress && MM.progress.stats){
+      const st=MM.progress.stats();
+      if(st && st.hard){
+        const hardReduction=MM.progress.toughnessDamageReduction ? MM.progress.toughnessDamageReduction(st.hard) : Math.min(0.45,st.hard*0.03);
+        defenseLines.push('Twardość '+st.hard+': -'+Math.round(hardReduction*100)+'% obrażeń');
+      }
+    }
+    statsBox.appendChild(statRow('Redukcja obrażeń', defensePct+'%', defenseLines));
     const energyInfo=(MM.heroEnergy && typeof MM.heroEnergy.info==='function') ? MM.heroEnergy.info() : null;
     if(energyInfo){
       const energyLines=[];
@@ -972,7 +982,7 @@ import './inventory.js';
       ['str','Siła', '+1 obrażeń', st.str],
       ['agi','Zwinność', '+2% ruch/skok', st.agi],
       ['cap','Pojemność', '+25 energii', st.cap||0],
-      ['hard','Twardość', '+1.5 udźwigu / ciśnienie', st.hard||0],
+      ['hard','Twardość', '+1.5 udźwigu / -3% obrażeń, maks. 45%', st.hard||0],
     ];
     rows.forEach(([key,label,effect,val])=>{
       const row=document.createElement('div');

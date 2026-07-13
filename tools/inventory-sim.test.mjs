@@ -176,8 +176,8 @@ assert.match(mainSrc, /assign\(slot,key\)\{[\s\S]*HOTBAR_ORDER\[slot\]=key; cycl
 assert.match(mainSrc, /function collectLooseItemAt\(tx,ty,opts\)\{[\s\S]*isLooseItemTile\(t\)[\s\S]*const dropCtx=dropContextForTile\(t,tx,ty\);[\s\S]*setTile\(tx,ty,T\.AIR\);[\s\S]*const drops=awardTileDrops\(info,dropCtx\);[\s\S]*pushUndo\(tx,ty,t,T\.AIR,'break',drops\);[\s\S]*updateInventory\(\);/, 'loose item collection reuses tile drops, removal, undo, and inventory refresh');
 assert.match(mainSrc, /MM\.collectLooseItemAt=collectLooseItemAt;/, 'main exposes loose item collection for weapon hits');
 assert.match(weaponsSrc, /function collectLooseTarget\(tx,ty\)\{[\s\S]*MM\.collectLooseItemAt\(tx,ty,\{source:'melee_weapon',silent:true\}\)/, 'melee weapons delegate loose item hits to the shared collection helper');
-assert.match(weaponsSrc, /function fireMelee\(player, aimX, aimY\)\{[\s\S]*const collected=collectLooseTarget\(tx,ty\);[\s\S]*const hit=collected/, 'normal melee swings count loose item collection as a hit');
-assert.match(weaponsSrc, /function firePowerMelee\(player, aimX, aimY, w, charge\)\{[\s\S]*const collected=collectLooseTarget\(tx,ty\);[\s\S]*hit = !!\(collected \|\|/, 'charged melee swings can also collect loose items');
+assert.match(weaponsSrc, /function fireMelee\(player, aimX, aimY\)\{[\s\S]*const chestHit=openChestFromWeaponHit\(tx,ty,[\s\S]*const collected=chestHit \? false : collectLooseTarget\(tx,ty\);[\s\S]*const hit=chestHit \|\| collected/, 'normal melee swings open chests first and still count loose item collection as a hit');
+assert.match(weaponsSrc, /function firePowerMelee\(player, aimX, aimY, w, charge\)\{[\s\S]*const chestHit=openChestFromWeaponHit\(tx,ty,[\s\S]*const collected=chestHit \? false : collectLooseTarget\(tx,ty\);[\s\S]*hit = !!\(chestHit \|\| collected \|\|/, 'charged melee swings open chests first and can also collect loose items');
 
 // --- percent ladder snapping ---------------------------------------------
 assert.equal(INV.snapPct(1), 0, 'noise under 2.5% disappears');
@@ -204,6 +204,7 @@ assert.ok(INV.statChips(INV.getItem('electric_gun')).some(c => c.label === 'Wią
 assert.ok(INV.statChips(INV.getItem('electric_gun')).some(c => c.label === 'Zużycie energii' && c.text.endsWith('/s')), 'electric gun shows energy drain');
 assert.equal(INV.STAT_LABELS.energyCapacityBonus, 'Pojemność energii', 'energy capacity has a player-facing stat label');
 assert.equal(INV.STAT_RULES.energyCapacityBonus, 'sum', 'energy capacity stacks additively');
+assert.equal(INV.STAT_RULES.damageReductionBonus, 'sum', 'passive defense stacks additively before its safety cap');
 assert.equal(INV.registerItem({id:'battery_charm_test', kind:'charm', name:'Akumulator testowy', energyCapacityBonus:50}), true, 'energy capacity loot is registerable');
 assert.ok(INV.statChips(INV.getItem('battery_charm_test')).some(c => c.text === '+50E'), 'energy capacity appears as a stat chip');
 INV.equip('battery_charm_test');

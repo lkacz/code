@@ -14,6 +14,23 @@ npm run check:modules # static ES-module graph check (catches missing exports)
 npm run check        # lint + module graph + water/clouds/bosses sim tests
 ```
 
+**Live preview** — launch the real game in a real browser, poke it, and screenshot it:
+
+```bash
+npm start                                                    # serve on :8123
+npm run preview                                              # boot + screenshot
+npm run preview -- --script=tools/scenes/example.js --head   # scripted scene, visible browser
+```
+
+`tools/live-preview.mjs` is a dependency-free CDP driver (Node's global `fetch` +
+`WebSocket` talk straight to headless Chrome/Edge) and the reusable core of every
+`tools/*-qa.mjs`. **`docs/LIVE-PREVIEW.md` is the handbook** — read it before writing a
+scene: it covers asserting from inside the page (including `getImageData` pixel checks,
+so an agent with no vision can still verify visuals) and the traps that make working
+features look broken (a software-rasterized 1600×900 window starves the simulation;
+background tabs freeze rAF and throttle timers to ~1 Hz; a page that threw during boot
+still screenshots as a calm, plausible, empty page).
+
 `npm run check` runs in CI on every push/PR (see `.github/workflows/ci.yml`).
 The module-graph check exists because a single missing ESM export silently
 blanks the whole game — exactly what happened during the 2025 ESM migration

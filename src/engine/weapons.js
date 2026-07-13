@@ -15,9 +15,11 @@ import { reactions as REACTIONS } from './reactions.js';
   window.MM = window.MM || {};
 
   const arrows=[]; // {x,y,vx,vy,dmg,life,stuck,stuckT,travel,maxTravel}
+  const arrowFragments=[]; // short-lived shaft/head pieces after an arrow breaks
   const puffs=[];  // {kind,x,y,vx,vy,life,total,dps}
   const electricBeams=[]; // {x1,y1,x2,y2,t,life,hit,blocked,phase}
   const ARROW_SPEED=22, ARROW_GRAV=14, ARROW_LIFE=5, ARROW_STUCK=4, ARROW_RECOVER_SECONDS=12, MAX_ARROWS=64;
+  const ARROW_EXPIRY_FALL_SECONDS=0.8, MAX_ARROW_FRAGMENTS=96;
   const ARROW_DAMAGE_FALLOFF={close:1, mid:0.6, long:0.33};
   const BOW_CHARGE_SECONDS=4;
   const BOW_MAX_CHARGE_MULT=2;
@@ -47,13 +49,14 @@ import { reactions as REACTIONS } from './reactions.js';
   //   diamond — pierces CREATURES (overpenetration, up to 3 targets)
   //   obsidian — ignites when fired at FULL draw (volcanic glass edge)
   //   stone — staggers: the hit target briefly stops (hard chill tap)
-  //   wood — cheap and recoverable: most stuck arrows can be picked back up
+  //   every real arrow can be recovered if it survives impact; break chance
+  //   descends evenly from wood (80%) to iridium (20%)
   const ARROW_TIERS=[
-    {id:'iridium',  key:'arrowIridium',  label:'irydowe',     damage:2.80, speed:1.32, life:1.55, spread:0.004, color:'#b8d7ff', head:'#f0f7ff'},
-    {id:'diamond',  key:'arrowDiamond',  label:'diamentowe',  damage:2.15, speed:1.18, life:1.35, spread:0.012, color:'#48f1ff', head:'#dffcff', mobPierce:3},
-    {id:'obsidian', key:'arrowObsidian', label:'obsydianowe', damage:1.65, speed:1.08, life:1.15, spread:0.020, color:'#7a5cc1', head:'#c7b8ff', igniteOnFull:true},
-    {id:'stone',    key:'arrowStone',    label:'kamienne',    damage:1.25, speed:1.00, life:1.00, spread:0.032, color:'#9aa0a8', head:'#e1e5ea', stagger:0.6},
-    {id:'wood',     key:'arrowWood',     label:'drewniane',   damage:1.00, speed:0.92, life:0.85, spread:0.050, color:'#caa472', head:'#dfe6f1', recover:0.6},
+    {id:'iridium',  key:'arrowIridium',  label:'irydowe',     damage:2.80, speed:1.32, life:1.55, spread:0.004, color:'#b8d7ff', head:'#f0f7ff', breakChance:0.20},
+    {id:'diamond',  key:'arrowDiamond',  label:'diamentowe',  damage:2.15, speed:1.18, life:1.35, spread:0.012, color:'#48f1ff', head:'#dffcff', mobPierce:3, breakChance:0.35},
+    {id:'obsidian', key:'arrowObsidian', label:'obsydianowe', damage:1.65, speed:1.08, life:1.15, spread:0.020, color:'#7a5cc1', head:'#c7b8ff', igniteOnFull:true, breakChance:0.50},
+    {id:'stone',    key:'arrowStone',    label:'kamienne',    damage:1.25, speed:1.00, life:1.00, spread:0.032, color:'#9aa0a8', head:'#e1e5ea', stagger:0.6, breakChance:0.65},
+    {id:'wood',     key:'arrowWood',     label:'drewniane',   damage:1.00, speed:0.92, life:0.85, spread:0.050, color:'#caa472', head:'#dfe6f1', breakChance:0.80},
     // Utility ammo, deliberately below wood so 'auto' never wastes real arrows on
     // it — pin it from the HUD pips. Splats on impact: poison + chill instead of
     // raw damage (crafted from TOXIC_SNOW mined under gas-tainted blizzards).
@@ -320,7 +323,7 @@ import { reactions as REACTIONS } from './reactions.js';
       const count=resourceCount(t.key);
       total+=count;
       if(t.snowball && count<=0 && arrowPref!==t.id) continue;
-      tiers.push({id:t.id, key:t.key, label:t.label, color:t.color, damage:t.damage,
+      tiers.push({id:t.id, key:t.key, label:t.label, color:t.color, damage:t.damage, breakChance:t.breakChance,
         count, active:!!(active && active.id===t.id), pinned:arrowPref===t.id});
     }
     return {tiers, activeId:active?active.id:null, pref:arrowPref, total};
@@ -362,6 +365,191 @@ import { reactions as REACTIONS } from './reactions.js';
     }
     arrows.push(a);
     return a;
+  }
+
+  function arrowResourceKey(a){
+    if(!a || a.thrown || a.snowball || a.rock || a.splat) return null;
+    const tier=ARROW_TIERS.find(t=>t.id===a.tier);
+    return tier && !tier.snowball ? tier.key : null;
+  }
+  function arrowTierSpec(value){
+    const id=typeof value==='string' ? value : value && value.tier;
+    return ARROW_TIERS.find(t=>t.id===id && !t.snowball) || null;
+  }
+  function arrowBreakChance(value){
+    const tier=arrowTierSpec(value);
+    return tier ? Math.max(0,Math.min(1,Number(tier.breakChance)||0)) : 0;
+  }
+  function arrowBreaksOnImpact(a,roll){
+    if(!arrowResourceKey(a)) return false;
+    const chance=arrowBreakChance(a);
+    const r=Number.isFinite(roll) ? Math.max(0,Math.min(1,roll)) : Math.random();
+    return r<chance;
+  }
+  function spawnArrowBreakFx(a,cause){
+    if(!a || !arrowResourceKey(a)) return false;
+    const tier=arrowTierSpec(a) || {};
+    const ang=Number.isFinite(a.ang) ? a.ang : Math.atan2(a.vy||0,a.vx||0);
+    const inheritedX=Math.max(-5,Math.min(5,(a.vx||0)*0.12));
+    const inheritedY=Math.max(-4,Math.min(4,(a.vy||0)*0.08));
+    const pieces=[
+      {along:-0.27,kind:'shaft',len:0.34,kick:-2.4,spin:-8.5},
+      {along: 0.08,kind:'shaft',len:0.30,kick:-3.6,spin: 7.0},
+      {along: 0.30,kind:'head', len:0.18,kick:-2.8,spin:10.5},
+      {along:-0.43,kind:'fletch',len:0.16,kick:-3.2,spin:-11.0}
+    ];
+    while(arrowFragments.length+pieces.length>MAX_ARROW_FRAGMENTS) arrowFragments.shift();
+    pieces.forEach((piece,index)=>{
+      const side=index%2===0 ? -1 : 1;
+      arrowFragments.push({
+        x:a.x+Math.cos(ang)*piece.along,
+        y:a.y+Math.sin(ang)*piece.along,
+        vx:inheritedX+Math.cos(ang+side*1.15)*(1.4+index*0.35),
+        vy:inheritedY+piece.kick-side*0.35,
+        ang:ang+side*0.18, spin:piece.spin, kind:piece.kind, len:piece.len,
+        color:a.color||tier.color||'#caa472', headColor:a.headColor||tier.head||'#dfe6f1',
+        t:0, life:0.62+index*0.06, cause:cause||'impact', bounced:false
+      });
+    });
+    try{
+      if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(a.x*(MM.TILE||20),a.y*(MM.TILE||20),'common',4);
+    }catch(e){}
+    return true;
+  }
+  function breakArrowOnImpact(a,cause,roll){
+    if(!arrowBreaksOnImpact(a,roll)) return false;
+    spawnArrowBreakFx(a,cause);
+    return true;
+  }
+  function makeArrowRecoverable(a){
+    const key=arrowResourceKey(a);
+    if(!key) return false;
+    a.recoverable=true;
+    a.recoverKey=key;
+    a.stuckT=ARROW_RECOVER_SECONDS;
+    return true;
+  }
+  function stickArrowForRecovery(a,sdt){
+    a.x-=(a.vx||0)*(sdt||0)*0.6;
+    a.y-=(a.vy||0)*(sdt||0)*0.6;
+    a.ang=Math.atan2(a.vy||0,a.vx||0);
+    a.vx=0; a.vy=0;
+    a.stuck=true;
+    makeArrowRecoverable(a);
+    return true;
+  }
+  function dropSurvivingArrow(a){
+    if(!makeArrowRecoverable(a)) return false;
+    a.stuck=false;
+    a.spent=true;
+    a.dropOnLand=true;
+    a.vx=-(a.vx||0)*0.08;
+    a.vy=Math.min(-1.1,(a.vy||0)*-0.08);
+    a.life=Math.max(Number(a.life)||0,20);
+    a.travel=0;
+    a.maxTravel=Math.max(1,Math.hypot(a.vx,a.vy)*a.life);
+    return true;
+  }
+  function beginArrowExpiryFall(a){
+    if(!arrowResourceKey(a) || a.expiring) return false;
+    a.embeddedMob=null;
+    a.expiring=true;
+    a.stuck=false;
+    a.dropOnLand=false;
+    a.recoverable=false;
+    a.spent=true;
+    a.expireT=ARROW_EXPIRY_FALL_SECONDS;
+    a.ang=Number.isFinite(a.ang) ? a.ang : Math.atan2(a.vy||0,a.vx||0);
+    a.expireSpin=(a.vx||0)>=0 ? 5.5 : -5.5;
+    a.vx=Math.max(-3.5,Math.min(3.5,(a.vx||0)*0.16));
+    a.vy=Math.max(-1.2,Math.min(1.8,(a.vy||0)*0.08));
+    return true;
+  }
+  function updateExpiringArrow(a,dt,getTile){
+    a.expireT-=dt;
+    a.vy+=ARROW_GRAV*dt;
+    a.ang=(a.ang||0)+(a.expireSpin||5.5)*dt;
+    const nx=a.x+(a.vx||0)*dt, ny=a.y+(a.vy||0)*dt;
+    let struck=false;
+    try{ struck=!!(getTile && isSolid(getTile(Math.floor(nx),Math.floor(ny)))); }catch(e){}
+    if(struck || a.expireT<=0){
+      spawnArrowBreakFx(a,struck?'expiry_ground':'expiry_air');
+      return false;
+    }
+    a.x=nx; a.y=ny;
+    return true;
+  }
+  function updateArrowFragments(dt,getTile){
+    for(let i=arrowFragments.length-1;i>=0;i--){
+      const f=arrowFragments[i];
+      f.t+=dt;
+      if(f.t>=f.life){ arrowFragments.splice(i,1); continue; }
+      f.vy+=ARROW_GRAV*0.82*dt;
+      const nx=f.x+f.vx*dt, ny=f.y+f.vy*dt;
+      let solid=false;
+      try{ solid=!!(getTile && isSolid(getTile(Math.floor(nx),Math.floor(ny)))); }catch(e){}
+      if(solid && !f.bounced){
+        f.bounced=true; f.vy=-Math.abs(f.vy)*0.28; f.vx*=0.42; f.spin*=0.6;
+      } else if(!solid){
+        f.x=nx; f.y=ny;
+      }
+      f.ang+=f.spin*dt;
+    }
+  }
+  function showRecoveredArrowFx(a,key,player){
+    try{
+      if(MM.drops && typeof MM.drops.showArrowCollect==='function'){
+        MM.drops.showArrowCollect(a.x,a.y,key,player);
+      }
+    }catch(e){}
+  }
+  function attachArrowToMob(a,mob){
+    if(!arrowResourceKey(a) || !mob || !Number.isFinite(mob.x) || !Number.isFinite(mob.y)) return false;
+    const clamp=(v,min,max)=>Math.max(min,Math.min(max,Number(v)||0));
+    a.ang=Math.atan2(a.vy||0,a.vx||0);
+    a.embeddedMob=mob;
+    a.embeddedOffsetX=clamp(a.x-mob.x,-0.55,0.55);
+    a.embeddedOffsetY=clamp(a.y-mob.y,-0.55,0.45);
+    a.x=mob.x+a.embeddedOffsetX;
+    a.y=mob.y+a.embeddedOffsetY;
+    a.vx=0; a.vy=0;
+    a.stuck=true;
+    a.stuckT=Infinity;
+    return true;
+  }
+  function embeddedMobAlive(a){
+    const mob=a && a.embeddedMob;
+    if(!mob || !(mob.hp>0) || !Number.isFinite(mob.x) || !Number.isFinite(mob.y)) return false;
+    try{
+      if(MM.mobs && typeof MM.mobs.isLiving==='function') return !!MM.mobs.isLiving(mob);
+    }catch(e){ return false; }
+    return true;
+  }
+  function releaseArrowFromMob(a){
+    const mob=a.embeddedMob;
+    const carryVx=mob && Number.isFinite(mob.vx) ? mob.vx : 0;
+    const carryVy=mob && Number.isFinite(mob.vy) ? mob.vy : 0;
+    a.embeddedMob=null;
+    a.stuck=false;
+    a.stuckT=ARROW_STUCK;
+    a.dropOnLand=true;
+    a.spent=true;
+    a.recoverKey=arrowResourceKey(a);
+    a.vx=carryVx*0.25;
+    a.vy=Math.min(0,carryVy*0.2)-1.2;
+    a.life=Math.max(Number(a.life)||0,20);
+    a.travel=0;
+    a.maxTravel=Math.max(1,Math.hypot(a.vx,a.vy)*a.life);
+  }
+  function spawnDroppedArrowPickup(a){
+    const key=a.recoverKey || arrowResourceKey(a);
+    if(!key) return false;
+    try{
+      if(MM.drops && typeof MM.drops.spawnResource==='function'){
+        return !!MM.drops.spawnResource(a.x,a.y-0.15,key,1,{vx:(a.vx||0)*0.2,vy:-0.8});
+      }
+    }catch(e){}
+    return false;
   }
 
   function notifyMeleeSwing(tx,ty,player){
@@ -427,6 +615,16 @@ import { reactions as REACTIONS } from './reactions.js';
   function collectLooseTarget(tx,ty){
     try{
       return !!(MM.collectLooseItemAt && MM.collectLooseItemAt(tx,ty,{source:'melee_weapon',silent:true}));
+    }catch(e){}
+    return false;
+  }
+  function openChestFromWeaponHit(tx,ty,opts){
+    const chests=MM.chests;
+    if(!chests) return false;
+    try{
+      if(typeof chests.openFromWeaponHitAt==='function') return !!chests.openFromWeaponHitAt(tx,ty,Object.assign({source:'hero'},opts||{}));
+      const t=typeof lastGetTile==='function' ? lastGetTile(tx,ty) : null;
+      if(typeof chests.openChestAt==='function' && t!=null && INFO[t] && INFO[t].chestTier) return !!chests.openChestAt(tx,ty);
     }catch(e){}
     return false;
   }
@@ -544,8 +742,9 @@ import { reactions as REACTIONS } from './reactions.js';
     const w=equippedWeapon();
     const {px,tx,ty}=meleeTargetTile(player,aimX,aimY,meleeReach(w));
     const bonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
-    const collected=collectLooseTarget(tx,ty);
-    const hit=collected
+    const chestHit=openChestFromWeaponHit(tx,ty,{kind:'melee'});
+    const collected=chestHit ? false : collectLooseTarget(tx,ty);
+    const hit=chestHit || collected
            || (MM.guardianLairs && MM.guardianLairs.attackAt && MM.guardianLairs.attackAt(tx,ty,bonus))
            || (MM.undergroundBoss && MM.undergroundBoss.attackAt && MM.undergroundBoss.attackAt(tx,ty,bonus))
            || (MM.skyGuardian && MM.skyGuardian.attackAt && MM.skyGuardian.attackAt(tx,ty,bonus))
@@ -558,7 +757,7 @@ import { reactions as REACTIONS } from './reactions.js';
     meleeCd=0.35; player.atkCd=Math.max(player.atkCd||0, 0.35);
     player.facing = tx>=px? 1 : -1;
     notifyMeleeSwing(tx,ty,player);
-    if(hit && !collected){ addUltCharge(0.08); rollMeleeEffect(w,tx,ty); }
+    if(hit && !collected && !chestHit){ addUltCharge(0.08); rollMeleeEffect(w,tx,ty); }
     try{ if(MM.audio && MM.audio.play) MM.audio.play('swing'); }catch(e){}
     return !!hit;
   }
@@ -661,7 +860,7 @@ import { reactions as REACTIONS } from './reactions.js';
       tier:tier.id, snowball:!!tier.snowball, splat:tier.snowball?'toxic':undefined,
       stagger:tier.stagger||0,
       mobPierce:tier.mobPierce||0,
-      recoverable:!!(tier.recover && Math.random()<tier.recover),
+      recoverable:!tier.snowball, recoverKey:tier.snowball?null:tier.key,
       color:(full && !tier.snowball)?'#f5d66a':tier.color, headColor:(full && !tier.snowball)?'#fff1a8':tier.head, windCap:sp*1.35,
       pierceLeft:tier.id==='iridium' ? 3 : 0
     });
@@ -703,7 +902,7 @@ import { reactions as REACTIONS } from './reactions.js';
       tier:tier.id, snowball:!!tier.snowball, splat:tier.snowball?'toxic':undefined,
       stagger:tier.stagger||0,
       mobPierce:tier.mobPierce ? tier.mobPierce+1 : 0,
-      recoverable:!!(tier.recover && Math.random()<tier.recover),
+      recoverable:!tier.snowball, recoverKey:tier.snowball?null:tier.key,
       color:tier.color, headColor:tier.head, windCap:sp*1.25,
       pierceLeft:tier.id==='iridium' ? 5 : 0
     });
@@ -791,7 +990,7 @@ import { reactions as REACTIONS } from './reactions.js';
     const dmg=charge ? Math.max(2, baseDps*cadence*(roll ? roll.mult : 2)) : Math.max(0.75, baseDps*cadence*power);
     const sx=player.x + v.dx*0.62;
     const sy=player.y - 0.10 + v.dy*0.62;
-    let ex=sx+v.dx*range, ey=sy+v.dy*range, hit=false, blocked=false;
+    let ex=sx+v.dx*range, ey=sy+v.dy*range, hit=false, blocked=false, chestHit=false;
     const worldObj=(typeof MM!=='undefined' && MM.world) ? MM.world : null;
     const tileGetter=(typeof lastGetTile==='function') ? lastGetTile
       : (worldObj && typeof worldObj.getTile==='function' ? (x,y)=>worldObj.getTile(x,y) : null);
@@ -802,6 +1001,10 @@ import { reactions as REACTIONS } from './reactions.js';
       const x=sx+v.dx*d, y=sy+v.dy*d;
       const tx=Math.floor(x), ty=Math.floor(y);
       const t=tileGetter ? tileGetter(tx,ty) : null;
+      if(t != null && INFO[t] && INFO[t].chestTier && openChestFromWeaponHit(tx,ty,{kind:'electric',specialAttack:!!charge})){
+        ex=x; ey=y; hit=true; chestHit=true;
+        break;
+      }
       if(tileGetter && tileSetter && applyBlockReaction('electric',tx,ty,tileGetter,tileSetter)){
         ex=sx+v.dx*Math.max(0,d-step*0.5);
         ey=sy+v.dy*Math.max(0,d-step*0.5);
@@ -840,8 +1043,8 @@ import { reactions as REACTIONS } from './reactions.js';
       // (a successful ult consumes the whole charge — pinned in stream-sim)
       if(electricDamageAt(tx,ty,dmg,{specialAttack:!!charge,luckyStrike:!!(roll&&roll.lucky)})){ ex=x; ey=y; hit=true; if(!charge) addUltCharge(0.08); break; }
     }
-    if(hit && roll && roll.lucky) noteLuckyStrike(ex,ey-0.4);
-    if(hit && (charge || (roll && roll.lucky))) noteWeaponCombatHit(ex,ey-0.4,dmg,{kind:'electric',element:'electric',source:'hero',specialAttack:!!charge,luckyStrike:!!(roll&&roll.lucky)},{major:!!charge});
+    if(hit && !chestHit && roll && roll.lucky) noteLuckyStrike(ex,ey-0.4);
+    if(hit && !chestHit && (charge || (roll && roll.lucky))) noteWeaponCombatHit(ex,ey-0.4,dmg,{kind:'electric',element:'electric',source:'hero',specialAttack:!!charge,luckyStrike:!!(roll&&roll.lucky)},{major:!!charge});
     pushElectricBeam({x1:sx,y1:sy,x2:ex,y2:ey,t:0,life:charge?0.28:0.18,hit,blocked,phase:Math.random()*Math.PI*2,power});
     try{ if(MM.audio && MM.audio.play) MM.audio.play('beam'); }catch(e){}
     try{
@@ -858,7 +1061,7 @@ import { reactions as REACTIONS } from './reactions.js';
     player.facing = dx>=0?1:-1;
     const range=(w && w.fireRange)||6;
     const dps=(w && w.fireDps)||(kind==='hose'?2:6);
-    spawnExternalStream(kind,player.x,player.y-0.1,dx,dy,{range,dps});
+    spawnExternalStream(kind,player.x,player.y-0.1,dx,dy,{range,dps,source:'hero'});
     // Elemental streams tick direct damage into boss bodies along the ray.
     // Guardian-specific weaknesses are resolved by guardian_lairs.damageAt.
     bossAcc+=dt;
@@ -942,6 +1145,7 @@ import { reactions as REACTIONS } from './reactions.js';
         total:totalLife,
         dps,
         scale:1.25+charge*0.75,
+        source:'hero',
         specialAttack:true,
         luckyStrike:roll.lucky
       });
@@ -971,8 +1175,9 @@ import { reactions as REACTIONS } from './reactions.js';
     const chargeFx=Math.max(0,Math.min(1,Number(charge)||0));
     const dmg=Math.max(1,Math.round((3 + bonus + ((w && w.attackDamage)||3))*roll.mult));
     let hit=false;
-    const collected=collectLooseTarget(tx,ty);
-    hit = !!(collected || (MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,dmg,{kind:'melee',source:'hero'}))
+    const chestHit=openChestFromWeaponHit(tx,ty,{kind:'melee',specialAttack:true});
+    const collected=chestHit ? false : collectLooseTarget(tx,ty);
+    hit = !!(chestHit || collected || (MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,dmg,{kind:'melee',source:'hero'}))
       || (MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,dmg))
       || (MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(tx,ty,dmg))
       || (MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,dmg,{kind:'melee',source:'hero'}))
@@ -982,9 +1187,9 @@ import { reactions as REACTIONS } from './reactions.js';
       || (MM.mechs && MM.mechs.damageAt && MM.mechs.damageAt(tx,ty,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky}))
       || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,dmg))
       || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky})));
-    if(hit && roll.lucky) noteLuckyStrike(tx+0.5,ty-0.15);
-    if(hit) noteWeaponCombatHit(tx+0.5,ty+0.15,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky},{major:true});
-    if(hit && !collected) rollMeleeEffect(w,tx,ty,{chanceMult:1.5}); // a charged blow procs its material more often
+    if(hit && !chestHit && roll.lucky) noteLuckyStrike(tx+0.5,ty-0.15);
+    if(hit && !chestHit) noteWeaponCombatHit(tx+0.5,ty+0.15,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky},{major:true});
+    if(hit && !collected && !chestHit) rollMeleeEffect(w,tx,ty,{chanceMult:1.5}); // a charged blow procs its material more often
     player.facing = v.dx>=0?1:-1;
     meleeCd=Math.max(meleeCd,0.25);
     player.atkCd=Math.max(player.atkCd||0, 0.35);
@@ -1011,10 +1216,11 @@ import { reactions as REACTIONS } from './reactions.js';
   }
   // --- Gas detonation (TNT effect) ----------------------------------------------
   // Toxic vapour touching open flame or lava explodes: nearby gas puffs are
-  // consumed into the blast (bigger cloud → bigger boom), soft terrain craters
-  // (chests, obsidian and diamond survive), creatures and the hero are hurt and
-  // knocked back, the rim catches fire. A short cooldown turns a stream sprayed
-  // straight onto lava into rhythmic booms instead of a 60-per-second buzz.
+  // consumed into the blast (bigger cloud → bigger boom), soft terrain craters,
+  // creatures and the hero are hurt, and the rim catches fire. Obsidian and
+  // diamonds survive; chests open through their normal loot path instead of
+  // being erased. A short cooldown turns a stream
+  // sprayed straight onto lava into rhythmic booms instead of a 60-per-second buzz.
   const blastsFx=[]; // {x,y,R,t,max}
   let explodeCd=0;
   function explodeAt(wx,wy,getTile,setTile,opts){
@@ -1041,6 +1247,10 @@ import { reactions as REACTIONS } from './reactions.js';
         const tx=bx+dx, ty=by+dy;
         if(!explosionEditableY(ty)) continue;
         const t=getTile(tx,ty);
+        if(INFO[t] && INFO[t].chestTier && opts.source!=='mob' && opts.source!=='enemy'
+          && openChestFromWeaponHit(tx,ty,{kind:'explosion',specialAttack:true})){
+          continue;
+        }
         if(isBlastProtectedTile(t)) continue;
         if(typeof setTile!=='function') continue;
         awardUfoConcreteShard(tx,ty,t);
@@ -1239,7 +1449,7 @@ import { reactions as REACTIONS } from './reactions.js';
     }
     if(a.splat==='gascloud'){
       // gas grenade: releases a poison cloud where it lands (fire detonates it)
-      spawnGasCloud(a.x,a.y,1.6);
+      spawnGasCloud(a.x,a.y,1.6,{source:'hero'});
       try{ if(MM.audio && MM.audio.play) MM.audio.play('gas',{x:a.x,y:a.y}); }catch(e){}
       return;
     }
@@ -1553,7 +1763,8 @@ import { reactions as REACTIONS } from './reactions.js';
     }
   }
 
-  function spawnGasCloud(x,y,intensity){
+  function spawnGasCloud(x,y,intensity,opts){
+    opts=opts||{};
     const power=Math.max(0.25, Math.min(4, intensity||1));
     const persistent=addWorldGas('poison',x,y,{power,cells:Math.min(10,Math.round(2+power*2.4))});
     const n=Math.min(MAX_PUFFS-puffs.length, Math.round(8+power*9));
@@ -1569,7 +1780,8 @@ import { reactions as REACTIONS } from './reactions.js';
         life:(2.8+Math.random()*1.6)*(0.85+power*0.15),
         total:3.8,
         dps:4+power*1.2,
-        scale:1+power*0.12
+        scale:1+power*0.12,
+        source:opts.source || undefined
       });
     }
     return n+persistent;
@@ -1624,31 +1836,50 @@ import { reactions as REACTIONS } from './reactions.js';
       b.t+=dt;
       if(b.t>=b.life) electricBeams.splice(i,1);
     }
+    updateArrowFragments(dt,getTile);
     // Arrows
     for(let i=arrows.length-1;i>=0;i--){
       const a=arrows[i];
+      if(a.expiring){
+        if(!updateExpiringArrow(a,dt,getTile)) arrows.splice(i,1);
+        continue;
+      }
+      if(a.embeddedMob){
+        if(embeddedMobAlive(a)){
+          a.x=a.embeddedMob.x+(a.embeddedOffsetX||0);
+          a.y=a.embeddedMob.y+(a.embeddedOffsetY||0);
+          continue;
+        }
+        releaseArrowFromMob(a);
+      }
       if(a.stuck){
         a.stuckT-=dt;
-        // wood arrows are recoverable: walk over one before it despawns to take it back
+        // Any material that survived impact can be reclaimed before it expires.
         if(a.recoverable){
           const p=(typeof window!=='undefined') ? window.player : null;
           if(p && Math.abs(p.x-a.x)<1.1 && Math.abs(p.y-a.y)<1.3){
-            if(addResource('arrowWood',1)){
+            const recoverKey=a.recoverKey || arrowResourceKey(a);
+            if(addResource(recoverKey,1)){
+              showRecoveredArrowFx(a,recoverKey,p);
               try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(a.x*(MM.TILE||20),a.y*(MM.TILE||20),'common',4); }catch(e){}
               try{ if(MM.audio && MM.audio.play) MM.audio.play('harvest'); }catch(e){}
-              try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('arrow_recover','Wbite drewniane strzały można podnieść z powrotem!'); }catch(e){}
+              try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('arrow_recover','Strzałę, która przetrwała trafienie, można podnieść z powrotem!'); }catch(e){}
               arrows.splice(i,1); continue;
             }
           }
         }
         if(a.stuckT<=0){
           // a clung sticky bomb detonates when its fuse runs out
-          if(a.stickyFuse){ splatProjectile(a,getTile,setTile); }
-          arrows.splice(i,1);
+          if(a.stickyFuse){ splatProjectile(a,getTile,setTile); arrows.splice(i,1); }
+          else if(!beginArrowExpiryFall(a)) arrows.splice(i,1);
         }
         continue;
       }
-      a.life-=dt; if(a.life<=0){ arrows.splice(i,1); continue; }
+      a.life-=dt;
+      if(a.life<=0){
+        if(!beginArrowExpiryFall(a)) arrows.splice(i,1);
+        continue;
+      }
       a.ignoreUndergroundT=Math.max(0,(Number(a.ignoreUndergroundT)||0)-dt);
       // a burning arrow flying into a gas cloud detonates it
       if(a.fire){
@@ -1674,17 +1905,19 @@ import { reactions as REACTIONS } from './reactions.js';
         const hitDmg=arrowDamageAtRange(a);
         let undergroundResult=false;
         const arrowOpts={source:'hero',kind:'arrow',x:a.x,y:a.y,vx:a.vx,vy:a.vy,tier:a.tier,fire:!!a.fire,specialAttack:!!a.specialAttack,luckyStrike:!!a.luckyStrike};
-        if((a.ignoreUndergroundT||0)<=0 && MM.undergroundBoss && MM.undergroundBoss.damageAt){
+        if(!a.spent && (a.ignoreUndergroundT||0)<=0 && MM.undergroundBoss && MM.undergroundBoss.damageAt){
           undergroundResult=MM.undergroundBoss.damageAt(tx,ty,hitDmg,arrowOpts);
           if(undergroundResult==='bounce'){
             bounceArrowFromUnderground(a,tx,ty);
             break;
           }
         }
-        const creatureGate=(Number(a.pierceGate)||0)<= (a.travel||0);
+        const creatureGate=!a.spent && (Number(a.pierceGate)||0)<= (a.travel||0);
+        let hitMob=null;
+        const mobArrowOpts=Object.assign({},arrowOpts,{onTarget:(mob)=>{ hitMob=mob; }});
         if(creatureGate && ((MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,hitDmg,arrowOpts))
         || (MM.mechs && MM.mechs.damageAt && MM.mechs.damageAt(tx,ty,hitDmg,arrowOpts))
-        || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,hitDmg,arrowOpts))
+        || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,hitDmg,mobArrowOpts))
         || (MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,hitDmg))
         || undergroundResult
         || (MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,hitDmg,arrowOpts))
@@ -1697,6 +1930,10 @@ import { reactions as REACTIONS } from './reactions.js';
           if(a.stagger && MM.mobs && MM.mobs.chillAt) MM.mobs.chillAt(tx,ty,{dur:a.stagger,source:'hero',cause:'stagger'}); // stone arrows stop the target in its tracks
           if(a.splat) splatProjectile(a,getTile,setTile);
           addUltCharge(0.08);
+          if(breakArrowOnImpact(a,'creature')){
+            arrows.splice(i,1);
+            break;
+          }
           // diamond arrows overpenetrate: keep flying through up to 3 creatures
           if((a.mobPierce||0)>0){
             a.mobPierce--;
@@ -1704,15 +1941,33 @@ import { reactions as REACTIONS } from './reactions.js';
             a.pierceGate=(a.travel||0)+1.2; // clear the current body before the next hit registers
             continue;
           }
+          if(hitMob && attachArrowToMob(a,hitMob)){
+            // A lethal hit has no living body to hold the arrow for another
+            // frame, so begin the corpse drop immediately.
+            if(!embeddedMobAlive(a)) releaseArrowFromMob(a);
+            break;
+          }
+          if(dropSurvivingArrow(a)) break;
           arrows.splice(i,1); break;
         }
         const t=getTile(tx,ty);
-        if(t===T.GLASS && shatterGlassAt(tx,ty,setTile,getTile)){
-          arrows.splice(i,1);
+        if(!a.spent && INFO[t] && INFO[t].chestTier && openChestFromWeaponHit(tx,ty,{kind:a.thrown?'thrown':'arrow',specialAttack:!!a.specialAttack})){
+          if(a.splat) splatProjectile(a,getTile,setTile);
+          if(arrowResourceKey(a)){
+            if(breakArrowOnImpact(a,'chest')) arrows.splice(i,1);
+            else stickArrowForRecovery(a,sdt);
+          } else arrows.splice(i,1);
           break;
         }
+        if(!a.spent && t===T.GLASS && shatterGlassAt(tx,ty,setTile,getTile)){
+          if(arrowResourceKey(a)){
+            if(breakArrowOnImpact(a,'glass')){ arrows.splice(i,1); break; }
+            continue;
+          }
+          arrows.splice(i,1); break;
+        }
         if(isSolid(t)){
-          if(tryIridiumPierceBlock(a,tx,ty,t,getTile,setTile)){
+          if(!a.spent && tryIridiumPierceBlock(a,tx,ty,t,getTile,setTile)){
             if(a.fire && FIRE) FIRE.ignite(tx,ty,getTile,setTile);
             continue;
           }
@@ -1730,10 +1985,24 @@ import { reactions as REACTIONS } from './reactions.js';
             arrows.splice(i,1);
             break;
           }
-          a.x-=a.vx*sdt*0.6; a.y-=a.vy*sdt*0.6; // sit at the surface, not inside
-          a.stuck=true;
-          if(a.recoverable) a.stuckT=ARROW_RECOVER_SECONDS; // wood arrows wait to be picked back up
+          if(a.dropOnLand){
+            a.x-=a.vx*sdt*0.6; a.y-=a.vy*sdt*0.6;
+            if(spawnDroppedArrowPickup(a)){
+              arrows.splice(i,1);
+            } else {
+              a.dropOnLand=false;
+              a.stuck=true;
+              a.recoverable=true;
+              a.stuckT=ARROW_RECOVER_SECONDS;
+            }
+            break;
+          }
           if(a.fire && FIRE){ FIRE.ignite(tx,ty,getTile,setTile); FIRE.ignite(Math.floor(a.x),Math.floor(a.y),getTile,setTile); }
+          if(breakArrowOnImpact(a,'terrain')){
+            arrows.splice(i,1);
+            break;
+          }
+          stickArrowForRecovery(a,sdt);
           break;
         }
         if(t===T.WATER){ a.vx*=0.96; a.vy*=0.96; a.fire=false; } // water drag douses it too
@@ -1760,6 +2029,9 @@ import { reactions as REACTIONS } from './reactions.js';
       const t=getTile(tx,ty);
       const info=INFO[t] || null;
       const hitWall=isSolid(t);
+      if(p.source==='hero' && info && info.chestTier && openChestFromWeaponHit(tx,ty,{kind:p.kind,specialAttack:!!p.specialAttack})){
+        puffs.splice(i,1); continue;
+      }
       if(p.kind==='flame' && applyBlockReaction('heat',tx,ty,getTile,setTile)){
         puffs.splice(i,1); continue;
       }
@@ -1949,8 +2221,8 @@ import { reactions as REACTIONS } from './reactions.js';
           ctx.restore();
           continue;
         }
-        const ang=a.stuck? a.ang||0 : Math.atan2(a.vy,a.vx);
-        if(!a.stuck) a.ang=ang;
+        const ang=a.stuck || a.expiring ? a.ang||0 : Math.atan2(a.vy,a.vx);
+        if(!a.stuck && !a.expiring) a.ang=ang;
         ctx.save();
         ctx.translate(a.x*TILE, a.y*TILE); ctx.rotate(ang);
         ctx.strokeStyle=a.power?(a.color||'#f5d66a'):(a.color||'#caa472'); ctx.lineWidth=a.power?3.2:2;
@@ -1963,6 +2235,33 @@ import { reactions as REACTIONS } from './reactions.js';
           const fl=Math.sin(performance.now()*0.03 + a.x)*0.5+0.5;
           ctx.fillStyle='rgba(255,170,50,'+(0.6+0.3*fl)+')';
           ctx.beginPath(); ctx.arc(7,0,3+fl*1.5,0,Math.PI*2); ctx.fill();
+        }
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+    if(arrowFragments.length){
+      ctx.save();
+      ctx.lineCap='round';
+      for(const f of arrowFragments){
+        if(!tileVisible(f.x,f.y)) continue;
+        const alpha=Math.max(0,Math.min(1,(f.life-f.t)/Math.min(0.3,f.life)));
+        ctx.globalAlpha=alpha;
+        ctx.save();
+        ctx.translate(f.x*TILE,f.y*TILE);
+        ctx.rotate(f.ang||0);
+        if(f.kind==='head'){
+          ctx.fillStyle=f.headColor||'#dfe6f1';
+          ctx.beginPath();
+          ctx.moveTo(TILE*0.16,0); ctx.lineTo(-TILE*0.10,-TILE*0.11); ctx.lineTo(-TILE*0.10,TILE*0.11);
+          ctx.closePath(); ctx.fill();
+        } else if(f.kind==='fletch'){
+          ctx.fillStyle='#e8e2d2';
+          ctx.fillRect(-TILE*0.10,-TILE*0.08,TILE*0.22,TILE*0.16);
+        } else {
+          ctx.strokeStyle=f.color||'#caa472';
+          ctx.lineWidth=Math.max(1.4,TILE*0.08);
+          ctx.beginPath(); ctx.moveTo(-TILE*f.len*0.5,0); ctx.lineTo(TILE*f.len*0.5,0); ctx.stroke();
         }
         ctx.restore();
       }
@@ -2220,7 +2519,7 @@ import { reactions as REACTIONS } from './reactions.js';
       energySpent:+(bowCharge.energySpent||0).toFixed(3)
     };
   }
-  function reset(){ arrows.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; meleeCd=0; electricCd=0; throwCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; resetBowCharge(); }
+  function reset(){ arrows.length=0; arrowFragments.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; meleeCd=0; electricCd=0; throwCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; resetBowCharge(); }
 
   // --- ghost mirror: the hero's weapons, seen from the cheap seats ------------
   // A watcher runs the full renderer but no simulation, so its weapons module
@@ -2316,8 +2615,8 @@ import { reactions as REACTIONS } from './reactions.js';
   MM.weapons={fireHeld,releaseHeld,cancelHeld,fireUlt,update,draw,drawHeld,notifyMeleeSwing,reset,explodeAt,spawnGasCloud,spawnExternalStream,
     ghostFxState,ghostApplyFx,ghostStepFx,
     arrowInfo,setArrowPref,fuelInfo,thrownInfo,hudStatus,addUltCharge,
-    metrics:()=>({arrows:arrows.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),ultCharge,bowCharge:bowChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
-    _debug:{arrows,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,waterHeat,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS}};
+    metrics:()=>({arrows:arrows.length,arrowFragments:arrowFragments.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),ultCharge,bowCharge:bowChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
+    _debug:{arrows,arrowFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,waterHeat,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS}};
 })();
 // ESM export (progressive migration)
 export const weapons = (typeof window!=='undefined' && window.MM) ? window.MM.weapons : undefined;

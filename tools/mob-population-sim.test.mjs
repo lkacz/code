@@ -105,6 +105,11 @@ try{
   assert.equal(mobs.damageAt(NaN,29,999), false, 'invalid mob hit x is ignored');
   assert.equal(mobs.attackAt(1,Infinity,999), false, 'invalid mob melee y is ignored');
   assert.equal(mobs.serialize().list[0].hp, restored[0].hp, 'invalid hit coordinates cannot damage mobs');
+  let callbackTarget=null;
+  const callbackMob=mobs.nearestLiving(1,29,4);
+  assert.ok(callbackMob && mobs.isLiving(callbackMob), 'living-mob identity is exposed for projectile attachments');
+  assert.equal(mobs.damageAt(1,29,0.5,{source:'hero',onTarget:m=>{ callbackTarget=m; }}), true, 'projectile callback accompanies a normal mob hit');
+  assert.equal(callbackTarget,callbackMob, 'damage callback returns the exact mob entity that was hit');
 
   mobs.clearAll();
   mobs.deserialize({

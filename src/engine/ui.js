@@ -94,8 +94,40 @@ MM.ui = (function(){
     b.classList.toggle('toggled', !!on);
     b.textContent = 'Mapa: ' + (on?'ON':'OFF');
   }
+  function openWorldSettings(){
+    const wsOverlay=document.getElementById('worldSettingsOverlay');
+    const wsBody=document.getElementById('worldSettingsBody');
+    if(!wsOverlay || !wsBody) return false;
+    if(!wsBody.__injected){ injectWorldSettings(wsBody); wsBody.__injected=true; }
+    wsOverlay.style.display='block';
+    try{ api.closeMenu(); }catch(e){}
+    return true;
+  }
+  function closeWorldSettings(){
+    const wsOverlay=document.getElementById('worldSettingsOverlay');
+    if(!wsOverlay) return false;
+    wsOverlay.style.display='none';
+    return true;
+  }
+  function bindWorldSettings(){
+    const openWS=document.getElementById('openWorldSettingsBtn');
+    const wsOverlay=document.getElementById('worldSettingsOverlay');
+    const wsClose=document.getElementById('worldSettingsClose');
+    if(openWS && !openWS.__mmWorldSettingsBound){ openWS.__mmWorldSettingsBound=true; openWS.addEventListener('click',openWorldSettings); }
+    if(wsClose && !wsClose.__mmWorldSettingsBound){ wsClose.__mmWorldSettingsBound=true; wsClose.addEventListener('click',closeWorldSettings); }
+    if(wsOverlay && !wsOverlay.__mmWorldSettingsBound){
+      wsOverlay.__mmWorldSettingsBound=true;
+      wsOverlay.addEventListener('click',e=>{ if(e.target===wsOverlay) closeWorldSettings(); });
+      window.addEventListener('keydown',e=>{
+        if(e.key==='Escape' && wsOverlay.style.display!=='none' && wsOverlay.style.display!==''){
+          closeWorldSettings(); e.stopPropagation();
+        }
+      });
+    }
+  }
   function initMenuToggle(){
-    const menuBtn = document.getElementById('menuBtn');
+    bindWorldSettings();
+    const menuBtn = document.getElementById('debugMenuBtn');
     const menuPanel = document.getElementById('menuPanel');
     if(!menuBtn || !menuPanel) return;
     _menu.btn = menuBtn; _menu.panel = menuPanel;
@@ -128,22 +160,6 @@ MM.ui = (function(){
       try{ window.dispatchEvent(new CustomEvent('mm-radar-pulse')); }catch(e){}
       close();
     });
-  // Do not inject world settings into the dropdown menu anymore; use the dedicated modal instead.
-    // Hook world settings modal open/close
-    const openWS = document.getElementById('openWorldSettingsBtn');
-    const wsOverlay = document.getElementById('worldSettingsOverlay');
-    const wsBody = document.getElementById('worldSettingsBody');
-    const wsClose = document.getElementById('worldSettingsClose');
-    function openWorldSettings(){ if(!wsOverlay||!wsBody) return; // lazy inject content the first time
-      if(!wsBody.__injected){ injectWorldSettings(wsBody); wsBody.__injected=true; }
-      wsOverlay.style.display='block';
-      try{ api.closeMenu(); }catch(e){}
-    }
-    function closeWorldSettings(){ if(wsOverlay) wsOverlay.style.display='none'; }
-    openWS?.addEventListener('click', openWorldSettings);
-    wsClose?.addEventListener('click', closeWorldSettings);
-    wsOverlay?.addEventListener('click', (e)=>{ if(e.target===wsOverlay) closeWorldSettings(); });
-    window.addEventListener('keydown', (e)=>{ if(e.key==='Escape' && wsOverlay && wsOverlay.style.display!=='none' && wsOverlay.style.display!==''){ closeWorldSettings(); e.stopPropagation(); } });
   }
   function injectWorldSettings(menuPanel){
     const panel = menuPanel || document.getElementById('menuPanel'); if(!panel) return;
@@ -177,9 +193,10 @@ MM.ui = (function(){
   const r12=row('Głębokość jezior', 'setLakeDepth', 3, 20, 1, (s.lakeMaxDepth===undefined?12:s.lakeMaxDepth));
   const r13=row('Gęstość lasu', 'setForestMul', 0.2, 3.0, 0.05, (s.forestDensityMul===undefined?1.0:s.forestDensityMul), v=>Number(v).toFixed(2));
     const applyRow=document.createElement('div'); applyRow.style.cssText='display:flex; gap:6px;';
-  const apply=document.createElement('button'); apply.className='topbtn'; apply.textContent='Zastosuj i odśwież';
+  const apply=document.createElement('button'); apply.className='topbtn'; apply.textContent='Zastosuj i utwórz świat od nowa';
   apply.addEventListener('click',()=>{
       try{
+        if(typeof window.confirm==='function' && !window.confirm('Zastosować ustawienia generatora?\n\nBieżący świat i postęp zostaną rozpoczęte od nowa z tym samym ziarnem. Ręczne zapisy zostaną zachowane.')) return;
         const ns={
           seaLevel: parseInt(r1.input.value,10),
           oceanFrac: parseFloat(r2.input.value),
@@ -201,6 +218,7 @@ MM.ui = (function(){
         // Regenerate world with the SAME seed
         if(window.regenWorldSameSeed){ window.regenWorldSameSeed(); }
         else { window.dispatchEvent(new CustomEvent('mm-regen-same-seed')); }
+        closeWorldSettings();
       }catch(e){}
     });
     applyRow.appendChild(apply); box.appendChild(applyRow);
@@ -1966,7 +1984,7 @@ MM.ui = (function(){
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectInvasionDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectMechDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
+  const api = { msg, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, openWorldSettings, closeWorldSettings, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectInvasionDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectMechDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;

@@ -131,7 +131,8 @@
     waterMoveSpeedMult:'max',
     attackDamage:'sum',
     energyCapacityBonus:'sum',
-    crushResistBonus:'sum'
+    crushResistBonus:'sum',
+    damageReductionBonus:'sum'
   };
   const STAT_LABELS={
     maxAirJumps:'Skoki dodatkowe',
@@ -142,7 +143,8 @@
     mineSpeedMult:'Szybkość kopania',
     attackDamage:'Obrażenia',
     energyCapacityBonus:'Pojemność energii',
-    crushResistBonus:'Udźwig/ciśnienie'
+    crushResistBonus:'Udźwig/ciśnienie',
+    damageReductionBonus:'Redukcja obrażeń'
   };
   const BASE_ATTACK=3; // bare-handed melee damage
 
@@ -502,6 +504,7 @@
     if(mods.attackDamage==null) mods.attackDamage=0;
     if(mods.energyCapacityBonus==null) mods.energyCapacityBonus=0;
     if(mods.crushResistBonus==null) mods.crushResistBonus=0;
+    if(mods.damageReductionBonus==null) mods.damageReductionBonus=0;
     // Safety clamps (future-proof against extreme stacking)
     mods.moveSpeedMult=clampRange(mods.moveSpeedMult, 0.3, 30);
     mods.waterMoveSpeedMult=clampRange(mods.waterMoveSpeedMult, 0.25, 1.25);
@@ -509,6 +512,7 @@
     mods.attackDamage=clampRange(mods.attackDamage, 0, 97);
     mods.energyCapacityBonus=clampRange(mods.energyCapacityBonus, 0, 10000);
     mods.crushResistBonus=clampRange(mods.crushResistBonus, 0, 500);
+    mods.damageReductionBonus=clampRange(mods.damageReductionBonus, 0, 0.45);
     MM.activeModifiers=mods;
     return mods;
   }

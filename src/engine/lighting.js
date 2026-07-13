@@ -64,6 +64,57 @@ import { T, INFO, WORLD_MIN_Y, WORLD_MAX_Y, isLeaf } from '../constants.js';
     return !inf || !inf.passable;
   }
 
+  // Paint a directional cone after ordinary emitter propagation. Keeping the
+  // cone out of the BFS prevents a bright seed in front of the hero from
+  // radiating just as strongly behind their head. Every lit cone cell is
+  // line-of-sight checked, so walls receive light on their near face but block
+  // everything beyond them.
+  function applyHeroLamp(win,opts,level,solid){
+    const hero=opts && opts.hero, lamp=opts && opts.heroLamp;
+    if(!hero || !lamp || !lamp.enabled) return;
+    const {x0,y0,w,h}=win;
+    const hx=Math.floor(Number(hero.x)||0)-x0;
+    const eyeWorldY=(Number(hero.y)||0)-Math.max(0.5,Number(hero.h)||0.95)*0.15;
+    const hy=Math.floor(eyeWorldY)-y0;
+    if(hx<0 || hx>=w || hy<0 || hy>=h) return;
+    const facing=lamp.facing<0?-1:1;
+    const range=Math.max(2,Math.min(18,Math.round(Number(lamp.range)||11)));
+    const sourceLevel=Math.max(6,Math.min(LEVELS,Math.round(Number(lamp.level)||LEVELS)));
+    const spread=Math.max(0.12,Math.min(0.55,Number(lamp.spread)||0.28));
+    const inside=(x,y)=>x>=0&&x<w&&y>=0&&y<h;
+    const idx=(x,y)=>y*w+x;
+    function lineClear(tx,ty){
+      let x=hx,y=hy;
+      const dx=Math.abs(tx-x), sx=x<tx?1:-1;
+      const dy=-Math.abs(ty-y), sy=y<ty?1:-1;
+      let err=dx+dy;
+      for(let guard=0;guard<64;guard++){
+        if(x===tx && y===ty) return true;
+        const e2=err*2;
+        if(e2>=dy){ err+=dy; x+=sx; }
+        if(e2<=dx){ err+=dx; y+=sy; }
+        if(!inside(x,y)) return false;
+        if(x===tx && y===ty) return true; // the near face of a wall is illuminated
+        if(solid[idx(x,y)]===1) return false;
+      }
+      return false;
+    }
+    // A small pool at the eyes makes the source itself legible without turning
+    // the lamp into a backwards-facing floodlight.
+    level[idx(hx,hy)]=Math.max(level[idx(hx,hy)],Math.min(9,sourceLevel));
+    for(let d=1;d<=range;d++){
+      const x=hx+facing*d;
+      if(x<0 || x>=w) break;
+      const half=Math.max(0,Math.floor((d+1)*spread));
+      for(let oy=-half;oy<=half;oy++){
+        const y=hy+oy;
+        if(!inside(x,y) || !lineClear(x,y)) continue;
+        const beam=sourceLevel-Math.floor((d-1)*0.55)-Math.abs(oy)*2;
+        if(beam>level[idx(x,y)]) level[idx(x,y)]=Math.max(1,beam);
+      }
+    }
+  }
+
   // Pure compute: returns {level,surf} for the window. Exposed as L._compute
   // for the deterministic Node test.
   function computeField(win, opts){
@@ -135,6 +186,7 @@ import { T, INFO, WORLD_MIN_Y, WORLD_MAX_Y, isLeaf } from '../constants.js';
         }
       }
     }
+    applyHeroLamp(win,opts,level,solid);
     return { level, surf };
   }
 
@@ -153,18 +205,22 @@ import { T, INFO, WORLD_MIN_Y, WORLD_MAX_Y, isLeaf } from '../constants.js';
     const h = Math.max(1, Math.ceil(viewY) + PAD * 2 + 2);
     const dayBucket = Math.round((Number.isFinite(opts.daylight) ? opts.daylight : 1) * 24);
     const heroKey = opts.hero ? (Math.floor(opts.hero.x) + ',' + Math.floor(opts.hero.y)) : '';
+    const lamp=opts.heroLamp;
+    const heroLampKey=lamp && lamp.enabled
+      ? [lamp.facing<0?-1:1,Math.round(Number(lamp.range)||11),Math.round(Number(lamp.level)||LEVELS),Number(lamp.spread||0.28).toFixed(2)].join(',')
+      : '0';
     const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     let fireTick = false;
     if(opts.burningAt && now - lastComputeAt > 500){
       try{ fireTick = !!(MM.fire && MM.fire.count && MM.fire.count() > 0); }catch(e){}
     }
     const stale = !field || field.x0 !== x0 || field.y0 !== y0 || field.w !== w || field.h !== h ||
-      field.dayBucket !== dayBucket || field.heroKey !== heroKey || fieldDirty || fireTick;
+      field.dayBucket !== dayBucket || field.heroKey !== heroKey || field.heroLampKey !== heroLampKey || fieldDirty || fireTick;
     lastOpts = opts;
     if(!stale) return field;
     const t0 = now;
     const { level, surf } = computeField({ x0, y0, w, h }, opts);
-    field = { x0, y0, w, h, level, surf, dayBucket, heroKey };
+    field = { x0, y0, w, h, level, surf, dayBucket, heroKey, heroLampKey };
     fieldDirty = false;
     pixelsDirty = true;
     lastComputeAt = now;

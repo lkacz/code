@@ -51,6 +51,14 @@ assert.equal(progress.restore(snap), true, 'progress snapshot restores');
 assert.equal(progress.stats().cap, 1, 'restore brings back trained PojemnoĹ›Ä‡');
 assert.equal(sources.progress().energyCapacityBonus, 25, 'restored progress feeds modifier source again');
 
+progress.reset();
+globalThis.player = { xp:60 };
+assert.equal(progress.spend('hard'), true, 'Twardość can be trained');
+assert.equal(progress.bonuses().damageReductionBonus, 0.03, 'one Twardość point reduces blockable damage by 3%');
+assert.equal(sources.progress().damageReductionBonus, 0.03, 'registered progress modifiers expose Twardość defense');
+assert.equal(progress.toughnessDamageReduction(5), 0.15, 'Twardość defense scales linearly');
+assert.equal(progress.toughnessDamageReduction(999), progress.TOUGHNESS_DAMAGE_REDUCTION_MAX, 'Twardość defense is capped below immunity');
+
 let skillEvents=0;
 let skillEventLevel=0;
 let skillEventGained=0;

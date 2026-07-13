@@ -5,7 +5,10 @@ import {
   NEW_GAME_KNOWLEDGE_KEYS,
   clearActiveGameStorage,
   consumeFreshWorldSeed,
-  queueFreshWorldSeed
+  normalizeWorldSeed,
+  queueFreshWorldSeed,
+  queueWorldSeed,
+  randomWorldSeed
 } from '../src/engine/new_game.js';
 
 class MemoryStorage {
@@ -64,9 +67,17 @@ const session=new MemoryStorage();
 assert.equal(queueFreshWorldSeed(session,()=>0.42),420000000,'new game queues a fresh deterministic seed');
 assert.equal(consumeFreshWorldSeed(session),420000000,'world generation consumes the queued seed');
 assert.equal(consumeFreshWorldSeed(session),null,'the fresh seed is one-shot');
+assert.equal(normalizeWorldSeed('73421'),73421,'a player-entered numeric seed is normalized');
+assert.equal(normalizeWorldSeed('0'),null,'zero is not a valid world seed');
+assert.equal(normalizeWorldSeed('12.5'),null,'fractional world seeds are rejected');
+assert.equal(normalizeWorldSeed('1000000000'),null,'world seeds stay within the generator range');
+assert.equal(randomWorldSeed(()=>0.25),250000000,'the menu dice uses the same deterministic seed range');
+assert.equal(queueWorldSeed(session,'73421'),73421,'a chosen player seed can be queued explicitly');
+assert.equal(consumeFreshWorldSeed(session),73421,'the selected seed reaches the next world boot');
 
 const mainSrc=await readFile(new URL('../src/main.js',import.meta.url),'utf8');
 const worldgenSrc=await readFile(new URL('../src/engine/worldgen.js',import.meta.url),'utf8');
+const uiSrc=await readFile(new URL('../src/engine/ui.js',import.meta.url),'utf8');
 const indexSrc=await readFile(new URL('../index.html',import.meta.url),'utf8');
 
 assert.doesNotMatch(indexSrc,/id="inv"/,'the redundant resource HUD bar is absent');
@@ -74,6 +85,16 @@ assert.doesNotMatch(mainSrc,/function buildResourceHud\(/,'the resource HUD is n
 assert.match(mainSrc,/newGame\.textContent='Rozpocznij od nowa'/,'pause settings expose the new-game action');
 assert.match(mainSrc,/window\.confirm\('Rozpocząć nową grę\?/,'new game requires explicit confirmation');
 assert.match(mainSrc,/_startingNewGame=true;[\s\S]*clearActiveGameStorage\(localStorage\);[\s\S]*queueFreshWorldSeed[\s\S]*window\.location\.reload\(\)/,'new game suppresses saves, purges state, queues a new world, then reloads');
+assert.match(mainSrc,/function startNewGame\(requestedSeed\)/,'new game accepts an optional player-selected seed');
+assert.match(mainSrc,/queueWorldSeed\(seedStore,chosenSeed\)/,'a valid selected seed is queued instead of being rerolled');
+assert.match(mainSrc,/seedInput\.placeholder='losowe'/,'the player may leave the new-world seed random');
+assert.match(mainSrc,/className='pauseSeedValue'/,'the player menu shows the current world seed');
+assert.match(mainSrc,/saveMount\.id='playerSaveMenu'/,'save management is mounted in the release-facing player menu');
+assert.match(mainSrc,/openWorldSettings/,'the player menu exposes world generator settings');
+assert.match(mainSrc,/document\.getElementById\('menuBtn'\)\?\.addEventListener\('click',\(\)=>\{ setPaused\(!paused\); \}\)/,'the visible hamburger opens the player menu');
+assert.match(indexSrc,/id="debugMenuBtn"[^>]*class="topbtn devOnly"/,'developer tools have a separate removable trigger');
+assert.match(indexSrc,/id="menuPanel" class="devOnly"[^>]*aria-label="Narzędzia deweloperskie"/,'the debug toolbox is explicitly isolated from the player menu');
+assert.match(uiSrc,/document\.getElementById\('debugMenuBtn'\)/,'debug menu wiring no longer owns the player hamburger');
 assert.match(mainSrc,/function flushPendingSave\(\)\{[\s\S]*if\(_startingNewGame\)\{[\s\S]*clearActiveGameStorage\(localStorage\)/,'unload cannot resurrect the abandoned profile');
 assert.match(mainSrc,/if\(PLANTS && PLANTS\.reset\) PLANTS\.reset\(\)/,'plant pagehide persistence is neutralized before reset');
 assert.match(worldgenSrc,/consumeFreshWorldSeed\([^)]*sessionStorage[^)]*\) \|\| 12345/,'world generation consumes the one-shot new-game seed');

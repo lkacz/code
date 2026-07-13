@@ -14,7 +14,32 @@ globalThis.damageHero = () => {};
 
 const { T } = await import('../src/constants.js');
 const { lighting } = await import('../src/engine/lighting.js');
+const { createHeroLampModel } = await import('../src/engine/hero_lamp.js');
 assert.ok(lighting, 'lighting module exports');
+assert.equal(typeof createHeroLampModel,'function','hero lamp model exports');
+
+// Energy contract: the lamp cannot start empty, drains continuously while on,
+// switches itself off at depletion, and persists only its compact on/off state.
+{
+  const lamp=createHeroLampModel({drainPerSecond:2,minStartEnergy:1});
+  let energy=3;
+  const pool={
+    canSpend(n){ return energy>=n; },
+    spend(n){ if(energy<n) return false; energy-=n; return true; },
+    info(){ return {energy,max:40}; }
+  };
+  assert.equal(lamp.toggle(pool).on,true,'flashlight toggle turns the eye lamp on when energy is available');
+  for(let i=0;i<5;i++) lamp.update(0.1,pool);
+  assert.ok(Math.abs(energy-2)<1e-9,'eye lamp drains energy at its configured per-second rate');
+  const saved=lamp.snapshot();
+  const restored=createHeroLampModel();
+  assert.equal(restored.restore(saved),true,'eye-lamp on state survives save restore');
+  for(let i=0;i<20 && lamp.isOn();i++) lamp.update(0.1,pool);
+  assert.equal(lamp.isOn(),false,'eye lamp turns itself off when the energy pool is depleted');
+  assert.equal(lamp.lightSource({x:1,y:1,facing:1}),null,'depleted lamp no longer contributes a light source');
+  const empty=createHeroLampModel();
+  assert.equal(empty.toggle({canSpend(){ return false; }}).blocked,'energy','empty energy pool blocks lamp activation');
+}
 
 // ---- world: flat surface at row 20, everything below is stone --------------
 const SURF = 20;
@@ -100,6 +125,23 @@ assert.notEqual(f2, f3, 'hero position keys the field');
 assert.ok(Math.abs(lighting.lightAt(24,32) - 5/15) < 1e-9, 'hero glows faintly in the dark');
 assert.ok(lighting.lightAt(23,32) > 0, 'hero glow spills one tile');
 
+// 7b) eye lamp: directional, follows facing, and cannot shine through walls
+setT(15,32,T.AIR);
+lighting.onTileChanged(15,32);
+const lampHero={x:15.5,y:32.5,h:0.95,facing:1};
+const rightLamp={enabled:true,facing:1,range:11,level:15,spread:0.28};
+const rightField=ensureField({daylight:0,hero:lampHero,heroLamp:rightLamp});
+assert.ok(lighting.lightAt(19,32)>0.75,'eye lamp casts a strong cone in front of the hero');
+assert.ok(lighting.lightAt(19,32)>lighting.lightAt(11,32)+0.5,'eye lamp stays directional instead of flooding behind the hero');
+assert.ok(lighting.lightAt(21,32)>0.5,'eye lamp lights the near face of a blocking wall');
+assert.equal(lighting.lightAt(23,32),0,'blocking wall stops the eye-lamp cone');
+const leftField=ensureField({daylight:0,hero:lampHero,heroLamp:Object.assign({},rightLamp,{facing:-1})});
+assert.notEqual(leftField,rightField,'turning the hero invalidates the cached lamp field');
+assert.ok(lighting.lightAt(11,32)>0.75,'eye-lamp cone flips with hero facing');
+assert.ok(lighting.lightAt(11,32)>lighting.lightAt(19,32)+0.5,'flipped cone leaves the old forward side dim');
+setT(15,32,T.TORCH);
+lighting.onTileChanged(15,32);
+
 // 8) night: skylight dies, torches stay
 ensureField({daylight:0});
 assert.equal(lighting.lightAt(5,10), 0, 'night sky gives no skylight');
@@ -171,6 +213,10 @@ lighting.onTileChanged(0,0);
   assert.match(mainSrc, /localStorage\.setItem\(LIGHTING_OFF_KEY, light\.checked\?'0':'1'\)/, 'the pause panel persists the lighting toggle');
   assert.match(mainSrc, /function setPaused\(v\)/, 'pause state flows through one setter (panel + B key)');
   assert.match(mainSrc, /const MINIMAP_OFF_KEY='mm_minimap_off_v1'/, 'minimap toggle uses one stable localStorage key');
+  assert.match(mainSrc, /updateHeroEnergy\(dt\); updateHeroLamp\(dt\)/, 'lamp drain runs in the live simulation immediately after energy charging');
+  assert.match(mainSrc, /lamp:\(HERO_LAMP && HERO_LAMP\.snapshot\)/, 'player save snapshot persists the eye-lamp toggle');
+  const htmlSrc = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.match(htmlSrc, /id="lampBtn"[\s\S]*aria-pressed="false"/, 'HUD exposes an accessible flashlight icon toggle');
 }
 
 console.log('lighting-sim: all assertions passed');

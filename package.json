@@ -6,6 +6,7 @@
   "private": true,
   "scripts": {
     "start": "npx -y http-server -p 8123 -c-1 .",
+    "preview": "node tools/live-preview.mjs",
     "lint": "eslint src --max-warnings 0",
     "check:modules": "node tools/modcheck.mjs . src/main.js",
     "test:water": "node tools/water-sim.test.mjs",

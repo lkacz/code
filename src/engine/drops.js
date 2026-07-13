@@ -52,6 +52,13 @@ const drops = (function(){
   const isHighTier=t=>t==='epic'||t==='legendary';
   const KIND_GLYPH={cape:'🧥', eyes:'👁️', outfit:'👕', weapon:'⚔️', charm:'🔮'};
   const RES_GLYPH={meatScrap:'🍖', fish:'🐟', goldenFish:'🐠', springAntler:'🦌', summerHorn:'🐂', autumnHeartwood:'🌳', winterFur:'🐻'};
+  const ARROW_RES_STYLE={
+    arrowWood:{color:'#caa472',head:'#dfe6f1'},
+    arrowStone:{color:'#9aa0a8',head:'#e1e5ea'},
+    arrowObsidian:{color:'#7a5cc1',head:'#c7b8ff'},
+    arrowDiamond:{color:'#48f1ff',head:'#dffcff'},
+    arrowIridium:{color:'#b8d7ff',head:'#f0f7ff'}
+  };
 
   // --- Thematic gear loot: EVERY species sheds what it plausibly carries -----
   // chance rolls once per kill (scaled up by land hostility, see dangerFor);
@@ -177,6 +184,7 @@ const drops = (function(){
   const SACRIFICE_LEGENDARY_CHANCE=0.04; // the volcano, too, can hand back a legend
 
   const list=[];
+  const arrowCollectFx=[];
   let seq=1;
   let dry=0; // eligible kills since the last gear drop (persisted in snapshot)
   let sacrificeDry=0; // refused volcano offerings since the last gift (persisted)
@@ -397,6 +405,20 @@ const drops = (function(){
     }catch(e){}
     return res;
   }
+  function arrowStyleFor(res){ return ARROW_RES_STYLE[res] || null; }
+  function showArrowCollect(x,y,res,player){
+    const style=arrowStyleFor(res);
+    if(!style || !finiteNum(x) || !finiteNum(y)) return false;
+    const p=player || (typeof window!=='undefined' ? window.player : null);
+    const tx=p && finiteNum(p.x) ? p.x : x;
+    const ty=p && finiteNum(p.y) ? p.y-0.3 : y-0.3;
+    if(arrowCollectFx.length>=24) arrowCollectFx.shift();
+    arrowCollectFx.push({
+      sx:x, sy:y, x, y, px:x, py:y, tx, ty,
+      t:0, life:0.44, ang:Math.atan2(ty-y,tx-x), color:style.color, headColor:style.head
+    });
+    return true;
+  }
   function collectResource(d,silent){
     const inv=window.inv;
     if(!inv || typeof inv!=='object') return false;
@@ -434,6 +456,7 @@ const drops = (function(){
     const silent=!!(opts && opts.silent);
     const ok=d.kind==='gear' ? collectGear(d) : collectResource(d,silent);
     if(!ok) return false;
+    if(d.kind==='resource' && arrowStyleFor(d.res)) showArrowCollect(d.x,d.y,d.res,opts && opts.player);
     const idx=list.indexOf(d);
     if(idx>=0) list.splice(idx,1);
     // snatching an epic+ find is a rush — a short euphoria buff makes the body agree
@@ -481,7 +504,7 @@ const drops = (function(){
     const gains=[]; let best='common', any=false;
     for(const d of grabbed){
       const wasResource=d.kind==='resource';
-      if(!collect(d,{silent:true})) continue;
+      if(!collect(d,{silent:true,player})) continue;
       any=true;
       if(tierRank(d.tier)>tierRank(best)) best=d.tier;
       if(wasResource) gains.push(resourceLabel(d.res)+' ×'+d.qty);
@@ -537,10 +560,26 @@ const drops = (function(){
     const d=dropAtPoint(wx,wy,opts);
     if(!d) return null;
     if(!player || !finiteNum(player.x) || dist2ToPlayer(d,player)>MOUSE_PICKUP_RADIUS*MOUSE_PICKUP_RADIUS) return 'far';
-    return collect(d) ? 'picked' : null;
+    return collect(d,{player}) ? 'picked' : null;
   }
 
   // --- simulation -----------------------------------------------------------
+  function updateArrowCollectFx(dt,player){
+    const p=player || (typeof window!=='undefined' ? window.player : null);
+    for(let i=arrowCollectFx.length-1;i>=0;i--){
+      const fx=arrowCollectFx[i];
+      fx.t+=dt;
+      if(p && finiteNum(p.x) && finiteNum(p.y)){ fx.tx=p.x; fx.ty=p.y-0.3; }
+      const u=Math.max(0,Math.min(1,fx.t/fx.life));
+      const ease=1-Math.pow(1-u,3);
+      fx.px=fx.x; fx.py=fx.y;
+      fx.x=fx.sx+(fx.tx-fx.sx)*ease;
+      fx.y=fx.sy+(fx.ty-fx.sy)*ease-Math.sin(Math.PI*u)*0.18;
+      const dx=fx.x-fx.px, dy=fx.y-fx.py;
+      if(Math.abs(dx)+Math.abs(dy)>0.0001) fx.ang=Math.atan2(dy,dx);
+      if(u>=1) arrowCollectFx.splice(i,1);
+    }
+  }
   function stepPhysics(d,dt,getTile){
     const here=getSafe(getTile,d.x,d.y);
     d._tile=here; // update() reads this for the lava check — no second getTile
@@ -599,6 +638,7 @@ const drops = (function(){
   function update(dt,player,getTile){
     if(!(dt>0) || !isFinite(dt)) return;
     dt=Math.min(0.25,dt);
+    updateArrowCollectFx(dt,player);
     const auto=autoPickup() && player && finiteNum(player.x);
     for(let i=list.length-1;i>=0;i--){
       const d=list[i];
@@ -626,7 +666,7 @@ const drops = (function(){
       }
       if(auto){
         const dd=dist2ToPlayer(d,player);
-        if(dd<=COLLECT_DIST*COLLECT_DIST){ collect(d); continue; }
+        if(dd<=COLLECT_DIST*COLLECT_DIST){ collect(d,{player}); continue; }
         if(dd<=AUTO_RADIUS*AUTO_RADIUS){
           // vacuum: fly straight at the hero, ignoring terrain (short hop)
           const dist=Math.sqrt(dd)||1;
@@ -733,8 +773,21 @@ const drops = (function(){
       return c;
     });
   }
+  function drawArrowPickup(ctx,px,py,angle,TILE,style,alpha){
+    ctx.save();
+    ctx.globalAlpha=alpha==null?1:alpha;
+    ctx.translate(px,py); ctx.rotate(angle||0);
+    ctx.strokeStyle=style.color; ctx.lineWidth=Math.max(1.5,TILE*0.09); ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(-TILE*0.38,0); ctx.lineTo(TILE*0.24,0); ctx.stroke();
+    ctx.fillStyle=style.head;
+    ctx.beginPath(); ctx.moveTo(TILE*0.40,0); ctx.lineTo(TILE*0.20,-TILE*0.12); ctx.lineTo(TILE*0.20,TILE*0.12); ctx.closePath(); ctx.fill();
+    ctx.fillStyle='#e8e2d2';
+    ctx.fillRect(-TILE*0.42,-TILE*0.12,TILE*0.17,TILE*0.08);
+    ctx.fillRect(-TILE*0.42,TILE*0.04,TILE*0.17,TILE*0.08);
+    ctx.restore();
+  }
   function draw(ctx,TILE,camX,camY,zoom,canDrawTile,player){
-    if(!ctx || !list.length) return;
+    if(!ctx || (!list.length && !arrowCollectFx.length)) return;
     const visible=typeof canDrawTile==='function' ? canDrawTile : null;
     const viewL=camX-2, viewR=camX+(ctx.canvas.width/zoom)/TILE+2;
     const viewT=camY-2, viewB=camY+(ctx.canvas.height/zoom)/TILE+2;
@@ -791,23 +844,29 @@ const drops = (function(){
       }
       // body: small tilted plaque with an outline; spins while flying
       const s=TILE*0.42;
-      ctx.save();
-      ctx.translate(px,py);
-      ctx.rotate(d.settled ? Math.PI/24 : d.airT*d.spin*0.35);
-      ctx.fillStyle=tint;
-      ctx.fillRect(-s/2,-s/2,s,s);
-      ctx.strokeStyle='rgba(0,0,0,0.55)'; ctx.lineWidth=1;
-      ctx.strokeRect(-s/2,-s/2,s,s);
-      const glyph=d.kind==='gear' ? KIND_GLYPH[d.item && d.item.kind] : d.glyph;
-      if(glyph){
-        ctx.font=glyphFont;
-        ctx.textAlign='center'; ctx.textBaseline='middle';
-        ctx.fillText(glyph,0,1);
+      const arrowStyle=d.kind==='resource' ? arrowStyleFor(d.res) : null;
+      if(arrowStyle){
+        const angle=d.settled ? -Math.PI/18 : Math.atan2(d.vy||0,d.vx||0);
+        drawArrowPickup(ctx,px,py,angle,TILE,arrowStyle,1);
       } else {
-        ctx.fillStyle='rgba(255,255,255,0.35)';
-        ctx.fillRect(-s/2+2,-s/2+2,s-4,3);
+        ctx.save();
+        ctx.translate(px,py);
+        ctx.rotate(d.settled ? Math.PI/24 : d.airT*d.spin*0.35);
+        ctx.fillStyle=tint;
+        ctx.fillRect(-s/2,-s/2,s,s);
+        ctx.strokeStyle='rgba(0,0,0,0.55)'; ctx.lineWidth=1;
+        ctx.strokeRect(-s/2,-s/2,s,s);
+        const glyph=d.kind==='gear' ? KIND_GLYPH[d.item && d.item.kind] : d.glyph;
+        if(glyph){
+          ctx.font=glyphFont;
+          ctx.textAlign='center'; ctx.textBaseline='middle';
+          ctx.fillText(glyph,0,1);
+        } else {
+          ctx.fillStyle='rgba(255,255,255,0.35)';
+          ctx.fillRect(-s/2+2,-s/2+2,s-4,3);
+        }
+        ctx.restore();
       }
-      ctx.restore();
       // cursor hover: a breathing ring says "this one previews in the corner"
       if(hoverDrop===d){
         const hr=s*0.95+Math.sin(now*0.008)*1.2;
@@ -847,6 +906,14 @@ const drops = (function(){
       if(d.tier!=='common' && rand()<0.02){
         try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(px,py-TILE*0.3,d.tier,1); }catch(e){}
       }
+    }
+    for(const fx of arrowCollectFx){
+      const alpha=Math.max(0,Math.min(1,1-fx.t/fx.life*0.45));
+      ctx.globalAlpha=alpha*0.38;
+      ctx.strokeStyle=fx.color; ctx.lineWidth=Math.max(1.5,TILE*0.08);
+      ctx.beginPath(); ctx.moveTo(fx.px*TILE,fx.py*TILE); ctx.lineTo(fx.x*TILE,fx.y*TILE); ctx.stroke();
+      ctx.globalAlpha=1;
+      drawArrowPickup(ctx,fx.x*TILE,fx.y*TILE,fx.ang,TILE,{color:fx.color,head:fx.headColor},alpha);
     }
     ctx.restore();
   }
@@ -900,16 +967,16 @@ const drops = (function(){
       }
     }
   }
-  function reset(){ list.length=0; mergeT=0; dry=0; sacrificeDry=0; hoverDrop=null; }
+  function reset(){ list.length=0; arrowCollectFx.length=0; mergeT=0; dry=0; sacrificeDry=0; hoverDrop=null; }
 
   const api={
     update,draw,
-    spawnResource,spawnGear,rollGearDrop,rollGuardianDrop,
+    spawnResource,spawnGear,rollGearDrop,rollGuardianDrop,showArrowCollect,
     pickupNearest,wantsInteractKey,hoverAt,pickupAt,
     autoPickup,setAutoPickup,
     snapshot,restore,reset,
-    metrics:()=>({active:list.length, autoPickup:autoPickup()}),
-    _debug:{list, GEAR_LOOT, GUARDIAN_LOOT, dangerFor, rollTier, setRandom:(fn)=>{ rand=typeof fn==='function'?fn:Math.random; }, collect, nearestInReach,
+    metrics:()=>({active:list.length, arrowCollectFx:arrowCollectFx.length, autoPickup:autoPickup()}),
+    _debug:{list,arrowCollectFx,arrowStyleFor, GEAR_LOOT, GUARDIAN_LOOT, dangerFor, rollTier, setRandom:(fn)=>{ rand=typeof fn==='function'?fn:Math.random; }, collect, nearestInReach,
       dryStreak:()=>dry, setDryStreak:(n)=>{ dry=Math.max(0,Math.floor(Number(n)||0)); },
       sacrificeDry:()=>sacrificeDry,
       config:{MAX_DROPS,DESPAWN_SEC,GEAR_LIFE,GUARDIAN_RELIC_LIFE,PICKUP_RADIUS,AUTO_RADIUS,COLLECT_DIST,MERGE_DIST,MOUSE_HIT,MOUSE_PICKUP_RADIUS,SIDEKICK_DROP_CHANCE,SIDEKICK_EPIC_CHANCE,SIDEKICK_LEGENDARY_CHANCE,PITY_KILLS,SACRIFICE_BASE,SACRIFICE_STEP,SACRIFICE_MAX,SACRIFICE_LEGENDARY_CHANCE,UNCOMMON_SHARE,LEGENDARY_BASE_SHARE,LEGENDARY_DANGER_BONUS}}

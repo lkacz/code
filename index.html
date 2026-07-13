@@ -24,9 +24,39 @@
     #hud .panel{ pointer-events:auto; height:34px; background:rgba(8,12,20,.66); border:1px solid rgba(255,255,255,.10); border-radius:11px; padding:0 12px; display:inline-flex; align-items:center; gap:10px; font-size:12px; box-shadow:0 2px 10px rgba(0,0,0,.28); contain:layout paint; }
     #worldStatusPanel{ min-width:0; max-width:min(520px,58vw); overflow:hidden; justify-self:start; }
     #worldStatus{ display:block; min-width:0; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    #taskPanel{ min-width:0; max-width:min(300px,34vw); overflow:hidden; border-color:rgba(255,196,74,.32); gap:7px; }
+    #taskPanel{ min-width:0; max-width:min(340px,38vw); overflow:hidden; border-color:rgba(255,196,74,.32); gap:7px; color:#e8e8e8; cursor:pointer; text-align:left; font-family:inherit; transition:background .12s ease,border-color .12s ease; }
+    #taskPanel[hidden]{ display:none !important; }
+    #taskPanel:hover,#taskPanel[aria-expanded="true"]{ background:rgba(48,43,31,.86); border-color:rgba(255,196,74,.62); }
+    #taskPanel:focus-visible{ outline:2px solid #ffd36a; outline-offset:2px; }
     #taskPanel::before{ content:"🎯"; flex:none; font-size:12px; }
     #taskStatus{ display:block; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#ffe3ac; }
+    #taskChevron{ flex:none; color:#d9b866; font-size:10px; transition:transform .14s ease; }
+    #taskPanel[aria-expanded="true"] #taskChevron{ transform:rotate(180deg); }
+    #taskListPanel{ position:fixed; left:8px; top:50px; z-index:115; width:min(460px,calc(100vw - 16px)); max-height:min(72vh,620px); display:flex; flex-direction:column; overflow:hidden; box-sizing:border-box; pointer-events:auto; color:#eef4fb; background:linear-gradient(160deg,rgba(17,21,29,.97),rgba(10,14,21,.97)); border:1px solid rgba(255,196,74,.28); border-radius:14px; box-shadow:0 18px 44px rgba(0,0,0,.58); backdrop-filter:blur(12px); }
+    #taskListPanel[hidden]{ display:none !important; }
+    #taskListHead{ display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 13px 10px; border-bottom:1px solid rgba(255,255,255,.08); }
+    #taskListHeading{ display:flex; flex-direction:column; gap:2px; min-width:0; }
+    #taskListHeading strong{ font-size:15px; }
+    #taskListHeading small{ color:#9ca9b8; font-size:10px; }
+    #taskListCount{ display:inline-grid; min-width:20px; height:20px; margin-left:5px; place-items:center; border-radius:999px; background:rgba(255,196,74,.18); color:#ffe09b; font-size:11px; }
+    #taskListClose{ flex:none; width:30px; height:30px; padding:0; border:1px solid rgba(255,255,255,.15); border-radius:9px; background:rgba(255,255,255,.07); color:#eef4fb; font-size:18px; line-height:1; cursor:pointer; }
+    #taskListClose:hover{ background:rgba(255,255,255,.13); }
+    #taskList{ min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:7px; scrollbar-width:thin; }
+    .taskItem{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:9px; align-items:center; padding:10px; border:1px solid transparent; border-radius:11px; background:rgba(255,255,255,.035); }
+    .taskItem + .taskItem{ margin-top:6px; }
+    .taskItem.priority{ border-color:rgba(255,196,74,.42); background:linear-gradient(100deg,rgba(255,196,74,.13),rgba(255,255,255,.035)); box-shadow:inset 3px 0 #f4bd45; }
+    .taskCopy{ min-width:0; }
+    .taskTitle{ display:block; color:#f7f9fc; font-size:12px; line-height:1.35; }
+    .taskItem.priority .taskTitle{ color:#ffe09b; }
+    .taskDetail{ margin:3px 0 0; color:#b8c2cf; font-size:11px; line-height:1.35; }
+    .taskMeta{ margin-top:5px; color:#7f92a7; font-size:9px; font-weight:700; letter-spacing:.035em; text-transform:uppercase; }
+    .taskActions{ display:flex; flex-direction:column; gap:5px; align-items:stretch; }
+    .taskAction{ min-width:106px; border:1px solid rgba(255,255,255,.14); border-radius:8px; padding:5px 8px; background:rgba(255,255,255,.065); color:#dce5ef; font:700 10px system-ui; cursor:pointer; white-space:nowrap; }
+    .taskAction:hover{ background:rgba(255,255,255,.12); }
+    .taskPriority[aria-pressed="true"]{ background:rgba(255,196,74,.2); border-color:rgba(255,196,74,.45); color:#ffe09b; }
+    .taskDiscard{ color:#e6a5a9; }
+    .taskDiscard:hover{ background:rgba(202,72,80,.18); border-color:rgba(238,113,120,.34); }
+    #taskListFoot{ padding:8px 13px 10px; border-top:1px solid rgba(255,255,255,.07); color:#8796a8; font-size:10px; line-height:1.35; }
     #fpsPanel{ padding:0 10px; }
     #fps{ min-width:52px; text-align:right; opacity:.7; font-size:11px; font-variant-numeric:tabular-nums; letter-spacing:.2px; }
     #seedPanel input{ pointer-events:auto; background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 8px; font-size:12px; width:130px; }
@@ -35,9 +65,15 @@
   #menuWrap{ position:relative; pointer-events:auto; z-index:80; display:flex; gap:6px; align-items:center; }
   /* System buttons match the glass pills; color only carries STATE (menu open =
      accent blue, transmission live = green via the #ghostBtn.live rule below). */
-  #menuWrap .topbtn, #menuBtn{ background:rgba(8,12,20,.66); color:#e8eef8; border:1px solid rgba(255,255,255,.14); border-radius:11px; height:34px; min-height:0; padding:0 12px; font-weight:600; font-size:14px; box-shadow:0 2px 10px rgba(0,0,0,.28); cursor:pointer; transition:background .12s ease,border-color .12s ease; }
-  #menuWrap .topbtn:hover, #menuBtn:hover{ background:rgba(34,46,66,.82); border-color:rgba(255,255,255,.28); }
-  #menuBtn{ min-width:44px; }
+  #menuWrap .topbtn, #menuBtn, #debugMenuBtn{ background:rgba(8,12,20,.66); color:#e8eef8; border:1px solid rgba(255,255,255,.14); border-radius:11px; height:34px; min-height:0; padding:0 12px; font-weight:600; font-size:14px; box-shadow:0 2px 10px rgba(0,0,0,.28); cursor:pointer; transition:background .12s ease,border-color .12s ease; }
+  #menuWrap .topbtn:hover, #menuBtn:hover, #debugMenuBtn:hover{ background:rgba(34,46,66,.82); border-color:rgba(255,255,255,.28); }
+  #menuBtn, #debugMenuBtn{ min-width:40px; }
+  #debugMenuBtn{ color:#b8c2cf; font-size:15px; }
+  #lampBtn{ position:relative; width:38px; min-width:38px; padding:0 !important; font-size:17px !important; filter:saturate(.78); }
+  #menuWrap #lampBtn.on{ background:linear-gradient(180deg,rgba(255,210,78,.36),rgba(36,117,157,.72)); border-color:rgba(255,232,145,.72); box-shadow:0 0 15px rgba(116,224,255,.42),inset 0 1px 0 rgba(255,255,255,.24); filter:none; }
+  #menuWrap #lampBtn.low{ opacity:.55; filter:grayscale(.7); }
+  #lampBtn::after{ content:""; position:absolute; right:4px; bottom:4px; width:5px; height:5px; border-radius:50%; background:#66717d; box-shadow:0 0 0 transparent; }
+  #lampBtn.on::after{ background:#fff1a3; box-shadow:0 0 7px #8eeeff; }
   /* the glass override above out-specifies .topbtn.toggled — restate the ON state
      (this also covers the open menu: ui.js stamps menuBtn with .topbtn.toggled) */
   #menuWrap .topbtn.toggled{ background:#21a366; border-color:rgba(255,255,255,.22); box-shadow:0 2px 10px rgba(33,163,102,.45); }
@@ -52,6 +88,12 @@
       #hud{ grid-template-columns:minmax(0,1fr) auto auto; }
       #hudSpacer{ display:none; }
       #taskPanel{ grid-column:1 / -1; grid-row:2; justify-self:start; max-width:min(520px,calc(100vw - 16px)); }
+      #taskListPanel{ top:92px; max-height:calc(100vh - 100px); }
+    }
+    @media (max-width:480px){
+      .taskItem{ grid-template-columns:1fr; }
+      .taskActions{ flex-direction:row; }
+      .taskAction{ flex:1; min-width:0; }
     }
     /* phones: the FPS readout is a diagnostic — give its width back to the status line */
     @media (max-width:560px){ #fpsPanel{ display:none; } }
@@ -224,7 +266,7 @@
   #hoverInfo.show{ opacity:.92; }
   /* Corner-card column: right of the top bar, left of the minimap (W-232..W-12
      @ y 44..140) and the craft tracker (right:8 top:54) — the only top corner no
-     persistent UI claims. Hosts the drop hover preview + the upgrade notice. */
+     persistent UI claims. Hosts the drop hover preview + stacked upgrade notices. */
   #cornerCards{ position:absolute; right:244px; top:46px; display:flex; flex-direction:column; align-items:flex-end; gap:6px; pointer-events:none; }
   @media (max-width:760px){ #cornerCards{ right:8px; top:150px; } }
   #dropPreview{ pointer-events:none; opacity:0; transition:opacity .12s ease; display:flex; flex-direction:column; gap:4px; width:max-content; max-width:min(250px,60vw); padding:8px 10px; border-radius:10px; border:1px solid var(--drop-tier,rgba(255,255,255,.18)); background:rgba(10,14,22,.92); color:#eef4fb; font-size:11px; line-height:1.35; box-shadow:0 6px 18px rgba(0,0,0,.5); backdrop-filter:blur(6px); }
@@ -235,10 +277,12 @@
   #dropPreview .dpChip{ border:1px solid rgba(255,255,255,.14); border-radius:999px; background:rgba(255,255,255,.07); padding:1px 6px; font-size:10px; white-space:nowrap; }
   #dropPreview .dpDesc{ font-size:10px; font-style:italic; opacity:.75; }
   #dropPreview .dpHint{ font-size:10px; color:#9fb2c6; }
-  /* Upgrade notice: "you just found something better than what you wear" card
-     (built by showUpgradeNotice in main.js; replaces the old bare "!" button) */
-  #upgradeNotice{ pointer-events:auto; display:none; flex-direction:column; gap:6px; width:max-content; max-width:min(270px,64vw); padding:10px 12px; border-radius:12px; border:1px solid var(--up-tier,#4ade80); background:rgba(8,14,22,.95); color:#eef4fb; font-size:11px; line-height:1.35; box-shadow:0 8px 24px rgba(0,0,0,.55), 0 0 18px -6px var(--up-tier,#4ade80); backdrop-filter:blur(6px); }
-  #upgradeNotice.show{ display:flex; animation:upgradeIn .28s cubic-bezier(.2,.9,.3,1.08); }
+  /* Upgrade notices stack until each find is handled. The host scrolls when a
+     long loot burst would otherwise run below the viewport. */
+  #upgradeNotice{ pointer-events:none; display:none; flex-direction:column; align-items:flex-end; gap:6px; max-height:calc(100vh - 64px); overflow-y:auto; overscroll-behavior:contain; padding:0 3px 8px 0; }
+  #upgradeNotice.show{ display:flex; }
+  #upgradeNotice .upgradeNotice{ pointer-events:auto; display:flex; flex:none; flex-direction:column; gap:6px; width:max-content; max-width:min(270px,64vw); padding:10px 12px; border-radius:12px; border:1px solid var(--up-tier,#4ade80); background:rgba(8,14,22,.95); color:#eef4fb; font-size:11px; line-height:1.35; box-shadow:0 8px 24px rgba(0,0,0,.55), 0 0 18px -6px var(--up-tier,#4ade80); backdrop-filter:blur(6px); animation:upgradeIn .28s cubic-bezier(.2,.9,.3,1.08); }
+  @media (max-width:760px){ #upgradeNotice{ max-height:calc(100vh - 168px); } }
   @keyframes upgradeIn{ from{ opacity:0; transform:translateY(-8px) scale(.96); } to{ opacity:1; transform:none; } }
   #upgradeNotice .upKicker{ font-size:9px; font-weight:900; letter-spacing:.14em; text-transform:uppercase; color:#4ade80; }
   #upgradeNotice .upTitle{ font-size:13px; font-weight:800; color:var(--up-tier,#eef4fb); }
@@ -416,7 +460,7 @@
   .chest-pulse-epic{ animation:chestPulseE 2.8s ease-in-out infinite; }
   /* Viewers (Duchy Warstwy) — first-class top-bar entry point, panel lives in engine/ghost_host.js.
      The loot inbox popup that used to sit here is gone: found gear goes straight to the bag,
-     the upgrade card (#upgradeNotice) flags a genuine upgrade and Ekwipunek reviews the rest. */
+     upgrade cards (#upgradeNotice) flag genuine upgrades and Ekwipunek reviews the rest. */
   #ghostBtn{ display:inline-flex; align-items:center; gap:4px; }
   #ghostBtn.live{ background:#21a366; box-shadow:0 2px 10px rgba(33,163,102,.45); }
   #ghostBtn #ghostBtnCount{ background:rgba(0,0,0,.35); border-radius:999px; min-width:15px; padding:0 5px; font-size:11px; font-weight:700; text-align:center; }
@@ -454,10 +498,14 @@
   #traderPanel .tradeFoot{ margin-top:8px; font-size:11px; opacity:.65; }
   @media (max-width:560px){ #traderPanel .tradeCols{ grid-template-columns:1fr; } }
   /* Pause & settings panel (DOM built by main.js setPaused) */
-  #pausePanel{ position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); z-index:130; width:min(380px,calc(100vw - 24px)); color:#eef4fb; background:rgba(13,17,24,.95); border:1px solid rgba(255,255,255,.16); border-radius:14px; padding:14px; font-size:13px; box-shadow:0 14px 34px rgba(0,0,0,.55); backdrop-filter:blur(10px); pointer-events:auto; }
+  #pausePanel{ position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); z-index:130; width:min(440px,calc(100vw - 24px)); max-height:min(88vh,760px); overflow-y:auto; overscroll-behavior:contain; color:#eef4fb; background:rgba(13,17,24,.96); border:1px solid rgba(255,255,255,.16); border-radius:14px; padding:14px; font-size:13px; box-shadow:0 14px 34px rgba(0,0,0,.55); backdrop-filter:blur(10px); pointer-events:auto; }
+  #pausePanel[hidden]{ display:none; }
   #pausePanel .pauseHead{ display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:10px; }
+  #pausePanel .pauseTitle{ display:flex; flex-direction:column; gap:2px; }
   #pausePanel .pauseHead strong{ font-size:16px; }
+  #pausePanel .pauseHead small{ color:#8fa0b5; font-size:10px; }
   #pausePanel .pauseResume{ background:#2b87c9; color:#fff; border:none; border-radius:8px; padding:6px 12px; font-weight:700; cursor:pointer; }
+  #pausePanel .pauseSection{ margin:10px 0 2px; padding-top:9px; border-top:1px solid rgba(255,255,255,.10); color:#7fa3c8; font-size:10px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
   #pausePanel .pauseRow{ display:flex; justify-content:space-between; align-items:center; gap:10px; padding:7px 2px; }
   #pausePanel .pauseRow + .pauseRow{ border-top:1px dashed rgba(255,255,255,.07); }
   #pausePanel .pauseRow input[type=range]{ width:150px; }
@@ -469,7 +517,18 @@
   #pausePanel .pauseRow button.pauseDanger{ flex:none; background:rgba(176,43,43,.34); color:#ffdada; border-color:rgba(255,104,104,.58); font-weight:750; }
   #pausePanel .pauseRow button.pauseDanger:hover{ background:rgba(204,53,53,.48); }
   #pausePanel .pauseRow button.pauseDanger:disabled{ opacity:.55; cursor:wait; }
+  #pausePanel .pauseSeedValue{ color:#9ee8ff; font:700 12px ui-monospace,SFMono-Regular,Consolas,monospace; user-select:all; }
+  #pausePanel .pauseSeedControl{ display:flex; align-items:center; justify-content:flex-end; gap:5px; min-width:0; }
+  #pausePanel .pauseSeedControl input{ width:132px; min-width:0; background:rgba(255,255,255,.07); color:#eef4fb; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:5px 7px; font:12px ui-monospace,SFMono-Regular,Consolas,monospace; }
+  #pausePanel .pauseSaveMount{ display:flex; flex-direction:column; gap:6px; }
+  #pausePanel .pauseSaveMount .group{ display:flex; flex-direction:column; gap:6px; }
+  #pausePanel .pauseSaveMount button{ background:rgba(255,255,255,.1); color:#eef4fb; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:5px 9px; cursor:pointer; }
   #pausePanel .pauseFoot{ margin-top:10px; font-size:11px; opacity:.6; }
+  @media (max-width:520px){
+    #pausePanel{ width:calc(100vw - 16px); max-height:calc(100vh - 16px); padding:11px; }
+    #pausePanel .pauseRow input[type=range]{ width:125px; }
+    #pausePanel .pauseSeedControl input{ width:112px; }
+  }
   /* Keybind panel: layered over the pause card (z 130 → 140) */
   #keybindPanel{ position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); z-index:140; width:min(420px,calc(100vw - 24px)); max-height:min(82vh,640px); display:flex; flex-direction:column; color:#eef4fb; background:rgba(13,17,24,.97); border:1px solid rgba(255,255,255,.16); border-radius:14px; padding:14px; font-size:13px; box-shadow:0 14px 34px rgba(0,0,0,.6); backdrop-filter:blur(10px); pointer-events:auto; }
   #keybindPanel[hidden]{ display:none; }
@@ -494,13 +553,15 @@
   <div id="ui">
     <div id="hud">
       <div class="panel" id="worldStatusPanel"><span id="worldStatus" title="Pozycja bohatera · zegar · temperatura · pogoda · pora roku">📍 —</span></div>
-      <div class="panel" id="taskPanel" hidden><span id="taskStatus" title="Zadania">Zadania -</span></div>
+      <button type="button" class="panel" id="taskPanel" aria-haspopup="dialog" aria-expanded="false" aria-controls="taskListPanel" hidden><span id="taskStatus" title="Zadania">Zadania -</span><span id="taskChevron" aria-hidden="true">▼</span></button>
       <div id="hudSpacer" aria-hidden="true"></div>
       <div class="panel" id="fpsPanel"><span id="fps">— FPS</span></div>
       <div id="menuWrap">
+  <button id="lampBtn" class="topbtn" type="button" aria-pressed="false" aria-label="Włącz lampę w oczach" title="Włącz lampę w oczach">&#128294;</button>
   <button id="ghostBtn" class="topbtn" aria-haspopup="dialog" aria-expanded="false" title="Obserwatorzy — zaproś widzów do swojej warstwy" aria-label="Obserwatorzy">👁<span id="ghostBtnCount"></span></button>
-  <button id="menuBtn" class="topbtn" aria-haspopup="true" aria-expanded="false" title="Menu" aria-label="Menu główne">≡</button>
-        <div id="menuPanel" role="menu" aria-label="Menu" hidden>
+  <button id="menuBtn" class="topbtn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="pausePanel" title="Menu gry" aria-label="Otwórz menu gry">≡</button>
+  <button id="debugMenuBtn" class="topbtn devOnly" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="menuPanel" title="Narzędzia deweloperskie" aria-label="Narzędzia deweloperskie">🛠</button>
+        <div id="menuPanel" class="devOnly" role="menu" aria-label="Narzędzia deweloperskie" hidden>
           <div class="group">
             <button id="mapBtn" class="topbtn" role="menuitem" title="Pokaż całą mapę">Mapa: OFF</button>
             <button id="godBtn" class="topbtn" role="menuitem" title="Tryb boga (G)">Bóg: OFF</button>
@@ -547,6 +608,14 @@
         </div>
       </div>
     </div>
+    <section id="taskListPanel" role="dialog" aria-labelledby="taskListTitle" hidden>
+      <div id="taskListHead">
+        <div id="taskListHeading"><strong id="taskListTitle">Wszystkie zadania <span id="taskListCount">0</span></strong><small>Wybierz jedno zadanie, które chcesz śledzić.</small></div>
+        <button type="button" id="taskListClose" aria-label="Zamknij listę zadań">×</button>
+      </div>
+      <div id="taskList"></div>
+      <div id="taskListFoot">★ Priorytet trafia na górę listy. Jeśli ma lokalizację, czerwona strzałka prowadzi właśnie do niego.</div>
+    </section>
   <!-- topButtons replaced by dropdown menu; old markup removed -->
     <!-- Crafting panel is built dynamically from the RECIPES table in main.js -->
     <div id="craft"><strong>Rzemiosło</strong></div>
@@ -576,7 +645,7 @@
     <div id="hoverInfo" aria-hidden="true"></div>
     <div id="cornerCards">
       <div id="dropPreview" aria-live="polite"></div>
-      <div id="upgradeNotice" role="status" aria-live="polite"></div>
+      <div id="upgradeNotice" role="region" aria-label="Lepsze przedmioty" aria-live="polite" aria-atomic="false"></div>
     </div>
     <div id="weaponBar" role="toolbar" aria-label="Skróty broni (klawisze 1–4)">
       <div class="wepSlot" data-wkey="1"><span class="key">1</span><span class="wcyc"></span><span class="wicon">⛏️</span><span class="wname"></span><span class="wsub"></span><span class="wgauge"><i></i></span></div>
@@ -784,7 +853,7 @@
       .invResGrid{ grid-template-columns:repeat(auto-fill,minmax(136px,1fr)); }
     }
   /* World settings overlay (modal) */
-  #worldSettingsOverlay{ position:fixed; inset:0; background:rgba(5,8,14,.70); backdrop-filter:blur(10px); display:none; z-index:70; color:#eee; font-size:13px; }
+  #worldSettingsOverlay{ position:fixed; inset:0; background:rgba(5,8,14,.70); backdrop-filter:blur(10px); display:none; z-index:150; color:#eee; font-size:13px; }
   #worldSettingsDialog{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:min(560px,92vw); max-height:84vh; background:rgba(18,22,30,.95); border:1px solid rgba(255,255,255,.12); border-radius:18px; display:flex; flex-direction:column; gap:12px; padding:16px 18px 18px; box-shadow:0 12px 48px -8px rgba(0,0,0,.65); }
   #worldSettingsHeader{ display:flex; align-items:center; justify-content:space-between; }
   #worldSettingsClose{ background:rgba(255,255,255,.18); border:none; color:#fff; width:40px; height:40px; border-radius:12px; font-size:18px; cursor:pointer; }
@@ -816,7 +885,7 @@
     <div id="worldSettingsDialog">
       <div id="worldSettingsHeader"><h2 id="worldSettingsTitle" style="margin:0;font-size:18px;">Ustawienia świata</h2><button id="worldSettingsClose" aria-label="Zamknij">×</button></div>
       <div id="worldSettingsBody" aria-label="Ustawienia"></div>
-      <div style="font-size:11px; opacity:.75;">Zmiany działają po kliknięciu „Zastosuj i odśwież”.</div>
+      <div style="font-size:11px; opacity:.75;">Zastosowanie ustawień tworzy bieżący świat od nowa z tym samym ziarnem. Ręczne zapisy pozostają bez zmian.</div>
     </div>
   </div>
 </body>

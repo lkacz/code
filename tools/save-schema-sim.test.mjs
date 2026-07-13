@@ -8,6 +8,8 @@ const indexSrc = await readFile(new URL('../index.html', import.meta.url), 'utf8
 const progressSrc = await readFile(new URL('../src/engine/progress.js', import.meta.url), 'utf8');
 const inventorySrc = await readFile(new URL('../src/inventory.js', import.meta.url), 'utf8');
 const inventoryUiSrc = await readFile(new URL('../src/inventory_ui.js', import.meta.url), 'utf8');
+const chestsSrc = await readFile(new URL('../src/engine/chests.js', import.meta.url), 'utf8');
+const weaponsSrc = await readFile(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
 
 assert.match(src, /function snapshotInventory\(\)/, 'save code defines an inventory snapshot helper');
 assert.match(indexSrc, /id="immunityBtn"/, 'debug HUD exposes an immunity toggle button');
@@ -18,6 +20,13 @@ assert.match(src, /if\(immunityMode\)\{ player\.hp=player\.maxHp; return; \}/, '
 assert.match(src, /const DEFEND_ABSORB_FRACTION=0\.25;/, 'right-click defense absorbs one quarter of blockable attacks');
 assert.match(src, /function applyHeroDefense\(amount,opts,now\)\{[\s\S]*const absorbed=amount\*DEFEND_ABSORB_FRACTION;[\s\S]*amount:Math\.max\(0,amount-absorbed\)/, 'damageHero applies the defend reduction before HP loss');
 assert.match(src, /const defended=applyHeroDefense\(amount,opts,now\);[\s\S]*defendedAbsorbed:defended\.absorbed/, 'damageHero records defended hits for downstream systems');
+assert.match(progressSrc, /TOUGHNESS_DAMAGE_REDUCTION_PER_POINT=0\.03/, 'each Twardość point grants 3% passive defense');
+assert.match(progressSrc, /TOUGHNESS_DAMAGE_REDUCTION_MAX=0\.45/, 'Twardość passive defense stays below immunity');
+assert.match(inventorySrc, /damageReductionBonus:'sum'/, 'the modifier engine merges passive defense contributions');
+assert.match(inventoryUiSrc, /'hard','Twardość', '\+1\.5 udźwigu \/ -3% obrażeń, maks\. 45%'/, 'the development panel explains both Twardość effects and its defense cap');
+assert.match(src, /function applyHeroToughness\(amount,opts\)\{[\s\S]*heroDefenseCanAbsorb\(opts\)[\s\S]*amount:Math\.max\(0,amount-absorbed\)/, 'Twardość reduces the same blockable damage family as active defense');
+assert.match(src, /const toughened=applyHeroToughness\(amount,opts\);[\s\S]*const defended=applyHeroDefense\(amount,opts,now\);/, 'passive Twardość and active defense combine before HP loss');
+assert.match(src, /const dealt=toughened\.reduction>0 \? Math\.max\(0\.01,Math\.round\(amount\*100\)\/100\) : Math\.round\(amount\);/, 'Twardość keeps fractional HP damage so small bonuses are not lost to integer rounding');
 assert.match(src, /function tryWeaponUltOrDefend\(player,aimX,aimY,item,pointerId,source\)\{[\s\S]*WEAPONS\.fireUlt\(player,aimX,aimY\)[\s\S]*beginHeroDefense\(pointerId\)/, 'right-click first tries the extra shot, then falls back to defense');
 assert.match(src, /tryWeaponUltOrDefend\(player, aim\.x, aim\.y, it, e\.pointerId, 'mouse'\)/, 'desktop right-click uses the ult-or-defend fallback');
 assert.match(src, /tryWeaponUltOrDefend\(player, aim\.x, aim\.y, it, e\.pointerId, 'touch'\)/, 'touch ult button uses the same defend fallback');
@@ -273,5 +282,12 @@ assert.match(sameSeedRegen, /grave=null/, 'same-seed regeneration clears stale g
 assert.match(sameSeedRegen, /if\(godMode\)/, 'same-seed regeneration preserves debug god-mode resource stacks after reset');
 assert.match(indexSrc, /id="taskPanel"/, 'HUD exposes a compact task tracker panel');
 assert.match(indexSrc, /id="taskStatus"/, 'task tracker panel has a dedicated status text node');
+assert.match(indexSrc, /id="taskListPanel"[^>]*role="dialog"/, 'task tracker opens an accessible full task list');
+assert.match(indexSrc, /id="taskList"/, 'task tracker has a dedicated host for every active task');
+assert.match(indexSrc, /czerwona strzałka prowadzi właśnie do niego/, 'task list explains priority pointer behavior');
+assert.match(src, /TASKS\.setContext\(\{onChange:saveState\}\)/, 'task priority and discard choices request save persistence');
+assert.match(chestsSrc, /function openFromWeaponHitAt\(x,y,opts\)/, 'chest engine exposes one shared weapon-impact opener');
+assert.match(src, /CHESTS\.setWeaponHitHandler\(\(tx,ty,opts\)=>tryOpenChestAt\(tx,ty,opts\)\)/, 'weapon impacts retain the full chest UI, effects and save path');
+assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown projectiles route chest collisions through the opener');
 
 console.log('save-schema-sim: all assertions passed');

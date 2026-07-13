@@ -8,6 +8,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   const RNG = (seed)=>{ let s=seed>>>0; return ()=>{ s = (s*1664525 + 1013904223)>>>0; return (s>>>8)/0xFFFFFF; } };
   const DYN_KEY='mm_dynamic_loot_v1';
   const DYN_VERSION=1;
+  let weaponHitHandler=null;
   // Load previously saved dynamic loot (items from opened chests)
   try{
     const raw=localStorage.getItem(DYN_KEY);
@@ -213,7 +214,23 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     return {tier,items,spawned};
   }
 
-  MM.chests={openChestAt,TIERS,TIER_ORDER,CHEST_TIER_MIX,rollChestItemTier,genItem,saveDynamicLoot};
+  // Weapons run in a lower-level simulation module, while main.js owns the
+  // complete chest presentation (sound, toast, temple reaction, particles and
+  // saving). Use that presentation when registered, with a simulation fallback.
+  function setWeaponHitHandler(handler){
+    weaponHitHandler=typeof handler==='function' ? handler : null;
+    return !!weaponHitHandler;
+  }
+  function openFromWeaponHitAt(x,y,opts){
+    const t=WORLD.getTile(x,y);
+    if(!(INFO[t] && INFO[t].chestTier)) return false;
+    if(weaponHitHandler){
+      try{ return !!weaponHitHandler(x,y,opts||{}); }catch(e){}
+    }
+    return !!openChestAt(x,y);
+  }
+
+  MM.chests={openChestAt,openFromWeaponHitAt,setWeaponHitHandler,TIERS,TIER_ORDER,CHEST_TIER_MIX,rollChestItemTier,genItem,saveDynamicLoot};
 })();
 // ESM export (progressive migration)
 export const chests = (typeof window!=='undefined' && window.MM) ? window.MM.chests : undefined;

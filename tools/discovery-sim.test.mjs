@@ -49,6 +49,24 @@ assert.equal(p.count, 2, 'progress counts found entries');
 assert.equal(p.total, discovery.total(), 'progress exposes the catalog size');
 assert.ok(p.found.some(f => f.id === 'react_freeze' && /lodu/i.test(f.label)), 'progress lists catalog labels, not raw ids');
 
+// --- entering each surface biome is a one-shot discovery -------------------
+{
+  globalThis.player = { xp: 25 };
+  assert.equal(discovery.BIOME_DISCOVERY_IDS.length, 9, 'all surface biome ids are mapped');
+  assert.equal(discovery.noteBiome(3, 'Pustynia'), true, 'first entry into a biome is discovered');
+  assert.equal(discovery.has('biome_desert'), true, 'biome discovery lands in the journal');
+  assert.equal(globalThis.player.xp, 25 + discovery.DISCOVERY_XP, 'a fresh biome pays discovery XP');
+  assert.equal(discovery.noteBiome(3, 'Pustynia'), false, 're-entering a known biome is silent');
+  assert.equal(globalThis.player.xp, 25 + discovery.DISCOVERY_XP, 're-entering a biome never pays twice');
+  assert.equal(discovery.noteBiome(99, 'Nieznany'), false, 'unknown biome ids are refused');
+  assert.ok(toasts.some(t => t.includes('Nowy biom: Pustynia') && t.includes('+' + discovery.DISCOVERY_XP + ' XP')), 'biome toast names the place and XP reward');
+  delete globalThis.player;
+
+  const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+  assert.match(mainSrc, /function noteCurrentBiomeDiscovery\(\)/, 'main exposes one biome-transition check');
+  assert.match(mainSrc, /runGameStep\(frameDt,ts\);\s*noteCurrentBiomeDiscovery\(\);/, 'active simulation checks the current biome after movement');
+}
+
 // --- unknown ids never crash and never count --------------------------------
 assert.equal(discovery.note('', 'x'), false, 'empty id refused');
 assert.equal(discovery.note(123, 'x'), false, 'non-string id refused');

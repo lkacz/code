@@ -6,6 +6,8 @@
 window.MM = window.MM || {};
 (function(){
   const SAVE_KEY='mm_progress_v1';
+  const TOUGHNESS_DAMAGE_REDUCTION_PER_POINT=0.03;
+  const TOUGHNESS_DAMAGE_REDUCTION_MAX=0.45;
   const state={ vit:0, str:0, agi:0, cap:0, hard:0, lastLevel:1, bossKills:0, done:{}, trophies:{}, guardians:{} };
   let berries=0;
   const SEASON_TROPHY_KEYS=['springAntler','summerHorn','autumnHeartwood','winterFur'];
@@ -150,6 +152,10 @@ window.MM = window.MM || {};
     notify();
     return true;
   }
+  function toughnessDamageReduction(points){
+    const trained=toInt(points,0,999);
+    return Math.min(TOUGHNESS_DAMAGE_REDUCTION_MAX, trained*TOUGHNESS_DAMAGE_REDUCTION_PER_POINT);
+  }
   // Merged by inventory.computeModifiers into MM.activeModifiers
   function bonuses(){
     return {
@@ -159,6 +165,7 @@ window.MM = window.MM || {};
       maxHpBonus: state.vit*10,                // +10 HP per Witalność (applied in main)
       energyCapacityBonus: state.cap*25,       // +25 energy capacity per Pojemność
       crushResistBonus: state.hard*1.5,        // +1.5 crush-load capacity per Twardość (cave-ins and deep-water pressure)
+      damageReductionBonus: toughnessDamageReduction(state.hard), // -3% blockable damage per Twardość, capped at 45%
     };
   }
 
@@ -275,7 +282,8 @@ window.MM = window.MM || {};
 
   function reset(){ state.vit=state.str=state.agi=state.cap=state.hard=0; state.lastLevel=1; state.bossKills=0; state.done={}; state.trophies={}; state.guardians={}; berries=0; save(); try{ if(MM.recomputeModifiers) MM.recomputeModifiers(); }catch(e){} notify(); }
 
-  MM.progress={ update, level, points, spend, bonuses, reset, addBuff, snapshot, restore,
+  MM.progress={ update, level, points, spend, bonuses, toughnessDamageReduction, reset, addBuff, snapshot, restore,
+    TOUGHNESS_DAMAGE_REDUCTION_PER_POINT, TOUGHNESS_DAMAGE_REDUCTION_MAX,
     markGuardianHeart, hasGuardianHeart, guardianHearts,
     getBuffs:()=>buffs.map(b=>({name:b.name,icon:b.icon,t:b.t})),
     stats:()=>({vit:state.vit,str:state.str,agi:state.agi,cap:state.cap,hard:state.hard}),
@@ -287,7 +295,7 @@ window.MM = window.MM || {};
     if(MM.inventory && MM.inventory.registerModifierSource){
       MM.inventory.registerModifierSource('progress', ()=>{
         const b=bonuses();
-        return { attackDamage:b.attackDamage, moveSpeedMult:b.moveSpeedMult, jumpPowerMult:b.jumpPowerMult, energyCapacityBonus:b.energyCapacityBonus, crushResistBonus:b.crushResistBonus };
+        return { attackDamage:b.attackDamage, moveSpeedMult:b.moveSpeedMult, jumpPowerMult:b.jumpPowerMult, energyCapacityBonus:b.energyCapacityBonus, crushResistBonus:b.crushResistBonus, damageReductionBonus:b.damageReductionBonus };
       });
       MM.inventory.registerModifierSource('buffs', buffBundle);
     } else if(MM.recomputeModifiers) MM.recomputeModifiers();

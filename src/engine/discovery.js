@@ -26,7 +26,7 @@ const discovery = (function(){
     react_thermal:  'Szok termiczny (ogień na zmrożonym)',
     react_toxic:    'Toksyczny zapłon (ogień + trucizna)',
     react_chain:    'Porażenie łańcuchowe po mokrych celach',
-    arrow_recover:  'Wbite drewniane strzały da się podnieść',
+    arrow_recover:  'Strzały, które nie pękły, da się odzyskać',
     parry:          'Perfekcyjna parada odbija pociski',
     melee_bleed:    'Metalowe ostrza otwierają krwawiące rany',
     melee_stun:     'Kamienny obuch potrafi oszołomić',
@@ -57,6 +57,17 @@ const discovery = (function(){
     block_cat_machine:    'Katalog bloków: Maszyny',
     block_cat_utility:    'Katalog bloków: Instalacje',
     block_cat_food:       'Katalog bloków: Jedzenie',
+    // Surface biomes: crossing into each one for the first time is exploration
+    // knowledge, using the same one-shot toast and XP reward as other entries.
+    biome_forest:    'Biom: Las',
+    biome_plains:    'Biom: Równiny',
+    biome_snow:      'Biom: Śnieg/Lód',
+    biome_desert:    'Biom: Pustynia',
+    biome_swamp:     'Biom: Bagno',
+    biome_sea:       'Biom: Morze',
+    biome_lake:      'Biom: Jezioro',
+    biome_mountains: 'Biom: Góry',
+    biome_city:      'Biom: Zniszczone miasto',
     // Sky biomes (world_layers.js SKY_BIOMES): first flight into each themed
     // region of the high heavens is a discovery (mobs.js sky pressure notes it).
     sky_biome_heaven:  'Podniebna kraina: Rajskie Wyżyny',
@@ -77,6 +88,15 @@ const discovery = (function(){
   // Undiscovered entries show as "???" in the Ekwipunek journal tab, with only
   // the category and a foggy hint — enough to hunt, not enough to spoil.
   const HINTS = {
+    biome_forest:    {cat:'Biomy', hint:'Wyrusz między drzewa i poszukaj zielonej krainy…'},
+    biome_plains:    {cat:'Biomy', hint:'Szeroki, otwarty horyzont czeka poza lasem…'},
+    biome_snow:      {cat:'Biomy', hint:'Daleko od ciepłych ziem śnieg przykrywa powierzchnię…'},
+    biome_desert:    {cat:'Biomy', hint:'Idź tam, gdzie deszcz ustępuje piaskowi i skwarowi…'},
+    biome_swamp:     {cat:'Biomy', hint:'Wilgotna, grząska kraina kryje się pośród zieleni…'},
+    biome_sea:       {cat:'Biomy', hint:'Odszukaj wodę, której drugi brzeg znika za horyzontem…'},
+    biome_lake:      {cat:'Biomy', hint:'Nie każda wielka tafla wody prowadzi do oceanu…'},
+    biome_mountains: {cat:'Biomy', hint:'Wspinaj się tam, gdzie ziemia wyrasta ku chmurom…'},
+    biome_city:      {cat:'Biomy', hint:'Gdzieś na powierzchni stoją ruiny dawnej cywilizacji…'},
     stone_melt:     {cat:'🔥 Żywioły i teren',   hint:'Bardzo gorący strumień zmienia twardą skałę w coś płynnego…'},
     sand_glass:     {cat:'🔥 Żywioły i teren',   hint:'Pustynny materiał pod długim żarem robi się przezroczysty…'},
     water_boil:     {cat:'🔥 Żywioły i teren',   hint:'Płomień nad taflą nie zostaje bez odpowiedzi…'},
@@ -128,6 +148,17 @@ const discovery = (function(){
     steam_lift:   {cat:'⚙️ Maszyny parowe', hint:'Woda, żar i dysza skierowana w niebo — stań nad nią…'},
     steam_flight: {cat:'⚙️ Maszyny parowe', hint:'Kadłub z fotelem, kocioł z wodą i rząd dysz od spodu…'},
   };
+  const BIOME_DISCOVERY_IDS = Object.freeze([
+    'biome_forest',
+    'biome_plains',
+    'biome_snow',
+    'biome_desert',
+    'biome_swamp',
+    'biome_sea',
+    'biome_lake',
+    'biome_mountains',
+    'biome_city'
+  ]);
   const DISCOVERY_XP = 40; // every fresh journal entry pays experience (progress.js levels off player.xp)
 
   const seen = new Set();
@@ -177,6 +208,15 @@ const discovery = (function(){
     return true;
   }
 
+  function noteBiome(biomeId, biomeLabel){
+    const n=Number(biomeId);
+    if(!Number.isInteger(n) || n<0 || n>=BIOME_DISCOVERY_IDS.length) return false;
+    const id=BIOME_DISCOVERY_IDS[n];
+    const fallback=String(CATALOG[id] || id).replace(/^Biom:\s*/, '');
+    const label=typeof biomeLabel==='string' && biomeLabel.trim() ? biomeLabel.trim() : fallback;
+    return note(id, 'Nowy biom: '+label+'!');
+  }
+
   function has(id){ return seen.has(String(id)); }
   function count(){ return seen.size; }
   function list(){ return [...seen]; }
@@ -198,7 +238,7 @@ const discovery = (function(){
   }
   function reset(){ seen.clear(); persist(); }
 
-  const api = { note, has, count, list, total, label, progress, entries, CATALOG, HINTS, DISCOVERY_XP, reset };
+  const api = { note, noteBiome, has, count, list, total, label, progress, entries, CATALOG, HINTS, BIOME_DISCOVERY_IDS, DISCOVERY_XP, reset };
   MM.discovery = api;
   return api;
 })();

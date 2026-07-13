@@ -166,6 +166,7 @@ assert.equal(crushTickDamage(1e6), CRUSH_TUNING.DMG_MAX, 'tick damage is capped'
   assert.equal(progress.stats().hard, 1, 'Twardość point is stored');
   assert.equal(progress.points(), 0, 'training Twardość consumes the point');
   assert.equal(progress.bonuses().crushResistBonus, CRUSH_TUNING.CAPACITY_PER_POINT, 'each point adds the tuned capacity');
+  assert.equal(progress.bonuses().damageReductionBonus, 0.03, 'each Twardość point also grants 3% blockable damage reduction');
   const snap=progress.snapshot();
   progress.reset();
   assert.equal(progress.stats().hard, 0, 'reset clears Twardość');

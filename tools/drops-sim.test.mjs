@@ -86,6 +86,25 @@ assert.ok(played.includes('harvest'), 'common pickup plays the harvest chirp');
 assert.equal(drops.metrics().active, 0, 'collected drop leaves the world');
 assert.equal(drops.wantsInteractKey(player), false, 'no drop in reach, no interact claim');
 assert.equal(drops.pickupNearest(player), false, 'nothing to pick up returns false');
+
+// Arrow recovery has its own readable magnet beat: the arrow-shaped pickup
+// keeps flying toward the hero briefly after inventory credit is granted.
+drops.reset();
+inv.arrowIridium = 0;
+player.x = 72; player.y = SURF - 1;
+const recoveredArrow = drops.spawnResource(73.2, SURF - 1, 'arrowIridium', 1, { vx: 0, vy: 0 });
+advance(0.15);
+assert.ok(recoveredArrow && drops._debug.arrowStyleFor(recoveredArrow.res), 'arrow resources use an arrow-shaped world pickup');
+assert.equal(drops.pickupNearest(player), true, 'a recovered arrow can be picked up like other ground loot');
+assert.equal(inv.arrowIridium, 1, 'the exact arrow material returns to the quiver');
+assert.equal(drops.metrics().arrowCollectFx, 1, 'collection starts a dedicated arrow magnet animation');
+const arrowFx = drops._debug.arrowCollectFx[0];
+const startMagnetDist = Math.hypot(arrowFx.x-player.x,arrowFx.y-(player.y-0.3));
+drops.update(0.10,player,getTile);
+const movedMagnetDist = Math.hypot(arrowFx.x-player.x,arrowFx.y-(player.y-0.3));
+assert.ok(movedMagnetDist<startMagnetDist, 'the collected arrow visibly travels toward the hero');
+advance(0.5);
+assert.equal(drops.metrics().arrowCollectFx,0,'the magnet animation cleans itself up after reaching the hero');
 player.x = 500;
 
 // out of reach: no claim
@@ -507,10 +526,16 @@ assert.match(indexSrc, /id="dropPreview"/, 'index.html carries the corner drop-p
 // buried — a reintroduced popup would double up on the inventory panel again.
 assert.ok(!/id="lootPopup"|id="lootInboxBtn"|id="lootDim"/.test(indexSrc), 'no loot inbox popup/button survives in index.html');
 assert.match(indexSrc, /id="upgradeNotice"/, 'the upgrade-notice card is the loot signal');
+assert.match(indexSrc, /id="upgradeNotice"[^>]*role="region"/, 'the upgrade stack is exposed as one accessible live region');
+assert.match(indexSrc, /#upgradeNotice \.upgradeNotice/, 'each pending upgrade has its own styled card');
 assert.match(mainSrc, /window\.__lootNoticeInit=true;/, 'loot signal block replaced the inbox block');
 assert.ok(!/lootInbox|openInbox|lootPopup/.test(mainSrc), 'main.js keeps no inbox machinery');
 assert.match(mainSrc, /const fresh=ownedGearItems\(items\)\.filter\(it=>!announcedLoot\.has\(it\.id\)\);/, 'each found item is signalled exactly once');
-assert.match(mainSrc, /if\(upgrade && showUpgradeNotice\(upgrade\.item,upgrade\.cmp\)\) return;/, 'only a real upgrade interrupts; the rest is a toast');
+assert.match(mainSrc, /const upgrades=rows\.filter\(row=>isUpgradeWorthy\(row\.cmp\)\);/, 'every real upgrade in a fresh batch gets selected');
+assert.match(mainSrc, /upgrades\.slice\(\)\.reverse\(\)\.forEach\(row=>\{ if\(showUpgradeNotice\(row\.item,row\.cmp\)\) shown\+\+; \}\);/, 'all selected upgrades are rendered instead of only the best one');
+assert.match(mainSrc, /upgradeNoticeEl\.prepend\(card\);/, 'new upgrade cards join the existing stack at the visible top');
+assert.match(mainSrc, /dismissUpgradeNotice\(card\)/, 'each upgrade action dismisses only its own card');
+assert.ok(!/upgradeNoticeTimer|hideUpgradeNotice|upgradeNoticeEl\.textContent='';/.test(mainSrc), 'pending upgrade cards are neither timed out nor cleared by a newer find');
 const craftingSrc = readFileSync(new URL('../src/engine/crafting.js', import.meta.url), 'utf8');
 assert.match(craftingSrc, /meatScrap:/, 'crafting source hints cover meat scraps');
 const lairsSrc = readFileSync(new URL('../src/engine/guardian_lairs.js', import.meta.url), 'utf8');

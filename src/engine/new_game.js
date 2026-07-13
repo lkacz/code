@@ -35,13 +35,27 @@ export const NEW_GAME_KNOWLEDGE_KEYS = Object.freeze([
 
 const PREFERENCE_KEYS = new Set([...NEW_GAME_PREFERENCE_KEYS, ...NEW_GAME_KNOWLEDGE_KEYS]);
 
-export function queueFreshWorldSeed(storage,random=Math.random){
-  if(!storage || typeof storage.setItem!=='function') return null;
+export function normalizeWorldSeed(value){
+  const seed=Number(value);
+  return Number.isInteger(seed) && seed>0 && seed<1000000000 ? seed : null;
+}
+
+export function randomWorldSeed(random=Math.random){
   const roll=Number(random());
-  const seed=Math.max(1, Math.min(999999999, Math.floor((Number.isFinite(roll)?roll:0.5)*1000000000)));
+  return Math.max(1, Math.min(999999999, Math.floor((Number.isFinite(roll)?roll:0.5)*1000000000)));
+}
+
+export function queueWorldSeed(storage,value){
+  if(!storage || typeof storage.setItem!=='function') return null;
+  const seed=normalizeWorldSeed(value);
+  if(seed===null) return null;
   try{ storage.setItem(NEW_GAME_SEED_SESSION_KEY,String(seed)); }
   catch(e){ return null; }
   return seed;
+}
+
+export function queueFreshWorldSeed(storage,random=Math.random){
+  return queueWorldSeed(storage,randomWorldSeed(random));
 }
 
 export function consumeFreshWorldSeed(storage){
@@ -50,8 +64,7 @@ export function consumeFreshWorldSeed(storage){
   try{ raw=storage.getItem(NEW_GAME_SEED_SESSION_KEY); }
   catch(e){ return null; }
   finally{ try{ storage.removeItem(NEW_GAME_SEED_SESSION_KEY); }catch(e){} }
-  const seed=Number(raw);
-  return Number.isInteger(seed) && seed>0 && seed<1000000000 ? seed : null;
+  return normalizeWorldSeed(raw);
 }
 
 function storageKeys(storage){

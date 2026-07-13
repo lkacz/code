@@ -52,7 +52,12 @@ MM.inventory={
   equippedItem(){ return equippedWeapon; },
   TIER_COLORS:{}
 };
-globalThis.inv={toxicSnowball:0, arrowWood:0, snowball:0, throwingStone:0};
+globalThis.inv={toxicSnowball:0, arrowWood:0, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:0, snowball:0, throwingStone:0};
+const recoveredArrowDrops=[];
+MM.drops={
+  spawnResource(x,y,res,qty,opts){ const d={x,y,res,qty,opts}; recoveredArrowDrops.push(d); return d; },
+  showArrowCollect(){ return true; }
+};
 
 function resetScenario(){
   weapons.reset();
@@ -77,6 +82,15 @@ assert.ok(info.tiers.some(t=>t.id==='toxicSnowball'), 'toxic snowballs appear in
 assert.equal(info.activeId, 'wood', "'auto' keeps firing real arrows while any are owned");
 weapons.setArrowPref('toxicSnowball');
 assert.equal(weapons.arrowInfo().activeId, 'toxicSnowball', 'the snowball tier can be pinned from the HUD');
+
+// --- material durability: weakest breaks most, strongest breaks least -------
+const durability=Object.fromEntries(weapons._debug.arrowTiers.filter(t=>t.breakChance!=null).map(t=>[t.id,t.breakChance]));
+assert.deepEqual(durability,{iridium:0.20,diamond:0.35,obsidian:0.50,stone:0.65,wood:0.80},
+  'break chance descends evenly from wood (80%) to iridium (20%)');
+for(const [tier,chance] of Object.entries(durability)){
+  assert.equal(weapons._debug.arrowBreaksOnImpact({tier},chance-0.001),true,tier+' breaks below its threshold');
+  assert.equal(weapons._debug.arrowBreaksOnImpact({tier},chance),false,tier+' survives at or above its threshold');
+}
 
 // --- creature hit: consumes ammo, damages, and applies poison + chill ---
 resetScenario();
@@ -107,10 +121,76 @@ assert.equal(calls.damage.length, 0, 'no creature was hit by the wall splat itse
 resetScenario();
 weapons.setArrowPref('wood');
 inv.arrowWood=3;
+const wallSurviveRandom=Math.random;
+Math.random=()=>0.99;
 weapons.fireHeld({x:8.5,y:0.5,facing:1,atkCd:0}, 12.5, 0.5, 1/60);
 assert.equal(weapons.releaseHeld({x:8.5,y:0.5,facing:1,atkCd:0}, 12.5, 0.5), true, 'wood arrow fires');
 for(let i=0;i<60;i++) weapons.update(1/60,getTile,setTile);
+Math.random=wallSurviveRandom;
 assert.ok(weapons._debug.arrows.some(a=>a.stuck), 'a real arrow sticks in the wall (snowball splat is special)');
+
+// The same weak shaft breaks on a low roll and leaves visible pieces.
+resetScenario();
+weapons.setArrowPref('wood');
+inv.arrowWood=1;
+const wallBreakRandom=Math.random;
+Math.random=()=>0;
+weapons.fireHeld({x:8.5,y:0.5,facing:1,atkCd:0}, 12.5, 0.5, 1/60);
+assert.equal(weapons.releaseHeld({x:8.5,y:0.5,facing:1,atkCd:0}, 12.5, 0.5), true, 'break-test wood arrow fires');
+for(let i=0;i<60 && weapons.metrics().arrowFragments===0;i++) weapons.update(1/60,getTile,setTile);
+Math.random=wallBreakRandom;
+assert.equal(weapons.metrics().arrows,0,'a broken impact arrow is not recoverable');
+assert.ok(weapons.metrics().arrowFragments>=4,'breaking an arrow produces visible shaft, head, and fletching pieces');
+
+// --- creature impact: the exact mob carries the arrow until death, then the
+// matching ammo material falls back into the world as a pickup ---
+resetScenario();
+weapons.setArrowPref('obsidian');
+inv.arrowObsidian=1;
+const embeddedMob={x:7.5,y:0.5,vx:0,vy:0,hp:20};
+const corpseArrowDrops=[];
+const oldDrops=MM.drops;
+MM.drops={
+  spawnResource(x,y,res,qty,opts){
+    const d={x,y,res,qty,opts}; corpseArrowDrops.push(d); return d;
+  }
+};
+MM.mobs.damageAt=(tx,ty,dmg,opts)=>{
+  if(tx!==Math.floor(embeddedMob.x) || ty!==Math.floor(embeddedMob.y)) return false;
+  if(opts && typeof opts.onTarget==='function') opts.onTarget(embeddedMob);
+  return true;
+};
+MM.mobs.isLiving=(m)=>m===embeddedMob && m.hp>0;
+const embeddedSurviveRandom=Math.random;
+Math.random=()=>0.99;
+weapons.fireHeld({x:1.5,y:0.5,facing:1,atkCd:0}, embeddedMob.x, embeddedMob.y, 1/60);
+assert.equal(weapons.releaseHeld({x:1.5,y:0.5,facing:1,atkCd:0}, embeddedMob.x, embeddedMob.y), true, 'obsidian arrow fires at the test mob');
+for(let i=0;i<120 && !weapons._debug.arrows.some(a=>a.embeddedMob);i++) weapons.update(1/60,getTile,setTile);
+let bodyArrow=weapons._debug.arrows.find(a=>a.embeddedMob);
+assert.ok(bodyArrow && bodyArrow.embeddedMob===embeddedMob, 'arrow remains embedded in the exact mob it hit');
+const offsetX=bodyArrow.x-embeddedMob.x, offsetY=bodyArrow.y-embeddedMob.y;
+embeddedMob.x+=0.8; embeddedMob.y+=0.25;
+weapons.update(1/60,getTile,setTile);
+bodyArrow=weapons._debug.arrows.find(a=>a.embeddedMob);
+assert.ok(bodyArrow, 'living mob still carries its arrow');
+assert.ok(Math.abs(bodyArrow.x-(embeddedMob.x+offsetX))<1e-9 && Math.abs(bodyArrow.y-(embeddedMob.y+offsetY))<1e-9, 'embedded arrow follows the moving mob body');
+embeddedMob.hp=0;
+weapons.update(1/60,getTile,setTile);
+bodyArrow=weapons._debug.arrows[0];
+assert.ok(bodyArrow && !bodyArrow.embeddedMob && bodyArrow.dropOnLand, 'mob death releases the embedded arrow into falling motion');
+for(let i=0;i<300 && corpseArrowDrops.length===0;i++) weapons.update(1/60,getTile,setTile);
+assert.equal(corpseArrowDrops.length,1, 'released arrow lands as one physical pickup');
+assert.equal(corpseArrowDrops[0].res,'arrowObsidian', 'corpse arrow preserves its ammunition material');
+assert.equal(corpseArrowDrops[0].qty,1, 'corpse arrow drop contains one arrow');
+assert.equal(weapons.metrics().arrows,0, 'landed corpse arrow leaves the projectile simulation');
+Math.random=embeddedSurviveRandom;
+MM.drops=oldDrops;
+delete MM.mobs.isLiving;
+MM.mobs.damageAt=(tx,ty,dmg,opts)=>{
+  if(!mobAt || tx!==mobAt.x || ty!==mobAt.y) return false;
+  calls.damage.push({tx,ty,dmg,tier:opts && opts.tier});
+  return true;
+};
 
 // ===================== hand-thrown projectiles (ranged-slot rotation) =====================
 
@@ -213,9 +293,12 @@ MM.mobs.damageAt=(tx,ty,dmg,opts)=>{
   calls.damage.push({tx,ty,dmg,tier:opts && opts.tier});
   return true;
 };
+const diamondSurviveRandom=Math.random;
+Math.random=()=>0.99;
 weapons.fireHeld({x:1.5,y:0.5,facing:1,atkCd:0}, 9.5, 0.5, 1/60);
 assert.equal(weapons.releaseHeld({x:1.5,y:0.5,facing:1,atkCd:0}, 9.5, 0.5), true, 'diamond arrow fires');
 for(let i=0;i<200 && weapons.metrics().arrows>0;i++) weapons.update(1/60,getTile,setTile);
+Math.random=diamondSurviveRandom;
 assert.ok(calls.damage.length>=2, 'a diamond arrow pierces through into the next creature (hits: '+calls.damage.length+')');
 assert.ok(calls.damage.length<=3, 'overpenetration is capped');
 // restore the standard single-mob damage stub for the remaining scenarios
@@ -235,27 +318,37 @@ stepUntilNoArrows();
 assert.ok(calls.chillAt.length>=1, 'a stone arrow briefly staggers its target');
 assert.equal(calls.chillAt[0].opts.cause, 'stagger', 'the stagger is tagged');
 
-// --- wood arrows can be recovered by walking over them ---
+// --- every surviving material can be recovered by walking over it ---
 resetScenario();
-weapons.setArrowPref('wood');
-inv.arrowWood=1;
+weapons.setArrowPref('obsidian');
+inv.arrowObsidian=1;
 globalThis.player={x:8.5,y:0.5,facing:1,atkCd:0,w:0.7,h:0.95};
 const oldRnd=Math.random;
-Math.random=()=>0.1; // force the recover roll
+Math.random=()=>0.99; // force the impact-survival roll
 try{
   weapons.fireHeld(player, 12.5, 0.5, 1/60);
-  assert.equal(weapons.releaseHeld(player, 12.5, 0.5), true, 'wood arrow fires');
-  assert.equal(inv.arrowWood, 0, 'the quiver is empty');
+  assert.equal(weapons.releaseHeld(player, 12.5, 0.5), true, 'obsidian arrow fires');
+  assert.equal(inv.arrowObsidian, 0, 'the quiver is empty');
   for(let i=0;i<60 && !weapons._debug.arrows.some(a=>a.stuck);i++) weapons.update(1/60,getTile,setTile);
   const stuckArrow=weapons._debug.arrows.find(a=>a.stuck);
-  assert.ok(stuckArrow && stuckArrow.recoverable, 'the stuck wood arrow is recoverable');
+  assert.ok(stuckArrow && stuckArrow.recoverable, 'a surviving non-wood arrow is recoverable');
   player.x=stuckArrow.x; player.y=stuckArrow.y; // walk over it
   weapons.update(1/60,getTile,setTile);
-  assert.equal(inv.arrowWood, 1, 'walking over the stuck arrow takes it back');
+  assert.equal(inv.arrowObsidian, 1, 'walking over the stuck arrow takes its exact material back');
 } finally {
   Math.random=oldRnd;
   delete globalThis.player;
 }
+
+// --- timed-out arrows tumble down, then break apart instead of vanishing ---
+resetScenario();
+weapons._debug.arrows.push({x:2.5,y:0.4,vx:8,vy:-1,dmg:1,life:0.01,stuck:false,stuckT:4,travel:0,maxTravel:10,
+  tier:'diamond',color:'#48f1ff',headColor:'#dffcff'});
+weapons.update(0.02,getTile,setTile);
+assert.ok(weapons._debug.arrows[0] && weapons._debug.arrows[0].expiring,'expiry first changes the arrow into a falling tumble');
+for(let i=0;i<90 && weapons.metrics().arrowFragments===0;i++) weapons.update(1/60,getTile,setTile);
+assert.equal(weapons.metrics().arrows,0,'the expired arrow leaves only after its fall finishes');
+assert.ok(weapons._debug.arrowFragments.some(f=>String(f.cause).startsWith('expiry_')),'expiry ends in a visible break-apart effect');
 
 // --- landed hits feed the ult charge ---
 resetScenario();

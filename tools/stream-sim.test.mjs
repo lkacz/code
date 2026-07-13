@@ -27,6 +27,16 @@ const getTile = (x,y)=>{ const v=tiles.get(x+','+y); return v===undefined? T.AIR
 const setTile = (x,y,v)=>{ tiles.set(x+','+y,v); };
 function fill(x0,x1,y0,y1,t){ for(let x=x0;x<=x1;x++) for(let y=y0;y<=y1;y++) setTile(x,y,t); }
 function count(t){ let n=0; for(const v of tiles.values()) if(v===t) n++; return n; }
+const chestHits=[];
+MM.chests={
+  openFromWeaponHitAt(x,y,opts){
+    const t=getTile(x,y);
+    if(![T.CHEST_COMMON,T.CHEST_UNCOMMON,T.CHEST_RARE,T.CHEST_EPIC,T.CHEST_LEGENDARY].includes(t)) return false;
+    chestHits.push({x,y,opts});
+    setTile(x,y,T.AIR);
+    return true;
+  }
+};
 
 let vaporInjected=0;
 MM.clouds={ injectVapor:(x,m)=>{ vaporInjected+=m; } };
@@ -109,6 +119,52 @@ fire.update(getTile,setTile,NaN);
 assert.equal(weapons.metrics().puffs, 0, 'invalid stream ticks do not create or corrupt puffs');
 assert.equal(weapons.metrics().arrows, 0, 'invalid stream ticks do not create or corrupt arrows');
 
+// Every player weapon family routes a chest impact through the shared opener.
+tiles=new Map(); weapons.reset(); chestHits.length=0;
+setTile(1,0,T.CHEST_COMMON);
+equipped=weaponItems.melee; player.atkCd=0;
+weapons.update(0,getTile,setTile);
+assert.equal(weapons.fireHeld(player,5.5,0.5,1/60),true,'melee weapon opens an adjacent chest on impact');
+assert.equal(getTile(1,0),T.AIR,'melee-opened chest is removed by the chest system');
+assert.equal(chestHits.at(-1).opts.kind,'melee','melee chest hit carries weapon context');
+
+tiles=new Map(); weapons.reset(); chestHits.length=0;
+setTile(4,0,T.CHEST_RARE);
+refillResources({arrowWood:2}); equipped=weaponItems.bow; player.atkCd=0;
+fireBowTap(6,0.5);
+for(let i=0;i<60 && getTile(4,0)!==T.AIR;i++) weapons.update(1/60,getTile,setTile);
+assert.equal(getTile(4,0),T.AIR,'arrow opens a chest at range');
+assert.equal(weapons.metrics().arrows,0,'arrow is consumed by the chest impact');
+assert.equal(chestHits.at(-1).opts.kind,'arrow','ranged chest hit is identified as an arrow');
+
+tiles=new Map(); weapons.reset(); chestHits.length=0;
+setTile(4,0,T.CHEST_UNCOMMON);
+refillResources({throwingStone:1}); equipped={weaponType:'thrown',thrownKind:'stone',attackDamage:2,fireCooldown:0.3};
+assert.equal(weapons.fireHeld(player,6,0.5,1/60),true,'thrown weapon can be aimed at a chest');
+for(let i=0;i<80 && getTile(4,0)!==T.AIR;i++) weapons.update(1/60,getTile,setTile);
+assert.equal(getTile(4,0),T.AIR,'thrown weapon opens a chest');
+assert.equal(chestHits.at(-1).opts.kind,'thrown','thrown chest hit keeps its projectile context');
+
+tiles=new Map(); weapons.reset(); chestHits.length=0; heroEnergy=10;
+setTile(4,0,T.CHEST_EPIC);
+equipped=weaponItems.electric;
+weapons.update(0,getTile,setTile);
+assert.equal(weapons.fireHeld(player,6,0.5,1/60),true,'electric weapon fires at a chest');
+assert.equal(getTile(4,0),T.AIR,'electric beam opens a chest');
+assert.equal(chestHits.at(-1).opts.kind,'electric','electric chest hit keeps its weapon context');
+
+for(const kind of ['flame','hose','gas']){
+  tiles=new Map(); weapons.reset(); chestHits.length=0;
+  refillResources(); setTile(3,0,T.CHEST_COMMON); equipped=weaponItems[kind];
+  for(let i=0;i<90 && getTile(3,0)!==T.AIR;i++){
+    weapons.fireHeld(player,4,0.5,1/60);
+    weapons.update(1/60,getTile,setTile);
+  }
+  assert.equal(getTile(3,0),T.AIR,kind+' stream opens a chest on contact');
+  assert.equal(chestHits.at(-1).opts.kind,kind,kind+' chest hit keeps its stream context');
+}
+refillResources();
+
 {
   const oldMobs=MM.mobs;
   const oldMods=MM.activeModifiers;
@@ -189,10 +245,14 @@ withHeroDamageProbe(read=>{
 tiles=new Map(); weapons.reset(); fire.reset(); glassShards=0;
 setTile(4,0,T.GLASS);
 equipped=weaponItems.bow;
+const glassBreakRandom=Math.random;
+Math.random=()=>0; // deterministic weak-arrow break after the glass impact
 fireBowTap(6, 0.5);
 for(let i=0;i<30;i++) weapons.update(1/60, getTile, setTile);
+Math.random=glassBreakRandom;
 assert.equal(getTile(4,0), T.AIR, 'arrow shatters fragile glass into air');
-assert.equal(weapons.metrics().arrows, 0, 'arrow is consumed by shattering glass');
+assert.equal(weapons.metrics().arrows, 0, 'a weak arrow can break while shattering glass');
+assert.ok(weapons.metrics().arrowFragments>0, 'the broken glass-impact arrow leaves visible fragments');
 assert.ok(glassShards>=1, 'arrow impact spawns broken glass shards');
 
 tiles=new Map(); weapons.reset(); fire.reset();
@@ -333,7 +393,8 @@ const blastStoneBefore=count(T.STONE);
 assert.equal(weapons.explodeAt(5,4,getTile,setTile,{force:true}), true, 'forced gas blast detonates for material immunity test');
 assert.equal(getTile(4,4), T.BEDROCK, 'gas explosions do not erase bedrock');
 assert.equal(getTile(5,4), T.VOLCANO_MASTER_STONE, 'gas explosions do not erase story stones');
-assert.equal(getTile(6,4), T.CHEST_COMMON, 'gas explosions do not erase chests');
+assert.equal(getTile(6,4), T.AIR, 'player weapon explosions open chests instead of erasing their loot');
+assert.ok(chestHits.some(h=>h.x===6 && h.y===4 && h.opts.kind==='explosion'), 'explosion chest impact uses the shared opener');
 assert.equal(getTile(4,5), T.OBSIDIAN, 'gas explosions do not erase obsidian');
 assert.equal(getTile(5,5), T.DIAMOND, 'gas explosions do not erase diamond');
 assert.equal(getTile(6,5), T.IRIDIUM, 'gas explosions do not erase iridium');

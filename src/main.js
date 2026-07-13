@@ -1,7 +1,7 @@
 // Nowy styl / pełny ekran inspirowany Diamonds Explorer
 // Module entry: import constants (also hydrates window.MM via shim) and side-effect engine modules
 import { CHUNK_W, WORLD_H, WORLD_SECTION_H, WORLD_MIN_SECTION, WORLD_MAX_SECTION, WORLD_MIN_Y, WORLD_MAX_Y, TILE, T, INFO, MOVE, isAutumnLeaf, isLeaf, isFrozenEarth } from './constants.js';
-import { clearActiveGameStorage, queueFreshWorldSeed } from './engine/new_game.js';
+import { clearActiveGameStorage, normalizeWorldSeed, queueFreshWorldSeed, queueWorldSeed, randomWorldSeed } from './engine/new_game.js';
 // Ensure worldgen initializes before world (world.js reads MM.worldGen on load)
 import { worldGen as WORLDGEN } from './engine/worldgen.js';
 import world from './engine/world.js';
@@ -78,6 +78,7 @@ import { boats as BOATS } from './engine/boats.js';
 import { mechs as MECHS } from './engine/mechs.js';
 import { altar as ALTAR } from './engine/altar.js';
 import { lighting as LIGHTING } from './engine/lighting.js';
+import { heroLamp as HERO_LAMP } from './engine/hero_lamp.js';
 import { vitalsHud as VITALS_HUD } from './engine/vitals_hud.js';
 import { titleScreen as TITLE_SCREEN } from './engine/title_screen.js';
 import { finale as FINALE } from './engine/finale.js';
@@ -185,8 +186,10 @@ const BIOME_NAMES = [
 	'Góry',
 	'Zniszczone miasto'
 ];
-// HUD biome pill: DOM write only when the hero crosses into a different biome
-let _lastBiomeId=-1, _lastBiomeSeason='';
+// HUD biome pill: DOM write only when the hero crosses into a different biome.
+// Discovery checking is separate because the label also renders while the
+// title/finale overlays hold the simulation.
+let _lastBiomeId=-1, _lastBiomeSeason='', _lastBiomeDiscoveryId=-1;
 function atomicWinterCalendarActive(){
 	try{ return !!(ATOMIC_WINTER && typeof ATOMIC_WINTER.isActive==='function' && ATOMIC_WINTER.isActive()); }catch(e){ return false; }
 }
@@ -214,6 +217,19 @@ function updateBiomeLabel(){
 	_lastBiomeSeason=seasonLabel;
 	const el=document.getElementById('biome');
 	if(el) el.textContent=(BIOME_NAMES[id]||'---')+seasonLabel;
+}
+function noteCurrentBiomeDiscovery(){
+	if(!WORLDGEN || !WORLDGEN.biomeType || !DISCOVERY || !DISCOVERY.noteBiome) return false;
+	const id=WORLDGEN.biomeType(Math.floor(player.x));
+	if(id===_lastBiomeDiscoveryId) return false;
+	_lastBiomeDiscoveryId=id;
+	const fresh=DISCOVERY.noteBiome(id,BIOME_NAMES[id]||('Biom '+id));
+	if(fresh){
+		updateHelpDiscoveries();
+		noteSaveActivity();
+		saveState();
+	}
+	return fresh;
 }
 // Compact at-a-glance world status: hero position, in-world clock, live weather
 // and season. Reads the same sources the world already simulates (no new state)
@@ -402,6 +418,7 @@ function setFrameCapUnlocked(value){
 	const chk=document.getElementById('fpsUnlockCheckbox');
 	const label=document.getElementById('fpsCapLabel');
 	if(chk) chk.checked=frameCapUnlocked;
+	document.querySelectorAll('[data-frame-cap-toggle]').forEach(toggle=>{ toggle.checked=frameCapUnlocked; });
 	if(label) label.textContent=frameCapUnlocked?'bez limitu':('plynny ~'+FRAME_CAP_FPS);
 	try{ localStorage.setItem(FRAME_CAP_STORAGE_KEY, frameCapUnlocked?'1':'0'); }catch(e){}
 	publishFrameCapState();
@@ -692,6 +709,8 @@ function heroWaterMoveSpeedMult(){
 let energyChargeFx={t:0,intensity:0,source:null,flash:0};
 let energyFxEmitT=0;
 let heroEnergyDeltaAcc=0;
+let heroLampSaveAt=0;
+let heroLampButtonKey='';
 let turboFx=0, turboSparkT=0;
 let turboRechargePauseT=0;
 let underwaterEnergyShockMsgAt=0;
@@ -1506,6 +1525,63 @@ function heroEnergyInfo(){
 	return {energy:player.energy||0,displayEnergy:heroEnergyDisplayValue(),max:player.maxEnergy||heroEnergyCapacity(),base:HERO_ENERGY_BASE,perLevel:HERO_ENERGY_PER_LEVEL};
 }
 MM.heroEnergy={capacity:heroEnergyCapacity, info:heroEnergyInfo, add:addHeroEnergy, chargeExternal:chargeHeroEnergy, spend:spendHeroEnergy, canSpend:canSpendHeroEnergy, drain:drainHeroEnergy};
+function refreshHeroLampButton(){
+	const b=document.getElementById('lampBtn');
+	if(!b || !HERO_LAMP) return;
+	const on=!!HERO_LAMP.isOn();
+	const info=HERO_LAMP.info();
+	const energy=Math.max(0,Number(player.energy)||0);
+	const lightingOn=!!(LIGHTING && LIGHTING.config && LIGHTING.config.enabled);
+	const key=[on?1:0,Math.floor(energy),lightingOn?1:0].join('|');
+	if(key===heroLampButtonKey) return;
+	heroLampButtonKey=key;
+	b.classList.toggle('on',on);
+	b.classList.toggle('low',!on && energy<info.minStartEnergy);
+	b.setAttribute('aria-pressed',on?'true':'false');
+	b.setAttribute('aria-label',on?'Wyłącz lampę w oczach':'Włącz lampę w oczach');
+	const seconds=info.drainPerSecond>0 ? Math.floor(energy/info.drainPerSecond) : 0;
+	b.title=on
+		? 'Lampa oczu: WŁ. Energia '+Math.floor(energy)+' (około '+seconds+' s)'
+		: (lightingOn ? 'Włącz lampę w oczach · zużycie '+info.drainPerSecond+' energii/s' : 'Najpierw włącz oświetlenie jaskiń w ustawieniach');
+}
+function setHeroLampEnabled(value,opts){
+	opts=opts||{};
+	if(!HERO_LAMP) return false;
+	if(value && !(LIGHTING && LIGHTING.config && LIGHTING.config.enabled)){
+		if(!opts.silent) msg('Najpierw włącz oświetlenie jaskiń w ustawieniach');
+		refreshHeroLampButton();
+		return false;
+	}
+	const res=HERO_LAMP.setEnabled(!!value,MM.heroEnergy,{unlimited:godMode});
+	if(res.blocked==='energy' && !opts.silent) msg('Brak energii dla lampy w oczach');
+	if(res.changed){
+		heroLampButtonKey='';
+		refreshHeroLampButton();
+		if(!opts.silent){
+			try{ if(AUDIO && AUDIO.play) AUDIO.play('click'); }catch(e){}
+			noteSaveActivity(); saveState();
+		}
+	}
+	return !!res.on;
+}
+function toggleHeroLamp(){ return setHeroLampEnabled(!(HERO_LAMP && HERO_LAMP.isOn())); }
+function updateHeroLamp(dt){
+	if(!HERO_LAMP) return;
+	if(HERO_LAMP.isOn() && !(LIGHTING && LIGHTING.config && LIGHTING.config.enabled)){
+		HERO_LAMP.setEnabled(false,MM.heroEnergy,{unlimited:true});
+		heroLampButtonKey='';
+	}
+	const res=HERO_LAMP.update(dt,MM.heroEnergy,{unlimited:godMode});
+	if(res.depleted){
+		heroLampButtonKey='';
+		msg('Lampa w oczach zgasła — brak energii');
+		noteSaveActivity(); saveState();
+	}else if(res.spent>0){
+		const now=performance.now();
+		if(now-heroLampSaveAt>2500){ heroLampSaveAt=now; saveState(); }
+	}
+	refreshHeroLampButton();
+}
 window.addEventListener('mm-progress-change',applyHeroEnergyCapacity);
 applyHeroEnergyCapacity();
 function turboKeyHeld(){ return !!(keys['shift']||keys['shiftleft']||keys['shiftright']); }
@@ -2330,6 +2406,17 @@ function endHeroDefense(pointerId,opts){
 	else if(was) heroDefendUntil=Math.max(heroDefendUntil, now+DEFEND_RELEASE_GRACE_MS);
 	return was;
 }
+function heroToughnessReduction(){
+	const raw=MM.activeModifiers && Number(MM.activeModifiers.damageReductionBonus);
+	const max=(PROGRESS && Number(PROGRESS.TOUGHNESS_DAMAGE_REDUCTION_MAX))||0.45;
+	return Math.max(0,Math.min(max,Number.isFinite(raw)?raw:0));
+}
+function applyHeroToughness(amount,opts){
+	const reduction=heroToughnessReduction();
+	if(reduction<=0 || !heroDefenseCanAbsorb(opts)) return {amount,absorbed:0,reduction:0};
+	const absorbed=amount*reduction;
+	return {amount:Math.max(0,amount-absorbed),absorbed,reduction};
+}
 function applyHeroDefense(amount,opts,now){
 	if(!heroDefending(now) || !heroDefenseCanAbsorb(opts)) return {amount,absorbed:0};
 	const absorbed=amount*DEFEND_ABSORB_FRACTION;
@@ -2393,6 +2480,11 @@ window.damageHero=function(amount, opts){
 			}
 		}
 	}
+	const toughened=applyHeroToughness(amount,opts);
+	if(toughened.absorbed>0){
+		amount=toughened.amount;
+		opts=Object.assign({},opts,{toughnessAbsorbed:toughened.absorbed,toughnessReduction:toughened.reduction});
+	}
 	const defended=applyHeroDefense(amount,opts,now);
 	if(defended.absorbed>0){
 		triggerCombatFeedback({
@@ -2412,7 +2504,9 @@ window.damageHero=function(amount, opts){
 		amount=defended.amount;
 		opts=Object.assign({},opts,{defended:true,defendedAbsorbed:defended.absorbed});
 	}
-	const dealt=Math.round(amount);
+	// Keep two decimals when passive defense participated. Integer rounding would
+	// erase a low Twardość bonus on ordinary hits (10 * 0.97 would become 10).
+	const dealt=toughened.reduction>0 ? Math.max(0.01,Math.round(amount*100)/100) : Math.round(amount);
 	player.hp-=dealt;
 	player.hpInvul=now+(opts.invulMs||600);
 	player.hurtFlashUntil=now+HURT_FLASH_MS;
@@ -2876,7 +2970,8 @@ function snapshotPlayerState(){
 		hp:saveNumber(player.hp,2),
 		maxHp:saveNumber(player.maxHp,2),
 		tool:player.tool,
-		energy:saveNumber(player.energy,2)
+		energy:saveNumber(player.energy,2),
+		lamp:(HERO_LAMP && HERO_LAMP.snapshot) ? HERO_LAMP.snapshot() : {v:1,on:false}
 	};
 }
 function restorePlayerState(src){
@@ -2887,7 +2982,9 @@ function restorePlayerState(src){
 	if(Number.isFinite(y)){ player.y=y; hasY=true; }
 	if(Number.isFinite(Number(src.xp))) player.xp=Math.max(0, Number(src.xp)|0);
 	if(Number.isFinite(Number(src.energy))) player.energy=Math.max(0, Number(src.energy));
+	if(HERO_LAMP && HERO_LAMP.restore) HERO_LAMP.restore(src.lamp);
 	if(src.facing<0) player.facing=-1; else if(src.facing>0) player.facing=1;
+	heroLampButtonKey=''; refreshHeroLampButton();
 	player.vx=0; player.vy=0; player.onGround=false;
 	return hasX && hasY;
 }
@@ -3264,7 +3361,7 @@ function applyGameData(data,opts){
 setInterval(()=>{ saveState(); },60000);
 setInterval(()=>{ saveCriticalState('heartbeat'); },CRITICAL_SAVE_INTERVAL_MS);
 // Expose manual save/load via menu buttons (injected later if menu exists)
-window.__injectSaveButtons = function(){ const menuPanel=document.getElementById('menuPanel'); if(!menuPanel || document.getElementById('saveGameBtn')) return; const group=document.createElement('div'); group.className='group'; group.style.cssText='display:flex; flex-direction:column; gap:6px;';
+window.__injectSaveButtons = function(){ const menuPanel=document.getElementById('playerSaveMenu') || document.getElementById('menuPanel'); if(!menuPanel || document.getElementById('saveGameBtn')) return; const group=document.createElement('div'); group.className='group pauseSaveGroup'; group.style.cssText='display:flex; flex-direction:column; gap:6px;';
 	const row=document.createElement('div'); row.style.cssText='display:flex; gap:6px; flex-wrap:wrap;';
 	// Added 'Continue' quick-resume button and Export/Import later
 	const continueBtn=document.createElement('button'); continueBtn.id='continueBtn'; continueBtn.textContent='Kontynuuj'; continueBtn.style.minWidth='92px'; continueBtn.style.flex='1';
@@ -3358,7 +3455,7 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 	group.appendChild(openBrowserBtn); group.appendChild(browser);
 	menuPanel.appendChild(group);
 };
-document.addEventListener('DOMContentLoaded',()=>{ setTimeout(()=>window.__injectSaveButtons(),200); });
+document.addEventListener('DOMContentLoaded',()=>{ setTimeout(()=>{ ensurePausePanel(); window.__injectSaveButtons(); },200); });
 // Lightweight saveState(): mark dirty now, serialize later only when the player is
 // idle. Full save serialization can be expensive after long tunnel edits because it
 // encodes every modified chunk and writes localStorage synchronously.
@@ -3516,7 +3613,7 @@ window.addEventListener('pagehide',flushPendingSave);
 window.addEventListener('beforeunload',flushPendingSave);
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden') flushPendingSave(); });
 
-function startNewGame(){
+function startNewGame(requestedSeed){
 	if(_startingNewGame) return false;
 	_startingNewGame=true;
 	paused=true;
@@ -3527,7 +3624,10 @@ function startNewGame(){
 	try{
 		if(PLANTS && PLANTS.reset) PLANTS.reset();
 		clearActiveGameStorage(localStorage);
-		queueFreshWorldSeed(typeof sessionStorage!=='undefined' ? sessionStorage : null);
+		const seedStore=typeof sessionStorage!=='undefined' ? sessionStorage : null;
+		const chosenSeed=normalizeWorldSeed(requestedSeed);
+		if(chosenSeed===null) queueFreshWorldSeed(seedStore);
+		else if(queueWorldSeed(seedStore,chosenSeed)===null) throw new Error('Could not queue selected world seed');
 	}catch(e){
 		_startingNewGame=false;
 		console.warn('New game reset failed',e);
@@ -4524,6 +4624,25 @@ function drawPlayer(){ if(drawDeathTravelFx()) return; const c=MM.customization|
 		ctx.fillRect(bodyX+bw/2-eyeOffsetX-eyeW/2, eyeY-eyeH/2, eyeW, eyeH);
 		ctx.fillRect(bodyX+bw/2+eyeOffsetX-eyeW/2, eyeY-eyeH/2, eyeW, eyeH);
 		drawDefendEyeTension(eyeY,eyeOffsetX,eyeW);
+	}
+	if(HERO_LAMP && HERO_LAMP.isOn()){
+		const eyeY=bodyY+bh*0.35, eyeOffsetX=bw*0.18;
+		const centers=[bodyX+bw/2-eyeOffsetX,bodyX+bw/2+eyeOffsetX];
+		const dir=player.facing<0?-1:1;
+		ctx.save();
+		ctx.globalCompositeOperation='lighter';
+		for(const ex of centers){
+			const glow=ctx.createRadialGradient(ex,eyeY,0,ex,eyeY,TILE*0.20);
+			glow.addColorStop(0,'rgba(255,255,220,0.98)');
+			glow.addColorStop(0.35,'rgba(118,235,255,0.72)');
+			glow.addColorStop(1,'rgba(76,174,255,0)');
+			ctx.fillStyle=glow;
+			ctx.beginPath(); ctx.arc(ex,eyeY,TILE*0.20,0,Math.PI*2); ctx.fill();
+			ctx.strokeStyle='rgba(205,250,255,0.72)';
+			ctx.lineWidth=Math.max(1,TILE*0.035);
+			ctx.beginPath(); ctx.moveTo(ex+dir*2,eyeY); ctx.lineTo(ex+dir*TILE*0.28,eyeY); ctx.stroke();
+		}
+		ctx.restore();
 	}
 	const faceNow=performance.now();
 	if(heroPainUntil>faceNow){
@@ -7430,6 +7549,7 @@ function drawLightingOverlay(sx,sy,viewX,viewY,opts){
 		surfaceHeight: (WORLDGEN && WORLDGEN.surfaceHeight) ? WORLDGEN.surfaceHeight : null,
 		daylight: currentDaylight(),
 		hero: player,
+		heroLamp: (HERO_LAMP && HERO_LAMP.lightSource) ? HERO_LAMP.lightSource(player) : null,
 		burningAt: (FIRE && FIRE.isBurning) ? FIRE.isBurning : null
 	});
 	if(localLayer) ctx.restore();
@@ -7545,14 +7665,23 @@ function buildPauseRow(labelText){
 	const label=document.createElement('span'); label.textContent=labelText; row.appendChild(label);
 	return row;
 }
+function buildPauseSection(labelText){
+	const section=document.createElement('div'); section.className='pauseSection'; section.textContent=labelText;
+	return section;
+}
 function ensurePausePanel(){
 	if(pausePanel) return pausePanel;
 	pausePanel=document.createElement('div'); pausePanel.id='pausePanel'; pausePanel.hidden=true;
+	pausePanel.setAttribute('role','dialog'); pausePanel.setAttribute('aria-modal','true'); pausePanel.setAttribute('aria-labelledby','pauseMenuTitle');
 	const head=document.createElement('div'); head.className='pauseHead';
-	const title=document.createElement('strong'); title.textContent='⏸ Pauza';
+	const titleWrap=document.createElement('div'); titleWrap.className='pauseTitle';
+	const title=document.createElement('strong'); title.id='pauseMenuTitle'; title.textContent='☰ Menu gry';
+	const subtitle=document.createElement('small'); subtitle.textContent='Gra jest wstrzymana';
+	titleWrap.appendChild(title); titleWrap.appendChild(subtitle);
 	const resume=document.createElement('button'); resume.type='button'; resume.className='pauseResume'; resume.textContent='▶ Wznów (B)';
 	resume.addEventListener('click',()=>setPaused(false));
-	head.appendChild(title); head.appendChild(resume); pausePanel.appendChild(head);
+	head.appendChild(titleWrap); head.appendChild(resume); pausePanel.appendChild(head);
+	pausePanel.appendChild(buildPauseSection('Dźwięk'));
 	// volume slider rides the persisted WebAudio master gain
 	const volRow=buildPauseRow('🔊 Głośność');
 	const vol=document.createElement('input'); vol.type='range'; vol.min='0'; vol.max='100'; vol.step='5';
@@ -7580,13 +7709,19 @@ function ensurePausePanel(){
 	mute.checked=!!(MM.audio && MM.audio.isMuted && MM.audio.isMuted());
 	mute.addEventListener('change',()=>{ if(MM.audio && MM.audio.setMute) MM.audio.setMute(mute.checked); });
 	muteRow.appendChild(mute); pausePanel.appendChild(muteRow);
+	pausePanel.appendChild(buildPauseSection('Rozgrywka'));
 	const mapRow=buildPauseRow('🗺️ Minimapa (N)');
 	const map=document.createElement('input'); map.type='checkbox'; map.checked=showMinimap;
 	map.addEventListener('change',()=>{ showMinimap=map.checked; try{ localStorage.setItem(MINIMAP_OFF_KEY, showMinimap?'0':'1'); }catch(e){} });
 	mapRow.appendChild(map); pausePanel.appendChild(mapRow);
 	const lightRow=buildPauseRow('💡 Oświetlenie jaskiń');
 	const light=document.createElement('input'); light.type='checkbox'; light.checked=!!(LIGHTING && LIGHTING.config && LIGHTING.config.enabled);
-	light.addEventListener('change',()=>{ if(LIGHTING && LIGHTING.config) LIGHTING.config.enabled=light.checked; try{ localStorage.setItem(LIGHTING_OFF_KEY, light.checked?'0':'1'); }catch(e){} });
+	light.addEventListener('change',()=>{
+		if(LIGHTING && LIGHTING.config) LIGHTING.config.enabled=light.checked;
+		if(!light.checked) setHeroLampEnabled(false,{silent:true});
+		heroLampButtonKey=''; refreshHeroLampButton();
+		try{ localStorage.setItem(LIGHTING_OFF_KEY, light.checked?'0':'1'); }catch(e){}
+	});
 	lightRow.appendChild(light); pausePanel.appendChild(lightRow);
 	// ground-loot pickup mode: unchecked = walk up and press E (drops.js owns persistence)
 	const lootModeRow=buildPauseRow('🧲 Auto-zbieranie łupów');
@@ -7594,11 +7729,20 @@ function ensurePausePanel(){
 	lootMode.checked=!!(DROPS && DROPS.autoPickup && DROPS.autoPickup());
 	lootMode.addEventListener('change',()=>{ if(DROPS && DROPS.setAutoPickup) DROPS.setAutoPickup(lootMode.checked); });
 	lootModeRow.appendChild(lootMode); pausePanel.appendChild(lootModeRow);
+	pausePanel.appendChild(buildPauseSection('Ekran i wydajność'));
 	const fsRow=buildPauseRow('⛶ Pełny ekran');
 	const fs=document.createElement('button'); fs.type='button'; fs.className='pauseFullscreenBtn';
 	fs.textContent=fullscreenBtnLabel();
 	fs.addEventListener('click',()=>{ toggleFullscreen(); });
 	fsRow.appendChild(fs); pausePanel.appendChild(fsRow);
+	const fpsRow=buildPauseRow('🎞 Bez limitu FPS');
+	const fpsToggle=document.createElement('input'); fpsToggle.type='checkbox'; fpsToggle.dataset.frameCapToggle='player'; fpsToggle.checked=frameCapUnlocked;
+	fpsToggle.addEventListener('change',()=>{ setFrameCapUnlocked(fpsToggle.checked); resetFrameTiming('fps-cap-player'); });
+	fpsRow.appendChild(fpsToggle); pausePanel.appendChild(fpsRow);
+	const centerRow=buildPauseRow('🎯 Wyśrodkuj kamerę');
+	const center=document.createElement('button'); center.type='button'; center.textContent='Centruj';
+	center.addEventListener('click',()=>{ snapCameraToPlayer(); });
+	centerRow.appendChild(center); pausePanel.appendChild(centerRow);
 	const kbRow=buildPauseRow('⌨ Klawisze sterowania');
 	const kb=document.createElement('button'); kb.type='button'; kb.textContent='Zmień…';
 	kb.addEventListener('click',()=>{ openKeybindPanel(); });
@@ -7607,18 +7751,48 @@ function ensurePausePanel(){
 	const help=document.createElement('button'); help.type='button'; help.textContent='Pomoc (H)';
 	help.addEventListener('click',()=>{ setPaused(false); try{ toggleHelp(); }catch(e){} });
 	helpRow.appendChild(help); pausePanel.appendChild(helpRow);
+	pausePanel.appendChild(buildPauseSection('Zapisy'));
+	const saveMount=document.createElement('div'); saveMount.id='playerSaveMenu'; saveMount.className='pauseSaveMount';
+	pausePanel.appendChild(saveMount);
+	pausePanel.appendChild(buildPauseSection('Świat'));
+	const currentSeedRow=buildPauseRow('🌍 Bieżące ziarno');
+	const currentSeedControl=document.createElement('div'); currentSeedControl.className='pauseSeedControl';
+	const currentSeed=document.createElement('code'); currentSeed.className='pauseSeedValue'; currentSeed.textContent=String(WORLDGEN.worldSeed);
+	const copySeed=document.createElement('button'); copySeed.type='button'; copySeed.textContent='Kopiuj';
+	copySeed.addEventListener('click',()=>{
+		const value=String(WORLDGEN.worldSeed);
+		try{
+			if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(value).then(()=>msg('Skopiowano ziarno '+value)).catch(()=>msg('Ziarno: '+value)); }
+			else msg('Ziarno: '+value);
+		}catch(e){ msg('Ziarno: '+value); }
+	});
+	currentSeedControl.appendChild(currentSeed); currentSeedControl.appendChild(copySeed); currentSeedRow.appendChild(currentSeedControl); pausePanel.appendChild(currentSeedRow);
+	const seedRow=buildPauseRow('🌱 Ziarno nowego świata');
+	const seedControl=document.createElement('div'); seedControl.className='pauseSeedControl';
+	const seedInput=document.createElement('input'); seedInput.id='newWorldSeedInput'; seedInput.type='number'; seedInput.min='1'; seedInput.max='999999999'; seedInput.step='1'; seedInput.placeholder='losowe'; seedInput.inputMode='numeric';
+	const randomSeed=document.createElement('button'); randomSeed.type='button'; randomSeed.textContent='🎲'; randomSeed.title='Wylosuj ziarno'; randomSeed.setAttribute('aria-label','Wylosuj ziarno nowego świata');
+	randomSeed.addEventListener('click',()=>{ seedInput.value=String(randomWorldSeed()); });
+	seedControl.appendChild(seedInput); seedControl.appendChild(randomSeed); seedRow.appendChild(seedControl); pausePanel.appendChild(seedRow);
+	const worldSettingsRow=buildPauseRow('🗺️ Ustawienia generatora');
+	const worldSettings=document.createElement('button'); worldSettings.type='button'; worldSettings.textContent='Otwórz…';
+	worldSettings.addEventListener('click',()=>{ if(MM.ui && MM.ui.openWorldSettings) MM.ui.openWorldSettings(); });
+	worldSettingsRow.appendChild(worldSettings); pausePanel.appendChild(worldSettingsRow);
 	const newGameRow=buildPauseRow('Nowa gra'); newGameRow.classList.add('pauseDangerRow');
 	const newGameLabel=newGameRow.firstElementChild; newGameLabel.className='pauseDangerCopy';
 	const newGameHint=document.createElement('small');
-	newGameHint.textContent='Czyści bieżący świat, ekwipunek, postęp i statystyki.';
+	newGameHint.textContent='Czyści bieżący świat i postęp. Ustawienia oraz ręczne zapisy zostają.';
 	newGameLabel.appendChild(newGameHint);
 	const newGame=document.createElement('button'); newGame.type='button'; newGame.className='pauseDanger';
 	newGame.textContent='Rozpocznij od nowa';
 	newGame.addEventListener('click',()=>{
-		const confirmed=window.confirm('Rozpocząć nową grę?\n\nBieżący świat, ekwipunek, postęp i statystyki zostaną usunięte. Ręczne zapisy i ustawienia zostaną zachowane.');
+		const raw=seedInput.value.trim();
+		const chosenSeed=raw==='' ? null : normalizeWorldSeed(raw);
+		if(raw!=='' && chosenSeed===null){ msg('Ziarno musi być liczbą od 1 do 999999999'); seedInput.focus(); return; }
+		const seedDescription=chosenSeed===null ? 'losowe' : String(chosenSeed);
+		const confirmed=window.confirm('Rozpocząć nową grę?\n\nZiarno: '+seedDescription+'\nBieżący świat, ekwipunek, postęp i statystyki zostaną usunięte. Ręczne zapisy i ustawienia zostaną zachowane.');
 		if(!confirmed) return;
 		newGame.disabled=true; newGame.textContent='Uruchamiam…';
-		if(!startNewGame()){ newGame.disabled=false; newGame.textContent='Rozpocznij od nowa'; }
+		if(!startNewGame(chosenSeed)){ newGame.disabled=false; newGame.textContent='Rozpocznij od nowa'; }
 	});
 	newGameRow.appendChild(newGame); pausePanel.appendChild(newGameRow);
 	const foot=document.createElement('div'); foot.className='pauseFoot';
@@ -7629,6 +7803,11 @@ function ensurePausePanel(){
 }
 function pauseTrapKeydown(e){
 	if(!pausePanelVisible()) return;
+	const worldSettingsOverlay=document.getElementById('worldSettingsOverlay');
+	if(worldSettingsOverlay && worldSettingsOverlay.style.display==='block'){
+		if(e.key==='Escape'){ e.preventDefault(); e.stopImmediatePropagation(); if(MM.ui && MM.ui.closeWorldSettings) MM.ui.closeWorldSettings(); }
+		return;
+	}
 	if(keybindPanelVisible()) return; // the keybind panel owns the keyboard while open
 	if(e.key==='Escape'){ e.preventDefault(); e.stopImmediatePropagation(); setPaused(false); }
 }
@@ -7636,6 +7815,7 @@ function setPaused(v){
 	paused=!!v;
 	const panel=ensurePausePanel();
 	if(paused){
+		try{ if(MM.ui && MM.ui.closeMenu) MM.ui.closeMenu(); }catch(e){}
 		// refresh live values each open (N/H/menu may have changed them meanwhile)
 		panel.querySelectorAll('.pauseRow input[type=checkbox]').forEach(chk=>{
 			const label=chk.parentElement && chk.parentElement.firstChild ? chk.parentElement.firstChild.textContent : '';
@@ -7643,20 +7823,26 @@ function setPaused(v){
 			else if(label.includes('Oświetlenie')) chk.checked=!!(LIGHTING && LIGHTING.config && LIGHTING.config.enabled);
 			else if(label.includes('Wycisz')) chk.checked=!!(MM.audio && MM.audio.isMuted && MM.audio.isMuted());
 			else if(label.includes('Muzyka włączona')) chk.checked=!(MM.audio && MM.audio.isMusicOn && !MM.audio.isMusicOn());
+			else if(label.includes('Auto-zbieranie')) chk.checked=!!(DROPS && DROPS.autoPickup && DROPS.autoPickup());
 		});
+		panel.querySelectorAll('[data-frame-cap-toggle]').forEach(chk=>{ chk.checked=frameCapUnlocked; });
 		panel.querySelectorAll('.pauseRow input[type=range][data-bus]').forEach(s=>{
 			if(MM.audio && MM.audio.getBusVolume) s.value=String(Math.round(MM.audio.getBusVolume(s.dataset.bus)*100));
 		});
 		try{
+			const seedValue=panel.querySelector('.pauseSeedValue'); if(seedValue) seedValue.textContent=String(WORLDGEN.worldSeed);
 			const fsBtn=panel.querySelector('.pauseFullscreenBtn'); if(fsBtn) fsBtn.textContent=fullscreenBtnLabel();
 			const resumeBtn=panel.querySelector('.pauseResume');
 			if(resumeBtn && KEYBINDS) resumeBtn.textContent='▶ Wznów ('+KEYBINDS.displayKey(KEYBINDS.keyFor('pause'))+')';
+			const playerMenuBtn=document.getElementById('menuBtn'); if(playerMenuBtn) playerMenuBtn.setAttribute('aria-expanded','true');
 		}catch(e){}
+		try{ if(window.__injectSaveButtons) window.__injectSaveButtons(); }catch(e){}
 		panel.hidden=false;
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('uiOpen'); }catch(e){}
 		window.addEventListener('keydown',pauseTrapKeydown,true);
 	}else{
 		panel.hidden=true;
+		try{ const playerMenuBtn=document.getElementById('menuBtn'); if(playerMenuBtn) playerMenuBtn.setAttribute('aria-expanded','false'); }catch(e){}
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('uiClose'); }catch(e){}
 		window.removeEventListener('keydown',pauseTrapKeydown,true);
 		if(keybindPanelVisible()) closeKeybindPanel();
@@ -7961,7 +8147,8 @@ function updateArrowPips(slot,info){
 		p.classList.toggle('act', !!t.active);
 		p.classList.toggle('pin', !!t.pinned);
 		p.style.background= t.count>0 ? t.color : '';
-		p.title='Strzały '+t.label+': '+t.count+(t.pinned?' — przypięte':'')+(t.active?' — te lecą teraz':'');
+		const breakText=Number.isFinite(t.breakChance)?' — '+Math.round(t.breakChance*100)+'% szansy pęknięcia':'';
+		p.title='Strzały '+t.label+': '+t.count+breakText+(t.pinned?' — przypięte':'')+(t.active?' — te lecą teraz':'');
 	}
 }
 function updateWeaponBar(){
@@ -8161,7 +8348,8 @@ function buildWeaponTip(k){
 		const info=WEAPONS.arrowInfo();
 		frag.appendChild(hudTipNode('tipSection','Strzały — ➤ leci jako następna'));
 		info.tiers.forEach(t=>{
-			frag.appendChild(hudTipRow(t.color,t.label+(t.pinned?' 📌':''),'×'+t.count,{mark:t.active?'➤':TIP_MARK_NONE, dim:t.count<=0}));
+			const breakText=Number.isFinite(t.breakChance)?' · '+Math.round(t.breakChance*100)+'% pęka':'';
+			frag.appendChild(hudTipRow(t.color,t.label+(t.pinned?' 📌':''),'×'+t.count+breakText,{mark:t.active?'➤':TIP_MARK_NONE, dim:t.count<=0}));
 		});
 		if(!info.total) frag.appendChild(hudTipNode('tipWarn','Brak strzał — wytwórz je w Wytwarzaniu (T)'));
 		frag.appendChild(hudTipNode('tipHint', info.pref==='auto'
@@ -9552,9 +9740,12 @@ function tryOpenChestAt(tx,ty){
 			msg('Skrzynia '+tierPl+': +'+ownedItems.length+' przedm. (I aby zobaczyć)');
 		}
 		spawnBurst((tx+0.5)*TILE,(ty+0.5)*TILE, info.chestTier);
+		noteSaveActivity();
+		saveState();
 	}
 	return !!res;
 }
+if(CHESTS && CHESTS.setWeaponHitHandler) CHESTS.setWeaponHitHandler((tx,ty,opts)=>tryOpenChestAt(tx,ty,opts));
 function tryOpenInvasionCacheAt(tx,ty){
 	if(getTile(tx,ty)!==T.INVASION_CACHE || !INVASIONS || !INVASIONS.openCacheAt) return false;
 	const ok=INVASIONS.openCacheAt(tx,ty,{inv, inventory:MM.inventory, getTile, setTile, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst});
@@ -11391,6 +11582,7 @@ function updateInventory(opts){
 window.updateInventoryHud = updateInventory;
 const tutorialNpcCtx = {damageHero:window.damageHero, onInventoryChange:updateInventory, onChange:saveState, worldGen:WORLDGEN, gameDayFloat:()=>{ const m=(SEASONS && SEASONS.metrics) ? SEASONS.metrics() : null; return m && Number.isFinite(Number(m.dayFloat)) ? Number(m.dayFloat) : 1; }};
 if(NPCS && NPCS.setContext) NPCS.setContext(tutorialNpcCtx);
+if(TASKS && TASKS.setContext) TASKS.setContext({onChange:saveState});
 if(FISHING && FISHING.setContext) FISHING.setContext({onInventoryChange:updateInventory, onChange:saveState});
 // Wandering trader panel: DOM host for engine/trader.js. The module opens it
 // via the npc_system click dispatch and closes it on departure / walking away.
@@ -11491,7 +11683,10 @@ if(FISHING && FISHING.setContext) FISHING.setContext({onInventoryChange:updateIn
 })();
 buildCraftPanel();
 // Menu / przyciski
+document.getElementById('menuBtn')?.addEventListener('click',()=>{ setPaused(!paused); });
 document.getElementById('mapBtn')?.addEventListener('click',toggleMap);
+document.getElementById('lampBtn')?.addEventListener('click',toggleHeroLamp);
+refreshHeroLampButton();
 // Sound toggle (procedural WebAudio — engine/audio.js)
 (function(){
 	const b=document.getElementById('audioBtn'); if(!b || !MM.audio) return;
@@ -13312,7 +13507,7 @@ function regenWorld(){
 	// Reset inventory/tools/hotbar
 	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.meteor=inv.tools.diamond=inv.tools.bedrock=false; inv.bedrockPickDurability=0; player.tool='basic'; hotbarIndex=0; // if god mode active, restore 100 stack after reset
 	// Fresh world = fresh hero arc: XP, level, skill points and milestones restart
-	player.xp=0; player.energy=0; if(PROGRESS && PROGRESS.reset) PROGRESS.reset(); applyProgressHp(); applyHeroEnergyCapacity(); clearRespawnTotems(); clearHealingShelters(); grave=null; saveGrave();
+	player.xp=0; player.energy=0; if(HERO_LAMP && HERO_LAMP.reset) HERO_LAMP.reset(); heroLampButtonKey=''; refreshHeroLampButton(); if(PROGRESS && PROGRESS.reset) PROGRESS.reset(); applyProgressHp(); applyHeroEnergyCapacity(); clearRespawnTotems(); clearHealingShelters(); grave=null; saveGrave();
 	// Ensure all animals are removed when creating a new world and prevent immediate respawn
 	if(MOBS){ try{ if(MOBS.clearAll) MOBS.clearAll(); else if(MOBS.deserialize) MOBS.deserialize({v:3, list:[], aggro:{mode:'rel', m:{}}}); }catch(e){} }
 	if(godMode){ if(!_preGodInventory){ _preGodInventory={}; RESOURCE_KEYS.forEach(k=>{ _preGodInventory[k]=0; }); } RESOURCE_KEYS.forEach(k=>{ inv[k]=100; }); }
@@ -14301,7 +14496,7 @@ function runGameStep(dt,ts){
 	if(GASES && GASES.update) GASES.update(dt, getTile, setTile, player);
 	if(PLANTS && PLANTS.update) PLANTS.update(getTile, setTile, dt);
 	if(PROGRESS && PROGRESS.update) PROGRESS.update(dt);
-updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(STEAM_MACHINES && STEAM_MACHINES.update) STEAM_MACHINES.update(dt, player, getTile, setTile); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(ATOMIC_WINTER && ATOMIC_WINTER.update) ATOMIC_WINTER.update(dt, player, getTile, setTile); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(SKY_GUARDIAN && SKY_GUARDIAN.update) SKY_GUARDIAN.update(dt, player, getTile, setTile); if(CENTER_GUARDIAN && CENTER_GUARDIAN.update) CENTER_GUARDIAN.update(dt, player, getTile, setTile); if(STORY_PROGRESSION && STORY_PROGRESSION.update) STORY_PROGRESSION.update(dt, player, getTile, setTile); if(FINALE && FINALE.update) FINALE.update(dt); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, viewport:currentViewportState(), resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(ALIEN_RUINS && ALIEN_RUINS.update) ALIEN_RUINS.update(dt, player, getTile, setTile, {saveState, msg}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(TERRAIN_TRAPS && TERRAIN_TRAPS.update) TERRAIN_TRAPS.update(dt); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
+updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(STEAM_MACHINES && STEAM_MACHINES.update) STEAM_MACHINES.update(dt, player, getTile, setTile); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); updateHeroLamp(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(ATOMIC_WINTER && ATOMIC_WINTER.update) ATOMIC_WINTER.update(dt, player, getTile, setTile); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(SKY_GUARDIAN && SKY_GUARDIAN.update) SKY_GUARDIAN.update(dt, player, getTile, setTile); if(CENTER_GUARDIAN && CENTER_GUARDIAN.update) CENTER_GUARDIAN.update(dt, player, getTile, setTile); if(STORY_PROGRESSION && STORY_PROGRESSION.update) STORY_PROGRESSION.update(dt, player, getTile, setTile); if(FINALE && FINALE.update) FINALE.update(dt); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, viewport:currentViewportState(), resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(ALIEN_RUINS && ALIEN_RUINS.update) ALIEN_RUINS.update(dt, player, getTile, setTile, {saveState, msg}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(TERRAIN_TRAPS && TERRAIN_TRAPS.update) TERRAIN_TRAPS.update(dt); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
 }
 let lastLoopErrAt=0; function loop(ts){
 	if(shouldSkipFrameForCap(ts)){ requestAnimationFrame(loop); return; }
@@ -14324,6 +14519,7 @@ let lastLoopErrAt=0; function loop(ts){
 		if(!paused && !overlayHold && !ghostHold){
 			const simT=framePerfNow();
 			runGameStep(frameDt,ts);
+			noteCurrentBiomeDiscovery();
 			updateCameraFollow(frameDt);
 			revealAround();
 			scanCraftablesInView(frameDt);
@@ -14405,12 +14601,10 @@ if(!window.__lootNoticeInit){
 	// over the equipped item (same weapon class) or for the first item of an empty
 	// slot; everything else stays a quiet toast and waits in the Ekwipunek.
 	const upgradeNoticeEl=document.getElementById('upgradeNotice');
-	let upgradeNoticeTimer=null;
-	function hideUpgradeNotice(){
-		if(!upgradeNoticeEl) return;
-		upgradeNoticeEl.classList.remove('show');
-		upgradeNoticeEl.textContent='';
-		if(upgradeNoticeTimer){ clearTimeout(upgradeNoticeTimer); upgradeNoticeTimer=null; }
+	function dismissUpgradeNotice(card){
+		if(!upgradeNoticeEl || !card) return;
+		card.remove();
+		if(!upgradeNoticeEl.childElementCount) upgradeNoticeEl.classList.remove('show');
 	}
 	function upgradeNode(cls,text){ const n=document.createElement('div'); n.className=cls; if(text) n.textContent=text; return n; }
 	function isUpgradeWorthy(cmp){
@@ -14422,37 +14616,40 @@ if(!window.__lootNoticeInit){
 	function showUpgradeNotice(item,cmp){
 		if(!upgradeNoticeEl) return false;
 		const INV=MM.inventory;
-		hideUpgradeNotice();
+		const card=document.createElement('section');
+		card.className='upgradeNotice';
+		card.dataset.itemId=item.id;
+		card.setAttribute('aria-label','Lepszy przedmiot: '+(item.name||item.id));
 		const KIND_NAME={cape:'peleryna', eyes:'oczy', outfit:'strój', weapon:'broń', charm:'talizman'};
 		const TIER_NAME={common:'zwykły', uncommon:'niezwykły', rare:'rzadki', epic:'epicki', legendary:'legendarny'};
 		const tierColor=(INV && INV.TIER_COLORS && INV.TIER_COLORS[item.tier])||'#4ade80';
-		upgradeNoticeEl.style.setProperty('--up-tier',tierColor);
-		upgradeNoticeEl.appendChild(upgradeNode('upKicker','⬆ Znaleziono lepszy przedmiot'));
-		upgradeNoticeEl.appendChild(upgradeNode('upTitle',item.name||item.id));
-		upgradeNoticeEl.appendChild(upgradeNode('upSub',(KIND_NAME[item.kind]||item.kind)+' · '+(TIER_NAME[item.tier]||item.tier||'zwykły')+(INV&&INV.itemScore?' · Moc '+INV.itemScore(item):'')));
+		card.style.setProperty('--up-tier',tierColor);
+		card.appendChild(upgradeNode('upKicker','⬆ Znaleziono lepszy przedmiot'));
+		card.appendChild(upgradeNode('upTitle',item.name||item.id));
+		card.appendChild(upgradeNode('upSub',(KIND_NAME[item.kind]||item.kind)+' · '+(TIER_NAME[item.tier]||item.tier||'zwykły')+(INV&&INV.itemScore?' · Moc '+INV.itemScore(item):'')));
 		const deltaText=(cmp.equippedComparable && cmp.equippedDelta!=null)
 			? '▲ +'+cmp.equippedDelta+' Moc vs noszone: '+lootNoticeName(cmp.equipped)
 			: 'Pierwszy przedmiot do tego slotu';
-		upgradeNoticeEl.appendChild(upgradeNode('upDelta',deltaText));
+		card.appendChild(upgradeNode('upDelta',deltaText));
 		if(INV && INV.statChips){
 			const chips=document.createElement('div'); chips.className='upChips';
 			INV.statChips(item).forEach(ch=>{ const c=document.createElement('span'); c.className='upChip'; c.title=ch.label; c.textContent=ch.icon+' '+ch.text; chips.appendChild(c); });
-			if(chips.childNodes.length) upgradeNoticeEl.appendChild(chips);
+			if(chips.childNodes.length) card.appendChild(chips);
 		}
 		const btns=document.createElement('div'); btns.className='upBtns';
 		const eq=document.createElement('button'); eq.type='button'; eq.className='upEquip'; eq.textContent='Załóż';
 		eq.addEventListener('click',()=>{
 			if(MM.inventory && MM.inventory.equip && MM.inventory.equip(item.id)) msg('Założono: '+(item.name||item.id));
 			else msg('Nie można założyć (przedmiot odrzucony?)');
-			hideUpgradeNotice();
+			dismissUpgradeNotice(card);
 		});
 		const later=document.createElement('button'); later.type='button'; later.className='upLater'; later.textContent='Później';
 		later.title='Przedmiot czeka w torbie — Ekwipunek (przytrzymaj E)';
-		later.addEventListener('click',hideUpgradeNotice);
+		later.addEventListener('click',()=>dismissUpgradeNotice(card));
 		btns.appendChild(eq); btns.appendChild(later);
-		upgradeNoticeEl.appendChild(btns);
+		card.appendChild(btns);
+		upgradeNoticeEl.prepend(card); // newest find stays visible at the top
 		upgradeNoticeEl.classList.add('show');
-		upgradeNoticeTimer=setTimeout(hideUpgradeNotice,14000);
 		return true;
 	}
 	function notifyFreshLoot(fresh){
@@ -14462,10 +14659,12 @@ if(!window.__lootNoticeInit){
 		if(!rows.length) return;
 		rows.sort((a,b)=>lootNoticeRank(b)-lootNoticeRank(a));
 		const top=rows[0];
-		// The best fresh find that beats the worn gear gets the corner card with a
-		// one-click "Załóż"; anything less stays a quiet toast.
-		const upgrade=rows.find(row=>isUpgradeWorthy(row.cmp));
-		if(upgrade && showUpgradeNotice(upgrade.item,upgrade.cmp)) return;
+		// Every fresh find that beats worn gear gets its own card. Reverse the
+		// ranked list before prepending so the strongest find remains on top.
+		const upgrades=rows.filter(row=>isUpgradeWorthy(row.cmp));
+		let shown=0;
+		upgrades.slice().reverse().forEach(row=>{ if(showUpgradeNotice(row.item,row.cmp)) shown++; });
+		if(shown) return;
 		const extra=fresh.length>1 ? ' (+'+(fresh.length-1)+')' : '';
 		msg('Nowy przedmiot: '+lootNoticeName(top.item)+lootNoticeSuffix(top.cmp)+extra);
 	}
@@ -14485,7 +14684,7 @@ if(!window.__lootNoticeInit){
 window.regenWorldSameSeed = function(){ try{ if(MOBS && MOBS.clearAll) try{ MOBS.clearAll(); }catch(e){} if(COMPANIONS && COMPANIONS.reset) try{ COMPANIONS.reset(); }catch(e){} if(WORLD && WORLD.clear) WORLD.clear(); if(typeof chunkCanvases!=='undefined') chunkCanvases.clear(); if(typeof chunkRenderDirty!=='undefined') chunkRenderDirty.clear(); if(WORLD && WORLD.clearHeights) WORLD.clearHeights(); if(FALLING && FALLING.reset) FALLING.reset(); if(MECHS && MECHS.reset) MECHS.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(SPRING_PLATFORMS && SPRING_PLATFORMS.reset) SPRING_PLATFORMS.reset(); if(VENDING && VENDING.reset) VENDING.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GUARDIANS && GUARDIANS.reset) GUARDIANS.reset(); if(UNDERGROUND && UNDERGROUND.reset) UNDERGROUND.reset(); if(SKY_GUARDIAN && SKY_GUARDIAN.reset) SKY_GUARDIAN.reset(); if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); if(NPCS && NPCS.reset) NPCS.reset(); if(GENERATED_NPCS && GENERATED_NPCS.reset) GENERATED_NPCS.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(DROPS && DROPS.reset) DROPS.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(ATOMIC_WINTER && ATOMIC_WINTER.reset) ATOMIC_WINTER.reset(); if(TERRAIN_TRAPS && TERRAIN_TRAPS.reset) TERRAIN_TRAPS.reset(); if(UFO && UFO.reset) UFO.reset(); if(TASKS && TASKS.reset) TASKS.reset(); if(INVASIONS && INVASIONS.reset) INVASIONS.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
 	// Reset fog-of-war as well
 	try{ if(FOG && FOG.importSeen) FOG.importSeen([]); if(FOG && FOG.setRevealAll) FOG.setRevealAll(false); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); }catch(e){}
-	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.meteor=inv.tools.diamond=inv.tools.bedrock=false; inv.bedrockPickDurability=0; player.tool='basic'; hotbarIndex=0; player.xp=0; player.energy=0; if(PROGRESS && PROGRESS.reset) PROGRESS.reset(); applyProgressHp(); applyHeroEnergyCapacity(); clearRespawnTotems(); clearHealingShelters(); grave=null; saveGrave();
+	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.meteor=inv.tools.diamond=inv.tools.bedrock=false; inv.bedrockPickDurability=0; player.tool='basic'; hotbarIndex=0; player.xp=0; player.energy=0; if(HERO_LAMP && HERO_LAMP.reset) HERO_LAMP.reset(); heroLampButtonKey=''; refreshHeroLampButton(); if(PROGRESS && PROGRESS.reset) PROGRESS.reset(); applyProgressHp(); applyHeroEnergyCapacity(); clearRespawnTotems(); clearHealingShelters(); grave=null; saveGrave();
 	// Also remove all animals when regenerating with same seed and freeze spawns briefly
 	if(MOBS){ try{ if(MOBS.clearAll) MOBS.clearAll(); else if(MOBS.deserialize) MOBS.deserialize({v:3, list:[], aggro:{mode:'rel', m:{}}}); if(MOBS.freezeSpawns) MOBS.freezeSpawns(4000); }catch(e){} } if(godMode){ if(!_preGodInventory){ _preGodInventory={}; RESOURCE_KEYS.forEach(k=>{ _preGodInventory[k]=0; }); } RESOURCE_KEYS.forEach(k=>{ inv[k]=100; }); }
 	resetCraftingAvailability();
