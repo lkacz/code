@@ -610,10 +610,12 @@ window.MM = window.MM || {};
     if(Math.random()>=lightningChestChance()) return null;
     const r=Math.random();
     const id=r<0.55? T.CHEST_COMMON : (r<0.78? T.CHEST_UNCOMMON : (r<0.93? T.CHEST_RARE : (r<0.99? T.CHEST_EPIC : T.CHEST_LEGENDARY)));
-    setTile(x,y,id);
-    chestsMade++;
     const tier=(id===T.CHEST_LEGENDARY)?'legendary':(id===T.CHEST_EPIC)?'epic':(id===T.CHEST_RARE)?'rare':(id===T.CHEST_UNCOMMON)?'uncommon':'common';
-    return {id,tier};
+    if(!MM.drops || typeof MM.drops.spawnChest!=='function') return null;
+    const d=MM.drops.spawnChest(x+0.5,y-0.25,tier,{source:'lightning',vx:(Math.random()*2-1)*1.2,vy:-2.2});
+    if(!d) return null;
+    chestsMade++;
+    return {id:d.id,tier};
   }
   function igniteLightningTile(x,y,getTile,setTile){
     try{

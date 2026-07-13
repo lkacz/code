@@ -167,7 +167,15 @@ const discovery = (function(){
       const raw = localStorage.getItem(KEY);
       if(raw){
         const arr = JSON.parse(raw);
-        if(Array.isArray(arr)) for(const id of arr) if(typeof id === 'string') seen.add(id);
+        if(Array.isArray(arr)){
+          // The catalog is the schema. Ignore unknown/corrupt entries so a
+          // tampered profile cannot inflate progress beyond n/total or retain
+          // an unbounded collection of arbitrary strings.
+          for(const id of arr){
+            if(typeof id === 'string' && Object.prototype.hasOwnProperty.call(CATALOG,id)) seen.add(id);
+            if(seen.size>=Object.keys(CATALOG).length) break;
+          }
+        }
       }
     }
   }catch(e){ /* private mode / headless: session-only journal */ }
@@ -184,7 +192,7 @@ const discovery = (function(){
   // An empty text = SILENT entry (no toast, no jingle) — used when seeding
   // knowledge a loaded save already earned (category migration).
   function note(id, text){
-    if(typeof id !== 'string' || !id) return false;
+    if(typeof id !== 'string' || !Object.prototype.hasOwnProperty.call(CATALOG,id)) return false;
     if(seen.has(id)) return false;
     seen.add(id);
     persist();

@@ -72,6 +72,7 @@ const ruins = (function(){
     const put=(x,y,t,force)=>{
       x=Math.round(x); y=Math.round(y);
       if(y<1 || y>=WORLD_H-3) return; // bedrock shelf stays intact
+      if(t===T.CHEST_COMMON||t===T.CHEST_UNCOMMON||t===T.CHEST_RARE||t===T.CHEST_EPIC||t===T.CHEST_LEGENDARY) return;
       ops.push({x,y,t,f:force?1:0});
       if(!force) hints.push({x,y});
       if(x<minX)minX=x; if(x>maxX)maxX=x; if(y<minY)minY=y; if(y>maxY)maxY=y;

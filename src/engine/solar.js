@@ -52,10 +52,11 @@ import { isSunTransparentTile } from './material_physics.js';
     }
     return true;
   }
-  function cycleSunAt(cycleT){
+  function cycleSunAt(cycleT,dayFrac=0.5){
     const t=((Number(cycleT)||0)%1+1)%1;
-    if(t>=0.5) return 0;
-    return Math.max(0,Math.min(1,Math.sin((t/0.5)*Math.PI)));
+    const split=Math.max(0.2,Math.min(0.8,Number(dayFrac)||0.5));
+    if(t>=split) return 0;
+    return Math.max(0,Math.min(1,Math.sin((t/split)*Math.PI)));
   }
   function clearSkyForSolar(){
     try{
@@ -70,42 +71,60 @@ import { isSunTransparentTile } from './material_physics.js';
     }catch(e){}
     return true;
   }
-  function fullLightSunAt(cycleT){
-    const raw=cycleSunAt(cycleT);
+  function fullLightSunAt(cycleT,dayFrac=0.5){
+    const raw=cycleSunAt(cycleT,dayFrac);
     return raw>=FULL_LIGHT_THRESHOLD ? raw : 0;
   }
-  function currentCycleT(){
+  function currentCycleInfo(){
     try{
       const bg=MM.background;
       const c=bg && bg.timeInfo && bg.timeInfo();
-      if(c && Number.isFinite(Number(c.cycleT))) return Number(c.cycleT);
+      if(c && (Number.isFinite(Number(c.cycleT)) || typeof c.isDay==='boolean')) return c;
     }catch(e){}
     try{
       const bg=MM.background;
       const c=bg && bg.getCycleInfo && bg.getCycleInfo();
-      if(c && Number.isFinite(Number(c.cycleT))) return Number(c.cycleT);
-      if(c && typeof c.isDay==='boolean' && Number.isFinite(Number(c.tDay))){
-        return c.isDay ? Math.max(0,Math.min(0.5,Number(c.tDay)*0.5)) : 0.5+Math.max(0,Math.min(0.5,Number(c.tDay)*0.5));
-      }
+      if(c && (Number.isFinite(Number(c.cycleT)) || typeof c.isDay==='boolean')) return c;
     }catch(e){}
-    return 0.25;
+    return {cycleT:0.25,isDay:true,tDay:0.5,dayFrac:0.5};
+  }
+  function normalizedCycleInfo(info,cycleT){
+    const c=info && typeof info==='object' ? info : {};
+    const dayFrac=Math.max(0.2,Math.min(0.8,Number(c.dayFrac)||0.5));
+    let t=Number.isFinite(Number(cycleT)) ? Number(cycleT) : Number(c.cycleT);
+    if(!Number.isFinite(t) && typeof c.isDay==='boolean' && Number.isFinite(Number(c.tDay))){
+      const phase=Math.max(0,Math.min(1,Number(c.tDay)));
+      t=c.isDay ? phase*dayFrac : dayFrac+phase*(1-dayFrac);
+    }
+    if(!Number.isFinite(t)) t=0.25;
+    t=((t%1)+1)%1;
+    const isDay=t<dayFrac;
+    const tDay=isDay ? t/dayFrac : (t-dayFrac)/(1-dayFrac);
+    return {cycleT:t,isDay,tDay,dayFrac};
+  }
+  function fullLightForInfo(info,cycleT){
+    const c=normalizedCycleInfo(info,cycleT);
+    if(!c.isDay) return 0;
+    const raw=Math.max(0,Math.min(1,Math.sin(c.tDay*Math.PI)));
+    return raw>=FULL_LIGHT_THRESHOLD ? raw : 0;
   }
   function daylight(){
     if(!clearSkyForSolar()) return 0;
-    const sun=fullLightSunAt(currentCycleT());
+    const sun=fullLightForInfo(currentCycleInfo());
     return Math.max(0,Math.min(1,sun));
   }
   function averageDaylight(seconds){
     if(!clearSkyForSolar()) return 0;
     const span=Math.max(0,Number(seconds)||0);
     if(span<=0.001) return daylight();
-    const end=currentCycleT();
+    const current=currentCycleInfo();
+    const end=normalizedCycleInfo(current).cycleT;
     const delta=span/DAY_CYCLE_SECONDS;
     const samples=Math.max(4,Math.min(72,Math.ceil(span/30)));
     let total=0;
     for(let i=0; i<samples; i++){
       const f=(i+0.5)/samples;
-      total+=fullLightSunAt(end-delta+delta*f);
+      total+=fullLightForInfo(current,end-delta+delta*f);
     }
     return Math.max(0,Math.min(1,total/samples));
   }

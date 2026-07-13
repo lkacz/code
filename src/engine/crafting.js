@@ -42,6 +42,7 @@ const crafting = (function(){
     alienBiomass: 'pozostałości po najeźdźcach',
     motherIce: 'lód przy skale macierzystej',
     motherLava: 'lawa przy skale macierzystej',
+    bedrock: 'wydobywaj skałę macierzystą kilofem macierzystym',
     masterStone: 'serce wulkanu',
     servantStone: 'kamienie sługi przy wulkanie',
     springAntler: 'trofeum wiosennego jelenia',
@@ -59,6 +60,7 @@ const crafting = (function(){
     track: 'craft: stal + wegiel (Maszyny)',
     torch: 'craft: drewno (Start)',
     ladder: 'craft: drewno (Budowle)',
+    bedrockLadder: 'craft: skała macierzysta (Budowle)',
     fish: 'wędkuj: F przy wodzie (potrzebna wędka)',
     goldenFish: 'rzadki połów — wygraj walkę z dużą rybą',
     glowshroom: 'świecące jaskinie w lasach i na bagnach'

@@ -13,7 +13,15 @@
   };
 
   function createHeroLampModel(options){
-    const cfg=Object.assign({},DEFAULTS,options||{});
+    const raw=Object.assign({},DEFAULTS,options||{});
+    const finite=(value,fallback)=>Number.isFinite(Number(value)) ? Number(value) : fallback;
+    const cfg={
+      drainPerSecond:Math.max(0.05,Math.min(50,finite(raw.drainPerSecond,DEFAULTS.drainPerSecond))),
+      minStartEnergy:Math.max(0.05,Math.min(1000,finite(raw.minStartEnergy,DEFAULTS.minStartEnergy))),
+      range:Math.max(2,Math.min(18,finite(raw.range,DEFAULTS.range))),
+      level:Math.max(1,Math.min(15,finite(raw.level,DEFAULTS.level))),
+      spread:Math.max(0.12,Math.min(0.55,finite(raw.spread,DEFAULTS.spread)))
+    };
     let enabled=false;
 
     function isOn(){ return enabled; }
@@ -60,7 +68,9 @@
     }
     function snapshot(){ return {v:1,on:enabled}; }
     function restore(data){
-      enabled=!!(data && typeof data==='object' ? data.on : data);
+      // Only explicit booleans/numeric legacy flags may enable the lamp; a
+      // malformed string such as "false" must not turn it on after import.
+      enabled=data===true || data===1 || !!(data && typeof data==='object' && data.on===true);
       return enabled;
     }
     function reset(){ enabled=false; }

@@ -148,6 +148,24 @@ const tasks = (function(){
     if(da !== db) return da - db;
     return ((a && a.createdAt) || 0) - ((b && b.createdAt) || 0);
   }
+  function sameTarget(a,b){
+    if(!a && !b) return true;
+    if(!a || !b) return false;
+    return a.x === b.x && a.y === b.y && a.label === b.label;
+  }
+  function sameActiveTask(a,b){
+    return !!(a && b
+      && a.id === b.id
+      && a.kind === b.kind
+      && a.source === b.source
+      && a.title === b.title
+      && a.detail === b.detail
+      && a.status === b.status
+      && a.priority === b.priority
+      && a.pointer === b.pointer
+      && a.createdAt === b.createdAt
+      && sameTarget(a.target,b.target));
+  }
   function upsert(src){
     const task = normalizeTask(src);
     if(!task) return null;
@@ -164,10 +182,17 @@ const tasks = (function(){
     // A discarded objective stays dismissed when its source periodically
     // re-publishes it. It is released when that source completes/removes it.
     if(discarded.has(task.id)) return serializeTask(discarded.get(task.id));
+    const previous = active.get(task.id) || null;
+    // Story/invasion sources republish their objectives on simulation ticks.
+    // Treat an identical publication as a read so it neither churns timestamps
+    // nor schedules autosaves, but persist genuine creation/content changes.
+    if(previous && sameActiveTask(previous,task)) return serializeTask(previous);
     active.set(task.id, task);
     trimActive();
     updateHud();
-    return serializeTask(task);
+    const result=serializeTask(task);
+    if(active.has(task.id)) notifyChange('upsert', result);
+    return result;
   }
   function complete(id, opts){
     const taskId = cleanText(id, '', 80);

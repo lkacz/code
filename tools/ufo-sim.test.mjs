@@ -32,8 +32,8 @@ globalThis.inv = {
 const { T } = await import('../src/constants.js');
 
 MM.worldGen = { surfaceHeight: ()=>SURF };
-let fakeMob = null, abductedMob = null;
-MM.mobs = { nearestLiving: ()=>fakeMob, abduct: (m)=>{ abductedMob=m; fakeMob=null; return true; } };
+let fakeMob = null, abductedMob = null, ufoCollateralBlasts=0;
+MM.mobs = { nearestLiving: ()=>fakeMob, abduct: (m)=>{ abductedMob=m; fakeMob=null; return true; }, blastRadius(){ ufoCollateralBlasts++; return 1; } };
 let drainedByUfo=0;
 MM.heroEnergy = { drain(){ const p=globalThis.player; const n=Math.max(0, Number(p.energy)||0); p.energy=0; drainedByUfo+=n; return n; } };
 
@@ -211,6 +211,7 @@ assert.ok(inv.transistor>=1, 'wreck drops transistor scrap');
 assert.ok(inv.copperWire>=4, 'wreck drops copper power cable');
 assert.ok(inv.wire+inv.copper+inv.plastic+inv.steel>=1, 'wreck has extra seeded salvage');
 assert.ok(player.xp>=120, 'XP prize');
+assert.ok(ufoCollateralBlasts>=1,'crashing UFO explosion damages nearby mobs through the shared blast router');
 assert.ok(Array.isArray(looted) && looted.length===1 && looted[0].tier==='epic', 'alien artifact routed through the loot pipeline');
 assert.equal(looted[0].unique, 'alien_antigrav', 'deterministic UFO seed can drop antigravity tech');
 assert.equal(looted[0].energyCapacityBonus, 50, 'antigravity tech carries energy capacity');

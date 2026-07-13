@@ -10,6 +10,7 @@ const inventorySrc = await readFile(new URL('../src/inventory.js', import.meta.u
 const inventoryUiSrc = await readFile(new URL('../src/inventory_ui.js', import.meta.url), 'utf8');
 const chestsSrc = await readFile(new URL('../src/engine/chests.js', import.meta.url), 'utf8');
 const weaponsSrc = await readFile(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
+const worldSrc = await readFile(new URL('../src/engine/world.js', import.meta.url), 'utf8');
 
 assert.match(src, /function snapshotInventory\(\)/, 'save code defines an inventory snapshot helper');
 assert.match(indexSrc, /id="immunityBtn"/, 'debug HUD exposes an immunity toggle button');
@@ -56,6 +57,7 @@ assert.match(src, /infrastructure:\s*timedSavePart\('infrastructure',[^\n]*WORLD
 assert.match(src, /background:\s*timedSavePart\('background',[^\n]*BACKGROUND && BACKGROUND\.snapshot/, 'save payload includes day-night background state');
 assert.match(src, /constructionBackground:\s*timedSavePart\('constructionBackground',[^\n]*WORLD && WORLD\.snapshotConstructionBackground/, 'save payload includes background construction support tiles');
 assert.match(src, /gases:\s*timedSavePart\('gases',[^\n]*GASES && GASES\.snapshot/, 'save payload includes active gas state');
+assert.match(src, /smoke:\s*timedSavePart\('smoke',[^\n]*SMOKE && SMOKE\.snapshot/, 'save payload includes the independent black-smoke density layer');
 assert.match(src, /fire:\s*timedSavePart\('fire',[^\n]*FIRE && FIRE\.snapshot/, 'save payload includes active burning fire state');
 assert.match(src, /boats:\s*timedSavePart\('boats',[^\n]*BOATS && BOATS\.snapshot/, 'save payload includes floating wooden rafts');
 assert.match(src, /BOATS && BOATS\.restore\) BOATS\.restore\(data\.boats\)/, 'load code restores floating wooden rafts');
@@ -97,6 +99,10 @@ assert.match(src, /WORLD\.restoreInfrastructure\(data\.infrastructure\)/, 'load 
 assert.match(src, /WORLD\.restoreConstructionBackground\(data\.constructionBackground\)/, 'load path restores background construction support tiles after terrain');
 assert.match(src, /BACKGROUND\.restore\(data\.background\)/, 'load path restores day-night background state');
 assert.match(src, /GASES\.restore\(data\.gases,getTile,setTile\)/, 'load path restores active gas state through transient world writes');
+assert.match(src, /SMOKE\.restore\(data\.smoke,getTile\)/, 'load path restores physical black smoke without replacing terrain gases');
+assert.match(src, /function smokeDynamicOpenAt\(x,y,t\)\{[\s\S]*isDoorTile\(t\)[\s\S]*isTrapdoorTile\(t\)/, 'smoke has a shared resolver for actor-opened doors and trapdoors');
+assert.match(src, /SMOKE\.update\(dt, getTile, smokeDynamicOpenAt\)/, 'main simulation lets smoke pass currently open doorway tiles');
+assert.match(worldSrc, /MM\.smoke && MM\.smoke\.onTileChanged[^\n]*onTileChanged\(x,y,old,v,getTile\)/, 'world changes synchronously displace black smoke from newly blocked cells');
 assert.match(src, /const restoredBaseChunks=baseChunkIdsForAudits\(restoredChunks\)/, 'load path narrows mixed vertical-section refs to legacy base chunks for old auditors');
 assert.match(src, /GASES\.auditChunks\(restoredBaseChunks,getTile\)/, 'load path re-audits saved gas tiles from base chunks');
 assert.match(src, /FIRE\.restore\(data\.fire,getTile\)/, 'load path restores active burning fire after terrain');
@@ -218,6 +224,8 @@ assert.match(src, /cost:\{meteoricIron:5,\s*coal:2\}/, 'meteoric pickaxe recipe 
 assert.match(src, /id:'pick_bedrock'/, 'crafting exposes a bedrock pickaxe recipe');
 assert.match(src, /cost:\{motherIce:1,\s*motherLava:1,\s*diamond:1\}/, 'bedrock pickaxe recipe consumes guardian core materials plus diamond');
 assert.match(src, /consumeBedrockPickUse\(\)/, 'bedrock mining consumes fragile pickaxe durability');
+assert.match(src, /id:'bedrock_ladders'[^\n]*cost:\{bedrock:1\}/, 'bedrock ladder recipe consumes the newly mined bedrock resource');
+assert.match(src, /oneEndSupport:id===T\.BEDROCK_LADDER/, 'save-stable bedrock ladder tile receives one-end support semantics');
 assert.match(src, /id:'arrows_wood_small'/, 'crafting exposes a small wooden arrow recipe');
 assert.match(src, /cost:\{wood:1\}/, 'small wooden arrow recipe consumes one wood block');
 assert.match(src, /inv\.arrowWood\+=10/, 'small wooden arrow recipe yields ten arrows');
@@ -288,6 +296,7 @@ assert.match(indexSrc, /czerwona strzałka prowadzi właśnie do niego/, 'task l
 assert.match(src, /TASKS\.setContext\(\{onChange:saveState\}\)/, 'task priority and discard choices request save persistence');
 assert.match(chestsSrc, /function openFromWeaponHitAt\(x,y,opts\)/, 'chest engine exposes one shared weapon-impact opener');
 assert.match(src, /CHESTS\.setWeaponHitHandler\(\(tx,ty,opts\)=>tryOpenChestAt\(tx,ty,opts\)\)/, 'weapon impacts retain the full chest UI, effects and save path');
+assert.match(chestsSrc, /const wx=Number\(x\), wy=Number\(y\);[\s\S]*chestAtPoint\(wx,wy[\s\S]*const tx=Math\.floor\(wx\), ty=Math\.floor\(wy\)[\s\S]*weaponHitHandler\(tx,ty/, 'weapon chest impacts check physical coordinates before the legacy tile fallback');
 assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown projectiles route chest collisions through the opener');
 
 console.log('save-schema-sim: all assertions passed');

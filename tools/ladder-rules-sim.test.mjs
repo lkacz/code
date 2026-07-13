@@ -45,4 +45,42 @@ assert.equal(canPlaceLadderFixture({
   hasAnchor:(x,y)=>x===0 && (y===8 || y===11)
 }).ok, true, 'above-ground open-air ladder runs are allowed when linked top and bottom');
 
+const bottomAnchored = canPlaceLadderFixture({
+  tx:0, ty:0, underground:false, naturalSolidBlocked:false,
+  oneEndSupport:true,
+  hasLadder:ladderSet([[0,1],[0,2]]),
+  hasAnchor:(x,y)=>x===0 && y===3
+});
+assert.equal(bottomAnchored.ok, true, 'one bottom support anchors a bedrock ladder run');
+assert.equal(bottomAnchored.oneEndSupport, true, 'one-end support is explicit in the rule result');
+assert.equal(bottomAnchored.run.length, 3, 'single-anchored ladders still join the shared visual climbing run');
+assert.equal(canPlaceLadderFixture({
+  tx:0, ty:0, underground:false, naturalSolidBlocked:false,
+  oneEndSupport:true,
+  hasAnchor:(x,y)=>x===0 && y===-1
+}).ok, true, 'one top support also anchors a bedrock ladder');
+assert.equal(canPlaceLadderFixture({
+  tx:0, ty:0, underground:false, naturalSolidBlocked:false,
+  oneEndSupport:true,
+  hasAnchor:()=>false
+}).ok, false, 'a bedrock ladder cannot start with neither endpoint supported');
+assert.equal(canPlaceLadderFixture({
+  tx:0, ty:0, underground:false, naturalSolidBlocked:false,
+  oneEndSupport:true,
+  hasAnchor:(x,y)=>x===1 && y===0
+}).ok, false, 'side contact does not replace the required top or bottom support');
+
+const longCells=Array.from({length:300},(_,i)=>[0,i+1]);
+const longBottomAnchored=canPlaceLadderFixture({
+  tx:0, ty:0, underground:false, naturalSolidBlocked:false,
+  oneEndSupport:true, maxRun:512,
+  hasLadder:ladderSet(longCells),
+  hasAnchor:(x,y)=>x===0 && y===301
+});
+assert.equal(longBottomAnchored.ok, true, 'one anchored endpoint supports a run beyond the normal 128-cell scan');
+assert.equal(longBottomAnchored.run.length, 301, 'bedrock ladder run can span the full requested world height');
+assert.equal(canPlaceLadderFixture({
+  tx:0, ty:30, underground:true, naturalSolidBlocked:true, oneEndSupport:true
+}).ok, false, 'single-anchored ladders still require an open or excavated target cell');
+
 console.log('ladder-rules-sim: all assertions passed');

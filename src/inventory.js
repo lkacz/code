@@ -215,9 +215,11 @@
     {key:'ufoConcrete', label:'Beton UFO', color:'#536977', tile:null},
     {key:'motherIce', label:'Lod macierzysty', color:'#d8fbff', tile:'MOTHER_ICE'},
     {key:'motherLava', label:'Lawa macierzysta', color:'#ff7a33', tile:'MOTHER_LAVA'},
+    {key:'bedrock', label:'Skała macierzysta', color:'#454d5c', tile:null},
     {key:'meteorDust', label:'Pyl meteorytowy', color:'#c8a6ff', tile:'METEOR_DUST'},
     {key:'wood',    label:'Drewno',  color:'#8b5a2b', tile:'WOOD'},
     {key:'ladder',  label:'Drabinka', color:'#b98243', tile:'LADDER'},
+    {key:'bedrockLadder', label:'Drabinka macierzysta', color:'#6f7890', tile:'BEDROCK_LADDER'},
     {key:'woodDoor', label:'Drzwi drewniane', color:'#9b6730', tile:'WOOD_DOOR'},
     {key:'stoneDoor', label:'Drzwi kamienne', color:'#8d9098', tile:'STONE_DOOR'},
     {key:'steelDoor', label:'Drzwi stalowe', color:'#9aa8b5', tile:'STEEL_DOOR'},
@@ -300,6 +302,7 @@
     bag:[],            // dynamic loot items collected from chests
     discarded:new Set(), // ids the player threw away (never re-added by loot sync)
     shortcutOff:new Set(), // weapon ids excluded from number-key cycling (opt-out: new loot joins its category automatically)
+    shortcutSelection:{}, // category id -> item id remembered by keys 2/3/4 while another slot is active
     newItems:new Set() // looted items not yet acknowledged in the inventory UI
   };
   const extraItems=[]; // runtime-registered items (mods/extensions)
@@ -408,7 +411,14 @@
   function setShortcut(itemId,on){
     const item=findItem(itemId);
     if(!item || item.kind!=='weapon') return false;
-    if(on) state.shortcutOff.delete(itemId); else state.shortcutOff.add(itemId);
+    if(on){
+      state.shortcutOff.delete(itemId);
+      if(state.equipped.weapon===itemId) rememberWeaponSelection(item);
+    }else{
+      state.shortcutOff.add(itemId);
+      const cat=weaponCategory(item);
+      if(cat && state.shortcutSelection[cat.id]===itemId) delete state.shortcutSelection[cat.id];
+    }
     notifyChange({key:'shortcut', value:itemId});
     return true;
   }
@@ -416,19 +426,28 @@
   // from another weapon or bare hands returns to the weapon LAST USED there
   // (session memory) instead of always restarting at the strongest — so a
   // player fighting with snowballs gets them back on one key press.
-  const lastUsedPerCategory={};
+  function rememberWeaponSelection(item){
+    const cat=weaponCategory(item);
+    if(!cat || state.shortcutOff.has(item.id)) return false;
+    state.shortcutSelection[cat.id]=item.id;
+    return true;
+  }
+  // The content shown by an inactive shortcut is exactly what it will restore.
+  // Invalid, discarded and opted-out memories safely fall back to the strongest
+  // enabled weapon without changing the other slots.
+  function selectedWeaponForCategory(catId){
+    const list=categoryWeapons(catId);
+    if(!list.length) return null;
+    const active=list.find(i=>i.id===state.equipped.weapon);
+    if(active) return active;
+    const remembered=state.shortcutSelection[catId];
+    return (remembered && list.find(i=>i.id===remembered)) || list[0];
+  }
   function cycleWeaponCategory(catId){
     const list=categoryWeapons(catId);
     if(!list.length) return null;
     const idx=list.findIndex(i=>i.id===state.equipped.weapon);
-    let next;
-    if(idx<0){
-      const remembered=lastUsedPerCategory[catId];
-      next=(remembered && list.find(i=>i.id===remembered)) || list[0];
-    } else {
-      next=list[(idx+1)%list.length];
-    }
-    lastUsedPerCategory[catId]=next.id;
+    const next=idx<0 ? selectedWeaponForCategory(catId) : list[(idx+1)%list.length];
     equip(next.id);
     return next;
   }
@@ -528,12 +547,13 @@
   // --- Persistence ---
   function snapshot(){
     return {
-      v:1,
+      v:2,
       equipped:Object.assign({}, state.equipped),
       colors:Object.assign({}, state.colors),
       bag:state.bag.map(i=>Object.assign({}, i)),
       discarded:[...state.discarded],
       shortcutOff:[...state.shortcutOff],
+      shortcutSelection:Object.assign({}, state.shortcutSelection),
       newItems:[...state.newItems]
     };
   }
@@ -563,6 +583,15 @@
     if(Array.isArray(src.shortcutOff)){
       src.shortcutOff.slice(0,MAX_DISCARDED).forEach(id=>{ if(typeof id==='string' && id.length<=96) state.shortcutOff.add(id); });
     }
+    state.shortcutSelection={};
+    if(src.shortcutSelection && typeof src.shortcutSelection==='object'){
+      for(const cat of WEAPON_CATEGORIES){
+        const id=src.shortcutSelection[cat.id];
+        const item=typeof id==='string' && id.length<=96 ? findItem(id) : null;
+        const itemCat=weaponCategory(item);
+        if(itemCat && itemCat.id===cat.id && !state.shortcutOff.has(id)) state.shortcutSelection[cat.id]=id;
+      }
+    }
     state.newItems=new Set();
     if(Array.isArray(src.newItems)){
       src.newItems.slice(0,MAX_DISCARDED).forEach(id=>{
@@ -570,6 +599,7 @@
       });
     }
     ensureValid();
+    rememberWeaponSelection(findItem(state.equipped.weapon));
     syncCustomization();
     computeModifiers();
     if(opts.persist!==false) save();
@@ -627,6 +657,7 @@
     const slot=slotFor(item.kind); if(!slot) return false;
     if(state.equipped[slot.id]===itemId) return true;
     state.equipped[slot.id]=itemId;
+    if(item.kind==='weapon') rememberWeaponSelection(item);
     state.newItems.delete(itemId);
     notifyChange({key:slot.id, value:itemId});
     return true;
@@ -648,6 +679,8 @@
     state.discarded.add(itemId);
     state.newItems.delete(itemId);
     state.shortcutOff.delete(itemId); // a discarded weapon must not pin its id in the opt-out set forever
+    const itemCat=weaponCategory(item);
+    if(itemCat && state.shortcutSelection[itemCat.id]===itemId) delete state.shortcutSelection[itemCat.id];
     // FIFO cap (Sets iterate in insertion order): ids of long-gone loot expire first
     if(state.discarded.size>MAX_DISCARDED){ state.discarded.delete(state.discarded.values().next().value); }
     const bi=state.bag.findIndex(i=>i.id===itemId); if(bi>=0) state.bag.splice(bi,1);
@@ -878,7 +911,7 @@
     SLOTS, KIND_LABELS, TIER_COLORS, STAT_LABELS, STAT_RULES, RESOURCES, BASE_ATTACK,
     MELEE_EFFECT_LABELS,
     WEAPON_CATEGORIES, KIND_STAT_PRIORITY, WEAPON_TYPE_STATS, allowedStatsFor,
-    weaponCategory, categoryWeapons, isShortcut, setShortcut, cycleWeaponCategory,
+    weaponCategory, categoryWeapons, selectedWeaponForCategory, isShortcut, setShortcut, cycleWeaponCategory,
     statChips, itemScore, snapPct, fmtPct, VISION_BASE,
     items:itemsOfKind,
     allItems,

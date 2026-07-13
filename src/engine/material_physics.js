@@ -112,6 +112,12 @@ export function isWindPorousTile(t){
   return !!(info && (info.passable || info.gas));
 }
 
+export function isSmokePorousTile(t){
+  // Smoke shares thin-fixture/gas porosity with wind, but it cannot occupy a
+  // liquid cell. Closed doors and trapdoors remain structural barriers.
+  return t!==T.WATER && t!==T.LAVA && isWindPorousTile(t);
+}
+
 export function isPlayerPassableTile(t){
   return t===T.AIR || t===T.WATER || t===T.LAVA || !!(INFO[t] && INFO[t].passable);
 }
@@ -226,7 +232,7 @@ export function isMeteorLifeSiteTile(t){
 export function isMeteorSettlementSiteTile(t){
   const info=INFO[t] || INFO[T.AIR];
   return !!(info && (info.machine || info.chestTier || info.cache || info.door || info.trapdoor)) ||
-    t===T.STEEL || t===T.CHIMNEY || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.LADDER;
+    t===T.STEEL || t===T.CHIMNEY || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.LADDER || t===T.BEDROCK_LADDER;
 }
 
 export function isCreatureRockFloorTile(t){
@@ -280,7 +286,7 @@ export function isLimitedBrittleStructuralMaterial(t){
 
 export function isUtilityMaterial(t){
   const info=INFO[t];
-  if(t===T.TORCH || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.LADDER || t===T.GRAVE) return true;
+  if(t===T.TORCH || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.LADDER || t===T.BEDROCK_LADDER || t===T.GRAVE) return true;
   if(t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return true;
   if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) return true;
   return !!(info && (info.machine || info.chestTier || info.cache || info.gas || isLooseItemMaterial(t)));
@@ -356,7 +362,7 @@ export function isPlayerBuiltMaterial(t){
   if(t===T.AIR || t===T.WATER || t===T.LAVA || t===T.SAND ||
     t===T.UNSTABLE_SAND || t===T.UNSTABLE_GRASS || t===T.QUICKSAND ||
     t===T.BEDROCK) return false;
-  if(t===T.TORCH || t===T.WIRE || t===T.COPPER_WIRE || t===T.LADDER || t===T.GRAVE) return false;
+  if(t===T.TORCH || t===T.WIRE || t===T.COPPER_WIRE || t===T.LADDER || t===T.BEDROCK_LADDER || t===T.GRAVE) return false;
   if(t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT) return false;
   return true;
 }

@@ -1,6 +1,6 @@
-// Deterministic smoke-emission test for fire/lava rendering hooks.
-// Verifies active fires and exposed volcanic lava feed the shared black-smoke
-// particle emitter without relying on browser rendering.
+// Deterministic smoke-emission test for the fire/lava simulation hooks.
+// Smoke production must happen during simulation (even off screen), feed the
+// physical density layer, and route through chimneys.
 // Run: node tools/fire-smoke-sim.test.mjs
 import { strict as assert } from 'assert';
 import { readFile } from 'node:fs/promises';
@@ -41,7 +41,7 @@ assert.ok(fire, 'fire module exports');
 
 let smokeCalls=[];
 let gasAdds=[];
-MM.particles = { spawnSmoke(x,y,intensity,opts){ smokeCalls.push({x,y,intensity,opts}); } };
+MM.smoke = { emit(x,y,amount,opts){ smokeCalls.push({x,y,amount,opts}); return amount; } };
 MM.gases = { add(kind,x,y,opts){ gasAdds.push({kind,x,y,opts}); return 1; } };
 MM.worldGen = {
   volcanoAt(x){ return x===4 ? {center:4, crater:2} : null; },
@@ -59,7 +59,7 @@ try{
     const setSpreadTile=(x,y,t)=>spreadTiles.set(spreadKey(x,y),t);
     setSpreadTile(0,0,T.WOOD);
     setSpreadTile(1,0,targetTile);
-    const rolls=[0,0,0, 0, 0.375, finalSpreadRoll];
+    const rolls=[0,0,0,0, 0,0.375,finalSpreadRoll];
     let idx=0;
     Math.random=()=>idx<rolls.length ? rolls[idx++] : 0;
     assert.ok(fire.ignite(0,0,getSpreadTile,setSpreadTile), 'source fire ignites for spread check');
@@ -81,10 +81,14 @@ try{
   assert.ok(fire.ignite(1,3,getTile), 'wood ignites');
   assert.ok(fire.ignite(2,3,getTile), 'coal ignites');
   fire.noteLava(4,3);
+  fire.update(getTile,setTile,0.8);
   fire.draw(makeCtx(),20,0,0,8,8,getTile,{visible:()=>true, seen:()=>true});
-  assert.ok(smokeCalls.some(c=>c.opts && c.opts.tileX===1 && c.opts.tileY===3), 'burning wood emits smoke');
-  assert.ok(smokeCalls.some(c=>c.opts && c.opts.tileX===2 && c.opts.tileY===3 && c.intensity>2), 'burning coal emits a heavier plume');
-  assert.ok(smokeCalls.some(c=>c.opts && c.opts.tileX===4 && c.opts.tileY===3 && c.intensity>2), 'volcano lava emits a heavier plume');
+  const woodSmoke=smokeCalls.find(c=>Math.floor(c.x)===1 && Math.floor(c.y)===2);
+  const coalSmoke=smokeCalls.find(c=>Math.floor(c.x)===2 && Math.floor(c.y)===2);
+  const lavaSmoke=smokeCalls.find(c=>Math.floor(c.x)===4 && Math.floor(c.y)===2);
+  assert.ok(woodSmoke && woodSmoke.opts && woodSmoke.opts.getTile===getTile, 'burning wood emits physical smoke during update');
+  assert.ok(coalSmoke && coalSmoke.amount>woodSmoke.amount, 'burning coal emits a heavier physical smoke packet than wood');
+  assert.ok(lavaSmoke && lavaSmoke.amount>=0.24, 'volcanic lava emits a heavy physical smoke packet');
 
   const fireSnap=fire.snapshot();
   assert.equal(fireSnap.list.length,2,'fire snapshot captures active burning tiles');
@@ -115,9 +119,10 @@ try{
   setChimneyTile(2,4,T.CHIMNEY);
   setChimneyTile(2,3,T.CHIMNEY);
   assert.ok(fire.ignite(2,5,getChimneyTile), 'coal under a chimney ignites');
+  fire.update(getChimneyTile,setChimneyTile,0.8);
   fire.draw(makeCtx(),20,0,0,6,8,getChimneyTile,{visible:()=>true, seen:()=>true});
-  assert.ok(smokeCalls.some(c=>c.opts && c.opts.tileX===2 && c.opts.tileY===2 && c.intensity>2), 'coal smoke is emitted at the open chimney outlet');
-  assert.equal(smokeCalls.some(c=>c.opts && c.opts.tileX===2 && c.opts.tileY===5), false, 'chimney-routed coal smoke does not originate at the fuel cell');
+  assert.ok(smokeCalls.some(c=>Math.floor(c.x)===2 && Math.floor(c.y)===2 && c.amount>0), 'coal smoke is emitted at the open chimney outlet');
+  assert.equal(smokeCalls.some(c=>Math.floor(c.x)===2 && Math.floor(c.y)===5), false, 'chimney-routed coal smoke does not originate at the fuel cell');
 
   fire.reset();
   const verticalTiles=new Map();
@@ -154,7 +159,7 @@ try{
   setLavaTile(4,2,T.AIR);
   setLavaTile(4,3,T.LAVA);
   setLavaTile(4,4,T.STONE);
-  fire.noteLava(4,3,{hotT:0});
+  fire.noteLava(4,3,{hotT:0,smokeT:99});
   fire.update(getLavaTile,setLavaTile,0.1);
   assert.ok(gasAdds.some(g=>g.kind==='hot' && g.opts && g.opts.cells===1), 'exposed lava emits a small hot-air packet');
 
@@ -172,7 +177,7 @@ try{
   setSkyLavaTile(6,-26,T.AIR);
   setSkyLavaTile(6,-25,T.LAVA);
   setSkyLavaTile(6,-24,T.STONE);
-  fire.noteLava(6,-25,{hotT:0});
+  fire.noteLava(6,-25,{hotT:0,smokeT:99});
   fire.update(getSkyLavaTile,setSkyLavaTile,0.1);
   assert.ok(gasAdds.some(g=>g.kind==='hot' && g.y<0), 'sky-layer exposed lava emits hot air above y=0');
   fire.draw(makeCtx(),20,0,-30,12,12,getSkyLavaTile,{visible:()=>true, seen:()=>true});

@@ -44,7 +44,7 @@ const variants = new Set();
 for(const a of list){
   const L = ruins.layoutFor(a.n);
   sizes[L.size]++; variants.add(L.size+':'+L.variant);
-  assert.ok(L.chests >= 1, 'every ruin hides at least one chest');
+  assert.ok(!L.ops.some(o=>[T.CHEST_COMMON,T.CHEST_UNCOMMON,T.CHEST_RARE,T.CHEST_EPIC,T.CHEST_LEGENDARY].includes(o.t)), 'ruin layouts contain no generated chest blocks');
   const surfAtAx = WG.surfaceHeight(L.ax);
   assert.ok(L.ops.some(o=>o.f===1 && o.t===T.AIR && o.y > surfAtAx+2), 'a hollow lies underground');
   assert.ok(L.ops.some(o=>o.f===0 && o.y < WG.surfaceHeight(o.x)), 'subtle hints rise above the surface');
@@ -54,7 +54,7 @@ for(const a of list){
   if(L.size==='small') assert.ok(w <= 14, 'small ruins stay tiny ('+w+')');
   if(L.size==='large'){
     assert.ok(w >= 14, 'large ruins sprawl ('+w+')');
-    assert.ok(L.ops.some(o=>o.t===T.CHEST_EPIC), 'temple treasure room holds an epic chest');
+    assert.ok(!L.ops.some(o=>o.t===T.CHEST_EPIC), 'temple does not pre-place an epic chest block');
     if(L.variant==='vault'){
       assert.ok(L.ops.some(o=>o.t===T.OBSIDIAN), 'vault is sealed in obsidian');
       assert.ok(L.ops.filter(o=>o.t===T.DIAMOND).length >= 2, 'vault is studded with diamonds');
@@ -79,15 +79,15 @@ const templePlans=new Set(templeSamples.map(L=>L.plan));
 const templeSignatures=new Set(templeSamples.map(L=>L.signature));
 assert.ok(templePlans.size>=4, 'large temples use multiple floorplan families ('+[...templePlans].join(',')+')');
 assert.ok(templeSignatures.size>=Math.min(8,templeSamples.length), 'large temple signatures stay highly varied');
-const templeForLookup=templeSamples[0];
-const chestOp=templeForLookup.ops.find(o=>o.f===1 && (o.t===T.CHEST_COMMON||o.t===T.CHEST_RARE||o.t===T.CHEST_EPIC));
+const templeForLookup=templeSamples.find(L=>L.ops.some(o=>o.f===1 && o.t===T.DIAMOND))||templeSamples[0];
+const treasureOp=templeForLookup.ops.find(o=>o.f===1 && (o.t===T.DIAMOND||o.t===T.GOLD_ORE));
 const wallOp=templeForLookup.ops.find(o=>o.f===1 && (o.t===T.STONE||o.t===T.OBSIDIAN||o.t===T.TORCH));
-assert.ok(chestOp && wallOp, 'sample temple has both treasure and structure cells');
-const treasureHit=ruins.templeAt(chestOp.x,chestOp.y,{tile:chestOp.t});
+assert.ok(treasureOp && wallOp, 'sample temple has both mineral treasure and structure cells');
+const treasureHit=ruins.templeAt(treasureOp.x,treasureOp.y,{tile:treasureOp.t});
 assert.ok(treasureHit && treasureHit.isTreasure && treasureHit.size==='large', 'templeAt identifies stolen temple treasure');
 const wallHit=ruins.templeAt(wallOp.x,wallOp.y,{tile:wallOp.t});
 assert.ok(wallHit && wallHit.isStructure && !wallHit.isTreasure, 'templeAt identifies damaged temple masonry');
-assert.equal(ruins.templeAt(chestOp.x,chestOp.y,{tile:T.AIR}), null, 'templeAt ignores already-empty cells unless old treasure tile is supplied');
+assert.equal(ruins.templeAt(treasureOp.x,treasureOp.y,{tile:T.AIR}), null, 'templeAt ignores already-empty cells unless old treasure tile is supplied');
 
 // --- 2b. Living surface tribal temples: above-ground, varied, guarded treasure ---
 assert.equal(typeof world.surfaceTempleLayoutsInRange, 'function', 'world exposes living surface temple layouts');
@@ -97,26 +97,27 @@ assert.ok(surfaceTemples.length >= 8, 'living surface temples appear in jungle/s
 const surfaceSignatures = new Set(surfaceTemples.map(L=>L.variant+':'+L.tiers+':'+(L.maxX-L.minX)+':'+L.ops.length));
 assert.ok(surfaceSignatures.size >= 5, 'surface temples use varied procedural silhouettes ('+surfaceSignatures.size+' signatures)');
 const livingTemples = surfaceTemples.filter(L=>
-  L.ops.some(o=>o.t===T.CHEST_RARE || o.t===T.CHEST_EPIC) &&
   L.ops.some(o=>o.t===T.LEAF) &&
   L.ops.some(o=>o.t===T.GLOWSHROOM) &&
   L.ops.some(o=>o.t===T.TORCH)
 );
-assert.ok(livingTemples.length >= 4, 'surface temples look inhabited: treasure, canopy, glowshrooms and torches');
-let surfaceTemple=null, surfaceChestOp=null, surfaceStructureOp=null;
-for(const Ls of livingTemples){
-  const chest=Ls.ops.find(o=>o.t===T.CHEST_RARE || o.t===T.CHEST_EPIC);
+assert.ok(livingTemples.length >= 4, 'surface temples look inhabited: canopy, glowshrooms and torches');
+const treasureTemples=livingTemples.filter(L=>L.ops.some(o=>o.t===T.GOLD_ORE || o.t===T.DIAMOND));
+assert.ok(treasureTemples.length>=1, 'some surface temples retain mineral treasure without chest blocks');
+let surfaceTemple=null, surfaceTreasureOp=null, surfaceStructureOp=null;
+for(const Ls of treasureTemples){
+  const treasure=Ls.ops.find(o=>o.t===T.GOLD_ORE || o.t===T.DIAMOND);
   const structure=Ls.ops.find(o=>o.f===1 && (o.t===T.WOOD || o.t===T.STONE || o.t===T.OBSIDIAN));
-  if(chest && structure && world.getTile(chest.x,chest.y)===chest.t && world.getTile(structure.x,structure.y)===structure.t){
-    surfaceTemple=Ls; surfaceChestOp=chest; surfaceStructureOp=structure; break;
+  if(treasure && structure && world.getTile(treasure.x,treasure.y)===treasure.t && world.getTile(structure.x,structure.y)===structure.t){
+    surfaceTemple=Ls; surfaceTreasureOp=treasure; surfaceStructureOp=structure; break;
   }
 }
-assert.ok(surfaceTemple && surfaceChestOp && surfaceStructureOp, 'a generated surface temple materializes treasure and structure cells');
-const surfaceTreasureHit = world.surfaceTempleAt(surfaceChestOp.x,surfaceChestOp.y,{tile:surfaceChestOp.t});
+assert.ok(surfaceTemple && surfaceTreasureOp && surfaceStructureOp, 'a generated surface temple materializes mineral treasure and structure cells');
+const surfaceTreasureHit = world.surfaceTempleAt(surfaceTreasureOp.x,surfaceTreasureOp.y,{tile:surfaceTreasureOp.t});
 assert.ok(surfaceTreasureHit && surfaceTreasureHit.surface && surfaceTreasureHit.isTreasure, 'surfaceTempleAt identifies stolen above-ground temple treasure');
 const surfaceStructureHit = world.surfaceTempleAt(surfaceStructureOp.x,surfaceStructureOp.y,{tile:surfaceStructureOp.t});
 assert.ok(surfaceStructureHit && surfaceStructureHit.surface && surfaceStructureHit.isStructure && !surfaceStructureHit.isTreasure, 'surfaceTempleAt identifies vandalized above-ground temple structure');
-assert.equal(world.surfaceTempleAt(surfaceChestOp.x,surfaceChestOp.y,{tile:T.AIR}), null, 'surfaceTempleAt ignores empty cells after treasure has been removed');
+assert.equal(world.surfaceTempleAt(surfaceTreasureOp.x,surfaceTreasureOp.y,{tile:T.AIR}), null, 'surfaceTempleAt ignores empty cells after treasure has been removed');
 assert.match(mainSource, /WORLD\.surfaceTempleAt\(tx,ty,\{tile:oldTile\}\)/, 'main temple alarm path checks living surface temples');
 assert.match(mainSource, /Straznicy swiatyni bronia budowli/, 'surface temple vandalism has a dedicated guard warning');
 
@@ -128,7 +129,7 @@ const megaSurf = WG.surfaceHeight(mega.ax);
 const cityTop = Math.min(...mega.ops.filter(o=>o.f===1 && o.t===T.AIR && o.y>megaSurf+5).map(o=>o.y));
 assert.ok(cityTop - megaSurf >= 25 || cityTop >= 96, 'the city lies DEEP ('+(cityTop-megaSurf)+' below the surface)');
 assert.ok(mega.maxX - mega.minX >= 44, 'a vast cavern ('+(mega.maxX-mega.minX)+' wide)');
-assert.ok(mega.ops.filter(o=>o.t===T.CHEST_EPIC).length >= 2, 'the ziggurat hides multiple epic chests');
+assert.equal(mega.ops.filter(o=>[T.CHEST_COMMON,T.CHEST_RARE,T.CHEST_EPIC].includes(o.t)).length, 0, 'the buried city contains no generated chest blocks');
 assert.ok(mega.ops.filter(o=>o.t===T.TORCH).length >= 8, 'the city is torch-lit for the reveal');
 assert.ok(mega.ops.filter(o=>o.t===T.STONE_DOOR).length >= 2, 'the city tower entrances use structural stone doors');
 assert.ok(mega.ops.some(o=>o.t===T.LAVA), 'a lava moat glows in the dark');
@@ -164,13 +165,13 @@ let i2=0, same=true;
 for(let x=L.minX;x<=L.maxX;x++) for(let y=L.minY;y<=L.maxY;y++){ if(world.getTile(x,y)!==snapshot[i2++]){ same=false; break; } }
 assert.ok(same, 'regenerated chunks rebuild the identical ruin');
 
-// --- 5. Treasure really reachable: a chest tile exists inside the ruin body ---
+// --- 5. Generated ruins never reintroduce legacy chest blocks ---
 let chestSeen=0;
 for(let x=L.minX;x<=L.maxX;x++) for(let y=L.minY;y<=L.maxY;y++){
   const t=world.getTile(x,y);
   if(t===T.CHEST_COMMON||t===T.CHEST_RARE||t===T.CHEST_EPIC) chestSeen++;
 }
-assert.ok(chestSeen>=1, 'treasure sits in the generated world ('+chestSeen+' chests)');
+assert.equal(chestSeen,0, 'generated ruin world contains zero chest blocks');
 
 // --- 5b. nearest(): debug teleports hop to the right anchors ---
 const mid=list[Math.floor(list.length/2)];

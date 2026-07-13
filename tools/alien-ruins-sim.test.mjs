@@ -67,14 +67,14 @@ world.clear();
 // --- 2. Architecture invariants: tech in every complex, UFO concrete shell, surface hints ---
 const sizes = {small:0, medium:0, large:0, mega:0};
 const variants = new Set();
-let withChest = 0;
+let chestBlocks = 0;
 let withCommander = 0;
 for(const a of list){
   const L = alienRuins.layoutFor(a.n);
   assert.ok(L, 'layout exists for anchor');
   sizes[L.size]++;
   variants.add(L.size+':'+L.variant);
-  if(L.chests) withChest++;
+  chestBlocks += L.ops.filter(o=>[T.CHEST_COMMON,T.CHEST_UNCOMMON,T.CHEST_RARE,T.CHEST_EPIC,T.CHEST_LEGENDARY].includes(o.t)).length;
   if(L.commanders && L.commanders.length) withCommander++;
   assert.ok(L.tier >= 1 && L.tier <= 4, 'alien ruin exposes a tier');
   assert.ok(L.tech.length >= 1, 'every alien ruin has at least one technological element');
@@ -125,7 +125,7 @@ for(const a of list) assertHermetic(alienRuins.layoutFor(a.n));
 
 assert.ok(sizes.small>0 && sizes.medium>0 && sizes.large>0, 'all main alien ruin tiers occur (S:'+sizes.small+' M:'+sizes.medium+' L:'+sizes.large+' XL:'+sizes.mega+')');
 assert.ok(variants.size >= 5, 'alien architecture varies across variants ('+variants.size+')');
-assert.ok(withChest >= Math.max(1, Math.floor(list.length * 0.25)), 'some alien ruins contain chests ('+withChest+')');
+assert.equal(chestBlocks, 0, 'alien ruins contain no generated chest blocks');
 assert.ok(withCommander >= 1, 'some alien ruins contain a golden commander marker');
 
 let mega = null;
@@ -136,7 +136,7 @@ for(let n=0;n<8000 && !mega;n++){
 assert.ok(mega, 'a mega alien nexus exists within a wide scan');
 assertHermetic(mega);
 assert.ok(mega.maxX - mega.minX >= 44, 'mega nexus has impressive width ('+(mega.maxX-mega.minX)+')');
-assert.ok(mega.ops.filter(o=>o.t===T.CHEST_EPIC).length >= 2, 'mega nexus carries epic vault loot');
+assert.equal(mega.ops.filter(o=>[T.CHEST_COMMON,T.CHEST_RARE,T.CHEST_EPIC].includes(o.t)).length, 0, 'mega nexus carries no pre-placed chest blocks');
 assert.ok(mega.tech.length >= 4, 'mega nexus has multiple tech nodes');
 
 // --- 3. Materialization through the real world generator, including chunk borders ---

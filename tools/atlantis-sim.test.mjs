@@ -86,7 +86,7 @@ assert.ok(site.counts.bg>=150, 'Atlantis domes and vaults have generated interio
 assert.ok(site.counts.door>=2, 'Atlantis vaults include steel pressure-lock doors');
 assert.ok(site.counts.beacon>=2, 'Atlantis has multiple glowing/powered spire beacons');
 assert.ok(site.counts.shroom>=5, 'Atlantis has bioluminescent interior lighting');
-assert.ok(site.counts.epic>=1 && site.counts.rare>=2, 'Atlantis contains guarded rare/epic loot chests');
+assert.equal(site.counts.epic+site.counts.rare,0, 'Atlantis contains no generated chest blocks');
 assert.ok(site.counts.iridium>=1 && site.counts.meteor>=2, 'Atlantis carries scarce advanced resources');
 assert.equal(site.violations, 0, 'Atlantis never overwrites the sealed ocean bedrock basin');
 assert.equal(typeof world.nearestAtlantis, 'function', 'world has a callable Atlantis finder');

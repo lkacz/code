@@ -311,18 +311,9 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
     return {ok:true};
   }
   function placeChestNearStall(ctx){
-    const getTile = ctx && ctx.getTile, setTile = ctx && ctx.setTile;
-    if(typeof getTile!=='function' || typeof setTile!=='function') return false;
-    const bx = Math.floor(S.x), by = Math.floor(S.y);
-    for(const dx of [2,-2,3,-3,1,-1]){
-      const tx = bx+dx, ty = by;
-      if(getTile(tx,ty)===T.AIR && isSolid(getTile(tx,ty+1))){
-        setTile(tx,ty,T.CHEST_EPIC);
-        if(ctx.notifyTileChanged){ try{ ctx.notifyTileChanged(tx,ty,T.AIR,T.CHEST_EPIC); }catch(e){} }
-        return true;
-      }
-    }
-    return false;
+    const spawn=ctx && typeof ctx.spawnChest==='function' ? ctx.spawnChest : (MM.drops && MM.drops.spawnChest);
+    if(typeof spawn!=='function') return false;
+    try{ return !!spawn(S.x+1.2,S.y-0.35,'epic',{source:'trader',vx:1.2,vy:-2.6}); }catch(e){ return false; }
   }
   // Sell resources at rate `id` for diamonds. Returns {ok, reason}.
   function tradeSell(id, ctx){

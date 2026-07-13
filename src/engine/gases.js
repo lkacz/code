@@ -6,6 +6,7 @@
 // plume instead of multiplying one source forever.
 import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, CHUNK_W } from '../constants.js';
 import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from './material_physics.js';
+import { damageBlastCreatures } from './explosion_damage.js';
 
 (function(){
   window.MM = window.MM || {};
@@ -456,12 +457,13 @@ import { canGasReplaceTile, canGasSwapTile, isCondensedWaterTargetTile } from '.
     const wx=x+0.5, wy=y+0.5;
     const consumed=consumeRadius(T.FUEL_GAS,wx,wy,3.2,getTile,setTile);
     try{
-      if(MM.weapons && MM.weapons.explodeAt) return !!MM.weapons.explodeAt(wx,wy,getTile,setTile,{extraConsumed:consumed,force:consumed>0});
+      if(MM.weapons && MM.weapons.explodeAt) return !!MM.weapons.explodeAt(wx,wy,getTile,setTile,{extraConsumed:consumed,force:consumed>0,source:'fuel_gas',cause:'fuel_gas_blast'});
     }catch(e){}
     try{
       if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(wx*(MM.TILE||20),wy*(MM.TILE||20),'epic');
       if(MM.audio && MM.audio.play) MM.audio.play('explosion',{x:wx,y:wy});
     }catch(e){}
+    damageBlastCreatures(MM,wx,wy,4.7,14,{source:'fuel_gas',cause:'fuel_gas_blast'});
     return true;
   }
   function igniteAt(x,y,getTile,setTile,radius){

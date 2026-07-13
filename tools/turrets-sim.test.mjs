@@ -276,12 +276,13 @@ for(const tile of [T.FIRE_TURRET,T.WATER_TURRET]){
   assert.ok(boss,'real boss spawns for turret line-of-sight regression');
   const machine=turrets._debug.ensureMachine(0,88,getTile);
   const target=turrets._debug.nearestBossTarget(machine,getTile);
-  assert.ok(target,'turret finds a visible boss part when the closest low part is blocked');
+  assert.ok(target,'turret finds a visible boss weak point when the closest low part is blocked');
+  assert.ok(target.part && (target.part.role==='eye' || target.part.role==='core'),'turret targets only the eye or exposed heart, not block armor');
   const beforeHp=totalBossHp(boss);
   for(let i=0;i<120;i++) tick(1/30,globalThis.player);
   const after=turrets.metrics();
   assert.ok(after.shots>0,'turret fires at a real boss behind low cover');
-  assert.ok(after.hits>0 && totalBossHp(boss)<beforeHp,'turret damages a real boss through visible body parts');
+  assert.ok(after.hits>0 && totalBossHp(boss)<beforeHp,'turret damages a real boss through a visible weak point');
 }
 
 {

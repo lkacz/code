@@ -92,6 +92,7 @@ assert.match(mainSrc,/className='pauseSeedValue'/,'the player menu shows the cur
 assert.match(mainSrc,/saveMount\.id='playerSaveMenu'/,'save management is mounted in the release-facing player menu');
 assert.match(mainSrc,/openWorldSettings/,'the player menu exposes world generator settings');
 assert.match(mainSrc,/document\.getElementById\('menuBtn'\)\?\.addEventListener\('click',\(\)=>\{ setPaused\(!paused\); \}\)/,'the visible hamburger opens the player menu');
+assert.match(mainSrc,/if\(paused\)\{\s*releaseGameplayInput\(\);/,'opening the player menu releases held movement, mining and weapon input');
 assert.match(indexSrc,/id="debugMenuBtn"[^>]*class="topbtn devOnly"/,'developer tools have a separate removable trigger');
 assert.match(indexSrc,/id="menuPanel" class="devOnly"[^>]*aria-label="Narzędzia deweloperskie"/,'the debug toolbox is explicitly isolated from the player menu');
 assert.match(uiSrc,/document\.getElementById\('debugMenuBtn'\)/,'debug menu wiring no longer owns the player hamburger');

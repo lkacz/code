@@ -1,6 +1,7 @@
 import { CHUNK_W, T, INFO, WORLD_H, WORLD_MAX_Y } from '../constants.js';
 import { isGasTile, isMeteorForestSiteTile, isMeteorImpactGroundTile, isMeteorLifeSiteTile, isMeteorProtectedTile, isMeteorSettlementSiteTile, isMeteorWaterSiteTile } from './material_physics.js';
 import { worldHostility as HOSTILITY } from './world_hostility.js';
+import { damageBlastCreatures } from './explosion_damage.js';
 
 const meteorites = (function(){
   const MM = window.MM = window.MM || {};
@@ -1693,21 +1694,23 @@ const meteorites = (function(){
   }
   function hurtActors(cx,cy,intensity){
     const radius=8.0+intensity*2.3;
-    try{ if(MM.mobs && MM.mobs.blastRadius) MM.mobs.blastRadius(cx,cy,radius,34+intensity*10); }catch(e){}
+    damageBlastCreatures(MM,cx,cy,radius,34+intensity*10,{source:'meteor',cause:'meteor_blast'});
     try{
       if(MM.guardianLairs && MM.guardianLairs.damageAt){
         const d=38+intensity*12;
-        MM.guardianLairs.damageAt(Math.round(cx),Math.round(cy),d);
-        MM.guardianLairs.damageAt(Math.round(cx)+1,Math.round(cy),d*0.6);
-        MM.guardianLairs.damageAt(Math.round(cx)-1,Math.round(cy),d*0.6);
+        const blastOpts={kind:'explosion',source:'meteor',cause:'meteor_blast',terrainDamage:true};
+        MM.guardianLairs.damageAt(Math.round(cx),Math.round(cy),d,blastOpts);
+        MM.guardianLairs.damageAt(Math.round(cx)+1,Math.round(cy),d*0.6,blastOpts);
+        MM.guardianLairs.damageAt(Math.round(cx)-1,Math.round(cy),d*0.6,blastOpts);
       }
     }catch(e){}
     try{
       if(MM.bosses && MM.bosses.damageAt){
         const d=34+intensity*11;
-        MM.bosses.damageAt(Math.round(cx),Math.round(cy),d);
-        MM.bosses.damageAt(Math.round(cx)+1,Math.round(cy),d*0.6);
-        MM.bosses.damageAt(Math.round(cx)-1,Math.round(cy),d*0.6);
+        const blastOpts={kind:'explosion',source:'meteor',cause:'meteor_blast',terrainDamage:true};
+        MM.bosses.damageAt(Math.round(cx),Math.round(cy),d,blastOpts);
+        MM.bosses.damageAt(Math.round(cx)+1,Math.round(cy),d*0.6,blastOpts);
+        MM.bosses.damageAt(Math.round(cx)-1,Math.round(cy),d*0.6,blastOpts);
       }
     }catch(e){}
     try{ if(MM.ufo && MM.ufo.damageAt) MM.ufo.damageAt(Math.round(cx),Math.round(cy),48+intensity*13); }catch(e){}

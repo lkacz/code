@@ -64,6 +64,7 @@ const {
   isRubbleTrackedMaterial,
   isSafeLandingFloorTile,
   isSkyOpenTile,
+  isSmokePorousTile,
   isStableMachineSupportTile,
   isSolidCollisionTile,
   isStructuralMaterial,
@@ -518,6 +519,13 @@ assert.equal(isWindPorousTile(T.STEAM), true, 'wind treats gases as porous');
 assert.equal(isWindPorousTile(T.WOOD_DOOR), false, 'wind treats doors as closed structural faces');
 assert.equal(isWindPorousTile(T.WOOD_TRAPDOOR), false, 'wind treats trapdoors as closed structural faces');
 assert.equal(isWindPorousTile(T.STONE), false, 'wind treats solid terrain as closed');
+assert.equal(isSmokePorousTile(T.AIR), true, 'smoke moves through air');
+assert.equal(isSmokePorousTile(T.POISON_GAS), true, 'smoke can overlap an existing gas');
+assert.equal(isSmokePorousTile(T.LADDER), true, 'smoke moves around thin passable fixtures');
+assert.equal(isSmokePorousTile(T.WATER), false, 'smoke does not occupy liquid water');
+assert.equal(isSmokePorousTile(T.LAVA), false, 'smoke does not occupy molten tiles');
+assert.equal(isSmokePorousTile(T.WOOD_DOOR), false, 'closed doors contain smoke');
+assert.equal(isSmokePorousTile(T.STONE), false, 'solid terrain contains smoke');
 
 assert.equal(isGasTile(T.STEAM), true, 'steam is a gas tile');
 assert.equal(isGasTile(T.AIR), false, 'air is open space, not a gas tile');
@@ -720,6 +728,7 @@ const meatSource=readFileSync(new URL('../src/engine/meat.js', import.meta.url),
 const volcanoSource=readFileSync(new URL('../src/engine/volcano.js', import.meta.url),'utf8');
 const waterSource=readFileSync(new URL('../src/engine/water.js', import.meta.url),'utf8');
 const gasSource=readFileSync(new URL('../src/engine/gases.js', import.meta.url),'utf8');
+const smokeSource=readFileSync(new URL('../src/engine/smoke.js', import.meta.url),'utf8');
 const pumpSource=readFileSync(new URL('../src/engine/pumps.js', import.meta.url),'utf8');
 const windSource=readFileSync(new URL('../src/engine/wind.js', import.meta.url),'utf8');
 const cloudSource=readFileSync(new URL('../src/engine/clouds.js', import.meta.url),'utf8');
@@ -768,7 +777,7 @@ assert.match(worldSource, /generatedCitySupportTile/, 'generated-city audit uses
 assert.match(worldSource, /isGeneratedStructureReplaceableTile/, 'generated-city placement uses shared replacement predicates');
 assert.match(worldSource, /isLavaExposureOpenTile/, 'generated lava registration uses shared exposure predicates');
 assert.match(worldSource, /isReplaceableNaturalOpenTile\(arr\[i\],false\)/, 'small generated structures use shared natural-open replacement predicates');
-assert.match(worldSource, /isRockStructuralMaterial\(t\) && isObjectFootingTile\(t\)/, 'cave treasure footing uses shared material physics');
+assert.match(worldSource, /function stripChestTiles\(arr\)/, 'world generation hardens every chunk against legacy chest blocks');
 assert.match(mainSource, /import \{[^}]*isLooseItemMaterial[^}]*\} from '\.\/engine\/material_physics\.js'/, 'main imports shared loose-item predicates');
 assert.match(mainSource, /function isLooseItemTile\(t\)\{\s*return isLooseItemMaterial\(t\);\s*\}/, 'rendering and placement loose-item checks delegate to shared material physics');
 assert.match(meatSource, /import \{[^}]*isGasTile[^}]*isMeatDecayMaterial[^}]*isObjectFootingTile[^}]*isReplaceableNaturalOpenTile[^}]*\} from '\.\/material_physics\.js'/, 'loose meat drops import shared gas, lifecycle, footing and open-cell predicates');
@@ -789,6 +798,8 @@ assert.match(gasSource, /import \{ canGasReplaceTile, canGasSwapTile, isCondense
 assert.match(gasSource, /function canReplaceWithGas\(tile,dst\)\{\s*return canGasReplaceTile\(tile,dst\);\s*\}/, 'gas motion uses shared replacement predicates');
 assert.match(gasSource, /function canSwapThroughGas\(tile,dst\)\{\s*return canGasSwapTile\(tile,dst\);\s*\}/, 'gas swapping uses shared material predicates');
 assert.match(gasSource, /if\(!isCondensedWaterTargetTile\(cur\)\) return false;/, 'steam condensate uses shared water target predicates');
+assert.match(smokeSource, /import \{ isSmokePorousTile \} from '\.\/material_physics\.js'/, 'black smoke imports the shared porosity predicate');
+assert.match(smokeSource, /function smokeOpenTile\(t\)\{\s*return isSmokePorousTile\(t\);\s*\}/, 'black smoke delegates tile porosity to material physics');
 assert.match(pumpSource, /import \{ isGasTile, isWaterFillTile \} from '\.\/material_physics\.js'/, 'fluid pumps import shared gas and water receiver predicates');
 assert.match(pumpSource, /return isWaterFillTile\(t\);/, 'pump outlets use the same water-fill predicate as natural water');
 assert.match(windSource, /isWindExposureBlockerTile/, 'wind exposure uses shared material physics predicates');
@@ -840,7 +851,7 @@ assert.match(weaponsSource, /if\(isBlastProtectedTile\(t\)\) continue;/, 'gas ex
 assert.match(weaponsSource, /if\(!isCondensedWaterTargetTile\(t\)\) return;/, 'hose condensation uses shared condensate target predicates');
 assert.match(weaponsSource, /function flameHeatRayPasses\(t\)\{\s*return isHeatRayPassableTile\(t\);\s*\}/, 'flame heat rays use shared material passability');
 assert.match(weaponsSource, /function arrowPierceableTile\(t\)\{\s*return isIridiumArrowPierceableTile\(t\);\s*\}/, 'iridium arrow piercing does not keep a private material list');
-assert.match(bossSource, /import \{ isBlastProtectedTile, isCreatureOpenTile, isFoliageTile \} from '\.\/material_physics\.js'/, 'bosses import shared material collision and damage predicates');
+assert.match(bossSource, /import \{[^}]*isBlastProtectedTile[^}]*isCreatureOpenTile[^}]*isFoliageTile[^}]*\} from '\.\/material_physics\.js'/, 'bosses import shared material collision and damage predicates');
 assert.match(bossSource, /function openT\(t\)\{ return isCreatureOpenTile\(t\); \}/, 'boss collision uses shared creature-open predicates');
 assert.match(bossSource, /function isLeafTile\(t\)\{ return isFoliageTile\(t\); \}/, 'boss feeding text and nutrition uses shared foliage predicates');
 assert.match(bossSource, /if\(isBlastProtectedTile\(t\)\) continue;/, 'boss heart blasts do not keep a private blast-protection list');

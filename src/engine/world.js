@@ -6,10 +6,8 @@ import {
   isDoorTile,
   isGeneratedStructureReplaceableTile,
   isLavaExposureOpenTile,
-  isObjectFootingTile,
   isPlayerBuiltMaterial,
   isReplaceableNaturalOpenTile,
-  isRockStructuralMaterial,
   isTrapdoorTile
 } from './material_physics.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
@@ -28,8 +26,15 @@ window.MM = window.MM || {};
   const world = new Map();
   const versions = new Map(); // chunk key -> version number for render cache invalidation
   const modifiedChunks = new Set();
-  const infrastructure = new Map(); // "x,y" -> overlay tile stack (wire / copper cable / water pipe / ladder)
+  const infrastructure = new Map(); // "x,y" -> overlay tile stack (wire / copper cable / water pipe / ladders)
   const constructionBackground = new Map(); // "x,y" -> passable building support/decor tile
+  const isChestTile=t=>t===T.CHEST_COMMON||t===T.CHEST_UNCOMMON||t===T.CHEST_RARE||t===T.CHEST_EPIC||t===T.CHEST_LEGENDARY;
+  const chestTierForTile=t=>t===T.CHEST_LEGENDARY?'legendary':t===T.CHEST_EPIC?'epic':t===T.CHEST_RARE?'rare':t===T.CHEST_UNCOMMON?'uncommon':'common';
+  function stripChestTiles(arr){
+    if(!arr || typeof arr.length!=='number') return arr;
+    for(let i=0;i<arr.length;i++) if(isChestTile(arr[i])) arr[i]=T.AIR;
+    return arr;
+  }
   // Generated interior backdrops (city building rooms, tunnels...) live in their
   // own per-chunk layer: derived deterministically with the chunk, never saved
   // (save-loaded chunks replay the pass), shown behind foreground air like
@@ -105,7 +110,8 @@ window.MM = window.MM || {};
   function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
   function tileIndex(x,y){ return y*CHUNK_W+x; }
   function getTileRaw(arr,lx,y){ return arr[tileIndex(lx,y)]; }
-  function isInfrastructureTile(t){ return t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.LADDER; }
+  function isLadderInfrastructureTile(t){ return t===T.LADDER || t===T.BEDROCK_LADDER; }
+  function isInfrastructureTile(t){ return t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || isLadderInfrastructureTile(t); }
   function isConstructionBackgroundTile(t){ return isPlayerBuiltMaterial(t) && !isDoorTile(t) && !isTrapdoorTile(t); }
   function markModifiedChunk(cx,version,sy){
     if(!isFinite(cx)) return;
@@ -318,10 +324,6 @@ window.MM = window.MM || {};
   function geologyRockTile(wx,y,depth,biome){
     return WORLD_LAYERS.legacyGeologyRockTile(WG,wx,y,depth,biome);
   }
-  function isCaveTreasureFloor(t){
-    return isRockStructuralMaterial(t) && isObjectFootingTile(t);
-  }
-
   function applyDevastatedCity(arr,cx,bgOnly){
     const WG=MM.worldGen; if(!WG || !WG.column) return;
     if(bgOnly && generatedBackground.has(ck(cx))) return;
@@ -337,6 +339,7 @@ window.MM = window.MM || {};
     const put=(wx,y,t,force)=>{
       if(wx<worldLeft || wx>worldRight || y<0 || y>=WORLD_H-3) return false;
       if(bgOnly) return true; // background replay: keep builder flow, touch no foreground
+      if(isChestTile(t)) return false;
       const lx=wx-worldLeft, idx=tileIndex(lx,y), cur=arr[idx];
       if(force || isGeneratedStructureReplaceableTile(cur)){
         arr[idx]=t;
@@ -1246,7 +1249,7 @@ window.MM = window.MM || {};
       t===T.SAND || t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.CLAY || t===T.WET_CLAY ||
       t===T.DIRT || t===T.MUD || t===T.COAL || t===T.ICE ||
       t===T.GLASS || t===T.OBSIDIAN || t===T.STEEL || t===T.BRICK || t===T.CHIMNEY ||
-      t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.LADDER;
+      t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || isLadderInfrastructureTile(t);
   }
   function protectedAtlantisTile(t){
     return t===T.BEDROCK || t===T.LAVA || t===T.ALTAR || t===T.VOLCANO_MASTER_STONE ||
@@ -1336,6 +1339,7 @@ window.MM = window.MM || {};
       wx=Math.floor(wx); y=Math.floor(y);
       const lx=wx-worldLeft;
       if(lx<0 || lx>=CHUNK_W || y<0 || y>=WORLD_H) return false;
+      if(isChestTile(t)) return false;
       const sealTop=gen.oceanSealTop(wx);
       if(sealTop==null || y>=sealTop) return false;
       const i=tileIndex(lx,y);
@@ -1603,37 +1607,7 @@ window.MM = window.MM || {};
         }
         arr[tileIndex(lx,y)]=t;
       }
-      // Cave treasure: rare chests on deep cave floors reward spelunking
-      if(WG.randSeed(wx*4.21+9.7)<0.05){
-        for(let y=WORLD_H-5;y>ground+10;y--){
-          const idx=tileIndex(lx,y);
-          if(arr[idx]===T.AIR && isCaveTreasureFloor(arr[tileIndex(lx,y+1)])){
-            const rr=WG.randSeed(wx*6.13+1.7);
-            let ct=T.CHEST_COMMON;
-            if(y>WORLD_H-40){ if(rr>0.6) ct=T.CHEST_EPIC; else if(rr>0.25) ct=T.CHEST_RARE; }
-            else if(rr>0.65) ct=T.CHEST_RARE;
-            arr[idx]=ct; break;
-          }
-        }
-      }
     }
-    // Chest placement on surface blocks (above ground) using chestPlace probability.
-    // Ocean islets are treasure islands: denser chests with far richer tiers, so
-    // crossing the sealed deep water by boat pays off.
-    if(MM.chests){ for(let lx=0; lx<CHUNK_W; lx++){ const wx=cx*CHUNK_W+lx;
-        const col=WG.column(wx);
-        const isle=!!(col.island && col.elev>-1);
-        const place=(WG.chestPlace && WG.chestPlace(wx)) || (isle && WG.chestNoise && WG.chestNoise(wx)>0.86);
-        if(place){ const surface=colHeight(wx); const placeY=surface-1; if(placeY>=0){
-          const below=arr[tileIndex(lx,surface)];
-          // only on solid land surfaces (skip water, pools, carved cave mouths)
-          if(below===T.GRASS||below===T.GRASS_SNOW||below===T.SAND||below===T.FROZEN_SAND||below===T.FROZEN_DIRT||below===T.SNOW||below===T.STONE){
-            const r=WG.chestNoise(wx); let chestT=T.CHEST_COMMON;
-            if(isle){ chestT = r>0.975 ? T.CHEST_LEGENDARY : r>0.93 ? T.CHEST_EPIC : T.CHEST_RARE; }
-            else if(r>0.997) chestT=T.CHEST_LEGENDARY; else if(r>0.985) chestT=T.CHEST_EPIC; else if(r>0.955) chestT=T.CHEST_RARE; else if(r>0.948) chestT=T.CHEST_UNCOMMON;
-            const idx=tileIndex(lx,placeY); if(arr[idx]===T.AIR){ arr[idx]=chestT; }
-          }
-        } } } }
     // Trees are populated after base terrain; tree code uses deterministic RNG so caching heights is safe
     if(MM.trees && MM.trees.populateChunk){ MM.trees.populateChunk(arr,cx); }
     applyUndergroundBiomeDressing(arr,cx);
@@ -1657,6 +1631,9 @@ window.MM = window.MM || {};
     try{ if(CENTER_GUARDIAN && CENTER_GUARDIAN.applyToChunk) CENTER_GUARDIAN.applyToChunk(arr,cx); }catch(e){}
     if(AFTERMATH && AFTERMATH.applyToChunk) AFTERMATH.applyToChunk(arr,cx);
     try{ if(MM.trees && MM.trees.pruneChunk) MM.trees.pruneChunk(arr,cx); }catch(e){}
+    // Chests are reward entities now, never procedural terrain. This final
+    // scrub also covers third-party/story structure passes applied above.
+    stripChestTiles(arr);
     world.set(k,arr); markModifiedChunk(cx,0);
     if(world.size>CHUNK_CAP) evictFarChunks();
     auditCityStructuralStability(arr,cx);
@@ -1680,7 +1657,7 @@ window.MM = window.MM || {};
     }
     try{ if(UNDERGROUND && UNDERGROUND.applyToSection) UNDERGROUND.applyToSection(arr,cx,sy); }catch(e){}
     try{ if(SKY_GUARDIAN && SKY_GUARDIAN.applyToSection) SKY_GUARDIAN.applyToSection(arr,cx,sy); }catch(e){}
-    return arr;
+    return stripChestTiles(arr);
   }
   // --- Hot-path section-view cache -------------------------------------------
   // getTile runs hundreds of thousands of times per second (fluid sim, fire glow,
@@ -1882,7 +1859,7 @@ window.MM = window.MM || {};
     const tiers=2+Math.floor(r(4.4)*3);
     const variant=Math.floor(r(5.5)*4);
     const ops=[];
-    const put=(x,y,t,force=true)=>ops.push({x,y,t,f:force?1:0});
+    const put=(x,y,t,force=true)=>{ if(!isChestTile(t)) ops.push({x,y,t,f:force?1:0}); };
     const archStep=variant===2?5:4;
     for(let dx=-half; dx<=half; dx++){
       const wx=ax+dx;
@@ -1985,7 +1962,7 @@ window.MM = window.MM || {};
     const wx0=cx*CHUNK_W+lx0;
     const col=WG.column(wx0);
     if(col.volcano) return;
-    const put=(lx,y,t)=>{ if(lx>=0&&lx<CHUNK_W&&y>=0&&y<WORLD_H){ const i=tileIndex(lx,y); if(isReplaceableNaturalOpenTile(arr[i],false)||t===T.AIR) arr[i]=t; } };
+    const put=(lx,y,t)=>{ if(isChestTile(t)) return; if(lx>=0&&lx<CHUNK_W&&y>=0&&y<WORLD_H){ const i=tileIndex(lx,y); if(isReplaceableNaturalOpenTile(arr[i],false)||t===T.AIR) arr[i]=t; } };
     if(col.biome===5){
       // shipwreck: a broken wooden hull resting on the seabed with an epic chest
       const s=col.row;
@@ -2040,6 +2017,7 @@ window.MM = window.MM || {};
     const arr=Array.isArray(v) ? v : [v];
     for(const t of arr){
       if(!isInfrastructureTile(t) || out.includes(t)) continue;
+      if(isLadderInfrastructureTile(t) && out.some(isLadderInfrastructureTile)) continue;
       out.push(t);
     }
     return out;
@@ -2127,6 +2105,7 @@ window.MM = window.MM || {};
     try{ if(MM.trees && MM.trees.onTileChanged) MM.trees.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.meat && MM.meat.onTileChanged) MM.meat.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.gases && MM.gases.onTileChanged) MM.gases.onTileChanged(x,y,old,v); }catch(e){}
+    try{ if(MM.smoke && MM.smoke.onTileChanged) MM.smoke.onTileChanged(x,y,old,v,getTile); }catch(e){}
     try{ if(MM.dynamo && MM.dynamo.onTileChanged) MM.dynamo.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.solar && MM.solar.onTileChanged) MM.solar.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.teleporters && MM.teleporters.onTileChanged) MM.teleporters.onTileChanged(x,y,old,v); }catch(e){}
@@ -2158,6 +2137,7 @@ window.MM = window.MM || {};
     let next;
     if(item===T.AIR) next=[];
     else if(removeOnly) next=old.filter(t=>t!==item);
+    else if(isLadderInfrastructureTile(item) && old.some(isLadderInfrastructureTile)) next=old.slice();
     else next=old.includes(item) ? old.slice() : old.concat(item);
     if(old.length===next.length && old.every((t,i)=>t===next[i])) return false;
     if(!next.length) infrastructure.delete(k);
@@ -2200,6 +2180,17 @@ window.MM = window.MM || {};
   function setTileInternal(x,y,v,transient){
     if(!worldYInBounds(y) || !isFinite(x) || Math.abs(x)>MAX_COORD) return;
     if(isInfrastructureTile(v)){ setInfrastructureInternal(x,y,v,transient); return; }
+    if(isChestTile(v)){
+      // Runtime reward code written against the old tile API is upgraded in
+      // place to a physical chest instead of reintroducing a solid block. This
+      // compatibility path must never erase terrain already occupying the cell.
+      try{
+        if(MM.drops && typeof MM.drops.spawnChest==='function'){
+          MM.drops.spawnChest(Math.floor(x)+0.5,Math.floor(y)+0.35,chestTierForTile(v),{source:'legacy_reward'});
+        }
+      }catch(e){}
+      return;
+    }
     const cx=Math.floor(x/CHUNK_W);
     const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W;
     y=Math.floor(y);
@@ -2285,7 +2276,9 @@ window.MM = window.MM || {};
   // Save loading replaces whole chunk arrays: any cached section view over the
   // old array must be dropped or reads would silently hit the orphaned buffer.
   function setChunkArray(key,arr){
-    world.set(key,arr); sectionViews.clear();
+    // Old saves may contain chest blocks. They are intentionally removed, not
+    // converted: only fresh mob/reward drops populate physical chests now.
+    world.set(key,stripChestTiles(arr)); sectionViews.clear();
     // Save-loaded base chunks skip ensureChunk, so replay the deterministic
     // city pass in background-only mode to rebuild interior backdrops.
     if(typeof key==='string' && /^c-?\d+$/.test(key)){

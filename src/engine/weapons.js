@@ -11,6 +11,7 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, thawedEarthVariant, isFroze
 import { fire as FIRE } from './fire.js';
 import { isBlastProtectedTile, isCondensedWaterTargetTile, isHeatRayPassableTile, isIridiumArrowPierceableTile, isSolidCollisionTile as isSolid } from './material_physics.js';
 import { reactions as REACTIONS } from './reactions.js';
+import { damageBlastCreatures } from './explosion_damage.js';
 (function(){
   window.MM = window.MM || {};
 
@@ -19,6 +20,7 @@ import { reactions as REACTIONS } from './reactions.js';
   const puffs=[];  // {kind,x,y,vx,vy,life,total,dps}
   const electricBeams=[]; // {x1,y1,x2,y2,t,life,hit,blocked,phase}
   const ARROW_SPEED=22, ARROW_GRAV=14, ARROW_LIFE=5, ARROW_STUCK=4, ARROW_RECOVER_SECONDS=12, MAX_ARROWS=64;
+  const MAX_ARROW_ENTITIES=128; // embedded arrows do not consume the whole in-flight budget
   const ARROW_EXPIRY_FALL_SECONDS=0.8, MAX_ARROW_FRAGMENTS=96;
   const ARROW_DAMAGE_FALLOFF={close:1, mid:0.6, long:0.33};
   const BOW_CHARGE_SECONDS=4;
@@ -358,7 +360,25 @@ import { reactions as REACTIONS } from './reactions.js';
     return {dx:v.dx*ca - v.dy*sa, dy:v.dx*sa + v.dy*ca};
   }
   function pushArrow(a){
-    if(arrows.length>=MAX_ARROWS) arrows.shift();
+    let moving=0;
+    for(const existing of arrows) if(existing && !existing.embeddedMob) moving++;
+    let evict=-1;
+    if(moving>=MAX_ARROWS) evict=arrows.findIndex(existing=>existing && !existing.embeddedMob);
+    else if(arrows.length>=MAX_ARROW_ENTITIES) evict=arrows.findIndex(existing=>existing && !existing.embeddedMob);
+    if(evict<0 && arrows.length>=MAX_ARROW_ENTITIES){
+      // Every retained entry is embedded in a living body. Preserve that
+      // lifecycle promise; reject the incoming shaft with visible breakage
+      // instead of making an older body-arrow disappear before its mob dies.
+      if(a && arrowResourceKey(a)) spawnArrowBreakFx(a,'capacity');
+      return null;
+    }
+    if(evict>=0){
+      const old=arrows[evict];
+      // Capacity pressure is rare, but it must never make a recoverable arrow
+      // blink out. Show the same physical break-apart feedback as an impact.
+      if(old && arrowResourceKey(old)) spawnArrowBreakFx(old,'capacity');
+      arrows.splice(evict,1);
+    }
     a.travel=Number.isFinite(a.travel) ? Math.max(0,a.travel) : 0;
     if(!Number.isFinite(a.maxTravel) || !(a.maxTravel>0)){
       a.maxTravel=Math.max(1,Math.hypot(a.vx||0,a.vy||0)*Math.max(0.1,a.life||ARROW_LIFE));
@@ -503,11 +523,13 @@ import { reactions as REACTIONS } from './reactions.js';
       }
     }catch(e){}
   }
-  function attachArrowToMob(a,mob){
+  function attachArrowToMob(a,mob,family,isAlive){
     if(!arrowResourceKey(a) || !mob || !Number.isFinite(mob.x) || !Number.isFinite(mob.y)) return false;
     const clamp=(v,min,max)=>Math.max(min,Math.min(max,Number(v)||0));
     a.ang=Math.atan2(a.vy||0,a.vx||0);
     a.embeddedMob=mob;
+    a.embeddedFamily=family||'mob';
+    a.embeddedAlive=typeof isAlive==='function' ? isAlive : null;
     a.embeddedOffsetX=clamp(a.x-mob.x,-0.55,0.55);
     a.embeddedOffsetY=clamp(a.y-mob.y,-0.55,0.45);
     a.x=mob.x+a.embeddedOffsetX;
@@ -519,9 +541,12 @@ import { reactions as REACTIONS } from './reactions.js';
   }
   function embeddedMobAlive(a){
     const mob=a && a.embeddedMob;
-    if(!mob || !(mob.hp>0) || !Number.isFinite(mob.x) || !Number.isFinite(mob.y)) return false;
+    if(!mob || !(mob.hp>0) || mob.dead || mob.destroyed || !Number.isFinite(mob.x) || !Number.isFinite(mob.y)) return false;
+    if(typeof a.embeddedAlive==='function'){
+      try{ return !!a.embeddedAlive(mob); }catch(e){ return false; }
+    }
     try{
-      if(MM.mobs && typeof MM.mobs.isLiving==='function') return !!MM.mobs.isLiving(mob);
+      if(a.embeddedFamily==='mob' && MM.mobs && typeof MM.mobs.isLiving==='function') return !!MM.mobs.isLiving(mob);
     }catch(e){ return false; }
     return true;
   }
@@ -530,6 +555,7 @@ import { reactions as REACTIONS } from './reactions.js';
     const carryVx=mob && Number.isFinite(mob.vx) ? mob.vx : 0;
     const carryVy=mob && Number.isFinite(mob.vy) ? mob.vy : 0;
     a.embeddedMob=null;
+    a.embeddedAlive=null;
     a.stuck=false;
     a.stuckT=ARROW_STUCK;
     a.dropOnLand=true;
@@ -618,11 +644,12 @@ import { reactions as REACTIONS } from './reactions.js';
     }catch(e){}
     return false;
   }
-  function openChestFromWeaponHit(tx,ty,opts){
+  function openChestFromWeaponHit(wx,wy,opts){
     const chests=MM.chests;
     if(!chests) return false;
     try{
-      if(typeof chests.openFromWeaponHitAt==='function') return !!chests.openFromWeaponHitAt(tx,ty,Object.assign({source:'hero'},opts||{}));
+      if(typeof chests.openFromWeaponHitAt==='function') return !!chests.openFromWeaponHitAt(wx,wy,Object.assign({source:'hero'},opts||{}));
+      const tx=Math.floor(wx), ty=Math.floor(wy);
       const t=typeof lastGetTile==='function' ? lastGetTile(tx,ty) : null;
       if(typeof chests.openChestAt==='function' && t!=null && INFO[t] && INFO[t].chestTier) return !!chests.openChestAt(tx,ty);
     }catch(e){}
@@ -742,13 +769,13 @@ import { reactions as REACTIONS } from './reactions.js';
     const w=equippedWeapon();
     const {px,tx,ty}=meleeTargetTile(player,aimX,aimY,meleeReach(w));
     const bonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
-    const chestHit=openChestFromWeaponHit(tx,ty,{kind:'melee'});
+    const chestHit=openChestFromWeaponHit(tx+0.5,ty+0.5,{kind:'melee'});
     const collected=chestHit ? false : collectLooseTarget(tx,ty);
     const hit=chestHit || collected
            || (MM.guardianLairs && MM.guardianLairs.attackAt && MM.guardianLairs.attackAt(tx,ty,bonus))
            || (MM.undergroundBoss && MM.undergroundBoss.attackAt && MM.undergroundBoss.attackAt(tx,ty,bonus))
            || (MM.skyGuardian && MM.skyGuardian.attackAt && MM.skyGuardian.attackAt(tx,ty,bonus))
-           || (MM.bosses && MM.bosses.attackAt && MM.bosses.attackAt(tx,ty,bonus))
+           || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,Math.max(1,2+bonus),{kind:'melee',source:'hero'}))
            || (MM.ufo && MM.ufo.attackAt && MM.ufo.attackAt(tx,ty,bonus))
            || (MM.invasions && MM.invasions.attackAt && MM.invasions.attackAt(tx,ty,bonus))
            || (MM.mechs && MM.mechs.attackAt && MM.mechs.attackAt(tx,ty,bonus,{source:'hero'}))
@@ -1001,7 +1028,7 @@ import { reactions as REACTIONS } from './reactions.js';
       const x=sx+v.dx*d, y=sy+v.dy*d;
       const tx=Math.floor(x), ty=Math.floor(y);
       const t=tileGetter ? tileGetter(tx,ty) : null;
-      if(t != null && INFO[t] && INFO[t].chestTier && openChestFromWeaponHit(tx,ty,{kind:'electric',specialAttack:!!charge})){
+      if(openChestFromWeaponHit(x,y,{kind:'electric',specialAttack:!!charge,hitRadius:0.12})){
         ex=x; ey=y; hit=true; chestHit=true;
         break;
       }
@@ -1077,7 +1104,7 @@ import { reactions as REACTIONS } from './reactions.js';
         else if(kind==='flame' && MM.undergroundBoss && MM.undergroundBoss.heatAt && MM.undergroundBoss.heatAt(sx,sy,lastGetTile,lastSetTile,opts)) hit=true;
         else if(kind==='gas' && MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy, dps*0.2, opts)) hit=true;
         else if(kind!=='hose' && MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(sx,sy, dps*0.2, opts)) hit=true;
-        else if(kind!=='hose' && MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy, dps*0.2)) hit=true;
+        else if(kind!=='hose' && MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy, dps*0.2, opts)) hit=true;
         else if(kind!=='hose' && MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy, dps*0.2)) hit=true;
         else if(kind!=='hose' && MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(sx,sy, dps*0.2)) hit=true;
         if(hit){ noteWeaponCombatHit(sx+0.5,sy+0.2,dps*0.2,opts); addUltCharge(0.03); break; }
@@ -1160,7 +1187,7 @@ import { reactions as REACTIONS } from './reactions.js';
       else if(kind==='flame' && MM.undergroundBoss && MM.undergroundBoss.heatAt && MM.undergroundBoss.heatAt(sx,sy,lastGetTile,lastSetTile,opts)) hit=true;
       else if(kind==='gas' && MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(sx,sy,dps*0.18,opts)) hit=true;
       else if(kind!=='hose' && MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(sx,sy,dps*0.18,opts)) hit=true;
-      else if(kind!=='hose' && MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy,dps*0.18)) hit=true;
+      else if(kind!=='hose' && MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy,dps*0.18,opts)) hit=true;
       else if(kind!=='hose' && MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy,dps*0.18)) hit=true;
       else if(kind!=='hose' && MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(sx,sy,dps*0.18)) hit=true;
       if(hit){ noteWeaponCombatHit(sx+0.5,sy+0.2,dps*0.18,opts,{major:true}); break; }
@@ -1175,13 +1202,13 @@ import { reactions as REACTIONS } from './reactions.js';
     const chargeFx=Math.max(0,Math.min(1,Number(charge)||0));
     const dmg=Math.max(1,Math.round((3 + bonus + ((w && w.attackDamage)||3))*roll.mult));
     let hit=false;
-    const chestHit=openChestFromWeaponHit(tx,ty,{kind:'melee',specialAttack:true});
+    const chestHit=openChestFromWeaponHit(tx+0.5,ty+0.5,{kind:'melee',specialAttack:true});
     const collected=chestHit ? false : collectLooseTarget(tx,ty);
     hit = !!(chestHit || collected || (MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,dmg,{kind:'melee',source:'hero'}))
       || (MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,dmg))
       || (MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(tx,ty,dmg))
       || (MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,dmg,{kind:'melee',source:'hero'}))
-      || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,dmg))
+      || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,dmg,{kind:'melee',source:'hero',specialAttack:true,luckyStrike:roll.lucky}))
       || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,dmg))
       || (MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(tx,ty,dmg))
       || (MM.mechs && MM.mechs.damageAt && MM.mechs.damageAt(tx,ty,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky}))
@@ -1247,8 +1274,8 @@ import { reactions as REACTIONS } from './reactions.js';
         const tx=bx+dx, ty=by+dy;
         if(!explosionEditableY(ty)) continue;
         const t=getTile(tx,ty);
-        if(INFO[t] && INFO[t].chestTier && opts.source!=='mob' && opts.source!=='enemy'
-          && openChestFromWeaponHit(tx,ty,{kind:'explosion',specialAttack:true})){
+        if(opts.source!=='mob' && opts.source!=='enemy'
+          && openChestFromWeaponHit(tx+0.5,ty+0.5,{kind:'explosion',specialAttack:true,hitRadius:0.72})){
           continue;
         }
         if(isBlastProtectedTile(t)) continue;
@@ -1264,15 +1291,15 @@ import { reactions as REACTIONS } from './reactions.js';
       for(let k=0;k<6;k++){ const a=Math.random()*6.283; FIRE.ignite(Math.round(bx+Math.cos(a)*R), Math.round(by+Math.sin(a)*R), getTile, setTile); }
     }
     // creatures, bosses, plants
-    try{ if(MM.mobs && MM.mobs.blastRadius) MM.mobs.blastRadius(wx,wy,R+1.5,14,{source:'hero'}); }catch(e){}
-    try{ if(MM.mechs && MM.mechs.blastRadius) MM.mechs.blastRadius(wx,wy,R+1.5,14,{source:'hero'}); }catch(e){}
-    try{ if(MM.centerGuardian && MM.centerGuardian.damageAt){ const mirrorOpts={kind:'explosion',source:'hero'}; MM.centerGuardian.damageAt(bx,by,14,mirrorOpts); MM.centerGuardian.damageAt(bx+1,by,9,mirrorOpts); MM.centerGuardian.damageAt(bx-1,by,9,mirrorOpts); } }catch(e){}
+    const blastSource=typeof opts.source==='string' && opts.source ? opts.source : 'hero';
+    const blastCause=typeof opts.cause==='string' && opts.cause ? opts.cause : 'weapon_blast';
+    damageBlastCreatures(MM,wx,wy,R+1.5,14,{source:blastSource,cause:blastCause});
+    try{ if(MM.centerGuardian && MM.centerGuardian.damageAt){ const mirrorOpts={kind:'explosion',source:blastSource,cause:blastCause}; MM.centerGuardian.damageAt(bx,by,14,mirrorOpts); MM.centerGuardian.damageAt(bx+1,by,9,mirrorOpts); MM.centerGuardian.damageAt(bx-1,by,9,mirrorOpts); } }catch(e){}
     try{ if(MM.guardianLairs && MM.guardianLairs.damageAt){ MM.guardianLairs.damageAt(bx,by,14); MM.guardianLairs.damageAt(bx+1,by,9); MM.guardianLairs.damageAt(bx-1,by,9); MM.guardianLairs.damageAt(bx,by-1,9); } }catch(e){}
     try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt){ const gasOpts=streamDamageOpts('gas',{x:wx,y:wy,type:'gasExplosion'}); MM.undergroundBoss.damageAt(bx,by,14,gasOpts); MM.undergroundBoss.damageAt(bx+1,by,9,gasOpts); MM.undergroundBoss.damageAt(bx-1,by,9,gasOpts); MM.undergroundBoss.damageAt(bx,by-1,9,gasOpts); } }catch(e){}
     try{ if(MM.skyGuardian && MM.skyGuardian.damageAt){ const gasOpts=streamDamageOpts('gas',{x:wx,y:wy,type:'gasExplosion'}); MM.skyGuardian.damageAt(bx,by,14,gasOpts); MM.skyGuardian.damageAt(bx+1,by,9,gasOpts); MM.skyGuardian.damageAt(bx-1,by,9,gasOpts); MM.skyGuardian.damageAt(bx,by-1,9,gasOpts); } }catch(e){}
-    try{ if(MM.bosses && MM.bosses.damageAt){ MM.bosses.damageAt(bx,by,12); MM.bosses.damageAt(bx+1,by,8); MM.bosses.damageAt(bx-1,by,8); MM.bosses.damageAt(bx,by-1,8); } }catch(e){}
+    try{ if(MM.bosses && MM.bosses.damageAt){ const blastOpts={kind:'explosion',source:blastSource,cause:blastCause,terrainDamage:true}; MM.bosses.damageAt(bx,by,12,blastOpts); MM.bosses.damageAt(bx+1,by,8,blastOpts); MM.bosses.damageAt(bx-1,by,8,blastOpts); MM.bosses.damageAt(bx,by-1,8,blastOpts); } }catch(e){}
     try{ if(MM.ufo && MM.ufo.damageAt){ MM.ufo.damageAt(bx,by,14); MM.ufo.damageAt(bx,by-1,8); } }catch(e){}
-    try{ if(MM.invasions && MM.invasions.blastRadius) MM.invasions.blastRadius(wx,wy,R+1.25,14,{source:'hero'}); }catch(e){}
     try{ if(MM.plants && MM.plants.scorchAt) MM.plants.scorchAt(wx,wy,R+1); }catch(e){}
     // the hero standing close is hurt and hurled (central damageHero handles
     // i-frames/knockback/death; explosions just bring bigger numbers)
@@ -1548,6 +1575,19 @@ import { reactions as REACTIONS } from './reactions.js';
     }catch(e){}
     return false;
   }
+  function finishIridiumPierce(a,tx,ty){
+    if(!a || a.tier!=='iridium' || !(a.pierceLeft>0)) return false;
+    try{
+      const p=MM.particles, tile=MM.TILE||20;
+      if(p && p.spawnSparks) p.spawnSparks((tx+0.5)*tile,(ty+0.5)*tile,'rare',8);
+    }catch(e){}
+    a.pierceLeft--;
+    a.dmg=Math.max(1,Math.round((a.dmg||1)*0.78));
+    a.vx*=0.92;
+    a.vy*=0.92;
+    iridiumPierces++;
+    return true;
+  }
   function tryIridiumPierceBlock(a,tx,ty,t,getTile,setTile){
     if(!a || a.tier!=='iridium' || !(a.pierceLeft>0) || typeof setTile!=='function') return false;
     if(t===T.ANTIMATTER_CRYSTAL){
@@ -1561,16 +1601,7 @@ import { reactions as REACTIONS } from './reactions.js';
     try{ if(MM.fallingSolids && MM.fallingSolids.onTileRemoved) MM.fallingSolids.onTileRemoved(tx,ty); }catch(e){}
     try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(tx,ty,getTile); }catch(e){}
     markWorldChanged();
-    try{
-      const p=MM.particles, tile=MM.TILE||20;
-      if(p && p.spawnSparks) p.spawnSparks((tx+0.5)*tile,(ty+0.5)*tile,'rare',8);
-    }catch(e){}
-    a.pierceLeft--;
-    a.dmg=Math.max(1,Math.round((a.dmg||1)*0.78));
-    a.vx*=0.92;
-    a.vy*=0.92;
-    iridiumPierces++;
-    return true;
+    return finishIridiumPierce(a,tx,ty);
   }
   function arrowRangeBand(a){
     const max=Number.isFinite(a && a.maxTravel) && a.maxTravel>0 ? a.maxTravel : 1;
@@ -1904,7 +1935,7 @@ import { reactions as REACTIONS } from './reactions.js';
         // Creature hit (mob, boss part or a hovering saucer)
         const hitDmg=arrowDamageAtRange(a);
         let undergroundResult=false;
-        const arrowOpts={source:'hero',kind:'arrow',x:a.x,y:a.y,vx:a.vx,vy:a.vy,tier:a.tier,fire:!!a.fire,specialAttack:!!a.specialAttack,luckyStrike:!!a.luckyStrike};
+        const arrowOpts={source:'hero',kind:'arrow',x:a.x,y:a.y,vx:a.vx,vy:a.vy,tier:a.tier,pierceLeft:a.pierceLeft||0,fire:!!a.fire,specialAttack:!!a.specialAttack,luckyStrike:!!a.luckyStrike};
         if(!a.spent && (a.ignoreUndergroundT||0)<=0 && MM.undergroundBoss && MM.undergroundBoss.damageAt){
           undergroundResult=MM.undergroundBoss.damageAt(tx,ty,hitDmg,arrowOpts);
           if(undergroundResult==='bounce'){
@@ -1913,18 +1944,50 @@ import { reactions as REACTIONS } from './reactions.js';
           }
         }
         const creatureGate=!a.spent && (Number(a.pierceGate)||0)<= (a.travel||0);
-        let hitMob=null;
-        const mobArrowOpts=Object.assign({},arrowOpts,{onTarget:(mob)=>{ hitMob=mob; }});
-        if(creatureGate && ((MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,hitDmg,arrowOpts))
-        || (MM.mechs && MM.mechs.damageAt && MM.mechs.damageAt(tx,ty,hitDmg,arrowOpts))
-        || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,hitDmg,mobArrowOpts))
-        || (MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,hitDmg))
-        || undergroundResult
-        || (MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,hitDmg,arrowOpts))
-        || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,hitDmg))
-        || (MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(tx,ty,hitDmg))
-        || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,hitDmg))
-        || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,hitDmg)))){
+        let hitMob=null, hitMobFamily='', hitMobAlive=null;
+        const targetArrowOpts=Object.assign({},arrowOpts,{onTarget:(target,family,isAlive)=>{
+          hitMob=target;
+          hitMobFamily=family||'mob';
+          hitMobAlive=typeof isAlive==='function' ? isAlive : null;
+        }});
+        const beforeRoamingBoss=creatureGate && ((MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,hitDmg,arrowOpts))
+          || (MM.mechs && MM.mechs.damageAt && MM.mechs.damageAt(tx,ty,hitDmg,targetArrowOpts))
+          || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,hitDmg,targetArrowOpts))
+          || (MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,hitDmg))
+          || undergroundResult
+          || (MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,hitDmg,arrowOpts)));
+        let roamingBossResult=false;
+        if(creatureGate && !beforeRoamingBoss && MM.bosses && MM.bosses.damageAt){
+          roamingBossResult=MM.bosses.damageAt(tx,ty,hitDmg,arrowOpts);
+        }
+        // Irydium treats a boss body tile exactly like a pierceable world block:
+        // remove it, spend one penetration, lose momentum, and keep flying.
+        if(roamingBossResult==='pierced' && finishIridiumPierce(a,tx,ty)){
+          a.pierceGate=(a.travel||0)+0.55;
+          continue;
+        }
+        if(roamingBossResult==='blocked'){
+          if(a.stickyFuse){
+            a.x-=a.vx*sdt*0.4; a.y-=a.vy*sdt*0.4;
+            a.stuck=true; a.stuckT=a.stickyFuse;
+          } else if(a.snowball || a.rock){
+            a.x-=a.vx*sdt*0.5; a.y-=a.vy*sdt*0.5;
+            splatProjectile(a,getTile,setTile);
+            arrows.splice(i,1);
+          } else if(a.dropOnLand && spawnDroppedArrowPickup(a)){
+            arrows.splice(i,1);
+          } else if(breakArrowOnImpact(a,'terrain')){
+            arrows.splice(i,1);
+          } else {
+            stickArrowForRecovery(a,sdt);
+          }
+          break;
+        }
+        const creatureHit=creatureGate && (beforeRoamingBoss || roamingBossResult
+          || (MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(tx,ty,hitDmg,targetArrowOpts))
+          || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,hitDmg))
+          || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,hitDmg)));
+        if(creatureHit){
           if(a.specialAttack || a.luckyStrike) noteWeaponCombatHit(a.x,a.y-0.18,hitDmg,arrowOpts,{major:!!a.power,tier:a.tier});
           if(a.fire && MM.mobs && MM.mobs.igniteAt) MM.mobs.igniteAt(tx,ty,{dur:2.5,dps:2,source:'hero',specialAttack:!!a.specialAttack});
           if(a.stagger && MM.mobs && MM.mobs.chillAt) MM.mobs.chillAt(tx,ty,{dur:a.stagger,source:'hero',cause:'stagger'}); // stone arrows stop the target in its tracks
@@ -1941,7 +2004,7 @@ import { reactions as REACTIONS } from './reactions.js';
             a.pierceGate=(a.travel||0)+1.2; // clear the current body before the next hit registers
             continue;
           }
-          if(hitMob && attachArrowToMob(a,hitMob)){
+          if(hitMob && attachArrowToMob(a,hitMob,hitMobFamily,hitMobAlive)){
             // A lethal hit has no living body to hold the arrow for another
             // frame, so begin the corpse drop immediately.
             if(!embeddedMobAlive(a)) releaseArrowFromMob(a);
@@ -1951,7 +2014,7 @@ import { reactions as REACTIONS } from './reactions.js';
           arrows.splice(i,1); break;
         }
         const t=getTile(tx,ty);
-        if(!a.spent && INFO[t] && INFO[t].chestTier && openChestFromWeaponHit(tx,ty,{kind:a.thrown?'thrown':'arrow',specialAttack:!!a.specialAttack})){
+        if(!a.spent && openChestFromWeaponHit(a.x,a.y,{kind:a.thrown?'thrown':'arrow',specialAttack:!!a.specialAttack,hitRadius:0.12})){
           if(a.splat) splatProjectile(a,getTile,setTile);
           if(arrowResourceKey(a)){
             if(breakArrowOnImpact(a,'chest')) arrows.splice(i,1);
@@ -2029,7 +2092,7 @@ import { reactions as REACTIONS } from './reactions.js';
       const t=getTile(tx,ty);
       const info=INFO[t] || null;
       const hitWall=isSolid(t);
-      if(p.source==='hero' && info && info.chestTier && openChestFromWeaponHit(tx,ty,{kind:p.kind,specialAttack:!!p.specialAttack})){
+      if(p.source==='hero' && openChestFromWeaponHit(p.x,p.y,{kind:p.kind,specialAttack:!!p.specialAttack,hitRadius:0.16})){
         puffs.splice(i,1); continue;
       }
       if(p.kind==='flame' && applyBlockReaction('heat',tx,ty,getTile,setTile)){
@@ -2616,7 +2679,7 @@ import { reactions as REACTIONS } from './reactions.js';
     ghostFxState,ghostApplyFx,ghostStepFx,
     arrowInfo,setArrowPref,fuelInfo,thrownInfo,hudStatus,addUltCharge,
     metrics:()=>({arrows:arrows.length,arrowFragments:arrowFragments.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),ultCharge,bowCharge:bowChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
-    _debug:{arrows,arrowFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,waterHeat,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS}};
+    _debug:{arrows,arrowFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,pushArrow,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,waterHeat,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS}};
 })();
 // ESM export (progressive migration)
 export const weapons = (typeof window!=='undefined' && window.MM) ? window.MM.weapons : undefined;

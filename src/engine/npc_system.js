@@ -1,5 +1,6 @@
 import { T, WORLD_H } from '../constants.js';
 import { isNpcPassableTile, isSafeLandingFloorTile, isSolidCollisionTile as isSolid, isTrapdoorTile } from './material_physics.js';
+import { isLongCharacterSpeech, readableCharacterSpeechDuration } from './character_speech.js';
 
 function runtimeRoot(){ return (typeof window!=='undefined') ? window : globalThis; }
 function finite(v){ return typeof v==='number' && isFinite(v); }
@@ -441,6 +442,7 @@ function createQuestNpc(def){
     hp:maxHp,
     line:'',
     lineT:0,
+    lineLong:false,
     attackCd:0,
     hurtT:0,
     defeatedT:0,
@@ -560,8 +562,10 @@ function createQuestNpc(def){
   }
   function setLine(text,t,replace){
     state.line=textOf(text).slice(0,220);
-    const ttl=Math.max(0.2,Number(t)||3.5);
+    state.lineLong=isLongCharacterSpeech(state.line);
+    const ttl=readableCharacterSpeechDuration(Math.max(0.2,Number(t)||3.5),state.line);
     state.lineT=replace ? ttl : Math.max(state.lineT,ttl);
+    return ttl;
   }
   function textOf(value){
     if(Array.isArray(value)){
@@ -866,9 +870,7 @@ function createQuestNpc(def){
     state.talkIdx=(state.talkIdx|0)+1;
     state.lastTalkLine=text;
     setLine(text, 4.6, true);
-    state.talkT=4.6;
-    state.ai.mode='talk';
-    state.ai.t=Math.max(state.ai.t, 2.6);
+    state.talkT=state.lineT;
     return true;
   }
   function bodyCoversTile(tileX,tileY){
@@ -1016,6 +1018,13 @@ function createQuestNpc(def){
   }
   function behaviorStep(dt,player,getTile,setTile){
     const mv=state.move;
+    // Long dialogue owns the pose until its bubble disappears. Short barks can
+    // be delivered without interrupting a walk, jump, chore or combat reaction.
+    if(state.lineLong && state.lineT>0){
+      mv.vx=0;
+      if(player && finite(player.x)) mv.facing=player.x>=state.x?1:-1;
+      return;
+    }
     state.ai.t-=dt; state.ai.jumpCd=Math.max(0,(state.ai.jumpCd||0)-dt);
     // Resolve an in-progress chore.
     if(state.ai.job){
@@ -1080,7 +1089,7 @@ function createQuestNpc(def){
     const dx=(player.x||0)-state.x;
     const dy=(player.y||0)-state.y;
     const adx=Math.abs(dx);
-    if(adx<combat.chaseRadius && Math.abs(dy)<combat.chaseY){
+    if(!(state.lineLong && state.lineT>0) && adx<combat.chaseRadius && Math.abs(dy)<combat.chaseY){
       state.x += Math.sign(dx||1)*Math.min(combat.speed*dt, Math.max(0,adx-combat.stopDistance));
       followGround(getTile,worldGen);
     }
@@ -1098,6 +1107,7 @@ function createQuestNpc(def){
     dt=Math.max(0,Math.min(0.1,Number(dt)||0));
     state.tick+=dt;
     state.lineT=Math.max(0,state.lineT-dt);
+    if(state.lineT<=0) state.lineLong=false;
     state.hurtT=Math.max(0,state.hurtT-dt);
     state.defeatedT=Math.max(0,state.defeatedT-dt);
     state.ambientT=Math.max(0,state.ambientT-dt);
@@ -1251,6 +1261,7 @@ function createQuestNpc(def){
     state.observe=cleanObserve(restored.observe);
     state.line='';
     state.lineT=0;
+    state.lineLong=false;
     state.attackCd=0;
     state.hurtT=0;
     state.defeatedT=Math.max(0,Number(restored.defeatedT)||0);
@@ -1268,6 +1279,7 @@ function createQuestNpc(def){
     state.hp=maxHp;
     state.line='';
     state.lineT=0;
+    state.lineLong=false;
     state.attackCd=0;
     state.hurtT=0;
     state.defeatedT=0;

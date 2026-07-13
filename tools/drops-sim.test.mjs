@@ -87,6 +87,15 @@ assert.equal(drops.metrics().active, 0, 'collected drop leaves the world');
 assert.equal(drops.wantsInteractKey(player), false, 'no drop in reach, no interact claim');
 assert.equal(drops.pickupNearest(player), false, 'nothing to pick up returns false');
 
+// Capacity pressure may drop a new ephemeral pickup, but it must never erase a
+// persistent reward chest to make room for meat or gear.
+drops.reset();
+for(let i=0;i<CFG.MAX_DROPS;i++) assert.ok(drops.spawnChest(1000+i,SURF-1,'common',{vx:0,vy:0,lootSeed:i+1,source:'capacity'}));
+const fullChestIds=drops._debug.list.map(d=>d.id);
+assert.equal(drops.spawnResource(20,SURF-1,'meatScrap',1,{vx:0,vy:0}),null,'ephemeral pickup is refused when only persistent chests fill the cap');
+assert.deepEqual(drops._debug.list.map(d=>d.id),fullChestIds,'capacity pressure preserves every existing physical chest');
+drops.reset();
+
 // Arrow recovery has its own readable magnet beat: the arrow-shaped pickup
 // keeps flying toward the hero briefly after inventory credit is granted.
 drops.reset();
@@ -402,7 +411,7 @@ assert.equal(played.length, 0, 'restored drops do not replay the fanfare');
   }
 }
 
-// --- chests burst into PHYSICAL drops (loot must be picked up) ---------------------
+// --- chests are heavy PHYSICAL objects, then burst into pickup drops ----------------
 {
   const world = (await import('../src/engine/world.js')).default;
   const { T: TT } = await import('../src/constants.js');
@@ -410,12 +419,25 @@ assert.equal(played.length, 0, 'restored drops do not replay the fanfare');
   MM.dynamicLoot = { capes: [], eyes: [], outfits: [], weapons: [], charms: [] };
   const gainedNow = []; MM.onLootGained = (items) => gainedNow.push(...items);
   const cx = 3000, cy = 20; // above any generated terrain: clean landing spot
+  // Compatibility hardening: an old reward path that still asks for a chest
+  // tile gets an entity, while the world cell remains empty.
   world.setTile(cx, cy, TT.CHEST_EPIC);
-  const res = MM.chests.openChestAt(cx, cy);
+  const physical = drops._debug.list.find(d => d.kind === 'chest');
+  assert.ok(physical && physical.tier === 'epic', 'legacy chest placement becomes a physical epic chest');
+  assert.equal(world.getTile(cx, cy), TT.AIR, 'no chest block is written into the world');
+  world.setTile(cx + 1, cy, TT.STONE);
+  const chestCountBeforeOccupiedPlacement = drops.metrics().chests;
+  world.setTile(cx + 1, cy, TT.CHEST_RARE);
+  assert.equal(world.getTile(cx + 1, cy), TT.STONE, 'legacy chest placement never erases terrain already occupying the cell');
+  assert.equal(drops.metrics().chests, chestCountBeforeOccupiedPlacement + 1, 'occupied legacy placement still emits its physical reward chest');
+  const occupiedReward=drops.chestAtPoint(cx+1.5,cy+0.35,0.1);
+  assert.ok(occupiedReward && occupiedReward.tier==='rare','occupied legacy placement keeps the requested chest tier');
+  drops.remove(occupiedReward);
+  assert.equal(physical.life, undefined, 'physical chests have no despawn clock');
+  const res = MM.chests.openDroppedChest(physical);
   assert.ok(res && res.tier === 'epic', 'opening reports the chest tier');
   assert.ok(res.items.length >= 2, 'epic chest rolls multiple items');
   assert.equal(res.spawned, res.items.length, 'every rolled item became a physical drop');
-  assert.equal(world.getTile(cx, cy), TT.AIR, 'the chest tile is consumed');
   assert.equal(drops.metrics().active, res.items.length, 'the loot lies on the ground');
   assert.equal(gainedNow.length, 0, 'nothing lands in the bag before pickup');
   const chestDrop = drops._debug.list.find(d => d.kind === 'gear');
@@ -426,6 +448,40 @@ assert.equal(played.length, 0, 'restored drops do not replay the fanfare');
   assert.ok(gainedNow.length >= 1, 'pickup routes chest loot into the bag pipeline');
   delete MM.onLootGained; MM.dynamicLoot = { capes: [], eyes: [], outfits: [], weapons: [], charms: [] };
   drops.reset(); player.x = 500;
+}
+
+// Heavy chest physics: hard fall, tiny rebound, quick rest and persistence.
+{
+  drops.reset(); tiles.clear(); player.x = 500;
+  const chest = drops.spawnChest(42.5, SURF - 8, 'rare', { vx: 4, vy: 0, lootSeed: 77, source: 'test' });
+  assert.ok(chest && chest.kind === 'chest', 'physical chest spawns as its own payload kind');
+  assert.equal(drops.chestAtPoint(chest.x,chest.y,0.1),chest,'weapon probes find the chest through the sparse chest index');
+  advance(3);
+  assert.equal(chest.settled, true, 'heavy chest settles after its fall');
+  assert.ok(chest.y > SURF - 0.45 && chest.y < SURF - 0.25, 'chest rests on its larger body, not as a tiny pickup');
+  assert.equal(chest.vx, 0, 'heavy landing removes horizontal sliding');
+  const snap = drops.snapshot();
+  drops.restore(snap);
+  const restored = drops._debug.list.find(d => d.kind === 'chest');
+  assert.ok(restored && restored.lootSeed === 77 && restored.tier === 'rare', 'chest tier and deterministic loot seed survive save/load');
+  assert.equal(drops.chestAtPoint(restored.x,restored.y,0.1),restored,'restored chests are re-indexed for weapon hits');
+  assert.equal(drops.remove(restored),true,'physical chest can be removed by identity');
+  assert.equal(drops.chestAtPoint(restored.x,restored.y,0.1),null,'removed chest leaves the sparse hit index');
+  assert.ok(CFG.CHEST_BOUNCE <= 0.08, 'chest rebound is deliberately very small');
+  drops.reset();
+}
+
+// Opening a chest with E delegates presentation to the chest handler; the
+// aggregate pickup sweep must not immediately play a second fanfare.
+{
+  drops.reset(); played.length=0;
+  MM.chests.setDroppedOpenHandler(()=>MM.audio.play('chest'));
+  const chest=drops.spawnChest(44.5,SURF-1,'common',{vx:0,vy:0,lootSeed:91,source:'test'});
+  player.x=chest.x; player.y=chest.y;
+  assert.equal(drops.pickupNearest(player),true,'E opens a physical chest in reach');
+  assert.equal(played.filter(id=>id==='chest').length,1,'E-opened chest plays exactly one chest fanfare');
+  MM.chests.setDroppedOpenHandler(null);
+  drops.reset(); player.x=500;
 }
 
 // --- every chest tier can surprise: mixes are normalized and reach legendary -------
@@ -535,6 +591,9 @@ assert.match(mainSrc, /const upgrades=rows\.filter\(row=>isUpgradeWorthy\(row\.c
 assert.match(mainSrc, /upgrades\.slice\(\)\.reverse\(\)\.forEach\(row=>\{ if\(showUpgradeNotice\(row\.item,row\.cmp\)\) shown\+\+; \}\);/, 'all selected upgrades are rendered instead of only the best one');
 assert.match(mainSrc, /upgradeNoticeEl\.prepend\(card\);/, 'new upgrade cards join the existing stack at the visible top');
 assert.match(mainSrc, /dismissUpgradeNotice\(card\)/, 'each upgrade action dismisses only its own card');
+assert.match(mainSrc, /function refreshUpgradeNotices\(\)[\s\S]*querySelectorAll\('\.upgradeNotice\[data-item-id\]'\)/, 'pending cards can be re-evaluated after equipment changes');
+assert.match(mainSrc, /addEventListener\('mm-customization-change',refreshUpgradeNotices\)/, 'equipment changes refresh every pending upgrade comparison');
+assert.match(mainSrc, /classList\.toggle\('noLongerUpgrade',!worthy\)/, 'a stale upgrade card remains visible but is no longer labelled as an upgrade');
 assert.ok(!/upgradeNoticeTimer|hideUpgradeNotice|upgradeNoticeEl\.textContent='';/.test(mainSrc), 'pending upgrade cards are neither timed out nor cleared by a newer find');
 const craftingSrc = readFileSync(new URL('../src/engine/crafting.js', import.meta.url), 'utf8');
 assert.match(craftingSrc, /meatScrap:/, 'crafting source hints cover meat scraps');

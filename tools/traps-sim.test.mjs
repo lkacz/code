@@ -77,6 +77,19 @@ step(0.2);
 assert.ok(player.hp <= 100-14, 'rune blast hurt the hero (hp '+player.hp+')');
 assert.ok(messages.some(t=>t.includes('Runiczna')), 'boom announced');
 
+// The normal browser build has the weapon engine, so the rune delegates its
+// crater/FX there. Ownership must remain environmental rather than awarding the
+// resulting collateral as a hero weapon kill.
+traps.reset();
+let delegatedBlastOpts=null;
+MM.weapons={explodeAt(_x,_y,_getTile,_setTile,opts){ delegatedBlastOpts=opts; return true; }};
+d=liveTrap('boom'); assert.ok(d,'live delegated boom plate found');
+teleport(d.x+0.5,d.y-(player.h/2));
+step(0.2);
+assert.equal(delegatedBlastOpts && delegatedBlastOpts.source,'trap','delegated rune blast is not misattributed to the hero');
+assert.equal(delegatedBlastOpts && delegatedBlastOpts.cause,'rune_mine_blast','delegated rune blast preserves its trap cause');
+delete MM.weapons;
+
 // --- 4. Grave gas: reaching for the chest vents the cloud ---
 d=liveTrap('gas'); assert.ok(d,'live gas trap found');
 teleport(d.x+0.5, d.y-0.8);

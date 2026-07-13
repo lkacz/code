@@ -118,6 +118,8 @@ assert.ok(undergroundBoss.config.BOSS_HP >= 1500, 'underground guardian is tough
 let drones = dbg.entities.filter(e=>e.role==='drone');
 assert.equal(drones.length, 2, 'debug exposes both underground drill drones');
 assert.ok(drones.every(d=>d.maxHp >= 260), 'underground drill drones have late-game sidekick durability');
+let undergroundCollateralBlasts=0;
+globalThis.MM.mobs={blastRadius(){ undergroundCollateralBlasts++; return 1; }};
 assert.equal(dbg.forceBurrow(L.ax-9999,L.floorY-999), true, 'debug can force the excavator into a tunneling phase');
 assert.ok(core.targetX >= L.tunnelMinX+7 && core.targetX <= L.tunnelMaxX-7, 'debug-forced burrow target clamps inside the wider tunnel X bounds');
 assert.ok(core.targetX < L.minX || core.targetX > L.maxX, 'debug-forced burrow can target the rock outside the chamber');
@@ -131,6 +133,7 @@ assert.ok(forcedBomb, 'burrowing excavator leaves timed burrow bombs behind it')
 forcedBomb.delay = 0;
 undergroundBoss.update(0.1, globalThis.player, world.getTile, world.setTile);
 assert.ok(forcedBomb.exploded || undergroundBoss._debug().effects.some(e=>e.type==='bomb'), 'burrow bomb detonates into a visible blast hazard');
+assert.ok(undergroundCollateralBlasts>=1,'burrow-bomb explosion damages ordinary nearby mobs through the shared blast router');
 assert.ok(saveMarks-saveMarksBeforeBurrow <= 3, 'burrowing terrain edits are batched into a small number of save marks');
 assert.equal(undergroundBoss.targetsForTurret(core.x, core.y, 80, true).some(t=>t.raw===core), false, 'turrets cannot target the core while it is underground');
 const hiddenHp = core.hp;
@@ -257,6 +260,7 @@ assert.equal(marks.earth, 1, 'progress records the earth guardian defeat');
 assert.ok(meteorites.metrics().craters > cratersBefore, 'underground boss death uses the normal meteorite crater pipeline');
 const deathCrater = meteorites.snapshot().craters.at(-1);
 assert.equal(deathCrater.site, 'underground_boss_defeat', 'underground boss crater is tagged as its defeat impact');
+assert.ok(undergroundCollateralBlasts>=2,'underground boss death explosion also damages nearby mobs');
 assert.ok(deathCrater.r >= 38, 'underground boss death crater is colossal');
 assert.equal(globalThis.player.hp, hpBeforeDeathBlast, 'underground boss death blast does not damage the hero');
 

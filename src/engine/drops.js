@@ -1,7 +1,8 @@
 // Physical ground loot: slain creatures shed collectible pickups that fall,
 // bounce and lie in the world instead of teleporting into the inventory.
 //
-// Two payload kinds share one entity list:
+// Three payload kinds share one entity list. Chests are persistent heavy world
+// objects: they open in place and are never vacuumed into the inventory.
 //   * resource drops ({res,qty}) — meat scraps, trophy parts, spec.loot rolls;
 //     picked up they add straight into the block inventory (window.inv).
 //   * gear drops ({item}) — procedural equipment from THEMED species (a bat can
@@ -33,6 +34,8 @@ const drops = (function(){
   const BLINK_SEC=12;           // despawn warning window (capped at 25% of life)
   const GRAVITY=22, TERMINAL=17, BOUNCE=0.34;
   const RADIUS=0.18;            // collision half-extent in tiles
+  const CHEST_RADIUS_X=0.38, CHEST_RADIUS_Y=0.30;
+  const CHEST_GRAVITY=30, CHEST_TERMINAL=20, CHEST_BOUNCE=0.06;
   const PICKUP_RADIUS=1.75;     // manual E reach
   const AUTO_RADIUS=2.35;       // auto-pickup magnet reach
   const MOUSE_HIT=0.55;         // cursor-over-drop hit radius (hover preview)
@@ -48,6 +51,7 @@ const drops = (function(){
   // engine keeps its own copy so Node sims render/spawn without the UI).
   const TIER_COLORS={common:'#b07f2c', uncommon:'#3fa650', rare:'#a74cc9', epic:'#e0b341', legendary:'#58e0d8'};
   const TIER_RANK={common:0, uncommon:1, rare:2, epic:3, legendary:4};
+  const CHEST_LABEL={common:'Skrzynia zwykla', uncommon:'Skrzynia niezwykla', rare:'Skrzynia rzadka', epic:'Skrzynia epicka', legendary:'Skrzynia legendarna'};
   // Epic+ tiers get the full "come get me" treatment (beam, lava immunity, buff)
   const isHighTier=t=>t==='epic'||t==='legendary';
   const KIND_GLYPH={cape:'🧥', eyes:'👁️', outfit:'👕', weapon:'⚔️', charm:'🔮'};
@@ -184,6 +188,10 @@ const drops = (function(){
   const SACRIFICE_LEGENDARY_CHANCE=0.04; // the volcano, too, can hand back a legend
 
   const list=[];
+  // Weapon collision probes run many times per frame (arrows and stream
+  // particles in particular). Keep the sparse, persistent chest subset
+  // indexed separately instead of rescanning every resource and gear drop.
+  const chestDrops=new Set();
   const arrowCollectFx=[];
   let seq=1;
   let dry=0; // eligible kills since the last gear drop (persisted in snapshot)
@@ -217,23 +225,28 @@ const drops = (function(){
   }
 
   function tierRank(t){ return TIER_RANK[t]||0; }
-  function evictForRoom(){
+  function evictForRoom(incomingKind){
     if(list.length<MAX_DROPS) return true;
+    if(incomingKind!=='chest' && chestDrops.size===list.length) return false;
     // Oldest, least precious first: resources before gear, low tiers before high
     let worst=-1, worstScore=Infinity;
     for(let i=0;i<list.length;i++){
       const d=list[i];
-      const score=(d.kind==='gear'?1000:0)+tierRank(d.tier)*100-d.age*0.01;
+      // Persistent reward chests must never disappear merely because a mob
+      // tried to shed another scrap/gear pickup at the entity cap.
+      if(d.kind==='chest' && incomingKind!=='chest') continue;
+      const score=(d.kind==='chest'?3000:d.kind==='gear'?1000:0)+tierRank(d.tier)*100-d.age*0.01;
       if(score<worstScore){ worstScore=score; worst=i; }
     }
     if(worst<0) return false;
+    chestDrops.delete(list[worst]);
     list.splice(worst,1);
     return true;
   }
 
   function makeDrop(x,y,fields,opts){
     if(!finiteNum(x) || !finiteNum(y)) return null;
-    if(!evictForRoom()) return null;
+    if(!evictForRoom(fields && fields.kind)) return null;
     opts=opts||{};
     const d=Object.assign({
       id:seq++,
@@ -243,6 +256,7 @@ const drops = (function(){
       age:0, settled:false, airT:0, spin:(rand()*2-1)*7
     },fields);
     list.push(d);
+    if(d.kind==='chest') chestDrops.add(d);
     return d;
   }
 
@@ -286,6 +300,20 @@ const drops = (function(){
       d.upgrade=isWornUpgrade(d);
       d._cmpT=rand()*UPGRADE_RECHECK_SEC; // staggered re-judge clock
       if(!opts || opts.announce!==false) announceDrop(d);
+    }
+    return d;
+  }
+
+  function spawnChest(x,y,tier,opts){
+    opts=opts||{};
+    tier=TIER_RANK[tier]!==undefined ? tier : 'common';
+    const seed=finiteNum(Number(opts.lootSeed)) ? (Number(opts.lootSeed)>>>0)
+      : ((Math.imul(Math.round(x*1000)|0,73856093)^Math.imul(Math.round(y*1000)|0,19349663)^((rand()*0xffffffff)>>>0))>>>0);
+    const d=makeDrop(x,y,{kind:'chest', qty:1, tier, lootSeed:seed, source:opts.source||'reward', persistent:true},opts);
+    if(d){
+      d.spin=0;
+      d.vx=finiteNum(opts.vx) ? opts.vx : (rand()*2-1)*1.35;
+      d.vy=finiteNum(opts.vy) ? opts.vy : -(1.5+rand()*2.2);
     }
     return d;
   }
@@ -453,6 +481,11 @@ const drops = (function(){
     return true;
   }
   function collect(d,opts){
+    if(d.kind==='chest'){
+      try{
+        return !!(MM.chests && typeof MM.chests.openDroppedChest==='function' && MM.chests.openDroppedChest(d,opts||{}));
+      }catch(e){ return false; }
+    }
     const silent=!!(opts && opts.silent);
     const ok=d.kind==='gear' ? collectGear(d) : collectResource(d,silent);
     if(!ok) return false;
@@ -501,11 +534,12 @@ const drops = (function(){
     const grabbed=[];
     for(const d of list){ if(dist2ToPlayer(d,player)<=r2) grabbed.push(d); }
     if(!grabbed.length) return false;
-    const gains=[]; let best='common', any=false;
+    const gains=[]; let best='common', any=false, openedChest=false;
     for(const d of grabbed){
       const wasResource=d.kind==='resource';
       if(!collect(d,{silent:true,player})) continue;
       any=true;
+      if(d.kind==='chest') openedChest=true; // chest handler owns its fanfare
       if(tierRank(d.tier)>tierRank(best)) best=d.tier;
       if(wasResource) gains.push(resourceLabel(d.res)+' ×'+d.qty);
     }
@@ -515,7 +549,7 @@ const drops = (function(){
     }
     try{
       if(MM.audio && MM.audio.play){
-        MM.audio.play(isHighTier(best)?'golden':tierRank(best)>0?'chest':'harvest',{x:player.x,y:player.y});
+        if(!openedChest) MM.audio.play(isHighTier(best)?'golden':tierRank(best)>0?'chest':'harvest',{x:player.x,y:player.y});
       }
     }catch(e){}
     return true;
@@ -523,7 +557,12 @@ const drops = (function(){
   // E-precedence probe (inventory_ui): a drop in reach claims the interact key,
   // but only in manual mode — with auto-pickup on, E stays the wardrobe's.
   function wantsInteractKey(player){
-    if(autoPickup()) return false;
+    if(autoPickup()){
+      if(!player || !finiteNum(player.x)) return false;
+      const r2=PICKUP_RADIUS*PICKUP_RADIUS;
+      for(const d of chestDrops) if(dist2ToPlayer(d,player)<=r2) return true;
+      return false;
+    }
     return !!nearestInReach(player,PICKUP_RADIUS);
   }
 
@@ -532,11 +571,12 @@ const drops = (function(){
   let hoverDrop=null; // draw() highlights this one (set fresh each frame by hoverAt)
   function dropAtPoint(wx,wy,opts){
     if(!finiteNum(wx) || !finiteNum(wy)) return null;
-    const r2=MOUSE_HIT*MOUSE_HIT;
     let best=null, bestD=Infinity;
     for(const d of list){
       const dx=d.x-wx, dy=d.y-wy;
       const dd=dx*dx+dy*dy;
+      const hit=d.kind==='chest' ? 0.66 : MOUSE_HIT;
+      const r2=hit*hit;
       if(dd<=r2 && dd<bestD){ bestD=dd; best=d; }
     }
     if(best && opts && typeof opts.visible==='function' && !opts.visible(Math.floor(best.x),Math.floor(best.y))) return null;
@@ -551,6 +591,7 @@ const drops = (function(){
     const inReach=!!(player && finiteNum(player.x) && dist2ToPlayer(d,player)<=MOUSE_PICKUP_RADIUS*MOUSE_PICKUP_RADIUS);
     const info={id:d.id, kind:d.kind, tier:d.tier, x:d.x, y:d.y, qty:d.qty, inReach};
     if(d.kind==='gear') info.item=Object.assign({},d.item);
+    else if(d.kind==='chest') { info.label=CHEST_LABEL[d.tier]||CHEST_LABEL.common; info.glyph='📦'; }
     else { info.res=d.res; info.label=resourceLabel(d.res); info.glyph=d.glyph; info.color=d.color; }
     return info;
   }
@@ -561,6 +602,29 @@ const drops = (function(){
     if(!d) return null;
     if(!player || !finiteNum(player.x) || dist2ToPlayer(d,player)>MOUSE_PICKUP_RADIUS*MOUSE_PICKUP_RADIUS) return 'far';
     return collect(d,{player}) ? 'picked' : null;
+  }
+
+  function chestAtPoint(wx,wy,radius){
+    if(!finiteNum(wx) || !finiteNum(wy)) return null;
+    radius=Math.max(0.25,finiteNum(radius)?radius:0.52);
+    let best=null, bestD=Infinity;
+    const hitRadius=radius+Math.max(CHEST_RADIUS_X,CHEST_RADIUS_Y);
+    const hitRadius2=hitRadius*hitRadius;
+    for(const d of chestDrops){
+      const dx=d.x-wx, dy=d.y-wy, dd=dx*dx+dy*dy;
+      if(dd<=hitRadius2 && dd<bestD){ best=d; bestD=dd; }
+    }
+    return best;
+  }
+
+  function remove(drop){
+    const i=typeof drop==='number' ? list.findIndex(d=>d.id===drop) : list.indexOf(drop);
+    if(i<0) return false;
+    const removed=list[i];
+    chestDrops.delete(removed);
+    list.splice(i,1);
+    if(hoverDrop===removed) hoverDrop=null;
+    return true;
   }
 
   // --- simulation -----------------------------------------------------------
@@ -582,20 +646,25 @@ const drops = (function(){
   }
   function stepPhysics(d,dt,getTile){
     const here=getSafe(getTile,d.x,d.y);
-    d._tile=here; // update() reads this for the lava check — no second getTile
+    d._tile=here;
     const inWater=here===T.WATER;
+    const chest=d.kind==='chest';
+    const rx=chest?CHEST_RADIUS_X:RADIUS, ry=chest?CHEST_RADIUS_Y:RADIUS;
+    const gravity=chest?CHEST_GRAVITY:GRAVITY;
+    const terminal=chest?CHEST_TERMINAL:TERMINAL;
+    const bounce=chest?CHEST_BOUNCE:BOUNCE;
     d.airT+=dt;
-    d.vy=Math.min(inWater?2.2:TERMINAL, d.vy+(inWater?GRAVITY*0.25:GRAVITY)*dt);
-    if(inWater){ d.vx*=Math.max(0,1-3.2*dt); }
+    d.vy=Math.min(inWater?(chest?4.5:2.2):terminal, d.vy+(inWater?gravity*0.32:gravity)*dt);
+    if(inWater){ d.vx*=Math.max(0,1-(chest?4.5:3.2)*dt); }
     // horizontal step (wall bounce)
     const nx=d.x+d.vx*dt;
-    if(d.vx!==0 && solidAt(getTile,nx+Math.sign(d.vx)*RADIUS,d.y)){ d.vx=-d.vx*0.45; }
+    if(d.vx!==0 && solidAt(getTile,nx+Math.sign(d.vx)*rx,d.y)){ d.vx=-d.vx*(chest?0.12:0.45); }
     else d.x=nx;
     // vertical step (floor bounce / ceiling stop)
     const ny=d.y+d.vy*dt;
-    if(d.vy>0 && solidAt(getTile,d.x,ny+RADIUS)){
-      d.y=Math.floor(ny+RADIUS)-RADIUS-0.001;
-      if(Math.abs(d.vy)<1.5){
+    if(d.vy>0 && solidAt(getTile,d.x,ny+ry)){
+      d.y=Math.floor(ny+ry)-ry-0.001;
+      if(Math.abs(d.vy)<(chest?2.4:1.5)){
         d.vy=0; d.vx=0; d.settled=true; d.spin=0;
         // touchdown twinkle: a rare+ find sparkles where it comes to rest
         if(!d._landed && d.tier!=='common'){
@@ -606,10 +675,11 @@ const drops = (function(){
       else {
         // gear lands with an audible thud (throttled in the mixer) — loot has weight
         if(d.kind==='gear' && d.vy>4){ try{ if(MM.audio && MM.audio.play) MM.audio.play('thud',{x:d.x,y:d.y}); }catch(e){} }
-        d.vy=-d.vy*BOUNCE; d.vx*=0.6;
+        if(chest && d.vy>3){ try{ if(MM.audio && MM.audio.play) MM.audio.play('thud',{x:d.x,y:d.y}); }catch(e){} }
+        d.vy=-d.vy*bounce; d.vx*=chest?0.22:0.6;
       }
-    } else if(d.vy<0 && solidAt(getTile,d.x,ny-RADIUS)){
-      d.vy=0; d.y=ny+ (Math.floor(ny-RADIUS)+1+RADIUS+0.001-ny);
+    } else if(d.vy<0 && solidAt(getTile,d.x,ny-ry)){
+      d.vy=0; d.y=ny+ (Math.floor(ny-ry)+1+ry+0.001-ny);
     } else {
       d.y=ny;
     }
@@ -652,7 +722,7 @@ const drops = (function(){
       }
       // ticking bomb: the better the find, the shorter its clock (d.life)
       const lifetime=finiteNum(d.life) ? d.life : DESPAWN_SEC;
-      if(d.age>=lifetime){ list.splice(i,1); continue; }
+      if(d.kind!=='chest' && d.age>=lifetime){ list.splice(i,1); continue; }
       // an epic+'s final seconds tick audibly — the bomb is heard, not just seen
       if(d.kind==='gear' && isHighTier(d.tier)){
         const tickLeft=lifetime-d.age;
@@ -664,7 +734,7 @@ const drops = (function(){
           }
         }
       }
-      if(auto){
+      if(auto && d.kind!=='chest'){
         const dd=dist2ToPlayer(d,player);
         if(dd<=COLLECT_DIST*COLLECT_DIST){ collect(d,{player}); continue; }
         if(dd<=AUTO_RADIUS*AUTO_RADIUS){
@@ -687,7 +757,8 @@ const drops = (function(){
           d._supT=0;
           d._tile=getSafe(getTile,d.x,d.y);
           if(d._tile===T.LAVA && burnInLava(i,d)) continue;
-          if(!solidAt(getTile,d.x,d.y+RADIUS+0.05) && !solidAt(getTile,d.x,d.y+1)){
+          const supportRadius=d.kind==='chest'?CHEST_RADIUS_Y:RADIUS;
+          if(!solidAt(getTile,d.x,d.y+supportRadius+0.05) && !solidAt(getTile,d.x,d.y+1)){
             d.settled=false; d.vy=0.1; // ground mined away underneath: resume falling
           }
         }
@@ -722,6 +793,7 @@ const drops = (function(){
   // Lava eats dropped loot — walk into the volcano for your prize or lose it.
   // Epic finds are the exception: they sit IN the lava, glowing, daring you.
   function burnInLava(i,d){
+    if(d.kind==='chest') return false;
     if(isHighTier(d.tier)) return false;
     if(d._lavaGraceT>0) return false; // a fresh volcano gift arcs over its cradle
     if(d.kind==='gear' && d.tier==='common') volcanoSacrifice(d);
@@ -786,6 +858,26 @@ const drops = (function(){
     ctx.fillRect(-TILE*0.42,TILE*0.04,TILE*0.17,TILE*0.08);
     ctx.restore();
   }
+  function drawChest(ctx,px,py,TILE,tier,airT,vx,vy,settled){
+    const accent=TIER_COLORS[tier]||TIER_COLORS.common;
+    const w=TILE*0.82, h=TILE*0.58;
+    ctx.save();
+    ctx.translate(px,py);
+    if(!settled) ctx.rotate(Math.max(-0.16,Math.min(0.16,(vx||0)*0.025+(vy||0)*0.008)));
+    ctx.fillStyle='#5b351b';
+    ctx.fillRect(-w/2,-h/2,w,h);
+    ctx.fillStyle='#8d5928';
+    ctx.fillRect(-w/2+2,-h/2+2,w-4,h*0.42);
+    ctx.fillStyle='#321d10';
+    ctx.fillRect(-w/2,h*0.02,w,h*0.11);
+    ctx.strokeStyle=accent; ctx.lineWidth=Math.max(1.5,TILE*0.09);
+    ctx.strokeRect(-w/2,-h/2,w,h);
+    ctx.fillStyle=accent;
+    ctx.fillRect(-TILE*0.09,-TILE*0.05,TILE*0.18,TILE*0.23);
+    ctx.fillStyle='#fff4bd';
+    ctx.fillRect(-TILE*0.025,TILE*0.015,TILE*0.05,TILE*0.07);
+    ctx.restore();
+  }
   function draw(ctx,TILE,camX,camY,zoom,canDrawTile,player){
     if(!ctx || (!list.length && !arrowCollectFx.length)) return;
     const visible=typeof canDrawTile==='function' ? canDrawTile : null;
@@ -806,8 +898,8 @@ const drops = (function(){
       const lifetime=finiteNum(d.life) ? d.life : DESPAWN_SEC;
       const left=lifetime-d.age;
       const blinkWin=Math.min(BLINK_SEC, lifetime*0.25);
-      if(left<blinkWin && ((now/160)|0)%2===0) continue; // despawn blink
-      const bob=d.settled ? Math.sin(now*0.003+d.id)*0.07 : 0;
+      if(d.kind!=='chest' && left<blinkWin && ((now/160)|0)%2===0) continue; // despawn blink
+      const bob=d.kind==='chest' ? 0 : (d.settled ? Math.sin(now*0.003+d.id)*0.07 : 0);
       const px=d.x*TILE, py=(d.y+bob)*TILE;
       const tint=d.kind==='gear' ? (TIER_COLORS[d.tier]||TIER_COLORS.common) : (d.color||'#c9a15a');
       // tier halo: the promise of quality reads from across the screen
@@ -845,7 +937,9 @@ const drops = (function(){
       // body: small tilted plaque with an outline; spins while flying
       const s=TILE*0.42;
       const arrowStyle=d.kind==='resource' ? arrowStyleFor(d.res) : null;
-      if(arrowStyle){
+      if(d.kind==='chest'){
+        drawChest(ctx,px,py,TILE,d.tier,d.airT,d.vx,d.vy,d.settled);
+      } else if(arrowStyle){
         const angle=d.settled ? -Math.PI/18 : Math.atan2(d.vy||0,d.vx||0);
         drawArrowPickup(ctx,px,py,angle,TILE,arrowStyle,1);
       } else {
@@ -869,7 +963,7 @@ const drops = (function(){
       }
       // cursor hover: a breathing ring says "this one previews in the corner"
       if(hoverDrop===d){
-        const hr=s*0.95+Math.sin(now*0.008)*1.2;
+        const hr=(d.kind==='chest'?TILE*0.52:s*0.95)+Math.sin(now*0.008)*1.2;
         ctx.strokeStyle='rgba(255,255,255,0.85)'; ctx.lineWidth=1.5;
         ctx.beginPath(); ctx.arc(px,py,hr,0,Math.PI*2); ctx.stroke();
       }
@@ -933,14 +1027,18 @@ const drops = (function(){
   }
   function snapshot(){
     return {
-      v:1,
+      v:2,
       dry:Math.max(0,Math.min(PITY_KILLS,dry)),
       sac:Math.max(0,Math.min(200,sacrificeDry)),
       list:list.slice(0,SNAPSHOT_CAP).map(d=>{
         const out={x:+d.x.toFixed(4), y:+d.y.toFixed(4), kind:d.kind, tier:d.tier, age:+Math.min(9999,d.age).toFixed(2)};
         if(finiteNum(d.life)) out.life=+d.life.toFixed(1);
         if(d.kind==='resource'){ out.res=d.res; out.qty=d.qty; }
-        else out.item=Object.assign({},d.item);
+        else if(d.kind==='gear') out.item=Object.assign({},d.item);
+        else if(d.kind==='chest'){
+          out.lootSeed=d.lootSeed>>>0;
+          out.source=typeof d.source==='string' ? d.source.slice(0,40) : 'reward';
+        }
         return out;
       })
     };
@@ -961,25 +1059,28 @@ const drops = (function(){
         if(!item) continue;
         const d=spawnGear(r.x,r.y,item,{vx:0,vy:0,announce:false}); // a reload is not a find
         if(d){ d.tier=tier; d.age=age; if(life!=null) d.life=life; }
+      } else if(r.kind==='chest'){
+        const d=spawnChest(r.x,r.y,tier,{vx:0,vy:0,lootSeed:r.lootSeed,source:typeof r.source==='string'?r.source:'reward'});
+        if(d){ d.age=age; }
       } else if(typeof r.res==='string' && r.res.length<=48){
         const d=spawnResource(r.x,r.y,r.res,r.qty,{vx:0,vy:0});
         if(d){ d.tier=tier; d.age=age; if(life!=null) d.life=life; }
       }
     }
   }
-  function reset(){ list.length=0; arrowCollectFx.length=0; mergeT=0; dry=0; sacrificeDry=0; hoverDrop=null; }
+  function reset(){ list.length=0; chestDrops.clear(); arrowCollectFx.length=0; mergeT=0; dry=0; sacrificeDry=0; hoverDrop=null; }
 
   const api={
     update,draw,
-    spawnResource,spawnGear,rollGearDrop,rollGuardianDrop,showArrowCollect,
-    pickupNearest,wantsInteractKey,hoverAt,pickupAt,
+    spawnResource,spawnGear,spawnChest,rollGearDrop,rollGuardianDrop,showArrowCollect,
+    pickupNearest,wantsInteractKey,hoverAt,pickupAt,chestAtPoint,remove,
     autoPickup,setAutoPickup,
     snapshot,restore,reset,
-    metrics:()=>({active:list.length, arrowCollectFx:arrowCollectFx.length, autoPickup:autoPickup()}),
+    metrics:()=>({active:list.length, chests:chestDrops.size, arrowCollectFx:arrowCollectFx.length, autoPickup:autoPickup()}),
     _debug:{list,arrowCollectFx,arrowStyleFor, GEAR_LOOT, GUARDIAN_LOOT, dangerFor, rollTier, setRandom:(fn)=>{ rand=typeof fn==='function'?fn:Math.random; }, collect, nearestInReach,
       dryStreak:()=>dry, setDryStreak:(n)=>{ dry=Math.max(0,Math.floor(Number(n)||0)); },
       sacrificeDry:()=>sacrificeDry,
-      config:{MAX_DROPS,DESPAWN_SEC,GEAR_LIFE,GUARDIAN_RELIC_LIFE,PICKUP_RADIUS,AUTO_RADIUS,COLLECT_DIST,MERGE_DIST,MOUSE_HIT,MOUSE_PICKUP_RADIUS,SIDEKICK_DROP_CHANCE,SIDEKICK_EPIC_CHANCE,SIDEKICK_LEGENDARY_CHANCE,PITY_KILLS,SACRIFICE_BASE,SACRIFICE_STEP,SACRIFICE_MAX,SACRIFICE_LEGENDARY_CHANCE,UNCOMMON_SHARE,LEGENDARY_BASE_SHARE,LEGENDARY_DANGER_BONUS}}
+      config:{MAX_DROPS,DESPAWN_SEC,GEAR_LIFE,GUARDIAN_RELIC_LIFE,PICKUP_RADIUS,AUTO_RADIUS,COLLECT_DIST,MERGE_DIST,MOUSE_HIT,MOUSE_PICKUP_RADIUS,CHEST_RADIUS_X,CHEST_RADIUS_Y,CHEST_GRAVITY,CHEST_TERMINAL,CHEST_BOUNCE,SIDEKICK_DROP_CHANCE,SIDEKICK_EPIC_CHANCE,SIDEKICK_LEGENDARY_CHANCE,PITY_KILLS,SACRIFICE_BASE,SACRIFICE_STEP,SACRIFICE_MAX,SACRIFICE_LEGENDARY_CHANCE,UNCOMMON_SHARE,LEGENDARY_BASE_SHARE,LEGENDARY_DANGER_BONUS}}
   };
   MM.drops=api;
   return api;

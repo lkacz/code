@@ -5,6 +5,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
 import { worldHostility as HOSTILITY } from './world_hostility.js';
 import { worldLayers as WORLD_LAYERS } from './world_layers.js';
 import { threatLook as THREAT_LOOK } from './threat_look.js';
+import { damageBlastCreatures } from './explosion_damage.js';
 
 // Basic mob / animal system (birds, fish) with aggression propagation.
 // Exposes MM.mobs API (legacy) and ESM exports.
@@ -129,6 +130,8 @@ const mobs = (function(){
   const JACKPOT_WHALE_RAM_COOLDOWN_MS = 2600;
   const ATOMIC_BOMB_COCKROACH_INTERVAL_MS = 3800;
   const ATOMIC_BOMB_COCKROACH_LOCAL_CAP = 6;
+  const ATOMIC_BOMB_MAX_HP = 8000;
+  const ATOMIC_BOMB_LIFETIME_MS = 1000*60*60*6;
   const ATOMIC_BOMB_CRATER_RX = 45;
   const ATOMIC_BOMB_CRATER_RY = 30;
   const ATOMIC_BOMB_BLAST_RADIUS = Math.round(ATOMIC_BOMB_CRATER_RX*0.93);
@@ -1121,7 +1124,7 @@ const mobs = (function(){
   }
   function atomicBombSpawnCell(x,y,getTile){
     if(biomeAt(x)!==8 || typeof getTile!=='function') return false;
-    return bigAnimalSpawnCell(x,y,getTile,{halfWidth:1,height:2,floor:cityThreatFloor});
+    return bigAnimalSpawnCell(x,y,getTile,{halfWidth:2,height:2,floor:cityThreatFloor});
   }
   function radiationCockroachSpawnCell(x,y,getTile){
     if(biomeAt(x)!==8 || typeof getTile!=='function') return false;
@@ -1212,6 +1215,7 @@ const mobs = (function(){
       }
     }
     try{ blastRadius(m.x,m.y,ATOMIC_BOMB_BLAST_RADIUS,96,{cause:'atomic_blast',source:'atomic_bomb',naturalDeath:false}); }catch(e){}
+    damageBlastCreatures(MM,m.x,m.y,ATOMIC_BOMB_BLAST_RADIUS,96,{source:'atomic_bomb',cause:'atomic_blast',skipMobs:true});
     if(gt){
       for(let i=0;i<12;i++) spawnRadiationCockroachAt(cx+(Math.random()*ATOMIC_BOMB_CRATER_RX*1.5-ATOMIC_BOMB_CRATER_RX*0.75),cy-2+Math.random()*5,gt);
     }
@@ -1604,26 +1608,11 @@ const mobs = (function(){
   }
   function placeRewardChestNearMob(m,tier,chance){
     if(!m || Math.random()>Math.max(0,Math.min(1,chance||0))) return false;
-    const W=MM.world || WORLD;
-    if(!W || typeof W.getTile!=='function' || typeof W.setTile!=='function') return false;
-    const chest=tier==='legendary'?T.CHEST_LEGENDARY:tier==='epic'?T.CHEST_EPIC:(tier==='rare'?T.CHEST_RARE:tier==='uncommon'?T.CHEST_UNCOMMON:T.CHEST_COMMON);
-    const bx=Math.floor(m.x), by=Math.floor(m.y);
-    for(let r=0; r<=5; r++){
-      for(let dy=-2; dy<=4; dy++){
-        for(let dx=-r; dx<=r; dx++){
-          if(Math.max(Math.abs(dx),Math.abs(dy))!==r && r!==0) continue;
-          const x=bx+dx, y=by+dy;
-          const here=readMobTile(W.getTile,x,y);
-          const below=readMobTile(W.getTile,x,y+1);
-          if(here===T.AIR && below!==T.AIR && below!==T.WATER && !(INFO[below] && INFO[below].chestTier)){
-            W.setTile(x,y,chest);
-            try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((x+0.5)*(MM.TILE||20),(y+0.5)*(MM.TILE||20),tier||'common'); }catch(e){}
-            return true;
-          }
-        }
-      }
-    }
-    return false;
+    if(!MM.drops || typeof MM.drops.spawnChest!=='function') return false;
+    const d=MM.drops.spawnChest(m.x,m.y-0.25,tier,{source:'mob',vx:(Math.random()*2-1)*1.8,vy:-(2.2+Math.random()*2.2)});
+    if(!d) return false;
+    try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(d.x*(MM.TILE||20),d.y*(MM.TILE||20),tier||'common'); }catch(e){}
+    return true;
   }
 
   registerSpecies({ // Large forest predator near trees
@@ -3887,11 +3876,11 @@ const mobs = (function(){
   });
 
   registerSpecies({
-    id:'ATOMIC_BOMB', displayName:'Atomic bomb',
+    id:'ATOMIC_BOMB', displayName:'Bomba atomowa',
     max:2, localMax:1, spawnChance:0.035, spawnBatch:1,
-    hp:120, dmg:0, speed:0.02, wanderInterval:[4,8], xp:6000, ground:true, organic:false, menaceBias:30,
+    hp:ATOMIC_BOMB_MAX_HP, dmg:0, speed:0.02, wanderInterval:[4,8], xp:6000, ground:true, organic:false, menaceBias:30,
     sightRange:0, pursueRange:0,
-    body:{w:1.75,h:1.55},
+    body:{w:2.9,h:1.5},
     move:{jumpVel:0, maxClimb:0, avoidWater:true},
     meat:false,
     loot:[{item:'steel', min:4, max:8, chance:1}, {item:'electronics', min:2, max:4, chance:0.72}, {item:'radioactiveOre', min:2, max:5, chance:0.95}],
@@ -3901,7 +3890,7 @@ const mobs = (function(){
     onCreate(m){
       m.state='armed';
       m.scale=0.98+Math.random()*0.08;
-      m.lifeEndAt=performance.now()+1000*60*14;
+      m.lifeEndAt=performance.now()+ATOMIC_BOMB_LIFETIME_MS;
       m.decayStartAt=m.lifeEndAt+10000;
       m._nextCockroachAt=performance.now()+1200+Math.random()*2400;
     },
@@ -4048,15 +4037,7 @@ const mobs = (function(){
       // the exceptional prize: an epic chest materializes where it fell (a mole
       // dies inside rock, so the scan starts above the surface and walks down)
       try{
-        const W=MM.world, TT=MM.T||T;
-        if(W && W.getTile && W.setTile){
-          const bx=Math.round(m.x);
-          let ty=Math.max(1, Math.min(Math.round(m.y), Math.round(goldenSurfaceY(m.x,m.y)))-5);
-          for(let i=0;i<18;i++,ty++){
-            const t=W.getTile(bx,ty), below=W.getTile(bx,ty+1);
-            if(t===TT.AIR && below!==TT.AIR && below!==TT.WATER){ W.setTile(bx,ty,TT.CHEST_EPIC); break; }
-          }
-        }
+        if(MM.drops && MM.drops.spawnChest) MM.drops.spawnChest(m.x,m.y-0.3,'epic',{source:'golden_mob',vx:(Math.random()*2-1)*1.4,vy:-3.5});
       }catch(e){}
       try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20), m.y*(MM.TILE||20),'epic'); }catch(e){}
       goldenSay('🏆 Złoty sprinter pokonany! Zostawił epicką skrzynię.');
@@ -7518,6 +7499,29 @@ const mobs = (function(){
     return _goldGlow;
   }
 
+  function drawAtomicTrefoil(ctx,cx,cy,r){
+    const radius=Math.max(3,Number(r)||7);
+    ctx.save();
+    ctx.translate(cx,cy);
+    ctx.fillStyle='#f2d33c';
+    ctx.beginPath(); ctx.arc(0,0,radius,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#11151a';
+    for(let i=0;i<3;i++){
+      const a=-Math.PI/2+i*Math.PI*2/3;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a-0.42)*radius*0.34,Math.sin(a-0.42)*radius*0.34);
+      ctx.arc(0,0,radius*0.82,a-0.42,a+0.42);
+      ctx.lineTo(Math.cos(a+0.42)*radius*0.34,Math.sin(a+0.42)*radius*0.34);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.beginPath(); ctx.arc(0,0,radius*0.20,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='rgba(12,15,18,0.82)';
+    ctx.lineWidth=1;
+    ctx.beginPath(); ctx.arc(0,0,radius-0.5,0,Math.PI*2); ctx.stroke();
+    ctx.restore();
+  }
+
   function draw(ctx, TILE, camX,camY, zoom, canDrawTile){
     const visibleTile = typeof canDrawTile === 'function' ? canDrawTile : null;
     const mobVisible = (m)=> !visibleTile || visibleTile(Math.floor(m.x), Math.floor(m.y));
@@ -8872,43 +8876,107 @@ const mobs = (function(){
           hpTop(screenY-8);
           break; }
         case 'ATOMIC_BOMB': {
-          const body = flashing? '#eef6ff' : (m.baseColor||'#646f77');
-          const pulse=Math.sin(now*0.006+m.spawnT*0.004)*0.5+0.5;
-          const hot=0.36+0.42*pulse;
+          m._hideBar=true;
+          const maxHp=Math.max(1,Number(m.maxHp)||ATOMIC_BOMB_MAX_HP);
+          const hpFrac=Math.max(0,Math.min(1,(Number(m.hp)||0)/maxHp));
+          const damage=1-hpFrac;
+          const body=flashing ? '#edf3e9' : mixHexColor(m.baseColor||'#59634f','#788067',0.28);
+          const dark=mixHexColor(body,'#151b18',0.58);
+          const mid=mixHexColor(body,'#9fa78b',0.24);
+          const pulse=Math.sin(now*(0.006+damage*0.012)+m.spawnT*0.004)*0.5+0.5;
+          const alarm=0.42+0.58*pulse;
+          // Restrained radioactive aura: the silhouette, not a green blob, owns the read.
           ctx.save();
           ctx.globalCompositeOperation='lighter';
-          ctx.fillStyle='rgba(165,255,78,'+(0.12+hot*0.20).toFixed(3)+')';
+          ctx.fillStyle='rgba(163,255,84,'+(0.07+0.08*pulse+damage*0.08).toFixed(3)+')';
           ctx.beginPath();
-          ctx.ellipse(screenX,screenY-14,23,26,0,0,Math.PI*2);
+          ctx.ellipse(screenX-2,screenY-12,36,22,0,0,Math.PI*2);
           ctx.fill();
           ctx.restore();
+          // Heavy transport cradle and skids keep the warhead grounded.
+          ctx.strokeStyle='#242a27';
+          ctx.lineWidth=3;
+          ctx.beginPath(); ctx.moveTo(screenX-13,screenY-4); ctx.lineTo(screenX-16,screenY+4); ctx.lineTo(screenX-8,screenY+4); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(screenX+10,screenY-4); ctx.lineTo(screenX+13,screenY+4); ctx.lineTo(screenX+21,screenY+4); ctx.stroke();
+          // Tail tube and four unmistakable stabilising fins.
+          ctx.fillStyle=dark;
+          ctx.fillRect(screenX+13,screenY-17,17,10);
+          ctx.strokeStyle='#202621'; ctx.lineWidth=1.5; ctx.strokeRect(screenX+13.5,screenY-16.5,16,9);
+          ctx.fillStyle=mid;
+          ctx.beginPath(); ctx.moveTo(screenX+17,screenY-17); ctx.lineTo(screenX+27,screenY-29); ctx.lineTo(screenX+31,screenY-17); ctx.closePath(); ctx.fill(); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(screenX+17,screenY-7); ctx.lineTo(screenX+27,screenY+3); ctx.lineTo(screenX+31,screenY-7); ctx.closePath(); ctx.fill(); ctx.stroke();
+          ctx.fillStyle='#333b34';
+          ctx.fillRect(screenX+27,screenY-20,4,16);
+          // Fat-Man-like armoured warhead body.
           ctx.fillStyle=body;
           ctx.beginPath();
-          ctx.ellipse(screenX,screenY-12,15,19,0,0,Math.PI*2);
+          ctx.ellipse(screenX-5,screenY-12,24,11,0,0,Math.PI*2);
           ctx.fill();
-          ctx.strokeStyle='#222a31';
-          ctx.lineWidth=2;
+          ctx.strokeStyle='#202620';
+          ctx.lineWidth=2.2;
           ctx.stroke();
-          shade(screenX-12,screenY-25,24,6,'#fff',0.12);
-          ctx.fillStyle='#2a3138';
-          ctx.fillRect(screenX-8,screenY+5,16,4);
-          ctx.fillRect(screenX-4,screenY+9,8,3);
-          ctx.strokeStyle='#2a3138';
-          ctx.lineWidth=2;
-          ctx.beginPath();
-          ctx.moveTo(screenX,screenY-31);
-          ctx.lineTo(screenX+Math.sin(phase)*6,screenY-40);
-          ctx.stroke();
-          ctx.fillStyle='rgba(210,255,95,'+(0.55+0.35*pulse).toFixed(3)+')';
-          ctx.fillRect(screenX-5,screenY-17,10,10);
-          ctx.fillStyle='#20282f';
-          ctx.fillRect(screenX-7,screenY-3,14,2);
-          ctx.fillRect(screenX-7,screenY-27,14,2);
-          ctx.fillStyle='#111820';
-          ctx.fillRect(screenX-12,screenY-10,24,2);
-          ctx.fillStyle='#eaff8e';
-          ctx.fillRect(screenX-2,screenY-14,4,4);
-          hpTop(screenY-42);
+          // Highlight, nose plate, armoured seams and hazard bands.
+          shade(screenX-23,screenY-20,35,4,'#fff',flashing?0.20:0.10);
+          ctx.strokeStyle='rgba(18,23,19,0.72)'; ctx.lineWidth=1.3;
+          ctx.beginPath(); ctx.moveTo(screenX-19,screenY-19); ctx.lineTo(screenX-19,screenY-5); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(screenX+10,screenY-21); ctx.lineTo(screenX+10,screenY-3); ctx.stroke();
+          ctx.fillStyle='#e7c63a';
+          ctx.fillRect(screenX+5,screenY-20,5,16);
+          ctx.fillStyle='#171a18';
+          ctx.fillRect(screenX+5,screenY-18,5,3);
+          ctx.fillRect(screenX+5,screenY-10,5,3);
+          ctx.fillStyle='#303730';
+          ctx.fillRect(screenX-28,screenY-14,3,4);
+          // Radiation trefoil makes the payload readable even at gameplay scale.
+          drawAtomicTrefoil(ctx,screenX-6,screenY-12,7);
+          // Rivets and an armed electronics box with a red warning lamp.
+          ctx.fillStyle='#bec6a8';
+          for(const bx of [-17,13]){ ctx.fillRect(screenX+bx,screenY-16,1.5,1.5); ctx.fillRect(screenX+bx,screenY-8,1.5,1.5); }
+          ctx.fillStyle='#242a25'; ctx.fillRect(screenX+8,screenY-27,12,6);
+          ctx.strokeStyle='#111612'; ctx.lineWidth=1; ctx.strokeRect(screenX+8.5,screenY-26.5,11,5);
+          ctx.save();
+          ctx.globalCompositeOperation='lighter';
+          ctx.fillStyle='rgba(255,55,35,'+(0.12+alarm*0.35).toFixed(3)+')';
+          ctx.beginPath(); ctx.arc(screenX+16,screenY-27,4+damage*2,0,Math.PI*2); ctx.fill();
+          ctx.restore();
+          ctx.fillStyle=alarm>0.7?'#fff0c2':'#f0442f';
+          ctx.fillRect(screenX+14,screenY-29,4,3);
+          // Progressive cracks, scorched plating and smoke communicate the long siege.
+          if(damage>0.12){
+            ctx.strokeStyle='rgba(25,24,20,0.82)'; ctx.lineWidth=1.2;
+            ctx.beginPath(); ctx.moveTo(screenX-15,screenY-5); ctx.lineTo(screenX-11,screenY-10); ctx.lineTo(screenX-8,screenY-7); ctx.lineTo(screenX-5,screenY-11); ctx.stroke();
+          }
+          if(damage>0.42){
+            ctx.strokeStyle='rgba(238,116,48,0.72)';
+            ctx.beginPath(); ctx.moveTo(screenX+11,screenY-6); ctx.lineTo(screenX+15,screenY-12); ctx.lineTo(screenX+12,screenY-16); ctx.stroke();
+            ctx.fillStyle='rgba(20,22,20,0.28)'; ctx.beginPath(); ctx.ellipse(screenX+13,screenY-12,6,8,0,0,Math.PI*2); ctx.fill();
+          }
+          if(damage>0.68){
+            ctx.fillStyle='rgba(32,37,32,'+(0.22+0.18*pulse).toFixed(3)+')';
+            ctx.beginPath(); ctx.arc(screenX+14+Math.sin(phase)*2,screenY-34,4,0,Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(screenX+17-Math.sin(phase)*3,screenY-40,3,0,Math.PI*2); ctx.fill();
+          }
+          // Bespoke wide, segmented integrity bar: a huge health pool should read as armour.
+          if(damage>0.00001){
+            const barW=58, barX=screenX-barW/2, barY=screenY-38;
+            ctx.fillStyle='rgba(5,8,6,0.82)'; ctx.fillRect(barX-1,barY-1,barW+2,6);
+            ctx.fillStyle=hpFrac>0.55?'#a6d63f':(hpFrac>0.24?'#efb23a':'#ef513d');
+            ctx.fillRect(barX,barY,barW*hpFrac,4);
+            ctx.fillStyle='rgba(8,12,9,0.42)';
+            for(let sx=barX+6;sx<barX+barW;sx+=6) ctx.fillRect(sx,barY,1,4);
+            ctx.save();
+            ctx.font='bold 7px system-ui';
+            ctx.textAlign='center';
+            ctx.textBaseline='bottom';
+            ctx.lineWidth=2.5;
+            ctx.strokeStyle='rgba(4,7,5,0.94)';
+            ctx.fillStyle='#f3f5df';
+            const armourText=Math.ceil(Number(m.hp)||0)+' / '+Math.ceil(maxHp);
+            ctx.strokeText(armourText,screenX,barY-3);
+            ctx.fillText(armourText,screenX,barY-3);
+            ctx.restore();
+            hpTop(barY-1);
+          }else hpTop(screenY-30);
           break; }
         case 'ICE_SHAMAN':
         case 'FIRE_SHAMAN': {
@@ -9662,7 +9730,7 @@ const mobs = (function(){
     // they struck. The callback receives the live entity by reference; callers
     // must not mutate it.
     if(opts && typeof opts.onTarget==='function'){
-      try{ opts.onTarget(m); }catch(e){}
+      try{ opts.onTarget(m,'mob',isLiving); }catch(e){}
     }
     if(m.id==='SAND_WORM' && sandWormWaterHitOpts(opts)){
       pacifySandWorm(m,'water',performance.now(),{x:tileX+0.5,y:tileY+0.5});
@@ -10007,7 +10075,10 @@ const mobs = (function(){
   function blastRadius(wx,wy,r,dmg,opts){
     let n=0; const r2=r*r;
     for(const m of mobs){
-      if(!mobAllowedByOpts(m,opts)) continue;
+      // Death handlers can trigger a blast while the dead entity still occupies
+      // the live array. Skip corpses so hit metrics and chained effects stay
+      // exact and a dead bomb cannot be aggro-marked again.
+      if(!mobAllowedByOpts(m,opts) || !(m.hp>0)) continue;
       const dx=m.x-wx, dy=m.y-wy; const d2=dx*dx+dy*dy;
       if(d2>r2) continue;
       const d=Math.sqrt(d2);
@@ -10469,6 +10540,11 @@ const mobs = (function(){
         }
         if(finiteNum(r.lifeEndAt)) m.lifeEndAt=r.lifeEndAt;
         if(finiteNum(r.decayStartAt)) m.decayStartAt=r.decayStartAt;
+        if(r.id==='ATOMIC_BOMB'){
+          const safeUntil=performance.now()+ATOMIC_BOMB_LIFETIME_MS;
+          if(!finiteNum(m.lifeEndAt) || m.lifeEndAt<safeUntil) m.lifeEndAt=safeUntil;
+          if(!finiteNum(m.decayStartAt) || m.decayStartAt<m.lifeEndAt) m.decayStartAt=m.lifeEndAt+10000;
+        }
         if(finiteNum(r.pacifiedMs) && r.pacifiedMs>0) m._pacifiedUntil=performance.now()+Math.min(r.pacifiedMs,60000);
         if(finiteNum(r.homeX)) m.homeX=clampFinite(r.homeX,m.x,-10000000,10000000);
         if(finiteNum(r.homeY)) m.homeY=clampFinite(r.homeY,m.y,WORLD_TOP,WORLD_BOTTOM);

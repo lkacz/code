@@ -350,6 +350,33 @@ for(let i=0;i<90 && weapons.metrics().arrowFragments===0;i++) weapons.update(1/6
 assert.equal(weapons.metrics().arrows,0,'the expired arrow leaves only after its fall finishes');
 assert.ok(weapons._debug.arrowFragments.some(f=>String(f.cause).startsWith('expiry_')),'expiry ends in a visible break-apart effect');
 
+// Capacity pressure also resolves visibly instead of silently shifting the
+// oldest recoverable arrow out of the projectile array.
+resetScenario();
+for(let i=0;i<65;i++) weapons._debug.pushArrow({
+  x:i*0.05,y:0.5,vx:1,vy:0,dmg:1,life:5,stuck:false,travel:0,maxTravel:5,
+  tier:'wood',color:'#caa472',headColor:'#dfe6f1'
+});
+assert.equal(weapons.metrics().arrows,64,'moving-arrow capacity remains bounded');
+assert.ok(weapons._debug.arrowFragments.some(f=>f.cause==='capacity'),'capacity eviction breaks the old arrow into visible pieces');
+
+// An extreme crowd can carry many embedded arrows at once. Capacity pressure
+// must reject the incoming shaft, never erase one from a still-living body.
+resetScenario();
+const carried=[];
+for(let i=0;i<128;i++){
+  const mob={x:i,y:0.5,hp:10};
+  const arrow={x:i,y:0.5,vx:0,vy:0,dmg:1,life:5,stuck:true,stuckT:Infinity,
+    embeddedMob:mob,tier:'wood',color:'#caa472',headColor:'#dfe6f1'};
+  carried.push(arrow);
+  assert.equal(weapons._debug.pushArrow(arrow),arrow,'embedded setup arrow is retained');
+}
+const rejected=weapons._debug.pushArrow({x:0,y:0.5,vx:1,vy:0,dmg:1,life:5,tier:'wood',color:'#caa472',headColor:'#dfe6f1'});
+assert.equal(rejected,null,'incoming arrow is rejected when every retained arrow belongs to a living mob');
+assert.equal(weapons.metrics().arrows,128,'embedded-arrow entity cap remains bounded');
+assert.ok(carried.every(a=>weapons._debug.arrows.includes(a)),'no living mob loses its embedded arrow to capacity eviction');
+assert.ok(weapons._debug.arrowFragments.some(f=>f.cause==='capacity'),'the rejected incoming arrow breaks visibly');
+
 // --- landed hits feed the ult charge ---
 resetScenario();
 weapons.setArrowPref('wood');

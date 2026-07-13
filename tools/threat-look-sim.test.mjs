@@ -52,13 +52,23 @@ for(let dmg=0; dmg<=44; dmg+=6){
 // --- parse the REAL bestiary out of mobs.js source ----------------------------
 function parseSpecies(src){
   const out={};
+  // Production stats may use a named numeric constant so gameplay, rendering and
+  // save migration can share one value. Resolve those simple constants instead of
+  // forcing species declarations to duplicate a magic number for this audit.
+  const constants={};
+  for(const hit of src.matchAll(/\bconst\s+([A-Z][A-Z0-9_]*)\s*=\s*(-?[\d.]+)\s*;/g))
+    constants[hit[1]]=Number(hit[2]);
   const re=/id:\s*'([A-Z_]+)'/g;
   let m;
   while((m=re.exec(src))){
     const id=m[1];
     if(out[id]) continue;
     const win=src.slice(m.index, m.index+520);
-    const num=(k)=>{ const h=win.match(new RegExp(k+':\\s*(-?[\\d.]+)')); return h?Number(h[1]):null; };
+    const num=(k)=>{
+      const h=win.match(new RegExp(k+':\\s*([A-Z][A-Z0-9_]*|-?[\\d.]+)'));
+      if(!h) return null;
+      return Object.prototype.hasOwnProperty.call(constants,h[1]) ? constants[h[1]] : Number(h[1]);
+    };
     const hp=num('hp'), dmg=num('dmg');
     if(hp==null || dmg==null) continue; // not a species literal (e.g. serialized refs)
     out[id]={
@@ -98,7 +108,8 @@ for(const id in EXACT){
 const RANGE={
   FISH:[0,1], GOAT:[1,2], PIRANHA:[1,2], BAT:[1,2], CRAB:[1,2],
   ICE_WRAITH:[2,3], ATLANTIS_MEDUZA:[2,3], WIOSENNY_JELEN:[2,3], RADIATION_COCKROACH:[2,3],
-  ATOMIC_BOMB:[3,4], LAKE_SERPENT:[2,3],
+  // The bomb's 8000-point armoured shell is intentionally an apex-level threat.
+  ATOMIC_BOMB:[5,5], LAKE_SERPENT:[2,3],
   GOLD_DRAGON:[4,5], JACKPOT_WHALE:[4,5], MIRAGE_DJINN:[4,5],
   SKY_SERAPH:[4,5], STORM_HERALD:[4,5], BALLOON_TYRANT:[4,5], HARPY_QUEEN:[4,5], EMBER_PHOENIX:[4,5]
 };

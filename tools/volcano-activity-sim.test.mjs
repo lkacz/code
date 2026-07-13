@@ -78,6 +78,27 @@ assert.equal(persistentGas, 1, 'volcano gas also enters the persistent world gas
   assert.equal(explosions, 1, 'servant stone triggers a mid-size explosion');
   assert.equal(lastExplosionOpts.force, true, 'servant stone explosion bypasses blast cooldown');
   assert.ok(lastExplosionOpts.extraConsumed>=18, 'servant stone explosion is stronger than a tiny gas pop');
+  assert.equal(lastExplosionOpts.source, 'volcano', 'servant stone damage is not misattributed to the hero');
+  assert.equal(lastExplosionOpts.cause, 'servant_stone_blast', 'servant stone keeps a distinct explosion cause');
+}
+
+{
+  volcano.reset();
+  const w=makeTiles();
+  w.setTile(3,9,T.SERVANT_STONE);
+  const oldApis={weapons:MM.weapons,mobs:MM.mobs,invasions:MM.invasions,mechs:MM.mechs};
+  const collateral=[];
+  MM.weapons=null;
+  MM.mobs={blastRadius(x,y,r,dmg,opts){ collateral.push({family:'mobs',x,y,r,dmg,opts}); return 1; }};
+  MM.invasions={blastRadius(x,y,r,dmg,opts){ collateral.push({family:'invasions',x,y,r,dmg,opts}); return 2; }};
+  MM.mechs={blastRadius(x,y,r,dmg,opts){ collateral.push({family:'mechs',x,y,r,dmg,opts}); return 1; }};
+  try{
+    assert.equal(volcano._debug.explodeServantStone({x:3,y:9},w.getTile,w.setTile),true,'servant stone fallback still detonates without the weapon engine');
+    assert.deepEqual(collateral.map(c=>c.family),['mobs','invasions','mechs'],'fallback servant blast reaches every creature family');
+    assert.ok(collateral.every(c=>c.opts.source==='volcano' && c.opts.cause==='servant_stone_blast' && c.opts.kind==='explosion'),'fallback servant blast keeps normalized environmental metadata');
+  } finally {
+    MM.weapons=oldApis.weapons; MM.mobs=oldApis.mobs; MM.invasions=oldApis.invasions; MM.mechs=oldApis.mechs;
+  }
 }
 
 {

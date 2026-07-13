@@ -23,6 +23,7 @@
 // not just walking slowly. Fired traps stay dead for the session.
 import { T } from '../constants.js';
 import { isSolidCollisionTile as isSolid } from './material_physics.js';
+import { damageBlastCreatures } from './explosion_damage.js';
 
 const traps = (function(){
   const MM = (typeof window!=='undefined')? (window.MM = window.MM || {}) : {};
@@ -74,8 +75,12 @@ const traps = (function(){
       try{ if(MM.mobs && MM.mobs.poisonRadius) MM.mobs.poisonRadius(cx,cy,d.r||2.6,{dur:3,dps:2}); }catch(e){}
       say('☠️ Grobowy gaz! Wstrzymaj oddech i uciekaj!'); sfx('gas',{x:cx,y:cy});
     } else if(d.kind==='boom'){
-      if(MM.weapons && MM.weapons.explodeAt && setTile) MM.weapons.explodeAt(cx, cy-1, getTile, setTile);
-      else { heroHit(14,{srcX:cx,srcY:cy,cause:'trap'}); burst(d.x,d.y-1,'epic'); sfx('explosion',{x:cx,y:cy-1}); }
+      if(MM.weapons && MM.weapons.explodeAt && setTile) MM.weapons.explodeAt(cx, cy-1, getTile, setTile,{source:'trap',cause:'rune_mine_blast'});
+      else {
+        heroHit(14,{srcX:cx,srcY:cy,cause:'trap'});
+        damageBlastCreatures(MM,cx,cy-1,4.7,14,{source:'trap',cause:'rune_mine_blast'});
+        burst(d.x,d.y-1,'epic'); sfx('explosion',{x:cx,y:cy-1});
+      }
       say('💥 Runiczna mina! Kto to tu zostawił?!');
     } else if(d.kind==='keystone'){
       for(const w of it.watch){

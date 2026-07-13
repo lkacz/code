@@ -113,7 +113,7 @@ import { reactions as REACTIONS } from './reactions.js';
     if(wetAt(getTile,x,y)) return false;
     const info=INFO[getTile(x,y)];
     const total=Math.max(0.4, info.burnTime||2);
-    burning.set(k,{x,y,left:total,total,spreadAcc:Math.random()*SPREAD_INTERVAL,envAcc:Math.random()*0.25,hotAcc:Math.random()*0.8});
+    burning.set(k,{x,y,left:total,total,fuel:getTile(x,y),spreadAcc:Math.random()*SPREAD_INTERVAL,envAcc:Math.random()*0.25,hotAcc:Math.random()*0.8,smokeAcc:Math.random()*0.18});
     return true;
   }
   function burnOut(b,getTile,setTile){
@@ -177,6 +177,13 @@ import { reactions as REACTIONS } from './reactions.js';
       if(b.hotAcc>=BURNING_HOT_AIR_INTERVAL){
         b.hotAcc=0;
         try{ if(MM.gases && MM.gases.add) MM.gases.add('hot',b.x+0.5,b.y-0.05,{power:0.2,cells:1,getTile,setTile}); }catch(e){}
+      }
+      const smokeRate=burningSmokeRate(b.fuel);
+      b.smokeAcc=(b.smokeAcc||0)+dt*smokeRate*(0.85+0.35*(1-b.left/b.total));
+      if(b.smokeAcc>=0.18){
+        const packet=Math.min(0.38,b.smokeAcc);
+        b.smokeAcc-=packet;
+        emitBlackSmoke(b.x,b.y,packet,getTile);
       }
       // Spread to flammable neighbours; the heat also thaws snow and ice to water
       b.spreadAcc+=dt;
@@ -243,24 +250,6 @@ import { reactions as REACTIONS } from './reactions.js';
   // pass in main.js — for glow, surface shimmer, and periodic neighbour ignition.
   let lastLavaTick=0;
   let lastLavaWakeTick=-Infinity;
-  let lastSmokeTick=-Infinity;
-  const smokeEmissionBuckets=new Map();
-  function smokeHash(x,y,bucket){
-    const v=Math.sin(x*127.1 + y*311.7 + bucket*43.3)*43758.5453;
-    return v-Math.floor(v);
-  }
-  function shouldEmitSmoke(x,y,now,period,chance){
-    const phase=smokeHash(x,y,0)*period;
-    const bucket=Math.floor((now+phase)/period);
-    const k=key(x,y);
-    if(smokeEmissionBuckets.get(k)===bucket) return false;
-    smokeEmissionBuckets.set(k,bucket);
-    if(smokeEmissionBuckets.size>1200){
-      const first=smokeEmissionBuckets.keys().next();
-      if(!first.done) smokeEmissionBuckets.delete(first.value);
-    }
-    return smokeHash(x,y,bucket)<chance;
-  }
   function smokeChimneyOutlet(x,y,getTile){
     if(typeof getTile!=='function') return null;
     const tx=Math.floor(x);
@@ -273,15 +262,23 @@ import { reactions as REACTIONS } from './reactions.js';
     if(cy>=WORLD_BOTTOM) return null;
     return isLavaVentOpenTile(getTile(tx,cy)) ? {x:tx,y:cy} : null;
   }
-  function emitBlackSmoke(x,y,TILE,intensity,tileX,tileY,getTile){
+  function burningSmokeRate(t){
+    if(t===T.COAL) return 0.52;
+    if(t===T.WOOD || t===T.WOOD_DOOR || t===T.WOOD_TRAPDOOR) return 0.28;
+    if(t===T.ALIEN_BIOMASS) return 0.36;
+    if(t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED || t===T.GRASS || t===T.GRASS_SNOW || t===T.UNSTABLE_GRASS) return 0.12;
+    if(t===T.MEAT || t===T.ROTTEN_MEAT) return 0.20;
+    return 0.16;
+  }
+  function emitBlackSmoke(tileX,tileY,amount,getTile){
     try{
-      const p=MM.particles;
-      if(!p || !p.spawnSmoke) return;
-      const outlet=smokeChimneyOutlet(tileX==null?x:tileX,tileY==null?y:tileY,getTile);
-      const sx=outlet ? outlet.x : x;
-      const sy=outlet ? outlet.y : y;
-      p.spawnSmoke((sx+0.5)*TILE, sy*TILE+TILE*0.15, intensity||1, {tileSize:TILE, tileX:outlet?outlet.x:tileX, tileY:outlet?outlet.y:tileY});
-    }catch(e){}
+      const layer=MM.smoke;
+      if(!layer || typeof layer.emit!=='function') return 0;
+      const outlet=smokeChimneyOutlet(tileX,tileY,getTile);
+      const sx=outlet?outlet.x:Math.floor(tileX);
+      const sy=outlet?outlet.y:Math.floor(tileY)-1;
+      return layer.emit(sx+0.5,sy+0.5,amount,{getTile});
+    }catch(e){ return 0; }
   }
   function volcanoSmokePower(x,y){
     try{
@@ -321,7 +318,7 @@ import { reactions as REACTIONS } from './reactions.js';
     }
     return 0;
   }
-  function drawLava(ctx,TILE,sx,sy,viewX,viewY,getTile,now,visibility,smokeTick){
+  function drawLava(ctx,TILE,sx,sy,viewX,viewY,getTile,now,visibility){
     const GS=glowSprite.width, FH=flameFrames[0].height;
     const igniteTick = now-lastLavaTick>500;
     if(igniteTick) lastLavaTick=now;
@@ -330,7 +327,6 @@ import { reactions as REACTIONS } from './reactions.js';
     let glowBudget=critical?54:(stressed?115:260);
     let flameBudget=critical?24:(stressed?52:112);
     let wakeBudget=critical?10:(stressed?26:58);
-    let smokeBudget=critical?5:(stressed?12:26);
     let frontierProbeBudget=critical?90:(stressed?190:420);
     let flameProbeBudget=critical?90:(stressed?190:420);
     const wakeTick = now-lastLavaWakeTick>460;
@@ -385,7 +381,7 @@ import { reactions as REACTIONS } from './reactions.js';
         if(!visibleTile(x,y)) continue;
         let aboveT=T.STONE, belowT=T.STONE, leftT=T.STONE, rightT=T.STONE, frontier=false;
         const ignitionRoll=igniteTick && Math.random()<0.4;
-        const wantFlameProbe=flameBudget>0 || (smokeTick && smokeBudget>0);
+        const wantFlameProbe=flameBudget>0;
         const needFrontierProbe=frontierProbeBudget>0 && ((wakeTick && wakeBudget>0) || glowBudget>0);
         const needFlameProbe=wantFlameProbe && (needFrontierProbe || flameProbeBudget>0);
         if(needFlameProbe || needFrontierProbe) aboveT=getTile(x,y-1);
@@ -419,15 +415,6 @@ import { reactions as REACTIONS } from './reactions.js';
             ctx.globalAlpha=0.45+0.25*flick;
             ctx.drawImage(flameFrames[fi<0? fi+FRAMES : fi], px, py-FH+TILE*0.4, TILE, FH*0.7);
           }
-          if(smokeTick && smokeBudget-->0){
-            const vp=volcanoSmokePower(x,y);
-            const perfMul=critical?0.30:(stressed?0.55:1);
-            const lavaLoad=lavaSet.size;
-            const loadMul=lavaLoad>440?0.35:(lavaLoad>260?0.58:1);
-            const chance=Math.min(0.80, vp>1 ? 0.56*perfMul*loadMul : 0.16*perfMul*loadMul);
-            const period=vp>1 ? 680 : 1120;
-            if(shouldEmitSmoke(x,y,now,period,chance)) emitBlackSmoke(x,y,TILE,vp>1?vp:1.1,x,y,getTile);
-          }
         }
         ctx.globalAlpha=1;
         // heat ignites flammable neighbours (organic matter catches from lava)
@@ -442,13 +429,11 @@ import { reactions as REACTIONS } from './reactions.js';
   function draw(ctx,TILE,sx,sy,viewX,viewY,getTile,visibility){
     if(spriteTile!==TILE || !glowSprite) buildSprites(TILE);
     const now=performance.now();
-    const smokeTick = now-lastSmokeTick>130;
-    if(smokeTick) lastSmokeTick=now;
     const canSee = visibility && typeof visibility.visible==='function' ? visibility.visible : null;
     const revealAll = !!(visibility && visibility.revealAll);
     const visibleTile = (x,y)=>revealAll || !canSee || canSee(x,y);
     ctx.save();
-    if(typeof getTile==='function') drawLava(ctx,TILE,sx,sy,viewX,viewY,getTile,now,visibility,smokeTick);
+    if(typeof getTile==='function') drawLava(ctx,TILE,sx,sy,viewX,viewY,getTile,now,visibility);
     if(!burning.size){ ctx.restore(); return; }
     const FH=flameFrames[0].height, GS=glowSprite.width;
     for(const b of burning.values()){
@@ -457,12 +442,6 @@ import { reactions as REACTIONS } from './reactions.js';
       const px=b.x*TILE, py=b.y*TILE;
       const flick=Math.sin(now*0.02 + b.x*3.7 + b.y*1.3)*0.5+0.5;
       const stage=1-(b.left/b.total); // 0 fresh → 1 burnt
-      if(smokeTick && Math.random()<0.42){
-        const bt=getTile(b.x,b.y);
-        const isLeafTile=bt===T.LEAF || bt===T.AUTUMN_LEAF_ORANGE || bt===T.AUTUMN_LEAF_RED;
-        const power=bt===T.COAL ? 2.15 : (bt===T.WOOD ? 1.55 : (isLeafTile ? 1.0 : 0.7));
-        emitBlackSmoke(b.x,b.y,TILE,power,b.x,b.y,getTile);
-      }
       // charring overlay
       ctx.fillStyle='rgba(20,12,8,'+(0.25+stage*0.45).toFixed(2)+')';
       ctx.fillRect(px,py,TILE,TILE);
@@ -591,7 +570,7 @@ import { reactions as REACTIONS } from './reactions.js';
       const important=source || pressure || opts.priority || opts.fast;
       if(!important || !evictNonSourceLava()) return null;
     }
-    const entry={x,y,coolT:lavaCoolTime(),moveT:opts.fast?lavaWakeDelay(pressure>0.03):(Math.random()*lavaMoveDelay(pressure>0.03)),hotT:Number.isFinite(opts.hotT)?Math.max(0,opts.hotT):Math.random()*LAVA_HOT_AIR_INTERVAL,pressure,source};
+    const entry={x,y,coolT:lavaCoolTime(),moveT:opts.fast?lavaWakeDelay(pressure>0.03):(Math.random()*lavaMoveDelay(pressure>0.03)),hotT:Number.isFinite(opts.hotT)?Math.max(0,opts.hotT):Math.random()*LAVA_HOT_AIR_INTERVAL,smokeT:Number.isFinite(opts.smokeT)?Math.max(0,opts.smokeT):Math.random()*2.8,pressure,source};
     lavaSet.set(k,entry);
     return entry;
   }
@@ -702,6 +681,14 @@ import { reactions as REACTIONS } from './reactions.js';
         L.hotT=LAVA_HOT_AIR_INTERVAL*(0.85+Math.random()*0.30);
         if(hotAirBudget>0 && emitLavaHotAir(L,getTile,setTile)>0) hotAirBudget--;
       }
+      L.smokeT=(L.smokeT==null?Math.random()*2.8:L.smokeT)-dt;
+      if(L.smokeT<=0){
+        const vp=volcanoSmokePower(L.x,L.y);
+        const heavy=vp>1;
+        L.smokeT=(heavy?0.72:2.8)*(0.82+Math.random()*0.36);
+        const above=getTile(L.x,L.y-1);
+        if(lavaOpenTile(above)||above===T.CHIMNEY) emitBlackSmoke(L.x,L.y,heavy?0.24:0.14,getTile);
+      }
       const source=!!L.source;
       if(L.pressure>0 && !source) L.pressure=Math.max(0,L.pressure-dt*0.10);
       const pressureLevel=L.pressure||0;
@@ -773,7 +760,9 @@ import { reactions as REACTIONS } from './reactions.js';
       x,y,left,total,
       spreadAcc:Math.max(0, Math.min(SPREAD_INTERVAL, Number.isFinite(raw.spreadAcc) ? raw.spreadAcc : Math.random()*SPREAD_INTERVAL)),
       envAcc:Math.max(0, Math.min(0.25, Number.isFinite(raw.envAcc) ? raw.envAcc : Math.random()*0.25)),
-      hotAcc:Math.max(0, Math.min(BURNING_HOT_AIR_INTERVAL, Number.isFinite(raw.hotAcc) ? raw.hotAcc : Math.random()*0.8))
+      hotAcc:Math.max(0, Math.min(BURNING_HOT_AIR_INTERVAL, Number.isFinite(raw.hotAcc) ? raw.hotAcc : Math.random()*0.8)),
+      smokeAcc:Math.max(0, Math.min(0.38, Number.isFinite(raw.smokeAcc) ? raw.smokeAcc : Math.random()*0.18)),
+      fuel:getTile(x,y)
     };
   }
   function snapshot(){
@@ -788,7 +777,8 @@ import { reactions as REACTIONS } from './reactions.js';
         total:+Math.max(0.4,b.total||0.4).toFixed(3),
         spreadAcc:+Math.max(0,b.spreadAcc||0).toFixed(3),
         envAcc:+Math.max(0,b.envAcc||0).toFixed(3),
-        hotAcc:+Math.max(0,b.hotAcc||0).toFixed(3)
+        hotAcc:+Math.max(0,b.hotAcc||0).toFixed(3),
+        smokeAcc:+Math.max(0,b.smokeAcc||0).toFixed(3)
       }));
     return {v:1,list};
   }
@@ -802,7 +792,7 @@ import { reactions as REACTIONS } from './reactions.js';
       burning.set(key(b.x,b.y),b);
     }
   }
-  function reset(){ burning.clear(); lavaSet.clear(); torchHeat.clear(); torchHeatAcc=0; lastSmokeTick=-Infinity; smokeEmissionBuckets.clear(); drawScanCache={key:'', at:0, tiles:[]}; }
+  function reset(){ burning.clear(); lavaSet.clear(); torchHeat.clear(); torchHeatAcc=0; drawScanCache={key:'', at:0, tiles:[]}; }
   function isBurning(x,y){ return burning.has(key(x|0,y|0)); }
   // Put out a single tile (water hose, rain, …) — the tile keeps whatever charring it had
   function extinguish(x,y){ return burning.delete(key(x|0,y|0)); }

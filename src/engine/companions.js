@@ -1,5 +1,6 @@
 import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, isLeaf } from '../constants.js';
 import { buildMaterialProfile, isDoorTile, isGasTile, isHeroPassableTile } from './material_physics.js';
+import { damageBlastCreatures } from './explosion_damage.js';
 
 const companions = (function(){
   const root = (typeof window!=='undefined') ? window : globalThis;
@@ -3443,7 +3444,7 @@ const companions = (function(){
     }
     const traits=traitsFor(c);
     const r=(2.2+Math.min(1.4,c.biomass*0.04))*traits.death;
-    try{ if(MM.mobs && MM.mobs.blastRadius) MM.mobs.blastRadius(c.x,c.y-0.35,r,(8+Math.min(18,c.biomass*0.8))*traits.death,{hostileOnly:true,source:'companion'}); }catch(e){}
+    damageBlastCreatures(MM,c.x,c.y-0.35,r,(8+Math.min(18,c.biomass*0.8))*traits.death,{hostileOnly:true,source:'companion',cause:'companion_blast'});
     try{ if(MM.gases && MM.gases.add) MM.gases.add('poison',c.x,c.y-0.3,{power:0.9*traits.poisonPower,cells:4}); }catch(e){}
     deathFx.push({x:c.x,y:c.y-0.45,t:0,max:0.55,color:c.genome.glow});
     if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);

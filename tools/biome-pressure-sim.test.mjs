@@ -105,6 +105,8 @@ try{
   assert.ok(species.STONE_GOLEM.xp >= 50, 'stone golems pay meaningful XP for surviving mountain pressure');
   assert.ok(species.VULTURE.xp >= 30, 'vultures pay meaningful XP for surviving a nest attack');
   assert.equal(species.ATOMIC_BOMB.xp, 6000, 'destroying an atomic bomb pays a massive high-risk XP jackpot');
+  assert.equal(species.ATOMIC_BOMB.hp, 8000, 'atomic bomb has a siege-scale health pool and cannot be destroyed quickly');
+  assert.ok(species.ATOMIC_BOMB.body.w >= 2.8, 'atomic bomb collision body matches the larger warhead silhouette');
   assert.ok(species.RADIATION_COCKROACH.dmg >= 16, 'radiation cockroaches are poisonous enough to pressure city survival');
   assert.match(mobsSource, /const ATOMIC_BOMB_CRATER_RX = 45;/, 'atomic bomb crater is tripled horizontally into a massive 90-block blast bowl');
   assert.match(mobsSource, /const ATOMIC_BOMB_CRATER_RY = 30;/, 'atomic bomb crater is tripled vertically into a deep blast bowl');
@@ -116,18 +118,27 @@ try{
   player = resetPlayer(80,9.15);
   installDamageRecorder(player);
   mobs.clearAll();
+  mobs.deserialize({v:5,list:[{id:'ATOMIC_BOMB',x:0.5,y:9.124,vx:0,vy:0,hp:120,maxHp:120,state:'armed',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}}});
+  mobs.freezeSpawns(10000);
+  assert.equal(mobs.damageAt(0,9,999,{source:'hero'}), true, 'a large hit reaches the atomic bomb through the normal damage API');
+  const hardenedBomb=mobs.serialize().list.find(m=>m.id==='ATOMIC_BOMB');
+  assert.ok(hardenedBomb && hardenedBomb.maxHp>=8000 && hardenedBomb.hp>6500, 'legacy saved bomb is upgraded proportionally and survives a 999-damage hit');
+  assert.equal(player.xp, 0, 'damaging but not destroying the hardened bomb awards no XP');
+  mobs.clearAll();
   let bombFatigue = {mode:'day',m:{}};
   const bombRewards = [];
   for(let i=0;i<5;i++){
-    mobs.deserialize({v:5,list:[{id:'ATOMIC_BOMB',x:0.5,y:9.124,vx:0,vy:0,hp:120,maxHp:120,state:'armed',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}},xpFatigue:bombFatigue});
+    mobs.deserialize({v:5,list:[{id:'ATOMIC_BOMB',x:0.5,y:9.124,vx:0,vy:0,hp:8000,maxHp:8000,state:'armed',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}},xpFatigue:bombFatigue});
     mobs.freezeSpawns(10000);
     const beforeXp = player.xp;
     const opts = i===2 ? {source:'hero',specialAttack:true} : {source:'hero'};
-    assert.equal(mobs.damageAt(0,9,999,opts), true, 'atomic bombs can be detonated through the normal mob damage API');
+    assert.equal(mobs.damageAt(0,9,species.ATOMIC_BOMB.hp*2,opts), true, 'atomic bombs can still be detonated through overwhelming normal mob damage');
     bombRewards.push(player.xp-beforeXp);
     bombFatigue = mobs.serialize().xpFatigue;
   }
   assert.deepEqual(bombRewards, [6000,3000,1500,750,375], 'repeat atomic bomb detonations halve their XP jackpot each time');
+  assert.match(mobsSource, /function drawAtomicTrefoil\(ctx,cx,cy,r\)/, 'atomic bomb renderer includes a proper radiation trefoil');
+  assert.match(mobsSource, /Bespoke wide, segmented integrity bar/, 'atomic bomb renders a dedicated siege-health integrity bar');
 
   worldGen.biomeType = () => 3;
   const desert = makeTileWorld(T.SAND);

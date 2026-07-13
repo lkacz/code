@@ -35,6 +35,7 @@ const opt = (name, dflt) => {
 const url      = opt('url', 'http://127.0.0.1:8123/index.html');
 const out      = opt('out', 'tools/live-preview.png');
 const wait     = Number(opt('wait', 2500));
+const postWait = Math.max(0, Number(opt('post-wait', 0)) || 0);
 const shots    = Math.max(1, Number(opt('shots', 1)));
 const interval = Number(opt('interval', 800));
 const headful  = !!opt('head', false);
@@ -162,6 +163,10 @@ async function main(){
 			console.log('script:', typeof v === 'object' ? JSON.stringify(v) : String(v));
 			if(String(v).startsWith('FAIL')) failed = true;
 		}
+		// Scenes should make instantaneous assertions. When the final screenshot
+		// needs transient particles/toasts to settle, wait here in the foreground
+		// driver instead of throttled in-page timers.
+		if(postWait>0) await sleep(postWait);
 
 		for(let i = 0; i < shots; i++){
 			if(i) await sleep(interval);

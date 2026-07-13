@@ -18,6 +18,8 @@ const { T } = await import('../src/constants.js');
 const { STORY_LORE } = await import('../src/engine/story_lore.js');
 const { worldGen: WG } = await import('../src/engine/worldgen.js');
 const { centerGuardian } = await import('../src/engine/center_guardian.js');
+const physicalChests=[];
+MM.drops={spawnChest(x,y,tier,opts){ const d={id:physicalChests.length+1,x,y,tier,opts}; physicalChests.push(d); return d; }};
 
 assert.ok(centerGuardian && globalThis.MM.centerGuardian === centerGuardian, 'center guardian registers on MM');
 assert.ok(STORY_LORE.center && STORY_LORE.center.reveal.length >= 8, 'center lore ships the full confession');
@@ -172,7 +174,8 @@ assert.equal(globalThis.inv.heartMother, 1, 'the heart lands in the inventory');
 assert.ok(granted.some(g=>g.id==='serce_ciszy'), 'the Heart of Quiet charm is granted');
 assert.equal(mentorHidden, false, 'the freed mentor returns');
 assert.equal(getTile(L.obeliskX, L.floorY-5), T.TORCH, 'the obelisk quiets into a lantern');
-assert.ok([2,-2,3,-3].some(off=>getTile(L.obeliskX+off, L.floorY-1)===T.CHEST_EPIC), 'the story leaves one epic chest at the dais');
+assert.ok(physicalChests.some(d=>d.tier==='epic' && d.opts.source==='story'), 'the story drops one physical epic chest at the dais');
+assert.ok(![...tiles.values()].some(t=>t===T.CHEST_EPIC), 'the story writes no chest block into the dais');
 assert.ok(events.some(e=>e.type==='mm-guardian-defeated' && e.detail && e.detail.kind==='mother'), 'the defeat event fires for progress systems');
 assert.equal(centerGuardian.completed(), true, 'the arc reports completion');
 
