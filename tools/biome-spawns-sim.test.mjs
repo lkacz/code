@@ -70,12 +70,14 @@ mobs.freezeSpawns(10000);
 companions.restore({v:1,list:[{x:0,y:9.96,biomass:3,hp:88,seed:4160,laserCd:99,gasCd:99}]},flatTile);
 mobs.deserialize({
   v:4,
-  list:[{id:'BAT',x:0.08,y:9.35,vx:0,vy:0,hp:6,state:'idle',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],
+  // A bat is now correctly outmatched by even a fresh hero and flees the whole
+  // party. Use a non-trivial hostile to retain this companion-targeting check.
+  list:[{id:'SZKIELET',x:0.08,y:9.35,vx:0,vy:0,hp:12,state:'idle',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],
   aggro:{mode:'rel',m:{}}
 });
 const farHero = {x:20,y:9.96,hp:100,maxHp:100,vx:0,vy:0,hpInvul:0};
 mobs.update(1/30,farHero,flatTile,()=>{});
-assert.ok(companions._debug.list()[0].hp<88, 'always-hostile mobs attack nearby companions before a far hero');
+assert.ok(companions._debug.list()[0].hp<88, 'non-trivial always-hostile mobs attack nearby companions before a far hero');
 assert.equal(farHero.hp, 100, 'mob companion targeting leaves the far hero unharmed');
 companions.reset();
 mobs.clearAll();

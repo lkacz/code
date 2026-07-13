@@ -1,9 +1,9 @@
-// Mob XP reward contract:
-// - repeat kills of the same species lose 1% XP per kill within one game day
-// - the fatigue ledger persists through mob snapshots and resets after a day
-// - right-click/special killing blows get a 20% XP bonus after fatigue
-// - XP awards emit a HUD-facing event/detail.
-// - special/important kills emit a combat feedback event for in-world effects.
+// Nonlinear combat progression contract:
+// - actual mob power is compared with an unremovable hero-development floor
+// - dangerous and regionally strengthened enemies pay much more than base XP
+// - trivial enemies pay zero XP, suppress hostility and flee the hero
+// - repeated same-species farming decays quickly but resets after a game day
+// - special killing blows retain their separate 20% execution bonus.
 import assert from 'node:assert/strict';
 
 globalThis.window = globalThis;
@@ -26,9 +26,16 @@ globalThis.dispatchEvent = (ev)=>{
   for(const fn of listeners.get(ev.type) || []) fn(ev);
   return true;
 };
-let simNow = 0;
+let simNow = 1000;
 globalThis.performance = { now:()=>simNow };
-globalThis.msg = () => {};
+const messages=[];
+globalThis.msg = t=>messages.push(String(t));
+
+let heroLevel=1;
+let heroAttack=3;
+MM.progress={level:()=>({level:heroLevel})};
+MM.inventory={attackDamage:()=>heroAttack};
+MM.activeModifiers={attackDamage:0,damageReductionBonus:0,moveSpeedMult:1};
 
 const { T } = await import('../src/constants.js');
 const { mobs } = await import('../src/engine/mobs.js');
@@ -47,33 +54,51 @@ const world = {
   setTile(){}
 };
 const species = mobs._debugSpecies();
+const progression=mobs._debugProgression;
 const id = 'STONE_GOLEM';
-const baseXp = species[id].xp;
 globalThis.player = {x:0.5,y:9.15,w:0.7,h:0.95,vx:0,vy:0,hp:100,maxHp:100,hpInvul:0,xp:0};
 
 function currentFatigue(){
   return mobs.serialize().xpFatigue;
 }
-function spawnTestMob(specId=id){
+function spawnTestMob(specId=id,x=0.5){
   const fatigue=currentFatigue();
   const spec=species[specId];
   mobs.deserialize({
     v:5,
-    list:[{id:specId,x:0.5,y:9.124,vx:0,vy:0,hp:spec.hp,maxHp:spec.hp,state:'dormant',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],
+    list:[{id:specId,x,y:9.124,vx:0,vy:0,hp:spec.hp,maxHp:spec.hp,state:'dormant',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],
     aggro:{mode:'rel',m:{}},
     xpFatigue:fatigue
   });
   mobs.freezeSpawns(10000);
 }
-function kill(opts){
-  spawnTestMob();
+function kill(specId=id,opts,x=0.5){
+  spawnTestMob(specId,x);
   const before=player.xp;
-  assert.equal(mobs.damageAt(0,9,999,Object.assign({source:'hero'},opts||{})), true, 'test mob can be killed');
+  assert.equal(mobs.damageAt(Math.floor(x),9,999,Object.assign({source:'hero'},opts||{})), true, 'test mob can be killed');
   return player.xp-before;
+}
+function challengeFor(specId,mobOverrides){
+  const spec=species[specId];
+  const m=Object.assign({id:specId,maxHp:spec.hp,dmgMult:1,speedMul:1},mobOverrides||{});
+  return progression.challenge(m,spec,player);
 }
 
 try{
   mobs.deserialize({v:5,list:[],aggro:{mode:'rel',m:{}},xpFatigue:{mode:'day',m:{}}});
+
+  const fairBear=challengeFor('BEAR');
+  const weakWolf=challengeFor('WOLF');
+  const hardGolem=challengeFor(id);
+  assert.equal(fairBear.tier,'fair','a fresh hero and a bear are an approximately fair match');
+  assert.equal(weakWolf.tier,'weak','a wolf is already less rewarding than a bear for the fresh hero');
+  assert.ok(hardGolem.challengeMult>2,'a materially stronger golem receives a nonlinear risk bonus');
+  assert.ok(hardGolem.recommendedLevel>fairBear.recommendedLevel,'recommended level follows actual threat power');
+
+  const regionalGolem=challengeFor(id,{maxHp:species[id].hp*4,dmgMult:3,speedMul:1.2});
+  assert.ok(regionalGolem.mobPower>hardGolem.mobPower*3,'regional HP/damage produce a genuinely stronger entity rating');
+  assert.ok(regionalGolem.variantMult>2,'a strengthened regional variant raises base payout as well as challenge');
+  assert.ok(regionalGolem.totalMult>hardGolem.totalMult,'travelling toward stronger variants can pay XP unavailable near the center');
 
   const coldId='ICE_WRAITH';
   spawnTestMob(coldId);
@@ -81,47 +106,88 @@ try{
   const coldBefore=species[coldId].hp;
   assert.equal(mobs.damageAt(0,9,10,{source:'hero',kind:'flame',element:'fire'}), true, 'fire can hit a cold biome threat');
   const coldAfter=mobs.serialize().list[0].hp;
-  assert.ok(coldBefore-coldAfter >= 11.9, 'cold biome threats take the 20% thermal fire bonus');
-  assert.ok(combatEvents.some(e=>e && e.species===coldId && e.bonusDamagePct===20 && e.element==='fire'), 'thermal mob bonus emits HEAT +20% combat feedback');
+  assert.ok(coldBefore-coldAfter >= 11.9, 'cold biome threats retain the 20% thermal fire bonus');
+  assert.ok(combatEvents.some(e=>e && e.species===coldId && e.bonusDamagePct===20 && e.element==='fire'), 'thermal bonus still emits combat feedback');
 
-  assert.equal(kill({source:'hero_mech'}), baseXp, 'kills from a captured mech are credited as hero XP');
+  const mechXp=kill(id,{source:'hero_mech'});
+  assert.ok(mechXp>species[id].xp*2,'captured-mech kills are credited with the dangerous-enemy bonus');
   mobs.deserialize({v:5,list:[],aggro:{mode:'rel',m:{}},xpFatigue:{mode:'day',m:{}}});
   player.xp=0;
   events.length=0;
   combatEvents.length=0;
 
-  assert.equal(kill(), baseXp, 'first same-species kill pays full XP');
-  assert.equal(kill(), Math.round(baseXp*0.99), 'second same-species kill pays 1% less');
-  assert.equal(kill({specialAttack:true}), Math.round(baseXp*0.98*1.2), 'special killing blow adds 20% after fatigue');
+  const first=kill();
+  const second=kill();
+  const special=kill(id,{specialAttack:true});
+  assert.ok(first>species[id].xp*2,'first hard kill pays far above authored base XP');
+  assert.ok(Math.abs(second-Math.round(first*0.92))<=1,'second same-species kill loses about 8% instead of the old negligible 1%');
+  assert.ok(special>second,'special execution bonus can overcome one additional fatigue step');
+  assert.equal(events[0].challenge,'hard','award detail names the risk tier');
+  assert.ok(events[0].challengeRatio>1 && events[0].challengeMult>2,'award detail exposes comparison and multiplier to UI');
+  assert.equal(events[0].risk,true,'hard reward is highlighted in world-space feedback');
+  assert.equal(events[2].special,true,'event preserves special-kill semantics');
 
   const snap=mobs.serialize();
-  assert.equal(snap.xpFatigue.m[id].kills, 3, 'snapshot persists same-species fatigue kills');
-  assert.equal(kill(), Math.round(baseXp*0.97), 'restored fatigue keeps diminishing returns');
+  assert.equal(snap.xpFatigue.m[id].kills,3,'snapshot persists same-species fatigue kills');
+  const fourth=kill();
+  assert.ok(fourth<second,'restored fatigue keeps meaningful diminishing returns');
+  dayFloat+=1.05;
+  const reset=kill();
+  assert.equal(reset,first,'one game day without that kill type resets fatigue');
 
-  dayFloat += 1.05;
-  assert.equal(kill(), baseXp, 'one game day without that kill type resets fatigue');
+  // A low-base center species that becomes a legitimate fight through distant
+  // regional scaling must not still pay low-level pocket change.
+  mobs.deserialize({v:5,list:[],aggro:{mode:'rel',m:{}},xpFatigue:{mode:'day',m:{}}});
+  heroLevel=20;
+  player.x=26000.5;
+  player.xp=0;
+  events.length=0;
+  const farBisonXp=kill('THUNDER_BISON',{},26000.5);
+  const farBisonEvent=events.at(-1);
+  assert.ok(farBisonEvent && farBisonEvent.floorApplied,'level-appropriate distant variant receives the progression floor');
+  assert.ok(farBisonXp/progression.xpNeed(20)>=0.035,'fair distant fight pays a meaningful share of the next level');
+  assert.ok(farBisonEvent.progressionFloor>farBisonEvent.authoredCombatXp,'floor specifically repairs underpayment from the low center-species base');
 
-  assert.ok(events.length>=5, 'mob XP awards emit HUD events');
-  assert.equal(events[0].amount, baseXp, 'event carries the awarded XP amount');
-  assert.equal(events[2].special, true, 'event marks special-kill awards');
-  assert.ok(combatEvents.some(e=>e && e.kind==='special' && e.special===true && e.finisher===true), 'special mob kill emits finisher combat feedback');
-  assert.equal(combatEvents.some(e=>e && e.kind==='special_xp'), false, 'special XP bonus does not create a second floating combat event');
+  // Once development overtakes the mob, it cannot be used to reproduce the
+  // earlier risk reward and its AI yields even after being provoked.
+  heroLevel=20;
+  player.x=0.5;
+  player.xp=0;
+  events.length=0;
+  const trivial=challengeFor('WOLF');
+  assert.equal(trivial.trivial,true,'old low-tier opponent crosses the explicit trivial threshold');
+  assert.equal(trivial.challengeMult,0,'trivial challenge has a hard zero multiplier');
+  assert.equal(kill('WOLF'),0,'killing a trivial opponent awards zero XP');
+  assert.equal(events.length,0,'zero-XP kills do not create fake positive award numbers');
+  assert.ok(messages.some(t=>t.includes('0 EXP')),'first hunted trivial enemy explains why no XP was paid');
+
+  spawnTestMob('WOLF',3.5);
+  mobs.setAggro('WOLF');
+  let heroDamage=0;
+  globalThis.damageHero=amount=>{ heroDamage+=amount; return true; };
+  assert.equal(mobs.damageAt(3,9,1,{source:'hero'}),true,'a trivial mob can still be attacked for loot');
+  simNow+=16;
+  mobs.update(1/30,player,world.getTile,world.setTile);
+  const fleeing=mobs.serialize().list.find(m=>m.id==='WOLF');
+  assert.ok(fleeing && fleeing.state==='flee_outmatched','provoked trivial mob flees instead of switching back to attack AI');
+  assert.ok(fleeing.vx>0,'mob on the right runs farther right, away from the hero');
+  assert.equal(heroDamage,0,'outmatched mob cannot deal proactive contact damage while fleeing');
+
+  assert.ok(combatEvents.some(e=>e && e.kind==='special' && e.special===true && e.finisher===true), 'special mob kill still emits finisher feedback');
+  assert.equal(combatEvents.some(e=>e && e.kind==='special_xp'),false,'XP bonus does not duplicate combat numbers');
 
   const model=createVitalsModel();
-  assert.equal(model.noteXpAward({amount:42,special:true,fatigueMult:0.91}), true, 'HUD model accepts XP award details');
+  assert.equal(model.noteXpAward({amount:42,special:true,fatigueMult:0.91}),true,'HUD model accepts rich XP award details');
   let st=model.update({hp:100,maxHp:100,en:20,enMax:40,level:1,xpInto:42,xpNeed:60,buffs:[]},1/60);
-  assert.equal(st.xpDeltas.length, 1, 'XP award queues a green XP number');
-  assert.equal(st.xpDeltas[0].v, 42, 'XP number stores the awarded amount');
-  assert.equal(st.xpDeltas[0].special, true, 'XP number remembers special bonus state');
-  for(let t=0; t<1.5; t+=1/60){
-    st=model.update({hp:100,maxHp:100,en:20,enMax:40,level:1,xpInto:42,xpNeed:60,buffs:[]},1/60);
-  }
-  assert.equal(st.xpDeltas.length, 0, 'XP number ages out');
-
-  assert.ok(vitalsHud.noteXpAward({amount:7}), 'exported HUD API accepts XP awards');
+  assert.equal(st.xpDeltas.length,1,'XP award queues a HUD record');
+  assert.equal(st.xpDeltas[0].v,42,'XP record stores the awarded amount');
+  for(let t=0;t<1.5;t+=1/60) st=model.update({hp:100,maxHp:100,en:20,enMax:40,level:1,xpInto:42,xpNeed:60,buffs:[]},1/60);
+  assert.equal(st.xpDeltas.length,0,'XP record ages out');
+  assert.ok(vitalsHud.noteXpAward({amount:7}),'exported HUD API accepts XP awards');
 } finally {
   mobs.clearAll();
   delete globalThis.msg;
+  delete globalThis.damageHero;
 }
 
 console.log('mob-xp-rewards-sim: all assertions passed');

@@ -39,6 +39,7 @@ const discovery = (function(){
     hero_fizzle:    'Ogień gaśnie na przemoczonym bohaterze',
     mob_gear:       'Pokonane stwory gubią swoje rzemiosło',
     epic_drop:      'Epicki łup ogłasza się słupem światła',
+    jewel_drop:     'Jewel trwale ulepsza wybrany przedmiot',
     volcano_sacrifice: 'Wulkan przyjmuje ofiary i oddaje z nawiązką',
     // Category discoveries (main.js noteCategoryDiscoveries): the FIRST unlocked
     // recipe of a craft group / first held block of a picker group opens the
@@ -119,6 +120,7 @@ const discovery = (function(){
     hero_fizzle:    {cat:'🧍 Na własnej skórze', hint:'Dobrze przemoczony możesz wejść tam, gdzie zwykle parzy…'},
     mob_gear:       {cat:'🎁 Łupy',              hint:'To, czym stwór walczy albo czym jest, może po nim zostać…'},
     epic_drop:      {cat:'🎁 Łupy',              hint:'Na krańcach świata spadają skarby, których nie sposób przegapić…'},
+    jewel_drop:     {cat:'🎁 Łupy',              hint:'Najpotężniejsi przeciwnicy mogą zgubić kamień, który zmienia przedmiot na zawsze…'},
     volcano_sacrifice: {cat:'🎁 Łupy',           hint:'Zwykły przedmiot wrzucony w ogień góry czasem wraca lepszy…'},
     craft_cat_survival:   {cat:'📚 Katalogi', hint:'Pierwsze deski i pierwsza noc otwierają najprostszy dział…'},
     craft_cat_tools:      {cat:'📚 Katalogi', hint:'Twardszy surowiec w plecaku podpowiada lepsze narzędzia…'},

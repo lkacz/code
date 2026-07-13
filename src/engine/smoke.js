@@ -16,6 +16,7 @@ import { isSmokePorousTile } from './material_physics.js';
   const MAX_CELLS=1200;
   const MAX_DENSITY=1.25;
   const MIN_DENSITY=0.012;
+  const SOOT_FADE_SECONDS=75;
   // Keep the sparse overlay inside the same horizontal storage envelope as
   // world.js. Bitwise key normalization would otherwise wrap corrupt, huge x
   // coordinates back into an unrelated valid cell (most visibly x=0).
@@ -287,6 +288,87 @@ import { isSmokePorousTile } from './material_physics.js';
     return c?clamp(c.d,0,MAX_DENSITY):0;
   }
 
+  // Creatures do not need their own particle simulation. Sampling at most three
+  // sparse smoke cells per active body is enough to build a persistent soot film;
+  // once outside the cloud it wears off slowly on simulation time.
+  function updateSoot(target,dt,opts){
+    if(!target||typeof target!=='object'||!(dt>0)||!Number.isFinite(dt)) return 0;
+    const x=Number(target.x),y=Number(target.y);
+    if(!Number.isFinite(x)||!Number.isFinite(y)) return 0;
+    opts=opts||{};
+    // Some procedural genomes already use `soot` as an art parameter. They can
+    // opt into a private film field without conflating appearance metadata with
+    // environmental exposure.
+    const filmField=opts.field==='_sootFilm'?'_sootFilm':'soot';
+    const tintField=filmField==='_sootFilm'?'_sootFilmTint':'_smokeTint';
+    const soot=clamp(Number.isFinite(Number(target[filmField]))?Number(target[filmField]):0,0,1);
+    const tint=clamp(Number.isFinite(Number(target[tintField]))?Number(target[tintField]):0,0,1);
+    let exposure=0;
+    if(cells.size){
+      const height=clamp(Number.isFinite(Number(opts.height))?Number(opts.height):(Number(target.h)||0.9),0.2,4);
+      exposure=Math.max(
+        densityAt(x,y),
+        densityAt(x,y-height*0.34),
+        densityAt(x,y+height*0.28)
+      );
+      exposure=clamp((exposure-0.025)/0.90,0,1);
+    }
+    const step=Math.min(dt,0.25);
+    const tintRate=exposure>tint?9:3.2;
+    const nextTint=tint+(exposure-tint)*Math.min(1,step*tintRate);
+    const speed=Math.hypot(Number(target.vx)||0,Number(target.vy)||0);
+    const motion=clamp(speed/2.4,0,1);
+    const nextSoot=exposure>0
+      ? soot+step*exposure*(0.10+motion*0.12)
+      : soot-step/SOOT_FADE_SECONDS;
+    target[filmField]=clamp(nextSoot,0,1);
+    target[tintField]=clamp(nextTint,0,1);
+    return target[filmField];
+  }
+
+  function visualSoot(target,opts){
+    if(!target||typeof target!=='object') return 0;
+    const filmField=opts&&opts.field==='_sootFilm'?'_sootFilm':'soot';
+    const tintField=filmField==='_sootFilm'?'_sootFilmTint':'_smokeTint';
+    const soot=Number(target[filmField])||0;
+    const tint=Number(target[tintField])||0;
+    return clamp(Math.max(soot,tint*0.82),0,1);
+  }
+
+  // A few deterministic marks are cheaper and clearer than per-creature soot
+  // particles. Callers provide a tight body box, keeping scenery unaffected.
+  function drawSootMarks(ctx,cx,cy,width,height,amount,seed){
+    if(!ctx||typeof ctx.save!=='function'||typeof ctx.ellipse!=='function') return false;
+    amount=clamp(Number(amount)||0,0,1);
+    width=Math.max(1,Number(width)||0); height=Math.max(1,Number(height)||0);
+    if(amount<0.015||!Number.isFinite(cx)||!Number.isFinite(cy)) return false;
+    const base=(Number(seed)||0)|0;
+    ctx.save();
+    ctx.globalCompositeOperation='source-over';
+    // A restrained central glaze makes the whole silhouette read darker; the
+    // smaller marks below sell uneven soot instead of a flat colour filter.
+    ctx.globalAlpha=amount*0.12;
+    ctx.fillStyle='#090a09';
+    ctx.beginPath();
+    ctx.ellipse(cx,cy,width*0.44,height*0.44,0,0,Math.PI*2);
+    ctx.fill();
+    for(let i=0;i<5;i++){
+      const h=hash32(base+i*17,base>>>7,i+113);
+      const px=cx+(((h&255)/255)-0.5)*width*0.62;
+      const py=cy+((((h>>>8)&255)/255)-0.5)*height*0.62;
+      const rx=width*(0.055+((h>>>16)&31)/31*0.065);
+      const ry=height*(0.035+((h>>>21)&31)/31*0.060);
+      ctx.globalAlpha=amount*(0.13+((h>>>26)&15)/15*0.15);
+      ctx.fillStyle=(i&1)?'#080909':'#171713';
+      ctx.beginPath();
+      ctx.ellipse(px,py,rx,ry,((h>>>12)&31)/31*Math.PI,0,Math.PI*2);
+      ctx.fill();
+    }
+    ctx.globalAlpha=1;
+    ctx.restore();
+    return true;
+  }
+
   function onTileChanged(x,y,_old,next,getTile){
     if(!cells.size) return false;
     x=Math.floor(x); y=Math.floor(y);
@@ -408,7 +490,7 @@ import { isSmokePorousTile } from './material_physics.js';
     return {active:cells.size,mass:+mass.toFixed(2),dense,cap:MAX_CELLS,queue:queue.length,processed:lastProcessed,budget:lastBudget};
   }
 
-  const api={update,draw,emit,densityAt,onTileChanged,snapshot,restore,reset,metrics,count:()=>cells.size,config:{STEP,MAX_CELLS,MAX_DENSITY},_debug:{cells,smokeOpenTile,ventilationAt,physicsStep}};
+  const api={update,draw,emit,densityAt,updateSoot,visualSoot,drawSootMarks,onTileChanged,snapshot,restore,reset,metrics,count:()=>cells.size,config:{STEP,MAX_CELLS,MAX_DENSITY,SOOT_FADE_SECONDS},_debug:{cells,smokeOpenTile,ventilationAt,physicsStep}};
   root.MM.smoke=api;
 })();
 

@@ -382,6 +382,49 @@ for(const family of ['invasions','mechs']){
   }
 }
 
+// Block-built bosses return a terrain-style "blocked" hit, but surviving arrows
+// still need a local block anchor so they move with the creature instead of
+// hanging at an absolute world coordinate.
+{
+  const oldBosses=MM.bosses;
+  const oldMobs=MM.mobs;
+  const target={x:-2,y:1,vx:0.7,vy:0,dead:false,dying:false}; // real block bosses have per-part HP, not body HP
+  const struckPart={hp:5};
+  const isPartAlive=b=>b===target && !b.dead && !b.dying && struckPart.hp>0;
+  MM.mobs={damageAt(){ return false; },igniteAt(){ return false; }};
+  MM.bosses={damageAt(tx,ty,dmg,opts){
+    if(tx!==0 || ty!==0) return false;
+    if(opts && typeof opts.onTarget==='function') opts.onTarget(target,'boss',isPartAlive,{localX:2.5,localY:-0.5});
+    return 'blocked';
+  }};
+  const savedRandom=Math.random;
+  try{
+    Math.random=()=>0.99;
+    tiles=new Map(); weapons.reset(); player.x=100; player.y=0.5;
+    weapons._debug.pushArrow({x:-0.1,y:0.5,vx:12,vy:0,dmg:2,life:2,tier:'iridium',stuck:false,stuckT:4,recoverable:true,recoverKey:'arrowIridium'});
+    weapons.update(1/60,getTile,setTile);
+    const embedded=weapons._debug.arrows[0];
+    assert.equal(embedded && embedded.embeddedMob,target,'a surviving shell hit embeds in the block boss');
+    assert.equal(embedded.embeddedFamily,'boss','the embedded shaft retains its boss family');
+    assert.equal(embedded.embeddedAnchorX,2.5,'the exact struck block X anchor is retained');
+    assert.equal(embedded.embeddedAnchorY,-0.5,'the exact struck block Y anchor is retained');
+    target.x+=1.75; target.y-=0.4;
+    weapons.update(1/60,getTile,setTile);
+    assert.ok(Math.abs(embedded.x-(target.x+embedded.embeddedAnchorX+embedded.embeddedOffsetX))<1e-9
+      && Math.abs(embedded.y-(target.y+embedded.embeddedAnchorY+embedded.embeddedOffsetY))<1e-9,
+      'the arrow follows the moving boss at its struck block');
+    struckPart.hp=0;
+    weapons.update(1/60,getTile,setTile);
+    assert.equal(embedded.embeddedMob,null,'destroying the anchored boss block releases its arrow');
+    assert.equal(embedded.dropOnLand,true,'the released boss arrow falls as a collectible');
+  } finally {
+    Math.random=savedRandom;
+    if(oldBosses===undefined) delete MM.bosses; else MM.bosses=oldBosses;
+    MM.mobs=oldMobs;
+    player.x=0.5; player.y=0.5;
+  }
+}
+
 tiles=new Map(); weapons.reset(); fire.reset(); sparks=0;
 refillResources({arrowWood:0, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:1});
 setTile(4,0,T.STONE);

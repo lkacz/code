@@ -185,10 +185,19 @@ assert.equal(bosses.damageAt(shellX,shellY,999,{kind:'melee',source:'hero'}), 'b
 assert.equal(shell.hp,shellHp,'melee cannot damage the material shell');
 assert.equal(bosses.damageAt(shellX,shellY,999,{kind:'electric',source:'hero'}), 'blocked', 'electric weapons stop on a boss body block');
 assert.equal(shell.hp,shellHp,'electric damage cannot erode the material shell');
-assert.equal(bosses.damageAt(shellX,shellY,999,{kind:'arrow',tier:'wood',pierceLeft:0,source:'hero'}), 'blocked', 'ordinary arrows hit the shell like terrain');
+let arrowAnchor=null;
+assert.equal(bosses.damageAt(shellX,shellY,999,{kind:'arrow',tier:'wood',pierceLeft:0,source:'hero',onTarget(target,family,isAlive,anchor){
+  arrowAnchor={target,family,isAlive,anchor};
+}}), 'blocked', 'ordinary arrows hit the shell like terrain');
 assert.equal(shell.hp,shellHp,'ordinary arrows cannot damage the material shell');
+assert.equal(arrowAnchor && arrowAnchor.target,mm,'a shell hit exposes the moving boss body to the arrow system');
+assert.equal(arrowAnchor && arrowAnchor.family,'boss','the projectile target is tagged as a block boss');
+assert.ok(arrowAnchor && Math.abs(arrowAnchor.anchor.localX-(shell.dx+0.5))<1e-9
+  && Math.abs(arrowAnchor.anchor.localY-(shell.dy+0.5))<1e-9,'the anchor identifies the exact struck block in boss-local coordinates');
+assert.equal(arrowAnchor.isAlive(mm),true,'the struck block initially keeps an embedded arrow attached');
 assert.equal(bosses.damageAt(shellX,shellY,1,{kind:'arrow',tier:'iridium',pierceLeft:3,source:'hero'}), 'pierced', 'iridium arrows pierce a compatible boss block');
 assert.ok(!mm.parts.includes(shell),'iridium piercing removes the dynamic block');
+assert.equal(arrowAnchor.isAlive(mm),false,'destroying the struck block releases arrows anchored to it');
 
 resetWorld();
 const mined = bosses.forceSpawn(getTile, {x:300, seed:557, freeze:true, archetype:'walker'});

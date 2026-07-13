@@ -538,6 +538,12 @@ const centerGuardian = (function(){
     state.suspended=false;
     reflects.length=0;
     awardHeart();
+    try{
+      if(MM.drops && MM.drops.rollJewelDrop){
+        MM.drops.rollJewelDrop({id:'CENTER_GUARDIAN',x:mimic.x,y:mimic.y,maxHp:mimic.maxHp,dmg:30},
+          {boss:true,hp:mimic.maxHp,dmg:30,xp:700});
+      }
+    }catch(e){}
     grantQuietCharm();
     materializeEpilogue();
     setMentorHidden(false);

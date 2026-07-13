@@ -1305,6 +1305,18 @@ window.MM = window.MM || {};
       p.xp=(Number(p.xp)||0)+xpGain;
       notifyXpAward({amount:xpGain,x:blastX,y:blastY,species:'BOSS',special:true,source:'boss'});
     }
+    // Procedural block beasts are outside mobs.js, so they make their own roll
+    // through the same power-scaled jewel table. Gargantuans naturally score
+    // higher but the reward remains a rare possibility, never a guaranteed drop.
+    try{
+      if(MM.drops && MM.drops.rollJewelDrop){
+        const hpBudget=Math.max(1,deathPartCount*8+(m.gargantuan?180:0));
+        MM.drops.rollJewelDrop({
+          id:'BLOCK_BOSS',x:blastX,y:blastY,maxHp:hpBudget,dmg:m.attackDmg,
+          scale:m.gargantuan?3:1,hostility:m.hostility,hostilityTier:m.hostilityTier
+        },{boss:true,hp:hpBudget,dmg:m.attackDmg,xp:xpGain});
+      }
+    }catch(e){}
     say('💥 Serce potwora '+m.name+' eksplodowało! Nagroda: +'+xpGain+' XP'+(m.gargantuan? ' — zostawił stos epickich skrzyń!':' — zostawił skrzynię!'));
     killedTotal++;
     try{ if(typeof window!=='undefined' && window.dispatchEvent) window.dispatchEvent(new CustomEvent('mm-boss-killed',{detail:{name:m.name,gargantuan:!!m.gargantuan,xp:xpGain,x:blastX,y:blastY}})); }catch(e){}
@@ -1421,6 +1433,15 @@ window.MM = window.MM || {};
   function damageAt(tx,ty,dmg,opts){
     return strikeAt(tx,ty, Math.max(0.5,(typeof dmg==='number' && isFinite(dmg))? dmg:1), opts);
   }
+  function reportProjectileAnchor(opts,m,part){
+    if(!opts || typeof opts.onTarget!=='function' || !m || !part) return;
+    // Parts live in the boss-local block lattice. Passing that local anchor lets
+    // a surviving arrow follow the moving beast without snapping to its origin.
+    const anchor={localX:(Number(part.dx)||0)+0.5,localY:(Number(part.dy)||0)+0.5};
+    const partAlive=(boss)=>!!(boss===m && !m.dead && !m.dying && part.hp>0
+      && monsters.indexOf(m)>=0 && m.parts.indexOf(part)>=0);
+    try{ opts.onTarget(m,'boss',partAlive,anchor); }catch(e){}
+  }
   // Status damage follows the weapon rule too: eye first, then an exposed heart.
   function applyStatusDot(m,dmg,getTile,setTile){
     if(!m || m.dead || m.dying || !(dmg>0) || !Array.isArray(m.parts) || !m.parts.length) return false;
@@ -1455,6 +1476,7 @@ window.MM = window.MM || {};
         if(ov>bestOv){ bestOv=ov; best=p; }
       }
       if(best){
+        reportProjectileAnchor(opts,m,best);
         const impact=bodyImpactMode(best,opts);
         best.hitT=0.18;
         // a struck beast stops grazing and turns to fight (a blind one only frets)
@@ -1467,6 +1489,7 @@ window.MM = window.MM || {};
         return true;
       }
       if(coreOv>0){
+        reportProjectileAnchor(opts,m,m.core);
         // the blow glances off the plating sealing the heart — flash the armor ring
         for(const p of m.parts){ if(Math.abs(p.dx-m.core.dx)+Math.abs(p.dy-m.core.dy)===1) p.hitT=0.15; }
         const now=(typeof performance!=='undefined')? performance.now():0;

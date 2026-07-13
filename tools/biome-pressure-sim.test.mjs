@@ -252,7 +252,7 @@ try{
   mobs.deserialize({v:4,list:[{id:'SAND_WORM',x:0.5,y:9.5,vx:0,vy:0,hp:46,maxHp:46,state:'ambush',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}}});
   mobs.freezeSpawns(10000);
   assert.equal(mobs.damageAt(0,9,999,{source:'hero'}), true, 'sand worms can be defeated through the normal mob damage API');
-  assert.ok(player.xp >= species.SAND_WORM.xp, 'defeating a sand worm awards XP');
+  assert.ok(player.xp > 0, 'defeating a sand worm awards challenge-scaled XP');
 
   player = resetPlayer(1.25,9.15);
   hits = installDamageRecorder(player);
@@ -279,7 +279,7 @@ try{
     mobs.deserialize({v:5,list:[{id:'GIANT_SCORPION',x:0.5,y:9.5,vx:0,vy:0,hp:126,maxHp:126,state:'stalking',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}}});
     mobs.freezeSpawns(10000);
     assert.equal(mobs.damageAt(0,9,999,{source:'hero'}), true, 'giant scorpions can be defeated through the normal mob damage API');
-    assert.ok(player.xp >= species.GIANT_SCORPION.xp, 'defeating a giant scorpion awards major XP');
+    assert.ok(player.xp > 0, 'defeating a giant scorpion awards challenge-scaled XP');
     assert.equal(commanders.length, 1, 'one-in-ten giant scorpion deaths can reveal a golden alien commander');
     assert.equal(commanders[0].opts?.forceAfterWestGuardian, true, 'scorpion commander reveals are independent of ruin progression');
     assert.ok(commanders[0].opts?.threatBonus >= 10, 'scorpion commanders inherit an elite threat bonus');
@@ -344,7 +344,7 @@ try{
   assert.ok(mobs.serialize().list[0].pacifiedMs > 0, 'torch-suppressed bramble stalkers persist a visible calm timer');
   player.xp = 0;
   assert.equal(mobs.damageAt(0,9,999,{source:'hero'}), true, 'bramble stalkers can be defeated through the normal mob damage API');
-  assert.ok(player.xp >= species.BRAMBLE_STALKER.xp, 'defeating a bramble stalker awards XP');
+  assert.ok(player.xp > 0, 'defeating a bramble stalker awards challenge-scaled XP');
 
   worldGen.biomeType = () => 1;
   const plains = makeTileWorld(T.GRASS);
@@ -388,7 +388,7 @@ try{
   player.xp = 0;
   const chargedBison = mobs.serialize().list[0];
   assert.equal(mobs.damageAt(Math.floor(chargedBison.x),Math.floor(chargedBison.y),999,{source:'hero'}), true, 'thunder bison can be defeated through the normal mob damage API');
-  assert.ok(player.xp >= species.THUNDER_BISON.xp, 'defeating a thunder bison awards XP');
+  assert.ok(player.xp > 0, 'defeating a thunder bison awards challenge-scaled XP');
 
   worldGen.biomeType = () => 0;
   const temple = makeTileWorld(T.GRASS, {
@@ -443,7 +443,7 @@ try{
 
   player.xp = 0;
   assert.equal(mobs.damageAt(0,9,999,{source:'hero'}), true, 'temple guards can be defeated through the normal mob damage API');
-  assert.ok(player.xp >= species.TEMPLE_GUARD.xp, 'defeating a temple guard awards XP');
+  assert.ok(player.xp > 0, 'defeating a temple guard awards challenge-scaled XP');
 
   worldGen.biomeType = () => 2;
   const snow = makeTileWorld(T.SNOW);
@@ -488,7 +488,7 @@ try{
 
   player.xp = 0;
   assert.equal(mobs.damageAt(Math.floor(blinkedWraith.x),Math.floor(blinkedWraith.y),999,{source:'hero'}), true, 'ice wraiths can be defeated through the normal mob damage API');
-  assert.ok(player.xp >= species.ICE_WRAITH.xp, 'defeating an ice wraith awards XP');
+  assert.ok(player.xp > 0, 'defeating an ice wraith awards challenge-scaled XP');
 
   player = resetPlayer(0.65,9.15);
   hits = installDamageRecorder(player);
@@ -515,7 +515,7 @@ try{
     mobs.deserialize({v:5,list:[{id:'JACKPOT_YETI',x:0.5,y:9.15,vx:0,vy:0,hp:152,maxHp:152,state:'prowling',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}}});
     mobs.freezeSpawns(10000);
     assert.equal(mobs.damageAt(0,9,999,{source:'hero'}), true, 'jackpot yetis can be defeated through the normal mob damage API');
-    assert.ok(player.xp >= species.JACKPOT_YETI.xp, 'defeating a jackpot yeti awards major XP');
+    assert.ok(player.xp > 0, 'defeating a jackpot yeti awards challenge-scaled XP');
     assert.equal(yetiCommanders.length, 1, 'one-in-ten jackpot yeti deaths can reveal a golden alien commander');
     assert.ok(String(yetiCommanders[0].opts?.key||'').startsWith('yeti:'), 'jackpot yeti commander reveal uses a yeti-specific key');
     assert.ok(yetiCommanders[0].opts?.threatBonus >= 12, 'jackpot yeti commanders inherit an elite threat bonus');
@@ -564,7 +564,7 @@ try{
   assert.equal(hits.length, 0, 'burning bog lurkers stop biting long enough to reposition');
   player.xp = 0;
   assert.equal(mobs.damageAt(0,9,999,{source:'hero'}), true, 'bog lurkers can be defeated through the normal mob damage API');
-  assert.ok(player.xp >= species.BOG_LURKER.xp, 'defeating a bog lurker awards XP');
+  assert.ok(player.xp > 0, 'defeating a bog lurker awards challenge-scaled XP');
 
   worldGen.biomeType = () => 6;
   const lake = makeWaterTileWorld(T.STONE, -5, 5, 4, 9);
@@ -585,7 +585,7 @@ try{
   assert.ok(shockedSerpent.state === 'charged', 'lake serpent remains in charged pursuit while the hero is in lake water');
   player.xp = 0;
   assert.equal(mobs.damageAt(Math.floor(shockedSerpent.x),Math.floor(shockedSerpent.y),999,{source:'hero'}), true, 'lake serpents can be defeated through the normal mob damage API');
-  assert.ok(player.xp >= species.LAKE_SERPENT.xp, 'defeating a lake serpent awards XP');
+  assert.ok(player.xp > 0, 'defeating a lake serpent awards challenge-scaled XP');
 
   worldGen.biomeType = () => 5;
   const ocean = makeWaterTileWorld(T.STONE, -8, 8, 2, 12);
@@ -619,7 +619,7 @@ try{
     mobs.deserialize({v:5,list:[{id:'JACKPOT_WHALE',x:0.5,y:6.5,vx:0,vy:0,hp:220,maxHp:220,state:'cruising',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}}});
     mobs.freezeSpawns(10000);
     assert.equal(mobs.damageAt(0,6,999,{source:'hero'}), true, 'jackpot whales can be defeated through the normal mob damage API');
-    assert.ok(player.xp >= species.JACKPOT_WHALE.xp, 'defeating a jackpot whale awards major XP');
+    assert.ok(player.xp > 0, 'defeating a jackpot whale awards challenge-scaled XP');
     assert.equal(whaleCommanders.length, 1, 'one-in-ten jackpot whale deaths can reveal a golden alien commander');
     assert.ok(String(whaleCommanders[0].opts?.key||'').startsWith('whale:'), 'jackpot whale commander reveal uses a whale-specific key');
     assert.ok(whaleCommanders[0].opts?.threatBonus >= 14, 'jackpot whale commanders inherit an elite threat bonus');
@@ -688,7 +688,7 @@ try{
   assert.equal(hits.length, 0, 'a doused stone golem does not keep crushing through aggro');
   player.xp = 0;
   assert.equal(mobs.damageAt(0,9,999,{source:'hero'}), true, 'stone golems can be defeated through the normal mob damage API');
-  assert.ok(player.xp >= species.STONE_GOLEM.xp, 'defeating a stone golem awards XP');
+  assert.ok(player.xp > 0, 'defeating a stone golem awards challenge-scaled XP');
 
   worldGen.biomeType = () => 7;
   worldGen.volcanoAt = () => null;
@@ -763,7 +763,8 @@ try{
   const afterNest=mobs.serialize().list;
   const hatchling=afterNest.find(m=>m.id==='VULTURE_HATCHLING');
   assert.ok(afterNest.filter(m=>m.id==='VULTURE_HATCHLING').length>=3, 'capture spawns hatchlings in the nest');
-  assert.equal(mobs.nearestHostileLiving(hatchling.x,hatchling.y,1.2,{preferHeroFocus:false})?.id, 'VULTURE_HATCHLING', 'hatchlings immediately defend the nest');
+  assert.equal(mobs.nearestHostileLiving(hatchling.x,hatchling.y,1.2,{preferHeroFocus:false}), null, 'outmatched hatchlings no longer initiate a hopeless fight');
+  assert.equal(hatchling.state,'flee_outmatched','outmatched hatchlings visibly flee the released hero');
 } finally {
   Math.random = originalRandom;
   worldGen.biomeType = originalBiomeType;

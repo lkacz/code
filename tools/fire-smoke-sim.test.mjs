@@ -183,7 +183,20 @@ try{
   fire.draw(makeCtx(),20,0,-30,12,12,getSkyLavaTile,{visible:()=>true, seen:()=>true});
   assert.ok(skyDrawReads>0, 'sky-layer lava participates in draw scans');
   const fireSrc = await readFile(new URL('../src/engine/fire.js', import.meta.url), 'utf8');
+  const weaponsSrc = await readFile(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
+  const mobsSrc = await readFile(new URL('../src/engine/mobs.js', import.meta.url), 'utf8');
   assert.match(fireSrc, /const LAVA_HOT_AIR_INTERVAL=8\.5/, 'lava hot-air cadence is 10% of coal/wood hot-air cadence');
+  assert.match(fireSrc, /const FRAMES=16/, 'block fire uses a fluid sixteen-phase animation');
+  assert.match(fireSrc, /const FLAME_VARIANTS=4/, 'nearby burning blocks select independent flame silhouettes');
+  assert.match(fireSrc, /const FLAME_SUPERSAMPLE=2/, 'flames are baked above display resolution for smooth curves');
+  assert.match(fireSrc, /imageSmoothingQuality='high'/, 'fire stamps opt into high-quality downsampling');
+  assert.match(fireSrc, /from '\.\/flame_fx\.js'/, 'world fire imports the shared flamethrower sprite vocabulary');
+  assert.match(fireSrc, /const BLOCK_FLAME_PUFFS=6/, 'world fire precomposes a bounded plume from shared puffs');
+  assert.match(fireSrc, /flamePuffFrame\(shared,freshness\)/, 'world fire selects the same hot, mid and tail frames as the fire hose');
+  assert.match(weaponsSrc, /flame:getFlamePuffSprites\(\)/, 'the hero fire hose reads its sprites from the shared flame renderer');
+  assert.match(mobsSrc, /flamePuffFrame\(burnSprites,freshness\)/, 'burning mobs use the shared flame phases too');
+  assert.doesNotMatch(fireSrc, /function drawFlameShape/, 'the separate legacy flame silhouette renderer is removed');
+  assert.doesNotMatch(fireSrc, /px\+TILE\*0\.3\+flick\*6/, 'legacy square per-tile spark animation is removed');
 
   fire.reset();
   smokeCalls=[];

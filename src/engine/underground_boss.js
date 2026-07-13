@@ -1474,6 +1474,7 @@ const undergroundBoss = (function(){
       hazards.length=0;
       // Signature relics rain from the felled excavator (engine/drops.js)
       try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop('earth',e.x,e.y,{boss:true}); }catch(err){}
+      try{ if(MM.drops && MM.drops.rollJewelDrop) MM.drops.rollJewelDrop(e,{boss:true,hp:e.maxHp,dmg:28,xp:560}); }catch(err){}
     }else if(e.role==='zombieGolem'){
       say(e.name+' rozpada sie na zgnily gruz.');
       try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop('earth',e.x,e.y,{role:'zombieGolem'}); }catch(err){}

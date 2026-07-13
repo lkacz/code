@@ -115,7 +115,8 @@ import { isSolidCollisionTile } from './material_physics.js';
     if(e.indexOf('electric')>=0 || e.indexOf('shock')>=0 || e.indexOf('lightning')>=0) return [[112,246,255],[228,255,255],[88,148,255]];
     if(e.indexOf('water')>=0 || e.indexOf('hose')>=0 || e.indexOf('pressure')>=0) return [[122,214,255],[210,246,255],[74,137,255]];
     if(e.indexOf('ice')>=0 || e.indexOf('chill')>=0 || e.indexOf('frost')>=0 || e.indexOf('cold')>=0) return [[198,244,255],[244,255,255],[126,190,255]];
-    if(e.indexOf('gas')>=0 || e.indexOf('poison')>=0) return [[151,246,116],[222,255,130],[82,188,94]];
+    if(e.indexOf('gas')>=0 || e.indexOf('poison')>=0 || e.indexOf('toxic')>=0) return [[151,246,116],[222,255,130],[82,188,94]];
+    if(e.indexOf('sand')>=0) return [[199,170,104],[239,215,151],[151,119,67]];
     if(e.indexOf('lucky')>=0 || e.indexOf('special')>=0 || e.indexOf('crit')>=0) return [[255,216,74],[255,248,185],[255,160,64]];
     return [[221,185,116],[255,233,178],[154,122,76]];
   }
@@ -282,7 +283,10 @@ import { isSolidCollisionTile } from './material_physics.js';
     opts=opts||{};
     const power=Math.max(0.35, Math.min(2.4, Number(opts.power)||1));
     const major=!!(opts.major || opts.lucky || opts.critical);
-    const n=Math.max(3, Math.min(22, Math.round((major?8:5)+power*5)));
+    const fine=!!opts.fine;
+    const n=fine
+      ? Math.max(10,Math.min(26,Math.round(10+power*13)))
+      : Math.max(3,Math.min(22,Math.round((major?8:5)+power*5)));
     const dir=Number.isFinite(opts.dir) && opts.dir!==0 ? (opts.dir>0?1:-1) : 0;
     const palette=impactPalette(opts.element, opts.tier || opts.kind);
     for(let i=0;i<n;i++){
@@ -290,7 +294,7 @@ import { isSolidCollisionTile } from './material_physics.js';
       const base=dir ? (dir>0 ? 0 : Math.PI) : Math.random()*Math.PI*2;
       const spread=(Math.random()-0.5)*(dir ? 1.35 : Math.PI*2);
       const ang=base+spread;
-      const sp=(1.2+Math.random()*2.8)*power*(major?1.18:1);
+      const sp=(fine?(1.5+Math.random()*3.5):(1.2+Math.random()*2.8))*power*(major?1.18:1);
       const rgb=palette[i%palette.length];
       particles.push({
         kind:'impactChip',
@@ -299,12 +303,13 @@ import { isSolidCollisionTile } from './material_physics.js';
         vx:Math.cos(ang)*sp + (Math.random()-0.5)*0.45,
         vy:Math.sin(ang)*sp*0.52 - (0.85+Math.random()*1.15)*power,
         life:0,
-        max:(major?0.62:0.44)+Math.random()*0.30,
+        max:fine?(0.28+Math.random()*0.28):((major?0.62:0.44)+Math.random()*0.30),
         rot:Math.random()*Math.PI,
         spin:(Math.random()-0.5)*(10+power*7),
-        size:(2.0+Math.random()*3.8)*(major?1.12:1),
+        size:fine?(0.7+Math.random()*1.15):((2.0+Math.random()*3.8)*(major?1.12:1)),
         rgb,
-        glow:!!(opts.lucky || opts.critical || opts.element)
+        fine,
+        glow:!fine && !!(opts.lucky || opts.critical || opts.element)
       });
     }
   };
@@ -560,9 +565,13 @@ import { isSolidCollisionTile } from './material_physics.js';
         ctx.rotate(p.rot||0);
         if(p.glow) ctx.globalCompositeOperation='lighter';
         ctx.fillStyle='rgba('+rgb[0]+','+rgb[1]+','+rgb[2]+','+(alpha*0.88).toFixed(3)+')';
-        ctx.fillRect(-s*0.55,-Math.max(1,s*0.32),s*1.1,Math.max(1.5,s*0.64));
-        ctx.fillStyle='rgba(255,255,255,'+(alpha*0.34).toFixed(3)+')';
-        ctx.fillRect(-s*0.18,-s*0.48,Math.max(1,s*0.36),s*0.92);
+        if(p.fine){
+          ctx.fillRect(-s*0.5,-s*0.5,Math.max(0.75,s),Math.max(0.75,s));
+        }else{
+          ctx.fillRect(-s*0.55,-Math.max(1,s*0.32),s*1.1,Math.max(1.5,s*0.64));
+          ctx.fillStyle='rgba(255,255,255,'+(alpha*0.34).toFixed(3)+')';
+          ctx.fillRect(-s*0.18,-s*0.48,Math.max(1,s*0.36),s*0.92);
+        }
         ctx.restore();
       } else if(p.kind==='spark'){
         const electric = p.tier==='turbo' || p.tier==='electric';

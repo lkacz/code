@@ -58,6 +58,7 @@ const p = discovery.progress();
 assert.equal(p.count, 2, 'progress counts found entries');
 assert.equal(p.total, discovery.total(), 'progress exposes the catalog size');
 assert.ok(p.found.some(f => f.id === 'react_freeze' && /lodu/i.test(f.label)), 'progress lists catalog labels, not raw ids');
+assert.ok(discovery.HINTS.jewel_drop && /przedmiot/i.test(discovery.HINTS.jewel_drop.hint), 'rare jewel discovery has a non-spoiling journal hint');
 
 // --- entering each surface biome is a one-shot discovery -------------------
 {

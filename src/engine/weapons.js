@@ -9,6 +9,7 @@
 // The equipped weapon comes from MM.inventory.
 import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, thawedEarthVariant, isFrozenEarth } from '../constants.js';
 import { fire as FIRE } from './fire.js';
+import { getFlamePuffSprites, flamePuffFrame, flamePuffAlpha, flamePuffRadius } from './flame_fx.js';
 import { isBlastProtectedTile, isCondensedWaterTargetTile, isHeatRayPassableTile, isIridiumArrowPierceableTile, isSolidCollisionTile as isSolid } from './material_physics.js';
 import { reactions as REACTIONS } from './reactions.js';
 import { damageBlastCreatures } from './explosion_damage.js';
@@ -77,12 +78,31 @@ import { damageBlastCreatures } from './explosion_damage.js';
     waterBalloon:  {key:'waterBalloon',  label:'Balony wodne',      color:'#7cc4ff', head:'#dff2ff', speed:14.5, lob:-2.0, life:2.4, splat:'wet', ball:true},
     gasGrenade:    {key:'gasGrenade',    label:'Granaty gazowe',    color:'#9dbf5a', head:'#e2f0b8', speed:14.0, lob:-2.4, life:2.6, splat:'gascloud', ball:true},
     stickyBomb:    {key:'stickyBomb',    label:'Lepkie bomby',      color:'#b0703c', head:'#ffd9a8', speed:14.5, lob:-2.4, life:3.0, splat:'bomb', ball:true, sticky:true, fuse:1.5},
-    // Improvised throws: barely any damage, a status identity instead —
-    //   sand — a fistful in the eyes: chance to BLIND (the mob loses the hero)
-    //   spit — a gulp of inventory water spat back out: soaks, chance of poison
-    sand:          {key:'sand',          label:'Piasek w oczy',     color:'#c2b280', head:'#e8dcb8', speed:13.5, lob:-1.7, life:1.6, splat:'sand', ball:true},
-    spit:          {key:'water',         label:'Plucie wodą',       color:'#7cc4ff', head:'#dff2ff', speed:14.0, lob:-1.9, life:1.7, splat:'spit', ball:true}
+    // Improvised fun weapons have deliberately strong utility identities:
+    //   sand — a loose spray of fine grains: zero damage, BLIND + short STUN
+    //   spit — one small saliva droplet; its ult becomes toxic green saliva
+    sand:          {key:'sand',          label:'Piasek w oczy',     color:'#c7aa68', head:'#f0dc9b', speed:13.5, lob:-1.7, life:1.6, splat:'sand', visual:'sand', noDamage:true},
+    spit:          {key:'water',         label:'Plucie',             color:'#cfe9df', head:'#f5fff8', speed:14.8, lob:-1.45, life:1.7, splat:'spit', visual:'spit'}
   };
+  // A sand throw is one cheap gameplay collider, but its visible grains are a
+  // stable random pattern attached to that throw. Integer hashing avoids both
+  // per-frame Math.random shimmer and stored per-grain objects.
+  function sandVisualNoise(seed,index,salt){
+    let x=((Number(seed)>>>0)^Math.imul((index|0)+1,0x9e3779b1)^Math.imul((salt|0)+1,0x85ebca6b))>>>0;
+    x=Math.imul(x^(x>>>16),0x7feb352d);
+    x=Math.imul(x^(x>>>15),0x846ca68b);
+    return ((x^(x>>>16))>>>0)/4294967296;
+  }
+  function sandVisualPattern(seed){
+    seed=(Number(seed)>>>0)||1;
+    return {
+      count:10+Math.floor(sandVisualNoise(seed,0,0)*11),
+      tail:0.50+sandVisualNoise(seed,0,1)*0.38,
+      spread:0.18+sandVisualNoise(seed,0,2)*0.24,
+      flutter:0.018+sandVisualNoise(seed,0,3)*0.030,
+      tilt:(sandVisualNoise(seed,0,4)-0.5)*0.10
+    };
+  }
   const WATER_CONDENSE_CHANCE=0.008; // per dying hose puff (~1 tile per second of spray)
   // Elemental conversions use sustained contact so one lucky puff cannot reshape terrain.
   const WATER_BOIL_SECONDS=2.8; // flame must hold on water before it boils into steam
@@ -523,17 +543,21 @@ import { damageBlastCreatures } from './explosion_damage.js';
       }
     }catch(e){}
   }
-  function attachArrowToMob(a,mob,family,isAlive){
+  function attachArrowToMob(a,mob,family,isAlive,anchor){
     if(!arrowResourceKey(a) || !mob || !Number.isFinite(mob.x) || !Number.isFinite(mob.y)) return false;
     const clamp=(v,min,max)=>Math.max(min,Math.min(max,Number(v)||0));
+    const anchorX=anchor && Number.isFinite(anchor.localX) ? anchor.localX : 0;
+    const anchorY=anchor && Number.isFinite(anchor.localY) ? anchor.localY : 0;
     a.ang=Math.atan2(a.vy||0,a.vx||0);
     a.embeddedMob=mob;
     a.embeddedFamily=family||'mob';
     a.embeddedAlive=typeof isAlive==='function' ? isAlive : null;
-    a.embeddedOffsetX=clamp(a.x-mob.x,-0.55,0.55);
-    a.embeddedOffsetY=clamp(a.y-mob.y,-0.55,0.45);
-    a.x=mob.x+a.embeddedOffsetX;
-    a.y=mob.y+a.embeddedOffsetY;
+    a.embeddedAnchorX=anchorX;
+    a.embeddedAnchorY=anchorY;
+    a.embeddedOffsetX=clamp(a.x-(mob.x+anchorX),-0.65,0.65);
+    a.embeddedOffsetY=clamp(a.y-(mob.y+anchorY),-0.65,0.65);
+    a.x=mob.x+anchorX+a.embeddedOffsetX;
+    a.y=mob.y+anchorY+a.embeddedOffsetY;
     a.vx=0; a.vy=0;
     a.stuck=true;
     a.stuckT=Infinity;
@@ -541,10 +565,11 @@ import { damageBlastCreatures } from './explosion_damage.js';
   }
   function embeddedMobAlive(a){
     const mob=a && a.embeddedMob;
-    if(!mob || !(mob.hp>0) || mob.dead || mob.destroyed || !Number.isFinite(mob.x) || !Number.isFinite(mob.y)) return false;
+    if(!mob || mob.dead || mob.destroyed || !Number.isFinite(mob.x) || !Number.isFinite(mob.y)) return false;
     if(typeof a.embeddedAlive==='function'){
       try{ return !!a.embeddedAlive(mob); }catch(e){ return false; }
     }
+    if(!(mob.hp>0)) return false;
     try{
       if(a.embeddedFamily==='mob' && MM.mobs && typeof MM.mobs.isLiving==='function') return !!MM.mobs.isLiving(mob);
     }catch(e){ return false; }
@@ -556,6 +581,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const carryVy=mob && Number.isFinite(mob.vy) ? mob.vy : 0;
     a.embeddedMob=null;
     a.embeddedAlive=null;
+    a.embeddedAnchorX=0;
+    a.embeddedAnchorY=0;
     a.stuck=false;
     a.stuckT=ARROW_STUCK;
     a.dropOnLand=true;
@@ -1356,8 +1383,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
   // Toxic snowball impact: the ball bursts into a small poison+chill cloud —
   // creatures caught in it are slowed hard (chill) and poisoned over time.
   const SNOWBALL_SPLAT={radius:1.5, poisonDur:5, poisonDps:2, chillDur:4};
-  const SAND_BLIND_CHANCE=0.65, SAND_BLIND_DUR=4.5;
-  const SPIT_TOXIC_CHANCE=0.45;
+  const SAND_BLIND_DUR=5.0, SAND_SHOCK_DUR=2.6;
+  const TOXIC_SPIT_COLOR='#55db63', TOXIC_SPIT_HEAD='#dcffd6';
   // Crafted hand-weapon material identities (recipes in main.js): mirroring the
   // arrow-tier philosophy, each material carries ONE on-hit effect chance —
   // metal cuts (bleed DoT), stone concusses (short stun), diamond terrifies
@@ -1427,28 +1454,36 @@ import { damageBlastCreatures } from './explosion_damage.js';
       return;
     }
     if(a.splat==='sand'){
-      // a fistful of sand in the eyes: barely hurts, but a blinded creature
-      // loses sight of the hero (aggro gate in mobs.js) until it wears off
+      // A fistful of sand is pure crowd control: it never deals direct damage.
+      // Blind drops the aggro gate, while the shorter stun sells the initial
+      // shock of getting fine grains in the face.
       try{
-        if(Math.random()<SAND_BLIND_CHANCE && MM.mobs && MM.mobs.statusRadius
-           && MM.mobs.statusRadius(a.x,a.y,1.25,'blind',{dur:SAND_BLIND_DUR,source:'hero',cause:'sand_blind'})>0){
-          try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('sand_blind','Piasek w oczy: oślepiony wróg traci cię z widoku!'); }catch(e2){}
+        let affected=0;
+        if(MM.mobs && MM.mobs.statusRadius){
+          affected+=MM.mobs.statusRadius(a.x,a.y,1.05,'blind',{dur:SAND_BLIND_DUR,source:'hero',cause:'sand_blind'})||0;
+          affected+=MM.mobs.statusRadius(a.x,a.y,1.05,'stun',{dur:SAND_SHOCK_DUR,source:'hero',cause:'sand_shock'})||0;
+        }
+        if(affected>0){
+          try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('sand_blind','Piasek w oczy: wróg jest oślepiony i oszołomiony!'); }catch(e2){}
         }
       }catch(e){}
-      try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:0.7}); }catch(e){}
+      try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:0.65,element:'sand_spray',fine:true}); }catch(e){}
       try{ if(MM.audio && MM.audio.play) MM.audio.play('dig',{x:a.x,y:a.y}); }catch(e){}
       return;
     }
     if(a.splat==='spit'){
-      // a gulp of water spat back out: soaks a little — and sometimes it turns
-      // out the hero's saliva is, well, toxic
+      // Normal saliva is just a small wet splat. The thrown-weapon ult marks its
+      // droplets toxic, matching their vivid green projectile treatment.
       try{ if(MM.mobs && MM.mobs.wetRadius) MM.mobs.wetRadius(a.x,a.y,0.9,{dur:3,source:'hero',cause:'spit'}); }catch(e){}
-      try{
-        if(Math.random()<SPIT_TOXIC_CHANCE && MM.mobs && MM.mobs.poisonRadius
-           && MM.mobs.poisonRadius(a.x,a.y,1.1,{dur:4,dps:1.5,source:'hero',cause:'toxic_spit'})>0){
-          try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('spit_toxic','Plucie wodą bywa toksyczne — cel zatruty!'); }catch(e2){}
-        }
-      }catch(e){}
+      if(a.toxicSpit){
+        try{
+          if(MM.mobs && MM.mobs.poisonRadius
+             && MM.mobs.poisonRadius(a.x,a.y,1.1,{dur:5,dps:1.5,source:'hero',cause:'toxic_spit_ult'})>0){
+            try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('spit_toxic','Toksyczna zielona ślina zatruwa trafione cele!'); }catch(e2){}
+          }
+        }catch(e){}
+        try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:0.7,element:'toxic_spit'}); }catch(e){}
+      }
       try{ if(MM.particles && MM.particles.spawnSplash) MM.particles.spawnSplash(a.x*tile,a.y*tile,0.4); }catch(e){}
       try{ if(MM.audio && MM.audio.play) MM.audio.play('splash',{x:a.x,y:a.y}); }catch(e){}
       return;
@@ -1497,17 +1532,21 @@ import { damageBlastCreatures } from './explosion_damage.js';
   function pushThrownProjectile(player,dx,dy,spec,w,opts){
     opts=opts||{};
     const sp=spec.speed*(opts.speedMult||1);
+    const toxicSpit=spec.visual==='spit' && !!opts.specialAttack;
+    const sandSeed=spec.visual==='sand' ? (((Math.random()*0xffffffff)>>>0)||1) : 0;
     return pushArrow({
       x:player.x + dx*0.6,
       y:player.y - 0.2 + dy*0.6,
       vx:dx*sp,
       vy:dy*sp + spec.lob,
-      dmg:Math.max(1,Math.round(((w && w.attackDamage)||2)*(opts.dmgMult||1))),
+      dmg:spec.noDamage ? 0 : Math.max(1,Math.round(((w && w.attackDamage)||2)*(opts.dmgMult||1))),
       life:spec.life, stuck:false, stuckT:ARROW_STUCK,
       thrown:true, snowball:!!spec.ball, rock:!!spec.rock, splat:spec.splat,
+      sandSpray:spec.visual==='sand', sandSeed, spitDroplet:spec.visual==='spit', toxicSpit,
+      noDamage:!!spec.noDamage,
       stickyFuse:spec.sticky ? (spec.fuse||1.5) : 0,
-      specialAttack:!!opts.specialAttack, luckyStrike:!!opts.luckyStrike,
-      tier:'thrown', color:spec.color, headColor:spec.head, windCap:sp*1.3
+      power:!!opts.specialAttack, specialAttack:!!opts.specialAttack, luckyStrike:!!opts.luckyStrike,
+      tier:'thrown', color:toxicSpit?TOXIC_SPIT_COLOR:spec.color, headColor:toxicSpit?TOXIC_SPIT_HEAD:spec.head, windCap:sp*1.3
     });
   }
   function fireThrown(player, aimX, aimY, w){
@@ -1877,8 +1916,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
       }
       if(a.embeddedMob){
         if(embeddedMobAlive(a)){
-          a.x=a.embeddedMob.x+(a.embeddedOffsetX||0);
-          a.y=a.embeddedMob.y+(a.embeddedOffsetY||0);
+          a.x=a.embeddedMob.x+(a.embeddedAnchorX||0)+(a.embeddedOffsetX||0);
+          a.y=a.embeddedMob.y+(a.embeddedAnchorY||0)+(a.embeddedOffsetY||0);
           continue;
         }
         releaseArrowFromMob(a);
@@ -1932,23 +1971,34 @@ import { damageBlastCreatures } from './explosion_damage.js';
         const tx=Math.floor(a.x), ty=Math.floor(a.y);
         // an arrow flying through open flame or over lava catches fire
         if(!a.fire && ((FIRE && FIRE.isBurning(tx,ty)) || getTile(tx,ty)===T.LAVA)) a.fire=true;
+        // Sand needs contact detection without ever entering a target's damage
+        // handler (many of those deliberately clamp even zero to chip damage).
+        // Its status splat is the entire effect.
+        if(a.noDamage && !a.spent && MM.mobs && MM.mobs.nearestLiving
+           && MM.mobs.nearestLiving(a.x,a.y,0.72)){
+          splatProjectile(a,getTile,setTile);
+          addUltCharge(0.08);
+          arrows.splice(i,1);
+          break;
+        }
         // Creature hit (mob, boss part or a hovering saucer)
         const hitDmg=arrowDamageAtRange(a);
         let undergroundResult=false;
         const arrowOpts={source:'hero',kind:'arrow',x:a.x,y:a.y,vx:a.vx,vy:a.vy,tier:a.tier,pierceLeft:a.pierceLeft||0,fire:!!a.fire,specialAttack:!!a.specialAttack,luckyStrike:!!a.luckyStrike};
-        if(!a.spent && (a.ignoreUndergroundT||0)<=0 && MM.undergroundBoss && MM.undergroundBoss.damageAt){
+        if(!a.noDamage && !a.spent && (a.ignoreUndergroundT||0)<=0 && MM.undergroundBoss && MM.undergroundBoss.damageAt){
           undergroundResult=MM.undergroundBoss.damageAt(tx,ty,hitDmg,arrowOpts);
           if(undergroundResult==='bounce'){
             bounceArrowFromUnderground(a,tx,ty);
             break;
           }
         }
-        const creatureGate=!a.spent && (Number(a.pierceGate)||0)<= (a.travel||0);
-        let hitMob=null, hitMobFamily='', hitMobAlive=null;
-        const targetArrowOpts=Object.assign({},arrowOpts,{onTarget:(target,family,isAlive)=>{
+        const creatureGate=!a.noDamage && !a.spent && (Number(a.pierceGate)||0)<= (a.travel||0);
+        let hitMob=null, hitMobFamily='', hitMobAlive=null, hitMobAnchor=null;
+        const targetArrowOpts=Object.assign({},arrowOpts,{onTarget:(target,family,isAlive,anchor)=>{
           hitMob=target;
           hitMobFamily=family||'mob';
           hitMobAlive=typeof isAlive==='function' ? isAlive : null;
+          hitMobAnchor=anchor && typeof anchor==='object' ? anchor : null;
         }});
         const beforeRoamingBoss=creatureGate && ((MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,hitDmg,arrowOpts))
           || (MM.mechs && MM.mechs.damageAt && MM.mechs.damageAt(tx,ty,hitDmg,targetArrowOpts))
@@ -1958,7 +2008,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
           || (MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,hitDmg,arrowOpts)));
         let roamingBossResult=false;
         if(creatureGate && !beforeRoamingBoss && MM.bosses && MM.bosses.damageAt){
-          roamingBossResult=MM.bosses.damageAt(tx,ty,hitDmg,arrowOpts);
+          roamingBossResult=MM.bosses.damageAt(tx,ty,hitDmg,targetArrowOpts);
         }
         // Irydium treats a boss body tile exactly like a pierceable world block:
         // remove it, spend one penetration, lose momentum, and keep flying.
@@ -1970,7 +2020,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
           if(a.stickyFuse){
             a.x-=a.vx*sdt*0.4; a.y-=a.vy*sdt*0.4;
             a.stuck=true; a.stuckT=a.stickyFuse;
-          } else if(a.snowball || a.rock){
+          } else if(a.thrown || a.snowball || a.rock){
             a.x-=a.vx*sdt*0.5; a.y-=a.vy*sdt*0.5;
             splatProjectile(a,getTile,setTile);
             arrows.splice(i,1);
@@ -1978,6 +2028,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
             arrows.splice(i,1);
           } else if(breakArrowOnImpact(a,'terrain')){
             arrows.splice(i,1);
+          } else if(hitMob && attachArrowToMob(a,hitMob,hitMobFamily,hitMobAlive,hitMobAnchor)){
+            if(!embeddedMobAlive(a)) releaseArrowFromMob(a);
           } else {
             stickArrowForRecovery(a,sdt);
           }
@@ -2004,7 +2056,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
             a.pierceGate=(a.travel||0)+1.2; // clear the current body before the next hit registers
             continue;
           }
-          if(hitMob && attachArrowToMob(a,hitMob,hitMobFamily,hitMobAlive)){
+          if(hitMob && attachArrowToMob(a,hitMob,hitMobFamily,hitMobAlive,hitMobAnchor)){
             // A lethal hit has no living body to hold the arrow for another
             // frame, so begin the corpse drop immediately.
             if(!embeddedMobAlive(a)) releaseArrowFromMob(a);
@@ -2022,7 +2074,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
           } else arrows.splice(i,1);
           break;
         }
-        if(!a.spent && t===T.GLASS && shatterGlassAt(tx,ty,setTile,getTile)){
+        if(!a.noDamage && !a.spent && t===T.GLASS && shatterGlassAt(tx,ty,setTile,getTile)){
           if(arrowResourceKey(a)){
             if(breakArrowOnImpact(a,'glass')){ arrows.splice(i,1); break; }
             continue;
@@ -2042,7 +2094,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
             break;
           }
           // thrown projectiles never stick in a wall — they burst on impact
-          if(a.snowball || a.rock){
+          if(a.thrown || a.snowball || a.rock){
             a.x-=a.vx*sdt*0.5; a.y-=a.vy*sdt*0.5;
             splatProjectile(a,getTile,setTile);
             arrows.splice(i,1);
@@ -2252,6 +2304,62 @@ import { damageBlastCreatures } from './explosion_damage.js';
       ctx.save();
       for(const a of arrows){
         if(!tileVisible(a.x,a.y)) continue;
+        if(a.sandSpray){
+          // Each throw owns a different stable spray: grain count, tail length,
+          // fan width, clumps, sizes and wobble all come from its compact seed.
+          const seed=(Number(a.sandSeed)>>>0)||1;
+          const pattern=sandVisualPattern(seed);
+          const now=nowMs();
+          const ang=Math.atan2(a.vy||0,a.vx||1)+pattern.tilt;
+          const bloom=0.72+Math.min(1,(Number(a.travel)||0)/3)*0.36;
+          ctx.save();
+          ctx.translate(a.x*TILE,a.y*TILE); ctx.rotate(ang);
+          for(let g=0;g<pattern.count;g++){
+            const along=sandVisualNoise(seed,g,10);
+            const side=sandVisualNoise(seed,g,11)-0.5;
+            const clump=sandVisualNoise(seed,g,12);
+            const phase=sandVisualNoise(seed,g,13)*Math.PI*2;
+            const lead=clump>0.84 ? 0.10+(clump-0.84)*0.55 : 0;
+            const gx=TILE*(lead-0.08-along*pattern.tail+(sandVisualNoise(seed,g,14)-0.5)*0.08);
+            const fan=pattern.spread*(0.38+along*0.90)*bloom;
+            const flutter=Math.sin(now*(0.012+sandVisualNoise(seed,g,15)*0.011)+phase)*pattern.flutter;
+            const gy=TILE*(side*fan+flutter+(clump>0.72?(clump-0.72)*0.10:0));
+            const sz=Math.max(0.65,TILE*(0.022+sandVisualNoise(seed,g,16)*0.052));
+            ctx.globalAlpha=0.36+sandVisualNoise(seed,g,17)*0.58;
+            const tone=sandVisualNoise(seed,g,18);
+            ctx.fillStyle=tone>0.76?(a.headColor||'#f0dc9b'):tone<0.18?'#8f7341':(a.color||'#c7aa68');
+            ctx.fillRect(gx-sz*0.5,gy-sz*0.5,sz,sz);
+          }
+          ctx.restore();
+          ctx.globalAlpha=1;
+          continue;
+        }
+        if(a.spitDroplet){
+          // A compact saliva bead with two tiny trailing beads. The ult uses the
+          // same silhouette, but glows toxic green through its projectile color.
+          const ang=Math.atan2(a.vy||0,a.vx||1);
+          const px=a.x*TILE, py=a.y*TILE;
+          ctx.save();
+          ctx.translate(px,py); ctx.rotate(ang);
+          if(a.toxicSpit){
+            ctx.globalCompositeOperation='lighter';
+            ctx.fillStyle='rgba(74,235,83,0.22)';
+            ctx.beginPath(); ctx.arc(0,0,TILE*0.18,0,Math.PI*2); ctx.fill();
+            ctx.globalCompositeOperation='source-over';
+          }
+          ctx.globalAlpha=0.52;
+          ctx.fillStyle=a.color||'#cfe9df';
+          ctx.beginPath(); ctx.arc(-TILE*0.22,0,TILE*0.035,0,Math.PI*2); ctx.fill();
+          ctx.globalAlpha=0.70;
+          ctx.beginPath(); ctx.arc(-TILE*0.13,0,TILE*0.055,0,Math.PI*2); ctx.fill();
+          ctx.globalAlpha=0.94;
+          ctx.beginPath(); ctx.arc(0,0,TILE*(a.toxicSpit?0.115:0.095),0,Math.PI*2); ctx.fill();
+          ctx.fillStyle=a.headColor||'#f5fff8';
+          ctx.beginPath(); ctx.arc(-TILE*0.025,-TILE*0.032,TILE*0.034,0,Math.PI*2); ctx.fill();
+          ctx.restore();
+          ctx.globalAlpha=1;
+          continue;
+        }
         if(a.rock){
           // thrown stone: a tumbling grey chunk
           const px=a.x*TILE, py=a.y*TILE;
@@ -2340,10 +2448,12 @@ import { damageBlastCreatures } from './explosion_damage.js';
         const want=p.kind==='flame'? 'lighter':'source-over';
         if(comp!==want){ ctx.globalCompositeOperation=want; comp=want; }
         const fr=Math.max(0, p.life/p.total); // 1 fresh → 0 dying
-        const r=TILE*(0.25 + (1-fr)*0.65)*(p.scale||1);
+        const r=p.kind==='flame'
+          ? flamePuffRadius(TILE,fr,p.scale||1)
+          : TILE*(0.25 + (1-fr)*0.65)*(p.scale||1);
         const set=spriteCache[p.kind]||spriteCache.flame;
-        const sp= fr>0.6? set.hot : fr>0.3? set.mid : set.tail;
-        ctx.globalAlpha= fr>0.3? 1 : Math.max(0, fr/0.3);
+        const sp=p.kind==='flame' ? flamePuffFrame(set,fr) : (fr>0.6?set.hot:(fr>0.3?set.mid:set.tail));
+        ctx.globalAlpha=p.kind==='flame' ? flamePuffAlpha(fr) : (fr>0.3?1:Math.max(0,fr/0.3));
         ctx.drawImage(sp, p.x*TILE-r, p.y*TILE-r, r*2, r*2);
       }
       ctx.globalAlpha=1;
@@ -2441,6 +2551,10 @@ import { damageBlastCreatures } from './explosion_damage.js';
   function drawHeld(ctx,TILE,player){
     const it=equippedWeapon(); if(!it) return;
     const type=weaponType(it);
+    const heldThrownSpec=type==='thrown' ? thrownSpec(it) : null;
+    // Selecting a throw technique equips the technique, not an imaginary piece
+    // of ammo. Keep the hand empty until its matching inventory resource exists.
+    if(type==='thrown' && (!heldThrownSpec || resourceCount(heldThrownSpec.key)<=0)) return;
     const facing=(player.facing>=0)?1:-1;
     const bw=player.w*TILE, bh=player.h*TILE;
     const col=tierColor(it);
@@ -2508,10 +2622,23 @@ import { damageBlastCreatures } from './explosion_damage.js';
       }
     } else if(type==='thrown'){
       // a throw-ready projectile bobbing in the raised hand
-      const spec=thrownSpec(it);
+      const spec=heldThrownSpec;
       const bob=Math.sin(nowMs()*0.006)*0.8;
       ctx.translate(facing*1.5, -4+bob);
-      if(spec && spec.rock){
+      if(spec && spec.visual==='sand'){
+        for(let g=0;g<6;g++){
+          const sz=0.8+(g%2)*0.35;
+          ctx.fillStyle=g%3===0?(spec.head||'#f0dc9b'):(spec.color||'#c7aa68');
+          ctx.fillRect(-2.8+(g%3)*2.1,-1.3+Math.floor(g/3)*2.0,sz,sz);
+        }
+      }else if(spec && spec.visual==='spit'){
+        ctx.globalAlpha=0.88;
+        ctx.fillStyle=spec.color||'#cfe9df';
+        ctx.beginPath(); ctx.arc(0,0,1.8,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle=spec.head||'#f5fff8';
+        ctx.beginPath(); ctx.arc(-0.5,-0.6,0.65,0,Math.PI*2); ctx.fill();
+        ctx.globalAlpha=1;
+      }else if(spec && spec.rock){
         ctx.fillStyle=(spec && spec.color)||'#9aa0a8';
         ctx.beginPath();
         ctx.moveTo(-3.4,-2.2); ctx.lineTo(2.4,-3.2); ctx.lineTo(4,1); ctx.lineTo(0.8,3.2); ctx.lineTo(-3.4,1.6);
@@ -2549,11 +2676,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
       return c;
     }
     spriteCache={
-      flame:{
-        hot:  mk([[0,'rgba(255,245,200,0.85)'],[0.5,'rgba(255,180,60,0.55)'],[1,'rgba(255,90,20,0)']]),
-        mid:  mk([[0,'rgba(255,170,60,0.6)'],[1,'rgba(230,70,20,0)']]),
-        tail: mk([[0,'rgba(120,90,70,0.35)'],[1,'rgba(80,60,50,0)']])
-      },
+      flame:getFlamePuffSprites(),
       hose:{
         hot:  mk([[0,'rgba(225,245,255,0.9)'],[0.5,'rgba(140,195,255,0.6)'],[1,'rgba(60,120,230,0)']]),
         mid:  mk([[0,'rgba(150,200,255,0.65)'],[1,'rgba(60,110,220,0)']]),
@@ -2592,14 +2715,15 @@ import { damageBlastCreatures } from './explosion_damage.js';
   // read-only), and the watcher integrates it locally between packets so arrows
   // keep flying smoothly instead of teleporting once per network tick.
   const GHOST_FX_CAP={arrows:24, puffs:80, beams:8, blasts:8};
-  const FX_STUCK=1, FX_POWER=2, FX_ROCK=4, FX_SNOW=8;
+  const FX_STUCK=1, FX_POWER=2, FX_ROCK=4, FX_SNOW=8, FX_SAND=16, FX_SPIT=32, FX_TOXIC_SPIT=64;
   function ghostFxState(){
     const st={};
     if(swing.t>0) st.sw=[+swing.t.toFixed(3), swing.tx, swing.ty, swing.dir, +swing.dur.toFixed(3)];
     if(arrows.length) st.ar=arrows.slice(-GHOST_FX_CAP.arrows).map(a=>[
       +a.x.toFixed(2), +a.y.toFixed(2), +(a.vx||0).toFixed(2), +(a.vy||0).toFixed(2),
-      (a.stuck?FX_STUCK:0)|(a.power?FX_POWER:0)|(a.rock?FX_ROCK:0)|(a.snowball?FX_SNOW:0),
-      +(a.ang||0).toFixed(3), a.color||'', a.headColor||''
+      (a.stuck?FX_STUCK:0)|(a.power?FX_POWER:0)|(a.rock?FX_ROCK:0)|(a.snowball?FX_SNOW:0)|
+      (a.sandSpray?FX_SAND:0)|(a.spitDroplet?FX_SPIT:0)|(a.toxicSpit?FX_TOXIC_SPIT:0),
+      +(a.ang||0).toFixed(3), a.color||'', a.headColor||'', (Number(a.sandSeed)>>>0)||0
     ]);
     if(puffs.length) st.pf=puffs.slice(-GHOST_FX_CAP.puffs).map(p=>[
       p.kind, +p.x.toFixed(2), +p.y.toFixed(2), +(p.vx||0).toFixed(2), +(p.vy||0).toFixed(2),
@@ -2627,7 +2751,9 @@ import { damageBlastCreatures } from './explosion_damage.js';
       const f=num(a[4])|0;
       arrows.push({x:num(a[0]), y:num(a[1]), vx:num(a[2]), vy:num(a[3]),
         stuck:!!(f&FX_STUCK), power:!!(f&FX_POWER), rock:!!(f&FX_ROCK), snowball:!!(f&FX_SNOW),
+        sandSpray:!!(f&FX_SAND), spitDroplet:!!(f&FX_SPIT), toxicSpit:!!(f&FX_TOXIC_SPIT),
         ang:num(a[5]), color:typeof a[6]==='string'?a[6].slice(0,24):'', headColor:typeof a[7]==='string'?a[7].slice(0,24):'',
+        sandSeed:(num(a[8])>>>0)||1,
         life:9, stuckT:9, travel:0, maxTravel:1e9, ghost:true});
     }
     puffs.length=0;
@@ -2679,7 +2805,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     ghostFxState,ghostApplyFx,ghostStepFx,
     arrowInfo,setArrowPref,fuelInfo,thrownInfo,hudStatus,addUltCharge,
     metrics:()=>({arrows:arrows.length,arrowFragments:arrowFragments.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),ultCharge,bowCharge:bowChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
-    _debug:{arrows,arrowFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,pushArrow,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,waterHeat,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS}};
+    _debug:{arrows,arrowFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,pushArrow,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,waterHeat,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS,sandVisualPattern}};
 })();
 // ESM export (progressive migration)
 export const weapons = (typeof window!=='undefined' && window.MM) ? window.MM.weapons : undefined;

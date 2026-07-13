@@ -771,6 +771,8 @@
     .invBadges{ display:flex; gap:4px; flex-wrap:wrap; justify-content:center; min-height:16px; align-self:stretch; }
     .invBadges span{ border-radius:7px; padding:1.5px 6px; font-size:8.5px; font-weight:900; text-transform:uppercase; letter-spacing:.4px; color:#06121d; background:#cbd5e1; white-space:nowrap; max-width:100%; overflow:hidden; text-overflow:ellipsis; }
     .invBadges .bEq{ background:#2c7ef8; color:#fff; }
+    .invBadges .bEnh{ background:linear-gradient(135deg,#ffe68a,#ffc13d); color:#352300; box-shadow:0 0 8px rgba(255,205,80,.38); }
+    .invBadges .bEnh.bad{ background:#f87171; color:#fff; box-shadow:0 0 8px rgba(248,113,113,.35); }
     .invBadges .bNew{ background:#7df9ff; }
     .invBadges .best{ background:#ffd54a; }
     .invBadges .upgrade{ background:#4ade80; }
@@ -807,6 +809,23 @@
     .invResBtns button.danger{ background:rgba(248,113,113,.10); border-color:rgba(248,113,113,.35); color:#ff9f9f; }
     .invResBtns button.danger:hover:not(:disabled){ background:rgba(196,50,50,.55); color:#fff; }
     .invResBtns button:disabled{ opacity:.35; cursor:default; }
+    /* Permanent jewel upgrading: rare stones should read like treasure even in a menu. */
+    .invJewelCards{ grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); }
+    .invJewelCard{ --jewel:#7df9ff; position:relative; overflow:hidden; border-color:color-mix(in srgb,var(--jewel) 42%,transparent); background:radial-gradient(120% 120% at 12% 0%,color-mix(in srgb,var(--jewel) 20%,transparent),rgba(255,255,255,.045) 58%); }
+    .invJewelCard::after{ content:""; position:absolute; width:90px; height:180%; top:-40%; left:-120px; transform:rotate(20deg); background:linear-gradient(90deg,transparent,rgba(255,255,255,.18),transparent); animation:jewelCardSweep 3.8s ease-in-out infinite; pointer-events:none; }
+    .invJewelCard.selected{ border-color:var(--jewel); box-shadow:0 0 20px color-mix(in srgb,var(--jewel) 35%,transparent),inset 0 0 16px color-mix(in srgb,var(--jewel) 12%,transparent); }
+    .invJewelGem{ width:20px; height:20px; flex:none; transform:rotate(45deg); border-radius:4px 10px 4px 10px; background:linear-gradient(135deg,#fff 2%,var(--jewel) 38%,color-mix(in srgb,var(--jewel) 35%,#111) 78%); border:1px solid rgba(255,255,255,.9); box-shadow:0 0 8px var(--jewel),0 0 18px color-mix(in srgb,var(--jewel) 50%,transparent); }
+    .invJewelOdds{ font-size:10px; font-weight:750; color:#ccebdc; line-height:1.35; }
+    .invJewelOdds.risk{ color:#ffadad; }
+    .invJewelForge{ display:grid; grid-template-columns:minmax(240px,1.35fr) minmax(190px,1fr) auto; align-items:center; gap:8px; border:1px solid rgba(125,249,255,.28); border-radius:12px; padding:10px; background:linear-gradient(90deg,rgba(125,249,255,.10),rgba(155,140,255,.08)); }
+    .invJewelForge strong{ grid-column:1/-1; color:#fff0b0; }
+    .invJewelTarget{ width:100%; min-width:0; }
+    .invJewelWarning{ font-size:10.5px; line-height:1.35; color:#d6e7f7; }
+    .invJewelWarning.risk{ color:#ffb0b0; font-weight:750; }
+    .invJewelApply{ height:34px; padding:0 16px; border:1px solid rgba(255,232,150,.7); border-radius:9px; color:#211700; font-weight:900; cursor:pointer; background:linear-gradient(180deg,#fff0a3,#f0b933); box-shadow:0 0 14px rgba(255,202,64,.24); }
+    .invJewelApply:hover{ filter:brightness(1.08); }
+    .invJewelEmpty::before{ content:"💎"; }
+    @keyframes jewelCardSweep{ 0%,55%{ left:-120px; } 82%,100%{ left:130%; } }
     /* Odkrycia (discovery journal) tab: foggy hint line under each card title */
     .invDiscHint{ font-size:10px; line-height:1.35; color:rgba(230,237,248,.58); font-style:italic; min-height:27px; }
     .invDiscHint.found{ color:#9fd6ae; font-style:normal; }
@@ -867,6 +886,8 @@
       .invNewReviewHead{ align-items:flex-start; }
       #invGrid{ grid-template-columns:repeat(auto-fill,minmax(124px,1fr)); gap:8px; }
       .invResGrid{ grid-template-columns:repeat(auto-fill,minmax(136px,1fr)); }
+      .invJewelForge{ grid-template-columns:1fr; }
+      .invJewelForge strong{ grid-column:auto; }
     }
   /* World settings overlay (modal) */
   #worldSettingsOverlay{ position:fixed; inset:0; background:rgba(5,8,14,.70); backdrop-filter:blur(10px); display:none; z-index:150; color:#eee; font-size:13px; }

@@ -44,12 +44,13 @@ import './inventory.js';
 
   // --- Tabs: one per item kind + resources ---
   const TABS=MM.inventory.SLOTS.map(s=>({key:s.accepts, label:INV.KIND_LABELS[s.accepts]||s.accepts, kind:s.accepts}))
-    .concat([{key:'resources', label:'Surowce'},{key:'discovery', label:'Odkrycia'}]);
-  const TAB_ICONS={cape:'🧥', eyes:'👁️', outfit:'👕', weapon:'⚔️', charm:'🧿', resources:'📦', discovery:'🧪'};
+    .concat([{key:'jewels', label:'Juwele'},{key:'resources', label:'Surowce'},{key:'discovery', label:'Odkrycia'}]);
+  const TAB_ICONS={cape:'🧥', eyes:'👁️', outfit:'👕', weapon:'⚔️', charm:'🧿', jewels:'💎', resources:'📦', discovery:'🧪'};
   let activeTab=TABS[0];
   let searchText='';
   let tierFilter='all';
   let sortMode='power';
+  let selectedJewelKey=null;
   let toolbarEl=null, searchInput=null, tierSelect=null, sortSelect=null, capEl=null, undoBtn=null, newReviewEl=null;
 
   function isOpen(){ return overlay.style.display==='block'; }
@@ -84,8 +85,9 @@ import './inventory.js';
       if(cnt){
         let n=tab.kind? INV.items(tab.kind).length : 0;
         if(tab.key==='discovery' && MM.discovery && MM.discovery.count) n=MM.discovery.count();
+        if(tab.key==='jewels') n=(INV.JEWELS||[]).reduce((sum,j)=>sum+Math.max(0,((window.inv||{})[j.key]|0)),0);
         cnt.textContent=n;
-        cnt.style.display=((tab.kind || tab.key==='discovery') && n)? '' : 'none';
+        cnt.style.display=((tab.kind || tab.key==='discovery' || tab.key==='jewels') && n)? '' : 'none';
       }
       const has=!!tab.kind && news.some(i=>i.kind===tab.kind);
       let dot=b.querySelector('.dotNew');
@@ -145,10 +147,10 @@ import './inventory.js';
   function updateToolbar(){
     ensureToolbar();
     if(!toolbarEl) return;
-    const itemTab=activeTab.key!=='resources' && activeTab.key!=='discovery';
+    const itemTab=!['resources','discovery','jewels'].includes(activeTab.key);
     searchInput.parentElement.style.display='';
     searchInput.placeholder=itemTab? 'Szukaj przedmiotów…  ( / )'
-      : (activeTab.key==='discovery' ? 'Szukaj odkryć…  ( / )' : 'Szukaj surowców…  ( / )');
+      : (activeTab.key==='discovery' ? 'Szukaj odkryć…  ( / )' : activeTab.key==='jewels' ? 'Szukaj juweli lub przedmiotów…  ( / )' : 'Szukaj surowców…  ( / )');
     tierSelect.style.display=itemTab?'':'none';
     sortSelect.style.display=itemTab?'':'none';
     tierSelect.value=tierFilter;
@@ -159,6 +161,11 @@ import './inventory.js';
       capEl.textContent='🧪 '+dp.count+'/'+dp.total;
       capEl.classList.remove('warn');
       capEl.title='Odkryte sekrety świata';
+    } else if(activeTab.key==='jewels'){
+      const total=(INV.JEWELS||[]).reduce((sum,j)=>sum+Math.max(0,((window.inv||{})[j.key]|0)),0);
+      capEl.textContent='💎 '+total;
+      capEl.classList.toggle('warn',total>0);
+      capEl.title=total?'Juwele gotowe do użycia':'Brak juweli';
     } else {
       const cap=INV.capacity? INV.capacity():null;
       if(cap){
@@ -285,7 +292,7 @@ import './inventory.js';
     if(!newReviewEl) return;
     const cmps=newComparisons();
     newReviewEl.innerHTML='';
-    if(!cmps.length || activeTab.key==='resources' || activeTab.key==='discovery'){ newReviewEl.style.display='none'; return; }
+    if(!cmps.length || ['resources','discovery','jewels'].includes(activeTab.key)){ newReviewEl.style.display='none'; return; }
     newReviewEl.style.display='block';
     const upgrades=cmps.filter(c=>c.isNewBest || c.isEquippedUpgrade).length;
     const head=document.createElement('div'); head.className='invNewReviewHead';
@@ -382,6 +389,10 @@ import './inventory.js';
     // status badges live in one flow row — nothing ever overlaps art or name
     const badges=document.createElement('div'); badges.className='invBadges';
     if(equipped){ const b=document.createElement('span'); b.className='bEq'; b.textContent='✓ W użyciu'; badges.appendChild(b); }
+    if(typeof item.enhancement==='number' && item.enhancement){
+      const eb=document.createElement('span'); eb.className='bEnh'+(item.enhancement<0?' bad':'');
+      eb.textContent='✦ '+(item.enhancement>0?'+':'')+item.enhancement; eb.title='Trwały poziom ulepszenia'; badges.appendChild(eb);
+    }
     if(isNew){
       const nb=document.createElement('span'); nb.className='bNew'; nb.textContent='Nowe'; badges.appendChild(nb);
       const vb=document.createElement('span'); vb.className=relationClass(cmp); vb.textContent=compactVerdict(cmp);
@@ -452,6 +463,7 @@ import './inventory.js';
   function buildGrid(){
     updateToolbar();
     grid.innerHTML='';
+    if(activeTab.key==='jewels'){ buildJewelsGrid(); return; }
     if(activeTab.key==='resources'){ buildResourcesGrid(); return; }
     if(activeTab.key==='discovery'){ buildDiscoveryGrid(); return; }
     const kind=activeTab.kind;
@@ -500,6 +512,87 @@ import './inventory.js';
     });
   }
 
+  // --- Jewels: select a stone, inspect its exact odds, then choose a target ---
+  function buildJewelsGrid(){
+    const wrap=document.createElement('div'); wrap.className='invResources invJewels';
+    const jewels=Array.isArray(INV.JEWELS)?INV.JEWELS:[];
+    const owned=jewels.filter(j=>Math.max(0,((window.inv||{})[j.key]|0))>0);
+    if(!selectedJewelKey || !jewels.some(j=>j.key===selectedJewelKey)) selectedJewelKey=(owned[0]||jewels[0]||{}).key||null;
+    const hint=document.createElement('div'); hint.className='invHint';
+    hint.textContent='Juwele trwale podnoszą główny parametr wybranego przedmiotu. Każda próba zużywa kamień; dodatnie i ujemne poziomy pozostają po zapisie.';
+    wrap.appendChild(hint);
+    const cards=document.createElement('div'); cards.className='invResGrid invJewelCards';
+    for(const jewel of jewels){
+      if(searchText && !String(jewel.label+' '+jewel.desc).toLowerCase().includes(searchText)) continue;
+      const count=Math.max(0,((window.inv||{})[jewel.key]|0));
+      const card=document.createElement('div'); card.className='invResCard invJewelCard'+(count?'':' zero')+(selectedJewelKey===jewel.key?' selected':'');
+      card.style.setProperty('--jewel',jewel.color);
+      const top=document.createElement('div'); top.className='invResTop';
+      const gem=document.createElement('span'); gem.className='invJewelGem'; gem.setAttribute('aria-hidden','true');
+      const lab=document.createElement('span'); lab.className='invResLabel'; lab.textContent=jewel.label; lab.title=jewel.label;
+      const cnt=document.createElement('b'); cnt.className='invResCount'; cnt.textContent=count;
+      top.appendChild(gem); top.appendChild(lab); top.appendChild(cnt); card.appendChild(top);
+      const odds=document.createElement('div'); odds.className='invJewelOdds'; odds.textContent=jewel.desc;
+      if(jewel.failDelta<0) odds.classList.add('risk');
+      card.appendChild(odds);
+      const btns=document.createElement('span'); btns.className='invResBtns';
+      const choose=document.createElement('button'); choose.textContent=selectedJewelKey===jewel.key?'Wybrany':'Wybierz'; choose.disabled=!count;
+      choose.addEventListener('click',()=>{ selectedJewelKey=jewel.key; buildGrid(); });
+      btns.appendChild(choose); card.appendChild(btns); cards.appendChild(card);
+    }
+    wrap.appendChild(cards);
+    const jewel=jewels.find(j=>j.key===selectedJewelKey);
+    if(!jewel || Math.max(0,((window.inv||{})[jewel.key]|0))<1){
+      const empty=document.createElement('div'); empty.className='invEmpty invJewelEmpty';
+      empty.textContent='Pokonuj silnych przeciwników — szansa na jewel rośnie wraz z ich mocą.';
+      wrap.appendChild(empty); grid.appendChild(wrap); return;
+    }
+    let targets=INV.allItems().map(item=>({item,info:INV.enhancementInfo(item.id)})).filter(row=>row.info&&row.info.eligible);
+    if(searchText) targets=targets.filter(row=>itemSearchText(row.item).includes(searchText));
+    targets.sort((a,b)=>(INV.itemScore(b.item)-INV.itemScore(a.item)) || displayName(a.item).localeCompare(displayName(b.item),'pl'));
+    const forge=document.createElement('div'); forge.className='invJewelForge';
+    const title=document.createElement('strong'); title.textContent='Użyj: '+jewel.label; forge.appendChild(title);
+    if(!targets.length){
+      const none=document.createElement('div'); none.className='invHint'; none.textContent='Brak przedmiotu z parametrem, który można ulepszyć.'; forge.appendChild(none);
+    } else {
+      const select=document.createElement('select'); select.className='invSelect invJewelTarget'; select.setAttribute('aria-label','Przedmiot do ulepszenia');
+      for(const row of targets){
+        const o=document.createElement('option'); o.value=row.item.id;
+        const lv=row.info.level; const levelText=lv?(' ✦ '+(lv>0?'+':'')+lv):' ✦ +0';
+        const statLabel=(INV.STAT_LABELS&&INV.STAT_LABELS[row.info.stat])||'Główny parametr';
+        const value=['moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult'].includes(row.info.stat)
+          ? ((Math.round((row.info.value-1)*100)>=0?'+':'')+Math.round((row.info.value-1)*100)+'%')
+          : String(row.info.value);
+        o.textContent=displayName(row.item)+levelText+' — '+statLabel+': '+value;
+        select.appendChild(o);
+      }
+      const equipped=targets.find(row=>INV.isEquipped(row.item.id)); if(equipped) select.value=equipped.item.id;
+      const warning=document.createElement('div'); warning.className='invJewelWarning'+(jewel.failDelta<0?' risk':'');
+      warning.textContent=jewel.failDelta<0?'50%: +2. Porażka: trwałe -1.':'Szansa powodzenia: '+Math.round(jewel.chance*100)+'%. Porażka zużywa kamień.';
+      const apply=document.createElement('button'); apply.className='invJewelApply'; apply.textContent='Ulepsz przedmiot';
+      apply.addEventListener('click',()=>{
+        const target=INV.getItem(select.value); if(!target) return;
+        if(jewel.failDelta<0 && !window.confirm('Kamień Divinity: 50% na +2, ale porażka obniży '+displayName(target)+' o 1. Kontynuować?')) return;
+        const result=INV.applyJewel(target.id,jewel.key);
+        if(!result || !result.ok){ if(window.msg) window.msg('Nie udało się użyć kamienia.'); buildGrid(); return; }
+        const level=(result.level>0?'+':'')+result.level;
+        if(result.success){
+          if(window.msg) window.msg('✨ '+displayName(result.item)+' '+(result.delta>0?'+':'')+result.delta+' → poziom '+level);
+          try{ if(MM.audio&&MM.audio.play) MM.audio.play('jewel',{priority:true}); }catch(e){}
+        } else if(result.delta<0){
+          if(window.msg) window.msg('💔 Divinity pękł: '+displayName(result.item)+' -1 → poziom '+level);
+          try{ if(MM.audio&&MM.audio.play) MM.audio.play('thud'); }catch(e){}
+        } else {
+          if(window.msg) window.msg('Kamień rozpadł się bez ulepszenia.');
+          try{ if(MM.audio&&MM.audio.play) MM.audio.play('thud'); }catch(e){}
+        }
+        buildGrid();
+      });
+      forge.appendChild(select); forge.appendChild(warning); forge.appendChild(apply);
+    }
+    wrap.appendChild(forge); grid.appendChild(wrap);
+  }
+
   // --- Resources tab: card grid, owned first, searchable; empty stacks dimmed ---
   function buildResourcesGrid(){
     const wrap=document.createElement('div'); wrap.className='invResources';
@@ -507,7 +600,7 @@ import './inventory.js';
     hint.textContent='Zebrane surowce — posiadane na górze. „Do paska” przypisuje surowiec do aktywnego slotu paska (5–9, 0).';
     wrap.appendChild(hint);
     const cards=document.createElement('div'); cards.className='invResGrid';
-    let list=INV.resources();
+    let list=INV.resources().filter(r=>!r.jewel);
     if(searchText) list=list.filter(r=>String(r.label+' '+r.key).toLowerCase().includes(searchText));
     list=list.slice().sort((a,b)=>((b.count>0)-(a.count>0)) || String(a.label).localeCompare(String(b.label),'pl'));
     if(!list.length){
@@ -1062,7 +1155,7 @@ import './inventory.js';
   }
   window.addEventListener('mm-inventory-change',refreshAll);
   window.addEventListener('mm-customization-change',refreshAll);
-  window.addEventListener('mm-resources-change',()=>{ if(isOpen() && activeTab.key==='resources') refreshAll(); });
+  window.addEventListener('mm-resources-change',()=>{ if(isOpen() && (activeTab.key==='resources'||activeTab.key==='jewels')) refreshAll(); });
 
   // --- Open / close / focus management ---
   let lastFocus=null;

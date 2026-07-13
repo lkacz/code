@@ -50,6 +50,25 @@ function seededRandom(){
 }
 Math.random=seededRandom;
 
+// Standard mobs share the sparse smoke exposure pass and persist only the slow
+// soot film (the immediate in-cloud tint is deliberately transient).
+let sootUpdates=0;
+MM.smoke={updateSoot(m){ sootUpdates++; m.soot=Math.max(Number(m.soot)||0,0.62); m._smokeTint=0.9; }};
+mobs.deserialize({
+  v:5,
+  list:[{id:'DEER',x:2,y:29,vx:0,vy:0,hp:20,state:'idle',facing:1,scale:1,speedMul:1,jumpMul:1,soot:0.37}],
+  aggro:{mode:'rel',m:{}}
+});
+mobs.freezeSpawns(10000);
+simNow+=50;
+mobs.update(0.05,player,getTile);
+const sootyMob=mobs.serialize().list[0];
+assert.ok(sootUpdates>0,'live mobs receive the lightweight smoke/soot update');
+assert.equal(sootyMob.soot,0.62,'persistent mob soot is serialized');
+assert.equal('_smokeTint' in sootyMob,false,'short-lived smoke tint is not serialized');
+mobs.clearAll();
+delete MM.smoke;
+
 let dayCycle=false;
 MM.background = { getCycleInfo(){ return {isDay:dayCycle}; } };
 try{
@@ -145,7 +164,9 @@ try{
     });
     mobs.freezeSpawns(10000);
     simNow += 400;
-    mobs.update(0.4,{x:20,y:20,hp:100,maxHp:100,vx:0,vy:0},getTile);
+    // The bird is trivial to the hero and therefore flees. Keep the hero on the
+    // left so the intended escape path still exercises the wall on the right.
+    mobs.update(0.4,{x:-20,y:20,hp:100,maxHp:100,vx:0,vy:0},getTile);
     let flyer=mobs.serialize().list.find(m=>m.id==='BIRD');
     assert.ok(flyer && flyer.x<0.55, 'flying mobs cannot pass through a healing-shelter wall tile');
     assert.equal(flyer.vx, 0, 'flying mob horizontal motion is stopped by the shelter wall');
@@ -159,7 +180,7 @@ try{
     });
     mobs.freezeSpawns(10000);
     simNow += 400;
-    mobs.update(0.4,{x:20,y:20,hp:100,maxHp:100,vx:0,vy:0},getTile);
+    mobs.update(0.4,{x:-20,y:20,hp:100,maxHp:100,vx:0,vy:0},getTile);
     flyer=mobs.serialize().list.find(m=>m.id==='BIRD');
     assert.ok(flyer && flyer.x>1.1, 'flying mobs can still enter through an actual open shelter gap');
   } finally {

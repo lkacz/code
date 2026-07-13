@@ -40,6 +40,12 @@ for (const [tileId, info] of Object.entries(INFO)) {
     }
   }
 }
+for (const jewel of INV.JEWELS) {
+  const def = res(jewel.key);
+  assert.ok(def && def.jewel, jewel.label + ' is a dedicated jewel resource');
+  assert.equal(def.tile, null, jewel.label + ' cannot be placed as a block');
+}
+assert.deepEqual(INV.JEWELS.map(j => j.chance), [1, 0.7, 0.5], 'jewel success odds match the design');
 assert.equal(INFO[T.COAL].drop, 'coal', 'coal blocks drop coal');
 assert.equal(INFO[T.GOLD_ORE].drop, 'gold', 'gold ore blocks drop gold');
 assert.equal(INFO[T.GOLD_ORE].goldOre, true, 'gold ore advertises its mineral identity');
@@ -337,8 +343,8 @@ assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_sticky', 'fourth press = 
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_snowball', 'fifth press = plain snowballs');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_balloon', 'sixth press = water balloons');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_gas', 'seventh press = gas grenades');
-assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_sand', 'eighth press = sand in the eyes');
-assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_spit', 'ninth press = water spit');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_spit', 'eighth press = damaging saliva');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_sand', 'ninth press = damage-free sand utility');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'bow_wood', 'rotation wraps back to the bow');
 // Session memory: after leaving for melee, the ranged key returns to the LAST
 // USED ranged weapon instead of restarting at the strongest.
@@ -453,6 +459,53 @@ assert.equal(INV.isNew('restore_ok'), true, 'new marker for existing restored lo
 assert.equal(INV.isNew('missing_item'), false, 'new marker for absent loot is dropped');
 assert.deepEqual(INV.snapshot().shortcutSelection, {}, 'invalid or wrong-category shortcut selections are discarded on restore');
 INV.restore(cleanSnap, { persist: false, silent: true });
+
+// --- permanent jewel enhancement: all three outcomes + save roundtrip -----
+const beforeJewels = INV.snapshot();
+globalThis.inv = Object.assign(globalThis.inv || {}, {
+  jewelBlessed: 1,
+  jewelDevout: 2,
+  jewelDivinity: 2
+});
+const stoneBase = INV.getItem('stone_blade').attackDamage;
+assert.equal(INV.enhancementInfo('stone_blade').level, 0, 'built-in gear starts without an enhancement');
+INV._debugEnhancement.setRandom(() => 0.999);
+let result = INV.applyJewel('stone_blade', 'jewelBlessed');
+assert.equal(result.success, true, 'blessed jewel succeeds even on the highest roll');
+assert.equal(result.delta, 1, 'blessed jewel grants +1');
+assert.equal(INV.getItem('stone_blade').attackDamage, stoneBase + 1, '+1 permanently changes the weapon primary stat');
+
+INV._debugEnhancement.setRandom(() => 0.69);
+result = INV.applyJewel('stone_blade', 'jewelDevout');
+assert.equal(result.success, true, 'devout jewel succeeds below 70%');
+assert.equal(result.level, 2, 'devout success stacks on an existing enhancement');
+INV._debugEnhancement.setRandom(() => 0.70);
+result = INV.applyJewel('stone_blade', 'jewelDevout');
+assert.equal(result.success, false, 'devout jewel fails at the 70% boundary');
+assert.equal(result.delta, 0, 'devout failure consumes the jewel without harming the item');
+assert.equal(result.level, 2, 'devout failure preserves the previous level');
+
+INV._debugEnhancement.setRandom(() => 0.49);
+result = INV.applyJewel('stone_blade', 'jewelDivinity');
+assert.equal(result.success, true, 'Divinity succeeds below 50%');
+assert.equal(result.delta, 2, 'Divinity success grants +2');
+assert.equal(result.level, 4, 'Divinity success stacks two levels');
+INV._debugEnhancement.setRandom(() => 0.50);
+result = INV.applyJewel('stone_blade', 'jewelDivinity');
+assert.equal(result.success, false, 'Divinity fails at the 50% boundary');
+assert.equal(result.delta, -1, 'Divinity failure lowers the enhancement by one');
+assert.equal(result.level, 3, 'Divinity failure retains the signed permanent remainder');
+assert.equal(globalThis.inv.jewelBlessed + globalThis.inv.jewelDevout + globalThis.inv.jewelDivinity, 0, 'every enhancement attempt consumes exactly one jewel');
+
+const enhancedSnap = INV.snapshot();
+assert.equal(enhancedSnap.enhancements.stone_blade, 3, 'snapshot stores enhancement separately from immutable item definitions');
+INV.restore(beforeJewels, { persist: false, silent: true });
+assert.equal(INV.getItem('stone_blade').attackDamage, stoneBase, 'restoring an older save removes later enhancements');
+INV.restore(enhancedSnap, { persist: false, silent: true });
+assert.equal(INV.enhancementInfo('stone_blade').level, 3, 'enhancement level survives save/restore');
+assert.equal(INV.getItem('stone_blade').attackDamage, stoneBase + 3, 'enhanced stat survives save/restore without double application');
+INV.restore(beforeJewels, { persist: false, silent: true });
+INV._debugEnhancement.setRandom(null);
 
 console.log('inventory-sim: all assertions passed (avg Moc common/uncommon/rare/epic/legendary: '
   + [(sums.common / counts.common).toFixed(1), (sums.uncommon / counts.uncommon).toFixed(1), (sums.rare / counts.rare).toFixed(1), (sums.epic / counts.epic).toFixed(1), (sums.legendary / counts.legendary).toFixed(1)].join('/') + ')');

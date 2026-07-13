@@ -26,6 +26,7 @@ assert.equal(typeof createHeroLampModel,'function','hero lamp model exports');
   const pool={
     canSpend(n){ return energy>=n; },
     spend(n){ if(energy<n) return false; energy-=n; return true; },
+    spendContinuous(n){ const spent=Math.min(energy,n); energy-=spent; if(energy<1e-9) energy=0; return spent; },
     info(){ return {energy,max:40}; }
   };
   assert.equal(lamp.toggle(pool).on,true,'flashlight toggle turns the eye lamp on when energy is available');
@@ -39,9 +40,23 @@ assert.equal(typeof createHeroLampModel,'function','hero lamp model exports');
   assert.ok(hardened.info().drainPerSecond>0 && hardened.info().range<=18 && hardened.info().level<=15,'lamp configuration is clamped to safe simulation bounds');
   for(let i=0;i<20 && lamp.isOn();i++) lamp.update(0.1,pool);
   assert.equal(lamp.isOn(),false,'eye lamp turns itself off when the energy pool is depleted');
+  assert.equal(energy,0,'eye lamp consumes the final fractional energy instead of stranding it');
   assert.equal(lamp.lightSource({x:1,y:1,facing:1}),null,'depleted lamp no longer contributes a light source');
   const empty=createHeroLampModel();
   assert.equal(empty.toggle({canSpend(){ return false; }}).blocked,'energy','empty energy pool blocks lamp activation');
+
+  const finalFraction=createHeroLampModel({drainPerSecond:2,minStartEnergy:0.05});
+  let fraction=0.07;
+  const fractionPool={
+    canSpend(n){ return fraction>=n; },
+    spendContinuous(n){ const spent=Math.min(fraction,n); fraction-=spent; return spent; },
+    info(){ return {energy:fraction,max:40}; }
+  };
+  assert.equal(finalFraction.toggle(fractionPool).on,true,'lamp can start for the final-fraction regression');
+  const depleted=finalFraction.update(0.1,fractionPool);
+  assert.equal(fraction,0,'a drain larger than the remaining fraction consumes all remaining energy');
+  assert.equal(depleted.depleted,true,'partial final payment reports depletion immediately');
+  assert.equal(finalFraction.isOn(),false,'lamp switches off in the same tick as final fractional drain');
 }
 
 // ---- world: flat surface at row 20, everything below is stone --------------

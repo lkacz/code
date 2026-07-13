@@ -49,12 +49,32 @@
       if(opts && opts.unlimited) return {on:true,changed:false,spent:0};
       const cost=cfg.drainPerSecond*step;
       let paid=false;
-      try{ paid=!!(energy && typeof energy.spend==='function' && energy.spend(cost)); }catch(e){ paid=false; }
+      let spent=0;
+      try{
+        if(energy && typeof energy.spendContinuous==='function'){
+          spent=Math.max(0,Math.min(cost,Number(energy.spendContinuous(cost))||0));
+          paid=spent>=cost-1e-7;
+        }else if(energy && typeof energy.spend==='function' && energy.spend(cost)){
+          paid=true;
+          spent=cost;
+        }
+      }catch(e){ paid=false; spent=0; }
       if(!paid){
         enabled=false;
-        return {on:false,changed:true,depleted:true,spent:0};
+        return {on:false,changed:true,depleted:true,spent};
       }
-      return {on:true,changed:false,spent:cost};
+      // Paying the final exact fraction must extinguish the lamp immediately;
+      // otherwise lightSource() would contribute one free frame at zero energy.
+      let remaining=null;
+      try{
+        const info=energy&&typeof energy.info==='function'?energy.info():null;
+        if(info&&Number.isFinite(Number(info.energy))) remaining=Math.max(0,Number(info.energy));
+      }catch(e){}
+      if(remaining!==null&&remaining<=1e-7){
+        enabled=false;
+        return {on:false,changed:true,depleted:true,spent};
+      }
+      return {on:true,changed:false,spent};
     }
     function lightSource(player){
       if(!enabled || !player) return null;

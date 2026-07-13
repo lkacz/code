@@ -417,7 +417,7 @@ assert.ok(/conn\.onMessage\(\{ t: 'connLost' \}\)/.test(netSrc),
 
 // --- social facilitation integration pins ---------------------------------------------------
 assert.ok(/const socialMult=\(MM\.socialBoost && Number\.isFinite\(MM\.socialBoost\.xp\)\) \? MM\.socialBoost\.xp : 1;/.test(mobsSrc)
-	&& /base\*fatigue\.mult\*specialMult\*socialMult/.test(mobsSrc),
+	&& /combatXp\*fatigue\.mult\*specialMult\*socialMult/.test(mobsSrc),
 	'mob XP multiplies the social boost (neutral 1 in solo/Node)');
 assert.ok(/function socialBoostMult\(part\)/.test(mainSrc), 'main.js social boost reader exists');
 assert.ok(/heroSandMoveMult\(\) \* socialBoostMult\('move'\)/.test(mainSrc), 'movement speed multiplies the social boost');

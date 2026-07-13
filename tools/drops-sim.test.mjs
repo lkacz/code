@@ -37,7 +37,7 @@ function getTile(x, y){
 function setTile(x, y, t){ tiles.set(key(x, y), t); }
 
 globalThis.player = { x: 500, y: SURF - 1 }; // far away by default
-globalThis.inv = { meatScrap: 0, coal: 0 };
+globalThis.inv = { meatScrap: 0, coal: 0, jewelBlessed: 0, jewelDevout: 0, jewelDivinity: 0 };
 const msgs = []; globalThis.msg = m => msgs.push(m);
 const played = []; MM.audio = { play: n => played.push(n) };
 const bursts = []; MM.particles = { spawnBurst: (x, y, t) => bursts.push(t), spawnSparks: () => {} };
@@ -56,6 +56,48 @@ function advance(seconds, dt = 0.05){
 const scrapDef = MM.inventory.RESOURCES.find(r => r.key === 'meatScrap');
 assert.ok(scrapDef, 'meatScrap is a registered resource');
 assert.equal(scrapDef.tile, null, 'meat scraps are a pickup, not a placeable block');
+
+// --- jewels: weak foes almost never pay; powerful foes visibly can -----------
+const weakJewelChance = drops._debug.jewelChanceFor(
+  { id: 'RABBIT', x: 4, y: 4, maxHp: 5, dmg: 2, hostility: 0 },
+  { hp: 5, dmg: 2, xp: 5 }
+);
+const eliteJewelChance = drops._debug.jewelChanceFor(
+  { id: 'ARMORED_ELITE', x: 4, y: 4, maxHp: 260, dmg: 24, scale: 1.4, hostility: 0.8 },
+  { hp: 260, dmg: 24, xp: 280 }
+);
+const bossJewelChance = drops._debug.jewelChanceFor(
+  { id: 'GOLD_DRAGON', x: 4, y: 4, maxHp: 700, dmg: 38, scale: 1.8, hostility: 1 },
+  { hp: 700, dmg: 38, xp: 900, boss: true }
+);
+assert.ok(weakJewelChance < 0.001, 'weak-creature jewel chance stays below one tenth of a percent');
+assert.ok(eliteJewelChance > weakJewelChance * 20, 'elite jewel chance is materially higher than a weak foe');
+assert.ok(bossJewelChance > eliteJewelChance, 'boss premium raises jewel odds again');
+assert.ok(bossJewelChance <= 0.18, 'even bosses respect the jewel rarity cap');
+
+drops.reset(); msgs.length = 0; played.length = 0; bursts.length = 0;
+const scripted = [0, 0.99, 0.5, 0.5, 0.5];
+drops._debug.setRandom(() => scripted.shift() ?? 0.5);
+const jewelDrop = drops.rollJewelDrop(
+  { id: 'RABBIT', x: 12.5, y: SURF - 1, maxHp: 5, dmg: 2 },
+  { hp: 5, dmg: 2, xp: 5 }
+);
+assert.ok(jewelDrop && jewelDrop.kind === 'jewel', 'a successful jewel roll spawns a physical jewel');
+assert.equal(jewelDrop.res, 'jewelBlessed', 'scripted common branch selects the blessed jewel');
+assert.equal(jewelDrop.life, CFG.JEWEL_LIFE, 'jewel receives its protected long world lifetime');
+assert.ok(played.includes('jewel'), 'jewel arrival plays the dedicated Pavlov bell');
+assert.ok(msgs.some(m => m.includes('JEWEL') && m.includes('Kamień błogosławionych')), 'jewel arrival is explicitly announced');
+assert.ok(bursts.length > 0, 'jewel arrival has a particle reveal');
+const jewelSnap = drops.snapshot();
+drops.reset();
+drops.restore(jewelSnap);
+assert.equal(drops._debug.list[0].kind, 'jewel', 'jewel survives a ground-drop save roundtrip');
+player.x = 12.5; player.y = SURF - 1;
+advance(1);
+assert.equal(drops.pickupNearest(player), true, 'jewel can be collected from the ground');
+assert.equal(inv.jewelBlessed, 1, 'collected jewel enters the resource inventory');
+assert.ok(played.filter(n => n === 'jewel').length >= 2, 'pickup repeats the learned jewel bell');
+drops._debug.setRandom(null);
 
 // --- pop physics: fall, land, settle ------------------------------------------
 drops.reset();
@@ -570,6 +612,7 @@ assert.match(mainSrc, /DROPS\.hoverAt\(aim\.x,aim\.y,player,\{visible:worldFxVis
 const mobsSrc = readFileSync(new URL('../src/engine/mobs.js', import.meta.url), 'utf8');
 assert.match(mobsSrc, /MM\.drops && MM\.drops\.spawnResource/, 'mob deaths route loot through physical drops');
 assert.match(mobsSrc, /MM\.drops\.rollGearDrop\(m\)/, 'mob deaths roll themed gear drops');
+assert.match(mobsSrc, /MM\.drops\.rollJewelDrop\(m,spec\)/, 'mob deaths roll power-scaled jewels');
 assert.match(mobsSrc, /meatScrapCountFor/, 'meat kills shed size-scaled scrap counts');
 const invUiSrc = readFileSync(new URL('../src/inventory_ui.js', import.meta.url), 'utf8');
 assert.match(invUiSrc, /drops\.wantsInteractKey/, 'wardrobe yields E to a drop in reach');
@@ -599,15 +642,22 @@ const craftingSrc = readFileSync(new URL('../src/engine/crafting.js', import.met
 assert.match(craftingSrc, /meatScrap:/, 'crafting source hints cover meat scraps');
 const lairsSrc = readFileSync(new URL('../src/engine/guardian_lairs.js', import.meta.url), 'utf8');
 assert.match(lairsSrc, /rollGuardianDrop\(e\.kind,e\.x,e\.y,\{boss:true\}\)/, 'fire/ice guardian bosses shed their relics');
+assert.match(lairsSrc, /rollJewelDrop\(e,\{boss:true,hp:e\.maxHp,dmg:26,xp:520\}\)/, 'fire/ice guardians receive a boss jewel roll');
 assert.match(lairsSrc, /rollGuardianDrop\(e\.kind,e\.x,e\.y,\{role:e\.role\}\)/, 'fire/ice sidekicks roll a relic');
 const undergroundSrc = readFileSync(new URL('../src/engine/underground_boss.js', import.meta.url), 'utf8');
 assert.match(undergroundSrc, /rollGuardianDrop\('earth',e\.x,e\.y,\{boss:true\}\)/, 'earth excavator sheds its relics');
+assert.match(undergroundSrc, /rollJewelDrop\(e,\{boss:true,hp:e\.maxHp,dmg:28,xp:560\}\)/, 'earth guardian receives a boss jewel roll');
 const skySrc = readFileSync(new URL('../src/engine/sky_guardian.js', import.meta.url), 'utf8');
 assert.match(skySrc, /rollGuardianDrop\('air',e\.x,e\.y,\{boss:true\}\)/, 'sky crown sheds its relics');
+assert.match(skySrc, /rollJewelDrop\(e,\{boss:true,hp:e\.maxHp,dmg:30,xp:600\}\)/, 'sky guardian receives a boss jewel roll');
 assert.match(skySrc, /rollGuardianDrop\('air',e\.x,e\.y,\{role:'resonator'\}\)/, 'resonators roll a relic (leaflings stay lootless)');
 const chestsSrc = readFileSync(new URL('../src/engine/chests.js', import.meta.url), 'utf8');
 assert.match(chestsSrc, /opts\.forceUnique \|\| r\(\)<td\.uniqueChance/, 'genItem supports forced unique boosts for guardian relics');
 const invSrc = readFileSync(new URL('../src/inventory.js', import.meta.url), 'utf8');
 assert.match(invSrc, /drops\.spawnGear\(p\.x, p\.y-0\.3, thrown, \{announce:false\}\)/, 'discard throws the item out as a ground drop');
+const bossesSrc = readFileSync(new URL('../src/engine/bosses.js', import.meta.url), 'utf8');
+assert.match(bossesSrc, /id:'BLOCK_BOSS'[\s\S]{0,220}\},\{boss:true,hp:hpBudget/, 'procedural block bosses receive the same scaled jewel roll');
+const centerGuardianSrc = readFileSync(new URL('../src/engine/center_guardian.js', import.meta.url), 'utf8');
+assert.match(centerGuardianSrc, /id:'CENTER_GUARDIAN'[\s\S]{0,180}\{boss:true,hp:mimic\.maxHp,dmg:30,xp:700\}/, 'center guardian receives a boss jewel roll');
 
 console.log('drops-sim: all assertions passed');

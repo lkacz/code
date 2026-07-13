@@ -1,5 +1,6 @@
 // Hand-weapon crafting ladder + material identities (weapons.js MELEE_EFFECTS,
-// mobs.js statuses) and the improvised throws (sand → blind, water spit → toxic):
+// mobs.js statuses) and the improvised fun weapons (sand → blind+stun without
+// damage, regular saliva → wet, ult saliva → toxic):
 //  1. weapons.js: melee reach comes from fireRange (spears poke 2 tiles),
 //     material effects roll on hit (metal=bleed, stone=stun, diamond=panic),
 //     sand/spit thrown kinds spend the raw resource and splat their status.
@@ -39,14 +40,16 @@ let tiles = new Map();
 const getTile = (x,y)=>{ const v = tiles.get(x+','+y); return v===undefined ? T.AIR : v; };
 const setTile = (x,y,v)=>{ tiles.set(x+','+y, v); };
 
-const attackCalls=[], statusAtCalls=[], statusRadiusCalls=[], poisonCalls=[], wetCalls=[];
+const attackCalls=[], damageCalls=[], statusAtCalls=[], statusRadiusCalls=[], poisonCalls=[], wetCalls=[];
+let nearestTarget=null;
 MM.mobs = {
   attackAt(tx,ty,bonus,opts){ attackCalls.push({tx,ty,bonus,opts}); return true; },
-  damageAt(){ return false; },
+  damageAt(tx,ty,dmg,opts){ damageCalls.push({tx,ty,dmg,opts}); return false; },
   statusAt(tx,ty,id,opts){ statusAtCalls.push({tx,ty,id,opts}); return true; },
   statusRadius(wx,wy,r,id,opts){ statusRadiusCalls.push({wx,wy,r,id,opts}); return 1; },
   poisonRadius(wx,wy,r,opts){ poisonCalls.push({wx,wy,r,opts}); return 1; },
   wetRadius(wx,wy,r,opts){ wetCalls.push({wx,wy,r,opts}); return 1; },
+  nearestLiving(){ return nearestTarget; },
   igniteAt(){ return false; }
 };
 const discoveries=[];
@@ -60,6 +63,29 @@ const player = { x:0.5, y:0.5, facing:1, atkCd:0 };
 globalThis.player = player;
 
 function coolDown(){ player.atkCd=0; weapons.update(1.0,getTile,setTile); }
+
+// Selecting a throw technique must not conjure its projectile into the hand.
+// Cover every current thrown kind so future rocks/grenades cannot regress alone.
+function heldCtx(){
+  const calls=[];
+  return {calls,save(){calls.push('save');},restore(){calls.push('restore');},translate(){calls.push('translate');},rotate(){calls.push('rotate');},
+    beginPath(){calls.push('beginPath');},closePath(){calls.push('closePath');},moveTo(){calls.push('moveTo');},lineTo(){calls.push('lineTo');},
+    arc(){calls.push('arc');},fill(){calls.push('fill');},stroke(){calls.push('stroke');},fillRect(){calls.push('fillRect');}};
+}
+for(const [kind,spec] of Object.entries(weapons._debug.thrownKinds)){
+  equipped={weaponType:'thrown',thrownKind:kind,name:'Test '+kind};
+  globalThis.inv[spec.key]=0;
+  const emptyCtx=heldCtx();
+  weapons.drawHeld(emptyCtx,20,player);
+  assert.equal(emptyCtx.calls.length,0,kind+' is not shown in the hand with zero ammo');
+  globalThis.inv[spec.key]=1;
+  const loadedCtx=heldCtx();
+  weapons.drawHeld(loadedCtx,20,player);
+  assert.ok(loadedCtx.calls.length>0,kind+' appears in the hand when one unit exists');
+  delete globalThis.inv[spec.key];
+}
+globalThis.inv.sand=5;
+globalThis.inv.water=5;
 
 // --- melee reach: fireRange:2 lets a spear strike the clamped 2-tile ring ---
 equipped = { weaponType:'melee', attackDamage:3, fireRange:2, name:'Dzida' };
@@ -99,7 +125,7 @@ const fx = weapons._debug.meleeEffects;
 assert.deepEqual(Object.keys(fx).sort(), ['bleed','panic','stun'], 'exactly three material identities');
 assert.ok(fx.bleed.dps>0 && fx.stun.dps===0 && fx.panic.dps===0, 'only bleed carries a DoT');
 
-// --- thrown sand: spends inv.sand, splats a blind cloud on the wall ---
+// --- improvised throws: distinct utility, effects and projectile identity ---
 function throwAtWall(kind, key){
   tiles = new Map();
   for(let y=-4;y<=4;y++) setTile(4,y,T.STONE); // wall the lobbed ball must hit
@@ -111,27 +137,62 @@ function throwAtWall(kind, key){
   assert.equal(weapons.metrics().arrows, 0, kind+' ball burst on the wall');
   coolDown();
 }
-Math.random = ()=>0.0; // chance rolls always pass
+const damageBeforeSand=damageCalls.length;
 throwAtWall('sand','sand');
 assert.ok(statusRadiusCalls.some(c=>c.id==='blind' && c.opts && c.opts.dur>0), 'sand splat blinds the area');
+assert.ok(statusRadiusCalls.some(c=>c.id==='stun' && c.opts && c.opts.dur>=2), 'sand splat shocks/stuns for a few seconds');
+assert.equal(damageCalls.length,damageBeforeSand,'sand never enters a creature damage handler');
 assert.ok(discoveries.includes('sand_blind'), 'first blind unlocks the discovery');
 
+// It also detects a creature in flight without calling damageAt merely to probe.
+statusRadiusCalls.length=0;
+tiles=new Map();
+nearestTarget={x:1.5,y:0.5,hp:10};
+equipped={weaponType:'thrown',thrownKind:'sand',attackDamage:99,fireCooldown:0.4,name:'Piasek'};
+const damageBeforeContact=damageCalls.length;
+assert.equal(weapons.fireHeld(player,3.5,0.5,1/60),true,'sand can be thrown at a creature');
+const contactSand=weapons._debug.arrows.at(-1);
+assert.equal(contactSand.dmg,0,'even an artificially huge weapon stat cannot give sand damage');
+assert.ok(contactSand.sandSpray && contactSand.noDamage,'the flight carries fine-sand and no-damage metadata');
+assert.ok(Number.isInteger(contactSand.sandSeed) && contactSand.sandSeed>0,'each sand throw carries a stable visual seed');
+const sandPatternA=weapons._debug.sandVisualPattern(contactSand.sandSeed);
+const sandPatternB=weapons._debug.sandVisualPattern((contactSand.sandSeed+1)>>>0);
+assert.ok(sandPatternA.count>=10 && sandPatternA.count<=20,'a sand pattern varies its bounded grain count');
+assert.ok(sandPatternA.spread>=0.18 && sandPatternA.spread<=0.42,'a sand pattern varies its bounded fan width');
+assert.notDeepEqual(sandPatternA,sandPatternB,'different throw seeds produce different visible layouts');
+weapons.update(0.05,getTile,setTile);
+nearestTarget=null;
+assert.equal(weapons.metrics().arrows,0,'sand splats as soon as it contacts the creature');
+assert.equal(damageCalls.length,damageBeforeContact,'contact probing remains damage-free');
+assert.ok(statusRadiusCalls.some(c=>c.id==='blind') && statusRadiusCalls.some(c=>c.id==='stun'),'contact applies both utility effects');
+coolDown();
+
+poisonCalls.length=0;
 throwAtWall('spit','water');
 assert.ok(wetCalls.length>=1, 'spit always soaks a little');
-assert.ok(poisonCalls.some(c=>c.opts && c.opts.cause==='toxic_spit'), 'a lucky spit turns out toxic');
-assert.ok(discoveries.includes('spit_toxic'), 'first toxic spit unlocks the discovery');
+assert.equal(poisonCalls.length,0,'regular saliva is not randomly toxic');
 
-poisonCalls.length = 0; statusRadiusCalls.length = 0;
-Math.random = ()=>0.99; // chance rolls always fail
-throwAtWall('sand','sand');
-assert.equal(statusRadiusCalls.filter(c=>c.id==='blind').length, 0, 'sand blind is a chance, not a guarantee');
-throwAtWall('spit','water');
-assert.equal(poisonCalls.length, 0, 'toxic spit is a chance, not a guarantee');
-Math.random = ()=>{ randomSeed=(randomSeed*1664525+1013904223)>>>0; return randomSeed/4294967296; };
+// The ult is the toxic variant: every projectile is vivid green and poisons.
+weapons.reset();
+globalThis.inv.water=10;
+tiles = new Map();
+for(let y=-4;y<=4;y++) setTile(4,y,T.STONE);
+equipped = { weaponType:'thrown', thrownKind:'spit', attackDamage:1, fireCooldown:0.4, name:'Plucie' };
+assert.equal(weapons.fireUlt(player,3.5,0.5),true,'spit ult fires');
+const toxicVolley=weapons._debug.arrows.filter(a=>a.spitDroplet);
+assert.equal(toxicVolley.length,5,'full spit ult fans five droplets');
+assert.ok(toxicVolley.every(a=>a.toxicSpit && a.specialAttack),'every ult droplet is toxic');
+assert.ok(toxicVolley.every(a=>/^#55db63$/i.test(a.color)),'toxic saliva is visibly green');
+for(let i=0;i<45;i++) weapons.update(0.05,getTile,setTile);
+assert.ok(poisonCalls.some(c=>c.opts && c.opts.cause==='toxic_spit_ult'),'toxic ult saliva poisons on impact');
+assert.ok(discoveries.includes('spit_toxic'),'first toxic ult unlocks the discovery');
 
 const thrownKinds = weapons._debug.thrownKinds;
 assert.equal(thrownKinds.sand.key, 'sand', 'sand throw is fuelled by raw sand');
 assert.equal(thrownKinds.spit.key, 'water', 'spitting needs water in the inventory');
+assert.equal(thrownKinds.sand.noDamage,true,'sand is explicitly damage-free');
+assert.equal(thrownKinds.sand.visual,'sand','sand uses the fine-grain renderer');
+assert.equal(thrownKinds.spit.visual,'spit','saliva uses the droplet renderer');
 assert.ok(weapons.thrownInfo('sand') && weapons.thrownInfo('spit'), 'HUD readout covers the new throws');
 
 // ---------------------------------------------------------------------------

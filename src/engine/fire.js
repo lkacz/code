@@ -17,6 +17,7 @@
 import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, TILE as TILE_PX, thawedEarthVariant, isFrozenEarth } from '../constants.js';
 import { isLavaExposureOpenTile, isLavaVentOpenTile } from './material_physics.js';
 import { reactions as REACTIONS } from './reactions.js';
+import { getFlamePuffSprites, flamePuffFrame, flamePuffAlpha, flamePuffRadius } from './flame_fx.js';
 (function(){
   window.MM = window.MM || {};
   const burning=new Map(); // key "x,y" -> {x,y,left,total,spreadAcc,mobAcc}
@@ -208,33 +209,54 @@ import { reactions as REACTIONS } from './reactions.js';
       // O(mobs) Map lookups instead of this loop scanning all mobs per tile.)
     }
   }
-  // --- Pre-rendered flame sprites: gradient allocation per tile per frame caused
-  // GC churn at the 240-tile cap (4 gradients × 240 × 60fps ≈ 58k allocs/s), so the
-  // tongues and glow are baked once into small canvases and stamped with drawImage.
-  let spriteTile=0; const flameFrames=[]; let glowSprite=null; const FRAMES=6;
+  // --- Shared flamethrower-style fire ------------------------------------------
+  // World flames are precomposed from the exact hot/mid/tail radial sprites used
+  // by the hero's flame stream. Runtime still stamps one baked frame per burning
+  // tile, avoiding hundreds of puff draws at the 240-tile fire cap.
+  let spriteTile=0; const flameFrames=[]; let glowSprite=null;
+  let flameWidth=0,flameHeight=0;
+  const FRAMES=16;
+  const FLAME_VARIANTS=4;
+  const FLAME_SUPERSAMPLE=2;
+  const BLOCK_FLAME_PUFFS=6;
+  function flameRand(variant,index){
+    let h=Math.imul((variant+1)|0,0x45d9f3b)^Math.imul((index+17)|0,0x27d4eb2d);
+    h=Math.imul(h^(h>>>16),0x45d9f3b); h^=h>>>16;
+    return (h>>>0)/4294967296;
+  }
   function buildSprites(TILE){
     spriteTile=TILE; flameFrames.length=0;
-    const FH=Math.ceil(TILE*1.6); // flames can rise above the tile
-    for(let f=0; f<FRAMES; f++){
-      const c=document.createElement('canvas'); c.width=TILE; c.height=FH;
+    flameWidth=Math.ceil(TILE*1.24);
+    flameHeight=Math.ceil(TILE*1.78);
+    const pad=(flameWidth-TILE)*0.5;
+    const shared=getFlamePuffSprites();
+    for(let variant=0;variant<FLAME_VARIANTS;variant++) for(let f=0;f<FRAMES;f++){
+      const c=document.createElement('canvas');
+      c.width=flameWidth*FLAME_SUPERSAMPLE;
+      c.height=flameHeight*FLAME_SUPERSAMPLE;
       const g=c.getContext('2d');
-      const phase=(f/FRAMES)*Math.PI*2;
-      const flick=Math.sin(phase)*0.5+0.5;
-      for(let i=0;i<3;i++){
-        const fx=TILE*(0.2+0.3*i) + Math.sin(phase+i*2.1)*2;
-        const h=TILE*(0.5+0.45*flick)*(0.7+0.3*Math.sin(phase*1.3+i*1.7));
-        const w=TILE*0.22;
-        const grd=g.createLinearGradient(fx,FH,fx,FH-h);
-        grd.addColorStop(0,'rgba(255,120,20,0.85)');
-        grd.addColorStop(0.6,'rgba(255,200,60,0.7)');
-        grd.addColorStop(1,'rgba(255,255,180,0)');
-        g.fillStyle=grd;
-        g.beginPath();
-        g.moveTo(fx-w/2,FH);
-        g.quadraticCurveTo(fx-w*0.2,FH-h*0.5,fx,FH-h);
-        g.quadraticCurveTo(fx+w*0.2,FH-h*0.5,fx+w/2,FH);
-        g.closePath(); g.fill();
+      if(typeof g.scale==='function') g.scale(FLAME_SUPERSAMPLE,FLAME_SUPERSAMPLE);
+      g.imageSmoothingEnabled=true;
+      if('imageSmoothingQuality' in g) g.imageSmoothingQuality='high';
+      const base=flameHeight-1;
+      g.globalCompositeOperation='lighter';
+      for(let i=0;i<BLOCK_FLAME_PUFFS;i++){
+        const r0=flameRand(variant,i*5+1), r1=flameRand(variant,i*5+2), r2=flameRand(variant,i*5+3);
+        const age=((f/FRAMES)+(i/BLOCK_FLAME_PUFFS)+variant*0.037)%1;
+        const freshness=1-age;
+        const puff=flamePuffFrame(shared,freshness);
+        if(!puff) continue;
+        const scale=(0.34+r0*0.20)*(0.92+0.08*Math.sin((f/FRAMES)*Math.PI*2+i));
+        const radius=flamePuffRadius(TILE,freshness,scale);
+        const lane=0.17+r1*0.66;
+        const sway=Math.sin((f/FRAMES)*Math.PI*2+i*1.83+r2*3)*TILE*(0.04+age*0.10);
+        const cx=pad+TILE*lane+sway;
+        const cy=base-TILE*(0.05+age*(0.72+r2*0.34));
+        g.globalAlpha=flamePuffAlpha(freshness)*(0.62+r2*0.28);
+        g.drawImage(puff,cx-radius,cy-radius,radius*2,radius*2);
       }
+      g.globalAlpha=1;
+      g.globalCompositeOperation='source-over';
       flameFrames.push(c);
     }
     const GS=Math.ceil(TILE*2.2);
@@ -244,6 +266,25 @@ import { reactions as REACTIONS } from './reactions.js';
     rg.addColorStop(0,'rgba(255,150,40,0.30)');
     rg.addColorStop(1,'rgba(255,150,40,0)');
     gg.fillStyle=rg; gg.fillRect(0,0,GS,GS);
+  }
+  function flameFrameAt(x,y,frame){
+    const h=Math.imul(x|0,73856093)^Math.imul(y|0,19349663);
+    const variant=(h>>>0)%FLAME_VARIANTS;
+    const fi=((frame%FRAMES)+FRAMES)%FRAMES;
+    return flameFrames[variant*FRAMES+fi];
+  }
+  function drawFlameSprite(ctx,TILE,x,y,baseY,now,scale,alpha){
+    const fi=(((now*0.018)|0)+x*7+y*13)%FRAMES;
+    const frame=flameFrameAt(x,y,fi);
+    if(!frame) return;
+    const pulse=Math.sin(now*0.006+x*2.71+y*1.93);
+    const w=flameWidth*scale*(1+pulse*0.025);
+    const h=flameHeight*scale*(1-pulse*0.018);
+    const sway=Math.sin(now*0.004+x*1.37-y*2.11)*TILE*0.035*scale;
+    const oldAlpha=ctx.globalAlpha;
+    ctx.globalAlpha=alpha;
+    ctx.drawImage(frame,x*TILE+(TILE-w)*0.5+sway,baseY-h,w,h);
+    ctx.globalAlpha=oldAlpha;
   }
   // Lava behavior is tile-derived (no registry, so it survives world save/load):
   // the visible viewport is scanned each frame — same pattern as the chest-aura
@@ -319,7 +360,7 @@ import { reactions as REACTIONS } from './reactions.js';
     return 0;
   }
   function drawLava(ctx,TILE,sx,sy,viewX,viewY,getTile,now,visibility){
-    const GS=glowSprite.width, FH=flameFrames[0].height;
+    const GS=glowSprite.width;
     const igniteTick = now-lastLavaTick>500;
     if(igniteTick) lastLavaTick=now;
     const frameMs=(typeof window!=='undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
@@ -354,9 +395,7 @@ import { reactions as REACTIONS } from './reactions.js';
           ctx.fillStyle=radBoost>0 ? '#caff73' : '#ffd56e'; ctx.fillRect(px+TILE/2-2.5, py+TILE*0.22, 5, 5);
           if(!visibleTile(x,y)) continue;
           // small flame + radial glow (baked sprites)
-          const fi=(((now*0.012)|0)+x*7)%FRAMES;
-          ctx.globalAlpha=0.8;
-          ctx.drawImage(flameFrames[fi<0?fi+FRAMES:fi], px+TILE*0.25, py-FH*0.45+TILE*0.25, TILE*0.5, FH*0.5);
+          drawFlameSprite(ctx,TILE,x,y,py+TILE*0.33,now,0.48,0.80);
           ctx.globalAlpha=(0.5+0.3*flick)*night*1.6;
           const gs=GS*2.4;
           ctx.drawImage(glowSprite, px+TILE/2-gs/2, py+TILE*0.3-gs/2, gs, gs);
@@ -410,10 +449,8 @@ import { reactions as REACTIONS } from './reactions.js';
         // small surface flames where lava meets open air
         const chimneySmokeOutlet=aboveT===T.CHIMNEY && smokeChimneyOutlet(x,y,getTile);
         if((aboveT===T.AIR || chimneySmokeOutlet) && flameBudget-->0 && (!critical || ((x+y)&1)===0)){
-          const fi=(((now*0.01)|0) + x*5 + y*11) % FRAMES;
           if(aboveT===T.AIR){
-            ctx.globalAlpha=0.45+0.25*flick;
-            ctx.drawImage(flameFrames[fi<0? fi+FRAMES : fi], px, py-FH+TILE*0.4, TILE, FH*0.7);
+            drawFlameSprite(ctx,TILE,x,y,py+TILE*0.13,now,0.68,0.45+0.25*flick);
           }
         }
         ctx.globalAlpha=1;
@@ -433,9 +470,11 @@ import { reactions as REACTIONS } from './reactions.js';
     const revealAll = !!(visibility && visibility.revealAll);
     const visibleTile = (x,y)=>revealAll || !canSee || canSee(x,y);
     ctx.save();
+    ctx.imageSmoothingEnabled=true;
+    if('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality='high';
     if(typeof getTile==='function') drawLava(ctx,TILE,sx,sy,viewX,viewY,getTile,now,visibility);
     if(!burning.size){ ctx.restore(); return; }
-    const FH=flameFrames[0].height, GS=glowSprite.width;
+    const GS=glowSprite.width;
     for(const b of burning.values()){
       if(b.x<sx-1||b.x>sx+viewX+2||b.y<sy-1||b.y>sy+viewY+2) continue;
       if(!visibleTile(b.x,b.y)) continue;
@@ -448,16 +487,13 @@ import { reactions as REACTIONS } from './reactions.js';
       // glow (baked radial sprite, alpha-flickered)
       ctx.globalAlpha=0.6+0.4*flick;
       ctx.drawImage(glowSprite, px+TILE/2-GS/2, py+TILE/2-GS/2);
-      // flame tongues: cycle baked frames, de-synced per tile
-      const fi=(((now*0.012)|0) + b.x*7 + b.y*13) % FRAMES;
-      ctx.globalAlpha=0.85+0.15*flick;
-      ctx.drawImage(flameFrames[fi<0? fi+FRAMES : fi], px, py+TILE-FH);
+      // Fuel changes the silhouette slightly; the final moments collapse toward
+      // the block instead of ending as a full-height sprite pop.
+      const leafy=b.fuel===T.LEAF||b.fuel===T.AUTUMN_LEAF_ORANGE||b.fuel===T.AUTUMN_LEAF_RED||b.fuel===T.GRASS||b.fuel===T.GRASS_SNOW;
+      const fuelScale=b.fuel===T.COAL?1.06:(leafy?0.84:1);
+      const burnout=stage>0.88?Math.max(0.24,(1-stage)/0.12):1;
+      drawFlameSprite(ctx,TILE,b.x,b.y,py+TILE,now,fuelScale*(0.97+flick*0.06)*burnout,0.84+0.16*flick);
       ctx.globalAlpha=1;
-      // sparks
-      if(((now*0.01+b.x*7+b.y*13)|0)%5===0){
-        ctx.fillStyle='rgba(255,220,120,0.9)';
-        ctx.fillRect(px+TILE*0.3+flick*6, py+TILE*0.2 - flick*5, 2,2);
-      }
     }
     ctx.restore();
   }

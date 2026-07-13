@@ -723,7 +723,7 @@ setTile.transient = function(x,y,v){
 if(FALLING && FALLING.init) FALLING.init(getTile,setTile);
 
 // --- Gracz / inwentarz ---
-const player={x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,facing:1,tool:'basic',jumpCount:0,maxHp:100,hp:100,hpInvul:0,hurtFlashUntil:0,atkCd:0,xp:0,energy:0,maxEnergy:0};
+const player={x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,facing:1,tool:'basic',jumpCount:0,maxHp:100,hp:100,hpInvul:0,hurtFlashUntil:0,atkCd:0,xp:0,energy:0,maxEnergy:0,soot:0,_smokeTint:0};
 const HURT_FLASH_MS=520;
 const HERO_ENERGY_BASE=40;
 const HERO_ENERGY_PER_LEVEL=8;
@@ -1387,7 +1387,11 @@ if(typeof window!=='undefined' && window.addEventListener){
 		const d=(ev && ev.detail) || {};
 		const x=Number.isFinite(Number(d.x)) ? Number(d.x) : player.x;
 		const y=Number.isFinite(Number(d.y)) ? Number(d.y)-1.05 : player.y-player.h*1.05;
-		pushWorldNumber({kind:'xp',amount:d.amount,x,y,target:'xp:'+String(d.species||'mob'),special:!!d.special});
+		const amount=Math.max(0,Math.round(Number(d.amount)||0));
+		const mult=Number(d.challengeMult);
+		const risk=!!d.risk;
+		const text=amount>0 ? ('+'+amount+' XP'+(risk && Number.isFinite(mult) ? '  ×'+mult.toFixed(1) : '')) : '';
+		pushWorldNumber({kind:'xp',amount,text,x,y,target:'xp:'+String(d.species||'mob'),special:!!(d.special||risk)});
 	});
 	window.addEventListener('mm-skill-point-gained',ev=>{
 		const d=(ev && ev.detail) || {};
@@ -1496,6 +1500,19 @@ function spendHeroEnergy(amount){
 	applyUnderwaterEnergyUseDamage(n);
 	return true;
 }
+function spendContinuousHeroEnergy(amount){
+	const n=Math.max(0,Number(amount)||0);
+	if(n<=0) return 0;
+	applyHeroEnergyCapacity();
+	const before=Math.max(0,Number(player.energy)||0);
+	if(before<=0) return 0;
+	const spent=Math.min(before,n);
+	player.energy=Math.max(0,before-spent);
+	if(player.energy<0.0001) player.energy=0;
+	noteHeroEnergyDelta(-spent);
+	applyUnderwaterEnergyUseDamage(spent);
+	return spent;
+}
 function chargeHeroEnergy(amount, opts){
 	opts=opts||{};
 	const charged=addHeroEnergy(amount,opts);
@@ -1589,7 +1606,7 @@ function heroEnergyInfo(){
 	applyHeroEnergyCapacity();
 	return {energy:player.energy||0,displayEnergy:heroEnergyDisplayValue(),max:player.maxEnergy||heroEnergyCapacity(),base:HERO_ENERGY_BASE,perLevel:HERO_ENERGY_PER_LEVEL};
 }
-MM.heroEnergy={capacity:heroEnergyCapacity, info:heroEnergyInfo, add:addHeroEnergy, chargeExternal:chargeHeroEnergy, spend:spendHeroEnergy, canSpend:canSpendHeroEnergy, drain:drainHeroEnergy};
+MM.heroEnergy={capacity:heroEnergyCapacity, info:heroEnergyInfo, add:addHeroEnergy, chargeExternal:chargeHeroEnergy, spend:spendHeroEnergy, spendContinuous:spendContinuousHeroEnergy, canSpend:canSpendHeroEnergy, drain:drainHeroEnergy};
 function refreshHeroLampButton(){
 	const b=document.getElementById('lampBtn');
 	if(!b || !HERO_LAMP) return;
@@ -3037,6 +3054,7 @@ function snapshotPlayerState(){
 		maxHp:saveNumber(player.maxHp,2),
 		tool:player.tool,
 		energy:saveNumber(player.energy,2),
+		soot:saveNumber(Math.max(0,Math.min(1,Number(player.soot)||0)),3),
 		lamp:(HERO_LAMP && HERO_LAMP.snapshot) ? HERO_LAMP.snapshot() : {v:1,on:false}
 	};
 }
@@ -3048,6 +3066,8 @@ function restorePlayerState(src){
 	if(Number.isFinite(y)){ player.y=y; hasY=true; }
 	if(Number.isFinite(Number(src.xp))) player.xp=Math.max(0, Number(src.xp)|0);
 	if(Number.isFinite(Number(src.energy))) player.energy=Math.max(0, Number(src.energy));
+	player.soot=Number.isFinite(Number(src.soot)) ? Math.max(0,Math.min(1,Number(src.soot))) : 0;
+	player._smokeTint=0;
 	if(HERO_LAMP && HERO_LAMP.restore) HERO_LAMP.restore(src.lamp);
 	if(src.facing<0) player.facing=-1; else if(src.facing>0) player.facing=1;
 	heroLampButtonKey=''; refreshHeroLampButton();
@@ -4590,6 +4610,10 @@ function drawPlayer(){ if(drawDeathTravelFx()) return; const c=MM.customization|
 			 ctx.fillRect(bodyX,bodyY,bw,bh);
 			 ctx.strokeStyle='#4b3212'; ctx.lineWidth=2; ctx.strokeRect(bodyX,bodyY,bw,bh);
 		 }
+	if(SMOKE && SMOKE.drawSootMarks){
+		const soot=SMOKE.visualSoot?SMOKE.visualSoot(player):(Number(player.soot)||0);
+		SMOKE.drawSootMarks(ctx,bodyX+bw*0.5,bodyY+bh*0.5,bw*0.92,bh*0.88,soot,0x51a7);
+	}
 	if(waterPressureFx>0.03 || waterDamageFx>0.03){
 		const t=performance.now();
 		ctx.save();
@@ -13647,7 +13671,7 @@ function regenWorld(){
 	// Reset inventory/tools/hotbar
 	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.meteor=inv.tools.diamond=inv.tools.bedrock=false; inv.bedrockPickDurability=0; player.tool='basic'; hotbarIndex=0; // if god mode active, restore 100 stack after reset
 	// Fresh world = fresh hero arc: XP, level, skill points and milestones restart
-	player.xp=0; player.energy=0; if(HERO_LAMP && HERO_LAMP.reset) HERO_LAMP.reset(); heroLampButtonKey=''; refreshHeroLampButton(); if(PROGRESS && PROGRESS.reset) PROGRESS.reset(); applyProgressHp(); applyHeroEnergyCapacity(); clearRespawnTotems(); clearHealingShelters(); grave=null; saveGrave();
+	player.xp=0; player.energy=0; player.soot=0; player._smokeTint=0; if(HERO_LAMP && HERO_LAMP.reset) HERO_LAMP.reset(); heroLampButtonKey=''; refreshHeroLampButton(); if(PROGRESS && PROGRESS.reset) PROGRESS.reset(); applyProgressHp(); applyHeroEnergyCapacity(); clearRespawnTotems(); clearHealingShelters(); grave=null; saveGrave();
 	// Ensure all animals are removed when creating a new world and prevent immediate respawn
 	if(MOBS){ try{ if(MOBS.clearAll) MOBS.clearAll(); else if(MOBS.deserialize) MOBS.deserialize({v:3, list:[], aggro:{mode:'rel', m:{}}}); }catch(e){} }
 	if(godMode){ if(!_preGodInventory){ _preGodInventory={}; RESOURCE_KEYS.forEach(k=>{ _preGodInventory[k]=0; }); } RESOURCE_KEYS.forEach(k=>{ inv[k]=100; }); }
@@ -14635,6 +14659,7 @@ function runGameStep(dt,ts){
 	if(MECHS && MECHS.update) MECHS.update(dt, player, getTile, setTile, {controls:companionControlState(), godMode, heroEnergy:MM.heroEnergy});
 	if(GASES && GASES.update) GASES.update(dt, getTile, setTile, player);
 	if(SMOKE && SMOKE.update && (!SMOKE.count || SMOKE.count()>0)){ refreshSmokeDoorActors(); SMOKE.update(dt, getTile, smokeDynamicOpenAt); }
+	if(SMOKE && SMOKE.updateSoot) SMOKE.updateSoot(player,dt,{height:player.h});
 	if(PLANTS && PLANTS.update) PLANTS.update(getTile, setTile, dt);
 	if(PROGRESS && PROGRESS.update) PROGRESS.update(dt);
 updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(STEAM_MACHINES && STEAM_MACHINES.update) STEAM_MACHINES.update(dt, player, getTile, setTile); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); updateHeroLamp(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(ATOMIC_WINTER && ATOMIC_WINTER.update) ATOMIC_WINTER.update(dt, player, getTile, setTile); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(SKY_GUARDIAN && SKY_GUARDIAN.update) SKY_GUARDIAN.update(dt, player, getTile, setTile); if(CENTER_GUARDIAN && CENTER_GUARDIAN.update) CENTER_GUARDIAN.update(dt, player, getTile, setTile); if(STORY_PROGRESSION && STORY_PROGRESSION.update) STORY_PROGRESSION.update(dt, player, getTile, setTile); if(FINALE && FINALE.update) FINALE.update(dt); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, viewport:currentViewportState(), resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(ALIEN_RUINS && ALIEN_RUINS.update) ALIEN_RUINS.update(dt, player, getTile, setTile, {saveState, msg}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(TERRAIN_TRAPS && TERRAIN_TRAPS.update) TERRAIN_TRAPS.update(dt); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
@@ -14862,7 +14887,7 @@ window.regenWorldSameSeed = function(){ try{ if(MOBS && MOBS.clearAll) try{ MOBS
 	if(SMOKE && SMOKE.reset) SMOKE.reset();
 	// Reset fog-of-war as well
 	try{ if(FOG && FOG.importSeen) FOG.importSeen([]); if(FOG && FOG.setRevealAll) FOG.setRevealAll(false); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); }catch(e){}
-	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.meteor=inv.tools.diamond=inv.tools.bedrock=false; inv.bedrockPickDurability=0; player.tool='basic'; hotbarIndex=0; player.xp=0; player.energy=0; if(HERO_LAMP && HERO_LAMP.reset) HERO_LAMP.reset(); heroLampButtonKey=''; refreshHeroLampButton(); if(PROGRESS && PROGRESS.reset) PROGRESS.reset(); applyProgressHp(); applyHeroEnergyCapacity(); clearRespawnTotems(); clearHealingShelters(); grave=null; saveGrave();
+	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.meteor=inv.tools.diamond=inv.tools.bedrock=false; inv.bedrockPickDurability=0; player.tool='basic'; hotbarIndex=0; player.xp=0; player.energy=0; player.soot=0; player._smokeTint=0; if(HERO_LAMP && HERO_LAMP.reset) HERO_LAMP.reset(); heroLampButtonKey=''; refreshHeroLampButton(); if(PROGRESS && PROGRESS.reset) PROGRESS.reset(); applyProgressHp(); applyHeroEnergyCapacity(); clearRespawnTotems(); clearHealingShelters(); grave=null; saveGrave();
 	// Also remove all animals when regenerating with same seed and freeze spawns briefly
 	if(MOBS){ try{ if(MOBS.clearAll) MOBS.clearAll(); else if(MOBS.deserialize) MOBS.deserialize({v:3, list:[], aggro:{mode:'rel', m:{}}}); if(MOBS.freezeSpawns) MOBS.freezeSpawns(4000); }catch(e){} } if(godMode){ if(!_preGodInventory){ _preGodInventory={}; RESOURCE_KEYS.forEach(k=>{ _preGodInventory[k]=0; }); } RESOURCE_KEYS.forEach(k=>{ inv[k]=100; }); }
 	resetCraftingAvailability();

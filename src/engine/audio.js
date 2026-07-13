@@ -233,6 +233,12 @@ window.MM = window.MM || {};
                    tone({...o,type:'sine',f0:196,f1:196,dur:0.6,peak:0.05,attack:0.1,send:0.3}); },
     milestone:(o)=>{ [523,659,784].forEach((f,i)=>tone({...o,type:'sine',f0:f,f1:f,dur:0.22,peak:0.14,delay:i*0.11,send:0.28,priority:true})); },
     golden: (o)=>{ [880,1175,1568,2093,2637].forEach((f,i)=>tone({...o,type:'sine',f0:f,f1:f*1.02,dur:0.45,peak:0.07,delay:i*0.065,send:0.3})); noise({...o,dur:0.5,peak:0.025,fLo:3800,fHi:9000,ftype:'highpass'}); },
+    // Pavlovian jewel bell: a clean, repeated chime with a long resonant tail,
+    // deliberately unlike hits/chests so one lucky drop teaches the cue forever.
+    jewel:  (o)=>{ duck(0.68,0.55);
+                   [1047,2093,3136,4186].forEach((f,i)=>tone({...o,type:i===0?'triangle':'sine',f0:f,f1:f*1.006,dur:0.72-i*0.07,peak:i===0?0.15:0.075,delay:i*0.028,send:0.48,priority:true}));
+                   [1319,1760].forEach((f,i)=>tone({...o,type:'sine',f0:f,f1:f,dur:0.48,peak:0.08,delay:0.24+i*0.06,send:0.42,priority:true}));
+                   noise({...o,dur:0.34,peak:0.018,fLo:6500,fHi:12000,ftype:'highpass',delay:0.04,send:0.35,priority:true}); },
     masterstone:(o)=>{ [1760,2349,3136,4186].forEach((f,i)=>tone({...o,type:i%2?'triangle':'sine',f0:f,f1:f*1.08,dur:0.34,peak:0.09,delay:i*0.045,send:0.3,priority:true}));
                    tone({...o,type:'square',f0:3520,f1:1408,dur:0.22,peak:0.045,bend:0.18,delay:0.08}); noise({...o,dur:0.28,peak:0.028,fLo:5200,fHi:11000,ftype:'highpass'}); },
     ufo:    (o)=>{ flagDanger(); tone({...o,type:'sine',f0:520,f1:820,dur:0.9,peak:0.09,bend:0.45}); tone({...o,type:'sine',f0:820,f1:470,dur:0.9,peak:0.08,bend:0.5,delay:0.45}); }, // theremin wobble

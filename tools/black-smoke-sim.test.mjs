@@ -23,11 +23,39 @@ globalThis.document={
 const {T}=await import('../src/constants.js');
 const {smoke}=await import('../src/engine/smoke.js');
 assert.ok(smoke,'smoke module exports');
+assert.equal(typeof smoke.updateSoot,'function','smoke exposes lightweight creature soot accumulation');
+assert.equal(typeof smoke.drawSootMarks,'function','smoke exposes shared soot rendering');
 
 const tiles=new Map();
 const tileKey=(x,y)=>x+','+y;
 const getTile=(x,y)=>tiles.get(tileKey(x,y)) ?? T.STONE;
 const setTile=(x,y,t)=>tiles.set(tileKey(x,y),t);
+
+// Dense smoke leaves a persistent film on a moving body. The immediate smoke
+// tint reacts quickly, while the accumulated soot wears away rather than popping.
+smoke.reset();
+assert.equal(smoke.restore({v:1,list:[{x:10,y:10,d:1.2,age:0}]},()=>T.AIR),true,'soot fixture smoke restores');
+const smokyBody={x:10.5,y:10.5,h:0.95,vx:2.4,vy:0,soot:0,_smokeTint:0};
+for(let i=0;i<45;i++) smoke.updateSoot(smokyBody,0.1,{height:smokyBody.h});
+assert.ok(smokyBody.soot>0.75,'moving through dense smoke visibly accumulates soot');
+assert.ok(smokyBody._smokeTint>0.9,'current smoke produces an immediate body tint');
+const dirtyLevel=smokyBody.soot;
+smoke.reset();
+for(let i=0;i<100;i++) smoke.updateSoot(smokyBody,0.1,{height:smokyBody.h});
+assert.ok(smokyBody.soot>0&&smokyBody.soot<dirtyLevel,'soot fades gradually after leaving smoke');
+for(let i=0;i<800;i++) smoke.updateSoot(smokyBody,0.1,{height:smokyBody.h});
+assert.equal(smokyBody.soot,0,'soot eventually wears off completely');
+assert.ok(smokyBody._smokeTint<0.001,'immediate tint clears quickly outside smoke');
+let sootMarks=0;
+const sootCtx={save(){},restore(){},beginPath(){},ellipse(){sootMarks++;},fill(){},fillStyle:'',globalAlpha:1,globalCompositeOperation:'source-over'};
+assert.equal(smoke.drawSootMarks(sootCtx,10,10,12,18,0.8,42),true,'dirty body draws soot marks');
+assert.equal(sootMarks,6,'soot uses one glaze and a fixed bounded mark count per creature');
+assert.equal(smoke.drawSootMarks(sootCtx,10,10,12,18,0,42),false,'clean body skips soot draw work');
+const proceduralCompanion={x:10.5,y:10.5,vx:0,vy:0,genome:{soot:8}};
+smoke.restore({v:1,list:[{x:10,y:10,d:1.2,age:0}]},()=>T.AIR);
+smoke.updateSoot(proceduralCompanion,0.1,{field:'_sootFilm'});
+assert.ok(proceduralCompanion._sootFilm>0,'alternate film field supports procedural companions');
+assert.equal(proceduralCompanion.genome.soot,8,'environmental soot does not overwrite genome soot markings');
 
 // A tall underground cavity is not a vent merely because its roof is outside
 // the short local probe. Above ground, the extended probe still finds tall
