@@ -258,8 +258,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
       level:Math.max(1,Math.min(15,Math.round(level))),
       color:material.glow,
       material:material.id,
-      radius:1.05+level*0.085+(action.active?0.22:0),
-      intensity:clamp01(0.24+(level-5)*0.065+(action.active?0.12:0)),
+      radius:0.70+level*0.055+(action.active?0.16:0),
+      intensity:clamp01(0.14+(level-5)*0.035+(action.active?0.08:0)),
       underwater:sub>0.45,
       facing,
       action:action.active?action.kind:''
@@ -279,8 +279,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const x=light.x*TILE,y=light.y*TILE,r=light.radius*TILE*(light.underwater?1.18:1)*pulse;
     ctx.save(); ctx.globalCompositeOperation='lighter';
     const g=ctx.createRadialGradient(x,y,0,x,y,r);
-    g.addColorStop(0,weaponLightRgba(light.color,light.intensity*(light.underwater?0.22:0.30)));
-    g.addColorStop(0.38,weaponLightRgba(light.color,light.intensity*(light.underwater?0.105:0.13)));
+    g.addColorStop(0,weaponLightRgba(light.color,light.intensity*(light.underwater?0.18:0.24)));
+    g.addColorStop(0.38,weaponLightRgba(light.color,light.intensity*(light.underwater?0.075:0.09)));
     g.addColorStop(1,weaponLightRgba(light.color,0));
     ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
     if(light.underwater){
@@ -302,8 +302,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const r=Math.max(w,h)*0.78;
     ctx.save(); ctx.globalCompositeOperation='lighter';
     const g=ctx.createRadialGradient(handX,handY,0,handX,handY,r);
-    g.addColorStop(0,weaponLightRgba(light.color,light.intensity*0.22));
-    g.addColorStop(0.46,weaponLightRgba(light.color,light.intensity*0.075));
+    g.addColorStop(0,weaponLightRgba(light.color,light.intensity*0.16));
+    g.addColorStop(0.46,weaponLightRgba(light.color,light.intensity*0.05));
     g.addColorStop(1,weaponLightRgba(light.color,0));
     ctx.fillStyle=g; ctx.beginPath();
     ctx.arc(handX,handY,r,0,Math.PI*2); ctx.fill(); ctx.restore();
@@ -317,36 +317,36 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(/dzid|w[łl][oó]cz|spear/.test(name) || Number(it&&it.fireRange)>1) return 'spear';
     return 'sword';
   }
+  function heldPrestigeFocus(it,facing){
+    const type=weaponType(it);
+    if(type==='melee'){
+      const form=meleeVisualForm(it);
+      if(form==='trident') return {x:0,y:-13};
+      if(form==='spear') return {x:0,y:-14};
+      if(form==='axe') return {x:0,y:-8.5};
+      if(form==='club') return {x:0,y:-10};
+      return {x:0,y:-9.5};
+    }
+    if(type==='bow') return {x:0,y:-2};
+    if(type==='harpoon') return {x:facing*7,y:-3};
+    if(type==='thrown') return {x:0,y:0};
+    return {x:facing*3.5,y:-2.6};
+  }
   function drawHeldPrestigeBack(ctx,TILE,it,facing){
     const rank=weaponPrestigeRank(it);
     if(rank<2) return;
     const now=nowMs()*0.001, seed=weaponVisualSeed(it)*Math.PI*2;
-    const s=Math.max(0.55,TILE/20), pulse=0.82+Math.sin(now*3.2+seed)*0.18;
-    const col=weaponPrestigeColor(it), cx=facing*3.2*s, cy=-5.2*s;
-    ctx.save();
-    ctx.globalCompositeOperation='lighter';
-    ctx.shadowColor=col; ctx.shadowBlur=(rank===4?15:rank===3?10:6)*s;
-    ctx.globalAlpha=(rank===4?0.13:rank===3?0.09:0.055)*pulse;
-    ctx.fillStyle=col;
-    ctx.beginPath(); ctx.arc(cx,cy,(rank===4?13:rank===3?10:7)*s,0,Math.PI*2); ctx.fill();
-    ctx.globalAlpha=(rank===4?0.48:rank===3?0.32:0.18)*pulse;
-    ctx.strokeStyle=col; ctx.lineWidth=(rank===4?1.7:1.1)*s;
-    const rings=rank===4?3:rank===3?2:1;
-    for(let i=0;i<rings;i++){
-      const r=(6.5+i*3.1+Math.sin(now*(1.7+i*0.35)+seed+i)*0.8)*s;
-      const spin=now*(0.7+i*0.23)*(i%2?-1:1)+seed;
-      ctx.beginPath(); ctx.arc(cx,cy,r,spin,spin+Math.PI*(0.72+i*0.16)); ctx.stroke();
-    }
-    if(rank>=3){
-      const motes=rank===4?5:3;
-      ctx.fillStyle=rank===4?'#ffffff':col;
-      for(let i=0;i<motes;i++){
-        const a=seed+i*Math.PI*2/motes+now*(i%2?1.25:-0.92);
-        const r=(8.5+(i%2)*3.2)*s;
-        ctx.globalAlpha=(0.45+0.35*Math.sin(now*4+i+seed))*pulse;
-        ctx.beginPath(); ctx.arc(cx+Math.cos(a)*r,cy+Math.sin(a)*r,(rank===4?1.25:0.85)*s,0,Math.PI*2); ctx.fill();
-      }
-    }
+    const s=Math.max(0.55,TILE/20), pulse=0.90+Math.sin(now*2.4+seed)*0.10;
+    const col=weaponPrestigeColor(it), focus=heldPrestigeFocus(it,facing);
+    const cx=focus.x*s, cy=focus.y*s, r=(rank===4?6.4:rank===3?5.6:4.8)*s;
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    ctx.shadowColor=col; ctx.shadowBlur=(rank===4?4.5:rank===3?3.2:2.2)*s;
+    const glow=ctx.createRadialGradient(cx,cy,0,cx,cy,r);
+    glow.addColorStop(0,weaponLightRgba(col,rank===4?0.085:rank===3?0.065:0.045));
+    glow.addColorStop(0.46,weaponLightRgba(col,rank===4?0.040:rank===3?0.030:0.020));
+    glow.addColorStop(1,weaponLightRgba(col,0));
+    ctx.globalAlpha=pulse; ctx.fillStyle=glow;
+    ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.fill();
     ctx.restore();
   }
   function drawHeldPrestigeFront(ctx,TILE,it,facing){
@@ -354,16 +354,17 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(rank<2) return;
     const now=nowMs()*0.001, seed=weaponVisualSeed(it)*Math.PI*2;
     const s=Math.max(0.55,TILE/20), col=weaponPrestigeColor(it);
-    const glint=0.55+0.45*Math.sin(now*(rank===4?6.5:4.2)+seed);
-    const gx=facing*(5.5+glint*4)*s, gy=(-6.5-glint*4)*s;
+    const glint=0.72+0.28*Math.sin(now*(rank===4?4.8:3.6)+seed);
+    const focus=heldPrestigeFocus(it,facing), gx=focus.x*s, gy=focus.y*s;
     ctx.save(); ctx.globalCompositeOperation='lighter';
-    ctx.globalAlpha=(rank===4?0.95:rank===3?0.72:0.42)*glint;
-    ctx.strokeStyle=rank===4?'#ffffff':col; ctx.shadowColor=col; ctx.shadowBlur=(rank===4?10:5)*s;
-    ctx.lineWidth=Math.max(0.8,s*(rank===4?1.25:0.9));
-    ctx.beginPath(); ctx.moveTo(gx-3*s,gy); ctx.lineTo(gx+3*s,gy); ctx.moveTo(gx,gy-3*s); ctx.lineTo(gx,gy+3*s); ctx.stroke();
+    ctx.globalAlpha=(rank===4?0.38:rank===3?0.30:0.22)*glint;
+    ctx.fillStyle=rank===4?'#ffffff':col; ctx.shadowColor=col; ctx.shadowBlur=(rank===4?4:rank===3?3:2)*s;
+    ctx.beginPath(); ctx.arc(gx,gy,(rank===4?0.72:rank===3?0.60:0.48)*s,0,Math.PI*2); ctx.fill();
     if(rank>=3){
-      ctx.globalAlpha=rank===4?0.78:0.48; ctx.fillStyle=col;
-      ctx.beginPath(); ctx.arc(facing*1.5*s,-4.2*s,(rank===4?1.65:1.15)*s,0,Math.PI*2); ctx.fill();
+      const arm=(rank===4?1.6:1.15)*s;
+      ctx.globalAlpha=(rank===4?0.30:0.22)*glint; ctx.strokeStyle=col;
+      ctx.lineWidth=Math.max(0.6,(rank===4?0.80:0.65)*s);
+      ctx.beginPath(); ctx.moveTo(gx-arm,gy); ctx.lineTo(gx+arm,gy); ctx.moveTo(gx,gy-arm); ctx.lineTo(gx,gy+arm); ctx.stroke();
     }
     ctx.restore();
   }
@@ -3046,6 +3047,24 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const s=Math.max(0.7,TILE/20), mat=weaponMaterialProfile(it);
     const col=rank>=2?weaponPrestigeColor(it):mat.glow;
     const full=bowCharge.active?bowRatio>=0.999:ultRatio>=0.999;
+    if(!bowCharge.active){
+      // A ready high-tier technique should read on the item, not as a second
+      // orbiting aura around the hero. Keep one jewel pulse at the weapon focus.
+      const focus=heldPrestigeFocus(it,facing), cx=focus.x*s, cy=focus.y*s;
+      const pulse=full?0.82+0.18*Math.sin(now*3.8+seed):1;
+      ctx.save(); ctx.globalCompositeOperation='lighter';
+      ctx.fillStyle=full?'#ffffff':col; ctx.strokeStyle=col; ctx.shadowColor=col;
+      ctx.shadowBlur=(2.2+charge*2.2)*s;
+      ctx.globalAlpha=(0.10+charge*0.18)*pulse;
+      ctx.beginPath(); ctx.arc(cx,cy,(0.46+charge*0.42)*s,0,Math.PI*2); ctx.fill();
+      if(full){
+        const d=1.7*s;
+        ctx.globalAlpha=0.24*pulse; ctx.lineWidth=Math.max(0.6,0.7*s);
+        ctx.beginPath(); ctx.moveTo(cx,cy-d); ctx.lineTo(cx+d,cy); ctx.lineTo(cx,cy+d); ctx.lineTo(cx-d,cy); ctx.closePath(); ctx.stroke();
+      }
+      ctx.restore();
+      return;
+    }
     const cx=facing*(weaponType(it)==='bow'?2.5:3.8)*s, cy=-3.2*s;
     const pulse=full?0.78+0.22*Math.sin(now*4.2+seed):1;
     ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.strokeStyle=col; ctx.fillStyle=col; ctx.shadowColor=col;
@@ -3145,11 +3164,11 @@ import { damageBlastCreatures } from './explosion_damage.js';
     ctx.translate(player.x*TILE + facing*(bw*0.5+1), player.y*TILE + bh*0.10);
     ctx.translate(-facing*action.kick*(1.2+action.power*1.5),idleBob+action.kick*0.45);
     ctx.rotate(facing*(idleSway-action.kick*0.045));
-    drawHeldPrestigeBack(ctx,TILE,it,facing);
     if(type==='melee'){
       const prog= swing.t>0? 1-swing.t/swing.dur : 0;
       const ang= facing*(-0.5 + (swing.t>0? (-1.3+2.1*prog) : 0));
       ctx.rotate(ang);
+      drawHeldPrestigeBack(ctx,TILE,it,facing);
       const form=meleeVisualForm(it), prestige=weaponPrestigeRank(it);
       const metal=it.meleeEffect==='panic'?'#75efff':it.meleeEffect==='stun'?'#aab0b8':material.edge;
       if(form==='trident'){
@@ -3200,6 +3219,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
         }
       }
     } else if(type==='bow'){
+      drawHeldPrestigeBack(ctx,TILE,it,facing);
       const draw=bowCharge.active ? bowChargeRatio() : 0;
       const full=draw>=0.999;
       const pulse=full ? (0.72+0.28*Math.sin(nowMs()*0.018)) : 0;
@@ -3263,6 +3283,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
         ctx.closePath(); ctx.fill();
       }
     } else if(type==='harpoon'){
+      drawHeldPrestigeBack(ctx,TILE,it,facing);
       const prestige=weaponPrestigeRank(it);
       ctx.fillStyle=material.dark; ctx.fillRect(facing===1?-4:-9,-5,13,4);
       ctx.fillStyle=col||material.accent; ctx.fillRect(facing===1?5:-9,-4.5,4,3);
@@ -3283,6 +3304,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
       const spec=heldThrownSpec;
       const bob=Math.sin(nowMs()*0.006)*0.8;
       ctx.translate(facing*1.5, -4+bob);
+      drawHeldPrestigeBack(ctx,TILE,it,facing);
       if(spec && spec.visual==='sand'){
         for(let g=0;g<6;g++){
           const sz=0.8+(g%2)*0.35;
@@ -3310,6 +3332,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
       }
     } else {
       // stream device: body + nozzle tinted by class, with a faint idle wisp
+      drawHeldPrestigeBack(ctx,TILE,it,facing);
       const tint= type==='flame'? '#b35324' : type==='hose'? '#2c7ef8' : type==='electric'? '#53e9ff' : '#4d9230';
       const prestige=weaponPrestigeRank(it);
       ctx.fillStyle=material.dark; ctx.fillRect(facing===1?-2:-4.5, -4, 6.5, 3);

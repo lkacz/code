@@ -1,7 +1,8 @@
-import { T } from '../constants.js';
+import { T, INFO } from '../constants.js';
 import {
   isChairTile,
   isDoorTile,
+  isFurnitureTile,
   isGasTile,
   isPlayerBuiltMaterial,
   isTrapdoorTile
@@ -21,6 +22,11 @@ export const HOUSE_MAX_RADIUS_Y = 24;
 // cannot stack forever.
 export const HOUSE_CHAIR_COMFORT_BONUS = 0.5;
 export const HOUSE_CHAIR_COMFORT_MAX_CHAIRS = 2;
+export const HOUSE_COMFORT_MULT_CAP = 3;
+// Repeating one design still helps, but at 55% of the previous copy. This
+// closes the cheap-stool spam route while making a varied, curated home the
+// fastest way to approach the global comfort cap.
+export const HOUSE_FURNISHING_DUPLICATE_DECAY = 0.55;
 
 const DIRS = Object.freeze([[1,0],[-1,0],[0,1],[0,-1]]);
 const LIGHT_SOURCE_TILES = new Set([T.TORCH, T.LAVA, T.MOTHER_LAVA, T.ALTAR, T.GLOWSHROOM]);
@@ -50,7 +56,7 @@ function safeBackground(opts,x,y){
 export function isHouseInteriorTile(t){
   return t===T.AIR || t===T.TORCH || t===T.LAVA || t===T.MOTHER_LAVA ||
     t===T.GLOWSHROOM || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE ||
-    t===T.LADDER || t===T.BEDROCK_LADDER || isChairTile(t) || isGasTile(t);
+    t===T.LADDER || t===T.BEDROCK_LADDER || isFurnitureTile(t) || isGasTile(t);
 }
 
 export function isHouseSealTile(t){
@@ -58,7 +64,7 @@ export function isHouseSealTile(t){
 }
 
 export function isHouseLightSourceTile(t,x,y,opts){
-  if(LIGHT_SOURCE_TILES.has(t)) return true;
+  if(LIGHT_SOURCE_TILES.has(t) || Number(INFO[t] && INFO[t].lightLevel)>0) return true;
   if(opts && typeof opts.isBurning==='function'){
     try{ if(opts.isBurning(Math.floor(x),Math.floor(y))) return true; }catch(e){}
   }
@@ -98,14 +104,33 @@ export function houseHealRateFracForSize(totalCells){
   return HOUSE_HEAL_RATE_MIN_FRAC + (HOUSE_HEAL_RATE_MAX_FRAC-HOUSE_HEAL_RATE_MIN_FRAC)*t;
 }
 
-export function houseComfortMult(chairs){
+export function houseComfortMult(chairs,furnishingBonus=0){
   const n=Math.max(0,Math.min(HOUSE_CHAIR_COMFORT_MAX_CHAIRS,Number(chairs)||0));
-  return 1+HOUSE_CHAIR_COMFORT_BONUS*n;
+  // Preserve the established chair ladder exactly (x1 / x1.5 / x2), then let
+  // every other furnishing fill the remaining headroom with diminishing returns.
+  // The exponential curve approaches x3 without making any later item worthless.
+  const base=1+HOUSE_CHAIR_COMFORT_BONUS*n;
+  const raw=Math.max(0,Number(furnishingBonus)||0);
+  const head=Math.max(0,HOUSE_COMFORT_MULT_CAP-base);
+  if(raw<=0 || head<=0) return Math.min(HOUSE_COMFORT_MULT_CAP,base);
+  return Math.min(HOUSE_COMFORT_MULT_CAP,base+head*(1-Math.exp(-raw/head)));
+}
+
+export function furnishingBonusForCopies(unitBonus,copies,decay=HOUSE_FURNISHING_DUPLICATE_DECAY){
+  const unit=Math.max(0,Number(unitBonus)||0);
+  const count=Math.max(0,Math.floor(Number(copies)||0));
+  const ratio=Math.max(0,Math.min(0.99,Number(decay)||0));
+  if(!unit || !count) return 0;
+  if(!ratio) return unit;
+  return unit*(1-Math.pow(ratio,count))/(1-ratio);
 }
 
 export function houseHealRateFrac(status){
   if(!status || !status.ok) return 0;
-  return houseHealRateFracForSize(status.totalCells || status.cells || 0)*houseComfortMult(status.chairs);
+  const mult=Number.isFinite(status.comfortMult)
+    ? status.comfortMult
+    : houseComfortMult(status.chairs,status.rawFurnishingBonus);
+  return houseHealRateFracForSize(status.totalCells || status.cells || 0)*mult;
 }
 
 function playerSampleTiles(player){
@@ -152,6 +177,8 @@ export function analyzeHouseAt(player,getTile,opts={}){
   const seen=new Set([key(start.x,start.y)]);
   const sealCells=new Set();
   let qi=0, light=false, crafted=false, seals=0, missingBackwall=null, chairs=0;
+  let furnishingCount=0, rawFurnishingBonus=0;
+  const furnishingCounts=new Map();
   let left=start.x, right=start.x, top=start.y, bottom=start.y;
 
   while(qi<q.length){
@@ -162,7 +189,12 @@ export function analyzeHouseAt(player,getTile,opts={}){
 
     const t=safeTile(getTile,c.x,c.y);
     if(!isHouseInteriorTile(t)) return {ok:false, reason:'blocked_start'};
-    if(isChairTile(t)){ chairs++; crafted=true; } // furniture: resting comfort + a clear built signal
+    if(isFurnitureTile(t)){
+      furnishingCount++;
+      furnishingCounts.set(t,(furnishingCounts.get(t)||0)+1);
+      if(isChairTile(t)) chairs++;
+      crafted=true;
+    }
     if(isHouseLightSourceTile(t,c.x,c.y,opts) || noteAdjacentLight(c.x,c.y,getTile,opts)) light=true;
     const bg=safeBackground(opts,c.x,c.y);
     if(isPlayerBuiltMaterial(bg)) crafted=true;
@@ -187,12 +219,34 @@ export function analyzeHouseAt(player,getTile,opts={}){
 
   const footprintCells=(right-left+3)*(bottom-top+3);
   const totalCells=countHouseSizeCells(seen,sealCells,getTile);
-  const healRateFrac=houseHealRateFracForSize(totalCells)*houseComfortMult(chairs);
+  rawFurnishingBonus=[...furnishingCounts.entries()].reduce((sum,[tile,count])=>{
+    if(isChairTile(tile)) return sum;
+    const unit=Math.max(0,Number(INFO[tile] && INFO[tile].homeRegenBonus)||0);
+    return sum+furnishingBonusForCopies(unit,count);
+  },0);
+  const comfortMult=houseComfortMult(chairs,rawFurnishingBonus);
+  const healRateFrac=houseHealRateFracForSize(totalCells)*comfortMult;
   if(!seals) return {ok:false, reason:'unsealed', cells:q.length};
   if(missingBackwall) return {ok:false, reason:'no_background', x:missingBackwall.x, y:missingBackwall.y, cells:q.length, seals};
   if(!crafted) return {ok:false, reason:'not_built', cells:q.length, seals};
   if(!light) return {ok:false, reason:'dark', cells:q.length, seals};
-  return {ok:true, reason:'house', cells:q.length, sealCells:sealCells.size, footprintCells, totalCells, healRateFrac, chairs, comfortMult:houseComfortMult(chairs), seals, lit:light, built:crafted, bounds:{left,right,top,bottom}};
+  const furnishingBreakdown=[...furnishingCounts.entries()].map(([tile,count])=>{
+    const chair=isChairTile(tile);
+    const unit=chair ? HOUSE_CHAIR_COMFORT_BONUS : Math.max(0,Number(INFO[tile] && INFO[tile].homeRegenBonus)||0);
+    const bonus=chair
+      ? unit*Math.min(count,HOUSE_CHAIR_COMFORT_MAX_CHAIRS)
+      : furnishingBonusForCopies(unit,count);
+    return {tile,count,chair,unitBonus:unit,bonus};
+  }).sort((a,b)=>b.bonus-a.bonus || a.tile-b.tile);
+  return {
+    ok:true, reason:'house', cells:q.length, sealCells:sealCells.size, footprintCells, totalCells,
+    healRateFrac, chairs, furnishingCount, furnishingTypes:furnishingCounts.size,
+    rawFurnishingBonus, furnishingBreakdown,
+    comfortMult, comfortCap:HOUSE_COMFORT_MULT_CAP,
+    comfortProgress:Math.max(0,Math.min(1,(comfortMult-1)/(HOUSE_COMFORT_MULT_CAP-1))),
+    comfortCapReached:comfortMult>=HOUSE_COMFORT_MULT_CAP-0.02,
+    seals, lit:light, built:crafted, bounds:{left,right,top,bottom}
+  };
 }
 
 export function createHouseHealingState(){
@@ -234,6 +288,7 @@ export const houseHealing = {
   healRateFrac:houseHealRateFrac,
   healRateFracForSize:houseHealRateFracForSize,
   comfortMult:houseComfortMult,
+  furnishingBonusForCopies,
   update:updateHouseHealing,
   config:Object.freeze({
     healRateFrac:HOUSE_HEAL_RATE_FRAC,
@@ -243,6 +298,8 @@ export const houseHealing = {
     healRateFullSize:HOUSE_HEAL_RATE_FULL_SIZE,
     chairComfortBonus:HOUSE_CHAIR_COMFORT_BONUS,
     chairComfortMaxChairs:HOUSE_CHAIR_COMFORT_MAX_CHAIRS,
+    comfortMultCap:HOUSE_COMFORT_MULT_CAP,
+    furnishingDuplicateDecay:HOUSE_FURNISHING_DUPLICATE_DECAY,
     scanInterval:HOUSE_SCAN_INTERVAL,
     maxCells:HOUSE_MAX_CELLS,
     maxRadiusX:HOUSE_MAX_RADIUS_X,

@@ -13,6 +13,11 @@ if(!pausePanel || pausePanel.hidden) return fail('player menu did not open');
 if(document.activeElement !== pausePanel.querySelector('.pauseResume'))
   return fail('opening the menu did not move focus to Resume');
 if(!pausePanel.querySelector('.pauseFullscreenBtn')) return fail('fullscreen control is missing');
+const fullscreenButton = document.getElementById('fullscreenBtn');
+if(!MM.fullscreen || typeof MM.fullscreen.toggle!=='function' || typeof MM.fullscreen.active!=='function')
+  return fail('fullscreen integration API is missing');
+if(!fullscreenButton || fullscreenButton.getAttribute('aria-pressed')!==String(MM.fullscreen.active()))
+  return fail('fullscreen HUD control is missing or out of sync');
 if(!pausePanel.querySelector('#newWorldSeedInput')) return fail('new-world seed control is missing');
 if(!pausePanel.querySelector('.pauseDanger')) return fail('new-world action is missing');
 if(!pausePanel.querySelector('#playerSaveMenu')) return fail('save controls are missing');

@@ -522,6 +522,7 @@ assert.equal(isWindPorousTile(T.STONE), false, 'wind treats solid terrain as clo
 assert.equal(isSmokePorousTile(T.AIR), true, 'smoke moves through air');
 assert.equal(isSmokePorousTile(T.POISON_GAS), true, 'smoke can overlap an existing gas');
 assert.equal(isSmokePorousTile(T.LADDER), true, 'smoke moves around thin passable fixtures');
+assert.equal(isSmokePorousTile(T.CHIMNEY), true, 'smoke moves through the open flue inside a solid chimney');
 assert.equal(isSmokePorousTile(T.WATER), false, 'smoke does not occupy liquid water');
 assert.equal(isSmokePorousTile(T.LAVA), false, 'smoke does not occupy molten tiles');
 assert.equal(isSmokePorousTile(T.WOOD_DOOR), false, 'closed doors contain smoke');

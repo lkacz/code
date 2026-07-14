@@ -77,24 +77,13 @@ import './inventory.js';
   function drawWeaponPrestigeAura(ctx,item,x,y,radius){
     const rank=prestigeRank(item); if(rank<2) return;
     const col=TIER_COLORS[item.tier]||(rank===4?'#65f4ff':rank===3?'#ffd45c':'#bd75ff');
-    const now=performance.now()*0.001, pulse=0.82+Math.sin(now*3.1)*0.18;
-    ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.shadowColor=col; ctx.shadowBlur=rank===4?14:rank===3?9:5;
-    ctx.fillStyle=col; ctx.globalAlpha=(rank===4?0.12:rank===3?0.08:0.045)*pulse;
-    ctx.beginPath(); ctx.arc(x,y,radius*(rank===4?1.08:0.88),0,Math.PI*2); ctx.fill();
-    ctx.strokeStyle=col; ctx.lineWidth=rank===4?1.5:1; ctx.globalAlpha=(rank===4?0.52:rank===3?0.34:0.20)*pulse;
-    const rings=rank===4?3:rank===3?2:1;
-    for(let i=0;i<rings;i++){
-      const spin=now*(0.65+i*0.22)*(i%2?-1:1)+i*2.1;
-      ctx.beginPath(); ctx.arc(x,y,radius*(0.55+i*0.17),spin,spin+Math.PI*(0.72+i*0.18)); ctx.stroke();
-    }
-    if(rank>=3){
-      ctx.fillStyle=rank===4?'#ffffff':col;
-      for(let i=0;i<(rank===4?4:2);i++){
-        const a=now*(i%2?1.1:-0.85)+i*Math.PI/2;
-        ctx.globalAlpha=0.55+Math.sin(now*4+i)*0.2;
-        ctx.beginPath(); ctx.arc(x+Math.cos(a)*radius*0.72,y+Math.sin(a)*radius*0.72,rank===4?1.25:0.9,0,Math.PI*2); ctx.fill();
-      }
-    }
+    const now=performance.now()*0.001, pulse=0.90+Math.sin(now*2.4)*0.10;
+    const r=radius*(rank===4?0.62:rank===3?0.54:0.46);
+    ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.shadowColor=col; ctx.shadowBlur=rank===4?5:rank===3?3.5:2;
+    const glow=ctx.createRadialGradient(x,y,0,x,y,r);
+    glow.addColorStop(0,col); glow.addColorStop(0.48,col); glow.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=glow; ctx.globalAlpha=(rank===4?0.075:rank===3?0.055:0.038)*pulse;
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
     ctx.restore();
   }
 

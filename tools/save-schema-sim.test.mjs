@@ -277,9 +277,14 @@ assert.match(src, /function filteredCraftRecipes\(\)/, 'crafting filters recipes
 assert.match(src, /function renderCraftPanel\(\)/, 'crafting renders through the recipe-book panel');
 assert.match(src, /search\.addEventListener\('input',\(\)=>\{ craftQuery=search\.value\|\|''; renderCraftPanel\(\); \}\)/, 'crafting search updates the visible recipe list');
 assert.match(src, /respawnTotems: timedSavePart\('respawnTotems',\(\)=>snapshotRespawnTotems\(\),perf\)/, 'save file persists placed respawn totem indexes');
-assert.match(src, /restoreRespawnTotems\(data\.respawnTotems \|\| \{seed:WORLDGEN\.worldSeed,list:respawnTotems\}\)/, 'load path restores respawn totem indexes after terrain chunks');
 assert.match(src, /healingShelters: timedSavePart\('healingShelters',\(\)=>snapshotHealingShelters\(\),perf\)/, 'save file persists healing shelter respawn indexes');
-assert.match(src, /restoreHealingShelters\(data\.healingShelters \|\| \{seed:WORLDGEN\.worldSeed,list:healingShelters\}\)/, 'load path restores healing shelter indexes after house backwalls');
+assert.match(src, /grave: timedSavePart\('grave',\(\)=>snapshotGrave\(\),perf\)/, 'save file scopes unrecovered grave resources to the saved world snapshot');
+assert.match(src, /const sameLiveSeed=incomingSeed===WORLDGEN\.worldSeed;[\s\S]*respawnTotems:!hasOwn\('respawnTotems'\) && sameLiveSeed \? snapshotRespawnTotems\(\) : null,[\s\S]*healingShelters:!hasOwn\('healingShelters'\) && sameLiveSeed \? snapshotHealingShelters\(\) : null,[\s\S]*grave:!hasOwn\('grave'\) && sameLiveSeed \? snapshotGrave\(\) : null/, 'sparse legacy saves may migrate side-store markers only from the exact incoming seed');
+assert.match(src, /restoreRespawnTotems\(hasOwn\('respawnTotems'\) \? data\.respawnTotems : \(legacyWorldMarkers\.respawnTotems \|\| \{seed:WORLDGEN\.worldSeed,list:\[\]\}\)\)/, 'totem restore prefers snapshot data and otherwise uses the guarded legacy migration');
+assert.match(src, /restoreHealingShelters\(hasOwn\('healingShelters'\) \? data\.healingShelters : \(legacyWorldMarkers\.healingShelters \|\| \{seed:WORLDGEN\.worldSeed,list:\[\]\}\)\)/, 'shelter restore prefers snapshot data and otherwise uses the guarded legacy migration');
+assert.match(src, /function restoreGrave\(src\)[\s\S]*getTile\(grave\.x,grave\.y\)!==T\.GRAVE[\s\S]*saveGrave\(\)/, 'a restored grave must still exist in the loaded terrain before its resources survive');
+assert.match(src, /restoreGrave\(hasOwn\('grave'\) \? data\.grave : legacyWorldMarkers\.grave\)/, 'grave restore uses snapshot state with same-seed legacy compatibility');
+assert.match(src, /function dropWorldBoundMarkers\(\)[\s\S]*respawnTotems=\[\];[\s\S]*healingShelters=\[\];[\s\S]*grave=null;/, 'snapshot replacement drops every side-store world marker before restore');
 
 const sameSeedRegen = src.match(/window\.regenWorldSameSeed = function\(\)\{ try\{([\s\S]*?)window\.addEventListener\('mm-regen-same-seed'/)?.[1] || '';
 assert.match(sameSeedRegen, /player\.xp=0/, 'same-seed regeneration resets hero XP');

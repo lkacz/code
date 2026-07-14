@@ -540,6 +540,26 @@ assert.equal(played.length, 0, 'restored drops do not replay the fanfare');
   // LEGENDARY chest never dips below epic
   assert.equal(MM.chests.rollChestItemTier(() => 0.999, 'common'), 'legendary', 'a plain wooden chest can pay out a legend');
   assert.equal(MM.chests.rollChestItemTier(() => 0.0, 'legendary'), 'epic', 'a legendary chest never rolls below epic');
+
+  // Furnishings use a separate, restrained route: lower chests never emit one,
+  // while a deterministic legendary seed eventually produces a physical,
+  // visibly legendary placeable resource.
+  drops.reset();
+  const low=MM.chests._releaseLoot('rare',1,88.5,SURF-1);
+  assert.equal(low.furnishing,null,'rare chest does not drop a catalogue furnishing');
+  let furnishingResult=null;
+  for(let seed=2;seed<200 && !furnishingResult;seed++){
+    drops.reset();
+    const rolled=MM.chests._releaseLoot('legendary',seed,88.5,SURF-1);
+    if(rolled.furnishing) furnishingResult=rolled;
+  }
+  assert.ok(furnishingResult && furnishingResult.furnishing.tier>=3,
+    'legendary chest can roll an advanced furnishing within deterministic seeds');
+  const furnishingDrop=drops._debug.list.find(d=>d.kind==='resource' && d.res===furnishingResult.furnishing.key);
+  assert.ok(furnishingDrop && furnishingDrop.source==='chest' && furnishingDrop.tier==='legendary',
+    'the chest furnishing is a physical legendary resource drop');
+  assert.equal(furnishingResult.furnishingSpawned,true,'chest result reports physical furnishing emission');
+  drops.reset();
 }
 
 // --- extended rarity ladder: uncommon/legendary ride the same drop machinery -------

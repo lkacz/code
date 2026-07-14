@@ -22,6 +22,7 @@ const { T, CHUNK_W } = await import('../src/constants.js');
 const { fallingSolids: FALLING } = await import('../src/engine/falling.js');
 const { npcRegistry } = await import('../src/engine/npc_system.js');
 const { generatedNpcs } = await import('../src/engine/generated_npcs.js');
+const { getByTile, furnishingTierAtDistance } = await import('../src/engine/furnishings.js');
 
 const SURFACE = 46;
 let tiles = new Map();
@@ -94,6 +95,14 @@ for(const biome of BIOMES){
     assert.ok(apex && apex.t===L.pal.roof && apex.structural, 'roof apex contract cell exists');
     assert.ok(cells.filter(c=>c.role==='window').length>=2, 'house has at least two windows');
     assert.ok(cells.some(c=>c.role==='light' && c.t===T.TORCH), 'house is lit');
+    const furnishings=cells.filter(c=>c.role==='furnishing');
+    const expectedFurnishingTier=furnishingTierAtDistance(cand.x);
+    assert.ok(furnishings.length>=1,'every NPC house showcases at least one discoverable furnishing');
+    assert.ok(furnishings.every(c=>getByTile(c.t)),'every furnishing cell uses the canonical catalogue');
+    assert.ok(furnishings.some(c=>getByTile(c.t).tier===expectedFurnishingTier),
+      'house at x='+Math.round(cand.x)+' showcases its current distance tier '+expectedFurnishingTier);
+    assert.ok(furnishings.every(c=>getByTile(c.t).tier<=expectedFurnishingTier),
+      'NPC house never leaks a tier beyond its exploration distance');
     assert.ok(cells.filter(c=>c.structural).length>=20, 'substantial structural shell');
     for(const c of cells){
       assert.ok(Number.isFinite(c.x) && Number.isFinite(c.y) && c.y>2 && c.y<SURFACE+30, 'cell within sane bounds');

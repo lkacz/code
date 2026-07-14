@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 globalThis.window = globalThis;
 globalThis.MM = {};
 
-const { T } = await import('../src/constants.js');
+const { T, INFO } = await import('../src/constants.js');
 const {
   HOUSE_HEAL_RATE_MIN_FRAC,
   HOUSE_HEAL_RATE_MAX_FRAC,
@@ -12,13 +12,28 @@ const {
   HOUSE_HEAL_RATE_FULL_SIZE,
   HOUSE_CHAIR_COMFORT_BONUS,
   HOUSE_CHAIR_COMFORT_MAX_CHAIRS,
+  HOUSE_COMFORT_MULT_CAP,
+  HOUSE_FURNISHING_DUPLICATE_DECAY,
   analyzeHouseAt,
   createHouseHealingState,
   houseComfortMult,
+  furnishingBonusForCopies,
   houseHealRateFrac,
   houseHealRateFracForSize,
   updateHouseHealing
 } = await import('../src/engine/house_healing.js');
+
+{
+  const unit=0.04;
+  const one=furnishingBonusForCopies(unit,1);
+  const two=furnishingBonusForCopies(unit,2);
+  const many=furnishingBonusForCopies(unit,1000);
+  assert.equal(one,unit,'the first furnishing copy contributes its full designed bonus');
+  assert.ok(two>one,'a duplicate still contributes a positive comfort increase');
+  assert.ok(two<unit*2,'a duplicate is deliberately weaker than another unique design');
+  assert.ok(many<=unit/(1-HOUSE_FURNISHING_DUPLICATE_DECAY)+1e-12,
+    'unlimited copies of one cheap design have a strict geometric upper bound');
+}
 
 function makeWorld(){
   const tiles = new Map();
@@ -81,6 +96,19 @@ const hero = {x:2.2,y:1.8,w:0.7,h:0.95,hp:50,maxHp:200};
   assert.equal(res.built,true,'door/trapdoor/wood shell marks the room as built');
   assert.equal(res.totalCells,20,'a 5x4 house reports its total footprint cells');
   assert.ok(res.healRateFrac>HOUSE_HEAL_RATE_MIN_FRAC && res.healRateFrac<HOUSE_HEAL_RATE_MAX_FRAC,'medium-small houses heal between the tiny and large limits');
+}
+
+for(const offsetY of [-120,-72,-50,20,160]){
+  const w=makeWorld();
+  buildHouse(w);
+  const shiftedHero={...hero,y:hero.y+offsetY};
+  const res=analyzeHouseAt(
+    shiftedHero,
+    (x,y)=>w.get(x,y-offsetY),
+    {backgroundAt:(x,y)=>w.bg(x,y-offsetY)}
+  );
+  assert.equal(res.ok,true,'healing shelter remains valid at vertical offset '+offsetY);
+  assert.equal(res.bounds.top,1+offsetY,'shelter bounds retain full-world y at offset '+offsetY);
 }
 
 {
@@ -231,6 +259,27 @@ const hero = {x:2.2,y:1.8,w:0.7,h:0.95,hp:50,maxHp:200};
   const res = updateHouseHealing(st,1,p,w.get,{backgroundAt:w.bg});
   assert.equal(res.inside,true,'furnished shelter still heals');
   assert.equal(p.hp,50 + p.maxHp*twoChairs.healRateFrac,'healing ticks at the comfort-boosted rate');
+}
+
+// The extended home catalog stacks diverse comfort bonuses with diminishing
+// returns. Every additional object helps, while even furnishing spam remains
+// bounded by the global x3 multiplier.
+{
+  const w = makeWorld();
+  buildHouse(w,{light:T.MINIATURE_SUN});
+  w.set(1,1,T.COZY_BED);
+  w.set(1,2,T.AQUARIUM);
+  const first = analyzeHouseAt(hero,w.get,{backgroundAt:w.bg});
+  assert.equal(first.ok,true,'a light-emitting furnishing can illuminate a healing home');
+  assert.equal(first.furnishingCount,3,'the analyzer counts every placed furnishing, including the light source');
+  assert.equal(first.furnishingTypes,3,'the home summary reports distinct furnishing types');
+  assert.equal(first.rawFurnishingBonus,INFO[T.MINIATURE_SUN].homeRegenBonus+INFO[T.COZY_BED].homeRegenBonus+INFO[T.AQUARIUM].homeRegenBonus,'raw comfort adds catalog bonuses exactly');
+  w.set(3,2,T.MEDICAL_STATION);
+  const richer = analyzeHouseAt(hero,w.get,{backgroundAt:w.bg});
+  assert.ok(richer.comfortMult>first.comfortMult,'adding another useful object always increases home regeneration');
+  assert.ok(richer.comfortMult<HOUSE_COMFORT_MULT_CAP,'normal furnishing remains below the soft cap');
+  assert.equal(richer.furnishingBreakdown[0].tile,T.MINIATURE_SUN,'comfort breakdown ranks the strongest furnishing first');
+  assert.ok(houseComfortMult(2,1e6)<=HOUSE_COMFORT_MULT_CAP,'even extreme furnishing totals never exceed the global cap');
 }
 
 // A chair alone in the open is just furniture — no shelter, no healing.

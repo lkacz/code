@@ -39,6 +39,8 @@ const player={x:4.5,y:6.5,w:0.7,h:0.95,facing:1,atkCd:0};
 function render(item){ equipped=item; const ctx=mockCtx(); weapons.drawHeld(ctx,20,player); return ctx.calls; }
 function count(calls,name){ return calls.filter(c=>c[0]===name).length; }
 function lighterCount(calls){ return calls.filter(c=>c[0]==='set'&&c[1]==='globalCompositeOperation'&&c[2]==='lighter').length; }
+function maxArcRadius(calls){ return Math.max(0,...calls.filter(c=>c[0]==='arc').map(c=>Number(c[3])||0)); }
+function maxSetValue(calls,key){ return Math.max(0,...calls.filter(c=>c[0]==='set'&&c[1]===key).map(c=>Number(c[2])||0)); }
 
 const D=weapons._debug;
 assert.equal(D.weaponPrestigeRank({tier:'common'}),0,'common has no prestige aura');
@@ -73,6 +75,7 @@ assert.ok(rareLight&&rareLight.level===6&&rareLight.material==='steel','rare wea
 equipped={id:'legendary_iridium',name:'Iridium sword',weaponType:'melee',tier:'legendary'};
 const legendaryLight=D.weaponLightSource(player);
 assert.ok(legendaryLight.level>rareLight.level&&legendaryLight.color==='#d7b4ff','legendary material emits a stronger correctly coloured light');
+assert.ok(legendaryLight.radius<1.4&&legendaryLight.intensity<0.4,'legendary passive light stays local and subdued');
 const worldLightCtx=mockCtx();
 assert.equal(weapons.drawWorldLight(worldLightCtx,20,player),true,'exceptional weapon composites coloured bounce into the world');
 assert.ok(lighterCount(worldLightCtx.calls)>=1&&count(worldLightCtx.calls,'addColorStop')===3,'world bounce uses one bounded radial gradient');
@@ -98,11 +101,15 @@ const legendaryItem={id:'legendary_sword',name:'Miecz irydowy',weaponType:'melee
 const legendary=render(legendaryItem);
 assert.equal(lighterCount(common),0,'common weapon stays visually quiet');
 assert.ok(lighterCount(rare)>=2,'rare weapon gets a back glow and a front glint');
-assert.ok(count(rare,'arc')<count(epic,'arc')&&count(epic,'arc')<count(legendary,'arc'),'aura geometry grows with rarity');
-assert.ok(legendary.some(c=>c[0]==='set'&&c[1]==='shadowBlur'&&c[2]>=15),'legendary weapon has the strongest bloom');
+assert.equal(count(rare,'createRadialGradient'),1,'rare weapon uses one bounded local bloom');
+assert.ok(count(epic,'arc')<=count(rare,'arc')+1,'epic rarity adds at most one weapon-local charge jewel, not orbiting geometry');
+assert.ok(count(legendary,'arc')<=count(rare,'arc')+1,'legendary rarity avoids additional rings and orbiting motes');
+assert.ok(maxArcRadius(legendary)<=6.5,'legendary idle glow remains tightly centered on the weapon');
+assert.ok(maxSetValue(legendary,'shadowBlur')<=4.5,'legendary idle bloom stays subtle instead of flooding the hero silhouette');
 
 const repeat=render(legendaryItem);
-assert.deepEqual(repeat,legendary,'prestige animation is deterministic for the same item and frame');
+assert.deepEqual(JSON.parse(JSON.stringify(repeat)),JSON.parse(JSON.stringify(legendary)),
+  'prestige animation is deterministic for the same item and frame');
 const alternate=render({...legendaryItem,id:'another_legendary'});
 assert.notDeepEqual(alternate,legendary,'different exceptional items do not pulse in lockstep');
 

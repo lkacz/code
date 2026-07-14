@@ -137,7 +137,12 @@ const mainSrc = fs.readFileSync(path.join(SRC, 'main.js'), 'utf8');
   assert.match(mainSrc, /KEYBINDS\.translate\(ev\.key\.toLowerCase\(\)\)==='z'/, 'the undo listener honors rebinds');
   // fullscreen: rebindable key branch + pause-panel button + change sync
   assert.match(mainSrc, /k==='u'&&!keysOnce\.has\('u'\)\)\{ toggleFullscreen\(\)/, 'fullscreen key branch (default U)');
-  assert.match(mainSrc, /fullscreenchange/, 'fullscreen state syncs back into the pause panel');
+  assert.match(mainSrc, /\['fullscreenchange','webkitfullscreenchange'\]/, 'standard and WebKit fullscreen changes synchronize the UI');
+  assert.match(mainSrc, /document\.fullscreenElement \|\| document\.webkitFullscreenElement/, 'fullscreen state supports standard and WebKit browsers');
+  assert.match(mainSrc, /root\.requestFullscreen \|\| root\.webkitRequestFullscreen/, 'fullscreen entry supports standard and WebKit browsers');
+  assert.match(mainSrc, /document\.exitFullscreen \|\| document\.webkitExitFullscreen/, 'fullscreen exit supports standard and WebKit browsers');
+  assert.match(mainSrc, /getElementById\('fullscreenBtn'\)\?\.addEventListener\('click',toggleFullscreen\)/, 'the permanent HUD control toggles fullscreen');
+  assert.match(mainSrc, /MM\.fullscreen=\{active:fullscreenActive,supported:fullscreenSupported,toggle:toggleFullscreen,sync:syncFullscreenControls\}/, 'fullscreen state is exposed for integration checks');
   assert.match(mainSrc, /pauseFullscreenBtn/, 'pause panel exposes the fullscreen button');
   // music switch + keybind editor reachable from the pause card
   assert.match(mainSrc, /Muzyka włączona/, 'pause panel exposes the music on/off switch');
@@ -154,6 +159,8 @@ const mainSrc = fs.readFileSync(path.join(SRC, 'main.js'), 'utf8');
 {
   const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
   assert.match(html, /#keybindPanel\{/, 'index.html styles the keybind panel');
+  assert.match(html, /id="fullscreenBtn"[^>]*aria-pressed="false"/, 'the HUD exposes an accessible fullscreen button');
+  assert.match(html, /#menuWrap #fullscreenBtn\[aria-pressed="true"\]/, 'active fullscreen mode has a distinct HUD state');
 }
 
 console.log('keybinds-sim: all tests passed');

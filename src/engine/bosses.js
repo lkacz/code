@@ -1399,6 +1399,16 @@ window.MM = window.MM || {};
     }
     return best;
   }
+  // A mining gesture keeps this opaque {boss,part} pair instead of a world tile.
+  // Resolve it every frame so the selected body block follows its moving owner.
+  function resolvePartTarget(target){
+    const m=target && target.boss, p=target && target.part;
+    if(!m || !p || m.dead || m.dying || !(p.hp>0)
+      || monsters.indexOf(m)<0 || m.parts.indexOf(p)<0) return null;
+    const x=m.x+p.dx+0.5, y=m.y+p.dy+0.5;
+    return {boss:m,part:p,x,y,tx:Math.floor(x),ty:Math.floor(y),
+            tile:p.blockType || T.STONE,role:p.role,protected:p===m.core && coreProtected(m)};
+  }
   function bodyImpactMode(p,opts){
     if(!p || p.role==='core' || p.role==='eye') return 'weakpoint';
     const o=opts && typeof opts==='object' ? opts : {};
@@ -1428,6 +1438,10 @@ window.MM = window.MM || {};
   function mineAt(tx,ty){
     return strikeAt(tx,ty,1,{kind:'pickaxe',source:'hero',breakTerrain:true});
   }
+  function mineTarget(target){
+    const hit=resolvePartTarget(target);
+    return hit ? strikePart(hit.boss,hit.part,1,{kind:'pickaxe',source:'hero',breakTerrain:true}) : false;
+  }
   // Weapon strike: eye and exposed heart take damage; the body first has to pass
   // the same terrain-breaking checks as its underlying block material.
   function damageAt(tx,ty,dmg,opts){
@@ -1442,6 +1456,31 @@ window.MM = window.MM || {};
       && monsters.indexOf(m)>=0 && m.parts.indexOf(part)>=0);
     try{ opts.onTarget(m,'boss',partAlive,anchor); }catch(e){}
   }
+  function strikePart(m,part,dmg,opts){
+    if(!resolvePartTarget({boss:m,part})) return false;
+    reportProjectileAnchor(opts,m,part);
+    if(part===m.core && coreProtected(m)){
+      // The exact tracked heart remains shielded until one of its four armor
+      // neighbors is removed, even if the whole boss moves during the swing.
+      for(const p of m.parts){ if(Math.abs(p.dx-m.core.dx)+Math.abs(p.dy-m.core.dy)===1) p.hitT=0.15; }
+      const now=(typeof performance!=='undefined')? performance.now():0;
+      if(!m.sealMsgT || now-m.sealMsgT>1500){ m.sealMsgT=now; say('Serce '+m.name+' jest osłonięte – przebij się przez pancerz!'); }
+      return true;
+    }
+    const electric=!!opts && /electric|shock|laser|lightning/.test(String(opts.element||opts.kind||opts.cause||'').toLowerCase());
+    const hitDmg=electric ? dmg*bossElectricDamageMult(m._elemStatus) : dmg;
+    const impact=bodyImpactMode(part,opts);
+    part.hitT=0.18;
+    m.feed=null; if(m.state==='feed') m.state = m.hasEye? 'hunt':'roam'; m.hunger=Math.min(m.hunger,0.8);
+    if(impact==='blocked') return 'blocked';
+    if(impact==='break' || impact==='pierce') part.hp=0;
+    else part.hp-=hitDmg;
+    const w=MM.world;
+    const getTile=(w && w.getTile)||(()=>T.AIR), setTile=(w && w.setTile)||(()=>{});
+    if(part.hp<=0) destroyPart(m,part,getTile,setTile);
+    if(impact==='pierce') return 'pierced';
+    return true;
+  }
   // Status damage follows the weapon rule too: eye first, then an exposed heart.
   function applyStatusDot(m,dmg,getTile,setTile){
     if(!m || m.dead || m.dying || !(dmg>0) || !Array.isArray(m.parts) || !m.parts.length) return false;
@@ -1455,13 +1494,8 @@ window.MM = window.MM || {};
   }
   function strikeAt(tx,ty,dmg,opts){
     if(typeof tx!=='number' || typeof ty!=='number' || !isFinite(tx) || !isFinite(ty)) return false;
-    const w=MM.world;
-    const getTile=(w && w.getTile)||(()=>T.AIR), setTile=(w && w.setTile)||(()=>{});
-    const electric=!!opts && /electric|shock|laser|lightning/.test(String(opts.element||opts.kind||opts.cause||'').toLowerCase());
     for(const m of monsters){
       if(tx<m.x+m.minDx-1 || tx>m.x+m.maxDx+1 || ty<m.y-m.height || ty>m.y+2) continue;
-      // weakened elemental matrix: a soaked beast conducts electricity
-      const hitDmg=electric ? dmg*bossElectricDamageMult(m._elemStatus) : dmg;
       // the body sits at a fractional position, so a clicked tile can overlap up to
       // four parts — strike the one covering most of the tile (matches the visuals)
       const sealed=coreProtected(m);
@@ -1476,17 +1510,7 @@ window.MM = window.MM || {};
         if(ov>bestOv){ bestOv=ov; best=p; }
       }
       if(best){
-        reportProjectileAnchor(opts,m,best);
-        const impact=bodyImpactMode(best,opts);
-        best.hitT=0.18;
-        // a struck beast stops grazing and turns to fight (a blind one only frets)
-        m.feed=null; if(m.state==='feed') m.state = m.hasEye? 'hunt':'roam'; m.hunger=Math.min(m.hunger,0.8);
-        if(impact==='blocked') return 'blocked';
-        if(impact==='break' || impact==='pierce') best.hp=0;
-        else best.hp-=hitDmg;
-        if(best.hp<=0) destroyPart(m,best,getTile,setTile);
-        if(impact==='pierce') return 'pierced';
-        return true;
+        return strikePart(m,best,dmg,opts);
       }
       if(coreOv>0){
         reportProjectileAnchor(opts,m,m.core);
@@ -1901,7 +1925,7 @@ window.MM = window.MM || {};
   }
   function _debug(){ return {monsters, debris, fallingBodyBlocks, blasts, projectiles, spawnTimer, lastIsDay}; }
 
-  MM.bosses={update, draw, drawHUD, attackAt, mineAt, damageAt, partAt, forceSpawn, killNearest, collideHero, clearAll, reset, metrics,
+  MM.bosses={update, draw, drawHUD, attackAt, mineAt, mineTarget, damageAt, partAt, resolvePartTarget, forceSpawn, killNearest, collideHero, clearAll, reset, metrics,
              nearestForAbduction, nearestForTurret, targetsForTurret, abduct, setCycleOverride, config:CFG, _debug};
   // weakened-matrix registry adapter (shared boss_status helper): splats and
   // streams reach roaming bosses through MM.bossStatus.applyRadius

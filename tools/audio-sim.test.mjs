@@ -92,7 +92,7 @@ function nodeCount(){ return lastCtx ? lastCtx.nodes.length : 0; }
 // ---------------- phase B: full engine against the mock --------------------
 globalThis.AudioContext = FakeCtx;
 store['mm_audio_v1'] = JSON.stringify({ vol: 0.3, mute: false }); // pre-bus blob
-const { audio: A } = await import('../src/engine/audio.js?phase=main');
+const { audio: A, RADIO_STATIONS } = await import('../src/engine/audio.js?phase=main');
 const { T } = await import('../src/constants.js');
 assert.equal(MM.audio, A, 'module installs itself on MM');
 
@@ -165,6 +165,9 @@ function collectRequestedNames(){
 }
 const requested = collectRequestedNames();
 assert.ok(requested.size >= 25, 'registry scan finds a realistic name set (got ' + requested.size + ')');
+for(const name of ['homeWater','homeTick','homeHum','homeRadio','homeCoffee','homeMedical','homeDream','homeChime']){
+  assert.ok(requested.has(name), 'furnishing sound contract includes ' + name);
+}
 for(const name of requested){
   nowMs += 8000; // clear throttles and expire tracked voices between shots
   const before = nodeCount();
@@ -351,6 +354,49 @@ function oscGrowthAfterUpdate(){
   A.setMusicOn(true);
   nowMs += 600000; // far past any window: the gate re-anchors into a fresh play window
   assert.ok(oscGrowthAfterUpdate() > 0, 'music back on: scheduling resumes');
+}
+
+// ---------------- placeable home radio ------------------------------------
+{
+  const audible=RADIO_STATIONS.filter(station=>station.id!=='off');
+  assert.equal(audible.length,6,'the home radio offers six audible stations plus off');
+  assert.equal(new Set(audible.map(station=>station.genre)).size,6,'every radio choice has a distinct genre');
+  assert.ok(audible.every(station=>station.tracks.length===3),'every genre advertises three original rotating track titles');
+  assert.ok(audible.every(station=>/^#[0-9a-f]{6}$/i.test(station.accent)),'every station has a safe visual accent');
+  const voiceSignatures=[];
+  for(const station of audible){
+    nowMs += 30000;
+    assert.equal(A.setRadioStation(station.id),true,station.id+' can be selected');
+    assert.equal(A.setRadioSource(6,8),true,'a nearby placed radio publishes a positional source');
+    const before=nodeCount();
+    A.update(0.3);
+    const oscillators=lastCtx.nodes.slice(before).filter(node=>node.kind==='osc').length;
+    voiceSignatures.push(oscillators);
+    assert.ok(oscillators>0,station.id+' schedules its own procedural phrase');
+    const state=A.debugState().radio;
+    assert.equal(state.station,station.id,'debug state reports '+station.id);
+    assert.equal(state.active,true,station.id+' is active while its radio is nearby');
+    assert.equal(state.track,station.tracks[0],station.id+' starts with its first named track');
+    const panner=lastCtx.nodes.slice(before).find(node=>node.kind==='panner');
+    assert.ok(panner && panner.pan.value>0,'radio music is spatialized from the placed receiver');
+  }
+  assert.ok(new Set(voiceSignatures).size>=5,'genres have materially different phrase density and orchestration');
+  const selected=A.getRadioStation();
+  assert.equal(A.setRadioStation('tampered-station'),false,'unknown station ids fail closed');
+  assert.equal(A.getRadioStation(),selected,'a rejected station cannot corrupt the selection');
+  assert.equal(JSON.parse(store['mm_audio_v1']).radioStation,selected,'radio selection persists in audio settings');
+  nowMs += 1601;
+  assert.equal(A.debugState().radio.active,false,'a stale or removed radio source expires promptly');
+  A.setRadioSource(6,8);
+  A.setMusicOn(false);
+  assert.equal(A.debugState().radio.active,false,'the global music switch also silences home radio');
+  A.setMusicOn(true);
+  assert.equal(A.setRadioStation('off'),true,'radio has an explicit off position');
+  assert.equal(A.debugState().radio.active,false,'off prevents radio scheduling even with a source');
+  A.clearRadioSource();
+  assert.equal(A.debugState().radio.source,null,'leaving or removing the receiver clears its source');
+  A.setRadioStation('lofi');
+  nowMs += 30000;
 }
 {
   // rotation: a theme plays for a window, rests in a silent break, then the

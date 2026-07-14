@@ -16,6 +16,7 @@ globalThis.msg = (t)=>messages.push(String(t));
 const { T } = await import('../src/constants.js');
 const { npcRegistry } = await import('../src/engine/npc_system.js');
 const { trader } = await import('../src/engine/trader.js');
+const { getByKey: getFurnishingByKey } = await import('../src/engine/furnishings.js');
 assert.ok(trader, 'trader module exports');
 assert.equal(npcRegistry.get('trader'), trader, 'trader registers into the npc system');
 
@@ -82,13 +83,22 @@ player.y = playerStart.y;
 const stock=trader.stock();
 assert.ok(stock, 'active trader exposes stock');
 assert.ok(stock.offers.some(o=>o.id==='chest'), 'epic chest is always on offer');
-assert.equal(stock.offers.length, 5, 'four seeded goods + the chest');
+assert.equal(stock.offers.length, 7, 'four seeded goods + two furnishing showcases + the chest');
+const furnishingStock=stock.offers.filter(o=>o.furnishingKey);
+assert.equal(furnishingStock.length,2,'each visit showcases two discoverable furnishings');
+assert.ok(furnishingStock.every(o=>o.cost.iridium>0 && getFurnishingByKey(o.furnishingKey)),
+  'furnishing stock is canonical and sold for iridium');
+assert.ok(furnishingStock.every(o=>o.furnishingTier===1),'near-origin trader cannot leak advanced furnishing recipes');
 assert.equal(stock.rates.length, 3, 'three seeded buy-back rates');
 {
   const a=trader._rollStock(7, 424242), b=trader._rollStock(7, 424242);
   assert.deepEqual(a, b, 'stock rolls are deterministic per (visit, seed)');
   const c=trader._rollStock(8, 424242);
   assert.notDeepEqual(a.offers, c.offers, 'different visits shuffle the shelves');
+  const frontier=trader._rollStock(7,424242,15000).offers.filter(id=>id.startsWith('decor_'))
+    .map(id=>getFurnishingByKey(id.slice(6)));
+  assert.ok(frontier.some(def=>def && def.tier===4),'a trader at 15,000 blocks showcases an endgame wonder');
+  assert.ok(frontier.every(def=>def && def.tier>=3),'frontier trader support stock remains advanced');
 }
 
 // 4) premium stock uses iridium; diamond-priced goods remain anti-arbitrage safe
@@ -163,6 +173,16 @@ assert.equal(trader.tradeSell('definitely-not-a-rate',{inv,player}).ok, false, '
   assert.equal(inv.diamond, 5, 'premium chest does not consume diamonds');
   assert.ok(physicalChests.some(d=>d.tier==='epic' && d.opts.source==='trader'), 'an epic physical chest drops next to the stall');
   assert.ok(![...tiles.values()].some(t=>t===T.CHEST_EPIC), 'trader never writes a chest block');
+}
+
+// 5b) furnishing wares are real placeable resources, not UI-only blueprints
+{
+  const offer=trader.stock().offers.find(o=>o.furnishingKey);
+  inv.iridium=offer.cost.iridium;
+  const before=inv[offer.furnishingKey]|0;
+  const r=trader.tradeBuy(offer.id,{inv,player,getTile,setTile});
+  assert.equal(r.ok,true,'an in-stock furnishing can be bought');
+  assert.equal(inv[offer.furnishingKey],before+1,'the bought furnishing enters the placeable resource inventory');
 }
 
 // 9) potion effects: heal clamps to maxHp, buffs ride MM.progress

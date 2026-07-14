@@ -26,6 +26,8 @@ import { getFlamePuffSprites, flamePuffFrame, flamePuffAlpha, flamePuffRadius } 
   const SPREAD_CHANCE=0.5;    // per attempt, before per-neighbour filtering
   const TORCH_HEAT_INTERVAL=0.35;
   const TORCH_HEAT_BUDGET=24;
+  const TORCH_SMOKE_RATE=0.018;   // roughly 3.5% of a burning coal block
+  const TORCH_SMOKE_PACKET=0.028; // small but above smoke's minimum density
   const BURNING_HOT_AIR_INTERVAL=0.85;
   const LAVA_HOT_AIR_INTERVAL=8.5; // 10% of a burning coal/wood tile's hot-air cadence
   // 8-neighbourhood; fire prefers climbing (trees burn upward)
@@ -134,16 +136,22 @@ import { getFlamePuffSprites, flamePuffFrame, flamePuffAlpha, flamePuffRadius } 
   }
   const torchHeat=new Map();
   let torchHeatAcc=0;
+  let torchRuntime=0;
   function noteTorch(x,y){
     x|=0; y|=0;
     const k=key(x,y);
+    const known=torchHeat.get(k);
+    if(known){ known.x=x; known.y=y; return; }
     if(!torchHeat.has(k) && torchHeat.size>=1000){
       const first=torchHeat.keys().next();
       if(!first.done) torchHeat.delete(first.value);
     }
-    torchHeat.set(k,{x,y});
+    // Coordinate staggering prevents a row of torches from puffing in unison.
+    const phase=((Math.imul(x,73856093)^Math.imul(y,19349663))>>>0)/4294967296;
+    torchHeat.set(k,{x,y,smokeAcc:phase*TORCH_SMOKE_PACKET,smokeAt:torchRuntime});
   }
   function updateTorchHeat(getTile,setTile,dt){
+    torchRuntime+=dt;
     if(!torchHeat.size) return;
     torchHeatAcc+=dt;
     if(torchHeatAcc<TORCH_HEAT_INTERVAL) return;
@@ -152,6 +160,14 @@ import { getFlamePuffSprites, flamePuffFrame, flamePuffAlpha, flamePuffRadius } 
     for(const [k,h] of batch){
       if(getTile(h.x,h.y)!==T.TORCH){ torchHeat.delete(k); continue; }
       heatAround(h.x,h.y,getTile,setTile,{includeCenter:false});
+      const elapsed=Math.max(0,Math.min(5,torchRuntime-(Number.isFinite(h.smokeAt)?h.smokeAt:torchRuntime)));
+      h.smokeAt=torchRuntime;
+      h.smokeAcc=Math.min(TORCH_SMOKE_PACKET*2,Math.max(0,Number(h.smokeAcc)||0)+elapsed*TORCH_SMOKE_RATE);
+      if(h.smokeAcc>=TORCH_SMOKE_PACKET){
+        const packet=Math.min(TORCH_SMOKE_PACKET*1.35,h.smokeAcc);
+        h.smokeAcc-=packet;
+        emitBlackSmoke(h.x,h.y,packet,getTile);
+      }
       torchHeat.delete(k);
       torchHeat.set(k,h);
     }
@@ -828,7 +844,7 @@ import { getFlamePuffSprites, flamePuffFrame, flamePuffAlpha, flamePuffRadius } 
       burning.set(key(b.x,b.y),b);
     }
   }
-  function reset(){ burning.clear(); lavaSet.clear(); torchHeat.clear(); torchHeatAcc=0; drawScanCache={key:'', at:0, tiles:[]}; }
+  function reset(){ burning.clear(); lavaSet.clear(); torchHeat.clear(); torchHeatAcc=0; torchRuntime=0; drawScanCache={key:'', at:0, tiles:[]}; }
   function isBurning(x,y){ return burning.has(key(x|0,y|0)); }
   // Put out a single tile (water hose, rain, …) — the tile keeps whatever charring it had
   function extinguish(x,y){ return burning.delete(key(x|0,y|0)); }

@@ -126,6 +126,26 @@ const wDeep = lighting.lightAt(80,26);
 assert.ok(wShallow > wDeep, 'deeper water is darker');
 assert.ok(wDeep > 0 && wDeep < 0.35, 'six tiles of water eat most of the light');
 
+// 5b) data-driven furniture emitters honor INFO.lightLevel proportionally
+{
+  const win={x0:0,y0:25,w:9,h:5};
+  const fieldFor=(tile)=>lighting._compute(win,{
+    getTile(x,y){ return x===4 && y===27 ? tile : T.AIR; },
+    surfaceHeight:()=>SURF,
+    daylight:0
+  }).level;
+  const center=2*win.w+4;
+  const aquarium=fieldFor(T.AQUARIUM);
+  const chandelier=fieldFor(T.CHANDELIER);
+  const miniatureSun=fieldFor(T.MINIATURE_SUN);
+  assert.equal(aquarium[center],4,'aquarium uses its exact INFO.lightLevel seed');
+  assert.equal(chandelier[center],12,'chandelier uses its exact INFO.lightLevel seed');
+  assert.equal(miniatureSun[center],15,'miniature sun reaches the lighting-engine maximum');
+  assert.ok(aquarium[center]<chandelier[center] && chandelier[center]<miniatureSun[center],
+    'higher furniture lightLevel values produce proportionally stronger sources');
+  assert.equal(chandelier[center+2],10,'data-driven furniture light uses the standard one-level-per-tile falloff');
+}
+
 // 6) torch placement: dirty tracking + falloff + light-tight walls
 setT(15,32,T.TORCH);
 lighting.onTileChanged(15,32);

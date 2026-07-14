@@ -2,6 +2,7 @@
 import { T, INFO } from '../constants.js';
 import world from './world.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
+import { rollChestFurnishing } from './furnishings.js';
 (function(){
   window.MM = window.MM || {};
   const WORLD = world || (window.MM && MM.world);
@@ -185,6 +186,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     // Item tiers draw from the chest's mix, so any chest can pay above its
     // station (and the best ones never pay far below it).
     const items=[]; for(let i=0;i<rolls;i++) items.push(genItem(r, rollChestItemTier(r,tier)));
+    const furnishing=rollChestFurnishing(tier,r);
     // The chest bursts open: its loot pops out as PHYSICAL drops the player has
     // to pick up (drops.js pipeline — same as creature loot). Picking a drop up
     // is what routes it into dynamicLoot + the inventory bag.
@@ -200,6 +202,14 @@ import { worldGen as WORLDGEN } from './worldgen.js';
         if(d){ d.source='chest'; spawned++; }
       });
     }
+    let furnishingSpawned=false;
+    if(furnishing && drops && typeof drops.spawnResource==='function'){
+      const dropTier=tier==='legendary'?'legendary':'epic';
+      const d=drops.spawnResource(cx,cy,furnishing.key,1,{
+        vx:(r()*2-1)*2.2,vy:-(4.8+r()*1.8),tier:dropTier,announce:true,source:'chest'
+      });
+      furnishingSpawned=!!d;
+    }
     if(spawned<items.length){
       // Fallback (DOM-less sims / drops module missing): straight to the bag.
       if(!MM.dynamicLoot){ MM.dynamicLoot={capes:[],eyes:[],outfits:[],weapons:[],charms:[]}; }
@@ -209,7 +219,14 @@ import { worldGen as WORLDGEN } from './worldgen.js';
       saveDynamicLoot();
       if(MM.onLootGained) MM.onLootGained(leftovers,tier);
     }
-    return {tier,items,spawned};
+    if(furnishing){
+      if(!furnishingSpawned){
+        const inv=window.inv;
+        if(inv && typeof inv==='object') inv[furnishing.key]=(Number(inv[furnishing.key])||0)+1;
+      }
+      try{ if(typeof MM.noteCraftResultSeen==='function') MM.noteCraftResultSeen(furnishing.key,{source:'chest'}); }catch(e){}
+    }
+    return {tier,items,spawned,furnishing:furnishing||null,furnishingSpawned};
   }
 
   function openChestAt(x,y){
@@ -257,7 +274,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     return !!openChestAt(tx,ty);
   }
 
-  MM.chests={openChestAt,openDroppedChest,openFromWeaponHitAt,setWeaponHitHandler,setDroppedOpenHandler,TIERS,TIER_ORDER,CHEST_TIER_MIX,rollChestItemTier,genItem,saveDynamicLoot};
+  MM.chests={openChestAt,openDroppedChest,openFromWeaponHitAt,setWeaponHitHandler,setDroppedOpenHandler,TIERS,TIER_ORDER,CHEST_TIER_MIX,rollChestItemTier,genItem,saveDynamicLoot,_releaseLoot:releaseLoot};
 })();
 // ESM export (progressive migration)
 export const chests = (typeof window!=='undefined' && window.MM) ? window.MM.chests : undefined;
