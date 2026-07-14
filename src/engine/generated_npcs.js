@@ -1,6 +1,7 @@
 import { T, WORLD_H } from '../constants.js';
 import { createQuestNpc, npcRegistry } from './npc_system.js';
 import { storyWhispersForProgress } from './story_lore.js';
+import { isFurnishingTile, selectFurnishingsForDistance } from './furnishings.js';
 
 const CELL_W = 1250;
 const ACTIVE_RADIUS = 1800;
@@ -213,6 +214,7 @@ function cleanLocalState(src){
     housePhysical:src.housePhysical===true,
     houseDoorsMigrated:src.houseDoorsMigrated===true,
     houseBackwallDone:src.houseBackwallDone===true,
+    houseFurnishingsDone:src.houseFurnishingsDone===true,
     abandoned:src.abandoned===true
   };
 }
@@ -455,13 +457,32 @@ function houseCells(candidate,getTile,worldGen){
   if(slabY!==null){
     for(let y=slabY; y<=g-1; y++) putCell(ladderX,y,T.LADDER,false,'stairs',true);
   }
-  // Interior warmth: a torch per storey and a modest piece of furniture.
+  // Interior warmth: a torch per storey plus a deterministic distance-tiered
+  // catalogue showcase. Farther homes contain more advanced pieces and larger
+  // homes get supporting objects, so exploration teaches recipes visually.
   putCell(doorX,g-3,T.TORCH,false,'light',true);
-  const furnX=doorX>cx?left+2:right-2;
-  if(furnX>left && furnX<right && furnX!==doorX && furnX!==ladderX && roll(251)<0.8){
-    putCell(furnX,g-1,pal.accent===T.STEEL?T.STONE:pal.accent,false,'furniture',true);
-  }
   if(slabY!==null) putCell(cx,slabY-1,T.TORCH,false,'light',true);
+  const distanceTierCount=1+(storeys>1?1:0)+(Math.abs(candidate.x)>=7500 && halfW>=4?1:0);
+  const furnishingDefs=selectFurnishingsForDistance(candidate.x,seed^Math.imul(cell,0x45d9f3b),distanceTierCount);
+  const floorRows=[g-1];
+  if(slabY!==null) floorRows.push(slabY-1);
+  const preferredX=doorX>cx
+    ? [left+2,right-2,cx-1,cx+1,cx]
+    : [right-2,left+2,cx+1,cx-1,cx];
+  const furnishingSlots=[];
+  for(const y of floorRows){
+    for(const x of preferredX){
+      if(x<=left || x>=right || x===doorX || x===ladderX) continue;
+      const existing=map.get(x+','+y);
+      if(!existing || existing.role!=='air') continue;
+      if(furnishingSlots.some(slot=>slot.x===x && slot.y===y)) continue;
+      furnishingSlots.push({x,y});
+    }
+  }
+  furnishingDefs.forEach((def,index)=>{
+    const slot=furnishingSlots[index];
+    if(slot) putCell(slot.x,slot.y,def.tile,false,'furnishing',true);
+  });
   // Roof: pitched gable (2-thick sloped edges) or flat with a parapet.
   if(flatRoof){
     for(let x=left-1; x<=right+1; x++) putCell(x,roofY,pal.roof,true,'roof',true);
@@ -555,7 +576,7 @@ function houseCells(candidate,getTile,worldGen){
   const bgCells=[];
   for(const c of map.values()){
     if(c.x<=left || c.x>=right) continue;
-    if(c.role!=='air' && c.role!=='light' && c.role!=='furniture' && c.role!=='stairs' && c.role!=='door') continue;
+    if(c.role!=='air' && c.role!=='light' && c.role!=='furnishing' && c.role!=='stairs' && c.role!=='door') continue;
     bgCells.push({x:c.x,y:c.y,t:pal.backwall,structural:false,role:'backwall',layer:'bg'});
   }
   return {layout:L,cells:[...map.values(),...bgCells]};
@@ -596,6 +617,25 @@ function migrateHouseDoors(candidate,getTile,setTile,worldGen){
     try{ cur=getTile(c.x,c.y); }catch(e){ cur=T.AIR; }
     if(cur===c.t) continue;
     if(cur!==T.AIR && cur!==T.WATER && cur!==T.LAVA) continue;
+    try{ setTile(c.x,c.y,c.t); changed=true; }catch(e){}
+  }
+  if(changed) protectHouse(cells);
+  return changed;
+}
+function migrateHouseFurnishings(candidate,getTile,setTile,worldGen){
+  const {layout,cells}=houseCells(candidate,getTile,worldGen);
+  let changed=false;
+  const legacyX=layout.doorX>layout.cx?layout.left+2:layout.right-2;
+  const legacyTile=layout.pal.accent===T.STEEL?T.STONE:layout.pal.accent;
+  for(const c of cells){
+    if(c.role!=='furnishing') continue;
+    let cur=T.AIR;
+    try{ cur=getTile(c.x,c.y); }catch(e){ continue; }
+    if(cur===c.t || isFurnishingTile(cur)) continue;
+    // Empty slots and the exact pre-catalogue placeholder are safe to upgrade;
+    // every other player-built replacement is respected.
+    const oldPlaceholder=c.x===legacyX && c.y===layout.g-1 && cur===legacyTile;
+    if(cur!==T.AIR && !oldPlaceholder) continue;
     try{ setTile(c.x,c.y,c.t); changed=true; }catch(e){}
   }
   if(changed) protectHouse(cells);
@@ -857,12 +897,18 @@ function maintainHouses(player,getTile,setTile,worldGen,ctx,day){
       state.housePhysical=physical;
       state.houseDoorsMigrated=physical;
       state.houseBackwallDone=physical;
+      state.houseFurnishingsDone=physical;
       if(physical) markChanged(ctx);
     }
     if(!state.houseBuilt || !state.housePhysical) return;
     if(!state.houseDoorsMigrated){
       const changed=migrateHouseDoors(candidate,getTile,setTile,worldGen);
       state.houseDoorsMigrated=true;
+      if(changed) markChanged(ctx);
+    }
+    if(!state.houseFurnishingsDone){
+      const changed=migrateHouseFurnishings(candidate,getTile,setTile,worldGen);
+      state.houseFurnishingsDone=true;
       if(changed) markChanged(ctx);
     }
     const {cells}=houseCells(candidate,getTile,worldGen);

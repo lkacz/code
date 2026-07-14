@@ -14,6 +14,7 @@
 import { T } from '../constants.js';
 import { npcRegistry } from './npc_system.js';
 import { isSolidCollisionTile as isSolid } from './material_physics.js';
+import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as getFurnishingByKey } from './furnishings.js';
 
 (function(){
   const root = (typeof window!=='undefined') ? window : globalThis;
@@ -127,19 +128,27 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
     return true;
   }
 
-  // Seeded per-visit stock: OFFER_COUNT goods + the epic chest, RATE_COUNT rates.
-  function rollStock(visitIndex, seed){
+  function furnishingOfferById(id){
+    if(typeof id!=='string' || !id.startsWith('decor_')) return null;
+    return furnishingTraderOffer(getFurnishingByKey(id.slice(6)));
+  }
+
+  // Seeded per-visit stock: ordinary goods, two distance-tiered catalogue
+  // showcases, and the epic chest. The stall follows the player, therefore its
+  // world x naturally advances the same east/west progression as NPC homes.
+  function rollStock(visitIndex, seed, worldX=0){
     const pickFrom = (list, n, salt)=>{
       const order = list.map((row,i)=>({row, k:hash01(seed ^ salt, visitIndex*131 + i)}))
         .sort((a,b)=>a.k-b.k || a.row.id.localeCompare(b.row.id));
       return order.slice(0, Math.min(n, order.length)).map(o=>o.row.id);
     };
+    const furnishingOffers=furnishingTraderOffersForDistance(worldX,seed^Math.imul(visitIndex,0x45d9f3b),2);
     return {
-      offers: pickFrom(GOODS, OFFER_COUNT, 0x517cc1b7).concat([EPIC_CHEST.id]),
+      offers: pickFrom(GOODS, OFFER_COUNT, 0x517cc1b7).concat(furnishingOffers.map(offer=>offer.id),[EPIC_CHEST.id]),
       rates: pickFrom(RATES, RATE_COUNT, 0x27220a95)
     };
   }
-  function offerById(id){ return id===EPIC_CHEST.id ? EPIC_CHEST : GOODS.find(g=>g.id===id) || null; }
+  function offerById(id){ return id===EPIC_CHEST.id ? EPIC_CHEST : GOODS.find(g=>g.id===id) || furnishingOfferById(id); }
   function rateById(id){ return RATES.find(r=>r.id===id) || null; }
 
   // A stall spot: two tiles of headroom on solid, dry ground.
@@ -173,7 +182,7 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
     S.active = true;
     S.x = spot.x; S.y = spot.y;
     S.visitIndex++;
-    S.stock = rollStock(S.visitIndex, worldSeed(ctx));
+    S.stock = rollStock(S.visitIndex, worldSeed(ctx),S.x);
     S.leaveDay = day + VISIT_LENGTH;
     S.greeted = false;
     S.falloutNoted = false;
@@ -405,7 +414,7 @@ import { isSolidCollisionTile as isSolid } from './material_physics.js';
         rates: data.stock.rates.filter(id=>!!rateById(id))
       };
     }
-    if(S.active && (!S.stock || !S.stock.offers.length)) S.stock = rollStock(S.visitIndex||1, 1337);
+    if(S.active && (!S.stock || !S.stock.offers.length)) S.stock = rollStock(S.visitIndex||1, 1337,S.x);
     return true;
   }
   function reset(){

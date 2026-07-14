@@ -8,7 +8,13 @@ export const WORLD_MAX_Y = (WORLD_MAX_SECTION + 1) * WORLD_SECTION_H;
 export const TILE = 20;
 export const SURFACE_GRASS_DEPTH = 1;
 export const SAND_DEPTH = 8;
-export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,LAVA:13,MUD:14,OBSIDIAN:15,TORCH:16,GRAVE:17,VOLCANO_MASTER_STONE:18,STEEL:19,MEAT:20,ROTTEN_MEAT:21,GLASS:22,WIRE:23,ELECTRONICS:24,COAL:25,HOT_AIR:26,STEAM:27,POISON_GAS:28,FUEL_GAS:29,DYNAMO:30,DYNAMO_SLOT:31,BAKED_MEAT:32,COPPER_WIRE:33,TELEPORTER:34,TRANSISTOR:35,SOLAR_PANEL:36,SOLAR_BATTERY:37,SERVANT_STONE:38,AUTUMN_LEAF_ORANGE:39,AUTUMN_LEAF_RED:40,IRIDIUM:41,METEORIC_IRON:42,ANTIGRAVITY_BEACON:43,TURRET:44,FIRE_TURRET:45,WATER_TURRET:46,WATER_PIPE:47,WATER_PUMP:48,METEOR_SIREN:49,RADIOACTIVE_ORE:50,ALIEN_BIOMASS:51,METEOR_DUST:52,ANTIMATTER_CRYSTAL:53,DIRT:54,GRANITE:55,BASALT:56,BEDROCK:57,WOOD_DOOR:58,STONE_DOOR:59,STEEL_DOOR:60,VENDING_MACHINE:61,WOOD_TRAPDOOR:62,STONE_TRAPDOOR:63,STEEL_TRAPDOOR:64,CLAY:65,WET_CLAY:66,BRICK:67,LADDER:68,SPRING_PLATFORM:69,INVASION_CACHE:70,UFO_CONCRETE:71,MOTHER_ICE:72,MOTHER_LAVA:73,ALTAR:74,GLOWSHROOM:75,CHIMNEY:76,RESPAWN_TOTEM:77,UNSTABLE_SAND:78,UNSTABLE_GRASS:79,QUICKSAND:80,GOLD_ORE:81,TRACK:82,CHAIR_WOOD:83,CHAIR_STONE:84,CHAIR_STEEL:85,GRASS_SNOW:86,FROZEN_DIRT:87,FROZEN_SAND:88,FROZEN_CLAY:89,TOXIC_SNOW:90,CHEST_UNCOMMON:91,CHEST_LEGENDARY:92,STEAM_BOILER:93,STEAM_JET:94,BEDROCK_LADDER:95};
+export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,LAVA:13,MUD:14,OBSIDIAN:15,TORCH:16,GRAVE:17,VOLCANO_MASTER_STONE:18,STEEL:19,MEAT:20,ROTTEN_MEAT:21,GLASS:22,WIRE:23,ELECTRONICS:24,COAL:25,HOT_AIR:26,STEAM:27,POISON_GAS:28,FUEL_GAS:29,DYNAMO:30,DYNAMO_SLOT:31,BAKED_MEAT:32,COPPER_WIRE:33,TELEPORTER:34,TRANSISTOR:35,SOLAR_PANEL:36,SOLAR_BATTERY:37,SERVANT_STONE:38,AUTUMN_LEAF_ORANGE:39,AUTUMN_LEAF_RED:40,IRIDIUM:41,METEORIC_IRON:42,ANTIGRAVITY_BEACON:43,TURRET:44,FIRE_TURRET:45,WATER_TURRET:46,WATER_PIPE:47,WATER_PUMP:48,METEOR_SIREN:49,RADIOACTIVE_ORE:50,ALIEN_BIOMASS:51,METEOR_DUST:52,ANTIMATTER_CRYSTAL:53,DIRT:54,GRANITE:55,BASALT:56,BEDROCK:57,WOOD_DOOR:58,STONE_DOOR:59,STEEL_DOOR:60,VENDING_MACHINE:61,WOOD_TRAPDOOR:62,STONE_TRAPDOOR:63,STEEL_TRAPDOOR:64,CLAY:65,WET_CLAY:66,BRICK:67,LADDER:68,SPRING_PLATFORM:69,INVASION_CACHE:70,UFO_CONCRETE:71,MOTHER_ICE:72,MOTHER_LAVA:73,ALTAR:74,GLOWSHROOM:75,CHIMNEY:76,RESPAWN_TOTEM:77,UNSTABLE_SAND:78,UNSTABLE_GRASS:79,QUICKSAND:80,GOLD_ORE:81,TRACK:82,CHAIR_WOOD:83,CHAIR_STONE:84,CHAIR_STEEL:85,GRASS_SNOW:86,FROZEN_DIRT:87,FROZEN_SAND:88,FROZEN_CLAY:89,TOXIC_SNOW:90,CHEST_UNCOMMON:91,CHEST_LEGENDARY:92,STEAM_BOILER:93,STEAM_JET:94,BEDROCK_LADDER:95,
+  // Home furnishing IDs are append-only: persisted worlds store these bytes directly.
+  RUSTIC_STOOL:96,PINE_TABLE:97,WALL_SHELF:98,OAK_CABINET:99,COZY_BED:100,BOOKCASE:101,PATCHWORK_SOFA:102,HAMMOCK:103,
+  WOVEN_RUG:104,POTTED_FERN:105,WALL_CLOCK:106,AQUARIUM:107,TERRARIUM:108,CHANDELIER:109,INDOOR_FOUNTAIN:110,HOLOGRAM_ART:111,
+  DESK_LAMP:112,RADIO:113,TELEVISION:114,GAME_CONSOLE:115,REFRIGERATOR:116,COFFEE_MACHINE:117,AIR_PURIFIER:118,MEDICAL_STATION:119,
+  HEALING_POD:120,ZERO_G_LOUNGER:121,MEMORY_PROJECTOR:122,CHRONO_CLOCK:123,BIOLUM_GARDEN:124,MINIATURE_SUN:125,DREAM_SYNTH:126,COSMIC_ORRERY:127
+};
 export const INFO = {
   0:{hp:0,color:null,drop:null,passable:true},
   // flammable/burnTime drive the fire system (engine/fire.js): seconds a tile burns
@@ -127,9 +133,9 @@ export const INFO = {
  // chair that crowns a valid block-built machine (track platform + hull)
  // assembles it into a drivable mech; the material sets seat durability and
  // how efficiently the seated hero's own energy can drive the tracks.
- 83:{hp:4,color:'#a9743c',drop:'chairWood',passable:true, chair:true, chairMaterial:'wood', flammable:true, burnTime:30},
- 84:{hp:7,color:'#8d939c',drop:'chairStone',passable:true, chair:true, chairMaterial:'stone'},
- 85:{hp:9,color:'#9fb0bd',drop:'chairSteel',passable:true, chair:true, chairMaterial:'steel'},
+ 83:{hp:4,color:'#a9743c',drop:'chairWood',passable:true, chair:true, furniture:true, furnitureCategory:'furniture', chairMaterial:'wood', flammable:true, burnTime:30},
+ 84:{hp:7,color:'#8d939c',drop:'chairStone',passable:true, chair:true, furniture:true, furnitureCategory:'furniture', chairMaterial:'stone'},
+ 85:{hp:9,color:'#9fb0bd',drop:'chairSteel',passable:true, chair:true, furniture:true, furnitureCategory:'furniture', chairMaterial:'steel'},
  // Winter grass: living turf dusted by snowfall (clouds deposit / seasonal dusting).
  // First stage of accumulation — melts back to GRASS, mines like grass. Too damp to burn.
  86:{hp:2,color:'#7fa06b',drop:'grass',passable:false, snowyGrass:true},
@@ -162,6 +168,51 @@ export const INFO = {
  // but the opposite end may extend through open air for the full world height.
  95:{hp:12,color:'#6f7890',drop:'bedrockLadder',passable:true, ladder:true, bedrockLadder:true}
 };
+
+// Compact physics/save metadata for the data-driven home catalogue. Names,
+// recipes and artwork live in engine/furnishings.js; constants only owns the
+// stable tile/resource contract used by worlds, mining and inventory restores.
+export const HOME_FURNISHING_TILE_SPECS = Object.freeze([
+  ['RUSTIC_STOOL','rusticStool','#ad7a45',3,.04,'furniture'],
+  ['PINE_TABLE','pineTable','#a66d38',4,.06,'furniture'],
+  ['WALL_SHELF','wallShelf','#916035',3,.05,'furniture'],
+  ['OAK_CABINET','oakCabinet','#7d4b2b',6,.09,'furniture'],
+  ['COZY_BED','cozyBed','#c67b69',5,.14,'furniture'],
+  ['BOOKCASE','bookcase','#8f5934',6,.10,'furniture'],
+  ['PATCHWORK_SOFA','patchworkSofa','#a85f73',5,.14,'furniture'],
+  ['HAMMOCK','hammock','#d2a25f',3,.08,'furniture'],
+  ['WOVEN_RUG','wovenRug','#b95f4f',2,.06,'decor'],
+  ['POTTED_FERN','pottedFern','#67a95b',2,.06,'decor'],
+  ['WALL_CLOCK','wallClock','#d1a84d',3,.07,'decor'],
+  ['AQUARIUM','aquarium','#52b9d5',3,.16,'decor',4],
+  ['TERRARIUM','terrarium','#67c58d',3,.12,'decor',6],
+  ['CHANDELIER','chandelier','#ffd978',4,.13,'decor',12],
+  ['INDOOR_FOUNTAIN','indoorFountain','#71b8d0',5,.14,'decor'],
+  ['HOLOGRAM_ART','hologramArt','#8fe9ff',4,.17,'decor',7],
+  ['DESK_LAMP','deskLamp','#ffc766',3,.08,'electronics',10],
+  ['RADIO','radio','#d28b4e',4,.11,'electronics'],
+  ['TELEVISION','television','#56b7d8',5,.14,'electronics',4],
+  ['GAME_CONSOLE','gameConsole','#9c7df2',4,.16,'electronics',4],
+  ['REFRIGERATOR','refrigerator','#b7d2dc',7,.13,'electronics'],
+  ['COFFEE_MACHINE','coffeeMachine','#b87852',5,.14,'electronics'],
+  ['AIR_PURIFIER','airPurifier','#77dfd2',6,.20,'electronics',5],
+  ['MEDICAL_STATION','medicalStation','#72e5ad',7,.26,'electronics',8],
+  ['HEALING_POD','healingPod','#62f1c5',10,.32,'wonders',11],
+  ['ZERO_G_LOUNGER','zeroGLounger','#b08cff',9,.28,'wonders',7],
+  ['MEMORY_PROJECTOR','memoryProjector','#7de8ff',8,.26,'wonders',8],
+  ['CHRONO_CLOCK','chronoClock','#f3ca63',9,.30,'wonders',7],
+  ['BIOLUM_GARDEN','biolumGarden','#7cf3a8',7,.27,'wonders',10],
+  ['MINIATURE_SUN','miniatureSun','#ffb43f',12,.36,'wonders',15],
+  ['DREAM_SYNTH','dreamSynth','#d07cff',10,.35,'wonders',9],
+  ['COSMIC_ORRERY','cosmicOrrery','#92a8ff',11,.34,'wonders',9]
+].map(Object.freeze));
+
+for(const [tileName,drop,color,hp,homeRegenBonus,furnitureCategory,lightLevel] of HOME_FURNISHING_TILE_SPECS){
+  INFO[T[tileName]]={
+    hp,color,drop,passable:true,furniture:true,furnitureCategory,homeRegenBonus,
+    ...(lightLevel ? {lightLevel} : null)
+  };
+}
 // Rows above (i.e. numerically below) this line get snow cover; tuned for the v2
 // terrain where sea level sits at row ~62 and peaks reach row ~10
 export const SNOW_LINE = 30;

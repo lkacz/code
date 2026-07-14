@@ -476,6 +476,7 @@ assert.match(mainSource, /function teleportHeroTo\(x,y,opts\)[\s\S]*ensureChunkA
 assert.match(mainSource, /function ensureChunks\(\)[\s\S]*ensureChunkAtY\(pcx\+d,player\.y\)/, 'runtime chunk warming follows the player vertical section');
 assert.match(mainSource, /function totemRespawnSpot\(tx,ty\)[\s\S]*ensureChunkAtY\(Math\.floor\(tx\/CHUNK_W\),ty\)/, 'totem respawn spot warms the saved vertical section');
 assert.match(mainSource, /function healingShelterRespawnSpot\(rec\)[\s\S]*ensureChunkAtY\(Math\.floor\(rec\.x\/CHUNK_W\),rec\.y\)/, 'healing shelter respawn spot warms the saved vertical section');
-assert.match(mainSource, /function placePlayer\(skipMsg,opts\)[\s\S]*const dest=nearestRespawnDestination\(\);[\s\S]*const spot=dest\.spot;[\s\S]*ensureChunkAtY\(Math\.floor\(spot\.x\/CHUNK_W\),spot\.y\)/, 'respawn placement warms the chosen totem or shelter landing section');
+assert.match(mainSource, /function placePlayerAtRespawnSpot\(spot\)[\s\S]*ensureChunkAtY\(Math\.floor\(x\/CHUNK_W\),y\)/, 'respawn placement helper warms the destination vertical section');
+assert.match(mainSource, /function placePlayer\(skipMsg,opts\)[\s\S]*const dest=nearestRespawnDestination\(\);[\s\S]*const spot=dest\.spot;[\s\S]*placePlayerAtRespawnSpot\(spot\)/, 'normal respawn routes its chosen totem or shelter through the section-aware placement helper');
 assert.match(mainSource, /function debugGasOrigin\(\)[\s\S]*ensureChunkAtY\(Math\.floor\(tx\/CHUNK_W\),ty\)/, 'debug gas placement probes the correct vertical section');
 assert.match(mainSource, /function debugRigCellsClear\(cells\)[\s\S]*ensureChunkAtY\(Math\.floor\(cell\.x\/CHUNK_W\),cell\.y\)/, 'debug rig placement validates cells in the correct vertical section');

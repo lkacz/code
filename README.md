@@ -145,6 +145,23 @@ reversed damage → mutual fall → epilogue, snapshot/restore) and
   progress bars with "where to find it" source hints, ×5/Max batch crafting and
   lifetime craft counters — all persisted in the save's `crafting` part and covered
   headless by `npm run test:crafting`.
+* **Home furnishing workshop** (`engine/furnishings.js`) adds 32 placeable, mineable
+  objects across four recipe-book collections: furniture, decoration, electronics and
+  late-game wonders. The ladder runs from stools, shelves, rugs and lamps through beds,
+  aquariums and consoles to healing pods, a miniature sun, a dream synthesizer and a
+  cosmic orrery. Every object has bespoke procedural pixel art (including animated
+  world effects and real light emitters) and contributes to an illuminated, sealed
+  home's health-regeneration multiplier. Chairs retain their exact x1.5/x2 comfort
+  steps; all other objects add diminishing-return comfort toward a global x3 cap.
+  Repeated copies of one design contribute 55% of the previous copy, so every placed
+  furnishing still helps, but a varied home decisively beats cheap-item spam. Animated effects use
+  a short-lived viewport cache, while clocks, water, appliances, media, medical equipment and
+  late-game wonders add sparse positional WebAudio cues with per-family scheduling and voice caps.
+  A placed radio opens an accessible station selector (E or click) with six original procedural
+  genres: lo-fi, synthwave, jazz noir, acoustic folk, cosmic ambient and chiptune. Each station has
+  its own colors, orchestration, named track rotation and positional sound; combat music interrupts
+  domestic radio cleanly, and the selected station persists in audio settings.
+  The in-world comfort HUD reports the live multiplier, heal rate, collection breakdown and cap progress.
 * **Audio** (`engine/audio.js`): every effect is synthesized with WebAudio — zero asset
   files, CSP-safe; context unlocks on first gesture. Digging, breaking, placing, bows,
   swings, streams, explosions, chests, level-ups, boss roars, plus a looping rain bed

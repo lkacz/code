@@ -69,6 +69,13 @@ export function isChairTile(t){
   return !!(INFO[t] && INFO[t].chair);
 }
 
+// Every home object is a thin, passable fixture. Chairs remain a specialised
+// subset because mechs use them as pilot seats; the wider predicate powers
+// shelter comfort, rendering and settlement detection.
+export function isFurnitureTile(t){
+  return !!(INFO[t] && INFO[t].furniture);
+}
+
 export function isAirOrGasTile(t){
   return t===T.AIR || isGasTile(t);
 }
@@ -114,7 +121,9 @@ export function isWindPorousTile(t){
 
 export function isSmokePorousTile(t){
   // Smoke shares thin-fixture/gas porosity with wind, but it cannot occupy a
-  // liquid cell. Closed doors and trapdoors remain structural barriers.
+  // liquid cell. A chimney is structurally solid but contains an open internal
+  // flue, so only smoke may occupy it. Closed doors and trapdoors remain barriers.
+  if(t===T.CHIMNEY) return true;
   return t!==T.WATER && t!==T.LAVA && isWindPorousTile(t);
 }
 
@@ -231,7 +240,7 @@ export function isMeteorLifeSiteTile(t){
 
 export function isMeteorSettlementSiteTile(t){
   const info=INFO[t] || INFO[T.AIR];
-  return !!(info && (info.machine || info.chestTier || info.cache || info.door || info.trapdoor)) ||
+  return !!(info && (info.machine || info.chestTier || info.cache || info.door || info.trapdoor || info.furniture)) ||
     t===T.STEEL || t===T.CHIMNEY || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || t===T.LADDER || t===T.BEDROCK_LADDER;
 }
 

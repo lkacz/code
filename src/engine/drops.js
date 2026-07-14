@@ -271,9 +271,13 @@ const drops = (function(){
   function spawnResource(x,y,res,qty,opts){
     if(typeof res!=='string' || !res) return null;
     qty=Math.max(1,Math.floor(Number(qty)||1));
+    opts=opts||{};
+    const tier=TIER_RANK[opts.tier]!==undefined ? opts.tier : 'common';
     // color/glyph resolved ONCE here — draw() must never scan the resource
     // registry per frame (140 drops × registry find() was a real frame tax)
-    return makeDrop(x,y,{kind:'resource', res, qty, tier:'common', life:DESPAWN_SEC, color:resourceColor(res), glyph:RES_GLYPH[res]||null},opts);
+    const d=makeDrop(x,y,{kind:'resource',res,qty,tier,life:DESPAWN_SEC,color:resourceColor(res),glyph:RES_GLYPH[res]||null,source:opts.source||'resource'},opts);
+    if(d && opts.announce===true && tier!=='common') announceDrop(d);
+    return d;
   }
   function announceJewel(d){
     if(!d) return;
@@ -510,6 +514,7 @@ const drops = (function(){
     const inv=window.inv;
     if(!inv || typeof inv!=='object') return false;
     inv[d.res]=(Number(inv[d.res])||0)+d.qty;
+    try{ if(typeof MM.noteCraftResultSeen==='function') MM.noteCraftResultSeen(d.res,{source:d.source||'drop'}); }catch(e){}
     try{ if(typeof window.updateInventoryHud==='function') window.updateInventoryHud(); }catch(e){}
     if(!silent){
       try{ if(typeof window.msg==='function') window.msg('Podniesiono: '+resourceLabel(d.res)+' ×'+d.qty); }catch(e){}

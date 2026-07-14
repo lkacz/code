@@ -106,6 +106,24 @@ const sealedMass=smoke.metrics().mass;
 for(let i=0;i<240;i++) smoke.update(0.1,getTile);
 assert.ok(smoke.metrics().mass<sealedMass,'an opened roof and wind ventilate the room');
 assert.ok(smoke.snapshot().list.some(c=>c.y<0),'vented smoke rises out through the opening');
+const ventedSmokeSnap=smoke.snapshot();
+
+// Chimneys stay solid construction for actors and wind, but their internal flue
+// is open to this density layer. Smoke below a roof can enter the ceramic stack
+// and emerge above it instead of treating the chimney like a sealed wall.
+smoke.reset();
+MM.wind.speed=()=>0;
+const chimneyRoomTile=(x,y)=>{
+  if(x<0||x>8||y===7) return T.STONE;
+  if(y===1&&x!==4) return T.STONE;
+  if(x===4&&(y===0||y===1)) return T.CHIMNEY;
+  return T.AIR;
+};
+assert.ok(smoke.emit(4.5,6.5,4.2,{getTile:chimneyRoomTile})>0,'chimney room accepts a smoke release');
+for(let i=0;i<60;i++) smoke.update(0.1,chimneyRoomTile);
+assert.ok(smoke.snapshot().list.some(c=>c.x===4&&c.y<0),'physical smoke crosses the chimney stack and emerges above the roof');
+smoke.reset();
+assert.equal(smoke.restore(ventedSmokeSnap,getTile),true,'chimney probe restores the preceding room fixture');
 
 // Snapshot/restore keeps the physical layer across save/load without touching
 // terrain, and rejects blocked cells if the room changed meanwhile.

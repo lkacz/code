@@ -121,7 +121,10 @@ tiles.clear();
 const legacyCandidate = generatedNpcs._candidateForCell(candidate.cell, worldGen);
 const legacyCells = generatedNpcs._houseCells(legacyCandidate, getTile, worldGen).cells;
 // Legacy saves predate the construction-background layer, so only foreground cells exist.
-legacyCells.forEach(c => { if(c.layer === 'bg') return; setTile(c.x, c.y, c.role === 'door' ? T.AIR : c.t); });
+legacyCells.forEach(c => {
+  if(c.layer === 'bg') return;
+  setTile(c.x,c.y,c.role==='door'||c.role==='furnishing'?T.AIR:c.t);
+});
 generatedNpcs.restore({v:2, seed:worldGen.worldSeed, locals:[{
   id:legacyCandidate.id,
   houseBuilt:true,
@@ -132,8 +135,12 @@ player.x = legacyCandidate.x;
 generatedNpcs.update(1, player, getTile, setTile, ctx);
 const migratedDoorCells = legacyCells.filter(c => c.role === 'door');
 assert.ok(migratedDoorCells.every(c => getTile(c.x, c.y) === T.WOOD_DOOR), 'legacy air doorways migrate to structural door tiles');
+const migratedFurnishings=legacyCells.filter(c=>c.role==='furnishing');
+assert.ok(migratedFurnishings.length>0 && migratedFurnishings.every(c=>getTile(c.x,c.y)===c.t),
+  'legacy NPC interiors retrofit their distance-appropriate catalogue furnishings');
 local = generatedNpcs._debug().locals.find(s => s.id === legacyCandidate.id);
-assert.ok(local && local.houseDoorsMigrated && !local.abandoned, 'door migration is one-time and does not abandon an otherwise intact house');
+assert.ok(local && local.houseDoorsMigrated && local.houseFurnishingsDone && !local.abandoned,
+  'door/furnishing migration is one-time and does not abandon an otherwise intact house');
 
 generatedNpcs.reset();
 console.log('npc-house-sim: all assertions passed');

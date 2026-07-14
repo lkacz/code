@@ -41,6 +41,13 @@ import { T, INFO, WORLD_MIN_Y, WORLD_MAX_Y, isLeaf } from '../constants.js';
     [T.CHEST_LEGENDARY]: 7
   };
 
+  function tileEmitterLevel(t){
+    const fixed = EMITTERS[t] || 0;
+    if(fixed) return fixed;
+    const declared = Number(INFO[t] && INFO[t].lightLevel);
+    return Number.isFinite(declared) ? Math.max(0, Math.min(LEVELS, Math.round(declared))) : 0;
+  }
+
   const cfg = {
     enabled: true,
     heroGlow: 5,          // faint adaptation glow so darkness never soft-locks
@@ -161,7 +168,7 @@ import { T, INFO, WORLD_MIN_Y, WORLD_MAX_Y, isLeaf } from '../constants.js';
         else if(isLeaf(t)) sky = Math.max(0, sky - 1);
         if(inWin){
           solid[idx] = blocksLight(t) ? 1 : (t === T.WATER ? 2 : 0);
-          let e = EMITTERS[t] || 0;
+          let e = tileEmitterLevel(t);
           if(!e && opts.burningAt){ try{ if(opts.burningAt(wx, y)) e = FIRE_LEVEL; }catch(err){} }
           if(e){
             if(e > level[idx]) level[idx] = e;

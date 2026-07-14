@@ -125,6 +125,22 @@ try{
   assert.equal(smokeCalls.some(c=>Math.floor(c.x)===2 && Math.floor(c.y)===5), false, 'chimney-routed coal smoke does not originate at the fuel cell');
 
   fire.reset();
+  smokeCalls=[];
+  const torchTiles=new Map();
+  const torchKey=(x,y)=>x+','+y;
+  const getTorchTile=(x,y)=>torchTiles.get(torchKey(x,y)) ?? T.AIR;
+  const setTorchTile=(x,y,t)=>torchTiles.set(torchKey(x,y),t);
+  setTorchTile(3,5,T.TORCH);
+  setTorchTile(3,4,T.CHIMNEY);
+  setTorchTile(3,3,T.CHIMNEY);
+  fire.noteTorch(3,5);
+  for(let i=0;i<80;i++) fire.update(getTorchTile,setTorchTile,0.1);
+  const torchSmoke=smokeCalls.filter(c=>Math.floor(c.x)===3 && Math.floor(c.y)===2);
+  assert.ok(torchSmoke.length>0,'a torch produces physical black smoke at the open chimney outlet');
+  assert.ok(torchSmoke.every(c=>c.amount>0&&c.amount<0.05),'torch smoke packets stay subtle and much smaller than burning fuel packets');
+  assert.equal(smokeCalls.some(c=>Math.floor(c.x)===3 && Math.floor(c.y)===5),false,'torch smoke does not leak from the solid base of a working chimney');
+
+  fire.reset();
   const verticalTiles=new Map();
   const verticalKey=(x,y)=>x+','+y;
   const getVerticalTile=(x,y)=>verticalTiles.get(verticalKey(x,y)) ?? T.AIR;

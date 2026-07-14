@@ -1,13 +1,20 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { WORLD_H, WORLD_MAX_Y, WORLD_MIN_Y, WORLD_SECTION_H } from '../src/constants.js';
+import {
+  respawnTravelSection,
+  sectionAwareRespawnPoint,
+  usesSurfaceRespawnRoute
+} from '../src/engine/respawn_travel.js';
 
 const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const indexSource = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const constantsSource = readFileSync(new URL('../src/constants.js', import.meta.url), 'utf8');
 
 assert.match(mainSource, /let deathTravelFx=null;/, 'death respawn transit has a single active state object');
-assert.match(mainSource, /function startDeathTravelFx\(cause\)[\s\S]*deathRespawnTarget\(\)[\s\S]*releaseGameplayInput\(\)[\s\S]*spawnEnergyAbsorb/, 'starting death transit locks input and emits energy toward the respawn target');
-assert.match(mainSource, /function finishDeathTravelRespawn\(\)[\s\S]*player\.hp=player\.maxHp[\s\S]*placePlayer\(true,\{center:false\}\)[\s\S]*updateInventory\(\)/, 'respawn completion restores health and uses the normal spawn placement path without snapping the camera');
+assert.match(mainSource, /function startDeathTravelFx\(cause\)[\s\S]*lockDeathRespawnTarget\(deathRespawnTarget\(\)\)[\s\S]*surfaceRoute:usesSurfaceRespawnRoute[\s\S]*releaseGameplayInput\(\)[\s\S]*spawnEnergyAbsorb/, 'starting death transit freezes one section-aware target, locks input and emits energy toward it');
+assert.match(mainSource, /function lockDeathRespawnTarget\(target\)[\s\S]*Object\.freeze/, 'the selected respawn target cannot drift after departure');
+assert.match(mainSource, /function finishDeathTravelRespawn\(\)[\s\S]*player\.hp=player\.maxHp[\s\S]*placePlayerAtRespawnSpot\(fx\.to\)[\s\S]*centerOnPlayer\(\)[\s\S]*updateInventory\(\)/, 'respawn completion lands at the frozen target and synchronizes the camera in the same tick');
 assert.match(mainSource, /const DEATH_TRAVEL_SPEED_TILES_PER_SEC=\d+;/, 'death transit has an explicit world-speed target');
 assert.match(mainSource, /const DEATH_TRAVEL_GROUND_CLEARANCE=10;/, 'death transit cruises about ten blocks above the terrain');
 assert.match(mainSource, /function deathTravelProgressAt\(raw\)[\s\S]*slowZone=0\.28[\s\S]*u \+ u\*u - u\*u\*u/, 'death transit keeps most travel steady but eases out before respawn');
@@ -17,9 +24,9 @@ assert.match(mainSource, /function deathTravelTailAlpha\(v\)[\s\S]*t\*t\*\(3-2\*
 assert.match(mainSource, /function deathTravelLightningBolt\(fx,startRaw,endRaw,frame\)[\s\S]*stormScale=Math\.max\(0\.45, Math\.min\(1\.15, trailLen\/10\)\)[\s\S]*segs=9\+Math\.floor/, 'death transit uses storm-lightning segment counts and tile-scale wobble');
 assert.match(mainSource, /function deathTravelLightningBolt\(fx,startRaw,endRaw,frame\)[\s\S]*branches=\[\][\s\S]*1\.2\+deathRand[\s\S]*\*1\.6[\s\S]*return \{pts,branches\};/, 'death transit bolt forks use storm-lightning branch lengths');
 assert.match(mainSource, /function drawDeathLightningPath\(ctx,bolt,passes\)[\s\S]*deathTravelTailAlpha\(i\/last\)[\s\S]*a\*fade[\s\S]*anchorFade=deathTravelTailAlpha\(bp\.fade\|\|0\)/, 'death transit lightning is drawn segment-by-segment so the tail end fades out');
-assert.match(mainSource, /function deathTravelRawGroundYAt\(fx,tx\)[\s\S]*WORLDGEN\.surfaceHeight\(tx\)/, 'death transit samples world surface height along the route');
+assert.match(mainSource, /function deathTravelRawGroundYAt\(fx,tx\)\{\s*if\(!fx \|\| fx\.surfaceRoute!==true\) return null;[\s\S]*WORLDGEN\.surfaceHeight\(tx\)/, 'surface height sampling is guarded so sky, cave and deep routes never use it');
 assert.match(mainSource, /function deathTravelGroundYAt\(fx,x\)[\s\S]*for\(let dx=-4; dx<=4; dx\+\+\)[\s\S]*weight=5-Math\.abs\(dx\)/, 'death transit smooths nearby terrain samples instead of following every tile bump');
-assert.match(mainSource, /function deathTravelPointAt\(fx,p\)[\s\S]*cruiseY=deathTravelGroundYAt\(fx,x\)-DEATH_TRAVEL_GROUND_CLEARANCE[\s\S]*cruiseBlend/, 'death transit blends from the death point into a terrain-following spirit flight and back to respawn');
+assert.match(mainSource, /function deathTravelPointAt\(fx,p\)[\s\S]*fx\.surfaceRoute \? deathTravelGroundYAt\(fx,x\) : null[\s\S]*sectionAwareRespawnPoint/, 'death transit delegates the complete vertical route to the section-aware point calculator');
 assert.match(mainSource, /function deathTravelEstimatedPathLength\(fx\)[\s\S]*deathTravelPointAt\(fx,i\/steps\)/, 'death transit speed is estimated from the sampled spirit path rather than a straight line');
 assert.match(mainSource, /function deathTravelDurationForPathLength\(pathLength\)[\s\S]*len\/DEATH_TRAVEL_SPEED_TILES_PER_SEC/, 'death transit duration is derived from sampled path length and speed');
 assert.match(mainSource, /function deathTravelRemainingPathLength\(fx,progress\)[\s\S]*deathTravelPointAt\(fx,start\)[\s\S]*deathTravelPointAt\(fx,p\)/, 'death transit HUD samples the remaining route instead of showing straight-line distance');
@@ -27,7 +34,7 @@ assert.match(mainSource, /function deathTravelHudMetrics\(\)[\s\S]*const fx=deat
 assert.match(mainSource, /route\.pathLen=deathTravelEstimatedPathLength\(route\);[\s\S]*route\.dur=deathTravelDurationForPathLength\(route\.pathLen\);/, 'death transit no longer forces far respawns into a fixed short duration');
 assert.ok(!/0\.9 \+ dist\*0\.018/.test(mainSource), 'death transit does not use the old capped distance fudge');
 assert.ok(!/DEATH_TRAVEL_MAX_DUR=2\.35/.test(mainSource), 'death transit no longer has the short max duration that made far flights too fast');
-assert.match(mainSource, /function placePlayer\(skipMsg,opts\)[\s\S]*if\(opts\.center===false\)\{ revealAround\(\); ensureChunks\(\); initScarf\(\); \}/, 'placePlayer supports a no-snap mode for smooth death transit handoff');
+assert.match(mainSource, /function placePlayerAtRespawnSpot\(spot\)[\s\S]*ensureChunkAtY\(Math\.floor\(x\/CHUNK_W\),y\)[\s\S]*player\.x=x; player\.y=y/, 'the locked landing helper warms and places within the exact destination section');
 assert.match(constantsSource, /RESPAWN_TOTEM:77/, 'respawn totem is a stable terrain tile rather than a virtual marker');
 assert.match(constantsSource, /77:\{hp:8,color:'#e23b4e',drop:'respawnTotem',passable:true,\s*respawnTotem:true\}/, 'respawn totem drops as a placeable passable fixture');
 assert.doesNotMatch(mainSource, /RESPAWN_TOTEM_MINE_ID/, 'respawn totem no longer uses a virtual mining target id');
@@ -36,7 +43,7 @@ assert.match(mainSource, /MM\.onTileRenderChanged=function\(tx,ty,old,next\)[\s\
 assert.match(mainSource, /function nearestRespawnTotem\(\)[\s\S]*validRespawnTotemCells\(\)[\s\S]*if\(d<bestD\)\{ bestD=d; best=p; \}/, 'death respawn ranks all living totems by distance to the hero');
 assert.match(mainSource, /function nearestRespawnDestination\(\)[\s\S]*const totem=nearestRespawnTotem\(\);[\s\S]*const home=nearestHealingShelter\(\);[\s\S]*totemCand\.d<=homeCand\.d \? totemCand : homeCand/, 'death respawn compares the nearest totem and nearest healing shelter by actual landing distance, preferring totems on ties');
 assert.match(mainSource, /function deathRespawnTarget\(\)\{\s*const dest=nearestRespawnDestination\(\);\s*if\(dest && dest\.spot\) return dest\.spot;\s*return defaultRespawnTarget\(\);\s*\}/, 'death transit targets the nearest valid totem or healing shelter, then falls back to map start');
-assert.match(mainSource, /function placePlayer\(skipMsg,opts\)[\s\S]*const dest=nearestRespawnDestination\(\);[\s\S]*const spot=dest\.spot;[\s\S]*ensureChunkAtY\(Math\.floor\(spot\.x\/CHUNK_W\),spot\.y\)/, 'final respawn placement warms the chosen totem/home destination section and lands there');
+assert.match(mainSource, /function placePlayer\(skipMsg,opts\)[\s\S]*const dest=nearestRespawnDestination\(\);[\s\S]*placePlayerAtRespawnSpot\(spot\)/, 'ordinary placement shares the exact section-aware landing helper');
 assert.match(mainSource, /function registerHealingShelterStatus\(status,opts\)[\s\S]*healingShelterSignalAt\(rec,false\)/, 'valid healing shelters are indexed and show a heart when first registered');
 assert.match(mainSource, /function noteHealingShelterTileChanged\(tx,ty\)[\s\S]*validateHealingShelters\(\{changed:\{x:tx,y:ty\},signal:true\}\)/, 'remembered homes revalidate nearby tile edits and can show a broken heart');
 assert.match(mainSource, /pushWorldNumber\(\{kind:'home',icon:broken\?'brokenHeart':'heart'/, 'home and broken-home feedback uses icon-only world popups');
@@ -71,5 +78,86 @@ assert.match(mainSource, /CLOUDS\.isRainingAt\) \? CLOUDS\.isRainingAt\(Math\.fl
 assert.match(indexSource, /#worldStatusPanel\{[^}]*max-width:min\(520px,58vw\)[^}]*overflow:hidden/, 'status panel is bounded so death transit HUD details do not break the top bar');
 assert.match(indexSource, /#worldStatus\{[^}]*white-space:nowrap[^}]*text-overflow:ellipsis/, 'status text remains a single trimmed line on narrow screens');
 assert.match(mainSource, /function runGameStep\(dt,ts\)\{\s*if\(updateDeathTravelFx\(dt\)\)\{[\s\S]*updateParticles\(dt\);[\s\S]*updateBlink\(ts\);[\s\S]*return;/, 'simulation pauses gameplay and still advances particles during death transit');
+
+const routeOpts={
+  sectionHeight:WORLD_SECTION_H,
+  baseSectionMin:0,
+  baseSectionMax:Math.ceil(WORLD_H/WORLD_SECTION_H)-1,
+  minY:WORLD_MIN_Y,
+  maxY:WORLD_MAX_Y,
+  clearance:10,
+  edgeMargin:2,
+  sourceSurfaceY:60,
+  targetSurfaceY:60,
+  surfaceBand:18
+};
+assert.equal(usesSurfaceRespawnRoute(59,61,routeOpts),true,'near-surface middle-world travel retains terrain following');
+assert.equal(usesSurfaceRespawnRoute(59,61,{...routeOpts,sourceSurfaceY:null}),false,'missing surface evidence safely disables terrain following');
+assert.equal(usesSurfaceRespawnRoute(-105,-95,routeOpts),false,'high-sky travel never follows the middle-world surface');
+assert.equal(usesSurfaceRespawnRoute(125,130,routeOpts),false,'deep cave travel inside the legacy array does not rise to the surface');
+const surfaceMid=sectionAwareRespawnPoint({from:{x:0,y:59},to:{x:20,y:61},seed:0},0.5,64,routeOpts);
+assert.ok(Math.abs(surfaceMid.y-54)<0.001,'near-surface route still cruises ten blocks above smoothed terrain');
+
+for(const sy of [-2,-1,0,1,2,3]){
+  const top=sy*WORLD_SECTION_H;
+  const fromY=top+25, toY=top+43;
+  const opts={...routeOpts,sourceSurfaceY:60,targetSurfaceY:60};
+  for(let i=0;i<=40;i++){
+    const point=sectionAwareRespawnPoint({from:{x:0,y:fromY},to:{x:80,y:toY},seed:sy+7},i/40,null,opts);
+    assert.ok(Number.isFinite(point.x)&&Number.isFinite(point.y),'section '+sy+' route remains finite');
+    assert.equal(respawnTravelSection(point.y,WORLD_SECTION_H),sy,'same-section route remains inside section '+sy);
+  }
+}
+
+for(const sy of [-2,-1,0,1,2,3]){
+  const top=sy*WORLD_SECTION_H;
+  for(const [fromY,toY,edge] of [
+    [top+0.05,top+0.15,'top'],
+    [top+WORLD_SECTION_H-0.15,top+WORLD_SECTION_H-0.05,'bottom']
+  ]){
+    const route={from:{x:0,y:fromY},to:{x:20,y:toY},seed:sy+31};
+    const start=sectionAwareRespawnPoint(route,0,null,routeOpts);
+    const justAfterStart=sectionAwareRespawnPoint(route,1e-6,null,routeOpts);
+    const justBeforeEnd=sectionAwareRespawnPoint(route,1-1e-6,null,routeOpts);
+    const end=sectionAwareRespawnPoint(route,1,null,routeOpts);
+    assert.ok(Math.abs(justAfterStart.y-start.y)<0.001,'section '+sy+' '+edge+' departure is continuous');
+    assert.ok(Math.abs(end.y-justBeforeEnd.y)<0.001,'section '+sy+' '+edge+' landing is continuous');
+    assert.equal(respawnTravelSection(justAfterStart.y,WORLD_SECTION_H),sy,'section '+sy+' '+edge+' departure remains in its layer');
+    assert.equal(respawnTravelSection(justBeforeEnd.y,WORLD_SECTION_H),sy,'section '+sy+' '+edge+' landing remains in its layer');
+  }
+}
+
+for(const [fromY,toY] of [[60,-105],[-105,175],[175,-35],[-70.1,-69.9]]){
+  const ascending=toY>=fromY;
+  let previous=fromY;
+  for(let i=0;i<=80;i++){
+    const point=sectionAwareRespawnPoint({from:{x:0,y:fromY},to:{x:120,y:toY},seed:19},i/80,null,routeOpts);
+    assert.ok(Number.isFinite(point.y),'cross-section route remains finite');
+    if(i>0) assert.ok(ascending ? point.y>=previous-1e-9 : point.y<=previous+1e-9,'cross-section y stays monotone');
+    previous=point.y;
+  }
+  assert.ok(Math.abs(previous-toY)<1e-9,'cross-section route ends at its exact frozen y');
+}
+
+for(const fromSection of [-2,-1,0,1,2,3]){
+  for(const toSection of [-2,-1,0,1,2,3]){
+    if(fromSection===toSection) continue;
+    const fromY=fromSection*WORLD_SECTION_H+WORLD_SECTION_H*0.42;
+    const toY=toSection*WORLD_SECTION_H+WORLD_SECTION_H*0.58;
+    let previous=fromY;
+    for(let i=1;i<=50;i++){
+      const point=sectionAwareRespawnPoint({from:{x:-30,y:fromY},to:{x:260,y:toY},seed:73},i/50,null,routeOpts);
+      assert.ok(toY>fromY ? point.y>=previous-1e-9 : point.y<=previous+1e-9,'section-pair '+fromSection+'→'+toSection+' remains monotone');
+      previous=point.y;
+    }
+    assert.ok(Math.abs(previous-toY)<1e-9,'section-pair '+fromSection+'→'+toSection+' lands exactly');
+  }
+}
+
+assert.match(mainSource, /function resetWorldTransitionRuntime\(\)[\s\S]*deathTravelFx=null;[\s\S]*resetHouseHealingRuntimeState\(\)[\s\S]*player\.hpInvul=0;[\s\S]*player\.hurtFlashUntil=0;[\s\S]*releaseGameplayInput\(\)/, 'world replacement cancels death travel, healing state, invulnerability and held input together');
+assert.match(mainSource, /function resetHouseHealingRuntimeState\(\)[\s\S]*HOUSE_HEALING\.createState[\s\S]*Object\.assign\(houseHealingState,fresh\)[\s\S]*houseHealMsgAt=0;/, 'world replacement recreates the full house-healing runtime state');
+assert.match(mainSource, /function applyGameData\(data,opts\)[\s\S]*if\(ver<6\)[^\n]*[\s\S]*const legacyWorldMarkers=[\s\S]*resetWorldTransitionRuntime\(\);[\s\S]*if\(WORLD && WORLD\.clear\) WORLD\.clear\(\)/, 'snapshot loading captures guarded legacy markers, then cancels transient respawn state before replacing chunks');
+assert.match(mainSource, /function regenWorld\(\)\{\s*resetWorldTransitionRuntime\(\);[\s\S]*WORLD\.clear\(\)/, 'new-seed regeneration cancels transient respawn state before clearing the world');
+assert.match(mainSource, /window\.regenWorldSameSeed = function\(\)\{ try\{ resetWorldTransitionRuntime\(\);[\s\S]*WORLD && WORLD\.clear/, 'same-seed regeneration cancels transient respawn state before clearing the world');
 
 console.log('death-respawn-fx-sim: all assertions passed');

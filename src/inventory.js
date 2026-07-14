@@ -1,3 +1,5 @@
+import { FURNISHING_RESOURCES } from './engine/furnishings.js';
+
 // Scalable inventory system — core data model (no DOM here; UI lives in inventory_ui.js).
 // Replaces the old customization.js "Stylizacja" system. The player has equipment
 // slots (cape / eyes / outfit / weapon / charm), a bag of collected loot from chests
@@ -268,6 +270,7 @@
     {key:'chairWood',  label:'Fotel drewniany', color:'#a9743c', tile:'CHAIR_WOOD'},
     {key:'chairStone', label:'Fotel kamienny',  color:'#8d939c', tile:'CHAIR_STONE'},
     {key:'chairSteel', label:'Fotel stalowy',   color:'#9fb0bd', tile:'CHAIR_STEEL'},
+    ...FURNISHING_RESOURCES,
     {key:'meatScrap', label:'Skrawki miesa', color:'#d06a54', tile:null}, // mob drops; meld into MEAT blocks at the craft bench
     {key:'meat',    label:'Mieso',   color:'#bd5145', tile:'MEAT'},
     {key:'rottenMeat', label:'Zepsute mieso', color:'#647136', tile:'ROTTEN_MEAT'},

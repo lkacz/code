@@ -10,6 +10,7 @@
 // while a nearby hero suppresses feeding.
 // Run: node tools/boss-sim.test.mjs
 import { strict as assert } from 'assert';
+import { readFile } from 'node:fs/promises';
 
 globalThis.window = globalThis; // bosses.js attaches to window.MM
 globalThis.MM = {};
@@ -34,6 +35,9 @@ globalThis.MM = {
 const { companions } = await import('../src/engine/companions.js');
 const { bosses } = await import('../src/engine/bosses.js');
 assert.ok(bosses, 'bosses module exports');
+const mainSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+assert.match(mainSource,/if\(mineBossTarget\)\{ updateBossMining\(dt\); return; \}/,
+  'the held-mining loop follows a captured boss block instead of a fixed world tile');
 const CFG = bosses.config;
 assert.equal(CFG.FEED_BUILD_SPEED_MULT, 3, 'bosses feed/build themselves 3x faster');
 assert.equal(CFG.SATIATE_BITES, 12, 'bosses eat twice as many blocks per meal');
@@ -207,6 +211,24 @@ const minedPart=mined.parts.find(p=>p.role!=='core' && p.role!=='eye' && bosses.
 assert.ok(minedPart,'a mineable shell part is available');
 assert.ok(bosses.mineAt(minedBx+minedPart.dx,minedBy+minedPart.dy),'a completed pickaxe mining cycle breaks the boss block');
 assert.ok(!mined.parts.includes(minedPart),'pickaxe mining removes the body tile in one completed cycle');
+
+resetWorld();
+const movingMine = bosses.forceSpawn(getTile, {x:300, seed:558, freeze:true, archetype:'walker'});
+step(30);
+const movingBx=Math.round(movingMine.x), movingBy=Math.round(movingMine.y);
+const movingPart=movingMine.parts.find(p=>p.role!=='core' && p.role!=='eye'
+  && bosses.partAt(movingBx+p.dx,movingBy+p.dy)?.part===p);
+assert.ok(movingPart,'a moving boss exposes a mineable shell part');
+const movingTarget=bosses.partAt(movingBx+movingPart.dx,movingBy+movingPart.dy);
+const targetBefore=bosses.resolvePartTarget(movingTarget);
+assert.ok(targetBefore && targetBefore.part===movingPart,'pickaxe captures the exact boss-local block');
+movingMine.x+=2.25;
+const targetAfter=bosses.resolvePartTarget(movingTarget);
+assert.ok(targetAfter && targetAfter.part===movingPart,'captured pickaxe target survives boss movement');
+assert.ok(Math.abs(targetAfter.x-targetBefore.x-2.25)<1e-9,'captured pickaxe target follows the boss live position');
+assert.ok(bosses.mineTarget(movingTarget),'completed mining strikes the captured block after the boss moves');
+assert.ok(!movingMine.parts.includes(movingPart),'moving-boss mining removes the originally selected block');
+assert.equal(bosses.resolvePartTarget(movingTarget),null,'a destroyed block invalidates its mining target');
 
 // --- 6. Heart destruction: the sealed heart deflects blows until the hero carves a
 // path through the plating; once exposed, detonation craters the world, spares loot,
