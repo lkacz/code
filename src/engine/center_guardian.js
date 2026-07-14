@@ -304,14 +304,9 @@ const centerGuardian = (function(){
     if(typeof getTile!=='function' || typeof setTile!=='function') return 0;
     const L=layoutFor();
     const changed=applyOps(epilogueOps(L),getTile,setTile);
-    // A single epic chest settles beside the dais: the story's material thanks.
+    // A single heavy epic chest falls beside the dais: the story's material thanks.
     try{
-      for(const off of [2,-2,3,-3]){
-        const x=L.obeliskX+off;
-        const t=getTile(x,L.floorY-1);
-        const below=getTile(x,L.floorY);
-        if(t===T.AIR && below!==T.AIR && below!==T.WATER){ setTile(x,L.floorY-1,T.CHEST_EPIC); break; }
-      }
+      if(MM.drops && MM.drops.spawnChest) MM.drops.spawnChest(L.obeliskX+0.5,L.floorY-3,'epic',{source:'story',vx:1.3,vy:-2.8});
     }catch(e){}
     state.epilogueMaterialized=true;
     markWorldChanged();
@@ -543,6 +538,12 @@ const centerGuardian = (function(){
     state.suspended=false;
     reflects.length=0;
     awardHeart();
+    try{
+      if(MM.drops && MM.drops.rollJewelDrop){
+        MM.drops.rollJewelDrop({id:'CENTER_GUARDIAN',x:mimic.x,y:mimic.y,maxHp:mimic.maxHp,dmg:30},
+          {boss:true,hp:mimic.maxHp,dmg:30,xp:700});
+      }
+    }catch(e){}
     grantQuietCharm();
     materializeEpilogue();
     setMentorHidden(false);

@@ -9,6 +9,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
   const DYN_KEY='mm_dynamic_loot_v1';
   const DYN_VERSION=1;
   let weaponHitHandler=null;
+  let droppedOpenHandler=null;
   // Load previously saved dynamic loot (items from opened chests)
   try{
     const raw=localStorage.getItem(DYN_KEY);
@@ -177,11 +178,8 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     return item;
   }
 
-  function openChestAt(x,y){ const t=WORLD.getTile(x,y); const info=INFO[t]; if(!info || !info.chestTier) return null; // not chest
-    // remove chest tile
-    WORLD.setTile(x,y,T.AIR);
-    const r=RNG( (x*73856093) ^ (y*19349663) ^ WORLDGEN.worldSeed );
-    const tier=info.chestTier;
+  function releaseLoot(tier,seed,cx,cy){
+    const r=RNG(seed>>>0);
     const tierDef=TIERS[tier]||TIERS.common;
     const rolls=randInt(r,tierDef.rolls[0], tierDef.rolls[1]);
     // Item tiers draw from the chest's mix, so any chest can pay above its
@@ -198,7 +196,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
         // the full spawn fanfare (burst + golden sting + toast); expected-tier
         // loot stays quiet, the chest-open sound already covered it.
         const surprise=(TIER_INDEX[it.tier]||0)>(TIER_INDEX[tier]||0);
-        const d=drops.spawnGear(x+0.5, y+0.35, it, {vx:(r()*2-1)*2.8, vy:-(4.2+r()*2.4), announce:surprise});
+        const d=drops.spawnGear(cx, cy, it, {vx:(r()*2-1)*2.8, vy:-(4.2+r()*2.4), announce:surprise});
         if(d){ d.source='chest'; spawned++; }
       });
     }
@@ -214,6 +212,29 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     return {tier,items,spawned};
   }
 
+  function openChestAt(x,y){
+    const t=WORLD.getTile(x,y), info=INFO[t];
+    if(!info || !info.chestTier) return null;
+    WORLD.setTile(x,y,T.AIR);
+    const seed=(Math.imul(x|0,73856093)^Math.imul(y|0,19349663)^(WORLDGEN.worldSeed|0))>>>0;
+    return releaseLoot(info.chestTier,seed,x+0.5,y+0.35);
+  }
+
+  function setDroppedOpenHandler(handler){
+    droppedOpenHandler=typeof handler==='function' ? handler : null;
+    return !!droppedOpenHandler;
+  }
+  function openDroppedChest(drop,opts){
+    if(!drop || drop.kind!=='chest' || !TIERS[drop.tier]) return null;
+    const drops=MM.drops;
+    if(!drops || typeof drops.remove!=='function' || !drops.remove(drop)) return null;
+    const res=releaseLoot(drop.tier,drop.lootSeed>>>0,drop.x,drop.y-0.12);
+    if(droppedOpenHandler){
+      try{ droppedOpenHandler(drop,res,opts||{}); }catch(e){}
+    }
+    return res;
+  }
+
   // Weapons run in a lower-level simulation module, while main.js owns the
   // complete chest presentation (sound, toast, temple reaction, particles and
   // saving). Use that presentation when registered, with a simulation fallback.
@@ -222,15 +243,21 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     return !!weaponHitHandler;
   }
   function openFromWeaponHitAt(x,y,opts){
-    const t=WORLD.getTile(x,y);
+    const wx=Number(x), wy=Number(y);
+    if(!Number.isFinite(wx) || !Number.isFinite(wy)) return false;
+    const physical=MM.drops && typeof MM.drops.chestAtPoint==='function' ? MM.drops.chestAtPoint(wx,wy,opts&&opts.hitRadius) : null;
+    if(physical) return !!openDroppedChest(physical,opts||{});
+    const tx=Math.floor(wx), ty=Math.floor(wy);
+    if(!Number.isFinite(tx) || !Number.isFinite(ty)) return false;
+    const t=WORLD.getTile(tx,ty);
     if(!(INFO[t] && INFO[t].chestTier)) return false;
     if(weaponHitHandler){
-      try{ return !!weaponHitHandler(x,y,opts||{}); }catch(e){}
+      try{ return !!weaponHitHandler(tx,ty,opts||{}); }catch(e){}
     }
-    return !!openChestAt(x,y);
+    return !!openChestAt(tx,ty);
   }
 
-  MM.chests={openChestAt,openFromWeaponHitAt,setWeaponHitHandler,TIERS,TIER_ORDER,CHEST_TIER_MIX,rollChestItemTier,genItem,saveDynamicLoot};
+  MM.chests={openChestAt,openDroppedChest,openFromWeaponHitAt,setWeaponHitHandler,setDroppedOpenHandler,TIERS,TIER_ORDER,CHEST_TIER_MIX,rollChestItemTier,genItem,saveDynamicLoot};
 })();
 // ESM export (progressive migration)
 export const chests = (typeof window!=='undefined' && window.MM) ? window.MM.chests : undefined;

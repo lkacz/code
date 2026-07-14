@@ -105,6 +105,8 @@ try{
   assert.ok(species.STONE_GOLEM.xp >= 50, 'stone golems pay meaningful XP for surviving mountain pressure');
   assert.ok(species.VULTURE.xp >= 30, 'vultures pay meaningful XP for surviving a nest attack');
   assert.equal(species.ATOMIC_BOMB.xp, 6000, 'destroying an atomic bomb pays a massive high-risk XP jackpot');
+  assert.equal(species.ATOMIC_BOMB.hp, 8000, 'atomic bomb has a siege-scale health pool and cannot be destroyed quickly');
+  assert.ok(species.ATOMIC_BOMB.body.w >= 2.8, 'atomic bomb collision body matches the larger warhead silhouette');
   assert.ok(species.RADIATION_COCKROACH.dmg >= 16, 'radiation cockroaches are poisonous enough to pressure city survival');
   assert.match(mobsSource, /const ATOMIC_BOMB_CRATER_RX = 45;/, 'atomic bomb crater is tripled horizontally into a massive 90-block blast bowl');
   assert.match(mobsSource, /const ATOMIC_BOMB_CRATER_RY = 30;/, 'atomic bomb crater is tripled vertically into a deep blast bowl');
@@ -116,18 +118,27 @@ try{
   player = resetPlayer(80,9.15);
   installDamageRecorder(player);
   mobs.clearAll();
+  mobs.deserialize({v:5,list:[{id:'ATOMIC_BOMB',x:0.5,y:9.124,vx:0,vy:0,hp:120,maxHp:120,state:'armed',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}}});
+  mobs.freezeSpawns(10000);
+  assert.equal(mobs.damageAt(0,9,999,{source:'hero'}), true, 'a large hit reaches the atomic bomb through the normal damage API');
+  const hardenedBomb=mobs.serialize().list.find(m=>m.id==='ATOMIC_BOMB');
+  assert.ok(hardenedBomb && hardenedBomb.maxHp>=8000 && hardenedBomb.hp>6500, 'legacy saved bomb is upgraded proportionally and survives a 999-damage hit');
+  assert.equal(player.xp, 0, 'damaging but not destroying the hardened bomb awards no XP');
+  mobs.clearAll();
   let bombFatigue = {mode:'day',m:{}};
   const bombRewards = [];
   for(let i=0;i<5;i++){
-    mobs.deserialize({v:5,list:[{id:'ATOMIC_BOMB',x:0.5,y:9.124,vx:0,vy:0,hp:120,maxHp:120,state:'armed',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}},xpFatigue:bombFatigue});
+    mobs.deserialize({v:5,list:[{id:'ATOMIC_BOMB',x:0.5,y:9.124,vx:0,vy:0,hp:8000,maxHp:8000,state:'armed',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}},xpFatigue:bombFatigue});
     mobs.freezeSpawns(10000);
     const beforeXp = player.xp;
     const opts = i===2 ? {source:'hero',specialAttack:true} : {source:'hero'};
-    assert.equal(mobs.damageAt(0,9,999,opts), true, 'atomic bombs can be detonated through the normal mob damage API');
+    assert.equal(mobs.damageAt(0,9,species.ATOMIC_BOMB.hp*2,opts), true, 'atomic bombs can still be detonated through overwhelming normal mob damage');
     bombRewards.push(player.xp-beforeXp);
     bombFatigue = mobs.serialize().xpFatigue;
   }
   assert.deepEqual(bombRewards, [6000,3000,1500,750,375], 'repeat atomic bomb detonations halve their XP jackpot each time');
+  assert.match(mobsSource, /function drawAtomicTrefoil\(ctx,cx,cy,r\)/, 'atomic bomb renderer includes a proper radiation trefoil');
+  assert.match(mobsSource, /Bespoke wide, segmented integrity bar/, 'atomic bomb renders a dedicated siege-health integrity bar');
 
   worldGen.biomeType = () => 3;
   const desert = makeTileWorld(T.SAND);
@@ -241,7 +252,7 @@ try{
   mobs.deserialize({v:4,list:[{id:'SAND_WORM',x:0.5,y:9.5,vx:0,vy:0,hp:46,maxHp:46,state:'ambush',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}}});
   mobs.freezeSpawns(10000);
   assert.equal(mobs.damageAt(0,9,999,{source:'hero'}), true, 'sand worms can be defeated through the normal mob damage API');
-  assert.ok(player.xp >= species.SAND_WORM.xp, 'defeating a sand worm awards XP');
+  assert.ok(player.xp > 0, 'defeating a sand worm awards challenge-scaled XP');
 
   player = resetPlayer(1.25,9.15);
   hits = installDamageRecorder(player);
@@ -268,7 +279,7 @@ try{
     mobs.deserialize({v:5,list:[{id:'GIANT_SCORPION',x:0.5,y:9.5,vx:0,vy:0,hp:126,maxHp:126,state:'stalking',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}}});
     mobs.freezeSpawns(10000);
     assert.equal(mobs.damageAt(0,9,999,{source:'hero'}), true, 'giant scorpions can be defeated through the normal mob damage API');
-    assert.ok(player.xp >= species.GIANT_SCORPION.xp, 'defeating a giant scorpion awards major XP');
+    assert.ok(player.xp > 0, 'defeating a giant scorpion awards challenge-scaled XP');
     assert.equal(commanders.length, 1, 'one-in-ten giant scorpion deaths can reveal a golden alien commander');
     assert.equal(commanders[0].opts?.forceAfterWestGuardian, true, 'scorpion commander reveals are independent of ruin progression');
     assert.ok(commanders[0].opts?.threatBonus >= 10, 'scorpion commanders inherit an elite threat bonus');
@@ -333,7 +344,7 @@ try{
   assert.ok(mobs.serialize().list[0].pacifiedMs > 0, 'torch-suppressed bramble stalkers persist a visible calm timer');
   player.xp = 0;
   assert.equal(mobs.damageAt(0,9,999,{source:'hero'}), true, 'bramble stalkers can be defeated through the normal mob damage API');
-  assert.ok(player.xp >= species.BRAMBLE_STALKER.xp, 'defeating a bramble stalker awards XP');
+  assert.ok(player.xp > 0, 'defeating a bramble stalker awards challenge-scaled XP');
 
   worldGen.biomeType = () => 1;
   const plains = makeTileWorld(T.GRASS);
@@ -377,7 +388,7 @@ try{
   player.xp = 0;
   const chargedBison = mobs.serialize().list[0];
   assert.equal(mobs.damageAt(Math.floor(chargedBison.x),Math.floor(chargedBison.y),999,{source:'hero'}), true, 'thunder bison can be defeated through the normal mob damage API');
-  assert.ok(player.xp >= species.THUNDER_BISON.xp, 'defeating a thunder bison awards XP');
+  assert.ok(player.xp > 0, 'defeating a thunder bison awards challenge-scaled XP');
 
   worldGen.biomeType = () => 0;
   const temple = makeTileWorld(T.GRASS, {
@@ -432,7 +443,7 @@ try{
 
   player.xp = 0;
   assert.equal(mobs.damageAt(0,9,999,{source:'hero'}), true, 'temple guards can be defeated through the normal mob damage API');
-  assert.ok(player.xp >= species.TEMPLE_GUARD.xp, 'defeating a temple guard awards XP');
+  assert.ok(player.xp > 0, 'defeating a temple guard awards challenge-scaled XP');
 
   worldGen.biomeType = () => 2;
   const snow = makeTileWorld(T.SNOW);
@@ -477,7 +488,7 @@ try{
 
   player.xp = 0;
   assert.equal(mobs.damageAt(Math.floor(blinkedWraith.x),Math.floor(blinkedWraith.y),999,{source:'hero'}), true, 'ice wraiths can be defeated through the normal mob damage API');
-  assert.ok(player.xp >= species.ICE_WRAITH.xp, 'defeating an ice wraith awards XP');
+  assert.ok(player.xp > 0, 'defeating an ice wraith awards challenge-scaled XP');
 
   player = resetPlayer(0.65,9.15);
   hits = installDamageRecorder(player);
@@ -504,7 +515,7 @@ try{
     mobs.deserialize({v:5,list:[{id:'JACKPOT_YETI',x:0.5,y:9.15,vx:0,vy:0,hp:152,maxHp:152,state:'prowling',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}}});
     mobs.freezeSpawns(10000);
     assert.equal(mobs.damageAt(0,9,999,{source:'hero'}), true, 'jackpot yetis can be defeated through the normal mob damage API');
-    assert.ok(player.xp >= species.JACKPOT_YETI.xp, 'defeating a jackpot yeti awards major XP');
+    assert.ok(player.xp > 0, 'defeating a jackpot yeti awards challenge-scaled XP');
     assert.equal(yetiCommanders.length, 1, 'one-in-ten jackpot yeti deaths can reveal a golden alien commander');
     assert.ok(String(yetiCommanders[0].opts?.key||'').startsWith('yeti:'), 'jackpot yeti commander reveal uses a yeti-specific key');
     assert.ok(yetiCommanders[0].opts?.threatBonus >= 12, 'jackpot yeti commanders inherit an elite threat bonus');
@@ -553,7 +564,7 @@ try{
   assert.equal(hits.length, 0, 'burning bog lurkers stop biting long enough to reposition');
   player.xp = 0;
   assert.equal(mobs.damageAt(0,9,999,{source:'hero'}), true, 'bog lurkers can be defeated through the normal mob damage API');
-  assert.ok(player.xp >= species.BOG_LURKER.xp, 'defeating a bog lurker awards XP');
+  assert.ok(player.xp > 0, 'defeating a bog lurker awards challenge-scaled XP');
 
   worldGen.biomeType = () => 6;
   const lake = makeWaterTileWorld(T.STONE, -5, 5, 4, 9);
@@ -574,7 +585,7 @@ try{
   assert.ok(shockedSerpent.state === 'charged', 'lake serpent remains in charged pursuit while the hero is in lake water');
   player.xp = 0;
   assert.equal(mobs.damageAt(Math.floor(shockedSerpent.x),Math.floor(shockedSerpent.y),999,{source:'hero'}), true, 'lake serpents can be defeated through the normal mob damage API');
-  assert.ok(player.xp >= species.LAKE_SERPENT.xp, 'defeating a lake serpent awards XP');
+  assert.ok(player.xp > 0, 'defeating a lake serpent awards challenge-scaled XP');
 
   worldGen.biomeType = () => 5;
   const ocean = makeWaterTileWorld(T.STONE, -8, 8, 2, 12);
@@ -608,7 +619,7 @@ try{
     mobs.deserialize({v:5,list:[{id:'JACKPOT_WHALE',x:0.5,y:6.5,vx:0,vy:0,hp:220,maxHp:220,state:'cruising',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}}});
     mobs.freezeSpawns(10000);
     assert.equal(mobs.damageAt(0,6,999,{source:'hero'}), true, 'jackpot whales can be defeated through the normal mob damage API');
-    assert.ok(player.xp >= species.JACKPOT_WHALE.xp, 'defeating a jackpot whale awards major XP');
+    assert.ok(player.xp > 0, 'defeating a jackpot whale awards challenge-scaled XP');
     assert.equal(whaleCommanders.length, 1, 'one-in-ten jackpot whale deaths can reveal a golden alien commander');
     assert.ok(String(whaleCommanders[0].opts?.key||'').startsWith('whale:'), 'jackpot whale commander reveal uses a whale-specific key');
     assert.ok(whaleCommanders[0].opts?.threatBonus >= 14, 'jackpot whale commanders inherit an elite threat bonus');
@@ -677,7 +688,7 @@ try{
   assert.equal(hits.length, 0, 'a doused stone golem does not keep crushing through aggro');
   player.xp = 0;
   assert.equal(mobs.damageAt(0,9,999,{source:'hero'}), true, 'stone golems can be defeated through the normal mob damage API');
-  assert.ok(player.xp >= species.STONE_GOLEM.xp, 'defeating a stone golem awards XP');
+  assert.ok(player.xp > 0, 'defeating a stone golem awards challenge-scaled XP');
 
   worldGen.biomeType = () => 7;
   worldGen.volcanoAt = () => null;
@@ -752,7 +763,8 @@ try{
   const afterNest=mobs.serialize().list;
   const hatchling=afterNest.find(m=>m.id==='VULTURE_HATCHLING');
   assert.ok(afterNest.filter(m=>m.id==='VULTURE_HATCHLING').length>=3, 'capture spawns hatchlings in the nest');
-  assert.equal(mobs.nearestHostileLiving(hatchling.x,hatchling.y,1.2,{preferHeroFocus:false})?.id, 'VULTURE_HATCHLING', 'hatchlings immediately defend the nest');
+  assert.equal(mobs.nearestHostileLiving(hatchling.x,hatchling.y,1.2,{preferHeroFocus:false}), null, 'outmatched hatchlings no longer initiate a hopeless fight');
+  assert.equal(hatchling.state,'flee_outmatched','outmatched hatchlings visibly flee the released hero');
 } finally {
   Math.random = originalRandom;
   worldGen.biomeType = originalBiomeType;

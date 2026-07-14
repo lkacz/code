@@ -86,6 +86,8 @@ assert.equal(INFO[T.SOLAR_BATTERY].energyCapacity,120,'storage solar panel adver
 assert.equal(solar._debug.FULL_LIGHT_THRESHOLD,0.9,'solar panels require high full daylight before producing energy');
 assert.ok(solar._debug.PANEL_RATE<0.25,'basic solar panel production is intentionally weak');
 assert.ok(solar._debug.STORAGE_RATE<0.35,'storage solar panel production is intentionally weak');
+assert.ok(solar._debug.fullLightSunAt(0.4,16/24)>0.9,'solar generation follows the longer summer daylight arc');
+assert.equal(solar._debug.fullLightSunAt(0.4,8/24),0,'the same cycle moment is night on the shorter winter daylight arc');
 
 {
   reset();

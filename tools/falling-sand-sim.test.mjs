@@ -1145,6 +1145,6 @@ fallingSolids.reset();
 const mainSource=readFileSync(new URL('../src/main.js', import.meta.url),'utf8');
 assert.match(mainSource,/FALLING && FALLING\.canSupportPlacement/,'main placement preview/rejection uses the structural support solver');
 assert.match(mainSource,/checkedStructural/,'main falls back to contact support only for non-structural placements');
-assert.match(mainSource,/if\(v\.chest\)\{ displacePlacedWater\(\); setTile\(tx,ty,id\); if\(FALLING && FALLING\.afterPlacement\) FALLING\.afterPlacement\(tx,ty\); return true; \}/,'main wakes falling physics after chest placement');
+assert.match(mainSource,/if\(v\.chest\)\{[\s\S]*DROPS\.spawnChest[\s\S]*source:'god_mode'/,'main spawns debug chests as physical entities instead of falling tiles');
 
 console.log('falling sand simulation tests passed');

@@ -64,6 +64,21 @@ import { T, INFO, WORLD_MIN_Y, WORLD_MAX_Y, isLeaf } from '../constants.js';
     return !inf || !inf.passable;
   }
 
+  // The equipped exceptional weapon contributes one quantized radial seed to
+  // the same light field as torches. Quantization happens in weapons.js, so an
+  // animated glow does not invalidate and rebuild this field every frame.
+  function applyWeaponLight(win,opts,level){
+    const light=opts && opts.weaponLight;
+    if(!light || !light.enabled) return;
+    const {x0,y0,w,h}=win;
+    const lx=Math.floor(Number(light.x)||0)-x0;
+    const ly=Math.floor(Number(light.y)||0)-y0;
+    if(lx<0||lx>=w||ly<0||ly>=h) return;
+    const idx=ly*w+lx;
+    const sourceLevel=Math.max(1,Math.min(LEVELS,Math.round(Number(light.level)||0)));
+    if(sourceLevel>level[idx]) level[idx]=sourceLevel;
+  }
+
   // Paint a directional cone after ordinary emitter propagation. Keeping the
   // cone out of the BFS prevents a bright seed in front of the hero from
   // radiating just as strongly behind their head. Every lit cone cell is
@@ -165,6 +180,7 @@ import { T, INFO, WORLD_MIN_Y, WORLD_MAX_Y, isLeaf } from '../constants.js';
         if(cfg.heroGlow > level[idx]) level[idx] = cfg.heroGlow;
       }
     }
+    applyWeaponLight(win,opts,level);
 
     // Bucket-queue BFS (Dial): exact for step costs 1 (open) / 2 (into water).
     const buckets = [];
@@ -209,18 +225,22 @@ import { T, INFO, WORLD_MIN_Y, WORLD_MAX_Y, isLeaf } from '../constants.js';
     const heroLampKey=lamp && lamp.enabled
       ? [lamp.facing<0?-1:1,Math.round(Number(lamp.range)||11),Math.round(Number(lamp.level)||LEVELS),Number(lamp.spread||0.28).toFixed(2)].join(',')
       : '0';
+    const weapon=opts.weaponLight;
+    const weaponLightKey=weapon&&weapon.enabled
+      ? [Math.floor(Number(weapon.x)||0),Math.floor(Number(weapon.y)||0),Math.max(1,Math.min(LEVELS,Math.round(Number(weapon.level)||0)))].join(',')
+      : '0';
     const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     let fireTick = false;
     if(opts.burningAt && now - lastComputeAt > 500){
       try{ fireTick = !!(MM.fire && MM.fire.count && MM.fire.count() > 0); }catch(e){}
     }
     const stale = !field || field.x0 !== x0 || field.y0 !== y0 || field.w !== w || field.h !== h ||
-      field.dayBucket !== dayBucket || field.heroKey !== heroKey || field.heroLampKey !== heroLampKey || fieldDirty || fireTick;
+      field.dayBucket !== dayBucket || field.heroKey !== heroKey || field.heroLampKey !== heroLampKey || field.weaponLightKey !== weaponLightKey || fieldDirty || fireTick;
     lastOpts = opts;
     if(!stale) return field;
     const t0 = now;
     const { level, surf } = computeField({ x0, y0, w, h }, opts);
-    field = { x0, y0, w, h, level, surf, dayBucket, heroKey, heroLampKey };
+    field = { x0, y0, w, h, level, surf, dayBucket, heroKey, heroLampKey, weaponLightKey };
     fieldDirty = false;
     pixelsDirty = true;
     lastComputeAt = now;

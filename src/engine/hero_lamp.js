@@ -13,7 +13,15 @@
   };
 
   function createHeroLampModel(options){
-    const cfg=Object.assign({},DEFAULTS,options||{});
+    const raw=Object.assign({},DEFAULTS,options||{});
+    const finite=(value,fallback)=>Number.isFinite(Number(value)) ? Number(value) : fallback;
+    const cfg={
+      drainPerSecond:Math.max(0.05,Math.min(50,finite(raw.drainPerSecond,DEFAULTS.drainPerSecond))),
+      minStartEnergy:Math.max(0.05,Math.min(1000,finite(raw.minStartEnergy,DEFAULTS.minStartEnergy))),
+      range:Math.max(2,Math.min(18,finite(raw.range,DEFAULTS.range))),
+      level:Math.max(1,Math.min(15,finite(raw.level,DEFAULTS.level))),
+      spread:Math.max(0.12,Math.min(0.55,finite(raw.spread,DEFAULTS.spread)))
+    };
     let enabled=false;
 
     function isOn(){ return enabled; }
@@ -41,12 +49,32 @@
       if(opts && opts.unlimited) return {on:true,changed:false,spent:0};
       const cost=cfg.drainPerSecond*step;
       let paid=false;
-      try{ paid=!!(energy && typeof energy.spend==='function' && energy.spend(cost)); }catch(e){ paid=false; }
+      let spent=0;
+      try{
+        if(energy && typeof energy.spendContinuous==='function'){
+          spent=Math.max(0,Math.min(cost,Number(energy.spendContinuous(cost))||0));
+          paid=spent>=cost-1e-7;
+        }else if(energy && typeof energy.spend==='function' && energy.spend(cost)){
+          paid=true;
+          spent=cost;
+        }
+      }catch(e){ paid=false; spent=0; }
       if(!paid){
         enabled=false;
-        return {on:false,changed:true,depleted:true,spent:0};
+        return {on:false,changed:true,depleted:true,spent};
       }
-      return {on:true,changed:false,spent:cost};
+      // Paying the final exact fraction must extinguish the lamp immediately;
+      // otherwise lightSource() would contribute one free frame at zero energy.
+      let remaining=null;
+      try{
+        const info=energy&&typeof energy.info==='function'?energy.info():null;
+        if(info&&Number.isFinite(Number(info.energy))) remaining=Math.max(0,Number(info.energy));
+      }catch(e){}
+      if(remaining!==null&&remaining<=1e-7){
+        enabled=false;
+        return {on:false,changed:true,depleted:true,spent};
+      }
+      return {on:true,changed:false,spent};
     }
     function lightSource(player){
       if(!enabled || !player) return null;
@@ -60,7 +88,9 @@
     }
     function snapshot(){ return {v:1,on:enabled}; }
     function restore(data){
-      enabled=!!(data && typeof data==='object' ? data.on : data);
+      // Only explicit booleans/numeric legacy flags may enable the lamp; a
+      // malformed string such as "false" must not turn it on after import.
+      enabled=data===true || data===1 || !!(data && typeof data==='object' && data.on===true);
       return enabled;
     }
     function reset(){ enabled=false; }

@@ -34,6 +34,7 @@ matters (layout, colour, "does this look broken").
 ```bash
 node tools/live-preview.mjs                                  # boot + screenshot
 node tools/live-preview.mjs --out=tools/shot.png --wait=3000
+node tools/live-preview.mjs --script=tools/scenes/example.js --post-wait=900 # let transient FX settle
 node tools/live-preview.mjs --eval="player.hp + '/' + player.maxHp"
 node tools/live-preview.mjs --script=tools/scenes/example.js # a scripted scene
 node tools/live-preview.mjs --shots=4 --interval=700         # a strip over time

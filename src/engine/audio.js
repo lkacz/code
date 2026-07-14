@@ -1,3 +1,6 @@
+import { T, INFO } from '../constants.js';
+import { isLooseItemMaterial, isPlayerPassableTile } from './material_physics.js';
+
 // Procedural audio engine: every sound is synthesized with WebAudio (zero asset
 // files, CSP-safe). The context starts suspended until the first user gesture
 // (autoplay policy). Architecture:
@@ -18,6 +21,7 @@ window.MM = window.MM || {};
   const VOL_KEY='mm_audio_v1';
   let ctx=null, master=null, limiter=null, mixBus=null, wetFilter=null, duckGain=null;
   let reverb=null, reverbReturn=null;
+  let caveEchoDelay=null, caveEchoReturn=null, caveEchoFeedback=null;
   const buses={sfx:null, ambience:null, music:null, ui:null};
   let settings={vol:0.5, mute:false, sfx:1, ambience:0.8, music:0.55, ui:0.9, musicOn:true};
   try{ const raw=localStorage.getItem(VOL_KEY); if(raw){ const d=JSON.parse(raw); if(d&&typeof d==='object'){
@@ -43,11 +47,21 @@ window.MM = window.MM || {};
     for(let i=0;i<len;i++){ last=(last+0.02*(Math.random()*2-1))/1.02; b[i]=last*3.2; }
   }
   function makeReverbIR(){
-    // small procedural hall: stereo noise with exponential decay
-    const dur=1.6, len=Math.max(1,Math.floor(ctx.sampleRate*dur));
+    // A quiet, long stereo tail. The first milliseconds stay dry; a few sparse
+    // early reflections make enclosed rock rooms read as space rather than hiss.
+    const dur=2.35, len=Math.max(1,Math.floor(ctx.sampleRate*dur));
+    const pre=Math.floor(ctx.sampleRate*0.011);
     const ir=ctx.createBuffer(2,len,ctx.sampleRate);
     for(let ch=0;ch<2;ch++){ const d=ir.getChannelData(ch);
-      for(let i=0;i<len;i++){ const f=i/len; d[i]=(Math.random()*2-1)*Math.pow(1-f,2.4)*0.5; } }
+      for(let i=pre;i<len;i++){
+        const f=(i-pre)/Math.max(1,len-pre);
+        d[i]=(Math.random()*2-1)*Math.pow(1-f,3.1)*0.34;
+      }
+      for(const tap of [0.037,0.061,0.103,0.157]){
+        const i=Math.min(len-1,Math.floor(ctx.sampleRate*(tap+ch*0.003)));
+        d[i]+=rand(0.18,0.34)*(ch? -1:1)*Math.pow(1-tap/dur,2);
+      }
+    }
     return ir;
   }
   function ensureCtx(){
@@ -77,8 +91,18 @@ window.MM = window.MM || {};
       // procedural reverb: per-voice sends feed one convolver
       if(ctx.createConvolver){
         reverb=ctx.createConvolver(); reverb.buffer=makeReverbIR();
-        reverbReturn=ctx.createGain(); reverbReturn.gain.value=0.07;
+        reverbReturn=ctx.createGain(); reverbReturn.gain.value=0.035;
         reverb.connect(reverbReturn); reverbReturn.connect(mixBus);
+      }
+      // A very low early echo complements the diffuse convolver in actual
+      // enclosed caves. It is silent on the surface and optional for older
+      // WebAudio implementations without DelayNode.
+      if(ctx.createDelay){
+        caveEchoDelay=ctx.createDelay(0.65); caveEchoDelay.delayTime.value=0.105;
+        caveEchoReturn=ctx.createGain(); caveEchoReturn.gain.value=0;
+        caveEchoFeedback=ctx.createGain(); caveEchoFeedback.gain.value=0.1;
+        caveEchoDelay.connect(caveEchoReturn); caveEchoReturn.connect(mixBus);
+        caveEchoDelay.connect(caveEchoFeedback); caveEchoFeedback.connect(caveEchoDelay);
       }
       makeNoiseBuffers();
       buildAmbienceBeds();
@@ -87,6 +111,7 @@ window.MM = window.MM || {};
       // each frame on machines with no audio backend.
       ctx=null; master=null; limiter=null; mixBus=null; wetFilter=null; duckGain=null;
       reverb=null; reverbReturn=null; noiseBuf=null; brownBuf=null;
+      caveEchoDelay=null; caveEchoReturn=null; caveEchoFeedback=null;
       for(const k in buses) buses[k]=null;
       ctxFailed=true;
     }
@@ -131,7 +156,10 @@ window.MM = window.MM || {};
     }
     head.connect(bus);
     const send=(o&&typeof o.send==='number')?o.send:0.12;
-    if(reverb && send>0){ const s=ctx.createGain(); s.gain.value=send; head.connect(s); s.connect(reverb); }
+    if(reverb && send>0){
+      const s=ctx.createGain(); s.gain.value=send; head.connect(s); s.connect(reverb);
+      if(caveEchoDelay) s.connect(caveEchoDelay);
+    }
   }
   function env(g,t0,a,peak,dec){
     g.gain.setValueAtTime(0.0001,t0);
@@ -204,6 +232,131 @@ window.MM = window.MM || {};
   let dangerUntil=0;
   function flagDanger(ms){ dangerUntil=Math.max(dangerUntil, Date.now()+(ms||18000)); }
 
+  // ---------------- material-aware landing foley ----------------
+  // The collision system supplies the exact supporting tile. These families
+  // intentionally describe what a boot excites (vegetation, loose grains,
+  // resonant wood, rigid rock...) rather than mirroring every inventory name.
+  function landingSurfaceForTile(tile){
+    const t=Number.isFinite(+tile)?+tile:T.STONE;
+    switch(t){
+      case T.WATER: return 'water';
+      case T.GRASS: case T.UNSTABLE_GRASS: return 'grass';
+      case T.SNOW: case T.TOXIC_SNOW: case T.GRASS_SNOW: return 'snow';
+      case T.SAND: case T.UNSTABLE_SAND: case T.QUICKSAND: return 'sand';
+      case T.MUD: case T.WET_CLAY: return 'mud';
+      case T.DIRT: case T.CLAY: case T.FROZEN_DIRT: case T.FROZEN_CLAY: return 'earth';
+      case T.WOOD: case T.WOOD_DOOR: case T.WOOD_TRAPDOOR: case T.CHAIR_WOOD: return 'wood';
+      case T.ICE: case T.MOTHER_ICE: case T.FROZEN_SAND: case T.GLASS:
+      case T.DIAMOND: case T.ANTIMATTER_CRYSTAL: return 'ice';
+      case T.STEEL: case T.STEEL_DOOR: case T.STEEL_TRAPDOOR: case T.CHAIR_STEEL:
+      case T.METEORIC_IRON: case T.IRIDIUM: case T.TRACK: case T.SPRING_PLATFORM:
+      case T.ELECTRONICS: return 'metal';
+      case T.ALIEN_BIOMASS: case T.MEAT: case T.ROTTEN_MEAT: case T.BAKED_MEAT: return 'organic';
+      default: break;
+    }
+    const info=INFO[t]||INFO[T.STONE];
+    if(info.doorMaterial==='wood' || info.chairMaterial==='wood') return 'wood';
+    if(info.doorMaterial==='steel' || info.chairMaterial==='steel' || info.machine || info.conductor) return 'metal';
+    if(info.biological || isLooseItemMaterial(t)) return 'organic';
+    if(info.wetClay) return 'mud';
+    if(info.frozenEarth) return 'ice';
+    if(info.ceramic || info.geology || info.hardRock || info.ore || info.story || info.chestTier || info.cache) return 'stone';
+    return 'stone';
+  }
+
+  const landingVariants=Object.create(null);
+  let lastLanding=null, landingSerial=0;
+  function nextLandingVariant(surface){
+    const count=4, previous=landingVariants[surface];
+    let variant=Math.floor(Math.random()*count);
+    if(variant===previous) variant=(variant+1+Math.floor(Math.random()*(count-1)))%count;
+    landingVariants[surface]=variant;
+    return variant;
+  }
+  function landingReverbSend(surface){
+    const enclosed=(scene && scene.underground)?clamp(scene.enclosure||0,0,1):0;
+    const hard=(surface==='stone'||surface==='metal'||surface==='ice')?1:0.55;
+    return 0.025+enclosed*hard*0.13;
+  }
+  function synthLanding(o){
+    o=o||{};
+    const surface=o.surface||landingSurfaceForTile(o.tile);
+    const impact=Math.max(0,Number.isFinite(+o.impact)?+o.impact:8);
+    const strength=clamp((impact-1.5)/15.5,0,1);
+    const variant=Number.isFinite(+o.variant)?Math.abs(Math.floor(+o.variant))%4:nextLandingVariant(surface);
+    const pitch=[0.88,0.97,1.07,1.16][variant]*rand(0.97,1.03);
+    const length=[0.88,1.12,0.96,1.2][variant];
+    const delay=[0.004,0.013,0.008,0.018][variant];
+    const send=landingReverbSend(surface);
+    const at={...o,send,detune:(variant-1.5)*11};
+    // Peak levels deliberately sit far below combat and UI effects. A normal
+    // jump is felt as texture; only a genuinely hard fall gets a clear transient.
+    switch(surface){
+      case 'grass':
+        noise({...at,dur:(0.048+strength*0.018)*length,peak:0.014+strength*0.014,fLo:620*pitch,fHi:2300*pitch,rate:pitch});
+        noise({...at,dur:0.025*length,peak:0.005+strength*0.006,fLo:2100*pitch,fHi:4700*pitch,ftype:'highpass',delay,rate:pitch*1.1});
+        tone({...at,type:'sine',f0:86*pitch,f1:56*pitch,dur:0.055*length,peak:0.004+strength*0.005});
+        break;
+      case 'snow':
+        noise({...at,dur:(0.07+strength*0.025)*length,peak:0.012+strength*0.014,fLo:850*pitch,fHi:3300*pitch,rate:pitch*0.82});
+        noise({...at,dur:0.022*length,peak:0.006+strength*0.007,fLo:3000*pitch,fHi:7200*pitch,ftype:'highpass',delay,rate:pitch*1.25});
+        noise({...at,dur:0.018*length,peak:0.004+strength*0.004,fLo:1800*pitch,fHi:5100*pitch,delay:delay+0.019,rate:pitch*0.94});
+        break;
+      case 'sand':
+        noise({...at,dur:(0.065+strength*0.02)*length,peak:0.014+strength*0.014,fLo:260*pitch,fHi:1250*pitch,ftype:'lowpass',buf:'brown',rate:pitch*0.76});
+        noise({...at,dur:0.04*length,peak:0.005+strength*0.006,fLo:1500*pitch,fHi:3900*pitch,delay,rate:pitch*1.18});
+        break;
+      case 'earth':
+        noise({...at,dur:(0.06+strength*0.018)*length,peak:0.016+strength*0.018,fLo:115*pitch,fHi:520*pitch,ftype:'lowpass',buf:'brown',rate:pitch*0.8});
+        noise({...at,dur:0.03*length,peak:0.005+strength*0.006,fLo:760*pitch,fHi:1900*pitch,delay,rate:pitch});
+        break;
+      case 'mud':
+        noise({...at,dur:(0.085+strength*0.035)*length,peak:0.015+strength*0.017,fLo:75*pitch,fHi:410*pitch,ftype:'lowpass',buf:'brown',rate:pitch*0.62});
+        tone({...at,type:'sine',f0:105*pitch,f1:58*pitch,dur:0.09*length,peak:0.005+strength*0.006,delay});
+        noise({...at,dur:0.025*length,peak:0.004+strength*0.004,fLo:520*pitch,fHi:1250*pitch,delay:delay+0.024,rate:pitch*0.7});
+        break;
+      case 'wood':
+        noise({...at,dur:0.045*length,peak:0.014+strength*0.017,fLo:170*pitch,fHi:920*pitch,buf:'brown',rate:pitch});
+        tone({...at,type:'triangle',f0:(155+variant*13)*pitch,f1:(105+variant*8)*pitch,dur:(0.085+strength*0.025)*length,peak:0.007+strength*0.009});
+        noise({...at,dur:0.018*length,peak:0.004+strength*0.005,fLo:1200*pitch,fHi:3100*pitch,delay});
+        break;
+      case 'metal':
+        noise({...at,dur:0.035*length,peak:0.013+strength*0.018,fLo:420*pitch,fHi:2100*pitch,rate:pitch});
+        tone({...at,type:'triangle',f0:(310+variant*48)*pitch,f1:(230+variant*35)*pitch,dur:(0.1+variant*0.018)*length,peak:0.005+strength*0.008,send:send+0.025});
+        noise({...at,dur:0.014*length,peak:0.004+strength*0.005,fLo:3600*pitch,fHi:8200*pitch,ftype:'highpass',delay});
+        break;
+      case 'ice':
+        noise({...at,dur:0.027*length,peak:0.011+strength*0.014,fLo:2300*pitch,fHi:7600*pitch,ftype:'highpass',rate:pitch*1.2});
+        tone({...at,type:'sine',f0:(760+variant*105)*pitch,f1:(510+variant*72)*pitch,dur:(0.075+variant*0.012)*length,peak:0.004+strength*0.007,send:send+0.035});
+        noise({...at,dur:0.012*length,peak:0.004+strength*0.005,fLo:4700*pitch,fHi:10500*pitch,ftype:'highpass',delay});
+        break;
+      case 'organic':
+        noise({...at,dur:0.075*length,peak:0.012+strength*0.016,fLo:90*pitch,fHi:620*pitch,ftype:'lowpass',buf:'brown',rate:pitch*0.68});
+        noise({...at,dur:0.032*length,peak:0.004+strength*0.005,fLo:520*pitch,fHi:1450*pitch,delay,rate:pitch*0.8});
+        break;
+      case 'water':
+        noise({...at,dur:(0.09+strength*0.055)*length,peak:0.018+strength*0.023,fLo:330*pitch,fHi:2100*pitch,f1:430*pitch,rate:pitch*0.88});
+        tone({...at,type:'sine',f0:245*pitch,f1:92*pitch,dur:0.1*length,peak:0.005+strength*0.007});
+        noise({...at,dur:0.026*length,peak:0.004+strength*0.005,fLo:1800*pitch,fHi:4800*pitch,delay:delay+0.018,rate:pitch*1.12});
+        break;
+      default:
+        noise({...at,dur:0.052*length,peak:0.015+strength*0.018,fLo:130*pitch,fHi:780*pitch,buf:'brown',rate:pitch});
+        tone({...at,type:'sine',f0:125*pitch,f1:68*pitch,dur:0.065*length,peak:0.005+strength*0.007});
+    }
+    lastLanding={tile:Number.isFinite(+o.tile)?+o.tile:null,surface,variant,impact,strength,send};
+    return lastLanding;
+  }
+  function playLanding(tile,impact,opts){
+    const surface=landingSurfaceForTile(tile);
+    const speed=Math.max(0,Number.isFinite(+impact)?+impact:0);
+    // Tiny floor corrections must remain silent. Water still gets a minimal
+    // contact texture because stepping into a pool never produces a tile hit.
+    if(surface!=='water' && speed<2.4) return false;
+    const result=synthLanding({...(opts||{}),tile,surface,impact:speed});
+    landingSerial++;
+    return result;
+  }
+
   // ---------------- one-shot effects ----------------
   // Each entry takes opts o (may carry {x,y} tile coords) and layers 1-4 voices.
   const FX={
@@ -233,6 +386,12 @@ window.MM = window.MM || {};
                    tone({...o,type:'sine',f0:196,f1:196,dur:0.6,peak:0.05,attack:0.1,send:0.3}); },
     milestone:(o)=>{ [523,659,784].forEach((f,i)=>tone({...o,type:'sine',f0:f,f1:f,dur:0.22,peak:0.14,delay:i*0.11,send:0.28,priority:true})); },
     golden: (o)=>{ [880,1175,1568,2093,2637].forEach((f,i)=>tone({...o,type:'sine',f0:f,f1:f*1.02,dur:0.45,peak:0.07,delay:i*0.065,send:0.3})); noise({...o,dur:0.5,peak:0.025,fLo:3800,fHi:9000,ftype:'highpass'}); },
+    // Pavlovian jewel bell: a clean, repeated chime with a long resonant tail,
+    // deliberately unlike hits/chests so one lucky drop teaches the cue forever.
+    jewel:  (o)=>{ duck(0.68,0.55);
+                   [1047,2093,3136,4186].forEach((f,i)=>tone({...o,type:i===0?'triangle':'sine',f0:f,f1:f*1.006,dur:0.72-i*0.07,peak:i===0?0.15:0.075,delay:i*0.028,send:0.48,priority:true}));
+                   [1319,1760].forEach((f,i)=>tone({...o,type:'sine',f0:f,f1:f,dur:0.48,peak:0.08,delay:0.24+i*0.06,send:0.42,priority:true}));
+                   noise({...o,dur:0.34,peak:0.018,fLo:6500,fHi:12000,ftype:'highpass',delay:0.04,send:0.35,priority:true}); },
     masterstone:(o)=>{ [1760,2349,3136,4186].forEach((f,i)=>tone({...o,type:i%2?'triangle':'sine',f0:f,f1:f*1.08,dur:0.34,peak:0.09,delay:i*0.045,send:0.3,priority:true}));
                    tone({...o,type:'square',f0:3520,f1:1408,dur:0.22,peak:0.045,bend:0.18,delay:0.08}); noise({...o,dur:0.28,peak:0.028,fLo:5200,fHi:11000,ftype:'highpass'}); },
     ufo:    (o)=>{ flagDanger(); tone({...o,type:'sine',f0:520,f1:820,dur:0.9,peak:0.09,bend:0.45}); tone({...o,type:'sine',f0:820,f1:470,dur:0.9,peak:0.08,bend:0.5,delay:0.45}); }, // theremin wobble
@@ -243,8 +402,8 @@ window.MM = window.MM || {};
                    noise({...o,dur:0.12,peak:0.1,fLo:1200,fHi:4200,delay:0.09}); noise({...o,dur:0.09,peak:0.06,fLo:900,fHi:3200,delay:0.21}); },
     meteor: (o)=>{ if(throttled('meteor',900,o)) return; duck(0.35,0.8); noise({...o,dur:0.75,peak:0.36,fLo:55,fHi:620,ftype:'lowpass',buf:'brown',priority:true}); tone({...o,type:'sawtooth',f0:95,f1:28,dur:0.9,peak:0.26,bend:0.65,priority:true}); noise({...o,dur:0.22,peak:0.14,fLo:1600,fHi:6200,delay:0.08}); },
     splash: (o)=>{ if(throttled('splash',250,o)) return; noise({...o,dur:0.18,peak:0.16,fLo:400,fHi:2400}); tone({...o,type:'sine',f0:300,f1:120,dur:0.12,peak:0.06}); },
-    splashIn:(o)=>{ noise({...o,dur:0.22,peak:0.18,fLo:300,fHi:1900,f1:420}); tone({...o,type:'sine',f0:260,f1:90,dur:0.16,peak:0.08}); },
-    splashOut:(o)=>{ noise({...o,dur:0.16,peak:0.12,fLo:500,fHi:2600,f1:2100}); },
+    splashIn:(o)=>synthLanding({...o,tile:T.WATER,surface:'water'}),
+    splashOut:(o)=>{ noise({...o,dur:0.11,peak:0.035,fLo:520,fHi:2400,f1:1900,send:0.035}); },
     grave:  (o)=>{ tone({...o,type:'sine',f0:196,f1:98,dur:0.5,peak:0.2,send:0.35}); tone({...o,type:'sine',f0:294,f1:147,dur:0.55,peak:0.08,delay:0.03,send:0.35}); },
     thud:   (o)=>{ if(throttled('thud',120,o)) return; noise({...o,dur:0.09,peak:0.16,fLo:90,fHi:280,ftype:'lowpass',buf:'brown'}); tone({...o,type:'sine',f0:140,f1:60,dur:0.1,peak:0.1}); },
     fire:   (o)=>{ if(throttled('fire',140,o)) return; noise({...o,dur:0.25,peak:0.08,fLo:250,fHi:1100,ftype:'lowpass'});
@@ -277,7 +436,7 @@ window.MM = window.MM || {};
                    noise({...o,dur:0.05,peak:0.05,fLo:5200,fHi:11000,ftype:'highpass'}); },
     step:   (o)=>{ noise({...o,dur:0.04,peak:0.055,fLo:120,fHi:380,buf:'brown'}); },
     jump:   (o)=>{ noise({...o,dur:0.1,peak:0.04,fLo:500,fHi:1300,f1:1600,attack:0.02}); },
-    land:   (o)=>{ noise({...o,dur:0.08,peak:Math.min(0.2,0.06+(o&&o.impact||0)*0.01),fLo:110,fHi:340,buf:'brown'}); tone({...o,type:'sine',f0:150,f1:70,dur:0.08,peak:Math.min(0.12,0.03+(o&&o.impact||0)*0.006)}); },
+    land:   (o)=>synthLanding(o),
     thunder:(o)=>thunder((o&&o.dist)||10,o),
     // ceremony voices (title_screen.js / finale.js): the dismiss click is the
     // gesture that unlocks the ctx, so titleStart doubles as the world's first sound
@@ -327,14 +486,70 @@ window.MM = window.MM || {};
   // Live game state snapshot, refreshed at 4 Hz by update(). Everything is read
   // defensively — any subsystem may be absent (tests, boot order).
   const scene={isDay:true, tDay:0.5, depth:0, underground:false, submerged:0, inWater:false,
+               enclosure:0, reflectivity:0, roomSize:0, acousticWet:0,
                rain:0, rainLevel:0, rainPan:0, snow:0, storm:0, wind:0, sandstorm:0, bossLevel:0, ready:false};
   let heroWater={inWater:false, subFrac:0};
-  function setHeroWater(inWater,subFrac){
+  function acousticBarrier(tile){
+    if(tile===T.AIR || tile===T.WATER || tile===T.LAVA) return false;
+    return !isPlayerPassableTile(tile);
+  }
+  function surfaceReflectivity(tile){
+    switch(landingSurfaceForTile(tile)){
+      case 'snow': case 'grass': case 'organic': return 0.22;
+      case 'sand': case 'earth': case 'mud': return 0.32;
+      case 'wood': return 0.48;
+      case 'metal': case 'ice': return 0.94;
+      default: return 0.82;
+    }
+  }
+  function senseLocalAcoustics(p){
+    if(!scene.underground) return {enclosure:0,reflectivity:0,roomSize:0,wet:0};
+    const world=MM.world;
+    const read=world && (world.peekTile||world.getTile);
+    // Headless providers and very early boot still receive a restrained cave
+    // fallback; normal play always takes the geometry path below.
+    if(typeof read!=='function') return {enclosure:0.58,reflectivity:0.76,roomSize:9,wet:0.56};
+    const dirs=[[0,-1],[1,0],[-1,0],[0,1],[0.707,-0.707],[-0.707,-0.707],[0.707,0.707],[-0.707,0.707],
+      [0.383,-0.924],[-0.383,-0.924],[0.924,-0.383],[-0.924,-0.383]];
+    const maxDist=20, hits=[];
+    for(const dir of dirs){
+      let found=null, lastKey='';
+      for(let d=1;d<=maxDist;d++){
+        const x=Math.floor(p.x+dir[0]*d), y=Math.floor(p.y+dir[1]*d);
+        const key=x+','+y;
+        if(key===lastKey) continue;
+        lastKey=key;
+        let tile=T.AIR;
+        try{ tile=read.call(world,x,y,T.AIR); }catch(e){ tile=T.AIR; }
+        if(acousticBarrier(tile)){ found={distance:d,tile}; break; }
+      }
+      hits.push(found);
+    }
+    const boundaries=hits.filter(Boolean);
+    if(!boundaries.length) return {enclosure:0.04,reflectivity:0.2,roomSize:maxDist,wet:0.03};
+    const hitRatio=boundaries.length/dirs.length;
+    const ceiling=hits[0]?clamp(1-hits[0].distance/maxDist,0.1,1):0;
+    const sideCount=(hits[1]?1:0)+(hits[2]?1:0);
+    const sideClosure=sideCount*0.5;
+    const meanDistance=boundaries.reduce((sum,h)=>sum+h.distance,0)/boundaries.length;
+    const reflectivity=boundaries.reduce((sum,h)=>sum+surfaceReflectivity(h.tile),0)/boundaries.length;
+    const enclosure=clamp(hitRatio*0.58+ceiling*0.25+sideClosure*0.17,0,1);
+    const roomSize=clamp(meanDistance,2,maxDist);
+    const sizeTail=clamp((roomSize-3)/15,0,1);
+    const wet=clamp(enclosure*(0.45+reflectivity*0.42)*(0.72+sizeTail*0.28),0,1);
+    return {enclosure,reflectivity,roomSize,wet};
+  }
+  function setHeroWater(inWater,subFrac,verticalSpeed){
     const wasIn=heroWater.inWater;
     heroWater.inWater=!!inWater; heroWater.subFrac=clamp(+subFrac||0,0,1);
     // audible enter/exit handled here so main.js only publishes state
     if(heroWater.inWater!==wasIn && ctx && ctx.state==='running'){
-      play(heroWater.inWater?'splashIn':'splashOut');
+      let speed=Number.isFinite(+verticalSpeed)?+verticalSpeed:0;
+      if(!Number.isFinite(+verticalSpeed)){
+        try{ speed=Number(window.player && window.player.vy)||0; }catch(e){ speed=0; }
+      }
+      if(heroWater.inWater) playLanding(T.WATER,Math.max(0,speed));
+      else play('splashOut');
     }
   }
   function senseScene(){
@@ -344,6 +559,12 @@ window.MM = window.MM || {};
       if(p && wg && wg.surfaceHeight){ scene.depth=Math.max(0, p.y - wg.surfaceHeight(Math.round(p.x))); }
     }catch(e){}
     scene.underground=scene.depth>6;
+    try{
+      const p=window.player;
+      const acoustic=(p&&Number.isFinite(p.x)&&Number.isFinite(p.y))?senseLocalAcoustics(p):{enclosure:0,reflectivity:0,roomSize:0,wet:0};
+      scene.enclosure=acoustic.enclosure; scene.reflectivity=acoustic.reflectivity;
+      scene.roomSize=acoustic.roomSize; scene.acousticWet=acoustic.wet;
+    }catch(e){ scene.enclosure=0; scene.reflectivity=0; scene.roomSize=0; scene.acousticWet=0; }
     scene.submerged=heroWater.subFrac; scene.inWater=heroWater.inWater;
     scene.rain=0; scene.rainLevel=0; scene.rainPan=0; scene.snow=0; scene.storm=0; scene.wind=0; scene.sandstorm=0;
     try{
@@ -462,12 +683,20 @@ window.MM = window.MM || {};
     const sandT=scene.sandstorm>0.05 ? Math.min(0.13,0.02+scene.sandstorm*0.11)*(scene.underground?ug*0.5:1)*muffle : 0;
     beds.sand.g.gain.setTargetAtTime(sandT,t,0.7);
     if(sandT>0) beds.sand.f.frequency.setTargetAtTime(700+rand(-80,140), t, 0.9);
-    const caveT=scene.underground? Math.min(0.11,0.04+scene.depth*0.0012)*muffle : 0;
+    const caveT=scene.underground? Math.min(0.11,0.04+scene.depth*0.0012)*(0.62+scene.enclosure*0.38)*muffle : 0;
     beds.cave.g.gain.setTargetAtTime(caveT,t,1.0);
     beds.water.g.gain.setTargetAtTime(sub?0.12:0, t,0.35);
     beds.water.f.frequency.setTargetAtTime(430+rand(-50,90), t, 0.8);
-    // reverb: caves get big and wet, the surface stays dry-ish
-    if(reverbReturn) reverbReturn.gain.setTargetAtTime(scene.underground? Math.min(0.4,0.16+scene.depth*0.002) : 0.07, t, 0.8);
+    // Geometry, room size and wall hardness drive the cave tail. An open mine
+    // shaft stays nearly dry; a broad stone chamber gets a longer, brighter tail.
+    const caveWet=scene.underground?clamp(0.055+scene.acousticWet*0.19,0.055,0.245):0.035;
+    if(reverbReturn) reverbReturn.gain.setTargetAtTime(caveWet,t,0.8);
+    if(caveEchoDelay && caveEchoReturn && caveEchoFeedback){
+      const echoDelay=clamp(0.052+scene.roomSize*0.0085,0.055,0.22);
+      caveEchoDelay.delayTime.setTargetAtTime(echoDelay,t,0.7);
+      caveEchoReturn.gain.setTargetAtTime(scene.underground?scene.acousticWet*0.032:0,t,0.8);
+      caveEchoFeedback.gain.setTargetAtTime(scene.underground?0.055+scene.acousticWet*0.095:0.04,t,0.8);
+    }
     // submersion muffles the whole mix via the master-side lowpass
     if(wetFilter) wetFilter.frequency.setTargetAtTime(sub?460:18500, t, 0.12);
   }
@@ -634,16 +863,32 @@ window.MM = window.MM || {};
   }
 
   // ---------------- movement foley ----------------
-  // Reads the hero directly each frame: footstep cadence from ground speed,
-  // landing thump from the previous frame's fall speed (physics zeroes vy
-  // before we run, so we remember it ourselves).
-  const move={prevGround:true, prevVy:0, stepAcc:0};
+  // Reads the hero directly each frame for footstep cadence and non-tile
+  // fallback landings. Ordinary terrain collisions arrive through playLanding
+  // with their exact material before physics zeroes the vertical speed.
+  const move={prevGround:true, prevVy:0, stepAcc:0, seenLanding:landingSerial};
+  function fallbackGroundTile(p){
+    const world=MM.world, read=world&&(world.peekTile||world.getTile);
+    if(typeof read!=='function') return T.STONE;
+    const y=Math.floor((+p.y||0)+(+p.h||0.95)*0.5+0.055);
+    const half=(+p.w||0.7)*0.42;
+    const samples=[+p.x||0,(+p.x||0)-half,(+p.x||0)+half];
+    let tile=T.AIR;
+    for(const sx of samples){
+      let value=T.AIR;
+      try{ value=read.call(world,Math.floor(sx),y,T.AIR); }catch(e){ value=T.AIR; }
+      if(value===T.SNOW||value===T.TOXIC_SNOW||value===T.GRASS_SNOW) return value;
+      if(value!==T.AIR && tile===T.AIR) tile=value;
+    }
+    return tile===T.AIR?T.STONE:tile;
+  }
   function driveMovement(dt){
     let p=null; try{ p=window.player; }catch(e){}
     if(!p) return;
     const vx=+p.vx||0, vy=+p.vy||0;
-    if(p.onGround && !move.prevGround && move.prevVy>7){
-      play('land',{impact:move.prevVy});
+    const explicitLanding=move.seenLanding!==landingSerial;
+    if(p.onGround && !move.prevGround && move.prevVy>2.4 && !explicitLanding && !heroWater.inWater){
+      playLanding(fallbackGroundTile(p),move.prevVy,{x:p.x,y:p.y+(+p.h||0.95)*0.5});
     }
     if(!p.onGround && move.prevGround && vy<-6 && !heroWater.inWater){
       play('jump');
@@ -653,6 +898,7 @@ window.MM = window.MM || {};
       if(move.stepAcc>2.4){ move.stepAcc=0; play('step'); }
     }else move.stepAcc=0;
     move.prevGround=!!p.onGround; move.prevVy=vy;
+    move.seenLanding=landingSerial;
   }
 
   // ---------------- frame update ----------------
@@ -691,6 +937,10 @@ window.MM = window.MM || {};
       ctx: !!ctx, state: ctx?ctx.state:'none', failed: ctxFailed, voices,
       buses:{sfx:settings.sfx, ambience:settings.ambience, music:settings.music, ui:settings.ui},
       scene:{...scene}, musicMode:music.mode, danger:Date.now()<dangerUntil,
+      lastLanding:lastLanding?{...lastLanding}:null,
+      acoustics:{reverb:reverbReturn?reverbReturn.gain.value:0,
+        echo:caveEchoReturn?caveEchoReturn.gain.value:0,
+        echoDelay:caveEchoDelay?caveEchoDelay.delayTime.value:0},
       musicOn:!!settings.musicOn, bossLevel:scene.bossLevel,
       rotation:{theme:rotation.theme, phase:rotation.phase, until:rotation.until},
       beds: beds.rain? {rain:beds.rain.g.gain.value, patter:beds.patter.g.gain.value,
@@ -702,7 +952,7 @@ window.MM = window.MM || {};
     };
   }
 
-  MM.audio={ play, playAt, thunder, update, setHeroWater,
+  MM.audio={ play, playAt, playLanding, thunder, update, setHeroWater,
     setVolume, setMute, setBusVolume, getBusVolume, setMusicOn, isMusicOn,
     getVolume:()=>settings.vol, isMuted:()=>settings.mute,
     isReady:()=>!!(ctx && ctx.state==='running'), debugState };

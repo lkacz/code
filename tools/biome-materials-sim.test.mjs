@@ -169,8 +169,8 @@ assert.ok(deepBedrock>=500, 'true extended-world bottom contains the hard bedroc
 
 const worldSource = await readFile(new URL('../src/engine/world.js', import.meta.url), 'utf8');
 const worldLayerSource = await readFile(new URL('../src/engine/world_layers.js', import.meta.url), 'utf8');
-assert.match(worldSource, /function isCaveTreasureFloor\(t\)/, 'worldgen centralizes cave treasure floor material checks');
-assert.match(worldSource, /isRockStructuralMaterial\(t\) && isObjectFootingTile\(t\)/, 'cave treasure uses shared substantial-rock footing checks instead of loose resource seams');
+assert.match(worldSource, /function stripChestTiles\(arr\)/, 'worldgen centralizes removal of legacy generated chest blocks');
+assert.doesNotMatch(worldSource, /Cave treasure: rare chests/, 'cave generation no longer seeds chest blocks on any footing');
 assert.match(worldSource, /WORLD_LAYERS\.legacyGeologyRockTile\(WG,wx,y,depth,biome\)/, 'legacy terrain delegates rock geology to the shared vertical layer model');
 assert.match(worldLayerSource, /function geologyMix\(WG,wx,y,primary,secondary,seed,amount\)/, 'geology transitions are feathered by local noise');
 assert.match(worldLayerSource, /export function legacyGeologyLayerDepth\(WG,wx,y,depth,biome\)/, 'geology layers use warped depth instead of straight horizontal bands');

@@ -15,6 +15,7 @@ const { chests } = await import('../src/engine/chests.js');
 const indexHtml = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const weaponsSrc = readFileSync(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
+assert.equal(T.BEDROCK_LADDER,95,'bedrock ladder appends a save-stable tile id');
 assert.match(indexHtml, /id="hotSelectMenu"[^>]*max-height:min\(78vh,calc\(100vh - 86px\)\)[^>]*overflow:hidden/, 'hotbar picker is height-bounded instead of growing behind the viewport');
 assert.match(indexHtml, /id="hotSelectOptions"[^>]*flex:1 1 auto[^>]*min-height:0[^>]*overflow-y:auto/, 'hotbar picker options list owns vertical scrolling');
 assert.match(indexHtml, /#craft\{[^}]*width:min\(560px,calc\(100vw - 16px\)\)[^}]*overflow:hidden/, 'crafting recipe book is viewport-bounded');
@@ -39,13 +40,19 @@ for (const [tileId, info] of Object.entries(INFO)) {
     }
   }
 }
+for (const jewel of INV.JEWELS) {
+  const def = res(jewel.key);
+  assert.ok(def && def.jewel, jewel.label + ' is a dedicated jewel resource');
+  assert.equal(def.tile, null, jewel.label + ' cannot be placed as a block');
+}
+assert.deepEqual(INV.JEWELS.map(j => j.chance), [1, 0.7, 0.5], 'jewel success odds match the design');
 assert.equal(INFO[T.COAL].drop, 'coal', 'coal blocks drop coal');
 assert.equal(INFO[T.GOLD_ORE].drop, 'gold', 'gold ore blocks drop gold');
 assert.equal(INFO[T.GOLD_ORE].goldOre, true, 'gold ore advertises its mineral identity');
 assert.equal(INFO[T.DIRT].drop, 'dirt', 'dirt blocks drop dirt');
 assert.equal(INFO[T.GRANITE].drop, 'granite', 'granite blocks drop granite');
 assert.equal(INFO[T.BASALT].drop, 'basalt', 'basalt blocks drop basalt');
-assert.equal(INFO[T.BEDROCK].drop, null, 'bedrock does not drop as a resource');
+assert.equal(INFO[T.BEDROCK].drop, 'bedrock', 'permitted bedrock mining yields the ladder crafting resource');
 assert.equal(INFO[T.CLAY].drop, 'clay', 'clay blocks drop clay');
 assert.equal(INFO[T.WET_CLAY].drop, 'clay', 'wet clay recovers as clay');
 assert.equal(INFO[T.BRICK].drop, 'brick', 'brick blocks drop brick');
@@ -55,6 +62,7 @@ assert.equal(INFO[T.RESPAWN_TOTEM].drop, 'respawnTotem', 'respawn totems drop ba
 assert.equal(INFO[T.RESPAWN_TOTEM].passable, true, 'respawn totems are passable fixtures');
 assert.equal(INFO[T.RESPAWN_TOTEM].respawnTotem, true, 'respawn totems advertise respawn semantics');
 assert.equal(INFO[T.LADDER].drop, 'ladder', 'ladders drop the ladder resource');
+assert.equal(INFO[T.BEDROCK_LADDER].drop, 'bedrockLadder', 'bedrock ladders drop their own recoverable resource');
 assert.equal(INFO[T.BEDROCK].unmineable, true, 'bedrock is an unmineable world boundary');
 assert.equal(INFO[T.MOTHER_ICE].drop, 'motherIce', 'mother ice drops the crafting resource');
 assert.equal(INFO[T.MOTHER_LAVA].drop, 'motherLava', 'mother lava drops the crafting resource');
@@ -83,7 +91,7 @@ assert.equal(res('gold')?.color, '#f2b93b', 'gold resource uses the bright vein 
 assert.equal(res('dirt')?.tile, 'DIRT', 'dirt is a placeable mined resource');
 assert.equal(res('granite')?.tile, 'GRANITE', 'granite is a placeable mined resource');
 assert.equal(res('basalt')?.tile, 'BASALT', 'basalt is a placeable mined resource');
-assert.equal(res('bedrock'), undefined, 'bedrock is not a placeable mined resource');
+assert.equal(res('bedrock')?.tile, null, 'raw bedrock is tracked for crafting but cannot be placed as boundary terrain');
 assert.equal(res('motherIce')?.tile, 'MOTHER_ICE', 'mother ice is a registered guardian-afterfall resource');
 assert.equal(res('motherLava')?.tile, 'MOTHER_LAVA', 'mother lava is a registered guardian-afterfall resource');
 assert.equal(res('heartAir')?.tile, null, 'Heart of Air is tracked as a non-placeable guardian trophy');
@@ -102,6 +110,7 @@ assert.equal(res('brick')?.tile, 'BRICK', 'brick is tracked as a fired ceramic b
 assert.equal(res('chimney')?.tile, 'CHIMNEY', 'chimneys are tracked as craftable vent blocks');
 assert.equal(res('respawnTotem')?.tile, 'RESPAWN_TOTEM', 'respawn totems are tracked as craftable placeable fixtures');
 assert.equal(res('ladder')?.tile, 'LADDER', 'ladder is tracked as a placeable climbing fixture');
+assert.equal(res('bedrockLadder')?.tile, 'BEDROCK_LADDER', 'bedrock ladder is a distinct placeable climbing fixture');
 assert.equal(res('woodDoor')?.tile, 'WOOD_DOOR', 'wood door is a craftable placeable resource');
 assert.equal(res('stoneDoor')?.tile, 'STONE_DOOR', 'stone door is a craftable placeable resource');
 assert.equal(res('steelDoor')?.tile, 'STEEL_DOOR', 'steel door is a craftable placeable resource');
@@ -138,6 +147,9 @@ assert.equal(res('winterFur')?.tile, null, 'winter hallmark fur is tracked as a 
 assert.equal(INFO[T.DYNAMO_SLOT].passable, true, 'dynamo slot is passable for the hero and machine flow');
 assert.equal(INFO[T.LADDER].passable, true, 'ladders are passable climbing fixtures');
 assert.equal(INFO[T.LADDER].ladder, true, 'ladders advertise ladder movement semantics');
+assert.equal(INFO[T.BEDROCK_LADDER].passable, true, 'bedrock ladders remain passable climbing fixtures');
+assert.equal(INFO[T.BEDROCK_LADDER].ladder, true, 'bedrock ladders advertise shared ladder movement semantics');
+assert.equal(INFO[T.BEDROCK_LADDER].bedrockLadder, true, 'bedrock ladders advertise their one-end-support identity');
 assert.equal(INFO[T.COPPER_WIRE].drop, 'copperWire', 'copper wire drops itself when dismantled');
 assert.equal(INFO[T.COPPER_WIRE].conductor, true, 'copper wire is marked as an energy conductor');
 assert.equal(INFO[T.TELEPORTER].machine, 'teleporter', 'teleporter tile is marked as a machine');
@@ -167,17 +179,21 @@ assert.match(mainSrc, /id:'solar_panel'/, 'crafting exposes solar panels outside
 assert.match(mainSrc, /id:'solar_battery'/, 'crafting exposes solar battery panels outside the debug menu');
 assert.match(mainSrc, /id:'spring_platform'/, 'crafting exposes spring platforms outside the debug menu');
 assert.match(mainSrc, /id:'ladders'/, 'crafting exposes ladders outside the debug menu');
+assert.match(mainSrc, /id:'bedrock_ladders'[^\n]*cost:\{bedrock:1\}/, 'crafting turns one mined bedrock into bedrock ladders');
+assert.match(mainSrc, /inv\.bedrockLadder\+=6/, 'bedrock ladder recipe yields six fixtures');
 assert.match(mainSrc, /tiles:\['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY','SPRING_PLATFORM'/, 'hotbar machine group includes solar panels and spring platforms');
 assert.match(mainSrc, /tiles:\['WIRE','COPPER_WIRE','WATER_PIPE','LADDER'/, 'hotbar utility group includes ladders with overlays');
+assert.match(mainSrc, /'LADDER','BEDROCK_LADDER'/, 'hotbar utility group exposes both ladder materials');
 assert.match(mainSrc, /tiles:\['WIRE','COPPER_WIRE','WATER_PIPE','LADDER'[\s\S]*'RESPAWN_TOTEM'\]/, 'hotbar utility group includes respawn totems');
 assert.match(mainSrc, /function selectToolMode\(opts\)\{[\s\S]*INV\.unequip\('weapon'\)[\s\S]*updateWeaponBar\(\)/, 'selecting build mode holsters the active weapon and refreshes the weapon bar');
 assert.match(mainSrc, /function cycleHotbar\(idx,opts\)\{[\s\S]*selectToolMode\(\{quiet:true\}\)[\s\S]*updateHotbarSel\(\)/, 'choosing a hotbar resource immediately returns to pickaxe/build mode');
+assert.match(mainSrc, /const preview=\(c && INV\.selectedWeaponForCategory\)\? INV\.selectedWeaponForCategory\(c\.id\)/, 'inactive weapon HUD slots display their remembered selection');
 assert.match(mainSrc, /assign\(slot,key\)\{[\s\S]*HOTBAR_ORDER\[slot\]=key; cycleHotbar\(slot\);/, 'inventory resource assignment goes through the hotbar selector');
 assert.match(mainSrc, /function collectLooseItemAt\(tx,ty,opts\)\{[\s\S]*isLooseItemTile\(t\)[\s\S]*const dropCtx=dropContextForTile\(t,tx,ty\);[\s\S]*setTile\(tx,ty,T\.AIR\);[\s\S]*const drops=awardTileDrops\(info,dropCtx\);[\s\S]*pushUndo\(tx,ty,t,T\.AIR,'break',drops\);[\s\S]*updateInventory\(\);/, 'loose item collection reuses tile drops, removal, undo, and inventory refresh');
 assert.match(mainSrc, /MM\.collectLooseItemAt=collectLooseItemAt;/, 'main exposes loose item collection for weapon hits');
 assert.match(weaponsSrc, /function collectLooseTarget\(tx,ty\)\{[\s\S]*MM\.collectLooseItemAt\(tx,ty,\{source:'melee_weapon',silent:true\}\)/, 'melee weapons delegate loose item hits to the shared collection helper');
-assert.match(weaponsSrc, /function fireMelee\(player, aimX, aimY\)\{[\s\S]*const chestHit=openChestFromWeaponHit\(tx,ty,[\s\S]*const collected=chestHit \? false : collectLooseTarget\(tx,ty\);[\s\S]*const hit=chestHit \|\| collected/, 'normal melee swings open chests first and still count loose item collection as a hit');
-assert.match(weaponsSrc, /function firePowerMelee\(player, aimX, aimY, w, charge\)\{[\s\S]*const chestHit=openChestFromWeaponHit\(tx,ty,[\s\S]*const collected=chestHit \? false : collectLooseTarget\(tx,ty\);[\s\S]*hit = !!\(chestHit \|\| collected \|\|/, 'charged melee swings open chests first and can also collect loose items');
+assert.match(weaponsSrc, /function fireMelee\(player, aimX, aimY\)\{[\s\S]*const chestHit=openChestFromWeaponHit\(tx\+0\.5,ty\+0\.5,[\s\S]*const collected=chestHit \? false : collectLooseTarget\(tx,ty\);[\s\S]*const hit=chestHit \|\| collected/, 'normal melee swings open physical chests first and still count loose item collection as a hit');
+assert.match(weaponsSrc, /function firePowerMelee\(player, aimX, aimY, w, charge\)\{[\s\S]*const chestHit=openChestFromWeaponHit\(tx\+0\.5,ty\+0\.5,[\s\S]*const collected=chestHit \? false : collectLooseTarget\(tx,ty\);[\s\S]*hit = !!\(chestHit \|\| collected \|\|/, 'charged melee swings open physical chests first and can also collect loose items');
 
 // --- percent ladder snapping ---------------------------------------------
 assert.equal(INV.snapPct(1), 0, 'noise under 2.5% disappears');
@@ -308,7 +324,10 @@ globalThis.MM.dynamicLoot = dynamicLootSnap;
 
 // --- shortcut category cycling: strongest first, opt-out respected --------
 // melee by score: w_dirty(36) > stone_blade(15) >= spear(15) > stick(6)
-INV.unequip('weapon');
+const shortcutStart=INV.snapshot();
+shortcutStart.equipped.weapon=null;
+shortcutStart.shortcutSelection={};
+INV.restore(shortcutStart,{persist:false,silent:true});
 assert.equal(INV.cycleWeaponCategory('melee').id, 'w_dirty', 'first press = strongest enabled melee');
 assert.equal(INV.cycleWeaponCategory('melee').id, 'stone_blade', 'second press = next strongest');
 INV.setShortcut('stone_blade', false);
@@ -324,14 +343,22 @@ assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_sticky', 'fourth press = 
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_snowball', 'fifth press = plain snowballs');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_balloon', 'sixth press = water balloons');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_gas', 'seventh press = gas grenades');
-assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_sand', 'eighth press = sand in the eyes');
-assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_spit', 'ninth press = water spit');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_spit', 'eighth press = damaging saliva');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_sand', 'ninth press = damage-free sand utility');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'bow_wood', 'rotation wraps back to the bow');
 // Session memory: after leaving for melee, the ranged key returns to the LAST
 // USED ranged weapon instead of restarting at the strongest.
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_stone', 'advance to a thrown weapon');
 INV.cycleWeaponCategory('melee');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_stone', 're-entering the ranged slot restores the last-used weapon');
+assert.equal(INV.selectedWeaponForCategory('bow').id, 'throw_stone', 'inactive ranged HUD content stays on the remembered weapon');
+const shortcutMemory=INV.snapshot();
+assert.equal(shortcutMemory.shortcutSelection.bow, 'throw_stone', 'shortcut selection is persisted independently of the active slot');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_toxic', 'same active slot still rotates on a repeated press');
+INV.restore(shortcutMemory,{persist:false,silent:true});
+INV.unequip('weapon');
+assert.equal(INV.selectedWeaponForCategory('bow').id, 'throw_stone', 'saved ranged slot content survives reload while tools are active');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_stone', 'first press after reload restores without advancing');
 const THROW_IDS=['throw_stone','throw_toxic','throw_sticky','throw_snowball','throw_balloon','throw_gas','throw_sand','throw_spit'];
 INV.setShortcut('bow_wood', false);
 THROW_IDS.forEach(id => INV.setShortcut(id, false));
@@ -421,6 +448,7 @@ assert.equal(INV.restore({
   bag: [{ id: 'restore_ok', kind: 'charm', name: 'Restore OK', mineSpeedMult: 1.0437 }],
   discarded: ['discarded_ok'],
   shortcutOff: ['bow_wood'],
+  shortcutSelection: { bow:'restore_ok', melee:'missing_item', stream:42 },
   newItems: ['restore_ok', 'missing_item']
 }, { persist: false, silent: true }), true, 'malformed persisted state restores safely');
 assert.equal(INV.equippedId('cape'), 'classic', 'malformed required equipment falls back to default');
@@ -429,7 +457,55 @@ assert.equal(INV.getColors().outfit, '#456789', 'valid color is preserved');
 assert.equal(INV.getItem('restore_ok').mineSpeedMult, 1.05, 'restored loot is normalized');
 assert.equal(INV.isNew('restore_ok'), true, 'new marker for existing restored loot is kept');
 assert.equal(INV.isNew('missing_item'), false, 'new marker for absent loot is dropped');
+assert.deepEqual(INV.snapshot().shortcutSelection, {}, 'invalid or wrong-category shortcut selections are discarded on restore');
 INV.restore(cleanSnap, { persist: false, silent: true });
+
+// --- permanent jewel enhancement: all three outcomes + save roundtrip -----
+const beforeJewels = INV.snapshot();
+globalThis.inv = Object.assign(globalThis.inv || {}, {
+  jewelBlessed: 1,
+  jewelDevout: 2,
+  jewelDivinity: 2
+});
+const stoneBase = INV.getItem('stone_blade').attackDamage;
+assert.equal(INV.enhancementInfo('stone_blade').level, 0, 'built-in gear starts without an enhancement');
+INV._debugEnhancement.setRandom(() => 0.999);
+let result = INV.applyJewel('stone_blade', 'jewelBlessed');
+assert.equal(result.success, true, 'blessed jewel succeeds even on the highest roll');
+assert.equal(result.delta, 1, 'blessed jewel grants +1');
+assert.equal(INV.getItem('stone_blade').attackDamage, stoneBase + 1, '+1 permanently changes the weapon primary stat');
+
+INV._debugEnhancement.setRandom(() => 0.69);
+result = INV.applyJewel('stone_blade', 'jewelDevout');
+assert.equal(result.success, true, 'devout jewel succeeds below 70%');
+assert.equal(result.level, 2, 'devout success stacks on an existing enhancement');
+INV._debugEnhancement.setRandom(() => 0.70);
+result = INV.applyJewel('stone_blade', 'jewelDevout');
+assert.equal(result.success, false, 'devout jewel fails at the 70% boundary');
+assert.equal(result.delta, 0, 'devout failure consumes the jewel without harming the item');
+assert.equal(result.level, 2, 'devout failure preserves the previous level');
+
+INV._debugEnhancement.setRandom(() => 0.49);
+result = INV.applyJewel('stone_blade', 'jewelDivinity');
+assert.equal(result.success, true, 'Divinity succeeds below 50%');
+assert.equal(result.delta, 2, 'Divinity success grants +2');
+assert.equal(result.level, 4, 'Divinity success stacks two levels');
+INV._debugEnhancement.setRandom(() => 0.50);
+result = INV.applyJewel('stone_blade', 'jewelDivinity');
+assert.equal(result.success, false, 'Divinity fails at the 50% boundary');
+assert.equal(result.delta, -1, 'Divinity failure lowers the enhancement by one');
+assert.equal(result.level, 3, 'Divinity failure retains the signed permanent remainder');
+assert.equal(globalThis.inv.jewelBlessed + globalThis.inv.jewelDevout + globalThis.inv.jewelDivinity, 0, 'every enhancement attempt consumes exactly one jewel');
+
+const enhancedSnap = INV.snapshot();
+assert.equal(enhancedSnap.enhancements.stone_blade, 3, 'snapshot stores enhancement separately from immutable item definitions');
+INV.restore(beforeJewels, { persist: false, silent: true });
+assert.equal(INV.getItem('stone_blade').attackDamage, stoneBase, 'restoring an older save removes later enhancements');
+INV.restore(enhancedSnap, { persist: false, silent: true });
+assert.equal(INV.enhancementInfo('stone_blade').level, 3, 'enhancement level survives save/restore');
+assert.equal(INV.getItem('stone_blade').attackDamage, stoneBase + 3, 'enhanced stat survives save/restore without double application');
+INV.restore(beforeJewels, { persist: false, silent: true });
+INV._debugEnhancement.setRandom(null);
 
 console.log('inventory-sim: all assertions passed (avg Moc common/uncommon/rare/epic/legendary: '
   + [(sums.common / counts.common).toFixed(1), (sums.uncommon / counts.uncommon).toFixed(1), (sums.rare / counts.rare).toFixed(1), (sums.epic / counts.epic).toFixed(1), (sums.legendary / counts.legendary).toFixed(1)].join('/') + ')');

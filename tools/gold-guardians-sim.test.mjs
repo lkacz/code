@@ -74,12 +74,28 @@ try{
 
   const cave = makeGoldCave();
   const empty = makeEmptyCave();
+  // The same cave geometry is considered shallow first: neither direct spawn
+  // tests nor the automatic scanner may leak the buried vein to a surface hero.
+  globalThis.MM.worldGen = { surfaceHeight(){ return 10; } };
+  assert.equal(species.GOLD_DRAGON.spawnTest(1,11,cave.getTile), false, 'gold dragons cannot spawn in a daylight-shallow cave');
+  assert.equal(species.GOLD_DWARF_GUARD.spawnTest(1,11,cave.getTile), false, 'gold dwarves cannot spawn in a daylight-shallow cave');
+  let player = resetPlayer(1.2,10.8);
+  installDamageRecorder(player);
+  mobs.clearAll();
+  simNow += 5200;
+  mobs.update(0.16,player,cave.getTile,cave.setTile);
+  const surfaceGuards=mobs.serialize().list.filter(m=>m.id==='GOLD_DRAGON' || m.id==='GOLD_DWARF_GUARD');
+  assert.equal(surfaceGuards.length,0,'walking above buried gold never summons a revealing surface guardian');
+
+  // Once the hero is genuinely underground, the original guarded-vein
+  // encounter remains active.
+  globalThis.MM.worldGen.surfaceHeight = ()=>5;
   assert.equal(species.GOLD_DRAGON.spawnTest(1,11,cave.getTile), true, 'gold dragons can stand in a roomy cave beside exposed gold');
   assert.equal(species.GOLD_DWARF_GUARD.spawnTest(1,11,cave.getTile), true, 'gold dwarves can stand in a cave beside exposed gold');
   assert.equal(species.GOLD_DRAGON.spawnTest(1,11,empty.getTile), false, 'gold dragons do not spawn without a gold vein to guard');
   assert.equal(species.GOLD_DWARF_GUARD.spawnTest(1,11,empty.getTile), false, 'gold dwarves do not spawn without a gold vein to guard');
 
-  let player = resetPlayer(1.2,10.8);
+  player = resetPlayer(1.2,10.8);
   installDamageRecorder(player);
   mobs.clearAll();
   simNow += 5200;

@@ -106,7 +106,7 @@ assert.ok(counts.dynamoSlot >= 1, 'city power plant contains a dynamo turbine sl
 assert.ok(counts.validDynamos >= 1 && counts.validDynamos <= 2, 'each generated city exposes one or two complete dynamo structures in its power plant');
 assert.ok(counts.vending >= 1, 'city generates fancy salvageable vending machines');
 assert.ok(counts.torches > 0, 'city generates lights in underground structures');
-assert.ok(counts.chests > 0, 'city can contain loot');
+assert.equal(counts.chests, 0, 'city generation contains no chest blocks');
 assert.ok(counts.airBelowSurface > 500, 'city contains carved interiors/tunnels below surface');
 assert.ok(mobs.species.includes('STRAZNIK'), 'city sentinel species is registered');
 assert.ok(mobs.forceSpawn('STRAZNIK', {x:center, y:WG.surfaceHeight(center)-2}, world.getTile), 'city sentinel can be debug-spawned');

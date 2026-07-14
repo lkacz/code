@@ -40,9 +40,10 @@
 // One prototype, three archetypes (walker / hopper / floater) — new species plug in
 // by extending the generator (silhouette + stats) without touching physics or combat.
 // The sim core runs headless; Node tests stub MM (see tools/boss-sim.test.mjs).
-import { isBlastProtectedTile, isCreatureOpenTile, isFoliageTile } from './material_physics.js';
+import { isBlastProtectedTile, isCreatureOpenTile, isFoliageTile, isIridiumArrowPierceableTile } from './material_physics.js';
 import { worldHostility as HOSTILITY } from './world_hostility.js';
 import { applyBossStatus, bossElectricDamageMult, bossStatusFor, tickBossStatus } from './boss_status.js';
+import { damageBlastCreatures } from './explosion_damage.js';
 
 window.MM = window.MM || {};
 (function(){
@@ -91,6 +92,10 @@ window.MM = window.MM || {};
     HEART_AGONY_MIN: 1.2, // exposed heart warning window before the final blast
     HEART_AGONY_MAX: 1.8,
     BODY_FALL_CAP: 220, // full boss-body tiles tumbling after heart collapse
+    HEART_RADIUS: 0.30,
+    HEART_GRAV: 28,
+    HEART_MAX_FALL: 21,
+    HEART_BOUNCE: 0.08,
   };
   // What a beast can consume from the world, and the body-block it grows in return
   // (drink water → icy flesh, eat sand → sandy flesh, graze grass/leaves → green, etc.)
@@ -210,6 +215,16 @@ window.MM = window.MM || {};
     return 1;
   }
   function say(t){ try{ if(typeof window!=='undefined' && window.msg) window.msg(t); }catch(e){} }
+  function notifyXpAward(detail){
+    try{
+      if(typeof window!=='undefined' && typeof window.dispatchEvent==='function' && typeof CustomEvent==='function'){
+        window.dispatchEvent(new CustomEvent('mm-xp-awarded',{detail}));
+        return true;
+      }
+    }catch(e){}
+    try{ if(MM.vitalsHud && typeof MM.vitalsHud.noteXpAward==='function'){ MM.vitalsHud.noteXpAward(detail); return true; } }catch(e){}
+    return false;
+  }
   // Hero damage is centralized in main.js (window.damageHero); the inline body
   // below is the fallback for the DOM-less Node sims, which stub neither handler.
   function damageHero(amount, srcX, cause){
@@ -685,6 +700,7 @@ window.MM = window.MM || {};
     const hw=(p.w||0.7)/2, hh=(p.h||0.95)/2;
     let standing=false;
     for(const m of monsters){
+      if(!m || m.dying || m.dead) continue;
       if(p.x+hw<=m.x+m.minDx || p.x-hw>=m.x+m.maxDx+1) continue;
       if(p.y+hh<=m.y-m.height+1 || p.y-hh>=m.y+1) continue;
       let best=null,bx=0,by=0,bestOv=0;
@@ -1033,6 +1049,26 @@ window.MM = window.MM || {};
     });
     return true;
   }
+  function detachHeartItem(m){
+    if(!m || !m.core) return null;
+    if(m.heartItem) return m.heartItem;
+    const c=m.core;
+    const inheritedVx=Number.isFinite(m.vx) ? m.vx*0.28 : 0;
+    const inheritedVy=Number.isFinite(m.vy) ? m.vy*0.18 : 0;
+    m.heartItem={
+      x:m.x+c.dx+0.5,
+      y:m.y+c.dy+0.5,
+      vx:inheritedVx+(Math.random()-0.5)*2.2,
+      vy:Math.min(-2.2,inheritedVy-2.6-Math.random()*1.2),
+      rot:(Math.random()-0.5)*0.35,
+      spin:(Math.random()<0.5?-1:1)*(2.8+Math.random()*3.4),
+      landed:false,
+      impactT:0,
+      sparkT:0,
+      radius:CFG.HEART_RADIUS
+    };
+    return m.heartItem;
+  }
   function releaseBodyAsBlocks(m){
     if(!m || m.bodyReleased) return 0;
     m.bodyReleased=true;
@@ -1068,11 +1104,59 @@ window.MM = window.MM || {};
     m.feed=null;
     m.state='agony';
     m.frozen=true;
+    detachHeartItem(m);
     releaseBodyAsBlocks(m);
     const bx=Math.round(m.x)+(m.core?m.core.dx:0), by=Math.round(m.y)+(m.core?m.core.dy:0);
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((bx+0.5)*(MM.TILE||20),(by+0.5)*(MM.TILE||20),'rare'); }catch(e){}
     try{ if(MM.audio && MM.audio.play) MM.audio.play('warning',{x:bx,y:by}); }catch(e){}
     say('Serce '+m.name+' kona i puchnie od energii - uciekaj!');
+    return true;
+  }
+  function heartHitsTerrain(getTile,x,y,r){
+    return solidT(getTile(Math.floor(x-r),Math.floor(y-r)))
+        || solidT(getTile(Math.floor(x+r),Math.floor(y-r)))
+        || solidT(getTile(Math.floor(x-r),Math.floor(y+r)))
+        || solidT(getTile(Math.floor(x+r),Math.floor(y+r)));
+  }
+  function updateHeartItem(m,dt,getTile){
+    const h=m && m.heartItem;
+    if(!h || typeof getTile!=='function') return false;
+    const r=Math.max(0.18,Number(h.radius)||CFG.HEART_RADIUS);
+    h.impactT=Math.max(0,(h.impactT||0)-dt);
+    h.sparkT=(h.sparkT||0)-dt;
+    h.vy=Math.min(CFG.HEART_MAX_FALL,(Number(h.vy)||0)+CFG.HEART_GRAV*dt);
+    const steps=Math.max(1,Math.ceil(Math.max(Math.abs(h.vx||0),Math.abs(h.vy||0))*dt/0.22));
+    const sdt=dt/steps;
+    for(let s=0;s<steps;s++){
+      const nx=h.x+(h.vx||0)*sdt;
+      if(!heartHitsTerrain(getTile,nx,h.y,r)) h.x=nx;
+      else { h.vx=-(h.vx||0)*0.12; h.spin*=0.72; }
+
+      const oldVy=h.vy||0;
+      const ny=h.y+oldVy*sdt;
+      if(!heartHitsTerrain(getTile,h.x,ny,r)){
+        h.y=ny;
+        h.landed=false;
+      } else if(oldVy>=0){
+        const footY=Math.floor(ny+r);
+        h.y=footY-r-0.002;
+        h.vy=oldVy>3.2 ? -oldVy*CFG.HEART_BOUNCE : 0;
+        h.vx*=Math.max(0.18,1-sdt*8.5);
+        h.spin*=0.46;
+        h.landed=true;
+        h.impactT=Math.max(h.impactT,0.18);
+      } else {
+        const ceilingY=Math.floor(ny-r);
+        h.y=ceilingY+1+r+0.002;
+        h.vy=-oldVy*0.06;
+        h.spin*=0.7;
+      }
+      h.rot+=(h.spin||0)*sdt;
+    }
+    if(h.sparkT<=0){
+      h.sparkT=0.11+Math.random()*0.08;
+      try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(h.x*(MM.TILE||20),h.y*(MM.TILE||20),'rare',2); }catch(e){}
+    }
     return true;
   }
   function updateHeartAgony(m,dt,getTile,setTile){
@@ -1082,6 +1166,7 @@ window.MM = window.MM || {};
       m.core.hp=0;
       m.core.hitT=Math.max(m.core.hitT||0,0.12);
     }
+    updateHeartItem(m,dt,getTile||m.deathGetTile);
     if(m.agonyT>=m.agonyMax){
       detonate(m,getTile||m.deathGetTile,setTile||m.deathSetTile);
       return true;
@@ -1158,7 +1243,10 @@ window.MM = window.MM || {};
     if(!m || m.dead) return;
     if(typeof getTile!=='function') getTile=m.deathGetTile || (MM.world && MM.world.getTile) || (()=>T.AIR);
     if(typeof setTile!=='function') setTile=m.deathSetTile || (MM.world && MM.world.setTile) || (()=>{});
-    const bx=Math.round(m.x)+m.core.dx, by=Math.round(m.y)+m.core.dy;
+    const heart=m.heartItem;
+    const blastX=heart && Number.isFinite(heart.x) ? heart.x : Math.round(m.x)+m.core.dx+0.5;
+    const blastY=heart && Number.isFinite(heart.y) ? heart.y : Math.round(m.y)+m.core.dy+0.5;
+    const bx=Math.floor(blastX), by=Math.floor(blastY);
     const deathPartCount=Math.max(m.deathPartCount||0,Array.isArray(m.parts)?m.parts.length:0,1);
     const R=CFG.BLAST_BASE+Math.round(Math.sqrt(deathPartCount+1));
     let ufoConcreteDrops=0;
@@ -1182,45 +1270,56 @@ window.MM = window.MM || {};
         for(const [ox,oy] of [[-R,0],[R,0],[0,-R],[0,R]]) MM.water.onTileChanged(bx+ox,by+oy,getTile);
       }
     }catch(e){}
-    for(const p of m.parts) spawnDebris(m,p,2);
-    // The felled beast leaves its hoard: chests settle onto the crater floor
-    // (a gargantuan drops a pile of epic chests; a normal beast one weighted chest)
+    for(const part of m.parts){ if(part!==m.core || !heart) spawnDebris(m,part,2); }
+    // The felled beast throws its hoard into the crater as heavy physical chests.
     const chestN = m.gargantuan? 3 : 1;
     for(let c=0;c<chestN;c++){
-      const tx=bx + (c===0?0: c===1?-2:2) + Math.round((Math.random()-0.5)*2);
-      const tier = m.gargantuan? (Math.random()<0.25? T.CHEST_LEGENDARY : T.CHEST_EPIC)
-                 : (Math.random()<0.15? T.CHEST_EPIC : Math.random()<0.55? T.CHEST_RARE : Math.random()<0.5? T.CHEST_UNCOMMON : T.CHEST_COMMON);
-      let placed=false;
-      for(let ty=Math.max(2,by-2); ty<WORLD_H-3; ty++){
-        const tt=getTile(tx,ty);
-        // air or water column with solid floor below — works on land and seabed
-        if(openT(tt) && solidT(getTile(tx,ty+1))){
-          setTile(tx,ty,tier);
-          if(tt===T.WATER){ try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(tx,ty,getTile); }catch(e){} }
-          placed=true; break;
+      const tier = m.gargantuan? (Math.random()<0.25? 'legendary' : 'epic')
+                 : (Math.random()<0.15? 'epic' : Math.random()<0.55? 'rare' : Math.random()<0.5? 'uncommon' : 'common');
+      try{
+        if(MM.drops && MM.drops.spawnChest){
+          const side=c===0?0:c===1?-1:1;
+          MM.drops.spawnChest(blastX,blastY-0.4,tier,{source:'boss',vx:side*(2.2+Math.random()*1.2)+(Math.random()-0.5),vy:-(3.5+Math.random()*2.5)});
         }
-      }
-      if(!placed){ const tt=getTile(tx,by); if(openT(tt)) setTile(tx,by,tier); }
+      }catch(e){}
     }
     const TILE=MM.TILE||20;
-    blasts.push({x:(bx+0.5)*TILE, y:(by+0.5)*TILE, R:R*TILE, t:0, max:0.7});
-    try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((bx+0.5)*TILE,(by+0.5)*TILE,'epic'); }catch(e){}
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('explosion',{x:bx+0.5,y:by+0.5}); }catch(e){}
+    blasts.push({x:blastX*TILE, y:blastY*TILE, R:R*TILE, t:0, max:0.7});
+    try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(blastX*TILE,blastY*TILE,'epic'); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('explosion',{x:blastX,y:blastY}); }catch(e){}
+    const creatureBlastDamage=Math.min(96,Math.round(28+deathPartCount*1.6));
+    damageBlastCreatures(MM,blastX,blastY,R+3,creatureBlastDamage,{source:'boss',cause:'boss_blast'});
     const p=playerRef();
     if(p && isFinite(p.x) && isFinite(p.y)){
-      const d=Math.max(Math.abs(p.x-bx), Math.abs(p.y-by));
-      if(d<R+4) damageHero(Math.round(40*(1-d/(R+5))+6), bx, 'boss_blast');
+      const d=Math.max(Math.abs(p.x-blastX), Math.abs(p.y-blastY));
+      if(d<R+4) damageHero(Math.round(40*(1-d/(R+5))+6), blastX, 'boss_blast');
     }
-    const cmp=companionTargetAt(bx,by,R+4);
+    const cmp=companionTargetAt(blastX,blastY,R+4);
     if(cmp){
       const cp=targetPoint(cmp);
-      const d=Math.max(Math.abs(cp.x-bx), Math.abs(cp.y-by));
-      if(d<R+4) damageCompanionTarget(cmp,Math.round(40*(1-d/(R+5))+6),bx,by,'boss_blast');
+      const d=Math.max(Math.abs(cp.x-blastX), Math.abs(cp.y-blastY));
+      if(d<R+4) damageCompanionTarget(cmp,Math.round(40*(1-d/(R+5))+6),blastX,blastY,'boss_blast');
     }
-    if(p && typeof p.xp==='number') p.xp+=40+deathPartCount*2;
-    say('💥 Serce potwora '+m.name+' zniszczone! +'+(40+deathPartCount*2)+' XP'+(m.gargantuan? ' — zostawił stos epickich skrzyń!':' — zostawił skrzynię!'));
+    const xpGain=40+deathPartCount*2;
+    if(p && typeof p==='object'){
+      p.xp=(Number(p.xp)||0)+xpGain;
+      notifyXpAward({amount:xpGain,x:blastX,y:blastY,species:'BOSS',special:true,source:'boss'});
+    }
+    // Procedural block beasts are outside mobs.js, so they make their own roll
+    // through the same power-scaled jewel table. Gargantuans naturally score
+    // higher but the reward remains a rare possibility, never a guaranteed drop.
+    try{
+      if(MM.drops && MM.drops.rollJewelDrop){
+        const hpBudget=Math.max(1,deathPartCount*8+(m.gargantuan?180:0));
+        MM.drops.rollJewelDrop({
+          id:'BLOCK_BOSS',x:blastX,y:blastY,maxHp:hpBudget,dmg:m.attackDmg,
+          scale:m.gargantuan?3:1,hostility:m.hostility,hostilityTier:m.hostilityTier
+        },{boss:true,hp:hpBudget,dmg:m.attackDmg,xp:xpGain});
+      }
+    }catch(e){}
+    say('💥 Serce potwora '+m.name+' eksplodowało! Nagroda: +'+xpGain+' XP'+(m.gargantuan? ' — zostawił stos epickich skrzyń!':' — zostawił skrzynię!'));
     killedTotal++;
-    try{ if(typeof window!=='undefined' && window.dispatchEvent) window.dispatchEvent(new CustomEvent('mm-boss-killed',{detail:{name:m.name, gargantuan:!!m.gargantuan}})); }catch(e){}
+    try{ if(typeof window!=='undefined' && window.dispatchEvent) window.dispatchEvent(new CustomEvent('mm-boss-killed',{detail:{name:m.name,gargantuan:!!m.gargantuan,xp:xpGain,x:blastX,y:blastY}})); }catch(e){}
     m.dead=true;
     const i=monsters.indexOf(m); if(i>=0) monsters.splice(i,1); // gone the moment it bursts
   }
@@ -1242,6 +1341,9 @@ window.MM = window.MM || {};
       const sealed=coreProtected(m);
       for(const p of parts){
         if(!p || !(p.hp>0)) continue;
+        // Turrets are weapons too: aim at the eye or an exposed heart, never at
+        // ordinary body blocks that their projectiles cannot mine.
+        if(p.role!=='eye' && p.role!=='core') continue;
         if(p===m.core && sealed) continue;
         const x=m.x+p.dx+0.5, y=m.y+p.dy+0.5;
         const dx=x-sx, dy=y-sy, d2=dx*dx+dy*dy;
@@ -1275,24 +1377,75 @@ window.MM = window.MM || {};
     if(!c || !(c.maxHp>0)) return 0;
     return clamp(c.hp/c.maxHp,0,1);
   }
-  // Attack the part occupying world tile (tx,ty). Damage = hero's tool + optional
-  // equipped-weapon bonus passed by main.js (MM.activeModifiers.attackDamage).
+  // Dynamic boss tiles participate in the ordinary mining cursor even though they
+  // are not stored in the world array. Their generated material supplies hardness.
+  function partAt(tx,ty){
+    if(!Number.isFinite(tx) || !Number.isFinite(ty)) return null;
+    let best=null, bestOv=0;
+    for(const m of monsters){
+      if(!m || m.dead || m.dying) continue;
+      if(tx<m.x+m.minDx-1 || tx>m.x+m.maxDx+1 || ty<m.y-m.height || ty>m.y+2) continue;
+      for(const p of m.parts){
+        if(!p || !(p.hp>0)) continue;
+        const px=m.x+p.dx, py=m.y+p.dy;
+        const ox=Math.min(px+1,tx+1)-Math.max(px,tx);
+        const oy=Math.min(py+1,ty+1)-Math.max(py,ty);
+        const ov=ox>0 && oy>0 ? ox*oy : 0;
+        if(ov>bestOv){
+          bestOv=ov;
+          best={boss:m,part:p,tile:p.blockType || T.STONE,role:p.role,protected:p===m.core && coreProtected(m)};
+        }
+      }
+    }
+    return best;
+  }
+  function bodyImpactMode(p,opts){
+    if(!p || p.role==='core' || p.role==='eye') return 'weakpoint';
+    const o=opts && typeof opts==='object' ? opts : {};
+    const kind=String(o.kind||o.type||o.cause||'').toLowerCase();
+    if(kind==='pickaxe' || kind==='mining') return o.breakTerrain ? 'break' : 'damage';
+    if(kind==='explosion' || kind==='blast' || /explosion|blast/.test(kind)){
+      return p.blockType!=null && !isBlastProtectedTile(p.blockType) ? 'break' : 'blocked';
+    }
+    if(kind==='arrow' && o.tier==='iridium' && Number(o.pierceLeft)>0){
+      return p.blockType!=null && isIridiumArrowPierceableTile(p.blockType) ? 'pierce' : 'blocked';
+    }
+    // Future drills or terrain-editing projectiles can opt into block behavior
+    // without making generic creature damage effective against the shell.
+    if(o.terrainDamage===true) return 'break';
+    return 'blocked';
+  }
+  // Compatibility/debug pickaxe strike. Normal held mining completes through
+  // mineAt(), while this incremental path still uses the selected tool strength.
   function attackAt(tx,ty,dmgBonus){
     const p=playerRef();
     let dmg=CFG.TOOL_DMG[(p && p.tool)||'basic']||2;
     if(typeof dmgBonus==='number' && isFinite(dmgBonus) && dmgBonus>0) dmg+=dmgBonus;
-    return strikeAt(tx,ty,dmg);
+    return strikeAt(tx,ty,dmg,{kind:'pickaxe',source:'hero'});
   }
-  // Absolute-damage strike (arrows / flame): bypasses tool scaling
+  // A completed mining cycle removes one dynamic body tile, just as it would the
+  // corresponding tile in the world array.
+  function mineAt(tx,ty){
+    return strikeAt(tx,ty,1,{kind:'pickaxe',source:'hero',breakTerrain:true});
+  }
+  // Weapon strike: eye and exposed heart take damage; the body first has to pass
+  // the same terrain-breaking checks as its underlying block material.
   function damageAt(tx,ty,dmg,opts){
     return strikeAt(tx,ty, Math.max(0.5,(typeof dmg==='number' && isFinite(dmg))? dmg:1), opts);
   }
-  // Burn-DoT hurt path (weakened matrix): chews the first exposed part; the
-  // sealed heart is architecture — status fire never bypasses the plating.
+  function reportProjectileAnchor(opts,m,part){
+    if(!opts || typeof opts.onTarget!=='function' || !m || !part) return;
+    // Parts live in the boss-local block lattice. Passing that local anchor lets
+    // a surviving arrow follow the moving beast without snapping to its origin.
+    const anchor={localX:(Number(part.dx)||0)+0.5,localY:(Number(part.dy)||0)+0.5};
+    const partAlive=(boss)=>!!(boss===m && !m.dead && !m.dying && part.hp>0
+      && monsters.indexOf(m)>=0 && m.parts.indexOf(part)>=0);
+    try{ opts.onTarget(m,'boss',partAlive,anchor); }catch(e){}
+  }
+  // Status damage follows the weapon rule too: eye first, then an exposed heart.
   function applyStatusDot(m,dmg,getTile,setTile){
     if(!m || m.dead || m.dying || !(dmg>0) || !Array.isArray(m.parts) || !m.parts.length) return false;
-    let target=null;
-    for(const p of m.parts){ if(p!==m.core && p.hp>0){ target=p; break; } }
+    let target=m.parts.find(p=>p && p.role==='eye' && p.hp>0) || null;
     if(!target && m.core && m.core.hp>0 && !coreProtected(m)) target=m.core;
     if(!target) return false;
     target.hp-=dmg;
@@ -1323,13 +1476,20 @@ window.MM = window.MM || {};
         if(ov>bestOv){ bestOv=ov; best=p; }
       }
       if(best){
-        best.hp-=hitDmg; best.hitT=0.18;
+        reportProjectileAnchor(opts,m,best);
+        const impact=bodyImpactMode(best,opts);
+        best.hitT=0.18;
         // a struck beast stops grazing and turns to fight (a blind one only frets)
         m.feed=null; if(m.state==='feed') m.state = m.hasEye? 'hunt':'roam'; m.hunger=Math.min(m.hunger,0.8);
+        if(impact==='blocked') return 'blocked';
+        if(impact==='break' || impact==='pierce') best.hp=0;
+        else best.hp-=hitDmg;
         if(best.hp<=0) destroyPart(m,best,getTile,setTile);
+        if(impact==='pierce') return 'pierced';
         return true;
       }
       if(coreOv>0){
+        reportProjectileAnchor(opts,m,m.core);
         // the blow glances off the plating sealing the heart — flash the armor ring
         for(const p of m.parts){ if(Math.abs(p.dx-m.core.dx)+Math.abs(p.dy-m.core.dy)===1) p.hitT=0.15; }
         const now=(typeof performance!=='undefined')? performance.now():0;
@@ -1485,8 +1645,42 @@ window.MM = window.MM || {};
   function tileVisible(canDrawTile,x,y){ return typeof canDrawTile !== 'function' || canDrawTile(Math.floor(x),Math.floor(y)); }
   function monsterVisible(canDrawTile,m){
     if(typeof canDrawTile !== 'function') return true;
+    if(m && m.dying && m.heartItem && tileVisible(canDrawTile,m.heartItem.x,m.heartItem.y)) return true;
     for(const p of m.parts){ if(tileVisible(canDrawTile,m.x+p.dx,m.y+p.dy)) return true; }
     return false;
+  }
+  function drawHeartItem(ctx,TILE,m,now,canDrawTile){
+    const h=m && m.heartItem;
+    if(!h || !tileVisible(canDrawTile,h.x,h.y)) return;
+    const agonyF=clamp((m.agonyT||0)/Math.max(0.001,m.agonyMax||1),0,1);
+    const pulse=0.5+0.5*Math.sin(now*(0.020+agonyF*0.032));
+    const impact=h.impactT>0 ? Math.min(1,h.impactT/0.18) : 0;
+    const size=TILE*(0.62+0.08*pulse);
+    ctx.save();
+    ctx.translate(h.x*TILE,h.y*TILE);
+    ctx.rotate(h.rot||0);
+    const glow=ctx.createRadialGradient(0,0,1,0,0,TILE*(1.0+0.75*agonyF+0.18*pulse));
+    glow.addColorStop(0,'rgba(255,92,112,'+(0.62+0.24*pulse).toFixed(3)+')');
+    glow.addColorStop(0.42,'rgba(255,198,72,'+(0.16+0.42*agonyF).toFixed(3)+')');
+    glow.addColorStop(1,'rgba(255,52,80,0)');
+    ctx.fillStyle=glow;
+    ctx.fillRect(-TILE*1.8,-TILE*1.8,TILE*3.6,TILE*3.6);
+    const sy=1-impact*0.16;
+    ctx.fillStyle=pulse>0.72 ? '#fff0a0' : '#ff244d';
+    ctx.beginPath();
+    ctx.moveTo(0,size*0.52*sy);
+    ctx.lineTo(-size*0.47,-size*0.02*sy);
+    ctx.lineTo(-size*0.42,-size*0.34*sy);
+    ctx.lineTo(-size*0.18,-size*0.50*sy);
+    ctx.lineTo(0,-size*0.29*sy);
+    ctx.lineTo(size*0.18,-size*0.50*sy);
+    ctx.lineTo(size*0.42,-size*0.34*sy);
+    ctx.lineTo(size*0.47,-size*0.02*sy);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle='rgba(255,255,255,'+(0.38+0.32*pulse).toFixed(3)+')';
+    ctx.fillRect(-size*0.20,-size*0.29*sy,size*0.19,size*0.10);
+    ctx.restore();
   }
   function bossOuterPart(occ,p){
     return !occ.has(p.dx+','+(p.dy-1)) || !occ.has(p.dx+','+(p.dy+1)) || !occ.has((p.dx-1)+','+p.dy) || !occ.has((p.dx+1)+','+p.dy);
@@ -1553,6 +1747,7 @@ window.MM = window.MM || {};
       const pivX=(bx+(m.minDx+m.maxDx)/2+0.5)*TILE, pivY=(by+1)*TILE+wob;
       if(m.tilt){ ctx.translate(pivX,pivY); ctx.rotate(m.tilt); ctx.translate(-pivX,-pivY); }
       for(const p of m.parts){
+        if(m.dying && m.heartItem && p===m.core) continue;
         const off=limbOffset(m,p,now);
         const X=(bx+p.dx)*TILE+off.ox, Y=(by+p.dy)*TILE+wob+off.oy;
         const dmgF=1-p.hp/p.maxHp;
@@ -1590,6 +1785,7 @@ window.MM = window.MM || {};
       ctx.strokeStyle='rgba(0,0,0,0.4)'; ctx.lineWidth=1;
       ctx.beginPath();
       for(const p of m.parts){
+        if(m.dying && m.heartItem && p===m.core) continue;
         const off=limbOffset(m,p,now);
         const X=(bx+p.dx)*TILE+off.ox, Y=(by+p.dy)*TILE+wob+off.oy;
         if(!occ.has(p.dx+','+(p.dy-1))){ ctx.moveTo(X,Y+0.5); ctx.lineTo(X+TILE,Y+0.5); }
@@ -1599,10 +1795,12 @@ window.MM = window.MM || {};
       }
       ctx.stroke();
       ctx.restore();
+      drawHeartItem(ctx,TILE,m,now,canDrawTile);
       // The monster dies when its heart reaches zero. Body blocks are destructible
       // armor, so the visible boss bar tracks heart HP instead of total body HP.
-      const barW=(m.maxDx-m.minDx+1)*TILE*0.8;
-      const barX=(bx+(m.minDx+m.maxDx)/2)*TILE+TILE/2-barW/2, barY=(by-m.height)*TILE-8+wob;
+      const barW=m.dying && m.heartItem ? TILE*1.8 : (m.maxDx-m.minDx+1)*TILE*0.8;
+      const barX=m.dying && m.heartItem ? m.heartItem.x*TILE-barW/2 : (bx+(m.minDx+m.maxDx)/2)*TILE+TILE/2-barW/2;
+      const barY=m.dying && m.heartItem ? (m.heartItem.y-0.78)*TILE : (by-m.height)*TILE-8+wob;
       ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(barX,barY,barW,4);
       if(m.dying){
         const left=1-clamp((m.agonyT||0)/Math.max(0.001,m.agonyMax||1),0,1);
@@ -1703,7 +1901,7 @@ window.MM = window.MM || {};
   }
   function _debug(){ return {monsters, debris, fallingBodyBlocks, blasts, projectiles, spawnTimer, lastIsDay}; }
 
-  MM.bosses={update, draw, drawHUD, attackAt, damageAt, forceSpawn, killNearest, collideHero, clearAll, reset, metrics,
+  MM.bosses={update, draw, drawHUD, attackAt, mineAt, damageAt, partAt, forceSpawn, killNearest, collideHero, clearAll, reset, metrics,
              nearestForAbduction, nearestForTurret, targetsForTurret, abduct, setCycleOverride, config:CFG, _debug};
   // weakened-matrix registry adapter (shared boss_status helper): splats and
   // streams reach roaming bosses through MM.bossStatus.applyRadius

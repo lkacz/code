@@ -130,6 +130,12 @@ assert.match(mainSource, /const waterMoveMult = \(inWater && !ridingFloatingBoat
 assert.match(mainSource, /moveMult = [^;]*\* turboSpeedMult \* waterMoveMult \* heroChillMoveMult\(\) \* heroSandMoveMult\(\) \* socialBoostMult\('move'\);/, 'turbo, water, chill, sandstorm and ghost-audience multipliers feed horizontal movement together');
 assert.match(mainSource, /jumpMult = [^;]*\* turboJumpMult \* Math\.sqrt\(socialBoostMult\('jump'\)\);/, 'turbo jump and the ghost-audience height boost feed jump impulse');
 assert.match(mainSource, /spendTurboEnergy\(dt\)/, 'turbo consumes hero energy while active');
+assert.match(mainSource, /function recordTurboEnergyUse\(amount\)[\s\S]*turboEnergyHoldSpent\+=spent/, 'turbo accumulates energy use for the whole Shift hold');
+assert.match(mainSource, /function reportTurboEnergyUse\(lockUntilRelease\)[\s\S]*noteHeroEnergyDelta\(-spent,\{force:true,cause:'turbo',target:'hero:energy:turbo'\}\)/, 'turbo reports one dedicated total when the hold finishes');
+assert.match(mainSource, /function spendTurboEnergy\(dt\)[\s\S]*recordTurboEnergyUse\(spent\)[\s\S]*if\(player\.energy<=TURBO_MIN_ENERGY\) reportTurboEnergyUse\(true\)/, 'energy depletion immediately closes and reports the turbo session');
+assert.doesNotMatch(mainSource.match(/function spendTurboEnergy\(dt\)\{[\s\S]*?\n\}/)?.[0]||'', /noteHeroEnergyDelta/, 'turbo no longer emits energy numbers every simulation pulse');
+assert.match(mainSource, /window\.addEventListener\('keyup',[\s\S]*if\(!turboKeyHeld\(\)\) endTurboEnergyHold\(\)/, 'releasing the final Shift key reports the accumulated total');
+assert.match(mainSource, /function releaseGameplayInput\(\)\{\s*endTurboEnergyHold\(\);/, 'blur and modal input release also close the turbo reporting session');
 assert.match(mainSource, /turboRechargePauseT=Math\.max\(turboRechargePauseT,0\.18\)/, 'turbo spending briefly blocks passive recharge so cost is visible');
 assert.match(mainSource, /if\(!turboRechargeBlocked && DYNAMO && typeof DYNAMO\.absorbNear==='function'/, 'passive dynamo recharge does not immediately erase turbo spending');
 assert.match(mainSource, /spawnTurboSparks/, 'turbo emits electric spark feedback');

@@ -1,6 +1,7 @@
 import { T, WORLD_H } from '../constants.js';
 import { isBlastProtectedTile, isObjectFootingTile, isPassableForFalling, isReplaceableNaturalOpenTile } from './material_physics.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
+import { damageBlastCreatures } from './explosion_damage.js';
 
 (function(){
   window.MM = window.MM || {};
@@ -264,6 +265,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     sparkBurst(x+0.5,y+0.5,'epic');
     smokeAt(x+0.5,y+0.4,4.0);
     try{ if(MM.audio && MM.audio.play) MM.audio.play('explosion',{x:x+0.5,y:y+0.5}); }catch(e){}
+    damageBlastCreatures(MM,x+0.5,y+0.5,R+1.5,14,{source:'volcano',cause:'servant_stone_blast'});
     return true;
   }
   function explodeServantStone(m,getTile,setTile){
@@ -276,7 +278,7 @@ import { worldGen as WORLDGEN } from './worldgen.js';
     let ok=false;
     try{
       if(MM.weapons && MM.weapons.explodeAt){
-        ok=!!MM.weapons.explodeAt(x+0.5,y+0.5,getTile,setTile,{force:true,extraConsumed:18});
+        ok=!!MM.weapons.explodeAt(x+0.5,y+0.5,getTile,setTile,{force:true,extraConsumed:18,source:'volcano',cause:'servant_stone_blast'});
       }
     }catch(e){ ok=false; }
     if(!ok) ok=fallbackServantExplosion(x,y,getTile,setTile);

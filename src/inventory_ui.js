@@ -41,15 +41,72 @@ import './inventory.js';
 
   const TIER_COLORS=INV.TIER_COLORS||{common:'#b07f2c', rare:'#a74cc9', epic:'#e0b341'};
   const TIER_LABELS={common:'zwykły', uncommon:'niezwykły', rare:'rzadki', epic:'epicki', legendary:'legendarny'};
+  const PRESTIGE_RANK={common:0,uncommon:1,rare:2,epic:3,legendary:4};
+  const WEAPON_MATERIALS={
+    wood:{body:'#76502b',edge:'#d7aa68',accent:'#ad7436',dark:'#3f2817',grip:'#5b351d'},
+    stone:{body:'#727982',edge:'#dce3ea',accent:'#9da6af',dark:'#3c4249',grip:'#654321'},
+    steel:{body:'#788694',edge:'#f2f8ff',accent:'#b9c8d6',dark:'#36424c',grip:'#674326'},
+    obsidian:{body:'#3c3158',edge:'#c7a4f2',accent:'#7e59b5',dark:'#171020',grip:'#4a2f2b'},
+    diamond:{body:'#70c9db',edge:'#f2ffff',accent:'#86f0f2',dark:'#285f72',grip:'#4f5363'},
+    iridium:{body:'#7668a7',edge:'#f4eaff',accent:'#b887ff',dark:'#302749',grip:'#403557'},
+    aquatic:{body:'#436d7c',edge:'#dffcff',accent:'#62dce7',dark:'#203d4a',grip:'#405764'},
+    arc:{body:'#3e5968',edge:'#efffff',accent:'#58eaff',dark:'#1d303a',grip:'#3e434d'},
+    exotic:{body:'#62528b',edge:'#fff2b8',accent:'#e7b85b',dark:'#28203d',grip:'#49354d'}
+  };
+  function prestigeRank(item){ return item&&item.unique?Math.max(3,PRESTIGE_RANK[item.tier]||0):(PRESTIGE_RANK[item&&item.tier]||0); }
+  function weaponMaterialProfile(item){
+    const name=String(item&&(item.id||item.name)||'').toLowerCase();
+    if(item&&item.aquaticStyle) return WEAPON_MATERIALS.aquatic;
+    if(/iryd|irid/.test(name)) return WEAPON_MATERIALS.iridium;
+    if(/diament|diamond/.test(name)) return WEAPON_MATERIALS.diamond;
+    if(/obsyd|obsid/.test(name)) return WEAPON_MATERIALS.obsidian;
+    if(/kamie|stone|rock/.test(name)) return WEAPON_MATERIALS.stone;
+    if(/drewn|wood|patyk|stick|maczug|club|luk|bow/.test(name)) return WEAPON_MATERIALS.wood;
+    if((item&&item.weaponType)==='electric'||/elektr|electric|tesla|laser|plasm/.test(name)) return WEAPON_MATERIALS.arc;
+    if(item&&(item.unique||prestigeRank(item)>=3)) return WEAPON_MATERIALS.exotic;
+    return WEAPON_MATERIALS.steel;
+  }
+  function meleeMiniForm(item){
+    if(item&&item.aquaticStyle==='trident') return 'trident';
+    const name=String(item&&item.name||'').toLowerCase();
+    if(/top[oó]r|axe/.test(name)) return 'axe';
+    if(/maczug|patyk|club|stick/.test(name)) return 'club';
+    if(/dzid|w[łl][oó]cz|spear/.test(name)||Number(item&&item.fireRange)>1) return 'spear';
+    return 'sword';
+  }
+  function drawWeaponPrestigeAura(ctx,item,x,y,radius){
+    const rank=prestigeRank(item); if(rank<2) return;
+    const col=TIER_COLORS[item.tier]||(rank===4?'#65f4ff':rank===3?'#ffd45c':'#bd75ff');
+    const now=performance.now()*0.001, pulse=0.82+Math.sin(now*3.1)*0.18;
+    ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.shadowColor=col; ctx.shadowBlur=rank===4?14:rank===3?9:5;
+    ctx.fillStyle=col; ctx.globalAlpha=(rank===4?0.12:rank===3?0.08:0.045)*pulse;
+    ctx.beginPath(); ctx.arc(x,y,radius*(rank===4?1.08:0.88),0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle=col; ctx.lineWidth=rank===4?1.5:1; ctx.globalAlpha=(rank===4?0.52:rank===3?0.34:0.20)*pulse;
+    const rings=rank===4?3:rank===3?2:1;
+    for(let i=0;i<rings;i++){
+      const spin=now*(0.65+i*0.22)*(i%2?-1:1)+i*2.1;
+      ctx.beginPath(); ctx.arc(x,y,radius*(0.55+i*0.17),spin,spin+Math.PI*(0.72+i*0.18)); ctx.stroke();
+    }
+    if(rank>=3){
+      ctx.fillStyle=rank===4?'#ffffff':col;
+      for(let i=0;i<(rank===4?4:2);i++){
+        const a=now*(i%2?1.1:-0.85)+i*Math.PI/2;
+        ctx.globalAlpha=0.55+Math.sin(now*4+i)*0.2;
+        ctx.beginPath(); ctx.arc(x+Math.cos(a)*radius*0.72,y+Math.sin(a)*radius*0.72,rank===4?1.25:0.9,0,Math.PI*2); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
 
   // --- Tabs: one per item kind + resources ---
   const TABS=MM.inventory.SLOTS.map(s=>({key:s.accepts, label:INV.KIND_LABELS[s.accepts]||s.accepts, kind:s.accepts}))
-    .concat([{key:'resources', label:'Surowce'},{key:'discovery', label:'Odkrycia'}]);
-  const TAB_ICONS={cape:'🧥', eyes:'👁️', outfit:'👕', weapon:'⚔️', charm:'🧿', resources:'📦', discovery:'🧪'};
+    .concat([{key:'jewels', label:'Juwele'},{key:'resources', label:'Surowce'},{key:'discovery', label:'Odkrycia'}]);
+  const TAB_ICONS={cape:'🧥', eyes:'👁️', outfit:'👕', weapon:'⚔️', charm:'🧿', jewels:'💎', resources:'📦', discovery:'🧪'};
   let activeTab=TABS[0];
   let searchText='';
   let tierFilter='all';
   let sortMode='power';
+  let selectedJewelKey=null;
   let toolbarEl=null, searchInput=null, tierSelect=null, sortSelect=null, capEl=null, undoBtn=null, newReviewEl=null;
 
   function isOpen(){ return overlay.style.display==='block'; }
@@ -84,8 +141,9 @@ import './inventory.js';
       if(cnt){
         let n=tab.kind? INV.items(tab.kind).length : 0;
         if(tab.key==='discovery' && MM.discovery && MM.discovery.count) n=MM.discovery.count();
+        if(tab.key==='jewels') n=(INV.JEWELS||[]).reduce((sum,j)=>sum+Math.max(0,((window.inv||{})[j.key]|0)),0);
         cnt.textContent=n;
-        cnt.style.display=((tab.kind || tab.key==='discovery') && n)? '' : 'none';
+        cnt.style.display=((tab.kind || tab.key==='discovery' || tab.key==='jewels') && n)? '' : 'none';
       }
       const has=!!tab.kind && news.some(i=>i.kind===tab.kind);
       let dot=b.querySelector('.dotNew');
@@ -145,10 +203,10 @@ import './inventory.js';
   function updateToolbar(){
     ensureToolbar();
     if(!toolbarEl) return;
-    const itemTab=activeTab.key!=='resources' && activeTab.key!=='discovery';
+    const itemTab=!['resources','discovery','jewels'].includes(activeTab.key);
     searchInput.parentElement.style.display='';
     searchInput.placeholder=itemTab? 'Szukaj przedmiotów…  ( / )'
-      : (activeTab.key==='discovery' ? 'Szukaj odkryć…  ( / )' : 'Szukaj surowców…  ( / )');
+      : (activeTab.key==='discovery' ? 'Szukaj odkryć…  ( / )' : activeTab.key==='jewels' ? 'Szukaj juweli lub przedmiotów…  ( / )' : 'Szukaj surowców…  ( / )');
     tierSelect.style.display=itemTab?'':'none';
     sortSelect.style.display=itemTab?'':'none';
     tierSelect.value=tierFilter;
@@ -159,6 +217,11 @@ import './inventory.js';
       capEl.textContent='🧪 '+dp.count+'/'+dp.total;
       capEl.classList.remove('warn');
       capEl.title='Odkryte sekrety świata';
+    } else if(activeTab.key==='jewels'){
+      const total=(INV.JEWELS||[]).reduce((sum,j)=>sum+Math.max(0,((window.inv||{})[j.key]|0)),0);
+      capEl.textContent='💎 '+total;
+      capEl.classList.toggle('warn',total>0);
+      capEl.title=total?'Juwele gotowe do użycia':'Brak juweli';
     } else {
       const cap=INV.capacity? INV.capacity():null;
       if(cap){
@@ -285,7 +348,7 @@ import './inventory.js';
     if(!newReviewEl) return;
     const cmps=newComparisons();
     newReviewEl.innerHTML='';
-    if(!cmps.length || activeTab.key==='resources' || activeTab.key==='discovery'){ newReviewEl.style.display='none'; return; }
+    if(!cmps.length || ['resources','discovery','jewels'].includes(activeTab.key)){ newReviewEl.style.display='none'; return; }
     newReviewEl.style.display='block';
     const upgrades=cmps.filter(c=>c.isNewBest || c.isEquippedUpgrade).length;
     const head=document.createElement('div'); head.className='invNewReviewHead';
@@ -382,6 +445,10 @@ import './inventory.js';
     // status badges live in one flow row — nothing ever overlaps art or name
     const badges=document.createElement('div'); badges.className='invBadges';
     if(equipped){ const b=document.createElement('span'); b.className='bEq'; b.textContent='✓ W użyciu'; badges.appendChild(b); }
+    if(typeof item.enhancement==='number' && item.enhancement){
+      const eb=document.createElement('span'); eb.className='bEnh'+(item.enhancement<0?' bad':'');
+      eb.textContent='✦ '+(item.enhancement>0?'+':'')+item.enhancement; eb.title='Trwały poziom ulepszenia'; badges.appendChild(eb);
+    }
     if(isNew){
       const nb=document.createElement('span'); nb.className='bNew'; nb.textContent='Nowe'; badges.appendChild(nb);
       const vb=document.createElement('span'); vb.className=relationClass(cmp); vb.textContent=compactVerdict(cmp);
@@ -452,6 +519,7 @@ import './inventory.js';
   function buildGrid(){
     updateToolbar();
     grid.innerHTML='';
+    if(activeTab.key==='jewels'){ buildJewelsGrid(); return; }
     if(activeTab.key==='resources'){ buildResourcesGrid(); return; }
     if(activeTab.key==='discovery'){ buildDiscoveryGrid(); return; }
     const kind=activeTab.kind;
@@ -500,6 +568,87 @@ import './inventory.js';
     });
   }
 
+  // --- Jewels: select a stone, inspect its exact odds, then choose a target ---
+  function buildJewelsGrid(){
+    const wrap=document.createElement('div'); wrap.className='invResources invJewels';
+    const jewels=Array.isArray(INV.JEWELS)?INV.JEWELS:[];
+    const owned=jewels.filter(j=>Math.max(0,((window.inv||{})[j.key]|0))>0);
+    if(!selectedJewelKey || !jewels.some(j=>j.key===selectedJewelKey)) selectedJewelKey=(owned[0]||jewels[0]||{}).key||null;
+    const hint=document.createElement('div'); hint.className='invHint';
+    hint.textContent='Juwele trwale podnoszą główny parametr wybranego przedmiotu. Każda próba zużywa kamień; dodatnie i ujemne poziomy pozostają po zapisie.';
+    wrap.appendChild(hint);
+    const cards=document.createElement('div'); cards.className='invResGrid invJewelCards';
+    for(const jewel of jewels){
+      if(searchText && !String(jewel.label+' '+jewel.desc).toLowerCase().includes(searchText)) continue;
+      const count=Math.max(0,((window.inv||{})[jewel.key]|0));
+      const card=document.createElement('div'); card.className='invResCard invJewelCard'+(count?'':' zero')+(selectedJewelKey===jewel.key?' selected':'');
+      card.style.setProperty('--jewel',jewel.color);
+      const top=document.createElement('div'); top.className='invResTop';
+      const gem=document.createElement('span'); gem.className='invJewelGem'; gem.setAttribute('aria-hidden','true');
+      const lab=document.createElement('span'); lab.className='invResLabel'; lab.textContent=jewel.label; lab.title=jewel.label;
+      const cnt=document.createElement('b'); cnt.className='invResCount'; cnt.textContent=count;
+      top.appendChild(gem); top.appendChild(lab); top.appendChild(cnt); card.appendChild(top);
+      const odds=document.createElement('div'); odds.className='invJewelOdds'; odds.textContent=jewel.desc;
+      if(jewel.failDelta<0) odds.classList.add('risk');
+      card.appendChild(odds);
+      const btns=document.createElement('span'); btns.className='invResBtns';
+      const choose=document.createElement('button'); choose.textContent=selectedJewelKey===jewel.key?'Wybrany':'Wybierz'; choose.disabled=!count;
+      choose.addEventListener('click',()=>{ selectedJewelKey=jewel.key; buildGrid(); });
+      btns.appendChild(choose); card.appendChild(btns); cards.appendChild(card);
+    }
+    wrap.appendChild(cards);
+    const jewel=jewels.find(j=>j.key===selectedJewelKey);
+    if(!jewel || Math.max(0,((window.inv||{})[jewel.key]|0))<1){
+      const empty=document.createElement('div'); empty.className='invEmpty invJewelEmpty';
+      empty.textContent='Pokonuj silnych przeciwników — szansa na jewel rośnie wraz z ich mocą.';
+      wrap.appendChild(empty); grid.appendChild(wrap); return;
+    }
+    let targets=INV.allItems().map(item=>({item,info:INV.enhancementInfo(item.id)})).filter(row=>row.info&&row.info.eligible);
+    if(searchText) targets=targets.filter(row=>itemSearchText(row.item).includes(searchText));
+    targets.sort((a,b)=>(INV.itemScore(b.item)-INV.itemScore(a.item)) || displayName(a.item).localeCompare(displayName(b.item),'pl'));
+    const forge=document.createElement('div'); forge.className='invJewelForge';
+    const title=document.createElement('strong'); title.textContent='Użyj: '+jewel.label; forge.appendChild(title);
+    if(!targets.length){
+      const none=document.createElement('div'); none.className='invHint'; none.textContent='Brak przedmiotu z parametrem, który można ulepszyć.'; forge.appendChild(none);
+    } else {
+      const select=document.createElement('select'); select.className='invSelect invJewelTarget'; select.setAttribute('aria-label','Przedmiot do ulepszenia');
+      for(const row of targets){
+        const o=document.createElement('option'); o.value=row.item.id;
+        const lv=row.info.level; const levelText=lv?(' ✦ '+(lv>0?'+':'')+lv):' ✦ +0';
+        const statLabel=(INV.STAT_LABELS&&INV.STAT_LABELS[row.info.stat])||'Główny parametr';
+        const value=['moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult'].includes(row.info.stat)
+          ? ((Math.round((row.info.value-1)*100)>=0?'+':'')+Math.round((row.info.value-1)*100)+'%')
+          : String(row.info.value);
+        o.textContent=displayName(row.item)+levelText+' — '+statLabel+': '+value;
+        select.appendChild(o);
+      }
+      const equipped=targets.find(row=>INV.isEquipped(row.item.id)); if(equipped) select.value=equipped.item.id;
+      const warning=document.createElement('div'); warning.className='invJewelWarning'+(jewel.failDelta<0?' risk':'');
+      warning.textContent=jewel.failDelta<0?'50%: +2. Porażka: trwałe -1.':'Szansa powodzenia: '+Math.round(jewel.chance*100)+'%. Porażka zużywa kamień.';
+      const apply=document.createElement('button'); apply.className='invJewelApply'; apply.textContent='Ulepsz przedmiot';
+      apply.addEventListener('click',()=>{
+        const target=INV.getItem(select.value); if(!target) return;
+        if(jewel.failDelta<0 && !window.confirm('Kamień Divinity: 50% na +2, ale porażka obniży '+displayName(target)+' o 1. Kontynuować?')) return;
+        const result=INV.applyJewel(target.id,jewel.key);
+        if(!result || !result.ok){ if(window.msg) window.msg('Nie udało się użyć kamienia.'); buildGrid(); return; }
+        const level=(result.level>0?'+':'')+result.level;
+        if(result.success){
+          if(window.msg) window.msg('✨ '+displayName(result.item)+' '+(result.delta>0?'+':'')+result.delta+' → poziom '+level);
+          try{ if(MM.audio&&MM.audio.play) MM.audio.play('jewel',{priority:true}); }catch(e){}
+        } else if(result.delta<0){
+          if(window.msg) window.msg('💔 Divinity pękł: '+displayName(result.item)+' -1 → poziom '+level);
+          try{ if(MM.audio&&MM.audio.play) MM.audio.play('thud'); }catch(e){}
+        } else {
+          if(window.msg) window.msg('Kamień rozpadł się bez ulepszenia.');
+          try{ if(MM.audio&&MM.audio.play) MM.audio.play('thud'); }catch(e){}
+        }
+        buildGrid();
+      });
+      forge.appendChild(select); forge.appendChild(warning); forge.appendChild(apply);
+    }
+    wrap.appendChild(forge); grid.appendChild(wrap);
+  }
+
   // --- Resources tab: card grid, owned first, searchable; empty stacks dimmed ---
   function buildResourcesGrid(){
     const wrap=document.createElement('div'); wrap.className='invResources';
@@ -507,7 +656,7 @@ import './inventory.js';
     hint.textContent='Zebrane surowce — posiadane na górze. „Do paska” przypisuje surowiec do aktywnego slotu paska (5–9, 0).';
     wrap.appendChild(hint);
     const cards=document.createElement('div'); cards.className='invResGrid';
-    let list=INV.resources();
+    let list=INV.resources().filter(r=>!r.jewel);
     if(searchText) list=list.filter(r=>String(r.label+' '+r.key).toLowerCase().includes(searchText));
     list=list.slice().sort((a,b)=>((b.count>0)-(a.count>0)) || String(a.label).localeCompare(String(b.label),'pl'));
     if(!list.length){
@@ -650,28 +799,62 @@ import './inventory.js';
   }
   function drawWeaponMini(ctx,item){
     const type=item.weaponType||'melee';
+    const mat=weaponMaterialProfile(item);
+    drawWeaponPrestigeAura(ctx,item,40,40,31);
     if(type==='bow'){ drawBowMini(ctx,item); return; }
+    if(type==='harpoon'){ drawHarpoonMini(ctx,item); return; }
     if(type==='flame'||type==='hose'||type==='gas'||type==='electric'){ drawStreamMini(ctx,item,type); return; }
     const col=TIER_COLORS[item.tier]||'#cfd6e4';
     ctx.save();
     ctx.translate(40,40); ctx.rotate(-Math.PI/4);
+    const form=meleeMiniForm(item), rank=prestigeRank(item);
+    if(form==='trident'){
+      ctx.fillStyle=mat.body; ctx.fillRect(-3,-31,6,64);
+      ctx.fillStyle=col==='#cfd6e4'?mat.accent:col; ctx.fillRect(-3,-39,6,12); ctx.fillRect(-13,-37,6,15); ctx.fillRect(7,-37,6,15); ctx.fillRect(-13,-28,26,5);
+      ctx.restore(); return;
+    }
+    if(form==='spear'){
+      ctx.fillStyle=mat.grip; ctx.fillRect(-2.5,-28,5,65);
+      ctx.fillStyle=mat.edge; ctx.beginPath(); ctx.moveTo(0,-42); ctx.lineTo(-9,-27); ctx.lineTo(0,-20); ctx.lineTo(9,-27); ctx.closePath(); ctx.fill();
+      ctx.fillStyle=col; ctx.fillRect(-7,-22,14,4);
+      if(rank>=3){ ctx.beginPath(); ctx.moveTo(-5,-28); ctx.lineTo(-14,-20); ctx.lineTo(-4,-17); ctx.closePath(); ctx.fill(); ctx.beginPath(); ctx.moveTo(5,-28); ctx.lineTo(14,-20); ctx.lineTo(4,-17); ctx.closePath(); ctx.fill(); }
+      ctx.restore(); return;
+    }
+    if(form==='axe'){
+      ctx.fillStyle=mat.grip; ctx.fillRect(-3,-17,6,53);
+      ctx.fillStyle=mat.edge; ctx.beginPath(); ctx.moveTo(-2,-31); ctx.lineTo(-24,-37); ctx.lineTo(-28,-15); ctx.lineTo(-9,-5); ctx.lineTo(1,-14); ctx.closePath(); ctx.fill();
+      if(rank>=3){ ctx.beginPath(); ctx.moveTo(2,-31); ctx.lineTo(24,-36); ctx.lineTo(28,-14); ctx.lineTo(9,-5); ctx.lineTo(-1,-14); ctx.closePath(); ctx.fill(); }
+      ctx.fillStyle=col; ctx.fillRect(-7,-18,14,7); ctx.restore(); return;
+    }
+    if(form==='club'){
+      ctx.fillStyle=mat.grip; ctx.fillRect(-3,-8,6,44);
+      ctx.fillStyle=col==='#cfd6e4'?mat.body:col; ctx.beginPath(); ctx.moveTo(-8,-38); ctx.lineTo(9,-34); ctx.lineTo(12,-12); ctx.lineTo(3,-3); ctx.lineTo(-10,-8); ctx.lineTo(-13,-28); ctx.closePath(); ctx.fill();
+      if(rank>=3){ ctx.fillStyle='#e8eef5'; ctx.fillRect(-17,-29,8,4); ctx.fillRect(9,-21,8,4); ctx.fillRect(-14,-12,8,4); }
+      ctx.restore(); return;
+    }
     // blade
     const g=ctx.createLinearGradient(0,-30,0,18);
-    g.addColorStop(0,'#f4f7ff'); g.addColorStop(1,shadeHex(col.length===7?col:'#cfd6e4',-10));
+    g.addColorStop(0,mat.edge); g.addColorStop(0.48,mat.accent); g.addColorStop(1,mat.body);
     ctx.fillStyle=g; ctx.beginPath();
     ctx.moveTo(-4,-30); ctx.lineTo(4,-30); ctx.lineTo(3,16); ctx.lineTo(-3,16); ctx.closePath(); ctx.fill();
     ctx.beginPath(); ctx.moveTo(-4,-30); ctx.lineTo(0,-38); ctx.lineTo(4,-30); ctx.closePath(); ctx.fill();
     // guard
-    ctx.fillStyle=col; ctx.fillRect(-11,16,22,5);
+    ctx.fillStyle=col==='#cfd6e4'?mat.accent:col; ctx.fillRect(-11,16,22,5);
     // hilt + pommel
-    ctx.fillStyle='#6e4a22'; ctx.fillRect(-2.5,21,5,12);
+    ctx.fillStyle=mat.grip; ctx.fillRect(-2.5,21,5,12);
     ctx.fillStyle=col; ctx.beginPath(); ctx.arc(0,36,4,0,Math.PI*2); ctx.fill();
     ctx.restore();
   }
   function drawBowMini(ctx,item){
     const col=TIER_COLORS[item.tier]||'#9a6a32';
+    const mat=weaponMaterialProfile(item);
     ctx.save();
     ctx.translate(40,40);
+    if(item.aquaticStyle==='crossbow'){
+      ctx.fillStyle=mat.body; ctx.fillRect(-28,-5,48,10);
+      ctx.fillStyle=col||mat.accent; ctx.fillRect(10,-8,10,16);
+      ctx.fillStyle=mat.grip; ctx.fillRect(-8,5,8,14);
+    }
     // limb (arc opening to the left, string on the right)
     ctx.strokeStyle=col; ctx.lineWidth=4; ctx.lineCap='round';
     ctx.beginPath(); ctx.arc(0,0,24,-Math.PI*0.42,Math.PI*0.42); ctx.stroke();
@@ -687,6 +870,19 @@ import './inventory.js';
     ctx.fillStyle='#e8e2d2'; ctx.fillRect(sx-5,-3,5,2); ctx.fillRect(sx-5,1,5,2);
     ctx.restore();
   }
+  function drawHarpoonMini(ctx,item){
+    const col=TIER_COLORS[item.tier]||'#4ea5b8';
+    const mat=weaponMaterialProfile(item);
+    ctx.save(); ctx.translate(39,42);
+    ctx.fillStyle=mat.dark; ctx.fillRect(-29,-8,42,14);
+    ctx.fillStyle=col; ctx.fillRect(8,-6,15,10);
+    ctx.fillStyle=mat.grip; ctx.fillRect(-10,5,8,15);
+    ctx.strokeStyle=mat.body; ctx.lineWidth=4;
+    ctx.beginPath(); ctx.moveTo(15,-1); ctx.lineTo(34,-1); ctx.stroke();
+    ctx.fillStyle=mat.edge;
+    ctx.beginPath(); ctx.moveTo(40,-1); ctx.lineTo(31,-7); ctx.lineTo(33,-1); ctx.lineTo(31,5); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
   // Tank + nozzle device with a spray cone tinted per stream class
   const STREAM_CONES={
     flame:[['rgba(255,245,200,0.95)',0],['rgba(255,170,50,0.8)',0.5],['rgba(255,80,20,0)',1]],
@@ -697,14 +893,15 @@ import './inventory.js';
   const STREAM_BODY={flame:'#8a4a1f', hose:'#1f5fb0', gas:'#3f7a2b', electric:'#1797a8'};
   function drawStreamMini(ctx,item,kind){
     const col=TIER_COLORS[item.tier]||STREAM_BODY[kind]||'#8a4a1f';
+    const mat=weaponMaterialProfile(item);
     ctx.save();
     ctx.translate(40,44);
     // fuel/water/toxin tank
     ctx.fillStyle=shadeHex((col.length===7?col:STREAM_BODY[kind]||'#8a4a1f'),-25);
     ctx.fillRect(-26,-8,14,20); ctx.strokeStyle='rgba(255,255,255,.3)'; ctx.strokeRect(-26,-8,14,20);
     // body + grip
-    ctx.fillStyle='#3c414d'; ctx.fillRect(-14,-6,26,9);
-    ctx.fillStyle='#6e4a22'; ctx.fillRect(-6,3,5,10);
+    ctx.fillStyle=mat.dark; ctx.fillRect(-14,-6,26,9);
+    ctx.fillStyle=mat.grip; ctx.fillRect(-6,3,5,10);
     // nozzle
     ctx.fillStyle=col; ctx.fillRect(12,-5,8,7);
     if(kind==='electric'){
@@ -818,10 +1015,13 @@ import './inventory.js';
   function drawWeaponInHand(ctx,bw,bh){
     const it=INV.equippedItem('weapon'); if(!it) return;
     const col=TIER_COLORS[it.tier]||'#cfd6e4';
+    const mat=weaponMaterialProfile(it);
     const type=it.weaponType||'melee';
+    const meleeForm=type==='melee'?meleeMiniForm(it):'';
     ctx.save();
     const hx= miniFacing===1? bw+0.5 : -0.5;
     ctx.translate(hx, bh*0.62);
+    drawWeaponPrestigeAura(ctx,it,miniFacing*2.4,-4.5,8);
     if(type==='bow'){
       ctx.strokeStyle=col==='#cfd6e4'?'#9a6a32':col; ctx.lineWidth=1.2; ctx.lineCap='round';
       const dir=miniFacing===1?1:-1;
@@ -829,23 +1029,50 @@ import './inventory.js';
       ctx.strokeStyle='#e8e2d2'; ctx.lineWidth=0.6;
       const ex=Math.cos(1.2)*5*dir, ey=Math.sin(1.2)*5;
       ctx.beginPath(); ctx.moveTo(ex,-2-ey); ctx.lineTo(ex,-2+ey); ctx.stroke();
+      if(it.aquaticStyle==='crossbow'){
+        ctx.fillStyle=mat.body; ctx.fillRect(miniFacing===1?-4:-7,-3,11,2.5);
+        ctx.fillStyle=mat.grip; ctx.fillRect(-1,-1,2,3);
+      }
+    } else if(type==='harpoon'){
+      ctx.fillStyle=mat.dark; ctx.fillRect(miniFacing===1?-2:-7,-4,9,3);
+      ctx.fillStyle=col; ctx.fillRect(miniFacing===1?5:-7,-3.6,3,2.2);
+      ctx.strokeStyle=mat.body; ctx.lineWidth=1.3;
+      ctx.beginPath(); ctx.moveTo(miniFacing===1?7:-7,-2.5); ctx.lineTo(miniFacing===1?13:-13,-2.5); ctx.stroke();
     } else if(type==='flame'||type==='hose'||type==='gas'||type==='electric'){
       const sprayCol= type==='flame'? ['rgba(255,240,180,0.9)','rgba(255,90,20,0)']
                     : type==='hose'? ['rgba(220,240,255,0.9)','rgba(60,120,230,0)']
                     : type==='electric'? ['rgba(255,255,255,0.95)','rgba(45,230,255,0)']
                     : ['rgba(220,255,170,0.9)','rgba(70,150,40,0)'];
-      ctx.fillStyle='#3c414d'; ctx.fillRect(miniFacing===1?-1:-4.5, -3.5, 5.5, 2.6);
+      ctx.fillStyle=mat.dark; ctx.fillRect(miniFacing===1?-1:-4.5, -3.5, 5.5, 2.6);
       ctx.fillStyle=col==='#cfd6e4'?(STREAM_BODY[type]||'#8a4a1f'):col; ctx.fillRect(miniFacing===1?4.5:-6.5, -3.2, 2, 2);
       const fx=miniFacing===1?6.5:-6.5;
       const g=ctx.createLinearGradient(fx,0,fx+miniFacing*6,0);
       g.addColorStop(0,sprayCol[0]); g.addColorStop(1,sprayCol[1]);
       ctx.fillStyle=g;
       ctx.beginPath(); ctx.moveTo(fx,-2.6); ctx.lineTo(fx+miniFacing*6,-1.2); ctx.lineTo(fx+miniFacing*6,0.4); ctx.lineTo(fx,-0.4); ctx.closePath(); ctx.fill();
+    } else if(meleeForm==='trident'){
+      ctx.rotate(miniFacing===1?-0.5:0.5);
+      ctx.fillStyle=mat.body; ctx.fillRect(-0.7,-11,1.4,14);
+      ctx.fillStyle=col==='#cfd6e4'?mat.accent:col; ctx.fillRect(-0.7,-13,1.4,3); ctx.fillRect(-3,-12.5,1.2,3.5); ctx.fillRect(1.8,-12.5,1.2,3.5); ctx.fillRect(-3,-10.5,6,1);
+    } else if(meleeForm==='spear'){
+      ctx.rotate(miniFacing===1?-0.5:0.5);
+      ctx.fillStyle=mat.grip; ctx.fillRect(-0.6,-11,1.2,14);
+      ctx.fillStyle=mat.edge; ctx.beginPath(); ctx.moveTo(0,-14); ctx.lineTo(-2,-10); ctx.lineTo(2,-10); ctx.closePath(); ctx.fill();
+      ctx.fillStyle=col; ctx.fillRect(-1.5,-10.5,3,0.8);
+    } else if(meleeForm==='axe'){
+      ctx.rotate(miniFacing===1?-0.5:0.5);
+      ctx.fillStyle=mat.grip; ctx.fillRect(-0.7,-7,1.4,10);
+      ctx.fillStyle=mat.edge; ctx.beginPath(); ctx.moveTo(0,-10); ctx.lineTo(-4,-11); ctx.lineTo(-5,-7); ctx.lineTo(-1,-5); ctx.closePath(); ctx.fill();
+      if(prestigeRank(it)>=3){ ctx.beginPath(); ctx.moveTo(0,-10); ctx.lineTo(4,-11); ctx.lineTo(5,-7); ctx.lineTo(1,-5); ctx.closePath(); ctx.fill(); }
+    } else if(meleeForm==='club'){
+      ctx.rotate(miniFacing===1?-0.5:0.5);
+      ctx.fillStyle=mat.grip; ctx.fillRect(-0.7,-6,1.4,9);
+      ctx.fillStyle=col==='#cfd6e4'?mat.body:col; ctx.fillRect(-1.8,-11,3.6,6);
     } else {
       ctx.rotate(miniFacing===1? -0.5 : 0.5);
-      ctx.fillStyle='#e9eef8'; ctx.fillRect(-0.7,-9,1.4,9);
-      ctx.fillStyle=col; ctx.fillRect(-1.8,0,3.6,1.2);
-      ctx.fillStyle='#6e4a22'; ctx.fillRect(-0.6,1.2,1.2,2.6);
+      ctx.fillStyle=mat.edge; ctx.fillRect(-0.7,-9,1.4,9);
+      ctx.fillStyle=col==='#cfd6e4'?mat.accent:col; ctx.fillRect(-1.8,0,3.6,1.2);
+      ctx.fillStyle=mat.grip; ctx.fillRect(-0.6,1.2,1.2,2.6);
     }
     ctx.restore();
   }
@@ -1062,7 +1289,7 @@ import './inventory.js';
   }
   window.addEventListener('mm-inventory-change',refreshAll);
   window.addEventListener('mm-customization-change',refreshAll);
-  window.addEventListener('mm-resources-change',()=>{ if(isOpen() && activeTab.key==='resources') refreshAll(); });
+  window.addEventListener('mm-resources-change',()=>{ if(isOpen() && (activeTab.key==='resources'||activeTab.key==='jewels')) refreshAll(); });
 
   // --- Open / close / focus management ---
   let lastFocus=null;

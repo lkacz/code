@@ -1,5 +1,6 @@
 import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, isLeaf } from '../constants.js';
 import { buildMaterialProfile, isDoorTile, isGasTile, isHeroPassableTile } from './material_physics.js';
+import { damageBlastCreatures } from './explosion_damage.js';
 
 const companions = (function(){
   const root = (typeof window!=='undefined') ? window : globalThis;
@@ -3443,7 +3444,7 @@ const companions = (function(){
     }
     const traits=traitsFor(c);
     const r=(2.2+Math.min(1.4,c.biomass*0.04))*traits.death;
-    try{ if(MM.mobs && MM.mobs.blastRadius) MM.mobs.blastRadius(c.x,c.y-0.35,r,(8+Math.min(18,c.biomass*0.8))*traits.death,{hostileOnly:true,source:'companion'}); }catch(e){}
+    damageBlastCreatures(MM,c.x,c.y-0.35,r,(8+Math.min(18,c.biomass*0.8))*traits.death,{hostileOnly:true,source:'companion',cause:'companion_blast'});
     try{ if(MM.gases && MM.gases.add) MM.gases.add('poison',c.x,c.y-0.3,{power:0.9*traits.poisonPower,cells:4}); }catch(e){}
     deathFx.push({x:c.x,y:c.y-0.45,t:0,max:0.55,color:c.genome.glow});
     if(deathFx.length>20) deathFx.splice(0,deathFx.length-20);
@@ -3681,6 +3682,66 @@ const companions = (function(){
     c.x=clamp(c.x,-999999999,999999999);
     c.y=clampCompanionWorldY(c.y,1,0.35);
     c.lastWind=wind.speed*wind.exposure;
+  }
+  function companionWaterSubmersion(c,getTile){
+    if(!c || typeof getTile!=='function') return 0;
+    const h=companionBodyH(c);
+    const probes=[c.y-0.06,c.y-h*0.30,c.y-h*0.58,c.y-h*0.86];
+    let wet=0;
+    for(const y of probes){
+      if(tileAt(getTile,c.x,y)===T.WATER) wet++;
+    }
+    return wet/probes.length;
+  }
+  function waterSurfaceFeetY(c,getTile){
+    const h=companionBodyH(c);
+    const probes=[c.y-0.06,c.y-h*0.30,c.y-h*0.58,c.y-h*0.86];
+    let waterRow=null;
+    for(const y of probes){
+      if(tileAt(getTile,c.x,y)===T.WATER){ waterRow=Math.floor(y); break; }
+    }
+    if(waterRow==null) return null;
+    let row=waterRow;
+    for(let i=0;i<10;i++){
+      if(tileAt(getTile,c.x,row-1+0.5)!==T.WATER) return row+h*0.88;
+      row--;
+    }
+    return null;
+  }
+  function swimTargetInWater(x,y,getTile){
+    return tileAt(getTile,x,y-0.08)===T.WATER || tileAt(getTile,x,y-0.62)===T.WATER;
+  }
+  function updateWaterGolemSwimming(c,dt,targetX,targetY,traits,getTile,setTile,opts,submersion){
+    let verticalTarget=targetY;
+    if(!swimTargetInWater(targetX,targetY,getTile)){
+      const surfaceY=waterSurfaceFeetY(c,getTile);
+      if(surfaceY!=null) verticalTarget=surfaceY;
+      else verticalTarget=Math.min(targetY,c.y-0.35);
+    }
+    const dx=targetX-c.x;
+    const dy=verticalTarget-c.y;
+    const bob=Math.sin(c.age*4.4+(c.seed||0)*0.002)*0.07*submersion;
+    const maxHorizontal=Math.max(1.35,traits.speed*1.04);
+    const maxVertical=Math.max(1.25,traits.speed*0.82);
+    const desiredX=clamp(dx*1.70,-maxHorizontal,maxHorizontal);
+    const desiredY=clamp(dy*1.75+bob,-maxVertical,maxVertical);
+    const accel=Math.max(5.5,traits.accel*0.90);
+    c.vx+=clamp(desiredX-c.vx,-accel*dt,accel*dt);
+    c.vy+=clamp(desiredY-c.vy,-accel*0.82*dt,accel*0.82*dt);
+    c.vx*=Math.pow(Math.abs(dx)>0.12 ? 0.90 : 0.72,dt*8);
+    c.vy*=Math.pow(Math.abs(dy)>0.10 ? 0.88 : 0.68,dt*8);
+    c.facing=c.vx>0.04 ? 1 : (c.vx<-0.04 ? -1 : c.facing);
+    c.grounded=false;
+    c.flying=false;
+    c.swimming=true;
+    c.navPath=null;
+    c.navGoalKey='';
+    c.stuckT=0;
+    moveAxis(c,c.vx*dt,'x',getTile,setTile,dt,opts);
+    moveAxis(c,c.vy*dt,'y',getTile,setTile,dt,opts);
+    c.grounded=false;
+    c.x=clamp(c.x,-999999999,999999999);
+    c.y=clampCompanionWorldY(c.y,1,0.35);
   }
   function strainDistantClayGolem(c,d2,dt){
     if(!isClayGolem(c)) return false;
@@ -3979,6 +4040,13 @@ const companions = (function(){
       updateLeafMonsterFlight(c,dt,dx,dy,traits,getTile,setTile,opts);
       return;
     }
+    const waterSubmersion=isWaterGolem(c) ? companionWaterSubmersion(c,getTile) : 0;
+    if(waterSubmersion>0){
+      updateWaterGolemSwimming(c,dt,targetX,targetY,traits,getTile,setTile,opts,waterSubmersion);
+      return;
+    }
+    c.swimming=false;
+    c.flying=false;
     const routed=companionPathTarget(c,targetX,targetY,dt,getTile);
     targetX=routed.x;
     targetY=routed.y;
@@ -4065,6 +4133,8 @@ const companions = (function(){
     for(let i=list.length-1;i>=0;i--){
       const c=list[i];
       if(!sanitizeCompanion(c)) continue;
+      const smoke=MM.smoke;
+      if(smoke&&typeof smoke.updateSoot==='function') smoke.updateSoot(c,dt,{height:1.15,field:'_sootFilm'});
       if(!isRottenMeatGolem(c)) planHarvest(c,dt,player,getTile);
       updateMotion(c,dt,player,getTile,setTile,i,opts);
       if(list.indexOf(c)<0) continue;
@@ -4160,9 +4230,7 @@ const companions = (function(){
     return c.y-Math.min(0.72, companionBodyH(c)*0.46);
   }
   function companionInWater(c,getTile){
-    if(!c || typeof getTile!=='function') return false;
-    const ay=companionAimY(c);
-    return tileAt(getTile,c.x,c.y-0.05)===T.WATER || tileAt(getTile,c.x,ay)===T.WATER || tileAt(getTile,c.x,(c.y+ay)*0.5)===T.WATER;
+    return companionWaterSubmersion(c,getTile)>0;
   }
   function damageAtWorld(wx,wy,dmg,opts){
     wx=Number(wx); wy=Number(wy);
@@ -5859,6 +5927,15 @@ const companions = (function(){
       else if(isMeatGolem(c) || isFriedMeatGolem(c)) drawMeatGolem(ctx,tile,c);
       else if(isMolekin(c)) drawMolekin(ctx,tile,c);
       else drawCompanion(ctx,tile,c);
+      const smoke=MM.smoke;
+      if(smoke&&typeof smoke.drawSootMarks==='function'){
+        const g=c.genome||{};
+        const mass=Math.max(1,Number(c.biomass)||1);
+        const bodyW=tile*clamp(0.76*(Number(g.body||g.width)||1)+mass*0.010,0.55,1.55);
+        const bodyH=tile*clamp(0.92*(Number(g.height)||1)+mass*0.012,0.62,1.72);
+        const amount=typeof smoke.visualSoot==='function'?smoke.visualSoot(c,{field:'_sootFilm'}):(Number(c._sootFilm)||0);
+        smoke.drawSootMarks(ctx,c.x*tile,c.y*tile-bodyH*0.5,bodyW,bodyH*0.84,amount,c.seed);
+      }
     }
     for(const fx of deathFx) drawDeathFx(ctx,tile,fx);
   }
@@ -5872,7 +5949,8 @@ const companions = (function(){
         laserCd:c.laserCd, gasCd:c.gasCd, guardCd:c.guardCd, attackCd:c.attackCd, shieldPulse:c.shieldPulse,
         waterDrinkCd:c.waterDrinkCd, wateredT:c.wateredT, leafFeedCd:c.leafFeedCd, leafFeedTarget:c.leafFeedTarget,
         leafFeeding:c.leafFeeding, transportRideT:c.transportRideT, transportPulse:c.transportPulse, genome:c.genome,
-        harvestX:c.harvestX, harvestY:c.harvestY, harvestProgress:c.harvestProgress
+        harvestX:c.harvestX, harvestY:c.harvestY, harvestProgress:c.harvestProgress,
+        sootFilm:clamp(Number(c._sootFilm)||0,0,1)
       }))
     };
   }
@@ -5885,6 +5963,8 @@ const companions = (function(){
     for(const raw of arr.slice(0,MAX_COMPANIONS)){
       if(!raw || !Number.isFinite(raw.x) || !Number.isFinite(raw.y)) continue;
       const c=makeCompanion(raw);
+      c._sootFilm=clamp(Number(raw.sootFilm)||0,0,1);
+      c._sootFilmTint=0;
       c.maxHp=expectedMaxHp(c);
       c.hp=clamp(Number(raw.hp)||c.maxHp,1,c.maxHp);
       sanitizeCompanion(c);
@@ -5917,7 +5997,7 @@ const companions = (function(){
     return {count:list.length, hp:Math.round(hp), maxHp:Math.round(maxHp), biomass, golems, clay, leafMonsters, leaves, transportMounted, waterGolems, water, meatGolems, rottenMeatGolems, friedMeatGolems, friedChickens:friedMeatGolems, meat, ufoAliens, motherIce, ufoConcrete:motherIce, molekin, lava, lasers:lasers.length, mode:command.mode, awaitingHarvest:command.awaiting, harvestTile:command.harvestTile};
   }
   function debugList(){
-    return list.map(c=>({kind:c.kind||KIND_BIO,id:c.id,name:c.name,x:c.x,y:c.y,vx:c.vx,vy:c.vy,hp:c.hp,maxHp:c.maxHp,biomass:c.biomass,clay:c.clay,leaves:c.leaves,water:c.water,meat:c.meat,motherIce:c.motherIce,ufoConcrete:c.ufoConcrete,ufoRole:c.ufoRole,lava:c.lava,moleRole:c.moleRole,age:c.age,rotIn:isRawMeatGolem(c)?Math.max(0,MEAT_GOLEM_ROT_SECONDS-(c.age||0)):0,wateredT:c.wateredT,waterDrinkCd:c.waterDrinkCd,leafFeedCd:c.leafFeedCd,leafFeeding:c.leafFeeding,leafFeedTarget:c.leafFeedTarget,transportMounted:!!c.transportMounted,transportRideT:c.transportRideT,transportPulse:c.transportPulse,lastWind:c.lastWind,laserCd:c.laserCd,gasCd:c.gasCd,guardCd:c.guardCd,attackCd:c.attackCd,genome:c.genome,harvestX:c.harvestX,harvestY:c.harvestY,harvestProgress:c.harvestProgress}));
+    return list.map(c=>({kind:c.kind||KIND_BIO,id:c.id,name:c.name,x:c.x,y:c.y,vx:c.vx,vy:c.vy,hp:c.hp,maxHp:c.maxHp,biomass:c.biomass,clay:c.clay,leaves:c.leaves,water:c.water,meat:c.meat,motherIce:c.motherIce,ufoConcrete:c.ufoConcrete,ufoRole:c.ufoRole,lava:c.lava,moleRole:c.moleRole,age:c.age,rotIn:isRawMeatGolem(c)?Math.max(0,MEAT_GOLEM_ROT_SECONDS-(c.age||0)):0,wateredT:c.wateredT,waterDrinkCd:c.waterDrinkCd,swimming:!!c.swimming,leafFeedCd:c.leafFeedCd,leafFeeding:c.leafFeeding,leafFeedTarget:c.leafFeedTarget,transportMounted:!!c.transportMounted,transportRideT:c.transportRideT,transportPulse:c.transportPulse,lastWind:c.lastWind,laserCd:c.laserCd,gasCd:c.gasCd,guardCd:c.guardCd,attackCd:c.attackCd,genome:c.genome,harvestX:c.harvestX,harvestY:c.harvestY,harvestProgress:c.harvestProgress}));
   }
   const api={spawnFromCraft, spawnUfoAlienFromCraft, spawnLeafMonsterFromCraft, feedNearest, tryClayGolemRitualAt, tryLeafMonsterRitualAt, tryWaterGolemRitualAt, tryMolekinRitualAt, tryMeatGolemRitualAt, fireGuardianDefeated, iceGuardianDefeated, onTileChanged, absorbHeroDamage, hasActive:()=>list.length>0, count:()=>list.length, update, draw, damageAt, damageAtWorld, nearestForEnemy, collideHero, heatAt, snapshot, restore, reset, metrics, commandAt, awaitingHarvestTarget, assignHarvestTarget,
     _debug:{list:debugList, command:()=>snapshotCommand(), setCommand, makeGenome, makeClayGenome, makeLeafGenome, makeWaterGenome, makeMeatGenome, makeUfoAlienGenome, makeMolekinGenome, makeCompanion, traits:traitsFor, maxHpForBiomass, maxHpForClay, maxHpForLeaves, maxHpForWater, maxHpForMeat, maxHpForUfoAlien, maxHpForMolekin, ufoAlienRoles:UFO_ALIEN_ROLES.slice(), molekinRoles:MOLEKIN_ROLES.slice(), maxCompanions:MAX_COMPANIONS, clayGolemMin:CLAY_GOLEM_MIN_CLAY, clayGolemMax:CLAY_GOLEM_MAX_CLAY, leafMonsterMin:LEAF_MONSTER_MIN_LEAVES, leafMonsterMax:LEAF_MONSTER_MAX_LEAVES, waterGolemMin:WATER_GOLEM_MIN_WATER, waterGolemMax:WATER_GOLEM_MAX_WATER, meatGolemMin:MEAT_GOLEM_MIN_MEAT, meatGolemMax:MEAT_GOLEM_MAX_MEAT, ufoAlienMin:UFO_ALIEN_MIN_CONCRETE, ufoAlienMax:UFO_ALIEN_MAX_CONCRETE, molekinMin:MOLEKIN_MIN_LAVA, molekinMax:MOLEKIN_MAX_LAVA, meatGolemRotSeconds:MEAT_GOLEM_ROT_SECONDS, fireGuardianDefeated, iceGuardianDefeated, damage, nearest:debugNearest, spawn:debugSpawn, spawnGolem:debugSpawnGolem, spawnLeafMonster:debugSpawnLeafMonster, spawnWaterGolem:debugSpawnWaterGolem, spawnMeatGolem:debugSpawnMeatGolem, spawnUfoAlien:debugSpawnUfoAlien, spawnMolekin:debugSpawnMolekin, feed:debugFeed, setBiomass:debugSetBiomass, setClay:debugSetClay, setLeaves:debugSetLeaves, setWater:debugSetWater, setMeat:debugSetMeat, setLava:debugSetLava, rotMeatGolem:debugRotMeatGolem, cookMeatGolem:debugCookMeatGolem, heal:debugHeal, damageNearest:debugDamage, kill:debugKill, teleportToHero:debugTeleportToHero, forceGas:debugForceGas, forceLaser:debugForceLaser, forceMolekinFire:debugForceMolekinFire, guardHero:debugGuardHero, shieldGolem:debugShieldGolem, forceGolemStrike:debugForceGolemStrike, forceWaterSpray:debugForceWaterSpray, clear:debugClear}

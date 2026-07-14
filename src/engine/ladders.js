@@ -22,6 +22,18 @@ export function canPlaceLadderFixture(opts){
     return {ok:false, reason:opts.underground?'Najpierw wykop miejsce':'Drabinka tylko na budowli'};
   }
   const run=ladderRun(tx,ty,hasLadder,opts.maxRun||128);
+  if(opts.oneEndSupport){
+    const topAnchor=!!hasAnchor(tx,run.top-1);
+    const bottomAnchor=!!hasAnchor(tx,run.bottom+1);
+    if(topAnchor || bottomAnchor) return {ok:true, run, topAnchor, bottomAnchor, oneEndSupport:true};
+    return {
+      ok:false,
+      run,
+      topAnchor,
+      bottomAnchor,
+      reason:'Drabinka macierzysta wymaga zaczepu u gory lub u dolu'
+    };
+  }
   if(opts.underground) return {ok:true, run};
   if(hasBacking(tx,ty)) return {ok:true, run};
   const topAnchor=!!hasAnchor(tx,run.top-1);

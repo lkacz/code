@@ -64,6 +64,7 @@ class FakeCtx {
   createDynamicsCompressor(){ return this._node('compressor', { threshold: new FakeParam(-24), knee: new FakeParam(30), ratio: new FakeParam(12), attack: new FakeParam(0.003), release: new FakeParam(0.25) }); }
   createStereoPanner(){ return this._node('panner', { pan: new FakeParam(0) }); }
   createConvolver(){ return this._node('convolver', { buffer: null }); }
+  createDelay(){ return this._node('delay', { delayTime: new FakeParam(0) }); }
   createBuffer(ch, len, rate){
     const data = Array.from({ length: ch }, () => new Float32Array(len));
     return { duration: len / rate, numberOfChannels: ch, getChannelData: (i) => data[i] };
@@ -92,6 +93,7 @@ function nodeCount(){ return lastCtx ? lastCtx.nodes.length : 0; }
 globalThis.AudioContext = FakeCtx;
 store['mm_audio_v1'] = JSON.stringify({ vol: 0.3, mute: false }); // pre-bus blob
 const { audio: A } = await import('../src/engine/audio.js?phase=main');
+const { T } = await import('../src/constants.js');
 assert.equal(MM.audio, A, 'module installs itself on MM');
 
 // settings migration: old blobs keep their master volume, buses get defaults
@@ -286,6 +288,21 @@ A.update(0.3); // one scene tick
   assert.ok(d.beds.cave > 0.03, 'cave drone rises underground');
   assert.ok(d.beds.rain < 0.02, 'surface rain fades away underground');
   assert.equal(d.musicMode, 'cave', 'music director follows the hero underground');
+
+  // Local room geometry, not depth alone, controls reflections. The first
+  // provider describes a stone chamber; the second is an open vertical void.
+  MM.world = { peekTile: (x,y) => (Math.abs(x-player.x)>=6 || Math.abs(y-player.y)>=5 ? T.STONE : T.AIR) };
+  A.update(0.3);
+  const chamber = A.debugState();
+  assert.ok(chamber.scene.enclosure > 0.6, 'nearby cave boundaries register as an enclosed chamber');
+  assert.ok(chamber.scene.reflectivity > 0.7, 'stone boundaries register as reflective');
+  assert.ok(chamber.acoustics.echo > 0, 'an enclosed cave opens the subtle early-echo return');
+  MM.world = { peekTile: () => T.AIR };
+  A.update(0.3);
+  const shaft = A.debugState();
+  assert.ok(shaft.scene.acousticWet < chamber.scene.acousticWet, 'an open shaft is drier than a stone chamber at the same depth');
+  assert.ok(shaft.acoustics.echo < chamber.acoustics.echo, 'open underground space reduces the early echo');
+  MM.world = undefined;
 }
 
 // ---------------- music director -------------------------------------------
@@ -413,6 +430,43 @@ function oscGrowthAfterUpdate(){
   player.vx = 0;
 }
 
+// ---------------- landing materials + variation ----------------------------
+{
+  const cases = [
+    [T.GRASS, 'grass'], [T.STONE, 'stone'], [T.SNOW, 'snow'], [T.WATER, 'water'],
+    [T.SAND, 'sand'], [T.MUD, 'mud'], [T.WOOD, 'wood'], [T.STEEL, 'metal'], [T.ICE, 'ice'],
+  ];
+  for(const [tile, surface] of cases){
+    nowMs += 1000;
+    const before = nodeCount();
+    assert.ok(A.playLanding(tile, 9), surface + ' landing is accepted');
+    assert.ok(nodeCount() > before, surface + ' landing synthesizes a voice');
+    assert.equal(A.debugState().lastLanding.surface, surface, tile + ' maps to ' + surface + ' foley');
+  }
+
+  nowMs += 1000;
+  A.playLanding(T.GRASS, 9);
+  const firstVariant = A.debugState().lastLanding.variant;
+  nowMs += 1000;
+  A.playLanding(T.GRASS, 9);
+  assert.notEqual(A.debugState().lastLanding.variant, firstVariant,
+    'successive landings on the same block cannot repeat the exact variant');
+
+  nowMs += 1000;
+  const quietStart = nodeCount();
+  A.playLanding(T.STONE, 9);
+  const landingGains = lastCtx.nodes.slice(quietStart).filter(n => n.kind === 'gain');
+  const landingPeaks = landingGains.flatMap(n => n.gain.events.filter(e => e[0] === 'lin').map(e => e[1]));
+  assert.ok(landingPeaks.length && Math.max(...landingPeaks) < 0.05,
+    'a normal landing remains deliberately quieter than gameplay effects');
+
+  nowMs += 1000;
+  const correctionStart = nodeCount();
+  assert.equal(A.playLanding(T.STONE, 1.2), false, 'tiny floor correction is not treated as a landing');
+  assert.equal(nodeCount(), correctionStart, 'tiny floor correction stays silent');
+  assert.ok(A.playLanding(T.WATER, 0), 'gentle water contact still gets a minimal water texture');
+}
+
 // ---------------- thunder + settings persistence ---------------------------
 {
   nowMs += 8000;
@@ -450,7 +504,9 @@ assert.ok(!/AudioContext/.test(particlesSrc), 'particle effects never bypass the
 assert.match(particlesSrc, /MM\.audio\.play/, 'opt-in particle sounds use the shared positional mixer');
 // main.js keeps feeding submersion + exposes the per-bus mixer sliders
 const mainSrc = fs.readFileSync(path.join(SRC, 'main.js'), 'utf8');
-assert.match(mainSrc, /AUDIO\.setHeroWater\(inWater,\s*subFrac\)/, 'physics publishes hero submersion to the audio scene');
+assert.match(mainSrc, /AUDIO\.setHeroWater\(inWater,\s*subFrac,\s*player\.vy\)/, 'physics publishes submersion and water-entry speed to the audio scene');
+assert.match(mainSrc, /AUDIO\.playLanding\(getTile\(landingTile\.x,landingTile\.y\),landingImpact/,
+  'tile collision publishes the exact landing material and pre-zeroed impact speed');
 assert.match(mainSrc, /dataset\.bus=bus/, 'pause panel builds per-bus volume sliders');
 assert.match(mainSrc, /AUDIO\.update\(frameDt\)/, 'the game loop drives audio.update every frame');
 

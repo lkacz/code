@@ -24,6 +24,8 @@ globalThis.inv = { diamond:0 };
 const { T } = await import('../src/constants.js');
 const { mobs } = await import('../src/engine/mobs.js');
 assert.ok(mobs && mobs.spawnGolden, 'mobs module exports spawnGolden');
+const physicalChests=[];
+MM.drops={spawnChest(x,y,tier,opts){ const d={id:physicalChests.length+1,x,y,tier,opts}; physicalChests.push(d); return d; }};
 // world.js / worldgen.js claimed MM.world / MM.worldGen during import — restore stubs
 MM.world = { getTile, setTile };
 MM.worldGen = { surfaceHeight: ()=>SURF, biomeType: ()=>1 };
@@ -52,6 +54,7 @@ step(60, 10); // its 34s lifetime expires well within this window
 assert.equal(goldenCount(), 0, 'visitor left after its lifetime');
 assert.ok(messages.some(t=>t.includes('umknął')), 'escape is announced');
 assert.ok(![...tiles.values()].includes(T.CHEST_EPIC), 'no chest from an escaped sprinter');
+assert.equal(physicalChests.length,0, 'an escaped sprinter drops no physical chest');
 assert.equal(inv.diamond, 0, 'no diamonds from an escaped sprinter');
 
 // --- 3. Second visit waits the full 7 days (4200s, counted from the first spawn) ---
@@ -148,7 +151,8 @@ step(0.2);
 assert.equal(goldenCount(), 0, 'corpse cleaned up');
 assert.ok(player.xp - xp0 >= 150, 'big XP prize ('+(player.xp-xp0)+')');
 assert.ok(inv.diamond >= 3 && inv.diamond <= 5, 'guaranteed diamonds ('+inv.diamond+')');
-assert.ok([...tiles.values()].includes(T.CHEST_EPIC), 'an epic chest materialized at the fall site');
+assert.ok(physicalChests.some(d=>d.tier==='epic' && d.opts.source==='golden_mob'), 'an epic physical chest drops at the fall site');
+assert.ok(![...tiles.values()].includes(T.CHEST_EPIC), 'the golden reward writes no chest block');
 assert.ok(messages.some(t=>t.includes('pokonany')), 'victory is announced');
 
 // --- 6. Single-slot cap: a second sprinter cannot be summoned while one lives ---

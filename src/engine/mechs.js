@@ -7,6 +7,7 @@ import { isChairTile, isFoliageTile, isPlayerPassableTile, isReplaceableNaturalO
 import { worldGen as WORLDGEN } from './worldgen.js';
 import { turrets as TURRETS } from './turrets.js';
 import { steamMachines as STEAM_MACHINES } from './steam_machines.js';
+import { damageBlastCreatures } from './explosion_damage.js';
 
 (function(){
   const root = typeof window !== 'undefined' ? window : globalThis;
@@ -188,7 +189,7 @@ import { steamMachines as STEAM_MACHINES } from './steam_machines.js';
     T.SPRING_PLATFORM,T.COPPER_WIRE,T.WIRE,T.WATER_PIPE,T.TORCH,T.CHIMNEY,
     T.WOOD_DOOR,T.STONE_DOOR,T.STEEL_DOOR,
     T.WOOD_TRAPDOOR,T.STONE_TRAPDOOR,T.STEEL_TRAPDOOR,
-    T.LADDER,T.CHAIR_WOOD,T.CHAIR_STONE,T.CHAIR_STEEL,
+    T.LADDER,T.BEDROCK_LADDER,T.CHAIR_WOOD,T.CHAIR_STONE,T.CHAIR_STEEL,
     T.STEAM_BOILER,T.STEAM_JET
   ]);
   function isMechComponentTile(t){ return MECH_COMPONENT_TILES.has(t); }
@@ -2131,6 +2132,7 @@ import { steamMachines as STEAM_MACHINES } from './steam_machines.js';
     addXp(m.kind==='solar'?130:155,centerX(m),m.y,'ALIEN_MECH');
     damageNumbers(m,22,'blast',Object.assign({source:'hero',element:'blast'},opts||{}));
     play('explosion',{x:centerX(m),y:centerY(m)});
+    damageBlastCreatures(root.MM,centerX(m),centerY(m),5.2,22,{source:'mech',cause:'mech_blast'});
     return true;
   }
   function damageMech(m,cell,dmg,opts){
@@ -2160,8 +2162,12 @@ import { steamMachines as STEAM_MACHINES } from './steam_machines.js';
   function damageAt(tx,ty,dmg,opts){
     const hit=cellAt(tx,ty);
     if(!hit) return false;
+    if(opts && typeof opts.onTarget==='function'){
+      try{ opts.onTarget(hit.mech,'mech',isLiving); }catch(e){}
+    }
     return damageMech(hit.mech,hit.cell,dmg,opts||{source:'hero'});
   }
+  function isLiving(m){ return !!(m && !m.destroyed && m.hp>0 && mechs.includes(m)); }
   function damageRadius(x,y,r,dmg,opts){
     let hits=0;
     const rr=Math.max(0.5,Number(r)||1);
@@ -2756,7 +2762,7 @@ import { steamMachines as STEAM_MACHINES } from './steam_machines.js';
   function sanitizeSavedBuiltCells(rawCells){
     const out=[];
     const seen=new Set();
-    const INFRA_OK=new Set([T.COPPER_WIRE,T.WIRE,T.WATER_PIPE,T.LADDER]);
+    const INFRA_OK=new Set([T.COPPER_WIRE,T.WIRE,T.WATER_PIPE,T.LADDER,T.BEDROCK_LADDER]);
     for(const rc of rawCells.slice(0,CFG.BUILT_MAX_CELLS)){
       if(!rc) continue;
       const dx=Number(rc.dx), dy=Number(rc.dy), t=Number(rc.t);
@@ -2889,7 +2895,7 @@ import { steamMachines as STEAM_MACHINES } from './steam_machines.js';
   }
 
   const api={
-    update,draw,attackAt,damageAt,damageRadius,blastRadius,igniteRadius,douseRadius,
+    update,draw,attackAt,damageAt,damageRadius,blastRadius,igniteRadius,douseRadius,isLiving,
     toggleBoard,heroMech,syncRider,absorbHeroDamage,cellAt,findAt,
     snapshot,restore,reset,forceSpawn,metrics,heroOnTracks,
     trySeatFromWorld,wantsInteractKey,tileOverlayAt,absorbDynamoFlow,

@@ -15,6 +15,7 @@ globalThis.window = globalThis; // clouds.js attaches to window.MM
 // Mutable climate knob so individual tests can freeze/thaw the world
 let TEMP = 0.7;
 let toxicWaterPollutions = 0;
+const physicalChests = [];
 const WORLD_MIN_Y = -140;
 const WORLD_MAX_Y = 280;
 globalThis.MM = {
@@ -45,6 +46,7 @@ globalThis.MM = {
     onTileChanged(){}, disturb(){},
   },
   particles: { spawnSplash(){}, spawnBubble(){} },
+  drops: { spawnChest(x,y,tier,opts){ const d={id:physicalChests.length+1,x,y,tier,opts}; physicalChests.push(d); return d; } },
 };
 
 const { clouds } = await import('../src/engine/clouds.js');
@@ -68,6 +70,7 @@ function resetWorld(){
   CFG.LIGHTNING_TELEPORT_CHANCE = 0;
   CFG.LIGHTNING_CHEST_CHANCE = 0;
   toxicWaterPollutions = 0;
+  physicalChests.length = 0;
   TEMP = 0.7;
   globalThis.player = {x:0};
   delete MM.dynamo;
@@ -390,7 +393,8 @@ Math.random = () => 0.5;
 try{
   const rareChest = clouds.strike(20, getTile, setTile);
   assert.ok(rareChest && rareChest.chest, 'forced rare lightning path can still create a chest');
-  assert.ok(CHEST_IDS.includes(getTile(rareChest.x,rareChest.y)), 'forced rare path places a chest tile');
+  assert.ok(physicalChests.some(d=>d.opts.source==='lightning'), 'forced rare path drops a physical lightning chest');
+  assert.ok(!CHEST_IDS.includes(getTile(rareChest.x,rareChest.y)), 'forced rare path places no chest tile');
   assert.equal(clouds.metrics().chests, 1, 'forced rare path increments the chest counter');
 } finally {
   Math.random = oldChestRandom;

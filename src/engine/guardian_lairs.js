@@ -7,6 +7,7 @@ import { isBlastProtectedTile, isGeneratedStructureReplaceableTile, isReplaceabl
 import { STORY_LORE } from './story_lore.js';
 import { worldGen as WG } from './worldgen.js';
 import { applyBossStatus, bossElectricDamageMult, bossStatusFor, tickBossStatus } from './boss_status.js';
+import { damageBlastCreatures } from './explosion_damage.js';
 
 const guardianLairs = (function(){
   const root = (typeof window !== 'undefined') ? window : globalThis;
@@ -1185,6 +1186,7 @@ const guardianLairs = (function(){
     const tx=Math.round(h.x), ty=Math.round(h.y);
     const storm=h.type==='stormMeteor';
     const burstR=storm ? (h.explodeR || (h.kind==='fire'?7.2:6.6)) : null;
+    damageBlastCreatures(MM,h.x,h.y,burstR || Math.max(1.5,Number(h.r)||2.2),Math.max(1,Number(h.dmg)||8),{source:'guardian',cause:storm?'guardian_storm_meteor':'guardian_projectile_blast'});
     if(storm){
       const M=MM.meteorites;
       if(M && typeof M.impactAt==='function'){
@@ -1379,6 +1381,7 @@ const guardianLairs = (function(){
   function guardianDeathBlast(e,getTile,setTile){
     if(!e || !e.boss) return false;
     addEffect({type:'burst',kind:e.kind,x:e.x,y:e.y,t:0,max:2.2,r:34});
+    damageBlastCreatures(MM,e.x,e.y,18,76,{source:'guardian',cause:'guardian_death_blast'});
     protectHeroFromDeathBlast();
     const M=MM.meteorites;
     const access=terrainAccess(getTile,setTile);
@@ -1628,6 +1631,7 @@ const guardianLairs = (function(){
       for(const other of entities){ if(other.kind===e.kind) other.dead=true; }
       // Signature relics rain from the felled guardian (engine/drops.js)
       try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop(e.kind,e.x,e.y,{boss:true}); }catch(err){}
+      try{ if(MM.drops && MM.drops.rollJewelDrop) MM.drops.rollJewelDrop(e,{boss:true,hp:e.maxHp,dmg:26,xp:520}); }catch(err){}
     }else{
       say(e.name+' breaks.');
       try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop(e.kind,e.x,e.y,{role:e.role}); }catch(err){}

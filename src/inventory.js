@@ -26,6 +26,13 @@
   const KIND_LABELS={cape:'Peleryny', eyes:'Oczy', outfit:'Stroje', weapon:'Bronie', charm:'Talizmany'};
   // Loot-tier accent colors (single source — UI badges, held-weapon tinting, …)
   const TIER_COLORS={common:'#b07f2c', uncommon:'#3fa650', rare:'#a74cc9', epic:'#e0b341', legendary:'#58e0d8'};
+  // Permanent item-enhancement stones. Every deliberate attempt consumes one.
+  const JEWELS=[
+    {key:'jewelBlessed', label:'Kamień błogosławionych', chance:1.00, successDelta:1, failDelta:0, tier:'rare', color:'#ffd96a', desc:'+1 ze 100% szansą'},
+    {key:'jewelDevout', label:'Kamień nabożnych', chance:0.70, successDelta:1, failDelta:0, tier:'epic', color:'#9b8cff', desc:'+1 z 70% szansą'},
+    {key:'jewelDivinity', label:'Kamień Divinity', chance:0.50, successDelta:2, failDelta:-1, tier:'legendary', color:'#65f4ff', desc:'+2 z 50% szansą; porażka obniża poziom o 1'}
+  ];
+  const JEWEL_BY_KEY=Object.fromEntries(JEWELS.map(j=>[j.key,j]));
 
   // --- Weapon shortcut categories (number keys; key 1 = pickaxe, lives in main.js) ---
   // Pressing a category's key cycles through the owned weapons of its types that the
@@ -33,8 +40,8 @@
   // category is one entry here — input handling and the UI badge follow.
   const WEAPON_CATEGORIES=[
     {id:'melee',  key:'2', label:'Broń biała', icon:'⚔️', types:['melee']},
-    // Ranged slot: bows AND hand-thrown projectiles (snowballs, stones) rotate here
-    {id:'bow',    key:'3', label:'Dystansowe', icon:'🏹', types:['bow','thrown']},
+    // Ranged slot: bows, underwater harpoon launchers and hand throws rotate here
+    {id:'bow',    key:'3', label:'Dystansowe', icon:'🏹', types:['bow','harpoon','thrown']},
     {id:'stream', key:'4', label:'Miotacze',   icon:'🔥', types:['flame','hose','gas','electric']}
   ];
 
@@ -62,10 +69,14 @@
   // inventory grid, the stats panel and the loot popup (textContent only).
   function statChips(item){
     const chips=[]; if(!item) return chips;
+    if(typeof item.enhancement==='number' && item.enhancement)
+      chips.push({icon:'✦', label:'Trwałe ulepszenie', text:(item.enhancement>0?'+':'')+item.enhancement, good:item.enhancement>0});
     if(typeof item.attackDamage==='number' && item.attackDamage)
-      chips.push({icon:'⚔️', label:item.weaponType==='bow'?'Strzała':'Obrażenia', text:'+'+item.attackDamage, good:item.attackDamage>0});
-    if(item.weaponType==='bow' && typeof item.fireCooldown==='number' && item.fireCooldown>0)
-      chips.push({icon:'🏹', label:'Tempo', text:(1/item.fireCooldown).toFixed(1)+'/s', good:true});
+      chips.push({icon:'⚔️', label:['bow','harpoon'].includes(item.weaponType)?'Pocisk':'Obrażenia', text:'+'+item.attackDamage, good:item.attackDamage>0});
+    if(['bow','harpoon'].includes(item.weaponType) && typeof item.fireCooldown==='number' && item.fireCooldown>0)
+      chips.push({icon:item.weaponType==='harpoon'?'🔱':'🏹', label:'Tempo', text:(1/item.fireCooldown).toFixed(1)+'/s', good:true});
+    if(item.aquaticStyle)
+      chips.push({icon:'🌊', label:'Środowisko', text:'Pod wodą', good:true});
     if(typeof item.fireDps==='number'){
       const streamIcon=item.weaponType==='hose'?'💧':item.weaponType==='gas'?'☠️':item.weaponType==='electric'?'⚡':'🔥';
       const streamLabel=item.weaponType==='electric'?'Wiązka':'Strumień';
@@ -106,7 +117,7 @@
     if(typeof item.energyCost==='number') s-=item.energyCost*0.45;
     if(typeof item.energyCapacityBonus==='number') s+=item.energyCapacityBonus*0.55;
     if(typeof item.waterMoveSpeedMult==='number') s+=(item.waterMoveSpeedMult-0.5)*80;
-    if(item.weaponType==='bow' && typeof item.fireCooldown==='number') s+=(0.6-item.fireCooldown)*40; // faster bow = stronger
+    if(['bow','harpoon'].includes(item.weaponType) && typeof item.fireCooldown==='number') s+=(0.6-item.fireCooldown)*40; // faster launcher = stronger
     if(typeof item.airJumps==='number') s+=item.airJumps*12;
     if(typeof item.crushResistBonus==='number') s+=item.crushResistBonus*10;
     if(typeof item.visionRadius==='number') s+=(item.visionRadius-VISION_BASE)*3;
@@ -135,6 +146,7 @@
     damageReductionBonus:'sum'
   };
   const STAT_LABELS={
+    airJumps:'Dodatkowe skoki',
     maxAirJumps:'Skoki dodatkowe',
     visionRadius:'Zasięg widzenia',
     moveSpeedMult:'Prędkość ruchu',
@@ -142,6 +154,7 @@
     jumpPowerMult:'Moc skoku',
     mineSpeedMult:'Szybkość kopania',
     attackDamage:'Obrażenia',
+    fireDps:'Obrażenia na sekundę',
     energyCapacityBonus:'Pojemność energii',
     crushResistBonus:'Udźwig/ciśnienie',
     damageReductionBonus:'Redukcja obrażeń'
@@ -186,8 +199,8 @@
     {id:'throw_balloon',  kind:'weapon', weaponType:'thrown', thrownKind:'waterBalloon',  name:'Rzut: Balony wodne',       attackDamage:1, fireCooldown:0.45, desc:'Rozprysk moczy wrogów (paliwo komb: prąd, mróz), gasi ogień i podlewa uprawy'},
     {id:'throw_gas',      kind:'weapon', weaponType:'thrown', thrownKind:'gasGrenade',    name:'Rzut: Granaty gazowe',     attackDamage:1, fireCooldown:0.65, desc:'Uwalnia trujący obłok tam, gdzie upadnie — ogień go detonuje'},
     {id:'throw_sticky',   kind:'weapon', weaponType:'thrown', thrownKind:'stickyBomb',    name:'Rzut: Lepkie bomby',       attackDamage:3, fireCooldown:0.75, desc:'Przykleja się do ściany i po chwili wybucha — otwiera skały i gniazda'},
-    {id:'throw_sand',     kind:'weapon', weaponType:'thrown', thrownKind:'sand',          name:'Rzut: Piasek w oczy',      attackDamage:1, fireCooldown:0.40, desc:'Garść piasku w ślepia: ledwo boli, ale oślepiony wróg traci cię z widoku'},
-    {id:'throw_spit',     kind:'weapon', weaponType:'thrown', thrownKind:'spit',          name:'Rzut: Plucie wodą',        attackDamage:1, fireCooldown:0.50, desc:'Nabierz wody i pluj: moczy cel, a czasem okazuje się toksyczne'},
+    {id:'throw_sand',     kind:'weapon', weaponType:'thrown', thrownKind:'sand',          name:'Rzut: Piasek w oczy',      attackDamage:0, fireCooldown:0.40, desc:'Drobny piasek nie zadaje obrażeń, ale na kilka sekund oślepia i oszołamia trafione cele'},
+    {id:'throw_spit',     kind:'weapon', weaponType:'thrown', thrownKind:'spit',          name:'Plucie',                    attackDamage:1, fireCooldown:0.50, desc:'Mała kropla śliny moczy cel; ULT wypluwa serię toksycznej zielonej śliny'},
     {id:'flamethrower', kind:'weapon', weaponType:'flame', name:'Miotacz ognia',   fireDps:6, fireRange:6.5, desc:'Strumień ognia (przytrzymaj LPM): podpala wrogów, trawę i drzewa; PPM = ult'},
     {id:'water_hose',   kind:'weapon', weaponType:'hose',  name:'Wąż wodny',       fireDps:2, fireRange:6,   desc:'Strumień wody (przytrzymaj LPM): gasi ogień, czasem zostawia wodę; PPM = ult'},
     {id:'gas_emitter',  kind:'weapon', weaponType:'gas',   name:'Emiter gazu',     fireDps:5, fireRange:5.5, desc:'Trujący obłok (przytrzymaj LPM): zatruwa żywe stworzenia; PPM = ult'},
@@ -208,6 +221,9 @@
     {key:'coal',    label:'Węgiel',  color:'#25272b', tile:'COAL'},
     {key:'gold',    label:'Złoto',   color:'#f2b93b', tile:'GOLD_ORE'},
     {key:'diamond', label:'Diament', color:'#3ef',    tile:'DIAMOND'},
+    {key:'jewelBlessed', label:'Kamień błogosławionych', color:'#ffd96a', tile:null, jewel:true},
+    {key:'jewelDevout', label:'Kamień nabożnych', color:'#9b8cff', tile:null, jewel:true},
+    {key:'jewelDivinity', label:'Kamień Divinity', color:'#65f4ff', tile:null, jewel:true},
     {key:'iridium', label:'Iryd',    color:'#b8d7ff', tile:'IRIDIUM'},
     {key:'meteoricIron', label:'Żelazo meteorytowe', color:'#7f878d', tile:'METEORIC_IRON'},
     {key:'radioactiveOre', label:'Ruda radioaktywna', color:'#8aff4f', tile:'RADIOACTIVE_ORE'},
@@ -215,9 +231,11 @@
     {key:'ufoConcrete', label:'Beton UFO', color:'#536977', tile:null},
     {key:'motherIce', label:'Lod macierzysty', color:'#d8fbff', tile:'MOTHER_ICE'},
     {key:'motherLava', label:'Lawa macierzysta', color:'#ff7a33', tile:'MOTHER_LAVA'},
+    {key:'bedrock', label:'Skała macierzysta', color:'#454d5c', tile:null},
     {key:'meteorDust', label:'Pyl meteorytowy', color:'#c8a6ff', tile:'METEOR_DUST'},
     {key:'wood',    label:'Drewno',  color:'#8b5a2b', tile:'WOOD'},
     {key:'ladder',  label:'Drabinka', color:'#b98243', tile:'LADDER'},
+    {key:'bedrockLadder', label:'Drabinka macierzysta', color:'#6f7890', tile:'BEDROCK_LADDER'},
     {key:'woodDoor', label:'Drzwi drewniane', color:'#9b6730', tile:'WOOD_DOOR'},
     {key:'stoneDoor', label:'Drzwi kamienne', color:'#8d9098', tile:'STONE_DOOR'},
     {key:'steelDoor', label:'Drzwi stalowe', color:'#9aa8b5', tile:'STEEL_DOOR'},
@@ -229,6 +247,7 @@
     {key:'arrowObsidian', label:'Strzaly obsydianowe', color:'#7a5cc1', tile:null},
     {key:'arrowDiamond', label:'Strzaly diamentowe', color:'#48f1ff', tile:null},
     {key:'arrowIridium', label:'Strzaly irydowe', color:'#b8d7ff', tile:null},
+    {key:'harpoonBolt', label:'Harpuny', color:'#72c7d8', tile:null},
     {key:'leaf',    label:'Liść',    color:'#2faa2f', tile:'LEAF'},
     {key:'snow',    label:'Śnieg',   color:'#e6f1ff', tile:'SNOW'},
     {key:'toxicSnow', label:'Toksyczny śnieg', color:'#9fe08a', tile:'TOXIC_SNOW'},
@@ -300,12 +319,15 @@
     bag:[],            // dynamic loot items collected from chests
     discarded:new Set(), // ids the player threw away (never re-added by loot sync)
     shortcutOff:new Set(), // weapon ids excluded from number-key cycling (opt-out: new loot joins its category automatically)
-    newItems:new Set() // looted items not yet acknowledged in the inventory UI
+    shortcutSelection:{}, // category id -> item id remembered by keys 2/3/4 while another slot is active
+    newItems:new Set(), // looted items not yet acknowledged in the inventory UI
+    enhancements:{}    // item id -> permanent signed +N level (built-ins included)
   };
   const extraItems=[]; // runtime-registered items (mods/extensions)
   const MAX_BAG=300, MAX_DISCARDED=1000; // localStorage quota guards for long-lived saves
   const discardUndo=[]; // session-only safety net for accidental item deletion
   const DISCARD_UNDO_LIMIT=20;
+  let enhanceRand=Math.random;
 
   // --- Function purity: each kind carries ONLY the stats of its job -----------
   // One item = its function, nothing else: capes jump, eyes see, outfits set one
@@ -325,6 +347,7 @@
     // two tiles out); plus an optional material identity string (meleeEffect)
     melee:['attackDamage','fireRange'],
     bow:['attackDamage','fireCooldown'],
+    harpoon:['attackDamage','fireCooldown'],
     thrown:['attackDamage','fireCooldown'],
     flame:['fireDps','fireRange'],
     hose:['fireDps','fireRange'],
@@ -336,14 +359,71 @@
     return KIND_STAT_PRIORITY[kind]||[];
   }
 
+  // +N stays one readable level although item kinds use different units. One
+  // level means +1 damage/DPS/vision/jump/resistance, +10 energy capacity, or
+  // +5 percentage points for multiplier stats. Base definitions stay immutable.
+  const ENHANCE_MULT_STATS=new Set(['moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult']);
+  function enhancementTarget(item){
+    if(!item) return null;
+    if(item.kind==='weapon'){
+      const type=item.weaponType||'melee';
+      return ['flame','hose','gas','electric'].includes(type) && typeof item.fireDps==='number'
+        ? 'fireDps' : (typeof item.attackDamage==='number' ? 'attackDamage' : null);
+    }
+    return allowedStatsFor(item.kind,item.weaponType).find(k=>typeof item[k]==='number')||null;
+  }
+  function enhancementStep(stat){ return stat==='energyCapacityBonus'?10:(ENHANCE_MULT_STATS.has(stat)?0.05:1); }
+  function clampEnhancedStat(stat,value){
+    if(ENHANCE_MULT_STATS.has(stat)){
+      const min=stat==='waterMoveSpeedMult'?0.25:0.3;
+      const max=stat==='waterMoveSpeedMult'?1.25:30;
+      return Math.max(min,Math.min(max,+value.toFixed(2)));
+    }
+    if(stat==='visionRadius') return Math.max(1,value);
+    return Math.max(0,value);
+  }
+  function rawItems(){ return BUILTIN_ITEMS.concat(extraItems,state.bag); }
+  function findRawItem(id){ return id ? (rawItems().find(i=>i.id===id)||null) : null; }
+  function enhancementLevel(id){
+    const n=Number(state.enhancements[id]);
+    return Number.isFinite(n) ? Math.max(-99,Math.min(99,Math.trunc(n))) : 0;
+  }
+  function effectiveItem(raw){
+    if(!raw) return null;
+    const level=enhancementLevel(raw.id);
+    if(!level) return raw;
+    const stat=enhancementTarget(raw);
+    const out=Object.assign({},raw,{enhancement:level});
+    if(stat){
+      out.enhancementStat=stat;
+      out[stat]=clampEnhancedStat(stat,(Number(raw[stat])||0)+enhancementStep(stat)*level);
+    }
+    return out;
+  }
+  function storedItem(raw,idOverride){
+    const out=Object.assign({},raw);
+    if(idOverride) out.id=idOverride;
+    const level=enhancementLevel(raw && raw.id);
+    if(level) out.enhancement=level;
+    return out;
+  }
+  function adoptSeedEnhancement(item){
+    if(!item || !item.id) return;
+    const level=Number(item.enhancement);
+    delete item.enhancement;
+    if(Number.isFinite(level) && Math.trunc(level)!==0)
+      state.enhancements[item.id]=Math.max(-99,Math.min(99,Math.trunc(level)));
+  }
+
   // Loot items come from localStorage (bag + dynamic-loot keys) — whitelist their
   // fields on ingest so tampered/corrupt entries can't smuggle objects or markup
   // into stat math and innerHTML-based displays downstream.
   const ITEM_NUM_FIELDS=['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','crushResistBonus'];
-  const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType','meleeEffect'];
+  const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType','meleeEffect','aquaticStyle'];
   // Material identity of a crafted hand weapon (weapons.js MELEE_EFFECTS holds
   // the numbers) — anything else smuggled into meleeEffect is dropped on ingest.
   const MELEE_EFFECT_LABELS={bleed:'Krwawienie', stun:'Ogłuszenie', panic:'Panika'};
+  const AQUATIC_STYLES={trident:'melee',crossbow:'bow',harpoon:'harpoon'};
   const ITEM_KINDS=new Set(['cape','eyes','outfit','weapon','charm']);
   function sanitizeLootItem(raw,fallbackKind){
     if(!raw || typeof raw!=='object') return null;
@@ -353,7 +433,9 @@
     const it={id:raw.id, kind};
     ITEM_NUM_FIELDS.forEach(f=>{ const v=raw[f]; if(typeof v==='number' && isFinite(v)) it[f]=v; });
     ITEM_STR_FIELDS.forEach(f=>{ const v=raw[f]; if(typeof v==='string' && v.length<=80) it[f]=v; });
+    if(Number.isFinite(raw.enhancement)) it.enhancement=Math.max(-99,Math.min(99,Math.trunc(raw.enhancement)));
     if(it.meleeEffect && (kind!=='weapon' || (it.weaponType||'melee')!=='melee' || !MELEE_EFFECT_LABELS[it.meleeEffect])) delete it.meleeEffect;
+    if(it.aquaticStyle && (kind!=='weapon' || AQUATIC_STYLES[it.aquaticStyle]!==(it.weaponType||'melee'))) delete it.aquaticStyle;
     // Normalize multipliers onto the clean percent ladder: pre-rework loot carries
     // raw rolls like 1.0437 — snapped here once, so every stored item reads clean.
     ['moveSpeedMult','jumpPowerMult','mineSpeedMult'].forEach(f=>{
@@ -376,6 +458,7 @@
     if(state.bag.length>=MAX_BAG && !opts.essential){
       return false;
     }
+    adoptSeedEnhancement(item);
     state.bag.push(item);
     if(opts.markNew!==false) state.newItems.add(item.id);
     return true;
@@ -383,9 +466,9 @@
 
   function itemsOfKind(kind){ return allItems().filter(i=>i.kind===kind); }
   function allItems(){
-    return BUILTIN_ITEMS.concat(extraItems, state.bag).filter(i=>!state.discarded.has(i.id));
+    return rawItems().filter(i=>!state.discarded.has(i.id)).map(effectiveItem);
   }
-  function findItem(id){ if(!id) return null; return allItems().find(i=>i.id===id)||null; }
+  function findItem(id){ const raw=findRawItem(id); return raw && !state.discarded.has(id) ? effectiveItem(raw) : null; }
   function slotFor(kind){ return SLOTS.find(s=>s.accepts===kind)||null; }
 
   // --- Weapon shortcut categories ---
@@ -408,7 +491,14 @@
   function setShortcut(itemId,on){
     const item=findItem(itemId);
     if(!item || item.kind!=='weapon') return false;
-    if(on) state.shortcutOff.delete(itemId); else state.shortcutOff.add(itemId);
+    if(on){
+      state.shortcutOff.delete(itemId);
+      if(state.equipped.weapon===itemId) rememberWeaponSelection(item);
+    }else{
+      state.shortcutOff.add(itemId);
+      const cat=weaponCategory(item);
+      if(cat && state.shortcutSelection[cat.id]===itemId) delete state.shortcutSelection[cat.id];
+    }
     notifyChange({key:'shortcut', value:itemId});
     return true;
   }
@@ -416,19 +506,28 @@
   // from another weapon or bare hands returns to the weapon LAST USED there
   // (session memory) instead of always restarting at the strongest — so a
   // player fighting with snowballs gets them back on one key press.
-  const lastUsedPerCategory={};
+  function rememberWeaponSelection(item){
+    const cat=weaponCategory(item);
+    if(!cat || state.shortcutOff.has(item.id)) return false;
+    state.shortcutSelection[cat.id]=item.id;
+    return true;
+  }
+  // The content shown by an inactive shortcut is exactly what it will restore.
+  // Invalid, discarded and opted-out memories safely fall back to the strongest
+  // enabled weapon without changing the other slots.
+  function selectedWeaponForCategory(catId){
+    const list=categoryWeapons(catId);
+    if(!list.length) return null;
+    const active=list.find(i=>i.id===state.equipped.weapon);
+    if(active) return active;
+    const remembered=state.shortcutSelection[catId];
+    return (remembered && list.find(i=>i.id===remembered)) || list[0];
+  }
   function cycleWeaponCategory(catId){
     const list=categoryWeapons(catId);
     if(!list.length) return null;
     const idx=list.findIndex(i=>i.id===state.equipped.weapon);
-    let next;
-    if(idx<0){
-      const remembered=lastUsedPerCategory[catId];
-      next=(remembered && list.find(i=>i.id===remembered)) || list[0];
-    } else {
-      next=list[(idx+1)%list.length];
-    }
-    lastUsedPerCategory[catId]=next.id;
+    const next=idx<0 ? selectedWeaponForCategory(catId) : list[(idx+1)%list.length];
     equip(next.id);
     return next;
   }
@@ -528,12 +627,14 @@
   // --- Persistence ---
   function snapshot(){
     return {
-      v:1,
+      v:3,
       equipped:Object.assign({}, state.equipped),
       colors:Object.assign({}, state.colors),
-      bag:state.bag.map(i=>Object.assign({}, i)),
+      bag:state.bag.map(i=>storedItem(i)),
+      enhancements:Object.assign({},state.enhancements),
       discarded:[...state.discarded],
       shortcutOff:[...state.shortcutOff],
+      shortcutSelection:Object.assign({}, state.shortcutSelection),
       newItems:[...state.newItems]
     };
   }
@@ -554,7 +655,16 @@
       if(typeof src.colors.cape==='string' && src.colors.cape.length<=32) state.colors.cape=src.colors.cape;
       if(typeof src.colors.outfit==='string' && src.colors.outfit.length<=32) state.colors.outfit=src.colors.outfit;
     }
+    state.enhancements={};
     state.bag=Array.isArray(src.bag) ? src.bag.map(i=>sanitizeLootItem(i)).filter(Boolean).slice(0,MAX_BAG) : [];
+    state.bag.forEach(adoptSeedEnhancement);
+    if(src.enhancements && typeof src.enhancements==='object'){
+      Object.keys(src.enhancements).slice(0,MAX_DISCARDED).forEach(id=>{
+        const n=Number(src.enhancements[id]);
+        if(typeof id==='string' && id.length<=96 && findRawItem(id) && Number.isFinite(n) && Math.trunc(n)!==0)
+          state.enhancements[id]=Math.max(-99,Math.min(99,Math.trunc(n)));
+      });
+    }
     state.discarded=new Set();
     if(Array.isArray(src.discarded)){
       src.discarded.slice(0,MAX_DISCARDED).forEach(id=>{ if(typeof id==='string' && id.length<=96) state.discarded.add(id); });
@@ -563,6 +673,15 @@
     if(Array.isArray(src.shortcutOff)){
       src.shortcutOff.slice(0,MAX_DISCARDED).forEach(id=>{ if(typeof id==='string' && id.length<=96) state.shortcutOff.add(id); });
     }
+    state.shortcutSelection={};
+    if(src.shortcutSelection && typeof src.shortcutSelection==='object'){
+      for(const cat of WEAPON_CATEGORIES){
+        const id=src.shortcutSelection[cat.id];
+        const item=typeof id==='string' && id.length<=96 ? findItem(id) : null;
+        const itemCat=weaponCategory(item);
+        if(itemCat && itemCat.id===cat.id && !state.shortcutOff.has(id)) state.shortcutSelection[cat.id]=id;
+      }
+    }
     state.newItems=new Set();
     if(Array.isArray(src.newItems)){
       src.newItems.slice(0,MAX_DISCARDED).forEach(id=>{
@@ -570,6 +689,7 @@
       });
     }
     ensureValid();
+    rememberWeaponSelection(findItem(state.equipped.weapon));
     syncCustomization();
     computeModifiers();
     if(opts.persist!==false) save();
@@ -627,6 +747,7 @@
     const slot=slotFor(item.kind); if(!slot) return false;
     if(state.equipped[slot.id]===itemId) return true;
     state.equipped[slot.id]=itemId;
+    if(item.kind==='weapon') rememberWeaponSelection(item);
     state.newItems.delete(itemId);
     notifyChange({key:slot.id, value:itemId});
     return true;
@@ -641,16 +762,22 @@
   }
   function discard(itemId){
     const item=findItem(itemId); if(!item) return false;
+    const raw=findRawItem(itemId); if(!raw) return false;
     const builtin=BUILTIN_ITEMS.some(i=>i.id===itemId);
     if(builtin) return false; // built-in gear can't be thrown away
-    discardUndo.unshift(Object.assign({}, item));
+    const savedItem=storedItem(raw);
+    const savedEnhancement=enhancementLevel(itemId);
+    discardUndo.unshift(savedItem);
     if(discardUndo.length>DISCARD_UNDO_LIMIT) discardUndo.length=DISCARD_UNDO_LIMIT;
     state.discarded.add(itemId);
     state.newItems.delete(itemId);
     state.shortcutOff.delete(itemId); // a discarded weapon must not pin its id in the opt-out set forever
+    const itemCat=weaponCategory(item);
+    if(itemCat && state.shortcutSelection[itemCat.id]===itemId) delete state.shortcutSelection[itemCat.id];
     // FIFO cap (Sets iterate in insertion order): ids of long-gone loot expire first
     if(state.discarded.size>MAX_DISCARDED){ state.discarded.delete(state.discarded.values().next().value); }
     const bi=state.bag.findIndex(i=>i.id===itemId); if(bi>=0) state.bag.splice(bi,1);
+    delete state.enhancements[itemId];
     // A discarded item is THROWN OUT, not vaporized: it lands at the hero's feet
     // as a physical ground drop (engine/drops.js). A fresh id keeps it clear of
     // the discard blacklist, so regret-grabs work — and commons can be carried
@@ -658,7 +785,8 @@
     try{
       const drops=MM.drops, p=window.player;
       if(drops && drops.spawnGear && p && typeof p.x==='number' && typeof p.y==='number'){
-        const thrown=Object.assign({}, item, {id:item.id+'_out_'+Date.now().toString(36)});
+        const thrown=Object.assign({},raw,{id:item.id+'_out_'+Date.now().toString(36)});
+        if(savedEnhancement) thrown.enhancement=savedEnhancement;
         drops.spawnGear(p.x, p.y-0.3, thrown, {announce:false});
       }
     }catch(e){ /* drops engine absent (menus/DOM-less tests): plain discard */ }
@@ -696,7 +824,8 @@
         return false;
       }
       state.discarded.delete(item.id);
-      if(!state.bag.some(i=>i.id===item.id)) state.bag.push(Object.assign({}, item));
+      const restored=sanitizeLootItem(item,item.kind);
+      if(!restored || !pushToBag(restored,{markNew:true,essential:true})) return false;
       restoreDynamicLootItem(item);
       ensureValid();
       notifyChange({key:'undoDiscard', value:item.id});
@@ -770,7 +899,7 @@
     };
   }
   function newItems(){
-    return state.bag.filter(i=>!state.discarded.has(i.id) && state.newItems.has(i.id));
+    return state.bag.filter(i=>!state.discarded.has(i.id) && state.newItems.has(i.id)).map(effectiveItem);
   }
   function setColor(which,color){
     if(which!=='cape' && which!=='outfit') return;
@@ -796,6 +925,48 @@
     notifyChange({key:'grant', value:item.id});
     if(opts.equip) equip(item.id);
     return true;
+  }
+
+  function enhancementInfo(input){
+    const id=typeof input==='string' ? input : (input && input.id);
+    const raw=findRawItem(id);
+    if(!raw || state.discarded.has(id)) return null;
+    const stat=enhancementTarget(raw);
+    const effective=effectiveItem(raw);
+    return {
+      item:effective,
+      eligible:!!stat,
+      level:enhancementLevel(id),
+      stat,
+      baseValue:stat?raw[stat]:null,
+      value:stat?effective[stat]:null,
+      step:stat?enhancementStep(stat):null
+    };
+  }
+  function applyJewel(itemId,jewelKey){
+    const jewel=JEWEL_BY_KEY[jewelKey];
+    const raw=findRawItem(itemId);
+    const inv=window.inv;
+    const stat=enhancementTarget(raw);
+    if(!jewel) return {ok:false,reason:'jewel'};
+    if(!raw || state.discarded.has(itemId)) return {ok:false,reason:'item'};
+    if(!stat) return {ok:false,reason:'ineligible'};
+    if(!inv || (Number(inv[jewelKey])||0)<1) return {ok:false,reason:'missing'};
+    const beforeLevel=enhancementLevel(itemId);
+    const beforeValue=effectiveItem(raw)[stat];
+    inv[jewelKey]=Math.max(0,(Number(inv[jewelKey])||0)-1);
+    const roll=Math.max(0,Math.min(1,Number(enhanceRand())||0));
+    const success=jewel.chance>=1 || roll<jewel.chance;
+    const delta=success?jewel.successDelta:jewel.failDelta;
+    const level=Math.max(-99,Math.min(99,beforeLevel+delta));
+    if(level) state.enhancements[itemId]=level; else delete state.enhancements[itemId];
+    notifyChange({key:'enhance',value:itemId,jewel:jewelKey,success,delta,level});
+    try{
+      if(typeof window.updateInventoryHud==='function') window.updateInventoryHud();
+      else window.dispatchEvent(new CustomEvent('mm-resources-change',{detail:{key:jewelKey,spent:1}}));
+    }catch(e){}
+    const afterValue=effectiveItem(raw)[stat];
+    return {ok:true,consumed:true,success,delta,level,beforeLevel,stat,beforeValue,afterValue,jewel:Object.assign({},jewel),item:effectiveItem(raw)};
   }
 
   // --- Dynamic loot sync: chests.js fills MM.dynamicLoot; merge new items into the bag ---
@@ -826,7 +997,7 @@
   // --- Resources (view over window.inv, owned by main.js) ---
   function resourceList(){
     const inv=window.inv||{};
-    return RESOURCES.map(r=>({key:r.key, label:r.label, color:r.color, tile:r.tile, count:inv[r.key]|0}));
+    return RESOURCES.map(r=>({key:r.key, label:r.label, color:r.color, tile:r.tile, jewel:!!r.jewel, count:inv[r.key]|0}));
   }
   function dropResource(key,n){
     const inv=window.inv; if(!inv || !(key in inv)) return 0;
@@ -876,16 +1047,17 @@
 
   MM.inventory={
     SLOTS, KIND_LABELS, TIER_COLORS, STAT_LABELS, STAT_RULES, RESOURCES, BASE_ATTACK,
-    MELEE_EFFECT_LABELS,
+    MELEE_EFFECT_LABELS, JEWELS,
     WEAPON_CATEGORIES, KIND_STAT_PRIORITY, WEAPON_TYPE_STATS, allowedStatsFor,
-    weaponCategory, categoryWeapons, isShortcut, setShortcut, cycleWeaponCategory,
+    weaponCategory, categoryWeapons, selectedWeaponForCategory, isShortcut, setShortcut, cycleWeaponCategory,
     statChips, itemScore, snapPct, fmtPct, VISION_BASE,
     items:itemsOfKind,
     allItems,
-    bagItems:()=>state.bag.filter(i=>!state.discarded.has(i.id)),
+    bagItems:()=>state.bag.filter(i=>!state.discarded.has(i.id)).map(effectiveItem),
     getItem:findItem,
     isBuiltin:(id)=>BUILTIN_ITEMS.some(i=>i.id===id),
     equip, unequip, discard, undoDiscard, discardUndoCount, registerItem, grantItem, registerModifierSource,
+    enhancementInfo, applyJewel,
     isNew, markSeen, newItems, capacity, compareItem,
     equippedId:(slotId)=>state.equipped[slotId]||null,
     equippedItem:(slotId)=>findItem(state.equipped[slotId]),
@@ -899,7 +1071,8 @@
     dropResource,
     snapshot,
     restore:restoreSnapshot,
-    save
+    save,
+    _debugEnhancement:{target:enhancementTarget,step:enhancementStep,level:enhancementLevel,setRandom:(fn)=>{ enhanceRand=typeof fn==='function'?fn:Math.random; }}
   };
 })();
 // ESM export (progressive migration)

@@ -237,13 +237,7 @@ window.MM = window.MM || {};
   }
   function rewardChest(p){
     try{
-      const W=MM.world, T=MM.T; if(!W||!T) return;
-      const bx=Math.round(p.x)+2;
-      for(let ty=Math.max(2,Math.round(p.y)-3); ty<Math.round(p.y)+6; ty++){
-        const t=W.getTile(bx,ty);
-        const below=W.getTile(bx,ty+1);
-        if(t===T.AIR && below!==T.AIR && below!==T.WATER){ W.setTile(bx,ty,T.CHEST_EPIC); return; }
-      }
+      if(MM.drops && MM.drops.spawnChest) MM.drops.spawnChest(p.x+0.6,p.y-0.35,'epic',{source:'progress',vx:1.8,vy:-3.2});
     }catch(e){}
   }
 

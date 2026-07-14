@@ -17,6 +17,7 @@ import {
   makeTeamProfile
 } from './invasion_ai.js';
 import { STORY_LORE, storyInvasionLinesForProgress } from './story_lore.js';
+import { isLongCharacterSpeech, readableCharacterSpeechDuration } from './character_speech.js';
 
 // Night invasions are intentionally team-based. Today the implemented team type
 // is "aliens", but the save shape and scheduler can host more invader kinds.
@@ -699,6 +700,7 @@ const invasions = (function(){
       lastHitAt:0,
       speechText:'',
       speechUntil:0,
+      speechLong:false,
       nextSpeakAt:0,
       speechCue:'',
       speechCueUntil:0,
@@ -2288,7 +2290,10 @@ const invasions = (function(){
     if(!a || !text) return '';
     if(!opts.override && a.speechText && now < (a.speechUntil || 0)) return '';
     a.speechText = compactSpeechText(text);
-    a.speechUntil = now + clamp(1050 + a.speechText.length * 18,1300,2700);
+    a.speechLong = isLongCharacterSpeech(a.speechText);
+    const baseDuration = clamp(1050 + a.speechText.length * 18,1300,2700);
+    a.speechUntil = now + readableCharacterSpeechDuration(baseDuration,a.speechText);
+    if(a.speechLong && a.onGround) a.vx = 0;
     a._speechLayout = null;
     return a.speechText;
   }
@@ -2349,8 +2354,13 @@ const invasions = (function(){
     if(!team.speechStartAt) team.speechStartAt = now;
     if(a.speechText && now >= (a.speechUntil || 0)){
       a.speechText = '';
+      a.speechLong = false;
       a._speechLayout = null;
     }
+  }
+  function longSpeechActive(a,now){
+    const at = Number.isFinite(now) ? now : nowMs();
+    return !!(a && a.speechLong && a.speechText && at < (a.speechUntil || 0));
   }
   function onHeroAction(type,detail){
     detail = detail || {};
@@ -2718,8 +2728,8 @@ const invasions = (function(){
       fire:(a,opts)=>isMolekinTeam(team) ? fireMolekinAttack(a,team,player,getTile,setTile,ctx,opts) : fireAlienLaser(a,team,player,getTile,setTile,ctx,opts),
       heal:(a,target,amount)=>healAlien(team,a,target,amount),
       repairAtLander:(a,amount)=>isMolekinTeam(team) ? repairMolekinAtBurrow(team,a,amount) : repairAlienAtLander(team,a,amount),
-      unstuck:(a,opts)=>unstuckAlien(team,a,opts,getTile,setTile,ctx),
-      extract:(a,opts)=>beginExtraction(team,a,opts,getTile,setTile,ctx),
+      unstuck:(a,opts)=>longSpeechActive(a) ? false : unstuckAlien(team,a,opts,getTile,setTile,ctx),
+      extract:(a,opts)=>longSpeechActive(a) ? false : beginExtraction(team,a,opts,getTile,setTile,ctx),
       tileAttack:(a,tx,ty,mult)=>{
         burst(tx+0.5,ty+0.5,isMolekinTeam(team) ? 'rare' : 'common');
         const threat = teamThreatLevel(team);
@@ -2768,6 +2778,7 @@ const invasions = (function(){
     const dx = px - a.x;
     const dy = (py - 0.4) - (a.y - 0.45);
     const dist = Math.hypot(dx,dy) || 1;
+    const speakingLong = longSpeechActive(a);
     if(alienCollidesAt(a,a.x,a.y,getTile)){
       a.buriedT = (a.buriedT || 0) + dt;
       unstuckAlien(team,a,{dir:intent && intent.moveX ? intent.moveX : (a.facing || (dx >= 0 ? 1 : -1)), reason:'buried', embedded:true},getTile,setTile,ctx);
@@ -2783,11 +2794,14 @@ const invasions = (function(){
       a._ghostSpookUntil = (typeof performance!=='undefined' ? performance.now() : Date.now()) + 900;
       a.state = 'rout';
     }
-    const desired = dread ? dread.awayX * speed * 1.2 : (intent ? intent.moveX * speed : 0);
+    // Immediate danger interrupts a speech pause: a haunted alien flees first
+    // and can finish its sentence after the spirit is gone.
+    const desired = dread ? dread.awayX * speed * 1.2 : (speakingLong ? 0 : (intent ? intent.moveX * speed : 0));
     // Weak air control: jump-kick impulses must carry across gaps instead of
     // decaying back to walk speed mid-flight.
-    a.vx += (desired - (a.vx || 0)) * Math.min(1, dt * (a.onGround ? 5.8 : 1.5));
-    if(intent && intent.jump && a.onGround){
+    if(speakingLong && !dread && a.onGround) a.vx = 0;
+    else a.vx += (desired - (a.vx || 0)) * Math.min(1, dt * (a.onGround ? 5.8 : 1.5));
+    if(!speakingLong && intent && intent.jump && a.onGround){
       const boost = Math.max(1, Math.min(1.85, Number(intent.jumpBoost) || 1));
       a.vy = -profile.jumpVel * boost * (Number(a.jumpMult) || 1);
       if(intent.moveX){
@@ -2801,7 +2815,7 @@ const invasions = (function(){
       intent.jump = false;
       intent.jumpBoost = 1;
       intent.jumpKick = false;
-    } else if(a.onGround && intent && intent.moveX !== 0){
+    } else if(!speakingLong && a.onGround && intent && intent.moveX !== 0){
       const aheadX = a.x + intent.moveX * 0.42;
       if(alienCollidesAt(a,aheadX,a.y,getTile)){
         // auto-hop; a wall that still blocks at head height gets a full jump,
@@ -2967,22 +2981,6 @@ const invasions = (function(){
       lastWorldAccess = {getTile,setTile,ctx:ctx || {}};
     }
   }
-  function canPlaceCommanderChestAt(tx,ty,getTile){
-    if(!inWorldY(ty,2)) return false;
-    const here = readTile(getTile,tx,ty);
-    const below = readTile(getTile,tx,ty+1);
-    if(here === T.WATER || here === T.LAVA || here === T.INVASION_CACHE) return false;
-    if(below === T.WATER || below === T.LAVA) return false;
-    return isReplaceableNaturalOpenTile(here,false) && isObjectFootingTile(below);
-  }
-  function chestTileForTier(tier){
-    const key = String(tier || '').toLowerCase();
-    if(key === 'legendary') return T.CHEST_LEGENDARY;
-    if(key === 'epic' || key === 'gold' || key === 'golden') return T.CHEST_EPIC;
-    if(key === 'rare') return T.CHEST_RARE;
-    if(key === 'uncommon') return T.CHEST_UNCOMMON;
-    return T.CHEST_COMMON;
-  }
   function tierForChestTile(tile){
     if(tile === T.CHEST_LEGENDARY) return 'legendary';
     if(tile === T.CHEST_EPIC) return 'epic';
@@ -2992,7 +2990,10 @@ const invasions = (function(){
   }
   function describeChestDrops(chests){
     const counts = {common:0, uncommon:0, rare:0, epic:0, legendary:0};
-    for(const c of chests) counts[tierForChestTile(c && c.tile)]++;
+    for(const c of chests){
+      const tier=c && counts[c.tier]!==undefined ? c.tier : tierForChestTile(c && c.tile);
+      counts[tier]++;
+    }
     const parts = [];
     if(counts.legendary) parts.push(counts.legendary+'x legendarna skrzynia');
     if(counts.epic) parts.push(counts.epic+'x epicka skrzynia');
@@ -3031,17 +3032,13 @@ const invasions = (function(){
   }
   function dropRewardChestNear(x,y,tier,opts){
     opts = opts || {};
-    const ctx = opts.ctx || lastWorldAccess.ctx || {};
-    const getTile = opts.getTile || ctx.getTile || lastWorldAccess.getTile;
-    const setTile = opts.setTile || ctx.setTile || lastWorldAccess.setTile;
-    const spot = findCommanderChestSpot({x,y},getTile);
-    if(!spot) return null;
-    const tile = chestTileForTier(tier);
-    const oldTile = readTile(getTile,spot.x,spot.y);
-    if(!writeTile(setTile,spot.x,spot.y,tile)) return null;
-    wakeTileChanged(ctx,spot.x,spot.y,oldTile,tile);
-    burst(spot.x+0.5,spot.y+0.5,tier === 'epic' ? 'epic' : (tier === 'rare' ? 'rare' : 'common'));
-    return {x:spot.x,y:spot.y,tile,tier:tierForChestTile(tile)};
+    const spawn=typeof opts.spawnChest==='function' ? opts.spawnChest : (MM.drops && MM.drops.spawnChest);
+    if(typeof spawn!=='function') return null;
+    let d=null;
+    try{ d=spawn(x,y,tier,{source:'invasion',vx:(Math.random()*2-1)*1.8,vy:-(2.5+Math.random()*1.8)}); }catch(e){ d=null; }
+    if(!d) return null;
+    burst(d.x,d.y,tier === 'epic' || tier === 'legendary' ? 'epic' : (tier === 'rare' ? 'rare' : 'common'));
+    return {x:d.x,y:d.y,tier,id:d.id};
   }
   function dropTeamRewardChests(team,player,opts){
     if(!team || team.rewardDropped) return [];
@@ -3059,44 +3056,26 @@ const invasions = (function(){
       if(chest) drops.push(chest);
     }
     if(drops.length){
-      play(drops.some(c=>c.tile === T.CHEST_EPIC) ? 'golden' : 'chest',drops[0]);
+      play(drops.some(c=>c.tier === 'epic' || c.tier === 'legendary') ? 'golden' : 'chest',drops[0]);
       saveLocal();
     }
     return drops;
   }
-  function findCommanderChestSpot(a,getTile){
-    const sx = floor(a && Number.isFinite(a.x) ? a.x : 0);
-    const sy = floor(a && Number.isFinite(a.y) ? a.y : 0);
-    for(let r=0; r<=4; r++){
-      for(let dy=-3; dy<=3; dy++){
-        const yy = sy + dy;
-        for(let dx=-r; dx<=r; dx++){
-          if(Math.abs(dx) !== r && r !== 0) continue;
-          const xx = sx + dx;
-          if(canPlaceCommanderChestAt(xx,yy,getTile)) return {x:xx,y:yy};
-        }
-      }
-    }
-    const fallback = findSurfaceStandSpot(sx,sy,getTile);
-    const fx = floor(fallback.x), fy = floor(fallback.y);
-    return canPlaceCommanderChestAt(fx,fy,getTile) ? {x:fx,y:fy} : null;
-  }
   function dropCommanderChest(team,a,opts){
     opts = opts || {};
     const ctx = opts.ctx || lastWorldAccess.ctx || {};
-    const getTile = opts.getTile || ctx.getTile || lastWorldAccess.getTile;
-    const setTile = opts.setTile || ctx.setTile || lastWorldAccess.setTile;
-    const spot = findCommanderChestSpot(a,getTile);
-    if(!spot) return false;
-    const oldTile = readTile(getTile,spot.x,spot.y);
-    if(!writeTile(setTile,spot.x,spot.y,T.CHEST_EPIC)) return false;
-    wakeTileChanged(ctx,spot.x,spot.y,oldTile,T.CHEST_EPIC);
-    burst(spot.x+0.5,spot.y+0.5,'epic');
-    play('golden',{x:spot.x+0.5,y:spot.y+0.5});
+    const spawn=typeof opts.spawnChest==='function' ? opts.spawnChest : (MM.drops && MM.drops.spawnChest);
+    if(typeof spawn!=='function') return false;
+    const x=Number.isFinite(a&&a.x)?a.x:0, y=Number.isFinite(a&&a.y)?a.y-0.25:0;
+    let d=null;
+    try{ d=spawn(x,y,'epic',{source:'alien_commander',vx:(Math.random()*2-1)*1.5,vy:-3.5}); }catch(e){ d=null; }
+    if(!d) return false;
+    burst(d.x,d.y,'epic');
+    play('golden',{x:d.x,y:d.y});
     say('Zloty alien commander pokonany. Zostawil zlota skrzynie.');
     saveLocal();
     markHostSave(ctx);
-    if(team) team.commanderChestDroppedAt = {x:spot.x,y:spot.y,t:Date.now()};
+    if(team) team.commanderChestDroppedAt = {x:d.x,y:d.y,t:Date.now(),id:d.id};
     return true;
   }
   function update(dt,player,getTile,setTile,ctx){
@@ -3222,6 +3201,9 @@ const invasions = (function(){
   function damageAtWorld(wx,wy,dmg,opts){
     const hit = findAlienAtWorld(wx,wy);
     if(hit && hit.alien){
+      if(opts && typeof opts.onTarget==='function'){
+        try{ opts.onTarget(hit.alien,'invasion',isLiving); }catch(e){}
+      }
       applyAlienDamage(hit.team,hit.alien,Math.max(0.5, Number(dmg) || 1),120,opts);
       return true;
     }
@@ -3232,6 +3214,9 @@ const invasions = (function(){
     if(!hit) return false;
     const amount = Math.max(0.5, Number(dmg) || 1);
     if(hit.alien){
+      if(opts && typeof opts.onTarget==='function'){
+        try{ opts.onTarget(hit.alien,'invasion',isLiving); }catch(e){}
+      }
       applyAlienDamage(hit.team,hit.alien,amount,120,opts);
       return true;
     }
@@ -3249,8 +3234,12 @@ const invasions = (function(){
   function attackAt(tx,ty,bonus,opts){
     return damageAt(tx,ty,3 + Math.max(0, Number(bonus) || 0),opts);
   }
+  function isLiving(a){
+    if(!a || a.dead || !(a.hp>0)) return false;
+    return teams.some(team=>team && team.state!=='defeated' && Array.isArray(team.aliens) && team.aliens.includes(a));
+  }
   function blastRadius(wx,wy,r,dmg,opts){
-    let hit = false;
+    let hits = 0;
     const radius = Math.max(0.5, Number(r) || 1);
     const amount = Math.max(1, Number(dmg) || 6);
     for(const team of teams){
@@ -3258,17 +3247,17 @@ const invasions = (function(){
       if(isAlienTeam(team) && team.lander && !team.lander.destroyed && Math.hypot(team.lander.x-wx,team.lander.y-wy) <= radius + 1.8){
         team.lander.hp -= amount;
         if(team.lander.hp <= 0){ team.lander.destroyed = true; team.lander.landed = true; }
-        hit = true;
+        hits++;
       }
       for(const a of team.aliens){
         if(!a || a.dead || a.hp <= 0) continue;
         if(Math.hypot(a.x-wx,(a.y-0.4)-wy) <= radius){
           applyAlienDamage(team,a,amount,150,opts);
-          hit = true;
+          hits++;
         }
       }
     }
-    return hit;
+    return hits;
   }
   // Per-role skins: tint = shell, dark = under-shell/limbs, eye = glow,
   // accent = weapon/gear energy color. Flat fills with layered highlights to
@@ -4348,6 +4337,7 @@ const invasions = (function(){
       lastHitAt:0,
       speechText:'',
       speechUntil:0,
+      speechLong:false,
       nextSpeakAt:0,
       speechCue:'',
       speechCueUntil:0,
@@ -4702,6 +4692,7 @@ const invasions = (function(){
     attackAt,
     damageAt,
     damageAtWorld,
+    isLiving,
     blastRadius,
     nearestForEnemy,
     onHeroKilled,
@@ -4719,7 +4710,7 @@ const invasions = (function(){
     reset,
     metrics,
     state:()=>({teams:teams.map(serializeTeam), caches:caches.map(c=>deepCopy(c)), lastNightDay, seq}),
-    _debug:{teams,caches,lasers,tileDamage,brains,nav,traceLine,damageStructureTile,damageTeamTile,isMoleDiggableTile,fireMolekinAttack,unstuckAlien,beginExtraction,updateExtraction,extractionPlan,findSurfaceStandable,alienEscapeCells,findCacheSpot,stealResources,stealGear,canPlaceBarricadeAt,placeBarricadeTile,canPlaceMoleVentAt,placeMoleVentTile,cleanupBuiltTiles,profileFor,playerLevelFor,threatLevelFor,gradeForThreat,teamCountForDay,alienCountForDay,molekinCountForDay,xpRewardForTeam,rewardProfileForTeam,westGuardianDefeated,eastGuardianDefeated,spawnRuinCommander,forceMolekinInvasion,forceAlienSpeech,triggerTeamSpeech,updateAlienSpeech,updateHeroAwareness,updateAtomicWinterAwareness,atomicWinterSpeechLines,compactSpeechText,storyInvasionLinesForProgress,speechLines:ALIEN_SPEECH,moleSpeechLines:MOLEKIN_SPEECH,rareSpeechLines:ALIEN_RARE_SPEECH,moleRareSpeechLines:MOLEKIN_RARE_SPEECH,echoSpeechLines:ALIEN_ECHO_SPEECH,moleEchoSpeechLines:MOLEKIN_ECHO_SPEECH}
+    _debug:{teams,caches,lasers,tileDamage,brains,nav,traceLine,damageStructureTile,damageTeamTile,isMoleDiggableTile,fireMolekinAttack,unstuckAlien,beginExtraction,updateExtraction,extractionPlan,findSurfaceStandable,alienEscapeCells,findCacheSpot,stealResources,stealGear,canPlaceBarricadeAt,placeBarricadeTile,canPlaceMoleVentAt,placeMoleVentTile,cleanupBuiltTiles,profileFor,playerLevelFor,threatLevelFor,gradeForThreat,teamCountForDay,alienCountForDay,molekinCountForDay,xpRewardForTeam,rewardProfileForTeam,westGuardianDefeated,eastGuardianDefeated,spawnRuinCommander,forceMolekinInvasion,forceAlienSpeech,setAlienSpeech,longSpeechActive,updateAlien,triggerTeamSpeech,updateAlienSpeech,updateHeroAwareness,updateAtomicWinterAwareness,atomicWinterSpeechLines,compactSpeechText,storyInvasionLinesForProgress,speechLines:ALIEN_SPEECH,moleSpeechLines:MOLEKIN_SPEECH,rareSpeechLines:ALIEN_RARE_SPEECH,moleRareSpeechLines:MOLEKIN_RARE_SPEECH,echoSpeechLines:ALIEN_ECHO_SPEECH,moleEchoSpeechLines:MOLEKIN_ECHO_SPEECH}
   };
   MM.invasions = api;
   return api;

@@ -13,6 +13,7 @@ globalThis.msg = ()=>{};
 
 const { T } = await import('../src/constants.js');
 const { createQuestNpc, npcRegistry } = await import('../src/engine/npc_system.js');
+const { isBriefCharacterSpeech, readableCharacterSpeechDuration } = await import('../src/engine/character_speech.js');
 
 const SURFACE = 40;
 const HOME = 0;
@@ -28,12 +29,12 @@ for(let y=SURFACE-4; y<SURFACE; y++){ setTile(HOME-5,y,T.STONE); setTile(HOME+5,
 const naturalPen = new Map();
 for(let x=HOME-4; x<=HOME+4; x++) for(let y=SURFACE-4; y<SURFACE; y++) naturalPen.set(tk(x,y), getTile(x,y));
 
-function makeNpc(id,homeX){
+function makeNpc(id,homeX,prompt=id+' chce drewna'){
   return createQuestNpc({
     id, displayName:id, maxHp:10,
     initialData:{ role:id, home:{x:homeX}, color:'#6f6745', accent:'#c2df8a' },
     steps:[
-      {id:'job',kind:'handoff',item:'wood',amount:99,next:'done',prompt:id+' chce drewna',missing:'brak',complete:'dzieki'},
+      {id:'job',kind:'handoff',item:'wood',amount:99,next:'done',prompt,missing:'brak',complete:'dzieki'},
       {id:'done',kind:'done',prompt:'hej'}
     ]
   });
@@ -88,6 +89,46 @@ assert.equal(npc.interactAt(tileX,tileY,player), true, 'clicking the NPC tile wi
 assert.ok(npc._debug().lineT>0, 'talking surfaces a dialogue line');
 // Out of reach → no talk.
 assert.equal(npc.interactAt(tileX+40,tileY,{x:s.x+40,y:s.y}), false, 'clicking far away does not talk');
+
+// Readability: short exclamations remain compatible with movement, while longer
+// dialogue doubles its previous display time and owns a stationary speaking pose.
+for(const bark of ['Niech żyje Strażniczka Wschodu!','Boli!','Walnął mnie!','Uciekać!']){
+  assert.equal(isBriefCharacterSpeech(bark),true,'short bark stays movement-safe: '+bark);
+}
+const longLine='Zatrzymaj się, bo muszę opowiedzieć ci o bardzo ważnym przejściu pod górami.';
+assert.equal(isBriefCharacterSpeech(longLine),false,'a multi-clause dialogue line is classified as long');
+assert.equal(readableCharacterSpeechDuration(4.6,longLine),9.2,'long NPC dialogue is displayed exactly twice as long');
+
+const longSpeaker=makeNpc('long_speaker',HOME,longLine);
+longSpeaker.restore({v:1,x:HOME+0.5,y:SURFACE-1,phase:'job',hp:10});
+let longState=longSpeaker._debug();
+player.x=longState.x; player.y=longState.y;
+longState.move.onGround=true; longState.move.vx=0; longState.move.vy=0;
+longState.ai.mode='wander'; longState.ai.targetX=HOME+4; longState.ai.t=20;
+assert.equal(longSpeaker.interactAt(Math.floor(longState.x),Math.floor(longState.y),player),true,'long-dialogue NPC starts speaking');
+longState=longSpeaker._debug();
+assert.equal(longState.lineLong,true,'long dialogue marks the stationary speaking pose');
+assert.ok(Math.abs(longState.lineT-9.2)<0.001,'long dialogue bubble receives doubled lifetime');
+const longStartX=longState.x;
+for(let i=0;i<30;i++) longSpeaker.update(0.1,player,getTile,setTile,{worldGen});
+assert.ok(Math.abs(longSpeaker._debug().x-longStartX)<0.001,'NPC stands still while long dialogue remains visible');
+for(let i=0;i<70;i++) longSpeaker.update(0.1,player,getTile,setTile,{worldGen});
+assert.equal(longSpeaker._debug().lineT,0,'long dialogue eventually leaves the screen');
+assert.ok(Math.abs(longSpeaker._debug().x-longStartX)>0.05,'NPC resumes walking after the long dialogue disappears');
+
+const shortSpeaker=makeNpc('short_speaker',HOME,'Niech żyje Strażniczka Wschodu!');
+shortSpeaker.restore({v:1,x:HOME+0.5,y:SURFACE-1,phase:'job',hp:10});
+let shortState=shortSpeaker._debug();
+player.x=shortState.x; player.y=shortState.y;
+shortState.move.onGround=true; shortState.move.vx=0; shortState.move.vy=0;
+shortState.ai.mode='wander'; shortState.ai.targetX=HOME+4; shortState.ai.t=20;
+assert.equal(shortSpeaker.interactAt(Math.floor(shortState.x),Math.floor(shortState.y),player),true,'short-bark NPC starts speaking');
+shortState=shortSpeaker._debug();
+assert.equal(shortState.lineLong,false,'short bark does not claim a stationary pose');
+assert.ok(Math.abs(shortState.lineT-4.6)<0.001,'short bark keeps its original display lifetime');
+const shortStartX=shortState.x;
+shortSpeaker.update(0.1,player,getTile,setTile,{worldGen});
+assert.ok(Math.abs(shortSpeaker._debug().x-shortStartX)>0.01,'NPC can keep walking while delivering a short bark');
 
 // NPC-NPC separation: two residents dropped on the same spot push apart.
 npcRegistry.reset();

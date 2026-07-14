@@ -173,6 +173,41 @@ if(tough){
   assert.ok(tough.hp===tough.maxHp-1 && md.parts.includes(tough), 'partial damage chips without destroying');
 }
 
+// --- 5b. Material rules: the shell is terrain, while eye/heart are weak points ---
+resetWorld();
+const mm = bosses.forceSpawn(getTile, {x:300, seed:556, freeze:true, archetype:'walker'});
+step(30);
+const mbx=Math.round(mm.x), mby=Math.round(mm.y);
+const shell=mm.parts.find(p=>p.role!=='core' && p.role!=='eye' && bosses.partAt(mbx+p.dx,mby+p.dy)?.part===p);
+assert.ok(shell && shell.blockType, 'boss exposes a material body tile to the mining cursor');
+const shellX=mbx+shell.dx, shellY=mby+shell.dy, shellHp=shell.hp;
+assert.equal(bosses.damageAt(shellX,shellY,999,{kind:'melee',source:'hero'}), 'blocked', 'ordinary melee stops on a boss body block');
+assert.equal(shell.hp,shellHp,'melee cannot damage the material shell');
+assert.equal(bosses.damageAt(shellX,shellY,999,{kind:'electric',source:'hero'}), 'blocked', 'electric weapons stop on a boss body block');
+assert.equal(shell.hp,shellHp,'electric damage cannot erode the material shell');
+let arrowAnchor=null;
+assert.equal(bosses.damageAt(shellX,shellY,999,{kind:'arrow',tier:'wood',pierceLeft:0,source:'hero',onTarget(target,family,isAlive,anchor){
+  arrowAnchor={target,family,isAlive,anchor};
+}}), 'blocked', 'ordinary arrows hit the shell like terrain');
+assert.equal(shell.hp,shellHp,'ordinary arrows cannot damage the material shell');
+assert.equal(arrowAnchor && arrowAnchor.target,mm,'a shell hit exposes the moving boss body to the arrow system');
+assert.equal(arrowAnchor && arrowAnchor.family,'boss','the projectile target is tagged as a block boss');
+assert.ok(arrowAnchor && Math.abs(arrowAnchor.anchor.localX-(shell.dx+0.5))<1e-9
+  && Math.abs(arrowAnchor.anchor.localY-(shell.dy+0.5))<1e-9,'the anchor identifies the exact struck block in boss-local coordinates');
+assert.equal(arrowAnchor.isAlive(mm),true,'the struck block initially keeps an embedded arrow attached');
+assert.equal(bosses.damageAt(shellX,shellY,1,{kind:'arrow',tier:'iridium',pierceLeft:3,source:'hero'}), 'pierced', 'iridium arrows pierce a compatible boss block');
+assert.ok(!mm.parts.includes(shell),'iridium piercing removes the dynamic block');
+assert.equal(arrowAnchor.isAlive(mm),false,'destroying the struck block releases arrows anchored to it');
+
+resetWorld();
+const mined = bosses.forceSpawn(getTile, {x:300, seed:557, freeze:true, archetype:'walker'});
+step(30);
+const minedBx=Math.round(mined.x), minedBy=Math.round(mined.y);
+const minedPart=mined.parts.find(p=>p.role!=='core' && p.role!=='eye' && bosses.partAt(minedBx+p.dx,minedBy+p.dy)?.part===p);
+assert.ok(minedPart,'a mineable shell part is available');
+assert.ok(bosses.mineAt(minedBx+minedPart.dx,minedBy+minedPart.dy),'a completed pickaxe mining cycle breaks the boss block');
+assert.ok(!mined.parts.includes(minedPart),'pickaxe mining removes the body tile in one completed cycle');
+
 // --- 6. Heart destruction: the sealed heart deflects blows until the hero carves a
 // path through the plating; once exposed, detonation craters the world, spares loot,
 // pays XP ---
@@ -190,27 +225,55 @@ setTile(cbx+3, cby+1, T.UFO_CONCRETE);
 globalThis.player.x = cbx+3; globalThis.player.y = 88; globalThis.player.hpInvul = 0;
 const solidBefore = (()=>{ let c=0; for(let x=cbx-12;x<=cbx+12;x++) for(let y=85;y<100;y++) if(getTile(x,y)!==T.AIR && getTile(x,y)!==T.WATER) c++; return c; })();
 // fully armored heart: even an overwhelming blow glances off the plating
-assert.ok(bosses.attackAt(cbx, cby, 99999), 'striking the sealed heart still registers as a hit');
+assert.ok(bosses.damageAt(cbx, cby, 99999,{kind:'melee',source:'hero'}), 'a weapon striking the sealed heart still registers as a hit');
 assert.equal(bosses.metrics().alive, 1, 'the sealed heart shrugged the blow off');
 assert.equal(mh.core.hp, mh.core.maxHp, 'the protected heart took no damage');
 // carve a path: destroy one armor block beside the heart, then strike again
 assert.ok(bosses.attackAt(cbx+1, cby, 999), 'the armor beside the heart can be broken');
 companions.restore({v:1,list:[{x:cbx+1.5,y:cby+0.96,biomass:3,hp:88,seed:8891,laserCd:99,gasCd:99}]},getTile);
-assert.ok(bosses.attackAt(cbx, cby, 99999), 'the exposed heart can be struck');
+assert.ok(bosses.damageAt(cbx, cby, 99999,{kind:'melee',source:'hero'}), 'the exposed heart can be destroyed by a weapon');
 assert.equal(bosses.metrics().alive, 1, 'destroyed heart enters agony before the monster is removed');
 assert.equal(bosses.metrics().killed, 0, 'kill credit waits for the delayed heart blast');
 assert.ok(mh.dying, 'exposed heart is marked as dying');
 assert.ok(mh.agonyMax >= CFG.HEART_AGONY_MIN && mh.agonyMax <= CFG.HEART_AGONY_MAX, 'heart agony lasts within the warning window');
 assert.equal(mh.parts.length, 1, 'the block-built body collapses away from the dying heart');
+assert.ok(mh.heartItem && Number.isFinite(mh.heartItem.x) && Number.isFinite(mh.heartItem.y), 'destroyed heart detaches as a physical item');
 assert.ok(bosses._debug().fallingBodyBlocks.length > 0, 'collapsed boss body becomes falling block debris');
 assert.equal(globalThis.player.hp, 100, 'hero gets a moment to escape before the heart blast');
 assert.equal(globalThis.player.xp, 0, 'XP is delayed until the heart actually explodes');
 const solidDuringAgony = (()=>{ let c=0; for(let x=cbx-12;x<=cbx+12;x++) for(let y=85;y<100;y++) if(getTile(x,y)!==T.AIR && getTile(x,y)!==T.WATER) c++; return c; })();
 assert.equal(solidDuringAgony, solidBefore, 'heart agony has not cratered the terrain yet');
-step(20);
+let heartMinY=mh.heartItem.y, heartMaxY=mh.heartItem.y, heartFalling=false;
+for(let i=0;i<20;i++){
+  step(1);
+  heartMinY=Math.min(heartMinY,mh.heartItem.y);
+  heartMaxY=Math.max(heartMaxY,mh.heartItem.y);
+  if(mh.heartItem.vy>0.2) heartFalling=true;
+}
 assert.equal(bosses.metrics().alive, 1, 'heart is still in agony during the early warning beat');
 assert.equal(bosses.metrics().killed, 0, 'early warning beat still has no kill credit');
-step(90);
+assert.ok(heartFalling && heartMaxY-heartMinY>0.25,'detached heart visibly transitions into a gravity-driven fall');
+assert.ok(Math.abs(mh.heartItem.vy)<3.2,'heavy heart settles with very little bounce instead of ricocheting');
+globalThis.player.xp='corrupt-save-value';
+const oldBlastApis={mobs:MM.mobs,invasions:MM.invasions,mechs:MM.mechs,vitalsHud:MM.vitalsHud};
+const creatureBlastCalls=[];
+let xpNotice=null;
+MM.mobs={blastRadius(x,y,r,dmg,opts){ creatureBlastCalls.push({family:'mobs',x,y,r,dmg,opts}); return 1; }};
+MM.invasions={blastRadius(x,y,r,dmg,opts){ creatureBlastCalls.push({family:'invasions',x,y,r,dmg,opts}); return true; }};
+MM.mechs={blastRadius(x,y,r,dmg,opts){ creatureBlastCalls.push({family:'mechs',x,y,r,dmg,opts}); return 1; }};
+MM.vitalsHud={noteXpAward(detail){ xpNotice=detail; }};
+let lastHeart={x:mh.heartItem.x,y:mh.heartItem.y};
+for(let i=0;i<90 && bosses.metrics().alive;i++){
+  lastHeart={x:mh.heartItem.x,y:mh.heartItem.y};
+  step(1);
+}
+const blast=bosses._debug().blasts[bosses._debug().blasts.length-1];
+assert.ok(blast && Math.abs(blast.x/MM.TILE-lastHeart.x)<1 && Math.abs(blast.y/MM.TILE-lastHeart.y)<1,'detonation follows the physical heart to its final position');
+assert.deepEqual(new Set(creatureBlastCalls.map(c=>c.family)),new Set(['mobs','invasions','mechs']),'boss blast damages mobs, invasion squads and mechs');
+assert.ok(creatureBlastCalls.every(c=>c.opts.source==='boss' && c.opts.cause==='boss_blast'),'collateral damage records the boss explosion source');
+assert.equal(xpNotice && xpNotice.amount,globalThis.player.xp,'boss XP emits a visible XP-award notification with the exact gain');
+assert.ok(Number.isFinite(globalThis.player.xp) && globalThis.player.xp>0,'boss XP award recovers a malformed saved XP value instead of producing NaN');
+MM.mobs=oldBlastApis.mobs; MM.invasions=oldBlastApis.invasions; MM.mechs=oldBlastApis.mechs; MM.vitalsHud=oldBlastApis.vitalsHud;
 const solidAfter = (()=>{ let c=0; for(let x=cbx-12;x<=cbx+12;x++) for(let y=85;y<100;y++) if(getTile(x,y)!==T.AIR && getTile(x,y)!==T.WATER) c++; return c; })();
 assert.ok(solidAfter < solidBefore-10, `blast cratered the terrain (${solidBefore} -> ${solidAfter} solids)`);
 assert.equal(getTile(300+9,91), T.CHEST_EPIC, 'chests survive the blast');
@@ -465,7 +528,7 @@ step(30); // settle
 assert.ok(mbe.hasEye, 'a fresh beast has its eye');
 const eye = mbe.parts.find(p=>p.role==='eye');
 assert.ok(eye, 'generator placed an eye part');
-assert.ok(bosses.attackAt(Math.round(mbe.x)+eye.dx, Math.round(mbe.y)+eye.dy, 999), 'the eye can be struck out');
+assert.ok(bosses.damageAt(Math.round(mbe.x)+eye.dx, Math.round(mbe.y)+eye.dy, 999,{kind:'melee',source:'hero'}), 'the eye can be struck out with a weapon');
 assert.ok(!mbe.hasEye, 'losing the eye blinds the beast');
 mbe.frozen=false;
 let hunted=false;

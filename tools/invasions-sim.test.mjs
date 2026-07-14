@@ -4,6 +4,10 @@ import { readFile } from 'node:fs/promises';
 globalThis.window = globalThis;
 globalThis.MM = {};
 globalThis.performance = globalThis.performance || {now:()=>Date.now()};
+// Combat timing and spawn layouts are random in production; a fixed stream
+// keeps this finite-duration regression from occasionally missing every shot.
+let randomState=(Number(process.env.MM_TEST_SEED)||1)>>>0;
+Math.random=()=>((randomState=Math.imul(randomState,1664525)+1013904223>>>0)/0x100000000);
 const storage = new Map();
 globalThis.localStorage = {
   getItem:k=>storage.has(k) ? storage.get(k) : null,
@@ -15,6 +19,24 @@ globalThis.msg = t=>messages.push(String(t));
 
 const { T } = await import('../src/constants.js');
 const { STORY_LORE } = await import('../src/engine/story_lore.js');
+const { damageBlastCreatures } = await import('../src/engine/explosion_damage.js');
+{
+  const calls=[];
+  const fake={
+    mobs:{blastRadius(x,y,r,dmg,opts){ calls.push({family:'mobs',x,y,r,dmg,opts}); return 2; }},
+    invasions:{blastRadius(x,y,r,dmg,opts){ calls.push({family:'invasions',x,y,r,dmg,opts}); return 3; }},
+    mechs:{blastRadius(x,y,r,dmg,opts){ calls.push({family:'mechs',x,y,r,dmg,opts}); return 1; }}
+  };
+  const result=damageBlastCreatures(fake,4,5,6,20,{source:'boss',cause:'boss_blast',kind:'melee',element:'fire'});
+  assert.deepEqual(calls.map(c=>c.family),['mobs','invasions','mechs'],'shared explosions reach mobs, Alien Team/kretoludzie and mechs');
+  assert.ok(calls.every(c=>c.opts.kind==='explosion' && c.opts.element==='blast' && c.opts.source==='boss'),'shared explosion metadata is normalized for every creature family');
+  assert.deepEqual(result,{mobs:2,invasions:3,mechs:1,total:6},'shared explosion router reports the exact affected-creature count for every family');
+  calls.length=0;
+  for(const args of [[NaN,5,6,20],[4,Infinity,6,20],[4,5,0,20],[4,5,6,-1]]){
+    assert.deepEqual(damageBlastCreatures(fake,...args),{mobs:0,invasions:0,mechs:0,total:0},'invalid explosion input is rejected without partial damage');
+  }
+  assert.equal(calls.length,0,'invalid explosion input never reaches a creature subsystem');
+}
 const taskCalls = [];
 MM.tasks = {
   upsertAlienCache(cache){ taskCalls.push(['upsert', cache && cache.id, cache && cache.x, cache && cache.y]); return true; },
@@ -40,6 +62,8 @@ function getTile(x,y){
 function setTile(x,y,t){ overrides.set(key(x,y),t); }
 const player = {x:0,y:49,hp:100,maxHp:100,vx:0,vy:0,xp:0};
 let saveMarks = 0;
+const physicalChests=[];
+MM.drops={spawnChest(x,y,tier,opts){ const d={id:physicalChests.length+1,x,y,tier,opts}; physicalChests.push(d); return d; }};
 const ctx = {getTile,setTile,spawnBurst(){},msg:globalThis.msg,ensureChunkAtY(){},notifyStructureTileChanged(){},saveState(){ saveMarks++; }};
 
 invasions.reset();
@@ -176,16 +200,14 @@ assert.ok(upgradedSquad.aliens.every(a=>a.grade === upgradedSquad.grade && a.wea
 assert.ok(upgradedSquad.aliens.some(a=>a.maxHp > lowTeam.day * 3 + 18), 'spawned high-level aliens have scaled durability');
 invasions.reset();
 overrides.clear();
+physicalChests.length = 0;
 player.xp = 12000;
 const rewardSquad = invasions.forceNightInvasion(player,getTile,setTile,{day:3,teams:1,alienCount:1,forceRewardChance:1,forceRewardTier:'epic'})[0];
 const rewardLander = rewardSquad.lander;
 assert.ok(invasions.damageAt(Math.floor(rewardLander.x),Math.floor(rewardLander.y),9999), 'hero can destroy a reward-scaled invasion lander');
 invasions.update(0.1, player, getTile, setTile, ctx);
-let scaledRewardChestSeen = false;
-for(let x=Math.floor(rewardSquad.x)-6; x<=Math.floor(rewardSquad.x)+6; x++){
-  for(let y=45; y<=52; y++) if(getTile(x,y) === T.CHEST_EPIC) scaledRewardChestSeen = true;
-}
-assert.ok(scaledRewardChestSeen, 'defeating a high-level alien squad can materialize an epic reward chest');
+assert.ok(physicalChests.some(d=>d.tier==='epic' && d.opts.source==='invasion'), 'defeating a high-level alien squad drops a physical epic reward chest');
+assert.ok(![...overrides.values()].some(t=>[T.CHEST_COMMON,T.CHEST_UNCOMMON,T.CHEST_RARE,T.CHEST_EPIC,T.CHEST_LEGENDARY].includes(t)), 'invasion rewards never write chest blocks');
 player.xp = 0;
 
 invasions.reset();
@@ -249,10 +271,17 @@ const actualSquad = invasions._debug.teams[0];
 const tank = actualSquad.aliens.find(a=>a.role === 'tank');
 const healer = actualSquad.aliens.find(a=>a.role === 'healer');
 assert.ok(tank && healer, 'debug squad exposes live tank and healer units');
+clearSquadSpeech(actualSquad);
 const tankBeforeHit = tank.hp;
-assert.ok(invasions.blastRadius(tank.x,tank.y-0.4,0.2,10), 'direct blast can hit the tank');
+const directBlastHits=invasions.blastRadius(tank.x,tank.y-0.4,0.2,10);
+assert.ok(Number.isInteger(directBlastHits) && directBlastHits>=1, 'direct blast reports how many invasion units it hit');
 assert.ok(tank.hp > tankBeforeHit - 10, 'tank role reduces incoming damage');
 tank.hp = Math.max(1, tank.maxHp - 14);
+healer.x = tank.x + 0.55;
+healer.y = tank.y;
+healer.vx = 0;
+healer.vy = 0;
+healer.onGround = true;
 healer.attackCd = 0;
 const tankBeforeHeal = tank.hp;
 for(let i=0;i<60;i++) invasions.update(0.1, player, getTile, setTile, ctx);
@@ -339,6 +368,7 @@ function clearSquadSpeech(team){
   for(const a of team.aliens){
     a.speechText = '';
     a.speechUntil = 0;
+    a.speechLong = false;
     a.speechCue = '';
     a.speechCueUntil = 0;
   }
@@ -380,6 +410,32 @@ assert.ok(invasions._debug.triggerTeamSpeech(actualSquad,'heroHit',{now:gatedNow
 invasions._debug.triggerTeamSpeech(actualSquad,'heroMine',{now:gatedNow+120});
 assert.equal(actualSquad.aliens.filter(a=>a.speechText).length, 1, 'back-to-back non-forced events are rate-limited to one bubble');
 assert.ok(actualSquad.aliens.every(a=>!a.speechText || a.speechText.length <= 64), 'combat bubbles stay short');
+
+// Long invader dialogue is a stop-and-talk moment with twice the old bubble
+// lifetime. Brief combat cries keep their old timing and allow movement.
+clearSquadSpeech(actualSquad);
+const speechRuleNow=performance.now()+8000;
+const longInvasionLine='Musimy zatrzymać się i wyjaśnić cały plan przejścia przez podziemny korytarz.';
+invasions._debug.setAlienSpeech(tank,longInvasionLine,speechRuleNow,{override:true});
+const compactLong=invasions._debug.compactSpeechText(longInvasionLine);
+const oldLongDuration=Math.max(1300,Math.min(2700,1050+compactLong.length*18));
+assert.equal(tank.speechLong,true,'long alien-team dialogue claims a stationary speaking pose');
+assert.ok(Math.abs((tank.speechUntil-speechRuleNow)-oldLongDuration*2)<0.001,'long alien-team dialogue stays visible exactly twice as long');
+tank.x=10.5; tank.y=49; tank.vx=0; tank.vy=0; tank.onGround=true;
+tank._ai={intent:{moveX:1,speedMult:1,jump:false,jumpBoost:1,jumpKick:false}};
+const stoppedAlienX=tank.x;
+invasions._debug.updateAlien(tank,actualSquad,0.1,{x:100,y:49,hp:100,maxHp:100},getTile,setTile,ctx);
+assert.ok(Math.abs(tank.x-stoppedAlienX)<0.001,'alien-team speaker stands still for a long visible line');
+
+const shortRuleNow=performance.now()+9000;
+invasions._debug.setAlienSpeech(tank,'Boli!',shortRuleNow,{override:true});
+const oldShortDuration=Math.max(1300,Math.min(2700,1050+tank.speechText.length*18));
+assert.equal(tank.speechLong,false,'brief alien-team bark does not claim a stationary pose');
+assert.ok(Math.abs((tank.speechUntil-shortRuleNow)-oldShortDuration)<0.001,'brief alien-team bark keeps its original display time');
+tank.vx=0; tank.vy=0; tank.onGround=true;
+const movingAlienX=tank.x;
+invasions._debug.updateAlien(tank,actualSquad,0.1,{x:100,y:49,hp:100,maxHp:100},getTile,setTile,ctx);
+assert.ok(tank.x>movingAlienX+0.01,'alien-team unit can keep moving during a brief bark');
 
 clearSquadSpeech(actualSquad);
 const repeatedHeroHitLines = [];
@@ -545,6 +601,9 @@ const moleSpeaker = moleTeam.aliens.find(a=>a.role === 'sapper') || moleTeam.ali
 const forcedMoleLore = invasions._debug.forceAlienSpeech(moleSpeaker,moleTeam,'lore');
 assert.equal(moleSpeaker.speechText, forcedMoleLore, 'debug forced speech also works for molekin');
 assert.ok(forcedMoleLore && forcedMoleLore.length <= 64, 'forced molekin lore speech is compact enough for a combat bubble');
+const moleSpeechNow=performance.now()+9500;
+invasions._debug.setAlienSpeech(moleSpeaker,'Zatrzymajmy się i opowiedzmy dokładnie, czego nauczył nas Strażnik Wschodu.',moleSpeechNow,{override:true});
+assert.equal(moleSpeaker.speechLong,true,'long kretolud dialogue uses the same stationary speaking rule');
 clearSquadSpeech(moleTeam);
 moleTeam.speechStartAt = performance.now() - 20000;
 Math.random = () => 0;
@@ -639,6 +698,7 @@ assert.ok(restoredMole.aliens.every(a=>a.kind === 'molekin' && Number.isFinite(a
 // rare golden commanders stand out, carry double tank health, and drop golden chests
 invasions.reset();
 overrides.clear();
+physicalChests.length = 0;
 player.x = 0; player.y = 49; player.hp = player.maxHp;
 invasions.forceNightInvasion(player,getTile,setTile,{day:8,teams:1,alienCount:5,forceCommander:true});
 for(let i=0;i<120;i++) invasions.update(0.1, player, getTile, setTile, ctx);
@@ -652,13 +712,14 @@ commander.x = 12; commander.y = 49; commander.hp = commander.maxHp; commander.de
 for(const a of commanderTeam.aliens){
   if(a !== commander){ a.x = 18 + commanderTeam.aliens.indexOf(a) * 2; a.y = 49; }
 }
+let arrowTarget=null;
+assert.ok(invasions.damageAt(Math.floor(commander.x),Math.floor(commander.y-0.45),1,{kind:'arrow',onTarget:a=>{ arrowTarget=a; }}),'arrow metadata can hit an invasion unit');
+assert.equal(arrowTarget,commander,'Alien Team/kretoludzie expose the struck body so surviving arrows can embed');
+assert.equal(invasions.isLiving(commander),true,'living invasion units remain valid arrow hosts');
 assert.ok(invasions.damageAt(Math.floor(commander.x),Math.floor(commander.y-0.45),commander.maxHp * 3,{weaponType:'melee'}), 'hero can kill the golden commander');
 assert.ok(commander.dead, 'golden commander dies from overwhelming damage');
-let commanderChestSeen = false;
-for(let x=8; x<=16; x++){
-  for(let y=45; y<=52; y++) if(getTile(x,y) === T.CHEST_EPIC) commanderChestSeen = true;
-}
-assert.ok(commanderChestSeen, 'golden commander death materializes a golden epic chest near the fall site');
+assert.equal(invasions.isLiving(commander),false,'dead invasion units release embedded arrows');
+assert.ok(physicalChests.some(d=>d.tier==='epic' && d.opts.source==='alien_commander' && Math.abs(d.x-commander.x)<1), 'golden commander death drops a golden physical chest at the fall site');
 
 // engineer barricades are tracked and cleaned up when the team falls
 const debugTeam = invasions._debug.teams[0];
@@ -775,7 +836,7 @@ assert.match(mainSrc, /notifyInvasionHeroAction\('hero_mine'/, 'successful minin
 assert.match(mainSrc, /notifyInvasionWeaponUse/, 'weapon usage notifies alien chatter');
 assert.match(weaponsSrc, /MM\.invasions && MM\.invasions\.attackAt/, 'melee weapons can hit invasion enemies');
 assert.match(weaponsSrc, /MM\.invasions && MM\.invasions\.damageAt/, 'ranged and stream weapons can damage invasion enemies');
-assert.match(weaponsSrc, /MM\.invasions && MM\.invasions\.blastRadius/, 'gas explosions damage invasion enemies');
+assert.match(weaponsSrc, /damageBlastCreatures\(MM,wx,wy,R\+1\.5,14/, 'gas explosions use the shared creature damage router');
 
 // --- extraction: nobody is abandoned down a hole ----------------------------
 // The squad brain reports a walled-in unit (invasion-ai-sim covers that side);
@@ -853,6 +914,7 @@ assert.match(weaponsSrc, /MM\.invasions && MM\.invasions\.blastRadius/, 'gas exp
   overrides.clear();
   const team = invasions.forceNightInvasion(player,getTile,setTile,{day:5,teams:1,kind:'aliens',alienCount:1,forceVisible:true,immediate:true})[0];
   const a = team.aliens[0];
+  clearSquadSpeech(team); // isolate extraction timing from the real-time landing speech pause
   a.x = team.lander.x + 26; a.y = 72;
   // drive the real update loop with the unit sealed under rock and the hero far
   // away up top: the brain must eventually reach for the hook on its own
@@ -861,9 +923,17 @@ assert.match(weaponsSrc, /MM\.invasions && MM\.invasions\.blastRadius/, 'gas exp
   }
   for(let y=60; y<73; y++) setTile(Math.floor(a.x),y,T.AIR); // the shaft it fell down
   let sawTransit = false;
-  for(let i=0;i<900 && !sawTransit;i++){
-    invasions.update(0.05, player, getTile, setTile, ctx);
-    if(a.extract || a.y < 60) sawTransit = true;
+  const realPerformance=globalThis.performance;
+  let extractionNow=realPerformance.now();
+  globalThis.performance={now:()=>extractionNow};
+  try{
+    for(let i=0;i<900 && !sawTransit;i++){
+      extractionNow+=50;
+      invasions.update(0.05, player, getTile, setTile, ctx);
+      if(a.extract || a.y < 60) sawTransit = true;
+    }
+  } finally {
+    globalThis.performance=realPerformance;
   }
   assert.ok(sawTransit, 'left to itself, a unit sealed in a shaft is eventually pulled out (no more forever-stuck squads)');
   void D;

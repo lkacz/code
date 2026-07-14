@@ -7,6 +7,10 @@ import { readFile } from 'node:fs/promises';
 
 globalThis.window = globalThis;
 globalThis.MM = {};
+// Crater deposits are intentionally randomized in production. Pin the test RNG
+// so assertions about the complete resource mix cannot fail intermittently.
+let randomState=0x6d2b79f5;
+Math.random=()=>((randomState=Math.imul(randomState,1664525)+1013904223>>>0)/0x100000000);
 const store = new Map();
 globalThis.localStorage = {
   getItem:k=>store.has(k)?store.get(k):null,

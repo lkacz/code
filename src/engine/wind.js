@@ -247,6 +247,20 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
     const t=clamp((mag-CFG.HERO_STRONG_THRESHOLD)/span,0,1);
     return 1 + Math.pow(t,1.22)*(CFG.HERO_STRONG_MAX_MULT-1);
   }
+  function heroUnderground(player){
+    if(!player || typeof player.x !== 'number' || !isFinite(player.x) || typeof player.y !== 'number' || !isFinite(player.y)) return false;
+    const wg=root.MM && root.MM.worldGen;
+    if(!wg || typeof wg.surfaceHeight !== 'function') return false;
+    let surface;
+    try{ surface=wg.surfaceHeight(Math.floor(player.x)); }catch(e){ return false; }
+    if(typeof surface !== 'number' || !isFinite(surface)) return false;
+    const h=clamp((typeof player.h === 'number' && isFinite(player.h)) ? player.h : 0.95,0.45,1.8);
+    const headY=player.y-h*0.5;
+    // A cave or shaft remains underground even if it has a long open column to
+    // the sky. Once the hero's whole body is below the terrain surface, weather
+    // can no longer add horizontal velocity to it.
+    return headY>surface+0.05;
+  }
   function heroExposureAt(player,getTile){
     if(typeof getTile !== 'function' || !player) return 1;
     const w=clamp((typeof player.w === 'number' && isFinite(player.w)) ? player.w : 0.7,0.35,1.4);
@@ -280,6 +294,7 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
     if(!player || !(dt>0) || !isFinite(dt)) return {applied:false, delta:0, exposure:0, speed:currentSpeed()};
     opts=opts||{};
     if(opts.godMode) return {applied:false, delta:0, exposure:0, speed:currentSpeed()};
+    if(heroUnderground(player)) return {applied:false, delta:0, exposure:0, speed:currentSpeed(), underground:true};
     const sample=heroWindSample(player,getTile);
     const sp=sample.speed;
     const mag=Math.abs(sp);
@@ -665,7 +680,7 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
     exposureAt, applyToHero, setOverride, setCycleOverride, setCloudMetricsOverride,
     setWeatherProfile, forceSquall, forceRitualGale, stopRitualGale,
     config:CFG,
-    _debug:{particles, squall, ritualGale, computeEnvironment, computeTarget, exposureAt, heroExposureAt, heroWindSample, altitudeMultiplier, squallSpeed, ritualGaleSpeed, heroStrongWindMultiplier, isWindBlocker, materialDescriptor}
+    _debug:{particles, squall, ritualGale, computeEnvironment, computeTarget, exposureAt, heroExposureAt, heroWindSample, heroUnderground, altitudeMultiplier, squallSpeed, ritualGaleSpeed, heroStrongWindMultiplier, isWindBlocker, materialDescriptor}
   };
   root.MM.wind=api;
 })();

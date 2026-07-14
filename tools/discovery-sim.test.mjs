@@ -8,9 +8,19 @@ globalThis.window = globalThis;
 globalThis.MM = {};
 let toasts = [];
 globalThis.msg = (t) => { toasts.push(String(t)); };
+const discoveryStore = {
+  mm_discoveries_v1: JSON.stringify(['stone_melt','not_in_catalog',123,null])
+};
+globalThis.localStorage = {
+  getItem(key){ return Object.prototype.hasOwnProperty.call(discoveryStore,key) ? discoveryStore[key] : null; },
+  setItem(key,value){ discoveryStore[key]=String(value); },
+  removeItem(key){ delete discoveryStore[key]; }
+};
 
 const { discovery } = await import('../src/engine/discovery.js');
 assert.ok(discovery, 'discovery module exports');
+assert.equal(discovery.count(), 1, 'restore keeps only known catalog discoveries from a corrupted profile');
+assert.equal(discovery.has('not_in_catalog'), false, 'restore rejects unknown discovery ids');
 discovery.reset();
 
 // --- catalog completeness: scan src for every id fed to note() -------------
@@ -48,6 +58,7 @@ const p = discovery.progress();
 assert.equal(p.count, 2, 'progress counts found entries');
 assert.equal(p.total, discovery.total(), 'progress exposes the catalog size');
 assert.ok(p.found.some(f => f.id === 'react_freeze' && /lodu/i.test(f.label)), 'progress lists catalog labels, not raw ids');
+assert.ok(discovery.HINTS.jewel_drop && /przedmiot/i.test(discovery.HINTS.jewel_drop.hint), 'rare jewel discovery has a non-spoiling journal hint');
 
 // --- entering each surface biome is a one-shot discovery -------------------
 {
@@ -70,6 +81,8 @@ assert.ok(p.found.some(f => f.id === 'react_freeze' && /lodu/i.test(f.label)), '
 // --- unknown ids never crash and never count --------------------------------
 assert.equal(discovery.note('', 'x'), false, 'empty id refused');
 assert.equal(discovery.note(123, 'x'), false, 'non-string id refused');
+assert.equal(discovery.note('not_in_catalog', 'x'), false, 'unknown string id refused');
+assert.equal(discovery.count(), 3, 'unknown ids never inflate journal progress');
 
 // --- journal-tab view: entries() masks unfound ids to ??? + category hint ----
 {

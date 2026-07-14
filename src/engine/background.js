@@ -4,16 +4,31 @@
   window.MM = window.MM || {};
   const background = {};
 
-  // Day/night cycle
-  const DAY_DURATION=300000; // 5 min
-  const NIGHT_DURATION=300000; // 5 min
-  const CYCLE_DURATION=DAY_DURATION+NIGHT_DURATION;
-  const DAY_FRAC = DAY_DURATION / CYCLE_DURATION; // 0.5
+  // One complete game day always lasts ten real minutes.  The share occupied
+  // by daylight follows the 40-day season calendar instead of staying at 50%:
+  // roughly 16 h of daylight at midsummer and 8 h at midwinter, like a
+  // temperate latitude on Earth.  Keeping the whole cycle fixed also keeps the
+  // season clock, saves and time slider stable.
+  const CYCLE_DURATION=600000;
+  const DEFAULT_DAY_FRAC=0.5;
+  const DAYS_PER_YEAR=40;
+  const EQUINOX_DAY=5;
+  const DAYLIGHT_MID_HOURS=12;
+  const DAYLIGHT_AMPLITUDE_HOURS=4;
+  // Reconstructing cycleStart through performance.now can move an exact saved
+  // boundary by a few floating-point ulps. This is far below a rendered frame,
+  // but classify it deterministically as the new phase.
+  const CYCLE_BOUNDARY_EPSILON=1e-10;
   const TWILIGHT_BAND = 0.12;
   const BACKDROP_BLUR_MIN=1.25;
   const BACKDROP_BLUR_MAX=2.80;
   const RED_DWARF_PERIOD_CYCLES=4.75;
   let cycleStart=performance.now();
+  function normalizeCycle(value,fallback=0){
+    const raw=Number.isFinite(+value) ? +value : fallback;
+    if(raw>=0 && raw<1) return raw;
+    return ((raw%1)+1)%1;
+  }
 
   // Palettes keyed by worldgen biome id. The background now follows the actual
   // biome mix around the hero instead of an unrelated noise field.
@@ -48,7 +63,7 @@
     }
   }
   function starRotation(cycleT){
-    const t=((cycleT%1)+1)%1;
+    const t=normalizeCycle(cycleT);
     return t*Math.PI*2;
   }
   function starScreenPosition(s,W,H,rot){
@@ -413,12 +428,43 @@
       angle:ang
     };
   }
-  function sunPosition(frac,W,H){ return celestialPosition(frac,W,H,{start:Math.PI*1.05,end:Math.PI*-0.05,xAmp:0.45,yBase:0.82,yAmp:0.65}); }
-  function moonPosition(frac,W,H){ return celestialPosition(frac,W,H,{start:Math.PI*1.13,end:Math.PI*-0.13,xAmp:0.50,yBase:0.84,yAmp:0.67}); }
+  function sunPosition(frac,W,H,dayHours=12){
+    // The apparent angular speed should not increase merely because winter has
+    // fewer daylight hours.  Scale the visible ellipse with the daylight span:
+    // winter covers a shorter, lower path; summer a longer, higher one.  Since
+    // both path size and duration use the same factor, screen-space speed stays
+    // approximately constant through the year.
+    const orbitScale=clamp(finite(dayHours,12)/12,2/3,4/3);
+    return celestialPosition(frac,W,H,{
+      start:Math.PI*1.05,
+      end:Math.PI*-0.05,
+      xAmp:0.36*orbitScale,
+      yBase:0.82,
+      // Keep the midsummer body inside the viewport while retaining the
+      // proportional seasonal path (and therefore constant apparent speed).
+      yAmp:0.54*orbitScale
+    });
+  }
+  function moonPosition(frac,W,H,nightHours=12){
+    // Mirror the solar rule for the part of the lunar path visible at night.
+    // A short summer night exposes a shorter/lower arc; a long winter night a
+    // longer/higher one. Scaling path and duration together prevents racing.
+    const orbitScale=clamp(finite(nightHours,12)/12,2/3,4/3);
+    return celestialPosition(frac,W,H,{
+      start:Math.PI*1.13,
+      end:Math.PI*-0.13,
+      xAmp:0.36*orbitScale,
+      yBase:0.84,
+      // The longest winter arc remains fully readable instead of clipping the
+      // Moon at the top edge; the scale is still strictly proportional.
+      yAmp:0.56*orbitScale
+    });
+  }
   function redDwarfPosition(frac,W,H){ return celestialPosition(frac,W,H,{start:Math.PI*1.18,end:Math.PI*-0.18,xAmp:0.58,yBase:0.76,yAmp:0.54}); }
-  function moonFracForCycle(cycleT){
-    const t=((cycleT%1)+1)%1;
-    return (((t-DAY_FRAC)/(1-DAY_FRAC))%1+1)%1;
+  function moonFracForCycle(cycleT,dayFrac){
+    const t=normalizeCycle(cycleT);
+    const split=clamp(finite(dayFrac,DEFAULT_DAY_FRAC),0.2,0.8);
+    return normalizeCycle((t-split)/(1-split));
   }
   function blendColor(c1,c2,t){ return lerpColor(c1,c2,t); }
   function blendPalette(p1,p2,t){ if(!p2||t<=0) return p1; if(t>=1) return p2; return {
@@ -493,6 +539,58 @@
     const seasons=window.MM && window.MM.seasons;
     if(!seasons || typeof seasons.metrics!=='function') return null;
     try{ return seasons.metrics() || null; }catch(e){ return null; }
+  }
+  function seasonCenterDay(season){
+    const index={spring:0,summer:1,autumn:2,winter:3}[String(season || '').toLowerCase()];
+    return Number.isFinite(index) ? index*10+5 : null;
+  }
+  function daylightModel(metrics){
+    const m=metrics && typeof metrics==='object' ? metrics : null;
+    let yearDay=null;
+    if(m && (m.enabled===false || m.season==='off')) yearDay=EQUINOX_DAY;
+    // A forced season is a debug/testing state, so present its characteristic
+    // solstice/equinox lighting rather than inheriting an unrelated calendar day.
+    if(!Number.isFinite(yearDay) && m && m.forced===true) yearDay=seasonCenterDay(m.season);
+    if(!Number.isFinite(yearDay) && m && Number.isFinite(+m.dayFloat)) yearDay=(((+m.dayFloat-1)%DAYS_PER_YEAR)+DAYS_PER_YEAR)%DAYS_PER_YEAR;
+    if(!Number.isFinite(yearDay)) yearDay=EQUINOX_DAY;
+    const annualAngle=((yearDay-EQUINOX_DAY)/DAYS_PER_YEAR)*Math.PI*2;
+    const dayHours=clamp(DAYLIGHT_MID_HOURS+DAYLIGHT_AMPLITUDE_HOURS*Math.sin(annualAngle),8,16);
+    const nightHours=24-dayHours;
+    return {
+      yearDay,
+      dayHours,
+      nightHours,
+      dayFrac:dayHours/24,
+      sunriseHour:12-dayHours/2,
+      sunsetHour:12+dayHours/2
+    };
+  }
+  function cycleInfo(cycleT,metrics){
+    const t=normalizeCycle(cycleT);
+    const solar=daylightModel(metrics);
+    const boundaryDelta=t-solar.dayFrac;
+    const isDay=boundaryDelta < -CYCLE_BOUNDARY_EPSILON;
+    const tDay=isDay ? t/solar.dayFrac : Math.max(0,boundaryDelta)/(1-solar.dayFrac);
+    return Object.assign({
+      cycleT:t,
+      isDay,
+      tDay,
+      tNight:isDay ? 0 : tDay,
+      twilightBand:TWILIGHT_BAND
+    },solar);
+  }
+  function clockTimeForInfo(info){
+    const c=info || cycleInfo(0,null);
+    const clockHour=c.isDay
+      ? c.sunriseHour+c.tDay*c.dayHours
+      : c.sunsetHour+c.tNight*c.nightHours;
+    const normalized=(((clockHour%24)+24)%24);
+    const dayMinutes=normalized*60;
+    return {
+      hourFloat:normalized,
+      hour:Math.floor(dayMinutes/60)%24,
+      minute:Math.floor(dayMinutes%60)
+    };
   }
   function seasonTintSpec(id){ return SEASON_TINTS[id] || null; }
   function blendSeasonTint(a,b,t){
@@ -579,6 +677,30 @@
     }
     return moonPhaseIndex;
   }
+  function moonIlluminationForPhase(phaseIndex){
+    const phaseT=(((finite(phaseIndex,0)%MOON_PHASES)+MOON_PHASES)%MOON_PHASES)/MOON_PHASES;
+    return clamp(0.5-0.5*Math.cos(phaseT*Math.PI*2),0,1);
+  }
+  function moonLightForInfo(info,metrics,WORLDGEN,now){
+    const c=info || cycleInfo(0,metrics);
+    const stamp=Number.isFinite(+now) ? +now : performance.now();
+    const cycleIndex=Math.floor((stamp-cycleStart)/CYCLE_DURATION);
+    const phaseIndex=moonPhaseFromCalendar(metrics,WORLDGEN,cycleIndex);
+    const illumination=moonIlluminationForPhase(phaseIndex);
+    const arcAltitude=c.isDay ? 0 : Math.sin(clamp(finite(c.tNight,c.tDay),0,1)*Math.PI);
+    const heightScale=clamp(finite(c.nightHours,12)/12,2/3,1);
+    const altitude=arcAltitude*heightScale;
+    // A small star-lit floor remains at new moon; the rest follows the lunar
+    // phase. Altitude makes the effect fade continuously at moonrise/moonset.
+    const moonlight=altitude*(0.018+0.202*Math.pow(illumination,0.75));
+    return {
+      moonAltitude:+clamp(altitude,0,1).toFixed(4),
+      moonArcAltitude:+clamp(arcAltitude,0,1).toFixed(4),
+      moonIllumination:+illumination.toFixed(4),
+      moonlight:+clamp(moonlight,0,0.22).toFixed(4),
+      moonPhaseIndex:phaseIndex
+    };
+  }
   function moonStateForDraw(cycleT,metrics,blend,WORLDGEN,now,playerX){
     const season=moonSeasonStyle(metrics);
     const world=moonWorldStyle(blend);
@@ -586,7 +708,7 @@
     const phaseIndex=moonPhaseFromCalendar(season.metrics,WORLDGEN,cycleIndex);
     moonPhaseIndex=phaseIndex;
     const phaseT=phaseIndex/MOON_PHASES;
-    const illumination=clamp(0.5-0.5*Math.cos(phaseT*Math.PI*2),0,1);
+    const illumination=moonIlluminationForPhase(phaseIndex);
     const seasonal=season.spec || MOON_SEASON_STYLES.off;
     const style=Object.assign({},seasonal,{
       accent:blendColor(seasonal.accent,world.accent,0.34),
@@ -602,7 +724,7 @@
       phaseIndex,
       phaseT:+phaseT.toFixed(4),
       illumination:+illumination.toFixed(4),
-      cycleT:+(((cycleT%1)+1)%1).toFixed(4),
+      cycleT:+normalizeCycle(cycleT).toFixed(4),
       day:Number.isFinite(moonDayNumber(season.metrics)) ? +moonDayNumber(season.metrics).toFixed(3) : null,
       playerX:finite(playerX,0),
       core:style.core,
@@ -671,7 +793,7 @@
       daylight:+daylight.toFixed(4),
       edgeWarmth:+edgeWarmth.toFixed(4),
       heat:+heat.toFixed(4),
-      cycleT:+(((cycleT%1)+1)%1).toFixed(4),
+      cycleT:+normalizeCycle(cycleT).toFixed(4),
       day:Number.isFinite(moonDayNumber(season.metrics)) ? +moonDayNumber(season.metrics).toFixed(3) : null,
       playerX:finite(playerX,0),
       core:style.core,
@@ -695,16 +817,14 @@
   }
   function redDwarfPhaseFromElapsed(elapsedCycles,WORLDGEN){
     const cycles=Number.isFinite(+elapsedCycles) ? +elapsedCycles : 0;
-    return (((cycles/RED_DWARF_PERIOD_CYCLES)+redDwarfSeedOffset(WORLDGEN))%1+1)%1;
+    return normalizeCycle((cycles/RED_DWARF_PERIOD_CYCLES)+redDwarfSeedOffset(WORLDGEN));
   }
-  function redDwarfSkyAlpha(cycleT){
-    const t=((Number.isFinite(+cycleT) ? +cycleT : 0.75)%1+1)%1;
-    const isDay=t<DAY_FRAC;
-    const tDay=isDay ? t/DAY_FRAC : ((t-DAY_FRAC)/(1-DAY_FRAC));
-    const edge=smoothstep(0,TWILIGHT_BAND*1.5,tDay)*smoothstep(0,TWILIGHT_BAND*1.5,1-tDay);
-    return isDay ? lerp(0.38,0.20,edge) : 0.88;
+  function redDwarfSkyAlpha(cycleT,metrics){
+    const info=cycleInfo(cycleT,metrics);
+    const edge=smoothstep(0,TWILIGHT_BAND*1.5,info.tDay)*smoothstep(0,TWILIGHT_BAND*1.5,1-info.tDay);
+    return info.isDay ? lerp(0.38,0.20,edge) : 0.88;
   }
-  function redDwarfStateForElapsed(elapsedCycles,cycleT,W,H,WORLDGEN,blend){
+  function redDwarfStateForElapsed(elapsedCycles,cycleT,W,H,WORLDGEN,blend,metrics){
     const phase=redDwarfPhaseFromElapsed(elapsedCycles,WORLDGEN);
     const p=redDwarfPosition(phase,W,H);
     const volcano=blend && blend.volcano && blend.volcano.amount>0.12;
@@ -719,16 +839,16 @@
       y:+p.y.toFixed(3),
       angle:+p.angle.toFixed(6),
       radius:+clamp(W*0.019,13,25).toFixed(3),
-      alpha:+redDwarfSkyAlpha(cycleT).toFixed(4),
+      alpha:+redDwarfSkyAlpha(cycleT,metrics).toFixed(4),
       core,
       color:tint,
       halo:volcano ? '#ff421d' : '#b91f2d',
       mark:city ? '#6e1d2a' : '#5b1219'
     };
   }
-  function redDwarfStateForDraw(cycleT,now,W,H,WORLDGEN,blend){
+  function redDwarfStateForDraw(cycleT,now,W,H,WORLDGEN,blend,metrics){
     const elapsedCycles=(now-cycleStart)/CYCLE_DURATION;
-    return redDwarfStateForElapsed(elapsedCycles,cycleT,W,H,WORLDGEN,blend);
+    return redDwarfStateForElapsed(elapsedCycles,cycleT,W,H,WORLDGEN,blend,metrics);
   }
   function strokeCircle(ctx,x,y,r,color,alpha,lineWidth){
     ctx.save();
@@ -1377,8 +1497,9 @@
     const b=cachedBiomeBlendAt(left+step,WORLDGEN);
     return interpolateBiomeBlend(a,b,t);
   }
-  function skyGradientFromPalette(pal,cycleT){
-    const dayFrac=DAY_FRAC; const twilightBand=TWILIGHT_BAND; const extend = twilightBand*2; let top, bottom;
+  function skyGradientFromPalette(pal,cycleT,dayFrac){
+    dayFrac=clamp(finite(dayFrac,DEFAULT_DAY_FRAC),0.2,0.8);
+    const twilightBand=TWILIGHT_BAND; const extend = twilightBand*2; let top, bottom;
     if(cycleT < dayFrac){
       const t=cycleT/dayFrac;
       const k0={t:0, top:pal.nightTop, bot:pal.nightBot};
@@ -1410,13 +1531,11 @@
     }
   }
 
-  let lastCycleInfo={cycleT:0,isDay:true,tDay:0,twilightBand:TWILIGHT_BAND};
+  let lastCycleInfo=cycleInfo(0,null);
   let moonPhaseIndex=0, lastPhaseCycle=-1;
-  function setCachedCycleInfo(cycleT){
-    const t=((cycleT%1)+1)%1;
-    const isDay=t<DAY_FRAC;
-    const tDay=isDay? (t/DAY_FRAC) : ((t-DAY_FRAC)/(1-DAY_FRAC));
-    lastCycleInfo={cycleT:t,isDay,tDay,twilightBand:TWILIGHT_BAND};
+  function setCachedCycleInfo(cycleT,metrics,WORLDGEN,now){
+    const info=cycleInfo(cycleT,metrics);
+    lastCycleInfo=Object.assign(info,moonLightForInfo(info,metrics,WORLDGEN,now));
     return lastCycleInfo;
   }
   function moonAlphaForInfo(info){
@@ -1485,18 +1604,20 @@
     const rawCycleT = (((now-cycleStart)%CYCLE_DURATION)+CYCLE_DURATION)%CYCLE_DURATION/CYCLE_DURATION;
     const cycleT = debugEnabled? manualT : rawCycleT;
     if(!debugEnabled && window.__timeSliderEl && !window.__timeSliderLocked){ window.__timeSliderEl.value = cycleT.toFixed(4); }
-    const blend=cachedBiomeBlend(playerX, WORLDGEN); const cols=skyGradientFromPalette(blend.pal,cycleT);
+    const seasonMetrics=currentSeasonMetrics();
+    const infoNow=setCachedCycleInfo(cycleT,seasonMetrics,WORLDGEN,now);
+    const blend=cachedBiomeBlend(playerX, WORLDGEN); const cols=skyGradientFromPalette(blend.pal,cycleT,infoNow.dayFrac);
     // Sky gradient
     ctx.save(); ctx.globalAlpha=1; const grd=ctx.createLinearGradient(0,0,0,H); grd.addColorStop(0,cols.top); grd.addColorStop(1,cols.bottom); ctx.fillStyle=grd; ctx.fillRect(0,0,W,H);
     // Horizon haze band
     (function(){
-      const isDay=cycleT<DAY_FRAC; const tDay=isDay? (cycleT/DAY_FRAC) : ((cycleT-DAY_FRAC)/(1-DAY_FRAC));
-      let hueCol; if(isDay){ const twilight=TWILIGHT_BAND; const edge=Math.min(1, Math.min(tDay/twilight, (1-tDay)/twilight)); hueCol = lerpColor('#ffb070', blend.pal.dayBot, edge); } else { const nt=(cycleT - DAY_FRAC)/(1-DAY_FRAC); const pulse = 0.4 + 0.6*Math.sin(nt*Math.PI*2); hueCol = lerpColor('#0b1d30', '#142b44', pulse*0.5); }
+      const isDay=infoNow.isDay; const tDay=infoNow.tDay;
+      let hueCol; if(isDay){ const twilight=TWILIGHT_BAND; const edge=Math.min(1, Math.min(tDay/twilight, (1-tDay)/twilight)); hueCol = lerpColor('#ffb070', blend.pal.dayBot, edge); } else { const pulse = 0.4 + 0.6*Math.sin(infoNow.tNight*Math.PI*2); hueCol = lerpColor('#0b1d30', '#142b44', pulse*0.5); }
       const hazeTopY = H*0.52; const hazeBotY = H*0.80; const g2 = ctx.createLinearGradient(0,hazeTopY,0,hazeBotY);
       g2.addColorStop(0, 'rgba(0,0,0,0)'); g2.addColorStop(0.65, hexToRgba(hueCol, isDay?0.06:0.08)); g2.addColorStop(1, hexToRgba(hueCol, isDay?0.12:0.16));
       ctx.fillStyle=g2; ctx.fillRect(0,hazeTopY,W,hazeBotY-hazeTopY);
     })();
-    const infoNow=setCachedCycleInfo(cycleT); const isDay=infoNow.isDay; const tDay=infoNow.tDay;
+    const isDay=infoNow.isDay; const tDay=infoNow.tDay;
     // Stars
     function smoothEdge(x,band){ if(x<=0) return 0; if(x>=band) return 1; const n=x/band; return n*n*(3-2*n); }
     const smoothBand = TWILIGHT_BAND*1.4; const edgeIn = smoothEdge(tDay, smoothBand); const edgeOut = smoothEdge(1 - tDay, smoothBand); let starAlpha = 1 - edgeIn*edgeOut; if(isDay) starAlpha *= 0.9; else starAlpha=1;
@@ -1504,20 +1625,19 @@
       drawStars(ctx,W,H,cycleT,starAlpha,now);
     }
     // Sun/Moon helpers
-    const seasonMetrics=currentSeasonMetrics();
     drawCelestialLayer(ctx,W,H,(skyCtx)=>{
-      const redDwarf=redDwarfStateForDraw(cycleT,now,W,H,WORLDGEN,blend);
+      const redDwarf=redDwarfStateForDraw(cycleT,now,W,H,WORLDGEN,blend,seasonMetrics);
       drawRedDwarfObject(skyCtx,W,H,redDwarf,now);
       if(isDay){
-        const sun=sunPosition(tDay,W,H);
+        const sun=sunPosition(tDay,W,H,infoNow.dayHours);
         const sunState=sunStateForDraw(cycleT,seasonMetrics,blend,WORLDGEN,now,playerX,tDay);
         const sunAlpha=clamp(0.34+0.66*Math.sin(clamp(tDay,0,1)*Math.PI),0.24,1);
         const sr=sunRadiusForState(W,sunState);
         drawSunObject(skyCtx,W,H,sun,sr,sunAlpha,sunState,now);
       }
-      const moonFrac=moonFracForCycle(cycleT);
+      const moonFrac=moonFracForCycle(cycleT,infoNow.dayFrac);
       const moonAlpha=moonAlphaForInfo(infoNow);
-      const moon=moonPosition(moonFrac,W,H);
+      const moon=moonPosition(moonFrac,W,H,infoNow.nightHours);
       const moonState=moonStateForDraw(cycleT,seasonMetrics,blend,WORLDGEN,now,playerX);
       const mr=clamp(W*0.065,42,74);
       drawMoonObject(skyCtx,W,H,moon,mr,moonAlpha,moonState,now);
@@ -1562,9 +1682,15 @@
     ctx.restore();
   };
 
+  function nightAtmosphereAlpha(info){
+    const c=info || {};
+    const nightDepth=Math.sin(clamp(finite(c.tNight,c.tDay),0,1)*Math.PI);
+    const raw=0.20+0.22*nightDepth-0.72*clamp(finite(c.moonlight,0),0,0.22);
+    return clamp(raw,0.18,0.44);
+  }
+
   background.applyTint = function(ctx,W,H){
     const info=lastCycleInfo;
-    const dayFrac=DAY_FRAC;
     const twilight=info.twilightBand;
     let a=0, col='#000';
     if(info.isDay){
@@ -1582,8 +1708,9 @@
       // Night dims the whole scene noticeably (max ~0.42) so torches, windows
       // and glow actually carry the mood; the old 0.12–0.25 read as daytime
       // with a dark skybox.
-      const nightT = (info.cycleT - dayFrac)/(1-dayFrac);
-      a = 0.22 + 0.20 * Math.sin(nightT*Math.PI);
+      // The high full moon visibly lifts the darkness; a low/new moon does not.
+      // Both altitude and phase are continuous, so the grading never jumps.
+      a=nightAtmosphereAlpha(info);
       col = '#061425';
     }
     if(a>0.001){
@@ -1624,19 +1751,20 @@
     const p=(kind==='moon' ? moonPosition : sunPosition)(frac,W,H);
     return {x:+p.x.toFixed(3), y:+p.y.toFixed(3), angle:+p.angle.toFixed(6)};
   };
-  background._debugCelestialCyclePosition = function(kind,cycleT,W,H){
-    const t=((cycleT%1)+1)%1;
-    const frac=kind==='moon' ? moonFracForCycle(t) : (t<DAY_FRAC ? t/DAY_FRAC : ((t-DAY_FRAC)/(1-DAY_FRAC)));
-    const p=(kind==='moon' ? moonPosition : sunPosition)(frac,W,H);
+  background._debugCelestialCyclePosition = function(kind,cycleT,W,H,metrics){
+    const t=normalizeCycle(cycleT);
+    const info=cycleInfo(t,metrics || null);
+    const frac=kind==='moon' ? moonFracForCycle(t,info.dayFrac) : info.tDay;
+    const p=kind==='moon' ? moonPosition(frac,W,H,info.nightHours) : sunPosition(frac,W,H,info.dayHours);
     return {x:+p.x.toFixed(3), y:+p.y.toFixed(3), frac:+frac.toFixed(6), angle:+p.angle.toFixed(6)};
   };
-  background._debugRedDwarfState = function(elapsedCycles,W,H,WORLDGEN,cycleT){
+  background._debugRedDwarfState = function(elapsedCycles,W,H,WORLDGEN,cycleT,metrics){
     const cycles=Number.isFinite(+elapsedCycles) ? +elapsedCycles : 0;
     const ww=Number.isFinite(+W)?+W:900;
     const hh=Number.isFinite(+H)?+H:500;
     const t=Number.isFinite(+cycleT) ? +cycleT : 0.75;
     const blend=computeBiomeBlend(0,WORLDGEN);
-    return redDwarfStateForElapsed(cycles,t,ww,hh,WORLDGEN,blend);
+    return redDwarfStateForElapsed(cycles,t,ww,hh,WORLDGEN,blend,metrics || null);
   };
   background._debugMoonState = function(metrics,WORLDGEN,cycleT,W,H,now,playerX){
     const t=Number.isFinite(+cycleT) ? +cycleT : 0.75;
@@ -1644,37 +1772,42 @@
     const x=Number.isFinite(+playerX) ? +playerX : 0;
     const blend=computeBiomeBlend(x,WORLDGEN);
     const state=moonStateForDraw(t,metrics || null,blend,WORLDGEN,tm,x);
-    const p=moonPosition(moonFracForCycle(t),Number.isFinite(+W)?+W:900,Number.isFinite(+H)?+H:500);
+    const solar=daylightModel(metrics || null);
+    const p=moonPosition(moonFracForCycle(t,solar.dayFrac),Number.isFinite(+W)?+W:900,Number.isFinite(+H)?+H:500,solar.nightHours);
     return Object.assign({
       x:+p.x.toFixed(3),
       y:+p.y.toFixed(3)
     },state);
   };
   background._debugSunState = function(metrics,WORLDGEN,cycleT,W,H,now,playerX){
-    const t=((Number.isFinite(+cycleT) ? +cycleT : 0.25)%1+1)%1;
+    const t=normalizeCycle(cycleT,0.25);
     const tm=Number.isFinite(+now) ? +now : performance.now();
     const x=Number.isFinite(+playerX) ? +playerX : 0;
-    const dayT=t<DAY_FRAC ? t/DAY_FRAC : ((t-DAY_FRAC)/(1-DAY_FRAC));
+    const solarInfo=cycleInfo(t,metrics || null);
+    const dayT=solarInfo.tDay;
     const blend=computeBiomeBlend(x,WORLDGEN);
     const state=sunStateForDraw(t,metrics || null,blend,WORLDGEN,tm,x,dayT);
     const ww=Number.isFinite(+W)?+W:900;
     const hh=Number.isFinite(+H)?+H:500;
-    const p=sunPosition(dayT,ww,hh);
+    const p=sunPosition(dayT,ww,hh,solarInfo.dayHours);
     return Object.assign({
       x:+p.x.toFixed(3),
       y:+p.y.toFixed(3),
       radius:+sunRadiusForState(ww,state).toFixed(3)
     },state);
   };
-  background._debugMoonAlpha = function(cycleT){
-    const t=((Number.isFinite(+cycleT) ? +cycleT : 0.75)%1+1)%1;
-    return +moonAlphaForInfo({
-      cycleT:t,
-      isDay:t<DAY_FRAC,
-      tDay:t<DAY_FRAC ? t/DAY_FRAC : ((t-DAY_FRAC)/(1-DAY_FRAC)),
-      twilightBand:TWILIGHT_BAND
-    }).toFixed(4);
+  background._debugMoonAlpha = function(cycleT,metrics){
+    const t=normalizeCycle(cycleT,0.75);
+    return +moonAlphaForInfo(cycleInfo(t,metrics || null)).toFixed(4);
   };
+  background._debugDaylightModel = function(metrics){ return daylightModel(metrics || null); };
+  background._debugCycleInfo = function(cycleT,metrics){ return cycleInfo(cycleT,metrics || null); };
+  background._debugClockTime = function(cycleT,metrics){ return clockTimeForInfo(cycleInfo(cycleT,metrics || null)); };
+  background._debugMoonlight = function(cycleT,metrics,WORLDGEN,now){
+    const info=cycleInfo(cycleT,metrics || null);
+    return moonLightForInfo(info,metrics || null,WORLDGEN || null,now);
+  };
+  background._debugNightTintAlpha = nightAtmosphereAlpha;
   background._debugSeasonTint = seasonVisualTint;
 
   // Save/load support for time-of-day and moon phase
@@ -1687,9 +1820,10 @@
     if(!s) return;
     if(typeof s.cycleT==='number'){
       const now=performance.now();
-      const cycleT=((s.cycleT%1)+1)%1;
+      const cycleT=normalizeCycle(s.cycleT);
       cycleStart = now - cycleT*CYCLE_DURATION;
-      setCachedCycleInfo(cycleT);
+      const metrics=currentSeasonMetrics();
+      setCachedCycleInfo(cycleT,metrics,window.MM && window.MM.worldGen,now);
     }
     if(typeof s.moonPhaseIndex==='number') moonPhaseIndex = (((s.moonPhaseIndex|0)%MOON_PHASES)+MOON_PHASES)%MOON_PHASES;
     if(typeof s.lastPhaseCycle==='number') lastPhaseCycle = s.lastPhaseCycle;
@@ -1697,28 +1831,27 @@
   background.snapshot = background.exportState;
   background.restore = background.importState;
 
-  // Day/night state for HUD readouts. Honors the debug time override so the
-  // displayed clock always matches the sky on screen. The cycle maps to a 24h
-  // clock with dawn at 06:00 (cycleT 0), noon at 12:00 (0.25), dusk at 18:00
-  // (0.5) and midnight at 00:00 (0.75).
+  // Day/night state for HUD readouts.  The ten-minute cycle starts at sunrise;
+  // its daylight and night sections expand/contract with the season.  Clock
+  // time is mapped through those sections so noon stays 12:00 while sunrise
+  // and sunset move naturally over the year.
   background.timeInfo = function(){
     const now=performance.now();
     const raw=(((now-cycleStart)%CYCLE_DURATION)+CYCLE_DURATION)%CYCLE_DURATION/CYCLE_DURATION;
     const cycleT = window.__timeOverrideActive===true
-      ? ((((window.__timeOverrideValue||0)%1)+1)%1)
+      ? normalizeCycle(window.__timeOverrideValue)
       : raw;
-    const isDay = cycleT<DAY_FRAC;
-    const tDay = isDay ? (cycleT/DAY_FRAC) : ((cycleT-DAY_FRAC)/(1-DAY_FRAC));
-    const dayMinutes = (((cycleT*24)+6)%24)*60;
-    const hour = Math.floor(dayMinutes/60)%24;
-    const minute = Math.floor(dayMinutes%60);
-    // dawn/day/dusk/night windows for a friendly icon
-    let phase;
-    if(hour>=5 && hour<7) phase='dawn';
-    else if(hour>=7 && hour<17) phase='day';
-    else if(hour>=17 && hour<19) phase='dusk';
-    else phase='night';
-    return { cycleT, isDay, tDay, hour, minute, phase };
+    const metrics=currentSeasonMetrics();
+    const info=cycleInfo(cycleT,metrics);
+    Object.assign(info,moonLightForInfo(info,metrics,window.MM && window.MM.worldGen,now));
+    const clock=clockTimeForInfo(info);
+    let phase='night';
+    if(info.isDay){
+      if(info.tDay<TWILIGHT_BAND) phase='dawn';
+      else if(info.tDay>1-TWILIGHT_BAND) phase='dusk';
+      else phase='day';
+    }
+    return Object.assign({},info,{hour:clock.hour,minute:clock.minute,phase});
   };
 
   MM.background = background;

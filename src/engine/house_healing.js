@@ -50,7 +50,7 @@ function safeBackground(opts,x,y){
 export function isHouseInteriorTile(t){
   return t===T.AIR || t===T.TORCH || t===T.LAVA || t===T.MOTHER_LAVA ||
     t===T.GLOWSHROOM || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE ||
-    t===T.LADDER || isChairTile(t) || isGasTile(t);
+    t===T.LADDER || t===T.BEDROCK_LADDER || isChairTile(t) || isGasTile(t);
 }
 
 export function isHouseSealTile(t){

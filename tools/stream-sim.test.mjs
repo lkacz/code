@@ -28,12 +28,16 @@ const setTile = (x,y,v)=>{ tiles.set(x+','+y,v); };
 function fill(x0,x1,y0,y1,t){ for(let x=x0;x<=x1;x++) for(let y=y0;y<=y1;y++) setTile(x,y,t); }
 function count(t){ let n=0; for(const v of tiles.values()) if(v===t) n++; return n; }
 const chestHits=[];
+const chestEntities=[];
+function spawnChestEntity(tx,ty,tier='common'){
+  const d={x:tx+0.5,y:ty+0.5,tier}; chestEntities.push(d); return d;
+}
 MM.chests={
   openFromWeaponHitAt(x,y,opts){
-    const t=getTile(x,y);
-    if(![T.CHEST_COMMON,T.CHEST_UNCOMMON,T.CHEST_RARE,T.CHEST_EPIC,T.CHEST_LEGENDARY].includes(t)) return false;
+    const i=chestEntities.findIndex(d=>Math.hypot(d.x-x,d.y-y)<=0.75);
+    if(i<0) return false;
     chestHits.push({x,y,opts});
-    setTile(x,y,T.AIR);
+    chestEntities.splice(i,1);
     return true;
   }
 };
@@ -120,47 +124,47 @@ assert.equal(weapons.metrics().puffs, 0, 'invalid stream ticks do not create or 
 assert.equal(weapons.metrics().arrows, 0, 'invalid stream ticks do not create or corrupt arrows');
 
 // Every player weapon family routes a chest impact through the shared opener.
-tiles=new Map(); weapons.reset(); chestHits.length=0;
-setTile(1,0,T.CHEST_COMMON);
+tiles=new Map(); weapons.reset(); chestHits.length=0; chestEntities.length=0;
+spawnChestEntity(1,0,'common');
 equipped=weaponItems.melee; player.atkCd=0;
 weapons.update(0,getTile,setTile);
 assert.equal(weapons.fireHeld(player,5.5,0.5,1/60),true,'melee weapon opens an adjacent chest on impact');
-assert.equal(getTile(1,0),T.AIR,'melee-opened chest is removed by the chest system');
+assert.equal(chestEntities.length,0,'melee-opened physical chest is removed by the chest system');
 assert.equal(chestHits.at(-1).opts.kind,'melee','melee chest hit carries weapon context');
 
-tiles=new Map(); weapons.reset(); chestHits.length=0;
-setTile(4,0,T.CHEST_RARE);
+tiles=new Map(); weapons.reset(); chestHits.length=0; chestEntities.length=0;
+spawnChestEntity(4,0,'rare');
 refillResources({arrowWood:2}); equipped=weaponItems.bow; player.atkCd=0;
 fireBowTap(6,0.5);
-for(let i=0;i<60 && getTile(4,0)!==T.AIR;i++) weapons.update(1/60,getTile,setTile);
-assert.equal(getTile(4,0),T.AIR,'arrow opens a chest at range');
+for(let i=0;i<60 && chestEntities.length;i++) weapons.update(1/60,getTile,setTile);
+assert.equal(chestEntities.length,0,'arrow opens a physical chest at range');
 assert.equal(weapons.metrics().arrows,0,'arrow is consumed by the chest impact');
 assert.equal(chestHits.at(-1).opts.kind,'arrow','ranged chest hit is identified as an arrow');
 
-tiles=new Map(); weapons.reset(); chestHits.length=0;
-setTile(4,0,T.CHEST_UNCOMMON);
+tiles=new Map(); weapons.reset(); chestHits.length=0; chestEntities.length=0;
+spawnChestEntity(4,0,'uncommon');
 refillResources({throwingStone:1}); equipped={weaponType:'thrown',thrownKind:'stone',attackDamage:2,fireCooldown:0.3};
 assert.equal(weapons.fireHeld(player,6,0.5,1/60),true,'thrown weapon can be aimed at a chest');
-for(let i=0;i<80 && getTile(4,0)!==T.AIR;i++) weapons.update(1/60,getTile,setTile);
-assert.equal(getTile(4,0),T.AIR,'thrown weapon opens a chest');
+for(let i=0;i<80 && chestEntities.length;i++) weapons.update(1/60,getTile,setTile);
+assert.equal(chestEntities.length,0,'thrown weapon opens a physical chest');
 assert.equal(chestHits.at(-1).opts.kind,'thrown','thrown chest hit keeps its projectile context');
 
-tiles=new Map(); weapons.reset(); chestHits.length=0; heroEnergy=10;
-setTile(4,0,T.CHEST_EPIC);
+tiles=new Map(); weapons.reset(); chestHits.length=0; chestEntities.length=0; heroEnergy=10;
+spawnChestEntity(4,0,'epic');
 equipped=weaponItems.electric;
 weapons.update(0,getTile,setTile);
 assert.equal(weapons.fireHeld(player,6,0.5,1/60),true,'electric weapon fires at a chest');
-assert.equal(getTile(4,0),T.AIR,'electric beam opens a chest');
+assert.equal(chestEntities.length,0,'electric beam opens a physical chest');
 assert.equal(chestHits.at(-1).opts.kind,'electric','electric chest hit keeps its weapon context');
 
 for(const kind of ['flame','hose','gas']){
-  tiles=new Map(); weapons.reset(); chestHits.length=0;
-  refillResources(); setTile(3,0,T.CHEST_COMMON); equipped=weaponItems[kind];
-  for(let i=0;i<90 && getTile(3,0)!==T.AIR;i++){
+  tiles=new Map(); weapons.reset(); chestHits.length=0; chestEntities.length=0;
+  refillResources(); spawnChestEntity(3,0,'common'); equipped=weaponItems[kind];
+  for(let i=0;i<90 && chestEntities.length;i++){
     weapons.fireHeld(player,4,0.5,1/60);
     weapons.update(1/60,getTile,setTile);
   }
-  assert.equal(getTile(3,0),T.AIR,kind+' stream opens a chest on contact');
+  assert.equal(chestEntities.length,0,kind+' stream opens a physical chest on contact');
   assert.equal(chestHits.at(-1).opts.kind,kind,kind+' chest hit keeps its stream context');
 }
 refillResources();
@@ -342,6 +346,85 @@ assert.ok(iridiumArrow.life>woodArrow.life, 'iridium arrows keep range longer th
   MM.mobs=savedMobs;
 }
 
+// Surviving arrows remain attached to invasion and mech bodies, following the
+// target until its owning subsystem reports death.
+for(const family of ['invasions','mechs']){
+  const oldSystem=MM[family];
+  const target={x:0.5,y:0.5,vx:0,vy:0,hp:100,dead:false,destroyed:false};
+  MM[family]={
+    isLiving:t=>t===target && t.hp>0 && !t.dead && !t.destroyed,
+    damageAt(tx,ty,dmg,opts){
+      if(tx!==0 || ty!==0) return false;
+      if(opts && typeof opts.onTarget==='function') opts.onTarget(target,family,MM[family].isLiving);
+      target.hp-=dmg;
+      return true;
+    }
+  };
+  const savedRandom=Math.random;
+  try{
+    Math.random=()=>0.99; // iridium survives its 20% break roll
+    tiles=new Map(); weapons.reset(); player.x=100; player.y=0.5;
+    weapons._debug.pushArrow({x:-0.1,y:0.5,vx:12,vy:0,dmg:2,life:2,tier:'iridium',stuck:false,stuckT:4,recoverable:true,recoverKey:'arrowIridium'});
+    weapons.update(1/60,getTile,setTile);
+    const embedded=weapons._debug.arrows[0];
+    assert.equal(embedded && embedded.embeddedMob,target,family+' body retains a surviving arrow');
+    target.x=2.5; target.y=1.25;
+    weapons.update(1/60,getTile,setTile);
+    assert.ok(Math.abs(embedded.x-(target.x+(embedded.embeddedOffsetX||0)))<1e-6,family+' embedded arrow follows its moving body');
+    target.hp=0; target.dead=true;
+    weapons.update(1/60,getTile,setTile);
+    assert.equal(embedded.embeddedMob,null,family+' death releases its arrow into world physics');
+    assert.equal(embedded.dropOnLand,true,family+' released arrow becomes a collectible floor pickup');
+  } finally {
+    Math.random=savedRandom;
+    if(oldSystem===undefined) delete MM[family]; else MM[family]=oldSystem;
+    player.x=0.5; player.y=0.5;
+  }
+}
+
+// Block-built bosses return a terrain-style "blocked" hit, but surviving arrows
+// still need a local block anchor so they move with the creature instead of
+// hanging at an absolute world coordinate.
+{
+  const oldBosses=MM.bosses;
+  const oldMobs=MM.mobs;
+  const target={x:-2,y:1,vx:0.7,vy:0,dead:false,dying:false}; // real block bosses have per-part HP, not body HP
+  const struckPart={hp:5};
+  const isPartAlive=b=>b===target && !b.dead && !b.dying && struckPart.hp>0;
+  MM.mobs={damageAt(){ return false; },igniteAt(){ return false; }};
+  MM.bosses={damageAt(tx,ty,dmg,opts){
+    if(tx!==0 || ty!==0) return false;
+    if(opts && typeof opts.onTarget==='function') opts.onTarget(target,'boss',isPartAlive,{localX:2.5,localY:-0.5});
+    return 'blocked';
+  }};
+  const savedRandom=Math.random;
+  try{
+    Math.random=()=>0.99;
+    tiles=new Map(); weapons.reset(); player.x=100; player.y=0.5;
+    weapons._debug.pushArrow({x:-0.1,y:0.5,vx:12,vy:0,dmg:2,life:2,tier:'iridium',stuck:false,stuckT:4,recoverable:true,recoverKey:'arrowIridium'});
+    weapons.update(1/60,getTile,setTile);
+    const embedded=weapons._debug.arrows[0];
+    assert.equal(embedded && embedded.embeddedMob,target,'a surviving shell hit embeds in the block boss');
+    assert.equal(embedded.embeddedFamily,'boss','the embedded shaft retains its boss family');
+    assert.equal(embedded.embeddedAnchorX,2.5,'the exact struck block X anchor is retained');
+    assert.equal(embedded.embeddedAnchorY,-0.5,'the exact struck block Y anchor is retained');
+    target.x+=1.75; target.y-=0.4;
+    weapons.update(1/60,getTile,setTile);
+    assert.ok(Math.abs(embedded.x-(target.x+embedded.embeddedAnchorX+embedded.embeddedOffsetX))<1e-9
+      && Math.abs(embedded.y-(target.y+embedded.embeddedAnchorY+embedded.embeddedOffsetY))<1e-9,
+      'the arrow follows the moving boss at its struck block');
+    struckPart.hp=0;
+    weapons.update(1/60,getTile,setTile);
+    assert.equal(embedded.embeddedMob,null,'destroying the anchored boss block releases its arrow');
+    assert.equal(embedded.dropOnLand,true,'the released boss arrow falls as a collectible');
+  } finally {
+    Math.random=savedRandom;
+    if(oldBosses===undefined) delete MM.bosses; else MM.bosses=oldBosses;
+    MM.mobs=oldMobs;
+    player.x=0.5; player.y=0.5;
+  }
+}
+
 tiles=new Map(); weapons.reset(); fire.reset(); sparks=0;
 refillResources({arrowWood:0, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:1});
 setTile(4,0,T.STONE);
@@ -355,6 +438,40 @@ assert.equal(getTile(5,0), T.AIR, 'iridium arrows keep piercing through a second
 assert.ok(weapons.metrics().iridiumPierces>=2, 'iridium piercing is tracked as material behavior');
 assert.ok(sparks>=2, 'iridium block piercing emits rare sparks');
 assert.ok(worldChanged>=2, 'iridium piercing schedules edited terrain for persistence');
+
+{
+  const oldBosses=MM.bosses;
+  const shell=new Set(['4,0','5,0']);
+  const calls=[];
+  MM.bosses={damageAt(tx,ty,dmg,opts){
+    const key=tx+','+ty;
+    if(!shell.has(key)) return false;
+    calls.push({key,dmg,opts});
+    if(opts && opts.kind==='arrow' && opts.tier==='iridium' && opts.pierceLeft>0){ shell.delete(key); return 'pierced'; }
+    return 'blocked';
+  }};
+  try{
+    tiles=new Map(); weapons.reset(); fire.reset(); sparks=0;
+    refillResources({arrowWood:0, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:1});
+    equipped=weaponItems.bow;
+    assert.equal(fireBowTap(8,0.5),true,'iridium bow fires at a block-built boss shell');
+    for(let i=0;i<45;i++) weapons.update(1/60,getTile,setTile);
+    assert.equal(shell.size,0,'iridium arrow keeps flying through consecutive dynamic boss blocks');
+    assert.ok(calls.length>=2 && calls.every(c=>c.opts.pierceLeft>0),'boss block impacts receive iridium terrain-piercing metadata');
+    assert.ok(weapons.metrics().iridiumPierces>=2,'dynamic boss blocks count as normal iridium block pierces');
+
+    shell.add('4,0'); calls.length=0;
+    tiles=new Map(); weapons.reset(); fire.reset();
+    refillResources({arrowWood:1, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:0});
+    equipped=weaponItems.bow;
+    assert.equal(fireBowTap(8,0.5),true,'wooden bow fires at a block-built boss shell');
+    for(let i=0;i<35;i++) weapons.update(1/60,getTile,setTile);
+    assert.ok(shell.has('4,0'),'ordinary arrow cannot remove a dynamic boss block');
+    assert.ok(calls.some(c=>c.opts && c.opts.tier==='wood'),'ordinary arrow impact is routed to the boss block gate');
+  } finally {
+    if(oldBosses===undefined) delete MM.bosses; else MM.bosses=oldBosses;
+  }
+}
 
 tiles=new Map(); weapons.reset(); fire.reset(); sparks=0; worldChanged=0;
 let antimatterBursts=0;
@@ -385,7 +502,7 @@ tiles=new Map(); weapons.reset(); fire.reset();
 fill(2,8,2,6,T.STONE);
 setTile(4,4,T.BEDROCK);
 setTile(5,4,T.VOLCANO_MASTER_STONE);
-setTile(6,4,T.CHEST_COMMON);
+chestEntities.length=0; spawnChestEntity(6,4,'common');
 setTile(4,5,T.OBSIDIAN);
 setTile(5,5,T.DIAMOND);
 setTile(6,5,T.IRIDIUM);
@@ -393,8 +510,8 @@ const blastStoneBefore=count(T.STONE);
 assert.equal(weapons.explodeAt(5,4,getTile,setTile,{force:true}), true, 'forced gas blast detonates for material immunity test');
 assert.equal(getTile(4,4), T.BEDROCK, 'gas explosions do not erase bedrock');
 assert.equal(getTile(5,4), T.VOLCANO_MASTER_STONE, 'gas explosions do not erase story stones');
-assert.equal(getTile(6,4), T.AIR, 'player weapon explosions open chests instead of erasing their loot');
-assert.ok(chestHits.some(h=>h.x===6 && h.y===4 && h.opts.kind==='explosion'), 'explosion chest impact uses the shared opener');
+assert.equal(chestEntities.length, 0, 'player weapon explosions open physical chests instead of erasing their loot');
+assert.ok(chestHits.some(h=>Math.floor(h.x)===6 && Math.floor(h.y)===4 && h.opts.kind==='explosion'), 'explosion chest impact uses the shared opener');
 assert.equal(getTile(4,5), T.OBSIDIAN, 'gas explosions do not erase obsidian');
 assert.equal(getTile(5,5), T.DIAMOND, 'gas explosions do not erase diamond');
 assert.equal(getTile(6,5), T.IRIDIUM, 'gas explosions do not erase iridium');

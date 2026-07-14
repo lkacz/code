@@ -31,6 +31,8 @@ const getTile=(x,y)=>{
 };
 const setTile=(x,y,t)=>setT(x,y,t);
 MM.worldGen = { worldSeed: 424242, surfaceHeight: ()=>SURF };
+const physicalChests=[];
+const spawnChest=(x,y,tier,opts)=>{ const d={id:physicalChests.length+1,x,y,tier,opts}; physicalChests.push(d); return d; };
 
 const player={x:100,y:SURF-1,hp:40,maxHp:100};
 globalThis.player=player;
@@ -148,21 +150,19 @@ assert.equal(stock.rates.length, 3, 'three seeded buy-back rates');
 assert.equal(trader.tradeBuy('definitely-not-a-good',{inv,player}).ok, false, 'unknown goods are refused');
 assert.equal(trader.tradeSell('definitely-not-a-rate',{inv,player}).ok, false, 'unknown rates are refused');
 
-// 8) the epic chest lands as a real tile beside the stall
+// 8) the epic chest drops as a heavy physical object beside the stall
 {
   inv.diamond=5;
   inv.iridium=0;
-  let r=trader.tradeBuy('chest', {inv, player, getTile, setTile});
+  let r=trader.tradeBuy('chest', {inv, player, getTile, setTile, spawnChest});
   assert.equal(r.ok, false, 'diamonds no longer buy the premium chest');
   inv.iridium=2;
-  r=trader.tradeBuy('chest', {inv, player, getTile, setTile});
+  r=trader.tradeBuy('chest', {inv, player, getTile, setTile, spawnChest});
   assert.equal(r.ok, true, 'epic chest purchase succeeds');
   assert.equal(inv.iridium, 0, 'chest costs iridium');
   assert.equal(inv.diamond, 5, 'premium chest does not consume diamonds');
-  const bx=Math.floor(trader.position().x);
-  let found=false;
-  for(let dx=-3;dx<=3;dx++) if(getTile(bx+dx,SURF-1)===T.CHEST_EPIC) found=true;
-  assert.ok(found, 'an epic chest tile appears next to the stall');
+  assert.ok(physicalChests.some(d=>d.tier==='epic' && d.opts.source==='trader'), 'an epic physical chest drops next to the stall');
+  assert.ok(![...tiles.values()].some(t=>t===T.CHEST_EPIC), 'trader never writes a chest block');
 }
 
 // 9) potion effects: heal clamps to maxHp, buffs ride MM.progress

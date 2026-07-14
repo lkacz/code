@@ -33,6 +33,11 @@ const alienTask = tasks.upsertAlienCache({
 assert.equal(alienTask.id, 'invasion_cache:cache_1', 'alien cache gets a stable recovery task id');
 assert.equal(tasks.metrics().active, 1, 'alien cache creates one active recovery task');
 assert.match(status.textContent, /Zadania 1 - Odzyskaj skradziony lup/, 'HUD names the active recovery task');
+assert.equal(userChanges, 1, 'creating a task requests persistence');
+tasks.upsertAlienCache({
+  id:'cache_1', x:80, y:42, resources:{wood:12, stone:3}, gear:[{id:'blade_1'}], createdAt:123
+});
+assert.equal(userChanges, 1, 'an identical periodic task refresh does not schedule another save');
 
 const player = {x:0,y:42};
 const target = tasks.trackedTarget(player);
@@ -65,14 +70,14 @@ assert.equal(tasks.setPriority(sideTask.id), true, 'the player can select a task
 assert.equal(tasks.activeList(player)[0].id, sideTask.id, 'selected priority moves to the top of the complete active list');
 assert.equal(tasks.trackedTarget(player).task.id, sideTask.id, 'the shared red pointer follows the selected priority');
 assert.match(status.textContent, /★ Sprawdz sygnal/, 'compact HUD marks the selected priority');
-assert.equal(userChanges, 1, 'priority changes request persistence');
+assert.equal(userChanges, 3, 'task creation and priority changes request persistence');
 
 assert.equal(tasks.discard(alienTask.id), true, 'the player can discard an active task');
 assert.equal(tasks.metrics().active, 1, 'discarded task leaves the active list');
 assert.equal(tasks.metrics().discarded, 1, 'discarded task is retained as a source-refresh tombstone');
 tasks.upsertAlienCache({id:'cache_1',x:80,y:42,resources:{wood:12},gear:[],createdAt:123});
 assert.equal(tasks.metrics().active, 1, 'periodic source refresh does not resurrect a discarded task');
-assert.equal(userChanges, 2, 'discard changes request persistence');
+assert.equal(userChanges, 4, 'discard changes request persistence');
 
 const snap = tasks.snapshot();
 tasks.reset();
@@ -103,5 +108,25 @@ assert.equal(tasks.metrics().active, 2, 'sync can rebuild all active alien-cache
 tasks.syncAlienCaches([{id:'cache_3',x:-20,y:12,resources:{},gear:[{id:'cape_1'}],createdAt:300}]);
 assert.equal(tasks.metrics().active, 1, 'sync removes alien-cache tasks whose caches no longer exist');
 assert.equal(tasks.removeSource('invasions'), 1, 'source removal clears invasion recovery tasks');
+assert.equal(userChanges, 13, 'creation, completion, removal, sync and source cleanup all request persistence without refresh churn');
+
+// Imported/corrupted task state is bounded and deterministic: a discarded
+// tombstone wins over a duplicate active row, and newest-first history stays so.
+tasks.restore({
+  v:2,
+  active:[{id:'duplicate',source:'story',title:'Aktywne',status:'active'}],
+  discarded:[{id:'duplicate',source:'story',title:'Odrzucone',status:'discarded'}],
+  history:[
+    {id:'done:new',source:'story',title:'Nowsze',status:'done',completedAt:300},
+    {id:'done:old',source:'story',title:'Starsze',status:'done',completedAt:200}
+  ]
+});
+assert.equal(tasks.metrics().active,0,'discarded duplicate cannot reappear as active after restore');
+assert.equal(tasks.metrics().discarded,1,'discard tombstone survives duplicate-state cleanup');
+assert.deepEqual(tasks.state().history.map(t=>t.id),['done:new','done:old'],'history order remains newest-first after restore');
+
+const oversized=Array.from({length:220},(_,i)=>({id:'bulk:'+i,source:'import',title:'Task '+i,status:'active'}));
+tasks.restore({v:2,active:oversized});
+assert.equal(tasks.metrics().active,160,'restore bounds oversized imported task arrays');
 
 console.log('tasks-sim: all assertions passed');

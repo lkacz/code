@@ -172,6 +172,22 @@ wind.setOverride(6.4);
 const narrowRoofStand = {x:0,y:50,vx:0,vy:0,onGround:true,w:0.7,h:0.95};
 const narrowRoofStandDelta = wind.applyToHero(narrowRoofStand,1/60,narrowRoofTile,{inWater:false,groundSpeedCap:MOVE.MAX*2}).delta;
 assert.ok(narrowRoofStandDelta > openGaleStandDelta*0.65, `one noisy roof column should not erase standing gale force (${narrowRoofStandDelta.toFixed(2)} vs open ${openGaleStandDelta.toFixed(2)})`);
+
+// Terrain depth is an absolute shelter boundary for the hero. Exposure probing
+// deliberately leaves a faint airflow in large caves for gases, but even an open
+// vertical shaft must never turn that residual flow into player acceleration.
+wind.setOverride(7.2);
+const undergroundHero = {x:0,y:96,vx:1.25,vy:-9,onGround:false,w:0.7,h:0.95};
+const undergroundBefore=undergroundHero.vx;
+const undergroundPush=wind.applyToHero(undergroundHero,1,openTile,{inWater:false,groundSpeedCap:MOVE.MAX*2});
+assert.equal(wind._debug.heroUnderground(undergroundHero), true, 'hero below the terrain surface is classified as underground');
+assert.equal(undergroundPush.underground, true, 'wind reports the underground shelter reason');
+assert.equal(undergroundPush.applied, false, 'even the maximum gale does not affect the player underground');
+assert.equal(undergroundHero.vx, undergroundBefore, 'underground wind leaves existing player velocity untouched');
+const surfaceHero = {x:0,y:88,vx:0,vy:-9,onGround:false,w:0.7,h:0.95};
+assert.equal(wind._debug.heroUnderground(surfaceHero), false, 'hero above the terrain line remains exposed to surface weather');
+assert.ok(wind.applyToHero(surfaceHero,1/60,openTile,{inWater:false}).delta>0, 'the same gale still affects an exposed surface jump');
+
 assert.ok(WORLD_MIN_Y<0, 'wind tests cover the extended sky range');
 const skyRoofTile = (x,y)=> {
   if(y===-58 && x>=-3 && x<=3) return T.STONE;

@@ -25,6 +25,16 @@ assert.equal(companions.count(), 1, 'created companion is active');
 let m = companions.metrics();
 assert.equal(m.maxHp, 34+3*18, 'initial biomass determines max HP');
 
+let companionSootCalls=0;
+MM.smoke={updateSoot(c,_dt,opts){ companionSootCalls++; assert.equal(opts.field,'_sootFilm'); c._sootFilm=0.55; }};
+companions.update(0.05,player,getTile,setTile);
+const sootSnapshot=companions.snapshot();
+assert.ok(companionSootCalls>0,'companions share the lightweight smoke exposure pass');
+assert.equal(sootSnapshot.list[0].sootFilm,0.55,'companion soot film is saved');
+assert.equal(companions.restore(sootSnapshot,getTile),true,'companion soot snapshot restores');
+assert.equal(companions.snapshot().list[0].sootFilm,0.55,'restored companion keeps its soot film');
+delete MM.smoke;
+
 const beforeHp = m.maxHp;
 assert.equal(companions.feedNearest(player,2,{refund:{alienBiomass:2,meat:1}}), true, 'nearby companion can be fed');
 m = companions.metrics();
@@ -682,6 +692,27 @@ assertWalkingGolemFlatTravel({kind:'clay_golem',x:0,y:9.96,clay:8,hp:320,seed:87
 assertWalkingGolemFlatTravel({kind:'water_golem',x:0,y:9.96,water:10,hp:220,seed:8788,laserCd:99}, 'water golem');
 assertWalkingGolemFlatTravel({kind:'meat_golem',x:0,y:9.96,meat:10,hp:232,seed:8789,laserCd:99}, 'meat golem');
 assertWalkingGolemFlatTravel({kind:'molekin',x:0,y:9.96,lava:10,moleRole:'flanker',hp:550,seed:8790,laserCd:99}, 'molekin companion');
+
+function deepPoolTile(x,y){
+  if(x>=-2 && x<=8 && y>=4 && y<=11) return T.WATER;
+  if(y>=12) return T.GRASS;
+  return T.AIR;
+}
+companions.restore({v:1,list:[{kind:'water_golem',x:0.5,y:10.6,water:10,hp:220,seed:87901,laserCd:99,waterDrinkCd:99}]},deepPoolTile);
+const risingSwimmerStart=companions._debug.list()[0];
+for(let i=0;i<150;i++) companions.update(1/30,{x:6.5,y:6.6,facing:1},deepPoolTile,()=>{});
+const risingSwimmer=companions._debug.list()[0];
+assert.equal(risingSwimmer.swimming, true, 'submerged water golem enters its swimming movement mode');
+assert.ok(risingSwimmer.x>risingSwimmerStart.x+2.2, 'water golem swims horizontally toward its hero');
+assert.ok(risingSwimmer.y<risingSwimmerStart.y-1.5, 'water golem swims upward instead of sinking along the pool floor');
+assert.ok(risingSwimmer.y<11.2, 'swimming water golem remains suspended clear of the pool floor');
+
+companions.restore({v:1,list:[{kind:'water_golem',x:0.5,y:6.8,water:10,hp:220,seed:87902,laserCd:99,waterDrinkCd:99}]},deepPoolTile);
+const divingSwimmerStart=companions._debug.list()[0];
+for(let i=0;i<150;i++) companions.update(1/30,{x:6.5,y:10.4,facing:1},deepPoolTile,()=>{});
+const divingSwimmer=companions._debug.list()[0];
+assert.equal(divingSwimmer.swimming, true, 'water golem keeps swimming while fully submerged');
+assert.ok(divingSwimmer.y>divingSwimmerStart.y+1.4, 'water golem can dive down through water toward its hero');
 
 companions.restore({v:1,list:[{x:0,y:9.96,biomass:3,hp:88,seed:8790,laserCd:99,gasCd:99}]},getTile);
 const enemyTargetableCompanion = companions.nearestForEnemy(0,9.35,3);

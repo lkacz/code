@@ -1,5 +1,6 @@
 import { isObjectFootingTile, isReplaceableNaturalOpenTile } from './material_physics.js';
 import { worldHostility as HOSTILITY } from './world_hostility.js';
+import { damageBlastCreatures } from './explosion_damage.js';
 
 // UFO visitor: every 2-3 in-game days a procedurally generated saucer descends,
 // scans for a living victim — an animal, the hero, even a boss — locks a tractor
@@ -446,8 +447,9 @@ const ufo = (function(){
     artMsg=scrapMsg+artMsg;
     const bioCompanion=dropBioCompanion(c,pl);
     const bioMsg=bioCompanion ? ' i bio-pomocnik!' : '';
-    if(pl && typeof pl.xp==='number') pl.xp+=120;
+    if(pl && typeof pl==='object') pl.xp=(Number(pl.xp)||0)+120;
     burst(c.x,c.y,'epic'); burst(c.x-1.5,c.y+0.5,'epic'); burst(c.x+1.5,c.y+0.5,'epic');
+    damageBlastCreatures(MM,c.x,c.y,6,28,{source:'ufo',cause:'ufo_crash_blast'});
     sfx('explosion',{x:c.x,y:c.y});
     say('💥 '+c.look.name+' zestrzelony! Antymateria ×'+n+artMsg+bioMsg+' (+120 XP)');
     if(typeof window!=='undefined' && window.updateInventoryHud) try{ window.updateInventoryHud(); }catch(e){}

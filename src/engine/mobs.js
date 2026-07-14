@@ -5,6 +5,8 @@ import { worldGen as WORLDGEN } from './worldgen.js';
 import { worldHostility as HOSTILITY } from './world_hostility.js';
 import { worldLayers as WORLD_LAYERS } from './world_layers.js';
 import { threatLook as THREAT_LOOK } from './threat_look.js';
+import { damageBlastCreatures } from './explosion_damage.js';
+import { getFlamePuffSprites, flamePuffFrame, flamePuffAlpha, flamePuffRadius } from './flame_fx.js';
 
 // Basic mob / animal system (birds, fish) with aggression propagation.
 // Exposes MM.mobs API (legacy) and ESM exports.
@@ -53,6 +55,7 @@ const mobs = (function(){
   let lastDayState = null;
   // Spatial partitioning (uniform grid) to speed up point queries (attackAt)
   const CELL=16; // tiles per cell both axes
+  const MOB_BODY_SLOP=0.005; // sub-pixel tolerance prevents endless contact jitter
   const grid = new Map(); // key "cx,cy" -> Set of mob refs
   function cellKey(x,y){ return ((x/CELL)|0)+','+((y/CELL)|0); }
   function addToGrid(m){ const k=cellKey(m.x,m.y); let set=grid.get(k); if(!set){ set=new Set(); grid.set(k,set); } set.add(m); m._cellKey=k; }
@@ -95,6 +98,13 @@ const mobs = (function(){
   const PIRANHA_BAIT_ZONE_CAP = 12;
   const PIRANHA_PREY_RANGE = 20;
   const PIRANHA_MEAT_DROP_CHANCE = 0.03;
+  // One horizontal tile is treated as roughly one metre for ecology. Piranhas
+  // remain possible offshore, but their population pressure drops sharply once
+  // the nearest coast is more than about 500 m away.
+  const PIRANHA_COASTAL_RANGE = 500;
+  const PIRANHA_COASTAL_CORE = 350;
+  const PIRANHA_OFFSHORE_DENSITY = 0.08;
+  const PIRANHA_SHORE_SEARCH = 64;
   const PIRANHA_IGNORE_PREY = Object.freeze({PIRANHA:true,FISH:true,SHARK:true,EEL:true});
   const piranhaBaitZones = [];
   const MOB_ATTACK_TELEGRAPH_MS = 420;
@@ -129,6 +139,8 @@ const mobs = (function(){
   const JACKPOT_WHALE_RAM_COOLDOWN_MS = 2600;
   const ATOMIC_BOMB_COCKROACH_INTERVAL_MS = 3800;
   const ATOMIC_BOMB_COCKROACH_LOCAL_CAP = 6;
+  const ATOMIC_BOMB_MAX_HP = 8000;
+  const ATOMIC_BOMB_LIFETIME_MS = 1000*60*60*6;
   const ATOMIC_BOMB_CRATER_RX = 45;
   const ATOMIC_BOMB_CRATER_RY = 30;
   const ATOMIC_BOMB_BLAST_RADIUS = Math.round(ATOMIC_BOMB_CRATER_RX*0.93);
@@ -186,6 +198,10 @@ const mobs = (function(){
   const GOLD_GUARD_KEY_W = 12;
   const GOLD_GUARD_KEY_H = 10;
   const GOLD_GUARD_LOCAL_CAP = 4;
+  // Gold defenders must never act as a surface ore detector. Their dedicated
+  // scan only wakes after the hero has entered the underground, and neither a
+  // qualifying vein nor a spawn cell may sit directly under open daylight.
+  const GOLD_GUARD_MIN_DEPTH = 3;
   const GOLD_DRAGON_BREATH_RANGE = 15.5;
   const GOLD_DRAGON_BREATH_MIN_RANGE = 3.1;
   const GOLD_DRAGON_BREATH_COOLDOWN_MS = 1850;
@@ -199,14 +215,32 @@ const mobs = (function(){
   const VULTURE_CAPTURE_HATCHLINGS = 3;
   const VULTURE_CAPTURE_COOLDOWN_MS = 16000;
   const VULTURE_NEST_REPAIR_MS = 8500;
-  const XP_FATIGUE_STEP = 0.01;
+  // Combat progression is deliberately much steeper than the old flat species
+  // payout.  A fair fight pays its authored XP, a dangerous one pays several
+  // times more, and a creature that has become trivial pays nothing and yields.
+  const XP_FATIGUE_KEEP = 0.92;
   const XP_FATIGUE_RESET_DAYS = 1;
-  const XP_FATIGUE_MIN_MULT = 0.1;
+  const XP_FATIGUE_MIN_MULT = 0.15;
   const ATOMIC_BOMB_XP_DECAY = 0.5;
   const XP_SPECIAL_BONUS_MULT = 1.2;
   const THERMAL_DAMAGE_BONUS_MULT = 1.2;
   const XP_FALLBACK_DAY_SECONDS = 600;
+  const XP_TRIVIAL_RATIO = 0.42;
+  const XP_MAX_CHALLENGE_MULT = 4.75;
+  const XP_MAX_VARIANT_MULT = 3.4;
+  const XP_PROGRESS_FLOOR_RATIO = 0.88;
+  const XP_PROGRESS_FLOOR_SHARE = 0.045;
+  const XP_PROGRESS_FLOOR_EXP = 0.72;
+  const XP_PROGRESS_FLOOR_CAP = 0.15;
+  const XP_FLEE_RANGE = 19;
+  const XP_CHALLENGE_KNOTS = [
+    [0,0], [XP_TRIVIAL_RATIO,0], [0.55,0.12], [0.70,0.38],
+    [0.85,0.72], [1.00,1.00], [1.20,1.55], [1.45,2.35],
+    [1.75,3.25], [2.20,4.20], [3.50,XP_MAX_CHALLENGE_MULT]
+  ];
+  const FIXED_CHALLENGE_XP = new Set(['ATOMIC_BOMB','ZLOTY']);
   const xpFatigue = {}; // speciesId -> {kills,lastDay}
+  let lastTrivialXpNoticeAt=-Infinity;
 
   // Additional biome-aware species
   // Helper biome query (0,1,2) fallback to 1 if missing
@@ -898,6 +932,21 @@ const mobs = (function(){
   function isGoldGuardianAir(t){
     return t===T.AIR || t===T.HOT_AIR || t===T.STEAM || t===T.POISON_GAS || t===T.FUEL_GAS;
   }
+  function goldGuardianDepthBelowSurface(x,y){
+    try{
+      const wg=MM.worldGen;
+      if(!wg || typeof wg.surfaceHeight!=='function') return null;
+      const surface=Number(wg.surfaceHeight(Math.floor(x)));
+      if(!Number.isFinite(surface)) return null;
+      return Number(y)-surface;
+    }catch(e){ return null; }
+  }
+  function goldGuardianUndergroundAt(x,y){
+    const depth=goldGuardianDepthBelowSurface(x,y);
+    // Headless/custom worlds without a surface model keep the old cave rules;
+    // the real world always supplies surfaceHeight.
+    return depth==null || depth>=GOLD_GUARD_MIN_DEPTH;
+  }
   function goldGuardKeyFor(x,y){
     return Math.floor(Math.floor(x)/GOLD_GUARD_KEY_W)+','+Math.floor(Math.floor(y)/GOLD_GUARD_KEY_H);
   }
@@ -935,6 +984,7 @@ const mobs = (function(){
   function goldDwarfSpawnCell(x,y,getTile){
     if(typeof getTile!=='function') return false;
     x=Math.floor(x); y=Math.floor(y);
+    if(!goldGuardianUndergroundAt(x,y)) return false;
     if(!nearGoldVein(x,y,getTile)) return false;
     return readMobTile(getTile,x,y)===T.AIR &&
       readMobTile(getTile,x,y-1)===T.AIR &&
@@ -942,7 +992,7 @@ const mobs = (function(){
   }
   function goldDragonSpawnCell(x,y,getTile){
     if(typeof getTile!=='function') return false;
-    return nearGoldVein(x,y,getTile) &&
+    return goldGuardianUndergroundAt(x,y) && nearGoldVein(x,y,getTile) &&
       bigAnimalSpawnCell(x,y,getTile,{halfWidth:2,height:3,floor:isGoldGuardianFloor});
   }
   function goldGuardianAlreadyForKey(key){
@@ -986,6 +1036,7 @@ const mobs = (function(){
       if(!inWorldY(y,1,1)) continue;
       for(let x=px-GOLD_GUARD_SCAN_RX; x<=px+GOLD_GUARD_SCAN_RX; x++){
         if(!isGoldOreTile(readMobTile(getTile,x,y))) continue;
+        if(!goldGuardianUndergroundAt(x,y)) continue;
         if(!goldOreTouchesOpenCave(x,y,getTile)) continue;
         const signal=goldClusterSignal(x,y,getTile);
         if(!signal.qualifies) continue;
@@ -1121,7 +1172,7 @@ const mobs = (function(){
   }
   function atomicBombSpawnCell(x,y,getTile){
     if(biomeAt(x)!==8 || typeof getTile!=='function') return false;
-    return bigAnimalSpawnCell(x,y,getTile,{halfWidth:1,height:2,floor:cityThreatFloor});
+    return bigAnimalSpawnCell(x,y,getTile,{halfWidth:2,height:2,floor:cityThreatFloor});
   }
   function radiationCockroachSpawnCell(x,y,getTile){
     if(biomeAt(x)!==8 || typeof getTile!=='function') return false;
@@ -1212,6 +1263,7 @@ const mobs = (function(){
       }
     }
     try{ blastRadius(m.x,m.y,ATOMIC_BOMB_BLAST_RADIUS,96,{cause:'atomic_blast',source:'atomic_bomb',naturalDeath:false}); }catch(e){}
+    damageBlastCreatures(MM,m.x,m.y,ATOMIC_BOMB_BLAST_RADIUS,96,{source:'atomic_bomb',cause:'atomic_blast',skipMobs:true});
     if(gt){
       for(let i=0;i<12;i++) spawnRadiationCockroachAt(cx+(Math.random()*ATOMIC_BOMB_CRATER_RX*1.5-ATOMIC_BOMB_CRATER_RX*0.75),cy-2+Math.random()*5,gt);
     }
@@ -1604,26 +1656,11 @@ const mobs = (function(){
   }
   function placeRewardChestNearMob(m,tier,chance){
     if(!m || Math.random()>Math.max(0,Math.min(1,chance||0))) return false;
-    const W=MM.world || WORLD;
-    if(!W || typeof W.getTile!=='function' || typeof W.setTile!=='function') return false;
-    const chest=tier==='legendary'?T.CHEST_LEGENDARY:tier==='epic'?T.CHEST_EPIC:(tier==='rare'?T.CHEST_RARE:tier==='uncommon'?T.CHEST_UNCOMMON:T.CHEST_COMMON);
-    const bx=Math.floor(m.x), by=Math.floor(m.y);
-    for(let r=0; r<=5; r++){
-      for(let dy=-2; dy<=4; dy++){
-        for(let dx=-r; dx<=r; dx++){
-          if(Math.max(Math.abs(dx),Math.abs(dy))!==r && r!==0) continue;
-          const x=bx+dx, y=by+dy;
-          const here=readMobTile(W.getTile,x,y);
-          const below=readMobTile(W.getTile,x,y+1);
-          if(here===T.AIR && below!==T.AIR && below!==T.WATER && !(INFO[below] && INFO[below].chestTier)){
-            W.setTile(x,y,chest);
-            try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((x+0.5)*(MM.TILE||20),(y+0.5)*(MM.TILE||20),tier||'common'); }catch(e){}
-            return true;
-          }
-        }
-      }
-    }
-    return false;
+    if(!MM.drops || typeof MM.drops.spawnChest!=='function') return false;
+    const d=MM.drops.spawnChest(m.x,m.y-0.25,tier,{source:'mob',vx:(Math.random()*2-1)*1.8,vy:-(2.2+Math.random()*2.2)});
+    if(!d) return false;
+    try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(d.x*(MM.TILE||20),d.y*(MM.TILE||20),tier||'common'); }catch(e){}
+    return true;
   }
 
   registerSpecies({ // Large forest predator near trees
@@ -2315,6 +2352,7 @@ const mobs = (function(){
     meatDropChance:PIRANHA_MEAT_DROP_CHANCE,
     loot:[{item:'fish', min:1, max:1, chance:0.16}],
     spawnTest(x,y,getTile){ return canHostPiranhaSpawn(x,y,getTile); },
+    spawnDensityAt(x){ return piranhaCoastProfile(x).density; },
     onCreate(m, spec, getTile){
       initWaterAnchor(m,getTile);
       m.desiredDepth = Math.min(1, m.desiredDepth||0);
@@ -3887,11 +3925,11 @@ const mobs = (function(){
   });
 
   registerSpecies({
-    id:'ATOMIC_BOMB', displayName:'Atomic bomb',
+    id:'ATOMIC_BOMB', displayName:'Bomba atomowa',
     max:2, localMax:1, spawnChance:0.035, spawnBatch:1,
-    hp:120, dmg:0, speed:0.02, wanderInterval:[4,8], xp:6000, ground:true, organic:false, menaceBias:30,
+    hp:ATOMIC_BOMB_MAX_HP, dmg:0, speed:0.02, wanderInterval:[4,8], xp:6000, ground:true, organic:false, menaceBias:30,
     sightRange:0, pursueRange:0,
-    body:{w:1.75,h:1.55},
+    body:{w:2.9,h:1.5},
     move:{jumpVel:0, maxClimb:0, avoidWater:true},
     meat:false,
     loot:[{item:'steel', min:4, max:8, chance:1}, {item:'electronics', min:2, max:4, chance:0.72}, {item:'radioactiveOre', min:2, max:5, chance:0.95}],
@@ -3901,7 +3939,7 @@ const mobs = (function(){
     onCreate(m){
       m.state='armed';
       m.scale=0.98+Math.random()*0.08;
-      m.lifeEndAt=performance.now()+1000*60*14;
+      m.lifeEndAt=performance.now()+ATOMIC_BOMB_LIFETIME_MS;
       m.decayStartAt=m.lifeEndAt+10000;
       m._nextCockroachAt=performance.now()+1200+Math.random()*2400;
     },
@@ -4029,7 +4067,10 @@ const mobs = (function(){
           return gen;
         };
         const here=standAt(m.x);
-        const ahead=Math.min(standAt(m.x+g.dir*2), standAt(m.x+g.dir*4));
+        // Include the collider's immediate front. Once a real wall stops the
+        // runner, the older 2/4-tile probes could both land beyond a one-wide
+        // obstacle and forget to finish the leap.
+        const ahead=Math.min(standAt(m.x+g.dir), standAt(m.x+g.dir*2), standAt(m.x+g.dir*4));
         if(here-ahead>4 && g.flipCd<=0){
           g.flipCd=0.8; g.dir*=-1; m.facing=g.dir; // too tall — wheel around in a spray of sparks
           try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20), m.y*(MM.TILE||20),'common'); }catch(e){}
@@ -4048,15 +4089,7 @@ const mobs = (function(){
       // the exceptional prize: an epic chest materializes where it fell (a mole
       // dies inside rock, so the scan starts above the surface and walks down)
       try{
-        const W=MM.world, TT=MM.T||T;
-        if(W && W.getTile && W.setTile){
-          const bx=Math.round(m.x);
-          let ty=Math.max(1, Math.min(Math.round(m.y), Math.round(goldenSurfaceY(m.x,m.y)))-5);
-          for(let i=0;i<18;i++,ty++){
-            const t=W.getTile(bx,ty), below=W.getTile(bx,ty+1);
-            if(t===TT.AIR && below!==TT.AIR && below!==TT.WATER){ W.setTile(bx,ty,TT.CHEST_EPIC); break; }
-          }
-        }
+        if(MM.drops && MM.drops.spawnChest) MM.drops.spawnChest(m.x,m.y-0.3,'epic',{source:'golden_mob',vx:(Math.random()*2-1)*1.4,vy:-3.5});
       }catch(e){}
       try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(m.x*(MM.TILE||20), m.y*(MM.TILE||20),'epic'); }catch(e){}
       goldenSay('🏆 Złoty sprinter pokonany! Zostawił epicką skrzynię.');
@@ -4814,6 +4847,136 @@ const mobs = (function(){
     if(typeof max==='number' && v>max) return max;
     return v;
   }
+  function fallbackHeroLevel(xp){
+    let level=1, spent=0;
+    const total=Math.max(0,Number(xp)||0);
+    while(level<99){
+      const need=heroXpNeed(level);
+      if(total<spent+need) break;
+      spent+=need; level++;
+    }
+    return level;
+  }
+  function heroXpNeed(level){
+    return Math.round(60*Math.pow(Math.max(1,Math.min(99,Math.floor(Number(level)||1))),1.35));
+  }
+  function heroCombatProfile(player){
+    let level=1;
+    try{
+      const p=MM.progress && typeof MM.progress.level==='function' ? MM.progress.level() : null;
+      if(p && finiteNum(p.level)) level=Math.max(1,Math.min(99,Math.floor(p.level)));
+      else level=fallbackHeroLevel(player && player.xp);
+    }catch(e){ level=fallbackHeroLevel(player && player.xp); }
+    // Level is an unremovable floor: every kind of development counts. Actual
+    // equipped offence, vitality and defence can only raise the rating. This
+    // makes the comparison feel honest without allowing an unequip-before-kill
+    // exploit to erase the hero's earned strength.
+    const levelPower=17.25*(1+Math.max(0,level-1)*0.14);
+    const maxHp=Math.max(1,Number(player && player.maxHp)||100);
+    let attack=3, reduction=0, moveMult=1;
+    try{
+      if(MM.inventory && typeof MM.inventory.attackDamage==='function') attack=Math.max(1,Number(MM.inventory.attackDamage())||3);
+      else attack=Math.max(1,3+(Number(MM.activeModifiers && MM.activeModifiers.attackDamage)||0));
+      reduction=Math.max(0,Math.min(0.65,Number(MM.activeModifiers && MM.activeModifiers.damageReductionBonus)||0));
+      moveMult=Math.max(0.75,Math.min(2.2,Number(MM.activeModifiers && MM.activeModifiers.moveSpeedMult)||1));
+    }catch(e){}
+    const effectiveHp=maxHp/Math.max(0.35,1-reduction);
+    const statPower=Math.sqrt(effectiveHp*attack)*Math.pow(moveMult,0.16);
+    return {level,power:Math.max(levelPower,statPower),levelPower,statPower,attack,effectiveHp};
+  }
+  function mobCombatPower(m,spec,baseOnly){
+    spec=spec||{};
+    const hp=Math.max(1,baseOnly ? (Number(spec.hp)||1) : (Number(m && m.maxHp)||Number(spec.hp)||1));
+    const dmgMult=baseOnly ? 1 : Math.max(0.1,Number(m && m.dmgMult)||1);
+    // Menace covers indirect threats (for example shamans which weaponise the
+    // weather while their direct contact damage is zero).
+    const damage=Math.max(1,(Number(spec.dmg)||0)*dmgMult,(Number(spec.menaceBias)||0)*0.75);
+    const speed=Math.max(0,Number(spec.speed)||0)*(baseOnly?1:Math.max(0.45,Number(m && m.speedMul)||1));
+    const tempo=Math.max(0.9,Math.min(1.32,0.86+speed/18))*(spec.alwaysAggro?1.04:1);
+    return Math.max(1,Math.sqrt(hp*damage)*tempo);
+  }
+  function challengeXpMultiplier(ratio){
+    const r=Math.max(0,Number(ratio)||0);
+    for(let i=1;i<XP_CHALLENGE_KNOTS.length;i++){
+      const a=XP_CHALLENGE_KNOTS[i-1], b=XP_CHALLENGE_KNOTS[i];
+      if(r>b[0]) continue;
+      const raw=(r-a[0])/Math.max(0.0001,b[0]-a[0]);
+      const t=Math.max(0,Math.min(1,raw));
+      const smooth=t*t*(3-2*t);
+      return a[1]+(b[1]-a[1])*smooth;
+    }
+    return XP_MAX_CHALLENGE_MULT;
+  }
+  function challengeTier(ratio){
+    if(ratio<=XP_TRIVIAL_RATIO) return {id:'trivial',label:'trywialny',color:'#aeb8c5'};
+    if(ratio<0.70) return {id:'weak',label:'słaby',color:'#83c98b'};
+    if(ratio<0.88) return {id:'easy',label:'łatwy',color:'#a9d866'};
+    if(ratio<1.12) return {id:'fair',label:'równy',color:'#f1d45d'};
+    if(ratio<1.65) return {id:'hard',label:'groźny',color:'#ff9c4a'};
+    return {id:'deadly',label:'zabójczy',color:'#ff5d65'};
+  }
+  function recommendedHeroLevel(power){
+    return Math.max(1,Math.min(99,Math.round(1+(Math.max(0,power/17.25-1)/0.14))));
+  }
+  function mobChallengeProfile(m,spec,player,heroOpt){
+    const hero=heroOpt || heroCombatProfile(player);
+    const remembered=Math.max(0,Number(m && m._heroPowerSeen)||0);
+    const heroPower=Math.max(hero.power,remembered);
+    const mobPower=mobCombatPower(m,spec,false);
+    const basePower=mobCombatPower(null,spec,true);
+    const fixed=FIXED_CHALLENGE_XP.has(String(spec && spec.id||m && m.id||''));
+    const ratio=fixed ? 1 : mobPower/Math.max(1,heroPower);
+    const tier=challengeTier(ratio);
+    const challengeMult=fixed ? 1 : challengeXpMultiplier(ratio);
+    const variantMult=fixed ? 1 : Math.max(0.75,Math.min(XP_MAX_VARIANT_MULT,Math.pow(mobPower/Math.max(1,basePower),0.68)));
+    return {
+      heroLevel:hero.level,
+      heroPower,
+      mobPower,
+      basePower,
+      ratio,
+      tier:tier.id,
+      label:tier.label,
+      color:tier.color,
+      challengeMult,
+      variantMult,
+      totalMult:challengeMult*variantMult,
+      recommendedLevel:recommendedHeroLevel(mobPower),
+      trivial:!fixed && ratio<=XP_TRIVIAL_RATIO,
+      fixed
+    };
+  }
+  function challengeProgressionFloor(profile){
+    if(!profile || profile.fixed || profile.trivial || profile.ratio<XP_PROGRESS_FLOOR_RATIO) return 0;
+    // A genuinely level-appropriate fight must remain worth travelling for even
+    // when it is a humble center species hardened by a distant region. Authored
+    // species XP can exceed this; the floor only repairs underpayment. It starts
+    // at ~4% of a level for an equal foe, rises toward 15% for extreme danger,
+    // and is still reduced by fatigue after the first kill.
+    const share=Math.min(XP_PROGRESS_FLOOR_CAP,XP_PROGRESS_FLOOR_SHARE*Math.pow(Math.max(0,profile.challengeMult),XP_PROGRESS_FLOOR_EXP));
+    return Math.max(0,Math.round(heroXpNeed(profile.heroLevel)*share));
+  }
+  function progressionFleeEligible(m,spec,profile){
+    if(!m || !spec || !profile || !profile.trivial) return false;
+    if(spec.neverAggro || !(Number(spec.dmg)>0) || FIXED_CHALLENGE_XP.has(m.id)) return false;
+    return true;
+  }
+  function applyProgressionFlee(m,spec,player,profile,dt){
+    if(!progressionFleeEligible(m,spec,profile) || !player) return false;
+    const dx=m.x-player.x, dy=m.y-player.y;
+    const dist=Math.hypot(dx,dy)||0.001;
+    const sense=Math.max(12,Math.min(24,Math.max(XP_FLEE_RANGE,(Number(spec.sightRange)||0)+3)));
+    if(dist>sense) return false;
+    const ax=dx/dist, ay=dy/dist;
+    const speed=Math.max(1.8,(Number(spec.speed)||2)*(Number(m.speedMul)||1)*(spec.flying||spec.aquatic?1.12:0.96));
+    m.vx=ax*speed;
+    if(spec.flying || spec.aquatic) m.vy=ay*speed*0.72;
+    else if(m.onGround && (Math.abs(dy)>1.5 || Math.random()<Math.max(0,dt)*0.8)) m.vy=Math.min(m.vy||0,(spec.move&&spec.move.jumpVel)||-4.2);
+    m.facing=ax>=0?1:-1;
+    m.state='flee_outmatched';
+    m._progressionFlee=true;
+    return true;
+  }
   function validMobState(m){
     return !!m && finiteCoord(m.x) && finiteCoord(m.y) && finiteNum(m.vx) && finiteNum(m.vy) && finiteNum(m.hp);
   }
@@ -4857,7 +5020,7 @@ const mobs = (function(){
     const now = performance.now();
   const h=mobHostilityAt(x);
   const maxHp=mobMaxHp(spec,x);
-  const m={ id: spec.id, x, y, vx:0, vy:0, hp: maxHp, maxHp, baseHp: spec.hp, hostility:+h.hostility.toFixed(3), hostilitySide:h.side, dmgMult:mobDamageMult(spec,x), state:'idle', tNext: now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000, facing:1, _stableFacing:1, _stableFacingChangedAt:now, _pendingFacing:0, _pendingFacingSince:0, spawnT: now, attackCd:0, hitFlashUntil:0, shake:0, tickMod: (Math.random()<0.5?1:0), sleepUntil:0 };
+  const m={ id: spec.id, x, y, vx:0, vy:0, hp: maxHp, maxHp, baseHp: spec.hp, hostility:+h.hostility.toFixed(3), hostilitySide:h.side, dmgMult:mobDamageMult(spec,x), state:'idle', tNext: now + rand(spec.wanderInterval[0], spec.wanderInterval[1])*1000, facing:1, _stableFacing:1, _stableFacingChangedAt:now, _pendingFacing:0, _pendingFacingSince:0, spawnT: now, attackCd:0, hitFlashUntil:0, shake:0, tickMod: (Math.random()<0.5?1:0), sleepUntil:0, soot:0, _smokeTint:0 };
   // Per-entity variability
   m.scale = 0.75 + Math.random()*0.25; // 0.75..1.0 visual & collider scaling
   m.speedMul = (0.75 + Math.random()*0.25) * (h.mobSpeedMult || 1); // regional speed pressure + per-mob variance
@@ -4996,6 +5159,37 @@ const mobs = (function(){
     if(biomeAt(x)===5) return true;
     try{ return !!(WORLDGEN && typeof WORLDGEN.oceanBasinAt==='function' && WORLDGEN.oceanBasinAt(x)); }catch(e){ return false; }
   }
+  function piranhaCoastProfile(x){
+    x=Math.floor(Number.isFinite(x)?x:0);
+    let basin=null;
+    try{
+      basin=WORLDGEN && typeof WORLDGEN.oceanBasinAt==='function' ? WORLDGEN.oceanBasinAt(x) : null;
+    }catch(e){}
+    // Small seas that do not qualify as sealed ocean basins are, by definition,
+    // entirely coastal. Keeping full density here also avoids treating a missing
+    // worldgen query as an offshore exclusion.
+    if(!basin || !Number.isFinite(basin.left) || !Number.isFinite(basin.right) || x<basin.left || x>basin.right){
+      return {distance:0,density:1,ambushChance:1,inwardDir:0,basin:null};
+    }
+    const leftDistance=Math.max(0,x-basin.left);
+    const rightDistance=Math.max(0,basin.right-x);
+    const distance=Math.min(leftDistance,rightDistance);
+    let density=1;
+    if(distance>PIRANHA_COASTAL_CORE){
+      const span=Math.max(1,PIRANHA_COASTAL_RANGE-PIRANHA_COASTAL_CORE);
+      const t=Math.max(0,Math.min(1,(distance-PIRANHA_COASTAL_CORE)/span));
+      const smooth=t*t*(3-2*t);
+      density=1-(1-PIRANHA_OFFSHORE_DENSITY)*smooth;
+    }
+    density=Math.max(PIRANHA_OFFSHORE_DENSITY,Math.min(1,density));
+    return {
+      distance,
+      density,
+      ambushChance:0.10+0.90*density,
+      inwardDir:leftDistance<=rightDistance ? 1 : -1,
+      basin
+    };
+  }
   function isLakeColumn(x){
     return biomeAt(Math.floor(Number.isFinite(x)?x:0))===6;
   }
@@ -5010,11 +5204,13 @@ const mobs = (function(){
     if(!isSeaOrOceanColumn(x)) return false;
     if(readMobTile(getTile,x,y)!==T.WATER) return false;
     const col=waterColumnAt(x,y,getTile);
-    if(!col || col.depth<3) return false;
+    // A two-tile coastal shelf is enough room for the small body of a piranha.
+    // The former three-tile rule erased them from long, gently sloping shores.
+    if(!col || col.depth<2) return false;
     const above=readMobTile(getTile,x,y-1);
     if(above!==T.WATER && above!==T.AIR) return false;
     const pocket=waterPocketShape(x,y,getTile);
-    return pocket.count>=16 && pocket.width>=4 && pocket.depth>=3;
+    return pocket.count>=12 && pocket.width>=4 && pocket.depth>=2;
   }
   function canHostJackpotWhaleSpawn(x,y,getTile){
     x|=0; y|=0;
@@ -5540,7 +5736,13 @@ const mobs = (function(){
     }
     return n;
   }
-  function findPiranhaAmbushSpawn(player,getTile){
+  function piranhaSpawnSpot(spec,tx,ty,getTile,used){
+    const key=tx+','+ty;
+    if(used && used.has(key)) return null;
+    if(!spec.spawnTest(tx,ty,getTile)) return null;
+    return {x:tx+0.5,y:ty+0.5,key};
+  }
+  function findPiranhaAmbushSpawn(player,getTile,used){
     const spec=SPECIES.PIRANHA;
     if(!spec) return null;
     for(let tries=0; tries<48; tries++){
@@ -5548,15 +5750,31 @@ const mobs = (function(){
       const r=3.5+Math.random()*11.5;
       const tx=Math.floor(player.x+Math.cos(ang)*r);
       const ty=Math.floor(player.y-1+Math.random()*5);
-      if(spec.spawnTest(tx,ty,getTile)) return {x:tx+0.5,y:ty+0.5};
+      const spot=piranhaSpawnSpot(spec,tx,ty,getTile,used);
+      if(spot) return spot;
     }
     const px=Math.floor(player.x), py=Math.floor(player.y);
-    for(let r=2; r<=13; r++){
+    for(let r=2; r<=18; r++){
       for(let dy=-Math.min(4,r); dy<=Math.min(5,r); dy++){
         for(let dx=-r; dx<=r; dx++){
           if(Math.max(Math.abs(dx),Math.abs(dy))!==r) continue;
           const tx=px+dx, ty=py+dy;
-          if(spec.spawnTest(tx,ty,getTile)) return {x:tx+0.5,y:ty+0.5};
+          const spot=piranhaSpawnSpot(spec,tx,ty,getTile,used);
+          if(spot) return spot;
+        }
+      }
+    }
+    // On gentle shelves the nearest two-tile-deep water can be dozens of metres
+    // from the first wet shore tile. Search toward the basin interior instead of
+    // giving up after a small circle around the swimmer.
+    const coast=piranhaCoastProfile(px);
+    const primary=coast.inwardDir || (Math.random()<0.5 ? -1 : 1);
+    for(const dir of [primary,-primary]){
+      for(let distance=19; distance<=PIRANHA_SHORE_SEARCH; distance++){
+        const tx=px+dir*distance;
+        for(let dy=-2; dy<=8; dy++){
+          const spot=piranhaSpawnSpot(spec,tx,py+dy,getTile,used);
+          if(spot) return spot;
         }
       }
     }
@@ -5567,18 +5785,27 @@ const mobs = (function(){
     if(!spec || typeof getTile!=='function' || !heroInSeaWater(player,getTile)) return;
     if(now<spawnFreezeUntil) return;
     if(now<nextPiranhaAmbush) return;
-    nextPiranhaAmbush=now+850+Math.random()*850;
+    const coast=piranhaCoastProfile(player.x);
+    const offshoreSlowdown=1+3*(1-coast.density);
+    nextPiranhaAmbush=now+(850+Math.random()*850)*offshoreSlowdown;
+    // This is deliberately a probability, not a hard geographic ban: a small
+    // hunting group can still surprise a swimmer in the open ocean.
+    if(Math.random()>coast.ambushChance) return;
     const local=countSpeciesNear('PIRANHA',player.x,player.y,28);
-    const target=Math.max(6,Math.min(spec.localMax||12, 8+Math.floor(Math.random()*4)));
+    const targetBase=Math.round(2+6*coast.density);
+    const targetSpread=Math.max(1,Math.round(1+3*coast.density));
+    const target=Math.max(2,Math.min(spec.localMax||12,targetBase+Math.floor(Math.random()*targetSpread)));
     if(local>=target || countSpecies('PIRANHA')>=spec.max) return;
     const localAll=localMobCounts(player,32);
     const cap=Math.max(ECO_TOTAL_LOCAL_CAP+6, Math.round(ECO_TOTAL_LOCAL_CAP*1.25));
     if(localAll.total>=cap) return;
     const want=Math.min(spec.spawnBatch||6, target-local, spec.max-countSpecies('PIRANHA'), cap-localAll.total);
     let born=0;
+    const used=new Set();
     for(let i=0;i<want;i++){
-      const spot=findPiranhaAmbushSpawn(player,getTile);
+      const spot=findPiranhaAmbushSpawn(player,getTile,used);
       if(!spot) break;
+      used.add(spot.key);
       mobs.push(create(spec,spot.x,spot.y,getTile));
       born++;
     }
@@ -5630,6 +5857,9 @@ const mobs = (function(){
   }
   function tryGoldGuardianSpawn(player,getTile,now){
     if(!player || typeof getTile!=='function' || now<spawnFreezeUntil || now<nextGoldGuardianScan) return;
+    // Walking over a buried vein must not summon a visible clue on the surface.
+    // Once the hero actually descends, the encounter can arm immediately.
+    if(!goldGuardianUndergroundAt(player.x,player.y)) return;
     nextGoldGuardianScan=now+GOLD_GUARD_SCAN_MS+Math.random()*GOLD_GUARD_SCAN_MS;
     if(countGoldGuardiansNear(player.x,player.y,34)>=GOLD_GUARD_LOCAL_CAP) return;
     const vein=scanGoldVeinNearPlayer(player,getTile);
@@ -5658,10 +5888,15 @@ const mobs = (function(){
       if(localCount>=localCap) continue;
       const affinity=biomeAffinity(spec,biome);
       if(affinity<=0.02) continue;
+      let locationDensity=1;
+      if(typeof spec.spawnDensityAt==='function'){
+        try{ locationDensity=Math.max(0,Math.min(1,Number(spec.spawnDensityAt(player.x))||0)); }catch(e){ locationDensity=1; }
+      }
+      if(locationDensity<=0) continue;
       const spawnChance=(typeof spec.spawnChance==='number' && isFinite(spec.spawnChance)) ? Math.max(0,Math.min(1,spec.spawnChance)) : 0.38;
       const deficit=Math.max(0,localCap-localCount);
-      const weight=affinity*spawnChance*seasonAnimalMultiplier(spec)*(0.6+deficit/localCap);
-      if(weight>0) candidates.push({spec,weight});
+      const weight=affinity*spawnChance*seasonAnimalMultiplier(spec)*(0.6+deficit/localCap)*locationDensity;
+      if(weight>0) candidates.push({spec,weight,locationDensity});
     }
     candidates.sort((a,b)=>b.weight-a.weight);
     let born=0;
@@ -5671,7 +5906,10 @@ const mobs = (function(){
       for(; idx<candidates.length; idx++){ pick-=candidates[idx].weight; if(pick<=0) break; }
       const cand=candidates[Math.min(idx,candidates.length-1)];
       candidates.splice(Math.min(idx,candidates.length-1),1);
-      const batch=(typeof cand.spec.spawnBatch==='number' && isFinite(cand.spec.spawnBatch)) ? Math.max(1,cand.spec.spawnBatch|0) : 1;
+      const baseBatch=(typeof cand.spec.spawnBatch==='number' && isFinite(cand.spec.spawnBatch)) ? Math.max(1,cand.spec.spawnBatch|0) : 1;
+      const batch=typeof cand.spec.spawnDensityAt==='function'
+        ? Math.max(1,Math.round(baseBatch*(0.25+0.75*cand.locationDensity)))
+        : baseBatch;
       const passCapForCandidate=Math.max(ECO_MAX_BIRTHS_PER_PASS,batch);
       for(let n=0; n<batch && born<passCapForCandidate && local.total+born<totalLocalCap; n++){
         const localCap=seasonAdjustedLocalCap(cand.spec);
@@ -5697,6 +5935,120 @@ const mobs = (function(){
         }
       }
     }
+  }
+
+  function mobCollisionMass(m,spec){
+    const body=bodyHalfExtents(m,spec);
+    const density=spec && spec.organic===false ? 1.35 : (spec && spec.flying ? 0.72 : 1);
+    return Math.max(0.18,body.halfW*body.halfH*4*density);
+  }
+  function mobBodyClearAt(m,spec,x,y,getTile){
+    if(!m || !spec || typeof getTile!=='function' || !finiteCoord(x) || !finiteCoord(y)) return false;
+    const {halfW,halfH}=bodyHalfExtents(m,spec);
+    if(!inWorldY(y,halfH+0.01,halfH+0.01)) return false;
+    const minX=Math.floor(x-halfW+0.002), maxX=Math.floor(x+halfW-0.002);
+    const minY=Math.floor(y-halfH+0.002), maxY=Math.floor(y+halfH-0.002);
+    for(let ty=minY;ty<=maxY;ty++){
+      for(let tx=minX;tx<=maxX;tx++){
+        if(mobCellBlocked(tx,ty,getTile)) return false;
+      }
+    }
+    return true;
+  }
+  function shiftMobIfClear(m,spec,dx,dy,getTile){
+    if((!dx && !dy) || !mobBodyClearAt(m,spec,m.x+dx,m.y+dy,getTile)) return false;
+    m.x+=dx;
+    m.y+=dy;
+    return true;
+  }
+  function dampClosingMobVelocity(a,b,axis,dir,ma,mb){
+    const key=axis==='x'?'vx':'vy';
+    const closing=((a[key]||0)-(b[key]||0))*dir;
+    if(closing<=0) return;
+    const total=ma+mb;
+    a[key]-=dir*closing*(mb/total);
+    b[key]+=dir*closing*(ma/total);
+  }
+  function separateMobPairOnAxis(a,b,sa,sb,getTile,axis,overlap,orderSign){
+    const delta=axis==='x' ? b.x-a.x : b.y-a.y;
+    const dir=Math.abs(delta)>0.0001 ? Math.sign(delta) : orderSign;
+    const ma=mobCollisionMass(a,sa), mb=mobCollisionMass(b,sb), total=ma+mb;
+    const distance=overlap+0.006;
+    const aShare=distance*(mb/total), bShare=distance*(ma/total);
+    const adx=axis==='x' ? -dir*aShare : 0;
+    const ady=axis==='y' ? -dir*aShare : 0;
+    const bdx=axis==='x' ? dir*bShare : 0;
+    const bdy=axis==='y' ? dir*bShare : 0;
+    const movedA=shiftMobIfClear(a,sa,adx,ady,getTile);
+    const movedB=shiftMobIfClear(b,sb,bdx,bdy,getTile);
+    if(!movedA){
+      const extra=distance-(movedB?bShare:0);
+      if(extra>0) shiftMobIfClear(b,sb,axis==='x'?dir*extra:0,axis==='y'?dir*extra:0,getTile);
+    }
+    if(!movedB){
+      const extra=distance-(movedA?aShare:0);
+      if(extra>0) shiftMobIfClear(a,sa,axis==='x'?-dir*extra:0,axis==='y'?-dir*extra:0,getTile);
+    }
+    if(movedA || movedB){
+      dampClosingMobVelocity(a,b,axis,dir,ma,mb);
+      if(axis==='y'){
+        if(dir>0 && movedA) a.onGround=false;
+        if(dir<0 && movedB) b.onGround=false;
+      }
+      return true;
+    }
+    return false;
+  }
+  function separateMobPair(a,b,getTile,orderSign){
+    if(!validMobState(a) || !validMobState(b) || a.hp<=0 || b.hp<=0) return false;
+    const sa=SPECIES[a.id], sb=SPECIES[b.id];
+    if(!sa || !sb) return false;
+    const ea=bodyHalfExtents(a,sa), eb=bodyHalfExtents(b,sb);
+    const overlapX=ea.halfW+eb.halfW-Math.abs(b.x-a.x);
+    const overlapY=ea.halfH+eb.halfH-Math.abs(b.y-a.y);
+    if(overlapX<=MOB_BODY_SLOP || overlapY<=MOB_BODY_SLOP) return false;
+    const bothGround=!!(sa.ground && sb.ground && !sa.flying && !sb.flying && !sa.aquatic && !sb.aquatic);
+    const firstAxis=bothGround || overlapX<=overlapY ? 'x' : 'y';
+    const firstOverlap=firstAxis==='x'?overlapX:overlapY;
+    if(separateMobPairOnAxis(a,b,sa,sb,getTile,firstAxis,firstOverlap,orderSign)) return true;
+    const secondAxis=firstAxis==='x'?'y':'x';
+    return separateMobPairOnAxis(a,b,sa,sb,getTile,secondAxis,secondAxis==='x'?overlapX:overlapY,orderSign);
+  }
+  function resolveMobBodyCollisions(getTile){
+    if(mobs.length<2 || typeof getTile!=='function') return 0;
+    const order=new Map();
+    for(let i=0;i<mobs.length;i++) order.set(mobs[i],i);
+    let resolved=0;
+    // A short bounded relaxation handles spawn batches without turning the
+    // resolver into an unbounded physics loop on a crowded frame.
+    for(let pass=0;pass<12;pass++){
+      const moved=new Set();
+      for(let i=0;i<mobs.length;i++){
+        const m=mobs[i];
+        if(!validMobState(m) || m.hp<=0) continue;
+        const key=m._cellKey || cellKey(m.x,m.y);
+        const parts=key.split(',');
+        const cx=+parts[0], cy=+parts[1];
+        for(let gx=cx-1;gx<=cx+1;gx++){
+          for(let gy=cy-1;gy<=cy+1;gy++){
+            const set=grid.get(gx+','+gy);
+            if(!set) continue;
+            for(const other of set){
+              const j=order.get(other);
+              if(j==null || j<=i) continue;
+              if(separateMobPair(m,other,getTile,((i+j)&1)?1:-1)){
+                moved.add(m);
+                moved.add(other);
+                resolved++;
+              }
+            }
+          }
+        }
+      }
+      for(const m of moved) updateGridCell(m);
+      if(!moved.size) break;
+    }
+    return resolved;
   }
 
   function isAggro(specId){ const exp=speciesAggro[specId]; return exp && exp> Date.now(); }
@@ -5779,10 +6131,11 @@ const mobs = (function(){
     return true;
   }
   function isHeroFocused(m,now){
-    return !!(m && finiteNum(m.heroFocusUntil) && m.heroFocusUntil>(now||Date.now()));
+    return !!(m && !m._progressionOutmatched && finiteNum(m.heroFocusUntil) && m.heroFocusUntil>(now||Date.now()));
   }
   function isMobHostile(m,now){
     if(!m || m.hp<=0) return false;
+    if(m._progressionOutmatched) return false;
     if(isMobPacified(m,now)) return false;
     const spec=SPECIES[m.id];
     if(spec && spec.neverAggro) return false;
@@ -5809,7 +6162,14 @@ const mobs = (function(){
     m._lastHeroHitSpecial=heroHit ? !!(opts && typeof opts==='object' && opts.specialAttack) : false;
     m._lastHeroHitLucky=heroHit ? !!(opts && typeof opts==='object' && opts.luckyStrike) : false;
     m._lastHeroHitElement=heroHit ? combatElementFromOpts(opts) : '';
-    if(heroHit) markHeroAttack(m);
+    if(heroHit){
+      markHeroAttack(m);
+      try{
+        const p=heroCombatProfile((typeof window!=='undefined' && window.player)||null);
+        m._heroPowerSeen=Math.max(Number(m._heroPowerSeen)||0,p.power);
+        m._heroLevelSeen=Math.max(Number(m._heroLevelSeen)||1,p.level);
+      }catch(e){}
+    }
   }
   function nearestCompanionTarget(wx,wy,range,opts){
     try{
@@ -6921,8 +7281,7 @@ const mobs = (function(){
     let minY = Math.floor(m.y - halfH), maxY = Math.floor(m.y + halfH);
     for(let y=minY; y<=maxY; y++){
       for(let x=minX; x<=maxX; x++){
-        const t=getTile(x,y);
-        if(isSolid && isSolid(t)){
+        if(mobCellBlocked(x,y,getTile)){
           if(m.vx>0) m.x = x - halfW - 0.001;
           else if(m.vx<0) m.x = x + 1 + halfW + 0.001;
           m.vx = 0;
@@ -6936,8 +7295,7 @@ const mobs = (function(){
     minY = Math.floor(m.y - halfH); maxY = Math.floor(m.y + halfH);
     for(let y=minY; y<=maxY; y++){
       for(let x=minX; x<=maxX; x++){
-        const t=getTile(x,y);
-        if(isSolid && isSolid(t)){
+        if(mobCellBlocked(x,y,getTile)){
           if(m.vy>0) m.y = y - halfH - 0.001;
           else if(m.vy<0) m.y = y + 1 + halfH + 0.001;
           m.vy = 0;
@@ -6960,42 +7318,32 @@ const mobs = (function(){
     }catch(e){}
     return false;
   }
-  function integrateFloatingShelterBarrierStep(m,spec,getTile,dt){
-    const {halfW,halfH}=bodyHalfExtents(m,spec);
-    if(m.vx) m.x += m.vx*dt;
-    let minX = Math.floor(m.x - halfW), maxX = Math.floor(m.x + halfW);
-    let minY = Math.floor(m.y - halfH), maxY = Math.floor(m.y + halfH);
-    for(let y=minY; y<=maxY; y++){
-      for(let x=minX; x<=maxX; x++){
-        if(healingShelterBarrierAt(x,y,getTile)){
-          if(m.vx>0) m.x = x - halfW - 0.001;
-          else if(m.vx<0) m.x = x + 1 + halfW + 0.001;
-          m.vx = 0;
-          minX = Math.floor(m.x - halfW);
-          maxX = Math.floor(m.x + halfW);
-        }
-      }
-    }
-    if(m.vy) m.y += m.vy*dt;
-    minX = Math.floor(m.x - halfW); maxX = Math.floor(m.x + halfW);
-    minY = Math.floor(m.y - halfH); maxY = Math.floor(m.y + halfH);
-    for(let y=minY; y<=maxY; y++){
-      for(let x=minX; x<=maxX; x++){
-        if(healingShelterBarrierAt(x,y,getTile)){
-          if(m.vy>0) m.y = y - halfH - 0.001;
-          else if(m.vy<0) m.y = y + 1 + halfH + 0.001;
-          m.vy = 0;
-          minY = Math.floor(m.y - halfH);
-          maxY = Math.floor(m.y + halfH);
-        }
-      }
-    }
+  function mobCellBlocked(x,y,getTile){
+    const t=getTile(x,y);
+    return !!(isSolid && isSolid(t)) || healingShelterBarrierAt(x,y,getTile);
   }
-  function integrateFloatingWithShelterBarriers(m,spec,getTile,dt){
-    const maxMove = Math.max(Math.abs(m.vx*dt), Math.abs(m.vy*dt));
-    const steps = Math.max(1, Math.ceil(maxMove/0.35));
-    const stepDt = dt / steps;
-    for(let s=0; s<steps; s++) integrateFloatingShelterBarrierStep(m,spec,getTile,stepDt);
+  function depenetrateMobFromTerrain(m,spec,getTile){
+    if(mobBodyClearAt(m,spec,m.x,m.y,getTile)) return true;
+    const offsets=[
+      [0,-0.35],[-0.35,0],[0.35,0],[0,0.35],
+      [0,-0.75],[-0.75,0],[0.75,0],[0,0.75],
+      [-0.75,-0.75],[0.75,-0.75],[-0.75,0.75],[0.75,0.75],
+      [0,-1.25],[-1.25,0],[1.25,0],[0,1.25],
+      [0,-2],[-2,0],[2,0],[0,2]
+    ];
+    for(const off of offsets){
+      const nx=m.x+off[0], ny=m.y+off[1];
+      if(!mobBodyClearAt(m,spec,nx,ny,getTile)) continue;
+      m.x=nx;
+      m.y=ny;
+      m.vx=0;
+      m.vy=0;
+      m.onGround=false;
+      return true;
+    }
+    m.vx=0;
+    m.vy=0;
+    return false;
   }
   function windSpeedAt(x,y,getTile){
     try{
@@ -7079,8 +7427,15 @@ const mobs = (function(){
     }catch(e){}
     let active=0;
     const nowEpoch=Date.now();
+    const heroThreat=heroCombatProfile(player);
     for(let i=0;i<mobs.length;i++){
-      const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue; const aggressive=isMobHostile(m,nowEpoch) && !isMobPacified(m,now) && !hasStatus(m,'blind') && !isGhostSpooked(m);
+      const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue;
+      const challenge=mobChallengeProfile(m,spec,player,heroThreat);
+      m._progressionOutmatched=progressionFleeEligible(m,spec,challenge);
+      m._progressionFlee=false;
+      const aggressive=isMobHostile(m,nowEpoch) && !isMobPacified(m,now) && !hasStatus(m,'blind') && !isGhostSpooked(m);
+      const smoke=MM.smoke;
+      if(smoke&&typeof smoke.updateSoot==='function') smoke.updateSoot(m,dt,{height:spec.body&&spec.body.h||0.9});
       // Natural lifespan: apply health decay when past decayStartAt; ensure it runs before far-sleep skip
       if(m.decayStartAt && now >= m.decayStartAt){
         const total = Math.max(0.5, ((m.lifeEndAt||now) - m.decayStartAt)/1000); // seconds window
@@ -7102,12 +7457,16 @@ const mobs = (function(){
   const canSee = distToPlayer <= sight;
   const shouldPursue = distToPlayer <= pursue;
   const aggroNow = aggressive && (canSee || shouldPursue);
-  m._combatTarget=aggroNow ? (combatTarget && combatTarget.kind==='companion' ? Object.assign({},combatTarget,{y:combatTarget.aimY==null ? combatTarget.y : combatTarget.aimY}) : combatTarget) : player;
+  const fleeTarget=m._progressionOutmatched ? {x:m.x+(m.x>=player.x?10000:-10000),y:m.y} : null;
+  m._combatTarget=fleeTarget || (aggroNow ? (combatTarget && combatTarget.kind==='companion' ? Object.assign({},combatTarget,{y:combatTarget.aimY==null ? combatTarget.y : combatTarget.aimY}) : combatTarget) : player);
   // Blinded (sand in the eyes): the AI perceives its target impossibly far away,
   // so even species with proximity-hunt fallbacks (wolf adx<8 …) stop closing in.
   // Physical contact still hurts — a blind wolf that stumbles into you bites.
   const blindMob=hasStatus(m,'blind');
-  updateMob(m, spec, {dt, now, aggressive: aggroNow, player:(blindMob ? {x:m.x-10000, y:m.y} : m._combatTarget), getTile, setTile, distToPlayer:(blindMob ? 10000 : distToPlayer)});
+  updateMob(m, spec, {dt, now, aggressive: aggroNow, player:(blindMob ? {x:m.x-10000, y:m.y} : m._combatTarget), getTile, setTile, distToPlayer:(blindMob || m._progressionOutmatched ? 10000 : distToPlayer)});
+      // This runs after every species-specific AI, overriding proximity shortcuts
+      // that used to make weak wolves, vultures, worms, etc. lunge anyway.
+      applyProgressionFlee(m,spec,player,challenge,dt);
       if(isGroundMob){
         // Interpret AI changes: any upward impulse (vy<-1) becomes a jump intent
         if(m.vy < -1){ m._wantJump=true; }
@@ -7192,6 +7551,10 @@ const mobs = (function(){
         if(distP > 140 && (frame & 3)!== (m.tickMod||0)){ continue; } // skip this frame
       }
       active++;
+  // Every ordinary mob is a terrain-aware body. The golden mole is the one
+  // explicit burrower: its form is intentionally visible only in open galleries.
+  const terrainPhasing=spec.flying && m.id==='ZLOTY' && m._g && m._g.form==='mole';
+  if(!terrainPhasing) depenetrateMobFromTerrain(m,spec,getTile);
   // Ground / gravity integration + AABB collision for ground mobs
   if(!spec.aquatic && !spec.flying){
   m.vy += MOVE.GRAV * dt; if(m.vy>24) m.vy=24;
@@ -7202,7 +7565,7 @@ const mobs = (function(){
         let minY = Math.floor(m.y - halfH), maxY = Math.floor(m.y + halfH);
         for(let y=minY; y<=maxY; y++){
           for(let x=minX; x<=maxX; x++){
-            const t = getTile(x,y); if(isSolid && isSolid(t)){
+            if(mobCellBlocked(x,y,getTile)){
               if(m.vx>0) m.x = x - halfW - 0.001; else if(m.vx<0) m.x = x + 1 + halfW + 0.001; m.vx=0;
               minX = Math.floor(m.x - halfW); maxX = Math.floor(m.x + halfW); // recalc
             }
@@ -7213,7 +7576,7 @@ const mobs = (function(){
         const wasGround = m.onGround; m.onGround=false;
         for(let y=minY; y<=maxY; y++){
           for(let x=minX; x<=maxX; x++){
-            const t=getTile(x,y); if(isSolid && isSolid(t)){
+            const t=getTile(x,y); if(mobCellBlocked(x,y,getTile)){
               if(m.vy>0){
                 m.y = y - halfH - 0.001;
                 const spring=MM.springPlatforms;
@@ -7255,10 +7618,10 @@ const mobs = (function(){
           m.vx *= 0.995;
         }
         if(m.onGround && !wasGround){ /* landing hook placeholder */ }
-      } else if(spec.collideTerrain){
+      } else if(terrainPhasing){
+        m.x += m.vx*dt; m.y += m.vy*dt;
+      } else if(spec.aquatic || spec.flying || spec.collideTerrain){
         integrateFloatingWithTerrain(m,spec,getTile,dt);
-      } else if(spec.flying){
-        integrateFloatingWithShelterBarriers(m,spec,getTile,dt);
       } else {
         // Non-ground ambient movement for pass-through creatures (fish, birds, fireflies).
         m.x += m.vx*dt; m.y += m.vy*dt;
@@ -7303,7 +7666,7 @@ const mobs = (function(){
       applyGhostDread(m,dt);
       stabilizeMobFacing(m,spec,now);
       // Contact damage + bounce (touch) independent of attack cooldown
-  const piranhaTouchTarget = m.id==='PIRANHA' ? piranhaPreyTarget(m,player,getTile,1.55) : null;
+  const piranhaTouchTarget = (m.id==='PIRANHA' && !m._progressionOutmatched) ? piranhaPreyTarget(m,player,getTile,1.55) : null;
   const touchCompanion = (m.id!=='PIRANHA' && aggressive) ? nearestCompanionTarget(m.x,m.y,1.15) : null;
   const touchTarget = piranhaTouchTarget || (m.id==='PIRANHA' ? null : (touchCompanion || player));
   if(!touchTarget) continue;
@@ -7318,7 +7681,7 @@ const mobs = (function(){
         } else if(!touchCompanion && (!piranhaTouchTarget || piranhaTouchTarget.kind==='hero')){
           player.vx += nx*3*dt; player.vy += ny*2*dt;
         } // gentle continuous push
-        const canBite=isMobHostile(m,nowEpoch) && !piranhaIsDistracted(m,now);
+        const canBite=!m._progressionOutmatched && isMobHostile(m,nowEpoch) && !piranhaIsDistracted(m,now);
         if(canBite){
           if(m.attackCd>0) m.attackCd-=dt;
           if(m.attackCd<=0){
@@ -7332,6 +7695,7 @@ const mobs = (function(){
         }
       }
     }
+    resolveMobBodyCollisions(getTile);
     updateProjectiles(dt, player, getTile, setTile);
     updateLasers(dt);
     updateMobDeathFx(dt,getTile);
@@ -7516,6 +7880,29 @@ const mobs = (function(){
       _goldGlow=c;
     }catch(e){ _goldGlow=false; }
     return _goldGlow;
+  }
+
+  function drawAtomicTrefoil(ctx,cx,cy,r){
+    const radius=Math.max(3,Number(r)||7);
+    ctx.save();
+    ctx.translate(cx,cy);
+    ctx.fillStyle='#f2d33c';
+    ctx.beginPath(); ctx.arc(0,0,radius,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#11151a';
+    for(let i=0;i<3;i++){
+      const a=-Math.PI/2+i*Math.PI*2/3;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a-0.42)*radius*0.34,Math.sin(a-0.42)*radius*0.34);
+      ctx.arc(0,0,radius*0.82,a-0.42,a+0.42);
+      ctx.lineTo(Math.cos(a+0.42)*radius*0.34,Math.sin(a+0.42)*radius*0.34);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.beginPath(); ctx.arc(0,0,radius*0.20,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='rgba(12,15,18,0.82)';
+    ctx.lineWidth=1;
+    ctx.beginPath(); ctx.arc(0,0,radius-0.5,0,Math.PI*2); ctx.stroke();
+    ctx.restore();
   }
 
   function draw(ctx, TILE, camX,camY, zoom, canDrawTile){
@@ -8872,43 +9259,107 @@ const mobs = (function(){
           hpTop(screenY-8);
           break; }
         case 'ATOMIC_BOMB': {
-          const body = flashing? '#eef6ff' : (m.baseColor||'#646f77');
-          const pulse=Math.sin(now*0.006+m.spawnT*0.004)*0.5+0.5;
-          const hot=0.36+0.42*pulse;
+          m._hideBar=true;
+          const maxHp=Math.max(1,Number(m.maxHp)||ATOMIC_BOMB_MAX_HP);
+          const hpFrac=Math.max(0,Math.min(1,(Number(m.hp)||0)/maxHp));
+          const damage=1-hpFrac;
+          const body=flashing ? '#edf3e9' : mixHexColor(m.baseColor||'#59634f','#788067',0.28);
+          const dark=mixHexColor(body,'#151b18',0.58);
+          const mid=mixHexColor(body,'#9fa78b',0.24);
+          const pulse=Math.sin(now*(0.006+damage*0.012)+m.spawnT*0.004)*0.5+0.5;
+          const alarm=0.42+0.58*pulse;
+          // Restrained radioactive aura: the silhouette, not a green blob, owns the read.
           ctx.save();
           ctx.globalCompositeOperation='lighter';
-          ctx.fillStyle='rgba(165,255,78,'+(0.12+hot*0.20).toFixed(3)+')';
+          ctx.fillStyle='rgba(163,255,84,'+(0.07+0.08*pulse+damage*0.08).toFixed(3)+')';
           ctx.beginPath();
-          ctx.ellipse(screenX,screenY-14,23,26,0,0,Math.PI*2);
+          ctx.ellipse(screenX-2,screenY-12,36,22,0,0,Math.PI*2);
           ctx.fill();
           ctx.restore();
+          // Heavy transport cradle and skids keep the warhead grounded.
+          ctx.strokeStyle='#242a27';
+          ctx.lineWidth=3;
+          ctx.beginPath(); ctx.moveTo(screenX-13,screenY-4); ctx.lineTo(screenX-16,screenY+4); ctx.lineTo(screenX-8,screenY+4); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(screenX+10,screenY-4); ctx.lineTo(screenX+13,screenY+4); ctx.lineTo(screenX+21,screenY+4); ctx.stroke();
+          // Tail tube and four unmistakable stabilising fins.
+          ctx.fillStyle=dark;
+          ctx.fillRect(screenX+13,screenY-17,17,10);
+          ctx.strokeStyle='#202621'; ctx.lineWidth=1.5; ctx.strokeRect(screenX+13.5,screenY-16.5,16,9);
+          ctx.fillStyle=mid;
+          ctx.beginPath(); ctx.moveTo(screenX+17,screenY-17); ctx.lineTo(screenX+27,screenY-29); ctx.lineTo(screenX+31,screenY-17); ctx.closePath(); ctx.fill(); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(screenX+17,screenY-7); ctx.lineTo(screenX+27,screenY+3); ctx.lineTo(screenX+31,screenY-7); ctx.closePath(); ctx.fill(); ctx.stroke();
+          ctx.fillStyle='#333b34';
+          ctx.fillRect(screenX+27,screenY-20,4,16);
+          // Fat-Man-like armoured warhead body.
           ctx.fillStyle=body;
           ctx.beginPath();
-          ctx.ellipse(screenX,screenY-12,15,19,0,0,Math.PI*2);
+          ctx.ellipse(screenX-5,screenY-12,24,11,0,0,Math.PI*2);
           ctx.fill();
-          ctx.strokeStyle='#222a31';
-          ctx.lineWidth=2;
+          ctx.strokeStyle='#202620';
+          ctx.lineWidth=2.2;
           ctx.stroke();
-          shade(screenX-12,screenY-25,24,6,'#fff',0.12);
-          ctx.fillStyle='#2a3138';
-          ctx.fillRect(screenX-8,screenY+5,16,4);
-          ctx.fillRect(screenX-4,screenY+9,8,3);
-          ctx.strokeStyle='#2a3138';
-          ctx.lineWidth=2;
-          ctx.beginPath();
-          ctx.moveTo(screenX,screenY-31);
-          ctx.lineTo(screenX+Math.sin(phase)*6,screenY-40);
-          ctx.stroke();
-          ctx.fillStyle='rgba(210,255,95,'+(0.55+0.35*pulse).toFixed(3)+')';
-          ctx.fillRect(screenX-5,screenY-17,10,10);
-          ctx.fillStyle='#20282f';
-          ctx.fillRect(screenX-7,screenY-3,14,2);
-          ctx.fillRect(screenX-7,screenY-27,14,2);
-          ctx.fillStyle='#111820';
-          ctx.fillRect(screenX-12,screenY-10,24,2);
-          ctx.fillStyle='#eaff8e';
-          ctx.fillRect(screenX-2,screenY-14,4,4);
-          hpTop(screenY-42);
+          // Highlight, nose plate, armoured seams and hazard bands.
+          shade(screenX-23,screenY-20,35,4,'#fff',flashing?0.20:0.10);
+          ctx.strokeStyle='rgba(18,23,19,0.72)'; ctx.lineWidth=1.3;
+          ctx.beginPath(); ctx.moveTo(screenX-19,screenY-19); ctx.lineTo(screenX-19,screenY-5); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(screenX+10,screenY-21); ctx.lineTo(screenX+10,screenY-3); ctx.stroke();
+          ctx.fillStyle='#e7c63a';
+          ctx.fillRect(screenX+5,screenY-20,5,16);
+          ctx.fillStyle='#171a18';
+          ctx.fillRect(screenX+5,screenY-18,5,3);
+          ctx.fillRect(screenX+5,screenY-10,5,3);
+          ctx.fillStyle='#303730';
+          ctx.fillRect(screenX-28,screenY-14,3,4);
+          // Radiation trefoil makes the payload readable even at gameplay scale.
+          drawAtomicTrefoil(ctx,screenX-6,screenY-12,7);
+          // Rivets and an armed electronics box with a red warning lamp.
+          ctx.fillStyle='#bec6a8';
+          for(const bx of [-17,13]){ ctx.fillRect(screenX+bx,screenY-16,1.5,1.5); ctx.fillRect(screenX+bx,screenY-8,1.5,1.5); }
+          ctx.fillStyle='#242a25'; ctx.fillRect(screenX+8,screenY-27,12,6);
+          ctx.strokeStyle='#111612'; ctx.lineWidth=1; ctx.strokeRect(screenX+8.5,screenY-26.5,11,5);
+          ctx.save();
+          ctx.globalCompositeOperation='lighter';
+          ctx.fillStyle='rgba(255,55,35,'+(0.12+alarm*0.35).toFixed(3)+')';
+          ctx.beginPath(); ctx.arc(screenX+16,screenY-27,4+damage*2,0,Math.PI*2); ctx.fill();
+          ctx.restore();
+          ctx.fillStyle=alarm>0.7?'#fff0c2':'#f0442f';
+          ctx.fillRect(screenX+14,screenY-29,4,3);
+          // Progressive cracks, scorched plating and smoke communicate the long siege.
+          if(damage>0.12){
+            ctx.strokeStyle='rgba(25,24,20,0.82)'; ctx.lineWidth=1.2;
+            ctx.beginPath(); ctx.moveTo(screenX-15,screenY-5); ctx.lineTo(screenX-11,screenY-10); ctx.lineTo(screenX-8,screenY-7); ctx.lineTo(screenX-5,screenY-11); ctx.stroke();
+          }
+          if(damage>0.42){
+            ctx.strokeStyle='rgba(238,116,48,0.72)';
+            ctx.beginPath(); ctx.moveTo(screenX+11,screenY-6); ctx.lineTo(screenX+15,screenY-12); ctx.lineTo(screenX+12,screenY-16); ctx.stroke();
+            ctx.fillStyle='rgba(20,22,20,0.28)'; ctx.beginPath(); ctx.ellipse(screenX+13,screenY-12,6,8,0,0,Math.PI*2); ctx.fill();
+          }
+          if(damage>0.68){
+            ctx.fillStyle='rgba(32,37,32,'+(0.22+0.18*pulse).toFixed(3)+')';
+            ctx.beginPath(); ctx.arc(screenX+14+Math.sin(phase)*2,screenY-34,4,0,Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(screenX+17-Math.sin(phase)*3,screenY-40,3,0,Math.PI*2); ctx.fill();
+          }
+          // Bespoke wide, segmented integrity bar: a huge health pool should read as armour.
+          if(damage>0.00001){
+            const barW=58, barX=screenX-barW/2, barY=screenY-38;
+            ctx.fillStyle='rgba(5,8,6,0.82)'; ctx.fillRect(barX-1,barY-1,barW+2,6);
+            ctx.fillStyle=hpFrac>0.55?'#a6d63f':(hpFrac>0.24?'#efb23a':'#ef513d');
+            ctx.fillRect(barX,barY,barW*hpFrac,4);
+            ctx.fillStyle='rgba(8,12,9,0.42)';
+            for(let sx=barX+6;sx<barX+barW;sx+=6) ctx.fillRect(sx,barY,1,4);
+            ctx.save();
+            ctx.font='bold 7px system-ui';
+            ctx.textAlign='center';
+            ctx.textBaseline='bottom';
+            ctx.lineWidth=2.5;
+            ctx.strokeStyle='rgba(4,7,5,0.94)';
+            ctx.fillStyle='#f3f5df';
+            const armourText=Math.ceil(Number(m.hp)||0)+' / '+Math.ceil(maxHp);
+            ctx.strokeText(armourText,screenX,barY-3);
+            ctx.fillText(armourText,screenX,barY-3);
+            ctx.restore();
+            hpTop(barY-1);
+          }else hpTop(screenY-30);
           break; }
         case 'ICE_SHAMAN':
         case 'FIRE_SHAMAN': {
@@ -9273,6 +9724,16 @@ const mobs = (function(){
           box(screenX-4, screenY-4,8,8, flashing? '#ffffff':'#888', '#444');
         }
       }
+      {
+        const smoke=MM.smoke;
+        if(smoke&&typeof smoke.drawSootMarks==='function'){
+          const amount=typeof smoke.visualSoot==='function'?smoke.visualSoot(m):(Number(m.soot)||0);
+          const bodyW=Math.max(0.35,(spec&&spec.body&&spec.body.w)||0.85)*TILE;
+          const bodyH=Math.max(0.35,(spec&&spec.body&&spec.body.h)||0.85)*TILE;
+          const sootY=spec&&spec.ground ? screenY-bodyH*0.5+1 : screenY;
+          smoke.drawSootMarks(ctx,screenX,sootY,bodyW*0.88,bodyH*0.82,amount,m.spawnT);
+        }
+      }
       drawMobAttackIntent(ctx,TILE,spec,screenX,screenY,faceDir,phase,attack,hpTop);
       // threat-look feature layers anchored on the actual drawn art (topY)
       THREAT_LOOK.drawPost(ctx,TILE,m,spec,screenX,screenY,faceDir,phase,topY,hpTop);
@@ -9304,24 +9765,35 @@ const mobs = (function(){
         }
       }
       ctx.restore(); }
-    // Burning mobs: flame overlay drawn after bodies so fire reads on top
+    // Burning mobs use the same soft hot/mid/tail puffs as the hero's fire hose
+    // and world fire. Four deterministic stamps keep the overlay cheap and stop
+    // the old per-frame random sparks from visibly crawling over the body.
+    const burnSprites=getFlamePuffSprites();
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
     for(const m of mobs){
       if(!hasStatus(m,'burn')) continue;
       if(!disableCull && (m.x < viewL || m.x > viewR || m.y < viewT || m.y > viewB)) continue;
       if(!mobVisible(m)) continue;
       const px=m.x*TILE, py=m.y*TILE;
-      const flick=Math.sin(now*0.025 + m.spawnT*0.01)*0.5+0.5;
-      const h=TILE*(0.7+0.5*flick)*(m.scale||1);
       const baseY=py+TILE*0.3;
-      const g=ctx.createLinearGradient(px,baseY,px,baseY-h);
-      g.addColorStop(0,'rgba(255,120,20,0.8)'); g.addColorStop(0.7,'rgba(255,210,80,0.55)'); g.addColorStop(1,'rgba(255,255,180,0)');
-      ctx.fillStyle=g;
-      ctx.beginPath();
-      ctx.moveTo(px-TILE*0.3, baseY);
-      ctx.quadraticCurveTo(px + Math.sin(now*0.02+m.spawnT)*3, baseY-h*1.15, px+TILE*0.3, baseY);
-      ctx.closePath(); ctx.fill();
-      if(Math.random()<0.3){ ctx.fillStyle='rgba(255,230,140,0.9)'; ctx.fillRect(px+(Math.random()*2-1)*6, baseY-h-Math.random()*4, 2,2); }
+      const mobScale=Math.max(0.55,m.scale||1);
+      const seed=(Number(m.spawnT)||0)*0.001;
+      for(let i=0;i<4;i++){
+        const age=((now*0.00125)+(i/4)+seed)%1;
+        const freshness=1-age;
+        const puff=flamePuffFrame(burnSprites,freshness);
+        if(!puff) continue;
+        const radius=flamePuffRadius(TILE,freshness,(0.30+(i%2)*0.06)*mobScale);
+        const sway=Math.sin(now*0.006+i*2.17+seed)*TILE*(0.035+age*0.055);
+        const lane=((i*7+(Math.floor(seed*13)||0))%9)/8-0.5;
+        const cx=px+lane*TILE*0.42*mobScale+sway;
+        const cy=baseY-TILE*(0.06+age*0.66)*mobScale;
+        ctx.globalAlpha=flamePuffAlpha(freshness)*(0.66+(i%3)*0.08);
+        ctx.drawImage(puff,cx-radius,cy-radius,radius*2,radius*2);
+      }
     }
+    ctx.restore();
     // Chilled mobs: frosty shimmer + drifting flakes so the slow reads visually
     for(const m of mobs){
       if(!hasStatus(m,'chill')) continue;
@@ -9662,7 +10134,7 @@ const mobs = (function(){
     // they struck. The callback receives the live entity by reference; callers
     // must not mutate it.
     if(opts && typeof opts.onTarget==='function'){
-      try{ opts.onTarget(m); }catch(e){}
+      try{ opts.onTarget(m,'mob',isLiving); }catch(e){}
     }
     if(m.id==='SAND_WORM' && sandWormWaterHitOpts(opts)){
       pacifySandWorm(m,'water',performance.now(),{x:tileX+0.5,y:tileY+0.5});
@@ -10007,7 +10479,10 @@ const mobs = (function(){
   function blastRadius(wx,wy,r,dmg,opts){
     let n=0; const r2=r*r;
     for(const m of mobs){
-      if(!mobAllowedByOpts(m,opts)) continue;
+      // Death handlers can trigger a blast while the dead entity still occupies
+      // the live array. Skip corpses so hit metrics and chained effects stay
+      // exact and a dead bomb cannot be aggro-marked again.
+      if(!mobAllowedByOpts(m,opts) || !(m.hp>0)) continue;
       const dx=m.x-wx, dy=m.y-wy; const d2=dx*dx+dy*dy;
       if(d2>r2) continue;
       const d=Math.sqrt(d2);
@@ -10198,7 +10673,7 @@ const mobs = (function(){
     if(day-entry.lastDay>=XP_FATIGUE_RESET_DAYS) entry={kills:0,lastDay:day};
     const mult=id==='ATOMIC_BOMB'
       ? Math.pow(ATOMIC_BOMB_XP_DECAY,Math.min(30,entry.kills))
-      : Math.max(XP_FATIGUE_MIN_MULT, 1-entry.kills*XP_FATIGUE_STEP);
+      : Math.max(XP_FATIGUE_MIN_MULT, Math.pow(XP_FATIGUE_KEEP,Math.min(80,entry.kills)));
     return {entry,mult};
   }
   function noteXpAwardEvent(detail){
@@ -10217,11 +10692,16 @@ const mobs = (function(){
     const fatigue=xpFatigueMultiplier(m.id,day);
     const special=!!m._lastHeroHitSpecial && m.id!=='ATOMIC_BOMB';
     const specialMult=special ? XP_SPECIAL_BONUS_MULT : 1;
+    const challenge=mobChallengeProfile(m,spec,player);
     // social facilitation: an ACTIVE ghost audience grants bonus XP (ghost_host.js
     // maintains MM.socialBoost; absent/neutral in solo play and Node sims)
     const socialMult=(MM.socialBoost && Number.isFinite(MM.socialBoost.xp)) ? MM.socialBoost.xp : 1;
-    const amount=Math.max(1,Math.round(base*fatigue.mult*specialMult*socialMult));
-    player.xp += amount;
+    const authoredCombatXp=base*challenge.totalMult;
+    const progressionFloor=challengeProgressionFloor(challenge);
+    const combatXp=Math.max(authoredCombatXp,progressionFloor);
+    const raw=combatXp*fatigue.mult*specialMult*socialMult;
+    const amount=challenge.trivial ? 0 : Math.max(1,Math.round(raw));
+    if(amount>0) player.xp += amount;
     const next={kills:fatigue.entry.kills+1,lastDay:day};
     xpFatigue[m.id]=next;
     const detail={
@@ -10232,11 +10712,32 @@ const mobs = (function(){
       fatigueMult:+fatigue.mult.toFixed(3),
       special,
       specialMult,
+      risk:challenge.ratio>=1.12,
+      challenge:challenge.tier,
+      challengeLabel:challenge.label,
+      challengeRatio:+challenge.ratio.toFixed(3),
+      challengeMult:+challenge.challengeMult.toFixed(3),
+      variantMult:+challenge.variantMult.toFixed(3),
+      totalCombatMult:+challenge.totalMult.toFixed(3),
+      authoredCombatXp:+authoredCombatXp.toFixed(2),
+      progressionFloor,
+      floorApplied:progressionFloor>authoredCombatXp,
+      preFatigueXp:+combatXp.toFixed(2),
+      heroLevel:challenge.heroLevel,
+      recommendedLevel:challenge.recommendedLevel,
+      trivial:challenge.trivial,
       day:+day.toFixed(3),
       x:finiteCoord(m.x)?+m.x.toFixed(4):undefined,
       y:finiteCoord(m.y)?+m.y.toFixed(4):undefined
     };
-    noteXpAwardEvent(detail);
+    if(amount>0) noteXpAwardEvent(detail);
+    else {
+      const now=performance.now();
+      if(now-lastTrivialXpNoticeAt>12000){
+        lastTrivialXpNoticeAt=now;
+        try{ if(window.msg) window.msg('⚪ Ten przeciwnik jest już zbyt słaby — 0 EXP. Szukaj większego zagrożenia dalej od centrum.'); }catch(e){}
+      }
+    }
     return detail;
   }
 
@@ -10268,6 +10769,10 @@ const mobs = (function(){
     // Thematic gear drops: species-bound equipment falls as a glowing pickup
     // (a bat may shed a cape, an owl its eyes — see drops.js GEAR_LOOT)
     try{ if(MM.drops && MM.drops.rollGearDrop) MM.drops.rollGearDrop(m); }catch(e){}
+    // Exceptionally rare permanent-upgrade jewels scale with the defeated
+    // creature's own HP/damage/XP. Weak wildlife can technically pay out, while
+    // elites and named terrors provide the meaningful odds.
+    try{ if(MM.drops && MM.drops.rollJewelDrop) MM.drops.rollJewelDrop(m,spec); }catch(e){}
     // Species-specific death ceremony (golden sprinter's chest, future rares)
     if(typeof spec.onDeath==='function'){ try{ spec.onDeath(m); }catch(e){} }
   }
@@ -10335,6 +10840,7 @@ const mobs = (function(){
       spawnT:clampFinite(m.spawnT,performance.now(),0,Number.MAX_SAFE_INTEGER),
       attackCd:clampFinite(m.attackCd,0,0,60)
     };
+    if(finiteNum(m.soot)&&m.soot>0) out.soot=+clampFinite(m.soot,0,0,1).toFixed(3);
     if(finiteNum(m.waterTopY)) out.waterTopY=m.waterTopY;
     if(finiteNum(m.desiredDepth)) out.desiredDepth=m.desiredDepth;
     if(finiteNum(m.scale)) out.scale=clampFinite(m.scale,1,0.35,3);
@@ -10450,6 +10956,8 @@ const mobs = (function(){
         initMobFacingStability(m,performance.now());
         m.spawnT=clampFinite(r.spawnT,performance.now(),0,Number.MAX_SAFE_INTEGER);
         m.attackCd=clampFinite(r.attackCd,0,0,60);
+        if(finiteNum(r.soot)) m.soot=clampFinite(r.soot,0,0,1);
+        m._smokeTint=0;
         if(finiteNum(r.scale)) m.scale=clampFinite(r.scale,1,0.35,3);
         if(finiteNum(r.speedMul)) m.speedMul=clampFinite(r.speedMul,1,0.1,4);
         if(finiteNum(r.jumpMul)) m.jumpMul=clampFinite(r.jumpMul,1,0.1,4);
@@ -10469,6 +10977,11 @@ const mobs = (function(){
         }
         if(finiteNum(r.lifeEndAt)) m.lifeEndAt=r.lifeEndAt;
         if(finiteNum(r.decayStartAt)) m.decayStartAt=r.decayStartAt;
+        if(r.id==='ATOMIC_BOMB'){
+          const safeUntil=performance.now()+ATOMIC_BOMB_LIFETIME_MS;
+          if(!finiteNum(m.lifeEndAt) || m.lifeEndAt<safeUntil) m.lifeEndAt=safeUntil;
+          if(!finiteNum(m.decayStartAt) || m.decayStartAt<m.lifeEndAt) m.decayStartAt=m.lifeEndAt+10000;
+        }
         if(finiteNum(r.pacifiedMs) && r.pacifiedMs>0) m._pacifiedUntil=performance.now()+Math.min(r.pacifiedMs,60000);
         if(finiteNum(r.homeX)) m.homeX=clampFinite(r.homeX,m.x,-10000000,10000000);
         if(finiteNum(r.homeY)) m.homeY=clampFinite(r.homeY,m.y,WORLD_TOP,WORLD_BOTTOM);
@@ -10655,10 +11168,14 @@ const mobs = (function(){
           if(tileBelow===T.AIR){ report.groundHoverIssues.push({id:m.id,x:m.x,y:m.y}); }
         }
       }
-      // naive overlap detect (same tile center proximity)
+      // Collider overlap audit across all species.
       for(let i=0;i<mobs.length;i++){
         for(let j=i+1;j<mobs.length;j++){
-          const a=mobs[i], b=mobs[j]; const dx=a.x-b.x, dy=a.y-b.y; if(dx*dx+dy*dy < 0.16) report.overlaps++; }
+          const a=mobs[i], b=mobs[j], sa=SPECIES[a.id], sb=SPECIES[b.id];
+          if(!sa || !sb) continue;
+          const ea=bodyHalfExtents(a,sa), eb=bodyHalfExtents(b,sb);
+          if(Math.abs(a.x-b.x)<ea.halfW+eb.halfW-MOB_BODY_SLOP && Math.abs(a.y-b.y)<ea.halfH+eb.halfH-MOB_BODY_SLOP) report.overlaps++;
+        }
       }
       report.metrics={...metrics};
       return report;
@@ -10714,7 +11231,9 @@ const mobs = (function(){
         lasers:mobLasers.map(l=>({x1:l.x1,y1:l.y1,x2:l.x2,y2:l.y2,dmg:l.dmg||0,hit:!!l.hit}))
       };
     }
-  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, chillAt, chillRadius, wetAt, wetRadius, statusAt, statusRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, ghostRoster, ghostApplyRoster, ghostLerp, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, isLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat };
+  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, chillAt, chillRadius, wetAt, wetRadius, statusAt, statusRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, ghostRoster, ghostApplyRoster, ghostLerp, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, isLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugPiranhas:()=>({coastProfile:piranhaCoastProfile,coastalRange:PIRANHA_COASTAL_RANGE,coastalCore:PIRANHA_COASTAL_CORE,offshoreDensity:PIRANHA_OFFSHORE_DENSITY}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat,
+    _debugProgression:{heroProfile:heroCombatProfile,mobPower:mobCombatPower,challenge:mobChallengeProfile,multiplier:challengeXpMultiplier,tier:challengeTier,progressionFloor:challengeProgressionFloor,xpNeed:heroXpNeed,TRIVIAL_RATIO:XP_TRIVIAL_RATIO}
+  };
   MM.mobs = api;
   try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}
   return api;

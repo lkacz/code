@@ -8,6 +8,7 @@ import {
 import { worldGen as WG } from './worldgen.js';
 import { guardianLairs as GUARDIANS } from './guardian_lairs.js';
 import { applyBossStatus, bossElectricDamageMult, bossStatusFor, tickBossStatus } from './boss_status.js';
+import { damageBlastCreatures } from './explosion_damage.js';
 
 const undergroundBoss = (function(){
   const root = (typeof window !== 'undefined') ? window : globalThis;
@@ -1008,6 +1009,7 @@ const undergroundBoss = (function(){
     h.exploded=true;
     addEffect({type:'bomb',kind:'earth',x:h.x,y:h.y,t:0,max:0.72,r:h.r+2});
     sfx('explosion',{x:h.x,y:h.y});
+    damageBlastCreatures(MM,h.x,h.y,h.r+0.9,h.dmg,{source:'underground_boss',cause:'earth_burrow_bomb'});
     if(p && !h.hit && Math.hypot(finite(p.x,0)-h.x,finite(p.y,0)-h.y)<h.r+0.9){
       h.hit=true;
       damageHero(h.dmg,h.x,h.y,'earth_burrow_bomb');
@@ -1394,6 +1396,7 @@ const undergroundBoss = (function(){
     if(!e) return false;
     const L = layoutFor();
     addEffect({type:'burst',kind:'earth',x:e.x,y:e.y,t:0,max:2.4,r:38});
+    damageBlastCreatures(MM,e.x,e.y,20,86,{source:'underground_boss',cause:'underground_boss_death_blast'});
     try{
       const p=playerRef();
       if(p && Number.isFinite(p.hp) && p.hp<1) p.hp=1;
@@ -1471,6 +1474,7 @@ const undergroundBoss = (function(){
       hazards.length=0;
       // Signature relics rain from the felled excavator (engine/drops.js)
       try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop('earth',e.x,e.y,{boss:true}); }catch(err){}
+      try{ if(MM.drops && MM.drops.rollJewelDrop) MM.drops.rollJewelDrop(e,{boss:true,hp:e.maxHp,dmg:28,xp:560}); }catch(err){}
     }else if(e.role==='zombieGolem'){
       say(e.name+' rozpada sie na zgnily gruz.');
       try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop('earth',e.x,e.y,{role:'zombieGolem'}); }catch(err){}

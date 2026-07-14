@@ -186,6 +186,8 @@ assert.equal(explosions,1,'fuel gas explodes when ignited by lava');
 assert.equal(count(T.FUEL_GAS),0,'exploding fuel gas is consumed');
 assert.ok(lastExplosionOpts && lastExplosionOpts.extraConsumed>=1,'fuel explosion reports consumed gas volume to the blast');
 assert.equal(lastExplosionOpts.force,true,'fuel-triggered explosion bypasses visual blast cooldown after consuming fuel');
+assert.equal(lastExplosionOpts.source,'fuel_gas','fuel-triggered explosion is not misattributed to the hero');
+assert.equal(lastExplosionOpts.cause,'fuel_gas_blast','fuel-triggered explosion preserves its environmental cause');
 
 // 5) Non-hot gases do not mix into each other or overwrite each other.
 resetWorld();

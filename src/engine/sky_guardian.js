@@ -786,6 +786,7 @@ const skyGuardian = (function(){
       hazards.length=0;
       // Signature relics fall from the crown (engine/drops.js)
       try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop('air',e.x,e.y,{boss:true}); }catch(err){}
+      try{ if(MM.drops && MM.drops.rollJewelDrop) MM.drops.rollJewelDrop(e,{boss:true,hp:e.maxHp,dmg:30,xp:600}); }catch(err){}
     }else if(e.resonator){
       say(e.name+' falls silent.');
       // Leaflings split when cut and stay lootless on purpose (no mow farming);

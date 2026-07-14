@@ -353,9 +353,12 @@ import { isPlayerPassableTile } from './material_physics.js';
     return true;
   }
   function metrics(){
+    const duration=winterLength();
     return {
       active:!!state.active,
       tLeft:state.tLeft,
+      duration,
+      progress:state.active && duration>0 ? clamp(state.tLeft/duration,0,1) : 0,
       windLeft:state.windLeft,
       x:state.x,
       y:state.y,

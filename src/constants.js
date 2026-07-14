@@ -8,7 +8,7 @@ export const WORLD_MAX_Y = (WORLD_MAX_SECTION + 1) * WORLD_SECTION_H;
 export const TILE = 20;
 export const SURFACE_GRASS_DEPTH = 1;
 export const SAND_DEPTH = 8;
-export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,LAVA:13,MUD:14,OBSIDIAN:15,TORCH:16,GRAVE:17,VOLCANO_MASTER_STONE:18,STEEL:19,MEAT:20,ROTTEN_MEAT:21,GLASS:22,WIRE:23,ELECTRONICS:24,COAL:25,HOT_AIR:26,STEAM:27,POISON_GAS:28,FUEL_GAS:29,DYNAMO:30,DYNAMO_SLOT:31,BAKED_MEAT:32,COPPER_WIRE:33,TELEPORTER:34,TRANSISTOR:35,SOLAR_PANEL:36,SOLAR_BATTERY:37,SERVANT_STONE:38,AUTUMN_LEAF_ORANGE:39,AUTUMN_LEAF_RED:40,IRIDIUM:41,METEORIC_IRON:42,ANTIGRAVITY_BEACON:43,TURRET:44,FIRE_TURRET:45,WATER_TURRET:46,WATER_PIPE:47,WATER_PUMP:48,METEOR_SIREN:49,RADIOACTIVE_ORE:50,ALIEN_BIOMASS:51,METEOR_DUST:52,ANTIMATTER_CRYSTAL:53,DIRT:54,GRANITE:55,BASALT:56,BEDROCK:57,WOOD_DOOR:58,STONE_DOOR:59,STEEL_DOOR:60,VENDING_MACHINE:61,WOOD_TRAPDOOR:62,STONE_TRAPDOOR:63,STEEL_TRAPDOOR:64,CLAY:65,WET_CLAY:66,BRICK:67,LADDER:68,SPRING_PLATFORM:69,INVASION_CACHE:70,UFO_CONCRETE:71,MOTHER_ICE:72,MOTHER_LAVA:73,ALTAR:74,GLOWSHROOM:75,CHIMNEY:76,RESPAWN_TOTEM:77,UNSTABLE_SAND:78,UNSTABLE_GRASS:79,QUICKSAND:80,GOLD_ORE:81,TRACK:82,CHAIR_WOOD:83,CHAIR_STONE:84,CHAIR_STEEL:85,GRASS_SNOW:86,FROZEN_DIRT:87,FROZEN_SAND:88,FROZEN_CLAY:89,TOXIC_SNOW:90,CHEST_UNCOMMON:91,CHEST_LEGENDARY:92,STEAM_BOILER:93,STEAM_JET:94};
+export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WATER:8,CHEST_COMMON:9,CHEST_RARE:10,CHEST_EPIC:11,ICE:12,LAVA:13,MUD:14,OBSIDIAN:15,TORCH:16,GRAVE:17,VOLCANO_MASTER_STONE:18,STEEL:19,MEAT:20,ROTTEN_MEAT:21,GLASS:22,WIRE:23,ELECTRONICS:24,COAL:25,HOT_AIR:26,STEAM:27,POISON_GAS:28,FUEL_GAS:29,DYNAMO:30,DYNAMO_SLOT:31,BAKED_MEAT:32,COPPER_WIRE:33,TELEPORTER:34,TRANSISTOR:35,SOLAR_PANEL:36,SOLAR_BATTERY:37,SERVANT_STONE:38,AUTUMN_LEAF_ORANGE:39,AUTUMN_LEAF_RED:40,IRIDIUM:41,METEORIC_IRON:42,ANTIGRAVITY_BEACON:43,TURRET:44,FIRE_TURRET:45,WATER_TURRET:46,WATER_PIPE:47,WATER_PUMP:48,METEOR_SIREN:49,RADIOACTIVE_ORE:50,ALIEN_BIOMASS:51,METEOR_DUST:52,ANTIMATTER_CRYSTAL:53,DIRT:54,GRANITE:55,BASALT:56,BEDROCK:57,WOOD_DOOR:58,STONE_DOOR:59,STEEL_DOOR:60,VENDING_MACHINE:61,WOOD_TRAPDOOR:62,STONE_TRAPDOOR:63,STEEL_TRAPDOOR:64,CLAY:65,WET_CLAY:66,BRICK:67,LADDER:68,SPRING_PLATFORM:69,INVASION_CACHE:70,UFO_CONCRETE:71,MOTHER_ICE:72,MOTHER_LAVA:73,ALTAR:74,GLOWSHROOM:75,CHIMNEY:76,RESPAWN_TOTEM:77,UNSTABLE_SAND:78,UNSTABLE_GRASS:79,QUICKSAND:80,GOLD_ORE:81,TRACK:82,CHAIR_WOOD:83,CHAIR_STONE:84,CHAIR_STEEL:85,GRASS_SNOW:86,FROZEN_DIRT:87,FROZEN_SAND:88,FROZEN_CLAY:89,TOXIC_SNOW:90,CHEST_UNCOMMON:91,CHEST_LEGENDARY:92,STEAM_BOILER:93,STEAM_JET:94,BEDROCK_LADDER:95};
 export const INFO = {
   0:{hp:0,color:null,drop:null,passable:true},
   // flammable/burnTime drive the fire system (engine/fire.js): seconds a tile burns
@@ -82,7 +82,7 @@ export const INFO = {
  54:{hp:3,color:'#73543a',drop:'dirt',passable:false, geology:true},
  55:{hp:10,color:'#7d7f87',drop:'granite',passable:false, geology:true, hardRock:true},
  56:{hp:16,color:'#30333a',drop:'basalt',passable:false, geology:true, hardRock:true},
- 57:{hp:0,color:'#1c2028',drop:null,passable:false, geology:true, hardRock:true, bedrock:true, unmineable:true},
+ 57:{hp:0,color:'#1c2028',drop:'bedrock',passable:false, geology:true, hardRock:true, bedrock:true, unmineable:true},
  58:{hp:4,color:'#9b6730',drop:'woodDoor',passable:false, door:true, doorMaterial:'wood', flammable:true, burnTime:48, spreadInMult:0.75},
  59:{hp:7,color:'#8d9098',drop:'stoneDoor',passable:false, door:true, doorMaterial:'stone'},
  60:{hp:9,color:'#9aa8b5',drop:'steelDoor',passable:false, door:true, doorMaterial:'steel'},
@@ -157,7 +157,10 @@ export const INFO = {
  // Steam jet: fed by a nearby boiler it blasts a rising steam column — a
  // ground-mounted jet is an updraft elevator; a hull-bottom row of jets is the
  // lift drive of a flying built mech (W = thrust while seated).
- 94:{hp:8,color:'#9fb6c4',drop:'steamJet',passable:false, machine:'steamJet', conductor:true}
+ 94:{hp:8,color:'#9fb6c4',drop:'steamJet',passable:false, machine:'steamJet', conductor:true},
+ // Bedrock ladder: an endgame climbing fixture. One endpoint must be anchored,
+ // but the opposite end may extend through open air for the full world height.
+ 95:{hp:12,color:'#6f7890',drop:'bedrockLadder',passable:true, ladder:true, bedrockLadder:true}
 };
 // Rows above (i.e. numerically below) this line get snow cover; tuned for the v2
 // terrain where sea level sits at row ~62 and peaks reach row ~10

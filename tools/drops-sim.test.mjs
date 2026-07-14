@@ -37,7 +37,7 @@ function getTile(x, y){
 function setTile(x, y, t){ tiles.set(key(x, y), t); }
 
 globalThis.player = { x: 500, y: SURF - 1 }; // far away by default
-globalThis.inv = { meatScrap: 0, coal: 0 };
+globalThis.inv = { meatScrap: 0, coal: 0, jewelBlessed: 0, jewelDevout: 0, jewelDivinity: 0 };
 const msgs = []; globalThis.msg = m => msgs.push(m);
 const played = []; MM.audio = { play: n => played.push(n) };
 const bursts = []; MM.particles = { spawnBurst: (x, y, t) => bursts.push(t), spawnSparks: () => {} };
@@ -56,6 +56,48 @@ function advance(seconds, dt = 0.05){
 const scrapDef = MM.inventory.RESOURCES.find(r => r.key === 'meatScrap');
 assert.ok(scrapDef, 'meatScrap is a registered resource');
 assert.equal(scrapDef.tile, null, 'meat scraps are a pickup, not a placeable block');
+
+// --- jewels: weak foes almost never pay; powerful foes visibly can -----------
+const weakJewelChance = drops._debug.jewelChanceFor(
+  { id: 'RABBIT', x: 4, y: 4, maxHp: 5, dmg: 2, hostility: 0 },
+  { hp: 5, dmg: 2, xp: 5 }
+);
+const eliteJewelChance = drops._debug.jewelChanceFor(
+  { id: 'ARMORED_ELITE', x: 4, y: 4, maxHp: 260, dmg: 24, scale: 1.4, hostility: 0.8 },
+  { hp: 260, dmg: 24, xp: 280 }
+);
+const bossJewelChance = drops._debug.jewelChanceFor(
+  { id: 'GOLD_DRAGON', x: 4, y: 4, maxHp: 700, dmg: 38, scale: 1.8, hostility: 1 },
+  { hp: 700, dmg: 38, xp: 900, boss: true }
+);
+assert.ok(weakJewelChance < 0.001, 'weak-creature jewel chance stays below one tenth of a percent');
+assert.ok(eliteJewelChance > weakJewelChance * 20, 'elite jewel chance is materially higher than a weak foe');
+assert.ok(bossJewelChance > eliteJewelChance, 'boss premium raises jewel odds again');
+assert.ok(bossJewelChance <= 0.18, 'even bosses respect the jewel rarity cap');
+
+drops.reset(); msgs.length = 0; played.length = 0; bursts.length = 0;
+const scripted = [0, 0.99, 0.5, 0.5, 0.5];
+drops._debug.setRandom(() => scripted.shift() ?? 0.5);
+const jewelDrop = drops.rollJewelDrop(
+  { id: 'RABBIT', x: 12.5, y: SURF - 1, maxHp: 5, dmg: 2 },
+  { hp: 5, dmg: 2, xp: 5 }
+);
+assert.ok(jewelDrop && jewelDrop.kind === 'jewel', 'a successful jewel roll spawns a physical jewel');
+assert.equal(jewelDrop.res, 'jewelBlessed', 'scripted common branch selects the blessed jewel');
+assert.equal(jewelDrop.life, CFG.JEWEL_LIFE, 'jewel receives its protected long world lifetime');
+assert.ok(played.includes('jewel'), 'jewel arrival plays the dedicated Pavlov bell');
+assert.ok(msgs.some(m => m.includes('JEWEL') && m.includes('Kamień błogosławionych')), 'jewel arrival is explicitly announced');
+assert.ok(bursts.length > 0, 'jewel arrival has a particle reveal');
+const jewelSnap = drops.snapshot();
+drops.reset();
+drops.restore(jewelSnap);
+assert.equal(drops._debug.list[0].kind, 'jewel', 'jewel survives a ground-drop save roundtrip');
+player.x = 12.5; player.y = SURF - 1;
+advance(1);
+assert.equal(drops.pickupNearest(player), true, 'jewel can be collected from the ground');
+assert.equal(inv.jewelBlessed, 1, 'collected jewel enters the resource inventory');
+assert.ok(played.filter(n => n === 'jewel').length >= 2, 'pickup repeats the learned jewel bell');
+drops._debug.setRandom(null);
 
 // --- pop physics: fall, land, settle ------------------------------------------
 drops.reset();
@@ -86,6 +128,15 @@ assert.ok(played.includes('harvest'), 'common pickup plays the harvest chirp');
 assert.equal(drops.metrics().active, 0, 'collected drop leaves the world');
 assert.equal(drops.wantsInteractKey(player), false, 'no drop in reach, no interact claim');
 assert.equal(drops.pickupNearest(player), false, 'nothing to pick up returns false');
+
+// Capacity pressure may drop a new ephemeral pickup, but it must never erase a
+// persistent reward chest to make room for meat or gear.
+drops.reset();
+for(let i=0;i<CFG.MAX_DROPS;i++) assert.ok(drops.spawnChest(1000+i,SURF-1,'common',{vx:0,vy:0,lootSeed:i+1,source:'capacity'}));
+const fullChestIds=drops._debug.list.map(d=>d.id);
+assert.equal(drops.spawnResource(20,SURF-1,'meatScrap',1,{vx:0,vy:0}),null,'ephemeral pickup is refused when only persistent chests fill the cap');
+assert.deepEqual(drops._debug.list.map(d=>d.id),fullChestIds,'capacity pressure preserves every existing physical chest');
+drops.reset();
 
 // Arrow recovery has its own readable magnet beat: the arrow-shaped pickup
 // keeps flying toward the hero briefly after inventory credit is granted.
@@ -402,7 +453,7 @@ assert.equal(played.length, 0, 'restored drops do not replay the fanfare');
   }
 }
 
-// --- chests burst into PHYSICAL drops (loot must be picked up) ---------------------
+// --- chests are heavy PHYSICAL objects, then burst into pickup drops ----------------
 {
   const world = (await import('../src/engine/world.js')).default;
   const { T: TT } = await import('../src/constants.js');
@@ -410,12 +461,25 @@ assert.equal(played.length, 0, 'restored drops do not replay the fanfare');
   MM.dynamicLoot = { capes: [], eyes: [], outfits: [], weapons: [], charms: [] };
   const gainedNow = []; MM.onLootGained = (items) => gainedNow.push(...items);
   const cx = 3000, cy = 20; // above any generated terrain: clean landing spot
+  // Compatibility hardening: an old reward path that still asks for a chest
+  // tile gets an entity, while the world cell remains empty.
   world.setTile(cx, cy, TT.CHEST_EPIC);
-  const res = MM.chests.openChestAt(cx, cy);
+  const physical = drops._debug.list.find(d => d.kind === 'chest');
+  assert.ok(physical && physical.tier === 'epic', 'legacy chest placement becomes a physical epic chest');
+  assert.equal(world.getTile(cx, cy), TT.AIR, 'no chest block is written into the world');
+  world.setTile(cx + 1, cy, TT.STONE);
+  const chestCountBeforeOccupiedPlacement = drops.metrics().chests;
+  world.setTile(cx + 1, cy, TT.CHEST_RARE);
+  assert.equal(world.getTile(cx + 1, cy), TT.STONE, 'legacy chest placement never erases terrain already occupying the cell');
+  assert.equal(drops.metrics().chests, chestCountBeforeOccupiedPlacement + 1, 'occupied legacy placement still emits its physical reward chest');
+  const occupiedReward=drops.chestAtPoint(cx+1.5,cy+0.35,0.1);
+  assert.ok(occupiedReward && occupiedReward.tier==='rare','occupied legacy placement keeps the requested chest tier');
+  drops.remove(occupiedReward);
+  assert.equal(physical.life, undefined, 'physical chests have no despawn clock');
+  const res = MM.chests.openDroppedChest(physical);
   assert.ok(res && res.tier === 'epic', 'opening reports the chest tier');
   assert.ok(res.items.length >= 2, 'epic chest rolls multiple items');
   assert.equal(res.spawned, res.items.length, 'every rolled item became a physical drop');
-  assert.equal(world.getTile(cx, cy), TT.AIR, 'the chest tile is consumed');
   assert.equal(drops.metrics().active, res.items.length, 'the loot lies on the ground');
   assert.equal(gainedNow.length, 0, 'nothing lands in the bag before pickup');
   const chestDrop = drops._debug.list.find(d => d.kind === 'gear');
@@ -426,6 +490,40 @@ assert.equal(played.length, 0, 'restored drops do not replay the fanfare');
   assert.ok(gainedNow.length >= 1, 'pickup routes chest loot into the bag pipeline');
   delete MM.onLootGained; MM.dynamicLoot = { capes: [], eyes: [], outfits: [], weapons: [], charms: [] };
   drops.reset(); player.x = 500;
+}
+
+// Heavy chest physics: hard fall, tiny rebound, quick rest and persistence.
+{
+  drops.reset(); tiles.clear(); player.x = 500;
+  const chest = drops.spawnChest(42.5, SURF - 8, 'rare', { vx: 4, vy: 0, lootSeed: 77, source: 'test' });
+  assert.ok(chest && chest.kind === 'chest', 'physical chest spawns as its own payload kind');
+  assert.equal(drops.chestAtPoint(chest.x,chest.y,0.1),chest,'weapon probes find the chest through the sparse chest index');
+  advance(3);
+  assert.equal(chest.settled, true, 'heavy chest settles after its fall');
+  assert.ok(chest.y > SURF - 0.45 && chest.y < SURF - 0.25, 'chest rests on its larger body, not as a tiny pickup');
+  assert.equal(chest.vx, 0, 'heavy landing removes horizontal sliding');
+  const snap = drops.snapshot();
+  drops.restore(snap);
+  const restored = drops._debug.list.find(d => d.kind === 'chest');
+  assert.ok(restored && restored.lootSeed === 77 && restored.tier === 'rare', 'chest tier and deterministic loot seed survive save/load');
+  assert.equal(drops.chestAtPoint(restored.x,restored.y,0.1),restored,'restored chests are re-indexed for weapon hits');
+  assert.equal(drops.remove(restored),true,'physical chest can be removed by identity');
+  assert.equal(drops.chestAtPoint(restored.x,restored.y,0.1),null,'removed chest leaves the sparse hit index');
+  assert.ok(CFG.CHEST_BOUNCE <= 0.08, 'chest rebound is deliberately very small');
+  drops.reset();
+}
+
+// Opening a chest with E delegates presentation to the chest handler; the
+// aggregate pickup sweep must not immediately play a second fanfare.
+{
+  drops.reset(); played.length=0;
+  MM.chests.setDroppedOpenHandler(()=>MM.audio.play('chest'));
+  const chest=drops.spawnChest(44.5,SURF-1,'common',{vx:0,vy:0,lootSeed:91,source:'test'});
+  player.x=chest.x; player.y=chest.y;
+  assert.equal(drops.pickupNearest(player),true,'E opens a physical chest in reach');
+  assert.equal(played.filter(id=>id==='chest').length,1,'E-opened chest plays exactly one chest fanfare');
+  MM.chests.setDroppedOpenHandler(null);
+  drops.reset(); player.x=500;
 }
 
 // --- every chest tier can surprise: mixes are normalized and reach legendary -------
@@ -514,6 +612,7 @@ assert.match(mainSrc, /DROPS\.hoverAt\(aim\.x,aim\.y,player,\{visible:worldFxVis
 const mobsSrc = readFileSync(new URL('../src/engine/mobs.js', import.meta.url), 'utf8');
 assert.match(mobsSrc, /MM\.drops && MM\.drops\.spawnResource/, 'mob deaths route loot through physical drops');
 assert.match(mobsSrc, /MM\.drops\.rollGearDrop\(m\)/, 'mob deaths roll themed gear drops');
+assert.match(mobsSrc, /MM\.drops\.rollJewelDrop\(m,spec\)/, 'mob deaths roll power-scaled jewels');
 assert.match(mobsSrc, /meatScrapCountFor/, 'meat kills shed size-scaled scrap counts');
 const invUiSrc = readFileSync(new URL('../src/inventory_ui.js', import.meta.url), 'utf8');
 assert.match(invUiSrc, /drops\.wantsInteractKey/, 'wardrobe yields E to a drop in reach');
@@ -535,20 +634,30 @@ assert.match(mainSrc, /const upgrades=rows\.filter\(row=>isUpgradeWorthy\(row\.c
 assert.match(mainSrc, /upgrades\.slice\(\)\.reverse\(\)\.forEach\(row=>\{ if\(showUpgradeNotice\(row\.item,row\.cmp\)\) shown\+\+; \}\);/, 'all selected upgrades are rendered instead of only the best one');
 assert.match(mainSrc, /upgradeNoticeEl\.prepend\(card\);/, 'new upgrade cards join the existing stack at the visible top');
 assert.match(mainSrc, /dismissUpgradeNotice\(card\)/, 'each upgrade action dismisses only its own card');
+assert.match(mainSrc, /function refreshUpgradeNotices\(\)[\s\S]*querySelectorAll\('\.upgradeNotice\[data-item-id\]'\)/, 'pending cards can be re-evaluated after equipment changes');
+assert.match(mainSrc, /addEventListener\('mm-customization-change',refreshUpgradeNotices\)/, 'equipment changes refresh every pending upgrade comparison');
+assert.match(mainSrc, /classList\.toggle\('noLongerUpgrade',!worthy\)/, 'a stale upgrade card remains visible but is no longer labelled as an upgrade');
 assert.ok(!/upgradeNoticeTimer|hideUpgradeNotice|upgradeNoticeEl\.textContent='';/.test(mainSrc), 'pending upgrade cards are neither timed out nor cleared by a newer find');
 const craftingSrc = readFileSync(new URL('../src/engine/crafting.js', import.meta.url), 'utf8');
 assert.match(craftingSrc, /meatScrap:/, 'crafting source hints cover meat scraps');
 const lairsSrc = readFileSync(new URL('../src/engine/guardian_lairs.js', import.meta.url), 'utf8');
 assert.match(lairsSrc, /rollGuardianDrop\(e\.kind,e\.x,e\.y,\{boss:true\}\)/, 'fire/ice guardian bosses shed their relics');
+assert.match(lairsSrc, /rollJewelDrop\(e,\{boss:true,hp:e\.maxHp,dmg:26,xp:520\}\)/, 'fire/ice guardians receive a boss jewel roll');
 assert.match(lairsSrc, /rollGuardianDrop\(e\.kind,e\.x,e\.y,\{role:e\.role\}\)/, 'fire/ice sidekicks roll a relic');
 const undergroundSrc = readFileSync(new URL('../src/engine/underground_boss.js', import.meta.url), 'utf8');
 assert.match(undergroundSrc, /rollGuardianDrop\('earth',e\.x,e\.y,\{boss:true\}\)/, 'earth excavator sheds its relics');
+assert.match(undergroundSrc, /rollJewelDrop\(e,\{boss:true,hp:e\.maxHp,dmg:28,xp:560\}\)/, 'earth guardian receives a boss jewel roll');
 const skySrc = readFileSync(new URL('../src/engine/sky_guardian.js', import.meta.url), 'utf8');
 assert.match(skySrc, /rollGuardianDrop\('air',e\.x,e\.y,\{boss:true\}\)/, 'sky crown sheds its relics');
+assert.match(skySrc, /rollJewelDrop\(e,\{boss:true,hp:e\.maxHp,dmg:30,xp:600\}\)/, 'sky guardian receives a boss jewel roll');
 assert.match(skySrc, /rollGuardianDrop\('air',e\.x,e\.y,\{role:'resonator'\}\)/, 'resonators roll a relic (leaflings stay lootless)');
 const chestsSrc = readFileSync(new URL('../src/engine/chests.js', import.meta.url), 'utf8');
 assert.match(chestsSrc, /opts\.forceUnique \|\| r\(\)<td\.uniqueChance/, 'genItem supports forced unique boosts for guardian relics');
 const invSrc = readFileSync(new URL('../src/inventory.js', import.meta.url), 'utf8');
 assert.match(invSrc, /drops\.spawnGear\(p\.x, p\.y-0\.3, thrown, \{announce:false\}\)/, 'discard throws the item out as a ground drop');
+const bossesSrc = readFileSync(new URL('../src/engine/bosses.js', import.meta.url), 'utf8');
+assert.match(bossesSrc, /id:'BLOCK_BOSS'[\s\S]{0,220}\},\{boss:true,hp:hpBudget/, 'procedural block bosses receive the same scaled jewel roll');
+const centerGuardianSrc = readFileSync(new URL('../src/engine/center_guardian.js', import.meta.url), 'utf8');
+assert.match(centerGuardianSrc, /id:'CENTER_GUARDIAN'[\s\S]{0,180}\{boss:true,hp:mimic\.maxHp,dmg:30,xp:700\}/, 'center guardian receives a boss jewel roll');
 
 console.log('drops-sim: all assertions passed');
