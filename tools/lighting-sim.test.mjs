@@ -157,6 +157,18 @@ const leftField=ensureField({daylight:0,hero:lampHero,heroLamp:Object.assign({},
 assert.notEqual(leftField,rightField,'turning the hero invalidates the cached lamp field');
 assert.ok(lighting.lightAt(11,32)>0.75,'eye-lamp cone flips with hero facing');
 assert.ok(lighting.lightAt(11,32)>lighting.lightAt(19,32)+0.5,'flipped cone leaves the old forward side dim');
+
+// 7c) exceptional held weapon: quantized radial seed shares wall-tight BFS
+const rareWeaponLight={enabled:true,x:15.8,y:32.2,level:9};
+const weaponField=ensureField({daylight:0,hero:null,heroLamp:null,weaponLight:rareWeaponLight});
+assert.equal(lighting.lightAt(15,32),9/15,'held weapon seeds its exact quantized light level');
+assert.ok(lighting.lightAt(19,32)>0.25,'held weapon glow reaches the nearby cave wall');
+assert.equal(lighting.lightAt(23,32),0,'held weapon light cannot leak through a two-tile wall');
+const sameWeaponField=ensureField({daylight:0,hero:null,heroLamp:null,weaponLight:Object.assign({},rareWeaponLight)});
+assert.equal(sameWeaponField,weaponField,'animated colour pulse with unchanged light bucket reuses the cached field');
+const strongerWeaponField=ensureField({daylight:0,hero:null,heroLamp:null,weaponLight:Object.assign({},rareWeaponLight,{level:12})});
+assert.notEqual(strongerWeaponField,weaponField,'crossing a quantized weapon-light level invalidates the field');
+assert.equal(lighting.lightAt(15,32),12/15,'stronger activation impulse raises the physical light level');
 setT(15,32,T.TORCH);
 lighting.onTileChanged(15,32);
 
@@ -233,6 +245,8 @@ lighting.onTileChanged(0,0);
   assert.match(mainSrc, /const MINIMAP_OFF_KEY='mm_minimap_off_v1'/, 'minimap toggle uses one stable localStorage key');
   assert.match(mainSrc, /updateHeroEnergy\(dt\); updateHeroLamp\(dt\)/, 'lamp drain runs in the live simulation immediately after energy charging');
   assert.match(mainSrc, /lamp:\(HERO_LAMP && HERO_LAMP\.snapshot\)/, 'player save snapshot persists the eye-lamp toggle');
+  assert.match(mainSrc, /weaponLight: \(WEAPONS && WEAPONS\.lightSource\)/, 'finished scene feeds the equipped weapon into the physical cave-light field');
+  assert.match(mainSrc, /WEAPONS\.drawHeroReflection[\s\S]*WEAPONS\.drawWorldLight/, 'weapon light affects both the hero sprite and the later world composite');
   const htmlSrc = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   assert.match(htmlSrc, /id="lampBtn"[\s\S]*aria-pressed="false"/, 'HUD exposes an accessible flashlight icon toggle');
 }

@@ -98,6 +98,13 @@ const mobs = (function(){
   const PIRANHA_BAIT_ZONE_CAP = 12;
   const PIRANHA_PREY_RANGE = 20;
   const PIRANHA_MEAT_DROP_CHANCE = 0.03;
+  // One horizontal tile is treated as roughly one metre for ecology. Piranhas
+  // remain possible offshore, but their population pressure drops sharply once
+  // the nearest coast is more than about 500 m away.
+  const PIRANHA_COASTAL_RANGE = 500;
+  const PIRANHA_COASTAL_CORE = 350;
+  const PIRANHA_OFFSHORE_DENSITY = 0.08;
+  const PIRANHA_SHORE_SEARCH = 64;
   const PIRANHA_IGNORE_PREY = Object.freeze({PIRANHA:true,FISH:true,SHARK:true,EEL:true});
   const piranhaBaitZones = [];
   const MOB_ATTACK_TELEGRAPH_MS = 420;
@@ -2345,6 +2352,7 @@ const mobs = (function(){
     meatDropChance:PIRANHA_MEAT_DROP_CHANCE,
     loot:[{item:'fish', min:1, max:1, chance:0.16}],
     spawnTest(x,y,getTile){ return canHostPiranhaSpawn(x,y,getTile); },
+    spawnDensityAt(x){ return piranhaCoastProfile(x).density; },
     onCreate(m, spec, getTile){
       initWaterAnchor(m,getTile);
       m.desiredDepth = Math.min(1, m.desiredDepth||0);
@@ -5151,6 +5159,37 @@ const mobs = (function(){
     if(biomeAt(x)===5) return true;
     try{ return !!(WORLDGEN && typeof WORLDGEN.oceanBasinAt==='function' && WORLDGEN.oceanBasinAt(x)); }catch(e){ return false; }
   }
+  function piranhaCoastProfile(x){
+    x=Math.floor(Number.isFinite(x)?x:0);
+    let basin=null;
+    try{
+      basin=WORLDGEN && typeof WORLDGEN.oceanBasinAt==='function' ? WORLDGEN.oceanBasinAt(x) : null;
+    }catch(e){}
+    // Small seas that do not qualify as sealed ocean basins are, by definition,
+    // entirely coastal. Keeping full density here also avoids treating a missing
+    // worldgen query as an offshore exclusion.
+    if(!basin || !Number.isFinite(basin.left) || !Number.isFinite(basin.right) || x<basin.left || x>basin.right){
+      return {distance:0,density:1,ambushChance:1,inwardDir:0,basin:null};
+    }
+    const leftDistance=Math.max(0,x-basin.left);
+    const rightDistance=Math.max(0,basin.right-x);
+    const distance=Math.min(leftDistance,rightDistance);
+    let density=1;
+    if(distance>PIRANHA_COASTAL_CORE){
+      const span=Math.max(1,PIRANHA_COASTAL_RANGE-PIRANHA_COASTAL_CORE);
+      const t=Math.max(0,Math.min(1,(distance-PIRANHA_COASTAL_CORE)/span));
+      const smooth=t*t*(3-2*t);
+      density=1-(1-PIRANHA_OFFSHORE_DENSITY)*smooth;
+    }
+    density=Math.max(PIRANHA_OFFSHORE_DENSITY,Math.min(1,density));
+    return {
+      distance,
+      density,
+      ambushChance:0.10+0.90*density,
+      inwardDir:leftDistance<=rightDistance ? 1 : -1,
+      basin
+    };
+  }
   function isLakeColumn(x){
     return biomeAt(Math.floor(Number.isFinite(x)?x:0))===6;
   }
@@ -5165,11 +5204,13 @@ const mobs = (function(){
     if(!isSeaOrOceanColumn(x)) return false;
     if(readMobTile(getTile,x,y)!==T.WATER) return false;
     const col=waterColumnAt(x,y,getTile);
-    if(!col || col.depth<3) return false;
+    // A two-tile coastal shelf is enough room for the small body of a piranha.
+    // The former three-tile rule erased them from long, gently sloping shores.
+    if(!col || col.depth<2) return false;
     const above=readMobTile(getTile,x,y-1);
     if(above!==T.WATER && above!==T.AIR) return false;
     const pocket=waterPocketShape(x,y,getTile);
-    return pocket.count>=16 && pocket.width>=4 && pocket.depth>=3;
+    return pocket.count>=12 && pocket.width>=4 && pocket.depth>=2;
   }
   function canHostJackpotWhaleSpawn(x,y,getTile){
     x|=0; y|=0;
@@ -5695,7 +5736,13 @@ const mobs = (function(){
     }
     return n;
   }
-  function findPiranhaAmbushSpawn(player,getTile){
+  function piranhaSpawnSpot(spec,tx,ty,getTile,used){
+    const key=tx+','+ty;
+    if(used && used.has(key)) return null;
+    if(!spec.spawnTest(tx,ty,getTile)) return null;
+    return {x:tx+0.5,y:ty+0.5,key};
+  }
+  function findPiranhaAmbushSpawn(player,getTile,used){
     const spec=SPECIES.PIRANHA;
     if(!spec) return null;
     for(let tries=0; tries<48; tries++){
@@ -5703,15 +5750,31 @@ const mobs = (function(){
       const r=3.5+Math.random()*11.5;
       const tx=Math.floor(player.x+Math.cos(ang)*r);
       const ty=Math.floor(player.y-1+Math.random()*5);
-      if(spec.spawnTest(tx,ty,getTile)) return {x:tx+0.5,y:ty+0.5};
+      const spot=piranhaSpawnSpot(spec,tx,ty,getTile,used);
+      if(spot) return spot;
     }
     const px=Math.floor(player.x), py=Math.floor(player.y);
-    for(let r=2; r<=13; r++){
+    for(let r=2; r<=18; r++){
       for(let dy=-Math.min(4,r); dy<=Math.min(5,r); dy++){
         for(let dx=-r; dx<=r; dx++){
           if(Math.max(Math.abs(dx),Math.abs(dy))!==r) continue;
           const tx=px+dx, ty=py+dy;
-          if(spec.spawnTest(tx,ty,getTile)) return {x:tx+0.5,y:ty+0.5};
+          const spot=piranhaSpawnSpot(spec,tx,ty,getTile,used);
+          if(spot) return spot;
+        }
+      }
+    }
+    // On gentle shelves the nearest two-tile-deep water can be dozens of metres
+    // from the first wet shore tile. Search toward the basin interior instead of
+    // giving up after a small circle around the swimmer.
+    const coast=piranhaCoastProfile(px);
+    const primary=coast.inwardDir || (Math.random()<0.5 ? -1 : 1);
+    for(const dir of [primary,-primary]){
+      for(let distance=19; distance<=PIRANHA_SHORE_SEARCH; distance++){
+        const tx=px+dir*distance;
+        for(let dy=-2; dy<=8; dy++){
+          const spot=piranhaSpawnSpot(spec,tx,py+dy,getTile,used);
+          if(spot) return spot;
         }
       }
     }
@@ -5722,18 +5785,27 @@ const mobs = (function(){
     if(!spec || typeof getTile!=='function' || !heroInSeaWater(player,getTile)) return;
     if(now<spawnFreezeUntil) return;
     if(now<nextPiranhaAmbush) return;
-    nextPiranhaAmbush=now+850+Math.random()*850;
+    const coast=piranhaCoastProfile(player.x);
+    const offshoreSlowdown=1+3*(1-coast.density);
+    nextPiranhaAmbush=now+(850+Math.random()*850)*offshoreSlowdown;
+    // This is deliberately a probability, not a hard geographic ban: a small
+    // hunting group can still surprise a swimmer in the open ocean.
+    if(Math.random()>coast.ambushChance) return;
     const local=countSpeciesNear('PIRANHA',player.x,player.y,28);
-    const target=Math.max(6,Math.min(spec.localMax||12, 8+Math.floor(Math.random()*4)));
+    const targetBase=Math.round(2+6*coast.density);
+    const targetSpread=Math.max(1,Math.round(1+3*coast.density));
+    const target=Math.max(2,Math.min(spec.localMax||12,targetBase+Math.floor(Math.random()*targetSpread)));
     if(local>=target || countSpecies('PIRANHA')>=spec.max) return;
     const localAll=localMobCounts(player,32);
     const cap=Math.max(ECO_TOTAL_LOCAL_CAP+6, Math.round(ECO_TOTAL_LOCAL_CAP*1.25));
     if(localAll.total>=cap) return;
     const want=Math.min(spec.spawnBatch||6, target-local, spec.max-countSpecies('PIRANHA'), cap-localAll.total);
     let born=0;
+    const used=new Set();
     for(let i=0;i<want;i++){
-      const spot=findPiranhaAmbushSpawn(player,getTile);
+      const spot=findPiranhaAmbushSpawn(player,getTile,used);
       if(!spot) break;
+      used.add(spot.key);
       mobs.push(create(spec,spot.x,spot.y,getTile));
       born++;
     }
@@ -5816,10 +5888,15 @@ const mobs = (function(){
       if(localCount>=localCap) continue;
       const affinity=biomeAffinity(spec,biome);
       if(affinity<=0.02) continue;
+      let locationDensity=1;
+      if(typeof spec.spawnDensityAt==='function'){
+        try{ locationDensity=Math.max(0,Math.min(1,Number(spec.spawnDensityAt(player.x))||0)); }catch(e){ locationDensity=1; }
+      }
+      if(locationDensity<=0) continue;
       const spawnChance=(typeof spec.spawnChance==='number' && isFinite(spec.spawnChance)) ? Math.max(0,Math.min(1,spec.spawnChance)) : 0.38;
       const deficit=Math.max(0,localCap-localCount);
-      const weight=affinity*spawnChance*seasonAnimalMultiplier(spec)*(0.6+deficit/localCap);
-      if(weight>0) candidates.push({spec,weight});
+      const weight=affinity*spawnChance*seasonAnimalMultiplier(spec)*(0.6+deficit/localCap)*locationDensity;
+      if(weight>0) candidates.push({spec,weight,locationDensity});
     }
     candidates.sort((a,b)=>b.weight-a.weight);
     let born=0;
@@ -5829,7 +5906,10 @@ const mobs = (function(){
       for(; idx<candidates.length; idx++){ pick-=candidates[idx].weight; if(pick<=0) break; }
       const cand=candidates[Math.min(idx,candidates.length-1)];
       candidates.splice(Math.min(idx,candidates.length-1),1);
-      const batch=(typeof cand.spec.spawnBatch==='number' && isFinite(cand.spec.spawnBatch)) ? Math.max(1,cand.spec.spawnBatch|0) : 1;
+      const baseBatch=(typeof cand.spec.spawnBatch==='number' && isFinite(cand.spec.spawnBatch)) ? Math.max(1,cand.spec.spawnBatch|0) : 1;
+      const batch=typeof cand.spec.spawnDensityAt==='function'
+        ? Math.max(1,Math.round(baseBatch*(0.25+0.75*cand.locationDensity)))
+        : baseBatch;
       const passCapForCandidate=Math.max(ECO_MAX_BIRTHS_PER_PASS,batch);
       for(let n=0; n<batch && born<passCapForCandidate && local.total+born<totalLocalCap; n++){
         const localCap=seasonAdjustedLocalCap(cand.spec);
@@ -11151,7 +11231,7 @@ const mobs = (function(){
         lasers:mobLasers.map(l=>({x1:l.x1,y1:l.y1,x2:l.x2,y2:l.y2,dmg:l.dmg||0,hit:!!l.hit}))
       };
     }
-  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, chillAt, chillRadius, wetAt, wetRadius, statusAt, statusRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, ghostRoster, ghostApplyRoster, ghostLerp, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, isLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat,
+  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, chillAt, chillRadius, wetAt, wetRadius, statusAt, statusRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, ghostRoster, ghostApplyRoster, ghostLerp, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, isLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugPiranhas:()=>({coastProfile:piranhaCoastProfile,coastalRange:PIRANHA_COASTAL_RANGE,coastalCore:PIRANHA_COASTAL_CORE,offshoreDensity:PIRANHA_OFFSHORE_DENSITY}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat,
     _debugProgression:{heroProfile:heroCombatProfile,mobPower:mobCombatPower,challenge:mobChallengeProfile,multiplier:challengeXpMultiplier,tier:challengeTier,progressionFloor:challengeProgressionFloor,xpNeed:heroXpNeed,TRIVIAL_RATIO:XP_TRIVIAL_RATIO}
   };
   MM.mobs = api;

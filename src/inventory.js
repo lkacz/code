@@ -40,8 +40,8 @@
   // category is one entry here — input handling and the UI badge follow.
   const WEAPON_CATEGORIES=[
     {id:'melee',  key:'2', label:'Broń biała', icon:'⚔️', types:['melee']},
-    // Ranged slot: bows AND hand-thrown projectiles (snowballs, stones) rotate here
-    {id:'bow',    key:'3', label:'Dystansowe', icon:'🏹', types:['bow','thrown']},
+    // Ranged slot: bows, underwater harpoon launchers and hand throws rotate here
+    {id:'bow',    key:'3', label:'Dystansowe', icon:'🏹', types:['bow','harpoon','thrown']},
     {id:'stream', key:'4', label:'Miotacze',   icon:'🔥', types:['flame','hose','gas','electric']}
   ];
 
@@ -72,9 +72,11 @@
     if(typeof item.enhancement==='number' && item.enhancement)
       chips.push({icon:'✦', label:'Trwałe ulepszenie', text:(item.enhancement>0?'+':'')+item.enhancement, good:item.enhancement>0});
     if(typeof item.attackDamage==='number' && item.attackDamage)
-      chips.push({icon:'⚔️', label:item.weaponType==='bow'?'Strzała':'Obrażenia', text:'+'+item.attackDamage, good:item.attackDamage>0});
-    if(item.weaponType==='bow' && typeof item.fireCooldown==='number' && item.fireCooldown>0)
-      chips.push({icon:'🏹', label:'Tempo', text:(1/item.fireCooldown).toFixed(1)+'/s', good:true});
+      chips.push({icon:'⚔️', label:['bow','harpoon'].includes(item.weaponType)?'Pocisk':'Obrażenia', text:'+'+item.attackDamage, good:item.attackDamage>0});
+    if(['bow','harpoon'].includes(item.weaponType) && typeof item.fireCooldown==='number' && item.fireCooldown>0)
+      chips.push({icon:item.weaponType==='harpoon'?'🔱':'🏹', label:'Tempo', text:(1/item.fireCooldown).toFixed(1)+'/s', good:true});
+    if(item.aquaticStyle)
+      chips.push({icon:'🌊', label:'Środowisko', text:'Pod wodą', good:true});
     if(typeof item.fireDps==='number'){
       const streamIcon=item.weaponType==='hose'?'💧':item.weaponType==='gas'?'☠️':item.weaponType==='electric'?'⚡':'🔥';
       const streamLabel=item.weaponType==='electric'?'Wiązka':'Strumień';
@@ -115,7 +117,7 @@
     if(typeof item.energyCost==='number') s-=item.energyCost*0.45;
     if(typeof item.energyCapacityBonus==='number') s+=item.energyCapacityBonus*0.55;
     if(typeof item.waterMoveSpeedMult==='number') s+=(item.waterMoveSpeedMult-0.5)*80;
-    if(item.weaponType==='bow' && typeof item.fireCooldown==='number') s+=(0.6-item.fireCooldown)*40; // faster bow = stronger
+    if(['bow','harpoon'].includes(item.weaponType) && typeof item.fireCooldown==='number') s+=(0.6-item.fireCooldown)*40; // faster launcher = stronger
     if(typeof item.airJumps==='number') s+=item.airJumps*12;
     if(typeof item.crushResistBonus==='number') s+=item.crushResistBonus*10;
     if(typeof item.visionRadius==='number') s+=(item.visionRadius-VISION_BASE)*3;
@@ -245,6 +247,7 @@
     {key:'arrowObsidian', label:'Strzaly obsydianowe', color:'#7a5cc1', tile:null},
     {key:'arrowDiamond', label:'Strzaly diamentowe', color:'#48f1ff', tile:null},
     {key:'arrowIridium', label:'Strzaly irydowe', color:'#b8d7ff', tile:null},
+    {key:'harpoonBolt', label:'Harpuny', color:'#72c7d8', tile:null},
     {key:'leaf',    label:'Liść',    color:'#2faa2f', tile:'LEAF'},
     {key:'snow',    label:'Śnieg',   color:'#e6f1ff', tile:'SNOW'},
     {key:'toxicSnow', label:'Toksyczny śnieg', color:'#9fe08a', tile:'TOXIC_SNOW'},
@@ -344,6 +347,7 @@
     // two tiles out); plus an optional material identity string (meleeEffect)
     melee:['attackDamage','fireRange'],
     bow:['attackDamage','fireCooldown'],
+    harpoon:['attackDamage','fireCooldown'],
     thrown:['attackDamage','fireCooldown'],
     flame:['fireDps','fireRange'],
     hose:['fireDps','fireRange'],
@@ -415,10 +419,11 @@
   // fields on ingest so tampered/corrupt entries can't smuggle objects or markup
   // into stat math and innerHTML-based displays downstream.
   const ITEM_NUM_FIELDS=['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','crushResistBonus'];
-  const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType','meleeEffect'];
+  const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType','meleeEffect','aquaticStyle'];
   // Material identity of a crafted hand weapon (weapons.js MELEE_EFFECTS holds
   // the numbers) — anything else smuggled into meleeEffect is dropped on ingest.
   const MELEE_EFFECT_LABELS={bleed:'Krwawienie', stun:'Ogłuszenie', panic:'Panika'};
+  const AQUATIC_STYLES={trident:'melee',crossbow:'bow',harpoon:'harpoon'};
   const ITEM_KINDS=new Set(['cape','eyes','outfit','weapon','charm']);
   function sanitizeLootItem(raw,fallbackKind){
     if(!raw || typeof raw!=='object') return null;
@@ -430,6 +435,7 @@
     ITEM_STR_FIELDS.forEach(f=>{ const v=raw[f]; if(typeof v==='string' && v.length<=80) it[f]=v; });
     if(Number.isFinite(raw.enhancement)) it.enhancement=Math.max(-99,Math.min(99,Math.trunc(raw.enhancement)));
     if(it.meleeEffect && (kind!=='weapon' || (it.weaponType||'melee')!=='melee' || !MELEE_EFFECT_LABELS[it.meleeEffect])) delete it.meleeEffect;
+    if(it.aquaticStyle && (kind!=='weapon' || AQUATIC_STYLES[it.aquaticStyle]!==(it.weaponType||'melee'))) delete it.aquaticStyle;
     // Normalize multipliers onto the clean percent ladder: pre-rework loot carries
     // raw rolls like 1.0437 — snapped here once, so every stored item reads clean.
     ['moveSpeedMult','jumpPowerMult','mineSpeedMult'].forEach(f=>{

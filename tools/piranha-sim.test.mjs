@@ -37,6 +37,13 @@ function shallowSeaTile(_x,y){
   if(y>=11) return T.STONE;
   return T.AIR;
 }
+function gentleShelfTile(x,y){
+  const tx=Math.floor(x);
+  const depth=tx<0 ? 0 : (tx<26 ? 1 : (tx<64 ? 2 : 7));
+  if(y>=10 && y<10+depth) return T.WATER;
+  if(y>=10+depth) return T.STONE;
+  return T.AIR;
+}
 function baitSea(meatTile,tx=1,ty=11){
   const tiles = new Map();
   const key=(x,y)=>`${Math.floor(x)},${Math.floor(y)}`;
@@ -65,6 +72,19 @@ try{
   assert.ok(spec.contactInvulMs<=300, 'piranha bites use short hero i-frames');
   assert.ok(spec.speed*1.05*1.2 > MOVE.MAX*2, 'even a slow piranha is faster than the normal hero movement cap');
   assert.ok(spec.meatDropChance>0 && spec.meatDropChance<=0.04, 'dead piranhas have very low odds of turning into meat');
+  const piranhaEcology=mobs._debugPiranhas();
+  assert.equal(piranhaEcology.coastalRange,500, 'piranha coastal pressure uses a 500 m shore range');
+  worldGen.oceanBasinAt = () => ({left:-800,right:800,width:1601});
+  const nearCoast=piranhaEcology.coastProfile(-700);
+  const coastalFade=piranhaEcology.coastProfile(-375);
+  const openOcean=piranhaEcology.coastProfile(0);
+  assert.equal(nearCoast.distance,100, 'coast profile measures distance to the nearest shore');
+  assert.equal(nearCoast.density,1, 'the inner coastal belt keeps full piranha pressure');
+  assert.ok(coastalFade.density<nearCoast.density && coastalFade.density>openOcean.density, 'piranha pressure fades smoothly before 500 m');
+  assert.ok(openOcean.density>0 && openOcean.density<0.15, 'open-ocean piranhas are rare rather than forbidden');
+  assert.ok(openOcean.ambushChance>0, 'an offshore swimmer still has a non-zero ambush chance');
+  assert.equal(spec.spawnDensityAt(0),openOcean.density, 'ordinary ecological spawning uses the same coast profile');
+  worldGen.oceanBasinAt = () => ({left:-80,right:80,width:161});
   assert.ok(meat.baitProfileForTile(T.MEAT).duration > meat.baitProfileForTile(T.BAKED_MEAT).duration, 'raw meat distracts piranhas longer than cooked meat');
   assert.ok(meat.baitProfileForTile(T.BAKED_MEAT).duration > meat.baitProfileForTile(T.ROTTEN_MEAT).duration, 'cooked meat distracts piranhas longer than rotten meat');
   assert.equal(spec.spawnTest(0,12,seaTile), true, 'piranhas spawn in real sea water');
@@ -122,6 +142,34 @@ try{
   piranhas = mobs.serialize().list.filter(m=>m.id==='PIRANHA');
   const afterDist = Math.min(...piranhas.map(m=>Math.hypot(m.x-player.x,m.y-player.y)));
   assert.ok(afterDist<beforeDist, 'piranha horde closes on a swimming hero');
+
+  // Regression for long, shallow shelves: the old three-tile depth gate plus a
+  // ~15 tile search radius made this entire shoreline appear piranha-free.
+  mobs.clearAll();
+  worldGen.biomeType = x => x>=0 && x<=1000 ? 5 : 1;
+  worldGen.oceanBasinAt = x => x>=0 && x<=1000 ? {left:0,right:1000,width:1001} : null;
+  player.x=0.5; player.y=10.2; player.vx=0; player.vy=0; player.hpInvul=0;
+  simNow += 5000;
+  mobs.update(0.05,player,gentleShelfTile,()=>{});
+  const shelfPiranhas=mobs.serialize().list.filter(m=>m.id==='PIRANHA');
+  assert.ok(shelfPiranhas.length>=6, 'piranhas return at a gentle real-ocean shoreline');
+  assert.ok(shelfPiranhas.every(m=>m.x>=26 && gentleShelfTile(m.x,m.y)===T.WATER), 'shore ambush searches inward to safe two-tile-deep water');
+
+  // Force the rare offshore roll to succeed: the centre is intentionally much
+  // quieter, but never a hard no-spawn zone.
+  const seededRandomBeforeOffshore=Math.random;
+  Math.random=()=>0;
+  mobs.clearAll();
+  worldGen.biomeType = () => 5;
+  worldGen.oceanBasinAt = () => ({left:-800,right:800,width:1601});
+  player.x=0.5; player.y=11.4;
+  simNow += 5000;
+  mobs.update(0.05,player,seaTile,()=>{});
+  const offshorePiranhas=mobs.serialize().list.filter(m=>m.id==='PIRANHA');
+  assert.ok(offshorePiranhas.length>=2 && offshorePiranhas.length<6, 'a successful open-ocean ambush is a small hunting group, not a coastal horde');
+  Math.random=seededRandomBeforeOffshore;
+  worldGen.biomeType = () => 5;
+  worldGen.oceanBasinAt = () => ({left:-80,right:80,width:161});
 
   mobs.clearAll();
   mobs.deserialize({

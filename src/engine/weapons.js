@@ -126,21 +126,317 @@ import { damageBlastCreatures } from './explosion_damage.js';
   const flameHeatRays=[];
   const streamFuelDebt={flame:0,hose:0,gas:0};
   const warnAt=Object.create(null);
-  let bowCd=0, meleeCd=0, bossAcc=0, ultCharge=1, electricCd=0, throwCd=0;
+  let bowCd=0, harpoonCd=0, meleeCd=0, bossAcc=0, ultCharge=1, electricCd=0, throwCd=0;
   let heroFlameHitCd=0;
   let lastWeaponCombatFxAt=0, lastWeaponCombatFxKey='', lastWeaponCombatFxX=0, lastWeaponCombatFxY=0;
   let iridiumPierces=0;
   let lastGetTile=null, lastSetTile=null;
   const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
-  const bowCharge={active:false,t:0,aimX:0,aimY:0,player:null,full:false,overdrawT:0,energySpent:0,starved:false};
+  const bowCharge={active:false,t:0,required:BOW_CHARGE_SECONDS,aimX:0,aimY:0,player:null,full:false,overdrawT:0,energySpent:0,starved:false};
   const ULT_CHARGE_TIME=5;
   // Melee swing visual: drawHeld animates the held blade, draw() adds a slash arc
   const swing={t:0, dur:0.2, tx:0, ty:0, dir:1};
+  // Short, cosmetic-only impulse shared by every held-weapon renderer. Discrete
+  // shots restart it; continuous emitters merely keep it alive, avoiding a
+  // strobing muzzle flash when fireHeld() is called every simulation tick.
+  const heldActionFx={kind:'',started:0,until:0,power:0,serial:0};
 
   function equippedWeapon(){ return (MM.inventory && MM.inventory.equippedItem)? MM.inventory.equippedItem('weapon'):null; }
   function weaponType(w){ return (w && w.weaponType)||'melee'; }
   function tierColor(it){ const tc=(MM.inventory && MM.inventory.TIER_COLORS)||{}; return (it && tc[it.tier])||null; }
+  const WEAPON_TIER_RANK={common:0,uncommon:1,rare:2,epic:3,legendary:4};
+  const WEAPON_TIER_GLOW={rare:'#bd75ff',epic:'#ffd45c',legendary:'#65f4ff'};
+  const WEAPON_MATERIALS={
+    wood:{id:'wood',body:'#76502b',edge:'#b9874a',accent:'#e2b66f',glow:'#d9a55c',dark:'#3f2817',grip:'#5b351d'},
+    stone:{id:'stone',body:'#727982',edge:'#c4cbd2',accent:'#9da6af',glow:'#d8e0e7',dark:'#3c4249',grip:'#654321'},
+    steel:{id:'steel',body:'#788694',edge:'#eef6ff',accent:'#b9c8d6',glow:'#d9efff',dark:'#36424c',grip:'#674326'},
+    obsidian:{id:'obsidian',body:'#3c3158',edge:'#a98ad8',accent:'#7e59b5',glow:'#c994ff',dark:'#171020',grip:'#4a2f2b'},
+    diamond:{id:'diamond',body:'#70c9db',edge:'#f0ffff',accent:'#86f0f2',glow:'#8fffff',dark:'#285f72',grip:'#4f5363'},
+    iridium:{id:'iridium',body:'#7668a7',edge:'#f4eaff',accent:'#b887ff',glow:'#d7b4ff',dark:'#302749',grip:'#403557'},
+    aquatic:{id:'aquatic',body:'#436d7c',edge:'#dffcff',accent:'#62dce7',glow:'#70efff',dark:'#203d4a',grip:'#405764'},
+    arc:{id:'arc',body:'#3e5968',edge:'#efffff',accent:'#58eaff',glow:'#79f5ff',dark:'#1d303a',grip:'#3e434d'},
+    exotic:{id:'exotic',body:'#62528b',edge:'#fff2b8',accent:'#e7b85b',glow:'#ffe27a',dark:'#28203d',grip:'#49354d'}
+  };
+  function weaponPrestigeRank(it){
+    const base=it && WEAPON_TIER_RANK[it.tier] || 0;
+    return it && it.unique ? Math.max(3,base) : base;
+  }
+  function weaponVisualSeed(it){
+    const text=String((it&&(it.id||it.name))||'weapon');
+    let h=2166136261;
+    for(let i=0;i<text.length;i++){ h^=text.charCodeAt(i); h=Math.imul(h,16777619); }
+    return (h>>>0)/4294967296;
+  }
+  function weaponPrestigeColor(it){ return tierColor(it)||WEAPON_TIER_GLOW[it&&it.tier]||'#d7f5ff'; }
+  function weaponMaterialProfile(it){
+    const name=String((it&&(it.id||it.name))||'').toLowerCase();
+    const aquatic=aquaticStyle(it);
+    if(aquatic) return WEAPON_MATERIALS.aquatic;
+    if(/iryd|irid/.test(name)) return WEAPON_MATERIALS.iridium;
+    if(/diament|diamond/.test(name)) return WEAPON_MATERIALS.diamond;
+    if(/obsyd|obsid/.test(name)) return WEAPON_MATERIALS.obsidian;
+    if(/kamie|stone|rock/.test(name)) return WEAPON_MATERIALS.stone;
+    if(/drewn|wood|patyk|stick|maczug|club|luk|bow/.test(name)) return WEAPON_MATERIALS.wood;
+    if(weaponType(it)==='electric' || /elektr|electric|tesla|laser|plasm/.test(name)) return WEAPON_MATERIALS.arc;
+    if(it && (it.unique || weaponPrestigeRank(it)>=3)) return WEAPON_MATERIALS.exotic;
+    return WEAPON_MATERIALS.steel;
+  }
+  function triggerHeldActionFx(kind,power,duration,continuous){
+    const now=nowMs(), dur=Math.max(45,Number(duration)||150);
+    const active=now<heldActionFx.until;
+    if(continuous && active && heldActionFx.kind===kind){
+      heldActionFx.until=now+dur;
+      heldActionFx.power=Math.max(heldActionFx.power,Math.max(0.25,Number(power)||1));
+      return heldActionFx;
+    }
+    heldActionFx.kind=String(kind||'weapon');
+    heldActionFx.started=now;
+    heldActionFx.until=now+dur;
+    heldActionFx.power=Math.max(0.25,Number(power)||1);
+    heldActionFx.serial=(heldActionFx.serial+1)>>>0;
+    return heldActionFx;
+  }
+  function heldActionState(){
+    const now=nowMs(), duration=Math.max(1,heldActionFx.until-heldActionFx.started);
+    if(now>=heldActionFx.until) return {active:false,kind:heldActionFx.kind,age:1,kick:0,flash:0,power:0,serial:heldActionFx.serial};
+    const age=clamp01((now-heldActionFx.started)/duration);
+    const release=1-age;
+    return {active:true,kind:heldActionFx.kind,age,kick:release*release,flash:Math.sin(Math.PI*release)*0.35+release*0.65,power:heldActionFx.power,serial:heldActionFx.serial};
+  }
+  function weaponCombatVisualMeta(w,weaponClass,extra){
+    const mat=weaponMaterialProfile(w), cls=weaponClass||weaponType(w);
+    const meta={
+      forceVisual:true,
+      weaponMaterial:mat.id,
+      weaponPrestige:weaponPrestigeRank(w),
+      weaponGlow:weaponPrestigeColor(w),
+      weaponClass:cls,
+      weaponForm:cls==='melee'?meleeVisualForm(w):cls
+    };
+    return extra&&typeof extra==='object'?Object.assign(meta,extra):meta;
+  }
+  function projectileCombatVisualMeta(a,extra){
+    const cls=a&&a.harpoon?'harpoon':a&&a.thrown?'thrown':'bow';
+    const meta={
+      forceVisual:true,
+      weaponMaterial:String(a&&a.weaponMaterial||''),
+      weaponPrestige:Math.max(0,Math.min(4,Number(a&&a.weaponPrestige)||0)),
+      weaponGlow:String(a&&a.weaponGlow||''),
+      weaponClass:cls,
+      weaponForm:cls,
+      dir:Number(a&&a.vx)<0?-1:1
+    };
+    return extra&&typeof extra==='object'?Object.assign(meta,extra):meta;
+  }
+  function weaponLightSource(player){
+    const it=equippedWeapon();
+    if(!it||!player) return null;
+    const type=weaponType(it);
+    if(type==='thrown'){
+      const spec=thrownSpec(it);
+      if(!spec||resourceCount(spec.key)<=0) return null;
+    }
+    const rank=weaponPrestigeRank(it), material=weaponMaterialProfile(it);
+    const action=heldActionState();
+    const bowRatio=type==='bow'&&bowCharge.active?bowChargeRatio():0;
+    let level=rank>=2?(rank===4?10:rank===3?8:6):0;
+    if(action.active){
+      const actionLevel=type==='electric'?14:type==='flame'?13:type==='hose'?9:type==='gas'?8:type==='harpoon'?9:7;
+      const prestigeImpulse=rank>=2?1+Math.floor(Math.max(0,action.power-0.8)):0;
+      level=Math.max(Math.min(15,level+prestigeImpulse),Math.min(15,actionLevel+Math.floor(Math.max(0,action.power-1)*2)));
+    }
+    if(rank>=2&&bowRatio>0.15) level=Math.max(level,Math.round(5+bowRatio*7));
+    const sub=aquaticStyle(it)?heroSubmersion(player):0;
+    if(sub>0.55&&aquaticStyle(it)) level=Math.min(15,level+1);
+    if(level<6) return null;
+    const facing=player.facing<0?-1:1;
+    return {
+      enabled:true,
+      x:player.x+facing*0.38,
+      y:player.y-Math.max(0.05,(Number(player.h)||0.95)*0.10),
+      level:Math.max(1,Math.min(15,Math.round(level))),
+      color:material.glow,
+      material:material.id,
+      radius:1.05+level*0.085+(action.active?0.22:0),
+      intensity:clamp01(0.24+(level-5)*0.065+(action.active?0.12:0)),
+      underwater:sub>0.45,
+      facing,
+      action:action.active?action.kind:''
+    };
+  }
+  function weaponLightRgba(hex,alpha){
+    const raw=String(hex||'').trim();
+    const m=/^#([0-9a-f]{6})$/i.exec(raw);
+    if(!m) return 'rgba(170,235,255,'+clamp01(alpha).toFixed(3)+')';
+    const n=parseInt(m[1],16);
+    return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+clamp01(alpha).toFixed(3)+')';
+  }
+  function drawWorldLight(ctx,TILE,player){
+    const light=weaponLightSource(player);
+    if(!light||typeof ctx.createRadialGradient!=='function') return false;
+    const now=nowMs()*0.001, pulse=0.90+0.10*Math.sin(now*(light.action?5.2:2.1)+weaponVisualSeed(equippedWeapon())*6.28);
+    const x=light.x*TILE,y=light.y*TILE,r=light.radius*TILE*(light.underwater?1.18:1)*pulse;
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    const g=ctx.createRadialGradient(x,y,0,x,y,r);
+    g.addColorStop(0,weaponLightRgba(light.color,light.intensity*(light.underwater?0.22:0.30)));
+    g.addColorStop(0.38,weaponLightRgba(light.color,light.intensity*(light.underwater?0.105:0.13)));
+    g.addColorStop(1,weaponLightRgba(light.color,0));
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+    if(light.underwater){
+      ctx.strokeStyle=weaponLightRgba(light.color,light.intensity*0.16); ctx.lineWidth=Math.max(0.8,TILE*0.035);
+      for(let i=0;i<2;i++){
+        const rr=r*(0.42+i*0.18),spin=now*(0.35+i*0.12)*(i?1:-1);
+        ctx.beginPath(); ctx.arc(x,y,rr,spin,spin+Math.PI*0.72); ctx.stroke();
+      }
+    }
+    ctx.restore();
+    return true;
+  }
+  function drawHeroReflection(ctx,TILE,player){
+    const light=weaponLightSource(player);
+    if(!light||typeof ctx.createRadialGradient!=='function') return false;
+    const w=Math.max(0.4,Number(player.w)||0.7)*TILE, h=Math.max(0.6,Number(player.h)||0.95)*TILE;
+    const handX=(player.x+light.facing*(Number(player.w)||0.7)*0.40)*TILE;
+    const handY=(player.y-h/TILE*0.10)*TILE;
+    const r=Math.max(w,h)*0.78;
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    const g=ctx.createRadialGradient(handX,handY,0,handX,handY,r);
+    g.addColorStop(0,weaponLightRgba(light.color,light.intensity*0.22));
+    g.addColorStop(0.46,weaponLightRgba(light.color,light.intensity*0.075));
+    g.addColorStop(1,weaponLightRgba(light.color,0));
+    ctx.fillStyle=g; ctx.beginPath();
+    ctx.arc(handX,handY,r,0,Math.PI*2); ctx.fill(); ctx.restore();
+    return true;
+  }
+  function meleeVisualForm(it){
+    if(aquaticStyle(it)==='trident') return 'trident';
+    const name=String(it&&it.name||'').toLowerCase();
+    if(/top[oó]r|axe/.test(name)) return 'axe';
+    if(/maczug|patyk|club|stick/.test(name)) return 'club';
+    if(/dzid|w[łl][oó]cz|spear/.test(name) || Number(it&&it.fireRange)>1) return 'spear';
+    return 'sword';
+  }
+  function drawHeldPrestigeBack(ctx,TILE,it,facing){
+    const rank=weaponPrestigeRank(it);
+    if(rank<2) return;
+    const now=nowMs()*0.001, seed=weaponVisualSeed(it)*Math.PI*2;
+    const s=Math.max(0.55,TILE/20), pulse=0.82+Math.sin(now*3.2+seed)*0.18;
+    const col=weaponPrestigeColor(it), cx=facing*3.2*s, cy=-5.2*s;
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
+    ctx.shadowColor=col; ctx.shadowBlur=(rank===4?15:rank===3?10:6)*s;
+    ctx.globalAlpha=(rank===4?0.13:rank===3?0.09:0.055)*pulse;
+    ctx.fillStyle=col;
+    ctx.beginPath(); ctx.arc(cx,cy,(rank===4?13:rank===3?10:7)*s,0,Math.PI*2); ctx.fill();
+    ctx.globalAlpha=(rank===4?0.48:rank===3?0.32:0.18)*pulse;
+    ctx.strokeStyle=col; ctx.lineWidth=(rank===4?1.7:1.1)*s;
+    const rings=rank===4?3:rank===3?2:1;
+    for(let i=0;i<rings;i++){
+      const r=(6.5+i*3.1+Math.sin(now*(1.7+i*0.35)+seed+i)*0.8)*s;
+      const spin=now*(0.7+i*0.23)*(i%2?-1:1)+seed;
+      ctx.beginPath(); ctx.arc(cx,cy,r,spin,spin+Math.PI*(0.72+i*0.16)); ctx.stroke();
+    }
+    if(rank>=3){
+      const motes=rank===4?5:3;
+      ctx.fillStyle=rank===4?'#ffffff':col;
+      for(let i=0;i<motes;i++){
+        const a=seed+i*Math.PI*2/motes+now*(i%2?1.25:-0.92);
+        const r=(8.5+(i%2)*3.2)*s;
+        ctx.globalAlpha=(0.45+0.35*Math.sin(now*4+i+seed))*pulse;
+        ctx.beginPath(); ctx.arc(cx+Math.cos(a)*r,cy+Math.sin(a)*r,(rank===4?1.25:0.85)*s,0,Math.PI*2); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+  function drawHeldPrestigeFront(ctx,TILE,it,facing){
+    const rank=weaponPrestigeRank(it);
+    if(rank<2) return;
+    const now=nowMs()*0.001, seed=weaponVisualSeed(it)*Math.PI*2;
+    const s=Math.max(0.55,TILE/20), col=weaponPrestigeColor(it);
+    const glint=0.55+0.45*Math.sin(now*(rank===4?6.5:4.2)+seed);
+    const gx=facing*(5.5+glint*4)*s, gy=(-6.5-glint*4)*s;
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    ctx.globalAlpha=(rank===4?0.95:rank===3?0.72:0.42)*glint;
+    ctx.strokeStyle=rank===4?'#ffffff':col; ctx.shadowColor=col; ctx.shadowBlur=(rank===4?10:5)*s;
+    ctx.lineWidth=Math.max(0.8,s*(rank===4?1.25:0.9));
+    ctx.beginPath(); ctx.moveTo(gx-3*s,gy); ctx.lineTo(gx+3*s,gy); ctx.moveTo(gx,gy-3*s); ctx.lineTo(gx,gy+3*s); ctx.stroke();
+    if(rank>=3){
+      ctx.globalAlpha=rank===4?0.78:0.48; ctx.fillStyle=col;
+      ctx.beginPath(); ctx.arc(facing*1.5*s,-4.2*s,(rank===4?1.65:1.15)*s,0,Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+  }
+  function clamp01(v){ return Math.max(0,Math.min(1,Number(v)||0)); }
+  function mix(a,b,t){ return a+(b-a)*clamp01(t); }
+  function tileGetter(){
+    if(typeof lastGetTile==='function') return lastGetTile;
+    try{ if(MM.world && typeof MM.world.getTile==='function') return (x,y)=>MM.world.getTile(x,y); }catch(e){}
+    return null;
+  }
+  // Water penalties follow the hero's body, not merely the tile below the feet.
+  // This makes wading almost normal and ramps smoothly into the full deep-water
+  // profile once the head, torso and weapon arm are submerged.
+  function heroSubmersion(player,getTile){
+    if(!player) return 0;
+    const getter=typeof getTile==='function' ? getTile : tileGetter();
+    if(!getter) return 0;
+    const w=Math.max(0.4,Number(player.w)||0.7), h=Math.max(0.6,Number(player.h)||0.95);
+    const points=[
+      [player.x,player.y-h*0.44],
+      [player.x-w*0.28,player.y-h*0.10],
+      [player.x+w*0.28,player.y-h*0.10],
+      [player.x-w*0.18,player.y+h*0.32],
+      [player.x+w*0.18,player.y+h*0.32]
+    ];
+    let wet=0;
+    for(const p of points){ try{ if(getter(Math.floor(p[0]),Math.floor(p[1]))===T.WATER) wet++; }catch(e){} }
+    return wet/points.length;
+  }
+  function aquaticStyle(w){
+    const s=w && w.aquaticStyle;
+    return s==='trident'||s==='crossbow'||s==='harpoon' ? s : '';
+  }
+  function meleeWaterProfile(w,player){
+    const sub=heroSubmersion(player);
+    if(aquaticStyle(w)==='trident') return {
+      submersion:sub,
+      damageMult:mix(0.65,1.45,sub),
+      cooldownMult:mix(1.32,0.68,sub),
+      effectMult:mix(0.75,1.20,sub)
+    };
+    const thrusting=meleeReach(w)>1;
+    return {
+      submersion:sub,
+      damageMult:mix(1,thrusting?0.72:0.50,sub),
+      cooldownMult:mix(1,thrusting?1.35:1.80,sub),
+      effectMult:mix(1,thrusting?0.70:0.42,sub)
+    };
+  }
+  function bowWaterProfile(w,player){
+    const sub=heroSubmersion(player);
+    if(aquaticStyle(w)==='crossbow') return {
+      submersion:sub, chargeSeconds:mix(1.55,0.85,sub),
+      damageMult:mix(0.65,1.35,sub), speedMult:mix(0.72,1.08,sub),
+      gravityMult:mix(0.90,0.18,sub), waterDrag:0.995, windResponse:0.055,
+      lifeMult:mix(0.88,1.18,sub)
+    };
+    return {
+      submersion:sub, chargeSeconds:mix(BOW_CHARGE_SECONDS,7.2,sub),
+      damageMult:mix(1,0.46,sub), speedMult:mix(1,0.38,sub),
+      gravityMult:mix(1,0.58,sub), waterDrag:0.955, windResponse:0.16,
+      lifeMult:mix(1,0.72,sub)
+    };
+  }
+  function harpoonWaterProfile(w,player){
+    const sub=heroSubmersion(player);
+    return {
+      submersion:sub,
+      damageMult:mix(0.62,1.55,sub), speedMult:mix(0.64,1.14,sub),
+      cooldownMult:mix(1.32,0.72,sub), gravityMult:mix(0.92,0.12,sub),
+      waterDrag:0.997, windResponse:0.035, lifeMult:mix(0.82,1.30,sub)
+    };
+  }
   function addWorldGas(kind,x,y,opts){
     try{
       if(MM.gases && MM.gases.add){
@@ -161,7 +457,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const sp=windSpeedAt(a.x,a.y,getTile);
     if(Math.abs(sp)<0.05) return false;
     const before=a.vx||0;
-    const response=a.power ? 0.12 : 0.16;
+    const response=Number.isFinite(a.windResponse) ? a.windResponse : (a.power ? 0.12 : 0.16);
     a.vx = before + sp*response*dt;
     const cap=Math.max(ARROW_SPEED*1.35, Number(a.windCap)||0);
     if(Math.abs(a.vx)>cap) a.vx=Math.sign(a.vx)*cap;
@@ -361,6 +657,12 @@ import { damageBlastCreatures } from './explosion_damage.js';
   }
   function hasArrowAmmo(){ return !!pickArrowTier(); }
   function warnNoArrows(){ sayLimited('arrows_empty','Brak strzal'); }
+  function hasHarpoonAmmo(){ return resourceCount('harpoonBolt')>0; }
+  function warnNoHarpoons(){ sayLimited('harpoons_empty','Brak harpunow'); }
+  function consumeHarpoon(){
+    if(!hasHarpoonAmmo() || !spendResource('harpoonBolt',1)){ warnNoHarpoons(); return false; }
+    return true;
+  }
   function consumeArrowTier(){
     const tier=pickArrowTier();
     if(!tier){ warnNoArrows(); return null; }
@@ -409,6 +711,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
 
   function arrowResourceKey(a){
     if(!a || a.thrown || a.snowball || a.rock || a.splat) return null;
+    if(typeof a.recoverKey==='string' && a.recoverKey) return a.recoverKey;
     const tier=ARROW_TIERS.find(t=>t.id===a.tier);
     return tier && !tier.snowball ? tier.key : null;
   }
@@ -417,6 +720,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     return ARROW_TIERS.find(t=>t.id===id && !t.snowball) || null;
   }
   function arrowBreakChance(value){
+    if(value && Number.isFinite(value.breakChance)) return Math.max(0,Math.min(1,Number(value.breakChance)));
     const tier=arrowTierSpec(value);
     return tier ? Math.max(0,Math.min(1,Number(tier.breakChance)||0)) : 0;
   }
@@ -607,6 +911,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
 
   function notifyMeleeSwing(tx,ty,player){
     swing.t=swing.dur; swing.tx=tx; swing.ty=ty; swing.dir=(player && player.facing>=0)?1:-1;
+    triggerHeldActionFx('melee',1,210,false);
   }
   function combatElementFromOpts(opts){
     const raw=String((opts && (opts.element || opts.cause || opts.kind || opts.type || opts.weaponType)) || '').toLowerCase();
@@ -632,9 +937,9 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const lucky=!!opts.luckyStrike || !!extra.lucky;
     const element=combatElementFromOpts(opts);
     const major=!!extra.major || lucky || special || Math.abs(Number(amount)||0)>=8;
-    if(!special && !lucky && !element && !major) return;
+    if(!special && !lucky && !element && !major && !extra.forceVisual) return;
     const t=nowMs();
-    const key=(lucky?'lucky':(special?'special':(element||'heavy')))+'|'+element;
+    const key=(lucky?'lucky':(special?'special':(element||'heavy')))+'|'+element+'|'+String(extra.weaponMaterial||'')+'|'+String(extra.weaponClass||'');
     if(!special && !lucky && t-lastWeaponCombatFxAt<320 && key===lastWeaponCombatFxKey && Math.hypot(x-lastWeaponCombatFxX,y-lastWeaponCombatFxY)<1.15) return;
     lastWeaponCombatFxAt=t;
     lastWeaponCombatFxKey=key;
@@ -689,6 +994,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const type=weaponType(w);
     if(type==='bow') return updateBowCharge(player, aimX, aimY, w, dt||0.016);
     if(bowCharge.active) cancelHeld();
+    if(type==='harpoon') return fireHarpoon(player, aimX, aimY, w);
     if(type==='thrown') return fireThrown(player, aimX, aimY, w);
     if(type==='electric') return fireElectric(player, aimX, aimY, w, 1);
     if(STREAMS[type]) return fireStream(player, aimX, aimY, w, dt||0.016, type);
@@ -748,6 +1054,10 @@ import { damageBlastCreatures } from './explosion_damage.js';
       warnNoArrows();
       return false;
     }
+    if(type==='harpoon' && !hasHarpoonAmmo()){
+      warnNoHarpoons();
+      return false;
+    }
     if(type==='thrown'){
       const spec=thrownSpec(w);
       if(!spec || !canSpendResource(spec.key,1)){
@@ -766,6 +1076,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const charge=consumeUltCharge();
     if(!charge) return false;
     if(type==='bow') return firePowerBow(player, aimX, aimY, w, charge);
+    if(type==='harpoon') return firePowerHarpoon(player, aimX, aimY, w, charge);
     if(type==='thrown') return firePowerThrown(player, aimX, aimY, w, charge);
     if(STREAMS[type]) return firePowerStream(player, aimX, aimY, w, type, charge);
     return firePowerMelee(player, aimX, aimY, w, charge);
@@ -794,8 +1105,10 @@ import { damageBlastCreatures } from './explosion_damage.js';
     // Melee strength changes damage only; reach is one tile unless the weapon
     // carries fireRange (spears poke from two tiles out — see meleeReach).
     const w=equippedWeapon();
+    const water=meleeWaterProfile(w,player);
     const {px,tx,ty}=meleeTargetTile(player,aimX,aimY,meleeReach(w));
-    const bonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
+    const rawBonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
+    const bonus=Math.max(0,rawBonus*water.damageMult);
     const chestHit=openChestFromWeaponHit(tx+0.5,ty+0.5,{kind:'melee'});
     const collected=chestHit ? false : collectLooseTarget(tx,ty);
     const hit=chestHit || collected
@@ -808,15 +1121,21 @@ import { damageBlastCreatures } from './explosion_damage.js';
            || (MM.mechs && MM.mechs.attackAt && MM.mechs.attackAt(tx,ty,bonus,{source:'hero'}))
            || (MM.npcSystem && MM.npcSystem.attackAt && MM.npcSystem.attackAt(tx,ty,bonus))
            || (MM.mobs && MM.mobs.attackAt && MM.mobs.attackAt(tx,ty,bonus,{source:'hero'}));
-    meleeCd=0.35; player.atkCd=Math.max(player.atkCd||0, 0.35);
+    const cooldown=0.35*water.cooldownMult;
+    meleeCd=cooldown; player.atkCd=Math.max(player.atkCd||0,cooldown);
     player.facing = tx>=px? 1 : -1;
     notifyMeleeSwing(tx,ty,player);
-    if(hit && !collected && !chestHit){ addUltCharge(0.08); rollMeleeEffect(w,tx,ty); }
+    if(hit && !collected && !chestHit){
+      addUltCharge(0.08);
+      rollMeleeEffect(w,tx,ty,{chanceMult:water.effectMult});
+      noteWeaponCombatHit(tx+0.5,ty+0.15,Math.max(1,2+bonus),{source:'hero',kind:'melee'},weaponCombatVisualMeta(w,'melee',{dir:player.facing,power:0.82+Math.min(0.45,bonus/16)}));
+    }
     try{ if(MM.audio && MM.audio.play) MM.audio.play('swing'); }catch(e){}
     return !!hit;
   }
   function bowChargeRatio(){
-    return bowCharge.active ? Math.max(0,Math.min(1,(bowCharge.t||0)/BOW_CHARGE_SECONDS)) : 0;
+    const required=Math.max(0.1,Number(bowCharge.required)||BOW_CHARGE_SECONDS);
+    return bowCharge.active ? Math.max(0,Math.min(1,(bowCharge.t||0)/required)) : 0;
   }
   function bowDamageMult(chargeRatio){
     return 1 + Math.max(0,Math.min(1,Number(chargeRatio)||0))*(BOW_MAX_CHARGE_MULT-1);
@@ -845,6 +1164,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
   function resetBowCharge(){
     bowCharge.active=false;
     bowCharge.t=0;
+    bowCharge.required=BOW_CHARGE_SECONDS;
     bowCharge.aimX=0;
     bowCharge.aimY=0;
     bowCharge.player=null;
@@ -855,11 +1175,13 @@ import { damageBlastCreatures } from './explosion_damage.js';
   }
   function updateBowCharge(player, aimX, aimY, w, dt){
     if(!player) return false;
+    const profile=bowWaterProfile(w,player);
     if(!bowCharge.active){
       if(bowCd>0) return false;
       if(!hasArrowAmmo()){ warnNoArrows(); return false; }
       bowCharge.active=true;
       bowCharge.t=0;
+      bowCharge.required=profile.chargeSeconds;
       bowCharge.aimX=aimX;
       bowCharge.aimY=aimY;
       bowCharge.player=player;
@@ -873,14 +1195,17 @@ import { damageBlastCreatures } from './explosion_damage.js';
     bowCharge.aimX=aimX;
     bowCharge.aimY=aimY;
     bowCharge.player=player;
+    bowCharge.required=profile.chargeSeconds;
     const step=Math.max(0,Math.min(0.12,Number(dt)||0));
     const before=bowCharge.t;
     bowCharge.t+=step;
-    if(!bowCharge.full && before<BOW_CHARGE_SECONDS && bowCharge.t+1e-6>=BOW_CHARGE_SECONDS){
-      bowCharge.full=true;
+    const required=Math.max(0.1,bowCharge.required);
+    const wasFull=bowCharge.full;
+    bowCharge.full=bowCharge.t+1e-6>=required;
+    if(!wasFull && bowCharge.full){
       try{ if(MM.audio && MM.audio.play) MM.audio.play('charge'); }catch(e){}
     }
-    const overDt=Math.max(0,bowCharge.t-Math.max(before,BOW_CHARGE_SECONDS));
+    const overDt=Math.max(0,bowCharge.t-Math.max(before,required));
     if(overDt>0){
       const spent=spendHeroEnergyUpTo(player,bowOverdrawEnergyRate(w)*overDt);
       bowCharge.energySpent+=spent;
@@ -896,10 +1221,11 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(bowCd>0) return false;
     const tier=consumeArrowTier();
     if(!tier) return false;
+    const profile=bowWaterProfile(w,player);
     bowCd=Math.max(0.25, (w && w.fireCooldown)||0.55);
     const v=spreadAim(aimVector(player,aimX,aimY),tier,1);
-    const sp=ARROW_SPEED*tier.speed;
-    const baseDamage=Math.max(1,Math.round(((w && w.attackDamage)||3)*tier.damage));
+    const sp=ARROW_SPEED*tier.speed*profile.speedMult;
+    const baseDamage=Math.max(1,Math.round(((w && w.attackDamage)||3)*tier.damage*profile.damageMult));
     const ratio=Math.max(0,Math.min(1,Number(chargeRatio)||0));
     const full=ratio>=0.999;
     pushArrow({
@@ -908,7 +1234,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
       vx:v.dx*sp,
       vy:v.dy*sp - 1.2, // slight lob so mid-range shots arc naturally
       dmg:Math.max(1,Math.round(baseDamage*bowDamageMult(ratio))),
-      life:ARROW_LIFE*tier.life, stuck:false, stuckT:ARROW_STUCK,
+      life:ARROW_LIFE*tier.life*profile.lifeMult, stuck:false, stuckT:ARROW_STUCK,
       charged:ratio>0.01, fullDraw:full,
       fire:!!(full && tier.igniteOnFull), // obsidian edge ignites on a full draw
       tier:tier.id, snowball:!!tier.snowball, splat:tier.snowball?'toxic':undefined,
@@ -916,11 +1242,48 @@ import { damageBlastCreatures } from './explosion_damage.js';
       mobPierce:tier.mobPierce||0,
       recoverable:!tier.snowball, recoverKey:tier.snowball?null:tier.key,
       color:(full && !tier.snowball)?'#f5d66a':tier.color, headColor:(full && !tier.snowball)?'#fff1a8':tier.head, windCap:sp*1.35,
+      aquatic:aquaticStyle(w)==='crossbow', gravityMult:profile.gravityMult,
+      waterDrag:profile.waterDrag, windResponse:profile.windResponse,
+      weaponPrestige:weaponPrestigeRank(w), weaponGlow:weaponPrestigeColor(w), weaponMaterial:weaponMaterialProfile(w).id,
       pierceLeft:tier.id==='iridium' ? 3 : 0
     });
     player.facing = v.dx>=0?1:-1;
+    triggerHeldActionFx(aquaticStyle(w)==='crossbow'?'crossbow':'bow',full?1.3:0.85,full?250:180,false);
     try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
     return true;
+  }
+  function spawnHarpoonShot(player,aimX,aimY,w,opts){
+    opts=opts||{};
+    const profile=harpoonWaterProfile(w,player);
+    const v=aimVector(player,aimX,aimY);
+    const power=Math.max(1,Number(opts.power)||1);
+    const sp=ARROW_SPEED*0.86*profile.speedMult*(opts.speedMult||1);
+    const mobPierce=Number.isFinite(opts.mobPierce) ? Math.max(0,Number(opts.mobPierce)) : (profile.submersion>=0.8?1:0);
+    pushArrow({
+      x:player.x+v.dx*0.82, y:player.y-0.12+v.dy*0.82,
+      vx:v.dx*sp, vy:v.dy*sp-0.35,
+      dmg:Math.max(1,Math.round(((w&&w.attackDamage)||7)*profile.damageMult*power)),
+      life:ARROW_LIFE*1.08*profile.lifeMult, stuck:false, stuckT:ARROW_RECOVER_SECONDS,
+      tier:'harpoon', harpoon:true, aquatic:true,
+      power:!!opts.powerShot, specialAttack:!!opts.powerShot, luckyStrike:!!opts.luckyStrike,
+      mobPierce,
+      recoverable:true, recoverKey:'harpoonBolt', breakChance:opts.powerShot?0.08:0.12,
+      color:opts.powerShot?'#72e7ff':'#718896', headColor:opts.powerShot?'#e8fdff':'#dcebf2',
+      gravityMult:profile.gravityMult, waterDrag:profile.waterDrag,
+      weaponPrestige:weaponPrestigeRank(w), weaponGlow:weaponPrestigeColor(w), weaponMaterial:weaponMaterialProfile(w).id,
+      windResponse:profile.windResponse, windCap:sp*1.2
+    });
+    player.facing=v.dx>=0?1:-1;
+    triggerHeldActionFx('harpoon',opts.powerShot?1.45:1,opts.powerShot?290:220,false);
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
+    return true;
+  }
+  function fireHarpoon(player,aimX,aimY,w){
+    if(harpoonCd>0 || !player) return false;
+    if(!consumeHarpoon()) return false;
+    const profile=harpoonWaterProfile(w,player);
+    harpoonCd=Math.max(0.24,((w&&w.fireCooldown)||0.68)*profile.cooldownMult);
+    return spawnHarpoonShot(player,aimX,aimY,w,{});
   }
   function releaseHeld(player, aimX, aimY){
     if(!bowCharge.active) return false;
@@ -941,29 +1304,45 @@ import { damageBlastCreatures } from './explosion_damage.js';
   function firePowerBow(player, aimX, aimY, w, charge){
     const tier=consumeArrowTier();
     if(!tier) return false;
+    const profile=bowWaterProfile(w,player);
     const roll=specialAttackRoll();
     const v=spreadAim(aimVector(player,aimX,aimY),tier,0.45);
-    const sp=ARROW_SPEED*tier.speed*(1.18+charge*0.28);
+    const sp=ARROW_SPEED*tier.speed*(1.18+charge*0.28)*profile.speedMult;
     if(roll.lucky) noteLuckyStrike(player.x+v.dx*1.3,player.y-0.45+v.dy*1.3);
     pushArrow({
       x:player.x + v.dx*0.75,
       y:player.y - 0.15 + v.dy*0.75,
       vx:v.dx*sp,
       vy:v.dy*sp - 0.9,
-      dmg:Math.max(1,Math.round(((w && w.attackDamage)||3)*tier.damage*roll.mult)),
-      life:ARROW_LIFE*tier.life*(1.05+charge*0.35), stuck:false, stuckT:ARROW_STUCK,
+      dmg:Math.max(1,Math.round(((w && w.attackDamage)||3)*tier.damage*roll.mult*profile.damageMult)),
+      life:ARROW_LIFE*tier.life*(1.05+charge*0.35)*profile.lifeMult, stuck:false, stuckT:ARROW_STUCK,
       power:true, specialAttack:true, luckyStrike:roll.lucky, fire:(roll.lucky || charge>0.85 || tier.igniteOnFull) && !tier.snowball,
       tier:tier.id, snowball:!!tier.snowball, splat:tier.snowball?'toxic':undefined,
       stagger:tier.stagger||0,
       mobPierce:tier.mobPierce ? tier.mobPierce+1 : 0,
       recoverable:!tier.snowball, recoverKey:tier.snowball?null:tier.key,
       color:tier.color, headColor:tier.head, windCap:sp*1.25,
+      aquatic:aquaticStyle(w)==='crossbow', gravityMult:profile.gravityMult,
+      waterDrag:profile.waterDrag, windResponse:profile.windResponse,
+      weaponPrestige:weaponPrestigeRank(w), weaponGlow:weaponPrestigeColor(w), weaponMaterial:weaponMaterialProfile(w).id,
       pierceLeft:tier.id==='iridium' ? 5 : 0
     });
     player.facing = v.dx>=0?1:-1;
+    triggerHeldActionFx(aquaticStyle(w)==='crossbow'?'crossbow':'bow',1.55,300,false);
     bowCd=Math.max(bowCd,0.25);
     try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
     return true;
+  }
+  function firePowerHarpoon(player,aimX,aimY,w,charge){
+    if(!consumeHarpoon()) return false;
+    const roll=specialAttackRoll();
+    if(roll.lucky) noteLuckyStrike(player.x,player.y-0.35);
+    const profile=harpoonWaterProfile(w,player);
+    harpoonCd=Math.max(harpoonCd,Math.max(0.20,((w&&w.fireCooldown)||0.68)*profile.cooldownMult*0.72));
+    return spawnHarpoonShot(player,aimX,aimY,w,{
+      power:roll.mult*(1.05+clamp01(charge)*0.30), powerShot:true,
+      luckyStrike:roll.lucky, speedMult:1.15+clamp01(charge)*0.18, mobPierce:2
+    });
   }
   function spendHeroEnergy(player, amount){
     const n=Math.max(0, Number(amount)||0);
@@ -1098,8 +1477,9 @@ import { damageBlastCreatures } from './explosion_damage.js';
       if(electricDamageAt(tx,ty,dmg,{specialAttack:!!charge,luckyStrike:!!(roll&&roll.lucky)})){ ex=x; ey=y; hit=true; if(!charge) addUltCharge(0.08); break; }
     }
     if(hit && !chestHit && roll && roll.lucky) noteLuckyStrike(ex,ey-0.4);
-    if(hit && !chestHit && (charge || (roll && roll.lucky))) noteWeaponCombatHit(ex,ey-0.4,dmg,{kind:'electric',element:'electric',source:'hero',specialAttack:!!charge,luckyStrike:!!(roll&&roll.lucky)},{major:!!charge});
+    if(hit && !chestHit) noteWeaponCombatHit(ex,ey-0.4,dmg,{kind:'electric',element:'electric',source:'hero',specialAttack:!!charge,luckyStrike:!!(roll&&roll.lucky)},weaponCombatVisualMeta(w,'electric',{major:!!charge,dir:player.facing}));
     pushElectricBeam({x1:sx,y1:sy,x2:ex,y2:ey,t:0,life:charge?0.28:0.18,hit,blocked,phase:Math.random()*Math.PI*2,power});
+    triggerHeldActionFx('electric',charge?1.6:Math.max(0.7,power),charge?300:150,false);
     try{ if(MM.audio && MM.audio.play) MM.audio.play('beam'); }catch(e){}
     try{
       const p=MM.particles, TILE=MM.TILE||20;
@@ -1116,6 +1496,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const range=(w && w.fireRange)||6;
     const dps=(w && w.fireDps)||(kind==='hose'?2:6);
     spawnExternalStream(kind,player.x,player.y-0.1,dx,dy,{range,dps,source:'hero'});
+    triggerHeldActionFx(kind,0.72,125,true);
     // Elemental streams tick direct damage into boss bodies along the ray.
     // Guardian-specific weaknesses are resolved by guardian_lairs.damageAt.
     bossAcc+=dt;
@@ -1134,7 +1515,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
         else if(kind!=='hose' && MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy, dps*0.2, opts)) hit=true;
         else if(kind!=='hose' && MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy, dps*0.2)) hit=true;
         else if(kind!=='hose' && MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(sx,sy, dps*0.2)) hit=true;
-        if(hit){ noteWeaponCombatHit(sx+0.5,sy+0.2,dps*0.2,opts); addUltCharge(0.03); break; }
+        if(hit){ noteWeaponCombatHit(sx+0.5,sy+0.2,dps*0.2,opts,weaponCombatVisualMeta(w,kind,{dir:player.facing,power:0.72})); addUltCharge(0.03); break; }
       }
     }
     return true;
@@ -1186,6 +1567,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const dps=((w && w.fireDps)||(kind==='hose'?2:6))*roll.mult;
     const totalLife=range/cfg.speed*cfg.lifeMult*(1.2+charge*0.4);
     const n=Math.min(MAX_PUFFS-puffs.length, Math.round(16+charge*18));
+    triggerHeldActionFx(kind,1.35+charge*0.45,320,false);
     for(let i=0;i<n;i++){
       const spread=(Math.random()-0.5)*(0.42-charge*0.12);
       const ca=Math.cos(spread), sa=Math.sin(spread);
@@ -1217,7 +1599,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
       else if(kind!=='hose' && MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(sx,sy,dps*0.18,opts)) hit=true;
       else if(kind!=='hose' && MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(sx,sy,dps*0.18)) hit=true;
       else if(kind!=='hose' && MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(sx,sy,dps*0.18)) hit=true;
-      if(hit){ noteWeaponCombatHit(sx+0.5,sy+0.2,dps*0.18,opts,{major:true}); break; }
+      if(hit){ noteWeaponCombatHit(sx+0.5,sy+0.2,dps*0.18,opts,weaponCombatVisualMeta(w,kind,{major:true,dir:player.facing,power:1.35+charge*0.35})); break; }
     }
     return true;
   }
@@ -1225,9 +1607,10 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const v=aimVector(player,aimX,aimY);
     const {tx,ty}=meleeTargetTile(player,aimX,aimY,meleeReach(w));
     const bonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
+    const water=meleeWaterProfile(w,player);
     const roll=specialAttackRoll();
     const chargeFx=Math.max(0,Math.min(1,Number(charge)||0));
-    const dmg=Math.max(1,Math.round((3 + bonus + ((w && w.attackDamage)||3))*roll.mult));
+    const dmg=Math.max(1,Math.round((3 + bonus + ((w && w.attackDamage)||3))*roll.mult*water.damageMult));
     let hit=false;
     const chestHit=openChestFromWeaponHit(tx+0.5,ty+0.5,{kind:'melee',specialAttack:true});
     const collected=chestHit ? false : collectLooseTarget(tx,ty);
@@ -1242,11 +1625,11 @@ import { damageBlastCreatures } from './explosion_damage.js';
       || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,dmg))
       || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky})));
     if(hit && !chestHit && roll.lucky) noteLuckyStrike(tx+0.5,ty-0.15);
-    if(hit && !chestHit) noteWeaponCombatHit(tx+0.5,ty+0.15,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky},{major:true});
-    if(hit && !collected && !chestHit) rollMeleeEffect(w,tx,ty,{chanceMult:1.5}); // a charged blow procs its material more often
+    if(hit && !chestHit) noteWeaponCombatHit(tx+0.5,ty+0.15,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky},weaponCombatVisualMeta(w,'melee',{major:true,dir:player.facing,power:1.35+chargeFx*0.45}));
+    if(hit && !collected && !chestHit) rollMeleeEffect(w,tx,ty,{chanceMult:1.5*water.effectMult}); // a charged blow procs its material more often
     player.facing = v.dx>=0?1:-1;
-    meleeCd=Math.max(meleeCd,0.25);
-    player.atkCd=Math.max(player.atkCd||0, 0.35);
+    meleeCd=Math.max(meleeCd,0.25*water.cooldownMult);
+    player.atkCd=Math.max(player.atkCd||0,0.35*water.cooldownMult);
     notifyMeleeSwing(tx,ty,player);
     blastsFx.push({x:tx+0.5,y:ty+0.5,R:0.82+chargeFx*0.12,t:0,max:0.35});
     try{ if(MM.audio && MM.audio.play) MM.audio.play('swing'); }catch(e){}
@@ -1546,7 +1929,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
       noDamage:!!spec.noDamage,
       stickyFuse:spec.sticky ? (spec.fuse||1.5) : 0,
       power:!!opts.specialAttack, specialAttack:!!opts.specialAttack, luckyStrike:!!opts.luckyStrike,
-      tier:'thrown', color:toxicSpit?TOXIC_SPIT_COLOR:spec.color, headColor:toxicSpit?TOXIC_SPIT_HEAD:spec.head, windCap:sp*1.3
+      tier:'thrown', color:toxicSpit?TOXIC_SPIT_COLOR:spec.color, headColor:toxicSpit?TOXIC_SPIT_HEAD:spec.head, windCap:sp*1.3,
+      weaponPrestige:weaponPrestigeRank(w), weaponGlow:weaponPrestigeColor(w), weaponMaterial:weaponMaterialProfile(w).id
     });
   }
   function fireThrown(player, aimX, aimY, w){
@@ -1558,6 +1942,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const v=aimVector(player,aimX,aimY);
     pushThrownProjectile(player,v.dx,v.dy,spec,w);
     player.facing=v.dx>=0?1:-1;
+    triggerHeldActionFx('thrown',0.9,190,false);
     try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
     return true;
   }
@@ -1580,6 +1965,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(!thrown){ sayLimited('thrown_empty_'+spec.key,'Brak: '+spec.label); return false; }
     if(roll.lucky) noteLuckyStrike(player.x+v.dx*1.3,player.y-0.45+v.dy*1.3);
     player.facing=v.dx>=0?1:-1;
+    triggerHeldActionFx('thrown',1.45,280,false);
     throwCd=Math.max(throwCd,0.3);
     try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
     return true;
@@ -1891,6 +2277,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(!(dt>0) || !isFinite(dt)) return;
     ultCharge=Math.min(1, ultCharge + dt/ULT_CHARGE_TIME);
     if(bowCd>0) bowCd-=dt;
+    if(harpoonCd>0) harpoonCd-=dt;
     if(meleeCd>0) meleeCd-=dt;
     if(electricCd>0) electricCd-=dt;
     if(throwCd>0) throwCd-=dt;
@@ -1945,6 +2332,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
         }
         continue;
       }
+      a.inWater=false;
       a.life-=dt;
       if(a.life<=0){
         if(!beginArrowExpiryFall(a)) arrows.splice(i,1);
@@ -1960,7 +2348,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
         }
         igniteWorldGas(a.x,a.y,getTile,setTile,1.4);
       }
-      a.vy+=ARROW_GRAV*dt;
+      a.vy+=ARROW_GRAV*(Number.isFinite(a.gravityMult)?a.gravityMult:1)*dt;
       applyWindToArrow(a,dt,getTile);
       const steps=Math.max(1, Math.ceil(Math.max(Math.abs(a.vx),Math.abs(a.vy))*dt/0.35));
       const sdt=dt/steps;
@@ -1976,6 +2364,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
         // Its status splat is the entire effect.
         if(a.noDamage && !a.spent && MM.mobs && MM.mobs.nearestLiving
            && MM.mobs.nearestLiving(a.x,a.y,0.72)){
+          noteWeaponCombatHit(a.x,a.y-0.10,0,{source:'hero',kind:'thrown'},projectileCombatVisualMeta(a,{target:'mob',power:0.65}));
           splatProjectile(a,getTile,setTile);
           addUltCharge(0.08);
           arrows.splice(i,1);
@@ -1984,7 +2373,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
         // Creature hit (mob, boss part or a hovering saucer)
         const hitDmg=arrowDamageAtRange(a);
         let undergroundResult=false;
-        const arrowOpts={source:'hero',kind:'arrow',x:a.x,y:a.y,vx:a.vx,vy:a.vy,tier:a.tier,pierceLeft:a.pierceLeft||0,fire:!!a.fire,specialAttack:!!a.specialAttack,luckyStrike:!!a.luckyStrike};
+        const arrowOpts={source:'hero',kind:a.harpoon?'harpoon':'arrow',weaponType:a.harpoon?'harpoon':'bow',x:a.x,y:a.y,vx:a.vx,vy:a.vy,tier:a.tier,pierceLeft:a.pierceLeft||0,fire:!!a.fire,specialAttack:!!a.specialAttack,luckyStrike:!!a.luckyStrike};
         if(!a.noDamage && !a.spent && (a.ignoreUndergroundT||0)<=0 && MM.undergroundBoss && MM.undergroundBoss.damageAt){
           undergroundResult=MM.undergroundBoss.damageAt(tx,ty,hitDmg,arrowOpts);
           if(undergroundResult==='bounce'){
@@ -2040,7 +2429,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
           || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,hitDmg))
           || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,hitDmg)));
         if(creatureHit){
-          if(a.specialAttack || a.luckyStrike) noteWeaponCombatHit(a.x,a.y-0.18,hitDmg,arrowOpts,{major:!!a.power,tier:a.tier});
+          noteWeaponCombatHit(a.x,a.y-0.18,hitDmg,arrowOpts,projectileCombatVisualMeta(a,{major:!!a.power,tier:a.tier,power:a.power?1.35:0.82}));
           if(a.fire && MM.mobs && MM.mobs.igniteAt) MM.mobs.igniteAt(tx,ty,{dur:2.5,dps:2,source:'hero',specialAttack:!!a.specialAttack});
           if(a.stagger && MM.mobs && MM.mobs.chillAt) MM.mobs.chillAt(tx,ty,{dur:a.stagger,source:'hero',cause:'stagger'}); // stone arrows stop the target in its tracks
           if(a.splat) splatProjectile(a,getTile,setTile);
@@ -2066,7 +2455,10 @@ import { damageBlastCreatures } from './explosion_damage.js';
           arrows.splice(i,1); break;
         }
         const t=getTile(tx,ty);
-        if(!a.spent && openChestFromWeaponHit(a.x,a.y,{kind:a.thrown?'thrown':'arrow',specialAttack:!!a.specialAttack,hitRadius:0.12})){
+        const chestProjectileOpts={kind:a.thrown?'thrown':'arrow',specialAttack:!!a.specialAttack,hitRadius:0.12};
+        if(a.harpoon) chestProjectileOpts.kind='harpoon';
+        if(!a.spent && openChestFromWeaponHit(a.x,a.y,chestProjectileOpts)){
+          noteWeaponCombatHit(a.x,a.y,0,{source:'hero',kind:chestProjectileOpts.kind},projectileCombatVisualMeta(a,{target:'chest',power:0.72}));
           if(a.splat) splatProjectile(a,getTile,setTile);
           if(arrowResourceKey(a)){
             if(breakArrowOnImpact(a,'chest')) arrows.splice(i,1);
@@ -2075,6 +2467,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
           break;
         }
         if(!a.noDamage && !a.spent && t===T.GLASS && shatterGlassAt(tx,ty,setTile,getTile)){
+          noteWeaponCombatHit(a.x,a.y,0,{source:'hero',kind:a.harpoon?'harpoon':'arrow'},projectileCombatVisualMeta(a,{target:'terrain',targetMaterial:'glass',power:0.9}));
           if(arrowResourceKey(a)){
             if(breakArrowOnImpact(a,'glass')){ arrows.splice(i,1); break; }
             continue;
@@ -2082,6 +2475,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
           arrows.splice(i,1); break;
         }
         if(isSolid(t)){
+          noteWeaponCombatHit(a.x,a.y,0,{source:'hero',kind:a.harpoon?'harpoon':a.thrown?'thrown':'arrow'},projectileCombatVisualMeta(a,{target:'terrain',targetMaterial:String(t),power:a.power?1.2:0.72}));
           if(!a.spent && tryIridiumPierceBlock(a,tx,ty,t,getTile,setTile)){
             if(a.fire && FIRE) FIRE.ignite(tx,ty,getTile,setTile);
             continue;
@@ -2120,7 +2514,10 @@ import { damageBlastCreatures } from './explosion_damage.js';
           stickArrowForRecovery(a,sdt);
           break;
         }
-        if(t===T.WATER){ a.vx*=0.96; a.vy*=0.96; a.fire=false; } // water drag douses it too
+        if(t===T.WATER){
+          const retention=Number.isFinite(a.waterDrag) ? Math.max(0.80,Math.min(0.999,a.waterDrag)) : 0.96;
+          a.vx*=retention; a.vy*=retention; a.fire=false; a.inWater=true;
+        } // water drag douses it too; aquatic shafts keep far more momentum
       }
     }
     // Stream puffs
@@ -2297,6 +2694,34 @@ import { damageBlastCreatures } from './explosion_damage.js';
     }
     ctx.restore();
   }
+  function drawProjectilePrestigeTrail(ctx,TILE,a){
+    const rank=Math.max(0,Math.min(4,Number(a.weaponPrestige)||0));
+    if(rank<2 || a.stuck || a.expiring || (!a.vx && !a.vy)) return;
+    const ang=Math.atan2(a.vy||0,a.vx||1), col=a.weaponGlow||'#d7f5ff';
+    const pulse=0.78+0.22*Math.sin(nowMs()*0.012+(a.x||0)*0.7+(a.y||0)*0.43);
+    ctx.save(); ctx.translate(a.x*TILE,a.y*TILE); ctx.rotate(ang);
+    ctx.globalCompositeOperation='lighter'; ctx.strokeStyle=col; ctx.fillStyle=col; ctx.shadowColor=col;
+    ctx.shadowBlur=(rank===4?9:rank===3?6:3); ctx.lineCap='round';
+    if(a.aquatic && a.inWater){
+      const bubbles=rank===4?4:rank===3?3:2;
+      for(let i=0;i<bubbles;i++){
+        ctx.globalAlpha=(0.30+i*0.08)*pulse;
+        const bx=-TILE*(0.22+i*0.18), by=Math.sin(i*2.3+(a.travel||0)*2)*TILE*0.07;
+        ctx.lineWidth=Math.max(0.75,TILE*0.038);
+        ctx.beginPath(); ctx.arc(bx,by,TILE*(0.035+i*0.008),0,Math.PI*2); ctx.stroke();
+      }
+    }else{
+      const len=TILE*(rank===4?1.12:rank===3?0.84:0.58);
+      ctx.globalAlpha=(rank===4?0.55:rank===3?0.38:0.22)*pulse;
+      ctx.lineWidth=Math.max(1,TILE*(rank===4?0.15:rank===3?0.105:0.075));
+      ctx.beginPath(); ctx.moveTo(-len,0); ctx.lineTo(-TILE*0.08,0); ctx.stroke();
+      if(rank===4){
+        ctx.globalAlpha=0.72*pulse; ctx.fillStyle='#ffffff';
+        ctx.beginPath(); ctx.arc(-len*0.58,0,TILE*0.045,0,Math.PI*2); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
   function draw(ctx,TILE,canDrawTile){
     const visibleTile = typeof canDrawTile === 'function' ? canDrawTile : null;
     const tileVisible = (x,y)=> !visibleTile || visibleTile(Math.floor(x),Math.floor(y));
@@ -2304,6 +2729,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
       ctx.save();
       for(const a of arrows){
         if(!tileVisible(a.x,a.y)) continue;
+        drawProjectilePrestigeTrail(ctx,TILE,a);
         if(a.sandSpray){
           // Each throw owns a different stable spray: grain count, tail length,
           // fan width, clumps, sizes and wobble all come from its compact seed.
@@ -2389,6 +2815,23 @@ import { damageBlastCreatures } from './explosion_damage.js';
           ctx.beginPath(); ctx.arc(px, py, TILE*0.20, 0, Math.PI*2); ctx.fill();
           ctx.fillStyle=a.headColor||'#d9ffd0';
           ctx.beginPath(); ctx.arc(px-TILE*0.05, py-TILE*0.06, TILE*0.09, 0, Math.PI*2); ctx.fill();
+          ctx.restore();
+          continue;
+        }
+        if(a.harpoon){
+          const ang=a.stuck || a.expiring ? a.ang||0 : Math.atan2(a.vy,a.vx);
+          if(!a.stuck && !a.expiring) a.ang=ang;
+          ctx.save();
+          ctx.translate(a.x*TILE,a.y*TILE); ctx.rotate(ang);
+          ctx.strokeStyle=a.color||'#718896'; ctx.lineWidth=a.power?4:3;
+          ctx.beginPath(); ctx.moveTo(-TILE*0.72,0); ctx.lineTo(TILE*0.38,0); ctx.stroke();
+          ctx.fillStyle=a.headColor||'#dcebf2';
+          ctx.beginPath();
+          ctx.moveTo(TILE*0.64,0); ctx.lineTo(TILE*0.30,-TILE*0.17); ctx.lineTo(TILE*0.38,0);
+          ctx.lineTo(TILE*0.30,TILE*0.17); ctx.closePath(); ctx.fill();
+          ctx.strokeStyle=a.headColor||'#dcebf2'; ctx.lineWidth=Math.max(1,TILE*0.055);
+          ctx.beginPath(); ctx.moveTo(TILE*0.23,0); ctx.lineTo(TILE*0.08,-TILE*0.16);
+          ctx.moveTo(TILE*0.23,0); ctx.lineTo(TILE*0.08,TILE*0.16); ctx.stroke();
           ctx.restore();
           continue;
         }
@@ -2543,8 +2986,143 @@ import { damageBlastCreatures } from './explosion_damage.js';
       ctx.strokeStyle='rgba(255,255,255,'+(0.4*a).toFixed(2)+')';
       ctx.lineWidth=1.5;
       ctx.beginPath(); ctx.arc(cx,cy,TILE*0.52, base-0.5+sweep, base+0.18+sweep); ctx.stroke();
+      const held=equippedWeapon(), prestige=weaponPrestigeRank(held);
+      if(prestige>=2){
+        const col=weaponPrestigeColor(held);
+        ctx.globalCompositeOperation='lighter';
+        ctx.shadowColor=col; ctx.shadowBlur=prestige===4?14:8;
+        ctx.strokeStyle=col; ctx.lineCap='round';
+        for(let i=0;i<prestige-1;i++){
+          ctx.globalAlpha=Math.max(0,Math.min(1,a*(0.34-i*0.055)));
+          ctx.lineWidth=Math.max(1,(prestige===4?4.2:2.8)-i*0.7);
+          ctx.beginPath();
+          ctx.arc(cx,cy,TILE*(0.83+i*0.09),base-0.72+sweep-i*0.08,base+0.34+sweep-i*0.04);
+          ctx.stroke();
+        }
+        if(prestige===4){
+          const tip=base+0.34+sweep;
+          ctx.globalAlpha=Math.min(1,a*0.9); ctx.fillStyle='#ffffff';
+          ctx.beginPath(); ctx.arc(cx+Math.cos(tip)*TILE*0.92,cy+Math.sin(tip)*TILE*0.92,TILE*0.085,0,Math.PI*2); ctx.fill();
+        }
+      }
       ctx.restore();
     }
+  }
+  function drawHeldAquaticFx(ctx,TILE,it,facing,player){
+    const style=aquaticStyle(it);
+    if(!style) return;
+    const submerged=heroSubmersion(player);
+    if(submerged<0.28) return;
+    const now=nowMs()*0.001, seed=weaponVisualSeed(it)*Math.PI*2;
+    const s=Math.max(0.7,TILE/20), col=weaponMaterialProfile(it).glow;
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
+    ctx.strokeStyle=col; ctx.fillStyle=col; ctx.lineWidth=Math.max(0.75,s*0.8);
+    for(let i=0;i<4;i++){
+      const phase=(now*(0.42+i*0.08)+seed+i*0.23)%1;
+      const bx=facing*(4.5+i*2.1)*s+Math.sin(now*1.8+seed+i)*1.4*s;
+      const by=(-2.5-phase*13-i*0.7)*s;
+      ctx.globalAlpha=(0.12+submerged*0.24)*(1-phase);
+      ctx.beginPath(); ctx.arc(bx,by,(0.65+(i%2)*0.45)*s,0,Math.PI*2); ctx.stroke();
+    }
+    ctx.globalAlpha=0.10+submerged*0.13;
+    for(let i=0;i<2;i++){
+      const sweep=now*(0.65+i*0.17)+seed+i*2.4;
+      ctx.beginPath();
+      ctx.arc(facing*4*s,-4*s,(8+i*3)*s,sweep,sweep+0.72);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  function drawHeldChargeFx(ctx,TILE,it,facing){
+    const bowRatio=weaponType(it)==='bow'&&bowCharge.active?bowChargeRatio():0;
+    const rank=weaponPrestigeRank(it);
+    const ultRatio=rank>=3&&ultCharge>0.72?clamp01((ultCharge-0.72)/0.28):0;
+    // While a bow is being drawn its physical tension is the only progress
+    // shown; a ready ultimate must not make a freshly nocked arrow look full.
+    const charge=bowCharge.active?bowRatio:ultRatio;
+    if(charge<=0.015) return;
+    const now=nowMs()*0.001, seed=weaponVisualSeed(it)*Math.PI*2;
+    const s=Math.max(0.7,TILE/20), mat=weaponMaterialProfile(it);
+    const col=rank>=2?weaponPrestigeColor(it):mat.glow;
+    const full=bowCharge.active?bowRatio>=0.999:ultRatio>=0.999;
+    const cx=facing*(weaponType(it)==='bow'?2.5:3.8)*s, cy=-3.2*s;
+    const pulse=full?0.78+0.22*Math.sin(now*4.2+seed):1;
+    ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.strokeStyle=col; ctx.fillStyle=col; ctx.shadowColor=col;
+    ctx.shadowBlur=(3+charge*(rank>=3?8:5))*s; ctx.lineCap='round';
+    const rings=1+Math.floor(charge*2.99);
+    for(let i=0;i<rings;i++){
+      const r=(4.6+i*2.5-charge*0.8)*s;
+      const spin=now*(0.36+i*0.14)*(i%2?-1:1)+seed+i*1.7;
+      ctx.globalAlpha=(0.10+charge*(full?0.27:0.17))*pulse*(1-i*0.13);
+      ctx.lineWidth=Math.max(0.7,(0.75+charge*0.45)*s);
+      ctx.beginPath(); ctx.arc(cx,cy,r,spin,spin+Math.PI*(0.42+charge*0.58)); ctx.stroke();
+    }
+    const motes=1+Math.floor(charge*4.2);
+    for(let i=0;i<motes;i++){
+      const a=seed+i*Math.PI*2/motes+now*(i%2?0.72:-0.54);
+      const r=(4.5+(i%3)*1.8)*(1-charge*0.16)*s;
+      ctx.globalAlpha=(0.16+charge*0.36)*pulse;
+      ctx.beginPath(); ctx.arc(cx+Math.cos(a)*r,cy+Math.sin(a)*r,(0.45+charge*0.48)*s,0,Math.PI*2); ctx.fill();
+    }
+    if(full){
+      ctx.globalAlpha=0.68*pulse; ctx.strokeStyle=rank===4?'#ffffff':col; ctx.lineWidth=Math.max(0.8,s);
+      const d=2.4*s;
+      ctx.beginPath(); ctx.moveTo(cx,cy-d); ctx.lineTo(cx+d,cy); ctx.lineTo(cx,cy+d); ctx.lineTo(cx-d,cy); ctx.closePath(); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  function drawHeldActionFx(ctx,TILE,it,facing,player,action){
+    if(!action || !action.active) return;
+    const type=weaponType(it), kind=action.kind||type;
+    const s=Math.max(0.7,TILE/20), power=Math.max(0.4,action.power||1);
+    const alpha=Math.min(1,action.flash*(0.55+power*0.24));
+    const mat=weaponMaterialProfile(it), prestige=weaponPrestigeRank(it);
+    const col=prestige>=2?weaponPrestigeColor(it):mat.glow;
+    const muzzle=(kind==='harpoon'?16:(kind==='bow'||kind==='crossbow'?10:8))*s*facing;
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
+    ctx.globalAlpha=alpha;
+    ctx.strokeStyle=col; ctx.fillStyle=col; ctx.shadowColor=col;
+    ctx.shadowBlur=(4+prestige*2.2)*s; ctx.lineWidth=Math.max(0.9,(0.9+power*0.45)*s);
+    if(kind==='melee'){
+      const form=meleeVisualForm(it), tip=(form==='spear'||form==='trident'?-20:form==='axe'?-13:-17)*s;
+      ctx.beginPath(); ctx.moveTo(-3.5*s,tip+2*s); ctx.lineTo(0,tip-3*s); ctx.lineTo(3.5*s,tip+2*s); ctx.stroke();
+      if(prestige>=3){ ctx.globalAlpha*=0.7; ctx.beginPath(); ctx.arc(0,tip,5.5*s,-2.8,-0.35); ctx.stroke(); }
+    }else if(kind==='bow'||kind==='crossbow'){
+      ctx.beginPath(); ctx.arc(muzzle,-2*s,(3.5+power*1.8)*s,-1.05,1.05); ctx.stroke();
+      ctx.globalAlpha*=0.72; ctx.beginPath(); ctx.moveTo(muzzle,-2*s); ctx.lineTo(muzzle+facing*(7+power*3)*s,-2*s); ctx.stroke();
+    }else if(kind==='harpoon'){
+      ctx.beginPath(); ctx.moveTo(muzzle,-2.8*s); ctx.lineTo(muzzle+facing*(8+power*3)*s,-5.2*s);
+      ctx.moveTo(muzzle,-2.8*s); ctx.lineTo(muzzle+facing*(8+power*3)*s,-0.4*s); ctx.stroke();
+      for(let i=0;i<3;i++){
+        ctx.globalAlpha=alpha*(0.62-i*0.12);
+        ctx.beginPath(); ctx.arc(muzzle-facing*(2+i*2.4)*s,(-5.5-i*1.5)*s,(0.8+i*0.2)*s,0,Math.PI*2); ctx.stroke();
+      }
+    }else if(kind==='electric'){
+      ctx.beginPath(); ctx.moveTo(muzzle,-2.6*s); ctx.lineTo(muzzle+facing*3*s,-5*s);
+      ctx.lineTo(muzzle+facing*6*s,-1*s); ctx.lineTo(muzzle+facing*10*s,-3*s); ctx.stroke();
+      ctx.globalAlpha*=0.65; ctx.beginPath(); ctx.arc(muzzle,-2.6*s,(3+power)*s,0,Math.PI*2); ctx.stroke();
+    }else if(kind==='flame'){
+      ctx.fillStyle=prestige>=2?col:'#ffad42';
+      ctx.beginPath(); ctx.moveTo(muzzle,-4*s); ctx.lineTo(muzzle+facing*(8+power*4)*s,-2.6*s);
+      ctx.lineTo(muzzle,-1*s); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha*=0.78; ctx.fillStyle='#fff1b2'; ctx.beginPath(); ctx.arc(muzzle+facing*2*s,-2.6*s,1.4*s,0,Math.PI*2); ctx.fill();
+    }else if(kind==='hose'){
+      ctx.strokeStyle=prestige>=2?col:'#92e7ff';
+      ctx.beginPath(); ctx.moveTo(muzzle,-2.6*s); ctx.lineTo(muzzle+facing*(11+power*4)*s,-2.6*s); ctx.stroke();
+      for(let i=0;i<3;i++){ ctx.globalAlpha=alpha*(0.72-i*0.14); ctx.beginPath(); ctx.arc(muzzle+facing*(4+i*4)*s,(-3+i%2)*s,(0.8+i*0.2)*s,0,Math.PI*2); ctx.fill(); }
+    }else if(kind==='gas'){
+      for(let i=0;i<4;i++){
+        ctx.globalAlpha=alpha*(0.66-i*0.10); ctx.beginPath();
+        ctx.arc(muzzle+facing*(2+i*2.8)*s,(-2.8+Math.sin(i*2.1+action.serial)*2.1)*s,(1.7+i*0.35)*s,0,Math.PI*2); ctx.fill();
+      }
+    }else if(kind==='thrown'){
+      ctx.beginPath(); ctx.arc(facing*3*s,-6*s,(5+power*2)*s,facing>0?-2.5:-0.65,facing>0?-0.5:-2.65); ctx.stroke();
+      ctx.beginPath(); ctx.arc(facing*9*s,-8*s,1.5*s,0,Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+    drawHeldAquaticFx(ctx,TILE,it,facing,player);
   }
   // The equipped weapon in the hero's hand (world space, called after drawPlayer).
   // Melee blades sweep forward during a swing so hits read on the character too.
@@ -2558,23 +3136,87 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const facing=(player.facing>=0)?1:-1;
     const bw=player.w*TILE, bh=player.h*TILE;
     const col=tierColor(it);
+    const material=weaponMaterialProfile(it);
+    const action=heldActionState();
+    const idleNow=nowMs()*0.001, idleSeed=weaponVisualSeed(it)*Math.PI*2;
+    const idleBob=Math.sin(idleNow*2.05+idleSeed)*Math.min(0.7,TILE*0.025);
+    const idleSway=Math.sin(idleNow*1.35+idleSeed*0.7)*0.018;
     ctx.save();
     ctx.translate(player.x*TILE + facing*(bw*0.5+1), player.y*TILE + bh*0.10);
+    ctx.translate(-facing*action.kick*(1.2+action.power*1.5),idleBob+action.kick*0.45);
+    ctx.rotate(facing*(idleSway-action.kick*0.045));
+    drawHeldPrestigeBack(ctx,TILE,it,facing);
     if(type==='melee'){
       const prog= swing.t>0? 1-swing.t/swing.dur : 0;
       const ang= facing*(-0.5 + (swing.t>0? (-1.3+2.1*prog) : 0));
       ctx.rotate(ang);
-      ctx.fillStyle='#e9eef8'; ctx.fillRect(-1,-12,2,12);
-      ctx.beginPath(); ctx.moveTo(-1,-12); ctx.lineTo(0,-15); ctx.lineTo(1,-12); ctx.closePath(); ctx.fill();
-      ctx.fillStyle=col||'#cfd6e4'; ctx.fillRect(-2.6,0,5.2,1.6);
-      ctx.fillStyle='#6e4a22'; ctx.fillRect(-0.9,1.6,1.8,3.4);
+      const form=meleeVisualForm(it), prestige=weaponPrestigeRank(it);
+      const metal=it.meleeEffect==='panic'?'#75efff':it.meleeEffect==='stun'?'#aab0b8':material.edge;
+      if(form==='trident'){
+        ctx.fillStyle=material.body; ctx.fillRect(-1,-16,2,19);
+        ctx.fillStyle=col||material.accent;
+        ctx.fillRect(-1,-18,2,4); ctx.fillRect(-5,-17,2,5); ctx.fillRect(3,-17,2,5);
+        ctx.fillRect(-5,-17,10,1.5);
+        ctx.fillStyle=material.dark; ctx.fillRect(-1,3,2,4);
+        if(prestige>=3){
+          ctx.fillStyle=prestige===4?'#f4ffff':'#bff8ff';
+          ctx.fillRect(-6,-18,2,2); ctx.fillRect(4,-18,2,2); ctx.fillRect(-1.5,-20,3,2);
+        }
+      }else if(form==='spear'){
+        ctx.fillStyle=material.grip; ctx.fillRect(-1,-17,2,22);
+        ctx.fillStyle=metal;
+        ctx.beginPath(); ctx.moveTo(0,-22); ctx.lineTo(-3.4,-15); ctx.lineTo(0,-12.5); ctx.lineTo(3.4,-15); ctx.closePath(); ctx.fill();
+        ctx.fillStyle=col||material.accent; ctx.fillRect(-2.4,-13.2,4.8,1.7);
+        if(prestige>=3){
+          ctx.beginPath(); ctx.moveTo(-2,-15); ctx.lineTo(-6,-12); ctx.lineTo(-2,-11); ctx.closePath(); ctx.fill();
+          ctx.beginPath(); ctx.moveTo(2,-15); ctx.lineTo(6,-12); ctx.lineTo(2,-11); ctx.closePath(); ctx.fill();
+        }
+      }else if(form==='axe'){
+        ctx.fillStyle=material.grip; ctx.fillRect(-1.2,-9,2.4,16);
+        ctx.fillStyle=metal;
+        ctx.beginPath(); ctx.moveTo(-1,-12); ctx.lineTo(-8,-14); ctx.lineTo(-9,-7); ctx.lineTo(-3,-4); ctx.lineTo(0,-7); ctx.closePath(); ctx.fill();
+        if(prestige>=3){
+          ctx.beginPath(); ctx.moveTo(1,-12); ctx.lineTo(8,-13); ctx.lineTo(9,-6); ctx.lineTo(3,-4); ctx.lineTo(0,-7); ctx.closePath(); ctx.fill();
+        }
+        ctx.fillStyle=col||'#8f9aa6'; ctx.fillRect(-2.1,-8.5,4.2,2.2);
+      }else if(form==='club'){
+        ctx.fillStyle=material.grip; ctx.fillRect(-1.2,-5,2.4,12);
+        ctx.fillStyle=col||material.body;
+        ctx.beginPath(); ctx.moveTo(-2,-16); ctx.lineTo(3,-15); ctx.lineTo(4,-7); ctx.lineTo(1,-3); ctx.lineTo(-3,-5); ctx.lineTo(-4,-12); ctx.closePath(); ctx.fill();
+        if(prestige>=3){
+          ctx.fillStyle=metal;
+          ctx.fillRect(-6,-13,3,1.6); ctx.fillRect(3,-10,3,1.6); ctx.fillRect(-5,-7,3,1.6);
+        }
+      }else{
+        const bladeLen=prestige===4?17:prestige===3?15:14;
+        ctx.fillStyle=metal; ctx.fillRect(-1.2,-bladeLen,2.4,bladeLen);
+        ctx.beginPath(); ctx.moveTo(-1.2,-bladeLen); ctx.lineTo(0,-bladeLen-3.5); ctx.lineTo(1.2,-bladeLen); ctx.closePath(); ctx.fill();
+        ctx.fillStyle=col||material.accent; ctx.fillRect(-2.6,0,5.2,1.6);
+        ctx.fillStyle=material.grip; ctx.fillRect(-0.9,1.6,1.8,3.4);
+        if(prestige>=3){
+          ctx.fillStyle=prestige===4?'#ffffff':(col||'#ffd45c');
+          ctx.fillRect(-0.35,-bladeLen+4,0.7,5.5);
+          ctx.fillRect(-4.2,-0.8,8.4,0.8);
+        }
+      }
     } else if(type==='bow'){
       const draw=bowCharge.active ? bowChargeRatio() : 0;
       const full=draw>=0.999;
       const pulse=full ? (0.72+0.28*Math.sin(nowMs()*0.018)) : 0;
+      const prestige=weaponPrestigeRank(it);
+      if(aquaticStyle(it)==='crossbow'){
+        ctx.fillStyle=material.body; ctx.fillRect(facing===1?-4:-9,-4,13,3.5);
+        ctx.fillStyle=col||material.accent; ctx.fillRect(facing===1?4:-8,-5,5,5.5);
+        ctx.fillStyle=material.grip; ctx.fillRect(-1,-1,2.5,4);
+      }
       ctx.strokeStyle=full ? '#f5d66a' : (col||'#9a6a32'); ctx.lineWidth=1.6+draw*0.5; ctx.lineCap='round';
       const a0=facing===1? -1.15 : Math.PI-1.15, a1=facing===1? 1.15 : Math.PI+1.15;
       ctx.beginPath(); ctx.arc(0,-2,6,a0,a1); ctx.stroke();
+      if(prestige>=3){
+        ctx.fillStyle=prestige===4?'#ffffff':(col||'#ffd45c');
+        ctx.beginPath(); ctx.arc(0,-2,prestige===4?1.7:1.2,0,Math.PI*2); ctx.fill();
+        ctx.fillRect(facing===1?1.8:-3.8,-8,2,2); ctx.fillRect(facing===1?1.8:-3.8,2,2,2);
+      }
       if(full){
         ctx.save();
         ctx.globalCompositeOperation='lighter';
@@ -2620,6 +3262,22 @@ import { damageBlastCreatures } from './explosion_damage.js';
         ctx.lineTo(facing*(5.9+draw*1.1),0.2);
         ctx.closePath(); ctx.fill();
       }
+    } else if(type==='harpoon'){
+      const prestige=weaponPrestigeRank(it);
+      ctx.fillStyle=material.dark; ctx.fillRect(facing===1?-4:-9,-5,13,4);
+      ctx.fillStyle=col||material.accent; ctx.fillRect(facing===1?5:-9,-4.5,4,3);
+      ctx.fillStyle=material.body; ctx.fillRect(facing===1?8:-14,-3.5,6,1.5);
+      ctx.fillStyle=material.edge;
+      ctx.beginPath();
+      if(facing===1){ ctx.moveTo(16,-2.8); ctx.lineTo(12,-5); ctx.lineTo(12,-0.6); }
+      else { ctx.moveTo(-16,-2.8); ctx.lineTo(-12,-5); ctx.lineTo(-12,-0.6); }
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle=material.grip; ctx.fillRect(facing===1?-1:-3,-1,3,4);
+      if(prestige>=3){
+        ctx.fillStyle=prestige===4?'#ffffff':(col||'#72e7ff');
+        ctx.beginPath(); ctx.arc(facing===1?3:-3,-3,prestige===4?1.5:1.1,0,Math.PI*2); ctx.fill();
+        ctx.fillRect(facing===1?8:-10,-6,2,2); ctx.fillRect(facing===1?8:-10,-1,2,2);
+      }
     } else if(type==='thrown'){
       // a throw-ready projectile bobbing in the raised hand
       const spec=heldThrownSpec;
@@ -2653,14 +3311,36 @@ import { damageBlastCreatures } from './explosion_damage.js';
     } else {
       // stream device: body + nozzle tinted by class, with a faint idle wisp
       const tint= type==='flame'? '#b35324' : type==='hose'? '#2c7ef8' : type==='electric'? '#53e9ff' : '#4d9230';
-      ctx.fillStyle='#3c414d'; ctx.fillRect(facing===1?-2:-4.5, -4, 6.5, 3);
+      const prestige=weaponPrestigeRank(it);
+      ctx.fillStyle=material.dark; ctx.fillRect(facing===1?-2:-4.5, -4, 6.5, 3);
       ctx.fillStyle=col||tint; ctx.fillRect(facing===1?4.5:-6.5, -3.7, 2.2, 2.4);
-      ctx.fillStyle='#6e4a22'; ctx.fillRect(facing===1?-0.5:-1.5, -1, 2, 3.4);
+      ctx.fillStyle=material.grip; ctx.fillRect(facing===1?-0.5:-1.5, -1, 2, 3.4);
+      if(type==='flame'){
+        ctx.fillStyle='#7b3d22'; ctx.beginPath(); ctx.arc(facing===1?-2.8:2.8,-2.4,2.2,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='#ff9b35'; ctx.fillRect(facing===1?6.5:-8.5,-4.2,1.2,3.4);
+      }else if(type==='hose'){
+        ctx.strokeStyle='#9fe6ff'; ctx.lineWidth=1.2; ctx.beginPath(); ctx.arc(facing===1?-2.5:2.5,-2.5,2.2,0,Math.PI*2); ctx.stroke();
+        ctx.fillStyle='#4db6ff'; ctx.fillRect(facing===1?6.5:-8.5,-3.8,2,2.6);
+      }else if(type==='gas'){
+        ctx.fillStyle='#8fd35d'; ctx.beginPath(); ctx.arc(facing===1?-2.6:2.6,-2.5,2,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='#d8ffb0'; ctx.fillRect(facing===1?-3.3:1.9,-3.5,1.2,1.2);
+      }else if(type==='electric'){
+        ctx.strokeStyle='#8ffaff'; ctx.lineWidth=1;
+        for(let i=0;i<3;i++){ const x=(facing===1?0.4+i*1.7:-0.4-i*1.7); ctx.beginPath(); ctx.arc(x,-2.5,1.1,0,Math.PI*2); ctx.stroke(); }
+      }
+      if(prestige>=3){
+        ctx.fillStyle=prestige===4?'#ffffff':(col||tint);
+        ctx.beginPath(); ctx.arc(facing===1?2.5:-2.5,-2.5,prestige===4?1.35:0.95,0,Math.PI*2); ctx.fill();
+      }
       ctx.globalAlpha=0.5;
       ctx.fillStyle=tint;
       ctx.fillRect(facing===1?7:-9, -3.4, 2, 1.8);
       ctx.globalAlpha=1;
     }
+    drawHeldChargeFx(ctx,TILE,it,facing);
+    drawHeldActionFx(ctx,TILE,it,facing,player,action);
+    if(!action.active) drawHeldAquaticFx(ctx,TILE,it,facing,player);
+    drawHeldPrestigeFront(ctx,TILE,it,facing);
     ctx.restore();
   }
   // Baked radial sprites per stream kind: a per-puff createRadialGradient at up to
@@ -2700,12 +3380,13 @@ import { damageBlastCreatures } from './explosion_damage.js';
       active:!!bowCharge.active,
       t:+(bowCharge.t||0).toFixed(3),
       ratio:+bowChargeRatio().toFixed(3),
+      required:+(bowCharge.required||BOW_CHARGE_SECONDS).toFixed(3),
       full:!!bowCharge.full,
       overdrawT:+(bowCharge.overdrawT||0).toFixed(3),
       energySpent:+(bowCharge.energySpent||0).toFixed(3)
     };
   }
-  function reset(){ arrows.length=0; arrowFragments.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; meleeCd=0; electricCd=0; throwCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; resetBowCharge(); }
+  function reset(){ arrows.length=0; arrowFragments.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; harpoonCd=0; meleeCd=0; electricCd=0; throwCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; heldActionFx.kind=''; heldActionFx.started=0; heldActionFx.until=0; heldActionFx.power=0; heldActionFx.serial=0; resetBowCharge(); }
 
   // --- ghost mirror: the hero's weapons, seen from the cheap seats ------------
   // A watcher runs the full renderer but no simulation, so its weapons module
@@ -2715,15 +3396,20 @@ import { damageBlastCreatures } from './explosion_damage.js';
   // read-only), and the watcher integrates it locally between packets so arrows
   // keep flying smoothly instead of teleporting once per network tick.
   const GHOST_FX_CAP={arrows:24, puffs:80, beams:8, blasts:8};
-  const FX_STUCK=1, FX_POWER=2, FX_ROCK=4, FX_SNOW=8, FX_SAND=16, FX_SPIT=32, FX_TOXIC_SPIT=64;
+  const FX_STUCK=1, FX_POWER=2, FX_ROCK=4, FX_SNOW=8, FX_SAND=16, FX_SPIT=32, FX_TOXIC_SPIT=64, FX_HARPOON=128, FX_AQUATIC=256;
   function ghostFxState(){
     const st={};
     if(swing.t>0) st.sw=[+swing.t.toFixed(3), swing.tx, swing.ty, swing.dir, +swing.dur.toFixed(3)];
+    const held=heldActionState();
+    if(held.active) st.ha=[held.kind,+Math.max(0,(heldActionFx.until-nowMs())/1000).toFixed(3),+held.power.toFixed(2),held.serial>>>0];
+    if(bowCharge.active) st.bc=[+bowChargeRatio().toFixed(3),bowCharge.full?1:0];
+    st.uc=+ultCharge.toFixed(3);
     if(arrows.length) st.ar=arrows.slice(-GHOST_FX_CAP.arrows).map(a=>[
       +a.x.toFixed(2), +a.y.toFixed(2), +(a.vx||0).toFixed(2), +(a.vy||0).toFixed(2),
       (a.stuck?FX_STUCK:0)|(a.power?FX_POWER:0)|(a.rock?FX_ROCK:0)|(a.snowball?FX_SNOW:0)|
-      (a.sandSpray?FX_SAND:0)|(a.spitDroplet?FX_SPIT:0)|(a.toxicSpit?FX_TOXIC_SPIT:0),
-      +(a.ang||0).toFixed(3), a.color||'', a.headColor||'', (Number(a.sandSeed)>>>0)||0
+      (a.sandSpray?FX_SAND:0)|(a.spitDroplet?FX_SPIT:0)|(a.toxicSpit?FX_TOXIC_SPIT:0)|(a.harpoon?FX_HARPOON:0)|(a.aquatic?FX_AQUATIC:0),
+      +(a.ang||0).toFixed(3), a.color||'', a.headColor||'', (Number(a.sandSeed)>>>0)||0,
+      Math.max(0,Math.min(4,Number(a.weaponPrestige)||0)), a.weaponGlow||'', a.weaponMaterial||''
     ]);
     if(puffs.length) st.pf=puffs.slice(-GHOST_FX_CAP.puffs).map(p=>[
       p.kind, +p.x.toFixed(2), +p.y.toFixed(2), +(p.vx||0).toFixed(2), +(p.vy||0).toFixed(2),
@@ -2745,15 +3431,30 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const sw=Array.isArray(st.sw)?st.sw:null;
     swing.t=sw?Math.max(0,Math.min(2,num(sw[0]))):0;
     if(sw){ swing.tx=num(sw[1]); swing.ty=num(sw[2]); swing.dir=num(sw[3])<0?-1:1; swing.dur=Math.max(0.05,Math.min(2,num(sw[4],0.2))); }
+    const ha=Array.isArray(st.ha)?st.ha:null;
+    if(ha){
+      const now=nowMs(), duration=Math.max(45,Math.min(650,num(ha[1],0.15)*1000));
+      heldActionFx.kind=typeof ha[0]==='string'?ha[0].slice(0,16):'weapon'; heldActionFx.started=now;
+      heldActionFx.until=now+duration; heldActionFx.power=Math.max(0.25,Math.min(3,num(ha[2],1))); heldActionFx.serial=num(ha[3])>>>0;
+    }else{
+      heldActionFx.until=0; heldActionFx.power=0;
+    }
+    const bc=Array.isArray(st.bc)?st.bc:null;
+    if(bc){ bowCharge.active=true; bowCharge.required=1; bowCharge.t=Math.max(0,Math.min(1,num(bc[0]))); bowCharge.full=!!num(bc[1]); }
+    else { bowCharge.active=false; bowCharge.t=0; bowCharge.full=false; }
+    if(Number.isFinite(Number(st.uc))) ultCharge=Math.max(0,Math.min(1,num(st.uc)));
     arrows.length=0;
     for(const a of (Array.isArray(st.ar)?st.ar.slice(0,GHOST_FX_CAP.arrows):[])){
       if(!Array.isArray(a)) continue;
       const f=num(a[4])|0;
       arrows.push({x:num(a[0]), y:num(a[1]), vx:num(a[2]), vy:num(a[3]),
         stuck:!!(f&FX_STUCK), power:!!(f&FX_POWER), rock:!!(f&FX_ROCK), snowball:!!(f&FX_SNOW),
-        sandSpray:!!(f&FX_SAND), spitDroplet:!!(f&FX_SPIT), toxicSpit:!!(f&FX_TOXIC_SPIT),
+        sandSpray:!!(f&FX_SAND), spitDroplet:!!(f&FX_SPIT), toxicSpit:!!(f&FX_TOXIC_SPIT), harpoon:!!(f&FX_HARPOON),
         ang:num(a[5]), color:typeof a[6]==='string'?a[6].slice(0,24):'', headColor:typeof a[7]==='string'?a[7].slice(0,24):'',
         sandSeed:(num(a[8])>>>0)||1,
+        weaponPrestige:Math.max(0,Math.min(4,num(a[9]))), weaponGlow:typeof a[10]==='string'?a[10].slice(0,24):'',
+        weaponMaterial:typeof a[11]==='string'?a[11].slice(0,16):'', aquatic:!!(f&FX_AQUATIC),
+        gravityMult:(f&FX_HARPOON)?0.12:1,
         life:9, stuckT:9, travel:0, maxTravel:1e9, ghost:true});
     }
     puffs.length=0;
@@ -2782,10 +3483,11 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const d=Math.max(0, Math.min(0.1, Number(dt)||0));
     if(!d) return;
     if(swing.t>0) swing.t-=d;
+    if(bowCharge.active && !bowCharge.full){ bowCharge.t=Math.min(bowCharge.required,bowCharge.t+d*0.35); bowCharge.full=bowCharge.t>=bowCharge.required; }
     for(let i=arrows.length-1;i>=0;i--){
       const a=arrows[i];
       if(a.stuck) continue;
-      a.x+=a.vx*d; a.y+=a.vy*d; a.vy+=ARROW_GRAV*d;
+      a.x+=a.vx*d; a.y+=a.vy*d; a.vy+=ARROW_GRAV*(Number.isFinite(a.gravityMult)?a.gravityMult:1)*d;
     }
     for(let i=puffs.length-1;i>=0;i--){
       const p=puffs[i];
@@ -2801,11 +3503,11 @@ import { damageBlastCreatures } from './explosion_damage.js';
       if(b.t>b.max) blastsFx.splice(i,1);
     }
   }
-  MM.weapons={fireHeld,releaseHeld,cancelHeld,fireUlt,update,draw,drawHeld,notifyMeleeSwing,reset,explodeAt,spawnGasCloud,spawnExternalStream,
+  MM.weapons={fireHeld,releaseHeld,cancelHeld,fireUlt,update,draw,drawHeld,drawWorldLight,drawHeroReflection,lightSource:weaponLightSource,notifyMeleeSwing,reset,explodeAt,spawnGasCloud,spawnExternalStream,
     ghostFxState,ghostApplyFx,ghostStepFx,
     arrowInfo,setArrowPref,fuelInfo,thrownInfo,hudStatus,addUltCharge,
-    metrics:()=>({arrows:arrows.length,arrowFragments:arrowFragments.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),ultCharge,bowCharge:bowChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
-    _debug:{arrows,arrowFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,pushArrow,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,waterHeat,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS,sandVisualPattern}};
+    metrics:()=>({arrows:arrows.length,arrowFragments:arrowFragments.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),harpoonAmmo:resourceCount('harpoonBolt'),ultCharge,bowCharge:bowChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
+    _debug:{arrows,arrowFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,pushArrow,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,heroSubmersion,meleeWaterProfile,bowWaterProfile,harpoonWaterProfile,weaponPrestigeRank,weaponVisualSeed,weaponPrestigeColor,weaponMaterialProfile,weaponCombatVisualMeta,projectileCombatVisualMeta,weaponLightSource,weaponLightRgba,meleeVisualForm,heldActionFx,heldActionState,triggerHeldActionFx,drawHeldChargeFx,drawProjectilePrestigeTrail,waterHeat,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS,sandVisualPattern}};
 })();
 // ESM export (progressive migration)
 export const weapons = (typeof window!=='undefined' && window.MM) ? window.MM.weapons : undefined;

@@ -117,6 +117,15 @@ import { isSolidCollisionTile } from './material_physics.js';
     if(e.indexOf('ice')>=0 || e.indexOf('chill')>=0 || e.indexOf('frost')>=0 || e.indexOf('cold')>=0) return [[198,244,255],[244,255,255],[126,190,255]];
     if(e.indexOf('gas')>=0 || e.indexOf('poison')>=0 || e.indexOf('toxic')>=0) return [[151,246,116],[222,255,130],[82,188,94]];
     if(e.indexOf('sand')>=0) return [[199,170,104],[239,215,151],[151,119,67]];
+    if(e.indexOf('wood')>=0) return [[188,133,72],[231,190,120],[111,70,38]];
+    if(e.indexOf('stone')>=0) return [[154,164,174],[220,226,232],[91,101,111]];
+    if(e.indexOf('steel')>=0) return [[185,213,235],[244,251,255],[111,148,177]];
+    if(e.indexOf('obsidian')>=0) return [[156,105,222],[219,190,255],[74,45,122]];
+    if(e.indexOf('diamond')>=0) return [[118,232,242],[232,255,255],[65,169,207]];
+    if(e.indexOf('iridium')>=0) return [[189,135,251],[246,228,255],[105,75,194]];
+    if(e.indexOf('aquatic')>=0) return [[104,221,235],[220,251,255],[49,132,166]];
+    if(e.indexOf('arc')>=0) return [[99,239,255],[235,255,255],[65,132,220]];
+    if(e.indexOf('exotic')>=0) return [[255,215,105],[255,247,199],[182,111,219]];
     if(e.indexOf('lucky')>=0 || e.indexOf('special')>=0 || e.indexOf('crit')>=0) return [[255,216,74],[255,248,185],[255,160,64]];
     return [[221,185,116],[255,233,178],[154,122,76]];
   }

@@ -41,6 +41,62 @@ import './inventory.js';
 
   const TIER_COLORS=INV.TIER_COLORS||{common:'#b07f2c', rare:'#a74cc9', epic:'#e0b341'};
   const TIER_LABELS={common:'zwykły', uncommon:'niezwykły', rare:'rzadki', epic:'epicki', legendary:'legendarny'};
+  const PRESTIGE_RANK={common:0,uncommon:1,rare:2,epic:3,legendary:4};
+  const WEAPON_MATERIALS={
+    wood:{body:'#76502b',edge:'#d7aa68',accent:'#ad7436',dark:'#3f2817',grip:'#5b351d'},
+    stone:{body:'#727982',edge:'#dce3ea',accent:'#9da6af',dark:'#3c4249',grip:'#654321'},
+    steel:{body:'#788694',edge:'#f2f8ff',accent:'#b9c8d6',dark:'#36424c',grip:'#674326'},
+    obsidian:{body:'#3c3158',edge:'#c7a4f2',accent:'#7e59b5',dark:'#171020',grip:'#4a2f2b'},
+    diamond:{body:'#70c9db',edge:'#f2ffff',accent:'#86f0f2',dark:'#285f72',grip:'#4f5363'},
+    iridium:{body:'#7668a7',edge:'#f4eaff',accent:'#b887ff',dark:'#302749',grip:'#403557'},
+    aquatic:{body:'#436d7c',edge:'#dffcff',accent:'#62dce7',dark:'#203d4a',grip:'#405764'},
+    arc:{body:'#3e5968',edge:'#efffff',accent:'#58eaff',dark:'#1d303a',grip:'#3e434d'},
+    exotic:{body:'#62528b',edge:'#fff2b8',accent:'#e7b85b',dark:'#28203d',grip:'#49354d'}
+  };
+  function prestigeRank(item){ return item&&item.unique?Math.max(3,PRESTIGE_RANK[item.tier]||0):(PRESTIGE_RANK[item&&item.tier]||0); }
+  function weaponMaterialProfile(item){
+    const name=String(item&&(item.id||item.name)||'').toLowerCase();
+    if(item&&item.aquaticStyle) return WEAPON_MATERIALS.aquatic;
+    if(/iryd|irid/.test(name)) return WEAPON_MATERIALS.iridium;
+    if(/diament|diamond/.test(name)) return WEAPON_MATERIALS.diamond;
+    if(/obsyd|obsid/.test(name)) return WEAPON_MATERIALS.obsidian;
+    if(/kamie|stone|rock/.test(name)) return WEAPON_MATERIALS.stone;
+    if(/drewn|wood|patyk|stick|maczug|club|luk|bow/.test(name)) return WEAPON_MATERIALS.wood;
+    if((item&&item.weaponType)==='electric'||/elektr|electric|tesla|laser|plasm/.test(name)) return WEAPON_MATERIALS.arc;
+    if(item&&(item.unique||prestigeRank(item)>=3)) return WEAPON_MATERIALS.exotic;
+    return WEAPON_MATERIALS.steel;
+  }
+  function meleeMiniForm(item){
+    if(item&&item.aquaticStyle==='trident') return 'trident';
+    const name=String(item&&item.name||'').toLowerCase();
+    if(/top[oó]r|axe/.test(name)) return 'axe';
+    if(/maczug|patyk|club|stick/.test(name)) return 'club';
+    if(/dzid|w[łl][oó]cz|spear/.test(name)||Number(item&&item.fireRange)>1) return 'spear';
+    return 'sword';
+  }
+  function drawWeaponPrestigeAura(ctx,item,x,y,radius){
+    const rank=prestigeRank(item); if(rank<2) return;
+    const col=TIER_COLORS[item.tier]||(rank===4?'#65f4ff':rank===3?'#ffd45c':'#bd75ff');
+    const now=performance.now()*0.001, pulse=0.82+Math.sin(now*3.1)*0.18;
+    ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.shadowColor=col; ctx.shadowBlur=rank===4?14:rank===3?9:5;
+    ctx.fillStyle=col; ctx.globalAlpha=(rank===4?0.12:rank===3?0.08:0.045)*pulse;
+    ctx.beginPath(); ctx.arc(x,y,radius*(rank===4?1.08:0.88),0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle=col; ctx.lineWidth=rank===4?1.5:1; ctx.globalAlpha=(rank===4?0.52:rank===3?0.34:0.20)*pulse;
+    const rings=rank===4?3:rank===3?2:1;
+    for(let i=0;i<rings;i++){
+      const spin=now*(0.65+i*0.22)*(i%2?-1:1)+i*2.1;
+      ctx.beginPath(); ctx.arc(x,y,radius*(0.55+i*0.17),spin,spin+Math.PI*(0.72+i*0.18)); ctx.stroke();
+    }
+    if(rank>=3){
+      ctx.fillStyle=rank===4?'#ffffff':col;
+      for(let i=0;i<(rank===4?4:2);i++){
+        const a=now*(i%2?1.1:-0.85)+i*Math.PI/2;
+        ctx.globalAlpha=0.55+Math.sin(now*4+i)*0.2;
+        ctx.beginPath(); ctx.arc(x+Math.cos(a)*radius*0.72,y+Math.sin(a)*radius*0.72,rank===4?1.25:0.9,0,Math.PI*2); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
 
   // --- Tabs: one per item kind + resources ---
   const TABS=MM.inventory.SLOTS.map(s=>({key:s.accepts, label:INV.KIND_LABELS[s.accepts]||s.accepts, kind:s.accepts}))
@@ -743,28 +799,62 @@ import './inventory.js';
   }
   function drawWeaponMini(ctx,item){
     const type=item.weaponType||'melee';
+    const mat=weaponMaterialProfile(item);
+    drawWeaponPrestigeAura(ctx,item,40,40,31);
     if(type==='bow'){ drawBowMini(ctx,item); return; }
+    if(type==='harpoon'){ drawHarpoonMini(ctx,item); return; }
     if(type==='flame'||type==='hose'||type==='gas'||type==='electric'){ drawStreamMini(ctx,item,type); return; }
     const col=TIER_COLORS[item.tier]||'#cfd6e4';
     ctx.save();
     ctx.translate(40,40); ctx.rotate(-Math.PI/4);
+    const form=meleeMiniForm(item), rank=prestigeRank(item);
+    if(form==='trident'){
+      ctx.fillStyle=mat.body; ctx.fillRect(-3,-31,6,64);
+      ctx.fillStyle=col==='#cfd6e4'?mat.accent:col; ctx.fillRect(-3,-39,6,12); ctx.fillRect(-13,-37,6,15); ctx.fillRect(7,-37,6,15); ctx.fillRect(-13,-28,26,5);
+      ctx.restore(); return;
+    }
+    if(form==='spear'){
+      ctx.fillStyle=mat.grip; ctx.fillRect(-2.5,-28,5,65);
+      ctx.fillStyle=mat.edge; ctx.beginPath(); ctx.moveTo(0,-42); ctx.lineTo(-9,-27); ctx.lineTo(0,-20); ctx.lineTo(9,-27); ctx.closePath(); ctx.fill();
+      ctx.fillStyle=col; ctx.fillRect(-7,-22,14,4);
+      if(rank>=3){ ctx.beginPath(); ctx.moveTo(-5,-28); ctx.lineTo(-14,-20); ctx.lineTo(-4,-17); ctx.closePath(); ctx.fill(); ctx.beginPath(); ctx.moveTo(5,-28); ctx.lineTo(14,-20); ctx.lineTo(4,-17); ctx.closePath(); ctx.fill(); }
+      ctx.restore(); return;
+    }
+    if(form==='axe'){
+      ctx.fillStyle=mat.grip; ctx.fillRect(-3,-17,6,53);
+      ctx.fillStyle=mat.edge; ctx.beginPath(); ctx.moveTo(-2,-31); ctx.lineTo(-24,-37); ctx.lineTo(-28,-15); ctx.lineTo(-9,-5); ctx.lineTo(1,-14); ctx.closePath(); ctx.fill();
+      if(rank>=3){ ctx.beginPath(); ctx.moveTo(2,-31); ctx.lineTo(24,-36); ctx.lineTo(28,-14); ctx.lineTo(9,-5); ctx.lineTo(-1,-14); ctx.closePath(); ctx.fill(); }
+      ctx.fillStyle=col; ctx.fillRect(-7,-18,14,7); ctx.restore(); return;
+    }
+    if(form==='club'){
+      ctx.fillStyle=mat.grip; ctx.fillRect(-3,-8,6,44);
+      ctx.fillStyle=col==='#cfd6e4'?mat.body:col; ctx.beginPath(); ctx.moveTo(-8,-38); ctx.lineTo(9,-34); ctx.lineTo(12,-12); ctx.lineTo(3,-3); ctx.lineTo(-10,-8); ctx.lineTo(-13,-28); ctx.closePath(); ctx.fill();
+      if(rank>=3){ ctx.fillStyle='#e8eef5'; ctx.fillRect(-17,-29,8,4); ctx.fillRect(9,-21,8,4); ctx.fillRect(-14,-12,8,4); }
+      ctx.restore(); return;
+    }
     // blade
     const g=ctx.createLinearGradient(0,-30,0,18);
-    g.addColorStop(0,'#f4f7ff'); g.addColorStop(1,shadeHex(col.length===7?col:'#cfd6e4',-10));
+    g.addColorStop(0,mat.edge); g.addColorStop(0.48,mat.accent); g.addColorStop(1,mat.body);
     ctx.fillStyle=g; ctx.beginPath();
     ctx.moveTo(-4,-30); ctx.lineTo(4,-30); ctx.lineTo(3,16); ctx.lineTo(-3,16); ctx.closePath(); ctx.fill();
     ctx.beginPath(); ctx.moveTo(-4,-30); ctx.lineTo(0,-38); ctx.lineTo(4,-30); ctx.closePath(); ctx.fill();
     // guard
-    ctx.fillStyle=col; ctx.fillRect(-11,16,22,5);
+    ctx.fillStyle=col==='#cfd6e4'?mat.accent:col; ctx.fillRect(-11,16,22,5);
     // hilt + pommel
-    ctx.fillStyle='#6e4a22'; ctx.fillRect(-2.5,21,5,12);
+    ctx.fillStyle=mat.grip; ctx.fillRect(-2.5,21,5,12);
     ctx.fillStyle=col; ctx.beginPath(); ctx.arc(0,36,4,0,Math.PI*2); ctx.fill();
     ctx.restore();
   }
   function drawBowMini(ctx,item){
     const col=TIER_COLORS[item.tier]||'#9a6a32';
+    const mat=weaponMaterialProfile(item);
     ctx.save();
     ctx.translate(40,40);
+    if(item.aquaticStyle==='crossbow'){
+      ctx.fillStyle=mat.body; ctx.fillRect(-28,-5,48,10);
+      ctx.fillStyle=col||mat.accent; ctx.fillRect(10,-8,10,16);
+      ctx.fillStyle=mat.grip; ctx.fillRect(-8,5,8,14);
+    }
     // limb (arc opening to the left, string on the right)
     ctx.strokeStyle=col; ctx.lineWidth=4; ctx.lineCap='round';
     ctx.beginPath(); ctx.arc(0,0,24,-Math.PI*0.42,Math.PI*0.42); ctx.stroke();
@@ -780,6 +870,19 @@ import './inventory.js';
     ctx.fillStyle='#e8e2d2'; ctx.fillRect(sx-5,-3,5,2); ctx.fillRect(sx-5,1,5,2);
     ctx.restore();
   }
+  function drawHarpoonMini(ctx,item){
+    const col=TIER_COLORS[item.tier]||'#4ea5b8';
+    const mat=weaponMaterialProfile(item);
+    ctx.save(); ctx.translate(39,42);
+    ctx.fillStyle=mat.dark; ctx.fillRect(-29,-8,42,14);
+    ctx.fillStyle=col; ctx.fillRect(8,-6,15,10);
+    ctx.fillStyle=mat.grip; ctx.fillRect(-10,5,8,15);
+    ctx.strokeStyle=mat.body; ctx.lineWidth=4;
+    ctx.beginPath(); ctx.moveTo(15,-1); ctx.lineTo(34,-1); ctx.stroke();
+    ctx.fillStyle=mat.edge;
+    ctx.beginPath(); ctx.moveTo(40,-1); ctx.lineTo(31,-7); ctx.lineTo(33,-1); ctx.lineTo(31,5); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
   // Tank + nozzle device with a spray cone tinted per stream class
   const STREAM_CONES={
     flame:[['rgba(255,245,200,0.95)',0],['rgba(255,170,50,0.8)',0.5],['rgba(255,80,20,0)',1]],
@@ -790,14 +893,15 @@ import './inventory.js';
   const STREAM_BODY={flame:'#8a4a1f', hose:'#1f5fb0', gas:'#3f7a2b', electric:'#1797a8'};
   function drawStreamMini(ctx,item,kind){
     const col=TIER_COLORS[item.tier]||STREAM_BODY[kind]||'#8a4a1f';
+    const mat=weaponMaterialProfile(item);
     ctx.save();
     ctx.translate(40,44);
     // fuel/water/toxin tank
     ctx.fillStyle=shadeHex((col.length===7?col:STREAM_BODY[kind]||'#8a4a1f'),-25);
     ctx.fillRect(-26,-8,14,20); ctx.strokeStyle='rgba(255,255,255,.3)'; ctx.strokeRect(-26,-8,14,20);
     // body + grip
-    ctx.fillStyle='#3c414d'; ctx.fillRect(-14,-6,26,9);
-    ctx.fillStyle='#6e4a22'; ctx.fillRect(-6,3,5,10);
+    ctx.fillStyle=mat.dark; ctx.fillRect(-14,-6,26,9);
+    ctx.fillStyle=mat.grip; ctx.fillRect(-6,3,5,10);
     // nozzle
     ctx.fillStyle=col; ctx.fillRect(12,-5,8,7);
     if(kind==='electric'){
@@ -911,10 +1015,13 @@ import './inventory.js';
   function drawWeaponInHand(ctx,bw,bh){
     const it=INV.equippedItem('weapon'); if(!it) return;
     const col=TIER_COLORS[it.tier]||'#cfd6e4';
+    const mat=weaponMaterialProfile(it);
     const type=it.weaponType||'melee';
+    const meleeForm=type==='melee'?meleeMiniForm(it):'';
     ctx.save();
     const hx= miniFacing===1? bw+0.5 : -0.5;
     ctx.translate(hx, bh*0.62);
+    drawWeaponPrestigeAura(ctx,it,miniFacing*2.4,-4.5,8);
     if(type==='bow'){
       ctx.strokeStyle=col==='#cfd6e4'?'#9a6a32':col; ctx.lineWidth=1.2; ctx.lineCap='round';
       const dir=miniFacing===1?1:-1;
@@ -922,23 +1029,50 @@ import './inventory.js';
       ctx.strokeStyle='#e8e2d2'; ctx.lineWidth=0.6;
       const ex=Math.cos(1.2)*5*dir, ey=Math.sin(1.2)*5;
       ctx.beginPath(); ctx.moveTo(ex,-2-ey); ctx.lineTo(ex,-2+ey); ctx.stroke();
+      if(it.aquaticStyle==='crossbow'){
+        ctx.fillStyle=mat.body; ctx.fillRect(miniFacing===1?-4:-7,-3,11,2.5);
+        ctx.fillStyle=mat.grip; ctx.fillRect(-1,-1,2,3);
+      }
+    } else if(type==='harpoon'){
+      ctx.fillStyle=mat.dark; ctx.fillRect(miniFacing===1?-2:-7,-4,9,3);
+      ctx.fillStyle=col; ctx.fillRect(miniFacing===1?5:-7,-3.6,3,2.2);
+      ctx.strokeStyle=mat.body; ctx.lineWidth=1.3;
+      ctx.beginPath(); ctx.moveTo(miniFacing===1?7:-7,-2.5); ctx.lineTo(miniFacing===1?13:-13,-2.5); ctx.stroke();
     } else if(type==='flame'||type==='hose'||type==='gas'||type==='electric'){
       const sprayCol= type==='flame'? ['rgba(255,240,180,0.9)','rgba(255,90,20,0)']
                     : type==='hose'? ['rgba(220,240,255,0.9)','rgba(60,120,230,0)']
                     : type==='electric'? ['rgba(255,255,255,0.95)','rgba(45,230,255,0)']
                     : ['rgba(220,255,170,0.9)','rgba(70,150,40,0)'];
-      ctx.fillStyle='#3c414d'; ctx.fillRect(miniFacing===1?-1:-4.5, -3.5, 5.5, 2.6);
+      ctx.fillStyle=mat.dark; ctx.fillRect(miniFacing===1?-1:-4.5, -3.5, 5.5, 2.6);
       ctx.fillStyle=col==='#cfd6e4'?(STREAM_BODY[type]||'#8a4a1f'):col; ctx.fillRect(miniFacing===1?4.5:-6.5, -3.2, 2, 2);
       const fx=miniFacing===1?6.5:-6.5;
       const g=ctx.createLinearGradient(fx,0,fx+miniFacing*6,0);
       g.addColorStop(0,sprayCol[0]); g.addColorStop(1,sprayCol[1]);
       ctx.fillStyle=g;
       ctx.beginPath(); ctx.moveTo(fx,-2.6); ctx.lineTo(fx+miniFacing*6,-1.2); ctx.lineTo(fx+miniFacing*6,0.4); ctx.lineTo(fx,-0.4); ctx.closePath(); ctx.fill();
+    } else if(meleeForm==='trident'){
+      ctx.rotate(miniFacing===1?-0.5:0.5);
+      ctx.fillStyle=mat.body; ctx.fillRect(-0.7,-11,1.4,14);
+      ctx.fillStyle=col==='#cfd6e4'?mat.accent:col; ctx.fillRect(-0.7,-13,1.4,3); ctx.fillRect(-3,-12.5,1.2,3.5); ctx.fillRect(1.8,-12.5,1.2,3.5); ctx.fillRect(-3,-10.5,6,1);
+    } else if(meleeForm==='spear'){
+      ctx.rotate(miniFacing===1?-0.5:0.5);
+      ctx.fillStyle=mat.grip; ctx.fillRect(-0.6,-11,1.2,14);
+      ctx.fillStyle=mat.edge; ctx.beginPath(); ctx.moveTo(0,-14); ctx.lineTo(-2,-10); ctx.lineTo(2,-10); ctx.closePath(); ctx.fill();
+      ctx.fillStyle=col; ctx.fillRect(-1.5,-10.5,3,0.8);
+    } else if(meleeForm==='axe'){
+      ctx.rotate(miniFacing===1?-0.5:0.5);
+      ctx.fillStyle=mat.grip; ctx.fillRect(-0.7,-7,1.4,10);
+      ctx.fillStyle=mat.edge; ctx.beginPath(); ctx.moveTo(0,-10); ctx.lineTo(-4,-11); ctx.lineTo(-5,-7); ctx.lineTo(-1,-5); ctx.closePath(); ctx.fill();
+      if(prestigeRank(it)>=3){ ctx.beginPath(); ctx.moveTo(0,-10); ctx.lineTo(4,-11); ctx.lineTo(5,-7); ctx.lineTo(1,-5); ctx.closePath(); ctx.fill(); }
+    } else if(meleeForm==='club'){
+      ctx.rotate(miniFacing===1?-0.5:0.5);
+      ctx.fillStyle=mat.grip; ctx.fillRect(-0.7,-6,1.4,9);
+      ctx.fillStyle=col==='#cfd6e4'?mat.body:col; ctx.fillRect(-1.8,-11,3.6,6);
     } else {
       ctx.rotate(miniFacing===1? -0.5 : 0.5);
-      ctx.fillStyle='#e9eef8'; ctx.fillRect(-0.7,-9,1.4,9);
-      ctx.fillStyle=col; ctx.fillRect(-1.8,0,3.6,1.2);
-      ctx.fillStyle='#6e4a22'; ctx.fillRect(-0.6,1.2,1.2,2.6);
+      ctx.fillStyle=mat.edge; ctx.fillRect(-0.7,-9,1.4,9);
+      ctx.fillStyle=col==='#cfd6e4'?mat.accent:col; ctx.fillRect(-1.8,0,3.6,1.2);
+      ctx.fillStyle=mat.grip; ctx.fillRect(-0.6,1.2,1.2,2.6);
     }
     ctx.restore();
   }

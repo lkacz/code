@@ -1061,6 +1061,20 @@ function combatPalette(element,kind){
 	if(k==='special') return {ring:'rgba(255,222,92,',core:'rgba(255,250,190,',slash:'rgba(255,138,54,',text:'special'};
 	return {ring:'rgba(255,226,170,',core:'rgba(255,250,224,',slash:'rgba(218,148,78,',text:'special'};
 }
+const WEAPON_IMPACT_PALETTES=Object.freeze({
+	wood:{ring:'rgba(202,151,88,',core:'rgba(244,211,150,',slash:'rgba(132,82,42,',text:'material'},
+	stone:{ring:'rgba(161,170,180,',core:'rgba(226,232,238,',slash:'rgba(104,113,123,',text:'material'},
+	steel:{ring:'rgba(190,216,236,',core:'rgba(248,253,255,',slash:'rgba(126,158,184,',text:'material'},
+	obsidian:{ring:'rgba(163,112,230,',core:'rgba(224,197,255,',slash:'rgba(85,53,139,',text:'material'},
+	diamond:{ring:'rgba(118,238,246,',core:'rgba(238,255,255,',slash:'rgba(70,173,213,',text:'material'},
+	iridium:{ring:'rgba(193,139,255,',core:'rgba(250,235,255,',slash:'rgba(114,83,205,',text:'material'},
+	aquatic:{ring:'rgba(101,226,240,',core:'rgba(225,253,255,',slash:'rgba(54,137,171,',text:'material'},
+	arc:{ring:'rgba(99,239,255,',core:'rgba(238,255,255,',slash:'rgba(68,133,220,',text:'material'},
+	exotic:{ring:'rgba(255,215,105,',core:'rgba(255,248,202,',slash:'rgba(184,112,223,',text:'material'}
+});
+function combatWeaponPalette(material,fallback){
+	return WEAPON_IMPACT_PALETTES[String(material||'').toLowerCase()] || fallback;
+}
 function triggerHeroBodyRecoil(kind,dir,power){
 	const p=Math.max(0.35,Math.min(2.4,Number(power)||1));
 	heroBodyRecoilFx={
@@ -1129,6 +1143,10 @@ function triggerCombatFeedback(detail){
 	const target=String(detail.target||'');
 	const source=String(detail.source||'');
 	const element=combatElementFromDetail(detail);
+	const weaponMaterial=String(detail.weaponMaterial||'').toLowerCase().slice(0,16);
+	const weaponClass=String(detail.weaponClass||'').toLowerCase().slice(0,16);
+	const weaponForm=String(detail.weaponForm||'').toLowerCase().slice(0,16);
+	const weaponPrestige=Math.max(0,Math.min(4,Number(detail.weaponPrestige)||0));
 	const amount=Math.abs(Number(detail.amount)||0);
 	const x=combatFinite(detail.x, target==='hero'?player.x:player.x+(player.facing||1)*0.9);
 	const y=combatFinite(detail.y, target==='hero'?player.y-player.h*0.28:player.y-player.h*0.65);
@@ -1159,9 +1177,12 @@ function triggerCombatFeedback(detail){
 		if(major || bonusPct>0 || detail.special || detail.lucky) triggerHeroBodyRecoil('strike',x>=player.x?1:-1,Math.min(1.5,power));
 		if(detail.lucky || detail.special || bonusPct>0 || detail.finisher) noteCombatScreenShake(detail.lucky?1.1:(detail.finisher?1.0:(bonusPct>0?0.88:0.66)),x>=player.x?1:-1);
 	}
-	const palette=combatPalette(element,kind);
+	const basePalette=combatPalette(element,kind);
+	const palette=element ? basePalette : combatWeaponPalette(weaponMaterial,basePalette);
+	const impactSeed=((Math.floor(x*997)*73856093)^(Math.floor(y*991)*19349663)^((combatImpactFx.length+1)*83492791)^(Math.floor(now)&0xffff))>>>0;
 	combatImpactFx.push({
 		x,y,kind,element,target,key:fxKey,palette,
+		weaponMaterial,weaponClass,weaponForm,weaponPrestige,impactSeed,
 		born:now,t:0,life:major?0.56:0.38,
 		power,major,bonusPct,dir,
 		finisher:!!detail.finisher,
@@ -1171,7 +1192,7 @@ function triggerCombatFeedback(detail){
 	if(combatImpactFx.length>36) combatImpactFx.splice(0,combatImpactFx.length-36);
 	try{
 		if(PARTICLES && PARTICLES.spawnImpactChips){
-			PARTICLES.spawnImpactChips(x*TILE,y*TILE,{element:element || kind,kind,major,lucky:!!detail.lucky,critical:!!detail.critical,power,dir:x>=player.x?1:-1});
+			PARTICLES.spawnImpactChips(x*TILE,y*TILE,{element:element || weaponMaterial || kind,tier:weaponMaterial,kind,major,lucky:!!detail.lucky,critical:!!detail.critical,power,dir:x>=player.x?1:-1});
 		}
 		if(PARTICLES && PARTICLES.spawnSparks && (element==='electric' || detail.lucky)){
 			PARTICLES.spawnSparks(x*TILE,y*TILE,element==='electric'?'electric':'rare',detail.lucky?8:5);
@@ -1191,6 +1212,70 @@ function updateCombatImpactFx(dt){
 	if(heroBodyRecoilFx.t<heroBodyRecoilFx.life) heroBodyRecoilFx.t+=Math.max(0,Math.min(0.08,dt||0));
 	if(combatScreenShakeFx.t<combatScreenShakeFx.life) combatScreenShakeFx.t+=Math.max(0,Math.min(0.08,dt||0));
 	if(heroCriticalHurtFx.t<heroCriticalHurtFx.life) heroCriticalHurtFx.t+=Math.max(0,Math.min(0.08,dt||0));
+}
+function combatImpactNoise(seed,index){
+	let x=((seed>>>0)+Math.imul((index|0)+1,0x9e3779b1))>>>0;
+	x^=x>>>16; x=Math.imul(x,0x7feb352d); x^=x>>>15; x=Math.imul(x,0x846ca68b); x^=x>>>16;
+	return (x>>>0)/4294967296;
+}
+function drawWeaponMaterialImpactFx(fx,cx,cy,r,k,alpha){
+	const material=fx.weaponMaterial;
+	const weaponClass=fx.weaponClass;
+	if(!material&&!weaponClass) return;
+	const rank=Math.max(0,Math.min(4,fx.weaponPrestige||0));
+	const dir=(fx.dir||1)>=0?1:-1;
+	const settle=Math.max(0,1-k);
+	const slash=fx.palette&&fx.palette.slash?fx.palette.slash:'rgba(218,148,78,';
+	const core=fx.palette&&fx.palette.core?fx.palette.core:'rgba(255,250,224,';
+	ctx.save(); ctx.globalCompositeOperation='lighter';
+	if(weaponClass==='bow'||weaponClass==='harpoon'){
+		const punch=TILE*(0.34+0.12*(fx.power||1))*(0.72+settle*0.28);
+		ctx.globalAlpha=alpha*(0.55+rank*0.07);
+		ctx.strokeStyle=slash+(0.82*alpha).toFixed(3)+')'; ctx.lineWidth=Math.max(1,TILE*(weaponClass==='harpoon'?0.060:0.042));
+		ctx.beginPath(); ctx.moveTo(cx-dir*punch,cy); ctx.lineTo(cx+dir*punch*0.42,cy); ctx.stroke();
+		ctx.fillStyle=core+(0.82*alpha).toFixed(3)+')'; ctx.beginPath();
+		ctx.moveTo(cx+dir*punch*0.60,cy); ctx.lineTo(cx+dir*punch*0.20,cy-TILE*0.12); ctx.lineTo(cx+dir*punch*0.20,cy+TILE*0.12); ctx.closePath(); ctx.fill();
+	}
+	const count=3+(rank>=2?1:0)+(rank>=4?2:0);
+	if(material==='wood'){
+		ctx.strokeStyle=slash+(0.70*alpha).toFixed(3)+')'; ctx.lineWidth=Math.max(1,TILE*0.030);
+		for(let i=0;i<count;i++){
+			const a=-2.35+combatImpactNoise(fx.impactSeed,i)*1.55, len=TILE*(0.16+combatImpactNoise(fx.impactSeed,i+8)*0.25)*settle;
+			ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(a)*len*dir,cy+Math.sin(a)*len); ctx.stroke();
+		}
+	}else if(material==='stone'){
+		ctx.fillStyle=slash+(0.62*alpha).toFixed(3)+')';
+		for(let i=0;i<count;i++){
+			const a=combatImpactNoise(fx.impactSeed,i)*Math.PI*2, rr=r*(0.35+combatImpactNoise(fx.impactSeed,i+9)*0.55), sz=TILE*(0.035+combatImpactNoise(fx.impactSeed,i+17)*0.045)*settle;
+			ctx.save(); ctx.translate(cx+Math.cos(a)*rr,cy+Math.sin(a)*rr); ctx.rotate(a+k*2); ctx.fillRect(-sz,-sz,sz*2,sz*2); ctx.restore();
+		}
+	}else if(material==='obsidian'||material==='diamond'){
+		ctx.fillStyle=core+(0.68*alpha).toFixed(3)+')';
+		for(let i=0;i<count;i++){
+			const a=combatImpactNoise(fx.impactSeed,i)*Math.PI*2+k*(material==='diamond'?1.4:-0.8), rr=r*(0.38+combatImpactNoise(fx.impactSeed,i+11)*0.58), sz=TILE*(0.055+rank*0.007)*settle;
+			ctx.save(); ctx.translate(cx+Math.cos(a)*rr,cy+Math.sin(a)*rr); ctx.rotate(a);
+			ctx.beginPath(); ctx.moveTo(0,-sz*1.5); ctx.lineTo(sz,0); ctx.lineTo(0,sz*1.5); ctx.lineTo(-sz,0); ctx.closePath(); ctx.fill(); ctx.restore();
+		}
+	}else if(material==='iridium'||material==='exotic'){
+		ctx.strokeStyle=slash+(0.66*alpha).toFixed(3)+')'; ctx.lineWidth=Math.max(1,TILE*0.034);
+		for(let i=0;i<2+(rank>=4?1:0);i++){
+			const rr=r*(0.62+i*0.22); const spin=(i%2?-1:1)*(k*2.2+i*0.7);
+			ctx.beginPath(); ctx.arc(cx,cy,rr,spin,spin+Math.PI*(0.52+i*0.12)); ctx.stroke();
+		}
+	}else if(material==='aquatic'){
+		ctx.strokeStyle=core+(0.64*alpha).toFixed(3)+')'; ctx.lineWidth=Math.max(1,TILE*0.028);
+		for(let i=0;i<count;i++){
+			const a=-Math.PI+combatImpactNoise(fx.impactSeed,i)*Math.PI, rr=r*(0.30+combatImpactNoise(fx.impactSeed,i+7)*0.64);
+			ctx.beginPath(); ctx.arc(cx+Math.cos(a)*rr,cy+Math.sin(a)*rr-TILE*0.10*k,TILE*(0.025+i*0.004),0,Math.PI*2); ctx.stroke();
+		}
+	}else if(material==='steel'||material==='arc'){
+		ctx.strokeStyle=core+(0.72*alpha).toFixed(3)+')'; ctx.lineWidth=Math.max(1,TILE*0.025);
+		for(let i=0;i<count;i++){
+			const a=combatImpactNoise(fx.impactSeed,i)*Math.PI*2, len=r*(0.50+combatImpactNoise(fx.impactSeed,i+13)*0.55)*settle;
+			ctx.beginPath(); ctx.moveTo(cx+Math.cos(a)*r*0.18,cy+Math.sin(a)*r*0.18); ctx.lineTo(cx+Math.cos(a)*len,cy+Math.sin(a)*len); ctx.stroke();
+		}
+	}
+	ctx.restore();
 }
 function drawCombatImpactFx(){
 	if(!combatImpactFx.length) return;
@@ -1243,6 +1328,7 @@ function drawCombatImpactFx(){
 				ctx.stroke();
 			}
 		}
+		drawWeaponMaterialImpactFx(fx,cx,cy,r,k,alpha);
 		if(fx.bonusPct>0){
 			const bonusAlpha=alpha*(1-Math.min(1,k*0.85));
 			ctx.strokeStyle=core+(0.72*bonusAlpha).toFixed(3)+')';
@@ -3775,6 +3861,7 @@ const RECIPES=[
 	{id:'arrows_obsidian_bulk', name:'Strzaly obsydianowe x100', cost:{wood:10, obsidian:1}, make(){ inv.arrowObsidian+=100; msg('Strzaly obsydianowe +100'); }},
 	{id:'arrows_diamond_bulk', name:'Strzaly diamentowe x100', cost:{wood:10, diamond:1}, make(){ inv.arrowDiamond+=100; msg('Strzaly diamentowe +100'); }},
 	{id:'arrows_iridium_bulk', name:'Strzaly irydowe x100', cost:{wood:10, iridium:1}, make(){ inv.arrowIridium+=100; msg('Strzaly irydowe +100'); }},
+	{id:'harpoon_bolts', name:'Harpuny x8', cost:{steel:1, wood:1}, make(){ inv.harpoonBolt+=8; msg('Harpuny +8 - ciezkie, odzyskiwalne groty do wyrzutni podwodnej'); }},
 	{id:'toxic_snowballs', name:'Toksyczne snieżki x8', cost:{toxicSnow:2}, make(){ inv.toxicSnowball+=8; msg('Toksyczne snieżki +8 - amunicja do luku; spowalnia i zatruwa cel'); }},
 	{id:'snowballs', name:'Snieżki x8', cost:{snow:2}, make(){ inv.snowball+=8; msg('Snieżki +8 - rzut z reki (klawisz 3); chwilowo spowalniaja cel'); }},
 	{id:'throwing_stones', name:'Kamienie do rzucania x6', cost:{stone:2}, make(){ inv.throwingStone+=6; msg('Kamienie do rzucania +6 - ciezki rzut z reki (klawisz 3)'); }},
@@ -3782,6 +3869,11 @@ const RECIPES=[
 	{id:'gas_grenades', name:'Granaty gazowe x3', cost:{rottenMeat:2, clay:1}, make(){ inv.gasGrenade+=3; msg('Granaty gazowe +3 - trujacy oblok; ogien go detonuje'); }},
 	{id:'sticky_bombs', name:'Lepkie bomby x2', cost:{clay:1, coal:1}, make(){ inv.stickyBomb+=2; msg('Lepkie bomby +2 - przyklejaja sie i wybuchaja po chwili'); }},
 	{id:'obsidian_sword', name:'Miecz obsydianowy', cost:{obsidian:4, wood:2}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Miecz obsydianowy',attackDamage:6,tier:'rare',desc:'Wykuty z hartowanej lawy'}); }},
+	// Bron wodna ma osobna fizyke w weapons.js: pod woda jest szybsza i mocniejsza,
+	// a na powierzchni pozostaje uzyteczna, lecz wyraznie przegrywa ze zwykla bronia.
+	{id:'trident_steel', name:'Trójząb stalowy', cost:{steel:5, wood:1}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',aquaticStyle:'trident',name:'Trójząb stalowy',attackDamage:7,fireRange:3,meleeEffect:'bleed',tier:'rare',desc:'Pod wodą: szybkie pchnięcia, zasięg i siła. Na lądzie jest nieporęczny'}); }},
+	{id:'underwater_crossbow', name:'Kusza podwodna', cost:{wood:4, steel:3, copperWire:1}, make(){ grantCraftedItem({kind:'weapon',weaponType:'bow',aquaticStyle:'crossbow',name:'Kusza podwodna',attackDamage:7,fireCooldown:0.55,tier:'rare',desc:'Pod wodą szybko napina cięciwę i ogranicza opad. Na lądzie jest słabsza'}); }},
+	{id:'harpoon_launcher', name:'Wyrzutnia harpunów', cost:{steel:4, waterPipe:1, copperWire:1}, make(){ grantCraftedItem({kind:'weapon',weaponType:'harpoon',aquaticStyle:'harpoon',name:'Wyrzutnia harpunów',attackDamage:9,fireCooldown:0.68,tier:'rare',desc:'Pod wodą zachowuje pęd i przebija cele. Na lądzie jest ciężka i wolna'}); }},
 	// --- Hand-weapon ladder: the MATERIAL is the identity (weapons.js MELEE_EFFECTS)
 	// — drewno bije, kamień ogłusza, metal tnie do krwi, diament sieje panikę.
 	// Dzidy (fireRange:2) oddają część obrażeń za zasięg; miecze to szczyt materiału.
@@ -3887,6 +3979,7 @@ const CRAFT_RECIPE_META={
 	arrows_obsidian_bulk:{group:'weapons',icon:'🏹',out:'arrowObsidian',amount:100,desc:'Ostre groty z wulkanicznego szkla.'},
 	arrows_diamond_bulk:{group:'weapons',icon:'🏹',out:'arrowDiamond',amount:100,desc:'Droga, precyzyjna amunicja.'},
 	arrows_iridium_bulk:{group:'weapons',icon:'🏹',out:'arrowIridium',amount:100,desc:'Amunicja z materialu meteorytowego.'},
+	harpoon_bolts:{group:'weapons',icon:'🔱',out:'harpoonBolt',amount:8,desc:'Ciezkie groty do wyrzutni; po trafieniu zwykle mozna je odzyskac.'},
 	toxic_snowballs:{group:'weapons',icon:'❄️',out:'toxicSnowball',amount:8,desc:'Snieżki ze skazonego sniegu: cel dostaje spowolnienie i zatrucie.'},
 	snowballs:{group:'weapons',icon:'⚪',out:'snowball',amount:8,desc:'Zwykle snieżki do rzucania: lekkie trafienie i krotki chlod.'},
 	throwing_stones:{group:'weapons',icon:'🪨',out:'throwingStone',amount:6,desc:'Dobrane w dloni kamienie: mocny rzut po stromym luku.'},
@@ -3894,6 +3987,9 @@ const CRAFT_RECIPE_META={
 	gas_grenades:{group:'weapons',icon:'☠️',out:'gasGrenade',amount:3,desc:'Przenosny oblok trucizny - podpal go dla eksplozji.'},
 	sticky_bombs:{group:'weapons',icon:'🧨',out:'stickyBomb',amount:2,desc:'Klei sie do scian i mobow; krotki lont, maly krater.'},
 	obsidian_sword:{group:'weapons',icon:'🗡️',tint:'#7a5cc1',desc:'Craftowany ekwipunek trafia do torby i od razu sie zaklada.'},
+	trident_steel:{group:'weapons',icon:'🔱',tint:'#72c7d8',desc:'Trzytileowy zasieg. Pod woda szybszy i mocniejszy, na ladzie nieporeczny.'},
+	underwater_crossbow:{group:'weapons',icon:'🏹',tint:'#4ea5b8',desc:'Krotki podwodny naciag, maly opad i lekki opor; na powierzchni slabsza od luku.'},
+	harpoon_launcher:{group:'weapons',icon:'🔱',tint:'#718896',desc:'Najmocniejszy podwodny miotacz; harpuny zachowuja ped i przebijaja cele.'},
 	stick_weapon:{group:'weapons',icon:'🪵',tint:'#8b5a2b',desc:'Najtansza bron na pierwsze noce.'},
 	club_wood:{group:'weapons',icon:'🏏',tint:'#a9743c',desc:'Wiecej patykow, wiecej masy w zamachu.'},
 	axe_stone:{group:'weapons',icon:'🪓',tint:'#9aa0a8',desc:'Kamien oszalamia: trafiony wrog staje na chwile.'},
@@ -7663,6 +7759,7 @@ function drawLightingOverlay(sx,sy,viewX,viewY,opts){
 		daylight: currentDaylight(),
 		hero: player,
 		heroLamp: (HERO_LAMP && HERO_LAMP.lightSource) ? HERO_LAMP.lightSource(player) : null,
+		weaponLight: (WEAPONS && WEAPONS.lightSource) ? WEAPONS.lightSource(player) : null,
 		burningAt: (FIRE && FIRE.isBurning) ? FIRE.isBurning : null
 	});
 	if(localLayer) ctx.restore();
@@ -9340,7 +9437,7 @@ function physics(dt){
 	}
 	wasInWater=inWater;
 	// audio reads submersion for splashes, underwater muffle and the bubble bed
-	try{ if(AUDIO && AUDIO.setHeroWater) AUDIO.setHeroWater(inWater, subFrac); }catch(e){}
+	try{ if(AUDIO && AUDIO.setHeroWater) AUDIO.setHeroWater(inWater, subFrac, player.vy); }catch(e){}
 
 	if(inWater){
 		// Water drag scales with immersion and adds subtle variation
@@ -9538,6 +9635,7 @@ function collide(axis, prevC){
 		const minX=Math.floor(player.x-w), maxX=Math.floor(player.x+w), minY=Math.floor(player.y-h), maxY=Math.floor(player.y+h);
 		const wasGround=player.onGround;
 		player.onGround=false;
+		const landingImpact=Math.max(0,Number(player.vy)||0);
 		let target=player.y, hit=false, landed=false, landingTile=null;
 		for(let y=minY;y<=maxY;y++){
 			for(let x=minX;x<=maxX;x++){
@@ -9559,6 +9657,9 @@ function collide(axis, prevC){
 					try{ if(PARTICLES && PARTICLES.spawnEnergyAbsorb) PARTICLES.spawnEnergyAbsorb((landingTile.x+0.5)*TILE,(landingTile.y+0.35)*TILE,player.x*TILE,(player.y-0.25)*TILE,launched.powered?1.25:0.45); }catch(e){}
 					try{ if(AUDIO && AUDIO.play) AUDIO.play(launched.powered?'charge':'jump'); }catch(e){}
 				}
+			}
+			if(landed && landingTile && player.onGround && !wasGround){
+				try{ if(AUDIO && AUDIO.playLanding) AUDIO.playLanding(getTile(landingTile.x,landingTile.y),landingImpact,{x:player.x,y:landingTile.y}); }catch(e){}
 			}
 		}
 		if(player.onGround && !wasGround){
@@ -10048,7 +10149,7 @@ if(fireBtn){
 	function refreshFireBtn(){
 		const it=activeWeaponItem();
 		const type=(it && it.weaponType)||'melee';
-		fireBtn.textContent= type==='bow'? '🏹' : type==='flame'? '🔥' : type==='hose'? '💧' : type==='gas'? '☠️' : type==='electric'? '⚡' : '⚔️';
+		fireBtn.textContent= type==='harpoon'? '🔱' : (it&&it.aquaticStyle==='trident')? '🔱' : type==='bow'? '🏹' : type==='flame'? '🔥' : type==='hose'? '💧' : type==='gas'? '☠️' : type==='electric'? '⚡' : '⚔️';
 		fireBtn.title='Użyj broni'+(it? ' – '+(it.name||it.id):'');
 	}
 	refreshFireBtn();
@@ -11214,6 +11315,8 @@ function draw(){ // Background first
  else if(GHOST_HOST && GHOST_HOST.active()) GHOST_HOST.drawSpirits(ctx,TILE,'body');
  // player body + overlays (back pass for vegetation done earlier)
  drawPlayer();
+ // Exceptional weapons tint the hand-facing side of the finished hero sprite.
+ if(!deathTravelFx && WEAPONS && WEAPONS.drawHeroReflection) WEAPONS.drawHeroReflection(ctx,TILE,player);
  // equipped weapon in hand (melee blades sweep during a swing)
  if(!deathTravelFx && WEAPONS && WEAPONS.drawHeld) WEAPONS.drawHeld(ctx,TILE,player);
  if(NPCS && NPCS.draw) NPCS.draw(ctx,TILE,worldFxVisible);
@@ -11284,6 +11387,9 @@ function draw(){ // Background first
  // Black smoke is a composited density layer: it can overlap ordinary gases and
  // obscures creatures/objects, while lighting still colours the finished scene.
  if(SMOKE && SMOKE.draw) SMOKE.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible);
+ // Coloured weapon bounce is composited into the finished scene, then the
+ // light-field overlay below applies cave occlusion and depth attenuation.
+ if(!deathTravelFx && WEAPONS && WEAPONS.drawWorldLight) WEAPONS.drawWorldLight(ctx,TILE,player);
  // Cave darkness overlay: darkens unlit underground before UI-ish indicators,
  // so the ghost preview, mining progress and fog (final occlusion) stay on top.
  drawLightingOverlay(sx,sy,viewX,viewY,{camX:camRenderX,camY:camRenderY,shake:screenShake});
