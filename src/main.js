@@ -15928,6 +15928,7 @@ updateInventory({noCraftNotify:true}); updateGodBtn(); updateImmunityBtn(); if(M
 // Ghost spectator bridge: the one sanctioned window into main.js internals for
 // ghost_host.js / ghost_client.js — snapshot codec, world access, camera and
 // hero touch-points. Hosting streams THROUGH it; watching replays INTO it.
+const remoteBodyCustScratch={}; // reused by drawHeroAt's per-body customization swap
 MM.ghostBridge={
 	applyGameData:(data,opts)=>applyGameData(data,Object.assign({ignoreCritical:true},opts||{})),
 	buildSave:()=>buildSaveObject({perf:{parts:[]}}),
@@ -16059,7 +16060,8 @@ MM.ghostBridge={
 		player.onGround=st.onGround!==false;
 		// each gid-tagged remote body wears the color its player CHOSE (host-validated,
 		// display-only), or its deterministic gid tint when it never picked one —
-		// either way two players are distinguishable at a glance
+		// either way two players are distinguishable at a glance. The swap reuses one
+		// scratch object: this runs per body per frame, allocation would be a tax.
 		const savedCust=MM.customization;
 		if(typeof st.gid==='string' && st.gid){
 			let color=(typeof st.look==='string' && /^#[0-9a-f]{6}$/i.test(st.look)) ? st.look : null;
@@ -16067,7 +16069,10 @@ MM.ghostBridge={
 				let h=0; for(let i=0;i<st.gid.length;i++) h=(h*31+st.gid.charCodeAt(i))>>>0;
 				color='hsl('+(h%360)+',68%,55%)';
 			}
-			MM.customization=Object.assign({}, savedCust, {outfitStyle:'default', outfitColor:color});
+			const scratch=remoteBodyCustScratch;
+			for(const k of Object.keys(scratch)) delete scratch[k];
+			Object.assign(scratch, savedCust, {outfitStyle:'default', outfitColor:color});
+			MM.customization=scratch;
 		}
 		try{ drawPlayer({remoteBody:true}); }catch(e){ /* one bad frame must not leak the swap */ }
 		finally{ MM.customization=savedCust; for(const k of keys) player[k]=saved[k]; }

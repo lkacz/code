@@ -391,7 +391,11 @@ const ghostClient = (function(){
 		if(pl.t === 'pwat'){
 			// sub-tile water windows around the host hero and the bodies — applied
 			// DISPLAY-ONLY (water.js bounds and sanitizes; a watcher never runs the
-			// solver, so no volume invariant can fight the write)
+			// solver, so no volume invariant can fight the write). Rate-floored: a
+			// hostile host spamming windows must not buy thousands of map ops a frame.
+			const tW = nowMs();
+			if(tW - (timers.pwat || 0) < 200) return;
+			timers.pwat = tW;
 			const W = MMR && MMR.water;
 			if(W && W.ghostApplyPartialsWindow && Array.isArray(pl.w)){
 				for(const w of pl.w.slice(0, 6)){
@@ -666,11 +670,20 @@ const ghostClient = (function(){
 									const pastIdx = seq ? poseLog.findIndex(e => e.seq === seq) : -1;
 									if(pastIdx >= 0){
 										const past = poseLog[pastIdx];
-										poseLog.splice(0, pastIdx); // everything older is answered too
+										// consume THROUGH the match: when pose uplinks stall (background
+										// throttling) the host echoes the same seq every tick — a claim
+										// left in the log would re-apply the same correction forever
+										poseLog.splice(0, pastIdx + 1);
 										const ex = +bx - past.x, ey = +by - past.y;
 										const err = Math.hypot(ex, ey);
 										if(err > 8){ p.x = +bx; p.y = +by; stats.poseSnaps = (stats.poseSnaps || 0) + 1; }
-										else if(err > 0.25){ p.x += ex; p.y += ey; stats.poseFixes = (stats.poseFixes || 0) + 1; }
+										else if(err > 0.25){
+											// current+drift may land inside rock (the echo itself is
+											// clamped claims = valid space) — embed means snap instead
+											const nx = p.x + ex, ny = p.y + ey;
+											if(bridge.solidAt(Math.floor(nx), Math.floor(ny), 'y')){ p.x = +bx; p.y = +by; stats.poseSnaps = (stats.poseSnaps || 0) + 1; }
+											else { p.x = nx; p.y = ny; stats.poseFixes = (stats.poseFixes || 0) + 1; }
+										}
 									} else if(Math.hypot(p.x - bx, p.y - by) > 8){
 										p.x = +bx; p.y = +by; // no matching claim (old host, rotated log): gross fallback
 										stats.poseSnaps = (stats.poseSnaps || 0) + 1;
@@ -1112,7 +1125,13 @@ const ghostClient = (function(){
 	function exitPlay(){
 		if(!play.on) return;
 		play.on = false; play.spawned = false; play.dead = false; play.mineHold = null;
+		play.duelWith = null;
 		remoteHost.has = false;
+		// embodiment state must not leak into the NEXT embodiment: a lingering
+		// mirrored `frozen` would stun the fresh body until decay, and stale pose
+		// claims could mis-correct a fresh spawn
+		poseLog.length = 0;
+		try{ if(MMR && MMR.heroStatus && MMR.heroStatus.clearAll) MMR.heroStatus.clearAll(); }catch(e){ /* fine */ }
 		// pure spectating resumes: the next hero packet re-bases the replica (the
 		// >6-tile hard-snap in the interpolator absorbs the position jump)
 		renderPouch();

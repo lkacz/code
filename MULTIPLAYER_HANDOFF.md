@@ -278,6 +278,15 @@ burn dot lands through hurtBody; a FROZEN body bounces every intent
 ('frozen'); a soaked body conducts electricity ×1.5; chips stream on
 transitions (`pstat`) into the guest's local singleton for HUD chips and
 movement feel. **The polish backlog is now EMPTY.**
+**Critical audit (2026-07-16, all fixes pinned):** exitPlay no longer leaks
+embodiment state into the next embodiment (mirrored statuses/pose log/duel);
+reconciliation consumes the matched claim (a stalled uplink + repeating echo
+used to re-apply the same correction forever) and embed-guards corrections
+(current+drift can land in rock — snap to the echo instead); status chips
+refresh every 2 s while active (the guest decays its mirror locally); the
+client rate-floors pwat windows against a hostile host's frame-budget flood;
+a failed arrow spawn refunds its ammo; drawHeroAt reuses a scratch
+customization object (per-body-per-frame allocation gone).
 **QA driver (2026-07-16):** the world seed is PINNED (777; `--seed=auto`
 restores the roulette) — validated with consecutive full-gauntlet greens; the
 survival shelves are lidded against sky-sand cascades and the weapon-plane

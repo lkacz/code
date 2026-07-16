@@ -1243,8 +1243,9 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 		'the host sanitizes the seq and echoes it in the own pb row');
 	assert.ok(/const pastIdx = seq \? poseLog\.findIndex\(e => e\.seq === seq\) : -1;/.test(clientSrc)
 		&& /if\(err > 8\)\{ p\.x = \+bx; p\.y = \+by; stats\.poseSnaps/.test(clientSrc)
-		&& /else if\(err > 0\.25\)\{ p\.x \+= ex; p\.y \+= ey; stats\.poseFixes/.test(clientSrc),
-		'divergence is measured against the MATCHING claim: exact correction, gross snap, dead zone');
+		&& /if\(bridge\.solidAt\(Math\.floor\(nx\), Math\.floor\(ny\), 'y'\)\)\{ p\.x = \+bx; p\.y = \+by;/.test(clientSrc)
+		&& /else \{ p\.x = nx; p\.y = ny; stats\.poseFixes/.test(clientSrc),
+		'divergence is measured against the MATCHING claim: exact correction (embed-guarded), gross snap, dead zone');
 	assert.ok(/no matching claim \(old host, rotated log\): gross fallback/.test(clientSrc),
 		'a host that echoes nothing still gets the old gross-divergence fallback');
 	assert.ok(/poseLog\.length = 0; \/\/ pre-respawn claims answer nothing anymore/.test(clientSrc),

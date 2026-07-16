@@ -34,6 +34,7 @@ if(MMR && !MMR.ghostDreadAt){
 const CAD = { hero: 66, wfx: 66, mobs: 120, mobsFull: 3000, inv: 120, invFull: 3000, guard: 150, body: 80, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 4000, prog: 1000, pwat: 500 };
 const CHAT_MIN_MS = NET.CHAT.MIN_MS; // per-peer chat floor (shared with the client's local mirror)
 const ACT_POSE_TTL_MS = 6000; // an "active" pose vouches for the watcher this long
+const ELECTRIC_CAUSE = /shock|electric|lightning|laser/; // wet bodies conduct these
 const TILE_RESYNC_LIMIT = 3000;
 const MAX_GHOSTS = 12; // every join serializes a full snapshot — cap the flood surface
 const SNAP_REQ_MIN_MS = 5000; // per-peer floor for needSnap re-sends
@@ -802,7 +803,7 @@ const ghostHost = (function(){
 		// the elemental matrix applies to bodies too: a soaked body conducts (the
 		// hero's own WET_ELECTRIC_MULT), judged from the CAUSE the attacker declared
 		let amt = Math.max(1, Number(amount) || 1);
-		if(b.statusSt && MMR && MMR.heroStatus && MMR.heroStatus.damageInMultOf && /shock|electric|lightning|laser/.test(String(cause || ''))){
+		if(b.statusSt && MMR && MMR.heroStatus && MMR.heroStatus.damageInMultOf && ELECTRIC_CAUSE.test(String(cause || ''))){
 			amt = amt * MMR.heroStatus.damageInMultOf(b.statusSt, 'electric');
 		}
 		b.hp = Math.max(0, b.hp - amt);
@@ -873,6 +874,7 @@ const ghostHost = (function(){
 			b.lastAttackAt = tA;
 			let res = null;
 			try{ res = bridge.ghostPlayAttack({ x: b.x, y: b.y, facing: b.f < 0 ? -1 : 1, gid: entry.gid, duelWith: b.duelWith || null }, spec, ax, ay); }catch(e){ res = null; }
+			if(spec.ammo && !(res && res.ok)) NET.pouchAdd(b.pouch, spec.ammo, 1); // a shot that never flew is refunded
 			const hits = (res && res.hits) | 0;
 			// consensual duel (owner ruling): a MELEE swing that reaches the consenting
 			// partner wounds it too — bodies only, never the host hero, never without
@@ -1139,11 +1141,13 @@ const ghostHost = (function(){
 			if(st.burnDamage > 0 && t >= (b.invulUntil || 0)){
 				hurtBody(s, entry, st.burnDamage, NaN, NaN, 'burn_dot'); // a dot cause must NOT re-apply burn
 			}
-			// stream the chips on TRANSITIONS (a 4-bit signature): the guest mirrors
-			// them into its local hero-status singleton for chips + movement feel
+			// stream the chips on TRANSITIONS (a 4-bit signature) plus a 2 s refresh
+			// while anything is active: the guest DECAYS its mirror locally, so a
+			// continuously re-soaked status would otherwise die on its chips early
 			const sig = ((b.statusSt.wet > 0) ? 1 : 0) | ((b.statusSt.burn > 0) ? 2 : 0) | ((b.statusSt.chill > 0) ? 4 : 0) | ((b.statusSt.frozen > 0) ? 8 : 0);
-			if(sig !== b.lastStatusSig){
+			if(sig !== b.lastStatusSig || (sig !== 0 && t - (b.lastStatusAt || 0) > 2000)){
 				b.lastStatusSig = sig;
+				b.lastStatusAt = t;
 				try{ entry.peer.send({ t: 'pstat', w: +b.statusSt.wet.toFixed(1), c: +b.statusSt.chill.toFixed(1), b: +b.statusSt.burn.toFixed(1), f: +b.statusSt.frozen.toFixed(1) }); }catch(e){ /* fine */ }
 			}
 		}
