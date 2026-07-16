@@ -1302,6 +1302,19 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 		&& /if\(!remoteBody && HERO_LAMP && HERO_LAMP\.isOn\(\)\)/.test(mainSrc)
 		&& /if\(!remoteBody && energyChargeFx\.t>0\.01\)/.test(mainSrc),
 		'the host’s necklace, lamp beam and charge aura never bleed onto remote bodies');
+	// per-body look: every gid-tagged remote body wears its own deterministic tint,
+	// derived locally on each renderer (no wire data, no forgeable claim)
+	assert.ok(/const savedCust=MM\.customization;/.test(mainSrc)
+		&& /'hsl\('\+\(h%360\)\+',68%,55%\)'/.test(mainSrc)
+		&& /finally\{ MM\.customization=savedCust;/.test(mainSrc),
+		'remote bodies wear a gid-derived outfit tint, restored in finally');
+	assert.ok(/gid: entry\.gid \}\);/.test(hostSrc) && /gid: b\.id \}\);/.test(clientSrc),
+		'both body painters tag the gid so every renderer derives the same look');
+	// weapon grants: whitelist-bound, deduped, free (templates are not host stock)
+	const gw = hostSrc.slice(hostSrc.indexOf('function giftWeapon'), hostSrc.indexOf('function giftResource'));
+	assert.ok(/if\(!NET\.validPlayWeapon\(key\)\)/.test(gw) && /if\(te\.body\.weapons\.includes\(key\)\)/.test(gw),
+		'a weapon grant validates the arsenal whitelist and never duplicates');
+	assert.ok(!/pouch/.test(gw), 'granting a weapon touches no pouch on either side');
 }
 
 console.log('ghost-sim: all assertions passed');

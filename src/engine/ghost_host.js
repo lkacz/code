@@ -1478,7 +1478,7 @@ const ghostHost = (function(){
 				if(!b.disp) b.disp = { x: b.x, y: b.y };
 				b.disp.x += (b.x - b.disp.x) * ease;
 				b.disp.y += (b.y - b.disp.y) * ease;
-				if(wantBody && bridge.drawHeroAt) bridge.drawHeroAt({ x: b.disp.x, y: b.disp.y, vx: b.vx, vy: b.vy, facing: b.f, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H });
+				if(wantBody && bridge.drawHeroAt) bridge.drawHeroAt({ x: b.disp.x, y: b.disp.y, vx: b.vx, vy: b.vy, facing: b.f, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, gid: entry.gid });
 				if(wantText) paintBodyTag(ctx, TILE, b.disp.x, b.disp.y, entry.name || 'Duch', b, viewPrefs.bubbles ? entry.lastChat : null);
 				continue;
 			}
@@ -1782,13 +1782,14 @@ const ghostHost = (function(){
 		// to an embodied guest's pouch; guests cannot move items between themselves
 		if(entry.body){
 			const gift = styledButton('🎁', 'border:none;border-radius:6px;background:rgba(74,160,90,.45);color:#fff;font-size:10px;font-weight:700;padding:3px 7px;cursor:pointer;');
-			gift.title = 'Podaruj temu graczowi surowce z twojego ekwipunku (np. "stone 10")';
+			gift.title = 'Podaruj surowce ("stone 10") albo broń z arsenału ("spear")';
 			gift.addEventListener('click', () => {
-				const raw = (typeof prompt === 'function') ? prompt('Co podarować? (np. "stone 10")', 'stone 5') : null;
+				const raw = (typeof prompt === 'function') ? prompt('Co podarować? (np. "stone 10" albo "spear")', 'stone 5') : null;
 				if(!raw) return;
-				const m = String(raw).trim().match(/^([a-zA-Z_]+)\s+(\d{1,3})$/);
-				if(!m){ try{ bridge.msg('🎁 Format: "surowiec ilość", np. "stone 10"'); }catch(e){ /* fine */ } return; }
-				giftResource(entry.gid, m[1], +m[2]);
+				const m = String(raw).trim().match(/^([a-zA-Z_]+)(?:\s+(\d{1,3}))?$/);
+				if(!m){ try{ bridge.msg('🎁 Format: "surowiec ilość" albo nazwa broni'); }catch(e){ /* fine */ } return; }
+				if(m[2] === undefined) giftWeapon(entry.gid, m[1]);
+				else giftResource(entry.gid, m[1], +m[2]);
 			});
 			row.append(gift);
 		}
@@ -1797,6 +1798,23 @@ const ghostHost = (function(){
 	// Host gifting (owner ruling): host-authoritative end to end — the resource must
 	// really leave the HOST inventory (bridge seam validates key + count) before it
 	// lands in the guest pouch. No guest intent exists for this; only the host gives.
+	// Weapon grants are free (the arsenal is a template registry, not host stock)
+	// but stay whitelist-bound and deduped — the host DECIDES, it cannot invent.
+	function giftWeapon(gid, key){
+		const s = session;
+		if(!s || !bridge) return false;
+		if(!NET.validPlayWeapon(key)){ try{ bridge.msg('🎁 Nie ma takiej broni: ' + String(key).slice(0, 16)); }catch(e){ /* fine */ } return false; }
+		let te = null;
+		for(const e of entries()){ if(e.gid === gid && e.body && !e.body.dead){ te = e; break; } }
+		if(!te){ try{ bridge.msg('🎁 Ten widz nie ma teraz bohatera w grze'); }catch(e){ /* fine */ } return false; }
+		if(te.body.weapons.includes(key)){ try{ bridge.msg('🎁 ' + (te.name || 'Duch') + ' już to ma'); }catch(e){ /* fine */ } return false; }
+		te.body.weapons.push(key);
+		keepBody(te);
+		sendVitals(s, te);
+		try{ te.peer.send({ t: 'gift', weapon: key, label: NET.PLAY_WEAPONS[key].label }); }catch(e){ /* fine */ }
+		try{ bridge.msg('🎁 Wręczono broń: ' + NET.PLAY_WEAPONS[key].label + ' → ' + (te.name || 'Duch')); }catch(e){ /* fine */ }
+		return true;
+	}
 	function giftResource(gid, key, n){
 		const s = session;
 		if(!s || !bridge) return false;
@@ -1910,7 +1928,7 @@ const ghostHost = (function(){
 		perks.textContent = 'Uprawnienia: „tylko ogląda” = sama obecność (płoszy stwory, wzmacnia). „+ czat” dopuszcza krótkie wiadomości i wskazywanie miejsc 📍 (filtr wulgaryzmów). „+ czat i wpływ” odblokowuje doping, błogosławieństwa i moce (popłoch/mróz/grom). 🛠 mianuje asystentów (może być kilku — gdy rywalizują o surowce, wygrywa szybszy), z zatwierdzaniem ich propozycje czekają na twoje Zatwierdź. Widok: „duchy/dymki/działania” chowają awatary, teksty i efekty (👁/🙈 przy widzu chowa jednego); Enter = szybka wiadomość do widzów.';
 	}
 
-	const api = { wire, start, stop, active, link, frame, metrics, drawSpirits, paintSpirit, paintChatBubble, paintBodyTag, say, setViewerMode, banViewer, setAssistant, setDefaultMode, setApprovalMode, setViewPref, setViewerHidden, approveAssist, rejectAssist, socialBoost: updateSocialBoost, openPanel: () => togglePanel(true), giftResource,
+	const api = { wire, start, stop, active, link, frame, metrics, drawSpirits, paintSpirit, paintChatBubble, paintBodyTag, say, setViewerMode, banViewer, setAssistant, setDefaultMode, setApprovalMode, setViewPref, setViewerHidden, approveAssist, rejectAssist, socialBoost: updateSocialBoost, openPanel: () => togglePanel(true), giftResource, giftWeapon,
 		// QA seam: the LIVE body object for a gid (host page only — the host owns every
 		// body anyway; this just spares QA the private-scope gymnastics)
 		_debugBody: (gid) => { if(!session) return null; for(const e of entries()) if(e.gid === gid) return e.body; return null; } };

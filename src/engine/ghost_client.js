@@ -390,7 +390,8 @@ const ghostClient = (function(){
 			return;
 		}
 		if(pl.t === 'gift'){
-			bridge.msg('🎁 Gospodarz podarował: ' + String(pl.label || pl.key || '?').slice(0, 24) + ' ×' + (Number(pl.n) || 0));
+			if(pl.weapon) bridge.msg('🎁 Gospodarz wręcza ci broń: ' + String(pl.label || pl.weapon).slice(0, 24));
+			else bridge.msg('🎁 Gospodarz podarował: ' + String(pl.label || pl.key || '?').slice(0, 24) + ' ×' + (Number(pl.n) || 0));
 			return;
 		}
 		if(pl.t === 'pdmg'){
@@ -871,7 +872,7 @@ const ghostClient = (function(){
 		for(const b of bodies){
 			if(Number.isFinite(b.tx)){ b.x += (b.tx - b.x) * ease; b.y += (b.ty - b.y) * ease; }
 			if(b.dead) continue; // their ghost spirit shows via the presence relay instead
-			if(wantBody && bridge.drawHeroAt) bridge.drawHeroAt({ x: b.x, y: b.y, vx: b.vx, vy: b.vy, facing: b.f, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H });
+			if(wantBody && bridge.drawHeroAt) bridge.drawHeroAt({ x: b.x, y: b.y, vx: b.vx, vy: b.vy, facing: b.f, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, gid: b.id });
 			if(wantText && tagPainter) tagPainter(ctx, TILE, b.x, b.y, b.name || 'Gracz', b, null);
 		}
 		for(const g of others){

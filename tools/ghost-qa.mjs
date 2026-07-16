@@ -1483,6 +1483,10 @@ async function main(){
 		})()`);
 		if(!(gift.ok === true && gift.bad === false && gift.inv1 === gift.inv0 - 7)) throw new Error('gifting accounting broke: ' + JSON.stringify(gift));
 		await ghost4.poll(`MM.ghostClient.metrics().play.pouch.stone || 0`, v => v >= 7, 'the gift lands in the guest pouch', 30, 250);
+		// weapon grant: whitelist-bound, deduped, free — and it reaches the arsenal chips
+		const wgift = await host.eval(`(()=>({ ok: MM.ghostHost.giftWeapon('${duelists.g4}', 'spear'), dup: MM.ghostHost.giftWeapon('${duelists.g4}', 'spear'), bogus: MM.ghostHost.giftWeapon('${duelists.g4}', 'bazooka') }))()`);
+		if(!(wgift.ok === true && wgift.dup === false && wgift.bogus === false)) throw new Error('weapon gifting broke: ' + JSON.stringify(wgift));
+		await ghost4.poll(`MM.ghostClient.metrics().play.weapons.includes('spear') ? 1 : 0`, v => v === 1, 'the granted spear reaches the guest arsenal', 30, 250);
 		// demotion forfeits the duel on BOTH ends
 		await host.eval(`MM.ghostHost.setViewerMode('${duelists.g4}', 'watch')`);
 		await ghost.poll(`MM.ghostClient.metrics().play.duelWith === null ? 1 : 0`, v => v === 1, 'demotion forfeits the duel', 30, 250);

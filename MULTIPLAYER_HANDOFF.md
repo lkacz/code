@@ -229,12 +229,18 @@ guests get none either unless the game grows one), status effects
   pouch is credited. Guests cannot move items between themselves.
 - **Fog = shared.** The standing contract (guest replica reveals through the one
   normal reveal path into the host-mirrored fog) is now pinned; no per-guest fog.
-**Cosmetics (first slice, 2026-07-16):** `drawPlayer` now honors `remoteBody` —
-the host's necklace, lamp beam and energy-charge aura no longer bleed onto
-remote co-op bodies (pinned). The base customization palette still comes from
-the host; streaming per-guest palettes stays open. **Still open (polish):**
-water sub-tile partials around bodies, smooth position reconciliation (today:
->6–8-tile hard snap), per-guest palettes, duel arrows, gift-a-weapon.
+**Cosmetics (2026-07-16):** `drawPlayer` honors `remoteBody` — the host's
+necklace, lamp beam and charge aura no longer bleed onto remote bodies — and
+every gid-tagged body wears its OWN deterministic outfit tint (derived locally
+on each renderer from the gid: no wire data, no forgeable claim), so players
+are distinguishable at a glance. Streaming the guest's REAL customization can
+replace the derivation without touching callers. **Weapon gifting (2026-07-16):**
+`MM.ghostHost.giftWeapon(gid, key)` — whitelist-bound, deduped, free (templates
+are not host stock), never touches a pouch; the 🎁 prompt takes a bare weapon
+name ("spear") alongside "stone 10". **Still open (polish):** water sub-tile
+partials around bodies, smooth position reconciliation (needs echo-timestamp
+lag compensation — a naive ease toward the lagged echo makes movement rubbery),
+streamed per-guest customization, duel arrows.
 **QA driver (2026-07-16):** the world seed is PINNED (777; `--seed=auto`
 restores the roulette) — validated with consecutive full-gauntlet greens; the
 survival shelves are lidded against sky-sand cascades and the weapon-plane

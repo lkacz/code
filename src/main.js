@@ -16057,8 +16057,16 @@ MM.ghostBridge={
 		if(Number.isFinite(st.w)) player.w=st.w;
 		if(Number.isFinite(st.h)) player.h=st.h;
 		player.onGround=st.onGround!==false;
+		// each gid-tagged remote body wears its OWN deterministic outfit tint, so two
+		// players are distinguishable at a glance (display-only; streaming the guest's
+		// real customization can replace this derivation without touching callers)
+		const savedCust=MM.customization;
+		if(typeof st.gid==='string' && st.gid){
+			let h=0; for(let i=0;i<st.gid.length;i++) h=(h*31+st.gid.charCodeAt(i))>>>0;
+			MM.customization=Object.assign({}, savedCust, {outfitStyle:'default', outfitColor:'hsl('+(h%360)+',68%,55%)'});
+		}
 		try{ drawPlayer({remoteBody:true}); }catch(e){ /* one bad frame must not leak the swap */ }
-		finally{ for(const k of keys) player[k]=saved[k]; }
+		finally{ MM.customization=savedCust; for(const k of keys) player[k]=saved[k]; }
 	},
 	resourceLabel:(k)=>RES_LABEL[k]||k,
 	// Guest mining: the same whitelist and lifecycle hooks the companion diggers use
