@@ -16564,6 +16564,9 @@ function runHeroStep(dt,ts){
 	// the REAL update here would run impact chains on replica arrows and forward
 	// spurious damage for shots the guest never fired
 	if(WEAPONS && WEAPONS.ghostStepFx) WEAPONS.ghostStepFx(dt);
+	// fishing is a HERO system: reads replica water, never writes a tile, and the
+	// catch lands in the guest's own inventory (its local truth) — full parity free
+	if(FISHING && FISHING.update) FISHING.update(dt, player, getTile);
 	updateMining(dt);
 	updateHeroEnergy(dt); updateHeroLamp(dt); updateSpecialVision(dt); updateTreasureCompass(dt);
 	updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);

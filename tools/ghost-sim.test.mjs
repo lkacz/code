@@ -797,6 +797,8 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	assert.ok(/if\(WEAPONS && WEAPONS\.ghostStepFx\) WEAPONS\.ghostStepFx\(dt\);/.test(mainSrc)
 		&& !/function runHeroStep[\s\S]{0,1400}WEAPONS\.update\(/.test(mainSrc),
 		'the hero frame steps arrows cosmetically only — the real impact chains never run on replica arrows');
+	assert.ok(/function runHeroStep[\s\S]{0,1600}FISHING\.update\(dt, player, getTile\);/.test(mainSrc),
+		'fishing runs for hero guests — reads replica water, writes nothing, catch is guest-local');
 	// projectiles: ONE chokepoint in pushArrow forwards the shot; the host flies
 	// the real arrow with clamped velocity/damage and a whitelisted flag set
 	const wsrcH = readFileSync(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
