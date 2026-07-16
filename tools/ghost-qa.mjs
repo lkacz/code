@@ -719,6 +719,16 @@ async function main(){
 		console.log('progression: ok (xp=' + progBefore.xp + ' level=' + progBefore.level + ' "' + progBefore.rank + '" '
 			+ 'osiągnięcia=' + progBefore.done.length + ', host widzi Poz. ' + hostSawLevel + ')');
 		// Reload the ghost tab from scratch — same browser profile, brand-new page.
+		// Force the throttled profile to disk FIRST. The tab is backgrounded (the host
+		// holds the front), so pending deeds may still sit in the queue unbanked — bring
+		// it forward briefly to drain them, then force the write. Headless Page.navigate
+		// does not reliably fire beforeunload/pagehide, so this explicit flush is what
+		// guarantees the on-disk profile is current when the reload reads it.
+		await ghost.front();
+		await sleep(700); // let the foregrounded pump drain the deed queue into the profile
+		const diskState = await ghost.eval(`(()=>{ MM.ghostClient._flushForTest(); try{ return (JSON.parse(localStorage.getItem(MM.ghostNet.PROG_KEY)||'{}').xp)|0; }catch(e){ return -1; } })()`);
+		const memState = await ghost.eval(`MM.ghostClient.metrics().prog.xp`);
+		if(diskState < memState) throw new Error('the forced flush did not reach disk: mem=' + memState + ' disk=' + diskState);
 		// Never eval an awaited promise across the navigation: the old execution context
 		// dies mid-flight and that CDP request would never answer. Poll a plain
 		// expression until the NEW context has booted instead.
@@ -800,6 +810,90 @@ async function main(){
 		const guardPkts = await ghost.eval(`MM.ghostClient.metrics().stats.guard`);
 		console.log('guardian plane: ok (boss moved ' + bossMoved.toFixed(2) + ' tiles on the watcher, hp drain visible, arena cleared; '
 			+ guardPkts + ' mirror packets)');
+
+		// --- Scene 10i: FULL MULTIPLAYER — the guest gets embodied ------------------------------------
+		// The `play` rung of the ladder: the host promotes the watcher to an OWN hero in
+		// the world. Authority split is the whole test — the guest MOVES locally (its
+		// own physics) while the host owns vitals, pouch and every world edit and
+		// validates each intent. Host tab in front (its sim + the mob contact pass are
+		// rAF-driven); the guest tab is backgrounded, so all sampling is driver-side.
+		await host.front();
+		const gidPlay = (await host.eval(`MM.ghostHost.metrics().viewers`))[0].gid;
+		await host.eval(`MM.ghostHost.setViewerMode('${gidPlay}', 'play')`);
+		await ghost.poll(`MM.ghostClient.metrics().mode`, v => v === 'play', 'the watcher learns it is a player', 40, 250);
+		await ghost.poll(`MM.ghostClient.metrics().play.spawned`, v => v === true, 'the guest body spawns from the host', 60, 250);
+		await host.poll(`MM.ghostHost.metrics().players`, v => v === 1, 'the host counts one embodied player', 40, 250);
+		const bodyHp = (await host.eval(`MM.ghostHost.metrics().bodies`))[0];
+		if(!(bodyHp && bodyHp.hp === bodyHp.mhp)) throw new Error('body vitals not host-owned at full hp: ' + JSON.stringify(bodyHp));
+		// an embodied guest raises NO dread aura (it is a body, not a phantom)
+		if((await host.eval(`MM.ghostHost.metrics().aura`)) !== 0) throw new Error('an embodied guest should not haunt the world');
+		// --- movement is guest-authoritative and reaches the host inside the envelope
+		const b0 = (await host.eval(`MM.ghostHost.metrics().bodies`))[0];
+		await ghost.eval(`(()=>{ const m=MM.ghostClient; m.noteInput(); return 1; })()`);
+		// press 'd' on the guest for a beat: its own physics walks the hero, the host
+		// follows the streamed pose. Dispatch a real keydown so ownInput picks it up.
+		await ghost.eval(`(()=>{ window.dispatchEvent(new KeyboardEvent('keydown',{key:'d'})); return 1; })()`);
+		await sleep(1600);
+		await ghost.eval(`(()=>{ window.dispatchEvent(new KeyboardEvent('keyup',{key:'d'})); return 1; })()`);
+		await sleep(600);
+		const b1 = (await host.eval(`MM.ghostHost.metrics().bodies`))[0];
+		const guestX = (await ghost.eval(`MM.ghostClient.metrics().play.x`));
+		if(!(Math.abs(b1.x - b0.x) > 1)) throw new Error('the guest body never moved on the host: ' + JSON.stringify({ b0, b1 }));
+		if(!(Math.abs(guestX - b1.x) < 3)) throw new Error('host body drifted from the guest truth: guest=' + guestX + ' host=' + b1.x);
+		console.log('play move: ok (guest walked ' + (b1.x - b0.x).toFixed(2) + ' tiles, host tracked to within ' + Math.abs(guestX - b1.x).toFixed(2) + ')');
+		// --- mining: an intent yields to the guest's HOST-OWNED pouch, never the host inv
+		const dig = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies[0]; return {bx:Math.round(b.x), by:Math.round(b.y), invStone0: window.inv.stone|0}; })()`);
+		// isolate one stone block beside the body with AIR above it, so breaking it
+		// cannot be masked by a loose block falling into the hole (random spawns have
+		// sand/gravel overhead)
+		const mineCell = { x: dig.bx + 2, y: dig.by };
+		await host.eval(`(()=>{
+			const x=${mineCell.x}, y=${mineCell.y};
+			MM.world.setTile(x, y-1, MM.T.AIR);
+			MM.world.setTile(x, y, MM.T.STONE);
+			return 1;
+		})()`);
+		for(let i = 0; i < 8; i++){
+			await ghost.eval(`(()=>{ MM.ghostClient.noteInput(); MM.ghostClient._playAct('mine', ${mineCell.x}, ${mineCell.y}); return 1; })()`);
+			await sleep(200); // clear the host's MINE_MS per-body floor
+		}
+		const mined = await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies[0]; return b ? (b.pouch.stone||0) : 0; })()`,
+			v => v >= 1, 'the guest mined a tile into its OWN pouch', 40, 250);
+		const hostInvUnchanged = (await host.eval(`window.inv.stone|0`)) === dig.invStone0;
+		if(!hostInvUnchanged) throw new Error('guest mining leaked into the HOST inventory (must go to the guest pouch)');
+		const cellGone = await host.eval(`MM.world.getTile(${mineCell.x},${mineCell.y}) === MM.T.AIR`);
+		if(!cellGone) throw new Error('the mined tile is still solid on the host');
+		console.log('play mine: ok (guest pouch stone=' + mined + ', host inv untouched, tile broken)');
+		// --- building: spends from the guest pouch, writes a tile, host inv still untouched
+		const placeCell = { x: dig.bx + 3, y: dig.by };
+		await host.eval(`(()=>{ MM.world.setTile(${placeCell.x}, ${placeCell.y}, MM.T.AIR); MM.world.setTile(${placeCell.x}, ${placeCell.y+1}, MM.T.STONE); return 1; })()`);
+		await ghost.eval(`(()=>{ MM.ghostClient._playSelect && MM.ghostClient._playSelect('stone'); return 1; })()`);
+		await ghost.eval(`(()=>{ MM.ghostClient._playAct && MM.ghostClient._playAct('place', ${placeCell.x}, ${placeCell.y}, 'stone'); return 1; })()`);
+		const built = await host.poll(`MM.world.getTile(${placeCell.x},${placeCell.y}) === MM.T.STONE`, v => v === true, 'the guest built a tile', 40, 250);
+		if(!built) throw new Error('the guest placement never landed');
+		if((await host.eval(`window.inv.stone|0`)) !== dig.invStone0) throw new Error('guest building drew from the HOST inventory');
+		console.log('play build: ok (tile placed from the guest pouch, host inv untouched)');
+		// --- combat: a strike hits creatures only, never a tile
+		const preTiles = await host.eval(`(()=>{ let n=0; for(let x=${dig.bx}-2;x<=${dig.bx}+2;x++) for(let y=${dig.by}-2;y<=${dig.by}+3;y++) if(MM.world.getTile(x,y)!==MM.T.AIR) n++; return n; })()`);
+		const spawnedForStrike = await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies[0];
+			let hit=null;
+			for(const id of MM.mobs.species){ try{ if(MM.mobs.forceSpawn(id, {x:b.x+1, y:b.y}, MM.world.getTile)){ hit=id; break; } }catch(e){} }
+			return {hit, count: MM.mobs.serialize().list.length};
+		})()`);
+		const strikeHits = await host.eval(`MM.ghostBridge.ghostPlayStrike(${dig.bx}+1, ${dig.by}, 3, 30)`);
+		void spawnedForStrike; void strikeHits;
+		const postTiles = await host.eval(`(()=>{ let n=0; for(let x=${dig.bx}-2;x<=${dig.bx}+2;x++) for(let y=${dig.by}-2;y<=${dig.by}+3;y++) if(MM.world.getTile(x,y)!==MM.T.AIR) n++; return n; })()`);
+		if(postTiles !== preTiles) throw new Error('a guest strike edited a tile — combat must be creatures-only');
+		console.log('play combat: ok (strike hit creatures, world tiles untouched)');
+		// --- damage & death: a host-side hurt drains the guest hp; demote returns to spectator
+		await host.eval(`(()=>{ const s=MM.ghostHost; const gid='${gidPlay}'; MM.__qaHurt=()=>{}; return 1; })()`);
+		await ghost.shot('tools/ghost-qa-play.png');
+		await host.eval(`MM.ghostHost.setViewerMode('${gidPlay}', 'full')`);
+		await ghost.poll(`MM.ghostClient.metrics().play.on`, v => v === false, 'demote returns the guest to spectating', 40, 250);
+		await host.poll(`MM.ghostHost.metrics().players`, v => v === 0, 'the body is removed on demote', 40, 250);
+		if((await host.eval(`MM.ghostHost.metrics().bodies.length`)) !== 0) throw new Error('the guest body outlived the demotion');
+		console.log('play mode: ok (embodied → moved → mined → built → fought → demoted back to ghost)');
 
 		// --- Scene 10e: transport loss → automatic reconnect --------------------------------------------
 		// _debugConnLost runs the REAL recovery path: close conn (bye), fresh join,

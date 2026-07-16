@@ -7737,6 +7737,7 @@ const mobs = (function(){
     resolveMobBodyCollisions(getTile);
     updateProjectiles(dt, player, getTile, setTile);
     updateLasers(dt);
+    coopContactPass(now, nowEpoch);
     updateMobDeathFx(dt,getTile);
     metrics.projectiles = mobProjectiles.length;
     metrics.lasers = mobLasers.length;
@@ -7780,6 +7781,30 @@ const mobs = (function(){
     }
   }
 
+
+  // Embodied co-op guests (ghost play mode): hostile creatures hurt a guest body
+  // they touch, exactly like brushing the hero. The bodies live in MM.coopBodies
+  // (published by ghost_host, empty/absent in solo play and the Node sims — the
+  // early return keeps this pass at zero cost there). Damage lands through the
+  // body's own hurt() callback, which owns the i-frames and the vitals stream;
+  // full AI retargeting is a known follow-up — creatures still HUNT the host.
+  function coopContactPass(now, nowEpoch){
+    const bodies = (typeof MM!=='undefined' && MM.coopBodies) || null;
+    if(!bodies || !bodies.length) return;
+    for(const m of mobs){
+      if(!validMobState(m) || m.hp<=0) continue;
+      const spec=SPECIES[m.id];
+      if(!spec || !(spec.dmg>0)) continue;
+      if(!isMobHostile(m,nowEpoch) || isMobPacified(m,now) || hasStatus(m,'blind') || isGhostSpooked(m)) continue;
+      const mw=(spec.body&&spec.body.w||0.8)/2, mh=(spec.body&&spec.body.h||0.8)/2;
+      for(const b of bodies){
+        if(!b || b.dead || typeof b.hurt!=='function' || !finiteNum(b.x) || !finiteNum(b.y)) continue;
+        if(Math.abs(m.x-b.x) < mw+(b.w||0.6)/2 && Math.abs(m.y-b.y) < mh+(b.h||0.9)/2){
+          b.hurt(spec.dmg*(m.dmgMult||1), m.x, m.y, 'mob');
+        }
+      }
+    }
+  }
 
   function mobAttackVisual(m,spec,now){
     if(!m || m.id==='ZLOTY') return null;

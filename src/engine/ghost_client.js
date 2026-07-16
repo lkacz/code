@@ -10,6 +10,8 @@
 // just a camera: follow mode tracks the hero, any pan key/drag detaches into
 // free flight, F snaps back. The only uplink: camera pose + rate-limited buffs.
 import { ghostNet as NET } from './ghost_net.js';
+import { MOVE, T } from '../constants.js';
+import { applyHorizontalMovement } from './movement.js';
 
 const MMR = (typeof window !== 'undefined' && window.MM) ? window.MM : null;
 const WATCH = (typeof location !== 'undefined') ? NET.parseWatch(location.search) : null;
@@ -77,6 +79,15 @@ const ghostClient = (function(){
 	let lastPingSentAt = 0;
 	let prog = NET.createProgress(); // the watcher's own career (persisted in THEIR browser)
 	let progPanel = null;
+	// --- play mode (embodiment): the ghost gains an OWN hero -------------------------
+	// The local `player` object flips roles: replica of the host hero → the guest's
+	// own body, simulated locally (movement feels instant) while the HOST owns the
+	// vitals, the pouch and every world edit. The host hero moves into remoteHost
+	// and is painted like any other remote body.
+	const play = { on: false, spawned: false, dead: false, sel: null, pouch: {}, mineHold: null, prog: 0, progAt: null, jumpBufT: 0, coyoteT: 0 };
+	const remoteHost = { has: false, x: 0, y: 0, vx: 0, vy: 0, f: 1, dx: 0, dy: 0 };
+	const bodies = []; // fellow embodied guests, eased like the spirits
+	let timersPlay = { pose: 0, mine: 0 };
 
 	function nowMs(){ return Date.now(); }
 	// Remote strings (host name, fellow-ghost names) render into innerHTML in the
@@ -263,9 +274,63 @@ const ghostClient = (function(){
 		if(pl.t === 'perm'){
 			if(NET.validPermissionMode(pl.mode)){
 				mode = pl.mode;
-				bridge.msg(mode === 'watch' ? '👁 Gospodarz: możesz teraz tylko oglądać' : mode === 'chat' ? '💬 Gospodarz: możesz pisać, bez wpływu na grę' : '⚡ Gospodarz: pełne uprawnienia ducha');
+				if(mode === 'play') enterPlay();
+				else if(play.on) exitPlay();
+				bridge.msg(mode === 'watch' ? '👁 Gospodarz: możesz teraz tylko oglądać'
+					: mode === 'chat' ? '💬 Gospodarz: możesz pisać, bez wpływu na grę'
+					: mode === 'play' ? '🎮 Gospodarz wciela cię do gry!'
+					: '⚡ Gospodarz: pełne uprawnienia ducha');
 				updateBar();
 			}
+			return;
+		}
+		if(pl.t === 'pvit'){
+			// host-owned vitals & pouch — the ONLY source of truth for both
+			if(play.on){
+				if(Number.isFinite(pl.hp)) bridge.player.hp = Math.max(0, pl.hp);
+				if(Number.isFinite(pl.mhp) && pl.mhp > 0) bridge.player.maxHp = pl.mhp;
+				play.dead = !!pl.dead;
+			}
+			play.pouch = {};
+			if(pl.pouch && typeof pl.pouch === 'object'){
+				for(const k of Object.keys(pl.pouch).slice(0, 40)){
+					const n = Number(pl.pouch[k]);
+					if(k && k !== '__proto__' && Number.isFinite(n) && n > 0) play.pouch[k.slice(0, 24)] = Math.min(999, Math.floor(n));
+				}
+			}
+			if(play.sel && !(play.pouch[play.sel] > 0)) play.sel = null;
+			renderPouch();
+			return;
+		}
+		if(pl.t === 'pdmg'){
+			// advisory knockback: the host decided the hit, the impulse lands on the
+			// locally simulated body so it FEELS like a hit
+			if(play.on && play.spawned){
+				const p = bridge.player;
+				if(Number.isFinite(pl.kbx)) p.vx += Math.max(-8, Math.min(8, pl.kbx));
+				if(Number.isFinite(pl.kby)) p.vy += Math.max(-8, Math.min(8, pl.kby));
+				if(Number.isFinite(pl.hp)) p.hp = Math.max(0, pl.hp);
+			}
+			return;
+		}
+		if(pl.t === 'prespawn'){
+			if(play.on && Number.isFinite(pl.x) && Number.isFinite(pl.y)){
+				const p = bridge.player;
+				p.x = +pl.x; p.y = +pl.y; p.vx = 0; p.vy = 0;
+				play.dead = false;
+				bridge.snapCameraToPlayer();
+				bridge.msg('✨ Odrodzenie!');
+			}
+			return;
+		}
+		if(pl.t === 'pactAck'){
+			if(pl.a === 'mine'){
+				if(pl.ok && Number.isFinite(pl.progress) && pl.progress < 1){
+					play.prog = pl.progress;
+					play.progAt = (Number.isFinite(pl.x) && Number.isFinite(pl.y)) ? { x: pl.x, y: pl.y } : null;
+				} else { play.prog = 0; play.progAt = null; }
+			}
+			if(!pl.ok && pl.reason === 'cost') bridge.msg('🎒 Brak surowca w sakwie — wykop go najpierw');
 			return;
 		}
 		if(pl.t === 'deed'){
@@ -357,10 +422,18 @@ const ghostClient = (function(){
 	function applySnapshot(json){
 		let data = null;
 		try{ data = JSON.parse(json); }catch(e){ console.warn('ghost snapshot parse failed', e); return; }
+		// an embodied guest keeps ITS hero across a resync: applyGameData rewrites the
+		// player object with the HOST hero's saved state, which is the replica's job,
+		// not ours — capture and re-apply our body afterwards
+		const keep = (play.on && play.spawned) ? {
+			x: bridge.player.x, y: bridge.player.y, vx: bridge.player.vx, vy: bridge.player.vy,
+			facing: bridge.player.facing, hp: bridge.player.hp, maxHp: bridge.player.maxHp
+		} : null;
 		try{
 			const ok = bridge.applyGameData(data, { ignoreCritical: true });
 			if(!ok){ showVeil('Świat gospodarza nie dał się wczytać.'); return; }
 		}catch(e){ console.warn('ghost snapshot apply failed', e); return; }
+		if(keep) Object.assign(bridge.player, keep);
 		stats.snapsApplied++;
 		heroTarget.has = false;
 		reconnects = 0; // a completed join proves the path — future blips get a fresh budget
@@ -394,6 +467,15 @@ const ghostClient = (function(){
 					stats.tileMsgs++; stats.tilesApplied += pl.d.length / 3;
 				} else if(pl.t === 'hero'){
 					if(!Number.isFinite(pl.x) || !Number.isFinite(pl.y)) continue; // NaN would poison the replica
+					if(play.on){
+						// embodied: the host hero is a REMOTE body — its vitals must not
+						// clobber our own (the local player carries OUR host-owned hp now)
+						remoteHost.has = true;
+						remoteHost.x = pl.x; remoteHost.y = pl.y;
+						remoteHost.vx = Number.isFinite(pl.vx) ? pl.vx : 0; remoteHost.vy = Number.isFinite(pl.vy) ? pl.vy : 0;
+						remoteHost.f = pl.f < 0 ? -1 : 1;
+						continue;
+					}
 					heroTarget.x = pl.x; heroTarget.y = pl.y;
 					heroTarget.vx = Number.isFinite(pl.vx) ? pl.vx : 0; heroTarget.vy = Number.isFinite(pl.vy) ? pl.vy : 0;
 					heroTarget.at = nowMs(); heroTarget.has = true;
@@ -402,6 +484,40 @@ const ghostClient = (function(){
 					if(Number.isFinite(pl.hp)) p.hp = pl.hp;
 					if(Number.isFinite(pl.mhp) && pl.mhp > 0) p.maxHp = pl.mhp;
 					if(Number.isFinite(pl.en)) p.energy = pl.en;
+				} else if(pl.t === 'pb' && Array.isArray(pl.list)){
+					// embodied guests, everywhere: players see each other, spectators see
+					// the players. Own row = authoritative echo (spawn seed + gross-drift
+					// correction); other rows keep identity so the painter can glide.
+					const seen = new Set();
+					for(const row of pl.list.slice(0, 16)){
+						if(!Array.isArray(row) || row.length < 10) continue;
+						const [bgid, bname, bx, by, bvx, bvy, bf, bhp, bmhp, bdead] = row;
+						if(!Number.isFinite(+bx) || !Number.isFinite(+by)) continue;
+						if(bgid === gid){
+							if(play.on){
+								const p = bridge.player;
+								if(!play.spawned){
+									p.x = +bx; p.y = +by; p.vx = 0; p.vy = 0;
+									play.spawned = true;
+									bridge.snapCameraToPlayer();
+								} else if(Math.hypot(p.x - bx, p.y - by) > 8){
+									p.x = +bx; p.y = +by; // rubber-band only on gross divergence
+								}
+								play.dead = !!+bdead;
+							}
+							continue;
+						}
+						seen.add(bgid);
+						let o = bodies.find(b => b.id === bgid);
+						if(!o){ o = { id: bgid, x: +bx, y: +by }; bodies.push(o); }
+						o.name = String(bname || 'Gracz').slice(0, 24);
+						o.tx = +bx; o.ty = +by;
+						o.vx = Number.isFinite(+bvx) ? +bvx : 0; o.vy = Number.isFinite(+bvy) ? +bvy : 0;
+						o.f = +bf < 0 ? -1 : 1;
+						o.hp = Number.isFinite(+bhp) ? +bhp : 1; o.maxHp = Number.isFinite(+bmhp) && +bmhp > 0 ? +bmhp : 1;
+						o.dead = !!+bdead;
+					}
+					for(let i = bodies.length - 1; i >= 0; i--){ if(!seen.has(bodies[i].id)) bodies.splice(i, 1); }
 				} else if(pl.t === 'mobs'){
 					const M = MMR && MMR.mobs;
 					if(M && M.ghostApplyRoster){
@@ -524,8 +640,12 @@ const ghostClient = (function(){
 		if(state !== 'live') return;
 		if(!rafAlive){
 		const p = bridge.player;
-		// hero replica: short prediction toward the last pose, hard snap on teleports
-		if(heroTarget.has){
+		// EMBODIED: the local player is OUR hero — simulate it; the host hero glides
+		// in remoteHost (eased at paint time). Otherwise: the replica interpolation.
+		if(play.on && play.spawned){
+			if(!play.dead) stepOwnHero(dt);
+		} else if(heroTarget.has){
+			// hero replica: short prediction toward the last pose, hard snap on teleports
 			const age = Math.min(0.25, (t - heroTarget.at) / 1000);
 			const gx = heroTarget.x + heroTarget.vx * age;
 			const gy = heroTarget.y + heroTarget.vy * age;
@@ -545,7 +665,23 @@ const ghostClient = (function(){
 		try{ bridge.stepCosmetics(dt); }catch(e){ /* fine */ }
 		updateCamera(dt);
 		}
-		if(t - timers.pose > POSE_MS){
+		if(play.on && play.spawned){
+			// embodied uplink: the body pose replaces the camera pose (the host uses
+			// it for the body AND as this guest's tracked spot for pings/powers)
+			if(t - timersPlay.pose > NET.PLAY_RULES.POSE_MS){
+				timersPlay.pose = t;
+				const p = bridge.player;
+				conn.send({ t: 'ppose', x: +p.x.toFixed(2), y: +p.y.toFixed(2), vx: +(p.vx || 0).toFixed(2), vy: +(p.vy || 0).toFixed(2), f: p.facing < 0 ? -1 : 1, act: isActive() ? 1 : 0 });
+			}
+			// hold-to-mine: keep re-sending the intent at the host's floor while the
+			// button is down; the host owns the per-cell progress
+			if(play.mineHold && !play.dead && t - timersPlay.mine > NET.PLAY_RULES.MINE_MS + 20){
+				timersPlay.mine = t;
+				const w = bridge.screenToWorld ? bridge.screenToWorld(play.mineHold.cx, play.mineHold.cy) : null;
+				if(w && bridge.solidAt(Math.floor(w.x), Math.floor(w.y), 'y')) sendPlayAct('mine', w.x, w.y);
+				else play.mineHold = null;
+			}
+		} else if(t - timers.pose > POSE_MS){
 			timers.pose = t;
 			const c = bridge.getCamCenter();
 			conn.send({ t: 'pose', x: +c.x.toFixed(2), y: +c.y.toFixed(2), act: isActive() ? 1 : 0 });
@@ -579,7 +715,7 @@ const ghostClient = (function(){
 
 	// --- buffs -----------------------------------------------------------------------
 	function sendBuff(kind){
-		if(state !== 'live' || !NET.validBuffKind(kind) || mode !== 'full') return false;
+		if(state !== 'live' || !NET.validBuffKind(kind) || !NET.modeAllows(mode, 'full')) return false;
 		noteInput();
 		if((buffWait[kind] || 0) > nowMs()) return false;
 		buffWait[kind] = nowMs() + 1500; // pessimistic lock until the ack lands
@@ -612,36 +748,75 @@ const ghostClient = (function(){
 		lastSpiritT = t; // the second pass of a frame sees dt≈0 — no double-glide
 		const p = bridge.player;
 		const hx = p ? p.x : NaN, hy = p ? p.y : NaN;
+		const tagPainter = MMR && MMR.ghostHost && MMR.ghostHost.paintBodyTag;
+		// the host hero as a REMOTE body (embodied mode only — otherwise the local
+		// player object is the replica and main.js draws it already)
+		if(play.on && remoteHost.has){
+			remoteHost.dx += (remoteHost.x - remoteHost.dx) * ease;
+			remoteHost.dy += (remoteHost.y - remoteHost.dy) * ease;
+			if(Math.abs(remoteHost.x - remoteHost.dx) > 6){ remoteHost.dx = remoteHost.x; remoteHost.dy = remoteHost.y; }
+			if(wantBody && bridge.drawHeroAt) bridge.drawHeroAt({ x: remoteHost.dx, y: remoteHost.dy, vx: remoteHost.vx, vy: remoteHost.vy, facing: remoteHost.f });
+			if(wantText && tagPainter) tagPainter(ctx, TILE, remoteHost.dx, remoteHost.dy, hostName || 'Gospodarz', null, null);
+		}
+		// fellow embodied players (visible to players AND plain spectators)
+		for(const b of bodies){
+			if(Number.isFinite(b.tx)){ b.x += (b.tx - b.x) * ease; b.y += (b.ty - b.y) * ease; }
+			if(b.dead) continue; // their ghost spirit shows via the presence relay instead
+			if(wantBody && bridge.drawHeroAt) bridge.drawHeroAt({ x: b.x, y: b.y, vx: b.vx, vy: b.vy, facing: b.f, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H });
+			if(wantText && tagPainter) tagPainter(ctx, TILE, b.x, b.y, b.name || 'Gracz', b, null);
+		}
 		for(const g of others){
 			if(Number.isFinite(g.tx)){ g.x += (g.tx - g.x) * ease; g.y += (g.ty - g.y) * ease; }
 			const lift = NET.spiritLift(g.x, g.y, hx, hy);
 			if(wantBody) painter(ctx, TILE, g.x, g.y - lift, g.name, t, false, g.avatar, g.act, null, 'body');
 			if(wantText) painter(ctx, TILE, g.x, g.y - lift, g.name, t, false, g.avatar, g.act, g.chat, 'text');
 		}
-		// your own spirit rides the camera — dragging/WASD IS the ghost flying
 		const c = bridge.getCamCenter();
 		if(selfChat && selfChat.until < nowMs()) selfChat = null;
-		const selfLift = NET.spiritLift(c.x, c.y, hx, hy);
-		if(wantBody){
-			// dread ring: what your presence scares away right now (only while active);
-			// anchored at the TRUE position — the lift is display-only, dread is not
-			if(isActive()){
+		if(play.on && play.spawned){
+			// embodied: no own spirit (main.js draws our hero), no dread ring (a body
+			// is a physical presence, not a phantom) — just the mining progress ring
+			if(wantText && play.progAt && play.prog > 0){
 				ctx.save();
-				ctx.globalAlpha = 0.10;
-				ctx.strokeStyle = '#9fd6ff';
-				ctx.lineWidth = 1.5;
+				ctx.globalAlpha = 0.85;
+				ctx.strokeStyle = '#ffd76a';
+				ctx.lineWidth = 3;
 				ctx.beginPath();
-				ctx.arc(c.x * TILE, c.y * TILE, NET.DREAD.R * TILE, 0, Math.PI * 2);
+				ctx.arc((play.progAt.x + 0.5) * TILE, (play.progAt.y + 0.5) * TILE, TILE * 0.42, -Math.PI / 2, -Math.PI / 2 + play.prog * Math.PI * 2);
 				ctx.stroke();
 				ctx.restore();
 			}
-			painter(ctx, TILE, c.x, c.y - selfLift, ghostName(), t, true, avatar, isActive(), null, 'body');
+			if(wantText && selfChat && selfChat.text && MMR && MMR.ghostHost && MMR.ghostHost.paintChatBubble){
+				MMR.ghostHost.paintChatBubble(ctx, TILE, p.x, p.y - (p.h || 1) / 2 - 0.9, selfChat.text);
+			}
+		} else {
+			// your own spirit rides the camera — dragging/WASD IS the ghost flying
+			const selfLift = NET.spiritLift(c.x, c.y, hx, hy);
+			if(wantBody){
+				// dread ring: what your presence scares away right now (only while active);
+				// anchored at the TRUE position — the lift is display-only, dread is not
+				if(isActive()){
+					ctx.save();
+					ctx.globalAlpha = 0.10;
+					ctx.strokeStyle = '#9fd6ff';
+					ctx.lineWidth = 1.5;
+					ctx.beginPath();
+					ctx.arc(c.x * TILE, c.y * TILE, NET.DREAD.R * TILE, 0, Math.PI * 2);
+					ctx.stroke();
+					ctx.restore();
+				}
+				painter(ctx, TILE, c.x, c.y - selfLift, ghostName(), t, true, avatar, isActive(), null, 'body');
+			}
+			if(wantText) painter(ctx, TILE, c.x, c.y - selfLift, ghostName(), t, true, avatar, isActive(), selfChat, 'text');
 		}
 		if(!wantText) return;
-		painter(ctx, TILE, c.x, c.y - selfLift, ghostName(), t, true, avatar, isActive(), selfChat, 'text');
-		// the host's own words hover over the hero replica
+		// the host's own words hover over its hero — the replica normally, the
+		// remote body when this guest is embodied
 		const bubble = MMR && MMR.ghostHost && MMR.ghostHost.paintChatBubble;
-		if(hostChat && hostChat.until > nowMs() && bubble && p) bubble(ctx, TILE, p.x, p.y - (p.h || 1) / 2 - 0.5, hostChat.text);
+		if(hostChat && hostChat.until > nowMs() && bubble){
+			if(play.on && remoteHost.has) bubble(ctx, TILE, remoteHost.dx, remoteHost.dy - 1.0, hostChat.text);
+			else if(p) bubble(ctx, TILE, p.x, p.y - (p.h || 1) / 2 - 0.5, hostChat.text);
+		}
 		const now = nowMs();
 		// pointed spots pulse for a few seconds
 		for(let i = pings.length - 1; i >= 0; i--){
@@ -698,7 +873,7 @@ const ghostClient = (function(){
 	// Powers strike at the SPIRIT's position — the host re-derives it from the last
 	// pose, so the client cannot aim them anywhere it hasn't actually flown.
 	function sendPower(kind){
-		if(state !== 'live' || mode !== 'full' || !NET.validPowerKind(kind)) return false;
+		if(state !== 'live' || !NET.modeAllows(mode, 'full') || !NET.validPowerKind(kind)) return false;
 		const rule = NET.POWER_RULES[kind];
 		if(charge < rule.cost || (powerWait[kind] || 0) > nowMs()) return false;
 		conn.send({ t: 'power', kind });
@@ -726,6 +901,126 @@ const ghostClient = (function(){
 		return true;
 	}
 
+	// --- play mode: the guest's own hero -------------------------------------------------
+	function enterPlay(){
+		if(play.on) return;
+		play.on = true; play.spawned = false; play.dead = false;
+		// the host hero leaves the local `player` (which becomes OUR body) and moves
+		// into remoteHost, seeded from the replica so nothing blinks
+		const p = bridge.player;
+		remoteHost.has = true; remoteHost.x = p.x; remoteHost.y = p.y;
+		remoteHost.dx = p.x; remoteHost.dy = p.y;
+		remoteHost.vx = p.vx || 0; remoteHost.vy = p.vy || 0; remoteHost.f = p.facing || 1;
+		cam.mode = 'follow';
+		bridge.msg('🎮 Wcielenie! A/D = ruch, W/spacja = skok, LPM = kop (trzymaj) lub uderz, PPM = buduj (wybierz surowiec z sakwy). F = kamera.');
+		renderPouch();
+		updateBar();
+	}
+	function exitPlay(){
+		if(!play.on) return;
+		play.on = false; play.spawned = false; play.dead = false; play.mineHold = null;
+		remoteHost.has = false;
+		// pure spectating resumes: the next hero packet re-bases the replica (the
+		// >6-tile hard-snap in the interpolator absorbs the position jump)
+		renderPouch();
+		updateBar();
+	}
+	// Local hero physics: a compact mirror of the host's swept per-axis resolver,
+	// driven by the guest's replicated world (bridge.solidAt). Guest-authoritative
+	// by design — the host clamps the resulting pose inside a speed envelope and
+	// owns everything that matters (vitals, edits), so divergence is cosmetic.
+	function collideAxis(p, axis, prev){
+		const w = (p.w || NET.PLAY_RULES.BODY_W) / 2, h = (p.h || NET.PLAY_RULES.BODY_H) / 2;
+		const EPS = 1e-4;
+		if(axis === 'x'){
+			const moved = p.x - prev;
+			const dir = moved > EPS ? 1 : moved < -EPS ? -1 : 0;
+			if(!dir) return;
+			const prevL = prev - w, prevR = prev + w;
+			let target = p.x, hit = false;
+			for(let y = Math.floor(p.y - h); y <= Math.floor(p.y + h); y++){
+				for(let x = Math.floor(p.x - w); x <= Math.floor(p.x + w); x++){
+					if(!bridge.solidAt(x, y, 'x')) continue;
+					if(prevR > x + EPS && prevL < x + 1 - EPS) continue; // embedded before the move
+					if(dir > 0){ const c = x - w - 0.001; if(!hit || c < target) target = c; hit = true; }
+					else { const c = x + 1 + w + 0.001; if(!hit || c > target) target = c; hit = true; }
+				}
+			}
+			if(hit){ p.x = target; p.vx = 0; }
+		} else {
+			const moved = p.y - prev;
+			const dir = moved > EPS ? 1 : moved < -EPS ? -1 : 0;
+			p.onGround = false;
+			if(!dir){ if(bridge.solidAt(Math.floor(p.x), Math.floor(p.y + h + 0.05), 'y')) p.onGround = true; return; }
+			const prevT = prev - h, prevB = prev + h;
+			let target = p.y, hit = false, landed = false;
+			for(let y = Math.floor(p.y - h); y <= Math.floor(p.y + h); y++){
+				for(let x = Math.floor(p.x - w); x <= Math.floor(p.x + w); x++){
+					if(!bridge.solidAt(x, y, 'y')) continue;
+					if(prevB > y + EPS && prevT < y + 1 - EPS) continue;
+					if(dir > 0){ const c = y - h - 0.001; if(!hit || c < target) target = c; hit = true; landed = true; }
+					else { const c = y + 1 + h + 0.001; if(!hit || c > target) target = c; hit = true; }
+				}
+			}
+			if(hit){ p.y = target; p.vy = 0; if(landed) p.onGround = true; }
+		}
+	}
+	function stepOwnHero(dt){
+		const p = bridge.player;
+		let dir = 0;
+		if(held.has('a') || held.has('arrowleft')) dir -= 1;
+		if(held.has('d') || held.has('arrowright')) dir += 1;
+		const wantJump = held.has('w') || held.has('arrowup') || held.has(' ');
+		if(dir) p.facing = dir < 0 ? -1 : 1;
+		const groundTile = bridge.getTile(Math.floor(p.x), Math.floor(p.y + (p.h || 0.95) / 2 + 0.1));
+		const inWater = bridge.getTile(Math.floor(p.x), Math.floor(p.y)) === T.WATER;
+		p.vx = applyHorizontalMovement(p.vx, dir, dt, inWater ? 0.6 : 1, MOVE, groundTile);
+		if(inWater){
+			p.vy += (wantJump ? -14 : 6) * dt;
+			p.vy = Math.max(-4, Math.min(4, p.vy));
+			play.coyoteT = 0;
+		} else {
+			p.vy += MOVE.GRAV * dt;
+			if(p.vy > 20) p.vy = 20;
+			play.coyoteT = p.onGround ? 0.12 : Math.max(0, play.coyoteT - dt);
+			play.jumpBufT = wantJump ? 0.12 : Math.max(0, play.jumpBufT - dt);
+			if(play.jumpBufT > 0 && play.coyoteT > 0){ p.vy = MOVE.JUMP; p.onGround = false; play.coyoteT = 0; play.jumpBufT = 0; }
+		}
+		let remaining = Math.min(0.25, dt);
+		while(remaining > 0){
+			const step = Math.min(1 / 60, remaining);
+			remaining -= step;
+			const prevX = p.x; p.x += p.vx * step; collideAxis(p, 'x', prevX);
+			const prevY = p.y; p.y += p.vy * step; collideAxis(p, 'y', prevY);
+		}
+	}
+	// Intents: the guest DECIDES nothing about the world — it points. Reach, rate,
+	// pouch and world truth are all re-checked by the host before a tile changes.
+	function sendPlayAct(a, wx, wy, key){
+		if(state !== 'live' || !play.on || !play.spawned || play.dead) return false;
+		const pl = { t: 'pact', a, x: Math.floor(wx), y: Math.floor(wy) };
+		if(key) pl.key = key;
+		conn.send(pl);
+		noteInput();
+		return true;
+	}
+	function playPointerAct(clientX, clientY, button){
+		const w = bridge.screenToWorld ? bridge.screenToWorld(clientX, clientY) : null;
+		if(!w) return;
+		if(button === 2){
+			if(!play.sel){ bridge.msg('🎒 Wybierz surowiec z sakwy (kliknij żeton), by budować'); return; }
+			sendPlayAct('place', w.x, w.y, play.sel);
+			return;
+		}
+		// LMB: solid target = start mining hold; open air = melee strike
+		if(bridge.solidAt(Math.floor(w.x), Math.floor(w.y), 'y')){
+			play.mineHold = { cx: clientX, cy: clientY };
+			sendPlayAct('mine', w.x, w.y);
+			timersPlay.mine = nowMs();
+		} else {
+			sendPlayAct('strike', w.x, w.y);
+		}
+	}
 	// --- input ownership: watchers must not reach the game's handlers ---------------------
 	function ownInput(){
 		if(typeof window === 'undefined') return;
@@ -736,7 +1031,12 @@ const ghostClient = (function(){
 			if(e.ctrlKey || e.metaKey || e.altKey) return; // browser shortcuts stay browser shortcuts
 			if(isOurs(e)) return;
 			const k = (e.key || '').toLowerCase();
-			if(PAN_KEYS[k]){ held.add(k); if(cam.mode === 'follow') setFollow(false); e.preventDefault(); }
+			if(play.on && play.spawned && (PAN_KEYS[k] || k === ' ')){
+				// embodied: WASD/arrows/space DRIVE THE HERO — the camera follows it
+				held.add(k);
+				e.preventDefault();
+			}
+			else if(PAN_KEYS[k]){ held.add(k); if(cam.mode === 'follow') setFollow(false); e.preventDefault(); }
 			else if(k === 'f'){ setFollow(cam.mode !== 'follow'); e.preventDefault(); }
 			else if(k === 'p'){ sendPing(); e.preventDefault(); }
 			else if(k === '+' || k === '=' || k === ']'){ bridge && bridge.nudgeZoom(1.1); e.preventDefault(); }
@@ -753,6 +1053,20 @@ const ghostClient = (function(){
 			if(e.type === 'pointerdown' || e.type === 'mousedown') noteInput();
 			if(isOurs(e)) return;
 			const onCanvas = e.target && e.target.id === 'game';
+			// embodied: the pointer WORKS the world (mine/strike/place) instead of
+			// dragging the camera — the camera lives on the hero now
+			if(play.on && play.spawned && onCanvas && bridge){
+				if(e.type === 'pointerdown'){
+					playPointerAct(e.clientX, e.clientY, e.button === 2 ? 2 : 0);
+				} else if(e.type === 'pointermove' && play.mineHold){
+					play.mineHold.cx = e.clientX; play.mineHold.cy = e.clientY;
+				} else if(e.type === 'pointerup' || e.type === 'pointercancel'){
+					play.mineHold = null;
+				}
+				if(e.type === 'contextmenu') e.preventDefault();
+				e.stopImmediatePropagation();
+				return;
+			}
 			if(e.type === 'pointerdown' && onCanvas){
 				const c = bridge ? bridge.getCamCenter() : null;
 				if(c){ drag = { px: e.clientX, py: e.clientY, cx: c.x, cy: c.y }; if(cam.mode === 'follow') setFollow(false); }
@@ -853,6 +1167,7 @@ const ghostClient = (function(){
 			+ '<button class="gbPower" data-kind="banish">💀 Popłoch</button>'
 			+ '<button class="gbPower" data-kind="frost">❄️ Mróz</button>'
 			+ '<button class="gbPower" data-kind="smite">⚡ Grom</button>'
+			+ '<span id="gbPouch" style="display:none;align-items:center;gap:3px;flex-wrap:wrap;"></span>'
 			+ '<button id="gbPing">📍 Wskaż</button>'
 			+ '<button id="gbAssist" style="display:none;">🛠 Asystent</button>'
 			+ '<button id="gbZoomOut" title="Oddal">➖</button>'
@@ -894,11 +1209,38 @@ const ghostClient = (function(){
 		barTick = setInterval(updateBar, 500);
 		updateBar();
 	}
+	// Pouch chips: the guest's host-owned resources, click to arm one for building.
+	function renderPouch(){
+		if(!bar) return;
+		const box = bar.querySelector('#gbPouch');
+		if(!box) return;
+		const keys = Object.keys(play.pouch).filter(k => play.pouch[k] > 0);
+		box.style.display = play.on ? 'inline-flex' : 'none';
+		box.textContent = '';
+		if(!play.on) return;
+		if(!keys.length){
+			const hint = document.createElement('span');
+			hint.style.cssText = 'font-size:10px;color:#9db4cc;white-space:nowrap;';
+			hint.textContent = '🎒 sakwa pusta — wykop coś';
+			box.appendChild(hint);
+			return;
+		}
+		for(const k of keys.slice(0, 12)){
+			const chip = document.createElement('button');
+			const sel = play.sel === k;
+			chip.style.cssText = 'border:1px solid ' + (sel ? '#ffd76a' : 'rgba(255,255,255,.2)') + ';border-radius:999px;'
+				+ 'background:' + (sel ? 'rgba(255,215,106,.25)' : 'rgba(255,255,255,.08)') + ';color:#e6f0fb;padding:3px 8px;font-size:10px;font-weight:700;white-space:nowrap;';
+			chip.textContent = (bridge.resourceLabel ? bridge.resourceLabel(k) : k) + ' ' + play.pouch[k];
+			chip.title = sel ? 'Wybrany do budowania (PPM stawia)' : 'Kliknij, by budować tym surowcem';
+			chip.addEventListener('click', () => { noteInput(); play.sel = sel ? null : k; renderPouch(); });
+			box.appendChild(chip);
+		}
+	}
 	function updateBar(){
 		flushProgress(); // the 500 ms bar tick doubles as the trailing-write driver
 		if(!bar) return;
 		const info = bar.querySelector('#gbInfo');
-		info.textContent = (hostName ? hostName : '…') + (others.length ? ' • duchy: ' + (others.length + 1) : '');
+		info.textContent = (play.on ? '🎮 ' : '') + (hostName ? hostName : '…') + (others.length ? ' • duchy: ' + (others.length + 1) : '') + (bodies.length ? ' • gracze: ' + (bodies.length + (play.on ? 1 : 0)) : '');
 		const lv = NET.levelFor(prog.xp);
 		const rank = NET.rankFor(lv.level);
 		const rankEl = bar.querySelector('#gbRank');
@@ -913,28 +1255,34 @@ const ghostClient = (function(){
 		bar.querySelector('#gbActivity').textContent = isActive() ? '⚡ wzmacniasz' : '💤 rusz się!';
 		bar.querySelector('#gbAvatar').textContent = AVATAR_ICONS[avatar] || '👻';
 		const t = nowMs();
+		renderPouch();
+		// in embodiment the bar is a PLAYER hud (pouch + hands), so the spectator
+		// influence controls (blessings, powers) step aside to reduce clutter
+		const spectatorControls = !play.on;
 		bar.querySelectorAll('.gbBuff').forEach(btn => {
 			const wait = (buffWait[btn.dataset.kind] || 0) - t;
-			btn.disabled = state !== 'live' || wait > 0 || mode !== 'full';
+			btn.style.display = spectatorControls ? 'inline-block' : 'none';
+			btn.disabled = state !== 'live' || wait > 0 || !NET.modeAllows(mode, 'full');
 			const rule = NET.BUFF_RULES[btn.dataset.kind];
 			const base = btn.dataset.kind === 'cheer' ? '✨ Doping' : btn.dataset.kind === 'bless' ? '💚 Błogosławieństwo' : '⚡ Energia';
 			btn.textContent = wait > 1000 ? base + ' (' + Math.ceil(wait / 1000) + 's)' : base;
-			btn.title = mode !== 'full' ? 'Gospodarz wyłączył wpływ na grę' : (rule ? rule.label : '');
+			btn.title = !NET.modeAllows(mode, 'full') ? 'Gospodarz wyłączył wpływ na grę' : (rule ? rule.label : '');
 		});
 		// powers: charge is earned by staying active, then spent
-		bar.querySelector('#gbCharge').textContent = mode === 'full' ? '🔮 ' + Math.floor(charge) + '/' + NET.POWER_CHARGE.MAX : '';
+		const canInfluence = NET.modeAllows(mode, 'full') && spectatorControls;
+		bar.querySelector('#gbCharge').textContent = canInfluence ? '🔮 ' + Math.floor(charge) + '/' + NET.POWER_CHARGE.MAX : '';
 		bar.querySelectorAll('.gbPower').forEach(btn => {
 			const kind = btn.dataset.kind;
 			const rule = NET.POWER_RULES[kind];
 			const wait = (powerWait[kind] || 0) - t;
 			const poor = charge < rule.cost;
-			btn.style.display = mode === 'full' ? 'inline-block' : 'none';
+			btn.style.display = canInfluence ? 'inline-block' : 'none';
 			btn.disabled = state !== 'live' || wait > 0 || poor;
 			btn.textContent = wait > 1000 ? rule.icon + ' ' + Math.ceil(wait / 1000) + 's' : rule.icon + ' ' + rule.label;
 			btn.title = rule.label + ' — koszt ' + rule.cost + ' energii ducha, działa wokół twojego ducha' + (poor ? ' (za mało energii: bądź aktywny!)' : '');
 		});
 		const ping = bar.querySelector('#gbPing');
-		ping.style.display = mode === 'watch' ? 'none' : 'inline-block';
+		ping.style.display = (mode === 'watch' || play.on) ? 'none' : 'inline-block';
 		ping.disabled = state !== 'live' || nowMs() - lastPingSentAt < NET.PING.MIN_MS;
 		ping.title = isTouchUi() ? 'Wskaż widzom i graczowi miejsce, nad którym unosi się twój duch'
 			: 'Wskaż miejsce, nad którym unosi się twój duch [P]';
@@ -943,12 +1291,15 @@ const ghostClient = (function(){
 		const chat = bar.querySelector('#gbChat');
 		chat.style.display = mode === 'watch' ? 'none' : 'inline-block';
 		chat.disabled = state !== 'live';
+		const avatarBtn2 = bar.querySelector('#gbAvatar');
+		if(avatarBtn2) avatarBtn2.style.display = play.on ? 'none' : 'inline-block';
 		const fol = bar.querySelector('#gbFollow');
 		fol.classList.toggle('on', cam.mode === 'follow');
 		fol.textContent = isTouchUi()
 			? (cam.mode === 'follow' ? '🎥 Podążam' : '🎥 Podążaj')
 			: (cam.mode === 'follow' ? '🎥 Podążam [F]' : '🎥 Podążaj [F]');
-		fol.title = isTouchUi() ? 'Przeciągnij po ekranie, aby latać duchem' : 'WASD/strzałki lub przeciąganie = lot ducha';
+		fol.title = play.on ? 'Kamera podąża za twoim bohaterem (F)'
+			: isTouchUi() ? 'Przeciągnij po ekranie, aby latać duchem' : 'WASD/strzałki lub przeciąganie = lot ducha';
 	}
 
 	// --- trophy case: the watcher's level, rank and achievements ------------------------
@@ -1204,6 +1555,15 @@ const ghostClient = (function(){
 				days: prog.days.length
 			},
 			assistRecipes: assistState && Array.isArray(assistState.recipes) ? assistState.recipes.length : 0,
+			play: {
+				on: play.on, spawned: play.spawned, dead: play.dead, sel: play.sel,
+				pouch: Object.assign({}, play.pouch),
+				x: play.on ? +(bridge && bridge.player ? bridge.player.x : 0).toFixed(2) : null,
+				y: play.on ? +(bridge && bridge.player ? bridge.player.y : 0).toFixed(2) : null,
+				hp: play.on && bridge && bridge.player ? +(bridge.player.hp || 0).toFixed(1) : null,
+				bodies: bodies.length,
+				remoteHost: remoteHost.has
+			},
 			hostChat: (hostChat && hostChat.until > nowMs()) ? hostChat.text : null,
 			pings: pings.length,
 			stats: Object.assign({}, stats),
@@ -1215,6 +1575,15 @@ const ghostClient = (function(){
 	const api = { boot, frame, active: () => !!WATCH && state !== 'idle', state: () => state, drawSpirits, sendBuff, sendChat, sendPower, sendPing, sendAssist, setAvatar, setFollow, setCam, noteInput, leave, metrics,
 		openProgress: () => toggleProgPanel(),
 		_debugConnLost: scheduleReconnect, // QA: exercises the real drop→rejoin→resnapshot cycle
+		// QA seams for play mode: fire an intent / arm a pouch resource without the
+		// screen-coordinate math (headless clicks are brittle); the wire path, the
+		// host validation and the pouch accounting are all still the production ones
+		_playAct: (a, x, y, key) => sendPlayAct(a, x, y, key),
+		_playSelect: (key) => { play.sel = key; renderPouch(); },
+		// QA: force the throttled profile write to disk NOW. Headless Page.navigate
+		// does not reliably fire beforeunload/pagehide, so a deed banked inside the
+		// 2 s throttle window would otherwise not be on disk when the reload reads it.
+		_flushForTest: () => flushProgress(true),
 		// QA: age this watcher's last input past IDLE_MS without waiting 30 real seconds.
 		// It rewinds the SAME stamp isActive() reads, so the idle path under test is the
 		// production one (next pose vouches act=0 → the host's TTL lapses → boosts drop).

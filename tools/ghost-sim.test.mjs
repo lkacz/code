@@ -176,9 +176,37 @@ assert.deepEqual(NET.ASSIST_ACTIONS, ['craft', 'equip', 'unequip'], 'the assista
 assert.ok(!NET.validAssistAction('setTile') && !NET.validAssistAction('teleport'), 'world-editing actions are not assistant actions');
 
 // --- permission ladder & avatars ------------------------------------------------------
-assert.deepEqual(NET.PERMISSION_MODES, ['watch', 'chat', 'full'], 'the three-mode ladder');
-assert.ok(NET.validPermissionMode('watch') && !NET.validPermissionMode('admin'), 'mode validation');
+assert.deepEqual(NET.PERMISSION_MODES, ['watch', 'chat', 'full', 'play'], 'the four-mode ladder (play = embodied)');
+assert.ok(NET.validPermissionMode('watch') && NET.validPermissionMode('play') && !NET.validPermissionMode('admin'), 'mode validation');
 assert.ok(NET.AVATARS.length >= 6 && NET.validAvatar('duszek') && !NET.validAvatar('<img>'), 'avatar registry validates');
+// the ladder is strictly inclusive: a higher rung keeps every lower ability
+assert.ok(NET.modeAllows('play', 'watch') && NET.modeAllows('play', 'chat') && NET.modeAllows('play', 'full') && NET.modeAllows('play', 'play'), 'play ⊇ every lower rung');
+assert.ok(NET.modeAllows('full', 'chat') && !NET.modeAllows('full', 'play'), 'full is below play');
+assert.ok(NET.modeAllows('chat', 'chat') && !NET.modeAllows('chat', 'full'), 'chat cannot influence');
+assert.ok(!NET.modeAllows('watch', 'chat') && !NET.modeAllows('bogus', 'watch'), 'watch is the floor, garbage denies');
+
+// --- play mode: the embodied guest (full multiplayer) ---------------------------------
+assert.deepEqual(NET.PLAY_ACTIONS, ['mine', 'place', 'strike'], 'a player mines, builds and fights — nothing that bypasses the host');
+assert.ok(NET.validPlayAction('mine') && !NET.validPlayAction('setTile') && !NET.validPlayAction('teleport'), 'play actions validate');
+assert.ok(NET.PLAY_RULES.REACH > 0 && NET.PLAY_RULES.MAX_HP > 0 && NET.PLAY_RULES.MINE_TICKS >= 1, 'play rules are sane');
+// reach is Chebyshev around the BODY, and it is the host that measures it
+assert.ok(NET.playReachOk(10, 10, 12, 8, 5) && !NET.playReachOk(10, 10, 17, 10, 5), 'reach gate: inside vs beyond');
+assert.ok(!NET.playReachOk(NaN, 10, 12, 8, 5), 'garbage body coords deny the reach');
+// the movement envelope clamps a claimed pose to at most maxStep of travel
+assert.equal(NET.clampBodyStep(10, 10.3, 0.5), 10.3, 'a small honest step is accepted verbatim');
+assert.equal(NET.clampBodyStep(10, 40, 0.5), 10.5, 'a teleport claim is clamped to the envelope (rubber-band)');
+assert.equal(NET.clampBodyStep(10, -40, 0.5), 9.5, 'the clamp is symmetric');
+assert.equal(NET.clampBodyStep(10, NaN, 0.5), 10, 'a NaN claim holds position');
+// the host-owned pouch clamps both ways and refuses prototype smuggling
+{
+	const pouch = {};
+	assert.equal(NET.pouchAdd(pouch, 'stone', 3), 3, 'mining credits the pouch');
+	assert.equal(NET.pouchAdd(pouch, 'stone', NET.PLAY_RULES.POUCH_CAP + 999), NET.PLAY_RULES.POUCH_CAP, 'the pouch has a ceiling');
+	assert.equal(NET.pouchAdd(pouch, '__proto__', 5), 0, 'no prototype key in the pouch');
+	assert.ok(NET.pouchTake(pouch, 'stone', 1), 'placing spends from the pouch');
+	assert.ok(!NET.pouchTake(pouch, 'stone', NET.PLAY_RULES.POUCH_CAP + 1), 'cannot spend what is not there (no negative pouch)');
+	assert.ok(!NET.pouchTake(pouch, 'gold', 1), 'cannot spend a resource never mined');
+}
 
 // --- chat profanity filter ----------------------------------------------------------------
 assert.deepEqual(NET.filterChat('   '), { text: '', filtered: false, empty: true }, 'blank chat is empty');
@@ -503,9 +531,9 @@ assert.ok(/#ghostMeter\{/.test(html) && /#ghostMeter\.idle\{/.test(html),
 // --- moderation pins ---------------------------------------------------------------------------
 assert.ok(/s\.banned\.has\(entry\.gid\)/.test(hostSrc) && /function banViewer\(gid\)/.test(hostSrc),
 	'banned ghosts are rejected at hello and evictable live');
-assert.ok(/entry\.mode !== 'full'\)\{ entry\.peer\.send\(\{ t: 'buffAck', kind: pl\.kind, ok: false, waitMs: 0, reason: 'perm' \}\)/.test(hostSrc),
-	'buffs require the full permission mode');
-assert.ok(/entry\.mode !== 'chat' && entry\.mode !== 'full'\)\) return;/.test(hostSrc), 'chat requires at least the chat mode');
+assert.ok(/!NET\.modeAllows\(entry\.mode, 'full'\)\)\{ entry\.peer\.send\(\{ t: 'buffAck', kind: pl\.kind, ok: false, waitMs: 0, reason: 'perm' \}\)/.test(hostSrc),
+	'buffs require at least the full permission mode (inclusive: play qualifies too)');
+assert.ok(/!NET\.modeAllows\(entry\.mode, 'chat'\)\) return;/.test(hostSrc), 'chat requires at least the chat mode');
 assert.ok(/CHAT_MIN_MS/.test(hostSrc) && /NET\.filterChat\(pl\.text\)/.test(hostSrc), 'host chat is rate-limited and profanity-filtered');
 assert.ok(/function setViewerMode\(gid, mode\)/.test(hostSrc), 'per-viewer permission modes are host-settable');
 assert.ok(/pl\.t === 'banned'/.test(clientSrc) && /pl\.t === 'perm'/.test(clientSrc), 'client honors ban and permission downgrades');
@@ -526,8 +554,8 @@ assert.ok(/painter\(ctx, TILE, c\.x, c\.y - selfLift, ghostName\(\), t, true, av
 // --- ghost dread integration: four creature systems flee the spirits -------------------------------
 assert.ok(/if\(MMR && !MMR\.ghostAura\)/.test(hostSrc) && /MMR\.ghostDreadAt = function/.test(hostSrc),
 	'the host publishes the aura + the single dread lookup every creature system calls');
-assert.ok(/if\(!e\.hello \|\| e\.actUntil <= t\) continue;[\s\S]*if\(e\.cam\)\{ spirits\.push\(\{ x: e\.cam\.x, y: e\.cam\.y \}\); owners\.push\(e\); \}/.test(hostSrc),
-	'ONLY active watchers haunt the world (an idle tab is furniture, not a phantom), and each spirit remembers its owner');
+assert.ok(/if\(!e\.hello \|\| e\.actUntil <= t\) continue;[\s\S]*if\(e\.cam && !e\.body\)\{ spirits\.push\(\{ x: e\.cam\.x, y: e\.cam\.y \}\); owners\.push\(e\); \}/.test(hostSrc),
+	'ONLY active, DISEMBODIED watchers haunt the world (an idle tab is furniture, an embodied guest is a body — neither is a phantom), and each spirit remembers its owner');
 assert.ok(/function applyGhostDread\(m,dt\)/.test(mobsSrc) && /applyGhostDread\(m,dt\);/.test(mobsSrc), 'mobs flee spirits');
 assert.ok(/!hasStatus\(m,'blind'\) && !isGhostSpooked\(m\)/.test(mobsSrc), 'a spooked mob stops being aggressive');
 const invSrc = readFileSync(new URL('../src/engine/invasions.js', import.meta.url), 'utf8');
@@ -544,7 +572,7 @@ assert.ok(/c\.laserCd=Math\.max\(c\.laserCd\|\|0,0\.6\);[\s\S]{0,80}return true;
 
 // --- watcher powers: host-authoritative, creatures-only ---------------------------------------------
 assert.ok(/function handlePower\(s, entry, pl\)/.test(hostSrc), 'the host owns power resolution');
-assert.ok(/if\(entry\.mode !== 'full'\)\{ entry\.peer\.send\(\{ t: 'powerAck', kind, ok: false, reason: 'perm'/.test(hostSrc), 'powers need the full permission mode');
+assert.ok(/if\(!NET\.modeAllows\(entry\.mode, 'full'\)\)\{ entry\.peer\.send\(\{ t: 'powerAck', kind, ok: false, reason: 'perm'/.test(hostSrc), 'powers need at least the full permission mode');
 assert.ok(/if\(entry\.charge < rule\.cost\)/.test(hostSrc) && /entry\.charge -= rule\.cost;/.test(hostSrc), 'powers cost earned charge');
 assert.ok(/const hits = bridge\.ghostPower\(kind, entry\.cam\.x, entry\.cam\.y, rule\);/.test(hostSrc),
 	'a power strikes at the SPIRIT position the host tracked — never at client-chosen coordinates');
@@ -557,9 +585,9 @@ assert.ok(/MOBS\.chillRadius/.test(mainSrc) && /MOBS\.blastRadius/.test(mainSrc)
 
 // --- assistants: delegates, not second players ----------------------------------------------------------
 assert.ok(/function setAssistant\(gid, on\)/.test(hostSrc), 'the host appoints assistants');
-assert.ok(/if\(on && entry\.mode !== 'full'\) return false;/.test(hostSrc), 'an assistant must hold full permissions');
+assert.ok(/if\(on && !NET\.modeAllows\(entry\.mode, 'full'\)\) return false;/.test(hostSrc), 'an assistant must hold at least full permissions');
 assert.ok(!/else if\(on && entry\.assistant\)/.test(hostSrc), 'the single-seat handover is GONE — several assistants may serve at once');
-assert.ok(/if\(!entry\.assistant \|\| entry\.mode !== 'full'\)\{ entry\.peer\.send\(\{ t: 'assistAck', ok: false, reason: 'perm' \}\); return; \}/.test(hostSrc),
+assert.ok(/if\(!entry\.assistant \|\| !NET\.modeAllows\(entry\.mode, 'full'\)\)\{ entry\.peer\.send\(\{ t: 'assistAck', ok: false, reason: 'perm' \}\); return; \}/.test(hostSrc),
 	'non-assistants cannot run assistant actions');
 assert.ok(/ghostAssistState:\(\)=>\{/.test(mainSrc) && /ghostAssist:\(action,id,n\)=>\{/.test(mainSrc), 'the bridge exposes the assistant surface');
 assert.ok(/if\(!made\) return \{ok:false, reason:'cost'\};/.test(mainSrc), 'the assistant cannot craft what the hero cannot afford');
@@ -727,7 +755,7 @@ assert.ok(NET.PING.MIN_MS >= 2000 && NET.PING.TTL_MS > 0, 'pings are rate-limite
 {
 	const pingSlice = hostSrc.slice(hostSrc.indexOf('function handlePing'), hostSrc.indexOf("--- the host's own voice"));
 	assert.ok(pingSlice.length > 40, 'handlePing found');
-	assert.ok(/entry\.mode === 'watch' \|\| !entry\.cam\) return;/.test(pingSlice), 'pings need at least chat permission and a tracked pose');
+	assert.ok(/!NET\.modeAllows\(entry\.mode, 'chat'\) \|\| !entry\.cam\) return;/.test(pingSlice), 'pings need at least chat permission and a tracked pose');
 	assert.ok(/t - \(entry\.lastPingAt \|\| 0\) < NET\.PING\.MIN_MS\) return;/.test(pingSlice), 'pings are rate-limited per watcher');
 	assert.ok(/x: \+entry\.cam\.x\.toFixed\(2\), y: \+entry\.cam\.y\.toFixed\(2\)/.test(pingSlice) && !/pl\.x|pl\.y/.test(pingSlice),
 		'the marker lands at the HOST-tracked pose — client coordinates are never read');
@@ -812,5 +840,77 @@ assert.equal(NET.CHAT.MIN_MS, 4000, 'the chat floor is a shared constant');
 assert.ok(/const CHAT_MIN_MS = NET\.CHAT\.MIN_MS;/.test(hostSrc), 'the host chat floor derives from the shared constant');
 assert.ok(/lastChatSentAt \+ NET\.CHAT\.MIN_MS - nowMs\(\)/.test(clientSrc),
 	'the client mirrors the chat floor locally — a too-fast message is refused with a reason instead of vanishing server-side');
+
+// --- full multiplayer: the embodied guest (2026-07-16) --------------------------------------------
+// The ghost ladder gains a `play` rung: a promoted viewer gets an OWN hero in the
+// host's world. Authority split is the whole safety story — the guest simulates its
+// own MOVEMENT locally (feels instant), the HOST owns vitals, pouch and every world
+// edit and validates each intent. The spectator tiers below are untouched: the ghost
+// system stays the default and the safe floor.
+// permission gates read the INCLUSIVE ladder now (play ⊇ full), not `=== 'full'`
+assert.ok(/NET\.modeAllows\(entry\.mode, 'full'\)/.test(hostSrc) && !/entry\.mode !== 'full'/.test(hostSrc),
+	'host influence gates use the inclusive ladder (a player keeps every spectator ability)');
+assert.ok(/NET\.modeAllows\(entry\.mode, 'chat'\)/.test(hostSrc), 'chat/ping gates use the inclusive ladder too');
+// the play rung is NEVER a default door policy — embodiment is granted by hand
+assert.ok(/DEFAULT_MODES = NET\.PERMISSION_MODES\.filter\(m => m !== 'play'\)/.test(hostSrc),
+	'play is excluded from the newcomer default (an embodied stranger by default is a griefing invite)');
+assert.ok(/if\(!DEFAULT_MODES\.includes\(mode\)\) return false;/.test(hostSrc), 'setDefaultMode refuses the play rung');
+// granting play spawns a HOST-owned body; revoking removes it — spectating persists
+assert.ok(/if\(mode === 'play' && !entry\.body\) spawnBody\(session, entry\);/.test(hostSrc)
+	&& /else if\(mode !== 'play' && entry\.body\) despawnBody\(session, entry\);/.test(hostSrc),
+	'promotion to play embodies the guest; any downgrade removes the body');
+// vitals & pouch are HOST state, streamed to the guest as display truth
+assert.ok(/function sendVitals\(s, entry\)/.test(hostSrc) && /t: 'pvit'/.test(hostSrc), 'the host owns and streams the guest vitals + pouch');
+assert.ok(/function hurtBody\(s, entry/.test(hostSrc) && /b\.invulUntil = t \+ NET\.PLAY_RULES\.HURT_INVUL_MS/.test(hostSrc),
+	'guest damage is host-decided with i-frames; death and respawn are host-owned');
+// the movement envelope: a claimed pose is followed at most MAX_SPEED fast
+assert.ok(/pl\.t === 'ppose'/.test(hostSrc) && /NET\.clampBodyStep\(b\.x, \+pl\.x, maxStep\)/.test(hostSrc),
+	'the guest pose is followed inside a per-axis speed envelope (a teleport hack rubber-bands)');
+// EVERY world-touching intent funnels through one validated handler
+assert.ok(/function handlePlayAct\(s, entry, pl\)/.test(hostSrc) && /pl\.t === 'pact'/.test(hostSrc),
+	'every guest world intent lands in one host-side handler');
+assert.ok(/if\(b\.dead\)\{ entry\.peer\.send\(\{ t: 'pactAck', a: pl\.a, ok: false, reason: 'dead'/.test(hostSrc), 'a dead guest cannot act');
+assert.ok(/if\(!NET\.playReachOk\(b\.x, b\.y, tx, ty\)\)/.test(hostSrc), 'reach is enforced against the HOST-tracked body pose');
+assert.ok(/if\(!\(Number\(b\.pouch\[key\]\) > 0\)/.test(hostSrc), 'building spends only what the host-owned pouch holds');
+assert.ok(/bridge\.ghostPlayMineAt\(tx, ty\)/.test(hostSrc) && /bridge\.ghostPlayPlaceAt\(tx, ty, key/.test(hostSrc)
+	&& /bridge\.ghostPlayStrike\(/.test(hostSrc), 'intents resolve through the guarded bridge seams');
+// the body plane feeds MM.coopBodies — the one hook creatures read
+assert.ok(/function bodyTick\(s, t\)/.test(hostSrc) && /MMR\.coopBodies = pub;/.test(hostSrc) && /t: 'pb'/.test(hostSrc),
+	'the body plane streams the guests AND publishes MM.coopBodies for creature contact');
+assert.ok(/MMR\.coopBodies = \[\];/.test(hostSrc), 'ending the session clears MM.coopBodies (creatures stop checking)');
+// an embodied guest is a physical presence, NOT a dread phantom
+assert.ok(/if\(e\.cam && !e\.body\)\{ spirits\.push/.test(hostSrc), 'an embodied guest raises no dread aura (it is a body, not a spirit)');
+// the bridge seams — creatures only for strike, foreground-tile-only for edits, pouch yield
+assert.ok(/ghostPlayMineAt:\(tx,ty\)=>\{/.test(mainSrc) && /companionHarvestAssignableTile\(tId\)/.test(mainSrc),
+	'guest mining reuses the companion-digger whitelist (no machines, chests, story tiles)');
+assert.ok(/ghostPlayPlaceAt:\(tx,ty,key,body\)=>\{/.test(mainSrc) && /cellOverlapsPlayer\(tx,ty\)/.test(mainSrc),
+	'guest building respects the same open-cell / hero-overlap rules as the local placer');
+assert.ok(/ghostPlayStrike:\(x,y,r,dmg\)=>\{/.test(mainSrc) && !/ghostPlayStrike[\s\S]{0,400}setTile\(/.test(mainSrc),
+	'guest melee is creatures-only — no tile is ever touched by fighting');
+assert.ok(/drawHeroAt:\(st\)=>\{/.test(mainSrc) && /drawPlayer\(\{remoteBody:true\}\)/.test(mainSrc),
+	'remote heroes render through the REAL hero painter via a field swap (a player looks like a player)');
+// mobs.js contact pass — cost-free in solo play, hurts a touched guest body
+const mobsSrc2 = readFileSync(new URL('../src/engine/mobs.js', import.meta.url), 'utf8');
+assert.ok(/function coopContactPass\(now, nowEpoch\)/.test(mobsSrc2) && /coopContactPass\(now, nowEpoch\);/.test(mobsSrc2),
+	'the mob update runs a co-op contact pass');
+assert.ok(/const bodies = \(typeof MM!=='undefined' && MM\.coopBodies\) \|\| null;\s*\n\s*if\(!bodies \|\| !bodies\.length\) return;/.test(mobsSrc2),
+	'the contact pass early-returns with no bodies (zero cost in solo play and the Node sims)');
+assert.ok(/b\.hurt\(spec\.dmg\*\(m\.dmgMult\|\|0\+1\)?/.test(mobsSrc2) || /b\.hurt\(spec\.dmg\*\(m\.dmgMult\|\|1\)/.test(mobsSrc2),
+	'a hostile creature that touches a guest body hurts it through the body hurt() callback');
+// client: the local player object FLIPS from replica to the guest's own body
+assert.ok(/function enterPlay\(\)/.test(clientSrc) && /function exitPlay\(\)/.test(clientSrc), 'the client enters/leaves embodiment on the perm change');
+assert.ok(/import \{ applyHorizontalMovement \} from '\.\/movement\.js';/.test(clientSrc) && /function stepOwnHero\(dt\)/.test(clientSrc),
+	'the guest simulates its own hero with the shared movement helper (local, instant)');
+assert.ok(/function collideAxis\(p, axis, prev\)/.test(clientSrc) && /bridge\.solidAt\(x, y, 'x'\)/.test(clientSrc),
+	'guest physics runs a swept per-axis resolver against the replicated world');
+assert.ok(/function sendPlayAct\(a, wx, wy, key\)/.test(clientSrc) && /t: 'pact', a, x: Math\.floor\(wx\), y: Math\.floor\(wy\)/.test(clientSrc),
+	'the guest POINTS (mine/place/strike intents) — it decides nothing about the world itself');
+assert.ok(/pl\.t === 'pvit'/.test(clientSrc) && /pl\.t === 'pdmg'/.test(clientSrc) && /pl\.t === 'prespawn'/.test(clientSrc),
+	'the client honors host-owned vitals, damage and respawn');
+assert.ok(/const keep = \(play\.on && play\.spawned\)/.test(clientSrc) && /if\(keep\) Object\.assign\(bridge\.player, keep\);/.test(clientSrc),
+	'an embodied guest keeps ITS hero across a mid-session resync (applyGameData would otherwise rewrite it with the host hero)');
+assert.ok(/if\(play\.on\)\{[\s\S]{0,200}remoteHost\.has = true;/.test(clientSrc),
+	'in embodiment the host hero becomes a remote body — its vitals never clobber the guest');
+assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow embodied players render as hero bodies for everyone');
 
 console.log('ghost-sim: all assertions passed');

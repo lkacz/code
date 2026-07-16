@@ -16035,6 +16035,95 @@ MM.ghostBridge={
 			return {ok:true, label:'zdjął '+(it.name||id)};
 		}
 		return {ok:false, reason:'action'};
+	},
+	// --- play mode (embodied guests) -----------------------------------------------
+	// The guest's own hero physics runs on ITS replicated world; these two feed it.
+	solidAt:(x,y,axis)=>{ try{ return solidAt(x,y,axis||'y'); }catch(e){ return true; } },
+	screenToWorld:(cx,cy)=>{ try{ return screenToWorld(cx,cy); }catch(e){ return null; } },
+	// Remote heroes (guest bodies on the host, the host hero + fellow guests on a
+	// guest) render through the REAL hero painter via a field swap, so a second
+	// player looks like a player, not a token. Cosmetic host-local state (tool,
+	// cape, customization) intentionally bleeds through — restored in finally.
+	drawHeroAt:(st)=>{
+		if(!st || !Number.isFinite(st.x) || !Number.isFinite(st.y)) return;
+		const keys=['x','y','vx','vy','facing','w','h','onGround'];
+		const saved={};
+		for(const k of keys) saved[k]=player[k];
+		player.x=st.x; player.y=st.y;
+		player.vx=Number.isFinite(st.vx)?st.vx:0; player.vy=Number.isFinite(st.vy)?st.vy:0;
+		player.facing=st.facing<0?-1:1;
+		if(Number.isFinite(st.w)) player.w=st.w;
+		if(Number.isFinite(st.h)) player.h=st.h;
+		player.onGround=st.onGround!==false;
+		try{ drawPlayer({remoteBody:true}); }catch(e){ /* one bad frame must not leak the swap */ }
+		finally{ for(const k of keys) player[k]=saved[k]; }
+	},
+	resourceLabel:(k)=>RES_LABEL[k]||k,
+	// Guest mining: the same whitelist and lifecycle hooks the companion diggers use
+	// (breakTileByCompanion is the model) — but the yield goes to the CALLER (the
+	// host-owned guest pouch), never to the host inventory. Foreground tiles only:
+	// infrastructure, backgrounds, machines, chests and story tiles are off-limits.
+	ghostPlayMineAt:(tx,ty)=>{
+		if(!worldCellInBounds(tx,ty)) return {ok:false, reason:'bounds'};
+		const tId=getTile(tx,ty);
+		if(!companionHarvestAssignableTile(tId)) return {ok:false, reason:'tile'};
+		if(getInfrastructureTile(tx,ty)!==T.AIR) return {ok:false, reason:'overlay'};
+		if(miningTargetsConstructionBackground(tx,ty)) return {ok:false, reason:'background'};
+		const info=INFO[tId];
+		if(!info) return {ok:false, reason:'tile'};
+		if(!setForegroundConfirmed(tx,ty,T.AIR)) return {ok:false, reason:'write'};
+		applyMaterialBreakPersonality(tId,tx,ty);
+		if(FIRE && FIRE.wakeLavaAround) FIRE.wakeLavaAround(tx,ty,getTile,{radius:22});
+		if(tId===T.WOOD && getTile(tx,ty-1)===T.WOOD) startTreeFall(tx,ty-1);
+		if(FALLING && FALLING.onTileRemoved) FALLING.onTileRemoved(tx,ty);
+		if(WATER && WATER.onTileChanged) WATER.onTileChanged(tx,ty,getTile);
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('dig',{x:tx+0.5,y:ty+0.5}); }catch(e){}
+		noteSaveActivity();
+		const key=TILE_TO_RES[tId]||null;
+		return {ok:true, key, tile:tId, label:TILE_LABELS[tId]||String(tId)};
+	},
+	// Guest building: plain construction tiles only (the mine whitelist read the other
+	// way), against the same open-cell / support / no-overlap rules canPlaceAt uses —
+	// minus the hotbar coupling. `body` is the guest's own AABB so it cannot brick
+	// itself in, and the host hero is protected by the usual overlap test.
+	ghostPlayPlaceAt:(tx,ty,key,body)=>{
+		if(!worldCellInBounds(tx,ty)) return {ok:false, reason:'bounds'};
+		const def=RESOURCE_DEFS.find(r=>r.key===key && r.tile && T[r.tile]!=null);
+		if(!def) return {ok:false, reason:'key'};
+		const id=T[def.tile];
+		if(!companionHarvestAssignableTile(id)) return {ok:false, reason:'tile'};
+		const cur=getTile(tx,ty);
+		if(!isReplaceableNaturalOpenTile(cur,false)) return {ok:false, reason:'occupied'};
+		if(cur===T.WATER && id===T.WATER) return {ok:false, reason:'occupied'};
+		if(cellOverlapsPlayer(tx,ty)) return {ok:false, reason:'hero'};
+		if(body && Number.isFinite(body.x) && tx+1>body.x-(body.w||0.6)/2 && tx<body.x+(body.w||0.6)/2
+			&& ty+1>body.y-(body.h||0.9)/2 && ty<body.y+(body.h||0.9)/2) return {ok:false, reason:'self'};
+		if(id!==T.SAND && FALLING && FALLING.canSupportPlacement){
+			const structural=FALLING.canSupportPlacement(tx,ty,id);
+			if(structural && structural.applies && !structural.ok) return {ok:false, reason:'support'};
+		}
+		if(cur===T.WATER){
+			let displaced=false;
+			try{ displaced=!!(WATER && WATER.displaceAt && WATER.displaceAt(tx,ty,getTile,setTile)); }catch(e){ displaced=false; }
+			if(!displaced) return {ok:false, reason:'water'};
+		}
+		if(!setForegroundConfirmed(tx,ty,id)) return {ok:false, reason:'write'};
+		if(FALLING && FALLING.afterPlacement) FALLING.afterPlacement(tx,ty);
+		if(WATER && id===T.WATER) WATER.addSource(tx,ty,getTile,setTile);
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
+		noteSaveActivity();
+		return {ok:true, tile:id, label:TILE_LABELS[id]||String(id)};
+	},
+	// Guest melee: creatures only, same contract as the ghost powers — no tile is
+	// ever touched, so even an armed guest cannot reshape the world by fighting.
+	ghostPlayStrike:(x,y,r,dmg)=>{
+		if(!Number.isFinite(x) || !Number.isFinite(y)) return 0;
+		const rad=Math.max(0.5,Math.min(3,Number(r)||1.4));
+		const amount=Math.max(1,Math.min(20,Number(dmg)||7));
+		let hits=0;
+		try{ if(MOBS && MOBS.blastRadius) hits+=MOBS.blastRadius(x,y,rad,amount,{source:'ghost',kind:'strike'})|0; }catch(e){}
+		try{ if(INVASIONS && INVASIONS.damageAt && INVASIONS.damageAt(Math.floor(x),Math.floor(y),amount,{source:'ghost'})) hits++; }catch(e){}
+		return hits;
 	}
 };
 if(MM.ghostMode){ try{ GHOST_CLIENT.boot(MM.ghostBridge); }catch(e){ console.warn('ghost client boot failed',e); } }

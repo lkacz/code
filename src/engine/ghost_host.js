@@ -31,7 +31,7 @@ if(MMR && !MMR.ghostDreadAt){
 	};
 }
 
-const CAD = { hero: 66, wfx: 66, mobs: 120, mobsFull: 3000, inv: 120, invFull: 3000, guard: 150, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 4000, prog: 1000 };
+const CAD = { hero: 66, wfx: 66, mobs: 120, mobsFull: 3000, inv: 120, invFull: 3000, guard: 150, body: 80, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 4000, prog: 1000 };
 const CHAT_MIN_MS = NET.CHAT.MIN_MS; // per-peer chat floor (shared with the client's local mirror)
 const ACT_POSE_TTL_MS = 6000; // an "active" pose vouches for the watcher this long
 const TILE_RESYNC_LIMIT = 3000;
@@ -69,7 +69,7 @@ const ghostHost = (function(){
 			snapCacheAt: 0,
 			sinceCache: [],
 			lastSnapAt: 0,
-			last: { hero: 0, heroKeepalive: 0, wfx: 0, mobs: 0, mobsFull: 0, inv: 0, invFull: 0, guard: 0, drops: 0, seasons: 0, infra: 0, presence: 0, reap: 0, prog: 0 },
+			last: { hero: 0, heroKeepalive: 0, wfx: 0, mobs: 0, mobsFull: 0, inv: 0, invFull: 0, guard: 0, body: 0, drops: 0, seasons: 0, infra: 0, presence: 0, reap: 0, prog: 0 },
 			auraOwners: [],
 			lastMobSig: null,
 			lastInvSig: null,
@@ -80,7 +80,8 @@ const ghostHost = (function(){
 			lastHeroSent: null,
 			infraDirty: true,
 			prevRenderHook: null,
-			stats: { tileMsgs: 0, snapshots: 0, buffs: 0, chats: 0, powers: 0, assists: 0, pings: 0 },
+			stats: { tileMsgs: 0, snapshots: 0, buffs: 0, chats: 0, powers: 0, assists: 0, pings: 0, playMines: 0, playPlaces: 0, playStrikes: 0 },
+			pbWas: false,
 			hiddenGids: new Set(), // per-watcher mute: THIS host's display only, never the relay
 			actionFx: [], // visible feedback for watcher deeds: labels, rings, ping markers
 			assistQueue: NET.createAssistQueue(),
@@ -123,6 +124,7 @@ const ghostHost = (function(){
 		if(MMR){
 			MMR.ghostHostTile = null;
 			MMR.ghostSpook = null;
+			MMR.coopBodies = []; // no session, no embodied guests — creatures stop checking
 			if(session.prevRenderHook) MMR.onTileRenderChanged = session.prevRenderHook;
 		}
 		session = null;
@@ -148,6 +150,8 @@ const ghostHost = (function(){
 			ghosts: entries().length,
 			activeGhosts: session ? entries().filter(e => e.actUntil > t).length : 0,
 			viewers: session ? entries().map(e => ({ gid: e.gid, name: e.name, mode: e.mode, avatar: e.avatar, active: e.actUntil > t, charge: +(e.charge || 0).toFixed(1), assistant: !!e.assistant, level: e.level || 1 })) : [],
+			players: session ? entries().filter(e => e.body).length : 0,
+			bodies: session ? entries().filter(e => e.body).map(e => ({ gid: e.gid, x: +e.body.x.toFixed(2), y: +e.body.y.toFixed(2), hp: +e.body.hp.toFixed(1), mhp: e.body.maxHp, dead: !!e.body.dead, pouch: Object.assign({}, e.body.pouch) })) : [],
 			aura: (MMR && MMR.ghostAura) ? MMR.ghostAura.spirits.length : 0,
 			banned: session ? session.banned.size : 0,
 			boost: (MMR && MMR.socialBoost) ? Object.assign({}, MMR.socialBoost) : null,
@@ -247,6 +251,26 @@ const ghostHost = (function(){
 			// the watcher vouches for its own recent input; the flag times out fast,
 			// so a parked tab stops counting toward social boosts within seconds
 			if(pl.act) markActive(entry);
+		} else if(pl.t === 'ppose'){
+			// an embodied guest's own hero: the claimed pose is followed inside a
+			// per-axis speed envelope — an honest client never feels the clamp, a
+			// teleport hack rubber-bands. The pose doubles as the guest's camera so
+			// pings and powers keep working from the same tracked spot.
+			const b = entry.body;
+			if(b && !b.dead && Number.isFinite(pl.x) && Number.isFinite(pl.y)){
+				const dtS = Math.min(0.5, Math.max(0.016, (t - (b.lastPoseAt || t)) / 1000));
+				b.lastPoseAt = t;
+				const maxStep = NET.PLAY_RULES.MAX_SPEED * dtS;
+				b.x = NET.clampBodyStep(b.x, +pl.x, maxStep);
+				b.y = NET.clampBodyStep(b.y, +pl.y, maxStep);
+				b.vx = Number.isFinite(pl.vx) ? Math.max(-40, Math.min(40, +pl.vx)) : 0;
+				b.vy = Number.isFinite(pl.vy) ? Math.max(-40, Math.min(40, +pl.vy)) : 0;
+				b.f = pl.f < 0 ? -1 : 1;
+			}
+			if(Number.isFinite(pl.x) && Number.isFinite(pl.y)) entry.cam = { x: +pl.x, y: +pl.y };
+			if(pl.act) markActive(entry);
+		} else if(pl.t === 'pact'){
+			handlePlayAct(s, entry, pl);
 		} else if(pl.t === 'buff'){
 			handleBuff(s, entry, pl);
 		} else if(pl.t === 'needMobs'){
@@ -365,6 +389,7 @@ const ghostHost = (function(){
 		if(t - s.last.mobs >= CAD.mobs) mobTick(s, t);
 		if(t - s.last.inv >= CAD.inv) invTick(s, t);
 		if(t - s.last.guard >= CAD.guard) guardTick(s, t);
+		if(t - s.last.body >= CAD.body) bodyTick(s, t);
 		if(t - s.last.drops >= CAD.drops) dropTick(s, t);
 		if(t - s.last.seasons >= CAD.seasons) seasonTick(s, t);
 		if(s.infraDirty && t - s.last.infra >= CAD.infra) infraTick(s, t);
@@ -475,7 +500,7 @@ const ghostHost = (function(){
 	function handleBuff(s, entry, pl){
 		if(!NET.validBuffKind(pl.kind)){ entry.peer.send({ t: 'buffAck', kind: pl.kind, ok: false, waitMs: 0 }); return; }
 		markActive(entry);
-		if(entry.mode !== 'full'){ entry.peer.send({ t: 'buffAck', kind: pl.kind, ok: false, waitMs: 0, reason: 'perm' }); return; }
+		if(!NET.modeAllows(entry.mode, 'full')){ entry.peer.send({ t: 'buffAck', kind: pl.kind, ok: false, waitMs: 0, reason: 'perm' }); return; }
 		const verdict = s.ledger.tryUse(entry.gid, pl.kind, Date.now());
 		entry.peer.send({ t: 'buffAck', kind: pl.kind, ok: verdict.ok, waitMs: verdict.waitMs });
 		if(!verdict.ok) return;
@@ -502,7 +527,7 @@ const ghostHost = (function(){
 	// --- short texts (host-moderated, profanity-filtered) --------------------------------
 	function handleChat(s, entry, pl){
 		markActive(entry);
-		if(!entry.hello || (entry.mode !== 'chat' && entry.mode !== 'full')) return;
+		if(!entry.hello || !NET.modeAllows(entry.mode, 'chat')) return;
 		const t = now();
 		if(t - entry.lastChatAt < CHAT_MIN_MS) return;
 		const res = NET.filterChat(pl.text);
@@ -526,7 +551,7 @@ const ghostHost = (function(){
 	function handlePing(s, entry){
 		markActive(entry);
 		const t = now();
-		if(!entry.hello || entry.mode === 'watch' || !entry.cam) return;
+		if(!entry.hello || !NET.modeAllows(entry.mode, 'chat') || !entry.cam) return;
 		if(t - (entry.lastPingAt || 0) < NET.PING.MIN_MS) return;
 		entry.lastPingAt = t;
 		s.stats.pings++;
@@ -565,7 +590,7 @@ const ghostHost = (function(){
 		if(!NET.validPowerKind(kind)) return;
 		const rule = NET.POWER_RULES[kind];
 		const t = now();
-		if(entry.mode !== 'full'){ entry.peer.send({ t: 'powerAck', kind, ok: false, reason: 'perm', charge: entry.charge }); return; }
+		if(!NET.modeAllows(entry.mode, 'full')){ entry.peer.send({ t: 'powerAck', kind, ok: false, reason: 'perm', charge: entry.charge }); return; }
 		if(!entry.cam){ entry.peer.send({ t: 'powerAck', kind, ok: false, reason: 'nopos', charge: entry.charge }); return; }
 		if(entry.charge < rule.cost){ entry.peer.send({ t: 'powerAck', kind, ok: false, reason: 'charge', charge: entry.charge }); return; }
 		const readyAt = (entry.powerCd && entry.powerCd[kind]) || 0;
@@ -605,6 +630,142 @@ const ghostHost = (function(){
 		}
 	}
 
+	// --- play mode: embodied guests (full multiplayer) --------------------------------------
+	// The ghost ladder gains a top rung: a viewer promoted to `play` gets an OWN
+	// hero in this world — moving on the guest's machine (guest-authoritative pose
+	// inside a speed envelope), everything else host-authoritative: vitals, pouch,
+	// and every world edit go through the validated bridge seams. The ghost tiers
+	// below stay untouched — spectating remains the default door.
+	function spawnBody(s, entry){
+		const p = bridge.player;
+		entry.body = {
+			x: p.x, y: p.y - 0.2, vx: 0, vy: 0, f: 1,
+			hp: NET.PLAY_RULES.MAX_HP, maxHp: NET.PLAY_RULES.MAX_HP,
+			pouch: {}, dead: false, respawnAt: 0, invulUntil: now() + 1500,
+			mine: null, lastMineAt: 0, lastPlaceAt: 0, lastStrikeAt: 0, lastPoseAt: 0, disp: null
+		};
+		sendVitals(s, entry);
+		try{ bridge.msg('🎮 ' + (entry.name || 'Duch') + ' wciela się w twoją warstwę!'); }catch(e){ /* fine */ }
+		updateUi();
+	}
+	function despawnBody(s, entry){
+		if(!entry.body) return;
+		entry.body = null;
+		entry.bodyLike = null;
+		updateUi();
+	}
+	function sendVitals(s, entry){
+		const b = entry.body;
+		if(!b) return;
+		try{ entry.peer.send({ t: 'pvit', hp: +b.hp.toFixed(1), mhp: b.maxHp, dead: b.dead ? 1 : 0, pouch: Object.assign({}, b.pouch) }); }catch(e){ /* going away */ }
+	}
+	// The one damage inlet for a guest body (mob contact today, hazards tomorrow):
+	// i-frames live HERE, knockback is advisory (the guest applies the impulse to
+	// its locally-simulated hero), death is host-decided and host-respawned.
+	function hurtBody(s, entry, amount, sx, sy, cause){
+		const b = entry.body;
+		if(!b || b.dead) return;
+		const t = now();
+		if(t < (b.invulUntil || 0)) return;
+		b.invulUntil = t + NET.PLAY_RULES.HURT_INVUL_MS;
+		b.hp = Math.max(0, b.hp - Math.max(1, Number(amount) || 1));
+		let kbx = 0;
+		if(Number.isFinite(sx)){ const dx = b.x - sx; const d = Math.abs(dx) || 1; kbx = (dx / d) * 5; }
+		try{ entry.peer.send({ t: 'pdmg', hp: +b.hp.toFixed(1), kbx: +kbx.toFixed(2), kby: -3.2, cause: String(cause || 'mob').slice(0, 16) }); }catch(e){ /* fine */ }
+		sendVitals(s, entry);
+		if(b.hp <= 0){
+			b.dead = true;
+			b.respawnAt = t + NET.PLAY_RULES.RESPAWN_MS;
+			try{ bridge.msg('💀 ' + (entry.name || 'Duch') + ' poległ — odrodzi się za ' + Math.round(NET.PLAY_RULES.RESPAWN_MS / 1000) + ' s'); }catch(e){ /* fine */ }
+		}
+	}
+	// Every world-touching intent lands here and nowhere else. Reach, rate, pouch
+	// and permission are checked against HOST state; the bridge seams re-validate
+	// world truth (whitelist, support, overlap) before a single tile changes.
+	function handlePlayAct(s, entry, pl){
+		markActive(entry);
+		const b = entry.body;
+		if(!b || entry.mode !== 'play'){ entry.peer.send({ t: 'pactAck', a: pl.a, ok: false, reason: 'perm' }); return; }
+		if(b.dead){ entry.peer.send({ t: 'pactAck', a: pl.a, ok: false, reason: 'dead' }); return; }
+		if(!NET.validPlayAction(pl.a)){ entry.peer.send({ t: 'pactAck', a: pl.a, ok: false, reason: 'action' }); return; }
+		const tx = Math.floor(Number(pl.x)), ty = Math.floor(Number(pl.y));
+		if(!Number.isFinite(tx) || !Number.isFinite(ty)) return;
+		if(!NET.playReachOk(b.x, b.y, tx, ty)){ entry.peer.send({ t: 'pactAck', a: pl.a, ok: false, reason: 'reach', x: tx, y: ty }); return; }
+		const t = now();
+		if(pl.a === 'mine'){
+			if(t - b.lastMineAt < NET.PLAY_RULES.MINE_MS) return; // silent — the hold-to-mine loop just retries
+			b.lastMineAt = t;
+			// progress is HOST state per (body, cell): switching cells restarts it
+			if(!b.mine || b.mine.x !== tx || b.mine.y !== ty) b.mine = { x: tx, y: ty, n: 0 };
+			b.mine.n++;
+			if(b.mine.n < NET.PLAY_RULES.MINE_TICKS){
+				entry.peer.send({ t: 'pactAck', a: 'mine', ok: true, progress: +(b.mine.n / NET.PLAY_RULES.MINE_TICKS).toFixed(2), x: tx, y: ty });
+				return;
+			}
+			b.mine = null;
+			let res = null;
+			try{ res = bridge.ghostPlayMineAt(tx, ty); }catch(e){ res = { ok: false, reason: 'error' }; }
+			if(res && res.ok){
+				if(res.key) NET.pouchAdd(b.pouch, res.key, 1);
+				s.stats.playMines++;
+				sendVitals(s, entry);
+			}
+			entry.peer.send({ t: 'pactAck', a: 'mine', ok: !!(res && res.ok), reason: res && res.reason, x: tx, y: ty, key: (res && res.key) || null });
+		} else if(pl.a === 'place'){
+			if(t - b.lastPlaceAt < NET.PLAY_RULES.PLACE_MS) return;
+			b.lastPlaceAt = t;
+			const key = typeof pl.key === 'string' ? pl.key.slice(0, 24) : '';
+			if(!(Number(b.pouch[key]) > 0) || !Object.prototype.hasOwnProperty.call(b.pouch, key)){
+				entry.peer.send({ t: 'pactAck', a: 'place', ok: false, reason: 'cost', x: tx, y: ty });
+				return;
+			}
+			let res = null;
+			try{ res = bridge.ghostPlayPlaceAt(tx, ty, key, { x: b.x, y: b.y, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H }); }catch(e){ res = { ok: false, reason: 'error' }; }
+			if(res && res.ok){
+				NET.pouchTake(b.pouch, key, 1);
+				s.stats.playPlaces++;
+				sendVitals(s, entry);
+			}
+			entry.peer.send({ t: 'pactAck', a: 'place', ok: !!(res && res.ok), reason: res && res.reason, x: tx, y: ty });
+		} else if(pl.a === 'strike'){
+			if(t - b.lastStrikeAt < NET.PLAY_RULES.STRIKE_MS) return;
+			b.lastStrikeAt = t;
+			let hits = 0;
+			try{ hits = bridge.ghostPlayStrike(tx + 0.5, ty + 0.5, NET.PLAY_RULES.STRIKE_R, NET.PLAY_RULES.STRIKE_DMG) | 0; }catch(e){ hits = 0; }
+			if(hits > 0) s.stats.playStrikes++;
+			entry.peer.send({ t: 'pactAck', a: 'strike', ok: true, hits, x: tx, y: ty });
+		}
+	}
+	// The body plane: every peer (players AND spectators) sees the embodied guests
+	// move; the publisher also feeds MM.coopBodies, the one hook hostile creatures
+	// read (empty array in solo play = zero cost, exactly like the ghost aura).
+	function bodyTick(s, t){
+		s.last.body = t;
+		const list = [];
+		const pub = [];
+		for(const entry of entries()){
+			const b = entry.body;
+			if(!b) continue;
+			if(b.dead && t >= b.respawnAt){
+				b.dead = false;
+				b.hp = b.maxHp;
+				b.x = bridge.player.x; b.y = bridge.player.y - 0.2;
+				b.vx = 0; b.vy = 0;
+				b.invulUntil = t + 1500;
+				try{ entry.peer.send({ t: 'prespawn', x: +b.x.toFixed(2), y: +b.y.toFixed(2) }); }catch(e){ /* fine */ }
+				sendVitals(s, entry);
+			}
+			list.push([entry.gid, entry.name || 'Duch', +b.x.toFixed(2), +b.y.toFixed(2), +(b.vx || 0).toFixed(2), +(b.vy || 0).toFixed(2), b.f < 0 ? -1 : 1, +b.hp.toFixed(1), b.maxHp, b.dead ? 1 : 0]);
+			if(!b.dead){
+				if(!entry.bodyLike) entry.bodyLike = { w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, dead: false, hurt: (a, sx, sy, c) => hurtBody(s, entry, a, sx, sy, c) };
+				entry.bodyLike.x = b.x; entry.bodyLike.y = b.y; entry.bodyLike.dead = false;
+				pub.push(entry.bodyLike);
+			}
+		}
+		if(MMR) MMR.coopBodies = pub;
+		if(list.length || s.pbWas){ broadcast({ t: 'pb', list }); s.pbWas = list.length > 0; }
+	}
+
 	// --- assistants: delegated watchers craft and manage the hero's gear -------------------
 	// SEVERAL may hold the seat at once. Requests are executed serially right here, so
 	// two assistants racing for the last resources resolve naturally: first one wins,
@@ -613,7 +774,7 @@ const ghostHost = (function(){
 	function handleAssist(s, entry, pl){
 		markActive(entry);
 		const t = now();
-		if(!entry.assistant || entry.mode !== 'full'){ entry.peer.send({ t: 'assistAck', ok: false, reason: 'perm' }); return; }
+		if(!entry.assistant || !NET.modeAllows(entry.mode, 'full')){ entry.peer.send({ t: 'assistAck', ok: false, reason: 'perm' }); return; }
 		if(!NET.validAssistAction(pl.a)){ entry.peer.send({ t: 'assistAck', ok: false, reason: 'action' }); return; }
 		if(t - (entry.lastAssistActAt || 0) < NET.ASSIST_LIMITS.RATE_MS){ entry.peer.send({ t: 'assistAck', ok: false, reason: 'rate', a: pl.a }); return; }
 		entry.lastAssistActAt = t;
@@ -666,7 +827,7 @@ const ghostHost = (function(){
 		let hit = false;
 		for(const entry of entries()){
 			if(entry.gid !== gid) continue;
-			if(on && entry.mode !== 'full') return false; // an assistant must be allowed to influence
+			if(on && !NET.modeAllows(entry.mode, 'full')) return false; // an assistant must be allowed to influence
 			entry.assistant = !!on;
 			entry.peer.send({ t: 'assistant', on: !!on });
 			if(entry.assistant) sendAssistState(session, entry, true);
@@ -727,8 +888,9 @@ const ghostHost = (function(){
 			for(const e of session.peers.values()){
 				if(!e.hello || e.actUntil <= t) continue;
 				active++;
-				// only ACTIVE watchers haunt the world (idle tabs are furniture)
-				if(e.cam){ spirits.push({ x: e.cam.x, y: e.cam.y }); owners.push(e); }
+				// only ACTIVE watchers haunt the world (idle tabs are furniture) — and an
+				// EMBODIED guest is a physical presence, not a phantom: no dread aura
+				if(e.cam && !e.body){ spirits.push({ x: e.cam.x, y: e.cam.y }); owners.push(e); }
 			}
 		}
 		const boost = NET.socialBoosts(active);
@@ -786,6 +948,10 @@ const ghostHost = (function(){
 		for(const entry of entries()){
 			if(entry.gid !== gid) continue;
 			entry.mode = mode;
+			// the play rung is embodied: granting it spawns the guest's hero at the
+			// host, revoking it (any downgrade) removes the body — spectating remains
+			if(mode === 'play' && !entry.body) spawnBody(session, entry);
+			else if(mode !== 'play' && entry.body) despawnBody(session, entry);
 			entry.peer.send({ t: 'perm', mode });
 			hit = true;
 		}
@@ -919,6 +1085,29 @@ const ghostHost = (function(){
 		}
 		ctx.restore();
 	}
+	// Name tag + hp sliver over an embodied guest — shared with the client, which
+	// paints the host hero and fellow players through the same function.
+	function paintBodyTag(ctx, TILE, x, y, name, vit, chat){
+		ctx.save();
+		ctx.font = 'bold ' + Math.max(7, TILE * 0.16) + 'px system-ui';
+		ctx.textAlign = 'center';
+		ctx.fillStyle = '#aef0c2';
+		ctx.strokeStyle = 'rgba(6,12,20,0.8)';
+		ctx.lineWidth = 2.5;
+		const ty = (y - 0.95) * TILE;
+		ctx.strokeText(name, x * TILE, ty);
+		ctx.fillText(name, x * TILE, ty);
+		if(vit && Number.isFinite(vit.hp) && Number.isFinite(vit.maxHp) && vit.hp < vit.maxHp){
+			const w = TILE * 1.1, h = 3;
+			const bx = x * TILE - w / 2, by = ty + 3;
+			ctx.fillStyle = 'rgba(0,0,0,0.55)';
+			ctx.fillRect(bx, by, w, h);
+			ctx.fillStyle = '#58d68d';
+			ctx.fillRect(bx, by, w * Math.max(0, Math.min(1, vit.hp / vit.maxHp)), h);
+		}
+		ctx.restore();
+		if(chat && chat.until > (Date.now ? Date.now() : 0) && chat.text) paintChatBubble(ctx, TILE, x, y - 1.5, chat.text);
+	}
 	// Shared bubble painter (tile coords; y = the bubble TOP). The client reuses it
 	// for fellow spirits and for the host's own words over the hero replica.
 	function paintChatBubble(ctx, TILE, x, y, text){
@@ -988,6 +1177,18 @@ const ghostHost = (function(){
 		session.lastSpiritDrawT = t; // the second pass of a frame sees dt≈0 — no double-glide
 		const p = bridge ? bridge.player : null;
 		for(const entry of entries()){
+			// an embodied guest renders as a HERO body, not a spirit — the real
+			// painter via the bridge field swap; while dead it reverts to a spirit
+			// (its ghost, literally) until the host respawns it
+			if(entry.body && !entry.body.dead){
+				const b = entry.body;
+				if(!b.disp) b.disp = { x: b.x, y: b.y };
+				b.disp.x += (b.x - b.disp.x) * ease;
+				b.disp.y += (b.y - b.disp.y) * ease;
+				if(wantBody && bridge.drawHeroAt) bridge.drawHeroAt({ x: b.disp.x, y: b.disp.y, vx: b.vx, vy: b.vy, facing: b.f, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H });
+				if(wantText) paintBodyTag(ctx, TILE, b.disp.x, b.disp.y, entry.name || 'Duch', b, viewPrefs.bubbles ? entry.lastChat : null);
+				continue;
+			}
 			if(!entry.cam) continue;
 			// eased display position — pose packets land at ~6 Hz, the glide hides it
 			if(!entry.camPos) entry.camPos = { x: entry.cam.x, y: entry.cam.y };
@@ -1012,8 +1213,11 @@ const ghostHost = (function(){
 	const PERM_KEY = 'mm_ghost_perm_v1';
 	const APPROVE_KEY = 'mm_ghost_approve_v1';
 	const VIEW_KEY = 'mm_ghost_view_v1';
-	const MODE_LABEL = { watch: 'tylko ogląda', chat: '+ czat', full: '+ czat i wpływ' };
+	const MODE_LABEL = { watch: 'tylko ogląda', chat: '+ czat', full: '+ czat i wpływ', play: '🎮 gra (wcielenie)' };
 	let defaultMode = 'full'; // what a viewer gets on join, until the host says otherwise
+	// the embodied rung is NEVER a door policy: play is granted per viewer, by hand —
+	// an embodied stranger by default would be a griefing invitation
+	const DEFAULT_MODES = NET.PERMISSION_MODES.filter(m => m !== 'play');
 	let approvalMode = false; // ON: assistant requests wait for the host's Zatwierdź
 	// what of the audience the host wants ON SCREEN — display only, mechanics never care
 	const viewPrefs = { spirits: true, bubbles: true, fx: true };
@@ -1032,7 +1236,7 @@ const ghostHost = (function(){
 		return viewPrefs[key];
 	}
 	function setDefaultMode(mode){
-		if(!NET.validPermissionMode(mode)) return false;
+		if(!DEFAULT_MODES.includes(mode)) return false;
 		defaultMode = mode;
 		try{ localStorage.setItem(PERM_KEY, mode); }catch(e){ /* storage may be locked down */ }
 		updateUi();
@@ -1209,7 +1413,7 @@ const ghostHost = (function(){
 			});
 		}
 		const def = el.querySelector('#ghostPanelDefault');
-		for(const val of NET.PERMISSION_MODES){
+		for(const val of DEFAULT_MODES){
 			const o = document.createElement('option');
 			o.value = val; o.textContent = MODE_LABEL[val] || val;
 			def.appendChild(o);
@@ -1378,7 +1582,7 @@ const ghostHost = (function(){
 		perks.textContent = 'Uprawnienia: „tylko ogląda” = sama obecność (płoszy stwory, wzmacnia). „+ czat” dopuszcza krótkie wiadomości i wskazywanie miejsc 📍 (filtr wulgaryzmów). „+ czat i wpływ” odblokowuje doping, błogosławieństwa i moce (popłoch/mróz/grom). 🛠 mianuje asystentów (może być kilku — gdy rywalizują o surowce, wygrywa szybszy), z zatwierdzaniem ich propozycje czekają na twoje Zatwierdź. Widok: „duchy/dymki/działania” chowają awatary, teksty i efekty (👁/🙈 przy widzu chowa jednego); Enter = szybka wiadomość do widzów.';
 	}
 
-	const api = { wire, start, stop, active, link, frame, metrics, drawSpirits, paintSpirit, paintChatBubble, say, setViewerMode, banViewer, setAssistant, setDefaultMode, setApprovalMode, setViewPref, setViewerHidden, approveAssist, rejectAssist, socialBoost: updateSocialBoost, openPanel: () => togglePanel(true) };
+	const api = { wire, start, stop, active, link, frame, metrics, drawSpirits, paintSpirit, paintChatBubble, paintBodyTag, say, setViewerMode, banViewer, setAssistant, setDefaultMode, setApprovalMode, setViewPref, setViewerHidden, approveAssist, rejectAssist, socialBoost: updateSocialBoost, openPanel: () => togglePanel(true) };
 	if(MMR) MMR.ghostHost = api;
 	if(typeof window !== 'undefined'){
 		window.__mmGhostHostStart = (room, opts) => start(Object.assign({ room }, opts || {}));

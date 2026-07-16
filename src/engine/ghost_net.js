@@ -47,9 +47,75 @@ export function socialBoosts(activeViewers){
 }
 
 // Watcher permission ladder (host-controlled, per viewer):
-//   watch — presence only; chat — may also send short texts; full — may also buff
-export const PERMISSION_MODES = ['watch', 'chat', 'full'];
+//   watch — presence only; chat — may also send short texts; full — may also buff;
+//   play  — EMBODIED: an own hero in the host's world (move, mine, build, fight).
+// The ladder is strictly inclusive: play ⊇ full ⊇ chat ⊇ watch, so promoting a
+// ghost to a player never takes away a spectator ability — the ghost system
+// remains the default and the safe floor.
+export const PERMISSION_MODES = ['watch', 'chat', 'full', 'play'];
 export function validPermissionMode(m){ return PERMISSION_MODES.includes(m); }
+export function modeAllows(mode, need){
+	const have = PERMISSION_MODES.indexOf(mode);
+	const want = PERMISSION_MODES.indexOf(need);
+	return have >= 0 && want >= 0 && have >= want;
+}
+
+// --- play mode: the embodied guest ------------------------------------------------
+// Authority split (the whole safety story in two lines): the GUEST simulates its
+// own hero locally (movement feels instant), the HOST owns everything that matters
+// — vitals, pouch, every world edit — and validates each intent against reach,
+// rate and inventory. A hostile client can therefore spam requests, never effects.
+export const PLAY_RULES = {
+	REACH: 5,          // Chebyshev build/mine reach in tiles (mirrors the host's PLACE_REACH)
+	MINE_MS: 150,      // per-body floor between mine intents
+	MINE_TICKS: 3,     // intents to break one tile (~0.5 s/tile at the floor)
+	PLACE_MS: 180,     // per-body floor between placements
+	STRIKE_MS: 550,    // melee cooldown
+	STRIKE_R: 1.4,     // melee radius around the struck point
+	STRIKE_DMG: 7,
+	POSE_MS: 80,       // guest pose uplink cadence
+	MAX_SPEED: 30,     // tiles/s envelope — a claimed pose beyond it is clamped, not trusted
+	BODY_W: 0.62, BODY_H: 0.92,
+	MAX_HP: 80,
+	HURT_INVUL_MS: 600,
+	RESPAWN_MS: 6000,
+	POUCH_CAP: 999    // per-resource ceiling in the host-owned pouch
+};
+export const PLAY_ACTIONS = ['mine', 'place', 'strike'];
+export function validPlayAction(a){ return PLAY_ACTIONS.includes(a); }
+export function playReachOk(bx, by, tx, ty, reach){
+	if(!Number.isFinite(bx) || !Number.isFinite(by) || !Number.isFinite(tx) || !Number.isFinite(ty)) return false;
+	const r = Number.isFinite(reach) ? reach : PLAY_RULES.REACH;
+	return Math.abs(tx - Math.floor(bx)) <= r && Math.abs(ty - Math.floor(by)) <= r;
+}
+// Per-axis movement envelope: the body follows the guest's claim at most MAX_SPEED
+// fast. An honest guest never hits the clamp; a teleport hack rubber-bands.
+export function clampBodyStep(cur, claimed, maxStep){
+	if(!Number.isFinite(claimed)) return cur;
+	if(!Number.isFinite(cur)) return claimed;
+	const step = Math.max(0, Number(maxStep) || 0);
+	const d = claimed - cur;
+	if(d > step) return cur + step;
+	if(d < -step) return cur - step;
+	return claimed;
+}
+// The pouch is host state fed only by validated deeds — clamped both ways so a
+// replayed credit can neither overflow nor a double-spend go negative.
+export function pouchAdd(pouch, key, n){
+	if(!pouch || typeof key !== 'string' || !key || key === '__proto__') return 0;
+	const cur = Number(pouch[key]) || 0;
+	const next = Math.max(0, Math.min(PLAY_RULES.POUCH_CAP, cur + Math.floor(Number(n) || 0)));
+	pouch[key] = next;
+	return next;
+}
+export function pouchTake(pouch, key, n){
+	if(!pouch || typeof key !== 'string' || !Object.prototype.hasOwnProperty.call(pouch, key)) return false;
+	const want = Math.max(1, Math.floor(Number(n) || 1));
+	const cur = Number(pouch[key]) || 0;
+	if(cur < want) return false;
+	pouch[key] = cur - want;
+	return true;
+}
 
 // --- ghost dread: creatures shy away from an ACTIVE spirit ----------------------
 // The living world can feel a watcher hovering: within DREAD_R the creature
@@ -794,7 +860,8 @@ export function joinRoom(room, opts){
 // every Node test still passes. ghost-sim pins the two lists against each other.
 const api = {
 	GHOST_PROTO, BUFF_RULES, MQTT_BROKERS,
-	SOCIAL_RULES, socialBoosts, PERMISSION_MODES, validPermissionMode, AVATARS, validAvatar, CHAT, filterChat,
+	SOCIAL_RULES, socialBoosts, PERMISSION_MODES, validPermissionMode, modeAllows, AVATARS, validAvatar, CHAT, filterChat,
+	PLAY_RULES, PLAY_ACTIONS, validPlayAction, playReachOk, clampBodyStep, pouchAdd, pouchTake,
 	SPIRIT_AVOID, spiritLift, PING,
 	DREAD, dreadAt, POWER_RULES, POWER_CHARGE, validPowerKind, chargeAfter, ASSIST_ACTIONS, validAssistAction,
 	ASSIST_LIMITS, clampCraftCount, createAssistQueue,
