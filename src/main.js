@@ -16138,6 +16138,19 @@ MM.ghostBridge={
 		const ok=!!(W.spawnCoopArrow && W.spawnCoopArrow(body,aimX,aimY,{dmg:spec.dmg,speed:spec.speed}));
 		return {ok, hits:0, ranged:true};
 	},
+	// Host gifting (owner ruling: host gifts only): the resource must really leave
+	// the host inventory — key whitelisted against the resource registry, count
+	// bounded, deducted here — before ghost_host credits the guest pouch.
+	ghostGiftTake:(key,n)=>{
+		const count=Math.max(1,Math.min(99,Math.floor(Number(n)||0)));
+		const def=RESOURCE_DEFS.find(r=>r.key===key);
+		if(!def) return {ok:false, reason:'key'};
+		if(!((inv[key]|0) >= count)) return {ok:false, reason:'cost'};
+		inv[key]-=count;
+		try{ updateInventory(); }catch(e){}
+		noteSaveActivity();
+		return {ok:true, label:def.label||key};
+	},
 	// Tool parity for guest mining: the tick need per tile derives from the SAME
 	// hardness the local miner uses (need = INFO.hp/6 seconds at tool speed 1); a
 	// guest digs with the basic pick and each accepted intent is one MINE_MS beat.

@@ -201,16 +201,23 @@ new `MM.ghostHost._debugBody` live-body seam instead of stalling 20 s).
 and water-pressure laws, per-guest gravestone on death (`respawn_travel.js`
 precedent — today: respawn at host, pouch intact).
 
-### Wave E — Fidelity & polish
-- **Water sub-tile partials** aren't replicated → a swimming guest diverges
-  (cosmetic but visible). Windowed partial replication around each body, or host
-  arbitration of swim state.
-- **Position reconciliation:** smooth correction instead of the >6–8-tile hard snap.
-- **Per-body cosmetics:** `drawHeroAt` currently bleeds the host's tool/cape/
-  customization onto every remote body. Stream per-guest customization
-  (`mm_ghost_name_v1`-style client prefs, display-only).
-- **Design rulings needed from the owner** (ask, then implement + pin): PvP between
-  guests? trading? shared vs per-guest fog?
+### Wave E — Design rulings & polish — 🟡 RULINGS SHIPPED (2026-07-16)
+**Owner rulings received, implemented and pinned:**
+- **PvP = duels by consent.** A `duel` intent registers a challenge (`s.duelAsks`,
+  30 s TTL); the duel starts ONLY on the mutual handshake, is host-arbitrated end
+  to end, resolves MELEE blows only (arrows stay creatures-only for now), never
+  touches the host hero, and ends on death, demotion or leaving. Client: ⚔ button
+  (nearest player), toasts, `_playDuel` seam. QA scene 10o: no consent = no
+  scratch; handshake = the sword's exact damage; host untouched; demote forfeits.
+- **Trading = host gifts only.** `MM.ghostHost.giftResource(gid, key, n)` (🎁 in
+  the viewer row) — the resource must really leave the HOST inventory
+  (`ghostGiftTake` bridge seam: whitelisted key, bounded count) before the guest
+  pouch is credited. Guests cannot move items between themselves.
+- **Fog = shared.** The standing contract (guest replica reveals through the one
+  normal reveal path into the host-mirrored fog) is now pinned; no per-guest fog.
+**Still open (polish):** water sub-tile partials around bodies, smooth position
+reconciliation (today: >6–8-tile hard snap), per-body cosmetics (`drawHeroAt`
+bleeds the host's tool/cape onto remote bodies), duel arrows, gift-a-weapon.
 
 ### Wave F — Infra reliability — ✅ DONE (2026-07-16)
 Shipped: the host tracks sim liveness (`s.lastSimAt` — only the rAF loop stamps

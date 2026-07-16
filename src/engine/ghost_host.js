@@ -89,6 +89,7 @@ const ghostHost = (function(){
 			assistStateAt: 0,
 			lastChargeAt: 0,
 			lastSimAt: now(), // a fresh session is not "idle" before its first sim frame
+			duelAsks: new Map(), // 'challenger>target' → ts; a duel starts only on MUTUAL asks
 			listen: null
 		};
 		s.listen = NET.hostListen(room, { rtc: opts.rtc !== false, onPeer: (peer) => onPeer(s, peer) });
@@ -716,8 +717,25 @@ const ghostHost = (function(){
 		try{ bridge.msg('🎮 ' + (entry.name || 'Duch') + ' wciela się w twoją warstwę!'); }catch(e){ /* fine */ }
 		updateUi();
 	}
+	// --- consensual duels (owner ruling): PvP between guests exists ONLY as a duel
+	// both sides asked for. Host-arbitrated end to end: mutual-consent handshake,
+	// melee-only resolution in the attack branch, ended by death, demotion or leave.
+	// The HOST hero is never a duel target, and nothing here persists (keepBody
+	// copies pouch + weapons only).
+	function endDuel(s, entry, silent){
+		const b = entry.body;
+		if(!b || !b.duelWith) return;
+		const otherGid = b.duelWith;
+		b.duelWith = null;
+		for(const e of entries()){
+			if(e.gid === otherGid && e.body && e.body.duelWith === entry.gid) e.body.duelWith = null;
+		}
+		broadcast({ t: 'duel', a: entry.gid, b: otherGid, on: 0 });
+		if(!silent){ try{ bridge.msg('⚔ Pojedynek zakończony'); }catch(e){ /* fine */ } }
+	}
 	function despawnBody(s, entry){
 		if(!entry.body) return;
+		endDuel(s, entry, true); // a demoted/leaving duelist forfeits quietly
 		keepBody(entry); // demote/leave: the pouch and earned arsenal await this gid's return
 		entry.body = null;
 		entry.bodyLike = null;
@@ -745,6 +763,7 @@ const ghostHost = (function(){
 		if(b.hp <= 0){
 			b.dead = true;
 			b.respawnAt = t + NET.PLAY_RULES.RESPAWN_MS;
+			if(b.duelWith && session) endDuel(session, entry); // death settles a duel
 			try{ bridge.msg('💀 ' + (entry.name || 'Duch') + ' poległ — odrodzi się za ' + Math.round(NET.PLAY_RULES.RESPAWN_MS / 1000) + ' s'); }catch(e){ /* fine */ }
 		}
 	}
@@ -777,12 +796,57 @@ const ghostHost = (function(){
 			let res = null;
 			try{ res = bridge.ghostPlayAttack({ x: b.x, y: b.y, facing: b.f < 0 ? -1 : 1 }, spec, ax, ay); }catch(e){ res = null; }
 			const hits = (res && res.hits) | 0;
+			// consensual duel (owner ruling): a MELEE swing that reaches the consenting
+			// partner wounds it too — bodies only, never the host hero, never without
+			// the mutual handshake below. Arrows stay creatures-only for now.
+			let duelHit = 0;
+			if(spec.melee && b.duelWith){
+				for(const e of entries()){
+					if(e.gid !== b.duelWith || !e.body || e.body.dead) continue;
+					if(e.body.duelWith !== entry.gid) break; // symmetry or nothing
+					const near = Math.abs(e.body.x - b.x) <= spec.reach + 0.6 && Math.abs(e.body.y - b.y) <= spec.reach + 0.6;
+					const aimed = Math.abs(e.body.x - ax) < 1.2 && Math.abs(e.body.y - ay) < 1.4;
+					if(near && aimed){
+						hurtBody(s, e, Math.max(1, 2 + spec.dmg), b.x, b.y, 'duel');
+						duelHit = 1;
+					}
+					break;
+				}
+			}
 			if(hits > 0){
 				s.stats.playStrikes++;
 				sendDeed(entry, 'hit', 1); // guest marksmanship pays guest XP — never host progression
 			}
 			if(spec.ammo) sendVitals(s, entry); // the spent arrow shows up in the pouch chips
-			entry.peer.send({ t: 'pactAck', a: 'attack', ok: !!(res && res.ok), key, hits });
+			entry.peer.send({ t: 'pactAck', a: 'attack', ok: !!(res && res.ok), key, hits, duel: duelHit });
+			return;
+		}
+		if(pl.a === 'duel'){
+			// mutual-consent handshake: the duel begins ONLY when both sides asked for
+			// each other within the TTL — a unilateral claim registers a challenge and
+			// nothing else. The host arbitrates every step.
+			const tD = now();
+			if(tD - (b.lastDuelAt || 0) < NET.PLAY_RULES.DUEL_MS) return;
+			b.lastDuelAt = tD;
+			const target = typeof pl.gid === 'string' ? pl.gid.slice(0, 20) : '';
+			let te = null;
+			for(const e of entries()){ if(e.gid === target && e !== entry && e.body && !e.body.dead){ te = e; break; } }
+			if(!te){ entry.peer.send({ t: 'pactAck', a: 'duel', ok: false, reason: 'target' }); return; }
+			if(b.duelWith || te.body.duelWith){ entry.peer.send({ t: 'pactAck', a: 'duel', ok: false, reason: 'busy' }); return; }
+			for(const [k, ts] of s.duelAsks){ if(tD - ts > NET.PLAY_RULES.DUEL_TTL_MS) s.duelAsks.delete(k); }
+			const back = s.duelAsks.get(te.gid + '>' + entry.gid);
+			if(back !== undefined){
+				s.duelAsks.delete(te.gid + '>' + entry.gid);
+				b.duelWith = te.gid;
+				te.body.duelWith = entry.gid;
+				broadcast({ t: 'duel', a: entry.gid, b: te.gid, on: 1 });
+				try{ bridge.msg('⚔ Pojedynek: ' + (entry.name || 'Duch') + ' vs ' + (te.name || 'Duch')); }catch(e){ /* fine */ }
+				entry.peer.send({ t: 'pactAck', a: 'duel', ok: true, on: 1 });
+			} else {
+				s.duelAsks.set(entry.gid + '>' + te.gid, tD);
+				entry.peer.send({ t: 'pactAck', a: 'duel', ok: true, on: 0 }); // challenge registered, waiting for consent
+				try{ te.peer.send({ t: 'duelAsk', from: entry.gid, name: String(entry.name || 'Duch').slice(0, 24) }); }catch(e){ /* fine */ }
+			}
 			return;
 		}
 		if(pl.a === 'craft'){
@@ -1647,7 +1711,41 @@ const ghostHost = (function(){
 		ban.title = 'Wyrzuć i zablokuj tego widza do końca sesji';
 		ban.addEventListener('click', () => banViewer(entry.gid));
 		row.append(dot, nm, badge, sel, asst, mute, ban);
+		// gifting (owner ruling: host gifts only) — the host hands ITS OWN resources
+		// to an embodied guest's pouch; guests cannot move items between themselves
+		if(entry.body){
+			const gift = styledButton('🎁', 'border:none;border-radius:6px;background:rgba(74,160,90,.45);color:#fff;font-size:10px;font-weight:700;padding:3px 7px;cursor:pointer;');
+			gift.title = 'Podaruj temu graczowi surowce z twojego ekwipunku (np. "stone 10")';
+			gift.addEventListener('click', () => {
+				const raw = (typeof prompt === 'function') ? prompt('Co podarować? (np. "stone 10")', 'stone 5') : null;
+				if(!raw) return;
+				const m = String(raw).trim().match(/^([a-zA-Z_]+)\s+(\d{1,3})$/);
+				if(!m){ try{ bridge.msg('🎁 Format: "surowiec ilość", np. "stone 10"'); }catch(e){ /* fine */ } return; }
+				giftResource(entry.gid, m[1], +m[2]);
+			});
+			row.append(gift);
+		}
 		return row;
+	}
+	// Host gifting (owner ruling): host-authoritative end to end — the resource must
+	// really leave the HOST inventory (bridge seam validates key + count) before it
+	// lands in the guest pouch. No guest intent exists for this; only the host gives.
+	function giftResource(gid, key, n){
+		const s = session;
+		if(!s || !bridge) return false;
+		const count = Math.max(1, Math.min(NET.PLAY_RULES.GIFT_MAX, Math.floor(Number(n) || 0)));
+		let te = null;
+		for(const e of entries()){ if(e.gid === gid && e.body && !e.body.dead){ te = e; break; } }
+		if(!te){ try{ bridge.msg('🎁 Ten widz nie ma teraz bohatera w grze'); }catch(e){ /* fine */ } return false; }
+		let took = null;
+		try{ took = bridge.ghostGiftTake ? bridge.ghostGiftTake(key, count) : null; }catch(e){ took = null; }
+		if(!took || !took.ok){ try{ bridge.msg('🎁 Nie masz tylu: ' + key); }catch(e){ /* fine */ } return false; }
+		NET.pouchAdd(te.body.pouch, key, count);
+		keepBody(te);
+		sendVitals(s, te);
+		try{ te.peer.send({ t: 'gift', key, n: count, label: took.label || key }); }catch(e){ /* fine */ }
+		try{ bridge.msg('🎁 Podarowano ' + (took.label || key) + ' ×' + count + ' → ' + (te.name || 'Duch')); }catch(e){ /* fine */ }
+		return true;
 	}
 	function updateUi(){
 		if(typeof document === 'undefined') return;
@@ -1745,7 +1843,7 @@ const ghostHost = (function(){
 		perks.textContent = 'Uprawnienia: „tylko ogląda” = sama obecność (płoszy stwory, wzmacnia). „+ czat” dopuszcza krótkie wiadomości i wskazywanie miejsc 📍 (filtr wulgaryzmów). „+ czat i wpływ” odblokowuje doping, błogosławieństwa i moce (popłoch/mróz/grom). 🛠 mianuje asystentów (może być kilku — gdy rywalizują o surowce, wygrywa szybszy), z zatwierdzaniem ich propozycje czekają na twoje Zatwierdź. Widok: „duchy/dymki/działania” chowają awatary, teksty i efekty (👁/🙈 przy widzu chowa jednego); Enter = szybka wiadomość do widzów.';
 	}
 
-	const api = { wire, start, stop, active, link, frame, metrics, drawSpirits, paintSpirit, paintChatBubble, paintBodyTag, say, setViewerMode, banViewer, setAssistant, setDefaultMode, setApprovalMode, setViewPref, setViewerHidden, approveAssist, rejectAssist, socialBoost: updateSocialBoost, openPanel: () => togglePanel(true),
+	const api = { wire, start, stop, active, link, frame, metrics, drawSpirits, paintSpirit, paintChatBubble, paintBodyTag, say, setViewerMode, banViewer, setAssistant, setDefaultMode, setApprovalMode, setViewPref, setViewerHidden, approveAssist, rejectAssist, socialBoost: updateSocialBoost, openPanel: () => togglePanel(true), giftResource,
 		// QA seam: the LIVE body object for a gid (host page only — the host owns every
 		// body anyway; this just spares QA the private-scope gymnastics)
 		_debugBody: (gid) => { if(!session) return null; for(const e of entries()) if(e.gid === gid) return e.body; return null; } };

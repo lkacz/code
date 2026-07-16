@@ -186,7 +186,7 @@ assert.ok(NET.modeAllows('chat', 'chat') && !NET.modeAllows('chat', 'full'), 'ch
 assert.ok(!NET.modeAllows('watch', 'chat') && !NET.modeAllows('bogus', 'watch'), 'watch is the floor, garbage denies');
 
 // --- play mode: the embodied guest (full multiplayer) ---------------------------------
-assert.deepEqual(NET.PLAY_ACTIONS, ['mine', 'place', 'strike', 'attack', 'craft'], 'a player mines, builds, fights and crafts — nothing that bypasses the host');
+assert.deepEqual(NET.PLAY_ACTIONS, ['mine', 'place', 'strike', 'attack', 'craft', 'duel'], 'a player mines, builds, fights, crafts and duels — nothing that bypasses the host');
 assert.ok(NET.validPlayAction('mine') && !NET.validPlayAction('setTile') && !NET.validPlayAction('teleport'), 'play actions validate');
 assert.ok(NET.PLAY_RULES.REACH > 0 && NET.PLAY_RULES.MAX_HP > 0 && NET.PLAY_RULES.MINE_TICKS >= 1, 'play rules are sane');
 // --- the guest arsenal: host-owned whitelist, host-side resolution --------------------
@@ -1145,8 +1145,8 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 		'the kept pouch REPLACES the starter pouch (no rejoin ammo farming) and re-clamps every count');
 	assert.ok(/if\(NET\.validPlayWeapon\(k\) && !body\.weapons\.includes\(k\)\) body\.weapons\.push\(k\);/.test(hostSrc),
 		'kept weapons pass the arsenal whitelist again on restore (disk is hostile input)');
-	assert.ok(/function despawnBody\(s, entry\)\{\s*\n\s*if\(!entry\.body\) return;\s*\n\s*keepBody\(entry\);/.test(hostSrc),
-		'demote/leave banks the body');
+	assert.ok(/function despawnBody\(s, entry\)\{\s*\n\s*if\(!entry\.body\) return;\s*\n\s*endDuel\(s, entry, true\);[^\n]*\n\s*keepBody\(entry\);/.test(hostSrc),
+		'demote/leave forfeits any duel and banks the body');
 	assert.ok(/if\(entry\.body\) keepBody\(entry\); \/\/ a vanished player/.test(hostSrc), 'a dropped connection banks the body');
 	assert.ok(/keepAllBodies\(s\); \/\/ slow-cadence flush/.test(hostSrc) && /keepAllBodies\(session\); \/\/ ending the stream/.test(hostSrc),
 		'the reap tick and session stop both flush every live body');
@@ -1202,6 +1202,43 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	assert.ok(/t - bootAt > 25000/.test(clientSrc) && /gvRetry/.test(clientSrc) && /location\.reload\(\)/.test(clientSrc),
 		'a join that never lands gets an honest verdict + retry after 25 s');
 	assert.ok(/_debugAgeJoin: \(\) => \{ bootAt = 1; \}/.test(clientSrc), 'the QA join-aging seam exists');
+}
+
+// --- Wave E: the owner's design rulings, implemented and pinned --------------------------------------
+// PvP: duels by CONSENT only. Trading: host gifts only. Fog: shared (the guest
+// replica reveals into the host-mirrored fog — nothing to build, pinned as the
+// standing contract below).
+{
+	// duels: mutual handshake, host-arbitrated, melee only, bodies only
+	assert.ok(/const back = s\.duelAsks\.get\(te\.gid \+ '>' \+ entry\.gid\);/.test(hostSrc)
+		&& /s\.duelAsks\.set\(entry\.gid \+ '>' \+ te\.gid, tD\);/.test(hostSrc),
+		'a duel starts ONLY when both sides asked for each other (mutual consent)');
+	assert.ok(/if\(b\.duelWith \|\| te\.body\.duelWith\)/.test(hostSrc), 'a busy duelist cannot be challenged');
+	const duelPass = hostSrc.slice(hostSrc.indexOf('let duelHit = 0;'), hostSrc.indexOf('let duelHit = 0;') + 900);
+	assert.ok(/if\(spec\.melee && b\.duelWith\)\{/.test(duelPass) && /e\.body\.duelWith !== entry\.gid\) break; \/\/ symmetry or nothing/.test(duelPass),
+		'duel damage requires a melee weapon AND symmetric consent on both bodies');
+	assert.ok(/hurtBody\(s, e, Math\.max\(1, 2 \+ spec\.dmg\), b\.x, b\.y, 'duel'\);/.test(duelPass),
+		'a duel blow lands through hurtBody with the weapon’s own damage');
+	assert.ok(!/bridge\.player|damageHero/.test(duelPass), 'the HOST hero is never a duel target');
+	assert.ok(/if\(b\.duelWith && session\) endDuel\(session, entry\); \/\/ death settles a duel/.test(hostSrc)
+		&& /endDuel\(s, entry, true\); \/\/ a demoted\/leaving duelist forfeits quietly/.test(hostSrc),
+		'death, demotion and leaving all end the duel');
+	assert.ok(/tD - ts > NET\.PLAY_RULES\.DUEL_TTL_MS\) s\.duelAsks\.delete\(k\);/.test(hostSrc), 'stale challenges expire');
+	assert.ok(/function sendDuel\(targetGid\)/.test(clientSrc) && /_playDuel: \(targetGid\) => sendDuel\(targetGid\),/.test(clientSrc),
+		'the client only REGISTERS consent — the host decides everything');
+	// gifting: host-authoritative end to end, resources leave the host inventory first
+	assert.ok(/function giftResource\(gid, key, n\)/.test(hostSrc) && /bridge\.ghostGiftTake \? bridge\.ghostGiftTake\(key, count\) : null;/.test(hostSrc),
+		'a gift must really leave the HOST inventory before the pouch is credited');
+	assert.ok(/Math\.min\(NET\.PLAY_RULES\.GIFT_MAX, Math\.floor\(Number\(n\) \|\| 0\)\)/.test(hostSrc), 'gift size is bounded');
+	assert.ok(/ghostGiftTake:\(key,n\)=>\{/.test(mainSrc) && /const def=RESOURCE_DEFS\.find\(r=>r\.key===key\);/.test(mainSrc)
+		&& /if\(!\(\(inv\[key\]\|0\) >= count\)\) return \{ok:false, reason:'cost'\};/.test(mainSrc),
+		'the bridge seam whitelists the key and refuses what the host does not own');
+	assert.ok(!/pouchTake/.test(hostSrc.slice(hostSrc.indexOf('function giftResource'), hostSrc.indexOf('function giftResource') + 1200)),
+		'gifting never debits the GUEST pouch — only the host gives');
+	// shared fog: the standing contract — the guest replica reveals into the
+	// host-mirrored fog through the normal reveal path; no per-guest fog exists
+	assert.ok(/bridge\.revealAround\(\);/.test(clientSrc), 'shared fog: the guest reveals through the one normal reveal path');
+	assert.ok(!/fogPerGuest|guestFog|fogByGid/.test(clientSrc + hostSrc), 'no per-guest fog layer exists (owner ruling: shared)');
 }
 
 console.log('ghost-sim: all assertions passed');

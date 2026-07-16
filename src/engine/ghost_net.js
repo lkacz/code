@@ -82,7 +82,10 @@ export const PLAY_RULES = {
 	POUCH_CAP: 999,   // per-resource ceiling in the host-owned pouch
 	ATTACK_MS: 240,   // global per-body floor between weapon intents (per-weapon cd stacks on top)
 	MINE_TICKS_MAX: 12, // hardness-derived tick need is clamped into [1, this]
-	CRAFT_MS: 400     // per-body floor between craft intents
+	CRAFT_MS: 400,    // per-body floor between craft intents
+	DUEL_MS: 800,     // per-body floor between duel intents
+	DUEL_TTL_MS: 30000, // a duel challenge waits this long for the other side's consent
+	GIFT_MAX: 99      // per-gift ceiling on host → guest resource transfers
 };
 // The guest's stable identity key (persisted in the GUEST browser, on the storage
 // lockdown allowlist). Self-claimed like the display name — never an authority,
@@ -93,7 +96,7 @@ export const PLAY_RULES = {
 export const GID_KEY = 'mm_ghost_gid_v1';
 export const GID_LEASE_KEY = 'mm_ghost_gid_lease_v1';
 export const GID_LEASE_MS = 8000;
-export const PLAY_ACTIONS = ['mine', 'place', 'strike', 'attack', 'craft'];
+export const PLAY_ACTIONS = ['mine', 'place', 'strike', 'attack', 'craft', 'duel'];
 export function validPlayAction(a){ return PLAY_ACTIONS.includes(a); }
 // --- the guest arsenal -------------------------------------------------------------
 // Curated starter templates, resolved HOST-side through the real combat chains

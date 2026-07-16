@@ -1349,6 +1349,81 @@ async function main(){
 		ghost3.close();
 		console.log('connect verdict: ok (dead room → honest failure + retry, not an eternal spinner)');
 
+		// --- Scene 10o: Wave E — the owner's rulings live (duels by consent, host gifts) ----------------
+		// Two embodied guests share the world. Without consent a sword cannot scratch a
+		// fellow player; after the MUTUAL handshake the same swing wounds; demotion
+		// forfeits. And the host hands resources from its OWN inventory to a pouch.
+		const g4url = url + `?watch=${ROOM}&via=bc&name=Widmo4`;
+		const created4 = await host.send('Target.createTarget', { url: g4url });
+		let ghost4Ws = null;
+		for(let i = 0; i < 40 && !ghost4Ws; i++){
+			await sleep(250);
+			const list4 = await (await fetch(`http://127.0.0.1:${dtPort}/json/list`)).json();
+			const t4 = list4.find(x => x.id === created4.targetId);
+			if(t4) ghost4Ws = t4.webSocketDebuggerUrl;
+		}
+		const ghost4 = new Tab(ghost4Ws, 'ghost4');
+		await ghost4.init();
+		await ghost4.eval(BOOT_WAIT, 60000);
+		await ghost4.poll(`MM.ghostClient.metrics().state`, v => v === 'live', 'the second player joins', 80, 250);
+		const duelists = await host.eval(`(()=>{
+			MM.mobs.clearAll && MM.mobs.clearAll();
+			const vs=MM.ghostHost.metrics().viewers;
+			return { g1: vs.find(v=>v.name==='Widmo').gid, g4: vs.find(v=>v.name==='Widmo4').gid };
+		})()`);
+		await host.eval(`MM.ghostHost.setViewerMode('${duelists.g1}', 'play')`);
+		await host.eval(`MM.ghostHost.setViewerMode('${duelists.g4}', 'play')`);
+		await host.poll(`MM.ghostHost.metrics().players`, v => v === 2, 'both guests embodied', 40, 250);
+		await ghost.poll(`MM.ghostClient.metrics().play.spawned`, v => v === true, 'player one spawned', 40, 250);
+		await ghost4.poll(`MM.ghostClient.metrics().play.spawned`, v => v === true, 'player two spawned', 40, 250);
+		await sleep(1700); // outlive the spawn i-frames so a real duel blow can land later
+		const preDuel = await host.eval(`(()=>{
+			const b4=MM.ghostHost.metrics().bodies.find(b=>b.gid==='${duelists.g4}');
+			player.hp=player.maxHp;
+			return { hp0: b4.hp, x: +b4.x.toFixed(2), y: +b4.y.toFixed(2), hostHp0: player.hp };
+		})()`);
+		// without consent, a sword swung straight at a fellow player scratches NOTHING
+		await ghost.eval(`MM.ghostClient._playAct('attack', (${preDuel.x}), (${preDuel.y}), 'sword')`);
+		await sleep(800);
+		const noConsent = await host.eval(`MM.ghostHost.metrics().bodies.find(b=>b.gid==='${duelists.g4}').hp`);
+		if(noConsent !== preDuel.hp0) throw new Error('PvP without consent: a guest wounded a guest with no duel (' + preDuel.hp0 + '→' + noConsent + ')');
+		// the mutual handshake: one asks, nothing starts; the other answers, the duel is on
+		await ghost.eval(`MM.ghostClient._playDuel('${duelists.g4}')`);
+		await sleep(400);
+		if((await ghost.eval(`MM.ghostClient.metrics().play.duelWith`)) !== null) throw new Error('a unilateral challenge started a duel');
+		await ghost4.eval(`MM.ghostClient._playDuel('${duelists.g1}')`);
+		await ghost.poll(`MM.ghostClient.metrics().play.duelWith`, v => v === duelists.g4, 'the mutual handshake starts the duel', 30, 250);
+		let duelHp = preDuel.hp0;
+		for(let i = 0; i < 6 && !(duelHp < preDuel.hp0); i++){
+			const b4 = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(v=>v.gid==='${duelists.g4}'); return b?{x:+b.x.toFixed(2),y:+b.y.toFixed(2),hp:b.hp}:null; })()`);
+			if(!b4) break;
+			duelHp = b4.hp;
+			if(duelHp < preDuel.hp0) break;
+			await ghost.eval(`MM.ghostClient._playAct('attack', (${b4 ? b4.x : 0}), (${b4 ? b4.y : 0}), 'sword')`);
+			await sleep(700);
+		}
+		{ const b4 = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(v=>v.gid==='${duelists.g4}'); return b?b.hp:null; })()`); if(b4 !== null) duelHp = Math.min(duelHp, b4); }
+		if(!(duelHp < preDuel.hp0)) throw new Error('the consensual duel blow never landed');
+		if((await host.eval(`window.player.hp`)) < preDuel.hostHp0) throw new Error('a duel blow reached the HOST hero (bodies only!)');
+		console.log('duel: ok (no consent = no scratch, handshake = ' + preDuel.hp0 + '→' + duelHp.toFixed(1) + ', host untouched)');
+		// host gift: the resource really leaves the host inventory before the pouch grows
+		const gift = await host.eval(`(()=>{
+			window.inv.stone=(window.inv.stone|0)+20;
+			const inv0=window.inv.stone|0;
+			const ok=MM.ghostHost.giftResource('${duelists.g4}', 'stone', 7);
+			const bad=MM.ghostHost.giftResource('${duelists.g4}', 'noSuchThing', 5);
+			return { ok, bad, inv0, inv1: window.inv.stone|0 };
+		})()`);
+		if(!(gift.ok === true && gift.bad === false && gift.inv1 === gift.inv0 - 7)) throw new Error('gifting accounting broke: ' + JSON.stringify(gift));
+		await ghost4.poll(`MM.ghostClient.metrics().play.pouch.stone || 0`, v => v >= 7, 'the gift lands in the guest pouch', 30, 250);
+		// demotion forfeits the duel on BOTH ends
+		await host.eval(`MM.ghostHost.setViewerMode('${duelists.g4}', 'watch')`);
+		await ghost.poll(`MM.ghostClient.metrics().play.duelWith === null ? 1 : 0`, v => v === 1, 'demotion forfeits the duel', 30, 250);
+		await ghost4.eval(`MM.ghostClient.leave()`);
+		await host.poll(`MM.ghostHost.metrics().ghosts`, v => v === 1, 'the second player left cleanly', 40, 250);
+		ghost4.close();
+		console.log('gift + forfeit: ok (host inv -7 → pouch +7, unknown key refused, demote ended the duel)');
+
 		// --- Scene 11: permission downgrade — watch-only means watch-only ------------------------------
 		const gidOnHost = (await host.eval(`MM.ghostHost.metrics().viewers`))[0].gid;
 		await host.eval(`MM.ghostHost.setViewerMode('${gidOnHost}', 'watch')`);

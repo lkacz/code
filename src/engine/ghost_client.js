@@ -117,7 +117,7 @@ const ghostClient = (function(){
 	// own body, simulated locally (movement feels instant) while the HOST owns the
 	// vitals, the pouch and every world edit. The host hero moves into remoteHost
 	// and is painted like any other remote body.
-	const play = { on: false, spawned: false, dead: false, sel: null, pouch: {}, weapons: [], arm: 'fists', mineHold: null, prog: 0, progAt: null, jumpBufT: 0, coyoteT: 0 };
+	const play = { on: false, spawned: false, dead: false, sel: null, pouch: {}, weapons: [], arm: 'fists', duelWith: null, mineHold: null, prog: 0, progAt: null, jumpBufT: 0, coyoteT: 0 };
 	const remoteHost = { has: false, x: 0, y: 0, vx: 0, vy: 0, f: 1, dx: 0, dy: 0 };
 	const bodies = []; // fellow embodied guests, eased like the spirits
 	let timersPlay = { pose: 0, mine: 0 };
@@ -351,6 +351,24 @@ const ghostClient = (function(){
 			if(play.on) bridge.msg(pl.w ? '🫧 Brakuje powietrza — wynurz się!' : '🫧 Łapiesz oddech');
 			return;
 		}
+		if(pl.t === 'duel'){
+			// host-arbitrated duel state: this client only mirrors what the host decided
+			const other = pl.a === gid ? pl.b : (pl.b === gid ? pl.a : null);
+			if(other){
+				play.duelWith = pl.on ? String(other).slice(0, 20) : null;
+				bridge.msg(pl.on ? '⚔ Pojedynek rozpoczęty!' : '⚔ Pojedynek zakończony');
+				updateBar();
+			}
+			return;
+		}
+		if(pl.t === 'duelAsk'){
+			bridge.msg('⚔ ' + String(pl.name || 'Duch').slice(0, 24) + ' wyzywa cię na pojedynek — kliknij ⚔, by przyjąć');
+			return;
+		}
+		if(pl.t === 'gift'){
+			bridge.msg('🎁 Gospodarz podarował: ' + String(pl.label || pl.key || '?').slice(0, 24) + ' ×' + (Number(pl.n) || 0));
+			return;
+		}
 		if(pl.t === 'pdmg'){
 			// advisory knockback: the host decided the hit, the impulse lands on the
 			// locally simulated body so it FEELS like a hit
@@ -382,6 +400,8 @@ const ghostClient = (function(){
 			if(!pl.ok && pl.reason === 'cost') bridge.msg('🎒 Brak surowca w sakwie — wykop go najpierw');
 			if(!pl.ok && pl.reason === 'ammo') bridge.msg('🏹 Brak strzał w sakwie');
 			if(!pl.ok && pl.reason === 'weapon') bridge.msg('⚔️ Nie masz tej broni');
+			if(pl.a === 'duel' && pl.ok && !pl.on) bridge.msg('⚔ Wyzwanie wysłane — pojedynek zacznie się, gdy przeciwnik też kliknie ⚔');
+			if(pl.a === 'duel' && !pl.ok && pl.reason === 'busy') bridge.msg('⚔ Któryś z was już walczy w pojedynku');
 			return;
 		}
 		if(pl.t === 'deed'){
@@ -1073,6 +1093,15 @@ const ghostClient = (function(){
 		noteInput();
 		return true;
 	}
+	// Duels are CONSENT: this only registers/accepts a challenge — the host starts
+	// the duel exclusively on a mutual handshake and resolves every blow itself.
+	function sendDuel(targetGid){
+		if(state !== 'live' || !play.on || !play.spawned || play.dead) return false;
+		if(typeof targetGid !== 'string' || !targetGid) return false;
+		conn.send({ t: 'pact', a: 'duel', gid: targetGid });
+		noteInput();
+		return true;
+	}
 	function playPointerAct(clientX, clientY, button){
 		const w = bridge.screenToWorld ? bridge.screenToWorld(clientX, clientY) : null;
 		if(!w) return;
@@ -1256,6 +1285,7 @@ const ghostClient = (function(){
 			+ '<button class="gbPower" data-kind="smite">⚡ Grom</button>'
 			+ '<span id="gbArms" style="display:none;align-items:center;gap:3px;"></span>'
 			+ '<span id="gbCraft" style="display:none;align-items:center;gap:3px;"></span>'
+			+ '<button id="gbDuel" style="display:none;" title="Wyzwij najbliższego gracza na pojedynek (zaczyna się dopiero, gdy oboje się zgodzą)">⚔ Pojedynek</button>'
 			+ '<span id="gbPouch" style="display:none;align-items:center;gap:3px;flex-wrap:wrap;"></span>'
 			+ '<button id="gbPing">📍 Wskaż</button>'
 			+ '<button id="gbAssist" style="display:none;">🛠 Asystent</button>'
@@ -1268,6 +1298,14 @@ const ghostClient = (function(){
 		bar.querySelectorAll('.gbBuff').forEach(btn => btn.addEventListener('click', () => sendBuff(btn.dataset.kind)));
 		bar.querySelectorAll('.gbPower').forEach(btn => btn.addEventListener('click', () => sendPower(btn.dataset.kind)));
 		bar.querySelector('#gbPing').addEventListener('click', () => sendPing());
+		bar.querySelector('#gbDuel').addEventListener('click', () => {
+			noteInput();
+			if(!bodies.length){ bridge.msg('⚔ Nie ma tu innego gracza'); return; }
+			const p = bridge.player;
+			let best = bodies[0], bd = Infinity;
+			for(const b of bodies){ const d = Math.hypot(b.x - p.x, b.y - p.y); if(d < bd){ bd = d; best = b; } }
+			sendDuel(best.id);
+		});
 		bar.querySelector('#gbAssist').addEventListener('click', () => { noteInput(); toggleAssistPanel(); });
 		bar.querySelector('#gbFollow').addEventListener('click', () => { noteInput(); setFollow(cam.mode !== 'follow'); });
 		bar.querySelector('#gbLeave').addEventListener('click', leave);
@@ -1394,6 +1432,11 @@ const ghostClient = (function(){
 		renderPouch();
 		renderArms();
 		renderCraft();
+		const duelBtn = bar.querySelector('#gbDuel');
+		if(duelBtn){
+			duelBtn.style.display = (play.on && bodies.length) ? 'inline-block' : 'none';
+			duelBtn.textContent = play.duelWith ? '⚔ w pojedynku' : '⚔ Pojedynek';
+		}
 		// in embodiment the bar is a PLAYER hud (pouch + hands), so the spectator
 		// influence controls (blessings, powers) step aside to reduce clutter
 		const spectatorControls = !play.on;
@@ -1695,7 +1738,7 @@ const ghostClient = (function(){
 			assistRecipes: assistState && Array.isArray(assistState.recipes) ? assistState.recipes.length : 0,
 			play: {
 				on: play.on, spawned: play.spawned, dead: play.dead, sel: play.sel,
-				arm: play.arm, weapons: play.weapons.slice(),
+				arm: play.arm, weapons: play.weapons.slice(), duelWith: play.duelWith,
 				pouch: Object.assign({}, play.pouch),
 				x: play.on ? +(bridge && bridge.player ? bridge.player.x : 0).toFixed(2) : null,
 				y: play.on ? +(bridge && bridge.player ? bridge.player.y : 0).toFixed(2) : null,
@@ -1724,6 +1767,7 @@ const ghostClient = (function(){
 		_playSelect: (key) => { play.sel = key; renderPouch(); },
 		_playArm: (key) => { play.arm = key; renderArms(); },
 		_playCraft: (key) => sendPlayAct('craft', 0, 0, key),
+		_playDuel: (targetGid) => sendDuel(targetGid),
 		// QA: deterministically halt the embodied hero (clears held keys + velocity).
 		// Synthetic keyup events do not reliably clear `held` under headless CDP.
 		_playStop: () => { held.clear(); if(play.on && bridge && bridge.player){ bridge.player.vx = 0; } },
