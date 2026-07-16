@@ -212,12 +212,18 @@ precedent — today: respawn at host, pouch intact).
 - **Design rulings needed from the owner** (ask, then implement + pin): PvP between
   guests? trading? shared vs per-guest fog?
 
-### Wave F — Infra reliability
-- **NAT:** STUN-only → some pairs never connect. Add explicit "couldn't connect" UX
-  with a retry; evaluate a TURN option or document the limitation in the invite UI.
-- **Host tab is the server:** backgrounding it freezes the guests' world — currently
-  silent. Surface a "gospodarz jest nieaktywny" notice client-side (the companion
-  pump heartbeat makes staleness detectable). Host-migration is out of scope.
+### Wave F — Infra reliability — ✅ DONE (2026-07-16)
+Shipped: the host tracks sim liveness (`s.lastSimAt` — only the rAF loop stamps
+it; the pump declares itself with `fromPump`) and self-reports `idle` on the
+presence plane when backgrounded; the watcher raises a fixed banner
+("gospodarz jest nieaktywny — świat wstrzymany", pointer-events:none) on
+host-idle or an 8 s all-traffic gap, cleared the moment the sim resumes. A join
+that never lands gets an honest verdict + a 🔄 retry button after 25 s (reload —
+the real join path) instead of an eternal spinner, and the invite panel documents
+the STUN-only NAT limitation. QA scene 10n (host backgrounded live → banner
+up/down; dead-room join → verdict via the `_debugAgeJoin` seam). **Out of scope,
+confirmed:** host migration; a TURN server (would need infrastructure — the
+limitation is now at least explained to the people who hit it).
 
 ---
 

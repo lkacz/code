@@ -1183,4 +1183,25 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 		'the guest hears the breath warning (display only — damage arrives via pvit/pdmg)');
 }
 
+// --- Wave F: reliability is a feature ----------------------------------------------------------------
+// A frozen world and an eternal spinner are the two silent failure modes of P2P
+// co-op. Both now get honest words: the host self-reports a backgrounded tab on
+// the presence plane, and a join that never lands earns a verdict + retry.
+{
+	assert.ok(/if\(!fromPump\) s\.lastSimAt = t;/.test(hostSrc), 'the host tracks sim liveness (only the rAF loop stamps it)');
+	assert.ok(/frame\(0\.25, now\(\), true\)/.test(hostSrc), 'the host pump declares itself when driving the frame');
+	assert.ok(/broadcast\(\{ t: 'ghosts', list, idle: \(t - \(s\.lastSimAt \|\| t\)\) > 1500 \? 1 : 0 \}\);/.test(hostSrc),
+		'a backgrounded host self-reports idle on the presence plane');
+	assert.ok(/STUN/.test(hostSrc), 'the invite panel documents the STUN-only NAT limitation');
+	assert.ok(/hostIdle = !!pl\.idle;/.test(clientSrc) && /function updateStaleBanner\(\)/.test(clientSrc)
+		&& /const stale = state === 'live' && \(hostIdle \|\| \(lastHostMsgAt > 0 && nowMs\(\) - lastHostMsgAt > 8000\)\);/.test(clientSrc),
+		'the watcher banner rises on host-idle or an 8 s stream gap, and only while live');
+	assert.ok(/pointer-events:none/.test(clientSrc), 'the banner never eats input');
+	assert.ok(/lastHostMsgAt = nowMs\(\); \/\/ any traffic proves the stream is alive/.test(clientSrc),
+		'every host message refreshes the liveness stamp');
+	assert.ok(/t - bootAt > 25000/.test(clientSrc) && /gvRetry/.test(clientSrc) && /location\.reload\(\)/.test(clientSrc),
+		'a join that never lands gets an honest verdict + retry after 25 s');
+	assert.ok(/_debugAgeJoin: \(\) => \{ bootAt = 1; \}/.test(clientSrc), 'the QA join-aging seam exists');
+}
+
 console.log('ghost-sim: all assertions passed');

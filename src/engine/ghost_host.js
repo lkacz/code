@@ -88,6 +88,7 @@ const ghostHost = (function(){
 			assistStateCache: null,
 			assistStateAt: 0,
 			lastChargeAt: 0,
+			lastSimAt: now(), // a fresh session is not "idle" before its first sim frame
 			listen: null
 		};
 		s.listen = NET.hostListen(room, { rtc: opts.rtc !== false, onPeer: (peer) => onPeer(s, peer) });
@@ -108,7 +109,7 @@ const ghostHost = (function(){
 		// every frame-driven plane the moment the host alt-tabs. Intervals only
 		// get clamped (≥1 Hz), so the stream degrades instead of dying. frame()
 		// is cadence-gated, so double-driving it from rAF + interval is harmless.
-		s.pump = setInterval(() => { try{ frame(0.25, now()); }catch(e){ /* next tick */ } }, 250);
+		s.pump = setInterval(() => { try{ frame(0.25, now(), true); }catch(e){ /* next tick */ } }, 250);
 		updateUi();
 		try{ bridge.msg('👁 Transmisja warstwy otwarta — pokój ' + room); }catch(e){ /* boot order */ }
 		return room;
@@ -353,10 +354,14 @@ const ghostHost = (function(){
 		s.pendingTiles.set(x * 1000 + (y + 512), [x, y, v]);
 		if(s.pendingTiles.size > TILE_RESYNC_LIMIT){ s.pendingTiles.clear(); s.needResync = true; }
 	}
-	function frame(dt, ts){
+	function frame(dt, ts, fromPump){
 		const s = session;
 		if(!s || !bridge) return;
 		const t = Number.isFinite(ts) ? ts : now();
+		// only the SIM loop calls without fromPump — a stale stamp means the host tab
+		// is backgrounded (rAF frozen): the world stands still while the pump keeps
+		// the stream alive, and the viewers deserve to be TOLD instead of guessing
+		if(!fromPump) s.lastSimAt = t;
 		const live = entries(); // one snapshot serves the whole frame (charge/assist/prog reuse it)
 		if(!live.length){
 			s.pendingTiles.clear(); s.needResync = false;
@@ -488,7 +493,9 @@ const ghostHost = (function(){
 		s.last.presence = t;
 		updateSocialBoost();
 		const list = entries().filter(e => e.cam).map(e => ({ id: e.gid, name: e.name, x: +e.cam.x.toFixed(2), y: +e.cam.y.toFixed(2), a: e.avatar, act: e.actUntil > t ? 1 : 0 }));
-		broadcast({ t: 'ghosts', list });
+		// idle = the host tab is backgrounded (sim frozen, pump-only stream) — the
+		// viewers show a "host inactive" banner instead of staring at a frozen world
+		broadcast({ t: 'ghosts', list, idle: (t - (s.lastSimAt || t)) > 1500 ? 1 : 0 });
 		if(t - (s.lastBadgeAt || 0) > 900){ s.lastBadgeAt = t; updateUi(); } // active-count on the badge stays fresh
 	}
 	function reap(s, t){
@@ -1551,6 +1558,7 @@ const ghostHost = (function(){
 			+ '<div id="ghostPanelQueue" style="display:none;flex-direction:column;gap:4px;"></div>'
 			+ '<div id="ghostPanelViewers" style="color:#9fd6ae;"></div>'
 			+ '<div id="ghostPanelPerks" style="line-height:1.45;color:#8fa4bb;font-size:11px;"></div>'
+			+ '<div style="color:#7d8fa6;font-size:10px;line-height:1.4;">🌐 Połączenie jest bezpośrednie (P2P, tylko STUN — bez serwera pośredniczącego). W restrykcyjnych sieciach (niektóre NAT-y firmowe/komórkowe) widz może nie zdołać się połączyć — wtedy pomaga inna sieć lub hotspot.</div>'
 			+ '<button id="ghostPanelToggle" style="border:none;border-radius:10px;background:#21a366;color:#fff;font-weight:800;padding:9px 12px;cursor:pointer;">Rozpocznij transmisję</button>';
 		document.body.appendChild(el);
 		el.querySelector('#ghostPanelClose').addEventListener('click', () => togglePanel(false));

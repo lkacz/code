@@ -92,6 +92,7 @@ const ghostClient = (function(){
 	const buffWait = {}; // kind -> readyAtMs (UI countdown)
 	let timers = { hello: 0, pose: 0, needMobs: 0 };
 	let veil = null, bar = null, barTick = null;
+	let hostIdle = false, staleBanner = null, lastHostMsgAt = 0, bootAt = 0, connectFailShown = false;
 	let drag = null;
 	let pump = null;
 	let lockedConn = null;
@@ -214,6 +215,7 @@ const ghostClient = (function(){
 		injectCss();
 		showVeil('Łączenie z warstwą <b>' + WATCH.room + '</b>…');
 		buildBar();
+		bootAt = nowMs(); // the connect-failure verdict measures from here
 		state = 'connect';
 		conn = makeConn();
 		sendHello();
@@ -285,6 +287,7 @@ const ghostClient = (function(){
 		// once locked, a straggler frame from the losing transport must not reach
 		// the assembler — an interleaved foreign chunk would wedge the snapshot
 		if(lockedConn && c !== lockedConn) return;
+		lastHostMsgAt = nowMs(); // any traffic proves the stream is alive (stale-banner fallback)
 		if(pl.t === 'welcome'){
 			if(state === 'connect'){
 				state = 'sync';
@@ -610,6 +613,10 @@ const ghostClient = (function(){
 					if(pl.data) bridge.restoreInfra(pl.data);
 					if(pl.bg) bridge.restoreConstructionBackground(pl.bg);
 				} else if(pl.t === 'ghosts' && Array.isArray(pl.list)){
+					// the host self-reports a backgrounded tab (sim frozen, pump-only
+					// stream): show the "host inactive" banner instead of a frozen world
+					hostIdle = !!pl.idle;
+					updateStaleBanner();
 					// keep object identity per gid so the painter can glide, not teleport
 					const seen = new Set();
 					for(const g of pl.list.slice(0, 16)){
@@ -674,8 +681,18 @@ const ghostClient = (function(){
 		const t = nowMs();
 		if(!fromPump) lastRafAt = t;
 		const rafAlive = fromPump && (t - lastRafAt) < 1500;
+		updateStaleBanner();
 		if(state === 'connect' || state === 'sync'){
 			if(t - timers.hello > HELLO_MS){ timers.hello = t; sendHello(); }
+			// a join that never lands gets an honest verdict + retry, not an eternal
+			// spinner — STUN-only P2P legitimately fails on some networks (no TURN)
+			if(state === 'connect' && !connectFailShown && bootAt > 0 && t - bootAt > 25000){
+				connectFailShown = true;
+				showVeil('Nie można połączyć się z gospodarzem 😞<br><small>Transmisja mogła się skończyć, albo sieć blokuje bezpośrednie połączenia (restrykcyjny NAT — pomaga inna sieć/hotspot).</small><br>'
+					+ '<button id="gvRetry" style="margin-top:10px;border:none;border-radius:8px;background:#21a366;color:#fff;font-weight:700;padding:8px 14px;cursor:pointer;">🔄 Spróbuj ponownie</button>');
+				const btn = veil && veil.querySelector('#gvRetry');
+				if(btn) btn.addEventListener('click', () => { try{ location.reload(); }catch(e){ /* fine */ } });
+			}
 			// a wedged or lost snapshot transfer must not strand the watcher —
 			// after 15 s of sync we ask the host to restart it (host rate-limits)
 			if(state === 'sync' && t - syncSince > 15000 && t - lastSnapReq > 5000){
@@ -1187,6 +1204,24 @@ const ghostClient = (function(){
 			+ '@keyframes gvFloat{ 0%,100%{ transform:translateY(0); opacity:.75; } 50%{ transform:translateY(-9px); opacity:1; } }';
 		document.head.appendChild(st);
 	}
+	// A frozen world deserves an explanation: this banner shows while the HOST tab is
+	// backgrounded (self-reported via the presence plane) or while the stream itself
+	// has gone quiet past the pump cadence — a silently dying channel, before the
+	// transport-level connLost recovery kicks in.
+	function updateStaleBanner(){
+		if(typeof document === 'undefined') return;
+		const stale = state === 'live' && (hostIdle || (lastHostMsgAt > 0 && nowMs() - lastHostMsgAt > 8000));
+		if(stale && !staleBanner){
+			staleBanner = document.createElement('div');
+			staleBanner.id = 'ghostStale';
+			staleBanner.style.cssText = 'position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:10001;'
+				+ 'background:rgba(30,24,10,.92);border:1px solid rgba(255,196,0,.5);border-radius:10px;color:#ffd76a;'
+				+ 'padding:7px 14px;font:700 12px system-ui;pointer-events:none;';
+			staleBanner.textContent = '⏸ Gospodarz jest nieaktywny — świat wstrzymany (karta gospodarza w tle)';
+			document.body.appendChild(staleBanner);
+		}
+		if(staleBanner) staleBanner.style.display = stale ? 'block' : 'none';
+	}
 	function showVeil(html){
 		if(!veil){
 			veil = document.createElement('div');
@@ -1672,7 +1707,10 @@ const ghostClient = (function(){
 			pings: pings.length,
 			stats: Object.assign({}, stats),
 			queued: queue.length,
-			barTick: !!barTick
+			barTick: !!barTick,
+			hostIdle,
+			staleBannerShown: !!(staleBanner && staleBanner.style.display !== 'none'),
+			connectFailShown
 		};
 	}
 
@@ -1694,6 +1732,8 @@ const ghostClient = (function(){
 		// 2 s throttle window would otherwise not be on disk when the reload reads it.
 		// Returns whether the profile is STILL dirty (a swallowed write leaves it so).
 		_flushForTest: () => { flushProgress(true); return progDirty; },
+		// QA: age the join start past the connect-failure deadline without a 25 s stall.
+		_debugAgeJoin: () => { bootAt = 1; },
 		// QA: age this watcher's last input past IDLE_MS without waiting 30 real seconds.
 		// It rewinds the SAME stamp isActive() reads, so the idle path under test is the
 		// production one (next pose vouches act=0 → the host's TTL lapses → boosts drop).

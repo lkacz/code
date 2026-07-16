@@ -1061,8 +1061,12 @@ async function main(){
 			// line of fire — a real grazer proves the same thing without ordnance
 			const calm=Object.keys(SP).filter(id=>{ const s=SP[id]; return s && s.ground && !s.aquatic && !s.flying && !s.alwaysAggro && !(s.dmg>0) && (s.hp||0)>=8 && (s.hp||0)<=1000; })
 				.sort((a,b)=>SP[b].hp-SP[a].hp);
+			// quiet grazers first: a provoked SHAMAN casts tile-writing spells and a
+			// charger tramples the body — either poisons the zero-tiles/routing asserts
+			const prefer=['JESIENNY_LOS','WIOSENNY_JELEN','DEER','GOAT','JASZCZUR','RABBIT','SQUIRREL','ZABA'].filter(id=>calm.includes(id));
+			const order=[...prefer, ...calm.filter(id=>!prefer.includes(id))];
 			let prey=null;
-			for(const id of calm){ try{ if(MM.mobs.forceSpawn(id, {x:bx-2, y:floorRow-1}, MM.world.getTile)){ prey=id; break; } }catch(e){} }
+			for(const id of order){ try{ if(MM.mobs.forceSpawn(id, {x:bx-2, y:floorRow-1}, MM.world.getTile)){ prey=id; break; } }catch(e){} }
 			return {tx, ty, prey, preyHp0: prey ? (MM.mobs.serialize().list.find(m=>m.id===prey)||{}).hp : 0, hostDist:Math.abs(player.x-tx)};
 		})()`);
 		if(!t0.prey) throw new Error('setup: could not spawn a passive creature for the turret to shoot');
@@ -1100,8 +1104,12 @@ async function main(){
 			const SP=MM.mobs._debugSpecies();
 			const calm=Object.keys(SP).filter(id=>{ const s=SP[id]; return s && s.ground && !s.aquatic && !s.flying && !s.alwaysAggro && !(s.dmg>0) && (s.hp||0)>=8 && (s.hp||0)<=1000; })
 				.sort((a,b)=>SP[b].hp-SP[a].hp);
+			// quiet grazers first: a provoked SHAMAN casts tile-writing spells and a
+			// charger tramples the body — either poisons the zero-tiles/routing asserts
+			const prefer=['JESIENNY_LOS','WIOSENNY_JELEN','DEER','GOAT','JASZCZUR','RABBIT','SQUIRREL','ZABA'].filter(id=>calm.includes(id));
+			const order=[...prefer, ...calm.filter(id=>!prefer.includes(id))];
 			let prey=null;
-			for(const id of calm){ try{ if(MM.mobs.forceSpawn(id, {x:b.x+1.5, y:floorRow-1}, MM.world.getTile)){ prey=id; break; } }catch(e){} }
+			for(const id of order){ try{ if(MM.mobs.forceSpawn(id, {x:b.x+1.5, y:floorRow-1}, MM.world.getTile)){ prey=id; break; } }catch(e){} }
 			const m=prey ? MM.mobs.serialize().list.find(v=>v.id===prey) : null;
 			const bx=Math.round(b.x);
 			let tiles=0; for(let x=bx-8;x<=bx+8;x++) for(let y=floorRow-5;y<=floorRow+1;y++) if(MM.world.getTile(x,y)!==MM.T.AIR) tiles++;
@@ -1134,8 +1142,12 @@ async function main(){
 			const SP=MM.mobs._debugSpecies();
 			const calm=Object.keys(SP).filter(id=>{ const s=SP[id]; return s && s.ground && !s.aquatic && !s.flying && !s.alwaysAggro && !(s.dmg>0) && (s.hp||0)>=8 && (s.hp||0)<=1000 && id!=='${wb.prey}'; })
 				.sort((a,b)=>SP[b].hp-SP[a].hp);
+			// quiet grazers first: a provoked SHAMAN casts tile-writing spells and a
+			// charger tramples the body — either poisons the zero-tiles/routing asserts
+			const prefer=['JESIENNY_LOS','WIOSENNY_JELEN','DEER','GOAT','JASZCZUR','RABBIT','SQUIRREL','ZABA'].filter(id=>calm.includes(id));
+			const order=[...prefer, ...calm.filter(id=>!prefer.includes(id))];
 			let prey=null;
-			for(const id of calm){ try{ if(MM.mobs.forceSpawn(id, {x:b.x-3, y:floorRow-1}, MM.world.getTile)){ prey=id; break; } }catch(e){} }
+			for(const id of order){ try{ if(MM.mobs.forceSpawn(id, {x:b.x-3, y:floorRow-1}, MM.world.getTile)){ prey=id; break; } }catch(e){} }
 			const m=prey ? MM.mobs.serialize().list.find(v=>v.id===prey) : null;
 			return {prey, hp0:m?m.hp:0};
 		})()`);
@@ -1207,8 +1219,12 @@ async function main(){
 			const SP=MM.mobs._debugSpecies();
 			const calm=Object.keys(SP).filter(id=>{ const s=SP[id]; return s && s.ground && !s.aquatic && !s.flying && !s.alwaysAggro && !(s.dmg>0) && (s.hp||0)>=8 && (s.hp||0)<=1000; })
 				.sort((a,b)=>SP[b].hp-SP[a].hp);
+			// quiet grazers first: a provoked SHAMAN casts tile-writing spells and a
+			// charger tramples the body — either poisons the zero-tiles/routing asserts
+			const prefer=['JESIENNY_LOS','WIOSENNY_JELEN','DEER','GOAT','JASZCZUR','RABBIT','SQUIRREL','ZABA'].filter(id=>calm.includes(id));
+			const order=[...prefer, ...calm.filter(id=>!prefer.includes(id))];
 			let prey=null;
-			for(const id of calm){ try{ if(MM.mobs.forceSpawn(id, {x:b.x+2.5, y:floorRow-1}, MM.world.getTile)){ prey=id; break; } }catch(e){} }
+			for(const id of order){ try{ if(MM.mobs.forceSpawn(id, {x:b.x+2.5, y:floorRow-1}, MM.world.getTile)){ prey=id; break; } }catch(e){} }
 			const m=prey ? MM.mobs.serialize().list.find(v=>v.id===prey) : null;
 			return {prey, hp0:m?m.hp:0};
 		})()`);
@@ -1245,7 +1261,9 @@ async function main(){
 			MM.mobs.clearAll && MM.mobs.clearAll(); // wildlife respawns near the parked host over the run — none of it may gnaw the baseline
 			player.x=b.x+40; player.vx=0; player.vy=0; player.hp=player.maxHp;
 			{ const sx=Math.round(player.x); for(let y=2;y<200;y++){ if(MM.world.getTile(sx,y)!==MM.T.AIR){ player.y=y-1.2; break; } } }
-			const cx=Math.floor(b.x), cy=Math.floor(b.y+0.41);
+			// the CENTER cell is always air inside the hitbox — floor(b.y+0.41) can hit
+			// the footing tile on an unlucky settle fraction and drop the body instead
+			const cx=Math.floor(b.x), cy=Math.floor(b.y);
 			MM.world.setTile(cx, cy, MM.T.LAVA);
 			return {hp0:b.hp, cx, cy, hostHp0:player.hp};
 		})()`);
@@ -1297,6 +1315,39 @@ async function main(){
 		if(postTile !== diff.want) throw new Error('world state diverged across the reconnect');
 		await host.poll(`MM.ghostHost.metrics().ghosts`, v => v === 1, 'host still sees exactly one ghost after reconnect', 40, 250);
 		console.log('reconnect: ok (snaps=' + rec.stats.snapsApplied + ', world coherent)');
+
+		// --- Scene 10n: Wave F — reliability UX (host-inactive banner, connect-failure verdict) --------
+		// (a) Background the HOST tab: its sim freezes while the pump keeps streaming —
+		// the host self-reports idle on the presence plane and the watcher raises a
+		// banner instead of staring at a silently frozen world.
+		await ghost.front(); // the host tab drops to the background → its rAF freezes
+		await ghost.poll(`(()=>{ const m=MM.ghostClient.metrics(); return (m.hostIdle && m.staleBannerShown) ? 1 : 0; })()`,
+			v => v === 1, 'the watcher learns the host is inactive (banner up)', 60, 250);
+		await host.front(); // sim resumes → the next presence tick withdraws the flag
+		await ghost.poll(`(()=>{ const m=MM.ghostClient.metrics(); return (!m.hostIdle && !m.staleBannerShown) ? 1 : 0; })()`,
+			v => v === 1, 'the banner clears when the host returns', 60, 250);
+		console.log('host-idle banner: ok (backgrounded host self-reports, watcher banner up and down)');
+		// (b) a join at a dead room gets an honest verdict + a retry button instead of
+		// an eternal spinner (STUN-only P2P legitimately fails on some networks)
+		const g3url = url + `?watch=QAFDED&via=bc&name=Zblakany`;
+		const created3 = await host.send('Target.createTarget', { url: g3url });
+		let ghost3Ws = null;
+		for(let i = 0; i < 40 && !ghost3Ws; i++){
+			await sleep(250);
+			const list3 = await (await fetch(`http://127.0.0.1:${dtPort}/json/list`)).json();
+			const t3 = list3.find(x => x.id === created3.targetId);
+			if(t3) ghost3Ws = t3.webSocketDebuggerUrl;
+		}
+		const ghost3 = new Tab(ghost3Ws, 'ghost3');
+		await ghost3.init();
+		await ghost3.eval(BOOT_WAIT, 60000);
+		await ghost3.poll(`MM.ghostClient.metrics().state`, v => v === 'connect', 'the lost watcher keeps knocking', 40, 250);
+		await ghost3.eval(`MM.ghostClient._debugAgeJoin()`);
+		await ghost3.poll(`MM.ghostClient.metrics().connectFailShown ? 1 : 0`, v => v === 1, 'the join verdict lands', 40, 250);
+		const retryUi = await ghost3.eval(`(()=>{ const b=document.querySelector('#gvRetry'); return b ? b.getClientRects().length : 0; })()`);
+		if(!(retryUi > 0)) throw new Error('the connect-failure verdict has no retry button');
+		ghost3.close();
+		console.log('connect verdict: ok (dead room → honest failure + retry, not an eternal spinner)');
 
 		// --- Scene 11: permission downgrade — watch-only means watch-only ------------------------------
 		const gidOnHost = (await host.eval(`MM.ghostHost.metrics().viewers`))[0].gid;
