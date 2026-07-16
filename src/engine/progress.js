@@ -6,6 +6,10 @@
 window.MM = window.MM || {};
 (function(){
   const SAVE_KEY='mm_progress_v1';
+  const PROGRESS_COUNTER_CAP=1000000;
+  const PROGRESS_RAW_CAP=65536;
+  const MAX_TRAINED_POINTS=98;
+  const TRAINABLE_STATS=new Set(['vit','str','agi','cap','hard']);
   const TOUGHNESS_DAMAGE_REDUCTION_PER_POINT=0.03;
   const TOUGHNESS_DAMAGE_REDUCTION_MAX=0.45;
   const state={ vit:0, str:0, agi:0, cap:0, hard:0, lastLevel:1, bossKills:0, done:{}, trophies:{}, guardians:{} };
@@ -24,7 +28,11 @@ window.MM = window.MM || {};
   function cleanDone(src){
     const out={};
     if(src && typeof src==='object'){
-      Object.keys(src).forEach(k=>{ if(src[k]) out[String(k).slice(0,64)]=1; });
+      // Read the schema, not the attacker-controlled key order: legitimate
+      // milestones cannot be displaced by thousands of junk properties.
+      for(const k of KNOWN_MILESTONE_IDS){
+        try{ if(Object.prototype.hasOwnProperty.call(src,k) && src[k]) out[k]=1; }catch(e){}
+      }
     }
     return out;
   }
@@ -45,52 +53,57 @@ window.MM = window.MM || {};
   function snapshot(){
     return {
       v:2,
-      vit:toInt(state.vit,0,999),
-      str:toInt(state.str,0,999),
-      agi:toInt(state.agi,0,999),
-      cap:toInt(state.cap,0,999),
-      hard:toInt(state.hard,0,999),
+      vit:toInt(state.vit,0,MAX_TRAINED_POINTS),
+      str:toInt(state.str,0,MAX_TRAINED_POINTS),
+      agi:toInt(state.agi,0,MAX_TRAINED_POINTS),
+      cap:toInt(state.cap,0,MAX_TRAINED_POINTS),
+      hard:toInt(state.hard,0,MAX_TRAINED_POINTS),
       lastLevel:toInt(state.lastLevel,1,99),
-      bossKills:toInt(state.bossKills,0),
+      bossKills:toInt(state.bossKills,0,PROGRESS_COUNTER_CAP),
       done:cleanDone(state.done),
       trophies:cleanTrophies(state.trophies),
       guardians:cleanGuardians(state.guardians),
-      berries:toInt(berries,0),
+      berries:toInt(berries,0,PROGRESS_COUNTER_CAP),
     };
   }
   function applySnapshot(d){
-    if(!d || typeof d!=='object') return false;
-    state.vit=toInt(d.vit,0,999);
-    state.str=toInt(d.str,0,999);
-    state.agi=toInt(d.agi,0,999);
-    state.cap=toInt(d.cap,0,999);
-    state.hard=toInt(d.hard,0,999); // absent in pre-Twardość saves → 0
+    if(!d || typeof d!=='object' || Array.isArray(d)) return false;
+    // Level 99 can award at most 98 points. Repair edited saves in a stable
+    // order so persistent modifiers can never exceed the legal total.
+    let remaining=MAX_TRAINED_POINTS;
+    for(const key of TRAINABLE_STATS){
+      state[key]=Math.min(remaining,toInt(d[key],0,MAX_TRAINED_POINTS));
+      remaining-=state[key];
+    }
     state.lastLevel=toInt(d.lastLevel,1,99);
-    state.bossKills=toInt(d.bossKills,0);
+    state.bossKills=toInt(d.bossKills,0,PROGRESS_COUNTER_CAP);
     state.done=cleanDone(d.done);
     state.trophies=cleanTrophies(d.trophies);
     state.guardians=cleanGuardians(d.guardians);
-    berries=toInt(d.berries,0);
+    berries=toInt(d.berries,0,PROGRESS_COUNTER_CAP);
     return true;
   }
   function save(){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(snapshot())); }catch(e){} }
   function restore(data){
+    if(!data || typeof data!=='object' || Array.isArray(data)) return false;
+    clearTransient();
     if(!applySnapshot(data)) return false;
     save();
     try{ if(MM.recomputeModifiers) MM.recomputeModifiers(); }catch(e){}
     notify();
     return true;
   }
-  (function load(){
+  function load(){
     try{
       const raw=localStorage.getItem(SAVE_KEY); if(!raw) return;
+      if(typeof raw!=='string' || raw.length>PROGRESS_RAW_CAP) return;
       applySnapshot(JSON.parse(raw));
     }catch(e){}
-  })();
+  }
   // Boss kills must survive reloads (bosses.js's session counter resets with the
   // module), otherwise the ×5 milestone is unreachable across sessions.
   if(typeof window!=='undefined' && window.addEventListener){
-    window.addEventListener('mm-boss-killed',()=>{ state.bossKills++; save(); });
+    window.addEventListener('mm-boss-killed',()=>{ state.bossKills=Math.min(PROGRESS_COUNTER_CAP,state.bossKills+1); save(); });
   }
 
   function playerRef(){ return (typeof window!=='undefined' && window.player)||null; }
@@ -146,7 +159,7 @@ window.MM = window.MM || {};
   function level(){ const p=playerRef(); return levelFor((p&&p.xp)||0); }
   function points(){ const L=level().level; return Math.max(0,(L-1)-(state.vit+state.str+state.agi+state.cap+state.hard)); }
   function spend(stat){
-    if(points()<=0 || !(stat in {vit:1,str:1,agi:1,cap:1,hard:1})) return false;
+    if(points()<=0 || !TRAINABLE_STATS.has(stat)) return false;
     state[stat]++; save();
     try{ if(MM.recomputeModifiers) MM.recomputeModifiers(); }catch(e){}
     notify();
@@ -175,12 +188,81 @@ window.MM = window.MM || {};
   const buffs=[]; // {name,icon,t,stats}
   const MUL_KEYS=new Set(['moveSpeedMult','jumpPowerMult','mineSpeedMult']);
   const MAX_KEYS=new Set(['waterMoveSpeedMult']);
+  const BUFF_STACK_CAP=3;
+  const BUFF_TOTAL_CAP=48;
+  const BUFF_DURATION_CAP=3600;
+  const BUFF_STAT_LIMITS={
+    maxAirJumps:[0,10],
+    visionRadius:[0,100],
+    mineSpeedMult:[0.05,10],
+    moveSpeedMult:[0.05,10],
+    jumpPowerMult:[0.05,10],
+    waterMoveSpeedMult:[0,1.25],
+    attackDamage:[-1000,1000],
+    energyCapacityBonus:[-10000,10000],
+    crushResistBonus:[-500,500],
+    damageReductionBonus:[-0.45,0.45]
+  };
+  const BUFF_BUNDLE_LIMITS=Object.assign({},BUFF_STAT_LIMITS,{
+    mineSpeedMult:[0.01,30], moveSpeedMult:[0.01,30], jumpPowerMult:[0.01,30]
+  });
+  function clampBuffValue(key,value,limits){
+    if(!Object.prototype.hasOwnProperty.call(limits,key)) return null;
+    const range=limits[key];
+    if(!range || !Number.isFinite(value)) return null;
+    return Math.max(range[0],Math.min(range[1],value));
+  }
+  function buffStackKey(b){
+    const raw=b && (b.stackKey || b.id || b.name);
+    return String(raw||'buff').trim().toLowerCase().slice(0,64) || 'buff';
+  }
+  function cleanBuffStats(src){
+    const out={};
+    if(!src || typeof src!=='object') return out;
+    let processed=0;
+    for(const rawKey in src){
+      if(!Object.prototype.hasOwnProperty.call(src,rawKey)) continue;
+      if(processed++>=32) break;
+      const k=String(rawKey).slice(0,64);
+      const v=Number(src[rawKey]);
+      const clean=clampBuffValue(k,v,BUFF_STAT_LIMITS);
+      if(!k || clean==null) continue;
+      out[k]=clean;
+    }
+    return out;
+  }
   function addBuff(b){
     if(!b || !b.stats) return false;
-    buffs.push({name:b.name||'Buff', icon:b.icon||'✦', t:Math.max(1,b.dur||30), stats:b.stats});
+    const stats=cleanBuffStats(b.stats);
+    if(!Object.keys(stats).length) return false;
+    const name=String(b.name||'Buff').slice(0,64);
+    const icon=String(b.icon||'✦').slice(0,8);
+    const stackKey=buffStackKey(b);
+    const duration=Math.max(1,Math.min(BUFF_DURATION_CAP,Number(b.dur)||30));
+    const same=buffs.filter(active=>active && active.stackKey===stackKey);
+    let capped=false;
+    if(same.length>=BUFF_STACK_CAP){
+      // At the cap another drink refreshes the layer that would expire first;
+      // it never adds a fourth multiplier/additive bonus.
+      same.sort((a,c)=>(a.t-c.t));
+      const target=same[0];
+      target.name=name;
+      target.icon=icon;
+      target.t=Math.max(target.t,duration);
+      target.stats=stats;
+      capped=true;
+    }else{
+      if(buffs.length>=BUFF_TOTAL_CAP){
+        let shortest=0;
+        for(let i=1;i<buffs.length;i++) if((buffs[i].t||0)<(buffs[shortest].t||0)) shortest=i;
+        buffs.splice(shortest,1);
+      }
+      buffs.push({name,icon,t:duration,stats,stackKey});
+    }
     try{ if(MM.recomputeModifiers) MM.recomputeModifiers(); }catch(e){}
     notify();
-    return true;
+    const stacks=buffs.reduce((n,active)=>n+(active && active.stackKey===stackKey?1:0),0);
+    return {ok:true,capped,stacks,cap:BUFF_STACK_CAP,stackKey};
   }
   function buffBundle(){
     if(!buffs.length) return null;
@@ -188,15 +270,21 @@ window.MM = window.MM || {};
     for(const b of buffs){
       for(const k in b.stats){
         const v=b.stats[k]; if(typeof v!=='number' || !isFinite(v)) continue;
-        if(MUL_KEYS.has(k)) out[k]=(out[k]==null?1:out[k])*v;
-        else if(MAX_KEYS.has(k)) out[k]=Math.max(out[k]||0,v);
-        else out[k]=(out[k]||0)+v;
+        let next;
+        if(MUL_KEYS.has(k)) next=(out[k]==null?1:out[k])*v;
+        else if(MAX_KEYS.has(k)) next=Math.max(out[k]||0,v);
+        else next=(out[k]||0)+v;
+        const clean=clampBuffValue(k,next,BUFF_BUNDLE_LIMITS);
+        if(clean!=null) out[k]=clean;
       }
     }
     return out;
   }
   function tickBuffs(dt){
     if(!buffs.length) return;
+    dt=Number(dt);
+    if(!(dt>0) || !Number.isFinite(dt)) return;
+    dt=Math.min(BUFF_DURATION_CAP,dt);
     let expired=false;
     for(let i=buffs.length-1;i>=0;i--){ buffs[i].t-=dt; if(buffs[i].t<=0){ buffs.splice(i,1); expired=true; } }
     if(expired){
@@ -232,17 +320,50 @@ window.MM = window.MM || {};
     {id:'guardian_air',   desc:'Zejscie na ziemie: sciagnij ambicje z nieba', check:()=>!!state.guardians.air, xp:500},
     {id:'story_complete', desc:'Cisza: spotkaj siebie w srodku swiata', check:()=>!!state.guardians.mother, xp:1500, chest:true},
   ];
+  const KNOWN_MILESTONE_IDS=new Set(MILESTONES.map(m=>m.id));
+  load();
   if(typeof window!=='undefined' && window.addEventListener){
-    window.addEventListener('mm-berry-harvest',()=>{ berries=toInt(berries+1,0); save(); });
+    window.addEventListener('mm-berry-harvest',()=>{ berries=toInt(berries+1,0,PROGRESS_COUNTER_CAP); save(); });
   }
   function rewardChest(p){
     try{
       if(MM.drops && MM.drops.spawnChest) MM.drops.spawnChest(p.x+0.6,p.y-0.35,'epic',{source:'progress',vx:1.8,vy:-3.2});
     }catch(e){}
   }
+  function publicBuffs(){
+    const grouped=new Map();
+    for(const b of buffs){
+      if(!b) continue;
+      const k=b.stackKey||buffStackKey(b);
+      let row=grouped.get(k);
+      if(!row){
+        row={name:b.name||'Buff',icon:b.icon||'✦',t:Math.max(0,b.t||0),stacks:0,cap:BUFF_STACK_CAP};
+        grouped.set(k,row);
+      }
+      row.stacks++;
+      // The ring counts down to the next layer falling off, not the last one.
+      row.t=Math.min(row.t,Math.max(0,b.t||0));
+    }
+    return [...grouped.values()].map(row=>({
+      name:row.name+(row.stacks>1?' ×'+row.stacks:''),
+      icon:row.icon,
+      t:row.t,
+      stacks:row.stacks,
+      cap:row.cap
+    }));
+  }
 
   let tickAcc=0;
+  function clearTransient(){
+    buffs.length=0;
+    tickAcc=0;
+    try{ if(MM.recomputeModifiers) MM.recomputeModifiers(); }catch(e){}
+    return true;
+  }
   function update(dt){
+    dt=Number(dt);
+    if(!(dt>0) || !Number.isFinite(dt)) return;
+    dt=Math.min(BUFF_DURATION_CAP,dt);
     tickBuffs(dt); // buffs need real dt (sub-second expiry accuracy)
     tickAcc+=dt; if(tickAcc<0.5) return; tickAcc=0;
     const p=playerRef(); if(!p) return;
@@ -274,12 +395,13 @@ window.MM = window.MM || {};
     }
   }
 
-  function reset(){ state.vit=state.str=state.agi=state.cap=state.hard=0; state.lastLevel=1; state.bossKills=0; state.done={}; state.trophies={}; state.guardians={}; berries=0; save(); try{ if(MM.recomputeModifiers) MM.recomputeModifiers(); }catch(e){} notify(); }
+  function reset(){ state.vit=state.str=state.agi=state.cap=state.hard=0; state.lastLevel=1; state.bossKills=0; state.done={}; state.trophies={}; state.guardians={}; berries=0; clearTransient(); save(); notify(); }
 
-  MM.progress={ update, level, points, spend, bonuses, toughnessDamageReduction, reset, addBuff, snapshot, restore,
+  MM.progress={ update, level, points, spend, bonuses, toughnessDamageReduction, reset, clearTransient, addBuff, snapshot, restore,
     TOUGHNESS_DAMAGE_REDUCTION_PER_POINT, TOUGHNESS_DAMAGE_REDUCTION_MAX,
+    BUFF_STACK_CAP, BUFF_TOTAL_CAP,
     markGuardianHeart, hasGuardianHeart, guardianHearts,
-    getBuffs:()=>buffs.map(b=>({name:b.name,icon:b.icon,t:b.t})),
+    getBuffs:publicBuffs,
     stats:()=>({vit:state.vit,str:state.str,agi:state.agi,cap:state.cap,hard:state.hard}),
     milestones:()=>MILESTONES.map(m=>({id:m.id,desc:m.desc,done:!!state.done[m.id]})) };
   // Register as a stat provider: skill-point bonuses merge through the same

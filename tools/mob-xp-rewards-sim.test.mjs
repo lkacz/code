@@ -1,9 +1,9 @@
 // Nonlinear combat progression contract:
-// - actual mob power is compared with an unremovable hero-development floor
+// - actual mob power is compared with a weapon-neutral hero-development floor
 // - dangerous and regionally strengthened enemies pay much more than base XP
-// - trivial enemies pay zero XP, suppress hostility and flee the hero
-// - repeated same-species farming decays quickly but resets after a game day
-// - special killing blows retain their separate 20% execution bonus.
+// - weak enemies pay diminishing XP for several hero levels before reaching zero
+// - repeated same-species farming has a grace run, then decays and resets daily
+// - weapon choice never changes the XP payout; it only changes combat efficiency.
 import assert from 'node:assert/strict';
 
 globalThis.window = globalThis;
@@ -95,6 +95,46 @@ try{
   assert.ok(hardGolem.challengeMult>2,'a materially stronger golem receives a nonlinear risk bonus');
   assert.ok(hardGolem.recommendedLevel>fairBear.recommendedLevel,'recommended level follows actual threat power');
 
+  const basicRewardProfile=challengeFor(id);
+  const basicThreat=progression.threatProfile(player);
+  heroAttack=300;
+  const strongRewardProfile=challengeFor(id);
+  const strongThreat=progression.threatProfile(player);
+  assert.equal(strongRewardProfile.totalMult,basicRewardProfile.totalMult,'equipping a much stronger weapon does not reduce creature XP');
+  assert.equal(strongRewardProfile.ratio,basicRewardProfile.ratio,'XP challenge ratio is independent of weapon damage');
+  assert.ok(strongThreat.power>basicThreat.power*4,'AI threat perception still sees the power of the equipped weapon');
+  const strongWeaponXp=kill(id);
+  mobs.deserialize({v:5,list:[],aggro:{mode:'rel',m:{}},xpFatigue:{mode:'day',m:{}}});
+  player.xp=0;
+  heroAttack=3;
+  const basicWeaponXp=kill(id);
+  assert.equal(strongWeaponXp,basicWeaponXp,'the same creature awards exactly the same XP for weak and powerful weapons');
+  mobs.deserialize({v:5,list:[],aggro:{mode:'rel',m:{}},xpFatigue:{mode:'day',m:{}}});
+  player.xp=0;
+
+  // Even the weakest wildlife teaches a new hero something. Its level-based
+  // floor then fades in visible steps instead of producing an immediate zero.
+  for(const weakId of ['BIRD','FISH','FIREFLY']){
+    const profile=challengeFor(weakId);
+    assert.equal(profile.trivial,false,weakId+' is not trivial for a fresh hero');
+    assert.ok(profile.levelGraceMult>0,weakId+' receives the early progression floor');
+    assert.ok(kill(weakId)>0,weakId+' awards positive XP on an early kill');
+  }
+  mobs.deserialize({v:5,list:[],aggro:{mode:'rel',m:{}},xpFatigue:{mode:'day',m:{}}});
+  heroLevel=4;
+  const learningBird=challengeFor('BIRD');
+  heroLevel=7;
+  const fadingBird=challengeFor('BIRD');
+  assert.ok(learningBird.levelGraceMult>fadingBird.levelGraceMult && fadingBird.levelGraceMult>0,'weak-species XP fades across hero levels');
+  heroLevel=9;
+  const outgrownBird=challengeFor('BIRD');
+  assert.equal(outgrownBird.trivial,true,'weak wildlife becomes trivial only after the full level fade');
+  assert.equal(kill('BIRD'),0,'fully outgrown wildlife eventually awards zero XP');
+  mobs.deserialize({v:5,list:[],aggro:{mode:'rel',m:{}},xpFatigue:{mode:'day',m:{}}});
+  heroLevel=1;
+  player.xp=0;
+  events.length=0;
+
   const regionalGolem=challengeFor(id,{maxHp:species[id].hp*4,dmgMult:3,speedMul:1.2});
   assert.ok(regionalGolem.mobPower>hardGolem.mobPower*3,'regional HP/damage produce a genuinely stronger entity rating');
   assert.ok(regionalGolem.variantMult>2,'a strengthened regional variant raises base payout as well as challenge');
@@ -120,17 +160,22 @@ try{
   const second=kill();
   const special=kill(id,{specialAttack:true});
   assert.ok(first>species[id].xp*2,'first hard kill pays far above authored base XP');
-  assert.ok(Math.abs(second-Math.round(first*0.92))<=1,'second same-species kill loses about 8% instead of the old negligible 1%');
-  assert.ok(special>second,'special execution bonus can overcome one additional fatigue step');
+  assert.equal(second,first,'early repeat kills retain full XP during the fatigue grace run');
+  assert.equal(special,second,'a special killing blow has the same XP value as every other weapon action');
   assert.equal(events[0].challenge,'hard','award detail names the risk tier');
   assert.ok(events[0].challengeRatio>1 && events[0].challengeMult>2,'award detail exposes comparison and multiplier to UI');
   assert.equal(events[0].risk,true,'hard reward is highlighted in world-space feedback');
   assert.equal(events[2].special,true,'event preserves special-kill semantics');
+  assert.equal(events[2].specialMult,1,'special-hit feedback no longer carries a weapon-dependent XP multiplier');
 
   const snap=mobs.serialize();
   assert.equal(snap.xpFatigue.m[id].kills,3,'snapshot persists same-species fatigue kills');
   const fourth=kill();
-  assert.ok(fourth<second,'restored fatigue keeps meaningful diminishing returns');
+  const fifth=kill();
+  const sixth=kill();
+  assert.equal(fourth,first,'fourth same-species kill is still inside the grace run');
+  assert.equal(fifth,first,'fifth same-species kill is the last full-value repeat');
+  assert.ok(sixth<first && Math.abs(sixth-Math.round(first*0.96))<=1,'fatigue begins gradually only after five full-value kills');
   dayFloat+=1.05;
   const reset=kill();
   assert.equal(reset,first,'one game day without that kill type resets fatigue');
@@ -160,6 +205,20 @@ try{
   assert.equal(kill('WOLF'),0,'killing a trivial opponent awards zero XP');
   assert.equal(events.length,0,'zero-XP kills do not create fake positive award numbers');
   assert.ok(messages.some(t=>t.includes('0 EXP')),'first hunted trivial enemy explains why no XP was paid');
+
+  // Weapon-neutral rewards do not weaken the existing fear response: a fresh
+  // hero holding an extreme weapon still scares an otherwise relevant wolf.
+  heroLevel=1;
+  heroAttack=300;
+  spawnTestMob('WOLF',3.5);
+  mobs.setAggro('WOLF');
+  assert.equal(mobs.damageAt(3,9,1,{source:'hero'}),true,'strong-weapon threat can provoke a living mob');
+  simNow+=16;
+  mobs.update(1/30,player,world.getTile,world.setTile);
+  const weaponFleeing=mobs.serialize().list.find(m=>m.id==='WOLF');
+  assert.ok(weaponFleeing && weaponFleeing.state==='flee_outmatched','mob AI still flees after seeing an overwhelmingly strong weapon');
+  heroAttack=3;
+  heroLevel=20;
 
   spawnTestMob('WOLF',3.5);
   mobs.setAggro('WOLF');

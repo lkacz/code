@@ -57,6 +57,7 @@ const vendor = createQuestNpc({
   choiceRewards:[
     {key:'1',id:'qa_spanner',kind:'weapon',weaponType:'melee',name:'QA Spanner',attackDamage:2}
   ],
+  rewardOnceKeys:['starter_choice'],
   choiceReward(item){
     return {
       once:'starter_choice',
@@ -177,5 +178,76 @@ assert.ok(observer.summary().observe.progress>0, 'observe snapshot keeps partial
 observer.update(0.1,player,getTile,setTile,ctx);
 observer.update(0.1,player,getTile,setTile,ctx);
 assert.equal(observer.phase(), 'done', 'observe quest advances after enough active time');
+
+const rewardGateNpc=createQuestNpc({
+  id:'qa_reward_gate',
+  displayName:'QA Reward Gate',
+  steps:[
+    {id:'pay',kind:'handoff',item:'water',amount:1,next:'done',reward:{once:'prize',gear:{id:'qa_prize',kind:'weapon',weaponType:'melee',name:'QA Prize'},next:'done'}},
+    {id:'done',kind:'done',prompt:'Done'}
+  ]
+});
+rewardGateNpc.placeNearWorldStart(getTile,worldGen);
+const gatePosition=rewardGateNpc._debug();
+player.x=gatePosition.x;
+player.y=gatePosition.y;
+globalThis.inv.water=1;
+const workingGrant=globalThis.MM.inventory.grantItem;
+globalThis.MM.inventory.grantItem=()=>false;
+rewardGateNpc.update(0.1,player,getTile,setTile,ctx);
+assert.equal(rewardGateNpc.phase(),'pay','a rejected handoff reward rolls the quest phase back');
+assert.equal(globalThis.inv.water,1,'a rejected handoff reward refunds the consumed resource exactly');
+globalThis.MM.inventory.grantItem=workingGrant;
+rewardGateNpc.update(0.1,player,getTile,setTile,ctx);
+assert.equal(rewardGateNpc.phase(),'done','handoff retries successfully once its reward can be granted');
+assert.equal(globalThis.inv.water,0,'a successful retried handoff consumes its resource once');
+
+const pollutedSnapshot=vendor.snapshot();
+pollutedSnapshot.data=JSON.parse('{"__proto__":{"npcPolluted":true},"constructor":{"prototype":{"npcPolluted":true}},"safeValue":7}');
+assert.equal(vendor.restore(pollutedSnapshot), true, 'NPC restore accepts an otherwise valid record containing hostile keys');
+assert.equal({}.npcPolluted, undefined, 'NPC record restore blocks prototype-pollution keys');
+assert.equal(vendor._debug().data.safeValue, 7, 'NPC record hardening preserves ordinary state fields');
+
+const knownTailSnapshot=vendor.snapshot();
+knownTailSnapshot.data.tailMarker=99;
+const hostileNpcSnapshot=vendor.snapshot();
+hostileNpcSnapshot.x=1e308;
+hostileNpcSnapshot.y=-1e308;
+hostileNpcSnapshot.defeatedT=Infinity;
+hostileNpcSnapshot.data={
+  home:{x:1e308},
+  longText:'x'.repeat(2000),
+  values:Array.from({length:200},(_,i)=>i),
+  nested:{a:{b:{c:{d:'too deep'}}}},
+  nonFinite:Infinity
+};
+assert.equal(vendor.restore(hostileNpcSnapshot),true,'NPC restore accepts and sanitises deeply hostile state');
+const hardenedNpc=vendor._debug();
+assert.equal(hardenedNpc.x,null,'astronomical NPC x coordinates are rejected');
+assert.equal(hardenedNpc.y,null,'out-of-world NPC y coordinates are rejected');
+assert.equal(hardenedNpc.data.home.x,undefined,'invalid home anchors cannot override NPC placement');
+assert.ok(hardenedNpc.data.longText.length<=512,'NPC strings have a persisted length cap');
+assert.ok(hardenedNpc.data.values.length<=64,'NPC arrays have a persisted element cap');
+assert.equal(hardenedNpc.data.nested.a.b,undefined,'NPC records have a bounded nesting depth');
+assert.equal(hardenedNpc.data.nonFinite,undefined,'NPC records discard non-finite numbers');
+assert.ok(Number.isFinite(hardenedNpc.defeatedT),'transient NPC timers remain finite');
+
+const hostileObserve=observer.snapshot();
+hostileObserve.observe={phase:'watch',t:Infinity,best:1e308,ok:true,lineCd:Infinity};
+assert.equal(observer.restore(hostileObserve),true,'observe state restores through numerical hardening');
+const cleanObserve=observer._debug().observe;
+assert.ok(Number.isFinite(cleanObserve.t) && cleanObserve.t<=0.3,'observe progress is finite and capped to the step duration');
+assert.ok(Number.isFinite(cleanObserve.best) && cleanObserve.best<=0.3,'best observe progress is finite and capped');
+assert.ok(Number.isFinite(cleanObserve.lineCd) && cleanObserve.lineCd<=60,'observe dialogue cooldown is finite and capped');
+
+const oversizedRegistry=Object.create(null);
+for(let i=0;i<5000;i++) oversizedRegistry['deferred_'+i]={v:1,phase:'done'};
+oversizedRegistry.qa_vendor=knownTailSnapshot;
+vendor.reset();
+assert.equal(npcRegistry.restore({npcs:oversizedRegistry}), true, 'NPC registry accepts a bounded prefix of a legacy oversized save');
+assert.equal(vendor.phase(),'done','a registered NPC at the tail of an oversized save cannot be starved by junk ids');
+assert.equal(vendor._debug().data.tailMarker,99,'priority restore preserves the registered NPC payload');
+const boundedRegistrySnapshot=npcRegistry.snapshot();
+assert.ok(Object.keys(boundedRegistrySnapshot.npcs).length<=4096, 'NPC pending restore and snapshot registries have a hard size cap');
 
 console.log('npc-system-sim: all assertions passed');

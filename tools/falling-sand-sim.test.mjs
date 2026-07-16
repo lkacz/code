@@ -159,6 +159,33 @@ function makeDrawCtx(){
 
 {
   reset();
+  const oversized=new Array(1101).fill(null).map(()=>({x:0,y:0,type:T.STONE,vy:0}));
+  Object.defineProperty(oversized,1100,{get(){ throw new Error('untrusted oversized tail'); }});
+  fallingSolids.restore({v:5,active:oversized,sand:[{x:2,y:0,vy:0}]});
+  assert.equal(fallingSolids.metrics().active,1100,'restore accepts at most the rigid-entity hard cap');
+  assert.equal(fallingSolids.metrics().sand,1,'an oversized or throwing save section cannot abort restoration of later bounded sections');
+}
+
+{
+  reset();
+  assert.equal(fallingSolids.spawnLoose(Infinity,0,T.STONE),false,'malformed loose-block coordinates are rejected');
+  assert.equal(fallingSolids.protectStructure([{x:Infinity,y:0},{x:0,y:Infinity},{x:0,y:-9999}]),0,
+    'invalid protected-build cells neither consume the cap nor report false successes');
+  assert.doesNotThrow(()=>{
+    fallingSolids.afterPlacement(Infinity,0);
+    fallingSolids.onTileRemoved(NaN,0);
+    fallingSolids.maybeStart(0,Infinity);
+  },'malformed external build events fail closed');
+  assert.equal(fallingSolids.metrics().queue,0,'malformed build events cannot poison the instability queue');
+  assert.equal(fallingSolids.metrics().protected,0,'malformed build events cannot pollute protected structure state');
+  const hostileBatch=new Array(24001).fill(null);
+  Object.defineProperty(hostileBatch,24000,{get(){ throw new Error('unbounded invalid tail'); }});
+  assert.doesNotThrow(()=>fallingSolids.onTilesChangedBatch(hostileBatch,[]),
+    'an invalid batch is inspected only to a bounded multiple of its accepted-cell cap');
+}
+
+{
+  reset();
   fillFloor(-15,-8,8);
   setTile(0,-30,T.CHEST_RARE);
   withPlayerY(-38,()=>{
@@ -402,6 +429,14 @@ function supportedCantileverCells(t,span=25){
   fillFloor(60,-30,30);
   setTile(0,50,T.WATER_PUMP);
   assert.equal(fallingSolids.canSupportPlacement(1,50,T.STONE).ok,false,'machines do not count as building-physics anchors');
+  setTile(0,50,T.DYNAMO);
+  assert.equal(fallingSolids.canSupportPlacement(1,50,T.STONE).ok,true,'solid dynamo casing supports a block built against its side');
+  placeBuilt(T.STONE,1,50);
+  stepFalling(0.5);
+  assert.equal(getTile(1,50),T.STONE,'a block attached to a dynamo casing remains structurally stable');
+  setTile(0,50,T.DYNAMO_SLOT);
+  setTile(1,50,T.AIR);
+  assert.equal(fallingSolids.canSupportPlacement(1,50,T.STONE).ok,false,'open dynamo slot does not provide false side support');
   setTile(0,50,T.BEDROCK);
   assert.equal(fallingSolids.canSupportPlacement(1,50,T.STONE).ok,true,'terrain anchors still support wall-attached building blocks');
 }

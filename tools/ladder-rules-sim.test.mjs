@@ -83,4 +83,17 @@ assert.equal(canPlaceLadderFixture({
   tx:0, ty:30, underground:true, naturalSolidBlocked:true, oneEndSupport:true
 }).ok, false, 'single-anchored ladders still require an open or excavated target cell');
 
+assert.equal(canPlaceLadderFixture({
+  tx:Infinity,ty:10,underground:true,naturalSolidBlocked:false
+}).ok,false,'non-finite ladder coordinates are rejected instead of aliasing the world origin');
+assert.deepEqual(ladderConnections(NaN,0,()=>true),{up:false,down:false},'malformed renderer coordinates never call the ladder provider');
+let unboundedReads=0;
+const capped=ladderRun(0,0,()=>{ unboundedReads++; return true; },Infinity);
+assert.equal(capped.length,4097,'an infinite requested run is clamped to the hard scan bound in both directions');
+assert.equal(unboundedReads,4096,'malformed ladder data cannot cause an unbounded vertical scan');
+let throwingReads=0;
+assert.doesNotThrow(()=>ladderRun(0,0,()=>{ throwingReads++; throw new Error('bad provider'); },100),
+  'a bad ladder provider cannot break placement or rendering');
+assert.equal(throwingReads,2,'provider errors terminate each direction immediately');
+
 console.log('ladder-rules-sim: all assertions passed');

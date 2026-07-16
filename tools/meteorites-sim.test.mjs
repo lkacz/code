@@ -30,6 +30,8 @@ assert.ok(meteorites && meteorites.forceSpawn && meteorites.update, 'meteorites 
 assert.equal(typeof meteorites.impactAt, 'function', 'meteorites expose the normal impact/crater pipeline');
 assert.equal(typeof meteorites.onTileChanged, 'function', 'meteorites expose a beacon tile-change index hook');
 assert.equal(INFO[T.ANTIGRAVITY_BEACON].meteorShield, true, 'antigravity beacon is registered as a meteor shield tile');
+assert.equal(INFO[T.ANTIGRAVITY_BEACON].selfPowered, true, 'antigravity beacon remains fail-safe on its internal antimatter generator');
+assert.equal(INFO[T.ANTIGRAVITY_BEACON].internalGenerator, 'antimatter', 'beacon metadata explains its independent power source');
 assert.equal(T.METEOR_SIREN, 49, 'meteor siren has a stable tile id after water pump');
 assert.equal(INFO[T.METEOR_SIREN].meteorSiren, true, 'meteor siren is registered as an alert machine');
 assert.equal(INFO[T.RADIOACTIVE_ORE].radioactive, true, 'radioactive meteor ore is flagged');
@@ -335,6 +337,30 @@ meteorites.restore(ecoSnap);
 const restoredEcoScan=meteorites.scanNearestCrater({x:760,y:SURF},getEcoTile);
 assert.ok(restoredEcoScan && restoredEcoScan.ecology && restoredEcoScan.ecology.kind==='glow', 'crater ecology landmark type survives snapshot restore');
 assert.ok(restoredEcoScan.ecology.glow>=ecoScan.ecology.glow, 'crater ecology progress survives snapshot restore');
+const auraCrater=meteorites._debug.craterRecords.find(c=>Math.abs(c.x-760)<1);
+assert.ok(auraCrater && auraCrater.ecology && auraCrater.ecology.kind==='glow','render regression targets the restored radioactive crater');
+auraCrater.ecology.glow=Math.max(1,auraCrater.ecology.glow|0);
+
+function radioactiveAuraShape(frameMs){
+  globalThis.__mmFrameMs=frameMs;
+  const ellipses=[];
+  const drawCtx={
+    save(){},restore(){},beginPath(){},fill(){},fillRect(){},
+    ellipse(...args){ ellipses.push(args); },
+    createRadialGradient(){ return {addColorStop(){}}; }
+  };
+  meteorites.draw(drawCtx,20,(x)=>Math.abs(x-760)<3);
+  const aura=ellipses.find(args=>Math.abs(args[0]-auraCrater.x*20)<1);
+  assert.ok(aura,'radioactive crater draws its persistent aura');
+  return aura.slice(2,4);
+}
+const healthyAura=radioactiveAuraShape(16);
+const stressedAura=radioactiveAuraShape(23);
+assert.equal(meteorites._debug.craterEcologyDrawQuality(),1,'a stressed frame lowers crater draw quality');
+const recoveryAura=radioactiveAuraShape(16);
+assert.equal(meteorites._debug.craterEcologyDrawQuality(),1,'one healthy frame cannot bounce crater quality straight back up');
+assert.deepEqual(stressedAura,healthyAura,'radioactive aura geometry does not jump when draw quality degrades');
+assert.deepEqual(recoveryAura,healthyAura,'radioactive aura geometry stays stable during quality recovery');
 globalThis.__mmFrameMs = 35;
 const criticalEcoBefore=meteorites.metrics().craterEcologyOps;
 for(let i=0;i<20;i++) meteorites.update(1, player, getEcoTile, setEcoTile);
@@ -378,7 +404,11 @@ function setSirenTile(x,y,t){ sirenTiles.set(kxy(x,y),t); }
 setSirenTile(660,SURF-1,T.METEOR_SIREN);
 meteorites.onTileChanged(660,SURF-1,T.AIR,T.METEOR_SIREN);
 const beforeAlerts=meteorites.metrics().sirenAlerts;
-assert.ok(meteorites.forceSpawn({x:666,y:SURF,intensity:1.25,side:-1,classId:'ice'}, player, getSirenTile), 'forced meteor spawns near siren');
+assert.ok(meteorites.forceSpawn({x:666,y:SURF,intensity:1.25,side:-1,classId:'ice'}, player, getSirenTile), 'forced meteor spawns near unpowered siren');
+assert.equal(meteorites.metrics().sirenAlerts,beforeAlerts,'an unpowered siren cannot issue a free meteor warning');
+meteorites.clearActive();
+assert.equal(meteorites.receiveElectricChargeAt(660,SURF-1,4,getSirenTile),4,'electric input charges the siren alarm reserve');
+assert.ok(meteorites.forceSpawn({x:666,y:SURF,intensity:1.25,side:-1,classId:'ice'}, player, getSirenTile), 'forced meteor spawns near powered siren');
 const sirenAfter=meteorites.metrics();
 assert.equal(sirenAfter.sirens, 1, 'siren remains indexed after alert');
 assert.ok(sirenAfter.sirenAlerts>beforeAlerts, 'siren warns about nearby meteor target');

@@ -467,7 +467,7 @@ assert.match(mainSrc, /function gasSkyExposedTile\(x,y\)/, 'main.js has a sky-ex
 assert.match(mainSrc, /y>surf && !\(gasTile && gasSkyExposedTile\(wx,y\)\)/, 'chunk terrain cache does not bake cave darkness behind sky-exposed gas');
 assert.match(mainSrc, /t===T\.AIR \|\| isGasTileId\(t\)/, 'mining does not start on gas cells');
 assert.match(mainSrc, /if\(isGasTileId\(tId\)\) return false;/, 'mining cannot break gas cells directly');
-assert.match(mainSrc, /const prevRaw=getTile\(tx,ty\); const prev=isGasTileId\(prevRaw\)\?T\.AIR:prevRaw;/, 'placing into gas records air for undo');
+assert.match(mainSrc, /const prevRaw=getTile\(tx,ty\);\s*const prev=isGasTileId\(prevRaw\)\?T\.AIR:prevRaw;/, 'placing into gas records air for undo');
 assert.match(mainSrc, /setTile\.transient\s*=\s*function/, 'main.js exposes transient world writes to simulation layers');
 assert.match(mainSrc, /function debugGasOrigin\(\)/, 'main.js chooses a nearby open gas debug origin');
 assert.match(mainSrc, /GASES\.add\(kind,at\.x,at\.y,\{power:p,cells:Math\.round\(3\+p\*4\),getTile,setTile\}\)/, 'gas debug buttons use the public gas add API');

@@ -62,12 +62,18 @@ import { isSolidCollisionTile } from './material_physics.js';
   // quick re-place) inherits it instead of silently venting everything.
   const orphanTanks = [];
   const ORPHAN_TTL = 6, ORPHAN_MAX = 24;
+  const BOILER_CAP = 600, JET_CAP = 1200;
+  const BOILER_ELECTRIC_CAP = 24;
   let sweepAcc = STEAM_CFG.SWEEP_INTERVAL; // first update sweeps immediately
   let simT = 0;
   const metricsState = {boilers:0, jets:0, boiled:0, vented:0, lifted:0, waterDrunk:0, lavaHeat:0, energyHeat:0};
 
   const key=(x,y)=>x+','+y;
-  const clamp=(v,a,b)=>v<a?a:(v>b?b:v);
+  const clamp=(v,a,b)=>{
+    const value=Number(v);
+    const safe=Number.isFinite(value) ? value : 0;
+    return safe<a?a:(safe>b?b:safe);
+  };
   const finite=(v)=>typeof v==='number' && isFinite(v);
   function getSafe(getTile,x,y){ try{ return getTile ? getTile(x,y) : T.AIR; }catch(e){ return T.AIR; } }
   function isSolid(t){ return isSolidCollisionTile(t); }
@@ -75,34 +81,49 @@ import { isSolidCollisionTile } from './material_physics.js';
   function boilerAt(x,y){ return boilers.get(key(x|0,y|0)) || null; }
   function jetAt(x,y){ return jets.get(key(x|0,y|0)) || null; }
   function ensureBoiler(x,y){
+    x=Math.floor(Number(x)); y=Math.floor(Number(y));
+    if(!finite(x) || !finite(y) || y<WORLD_MIN_Y || y>=WORLD_MAX_Y) return null;
     const k=key(x,y);
     let b=boilers.get(k);
-    if(!b){ b={x,y,water:0,steam:0,heat:0,ventT:0,puffT:0,drinkT:0}; boilers.set(k,b); }
+    if(!b){
+      if(boilers.size>=BOILER_CAP) return null;
+      b={x,y,water:0,steam:0,electric:0,heat:0,ventT:0,puffT:0,drinkT:0};
+      boilers.set(k,b);
+    }
+    b.lastSeen=simT;
     return b;
   }
   function ensureJet(x,y){
+    x=Math.floor(Number(x)); y=Math.floor(Number(y));
+    if(!finite(x) || !finite(y) || y<WORLD_MIN_Y || y>=WORLD_MAX_Y) return null;
     const k=key(x,y);
     let j=jets.get(k);
-    if(!j){ j={x,y,fedT:0,liftT:0,puffT:0}; jets.set(k,j); }
+    if(!j){
+      if(jets.size>=JET_CAP) return null;
+      j={x,y,fedT:0,liftT:0,puffT:0};
+      jets.set(k,j);
+    }
+    j.lastSeen=simT;
     return j;
   }
 
   function stashOrphanTank(b){
-    if(!b || (b.water<=0.01 && b.steam<=0.01)) return;
-    orphanTanks.push({x:b.x,y:b.y,water:b.water,steam:b.steam,t:simT});
+    if(!b || (b.water<=0.01 && b.steam<=0.01 && clamp(b.electric,0,BOILER_ELECTRIC_CAP)<=0.01)) return;
+    orphanTanks.push({x:b.x,y:b.y,water:b.water,steam:b.steam,electric:b.electric,t:simT});
     if(orphanTanks.length>ORPHAN_MAX) orphanTanks.shift();
   }
   // Falling machines land straight down: adopt only a same-column stash at or
   // below the origin, and only into an empty tank (a primed boiler keeps its
   // own charge — park continuity writes exact values after this).
   function adoptOrphanTank(b){
-    if(!b || b.water>0.01 || b.steam>0.01) return false;
+    if(!b || b.water>0.01 || b.steam>0.01 || clamp(b.electric,0,BOILER_ELECTRIC_CAP)>0.01) return false;
     for(let i=orphanTanks.length-1;i>=0;i--){
       const o=orphanTanks[i];
       if(simT-o.t>ORPHAN_TTL){ orphanTanks.splice(i,1); continue; }
       if(o.x===b.x && b.y>=o.y){
         b.water=clamp(o.water,0,STEAM_CFG.BOILER_WATER_CAP);
         b.steam=clamp(o.steam,0,STEAM_CFG.BOILER_STEAM_CAP);
+        b.electric=clamp(o.electric,0,BOILER_ELECTRIC_CAP);
         orphanTanks.splice(i,1);
         return true;
       }
@@ -126,6 +147,17 @@ import { isSolidCollisionTile } from './material_physics.js';
 
   function sweep(player,getTile){
     if(!player || !finite(player.x) || !finite(player.y)) return;
+    const px=Math.floor(player.x), py=Math.floor(player.y);
+    // Empty boilers and stateless jets outside the discovery window can be
+    // rediscovered later. Charged tanks are retained so travelling cannot erase
+    // persistent resources, while the live registry remains bounded.
+    for(const [k,b] of boilers){
+      if((b.water||0)>0.005 || (b.steam||0)>0.005) continue;
+      if(Math.abs(b.x-px)>STEAM_CFG.SWEEP_RX+4 || Math.abs(b.y-py)>STEAM_CFG.SWEEP_RY+4) boilers.delete(k);
+    }
+    for(const [k,j] of jets){
+      if(Math.abs(j.x-px)>STEAM_CFG.SWEEP_RX+4 || Math.abs(j.y-py)>STEAM_CFG.SWEEP_RY+4) jets.delete(k);
+    }
     const x0=Math.floor(player.x-STEAM_CFG.SWEEP_RX), x1=Math.floor(player.x+STEAM_CFG.SWEEP_RX);
     const y0=Math.max(WORLD_MIN_Y,Math.floor(player.y-STEAM_CFG.SWEEP_RY));
     const y1=Math.min(WORLD_MAX_Y-1,Math.floor(player.y+STEAM_CFG.SWEEP_RY));
@@ -173,15 +205,42 @@ import { isSolidCollisionTile } from './material_physics.js';
     return cells;
   }
   function drainElectricHeat(b,amount,getTile){
+    amount=Number(amount);
+    if(!(amount>0) || !Number.isFinite(amount)) return 0;
+    b.electric=clamp(b.electric,0,BOILER_ELECTRIC_CAP);
+    const stored=Math.min(amount,b.electric);
+    b.electric-=stored;
+    const remaining=amount-stored;
+    if(remaining<=1e-9) return stored;
+    const network=MM.teleporters;
+    if(network && typeof network.drainNetworkEnergyAt==='function'){
+      const electricTile=(x,y)=>{
+        try{
+          if(MM.world && typeof MM.world.hasInfrastructure==='function' && MM.world.hasInfrastructure(x,y,T.SILVER_WIRE)) return T.SILVER_WIRE;
+        }catch(e){}
+        try{
+          if(MM.world && typeof MM.world.hasInfrastructure==='function' && MM.world.hasInfrastructure(x,y,T.COPPER_WIRE)) return T.COPPER_WIRE;
+        }catch(e){}
+        return getSafe(getTile,x,y);
+      };
+      try{
+        // The boiler is a normal load on the same precious-metal component as every
+        // other machine. A zero result means genuine network scarcity; do not
+        // bypass it by secretly reaching for a nearby source afterwards.
+        const drained=Number(network.drainNetworkEnergyAt(b.x,b.y,remaining,electricTile,MM.dynamo,{fair:true}));
+        return stored+(Number.isFinite(drained) ? Math.min(remaining,Math.max(0,drained)) : 0);
+      }catch(e){ return stored; }
+    }
+    // Compatibility path for isolated module tests and pre-network hosts.
     let got=0;
     try{
       const dyn=MM.dynamo;
       if(dyn && typeof dyn.absorbNear==='function'){
-        const res=dyn.absorbNear(b.x+0.5,b.y+0.5,amount,getTile,4);
-        if(res && res.amount>0) got+=Math.min(amount,Number(res.amount)||0);
+        const res=dyn.absorbNear(b.x+0.5,b.y+0.5,remaining,getTile,4);
+        if(res && res.amount>0) got+=Math.min(remaining,Number(res.amount)||0);
       }
     }catch(e){}
-    if(got<amount){
+    if(got<remaining){
       try{
         const sol=MM.solar;
         if(sol && typeof sol.drainAt==='function'){
@@ -193,15 +252,25 @@ import { isSolidCollisionTile } from './material_physics.js';
             b.solarRescanAt=simT+2.4;
           }
           for(const [sx,sy] of b.solarCells){
-            if(got>=amount) break;
-            const res=sol.drainAt(sx,sy,amount-got,getTile);
+            if(got>=remaining) break;
+            const res=sol.drainAt(sx,sy,remaining-got,getTile);
             if(res && res.amount>0) got+=res.amount;
           }
-          if(got<amount && b.solarCells.length) b.solarRescanAt=Math.min(b.solarRescanAt,simT+0.5);
+          if(got<remaining && b.solarCells.length) b.solarRescanAt=Math.min(b.solarRescanAt,simT+0.5);
         }
       }catch(e){}
     }
-    return got;
+    return stored+(Number.isFinite(got) ? Math.min(remaining,Math.max(0,got)) : 0);
+  }
+  function receiveElectricChargeAt(x,y,amount,getTile){
+    x=Math.floor(Number(x)); y=Math.floor(Number(y));
+    const tileGetter=getTile || (MM.world && MM.world.getTile);
+    if(!finite(x) || !finite(y) || getSafe(tileGetter,x,y)!==T.STEAM_BOILER) return 0;
+    const b=ensureBoiler(x,y);
+    if(!b) return 0;
+    const before=clamp(b.electric,0,BOILER_ELECTRIC_CAP);
+    b.electric=Math.min(BOILER_ELECTRIC_CAP,before+Math.max(0,Number(amount)||0));
+    return b.electric-before;
   }
   // Drink from adjacent surface water: whole tiles, volume-true against the
   // tank (one absorbed tile = WATER_PER_TILE units).
@@ -352,7 +421,9 @@ import { isSolidCollisionTile } from './material_physics.js';
   }
 
   function update(dt,player,getTile,setTile){
-    if(!(dt>0) || typeof getTile!=='function') return;
+    dt=Number(dt);
+    if(!(dt>0) || !Number.isFinite(dt) || typeof getTile!=='function') return;
+    dt=Math.min(0.1,dt);
     simT+=dt;
     sweepAcc+=dt;
     if(sweepAcc>=STEAM_CFG.SWEEP_INTERVAL){
@@ -403,12 +474,11 @@ import { isSolidCollisionTile } from './material_physics.js';
   }
 
   function snapshot(){
-    // empty tanks carry no state worth saving: the sweep re-registers those
-    // boilers for free, so only charged ones ride the save file
+    // Persist empty remote boilers too. The local sweep cannot rediscover a
+    // machine in another base after load, and that would make it appear frozen.
     const charged=[];
     for(const b of boilers.values()){
-      if(b.water<=0.005 && b.steam<=0.005) continue;
-      charged.push({x:b.x,y:b.y,w:+b.water.toFixed(2),s:+b.steam.toFixed(2)});
+      charged.push({x:b.x,y:b.y,w:+b.water.toFixed(2),s:+b.steam.toFixed(2),e:+clamp(b.electric,0,BOILER_ELECTRIC_CAP).toFixed(2)});
       if(charged.length>=600) break;
     }
     return {v:1, boilers:charged};
@@ -424,8 +494,10 @@ import { isSolidCollisionTile } from './material_physics.js';
       const here=tileForValidation(getTile,r.x|0,r.y|0);
       if(here!==UNKNOWN_TILE && here!==T.STEAM_BOILER) continue;
       const b=ensureBoiler(r.x|0,r.y|0);
+      if(!b) continue;
       b.water=clamp(Number(r.w)||0,0,STEAM_CFG.BOILER_WATER_CAP);
       b.steam=clamp(Number(r.s)||0,0,STEAM_CFG.BOILER_STEAM_CAP);
+      b.electric=clamp(Number(r.e)||0,0,BOILER_ELECTRIC_CAP);
     }
     return true;
   }
@@ -433,20 +505,23 @@ import { isSolidCollisionTile } from './material_physics.js';
     boilers.clear();
     jets.clear();
     orphanTanks.length=0;
+    simT=0;
     sweepAcc=STEAM_CFG.SWEEP_INTERVAL;
+    metricsState.boilers=0; metricsState.jets=0;
     metricsState.boiled=0; metricsState.vented=0; metricsState.lifted=0;
     metricsState.waterDrunk=0; metricsState.lavaHeat=0; metricsState.energyHeat=0;
   }
   function metrics(){
     // live tank totals ride along for QA drivers and debug overlays
-    let tankedWater=0, pressure=0;
-    for(const b of boilers.values()){ tankedWater+=b.water; pressure+=b.steam; }
-    return Object.assign({tankedWater:+tankedWater.toFixed(2), pressure:+pressure.toFixed(2)}, metricsState);
+    let tankedWater=0, pressure=0, electric=0;
+    for(const b of boilers.values()){ tankedWater+=b.water; pressure+=b.steam; electric+=clamp(b.electric,0,BOILER_ELECTRIC_CAP); }
+    return Object.assign({tankedWater:+tankedWater.toFixed(2), pressure:+pressure.toFixed(2), electric:+electric.toFixed(2)}, metricsState);
   }
   // Mech continuity: assembling a hull lifts the world boiler's tank into the
   // mech (mechs.js reads boilerAt before the carve); parking pours it back.
   function primeBoilerAt(x,y,water,steam){
     const b=ensureBoiler(x|0,y|0);
+    if(!b) return null;
     b.water=clamp(Number(water)||0,0,STEAM_CFG.BOILER_WATER_CAP);
     b.steam=clamp(Number(steam)||0,0,STEAM_CFG.BOILER_STEAM_CAP);
     return b;
@@ -455,9 +530,9 @@ import { isSolidCollisionTile } from './material_physics.js';
   const api={
     CFG:STEAM_CFG,
     update, draw, onTileChanged,
-    boilerAt, jetAt, primeBoilerAt,
+    boilerAt, jetAt, primeBoilerAt, receiveElectricChargeAt,
     snapshot, restore, reset, metrics,
-    _debug:{boilers, jets, orphanTanks, ensureBoiler, ensureJet, tickBoiler, tickJet, feedingBoiler, columnHeight}
+    _debug:{boilers, jets, orphanTanks, BOILER_CAP, JET_CAP, BOILER_ELECTRIC_CAP, ensureBoiler, ensureJet, tickBoiler, tickJet, feedingBoiler, columnHeight}
   };
   MM.steamMachines=api;
 })();

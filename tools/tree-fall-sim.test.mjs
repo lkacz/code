@@ -1309,4 +1309,35 @@ worldGen.randSeed = ()=>0;
   assert.match(mainSource,/tId===T\.WOOD && getTile\(mineTx,mineTy-1\)===T\.WOOD\) startTreeFall\(mineTx,mineTy-1\)/,'mining only starts a tree fall when another trunk block remains above the removed wood');
 }
 
+{
+  resetTiles();
+  resetTreeSystem();
+  const debrisFlood=Array.from({length:trees._limits.debris+29},(_,i)=>key(i,5));
+  trees.restore({v:3,debris:debrisFlood,identities:[],leafLitter:[]},()=>T.WOOD);
+  assert.equal(trees._fallenTreeTiles.size,trees._limits.debris,'tree restore processes at most the debris persistence cap');
+  assert.equal(trees.snapshot().debris.length,trees._limits.debris,'tree snapshot stays bounded at the debris persistence cap');
+
+  trees.restore({v:3,
+    debris:['bad-key','1,Infinity','30000001,5','1,5,extra'],
+    identities:[['2,5','valid-tree'],['3,5','x'.repeat(161)],['4e0,5','invalid-key']],
+    leafLitter:[['4,5',Infinity]]
+  },(x)=>x===4?T.AUTUMN_LEAF_ORANGE:T.WOOD);
+  assert.equal(trees._fallenTreeTiles.has('bad-key'),false,'malformed persisted coordinates are rejected');
+  assert.equal(trees._tileTreeIds.size,1,'restore rejects oversized ids and non-canonical identity coordinates');
+  assert.equal(trees._tileTreeIds.get('2,5'),'valid-tree','valid bounded tree identity still restores');
+  assert.ok(Number.isFinite(trees._seasonalLeafLitter.get('4,5')),'non-finite leaf expiry is replaced with a finite decay deadline');
+}
+
+{
+  resetTiles();
+  resetTreeSystem();
+  MM.fallingSolids={onTileRemoved(){}};
+  MM.water={};
+  setTile(0,4,T.STONE);
+  trees._fallingBlocks.push({x:0,y:0,t:T.LEAF,dir:0,hBudget:0,windCarry:0});
+  trees.updateFallingBlocks(getTile,setTile,Infinity);
+  trees.updateFallingBlocks(getTile,setTile,0.05);
+  assert.equal(trees._fallingBlocks[0].y,1,'non-finite frame delta cannot poison or infinitely loop the falling-piece accumulator');
+}
+
 console.log('tree-fall-sim: all assertions passed');

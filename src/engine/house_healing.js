@@ -7,6 +7,7 @@ import {
   isPlayerBuiltMaterial,
   isTrapdoorTile
 } from './material_physics.js';
+import { getByTile as getFurnishingByTile } from './furnishings.js';
 
 export const HOUSE_HEAL_RATE_MIN_FRAC = 0.001;
 export const HOUSE_HEAL_RATE_MAX_FRAC = 0.01;
@@ -55,7 +56,7 @@ function safeBackground(opts,x,y){
 
 export function isHouseInteriorTile(t){
   return t===T.AIR || t===T.TORCH || t===T.LAVA || t===T.MOTHER_LAVA ||
-    t===T.GLOWSHROOM || t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE ||
+    t===T.GLOWSHROOM || t===T.WIRE || t===T.COPPER_WIRE || t===T.SILVER_WIRE || t===T.WATER_PIPE ||
     t===T.LADDER || t===T.BEDROCK_LADDER || isFurnitureTile(t) || isGasTile(t);
 }
 
@@ -64,7 +65,15 @@ export function isHouseSealTile(t){
 }
 
 export function isHouseLightSourceTile(t,x,y,opts){
-  if(LIGHT_SOURCE_TILES.has(t) || Number(INFO[t] && INFO[t].lightLevel)>0) return true;
+  if(LIGHT_SOURCE_TILES.has(t)) return true;
+  if(Number(INFO[t] && INFO[t].lightLevel)>0){
+    const furnishing=getFurnishingByTile(t);
+    if(furnishing && furnishing.requiresPower){
+      try{ if(!opts || typeof opts.isFurnishingPowered!=='function' || !opts.isFurnishingPowered(x,y,furnishing)) return false; }
+      catch(e){ return false; }
+    }
+    return true;
+  }
   if(opts && typeof opts.isBurning==='function'){
     try{ if(opts.isBurning(Math.floor(x),Math.floor(y))) return true; }catch(e){}
   }
@@ -114,6 +123,13 @@ export function houseComfortMult(chairs,furnishingBonus=0){
   const head=Math.max(0,HOUSE_COMFORT_MULT_CAP-base);
   if(raw<=0 || head<=0) return Math.min(HOUSE_COMFORT_MULT_CAP,base);
   return Math.min(HOUSE_COMFORT_MULT_CAP,base+head*(1-Math.exp(-raw/head)));
+}
+
+function furnishingActiveAt(t,x,y,opts){
+  const furnishing=getFurnishingByTile(t);
+  if(!furnishing || !furnishing.requiresPower) return true;
+  try{ return !!(opts && typeof opts.isFurnishingPowered==='function' && opts.isFurnishingPowered(x,y,furnishing)); }
+  catch(e){ return false; }
 }
 
 export function furnishingBonusForCopies(unitBonus,copies,decay=HOUSE_FURNISHING_DUPLICATE_DECAY){
@@ -179,6 +195,7 @@ export function analyzeHouseAt(player,getTile,opts={}){
   let qi=0, light=false, crafted=false, seals=0, missingBackwall=null, chairs=0;
   let furnishingCount=0, rawFurnishingBonus=0;
   const furnishingCounts=new Map();
+  const activeFurnishingCounts=new Map();
   let left=start.x, right=start.x, top=start.y, bottom=start.y;
 
   while(qi<q.length){
@@ -192,6 +209,7 @@ export function analyzeHouseAt(player,getTile,opts={}){
     if(isFurnitureTile(t)){
       furnishingCount++;
       furnishingCounts.set(t,(furnishingCounts.get(t)||0)+1);
+      if(furnishingActiveAt(t,c.x,c.y,opts)) activeFurnishingCounts.set(t,(activeFurnishingCounts.get(t)||0)+1);
       if(isChairTile(t)) chairs++;
       crafted=true;
     }
@@ -219,7 +237,7 @@ export function analyzeHouseAt(player,getTile,opts={}){
 
   const footprintCells=(right-left+3)*(bottom-top+3);
   const totalCells=countHouseSizeCells(seen,sealCells,getTile);
-  rawFurnishingBonus=[...furnishingCounts.entries()].reduce((sum,[tile,count])=>{
+  rawFurnishingBonus=[...activeFurnishingCounts.entries()].reduce((sum,[tile,count])=>{
     if(isChairTile(tile)) return sum;
     const unit=Math.max(0,Number(INFO[tile] && INFO[tile].homeRegenBonus)||0);
     return sum+furnishingBonusForCopies(unit,count);
@@ -232,15 +250,16 @@ export function analyzeHouseAt(player,getTile,opts={}){
   if(!light) return {ok:false, reason:'dark', cells:q.length, seals};
   const furnishingBreakdown=[...furnishingCounts.entries()].map(([tile,count])=>{
     const chair=isChairTile(tile);
+    const activeCount=chair ? count : (activeFurnishingCounts.get(tile)||0);
     const unit=chair ? HOUSE_CHAIR_COMFORT_BONUS : Math.max(0,Number(INFO[tile] && INFO[tile].homeRegenBonus)||0);
     const bonus=chair
       ? unit*Math.min(count,HOUSE_CHAIR_COMFORT_MAX_CHAIRS)
-      : furnishingBonusForCopies(unit,count);
-    return {tile,count,chair,unitBonus:unit,bonus};
+      : furnishingBonusForCopies(unit,activeCount);
+    return {tile,count,activeCount,chair,unitBonus:unit,bonus};
   }).sort((a,b)=>b.bonus-a.bonus || a.tile-b.tile);
   return {
     ok:true, reason:'house', cells:q.length, sealCells:sealCells.size, footprintCells, totalCells,
-    healRateFrac, chairs, furnishingCount, furnishingTypes:furnishingCounts.size,
+    healRateFrac, chairs, furnishingCount, poweredFurnishingCount:[...activeFurnishingCounts.values()].reduce((sum,n)=>sum+n,0),furnishingTypes:furnishingCounts.size,
     rawFurnishingBonus, furnishingBreakdown,
     comfortMult, comfortCap:HOUSE_COMFORT_MULT_CAP,
     comfortProgress:Math.max(0,Math.min(1,(comfortMult-1)/(HOUSE_COMFORT_MULT_CAP-1))),

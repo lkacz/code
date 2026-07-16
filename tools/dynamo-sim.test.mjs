@@ -8,6 +8,7 @@ globalThis.window = globalThis;
 globalThis.MM = {};
 
 const { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } = await import('../src/constants.js');
+const { drawEnergyGenerationLamp, isEnergyGenerating } = await import('../src/engine/power_indicator.js');
 const { dynamo } = await import('../src/engine/dynamo.js');
 const { water } = await import('../src/engine/water.js');
 const { gases } = await import('../src/engine/gases.js');
@@ -57,6 +58,21 @@ function stepGas(seconds,dt=0.1){
 assert.equal(T.DYNAMO_SLOT,31,'dynamo slot has a stable tile id after gas tiles');
 assert.equal(dynamo.isSlot(T.DYNAMO_SLOT),true,'dynamo exposes slot predicate');
 assert.deepEqual(dynamo.plannedCells(3,8,'vertical').map(c=>[c.x,c.y,c.t]), [[3,7,T.DYNAMO],[3,8,T.DYNAMO_SLOT],[3,9,T.DYNAMO]], 'dynamo can plan a 90-degree rotated structure');
+assert.equal(isEnergyGenerating(0),false,'zero output is an idle generator state');
+assert.equal(isEnergyGenerating(4),true,'positive live output is a generating state');
+assert.equal(isEnergyGenerating(4,true),false,'external charging is not mislabeled as generation');
+{
+  const fills=[];
+  const lampCtx={
+    fillStyle:'',strokeStyle:'',globalAlpha:1,globalCompositeOperation:'source-over',lineWidth:1,
+    save(){},restore(){},beginPath(){},arc(){},stroke(){},fill(){ fills.push(this.fillStyle); }
+  };
+  drawEnergyGenerationLamp(lampCtx,32,0,0,true,1);
+  assert.ok(fills.includes('#59ff73'),'active generator renderer paints a green LED');
+  fills.length=0;
+  drawEnergyGenerationLamp(lampCtx,32,0,0,false,0);
+  assert.ok(fills.includes('#ff4f58'),'idle generator renderer paints a red LED');
+}
 
 // Water falls through a valid slot and generates power without replacing it.
 resetWorld();
@@ -73,6 +89,7 @@ assert.ok(dynamo.metrics().storedEnergy>0,'falling water adds stored energy');
 assert.ok(dynamo.metrics().rotorSpeed>0,'falling water spins the dynamo fan');
 {
   const m=dynamo._debug.machines.get('0,5');
+  assert.equal(dynamo._debug.isGeneratingState(m),true,'live water generation lights the green generator status');
   const angleBefore=m.rotorAngle;
   dynamo.update(0.16,getTile);
   assert.notEqual(m.rotorAngle,angleBefore,'working dynamo fan animation advances with machine output');
@@ -94,6 +111,13 @@ assert.ok(dynamo.metrics().rotorSpeed>0,'falling water spins the dynamo fan');
 
 for(let i=0; i<160; i++) dynamo.recordFlow(0,5,T.WATER,4,getTile);
 assert.equal(dynamo.metrics().storedEnergy,dynamo._debug.ENERGY_CAPACITY,'stored dynamo energy caps at battery capacity');
+{
+  const before=dynamo.metrics().storedEnergy;
+  assert.equal(dynamo.recordFlow(0,5,T.WATER,0,getTile),false,'zero reported flow cannot mint a minimum dynamo pulse');
+  assert.equal(dynamo.recordFlow(0,5,T.WATER,-1,getTile),false,'negative reported flow cannot charge a dynamo');
+  assert.equal(dynamo.recordFlow(0,5,T.WATER,Number.NaN,getTile),false,'malformed reported flow cannot charge a dynamo');
+  assert.equal(dynamo.metrics().storedEnergy,before,'rejected flow leaves stored energy unchanged');
+}
 
 // A rotated dynamo in a dam lets pressurized water pass sideways through the slot.
 resetWorld();
@@ -109,6 +133,20 @@ assert.equal(getTile(0,5),T.DYNAMO_SLOT,'sideways flow preserves the rotated dyn
 assert.equal(getTile(1,5),T.WATER,'pressurized water exits on the dry side of the dam');
 assert.ok(dynamo.metrics().currentPower>0,'sideways dam flow produces dynamo output');
 assert.ok(dynamo.metrics().storedEnergy>0,'sideways dam flow adds stored energy');
+
+// A river or mill race can drive the same vertical turbine without a full
+// water column above it when the outlet drops to a lower tailrace. Energy is
+// awarded only for the parcel that actually crosses the rotor slot.
+resetWorld();
+placeDynamo(0,5,'vertical');
+setTile(-1,6,T.STONE);
+setTile(1,8,T.STONE);
+assert.equal(water.addSource(-1,5,getTile,setTile),true,'river water reaches the vertical dynamo inlet');
+water.update(getTile,setTile,0.2);
+assert.equal(getTile(0,5),T.DYNAMO_SLOT,'downhill cross-flow preserves the vertical dynamo slot');
+assert.equal(getTile(1,5),T.WATER,'river water crosses the rotor toward the lower tailrace');
+assert.ok(dynamo.metrics().currentPower>0,'actual downhill flow powers a vertical dynamo');
+assert.ok(dynamo.metrics().storedEnergy>0,'vertical hydroelectric flow is stored as usable energy');
 
 // Surface puddles do not drain through a dam turbine without pressure above them.
 resetWorld();
@@ -164,6 +202,13 @@ const drainResult=dynamo.drainAt(0,24,4,getTile);
 assert.ok(drainResult && drainResult.amount>0,'powered devices can drain a stored wind-turbine battery');
 assert.ok(dynamo.metrics().storedEnergy<beforeDrainEnergy,'network drain consumes stored wind-turbine energy');
 assert.equal(dynamo.metrics().currentPower,0,'draining a dynamo battery does not masquerade as fresh turbine output');
+assert.equal(dynamo._debug.isGeneratingState(dynamo._debug.machines.get('0,24')),false,'stored energy alone keeps the generator status idle');
+
+resetWorld();
+placeDynamo(0,24,'vertical');
+assert.ok(dynamo.receiveElectricChargeAt(0,24,2,getTile)>0,'electric rifle can inject energy into a dynamo');
+assert.equal(dynamo._debug.machines.get('0,24').lastKind,'electric','externally injected energy is marked as electric input');
+assert.equal(dynamo._debug.isGeneratingState(dynamo._debug.machines.get('0,24')),false,'external charging never lights the generation indicator green');
 
 resetWorld();
 placeDynamo(0,24,'horizontal');
@@ -324,12 +369,34 @@ dynamo.update(0.1,getTile);
 assert.equal(dynamo.metrics().machines,0,'broken structure drops stale dynamo state');
 
 resetWorld();
+placeDynamo(0,5);
+{
+  const oversized=new Array(dynamo._debug.MACHINE_CAP+1).fill(null);
+  oversized[dynamo._debug.MACHINE_CAP]={x:0,y:5,power:1,energy:10,lastKind:'water'};
+  dynamo.restore({v:1,list:oversized},getTile);
+  assert.equal(dynamo.metrics().machines,0,'dynamo restore scans at most its persisted machine cap even when preceding rows are invalid');
+}
+
+resetWorld();
 placeDynamo(0,5,'vertical');
 dynamo.recordFlow(0,5,T.WATER,1,getTile);
 assert.equal(dynamo.metrics().machines,1,'vertical dynamo can store machine state');
 setTile(0,4,T.AIR);
 dynamo.update(0.1,getTile);
 assert.equal(dynamo.metrics().machines,0,'breaking a vertical casing drops stale dynamo state');
+
+// A fallen three-cell dynamo may settle as separate tiles. The unique rotor
+// slot is its only recovery token, so casing fragments cannot multiply it.
+assert.equal(dynamo.dismantleRefundForCells([
+  {oldId:T.DYNAMO},{oldId:T.DYNAMO_SLOT},{oldId:T.DYNAMO}
+]),1,'a complete dynamo dismantles into exactly one inventory item');
+assert.equal(dynamo.dismantleRefundForCells([{oldId:T.DYNAMO_SLOT}]),1,'an isolated fallen rotor preserves the one recoverable dynamo');
+assert.equal(dynamo.dismantleRefundForCells([{oldId:T.DYNAMO},{oldId:T.DYNAMO}]),0,'casing-only fragments cannot mint a complete dynamo');
+assert.equal([
+  [{oldId:T.DYNAMO}],
+  [{oldId:T.DYNAMO_SLOT}],
+  [{oldId:T.DYNAMO}]
+].reduce((sum,cells)=>sum+dynamo.dismantleRefundForCells(cells),0),1,'all separately settled fragments still refund at most one dynamo');
 
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 assert.match(mainSrc, /function giveDebugDynamo\(\)/, 'main exposes a debug action that grants a dynamo item');
@@ -352,9 +419,17 @@ assert.doesNotMatch(mainSrc, /\b(?:DYNAMO|SOLAR|TELEPORTERS|GASES)\.onTileChange
   assert.match(notifyBody, /WATER\.onTileChanged/, 'main-layer edit notifications still wake water simulation');
 }
 assert.match(mainSrc, /notifyStructureTileChanged\(cell\.x,cell\.y,cell\.newId,cell\.oldId\)/, 'dynamo undo wakes dependent simulations');
+assert.match(mainSrc, /DYNAMO\.dismantleRefundForCells\(undoCells\)/, 'dynamo dismantling delegates fragment refunds to the rotor-token contract');
+assert.match(mainSrc, /const refund=Math\.max\(0,Math\.min\(1,Number\(e\.refund===undefined\?1:e\.refund\)\|\|0\)\)/, 'dynamo undo reclaims only the refund actually granted by dismantling');
 assert.match(mainSrc, /Dynamo wymaga podparcia obudowy/, 'dynamo placement explains casing support failures');
 assert.match(mainSrc, /ctx\.fillText\(text,lx\+2,ly-2\)/, 'placement preview renders the blocking reason beside the ghost');
 assert.match(mainSrc, /DYNAMO\.plannedCells\(tx,ty,dynamoOrientation\)/, 'regular placement uses the current dynamo orientation');
+assert.match(mainSrc, /for\(const cell of cells\)\{[\s\S]*Number\.isInteger\(cell\.x\)[\s\S]*worldCellInBounds\(cell\.x,cell\.y\)/,
+  'every casing and rotor cell must be an integer coordinate inside the world before a composite placement');
+assert.match(mainSrc, /const placed=\[\];[\s\S]*throw new Error\('dynamo write rejected'\)[\s\S]*for\(let i=placed\.length-1;i>=0;i--\)/,
+  'a rejected dynamo cell rolls back earlier casing writes before inventory is consumed');
+assert.match(mainSrc, /WATER\.displaceAt\(cell\.x,cell\.y,getTile,setTile\)[\s\S]*if\(!displaced\)[\s\S]*return false;/,
+  'a rotor placed into sealed water aborts instead of deleting the trapped fluid');
 assert.match(mainSrc, /DYNAMO\.plannedCells\(cx,cy,dynamoOrientation\)/, 'debug placement uses the current dynamo orientation');
 assert.match(mainSrc, /MM\.ui\.injectDynamoDebugPanel/, 'main injects the dynamo debug panel');
 

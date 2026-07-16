@@ -49,6 +49,8 @@ assert.deepEqual(INV.JEWELS.map(j => j.chance), [1, 0.7, 0.5], 'jewel success od
 assert.equal(INFO[T.COAL].drop, 'coal', 'coal blocks drop coal');
 assert.equal(INFO[T.GOLD_ORE].drop, 'gold', 'gold ore blocks drop gold');
 assert.equal(INFO[T.GOLD_ORE].goldOre, true, 'gold ore advertises its mineral identity');
+assert.equal(INFO[T.SILVER_ORE].drop, 'silverOre', 'silver ore blocks drop raw ore for smelting');
+assert.equal(INFO[T.SILVER_INGOT].drop, 'silver', 'silver ingot blocks return usable silver material');
 assert.equal(INFO[T.DIRT].drop, 'dirt', 'dirt blocks drop dirt');
 assert.equal(INFO[T.GRANITE].drop, 'granite', 'granite blocks drop granite');
 assert.equal(INFO[T.BASALT].drop, 'basalt', 'basalt blocks drop basalt');
@@ -123,6 +125,9 @@ assert.equal(res('wire')?.tile, 'WIRE', 'wire is a placeable salvaged resource')
 assert.equal(res('plastic')?.tile, null, 'plastic is tracked as a non-placeable component');
 assert.equal(res('copper')?.tile, null, 'copper is tracked as a non-placeable component');
 assert.equal(res('copperWire')?.tile, 'COPPER_WIRE', 'copper wire is a placeable power cable resource');
+assert.equal(res('silverOre')?.tile, 'SILVER_ORE', 'silver ore is a placeable smelting resource');
+assert.equal(res('silver')?.tile, 'SILVER_INGOT', 'silver ingots are tracked separately from raw ore');
+assert.equal(res('silverWire')?.tile, 'SILVER_WIRE', 'silver wire is a placeable high-conductivity cable resource');
 assert.equal(res('transistor')?.tile, 'TRANSISTOR', 'transistor is placeable for block-reaction assemblies');
 assert.equal(res('dynamo')?.tile, 'DYNAMO', 'dynamo is a craftable placeable machine resource');
 assert.equal(res('solarPanel')?.tile, 'SOLAR_PANEL', 'solar panel is a craftable placeable power-source resource');
@@ -152,6 +157,9 @@ assert.equal(INFO[T.BEDROCK_LADDER].ladder, true, 'bedrock ladders advertise sha
 assert.equal(INFO[T.BEDROCK_LADDER].bedrockLadder, true, 'bedrock ladders advertise their one-end-support identity');
 assert.equal(INFO[T.COPPER_WIRE].drop, 'copperWire', 'copper wire drops itself when dismantled');
 assert.equal(INFO[T.COPPER_WIRE].conductor, true, 'copper wire is marked as an energy conductor');
+assert.equal(INFO[T.SILVER_WIRE].drop, 'silverWire', 'silver wire drops itself when dismantled');
+assert.equal(INFO[T.SILVER_WIRE].conductivity, 1, 'silver wire advertises lossless conductivity');
+assert.equal(INFO[T.COPPER_WIRE].conductivity, 0.5, 'copper wire advertises its transmission loss');
 assert.equal(INFO[T.TELEPORTER].machine, 'teleporter', 'teleporter tile is marked as a machine');
 assert.equal(INFO[T.TELEPORTER].powerDevice, true, 'teleporter is marked as a powered device');
 assert.equal(INFO[T.VENDING_MACHINE].machine, 'vendingMachine', 'vending machine tile is marked as a machine');
@@ -178,21 +186,24 @@ assert.equal(INFO[T.SOLAR_BATTERY].energyCapacity, 120, 'storage solar panel adv
 assert.match(mainSrc, /id:'solar_panel'/, 'crafting exposes solar panels outside the debug menu');
 assert.match(mainSrc, /id:'solar_battery'/, 'crafting exposes solar battery panels outside the debug menu');
 assert.match(mainSrc, /id:'spring_platform'/, 'crafting exposes spring platforms outside the debug menu');
+assert.match(mainSrc, /id:'silver_wire'[^\n]*cost:\{silver:2, plastic:1\}/, 'crafting converts silver ingots into four silver-wire segments');
 assert.match(mainSrc, /id:'ladders'/, 'crafting exposes ladders outside the debug menu');
 assert.match(mainSrc, /id:'bedrock_ladders'[^\n]*cost:\{bedrock:1\}/, 'crafting turns one mined bedrock into bedrock ladders');
 assert.match(mainSrc, /inv\.bedrockLadder\+=6/, 'bedrock ladder recipe yields six fixtures');
 assert.match(mainSrc, /tiles:\['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY','SPRING_PLATFORM'/, 'hotbar machine group includes solar panels and spring platforms');
-assert.match(mainSrc, /tiles:\['WIRE','COPPER_WIRE','WATER_PIPE','LADDER'/, 'hotbar utility group includes ladders with overlays');
+assert.match(mainSrc, /tiles:\['WIRE','COPPER_WIRE','SILVER_WIRE','WATER_PIPE','LADDER'/, 'hotbar utility group includes both cable materials and ladders');
 assert.match(mainSrc, /'LADDER','BEDROCK_LADDER'/, 'hotbar utility group exposes both ladder materials');
-assert.match(mainSrc, /tiles:\['WIRE','COPPER_WIRE','WATER_PIPE','LADDER'[\s\S]*'RESPAWN_TOTEM'\]/, 'hotbar utility group includes respawn totems');
+assert.match(mainSrc, /tiles:\['WIRE','COPPER_WIRE','SILVER_WIRE','WATER_PIPE','LADDER'[\s\S]*'RESPAWN_TOTEM'\]/, 'hotbar utility group includes respawn totems');
 assert.match(mainSrc, /function selectToolMode\(opts\)\{[\s\S]*INV\.unequip\('weapon'\)[\s\S]*updateWeaponBar\(\)/, 'selecting build mode holsters the active weapon and refreshes the weapon bar');
 assert.match(mainSrc, /function cycleHotbar\(idx,opts\)\{[\s\S]*selectToolMode\(\{quiet:true\}\)[\s\S]*updateHotbarSel\(\)/, 'choosing a hotbar resource immediately returns to pickaxe/build mode');
 assert.match(mainSrc, /const preview=\(c && INV\.selectedWeaponForCategory\)\? INV\.selectedWeaponForCategory\(c\.id\)/, 'inactive weapon HUD slots display their remembered selection');
 assert.match(mainSrc, /assign\(slot,key\)\{[\s\S]*HOTBAR_ORDER\[slot\]=key; cycleHotbar\(slot\);/, 'inventory resource assignment goes through the hotbar selector');
-assert.match(mainSrc, /function collectLooseItemAt\(tx,ty,opts\)\{[\s\S]*isLooseItemTile\(t\)[\s\S]*const dropCtx=dropContextForTile\(t,tx,ty\);[\s\S]*setTile\(tx,ty,T\.AIR\);[\s\S]*const drops=awardTileDrops\(info,dropCtx\);[\s\S]*pushUndo\(tx,ty,t,T\.AIR,'break',drops\);[\s\S]*updateInventory\(\);/, 'loose item collection reuses tile drops, removal, undo, and inventory refresh');
+assert.match(mainSrc, /function collectLooseItemAt\(tx,ty,opts\)\{[\s\S]*isLooseItemTile\(t\)[\s\S]*const dropCtx=dropContextForTile\(t,tx,ty\);[\s\S]*setForegroundConfirmed\(tx,ty,T\.AIR\)[\s\S]*const drops=awardTileDrops\(info,dropCtx\);[\s\S]*pushUndo\(tx,ty,t,T\.AIR,'break',drops\);[\s\S]*updateInventory\(\);/, 'loose item collection confirms removal before drops, undo, and inventory refresh');
+assert.match(mainSrc, /function tryEatWorldFoodAt\(tx,ty\)[\s\S]*Consuming world food is not a reversible tile edit[\s\S]*setForegroundConfirmed\(tx,ty,T\.AIR\)/,
+  'consumed world food is not restorable without rolling back its already-applied health and status effects');
 assert.match(mainSrc, /MM\.collectLooseItemAt=collectLooseItemAt;/, 'main exposes loose item collection for weapon hits');
 assert.match(weaponsSrc, /function collectLooseTarget\(tx,ty\)\{[\s\S]*MM\.collectLooseItemAt\(tx,ty,\{source:'melee_weapon',silent:true\}\)/, 'melee weapons delegate loose item hits to the shared collection helper');
-assert.match(weaponsSrc, /function fireMelee\(player, aimX, aimY\)\{[\s\S]*const chestHit=openChestFromWeaponHit\(tx\+0\.5,ty\+0\.5,[\s\S]*const collected=chestHit \? false : collectLooseTarget\(tx,ty\);[\s\S]*const hit=chestHit \|\| collected/, 'normal melee swings open physical chests first and still count loose item collection as a hit');
+assert.match(weaponsSrc, /function fireMelee\(player, aimX, aimY, opts\)\{[\s\S]*const chestHit=openChestFromWeaponHit\(tx\+0\.5,ty\+0\.5,[\s\S]*const collected=chestHit \? false : collectLooseTarget\(tx,ty\);[\s\S]*const hit=chestHit \|\| collected/, 'normal and hold-charged melee swings open physical chests first and still count loose item collection as a hit');
 assert.match(weaponsSrc, /function firePowerMelee\(player, aimX, aimY, w, charge\)\{[\s\S]*const chestHit=openChestFromWeaponHit\(tx\+0\.5,ty\+0\.5,[\s\S]*const collected=chestHit \? false : collectLooseTarget\(tx,ty\);[\s\S]*hit = !!\(chestHit \|\| collected \|\|/, 'charged melee swings open physical chests first and can also collect loose items');
 
 // --- percent ladder snapping ---------------------------------------------
@@ -220,6 +231,31 @@ assert.ok(INV.statChips(INV.getItem('electric_gun')).some(c => c.label === 'Wią
 assert.ok(INV.statChips(INV.getItem('electric_gun')).some(c => c.label === 'Zużycie energii' && c.text.endsWith('/s')), 'electric gun shows energy drain');
 assert.equal(INV.STAT_LABELS.energyCapacityBonus, 'Pojemność energii', 'energy capacity has a player-facing stat label');
 assert.equal(INV.STAT_RULES.energyCapacityBonus, 'sum', 'energy capacity stacks additively');
+assert.equal(INV.STAT_LABELS.lootMagnetLevel, 'Auto-zbieranie łupów', 'loot magnet has a player-facing stat label');
+assert.equal(INV.STAT_RULES.lootMagnetLevel, 'max', 'multiple loot magnets use only the best range');
+assert.equal(INV.STAT_LABELS.treasureSenseLevel, 'Kompas skarbów', 'treasure compass has a player-facing stat label');
+assert.equal(INV.STAT_RULES.treasureSenseLevel, 'max', 'treasure sensing uses only the best equipped range');
+assert.equal(INV.STAT_RULES.specialVisionLevel, 'max', 'special optics use a capped best level');
+assert.equal(INV.registerItem({id:'compass_charm_test', kind:'charm', name:'Kompas testowy', treasureSenseLevel:3}), true, 'charms may carry treasure sensing');
+assert.equal(INV.registerItem({id:'thermal_eyes_test', kind:'eyes', name:'Termowizor testowy', specialVisionLevel:3, visionMode:'thermal'}), true, 'eyes may carry validated thermal vision');
+assert.ok(INV.statChips(INV.getItem('compass_charm_test')).some(c => c.label === 'Kompas skarbów' && c.text.includes('36 bloków')), 'treasure range is explicit on its item chip');
+assert.ok(INV.statChips(INV.getItem('thermal_eyes_test')).some(c => c.label === 'Termowizja' && c.text === 'poziom 3'), 'thermal mode and level are explicit on its item chip');
+INV.equip('compass_charm_test');
+assert.equal(globalThis.MM.activeModifiers.treasureSenseLevel, 3, 'equipped treasure charm contributes its bounded scan level');
+INV.unequip('charm');
+INV.equip('thermal_eyes_test');
+assert.equal(globalThis.MM.activeModifiers.specialVisionLevel, 3, 'equipped optics contribute special-vision level');
+INV.equip('bright');
+assert.equal(INV.registerItem({id:'magnet_outfit_test', kind:'outfit', name:'Strój zbieracza testowy', lootMagnetLevel:2}), true, 'outfits may carry auto-loot range');
+assert.equal(INV.registerItem({id:'magnet_charm_test', kind:'charm', name:'Wisiorek zbieracza testowy', lootMagnetLevel:4}), true, 'charms may carry auto-loot range');
+assert.ok(INV.statChips(INV.getItem('magnet_charm_test')).some(c => c.label === 'Auto-zbieranie' && c.text === 'promień +3 bloki'), 'loot magnet range is explicit on the item chip');
+INV.equip('magnet_outfit_test');
+INV.equip('magnet_charm_test');
+assert.equal(globalThis.MM.activeModifiers.lootMagnetLevel, 4, 'best equipped loot magnet wins instead of ranges stacking');
+INV.unequip('charm');
+assert.equal(globalThis.MM.activeModifiers.lootMagnetLevel, 2, 'outfit magnet remains active after removing the stronger charm');
+INV.equip('default');
+assert.equal(globalThis.MM.activeModifiers.lootMagnetLevel, 0, 'auto-loot is off without matching equipment');
 assert.equal(INV.STAT_RULES.damageReductionBonus, 'sum', 'passive defense stacks additively before its safety cap');
 assert.equal(INV.registerItem({id:'battery_charm_test', kind:'charm', name:'Akumulator testowy', energyCapacityBonus:50}), true, 'energy capacity loot is registerable');
 assert.ok(INV.statChips(INV.getItem('battery_charm_test')).some(c => c.text === '+50E'), 'energy capacity appears as a stat chip');
@@ -393,7 +429,7 @@ assert.equal(INV.isShortcut('w_dirty'), true, 'opt-out entry cleaned up with the
 // --- chest generation: function-pure stats on the clean ladder, tiers superior ---
 const RNG = seed => { let st = seed >>> 0; return () => { st = (st * 1664525 + 1013904223) >>> 0; return (st >>> 8) / 0xFFFFFF; }; };
 const onLadder = m => { const p = (m - 1) * 100; return Math.abs(p - Math.round(p)) < 1e-6 && Math.round(p) % 5 === 0; };
-const NUM_FIELDS = ['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','crushResistBonus'];
+const NUM_FIELDS = ['airJumps','visionRadius','specialVisionLevel','treasureSenseLevel','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','lootMagnetLevel','crushResistBonus'];
 const KIND_ONE_STAT = new Set(['cape','eyes','outfit','charm']);
 const sums = { common: 0, uncommon: 0, rare: 0, epic: 0, legendary: 0 }, counts = { common: 0, uncommon: 0, rare: 0, epic: 0, legendary: 0 };
 for (let i = 0; i < 3500; i++) {
@@ -418,9 +454,34 @@ for (let i = 0; i < 3500; i++) {
   if (typeof item.attackDamage === 'number') assert.equal(item.attackDamage, Math.round(item.attackDamage), 'damage integer');
   // Rarity = clearly superior magnitude of the SAME stat (unique boost included in bounds)
   if (item.kind === 'cape'){ if (tier === 'common') assert.ok(item.airJumps <= 2, 'common cape jumps bounded'); if (tier === 'epic') assert.ok(item.airJumps >= 3, 'epic cape clearly superior'); if (tier === 'legendary') assert.ok(item.airJumps >= 4, 'legendary cape crowns the ladder'); }
-  if (item.kind === 'eyes'){ if (tier === 'common') assert.ok(item.visionRadius <= 14, 'common eyes bounded'); if (tier === 'epic') assert.ok(item.visionRadius >= 15, 'epic eyes clearly superior'); if (tier === 'legendary') assert.ok(item.visionRadius >= 18, 'legendary eyes crown the ladder'); }
+  if (item.kind === 'eyes' && typeof item.visionRadius === 'number'){ if (tier === 'common') assert.ok(item.visionRadius <= 14, 'common eyes bounded'); if (tier === 'epic') assert.ok(item.visionRadius >= 15, 'epic eyes clearly superior'); if (tier === 'legendary') assert.ok(item.visionRadius >= 18, 'legendary eyes crown the ladder'); }
+  if (item.kind === 'eyes' && typeof item.specialVisionLevel === 'number'){
+    assert.ok(item.visionMode === 'night' || item.visionMode === 'thermal', 'special optics always identify a safe visual mode');
+    assert.ok(item.specialVisionLevel >= 1 && item.specialVisionLevel <= 4, 'special-vision loot stays inside its hard cap');
+  }
   if (item.weaponType === 'melee'){ if (tier === 'common') assert.ok(item.attackDamage <= 6, 'common melee bounded'); if (tier === 'epic') assert.ok(item.attackDamage >= 8, 'epic melee clearly superior'); if (tier === 'legendary') assert.ok(item.attackDamage >= 13, 'legendary melee crowns the ladder'); }
   sums[tier] += INV.itemScore(item); counts[tier]++;
+}
+const MAGNET_TIER_LEVEL={common:1,uncommon:2,rare:3,epic:4,legendary:4};
+for(const [tier,level] of Object.entries(MAGNET_TIER_LEVEL)){
+  for(const kind of ['outfit','charm']){
+    const item=chests.genItem(()=>0.99,tier,{kind,profile:'magnet'});
+    assert.equal(item.lootMagnetLevel,level,tier+' '+kind+' follows the capped auto-loot progression');
+    assert.equal(NUM_FIELDS.filter(f=>typeof item[f]==='number').length,1,'magnet '+kind+' remains a one-function item');
+    assert.match(item.name,/^(Strój zbieracza|Wisiorek przyciągania) /,'magnet loot advertises its function in the name');
+  }
+}
+for(const [tier,level] of Object.entries(MAGNET_TIER_LEVEL)){
+  const compass=chests.genItem(()=>0.99,tier,{kind:'charm',profile:'compass'});
+  assert.equal(compass.treasureSenseLevel,level,tier+' treasure compass follows the capped progression');
+  assert.equal(NUM_FIELDS.filter(f=>typeof compass[f]==='number').length,1,'compass remains a one-function charm');
+  assert.match(compass.name,/^Wisiorek-kompas /,'compass loot advertises its function in the name');
+  for(const mode of ['night','thermal']){
+    const optics=chests.genItem(()=>0.99,tier,{kind:'eyes',profile:mode});
+    assert.equal(optics.specialVisionLevel,level,tier+' '+mode+' optics follow the capped progression');
+    assert.equal(optics.visionMode,mode,'forced optics preserve their visual mode');
+    assert.equal(NUM_FIELDS.filter(f=>typeof optics[f]==='number').length,1,'special optics remain one-function eyes');
+  }
 }
 assert.ok(sums.legendary / counts.legendary > sums.epic / counts.epic, 'legendary loot averages stronger than epic');
 assert.ok(sums.epic / counts.epic > sums.rare / counts.rare, 'epic loot averages stronger than rare');
@@ -445,7 +506,14 @@ const cleanSnap = INV.snapshot();
 assert.equal(INV.restore({
   equipped: { cape: { bad: true }, eyes: 'bright', outfit: 'default', weapon: null, charm: null },
   colors: { cape: { bad: true }, outfit: '#456789' },
-  bag: [{ id: 'restore_ok', kind: 'charm', name: 'Restore OK', mineSpeedMult: 1.0437 }],
+  bag: [
+    { id: 'restore_ok', kind: 'charm', name: 'Restore OK', mineSpeedMult: 1.0437 },
+    { id: 'restore_magnet_cap', kind: 'charm', name: 'Magnet Cap', lootMagnetLevel: 99 },
+    { id: 'restore_magnet_off', kind: 'charm', name: 'Magnet Off', lootMagnetLevel: -4 },
+    { id: 'restore_compass_cap', kind: 'charm', name: 'Compass Cap', treasureSenseLevel: 999 },
+    { id: 'restore_thermal_cap', kind: 'eyes', name: 'Thermal Cap', specialVisionLevel: 999, visionMode: 'thermal' },
+    { id: 'restore_fake_vision', kind: 'eyes', name: 'Fake Vision', specialVisionLevel: 2, visionMode: 'xray' }
+  ],
   discarded: ['discarded_ok'],
   shortcutOff: ['bow_wood'],
   shortcutSelection: { bow:'restore_ok', melee:'missing_item', stream:42 },
@@ -455,6 +523,12 @@ assert.equal(INV.equippedId('cape'), 'classic', 'malformed required equipment fa
 assert.equal(INV.getColors().cape, '#b91818', 'malformed color falls back to default');
 assert.equal(INV.getColors().outfit, '#456789', 'valid color is preserved');
 assert.equal(INV.getItem('restore_ok').mineSpeedMult, 1.05, 'restored loot is normalized');
+assert.equal(INV.getItem('restore_magnet_cap').lootMagnetLevel, 4, 'corrupt auto-loot range is clamped to the gameplay cap');
+assert.equal(INV.getItem('restore_magnet_off').lootMagnetLevel, undefined, 'non-positive auto-loot range cannot enable the effect');
+assert.equal(INV.getItem('restore_compass_cap').treasureSenseLevel, 4, 'corrupt treasure range is clamped to the fourth tier');
+assert.equal(INV.getItem('restore_thermal_cap').specialVisionLevel, 4, 'corrupt special-vision level is clamped to the fourth tier');
+assert.equal(INV.getItem('restore_thermal_cap').visionMode, 'thermal', 'valid thermal mode survives restore');
+assert.equal(INV.getItem('restore_fake_vision').visionMode, 'night', 'unknown x-ray-like mode fails closed to ordinary night vision');
 assert.equal(INV.isNew('restore_ok'), true, 'new marker for existing restored loot is kept');
 assert.equal(INV.isNew('missing_item'), false, 'new marker for absent loot is dropped');
 assert.deepEqual(INV.snapshot().shortcutSelection, {}, 'invalid or wrong-category shortcut selections are discarded on restore');

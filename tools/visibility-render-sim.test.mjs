@@ -14,7 +14,7 @@ const { fallingSolids } = await import('../src/engine/falling.js');
 const { weapons } = await import('../src/engine/weapons.js');
 const { plants } = await import('../src/engine/plants.js');
 
-const T = { AIR:0, GRASS:1, SAND:2, STONE:3, DIAMOND:4, WOOD:5, LEAF:6, SNOW:7, WATER:8 };
+const T = { AIR:0, GRASS:1, SAND:2, STONE:3, DIAMOND:4, WOOD:5, LEAF:6, SNOW:7, WATER:8, SILVER_ORE:129, SILVER_INGOT:130 };
 const WORLD_H = 32;
 
 let tiles = new Map();
@@ -24,9 +24,13 @@ const getTile = (x,y)=>tiles.get(key(x,y)) ?? T.AIR;
 function makeCtx(){
   const calls=[];
   const quadratics=[];
+  const gradients=[];
+  const fillRects=[];
   return {
     calls,
     quadratics,
+    gradients,
+    fillRects,
     fillStyle:'',
     strokeStyle:'',
     lineWidth:1,
@@ -47,10 +51,10 @@ function makeCtx(){
     quadraticCurveTo(...args){ calls.push('quadraticCurveTo'); quadratics.push(args); },
     stroke(){ calls.push('stroke'); },
     fill(){ calls.push('fill'); },
-    fillRect(){ calls.push('fillRect'); },
+    fillRect(...args){ calls.push('fillRect'); fillRects.push(args); },
     strokeRect(){ calls.push('strokeRect'); },
     drawImage(){ calls.push('drawImage'); },
-    createLinearGradient(){ return {addColorStop(){}}; },
+    createLinearGradient(){ const stops=[]; gradients.push(stops); return {addColorStop(pos,color){ stops.push([pos,color]); }}; },
     createRadialGradient(){ return {addColorStop(){}}; },
     canvas:{width:800,height:600}
   };
@@ -77,6 +81,62 @@ function setPerfNow(ms){
   try{ Object.defineProperty(globalThis.performance, 'now', {value:()=>ms, configurable:true}); }
   catch(e){ globalThis.performance.now = ()=>ms; }
 }
+
+// Polished silver keeps its dynamic pass bounded even when a player fills the whole
+// viewport with ingot blocks. Static sheen is baked elsewhere, so LOD/stress may
+// safely reduce this garnish to zero without making the material turn matte.
+for(let y=10;y<30;y++) for(let x=10;x<30;x++) tiles.set(key(x,y),T.SILVER_INGOT);
+setPerfNow(2000);
+globalThis.__mmFrameMs=16;
+globalThis.player={x:15,y:15,vx:0,vy:0};
+grass.reset();
+const hiddenSilverCtx=makeCtx();
+grass.drawOverlays(hiddenSilverCtx,'back',10,10,20,20,20,WORLD_H,getTile,T,1,1,1,()=>false);
+assert.equal(hiddenSilverCtx.calls.length,0,'undiscovered silver gloss draws nothing');
+
+grass.reset();
+const silverCtx=makeCtx();
+grass.drawOverlays(silverCtx,'back',10,10,20,20,20,WORLD_H,getTile,T,1,1,1,()=>true);
+const silverRects=silverCtx.calls.filter(call=>call==='fillRect').length;
+assert.ok(silverRects>0,'visible silver ingots receive a view-dependent specular sweep');
+assert.ok(silverRects<=96*3,'normal-frame silver gloss stays within the 96-tile / three-rect budget');
+const silverFrontCtx=makeCtx();
+grass.drawOverlays(silverFrontCtx,'front',10,10,20,20,20,WORLD_H,getTile,T,1,1,1,()=>true);
+assert.equal(silverFrontCtx.calls.length,0,'silver gloss draws once in the back pass, never again in front');
+
+setPerfNow(9000);
+grass.reset();
+const stillSilverLaterCtx=makeCtx();
+grass.drawOverlays(stillSilverLaterCtx,'back',10,10,20,20,20,WORLD_H,getTile,T,1,1,1,()=>true);
+assert.deepEqual(stillSilverLaterCtx.fillRects,silverCtx.fillRects,'silver reflections stay fixed when the hero stands still');
+setPerfNow(2000);
+globalThis.player.x+=1;
+grass.reset();
+const movedSilverCtx=makeCtx();
+grass.drawOverlays(movedSilverCtx,'back',10,10,20,20,20,WORLD_H,getTile,T,1,1,1,()=>true);
+assert.notDeepEqual(movedSilverCtx.fillRects,silverCtx.fillRects,'moving the hero shifts view-dependent silver reflections');
+
+globalThis.__mmFrameMs=30;
+grass.reset();
+const stressedSilverCtx=makeCtx();
+grass.drawOverlays(stressedSilverCtx,'back',10,10,20,20,20,WORLD_H,getTile,T,1,1,1,()=>true);
+const stressedSilverRects=stressedSilverCtx.calls.filter(call=>call==='fillRect').length;
+assert.ok(stressedSilverRects>0 && stressedSilverRects<=32*3,'slow frames cut silver gloss to the stressed 32-tile budget');
+
+globalThis.__mmFrameMs=48;
+grass.reset();
+const criticalSilverCtx=makeCtx();
+grass.drawOverlays(criticalSilverCtx,'back',10,10,20,20,20,WORLD_H,getTile,T,1,1,1,()=>true);
+assert.equal(criticalSilverCtx.calls.length,0,'critical frames drop animated gloss and keep the cached static sheen only');
+
+globalThis.__mmFrameMs=16;
+grass.reset();
+const distantSilverCtx=makeCtx();
+grass.drawOverlays(distantSilverCtx,'back',10,10,20,20,20,WORLD_H,getTile,T,0.5,1,1,()=>true);
+assert.equal(distantSilverCtx.calls.length,0,'sub-pixel distant gloss is culled instead of wasting fill calls');
+for(let y=10;y<30;y++) for(let x=10;x<30;x++) tiles.delete(key(x,y));
+delete globalThis.player;
+
 function grassGeometryForWind(speed, nowMs, extraMetrics){
   setPerfNow(nowMs);
   grass.reset();
@@ -184,6 +244,27 @@ water.drawOverlay(joinedWaterCtx,20,getTile,0,4,3,3,(x,y)=>y===5 && (x===0 || x=
 assert.equal(joinedWaterCtx.drew, true, 'adjacent remembered water columns paint as one body');
 assert.ok(waterLayerCtx.quadratics.some(args=>args[2]>36 && args[2]<38), 'right exposed water edge is also rounded inward');
 assert.equal(waterLayerCtx.quadratics.some(args=>Math.abs(args[2]-20)<0.01), false, 'joined water columns do not add curved seams inside the water body');
+
+// Toxicity is gameplay metadata on ordinary WATER tiles. Its renderer must
+// interpolate across the boundary instead of switching a whole segment green.
+water.reset();
+tiles = new Map();
+for(let x=0;x<=4;x++) tiles.set(key(x,5),T.WATER);
+water.restore({v:3,toxic:[[4,5,120]]});
+waterLayerCtx.gradients.length=0;
+const blendedWaterCtx={drew:false,save(){},restore(){},drawImage(){ this.drew=true; }};
+water.drawOverlay(blendedWaterCtx,20,getTile,0,4,5,3,(x,y)=>y===5&&x>=0&&x<=4);
+const waterBodyGradients=waterLayerCtx.gradients.filter(stops=>stops.length===3);
+assert.equal(waterBodyGradients.length,5,'each visible water column receives a data-driven body gradient');
+const topColors=waterBodyGradients.map(stops=>stops[0][1]);
+const rgb=color=>color.match(/rgba\((\d+),(\d+),(\d+),/).slice(1).map(Number);
+const topRgb=topColors.map(rgb);
+assert.equal(topColors[0],'rgba(120,198,252,0.580)','water outside the blend radius keeps the clean-water palette');
+assert.ok(topRgb[2][1]>topRgb[1][1] && topRgb[3][1]>topRgb[2][1] && topRgb[4][1]>topRgb[3][1],
+  'green contamination increases gradually over multiple columns toward toxic water');
+assert.ok(topRgb[2][2]<topRgb[1][2] && topRgb[3][2]<topRgb[2][2] && topRgb[4][2]<topRgb[3][2],
+  'blue water decreases gradually instead of ending at a hard color seam');
+
 water.reset();
 tiles = new Map([[key(2,5), T.WATER]]);
 const scaledWaterCtx = {
@@ -269,7 +350,7 @@ assert.match(mainSource, /function terrainTextureVariant\(t,wx,y,h\)/, 'terrain 
 assert.match(mainSource, /\(patch \^ \(h>>>7\) \^ \(t\*97\)\)>>>0/, 'terrain texture variant hashes stay unsigned');
 assert.match(mainSource, /function drawTerrainPattern\(g,t,px,py,wx,y,h\)/, 'chunk renderer has a cached terrain pattern pass');
 assert.match(mainSource, /t===T\.STONE \|\| t===T\.GRANITE \|\| t===T\.BASALT \|\| t===T\.BEDROCK/, 'hard-rock texture pass is budgeted for large underground masses');
-assert.match(mainSource, /return t===T\.SAND \|\| t===T\.UNSTABLE_SAND \|\| t===T\.QUICKSAND \|\| t===T\.CLAY \|\| t===T\.WET_CLAY \|\| t===T\.BRICK \|\| t===T\.CHIMNEY \|\| t===T\.DIRT \|\| t===T\.STONE \|\| t===T\.GRANITE \|\| t===T\.BASALT \|\| t===T\.BEDROCK \|\| t===T\.COAL \|\| t===T\.UFO_CONCRETE \|\| t===T\.FROZEN_DIRT \|\| t===T\.FROZEN_SAND \|\| t===T\.FROZEN_CLAY;/, 'sand, sand hazards, clay, brick, chimney, dirt, rock, coal, UFO concrete and permafrost opt into characteristic pattern textures');
+assert.match(mainSource, /return t===T\.SAND \|\| t===T\.UNSTABLE_SAND \|\| t===T\.QUICKSAND \|\| t===T\.CLAY \|\| t===T\.WET_CLAY \|\| t===T\.BRICK \|\| t===T\.CHIMNEY \|\| t===T\.DIRT \|\| t===T\.STONE \|\| t===T\.GRANITE \|\| t===T\.BASALT \|\| t===T\.BEDROCK \|\| t===T\.COAL \|\| t===T\.SILVER_INGOT \|\| t===T\.UFO_CONCRETE \|\| t===T\.FROZEN_DIRT \|\| t===T\.FROZEN_SAND \|\| t===T\.FROZEN_CLAY;/, 'terrain and polished silver opt into characteristic cached pattern textures');
 assert.match(mainSource, /drawTerrainPattern\(cctx,t,lx\*TILE,y\*TILE,wx,y,h\);/, 'visible chunk cache draws terrain patterns for real world tiles');
 assert.match(mainSource, /g\.drawImage\(terrainPatternCanvas\(t,variant\),px,py\);/, 'terrain patterns are blitted from a small cached atlas');
 assert.match(mainSource, /function drawTurretTilePixels\(g,t,px,py,h\)[\s\S]*Stepped barrel pixels keep the turret crisp/, 'turrets have a dedicated detailed pixel renderer');
@@ -333,6 +414,11 @@ assert.match(mainSource, /function drawGoldOreArt\(g,px,py,h\)/, 'gold ore has a
 assert.match(mainSource, /if\(t===T\.GOLD_ORE\)\{[\s\S]*drawGoldOreArt\(cctx,lx\*TILE,y\*TILE,h\)/, 'chunk bake embeds gold as veins inside host rock');
 assert.match(grassSource, /leafTile\(t\) \|\| t===T\.DIAMOND \|\| t===T\.GOLD_ORE/, 'animated overlay pass can add gold glints');
 assert.match(grassSource, /pass==='back' && t===T\.GOLD_ORE[\s\S]*rgba\(255,202,58/, 'gold ore shimmer uses a warm metallic palette');
+assert.match(mainSource, /if\(t===T\.SILVER_INGOT\)\{[\s\S]*drawSilverIngotArt\(g,0,0,[\s\S]*terrainPatternCache\.set\(key,c\)/, 'silver ingot sheen is rendered into the small cached pattern atlas');
+assert.match(mainSource, /if\(t===T\.SILVER_INGOT\) return 3;/, 'polished silver keeps low base-shade variance instead of looking mottled');
+assert.match(grassSource, /const GLOSS_GLINT_BUDGET = 96;[\s\S]*const GLOSS_STRESSED_BUDGET = 32;/, 'animated metal gloss has explicit normal and stressed-frame budgets');
+assert.match(grassSource, /t===T\.SILVER_ORE \|\| t===T\.SILVER_INGOT[\s\S]*glossyDrawn<glossBudget/, 'only cached visible silver candidates enter the budgeted dynamic gloss pass');
+assert.match(grassSource, /phase:x\*0\.21\+y\*0\.08[\s\S]*glossPhaseAt\(x,y,h,glossView\.phase\)/, 'silver specular position follows the hero/view phase instead of wall-clock time');
 assert.match(mainSource, /if\(t===T\.SAND \|\| t===T\.UNSTABLE_SAND \|\| t===T\.QUICKSAND\) return 4;/, 'sand shade variance stays low enough to avoid block grid patches');
 assert.match(mainSource, /if\(t===T\.DIRT\) return 5;/, 'dirt has a restrained continuous shade variance');
 assert.match(mainSource, /if\(t===T\.GRANITE\) return 6;/, 'granite has its own shade variance');

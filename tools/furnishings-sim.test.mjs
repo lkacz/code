@@ -19,6 +19,16 @@ const {
   getByKey,
   getFurnishing,
   isFurnishingTile,
+  placementFor,
+  validatePlacement,
+  FURNISHING_PLACEMENTS,
+  isPoweredAt,
+  receiveElectricChargeAt,
+  updatePower,
+  catchUpPower,
+  onPowerTileChanged,
+  snapshotPower,
+  restorePower,
   findNearestRadio,
   furnishingTierAtDistance,
   selectFurnishingsForDistance,
@@ -31,6 +41,10 @@ const {
   drawTile,
   drawPreview,
   drawEffects,
+  drawMirrors,
+  mirrorPlayerOverlap,
+  mirrorSubjectProjection,
+  findMirrorAtPlayer,
   updateAudio,
   FURNISHING_SOUND_PROFILES,
   runtimeMetrics,
@@ -40,7 +54,7 @@ const {
 } = await import('../src/engine/furnishings.js');
 
 assert.ok(Array.isArray(FURNISHINGS), 'furnishings exports a definition array');
-assert.equal(FURNISHINGS.length, 32, 'the home catalogue ships exactly 32 furnishings');
+assert.equal(FURNISHINGS.length, 33, 'the home catalogue ships exactly 33 furnishings');
 
 const unique = (values, label) => {
   assert.equal(new Set(values).size, values.length, label + ' are unique');
@@ -56,10 +70,10 @@ assert.ok(ids.every(id => typeof id === 'string' && id.length > 0), 'every furni
 assert.ok(keys.every(key => typeof key === 'string' && key.length > 0), 'every furnishing has a stable resource key');
 assert.deepEqual(
   tiles.slice().sort((a, b) => a - b),
-  Array.from({ length: 32 }, (_, i) => 96 + i),
-  'furnishing tiles occupy the append-only 96..127 save range'
+  Array.from({ length: 33 }, (_, i) => 96 + i),
+  'furnishing tiles occupy the append-only 96..128 save range'
 );
-assert.ok(tiles.every(tile => Number.isInteger(tile) && tile >= 96 && tile <= 127 && tile < 256),
+assert.ok(tiles.every(tile => Number.isInteger(tile) && tile >= 96 && tile <= 128 && tile < 256),
   'every furnishing tile fits the Uint8 world/save format');
 
 const categorySet = new Set();
@@ -81,6 +95,11 @@ for (const def of FURNISHINGS) {
   assert.equal(info.color, def.color, def.id + ' color matches INFO');
   assert.equal(info.hp, def.hp, def.id + ' durability matches INFO');
   assert.equal(def.placeableInHome, true, def.id + ' is explicitly placeable in a home');
+  assert.ok(Object.values(FURNISHING_PLACEMENTS).includes(def.placement),def.id+' has an explicit physical placement rule');
+  assert.equal(info.furniturePlacement,def.placement,def.id+' placement metadata reaches the tile registry');
+  assert.equal(info.requiresHomePower,def.requiresPower,def.id+' power requirement reaches the tile registry');
+  assert.equal(info.homePowerDraw,def.powerDraw,def.id+' power draw reaches the tile registry');
+  assert.equal(def.requiresPower,def.powerDraw>0,def.id+' only declares power when it has a positive bounded draw');
 
   assert.ok(typeof def.category === 'string' && def.category, def.id + ' has a category');
   assert.equal(def.group, def.category, def.id + ' belongs to its furnishing category');
@@ -106,7 +125,7 @@ assert.deepEqual([...soundSet].sort(), Object.keys(FURNISHING_SOUND_PROFILES).so
   'audible furnishings exercise every restrained home sound family');
 assert.ok(FURNISHINGS.filter(def => def.sound).length >= 16,
   'the devices and advanced wonders have a substantial positional soundscape');
-for(const quiet of ['RUSTIC_STOOL','PINE_TABLE','WOVEN_RUG','POTTED_FERN']){
+for(const quiet of ['RUSTIC_STOOL','PINE_TABLE','WOVEN_RUG','POTTED_FERN','MIRROR']){
   assert.equal(FURNISHINGS.find(def => def.tileName === quiet).sound, null, quiet + ' remains appropriately silent');
 }
 
@@ -130,6 +149,44 @@ assert.equal(getFurnishing(null), null, 'generic lookup rejects missing values')
 assert.equal(isFurnishingTile(T.AIR), false, 'air is not a furnishing tile');
 assert.equal(isFurnishingTile(T.BEDROCK_LADDER), false, 'pre-catalogue tiles are not furnishings');
 
+// Physical placement is silhouette-specific instead of accepting any generic
+// side/ceiling brace. Small devices may sit directly above the pine table.
+{
+  const tiles=new Map();
+  const get=(x,y)=>tiles.get(x+','+y)||T.AIR;
+  tiles.set('0,1',T.STONE);
+  assert.equal(validatePlacement(T.RUSTIC_STOOL,0,0,get).support,'floor','standing furniture accepts a solid floor');
+  tiles.clear(); tiles.set('-1,0',T.STONE);
+  assert.equal(validatePlacement(T.RUSTIC_STOOL,0,0,get).ok,false,'standing furniture rejects side-wall support');
+  tiles.clear(); tiles.set('0,-1',T.STONE);
+  assert.equal(validatePlacement(T.RUSTIC_STOOL,0,0,get).ok,false,'standing furniture rejects ceiling-only support');
+  assert.equal(validatePlacement(T.CHANDELIER,0,0,get).support,'ceiling','hanging decor mounts directly beneath a ceiling');
+  tiles.clear(); tiles.set('0,1',T.STONE);
+  assert.equal(validatePlacement(T.CHANDELIER,0,0,get).support,'floor','hanging decor may alternatively rest on a floor');
+  assert.equal(validatePlacement(T.WALL_CLOCK,0,0,get,{getBackground:()=>T.BRICK}).support,'wall','wall decor mounts to the construction back wall');
+  assert.equal(validatePlacement(T.WALL_CLOCK,0,0,get,{getBackground:()=>T.AIR}).ok,false,'wall decor rejects an empty backdrop');
+  assert.equal(validatePlacement(T.WALL_CLOCK,0,0,get,{getBackground:()=>undefined}).ok,false,'missing background data fails closed instead of becoming a phantom wall');
+  assert.equal(validatePlacement(T.WALL_CLOCK,0,0,get,{getBackground:()=>T.WATER}).ok,false,'a passable fluid cannot masquerade as wall support');
+  assert.equal(validatePlacement(T.WALL_CLOCK,0,0,get,{getBackground:()=>999999}).ok,false,'unknown persisted tile ids cannot support wall decor');
+  assert.equal(validatePlacement(T.MIRROR,0,0,get,{getBackground:()=>T.BRICK}).support,'wall','the mirror mounts only to a construction back wall');
+  assert.equal(validatePlacement(T.MIRROR,0,0,get,{getBackground:()=>T.AIR}).ok,false,'the mirror rejects unsupported open air');
+  tiles.clear(); tiles.set('0,1',T.PINE_TABLE);
+  assert.equal(validatePlacement(T.RADIO,0,0,get).support,'table','a tabletop-sized radio can occupy the tile above a table');
+  assert.equal(validatePlacement(T.REFRIGERATOR,0,0,get).ok,false,'a standing refrigerator cannot balance on a table');
+  tiles.clear(); tiles.set('0,1',T.STONE);
+  assert.equal(placementFor(T.CHAIR_WOOD),FURNISHING_PLACEMENTS.FLOOR,'ordinary chairs inherit the strict floor rule');
+  assert.equal(validatePlacement(T.CHAIR_WOOD,0,0,get).support,'floor','chairs remain placeable on a floor');
+}
+
+assert.ok(FURNISHINGS.filter(def=>def.requiresPower).length>=16,'the electrical catalogue has a substantial powered-device set');
+assert.ok(FURNISHINGS.filter(def=>def.requiresPower).every(def=>def.lightLevel>0),
+  'every electrical home device contributes physical light while powered');
+assert.equal(getByTile(T.RADIO).requiresPower,true,'the radio is an electrical consumer');
+assert.equal(getByTile(T.WALL_CLOCK).requiresPower,false,'the mechanical wall clock remains usable without electricity');
+const mirrorDef=getByTile(T.MIRROR);
+assert.ok(mirrorDef && mirrorDef.tier===2 && mirrorDef.category==='decor','the mirror is a discoverable tier-two decoration');
+assert.equal(mirrorDef.requiresPower,false,'the optical mirror needs no household electricity');
+
 assert.equal(FURNISHING_FRONTIER_DISTANCE,15000,'the furnishing frontier caps at 15,000 blocks');
 assert.deepEqual(FURNISHING_DISTANCE_BANDS.map(b=>[b.minDistance,b.tier]),[[0,1],[2500,2],[7500,3],[12500,4]],
   'distance bands advance from homestead craft to frontier wonders');
@@ -151,6 +208,13 @@ assert.equal(farTrader.length,2,'the Ir trader showcases two furnishings per vis
 assert.ok(farTrader.some(offer=>offer.furnishingTier===4),'a frontier trader stocks a tier-four wonder');
 assert.ok(farTrader.every(offer=>offer.cost.iridium>=4 && offer.give[offer.furnishingKey]===1),
   'advanced trader furnishings cost iridium and grant a placeable item');
+for(let seed=0;seed<64;seed++){
+  const tierTwoTrader=furnishingTraderOffersForDistance(seed&1?-2500:2500,seed,2);
+  assert.ok(tierTwoTrader.some(offer=>offer.furnishingKey==='mirror'),
+    'every tier-two Ir trader exposes the mirror discovery route (seed '+seed+')');
+}
+assert.ok(!furnishingTraderOffersForDistance(0,7,2).some(offer=>offer.furnishingKey==='mirror'),
+  'the guaranteed mirror does not bypass expedition progression at the spawn trader');
 assert.deepEqual(FURNISHING_CHEST_CHANCES,{epic:.10,legendary:.26},'only best chests carry restrained furnishing odds');
 const sequence=values=>{ let i=0; return ()=>values[Math.min(i++,values.length-1)]; };
 assert.equal(rollChestFurnishing('rare',()=>0),null,'rare and lower chests never bypass exploration');
@@ -166,6 +230,11 @@ assert.equal(furnishingsApi.byTile, FURNISHING_BY_TILE, 'default API exposes til
 assert.equal(furnishingsApi.byKey, FURNISHING_BY_KEY, 'default API exposes key lookup');
 assert.equal(furnishingsApi.isFurnishingTile, isFurnishingTile, 'default API exposes the furnishing predicate');
 assert.equal(furnishingsApi.findNearestRadio, findNearestRadio, 'default API exposes radio interaction lookup');
+assert.equal(furnishingsApi.validatePlacement,validatePlacement,'default API exposes the canonical placement validator');
+assert.equal(furnishingsApi.updatePower,updatePower,'default API exposes the household power tick');
+assert.equal(furnishingsApi.catchUpPower,catchUpPower,'default API exposes household power catch-up');
+assert.equal(furnishingsApi.snapshotPower,snapshotPower,'default API persists remote household loads');
+assert.equal(furnishingsApi.drawMirrors,drawMirrors,'default API exposes the clipped live-mirror pass');
 
 assert.ok(Array.isArray(FURNISHING_RESOURCES), 'furnishings exports inventory resource definitions');
 assert.equal(FURNISHING_RESOURCES.length, FURNISHINGS.length, 'every furnishing has one resource definition');
@@ -180,6 +249,9 @@ for (const def of FURNISHINGS) {
   assert.equal(resource.furniture, true, def.id + ' resource advertises furniture semantics');
   assert.equal(resource.placeableInHome, true, def.id + ' resource advertises home placement');
   assert.equal(resource.furnitureCategory, def.category, def.id + ' resource category matches');
+  assert.equal(resource.placement,def.placement,def.id+' resource carries its placement rule');
+  assert.equal(resource.requiresPower,def.requiresPower,def.id+' resource carries its power requirement');
+  assert.equal(resource.powerDraw,def.powerDraw,def.id+' resource carries its continuous power draw');
   assert.equal(resource.homeRegenBonus, def.homeRegenBonus, def.id + ' resource bonus matches');
   assert.equal(resource.ambientSound, def.sound, def.id + ' resource sound metadata matches');
   assert.equal(resource.tier, def.tier, def.id + ' resource tier matches');
@@ -211,6 +283,8 @@ for (const def of FURNISHINGS) {
   assert.equal(recipe.tile, def.tile, def.id + ' recipe carries the numeric tile');
   assert.equal(recipe.tileName, def.tileName, def.id + ' recipe carries the tile constant name');
   assert.equal(recipe.placeableInHome, true, def.id + ' recipe advertises home placement');
+  assert.equal(recipe.placement,def.placement,def.id+' recipe displays its placement rule');
+  assert.equal(recipe.requiresPower,def.requiresPower,def.id+' recipe displays its power requirement');
   assert.equal(recipe.homeRegenBonus, def.homeRegenBonus, def.id + ' recipe displays the correct home bonus');
   assert.equal(recipe.ambientSound, def.sound, def.id + ' recipe sound metadata matches');
   assert.equal(typeof recipe.make, 'function', def.id + ' recipe has a make effect');
@@ -242,14 +316,20 @@ for (const recipe of recipes) {
 // metrics return the tiny interfaces procedural renderers expect.
 function mockContext() {
   let drawCalls = 0;
+  let stateDepth = 0;
+  let minStateDepth = 0;
   const gradient = { addColorStop() { drawCalls++; } };
   const target = {
     canvas: { width: 96, height: 96 },
+    save() { drawCalls++; stateDepth++; },
+    restore() { drawCalls++; stateDepth--; minStateDepth=Math.min(minStateDepth,stateDepth); },
     measureText(text) { drawCalls++; return { width: String(text).length * 6 }; },
     createLinearGradient() { drawCalls++; return gradient; },
     createRadialGradient() { drawCalls++; return gradient; },
     createPattern() { drawCalls++; return {}; },
-    _drawCalls() { return drawCalls; }
+    _drawCalls() { return drawCalls; },
+    _stateDepth() { return stateDepth; },
+    _minStateDepth() { return minStateDepth; }
   };
   return new Proxy(target, {
     get(object, prop) {
@@ -266,6 +346,7 @@ function mockContext() {
 assert.equal(typeof drawTile, 'function', 'furnishings exports the world/icon tile renderer');
 assert.equal(typeof drawPreview, 'function', 'furnishings exports the preview renderer');
 assert.equal(typeof drawEffects, 'function', 'furnishings exports the dynamic effects pass');
+assert.equal(typeof drawMirrors, 'function', 'furnishings exports the live mirror pass');
 assert.equal(furnishings, furnishingsApi, 'named and default furnishings APIs stay in sync');
 for (const def of FURNISHINGS) {
   const tileCtx = mockContext();
@@ -287,6 +368,119 @@ for (const def of FURNISHINGS) {
 }
 assert.equal(drawTile(mockContext(), T.AIR, 0, 0, 0, 0), false, 'drawTile rejects non-furnishing tiles');
 
+resetRuntimeCaches();
+{
+  const hero={x:1.5,y:1.5,w:.8,h:1.8};
+  assert.ok(mirrorPlayerOverlap(hero,1,1),'hero body overlapping the mirror cell activates the reflection plane');
+  assert.equal(mirrorPlayerOverlap(hero,1,3),null,'an adjacent floor cannot show a remote hero reflection');
+  const base={x:1,y:1,glassW:10,glassH:14,centerX:30,centerY:30};
+  const left=mirrorSubjectProjection({...hero,x:1.25},base);
+  const right=mirrorSubjectProjection({...hero,x:1.75},base);
+  assert.ok(left && right && left.centerX>right.centerX,'mirror projection reverses horizontal movement across the glass');
+  assert.equal(findMirrorAtPlayer(hero,(x,y)=>x===1&&y===1?T.MIRROR:T.AIR).x,1,'the live pose locates the mirror actually covered by the hero');
+  assert.equal(findMirrorAtPlayer(hero,(x,y)=>x===1&&y===3?T.MIRROR:T.AIR),null,'the live pose ignores mirrors outside the hero level');
+
+  let reflections=0;
+  const mirrorTiles=(x,y)=>x===1 && y===1 ? T.MIRROR : T.AIR;
+  const mirrorCtx=mockContext();
+  const handled=drawMirrors(mirrorCtx,20,0,0,3,3,mirrorTiles,()=>true,{
+    player:{x:1.5,y:1.5},
+    renderReflection:(_g,mirror)=>{
+      reflections++;
+      assert.deepEqual({x:mirror.x,y:mirror.y},{x:1,y:1},'mirror callback receives its world cell');
+      assert.ok(mirror.glassW>0 && mirror.glassH>0,'mirror callback receives bounded glass geometry');
+      return true;
+    }
+  });
+  assert.equal(handled,true,'a visible mirror composites its live glass pass');
+  assert.equal(reflections,1,'one visible mirror renders the reflected subject once');
+  assert.equal(mirrorCtx._stateDepth(),0,'the mirror pass balances every canvas save with a restore');
+  assert.equal(mirrorCtx._minStateDepth(),0,'the mirror pass never underflows the canvas state stack');
+  assert.equal(drawMirrors(mockContext(),20,0,0,3,3,mirrorTiles,()=>false,{player:{x:1.5,y:1.5},renderReflection:()=>true}),false,
+    'fog-hidden mirrors perform no reflection work');
+  assert.doesNotThrow(()=>drawMirrors(mockContext(),20,0,0,3,3,mirrorTiles,()=>true,{
+    player:{x:1.5,y:1.5},renderReflection:()=>{ throw new Error('bad reflection renderer'); }
+  }),'the mirror clip contains renderer failures without breaking the world frame');
+}
+
+resetRuntimeCaches();
+{
+  const negativeCtx=mockContext();
+  const sweepStarts=[];
+  negativeCtx.moveTo=(x)=>sweepStarts.push(x);
+  const farWestTiles=(x,y)=>x===-15000 && y===1 ? T.MIRROR : T.AIR;
+  drawMirrors(negativeCtx,20,-15001,0,3,3,farWestTiles,()=>true,{
+    player:{x:-14999.5,y:1.5},renderReflection:()=>true
+  });
+  const glassX=-15000*20+5;
+  assert.ok(sweepStarts.length>0 && sweepStarts[0]>=glassX-14 && sweepStarts[0]<=glassX+10,
+    'the animated glass sweep stays normalized at the 15,000-block western frontier');
+}
+
+// A mirror-spammed room must not multiply the full hero renderer without a
+// bound, nor validate every unrelated aquarium/hologram on every frame.
+resetRuntimeCaches();
+{
+  let denseReads=0, reflections=0;
+  const denseTiles=(x,y)=>{
+    denseReads++;
+    if(y>=1 && y<=5 && x>=1 && x<=20) return T.MIRROR;
+    return x>=0 && x<=20 && y>=0 && y<=10 ? T.AQUARIUM : T.AIR;
+  };
+  const options={player:{x:4.5,y:1.5},renderReflection:()=>{ reflections++; return true; }};
+  assert.equal(drawMirrors(mockContext(),20,0,0,20,10,denseTiles,()=>true,options),true,
+    'dense animated rooms still locate mirrors');
+  assert.equal(reflections,1,'only the mirror physically covered by the hero duplicates the live renderer');
+  const readsAfterWarmup=denseReads;
+  reflections=0;
+  drawMirrors(mockContext(),20,0,0,20,10,denseTiles,()=>true,options);
+  assert.equal(reflections,1,'the same covered mirror remains live on cache hits');
+  assert.ok(denseReads-readsAfterWarmup<=16,'a warm mirror pass rereads only a bounded nearest-candidate set');
+}
+
+resetRuntimeCaches();
+{
+  let reflections=0;
+  const fogRow=(x,y)=>y===1 && x>=1 && x<=20 ? T.MIRROR : T.AIR;
+  assert.equal(drawMirrors(mockContext(),20,0,0,20,3,fogRow,(x)=>x>=17,{
+    player:{x:17.5,y:1.5},renderReflection:()=>{ reflections++; return true; }
+  }),true,'fog-hidden nearest mirrors do not starve later visible candidates');
+  assert.equal(reflections,1,'visibility probing renders only the covered visible mirror');
+}
+
+resetRuntimeCaches();
+{
+  let attempts=0, successful=0;
+  const blockedRow=(x,y)=>y===1 && x===1 ? T.MIRROR : T.AIR;
+  drawMirrors(mockContext(),20,0,0,12,3,blockedRow,()=>true,{
+    player:{x:1.5,y:1.5},
+    renderReflection:(_g,mirror)=>{
+      attempts++;
+      successful++;
+      return true;
+    }
+  });
+  assert.equal(successful,1,'the covered mirror remains live on its own level');
+  assert.equal(attempts,1,'off-level and non-overlapping mirrors never invoke the expensive renderer');
+}
+
+// If the shared animated-art cache truncates before the player's part of a
+// huge viewport, a bounded local fallback must still find nearby mirrors.
+resetRuntimeCaches();
+{
+  let reflections=0;
+  const overflowTiles=(x,y)=>{
+    if(y===15 && x>=18 && x<=22) return T.MIRROR;
+    return x>=0 && x<=40 && y>=0 && y<=20 ? T.AQUARIUM : T.AIR;
+  };
+  assert.equal(drawMirrors(mockContext(),20,0,0,40,20,overflowTiles,()=>true,{
+    player:{x:20.5,y:15.5},maxDistance:8.5,renderReflection:()=>{ reflections++; return true; }
+  }),true,'nearby mirrors survive shared effect-cache overflow');
+  assert.equal(reflections,1,'overflow recovery preserves the covered-mirror rule');
+  assert.equal(runtimeMetrics().effects.truncated,true,'the stress viewport actually exercises cache truncation');
+  assert.equal(runtimeMetrics().effects.mirrorFallbackScans,1,'overflow recovery performs one bounded local mirror scan');
+}
+
 const radioDef=FURNISHINGS.find(def=>def.tile===T.RADIO);
 assert.ok(radioDef && /sześcioma proceduralnymi stacjami/.test(radioDef.description),'radio recipe explains its multi-genre station feature');
 assert.equal(radioDef.sound,null,'radio delegates music to the dedicated station scheduler instead of random ambience');
@@ -306,7 +500,31 @@ assert.equal(radioDef.sound,null,'radio delegates music to the dedicated station
   assert.match(mainSource,/if\(o\.furnishingKey\) noteCraftResultSeen\(o\.furnishingKey,\{source:'trader'\}\)/,
     'viewing a furnishing at the Ir trader permanently reveals its recipe');
   assert.match(mainSource,/aria-modal/,'radio selector participates in the modal-input contract');
+  assert.match(mainSource,/FURNISHINGS\.validatePlacement\(id,tx,ty,getTile,\{getBackground:getConstructionBackgroundTile\}\)/,
+    'actual placement and its ghost preview share the catalogue support validator');
+  assert.match(mainSource,/FURNISHINGS\.updatePower\(dt,player,getTile,HOME_FURNISHING_POWER\)/,
+    'the live game drains powered furnishings through the canonical electrical network');
+  assert.match(mainSource,/FURNISHINGS\.catchUpPower\(simDt,getTile,HOME_FURNISHING_POWER\)/,
+    'background-tab catch-up includes persistent household electrical loads');
+  assert.match(mainSource,/FURNISHINGS\.drawMirrors\([\s\S]*renderReflection:drawHomeMirrorReflection/,
+    'the live world invokes the late clipped mirror pass');
+  assert.match(mainSource,/tiles:\['CHAIR_WOOD'[\s\S]*'MIRROR'/,
+    'the home hot-picker group explicitly contains the mirror tile');
+  assert.match(mainSource,/function resourceDiscovered\(key\)\{\s*return godMode \|\| resourceEverHeld\(key\);/,
+    'God Mode exposes undiscovered catalogue resources such as the mirror immediately');
+  assert.match(mainSource,/g\.scale\(-scale,scale\)/,
+    'the mirror performs a true horizontal optical reversal');
+  assert.match(mainSource,/function drawHomeMirrorReflection[\s\S]*g\.save\(\);\s*try\{[\s\S]*\}finally\{\s*g\.restore\(\);/,
+    'the reflected hero renderer restores canvas state even when a nested renderer fails');
+  assert.match(mainSource,/function homeMirrorHasLineOfSight[\s\S]*HOME_MIRROR_RANGE/,
+    'the smart mirror bounds work by range and world occlusion');
+  assert.match(mainSource,/drawCape\(\);[\s\S]*drawPlayer\(\{rearView:false,mirrorReflection:true\}\);[\s\S]*WEAPONS\.drawHeld/,
+    'the reflection reuses the live front-facing hero, cape and equipped-weapon renderers');
+  assert.match(mainSource,/findMirrorAtPlayer\(player,getTile\)[\s\S]*drawPlayer\(\{rearView:mirrorFacing\}\)/,
+    'the world hero turns his back only while physically covering a mirror cell');
+  assert.match(mainSource,/function activateRadioAudio\(\)/,'radio controls explicitly resume WebAudio from their trusted gesture');
   assert.match(htmlSource,/\.radioStationCard\[data-active="true"\]/,'radio selector has a distinct active-station treatment');
+  assert.match(htmlSource,/\.radioStationCard\[data-broadcasting="true"\]/,'radio equalizer only animates while audio is actually broadcasting');
   assert.match(htmlSource,/prefers-reduced-motion:reduce[^}]*radioPanel/,'radio animation honors reduced-motion preferences');
 }
 
@@ -323,7 +541,7 @@ const metricsAfterFirst = runtimeMetrics();
 assert.equal(metricsAfterFirst.effects.scans,1,'first effects pass scans the viewport once');
 assert.equal(metricsAfterFirst.effects.cached,2,'only animated furnishing cells enter the cache');
 assert.equal(drawEffects(mockContext(),20,0,0,80,40,stableTiles,()=>true),true,'cached effects remain drawable');
-assert.ok(tileReads-readsAfterFirst <= 2,'cache hit validates only known effect cells');
+assert.ok(tileReads-readsAfterFirst <= 4,'cache hit validates only known effect cells and their live power state');
 assert.equal(runtimeMetrics().effects.hits,1,'second stable effects pass records a cache hit');
 testNow += 241;
 drawEffects(mockContext(),20,0,0,80,40,stableTiles,()=>true);
@@ -340,10 +558,19 @@ const audioTiles = new Map([
 ]);
 const audioCalls=[];
 const radioSourceCalls=[];
+let homeEnergy=20;
+const powerContext={
+  getNetworkTile:(x,y)=>audioTiles.get(x+','+y)||T.AIR,
+  network:{
+    availableNetworkEnergyAt:()=>homeEnergy,
+    drainNetworkEnergyAt:(_x,_y,amount)=>{ const got=Math.min(homeEnergy,amount); homeEnergy-=got; return got; }
+  }
+};
 const fakeAudio={isReady:()=>true,isMuted:()=>false,
   play:(name,opts)=>audioCalls.push({name,opts,clock:runtimeMetrics().audio.scans}),
-  setRadioSource:(x,y)=>radioSourceCalls.push({x,y}),clearRadioSource:()=>radioSourceCalls.push(null)};
-for(let i=0;i<36;i++) updateAudio(.6,{x:4,y:2},(x,y)=>audioTiles.get(x+','+y)||T.AIR,fakeAudio);
+  setRadioSource:(x,y,opts)=>radioSourceCalls.push({x,y,opts}),clearRadioSource:()=>radioSourceCalls.push(null)};
+updatePower(.6,{x:4,y:2},(x,y)=>audioTiles.get(x+','+y)||T.AIR,powerContext);
+for(let i=0;i<36;i++) updateAudio(.6,{x:4,y:2},(x,y)=>audioTiles.get(x+','+y)||T.AIR,fakeAudio,powerContext);
 for(const name of ['homeTick','homeWater','homeRadio','homeMedical']){
   assert.ok(audioCalls.some(call=>call.name===name),name + ' eventually plays near its device');
 }
@@ -353,6 +580,51 @@ assert.ok(audioCalls.every((call,index,array)=>array.filter(other=>other.clock==
   'no audio scan starts more than two furnishing cues');
 assert.ok(runtimeMetrics().audio.candidates<=4,'duplicate clocks collapse to one nearest sound-family candidate');
 assert.ok(radioSourceCalls.some(source=>source && source.x===5.5 && source.y===1.5),'audio scan publishes the placed radio as a positional music source');
+assert.ok(radioSourceCalls.some(source=>source && source.opts && source.opts.powered===true),'powered radio publication reaches the music scheduler');
+assert.ok(runtimeMetrics().power.drained>0,'operating electrical furnishings continuously drain their connected source');
+
+resetRuntimeCaches();
+homeEnergy=0; audioCalls.length=0; radioSourceCalls.length=0;
+updatePower(.6,{x:4,y:2},(x,y)=>audioTiles.get(x+','+y)||T.AIR,powerContext);
+for(let i=0;i<16;i++) updateAudio(.6,{x:4,y:2},(x,y)=>audioTiles.get(x+','+y)||T.AIR,fakeAudio,powerContext);
+assert.equal(isPoweredAt(5,1,(x,y)=>audioTiles.get(x+','+y)||T.AIR,powerContext),false,'an empty circuit leaves the radio off');
+assert.ok(radioSourceCalls.some(source=>source && source.opts && source.opts.powered===false),'an unpowered radio publishes a no-power state instead of playing');
+assert.equal(audioCalls.some(call=>call.name==='homeRadio'||call.name==='homeMedical'),false,'unpowered electrical devices emit no ambient cues');
+assert.ok(audioCalls.some(call=>call.name==='homeTick'||call.name==='homeWater'),'non-electrical home ambience remains available without a circuit');
+
+resetRuntimeCaches();
+homeEnergy=0;
+assert.ok(receiveElectricChargeAt(5,1,1,(x,y)=>audioTiles.get(x+','+y)||T.AIR)>0,'electric rifle input charges a household device buffer');
+updatePower(.6,{x:5,y:1},(x,y)=>audioTiles.get(x+','+y)||T.AIR,powerContext);
+assert.equal(isPoweredAt(5,1,(x,y)=>audioTiles.get(x+','+y)||T.AIR,powerContext),true,'a rifle-charged radio operates temporarily without house-grid energy');
+
+// A house left behind remains an electrical load, but remote work is grouped
+// into one-second ticks instead of paying the network traversal every frame.
+resetRuntimeCaches();
+const remoteTiles=new Map([['100,1',T.RADIO]]);
+const remoteGet=(x,y)=>remoteTiles.get(x+','+y)||T.AIR;
+let remoteEnergy=10;
+const remotePower={
+  getNetworkTile:remoteGet,
+  network:{
+    availableNetworkEnergyAt:()=>remoteEnergy,
+    drainNetworkEnergyAt:(_x,_y,amount)=>{ const got=Math.min(remoteEnergy,amount); remoteEnergy-=got; return got; }
+  }
+};
+assert.equal(onPowerTileChanged(100,1,T.AIR,T.RADIO,remoteGet),true,'placing powered furniture registers it for remote simulation');
+for(let i=0;i<12;i++) updatePower(.1,{x:0,y:1},remoteGet,remotePower);
+assert.ok(remoteEnergy<9.99,'remote household electronics continue consuming real network energy');
+assert.equal(runtimeMetrics().power.remoteTicks,1,'twelve small frames collapse remote work into one bounded tick');
+const remoteSnap=snapshotPower();
+assert.ok(remoteSnap.list.some(row=>row.x===100 && row.tile===T.RADIO),'remote powered furniture is present in the power snapshot');
+resetRuntimeCaches();
+assert.equal(restorePower(remoteSnap,remoteGet),1,'remote household power state restores without a player visit');
+const beforeCatchUp=remoteEnergy;
+catchUpPower(10,remoteGet,remotePower);
+assert.ok(remoteEnergy<beforeCatchUp-.3,'background-tab catch-up charges remote household consumption to the source');
+remoteTiles.delete('100,1');
+onPowerTileChanged(100,1,T.RADIO,T.AIR,remoteGet);
+assert.equal(runtimeMetrics().power.tracked,0,'removing remote furniture unregisters its background load immediately');
 
 resetRuntimeCaches();
 let mutedReads=0;

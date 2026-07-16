@@ -22,6 +22,7 @@ const discovery = (function(){
     water_boil:     'Płomień gotuje wodę w parę',
     gas_boom:       'Obłok gazu detonuje od ognia',
     electric_water: 'Prąd elektryzuje całą taflę wody',
+    electric_weapon_charge: 'Karabin elektryczny ładuje baterie urządzeń',
     react_freeze:   'Mokry wróg + mróz = bryła lodu',
     react_thermal:  'Szok termiczny (ogień na zmrożonym)',
     react_toxic:    'Toksyczny zapłon (ogień + trucizna)',
@@ -91,6 +92,12 @@ const discovery = (function(){
     steam_lift:   'Kolumna pary unosi wszystko nad dyszą',
     steam_flight: 'Parowy mech wzbija się w powietrze',
   };
+  const CATALOG_IDS=Object.freeze(Object.keys(CATALOG));
+  const CATALOG_SET=new Set(CATALOG_IDS);
+  const CATALOG_COUNT=CATALOG_IDS.length;
+  const PROFILE_RAW_CAP=32768;
+  const PROFILE_SCAN_CAP=512;
+  const DISCOVERY_XP_CAP=1000000000;
   // Undiscovered entries show as "???" in the Ekwipunek journal tab, with only
   // the category and a foggy hint — enough to hunt, not enough to spoil.
   const HINTS = {
@@ -108,6 +115,7 @@ const discovery = (function(){
     water_boil:     {cat:'🔥 Żywioły i teren',   hint:'Płomień nad taflą nie zostaje bez odpowiedzi…'},
     gas_boom:       {cat:'🔥 Żywioły i teren',   hint:'Pewien obłok bardzo nie lubi otwartego ognia…'},
     electric_water: {cat:'⚗️ Reakcje bojowe',    hint:'Prąd puszczony w pewien żywioł niesie się dalej, niż celujesz…'},
+    electric_weapon_charge: {cat:'🏹 Techniki', hint:'Nie każda wiązka elektryczna musi służyć do niszczenia…'},
     react_freeze:   {cat:'⚗️ Reakcje bojowe',    hint:'Dwa zimne i mokre statusy na jednym celu dają coś twardego…'},
     react_thermal:  {cat:'⚗️ Reakcje bojowe',    hint:'Skrajne temperatury zderzone na jednym celu bolą podwójnie…'},
     react_toxic:    {cat:'⚗️ Reakcje bojowe',    hint:'Trucizna w żyłach + iskra z zewnątrz…'},
@@ -177,15 +185,17 @@ const discovery = (function(){
   try{
     if(typeof localStorage !== 'undefined'){
       const raw = localStorage.getItem(KEY);
-      if(raw){
+      if(typeof raw==='string' && raw.length<=PROFILE_RAW_CAP){
         const arr = JSON.parse(raw);
         if(Array.isArray(arr)){
           // The catalog is the schema. Ignore unknown/corrupt entries so a
           // tampered profile cannot inflate progress beyond n/total or retain
           // an unbounded collection of arbitrary strings.
-          for(const id of arr){
-            if(typeof id === 'string' && Object.prototype.hasOwnProperty.call(CATALOG,id)) seen.add(id);
-            if(seen.size>=Object.keys(CATALOG).length) break;
+          const count=Math.min(arr.length,PROFILE_SCAN_CAP);
+          for(let i=0;i<count;i++){
+            const id=arr[i];
+            if(typeof id === 'string' && CATALOG_SET.has(id)) seen.add(id);
+            if(seen.size>=CATALOG_COUNT) break;
           }
         }
       }
@@ -204,23 +214,28 @@ const discovery = (function(){
   // An empty text = SILENT entry (no toast, no jingle) — used when seeding
   // knowledge a loaded save already earned (category migration).
   function note(id, text){
-    if(typeof id !== 'string' || !Object.prototype.hasOwnProperty.call(CATALOG,id)) return false;
+    if(typeof id !== 'string' || !CATALOG_SET.has(id)) return false;
     if(seen.has(id)) return false;
     seen.add(id);
     persist();
     const loud = typeof text === 'string' && !!text;
-    try{
-      if(root.msg && loud) root.msg('🧪 Odkrycie: ' + text + ' (+' + DISCOVERY_XP + ' XP)');
-    }catch(e){ /* headless */ }
+    let awarded=0;
     try{
       // silent (migration) entries record knowledge without paying XP again
       const p = root.player;
       if(loud && p && typeof p === 'object'){
-        p.xp = (Number(p.xp) || 0) + DISCOVERY_XP;
-        if(typeof root.dispatchEvent === 'function' && typeof root.CustomEvent === 'function'){
-          root.dispatchEvent(new root.CustomEvent('mm-xp-awarded', {detail:{amount:DISCOVERY_XP, special:true, source:'discovery'}}));
+        const rawXp=Number(p.xp);
+        const xp=Number.isFinite(rawXp) ? Math.max(0,Math.min(DISCOVERY_XP_CAP,rawXp)) : 0;
+        const next=Math.min(DISCOVERY_XP_CAP,xp+DISCOVERY_XP);
+        awarded=Math.max(0,next-xp);
+        p.xp=next;
+        if(awarded>0 && typeof root.dispatchEvent === 'function' && typeof root.CustomEvent === 'function'){
+          root.dispatchEvent(new root.CustomEvent('mm-xp-awarded', {detail:{amount:awarded, special:true, source:'discovery'}}));
         }
       }
+    }catch(e){ /* headless */ }
+    try{
+      if(root.msg && loud) root.msg('🧪 Odkrycie: ' + text + (awarded>0 ? ' (+' + awarded + ' XP)' : ''));
     }catch(e){ /* headless */ }
     try{
       if(loud && root.MM.audio && root.MM.audio.play) root.MM.audio.play('chest');
@@ -240,7 +255,7 @@ const discovery = (function(){
   function has(id){ return seen.has(String(id)); }
   function count(){ return seen.size; }
   function list(){ return [...seen]; }
-  function total(){ return Object.keys(CATALOG).length; }
+  function total(){ return CATALOG_COUNT; }
   function label(id){ return CATALOG[id] || String(id); }
   // Help-panel view: found entries by label plus the remaining count.
   function progress(){
@@ -250,7 +265,7 @@ const discovery = (function(){
   // Journal-tab view (Ekwipunek → Odkrycia): every catalog entry, found ones
   // with their label, unfound ones masked to "???" + category hint.
   function entries(){
-    return Object.keys(CATALOG).map(id => {
+    return CATALOG_IDS.map(id => {
       const found = seen.has(id);
       const h = HINTS[id] || {};
       return {id, found, label: found ? CATALOG[id] : null, cat: h.cat || '❔ Sekrety', hint: h.hint || ''};

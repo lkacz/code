@@ -129,21 +129,32 @@ assert.ok(wDeep > 0 && wDeep < 0.35, 'six tiles of water eat most of the light')
 // 5b) data-driven furniture emitters honor INFO.lightLevel proportionally
 {
   const win={x0:0,y0:25,w:9,h:5};
-  const fieldFor=(tile)=>lighting._compute(win,{
+  const fieldFor=(tile,powered=true)=>lighting._compute(win,{
     getTile(x,y){ return x===4 && y===27 ? tile : T.AIR; },
     surfaceHeight:()=>SURF,
-    daylight:0
+    daylight:0,
+    isFurnishingPowered:()=>powered
   }).level;
   const center=2*win.w+4;
   const aquarium=fieldFor(T.AQUARIUM);
+  const television=fieldFor(T.TELEVISION);
+  const radio=fieldFor(T.RADIO);
   const chandelier=fieldFor(T.CHANDELIER);
   const miniatureSun=fieldFor(T.MINIATURE_SUN);
-  assert.equal(aquarium[center],4,'aquarium uses its exact INFO.lightLevel seed');
+  assert.equal(aquarium[center],6,'aquarium uses its exact INFO.lightLevel seed');
+  assert.equal(television[center],9,'a powered television casts a strong screen glow into the room');
+  assert.equal(television[center+3],6,'television light propagates through the standard physical light field');
+  assert.equal(radio[center],3,'small powered indicators still contribute a restrained local glow');
   assert.equal(chandelier[center],12,'chandelier uses its exact INFO.lightLevel seed');
   assert.equal(miniatureSun[center],15,'miniature sun reaches the lighting-engine maximum');
   assert.ok(aquarium[center]<chandelier[center] && chandelier[center]<miniatureSun[center],
     'higher furniture lightLevel values produce proportionally stronger sources');
   assert.equal(chandelier[center+2],10,'data-driven furniture light uses the standard one-level-per-tile falloff');
+  assert.equal(fieldFor(T.AQUARIUM,false)[center],0,'an unpowered electrical aquarium emits no physical light');
+  assert.equal(fieldFor(T.TELEVISION,false)[center],0,'an unpowered television emits no physical light');
+  assert.equal(fieldFor(T.RADIO,false)[center],0,'an unpowered radio emits no indicator glow');
+  assert.equal(fieldFor(T.MINIATURE_SUN,false)[center],0,'an unpowered electrical wonder emits no physical light');
+  assert.equal(fieldFor(T.CHANDELIER,false)[center],12,'a non-electrical chandelier keeps its flame-based light');
 }
 
 // 6) torch placement: dirty tracking + falloff + light-tight walls

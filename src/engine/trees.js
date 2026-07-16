@@ -25,12 +25,26 @@ window.MM = window.MM || {};
   const TREE_AREA_AUDIT_BUDGET = 180;
   const SEASONAL_LEAF_DECAY_SECONDS = 60;
   const SEASONAL_LEAF_CLEANUP_BUDGET = 18;
+  const TREE_DEBRIS_PERSIST_CAP = 24000;
+  const TREE_IDENTITY_PERSIST_CAP = 48000;
+  const TREE_LEAF_LITTER_PERSIST_CAP = 16000;
+  const TREE_CHUNK_AUDIT_CAP = 2048;
+  const TREE_PERSIST_KEY_MAX = 48;
+  const TREE_ID_MAX = 160;
+  const TREE_MAX_ABS_X = 30000000;
   let areaAuditCursor = 0;
   let treeElapsedSeconds = 0;
   let suppressFallenQueue = 0;
   const key = (x,y)=>x+','+y;
   const keyX = k=>+k.slice(0,k.indexOf(','));
   const keyY = k=>+k.slice(k.indexOf(',')+1);
+  function parsePersistedTreeKey(raw){
+    if(typeof raw!=='string' || !raw.length || raw.length>TREE_PERSIST_KEY_MAX || !/^-?\d+,\d+$/.test(raw)) return null;
+    const comma=raw.indexOf(',');
+    const x=Number(raw.slice(0,comma)), y=Number(raw.slice(comma+1));
+    if(!Number.isSafeInteger(x) || !Number.isSafeInteger(y) || Math.abs(x)>TREE_MAX_ABS_X || y<0 || y>=WORLD_H) return null;
+    return {x,y,k:key(x,y)};
+  }
   function hash01(x,y,salt){
     let h=Math.imul(x|0, 374761393) ^ Math.imul(y|0, 668265263) ^ Math.imul(salt|0, 1442695041);
     h=Math.imul(h ^ (h >>> 13), 1274126177);
@@ -66,6 +80,8 @@ window.MM = window.MM || {};
     if(cset){ cset.delete(k); if(!cset.size) chunkTreeKeys.delete(cx); }
   }
   function clearChunk(cx){
+    if(!Number.isFinite(cx) || Math.abs(cx*CHUNK_W)>TREE_MAX_ABS_X) return;
+    cx=Math.floor(cx);
     const cset=chunkTreeKeys.get(cx);
     if(cset){
       for(const k of [...cset]){
@@ -87,13 +103,16 @@ window.MM = window.MM || {};
   function markFallenTreeTile(x,y,t){ if(isFallenTreeMaterial(t)) fallenTreeTiles.add(key(x,y)); }
   function markSeasonalLeafLitter(x,y,t,seconds){
     if(!isAutumnLeaf(t)) return;
-    const base=Math.max(1, seconds || SEASONAL_LEAF_DECAY_SECONDS);
+    const requested=Number(seconds);
+    const base=Number.isFinite(requested) && requested>0
+      ? Math.max(1,Math.min(SEASONAL_LEAF_DECAY_SECONDS,requested))
+      : SEASONAL_LEAF_DECAY_SECONDS;
     const stagger=base >= 30 ? hash01(x,y,901) * 10 : 0;
     seasonalLeafLitter.set(key(x,y), treeElapsedSeconds + base + stagger);
   }
   function unmarkFallenTreeTile(x,y){ const k=key(x,y); fallenTreeTiles.delete(k); seasonalLeafLitter.delete(k); }
-  function queueFallenTreeCheck(x,y){ if(y>=0 && y<WORLD_H) unstableFallenTreeTiles.add(key(Math.floor(x),Math.floor(y))); }
-  function queueStandingTreeCheck(x,y){ if(y>=0 && y<WORLD_H) unstableTreeTiles.add(key(Math.floor(x),Math.floor(y))); }
+  function queueFallenTreeCheck(x,y){ if(Number.isFinite(x) && Number.isFinite(y) && Math.abs(x)<=TREE_MAX_ABS_X && y>=0 && y<WORLD_H) unstableFallenTreeTiles.add(key(Math.floor(x),Math.floor(y))); }
+  function queueStandingTreeCheck(x,y){ if(Number.isFinite(x) && Number.isFinite(y) && Math.abs(x)<=TREE_MAX_ABS_X && y>=0 && y<WORLD_H) unstableTreeTiles.add(key(Math.floor(x),Math.floor(y))); }
   function queueFallenTreeAroundPlacement(x,y){
     queueFallenTreeCheck(x,y);
     queueFallenTreeCheck(x,y-1);
@@ -115,6 +134,7 @@ window.MM = window.MM || {};
     for(let dy=-3; dy<=2; dy++) for(let dx=-3; dx<=3; dx++) queueStandingTreeCheck(x+dx,y+dy);
   }
   function onTileChanged(x,y,oldTile,newTile){
+    if(!Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x)>TREE_MAX_ABS_X) return;
     const tx=Math.floor(x), ty=Math.floor(y);
     const k=key(tx,ty);
     const leafColorChange=isLeaf(oldTile) && isLeaf(newTile);
@@ -134,6 +154,8 @@ window.MM = window.MM || {};
     }
   }
   function pruneChunk(arr,cx){
+    if(!Number.isFinite(cx) || Math.abs(cx*CHUNK_W)>TREE_MAX_ABS_X) return;
+    cx=Math.floor(cx);
     const cset=chunkTreeKeys.get(cx);
     if(!cset || !arr) return;
     for(const k of [...cset]){
@@ -525,6 +547,9 @@ window.MM = window.MM || {};
   }
 
   function startTreeFall(getTile,setTile,playerFacing,x,y){
+    if(typeof getTile!=='function' || typeof setTile!=='function' || !Number.isFinite(x) || !Number.isFinite(y)
+      || Math.abs(x)>TREE_MAX_ABS_X || y<0 || y>=WORLD_H) return false;
+    x=Math.floor(x); y=Math.floor(y);
     const collected=collectTreeTiles(getTile,setTile,x,y);
     const tiles=collected.tiles;
     if(!tiles.length) return false;
@@ -990,12 +1015,15 @@ window.MM = window.MM || {};
   }
   function auditStandingTreesInArea(getTile,area,budgetOverride){
     if(!area || typeof getTile!=='function') return;
-    const sx=Math.floor(area.sx||0), sy=Math.max(0, Math.floor(area.sy||0));
-    const w=Math.max(0, Math.ceil(area.viewX||0)+3);
-    const h=Math.max(0, Math.min(WORLD_H-sy, Math.ceil(area.viewY||0)+3));
+    const sx=Number.isFinite(area.sx) ? Math.max(-TREE_MAX_ABS_X,Math.min(TREE_MAX_ABS_X,Math.floor(area.sx))) : 0;
+    const sy=Number.isFinite(area.sy) ? Math.max(0,Math.min(WORLD_H-1,Math.floor(area.sy))) : 0;
+    const viewX=Number.isFinite(area.viewX) ? Math.max(0,Math.min(512,Math.ceil(area.viewX))) : 0;
+    const viewY=Number.isFinite(area.viewY) ? Math.max(0,Math.min(WORLD_H,Math.ceil(area.viewY))) : 0;
+    const w=viewX+3;
+    const h=Math.max(0, Math.min(WORLD_H-sy, viewY+3));
     if(w<=0 || h<=0) return;
     const total=w*h;
-    const requested=Number.isFinite(budgetOverride) ? Math.max(0,budgetOverride|0) : TREE_AREA_AUDIT_BUDGET;
+    const requested=Number.isFinite(budgetOverride) ? Math.max(0,Math.min(10000,Math.floor(budgetOverride))) : TREE_AREA_AUDIT_BUDGET;
     let budget=Math.min(requested,total);
     areaAuditCursor%=total;
     while(budget-- > 0){
@@ -1013,7 +1041,7 @@ window.MM = window.MM || {};
     }
   }
   function auditChunk(cx,getTile){
-    if(typeof getTile!=='function' || !Number.isFinite(cx)) return;
+    if(typeof getTile!=='function' || !Number.isFinite(cx) || Math.abs(cx*CHUNK_W)>TREE_MAX_ABS_X) return;
     const x0=Math.floor(cx)*CHUNK_W;
     for(let lx=0; lx<CHUNK_W; lx++){
       const x=x0+lx;
@@ -1030,7 +1058,8 @@ window.MM = window.MM || {};
   }
   function auditChunks(chunks,getTile){
     if(!Array.isArray(chunks)) return;
-    chunks.forEach(cx=>auditChunk(cx,getTile));
+    const n=Math.min(chunks.length,TREE_CHUNK_AUDIT_CAP);
+    for(let i=0;i<n;i++) auditChunk(chunks[i],getTile);
   }
   function settleAll(getTile,setTile){
     if(typeof getTile!=='function'||typeof setTile!=='function'){ reset(); return; }
@@ -1051,37 +1080,66 @@ window.MM = window.MM || {};
   }
   function reset(){ resetVolatileState(); }
   function snapshot(){
-    const leafLitter=[...seasonalLeafLitter.entries()].map(([k,expiresAt])=>[k, Math.max(0, +(expiresAt-treeElapsedSeconds).toFixed(3))]);
-    return {v:3, debris:[...fallenTreeTiles], identities:[...tileTreeIds.entries()], leafLitter};
+    const debris=[];
+    let processed=0;
+    for(const raw of fallenTreeTiles){
+      if(processed++>=TREE_DEBRIS_PERSIST_CAP || debris.length>=TREE_DEBRIS_PERSIST_CAP) break;
+      const pos=parsePersistedTreeKey(raw);
+      if(pos) debris.push(pos.k);
+    }
+    const identities=[];
+    processed=0;
+    for(const [raw,id] of tileTreeIds){
+      if(processed++>=TREE_IDENTITY_PERSIST_CAP || identities.length>=TREE_IDENTITY_PERSIST_CAP) break;
+      const pos=parsePersistedTreeKey(raw);
+      if(!pos || typeof id!=='string' || !id.length || id.length>TREE_ID_MAX) continue;
+      identities.push([pos.k,id]);
+    }
+    const leafLitter=[];
+    processed=0;
+    for(const [raw,expiresAt] of seasonalLeafLitter){
+      if(processed++>=TREE_LEAF_LITTER_PERSIST_CAP || leafLitter.length>=TREE_LEAF_LITTER_PERSIST_CAP) break;
+      const pos=parsePersistedTreeKey(raw);
+      if(!pos) continue;
+      const remaining=Number.isFinite(expiresAt)
+        ? Math.max(0,Math.min(SEASONAL_LEAF_DECAY_SECONDS,expiresAt-treeElapsedSeconds))
+        : SEASONAL_LEAF_DECAY_SECONDS;
+      leafLitter.push([pos.k,+remaining.toFixed(3)]);
+    }
+    return {v:3,debris,identities,leafLitter};
   }
   function restore(state,getTile){
     clearTreeIdentityMaps();
     resetVolatileState();
     const debris=state && Array.isArray(state.debris) ? state.debris : [];
-    for(const k of debris){
-      if(typeof k!=='string') continue;
-      const x=keyX(k), y=keyY(k);
-      if(!Number.isFinite(x) || !Number.isFinite(y) || y<0 || y>=WORLD_H) continue;
+    for(let i=0, n=Math.min(debris.length,TREE_DEBRIS_PERSIST_CAP); i<n; i++){
+      const pos=parsePersistedTreeKey(debris[i]);
+      if(!pos) continue;
+      const {x,y,k}=pos;
       if(typeof getTile==='function' && !isFallenTreeMaterial(getTile(x,y))) continue;
-      fallenTreeTiles.add(key(x,y));
+      fallenTreeTiles.add(k);
       queueFallenTreeCheck(x,y);
     }
     const leafLitter=state && Array.isArray(state.leafLitter) ? state.leafLitter : [];
-    for(const entry of leafLitter){
-      if(!Array.isArray(entry) || entry.length<2 || typeof entry[0]!=='string') continue;
-      const x=keyX(entry[0]), y=keyY(entry[0]);
-      if(!Number.isFinite(x) || !Number.isFinite(y) || y<0 || y>=WORLD_H) continue;
+    for(let i=0, n=Math.min(leafLitter.length,TREE_LEAF_LITTER_PERSIST_CAP); i<n; i++){
+      const entry=leafLitter[i];
+      if(!Array.isArray(entry) || entry.length<2) continue;
+      const pos=parsePersistedTreeKey(entry[0]);
+      if(!pos) continue;
+      const {x,y,k}=pos;
       if(typeof getTile==='function' && !isAutumnLeaf(getTile(x,y))) continue;
       const remaining=Number.isFinite(entry[1]) ? Math.max(0.5, Math.min(SEASONAL_LEAF_DECAY_SECONDS, entry[1])) : SEASONAL_LEAF_DECAY_SECONDS;
-      seasonalLeafLitter.set(key(x,y), treeElapsedSeconds + remaining);
-      fallenTreeTiles.add(key(x,y));
+      seasonalLeafLitter.set(k, treeElapsedSeconds + remaining);
+      fallenTreeTiles.add(k);
       queueFallenTreeCheck(x,y);
     }
     const identities=state && Array.isArray(state.identities) ? state.identities : [];
-    for(const entry of identities){
-      if(!Array.isArray(entry) || entry.length<2 || typeof entry[0]!=='string' || typeof entry[1]!=='string') continue;
-      const x=keyX(entry[0]), y=keyY(entry[0]);
-      if(!Number.isFinite(x) || !Number.isFinite(y) || y<0 || y>=WORLD_H) continue;
+    for(let i=0, n=Math.min(identities.length,TREE_IDENTITY_PERSIST_CAP); i<n; i++){
+      const entry=identities[i];
+      if(!Array.isArray(entry) || entry.length<2 || typeof entry[1]!=='string' || !entry[1].length || entry[1].length>TREE_ID_MAX) continue;
+      const pos=parsePersistedTreeKey(entry[0]);
+      if(!pos) continue;
+      const {x,y}=pos;
       if(typeof getTile==='function' && !isTreeMaterial(getTile(x,y),x,y)) continue;
       markTreeTile(entry[1],x,y);
       queueStandingTreeCheck(x,y);
@@ -1185,16 +1243,17 @@ window.MM = window.MM || {};
     };
   }
   function updateFallingBlocks(getTile,setTile,dt,area){
-    if(dt>0 && Number.isFinite(dt)) treeElapsedSeconds += Math.min(0.25, dt);
+    const safeDt=dt>0 && Number.isFinite(dt) ? Math.min(0.25,dt) : 0;
+    treeElapsedSeconds += safeDt;
     const tier=perfTier(area);
     pruneSeasonalLeafLitter(getTile,setTile,scaledBudget(SEASONAL_LEAF_CLEANUP_BUDGET,tier));
     auditStandingTreesInArea(getTile,area,scaledBudget(TREE_AREA_AUDIT_BUDGET,tier));
     processStandingTreeQueue(getTile,setTile,scaledBudget(TREE_STABILITY_QUEUE_BUDGET,tier));
     processFallenTreeQueue(getTile,setTile,scaledBudget(TREE_DEBRIS_QUEUE_BUDGET,tier));
-    updateFallingTrees(getTile,setTile,dt);
+    updateFallingTrees(getTile,setTile,safeDt);
     processStandingTreeQueue(getTile,setTile,scaledBudget(TREE_STABILITY_QUEUE_BUDGET,tier));
     processFallenTreeQueue(getTile,setTile,scaledBudget(TREE_DEBRIS_QUEUE_BUDGET,tier));
-    updateFallingPieces(getTile,setTile,dt);
+    updateFallingPieces(getTile,setTile,safeDt);
   }
 
   function drawFallingBlocks(ctx,TILE,INFO,canDrawTile){
@@ -1315,6 +1374,12 @@ window.MM = window.MM || {};
   trees._seasonalLeafLitter = seasonalLeafLitter;
   trees._unstableFallenTreeTiles = unstableFallenTreeTiles;
   trees._unstableTreeTiles = unstableTreeTiles;
+  trees._limits = Object.freeze({
+    debris:TREE_DEBRIS_PERSIST_CAP,
+    identities:TREE_IDENTITY_PERSIST_CAP,
+    leafLitter:TREE_LEAF_LITTER_PERSIST_CAP,
+    chunkAudit:TREE_CHUNK_AUDIT_CAP
+  });
 
   MM.trees = trees;
 })();

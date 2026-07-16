@@ -97,6 +97,10 @@ offeredEnergy=0;
 const steamBefore=b.steam;
 tick(30);
 assert.ok(Math.abs(b.steam-steamBefore) < 0.001, 'without heat the boiler makes no steam');
+assert.equal(SM.receiveElectricChargeAt(5,18,2,getTile),2,'electric rifle can charge the boiler heat buffer');
+tick(30);
+assert.ok(b.steam>steamBefore,'stored electric rifle charge boils water without a live external source');
+assert.ok(SM.metrics().electric<2,'boiling consumes the stored boiler electric buffer');
 
 // --- 1b. lava heats for free -------------------------------------------------
 setTile(9,18,T.STEAM_BOILER);
@@ -284,5 +288,46 @@ const reloaded=mechs._debug.mechs().find(m=>m.kind==='built');
 assert.ok(reloaded && reloaded.variant==='steam', 'restored hull keeps the steam drive');
 assert.ok(Math.abs(mechs.steamTotal(reloaded)-33) < 0.001, 'hull boiler tank survives the save round-trip (water+steam)');
 assert.ok(Math.abs((reloaded.boilerStates['2,1']||{}).water-6) < 0.001, 'tanked water survives too');
+
+// --- 8. malformed timing/network values and bounded registries -------------------
+SM.reset();
+setTile(600,18,T.STEAM_BOILER);
+SM.primeBoilerAt(600,18,10,0);
+const guardedBoiler=SM.boilerAt(600,18);
+globalThis.player.x=600; globalThis.player.y=18;
+const realTeleporters=globalThis.MM.teleporters;
+let networkDrains=0;
+globalThis.MM.teleporters={drainNetworkEnergyAt(){ networkDrains++; return Infinity; }};
+SM.update(Infinity,globalThis.player,getTile,setTile);
+assert.equal(networkDrains,0,'Infinity update is rejected before draining boiler power');
+assert.equal(guardedBoiler.steam,0,'Infinity update preserves boiler tank state');
+SM.update(0.1,globalThis.player,getTile,setTile);
+assert.equal(networkDrains,1,'finite boiler update still asks the network for heat');
+assert.ok(Number.isFinite(guardedBoiler.steam),'malformed network output cannot corrupt boiler pressure');
+assert.ok(SM.metrics().energyHeat<=CFG.BOIL_ENERGY_PER_SEC*0.1+1e-6,'reported heat is clamped to the requested network draw');
+globalThis.MM.teleporters=realTeleporters;
+
+SM.reset();
+setTile(800,10,T.STEAM_BOILER);
+setTile(900,10,T.STEAM_BOILER);
+SM.primeBoilerAt(900,10,0,5);
+globalThis.player.x=0; globalThis.player.y=10;
+SM.update(0.01,globalThis.player,getTile,setTile);
+assert.equal(SM.boilerAt(800,10),null,'empty offscreen boiler state is pruned for later rediscovery');
+assert.ok(SM.boilerAt(900,10),'charged offscreen boiler state survives registry pruning');
+assert.equal(SM.metrics().boilers,SM._debug.boilers.size,'live boiler metrics reflect the pruned registry');
+SM.reset();
+assert.equal(SM.metrics().boilers,0,'reset clears boiler count metrics');
+assert.equal(SM.metrics().jets,0,'reset clears jet count metrics');
+
+const boilerCap=SM._debug.BOILER_CAP;
+for(let i=0;i<boilerCap+20;i++) SM._debug.ensureBoiler(i,10);
+assert.equal(SM._debug.boilers.size,boilerCap,'boiler registry has a hard upper bound');
+assert.equal(SM._debug.ensureBoiler(boilerCap+100,10),null,'boiler registration refuses entries beyond the cap');
+SM.reset();
+const jetCap=SM._debug.JET_CAP;
+for(let i=0;i<jetCap+20;i++) SM._debug.ensureJet(i,10);
+assert.equal(SM._debug.jets.size,jetCap,'steam-jet registry has a hard upper bound');
+assert.equal(SM._debug.ensureJet(jetCap+100,10),null,'steam-jet registration refuses entries beyond the cap');
 
 console.log('OK steam-machines-sim: boiler water/heat/steam physics, venting, jet updraft, steam airship flight + park continuity, save & UI wiring, fall/hybrid/mech-save hardening');

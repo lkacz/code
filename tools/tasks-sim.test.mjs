@@ -88,6 +88,13 @@ assert.equal(tasks.metrics().discarded, 1, 'restored snapshot keeps discarded ta
 assert.equal(tasks.metrics().priorityId, sideTask.id, 'restored snapshot keeps the selected priority');
 assert.equal(tasks.trackedTarget(player).task.id, sideTask.id, 'restored pointer still follows the selected priority');
 
+const locationFreeUpdate=tasks.upsert({
+  id:sideTask.id, source:'story', title:'Sprawdz dowolne drzewo', pointer:false, target:null
+});
+assert.equal(locationFreeUpdate.target, undefined, 'an explicit null target clears coordinates inherited from an earlier phase');
+assert.equal(locationFreeUpdate.pointer, false, 'clearing inherited coordinates also disables its map pointer');
+assert.equal(tasks.trackedTarget(player), null, 'a location-free priority task cannot keep pointing at its previous coordinates');
+
 assert.equal(tasks.completeAlienCache({id:'cache_1'}), true, 'opening an alien cache completes the matching task');
 assert.equal(tasks.metrics().active, 1, 'completing a discarded cache leaves other active tasks untouched');
 assert.equal(tasks.metrics().discarded, 0, 'completed cache releases its discarded tombstone');
@@ -108,7 +115,7 @@ assert.equal(tasks.metrics().active, 2, 'sync can rebuild all active alien-cache
 tasks.syncAlienCaches([{id:'cache_3',x:-20,y:12,resources:{},gear:[{id:'cape_1'}],createdAt:300}]);
 assert.equal(tasks.metrics().active, 1, 'sync removes alien-cache tasks whose caches no longer exist');
 assert.equal(tasks.removeSource('invasions'), 1, 'source removal clears invasion recovery tasks');
-assert.equal(userChanges, 13, 'creation, completion, removal, sync and source cleanup all request persistence without refresh churn');
+assert.equal(userChanges, 14, 'creation, completion, removal, sync and source cleanup all request persistence without refresh churn');
 
 // Imported/corrupted task state is bounded and deterministic: a discarded
 // tombstone wins over a duplicate active row, and newest-first history stays so.

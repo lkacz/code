@@ -110,9 +110,9 @@ const STORY_LORE = {
     },
     treeWatchShort:{
       prompt:[
-        'Wejdz na czubek drzewa i stój tam 30 sekund. Drzewo jest starym pytaniem: czy upada, gdy nikt nie liczy huku?',
-        'Potrzebuje obserwacji z drzewa. Trzydziesci sekund na gorze, oczy na swiat, nie na kolana.',
-        'Stoj na drzewie przez 30 sekund. Jesli mapa ma kulisy, z wysokosci czasem widac szew.'
+        'Wejdz na czubek drzewa i stoj tam 10 sekund. Zielony licznik nad glowa pokaze, kiedy pomiar naprawde ruszyl.',
+        'Potrzebuje obserwacji z drzewa. Dziesiec sekund na gorze, oczy na swiat, nie na kolana.',
+        'Stoj na drzewie przez 10 sekund. Jesli mapa ma kulisy, z wysokosci czasem widac szew.'
       ],
       missing:[
         'To nie jest czubek drzewa. Drzewo musi czuc twoj ciezar i twoje filozoficzne niezdecydowanie.',
@@ -120,26 +120,26 @@ const STORY_LORE = {
         'Potrzebuje drzewa, nie ziemi obok drzewa. Symulacja tez zna wymowki.'
       ],
       complete:[
-        'Za krotko. Trzydziesci sekund wystarcza tylko, zeby swiat poprawil miny.',
-        'Cos sie nie zgadza. Drzewo milczalo za rowno. Staniesz dluzej.',
-        'Dobra, pierwszy pomiar mamy. Teraz sprawdzimy, czy cierpliwosc lamie renderer.'
+        'Dziesiec sekund wystarcza tylko, zeby swiat poprawil miny. Wez skrzynie i stan tam dluzej.',
+        'Cos sie nie zgadza. Drzewo milczalo za rowno. Skrzynia jest twoja, ale staniesz dluzej.',
+        'Dobra, pierwszy pomiar mamy i skrzynia jest twoja. Teraz sprawdzimy, czy cierpliwosc lamie renderer.'
       ]
     },
     treeWatchLong:{
       prompt:[
-        'Teraz 60 sekund na czubku drzewa. Jesli ktos patrzy na nas z gory, niech tez poczuje nude eksperymentu.',
-        'Stoj na drzewie pelna minute. Dlugie patrzenie jest kilofem dla klamstw.',
-        'Jeszcze raz, ale 60 sekund. Krotka obserwacja sprawdza teren; dluga sprawdza obserwatora.'
+        'Teraz 30 sekund na czubku drzewa. Jesli ktos patrzy na nas z gory, niech tez poczuje nude eksperymentu.',
+        'Stoj na drzewie pol minuty. Dlugie patrzenie jest kilofem dla klamstw.',
+        'Jeszcze raz, ale 30 sekund. Krotka obserwacja sprawdza teren; dluga sprawdza obserwatora.'
       ],
       missing:[
         'Wroc na czubek drzewa. Tak, wiem, ze brzmi jak najgorsza wersja medytacji.',
         'Jeszcze nie. Drzewo ma byc pod stopami, nie w opowiesci.',
-        'Minute liczymy dopiero wtedy, gdy naprawde stoisz na drzewie.'
+        'Trzydziesci sekund liczymy dopiero wtedy, gdy naprawde stoisz na drzewie.'
       ],
       complete:[
-        'Minuta. Niebo nie mrugnelo, ale przez chwile cienie wygladaly, jakby czekaly na twoj blad.',
-        'Dobrze. Jesli symulacja nas widzi, to wlasnie udawala drzewo z wyjatkowa godnoscia.',
-        'Pomiar zapisany w glowie, bo papier w tym swiecie zbyt latwo staje sie lisciem.'
+        'Pol minuty. Niebo nie mrugnelo. Wez kamien mistrza: duza woda albo skupisko lisci moze obudzic pomocnika.',
+        'Dobrze. Kamien mistrza jest twoj. Wrzuc go do duzego zbiornika wody lub wsrod lisci i obserwuj.',
+        'Pomiar zapisany. Kamien mistrza polozony w duzej wodzie albo w co najmniej pieciu polaczonych lisciach przywoluje pomocnika.'
       ]
     },
     sandHide:{

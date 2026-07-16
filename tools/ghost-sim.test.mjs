@@ -342,7 +342,7 @@ for(const who of ['GHOST_CLIENT', 'GHOST_HOST']){
 }
 {
 	const bodyAt = mainSrc.indexOf(".drawSpirits(ctx,TILE,'body')");
-	const playerAt = mainSrc.indexOf('drawPlayer();', bodyAt);
+	const playerAt = mainSrc.indexOf('drawPlayer({rearView:mirrorFacing});', bodyAt);
 	const textAt = mainSrc.indexOf(".drawSpirits(ctx,TILE,'text')");
 	const mobsAt = mainSrc.indexOf('MOBS.draw(ctx,TILE');
 	assert.ok(bodyAt > 0 && playerAt > 0 && bodyAt < playerAt, 'spirit BODIES are painted before the player (behind, never obscuring)');

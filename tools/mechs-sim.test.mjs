@@ -599,4 +599,37 @@ const noisySave={v:1,list:Array.from({length:mechs._debug.CFG.MAX_ACTIVE+5},(_,i
 assert.equal(mechs.restore(noisySave,getTile), true, 'oversized mech snapshots are accepted defensively');
 assert.equal(mechs.metrics().count, mechs._debug.CFG.MAX_ACTIVE, 'restore caps active mechs to the simulation maximum');
 
+const corruptStats={v:2,list:[{
+  id:1,kind:'forge',x:7200,y:14,vx:0,vy:0,
+  hp:'Infinity',maxHp:'Infinity',pilotHp:'Infinity',pilotMaxHp:'Infinity',
+  pilotAlive:true,energy:'Infinity',maxEnergy:'Infinity',facing:1,salvageSeed:7200
+}]};
+assert.equal(mechs.restore(corruptStats,getTile),true,'non-finite mech stats are accepted defensively');
+const hardened=mechs._debug.mechs()[0];
+for(const field of ['hp','maxHp','pilotHp','pilotMaxHp','energy','maxEnergy']){
+  assert.ok(Number.isFinite(hardened[field]),'restore keeps '+field+' finite when save data is corrupt');
+}
+
+const hugeFiniteStats={v:2,list:[{
+  id:1,kind:'forge',x:7200,y:14,vx:1e300,vy:-1e300,
+  hp:1e300,maxHp:1e300,pilotHp:1e300,pilotMaxHp:1e300,
+  pilotAlive:true,energy:1e300,maxEnergy:1e300,facing:1,salvageSeed:7200
+}]};
+assert.equal(mechs.restore(hugeFiniteStats,getTile),true,'huge finite mech stats are accepted defensively');
+const boundedStats=mechs._debug.mechs()[0];
+assert.ok(boundedStats.maxHp<1e6 && boundedStats.hp<=boundedStats.maxHp, 'saved mech health cannot exceed its reconstructed blueprint');
+assert.ok(boundedStats.pilotMaxHp<1000 && boundedStats.pilotHp<=boundedStats.pilotMaxHp, 'saved pilot health cannot exceed its reconstructed blueprint');
+assert.ok(boundedStats.maxEnergy<=mechs._debug.CFG.BUILT_MAX_ENERGY_CAP && boundedStats.energy<=boundedStats.maxEnergy, 'saved energy capacity cannot mint an oversized battery');
+assert.ok(Math.abs(boundedStats.vx)<=8,'huge saved horizontal velocity is clamped to the physics limit');
+assert.ok(Math.abs(boundedStats.vy)<=20,'huge saved vertical velocity is clamped to the physics limit');
+
+const corruptBoiler={v:2,list:[{
+  id:2,kind:'built',variant:'steam',x:7300,y:14,hp:20,maxHp:20,pilotHp:0,pilotMaxHp:1,
+  pilotAlive:false,energy:0,maxEnergy:300,cells:[{dx:0,dy:0,t:T.STEAM_BOILER}],
+  boilers:{'0,0':{w:Infinity,s:Infinity}}
+}]};
+assert.equal(mechs.restore(corruptBoiler,getTile),true,'built-mech boiler state restores defensively');
+const boilerState=mechs._debug.mechs()[0].boilerStates['0,0'];
+assert.deepEqual(boilerState,{water:0,steam:0},'non-finite boiler contents cannot mint water or steam');
+
 console.log('mechs-sim ok');

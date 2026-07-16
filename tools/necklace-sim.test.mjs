@@ -96,6 +96,36 @@ assert.ok(nanRun.points.every(pt=>isFinite(pt.x) && isFinite(pt.y)), 'NaN wind d
 assert.ok(isFinite(nanRun.pendant.x) && isFinite(nanRun.pendant.y) && isFinite(nanRun.pendant.spin), 'NaN wind does not corrupt the pendant');
 windSpeed = 0;
 
+// A treasure-sensing charm remains a physical necklace: the scanner signal
+// lengthens its tether and biases the gem toward the target instead of drawing
+// a duplicate magic arrow detached from the hero.
+let treasureTarget={signal:1,direction:{x:1,y:0}};
+MM.treasureScanner={target:()=>treasureTarget};
+equippedCharm={id:'compass_charm',kind:'charm',name:'Wisiorek-kompas',tier:'rare',treasureSenseLevel:3};
+p=makePlayer();
+const radarEast=runNecklace(p,1);
+const eastCenter=radarEast.points[Math.floor(radarEast.points.length/2)];
+assert.ok(radarEast.pendant.x>eastCenter.x+0.12,'eastward treasure pulls the physical gem to the east');
+assert.ok(Math.hypot(radarEast.pendant.x-eastCenter.x,radarEast.pendant.y-eastCenter.y)>0.18,'strong signal visibly stretches the pendant tether');
+assert.equal(radarEast.pendant.radarSignal,1,'pendant retains the bounded signal for its glow');
+treasureTarget={signal:0.9,direction:{x:-1,y:0}};
+p=makePlayer();
+const radarWest=runNecklace(p,1);
+const westCenter=radarWest.points[Math.floor(radarWest.points.length/2)];
+assert.ok(radarWest.pendant.x<westCenter.x-0.10,'westward treasure reverses the physical pull');
+treasureTarget={signal:1,direction:{x:0,y:-1}};
+p=makePlayer();
+const radarNorth=runNecklace(p,1);
+treasureTarget={signal:1,direction:{x:0,y:1}};
+p=makePlayer();
+const radarSouth=runNecklace(p,1);
+assert.ok(radarNorth.pendant.y<radarSouth.pendant.y-0.10,'north/south treasure signals visibly pull the physical gem in different vertical directions');
+assert.ok(radarNorth.pendant.y>=necklace._debug.anchors(p).chestY-0.001,'northward pull still keeps the pendant below the face guard');
+treasureTarget=null;
+p=makePlayer();
+const radarQuiet=runNecklace(p,0.5);
+assert.equal(radarQuiet.pendant.radarSignal,0,'missing scanner target returns the charm to ordinary physics');
+
 equippedCharm = null;
 assert.equal(necklace.update(p,1/60), false, 'unequipping the charm disables necklace physics');
 assert.equal(necklace._points.length, 0, 'unequipping clears necklace beads');
@@ -109,7 +139,7 @@ assert.match(mainSrc, /import \{ necklace as NECKLACE \} from '\.\/engine\/neckl
 assert.match(mainSrc, /function initScarf\(\)\{ CAPE\.init\(player\); if\(NECKLACE && NECKLACE\.init\) NECKLACE\.init\(player\); \}/, 'hero accessory reset initializes necklace with cape');
 assert.match(mainSrc, /function updateCape\(dt\)\{ CAPE\.update\(player,dt,getTile,isSolid\); if\(NECKLACE && NECKLACE\.update\) NECKLACE\.update\(player,dt,getTile\); \}/, 'hero accessory tick updates necklace with cape and wind sampling context');
 const backDrawIdx = mainSrc.indexOf('if(NECKLACE && NECKLACE.drawBack)');
-const outfitIdx = mainSrc.indexOf('MM.drawOutfit(ctx, bodyX, bodyY, bw, bh, style, c)');
+const outfitIdx = mainSrc.indexOf('MM.drawOutfit(ctx, bodyX, bodyY, bw, bh, style, c, rearView?{back:true}:null)');
 const frontDrawIdx = mainSrc.indexOf('if(NECKLACE && NECKLACE.drawFront)');
 const eyesIdx = mainSrc.indexOf('// Eyes (for all outfits except ninja/ironperson');
 assert.ok(backDrawIdx > 0 && backDrawIdx < outfitIdx, 'back chain draws behind the outfit body');

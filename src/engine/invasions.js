@@ -4683,12 +4683,37 @@ const invasions = (function(){
     }
   }
 
+  // Local, bounded pose provider for vision effects. It avoids serializing the
+  // complete invasion state and gives nearby living units priority.
+  function thermalTargets(wx,wy,range,limit){
+    wx=Number.isFinite(Number(wx))?Number(wx):0;
+    wy=Number.isFinite(Number(wy))?Number(wy):0;
+    range=Math.max(1,Math.min(64,Number(range)||28));
+    limit=Math.max(1,Math.min(96,Math.trunc(Number(limit)||48)));
+    const r2=range*range,out=[];
+    let inspected=0;
+    outer: for(const team of teams){
+      if(!team || team.state==='defeated' || !Array.isArray(team.aliens)) continue;
+      for(const a of team.aliens){
+        if(++inspected>256) break outer;
+        if(!a || a.dead || !(a.hp>0) || !Number.isFinite(a.x) || !Number.isFinite(a.y)) continue;
+        const dx=a.x-wx,dy=a.y-wy,d2=dx*dx+dy*dy;
+        if(d2>r2) continue;
+        const mole=a.kind==='molekin' || team.kind==='molekin';
+        out.push({id:String(a.id||a.role||out.length),name:mole?'molekin':'obcy',x:a.x,y:a.y,w:mole?0.82:0.72,h:mole?0.9:1.05,hp:a.hp,heat:mole?0.8:0.68,living:true,d2});
+      }
+    }
+    out.sort((a,b)=>a.d2-b.d2 || String(a.id).localeCompare(String(b.id)));
+    return out.slice(0,limit).map(({d2,...pose})=>pose);
+  }
+
   const api = {
     update,
     draw,
     ghostRoster,
     ghostApplyRoster,
     ghostLerp,
+    thermalTargets,
     attackAt,
     damageAt,
     damageAtWorld,

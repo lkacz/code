@@ -1,4 +1,4 @@
-import { T, WORLD_H } from '../constants.js';
+import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 import { isNpcPassableTile, isSafeLandingFloorTile, isSolidCollisionTile as isSolid, isTrapdoorTile } from './material_physics.js';
 import { isLongCharacterSpeech, readableCharacterSpeechDuration } from './character_speech.js';
 
@@ -7,18 +7,61 @@ function finite(v){ return typeof v==='number' && isFinite(v); }
 function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
 function now(){ try{ return performance.now(); }catch(e){ return Date.now(); } }
 function clonePlain(obj){ return obj && typeof obj==='object' ? Object.assign({},obj) : obj; }
-function cleanRecord(src){
+const NPC_RESTORE_CAP=4096;
+const NPC_RESTORE_SCAN_CAP=8192;
+const NPC_RECORD_KEY_CAP=128;
+const NPC_RECORD_NODE_CAP=512;
+const NPC_RECORD_ARRAY_CAP=64;
+const NPC_RECORD_DEPTH_CAP=3;
+const NPC_RECORD_STRING_CAP=512;
+const NPC_RECORD_NUMBER_CAP=1000000000;
+const NPC_MAX_ABS_X=30000000;
+const NPC_Y_MARGIN=32;
+const NPC_TRANSIENT_TIME_CAP=3600;
+function safeRecordKey(k){ return k!=='__proto__' && k!=='prototype' && k!=='constructor'; }
+function cleanJsonValue(value,depth,budget,seen){
+  if(budget.left--<=0) return undefined;
+  if(value===null || typeof value==='boolean') return value;
+  if(typeof value==='string') return value.slice(0,NPC_RECORD_STRING_CAP);
+  if(typeof value==='number'){
+    if(!Number.isFinite(value)) return undefined;
+    return clamp(value,-NPC_RECORD_NUMBER_CAP,NPC_RECORD_NUMBER_CAP);
+  }
+  if(typeof value!=='object' || depth>=NPC_RECORD_DEPTH_CAP) return undefined;
+  if(seen.has(value)) return undefined;
+  seen.add(value);
+  if(Array.isArray(value)){
+    const out=[];
+    const count=Math.min(value.length,NPC_RECORD_ARRAY_CAP);
+    for(let i=0;i<count && budget.left>0;i++){
+      let item;
+      try{ item=cleanJsonValue(value[i],depth+1,budget,seen); }catch(e){ item=undefined; }
+      if(item!==undefined) out.push(item);
+    }
+    seen.delete(value);
+    return out;
+  }
   const out={};
-  if(!src || typeof src!=='object') return out;
-  Object.keys(src).forEach(k=>{
-    const v=src[k];
-    if(v===undefined || typeof v==='function') return;
-    out[k]=v;
-  });
+  let processed=0;
+  for(const k in value){
+    if(processed>=NPC_RECORD_KEY_CAP || budget.left<=0) break;
+    if(!Object.prototype.hasOwnProperty.call(value,k) || !safeRecordKey(k)) continue;
+    processed++;
+    let item;
+    try{ item=cleanJsonValue(value[k],depth+1,budget,seen); }catch(e){ item=undefined; }
+    if(item!==undefined) out[k.slice(0,128)]=item;
+  }
+  seen.delete(value);
   return out;
 }
+function cleanRecord(src){
+  if(!src || typeof src!=='object') return {};
+  const out=cleanJsonValue(src,0,{left:NPC_RECORD_NODE_CAP},new WeakSet());
+  return out && !Array.isArray(out) && typeof out==='object' ? out : {};
+}
 function cleanId(v){
-  return String(v||'').trim().replace(/[^a-zA-Z0-9_:-]+/g,'_').slice(0,80);
+  const id=String(v||'').slice(0,160).trim().replace(/[^a-zA-Z0-9_:-]+/g,'_').slice(0,80);
+  return id==='__proto__' || id==='prototype' || id==='constructor' ? '' : id;
 }
 
 function createNpcRegistry(){
@@ -98,22 +141,49 @@ function createNpcRegistry(){
         .filter(s=>s && typeof s.x==='number' && typeof s.y==='number' && px!=null && py!=null && Math.hypot(s.x-px,s.y-py)<=r);
     },
     snapshot(){
-      const npcs={};
-      pendingRestores.forEach((snap,id)=>{ npcs[id]=snap; });
-      ordered().forEach(n=>{ if(n && n.id && n.snapshot) npcs[n.id()]=n.snapshot(); });
+      const npcs=Object.create(null);
+      let count=0;
+      // Live actors take priority over deferred legacy entries when a hostile or
+      // very old save has filled the pending registry.
+      ordered().forEach(n=>{
+        if(count>=NPC_RESTORE_CAP || !n || !n.id || !n.snapshot) return;
+        try{
+          const id=cleanId(n.id());
+          if(!id) return;
+          const snap=cleanRecord(n.snapshot());
+          npcs[id]=snap;
+          count++;
+        }catch(e){}
+      });
+      pendingRestores.forEach((snap,id)=>{
+        if(count>=NPC_RESTORE_CAP || Object.prototype.hasOwnProperty.call(npcs,id)) return;
+        npcs[id]=cleanRecord(snap);
+        count++;
+      });
       return {v:1,npcs};
     },
     restore(data){
       const npcs=data && data.npcs && typeof data.npcs==='object' ? data.npcs : data;
       if(!npcs || typeof npcs!=='object') return false;
+      pendingRestores.clear();
       let any=false;
-      Object.keys(npcs).forEach(id=>{
+      // Restore every actor that is already registered before scanning legacy
+      // IDs.  Otherwise thousands of junk keys placed first in a hostile save
+      // can starve the real residents at the end of the object.
+      for(const [key,n] of entries){
+        if(!n || typeof n.restore!=='function' || !Object.prototype.hasOwnProperty.call(npcs,key)) continue;
+        try{ any=!!n.restore(npcs[key]) || any; }catch(e){}
+      }
+      let scanned=0;
+      for(const id in npcs){
+        if(!Object.prototype.hasOwnProperty.call(npcs,id)) continue;
+        if(scanned++>=NPC_RESTORE_SCAN_CAP || pendingRestores.size>=NPC_RESTORE_CAP) break;
         const key=cleanId(id);
-        if(!key) return;
-        const n=entries.get(key);
-        if(n && n.restore) any=!!n.restore(npcs[id]) || any;
-        else { pendingRestores.set(key,npcs[id]); any=true; }
-      });
+        // Sanitised aliases must never overwrite or re-run a known actor.
+        if(!key || entries.has(key) || pendingRestores.has(key)) continue;
+        pendingRestores.set(key,cleanRecord(npcs[id]));
+        any=true;
+      }
       return any;
     }
   };
@@ -419,7 +489,47 @@ function createQuestNpc(def){
   const stepMap=steps.reduce((acc,step)=>{ acc[step.id]=step; return acc; },{});
   const initialPhase=cleanId(def.initialPhase || steps[0].id);
   const choiceRewards=(Array.isArray(def.choiceRewards)?def.choiceRewards:[]).map(clonePlain);
-  const initialData=cleanRecord(def.initialData);
+  const rewardOnceKeys=new Set();
+  function rewardKey(value){ return cleanId(value); }
+  function registerRewardKey(value){ const key=rewardKey(value); if(key) rewardOnceKeys.add(key); }
+  steps.forEach(step=>{ if(step && step.reward) registerRewardKey(step.reward.once); });
+  choiceRewards.forEach(reward=>registerRewardKey(reward && reward.once));
+  if(def.duelReward && typeof def.duelReward==='object') registerRewardKey(def.duelReward.once);
+  if(steps.some(step=>step && step.kind==='choice')) registerRewardKey('choice');
+  if(Array.isArray(def.rewardOnceKeys)) def.rewardOnceKeys.slice(0,32).forEach(registerRewardKey);
+  function validNpcX(value){ return finite(value) && Math.abs(value)<=NPC_MAX_ABS_X; }
+  function validNpcY(value){ return finite(value) && value>=WORLD_MIN_Y-NPC_Y_MARGIN && value<=WORLD_MAX_Y+NPC_Y_MARGIN; }
+  function cleanNpcData(src,fallback){
+    const base=cleanRecord(fallback);
+    const out=Object.assign({},base,cleanRecord(src));
+    const fallbackHome=base.home && typeof base.home==='object' && !Array.isArray(base.home) ? cleanRecord(base.home) : null;
+    if(out.home!==undefined || fallbackHome){
+      let home=out.home && typeof out.home==='object' && !Array.isArray(out.home) ? cleanRecord(out.home) : {};
+      if(!validNpcX(home.x)){
+        if(fallbackHome && validNpcX(fallbackHome.x)) home.x=fallbackHome.x;
+        else delete home.x;
+      }
+      out.home=home;
+    }
+    if(Object.prototype.hasOwnProperty.call(out,'hidden')) out.hidden=out.hidden===true;
+    if(Object.prototype.hasOwnProperty.call(out,'generated')) out.generated=out.generated===true;
+    for(const key of ['cycle','completedJobs']){
+      if(Object.prototype.hasOwnProperty.call(out,key)){
+        const value=Number(out[key]);
+        out[key]=Number.isFinite(value) ? Math.floor(clamp(value,0,1000000)) : 0;
+      }
+    }
+    return out;
+  }
+  function cleanRewards(src){
+    const out={};
+    if(!src || typeof src!=='object') return out;
+    for(const key of rewardOnceKeys){
+      try{ if(src[key]) out[key]=true; }catch(e){}
+    }
+    return out;
+  }
+  const initialData=cleanNpcData(def.initialData,null);
   const combat=Object.assign({
     chaseRadius:9,
     chaseY:4,
@@ -451,7 +561,7 @@ function createQuestNpc(def){
     talkT:0,
     talkIdx:0,
     rewards:{},
-    data:Object.assign({},initialData),
+    data:cleanNpcData(initialData,null),
     observe:{phase:'',t:0,best:0,ok:false,lineCd:0},
     // Transient movement + behaviour (never snapshotted; the home anchor reseeds it).
     move:{vx:0,vy:0,facing:1,onGround:false,walkT:0},
@@ -463,8 +573,8 @@ function createQuestNpc(def){
   function npcBodyH(){ return 0.95; }
   function homeAnchorX(){
     const home=state.data && state.data.home;
-    if(home && finite(home.x)) return home.x;
-    return finite(state.x)?state.x:0;
+    if(home && validNpcX(home.x)) return home.x;
+    return validNpcX(state.x)?state.x:0;
   }
   let defaultCtx={};
 
@@ -551,7 +661,7 @@ function createQuestNpc(def){
   function placeNearWorldStart(getTile,worldGen){
     return placeAround(defaultSpawnX(worldGen || MM.worldGen),getTile,worldGen || MM.worldGen);
   }
-  function hasPosition(){ return finite(state.x) && finite(state.y); }
+  function hasPosition(){ return validNpcX(state.x) && validNpcY(state.y); }
   function ensurePlaced(player,getTile,worldGen){
     if(hasPosition()) return true;
     return placeNearWorldStart(getTile,worldGen) || placeNearPlayer(player,getTile,worldGen);
@@ -579,7 +689,10 @@ function createQuestNpc(def){
   }
   function currentStep(){ return stepMap[state.phase] || null; }
   function stepForPhase(){ const step=currentStep(); return step && step.kind==='handoff' ? step : null; }
-  function observeSeconds(step){ return Math.max(0.1,Number(step && step.seconds) || 1); }
+  function observeSeconds(step){
+    const value=Number(step && step.seconds);
+    return clamp(Number.isFinite(value) ? value : 1,0.1,NPC_TRANSIENT_TIME_CAP);
+  }
   function observeProgress(step){
     const obs=state.observe && step && state.observe.phase===step.id ? state.observe : null;
     return obs ? clamp(Number(obs.t)||0,0,observeSeconds(step)) : 0;
@@ -593,12 +706,19 @@ function createQuestNpc(def){
   function cleanObserve(src){
     if(!src || typeof src!=='object') return {phase:'',t:0,best:0,ok:false,lineCd:0};
     const phase=cleanId(src.phase);
+    const step=stepMap[phase];
+    const limit=step && step.kind==='observe' ? observeSeconds(step) : 0;
+    const cleanTime=value=>{
+      const number=Number(value);
+      return Number.isFinite(number) ? clamp(number,0,limit) : 0;
+    };
+    const lineCd=Number(src.lineCd);
     return {
-      phase:stepMap[phase] ? phase : '',
-      t:Math.max(0,Number(src.t)||0),
-      best:Math.max(0,Number(src.best)||0),
+      phase:step ? phase : '',
+      t:cleanTime(src.t),
+      best:cleanTime(src.best),
       ok:src.ok===true,
-      lineCd:Math.max(0,Number(src.lineCd)||0)
+      lineCd:Number.isFinite(lineCd) ? clamp(lineCd,0,60) : 0
     };
   }
   function observeReady(step,player,getTile,setTile,ctx){
@@ -641,8 +761,8 @@ function createQuestNpc(def){
     const summary={
       id,
       name:displayName,
-      x:finite(state.x)?state.x:null,
-      y:finite(state.y)?state.y:null,
+      x:validNpcX(state.x)?state.x:null,
+      y:validNpcY(state.y)?state.y:null,
       phase:state.phase,
       status:jobStatus(),
       prompt:textOf(step.prompt || phaseText()),
@@ -733,29 +853,71 @@ function createQuestNpc(def){
     if(typeof v==='function') return v(item,state);
     return v;
   }
+  function spawnRewardChest(chest,ctx){
+    if(!chest) return true;
+    const spec=typeof chest==='string' ? {tier:chest} : chest;
+    if(!spec || typeof spec!=='object') return false;
+    const drops=MM.drops;
+    if(!drops || typeof drops.spawnChest!=='function') return false;
+    const actor=ctx && ctx.player;
+    const x=actor && finite(Number(actor.x)) ? Number(actor.x) : state.x;
+    const y=actor && finite(Number(actor.y)) ? Number(actor.y) : state.y;
+    if(!finite(x) || !finite(y)) return false;
+    const facing=actor && Number(actor.facing)<0 ? -1 : 1;
+    const tier=String(spec.tier||'common');
+    const rawOffsetX=Number(spec.offsetX), rawOffsetY=Number(spec.offsetY);
+    try{
+      return !!drops.spawnChest(
+        x+facing*clamp(finite(rawOffsetX)?rawOffsetX:0.55,-3,3),
+        y+clamp(finite(rawOffsetY)?rawOffsetY:-0.55,-3,3),
+        tier,
+        {
+          source:String(spec.source||('quest_'+id)).slice(0,64),
+          vx:finite(Number(spec.vx)) ? Number(spec.vx) : facing*1.25,
+          vy:finite(Number(spec.vy)) ? Number(spec.vy) : -2.6
+        }
+      );
+    }catch(e){ return false; }
+  }
   function applyReward(reward,ctx,item){
     ctx=contextFor(ctx);
     if(!reward) return true;
-    const once=reward.once ? String(reward.once) : '';
+    const once=rewardKey(reward.once);
+    if(once) rewardOnceKeys.add(once);
     if(once && state.rewards[once]) return true;
     const gearList=[];
     if(reward.gear) gearList.push(reward.gear);
     if(Array.isArray(reward.items)) reward.items.forEach(it=>gearList.push(it));
+    let inventorySnapshot=null;
+    try{
+      if(gearList.length && MM.inventory && typeof MM.inventory.snapshot==='function' && typeof MM.inventory.restore==='function'){
+        inventorySnapshot=MM.inventory.snapshot();
+      }
+    }catch(e){ inventorySnapshot=null; }
     for(const gear of gearList){
       if(!grantGear(gear,reward)){
+        try{ if(inventorySnapshot && MM.inventory && MM.inventory.restore) MM.inventory.restore(inventorySnapshot); }catch(e){}
         setLine(rewardText(reward.failureLine,item) || 'Nie mam gdzie wcisnac nagrody. Zrob miejsce.',4,true);
         return false;
       }
+    }
+    if(reward.chest && !spawnRewardChest(reward.chest,ctx)){
+      try{ if(inventorySnapshot && MM.inventory && MM.inventory.restore) MM.inventory.restore(inventorySnapshot); }catch(e){}
+      setLine(rewardText(reward.failureLine,item) || 'Nagroda nie ma jeszcze bezpiecznego miejsca. Sprobuj ponownie za chwile.',4,true);
+      return false;
     }
     addResources(reward.resources || {});
     if(once) state.rewards[once]=true;
     if(reward.data){
       const data=typeof reward.data==='function' ? reward.data(item,state) : reward.data;
-      Object.assign(state.data, cleanRecord(data));
+      state.data=cleanNpcData(data,state.data);
     }
     if(reward.next) state.phase=cleanPhase(reward.next);
     if(reward.hp!==undefined) state.hp=clamp(Number(reward.hp)||0,0,maxHp);
-    if(reward.defeatedT!==undefined) state.defeatedT=Math.max(0,Number(reward.defeatedT)||0);
+    if(reward.defeatedT!==undefined){
+      const value=Number(reward.defeatedT);
+      state.defeatedT=Number.isFinite(value) ? clamp(value,0,NPC_TRANSIENT_TIME_CAP) : 0;
+    }
     refreshInventory(ctx);
     markChanged(ctx);
     message(rewardText(reward.message,item));
@@ -779,6 +941,9 @@ function createQuestNpc(def){
     };
   }
   function advanceStep(step,ctx){
+    const inv=root.inv;
+    const resourceBefore=inv && typeof inv[step.item]==='number' ? inv[step.item] : null;
+    const before={phase:state.phase,hp:state.hp,attackCd:state.attackCd,hurtT:state.hurtT};
     if(!spendResource(step.item,step.amount)) return false;
     refreshInventory(ctx);
     const next=cleanPhase(step.next);
@@ -786,19 +951,37 @@ function createQuestNpc(def){
     if(nextStep && nextStep.kind==='duel') beginDuel();
     else state.phase=next;
     if(step.complete) setLine(step.complete,4.5,true);
+    if(step.reward && !applyReward(step.reward,ctx)){
+      if(inv && resourceBefore!==null) inv[step.item]=resourceBefore;
+      state.phase=before.phase;
+      state.hp=before.hp;
+      state.attackCd=before.attackCd;
+      state.hurtT=before.hurtT;
+      refreshInventory(ctx);
+      markChanged(ctx);
+      return false;
+    }
     markChanged(ctx);
-    if(step.reward) applyReward(step.reward,ctx);
     return true;
   }
   function advanceObserveStep(step,ctx){
+    const before={phase:state.phase,hp:state.hp,attackCd:state.attackCd,hurtT:state.hurtT,observe:Object.assign({},state.observe)};
     const next=cleanPhase(step.next);
     const nextStep=stepMap[next];
     state.observe={phase:'',t:0,best:0,ok:false,lineCd:0};
     if(nextStep && nextStep.kind==='duel') beginDuel();
     else state.phase=next;
     if(step.complete) setLine(step.complete,5.2,true);
+    if(step.reward && !applyReward(step.reward,ctx)){
+      state.phase=before.phase;
+      state.hp=before.hp;
+      state.attackCd=before.attackCd;
+      state.hurtT=before.hurtT;
+      state.observe=before.observe;
+      markChanged(ctx);
+      return false;
+    }
     markChanged(ctx);
-    if(step.reward) applyReward(step.reward,ctx);
     return true;
   }
   function updateObserveStep(step,dt,player,getTile,setTile,ctx){
@@ -1124,6 +1307,17 @@ function createQuestNpc(def){
       followGround(getTile,worldGen);
     }
     else updateRoam(dt,player,getTile,setTile,worldGen);
+    if(typeof def.afterUpdate==='function'){
+      try{
+        def.afterUpdate(state,{
+          player,getTile,setTile,ctx,
+          step:currentStep(),
+          applyReward:(reward,item)=>applyReward(reward,ctx,item),
+          markChanged:()=>markChanged(ctx),
+          refreshInventory:()=>refreshInventory(ctx)
+        });
+      }catch(e){}
+    }
   }
   function hitAt(tileX,tileY){
     if(isHidden()) return false;
@@ -1235,36 +1429,42 @@ function createQuestNpc(def){
     }));
   }
   function snapshot(){
-    if(typeof def.snapshot==='function') return def.snapshot(state,{cleanPhase,maxHp,finite,clamp,cleanObserve});
+    if(typeof def.snapshot==='function'){
+      try{ return cleanRecord(def.snapshot(state,{cleanPhase,maxHp,finite,clamp,cleanObserve})); }
+      catch(e){ return {}; }
+    }
     return {
       v:1,
       id,
-      x:finite(state.x)?+state.x.toFixed(3):null,
-      y:finite(state.y)?+state.y.toFixed(3):null,
+      x:validNpcX(state.x)?+state.x.toFixed(3):null,
+      y:validNpcY(state.y)?+state.y.toFixed(3):null,
       phase:cleanPhase(state.phase),
       hp:clamp(Number(state.hp)||0,0,maxHp),
-      rewards:cleanRecord(state.rewards),
-      data:cleanRecord(state.data),
+      rewards:cleanRewards(state.rewards),
+      data:cleanNpcData(state.data,initialData),
       observe:cleanObserve(state.observe)
     };
   }
   function restore(data){
     if(!data || typeof data!=='object') return false;
-    const restored=typeof def.migrateSnapshot==='function' ? def.migrateSnapshot(data,{cleanPhase,maxHp,finite,clamp,rewardForChoice}) : data;
+    let restored;
+    try{ restored=typeof def.migrateSnapshot==='function' ? def.migrateSnapshot(data,{cleanPhase,maxHp,finite,clamp,rewardForChoice}) : data; }
+    catch(e){ return false; }
     if(!restored || typeof restored!=='object') return false;
-    state.x=finite(restored.x)?restored.x:null;
-    state.y=finite(restored.y)?restored.y:null;
+    state.x=validNpcX(restored.x)?restored.x:null;
+    state.y=validNpcY(restored.y)?restored.y:null;
     state.phase=cleanPhase(restored.phase);
     state.hp=clamp(Number(restored.hp)||0,0,maxHp);
-    state.rewards=cleanRecord(restored.rewards);
-    state.data=Object.assign({},initialData,cleanRecord(restored.data));
+    state.rewards=cleanRewards(restored.rewards);
+    state.data=cleanNpcData(restored.data,initialData);
     state.observe=cleanObserve(restored.observe);
     state.line='';
     state.lineT=0;
     state.lineLong=false;
     state.attackCd=0;
     state.hurtT=0;
-    state.defeatedT=Math.max(0,Number(restored.defeatedT)||0);
+    const defeatedT=Number(restored.defeatedT);
+    state.defeatedT=Number.isFinite(defeatedT) ? clamp(defeatedT,0,NPC_TRANSIENT_TIME_CAP) : 0;
     state.ambientT=0;
     state.talkT=0; state.talkIdx=0;
     state.move={vx:0,vy:0,facing:1,onGround:false,walkT:0};
@@ -1287,13 +1487,13 @@ function createQuestNpc(def){
     state.tick=0;
     state.talkT=0; state.talkIdx=0;
     state.rewards={};
-    state.data=Object.assign({},initialData);
+    state.data=cleanNpcData(initialData,null);
     state.observe={phase:'',t:0,best:0,ok:false,lineCd:0};
     state.move={vx:0,vy:0,facing:1,onGround:false,walkT:0};
     state.ai={mode:'idle',t:0.6,targetX:null,job:null,jobT:0,jumpCd:0};
   }
   function debug(){
-    const base=Object.assign({},state,{rewards:cleanRecord(state.rewards), data:cleanRecord(state.data), maxHp});
+    const base=Object.assign({},state,{rewards:cleanRewards(state.rewards), data:cleanNpcData(state.data,initialData), maxHp});
     if(typeof def.debug==='function') return Object.assign(base,def.debug(state,{maxHp}));
     return base;
   }
@@ -1323,7 +1523,13 @@ function createQuestNpc(def){
     phase:()=>state.phase,
     // Lightweight position accessor + nudge used by the registry's NPC-NPC separation.
     body:()=>(hasPosition() && !isHidden())?{x:state.x,y:state.y,w:npcBodyW(),h:npcBodyH(),duel:(currentStep()&&currentStep().kind==='duel')}:null,
-    nudge:(dx)=>{ if(finite(state.x) && finite(dx)){ state.x+=dx; if(state.move) state.move.vx*=0.5; } },
+    nudge:(dx)=>{
+      if(validNpcX(state.x) && finite(dx)){
+        const next=state.x+clamp(dx,-1,1);
+        if(validNpcX(next)) state.x=next;
+        if(state.move) state.move.vx*=0.5;
+      }
+    },
     _debug:debug
   };
   npcRegistry.register(id,api);

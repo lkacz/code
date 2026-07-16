@@ -15,7 +15,7 @@ const { turrets } = await import('../src/engine/turrets.js');
 
 const getTile = (x,y)=>world.getTile(x,y);
 const getNetworkTile = (x,y)=>world.getNetworkTile(x,y);
-const getElectricNetworkTile = (x,y)=>world.hasInfrastructure(x,y,T.COPPER_WIRE) ? T.COPPER_WIRE : world.getTile(x,y);
+const getElectricNetworkTile = (x,y)=>world.hasInfrastructure(x,y,T.SILVER_WIRE) ? T.SILVER_WIRE : (world.hasInfrastructure(x,y,T.COPPER_WIRE) ? T.COPPER_WIRE : world.getTile(x,y));
 const getFluidNetworkTile = (x,y)=>world.hasInfrastructure(x,y,T.WATER_PIPE) ? T.WATER_PIPE : world.getTile(x,y);
 const setTile = (x,y,t)=>world.setTile(x,y,t);
 const setOverlay = (x,y,t)=>world.setInfrastructure(x,y,t);
@@ -32,6 +32,20 @@ function reset(){
   globalThis.MM.fire = {heatAround(){}};
 }
 
+function infrastructureCanvasRecorder(){
+  const strokes=[];
+  const strokeWidths=[];
+  let path=[];
+  return {
+    strokes,strokeWidths,lineWidth:1,
+    save(){}, restore(){}, fill(){}, fillRect(){}, closePath(){}, arc(){},
+    beginPath(){ path=[]; },
+    moveTo(x,y){ path.push({kind:'move',x,y}); },
+    lineTo(x,y){ path.push({kind:'line',x,y}); },
+    stroke(){ strokes.push(path.slice()); strokeWidths.push(this.lineWidth); }
+  };
+}
+
 reset();
 setTile(0,20,T.STONE);
 setOverlay(0,20,T.COPPER_WIRE);
@@ -44,6 +58,16 @@ assert.equal(getNetworkTile(0,20),T.STONE,'clearing overlay reveals original ter
 world.restoreInfrastructure(snap);
 assert.equal(getTile(0,20),T.STONE,'restore keeps terrain under overlay');
 assert.equal(getNetworkTile(0,20),T.COPPER_WIRE,'restore revives cable overlay');
+
+reset();
+setTile(3,20,T.STONE);
+setOverlay(3,20,T.SILVER_WIRE);
+assert.equal(getTile(3,20),T.STONE,'silver cable overlay preserves terrain');
+assert.equal(getElectricNetworkTile(3,20),T.SILVER_WIRE,'electric getter prefers a silver cable overlay');
+snap=world.snapshotInfrastructure();
+world.clearInfrastructure(3,20,T.SILVER_WIRE);
+world.restoreInfrastructure(snap);
+assert.ok(world.hasInfrastructure(3,20,T.SILVER_WIRE),'silver cable material survives infrastructure save and restore');
 
 reset();
 setTile(1,21,T.BRICK);
@@ -93,6 +117,29 @@ setOverlay(0,24,T.WATER_PIPE);
 setOverlay(0,24,T.COPPER_WIRE);
 assert.equal(getElectricNetworkTile(0,24),T.COPPER_WIRE,'electric getter is independent from stacked placement order');
 assert.equal(getFluidNetworkTile(0,24),T.WATER_PIPE,'fluid getter is independent from stacked placement order');
+{
+  const connections={left:true,right:true,up:true,down:true};
+  const cableCtx=infrastructureCanvasRecorder();
+  const pipeCtx=infrastructureCanvasRecorder();
+  teleporters.drawCableTile(cableCtx,20,0,0,connections,0);
+  pumps.drawPipeTile(pipeCtx,20,0,0,connections,0);
+  const cableCenter=cableCtx.strokes[0][0];
+  const pipeCenter=pipeCtx.strokes[0][0];
+  assert.ok(cableCenter.x<10 && cableCenter.y<10,'copper cable occupies the upper-left utility track');
+  assert.ok(pipeCenter.x>10 && pipeCenter.y>10,'fluid pipe occupies the lower-right utility track');
+  assert.ok(pipeCenter.x-cableCenter.x>=4 && pipeCenter.y-cableCenter.y>=4,'stacked cable and pipe cores remain visibly separated');
+  assert.ok(Math.abs(cableCtx.strokeWidths[0]-2.6)<0.001,'copper cable outer stroke is exactly half of its former 5.2px width at the standard tile scale');
+  assert.ok(cableCtx.strokeWidths[0]<pipeCtx.strokeWidths[0]*0.5,'copper cable remains visually much narrower than the fluid pipe');
+
+  const diagonalCable=infrastructureCanvasRecorder();
+  const diagonalPipe=infrastructureCanvasRecorder();
+  teleporters.drawCableTile(diagonalCable,20,0,0,{downRight:true},0);
+  pumps.drawPipeTile(diagonalPipe,20,0,0,{downRight:true},0);
+  const cableDiagonalEnd=diagonalCable.strokes[0].find(point=>point.kind==='line');
+  const pipeDiagonalEnd=diagonalPipe.strokes[0].find(point=>point.kind==='line');
+  assert.ok(cableDiagonalEnd.x>10 && cableDiagonalEnd.y>10,'copper renderer draws a real lower-right diagonal segment');
+  assert.ok(pipeDiagonalEnd.x>10 && pipeDiagonalEnd.y>10,'fluid renderer draws a real lower-right diagonal segment');
+}
 
 reset();
 setTile(6,26,T.AIR);
@@ -173,8 +220,8 @@ for(let i=0;i<90;i++){
   pumps.update(1/30,{x:0.5,y:40.5,w:0.7,h:0.95},getFluidNetworkTile,setTile,{dynamo});
   turrets.update(1/30,{x:0.5,y:40.5,w:0.7,h:0.95},getTile,setTile,{dynamo,teleporters,pumps});
 }
-assert.equal(getTile(-2,40),T.WATER,'water pipe can sit inside a water tile without replacing water');
-assert.equal(getNetworkTile(-2,40),T.WATER_PIPE,'network getter sees water pipe inside water');
+assert.equal(getTile(-2,40),T.AIR,'powered pump removes the water tile actually drawn through an overlaid intake pipe');
+assert.equal(getNetworkTile(-2,40),T.WATER_PIPE,'network getter still sees the overlaid pipe after its source water is drained');
 assert.ok(turrets.metrics().storedWater>0,'pump draws from a pipe overlay placed inside water');
 
 reset();
@@ -216,10 +263,32 @@ for(let i=0;i<150;i++){
 assert.equal(getTile(-4,70),T.AIR,'pipe intake can pull a stranded water remnant across a one-tile dry gap');
 assert.equal(getTile(0,75),T.WATER,'stranded remnant exits through the lower open pipe end');
 
+{
+  reset();
+  const cap=20000;
+  const x0=100000;
+  const rows=Array.from({length:cap+1},(_,i)=>({x:x0+i,y:30,t:T.COPPER_WIRE}));
+  world.restoreInfrastructure({v:2,list:rows});
+  assert.equal(world.metrics().infrastructure,cap,'infrastructure restore enforces the same 20k bound as its snapshot schema');
+  assert.equal(world.hasInfrastructure(x0+cap,30,T.COPPER_WIRE),false,'infrastructure restore never scans a valid row beyond its hard cap');
+}
+
+{
+  reset();
+  const cap=40000;
+  const x0=200000;
+  const rows=Array.from({length:cap+1},(_,i)=>({x:x0+i,y:31,t:T.BRICK}));
+  world.restoreConstructionBackground({v:1,list:rows});
+  assert.equal(world.metrics().constructionBackground,cap,'construction-background restore enforces the same 40k bound as its snapshot schema');
+  assert.equal(world.getPlayerConstructionBackground(x0+cap,31),T.AIR,'construction-background restore ignores rows beyond its hard cap');
+}
+
 const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const worldSrc = readFileSync(new URL('../src/engine/world.js', import.meta.url), 'utf8');
+const pumpSrc = readFileSync(new URL('../src/engine/pumps.js', import.meta.url), 'utf8');
+const teleporterSrc = readFileSync(new URL('../src/engine/teleporters.js', import.meta.url), 'utf8');
 const waterDrawIdx = mainSrc.indexOf('if(WATER){ WATER.drawOverlay');
-const playerDrawIdx = mainSrc.indexOf('drawPlayer();');
+const playerDrawIdx = mainSrc.indexOf('drawPlayer({rearView:mirrorFacing});');
 const ladderBackDrawIdx = mainSrc.indexOf('drawInfrastructureOverlays(sx,sy,viewX,viewY,{only:[T.LADDER,T.BEDROCK_LADDER]});');
 const infraDrawIdx = mainSrc.indexOf('drawInfrastructureOverlays(sx,sy,viewX,viewY,{exclude:[T.LADDER,T.BEDROCK_LADDER]});', waterDrawIdx);
 assert.ok(ladderBackDrawIdx > 0 && playerDrawIdx > ladderBackDrawIdx, 'ladder overlays render before the hero so the hero appears on the ladder');
@@ -232,6 +301,10 @@ assert.match(mainSrc, /function drawLadderOverlay\(g,px,py,h,conn,kind\)/, 'main
 assert.match(mainSrc, /function infrastructureOverlayCellsFor\(sx,sy,viewX,viewY\)/, 'infrastructure overlay pass reuses one visible-cell scan per frame');
 assert.match(mainSrc, /else if\(isLadderTileId\(t\)\)\{\s+drawLadderOverlay\(ctx,cell\.px,cell\.py,cell\.h,ladderConnections\(cell\.x,cell\.y,hasLadderAt\),t\);/, 'infrastructure overlay pass draws both connection-aware ladder materials');
 assert.match(mainSrc, /isLadderTileId\(t\) \? 3/, 'render sorting keeps both ladders above pipes and cables in stacked overlay cells');
+assert.match(mainSrc, /function infrastructureTargetBlockedReason\(tx,ty,id\)[\s\S]*?isPowerCableTileId\(id\) \|\| id===T\.WATER_PIPE[\s\S]*?Math\.abs\(tx-px\)===1 && Math\.abs\(ty-py\)===1/, 'adjacent diagonal pipe or either cable material can reach around a blocked tile corner');
+assert.match(mainSrc, /function canPlaceInfrastructureAt\(tx,ty,id\)[\s\S]*?infrastructureTargetBlockedReason\(tx,ty,id\)/, 'pipe and cable placement uses the diagonal-aware physical targeting rule');
+assert.match(pumpSrc, /function drawFlow\([\s\S]*?pipeRenderCenter\(TILE,px,py\)/, 'animated fluid flow follows the lower-right pipe track');
+assert.match(teleporterSrc, /function drawCableEnergy\([\s\S]*?cableRenderCenter\(TILE,px,py\)/, 'animated electric energy follows the upper-left cable track');
 assert.match(mainSrc, /function canPlaceLadderAt\(tx,ty,cur,id\)/, 'main has material-aware ladder placement rules');
 assert.match(mainSrc, /oneEndSupport:id===T\.BEDROCK_LADDER/, 'bedrock ladder placement uses the one-end support rule');
 assert.match(mainSrc, /maxRun:id===T\.BEDROCK_LADDER \? Math\.max\(128,worldMaxY\(\)-worldMinY\(\)\+2\) : 128/, 'bedrock support scanning spans the full vertical world instead of stopping at the normal ladder budget');
@@ -244,6 +317,20 @@ assert.match(mainSrc, /function tryToggleBlockLayerAt\(tx,ty\)\{[\s\S]*getTile\(
 assert.match(mainSrc, /getConstructionBackgroundTile\(tx,ty\)!==T\.AIR\)\{ msg\('Tlo zajete'\); return true; \}/, 'foreground-to-background toggle refuses to overwrite visible generated/player backdrops');
 assert.match(mainSrc, /toggleForegroundToBackground/, 'undo tracks foreground-to-background layer toggles');
 assert.match(mainSrc, /toggleBackgroundToForeground/, 'undo tracks background-to-foreground layer toggles');
+assert.match(mainSrc, /if\(v\.overlay\)\{[\s\S]*const placed=setInfrastructureConfirmed\(tx,ty,id\)[\s\S]*if\(!placed\)[\s\S]*return false;[\s\S]*consumeFor\(id\)/,
+  'overlay placement consumes inventory only after the world mutator confirms success');
+assert.match(mainSrc, /if\(v\.background\)\{[\s\S]*const placed=setConstructionBackgroundConfirmed\(tx,ty,id\)[\s\S]*if\(!placed\)[\s\S]*return false;[\s\S]*consumeFor\(id\)/,
+  'background placement consumes inventory only after the world mutator confirms success');
+assert.match(mainSrc, /const removed=clearInfrastructureConfirmed\([^;]+\);\s*if\(!removed\) return false;\s*const drops=awardTileDrops/,
+  'failed infrastructure removal cannot award duplicate drops');
+assert.match(mainSrc, /function setInfrastructureConfirmed\(x,y,t\)[\s\S]*catch\(e\)\{\}[\s\S]*return hasInfrastructureTile\(x,y,t\)/,
+  'throw-after-write infrastructure hooks are resolved by the observed storage postcondition');
+assert.match(mainSrc, /function clearConstructionBackgroundConfirmed\(x,y\)[\s\S]*return getConstructionBackgroundTile\(x,y\)===T\.AIR/,
+  'background removal confirms the actual layer state even when a mutator throws');
+assert.match(mainSrc, /function keepFailedUndo\(e\)[\s\S]*undoStack\.push\(e\)/,
+  'a transient layer-mutator failure preserves the undo entry for a later retry');
+assert.match(mainSrc, /function undoDropsAvailable\(drops\)[\s\S]*\(inv\[key\]\|\|0\)<n/,
+  'undo refuses to recreate mined infrastructure or backgrounds after their recorded drops were spent');
 assert.doesNotMatch(mainSrc, /if\(t===T\.WATER_PIPE\)\{[\s\S]{0,360}PUMPS\.drawPipeTile\(cctx/, 'chunk cache no longer bakes water pipes before water');
 
 console.log('infrastructure-overlay-sim: all assertions passed');

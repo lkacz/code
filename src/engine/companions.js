@@ -2032,9 +2032,21 @@ const companions = (function(){
     return stones;
   }
   function leafRitualCandidates(x,y,getTile){
-    return ritualStonesNear(x,y,LEAF_MONSTER_MAX_LEAVES,getTile,T.SERVANT_STONE);
+    const stones=[];
+    const seen=new Set();
+    for(const stoneTile of [T.SERVANT_STONE,T.VOLCANO_MASTER_STONE]){
+      if(!Number.isFinite(stoneTile)) continue;
+      for(const stone of ritualStonesNear(x,y,LEAF_MONSTER_MAX_LEAVES,getTile,stoneTile)){
+        const key=stone.x+','+stone.y;
+        if(seen.has(key)) continue;
+        seen.add(key);
+        stones.push(stone);
+      }
+    }
+    stones.sort((a,b)=>(a.y-b.y)||(a.x-b.x));
+    return stones;
   }
-  function leavesNearServant(sx,sy,getTile){
+  function leavesNearRitualStone(sx,sy,getTile){
     const cells=[];
     const seen=new Set();
     const queue=[];
@@ -2312,10 +2324,12 @@ const companions = (function(){
   function tryLeafMonsterRitualAt(x,y,getTile,setTile,opts){
     opts=opts||{};
     if(ritualBusy || typeof getTile!=='function' || typeof setTile!=='function') return null;
-    if(!Number.isFinite(T.SERVANT_STONE)) return null;
+    if(!Number.isFinite(T.SERVANT_STONE) && !Number.isFinite(T.VOLCANO_MASTER_STONE)) return null;
     const stones=leafRitualCandidates(x,y,getTile);
     for(const s of stones){
-      const leafCells=leavesNearServant(s.x,s.y,getTile);
+      const stoneTile=tileAt(getTile,s.x,s.y);
+      const stoneName=stoneTile===T.VOLCANO_MASTER_STONE ? 'kamienia mistrza' : 'kamienia slugi';
+      const leafCells=leavesNearRitualStone(s.x,s.y,getTile);
       if(leafCells.length<LEAF_MONSTER_MIN_LEAVES) continue;
       if(list.length>=MAX_COMPANIONS){
         if(opts.debugReplace){
@@ -2342,10 +2356,10 @@ const companions = (function(){
       sparks(leaf.x,leaf.y-0.42,'common',20);
       sfx('wind',leaf);
       sayVariant('leaf_ritual',[
-        '{name} zawirowal z lisci i kamienia slugi.',
+        '{name} zawirowal z lisci i {stone}.',
         '{name} wyskoczyl z lisci, jakby wiatr przez chwile mial plan.',
         '{name} zaszelescil przysiega: szybko, krucho, po twojej stronie.'
-      ],{name:leaf.name});
+      ],{name:leaf.name,stone:stoneName});
       try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-companion-change',{detail:{kind:KIND_LEAF_MONSTER}})); }catch(e){}
       return leaf;
     }
@@ -2506,7 +2520,7 @@ const companions = (function(){
       }catch(e){ /* registry optional */ }
     }
     const clayRelevant=newTile===T.WET_CLAY || newTile===T.VOLCANO_MASTER_STONE || oldTile===T.WET_CLAY || oldTile===T.VOLCANO_MASTER_STONE;
-    const leafRelevant=newTile===T.SERVANT_STONE || oldTile===T.SERVANT_STONE || isLeaf(newTile) || isLeaf(oldTile);
+    const leafRelevant=newTile===T.SERVANT_STONE || oldTile===T.SERVANT_STONE || newTile===T.VOLCANO_MASTER_STONE || oldTile===T.VOLCANO_MASTER_STONE || isLeaf(newTile) || isLeaf(oldTile);
     const waterRelevant=newTile===T.WATER || oldTile===T.WATER || newTile===T.VOLCANO_MASTER_STONE || oldTile===T.VOLCANO_MASTER_STONE;
     const lavaRelevant=newTile===T.MOTHER_LAVA || oldTile===T.MOTHER_LAVA || newTile===T.VOLCANO_MASTER_STONE || oldTile===T.VOLCANO_MASTER_STONE;
     const meatRelevant=newTile===T.MEAT || oldTile===T.MEAT || newTile===T.VOLCANO_MASTER_STONE || oldTile===T.VOLCANO_MASTER_STONE;

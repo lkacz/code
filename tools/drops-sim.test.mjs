@@ -208,6 +208,37 @@ assert.equal(drops.metrics().active, 0, 'vacuumed drop is gone');
 drops.setAutoPickup(false);
 player.x = 500;
 
+// --- equipment auto-loot: exact tile rings, capped at +3 ---------------------
+MM.activeModifiers.lootMagnetLevel = 0;
+const ringPlayer={x:10.1,y:20.1};
+assert.equal(drops._debug.inAutoPickupReach({x:10.9,y:20.9},ringPlayer,1),true,'level 1 includes the tile occupied by the hero');
+assert.equal(drops._debug.inAutoPickupReach({x:11.1,y:20.1},ringPlayer,1),false,'level 1 excludes an adjacent tile');
+assert.equal(drops._debug.inAutoPickupReach({x:11.9,y:21.9},ringPlayer,2),true,'+1 includes diagonal neighboring tiles');
+assert.equal(drops._debug.inAutoPickupReach({x:13.9,y:23.9},ringPlayer,4),true,'+3 includes the outer diagonal ring');
+assert.equal(drops._debug.inAutoPickupReach({x:14.1,y:20.1},ringPlayer,4),false,'range is hard-capped beyond the +3 ring');
+
+function assertGearMagnetCollects(level,playerX,dropX,label){
+  drops.reset(); inv.coal=0;
+  MM.activeModifiers.lootMagnetLevel=level;
+  player.x=playerX; player.y=SURF-1;
+  drops.spawnResource(dropX,SURF-1,'coal',1,{vx:0,vy:0});
+  advance(0.8);
+  assert.equal(inv.coal,1,label);
+  assert.equal(drops.metrics().active,0,'magnet removes a collected drop exactly once');
+}
+drops.reset(); inv.coal=0; MM.activeModifiers.lootMagnetLevel=0;
+player.x=70.2; player.y=SURF-1;
+drops.spawnResource(70.8,SURF-1,'coal',1,{vx:0,vy:0});
+advance(0.8);
+assert.equal(inv.coal,0,'ordinary play has no auto-loot without equipped gear');
+assert.equal(drops.metrics().active,1,'unmagnetized loot remains available for E/click pickup');
+assertGearMagnetCollects(1,70.2,70.8,'level 1 collects from the occupied tile');
+assertGearMagnetCollects(2,80.2,81.8,'level 2 collects from +1 tile');
+assertGearMagnetCollects(3,90.2,92.8,'level 3 collects from +2 tiles');
+assertGearMagnetCollects(4,100.2,103.8,'level 4 collects from +3 tiles');
+MM.activeModifiers.lootMagnetLevel=0;
+player.x=500;
+
 // --- gear pickup rides the chest-loot pipeline --------------------------------
 drops.reset(); played.length = 0;
 const gained = []; MM.onLootGained = (items, tier) => gained.push({ items, tier });
@@ -444,7 +475,11 @@ assert.equal(played.length, 0, 'restored drops do not replay the fanfare');
   for(let i = 0; i < 12; i++){
     const eyes = chests.genItem(RNG(i * 31 + 7), 'epic', { kind: 'eyes' });
     assert.equal(eyes.kind, 'eyes', 'forced kind sticks');
-    assert.ok(eyes.visionRadius >= 15 && eyes.visionRadius <= 17 + 2, 'epic eyes roll epic vision (' + eyes.visionRadius + ')');
+    if(typeof eyes.visionRadius==='number') assert.ok(eyes.visionRadius >= 15 && eyes.visionRadius <= 17 + 2, 'epic eyes roll epic vision (' + eyes.visionRadius + ')');
+    else {
+      assert.equal(eyes.specialVisionLevel,4,'epic special optics roll the capped fourth level');
+      assert.ok(eyes.visionMode==='night'||eyes.visionMode==='thermal','special optics identify their safe render mode');
+    }
     const zap = chests.genItem(RNG(i * 77 + 3), 'rare', { kind: 'weapon', weaponType: 'electric' });
     assert.equal(zap.weaponType, 'electric', 'forced weapon class sticks');
     assert.ok(typeof zap.energyCost === 'number', 'electric roll carries its class stat');
@@ -480,7 +515,9 @@ assert.equal(played.length, 0, 'restored drops do not replay the fanfare');
   assert.ok(res && res.tier === 'epic', 'opening reports the chest tier');
   assert.ok(res.items.length >= 2, 'epic chest rolls multiple items');
   assert.equal(res.spawned, res.items.length, 'every rolled item became a physical drop');
-  assert.equal(drops.metrics().active, res.items.length, 'the loot lies on the ground');
+  assert.equal(drops._debug.list.filter(d=>d.kind==='gear').length, res.items.length, 'every rolled gear item lies on the ground');
+  assert.ok(drops.metrics().active>=res.items.length+res.metals.filter(m=>m.spawned).length,
+    'physical metal ingots coexist with gear rather than replacing chest rolls');
   assert.equal(gainedNow.length, 0, 'nothing lands in the bag before pickup');
   const chestDrop = drops._debug.list.find(d => d.kind === 'gear');
   assert.equal(chestDrop.source, 'chest', 'chest drops carry their source');
@@ -540,6 +577,17 @@ assert.equal(played.length, 0, 'restored drops do not replay the fanfare');
   // LEGENDARY chest never dips below epic
   assert.equal(MM.chests.rollChestItemTier(() => 0.999, 'common'), 'legendary', 'a plain wooden chest can pay out a legend');
   assert.equal(MM.chests.rollChestItemTier(() => 0.0, 'legendary'), 'epic', 'a legendary chest never rolls below epic');
+  assert.ok(MM.chests.CHEST_METAL_TABLE.common.silver[0]>0 && MM.chests.CHEST_METAL_TABLE.common.gold[0]>0,
+    'even common chests retain a small chance for silver and gold ingots');
+  drops.reset();
+  const metalLoot=MM.chests._releaseLoot('legendary',1,87.5,SURF-1);
+  assert.deepEqual(metalLoot.metals.map(m=>m.key).sort(),['gold','silver'],
+    'the best chest tier guarantees both silver and gold ingots');
+  for(const key of ['silver','gold']){
+    const metalDrop=drops._debug.list.find(d=>d.kind==='resource' && d.res===key);
+    assert.ok(metalDrop && metalDrop.source==='chest' && metalDrop.qty>=1,
+      key+' ingots leave the chest as physical collectible resources');
+  }
 
   // Furnishings use a separate, restrained route: lower chests never emit one,
   // while a deterministic legendary seed eventually produces a physical,
@@ -617,6 +665,7 @@ assert.equal(drops.metrics().active, 0, 'malformed snapshot entries are dropped'
 
 // --- source pins: the wiring contracts in main.js / mobs.js / UI -------------------
 const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+const indexSrc = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 assert.match(mainSrc, /drops:\s*timedSavePart\('drops',[^\n]*DROPS && DROPS\.snapshot/, 'save payload includes ground loot drops');
 assert.match(mainSrc, /if\(DROPS && DROPS\.restore\) DROPS\.restore\(data\.drops\)/, 'restore rehydrates ground loot drops');
 assert.match(mainSrc, /if\(DROPS && DROPS\.update\) DROPS\.update\(dt, player, getTile\)/, 'game step ticks the drop simulation');
@@ -624,7 +673,10 @@ assert.match(mainSrc, /if\(DROPS && DROPS\.draw\) DROPS\.draw\(ctx,TILE,camRende
 assert.match(mainSrc, /DROPS && DROPS\.pickupNearest && DROPS\.pickupNearest\(player\)/, 'E key collects the nearest drop');
 assert.match(mainSrc, /MECHS\.wantsInteractKey\(player\)/, 'machine context still wins the interact key');
 assert.match(mainSrc, /id:'meat_block', name:'Blok miesa', cost:\{meatScrap:3\}/, 'meat scraps meld into a MEAT block at the bench');
-assert.match(mainSrc, /Auto-zbieranie łupów/, 'pause panel exposes the auto-pickup toggle');
+assert.match(indexSrc, /id="debugAutoPickupCheckbox"[^>]*type="checkbox"/, 'developer toolbox owns the unrestricted auto-pickup override');
+assert.match(mainSrc, /DROPS\.setDebugAutoPickup/, 'debug override is wired to the drops engine');
+assert.doesNotMatch(mainSrc, /buildPauseRow\('🧲 Auto-zbieranie łupów'\)/, 'player pause settings no longer bypass equipment progression');
+assert.match(mainSrc, /id:'loot_charm_tile'[\s\S]*id:'loot_charm_copper'[\s\S]*id:'loot_charm_silver'[\s\S]*id:'loot_charm_antimatter'/, 'crafting exposes all four auto-loot ranges');
 assert.match(mainSrc, /if\(DROPS && DROPS\.reset\) DROPS\.reset\(\)/, 'world resets clear lingering drops');
 assert.match(mainSrc, /DROPS\.pickupAt\(aim\.x,aim\.y,player,\{visible:worldFxVisible\}\)==='picked'/, 'left click grabs the hovered drop (fog-gated)');
 assert.match(mainSrc, /updateDropPreview\(\);/, 'frame loop refreshes the corner drop preview');
@@ -638,7 +690,6 @@ const invUiSrc = readFileSync(new URL('../src/inventory_ui.js', import.meta.url)
 assert.match(invUiSrc, /drops\.wantsInteractKey/, 'wardrobe yields E to a drop in reach');
 assert.match(invUiSrc, /const E_HOLD_MS=\d+/, 'holding E opens the wardrobe past the tap window');
 assert.match(invUiSrc, /!e\.repeat && logicalKey\(e\)==='e'/, 'auto-repeat E never toggles the wardrobe (logicalKey honors rebinds)');
-const indexSrc = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 assert.match(indexSrc, /id="dropPreview"/, 'index.html carries the corner drop-preview card');
 // The modal loot inbox ("Nowe przedmioty") is RETIRED: found gear lands in the bag,
 // the upgrade card is the only interruption, and Ekwipunek reviews the rest. Keep it

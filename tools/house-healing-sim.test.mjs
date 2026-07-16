@@ -269,17 +269,35 @@ for(const offsetY of [-120,-72,-50,20,160]){
   buildHouse(w,{light:T.MINIATURE_SUN});
   w.set(1,1,T.COZY_BED);
   w.set(1,2,T.AQUARIUM);
-  const first = analyzeHouseAt(hero,w.get,{backgroundAt:w.bg});
+  const poweredOpts={backgroundAt:w.bg,isFurnishingPowered:()=>true};
+  const first = analyzeHouseAt(hero,w.get,poweredOpts);
   assert.equal(first.ok,true,'a light-emitting furnishing can illuminate a healing home');
   assert.equal(first.furnishingCount,3,'the analyzer counts every placed furnishing, including the light source');
   assert.equal(first.furnishingTypes,3,'the home summary reports distinct furnishing types');
   assert.equal(first.rawFurnishingBonus,INFO[T.MINIATURE_SUN].homeRegenBonus+INFO[T.COZY_BED].homeRegenBonus+INFO[T.AQUARIUM].homeRegenBonus,'raw comfort adds catalog bonuses exactly');
   w.set(3,2,T.MEDICAL_STATION);
-  const richer = analyzeHouseAt(hero,w.get,{backgroundAt:w.bg});
+  const richer = analyzeHouseAt(hero,w.get,poweredOpts);
   assert.ok(richer.comfortMult>first.comfortMult,'adding another useful object always increases home regeneration');
   assert.ok(richer.comfortMult<HOUSE_COMFORT_MULT_CAP,'normal furnishing remains below the soft cap');
   assert.equal(richer.furnishingBreakdown[0].tile,T.MINIATURE_SUN,'comfort breakdown ranks the strongest furnishing first');
   assert.ok(houseComfortMult(2,1e6)<=HOUSE_COMFORT_MULT_CAP,'even extreme furnishing totals never exceed the global cap');
+}
+
+// Electrical comfort and electrical light only operate on a supplied circuit;
+// passive furniture remains useful when the batteries are empty.
+{
+  const w=makeWorld();
+  buildHouse(w);
+  w.set(1,1,T.COZY_BED);
+  w.set(1,2,T.AQUARIUM);
+  w.set(3,2,T.MEDICAL_STATION);
+  const darkPower=analyzeHouseAt(hero,w.get,{backgroundAt:w.bg,isFurnishingPowered:()=>false});
+  assert.equal(darkPower.ok,true,'a torch-lit house remains valid while its electrical circuit is empty');
+  assert.equal(darkPower.poweredFurnishingCount,1,'only the passive bed is active without electricity');
+  assert.equal(darkPower.rawFurnishingBonus,INFO[T.COZY_BED].homeRegenBonus,'unpowered devices contribute no regeneration multiplier');
+  const livePower=analyzeHouseAt(hero,w.get,{backgroundAt:w.bg,isFurnishingPowered:()=>true});
+  assert.equal(livePower.poweredFurnishingCount,3,'the supplied circuit activates every placed electrical device');
+  assert.ok(livePower.rawFurnishingBonus>darkPower.rawFurnishingBonus,'powered medical equipment restores its designed comfort bonus');
 }
 
 // A chair alone in the open is just furniture — no shelter, no healing.

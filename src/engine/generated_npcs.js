@@ -1,7 +1,8 @@
-import { T, WORLD_H } from '../constants.js';
+import { T, INFO, WORLD_H } from '../constants.js';
 import { createQuestNpc, npcRegistry } from './npc_system.js';
 import { storyWhispersForProgress } from './story_lore.js';
 import { isFurnishingTile, selectFurnishingsForDistance } from './furnishings.js';
+import { isMeteorSettlementSiteTile } from './material_physics.js';
 
 const CELL_W = 1250;
 const ACTIVE_RADIUS = 1800;
@@ -18,6 +19,16 @@ const HOUSE_BUILD_RADIUS = 220;
 const HOUSE_DESTROY_LIMIT = 0.20;
 // Counted back up as "rebuilt" once the structural footprint is mostly intact again.
 const HOUSE_REBUILD_MIN = 0.90;
+// Candidate data is deterministic and can always be rebuilt. Keeping an LRU here
+// prevents long expeditions (and repeated map searches) from turning every frame
+// into a walk over every NPC cell the player has ever visited.
+const CANDIDATE_CACHE_CAP = 512;
+const LOCAL_STATE_SAVE_CAP = 4096;
+const LOCAL_STATE_RESTORE_SCAN_CAP = 8192;
+const ACTIVE_UNLOAD_RADIUS = ACTIVE_RADIUS + CELL_W * 2;
+const STATE_COUNTER_CAP = 1000000;
+const STATE_DAY_CAP = 1000000000;
+const MAX_LOCAL_CELL_ABS = Math.ceil(30000000/CELL_W)+2;
 
 function j(role,color,accent,item,amount,label,reward,lore,moral,missing,complete){
   return {role,color,accent,cost:{item,amount,label},reward,lore,moral,missing,complete};
@@ -117,6 +128,39 @@ let activeSeed = null;
 let scanT = 0;
 
 function finite(v){ return typeof v==='number' && isFinite(v); }
+function boundedNonNegative(v,max,integer){
+  v=Number(v);
+  if(!Number.isFinite(v) || v<=0) return 0;
+  v=Math.min(max,v);
+  return integer ? Math.floor(v) : v;
+}
+function cleanLocalId(value,expectedSeed){
+  if(typeof value!=='string') return '';
+  const id=value.trim();
+  if(!id || id.length>96) return '';
+  const match=/^local_(-?(?:0|[1-9]\d*))_(m(?:[1-9]\d*)|(?:0|[1-9]\d*))$/.exec(id);
+  if(!match) return '';
+  const seed=Number(match[1]);
+  if(!Number.isInteger(seed) || seed<(0x80000000*-1) || seed>0x7fffffff || String(seed)!==match[1]) return '';
+  if(Number.isFinite(expectedSeed) && seed!==(expectedSeed|0)) return '';
+  const negativeCell=match[2][0]==='m';
+  const magnitude=Number(negativeCell?match[2].slice(1):match[2]);
+  if(!Number.isSafeInteger(magnitude) || magnitude>MAX_LOCAL_CELL_ABS) return '';
+  const cell=negativeCell?-magnitude:magnitude;
+  const canonical='local_'+seed+'_'+(cell<0?'m'+Math.abs(cell):cell);
+  if(canonical!==id) return '';
+  return id;
+}
+function cacheCandidate(key,value){
+  if(candidateCache.has(key)) candidateCache.delete(key);
+  candidateCache.set(key,value);
+  while(candidateCache.size>CANDIDATE_CACHE_CAP){
+    const oldest=candidateCache.keys().next();
+    if(oldest.done) break;
+    candidateCache.delete(oldest.value);
+  }
+  return value;
+}
 function runtimeRoot(){ return (typeof window!=='undefined') ? window : globalThis; }
 function cleanSeed(worldGen){ return worldGen && typeof worldGen.worldSeed==='number' ? worldGen.worldSeed|0 : 1; }
 function hash01(seed,a,b){
@@ -177,16 +221,18 @@ function rewardText(job){
   return parts.length ? parts.join(', ') : 'drobna wdziecznosc';
 }
 function baseCandidateForCell(cell,worldGen){
+  cell=Math.trunc(Number(cell));
+  if(!Number.isSafeInteger(cell)) return null;
   const seed=cleanSeed(worldGen);
   const key=seed+':'+cell;
-  if(candidateCache.has(key)) return candidateCache.get(key);
-  if(hash01(seed,cell,7)<SPAWN_GATE){ candidateCache.set(key,null); return null; }
+  if(candidateCache.has(key)) return cacheCandidate(key,candidateCache.get(key));
+  if(hash01(seed,cell,7)<SPAWN_GATE) return cacheCandidate(key,null);
   const rawCenter=Math.round((cell+0.5)*CELL_W + (hash01(seed,cell,11)-0.5)*CELL_W*0.62);
-  if(Math.abs(rawCenter)<START_SAFE_RADIUS){ candidateCache.set(key,null); return null; }
+  if(!Number.isSafeInteger(rawCenter) || Math.abs(rawCenter)<START_SAFE_RADIUS) return cacheCandidate(key,null);
   let rawBiome=0;
   try{ rawBiome=worldGen && worldGen.biomeType ? worldGen.biomeType(rawCenter)|0 : 0; }catch(e){}
   const x=dryAnchorAround(rawCenter,worldGen);
-  if(x==null){ candidateCache.set(key,null); return null; }
+  if(x==null) return cacheCandidate(key,null);
   let biome=0;
   try{ biome=(rawBiome===5 || rawBiome===6) ? rawBiome : (worldGen && worldGen.biomeType ? worldGen.biomeType(x)|0 : 0); }catch(e){}
   const id='local_'+seed+'_'+(cell<0?'m'+Math.abs(cell):cell);
@@ -197,17 +243,16 @@ function baseCandidateForCell(cell,worldGen){
     x,
     biome
   };
-  candidateCache.set(key,base);
-  return base;
+  return cacheCandidate(key,base);
 }
 function cleanLocalState(src){
   src=src && typeof src==='object' ? src : {};
   return {
-    cycle:Math.max(0,Math.floor(Number(src.cycle)||0)),
+    cycle:boundedNonNegative(src.cycle,STATE_COUNTER_CAP,true),
     hidden:src.hidden===true,
-    availableDay:Math.max(0,Number(src.availableDay)||0),
-    completedJobs:Math.max(0,Math.floor(Number(src.completedJobs)||0)),
-    completedDay:Math.max(0,Number(src.completedDay)||0),
+    availableDay:boundedNonNegative(src.availableDay,STATE_DAY_CAP,false),
+    completedJobs:boundedNonNegative(src.completedJobs,STATE_COUNTER_CAP,true),
+    completedDay:boundedNonNegative(src.completedDay,STATE_DAY_CAP,false),
     lastRole:String(src.lastRole||'').slice(0,120),
     // House lifecycle: built once into real tiles; abandoned when the player wrecks it.
     houseBuilt:src.houseBuilt===true,
@@ -221,6 +266,10 @@ function cleanLocalState(src){
 function localStateFor(id){
   let state=localStates.get(id);
   if(!state){
+    // A complete lifecycle entry is persistent anti-duplication state. Once
+    // the save budget is full, refuse to start another resident instead of
+    // creating an unsaved job whose reward could be repeated after reload.
+    if(localStates.size>=LOCAL_STATE_SAVE_CAP) return null;
     state=cleanLocalState(null);
     localStates.set(id,state);
   }
@@ -230,13 +279,13 @@ function currentDay(ctx){
   try{
     if(ctx && typeof ctx.gameDayFloat==='function'){
       const v=Number(ctx.gameDayFloat());
-      if(Number.isFinite(v)) return Math.max(1,v);
+      if(Number.isFinite(v)) return Math.min(STATE_DAY_CAP,Math.max(1,v));
     }
   }catch(e){}
   try{
     const root=runtimeRoot();
     const m=root.MM && root.MM.seasons && root.MM.seasons.metrics ? root.MM.seasons.metrics() : null;
-    if(m && Number.isFinite(Number(m.dayFloat))) return Math.max(1,Number(m.dayFloat));
+    if(m && Number.isFinite(Number(m.dayFloat))) return Math.min(STATE_DAY_CAP,Math.max(1,Number(m.dayFloat)));
   }catch(e){}
   return 1;
 }
@@ -245,7 +294,10 @@ function returnDelayDays(seed,cell,cycle){
   return RETURN_DAYS_MIN + Math.floor(hash01(seed,cell,733+(cycle|0)*37)*span);
 }
 function candidateAvailable(candidate,day){
-  const state=localStateFor(candidate.id);
+  // Discovery/search queries are read-only.  Do not retain thousands of
+  // completely neutral lifecycle records just because the player scanned a
+  // distant cell through the trader compass or candidate lookup.
+  const state=localStates.get(candidate.id) || cleanLocalState(null);
   // A wrecked house keeps its resident away regardless of the day clock — only a
   // rebuild (detected in maintainHouses) clears the abandoned flag.
   if(state.abandoned) return false;
@@ -469,20 +521,6 @@ function houseCells(candidate,getTile,worldGen){
   const preferredX=doorX>cx
     ? [left+2,right-2,cx-1,cx+1,cx]
     : [right-2,left+2,cx+1,cx-1,cx];
-  const furnishingSlots=[];
-  for(const y of floorRows){
-    for(const x of preferredX){
-      if(x<=left || x>=right || x===doorX || x===ladderX) continue;
-      const existing=map.get(x+','+y);
-      if(!existing || existing.role!=='air') continue;
-      if(furnishingSlots.some(slot=>slot.x===x && slot.y===y)) continue;
-      furnishingSlots.push({x,y});
-    }
-  }
-  furnishingDefs.forEach((def,index)=>{
-    const slot=furnishingSlots[index];
-    if(slot) putCell(slot.x,slot.y,def.tile,false,'furnishing',true);
-  });
   // Roof: pitched gable (2-thick sloped edges) or flat with a parapet.
   if(flatRoof){
     for(let x=left-1; x<=right+1; x++) putCell(x,roofY,pal.roof,true,'roof',true);
@@ -525,6 +563,52 @@ function houseCells(candidate,getTile,worldGen){
       const roofLine=roofY-Math.max(0,Math.floor((half-Math.abs(chX-cx))/pitch));
       for(let y=roofLine; y>=roofLine-2; y--) putCell(chX,y,pal.accent,false,'chimney',false);
     }
+  }
+  // Mount catalogue pieces where their silhouette belongs. Standing objects
+  // use a floor slab, wall pieces use an interior back-wall cell, and hanging
+  // pieces are placed directly below an actual roof/slab tile. If a table is
+  // among the selected support pieces, small tabletop objects prefer its top.
+  const furnishingOccupied=new Set();
+  const placedTables=[];
+  const available=(x,y,allowMissing=false)=>{
+    if(x<=left || x>=right || x===doorX || x===ladderX || furnishingOccupied.has(x+','+y)) return false;
+    const existing=map.get(x+','+y);
+    return allowMissing ? (!existing || existing.role==='air') : !!(existing && existing.role==='air');
+  };
+  const floorSlots=[];
+  for(const y of floorRows) for(const x of preferredX) if(available(x,y)) floorSlots.push({x,y,support:'floor'});
+  const wallSlots=[];
+  for(const floorY of floorRows) for(const x of preferredX){
+    const y=floorY-1;
+    if(available(x,y)) wallSlots.push({x,y,support:'wall'});
+  }
+  const ceilingSlots=[];
+  for(let y=apexY;y<=g-2;y++) for(const x of preferredX){
+    const support=map.get(x+','+y);
+    if(!support || (support.role!=='roof' && support.role!=='floor')) continue;
+    if(available(x,y+1,true)) ceilingSlots.push({x,y:y+1,support:'ceiling'});
+  }
+  const takeSlot=(slots)=>{
+    while(slots.length){
+      const slot=slots.shift(), k=slot.x+','+slot.y;
+      if(!furnishingOccupied.has(k) && available(slot.x,slot.y,slot.support==='ceiling')) return slot;
+    }
+    return null;
+  };
+  const orderedFurnishings=[...furnishingDefs].sort((a,b)=>(a.tile===T.PINE_TABLE?-1:0)-(b.tile===T.PINE_TABLE?-1:0));
+  for(const def of orderedFurnishings){
+    let slot=null;
+    if(def.placement==='wall') slot=takeSlot(wallSlots);
+    else if(def.placement==='floor_or_ceiling') slot=takeSlot(ceilingSlots)||takeSlot(floorSlots);
+    else if(def.placement==='floor_or_table' && placedTables.length){
+      const table=placedTables.find(cell=>available(cell.x,cell.y-1));
+      if(table) slot={x:table.x,y:table.y-1,support:'table'};
+    }
+    if(!slot) slot=takeSlot(floorSlots);
+    if(!slot) continue;
+    putCell(slot.x,slot.y,def.tile,false,'furnishing',true);
+    furnishingOccupied.add(slot.x+','+slot.y);
+    if(def.tile===T.PINE_TABLE) placedTables.push(slot);
   }
   // Porch: covered deck on the door side with a support post and a lantern.
   if(hasPorch){
@@ -588,43 +672,151 @@ function placeHouseBackground(cells){
   let placed=0;
   try{
     const w=runtimeRoot().MM && runtimeRoot().MM.world;
-    if(!w || !w.setConstructionBackground) return 0;
+    if(!w || !w.setConstructionBackground || !w.getConstructionBackground) return {placed:0,complete:true};
     for(const c of cells){
       if(c.layer!=='bg') continue;
-      try{ if(w.setConstructionBackground(c.x,c.y,c.t)) placed++; }catch(e){}
+      let current=T.AIR;
+      try{ current=w.getConstructionBackground(c.x,c.y); }catch(e){ return {placed,complete:false}; }
+      if(current===c.t) continue;
+      if(current!==T.AIR) continue; // a player's different background is respected
+      try{ w.setConstructionBackground(c.x,c.y,c.t); }catch(e){}
+      try{
+        if(w.getConstructionBackground(c.x,c.y)!==c.t) return {placed,complete:false};
+        placed++;
+      }catch(e){ return {placed,complete:false}; }
     }
   }catch(e){}
-  return placed;
+  return {placed,complete:true};
 }
-function buildHouse(candidate,getTile,setTile,worldGen){
+const HOUSE_PRESERVE_TILES=new Set([
+  T.TORCH,T.GRAVE,T.WIRE,T.COPPER_WIRE,T.SILVER_WIRE,T.WATER_PIPE,T.LADDER,T.BEDROCK_LADDER,
+  T.CHIMNEY,T.TRACK,T.RESPAWN_TOTEM
+]);
+function houseWorldLayers(){
+  try{ return runtimeRoot().MM && runtimeRoot().MM.world || null; }catch(e){ return null; }
+}
+function houseFallingApi(){
+  try{ return runtimeRoot().MM && runtimeRoot().MM.fallingSolids || null; }catch(e){ return null; }
+}
+function houseCellOverlapsPlayer(c,player){
+  if(!player || c.layer==='bg' || c.t===T.AIR || !finite(player.x) || !finite(player.y)) return false;
+  const w=Number.isFinite(player.w)?Math.max(0.2,player.w):0.8;
+  const h=Number.isFinite(player.h)?Math.max(0.4,player.h):1.8;
+  return c.x+1>player.x-w/2 && c.x<player.x+w/2 && c.y+1>player.y-h/2 && c.y<player.y+h/2;
+}
+function houseCellBlocked(c,getTile,world,falling,player){
+  if(!c || !Number.isInteger(c.x) || !Number.isInteger(c.y) || c.y<0 || c.y>=WORLD_H) return true;
+  if(houseCellOverlapsPlayer(c,player)) return true;
+  try{
+    if(falling && typeof falling.isPlayerBuiltAt==='function' && falling.isPlayerBuiltAt(c.x,c.y)) return true;
+    if(falling && typeof falling.isProtectedBuild==='function' && falling.isProtectedBuild(c.x,c.y)) return true;
+  }catch(e){ return true; }
+  try{
+    if(world && typeof world.getInfrastructureStack==='function'){
+      const stack=world.getInfrastructureStack(c.x,c.y);
+      if(Array.isArray(stack) && stack.length) return true;
+    }else if(world && typeof world.getInfrastructure==='function' && world.getInfrastructure(c.x,c.y)!==T.AIR) return true;
+  }catch(e){ return true; }
+  try{
+    if(world && typeof world.getPlayerConstructionBackground==='function' && world.getPlayerConstructionBackground(c.x,c.y)!==T.AIR) return true;
+  }catch(e){ return true; }
+  if(c.layer==='bg') return false;
+  let current=T.AIR;
+  try{ current=getTile(c.x,c.y); }catch(e){ return true; }
+  const info=INFO[current] || {};
+  return HOUSE_PRESERVE_TILES.has(current) || isMeteorSettlementSiteTile(current) ||
+    !!(info.machine || info.chestTier || info.cache || info.furniture || info.door || info.trapdoor || info.story || info.unmineable);
+}
+function restoreHouseForeground(rows,setTile,getTile){
+  let ok=true;
+  for(let i=rows.length-1;i>=0;i--){
+    const row=rows[i];
+    try{ setTile(row.c.x,row.c.y,row.old); }catch(e){}
+    try{ if(getTile(row.c.x,row.c.y)!==row.old) ok=false; }catch(e){ ok=false; }
+  }
+  return ok;
+}
+function restoreHouseBackground(rows,world){
+  if(!world) return;
+  for(let i=rows.length-1;i>=0;i--){
+    const row=rows[i];
+    try{
+      if(row.old===T.AIR && typeof world.clearConstructionBackground==='function') world.clearConstructionBackground(row.c.x,row.c.y);
+      else if(typeof world.setConstructionBackground==='function') world.setConstructionBackground(row.c.x,row.c.y,row.old);
+    }catch(e){}
+  }
+}
+function buildHouse(candidate,getTile,setTile,worldGen,player){
   const {layout,cells}=houseCells(candidate,getTile,worldGen);
-  for(const c of cells){ if(c.layer==='bg') continue; try{ setTile(c.x,c.y,c.t); }catch(e){} }
-  placeHouseBackground(cells);
+  const world=houseWorldLayers();
+  const falling=houseFallingApi();
+  // Preflight the complete footprint before the first write. NPC construction
+  // may clear natural terrain, but never player buildings, machines, wiring,
+  // backgrounds, or another managed structure.
+  for(const c of cells) if(houseCellBlocked(c,getTile,world,falling,player)) return false;
+  const foreground=[];
+  for(const c of cells){
+    if(c.layer==='bg') continue;
+    let old=T.AIR;
+    try{ old=getTile(c.x,c.y); }catch(e){ restoreHouseForeground(foreground,setTile,getTile); return false; }
+    foreground.push({c,old});
+    try{ setTile(c.x,c.y,c.t); }catch(e){}
+    let written=false;
+    try{ written=getTile(c.x,c.y)===c.t; }catch(e){ written=false; }
+    if(!written){ restoreHouseForeground(foreground,setTile,getTile); return false; }
+  }
+  const backgrounds=[];
+  if(world && typeof world.setConstructionBackground==='function' && typeof world.getConstructionBackground==='function'){
+    for(const c of cells){
+      if(c.layer!=='bg') continue;
+      let old=T.AIR, written=false;
+      try{
+        old=world.getConstructionBackground(c.x,c.y);
+        backgrounds.push({c,old});
+        world.setConstructionBackground(c.x,c.y,c.t);
+        written=world.getConstructionBackground(c.x,c.y)===c.t;
+      }catch(e){ written=false; }
+      if(!written){
+        restoreHouseBackground(backgrounds,world);
+        restoreHouseForeground(foreground,setTile,getTile);
+        return false;
+      }
+    }
+  }
   // Verify the build actually took. In headless/Node simulations setTile is a no-op,
   // so the roof apex reads back as AIR — we then treat the house as non-physical and
   // skip destruction auditing, leaving the pure NPC lifecycle untouched.
   let physical=false;
   try{ physical=getTile(layout.cx,layout.apexY)===layout.pal.roof; }catch(e){ physical=false; }
-  if(physical) protectHouse(cells);
+  if(!physical){
+    restoreHouseBackground(backgrounds,world);
+    restoreHouseForeground(foreground,setTile,getTile);
+    return false;
+  }
+  protectHouse(cells);
   return physical;
 }
 function migrateHouseDoors(candidate,getTile,setTile,worldGen){
   const {cells}=houseCells(candidate,getTile,worldGen);
-  let changed=false;
+  let changed=false, complete=true;
   for(const c of cells){
     if(c.role!=='door') continue;
     let cur=T.AIR;
     try{ cur=getTile(c.x,c.y); }catch(e){ cur=T.AIR; }
     if(cur===c.t) continue;
     if(cur!==T.AIR && cur!==T.WATER && cur!==T.LAVA) continue;
-    try{ setTile(c.x,c.y,c.t); changed=true; }catch(e){}
+    try{ setTile(c.x,c.y,c.t); }catch(e){}
+    try{
+      if(getTile(c.x,c.y)===c.t) changed=true;
+      else complete=false;
+    }catch(e){ complete=false; }
   }
   if(changed) protectHouse(cells);
-  return changed;
+  return {changed,complete};
 }
 function migrateHouseFurnishings(candidate,getTile,setTile,worldGen){
   const {layout,cells}=houseCells(candidate,getTile,worldGen);
-  let changed=false;
+  let changed=false, complete=true;
   const legacyX=layout.doorX>layout.cx?layout.left+2:layout.right-2;
   const legacyTile=layout.pal.accent===T.STEEL?T.STONE:layout.pal.accent;
   for(const c of cells){
@@ -636,10 +828,14 @@ function migrateHouseFurnishings(candidate,getTile,setTile,worldGen){
     // every other player-built replacement is respected.
     const oldPlaceholder=c.x===legacyX && c.y===layout.g-1 && cur===legacyTile;
     if(cur!==T.AIR && !oldPlaceholder) continue;
-    try{ setTile(c.x,c.y,c.t); changed=true; }catch(e){}
+    try{ setTile(c.x,c.y,c.t); }catch(e){}
+    try{
+      if(getTile(c.x,c.y)===c.t) changed=true;
+      else complete=false;
+    }catch(e){ complete=false; }
   }
   if(changed) protectHouse(cells);
-  return changed;
+  return {changed,complete};
 }
 // Hand the placed tiles to the falling engine's protected set so no collapse, sand
 // slump, or glass shatter simulation can touch them. Idempotent — safe to re-run
@@ -658,13 +854,16 @@ function houseIntegrity(candidate,getTile,worldGen){
     total++;
     let cur=T.AIR;
     try{ cur=getTile(c.x,c.y); }catch(e){ cur=T.AIR; }
-    if(cur!==T.AIR && cur!==T.WATER && cur!==T.LAVA) intact++;
+    if(cur===c.t) intact++;
   }
   return total>0 ? intact/total : 1;
 }
 function buildCandidate(base,cycle){
   if(!base) return null;
-  const state=localStateFor(base.id);
+  // A candidate can be inspected without becoming a persistent resident.
+  // Callers that actually build, retire or alter a house explicitly promote it
+  // through localStateFor().
+  const state=localStates.get(base.id) || cleanLocalState(null);
   const jobCycle=Math.max(0,Number.isFinite(cycle)?cycle:state.cycle|0);
   const job=jobFor(base.biome,base.seed,base.cell,jobCycle);
   const candidate={
@@ -848,6 +1047,9 @@ function ensureSeed(worldGen){
 function materialize(candidate,getTile,worldGen,ctx){
   if(!candidate || createdIds.has(candidate.id)) return npcRegistry.get(candidate.id);
   if(!candidateAvailable(candidate,currentDay(ctx))) return null;
+  const lifecycle=localStateFor(candidate.id);
+  if(!lifecycle) return null;
+  candidate.state=lifecycle;
   const npc=createQuestNpc(definitionFor(candidate));
   createdIds.add(candidate.id);
   createdCandidates.set(candidate.id,candidate);
@@ -887,36 +1089,42 @@ function maintainHouses(player,getTile,setTile,worldGen,ctx,day){
   const px=player.x;
   candidateCache.forEach(base=>{
     if(!base) return;
+    // homeFor() drifts at most four tiles from the deterministic base anchor.
+    if(Math.abs(base.x-px)>HOUSE_BUILD_RADIUS+6) return;
     const candidate=buildCandidate(base);
     if(!candidate || !candidate.home) return;
     if(Math.abs(candidate.home.x-px)>HOUSE_BUILD_RADIUS) return;
     const state=localStateFor(candidate.id);
-    if(!state.houseBuilt && !state.abandoned){
-      const physical=buildHouse(candidate,getTile,setTile,worldGen);
-      state.houseBuilt=true;
+    if(!state) return;
+    if((!state.houseBuilt || !state.housePhysical) && !state.abandoned){
+      const now=Date.now();
+      if(Number.isFinite(state._houseRetryAt) && now<state._houseRetryAt) return;
+      const physical=buildHouse(candidate,getTile,setTile,worldGen,player);
+      state.houseBuilt=physical;
       state.housePhysical=physical;
       state.houseDoorsMigrated=physical;
       state.houseBackwallDone=physical;
       state.houseFurnishingsDone=physical;
-      if(physical) markChanged(ctx);
+      if(physical){ delete state._houseRetryAt; markChanged(ctx); }
+      else state._houseRetryAt=now+5000;
     }
     if(!state.houseBuilt || !state.housePhysical) return;
     if(!state.houseDoorsMigrated){
-      const changed=migrateHouseDoors(candidate,getTile,setTile,worldGen);
-      state.houseDoorsMigrated=true;
-      if(changed) markChanged(ctx);
+      const result=migrateHouseDoors(candidate,getTile,setTile,worldGen);
+      state.houseDoorsMigrated=!!result.complete;
+      if(result.changed) markChanged(ctx);
     }
     if(!state.houseFurnishingsDone){
-      const changed=migrateHouseFurnishings(candidate,getTile,setTile,worldGen);
-      state.houseFurnishingsDone=true;
-      if(changed) markChanged(ctx);
+      const result=migrateHouseFurnishings(candidate,getTile,setTile,worldGen);
+      state.houseFurnishingsDone=!!result.complete;
+      if(result.changed) markChanged(ctx);
     }
     const {cells}=houseCells(candidate,getTile,worldGen);
     // Houses from saves that predate interior back walls get them retrofitted once.
     if(!state.houseBackwallDone){
-      const placed=placeHouseBackground(cells);
-      state.houseBackwallDone=true;
-      if(placed>0) markChanged(ctx);
+      const result=placeHouseBackground(cells);
+      state.houseBackwallDone=!!result.complete;
+      if(result.placed>0) markChanged(ctx);
     }
     // Re-assert protection every scan so it survives save reloads and chunk reloads.
     if(!state.abandoned) protectHouse(cells);
@@ -925,7 +1133,7 @@ function maintainHouses(player,getTile,setTile,worldGen,ctx,day){
       if(!c.structural) continue;
       total++;
       let cur=T.AIR; try{ cur=getTile(c.x,c.y); }catch(e){ cur=T.AIR; }
-      if(cur!==T.AIR && cur!==T.WATER && cur!==T.LAVA) intact++;
+      if(cur===c.t) intact++;
     }
     const integrity=total>0 ? intact/total : 1;
     if(!state.abandoned){
@@ -944,14 +1152,15 @@ function retireCompleted(day,ctx){
     if(!summary || summary.status!=='completed') return;
     const candidate=createdCandidates.get(id);
     const state=localStateFor(id);
+    if(!state) return;
     if(state.hidden) return;
     const seed=candidate && Number.isFinite(candidate.seed) ? candidate.seed : activeSeed;
     const cell=candidate && Number.isFinite(candidate.cell) ? candidate.cell : state.cell || 0;
-    state.completedJobs+=1;
-    state.completedDay=day;
+    state.completedJobs=Math.min(STATE_COUNTER_CAP,state.completedJobs+1);
+    state.completedDay=Math.min(STATE_DAY_CAP,day);
     state.lastRole=summary.role || summary.name || '';
-    state.cycle+=1;
-    state.availableDay=day+returnDelayDays(seed,cell,state.cycle);
+    state.cycle=Math.min(STATE_COUNTER_CAP,state.cycle+1);
+    state.availableDay=Math.min(STATE_DAY_CAP,day+returnDelayDays(seed,cell,state.cycle));
     state.hidden=true;
     try{ npcRegistry.unregister(id); }catch(e){}
     createdIds.delete(id);
@@ -960,6 +1169,25 @@ function retireCompleted(day,ctx){
   });
   if(retired>0) markChanged(ctx);
   return retired;
+}
+function unloadFarGenerated(x){
+  if(!finite(x)) return 0;
+  let removed=0;
+  createdCandidates.forEach((candidate,id)=>{
+    if(candidate && finite(candidate.x) && Math.abs(candidate.x-x)<=ACTIVE_UNLOAD_RADIUS) return;
+    // Current generated jobs are atomic handoffs. Keep any future multi-stage
+    // observe/duel/choice resident alive so unloading cannot erase progress.
+    try{
+      const npc=npcRegistry.get(id);
+      const summary=npc && npc.summary ? npc.summary() : null;
+      if(summary && summary.status!=='available' && summary.status!=='ready') return;
+    }catch(e){ return; }
+    try{ npcRegistry.unregister(id); }catch(e){}
+    createdIds.delete(id);
+    createdCandidates.delete(id);
+    removed++;
+  });
+  return removed;
 }
 function ensureAround(x,getTile,worldGen,ctx){
   ensureSeed(worldGen);
@@ -974,11 +1202,17 @@ function ensureAround(x,getTile,worldGen,ctx){
     if(Math.abs(c.x-x)>ACTIVE_RADIUS) continue;
     if(!candidateAvailable(c,day)) continue;
     if(!npcRegistry.get(c.id)){
-      materialize(c,getTile,worldGen,ctx);
-      made++;
+      if(materialize(c,getTile,worldGen,ctx)) made++;
     }
   }
   return made;
+}
+function primeCandidatesAround(x,worldGen){
+  ensureSeed(worldGen);
+  if(!finite(x)) return;
+  const first=Math.floor((x-ACTIVE_RADIUS)/CELL_W);
+  const last=Math.floor((x+ACTIVE_RADIUS)/CELL_W);
+  for(let cell=first;cell<=last;cell++) baseCandidateForCell(cell,worldGen);
 }
 function findNext(x,dir,worldGen,maxCells){
   ensureSeed(worldGen);
@@ -1008,15 +1242,22 @@ function update(dt,player,getTile,setTile,ctx){
   scanT-=Math.max(0,Number(dt)||0);
   if(scanT>0) return;
   scanT=0.9;
-  ensureAround(player && player.x, getTile, worldGen, ctx);
+  unloadFarGenerated(player && player.x);
+  primeCandidatesAround(player && player.x,worldGen);
   maintainHouses(player, getTile, setTile, worldGen, ctx, day);
+  ensureAround(player && player.x, getTile, worldGen, ctx);
 }
-function draw(ctx,TILE,canDrawTile,getTile,worldGen){
+function draw(ctx,TILE,canDrawTile,getTile,worldGen,sx,sy,viewX,viewY){
   const day=currentDay();
+  const viewport=finite(sx)&&finite(viewX) ? {left:sx-16,right:sx+viewX+16} : null;
   candidateCache.forEach(base=>{
+    // No local state means no physical house and therefore no ambiance to draw.
+    // Avoid manufacturing state entries just because a cached cell was inspected.
+    if(!base || !localStates.has(base.id)) return;
+    if(viewport && (base.x<viewport.left || base.x>viewport.right)) return;
     const candidate=buildCandidate(base);
     if(!candidate) return;
-    const life=localStateFor(candidate.id);
+    const life=candidate.state;
     if(life.hidden && life.availableDay<=day && !life.abandoned) life.hidden=false;
     drawHomeAmbiance(ctx,TILE,candidate,life,canDrawTile,getTile,worldGen);
   });
@@ -1030,28 +1271,39 @@ function reset(){
 }
 function snapshot(){
   const locals=[];
-  localStates.forEach((state,id)=>{
-    if(!state.hidden && !state.completedJobs && !state.cycle && !state.houseBuilt && !state.abandoned) return;
-    locals.push(Object.assign({id},cleanLocalState(state)));
-  });
-  return {v:2, seed:activeSeed, ids:Array.from(createdIds), locals};
+  for(const [id,state] of localStates){
+    if(locals.length>=LOCAL_STATE_SAVE_CAP) break;
+    if(!state.hidden && !state.completedJobs && !state.cycle && !state.houseBuilt && !state.abandoned) continue;
+    const cleanId=cleanLocalId(id);
+    if(cleanId) locals.push(Object.assign({id:cleanId},cleanLocalState(state)));
+  }
+  return {v:2, seed:activeSeed, ids:Array.from(createdIds).slice(0,LOCAL_STATE_SAVE_CAP), locals};
 }
 function restore(data){
   localStates.clear();
+  const restoredSeed=data && Number.isFinite(data.seed) ? data.seed|0 : activeSeed;
   if(data && Array.isArray(data.locals)){
-    data.locals.forEach(entry=>{
-      if(!entry || !entry.id) return;
-      localStates.set(String(entry.id),cleanLocalState(entry));
-    });
+    const count=Math.min(data.locals.length,LOCAL_STATE_RESTORE_SCAN_CAP);
+    for(let i=0;i<count;i++){
+      if(localStates.size>=LOCAL_STATE_SAVE_CAP) break;
+      const entry=data.locals[i];
+      if(!entry || typeof entry!=='object') continue;
+      const id=cleanLocalId(entry.id,restoredSeed);
+      if(!id) continue;
+      localStates.set(id,cleanLocalState(entry));
+    }
   }
-  activeSeed=data && Number.isFinite(data.seed) ? data.seed|0 : activeSeed;
+  activeSeed=restoredSeed;
   scanT=0;
   return true;
 }
 function debug(){
   const locals=[];
-  localStates.forEach((state,id)=>locals.push(Object.assign({id},cleanLocalState(state))));
-  return {activeSeed, created:Array.from(createdIds), locals, cellW:CELL_W, radius:ACTIVE_RADIUS, returnDays:{min:RETURN_DAYS_MIN,max:RETURN_DAYS_MAX}, jobs:jobCatalogStats()};
+  for(const [id,state] of localStates){
+    if(locals.length>=LOCAL_STATE_SAVE_CAP) break;
+    locals.push(Object.assign({id},cleanLocalState(state)));
+  }
+  return {activeSeed, created:Array.from(createdIds), locals, cacheSize:candidateCache.size, cellW:CELL_W, radius:ACTIVE_RADIUS, returnDays:{min:RETURN_DAYS_MIN,max:RETURN_DAYS_MAX}, limits:{candidateCache:CANDIDATE_CACHE_CAP,localStates:LOCAL_STATE_SAVE_CAP,activeUnloadRadius:ACTIVE_UNLOAD_RADIUS}, jobs:jobCatalogStats()};
 }
 
 const generatedNpcs={update, draw, reset, snapshot, restore, ensureAround, findNext, _debug:debug, _candidateForCell:candidateForCell, _jobCatalogStats:jobCatalogStats, _houseCells:houseCells, _houseLayout:houseLayout, _houseIntegrity:houseIntegrity};

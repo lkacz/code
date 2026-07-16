@@ -43,8 +43,8 @@ import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as g
     {id:'steel',    label:'Stal ×3',                   icon:'⚙️', cost:{iridium:1}, give:{steel:3}},
     {id:'obsidian', label:'Obsydian ×2',               icon:'🟣', cost:{iridium:1}, give:{obsidian:2}},
     {id:'heal',     label:'Eliksir życia (+40 HP)',    icon:'🧪', cost:{diamond:1}, effect:'heal'},
-    {id:'speed',    label:'Mikstura szybkości (60 s)', icon:'💨', cost:{diamond:1}, effect:'speed'},
-    {id:'strength', label:'Mikstura siły (60 s)',      icon:'💪', cost:{iridium:1}, effect:'strength'}
+    {id:'speed',    label:'Mikstura szybkości (60 s, maks. ×3)', icon:'💨', cost:{diamond:1}, effect:'speed'},
+    {id:'strength', label:'Mikstura siły (60 s, maks. ×3)',      icon:'💪', cost:{iridium:1}, effect:'strength'}
   ];
   const EPIC_CHEST = {id:'chest', label:'Skrzynia handlarza (epicka)', icon:'🎁', cost:{iridium:2}, effect:'epicChest'};
   // Buy-back rates (trader pays diamonds). Per-unit value must stay below the
@@ -307,8 +307,8 @@ import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as g
       const addBuff = (ctx && ctx.addBuff) || (MM.progress && MM.progress.addBuff);
       if(addBuff){
         try{
-          if(offer.effect==='speed') addBuff({name:'Szybkość', icon:'💨', dur:60, stats:{moveSpeedMult:1.3, jumpPowerMult:1.15}});
-          else addBuff({name:'Siła', icon:'💪', dur:60, stats:{attackDamage:5}});
+          if(offer.effect==='speed') addBuff({stackKey:'potion_speed',name:'Szybkość', icon:'💨', dur:60, stats:{moveSpeedMult:1.3, jumpPowerMult:1.15}});
+          else addBuff({stackKey:'potion_strength',name:'Siła', icon:'💪', dur:60, stats:{attackDamage:5}});
         }catch(e){}
       }
     }

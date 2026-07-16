@@ -19,9 +19,15 @@ assert.equal(INFO[T.GOLD_ORE].drop, 'gold', 'gold ore mines into the gold resour
 assert.equal(INFO[T.GOLD_ORE].ore, true, 'gold ore is marked as an ore');
 assert.equal(resource('gold')?.tile, 'GOLD_ORE', 'gold is registered as a placeable mined resource');
 assert.equal(resource('gold')?.color, '#f2b93b', 'gold uses a bright readable inventory color');
+assert.equal(INFO[T.SILVER_ORE].drop, 'silverOre', 'silver ore mines into the raw silver resource');
+assert.equal(INFO[T.SILVER_ORE].ore, true, 'silver ore is marked as an ore');
+assert.equal(resource('silverOre')?.tile, 'SILVER_ORE', 'silver ore is registered as a placeable mined resource');
+assert.equal(resource('silver')?.tile, 'SILVER_INGOT', 'smelted silver is registered as an ingot resource');
 assert.equal(typeof WG.goldVeinAt, 'function', 'legacy worldgen exposes gold vein placement');
+assert.equal(typeof WG.silverVeinAt, 'function', 'legacy worldgen exposes silver vein placement');
 assert.equal(typeof worldLayers.deepTile, 'function', 'deep worldgen exposes shared deep tiles');
 assert.equal(typeof worldLayers.deepGoldVeinAt, 'function', 'deep worldgen exposes short gold vein placement');
+assert.equal(typeof worldLayers.deepSilverVeinAt, 'function', 'deep worldgen exposes short silver vein placement');
 
 function componentStats(set,bounds){
   const seen = new Set();
@@ -75,22 +81,33 @@ function scanGold(seed){
   const deepSet = new Set();
   const rawLegacySet = new Set();
   const rawDeepSet = new Set();
+  let rawLegacySilver=0, rawDeepSilver=0, legacySilver=0, deepSilver=0, firstDeepSilver=null;
   let legacyDiamond = 0, deepDiamond = 0, firstDeep = null;
   const x0 = -384, x1 = 384;
   const rawX0 = x0-24, rawX1 = x1+24;
   for(let x=rawX0; x<rawX1; x++){
-    for(let y=45; y<WORLD_H-8; y++) if(WG.goldVeinAt(x,y,false)) rawLegacySet.add(x+','+y);
-    for(let y=WORLD_H; y<WORLD_MAX_Y-8; y++) if(worldLayers.deepGoldVeinAt(WG,x,y)) rawDeepSet.add(x+','+y);
+    for(let y=45; y<WORLD_H-8; y++){
+      if(WG.goldVeinAt(x,y,false)) rawLegacySet.add(x+','+y);
+      if(WG.silverVeinAt(x,y,false)) rawLegacySilver++;
+    }
+    for(let y=WORLD_H; y<WORLD_MAX_Y-8; y++){
+      if(worldLayers.deepGoldVeinAt(WG,x,y)) rawDeepSet.add(x+','+y);
+      if(worldLayers.deepSilverVeinAt(WG,x,y)) rawDeepSilver++;
+    }
   }
   for(let x=x0; x<x1; x++){
     for(let y=45; y<WORLD_H-8; y++){
       const t = world.getTile(x,y);
-      if(t === T.GOLD_ORE) legacySet.add(x+','+y);
+      if(t === T.SILVER_ORE) legacySilver++;
+      else if(t === T.GOLD_ORE) legacySet.add(x+','+y);
       else if(t === T.DIAMOND) legacyDiamond++;
     }
     for(let y=WORLD_H; y<WORLD_MAX_Y-8; y++){
       const t = world.getTile(x,y);
-      if(t === T.GOLD_ORE){
+      if(t === T.SILVER_ORE){
+        deepSilver++;
+        if(!firstDeepSilver) firstDeepSilver={x,y};
+      } else if(t === T.GOLD_ORE){
         deepSet.add(x+','+y);
         if(!firstDeep) firstDeep = {x,y};
       } else if(t === T.DIAMOND) deepDiamond++;
@@ -107,7 +124,12 @@ function scanGold(seed){
     deep,
     legacyDiamond,
     deepDiamond,
-    firstDeep
+    firstDeep,
+    firstDeepSilver,
+    rawLegacySilver,
+    rawDeepSilver,
+    legacySilver,
+    deepSilver
   };
 }
 
@@ -130,10 +152,18 @@ for(const seed of [20260616, 20260701, 12345, 987654321, 42]){
   assert.equal(r.deep.nonLine, 0, 'seed '+seed+' deep world gold remains line-like');
   assert.ok(r.deep.total > r.deepDiamond * 4, 'seed '+seed+' deep gold is richer than deep diamonds');
   assert.ok(r.firstDeep, 'seed '+seed+' exposes at least one deep gold coordinate for generator parity');
+  assert.ok(r.rawLegacySilver>=300 && r.legacySilver>=180,'seed '+seed+' exposes mineable mid-crust silver seams');
+  assert.ok(r.rawDeepSilver>=360 && r.deepSilver>=220,'seed '+seed+' exposes mineable deep silver seams');
+  assert.ok(r.firstDeepSilver,'seed '+seed+' exposes at least one deep silver coordinate for generator parity');
   assert.equal(
     worldLayers.deepTile(WG, r.firstDeep.x, r.firstDeep.y),
     world.getTile(r.firstDeep.x, r.firstDeep.y),
     'seed '+seed+' deep gold is produced by the shared deep layer generator'
+  );
+  assert.equal(
+    worldLayers.deepTile(WG,r.firstDeepSilver.x,r.firstDeepSilver.y),
+    world.getTile(r.firstDeepSilver.x,r.firstDeepSilver.y),
+    'seed '+seed+' deep silver is produced by the shared deep layer generator'
   );
 }
 
@@ -143,6 +173,7 @@ world.clear();
 for(let x=-384; x<384; x++){
   for(let y=WORLD_MAX_Y-12; y<WORLD_MAX_Y; y++){
     assert.notEqual(world.getTile(x,y), T.GOLD_ORE, 'absolute bedrock floor contains no gold ore');
+    assert.notEqual(world.getTile(x,y), T.SILVER_ORE, 'absolute bedrock floor contains no silver ore');
   }
 }
 

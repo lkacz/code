@@ -634,6 +634,33 @@ WG.goldVeinAt = function(x,y,nearCave){
 	}
 	return false;
 };
+// Silver sits between coal and gold in progression: broader, cooler veins are
+// visible from the middle crust onward, but still form deliberate short seams
+// instead of noisy isolated pixels.
+WG.silverVeinChance = function(y, nearCave){
+	const d=clamp((y-40)/(WORLD_H-50),0,1);
+	const mid=clamp(1-Math.abs(d-0.48)*1.45,0,1);
+	return Math.min(0.46,(0.16+mid*0.20+d*0.035)*(nearCave?1.12:1));
+};
+WG.silverVeinAt = function(x,y,nearCave){
+	x=Math.floor(Number(x)||0);
+	y=Math.floor(Number(y)||0);
+	const cellW=15, cellH=8;
+	const gx0=Math.floor((x-6)/cellW), gx1=Math.floor((x+6)/cellW);
+	const gy0=Math.floor((y-1)/cellH), gy1=Math.floor((y+1)/cellH);
+	for(let gy=gy0;gy<=gy1;gy++){
+		for(let gx=gx0;gx<=gx1;gx++){
+			const ay=gy*cellH+2+Math.floor(WG.randSeed(gx*37.11+gy*83.29+1915)*Math.max(1,cellH-4));
+			const chance=WG.silverVeinChance(ay,!!nearCave);
+			if(WG.randSeed(gx*109.41+gy*251.17+1914)>=chance) continue;
+			const len=3+Math.floor(WG.randSeed(gx*47.61+gy*71.03+1916)*4);
+			const span=Math.max(1,cellW-len-3);
+			const ax=gx*cellW+2+Math.floor(WG.randSeed(gx*57.23+gy*101.09+1917)*span);
+			if(y===ay && x>=ax && x<ax+len) return true;
+		}
+	}
+	return false;
+};
 // Diamond odds now belong to the lowest legacy crust: most reachable diamonds
 // should be a bedrock-level expedition, not a routine mid-depth seam. world.js
 // still boosts exposed cave-wall rolls, but the base chance stays deliberately

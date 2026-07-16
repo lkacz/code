@@ -80,14 +80,20 @@ assert.equal(T.LADDER,68,'ladder tile id is appended for save stability');
 assert.equal(T.SPRING_PLATFORM,69,'spring platform tile id is appended for save stability');
 assert.equal(T.CHIMNEY,76,'chimney tile id is appended for save stability');
 assert.equal(T.RESPAWN_TOTEM,77,'respawn totem tile id is appended for save stability');
+assert.equal(T.SILVER_ORE,129,'silver ore uses an append-only save-safe tile id');
+assert.equal(T.SILVER_INGOT,130,'silver ingot uses an append-only save-safe tile id');
+assert.equal(T.SILVER_WIRE,131,'silver wire uses an append-only save-safe tile id');
 assert.equal(INFO[T.TRANSISTOR].drop,'transistor','placed transistors can be recovered');
 assert.equal(INFO[T.SOLAR_PANEL].powerSource,true,'solar panels are power sources');
 assert.equal(INFO[T.SOLAR_BATTERY].energyCapacity,120,'storage solar panel advertises its battery capacity');
-assert.equal(solar._debug.FULL_LIGHT_THRESHOLD,0.9,'solar panels require high full daylight before producing energy');
+assert.equal(solar._debug.SUN_CURVE_EXPONENT,2.2,'solar output uses a deliberately steep all-day curve');
+assert.ok(solar._debug.PANEL_BUFFER_DECAY>=1,'basic panels only smooth short shadows instead of replacing storage');
 assert.ok(solar._debug.PANEL_RATE<0.25,'basic solar panel production is intentionally weak');
 assert.ok(solar._debug.STORAGE_RATE<0.35,'storage solar panel production is intentionally weak');
-assert.ok(solar._debug.fullLightSunAt(0.4,16/24)>0.9,'solar generation follows the longer summer daylight arc');
+assert.ok(((solar._debug.SCAN_RX*2+1)*(solar._debug.SCAN_RY*2+1))/solar._debug.SCAN_INTERVAL<4000,'fallback discovery stays below four thousand tile reads per second');
+assert.ok(solar._debug.fullLightSunAt(0.4,16/24)>0.85,'solar generation follows the longer summer daylight arc');
 assert.equal(solar._debug.fullLightSunAt(0.4,8/24),0,'the same cycle moment is night on the shorter winter daylight arc');
+assert.ok(solar._debug.fullLightSunAt(0.03,0.5)>0,'dawn provides a small but non-zero solar trickle');
 
 {
   reset();
@@ -95,6 +101,59 @@ assert.equal(solar._debug.fullLightSunAt(0.4,8/24),0,'the same cycle moment is n
   for(let i=0;i<40;i++) solar.update(0.25,{x:5,y:10},getTile);
   const stored=solar.metrics().storedEnergy;
   assert.ok(stored>0.5 && stored<4,'clear full-light noon charges a single storage panel slowly');
+  assert.equal(solar._debug.isGeneratingState(solar._debug.cells.get('5,10')),true,'sunlit solar panel lights its live-generation status');
+}
+
+{
+  reset();
+  setTile(0,10,T.SOLAR_BATTERY);
+  setTile(200,10,T.SOLAR_BATTERY);
+  for(let i=0;i<400;i++) solar.update(0.05,{x:0,y:10},getTile);
+  const nearby=solar.energyAt(0,10,getTile);
+  const remote=solar.energyAt(200,10,getTile);
+  assert.ok(remote>5,'a registered remote solar farm keeps producing while the player is away');
+  assert.ok(Math.abs(nearby-remote)<=solar._debug.STORAGE_RATE*solar._debug.REMOTE_UPDATE_INTERVAL+0.01,
+    'one-second remote solar ticks stay equivalent to watched production within one bounded tick');
+}
+
+{
+  reset();
+  setTile(5,10,T.SOLAR_BATTERY);
+  let reads=0;
+  const countingGetTile=(x,y)=>{ reads++; return getTile(x,y); };
+  solar.update(0.1,{x:5,y:10},countingGetTile);
+  const afterColdScan=reads;
+  solar.update(0.1,{x:5,y:10},countingGetTile);
+  const warmReads=reads-afterColdScan;
+  assert.ok(warmReads<10,'stable solar cells reuse cached sky exposure instead of rescanning the full world column every frame');
+  setTile(5,9,T.STONE);
+  const beforeRoofRefresh=reads;
+  solar.update(0.1,{x:5,y:10},countingGetTile);
+  assert.ok(reads-beforeRoofRefresh>warmReads,'a tile edit in the panel column invalidates cached sky exposure');
+  assert.equal(solar.metrics().currentPower,0,'a newly built roof immediately stops cached solar production');
+}
+
+{
+  reset();
+  const clearance=solar._debug.LOCAL_SKY_CLEARANCE;
+  setTile(20,10,T.SOLAR_BATTERY);
+  setTile(21,10,T.SOLAR_BATTERY);
+  // A high floating island belongs to another sky section and must not create
+  // arbitrary one-column shadows on otherwise adjacent surface panels.
+  setTile(20,10-clearance-8,T.STONE);
+  assert.equal(solar.skyExposed(20,10,getTile),true,'a remote sky island does not permanently shadow a surface panel');
+  assert.equal(solar.skyExposed(21,10,getTile),true,'adjacent surface panels agree under the same locally clear sky');
+  setTile(20,9,T.STONE);
+  assert.equal(solar.skyExposed(20,10,getTile),false,'a real local roof still blocks the panel directly below it');
+}
+
+{
+  reset();
+  setTile(30,95,T.SOLAR_BATTERY);
+  setTile(30,80,T.STONE);
+  assert.equal(solar.skyExposed(30,95,getTile),false,'an underground panel remains blocked by the terrain surface');
+  setTile(30,80,T.AIR);
+  assert.equal(solar.skyExposed(30,95,getTile),true,'an underground panel works when a shaft is genuinely open to the surface');
 }
 
 {
@@ -118,10 +177,15 @@ assert.equal(solar._debug.fullLightSunAt(0.4,8/24),0,'the same cycle moment is n
 {
   reset();
   setTile(5,10,T.SOLAR_BATTERY);
-  MM.clouds={metrics:()=>({clouds:1,cloudMass:0.1,drops:0,storm:{active:false,intensity:0}})};
+  const local=clouds.addCloud(5,-5,18);
+  assert.ok(local,'test cloud can be placed over the solar panel');
+  const localTransmission=clouds.solarTransmissionAt(5);
+  assert.ok(localTransmission>0.08 && localTransmission<0.75,'a local cloud strongly but partially shades solar output');
+  assert.ok(clouds.solarTransmissionAt(180)>0.99,'a distant cloud does not shade an unrelated solar outpost');
   for(let i=0;i<120;i++) solar.update(0.25,{x:5,y:10},getTile);
-  assert.equal(solar.metrics().storedEnergy,0,'any visible cloud cover blocks solar production completely');
-  assert.equal(solar.metrics().sun,0,'clouded sky reports zero solar sun');
+  assert.ok(solar.metrics().storedEnergy>1 && solar.metrics().storedEnergy<7,'local clouds reduce rather than globally disable solar production');
+  assert.equal(solar.metrics().sun,1,'solar metrics keep reporting the available noon sun independently of local cloud cover');
+  assert.equal(solar._debug.isGeneratingState(solar._debug.cells.get('5,10')),true,'a shaded panel shows its reduced live generation');
 }
 
 {
@@ -129,10 +193,12 @@ assert.equal(solar._debug.fullLightSunAt(0.4,8/24),0,'the same cycle moment is n
   setTile(5,10,T.SOLAR_BATTERY);
   MM.background={getCycleInfo:()=>({isDay:true,tDay:0.18})};
   for(let i=0;i<120;i++) solar.update(0.25,{x:5,y:10},getTile);
-  assert.equal(solar.metrics().storedEnergy,0,'partial morning light is not full enough for solar production');
+  const morningEnergy=solar.metrics().storedEnergy;
+  assert.ok(morningEnergy>1 && morningEnergy<3,'partial morning light produces a deliberately small solar trickle');
   MM.background={getCycleInfo:()=>({isDay:false,tDay:0.5})};
   for(let i=0;i<120;i++) solar.update(0.25,{x:5,y:10},getTile);
-  assert.equal(solar.metrics().storedEnergy,0,'night never produces solar energy');
+  assert.equal(solar.metrics().storedEnergy,morningEnergy,'night never produces solar energy and storage panels retain their charge');
+  assert.equal(solar.metrics().currentPower,0,'night reports no live solar generation');
 }
 
 {
@@ -196,6 +262,14 @@ assert.equal(solar._debug.fullLightSunAt(0.4,8/24),0,'the same cycle moment is n
   const done=reactions.apply('heat',55,10,getTile,setTile);
   assert.ok(done && done.recipe==='heat_clay_to_brick','heat fires clay into brick');
   assert.equal(getTile(55,10),T.BRICK,'clay heat recipe produces brick terrain');
+}
+
+{
+  reset();
+  setTile(57,10,T.SILVER_ORE);
+  const changed=fire.heatAround(57,10,getTile,setTile,{includeCenter:true});
+  assert.ok(changed>0,'direct fire heat smelts silver ore');
+  assert.equal(getTile(57,10),T.SILVER_INGOT,'heated silver ore becomes a recoverable silver ingot');
 }
 
 // The registry is open-ended: future water/electric reactions can be registered
@@ -279,9 +353,44 @@ assert.equal(solar._debug.fullLightSunAt(0.4,8/24),0,'the same cycle moment is n
   setTile(0,10,T.SOLAR_BATTERY);
   solar.restore({v:1,list:[{x:0,y:10,energy:20,power:0}]},getTile);
   assert.equal(solar.metrics().currentPower,0,'restored idle solar battery starts with no active production');
+  assert.equal(solar._debug.isGeneratingState(solar._debug.cells.get('0,10')),false,'charged but idle solar battery does not claim to be generating');
   const drained=solar.drainAt(0,10,4,getTile);
   assert.ok(drained && drained.amount>0,'stored solar energy can be drained from an idle battery');
   assert.equal(solar.metrics().currentPower,0,'draining a solar battery does not masquerade as fresh solar output');
+}
+
+{
+  reset();
+  setTile(9,10,T.SOLAR_BATTERY);
+  const emptySnap=solar.snapshot();
+  assert.ok(emptySnap.list.some(row=>row.x===9 && row.y===10 && row.energy===0),'empty remote solar panels remain registered in saves');
+  solar.reset();
+  solar.restore(emptySnap,getTile);
+  assert.equal(solar.metrics().cells,1,'an empty remote panel is restored without requiring a player revisit');
+  assert.equal(solar.metrics().storedEnergy,0,'restoring an empty panel does not create energy');
+}
+
+{
+  reset();
+  setTile(0,10,T.SOLAR_PANEL);
+  setTile(2,10,T.SOLAR_BATTERY);
+  solar._debug.debugChargeAt(0,10,18,getTile);
+  MM.background={getCycleInfo:()=>({cycleT:0.75,dayFrac:0.5,isDay:false,tDay:0.5})};
+  solar.catchUp(600,{x:1,y:10},getTile);
+  assert.equal(solar.energyAt(0,10,getTile),0,'a basic panel loses its small buffer during the night at the end of long catch-up');
+  const cycleEnergy=solar.energyAt(2,10,getTile);
+  assert.ok(cycleEnergy>35 && cycleEnergy<45,'one clear equinox cycle yields useful but deliberately limited stored solar energy');
+}
+
+{
+  reset();
+  setTile(0,10,T.SOLAR_BATTERY);
+  solar.restore({v:1,list:[{x:0,y:10,energy:20,power:Number.POSITIVE_INFINITY}]},getTile);
+  assert.equal(solar.metrics().currentPower,solar._debug.STORAGE_RATE,'restored non-finite production is clamped to the physical panel rate');
+  const oversized=new Array(solar._debug.CELL_CAP+1).fill(null);
+  oversized[solar._debug.CELL_CAP]={x:0,y:10,energy:20,power:0};
+  solar.restore({v:1,list:oversized},getTile);
+  assert.equal(solar.metrics().cells,0,'solar restore bounds scanned rows even when every preceding save entry is invalid');
 }
 
 {

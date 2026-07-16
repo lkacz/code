@@ -65,7 +65,7 @@ assert.match(mainSource, /function drawDeathTravelFx\(\)[\s\S]*deathTravelLightn
 assert.ok(!/rgba\(100,240,255/.test(mainSource), 'death transit no longer draws the unnecessary thick blue route line');
 assert.match(mainSource, /spawnEnergyAbsorb\([^\n]+quick:true,hue:'gold'\}/, 'death transit requests quick warm energy particles');
 assert.match(mainSource, /function drawCape\(\)\{ if\(deathTravelFx\) return; CAPE\.draw\(ctx,TILE\); \}/, 'cape is hidden while the hero is transformed into energy');
-assert.match(mainSource, /function drawPlayer\(\)\{ if\(drawDeathTravelFx\(\)\) return;/, 'player body renderer is replaced by the death energy renderer during transit');
+assert.match(mainSource, /function drawPlayer\(opts\)\{ if\(drawDeathTravelFx\(\)\) return;/, 'player body renderer is replaced by the death energy renderer during transit even with mirror-view options');
 assert.match(mainSource, /if\(!deathTravelFx && WEAPONS && WEAPONS\.drawHeld\) WEAPONS\.drawHeld\(ctx,TILE,player\);/, 'held weapon is hidden during death transit');
 assert.match(mainSource, /function drawBackground\(\)\{[\s\S]*const focus=deathTravelFx \? deathTravelCurrentPoint\(deathTravelFx\) : player;[\s\S]*BACKGROUND\.draw\(ctx, W, H, focus\.x, TILE, WORLDGEN, zoom\);/, 'background biome and parallax anchor follow the traveling energy during death transit');
 assert.match(mainSource, /function cameraCenterForPlayer\(\)\{[\s\S]*deathTravelFx \? deathTravelCurrentPoint\(deathTravelFx\) : player/, 'camera follows the traveling energy while death transit is active');

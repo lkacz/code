@@ -28,11 +28,14 @@ globalThis.MM.progress = { guardianHearts(){ return Object.assign({},hearts); } 
 let mentorPhase = 'water';
 globalThis.MM.npcs = { mentor: {
   summary(){
+    const tree=mentorPhase==='tree_watch_short' || mentorPhase==='tree_watch_long';
+    const treeSeconds=mentorPhase==='tree_watch_short' ? 10 : 30;
     return {
       x: 10, y: 30,
       phase: mentorPhase,
-      status: mentorPhase==='done' ? 'completed' : 'available',
-      required: mentorPhase==='water' ? {item:'water', amount:1, have:0} : null
+      status: mentorPhase==='done' ? 'completed' : (tree ? 'observe' : 'available'),
+      required: mentorPhase==='water' ? {item:'water', amount:1, have:0} : (tree ? {item:'observe',amount:treeSeconds,have:2} : null),
+      observe:tree ? {mode:'tree_top',seconds:treeSeconds,progress:2,active:true} : null
     };
   }
 }};
@@ -81,6 +84,20 @@ assert.match(mentorTask.detail, /\(0\/1\)/, 'handoff goals show live progress');
 assert.equal(mentorTask.target.x, 10, 'the goal points at the mentor');
 assert.equal(activeStoryTasks().length, 1, 'one story goal at a time during the tutorial');
 assert.equal(messages.length, 0, 'no horizon beats while the mentor still teaches');
+
+mentorPhase = 'tree_watch_short';
+tick(1);
+mentorTask = taskById('story:mentor');
+assert.match(mentorTask.title, /Dowolne drzewo \(10 s\)/, 'the short observation explicitly allows any tree');
+assert.equal(mentorTask.target, undefined, 'the short tree observation clears the mentor location inherited from the prior step');
+assert.equal(mentorTask.pointer, false, 'the short tree observation does not claim to have a map target');
+
+mentorPhase = 'tree_watch_long';
+tick(1);
+mentorTask = taskById('story:mentor');
+assert.match(mentorTask.title, /Dowolne drzewo \(30 s\)/, 'the long observation also allows any tree');
+assert.equal(mentorTask.target, undefined, 'the long tree observation remains location-free');
+assert.equal(mentorTask.pointer, false, 'the long tree observation has no map pointer');
 
 mentorPhase = 'duel';
 tick(1);

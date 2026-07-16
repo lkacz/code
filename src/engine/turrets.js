@@ -14,6 +14,9 @@ const turrets = (function(){
   const PUFF_CAP = 120;
   // Discovery-only cadence (placements register instantly via onTileChanged).
   const PLAYER_SCAN_INTERVAL = 2.5;
+  const ACTIVE_RX = 64;
+  const ACTIVE_RY = 42;
+  const REMOTE_CHARGE_INTERVAL = 1;
   const MOUNTED_SCAN_INTERVAL = 0.2;
   const VISIBLE_SCAN_INTERVAL_MS = 220;
   const WATER_TURRET_TANK = 24;
@@ -54,19 +57,23 @@ const turrets = (function(){
   }
   function getElectricNetworkTile(x,y,getTile){
     x=Math.floor(x); y=Math.floor(y);
+    if(worldHasInfrastructure(x,y,T.SILVER_WIRE)) return T.SILVER_WIRE;
     if(worldHasInfrastructure(x,y,T.COPPER_WIRE)) return T.COPPER_WIRE;
     try{
       if(MM.world && typeof MM.world.getNetworkTile==='function'){
         const t=MM.world.getNetworkTile(x,y);
-        if(t===T.COPPER_WIRE) return T.COPPER_WIRE;
+        if(t===T.SILVER_WIRE || t===T.COPPER_WIRE) return t;
       }
     }catch(e){}
     return getSafe(getTile,x,y,T.AIR);
   }
-  function clamp(n,a,b){ return Math.max(a,Math.min(b,n)); }
+  function clamp(n,a,b){
+    const value=Number(n);
+    return Math.max(a,Math.min(b,Number.isFinite(value)?value:0));
+  }
   function isTurretTile(t){ return !!KIND_BY_TILE[t]; }
   function kindForTile(t){ return KIND_BY_TILE[t] || null; }
-  function clampEnergy(n){ return clamp(Number(n)||0,0,TURRET_CAPACITY); }
+  function clampEnergy(n){ return clamp(n,0,TURRET_CAPACITY); }
   function cfgFor(kind){ return CFG[kind] || CFG.standard; }
   function nowMs(){ return (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now(); }
   function waterCapacityFor(m){
@@ -74,7 +81,19 @@ const turrets = (function(){
     const info=INFO[T.WATER_TURRET] || {};
     return Math.max(1,Number(info.waterCapacity)||WATER_TURRET_TANK);
   }
-  function clampWater(n,m){ return clamp(Number(n)||0,0,waterCapacityFor(m)); }
+  function clampWater(n,m){ return clamp(n,0,waterCapacityFor(m)); }
+
+  function makeRoomForMachine(){
+    if(machines.size<MACHINE_CAP) return true;
+    for(const [k,m] of machines){
+      if(!m){ machines.delete(k); return true; }
+      if((m.energy||0)>0.001 || (m.pulse||0)>0.001 || (m.activeT||0)>0.001 || m.target) continue;
+      if(m.kind==='water' && Math.abs(clampWater(m.water,m)-WATER_TURRET_START_WATER)>0.001) continue;
+      machines.delete(k);
+      return true;
+    }
+    return false;
+  }
 
   function ensureMachine(x,y,getTile){
     x=Math.floor(x); y=Math.floor(y);
@@ -85,7 +104,8 @@ const turrets = (function(){
     const k=key(x,y);
     let m=machines.get(k);
     if(!m){
-      m={x,y,kind,energy:0,cooldown:Math.random()*0.25,scanT:Math.random()*0.18,pulse:0,aim:0,target:null,lastSeen:0,activeT:0};
+      if(!makeRoomForMachine()) return null;
+      m={x,y,kind,energy:0,cooldown:Math.random()*0.25,scanT:Math.random()*0.18,pulse:0,aim:0,target:null,lastSeen:0,activeT:0,remoteChargeT:0};
       machines.set(k,m);
     }
     m.x=x; m.y=y; m.kind=kind;
@@ -99,6 +119,7 @@ const turrets = (function(){
     m.cooldown=Math.max(0,Number(m.cooldown)||0);
     m.scanT=Math.max(0,Number(m.scanT)||0);
     m.pulse=clamp(Number(m.pulse)||0,0,1);
+    m.remoteChargeT=clamp(Number(m.remoteChargeT)||0,0,REMOTE_CHARGE_INTERVAL*2);
     return m;
   }
 
@@ -498,13 +519,13 @@ const turrets = (function(){
   function fireAt(m,target,getTile){
     const cfg=cfgFor(m.kind);
     if(!target) return false;
+    const sx=m.x+0.5, sy=m.y+0.5;
+    const coords=targetCoords(target);
+    if(!coords) return false;
     if(m.kind==='water'){
       if(!hasWaterForShot(m)) return false;
       m.water=clampWater((m.water||0)-WATER_TURRET_WATER_PER_SHOT,m);
     }
-    const sx=m.x+0.5, sy=m.y+0.5;
-    const coords=targetCoords(target);
-    if(!coords) return false;
     const txw=coords.x, tyw=coords.y;
     const dx0=txw-sx, dy0=tyw-sy;
     const dist=Math.hypot(dx0,dy0)||1;
@@ -601,7 +622,14 @@ const turrets = (function(){
     const charger=MM.teleporters;
     if(!charger || !charger.chargeBatteryAt) return 0;
     const netTile=(x,y)=>getElectricNetworkTile(x,y,getTile);
-    const gained=charger.chargeBatteryAt(m.x,m.y,m,dt,netTile,dynamo,{capacity:TURRET_CAPACITY,rate:CHARGE_RATE});
+    const before=clampEnergy(m.energy);
+    m.energy=before;
+    try{
+      charger.chargeBatteryAt(m.x,m.y,m,dt,netTile,dynamo,{capacity:TURRET_CAPACITY,rate:CHARGE_RATE});
+    }catch(e){ m.energy=before; }
+    const raw=Number(m.energy);
+    m.energy=Number.isFinite(raw) && raw>=before ? clampEnergy(raw) : before;
+    const gained=Math.max(0,m.energy-before);
     if(gained>0) m.pulse=Math.max(m.pulse||0,0.55);
     return gained;
   }
@@ -609,7 +637,8 @@ const turrets = (function(){
     const m=ensureMachine(x,y,getTile || (MM.world && MM.world.getTile));
     if(!m || m.kind!=='water') return 0;
     const before=clampWater(m.water,m);
-    const add=Math.max(0,Number(amount)||0);
+    const raw=Number(amount);
+    const add=Number.isFinite(raw) ? Math.max(0,raw) : 0;
     m.water=clampWater(before+add,m);
     if(m.water>before) m.pulse=Math.max(m.pulse||0,0.35);
     return m.water-before;
@@ -633,8 +662,9 @@ const turrets = (function(){
       scanNearby(player,getTile);
     }
     const dynamo=opts && opts.dynamo;
-    const px=player && Number.isFinite(player.x) ? player.x : 0;
-    const py=player && Number.isFinite(player.y) ? player.y : 0;
+    const hasPlayer=!!(player && Number.isFinite(player.x) && Number.isFinite(player.y));
+    const px=hasPlayer ? player.x : 0;
+    const py=hasPlayer ? player.y : 0;
     for(const [k,m] of machines){
       if(!m || !isTurretTile(getSafe(getTile,m.x,m.y,T.AIR))){
         machines.delete(k);
@@ -645,7 +675,19 @@ const turrets = (function(){
       m.scanT=Math.max(0,(m.scanT||0)-dt);
       m.pulse=Math.max(0,(m.pulse||0)-dt*2.8);
       m.activeT=Math.max(0,(m.activeT||0)-dt);
-      chargeFromNetwork(m,dt,getTile,dynamo);
+      if(hasPlayer && (Math.abs(m.x-px)>ACTIVE_RX || Math.abs(m.y-py)>ACTIVE_RY)){
+        m.target=null;
+        m.scanT=0;
+        m.remoteChargeT=Math.min(REMOTE_CHARGE_INTERVAL*2,(m.remoteChargeT||0)+dt);
+        if(m.remoteChargeT>=REMOTE_CHARGE_INTERVAL){
+          chargeFromNetwork(m,m.remoteChargeT,getTile,dynamo);
+          m.remoteChargeT=0;
+        }
+        continue;
+      }
+      const chargeDt=dt+(m.remoteChargeT||0);
+      m.remoteChargeT=0;
+      chargeFromNetwork(m,chargeDt,getTile,dynamo);
       if(m.scanT<=0){
         m.scanT=cfg.scan+Math.random()*0.08;
         m.target=nearestHostileTarget(m,getTile);
@@ -700,6 +742,7 @@ const turrets = (function(){
       m.scanT=0;
       m.pulse=0;
       m.activeT=0;
+      m.remoteChargeT=0;
       chargeFromNetwork(m,simDt,getTile,dynamo);
       if(Math.abs((m.energy||0)-before)>0.0001) changed=true;
     }
@@ -828,7 +871,7 @@ const turrets = (function(){
 
   function snapshot(){
     const list=[...machines.values()]
-      .filter(m=>m && finiteTile(m.x,m.y) && ((m.energy||0)>0.001 || (m.kind==='water' && Math.abs(clampWater(m.water,m)-WATER_TURRET_START_WATER)>0.001)))
+      .filter(m=>m && finiteTile(m.x,m.y))
       .sort((a,b)=>(a.x-b.x)||(a.y-b.y))
       .slice(0,MACHINE_CAP)
       .map(m=>{
@@ -841,7 +884,7 @@ const turrets = (function(){
   function restore(data,getTile){
     reset();
     if(!data || !Array.isArray(data.list)) return;
-    for(const raw of data.list){
+    for(const raw of data.list.slice(0,MACHINE_CAP)){
       if(machines.size>=MACHINE_CAP) break;
       if(!raw || !finiteTile(raw.x,raw.y)) continue;
       const x=Math.floor(raw.x), y=Math.floor(raw.y);
@@ -875,14 +918,16 @@ const turrets = (function(){
     }
     return {machines:machines.size, active, charged, storedEnergy:+storedEnergy.toFixed(2), storedWater:+storedWater.toFixed(2), shots:totalShots, hits:totalHits, effects:shots.length+puffs.length, byKind};
   }
-  function debugChargeAt(x,y,amount,getTile){
+  function receiveElectricChargeAt(x,y,amount,getTile){
     const m=ensureMachine(x,y,getTile || (MM.world && MM.world.getTile));
     if(!m) return 0;
     const before=m.energy||0;
-    m.energy=clampEnergy(before+Math.max(0,Number(amount)||0));
+    const raw=Number(amount);
+    m.energy=clampEnergy(before+(Number.isFinite(raw)?Math.max(0,raw):0));
     m.pulse=1;
     return m.energy-before;
   }
+  function debugChargeAt(x,y,amount,getTile){ return receiveElectricChargeAt(x,y,amount,getTile); }
   function debugSetEnergyAt(x,y,amount,getTile){
     const m=ensureMachine(x,y,getTile || (MM.world && MM.world.getTile));
     if(!m) return false;
@@ -910,10 +955,11 @@ const turrets = (function(){
     restore,
     reset,
     metrics,
+    receiveElectricChargeAt,
     receiveWaterAt,
     waterNeedAt,
     fireMountedAt,
-    _debug:{machines,shots,puffs,TURRET_CAPACITY,CHARGE_RATE,CATCHUP_MAX_SECONDS,CFG,WATER_TURRET_TANK,WATER_TURRET_START_WATER,WATER_TURRET_WATER_PER_SHOT,debugChargeAt,debugSetEnergyAt,debugSetWaterAt,ensureMachine,nearestMobTarget,nearestBossTarget,nearestUfoTarget,nearestHostileTarget}
+    _debug:{machines,shots,puffs,TURRET_CAPACITY,CHARGE_RATE,CATCHUP_MAX_SECONDS,MACHINE_CAP,ACTIVE_RX,ACTIVE_RY,REMOTE_CHARGE_INTERVAL,CFG,WATER_TURRET_TANK,WATER_TURRET_START_WATER,WATER_TURRET_WATER_PER_SHOT,debugChargeAt,debugSetEnergyAt,debugSetWaterAt,ensureMachine,fireAt,chargeFromNetwork,nearestMobTarget,nearestBossTarget,nearestUfoTarget,nearestHostileTarget}
   };
   MM.turrets=api;
   return api;

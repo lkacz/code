@@ -186,13 +186,14 @@ import { damageBlastCreatures } from './explosion_damage.js';
     T.TRACK,T.STEEL,T.GLASS,T.WOOD,T.BRICK,T.OBSIDIAN,T.COAL,
     T.ELECTRONICS,T.TRANSISTOR,T.DYNAMO,T.DYNAMO_SLOT,
     T.SOLAR_PANEL,T.SOLAR_BATTERY,T.TURRET,T.FIRE_TURRET,T.WATER_TURRET,
-    T.SPRING_PLATFORM,T.COPPER_WIRE,T.WIRE,T.WATER_PIPE,T.TORCH,T.CHIMNEY,
+    T.SPRING_PLATFORM,T.COPPER_WIRE,T.SILVER_WIRE,T.WIRE,T.WATER_PIPE,T.TORCH,T.CHIMNEY,
     T.WOOD_DOOR,T.STONE_DOOR,T.STEEL_DOOR,
     T.WOOD_TRAPDOOR,T.STONE_TRAPDOOR,T.STEEL_TRAPDOOR,
     T.LADDER,T.BEDROCK_LADDER,T.CHAIR_WOOD,T.CHAIR_STONE,T.CHAIR_STEEL,
     T.STEAM_BOILER,T.STEAM_JET
   ]);
   function isMechComponentTile(t){ return MECH_COMPONENT_TILES.has(t); }
+  function isPowerCableTile(t){ return t===T.COPPER_WIRE || t===T.SILVER_WIRE; }
   // Infrastructure overlays (copper wire, ladders, pipes) ride on the world's
   // overlay layer; aboard a mech they become per-cell `infra` lists.
   function worldApi(){ return (root.MM && root.MM.world) || null; }
@@ -230,7 +231,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(t===T.SOLAR_BATTERY) return 11;
     if(t===T.SOLAR_PANEL) return 8;
     if(t===T.FIRE_TURRET || t===T.TURRET || t===T.WATER_TURRET) return 13;
-    if(t===T.COPPER_WIRE || t===T.WIRE) return 4;
+    if(isPowerCableTile(t) || t===T.WIRE) return 4;
     if(t===T.COAL || t===T.LAVA) return 6;
     return Math.max(2, Number(info.hp)||2);
   }
@@ -739,11 +740,12 @@ import { damageBlastCreatures } from './explosion_damage.js';
       if(!cellPowered(cell,energised)) continue;
       const state=turretStateFor(m,cell);
       const beforeEnergy=Math.max(0,Number(m.energy)||0);
+      const efficiency=Math.max(0.5,mechCircuitEfficiencyAt(m,cell)||1);
       const res=TURRETS.fireMountedAt(
         cell.t,
         state,
         dt,
-        {x:m.x+cell.dx,y:m.y+cell.dy,energy:beforeEnergy},
+        {x:m.x+cell.dx,y:m.y+cell.dy,energy:beforeEnergy*efficiency},
         target,
         getTile
       );
@@ -751,7 +753,11 @@ import { damageBlastCreatures } from './explosion_damage.js';
       // clamped to placed-turret capacity, while a mech battery bank can hold
       // far more — adopting the clamped total would wipe the excess reserve.
       const spent=(res && Number.isFinite(Number(res.spent))) ? Math.max(0,Number(res.spent)) : 0;
-      if(spent>0) m.energy=Math.max(0,beforeEnergy-spent);
+      if(spent>0){
+        const rawSpent=spent/efficiency;
+        m.energy=Math.max(0,beforeEnergy-rawSpent);
+        recordMechCopperLoss(m,rawSpent,spent,getTile);
+      }
       if(res && res.fired){
         firedAny=true;
         m.recoilT=0.18;
@@ -863,10 +869,14 @@ import { damageBlastCreatures } from './explosion_damage.js';
       const need=turretWaterCapacity()-cur;
       if(need<=0.001) continue;
       const energy=Math.max(0,Number(m.energy)||0);
-      const want=Math.min(need,WATER_INTAKE_RATE*dt,energy/WATER_INTAKE_ENERGY);
+      const efficiency=Math.max(0.5,mechCircuitEfficiencyAt(m,cell)||1);
+      const want=Math.min(need,WATER_INTAKE_RATE*dt,(energy*efficiency)/WATER_INTAKE_ENERGY);
       if(want<=0.0001) continue;
       state.water=cur+want;
-      m.energy=Math.max(0,energy-want*WATER_INTAKE_ENERGY);
+      const usefulCost=want*WATER_INTAKE_ENERGY;
+      const rawCost=usefulCost/efficiency;
+      m.energy=Math.max(0,energy-rawCost);
+      recordMechCopperLoss(m,rawCost,usefulCost,getTile);
       moved+=want;
     }
     if(moved>0) m.powerPulse=Math.min(1,(m.powerPulse||0)+0.1);
@@ -962,10 +972,23 @@ import { damageBlastCreatures } from './explosion_damage.js';
   }
   function isConductorCell(c){
     if(!c) return false;
-    if(c.wire===T.COPPER_WIRE) return true;
-    if(Array.isArray(c.infra) && c.infra.includes(T.COPPER_WIRE)) return true;
+    if(isPowerCableTile(c.wire)) return true;
+    if(Array.isArray(c.infra) && c.infra.some(isPowerCableTile)) return true;
     const info=INFO[c.t] || {};
     return !!(info.conductor || info.powerSource);
+  }
+  function cableTypeForCell(c){
+    if(!c) return null;
+    if(c.wire===T.SILVER_WIRE || c.wire===T.COPPER_WIRE) return c.wire;
+    if(Array.isArray(c.infra)){
+      if(c.infra.includes(T.SILVER_WIRE)) return T.SILVER_WIRE;
+      if(c.infra.includes(T.COPPER_WIRE)) return T.COPPER_WIRE;
+    }
+    return null;
+  }
+  function isLosslessConductorCell(c){
+    if(!isConductorCell(c)) return false;
+    return cableTypeForCell(c)!==T.COPPER_WIRE;
   }
   const CIRCUIT_DIRS=[[1,0],[-1,0],[0,1],[0,-1]];
   function isTrackCell(c){ return !!c && (c.t===T.TRACK || c.role==='track'); }
@@ -974,9 +997,9 @@ import { damageBlastCreatures } from './explosion_damage.js';
   // network in engine/teleporters.js networkFor(): copper wire (block or
   // overlay) and conductive machine blocks carry the current, dynamo casings /
   // slots / panels / batteries feed it.
-  function energisedCells(m){
+  function energisedCells(m,losslessOnly=false){
     const seen=new Set();
-    const nodes=(m && m.cells || []).filter(isConductorCell);
+    const nodes=(m && m.cells || []).filter(losslessOnly?isLosslessConductorCell:isConductorCell);
     if(!nodes.length) return seen;
     const byPos=new Map(nodes.map(c=>[c.dx+','+c.dy,c]));
     const queue=[];
@@ -1133,26 +1156,39 @@ import { damageBlastCreatures } from './explosion_damage.js';
   function spendMechOrHeroTrackEnergy(m,amount,ctx,getTile){
     const want=Math.max(0,Number(amount)||0);
     if(want<=0) return true;
+    const efficiency=Math.max(0.5,mechTrackCircuitEfficiency(m)||1);
+    const rawWant=want/efficiency;
     const have=Math.max(0,Number(m.energy)||0);
-    if(have+0.00001>=want){
-      m.energy=Math.max(0,have-want);
+    if(have+0.00001>=rawWant){
+      m.energy=Math.max(0,have-rawWant);
+      recordMechCopperLoss(m,rawWant,want,getTile);
       return true;
     }
-    let remaining=Math.max(0,want-have);
-    if(remaining<=0.00001) return true;
+    const usefulPaid=have*efficiency;
+    let remaining=Math.max(0,want-usefulPaid);
+    if(have>0){
+      m.energy=0;
+      recordMechCopperLoss(m,have,usefulPaid,getTile);
+    }
+    if(remaining<=0.00001){
+      return true;
+    }
     if(hasTrackDrive(m) && mechTrackCircuitConnected(m)){
-      const external=externalPowerDrainNear(m,remaining,getTile);
-      if(external>0){
+      const externalRaw=externalPowerDrainNear(m,remaining/efficiency,getTile);
+      if(externalRaw>0){
+        const external=externalRaw*efficiency;
         m.energy=0;
         m.powerPulse=Math.min(1,(m.powerPulse||0)+0.24+external*0.04);
         remaining=Math.max(0,remaining-external);
+        recordMechCopperLoss(m,externalRaw,external,getTile);
         if(remaining<=0.00001) return true;
       }
-      const heroCost=remaining*CFG.HERO_TRACK_ENERGY_MULT;
+      const heroCost=(remaining/efficiency)*CFG.HERO_TRACK_ENERGY_MULT;
       if(spendHeroEnergyForTrack(heroCost,ctx)){
         m.energy=0;
         m.heroPowerPulse=Math.min(1,(m.heroPowerPulse||0)+0.35+heroCost*0.025);
         m.powerPulse=Math.min(1,(m.powerPulse||0)+0.18);
+        recordMechCopperLoss(m,remaining/efficiency,remaining,getTile);
         return true;
       }
     }
@@ -1286,7 +1322,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(t===T.DYNAMO) return 'dynamo';
     if(t===T.DYNAMO_SLOT) return 'dynamoSlot';
     if(t===T.COAL) return 'coal';
-    if(t===T.COPPER_WIRE) return 'wire';
+    if(isPowerCableTile(t)) return 'wire';
     return '';
   }
   function builtMemberAt(x,y,getTile){
@@ -1354,12 +1390,12 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const byPos=new Map(cells.map(c=>[c.dx+','+c.dy,c]));
     const links=(a,b)=>{
       if(!b) return false;
-      const aw=a.wire===T.COPPER_WIRE, bw=b.wire===T.COPPER_WIRE;
+      const aw=isPowerCableTile(a.wire), bw=isPowerCableTile(b.wire);
       if(aw && bw) return true;
       return (aw && isConductorCell(b)) || (bw && isConductorCell(a));
     };
     for(const c of cells){
-      if(c.wire!==T.COPPER_WIRE) continue;
+      if(!isPowerCableTile(c.wire)) continue;
       c.wireConn={
         left:links(c,byPos.get((c.dx-1)+','+c.dy)),
         right:links(c,byPos.get((c.dx+1)+','+c.dy)),
@@ -1400,7 +1436,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const cell={dx:sc.x-minX,dy:sc.y-minY,t:sc.t,role,hp:durabilityForCell(sc.t,role)};
     if(Array.isArray(sc.infra) && sc.infra.length){
       cell.infra=sc.infra.slice(0,3);
-      if(cell.infra.includes(T.COPPER_WIRE)) cell.wire=T.COPPER_WIRE;
+      if(cell.infra.includes(T.SILVER_WIRE)) cell.wire=T.SILVER_WIRE;
+      else if(cell.infra.includes(T.COPPER_WIRE)) cell.wire=T.COPPER_WIRE;
     }
     return cell;
   }
@@ -1433,17 +1470,22 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(want<=0) return true;
     let remaining=want;
     if(mechTrackCircuitConnected(m)){
+      const efficiency=Math.max(0.5,mechTrackCircuitEfficiency(m)||1);
       const have=Math.max(0,Number(m.energy)||0);
-      const used=Math.min(have,remaining);
-      if(used>0){
-        m.energy=have-used;
+      const rawUsed=Math.min(have,remaining/efficiency);
+      const used=rawUsed*efficiency;
+      if(rawUsed>0){
+        m.energy=have-rawUsed;
         remaining-=used;
+        recordMechCopperLoss(m,rawUsed,used,getTile);
         m.powerPulse=Math.min(1,(m.powerPulse||0)+0.10);
       }
       if(remaining>0.00001){
-        const external=externalPowerDrainNear(m,remaining,getTile);
-        if(external>0){
+        const externalRaw=externalPowerDrainNear(m,remaining/efficiency,getTile);
+        const external=externalRaw*efficiency;
+        if(externalRaw>0){
           remaining=Math.max(0,remaining-external);
+          recordMechCopperLoss(m,externalRaw,external,getTile);
           m.powerPulse=Math.min(1,(m.powerPulse||0)+0.18+external*0.04);
         }
       }
@@ -1673,8 +1715,14 @@ import { damageBlastCreatures } from './explosion_damage.js';
         // and external charge all land there — the reserve IS the circuit)
         const want=cfg.BOIL_ENERGY_PER_SEC*dt;
         const have=Math.max(0,Number(m.energy)||0);
-        const got=Math.min(want,have);
-        if(got>0){ m.energy=have-got; heat=want>0?got/want:0; }
+        const efficiency=Math.max(0.5,mechCircuitEfficiencyAt(m,cell)||1);
+        const got=Math.min(want,have*efficiency);
+        if(got>0){
+          const rawCost=got/efficiency;
+          m.energy=have-rawCost;
+          recordMechCopperLoss(m,rawCost,got,getTile);
+          heat=want>0?got/want:0;
+        }
       }
       if(heat<=0) continue;
       const boiled=Math.min(cfg.BOIL_RATE*heat*dt, st.water*cfg.STEAM_PER_WATER, cfg.BOILER_STEAM_CAP-st.steam);
@@ -2077,7 +2125,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(c && c.t!=null && c.t!==T.AIR) out.push(c.t);
     const infra=(c && Array.isArray(c.infra) && c.infra.length) ? c.infra : null;
     if(infra){ for(const it of infra){ if(it!==T.AIR) out.push(it); } }
-    else if(c && c.wire===T.COPPER_WIRE) out.push(T.COPPER_WIRE);
+    else if(c && isPowerCableTile(c.wire)) out.push(c.wire);
     return out;
   }
   function collapseMechBlocks(m,opts){
@@ -2166,6 +2214,42 @@ import { damageBlastCreatures } from './explosion_damage.js';
       try{ opts.onTarget(hit.mech,'mech',isLiving); }catch(e){}
     }
     return damageMech(hit.mech,hit.cell,dmg,opts||{source:'hero'});
+  }
+  function mechTrackCircuitEfficiency(m){
+    if(!hasTrackDrive(m)) return 0;
+    const all=energisedCells(m);
+    const tracks=(m.cells||[]).filter(isTrackCell);
+    if(!tracks.some(c=>all.has(c.dx+','+c.dy))) return 0;
+    const lossless=energisedCells(m,true);
+    return tracks.some(c=>lossless.has(c.dx+','+c.dy)) ? 1 : 0.5;
+  }
+  function mechCircuitEfficiencyAt(m,cell){
+    if(!cell) return 0;
+    const all=energisedCells(m);
+    if(!cellPowered(cell,all)) return 0;
+    return cellPowered(cell,energisedCells(m,true)) ? 1 : 0.5;
+  }
+  function recordMechCopperLoss(m,rawCost,usefulCost,getTile){
+    const lost=Math.max(0,(Number(rawCost)||0)-(Number(usefulCost)||0));
+    if(!m || lost<=1e-9) return false;
+    m.copperHeatBuffer=Math.min(24,Math.max(0,Number(m.copperHeatBuffer)||0)+lost);
+    if(m.copperHeatBuffer<6) return false;
+    const copper=(m.cells||[]).filter(c=>cableTypeForCell(c)===T.COPPER_WIRE);
+    if(!copper.length) return false;
+    const c=copper[Math.abs((m.id|0)+(m.copperHeatEvents|0))%copper.length];
+    try{
+      const gases=root.MM && root.MM.gases;
+      const world=root.MM && root.MM.world;
+      if(!gases || typeof gases.add!=='function' || !world || typeof world.setTile!=='function') return false;
+      const x=m.x+c.dx+0.5, y=m.y+c.dy+0.5;
+      const placed=gases.add('hot',x,y,{power:.12,cells:1,getTile,setTile:world.setTile});
+      if(placed>0){
+        m.copperHeatBuffer=Math.max(0,m.copperHeatBuffer-6);
+        m.copperHeatEvents=(m.copperHeatEvents|0)+1;
+        return true;
+      }
+    }catch(e){}
+    return false;
   }
   function isLiving(m){ return !!(m && !m.destroyed && m.hp>0 && mechs.includes(m)); }
   function damageRadius(x,y,r,dmg,opts){
@@ -2406,7 +2490,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
     ctx.fillRect(px+TILE*0.14,py+TILE*0.12,TILE*0.12,TILE*0.60);
     ctx.restore();
   }
-  function drawCopperWireOverlay(ctx,TILE,px,py,conn,alpha,powered){
+  function drawCopperWireOverlay(ctx,TILE,px,py,conn,alpha,powered,cableType=T.COPPER_WIRE){
+    const silver=cableType===T.SILVER_WIRE;
     conn=conn||{};
     ctx.save();
     ctx.globalAlpha=alpha*(powered?0.98:0.84);
@@ -2419,23 +2504,23 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(conn.up) ends.push([cx,py+TILE*0.12]);
     if(conn.down) ends.push([cx,py+TILE*0.88]);
     if(!ends.length) ends.push([px+TILE*0.16,cy],[px+TILE*0.84,cy]);
-    ctx.strokeStyle='rgba(44,24,10,0.72)';
+    ctx.strokeStyle=silver?'rgba(45,57,72,0.78)':'rgba(44,24,10,0.72)';
     ctx.lineWidth=Math.max(2,TILE*0.14);
     ctx.beginPath();
     for(const e of ends){ ctx.moveTo(cx,cy); ctx.lineTo(e[0],e[1]); }
     ctx.stroke();
-    ctx.strokeStyle=powered?'#ffc35d':'#d68535';
+    ctx.strokeStyle=silver?(powered?'#f6fdff':'#c9ddec'):(powered?'#ffc35d':'#d68535');
     ctx.lineWidth=Math.max(1,TILE*0.075);
     ctx.beginPath();
     for(const e of ends){ ctx.moveTo(cx,cy); ctx.lineTo(e[0],e[1]); }
     ctx.stroke();
-    ctx.fillStyle=powered?'#fff0a8':'#f0a34b';
+    ctx.fillStyle=silver?(powered?'#ffffff':'#d9ecff'):(powered?'#fff0a8':'#f0a34b');
     ctx.beginPath();
     ctx.arc(cx,cy,TILE*(powered?0.085:0.065),0,Math.PI*2);
     ctx.fill();
     if(powered){
       ctx.globalAlpha=alpha*0.32;
-      ctx.strokeStyle='rgba(255,240,150,0.82)';
+      ctx.strokeStyle=silver?'rgba(224,248,255,0.90)':'rgba(255,240,150,0.82)';
       ctx.lineWidth=Math.max(1,TILE*0.025);
       ctx.beginPath();
       for(const e of ends){ ctx.moveTo(cx,cy); ctx.lineTo(e[0],e[1]); }
@@ -2444,9 +2529,9 @@ import { damageBlastCreatures } from './explosion_damage.js';
     ctx.restore();
   }
   function drawCellWireOverlay(ctx,TILE,m,c,px,py,alpha){
-    if(!c || c.wire!==T.COPPER_WIRE) return;
+    if(!c || !isPowerCableTile(c.wire)) return;
     const powered=!!(m && (m.powerPulse>0.05 || m.heroPowerPulse>0.05 || (hasTrackDrive(m) && mechTrackCircuitConnected(m) && (m.energy||0)>0)));
-    drawCopperWireOverlay(ctx,TILE,px,py,c.wireConn,alpha,powered);
+    drawCopperWireOverlay(ctx,TILE,px,py,c.wireConn,alpha,powered,c.wire);
   }
   function drawCellLegacy(ctx,TILE,m,c,px,py,alpha){
     if(c.t===T.AIR){
@@ -2762,11 +2847,12 @@ import { damageBlastCreatures } from './explosion_damage.js';
   function sanitizeSavedBuiltCells(rawCells){
     const out=[];
     const seen=new Set();
-    const INFRA_OK=new Set([T.COPPER_WIRE,T.WIRE,T.WATER_PIPE,T.LADDER,T.BEDROCK_LADDER]);
+    const INFRA_OK=new Set([T.COPPER_WIRE,T.SILVER_WIRE,T.WIRE,T.WATER_PIPE,T.LADDER,T.BEDROCK_LADDER]);
     for(const rc of rawCells.slice(0,CFG.BUILT_MAX_CELLS)){
       if(!rc) continue;
       const dx=Number(rc.dx), dy=Number(rc.dy), t=Number(rc.t);
-      if(!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(t)) continue;
+      if(!Number.isInteger(dx) || !Number.isInteger(dy) || !Number.isInteger(t)) continue;
+      if(dx<0 || dy<0 || dx>=CFG.BUILT_MAX_W || dy>=CFG.BUILT_MAX_H) continue;
       if(t!==T.AIR && !INFO[t]) continue;
       const key=(dx|0)+','+(dy|0);
       if(seen.has(key)) continue;
@@ -2777,7 +2863,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
       const cell={dx:dx|0,dy:dy|0,t:t|0,role,hp:durabilityForCell(t|0,role)};
       if(infra.length){
         cell.infra=infra;
-        if(infra.includes(T.COPPER_WIRE)) cell.wire=T.COPPER_WIRE;
+        if(infra.includes(T.SILVER_WIRE)) cell.wire=T.SILVER_WIRE;
+        else if(infra.includes(T.COPPER_WIRE)) cell.wire=T.COPPER_WIRE;
       }
       out.push(cell);
     }
@@ -2786,10 +2873,12 @@ import { damageBlastCreatures } from './explosion_damage.js';
   function restore(data,getTile){
     reset();
     if(!data || typeof data !== 'object') return false;
-    if(Array.isArray(data.used)) usedZones=new Set(data.used.filter(x=>typeof x==='string').slice(0,2400));
+    if(Array.isArray(data.used)) usedZones=new Set(data.used.filter(x=>typeof x==='string' && x.length<=80).slice(0,2400));
     if(Array.isArray(data.list)){
       for(const raw of data.list.slice(0,CFG.MAX_ACTIVE)){
         if(!raw || !finite(raw.x) || !finite(raw.y)) continue;
+        const restoredX=Number(raw.x), restoredY=Number(raw.y);
+        if(Math.abs(restoredX)>30000000 || restoredY<WORLD_TOP-128 || restoredY>WORLD_BOTTOM+128) continue;
         let m=null;
         let seed=Number.isFinite(Number(raw.salvageSeed)) ? Number(raw.salvageSeed)|0 : Math.floor(Number(raw.x));
         if(raw.kind==='built' && Array.isArray(raw.cells)){
@@ -2807,9 +2896,10 @@ import { damageBlastCreatures } from './explosion_damage.js';
               if(!c || c.t!==T.STEAM_BOILER) continue;
               const r=raw.boilers[c.dx+','+c.dy];
               if(!r) continue;
+              const savedWater=Number(r.w), savedSteam=Number(r.s);
               tanks[c.dx+','+c.dy]={
-                water:clamp(Number(r.w)||0,0,waterCap),
-                steam:clamp(Number(r.s)||0,0,steamCap)
+                water:Number.isFinite(savedWater)?clamp(savedWater,0,waterCap):0,
+                steam:Number.isFinite(savedSteam)?clamp(savedSteam,0,steamCap):0
               };
             }
             if(Object.keys(tanks).length) m.boilerStates=tanks;
@@ -2821,19 +2911,31 @@ import { damageBlastCreatures } from './explosion_damage.js';
         }
         m.id=Number.isFinite(raw.id)?Math.max(1,raw.id|0):nextId++;
         nextId=Math.max(nextId,m.id+1);
-        m.x=Number(raw.x);
-        m.y=Number(raw.y);
-        m.vx=clamp(Number(raw.vx)||0,-8,8);
-        m.vy=clamp(Number(raw.vy)||0,-20,20);
-        m.maxHp=Math.max(1,Number(raw.maxHp)||m.maxHp);
-        m.hp=clamp(Number(raw.hp)||m.maxHp,0.1,m.maxHp);
-        m.pilotMaxHp=Math.max(1,Number(raw.pilotMaxHp)||m.pilotMaxHp);
-        m.pilotHp=clamp(Number(raw.pilotHp),0,m.pilotMaxHp);
-        if(!Number.isFinite(raw.pilotHp)) m.pilotHp=m.pilotMaxHp;
+        m.x=restoredX;
+        m.y=restoredY;
+        const savedVx=Number(raw.vx), savedVy=Number(raw.vy);
+        m.vx=Number.isFinite(savedVx)?clamp(savedVx,-8,8):0;
+        m.vy=Number.isFinite(savedVy)?clamp(savedVy,-20,20):0;
+        const savedMaxHp=Number(raw.maxHp);
+        const savedHp=Number(raw.hp);
+        const savedPilotMaxHp=Number(raw.pilotMaxHp);
+        const savedPilotHp=Number(raw.pilotHp);
+        const defaultMaxHp=Math.max(1,Number(m.maxHp)||1);
+        m.maxHp=Number.isFinite(savedMaxHp) ? clamp(savedMaxHp,1,defaultMaxHp) : defaultMaxHp;
+        m.hp=Number.isFinite(savedHp) ? clamp(savedHp,0.1,m.maxHp) : m.maxHp;
+        const defaultPilotMaxHp=Math.max(1,Number(m.pilotMaxHp)||1);
+        m.pilotMaxHp=Number.isFinite(savedPilotMaxHp) ? clamp(savedPilotMaxHp,1,defaultPilotMaxHp) : defaultPilotMaxHp;
+        m.pilotHp=Number.isFinite(savedPilotHp) ? clamp(savedPilotHp,0,m.pilotMaxHp) : m.pilotMaxHp;
         m.pilotAlive=raw.pilotAlive!==false && m.pilotHp>0;
-        m.maxEnergy=Math.max(1,Number(raw.maxEnergy)||m.maxEnergy||mechMaxEnergy(m.kind));
-        m.energy=clamp(Number(raw.energy),0,m.maxEnergy);
-        if(!Number.isFinite(raw.energy)) m.energy=Math.min(m.maxEnergy,m.energy||m.maxEnergy*0.3);
+        const savedMaxEnergy=Number(raw.maxEnergy);
+        const savedEnergy=Number(raw.energy);
+        const defaultMaxEnergy=Math.max(1,Number(m.maxEnergy)||mechMaxEnergy(m.kind));
+        m.maxEnergy=Number.isFinite(savedMaxEnergy) ? clamp(savedMaxEnergy,1,defaultMaxEnergy) : defaultMaxEnergy;
+        if(Number.isFinite(savedEnergy)) m.energy=clamp(savedEnergy,0,m.maxEnergy);
+        else{
+          const current=Number(m.energy);
+          m.energy=clamp(Number.isFinite(current) && current>0 ? current : m.maxEnergy*0.3,0,m.maxEnergy);
+        }
         m.rider=!!raw.rider && !m.pilotAlive && m.hp>0 && riderMechId==null;
         if(m.rider) riderMechId=m.id;
         m.facing=raw.facing<0?-1:1;
@@ -2904,7 +3006,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     _debug:{
       mechs:()=>mechs,mountedTurretCell,makeBlueprint,trySpawnZone,zoneShouldSpawn,zoneSpawnX,CFG,
       isMechComponentTile,scanBuiltStructure,analyzeBuiltCells,assembleBuiltMechAt,parkBuiltMech,
-      mechTrackCircuitConnected,mechTurretCircuitConnected,energisedCells,chairEnergyMult,
+      mechTrackCircuitConnected,mechTrackCircuitEfficiency,mechCircuitEfficiencyAt,mechTurretCircuitConnected,energisedCells,chairEnergyMult,
       seatState:()=>({block:seatBlock,lastTry:lastSeatTry})
     }
   };

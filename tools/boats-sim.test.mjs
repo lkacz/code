@@ -231,6 +231,32 @@ assert.ok(boats.restore(snap), 'snapshot restores');
 assert.equal(boats._debug.boats().length, 2, 'both rafts came back');
 assert.equal(boats._debug.boats().reduce((n,x)=>n+x.cells.length,0), 2, 'restored plank count matches');
 
+// A cross-shaped hull has four independent arms after its articulation plank
+// is removed; each arm must become a real raft rather than one disconnected body.
+boats.reset();
+boats.restore({v:1,boats:[{x:20,y:9,vx:0,cells:[[0,0],[-1,0],[1,0],[0,-1],[0,1]]}]});
+assert.ok(boats.removeCellAt(20.5,9.5), 'articulation plank can be removed from a cross hull');
+assert.equal(boats._debug.boats().length, 4, 'multi-way hull split creates all four connected components');
+assert.ok(boats._debug.boats().every(h=>h.cells.length===1), 'each severed arm is represented exactly once');
+
+// Hostile persistence must not create unbounded entities or gigantic sparse
+// bounds that turn the per-frame hull-column scan into a denial of service.
+boats.restore({v:1,boats:[
+  {x:10,y:9,vx:Infinity,cells:[[0,0],[999999999,0],[-999999999,0]]},
+  {x:Infinity,y:9,vx:0,cells:[[0,0]]},
+  {x:11,y:9,vx:0,cells:[[0.5,0],[NaN,0]]},
+  {x:12,y:9,vx:0,cells:[[0,0],[2,0]]}
+]});
+assert.equal(boats._debug.boats().length, 3, 'restore rejects invalid boats/cells and splits disconnected saved hulls safely');
+assert.ok(boats._debug.boats().every(h=>boats._debug.bounds(h).w<=boats.config.MAX_CELLS), 'restored hull bounds remain strictly bounded');
+assert.ok(boats._debug.boats().every(h=>Number.isFinite(h.vx)), 'non-finite saved velocity is neutralized');
+
+const boatFlood=Array.from({length:boats.config.MAX_BOATS+37},(_,i)=>({x:1000+i,y:9,vx:0,cells:[[0,0]]}));
+boats.restore({v:1,boats:boatFlood});
+assert.equal(boats._debug.boats().length, boats.config.MAX_BOATS, 'restore processes at most the boat persistence cap');
+assert.equal(boats.snapshot().boats.length, boats.config.MAX_BOATS, 'snapshot is bounded by the same boat cap');
+assert.equal(boats.placeWood(5,10,getTile,{water}).ok, false, 'new standalone boats are refused once the runtime cap is reached');
+
 // --- Beaching: no water under the hull → the raft is cargo and rests ---------
 boats.reset();
 boats.restore({v:1,boats:[{x:50,y:8,vx:0,cells:[[0,0]]}]});
@@ -246,5 +272,11 @@ assert.equal(boats.row(1,{heroEnergy}).ok, false, 'cannot row a beached raft');
 // --- Propulsion registry stays extensible ------------------------------------
 assert.ok(boats.registerPropulsion({id:'test-engine', thrust:()=>0}), 'future engines can register propulsion providers');
 assert.ok(boats.metrics().propulsion.includes('wind') && boats.metrics().propulsion.includes('test-engine'), 'propulsion registry lists providers');
+assert.equal(boats.registerPropulsion({id:'x'.repeat(65),thrust:()=>0}),false,'oversized propulsion ids are rejected');
+assert.ok(boats.registerPropulsion({id:'faulty-engine',thrust(){ throw new Error('synthetic provider failure'); }}),'isolated faulty propulsion provider registers for the fault-containment test');
+assert.doesNotThrow(()=>boats.update(1/60,null,getTile,{wind:calm,water}),'one faulty propulsion extension cannot crash the boat simulation');
+for(let i=0;i<boats.config.MAX_PROPULSION_PROVIDERS;i++) boats.registerPropulsion({id:'bounded-'+i,thrust:()=>0});
+assert.equal(boats.metrics().propulsion.length,boats.config.MAX_PROPULSION_PROVIDERS,'propulsion registry has a hard provider cap');
+assert.equal(boats.registerPropulsion({id:'one-too-many',thrust:()=>0}),false,'propulsion provider flood is refused at the cap');
 
 console.log('boats-sim: all assertions passed');

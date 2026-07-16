@@ -492,7 +492,9 @@ const snap=water.snapshot();
 assert.ok(snap && snap.v===3, 'snapshot v3');
 water.restore(snap);
 water.restore({v:1, active:[[1,2]], ripples:[{L:0,R:5,y:60,ttl:300}]}); // legacy save shape
-water.restore(null); water.restore('garbage');
+water.restore(null);
+assert.deepEqual(water._debug().active,[],'missing water payload clears state inherited from the previous world');
+water.restore('garbage');
 water.restore({
   v:2,
   active:[[1,2],[NaN,3],[4,Infinity],'bad','-3,5'],
@@ -507,6 +509,13 @@ assert.deepEqual(new Set(clean.active), new Set(['1,2','-3,5']), 'water restore 
 assert.deepEqual(clean.cooldown, [[1,2],[3,5]], 'water restore sanitizes malformed and oversized lateral cooldowns');
 assert.equal(clean.pressureIntervalCurrent, 0.9, 'water restore clamps pressure interval');
 assert.equal(clean.pressureAcc, 0, 'water restore rejects invalid pressure accumulator');
+{
+  const cap=clean.restoreCaps.active;
+  const oversized=new Array(cap+1).fill(null);
+  oversized[cap]=[7,60];
+  water.restore({v:3,active:oversized});
+  assert.deepEqual(water._debug().active,[],'water restore bounds scanned rows even when every preceding entry is malformed');
+}
 water.restore({v:3, levels:[[5,60,4],[6,60,'x'],[7,60,0],[8,60,15],[9,'y',3]]});
 const levClean=water._debug().levels;
 assert.deepEqual(levClean, [[5,60,4]], 'water restore drops malformed sub-tile levels but keeps valid ones');
@@ -606,9 +615,11 @@ assert.equal(water.solidifyAt(filmCell.x,filmCell.y,getTile,setTile), false, 'th
 // The player's own placement path must displace water like every other solid-placement path,
 // not just wake neighbors and let the overwrite delete the cell.
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-assert.match(mainSrc, /getTile\(tx,ty\)===T\.WATER\)\s*WATER\.displaceAt\(tx,ty,getTile,setTile\)/, 'player block placement displaces water via displaceAt instead of deleting it');
-assert.match(mainSrc, /displacePlacedWater\(\);\s*\n\s*setTile\(tx,ty,id\);/, 'placement displaces water immediately before overwriting the tile');
+assert.match(mainSrc, /function tryPlace\(tx,ty\)[\s\S]*const displacePlacedWater=\(\)=>\{[\s\S]*WATER\.displaceAt\(tx,ty,getTile,setTile\)/, 'player block placement displaces water via displaceAt instead of deleting it');
+assert.match(mainSrc, /if\(!displacePlacedWater\(\)\)\{ msg\('Brak miejsca na wypchniecie wody'\); return false; \}\s*if\(!setForegroundConfirmed\(tx,ty,id\)\)/, 'placement requires successful displacement immediately before a confirmed tile write');
+assert.match(mainSrc, /const undoPrev=\(isGasTileId\(prevRaw\)\|\|prevRaw===T\.WATER\)\?T\.AIR:prevRaw;/, 'undo reveals air after a displaced water placement instead of minting a second fluid unit');
+assert.match(mainSrc, /oldForeground:\(isGasTileId\(cur\)\|\|cur===T\.WATER\)\?T\.AIR:cur/, 'background-to-foreground toggles use the same volume-safe water undo contract');
 assert.match(mainSrc, /function waterCollectionChanceAt\(tx,ty\)[\s\S]*WATER\.levelAt\(tx,ty,getTile\)[\s\S]*Number\(units\)[\s\S]*\/unitsMax/, 'water collection chance is proportional to the sub-block fill level');
-assert.match(mainSrc, /const dropCtx=dropContextForTile\(tId,mineTx,mineTy\);[\s\S]*setTile\(mineTx,mineTy,T\.AIR\);[\s\S]*awardTileDrops\(info,dropCtx\)/, 'player mining rolls water drops using the pre-removal water fill context');
+assert.match(mainSrc, /const dropCtx=dropContextForTile\(tId,mineTx,mineTy\);[\s\S]*setForegroundConfirmed\(mineTx,mineTy,T\.AIR\)[\s\S]*awardTileDrops\(info,dropCtx\)/, 'player mining rolls water drops using the pre-removal fill context and only after confirmed removal');
 
 console.log('OK: all water simulation tests passed');

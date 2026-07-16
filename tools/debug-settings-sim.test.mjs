@@ -4,6 +4,36 @@ import { readFile } from 'node:fs/promises';
 const uiSrc = await readFile(new URL('../src/engine/ui.js', import.meta.url), 'utf8');
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const meteoritesSrc = await readFile(new URL('../src/engine/meteorites.js', import.meta.url), 'utf8');
+const htmlSrc = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+
+const { debugShortcutsEnabled } = await import('../src/engine/debug_shortcuts.js');
+function fakeDebugDocument({panelHidden=true,expanded='false',panelConnected=true,buttonConnected=true}={}){
+	const controls={
+		menuPanel:{hidden:panelHidden,isConnected:panelConnected},
+		debugMenuBtn:{isConnected:buttonConnected,getAttribute:name=>name==='aria-expanded'?expanded:null},
+	};
+	return {getElementById:id=>controls[id]||null};
+}
+assert.equal(debugShortcutsEnabled(null), false, 'debug shortcuts fail closed without a document');
+assert.equal(debugShortcutsEnabled({getElementById:()=>null}), false, 'debug shortcuts fail closed without the developer controls');
+assert.equal(debugShortcutsEnabled(fakeDebugDocument()), false, 'a closed toolbox does not arm debug shortcuts');
+assert.equal(debugShortcutsEnabled(fakeDebugDocument({panelHidden:false,expanded:'false'})), false, 'a visible but unsynchronised toolbox fails closed');
+assert.equal(debugShortcutsEnabled(fakeDebugDocument({panelHidden:true,expanded:'true'})), false, 'aria state alone cannot arm hidden debug shortcuts');
+assert.equal(debugShortcutsEnabled(fakeDebugDocument({panelHidden:false,expanded:'true',panelConnected:false})), false, 'stale developer controls cannot arm shortcuts');
+assert.equal(debugShortcutsEnabled(fakeDebugDocument({panelHidden:false,expanded:'true'})), true, 'opening the developer toolbox explicitly arms debug shortcuts');
+
+assert.match(mainSrc, /import \{ debugShortcutsEnabled \} from '\.\/engine\/debug_shortcuts\.js'/, 'main uses the shared debug-shortcut predicate');
+assert.match(mainSrc, /const debugKeysEnabled=debugShortcutsEnabled\(\);/, 'the keydown event takes one toolbox state snapshot');
+for(const key of ['f3','g','i','p','j','k','l','m','v','o']){
+	assert.match(mainSrc, new RegExp("if\\(debugKeysEnabled && k==='"+key+"'"), 'debug shortcut '+key.toUpperCase()+' is toolbox-gated');
+}
+for(const key of ['c','t','e','h','x','f','b','n','u']){
+	assert.match(mainSrc, new RegExp("if\\(k==='"+key+"'"), 'normal shortcut '+key.toUpperCase()+' stays available outside debug');
+}
+assert.match(mainSrc, /if\(k==='r'&&/, 'normal rotation shortcut stays available outside debug');
+assert.match(mainSrc, /godBtn\.addEventListener\('click',toggleGod\)/, 'developer toolbox buttons remain directly operable');
+assert.match(htmlSrc, /Debug \(tylko przy otwartym panelu\):/, 'the toolbox explains when its keyboard shortcuts are armed');
+assert.match(mainSrc, /F3\/M\/G\/I i pozostałe skróty testowe działają wyłącznie przy otwartym panelu deweloperskim/, 'legacy help no longer advertises active cheats outside the toolbox');
 
 assert.match(uiSrc, /const DEBUG_SETTINGS_KEY='mm_debug_menu_settings_v1'/, 'debug menu settings use one stable localStorage key');
 assert.match(uiSrc, /function debugSet\(section,key,value\)/, 'debug UI has a shared setting writer');

@@ -141,6 +141,69 @@ assert.equal(INFO[T.SPRING_PLATFORM].energyCapacity,70,'spring platform advertis
   assert.equal(springPlatforms.metrics().machines,0,'tile removal prunes spring platform battery state');
 }
 
+{
+  reset();
+  setTile(0,10,T.SPRING_PLATFORM);
+  springPlatforms._debug.debugChargeAt(0,10,20,getTile);
+  let drained=0;
+  const shortNetwork={
+    availableNetworkEnergyAt(){ return 20; },
+    drainNetworkEnergyAt(_x,_y,amount){ drained+=Math.min(2,amount); return Math.min(2,amount); }
+  };
+  const launched=springPlatforms.launchHero(hero(),0,10,getTile,{teleporters:shortNetwork});
+  assert.equal(launched.powered,false,'an under-delivering network falls back to the weak launch');
+  assert.equal(drained,2,'only the network amount actually returned is accounted as spent');
+  assert.equal(launched.spent,2,'failed powered preflight reports only the irrecoverable network draw');
+  assert.equal(springPlatforms.metrics().storedEnergy,20,'failed powered launch refunds the local spring battery');
+}
+
+{
+  reset();
+  setTile(0,10,T.SPRING_PLATFORM);
+  springPlatforms._debug.debugChargeAt(0,10,12,getTile);
+  let chargeCalls=0;
+  const corruptCharger={chargeBatteryAt(_x,_y,battery){ chargeCalls++; battery.energy=Infinity; return Infinity; }};
+  springPlatforms.update(Infinity,hero(),getTile,{teleporters:corruptCharger});
+  assert.equal(chargeCalls,0,'Infinity update is rejected before touching the network');
+  assert.equal(springPlatforms.metrics().storedEnergy,12,'Infinity update preserves stored spring energy');
+  springPlatforms.update(0.05,hero(),getTile,{teleporters:corruptCharger});
+  assert.equal(chargeCalls,1,'finite update still invokes the charger');
+  assert.equal(springPlatforms.metrics().storedEnergy,12,'malformed charger output cannot create infinite spring energy');
+}
+
+{
+  reset();
+  let probes=0;
+  const probeTile=(x,y)=>{ probes++; return getTile(x,y); };
+  springPlatforms.update(0.01,hero(),probeTile,{});
+  assert.ok(probes>100,'first update performs the throttled discovery sweep');
+  springPlatforms.reset();
+  probes=0;
+  springPlatforms.update(0.01,hero(),probeTile,{});
+  assert.ok(probes>100,'reset also resets discovery cadence for the next world');
+}
+
+{
+  reset();
+  const cap=springPlatforms._debug.MACHINE_CAP;
+  for(let i=0;i<cap;i++) springPlatforms._debug.machines.set('cap-'+i,{x:i,y:10,energy:1,pulse:0,cooldown:0});
+  setTile(9999,10,T.SPRING_PLATFORM);
+  assert.equal(springPlatforms.ensureMachine(9999,10,getTile),null,'charged spring state is never evicted beyond the registry cap');
+  assert.equal(springPlatforms.onTileChanged(9999,10,T.AIR,T.SPRING_PLATFORM,getTile),false,'placement hook reports registry-cap refusal to the transactional builder');
+  assert.equal(springPlatforms._debug.machines.size,cap,'live spring registry remains hard-capped');
+  assert.ok(springPlatforms._debug.machines.has('cap-0'),'spring cap refusal preserves prior charged entries');
+}
+
+{
+  reset();
+  const cap=springPlatforms._debug.MACHINE_CAP;
+  setTile(25,10,T.SPRING_PLATFORM);
+  const hostile=Array.from({length:cap},()=>({x:0,y:Infinity,energy:1}));
+  hostile.push({x:25,y:10,energy:33});
+  springPlatforms.restore({v:1,machines:hostile},getTile);
+  assert.equal(springPlatforms.metrics().machines,0,'restore only processes a bounded prefix of oversized save data');
+}
+
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const uiSrc = await readFile(new URL('../src/engine/ui.js', import.meta.url), 'utf8');
 const mobsSrc = await readFile(new URL('../src/engine/mobs.js', import.meta.url), 'utf8');
@@ -153,6 +216,8 @@ assert.match(mainSrc, /SPRING_PLATFORMS\.restore\(data\.springPlatforms,getTile\
 assert.match(mainSrc, /SPRING_PLATFORMS\.update\(dt, player, getElectricNetworkTile, \{dynamo:DYNAMO, teleporters:TELEPORTERS\}\)/, 'main updates spring platforms with the electric network');
 assert.match(mainSrc, /SPRING_PLATFORMS\.draw\(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getElectricNetworkTile\)/, 'main draws spring platform charge overlays');
 assert.match(mainSrc, /SPRING_PLATFORMS\.launchHero\(player,landingTile\.x,landingTile\.y,getElectricNetworkTile,\{dynamo:DYNAMO,teleporters:TELEPORTERS\}\)/, 'landing collision launches the hero from spring platforms');
+assert.match(mainSrc, /machineRegistered=SPRING_PLATFORMS\.onTileChanged\([^\n]+\)!==false/, 'main checks spring registration before consuming the placed machine item');
+assert.match(mainSrc, /if\(!machineRegistered\)[\s\S]{0,700}setForegroundConfirmed\(tx,ty,undoPrev\)/, 'main rolls back a machine tile when its persistent registry is full');
 assert.match(mobsSrc, /launchEntity\(m,x,y,getTile,\{kind:'mob'/, 'ground mobs launch when they land on spring platforms');
 assert.match(companionsSrc, /launchEntity\(c,tx,footY,getTile,\{kind:'companion'/, 'companions launch when their feet touch spring platforms');
 assert.match(fallingSrc, /launchFromSpringEntity\(b,springAt\.x,springAt\.y,'falling'\)/, 'falling rigid objects launch from spring platforms');

@@ -131,5 +131,45 @@ assert.equal(npc.phase(), 'job', 'returning generated local starts a fresh job i
 assert.equal(npc.displayName(), nextJobCandidate.role, 'returning generated local appears with the next job identity');
 assert.equal(npc._debug().data.completedJobs, 1, 'returning generated local keeps completed-job history in metadata');
 
+player.x=candidate.x+generatedNpcs._debug().limits.activeUnloadRadius+20;
+generatedNpcs.update(1,player,getTile,setTile,ctx);
+assert.equal(npcRegistry.get(candidate.id), null, 'generated residents outside the active region are unloaded instead of accumulating forever');
+
+for(let cell=1000;cell<2100;cell++) generatedNpcs._candidateForCell(cell,worldGen);
+managerState=generatedNpcs._debug();
+assert.ok(managerState.cacheSize<=managerState.limits.candidateCache, 'deterministic candidate cache stays bounded after long-distance exploration');
+
+const hostileLocals=Array.from({length:5000},(_,i)=>({
+  id:'local_'+worldGen.worldSeed+'_'+i,
+  hidden:true,
+  cycle:i===0?Infinity:999999999,
+  availableDay:i===1?Infinity:999999999999,
+  completedJobs:i===2?NaN:999999999,
+  completedDay:i===3?-Infinity:999999999999,
+  lastRole:'x'.repeat(1000)
+}));
+hostileLocals[4].id='x'.repeat(1000);
+hostileLocals[5].id='local_'+worldGen.worldSeed+'_999999999999999999999999';
+generatedNpcs.restore({seed:worldGen.worldSeed,locals:hostileLocals});
+managerState=generatedNpcs._debug();
+assert.ok(managerState.locals.length<=managerState.limits.localStates, 'hostile saves cannot restore an unbounded NPC-local-state map');
+assert.ok(managerState.locals.length>0, 'hardening assertions exercise accepted canonical NPC lifecycle records');
+assert.ok(managerState.locals.every(s=>Number.isFinite(s.cycle) && Number.isFinite(s.availableDay) && Number.isFinite(s.completedJobs) && Number.isFinite(s.completedDay)), 'NPC lifecycle restore rejects NaN and Infinity values');
+assert.ok(managerState.locals.every(s=>s.cycle<=1000000 && s.completedJobs<=1000000 && s.availableDay<=1000000000 && s.completedDay<=1000000000), 'NPC lifecycle counters and days are capped');
+assert.ok(managerState.locals.every(s=>s.id.length<=96 && s.lastRole.length<=120), 'NPC lifecycle restore bounds persisted strings');
+assert.equal(generatedNpcs.snapshot().locals.length,managerState.locals.length,'every accepted lifecycle record fits back into the bounded snapshot');
+
+let overCapCandidate=null;
+for(let cell=5000;cell<5100;cell++){
+  overCapCandidate=generatedNpcs._candidateForCell(cell,worldGen);
+  if(overCapCandidate) break;
+}
+assert.ok(overCapCandidate,'the cap regression finds a fresh resident outside the restored registry');
+player.x=overCapCandidate.x;
+player.y=29;
+generatedNpcs.update(1,player,getTile,setTile,ctx);
+assert.equal(npcRegistry.get(overCapCandidate.id),null,'a full lifecycle registry refuses an unsaveable new reward job');
+assert.equal(generatedNpcs.snapshot().locals.length,managerState.limits.localStates,'the live lifecycle map never grows beyond its persistence budget');
+
 generatedNpcs.reset();
 console.log('generated-npcs-sim: all assertions passed');

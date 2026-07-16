@@ -47,6 +47,18 @@ root.MM = root.MM || {};
     if(typeof inv.equippedItem === 'function') return inv.equippedItem('charm') || null;
     return null;
   }
+  function treasureSignal(item){
+    if(!item || !(Number(item.treasureSenseLevel)>0)) return null;
+    try{
+      const scanner=root.MM && root.MM.treasureScanner;
+      const target=scanner && typeof scanner.target==='function' ? scanner.target() : null;
+      if(!target || !target.direction) return null;
+      const x=finite(target.direction.x,0), y=finite(target.direction.y,0);
+      const len=Math.hypot(x,y);
+      if(!(len>0.0001)) return null;
+      return {target,x:x/len,y:y/len,signal:clamp(finite(target.signal,0),0,1)};
+    }catch(e){ return null; }
+  }
   function bodyMetrics(player){
     const w=clamp(finite(player && player.w,0.7),0.35,1.4);
     const h=clamp(finite(player && player.h,0.95),0.45,1.8);
@@ -118,7 +130,7 @@ root.MM = root.MM || {};
       points.push({x:p.x,y:p.y,px:p.x,py:p.y});
     }
     const center=points[MID];
-    pendant={x:center.x,y:center.y+PENDANT_REST,px:center.x,py:center.y+PENDANT_REST,spin:0,vspin:0};
+    pendant={x:center.x,y:center.y+PENDANT_REST,px:center.x,py:center.y+PENDANT_REST,spin:0,vspin:0,radarSignal:0,radarX:0,radarY:0};
     charmId=charmKey(item);
     rebuildRest();
     return true;
@@ -185,20 +197,42 @@ root.MM = root.MM || {};
     }
     pin(a);
   }
-  function solvePendant(a,dt,fluid){
+  function solvePendant(a,dt,fluid,radar){
     if(!pendant || points.length!==BEADS) return;
     const center=points[MID];
+    const signal=radar?radar.signal:0;
+    const tether=PENDANT_REST+signal*0.075;
+    if(radar){
+      // The compass does not teleport or rigidly snap the jewellery. It biases
+      // the same Verlet body toward the signal, then the string constraint and
+      // chest guard keep the motion readable and physically bounded.
+      const desiredX=center.x+radar.x*tether*0.90;
+      // Preserve a slight hanging bias but keep the signed vertical component:
+      // north lifts the gem toward the chest, south stretches it downward.
+      const desiredY=Math.max(a.chestY,center.y+tether*(radar.y*0.82+0.18));
+      const follow=1-Math.exp(-dt*(fluid?4.5:10.5)*(0.42+signal*0.58));
+      pendant.x+=(desiredX-pendant.x)*follow;
+      pendant.y+=(desiredY-pendant.y)*follow;
+    }
     for(let pass=0;pass<5;pass++){
       let dx=pendant.x-center.x, dy=pendant.y-center.y;
       const d=Math.sqrt(dx*dx+dy*dy)||0.0001;
-      const diff=(d-PENDANT_REST)/d;
-      pendant.x-=dx*diff;
-      pendant.y-=dy*diff;
+      // An active compass may slacken the short chain to point upward. Enforcing
+      // its exact length would preserve the previous downward sign forever;
+      // it remains an ordinary exact-distance tether without a radar signal.
+      if(!radar || d>tether){
+        const diff=(d-tether)/d;
+        pendant.x-=dx*diff;
+        pendant.y-=dy*diff;
+      }
       if(pendant.y<a.chestY) pendant.y=a.chestY;
     }
-    const spinTarget=clamp((pendant.x-center.x)*8,-0.85,0.85);
+    const spinTarget=radar?clamp(radar.x*(0.35+signal*0.58),-0.92,0.92):clamp((pendant.x-center.x)*8,-0.85,0.85);
     pendant.vspin=(pendant.vspin||0)*Math.pow(fluid?0.40:0.58,dt*60)+(spinTarget-(pendant.spin||0))*dt*(fluid?4.5:9);
     pendant.spin=clamp((pendant.spin||0)+pendant.vspin*dt*60,-0.9,0.9);
+    pendant.radarSignal=signal;
+    pendant.radarX=radar?radar.x:0;
+    pendant.radarY=radar?radar.y:0;
   }
   function update(player,dt,getTile){
     const item=currentCharm();
@@ -218,6 +252,7 @@ root.MM = root.MM || {};
     const vx=finite(player.vx,0), vy=finite(player.vy,0);
     const airborne=player.onGround===false;
     const fluid=fluidAt(player.x,a.chestY,getTile);
+    const radar=treasureSignal(item);
     const wind=finite(sampleWind(player,getTile),0)*(fluid?0.18:1);
     const windMag=clamp(Math.abs(wind)/7.2,0,1);
     const damp=Math.pow(fluid?0.24:(0.54+windMag*0.08),dt*60);
@@ -241,7 +276,7 @@ root.MM = root.MM || {};
     pendant.y += (pendant.y-pendant.py)*Math.pow(fluid?0.24:0.50,dt*60) + 18.0*gravMul*dt*dt - vy*0.020*dt*(airborne?1.55:0.75);
     pendant.px=oldPX; pendant.py=oldPY;
     solveChain(a,8);
-    solvePendant(a,dt,fluid);
+    solvePendant(a,dt,fluid,radar);
     return true;
   }
   function shade(hex,delta){
@@ -258,6 +293,8 @@ root.MM = root.MM || {};
     if(item && palCacheItem===item && palCache) return palCache;
     let gem='#8ee9ff';
     if(item && item.attackDamage) gem='#ffb24d';
+    else if(item && item.treasureSenseLevel) gem='#72e7ff';
+    else if(item && item.lootMagnetLevel) gem='#63f0d4';
     else if(item && item.energyCapacityBonus) gem='#ffd45f';
     else if(item && item.mineSpeedMult) gem='#72e88f';
     else if(item && item.visionRadius) gem='#75dcff';
@@ -340,7 +377,7 @@ root.MM = root.MM || {};
   function ensureReady(player){
     const item=currentCharm();
     if(!item) return null;
-    if(points.length!==BEADS && player) init(player);
+    if((points.length!==BEADS || !pendant || charmId!==charmKey(item)) && player) init(player);
     if(points.length!==BEADS || !pendant) return null;
     return item;
   }
@@ -372,7 +409,8 @@ root.MM = root.MM || {};
     const TILE=finite(tile,20);
     const pal=palette(item);
     const now=(typeof performance!=='undefined' && performance.now) ? performance.now()*0.001 : 0;
-    const glow=0.55+0.45*Math.sin(now*4.3+(pendant?pendant.spin*2:0));
+    const radarGlow=pendant?clamp(finite(pendant.radarSignal,0),0,1):0;
+    const glow=clamp(0.55+0.45*Math.sin(now*(4.3+radarGlow*3)+(pendant?pendant.spin*2:0))+radarGlow*0.32,0,1.35);
     ctx.save();
     ctx.lineCap='round';
     ctx.lineJoin='round';
@@ -410,7 +448,7 @@ root.MM = root.MM || {};
   necklaceAPI.active=active;
   necklaceAPI._points=points;
   necklaceAPI._pendant=()=>pendant;
-  necklaceAPI._debug={currentCharm,palette,anchors,bodyMetrics,sampleWind,fluidAt};
+  necklaceAPI._debug={currentCharm,palette,anchors,bodyMetrics,sampleWind,fluidAt,treasureSignal};
   root.MM.necklace=necklaceAPI;
 })();
 

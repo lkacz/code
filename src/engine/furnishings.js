@@ -3,6 +3,7 @@
 // the catalogue append-only and lets the recipe book, hot picker and world use
 // exactly the same visual source.
 import { T, INFO, TILE, HOME_FURNISHING_TILE_SPECS } from '../constants.js';
+import { isSolidCollisionTile } from './material_physics.js';
 
 const RAW = [
   {tileName:'RUSTIC_STOOL',label:'Rustykalny stołek',description:'Prosty stołek z nieheblowanych desek. Mały początek prawdziwego domu.',tier:1,cost:{wood:2},icon:'▥',visual:'rustic_stool',effect:'still'},
@@ -22,6 +23,7 @@ const RAW = [
   {tileName:'CHANDELIER',label:'Żyrandol gwiezdny',description:'Rozgałęziony żyrandol rozrzucający po suficie ciepłe punkty światła.',tier:2,cost:{gold:2,glass:3,torch:2},icon:'✦',visual:'chandelier',effect:'light'},
   {tileName:'INDOOR_FOUNTAIN',label:'Fontanna domowa',description:'Kaskadowa fontanna o uspokajającym szumie i połyskującej tafli.',tier:2,cost:{stone:7,water:5,gold:1},icon:'♒',visual:'indoor_fountain',effect:'water',sound:'homeWater'},
   {tileName:'HOLOGRAM_ART',label:'Hologram zmiennokształtny',description:'Świetlna rzeźba, która nigdy nie przyjmuje dwa razy dokładnie tej samej formy.',tier:2,cost:{glass:3,transistor:2,copperWire:2,meteorDust:1},icon:'◇',visual:'hologram_art',effect:'holo',sound:'homeHum'},
+  {tileName:'MIRROR',label:'Lustro obserwatora',description:'Prawdziwe lustro ścienne: odbija aktualny wygląd, ruch, pelerynę i trzymaną broń bohatera.',tier:2,cost:{glass:4,steel:1,gold:1},icon:'◫',visual:'mirror',effect:'mirror'},
 
   {tileName:'DESK_LAMP',label:'Lampa kreślarska',description:'Regulowana lampa do planów, map i nocnych projektów technicznych.',tier:2,cost:{steel:1,glass:1,copperWire:1,torch:1},icon:'◒',visual:'desk_lamp',effect:'light'},
   {tileName:'RADIO',label:'Radio dalekiego zasięgu',description:'Domowy odbiornik z sześcioma proceduralnymi stacjami: od lo-fi i jazzu po synthwave, folk, ambient i chiptune.',tier:2,cost:{wood:2,copperWire:2,transistor:1},icon:'▣',visual:'radio',effect:'radio'},
@@ -42,12 +44,56 @@ const RAW = [
   {tileName:'COSMIC_ORRERY',label:'Kosmiczne planetarium',description:'Precyzyjny model nieznanego układu, którego planety poruszają się naprawdę.',tier:4,cost:{chronoClock:1,iridium:4,antimatter:2,meteorDust:5},icon:'⊙',visual:'cosmic_orrery',effect:'orbit',sound:'homeChime'}
 ];
 
+export const FURNISHING_PLACEMENTS = Object.freeze({
+  FLOOR:'floor',
+  FLOOR_OR_TABLE:'floor_or_table',
+  FLOOR_OR_CEILING:'floor_or_ceiling',
+  WALL:'wall',
+});
+
+// Placement is deliberately explicit for the exceptional silhouettes. Every
+// unlisted furnishing stands on the floor; small devices/decor may additionally
+// occupy the tile directly above the catalogue's table. Wall pieces use the
+// construction-background layer, while hanging decor may rest on the floor or
+// mount beneath real ceiling support, never on an unrelated side wall.
+const TABLETOP_NAMES=new Set([
+  'POTTED_FERN','AQUARIUM','TERRARIUM','HOLOGRAM_ART','DESK_LAMP','RADIO',
+  'TELEVISION','GAME_CONSOLE','COFFEE_MACHINE','MEMORY_PROJECTOR','CHRONO_CLOCK',
+  'MINIATURE_SUN','COSMIC_ORRERY'
+]);
+const WALL_NAMES=new Set(['WALL_SHELF','WALL_CLOCK','MIRROR']);
+const HANGING_NAMES=new Set(['CHANDELIER']);
+function placementForName(name){
+  if(WALL_NAMES.has(name)) return FURNISHING_PLACEMENTS.WALL;
+  if(HANGING_NAMES.has(name)) return FURNISHING_PLACEMENTS.FLOOR_OR_CEILING;
+  if(TABLETOP_NAMES.has(name)) return FURNISHING_PLACEMENTS.FLOOR_OR_TABLE;
+  return FURNISHING_PLACEMENTS.FLOOR;
+}
+
+// Energy units per simulated second. A solar panel reaches 0.18 E/s only near
+// clear noon; its full-day average is deliberately much lower. Small homes can
+// lean on solar, while continuous loads still reward storage plus wind/hydro.
+const HOME_POWER_DRAW=Object.freeze({
+  AQUARIUM:.03, HOLOGRAM_ART:.06, DESK_LAMP:.025, RADIO:.035,
+  TELEVISION:.06, GAME_CONSOLE:.05, REFRIGERATOR:.045, COFFEE_MACHINE:.08,
+  AIR_PURIFIER:.06, MEDICAL_STATION:.09, HEALING_POD:.14,
+  ZERO_G_LOUNGER:.10, MEMORY_PROJECTOR:.09, CHRONO_CLOCK:.08,
+  MINIATURE_SUN:.15, DREAM_SYNTH:.12, COSMIC_ORRERY:.10
+});
+
 const SPEC_BY_NAME = new Map(HOME_FURNISHING_TILE_SPECS.map(spec=>[spec[0],spec]));
 
 export const FURNISHINGS = Object.freeze(RAW.map(row=>{
   const spec=SPEC_BY_NAME.get(row.tileName);
   const tile=T[row.tileName];
   if(!spec || tile==null || !INFO[tile]) throw new Error('Invalid furnishing tile contract: '+row.tileName);
+  const placement=placementForName(row.tileName);
+  const powerDraw=Math.max(0,Number(HOME_POWER_DRAW[row.tileName])||0);
+  Object.assign(INFO[tile],{
+    furniturePlacement:placement,
+    requiresHomePower:powerDraw>0,
+    homePowerDraw:powerDraw
+  });
   return Object.freeze({
     id:row.tileName.toLowerCase(),
     key:spec[1],
@@ -66,6 +112,9 @@ export const FURNISHINGS = Object.freeze(RAW.map(row=>{
     color:spec[2],
     hp:spec[3],
     placeableInHome:true,
+    placement,
+    requiresPower:powerDraw>0,
+    powerDraw,
     homeRegenBonus:spec[4],
     lightLevel:Number(spec[6])||0
   });
@@ -89,6 +138,55 @@ export function getFurnishing(ref){
   return null;
 }
 export function isFurnishingTile(tile){ return FURNISHING_BY_TILE.has(Number(tile)); }
+
+export function placementFor(ref){
+  const def=getFurnishing(ref);
+  if(def) return def.placement;
+  const tile=Number(ref);
+  return INFO[tile] && INFO[tile].chair ? FURNISHING_PLACEMENTS.FLOOR : null;
+}
+
+function safeTile(getTile,x,y){
+  if(typeof getTile!=='function' || !Number.isFinite(x) || !Number.isFinite(y)) return T.AIR;
+  try{
+    const t=getTile(Math.floor(x),Math.floor(y));
+    return Number.isInteger(t) && INFO[t] ? t : T.AIR;
+  }catch(e){ return T.AIR; }
+}
+function floorSupportTile(t){ return isSolidCollisionTile(t); }
+function tableSupportTile(t){ return t===T.PINE_TABLE; }
+
+// Pure placement contract shared by the ghost preview and the actual placement
+// mutation. `getBackground` is the construction back-wall provider.
+export function validatePlacement(ref,x,y,getTile,opts={}){
+  const placement=placementFor(ref);
+  if(!placement) return {ok:true,applies:false};
+  if(typeof getTile!=='function') return {ok:false,applies:true,reason:'Brak danych o podparciu'};
+  const tx=Math.floor(Number(x)), ty=Math.floor(Number(y));
+  if(!Number.isFinite(tx) || !Number.isFinite(ty)) return {ok:false,applies:true,reason:'Nieprawidlowe miejsce'};
+  const below=safeTile(getTile,tx,ty+1), above=safeTile(getTile,tx,ty-1);
+  const floor=floorSupportTile(below), table=tableSupportTile(below);
+  if(placement===FURNISHING_PLACEMENTS.FLOOR) return floor
+    ? {ok:true,applies:true,support:'floor'}
+    : {ok:false,applies:true,reason:'Ten przedmiot musi stac na podlodze'};
+  if(placement===FURNISHING_PLACEMENTS.FLOOR_OR_TABLE) return floor||table
+    ? {ok:true,applies:true,support:table?'table':'floor'}
+    : {ok:false,applies:true,reason:'Postaw na podlodze albo bezposrednio na stole'};
+  if(placement===FURNISHING_PLACEMENTS.FLOOR_OR_CEILING){
+    if(floorSupportTile(above)) return {ok:true,applies:true,support:'ceiling'};
+    if(floor) return {ok:true,applies:true,support:'floor'};
+    return {ok:false,applies:true,reason:'Ten element wymaga podlogi pod nim albo sufitu bezposrednio nad nim'};
+  }
+  if(placement===FURNISHING_PLACEMENTS.WALL){
+    let background=T.AIR;
+    try{ if(typeof opts.getBackground==='function') background=opts.getBackground(tx,ty); }catch(e){ background=T.AIR; }
+    const wall=Number.isInteger(background) && !!INFO[background] && background!==T.AIR && isSolidCollisionTile(background);
+    return wall
+      ? {ok:true,applies:true,support:'wall'}
+      : {ok:false,applies:true,reason:'Ten przedmiot wymaga sciany w tle'};
+  }
+  return {ok:false,applies:true,reason:'Nieobslugiwany sposob montazu'};
+}
 
 // Exploration is the catalogue's primary progression track.  Distance is
 // deliberately based on |x| so travelling east and west is equally valuable;
@@ -161,7 +259,16 @@ export function furnishingTraderOffer(def){
 }
 
 export function furnishingTraderOffersForDistance(worldX,seed,count=2){
-  return selectFurnishingsForDistance(worldX,seed,count).map(furnishingTraderOffer).filter(Boolean);
+  const selected=selectFurnishingsForDistance(worldX,seed,count);
+  // Tier-two is the first expedition band where the mirror can be learned.
+  // Houses retain varied showcases, but every Ir-trader visit in this band has
+  // one guaranteed mirror slot so old saves and unlucky house rolls always have
+  // a deterministic discovery route without unlocking the recipe at spawn.
+  if(furnishingTierAtDistance(worldX)===2 && selected.length>=2){
+    const mirror=getByTile(T.MIRROR);
+    if(mirror && !selected.includes(mirror)) selected[selected.length-1]=mirror;
+  }
+  return selected.map(furnishingTraderOffer).filter(Boolean);
 }
 
 // Only the two best chest grades roll catalogue finds.  Epic chests provide a
@@ -199,6 +306,216 @@ export function findNearestRadio(player,getTile,range=3){
   return nearest;
 }
 
+function powerNetworkApi(power){ return power && (power.network||power.teleporters); }
+function powerNetworkTileProvider(getTile,power){
+  return power && typeof power.getNetworkTile==='function' ? power.getNetworkTile : getTile;
+}
+function availablePowerAt(x,y,getTile,power){
+  const network=powerNetworkApi(power);
+  const netGet=powerNetworkTileProvider(getTile,power);
+  if(network && typeof network.availableNetworkEnergyAt==='function'){
+    try{ return Math.max(0,Number(network.availableNetworkEnergyAt(x,y,netGet,power && power.dynamo))||0); }catch(e){}
+  }
+  // Small fallback for isolated tests/older saves: a source immediately beside
+  // the device is a valid direct connection even when the network helper is not
+  // present. Normal gameplay uses the canonical network API above.
+  let total=0;
+  for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+    const sx=x+dx, sy=y+dy, tile=safeTile(netGet,sx,sy);
+    if((tile===T.DYNAMO || tile===T.DYNAMO_SLOT) && power && power.dynamo && typeof power.dynamo.energyAt==='function'){
+      try{ total+=Math.max(0,Number(power.dynamo.energyAt(sx,sy,netGet))||0); }catch(e){}
+    }else if((tile===T.SOLAR_PANEL || tile===T.SOLAR_BATTERY) && power && power.solar && typeof power.solar.energyAt==='function'){
+      try{ total+=Math.max(0,Number(power.solar.energyAt(sx,sy,netGet))||0); }catch(e){}
+    }
+  }
+  return total;
+}
+
+const POWER_STATE_TTL_MS=1250;
+const POWER_SCAN_INTERVAL=.5;
+const POWER_RADIUS_X=20;
+const POWER_RADIUS_Y=14;
+const LOCAL_POWER_SECONDS=90;
+const POWER_REMOTE_INTERVAL=1;
+const POWER_CATCHUP_MAX_SECONDS=1800;
+const POWER_STATE_CAP=1600;
+const powerRuntime={scanT:0,remoteT:0,clockMs:0,states:new Map(),lastGetTile:null,scans:0,remoteTicks:0,visited:0,drained:0,changes:0,errors:0};
+
+function ensurePowerState(x,y,getTile,tileHint){
+  x=Math.floor(Number(x)); y=Math.floor(Number(y));
+  if(!Number.isFinite(x)||!Number.isFinite(y)) return null;
+  const tile=tileHint==null ? safeTile(getTile,x,y) : tileHint;
+  const def=getByTile(tile);
+  if(!def || !def.requiresPower) return null;
+  const k=x+','+y;
+  let state=powerRuntime.states.get(k);
+  if(!state){
+    if(powerRuntime.states.size>=POWER_STATE_CAP) return null;
+    state={x,y,tile,powered:false,at:powerRuntime.clockMs,draw:def.powerDraw,localEnergy:0};
+    powerRuntime.states.set(k,state);
+  }
+  state.x=x; state.y=y; state.tile=tile; state.draw=def.powerDraw;
+  state.localEnergy=Math.max(0,Number(state.localEnergy)||0);
+  return state;
+}
+
+export function isPoweredAt(x,y,getTile,power){
+  const tile=safeTile(getTile,x,y);
+  const def=getByTile(tile);
+  if(!def || !def.requiresPower) return true;
+  const k=Math.floor(x)+','+Math.floor(y);
+  const state=powerRuntime.states.get(k);
+  if(state && state.tile===tile && powerRuntime.clockMs-state.at<=POWER_STATE_TTL_MS) return !!state.powered;
+  if(!power) return false;
+  return availablePowerAt(Math.floor(x),Math.floor(y),getTile,power)>1e-6;
+}
+
+export function receiveElectricChargeAt(x,y,amount,getTile){
+  x=Math.floor(Number(x)); y=Math.floor(Number(y));
+  const tile=safeTile(getTile || (globalThis.MM && globalThis.MM.world && globalThis.MM.world.getTile),x,y);
+  const def=getByTile(tile);
+  if(!def || !def.requiresPower) return 0;
+  const state=ensurePowerState(x,y,getTile,tile);
+  if(!state) return 0;
+  const capacity=Math.max(.5,def.powerDraw*LOCAL_POWER_SECONDS);
+  const before=Math.max(0,Math.min(capacity,Number(state.localEnergy)||0));
+  state.localEnergy=Math.min(capacity,before+Math.max(0,Number(amount)||0));
+  if(state.localEnergy>before){ state.powered=true; state.at=powerRuntime.clockMs; }
+  return state.localEnergy-before;
+}
+
+function drainPowerAt(x,y,amount,getTile,power){
+  const want=Math.max(0,Number(amount)||0);
+  if(want<=0) return 0;
+  const network=powerNetworkApi(power);
+  const netGet=powerNetworkTileProvider(getTile,power);
+  if(network && typeof network.drainNetworkEnergyAt==='function'){
+    try{ return Math.max(0,Number(network.drainNetworkEnergyAt(x,y,want,netGet,power && power.dynamo,{fair:true}))||0); }catch(e){ powerRuntime.errors++; return 0; }
+  }
+  // Read-only power adapters can still drive visuals/tests; production always
+  // supplies drainNetworkEnergyAt so real sources pay the continuous cost.
+  return availablePowerAt(x,y,getTile,power)>1e-6 ? want : 0;
+}
+
+function tickPowerState(k,state,elapsed,getTile,power){
+  if(!state || !(elapsed>0)) return {changed:false,drained:0};
+  const x=Number.isFinite(state.x) ? state.x : +(k.slice(0,k.indexOf(',')));
+  const y=Number.isFinite(state.y) ? state.y : +(k.slice(k.indexOf(',')+1));
+  const tile=safeTile(getTile,x,y), def=getByTile(tile);
+  if(!def || !def.requiresPower || tile!==state.tile){
+    powerRuntime.states.delete(k);
+    return {changed:true,drained:0};
+  }
+  const wanted=Math.max(.000001,def.powerDraw*elapsed);
+  const local=Math.min(wanted,Math.max(0,Number(state.localEnergy)||0));
+  state.localEnergy=Math.max(0,(Number(state.localEnergy)||0)-local);
+  const paid=local+drainPowerAt(x,y,wanted-local,getTile,power);
+  const powered=paid+1e-8>=wanted;
+  const changed=state.powered!==powered;
+  if(changed){
+    state.powered=powered;
+    powerRuntime.changes++;
+    try{ if(power && typeof power.onStateChanged==='function') power.onStateChanged(x,y,powered,def); }catch(e){ powerRuntime.errors++; }
+  }
+  state.x=x; state.y=y; state.at=powerRuntime.clockMs; state.draw=def.powerDraw;
+  const drained=Math.min(wanted,paid);
+  powerRuntime.drained+=drained;
+  return {changed,drained};
+}
+
+export function updatePower(dt,player,getTile,power){
+  const step=Math.max(0,Math.min(1,Number(dt)||0));
+  powerRuntime.clockMs+=step*1000;
+  powerRuntime.lastGetTile=getTile;
+  if(!player || typeof getTile!=='function') return false;
+  const px=Math.floor(Number(player.x)), py=Math.floor(Number(player.y));
+  if(!Number.isFinite(px) || !Number.isFinite(py)) return false;
+  let changed=false;
+  powerRuntime.scanT-=step;
+  if(powerRuntime.scanT<=0){
+    powerRuntime.scanT=POWER_SCAN_INTERVAL;
+    powerRuntime.scans++;
+    for(let y=py-POWER_RADIUS_Y;y<=py+POWER_RADIUS_Y;y++){
+      for(let x=px-POWER_RADIUS_X;x<=px+POWER_RADIUS_X;x++){
+        powerRuntime.visited++;
+        const tile=safeTile(getTile,x,y), def=getByTile(tile);
+        if(!def || !def.requiresPower) continue;
+        ensurePowerState(x,y,getTile,tile);
+      }
+    }
+  }
+  powerRuntime.remoteT+=step;
+  const remoteStep=powerRuntime.remoteT>=POWER_REMOTE_INTERVAL ? powerRuntime.remoteT : 0;
+  if(remoteStep>0){ powerRuntime.remoteT=0; powerRuntime.remoteTicks++; }
+  // Drain continuously rather than in a half-second lump. This puts household
+  // electronics in the same per-frame fair allocator as pumps, turrets and
+  // teleporter batteries, so scan cadence cannot distort their network share.
+  for(const [k,state] of powerRuntime.states){
+    const x=Number.isFinite(state.x) ? state.x : 0;
+    const y=Number.isFinite(state.y) ? state.y : 0;
+    const nearby=Math.abs(x-px)<=POWER_RADIUS_X && Math.abs(y-py)<=POWER_RADIUS_Y;
+    const elapsed=nearby ? step : remoteStep;
+    if(!(elapsed>0)) continue;
+    if(tickPowerState(k,state,elapsed,getTile,power).changed) changed=true;
+  }
+  return changed;
+}
+
+export function catchUpPower(dt,getTile,power){
+  const elapsed=Math.max(0,Math.min(POWER_CATCHUP_MAX_SECONDS,Number(dt)||0));
+  if(!(elapsed>0) || typeof getTile!=='function') return false;
+  powerRuntime.clockMs+=elapsed*1000;
+  powerRuntime.lastGetTile=getTile;
+  let changed=false;
+  for(const [k,state] of powerRuntime.states){
+    if(tickPowerState(k,state,elapsed,getTile,power).changed) changed=true;
+  }
+  return changed;
+}
+
+export function onPowerTileChanged(x,y,oldTile,newTile,getTile){
+  const tx=Math.floor(Number(x)), ty=Math.floor(Number(y));
+  if(!Number.isFinite(tx)||!Number.isFinite(ty) || oldTile===newTile) return false;
+  const id=tx+','+ty;
+  const oldDef=getByTile(oldTile), nextDef=getByTile(newTile);
+  if(oldDef && oldDef.requiresPower && (!nextDef || !nextDef.requiresPower)) powerRuntime.states.delete(id);
+  if(nextDef && nextDef.requiresPower) return !!ensurePowerState(tx,ty,getTile,newTile);
+  return false;
+}
+
+export function snapshotPower(){
+  const getTile=powerRuntime.lastGetTile;
+  const list=[];
+  for(const state of powerRuntime.states.values()){
+    if(!state || !Number.isFinite(state.x)||!Number.isFinite(state.y)) continue;
+    if(getTile && safeTile(getTile,state.x,state.y)!==state.tile) continue;
+    const def=getByTile(state.tile);
+    if(!def || !def.requiresPower) continue;
+    list.push({x:state.x,y:state.y,tile:state.tile,powered:!!state.powered,energy:+Math.max(0,Number(state.localEnergy)||0).toFixed(3)});
+    if(list.length>=POWER_STATE_CAP) break;
+  }
+  return {v:1,list};
+}
+
+export function restorePower(data,getTile){
+  powerRuntime.states.clear();
+  powerRuntime.remoteT=0;
+  powerRuntime.lastGetTile=getTile;
+  const list=data && Array.isArray(data.list) ? data.list : [];
+  for(const raw of list.slice(0,POWER_STATE_CAP)){
+    if(!raw || !Number.isFinite(Number(raw.x)) || !Number.isFinite(Number(raw.y))) continue;
+    const x=Math.floor(raw.x), y=Math.floor(raw.y);
+    const tile=safeTile(getTile,x,y);
+    const state=ensurePowerState(x,y,getTile,tile);
+    if(!state) continue;
+    const capacity=Math.max(.5,state.draw*LOCAL_POWER_SECONDS);
+    state.localEnergy=Math.max(0,Math.min(capacity,Number(raw.energy)||0));
+    state.powered=!!raw.powered;
+    state.at=powerRuntime.clockMs;
+  }
+  return powerRuntime.states.size;
+}
+
 export const FURNISHING_RESOURCES = Object.freeze(FURNISHINGS.map(def=>Object.freeze({
   key:def.key,
   label:def.label,
@@ -207,6 +524,9 @@ export const FURNISHING_RESOURCES = Object.freeze(FURNISHINGS.map(def=>Object.fr
   furniture:true,
   placeableInHome:true,
   furnitureCategory:def.category,
+  placement:def.placement,
+  requiresPower:def.requiresPower,
+  powerDraw:def.powerDraw,
   homeRegenBonus:def.homeRegenBonus,
   ambientSound:def.sound,
   tier:def.tier,
@@ -230,9 +550,13 @@ export function createRecipes({inventory,notify}={}){
     tile:def.tile,
     tileName:def.tileName,
     placeableInHome:true,
+    placement:def.placement,
+    requiresPower:def.requiresPower,
+    powerDraw:def.powerDraw,
     homeRegenBonus:def.homeRegenBonus,
     ambientSound:def.sound,
-    home:{tile:def.tile,tier:def.tier,bonus:def.homeRegenBonus,category:def.category},
+    home:{tile:def.tile,tier:def.tier,bonus:def.homeRegenBonus,category:def.category,
+      placement:def.placement,requiresPower:def.requiresPower,powerDraw:def.powerDraw},
     desc:def.description,
     make(){
       bag[def.key]=Math.max(0,Number(bag[def.key])||0)+1;
@@ -324,6 +648,15 @@ export function drawTile(g,t,px,py,wx=0,wy=0){
     case 'wall_clock':
       rect(g,px+8,py+9,4,9,dark); circle(g,px+10,py+7,6,c,light,1); circle(g,px+10,py+7,4,'#f4e7c0');
       line(g,px+10,py+7,px+10,py+4,deep,1); line(g,px+10,py+7,px+13,py+8,deep,1); circle(g,px+10,py+16,2,'#e7bd57'); break;
+    case 'mirror': {
+      rect(g,px+3,py+1,14,18,'#6b4b2b'); rect(g,px+4,py+2,12,16,'#d3a85c');
+      const glass=g.createLinearGradient(px+5,py+3,px+15,py+17);
+      glass.addColorStop(0,'#dff7ff'); glass.addColorStop(.42,'#7298a9'); glass.addColorStop(1,'#243d4b');
+      rect(g,px+5,py+3,10,14,glass);
+      line(g,px+6,py+5,px+10,py+3,'rgba(255,255,255,.76)',1);
+      line(g,px+5,py+15,px+8,py+17,'rgba(84,126,145,.7)',1);
+      rect(g,px+8,py,4,1,'#efcc7a'); rect(g,px+8,py+19,4,1,deep); break;
+    }
     case 'aquarium':
       furnitureShadow(g,px,py,18); rect(g,px+1,py+4,18,14,'#274f63'); rect(g,px+2,py+5,16,11,'rgba(67,178,215,.72)'); rect(g,px+2,py+5,16,2,'#a7efff');
       rect(g,px+3,py+14,14,2,'#d1b574'); line(g,px+5,py+14,px+6,py+9,'#4a9f70',1); line(g,px+15,py+14,px+14,py+8,'#63b56d',1);
@@ -523,11 +856,24 @@ function drawEffectFor(g,def,px,py,s,now,seed){
   g.restore();
 }
 
+function drawPowerOff(g,def,px,py,s){
+  const u=s/TILE;
+  g.save();
+  g.globalCompositeOperation='source-over';
+  g.fillStyle='rgba(2,7,12,.34)';
+  g.fillRect(px+2*u,py+2*u,s-4*u,s-4*u);
+  circle(g,px+17*u,py+3*u,Math.max(.65,u),'#5f1920','#ff6670',Math.max(1,u*.7));
+  g.globalAlpha=.72;
+  fxLine(g,px+3*u,py+18*u,px+7*u,py+18*u,'#38434d',Math.max(1,u),1);
+  g.restore();
+}
+
 const EFFECT_CACHE_TTL_MS=240;
 const EFFECT_CACHE_MAX_ITEMS=512;
 const EFFECT_VIEW_MAX_X=192;
 const EFFECT_VIEW_MAX_Y=108;
 const effectCache={provider:null,key:'',expires:0,cells:[],scans:0,hits:0,visited:0,errors:0,truncated:false};
+const mirrorFallbackCache={provider:null,key:'',expires:0,cells:[],scans:0};
 
 export const FURNISHING_SOUND_PROFILES = Object.freeze({
   homeTick:Object.freeze({minMs:900,maxMs:1450}),
@@ -549,27 +895,27 @@ const audioRuntime={scanT:0,clockMs:0,nextBySound:new Map(),scans:0,visited:0,pl
 function resetEffectCache(){
   effectCache.provider=null; effectCache.key=''; effectCache.expires=0; effectCache.cells=[];
   effectCache.scans=0; effectCache.hits=0; effectCache.visited=0; effectCache.errors=0; effectCache.truncated=false;
+  mirrorFallbackCache.provider=null; mirrorFallbackCache.key=''; mirrorFallbackCache.expires=0;
+  mirrorFallbackCache.cells=[]; mirrorFallbackCache.scans=0;
 }
 export function resetRuntimeCaches(){
   resetEffectCache();
   audioRuntime.scanT=0; audioRuntime.clockMs=0; audioRuntime.nextBySound.clear();
   audioRuntime.scans=0; audioRuntime.visited=0; audioRuntime.plays=0; audioRuntime.errors=0; audioRuntime.lastCandidates=0;
+  powerRuntime.scanT=0; powerRuntime.remoteT=0; powerRuntime.clockMs=0; powerRuntime.states.clear(); powerRuntime.lastGetTile=null;
+  powerRuntime.scans=0; powerRuntime.remoteTicks=0; powerRuntime.visited=0; powerRuntime.drained=0; powerRuntime.changes=0; powerRuntime.errors=0;
 }
 export function runtimeMetrics(){
   return {
-    effects:{scans:effectCache.scans,hits:effectCache.hits,visited:effectCache.visited,cached:effectCache.cells.length,errors:effectCache.errors,truncated:effectCache.truncated},
-    audio:{scans:audioRuntime.scans,visited:audioRuntime.visited,plays:audioRuntime.plays,errors:audioRuntime.errors,candidates:audioRuntime.lastCandidates,scheduled:audioRuntime.nextBySound.size}
+    effects:{scans:effectCache.scans,hits:effectCache.hits,visited:effectCache.visited,cached:effectCache.cells.length,errors:effectCache.errors,truncated:effectCache.truncated,
+      mirrorFallbackScans:mirrorFallbackCache.scans,mirrorFallbackCached:mirrorFallbackCache.cells.length},
+    audio:{scans:audioRuntime.scans,visited:audioRuntime.visited,plays:audioRuntime.plays,errors:audioRuntime.errors,candidates:audioRuntime.lastCandidates,scheduled:audioRuntime.nextBySound.size},
+    power:{scans:powerRuntime.scans,remoteTicks:powerRuntime.remoteTicks,visited:powerRuntime.visited,drained:+powerRuntime.drained.toFixed(4),changes:powerRuntime.changes,errors:powerRuntime.errors,tracked:powerRuntime.states.size}
   };
 }
 
-export function drawEffects(g,tileSize,sx,sy,viewX,viewY,getTile,visible){
-  if(!g || typeof getTile!=='function') return false;
-  const size=Math.max(1,Math.min(512,Number(tileSize)||TILE));
-  const x0=Math.floor(Number(sx)||0), y0=Math.floor(Number(sy)||0);
-  const spanX=Math.min(EFFECT_VIEW_MAX_X,Math.max(1,Math.ceil(Number(viewX)||1)));
-  const spanY=Math.min(EFFECT_VIEW_MAX_Y,Math.max(1,Math.ceil(Number(viewY)||1)));
+function ensureEffectCache(getTile,x0,y0,spanX,spanY,now){
   const x1=x0+spanX+1, y1=y0+spanY+1;
-  const now=typeof performance!=='undefined' && performance.now ? performance.now() : Date.now();
   const cacheKey=x0+','+y0+','+x1+','+y1;
   if(effectCache.provider!==getTile || effectCache.key!==cacheKey || now>=effectCache.expires){
     effectCache.provider=getTile; effectCache.key=cacheKey; effectCache.expires=now+EFFECT_CACHE_TTL_MS;
@@ -586,18 +932,249 @@ export function drawEffects(g,tileSize,sx,sy,viewX,viewY,getTile,visible){
       }
     }
   }else effectCache.hits++;
+}
+
+export function drawEffects(g,tileSize,sx,sy,viewX,viewY,getTile,visible,power){
+  if(!g || typeof getTile!=='function') return false;
+  const size=Math.max(1,Math.min(512,Number(tileSize)||TILE));
+  const x0=Math.floor(Number(sx)||0), y0=Math.floor(Number(sy)||0);
+  const spanX=Math.min(EFFECT_VIEW_MAX_X,Math.max(1,Math.ceil(Number(viewX)||1)));
+  const spanY=Math.min(EFFECT_VIEW_MAX_Y,Math.max(1,Math.ceil(Number(viewY)||1)));
+  const now=typeof performance!=='undefined' && performance.now ? performance.now() : Date.now();
+  ensureEffectCache(getTile,x0,y0,spanX,spanY,now);
 
   let handled=false;
   for(const cell of effectCache.cells){
     let tile;
     try{ tile=getTile(cell.x,cell.y); }catch(e){ effectCache.errors++; continue; }
     const def=getByTile(tile);
-    if(!def || def.effect==='still') continue;
+    if(!def || def.effect==='still' || def.effect==='mirror') continue;
     if(typeof visible==='function'){
       try{ if(!visible(cell.x,cell.y)) continue; }catch(e){ effectCache.errors++; }
     }
     handled=true;
+    if(def.requiresPower && !isPoweredAt(cell.x,cell.y,getTile,power)){
+      drawPowerOff(g,def,cell.x*size,cell.y*size,size);
+      continue;
+    }
     drawEffectFor(g,def,cell.x*size,cell.y*size,size,now,(cell.x*31+cell.y*17)&255);
+  }
+  return handled;
+}
+
+// A full mirror invokes the canonical hero renderer (outfit, cape and weapon),
+// so bound duplicate work in deliberately mirror-spammed rooms. The nearest
+// four reflectable surfaces remain live; all other mirrors retain their static
+// reflective tile art. Rejected callbacks (range/occlusion) do not spend budget.
+const MIRROR_MAX_PER_FRAME=4;
+const MIRROR_CANDIDATE_MAX=16;
+const MIRROR_VISIBILITY_PROBE_MAX=64;
+
+function finitePlayerBody(player){
+  if(!player || !Number.isFinite(Number(player.x)) || !Number.isFinite(Number(player.y))) return null;
+  const w=Math.max(.2,Math.min(3,Number(player.w)||.8));
+  const h=Math.max(.4,Math.min(4,Number(player.h)||1.8));
+  const x=Number(player.x), y=Number(player.y);
+  return {x,y,w,h,left:x-w*.5,right:x+w*.5,top:y-h*.5,bottom:y+h*.5};
+}
+
+// A side-view mirror represents the foreground plane directly in front of it.
+// Merely being nearby is not enough: a useful slice of the hero's body must
+// overlap the mirror cell in both axes. This rejects adjacent floors and the
+// old "remote miniature" reflection seen through walls or from below.
+export function mirrorPlayerOverlap(player,x,y){
+  const body=finitePlayerBody(player);
+  x=Math.floor(Number(x)); y=Math.floor(Number(y));
+  if(!body || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const overlapX=Math.max(0,Math.min(body.right,x+1)-Math.max(body.left,x));
+  const overlapY=Math.max(0,Math.min(body.bottom,y+1)-Math.max(body.top,y));
+  if(overlapX<Math.min(.10,body.w*.18) || overlapY<Math.min(.12,body.h*.12)) return null;
+  return {body,overlapX,overlapY,area:overlapX*overlapY};
+}
+
+export function mirrorSubjectProjection(player,mirror){
+  if(!mirror || !Number.isFinite(Number(mirror.x)) || !Number.isFinite(Number(mirror.y))) return null;
+  const hit=mirrorPlayerOverlap(player,mirror.x,mirror.y);
+  if(!hit) return null;
+  const glassW=Math.max(1,Number(mirror.glassW)||10);
+  const glassH=Math.max(1,Number(mirror.glassH)||14);
+  const centerX=Number.isFinite(Number(mirror.centerX)) ? Number(mirror.centerX) : (Number(mirror.x)+.5)*TILE;
+  const centerY=Number.isFinite(Number(mirror.centerY)) ? Number(mirror.centerY) : (Number(mirror.y)+.5)*TILE;
+  const dx=Math.max(-1,Math.min(1,(hit.body.x-(Number(mirror.x)+.5))/(.5+hit.body.w*.5)));
+  const dy=Math.max(-1,Math.min(1,(hit.body.y-(Number(mirror.y)+.5))/(.5+hit.body.h*.5)));
+  const fit=Math.min(glassW/(hit.body.w*TILE*1.06),glassH/(hit.body.h*TILE*1.04));
+  return {
+    scale:Math.max(.12,Math.min(.72,fit)),
+    // Horizontal motion is optically reversed; vertical motion is preserved.
+    centerX:centerX-dx*glassW*.28,
+    centerY:centerY+dy*glassH*.28,
+    overlapX:hit.overlapX,
+    overlapY:hit.overlapY
+  };
+}
+
+export function findMirrorAtPlayer(player,getTile){
+  const body=finitePlayerBody(player);
+  if(!body || typeof getTile!=='function') return null;
+  const left=Math.floor(body.left+.001), right=Math.floor(body.right-.001);
+  const top=Math.floor(body.top+.001), bottom=Math.floor(body.bottom-.001);
+  let best=null;
+  for(let y=top;y<=bottom;y++){
+    for(let x=left;x<=right;x++){
+      let tile;
+      try{ tile=getTile(x,y); }catch(e){ continue; }
+      if(tile!==T.MIRROR) continue;
+      const hit=mirrorPlayerOverlap(player,x,y);
+      if(hit && (!best || hit.area>best.area)) best={x,y,area:hit.area,overlapX:hit.overlapX,overlapY:hit.overlapY};
+    }
+  }
+  return best;
+}
+
+function fallbackMirrorCells(getTile,x0,y0,spanX,spanY,px,py,now,maxDistance){
+  const radius=Math.max(2,Math.min(24,Number(maxDistance)||10));
+  const left=Math.max(x0,Math.floor(px-radius-1));
+  const right=Math.min(x0+spanX+1,Math.ceil(px+radius+1));
+  const top=Math.max(y0,Math.floor(py-radius-1));
+  const bottom=Math.min(y0+spanY+1,Math.ceil(py+radius+1));
+  if(right<left || bottom<top) return [];
+  const key=left+','+top+','+right+','+bottom+','+Math.floor(px)+','+Math.floor(py);
+  if(mirrorFallbackCache.provider===getTile && mirrorFallbackCache.key===key && now<mirrorFallbackCache.expires){
+    return mirrorFallbackCache.cells;
+  }
+  const found=[];
+  for(let y=top;y<=bottom;y++){
+    for(let x=left;x<=right;x++){
+      let tile;
+      try{ tile=getTile(x,y); }catch(e){ effectCache.errors++; continue; }
+      if(tile!==T.MIRROR) continue;
+      const dx=x+.5-px, dy=y+.5-py;
+      found.push({x,y,tile,dist2:dx*dx+dy*dy});
+    }
+  }
+  found.sort((a,b)=>a.dist2-b.dist2 || a.y-b.y || a.x-b.x);
+  mirrorFallbackCache.provider=getTile;
+  mirrorFallbackCache.key=key;
+  mirrorFallbackCache.expires=now+EFFECT_CACHE_TTL_MS;
+  mirrorFallbackCache.cells=found.slice(0,MIRROR_VISIBILITY_PROBE_MAX).map(({x,y,tile})=>({x,y,tile}));
+  mirrorFallbackCache.scans++;
+  return mirrorFallbackCache.cells;
+}
+
+// Mirrors are composited after actors and machines. The callback deliberately
+// owns the reflected subject so this catalogue module stays independent of the
+// hero renderer, while the clip guarantees even a faulty callback cannot paint
+// outside the glass. Repainting the narrow inner rim keeps the cached pixel-art
+// frame crisp above the live reflection.
+export function drawMirrors(g,tileSize,sx,sy,viewX,viewY,getTile,visible,opts={}){
+  if(!g || typeof getTile!=='function' || typeof opts.renderReflection!=='function') return false;
+  const size=Math.max(1,Math.min(512,Number(tileSize)||TILE));
+  const x0=Math.floor(Number(sx)||0), y0=Math.floor(Number(sy)||0);
+  const spanX=Math.min(EFFECT_VIEW_MAX_X,Math.max(1,Math.ceil(Number(viewX)||1)));
+  const spanY=Math.min(EFFECT_VIEW_MAX_Y,Math.max(1,Math.ceil(Number(viewY)||1)));
+  const now=typeof performance!=='undefined' && performance.now ? performance.now() : Date.now();
+  ensureEffectCache(getTile,x0,y0,spanX,spanY,now);
+
+  const player=opts.player;
+  const px=player && Number.isFinite(Number(player.x)) ? Number(player.x) : x0+spanX*.5;
+  const py=player && Number.isFinite(Number(player.y)) ? Number(player.y) : y0+spanY*.5;
+  // A tall actor can geometrically cross two stacked cells. Only the mirror
+  // with the largest covered area is the active foreground plane; rendering
+  // every intersected tile would duplicate the hero and shimmer on ties.
+  const activeMirror=findMirrorAtPlayer(player,getTile);
+  if(!activeMirror) return false;
+  const sourceCells=effectCache.truncated
+    ? fallbackMirrorCells(getTile,x0,y0,spanX,spanY,px,py,now,opts.maxDistance)
+    : effectCache.cells;
+  const candidates=[];
+  for(const cell of sourceCells){
+    // The shared cache can contain hundreds of other animated furnishings.
+    // Its recorded tile is safe as a fast rejection; only former mirror cells
+    // need one live read to reject removal/replacement during the short TTL.
+    if(cell.tile!==T.MIRROR) continue;
+    if(cell.x!==activeMirror.x || cell.y!==activeMirror.y) continue;
+    const dx=cell.x+.5-px, dy=cell.y+.5-py;
+    candidates.push({cell,dist2:dx*dx+dy*dy});
+  }
+  candidates.sort((a,b)=>a.dist2-b.dist2 || a.cell.y-b.cell.y || a.cell.x-b.cell.x);
+
+  const mirrors=[];
+  for(const candidate of candidates.slice(0,MIRROR_VISIBILITY_PROBE_MAX)){
+    const {cell,dist2}=candidate;
+    if(typeof visible==='function'){
+      try{ if(!visible(cell.x,cell.y)) continue; }catch(e){ effectCache.errors++; continue; }
+    }
+    let tile;
+    try{ tile=getTile(cell.x,cell.y); }catch(e){ effectCache.errors++; continue; }
+    if(tile!==T.MIRROR) continue;
+    mirrors.push({cell,dist2});
+    if(mirrors.length>=MIRROR_CANDIDATE_MAX) break;
+  }
+
+  let handled=false;
+  let liveReflections=0;
+  const u=size/TILE;
+  for(const entry of mirrors){
+    if(liveReflections>=MIRROR_MAX_PER_FRAME) break;
+    const {x,y}=entry.cell;
+    const tileX=x*size, tileY=y*size;
+    const glassX=tileX+5*u, glassY=tileY+3*u;
+    const glassW=10*u, glassH=14*u;
+    const mirrorGeometry={x,y,size,glassX,glassY,glassW,glassH,centerX:glassX+glassW*.5,centerY:glassY+glassH*.52};
+    const projection=mirrorSubjectProjection(player,mirrorGeometry);
+    if(!projection) continue;
+    let reflected=false;
+    g.save();
+    try{
+      g.beginPath();
+      g.rect(glassX,glassY,glassW,glassH);
+      g.clip();
+      const glass=g.createLinearGradient(glassX,glassY,glassX+glassW,glassY+glassH);
+      glass.addColorStop(0,'#dff7ff');
+      glass.addColorStop(.48,'#688c9d');
+      glass.addColorStop(1,'#203745');
+      g.fillStyle=glass;
+      g.fillRect(glassX,glassY,glassW,glassH);
+      try{
+        reflected=opts.renderReflection(g,{
+          ...mirrorGeometry,
+          distance:Math.sqrt(entry.dist2),
+          projection
+        })!==false;
+      }catch(e){ effectCache.errors++; }
+      if(reflected) liveReflections++;
+
+      // A cool tint integrates the reflected sprite with the glass rather than
+      // making it look pasted on. The travelling streak gives immediate visual
+      // feedback that this is a live surface even while the hero stands still.
+      g.globalCompositeOperation='source-over';
+      g.fillStyle=reflected?'rgba(113,180,205,.16)':'rgba(105,153,173,.22)';
+      g.fillRect(glassX,glassY,glassW,glassH);
+      const sweepPeriod=glassW+glassH;
+      const rawSweep=now*.018+x*13+y*7;
+      const sweep=((rawSweep%sweepPeriod)+sweepPeriod)%sweepPeriod-glassH;
+      g.strokeStyle='rgba(240,253,255,.30)';
+      g.lineWidth=Math.max(.7,u*.75);
+      g.beginPath();
+      g.moveTo(glassX+sweep,glassY+glassH);
+      g.lineTo(glassX+sweep+glassH,glassY);
+      g.stroke();
+      handled=true;
+    }finally{
+      g.restore();
+    }
+
+    g.save();
+    try{
+      g.globalCompositeOperation='source-over';
+      g.strokeStyle='rgba(244,218,153,.92)';
+      g.lineWidth=Math.max(.75,u*.8);
+      g.strokeRect(glassX+.35*u,glassY+.35*u,glassW-.7*u,glassH-.7*u);
+      g.fillStyle='rgba(255,255,238,.88)';
+      g.fillRect(glassX+1*u,glassY+1*u,Math.max(1,u),Math.max(1,u));
+    }finally{
+      g.restore();
+    }
   }
   return handled;
 }
@@ -615,7 +1192,7 @@ function soundDelayMs(sound,x,y,cycle,first=false){
 // Sparse positional one-shots are intentionally used instead of permanent
 // loops. They retain a lived-in soundscape without accumulating WebAudio nodes
 // in large houses, and only the nearest copy of a sound family can speak.
-export function updateAudio(dt,player,getTile,audio){
+export function updateAudio(dt,player,getTile,audio,power){
   const step=Math.max(0,Math.min(1,Number(dt)||0));
   audioRuntime.clockMs+=step*1000;
   if(!audio || typeof audio.play!=='function' || typeof getTile!=='function' || !player) return false;
@@ -637,14 +1214,16 @@ export function updateAudio(dt,player,getTile,audio){
       try{ tile=getTile(x,y); }catch(e){ audioRuntime.errors++; continue; }
       const def=getByTile(tile);
       const dist2=(x-px)*(x-px)+(y-py)*(y-py);
-      if(def && def.tile===T.RADIO && (!nearestRadio || dist2<nearestRadio.dist2)) nearestRadio={x,y,dist2};
+      const powered=!!(def && (!def.requiresPower || isPoweredAt(x,y,getTile,power)));
+      if(def && def.tile===T.RADIO && (!nearestRadio || dist2<nearestRadio.dist2)) nearestRadio={x,y,dist2,powered};
+      if(def && def.requiresPower && !powered) continue;
       if(!def || !def.sound || !FURNISHING_SOUND_PROFILES[def.sound]) continue;
       const old=nearest.get(def.sound);
       if(!old || dist2<old.dist2) nearest.set(def.sound,{sound:def.sound,x,y,dist2});
     }
   }
   try{
-    if(nearestRadio && typeof audio.setRadioSource==='function') audio.setRadioSource(nearestRadio.x+.5,nearestRadio.y+.5);
+    if(nearestRadio && typeof audio.setRadioSource==='function') audio.setRadioSource(nearestRadio.x+.5,nearestRadio.y+.5,{powered:nearestRadio.powered});
     else if(!nearestRadio && typeof audio.clearRadioSource==='function') audio.clearRadioSource();
   }catch(e){ audioRuntime.errors++; }
   const candidates=[...nearest.values()].sort((a,b)=>a.dist2-b.dist2 || a.sound.localeCompare(b.sound));
@@ -676,6 +1255,16 @@ export const furnishings = {
   getByKey,
   getFurnishing,
   isFurnishingTile,
+  placementFor,
+  validatePlacement,
+  placements:FURNISHING_PLACEMENTS,
+  isPoweredAt,
+  receiveElectricChargeAt,
+  updatePower,
+  catchUpPower,
+  onTileChanged:onPowerTileChanged,
+  snapshotPower,
+  restorePower,
   furnishingTierAtDistance,
   selectFurnishingsForDistance,
   furnishingTraderOffer,
@@ -689,6 +1278,10 @@ export const furnishings = {
   drawTile,
   drawPreview,
   drawEffects,
+  drawMirrors,
+  mirrorPlayerOverlap,
+  mirrorSubjectProjection,
+  findMirrorAtPlayer,
   updateAudio,
   resetRuntimeCaches,
   soundProfiles:FURNISHING_SOUND_PROFILES,

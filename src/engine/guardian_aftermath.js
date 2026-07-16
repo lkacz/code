@@ -131,7 +131,7 @@ const guardianAftermath = (function(){
   function isProtected(t){
     if(t === T.AIR) return false;
     const info = tileInfo(t);
-    if(t === T.TORCH || t === T.GRAVE || t === T.WIRE || t === T.COPPER_WIRE ||
+    if(t === T.TORCH || t === T.GRAVE || t === T.WIRE || t === T.COPPER_WIRE || t === T.SILVER_WIRE ||
       t === T.WATER_PIPE || t === T.LADDER || t === T.BEDROCK_LADDER) return true;
     if(isRelicStructureTile(t)) return true;
     return isBlastProtectedTile(t) || !!(info.chestTier || info.machine || info.story || info.unmineable);
