@@ -1040,6 +1040,93 @@ async function main(){
 			v => v < t0.preyHp0, 'the turret defends the guest (fires on the creature) with the host far away', 40, 250);
 		await host.eval(`(()=>{ MM.world.setTile(${t0.tx}, ${t0.ty}, MM.T.AIR); MM.mobs.clearAll && MM.mobs.clearAll(); return 1; })()`);
 		console.log('party turret: ok (' + t0.prey + ' hp ' + t0.preyHp0 + '→' + preyHurt.toFixed(1) + ' with the host ' + t0.hostDist.toFixed(0) + ' tiles away)');
+		// --- Scene 10k: Wave B — real guest weapons (host-resolved, body-attributed) -------------------
+		// The arsenal is HOST state streamed via pvit; the chips only NAME a kind. The
+		// host validates ownership + cooldown + pouch ammo, then resolves through the
+		// real combat chains — creatures only, never a tile, never the host's chests
+		// or ult. Hardness now sets mining speed (dirt fast, stone slow).
+		const arms = await ghost.eval(`(()=>{ const p=MM.ghostClient.metrics().play; return {weapons:p.weapons, arm:p.arm, arrows:p.pouch.arrowWood||0}; })()`);
+		if(JSON.stringify(arms.weapons) !== JSON.stringify(['fists', 'sword', 'bow'])) throw new Error('guest arsenal not streamed: ' + JSON.stringify(arms));
+		if(!(arms.arrows >= 30)) throw new Error('starter arrows missing from the pouch: ' + JSON.stringify(arms));
+		const ticks = await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies[0];
+			const bx=Math.round(b.x), floorRow=Math.ceil(b.y+0.46);
+			MM.world.setTile(bx+6, floorRow+1, MM.T.STONE); // support so the dirt cannot cascade away
+			MM.world.setTile(bx+5, floorRow, MM.T.STONE);
+			MM.world.setTile(bx+6, floorRow, MM.T.DIRT);
+			return { stone: MM.ghostBridge.ghostPlayMineTicks(bx+5, floorRow), dirt: MM.ghostBridge.ghostPlayMineTicks(bx+6, floorRow) };
+		})()`);
+		if(!(ticks.stone > ticks.dirt && ticks.dirt >= 1)) throw new Error('hardness does not set guest mining speed: ' + JSON.stringify(ticks));
+		// sword: a calm grazer beside the body takes a host-resolved swing. Aim reads the
+		// LIVE creature position each try — a provoked grazer may bolt out of reach.
+		const wb = await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies[0];
+			const floorRow=Math.ceil(b.y+0.46);
+			const SP=MM.mobs._debugSpecies();
+			const calm=Object.keys(SP).filter(id=>{ const s=SP[id]; return s && s.ground && !s.aquatic && !s.flying && !s.alwaysAggro && !(s.dmg>0) && (s.hp||0)>=8 && (s.hp||0)<=1000; })
+				.sort((a,b)=>SP[b].hp-SP[a].hp);
+			let prey=null;
+			for(const id of calm){ try{ if(MM.mobs.forceSpawn(id, {x:b.x+1.5, y:floorRow-1}, MM.world.getTile)){ prey=id; break; } }catch(e){} }
+			const m=prey ? MM.mobs.serialize().list.find(v=>v.id===prey) : null;
+			const bx=Math.round(b.x);
+			let tiles=0; for(let x=bx-8;x<=bx+8;x++) for(let y=floorRow-5;y<=floorRow+1;y++) if(MM.world.getTile(x,y)!==MM.T.AIR) tiles++;
+			return {prey, hp0:m?m.hp:0, tiles, strikes:MM.ghostHost.metrics().stats.playStrikes};
+		})()`);
+		if(!wb.prey) throw new Error('setup: could not spawn a sword target');
+		await ghost.eval(`MM.ghostClient._playArm('sword')`);
+		const readPrey = (id) => host.eval(`(()=>{ const m=MM.mobs.serialize().list.find(v=>v.id==='${id}'); return m?{x:+m.x.toFixed(2),y:+m.y.toFixed(2),hp:m.hp}:null; })()`);
+		let swordHp = wb.hp0;
+		for(let i = 0; i < 6 && !(swordHp < wb.hp0); i++){
+			const m = await readPrey(wb.prey);
+			if(!m) break;
+			swordHp = m.hp;
+			if(swordHp < wb.hp0) break;
+			await ghost.eval(`MM.ghostClient._playAct('attack', (${m.x}), (${m.y}), 'sword')`);
+			await sleep(700); // sword cooldown between tries
+		}
+		{ const m = await readPrey(wb.prey); if(m) swordHp = Math.min(swordHp, m.hp); }
+		if(!(swordHp < wb.hp0)) throw new Error('the guest sword never landed on ' + wb.prey + ' (hp stayed ' + wb.hp0 + ')');
+		console.log('play sword: ok (' + wb.prey + ' hp ' + wb.hp0 + '→' + swordHp.toFixed(1) + ' via host-resolved coop melee)');
+		// a weapon the body does NOT own is refused host-side (no strike is counted)
+		const strikes0 = await host.eval(`MM.ghostHost.metrics().stats.playStrikes`);
+		await ghost.eval(`MM.ghostClient._playAct('attack', 0, 0, 'nuke')`);
+		await sleep(450);
+		if((await host.eval(`MM.ghostHost.metrics().stats.playStrikes`)) !== strikes0) throw new Error('an unowned weapon produced a strike');
+		// bow: arrows fly on HOST physics and spend pouch ammo; live-aim a fresh grazer
+		const bowT = await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies[0];
+			const floorRow=Math.ceil(b.y+0.46);
+			const SP=MM.mobs._debugSpecies();
+			const calm=Object.keys(SP).filter(id=>{ const s=SP[id]; return s && s.ground && !s.aquatic && !s.flying && !s.alwaysAggro && !(s.dmg>0) && (s.hp||0)>=8 && (s.hp||0)<=1000 && id!=='${wb.prey}'; })
+				.sort((a,b)=>SP[b].hp-SP[a].hp);
+			let prey=null;
+			for(const id of calm){ try{ if(MM.mobs.forceSpawn(id, {x:b.x-3, y:floorRow-1}, MM.world.getTile)){ prey=id; break; } }catch(e){} }
+			const m=prey ? MM.mobs.serialize().list.find(v=>v.id===prey) : null;
+			return {prey, hp0:m?m.hp:0};
+		})()`);
+		if(!bowT.prey) throw new Error('setup: could not spawn a bow target');
+		let bowHp = bowT.hp0;
+		for(let i = 0; i < 6 && !(bowHp < bowT.hp0); i++){
+			const m = await readPrey(bowT.prey);
+			if(!m) break;
+			bowHp = m.hp;
+			if(bowHp < bowT.hp0) break;
+			await ghost.eval(`MM.ghostClient._playAct('attack', (${m.x}), (${(m.y - 0.3).toFixed(2)}), 'bow')`);
+			await sleep(950); // bow cooldown + arrow flight
+		}
+		{ const m = await readPrey(bowT.prey); if(m) bowHp = Math.min(bowHp, m.hp); }
+		if(!(bowHp < bowT.hp0)) throw new Error('the guest arrow never landed on ' + bowT.prey + ' (hp stayed ' + bowT.hp0 + ')');
+		const arrowsLeft = await ghost.poll(`MM.ghostClient.metrics().play.pouch.arrowWood||0`, v => v < arms.arrows, 'the spent arrows left the pouch', 20, 250);
+		// the whole weapons exchange edited NO tile — combat is creatures-only
+		const tilesAfter = await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies[0];
+			const bx=Math.round(b.x), floorRow=Math.ceil(b.y+0.46);
+			let tiles=0; for(let x=bx-8;x<=bx+8;x++) for(let y=floorRow-5;y<=floorRow+1;y++) if(MM.world.getTile(x,y)!==MM.T.AIR) tiles++;
+			return tiles;
+		})()`);
+		if(tilesAfter !== wb.tiles) throw new Error('guest weapons edited the world: tiles ' + wb.tiles + ' → ' + tilesAfter);
+		await host.eval(`MM.mobs.clearAll && MM.mobs.clearAll();`);
+		console.log('play bow: ok (' + bowT.prey + ' hp ' + bowT.hp0 + '→' + bowHp.toFixed(1) + ', arrows ' + arms.arrows + '→' + arrowsLeft + ', zero tiles touched, unknown weapon refused)');
 		// --- damage & death: a host-side hurt drains the guest hp; demote returns to spectator
 		await host.eval(`(()=>{ const s=MM.ghostHost; const gid='${gidPlay}'; MM.__qaHurt=()=>{}; return 1; })()`);
 		await ghost.shot('tools/ghost-qa-play.png');

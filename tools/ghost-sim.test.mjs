@@ -186,9 +186,28 @@ assert.ok(NET.modeAllows('chat', 'chat') && !NET.modeAllows('chat', 'full'), 'ch
 assert.ok(!NET.modeAllows('watch', 'chat') && !NET.modeAllows('bogus', 'watch'), 'watch is the floor, garbage denies');
 
 // --- play mode: the embodied guest (full multiplayer) ---------------------------------
-assert.deepEqual(NET.PLAY_ACTIONS, ['mine', 'place', 'strike'], 'a player mines, builds and fights — nothing that bypasses the host');
+assert.deepEqual(NET.PLAY_ACTIONS, ['mine', 'place', 'strike', 'attack'], 'a player mines, builds and fights — nothing that bypasses the host');
 assert.ok(NET.validPlayAction('mine') && !NET.validPlayAction('setTile') && !NET.validPlayAction('teleport'), 'play actions validate');
 assert.ok(NET.PLAY_RULES.REACH > 0 && NET.PLAY_RULES.MAX_HP > 0 && NET.PLAY_RULES.MINE_TICKS >= 1, 'play rules are sane');
+// --- the guest arsenal: host-owned whitelist, host-side resolution --------------------
+assert.deepEqual(NET.PLAY_STARTER_WEAPONS, ['fists', 'sword', 'bow'], 'the starter kit: fists, a sword, a bow');
+for(const k of NET.PLAY_STARTER_WEAPONS){
+	const w = NET.PLAY_WEAPONS[k];
+	assert.ok(w && w.cdMs >= NET.PLAY_RULES.ATTACK_MS, k + ' exists and cools down no faster than the global floor');
+	if(w.melee) assert.ok(w.reach >= 1 && w.reach <= 4 && w.dmg >= 0 && w.dmg <= 40, k + ' melee stats are bounded');
+	else assert.ok(w.ammo && typeof w.ammo === 'string' && w.dmg >= 1 && w.dmg <= 30, k + ' ranged needs ammo and bounded damage');
+}
+assert.ok(NET.validPlayWeapon('sword') && NET.validPlayWeapon('bow'), 'owned kinds validate');
+assert.ok(!NET.validPlayWeapon('nuke') && !NET.validPlayWeapon('__proto__') && !NET.validPlayWeapon(7), 'unknown/prototype/garbage weapons rejected');
+assert.ok(NET.PLAY_STARTER_AMMO.arrowWood > 0 && NET.PLAY_WEAPONS.bow.ammo === 'arrowWood', 'the bow shoots the starter wood arrows from the pouch');
+// the host derives every projectile from a normalized direction — never client velocity
+{
+	const v = NET.playAimDir(10, 10, 14, 7);
+	assert.ok(v && Math.abs(Math.hypot(v.dx, v.dy) - 1) < 1e-9, 'aim normalizes to a unit vector');
+	assert.equal(NET.playAimDir(10, 10, 10, 10), null, 'aiming at your own feet is degenerate');
+	assert.equal(NET.playAimDir(10, 10, NaN, 5), null, 'garbage aim is rejected');
+	assert.equal(NET.playAimDir(NaN, 10, 14, 7), null, 'garbage body coords are rejected');
+}
 // reach is Chebyshev around the BODY, and it is the host that measures it
 assert.ok(NET.playReachOk(10, 10, 12, 8, 5) && !NET.playReachOk(10, 10, 17, 10, 5), 'reach gate: inside vs beyond');
 assert.ok(!NET.playReachOk(NaN, 10, 12, 8, 5), 'garbage body coords deny the reach');
@@ -1005,6 +1024,70 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 		'a turret near an embodied guest stays awake even with the host far away');
 	assert.ok(/if\(coop\) for\(const b of coop\)\{ if\(!b\.dead\) scanNearby\(b,getTile\); \}/.test(tur),
 		'turret discovery also scans around guest bodies');
+}
+
+// --- Wave B: real guest weapons — host-resolved, body-attributed, creature-only ---------------------
+// The strike stub grows into an arsenal: the guest NAMES an owned weapon and a world
+// aim; the host checks ownership, cooldown and pouch ammo against ITS body state and
+// resolves the blow through the real combat chains in weapons.js, attributed 'coop'.
+// Nothing a guest fires may touch a tile, open a chest, or feed the host's ult.
+{
+	const w = readFileSync(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
+	// melee resolves through the hero's own attackAt fan-out, credited 'coop'
+	const cm = w.slice(w.indexOf('function coopMeleeAt'), w.indexOf('function spawnCoopArrow'));
+	assert.ok(/meleeTargetTile\(body,aimX,aimY,reach,false\)/.test(cm), 'coop melee clamps its target into the weapon reach box');
+	assert.ok(/MM\.mobs\.attackAt\(tx,ty,bonus,\{source:'coop'\}\)/.test(cm) && /MM\.invasions\.attackAt/.test(cm) && /MM\.guardianLairs\.attackAt/.test(cm),
+		'coop melee runs the real creature chains with coop attribution');
+	assert.ok(!/setTile\(|openChestFromWeaponHit\(|collectLooseTarget\(|addUltCharge\(|MM\.npcSystem\.|MM\.centerGuardian\./.test(cm),
+		'coop melee: no tiles, no chests, no pickups, no host ult, no villagers, no center mimic');
+	assert.ok(/noteCoopSwing\(tx,ty,tx>=px\?1:-1\)/.test(cm), 'a guest swing is visible (coop swing FX)');
+	// arrows join the ONE shared projectile array, tagged for attribution
+	const ca = w.slice(w.indexOf('function spawnCoopArrow'), w.indexOf('function ghostFxState'));
+	assert.ok(/recoverable:false, coopOwner:true/.test(ca), 'a coop arrow is owner-tagged and never drops a host pickup');
+	assert.ok(!/setTile/.test(ca), 'spawning a coop arrow touches no tile');
+	// in-flight gates: attribution + no host ult + no chest opening + no glass breaking
+	assert.ok(/source:a\.coopOwner\?'coop':'hero'/.test(w), 'arrow damage carries the owner as its source');
+	assert.ok(/if\(!a\.coopOwner\) addUltCharge\(0\.08\);/.test(w), 'only the hero’s own shots feed the hero’s ult');
+	assert.ok(/!a\.spent && !a\.coopOwner && openChestFromWeaponHit/.test(w), 'a coop arrow cannot open the host’s chests');
+	assert.ok(/!a\.coopOwner && t===T\.GLASS && shatterGlassAt/.test(w), 'a coop arrow cannot break glass (combat edits no tile)');
+	// the FX mirror carries per-body swings; the watcher-side step stays damage-free
+	assert.ok(/st\.cw=coopSwings\.map/.test(w) && /coopSwings\.length=0;\s*\n\s*for\(const s of \(Array\.isArray\(st\.cw\)/.test(w),
+		'coop swings stream through the weapon-FX mirror and are rebuilt sanitized');
+	assert.ok(/coopMeleeAt,spawnCoopArrow,/.test(w), 'the two coop entry points are published on MM.weapons');
+	// a coop blow provokes like the hero's, but pays no hero-power bookkeeping
+	const nds = mobsSrc2.slice(mobsSrc2.indexOf('function noteDamageSource'), mobsSrc2.indexOf('function nearestCompanionTarget'));
+	assert.ok(/String\(opts\.source\|\|''\)==='coop'\)\{[\s\S]{0,300}markHeroAttack\(m\);/.test(nds)
+		&& !/String\(opts\.source\|\|''\)==='coop'\)\{[\s\S]{0,300}_heroPowerSeen/.test(nds),
+		'a coop hit provokes retaliation without feeding hero-threat profiling');
+	// host authority: ownership, cooldown and ammo are HOST state
+	assert.ok(/weapons: NET\.PLAY_STARTER_WEAPONS\.slice\(\),\s*\n\s*pouch: Object\.assign\(\{\}, NET\.PLAY_STARTER_AMMO\)/.test(hostSrc),
+		'the body spawns with the starter arsenal and starter ammo (host state)');
+	assert.ok(/NET\.validPlayWeapon\(key\) && Array\.isArray\(b\.weapons\) && b\.weapons\.includes\(key\)/.test(hostSrc),
+		'an attack intent must name a weapon the body actually OWNS');
+	assert.ok(/Math\.max\(NET\.PLAY_RULES\.ATTACK_MS, spec\.cdMs\)/.test(hostSrc), 'per-weapon cooldown stacks on the global floor');
+	assert.ok(/if\(!\(Number\(b\.pouch\[spec\.ammo\]\) > 0\)\)/.test(hostSrc) && /NET\.pouchTake\(b\.pouch, spec\.ammo, 1\);/.test(hostSrc),
+		'ranged fire spends ammo from the host-owned pouch before anything flies');
+	assert.ok(/bridge\.ghostPlayAttack\(\{ x: b\.x, y: b\.y, facing: b\.f < 0 \? -1 : 1 \}, spec, ax, ay\)/.test(hostSrc),
+		'the blow originates at the HOST-tracked body pose, never a client claim');
+	assert.ok(/sendDeed\(entry, 'hit', 1\); \/\/ guest marksmanship pays guest XP/.test(hostSrc),
+		'landed guest hits pay guest progression XP, not host progression');
+	// tool parity: the mine tick need derives from the real tile hardness
+	assert.ok(/bridge\.ghostPlayMineTicks \? \(bridge\.ghostPlayMineTicks\(tx, ty\) \| 0\) : 0;/.test(hostSrc)
+		&& /Math\.min\(NET\.PLAY_RULES\.MINE_TICKS_MAX, derived\)/.test(hostSrc),
+		'mine ticks come from the hardness seam, clamped, with the flat rule as fallback');
+	assert.ok(/ghostPlayMineTicks:\(tx,ty\)=>\{/.test(mainSrc) && /const seconds=hp\/6\/tools\.basic;/.test(mainSrc),
+		'the hardness seam obeys the same INFO.hp/6 law as the local miner');
+	const gpa = mainSrc.slice(mainSrc.indexOf('ghostPlayAttack:'), mainSrc.indexOf('ghostPlayMineTicks:'));
+	assert.ok(/coopMeleeAt/.test(gpa) && /spawnCoopArrow/.test(gpa) && !/setTile\(/.test(gpa),
+		'the bridge attack seam resolves through weapons.js and touches no tile');
+	// client: the chips only NAME an owned weapon; the wire carries float aim for arrows
+	assert.ok(/a === 'attack'\s*\n?\s*\? \{ t: 'pact', a, x: \+Number\(wx\)\.toFixed\(1\), y: \+Number\(wy\)\.toFixed\(1\) \}/.test(clientSrc),
+		'attack intents aim at world floats (tile intents stay integer cells)');
+	assert.ok(/sendPlayAct\('attack', w\.x, w\.y, play\.arm \|\| 'fists'\);/.test(clientSrc),
+		'LMB in open air swings/shoots the ARMED weapon');
+	assert.ok(/play\.weapons = Array\.isArray\(pl\.weapons\)/.test(clientSrc) && /function renderArms\(\)/.test(clientSrc),
+		'the arsenal chips render from host-streamed pvit truth');
+	assert.ok(/_playArm: \(key\) => \{ play\.arm = key; renderArms\(\); \}/.test(clientSrc), 'the QA arm seam exists');
 }
 
 console.log('ghost-sim: all assertions passed');

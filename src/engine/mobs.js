@@ -6217,6 +6217,11 @@ const mobs = (function(){
         m._heroPowerSeen=Math.max(Number(m._heroPowerSeen)||0,p.power);
         m._heroLevelSeen=Math.max(Number(m._heroLevelSeen)||1,p.level);
       }catch(e){}
+    } else if(opts && typeof opts==='object' && String(opts.source||'')==='coop'){
+      // a co-op guest's blow provokes retaliation exactly like the hero's — the mob
+      // turns hostile and then hunts the NEAREST party member — but pays none of
+      // the hero-power bookkeeping (progression weighs the host only, by design)
+      markHeroAttack(m);
     }
   }
   function nearestCompanionTarget(wx,wy,range,opts){

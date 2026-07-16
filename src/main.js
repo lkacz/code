@@ -16124,6 +16124,29 @@ MM.ghostBridge={
 		try{ if(MOBS && MOBS.blastRadius) hits+=MOBS.blastRadius(x,y,rad,amount,{source:'ghost',kind:'strike'})|0; }catch(e){}
 		try{ if(INVASIONS && INVASIONS.damageAt && INVASIONS.damageAt(Math.floor(x),Math.floor(y),amount,{source:'ghost'})) hits++; }catch(e){}
 		return hits;
+	},
+	// Guest weapons: the host already validated ownership, cooldown and ammo against
+	// its own body state — this seam only resolves the blow through the REAL combat
+	// chains in weapons.js, attributed 'coop' (no host ult, no chests, no tiles).
+	ghostPlayAttack:(body,spec,aimX,aimY)=>{
+		const W=MM.weapons;
+		if(!W || !body || !spec || !Number.isFinite(aimX) || !Number.isFinite(aimY)) return {ok:false, reason:'error'};
+		if(spec.melee){
+			const hit=!!(W.coopMeleeAt && W.coopMeleeAt(body,aimX,aimY,{bonus:spec.dmg,reach:spec.reach}));
+			return {ok:true, hits:hit?1:0};
+		}
+		const ok=!!(W.spawnCoopArrow && W.spawnCoopArrow(body,aimX,aimY,{dmg:spec.dmg,speed:spec.speed}));
+		return {ok, hits:0, ranged:true};
+	},
+	// Tool parity for guest mining: the tick need per tile derives from the SAME
+	// hardness the local miner uses (need = INFO.hp/6 seconds at tool speed 1); a
+	// guest digs with the basic pick and each accepted intent is one MINE_MS beat.
+	ghostPlayMineTicks:(tx,ty)=>{
+		if(!worldCellInBounds(tx,ty)) return 0;
+		const info=INFO[getTile(tx,ty)];
+		const hp=Math.max(0.6,Number(info && info.hp)||1);
+		const seconds=hp/6/tools.basic;
+		return Math.max(1,Math.min(12,Math.round(seconds/0.15)));
 	}
 };
 if(MM.ghostMode){ try{ GHOST_CLIENT.boot(MM.ghostBridge); }catch(e){ console.warn('ghost client boot failed',e); } }

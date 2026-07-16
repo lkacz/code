@@ -84,7 +84,7 @@ const ghostClient = (function(){
 	// own body, simulated locally (movement feels instant) while the HOST owns the
 	// vitals, the pouch and every world edit. The host hero moves into remoteHost
 	// and is painted like any other remote body.
-	const play = { on: false, spawned: false, dead: false, sel: null, pouch: {}, mineHold: null, prog: 0, progAt: null, jumpBufT: 0, coyoteT: 0 };
+	const play = { on: false, spawned: false, dead: false, sel: null, pouch: {}, weapons: [], arm: 'fists', mineHold: null, prog: 0, progAt: null, jumpBufT: 0, coyoteT: 0 };
 	const remoteHost = { has: false, x: 0, y: 0, vx: 0, vy: 0, f: 1, dx: 0, dy: 0 };
 	const bodies = []; // fellow embodied guests, eased like the spirits
 	let timersPlay = { pose: 0, mine: 0 };
@@ -299,6 +299,10 @@ const ghostClient = (function(){
 				}
 			}
 			if(play.sel && !(play.pouch[play.sel] > 0)) play.sel = null;
+			// the arsenal is display truth from the host — the chips only pick which
+			// OWNED weapon the next attack intent names
+			play.weapons = Array.isArray(pl.weapons) ? pl.weapons.slice(0, 8).filter(w => typeof w === 'string' && w !== '__proto__').map(w => w.slice(0, 16)) : [];
+			if(play.weapons.length && !play.weapons.includes(play.arm)) play.arm = play.weapons[0];
 			renderPouch();
 			return;
 		}
@@ -331,6 +335,8 @@ const ghostClient = (function(){
 				} else { play.prog = 0; play.progAt = null; }
 			}
 			if(!pl.ok && pl.reason === 'cost') bridge.msg('🎒 Brak surowca w sakwie — wykop go najpierw');
+			if(!pl.ok && pl.reason === 'ammo') bridge.msg('🏹 Brak strzał w sakwie');
+			if(!pl.ok && pl.reason === 'weapon') bridge.msg('⚔️ Nie masz tej broni');
 			return;
 		}
 		if(pl.t === 'deed'){
@@ -998,7 +1004,11 @@ const ghostClient = (function(){
 	// pouch and world truth are all re-checked by the host before a tile changes.
 	function sendPlayAct(a, wx, wy, key){
 		if(state !== 'live' || !play.on || !play.spawned || play.dead) return false;
-		const pl = { t: 'pact', a, x: Math.floor(wx), y: Math.floor(wy) };
+		// weapons aim at world floats (an arrow needs a direction, not a cell);
+		// tile intents stay integer cells
+		const pl = a === 'attack'
+			? { t: 'pact', a, x: +Number(wx).toFixed(1), y: +Number(wy).toFixed(1) }
+			: { t: 'pact', a, x: Math.floor(wx), y: Math.floor(wy) };
 		if(key) pl.key = key;
 		conn.send(pl);
 		noteInput();
@@ -1012,13 +1022,13 @@ const ghostClient = (function(){
 			sendPlayAct('place', w.x, w.y, play.sel);
 			return;
 		}
-		// LMB: solid target = start mining hold; open air = melee strike
+		// LMB: solid target = start mining hold; open air = swing/shoot the ARMED weapon
 		if(bridge.solidAt(Math.floor(w.x), Math.floor(w.y), 'y')){
 			play.mineHold = { cx: clientX, cy: clientY };
 			sendPlayAct('mine', w.x, w.y);
 			timersPlay.mine = nowMs();
 		} else {
-			sendPlayAct('strike', w.x, w.y);
+			sendPlayAct('attack', w.x, w.y, play.arm || 'fists');
 		}
 	}
 	// --- input ownership: watchers must not reach the game's handlers ---------------------
@@ -1167,6 +1177,7 @@ const ghostClient = (function(){
 			+ '<button class="gbPower" data-kind="banish">💀 Popłoch</button>'
 			+ '<button class="gbPower" data-kind="frost">❄️ Mróz</button>'
 			+ '<button class="gbPower" data-kind="smite">⚡ Grom</button>'
+			+ '<span id="gbArms" style="display:none;align-items:center;gap:3px;"></span>'
 			+ '<span id="gbPouch" style="display:none;align-items:center;gap:3px;flex-wrap:wrap;"></span>'
 			+ '<button id="gbPing">📍 Wskaż</button>'
 			+ '<button id="gbAssist" style="display:none;">🛠 Asystent</button>'
@@ -1208,6 +1219,29 @@ const ghostClient = (function(){
 		});
 		barTick = setInterval(updateBar, 500);
 		updateBar();
+	}
+	// Weapon chips: the guest's host-owned arsenal. The armed kind is only what the
+	// next LMB-in-air attack intent NAMES — ownership, cooldown and ammo stay host
+	// truth, so clicking chips can never make an attack the host would refuse honor.
+	function renderArms(){
+		if(!bar) return;
+		const box = bar.querySelector('#gbArms');
+		if(!box) return;
+		box.style.display = play.on ? 'inline-flex' : 'none';
+		box.textContent = '';
+		if(!play.on) return;
+		for(const k of play.weapons.slice(0, 8)){
+			const spec = (NET.PLAY_WEAPONS && Object.prototype.hasOwnProperty.call(NET.PLAY_WEAPONS, k)) ? NET.PLAY_WEAPONS[k] : null;
+			const armed = play.arm === k;
+			const chip = document.createElement('button');
+			chip.style.cssText = 'border:1px solid ' + (armed ? '#7ad7ff' : 'rgba(255,255,255,.2)') + ';border-radius:999px;'
+				+ 'background:' + (armed ? 'rgba(122,215,255,.25)' : 'rgba(255,255,255,.08)') + ';color:#e6f0fb;padding:3px 8px;font-size:10px;font-weight:700;white-space:nowrap;';
+			const ammo = spec && spec.ammo ? ' ' + (play.pouch[spec.ammo] || 0) : '';
+			chip.textContent = (spec ? spec.icon + ' ' + spec.label : k) + ammo;
+			chip.title = armed ? 'W dłoni — LPM w powietrze atakuje' : 'Kliknij, by wziąć do ręki';
+			chip.addEventListener('click', () => { noteInput(); play.arm = k; renderArms(); });
+			box.appendChild(chip);
+		}
 	}
 	// Pouch chips: the guest's host-owned resources, click to arm one for building.
 	function renderPouch(){
@@ -1256,6 +1290,7 @@ const ghostClient = (function(){
 		bar.querySelector('#gbAvatar').textContent = AVATAR_ICONS[avatar] || '👻';
 		const t = nowMs();
 		renderPouch();
+		renderArms();
 		// in embodiment the bar is a PLAYER hud (pouch + hands), so the spectator
 		// influence controls (blessings, powers) step aside to reduce clutter
 		const spectatorControls = !play.on;
@@ -1557,6 +1592,7 @@ const ghostClient = (function(){
 			assistRecipes: assistState && Array.isArray(assistState.recipes) ? assistState.recipes.length : 0,
 			play: {
 				on: play.on, spawned: play.spawned, dead: play.dead, sel: play.sel,
+				arm: play.arm, weapons: play.weapons.slice(),
 				pouch: Object.assign({}, play.pouch),
 				x: play.on ? +(bridge && bridge.player ? bridge.player.x : 0).toFixed(2) : null,
 				y: play.on ? +(bridge && bridge.player ? bridge.player.y : 0).toFixed(2) : null,
@@ -1580,6 +1616,7 @@ const ghostClient = (function(){
 		// host validation and the pouch accounting are all still the production ones
 		_playAct: (a, x, y, key) => sendPlayAct(a, x, y, key),
 		_playSelect: (key) => { play.sel = key; renderPouch(); },
+		_playArm: (key) => { play.arm = key; renderArms(); },
 		// QA: deterministically halt the embodied hero (clears held keys + velocity).
 		// Synthetic keyup events do not reliably clear `held` under headless CDP.
 		_playStop: () => { held.clear(); if(play.on && bridge && bridge.player){ bridge.player.vx = 0; } },

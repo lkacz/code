@@ -641,8 +641,12 @@ const ghostHost = (function(){
 		entry.body = {
 			x: p.x, y: p.y - 0.2, vx: 0, vy: 0, f: 1,
 			hp: NET.PLAY_RULES.MAX_HP, maxHp: NET.PLAY_RULES.MAX_HP,
-			pouch: {}, dead: false, respawnAt: 0, invulUntil: now() + 1500,
-			mine: null, lastMineAt: 0, lastPlaceAt: 0, lastStrikeAt: 0, lastPoseAt: 0, disp: null
+			// the arsenal is HOST state: starter kit now, acquired gear in the crafting
+			// wave — a client-side claim to any other weapon dies in handlePlayAct
+			weapons: NET.PLAY_STARTER_WEAPONS.slice(),
+			pouch: Object.assign({}, NET.PLAY_STARTER_AMMO),
+			dead: false, respawnAt: 0, invulUntil: now() + 1500,
+			mine: null, lastMineAt: 0, lastPlaceAt: 0, lastStrikeAt: 0, lastAttackAt: 0, lastPoseAt: 0, disp: null
 		};
 		sendVitals(s, entry);
 		try{ bridge.msg('🎮 ' + (entry.name || 'Duch') + ' wciela się w twoją warstwę!'); }catch(e){ /* fine */ }
@@ -657,7 +661,7 @@ const ghostHost = (function(){
 	function sendVitals(s, entry){
 		const b = entry.body;
 		if(!b) return;
-		try{ entry.peer.send({ t: 'pvit', hp: +b.hp.toFixed(1), mhp: b.maxHp, dead: b.dead ? 1 : 0, pouch: Object.assign({}, b.pouch) }); }catch(e){ /* going away */ }
+		try{ entry.peer.send({ t: 'pvit', hp: +b.hp.toFixed(1), mhp: b.maxHp, dead: b.dead ? 1 : 0, pouch: Object.assign({}, b.pouch), weapons: (b.weapons || []).slice(0, 8) }); }catch(e){ /* going away */ }
 	}
 	// The one damage inlet for a guest body (mob contact today, hazards tomorrow):
 	// i-frames live HERE, knockback is advisory (the guest applies the impulse to
@@ -688,6 +692,34 @@ const ghostHost = (function(){
 		if(!b || entry.mode !== 'play'){ entry.peer.send({ t: 'pactAck', a: pl.a, ok: false, reason: 'perm' }); return; }
 		if(b.dead){ entry.peer.send({ t: 'pactAck', a: pl.a, ok: false, reason: 'dead' }); return; }
 		if(!NET.validPlayAction(pl.a)){ entry.peer.send({ t: 'pactAck', a: pl.a, ok: false, reason: 'action' }); return; }
+		if(pl.a === 'attack'){
+			// weapons aim at world floats and bypass the tile-reach gate: melee clamps to
+			// its own reach host-side, arrows fly on host physics. Ownership, cooldown and
+			// ammo are all HOST state — a modified client can spam names, not effects.
+			const tA = now();
+			const key = typeof pl.key === 'string' ? pl.key.slice(0, 16) : '';
+			const spec = (NET.validPlayWeapon(key) && Array.isArray(b.weapons) && b.weapons.includes(key)) ? NET.PLAY_WEAPONS[key] : null;
+			if(!spec){ entry.peer.send({ t: 'pactAck', a: 'attack', ok: false, reason: 'weapon', key }); return; }
+			if(tA - (b.lastAttackAt || 0) < Math.max(NET.PLAY_RULES.ATTACK_MS, spec.cdMs)) return; // silent — held fire just retries
+			const ax = Number(pl.x), ay = Number(pl.y);
+			if(!Number.isFinite(ax) || !Number.isFinite(ay)) return;
+			if(!spec.melee && !NET.playAimDir(b.x, b.y, ax, ay)) return; // degenerate arrow aim
+			if(spec.ammo){
+				if(!(Number(b.pouch[spec.ammo]) > 0)){ entry.peer.send({ t: 'pactAck', a: 'attack', ok: false, reason: 'ammo', key }); return; }
+				NET.pouchTake(b.pouch, spec.ammo, 1);
+			}
+			b.lastAttackAt = tA;
+			let res = null;
+			try{ res = bridge.ghostPlayAttack({ x: b.x, y: b.y, facing: b.f < 0 ? -1 : 1 }, spec, ax, ay); }catch(e){ res = null; }
+			const hits = (res && res.hits) | 0;
+			if(hits > 0){
+				s.stats.playStrikes++;
+				sendDeed(entry, 'hit', 1); // guest marksmanship pays guest XP — never host progression
+			}
+			if(spec.ammo) sendVitals(s, entry); // the spent arrow shows up in the pouch chips
+			entry.peer.send({ t: 'pactAck', a: 'attack', ok: !!(res && res.ok), key, hits });
+			return;
+		}
 		const tx = Math.floor(Number(pl.x)), ty = Math.floor(Number(pl.y));
 		if(!Number.isFinite(tx) || !Number.isFinite(ty)) return;
 		if(!NET.playReachOk(b.x, b.y, tx, ty)){ entry.peer.send({ t: 'pactAck', a: pl.a, ok: false, reason: 'reach', x: tx, y: ty }); return; }
@@ -695,11 +727,20 @@ const ghostHost = (function(){
 		if(pl.a === 'mine'){
 			if(t - b.lastMineAt < NET.PLAY_RULES.MINE_MS) return; // silent — the hold-to-mine loop just retries
 			b.lastMineAt = t;
-			// progress is HOST state per (body, cell): switching cells restarts it
-			if(!b.mine || b.mine.x !== tx || b.mine.y !== ty) b.mine = { x: tx, y: ty, n: 0 };
+			// progress is HOST state per (body, cell): switching cells restarts it. The
+			// tick need derives from the tile's REAL hardness (the same INFO.hp law the
+			// local miner obeys) — stone digs slower than dirt for a guest too.
+			if(!b.mine || b.mine.x !== tx || b.mine.y !== ty){
+				let need = NET.PLAY_RULES.MINE_TICKS;
+				try{
+					const derived = bridge.ghostPlayMineTicks ? (bridge.ghostPlayMineTicks(tx, ty) | 0) : 0;
+					if(derived >= 1) need = Math.min(NET.PLAY_RULES.MINE_TICKS_MAX, derived);
+				}catch(e){ /* flat fallback */ }
+				b.mine = { x: tx, y: ty, n: 0, need };
+			}
 			b.mine.n++;
-			if(b.mine.n < NET.PLAY_RULES.MINE_TICKS){
-				entry.peer.send({ t: 'pactAck', a: 'mine', ok: true, progress: +(b.mine.n / NET.PLAY_RULES.MINE_TICKS).toFixed(2), x: tx, y: ty });
+			if(b.mine.n < (b.mine.need || NET.PLAY_RULES.MINE_TICKS)){
+				entry.peer.send({ t: 'pactAck', a: 'mine', ok: true, progress: +(b.mine.n / (b.mine.need || NET.PLAY_RULES.MINE_TICKS)).toFixed(2), x: tx, y: ty });
 				return;
 			}
 			b.mine = null;

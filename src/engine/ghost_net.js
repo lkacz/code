@@ -79,10 +79,40 @@ export const PLAY_RULES = {
 	MAX_HP: 80,
 	HURT_INVUL_MS: 600,
 	RESPAWN_MS: 6000,
-	POUCH_CAP: 999    // per-resource ceiling in the host-owned pouch
+	POUCH_CAP: 999,   // per-resource ceiling in the host-owned pouch
+	ATTACK_MS: 240,   // global per-body floor between weapon intents (per-weapon cd stacks on top)
+	MINE_TICKS_MAX: 12 // hardness-derived tick need is clamped into [1, this]
 };
-export const PLAY_ACTIONS = ['mine', 'place', 'strike'];
+export const PLAY_ACTIONS = ['mine', 'place', 'strike', 'attack'];
 export function validPlayAction(a){ return PLAY_ACTIONS.includes(a); }
+// --- the guest arsenal -------------------------------------------------------------
+// Curated starter templates, resolved HOST-side through the real combat chains
+// (weapons.js coopMeleeAt / spawnCoopArrow). Ownership lives on the host body
+// (body.weapons); a modified client can name any kind it likes — the host only
+// honors what the body actually owns, at the weapon's own cooldown, spending ammo
+// from the host-owned pouch. Real acquired gear arrives with the crafting wave;
+// the combat plumbing (this table, the intent shape, body attribution) is final.
+export const PLAY_WEAPONS = {
+	fists: { melee: true,  label: 'Pięści', icon: '👊', dmg: 0, reach: 2, cdMs: 450 },
+	sword: { melee: true,  label: 'Miecz',  icon: '🗡️', dmg: 6, reach: 2, cdMs: 550 },
+	bow:   { melee: false, label: 'Łuk',    icon: '🏹', dmg: 6, cdMs: 750, ammo: 'arrowWood', speed: 15 }
+};
+export const PLAY_STARTER_WEAPONS = ['fists', 'sword', 'bow'];
+export const PLAY_STARTER_AMMO = { arrowWood: 40 };
+export function validPlayWeapon(k){
+	return typeof k === 'string' && Object.prototype.hasOwnProperty.call(PLAY_WEAPONS, k) && k !== '__proto__';
+}
+// Normalized aim direction from the body to a claimed world point — null when the
+// claim is degenerate (non-finite, or on top of the body). The HOST derives every
+// projectile from this, so a hostile client cannot smuggle velocity or position.
+export function playAimDir(bx, by, aimX, aimY){
+	const ax = Number(aimX), ay = Number(aimY);
+	if(!Number.isFinite(bx) || !Number.isFinite(by) || !Number.isFinite(ax) || !Number.isFinite(ay)) return null;
+	const dx = ax - bx, dy = ay - by;
+	const d = Math.hypot(dx, dy);
+	if(!(d > 0.05)) return null;
+	return { dx: dx / d, dy: dy / d };
+}
 export function playReachOk(bx, by, tx, ty, reach){
 	if(!Number.isFinite(bx) || !Number.isFinite(by) || !Number.isFinite(tx) || !Number.isFinite(ty)) return false;
 	const r = Number.isFinite(reach) ? reach : PLAY_RULES.REACH;
@@ -862,6 +892,7 @@ const api = {
 	GHOST_PROTO, BUFF_RULES, MQTT_BROKERS,
 	SOCIAL_RULES, socialBoosts, PERMISSION_MODES, validPermissionMode, modeAllows, AVATARS, validAvatar, CHAT, filterChat,
 	PLAY_RULES, PLAY_ACTIONS, validPlayAction, playReachOk, clampBodyStep, pouchAdd, pouchTake,
+	PLAY_WEAPONS, PLAY_STARTER_WEAPONS, PLAY_STARTER_AMMO, validPlayWeapon, playAimDir,
 	SPIRIT_AVOID, spiritLift, PING,
 	DREAD, dreadAt, POWER_RULES, POWER_CHARGE, validPowerKind, chargeAfter, ASSIST_ACTIONS, validAssistAction,
 	ASSIST_LIMITS, clampCraftCount, createAssistQueue,

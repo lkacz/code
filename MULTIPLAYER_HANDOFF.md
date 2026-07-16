@@ -144,22 +144,27 @@ host; `applySeparation` shoulders only the host aside (bodies are guest-authorit
 — by design, not a gap); guardian storm targeting aims at the host (hazard hit-tests
 still cover bodies).
 
-### Wave B — Guest combat & tool parity (the big one — give it a full session)
-The `strike` stub (`PLAY_RULES.STRIKE_DMG`) becomes real weapons.
-- `src/engine/weapons.js` is built around ONE hero: `fireHeld/releaseHeld/fireUlt`,
-  module-level projectile/FX arrays, ult charge, and `MM.weapons.ghostFxState/
-  ghostApplyFx/ghostStepFx` (the spectator FX mirror — currently host-hero-only).
-- Recommended shape: keep resolution host-side. Guest sends a richer intent
-  (`{t:'pact', a:'attack', kind, x, y}` with `kind` validated against a whitelist of
-  weapons the guest actually owns, host-side). The host spawns the projectile/swing
-  through the real weapons systems **attributed to the body** (source tagging so ult
-  charge, XP, and knockback credit the right hero and so friendly fire policy is
-  enforceable in one place).
-- Generalize the weapon-FX mirror to carry per-body FX (swings/arrows from any hero),
-  so spectators and fellow players see guests fight.
-- Mining speed by tool tier: replace flat `MINE_TICKS` with a host-side per-tile
-  ticks table derived from the same hardness data the host miner uses.
-- A minimal guest hotbar UI in `#ghostBar` (the pouch-chip pattern already there).
+### Wave B — Guest combat & tool parity — ✅ DONE (2026-07-16)
+Shipped: the strike stub became a host-owned arsenal. `NET.PLAY_WEAPONS` (fists /
+sword / bow starter templates; acquisition arrives with Wave C) + `validPlayWeapon`
++ `playAimDir`; the body spawns with `weapons` + starter `arrowWood` ammo in the
+pouch, both streamed via `pvit`. The `attack` intent (`{a:'attack', key, x, y}` —
+float aim) bypasses the tile-reach gate but is validated host-side for ownership,
+`max(ATTACK_MS, cdMs)` cooldown and pouch ammo, then resolves through
+`bridge.ghostPlayAttack` → `MM.weapons.coopMeleeAt` (the hero's real attackAt
+fan-out, minus chests/pickups/npcSystem/centerGuardian) or `spawnCoopArrow` (the
+ONE shared projectile array, `coopOwner`-tagged: `source:'coop'`, no host ult, no
+chest opening, no glass shattering, `recoverable:false`). A coop hit provokes
+retaliation (`noteDamageSource` marks heroFocus for `source:'coop'`) without
+feeding hero-threat profiling; landed hits pay the guest the `hit` deed. Mining
+ticks now derive from real hardness (`ghostPlayMineTicks` = INFO.hp/6 law, dirt=1
+tick, stone≈4). FX: `coopSwings` (cap 8) stream as `st.cw` in the weapon-FX
+mirror; guest arrows mirror for free via the shared array. Client: `#gbArms`
+weapon chips (armed kind = what the next intent names), LMB-in-air attacks with
+the armed weapon, `_playArm` QA seam. QA scene 10k. **Consciously deferred:**
+guest ult (per-body charge + UI), spears/streams/electric/thrown for guests,
+arrow-kill deed credit (only melee hits pay today, ranged kills pay nothing),
+knockback from guest blows uses the chain defaults, weapon durability.
 
 ### Wave C — Guest crafting, inventory & gear
 - Craft from the guest's own pouch, equip its own gear. Reuse the assistant
