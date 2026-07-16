@@ -2999,6 +2999,15 @@ window.heroDied=function(cause){
 	try{ window.dispatchEvent(new CustomEvent('mm-hero-died',{detail:{cause:String(cause||'damage')}})); }catch(e){}
 	if(HERO_STATUS && HERO_STATUS.clearAll) HERO_STATUS.clearAll(); // death sheds every elemental status
 	player.hurtFlashUntil=Math.max(player.hurtFlashUntil||0, performance.now()+HURT_FLASH_MS);
+	// A hero-mode GUEST dies by its own law MINUS the grave: the grave is a WORLD
+	// mechanic (a tile + a persisted marker) and the guest's world is a replica —
+	// a local grave would be wiped by the host's stream and the halved resources
+	// lost forever. Guest-local truth keeps its inventory; the travel still plays.
+	if(MM.ghostHeroIntents){
+		updateInventory();
+		startDeathTravelFx(cause);
+		return;
+	}
 	if(cause==='alien_invasion' && INVASIONS && INVASIONS.onHeroKilled){
 		const stolen=INVASIONS.onHeroKilled({player, inv, resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, getTile, setTile, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst});
 		if(stolen && stolen.handled){

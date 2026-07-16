@@ -807,6 +807,10 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	assert.ok(/window\.damageHero\(amt, \{ cause:/.test(clientSrc), 'forwarded wounds run the real hero damage pipeline (armor parity)');
 	assert.ok(/if\(hero\.on\) return; \/\/ hero mode: the REAL game handlers own every key/.test(clientSrc),
 		'hero mode hands the input back to the real game');
+	// death: the grave is a WORLD mechanic — a hero guest keeps its inventory
+	// (a replica-local grave would be stream-wiped and the halved resources lost)
+	assert.ok(/if\(MM\.ghostHeroIntents\)\{\s*updateInventory\(\);\s*startDeathTravelFx\(cause\);\s*return;/.test(mainSrc),
+		'a hero guest dies without the grave — no resource halving into a replica tile');
 }
 
 // …which is exactly why Kopiuj must RELEASE the focus it took: select() leaves the
