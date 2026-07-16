@@ -726,9 +726,13 @@ async function main(){
 		// guarantees the on-disk profile is current when the reload reads it.
 		await ghost.front();
 		await sleep(700); // let the foregrounded pump drain the deed queue into the profile
-		const diskState = await ghost.eval(`(()=>{ MM.ghostClient._flushForTest(); try{ return (JSON.parse(localStorage.getItem(MM.ghostNet.PROG_KEY)||'{}').xp)|0; }catch(e){ return -1; } })()`);
-		const memState = await ghost.eval(`MM.ghostClient.metrics().prog.xp`);
-		if(diskState < memState) throw new Error('the forced flush did not reach disk: mem=' + memState + ' disk=' + diskState);
+		// flush and read mem+disk ATOMICALLY in one eval — deeds keep banking on the
+		// pump, so two separate reads would race (disk at T1 vs mem at T2>T1) and lie
+		const flushCheck = await ghost.eval(`(()=>{ MM.ghostClient._flushForTest();
+			const mem=MM.ghostClient.metrics().prog.xp|0;
+			let disk=-1; try{ disk=(JSON.parse(localStorage.getItem(MM.ghostNet.PROG_KEY)||'{}').xp)|0; }catch(e){}
+			return {mem, disk}; })()`);
+		if(flushCheck.disk < flushCheck.mem) throw new Error('the forced flush did not reach disk: ' + JSON.stringify(flushCheck));
 		// Never eval an awaited promise across the navigation: the old execution context
 		// dies mid-flight and that CDP request would never answer. Poll a plain
 		// expression until the NEW context has booted instead.
@@ -827,14 +831,23 @@ async function main(){
 		if(!(bodyHp && bodyHp.hp === bodyHp.mhp)) throw new Error('body vitals not host-owned at full hp: ' + JSON.stringify(bodyHp));
 		// an embodied guest raises NO dread aura (it is a body, not a phantom)
 		if((await host.eval(`MM.ghostHost.metrics().aura`)) !== 0) throw new Error('an embodied guest should not haunt the world');
-		// --- movement is guest-authoritative and reaches the host inside the envelope
+		// --- movement is guest-authoritative and reaches the host inside the envelope.
+		// Carve a clear floored corridor to the right first — a random spawn may have a
+		// wall right beside the body, which would block the walk and prove nothing.
+		await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies[0];
+			const bx=Math.round(b.x), floorRow=Math.ceil(b.y+0.46); // the solid tile the feet rest ON — keep it, clear above
+			for(let x=bx;x<=bx+10;x++){ for(let yy=floorRow-4;yy<floorRow;yy++) MM.world.setTile(x,yy,MM.T.AIR); MM.world.setTile(x,floorRow,MM.T.STONE); }
+			return 1;
+		})()`);
+		await sleep(400); // let the body settle onto the fresh floor
 		const b0 = (await host.eval(`MM.ghostHost.metrics().bodies`))[0];
 		await ghost.eval(`(()=>{ const m=MM.ghostClient; m.noteInput(); return 1; })()`);
 		// press 'd' on the guest for a beat: its own physics walks the hero, the host
 		// follows the streamed pose. Dispatch a real keydown so ownInput picks it up.
 		await ghost.eval(`(()=>{ window.dispatchEvent(new KeyboardEvent('keydown',{key:'d'})); return 1; })()`);
 		await sleep(1600);
-		await ghost.eval(`(()=>{ window.dispatchEvent(new KeyboardEvent('keyup',{key:'d'})); return 1; })()`);
+		await ghost.eval(`(()=>{ window.dispatchEvent(new KeyboardEvent('keyup',{key:'d'})); MM.ghostClient._playStop(); return 1; })()`);
 		await sleep(600);
 		const b1 = (await host.eval(`MM.ghostHost.metrics().bodies`))[0];
 		const guestX = (await ghost.eval(`MM.ghostClient.metrics().play.x`));
@@ -843,26 +856,41 @@ async function main(){
 		console.log('play move: ok (guest walked ' + (b1.x - b0.x).toFixed(2) + ' tiles, host tracked to within ' + Math.abs(guestX - b1.x).toFixed(2) + ')');
 		// --- mining: an intent yields to the guest's HOST-OWNED pouch, never the host inv
 		const dig = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies[0]; return {bx:Math.round(b.x), by:Math.round(b.y), invStone0: window.inv.stone|0}; })()`);
-		// isolate one stone block beside the body with AIR above it, so breaking it
-		// cannot be masked by a loose block falling into the hole (random spawns have
-		// sand/gravel overhead)
+		// isolate one stone block beside the body with a TALL air column above it, so
+		// breaking it cannot be masked by loose material (sand/gravel) cascading down
+		// during the ~2 s mine window — random spawns have plenty overhead
 		const mineCell = { x: dig.bx + 2, y: dig.by };
 		await host.eval(`(()=>{
 			const x=${mineCell.x}, y=${mineCell.y};
-			MM.world.setTile(x, y-1, MM.T.AIR);
-			MM.world.setTile(x, y, MM.T.STONE);
+			for(let dx=-1;dx<=1;dx++) for(let yy=y-8; yy<y; yy++) MM.world.setTile(x+dx, yy, MM.T.AIR);
+			MM.world.setTile(x, y+1, MM.T.STONE); // footing so nothing below matters
+			MM.world.setTile(x, y, MM.T.STONE);   // the block the guest will mine
 			return 1;
 		})()`);
 		for(let i = 0; i < 8; i++){
 			await ghost.eval(`(()=>{ MM.ghostClient.noteInput(); MM.ghostClient._playAct('mine', ${mineCell.x}, ${mineCell.y}); return 1; })()`);
 			await sleep(200); // clear the host's MINE_MS per-body floor
 		}
-		const mined = await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies[0]; return b ? (b.pouch.stone||0) : 0; })()`,
-			v => v >= 1, 'the guest mined a tile into its OWN pouch', 40, 250);
+		let mined;
+		try{
+			mined = await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies[0]; return b ? (b.pouch.stone||0) : 0; })()`,
+				v => v >= 1, 'the guest mined a tile into its OWN pouch', 50, 250);
+		}catch(e){
+			const d = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies[0];
+				return {bodyX:b?+b.x.toFixed(2):null, bodyY:b?+b.y.toFixed(2):null, mineX:${mineCell.x}, mineY:${mineCell.y},
+					reachDX:b?Math.abs(${mineCell.x}-Math.floor(b.x)):null, reachDY:b?Math.abs(${mineCell.y}-Math.floor(b.y)):null,
+					cell:MM.world.getTile(${mineCell.x},${mineCell.y}), pouch:b?b.pouch:null,
+					ack:MM.ghostClient?MM.ghostClient.metrics().play:null}; })()`);
+			throw new Error('guest never mined into its pouch: ' + JSON.stringify(d));
+		}
 		const hostInvUnchanged = (await host.eval(`window.inv.stone|0`)) === dig.invStone0;
 		if(!hostInvUnchanged) throw new Error('guest mining leaked into the HOST inventory (must go to the guest pouch)');
 		const cellGone = await host.eval(`MM.world.getTile(${mineCell.x},${mineCell.y}) === MM.T.AIR`);
-		if(!cellGone) throw new Error('the mined tile is still solid on the host');
+		if(!cellGone){
+			const d = await host.eval(`(()=>({cell:MM.world.getTile(${mineCell.x},${mineCell.y}), air:MM.T.AIR, stone:MM.T.STONE,
+				above:MM.world.getTile(${mineCell.x},${mineCell.y}-1)}))()`);
+			throw new Error('the mined tile is still solid on the host: ' + JSON.stringify(d));
+		}
 		console.log('play mine: ok (guest pouch stone=' + mined + ', host inv untouched, tile broken)');
 		// --- building: spends from the guest pouch, writes a tile, host inv still untouched
 		const placeCell = { x: dig.bx + 3, y: dig.by };
@@ -886,6 +914,51 @@ async function main(){
 		const postTiles = await host.eval(`(()=>{ let n=0; for(let x=${dig.bx}-2;x<=${dig.bx}+2;x++) for(let y=${dig.by}-2;y<=${dig.by}+3;y++) if(MM.world.getTile(x,y)!==MM.T.AIR) n++; return n; })()`);
 		if(postTiles !== preTiles) throw new Error('a guest strike edited a tile — combat must be creatures-only');
 		console.log('play combat: ok (strike hit creatures, world tiles untouched)');
+		// --- Wave A: a creature HUNTS the guest and damages its BODY, not the host ---------------------
+		// Move the HOST hero far away, drop a hostile mob right on the guest body, and
+		// confirm the mob chases the body and drains the BODY's hp while the host's hp
+		// stays put. This is what turns a guest from furniture into a real participant.
+		await ghost.eval(`MM.ghostClient._playStop()`); // make sure the guest stands still
+		await sleep(400);
+		const hunt = await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies[0];
+			// park the host far from the guest so any host damage would be unambiguous
+			player.x=b.x+60; player.y=b.y; player.vx=0; player.vy=0; player.hp=player.maxHp;
+			// clear a wide flat arena around the guest so a walker can reach it (keep the
+			// body's own footing tile so it doesn't drop out from under the fight)
+			const bx=Math.round(b.x), floorRow=Math.ceil(b.y+0.46);
+			for(let x=bx-8;x<=bx+8;x++){ for(let yy=floorRow-4;yy<floorRow;yy++) MM.world.setTile(x,yy,MM.T.AIR); MM.world.setTile(x,floorRow,MM.T.STONE); }
+			// pick a GROUND species that is ALWAYS aggressive (never flees a strong host —
+			// this QA host has leveled up, so a flee-prone mob would bolt before reaching
+			// the guest) with real contact damage, then spawn it on the body
+			// tanky surface predators (high hp, no daylight burn) so it survives to reach
+			// the guest — a fragile night-mob would despawn on the surface before contact
+			const SP=MM.mobs._debugSpecies();
+			const ground=Object.keys(SP).filter(id=>{ const s=SP[id]; return s && s.ground && !s.aquatic && !s.flying && s.alwaysAggro && s.dmg>0 && !s.sunriseBurn && s.hp>=60; })
+				.sort((a,b)=>SP[b].hp-SP[a].hp);
+			const prefer=['GIANT_SCORPION','JACKPOT_YETI','GOLD_DWARF_GUARD'].filter(id=>ground.includes(id));
+			const order=[...prefer, ...ground.filter(id=>!prefer.includes(id))];
+			let hit=null;
+			for(const id of order){ try{ if(MM.mobs.forceSpawn(id, {x:b.x, y:b.y-1}, MM.world.getTile)){ hit=id; break; } }catch(e){} }
+			if(hit) MM.mobs.setAggro(hit);
+			return {hit, dmg:hit?SP[hit].dmg:0, hostHp0:player.hp, bodyHp0:b.hp, bx:+b.x.toFixed(2), by:+b.y.toFixed(2), hostX:+player.x.toFixed(2)};
+		})()`);
+		if(!hunt.hit) throw new Error('setup: could not spawn a ground hunter with damage on the guest');
+		// the mob must pick the guest as its combat target and drain the BODY's hp
+		let bodyHurt;
+		try{
+			bodyHurt = await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies[0]; return b ? b.hp : 999; })()`,
+				v => v < hunt.bodyHp0, 'the creature damages the GUEST body', 100, 250);
+		}catch(e){
+			const diag = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies[0];
+				const l=MM.mobs.serialize().list.map(m=>({id:m.id,x:+m.x.toFixed(1),dist:+Math.abs(m.x-(b?b.x:0)).toFixed(1)}));
+				return {coopBodies:(MM.coopBodies||[]).length, bodyHp:b?b.hp:null, bodyX:b?+b.x.toFixed(2):null, hunter:'${hunt.hit}', mobs:l.slice(0,6)}; })()`);
+			throw new Error('the creature never damaged the guest body: ' + JSON.stringify(diag));
+		}
+		const hostHpAfter = await host.eval(`window.player.hp`);
+		if(hostHpAfter < hunt.hostHp0) throw new Error('the distant HOST took damage from a mob hunting the guest (target routing broke): ' + hunt.hostHp0 + ' → ' + hostHpAfter);
+		console.log('play aggro: ok (' + hunt.hit + ' hunted the guest — body hp ' + hunt.bodyHp0 + '→' + bodyHurt.toFixed(1) + ', distant host untouched at ' + hostHpAfter + ')');
+		await host.eval(`MM.mobs.clearAll && MM.mobs.clearAll();`);
 		// --- damage & death: a host-side hurt drains the guest hp; demote returns to spectator
 		await host.eval(`(()=>{ const s=MM.ghostHost; const gid='${gidPlay}'; MM.__qaHurt=()=>{}; return 1; })()`);
 		await ghost.shot('tools/ghost-qa-play.png');

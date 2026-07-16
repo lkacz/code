@@ -3514,6 +3514,15 @@ const mobs = (function(){
         if(cmp && damageCompanionTarget(cmp,pr.dmg,pr.x-pr.vx*0.08,pr.y-pr.vy*0.08,pr.cause||'mob_projectile')) dead=true;
       }
       const hitRadius=finiteNum(pr.radius) ? Math.max(0.35,Math.min(1.2,pr.radius)) : 0.6;
+      // a co-op guest body catches projectiles too — damages the BODY, not the host
+      if(!dead && !pr.reflected){
+        const body=nearestCoopBody(pr.x,pr.y,hitRadius+0.2);
+        if(body && typeof body.hurt==='function' && !body.dead
+          && Math.abs(body.x-pr.x)<hitRadius && Math.abs(body.y-pr.y)<hitRadius+0.2){
+          body.hurt(pr.dmg, pr.x-pr.vx*0.08, pr.y-pr.vy*0.08, pr.cause||'mob_projectile');
+          dead=true;
+        }
+      }
       if(!dead && !pr.reflected && player && Math.abs(player.x-pr.x)<hitRadius && Math.abs(player.y-pr.y)<hitRadius+0.2){
         // A PERFECT block (defense started within the parry window) bats the
         // projectile straight back — it now flies for the hero and hits mobs.
@@ -6253,20 +6262,54 @@ const mobs = (function(){
     }catch(e){}
     return false;
   }
+  // Embodied co-op guests (ghost play mode) are just more heroes to hunt. The bodies
+  // live in MM.coopBodies (published by ghost_host, absent/empty in solo play and the
+  // Node sims — the early return keeps every caller at zero cost there).
+  function nearestCoopBody(wx,wy,range){
+    const bodies=(typeof MM!=='undefined' && MM.coopBodies) || null;
+    if(!bodies || !bodies.length) return null;
+    const R2=(range||16)*(range||16);
+    let best=null, bestD2=R2;
+    for(const b of bodies){
+      if(!b || b.dead || !finiteNum(b.x) || !finiteNum(b.y)) continue;
+      const dx=b.x-wx, dy=b.y-wy, d2=dx*dx+dy*dy;
+      if(d2<bestD2){ bestD2=d2; best=b; }
+    }
+    return best;
+  }
   function combatTargetForMob(m,hero,aggressive,range){
     if(!aggressive || !m || !hero) return hero;
-    const cmp=nearestCompanionTarget(m.x,m.y,range||16);
-    if(!cmp) return hero;
-    const cp=companionTargetPoint(cmp);
-    const cdx=cp.x-m.x, cdy=cp.y-m.y;
-    const hdx=hero.x-m.x, hdy=hero.y-m.y;
-    const c2=cdx*cdx+cdy*cdy;
-    const h2=hdx*hdx+hdy*hdy;
-    if(c2<h2*1.18 || h2>(range||16)*(range||16)) return cmp;
-    return hero;
+    const R=range||16;
+    // existing hero-vs-companion decision, byte-for-byte unchanged (solo/companion tests)
+    let target=hero;
+    const cmp=nearestCompanionTarget(m.x,m.y,R);
+    if(cmp){
+      const cp=companionTargetPoint(cmp);
+      const cdx=cp.x-m.x, cdy=cp.y-m.y;
+      const hdx=hero.x-m.x, hdy=hero.y-m.y;
+      const c2=cdx*cdx+cdy*cdy;
+      const h2=hdx*hdx+hdy*hdy;
+      if(c2<h2*1.18 || h2>R*R) target=cmp;
+    }
+    // a co-op guest body competes as another hero: the NEAREST candidate wins. The
+    // returned {kind:'coop'} target both aims the AI and (via _mobTargetBody) routes
+    // this mob's damage to the body it is actually attacking, never the distant host.
+    const body=nearestCoopBody(m.x,m.y,R);
+    if(body){
+      const tp=target && target.kind==='companion' ? companionTargetPoint(target) : target;
+      const t2=(tp.x-m.x)*(tp.x-m.x)+(tp.y-m.y)*(tp.y-m.y);
+      const b2=(body.x-m.x)*(body.x-m.x)+(body.y-m.y)*(body.y-m.y);
+      if(b2<t2) target={x:body.x, y:body.y, kind:'coop', body};
+    }
+    return target;
   }
 
   let frame=0; let lastMetricsSample=0; let metrics={count:0, active:0, dtAvg:0, sunriseBurns:0, goldGuardians:0};
+  // When the mob currently being updated is hunting a co-op guest body, its damage
+  // (melee, charge, sting, ranged, shock — everything funnels through damagePlayer)
+  // lands on THAT body, not the host. Null for every host-targeting mob and always
+  // in solo play, so the host path is untouched. Set/cleared around updateMob.
+  let _mobTargetBody=null;
   function sunriseBurnOptions(spec){
     const cfg=spec && spec.sunriseBurn;
     const dur=(cfg && typeof cfg==='object' && finiteNum(cfg.dur)) ? cfg.dur : DEFAULT_SUNRISE_BURN.dur;
@@ -7502,7 +7545,11 @@ const mobs = (function(){
   // so even species with proximity-hunt fallbacks (wolf adx<8 …) stop closing in.
   // Physical contact still hurts — a blind wolf that stumbles into you bites.
   const blindMob=hasStatus(m,'blind');
+  // route this mob's damage to the guest body it is hunting (if any) for the duration
+  // of its AI tick — every damagePlayer call inside updateMob honors it
+  _mobTargetBody=(m._combatTarget && m._combatTarget.kind==='coop') ? m._combatTarget.body : null;
   updateMob(m, spec, {dt, now, aggressive: aggroNow, player:(blindMob ? {x:m.x-10000, y:m.y} : m._combatTarget), getTile, setTile, distToPlayer:(blindMob || m._progressionOutmatched ? 10000 : distToPlayer)});
+  _mobTargetBody=null;
       // This runs after every species-specific AI, overriding proximity shortcuts
       // that used to make weak wolves, vultures, worms, etc. lunge anyway.
       applyProgressionFlee(m,spec,player,challenge,dt);
@@ -10859,6 +10906,13 @@ const mobs = (function(){
   }
 
   function damagePlayer(amount, srcX, srcY, cause, spec){
+    // co-op: when the attacking mob is hunting a guest body, the blow lands on that
+    // body (its own i-frames, its own host-owned vitals stream), never on the host —
+    // so a monster chasing a guest can't damage a player standing safely elsewhere
+    if(_mobTargetBody && typeof _mobTargetBody.hurt==='function' && !_mobTargetBody.dead){
+      _mobTargetBody.hurt(Math.max(1,Number(amount)||1), srcX, srcY, cause||'mob');
+      return;
+    }
     const player = window.player; if(typeof player!=='object' || !player) return;
     // hero damage is centralized in main.js (i-frames, knockback, audio, death);
     // the inline fallback exists only for the DOM-less Node sims

@@ -1580,6 +1580,9 @@ const ghostClient = (function(){
 		// host validation and the pouch accounting are all still the production ones
 		_playAct: (a, x, y, key) => sendPlayAct(a, x, y, key),
 		_playSelect: (key) => { play.sel = key; renderPouch(); },
+		// QA: deterministically halt the embodied hero (clears held keys + velocity).
+		// Synthetic keyup events do not reliably clear `held` under headless CDP.
+		_playStop: () => { held.clear(); if(play.on && bridge && bridge.player){ bridge.player.vx = 0; } },
 		// QA: force the throttled profile write to disk NOW. Headless Page.navigate
 		// does not reliably fire beforeunload/pagehide, so a deed banked inside the
 		// 2 s throttle window would otherwise not be on disk when the reload reads it.

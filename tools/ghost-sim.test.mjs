@@ -913,4 +913,31 @@ assert.ok(/if\(play\.on\)\{[\s\S]{0,200}remoteHost\.has = true;/.test(clientSrc)
 	'in embodiment the host hero becomes a remote body — its vitals never clobber the guest');
 assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow embodied players render as hero bodies for everyone');
 
+// --- Wave A: creatures target the WHOLE party (host + guest bodies) --------------------------------
+// A guest used to be furniture the monsters ignored — only contact damage reached it.
+// Now mobs aggro/pursue the nearest hero and route their damage to whoever they are
+// actually attacking. Solo play stays a zero-cost path (no bodies → the old code).
+{
+	const m = mobsSrc2;
+	assert.ok(/function nearestCoopBody\(wx,wy,range\)/.test(m)
+		&& /const bodies=\(typeof MM!=='undefined' && MM\.coopBodies\) \|\| null;\s*\n\s*if\(!bodies \|\| !bodies\.length\) return null;/.test(m),
+		'nearestCoopBody reads MM.coopBodies and early-returns with none (zero cost in solo play)');
+	// the existing hero-vs-companion decision must be preserved verbatim, then the body competes
+	const ct = m.slice(m.indexOf('function combatTargetForMob'), m.indexOf('function combatTargetForMob') + 1600);
+	assert.ok(/if\(c2<h2\*1\.18 \|\| h2>R\*R\) target=cmp;/.test(ct), 'the companion-vs-hero bias is unchanged');
+	assert.ok(/const body=nearestCoopBody\(m\.x,m\.y,R\);/.test(ct) && /if\(b2<t2\) target=\{x:body\.x, y:body\.y, kind:'coop', body\};/.test(ct),
+		'a co-op body competes as another hero and the NEAREST candidate wins');
+	// the damage chokepoint: a mob hunting a body damages the BODY, never the distant host
+	assert.ok(/let _mobTargetBody=null;/.test(m), 'the per-mob target-body chokepoint exists');
+	assert.ok(/_mobTargetBody=\(m\._combatTarget && m\._combatTarget\.kind==='coop'\) \? m\._combatTarget\.body : null;/.test(m)
+		&& /updateMob\(m, spec, \{dt, now, aggressive: aggroNow[\s\S]{0,220}\}\);\s*\n\s*_mobTargetBody=null;/.test(m),
+		'the chokepoint is set around updateMob and cleared after (host path untouched otherwise)');
+	const dp = m.slice(m.indexOf('function damagePlayer'), m.indexOf('function damagePlayer') + 700);
+	assert.ok(/if\(_mobTargetBody && typeof _mobTargetBody\.hurt==='function' && !_mobTargetBody\.dead\)\{\s*\n\s*_mobTargetBody\.hurt\(/.test(dp),
+		'damagePlayer routes a hunting mob’s blow to the guest body (its own i-frames + vitals)');
+	// projectiles catch on a guest body too, damaging the body not the host
+	assert.ok(/const body=nearestCoopBody\(pr\.x,pr\.y,hitRadius\+0\.2\);[\s\S]{0,220}body\.hurt\(pr\.dmg/.test(m),
+		'mob projectiles that strike a guest body damage the body, not the host');
+}
+
 console.log('ghost-sim: all assertions passed');

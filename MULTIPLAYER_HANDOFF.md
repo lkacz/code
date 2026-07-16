@@ -109,22 +109,26 @@ When in doubt, add a host-side validation and a test pin. Over-validate.
 Ship one wave at a time. Each wave = source change + `ghost-sim` pins + one new
 `ghost-qa.mjs` scene + `npm run check` green. Do not batch waves.
 
-### Wave A — Creatures fight the whole party (deepest, highest value; do first)
-Today creatures still **hunt the host only**; a guest body merely takes contact
-damage. Make mobs/invaders/guardians/companions/turrets target **the nearest of all
-heroes** (host + every live `MM.coopBodies` entry).
-- The obstacle is the singleton `player` threaded through `mobs.update(dt, player,
-  ...)`, guardian leash checks, invasion targeting, turret targeting. Precedent that
-  it's tractable: companions, mechs, and boat deck-standing are already actor-like
-  entities that collide/aggro without being "The Player."
-- Approach: introduce a `heroTargets()` helper (host = `player` + coop bodies; solo =
-  just `player`) and route aggro/pathing/attack selection through it. Keep the
-  zero-cost solo path (no bodies → the old single-target code path).
-- Damage a mob deals to a guest body must still go through `body.hurt()` (host owns
-  the i-frames and the vitals stream). Ranged mob attacks/projectiles that currently
-  aim at `player` must be able to aim at a body.
-- Contract: a guest must be a first-class threat/target, but the guest still never
-  runs the sim — the host resolves all of it and streams results.
+### Wave A — Creatures fight the whole party — ✅ DONE (mobs.js)
+Mobs now aggro/pursue/attack the nearest hero (host + guest bodies) and route their
+damage to whoever they are hunting. Implemented in `mobs.js`:
+`nearestCoopBody(wx,wy,range)` (reads `MM.coopBodies`, zero-cost when empty);
+`combatTargetForMob` extended so a guest body competes and the nearest candidate wins
+(the companion-vs-hero bias is preserved verbatim); a module-level `_mobTargetBody`
+set around `updateMob` makes `damagePlayer` — the single chokepoint all mob attacks
+funnel through — land on the hunted body instead of the distant host; and the
+projectile loop gained a coop-body AABB so ranged hits the body. Pinned in `ghost-sim`
+and proven live in `ghost-qa` (a GIANT_SCORPION drains the guest's hp while the
+60-tiles-away host stays untouched).
+
+**Still to do for the rest of the party (extend the SAME pattern):**
+`guardian_lairs.js`, `invasions.js` (sidekick/alien vs-hero targeting),
+`turrets.js`, and any `companions.js` enemy that currently reads only `window.player`
+should consult `nearestCoopBody` / a shared `heroTargets()` too. Known v1 gaps left:
+mob **spawning** still centers on the host (`trySpawnNearPlayer`) and despawn is
+host-distance based, so a guest far from the host sees thinner spawns;
+`heroThreatProfile`/`applyProgressionFlee` still weigh only the host (a weak guest
+doesn't scare mobs, a strong guest doesn't repel them).
 
 ### Wave B — Guest combat & tool parity
 The `strike` stub (`PLAY_RULES.STRIKE_DMG`) is a placeholder. Give the guest the real
