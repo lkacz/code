@@ -138,9 +138,11 @@ const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8
 assert.match(mainSrc, /import \{ necklace as NECKLACE \} from '\.\/engine\/necklace\.js';/, 'main imports the necklace engine');
 assert.match(mainSrc, /function initScarf\(\)\{ CAPE\.init\(player\); if\(NECKLACE && NECKLACE\.init\) NECKLACE\.init\(player\); \}/, 'hero accessory reset initializes necklace with cape');
 assert.match(mainSrc, /function updateCape\(dt\)\{ CAPE\.update\(player,dt,getTile,isSolid\); if\(NECKLACE && NECKLACE\.update\) NECKLACE\.update\(player,dt,getTile\); \}/, 'hero accessory tick updates necklace with cape and wind sampling context');
-const backDrawIdx = mainSrc.indexOf('if(NECKLACE && NECKLACE.drawBack)');
+// (the !remoteBody gate keeps the HOST's chain off remote co-op bodies — the
+// draw ORDER contract for the host's own render is unchanged)
+const backDrawIdx = mainSrc.indexOf('if(!remoteBody && NECKLACE && NECKLACE.drawBack)');
 const outfitIdx = mainSrc.indexOf('MM.drawOutfit(ctx, bodyX, bodyY, bw, bh, style, c, rearView?{back:true}:null)');
-const frontDrawIdx = mainSrc.indexOf('if(NECKLACE && NECKLACE.drawFront)');
+const frontDrawIdx = mainSrc.indexOf('if(!remoteBody && NECKLACE && NECKLACE.drawFront)');
 const eyesIdx = mainSrc.indexOf('// Eyes (for all outfits except ninja/ironperson');
 assert.ok(backDrawIdx > 0 && backDrawIdx < outfitIdx, 'back chain draws behind the outfit body');
 assert.ok(frontDrawIdx > outfitIdx && frontDrawIdx < eyesIdx, 'front chain draws over the outfit but before the eyes');

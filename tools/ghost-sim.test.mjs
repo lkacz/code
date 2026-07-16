@@ -1294,6 +1294,14 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	// host-mirrored fog through the normal reveal path; no per-guest fog exists
 	assert.ok(/bridge\.revealAround\(\);/.test(clientSrc), 'shared fog: the guest reveals through the one normal reveal path');
 	assert.ok(!/fogPerGuest|guestFog|fogByGid/.test(clientSrc + hostSrc), 'no per-guest fog layer exists (owner ruling: shared)');
+	// cosmetics: remote co-op bodies render through the REAL hero painter but
+	// without the host's personal gear and effects
+	assert.ok(/const remoteBody=!!\(opts&&opts\.remoteBody\);/.test(mainSrc)
+		&& /if\(!remoteBody && NECKLACE && NECKLACE\.drawBack\)/.test(mainSrc)
+		&& /if\(!remoteBody && NECKLACE && NECKLACE\.drawFront\)/.test(mainSrc)
+		&& /if\(!remoteBody && HERO_LAMP && HERO_LAMP\.isOn\(\)\)/.test(mainSrc)
+		&& /if\(!remoteBody && energyChargeFx\.t>0\.01\)/.test(mainSrc),
+		'the host’s necklace, lamp beam and charge aura never bleed onto remote bodies');
 }
 
 console.log('ghost-sim: all assertions passed');

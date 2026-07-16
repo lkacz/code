@@ -5064,7 +5064,7 @@ function drawDeathTravelFx(){
 	return true;
 }
 function drawCape(){ if(deathTravelFx) return; CAPE.draw(ctx,TILE); }
-function drawPlayer(opts){ if(drawDeathTravelFx()) return; const rearView=!!(opts&&opts.rearView); const c=MM.customization||{}; let bodyX=(player.x-player.w/2)*TILE; let bodyY=(player.y-player.h/2)*TILE; let bw=player.w*TILE, bh=player.h*TILE;
+function drawPlayer(opts){ if(drawDeathTravelFx()) return; const rearView=!!(opts&&opts.rearView); const remoteBody=!!(opts&&opts.remoteBody); const c=MM.customization||{}; let bodyX=(player.x-player.w/2)*TILE; let bodyY=(player.y-player.h/2)*TILE; let bw=player.w*TILE, bh=player.h*TILE;
 	const recoil=heroBodyRecoilVisual();
 	if(recoil){
 		const cx=bodyX+bw*0.5;
@@ -5074,7 +5074,9 @@ function drawPlayer(opts){ if(drawDeathTravelFx()) return; const rearView=!!(opt
 		bodyX=cx-bw*0.5+recoil.ox;
 		bodyY=foot-bh+recoil.oy;
 	}
-	if(energyChargeFx.t>0.01){
+	// host-specific gear and FX must not bleed onto remote co-op bodies rendered
+	// through the field swap: no borrowed necklace, lamp beam or charge aura
+	if(!remoteBody && energyChargeFx.t>0.01){
 		const k=Math.max(0, Math.min(1, energyChargeFx.t/0.55)) * Math.max(0.2, Math.min(1.4, energyChargeFx.intensity||0.4));
 		const cx=player.x*TILE, cy=(player.y-0.02)*TILE;
 		const pulse=0.5+0.5*Math.sin(performance.now()*0.018);
@@ -5137,7 +5139,7 @@ function drawPlayer(opts){ if(drawDeathTravelFx()) return; const rearView=!!(opt
 		}
 		ctx.restore();
 	}
-	if(NECKLACE && NECKLACE.drawBack) NECKLACE.drawBack(ctx,TILE,player);
+	if(!remoteBody && NECKLACE && NECKLACE.drawBack) NECKLACE.drawBack(ctx,TILE,player);
 	// Normalize outfit style to avoid hidden whitespace/case issues
 	const style = ((c && c.outfitStyle)!=null ? String(c.outfitStyle) : 'default').trim().toLowerCase();
 		 // draw outfit body using shared renderer from inventory.js
@@ -5211,7 +5213,7 @@ function drawPlayer(opts){ if(drawDeathTravelFx()) return; const rearView=!!(opt
 		ctx.restore();
 	}
 	if(!rearView){
-	if(NECKLACE && NECKLACE.drawFront) NECKLACE.drawFront(ctx,TILE,player);
+	if(!remoteBody && NECKLACE && NECKLACE.drawFront) NECKLACE.drawFront(ctx,TILE,player);
 	const defendFaceT=(()=>{
 		const now=performance.now();
 		if(heroDefending(now)) return 1;
@@ -5273,7 +5275,7 @@ function drawPlayer(opts){ if(drawDeathTravelFx()) return; const rearView=!!(opt
 		ctx.fillRect(bodyX+bw/2+eyeOffsetX-eyeW/2, eyeY-eyeH/2, eyeW, eyeH);
 		drawDefendEyeTension(eyeY,eyeOffsetX,eyeW);
 	}
-	if(HERO_LAMP && HERO_LAMP.isOn()){
+	if(!remoteBody && HERO_LAMP && HERO_LAMP.isOn()){
 		const eyeY=bodyY+bh*0.35, eyeOffsetX=bw*0.18;
 		const centers=[bodyX+bw/2-eyeOffsetX,bodyX+bw/2+eyeOffsetX];
 		const dir=player.facing<0?-1:1;
