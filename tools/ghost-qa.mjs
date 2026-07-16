@@ -1433,6 +1433,7 @@ async function main(){
 		await ghost4.init();
 		await ghost4.eval(BOOT_WAIT, 60000);
 		await ghost4.poll(`MM.ghostClient.metrics().state`, v => v === 'live', 'the second player joins', 80, 250);
+		await host.front(); // creating the tab FOREGROUNDED it — arrows live in the host's rAF-driven sim
 		const duelists = await host.eval(`(()=>{
 			MM.mobs.clearAll && MM.mobs.clearAll();
 			const vs=MM.ghostHost.metrics().viewers;
@@ -1473,6 +1474,43 @@ async function main(){
 		if(!(duelHp < preDuel.hp0)) throw new Error('the consensual duel blow never landed');
 		if((await host.eval(`window.player.hp`)) < preDuel.hostHp0) throw new Error('a duel blow reached the HOST hero (bodies only!)');
 		console.log('duel: ok (no consent = no scratch, handshake = ' + preDuel.hp0 + '→' + duelHp.toFixed(1) + ', host untouched)');
+		// the duel extends to ARROWS: a consensual bow shot wounds the partner too
+		// (host-stamped owner/duel identity on the arrow, symmetry re-checked at impact).
+		// Point-blank bows overshoot at spawn (the arrow starts 0.7 ahead of the body),
+		// so open a corridor and step back a few tiles before drawing.
+		await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies.find(v=>v.gid==='${duelists.g1}');
+			const bx=Math.round(b.x), floorRow=Math.ceil(b.y+0.46);
+			for(let x=bx-10;x<=bx+2;x++){ for(let yy=floorRow-4;yy<floorRow;yy++) MM.world.setTile(x,yy,MM.T.AIR); MM.world.setTile(x,floorRow,MM.T.STONE); }
+			return 1;
+		})()`);
+		await sleep(1200); // replicate the corridor to the guest before it walks
+		await ghost.eval(`(()=>{ MM.ghostClient.noteInput(); window.dispatchEvent(new KeyboardEvent('keydown',{key:'a'})); return 1; })()`);
+		await sleep(1400);
+		await ghost.eval(`(()=>{ window.dispatchEvent(new KeyboardEvent('keyup',{key:'a'})); MM.ghostClient._playStop(); return 1; })()`);
+		await sleep(500);
+		let bowDuelHp = duelHp;
+		for(let i = 0; i < 5 && !(bowDuelHp < duelHp); i++){
+			const b4 = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(v=>v.gid==='${duelists.g4}'); return b?{x:+b.x.toFixed(2),y:+b.y.toFixed(2),hp:b.hp}:null; })()`);
+			if(!b4) break;
+			bowDuelHp = b4.hp;
+			if(bowDuelHp < duelHp) break;
+			await ghost.eval(`MM.ghostClient._playAct('attack', (${b4.x}), (${(b4.y - 0.3).toFixed(2)}), 'bow')`);
+			await sleep(950);
+		}
+		{ const b4 = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(v=>v.gid==='${duelists.g4}'); return b?b.hp:null; })()`); if(b4 !== null) bowDuelHp = Math.min(bowDuelHp, b4); }
+		if(!(bowDuelHp < duelHp)){
+			const diag = await host.eval(`(()=>{
+				const bs=MM.ghostHost.metrics().bodies;
+				const b1=bs.find(v=>v.gid==='${duelists.g1}'), b4=bs.find(v=>v.gid==='${duelists.g4}');
+				const cb=(MM.coopBodies||[]).map(v=>({gid:v.gid, duelWith:v.duelWith||null, x:+v.x.toFixed(1)}));
+				const ar=MM.weapons._debug.arrows.slice(-4).map(a=>({x:+a.x.toFixed(1), y:+a.y.toFixed(1), own:a.ownerGid||null, dg:a.duelGid||null, coop:!!a.coopOwner, stuck:!!a.stuck}));
+				return {b1:b1?{x:+b1.x.toFixed(1),y:+b1.y.toFixed(1),arrows:b1.pouch.arrowWood||0}:null,
+					b4:b4?{x:+b4.x.toFixed(1),y:+b4.y.toFixed(1),hp:b4.hp}:null, cb, ar};
+			})()`);
+			throw new Error('the duel arrow never landed: ' + JSON.stringify(diag));
+		}
+		console.log('duel arrows: ok (' + duelHp.toFixed(1) + '→' + bowDuelHp.toFixed(1) + ' by consensual bow)');
 		// host gift: the resource really leaves the host inventory before the pouch grows
 		const gift = await host.eval(`(()=>{
 			window.inv.stone=(window.inv.stone|0)+20;
@@ -1567,6 +1605,38 @@ async function main(){
 		// through a background tab's clamped physics proved fragile three different
 		// environmental ways. The laws are the hero's own, pinned to the letter.)
 		console.log('metabolism: ok (scraps scooped from the ground, chest refused, +6 heal to 66)');
+		// --- the guest gravestone: death spills the pouch where the hero fell -------------------------
+		// A sealed flooded box + pre-aged lungs drown the weakened body deterministically
+		// (a lava kill might burn the spilled evidence). The pouch must land as physical
+		// drops at the death spot, the banked pouch must reflect the loss, and the
+		// respawned hero keeps its earned arsenal but not its cargo.
+		const grave = await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies[0];
+			const bx=Math.floor(b.x), row=Math.floor(b.y+0.41), head=row-1;
+			for(const [x,y] of [[bx-1,row],[bx+1,row],[bx-1,head],[bx+1,head],[bx,head-1],[bx-1,head-1],[bx+1,head-1]]) MM.world.setTile(x,y,MM.T.STONE);
+			MM.world.setTile(bx,row,MM.T.WATER);
+			MM.world.setTile(bx,head,MM.T.WATER);
+			return {bx, row, head};
+		})()`);
+		await host.poll(`(()=>{ const b=MM.ghostHost._debugBody('${duelists.g1}'); return (b && b.drownSt) ? 1 : 0; })()`,
+			v => v === 1, 'the doomed body grows a drowning state', 20, 250);
+		await host.eval(`(()=>{ const b=MM.ghostHost._debugBody('${duelists.g1}'); b.hp=5; b.drownSt.airless=60; return 1; })()`);
+		await host.poll(`(()=>{ const b=MM.ghostHost._debugBody('${duelists.g1}'); return (b && b.dead) ? 1 : 0; })()`,
+			v => v === 1, 'the guest drowns', 40, 250);
+		const spilled = await host.eval(`(()=>{
+			let n=0; for(const d of MM.drops._debug.list){ if(d.kind==='resource' && Math.abs(d.x-(${grave.bx}+0.5))<4 && Math.abs(d.y-${grave.row})<5) n++; }
+			const keep=JSON.parse(localStorage.getItem('mm_ghost_bodies_v1')||'{}')['${duelists.g1}'];
+			for(const [x,y] of [[${grave.bx},${grave.row}],[${grave.bx},${grave.head}],[${grave.bx}-1,${grave.row}],[${grave.bx}+1,${grave.row}],[${grave.bx}-1,${grave.head}],[${grave.bx}+1,${grave.head}],[${grave.bx},${grave.head}-1],[${grave.bx}-1,${grave.head}-1],[${grave.bx}+1,${grave.head}-1]]) MM.world.setTile(x,y,MM.T.AIR);
+			return {n, keptKeys:keep?Object.keys(keep.pouch).length:-1};
+		})()`);
+		if(!(spilled.n >= 2)) throw new Error('the gravestone spilled nothing: ' + JSON.stringify(spilled));
+		if(spilled.keptKeys !== 0) throw new Error('the banked pouch resurrected the spilled cargo: ' + JSON.stringify(spilled));
+		await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies[0]; return (b && !b.dead) ? 1 : 0; })()`,
+			v => v === 1, 'the guest respawns at the host', 50, 250);
+		const afterGrave = await ghost.eval(`(()=>{ const p=MM.ghostClient.metrics().play; return {pouch:Object.keys(p.pouch).length, weapons:p.weapons.length}; })()`);
+		if(afterGrave.pouch !== 0) throw new Error('the respawned pouch is not empty: ' + JSON.stringify(afterGrave));
+		if(!(afterGrave.weapons >= 4)) throw new Error('death stripped the earned arsenal: ' + JSON.stringify(afterGrave));
+		console.log('gravestone: ok (' + spilled.n + ' drops where the hero fell, pouch banked empty, arsenal kept through respawn)');
 
 		// --- Scene 11: permission downgrade — watch-only means watch-only ------------------------------
 		const gidOnHost = (await host.eval(`MM.ghostHost.metrics().viewers`))[0].gid;

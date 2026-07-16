@@ -764,7 +764,28 @@ const ghostHost = (function(){
 			b.dead = true;
 			b.respawnAt = t + NET.PLAY_RULES.RESPAWN_MS;
 			if(b.duelWith && session) endDuel(session, entry); // death settles a duel
-			try{ bridge.msg('💀 ' + (entry.name || 'Duch') + ' poległ — odrodzi się za ' + Math.round(NET.PLAY_RULES.RESPAWN_MS / 1000) + ' s'); }catch(e){ /* fine */ }
+			dropPouchAt(s, entry, b); // the gravestone rule: the pouch stays where the hero fell
+			try{ bridge.msg('💀 ' + (entry.name || 'Duch') + ' poległ — sakwa została na miejscu śmierci (odrodzenie za ' + Math.round(NET.PLAY_RULES.RESPAWN_MS / 1000) + ' s)'); }catch(e){ /* fine */ }
+		}
+	}
+	// The guest gravestone (respawn_travel's rule, guest-shaped): death spills the
+	// pouch as PHYSICAL resource drops at the death spot — recoverable with the
+	// pickup intent by whoever gets there first, exactly like the hero's own grave.
+	// The earned arsenal survives (weapons are identity, resources are cargo). In
+	// the DOM-less Node sims there is no drops engine, so the pouch survives there.
+	function dropPouchAt(s, entry, b){
+		const D = MMR && MMR.drops;
+		if(!D || !D.spawnResource) return;
+		let spilled = false;
+		for(const k of Object.keys(b.pouch)){
+			const n = Math.floor(Number(b.pouch[k]) || 0);
+			if(n <= 0){ delete b.pouch[k]; continue; }
+			try{ D.spawnResource(b.x, b.y - 0.2, k, n); spilled = true; }catch(e){ /* keep the rest */ }
+			delete b.pouch[k];
+		}
+		if(spilled){
+			keepBody(entry); // the banked pouch must reflect the loss — no resurrection by rejoin
+			sendVitals(s, entry);
 		}
 	}
 	// Every world-touching intent lands here and nowhere else. Reach, rate, pouch
@@ -794,7 +815,7 @@ const ghostHost = (function(){
 			}
 			b.lastAttackAt = tA;
 			let res = null;
-			try{ res = bridge.ghostPlayAttack({ x: b.x, y: b.y, facing: b.f < 0 ? -1 : 1 }, spec, ax, ay); }catch(e){ res = null; }
+			try{ res = bridge.ghostPlayAttack({ x: b.x, y: b.y, facing: b.f < 0 ? -1 : 1, gid: entry.gid, duelWith: b.duelWith || null }, spec, ax, ay); }catch(e){ res = null; }
 			const hits = (res && res.hits) | 0;
 			// consensual duel (owner ruling): a MELEE swing that reaches the consenting
 			// partner wounds it too — bodies only, never the host hero, never without
@@ -1049,9 +1070,10 @@ const ghostHost = (function(){
 			if(!b.dead && dt > 0) bodySurvivalPass(s, entry, b, dt, t);
 			list.push([entry.gid, entry.name || 'Duch', +b.x.toFixed(2), +b.y.toFixed(2), +(b.vx || 0).toFixed(2), +(b.vy || 0).toFixed(2), b.f < 0 ? -1 : 1, +b.hp.toFixed(1), b.maxHp, b.dead ? 1 : 0]);
 			if(!b.dead){
-				if(!entry.bodyLike) entry.bodyLike = { w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, dead: false, hurt: (a, sx, sy, c) => hurtBody(s, entry, a, sx, sy, c) };
-				// vx/vy are advisory (aim-lead for party-aware attackers) — never authority
-				entry.bodyLike.x = b.x; entry.bodyLike.y = b.y; entry.bodyLike.vx = b.vx || 0; entry.bodyLike.vy = b.vy || 0; entry.bodyLike.dead = false;
+				if(!entry.bodyLike) entry.bodyLike = { gid: entry.gid, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, dead: false, hurt: (a, sx, sy, c) => hurtBody(s, entry, a, sx, sy, c) };
+				// vx/vy are advisory (aim-lead for party-aware attackers) — never authority.
+				// duelWith lets in-flight duel arrows re-check consent at IMPACT time.
+				entry.bodyLike.x = b.x; entry.bodyLike.y = b.y; entry.bodyLike.vx = b.vx || 0; entry.bodyLike.vy = b.vy || 0; entry.bodyLike.dead = false; entry.bodyLike.duelWith = b.duelWith || null;
 				pub.push(entry.bodyLike);
 			}
 		}

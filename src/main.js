@@ -16145,7 +16145,7 @@ MM.ghostBridge={
 			const hit=!!(W.coopMeleeAt && W.coopMeleeAt(body,aimX,aimY,{bonus:spec.dmg,reach:spec.reach}));
 			return {ok:true, hits:hit?1:0};
 		}
-		const ok=!!(W.spawnCoopArrow && W.spawnCoopArrow(body,aimX,aimY,{dmg:spec.dmg,speed:spec.speed}));
+		const ok=!!(W.spawnCoopArrow && W.spawnCoopArrow(body,aimX,aimY,{dmg:spec.dmg,speed:spec.speed,ownerGid:body.gid,duelGid:body.duelWith}));
 		return {ok, hits:0, ranged:true};
 	},
 	// Host gifting (owner ruling: host gifts only): the resource must really leave

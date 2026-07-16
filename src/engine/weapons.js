@@ -2512,6 +2512,24 @@ import { damageBlastCreatures } from './explosion_damage.js';
             break;
           }
         }
+        // consensual duel arrows: a coop arrow whose owner is mid-duel wounds the
+        // consenting partner's body. Symmetry is re-verified at IMPACT time — a
+        // forfeit mid-flight (demote, death, leave) disarms the arrow. Only bodies
+        // ever match: the host hero carries no gid and stays untouchable.
+        if(a.coopOwner && a.duelGid && a.ownerGid && !a.spent){
+          const duelBodies=(typeof MM!=='undefined' && MM.coopBodies) || null;
+          let duelHit=false;
+          if(duelBodies) for(const bb of duelBodies){
+            if(bb.gid !== a.duelGid || bb.dead || typeof bb.hurt!=='function') continue;
+            if(bb.duelWith !== a.ownerGid) break; // symmetry or nothing
+            if(Math.abs(a.x-bb.x) < (bb.w||0.62)/2+0.35 && Math.abs(a.y-bb.y) < (bb.h||0.92)/2+0.35){
+              bb.hurt(a.dmg, a.x, a.y, 'duel');
+              duelHit=true;
+            }
+            break;
+          }
+          if(duelHit){ arrows.splice(i,1); break; }
+        }
         const creatureGate=!a.noDamage && !a.spent && (Number(a.pierceGate)||0)<= (a.travel||0);
         let hitMob=null, hitMobFamily='', hitMobAlive=null, hitMobAnchor=null;
         const targetArrowOpts=Object.assign({},arrowOpts,{onTarget:(target,family,isAlive,anchor)=>{
@@ -3680,7 +3698,10 @@ import { damageBlastCreatures } from './explosion_damage.js';
       dmg:Math.max(1,Math.min(30,Math.round(Number(opts.dmg)||3))),
       life:ARROW_LIFE*0.85, stuck:false, stuckT:ARROW_STUCK,
       tier:'wood', color:'#caa472', headColor:'#dfe6f1',
-      recoverable:false, coopOwner:true, windCap:sp*1.35
+      recoverable:false, coopOwner:true, windCap:sp*1.35,
+      // duel identity, HOST-stamped at fire time: consent is re-verified at impact
+      ownerGid:(typeof opts.ownerGid==='string')?opts.ownerGid.slice(0,20):null,
+      duelGid:(typeof opts.duelGid==='string')?opts.duelGid.slice(0,20):null
     });
     try{ if(MM.audio && MM.audio.play) MM.audio.play('bow',{x:body.x,y:body.y}); }catch(e){}
     return true;

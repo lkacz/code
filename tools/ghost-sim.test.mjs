@@ -1094,8 +1094,8 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	assert.ok(/Math\.max\(NET\.PLAY_RULES\.ATTACK_MS, spec\.cdMs\)/.test(hostSrc), 'per-weapon cooldown stacks on the global floor');
 	assert.ok(/if\(!\(Number\(b\.pouch\[spec\.ammo\]\) > 0\)\)/.test(hostSrc) && /NET\.pouchTake\(b\.pouch, spec\.ammo, 1\);/.test(hostSrc),
 		'ranged fire spends ammo from the host-owned pouch before anything flies');
-	assert.ok(/bridge\.ghostPlayAttack\(\{ x: b\.x, y: b\.y, facing: b\.f < 0 \? -1 : 1 \}, spec, ax, ay\)/.test(hostSrc),
-		'the blow originates at the HOST-tracked body pose, never a client claim');
+	assert.ok(/bridge\.ghostPlayAttack\(\{ x: b\.x, y: b\.y, facing: b\.f < 0 \? -1 : 1, gid: entry\.gid, duelWith: b\.duelWith \|\| null \}, spec, ax, ay\)/.test(hostSrc),
+		'the blow originates at the HOST-tracked body pose (with host-stamped duel identity), never a client claim');
 	assert.ok(/sendDeed\(entry, 'hit', 1\); \/\/ guest marksmanship pays guest XP/.test(hostSrc),
 		'landed guest hits pay guest progression XP, not host progression');
 	// tool parity: the mine tick need derives from the real tile hardness
@@ -1315,6 +1315,27 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	assert.ok(/if\(!NET\.validPlayWeapon\(key\)\)/.test(gw) && /if\(te\.body\.weapons\.includes\(key\)\)/.test(gw),
 		'a weapon grant validates the arsenal whitelist and never duplicates');
 	assert.ok(!/pouch/.test(gw), 'granting a weapon touches no pouch on either side');
+	// gravestones: death spills the pouch as PHYSICAL drops at the death spot;
+	// the earned arsenal survives; the banked pouch reflects the loss
+	const gv = hostSrc.slice(hostSrc.indexOf('function dropPouchAt'), hostSrc.indexOf('function dropPouchAt') + 1200);
+	assert.ok(/D\.spawnResource\(b\.x, b\.y - 0\.2, k, n\); spilled = true;/.test(gv) && /delete b\.pouch\[k\];/.test(gv),
+		'the pouch spills where the hero fell and is emptied');
+	assert.ok(/keepBody\(entry\); \/\/ the banked pouch must reflect the loss/.test(gv), 'a rejoin cannot resurrect the spilled pouch');
+	assert.ok(!/weapons/.test(gv), 'the earned arsenal survives death (weapons are identity, resources are cargo)');
+	assert.ok(/dropPouchAt\(s, entry, b\); \/\/ the gravestone rule/.test(hostSrc), 'death triggers the gravestone rule');
+	// duel arrows: host-stamped identity at fire time, consent re-verified at impact
+	const wsrc = readFileSync(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
+	assert.ok(/ownerGid:\(typeof opts\.ownerGid==='string'\)\?opts\.ownerGid\.slice\(0,20\):null,/.test(wsrc)
+		&& /duelGid:\(typeof opts\.duelGid==='string'\)\?opts\.duelGid\.slice\(0,20\):null/.test(wsrc),
+		'a coop arrow carries HOST-stamped owner/duel identity');
+	const da = wsrc.slice(wsrc.indexOf('// consensual duel arrows'), wsrc.indexOf('const creatureGate'));
+	assert.ok(/if\(bb\.gid !== a\.duelGid \|\| bb\.dead \|\| typeof bb\.hurt!=='function'\) continue;/.test(da)
+		&& /if\(bb\.duelWith !== a\.ownerGid\) break; \/\/ symmetry or nothing/.test(da)
+		&& /bb\.hurt\(a\.dmg, a\.x, a\.y, 'duel'\);/.test(da),
+		'a duel arrow wounds only the consenting partner body, symmetry checked at impact');
+	assert.ok(!/damageHero|bridge\.player/.test(da), 'a duel arrow can never touch the host hero');
+	assert.ok(/entry\.bodyLike\.duelWith = b\.duelWith \|\| null;/.test(hostSrc) && /entry\.bodyLike = \{ gid: entry\.gid,/.test(hostSrc),
+		'bodyLike carries gid + live duel consent for impact-time checks');
 }
 
 console.log('ghost-sim: all assertions passed');

@@ -237,10 +237,17 @@ are distinguishable at a glance. Streaming the guest's REAL customization can
 replace the derivation without touching callers. **Weapon gifting (2026-07-16):**
 `MM.ghostHost.giftWeapon(gid, key)` — whitelist-bound, deduped, free (templates
 are not host stock), never touches a pouch; the 🎁 prompt takes a bare weapon
-name ("spear") alongside "stone 10". **Still open (polish):** water sub-tile
-partials around bodies, smooth position reconciliation (needs echo-timestamp
-lag compensation — a naive ease toward the lagged echo makes movement rubbery),
-streamed per-guest customization, duel arrows.
+name ("spear") alongside "stone 10". **Duel arrows (2026-07-16):** the bow joined consensual duels — coop arrows
+carry HOST-stamped `ownerGid`/`duelGid` at fire time, and consent symmetry is
+re-verified at IMPACT (a forfeit mid-flight disarms the arrow); only gid-tagged
+bodies ever match, so the host hero stays untouchable. **Gravestones
+(2026-07-16):** death spills the pouch as physical resource drops at the death
+spot (recoverable with the pickup intent by whoever gets there first), the
+banked pouch reflects the loss (no resurrection by rejoin), and the earned
+arsenal survives — weapons are identity, resources are cargo. **Still open
+(polish):** water sub-tile partials around bodies, smooth position
+reconciliation (needs echo-timestamp lag compensation — a naive ease toward
+the lagged echo makes movement rubbery), streamed per-guest customization.
 **QA driver (2026-07-16):** the world seed is PINNED (777; `--seed=auto`
 restores the roulette) — validated with consecutive full-gauntlet greens; the
 survival shelves are lidded against sky-sand cascades and the weapon-plane
