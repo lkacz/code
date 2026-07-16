@@ -148,6 +148,11 @@ const ghostClient = (function(){
 		// a locally fired projectile (the pushArrow chokepoint) — velocity, damage
 		// and a flag whitelist travel; the host clamps everything and flies the
 		// REAL arrow from its tracked body
+		row(dir, strong){
+			if(state !== 'live' || !conn) return false;
+			conn.send({ t: 'hact', a: 'row', d: dir < 0 ? -1 : 1, st: strong ? 1 : 0 });
+			return true;
+		},
 		shoot(a){
 			if(state !== 'live' || !conn || !a) return false;
 			conn.send({ t: 'hact', a: 'shoot',

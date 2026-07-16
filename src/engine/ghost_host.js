@@ -1122,6 +1122,15 @@ const ghostHost = (function(){
 			if(hits) s.stats.heroDmg = (s.stats.heroDmg || 0) + 1;
 			return;
 		}
+		if(pl.a === 'row'){
+			// the oar stroke resolves against the boat under the HOST-tracked body;
+			// impulse and speed cap live in the boats module — the claim picks only
+			// between the module's own strong/weak stroke powers
+			if(t - (b.lastHeroRowAt || 0) < NET.HERO_RULES.ROW_MS) return;
+			b.lastHeroRowAt = t;
+			try{ if(bridge.ghostHeroRow) bridge.ghostHeroRow({ x: b.x, y: b.y, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, vy: 0 }, pl.d < 0 ? -1 : 1, !!pl.st); }catch(e){ /* fine */ }
+			return;
+		}
 		if(pl.a === 'shoot'){
 			// the projectile flies from the HOST-tracked body — the guest supplies
 			// only velocity/damage/flags, all clamped in the weapons resolver

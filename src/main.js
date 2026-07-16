@@ -9883,6 +9883,15 @@ let jumpBufferT=0, coyoteT=0, ladderReleaseT=0, trapdoorDropBufferT=0;
 let rowPrevLeft=false, rowPrevRight=false, rowNoEnergyMsgAt=0;
 function heroRowStroke(dir){
 	if(!BOATS || !BOATS.row) return;
+	// hero-mode guest: the stroke becomes an INTENT — energy is spent HERE (the
+	// guest's own pool, its local truth), the host applies the impulse to the
+	// boat under ITS tracked body, and the hull returns on the mach plane
+	if(MM.ghostHeroIntents){
+		const strong=godMode ? true : !!(MM.heroEnergy && MM.heroEnergy.spend && MM.heroEnergy.spend(1.2));
+		MM.ghostHeroIntents.row(dir, strong);
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('splash'); }catch(e){}
+		return;
+	}
 	const res=BOATS.row(dir,{heroEnergy:MM.heroEnergy, godMode, player});
 	if(!res || !res.ok) return;
 	noteSaveActivity();
@@ -16318,6 +16327,13 @@ MM.ghostBridge={
 		const info=INFO[getTile(tx,ty)];
 		if(!(info && info.chestTier)) return {ok:false, reason:'use'};
 		return {ok:!!tryOpenChestAt(tx,ty)};
+	},
+	// HOST-side: a hero guest's oar stroke — resolved against the boat under ITS
+	// tracked body; the impulse and speed cap live in the boats module, the
+	// strong/weak claim only picks between the module's own two stroke powers
+	ghostHeroRow:(body,dir,strong)=>{
+		if(!BOATS || !BOATS.row) return {ok:false};
+		return BOATS.row(dir<0?-1:1,{player:body, godMode:false, heroEnergy:{spend:()=>!!strong}});
 	},
 	// HOST-side: a hero guest's projectile intent — the REAL arrow flies from the
 	// tracked body with clamped velocity/damage and a whitelisted flag set

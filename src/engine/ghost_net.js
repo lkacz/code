@@ -133,7 +133,7 @@ export const GID_LEASE_MS = 8000;
 // damage envelope). A modified hero client can gild its own trophy case; it still
 // cannot write a single illegal tile or one-shot a boss.
 export const HERO_KEY = 'mm_ghost_hero_v1';
-export const HERO_ACTIONS = ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot'];
+export const HERO_ACTIONS = ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot', 'row'];
 export function validHeroAction(a){ return HERO_ACTIONS.includes(a); }
 export const HERO_RULES = {
 	REACH: 6,        // solo MINE/PLACE reach is 5; +1 tolerance for pose-stream lag
@@ -145,7 +145,8 @@ export const HERO_RULES = {
 	HP_MAX: 1000,    // claimed vitals (display/targeting truth) are clamped into [0, this]
 	PICKUP_MS: 150,  // per-guest floor between ground-pickup intents
 	USE_MS: 400,     // per-guest floor between world interactions (chests)
-	SHOOT_MS: 220    // per-guest floor between projectile intents
+	SHOOT_MS: 220,   // per-guest floor between projectile intents
+	ROW_MS: 250      // per-guest floor between oar strokes
 };
 export const PLAY_ACTIONS = ['mine', 'place', 'strike', 'attack', 'craft', 'duel', 'pickup', 'eat'];
 export function validPlayAction(a){ return PLAY_ACTIONS.includes(a); }

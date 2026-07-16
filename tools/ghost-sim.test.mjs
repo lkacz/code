@@ -192,9 +192,9 @@ assert.ok(NET.modeAllows('hero', 'play') && NET.modeAllows('hero', 'full') && NE
 assert.ok(!NET.modeAllows('play', 'hero'), 'play is below hero');
 // hero-mode contract: the guest player state is guest-local truth; the world is
 // protected here — actions, rates and envelopes
-assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot'], 'the six hero world-intents');
-assert.ok(NET.HERO_RULES.PICKUP_MS === 150 && NET.HERO_RULES.USE_MS === 400 && NET.HERO_RULES.SHOOT_MS === 220,
-	'pickup/use/shoot rate floors pinned');
+assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot', 'row'], 'the seven hero world-intents');
+assert.ok(NET.HERO_RULES.PICKUP_MS === 150 && NET.HERO_RULES.USE_MS === 400 && NET.HERO_RULES.SHOOT_MS === 220
+	&& NET.HERO_RULES.ROW_MS === 250, 'pickup/use/shoot/row rate floors pinned');
 assert.ok(NET.validHeroAction('mine') && !NET.validHeroAction('craft') && !NET.validHeroAction('__proto__'), 'hero action whitelist holds');
 assert.ok(NET.HERO_RULES.REACH === 6 && NET.HERO_RULES.DMG_MAX === 45 && NET.HERO_RULES.HP_MAX === 1000, 'hero envelopes pinned');
 assert.equal(NET.HERO_KEY, 'mm_ghost_hero_v1', 'the hero persistence key');
@@ -809,6 +809,14 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 		'the watcher applies vehicle snapshots through the reload codec');
 	assert.ok(/restoreMechs:\(d\)=>\{ try\{ if\(MECHS&&MECHS\.restore\) MECHS\.restore\(d,getTile\); \}catch\(e\)\{\} \}/.test(mainSrc),
 		'mech restore rides the same guarded bridge seam pattern as the other planes');
+	// rowing: energy is the guest's local truth (spent client-side), the impulse
+	// and speed cap are the boats module's own — the claim picks only strong/weak
+	assert.ok(/if\(MM\.ghostHeroIntents\)\{[\s\S]{0,400}MM\.ghostHeroIntents\.row\(dir, strong\);/.test(mainSrc),
+		'heroRowStroke defers to the row intent after spending the guest-local energy');
+	assert.ok(/ghostHeroRow:\(body,dir,strong\)=>\{/.test(mainSrc) && /heroEnergy:\{spend:\(\)=>!!strong\}/.test(mainSrc),
+		'the host resolves the stroke against the boat under the tracked body');
+	assert.ok(/if\(t - \(b\.lastHeroRowAt \|\| 0\) < NET\.HERO_RULES\.ROW_MS\) return;/.test(hostSrc),
+		'oar strokes ride a per-guest rate floor');
 	// projectiles: ONE chokepoint in pushArrow forwards the shot; the host flies
 	// the real arrow with clamped velocity/damage and a whitelisted flag set
 	const wsrcH = readFileSync(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
