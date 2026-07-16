@@ -9568,9 +9568,14 @@ window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if
 		// Machine context keeps the interact key (board/unboard). Otherwise E
 		// collects the nearest ground drop, then opens a radio within arm's reach.
 		const mechWants=!!(MECHS && MECHS.wantsInteractKey && MECHS.wantsInteractKey(player));
-		if(!mechWants && DROPS && DROPS.pickupNearest && DROPS.pickupNearest(player)){
+		// hero-mode guest: E grabs the nearest replica drop through the intent channel
+		if(MM.ghostHeroIntents && DROPS && DROPS.hoverAt){
+			const hn=DROPS.hoverAt(player.x,player.y,player,{visible:worldFxVisible});
+			if(hn && hn.inReach && hn.kind!=='chest' && hn.kind!=='gear'){ MM.ghostHeroIntents.pickup(hn.x,hn.y); return; }
+		}
+		if(!mechWants && !MM.ghostHeroIntents && DROPS && DROPS.pickupNearest && DROPS.pickupNearest(player)){
 			noteSaveActivity();
-		} else if(MECHS && MECHS.toggleBoard && MECHS.toggleBoard(player,getTile)){
+		} else if(!MM.ghostHeroIntents && MECHS && MECHS.toggleBoard && MECHS.toggleBoard(player,getTile)){
 			noteSaveActivity();
 			saveState();
 		} else {
@@ -10967,6 +10972,9 @@ function tryOpenChestAt(tx,ty){
 	const oldTile=getTile(tx,ty);
 	const info=INFO[oldTile];
 	if(!info || !info.chestTier || !CHESTS) return false;
+	// hero-mode guest: the HOST opens the chest (its loot economy) — the burst
+	// lands as world drops on the stream, first to pick them up wins
+	if(MM.ghostHeroIntents) return MM.ghostHeroIntents.use(tx,ty);
 	const res=CHESTS.openChestAt(tx,ty);
 	if(res){
 		notifyTempleDisturbance('treasure',tx,ty,oldTile,T.AIR);
@@ -12501,7 +12509,12 @@ canvas.addEventListener('pointerdown',e=>{
 		// click still mines/fires toward a drop that's out of reach.
 		if(e.pointerType!=='touch' && DROPS && DROPS.pickupAt){
 			const aim=screenToWorld(e.clientX,e.clientY);
-			if(DROPS.pickupAt(aim.x,aim.y,player,{visible:worldFxVisible})==='picked'){ noteSaveActivity(); return; }
+			// hero-mode guest: the drop lives on the HOST — route the grab as an
+			// intent (the replica hover only decides the click is a pickup at all)
+			if(MM.ghostHeroIntents && DROPS.hoverAt){
+				const h=DROPS.hoverAt(aim.x,aim.y,player,{visible:worldFxVisible});
+				if(h && h.inReach && h.kind!=='chest' && h.kind!=='gear'){ MM.ghostHeroIntents.pickup(aim.x,aim.y); return; }
+			} else if(DROPS.pickupAt(aim.x,aim.y,player,{visible:worldFxVisible})==='picked'){ noteSaveActivity(); return; }
 		}
 		if(assignCompanionHarvestTargetAt(tx,ty)) return;
 		if(weaponMode){
@@ -16270,6 +16283,21 @@ MM.ghostBridge={
 		if(!info) return false;
 		try{ awardTileDrops(info); updateInventory(); updateHotbarCounts(); }catch(e){ return false; }
 		return true;
+	},
+	// a validated ground pickup credits the guest's own inventory by resource KEY
+	ghostHeroGain:(key,qty)=>{
+		if(typeof key!=='string' || !RESOURCE_DEFS.find(r=>r.key===key)) return false;
+		inv[key]=(inv[key]|0)+Math.max(1,Math.min(99,Number(qty)|0));
+		try{ updateInventory(); updateHotbarCounts(); }catch(e){}
+		return true;
+	},
+	// HOST-side: a hero guest asks the host to open a chest TILE — the real chest
+	// pipeline runs (loot bursts as world drops on the stream, first-come wins)
+	ghostHeroUseAt:(tx,ty)=>{
+		if(!worldCellInBounds(tx,ty)) return {ok:false, reason:'bounds'};
+		const info=INFO[getTile(tx,ty)];
+		if(!(info && info.chestTier)) return {ok:false, reason:'use'};
+		return {ok:!!tryOpenChestAt(tx,ty)};
 	},
 	ghostHeroRefund:(tid)=>{
 		const def=RESOURCE_DEFS.find(r=>r.tile && T[r.tile]===(Number(tid)|0));

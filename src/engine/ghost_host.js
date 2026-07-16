@@ -1102,9 +1102,30 @@ const ghostHost = (function(){
 			if(hits) s.stats.heroDmg = (s.stats.heroDmg || 0) + 1;
 			return;
 		}
+		if(pl.a === 'pickup'){
+			// ground pickups aim at world floats; the play-mode bridge seam already
+			// validates fog, reach-from-body and resource-only — the YIELD goes to
+			// the guest's own inventory via the ack (its local truth)
+			if(t - (b.lastHeroPickupAt || 0) < NET.HERO_RULES.PICKUP_MS) return;
+			b.lastHeroPickupAt = t;
+			const px = Number(pl.x), py = Number(pl.y);
+			if(!Number.isFinite(px) || !Number.isFinite(py)) return;
+			let res = null;
+			try{ res = bridge.ghostPlayPickupAt ? bridge.ghostPlayPickupAt(px, py, { x: b.x, y: b.y }) : null; }catch(e){ res = { ok: false, reason: 'error' }; }
+			entry.peer.send({ t: 'hact', a: 'pickup', ok: !!(res && res.ok), reason: (res && res.reason) || null, key: (res && res.key) || null, qty: (res && res.qty) || 0 });
+			return;
+		}
 		const tx = Math.floor(Number(pl.x)), ty = Math.floor(Number(pl.y));
 		if(!Number.isFinite(tx) || !Number.isFinite(ty)) return;
 		if(!NET.playReachOk(b.x, b.y, tx, ty, NET.HERO_RULES.REACH)){ entry.peer.send({ t: 'hact', a: pl.a, ok: false, reason: 'reach', x: tx, y: ty }); return; }
+		if(pl.a === 'use'){
+			if(t - (b.lastHeroUseAt || 0) < NET.HERO_RULES.USE_MS) return;
+			b.lastHeroUseAt = t;
+			let res = null;
+			try{ res = bridge.ghostHeroUseAt ? bridge.ghostHeroUseAt(tx, ty) : null; }catch(e){ res = { ok: false, reason: 'error' }; }
+			entry.peer.send({ t: 'hact', a: 'use', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty });
+			return;
+		}
 		if(pl.a === 'mine'){
 			if(t - (b.lastHeroMineAt || 0) < NET.HERO_RULES.MINE_MS) return; // silent — re-mining retries
 			b.lastHeroMineAt = t;

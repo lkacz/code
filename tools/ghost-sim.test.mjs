@@ -192,7 +192,8 @@ assert.ok(NET.modeAllows('hero', 'play') && NET.modeAllows('hero', 'full') && NE
 assert.ok(!NET.modeAllows('play', 'hero'), 'play is below hero');
 // hero-mode contract: the guest player state is guest-local truth; the world is
 // protected here — actions, rates and envelopes
-assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg'], 'the three hero world-intents');
+assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg', 'pickup', 'use'], 'the five hero world-intents');
+assert.ok(NET.HERO_RULES.PICKUP_MS === 150 && NET.HERO_RULES.USE_MS === 400, 'pickup/use rate floors pinned');
 assert.ok(NET.validHeroAction('mine') && !NET.validHeroAction('craft') && !NET.validHeroAction('__proto__'), 'hero action whitelist holds');
 assert.ok(NET.HERO_RULES.REACH === 6 && NET.HERO_RULES.DMG_MAX === 45 && NET.HERO_RULES.HP_MAX === 1000, 'hero envelopes pinned');
 assert.equal(NET.HERO_KEY, 'mm_ghost_hero_v1', 'the hero persistence key');
@@ -807,6 +808,15 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	assert.ok(/window\.damageHero\(amt, \{ cause:/.test(clientSrc), 'forwarded wounds run the real hero damage pipeline (armor parity)');
 	assert.ok(/if\(hero\.on\) return; \/\/ hero mode: the REAL game handlers own every key/.test(clientSrc),
 		'hero mode hands the input back to the real game');
+	// the loot loop: pickups ride the fog/reach-validated play seam and credit the
+	// guest's OWN inventory; chest TILES open through the host's real pipeline
+	assert.ok(/bridge\.ghostPlayPickupAt\(px, py, \{ x: b\.x, y: b\.y \}\)/.test(hostSrc),
+		'hero pickups reuse the fog-gated resource-only seam');
+	assert.ok(/ghostHeroGain:\(key,qty\)=>\{/.test(mainSrc) && /RESOURCE_DEFS\.find\(r=>r\.key===key\)/.test(mainSrc),
+		'the pickup yield credits guest inventory through a whitelisted key');
+	assert.ok(/if\(MM\.ghostHeroIntents\) return MM\.ghostHeroIntents\.use\(tx,ty\);/.test(mainSrc)
+		&& /if\(!\(info && info\.chestTier\)\) return \{ok:false, reason:'use'\}/.test(mainSrc),
+		'chest tiles open via the use intent — the HOST runs its real chest pipeline');
 	// death: the grave is a WORLD mechanic — a hero guest keeps its inventory
 	// (a replica-local grave would be stream-wiped and the halved resources lost)
 	assert.ok(/if\(MM\.ghostHeroIntents\)\{\s*updateInventory\(\);\s*startDeathTravelFx\(cause\);\s*return;/.test(mainSrc),

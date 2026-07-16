@@ -134,6 +134,16 @@ const ghostClient = (function(){
 			if(state !== 'live' || !conn) return false;
 			conn.send({ t: 'hact', a: 'place', x: tx, y: ty, tid: Number(tid) | 0, l: layer });
 			return true;
+		},
+		pickup(wx, wy){
+			if(state !== 'live' || !conn) return false;
+			conn.send({ t: 'hact', a: 'pickup', x: +Number(wx).toFixed(1), y: +Number(wy).toFixed(1) });
+			return true;
+		},
+		use(tx, ty){
+			if(state !== 'live' || !conn) return false;
+			conn.send({ t: 'hact', a: 'use', x: Math.floor(tx), y: Math.floor(ty) });
+			return true;
 		}
 	};
 	// Replica damage entries, wrapped while embodied as a hero: the local call
@@ -469,7 +479,8 @@ const ghostClient = (function(){
 					try{ if(bridge.ghostHeroRefund) bridge.ghostHeroRefund(pl.tid); }catch(e){ /* fine */ }
 					bridge.msg('🧱 Gospodarz odrzucił postawienie (' + (pl.reason || '?') + ') — surowiec wraca');
 				}
-				else if(pl.a === 'mine' && !pl.ok && pl.reason === 'chest') bridge.msg('🎁 Skrzynie otwiera tylko gospodarz');
+				else if(pl.a === 'mine' && !pl.ok && pl.reason === 'chest') bridge.msg('🎁 Skrzynię otwórz kliknięciem — nie kilofem');
+				else if(pl.a === 'pickup' && pl.ok && pl.key){ try{ if(bridge.ghostHeroGain) bridge.ghostHeroGain(pl.key, pl.qty || 1); }catch(e){ /* fine */ } }
 			}
 			return;
 		}
