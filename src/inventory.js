@@ -7,7 +7,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
 //
 // Rendering/engine contracts kept intact so cape.js / eyes.js / main.js keep working:
 //   MM.customization    {capeStyle,eyeStyle,outfitStyle,capeColor,outfitColor}
-//   MM.activeModifiers  {maxAirJumps,visionRadius,mineSpeedMult,moveSpeedMult,jumpPowerMult,waterMoveSpeedMult,attackDamage}
+//   MM.activeModifiers  {maxAirJumps,visionRadius,specialVisionLevel,treasureSenseLevel,mineSpeedMult,moveSpeedMult,jumpPowerMult,waterMoveSpeedMult,attackDamage,lootMagnetLevel}
 //   MM.drawOutfit(ctx,x,y,w,h,style,cust)
 // Loot pipeline: window.updateDynamicCustomization syncs chest loot into the bag;
 // MM.recomputeModifiers / MM.getModifiers expose the stat engine.
@@ -92,6 +92,20 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
       chips.push({icon:'⚡', label:'Zużycie energii', text:item.energyCost+'/s', good:false});
     if(typeof item.energyCapacityBonus==='number' && item.energyCapacityBonus)
       chips.push({icon:'⚡', label:'Pojemność energii', text:(item.energyCapacityBonus>0?'+':'')+item.energyCapacityBonus+'E', good:item.energyCapacityBonus>0});
+    if(typeof item.lootMagnetLevel==='number' && item.lootMagnetLevel>0){
+      const level=Math.max(1,Math.min(4,Math.trunc(item.lootMagnetLevel)));
+      const reach=level-1;
+      chips.push({icon:'🧲', label:'Auto-zbieranie', text:reach===0?'własny blok':'promień +'+reach+' '+(reach===1?'blok':'bloki'), good:true});
+    }
+    if(typeof item.treasureSenseLevel==='number' && item.treasureSenseLevel>0){
+      const level=Math.max(1,Math.min(4,Math.trunc(item.treasureSenseLevel)));
+      const ranges=[0,12,22,36,52];
+      chips.push({icon:'🧭', label:'Kompas skarbów', text:'poziom '+level+' · '+ranges[level]+' bloków', good:true});
+    }
+    if(typeof item.specialVisionLevel==='number' && item.specialVisionLevel>0){
+      const level=Math.max(1,Math.min(4,Math.trunc(item.specialVisionLevel)));
+      chips.push({icon:item.visionMode==='thermal'?'🌡️':'🌙', label:item.visionMode==='thermal'?'Termowizja':'Noktowizja', text:'poziom '+level, good:true});
+    }
     if(typeof item.waterMoveSpeedMult==='number' && item.waterMoveSpeedMult)
       chips.push({icon:'~', label:'Ruch w wodzie', text:Math.round(item.waterMoveSpeedMult*100)+'%', good:item.waterMoveSpeedMult>0.5});
     if(typeof item.airJumps==='number' && item.airJumps)
@@ -115,9 +129,16 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     let s=0;
     if(typeof item.attackDamage==='number') s+=item.attackDamage*6;
     if(typeof item.fireDps==='number') s+=item.fireDps*5;
-    if(typeof item.fireRange==='number') s+=item.fireRange*2;
+    if(typeof item.fireRange==='number'){
+      // A one-tile strike is the melee baseline, so only a melee weapon's extra
+      // reach adds power.  Streams still value their complete effective range.
+      s+=(item.weaponType==='melee' ? Math.max(0,item.fireRange-1) : item.fireRange)*2;
+    }
     if(typeof item.energyCost==='number') s-=item.energyCost*0.45;
     if(typeof item.energyCapacityBonus==='number') s+=item.energyCapacityBonus*0.55;
+    if(typeof item.lootMagnetLevel==='number') s+=Math.max(0,Math.min(4,item.lootMagnetLevel))*10;
+    if(typeof item.treasureSenseLevel==='number') s+=Math.max(0,Math.min(4,item.treasureSenseLevel))*12;
+    if(typeof item.specialVisionLevel==='number') s+=Math.max(0,Math.min(4,item.specialVisionLevel))*12;
     if(typeof item.waterMoveSpeedMult==='number') s+=(item.waterMoveSpeedMult-0.5)*80;
     if(['bow','harpoon'].includes(item.weaponType) && typeof item.fireCooldown==='number') s+=(0.6-item.fireCooldown)*40; // faster launcher = stronger
     if(typeof item.airJumps==='number') s+=item.airJumps*12;
@@ -144,6 +165,9 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     waterMoveSpeedMult:'max',
     attackDamage:'sum',
     energyCapacityBonus:'sum',
+    lootMagnetLevel:'max',
+    treasureSenseLevel:'max',
+    specialVisionLevel:'max',
     crushResistBonus:'sum',
     damageReductionBonus:'sum'
   };
@@ -158,6 +182,9 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     attackDamage:'Obrażenia',
     fireDps:'Obrażenia na sekundę',
     energyCapacityBonus:'Pojemność energii',
+    lootMagnetLevel:'Auto-zbieranie łupów',
+    treasureSenseLevel:'Kompas skarbów',
+    specialVisionLevel:'Wizja specjalna',
     crushResistBonus:'Udźwig/ciśnienie',
     damageReductionBonus:'Redukcja obrażeń'
   };
@@ -191,7 +218,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     // 'flame'/'hose'/'gas' streams terrain effects; 'electric' fires an energy beam.
     {id:'stick',        kind:'weapon', weaponType:'melee', name:'Kij',             attackDamage:1, desc:'Prosty kij na początek'},
     {id:'stone_blade',  kind:'weapon', weaponType:'melee', name:'Ostrze kamienne', attackDamage:3, desc:'Ciężkie, ale skuteczne'},
-    {id:'spear',        kind:'weapon', weaponType:'melee', name:'Włócznia',        attackDamage:2, fireRange:2, desc:'Lekka i poręczna — dźga o tile dalej niż inne bronie'},
+    {id:'spear',        kind:'weapon', weaponType:'melee', name:'Włócznia',        attackDamage:2, fireRange:3, desc:'Długi prosty atak na trzy pola; przytrzymaj LPM, aby wzmocnić pchnięcie'},
     {id:'bow_wood',     kind:'weapon', weaponType:'bow',   name:'Łuk myśliwski',   attackDamage:4, fireCooldown:0.55, desc:'LPM strzela strzałami; PPM odpala naładowany ult'},
     // Hand-thrown projectiles: always-known techniques (the AMMO gates their use).
     // They share the ranged shortcut (key 3) with bows — the key rotates through them.
@@ -222,6 +249,8 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     {key:'stone',   label:'Skala',   color:'#888a90', tile:'STONE'},
     {key:'coal',    label:'Węgiel',  color:'#25272b', tile:'COAL'},
     {key:'gold',    label:'Złoto',   color:'#f2b93b', tile:'GOLD_ORE'},
+    {key:'silverOre', label:'Ruda srebra', color:'#9da8b8', tile:'SILVER_ORE'},
+    {key:'silver', label:'Sztabka srebra', color:'#dce5ef', tile:'SILVER_INGOT'},
     {key:'diamond', label:'Diament', color:'#3ef',    tile:'DIAMOND'},
     {key:'jewelBlessed', label:'Kamień błogosławionych', color:'#ffd96a', tile:null, jewel:true},
     {key:'jewelDevout', label:'Kamień nabożnych', color:'#9b8cff', tile:null, jewel:true},
@@ -283,6 +312,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     {key:'plastic', label:'Plastik', color:'#d7dbe3', tile:null},
     {key:'copper',  label:'Miedz',   color:'#cc7a36', tile:null},
     {key:'copperWire', label:'Przewod miedziany', color:'#d68535', tile:'COPPER_WIRE'},
+    {key:'silverWire', label:'Przewod srebrny', color:'#d9ecff', tile:'SILVER_WIRE'},
     {key:'waterPipe', label:'Rura fluidowa', color:'#2d8ec9', tile:'WATER_PIPE'},
     {key:'waterPump', label:'Pompa fluidowa', color:'#58d4ff', tile:'WATER_PUMP'},
     {key:'steamBoiler', label:'Kocioł parowy', color:'#c89a5b', tile:'STEAM_BOILER'},
@@ -340,14 +370,14 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
   // survives when legacy loot carried several (first hit wins).
   const KIND_STAT_PRIORITY={
     cape:['airJumps'],
-    eyes:['visionRadius'],
-    outfit:['mineSpeedMult','moveSpeedMult','jumpPowerMult','crushResistBonus'],
-    charm:['energyCapacityBonus','waterMoveSpeedMult','mineSpeedMult','moveSpeedMult','jumpPowerMult','crushResistBonus']
+    eyes:['specialVisionLevel','visionRadius'],
+    outfit:['lootMagnetLevel','mineSpeedMult','moveSpeedMult','jumpPowerMult','crushResistBonus'],
+    charm:['treasureSenseLevel','lootMagnetLevel','energyCapacityBonus','waterMoveSpeedMult','mineSpeedMult','moveSpeedMult','jumpPowerMult','crushResistBonus']
   };
   const KIND_STAT_MAX={cape:1, eyes:1, outfit:1, charm:1};
   const WEAPON_TYPE_STATS={
-    // melee may carry fireRange as its REACH in whole tiles (spears strike from
-    // two tiles out); plus an optional material identity string (meleeEffect)
+    // melee may carry fireRange as its REACH in whole tiles (spears strike along
+    // a three-tile horizontal lane); plus an optional material identity string
     melee:['attackDamage','fireRange'],
     bow:['attackDamage','fireCooldown'],
     harpoon:['attackDamage','fireCooldown'],
@@ -377,6 +407,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
   }
   function enhancementStep(stat){ return stat==='energyCapacityBonus'?10:(ENHANCE_MULT_STATS.has(stat)?0.05:1); }
   function clampEnhancedStat(stat,value){
+    if(stat==='lootMagnetLevel' || stat==='treasureSenseLevel' || stat==='specialVisionLevel') return Math.max(1,Math.min(4,Math.trunc(value)));
     if(ENHANCE_MULT_STATS.has(stat)){
       const min=stat==='waterMoveSpeedMult'?0.25:0.3;
       const max=stat==='waterMoveSpeedMult'?1.25:30;
@@ -421,8 +452,8 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
   // Loot items come from localStorage (bag + dynamic-loot keys) — whitelist their
   // fields on ingest so tampered/corrupt entries can't smuggle objects or markup
   // into stat math and innerHTML-based displays downstream.
-  const ITEM_NUM_FIELDS=['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','crushResistBonus'];
-  const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType','meleeEffect','aquaticStyle'];
+  const ITEM_NUM_FIELDS=['airJumps','visionRadius','specialVisionLevel','treasureSenseLevel','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','lootMagnetLevel','crushResistBonus'];
+  const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType','meleeEffect','aquaticStyle','visionMode'];
   // Material identity of a crafted hand weapon (weapons.js MELEE_EFFECTS holds
   // the numbers) — anything else smuggled into meleeEffect is dropped on ingest.
   const MELEE_EFFECT_LABELS={bleed:'Krwawienie', stun:'Ogłuszenie', panic:'Panika'};
@@ -435,7 +466,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     if(!kind) return null;
     const it={id:raw.id, kind};
     ITEM_NUM_FIELDS.forEach(f=>{ const v=raw[f]; if(typeof v==='number' && isFinite(v)) it[f]=v; });
-    ITEM_STR_FIELDS.forEach(f=>{ const v=raw[f]; if(typeof v==='string' && v.length<=80) it[f]=v; });
+    ITEM_STR_FIELDS.forEach(f=>{ const v=raw[f]; const max=f==='desc'?180:80; if(typeof v==='string' && v.length<=max) it[f]=v; });
     if(Number.isFinite(raw.enhancement)) it.enhancement=Math.max(-99,Math.min(99,Math.trunc(raw.enhancement)));
     if(it.meleeEffect && (kind!=='weapon' || (it.weaponType||'melee')!=='melee' || !MELEE_EFFECT_LABELS[it.meleeEffect])) delete it.meleeEffect;
     if(it.aquaticStyle && (kind!=='weapon' || AQUATIC_STYLES[it.aquaticStyle]!==(it.weaponType||'melee'))) delete it.aquaticStyle;
@@ -447,6 +478,20 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     if(typeof it.waterMoveSpeedMult==='number'){
       it.waterMoveSpeedMult=Math.max(0.25, Math.min(1.25, Math.round(it.waterMoveSpeedMult*20)/20));
     }
+    if(typeof it.lootMagnetLevel==='number'){
+      const level=Math.trunc(it.lootMagnetLevel);
+      if(level<1) delete it.lootMagnetLevel;
+      else it.lootMagnetLevel=Math.min(4,level);
+    }
+    for(const field of ['specialVisionLevel','treasureSenseLevel']){
+      if(typeof it[field]!=='number') continue;
+      const level=Math.trunc(it[field]);
+      if(level<1) delete it[field];
+      else it[field]=Math.min(4,level);
+    }
+    if(it.visionMode!=='night' && it.visionMode!=='thermal') delete it.visionMode;
+    if(typeof it.specialVisionLevel!=='number') delete it.visionMode;
+    else if(!it.visionMode) it.visionMode='night';
     // Function purity (also the one-shot migration for pre-rework saves): keep only
     // the stats of this kind's job, at most KIND_STAT_MAX of them in priority order.
     const allowed=allowedStatsFor(kind, it.weaponType);
@@ -583,6 +628,9 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     if(typeof item.waterMoveSpeedMult==='number') fn('waterMoveSpeedMult', item.waterMoveSpeedMult);
     if(typeof item.attackDamage==='number') fn('attackDamage', item.attackDamage);
     if(typeof item.energyCapacityBonus==='number') fn('energyCapacityBonus', item.energyCapacityBonus);
+    if(typeof item.lootMagnetLevel==='number') fn('lootMagnetLevel', item.lootMagnetLevel);
+    if(typeof item.treasureSenseLevel==='number') fn('treasureSenseLevel', item.treasureSenseLevel);
+    if(typeof item.specialVisionLevel==='number') fn('specialVisionLevel', item.specialVisionLevel);
     if(typeof item.crushResistBonus==='number') fn('crushResistBonus', item.crushResistBonus);
   }
   function computeModifiers(){
@@ -605,6 +653,9 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     if(mods.jumpPowerMult==null) mods.jumpPowerMult=1;
     if(mods.attackDamage==null) mods.attackDamage=0;
     if(mods.energyCapacityBonus==null) mods.energyCapacityBonus=0;
+    if(mods.lootMagnetLevel==null) mods.lootMagnetLevel=0;
+    if(mods.treasureSenseLevel==null) mods.treasureSenseLevel=0;
+    if(mods.specialVisionLevel==null) mods.specialVisionLevel=0;
     if(mods.crushResistBonus==null) mods.crushResistBonus=0;
     if(mods.damageReductionBonus==null) mods.damageReductionBonus=0;
     // Safety clamps (future-proof against extreme stacking)
@@ -613,6 +664,9 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     mods.jumpPowerMult=clampRange(mods.jumpPowerMult, 0.3, 3);
     mods.attackDamage=clampRange(mods.attackDamage, 0, 97);
     mods.energyCapacityBonus=clampRange(mods.energyCapacityBonus, 0, 10000);
+    mods.lootMagnetLevel=Math.trunc(clampRange(mods.lootMagnetLevel, 0, 4));
+    mods.treasureSenseLevel=Math.trunc(clampRange(mods.treasureSenseLevel, 0, 4));
+    mods.specialVisionLevel=Math.trunc(clampRange(mods.specialVisionLevel, 0, 4));
     mods.crushResistBonus=clampRange(mods.crushResistBonus, 0, 500);
     mods.damageReductionBonus=clampRange(mods.damageReductionBonus, 0, 0.45);
     MM.activeModifiers=mods;
@@ -1013,12 +1067,14 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
   // --- Shared outfit body renderer (used by main.js drawPlayer and the UI preview) ---
   const OUTFIT_BODY={ default:null /* uses colors.outfit */, miner:'#c89b50', mystic:'#6b42c7', ninja:'#23262e', ironperson:'#b3202a' };
   function outfitBaseColor(style, cust){ return OUTFIT_BODY[style] || (cust && cust.outfitColor) || '#f4c05a'; }
-  function drawOutfit(ctx,x,y,w,h,style,cust){
+  function drawOutfit(ctx,x,y,w,h,style,cust,opts){
+    const back=!!(opts && opts.back);
     const base=outfitBaseColor(style,cust);
     ctx.fillStyle=base; ctx.fillRect(x,y,w,h);
     if(style==='miner'){
       ctx.fillStyle='#8a6a30'; ctx.fillRect(x, y, w, h*0.18);
-      ctx.fillStyle='#ffe27a'; ctx.fillRect(x+w*0.5-w*0.1, y+h*0.04, w*0.2, h*0.10);
+      if(!back){ ctx.fillStyle='#ffe27a'; ctx.fillRect(x+w*0.5-w*0.1, y+h*0.04, w*0.2, h*0.10); }
+      else { ctx.fillStyle='#5f4924'; ctx.fillRect(x+w*.18,y+h*.08,w*.64,h*.05); }
       ctx.fillStyle='#6e5526'; ctx.fillRect(x, y+h*0.62, w, h*0.08);
     } else if(style==='mystic'){
       ctx.fillStyle='rgba(255,255,255,0.10)'; ctx.fillRect(x, y, w, h*0.25);
@@ -1029,7 +1085,12 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
       ctx.fillStyle='#5560a8'; ctx.fillRect(x, y+h*0.55, w, h*0.07);
     } else if(style==='ironperson'){
       ctx.fillStyle='#e3a934'; ctx.fillRect(x+w*0.18, y+h*0.5, w*0.64, h*0.34);
-      ctx.fillStyle='#7df9ff'; ctx.beginPath(); ctx.arc(x+w*0.5, y+h*0.62, Math.max(1.5, w*0.09), 0, Math.PI*2); ctx.fill();
+      if(back){
+        ctx.fillStyle='#711822'; ctx.fillRect(x+w*.42,y+h*.18,w*.16,h*.60);
+        ctx.fillStyle='#f2c85b'; ctx.fillRect(x+w*.46,y+h*.24,w*.08,h*.38);
+      }else{
+        ctx.fillStyle='#7df9ff'; ctx.beginPath(); ctx.arc(x+w*0.5, y+h*0.62, Math.max(1.5, w*0.09), 0, Math.PI*2); ctx.fill();
+      }
     }
     ctx.strokeStyle='#4b3212'; ctx.lineWidth=1; ctx.strokeRect(x,y,w,h);
   }

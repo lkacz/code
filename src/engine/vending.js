@@ -9,7 +9,9 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 
   const MAX_USES = 10;
   const ENERGY_COST = 1.2;
+  const ELECTRIC_BUFFER_CAP = ENERGY_COST*3;
   const MACHINE_CAP = 5000;
+  const DISPLAY_POWER_CACHE_MS = 450;
   const machines = new Map(); // "x,y" -> {x,y,usesLeft,placed,pulse,lastItem,lastVendDay}
   const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
@@ -47,6 +49,10 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 
   function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
   function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=WORLD_TOP && y<WORLD_BOTTOM; }
+  function finiteAmount(value){
+    const n=Number(value);
+    return Number.isFinite(n) ? Math.max(0,n) : 0;
+  }
   function getSafe(getTile,x,y,fallback){
     try{ return typeof getTile==='function' ? getTile(x,y) : fallback; }catch(e){ return fallback; }
   }
@@ -56,18 +62,21 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
       if(opts && typeof opts.getElectricNetworkTile==='function') return opts.getElectricNetworkTile(x,y);
     }catch(e){}
     try{
+      if(MM.world && typeof MM.world.hasInfrastructure==='function' && MM.world.hasInfrastructure(x,y,T.SILVER_WIRE)) return T.SILVER_WIRE;
+    }catch(e){}
+    try{
       if(MM.world && typeof MM.world.hasInfrastructure==='function' && MM.world.hasInfrastructure(x,y,T.COPPER_WIRE)) return T.COPPER_WIRE;
     }catch(e){}
     try{
       if(opts && typeof opts.getNetworkTile==='function'){
         const t=opts.getNetworkTile(x,y);
-        if(t===T.COPPER_WIRE) return T.COPPER_WIRE;
+        if(t===T.SILVER_WIRE || t===T.COPPER_WIRE) return t;
       }
     }catch(e){}
     try{
       if(MM.world && typeof MM.world.getNetworkTile==='function'){
         const t=MM.world.getNetworkTile(x,y);
-        if(t===T.COPPER_WIRE) return T.COPPER_WIRE;
+        if(t===T.SILVER_WIRE || t===T.COPPER_WIRE) return t;
       }
     }catch(e){}
     return getSafe(getTile,x,y,T.AIR);
@@ -149,6 +158,7 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
     m.usesLeft=Math.max(0,Math.min(MAX_USES,Number.isFinite(m.usesLeft)?Math.floor(m.usesLeft):MAX_USES));
     m.placed=!!m.placed;
     m.pulse=Math.max(0,Math.min(1,Number(m.pulse)||0));
+    m.energy=Math.max(0,Math.min(ELECTRIC_BUFFER_CAP,Number(m.energy)||0));
     m.lastVendDay=dayFromSave(m.lastVendDay);
     if(typeof m.lastItem!=='string') m.lastItem='';
     return m;
@@ -192,8 +202,8 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
     const netGet=(nx,ny)=>electricNetworkTile(nx,ny,getTile,opts);
     try{
       if(typeof charger.availableNetworkEnergyAt==='function'){
-        const available=charger.availableNetworkEnergyAt(x,y,netGet,D);
-        if((Number(available)||0)+1e-6<ENERGY_COST) return null;
+        const available=finiteAmount(charger.availableNetworkEnergyAt(x,y,netGet,D));
+        if(available+1e-6<ENERGY_COST) return null;
       }
       if(typeof charger.availableNetworkEnergyAt!=='function' && typeof charger.drainNetworkEnergyAt!=='function' && typeof charger.chargeBatteryAt!=='function') return null;
       return {kind:'network',x:Math.floor(x),y:Math.floor(y)};
@@ -207,12 +217,12 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
     const netGet=(nx,ny)=>electricNetworkTile(nx,ny,getTile,opts);
     try{
       if(typeof charger.drainNetworkEnergyAt==='function'){
-        return Math.max(0,Number(charger.drainNetworkEnergyAt(x,y,ENERGY_COST,netGet,D))||0);
+        return Math.min(ENERGY_COST,finiteAmount(charger.drainNetworkEnergyAt(x,y,ENERGY_COST,netGet,D,{fair:true})));
       }
       if(typeof charger.chargeBatteryAt!=='function') return 0;
       const battery={energy:0};
-      const gained=charger.chargeBatteryAt(x,y,battery,1,netGet,D,{capacity:ENERGY_COST,rate:ENERGY_COST});
-      return Math.max(0,Number(gained)||0);
+      charger.chargeBatteryAt(x,y,battery,1,netGet,D,{capacity:ENERGY_COST,rate:ENERGY_COST});
+      return Math.min(ENERGY_COST,finiteAmount(battery.energy));
     }catch(e){}
     return 0;
   }
@@ -222,28 +232,39 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
     const D=(opts && opts.dynamo) || MM.dynamo;
     const S=(opts && opts.solar) || MM.solar;
     if(source.kind==='dynamo' && D && D.drainAt){
-      try{ const got=D.drainAt(source.x,source.y,ENERGY_COST,getTile); if(got && got.amount>0) return true; }catch(e){}
+      try{
+        if(typeof D.energyAt==='function' && finiteAmount(D.energyAt(source.x,source.y,getTile))+1e-6<ENERGY_COST) return false;
+        const got=D.drainAt(source.x,source.y,ENERGY_COST,getTile);
+        return !!(got && finiteAmount(got.amount)+1e-6>=ENERGY_COST);
+      }catch(e){ return false; }
     }
     if(source.kind==='solar' && S && S.drainAt){
-      try{ const got=S.drainAt(source.x,source.y,ENERGY_COST,getTile); if(got && got.amount>0) return true; }catch(e){}
+      try{
+        if(typeof S.energyAt==='function' && finiteAmount(S.energyAt(source.x,source.y,getTile))+1e-6<ENERGY_COST) return false;
+        const got=S.drainAt(source.x,source.y,ENERGY_COST,getTile);
+        return !!(got && finiteAmount(got.amount)+1e-6>=ENERGY_COST);
+      }catch(e){ return false; }
     }
-    // A directly adjacent power-source block is enough for low-stakes vending even
-    // when its detailed battery model has not warmed up yet.
-    return source.kind==='source' || source.kind==='dynamo' || source.kind==='solar';
+    // Generic power-source blocks have no battery API. Modelled dynamo/solar
+    // sources must pay the complete cost; a partial drain is never a free vend.
+    return source.kind==='source';
   }
   function stateForUse(x,y,getTile,powered){
     const k=key(x,y);
     let m=machines.get(k);
     if(!m){
-      m={x:Math.floor(x),y:Math.floor(y),usesLeft:powered?MAX_USES:1,placed:!!powered,pulse:0,lastItem:'',lastVendDay:-1};
+      if(machines.size>=MACHINE_CAP) return null;
+      m={x:Math.floor(x),y:Math.floor(y),usesLeft:powered?MAX_USES:1,placed:!!powered,pulse:0,energy:0,lastItem:'',lastVendDay:-1};
       machines.set(k,m);
     }
     return normalizeMachine(m,x,y);
   }
   function onPlaced(x,y){
-    if(!finiteTile(x,y)) return;
-    if(machines.size>MACHINE_CAP) machines.clear();
-    machines.set(key(x,y),{x:Math.floor(x),y:Math.floor(y),usesLeft:MAX_USES,placed:true,pulse:0,lastItem:'',lastVendDay:-1});
+    if(!finiteTile(x,y)) return false;
+    const k=key(x,y);
+    if(!machines.has(k) && machines.size>=MACHINE_CAP) return false;
+    machines.set(k,{x:Math.floor(x),y:Math.floor(y),usesLeft:MAX_USES,placed:true,pulse:0,energy:0,lastItem:'',lastVendDay:-1});
+    return true;
   }
   function onTileRemoved(x,y){
     machines.delete(key(x,y));
@@ -262,9 +283,12 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
     x=Math.floor(x); y=Math.floor(y);
     const getTile=ctx && ctx.getTile;
     if(!finiteTile(x,y) || getSafe(getTile,x,y,T.AIR)!==T.VENDING_MACHINE) return {ok:false, reason:'not-vending'};
-    const source=powerSourceAt(x,y,getTile,ctx) || networkSourceAt(x,y,getTile,ctx);
+    let source=powerSourceAt(x,y,getTile,ctx) || networkSourceAt(x,y,getTile,ctx);
+    const existing=machines.get(key(x,y));
+    if(!source && existing && finiteAmount(existing.energy)+1e-6>=ENERGY_COST) source={kind:'rifle',x,y};
     const powered=!!source;
     const m=stateForUse(x,y,getTile,powered);
+    if(!m) return {ok:false, reason:'state-cap', message:'Za duzo aktywnych automatow'};
     if(m.placed && !powered) return {ok:false, reason:'power', message:'Automat wymaga zasilania obok albo przewodem'};
     if(m.usesLeft<=0){
       const scrap=breakMachine(x,y,ctx,ctx&&ctx.rng);
@@ -276,7 +300,8 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
       m.pulse=Math.max(m.pulse||0,0.34);
       return {ok:false, reason:'cooldown', message:'Automat wyczerpany na dzis. Wroc jutro.', powered, source, usesLeft:m.usesLeft, day, ready:false};
     }
-    if(powered && !drawPower(source,getTile,ctx)){
+    if(source && source.kind==='rifle') m.energy=Math.max(0,finiteAmount(m.energy)-ENERGY_COST);
+    else if(powered && !drawPower(source,getTile,ctx)){
       return {ok:false, reason:'power', message:'Automat stracil zasilanie'};
     }
     const loot=rollVendingLoot(ctx && ctx.rng);
@@ -303,12 +328,28 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
       m.pulse=Math.max(0,(m.pulse||0)-d*2.6);
     }
   }
+  function receiveElectricChargeAt(x,y,amount,getTile){
+    x=Math.floor(Number(x)); y=Math.floor(Number(y));
+    const gt=getTile || (MM.world && MM.world.getTile);
+    if(!finiteTile(x,y) || getSafe(gt,x,y,T.AIR)!==T.VENDING_MACHINE) return 0;
+    let m=machines.get(key(x,y));
+    if(!m){
+      if(machines.size>=MACHINE_CAP) return 0;
+      m={x,y,usesLeft:1,placed:false,pulse:0,energy:0,lastItem:'',lastVendDay:-1};
+      machines.set(key(x,y),m);
+    }
+    normalizeMachine(m,x,y);
+    const before=m.energy;
+    m.energy=Math.min(ELECTRIC_BUFFER_CAP,before+finiteAmount(amount));
+    if(m.energy>before) m.pulse=1;
+    return m.energy-before;
+  }
   function snapshot(){
     const list=[];
     for(const m of machines.values()){
       const mm=normalizeMachine(m,m&&m.x,m&&m.y);
       if(!finiteTile(mm.x,mm.y)) continue;
-      list.push({x:mm.x,y:mm.y,usesLeft:mm.usesLeft,placed:!!mm.placed,lastItem:mm.lastItem||'',lastVendDay:mm.lastVendDay});
+      list.push({x:mm.x,y:mm.y,usesLeft:mm.usesLeft,placed:!!mm.placed,energy:+mm.energy.toFixed(2),lastItem:mm.lastItem||'',lastVendDay:mm.lastVendDay});
       if(list.length>=MACHINE_CAP) break;
     }
     return {v:1,list};
@@ -316,7 +357,7 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
   function restore(s,getTile){
     machines.clear();
     const list=s && Array.isArray(s.list) ? s.list : [];
-    for(const raw of list){
+    for(const raw of list.slice(0,MACHINE_CAP)){
       if(!raw || machines.size>=MACHINE_CAP) break;
       const x=Math.floor(raw.x), y=Math.floor(raw.y);
       if(!finiteTile(x,y)) continue;
@@ -326,7 +367,7 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
   }
   function reset(){ machines.clear(); }
   function metrics(){
-    let placed=0, stock=0, exhaustedToday=0;
+    let placed=0, stock=0, exhaustedToday=0, storedEnergy=0;
     const day=gameDayKey();
     for(const m of machines.values()){
       const mm=normalizeMachine(m,m&&m.x,m&&m.y);
@@ -335,8 +376,9 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
         if(mm.lastVendDay===day) exhaustedToday++;
       }
       stock+=Math.max(0,Number(mm.usesLeft)||0);
+      storedEnergy+=mm.energy;
     }
-    return {machines:machines.size, placed, stock, exhaustedToday};
+    return {machines:machines.size, placed, stock, exhaustedToday, storedEnergy:+storedEnergy.toFixed(2)};
   }
   function draw(ctx,TILE,sx,sy,viewX,viewY,canDrawTile,getTile,opts){
     if(!ctx || !machines.size) return;
@@ -352,7 +394,16 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
       if(pulse<=0.01 && !m.placed) continue;
       const x=m.x*TILE, y=m.y*TILE;
       const mm=normalizeMachine(m,m.x,m.y);
-      const source=powerSourceAt(m.x,m.y,getTile,opts) || networkSourceAt(m.x,m.y,getTile,opts);
+      let source=powerSourceAt(m.x,m.y,getTile,opts);
+      if(!source){
+        const stale=!m._displayPowerChecked || !Number.isFinite(m._displayPowerAt) || now<m._displayPowerAt || now-m._displayPowerAt>=DISPLAY_POWER_CACHE_MS;
+        if(stale){
+          m._displayPowerSource=networkSourceAt(m.x,m.y,getTile,opts);
+          m._displayPowerAt=now;
+          m._displayPowerChecked=true;
+        }
+        source=m._displayPowerSource || (finiteAmount(m.energy)+1e-6>=ENERGY_COST ? {kind:'rifle',x:m.x,y:m.y} : null);
+      }
       const day=gameDayKey(opts);
       const hasStock=mm.usesLeft>0;
       const cooldown=!!(mm.placed && source && mm.lastVendDay===day);
@@ -385,7 +436,7 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
     ctx.restore();
   }
 
-  const api={MAX_USES,ENERGY_COST,rollVendingLoot,powerSourceAt,vendAt,onPlaced,onTileRemoved,update,draw,snapshot,restore,reset,metrics,_debug:{machines,scrapDrops,networkSourceAt,drainNetworkPowerAt}};
+  const api={MAX_USES,ENERGY_COST,rollVendingLoot,powerSourceAt,vendAt,onPlaced,onTileRemoved,receiveElectricChargeAt,update,draw,snapshot,restore,reset,metrics,_debug:{machines,scrapDrops,networkSourceAt,drainNetworkPowerAt,MACHINE_CAP,DISPLAY_POWER_CACHE_MS,ELECTRIC_BUFFER_CAP}};
   MM.vending=api;
 })();
 

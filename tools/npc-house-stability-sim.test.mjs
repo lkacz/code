@@ -38,7 +38,7 @@ generatedNpcs.reset();
 let candidate=null;
 for(let c=1;c<200;c++){ candidate=generatedNpcs._candidateForCell(c,worldGen); if(candidate) break; }
 assert.ok(candidate, 'a resident candidate exists');
-const player={x:candidate.x,y:SURFACE-1,hp:100};
+const player={x:candidate.x+20,y:SURFACE-1,hp:100};
 const ctx={worldGen,gameDayFloat(){return gameDay;},onInventoryChange(){},onChange(){}};
 
 // Build the house (protection is applied during build).

@@ -393,6 +393,63 @@ for(const tile of [T.FIRE_TURRET,T.WATER_TURRET]){
   assert.equal(turrets.metrics().machines,0,'tile removal prunes turret machine state');
 }
 
+{
+  reset();
+  const cap=turrets._debug.MACHINE_CAP;
+  for(let i=0;i<cap;i++){
+    turrets._debug.machines.set('cap-'+i,{x:i,y:10,kind:'standard',energy:1,cooldown:0,scanT:0,pulse:0,aim:0,target:null,lastSeen:0,activeT:0});
+  }
+  setTile(9999,10,T.TURRET);
+  assert.equal(turrets.ensureMachine(9999,10,getTile),null,'charged turret state is never evicted to exceed the registry cap');
+  assert.equal(turrets._debug.machines.size,cap,'live turret registry remains hard-capped');
+  assert.ok(turrets._debug.machines.has('cap-0'),'cap refusal preserves prior charged entries');
+}
+
+{
+  reset();
+  const cap=turrets._debug.MACHINE_CAP;
+  setTile(25,10,T.TURRET);
+  const hostile=Array.from({length:cap},()=>({x:0,y:Infinity,energy:90}));
+  hostile.push({x:25,y:10,energy:55});
+  turrets.restore({v:1,list:hostile},getTile);
+  assert.equal(turrets.metrics().machines,0,'restore processes only a bounded prefix of oversized turret data');
+}
+
+{
+  reset();
+  setTile(1000,10,T.TURRET);
+  const realTeleporters=globalThis.MM.teleporters;
+  let chargeCalls=0;
+  globalThis.MM.teleporters={chargeBatteryAt(){ chargeCalls++; return 1; }};
+  turrets.update(1/30,{x:0.5,y:10.5},getTile,setTile,{dynamo});
+  assert.equal(chargeCalls,0,'far-away turrets do not run cable-network charging each frame');
+  for(let i=0;i<31;i++) turrets.update(1/30,{x:0.5,y:10.5},getTile,setTile,{dynamo});
+  assert.equal(chargeCalls,1,'far-away turrets charge on a bounded one-second background tick');
+  globalThis.MM.teleporters=realTeleporters;
+}
+
+{
+  reset();
+  setTile(0,10,T.TURRET);
+  turrets._debug.debugSetEnergyAt(0,10,12,getTile);
+  const realTeleporters=globalThis.MM.teleporters;
+  let chargeCalls=0;
+  globalThis.MM.teleporters={chargeBatteryAt(_x,_y,battery){ chargeCalls++; battery.energy=Infinity; return Infinity; }};
+  turrets.update(0.1,{x:0.5,y:10.5},getTile,setTile,{dynamo});
+  assert.equal(chargeCalls,1,'nearby turret still asks its network charger');
+  assert.equal(turrets.metrics().storedEnergy,12,'invalid charger output cannot mint infinite turret energy');
+  globalThis.MM.teleporters={chargeBatteryAt(){ throw new Error('network failure'); }};
+  assert.doesNotThrow(()=>turrets.update(0.1,{x:0.5,y:10.5},getTile,setTile,{dynamo}),'charger failure cannot abort the turret update loop');
+  assert.equal(turrets.metrics().storedEnergy,12,'charger failure preserves the local turret battery');
+  globalThis.MM.teleporters=realTeleporters;
+}
+
+{
+  const state={x:0,y:10,kind:'water',energy:90,water:5,cooldown:0,scanT:0,pulse:0,aim:0,activeT:0};
+  assert.equal(turrets._debug.fireAt(state,{},getTile),false,'invalid target coordinates cannot fire a water turret');
+  assert.equal(state.water,5,'invalid target coordinates do not consume water');
+}
+
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 assert.match(mainSrc, /import \{ turrets as TURRETS \}/, 'main imports the turret engine');
 assert.match(mainSrc, /TURRETS\.update\(dt, player, getTile, setTile, \{dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS\}\)/, 'main updates turrets with power-network and pump access');

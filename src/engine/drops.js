@@ -12,9 +12,10 @@
 //     their own reveal beam, particles and learned bell on arrival and pickup.
 //
 // Pickup contract: E sweeps everything in reach (the wardrobe/mech E
-// precedence asks wantsInteractKey first); the persisted auto-pickup toggle
-// (pause panel) vacuums drops instead — the default is ON only for touch mode,
-// which has no E key. Rarity is a visible promise AND a ticking bomb: rare/epic
+// precedence asks wantsInteractKey first). Normal auto-pickup comes only from
+// worn lootMagnetLevel gear: current tile, then +1/+2/+3 tile rings. A separate
+// persisted developer override lives in the debug toolbox. Rarity is a visible
+// promise AND a ticking bomb: rare/epic
 // drops glow in their tier color, epic ones carry a light beam — but the better
 // the find, the FASTER it expires, with a countdown bar over rare+ gear.
 // Lava eats ordinary drops; a COMMON gear offering has a slim ratcheting chance
@@ -40,7 +41,7 @@ const drops = (function(){
   const CHEST_RADIUS_X=0.38, CHEST_RADIUS_Y=0.30;
   const CHEST_GRAVITY=30, CHEST_TERMINAL=20, CHEST_BOUNCE=0.06;
   const PICKUP_RADIUS=1.75;     // manual E reach
-  const AUTO_RADIUS=2.35;       // auto-pickup magnet reach
+  const AUTO_RADIUS=2.35;       // developer auto-pickup override reach
   const MOUSE_HIT=0.55;         // cursor-over-drop hit radius (hover preview)
   const MOUSE_PICKUP_RADIUS=3.0;// click-to-take reach (mirrors cursor mining)
   const COLLECT_DIST=0.55;
@@ -205,24 +206,37 @@ const drops = (function(){
   let dry=0; // eligible kills since the last gear drop (persisted in snapshot)
   let sacrificeDry=0; // refused volcano offerings since the last gift (persisted)
   let rand=Math.random; // _debug.setRandom swaps in a scripted queue for tests
-  let autoPref=null;    // null = no explicit choice: touch defaults ON, PC OFF
+  let debugAutoPref=false; // developer-only override; ordinary play uses worn gear
   try{
     const raw=(typeof localStorage!=='undefined') ? localStorage.getItem(AUTO_KEY) : null;
-    if(raw==='1') autoPref=true; else if(raw==='0') autoPref=false;
+    if(raw==='1') debugAutoPref=true;
   }catch(e){ /* headless */ }
 
   const WORLD_TOP=Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
   const WORLD_BOTTOM=Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : 400;
   const finiteNum=v=>typeof v==='number' && isFinite(v);
 
-  function isTouchMode(){
-    try{ return typeof document!=='undefined' && document.documentElement && document.documentElement.dataset.inputMode==='touch'; }catch(e){ return false; }
+  function debugAutoPickup(){ return debugAutoPref; }
+  function setDebugAutoPickup(on){
+    debugAutoPref=!!on;
+    try{ if(typeof localStorage!=='undefined') localStorage.setItem(AUTO_KEY, debugAutoPref?'1':'0'); }catch(e){}
+    return debugAutoPref;
   }
-  function autoPickup(){ return autoPref===null ? isTouchMode() : autoPref; }
-  function setAutoPickup(on){
-    autoPref=!!on;
-    try{ if(typeof localStorage!=='undefined') localStorage.setItem(AUTO_KEY, autoPref?'1':'0'); }catch(e){}
-    return autoPref;
+  // Compatibility aliases for older debug scripts. These never include the
+  // equipment effect; their sole meaning is the developer override.
+  function autoPickup(){ return debugAutoPickup(); }
+  function setAutoPickup(on){ return setDebugAutoPickup(on); }
+  function lootMagnetLevel(){
+    const raw=MM.activeModifiers && MM.activeModifiers.lootMagnetLevel;
+    return typeof raw==='number' && isFinite(raw) ? Math.max(0,Math.min(4,Math.trunc(raw))) : 0;
+  }
+  function inAutoPickupReach(d,player,level){
+    if(!d || !player) return false;
+    if(debugAutoPref) return dist2ToPlayer(d,player)<=AUTO_RADIUS*AUTO_RADIUS;
+    if(level<=0) return false;
+    const ring=level-1;
+    return Math.abs(Math.floor(d.x)-Math.floor(player.x))<=ring
+      && Math.abs(Math.floor(d.y)-Math.floor(player.y))<=ring;
   }
 
   function getSafe(getTile,x,y){ try{ return getTile ? getTile(Math.floor(x),Math.floor(y)) : T.AIR; }catch(e){ return T.AIR; } }
@@ -558,7 +572,7 @@ const drops = (function(){
     if(idx>=0) list.splice(idx,1);
     // snatching an epic+ find is a rush — a short euphoria buff makes the body agree
     if(d.kind==='gear' && isHighTier(d.tier)){
-      try{ if(MM.progress && MM.progress.addBuff) MM.progress.addBuff({name:'Euforia', icon:'✨', dur:12, stats:{moveSpeedMult:1.15, jumpPowerMult:1.1}}); }catch(e){}
+      try{ if(MM.progress && MM.progress.addBuff) MM.progress.addBuff({stackKey:'loot_euphoria',name:'Euforia', icon:'✨', dur:12, stats:{moveSpeedMult:1.15, jumpPowerMult:1.1}}); }catch(e){}
     }
     const px=d.x*(MM.TILE||20), py=d.y*(MM.TILE||20);
     try{
@@ -619,15 +633,9 @@ const drops = (function(){
     }catch(e){}
     return true;
   }
-  // E-precedence probe (inventory_ui): a drop in reach claims the interact key,
-  // but only in manual mode — with auto-pickup on, E stays the wardrobe's.
+  // E-precedence probe (inventory_ui): manual E remains useful beyond a worn
+  // magnet's ring, while holding E still opens the wardrobe as usual.
   function wantsInteractKey(player){
-    if(autoPickup()){
-      if(!player || !finiteNum(player.x)) return false;
-      const r2=PICKUP_RADIUS*PICKUP_RADIUS;
-      for(const d of chestDrops) if(dist2ToPlayer(d,player)<=r2) return true;
-      return false;
-    }
     return !!nearestInReach(player,PICKUP_RADIUS);
   }
 
@@ -774,7 +782,8 @@ const drops = (function(){
     if(!(dt>0) || !isFinite(dt)) return;
     dt=Math.min(0.25,dt);
     updateArrowCollectFx(dt,player);
-    const auto=autoPickup() && player && finiteNum(player.x);
+    const magnetLevel=lootMagnetLevel();
+    const auto=(debugAutoPref || magnetLevel>0) && player && finiteNum(player.x) && finiteNum(player.y);
     for(let i=list.length-1;i>=0;i--){
       const d=list[i];
       d.age+=dt;
@@ -799,17 +808,16 @@ const drops = (function(){
           }
         }
       }
-      if(auto && d.kind!=='chest'){
+      if(auto && d.kind!=='chest' && inAutoPickupReach(d,player,magnetLevel)){
         const dd=dist2ToPlayer(d,player);
         if(dd<=COLLECT_DIST*COLLECT_DIST){ collect(d,{player}); continue; }
-        if(dd<=AUTO_RADIUS*AUTO_RADIUS){
-          // vacuum: fly straight at the hero, ignoring terrain (short hop)
-          const dist=Math.sqrt(dd)||1;
-          d.x+=((player.x-d.x)/dist)*MAGNET_SPEED*dt;
-          d.y+=((player.y-0.3-d.y)/dist)*MAGNET_SPEED*dt;
-          d.settled=false; d.vx=0; d.vy=0;
-          continue;
-        }
+        // Vacuum straight at the hero, ignoring terrain. Gear reach is tile-
+        // exact (including diagonals); the debug override keeps its old circle.
+        const dist=Math.sqrt(dd)||1;
+        d.x+=((player.x-d.x)/dist)*MAGNET_SPEED*dt;
+        d.y+=((player.y-0.3-d.y)/dist)*MAGNET_SPEED*dt;
+        d.settled=false; d.vx=0; d.vy=0;
+        continue;
       }
       if(!d.settled){
         stepPhysics(d,dt,getTile);
@@ -982,9 +990,8 @@ const drops = (function(){
     const viewL=camX-2, viewR=camX+(ctx.canvas.width/zoom)/TILE+2;
     const viewT=camY-2, viewB=camY+(ctx.canvas.height/zoom)/TILE+2;
     const now=performance.now();
-    const manual=!autoPickup();
     let hint=null;
-    if(manual && player && finiteNum(player.x)) hint=nearestInReach(player,PICKUP_RADIUS);
+    if(player && finiteNum(player.x)) hint=nearestInReach(player,PICKUP_RADIUS);
     // font strings built once per frame, not once per drop
     const glyphFont=Math.round(TILE*0.5)+'px sans-serif';
     const qtyFont='bold '+Math.max(9,Math.round(TILE*0.42))+'px sans-serif';
@@ -1114,7 +1121,7 @@ const drops = (function(){
   }
 
   // --- persistence ------------------------------------------------------------
-  const ITEM_NUM_FIELDS=['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','crushResistBonus'];
+  const ITEM_NUM_FIELDS=['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','lootMagnetLevel','crushResistBonus'];
   const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType'];
   const ITEM_KINDS=new Set(['cape','eyes','outfit','weapon','charm']);
   function sanitizeItem(raw){
@@ -1124,6 +1131,11 @@ const drops = (function(){
     const it={id:raw.id, kind:raw.kind};
     ITEM_NUM_FIELDS.forEach(f=>{ const v=raw[f]; if(typeof v==='number' && isFinite(v)) it[f]=v; });
     ITEM_STR_FIELDS.forEach(f=>{ const v=raw[f]; if(typeof v==='string' && v.length<=80) it[f]=v; });
+    if(typeof it.lootMagnetLevel==='number'){
+      const level=Math.trunc(it.lootMagnetLevel);
+      if(level<1) delete it.lootMagnetLevel;
+      else it.lootMagnetLevel=Math.min(4,level);
+    }
     if(finiteNum(raw.enhancement)) it.enhancement=Math.max(-99,Math.min(99,Math.trunc(raw.enhancement)));
     return it;
   }
@@ -1179,10 +1191,10 @@ const drops = (function(){
     update,draw,
     spawnResource,spawnGear,spawnJewel,spawnChest,rollGearDrop,rollJewelDrop,rollGuardianDrop,showArrowCollect,
     pickupNearest,wantsInteractKey,hoverAt,pickupAt,chestAtPoint,remove,
-    autoPickup,setAutoPickup,
+    debugAutoPickup,setDebugAutoPickup,autoPickup,setAutoPickup,lootMagnetLevel,
     snapshot,restore,reset,
-    metrics:()=>({active:list.length, jewels:list.filter(d=>d.kind==='jewel').length, chests:chestDrops.size, arrowCollectFx:arrowCollectFx.length, autoPickup:autoPickup()}),
-    _debug:{list,arrowCollectFx,arrowStyleFor, GEAR_LOOT, GUARDIAN_LOOT, JEWEL_STYLE, dangerFor, jewelPowerFor, jewelChanceFor, jewelBossLike, rollTier, setRandom:(fn)=>{ rand=typeof fn==='function'?fn:Math.random; }, collect, nearestInReach,
+    metrics:()=>({active:list.length, jewels:list.filter(d=>d.kind==='jewel').length, chests:chestDrops.size, arrowCollectFx:arrowCollectFx.length, autoPickup:debugAutoPickup(), debugAutoPickup:debugAutoPickup(), lootMagnetLevel:lootMagnetLevel()}),
+    _debug:{list,arrowCollectFx,arrowStyleFor, GEAR_LOOT, GUARDIAN_LOOT, JEWEL_STYLE, dangerFor, jewelPowerFor, jewelChanceFor, jewelBossLike, rollTier, setRandom:(fn)=>{ rand=typeof fn==='function'?fn:Math.random; }, collect, nearestInReach,inAutoPickupReach,
       dryStreak:()=>dry, setDryStreak:(n)=>{ dry=Math.max(0,Math.floor(Number(n)||0)); },
       sacrificeDry:()=>sacrificeDry,
       config:{MAX_DROPS,DESPAWN_SEC,JEWEL_LIFE,GEAR_LIFE,GUARDIAN_RELIC_LIFE,PICKUP_RADIUS,AUTO_RADIUS,COLLECT_DIST,MERGE_DIST,MOUSE_HIT,MOUSE_PICKUP_RADIUS,CHEST_RADIUS_X,CHEST_RADIUS_Y,CHEST_GRAVITY,CHEST_TERMINAL,CHEST_BOUNCE,SIDEKICK_DROP_CHANCE,SIDEKICK_EPIC_CHANCE,SIDEKICK_LEGENDARY_CHANCE,PITY_KILLS,SACRIFICE_BASE,SACRIFICE_STEP,SACRIFICE_MAX,SACRIFICE_LEGENDARY_CHANCE,UNCOMMON_SHARE,LEGENDARY_BASE_SHARE,LEGENDARY_DANGER_BONUS}}

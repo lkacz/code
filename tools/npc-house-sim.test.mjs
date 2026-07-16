@@ -55,7 +55,9 @@ for(let cell=1; cell<200; cell++){
 }
 assert.ok(candidate, 'a deterministic resident candidate exists for the test world');
 
-const player = { x:candidate.x, y:SURFACE-1, hp:100 };
+// Approach from outside the footprint: generated construction deliberately
+// waits rather than materialising a wall through the hero's body.
+const player = { x:candidate.x+20, y:SURFACE-1, hp:100 };
 
 // First scan builds the house and materializes the resident.
 generatedNpcs.update(1, player, getTile, setTile, ctx);
@@ -141,6 +143,42 @@ assert.ok(migratedFurnishings.length>0 && migratedFurnishings.every(c=>getTile(c
 local = generatedNpcs._debug().locals.find(s => s.id === legacyCandidate.id);
 assert.ok(local && local.houseDoorsMigrated && local.houseFurnishingsDone && !local.abandoned,
   'door/furnishing migration is one-time and does not abandon an otherwise intact house');
+
+// A failed world write rolls the whole construction transaction back. No
+// half-house may be left behind and the lifecycle flag must stay retryable.
+generatedNpcs.reset();
+tiles.clear();
+const transactionalCandidate=generatedNpcs._candidateForCell(candidate.cell,worldGen);
+const transactionalCells=generatedNpcs._houseCells(transactionalCandidate,getTile,worldGen).cells.filter(c=>c.layer!=='bg');
+const beforeTransaction=new Map(transactionalCells.map(c=>[tkey(c.x,c.y),getTile(c.x,c.y)]));
+let writeCalls=0;
+function flakySetTile(x,y,v){
+  writeCalls++;
+  if(writeCalls===5) return;
+  setTile(x,y,v);
+}
+player.x=transactionalCandidate.x+20;
+generatedNpcs.update(1,player,getTile,flakySetTile,ctx);
+assert.ok(transactionalCells.every(c=>getTile(c.x,c.y)===beforeTransaction.get(tkey(c.x,c.y))),
+  'one rejected tile write rolls every earlier house write back');
+local=generatedNpcs._debug().locals.find(s=>s.id===transactionalCandidate.id);
+assert.ok(local && !local.houseBuilt && !local.housePhysical,'failed construction remains eligible for a later retry');
+
+// Existing machines/player infrastructure abort construction during preflight,
+// before any neighbouring natural terrain is touched.
+generatedNpcs.reset();
+tiles.clear();
+const blockedCandidate=generatedNpcs._candidateForCell(candidate.cell,worldGen);
+const blockedCells=generatedNpcs._houseCells(blockedCandidate,getTile,worldGen).cells.filter(c=>c.layer!=='bg');
+const blockedCell=blockedCells.find(c=>c.t!==T.AIR);
+assert.ok(blockedCell,'house plan exposes a foreground cell for blocker regression');
+setTile(blockedCell.x,blockedCell.y,T.TELEPORTER);
+const beforeBlocked=new Map(blockedCells.map(c=>[tkey(c.x,c.y),getTile(c.x,c.y)]));
+player.x=blockedCandidate.x+20;
+generatedNpcs.update(1,player,getTile,setTile,ctx);
+assert.ok(blockedCells.every(c=>getTile(c.x,c.y)===beforeBlocked.get(tkey(c.x,c.y))),
+  'a protected machine blocks the complete build without partial terrain edits');
+assert.equal(getTile(blockedCell.x,blockedCell.y),T.TELEPORTER,'NPC construction never overwrites a machine');
 
 generatedNpcs.reset();
 console.log('npc-house-sim: all assertions passed');

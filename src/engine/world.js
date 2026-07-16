@@ -53,6 +53,8 @@ window.MM = window.MM || {};
   const MAX_COORD = 30e6;        // |x| beyond this is treated as void (no storage)
   const CHUNK_CAP = 1536;        // ~98k columns of live chunks before eviction
   const HEIGHT_CACHE_CAP = 200000;
+  const INFRASTRUCTURE_SAVE_CAP = 20000;
+  const CONSTRUCTION_BACKGROUND_SAVE_CAP = 40000;
   const SECTION_SIZE = CHUNK_W * WORLD_SECTION_H;
   const BASE_SECTION_MIN = 0;
   const BASE_SECTION_MAX = Math.max(0, Math.ceil(WORLD_H / WORLD_SECTION_H) - 1);
@@ -111,7 +113,7 @@ window.MM = window.MM || {};
   function tileIndex(x,y){ return y*CHUNK_W+x; }
   function getTileRaw(arr,lx,y){ return arr[tileIndex(lx,y)]; }
   function isLadderInfrastructureTile(t){ return t===T.LADDER || t===T.BEDROCK_LADDER; }
-  function isInfrastructureTile(t){ return t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || isLadderInfrastructureTile(t); }
+  function isInfrastructureTile(t){ return t===T.WIRE || t===T.COPPER_WIRE || t===T.SILVER_WIRE || t===T.WATER_PIPE || isLadderInfrastructureTile(t); }
   function isConstructionBackgroundTile(t){ return isPlayerBuiltMaterial(t) && !isDoorTile(t) && !isTrapdoorTile(t); }
   function markModifiedChunk(cx,version,sy){
     if(!isFinite(cx)) return;
@@ -1249,7 +1251,7 @@ window.MM = window.MM || {};
       t===T.SAND || t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.CLAY || t===T.WET_CLAY ||
       t===T.DIRT || t===T.MUD || t===T.COAL || t===T.ICE ||
       t===T.GLASS || t===T.OBSIDIAN || t===T.STEEL || t===T.BRICK || t===T.CHIMNEY ||
-      t===T.WIRE || t===T.COPPER_WIRE || t===T.WATER_PIPE || isLadderInfrastructureTile(t);
+      t===T.WIRE || t===T.COPPER_WIRE || t===T.SILVER_WIRE || t===T.WATER_PIPE || isLadderInfrastructureTile(t);
   }
   function protectedAtlantisTile(t){
     return t===T.BEDROCK || t===T.LAVA || t===T.ALTAR || t===T.VOLCANO_MASTER_STONE ||
@@ -1355,7 +1357,7 @@ window.MM = window.MM || {};
       const sealTop=gen.oceanSealTop(wx);
       if(sealTop==null || y>=sealTop) return false;
       const front=arr[tileIndex(lx,y)];
-      if(front!==T.AIR && front!==T.WATER && front!==T.TORCH && front!==T.GLOWSHROOM && front!==T.WIRE && front!==T.COPPER_WIRE && front!==T.WATER_PIPE) return false;
+      if(front!==T.AIR && front!==T.WATER && front!==T.TORCH && front!==T.GLOWSHROOM && front!==T.WIRE && front!==T.COPPER_WIRE && front!==T.SILVER_WIRE && front!==T.WATER_PIPE) return false;
       if(!bgArr){
         bgArr=generatedBackground.get(ck(cx));
         if(!bgArr){ bgArr=new Uint8Array(CHUNK_W*WORLD_H); generatedBackground.set(ck(cx),bgArr); genBgInvalidate(); }
@@ -1598,6 +1600,7 @@ window.MM = window.MM || {};
             const chance=WG.diamondChance(y)*(nearCave?3:1);
             if(WG.randSeed(wx*13.37+y*0.7)<chance) t=T.DIAMOND;
             else if(WG.coalVeinAt && WG.coalVeinAt(wx,y,nearCave)) t=T.COAL;
+            else if(WG.silverVeinAt && WG.silverVeinAt(wx,y,nearCave)) t=T.SILVER_ORE;
             else if(WG.goldVeinAt && WG.goldVeinAt(wx,y,nearCave)) t=T.GOLD_ORE;
             else t=geologyRockTile(wx,y,depth,biome);
             if(biome!==8 && t===T.STONE && depth<SURFACE_GRASS_DEPTH+sandTh+2 && WG.randSeed(wx*9.71+y*0.23)<(0.10+0.5*(desertF+waterF*0.5))) t=T.SAND;
@@ -2108,6 +2111,7 @@ window.MM = window.MM || {};
     try{ if(MM.smoke && MM.smoke.onTileChanged) MM.smoke.onTileChanged(x,y,old,v,getTile); }catch(e){}
     try{ if(MM.dynamo && MM.dynamo.onTileChanged) MM.dynamo.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.solar && MM.solar.onTileChanged) MM.solar.onTileChanged(x,y,old,v); }catch(e){}
+    try{ if(MM.furnishings && MM.furnishings.onTileChanged) MM.furnishings.onTileChanged(x,y,old,v,getTile); }catch(e){}
     try{ if(MM.teleporters && MM.teleporters.onTileChanged) MM.teleporters.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.pumps && MM.pumps.onTileChanged) MM.pumps.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.steamMachines && MM.steamMachines.onTileChanged) MM.steamMachines.onTileChanged(x,y,old,v); }catch(e){}
@@ -2227,13 +2231,15 @@ window.MM = window.MM || {};
     const clean=list
       .filter(o=>isInfrastructureTile(o.t) && isFinite(o.x) && isFinite(o.y) && worldYInBounds(o.y))
       .sort((a,b)=>(a.x-b.x)||(a.y-b.y)||(a.t-b.t))
-      .slice(0,20000);
+      .slice(0,INFRASTRUCTURE_SAVE_CAP);
     return {v:2,list:clean};
   }
   function restoreInfrastructure(data){
     infrastructure.clear();
     if(!data || !Array.isArray(data.list)) return;
-    for(const raw of data.list){
+    const limit=Math.min(data.list.length,INFRASTRUCTURE_SAVE_CAP);
+    for(let i=0;i<limit;i++){
+      const raw=data.list[i];
       if(!raw || !isInfrastructureTile(raw.t)) continue;
       if(!isFinite(raw.x) || !isFinite(raw.y)) continue;
       const x=Math.floor(raw.x), y=Math.floor(raw.y);
@@ -2257,13 +2263,15 @@ window.MM = window.MM || {};
     const clean=list
       .filter(o=>(o.t===0 || isConstructionBackgroundTile(o.t)) && isFinite(o.x) && isFinite(o.y) && worldYInBounds(o.y))
       .sort((a,b)=>(a.x-b.x)||(a.y-b.y)||(a.t-b.t))
-      .slice(0,40000);
+      .slice(0,CONSTRUCTION_BACKGROUND_SAVE_CAP);
     return {v:1,list:clean};
   }
   function restoreConstructionBackground(data){
     constructionBackground.clear();
     if(!data || !Array.isArray(data.list)) return;
-    for(const raw of data.list){
+    const limit=Math.min(data.list.length,CONSTRUCTION_BACKGROUND_SAVE_CAP);
+    for(let i=0;i<limit;i++){
+      const raw=data.list[i];
       if(!raw || !(raw.t===0 || isConstructionBackgroundTile(raw.t))) continue;
       if(!isFinite(raw.x) || !isFinite(raw.y)) continue;
       const x=Math.floor(raw.x), y=Math.floor(raw.y);
@@ -2276,14 +2284,27 @@ window.MM = window.MM || {};
   // Save loading replaces whole chunk arrays: any cached section view over the
   // old array must be dropped or reads would silently hit the orphaned buffer.
   function setChunkArray(key,arr){
+    const ref=normalizeChunkRef(key);
+    if(!ref || !Number.isInteger(ref.cx)) return false;
+    const maxChunk=Math.ceil(MAX_COORD/CHUNK_W);
+    if(Math.abs(ref.cx)>maxChunk) return false;
+    if(ref.base){
+      if(ref.key!==ck(ref.cx)) return false;
+    }else{
+      if(!Number.isInteger(ref.sy) || ref.sy<WORLD_MIN_SECTION || ref.sy>WORLD_MAX_SECTION || isBaseSection(ref.sy)) return false;
+      if(ref.key!==ckSection(ref.cx,ref.sy)) return false;
+    }
+    const expected=CHUNK_W*(ref.base ? WORLD_H : WORLD_SECTION_H);
+    if(!(arr instanceof Uint8Array) || arr.length!==expected) return false;
     // Old saves may contain chest blocks. They are intentionally removed, not
     // converted: only fresh mob/reward drops populate physical chests now.
-    world.set(key,stripChestTiles(arr)); sectionViews.clear();
+    world.set(ref.key,stripChestTiles(arr)); sectionViews.clear();
     // Save-loaded base chunks skip ensureChunk, so replay the deterministic
     // city pass in background-only mode to rebuild interior backdrops.
-    if(typeof key==='string' && /^c-?\d+$/.test(key)){
-      try{ applyDevastatedCity(null,+key.slice(1),true); }catch(e){}
+    if(ref.base){
+      try{ applyDevastatedCity(null,ref.cx,true); }catch(e){}
     }
+    return true;
   }
 
   worldAPI.ensureChunk = ensureChunk;

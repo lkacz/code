@@ -103,6 +103,20 @@ assert.ok(A.getBusVolume('music') > 0 && A.getBusVolume('sfx') > 0, 'bus volumes
 globalThis.player = { x: 0, y: 0, vx: 0, vy: 0, onGround: true };
 fireUnlock();
 assert.ok(A.isReady(), 'unlock gesture builds a running context');
+assert.equal(typeof A.activate, 'function', 'audio exposes an explicit trusted-gesture activation path');
+{
+  const originalResume=lastCtx.resume;
+  let resumeCalls=0;
+  lastCtx.state='suspended';
+  lastCtx.resume=()=>{ resumeCalls++; return Promise.resolve().then(()=>{ lastCtx.state='running'; }); };
+  const first=A.activate(), second=A.activate();
+  assert.equal(A.isReady(),false,'an asynchronous browser resume is not reported ready prematurely');
+  assert.equal(first,second,'concurrent radio/UI activation shares one in-flight resume request');
+  await first;
+  assert.equal(resumeCalls,1,'only one AudioContext resume is issued for the gesture');
+  assert.equal(A.isReady(),true,'audio becomes ready after asynchronous resume resolves');
+  lastCtx.resume=originalResume;
+}
 
 // mixer graph: a voice must reach the destination through the limiter
 const comp = lastCtx.nodes.find(n => n.kind === 'compressor');
@@ -358,6 +372,7 @@ function oscGrowthAfterUpdate(){
 
 // ---------------- placeable home radio ------------------------------------
 {
+  player.x=0; player.y=1; // stand beside the receiver for an audible-mix assertion
   const audible=RADIO_STATIONS.filter(station=>station.id!=='off');
   assert.equal(audible.length,6,'the home radio offers six audible stations plus off');
   assert.equal(new Set(audible.map(station=>station.genre)).size,6,'every radio choice has a distinct genre');
@@ -367,15 +382,21 @@ function oscGrowthAfterUpdate(){
   for(const station of audible){
     nowMs += 30000;
     assert.equal(A.setRadioStation(station.id),true,station.id+' can be selected');
-    assert.equal(A.setRadioSource(6,8),true,'a nearby placed radio publishes a positional source');
+    assert.equal(A.setRadioSource(2,1),true,'a nearby placed radio publishes a positional source');
     const before=nodeCount();
     A.update(0.3);
-    const oscillators=lastCtx.nodes.slice(before).filter(node=>node.kind==='osc').length;
+    const phraseNodes=lastCtx.nodes.slice(before);
+    const oscillators=phraseNodes.filter(node=>node.kind==='osc').length;
     voiceSignatures.push(oscillators);
     assert.ok(oscillators>0,station.id+' schedules its own procedural phrase');
+    const loudestEnvelope=Math.max(0,...phraseNodes.filter(node=>node.kind==='gain')
+      .flatMap(node=>node.gain.events.filter(event=>event[0]==='lin').map(event=>event[1])));
+    assert.ok(loudestEnvelope>=0.025,station.id+' has an intentionally audible receiver-level mix');
     const state=A.debugState().radio;
     assert.equal(state.station,station.id,'debug state reports '+station.id);
     assert.equal(state.active,true,station.id+' is active while its radio is nearby');
+    assert.equal(state.blockedReason,null,station.id+' exposes no hidden playback blocker while broadcasting');
+    assert.equal(state.gain,3.2,station.id+' uses the bounded radio mix lift');
     assert.equal(state.track,station.tracks[0],station.id+' starts with its first named track');
     const panner=lastCtx.nodes.slice(before).find(node=>node.kind==='panner');
     assert.ok(panner && panner.pan.value>0,'radio music is spatialized from the placed receiver');
@@ -385,17 +406,23 @@ function oscGrowthAfterUpdate(){
   assert.equal(A.setRadioStation('tampered-station'),false,'unknown station ids fail closed');
   assert.equal(A.getRadioStation(),selected,'a rejected station cannot corrupt the selection');
   assert.equal(JSON.parse(store['mm_audio_v1']).radioStation,selected,'radio selection persists in audio settings');
-  nowMs += 1601;
-  assert.equal(A.debugState().radio.active,false,'a stale or removed radio source expires promptly');
-  A.setRadioSource(6,8);
+  nowMs += 10000;
+  assert.equal(A.debugState().radio.active,true,'a stationary placed radio does not silently expire between scans or pauses');
   A.setMusicOn(false);
   assert.equal(A.debugState().radio.active,false,'the global music switch also silences home radio');
+  assert.equal(A.debugState().radio.blockedReason,'music-off','debug state explains a disabled music setting');
   A.setMusicOn(true);
+  A.setRadioSource(2,1,{powered:false});
+  assert.equal(A.debugState().radio.active,false,'an unpowered receiver cannot schedule music');
+  assert.equal(A.debugState().radio.blockedReason,'no-power','radio diagnostics distinguish a missing house circuit');
+  A.setRadioSource(2,1,{powered:true});
+  assert.equal(A.debugState().radio.active,true,'supplying the receiver restores the selected station');
   assert.equal(A.setRadioStation('off'),true,'radio has an explicit off position');
   assert.equal(A.debugState().radio.active,false,'off prevents radio scheduling even with a source');
   A.clearRadioSource();
   assert.equal(A.debugState().radio.source,null,'leaving or removing the receiver clears its source');
   A.setRadioStation('lofi');
+  player.y=8;
   nowMs += 30000;
 }
 {

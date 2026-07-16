@@ -210,6 +210,15 @@ import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
     mirror:true
   });
   register({
+    id:'heat_silver_ore_to_ingot',
+    stimulus:'heat',
+    priority:6,
+    pattern:['S'],
+    map:{S:'SILVER_ORE'},
+    resultTile:'SILVER_INGOT',
+    mirror:false
+  });
+  register({
     id:'heat_clay_to_brick',
     stimulus:'heat',
     priority:1,

@@ -41,6 +41,7 @@ import { rollChestFurnishing } from './furnishings.js';
   const TIERS={
     common:{weight:58, rolls:[1,1], uniqueChance:0.02,
       airJumps:1, vision:[11,12],
+      lootMagnetLevel:1, specialVisionLevel:1, treasureSenseLevel:1,
       outfitPct:{mine:[10,15], move:[5,10],  jump:[5,10]},
       charmPct:{mine:[5,10],  move:[5],     jump:[5]},
       swim:[0.75],
@@ -48,6 +49,7 @@ import { rollChestFurnishing } from './furnishings.js';
       energyCap:[15,20,25], crush:[1], eCost:[13,14]},
     uncommon:{weight:20, rolls:[1,2], uniqueChance:0.04,
       airJumps:2, vision:[12,13],
+      lootMagnetLevel:2, specialVisionLevel:2, treasureSenseLevel:2,
       outfitPct:{mine:[20,25], move:[10], jump:[10]},
       charmPct:{mine:[10,15], move:[5,10], jump:[5,10]},
       swim:[0.75,1],
@@ -55,6 +57,7 @@ import { rollChestFurnishing } from './furnishings.js';
       energyCap:[20,30,35], crush:[1,2], eCost:[12,13]},
     rare:{weight:15, rolls:[1,2], uniqueChance:0.07,
       airJumps:2, vision:[13,14],
+      lootMagnetLevel:3, specialVisionLevel:3, treasureSenseLevel:3,
       outfitPct:{mine:[25,30,35], move:[10,15], jump:[10,15]},
       charmPct:{mine:[15,20], move:[10], jump:[10]},
       swim:[1],
@@ -62,6 +65,7 @@ import { rollChestFurnishing } from './furnishings.js';
       energyCap:[30,40,50], crush:[2], eCost:[10,12]},
     epic:{weight:5, rolls:[2,3], uniqueChance:0.18,
       airJumps:3, vision:[15,17],
+      lootMagnetLevel:4, specialVisionLevel:4, treasureSenseLevel:4,
       outfitPct:{mine:[50,60,70], move:[20,25], jump:[20,25]},
       charmPct:{mine:[25,30], move:[15,20], jump:[15,20]},
       swim:[1.25],
@@ -69,6 +73,7 @@ import { rollChestFurnishing } from './furnishings.js';
       energyCap:[60,80,100], crush:[3,4], eCost:[8,9]},
     legendary:{weight:2, rolls:[2,4], uniqueChance:0.30,
       airJumps:4, vision:[18,20],
+      lootMagnetLevel:4, specialVisionLevel:4, treasureSenseLevel:4,
       outfitPct:{mine:[80,90,100], move:[30,35], jump:[30,35]},
       charmPct:{mine:[35,40], move:[20,25], jump:[20,25]},
       swim:[1.25],
@@ -113,8 +118,14 @@ import { rollChestFurnishing } from './furnishings.js';
   function applyUniqueBoost(item){
     item.unique=UNIQUE_NAMES[item.kind]||'storm_edge';
     if(item.kind==='cape'){ item.airJumps=(item.airJumps||0)+1; return; }
-    if(item.kind==='eyes'){ item.visionRadius=(item.visionRadius||10)+2; return; }
+    if(item.kind==='eyes'){
+      if(typeof item.specialVisionLevel==='number') item.specialVisionLevel=Math.min(4,item.specialVisionLevel+1);
+      else item.visionRadius=(item.visionRadius||10)+2;
+      return;
+    }
     if(item.kind==='outfit' || item.kind==='charm'){
+      if(typeof item.treasureSenseLevel==='number'){ item.treasureSenseLevel=Math.min(4,item.treasureSenseLevel+1); return; }
+      if(typeof item.lootMagnetLevel==='number'){ item.lootMagnetLevel=Math.min(4,item.lootMagnetLevel+1); return; }
       if(typeof item.crushResistBonus==='number'){ item.crushResistBonus+=1; return; }
       if(typeof item.energyCapacityBonus==='number'){ item.energyCapacityBonus+=25; return; }
       if(typeof item.waterMoveSpeedMult==='number'){ item.waterMoveSpeedMult=Math.min(1.25, +(item.waterMoveSpeedMult+0.25).toFixed(2)); return; }
@@ -136,19 +147,34 @@ import { rollChestFurnishing } from './furnishings.js';
     const item={kind, id:kind+'_'+Math.random().toString(36).slice(2,7), tier};
     const td=TIERS[tier];
     if(kind==='cape'){ item.airJumps=td.airJumps; }
-    else if(kind==='eyes'){ item.visionRadius=randInt(r, td.vision[0], td.vision[1]); }
+    else if(kind==='eyes'){
+      const forced=['vision','night','thermal'].includes(opts.profile) ? opts.profile : null;
+      const profiles=tier==='common'
+        ? ['vision','vision','vision','night']
+        : tier==='uncommon'
+          ? ['vision','vision','night','thermal']
+          : ['vision','night','night','thermal'];
+      const p=forced||pick(r,profiles);
+      if(p==='night' || p==='thermal'){
+        item.specialVisionLevel=td.specialVisionLevel;
+        item.visionMode=p;
+      }else item.visionRadius=randInt(r, td.vision[0], td.vision[1]);
+    }
     else if(kind==='outfit'){
       const low= tier==='common' || tier==='uncommon';
-      const pool= low? ['mine','move','jump'] : ['mine','move','jump','crush'];
-      const p=pick(r,pool);
-      if(p==='crush') item.crushResistBonus=pick(r, td.crush);
+      const pool= low? ['mine','move','jump','magnet'] : ['mine','move','jump','crush','magnet'];
+      const p=pool.includes(opts.profile)?opts.profile:pick(r,pool);
+      if(p==='magnet') item.lootMagnetLevel=td.lootMagnetLevel;
+      else if(p==='crush') item.crushResistBonus=pick(r, td.crush);
       else addPct(item, PROFILE_KEYS[p], pick(r, td.outfitPct[p]));
     }
     else if(kind==='charm'){
       const low= tier==='common' || tier==='uncommon';
-      const pool= low? ['mine','move','jump','energy','swim'] : ['mine','move','jump','energy','crush','swim'];
-      const p=pick(r,pool);
-      if(p==='energy') item.energyCapacityBonus=pick(r, td.energyCap);
+      const pool= low? ['mine','move','jump','energy','swim','magnet','compass'] : ['mine','move','jump','energy','crush','swim','magnet','compass'];
+      const p=pool.includes(opts.profile)?opts.profile:pick(r,pool);
+      if(p==='compass') item.treasureSenseLevel=td.treasureSenseLevel;
+      else if(p==='magnet') item.lootMagnetLevel=td.lootMagnetLevel;
+      else if(p==='energy') item.energyCapacityBonus=pick(r, td.energyCap);
       else if(p==='crush') item.crushResistBonus=pick(r, td.crush);
       else if(p==='swim') item.waterMoveSpeedMult=pick(r, td.swim);
       else addPct(item, PROFILE_KEYS[p], pick(r, td.charmPct[p]));
@@ -172,11 +198,40 @@ import { rollChestFurnishing } from './furnishings.js';
         }
       }
     }
-    const nameBase = kind==='weapon'? (WEAPON_NAME_BASES[item.weaponType]||'Ostrze') : (NAME_BASES[kind]||'Przedmiot');
+    const nameBase = typeof item.specialVisionLevel==='number'
+      ? (item.visionMode==='thermal'?'Termowizor':'Noktowizor')
+      : typeof item.treasureSenseLevel==='number'
+        ? 'Wisiorek-kompas'
+      : typeof item.lootMagnetLevel==='number'
+      ? (kind==='outfit'?'Strój zbieracza':'Wisiorek przyciągania')
+      : kind==='weapon'? (WEAPON_NAME_BASES[item.weaponType]||'Ostrze') : (NAME_BASES[kind]||'Przedmiot');
     item.name = nameBase + ' ' + NAME_SUFFIXES[randInt(r,0,NAME_SUFFIXES.length-1)];
     // Guardian relics (drops.js) are always unique finds; chest rolls stay a chance.
     if(opts.forceUnique || r()<td.uniqueChance) applyUniqueBoost(item);
+    if(typeof item.lootMagnetLevel==='number'){
+      const reach=item.lootMagnetLevel-1;
+      item.desc=reach===0?'Przyciąga łupy z bloku, w którym stoisz.':'Przyciąga łupy z promienia +'+reach+' '+(reach===1?'bloku':'bloków')+'.';
+    }
+    if(typeof item.treasureSenseLevel==='number') item.desc='Wychyla się ku cennym, już odkrytym rudom i skrytkom; poziom '+item.treasureSenseLevel+'.';
+    if(typeof item.specialVisionLevel==='number') item.desc=(item.visionMode==='thermal'?'Termowizja podkreślająca widoczne istoty.':'Noktowizja wzmacniająca zastane światło.')+' Nie odsłania mgły ani ścian.';
     return item;
+  }
+
+  const CHEST_METAL_TABLE=Object.freeze({
+    common:{silver:[0.22,1,1],gold:[0.08,1,1]},
+    uncommon:{silver:[0.46,1,2],gold:[0.20,1,1]},
+    rare:{silver:[0.76,1,3],gold:[0.46,1,2]},
+    epic:{silver:[1,2,4],gold:[0.76,1,3]},
+    legendary:{silver:[1,3,6],gold:[1,2,4]}
+  });
+  function rollChestMetals(tier,r){
+    const table=CHEST_METAL_TABLE[tier]||CHEST_METAL_TABLE.common;
+    const out=[];
+    for(const key of ['silver','gold']){
+      const row=table[key];
+      if(r()<row[0]) out.push({key,n:randInt(r,row[1],row[2]),label:key==='silver'?'sztabka srebra':'sztabka zlota'});
+    }
+    return out;
   }
 
   function releaseLoot(tier,seed,cx,cy){
@@ -187,6 +242,7 @@ import { rollChestFurnishing } from './furnishings.js';
     // station (and the best ones never pay far below it).
     const items=[]; for(let i=0;i<rolls;i++) items.push(genItem(r, rollChestItemTier(r,tier)));
     const furnishing=rollChestFurnishing(tier,r);
+    const metals=rollChestMetals(tier,r);
     // The chest bursts open: its loot pops out as PHYSICAL drops the player has
     // to pick up (drops.js pipeline — same as creature loot). Picking a drop up
     // is what routes it into dynamicLoot + the inventory bag.
@@ -210,6 +266,21 @@ import { rollChestFurnishing } from './furnishings.js';
       });
       furnishingSpawned=!!d;
     }
+    const metalSpawns=[];
+    for(const metal of metals){
+      let spawnedMetal=false;
+      if(drops && typeof drops.spawnResource==='function'){
+        const d=drops.spawnResource(cx,cy,metal.key,metal.n,{
+          vx:(r()*2-1)*2.4,vy:-(4.4+r()*1.7),tier:metal.key==='gold'?'rare':'uncommon',announce:false,source:'chest'
+        });
+        spawnedMetal=!!d;
+      }
+      if(!spawnedMetal){
+        const inv=window.inv;
+        if(inv && typeof inv==='object') inv[metal.key]=(Number(inv[metal.key])||0)+metal.n;
+      }
+      metalSpawns.push({key:metal.key,n:metal.n,spawned:spawnedMetal});
+    }
     if(spawned<items.length){
       // Fallback (DOM-less sims / drops module missing): straight to the bag.
       if(!MM.dynamicLoot){ MM.dynamicLoot={capes:[],eyes:[],outfits:[],weapons:[],charms:[]}; }
@@ -226,7 +297,7 @@ import { rollChestFurnishing } from './furnishings.js';
       }
       try{ if(typeof MM.noteCraftResultSeen==='function') MM.noteCraftResultSeen(furnishing.key,{source:'chest'}); }catch(e){}
     }
-    return {tier,items,spawned,furnishing:furnishing||null,furnishingSpawned};
+    return {tier,items,spawned,furnishing:furnishing||null,furnishingSpawned,metals:metalSpawns};
   }
 
   function openChestAt(x,y){
@@ -274,7 +345,7 @@ import { rollChestFurnishing } from './furnishings.js';
     return !!openChestAt(tx,ty);
   }
 
-  MM.chests={openChestAt,openDroppedChest,openFromWeaponHitAt,setWeaponHitHandler,setDroppedOpenHandler,TIERS,TIER_ORDER,CHEST_TIER_MIX,rollChestItemTier,genItem,saveDynamicLoot,_releaseLoot:releaseLoot};
+  MM.chests={openChestAt,openDroppedChest,openFromWeaponHitAt,setWeaponHitHandler,setDroppedOpenHandler,TIERS,TIER_ORDER,CHEST_TIER_MIX,CHEST_METAL_TABLE,rollChestItemTier,rollChestMetals,genItem,saveDynamicLoot,_releaseLoot:releaseLoot};
 })();
 // ESM export (progressive migration)
 export const chests = (typeof window!=='undefined' && window.MM) ? window.MM.chests : undefined;

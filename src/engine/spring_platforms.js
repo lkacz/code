@@ -31,11 +31,25 @@ const springPlatforms = (function(){
   function getSafe(getTile,x,y,fallback){
     try{ return typeof getTile==='function' ? getTile(Math.floor(x),Math.floor(y)) : fallback; }catch(e){ return fallback; }
   }
-  function clamp(n,a,b){ return Math.max(a,Math.min(b,Number(n)||0)); }
+  function clamp(n,a,b){
+    const value=Number(n);
+    return Math.max(a,Math.min(b,Number.isFinite(value)?value:0));
+  }
   function capacity(){ return Math.max(1,Number(INFO[T.SPRING_PLATFORM] && INFO[T.SPRING_PLATFORM].energyCapacity)||CAPACITY); }
   function isSpringPlatformTile(t){ return t===T.SPRING_PLATFORM; }
   function clampEnergy(n){ return clamp(n,0,capacity()); }
   function nowMs(){ return (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now(); }
+
+  function makeRoomForMachine(){
+    if(machines.size<MACHINE_CAP) return true;
+    for(const [k,m] of machines){
+      if(!m){ machines.delete(k); return true; }
+      if((m.energy||0)>0.001 || (m.pulse||0)>0.001 || (m.cooldown||0)>0.001) continue;
+      machines.delete(k);
+      return true;
+    }
+    return false;
+  }
 
   function ensureMachine(x,y,getTile){
     x=Math.floor(x); y=Math.floor(y);
@@ -43,12 +57,9 @@ const springPlatforms = (function(){
     const k=key(x,y);
     let m=machines.get(k);
     if(!m){
+      if(!makeRoomForMachine()) return null;
       m={x,y,energy:0,pulse:0,cooldown:0,lastLaunch:0,lastPowered:false};
       machines.set(k,m);
-      if(machines.size>MACHINE_CAP){
-        const first=machines.keys().next();
-        if(!first.done) machines.delete(first.value);
-      }
     }
     m.x=x; m.y=y;
     m.energy=clampEnergy(m.energy);
@@ -80,21 +91,33 @@ const springPlatforms = (function(){
   function availableNetworkEnergyAt(x,y,getTile,opts){
     const tp=teleporterApi(opts);
     if(!tp || typeof tp.availableNetworkEnergyAt!=='function') return 0;
-    try{ return Math.max(0,tp.availableNetworkEnergyAt(x,y,getTile,(opts && opts.dynamo) || MM.dynamo)||0); }catch(e){ return 0; }
+    try{
+      const available=Number(tp.availableNetworkEnergyAt(x,y,getTile,(opts && opts.dynamo) || MM.dynamo));
+      return Number.isFinite(available) ? Math.max(0,available) : 0;
+    }catch(e){ return 0; }
   }
   function drainNetworkEnergyAt(x,y,amount,getTile,opts){
+    amount=Number(amount);
+    if(!(amount>0) || !Number.isFinite(amount)) return 0;
     const tp=teleporterApi(opts);
     if(!tp || typeof tp.drainNetworkEnergyAt!=='function') return 0;
-    try{ return Math.max(0,tp.drainNetworkEnergyAt(x,y,amount,getTile,(opts && opts.dynamo) || MM.dynamo)||0); }catch(e){ return 0; }
+    try{
+      const drained=Number(tp.drainNetworkEnergyAt(x,y,amount,getTile,(opts && opts.dynamo) || MM.dynamo,{fair:true}));
+      return Number.isFinite(drained) ? Math.min(amount,Math.max(0,drained)) : 0;
+    }catch(e){ return 0; }
   }
   function chargeFromNetwork(m,dt,getTile,opts){
     if(!m || !(dt>0)) return 0;
     const tp=teleporterApi(opts);
     if(!tp || typeof tp.chargeBatteryAt!=='function') return 0;
-    let gained=0;
+    const before=clampEnergy(m.energy);
+    m.energy=before;
     try{
-      gained=tp.chargeBatteryAt(m.x,m.y,m,dt,getTile,(opts && opts.dynamo) || MM.dynamo,{capacity:capacity(),rate:CHARGE_RATE}) || 0;
-    }catch(e){ gained=0; }
+      tp.chargeBatteryAt(m.x,m.y,m,dt,getTile,(opts && opts.dynamo) || MM.dynamo,{capacity:capacity(),rate:CHARGE_RATE});
+    }catch(e){ m.energy=before; }
+    const raw=Number(m.energy);
+    m.energy=Number.isFinite(raw) && raw>=before ? clampEnergy(raw) : before;
+    const gained=Math.max(0,m.energy-before);
     if(gained>0){
       m.energy=clampEnergy(m.energy);
       m.pulse=Math.max(m.pulse,0.35);
@@ -122,7 +145,13 @@ const springPlatforms = (function(){
       spent+=drained;
       if(drained>0) source=fromBattery>0 ? 'battery+network' : 'network';
     }
-    if(spent+1e-6<LAUNCH_COST) return {powered:false,spent,source:'spring'};
+    if(spent+1e-6<LAUNCH_COST){
+      // Availability is only a preflight hint. If the network under-delivers,
+      // keep the weak launch but refund the local battery portion so a race or
+      // stale network cache cannot silently empty the platform.
+      if(fromBattery>0) m.energy=clampEnergy((m.energy||0)+fromBattery);
+      return {powered:false,spent:Math.max(0,spent-fromBattery),source:'spring'};
+    }
     return {powered:true,spent,source};
   }
 
@@ -160,7 +189,9 @@ const springPlatforms = (function(){
   }
 
   function update(dt,player,getTile,opts){
-    if(!(dt>0) || typeof getTile!=='function') return;
+    dt=Number(dt);
+    if(!(dt>0) || !Number.isFinite(dt) || typeof getTile!=='function') return;
+    dt=Math.min(0.1,dt);
     // Discovery-only cadence: placements register via onTileChanged and landing on
     // a platform registers via launchEntity->ensureMachine. Scanning every frame
     // was ~270k probes/s at idle through the electric-network accessor (x3 lookups).
@@ -262,15 +293,16 @@ const springPlatforms = (function(){
   function onTileChanged(x,y,oldTile,newTile,getTile){
     const k=key(x,y);
     if(oldTile===T.SPRING_PLATFORM && newTile!==T.SPRING_PLATFORM) machines.delete(k);
-    if(newTile===T.SPRING_PLATFORM) ensureMachine(x,y,getTile || (MM.world && MM.world.getTile));
+    if(newTile===T.SPRING_PLATFORM) return !!ensureMachine(x,y,getTile || (MM.world && MM.world.getTile));
+    return true;
   }
   function snapshot(){
-    return {v:1,machines:[...machines.values()].map(m=>({x:m.x,y:m.y,energy:+clampEnergy(m.energy).toFixed(2)}))};
+    return {v:1,machines:[...machines.values()].slice(0,MACHINE_CAP).map(m=>({x:m.x,y:m.y,energy:+clampEnergy(m.energy).toFixed(2)}))};
   }
   function restore(state,getTile){
     machines.clear();
     if(!state || !Array.isArray(state.machines)) return;
-    for(const raw of state.machines){
+    for(const raw of state.machines.slice(0,MACHINE_CAP)){
       if(!raw || !finiteTile(raw.x,raw.y)) continue;
       const x=Math.floor(raw.x), y=Math.floor(raw.y);
       if(typeof getTile==='function' && getSafe(getTile,x,y,T.AIR)!==T.SPRING_PLATFORM) continue;
@@ -280,6 +312,7 @@ const springPlatforms = (function(){
   }
   function reset(){
     machines.clear();
+    scanT=0;
     visibleScanKey='';
     visibleScanAt=0;
     launches=0;
@@ -295,14 +328,16 @@ const springPlatforms = (function(){
     }
     return {machines:machines.size,charged,storedEnergy:+storedEnergy.toFixed(2),launches,poweredLaunches,unpoweredLaunches,entityLaunches};
   }
-  function debugChargeAt(x,y,amount,getTile){
+  function receiveElectricChargeAt(x,y,amount,getTile){
     const m=ensureMachine(x,y,getTile || (MM.world && MM.world.getTile));
     if(!m) return 0;
     const before=m.energy||0;
-    m.energy=clampEnergy(before+Math.max(0,Number(amount)||0));
+    const add=Number(amount);
+    m.energy=clampEnergy(before+(Number.isFinite(add)?Math.max(0,add):0));
     m.pulse=1;
     return m.energy-before;
   }
+  function debugChargeAt(x,y,amount,getTile){ return receiveElectricChargeAt(x,y,amount,getTile); }
   function debugSetEnergyAt(x,y,amount,getTile){
     const m=ensureMachine(x,y,getTile || (MM.world && MM.world.getTile));
     if(!m) return false;
@@ -311,7 +346,7 @@ const springPlatforms = (function(){
     return true;
   }
 
-  const api={isSpringPlatformTile,ensureMachine,launchEntity,launchHero,update,catchUp,draw,onTileChanged,snapshot,restore,reset,metrics,_debug:{machines,CAPACITY,CHARGE_RATE,LAUNCH_COST,POWERED_LAUNCH,UNPOWERED_LAUNCH,debugChargeAt,debugSetEnergyAt}};
+  const api={isSpringPlatformTile,ensureMachine,receiveElectricChargeAt,launchEntity,launchHero,update,catchUp,draw,onTileChanged,snapshot,restore,reset,metrics,_debug:{machines,CAPACITY,CHARGE_RATE,LAUNCH_COST,POWERED_LAUNCH,UNPOWERED_LAUNCH,MACHINE_CAP,debugChargeAt,debugSetEnergyAt}};
   MM.springPlatforms=api;
   return api;
 })();

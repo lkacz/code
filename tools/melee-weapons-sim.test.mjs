@@ -1,7 +1,7 @@
 // Hand-weapon crafting ladder + material identities (weapons.js MELEE_EFFECTS,
 // mobs.js statuses) and the improvised fun weapons (sand → blind+stun without
 // damage, regular saliva → wet, ult saliva → toxic):
-//  1. weapons.js: melee reach comes from fireRange (spears poke 2 tiles),
+//  1. weapons.js: spears charge and stab only along a three-tile horizontal lane,
 //     material effects roll on hit (metal=bleed, stone=stun, diamond=panic),
 //     sand/spit thrown kinds spend the raw resource and splat their status.
 //  2. mobs.js: the four new STATUS rows behave (bleed ticks damage, stun
@@ -32,6 +32,10 @@ Math.random = ()=>{
 const { T } = await import('../src/constants.js');
 const { weapons } = await import('../src/engine/weapons.js');
 assert.ok(weapons, 'weapons module exports');
+const weaponsSource = readFileSync(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
+assert.ok(weaponsSource.indexOf('function holdSpearCharge')>=0 && weaponsSource.indexOf('function holdSpearCharge')<weaponsSource.indexOf('function fireHeld'),
+  'held-spear helper is declared directly before the runtime input path');
+assert.doesNotMatch(weaponsSource,/\bupdateSpearCharge\b/,'fireHeld cannot retain the stale undefined spear helper reference');
 
 // ---------------------------------------------------------------------------
 // Part 1 — weapons.js with a stubbed MM.mobs (imported real mobs come later)
@@ -54,7 +58,8 @@ MM.mobs = {
 };
 const discoveries=[];
 MM.discovery = { note(id){ discoveries.push(id); return true; } };
-MM.audio = { play(){} };
+const audioCalls=[];
+MM.audio = { play(id){ audioCalls.push(id); } };
 
 let equipped = null;
 MM.inventory = { equippedItem:()=>equipped, TIER_COLORS:{} };
@@ -87,19 +92,63 @@ for(const [kind,spec] of Object.entries(weapons._debug.thrownKinds)){
 globalThis.inv.sand=5;
 globalThis.inv.water=5;
 
-// --- melee reach: fireRange:2 lets a spear strike the clamped 2-tile ring ---
-equipped = { weaponType:'melee', attackDamage:3, fireRange:2, name:'Dzida' };
-assert.equal(weapons._debug.meleeReach(equipped), 2, 'spear reach comes from fireRange');
+// --- spear: long horizontal lane, hold charge, release attack ----------------
+equipped = { weaponType:'melee', attackDamage:3, fireRange:3, name:'Dzida' };
+assert.equal(weapons._debug.meleeReach(equipped), 3, 'spear owns a three-tile reach');
+assert.equal(weapons._debug.meleeReach({weaponType:'melee',fireRange:2,name:'Stara dzida'}),3,'legacy two-tile spears are upgraded at runtime');
 assert.equal(weapons._debug.meleeReach({weaponType:'melee'}), 1, 'plain melee keeps the classic 1-tile arc');
-weapons.fireHeld(player, 5.5, 0.5, 1/60);
-assert.equal(attackCalls.length, 1, 'spear swing lands');
-assert.equal(attackCalls[0].tx, 2, 'spear aim clamps to px+2');
+for(let i=0;i<5;i++) weapons.fireHeld(player,5.5,-8.5,0.12);
+const halfChargeCtx=heldCtx();
+weapons.drawHeld(halfChargeCtx,20,player);
+assert.equal(attackCalls.length, 0, 'holding a spear builds force instead of attacking immediately');
+assert.ok(weapons._debug.spearChargeRatio()>0.45 && weapons._debug.spearChargeRatio()<0.55, 'half the hold time produces half spear charge');
+for(let i=0;i<5;i++) weapons.fireHeld(player,5.5,-8.5,0.12);
+const fullChargeCtx=heldCtx();
+weapons.drawHeld(fullChargeCtx,20,player);
+assert.equal(weapons.hudStatus().spearFull,true,'HUD exposes a fully charged spear');
+assert.ok(fullChargeCtx.calls.length>halfChargeCtx.calls.length,'the held-spear animation gains visible energy as charge grows');
+assert.equal(weapons.releaseHeld(player,5.5,-8.5),true,'releasing a charged spear performs the thrust');
+assert.equal(attackCalls.length, 1, 'charged spear swing lands once on release');
+assert.deepEqual([attackCalls[0].tx,attackCalls[0].ty],[3,0], 'upward cursor aim is snapped to the three-tile horizontal lane');
+const fullChargeBonus=attackCalls[0].bonus;
+assert.equal(weapons._debug.swing.form,'spear','spear attacks capture a stab animation instead of a generic slash');
+assert.equal(audioCalls.at(-1),'spearThrust','spear stab has a short thrust sound');
+const spearWorldFx=heldCtx();
+weapons.draw(spearWorldFx,20,()=>true);
+assert.equal(spearWorldFx.calls.filter(c=>c==='beginPath'||c==='stroke'||c==='fill').length,0,'spear no longer draws a detached white arrow on the target tile');
+coolDown();
+
+weapons.fireHeld(player,-5.5,9.5,0.02);
+assert.equal(weapons.releaseHeld(player,-5.5,9.5),true,'a quick backward spear tap still attacks');
+assert.deepEqual([attackCalls[1].tx,attackCalls[1].ty],[-3,0], 'backward spear attacks also stay perfectly horizontal');
+assert.ok(fullChargeBonus>attackCalls[1].bonus+2,'a full hold deals substantially more damage than a quick tap');
 coolDown();
 equipped = { weaponType:'melee', attackDamage:3, name:'Patyk' };
 weapons.fireHeld(player, 5.5, 0.5, 1/60);
-assert.equal(attackCalls.length, 2, 'stick swing lands');
-assert.equal(attackCalls[1].tx, 1, 'plain melee aim clamps to px+1');
+assert.equal(attackCalls.length, 3, 'stick swing still lands immediately');
+assert.equal(attackCalls[2].tx, 1, 'plain melee aim clamps to px+1');
 coolDown();
+
+// Weapon silhouettes drive genuinely different hero poses and impact reads.
+assert.equal(weapons._debug.meleeVisualForm({name:'Topór metalowy'}),'axe','Polish axe names select the axe form');
+const spearPull=weapons._debug.meleeAttackPose('spear',0.18,1);
+const spearImpact=weapons._debug.meleeAttackPose('spear',0.52,1);
+assert.equal(spearPull.style,'stab','spear uses the stab pose family');
+assert.ok(spearImpact.forward>spearPull.forward+15,'spear pose drives a long straight extension');
+assert.ok(Math.abs(spearImpact.angle-Math.PI*0.44)<0.2,'spear is held almost horizontally during the thrust');
+const axeRaised=weapons._debug.meleeAttackPose('axe',0,1);
+const axeFollow=weapons._debug.meleeAttackPose('axe',1,1);
+assert.equal(axeRaised.style,'hack','axe uses the hack-and-slash pose family');
+assert.ok(axeFollow.angle-axeRaised.angle>3,'axe travels through a broad overhead cutting arc');
+equipped={weaponType:'melee',attackDamage:6,name:'Topór metalowy'};
+weapons.notifyMeleeSwing(1,0,player);
+assert.equal(weapons._debug.swing.form,'axe','axe attacks retain their heavy chop form for the full animation');
+assert.equal(audioCalls.at(-1),'axeSwing','axe swing has a heavier cutting sound');
+const axeGhostFx=weapons.ghostFxState();
+assert.equal(axeGhostFx.sw[5],'axe','network FX snapshot carries the melee animation form');
+weapons.reset();
+weapons.ghostApplyFx(axeGhostFx);
+assert.equal(weapons._debug.swing.form,'axe','network observers restore the same axe animation form');
 
 // --- material identity procs its status on a landed melee hit ---
 for(const [effect, forced, expectProc] of [
@@ -318,8 +367,8 @@ assert.equal(ladder.club.effect, null, 'club is plain wood mass');
 for(const k of ['axeStone','spearStone']) assert.equal(ladder[k].effect, 'stun', k+' stuns (stone)');
 for(const k of ['axeMetal','spearMetal','swordSteel','swordIridium']) assert.equal(ladder[k].effect, 'bleed', k+' bleeds (metal)');
 for(const k of ['axeDiamond','spearDiamond','swordDiamond']) assert.equal(ladder[k].effect, 'panic', k+' panics (diamond)');
-// spears trade damage for reach
-for(const k of ['spearStone','spearMetal','spearDiamond']) assert.equal(ladder[k].reach, 2, k+' carries the 2-tile reach');
+// spears trade free-angle aiming and damage for a long horizontal lane
+for(const k of ['spearStone','spearMetal','spearDiamond']) assert.equal(ladder[k].reach, 3, k+' carries the 3-tile reach');
 for(const k of ['stick','club','axeStone','axeMetal','axeDiamond','swordSteel','swordDiamond','swordIridium']) assert.equal(ladder[k].reach, null, k+' keeps the 1-tile arc');
 // the ladder climbs: each branch strictly grows, swords crown their material
 assert.ok(ladder.stick.dmg < ladder.club.dmg, 'club beats the bare stick');
@@ -353,7 +402,7 @@ assert.equal(INV.getItem('test_bow_effect').meleeEffect, undefined, 'a bow canno
 // the improvised throws are always-known builtin techniques
 assert.equal(INV.getItem('throw_sand').thrownKind, 'sand', 'sand throw is builtin');
 assert.equal(INV.getItem('throw_spit').thrownKind, 'spit', 'spit throw is builtin');
-assert.equal(INV.getItem('spear').fireRange, 2, 'the builtin spear carries the 2-tile reach');
+assert.equal(INV.getItem('spear').fireRange, 3, 'the builtin spear carries the 3-tile reach');
 // labels cover exactly the identities weapons.js knows
 assert.deepEqual(Object.keys(INV.MELEE_EFFECT_LABELS).sort(), Object.keys(fx).sort(), 'effect labels cover the weapons registry');
 

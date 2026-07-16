@@ -49,6 +49,25 @@ const STREAM_REWARDS = [
   }
 ];
 const LORE_TUTORIAL = STORY_LORE.tutorial;
+const TREE_SHORT_REWARD = {
+  once:'tree_watch_short_chest',
+  // Keep the physical reward close and vertical. The old sideways launch could
+  // throw it several tiles down a slope from a tall tree, making a successful
+  // quest look unrewarded.
+  chest:{tier:'uncommon',source:'mentor_tree_watch_short',offsetX:0.8,offsetY:-0.8,vx:0,vy:0},
+  data:{pendingTreeShortChest:false},
+  failureLine:'Skrzynia nie ma gdzie bezpiecznie wyladowac. Zrob odrobine miejsca i wejdz na drzewo jeszcze raz.',
+  message:'Proba 10 s zaliczona: niezwykla skrzynia spada tuz obok ciebie.',
+  line:'Dziesiec sekund i ani jednego oszustwa grawitacji. Skrzynia spada tuz obok; teraz dluzsza proba.'
+};
+const TREE_LONG_REWARD = {
+  once:'tree_watch_long_master_stone',
+  resources:{masterStone:1},
+  data:{pendingTreeLongStone:false},
+  message:'Proba 30 s zaliczona: otrzymujesz 1 kamien mistrza.',
+  line:'Kamien mistrza jest twoj. Wrzuc go do duzego zbiornika wody albo ukryj wsrod co najmniej 5 polaczonych lisci, aby przywolac pomocnika.',
+  lineT:8
+};
 const QUEST_STEPS = [
   {
     id:'watch_area',
@@ -67,24 +86,26 @@ const QUEST_STEPS = [
     kind:'observe',
     mode:'tree_top',
     label:'czubek drzewa',
-    seconds:30,
+    seconds:10,
     next:'tree_watch_long',
     prompt:LORE_TUTORIAL.treeWatchShort.prompt,
     missing:LORE_TUTORIAL.treeWatchShort.missing,
     progress:'Nie ruszaj sie. Drzewo liczy ciezar, a ja licze sekundy.',
-    complete:LORE_TUTORIAL.treeWatchShort.complete
+    complete:LORE_TUTORIAL.treeWatchShort.complete,
+    reward:TREE_SHORT_REWARD
   },
   {
     id:'tree_watch_long',
     kind:'observe',
     mode:'tree_top',
     label:'dluga obserwacja drzewa',
-    seconds:60,
+    seconds:30,
     next:'sand_hide',
     prompt:LORE_TUTORIAL.treeWatchLong.prompt,
     missing:LORE_TUTORIAL.treeWatchLong.missing,
     progress:'Dluzej. Jesli swiat udaje cierpliwosc, musi sie w koncu zmeczyc.',
-    complete:LORE_TUTORIAL.treeWatchLong.complete
+    complete:LORE_TUTORIAL.treeWatchLong.complete,
+    reward:TREE_LONG_REWARD
   },
   {
     id:'sand_hide',
@@ -165,7 +186,71 @@ const QUEST_STEPS = [
 function safeTile(getTile,x,y){
   try{ return getTile ? getTile(Math.floor(x),Math.floor(y)) : T.AIR; }catch(e){ return T.AIR; }
 }
-function isTreeMaterial(t){ return t===T.WOOD || t===T.LEAF; }
+function isTreeMaterial(t){
+  return t===T.WOOD || t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED;
+}
+function treeSupportAtPlayer(player,getTile){
+  const px=Number(player && player.x), py=Number(player && player.y);
+  if(!Number.isFinite(px) || !Number.isFinite(py)) return null;
+  const width=Math.max(0.2,Math.min(1.8,Number(player.w)||0.7));
+  const height=Math.max(0.2,Math.min(2.5,Number(player.h)||0.95));
+  const bottom=py+height*0.5;
+  const supportY=Math.floor(bottom+0.12);
+  const gap=supportY-bottom;
+  // A tile merely somewhere below the hero is not enough: the feet have to be
+  // resting on its top edge. This also prevents mid-jump progress exploits.
+  if(gap < -0.08 || gap > 0.16) return null;
+  const inset=Math.min(0.08,width*0.22);
+  const samples=[px-width*0.5+inset,px,px+width*0.5-inset];
+  const seen=new Set();
+  for(const sx of samples){
+    const tx=Math.floor(sx);
+    if(seen.has(tx)) continue;
+    seen.add(tx);
+    const tile=safeTile(getTile,tx,supportY);
+    if(isTreeMaterial(tile)) return {x:tx,y:supportY,tile};
+  }
+  return null;
+}
+function connectedTreeAt(startX,startY,getTile){
+  const queue=[{x:startX,y:startY}];
+  const seen=new Set([startX+','+startY]);
+  const dirs=[[-1,-1],[0,-1],[1,-1],[-1,0],[1,0],[-1,1],[0,1],[1,1]];
+  let cells=0,wood=0;
+  while(queue.length && cells<72){
+    const cell=queue.shift();
+    const tile=safeTile(getTile,cell.x,cell.y);
+    if(!isTreeMaterial(tile)) continue;
+    cells++;
+    if(tile===T.WOOD) wood++;
+    for(const [dx,dy] of dirs){
+      const x=cell.x+dx, y=cell.y+dy;
+      if(Math.abs(x-startX)>5 || Math.abs(y-startY)>7) continue;
+      const key=x+','+y;
+      if(seen.has(key)) continue;
+      seen.add(key);
+      if(isTreeMaterial(safeTile(getTile,x,y))) queue.push({x,y});
+    }
+  }
+  return wood>0 && cells>=3;
+}
+function treeCanopyContactAtPlayer(player,getTile){
+  const px=Number(player && player.x), py=Number(player && player.y);
+  if(!Number.isFinite(px) || !Number.isFinite(py)) return null;
+  const width=Math.max(0.2,Math.min(1.8,Number(player.w)||0.7));
+  const height=Math.max(0.2,Math.min(2.5,Number(player.h)||0.95));
+  const minX=Math.floor(px-width*0.5+0.035);
+  const maxX=Math.floor(px+width*0.5-0.035);
+  const minY=Math.floor(py-height*0.5+0.035);
+  const maxY=Math.floor(py+height*0.5-0.035);
+  for(let y=minY;y<=maxY;y++){
+    for(let x=minX;x<=maxX;x++){
+      const tile=safeTile(getTile,x,y);
+      if(isTreeMaterial(tile) && connectedTreeAt(x,y,getTile)) return {x,y,tile};
+    }
+  }
+  return null;
+}
 function mentorObserveCheck(step,player,getTile,setTile,ctx,state){
   void setTile; void ctx;
   if(!player || !Number.isFinite(Number(player.x)) || !Number.isFinite(Number(player.y))) return false;
@@ -178,15 +263,79 @@ function mentorObserveCheck(step,player,getTile,setTile,ctx,state){
   const tx=Math.floor(Number(player.x));
   const footY=Math.floor(Number(player.y)+1.05);
   if(mode==='tree_top'){
-    const support=safeTile(getTile,tx,footY);
-    const head=safeTile(getTile,tx,footY-1);
-    const above=safeTile(getTile,tx,footY-2);
-    return isTreeMaterial(support) && head===T.AIR && above===T.AIR;
+    // Natural leaves are intentionally passable. Count either a proper perch
+    // on wood or direct body contact with a connected crown/trunk, otherwise a
+    // player visibly inside the tree receives no timer feedback at all.
+    return !!(treeSupportAtPlayer(player,getTile) || treeCanopyContactAtPlayer(player,getTile));
   }
   if(mode==='sand_hide'){
     return safeTile(getTile,tx,footY)===T.SAND || safeTile(getTile,tx,footY-1)===T.SAND;
   }
   return false;
+}
+
+function drawMentorObservationSignal(api,ctx,tileSize,player,visible,clockMs){
+  if(!ctx || !player || visible===false || !api || typeof api.summary!=='function') return false;
+  const phase=typeof api.phase==='function' ? api.phase() : '';
+  if(!['tree_watch_short','tree_watch_long'].includes(phase)) return false;
+  const summary=api.summary();
+  const observation=summary && summary.observe;
+  if(!observation || !observation.active) return false;
+  const seconds=Math.max(0.1,Number(observation.seconds)||1);
+  const progress=Math.max(0,Math.min(seconds,Number(observation.progress)||0));
+  const ratio=progress/seconds;
+  const tile=Math.max(8,Number(tileSize)||20);
+  const size=Math.max(10,Math.min(28,tile));
+  const px=Number(player.x)*tile;
+  const py=(Number(player.y)-(Number(player.h)||0.95)*0.5-0.62)*tile;
+  const now=Number.isFinite(Number(clockMs)) ? Number(clockMs) : 0;
+  const pulse=1+Math.sin(now*0.008)*0.035;
+  const radius=size*0.48;
+  const remaining=Math.max(0,Math.ceil(seconds-progress));
+  ctx.save();
+  ctx.translate(px,py);
+  ctx.scale(pulse,pulse);
+  ctx.globalAlpha=0.96;
+  ctx.lineCap='round';
+  ctx.lineJoin='round';
+  ctx.fillStyle='rgba(8,24,18,0.90)';
+  ctx.strokeStyle='rgba(154,255,139,0.42)';
+  ctx.lineWidth=Math.max(1.2,size*0.075);
+  ctx.beginPath();
+  ctx.arc(0,0,radius,0,Math.PI*2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.strokeStyle='rgba(255,255,255,0.16)';
+  ctx.lineWidth=Math.max(1.5,size*0.09);
+  ctx.beginPath();
+  ctx.arc(0,0,radius+size*0.11,-Math.PI*0.5,Math.PI*1.5);
+  ctx.stroke();
+  ctx.strokeStyle='#91f47d';
+  ctx.lineWidth=Math.max(2,size*0.105);
+  ctx.beginPath();
+  ctx.arc(0,0,radius+size*0.11,-Math.PI*0.5,-Math.PI*0.5+Math.PI*2*ratio);
+  ctx.stroke();
+  // Small vector tree: no font/emoji dependency and readable at every zoom.
+  ctx.fillStyle='#8b5a32';
+  ctx.fillRect(-size*0.075,size*0.02,size*0.15,size*0.30);
+  ctx.fillStyle='#76da62';
+  for(const crown of [[0,-0.16,0.22],[-0.15,-0.02,0.16],[0.15,-0.02,0.16]]){
+    ctx.beginPath();
+    ctx.arc(crown[0]*size,crown[1]*size,crown[2]*size,0,Math.PI*2);
+    ctx.fill();
+  }
+  const label=remaining+' s';
+  ctx.font='800 '+Math.max(9,Math.round(size*0.46))+'px system-ui, "Segoe UI", sans-serif';
+  ctx.textAlign='center';
+  ctx.textBaseline='middle';
+  const labelY=radius+size*0.55;
+  const labelW=Math.max(size*1.15,ctx.measureText(label).width+size*0.42);
+  ctx.fillStyle='rgba(5,13,11,0.90)';
+  ctx.fillRect(-labelW*0.5,labelY-size*0.32,labelW,size*0.64);
+  ctx.fillStyle='#e8ffe3';
+  ctx.fillText(label,0,labelY+0.5);
+  ctx.restore();
+  return true;
 }
 
 function choiceShortLabel(item){
@@ -205,13 +354,17 @@ function choiceFill(item){
 }
 function snapshotMentor(state,helpers){
   return {
-    v:4,
+    v:6,
     x:helpers.finite(state.x)?+state.x.toFixed(3):null,
     y:helpers.finite(state.y)?+state.y.toFixed(3):null,
     phase:helpers.cleanPhase(state.phase),
     hp:Math.max(0,Math.min(helpers.maxHp,Number(state.hp)||0)),
     rewarded:!!state.rewards.bow,
     bowRewarded:!!state.rewards.bow,
+    treeShortRewarded:!!state.rewards.tree_watch_short_chest,
+    treeLongRewarded:!!state.rewards.tree_watch_long_master_stone,
+    pendingTreeShortChest:!!(state.data && state.data.pendingTreeShortChest),
+    pendingTreeLongStone:!!(state.data && state.data.pendingTreeLongStone),
     streamRewarded:!!state.rewards.stream,
     streamChoice:state.data.streamChoice || null,
     observe:helpers.cleanObserve ? helpers.cleanObserve(state.observe) : null
@@ -223,6 +376,12 @@ function migrateMentorSnapshot(data,helpers){
   const streamChoice=streamItem ? streamItem.id : null;
   const streamRewarded=!!data.streamRewarded || (restoredPhase==='done' && !!streamChoice);
   const bowRewarded=!!data.bowRewarded || !!data.rewarded || streamRewarded || ['master_stone','reward_choice','done'].includes(restoredPhase);
+  const passedShort=['tree_watch_long','sand_hide','water','raw_meat','cooked_meat','duel','master_stone','reward_choice','done'].includes(restoredPhase);
+  const passedLong=['sand_hide','water','raw_meat','cooked_meat','duel','master_stone','reward_choice','done'].includes(restoredPhase);
+  const knowsShortReward=Object.prototype.hasOwnProperty.call(data,'treeShortRewarded');
+  const knowsLongReward=Object.prototype.hasOwnProperty.call(data,'treeLongRewarded');
+  const pendingTreeShortChest=!!data.pendingTreeShortChest || (!knowsShortReward && passedShort);
+  const pendingTreeLongStone=!!data.pendingTreeLongStone || (!knowsLongReward && passedLong);
   let phase=restoredPhase;
   const rawHp=Number(data.hp);
   let hp=helpers.clamp(helpers.finite(rawHp)?rawHp:helpers.maxHp,0,helpers.maxHp);
@@ -246,8 +405,13 @@ function migrateMentorSnapshot(data,helpers){
     y:helpers.finite(data.y)?data.y:null,
     phase,
     hp,
-    rewards:{bow:bowRewarded,stream:streamRewarded},
-    data:{streamChoice},
+    rewards:{
+      bow:bowRewarded,
+      stream:streamRewarded,
+      tree_watch_short_chest:!!data.treeShortRewarded,
+      tree_watch_long_master_stone:!!data.treeLongRewarded
+    },
+    data:{streamChoice,pendingTreeShortChest,pendingTreeLongStone},
     observe:data.observe
   };
 }
@@ -264,7 +428,18 @@ const tutorialNpc = createQuestNpc({
   accentColor:'#e8e5d2',
   steps:QUEST_STEPS,
   observeCheck:mentorObserveCheck,
+  afterUpdate(state,helpers){
+    if(state.data && state.data.pendingTreeShortChest){
+      if(state.rewards.tree_watch_short_chest){ state.data.pendingTreeShortChest=false; helpers.markChanged(); }
+      else helpers.applyReward(TREE_SHORT_REWARD);
+    }
+    if(state.data && state.data.pendingTreeLongStone){
+      if(state.rewards.tree_watch_long_master_stone){ state.data.pendingTreeLongStone=false; helpers.markChanged(); }
+      else helpers.applyReward(TREE_LONG_REWARD);
+    }
+  },
   choiceRewards:STREAM_REWARDS,
+  rewardOnceKeys:['stream'],
   duelReward:{
     once:'bow',
     gear:QUEST_BOW,
@@ -312,6 +487,7 @@ const tutorialNpc = createQuestNpc({
 
 tutorialNpc.questBow=()=>Object.assign({},QUEST_BOW);
 tutorialNpc.streamRewards=()=>STREAM_REWARDS.map(r=>Object.assign({},r));
+tutorialNpc.drawObservationSignal=(ctx,tileSize,player,visible,clockMs)=>drawMentorObservationSignal(tutorialNpc,ctx,tileSize,player,visible,clockMs);
 
 export { tutorialNpc };
 export default tutorialNpc;

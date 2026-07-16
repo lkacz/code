@@ -103,6 +103,7 @@ window.MM = window.MM || {};
   // ---------------- FX state ----------------
   const springs = new Map();        // x -> {o:px offset, v:px/s, y:surface tile row, seen:frame}
   const pendingImpulse = new Map(); // x -> accumulated velocity kick, applied when column renders
+  const PENDING_IMPULSE_CAP = 256;
   const streams = [];               // waterfalls {x, y0, y1, ttl}
   const STREAM_TTL = 0.5;
   const SPR_K = 50;                 // spring stiffness toward rest level (1/s^2)
@@ -260,10 +261,16 @@ window.MM = window.MM || {};
     return y+2<WORLD_BOTTOM && validDynamoSlot(x,y+1,getTile,'horizontal') && canFill(getTile(x,y+2));
   }
   function sideDynamoFlowTarget(x,y,dx,getTile){
-    if(getTile(x,y-1)!==T.WATER) return null;
     const slotX=x+dx, outX=x+dx*2;
     if(!validDynamoSlot(slotX,y,getTile,'vertical')) return null;
     if(!canFill(getTile(outX,y))) return null;
+    // A vertical dynamo is a cross-flow turbine. It may be driven either by
+    // hydraulic head in a dam or by a real downhill discharge on its far side
+    // (river / mill-race layout). Requiring one of those two pressure sources
+    // prevents a motionless one-tile puddle on level ground from making power.
+    const hasHydraulicHead=getTile(x,y-1)===T.WATER;
+    const hasDownhillDischarge=y+1<WORLD_BOTTOM && canFill(getTile(outX,y+1));
+    if(!hasHydraulicHead && !hasDownhillDischarge) return null;
     return {slotX,slotY:y,outX,outY:y};
   }
   function canSideFlowThroughDynamo(x,y,getTile){
@@ -766,8 +773,12 @@ window.MM = window.MM || {};
 
   // Public wave kick: positive impulse pushes the surface down (entry), negative lifts it.
   function disturb(x, impulse){
-    if(typeof x!=='number' || typeof impulse!=='number' || !isFinite(impulse)) return;
+    if(!Number.isFinite(x) || !Number.isFinite(impulse) || Math.abs(x)>=10000000) return;
     const xi = Math.floor(x);
+    if(!pendingImpulse.has(xi) && pendingImpulse.size>=PENDING_IMPULSE_CAP){
+      const oldest=pendingImpulse.keys().next();
+      if(!oldest.done) pendingImpulse.delete(oldest.value);
+    }
     let nv = (pendingImpulse.get(xi)||0) + impulse;
     if(nv>420) nv=420; else if(nv<-420) nv=-420;
     pendingImpulse.set(xi, nv);
@@ -776,7 +787,7 @@ window.MM = window.MM || {};
   // World generation finished a chunk spanning tile columns [x0..x1]: queue a boundary
   // wake (processed in update, where tile accessors are available).
   function noteChunkGenerated(x0,x1){
-    if(typeof x0!=='number' || typeof x1!=='number') return;
+    if(!Number.isFinite(x0) || !Number.isFinite(x1)) return;
     if(chunkWakes.length<64) chunkWakes.push({x0,x1});
   }
 
@@ -1315,6 +1326,44 @@ window.MM = window.MM || {};
     }
     return total>0 ? hits/total : 0;
   }
+  const TOXIC_BLEND_X=Object.freeze([[-2,0.16],[-1,0.42],[0,1],[1,0.42],[2,0.16]]);
+  const TOXIC_BLEND_Y=Object.freeze([[-1,0.28],[0,1],[1,0.28]]);
+  function toxicVisualFraction(wx,top,bot,getTile){
+    if(!toxicWater.size) return 0;
+    const height=Math.max(1,bot-top+1);
+    const step=Math.max(1,Math.floor(height/12));
+    let toxicWeight=0, waterWeight=0;
+    const sampled=new Set();
+    for(let sy=top; sy<=bot; sy+=step) sampled.add(sy);
+    sampled.add(bot);
+    for(const sy of sampled){
+      for(const [dx,xw] of TOXIC_BLEND_X){
+        for(const [dy,yw] of TOXIC_BLEND_Y){
+          const x=wx+dx, y=sy+dy, weight=xw*yw;
+          if(getSafe(getTile,x,y,T.STONE)!==T.WATER) continue;
+          waterWeight+=weight;
+          if(toxicWater.has(toxicKey(x,y))) toxicWeight+=weight;
+        }
+      }
+    }
+    return waterWeight>0 ? Math.max(0,Math.min(1,toxicWeight/waterWeight)) : 0;
+  }
+  function mixedRgba(normal,toxic,mix){
+    const t=Math.max(0,Math.min(1,Number(mix)||0)), u=1-t;
+    const r=Math.round(normal[0]*u+toxic[0]*t), g=Math.round(normal[1]*u+toxic[1]*t), b=Math.round(normal[2]*u+toxic[2]*t);
+    const a=Math.max(0,Math.min(1,normal[3]*u+toxic[3]*t));
+    return 'rgba('+r+','+g+','+b+','+a.toFixed(3)+')';
+  }
+  function addWaterGradientStops(gradient,open,toxicMix){
+    if(open){
+      gradient.addColorStop(0,mixedRgba([120,198,252,.58],[170,255,96,.62],toxicMix));
+      gradient.addColorStop(.17,mixedRgba([56,140,238,.72],[52,190,106,.78],toxicMix));
+      gradient.addColorStop(1,mixedRgba([8,28,86,.93],[13,72,46,.95],toxicMix));
+    }else{
+      gradient.addColorStop(0,mixedRgba([46,108,206,.72],[74,155,88,.76],toxicMix));
+      gradient.addColorStop(1,mixedRgba([6,22,70,.93],[10,54,38,.94],toxicMix));
+    }
+  }
   function drawWaterTopPath(g,xpx,TILE,sg,offset){
     const yL=sg.yl+(offset||0), yR=sg.yr+(offset||0);
     const lCap=sg.lCap||0, rCap=sg.rCap||0;
@@ -1389,10 +1438,33 @@ window.MM = window.MM || {};
           const pv=partial.get(LPK(wx,top));
           const lvl=pv===undefined ? UNITS : pv;
           const frac=(UNITS-lvl)/UNITS;
-          (segs||(segs=[])).push({top, bot:y-1, lvl, frac, rest:top*TILE+frac*TILE, open: (top>WORLD_TOP && isAir(getTile(wx,top-1))) || lvl<UNITS, surf:0, yl:0, yr:0, toxic:toxicSegmentFraction(wx,top,y-1)});
+          const bot=y-1;
+          (segs||(segs=[])).push({top, bot, lvl, frac, rest:top*TILE+frac*TILE, open: (top>WORLD_TOP && isAir(getTile(wx,top-1))) || lvl<UNITS, surf:0, yl:0, yr:0,
+            toxicCore:toxicSegmentFraction(wx,top,bot), toxic:toxicVisualFraction(wx,top,bot,getTile)});
         } else y++;
       }
       if(segs){ anyWater=true; cols[xi]=segs; }
+    }
+    // Give every segment matching contamination values at shared column edges.
+    // Horizontal overlay gradients then meet on the exact same color instead of
+    // exposing even a faint one-pixel boundary between independently drawn cells.
+    function neighborToxic(segs,sg){
+      if(!segs) return sg.toxic;
+      let best=null, overlap=0;
+      for(const other of segs){
+        const shared=Math.min(sg.bot,other.bot)-Math.max(sg.top,other.top)+1;
+        if(shared>overlap){ overlap=shared; best=other; }
+      }
+      return best ? best.toxic : sg.toxic;
+    }
+    for(let xi=0; xi<n; xi++){
+      const segs=cols[xi]; if(!segs) continue;
+      for(const sg of segs){
+        const lt=neighborToxic(xi>0?cols[xi-1]:null,sg);
+        const rt=neighborToxic(xi<n-1?cols[xi+1]:null,sg);
+        sg.toxicL=(sg.toxic+lt)*0.5;
+        sg.toxicR=(sg.toxic+rt)*0.5;
+      }
     }
 
     // 2. Surface springs: create/realign for visible surfaces, apply kicks, integrate, couple.
@@ -1515,23 +1587,7 @@ window.MM = window.MM || {};
         // Wave crests above the rest line clamp to the gradient's surface color.
         const topMin=sg.rest;
         const grad=g.createLinearGradient(0,topMin,0,topMin+TILE*9);
-        if(sg.toxic>0.01){
-          if(sg.open){
-            grad.addColorStop(0,'rgba(170,255,96,0.62)');
-            grad.addColorStop(0.18,'rgba(52,190,106,0.78)');
-            grad.addColorStop(1,'rgba(13,72,46,0.95)');
-          } else {
-            grad.addColorStop(0,'rgba(74,155,88,0.76)');
-            grad.addColorStop(1,'rgba(10,54,38,0.94)');
-          }
-        } else if(sg.open){
-          grad.addColorStop(0,'rgba(120,198,252,0.58)');
-          grad.addColorStop(0.16,'rgba(56,140,238,0.72)');
-          grad.addColorStop(1,'rgba(8,28,86,0.93)');
-        } else { // sealed under rock: murkier, darker
-          grad.addColorStop(0,'rgba(46,108,206,0.72)');
-          grad.addColorStop(1,'rgba(6,22,70,0.93)');
-        }
+        addWaterGradientStops(grad,sg.open,sg.toxic);
         g.fillStyle=grad;
         drawWaterSegmentPath(g,xpx,TILE,sg,botPx);
         g.fill();
@@ -1588,20 +1644,23 @@ window.MM = window.MM || {};
         const wx=x0+xi, xpx=wx*TILE;
         for(let si=0; si<segs.length; si++){
           const sg=segs[si];
-          if(!(sg.toxic>0.01)) continue;
-          const acidAlpha=Math.min(0.18,0.055+sg.toxic*0.12);
-          g.fillStyle='rgba(140,255,70,'+acidAlpha.toFixed(3)+')';
+          if(Math.max(sg.toxic,sg.toxicL,sg.toxicR)<=0.005) continue;
+          const acidGradient=g.createLinearGradient(xpx,0,xpx+TILE,0);
+          const acidLeft=0.18*Math.pow(sg.toxicL,0.82), acidRight=0.18*Math.pow(sg.toxicR,0.82);
+          acidGradient.addColorStop(0,'rgba(140,255,70,'+acidLeft.toFixed(3)+')');
+          acidGradient.addColorStop(1,'rgba(140,255,70,'+acidRight.toFixed(3)+')');
+          g.fillStyle=acidGradient;
           drawWaterSegmentPath(g,xpx,TILE,sg,(sg.bot+1)*TILE);
           g.fill();
           if(!SIMPLE && sg.open){
             const pulse=0.45+0.55*Math.sin(tSec*3.8+wx*0.73);
-            g.strokeStyle='rgba(202,255,120,'+(0.16+0.16*pulse*sg.toxic).toFixed(3)+')';
+            g.strokeStyle='rgba(202,255,120,'+((0.05+0.27*pulse)*sg.toxic).toFixed(3)+')';
             g.lineWidth=1.8;
             g.beginPath(); drawWaterTopPath(g,xpx,TILE,sg,-0.5); g.stroke();
             if(hash32(wx,Math.floor(tSec*3))%17===0){
               const bx=xpx+4+(hash32(wx,91)%Math.max(4,TILE-8));
               const by=sg.surf+4+(hash32(wx,137)%Math.max(5,Math.min(TILE*2,(sg.bot-sg.top+1)*TILE)));
-              g.fillStyle='rgba(216,255,126,0.42)';
+              g.fillStyle='rgba(216,255,126,'+(0.42*sg.toxic).toFixed(3)+')';
               g.beginPath(); g.ellipse(bx,by,1.8,1.1,0,0,Math.PI*2); g.fill();
             }
           }
@@ -1617,7 +1676,7 @@ window.MM = window.MM || {};
               if(v1>0.55){
                 const a=(v1-0.55)*0.22/(1+k2*0.35);
                 const h2=hash32(wx,k2);
-                g.fillStyle='rgba(190,232,255,'+a.toFixed(3)+')';
+                g.fillStyle=mixedRgba([190,232,255,a],[185,255,116,a*1.16],sg.toxic);
                 g.fillRect(xpx+2+(h2%11), sg.surf+k2*TILE+((h2>>3)%11), 5+(h2&7), 1.6);
                 causticBudget--;
               }
@@ -1637,9 +1696,15 @@ window.MM = window.MM || {};
           }
         }
         // surface sheen: bright crest + soft underglow band
-        g.strokeStyle='rgba(255,255,255,0.38)'; g.lineWidth=1.6;
+        const crestGradient=g.createLinearGradient(xpx,0,xpx+TILE,0);
+        crestGradient.addColorStop(0,mixedRgba([255,255,255,.38],[222,255,146,.48],s0.toxicL));
+        crestGradient.addColorStop(1,mixedRgba([255,255,255,.38],[222,255,146,.48],s0.toxicR));
+        g.strokeStyle=crestGradient; g.lineWidth=1.6;
         g.beginPath(); drawWaterTopPath(g,xpx,TILE,s0,0); g.stroke();
-        g.strokeStyle='rgba(170,215,255,0.10)'; g.lineWidth=4;
+        const underglowGradient=g.createLinearGradient(xpx,0,xpx+TILE,0);
+        underglowGradient.addColorStop(0,mixedRgba([170,215,255,.10],[140,255,106,.18],s0.toxicL));
+        underglowGradient.addColorStop(1,mixedRgba([170,215,255,.10],[140,255,106,.18],s0.toxicR));
+        g.strokeStyle=underglowGradient; g.lineWidth=4;
         g.beginPath(); drawWaterTopPath(g,xpx,TILE,s0,3); g.stroke();
         // whitecap: agitated water (steep slope) breaks into foam along the crest
         const slope=Math.abs(s0.yr-s0.yl);
@@ -1816,9 +1881,14 @@ window.MM = window.MM || {};
       };
     }catch(e){ return null; }
   }
-  function restore(s){ if(!s||typeof s!=='object') return; reset(); try{
+  function boundedRestoreLimit(rows,cap){
+    return Array.isArray(rows) ? Math.min(rows.length,Math.max(0,Math.floor(cap)||0)) : 0;
+  }
+  function restore(s){ reset(); if(!s||typeof s!=='object') return; try{
     if(Array.isArray(s.active)){
-      for(const a of s.active){
+      const limit=boundedRestoreLimit(s.active,RESTORE_ACTIVE_CAP);
+      for(let i=0;i<limit;i++){
+        const a=s.active[i];
         const kk=parseRestoreKey(a);
         if(kk && active.size<RESTORE_ACTIVE_CAP){
           const ix=kk.indexOf(',');
@@ -1827,11 +1897,19 @@ window.MM = window.MM || {};
       }
     }
     // v1 saves carried ripple visuals; replay them as gentle wave kicks
-    if(Array.isArray(s.ripples)) for(const r of s.ripples){ if(r && Number.isFinite(r.L) && Number.isFinite(r.R)) disturb(Math.floor((r.L+r.R)/2), 60); }
+    if(Array.isArray(s.ripples)){
+      const limit=boundedRestoreLimit(s.ripples,RESTORE_ACTIVE_CAP);
+      for(let i=0;i<limit;i++){
+        const r=s.ripples[i];
+        if(r && Number.isFinite(r.L) && Number.isFinite(r.R)) disturb(Math.floor((r.L+r.R)/2),60);
+      }
+    }
     // v3: sub-tile fill levels. Pre-v3 saves (or entries beyond the cap) restore as
     // full cells — the tile grid itself stays authoritative for where water exists.
     if(Array.isArray(s.levels)){
-      for(const row of s.levels){
+      const limit=boundedRestoreLimit(s.levels,RESTORE_LEVELS_CAP);
+      for(let i=0;i<limit;i++){
+        const row=s.levels[i];
         if(!Array.isArray(row) || row.length<3 || partial.size>=RESTORE_LEVELS_CAP) continue;
         const x=Number(row[0]), y=Number(row[1]), u=Math.floor(Number(row[2]));
         if(!validRestoreCoord(x,y) || !(u>=1) || u>=UNITS) continue;
@@ -1839,7 +1917,9 @@ window.MM = window.MM || {};
       }
     }
     if(Array.isArray(s.toxic)){
-      for(const row of s.toxic){
+      const limit=boundedRestoreLimit(s.toxic,RESTORE_TOXIC_WATER_CAP);
+      for(let i=0;i<limit;i++){
+        const row=s.toxic[i];
         if(!Array.isArray(row) || row.length<2 || toxicWater.size>=RESTORE_TOXIC_WATER_CAP) continue;
         const x=Number(row[0]), y=Number(row[1]), ttl=Number(row[2]);
         if(!validRestoreCoord(x,y)) continue;
@@ -1847,35 +1927,45 @@ window.MM = window.MM || {};
       }
     }
     if(Array.isArray(s.lateral)){
-      for(const row of s.lateral){
+      const limit=boundedRestoreLimit(s.lateral,RESTORE_LATERAL_CAP);
+      for(let i=0;i<limit;i++){
+        const row=s.lateral[i];
         if(!Array.isArray(row) || row.length<2 || lateralCooldown.size>=RESTORE_LATERAL_CAP) continue;
         const x=Number(row[0]), val=Number(row[1]);
         if(Number.isFinite(x) && Math.abs(x)<10000000 && Number.isFinite(val) && val>0) lateralCooldown.set(Math.floor(x),Math.max(0,Math.min(5,val)));
       }
     }
     if(Array.isArray(s.wet)){
-      for(const row of s.wet){
+      const limit=boundedRestoreLimit(s.wet,RESTORE_MATERIAL_CAP);
+      for(let i=0;i<limit;i++){
+        const row=s.wet[i];
         if(!Array.isArray(row) || row.length<2 || wetSand.size>=RESTORE_MATERIAL_CAP) continue;
         const x=Number(row[0]), y=Number(row[1]), wet=Number(row[2]);
         if(validRestoreCoord(x,y)) wetSand.set(Math.floor(x)+','+Math.floor(y),{x:Math.floor(x),y:Math.floor(y),wet:clampFinite(wet,0,20,0)});
       }
     }
     if(Array.isArray(s.clayWet)){
-      for(const row of s.clayWet){
+      const limit=boundedRestoreLimit(s.clayWet,RESTORE_MATERIAL_CAP);
+      for(let i=0;i<limit;i++){
+        const row=s.clayWet[i];
         if(!Array.isArray(row) || row.length<2 || wetClay.size>=RESTORE_MATERIAL_CAP) continue;
         const x=Number(row[0]), y=Number(row[1]), wet=Number(row[2]);
         if(validRestoreCoord(x,y)) wetClay.set(Math.floor(x)+','+Math.floor(y),{x:Math.floor(x),y:Math.floor(y),wet:clampFinite(wet,0,20,0)});
       }
     }
     if(Array.isArray(s.dry)){
-      for(const row of s.dry){
+      const limit=boundedRestoreLimit(s.dry,RESTORE_MATERIAL_CAP);
+      for(let i=0;i<limit;i++){
+        const row=s.dry[i];
         if(!Array.isArray(row) || row.length<2 || dryMud.size>=RESTORE_MATERIAL_CAP) continue;
         const x=Number(row[0]), y=Number(row[1]), dry=Number(row[2]);
         if(validRestoreCoord(x,y)) dryMud.set(Math.floor(x)+','+Math.floor(y),{x:Math.floor(x),y:Math.floor(y),dry:clampFinite(dry,0,30,0)});
       }
     }
     if(Array.isArray(s.clayDry)){
-      for(const row of s.clayDry){
+      const limit=boundedRestoreLimit(s.clayDry,RESTORE_MATERIAL_CAP);
+      for(let i=0;i<limit;i++){
+        const row=s.clayDry[i];
         if(!Array.isArray(row) || row.length<2 || dryClay.size>=RESTORE_MATERIAL_CAP) continue;
         const x=Number(row[0]), y=Number(row[1]), dry=Number(row[2]);
         if(validRestoreCoord(x,y)) dryClay.set(Math.floor(x)+','+Math.floor(y),{x:Math.floor(x),y:Math.floor(y),dry:clampFinite(dry,0,WET_CLAY_DRY_PROGRESS_CAP,0)});
@@ -2289,7 +2379,7 @@ window.MM = window.MM || {};
     for(const [pk,u] of partial){ const x=Math.floor(pk/512), y=pk-x*512+WORLD_TOP-8; levels.push([x,y,u]); }
     const toxic=[];
     for(const [pk,ttl] of toxicWater){ const x=Math.floor(pk/512), y=pk-x*512+WORLD_TOP-8; toxic.push([x,y,ttl]); }
-    return {active:[...active].map(pkToStr), seeds:[...pressureSeeds].map(pkToStr), cooldown:[...lateralCooldown.entries()], levels, toxicWater:toxic, wetSand:[...wetSand.values()], wetClay:[...wetClay.values()], dryMud:[...dryMud.values()], dryClay:[...dryClay.values()], pressureAcc, pressureIntervalCurrent, pressureLastMs, pressureMaxMs, passiveScanAcc, passiveScanOffset, passiveScanLastColumns, passiveScanTotalColumns, materialScanAcc, materialScanOffset};
+    return {active:[...active].map(pkToStr), seeds:[...pressureSeeds].map(pkToStr), cooldown:[...lateralCooldown.entries()], levels, toxicWater:toxic, wetSand:[...wetSand.values()], wetClay:[...wetClay.values()], dryMud:[...dryMud.values()], dryClay:[...dryClay.values()], restoreCaps:{active:RESTORE_ACTIVE_CAP,levels:RESTORE_LEVELS_CAP,toxic:RESTORE_TOXIC_WATER_CAP,material:RESTORE_MATERIAL_CAP}, pressureAcc, pressureIntervalCurrent, pressureLastMs, pressureMaxMs, passiveScanAcc, passiveScanOffset, passiveScanLastColumns, passiveScanTotalColumns, materialScanAcc, materialScanOffset};
   }
   // Sub-tile fill of a cell in units of 1/UNITS block (0 = no water, UNITS = full).
   function levelAt(x,y,getTile){

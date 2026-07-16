@@ -8,8 +8,11 @@ globalThis.window = globalThis;
 globalThis.MM = {};
 let toasts = [];
 globalThis.msg = (t) => { toasts.push(String(t)); };
+const hostileDiscoveryProfile=['stone_melt'];
+for(let i=0;i<600;i++) hostileDiscoveryProfile.push('unknown_'+i);
+hostileDiscoveryProfile.push('sandstorm');
 const discoveryStore = {
-  mm_discoveries_v1: JSON.stringify(['stone_melt','not_in_catalog',123,null])
+  mm_discoveries_v1: JSON.stringify(hostileDiscoveryProfile)
 };
 globalThis.localStorage = {
   getItem(key){ return Object.prototype.hasOwnProperty.call(discoveryStore,key) ? discoveryStore[key] : null; },
@@ -21,6 +24,7 @@ const { discovery } = await import('../src/engine/discovery.js');
 assert.ok(discovery, 'discovery module exports');
 assert.equal(discovery.count(), 1, 'restore keeps only known catalog discoveries from a corrupted profile');
 assert.equal(discovery.has('not_in_catalog'), false, 'restore rejects unknown discovery ids');
+assert.equal(discovery.has('sandstorm'),false,'discovery restore has a bounded hostile-array scan');
 discovery.reset();
 
 // --- catalog completeness: scan src for every id fed to note() -------------
@@ -107,6 +111,22 @@ assert.equal(discovery.count(), 3, 'unknown ids never inflate journal progress')
   assert.equal(discovery.note('sandstorm', 'test'), false, 'repeat is silent');
   assert.equal(globalThis.player.xp, 100 + discovery.DISCOVERY_XP, 'repeats never re-pay the XP');
   assert.ok(toasts.some(t => t.includes('+' + discovery.DISCOVERY_XP + ' XP')), 'the toast advertises the XP award');
+  delete globalThis.player;
+}
+
+// Corrupt XP cannot be propagated by a valid discovery reward.
+{
+  globalThis.player={xp:Infinity};
+  assert.equal(discovery.note('water_boil','test'),true,'fresh discovery still works with a corrupt XP counter');
+  assert.equal(globalThis.player.xp,discovery.DISCOVERY_XP,'non-finite XP is normalised before adding a reward');
+  globalThis.player.xp=1e300;
+  assert.equal(discovery.note('gas_boom','test'),true,'another discovery can reward a huge finite XP profile');
+  assert.equal(globalThis.player.xp,1000000000,'discovery XP has a finite global cap');
+  assert.equal(toasts.at(-1).includes('+40 XP'),false,'a capped discovery toast does not claim XP that was not awarded');
+  globalThis.player.xp=999999990;
+  assert.equal(discovery.note('electric_water','test'),true,'a discovery can award the remaining fraction below the XP cap');
+  assert.equal(globalThis.player.xp,1000000000,'a partial discovery reward stops exactly at the XP cap');
+  assert.ok(toasts.at(-1).includes('+10 XP'),'the discovery toast reports the actual partial XP award');
   delete globalThis.player;
 }
 

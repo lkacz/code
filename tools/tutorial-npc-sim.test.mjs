@@ -12,7 +12,7 @@ const { tutorialNpc } = await import('../src/engine/tutorial_npc.js');
 
 const questSteps=tutorialNpc.questSteps();
 assert.deepEqual(questSteps.map(s=>s.id), ['watch_area','tree_watch_short','tree_watch_long','sand_hide','water','raw_meat','cooked_meat','duel','master_stone','reward_choice','done'], 'mentor tutorial is defined as a scalable ordered quest chain');
-assert.deepEqual(questSteps.filter(s=>s.kind==='observe').map(s=>s.seconds), [12,30,60,30], 'mentor prologue carries timed simulation-observation tasks');
+assert.deepEqual(questSteps.filter(s=>s.kind==='observe').map(s=>s.seconds), [12,10,30,30], 'mentor prologue carries a ten-second tree trial followed by a thirty-second trial');
 assert.ok(questSteps.filter(s=>s.kind==='handoff').every(s=>s.item && s.amount>0 && s.next), 'handoff quest steps declare resource requirements and next phase');
 assert.equal(questSteps.find(s=>s.id==='reward_choice').choices.length, 3, 'mentor stream reward step declares three choices');
 assert.ok(STORY_LORE.arc.some(a=>a.id==='mentor_reveal'), 'shared story lore names the mentor reveal for later systems');
@@ -67,6 +67,7 @@ let saveMarks=0;
 let heroDamage=0;
 let equipped=null;
 const granted=[];
+const rewardChests=[];
 globalThis.MM.inventory = {
   grantItem(item,opts){
     granted.push({item:Object.assign({},item), opts:Object.assign({},opts)});
@@ -75,9 +76,17 @@ globalThis.MM.inventory = {
   equip(id){ equipped=id; return true; },
   getItem(){ return null; }
 };
+globalThis.MM.drops = {
+  spawnChest(x,y,tier,opts){
+    const chest={x,y,tier,opts:Object.assign({},opts)};
+    rewardChests.push(chest);
+    return chest;
+  }
+};
 globalThis.inv = { water:0, meat:0, bakedMeat:0, masterStone:0, arrowWood:0 };
 const player = {x:0.5,y:29,w:0.7,h:0.95,hp:100,vx:0,vy:0};
 const ctx = {
+  player,
   worldGen,
   onInventoryChange(){ inventoryUpdates++; },
   onChange(){ saveMarks++; },
@@ -112,13 +121,49 @@ assert.equal(tutorialNpc.summary().status, 'observe', 'tree experiment is expose
 
 const treeX=Math.floor(state.x)+2;
 const treeSupportY=26;
-setTile(treeX,treeSupportY,T.LEAF);
-standAt(treeX+0.5,treeSupportY-1);
+// Natural foliage is passable. Being visibly inside a connected crown must
+// still start feedback even before the hero settles on the highest wood tile.
+const canopyX=treeX+4;
+setTile(canopyX,26,T.WOOD);
+setTile(canopyX,25,T.LEAF);
+setTile(canopyX+1,24,T.AUTUMN_LEAF_RED);
+setTile(canopyX-1,24,T.LEAF);
+standAt(canopyX+1.5,24.5);
+runNpc(0.2);
+assert.equal(tutorialNpc.summary().observe.active, true, 'direct contact with a connected passable crown starts the tree timer');
+
+setTile(treeX,treeSupportY,T.AUTUMN_LEAF_ORANGE);
+const treeStandingY=treeSupportY-player.h*0.5-0.001;
+standAt(treeX+0.5,treeStandingY);
+runNpc(0.2);
+let treeObserve=tutorialNpc.summary().observe;
+assert.equal(treeObserve.active, true, 'standing with either foot on a seasonal tree crown starts the timer');
+assert.ok(treeObserve.progress>0, 'active tree observation accumulates time');
+const signalCalls=[];
+const signalCtx={
+  save(){ signalCalls.push('save'); }, restore(){ signalCalls.push('restore'); },
+  translate(x,y){ signalCalls.push(['translate',x,y]); }, scale(){ signalCalls.push('scale'); },
+  beginPath(){ signalCalls.push('beginPath'); }, arc(){ signalCalls.push('arc'); },
+  fill(){ signalCalls.push('fill'); }, stroke(){ signalCalls.push('stroke'); },
+  fillRect(){ signalCalls.push('fillRect'); }, fillText(text){ signalCalls.push(['fillText',String(text)]); },
+  measureText(text){ return {width:String(text).length*6}; }
+};
+assert.equal(tutorialNpc.drawObservationSignal(signalCtx,40,player,true,1250), true, 'active tree timer draws the overhead progress signal');
+assert.equal(signalCalls.find(call=>Array.isArray(call) && call[0]==='translate')[1], player.x*40, 'signal follows world coordinates even when its artwork is size-capped');
+assert.ok(signalCalls.some(call=>Array.isArray(call) && /s$/.test(call[1])), 'overhead progress signal includes the remaining seconds');
+standAt(treeX+0.5,treeStandingY-0.4);
+runNpc(0.2);
+assert.equal(tutorialNpc.summary().observe.active, false, 'hovering above a tree does not count as standing on it');
+assert.equal(tutorialNpc.drawObservationSignal(signalCtx,20,player,true,1450), false, 'overhead timer disappears as soon as time is no longer being counted');
+standAt(treeX+0.5,treeStandingY);
+runNpc(10.2);
+assert.equal(tutorialNpc.phase(), 'tree_watch_long', 'ten seconds on a tree advances to the longer tree observation');
+assert.equal(rewardChests.length, 1, 'the first tree task grants exactly one physical chest');
+assert.equal(rewardChests[0].tier, 'uncommon', 'the first tree task chest has the promised uncommon tier');
+standAt(treeX+0.5,treeStandingY);
 runNpc(30.2);
-assert.equal(tutorialNpc.phase(), 'tree_watch_long', 'thirty seconds on a tree advances to the longer tree observation');
-standAt(treeX+0.5,treeSupportY-1);
-runNpc(60.2);
-assert.equal(tutorialNpc.phase(), 'sand_hide', 'sixty seconds on a tree advances to the sand hiding test');
+assert.equal(tutorialNpc.phase(), 'sand_hide', 'thirty seconds on a tree advances to the sand hiding test');
+assert.equal(globalThis.inv.masterStone, 1, 'the second tree task grants one master stone');
 
 const sandX=Math.floor(state.x)+3;
 setTile(sandX,30,T.SAND);
@@ -219,6 +264,18 @@ assert.equal(tutorialNpc._debug().streamChoice, 'mentor_water_hose', 'completed 
 
 tutorialNpc.reset();
 assert.equal(tutorialNpc.attackAt(0,29,50), false, 'mentor is not attackable before the duel');
+
+const legacyChestBefore=rewardChests.length;
+const legacyStoneBefore=globalThis.inv.masterStone;
+tutorialNpc.restore({v:4,x:6.5,y:29,phase:'water',hp:28,bowRewarded:false,streamRewarded:false});
+tutorialNpc.update(0.1,player,getTile,setTile,ctx);
+assert.equal(rewardChests.length, legacyChestBefore+1, 'an older save past both tree trials receives its missing chest once after load');
+assert.equal(globalThis.inv.masterStone, legacyStoneBefore+1, 'an older save past both tree trials receives its missing master stone once after load');
+tutorialNpc.update(0.1,player,getTile,setTile,ctx);
+assert.equal(rewardChests.length, legacyChestBefore+1, 'legacy chest catch-up cannot duplicate on later frames');
+assert.equal(globalThis.inv.masterStone, legacyStoneBefore+1, 'legacy stone catch-up cannot duplicate on later frames');
+
+tutorialNpc.reset();
 tutorialNpc.restore({v:1,x:6.5,y:29,phase:'water',hp:28,rewarded:false});
 const calls=[];
 const drawCtx = {

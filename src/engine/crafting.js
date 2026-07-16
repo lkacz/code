@@ -16,6 +16,8 @@ const crafting = (function(){
   // that resource. One short player-facing phrase per key; `craft:` prefixed
   // entries point at other recipes instead of the world.
   const SOURCE_HINTS = {
+    silver: 'przetapiaj rudę srebra ogniem albo szukaj sztabek w skrzyniach',
+    silverWire: 'craft: sztabki srebra + plastik (Maszyny)',
     wood: 'ścinaj drzewa',
     leaf: 'korony drzew',
     grass: 'kop trawiaste bloki',
@@ -77,6 +79,12 @@ const crafting = (function(){
     const getHave = typeof cfg.getHave === 'function' ? cfg.getHave : ()=>0;
     const isDone = typeof cfg.isDone === 'function' ? cfg.isDone : ()=>false;
     const maxBatch = Math.max(1, cfg.maxBatch|0 || 999);
+    const recipeById = new Map();
+    const materialKeys = new Set();
+    for(const r of recipes){
+      if(r && typeof r.id==='string' && !recipeById.has(r.id)) recipeById.set(r.id,r);
+      for(const k of Object.keys((r && r.cost) || {})) materialKeys.add(k);
+    }
 
     const favorites = new Set();      // recipe ids pinned by the player
     const seenAvailable = new Set();  // ids that have EVER been craftable (toast bookkeeping)
@@ -91,7 +99,7 @@ const crafting = (function(){
     let trackedId = null;             // the one recipe pinned to the HUD tracker
     let trackedReadyAnnounced = false; // edge detector: announce "ready" once per dip
 
-    function byId(id){ return recipes.find(r=>r.id===id) || null; }
+    function byId(id){ return recipeById.get(id) || null; }
     function known(id){ return typeof id==='string' && !!byId(id); }
     function done(r){ try{ return !!isDone(r); }catch(e){ return false; } }
     function costEntries(r){ return Object.entries((r && r.cost) || {}); }
@@ -161,7 +169,8 @@ const crafting = (function(){
     function countOf(id){ return counts.get(id)|0; }
     function recordCraft(id, n){
       if(!known(id)) return 0;
-      const next = (counts.get(id)|0) + Math.max(1, n|0);
+      const add = Number.isFinite(Number(n)) ? Math.max(1,Math.floor(Number(n))) : 1;
+      const next = Math.min(999999, Math.max(0,counts.get(id)||0) + add);
       counts.set(id, next);
       return next;
     }
@@ -194,7 +203,7 @@ const crafting = (function(){
       const before = silent ? null : new Set(recipes.filter(isUnlocked).map(r=>r.id));
       let added = false;
       for(const k of (keys||[])){
-        if(typeof k==='string' && k && !knownMaterials.has(k)){ knownMaterials.add(k); added=true; }
+        if(typeof k==='string' && materialKeys.has(k) && !knownMaterials.has(k)){ knownMaterials.add(k); added=true; }
       }
       if(silent || !added) return [];
       const newly = recipes.filter(r=>!before.has(r.id) && isUnlocked(r));
@@ -268,18 +277,18 @@ const crafting = (function(){
         seedKnown();
         return false;
       }
-      src.seenAvailable.forEach(id=>{ if(known(id)) seenAvailable.add(id); });
-      if(Array.isArray(src.fresh)) src.fresh.forEach(id=>{ if(known(id) && seenAvailable.has(id)) fresh.add(id); });
-      if(Array.isArray(src.knownMaterials)) src.knownMaterials.forEach(k=>{ if(typeof k==='string' && k) knownMaterials.add(k); });
+      const restoreLimit=Math.max(32,recipes.length*2);
+      src.seenAvailable.slice(0,restoreLimit).forEach(id=>{ if(known(id)) seenAvailable.add(id); });
+      if(Array.isArray(src.fresh)) src.fresh.slice(0,restoreLimit).forEach(id=>{ if(known(id) && seenAvailable.has(id)) fresh.add(id); });
+      if(Array.isArray(src.knownMaterials)) src.knownMaterials.slice(0,restoreLimit).forEach(k=>{ if(typeof k==='string' && materialKeys.has(k)) knownMaterials.add(k); });
       // Pre-discovery saves carry no material knowledge: seed it silently so
       // long-standing recipes don't vanish from a veteran's panel.
       else seedKnown();
-      if(Array.isArray(src.seenResults)) src.seenResults.forEach(id=>{ if(known(id)) seenResults.add(id); });
-      if(Array.isArray(src.favorites)) src.favorites.forEach(id=>{ if(known(id)) favorites.add(id); });
+      if(Array.isArray(src.seenResults)) src.seenResults.slice(0,restoreLimit).forEach(id=>{ if(known(id)) seenResults.add(id); });
+      if(Array.isArray(src.favorites)) src.favorites.slice(0,restoreLimit).forEach(id=>{ if(known(id)) favorites.add(id); });
       if(known(src.tracked)) trackedId=src.tracked;
       if(src.counts && typeof src.counts==='object'){
-        for(const k in src.counts){
-          const v=src.counts[k];
+        for(const [k,v] of Object.entries(src.counts).slice(0,restoreLimit)){
           if(known(k) && typeof v==='number' && isFinite(v) && v>0) counts.set(k, Math.min(999999, Math.floor(v)));
         }
       }

@@ -43,6 +43,9 @@ assert.equal(T.COPPER_WIRE,33,'copper wire has a stable tile id after cooked mea
 assert.equal(T.TELEPORTER,34,'teleporter has a stable tile id after copper wire');
 assert.equal(INFO[T.TELEPORTER].passable,true,'teleporter can be entered by the hero');
 assert.equal(INFO[T.COPPER_WIRE].passable,true,'copper cables do not block movement');
+assert.equal(INFO[T.SILVER_WIRE].passable,true,'silver cables do not block movement');
+assert.equal(INFO[T.SILVER_WIRE].conductivity,1,'silver cables retain the full generated energy');
+assert.equal(INFO[T.COPPER_WIRE].conductivity,0.5,'copper cables deliver half of generated energy');
 assert.equal(INFO[T.TELEPORTER].powerDevice,true,'teleporter is a powered device endpoint');
 assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source endpoint');
 
@@ -99,10 +102,17 @@ assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source end
   setTile(-2,10,T.COPPER_WIRE);
   setTile(-1,10,T.COPPER_WIRE);
   chargeDynamo(-4,10);
+  const stopped={energy:0};
+  assert.equal(teleporters.chargeBatteryAt(0,10,stopped,1,getTile,dynamo,{capacity:50,rate:0}),0,'an explicit zero charge rate never falls back to the default rate');
+  assert.equal(teleporters.chargeBatteryAt(0,10,stopped,1,getTile,dynamo,{capacity:0,rate:20}),0,'an explicit zero-capacity battery cannot draw network energy');
+  const corrupted={energy:Number.POSITIVE_INFINITY};
+  assert.equal(teleporters.chargeBatteryAt(0,10,corrupted,1,getTile,dynamo,{capacity:50,rate:0}),0,'non-finite battery state cannot request energy');
+  assert.equal(corrupted.energy,0,'generic charging normalizes a non-finite battery state even without a transfer');
   const battery={energy:0};
   const gained=teleporters.chargeBatteryAt(0,10,battery,1,getTile,dynamo,{capacity:50,rate:20});
   assert.ok(gained>0 && battery.energy>0,'generic power devices can charge a local battery through copper wires');
   assert.ok(teleporters.metrics().poweredWires>0,'generic network drains also animate powered wires');
+  assert.ok([...teleporters._debug.wireActivity.values()].some(flow=>(flow.flowX||0)>0.01 && Math.abs(flow.flowY||0)<0.01),'powered cable records the real source-to-device flow direction');
   const drained=teleporters.drainNetworkEnergyAt(0,10,5,getTile,dynamo);
   assert.ok(drained>0,'generic power devices can drain network energy directly');
   dynamo.reset();
@@ -189,7 +199,166 @@ assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source end
   setTile(5,4,T.COPPER_WIRE);
   setTile(5,6,T.DYNAMO_SLOT);
   const c=teleporters.cableConnections(5,5,getTile);
-  assert.deepEqual(c,{left:true,right:true,up:true,down:true},'copper cable layout exposes crossroads for smart rendering');
+  assert.deepEqual(c,{left:true,right:true,up:true,down:true,upLeft:false,upRight:false,downLeft:false,downRight:false},'copper cable layout exposes crossroads for smart rendering');
+}
+
+{
+  reset();
+  setTile(5,5,T.COPPER_WIRE);
+  setTile(6,5,T.COPPER_WIRE);
+  setTile(6,6,T.SILVER_WIRE);
+  const start=teleporters.cableConnections(5,5,getTile);
+  const end=teleporters.cableConnections(6,6,getTile);
+  assert.equal(start.right,true,'an orthogonal cable segment remains visible');
+  assert.equal(start.downRight,false,'a redundant diagonal is omitted when an orthogonal corner already connects its endpoints');
+  assert.equal(end.upLeft,false,'redundant diagonal suppression is symmetric at both endpoints');
+}
+
+{
+  reset();
+  setTile(5,5,T.COPPER_WIRE);
+  setTile(6,6,T.SILVER_WIRE);
+  const isolated=teleporters.cableConnections(5,5,getTile);
+  assert.equal(isolated.downRight,true,'a diagonal remains visible when it is the simplest available connection');
+}
+
+{
+  reset();
+  setTile(0,9,T.TELEPORTER);
+  setTile(0,11,T.TELEPORTER);
+  placeDynamo(-4,10);
+  setTile(-2,10,T.COPPER_WIRE);
+  setTile(-1,10,T.COPPER_WIRE);
+  chargeDynamo(-4,10);
+  for(const machine of dynamo._debug.machines.values()) machine.energy=10;
+  const upper={energy:0}, lower={energy:0};
+  teleporters.beginPowerFrame();
+  teleporters.registerPowerDemandAt(0,9,10,getTile,dynamo);
+  teleporters.registerPowerDemandAt(0,11,10,getTile,dynamo);
+  const first=teleporters.chargeBatteryAt(0,9,upper,1,getTile,dynamo,{capacity:20,rate:10});
+  const second=teleporters.chargeBatteryAt(0,11,lower,1,getTile,dynamo,{capacity:20,rate:10});
+  assert.ok(Math.abs(first-2.5)<0.001 && Math.abs(second-2.5)<0.001,'a lossy copper network splits useful energy evenly instead of favoring the device updated first');
+  assert.ok(Math.abs(upper.energy-lower.energy)<0.001,'fair network allocation is independent of device position along the cable');
+  assert.ok(dynamo.metrics().storedEnergy<0.001,'fair shares account for all energy actually removed from the source');
+}
+
+{
+  reset();
+  setTile(0,9,T.TELEPORTER);
+  setTile(0,11,T.TELEPORTER);
+  placeDynamo(-4,10);
+  setTile(-2,10,T.SILVER_WIRE);
+  setTile(-1,10,T.SILVER_WIRE);
+  chargeDynamo(-4,10);
+  for(const machine of dynamo._debug.machines.values()) machine.energy=10;
+  const upper={energy:0}, lower={energy:0};
+  teleporters.beginPowerFrame();
+  teleporters.registerPowerDemandAt(0,9,10,getTile,dynamo);
+  teleporters.registerPowerDemandAt(0,11,10,getTile,dynamo);
+  const first=teleporters.chargeBatteryAt(0,9,upper,1,getTile,dynamo,{capacity:20,rate:10});
+  const second=teleporters.chargeBatteryAt(0,11,lower,1,getTile,dynamo,{capacity:20,rate:10});
+  assert.ok(Math.abs(first-5)<0.001 && Math.abs(second-5)<0.001,'silver delivers twice the useful energy of copper while preserving fair allocation');
+  assert.ok(Math.abs(upper.energy-lower.energy)<0.001,'silver network allocation is independent of consumer position');
+}
+
+function runMixedFairness(order){
+  reset();
+  placeDynamo(-4,10);
+  setTile(-2,10,T.SILVER_WIRE);
+  setTile(-1,9,T.SILVER_WIRE);
+  setTile(0,8,T.SILVER_WIRE);
+  setTile(1,7,T.TELEPORTER);
+  setTile(0,10,T.COPPER_WIRE);
+  setTile(1,11,T.COPPER_WIRE);
+  setTile(2,12,T.TELEPORTER);
+  chargeDynamo(-4,10);
+  for(const machine of dynamo._debug.machines.values()) machine.energy=10;
+  const batteries={silver:{energy:0},copper:{energy:0}};
+  teleporters.beginPowerFrame();
+  teleporters.registerPowerDemandAt(1,7,10,getTile,dynamo);
+  teleporters.registerPowerDemandAt(2,12,10,getTile,dynamo);
+  const targets={silver:[1,7],copper:[2,12]};
+  for(const id of order){
+    const [x,y]=targets[id];
+    teleporters.chargeBatteryAt(x,y,batteries[id],1,getTile,dynamo,{capacity:20,rate:10});
+  }
+  return {silver:batteries.silver.energy,copper:batteries.copper.energy,left:dynamo.metrics().storedEnergy};
+}
+{
+  const silverFirst=runMixedFairness(['silver','copper']);
+  const copperFirst=runMixedFairness(['copper','silver']);
+  const fair=10/3;
+  assert.ok(Math.abs(silverFirst.silver-fair)<0.002 && Math.abs(silverFirst.copper-fair)<0.002,'mixed silver/copper branches split delivered energy fairly after accounting for path loss');
+  assert.deepEqual(copperFirst,silverFirst,'mixed-network allocation is independent of which material consumer updates first');
+  assert.ok(silverFirst.left<0.002,'mixed-network fair allocation consumes the complete usable source reserve');
+}
+
+{
+  reset();
+  setTile(0,9,T.TELEPORTER);
+  setTile(0,11,T.METEOR_SIREN);
+  placeDynamo(-4,10);
+  setTile(-2,10,T.COPPER_WIRE);
+  setTile(-1,10,T.COPPER_WIRE);
+  chargeDynamo(-4,10);
+  for(const machine of dynamo._debug.machines.values()) machine.energy=10;
+  const active={energy:0};
+  teleporters.beginPowerFrame();
+  const gained=teleporters.chargeBatteryAt(0,9,active,1,getTile,dynamo,{capacity:20,rate:10});
+  assert.ok(Math.abs(gained-5)<0.001,'an idle event-driven endpoint never reserves a phantom fair share');
+  assert.ok(dynamo.metrics().storedEnergy<0.001,'energy no longer remains stranded behind an idle endpoint');
+}
+
+{
+  reset();
+  placeDynamo(-4,10);
+  placeDynamo(4,10);
+  for(let x=-2;x<=2;x++) setTile(x,10,T.SILVER_WIRE);
+  setTile(0,9,T.TELEPORTER);
+  chargeDynamo(-4,10);
+  chargeDynamo(4,10);
+  for(const machine of dynamo._debug.machines.values()) machine.energy=10;
+  teleporters.beginPowerFrame();
+  teleporters.registerPowerDemandAt(0,9,5,getTile,dynamo);
+  const got=teleporters.drainNetworkEnergyAt(0,9,5,getTile,dynamo,{fair:true});
+  assert.ok(Math.abs(got-5)<0.001,'a multi-generator network supplies the requested useful energy');
+  const left=[...dynamo._debug.machines.values()].map(machine=>machine.energy);
+  assert.ok(left.length===2 && Math.abs(left[0]-7.5)<0.001 && Math.abs(left[1]-7.5)<0.001,'identical generators share network load evenly');
+}
+
+{
+  reset();
+  setTile(0,10,T.TELEPORTER);
+  placeDynamo(-4,10);
+  setTile(-2,10,T.COPPER_WIRE);
+  setTile(-1,10,T.COPPER_WIRE);
+  setTile(-1,11,T.COPPER_WIRE);
+  setTile(-1,12,T.COPPER_WIRE); // connected dead branch: no load uses this tail
+  chargeDynamo(-4,10);
+  const hotAir=[];
+  globalThis.MM.gases={add(type,x,y){ if(type==='hot') hotAir.push({x,y}); return 1; }};
+  const battery={energy:0};
+  teleporters.chargeBatteryAt(0,10,battery,1,getTile,dynamo,{capacity:100,rate:30,fair:false});
+  assert.ok(hotAir.length>=1,'sustained copper transmission periodically vents lost energy as hot air');
+  assert.ok(hotAir.every(cell=>cell.y<11.5),'copper loss heat stays on the route that actually supplied the load, not a dead branch');
+  assert.equal(teleporters._debug.wireActivity.has('-1,12'),false,'flow arrows stay off an electrically idle branch');
+  assert.ok(teleporters.metrics().copperHeatEvents>=1,'copper heat events are observable in hardened runtime metrics');
+}
+
+{
+  reset();
+  placeDynamo(-4,10);
+  setTile(-2,11,T.COPPER_WIRE);
+  setTile(-1,12,T.COPPER_WIRE);
+  setTile(0,13,T.TELEPORTER);
+  chargeDynamo(-4,10);
+  const diagonal=teleporters.cableConnections(-1,12,getTile);
+  assert.equal(diagonal.upLeft,true,'copper cable detects its upper-left diagonal neighbour');
+  assert.equal(diagonal.downRight,true,'copper cable detects a lower-right diagonal power device');
+  const before=dynamo.metrics().storedEnergy;
+  tick(1,null);
+  assert.ok(teleporters.metrics().storedEnergy>0,'teleporter charges through a purely diagonal copper run');
+  assert.ok(dynamo.metrics().storedEnergy<before,'diagonal copper run drains its connected dynamo');
 }
 
 {
@@ -202,6 +371,15 @@ assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source end
   teleporters.restore(snap,getTile);
   assert.equal(teleporters.metrics().machines,1,'restore rehydrates teleporter battery state');
   assert.equal(Math.round(teleporters.metrics().storedEnergy),77,'restore preserves stored teleporter energy');
+}
+
+{
+  reset();
+  setTile(2,8,T.TELEPORTER);
+  const oversized=new Array(teleporters._debug.MACHINE_CAP+1).fill(null);
+  oversized[teleporters._debug.MACHINE_CAP]={x:2,y:8,energy:77};
+  teleporters.restore({v:1,list:oversized},getTile);
+  assert.equal(teleporters.metrics().machines,0,'teleporter restore scans at most the persisted machine cap when rows are invalid');
 }
 
 {
@@ -222,6 +400,7 @@ assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source end
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 assert.match(mainSrc, /import \{ teleporters as TELEPORTERS \}/, 'main imports the teleporter engine');
 assert.match(mainSrc, /TELEPORTERS\.update\(dt, player, getElectricNetworkTile, setTile, \{dynamo:DYNAMO, heroEnergy:MM\.heroEnergy\}\)/, 'main updates teleporters with overlay-aware dynamo and hero energy access');
+assert.match(mainSrc, /TELEPORTERS\.beginPowerFrame\(\)/, 'main opens one shared fair-allocation frame before any electrical consumers update');
 assert.match(mainSrc, /TELEPORTERS\.draw\(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getElectricNetworkTile\)/, 'main draws teleporter energy overlays through infrastructure overlays');
 assert.match(mainSrc, /TELEPORTERS\.cableConnections\(wx,y,peek\)/, 'main uses smart copper cable layouts without forcing neighbor chunks to generate');
 assert.match(mainSrc, /function placeDebugTeleporterPair\(\)/, 'main exposes a debug action that places a powered teleporter pair');

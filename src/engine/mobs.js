@@ -215,14 +215,14 @@ const mobs = (function(){
   const VULTURE_CAPTURE_HATCHLINGS = 3;
   const VULTURE_CAPTURE_COOLDOWN_MS = 16000;
   const VULTURE_NEST_REPAIR_MS = 8500;
-  // Combat progression is deliberately much steeper than the old flat species
-  // payout.  A fair fight pays its authored XP, a dangerous one pays several
-  // times more, and a creature that has become trivial pays nothing and yields.
-  const XP_FATIGUE_KEEP = 0.92;
+  // A fair fight pays its authored XP and a dangerous one pays several times
+  // more. Weak species still teach a developing hero for several levels before
+  // their reward fades to zero; repeated-kill fatigue also has a short grace run.
+  const XP_FATIGUE_KEEP = 0.96;
+  const XP_FATIGUE_GRACE_KILLS = 5;
   const XP_FATIGUE_RESET_DAYS = 1;
-  const XP_FATIGUE_MIN_MULT = 0.15;
+  const XP_FATIGUE_MIN_MULT = 0.25;
   const ATOMIC_BOMB_XP_DECAY = 0.5;
-  const XP_SPECIAL_BONUS_MULT = 1.2;
   const THERMAL_DAMAGE_BONUS_MULT = 1.2;
   const XP_FALLBACK_DAY_SECONDS = 600;
   const XP_TRIVIAL_RATIO = 0.42;
@@ -237,6 +237,13 @@ const mobs = (function(){
     [0,0], [XP_TRIVIAL_RATIO,0], [0.55,0.12], [0.70,0.38],
     [0.85,0.72], [1.00,1.00], [1.20,1.55], [1.45,2.35],
     [1.75,3.25], [2.20,4.20], [3.50,XP_MAX_CHALLENGE_MULT]
+  ];
+  // Minimum authored-XP share while the hero is still learning a species.
+  // The gap is hero level minus the level recommended by the mob's real stats.
+  // At +8 levels the grace is exhausted and the ordinary power curve may reach 0.
+  const XP_LEVEL_GRACE_KNOTS = [
+    [-99,0.70], [1,0.70], [2,0.58], [3,0.46], [4,0.34],
+    [5,0.23], [6,0.14], [7,0.07], [8,0]
   ];
   const FIXED_CHALLENGE_XP = new Set(['ATOMIC_BOMB','ZLOTY']);
   const xpFatigue = {}; // speciesId -> {kills,lastDay}
@@ -883,9 +890,9 @@ const mobs = (function(){
     m._vultureCapture = Math.random() < (aggressive ? 0.42 : 0.22);
     m._nextVultureDecisionAt=now+2500;
     if(player){
-      const side=Math.random()<0.5?-1:1;
-      m.x=player.x+side*(5.5+Math.random()*4.5);
-      m.y=player.y-(8.5+Math.random()*4.5);
+      // Start the swoop from the bird's real position. Repositioning it above the
+      // hero here made an already visible vulture disappear and pop in at the top
+      // of the screen every time it committed to an attack.
       const dx=player.x-m.x, dy=(player.y-0.35)-m.y;
       const d=Math.hypot(dx,dy)||1;
       m.vx=(dx/d)*(aggressive?8.6:7.2);
@@ -4860,18 +4867,25 @@ const mobs = (function(){
   function heroXpNeed(level){
     return Math.round(60*Math.pow(Math.max(1,Math.min(99,Math.floor(Number(level)||1))),1.35));
   }
-  function heroCombatProfile(player){
+  function heroProgressionProfile(player){
     let level=1;
     try{
       const p=MM.progress && typeof MM.progress.level==='function' ? MM.progress.level() : null;
       if(p && finiteNum(p.level)) level=Math.max(1,Math.min(99,Math.floor(p.level)));
       else level=fallbackHeroLevel(player && player.xp);
     }catch(e){ level=fallbackHeroLevel(player && player.xp); }
-    // Level is an unremovable floor: every kind of development counts. Actual
-    // equipped offence, vitality and defence can only raise the rating. This
-    // makes the comparison feel honest without allowing an unequip-before-kill
-    // exploit to erase the hero's earned strength.
+    // XP is progression-based, never loadout-based. A stronger weapon already
+    // pays by killing dangerous creatures faster; it must not quietly reduce
+    // their reward or make an unequip-before-kill exploit worthwhile.
     const levelPower=17.25*(1+Math.max(0,level-1)*0.14);
+    return {level,power:levelPower,levelPower,weaponNeutral:true};
+  }
+  function heroThreatProfile(player){
+    const progression=heroProgressionProfile(player);
+    const level=progression.level;
+    const levelPower=progression.levelPower;
+    // AI threat perception deliberately keeps the live loadout: visibly
+    // outmatched creatures should continue fleeing from a terrifying weapon.
     const maxHp=Math.max(1,Number(player && player.maxHp)||100);
     let attack=3, reduction=0, moveMult=1;
     try{
@@ -4882,7 +4896,7 @@ const mobs = (function(){
     }catch(e){}
     const effectiveHp=maxHp/Math.max(0.35,1-reduction);
     const statPower=Math.sqrt(effectiveHp*attack)*Math.pow(moveMult,0.16);
-    return {level,power:Math.max(levelPower,statPower),levelPower,statPower,attack,effectiveHp};
+    return {level,power:Math.max(levelPower,statPower),levelPower,statPower,attack,effectiveHp,threat:true};
   }
   function mobCombatPower(m,spec,baseOnly){
     spec=spec||{};
@@ -4918,16 +4932,37 @@ const mobs = (function(){
   function recommendedHeroLevel(power){
     return Math.max(1,Math.min(99,Math.round(1+(Math.max(0,power/17.25-1)/0.14))));
   }
+  function levelGraceXpMultiplier(heroLevel,recommendedLevel){
+    const gap=Math.max(-99,Math.floor(Number(heroLevel)||1)-Math.max(1,Math.floor(Number(recommendedLevel)||1)));
+    for(let i=1;i<XP_LEVEL_GRACE_KNOTS.length;i++){
+      const a=XP_LEVEL_GRACE_KNOTS[i-1], b=XP_LEVEL_GRACE_KNOTS[i];
+      if(gap>b[0]) continue;
+      const t=Math.max(0,Math.min(1,(gap-a[0])/Math.max(1,b[0]-a[0])));
+      return a[1]+(b[1]-a[1])*t;
+    }
+    return 0;
+  }
   function mobChallengeProfile(m,spec,player,heroOpt){
-    const hero=heroOpt || heroCombatProfile(player);
-    const remembered=Math.max(0,Number(m && m._heroPowerSeen)||0);
+    const hero=heroOpt || heroProgressionProfile(player);
+    // Remembered weapon strength belongs to fear/AI only. Feeding it into the
+    // death payout made identical creatures worth less after seeing a good gun.
+    const remembered=hero.threat ? Math.max(0,Number(m && m._heroPowerSeen)||0) : 0;
     const heroPower=Math.max(hero.power,remembered);
     const mobPower=mobCombatPower(m,spec,false);
     const basePower=mobCombatPower(null,spec,true);
     const fixed=FIXED_CHALLENGE_XP.has(String(spec && spec.id||m && m.id||''));
     const ratio=fixed ? 1 : mobPower/Math.max(1,heroPower);
-    const tier=challengeTier(ratio);
-    const challengeMult=fixed ? 1 : challengeXpMultiplier(ratio);
+    const recommendedLevel=recommendedHeroLevel(mobPower);
+    const ratioMult=fixed ? 1 : challengeXpMultiplier(ratio);
+    const levelGraceMult=fixed ? 1 : levelGraceXpMultiplier(hero.level,recommendedLevel);
+    const challengeMult=fixed ? 1 : Math.max(ratioMult,levelGraceMult);
+    const outmatched=!fixed && ratio<=XP_TRIVIAL_RATIO;
+    const trivial=outmatched && levelGraceMult<=0;
+    const rawTier=challengeTier(ratio);
+    // During the learning/fade window a numerically tiny foe is weak, not yet
+    // XP-trivial: it still grants a diminishing reward. Combat AI may separately
+    // recognise that it is outmatched and flee rather than start a hopeless fight.
+    const tier=!trivial && rawTier.id==='trivial' ? challengeTier(XP_TRIVIAL_RATIO+0.001) : rawTier;
     const variantMult=fixed ? 1 : Math.max(0.75,Math.min(XP_MAX_VARIANT_MULT,Math.pow(mobPower/Math.max(1,basePower),0.68)));
     return {
       heroLevel:hero.level,
@@ -4939,10 +4974,14 @@ const mobs = (function(){
       label:tier.label,
       color:tier.color,
       challengeMult,
+      ratioMult,
+      levelGraceMult,
+      levelGap:hero.level-recommendedLevel,
       variantMult,
       totalMult:challengeMult*variantMult,
-      recommendedLevel:recommendedHeroLevel(mobPower),
-      trivial:!fixed && ratio<=XP_TRIVIAL_RATIO,
+      recommendedLevel,
+      outmatched,
+      trivial,
       fixed
     };
   }
@@ -4957,7 +4996,7 @@ const mobs = (function(){
     return Math.max(0,Math.round(heroXpNeed(profile.heroLevel)*share));
   }
   function progressionFleeEligible(m,spec,profile){
-    if(!m || !spec || !profile || !profile.trivial) return false;
+    if(!m || !spec || !profile || !profile.outmatched) return false;
     if(spec.neverAggro || !(Number(spec.dmg)>0) || FIXED_CHALLENGE_XP.has(m.id)) return false;
     return true;
   }
@@ -6165,7 +6204,7 @@ const mobs = (function(){
     if(heroHit){
       markHeroAttack(m);
       try{
-        const p=heroCombatProfile((typeof window!=='undefined' && window.player)||null);
+        const p=heroThreatProfile((typeof window!=='undefined' && window.player)||null);
         m._heroPowerSeen=Math.max(Number(m._heroPowerSeen)||0,p.power);
         m._heroLevelSeen=Math.max(Number(m._heroLevelSeen)||1,p.level);
       }catch(e){}
@@ -7427,7 +7466,7 @@ const mobs = (function(){
     }catch(e){}
     let active=0;
     const nowEpoch=Date.now();
-    const heroThreat=heroCombatProfile(player);
+    const heroThreat=heroThreatProfile(player);
     for(let i=0;i<mobs.length;i++){
       const m=mobs[i]; const spec=SPECIES[m.id]; if(!spec) continue;
       const challenge=mobChallengeProfile(m,spec,player,heroThreat);
@@ -10671,9 +10710,10 @@ const mobs = (function(){
     const id=String(specId||'');
     let entry=cleanXpFatigueEntry(xpFatigue[id]) || {kills:0,lastDay:day};
     if(day-entry.lastDay>=XP_FATIGUE_RESET_DAYS) entry={kills:0,lastDay:day};
+    const decayedKills=Math.max(0,entry.kills-XP_FATIGUE_GRACE_KILLS+1);
     const mult=id==='ATOMIC_BOMB'
       ? Math.pow(ATOMIC_BOMB_XP_DECAY,Math.min(30,entry.kills))
-      : Math.max(XP_FATIGUE_MIN_MULT, Math.pow(XP_FATIGUE_KEEP,Math.min(80,entry.kills)));
+      : Math.max(XP_FATIGUE_MIN_MULT, Math.pow(XP_FATIGUE_KEEP,Math.min(80,decayedKills)));
     return {entry,mult};
   }
   function noteXpAwardEvent(detail){
@@ -10691,7 +10731,8 @@ const mobs = (function(){
     const day=currentGameDayFloat();
     const fatigue=xpFatigueMultiplier(m.id,day);
     const special=!!m._lastHeroHitSpecial && m.id!=='ATOMIC_BOMB';
-    const specialMult=special ? XP_SPECIAL_BONUS_MULT : 1;
+    // Preserve special-finisher feedback, but not a weapon-dependent XP bonus.
+    const specialMult=1;
     const challenge=mobChallengeProfile(m,spec,player);
     // social facilitation: an ACTIVE ghost audience grants bonus XP (ghost_host.js
     // maintains MM.socialBoost; absent/neutral in solo play and Node sims)
@@ -10717,6 +10758,9 @@ const mobs = (function(){
       challengeLabel:challenge.label,
       challengeRatio:+challenge.ratio.toFixed(3),
       challengeMult:+challenge.challengeMult.toFixed(3),
+      ratioMult:+challenge.ratioMult.toFixed(3),
+      levelGraceMult:+challenge.levelGraceMult.toFixed(3),
+      levelGap:challenge.levelGap,
       variantMult:+challenge.variantMult.toFixed(3),
       totalCombatMult:+challenge.totalMult.toFixed(3),
       authoredCombatXp:+authoredCombatXp.toFixed(2),
@@ -11062,6 +11106,43 @@ const mobs = (function(){
   }
   function isGhostSpooked(m){ return finiteNum(m._ghostSpookUntil) && m._ghostSpookUntil>performance.now(); }
 
+  // Bounded local pose query for screen effects such as thermal optics. Unlike
+  // ghostRoster(), this never serializes the entire population and it returns
+  // the closest living mobs first, so distant entities cannot displace actors
+  // that are actually on screen.
+  function thermalTargets(wx,wy,range,limit){
+    wx=finiteNum(wx)?wx:0; wy=finiteNum(wy)?wy:0;
+    range=Math.max(1,Math.min(64,finiteNum(range)?range:28));
+    limit=Math.max(1,Math.min(192,Math.floor(finiteNum(limit)?limit:128)));
+    const r2=range*range, cellRadius=Math.ceil(range/CELL)+1;
+    const baseX=(wx/CELL)|0, baseY=(wy/CELL)|0;
+    const candidates=[], seen=new Set();
+    let inspected=0;
+    outer: for(let gy=baseY-cellRadius;gy<=baseY+cellRadius;gy++){
+      for(let gx=baseX-cellRadius;gx<=baseX+cellRadius;gx++){
+        const set=grid.get(gx+','+gy); if(!set) continue;
+        for(const m of set){
+          if(++inspected>512) break outer;
+          if(!m || seen.has(m) || !validMobState(m) || !(m.hp>0)) continue;
+          seen.add(m);
+          const dx=m.x-wx,dy=m.y-wy,d2=dx*dx+dy*dy;
+          if(d2>r2) continue;
+          const spec=SPECIES[m.id]||{};
+          const body=spec.body||{};
+          const scale=Math.max(0.35,Math.min(4,finiteNum(m.scale)?m.scale:1));
+          candidates.push({
+            id:String(m.id||'mob'),name:String(spec.displayName||m.id||'stworzenie'),
+            x:m.x,y:m.y,w:Math.max(0.25,(finiteNum(body.w)?body.w:0.9)*scale),
+            h:Math.max(0.25,(finiteNum(body.h)?body.h:1)*scale),hp:m.hp,
+            heat:spec.aquatic?0.36:0.78,living:true,d2
+          });
+        }
+      }
+    }
+    candidates.sort((a,b)=>a.d2-b.d2 || String(a.id).localeCompare(String(b.id)));
+    return candidates.slice(0,limit).map(({d2,...pose})=>pose);
+  }
+
   // --- Ghost spectator sync (ghost_host.js / ghost_client.js) -----------------
   // Watchers render mobs through the normal draw path for full threat-look
   // fidelity: composition changes ride the existing serialize/deserialize codec,
@@ -11231,8 +11312,8 @@ const mobs = (function(){
         lasers:mobLasers.map(l=>({x1:l.x1,y1:l.y1,x2:l.x2,y2:l.y2,dmg:l.dmg||0,hit:!!l.hit}))
       };
     }
-  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, chillAt, chillRadius, wetAt, wetRadius, statusAt, statusRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, ghostRoster, ghostApplyRoster, ghostLerp, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, isLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugPiranhas:()=>({coastProfile:piranhaCoastProfile,coastalRange:PIRANHA_COASTAL_RANGE,coastalCore:PIRANHA_COASTAL_CORE,offshoreDensity:PIRANHA_OFFSHORE_DENSITY}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat,
-    _debugProgression:{heroProfile:heroCombatProfile,mobPower:mobCombatPower,challenge:mobChallengeProfile,multiplier:challengeXpMultiplier,tier:challengeTier,progressionFloor:challengeProgressionFloor,xpNeed:heroXpNeed,TRIVIAL_RATIO:XP_TRIVIAL_RATIO}
+  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, chillAt, chillRadius, wetAt, wetRadius, statusAt, statusRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, ghostRoster, ghostApplyRoster, ghostLerp, thermalTargets, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, isLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugPiranhas:()=>({coastProfile:piranhaCoastProfile,coastalRange:PIRANHA_COASTAL_RANGE,coastalCore:PIRANHA_COASTAL_CORE,offshoreDensity:PIRANHA_OFFSHORE_DENSITY}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat,
+    _debugProgression:{heroProfile:heroProgressionProfile,threatProfile:heroThreatProfile,mobPower:mobCombatPower,challenge:mobChallengeProfile,multiplier:challengeXpMultiplier,levelGraceMultiplier:levelGraceXpMultiplier,tier:challengeTier,progressionFloor:challengeProgressionFloor,xpNeed:heroXpNeed,TRIVIAL_RATIO:XP_TRIVIAL_RATIO,FATIGUE_GRACE_KILLS:XP_FATIGUE_GRACE_KILLS}
   };
   MM.mobs = api;
   try{ window.dispatchEvent(new CustomEvent('mm-mobs-ready')); }catch(e){}

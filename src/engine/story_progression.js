@@ -24,8 +24,8 @@ const storyProgression = (function(){
   };
   const MENTOR_TASKS = {
     watch_area:  {title:'Obserwacja okolicy',      detail:'Stary Kwadrat chce wiedziec, czy teren zachowuje sie grzecznie pod spojrzeniem.'},
-    tree_watch_short:{title:'Czubek drzewa (30 s)',detail:'Stan na drzewie i patrz. Stare pytanie o huk bez swiadka.'},
-    tree_watch_long:{title:'Czubek drzewa (60 s)', detail:'Dluga obserwacja sprawdza obserwatora, nie teren.'},
+    tree_watch_short:{title:'Dowolne drzewo (10 s)',detail:'Wejdz na dowolne drzewo. Zielony licznik nad glowa potwierdzi, ze czas plynie.'},
+    tree_watch_long:{title:'Dowolne drzewo (30 s)', detail:'Stan na dowolnym drzewie. Dluga obserwacja sprawdza obserwatora, nie teren.'},
     sand_hide:   {title:'Ukrycie w piasku (30 s)', detail:'Znikniecie tez jest pomiarem. Piasek ma dobre referencje.'},
     water:       {title:'Woda dla mentora',        detail:'Przynies 1 blok wody. Pragnienie albo skrypt - sprawdzimy.'},
     raw_meat:    {title:'Surowe mieso',            detail:'Przynies 1 surowe mieso. Tutorial nie ocenia.'},
@@ -148,9 +148,9 @@ const storyProgression = (function(){
       title:def.title,
       detail:def.detail,
       priority:CFG.TASK_PRIORITY,
-      pointer:!!target
+      pointer:!!target,
+      target:target ? {x:target.x, y:target.y, label:def.label||def.title} : null
     };
-    if(target) src.target = {x:target.x, y:target.y, label:def.label||def.title};
     return tasks.upsert(src);
   }
   function syncStoryTasks(desired){
@@ -175,10 +175,16 @@ const storyProgression = (function(){
     if(!meta) return null;
     let detail = meta.detail;
     if(summary.required && Number.isFinite(Number(summary.required.have)) && Number(summary.required.amount)>0){
-      detail = meta.detail+' ('+Math.min(Number(summary.required.have),Number(summary.required.amount))+'/'+Number(summary.required.amount)+')';
+      const amount=Number(summary.required.amount);
+      const have=Math.min(Number(summary.required.have),amount);
+      const suffix=summary.observe && summary.observe.mode==='tree_top'
+        ? (summary.observe.active ? ' - naliczanie trwa' : ' - wejdz na korone drzewa')
+        : '';
+      detail = meta.detail+' ('+have+'/'+amount+')'+suffix;
     }
     const def = {id:'story:mentor', title:'Stary Kwadrat: '+meta.title, detail, label:'Stary Kwadrat'};
-    const target = (Number.isFinite(Number(summary.x)) && Number.isFinite(Number(summary.y)))
+    const anywhere=summary.phase==='tree_watch_short' || summary.phase==='tree_watch_long';
+    const target = !anywhere && (Number.isFinite(Number(summary.x)) && Number.isFinite(Number(summary.y)))
       ? {x:Number(summary.x), y:Number(summary.y)} : null;
     return {def, target};
   }

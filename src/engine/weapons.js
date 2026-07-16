@@ -27,6 +27,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
   const BOW_CHARGE_SECONDS=4;
   const BOW_MAX_CHARGE_MULT=2;
   const BOW_OVERDRAW_ENERGY_PER_SEC=6;
+  const SPEAR_CHARGE_SECONDS=1.2;
+  const SPEAR_MAX_CHARGE_MULT=2;
   const MAX_PUFFS=220;
   const MAX_ELECTRIC_BEAMS=24;
   const MELEE_REACH=1;
@@ -134,9 +136,12 @@ import { damageBlastCreatures } from './explosion_damage.js';
   const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
   const bowCharge={active:false,t:0,required:BOW_CHARGE_SECONDS,aimX:0,aimY:0,player:null,full:false,overdrawT:0,energySpent:0,starved:false};
+  const spearCharge={active:false,t:0,required:SPEAR_CHARGE_SECONDS,dir:1,player:null,full:false};
   const ULT_CHARGE_TIME=5;
-  // Melee swing visual: drawHeld animates the held blade, draw() adds a slash arc
-  const swing={t:0, dur:0.2, tx:0, ty:0, dir:1};
+  // Melee action visual. The form is captured when the hit starts so a spear
+  // remains a thrust and an axe remains a chop even if equipment changes before
+  // the short animation (or a ghost-network snapshot) has finished.
+  const swing={t:0, dur:0.2, tx:0, ty:0, dir:1, form:'sword', charge:0};
   // Short, cosmetic-only impulse shared by every held-weapon renderer. Discrete
   // shots restart it; continuous emitters merely keep it alive, avoiding a
   // strobing muzzle flash when fireHeld() is called every simulation tick.
@@ -316,6 +321,28 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(/maczug|patyk|club|stick/.test(name)) return 'club';
     if(/dzid|w[łl][oó]cz|spear/.test(name) || Number(it&&it.fireRange)>1) return 'spear';
     return 'sword';
+  }
+  function isChargeableSpear(it){
+    return weaponType(it)==='melee' && meleeVisualForm(it)==='spear';
+  }
+  function meleeAttackPose(form,progress,facing){
+    const p=Math.max(0,Math.min(1,Number(progress)||0));
+    const dir=facing<0?-1:1;
+    const smooth=t=>{ const v=Math.max(0,Math.min(1,t)); return v*v*(3-2*v); };
+    if(form==='spear'||form==='trident'){
+      // Brief pull-back, explosive straight extension, then a controlled return.
+      let extension;
+      if(p<0.18) extension=-3*smooth(p/0.18);
+      else if(p<0.52) extension=-3+21*smooth((p-0.18)/0.34);
+      else extension=18*(1-smooth((p-0.52)/0.48));
+      return {style:'stab',angle:dir*(Math.PI*0.5-0.06),forward:dir*extension,lift:-1.2+Math.sin(p*Math.PI)*0.8};
+    }
+    if(form==='axe'){
+      // An overhead hack that accelerates through a broad slashing follow-through.
+      const cut=smooth(p);
+      return {style:'hack',angle:dir*(-2.18+3.18*cut),forward:dir*Math.sin(p*Math.PI)*3.2,lift:-Math.sin(p*Math.PI)*2.4};
+    }
+    return {style:'slash',angle:dir*(-1.8+2.1*p),forward:0,lift:0};
   }
   function heldPrestigeFocus(it,facing){
     const type=weaponType(it);
@@ -654,7 +681,11 @@ import { damageBlastCreatures } from './explosion_damage.js';
   }
   // Per-frame HUD gauge state (kept allocation-light next to the full metrics()).
   function hudStatus(){
-    return {ult:ultCharge, bowActive:!!bowCharge.active, bowRatio:bowChargeRatio(), bowFull:!!bowCharge.full};
+    return {
+      ult:ultCharge,
+      bowActive:!!bowCharge.active, bowRatio:bowChargeRatio(), bowFull:!!bowCharge.full,
+      spearActive:!!spearCharge.active, spearRatio:spearChargeRatio(), spearFull:!!spearCharge.full
+    };
   }
   function hasArrowAmmo(){ return !!pickArrowTier(); }
   function warnNoArrows(){ sayLimited('arrows_empty','Brak strzal'); }
@@ -910,9 +941,17 @@ import { damageBlastCreatures } from './explosion_damage.js';
     return false;
   }
 
-  function notifyMeleeSwing(tx,ty,player){
+  function notifyMeleeSwing(tx,ty,player,chargeRatio){
+    const form=meleeVisualForm(equippedWeapon());
+    const charge=form==='spear'?clamp01(chargeRatio):0;
+    swing.form=form;
+    swing.charge=charge;
+    swing.dur=(form==='axe'?0.32:(form==='spear'||form==='trident'?0.24+charge*0.10:0.2));
     swing.t=swing.dur; swing.tx=tx; swing.ty=ty; swing.dir=(player && player.facing>=0)?1:-1;
-    triggerHeldActionFx('melee',1,210,false);
+    triggerHeldActionFx('melee',1+charge*0.75,210+charge*110,false);
+    const sound=form==='axe'?'axeSwing':((form==='spear'||form==='trident')?'spearThrust':'swing');
+    try{ if(MM.audio && MM.audio.play) MM.audio.play(sound); }catch(e){}
+    return form;
   }
   function combatElementFromOpts(opts){
     const raw=String((opts && (opts.element || opts.cause || opts.kind || opts.type || opts.weaponType)) || '').toLowerCase();
@@ -989,12 +1028,40 @@ import { damageBlastCreatures } from './explosion_damage.js';
     return false;
   }
 
+  // Keep the held-spear state transition next to fireHeld. Besides making the
+  // input path self-contained, this prevents partial live reloads from leaving
+  // fireHeld with a reference to a helper that was added farther down the file.
+  function holdSpearCharge(player,aimX,w,dt){
+    if(!player || !isChargeableSpear(w)) return false;
+    if(!spearCharge.active){
+      if(meleeCd>0 || (player.atkCd&&player.atkCd>0)) return false;
+      if(bowCharge.active) resetBowCharge();
+      spearCharge.active=true;
+      spearCharge.t=0;
+      spearCharge.required=SPEAR_CHARGE_SECONDS;
+      spearCharge.player=player;
+      spearCharge.full=false;
+    }
+    const rawDx=Number(aimX)-Number(player.x);
+    spearCharge.dir=Number.isFinite(rawDx)&&Math.abs(rawDx)>0.05 ? (rawDx<0?-1:1) : (player.facing<0?-1:1);
+    player.facing=spearCharge.dir;
+    spearCharge.player=player;
+    const wasFull=spearCharge.full;
+    spearCharge.t=Math.min(spearCharge.required, spearCharge.t+Math.max(0,Math.min(0.12,Number(dt)||0)));
+    spearCharge.full=spearCharge.t+1e-6>=spearCharge.required;
+    if(!wasFull&&spearCharge.full){
+      try{ if(MM.audio&&MM.audio.play) MM.audio.play('charge'); }catch(e){}
+    }
+    return true;
+  }
+
   // ---- Firing (called every frame while the fire input is held) ----
   function fireHeld(player, aimX, aimY, dt){
     const w=equippedWeapon();
     const type=weaponType(w);
     if(type==='bow') return updateBowCharge(player, aimX, aimY, w, dt||0.016);
-    if(bowCharge.active) cancelHeld();
+    if(isChargeableSpear(w)) return holdSpearCharge(player, aimX, w, dt||0.016);
+    if(bowCharge.active || spearCharge.active) cancelHeld();
     if(type==='harpoon') return fireHarpoon(player, aimX, aimY, w);
     if(type==='thrown') return fireThrown(player, aimX, aimY, w);
     if(type==='electric') return fireElectric(player, aimX, aimY, w, 1);
@@ -1006,9 +1073,15 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const d=Math.hypot(dx,dy)||1;
     return {dx:dx/d, dy:dy/d};
   }
-  function meleeTargetTile(player, aimX, aimY, reach){
+  function meleeTargetTile(player, aimX, aimY, reach, horizontalOnly){
     const px=Math.floor(player.x), py=Math.floor(player.y);
     const R=Math.max(1, reach||MELEE_REACH);
+    if(horizontalOnly){
+      const rawDx=Number(aimX)-Number(player.x);
+      const dir=Number.isFinite(rawDx) && Math.abs(rawDx)>0.05 ? (rawDx<0?-1:1) : (player.facing<0?-1:1);
+      const aimed=Math.max(1,Math.abs(Math.floor(Number.isFinite(aimX)?aimX:player.x+dir)-px));
+      return {px,py,tx:px+dir*Math.min(R,aimed),ty:py,dir};
+    }
     let tx=Math.floor(aimX), ty=Math.floor(aimY);
     tx=Math.max(px-R, Math.min(px+R, tx));
     ty=Math.max(py-R, Math.min(py+R, ty));
@@ -1101,15 +1174,19 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(extra && typeof extra==='object') Object.assign(meta,extra);
     return streamDamageOpts(kind,meta);
   }
-  function fireMelee(player, aimX, aimY){
+  function fireMelee(player, aimX, aimY, opts){
     if(meleeCd>0 || (player.atkCd && player.atkCd>0)) return false;
-    // Melee strength changes damage only; reach is one tile unless the weapon
-    // carries fireRange (spears poke from two tiles out — see meleeReach).
+    // Ordinary melee keeps its classic reach. Spears trade free aiming for a
+    // three-tile horizontal lane and may multiply damage through hold charge.
     const w=equippedWeapon();
+    const form=meleeVisualForm(w);
+    const chargeRatio=form==='spear'?clamp01(opts&&opts.chargeRatio):0;
+    const damageMult=1+chargeRatio*(SPEAR_MAX_CHARGE_MULT-1);
     const water=meleeWaterProfile(w,player);
-    const {px,tx,ty}=meleeTargetTile(player,aimX,aimY,meleeReach(w));
+    const {px,tx,ty}=meleeTargetTile(player,aimX,aimY,meleeReach(w),form==='spear');
     const rawBonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
-    const bonus=Math.max(0,rawBonus*water.damageMult);
+    const baseBonus=Math.max(0,rawBonus*water.damageMult);
+    const bonus=form==='spear' ? Math.max(0,(3+baseBonus)*damageMult-3) : baseBonus;
     const chestHit=openChestFromWeaponHit(tx+0.5,ty+0.5,{kind:'melee'});
     const collected=chestHit ? false : collectLooseTarget(tx,ty);
     const hit=chestHit || collected
@@ -1125,14 +1202,25 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const cooldown=0.35*water.cooldownMult;
     meleeCd=cooldown; player.atkCd=Math.max(player.atkCd||0,cooldown);
     player.facing = tx>=px? 1 : -1;
-    notifyMeleeSwing(tx,ty,player);
+    notifyMeleeSwing(tx,ty,player,chargeRatio);
     if(hit && !collected && !chestHit){
       addUltCharge(0.08);
       rollMeleeEffect(w,tx,ty,{chanceMult:water.effectMult});
-      noteWeaponCombatHit(tx+0.5,ty+0.15,Math.max(1,2+bonus),{source:'hero',kind:'melee'},weaponCombatVisualMeta(w,'melee',{dir:player.facing,power:0.82+Math.min(0.45,bonus/16)}));
+      noteWeaponCombatHit(tx+0.5,ty+0.15,Math.max(1,2+bonus),{source:'hero',kind:'melee',charged:chargeRatio>0.05},weaponCombatVisualMeta(w,'melee',{major:chargeRatio>=0.75,dir:player.facing,power:0.82+chargeRatio*0.72+Math.min(0.45,bonus/16)}));
     }
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('swing'); }catch(e){}
     return !!hit;
+  }
+  function spearChargeRatio(){
+    const required=Math.max(0.1,Number(spearCharge.required)||SPEAR_CHARGE_SECONDS);
+    return spearCharge.active ? clamp01((spearCharge.t||0)/required) : 0;
+  }
+  function resetSpearCharge(){
+    spearCharge.active=false;
+    spearCharge.t=0;
+    spearCharge.required=SPEAR_CHARGE_SECONDS;
+    spearCharge.dir=1;
+    spearCharge.player=null;
+    spearCharge.full=false;
   }
   function bowChargeRatio(){
     const required=Math.max(0.1,Number(bowCharge.required)||BOW_CHARGE_SECONDS);
@@ -1287,8 +1375,17 @@ import { damageBlastCreatures } from './explosion_damage.js';
     return spawnHarpoonShot(player,aimX,aimY,w,{});
   }
   function releaseHeld(player, aimX, aimY){
-    if(!bowCharge.active) return false;
     const w=equippedWeapon();
+    if(spearCharge.active){
+      const p=player||spearCharge.player;
+      if(!p||!isChargeableSpear(w)){ resetSpearCharge(); return false; }
+      const ratio=spearChargeRatio();
+      const fallbackX=p.x+(spearCharge.dir<0?-1:1)*meleeReach(w);
+      const ax=Number.isFinite(aimX)?aimX:fallbackX;
+      resetSpearCharge();
+      return fireMelee(p,ax,p.y,{chargeRatio:ratio});
+    }
+    if(!bowCharge.active) return false;
     if(!w || weaponType(w)!=='bow'){ resetBowCharge(); return false; }
     const p=player || bowCharge.player;
     const ax=Number.isFinite(aimX) ? aimX : bowCharge.aimX;
@@ -1298,8 +1395,9 @@ import { damageBlastCreatures } from './explosion_damage.js';
     return fireBowShot(p, ax, ay, w, ratio);
   }
   function cancelHeld(){
-    const was=bowCharge.active;
+    const was=bowCharge.active||spearCharge.active;
     resetBowCharge();
+    resetSpearCharge();
     return was;
   }
   function firePowerBow(player, aimX, aimY, w, charge){
@@ -1386,6 +1484,26 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(t===T.WATER || t===T.LAVA) return false;
     return isSolid(t);
   }
+  function electricChargeTargetAt(tx,ty,amount,getTile){
+    if(typeof getTile!=='function') return null;
+    let tile=T.AIR;
+    try{ tile=getTile(tx,ty); }catch(e){ return null; }
+    let device=null;
+    if(tile===T.TELEPORTER) device=MM.teleporters;
+    else if(tile===T.WATER_PUMP) device=MM.pumps;
+    else if(tile===T.TURRET || tile===T.FIRE_TURRET || tile===T.WATER_TURRET) device=MM.turrets;
+    else if(tile===T.SPRING_PLATFORM) device=MM.springPlatforms;
+    else if(tile===T.SOLAR_PANEL || tile===T.SOLAR_BATTERY) device=MM.solar;
+    else if(tile===T.DYNAMO || tile===T.DYNAMO_SLOT) device=MM.dynamo;
+    else if(tile===T.VENDING_MACHINE) device=MM.vending;
+    else if(tile===T.STEAM_BOILER) device=MM.steamMachines;
+    else if(tile===T.METEOR_SIREN) device=MM.meteorites;
+    else if(INFO[tile] && INFO[tile].requiresHomePower) device=MM.furnishings;
+    if(!device || typeof device.receiveElectricChargeAt!=='function') return null;
+    let gained=0;
+    try{ gained=Math.max(0,Number(device.receiveElectricChargeAt(tx,ty,amount,getTile))||0); }catch(e){ gained=0; }
+    return {tile,gained,requested:Math.max(0,Number(amount)||0)};
+  }
   function pushElectricBeam(b){
     if(electricBeams.length>=MAX_ELECTRIC_BEAMS) electricBeams.shift();
     electricBeams.push(b);
@@ -1424,7 +1542,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const dmg=charge ? Math.max(2, baseDps*cadence*(roll ? roll.mult : 2)) : Math.max(0.75, baseDps*cadence*power);
     const sx=player.x + v.dx*0.62;
     const sy=player.y - 0.10 + v.dy*0.62;
-    let ex=sx+v.dx*range, ey=sy+v.dy*range, hit=false, blocked=false, chestHit=false;
+    let ex=sx+v.dx*range, ey=sy+v.dy*range, hit=false, blocked=false, chestHit=false, chargedDevice=null;
     const worldObj=(typeof MM!=='undefined' && MM.world) ? MM.world : null;
     const tileGetter=(typeof lastGetTile==='function') ? lastGetTile
       : (worldObj && typeof worldObj.getTile==='function' ? (x,y)=>worldObj.getTile(x,y) : null);
@@ -1437,6 +1555,14 @@ import { damageBlastCreatures } from './explosion_damage.js';
       const t=tileGetter ? tileGetter(tx,ty) : null;
       if(openChestFromWeaponHit(x,y,{kind:'electric',specialAttack:!!charge,hitRadius:0.12})){
         ex=x; ey=y; hit=true; chestHit=true;
+        break;
+      }
+      const chargeTarget=electricChargeTargetAt(tx,ty,energyCost,tileGetter);
+      if(chargeTarget){
+        ex=x; ey=y; hit=true; chargedDevice=chargeTarget;
+        if(chargeTarget.gained>0){
+          try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('electric_weapon_charge','Karabin elektryczny może awaryjnie ładować urządzenia.'); }catch(e){}
+        }
         break;
       }
       if(tileGetter && tileSetter && applyBlockReaction('electric',tx,ty,tileGetter,tileSetter)){
@@ -1478,8 +1604,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
       if(electricDamageAt(tx,ty,dmg,{specialAttack:!!charge,luckyStrike:!!(roll&&roll.lucky)})){ ex=x; ey=y; hit=true; if(!charge) addUltCharge(0.08); break; }
     }
     if(hit && !chestHit && roll && roll.lucky) noteLuckyStrike(ex,ey-0.4);
-    if(hit && !chestHit) noteWeaponCombatHit(ex,ey-0.4,dmg,{kind:'electric',element:'electric',source:'hero',specialAttack:!!charge,luckyStrike:!!(roll&&roll.lucky)},weaponCombatVisualMeta(w,'electric',{major:!!charge,dir:player.facing}));
-    pushElectricBeam({x1:sx,y1:sy,x2:ex,y2:ey,t:0,life:charge?0.28:0.18,hit,blocked,phase:Math.random()*Math.PI*2,power});
+    if(hit && !chestHit) noteWeaponCombatHit(ex,ey-0.4,chargedDevice?0:dmg,{kind:chargedDevice?'electric_charge':'electric',element:'electric',source:'hero',specialAttack:!!charge,luckyStrike:!!(roll&&roll.lucky),chargeAmount:chargedDevice&&chargedDevice.gained||0},weaponCombatVisualMeta(w,'electric',{major:!!charge||!!chargedDevice,dir:player.facing,target:chargedDevice?'device':undefined}));
+    pushElectricBeam({x1:sx,y1:sy,x2:ex,y2:ey,t:0,life:charge?0.28:0.18,hit,blocked,phase:Math.random()*Math.PI*2,power,chargeAmount:chargedDevice&&chargedDevice.gained||0});
     triggerHeldActionFx('electric',charge?1.6:Math.max(0.7,power),charge?300:150,false);
     try{ if(MM.audio && MM.audio.play) MM.audio.play('beam'); }catch(e){}
     try{
@@ -1606,7 +1732,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
   }
   function firePowerMelee(player, aimX, aimY, w, charge){
     const v=aimVector(player,aimX,aimY);
-    const {tx,ty}=meleeTargetTile(player,aimX,aimY,meleeReach(w));
+    const form=meleeVisualForm(w);
+    const {px,tx,ty}=meleeTargetTile(player,aimX,aimY,meleeReach(w),form==='spear');
     const bonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
     const water=meleeWaterProfile(w,player);
     const roll=specialAttackRoll();
@@ -1628,12 +1755,11 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(hit && !chestHit && roll.lucky) noteLuckyStrike(tx+0.5,ty-0.15);
     if(hit && !chestHit) noteWeaponCombatHit(tx+0.5,ty+0.15,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky},weaponCombatVisualMeta(w,'melee',{major:true,dir:player.facing,power:1.35+chargeFx*0.45}));
     if(hit && !collected && !chestHit) rollMeleeEffect(w,tx,ty,{chanceMult:1.5*water.effectMult}); // a charged blow procs its material more often
-    player.facing = v.dx>=0?1:-1;
+    player.facing = form==='spear' ? (tx>=px?1:-1) : (v.dx>=0?1:-1);
     meleeCd=Math.max(meleeCd,0.25*water.cooldownMult);
     player.atkCd=Math.max(player.atkCd||0,0.35*water.cooldownMult);
-    notifyMeleeSwing(tx,ty,player);
+    notifyMeleeSwing(tx,ty,player,form==='spear'?chargeFx:0);
     blastsFx.push({x:tx+0.5,y:ty+0.5,R:0.82+chargeFx*0.12,t:0,max:0.35});
-    try{ if(MM.audio && MM.audio.play) MM.audio.play('swing'); }catch(e){}
     return hit;
   }
 
@@ -1779,11 +1905,12 @@ import { damageBlastCreatures } from './explosion_damage.js';
     stun: {chance:0.25, dur:1.1, dps:0, note:['melee_stun','Kamienny cios oszałamia cel!']},
     panic:{chance:0.30, dur:3.0, dps:0, note:['melee_panic','Błysk diamentu sieje panikę — wróg ucieka!']}
   };
-  // Spears strike further: a melee weapon may carry fireRange (whole tiles) as
-  // its reach; everything else keeps the classic one-tile arc.
+  // Spears own the long three-tile lane even when loaded from an older save that
+  // still stores fireRange:2; everything else keeps its configured/classic reach.
   function meleeReach(w){
     const r=Number(w && w.fireRange);
-    return Number.isFinite(r) ? Math.max(1, Math.min(3, Math.round(r))) : MELEE_REACH;
+    const minReach=isChargeableSpear(w)?3:MELEE_REACH;
+    return Number.isFinite(r) ? Math.max(minReach,Math.min(3,Math.round(r))) : minReach;
   }
   function rollMeleeEffect(w,tx,ty,opts){
     const spec=w && MELEE_EFFECTS[w.meleeEffect];
@@ -2972,38 +3099,51 @@ import { damageBlastCreatures } from './explosion_damage.js';
       }
       ctx.restore();
     }
-    // Melee slash arc at the struck tile
+    // Weapon-specific melee read at the struck tile: spears leave a straight
+    // puncture trail, axes carve a heavy crescent, swords keep the quick slash.
     if(swing.t>0){
       if(!tileVisible(swing.tx,swing.ty)) return;
       const a=swing.t/swing.dur;
+      const progress=1-a, form=swing.form||'sword';
       const cx=(swing.tx+0.5)*TILE, cy=(swing.ty+0.5)*TILE;
-      const base=swing.dir===1? -0.8 : Math.PI+0.8;
-      const sweep=(1-a)*1.9*swing.dir;
+      const dir=swing.dir<0?-1:1;
+      const pulse=Math.max(0,Math.sin(Math.min(1,progress)*Math.PI));
+      const alpha=Math.max(0.08,pulse);
+      const held=equippedWeapon(), prestige=weaponPrestigeRank(held);
       ctx.save();
       ctx.lineCap='round';
-      ctx.strokeStyle='rgba(255,255,255,'+(0.75*a).toFixed(2)+')';
-      ctx.lineWidth=3;
-      ctx.beginPath(); ctx.arc(cx,cy,TILE*0.78, base-0.6+sweep, base+0.25+sweep); ctx.stroke();
-      ctx.strokeStyle='rgba(255,255,255,'+(0.4*a).toFixed(2)+')';
-      ctx.lineWidth=1.5;
-      ctx.beginPath(); ctx.arc(cx,cy,TILE*0.52, base-0.5+sweep, base+0.18+sweep); ctx.stroke();
-      const held=equippedWeapon(), prestige=weaponPrestigeRank(held);
-      if(prestige>=2){
+      if(form==='spear'||form==='trident'){
+        // The held spear now carries the full thrust animation. Do not draw the
+        // old detached white arrow glyph on the target tile.
+      }else{
+        const axe=form==='axe';
+        const base=dir===1?(axe?-1.2:-0.8):(axe?Math.PI+1.2:Math.PI+0.8);
+        const sweep=progress*(axe?2.65:1.9)*dir;
+        ctx.strokeStyle='rgba(255,255,255,'+((axe?0.88:0.75)*alpha).toFixed(2)+')';
+        ctx.lineWidth=axe?Math.max(4,TILE*0.2):3;
+        ctx.beginPath(); ctx.arc(cx,cy,TILE*(axe?0.9:0.78),base-(axe?0.82:0.6)+sweep,base+(axe?0.38:0.25)+sweep); ctx.stroke();
+        ctx.strokeStyle='rgba(255,255,255,'+((axe?0.5:0.4)*alpha).toFixed(2)+')';
+        ctx.lineWidth=axe?Math.max(2,TILE*0.085):1.5;
+        ctx.beginPath(); ctx.arc(cx,cy,TILE*(axe?0.62:0.52),base-(axe?0.7:0.5)+sweep,base+(axe?0.3:0.18)+sweep); ctx.stroke();
+      }
+      if(prestige>=2 && form!=='spear' && form!=='trident'){
         const col=weaponPrestigeColor(held);
         ctx.globalCompositeOperation='lighter';
         ctx.shadowColor=col; ctx.shadowBlur=prestige===4?14:8;
         ctx.strokeStyle=col; ctx.lineCap='round';
-        for(let i=0;i<prestige-1;i++){
-          ctx.globalAlpha=Math.max(0,Math.min(1,a*(0.34-i*0.055)));
-          ctx.lineWidth=Math.max(1,(prestige===4?4.2:2.8)-i*0.7);
-          ctx.beginPath();
-          ctx.arc(cx,cy,TILE*(0.83+i*0.09),base-0.72+sweep-i*0.08,base+0.34+sweep-i*0.04);
-          ctx.stroke();
-        }
-        if(prestige===4){
-          const tip=base+0.34+sweep;
-          ctx.globalAlpha=Math.min(1,a*0.9); ctx.fillStyle='#ffffff';
-          ctx.beginPath(); ctx.arc(cx+Math.cos(tip)*TILE*0.92,cy+Math.sin(tip)*TILE*0.92,TILE*0.085,0,Math.PI*2); ctx.fill();
+        ctx.globalAlpha=Math.min(1,alpha*(0.28+prestige*0.05));
+        if(form==='spear'||form==='trident'){
+          ctx.lineWidth=Math.max(1,prestige===4?4:2.4);
+          ctx.beginPath(); ctx.moveTo(cx-dir*TILE*0.92,cy); ctx.lineTo(cx+dir*TILE*(0.5+0.28*pulse),cy); ctx.stroke();
+        }else{
+          const axe=form==='axe', base=dir===1?(axe?-1.2:-0.8):(axe?Math.PI+1.2:Math.PI+0.8);
+          const sweep=progress*(axe?2.65:1.9)*dir;
+          for(let i=0;i<prestige-1;i++){
+            ctx.lineWidth=Math.max(1,(prestige===4?4.2:2.8)-i*0.7);
+            ctx.beginPath();
+            ctx.arc(cx,cy,TILE*((axe?0.95:0.83)+i*0.09),base-(axe?0.9:0.72)+sweep-i*0.08,base+(axe?0.46:0.34)+sweep-i*0.04);
+            ctx.stroke();
+          }
         }
       }
       ctx.restore();
@@ -3037,16 +3177,43 @@ import { damageBlastCreatures } from './explosion_damage.js';
   }
   function drawHeldChargeFx(ctx,TILE,it,facing){
     const bowRatio=weaponType(it)==='bow'&&bowCharge.active?bowChargeRatio():0;
+    const spearActive=isChargeableSpear(it)&&spearCharge.active;
+    const spearRatio=spearActive?spearChargeRatio():0;
     const rank=weaponPrestigeRank(it);
     const ultRatio=rank>=3&&ultCharge>0.72?clamp01((ultCharge-0.72)/0.28):0;
     // While a bow is being drawn its physical tension is the only progress
     // shown; a ready ultimate must not make a freshly nocked arrow look full.
-    const charge=bowCharge.active?bowRatio:ultRatio;
+    const charge=spearActive?spearRatio:(bowCharge.active?bowRatio:ultRatio);
     if(charge<=0.015) return;
     const now=nowMs()*0.001, seed=weaponVisualSeed(it)*Math.PI*2;
     const s=Math.max(0.7,TILE/20), mat=weaponMaterialProfile(it);
     const col=rank>=2?weaponPrestigeColor(it):mat.glow;
-    const full=bowCharge.active?bowRatio>=0.999:ultRatio>=0.999;
+    const full=spearActive?spearCharge.full:(bowCharge.active?bowRatio>=0.999:ultRatio>=0.999);
+    if(spearActive){
+      // The glow climbs the shaft as force builds. At full charge the point locks
+      // into a bright cross, while the held pose itself pulls farther backwards.
+      const baseY=3*s, tipY=-21*s, chargedY=baseY+(tipY-baseY)*charge;
+      const pulse=full?0.78+0.22*Math.sin(now*6.2+seed):1;
+      ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.lineCap='round';
+      ctx.strokeStyle=col; ctx.fillStyle=full?'#ffffff':col; ctx.shadowColor=col;
+      ctx.shadowBlur=(2+charge*(rank>=3?9:6))*s;
+      ctx.globalAlpha=(0.18+charge*0.42)*pulse;
+      ctx.lineWidth=Math.max(0.9,(0.85+charge*0.85)*s);
+      ctx.beginPath(); ctx.moveTo(0,baseY); ctx.lineTo(0,chargedY); ctx.stroke();
+      const motes=1+Math.floor(charge*4.2);
+      for(let i=0;i<motes;i++){
+        const y=baseY-(baseY-tipY)*((i+1)/(motes+1))*charge;
+        const side=(i%2?1:-1)*(1.5+charge*2.2)*s;
+        ctx.globalAlpha=(0.15+charge*0.34)*pulse;
+        ctx.fillRect(side-0.55*s,y-0.55*s,1.1*s,1.1*s);
+      }
+      if(full){
+        const d=3.2*s; ctx.globalAlpha=0.72*pulse; ctx.lineWidth=Math.max(0.8,1.05*s);
+        ctx.beginPath(); ctx.moveTo(0,tipY-d); ctx.lineTo(0,tipY+d); ctx.moveTo(-d,tipY); ctx.lineTo(d,tipY); ctx.stroke();
+      }
+      ctx.restore();
+      return;
+    }
     if(!bowCharge.active){
       // A ready high-tier technique should read on the item, not as a second
       // orbiting aura around the hero. Keep one jewel pulse at the weapon focus.
@@ -3166,10 +3333,21 @@ import { damageBlastCreatures } from './explosion_damage.js';
     ctx.rotate(facing*(idleSway-action.kick*0.045));
     if(type==='melee'){
       const prog= swing.t>0? 1-swing.t/swing.dur : 0;
-      const ang= facing*(-0.5 + (swing.t>0? (-1.3+2.1*prog) : 0));
-      ctx.rotate(ang);
+      const form=meleeVisualForm(it);
+      const spearDraw=form==='spear'&&spearCharge.active?spearChargeRatio():0;
+      if(swing.t>0){
+        const pose=meleeAttackPose(swing.form||form,prog,facing);
+        const thrustScale=(swing.form==='spear')?1+(swing.charge||0)*0.20:1;
+        ctx.translate(pose.forward*thrustScale,pose.lift);
+        ctx.rotate(pose.angle);
+      }else if(spearDraw>0){
+        const tension=spearDraw*spearDraw;
+        const tremor=tension>0.5?Math.sin(nowMs()*0.055)*(tension-0.5)*1.3:0;
+        ctx.translate(-facing*(2+spearDraw*7),-spearDraw*1.2+tremor);
+        ctx.rotate(facing*(Math.PI*0.5-0.06));
+      }else ctx.rotate(facing*-0.5);
       drawHeldPrestigeBack(ctx,TILE,it,facing);
-      const form=meleeVisualForm(it), prestige=weaponPrestigeRank(it);
+      const prestige=weaponPrestigeRank(it);
       const metal=it.meleeEffect==='panic'?'#75efff':it.meleeEffect==='stun'?'#aab0b8':material.edge;
       if(form==='trident'){
         ctx.fillStyle=material.body; ctx.fillRect(-1,-16,2,19);
@@ -3409,7 +3587,17 @@ import { damageBlastCreatures } from './explosion_damage.js';
       energySpent:+(bowCharge.energySpent||0).toFixed(3)
     };
   }
-  function reset(){ arrows.length=0; arrowFragments.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; harpoonCd=0; meleeCd=0; electricCd=0; throwCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; heldActionFx.kind=''; heldActionFx.started=0; heldActionFx.until=0; heldActionFx.power=0; heldActionFx.serial=0; resetBowCharge(); }
+  function spearChargeStatus(){
+    return {
+      active:!!spearCharge.active,
+      t:+(spearCharge.t||0).toFixed(3),
+      ratio:+spearChargeRatio().toFixed(3),
+      required:+(spearCharge.required||SPEAR_CHARGE_SECONDS).toFixed(3),
+      full:!!spearCharge.full,
+      dir:spearCharge.dir<0?-1:1
+    };
+  }
+  function reset(){ arrows.length=0; arrowFragments.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; harpoonCd=0; meleeCd=0; electricCd=0; throwCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; swing.form='sword'; swing.charge=0; heldActionFx.kind=''; heldActionFx.started=0; heldActionFx.until=0; heldActionFx.power=0; heldActionFx.serial=0; resetBowCharge(); resetSpearCharge(); }
 
   // --- ghost mirror: the hero's weapons, seen from the cheap seats ------------
   // A watcher runs the full renderer but no simulation, so its weapons module
@@ -3422,10 +3610,11 @@ import { damageBlastCreatures } from './explosion_damage.js';
   const FX_STUCK=1, FX_POWER=2, FX_ROCK=4, FX_SNOW=8, FX_SAND=16, FX_SPIT=32, FX_TOXIC_SPIT=64, FX_HARPOON=128, FX_AQUATIC=256;
   function ghostFxState(){
     const st={};
-    if(swing.t>0) st.sw=[+swing.t.toFixed(3), swing.tx, swing.ty, swing.dir, +swing.dur.toFixed(3)];
+    if(swing.t>0) st.sw=[+swing.t.toFixed(3), swing.tx, swing.ty, swing.dir, +swing.dur.toFixed(3), swing.form, +clamp01(swing.charge).toFixed(2)];
     const held=heldActionState();
     if(held.active) st.ha=[held.kind,+Math.max(0,(heldActionFx.until-nowMs())/1000).toFixed(3),+held.power.toFixed(2),held.serial>>>0];
     if(bowCharge.active) st.bc=[+bowChargeRatio().toFixed(3),bowCharge.full?1:0];
+    if(spearCharge.active) st.sc=[+spearChargeRatio().toFixed(3),spearCharge.full?1:0,spearCharge.dir<0?-1:1];
     st.uc=+ultCharge.toFixed(3);
     if(arrows.length) st.ar=arrows.slice(-GHOST_FX_CAP.arrows).map(a=>[
       +a.x.toFixed(2), +a.y.toFixed(2), +(a.vx||0).toFixed(2), +(a.vy||0).toFixed(2),
@@ -3453,7 +3642,12 @@ import { damageBlastCreatures } from './explosion_damage.js';
     // A hostile host must not be able to blow the watcher's frame budget.
     const sw=Array.isArray(st.sw)?st.sw:null;
     swing.t=sw?Math.max(0,Math.min(2,num(sw[0]))):0;
-    if(sw){ swing.tx=num(sw[1]); swing.ty=num(sw[2]); swing.dir=num(sw[3])<0?-1:1; swing.dur=Math.max(0.05,Math.min(2,num(sw[4],0.2))); }
+    if(!sw) swing.charge=0;
+    if(sw){
+      swing.tx=num(sw[1]); swing.ty=num(sw[2]); swing.dir=num(sw[3])<0?-1:1; swing.dur=Math.max(0.05,Math.min(2,num(sw[4],0.2)));
+      swing.form=['sword','club','axe','spear','trident'].includes(sw[5])?sw[5]:'sword';
+      swing.charge=clamp01(num(sw[6]));
+    }
     const ha=Array.isArray(st.ha)?st.ha:null;
     if(ha){
       const now=nowMs(), duration=Math.max(45,Math.min(650,num(ha[1],0.15)*1000));
@@ -3465,6 +3659,9 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const bc=Array.isArray(st.bc)?st.bc:null;
     if(bc){ bowCharge.active=true; bowCharge.required=1; bowCharge.t=Math.max(0,Math.min(1,num(bc[0]))); bowCharge.full=!!num(bc[1]); }
     else { bowCharge.active=false; bowCharge.t=0; bowCharge.full=false; }
+    const sc=Array.isArray(st.sc)?st.sc:null;
+    if(sc){ spearCharge.active=true; spearCharge.required=1; spearCharge.t=clamp01(num(sc[0])); spearCharge.full=!!num(sc[1]); spearCharge.dir=num(sc[2])<0?-1:1; }
+    else { spearCharge.active=false; spearCharge.t=0; spearCharge.full=false; }
     if(Number.isFinite(Number(st.uc))) ultCharge=Math.max(0,Math.min(1,num(st.uc)));
     arrows.length=0;
     for(const a of (Array.isArray(st.ar)?st.ar.slice(0,GHOST_FX_CAP.arrows):[])){
@@ -3507,6 +3704,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(!d) return;
     if(swing.t>0) swing.t-=d;
     if(bowCharge.active && !bowCharge.full){ bowCharge.t=Math.min(bowCharge.required,bowCharge.t+d*0.35); bowCharge.full=bowCharge.t>=bowCharge.required; }
+    if(spearCharge.active && !spearCharge.full){ spearCharge.t=Math.min(spearCharge.required,spearCharge.t+d*0.82); spearCharge.full=spearCharge.t>=spearCharge.required; }
     for(let i=arrows.length-1;i>=0;i--){
       const a=arrows[i];
       if(a.stuck) continue;
@@ -3529,8 +3727,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
   MM.weapons={fireHeld,releaseHeld,cancelHeld,fireUlt,update,draw,drawHeld,drawWorldLight,drawHeroReflection,lightSource:weaponLightSource,notifyMeleeSwing,reset,explodeAt,spawnGasCloud,spawnExternalStream,
     ghostFxState,ghostApplyFx,ghostStepFx,
     arrowInfo,setArrowPref,fuelInfo,thrownInfo,hudStatus,addUltCharge,
-    metrics:()=>({arrows:arrows.length,arrowFragments:arrowFragments.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),harpoonAmmo:resourceCount('harpoonBolt'),ultCharge,bowCharge:bowChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
-    _debug:{arrows,arrowFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,pushArrow,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,heroSubmersion,meleeWaterProfile,bowWaterProfile,harpoonWaterProfile,weaponPrestigeRank,weaponVisualSeed,weaponPrestigeColor,weaponMaterialProfile,weaponCombatVisualMeta,projectileCombatVisualMeta,weaponLightSource,weaponLightRgba,meleeVisualForm,heldActionFx,heldActionState,triggerHeldActionFx,drawHeldChargeFx,drawProjectilePrestigeTrail,waterHeat,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS,sandVisualPattern}};
+    metrics:()=>({arrows:arrows.length,arrowFragments:arrowFragments.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),harpoonAmmo:resourceCount('harpoonBolt'),ultCharge,bowCharge:bowChargeStatus(),spearCharge:spearChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
+    _debug:{arrows,arrowFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,pushArrow,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,spearCharge,spearChargeRatio,spearChargeStatus,heroSubmersion,meleeWaterProfile,bowWaterProfile,harpoonWaterProfile,weaponPrestigeRank,weaponVisualSeed,weaponPrestigeColor,weaponMaterialProfile,weaponCombatVisualMeta,projectileCombatVisualMeta,weaponLightSource,weaponLightRgba,meleeVisualForm,meleeAttackPose,swing,heldActionFx,heldActionState,triggerHeldActionFx,drawHeldChargeFx,drawProjectilePrestigeTrail,waterHeat,electricChargeTargetAt,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS,sandVisualPattern}};
 })();
 // ESM export (progressive migration)
 export const weapons = (typeof window!=='undefined' && window.MM) ? window.MM.weapons : undefined;

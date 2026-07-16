@@ -1,6 +1,6 @@
-// Teleporters and copper power cables. Copper wires form a lightweight machine
-// network: adjacent dynamos can charge devices directly or through contiguous
-// copper cable runs, while each teleporter keeps its own small battery.
+// Teleporters and precious-metal power cables. Copper is accessible but loses
+// half of transmitted source energy as heat; an all-silver route delivers the
+// full amount, exactly doubling useful delivery for the same source reserve.
 import { T, INFO, WORLD_H, WORLD_SECTION_H, WORLD_MIN_Y, WORLD_MAX_Y, CHUNK_W } from '../constants.js';
 import { isHeroPassableTile } from './material_physics.js';
 
@@ -11,15 +11,25 @@ import { isHeroPassableTile } from './material_physics.js';
   const networkCache = new Map(); // teleporter key -> {rev,dynamos:[{x,y}]}
   const wireActivity = new Map(); // "x,y" -> {x,y,ttl,level}
   const wireMarkThrottle = new Map(); // device key -> ms of last cable pulse paint
+  const fairDemandRegistry = new Map(); // network id -> device demand remembered across frames
+  const fairFrameAllocations = new Map(); // network id -> max-min allocation for this frame
   const TELEPORTER_CAPACITY = 160;
   const MACHINE_CAP = 1200;
   const TRAVEL_COST = 35;
   const CHARGE_RATE = 28;
   const NETWORK_CAP = 900;
+  const NETWORK_ENDPOINT_CAP = 1200;
   const NETWORK_CACHE_CAP = 420;
   const FLOW_DRAW_CAP = 260;
   const FLOW_MARK_INTERVAL_MS = 90;
   const WIRE_TTL = 0.62;
+  const FAIR_DEMAND_GRACE_FRAMES = 1;
+  const COPPER_DELIVERY_EFFICIENCY = 0.5;
+  const SILVER_DELIVERY_EFFICIENCY = 1;
+  const COPPER_HEAT_THRESHOLD = 12;
+  // Copper deliberately occupies the upper-left utility track. Fluid pipes use
+  // the mirrored lower-right track, so stacked networks never paint as one line.
+  const CABLE_RENDER_OFFSET = -0.12;
   const TELEPORT_COOLDOWN = 0.72;
   const BUNKER_FAILSAFE_CONCRETE_MIN = 10;
   // Discovery-only cadence: placements register instantly via onTileChanged and
@@ -29,6 +39,10 @@ import { isHeroPassableTile } from './material_physics.js';
   const PLAYER_SCAN_INTERVAL = 2.5;
   const VISIBLE_SCAN_INTERVAL_MS = 250;
   const CATCHUP_MAX_SECONDS = 900;
+  const NETWORK_ADJ = [
+    [1,0],[-1,0],[0,1],[0,-1],
+    [1,1],[1,-1],[-1,1],[-1,-1]
+  ];
 
   let networkRev = 1;
   let scanT = 0;
@@ -36,6 +50,14 @@ import { isHeroPassableTile } from './material_physics.js';
   let teleporterListCache = [];
   let visibleScanKey = '';
   let visibleScanAt = 0;
+  let powerFrameId = 0;
+  let externalPowerFramePending = false;
+  // Loss heat belongs to a physical cable component. A single global counter
+  // made a small loss in one house trigger hot air in a completely different
+  // circuit, so each connected network now keeps its own bounded accumulator.
+  const copperHeatBuffers = new Map();
+  let copperHeatCursor = 0;
+  let copperHeatEvents = 0;
   const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
@@ -45,13 +67,30 @@ import { isHeroPassableTile } from './material_physics.js';
     try{ return typeof getTile==='function' ? getTile(x,y) : fallback; }catch(e){ return fallback; }
   }
   function clampEnergy(n){ return Math.max(0,Math.min(TELEPORTER_CAPACITY,Number(n)||0)); }
+  function finiteNonNegative(n,fallback=0){
+    const value=Number(n);
+    return Number.isFinite(value) && value>=0 ? value : fallback;
+  }
   function isTeleporter(t){ return t===T.TELEPORTER; }
-  function isCable(t){ return t===T.COPPER_WIRE; }
+  function isCable(t){ return !!(INFO[t] && INFO[t].powerCable); }
   function isDynamoTile(t){ return t===T.DYNAMO || t===T.DYNAMO_SLOT; }
   function isSolarTile(t){ return !!(MM.solar && MM.solar.isSourceTile && MM.solar.isSourceTile(t)); }
   function isPowerDeviceTile(t){ return !!(INFO[t] && INFO[t].powerDevice); }
   function isPowerSourceTile(t){ return isDynamoTile(t) || !!(INFO[t] && INFO[t].powerSource); }
   function isMachineNetworkTile(t){ return isCable(t) || isPowerDeviceTile(t) || isPowerSourceTile(t); }
+  function basePowerTileAt(x,y,getTile){
+    let t=getSafe(getTile,x,y,T.AIR);
+    if(isCable(t) && MM.world && typeof MM.world.getTile==='function'){
+      try{ t=MM.world.getTile(x,y); }catch(e){}
+    }
+    return t;
+  }
+  function rechargeableDeviceAt(x,y,getTile){
+    const t=basePowerTileAt(x,y,getTile), info=INFO[t];
+    return info && (info.powerDevice || info.requiresHomePower)
+      ? {x:Math.floor(x),y:Math.floor(y),tile:t}
+      : null;
+  }
   function invalidateTeleporterSearch(){
     teleporterListStamp='';
     teleporterListCache=[];
@@ -72,52 +111,82 @@ import { isHeroPassableTile } from './material_physics.js';
   }
   function cableConnections(x,y,getTile){
     x=Math.floor(x); y=Math.floor(y);
+    const left=isMachineNetworkTile(getSafe(getTile,x-1,y,T.AIR));
+    const right=isMachineNetworkTile(getSafe(getTile,x+1,y,T.AIR));
+    const up=isMachineNetworkTile(getSafe(getTile,x,y-1,T.AIR));
+    const down=isMachineNetworkTile(getSafe(getTile,x,y+1,T.AIR));
+    // A diagonal is visually useful only when it is the sole bridge between
+    // the two cells. If either corner is occupied, the same endpoints are
+    // already joined by two orthogonal segments; painting the diagonal as
+    // well creates duplicate triangles in dense machine installations.
+    // This rule is symmetric at both ends, so half-segments still meet cleanly.
+    const upLeft=isMachineNetworkTile(getSafe(getTile,x-1,y-1,T.AIR)) && !left && !up;
+    const upRight=isMachineNetworkTile(getSafe(getTile,x+1,y-1,T.AIR)) && !right && !up;
+    const downLeft=isMachineNetworkTile(getSafe(getTile,x-1,y+1,T.AIR)) && !left && !down;
+    const downRight=isMachineNetworkTile(getSafe(getTile,x+1,y+1,T.AIR)) && !right && !down;
     return {
-      left:isMachineNetworkTile(getSafe(getTile,x-1,y,T.AIR)),
-      right:isMachineNetworkTile(getSafe(getTile,x+1,y,T.AIR)),
-      up:isMachineNetworkTile(getSafe(getTile,x,y-1,T.AIR)),
-      down:isMachineNetworkTile(getSafe(getTile,x,y+1,T.AIR))
+      left,right,up,down,upLeft,upRight,downLeft,downRight
     };
   }
-  function drawCableTile(ctx,TILE,px,py,conn,h){
+  function cableRenderCenter(TILE,px,py){
+    const offset=TILE*CABLE_RENDER_OFFSET;
+    return {x:px+TILE*0.5+offset,y:py+TILE*0.5+offset};
+  }
+
+  function drawCableTile(ctx,TILE,px,py,conn,h,cableType){
     if(!ctx) return;
-    const cx=px+TILE*0.5, cy=py+TILE*0.5;
-    const any=conn && (conn.left||conn.right||conn.up||conn.down);
+    const silver=cableType===T.SILVER_WIRE;
+    const center=cableRenderCenter(TILE,px,py);
+    const cx=center.x, cy=center.y;
+    const any=conn && (conn.left||conn.right||conn.up||conn.down||conn.upLeft||conn.upRight||conn.downLeft||conn.downRight);
     const c=conn || {left:true,right:true,up:false,down:false};
     ctx.save();
     ctx.lineCap='round';
     ctx.lineJoin='round';
-    ctx.strokeStyle='rgba(67,34,13,0.78)';
-    ctx.lineWidth=Math.max(2,TILE*0.26);
+    ctx.strokeStyle=silver?'rgba(45,57,72,0.82)':'rgba(67,34,13,0.78)';
+    ctx.lineWidth=Math.max(1,TILE*0.13);
     ctx.beginPath();
     if(c.left || !any){ ctx.moveTo(cx,cy); ctx.lineTo(px+1,cy); }
     if(c.right || !any){ ctx.moveTo(cx,cy); ctx.lineTo(px+TILE-1,cy); }
     if(c.up){ ctx.moveTo(cx,cy); ctx.lineTo(cx,py+1); }
     if(c.down){ ctx.moveTo(cx,cy); ctx.lineTo(cx,py+TILE-1); }
+    if(c.upLeft){ ctx.moveTo(cx,cy); ctx.lineTo(px+1,py+1); }
+    if(c.upRight){ ctx.moveTo(cx,cy); ctx.lineTo(px+TILE-1,py+1); }
+    if(c.downLeft){ ctx.moveTo(cx,cy); ctx.lineTo(px+1,py+TILE-1); }
+    if(c.downRight){ ctx.moveTo(cx,cy); ctx.lineTo(px+TILE-1,py+TILE-1); }
     ctx.stroke();
-    ctx.strokeStyle='#d68535';
-    ctx.lineWidth=Math.max(1,TILE*0.15);
+    ctx.strokeStyle=silver?'#c9ddec':'#d68535';
+    ctx.lineWidth=Math.max(0.75,TILE*0.075);
     ctx.beginPath();
     if(c.left || !any){ ctx.moveTo(cx,cy); ctx.lineTo(px+2,cy); }
     if(c.right || !any){ ctx.moveTo(cx,cy); ctx.lineTo(px+TILE-2,cy); }
     if(c.up){ ctx.moveTo(cx,cy); ctx.lineTo(cx,py+2); }
     if(c.down){ ctx.moveTo(cx,cy); ctx.lineTo(cx,py+TILE-2); }
+    if(c.upLeft){ ctx.moveTo(cx,cy); ctx.lineTo(px+2,py+2); }
+    if(c.upRight){ ctx.moveTo(cx,cy); ctx.lineTo(px+TILE-2,py+2); }
+    if(c.downLeft){ ctx.moveTo(cx,cy); ctx.lineTo(px+2,py+TILE-2); }
+    if(c.downRight){ ctx.moveTo(cx,cy); ctx.lineTo(px+TILE-2,py+TILE-2); }
     ctx.stroke();
-    ctx.strokeStyle='rgba(255,222,128,0.82)';
+    ctx.strokeStyle=silver?'rgba(255,255,255,0.88)':'rgba(255,222,128,0.82)';
     ctx.lineWidth=Math.max(1,TILE*0.045);
     ctx.beginPath();
     if(c.left || !any){ ctx.moveTo(cx,cy-1); ctx.lineTo(px+4,cy-1); }
     if(c.right || !any){ ctx.moveTo(cx,cy-1); ctx.lineTo(px+TILE-4,cy-1); }
     if(c.up){ ctx.moveTo(cx+1,cy); ctx.lineTo(cx+1,py+4); }
     if(c.down){ ctx.moveTo(cx+1,cy); ctx.lineTo(cx+1,py+TILE-4); }
+    if(c.upLeft){ ctx.moveTo(cx,cy); ctx.lineTo(px+4,py+4); }
+    if(c.upRight){ ctx.moveTo(cx,cy); ctx.lineTo(px+TILE-4,py+4); }
+    if(c.downLeft){ ctx.moveTo(cx,cy); ctx.lineTo(px+4,py+TILE-4); }
+    if(c.downRight){ ctx.moveTo(cx,cy); ctx.lineTo(px+TILE-4,py+TILE-4); }
     ctx.stroke();
-    const branches=(c.left?1:0)+(c.right?1:0)+(c.up?1:0)+(c.down?1:0);
-    ctx.fillStyle=branches>=3?'#ffe38f':'#f0a34c';
+    const branches=(c.left?1:0)+(c.right?1:0)+(c.up?1:0)+(c.down?1:0)
+      +(c.upLeft?1:0)+(c.upRight?1:0)+(c.downLeft?1:0)+(c.downRight?1:0);
+    ctx.fillStyle=silver?(branches>=3?'#f7fdff':'#cbe5f4'):(branches>=3?'#ffe38f':'#f0a34c');
     ctx.beginPath();
-    ctx.arc(cx,cy,Math.max(2,TILE*(branches>=3?0.17:0.13)),0,Math.PI*2);
+    ctx.arc(cx,cy,Math.max(0.9,TILE*(branches>=3?0.085:0.065)),0,Math.PI*2);
     ctx.fill();
     if(((h||0)&7)===0){
-      ctx.fillStyle='rgba(255,244,172,0.92)';
+      ctx.fillStyle=silver?'rgba(255,255,255,0.96)':'rgba(255,244,172,0.92)';
       ctx.fillRect(cx+TILE*0.12,cy-TILE*0.17,Math.max(1,TILE*0.08),Math.max(1,TILE*0.08));
     }
     ctx.restore();
@@ -125,14 +194,109 @@ import { isHeroPassableTile } from './material_physics.js';
   function nowMs(){
     return (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
   }
-  function markWire(x,y,level){
+  function markWire(x,y,level,flowX,flowY,cableType){
     const k=key(x,y);
     const cur=wireActivity.get(k) || {x:Math.floor(x),y:Math.floor(y),ttl:0,level:0};
+    const now=nowMs();
+    if(now-(cur.flowAt||0)>28){ cur.flowX=0; cur.flowY=0; }
+    if(Number.isFinite(flowX) && Number.isFinite(flowY) && (flowX||flowY)){
+      cur.flowX=(cur.flowX||0)+flowX*Math.max(0.1,level);
+      cur.flowY=(cur.flowY||0)+flowY*Math.max(0.1,level);
+      cur.flowAt=now;
+    }
     cur.ttl=Math.max(cur.ttl,WIRE_TTL);
     cur.level=Math.min(1,Math.max(cur.level*0.72,level));
+    cur.tile=isCable(cableType)?cableType:(cur.tile||T.COPPER_WIRE);
     wireActivity.set(k,cur);
   }
-  function markNetworkActivity(net,amount,deviceKey){
+  function sourceRouteInfo(net,source,getTile){
+    if(!net || !source) return {efficiency:SILVER_DELIVERY_EFFICIENCY,path:[]};
+    const sourceId=sourceCacheKey(source);
+    if(!(net.sourceRoutes instanceof Map)) net.sourceRoutes=new Map();
+    if(net.sourceRoutes.has(sourceId)) return net.sourceRoutes.get(sourceId);
+    const target=net.target;
+    if(!target){
+      const empty={efficiency:SILVER_DELIVERY_EFFICIENCY,path:[]};
+      net.sourceRoutes.set(sourceId,empty);
+      return empty;
+    }
+    for(const [dx,dy] of NETWORK_ADJ){
+      const adjacent=sourceNodeAt(target.x+dx,target.y+dy,getTile);
+      if(adjacent && sourceCacheKey(adjacent)===sourceId){
+        const direct={efficiency:SILVER_DELIVERY_EFFICIENCY,path:[]};
+        net.sourceRoutes.set(sourceId,direct);
+        return direct;
+      }
+    }
+    const cableByKey=new Map((net.cables||[]).map(c=>[key(c.x,c.y),c]));
+    const touchesSource=(x,y)=>{
+      for(const [dx,dy] of NETWORK_ADJ){
+        const adjacent=sourceNodeAt(x+dx,y+dy,getTile);
+        if(adjacent && sourceCacheKey(adjacent)===sourceId) return true;
+      }
+      return false;
+    };
+    const findPath=(silverOnly)=>{
+      const dist=new Map(), toward=new Map(), q=[];
+      const seed=(x,y,dx,dy)=>{
+        const id=key(x,y), cable=cableByKey.get(id);
+        if(!cable || (silverOnly && cable.tile!==T.SILVER_WIRE) || dist.has(id)) return;
+        dist.set(id,dx||dy?1:0);
+        if(dx||dy) toward.set(id,{dx,dy});
+        q.push({x:cable.x,y:cable.y});
+      };
+      if(cableByKey.has(key(target.x,target.y))) seed(target.x,target.y,0,0);
+      for(const [dx,dy] of NETWORK_ADJ) seed(target.x+dx,target.y+dy,-dx,-dy);
+      let end=null;
+      for(let qi=0;qi<q.length;qi++){
+        const c=q[qi];
+        if(touchesSource(c.x,c.y)){ end=c; break; }
+        const cd=dist.get(key(c.x,c.y))||0;
+        for(const [dx,dy] of NETWORK_ADJ){
+          const nx=c.x+dx, ny=c.y+dy, id=key(nx,ny), cable=cableByKey.get(id);
+          if(!cable || (silverOnly && cable.tile!==T.SILVER_WIRE) || dist.has(id)) continue;
+          dist.set(id,cd+1);
+          toward.set(id,{dx:-dx,dy:-dy});
+          q.push({x:nx,y:ny});
+        }
+      }
+      if(!end) return null;
+      const path=[];
+      let x=end.x,y=end.y;
+      for(let guard=0;guard<NETWORK_CAP;guard++){
+        const id=key(x,y), cable=cableByKey.get(id);
+        if(!cable) break;
+        const dir=toward.get(id) || {dx:0,dy:0};
+        path.push({x,y,dx:dir.dx,dy:dir.dy,tile:cable.tile,sourceId});
+        if(!dir.dx && !dir.dy) break;
+        const nx=x+dir.dx, ny=y+dir.dy;
+        if(!cableByKey.has(key(nx,ny))) break;
+        x=nx; y=ny;
+      }
+      return path;
+    };
+    const silverPath=findPath(true);
+    const path=silverPath || findPath(false) || [];
+    const info={
+      efficiency:silverPath ? SILVER_DELIVERY_EFFICIENCY : COPPER_DELIVERY_EFFICIENCY,
+      path
+    };
+    net.sourceRoutes.set(sourceId,info);
+    return info;
+  }
+  function wireFlowRoute(net,getTile,activeSourceKeys){
+    if(!net || !Array.isArray(net.cables) || !net.cables.length) return new Map();
+    const route=new Map();
+    const filter=activeSourceKeys instanceof Set ? activeSourceKeys : null;
+    for(const source of cachedSourceList(net)){
+      const sourceId=sourceCacheKey(source);
+      if(filter && !filter.has(sourceId)) continue;
+      const info=sourceRouteInfo(net,source,getTile);
+      for(const c of info.path||[]) route.set(key(c.x,c.y),c);
+    }
+    return route;
+  }
+  function markNetworkActivity(net,amount,deviceKey,getTile,activeSourceKeys){
     if(!net || !Array.isArray(net.cables) || !net.cables.length) return;
     const dk=String(deviceKey||'network');
     const now=nowMs();
@@ -147,15 +311,17 @@ import { isHeroPassableTile } from './material_physics.js';
     }
     wireMarkThrottle.set(dk,now);
     const level=Math.max(0.22,Math.min(1,0.18+(Number(amount)||0)/18));
-    const cap=Math.min(FLOW_DRAW_CAP,net.cables.length);
-    if(net.cables.length<=cap){
-      for(const c of net.cables) markWire(c.x,c.y,level);
+    const route=wireFlowRoute(net,getTile,activeSourceKeys);
+    const active=route.size ? [...route.values()] : net.cables;
+    const cap=Math.min(FLOW_DRAW_CAP,active.length);
+    if(active.length<=cap){
+      for(const c of active) markWire(c.x,c.y,level,c.dx||0,c.dy||0,c.tile);
       return;
     }
-    const stride=Math.max(1,Math.floor(net.cables.length/cap));
-    for(let i=0,count=0; i<net.cables.length && count<cap; i+=stride,count++){
-      const c=net.cables[i];
-      markWire(c.x,c.y,level);
+    const stride=Math.max(1,Math.floor(active.length/cap));
+    for(let i=0,count=0; i<active.length && count<cap; i+=stride,count++){
+      const c=active[i];
+      markWire(c.x,c.y,level,c.dx||0,c.dy||0,c.tile);
     }
   }
   function decayWireActivity(dt,getTile){
@@ -164,62 +330,95 @@ import { isHeroPassableTile } from './material_physics.js';
       if(!a){ wireActivity.delete(k); continue; }
       a.ttl-=dt;
       a.level=Math.max(0,(a.level||0)-dt*0.75);
-      if(a.ttl<=0 || a.level<=0.015 || getSafe(getTile,a.x,a.y,T.AIR)!==T.COPPER_WIRE) wireActivity.delete(k);
+      if(a.ttl<=0 || a.level<=0.015 || !isCable(getSafe(getTile,a.x,a.y,T.AIR))) wireActivity.delete(k);
     }
     if(wireMarkThrottle.size>120){
       const cutoff=nowMs()-2000;
       for(const [k,t] of wireMarkThrottle) if(t<cutoff) wireMarkThrottle.delete(k);
     }
   }
-  function drawCableEnergy(ctx,TILE,px,py,conn,level,ttl,h,phase){
+  function drawCableEnergy(ctx,TILE,px,py,conn,level,ttl,h,phase,flowX,flowY,cableType){
     const fade=Math.max(0,Math.min(1,ttl/WIRE_TTL));
     const a=Math.max(0,Math.min(1,level))*fade;
     if(a<=0.01) return;
     const c=conn || {left:true,right:true,up:false,down:false};
-    const any=c.left||c.right||c.up||c.down;
-    const cx=px+TILE*0.5, cy=py+TILE*0.5;
+    const any=c.left||c.right||c.up||c.down||c.upLeft||c.upRight||c.downLeft||c.downRight;
+    const center=cableRenderCenter(TILE,px,py);
+    const cx=center.x, cy=center.y;
     ctx.save();
     ctx.lineCap='round';
     ctx.lineJoin='round';
     ctx.globalCompositeOperation='lighter';
-    ctx.strokeStyle='rgba(96,238,255,'+(0.18+0.40*a).toFixed(3)+')';
-    ctx.lineWidth=Math.max(1,TILE*(0.10+0.10*a));
+    const silver=cableType===T.SILVER_WIRE;
+    ctx.strokeStyle=(silver?'rgba(196,238,255,':'rgba(96,238,255,')+(0.18+0.40*a).toFixed(3)+')';
+    ctx.lineWidth=Math.max(1,TILE*(0.055+0.07*a));
     ctx.beginPath();
     if(c.left || !any){ ctx.moveTo(cx,cy); ctx.lineTo(px+2,cy); }
     if(c.right || !any){ ctx.moveTo(cx,cy); ctx.lineTo(px+TILE-2,cy); }
     if(c.up){ ctx.moveTo(cx,cy); ctx.lineTo(cx,py+2); }
     if(c.down){ ctx.moveTo(cx,cy); ctx.lineTo(cx,py+TILE-2); }
+    if(c.upLeft){ ctx.moveTo(cx,cy); ctx.lineTo(px+2,py+2); }
+    if(c.upRight){ ctx.moveTo(cx,cy); ctx.lineTo(px+TILE-2,py+2); }
+    if(c.downLeft){ ctx.moveTo(cx,cy); ctx.lineTo(px+2,py+TILE-2); }
+    if(c.downRight){ ctx.moveTo(cx,cy); ctx.lineTo(px+TILE-2,py+TILE-2); }
     ctx.stroke();
-    ctx.strokeStyle='rgba(255,244,145,'+(0.16+0.58*a).toFixed(3)+')';
-    ctx.lineWidth=Math.max(1,TILE*0.045);
+    ctx.strokeStyle=(silver?'rgba(255,255,255,':'rgba(255,244,145,')+(0.16+0.58*a).toFixed(3)+')';
+    ctx.lineWidth=Math.max(0.75,TILE*0.032);
     ctx.beginPath();
     if(c.left || !any){ ctx.moveTo(cx,cy); ctx.lineTo(px+3,cy); }
     if(c.right || !any){ ctx.moveTo(cx,cy); ctx.lineTo(px+TILE-3,cy); }
     if(c.up){ ctx.moveTo(cx,cy); ctx.lineTo(cx,py+3); }
     if(c.down){ ctx.moveTo(cx,cy); ctx.lineTo(cx,py+TILE-3); }
+    if(c.upLeft){ ctx.moveTo(cx,cy); ctx.lineTo(px+3,py+3); }
+    if(c.upRight){ ctx.moveTo(cx,cy); ctx.lineTo(px+TILE-3,py+3); }
+    if(c.downLeft){ ctx.moveTo(cx,cy); ctx.lineTo(px+3,py+TILE-3); }
+    if(c.downRight){ ctx.moveTo(cx,cy); ctx.lineTo(px+TILE-3,py+TILE-3); }
     ctx.stroke();
-    const dirs=[];
-    if(c.left || !any) dirs.push([-1,0]);
-    if(c.right || !any) dirs.push([1,0]);
-    if(c.up) dirs.push([0,-1]);
-    if(c.down) dirs.push([0,1]);
+    const flowMag=Math.hypot(Number(flowX)||0,Number(flowY)||0);
+    const directed=flowMag>0.12;
+    const fx=directed ? (Number(flowX)||0)/flowMag : 0;
+    const fy=directed ? (Number(flowY)||0)/flowMag : 0;
+    if(directed){
+      const travel=(phase*0.28)%1;
+      const ax=cx+fx*TILE*(-0.16+travel*0.32);
+      const ay=cy+fy*TILE*(-0.16+travel*0.32);
+      const nx=-fy, ny=fx;
+      ctx.fillStyle='rgba(255,252,190,'+(0.52+0.42*a).toFixed(3)+')';
+      ctx.beginPath();
+      ctx.moveTo(ax+fx*TILE*0.11,ay+fy*TILE*0.11);
+      ctx.lineTo(ax-fx*TILE*0.07+nx*TILE*0.075,ay-fy*TILE*0.07+ny*TILE*0.075);
+      ctx.lineTo(ax-fx*TILE*0.07-nx*TILE*0.075,ay-fy*TILE*0.07-ny*TILE*0.075);
+      ctx.closePath();
+      ctx.fill();
+    }
+    const dirs=directed ? [[fx,fy]] : [];
+    if(!directed){
+      if(c.left || !any) dirs.push([-1,0]);
+      if(c.right || !any) dirs.push([1,0]);
+      if(c.up) dirs.push([0,-1]);
+      if(c.down) dirs.push([0,1]);
+      if(c.upLeft) dirs.push([-1,-1]);
+      if(c.upRight) dirs.push([1,-1]);
+      if(c.downLeft) dirs.push([-1,1]);
+      if(c.downRight) dirs.push([1,1]);
+    }
     const sparks=Math.min(2,Math.max(1,Math.round(a*2)));
     for(let i=0;i<sparks;i++){
       const idx=((h>>>((i*7)&15)) % Math.max(1,dirs.length));
       const d=dirs[idx] || [1,0];
       const seed=((h>>>((i*5+3)&15))&255)/255;
       const travel=(phase*0.9+seed+i*0.37)%1;
-      const dist=(0.13+0.72*travel)*TILE*(d[0]||d[1]);
+      const dist=(0.13+0.72*travel)*TILE*(directed?1:(d[0]&&d[1]?Math.SQRT1_2:1));
       const sx=cx + (d[0]?dist:((seed-0.5)*TILE*0.08));
       const sy=cy + (d[1]?dist:((seed-0.5)*TILE*0.08));
-      const r=Math.max(1,TILE*(0.045+0.045*a));
+      const r=Math.max(0.75,TILE*(0.03+0.025*a));
       ctx.fillStyle='rgba(255,250,183,'+(0.45+0.50*a).toFixed(3)+')';
       ctx.beginPath();
       ctx.arc(sx,sy,r,0,Math.PI*2);
       ctx.fill();
       if(a>0.45){
         ctx.strokeStyle='rgba(118,241,255,'+(0.25+0.45*a).toFixed(3)+')';
-        ctx.lineWidth=Math.max(1,TILE*0.035);
+        ctx.lineWidth=Math.max(0.75,TILE*0.025);
         ctx.beginPath();
         ctx.moveTo(sx-d[0]*TILE*0.12-(d[1]*TILE*0.05),sy-d[1]*TILE*0.12-(d[0]*TILE*0.05));
         ctx.lineTo(sx+d[0]*TILE*0.12+(d[1]*TILE*0.05),sy+d[1]*TILE*0.12+(d[0]*TILE*0.05));
@@ -256,7 +455,7 @@ import { isHeroPassableTile } from './material_physics.js';
     slots.list.push(slot);
   }
   function addSource(sources,source){
-    if(!source) return;
+    if(!source || sources.list.length>=NETWORK_ENDPOINT_CAP) return;
     const k=(source.kind||'source')+':'+key(source.x,source.y);
     if(sources.seen.has(k)) return;
     sources.seen.add(k);
@@ -285,13 +484,92 @@ import { isHeroPassableTile } from './material_physics.js';
     if(cached && Array.isArray(cached.dynamos)) return cached.dynamos.map(d=>({kind:'dynamo',x:d.x,y:d.y}));
     return [];
   }
+  function networkIdentity(net){
+    if(!net) return 'network:none';
+    if(net.networkId) return net.networkId;
+    const cableIds=(Array.isArray(net.cables)?net.cables:[]).map(c=>key(c.x,c.y)).sort();
+    const sourceIds=cachedSourceList(net).map(sourceCacheKey).filter(Boolean).sort();
+    // A connected component cannot share its lexicographically smallest cable
+    // with another component. Cable-less direct connections are grouped by the
+    // physical source instead, so two devices touching one dynamo still share.
+    net.networkId=cableIds.length ? 'cable:'+cableIds[0]
+      : (sourceIds.length ? 'source:'+sourceIds.join('|')
+        : 'isolated:'+key(net.target && net.target.x,net.target && net.target.y));
+    return net.networkId;
+  }
+  function maxMinAlloc(demands,supply){
+    const out=new Map();
+    const rows=[...demands]
+      .map(([id,demand])=>({id,demand:Math.max(0,Number(demand)||0)}))
+      .filter(row=>row.demand>1e-9)
+      .sort((a,b)=>a.demand-b.demand || String(a.id).localeCompare(String(b.id)));
+    let left=Math.max(0,Number(supply)||0);
+    for(let i=0;i<rows.length;i++){
+      const count=rows.length-i;
+      const share=count>0 ? left/count : 0;
+      if(rows[i].demand<=share+1e-9){
+        out.set(rows[i].id,rows[i].demand);
+        left=Math.max(0,left-rows[i].demand);
+        continue;
+      }
+      for(let j=i;j<rows.length;j++) out.set(rows[j].id,Math.min(rows[j].demand,share));
+      left=0;
+      break;
+    }
+    return out;
+  }
+  function maxMinAllocWeighted(demands,rawSupply){
+    const out=new Map();
+    const rows=[...demands].map(([id,row])=>({
+      id,
+      demand:Math.max(0,Number(row && row.demand)||0),
+      efficiency:Math.max(0.01,Math.min(1,Number(row && row.efficiency)||1))
+    })).filter(row=>row.demand>1e-9);
+    if(!rows.length || !(rawSupply>0)) return out;
+    let lo=0, hi=Math.max(...rows.map(row=>row.demand));
+    for(let i=0;i<48;i++){
+      const level=(lo+hi)*0.5;
+      let rawCost=0;
+      for(const row of rows) rawCost+=Math.min(row.demand,level)/row.efficiency;
+      if(rawCost<=rawSupply) lo=level;
+      else hi=level;
+    }
+    for(const row of rows) out.set(row.id,Math.min(row.demand,lo));
+    return out;
+  }
+  function advancePowerFrame(){
+    powerFrameId++;
+    fairFrameAllocations.clear();
+    if((powerFrameId&63)!==0) return powerFrameId;
+    const cutoff=powerFrameId-FAIR_DEMAND_GRACE_FRAMES-2;
+    for(const [networkId,registry] of fairDemandRegistry){
+      for(const [consumerId,row] of registry) if(!row || row.frame<cutoff) registry.delete(consumerId);
+      if(!registry.size) fairDemandRegistry.delete(networkId);
+    }
+    return powerFrameId;
+  }
+  function beginPowerFrame(){
+    advancePowerFrame();
+    externalPowerFramePending=true;
+    return powerFrameId;
+  }
+  function hasReliableTopologyNotifications(cached){
+    const world=MM.world;
+    // The production world routes both terrain and stacked-infrastructure edits
+    // through onTileChanged and exposes versioned chunks. In that environment
+    // networkRev is authoritative, so re-reading every cable (8 neighbours each)
+    // for every consumer every frame would turn a cached network back into O(n).
+    return !!(world && cached && cached.worldRef===world && typeof world.chunkVersion==='function' && typeof world.hasInfrastructure==='function');
+  }
   function networkCacheEntryValid(tx,ty,cached,getTile){
     if(!cached || cached.rev!==networkRev || typeof getTile!=='function') return false;
+    if(hasReliableTopologyNotifications(cached)) return true;
     const cableKeys=new Set();
     const cables=Array.isArray(cached.cables) ? cached.cables : [];
     if(cables.length !== (Number(cached.cableCount)||0)) return false;
     for(const c of cables){
-      if(!c || !finiteTile(c.x,c.y) || getSafe(getTile,c.x,c.y,T.AIR)!==T.COPPER_WIRE) return false;
+      const live=c && finiteTile(c.x,c.y) ? getSafe(getTile,c.x,c.y,T.AIR) : T.AIR;
+      if(!c || !isCable(live) || (c.tile!=null && live!==c.tile)) return false;
       cableKeys.add(key(c.x,c.y));
     }
     const sourceKeys=new Set(cachedSourceList(cached).map(sourceCacheKey).filter(Boolean));
@@ -307,11 +585,11 @@ import { isHeroPassableTile } from './material_physics.js';
       }
       return true;
     };
-    for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+    for(const [dx,dy] of NETWORK_ADJ){
       if(!inspectNeighbor(tx+dx,ty+dy)) return false;
     }
     for(const c of cables){
-      for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      for(const [dx,dy] of NETWORK_ADJ){
         if(!inspectNeighbor(c.x+dx,c.y+dy)) return false;
       }
     }
@@ -342,34 +620,60 @@ import { isHeroPassableTile } from './material_physics.js';
     }
     const dynamos={seen:new Set(),list:[]};
     const sources={seen:new Set(),list:[]};
+    const devices={seen:new Set(),list:[]};
+    const sourceMemo=new Map();
     const seen=new Set();
+    const cableTypes=new Map();
     const q=[];
     const pushCable=(x,y)=>{
       if(!finiteTile(x,y)) return;
-      if(getSafe(getTile,x,y,T.AIR)!==T.COPPER_WIRE) return;
+      const tile=getSafe(getTile,x,y,T.AIR);
+      if(!isCable(tile)) return;
       const k=key(x,y);
       if(seen.has(k) || seen.size>=NETWORK_CAP) return;
       seen.add(k);
+      cableTypes.set(k,tile);
       q.push({x,y});
     };
-    [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy])=>{
+    const addDevice=(x,y)=>{
+      if(devices.list.length>=NETWORK_ENDPOINT_CAP) return;
+      const d=rechargeableDeviceAt(x,y,getTile);
+      if(!d) return;
+      const id=key(d.x,d.y);
+      if(devices.seen.has(id)) return;
+      devices.seen.add(id);
+      devices.list.push(d);
+    };
+    const readSource=(x,y)=>{
+      if(sources.list.length>=NETWORK_ENDPOINT_CAP) return null;
+      const id=key(x,y);
+      if(sourceMemo.has(id)) return sourceMemo.get(id);
+      const src=sourceNodeAt(x,y,getTile);
+      sourceMemo.set(id,src);
+      return src;
+    };
+    addDevice(tx,ty);
+    if(isCable(getSafe(getTile,tx,ty,T.AIR))) pushCable(tx,ty);
+    NETWORK_ADJ.forEach(([dx,dy])=>{
       const nx=tx+dx, ny=ty+dy;
       const t=getSafe(getTile,nx,ny,T.AIR);
       if(isCable(t)) pushCable(nx,ny);
       else {
-        const src=sourceNodeAt(nx,ny,getTile);
+        addDevice(nx,ny);
+        const src=readSource(nx,ny);
         addSource(sources,src);
         if(src && src.kind==='dynamo') addDynamoSlot(dynamos,{x:src.x,y:src.y});
       }
     });
     for(let qi=0; qi<q.length && qi<NETWORK_CAP; qi++){
       const c=q[qi];
-      [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy])=>{
+      NETWORK_ADJ.forEach(([dx,dy])=>{
         const nx=c.x+dx, ny=c.y+dy;
         const t=getSafe(getTile,nx,ny,T.AIR);
         if(isCable(t)) pushCable(nx,ny);
         else {
-          const src=sourceNodeAt(nx,ny,getTile);
+          addDevice(nx,ny);
+          const src=readSource(nx,ny);
           addSource(sources,src);
           if(src && src.kind==='dynamo') addDynamoSlot(dynamos,{x:src.x,y:src.y});
         }
@@ -377,22 +681,60 @@ import { isHeroPassableTile } from './material_physics.js';
     }
     const cables=[...seen].map(id=>{
       const comma=id.indexOf(',');
-      return {x:+id.slice(0,comma),y:+id.slice(comma+1)};
+      return {x:+id.slice(0,comma),y:+id.slice(comma+1),tile:cableTypes.get(id)};
     });
-    const net={rev:networkRev,dynamos:dynamos.list,sources:sources.list,cableCount:seen.size,cables};
+    const net={rev:networkRev,worldRef:MM.world,target:{x:tx,y:ty},dynamos:dynamos.list,sources:sources.list,devices:devices.list,cableCount:seen.size,cables};
     networkCache.set(tk,net);
     pruneNetworkCache(getTile);
     return net;
+  }
+  function networkDeliveryEfficiency(net,getTile,dynamo){
+    if(!net) return SILVER_DELIVERY_EFFICIENCY;
+    const sources=networkSources(net);
+    if(!sources.length) return SILVER_DELIVERY_EFFICIENCY;
+    let raw=0,useful=0,fallback=0;
+    for(const source of sources){
+      const efficiency=sourceRouteInfo(net,source,getTile).efficiency;
+      const energy=sourceEnergy(source,getTile,dynamo);
+      fallback+=efficiency;
+      raw+=energy;
+      useful+=energy*efficiency;
+    }
+    if(raw>1e-9) return Math.max(COPPER_DELIVERY_EFFICIENCY,Math.min(SILVER_DELIVERY_EFFICIENCY,useful/raw));
+    return Math.max(COPPER_DELIVERY_EFFICIENCY,Math.min(SILVER_DELIVERY_EFFICIENCY,fallback/sources.length));
+  }
+  function emitCopperLossHeat(net,lost,getTile,activeSourceKeys){
+    const amount=Math.max(0,Number(lost)||0);
+    if(amount<=0 || !net || !Array.isArray(net.cables)) return false;
+    const routed=[...wireFlowRoute(net,getTile,activeSourceKeys).values()];
+    const copper=(routed.length?routed:net.cables).filter(c=>c && c.tile===T.COPPER_WIRE);
+    if(!copper.length) return false;
+    const networkId=networkIdentity(net);
+    const buffered=Math.min(COPPER_HEAT_THRESHOLD*4,(copperHeatBuffers.get(networkId)||0)+amount);
+    copperHeatBuffers.set(networkId,buffered);
+    if(buffered<COPPER_HEAT_THRESHOLD) return false;
+    const c=copper[copperHeatCursor++%copper.length];
+    try{
+      const world=MM.world;
+      if(!MM.gases || typeof MM.gases.add!=='function' || !world || typeof world.setTile!=='function') return false;
+      const placed=MM.gases.add('hot',c.x+.5,c.y+.5,{power:.18,cells:1,getTile,setTile:world.setTile});
+      if(placed>0){
+        copperHeatBuffers.set(networkId,Math.max(0,buffered-COPPER_HEAT_THRESHOLD));
+        copperHeatEvents++;
+        return true;
+      }
+    }catch(e){}
+    return false;
   }
   function sourceEnergy(source,getTile,dynamo){
     if(!source) return 0;
     if(source.kind==='dynamo'){
       const D=dynamo || MM.dynamo;
-      return (D && D.energyAt) ? Math.max(0,D.energyAt(source.x,source.y,getTile)||0) : 0;
+      try{ return (D && D.energyAt) ? finiteNonNegative(D.energyAt(source.x,source.y,getTile),0) : 0; }catch(e){ return 0; }
     }
     if(source.kind==='solar'){
       const S=MM.solar;
-      return (S && S.energyAt) ? Math.max(0,S.energyAt(source.x,source.y,getTile)||0) : 0;
+      try{ return (S && S.energyAt) ? finiteNonNegative(S.energyAt(source.x,source.y,getTile),0) : 0; }catch(e){ return 0; }
     }
     return 0;
   }
@@ -402,13 +744,17 @@ import { isHeroPassableTile } from './material_physics.js';
     if(want<=0) return 0;
     if(source.kind==='dynamo'){
       const D=dynamo || MM.dynamo;
-      const got=(D && D.drainAt) ? D.drainAt(source.x,source.y,want,getTile) : null;
-      return got && got.amount>0 ? got.amount : 0;
+      try{
+        const got=(D && D.drainAt) ? D.drainAt(source.x,source.y,want,getTile) : null;
+        return got ? Math.min(want,finiteNonNegative(got.amount,0)) : 0;
+      }catch(e){ return 0; }
     }
     if(source.kind==='solar'){
       const S=MM.solar;
-      const got=(S && S.drainAt) ? S.drainAt(source.x,source.y,want,getTile) : null;
-      return got && got.amount>0 ? got.amount : 0;
+      try{
+        const got=(S && S.drainAt) ? S.drainAt(source.x,source.y,want,getTile) : null;
+        return got ? Math.min(want,finiteNonNegative(got.amount,0)) : 0;
+      }catch(e){ return 0; }
     }
     return 0;
   }
@@ -416,7 +762,7 @@ import { isHeroPassableTile } from './material_physics.js';
     const net=networkFor(m.x,m.y,getTile);
     let total=0;
     const sources=Array.isArray(net.sources) && net.sources.length ? net.sources : net.dynamos.map(d=>({kind:'dynamo',x:d.x,y:d.y}));
-    for(const s of sources) total+=sourceEnergy(s,getTile,dynamo);
+    for(const s of sources) total+=sourceEnergy(s,getTile,dynamo)*sourceRouteInfo(net,s,getTile).efficiency;
     return total;
   }
   function connectedDynamosAt(x,y,getTile){
@@ -426,31 +772,132 @@ import { isHeroPassableTile } from './material_physics.js';
     let total=0;
     const net=networkFor(x,y,getTile);
     const sources=Array.isArray(net.sources) && net.sources.length ? net.sources : net.dynamos.map(d=>({kind:'dynamo',x:d.x,y:d.y}));
-    for(const s of sources) total+=sourceEnergy(s,getTile,dynamo);
+    for(const s of sources) total+=sourceEnergy(s,getTile,dynamo)*sourceRouteInfo(net,s,getTile).efficiency;
     return total;
   }
-  function drainNetworkEnergyAt(x,y,amount,getTile,dynamo){
+  function networkSources(net){
+    return Array.isArray(net.sources) && net.sources.length
+      ? net.sources
+      : net.dynamos.map(d=>({kind:'dynamo',x:d.x,y:d.y}));
+  }
+  function drainUsefulFromNetwork(net,amount,getTile,dynamo){
     const maxTake=Math.max(0,Number(amount)||0);
-    if(maxTake<=0) return 0;
-    let drained=0;
-    const net=networkFor(x,y,getTile);
-    const sources=Array.isArray(net.sources) && net.sources.length ? net.sources : net.dynamos.map(d=>({kind:'dynamo',x:d.x,y:d.y}));
-    for(const source of sources){
-      if(drained>=maxTake) break;
-      drained+=drainSource(source,maxTake-drained,getTile,dynamo);
+    const result={delivered:0,raw:0,lost:0,sourceKeys:new Set()};
+    if(maxTake<=0) return result;
+    const rows=[];
+    for(const source of networkSources(net)){
+      const rawAvailable=sourceEnergy(source,getTile,dynamo);
+      if(rawAvailable<=1e-9) continue;
+      const efficiency=sourceRouteInfo(net,source,getTile).efficiency;
+      rows.push({source,sourceId:sourceCacheKey(source),efficiency,rawAvailable,usefulAvailable:rawAvailable*efficiency,rawUsed:0});
     }
-    if(drained>0) markNetworkActivity(net,drained,key(x,y));
+    if(!rows.length) return result;
+    const capacities=new Map(rows.map(row=>[row.sourceId,row.usefulAvailable]));
+    const planned=maxMinAlloc(capacities,maxTake);
+    let remaining=maxTake;
+    for(const row of rows){
+      const usefulWant=Math.min(remaining,Math.max(0,Number(planned.get(row.sourceId))||0));
+      if(usefulWant<=1e-9) continue;
+      const rawWant=Math.min(row.rawAvailable,usefulWant/row.efficiency);
+      const rawGot=drainSource(row.source,rawWant,getTile,dynamo);
+      const usefulGot=Math.min(usefulWant,rawGot*row.efficiency);
+      row.rawUsed+=rawGot;
+      result.raw+=rawGot;
+      result.delivered+=usefulGot;
+      remaining=Math.max(0,remaining-usefulGot);
+      if(rawGot>0) result.sourceKeys.add(row.sourceId);
+    }
+    // A source API may return less than advertised. Redistribute the shortfall
+    // over the remaining reserves instead of silently privileging the first one.
+    for(let round=0;remaining>1e-8 && round<rows.length+1;round++){
+      const active=rows.filter(row=>row.rawAvailable-row.rawUsed>1e-8);
+      if(!active.length) break;
+      const share=remaining/active.length;
+      let progress=0;
+      for(const row of active){
+        const rawWant=Math.min(row.rawAvailable-row.rawUsed,share/row.efficiency);
+        const rawGot=drainSource(row.source,rawWant,getTile,dynamo);
+        const usefulGot=Math.min(remaining,rawGot*row.efficiency);
+        row.rawUsed+=rawGot;
+        result.raw+=rawGot;
+        result.delivered+=usefulGot;
+        remaining=Math.max(0,remaining-usefulGot);
+        progress+=usefulGot;
+        if(rawGot>0) result.sourceKeys.add(row.sourceId);
+      }
+      if(progress<=1e-9) break;
+    }
+    result.delivered=Math.min(maxTake,result.delivered);
+    result.lost=Math.max(0,result.raw-result.delivered);
+    return result;
+  }
+  function registerPowerDemandAt(x,y,want,getTile,dynamo){
+    const net=networkFor(x,y,getTile);
+    const consumerId=key(x,y);
+    const networkId=networkIdentity(net);
+    let registry=fairDemandRegistry.get(networkId);
+    if(!registry){ registry=new Map(); fairDemandRegistry.set(networkId,registry); }
+    registry.set(consumerId,{
+      demand:Math.max(0,Number(want)||0),
+      efficiency:networkDeliveryEfficiency(net,getTile,dynamo),
+      frame:powerFrameId
+    });
+    return {net,consumerId,networkId,registry};
+  }
+  function fairAllocationFor(net,consumerId,want,getTile,dynamo){
+    const registered=registerPowerDemandAt(net.target.x,net.target.y,want,getTile,dynamo);
+    const networkId=registered.networkId;
+    const registry=registered.registry;
+    let frame=fairFrameAllocations.get(networkId);
+    if(frame) return frame;
+    const demands=new Map();
+    for(const [id,row] of registry){
+      if(row && row.frame>=powerFrameId-FAIR_DEMAND_GRACE_FRAMES && row.demand>1e-9){
+        demands.set(id,{demand:row.demand,efficiency:row.efficiency});
+      }
+    }
+    let rawSupply=0;
+    for(const source of networkSources(net)) rawSupply+=sourceEnergy(source,getTile,dynamo);
+    frame={allocations:maxMinAllocWeighted(demands,rawSupply),used:new Map(),rawSupply,demands};
+    fairFrameAllocations.set(networkId,frame);
+    return frame;
+  }
+  function drainNetworkEnergyAt(x,y,amount,getTile,dynamo,opts){
+    opts=opts||{};
+    const maxTake=Math.max(0,Number(amount)||0);
+    const net=networkFor(x,y,getTile);
+    const consumerId=key(x,y);
+    let permitted=maxTake;
+    if(opts.fair){
+      const frame=fairAllocationFor(net,consumerId,maxTake,getTile,dynamo);
+      const allocation=Math.max(0,Number(frame.allocations.get(consumerId))||0);
+      const used=Math.max(0,Number(frame.used.get(consumerId))||0);
+      permitted=Math.min(maxTake,Math.max(0,allocation-used));
+      if(permitted<=0) return 0;
+    }else if(maxTake<=0) return 0;
+    const transfer=drainUsefulFromNetwork(net,permitted,getTile,dynamo);
+    const drained=Math.min(permitted,transfer.delivered);
+    if(transfer.lost>1e-9) emitCopperLossHeat(net,transfer.lost,getTile,transfer.sourceKeys);
+    if(opts.fair && drained>0){
+      const frame=fairFrameAllocations.get(networkIdentity(net));
+      if(frame) frame.used.set(consumerId,(Number(frame.used.get(consumerId))||0)+drained);
+    }
+    if(drained>0) markNetworkActivity(net,drained,consumerId,getTile,transfer.sourceKeys);
     return drained;
   }
   function chargeBatteryAt(x,y,battery,dt,getTile,dynamo,opts){
     opts=opts||{};
-    if(!battery || !(dt>0)) return 0;
-    const capacity=Math.max(0,Number(opts.capacity)||TELEPORTER_CAPACITY);
-    const rate=Math.max(0,Number(opts.rate)||CHARGE_RATE);
-    const current=Math.max(0,Math.min(capacity,Number(battery.energy)||0));
+    if(!battery || !(dt>0) || !Number.isFinite(dt)) return 0;
+    const capacity=opts.capacity===undefined ? TELEPORTER_CAPACITY : finiteNonNegative(opts.capacity,0);
+    const rate=opts.rate===undefined ? CHARGE_RATE : finiteNonNegative(opts.rate,0);
+    const current=Math.max(0,Math.min(capacity,finiteNonNegative(battery.energy,0)));
+    // Normalize corrupted callers even when the battery is already full or the
+    // requested rate is zero; otherwise Infinity/NaN can persist indefinitely.
+    battery.energy=current;
     const want=Math.min(capacity-current,rate*dt);
-    if(want<=0) return 0;
-    const gained=drainNetworkEnergyAt(x,y,want,getTile,dynamo);
+    if(opts.fair!==false) registerPowerDemandAt(x,y,want,getTile,dynamo);
+    if(!(want>0) || !Number.isFinite(want)) return 0;
+    const gained=drainNetworkEnergyAt(x,y,want,getTile,dynamo,{fair:opts.fair!==false});
     if(gained>0) battery.energy=Math.min(capacity,current+gained);
     return gained;
   }
@@ -488,7 +935,7 @@ import { isHeroPassableTile } from './material_physics.js';
       spent.storage=fromStorage;
     }
     if(remaining>0 && D && D.drainAt){
-      const drained=drainNetworkEnergyAt(m.x,m.y,remaining,getTile,D);
+      const drained=drainNetworkEnergyAt(m.x,m.y,remaining,getTile,D,{fair:true});
       if(drained>0){
         remaining-=drained;
         spent.dynamo+=drained;
@@ -709,6 +1156,8 @@ import { isHeroPassableTile } from './material_physics.js';
   }
   function update(dt,player,getTile,_setTile,opts){
     if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function') return;
+    if(externalPowerFramePending) externalPowerFramePending=false;
+    else advancePowerFrame();
     decayWireActivity(dt,getTile);
     scanT-=dt;
     if(scanT<=0){
@@ -744,6 +1193,7 @@ import { isHeroPassableTile } from './material_physics.js';
     if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function') return false;
     const simDt=Math.max(0,Math.min(CATCHUP_MAX_SECONDS,Number(dt)||0));
     if(simDt<=0) return false;
+    advancePowerFrame();
     let changed=false;
     const dynamo=opts && opts.dynamo;
     for(const [raw,m] of machines){
@@ -829,9 +1279,10 @@ import { isHeroPassableTile } from './material_physics.js';
       for(const a of wireActivity.values()){
         if(!a || a.x<sx-2 || a.x>sx+viewX+2 || a.y<sy-2 || a.y>sy+viewY+2) continue;
         if(visible && !visible(a.x,a.y)) continue;
-        if(getSafe(getTile,a.x,a.y,T.AIR)!==T.COPPER_WIRE) continue;
+        const cableType=getSafe(getTile,a.x,a.y,T.AIR);
+        if(!isCable(cableType)) continue;
         const conn=cableConnections(a.x,a.y,getTile);
-        drawCableEnergy(ctx,TILE,a.x*TILE,a.y*TILE,conn,a.level||0,a.ttl||0,((a.x*73856093)^(a.y*19349663))>>>0,now+a.x*0.19+a.y*0.11);
+        drawCableEnergy(ctx,TILE,a.x*TILE,a.y*TILE,conn,a.level||0,a.ttl||0,((a.x*73856093)^(a.y*19349663))>>>0,now+a.x*0.19+a.y*0.11,a.flowX||0,a.flowY||0,cableType);
       }
       ctx.restore();
     }
@@ -852,6 +1303,9 @@ import { isHeroPassableTile } from './material_physics.js';
     if(!isMachineNetworkTile(oldTile) && !isMachineNetworkTile(newTile)) return;
     networkRev++;
     networkCache.clear();
+    fairDemandRegistry.clear();
+    fairFrameAllocations.clear();
+    copperHeatBuffers.clear();
     invalidateTeleporterSearch();
     const tx=Math.floor(x), ty=Math.floor(y);
     if(oldTile===T.TELEPORTER && newTile!==T.TELEPORTER) machines.delete(key(tx,ty));
@@ -859,7 +1313,7 @@ import { isHeroPassableTile } from './material_physics.js';
   }
   function snapshot(){
     const list=[...machines.values()]
-      .filter(m=>m && finiteTile(m.x,m.y) && (m.energy||0)>0.001)
+      .filter(m=>m && finiteTile(m.x,m.y))
       .sort((a,b)=>(a.x-b.x)||(a.y-b.y))
       .slice(0,MACHINE_CAP)
       .map(m=>({x:m.x,y:m.y,energy:+(m.energy||0).toFixed(3)}));
@@ -868,8 +1322,9 @@ import { isHeroPassableTile } from './material_physics.js';
   function restore(data,getTile){
     reset();
     if(!data || !Array.isArray(data.list)) return;
-    for(const raw of data.list){
-      if(machines.size>=MACHINE_CAP) break;
+    const limit=Math.min(data.list.length,MACHINE_CAP);
+    for(let i=0;i<limit;i++){
+      const raw=data.list[i];
       if(!raw || !finiteTile(raw.x,raw.y)) continue;
       const x=Math.floor(raw.x), y=Math.floor(raw.y);
       if(getTile && getSafe(getTile,x,y,T.AIR)!==T.TELEPORTER) continue;
@@ -882,6 +1337,13 @@ import { isHeroPassableTile } from './material_physics.js';
     networkCache.clear();
     wireActivity.clear();
     wireMarkThrottle.clear();
+    fairDemandRegistry.clear();
+    fairFrameAllocations.clear();
+    powerFrameId=0;
+    externalPowerFramePending=false;
+    copperHeatBuffers.clear();
+    copperHeatCursor=0;
+    copperHeatEvents=0;
     networkRev++;
     invalidateTeleporterSearch();
     scanT=0;
@@ -894,9 +1356,12 @@ import { isHeroPassableTile } from './material_physics.js';
       storedEnergy+=Math.max(0,m.energy||0);
       if((m.energy||0)>0.001) charged++;
     }
-    return {machines:machines.size, charged, storedEnergy:+storedEnergy.toFixed(2), poweredWires:wireActivity.size, networkRev};
+    let copperHeatBuffer=0;
+    for(const value of copperHeatBuffers.values()) copperHeatBuffer+=Math.max(0,Number(value)||0);
+    return {machines:machines.size, charged, storedEnergy:+storedEnergy.toFixed(2), poweredWires:wireActivity.size,
+      fairNetworks:fairDemandRegistry.size,powerFrameId,networkRev,copperHeatEvents,copperHeatBuffer:+copperHeatBuffer.toFixed(2),copperHeatNetworks:copperHeatBuffers.size};
   }
-  function debugCharge(x,y,amount,getTile){
+  function receiveElectricChargeAt(x,y,amount,getTile){
     const m=ensureMachine(x,y,getTile || (MM.world && MM.world.getTile));
     if(!m) return 0;
     const before=m.energy||0;
@@ -904,6 +1369,7 @@ import { isHeroPassableTile } from './material_physics.js';
     m.pulse=1;
     return m.energy-before;
   }
+  function debugCharge(x,y,amount,getTile){ return receiveElectricChargeAt(x,y,amount,getTile); }
   function debugSetEnergy(x,y,amount,getTile){
     const m=ensureMachine(x,y,getTile || (MM.world && MM.world.getTile));
     if(!m) return false;
@@ -925,6 +1391,9 @@ import { isHeroPassableTile } from './material_physics.js';
     availableNetworkEnergyAt,
     drainNetworkEnergyAt,
     chargeBatteryAt,
+    registerPowerDemandAt,
+    receiveElectricChargeAt,
+    beginPowerFrame,
     update,
     catchUp,
     draw,
@@ -933,7 +1402,7 @@ import { isHeroPassableTile } from './material_physics.js';
     restore,
     reset,
     metrics,
-    _debug:{machines,networkCache,wireActivity,TELEPORTER_CAPACITY,MACHINE_CAP,TRAVEL_COST,CHARGE_RATE,CATCHUP_MAX_SECONDS,debugCharge,debugSetEnergy,ensureMachine,networkFor,isAlienBunkerTeleporter}
+    _debug:{machines,networkCache,wireActivity,fairDemandRegistry,fairFrameAllocations,copperHeatBuffers,TELEPORTER_CAPACITY,MACHINE_CAP,NETWORK_CAP,NETWORK_ENDPOINT_CAP,TRAVEL_COST,CHARGE_RATE,CATCHUP_MAX_SECONDS,COPPER_DELIVERY_EFFICIENCY,SILVER_DELIVERY_EFFICIENCY,COPPER_HEAT_THRESHOLD,debugCharge,debugSetEnergy,ensureMachine,networkFor,networkDeliveryEfficiency,sourceRouteInfo,isAlienBunkerTeleporter,maxMinAlloc,maxMinAllocWeighted,networkIdentity}
   };
   MM.teleporters=api;
 })();

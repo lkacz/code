@@ -11,10 +11,12 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
   const GRASS_STROKE_BUDGET = 6500; // soft cap total blade strokes per frame (both passes)
   const GRASS_CRITICAL_BUDGET = 1800;
   const GRASS_MAX_BLADES_PER_TILE = 56;
+  const GLOSS_GLINT_BUDGET = 96; // rare metals only; dense steel stays baked/static
+  const GLOSS_STRESSED_BUDGET = 32;
   let grassThinningFactor = 1; // dynamic 0..1
   let grassBladeTarget = 3;
   let grassBudgetInfo = '';
-  let overlayCache = {key:'', ver:-1, at:-1e9, tiles:[], grassTiles:0};
+  let overlayCache = {key:'', ver:-1, at:-1e9, tiles:[], grassTiles:0, glossyTiles:0};
 
   function hash32(x,y){ let h = (x|0)*374761393 + (y|0)*668265263; h = (h^(h>>>13))*1274126177; h = h^(h>>>16); return h>>>0; }
   function openAbove(t){ return isAirOrGasTile(t); }
@@ -26,7 +28,7 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
     grassThinningFactor = 1;
     grassBladeTarget = 3;
     grassBudgetInfo = '';
-    overlayCache = {key:'', ver:-1, at:-1e9, tiles:[], grassTiles:0};
+    overlayCache = {key:'', ver:-1, at:-1e9, tiles:[], grassTiles:0, glossyTiles:0};
   };
 
   function leafTile(t){ return isFoliageTile(t); }
@@ -36,6 +38,21 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
   function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
   function cleanNumber(v,fallback){
     return (typeof v === 'number' && isFinite(v)) ? v : fallback;
+  }
+  function readGlossView(){
+    const p=(typeof window!=='undefined' && window.player) ? window.player : null;
+    if(!p) return {phase:0,motion:0};
+    const x=cleanNumber(p.x,0), y=cleanNumber(p.y,0);
+    const vx=cleanNumber(p.vx,0), vy=cleanNumber(p.vy,0);
+    return {
+      // The observer phase advances with the hero, never with wall time.
+      phase:x*0.21+y*0.08,
+      motion:clamp(Math.hypot(vx,vy)/3.5,0,1)
+    };
+  }
+  function glossPhaseAt(x,y,h,viewPhase){
+    const raw=x*0.067+y*0.041+((h&31)/256)-viewPhase;
+    return raw-Math.floor(raw);
   }
   function readWindFrame(now){
     const W = window.MM && window.MM.wind;
@@ -82,6 +99,7 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
   function buildOverlayCandidates(sx,sy,viewX,viewY,worldMinY,worldMaxY,getTile,T,visibleTile){
     const tiles=[];
     let grassTiles=0;
+    let glossyTiles=0;
     for(let y=sy; y<sy+viewY+2; y++){
       if(y<worldMinY||y>=worldMaxY) continue;
       for(let x=sx; x<sx+viewX+2; x++){
@@ -93,12 +111,13 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
             grassTiles++;
             tiles.push([x,y,t]);
           }
-        } else if(visible && (leafTile(t) || t===T.DIAMOND || t===T.GOLD_ORE)){
+        } else if(visible && (leafTile(t) || t===T.DIAMOND || t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.SILVER_INGOT)){
+          if(t===T.SILVER_ORE || t===T.SILVER_INGOT) glossyTiles++;
           tiles.push([x,y,t]);
         }
       }
     }
-    return {tiles, grassTiles};
+    return {tiles, grassTiles, glossyTiles};
   }
 
   grass.drawOverlays = function(ctx, pass, sx, sy, viewX, viewY, TILE, worldMaxY, getTile, T, zoom, densityScalar, heightScalar, canDrawTile, worldMinY){
@@ -116,16 +135,21 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
     const ver=(window.MM && Number.isFinite(window.MM.worldRenderVersion)) ? window.MM.worldRenderVersion : 0;
     if(overlayCache.key!==key || overlayCache.ver!==ver || now-overlayCache.at>400){
       const next=buildOverlayCandidates(sx,sy,viewX,viewY,minY,maxY,getTile,T,visibleTile);
-      overlayCache={key, ver, at:now, tiles:next.tiles, grassTiles:next.grassTiles};
+      overlayCache={key, ver, at:now, tiles:next.tiles, grassTiles:next.grassTiles, glossyTiles:next.glossyTiles};
     }
     const candidates=overlayCache.tiles;
+    const frameMs = (typeof window!=='undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
+    const glossView = pass==='back' ? readGlossView() : {phase:0,motion:0};
+    const glossBudget = zoom<0.65 || frameMs>40 ? 0 : (frameMs>24 ? GLOSS_STRESSED_BUDGET : GLOSS_GLINT_BUDGET);
+    const glossStride = glossBudget>0 ? Math.max(1,Math.ceil(overlayCache.glossyTiles/glossBudget)) : Infinity;
+    let glossySeen=0;
+    let glossyDrawn=0;
 
     if(pass==='back'){
       // Estimate cost and set thinning factor once per frame region
       const basePerTile = Math.min(GRASS_MAX_BLADES_PER_TILE, Math.max(1, Math.round(3 * densityScalar)));
       const zoomLod = zoom < 1 ? (0.35 + 0.65*zoom) : 1;
       const desiredBlades = Math.max(1, Math.round(basePerTile * zoomLod));
-      const frameMs = (typeof window!=='undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
       const budget = frameMs>40 ? GRASS_CRITICAL_BUDGET : (frameMs>24 ? 3400 : GRASS_STROKE_BUDGET);
       const estimatedStrokes = overlayCache.grassTiles * desiredBlades;
       if(estimatedStrokes > budget){
@@ -190,6 +214,30 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
           ctx.fillStyle='rgba(255,255,255,'+(0.05+diamondPulse*0.07)+')'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); }
         if(pass==='back' && t===T.GOLD_ORE){ const h=hash32(x,y); const flash = Math.sin(now*0.0048 + (h&1023))*0.5 + 0.5; if(flash>0.72){ const alpha=(flash-0.72)/0.28; ctx.fillStyle='rgba(255,235,118,'+(0.22*alpha)+')'; const cxp=x*TILE+TILE/2+(((h>>>5)&3)-1), cyp=y*TILE+TILE/2+(((h>>>9)&3)-1); ctx.fillRect(cxp-1,cyp,3,1); ctx.fillRect(cxp,cyp-1,1,3); }
           ctx.fillStyle='rgba(255,202,58,'+(0.035+diamondPulse*0.045)+')'; ctx.fillRect(x*TILE,y*TILE,TILE,TILE); }
+        if(pass==='back' && (t===T.SILVER_ORE || t===T.SILVER_INGOT)){
+          const slot=glossySeen++;
+          if(glossyDrawn<glossBudget && slot%glossStride===0){
+            glossyDrawn++;
+            const h=hash32(x,y);
+            const phase=glossPhaseAt(x,y,h,glossView.phase);
+            if(t===T.SILVER_ORE){
+              const flash=Math.max(0,1-Math.abs(phase-0.5)*7);
+              if(flash>0){ const alpha=flash*(0.07+glossView.motion*0.19); ctx.fillStyle='rgba(236,249,255,'+alpha.toFixed(3)+')'; const cxp=x*TILE+TILE/2+(((h>>>6)&3)-1),cyp=y*TILE+TILE/2+(((h>>>10)&3)-1); ctx.fillRect(cxp-2,cyp,5,1); ctx.fillRect(cxp,cyp-2,1,5); }
+            }else{
+              // Three tiny rectangles fake one diagonal reflection sweep. Unlike
+              // gradients/shadows they remain cheap even on a placed silver wall.
+              // Its position follows the observer: a still hero means a still
+              // reflection, while hero motion slides it in the opposite direction.
+              const tileX=x*TILE;
+              const sxp=tileX-5+Math.round(phase*(TILE+10));
+              const a=(0.08+Math.sin(phase*Math.PI)*0.08+glossView.motion*0.18).toFixed(3);
+              ctx.fillStyle='rgba(255,255,255,'+a+')';
+              if(sxp>=tileX+2 && sxp<=tileX+TILE-4) ctx.fillRect(sxp,y*TILE+2,2,5);
+              if(sxp-2>=tileX+2 && sxp-2<=tileX+TILE-4) ctx.fillRect(sxp-2,y*TILE+7,2,6);
+              if(sxp-4>=tileX+2 && sxp-4<=tileX+TILE-4) ctx.fillRect(sxp-4,y*TILE+13,2,5);
+            }
+          }
+        }
     }
   };
 

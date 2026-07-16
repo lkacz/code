@@ -2,6 +2,7 @@
 // This is a light static guard because main.js is browser/DOM-bound.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { runInNewContext } from 'node:vm';
 
 const src = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const indexSrc = await readFile(new URL('../index.html', import.meta.url), 'utf8');
@@ -11,6 +12,30 @@ const inventoryUiSrc = await readFile(new URL('../src/inventory_ui.js', import.m
 const chestsSrc = await readFile(new URL('../src/engine/chests.js', import.meta.url), 'utf8');
 const weaponsSrc = await readFile(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
 const worldSrc = await readFile(new URL('../src/engine/world.js', import.meta.url), 'utf8');
+
+// Exercise the real codec declarations without booting the DOM-bound game.
+// Randomized alternating bytes hit the worst-case RLE expansion, while the
+// malformed samples pin strict length/run validation used by imported saves.
+{
+  const start=src.indexOf('function _b64FromBytes');
+  const end=src.indexOf('function isTransientTerrainTile');
+  assert.ok(start>=0 && end>start,'save codec source block is discoverable');
+  const sandbox={Uint8Array,btoa,atob};
+  runInNewContext(src.slice(start,end)+';globalThis.codec={encodeRLE,decodeRLE,decodeRaw};',sandbox);
+  for(const n of [1,2,17,255,256,4480,8960]){
+    const input=new Uint8Array(n);
+    let seed=(n*2654435761)>>>0;
+    for(let i=0;i<n;i++){
+      seed=(Math.imul(seed,1664525)+1013904223)>>>0;
+      input[i]=(seed>>>24)&255;
+    }
+    const decoded=sandbox.codec.decodeRLE(sandbox.codec.encodeRLE(input),n);
+    assert.ok(decoded && decoded.length===n && decoded.every((v,i)=>v===input[i]),'RLE round-trip preserves '+n+' randomized bytes');
+  }
+  assert.equal(sandbox.codec.decodeRLE(btoa(String.fromCharCode(7,0)),1),null,'RLE rejects a zero-length run');
+  assert.equal(sandbox.codec.decodeRLE(btoa(String.fromCharCode(7,2)),1),null,'RLE rejects a run exceeding the declared chunk');
+  assert.equal(sandbox.codec.decodeRLE(btoa(String.fromCharCode(7)),1),null,'RLE rejects a truncated pair');
+}
 
 assert.match(src, /function snapshotInventory\(\)/, 'save code defines an inventory snapshot helper');
 assert.match(indexSrc, /id="immunityBtn"/, 'debug HUD exposes an immunity toggle button');
@@ -66,6 +91,8 @@ assert.match(src, /seasons:\s*timedSavePart\('seasons',[^\n]*SEASONS && SEASONS\
 assert.match(src, /clouds:\s*timedSavePart\('clouds',[^\n]*CLOUDS && CLOUDS\.snapshot/, 'save payload includes cloud and storm weather state');
 assert.match(src, /dynamo:\s*timedSavePart\('dynamo',[^\n]*DYNAMO && DYNAMO\.snapshot/, 'save payload includes dynamo machine state');
 assert.match(src, /solar:\s*timedSavePart\('solar',[^\n]*SOLAR && SOLAR\.snapshot/, 'save payload includes solar panel battery state');
+assert.match(src, /furnishingsPower:\s*timedSavePart\('furnishingsPower',[^\n]*FURNISHINGS && FURNISHINGS\.snapshotPower/, 'save payload includes remote household electrical loads');
+assert.match(src, /FURNISHINGS && FURNISHINGS\.restorePower\) FURNISHINGS\.restorePower\(data\.furnishingsPower,getTile\)/, 'load path restores remote household electrical loads');
 assert.match(src, /teleporters:\s*timedSavePart\('teleporters',[^\n]*TELEPORTERS && TELEPORTERS\.snapshot/, 'save payload includes teleporter machine state');
 assert.match(src, /pumps:\s*timedSavePart\('pumps',[^\n]*PUMPS && PUMPS\.snapshot/, 'save payload includes water pump machine state');
 assert.match(src, /turrets:\s*timedSavePart\('turrets',[^\n]*TURRETS && TURRETS\.snapshot/, 'save payload includes turret battery state');
@@ -128,12 +155,12 @@ assert.match(src, /GENERATED_NPCS\.restore\(data\.generatedNpcs\)/, 'load path r
 assert.match(src, /NPCS\.restore\(data\.npcs\)/, 'load path restores the registered NPC system state');
 assert.match(src, /TUTORIAL_NPC\.restore\(data\.tutorialNpc\)/, 'load path restores tutorial mentor quest state');
 assert.match(src, /TUTORIAL_NPC\.placeNearWorldStart\(getTile,WORLDGEN\)/, 'old saves place the tutorial mentor near the world start');
-assert.match(src, /const tutorialNpcCtx = \{damageHero:window\.damageHero, onInventoryChange:updateInventory, onChange:saveState, worldGen:WORLDGEN, gameDayFloat:\(\)=>\{[^}]+SEASONS && SEASONS\.metrics[^}]+\}\};\s*if\(NPCS && NPCS\.setContext\) NPCS\.setContext\(tutorialNpcCtx\);/, 'main registers one shared NPC context for quest saves, HUD refreshes, hero damage, and in-game day scheduling');
+assert.match(src, /const tutorialNpcCtx = \{player, damageHero:window\.damageHero, onInventoryChange:updateInventory, onChange:saveState, worldGen:WORLDGEN, gameDayFloat:\(\)=>\{[^}]+SEASONS && SEASONS\.metrics[^}]+\}\};\s*if\(NPCS && NPCS\.setContext\) NPCS\.setContext\(tutorialNpcCtx\);/, 'main registers one shared NPC context for positioned quest rewards, saves, HUD refreshes, hero damage, and in-game day scheduling');
 assert.match(src, /NPCS\.handleKey\(e\.key,player,tutorialNpcCtx\)/, 'NPC reward-choice keys are handled before weapon shortcuts through the shared quest context');
 assert.match(src, /function selectWeaponKey\(key\)\{\s*if\(NPCS && NPCS\.handleKey && NPCS\.handleKey\(key,player,tutorialNpcCtx\)\) return;/, 'on-screen weapon buttons can also answer NPC reward choices through the shared quest context');
 assert.match(src, /NPCS\.attackAt\(tx,ty,atkBonus,tutorialNpcCtx\)/, 'direct melee attacks pass the shared NPC quest context');
 assert.match(src, /GENERATED_NPCS\.update\(dt, player, getTile, setTile, tutorialNpcCtx\)/, 'generated NPC discovery runs before registered NPC simulation');
-assert.match(src, /GENERATED_NPCS\.draw\(ctx,TILE,worldFxVisible,getTile,WORLDGEN\)/, 'generated NPC homes are drawn from the manager before NPC actors');
+assert.match(src, /GENERATED_NPCS\.draw\(ctx,TILE,worldFxVisible,getTile,WORLDGEN,sx,sy,viewX,viewY\)/, 'generated NPC homes are drawn with viewport bounds before NPC actors');
 assert.match(src, /NPCS\.update\(dt, player, getTile, setTile, tutorialNpcCtx\)/, 'NPC update uses the same shared quest context as damage and input paths');
 assert.match(src, /UFO\.restore\(data\.ufo\)/, 'load path restores UFO visitor schedule');
 assert.match(src, /TASKS\.restore\(data\.tasks\)/, 'load path restores task tracker state before source systems resync their tasks');
@@ -180,6 +207,15 @@ assert.match(src, /function chunkForTerrainSave\(arr\)/, 'save path strips trans
 assert.match(src, /function stripTransientTerrainTiles\(arr\)/, 'load path sanitizes transient world layers from saved chunks');
 assert.match(src, /function migrateLegacyInfrastructureTerrain\(cx,arr\)/, 'load path migrates legacy pipe and cable terrain into overlays');
 assert.match(src, /function restoreTerrainChunk\(cx,arr\)/, 'chunk restore uses one shared terrain cleanup helper');
+assert.match(src, /const SAVE_CHUNK_RESTORE_CAP=4096;/, 'save restore caps the number of chunk records processed from untrusted data');
+assert.match(src, /function validSavedChunkRef\(cx,sy\)/, 'chunk restore validates coordinates and vertical section bounds before decoding');
+assert.match(src, /function decodeSavedChunk\(data,rle,size\)/, 'chunk restore validates encoded and decoded payload sizes');
+assert.match(src, /if\(!\(arr instanceof Uint8Array\) \|\| arr\.length!==expected\) return;/, 'terrain restore rejects malformed chunk array dimensions');
+assert.match(src, /for\(const ch of list\.slice\(0,SAVE_CHUNK_RESTORE_CAP\)\)/, 'inline chunk restore has a processed-record cap');
+assert.match(src, /for\(const saved of refs\.slice\(0,SAVE_CHUNK_RESTORE_CAP\)\)/, 'referenced chunk restore has a processed-record cap');
+assert.match(src, /f\.size>IMPORT_SAVE_BYTE_CAP/, 'save-file import rejects oversized payloads before FileReader allocation');
+assert.match(src, /const ver=Number\.isFinite\(data\.v\) \? data\.v : 5;/, 'runtime load rejects non-finite save versions');
+assert.match(src, /const incomingSeed=Number\.isFinite\(data\.seed\) \? data\.seed : WORLDGEN\.worldSeed;/, 'runtime load rejects non-finite world seeds');
 assert.match(src, /stripTransientTerrainTiles\(arr\);\s*migrateLegacyInfrastructureTerrain\(cx,arr,ref\.base\?null:ref\.sy\);/, 'terrain restore strips transient tiles before migrating legacy base infrastructure overlays');
 assert.match(src, /const auditChunkIds=baseChunkIdsForAudits\(saveChunkIds\)/, 'full save filters vertical-section refs before legacy chunk auditors run');
 assert.match(src, /timedSavePart\('falling\.audit',[^\n]*FALLING\.auditChunks\(auditChunkIds,\{force:true,immediate:true\}\)/, 'full save audits base modified chunks through falling physics before settling terrain');
@@ -187,7 +223,7 @@ assert.match(src, /timedSavePart\('falling\.settle',[^\n]*FALLING\.settleAll\(\)
 assert.match(src, /FALLING\.auditChunks\(\[cx\],\{force:true,immediate:true\}\)/, 'incremental autosave audits each chunk through falling physics before writing its blob');
 assert.match(src, /encodeRLE\(chunkForTerrainSave\(arr\)\)/, 'full and incremental chunk saves encode sanitized terrain chunks');
 assert.match(src, /restoreTerrainChunk\(ch\.cx,arr\)/, 'inline modified chunk restore removes transient and legacy overlay tiles from terrain');
-assert.match(src, /restoreTerrainChunk\(ref\.cx,arr\)/, 'referenced autosave restore removes transient and legacy overlay tiles from terrain');
+assert.match(src, /restoreTerrainChunk\((?:ref|saved)\.cx,arr\)/, 'referenced autosave restore removes transient and legacy overlay tiles from terrain');
 assert.match(src, /updateInventory\(\{noSave:true,noCraftNotify:true\}\)/, 'load path refreshes inventory UI without dirtying the save or replaying craft notifications');
 assert.match(src, /refreshHotbarDom\(\)/, 'load path refreshes visible hotbar labels');
 assert.match(src, /updateHotbarSel\(\)/, 'load path refreshes visible hotbar selection');

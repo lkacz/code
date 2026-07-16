@@ -19,6 +19,7 @@
 // so cave-only spawn gating degrades to the legacy depth-only behavior away
 // from the player. mobs.js uses this to keep PELZACZE out of torch-lit camps.
 import { T, INFO, WORLD_MIN_Y, WORLD_MAX_Y, isLeaf } from '../constants.js';
+import { getByTile as getFurnishingByTile } from './furnishings.js';
 
 (function(){
   window.MM = window.MM || {};
@@ -41,9 +42,14 @@ import { T, INFO, WORLD_MIN_Y, WORLD_MAX_Y, isLeaf } from '../constants.js';
     [T.CHEST_LEGENDARY]: 7
   };
 
-  function tileEmitterLevel(t){
+  function tileEmitterLevel(t,x,y,opts){
     const fixed = EMITTERS[t] || 0;
     if(fixed) return fixed;
+    const furnishing=getFurnishingByTile(t);
+    if(furnishing && furnishing.requiresPower){
+      try{ if(!opts || typeof opts.isFurnishingPowered!=='function' || !opts.isFurnishingPowered(x,y,furnishing)) return 0; }
+      catch(e){ return 0; }
+    }
     const declared = Number(INFO[t] && INFO[t].lightLevel);
     return Number.isFinite(declared) ? Math.max(0, Math.min(LEVELS, Math.round(declared))) : 0;
   }
@@ -168,7 +174,7 @@ import { T, INFO, WORLD_MIN_Y, WORLD_MAX_Y, isLeaf } from '../constants.js';
         else if(isLeaf(t)) sky = Math.max(0, sky - 1);
         if(inWin){
           solid[idx] = blocksLight(t) ? 1 : (t === T.WATER ? 2 : 0);
-          let e = tileEmitterLevel(t);
+          let e = tileEmitterLevel(t,wx,y,opts);
           if(!e && opts.burningAt){ try{ if(opts.burningAt(wx, y)) e = FIRE_LEVEL; }catch(err){} }
           if(e){
             if(e > level[idx]) level[idx] = e;

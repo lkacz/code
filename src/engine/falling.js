@@ -92,6 +92,11 @@ window.MM = window.MM || {};
   let getTile = null, setTile = null;
   function init(gt, st){ getTile = gt; setTile = st; }
   const key = (x,y)=>x+','+y;
+  function normalizedWorldCell(x,y){
+    if(!finiteX(x) || !Number.isFinite(y)) return null;
+    x=Math.floor(x); y=Math.floor(y);
+    return inWorldY(y) ? {x,y} : null;
+  }
   function inWorldY(y){ return Number.isFinite(y) && y>=WORLD_TOP && y<WORLD_BOTTOM; }
   function activeAuditRange(){
     const p=(typeof window!=='undefined' && window.player) ? window.player : null;
@@ -115,20 +120,29 @@ window.MM = window.MM || {};
   }
   function isProtectedBuild(x,y){ return protectedBuilds.has(key(x,y)); }
   function protectBuild(x,y){
-    if(!Number.isFinite(x) || !Number.isFinite(y)) return;
-    if(protectedBuilds.size>PROTECTED_SAVE_CAP) return;
-    const k=key(Math.floor(x),Math.floor(y));
+    const cell=normalizedWorldCell(x,y);
+    if(!cell || protectedBuilds.size>=PROTECTED_SAVE_CAP) return false;
+    const k=key(cell.x,cell.y);
     protectedBuilds.add(k);
     // A protected tile is, by definition, stable: drop any pending churn for it.
     unstable.delete(k);
     playerBuilt.delete(k);
     manualCityBuilt.delete(k);
+    return true;
   }
-  function unprotectBuild(x,y){ protectedBuilds.delete(key(Math.floor(x),Math.floor(y))); }
+  function unprotectBuild(x,y){
+    const cell=normalizedWorldCell(x,y);
+    return !!cell && protectedBuilds.delete(key(cell.x,cell.y));
+  }
   function protectStructure(cells){
     if(!Array.isArray(cells)) return 0;
     let n=0;
-    for(const c of cells){ if(c && Number.isFinite(c.x) && Number.isFinite(c.y)){ protectBuild(c.x,c.y); n++; } }
+    const scan=Math.min(cells.length,PROTECTED_SAVE_CAP);
+    for(let i=0;i<scan && protectedBuilds.size<PROTECTED_SAVE_CAP;i++){
+      let c=null;
+      try{ c=cells[i]; }catch(e){ continue; }
+      if(c && protectBuild(c.x,c.y)) n++;
+    }
     return n;
   }
   function supportSignature(x,y){
@@ -960,7 +974,9 @@ window.MM = window.MM || {};
 
   // --- Instability queue ---
   function queueCheck(x,y){
-    if(!inWorldY(y)) return;
+    const cell=normalizedWorldCell(x,y);
+    if(!cell) return;
+    x=cell.x; y=cell.y;
     const k=key(x,y);
     if(getTile && quietStable.has(k)){
       const sig=supportSignature(x,y);
@@ -2090,19 +2106,22 @@ window.MM = window.MM || {};
   }
 
   // --- Public event API (names kept stable for main.js / undo) ---
-  function onTileRemoved(x,y){ unprotectBuild(x,y); forgetManualCityBuild(x,y); forgetPlayerBuild(x,y); forgetSettledRubble(x,y); queueAroundRemoval(x,y); checkBuiltPillarAround(x,y); }
-  function recheckNeighborhood(x,y){ forgetSettledRubble(x,y); syncManualCityBuild(x,y); syncPlayerBuild(x,y); queueCheck(x,y); queueAroundRemoval(x,y); checkBuiltPillarAround(x,y); } // undo can both add and remove tiles
-  function afterPlacement(x,y){ forgetSettledRubble(x,y); rememberManualCityBuild(x,y); rememberPlayerBuild(x,y); queueAroundSettle(x,y); checkBuiltPillarAround(x,y); }
+  function onTileRemoved(x,y){ const c=normalizedWorldCell(x,y); if(!c) return false; x=c.x;y=c.y; unprotectBuild(x,y); forgetManualCityBuild(x,y); forgetPlayerBuild(x,y); forgetSettledRubble(x,y); queueAroundRemoval(x,y); checkBuiltPillarAround(x,y); return true; }
+  function recheckNeighborhood(x,y){ const c=normalizedWorldCell(x,y); if(!c) return false; x=c.x;y=c.y; forgetSettledRubble(x,y); syncManualCityBuild(x,y); syncPlayerBuild(x,y); queueCheck(x,y); queueAroundRemoval(x,y); checkBuiltPillarAround(x,y); return true; } // undo can both add and remove tiles
+  function afterPlacement(x,y){ const c=normalizedWorldCell(x,y); if(!c) return false; x=c.x;y=c.y; forgetSettledRubble(x,y); rememberManualCityBuild(x,y); rememberPlayerBuild(x,y); queueAroundSettle(x,y); checkBuiltPillarAround(x,y); return true; }
   function sanitizeBatchCells(cells,limit){
     if(!Array.isArray(cells) || !cells.length) return [];
     const out=[];
     const seen=new Set();
     const max=Math.max(1,limit|0);
-    for(const c of cells){
+    const scan=Math.min(cells.length,max*4);
+    for(let i=0;i<scan;i++){
       if(out.length>=max) break;
+      let c=null;
+      try{ c=cells[i]; }catch(e){ continue; }
       if(!c || !Number.isFinite(c.x) || !Number.isFinite(c.y)) continue;
       const x=Math.floor(c.x), y=Math.floor(c.y);
-      if(!inWorldY(y)) continue;
+      if(!finiteX(x) || !inWorldY(y)) continue;
       const kk=key(x,y);
       if(seen.has(kk)) continue;
       seen.add(kk);
@@ -2170,16 +2189,19 @@ window.MM = window.MM || {};
     return {removed:removed.length,placed:placed.length};
   }
   function maybeStart(x,y){ queueCheck(x,y); }
-  function isPlayerBuiltAt(x,y){ return isTrackedPlayerBuild(Math.floor(x),Math.floor(y)); }
+  function isPlayerBuiltAt(x,y){ const c=normalizedWorldCell(x,y); return !!c && isTrackedPlayerBuild(c.x,c.y); }
   // Re-loosen a tile the burial resolver pulled off the hero: the entity rests
   // on him (playerBlocks) and settles normally once he steps away.
   function spawnLoose(x,y,t){
-    if(!validFallingType(t)) return false;
+    if(!validFallingType(t) || !finiteX(x) || !Number.isFinite(y)) return false;
     x=Math.floor(x); y=clampY(y);
     if(t===T.SAND) spawnSand(x,y); else spawn(x,y,t,isRubbleTrackedMaterial(t));
     return true;
   }
-  function isSettledRubbleAt(x,y){ return isSettledRubble(Math.floor(x),Math.floor(y)); }
+  function isSettledRubbleAt(x,y){
+    const cell=normalizedWorldCell(x,y);
+    return !!cell && isSettledRubble(cell.x,cell.y);
+  }
 
   function reset(){ active.length=0; sandActive.length=0; unstable.clear(); quietStable.clear(); auditJobs.length=0; auditPending.clear(); auditLast.clear(); manualCityBuilt.clear(); playerBuilt.clear(); buildStress.clear(); buildStressFlow.clear(); buildBreaks.length=0; settledRubble.clear(); protectedBuilds.clear(); }
   function metrics(){ return {queue:unstable.size, audit:auditJobs.length, active:active.length, sand:sandActive.length, debris:settledRubble.size, built:playerBuilt.size, stress:buildStress.size, breaks:buildBreaks.length, protected:protectedBuilds.size}; }
@@ -2233,14 +2255,21 @@ window.MM = window.MM || {};
       protected:protectedOut
     };
   }catch(e){ return null; } }
+  function restoreEntries(items,scanCap,visit){
+    if(!Array.isArray(items)) return;
+    const n=Math.min(items.length,Math.max(0,scanCap|0));
+    for(let i=0;i<n;i++){
+      try{ visit(items[i]); }catch(e){}
+    }
+  }
   function restore(s){ reset(); if(!s||typeof s!=='object') return; try{
-    if(Array.isArray(s.active)) for(const b of s.active){ const r=restoredRigid(b); if(r && active.length<ACTIVE_RIGID_CAP) active.push(r); }
-    if(Array.isArray(s.sand)) for(const g of s.sand){ const r=restoredSand(g); if(r && sandActive.length<3000) sandActive.push(r); }
-    if(Array.isArray(s.queue)) for(const k of s.queue){ const kk=parseSavedKey(k); if(kk && unstable.size<6000) unstable.add(kk); }
-    if(Array.isArray(s.built)) for(const k of s.built){ const kk=parseSavedKey(k); if(kk && manualCityBuilt.size<20000) manualCityBuilt.add(kk); }
-    if(Array.isArray(s.playerBuilt)) for(const k of s.playerBuilt){ const kk=parseSavedKey(k); if(kk && playerBuilt.size<PLAYER_BUILT_SAVE_CAP) playerBuilt.add(kk); }
-    if(Array.isArray(s.debris)) for(const k of s.debris){ const kk=parseSavedKey(k); if(kk && settledRubble.size<22000) settledRubble.add(kk); }
-    if(Array.isArray(s.protected)) for(const k of s.protected){ const kk=parseSavedKey(k); if(kk && protectedBuilds.size<PROTECTED_SAVE_CAP) protectedBuilds.add(kk); }
+    restoreEntries(s.active,ACTIVE_RIGID_CAP,b=>{ const r=restoredRigid(b); if(r && active.length<ACTIVE_RIGID_CAP) active.push(r); });
+    restoreEntries(s.sand,3000,g=>{ const r=restoredSand(g); if(r && sandActive.length<3000) sandActive.push(r); });
+    restoreEntries(s.queue,6000,k=>{ const kk=parseSavedKey(k); if(kk && unstable.size<6000) unstable.add(kk); });
+    restoreEntries(s.built,20000,k=>{ const kk=parseSavedKey(k); if(kk && manualCityBuilt.size<20000) manualCityBuilt.add(kk); });
+    restoreEntries(s.playerBuilt,PLAYER_BUILT_SAVE_CAP,k=>{ const kk=parseSavedKey(k); if(kk && playerBuilt.size<PLAYER_BUILT_SAVE_CAP) playerBuilt.add(kk); });
+    restoreEntries(s.debris,22000,k=>{ const kk=parseSavedKey(k); if(kk && settledRubble.size<22000) settledRubble.add(kk); });
+    restoreEntries(s.protected,PROTECTED_SAVE_CAP,k=>{ const kk=parseSavedKey(k); if(kk && protectedBuilds.size<PROTECTED_SAVE_CAP) protectedBuilds.add(kk); });
     for(const k of playerBuilt){ if(unstable.size>=6000) break; if(protectedBuilds.has(k)) continue; unstable.add(k); }
   }catch(e){} }
 

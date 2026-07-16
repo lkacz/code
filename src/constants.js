@@ -13,7 +13,11 @@ export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WA
   RUSTIC_STOOL:96,PINE_TABLE:97,WALL_SHELF:98,OAK_CABINET:99,COZY_BED:100,BOOKCASE:101,PATCHWORK_SOFA:102,HAMMOCK:103,
   WOVEN_RUG:104,POTTED_FERN:105,WALL_CLOCK:106,AQUARIUM:107,TERRARIUM:108,CHANDELIER:109,INDOOR_FOUNTAIN:110,HOLOGRAM_ART:111,
   DESK_LAMP:112,RADIO:113,TELEVISION:114,GAME_CONSOLE:115,REFRIGERATOR:116,COFFEE_MACHINE:117,AIR_PURIFIER:118,MEDICAL_STATION:119,
-  HEALING_POD:120,ZERO_G_LOUNGER:121,MEMORY_PROJECTOR:122,CHRONO_CLOCK:123,BIOLUM_GARDEN:124,MINIATURE_SUN:125,DREAM_SYNTH:126,COSMIC_ORRERY:127
+  HEALING_POD:120,ZERO_G_LOUNGER:121,MEMORY_PROJECTOR:122,CHRONO_CLOCK:123,BIOLUM_GARDEN:124,MINIATURE_SUN:125,DREAM_SYNTH:126,COSMIC_ORRERY:127,
+  MIRROR:128,
+  // Precious-metal pipeline. IDs are append-only because worlds persist raw
+  // tile bytes: ore -> fire-smelted ingot -> high-conductivity cable.
+  SILVER_ORE:129,SILVER_INGOT:130,SILVER_WIRE:131
 };
 export const INFO = {
   0:{hp:0,color:null,drop:null,passable:true},
@@ -64,7 +68,7 @@ export const INFO = {
  30:{hp:7,color:'#697685',drop:null,passable:false, machine:'dynamo', powerSource:true},
  31:{hp:4,color:'#1f2937',drop:null,passable:true, machine:'dynamoSlot', powerSource:true},
  32:{hp:1,color:'#9b5a2e',drop:'bakedMeat',passable:false, looseItem:true, cooked:true},
- 33:{hp:1,color:'#d68535',drop:'copperWire',passable:true, machine:'copperWire', conductor:true},
+ 33:{hp:1,color:'#d68535',drop:'copperWire',passable:true, machine:'copperWire', conductor:true, powerCable:'copper', conductivity:0.5},
  34:{hp:8,color:'#24435a',drop:'teleporter',passable:true, machine:'teleporter', powerDevice:true, energyCapacity:160},
  35:{hp:1,color:'#47d18c',drop:'transistor',passable:false, machine:'transistor', drops:[{item:'transistor',min:1,max:1},{item:'copper',min:1,max:1,chance:0.25}]},
  36:{hp:3,color:'#17607a',drop:'solarPanel',passable:false, machine:'solarPanel', powerSource:true, conductor:true},
@@ -74,7 +78,7 @@ export const INFO = {
  40:{hp:1,color:'#8f5a2a',drop:'leaf',passable:true, flammable:true, burnTime:1.1, seasonalLeaf:true},
  41:{hp:18,color:'#b8d7ff',drop:'iridium',passable:false, meteorite:true},
  42:{hp:12,color:'#7f878d',drop:'meteoricIron',passable:false, meteorite:true},
- 43:{hp:10,color:'#3f214f',drop:'antigravityBeacon',passable:false, machine:'antigravityBeacon', meteorShield:true},
+ 43:{hp:10,color:'#3f214f',drop:'antigravityBeacon',passable:false, machine:'antigravityBeacon', meteorShield:true, selfPowered:true, internalGenerator:'antimatter'},
  44:{hp:8,color:'#4d5e72',drop:'turret',passable:false, machine:'turret', powerDevice:true, energyCapacity:90},
  45:{hp:8,color:'#7a3324',drop:'fireTurret',passable:false, machine:'fireTurret', powerDevice:true, energyCapacity:90},
  46:{hp:8,color:'#24628a',drop:'waterTurret',passable:false, machine:'waterTurret', powerDevice:true, waterDevice:true, energyCapacity:90, waterCapacity:24},
@@ -184,17 +188,17 @@ export const HOME_FURNISHING_TILE_SPECS = Object.freeze([
   ['WOVEN_RUG','wovenRug','#b95f4f',2,.06,'decor'],
   ['POTTED_FERN','pottedFern','#67a95b',2,.06,'decor'],
   ['WALL_CLOCK','wallClock','#d1a84d',3,.07,'decor'],
-  ['AQUARIUM','aquarium','#52b9d5',3,.16,'decor',4],
+  ['AQUARIUM','aquarium','#52b9d5',3,.16,'decor',6],
   ['TERRARIUM','terrarium','#67c58d',3,.12,'decor',6],
   ['CHANDELIER','chandelier','#ffd978',4,.13,'decor',12],
   ['INDOOR_FOUNTAIN','indoorFountain','#71b8d0',5,.14,'decor'],
-  ['HOLOGRAM_ART','hologramArt','#8fe9ff',4,.17,'decor',7],
-  ['DESK_LAMP','deskLamp','#ffc766',3,.08,'electronics',10],
-  ['RADIO','radio','#d28b4e',4,.11,'electronics'],
-  ['TELEVISION','television','#56b7d8',5,.14,'electronics',4],
-  ['GAME_CONSOLE','gameConsole','#9c7df2',4,.16,'electronics',4],
-  ['REFRIGERATOR','refrigerator','#b7d2dc',7,.13,'electronics'],
-  ['COFFEE_MACHINE','coffeeMachine','#b87852',5,.14,'electronics'],
+  ['HOLOGRAM_ART','hologramArt','#8fe9ff',4,.17,'decor',8],
+  ['DESK_LAMP','deskLamp','#ffc766',3,.08,'electronics',12],
+  ['RADIO','radio','#d28b4e',4,.11,'electronics',3],
+  ['TELEVISION','television','#56b7d8',5,.14,'electronics',9],
+  ['GAME_CONSOLE','gameConsole','#9c7df2',4,.16,'electronics',6],
+  ['REFRIGERATOR','refrigerator','#b7d2dc',7,.13,'electronics',3],
+  ['COFFEE_MACHINE','coffeeMachine','#b87852',5,.14,'electronics',4],
   ['AIR_PURIFIER','airPurifier','#77dfd2',6,.20,'electronics',5],
   ['MEDICAL_STATION','medicalStation','#72e5ad',7,.26,'electronics',8],
   ['HEALING_POD','healingPod','#62f1c5',10,.32,'wonders',11],
@@ -204,7 +208,8 @@ export const HOME_FURNISHING_TILE_SPECS = Object.freeze([
   ['BIOLUM_GARDEN','biolumGarden','#7cf3a8',7,.27,'wonders',10],
   ['MINIATURE_SUN','miniatureSun','#ffb43f',12,.36,'wonders',15],
   ['DREAM_SYNTH','dreamSynth','#d07cff',10,.35,'wonders',9],
-  ['COSMIC_ORRERY','cosmicOrrery','#92a8ff',11,.34,'wonders',9]
+  ['COSMIC_ORRERY','cosmicOrrery','#92a8ff',11,.34,'wonders',9],
+  ['MIRROR','mirror','#a9cad8',4,.12,'decor']
 ].map(Object.freeze));
 
 for(const [tileName,drop,color,hp,homeRegenBonus,furnitureCategory,lightLevel] of HOME_FURNISHING_TILE_SPECS){
@@ -213,6 +218,9 @@ for(const [tileName,drop,color,hp,homeRegenBonus,furnitureCategory,lightLevel] o
     ...(lightLevel ? {lightLevel} : null)
   };
 }
+INFO[T.SILVER_ORE]={hp:10,color:'#aeb8c8',drop:'silverOre',passable:false,ore:true,silverOre:true};
+INFO[T.SILVER_INGOT]={hp:8,color:'#dce5ef',drop:'silver',passable:false,preciousIngot:true};
+INFO[T.SILVER_WIRE]={hp:1,color:'#d9ecff',drop:'silverWire',passable:true,machine:'silverWire',conductor:true,powerCable:'silver',conductivity:1};
 // Rows above (i.e. numerically below) this line get snow cover; tuned for the v2
 // terrain where sea level sits at row ~62 and peaks reach row ~10
 export const SNOW_LINE = 30;

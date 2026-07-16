@@ -129,9 +129,28 @@ window.MM = window.MM || {};
     }
     return ctx;
   }
-  // unlock on the first gesture (a real gesture may succeed where autoplay failed)
+  // Resume is asynchronous in real browsers. Keep one in-flight request so a
+  // radio click cannot race several resume() calls, and expose the same path to
+  // UI controls that are themselves trusted user gestures.
+  let resumePending=null;
+  function activate(){
+    ctxFailed=false;
+    const c=ensureCtx();
+    if(!c) return Promise.resolve(false);
+    if(c.state==='running') return Promise.resolve(true);
+    if(resumePending) return resumePending;
+    try{
+      const resumed=typeof c.resume==='function' ? c.resume() : null;
+      resumePending=Promise.resolve(resumed).then(()=>c.state==='running',()=>false).finally(()=>{ resumePending=null; });
+    }catch(e){
+      resumePending=Promise.resolve(false).finally(()=>{ resumePending=null; });
+    }
+    return resumePending;
+  }
+  // unlock on every gesture (tabs and mobile devices may suspend the context
+  // again after it was initially started)
   if(typeof window!=='undefined' && window.addEventListener){
-    const unlock=()=>{ ctxFailed=false; const c=ensureCtx(); if(c && c.state==='suspended') c.resume(); };
+    const unlock=()=>{ activate(); };
     window.addEventListener('pointerdown',unlock,{once:false});
     window.addEventListener('keydown',unlock,{once:false});
   }
@@ -190,7 +209,8 @@ window.MM = window.MM || {};
     if(o.f1 && o.f1!==o.f0) osc.frequency.exponentialRampToValueAtTime(Math.max(20,o.f1), t+(o.bend||o.dur));
     // humanize: repeats never land on the exact same pitch/level
     if(osc.detune) osc.detune.value=(o.detune!=null?o.detune:rand(-14,14));
-    const peak=(o.peak||0.1)*sp.g*rand(0.88,1.06);
+    const voiceGain=Number.isFinite(o.gain)?clamp(o.gain,0,4):1;
+    const peak=(o.peak||0.1)*voiceGain*sp.g*rand(0.88,1.06);
     env(g,t,o.attack||0.005,peak,o.dur);
     osc.connect(g); route(g,{...o,pan:sp.pan});
     osc.start(t); osc.stop(t+o.dur+0.15);
@@ -209,7 +229,9 @@ window.MM = window.MM || {};
     f.frequency.setValueAtTime(fc*rand(0.94,1.06),t);
     if(o.f1) f.frequency.exponentialRampToValueAtTime(Math.max(40,o.f1), t+o.dur);
     f.Q.value=o.Q!=null?o.Q:Math.max(0.3,fc/Math.max(60,(o.fHi||1600)-(o.fLo||400)));
-    const g=c.createGain(); const peak=(o.peak||0.1)*sp.g*rand(0.88,1.06);
+    const g=c.createGain();
+    const voiceGain=Number.isFinite(o.gain)?clamp(o.gain,0,4):1;
+    const peak=(o.peak||0.1)*voiceGain*sp.g*rand(0.88,1.06);
     env(g,t,o.attack||0.004,peak,o.dur);
     s.connect(f); f.connect(g); route(g,{...o,pan:sp.pan});
     s.start(t); s.stop(t+o.dur+0.15);
@@ -380,6 +402,8 @@ window.MM = window.MM || {};
     heal:   (o)=>{ tone({...o,type:'sine',f0:440,f1:720,dur:0.18,peak:0.16,send:0.22}); tone({...o,type:'sine',f0:660,f1:990,dur:0.22,peak:0.1,delay:0.05,send:0.22}); },
     bow:    (o)=>{ tone({...o,type:'square',f0:220,f1:640,dur:0.1,peak:0.12,bend:0.05}); noise({...o,dur:0.07,peak:0.1,fLo:1200,fHi:3200}); tone({...o,type:'triangle',f0:1180,f1:820,dur:0.05,peak:0.05}); },
     swing:  (o)=>{ if(throttled('swing',150,o)) return; noise({...o,dur:0.1,peak:0.14,fLo:700,fHi:2400,f1:520,ftype:'bandpass'}); },
+    spearThrust:(o)=>{ if(throttled('spearThrust',120,o)) return; noise({...o,dur:0.075,peak:0.13,fLo:1100,fHi:4200,f1:780,ftype:'bandpass'}); tone({...o,type:'triangle',f0:310,f1:185,dur:0.055,peak:0.055,delay:0.025}); },
+    axeSwing:(o)=>{ if(throttled('axeSwing',190,o)) return; noise({...o,dur:0.16,peak:0.18,fLo:280,fHi:1900,f1:240,ftype:'bandpass',buf:'brown'}); noise({...o,dur:0.07,peak:0.09,fLo:1200,fHi:3600,delay:0.055}); },
     flame:  (o)=>{ if(throttled('flame',160,o)) return; noise({...o,dur:0.16,peak:0.07,fLo:300,fHi:1400,ftype:'lowpass'}); noise({...o,dur:0.05,peak:0.03,fLo:rand(1400,2600),fHi:rand(3000,4600),delay:rand(0.01,0.07)}); },
     hose:   (o)=>{ if(throttled('hose',160,o)) return; noise({...o,dur:0.16,peak:0.06,fLo:1000,fHi:4200}); },
     gas:    (o)=>{ if(throttled('gas',200,o)) return; noise({...o,dur:0.2,peak:0.045,fLo:600,fHi:1600,ftype:'lowpass'}); },
@@ -762,22 +786,30 @@ window.MM = window.MM || {};
   // score never loops one idea — a theme plays ~2-3 min, rests in a silent
   // break ~0.5-1 min, then the next theme (shuffled bag, no immediate repeat)
   // takes over. Danger/boss phrases ignore the breaks: combat always sounds.
-  const radio={source:null,lastSeen:0,nextAt:0,phrase:0,trackIndex:0,trackUntil:0};
-  function setRadioSource(x,y){
+  const RADIO_GAIN=3.2;
+  const radio={source:null,powered:false,lastSeen:0,nextAt:0,phrase:0,trackIndex:0,trackUntil:0};
+  function setRadioSource(x,y,opts){
     if(!Number.isFinite(Number(x)) || !Number.isFinite(Number(y))){ clearRadioSource(); return false; }
     radio.source={x:Number(x),y:Number(y)};
+    radio.powered=!(opts && opts.powered===false);
     radio.lastSeen=Date.now();
     return true;
   }
-  function clearRadioSource(){ radio.source=null; radio.lastSeen=0; radio.nextAt=0; }
+  function clearRadioSource(){ radio.source=null; radio.powered=false; radio.lastSeen=0; radio.nextAt=0; }
   function selectedRadioStation(){ return RADIO_STATION_BY_ID.get(settings.radioStation)||RADIO_STATION_BY_ID.get('off'); }
-  function radioCanPlay(nowMs){
-    if(!settings.musicOn || settings.mute || settings.music<=0.001 || settings.radioStation==='off') return false;
-    if(!radio.source || nowMs-radio.lastSeen>1600) return false;
+  function radioBlockReason(nowMs){
+    if(settings.radioStation==='off') return 'off';
+    if(settings.mute) return 'muted';
+    if(!settings.musicOn) return 'music-off';
+    if(settings.music<=0.001) return 'music-volume';
+    if(!radio.source) return 'no-source';
+    if(!radio.powered) return 'no-power';
     // A radio is domestic flavor, never a way to mask danger: guardian and
     // alarm scores interrupt it until the situation is safe again.
-    return !(scene.bossLevel>0 || nowMs<dangerUntil);
+    if(scene.bossLevel>0 || nowMs<dangerUntil) return 'danger';
+    return null;
   }
+  function radioCanPlay(nowMs){ return !radioBlockReason(nowMs); }
   function setRadioStation(id){
     const next=RADIO_STATION_BY_ID.get(String(id||''));
     if(!next) return false;
@@ -790,7 +822,10 @@ window.MM = window.MM || {};
   function getRadioStationInfo(){
     const station=selectedRadioStation();
     const track=station.tracks.length ? station.tracks[radio.trackIndex%station.tracks.length] : null;
-    return {...station,tracks:[...station.tracks],track,active:radioCanPlay(Date.now()),source:radio.source?{...radio.source}:null};
+    const blockedReason=radioBlockReason(Date.now());
+    const active=!blockedReason && !!(ctx && ctx.state==='running');
+    return {...station,tracks:[...station.tracks],track,active,
+      blockedReason:blockedReason || (active?null:'audio-suspended'),powered:radio.powered,source:radio.source?{...radio.source}:null};
   }
   const SCALES={
     day:   [0,2,4,7,9],      // major pentatonic
@@ -860,13 +895,16 @@ window.MM = window.MM || {};
       radio.trackUntil=nowMs+rand(48000,72000);
     }
     const p=radio.phrase++, track=radio.trackIndex;
-    const o={bus:'music',x:radio.source.x,y:radio.source.y,send:.28};
+    // A placed receiver should read as actual foreground music in a home. The
+    // general world score is intentionally much quieter, so radio voices get a
+    // bounded local lift while still respecting master/music/spatial gains.
+    const o={bus:'music',x:radio.source.x,y:radio.source.y,send:.28,gain:RADIO_GAIN};
     if(station.id==='lofi'){
       const scale=[0,3,5,7,10], root=[174.61,196,220][track%3];
       const degree=[0,3,1,4][p%4];
       for(const d of [0,2,4,6]){
         const f=noteHz(root/2,scale,degree+d,0);
-        tone({...o,type:d===0?'triangle':'sine',f0:f,f1:f*.998,dur:2.3,peak:d===0?.022:.012,attack:.08,delay:d*.018,send:.38});
+        tone({...o,type:d===0?'triangle':'sine',f0:f,f1:f*.998,dur:2.3,peak:d===0?.022:.012,attack:.08,delay:d*.018,send:.38,priority:d===0});
       }
       for(let i=0;i<4;i++) noise({...o,dur:.07,peak:i%2?.006:.012,fLo:i%2?1800:70,fHi:i%2?5200:220,ftype:i%2?'highpass':'lowpass',buf:i%2?undefined:'brown',delay:i*.72+.08,send:.08});
       radio.nextAt=nowMs+3000+rand(0,700);
@@ -874,7 +912,7 @@ window.MM = window.MM || {};
       const scale=[0,2,3,7,10], root=[110,123.47,98][track%3];
       for(let i=0;i<8;i++){
         const f=noteHz(root,scale,[0,0,2,0,3,2,4,3][i],0);
-        tone({...o,type:'sawtooth',f0:f,f1:f,dur:.15,peak:.023,attack:.008,delay:i*.27,send:.12});
+        tone({...o,type:'sawtooth',f0:f,f1:f,dur:.15,peak:.023,attack:.008,delay:i*.27,send:.12,priority:i===0});
         if(i%2===0){ const lead=noteHz(root*2,scale,(i/2+p)%5,1); tone({...o,type:'square',f0:lead,f1:lead*.995,dur:.12,peak:.012,delay:i*.27+.08,send:.22}); }
       }
       tone({...o,type:'triangle',f0:root/2,f1:root/2,dur:2.15,peak:.014,attack:.3,send:.25});
@@ -884,7 +922,7 @@ window.MM = window.MM || {};
       const swing=[0,.46,1.02,1.48];
       for(let i=0;i<4;i++){
         const f=noteHz(root/2,scale,(p+i*2)%7,0);
-        tone({...o,type:'triangle',f0:f,f1:f*.993,dur:.28,peak:.024,delay:swing[i],send:.2});
+        tone({...o,type:'triangle',f0:f,f1:f*.993,dur:.28,peak:.024,delay:swing[i],send:.2,priority:i===0});
       }
       for(const at of [0,1.02]) for(const d of [0,2,5]){
         const f=noteHz(root,scale,(p+d)%7,0);
@@ -897,7 +935,7 @@ window.MM = window.MM || {};
       for(let i=0;i<7;i++){
         const deg=[0,2,4,3,1,2,0][(i+p)%7];
         const f=noteHz(root,scale,deg,i===3?1:0);
-        tone({...o,type:'triangle',f0:f,f1:f*.997,dur:.26,peak:.022,attack:.008,delay:i*.31,send:.35});
+        tone({...o,type:'triangle',f0:f,f1:f*.997,dur:.26,peak:.022,attack:.008,delay:i*.31,send:.35,priority:i===0});
       }
       for(const f of [root/2,root*.75]) tone({...o,type:'sine',f0:f,f1:f,dur:2.25,peak:.009,attack:.45,send:.45});
       radio.nextAt=nowMs+2500+rand(0,650);
@@ -905,7 +943,7 @@ window.MM = window.MM || {};
       const scale=[0,2,5,7,9], root=[130.81,146.83,110][track%3];
       for(const d of [0,2,4]){
         const f=noteHz(root/2,scale,d,0);
-        tone({...o,type:'sine',f0:f,f1:f*1.006,dur:5.2,peak:.012,attack:1.4,delay:d*.11,send:.72});
+        tone({...o,type:'sine',f0:f,f1:f*1.006,dur:5.2,peak:.012,attack:1.4,delay:d*.11,send:.72,priority:d===0});
       }
       for(let i=0;i<3;i++){
         const f=noteHz(root,scale,(p+i*2)%5,1);
@@ -917,7 +955,7 @@ window.MM = window.MM || {};
       const pattern=[0,2,4,7,4,2,1,3,5,8,5,3];
       for(let i=0;i<pattern.length;i++){
         const f=noteHz(root,scale,pattern[(i+p)%pattern.length],0);
-        tone({...o,type:'square',f0:f,f1:f,dur:.095,peak:.014,attack:.004,delay:i*.135,send:.08});
+        tone({...o,type:'square',f0:f,f1:f,dur:.095,peak:.014,attack:.004,delay:i*.135,send:.08,priority:i===0});
         if(i%3===0){ const bass=noteHz(root/2,scale,(i/3+p)%4,0); tone({...o,type:'square',f0:bass,f1:bass,dur:.11,peak:.018,delay:i*.135,send:.05}); }
       }
       radio.nextAt=nowMs+1900+rand(0,360);
@@ -1069,7 +1107,9 @@ window.MM = window.MM || {};
         echo:caveEchoReturn?caveEchoReturn.gain.value:0,
         echoDelay:caveEchoDelay?caveEchoDelay.delayTime.value:0},
       musicOn:!!settings.musicOn, bossLevel:scene.bossLevel,
-      radio:{station:settings.radioStation,active:radioCanPlay(Date.now()),source:radio.source?{...radio.source}:null,
+      radio:{station:settings.radioStation,active:radioCanPlay(Date.now()) && !!(ctx && ctx.state==='running'),
+        blockedReason:radioBlockReason(Date.now()) || ((ctx && ctx.state==='running')?null:'audio-suspended'),
+        gain:RADIO_GAIN,powered:radio.powered,source:radio.source?{...radio.source}:null,
         trackIndex:radio.trackIndex,track:selectedRadioStation().tracks[radio.trackIndex]||null,nextAt:radio.nextAt,lastSeen:radio.lastSeen},
       rotation:{theme:rotation.theme, phase:rotation.phase, until:rotation.until},
       beds: beds.rain? {rain:beds.rain.g.gain.value, patter:beds.patter.g.gain.value,
@@ -1081,7 +1121,7 @@ window.MM = window.MM || {};
     };
   }
 
-  MM.audio={ play, playAt, playLanding, thunder, update, setHeroWater,
+  MM.audio={ play, playAt, playLanding, thunder, update, setHeroWater, activate,
     setVolume, setMute, setBusVolume, getBusVolume, setMusicOn, isMusicOn,
     setRadioSource, clearRadioSource, setRadioStation, getRadioStation, getRadioStationInfo,
     radioStations:RADIO_STATIONS,

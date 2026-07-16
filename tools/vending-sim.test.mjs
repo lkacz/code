@@ -78,6 +78,7 @@ res = vending.vendAt(0,0,baseCtx(()=>0.10));
 assert.equal(res.ok, false, 'powered vending machine refuses a second draw on the same day');
 assert.equal(res.reason, 'cooldown', 'same-day powered vending reports cooldown');
 assert.equal(getTile(0,0), T.VENDING_MACHINE, 'cooldown does not break the vending machine');
+
 for(let day=2; day<=vending.MAX_USES; day++){
   testDay = day;
   res = vending.vendAt(0,0,baseCtx(()=>0.10));
@@ -86,6 +87,18 @@ assert.equal(res.ok, true, 'last powered use still succeeds');
 assert.equal(res.broke, true, 'machine breaks after the tenth powered use');
 assert.equal(getTile(0,0), T.AIR, 'exhausted vending machine removes its tile');
 assert.ok((inv.copperWire||0)>=1, 'exhausted vending machine grants copper-wire scrap');
+
+resetWorld();
+setTile(2,0,T.VENDING_MACHINE);
+vending.onPlaced(2,0,getTile);
+assert.equal(vending.receiveElectricChargeAt(2,0,vending.ENERGY_COST*2,getTile),vending.ENERGY_COST*2,'electric rifle can store two vend charges in a machine');
+res=vending.vendAt(2,0,baseCtx(sequence([0.62,0,0])));
+assert.equal(res.ok,true,'stored rifle energy powers a vend without an external circuit');
+assert.ok(Math.abs(vending.metrics().storedEnergy-vending.ENERGY_COST)<0.001,'a vend consumes exactly one stored electric charge');
+const chargedVendSnap=vending.snapshot();
+vending.reset();
+vending.restore(chargedVendSnap,getTile);
+assert.ok(Math.abs(vending.metrics().storedEnergy-vending.ENERGY_COST)<0.001,'vending electric buffer survives save and restore');
 
 resetWorld();
 dynamo.plannedCells(-4,2,'horizontal').forEach(c=>setTile(c.x,c.y,c.t));
@@ -164,5 +177,52 @@ assert.equal(res.ok, true, 'restored vending machine is usable on the next day')
 setTile(20,20,T.AIR);
 vending.update(1,getTile);
 assert.equal(vending.metrics().machines, 0, 'update prunes missing restored vending tiles');
+
+// Modelled sources must pay the full vend cost. A positive but insufficient
+// drain used to be accepted, and then empty sources fell through as free power.
+resetWorld();
+setTile(30,10,T.VENDING_MACHINE);
+setTile(31,10,T.SOLAR_PANEL);
+vending.onPlaced(30,10);
+let partialDrains=0;
+const partialSolar={
+  sourceAt(){ return {x:31,y:10}; },
+  drainAt(){ partialDrains++; return {amount:vending.ENERGY_COST*0.25}; }
+};
+const beforePartialStock=vending.metrics().stock;
+res=vending.vendAt(30,10,{...baseCtx(()=>0.1),solar:partialSolar});
+assert.equal(res.ok,false,'a partial direct-source drain cannot buy a vend');
+assert.equal(res.reason,'power','an underpowered modelled source reports power loss');
+assert.equal(partialDrains,1,'the partial source was queried exactly once');
+assert.equal(vending.metrics().stock,beforePartialStock,'failed power draw does not consume machine stock');
+assert.deepEqual(inv,{},'failed power draw grants no loot');
+
+// Save processing and live registration are both bounded without wiping the
+// existing registry when one more machine is placed at the cap.
+resetWorld();
+const vendingCap=vending._debug.MACHINE_CAP;
+for(let i=0;i<vendingCap;i++) vending._debug.machines.set('cap-'+i,{x:i,y:0,usesLeft:1,placed:true,pulse:0,lastItem:'',lastVendDay:-1});
+assert.equal(vending.onPlaced(999999,0),false,'registration refuses a machine beyond the cap');
+assert.equal(vending._debug.machines.size,vendingCap,'cap refusal never clears or grows the registry');
+assert.ok(vending._debug.machines.has('cap-0'),'cap refusal preserves existing machine state');
+resetWorld();
+setTile(40,10,T.VENDING_MACHINE);
+const oversizedInvalid=Array.from({length:vendingCap},()=>({x:0,y:Infinity}));
+oversizedInvalid.push({x:40,y:10,usesLeft:7,placed:true});
+vending.restore({v:1,list:oversizedInvalid},getTile);
+assert.equal(vending.metrics().machines,0,'restore processes only a bounded prefix of hostile save data');
+
+// The overlay checks the expensive cable network at a short cadence instead of
+// running a graph search for every visible vending machine on every frame.
+resetWorld();
+setTile(50,10,T.VENDING_MACHINE);
+vending.onPlaced(50,10);
+let networkChecks=0;
+const displayNetwork={availableNetworkEnergyAt(){ networkChecks++; return vending.ENERGY_COST; }};
+const drawCtx={save(){},restore(){},fillRect(){},set fillStyle(_v){}};
+const drawOpts={teleporters:displayNetwork,gameDayFloat:()=>testDay};
+vending.draw(drawCtx,20,45,5,12,12,()=>true,getTile,drawOpts);
+vending.draw(drawCtx,20,45,5,12,12,()=>true,getTile,drawOpts);
+assert.equal(networkChecks,1,'consecutive overlay frames reuse the network-power probe');
 
 console.log('vending-sim: all assertions passed');

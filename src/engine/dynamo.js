@@ -6,6 +6,7 @@
 // do not charge the machine.
 import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 import { isWindExposureBlockerTile } from './material_physics.js';
+import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.js';
 
 (function(){
   window.MM = window.MM || {};
@@ -131,6 +132,13 @@ import { isWindExposureBlockerTile } from './material_physics.js';
     if(t===T.DYNAMO || t===T.DYNAMO_SLOT) return [{x:Math.floor(x),y:Math.floor(y),t,role:'orphan'}];
     return [];
   }
+  // A collapsed composite settles as multiple tiles. The rotor slot is the
+  // unique ownership token, so dismantling any casing-only fragment cannot
+  // manufacture another complete generator.
+  function dismantleRefundForCells(cells){
+    if(!Array.isArray(cells)) return 0;
+    return cells.some(cell=>cell && cell.oldId===T.DYNAMO_SLOT) ? 1 : 0;
+  }
   function sourcePower(medium){
     if(medium===T.WATER || medium==='water') return {kind:'water', gain:1.0};
     if(medium===T.STEAM || medium==='steam') return {kind:'steam', gain:0.72};
@@ -174,7 +182,11 @@ import { isWindExposureBlockerTile } from './material_physics.js';
     if(!isValidSlot(x,y,getTile || (MM.world && MM.world.getTile))) return false;
     const src=sourcePower(medium);
     if(!src) return false;
-    const gain=src.gain*Math.max(0.25, Math.min(4, Number.isFinite(amount)?amount:1));
+    const flowAmount=amount===undefined ? 1 : Number(amount);
+    // Zero, negative and malformed flow reports must not mint the minimum-flow
+    // energy pulse. Real sub-cell flow remains rounded up to the turbine floor.
+    if(!Number.isFinite(flowAmount) || flowAmount<=0) return false;
+    const gain=src.gain*Math.max(0.25,Math.min(4,flowAmount));
     // flow through a mech-carried slot: identical media and gains, but the
     // energy is deposited straight into that mech's battery
     if(mechOwnsSlot(x,y)){
@@ -291,6 +303,19 @@ import { isWindExposureBlockerTile } from './material_physics.js';
       energy:m.energy||0,
       lastKind:m.lastKind||''
     };
+  }
+  function receiveElectricChargeAt(x,y,amount,getTile){
+    const m=machineAt(x,y,getTile);
+    if(!m) return 0;
+    const before=Math.max(0,Number(m.energy)||0);
+    const gained=Math.min(Math.max(0,ENERGY_CAPACITY-before),Math.max(0,Number(amount)||0));
+    if(gained<=0) return 0;
+    m.energy=Math.min(ENERGY_CAPACITY,before+gained);
+    m.power=Math.min(MAX_POWER,Math.max(Number(m.power)||0,gained*18));
+    m.pulse=1;
+    m.lastKind='electric';
+    kickRotor(m,0.12+gained*0.35);
+    return gained;
   }
   function onTileChanged(x,y,oldTile,newTile){
     if(oldTile===newTile) return;
@@ -456,11 +481,16 @@ import { isWindExposureBlockerTile } from './material_physics.js';
     ctx.fillText(text,bx+bw*0.5,by+bh*0.5);
     ctx.restore();
   }
+  function isGeneratingState(machine){
+    return isEnergyGenerating(machine && machine.power,machine && machine.lastKind==='electric');
+  }
   function draw(ctx,TILE,sx,sy,viewX,viewY,canDrawTile,getTile){
     if(!ctx) return;
     ensureVisibleMachines(sx,sy,viewX,viewY,getTile);
     if(!machines.size) return;
     const visible=typeof canDrawTile==='function' ? canDrawTile : null;
+    const now=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+    const lampClock=now*0.005;
     ctx.save();
     ctx.textAlign='center';
     ctx.textBaseline='middle';
@@ -483,12 +513,15 @@ import { isWindExposureBlockerTile } from './material_physics.js';
       drawRotorFan(ctx,TILE,px,py,m.rotorAngle||0,spin,m.pulse||0);
       drawBatteryLines(ctx,TILE,px,py,charge,m.pulse||0);
       drawOutputReadout(ctx,TILE,px,py,m.power||0,m.lastKind||'',orientation,m.pulse||0);
+      drawEnergyGenerationLamp(ctx,TILE,px,py,isGeneratingState(m),0.5+0.5*Math.sin(lampClock+m.x*0.31+m.y*0.17));
     }
     ctx.restore();
   }
   function snapshot(){
     const list=[...machines.values()]
-      .filter(m=>m && finiteTile(m.x,m.y) && ((m.energy||0)>0 || (m.power||0)>0))
+      // Empty remote generators must survive load so they can resume producing
+      // without requiring the player to revisit their chunk.
+      .filter(m=>m && finiteTile(m.x,m.y))
       .sort((a,b)=>(a.x-b.x)||(a.y-b.y))
       .slice(0,MACHINE_CAP)
       .map(m=>({x:m.x,y:m.y,power:+(m.power||0).toFixed(2),energy:+(m.energy||0).toFixed(3),lastKind:m.lastKind||''}));
@@ -497,8 +530,9 @@ import { isWindExposureBlockerTile } from './material_physics.js';
   function restore(data,getTile){
     reset();
     if(!data || !Array.isArray(data.list)) return;
-    for(const raw of data.list){
-      if(machines.size>=MACHINE_CAP) break;
+    const limit=Math.min(data.list.length,MACHINE_CAP);
+    for(let i=0;i<limit;i++){
+      const raw=data.list[i];
       if(!raw || !finiteTile(raw.x,raw.y)) continue;
       const x=Math.floor(raw.x), y=Math.floor(raw.y);
       if(getTile && !isValidSlot(x,y,getTile)) continue;
@@ -525,7 +559,7 @@ import { isWindExposureBlockerTile } from './material_physics.js';
     return {machines:machines.size, active, currentPower:+currentPower.toFixed(2), storedEnergy:+storedEnergy.toFixed(2), rotorSpeed:+rotorSpeed.toFixed(2)};
   }
 
-  const api={isCasing,isSlot,isValidSlot,slotOrientation,plannedCells,structureCellsAt,recordFlow,absorbNear,energyAt,drainAt,windEnergyPerSecAt,onTileChanged,update,catchUp,draw,snapshot,restore,reset,metrics,_debug:{machines,MAX_POWER,ENERGY_CAPACITY,MACHINE_CAP,windSpeedForSlot,WIND_MIN_SPEED,WIND_RATED_SPEED,WIND_MAX_ENERGY_PER_SEC,CATCHUP_MAX_SECONDS}};
+  const api={isCasing,isSlot,isValidSlot,slotOrientation,plannedCells,structureCellsAt,dismantleRefundForCells,recordFlow,absorbNear,energyAt,drainAt,receiveElectricChargeAt,windEnergyPerSecAt,onTileChanged,update,catchUp,draw,snapshot,restore,reset,metrics,_debug:{machines,MAX_POWER,ENERGY_CAPACITY,MACHINE_CAP,windSpeedForSlot,WIND_MIN_SPEED,WIND_RATED_SPEED,WIND_MAX_ENERGY_PER_SEC,CATCHUP_MAX_SECONDS,isGeneratingState}};
   MM.dynamo=api;
 })();
 

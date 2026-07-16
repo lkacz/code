@@ -33,6 +33,27 @@ assert.equal(WORLD_MIN_Y, -140, 'top extended coordinate is exposed through cons
 assert.equal(WORLD_MAX_Y, 280, 'bottom extended coordinate is exposed through constants');
 
 {
+  world.clear();
+  const cx=7;
+  const base=new Uint8Array(CHUNK_W*WORLD_H);
+  base[0]=T.STONE;
+  assert.equal(world.setChunkArray('c'+cx,base),true,'validated base chunk arrays can be installed');
+  assert.equal(world.getTile(cx*CHUNK_W,0),T.STONE,'installed base chunk is visible through normal tile reads');
+  assert.equal(world.setChunkArray('c'+cx,new Uint8Array(base.length-1)),false,'wrong-length base chunks are rejected without replacing live terrain');
+  assert.equal(world.getTile(cx*CHUNK_W,0),T.STONE,'rejected chunk data leaves the previous chunk intact');
+  assert.equal(world.setChunkArray('c'+cx+':s0',new Uint8Array(CHUNK_W*WORLD_SECTION_H)),false,'non-canonical aliases for base sections are rejected');
+  assert.equal(world.setChunkArray('c0:s'+(WORLD_MAX_SECTION+1),new Uint8Array(CHUNK_W*WORLD_SECTION_H)),false,'sections outside the vertical world range are rejected');
+  assert.equal(world.setChunkArray('c1.5',new Uint8Array(CHUNK_W*WORLD_H)),false,'fractional chunk coordinates are rejected');
+  assert.equal(world.setChunkArray('c999999999',new Uint8Array(CHUNK_W*WORLD_H)),false,'chunk coordinates outside the hardened world span are rejected');
+  assert.equal(world.setChunkArray('c8',new Uint8ClampedArray(CHUNK_W*WORLD_H)),false,'non-Uint8Array chunk payloads are rejected');
+  const sky=new Uint8Array(CHUNK_W*WORLD_SECTION_H);
+  sky[0]=T.GLASS;
+  assert.equal(world.setChunkArray('c'+cx+':s-1',sky),true,'validated non-base section arrays can be installed');
+  assert.equal(world.getTile(cx*CHUNK_W,-70),T.GLASS,'installed sky section is visible at its world coordinate');
+  world.clear();
+}
+
+{
   const lowSky = worldLayers.layerEnvelope(WG, 0, -24);
   const highSky = worldLayers.layerEnvelope(WG, 0, WORLD_MIN_Y + 12);
   const deep = worldLayers.layerEnvelope(WG, 0, WORLD_H + 86);

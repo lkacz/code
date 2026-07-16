@@ -151,7 +151,13 @@ function assertRouteContract(row){
   }
   if(route==='rigid-object'){
     assert.ok(isRigidObjectTile(t), name+' rigid-object route reaches rigid object physics');
-    assertNoSupportRole(name,t);
+    if(t===T.DYNAMO){
+      assert.equal(isBuildAnchorTile(t),true,name+' casing is the intentional lateral-anchor exception');
+      assert.equal(isBuildFoundationTile(t),false,name+' casing does not become a vertical foundation');
+      assert.equal(isStableMachineSupportTile(t),false,name+' casing does not support stacking another machine');
+      assert.equal(isObjectFootingTile(t),false,name+' casing is not generic object footing');
+      assert.equal(isObjectBraceTile(t),false,name+' casing is not generic object bracing');
+    }else assertNoSupportRole(name,t);
     assert.equal(isPlayerBuiltMaterial(t), false, name+' rigid object is not a player-built material');
     assert.equal(isRubbleTrackedMaterial(t), false, name+' rigid object is not tracked as structural rubble');
     return;
@@ -305,7 +311,8 @@ for(const r of rows){
   }
   if(route==='rigid-object'){
     assert.ok(isRigidObjectTile(id), r.tile+' object route is reachable by rigid-object physics');
-    assert.ok(!isBuildAnchorTile(id), r.tile+' rigid object is not a building anchor');
+    if(id===T.DYNAMO) assert.ok(isBuildAnchorTile(id),r.tile+' solid casing is the intentional machine anchor exception');
+    else assert.ok(!isBuildAnchorTile(id), r.tile+' rigid object is not a building anchor');
     classified.push([r.key,'object']);
     continue;
   }
@@ -376,6 +383,8 @@ assert.ok(classified.some(([key,kind])=>key==='torch' && kind==='fixture'), 'tor
 
 assert.equal(isBuildAnchorTile(T.WATER_PUMP), false, 'machines are not building anchors');
 assert.equal(isBuildAnchorTile(T.VENDING_MACHINE), false, 'vending machines are not building anchors');
+assert.equal(isBuildAnchorTile(T.DYNAMO), true, 'solid dynamo casing anchors blocks attached to its sides');
+assert.equal(isBuildAnchorTile(T.DYNAMO_SLOT), false, 'open dynamo rotor slot never acts as construction support');
 assert.equal(isBuildAnchorTile(T.CHEST_COMMON), false, 'chests are not building anchors');
 assert.equal(isBuildAnchorTile(T.GLASS), false, 'fragile glass is not a building anchor');
 assert.equal(isBuildAnchorTile(T.ELECTRONICS), false, 'electronics are not a building anchor');
@@ -762,7 +771,7 @@ assert.match(mainSource, /function solidAt\(x,y,axis\)\{[\s\S]*const t=getTile\(
 assert.match(mainSource, /function meteorPickSparkTile\(t\)\{\s*return isMeteorPickSparkMaterial\(t\);\s*\}/, 'meteor pick mining feedback uses shared material predicates');
 assert.match(mainSource, /emitMeteorPickSpark\(tx,ty,isMeteorPickDenseRockMaterial\(tId\)\?7:5\);/, 'meteor pick dense-rock intensity uses shared material predicates');
 assert.match(mainSource, /return isReplaceableNaturalOpenTile\(cur,false\) && \(slot \|\| cur!==T\.WATER\);/, 'dynamo placement uses shared natural-open replacement rules');
-assert.match(mainSource, /function isStableConstructionSupportAt\(x,y\)\{[\s\S]*isStableMachineSupport\(getTile\(x,y\)\)[\s\S]*isStableMachineSupport\(getConstructionBackgroundTile\(x,y\)\)[\s\S]*\}/, 'non-structural placement fallback uses the same stable support predicate including background construction');
+assert.match(mainSource, /function isStableConstructionSupportAt\(x,y\)\{[\s\S]*isBuildAnchorTile\(foreground\)[\s\S]*isStableMachineSupport\(foreground\)[\s\S]*isBuildAnchorTile\(background\)[\s\S]*isStableMachineSupport\(background\)[\s\S]*\}/, 'non-structural placement fallback accepts shared anchors and stable support in foreground or background construction');
 assert.match(mainSource, /function isBackgroundBuildTileId\(t\)\{ return isPlayerBuiltMaterial\(t\) && !isDoorTile\(t\) && !isTrapdoorTile\(t\) && !!TILE_TO_RES\[t\]; \}/, 'background construction selector excludes foreground-only doors and trapdoors');
 assert.match(mainSource, /const BACKGROUND_BUILD_SHADE_DELTA=-30;/, 'background construction tiles use a darker material shade than foreground blocks');
 assert.match(mainSource, /const BACKGROUND_BUILD_PATTERN_DARKEN='rgba\(0,0,0,0\.10\)';/, 'background construction tile patterns get a subtle dark wash for contrast');

@@ -982,6 +982,15 @@ export function deepGoldVeinAt(WG,wx,y){
   return shortGoldLineAt(WG,wx,y,17,10,7466,()=>chance);
 }
 
+export function deepSilverVeinAt(WG,wx,y){
+  const deep=Math.max(0,Number(y)-WORLD_H);
+  if(!(deep>8 && deep<120)) return false;
+  const mid=clamp01(1-Math.abs((deep-54)/62));
+  const lower=clamp01((deep-14)/86);
+  const chance=0.20+mid*0.22+lower*0.035;
+  return shortGoldLineAt(WG,wx,y,16,9,7496,()=>chance);
+}
+
 function deepRockMaterialTile(WG,wx,y,strataOpt){
   const strata=strataOpt || deepStrataProfile(WG,wx,y);
   const env=strata.env;
@@ -1006,6 +1015,7 @@ function deepRockMaterialTile(WG,wx,y,strataOpt){
   if(env.snow>0.55 && deep<74 && ore>0.965 && vein>0.68) return T.ICE;
   if(env.city>0.24 && deep>18 && ore>0.976 && vein>0.34) return T.RADIOACTIVE_ORE;
   if(env.city>0.24 && ore>0.989-deep*0.00008 && vein>0.20) return T.METEORIC_IRON;
+  if(deepSilverVeinAt(WG,wx,y)) return T.SILVER_ORE;
   if(deepGoldVeinAt(WG,wx,y)) return T.GOLD_ORE;
   if(deep>86 && ore<(0.006+strata.crystal*0.010)*oreScale) return T.ANTIMATTER_CRYSTAL;
   if(deep>52 && ore<(0.012+strata.crystal*0.022)*oreScale) return T.IRIDIUM;
@@ -1079,6 +1089,7 @@ export const worldLayers = Object.freeze({
   deepCaveProfile,
   deepCaveDressingTile,
   deepGoldVeinAt,
+  deepSilverVeinAt,
   deepTile
 });
 

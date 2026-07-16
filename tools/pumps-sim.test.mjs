@@ -97,6 +97,66 @@ assert.equal(INFO[T.WATER_PIPE].fluidPipe,true,'water pipe is marked as a fluid 
 assert.equal(INFO[T.WATER_PIPE].passable,true,'water pipes are passable infrastructure');
 assert.equal(INFO[T.WATER_PUMP].powerDevice,true,'water pump is a powered endpoint for copper networks');
 assert.equal(INFO[T.WATER_TURRET].waterDevice,true,'water turret is a hydraulic consumer');
+assert.deepEqual(
+  ['east','south','west','north','east'].slice(1),
+  [pumps.rotateDir('east'),pumps.rotateDir('south'),pumps.rotateDir('west'),pumps.rotateDir('north')],
+  'pump rotation advances clockwise and wraps back to east'
+);
+
+{
+  reset();
+  setTile(5,5,T.WATER_PIPE);
+  assert.equal(pumps.pipeModeAt(5,5,getTile),'normal','new fluid pipe starts as an ordinary segment');
+  assert.equal(pumps.togglePipeModeAt(5,5,getTile),'intake','pipe mode toggles to a designated water intake');
+  assert.equal(pumps.pipeModeAt(5,5,getTile),'intake','designated intake mode is readable by rendering and simulation');
+  const snap=pumps.snapshot();
+  assert.deepEqual(snap.inlets,[{x:5,y:5}],'pump snapshot persists sparse pipe intake metadata');
+  pumps.reset();
+  pumps.restore(snap,getTile);
+  assert.equal(pumps.pipeModeAt(5,5,getTile),'intake','pipe intake mode survives save and restore');
+  assert.equal(pumps.togglePipeModeAt(5,5,getTile),'normal','second toggle restores ordinary pipe behaviour');
+}
+
+function pumpCanvasRecorder(){
+  const strokes=[];
+  let path=[];
+  const ctx={
+    strokes,
+    save(){}, restore(){}, fillRect(){}, strokeRect(){}, fill(){}, closePath(){},
+    beginPath(){ path=[]; },
+    moveTo(x,y){ path.push({kind:'move',x,y}); },
+    lineTo(x,y){ path.push({kind:'line',x,y}); },
+    arc(){},
+    stroke(){ strokes.push(path.slice()); }
+  };
+  return ctx;
+}
+
+{
+  const ctx=pumpCanvasRecorder();
+  pumps.drawPumpTile(ctx,20,0,0,'east',1,1,1);
+  const fullFlow=ctx.strokes.find(path=>path.length===2
+    && path[0].kind==='move' && path[1].kind==='line'
+    && path[0].x<3 && path[1].x>17 && Math.abs(path[0].y-path[1].y)<0.001);
+  assert.ok(fullFlow,'active pump draws a non-zero flow pulse from its inlet to its outlet');
+}
+
+{
+  const normal=pumpCanvasRecorder();
+  const intake=pumpCanvasRecorder();
+  const conn={left:true,right:true,up:false,down:false};
+  pumps.drawPipeTile(normal,20,0,0,conn,7,'normal');
+  pumps.drawPipeTile(intake,20,0,0,conn,7,'intake');
+  assert.ok(intake.strokes.length>normal.strokes.length,'water intake pipe draws an additional high-contrast grate and inward arrows');
+}
+
+for(const [dir,axis,sign] of [['east','x',1],['south','y',1],['west','x',-1],['north','y',-1]]){
+  const ctx=pumpCanvasRecorder();
+  pumps.drawPumpTile(ctx,20,0,0,dir,0,0,0);
+  const indicator=ctx.strokes.at(-1);
+  assert.ok(indicator && indicator.length>=2,dir+' pump draws its permanent direction arrow');
+  assert.ok((indicator[1][axis]-indicator[0][axis])*sign>0,dir+' pump arrow points toward its configured outlet');
+}
 
 {
   reset();
@@ -150,6 +210,34 @@ assert.equal(INFO[T.WATER_TURRET].waterDevice,true,'water turret is a hydraulic 
   assert.ok(turrets.metrics().storedWater>0,'powered pump fills a connected water turret from a reservoir');
   assert.ok(pumps.metrics().moved>0,'powered pump records moved water');
   assert.ok(pumps.metrics().storedEnergy<pumps._debug.PUMP_CAPACITY,'moving water consumes pump battery energy');
+  assert.equal(getTile(-3,10),T.AIR,'powered pump conserves water by draining the source tile it transferred');
+}
+
+
+{
+  reset();
+  setTile(0,9,T.WATER);
+  for(let y=10;y<=19;y++) setTile(0,y,T.WATER_PIPE);
+  setTile(0,21,T.WATER);
+  pumps.setPipeModeAt(0,19,'intake',getTile);
+  for(let i=0;i<120;i++) tick(1/30,{x:0.5,y:15.5});
+  assert.equal(getTile(0,9),T.WATER,'wet designated lower intake prevents an unmarked upper end from becoming the source');
+  assert.equal(getTile(0,21),T.WATER,'designated intake is source-only and never used as a discharge outlet');
+  pumps.setPipeModeAt(0,19,'normal',getTile);
+  for(let i=0;i<120;i++) tick(1/30,{x:0.5,y:15.5});
+  assert.equal(getTile(0,9),T.AIR,'ordinary unmarked pipe ending still catches water automatically');
+  assert.equal(getTile(0,20),T.WATER,'automatic endpoint sends that water to the lower end of the pipe');
+}
+
+{
+  reset();
+  for(let y=40;y<=49;y++) setTile(-4,y,T.WATER);
+  for(let x=-3;x<=0;x++) setTile(x,49,T.WATER_PIPE);
+  for(let y=50;y<=60;y++) setTile(0,y,T.WATER_PIPE);
+  for(let i=0;i<30;i++) tick(1/30,{x:0.5,y:54.5});
+  const moved=pumps.metrics().passiveMoved;
+  assert.ok(moved>0,'large passive component begins moving water without duplicate seed acceleration');
+  assert.ok(moved<=4,'one passive pipe component respects its roughly 3.2-cell-per-second flow rate regardless of how many of its tiles were queued');
 }
 
 {
@@ -163,6 +251,17 @@ assert.equal(INFO[T.WATER_TURRET].waterDevice,true,'water turret is a hydraulic 
   for(let i=0;i<90;i++) tick(1/30);
   assert.equal(getTile(2,10),T.WATER,'powered pump spills water from an open output pipe when no water device is attached');
   assert.ok(pumps.metrics().outletMoved>0,'pump metrics record open-end pipe discharge');
+}
+
+{
+  reset();
+  setTile(0,10,T.WATER_PUMP);
+  setTile(1,10,T.WATER_PIPE);
+  pumps.restore({v:2,list:[{x:0,y:10,dir:'east',energy:pumps._debug.PUMP_CAPACITY,water:0.25}],inlets:[]},getTile);
+  for(let i=0;i<30;i++) tick(1/30);
+  assert.equal(getTile(2,10),T.AIR,'a fractional internal buffer is reserved once and cannot be recounted each frame into a full output tile');
+  assert.equal(pumps.metrics().outletMoved,0,'sub-tile water volume never reports a whole-cell discharge');
+  assert.ok(pumps.snapshot().list.some(row=>Math.abs(row.water-0.25)<0.001),'blocked fractional water remains conserved inside the pump');
 }
 
 {
@@ -245,6 +344,27 @@ assert.equal(INFO[T.WATER_TURRET].waterDevice,true,'water turret is a hydraulic 
 
 {
   reset();
+  setTile(-4,13,T.WATER);
+  setTile(-3,12,T.WATER_PIPE);
+  setTile(-2,11,T.WATER_PIPE);
+  setTile(-1,10,T.WATER_PIPE);
+  setTile(0,10,T.WATER_PUMP);
+  pumps.setOrientationAt(0,10,'east',getTile);
+  setTile(1,10,T.WATER_PIPE);
+  setTile(2,11,T.WATER_PIPE);
+  setTile(3,12,T.WATER_PIPE);
+  setTile(4,13,T.WATER_TURRET);
+  turrets._debug.debugSetWaterAt(4,13,0,getTile);
+  pumps._debug.debugSetEnergyAt(0,10,pumps._debug.PUMP_CAPACITY,getTile);
+  const diagonal=pumps.pipeConnections(2,11,getTile);
+  assert.equal(diagonal.upLeft,true,'fluid pipe detects its upper-left diagonal neighbour');
+  assert.equal(diagonal.downRight,true,'fluid pipe detects its lower-right diagonal neighbour');
+  for(let i=0;i<120;i++) tick(1/30);
+  assert.ok(turrets.metrics().storedWater>0,'powered pump transfers water through diagonal input and output pipe runs');
+}
+
+{
+  reset();
   setTile(0,20,T.STEAM);
   for(let y=16; y<=19; y++) setTile(0,y,T.WATER_PIPE);
   for(let i=0;i<90;i++) tick(1/30);
@@ -310,6 +430,15 @@ assert.equal(INFO[T.WATER_TURRET].waterDevice,true,'water turret is a hydraulic 
 
 {
   reset();
+  setTile(0,10,T.WATER_PUMP);
+  const oversized=new Array(pumps._debug.MACHINE_CAP+1).fill(null);
+  oversized[pumps._debug.MACHINE_CAP]={x:0,y:10,dir:'south',energy:20,water:1};
+  pumps.restore({v:2,list:oversized,inlets:[]},getTile);
+  assert.equal(pumps.metrics().machines,0,'pump restore bounds scanned machine rows even when all preceding entries are invalid');
+}
+
+{
+  reset();
   setTile(-1,10,T.WATER);
   setTile(0,10,T.WATER_PUMP);
   pumps.setOrientationAt(0,10,'east',getTile);
@@ -332,6 +461,12 @@ assert.match(mainSrc, /PUMPS\.update\(dt, player, getFluidNetworkTile, setTile, 
 assert.match(mainSrc, /PUMPS\.draw\(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getFluidNetworkTile\)/, 'main draws pump overlays and pipe flow FX through infrastructure overlays');
 assert.match(mainSrc, /id:'water_pipe'/, 'crafting exposes water pipes');
 assert.match(mainSrc, /id:'water_pump'/, 'crafting exposes water pumps');
+assert.match(mainSrc, /function tryRotateWaterPumpAt\(tx,ty\)[\s\S]*?PUMPS\.orientationAt\(tx,ty,getTile\)[\s\S]*?PUMPS\.rotateDir\(previous\)[\s\S]*?PUMPS\.setOrientationAt\(tx,ty,next,getTile\)/, 'main rotates a placed pump from its persisted orientation');
+assert.match(mainSrc, /function tryToggleFluidPipeModeAt\(tx,ty\)[\s\S]*?PUMPS\.togglePipeModeAt\(tx,ty,getFluidNetworkTile\)/, 'main toggles ordinary and water-intake pipe modes with the persisted pump API');
+assert.match(mainSrc, /function useToolSecondaryAt\(tx,ty\)\{\s*if\(tryRotateWaterPumpAt\(tx,ty\)\) return true;/, 'right-click tool interaction gives placed pump rotation priority over placement');
+assert.match(mainSrc, /else if\(e\.button===2\)[\s\S]*?if\(tryRotateWaterPumpAt\(tx,ty\)\) return;[\s\S]*?if\(weaponMode\)/, 'right-click rotates a targeted pump even while a weapon is equipped');
+assert.match(mainSrc, /if\(tryToggleFluidPipeModeAt\(tx,ty\)\) return;[\s\S]*?if\(weaponMode\)/, 'right-click toggles a targeted pipe even while a weapon is equipped');
+assert.match(mainSrc, /PPM na pompie obraca ją w świecie/, 'pump hotbar help documents right-click rotation');
 assert.match(mainSrc, /function placeDebugPumpRig\(\)/, 'main exposes a complete pump debug rig');
 assert.match(mainSrc, /MM\.ui\.injectPumpDebugPanel/, 'main injects the pump debug panel');
 

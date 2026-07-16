@@ -16,7 +16,7 @@ Math.random = ()=>{
   return randomSeed / 4294967296;
 };
 
-const { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } = await import('../src/constants.js');
+const { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } = await import('../src/constants.js');
 const { fire } = await import('../src/engine/fire.js');
 const { weapons } = await import('../src/engine/weapons.js');
 assert.ok(fire && weapons, 'modules export');
@@ -591,6 +591,59 @@ assert.ok(beamSounds>=1, 'electric shot uses the robot beam sound');
 assert.ok(sparks>=1, 'electric hit spawns spark feedback');
 weapons.update(0.3, getTile, setTile);
 assert.equal(weapons.metrics().electricBeams, 0, 'electric beam effect expires promptly');
+
+{
+  const oldTeleporters=MM.teleporters;
+  let received=0;
+  MM.teleporters={
+    receiveElectricChargeAt(x,y,amount){
+      assert.equal(x+','+y,'4,0','electric charge is delivered to the exact aimed device tile');
+      received+=amount;
+      return amount;
+    }
+  };
+  tiles=new Map(); weapons.reset(); fire.reset(); heroEnergy=5; electricDamage=0; electricTarget='5,0';
+  setTile(4,0,T.TELEPORTER);
+  weapons.update(0,getTile,setTile);
+  assert.equal(weapons.fireHeld(player,6,0.5,1/60),true,'electric gun fires into a chargeable device');
+  assert.ok(Math.abs(received-1)<0.0001,'device receives exactly the energy paid by a normal electric shot');
+  assert.equal(electricDamage,0,'the charged device stops the beam before a creature behind it');
+  assert.ok(Math.abs(weapons._debug.electricBeams.at(-1).chargeAmount-received)<0.0001,'beam impact records transferred charge for visual feedback');
+
+  weapons.update(0.2,getTile,setTile);
+  heroEnergy=5; received=0;
+  MM.teleporters.receiveElectricChargeAt=()=>0; // a full battery accepts no excess
+  assert.equal(weapons.fireHeld(player,6,0.5,1/60),true,'a full device is still a valid electric-beam impact');
+  assert.equal(electricDamage,0,'a full device still blocks the shot instead of letting it pass through');
+  MM.teleporters=oldTeleporters;
+}
+
+{
+  const cases=[
+    [T.VENDING_MACHINE,'vending'],
+    [T.STEAM_BOILER,'steamMachines'],
+    [T.METEOR_SIREN,'meteorites'],
+    [T.RADIO,'furnishings']
+  ];
+  const oldHomePower=INFO[T.RADIO].requiresHomePower;
+  INFO[T.RADIO].requiresHomePower=true;
+  try{
+    for(const [tile,apiKey] of cases){
+      const old=MM[apiKey];
+      let received=0;
+      MM[apiKey]={receiveElectricChargeAt(x,y,amount){ received+=amount; return amount; }};
+      tiles=new Map(); weapons.reset(); fire.reset(); heroEnergy=5; electricDamage=0; electricTarget='5,0';
+      setTile(4,0,tile);
+      weapons.update(0,getTile,setTile);
+      assert.equal(weapons.fireHeld(player,6,0.5,1/60),true,'electric gun charges '+apiKey+' devices');
+      assert.ok(received>0,'electric energy reaches the '+apiKey+' charge API');
+      assert.equal(electricDamage,0,'a charged '+apiKey+' device stops the beam');
+      MM[apiKey]=old;
+    }
+  }finally{
+    INFO[T.RADIO].requiresHomePower=oldHomePower;
+  }
+}
 
 tiles=new Map(); weapons.reset(); fire.reset(); heroEnergy=5; electricDamage=0; electricTarget='4,0';
 setTile(3,0,T.STONE);

@@ -8,7 +8,7 @@
 // Rafts are entities, not tiles: the world grid keeps its water, the raft keeps
 // sub-tile position and velocity, and the hero stands on it boss-style
 // (collideHero). Planks are mined back into wood through the normal mining flow.
-import { T } from '../constants.js';
+import { T, WORLD_H } from '../constants.js';
 import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_physics.js';
 
 (function(){
@@ -33,7 +33,10 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     GRAV: 16,
     STICKY_DECK: 0.2,       // feet stay glued through this much wave-bob gap
     BOAT_BOUNCE: 0.36,      // restitution when two floating wooden hulls meet
-    OBJECT_DRAG: 0.05       // per entity hit: fish/debris sap a little hull speed
+    OBJECT_DRAG: 0.05,      // per entity hit: fish/debris sap a little hull speed
+    MAX_BOATS: 512,         // hard persistence/runtime guard against entity floods
+    MAX_PROPULSION_PROVIDERS: 32,
+    MAX_ABS_X: 30000000
   };
 
   let boats = [];
@@ -212,9 +215,13 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
   // Future engines/sails register here; oar strokes are impulses via row().
   const propulsion=[];
   function registerPropulsion(p){
-    if(!p || typeof p.thrust!=='function' || !p.id) return false;
+    if(!p || typeof p.thrust!=='function' || typeof p.id!=='string' || !p.id.length || p.id.length>64) return false;
     const at=propulsion.findIndex(q=>q.id===p.id);
-    if(at>=0) propulsion[at]=p; else propulsion.push(p);
+    if(at>=0) propulsion[at]=p;
+    else {
+      if(propulsion.length>=CFG.MAX_PROPULSION_PROVIDERS) return false;
+      propulsion.push(p);
+    }
     return true;
   }
   registerPropulsion({
@@ -231,10 +238,12 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     }
   });
 
-  function resolveBoatBoatCollisions(b,getTile){
+  function resolveBoatBoatCollisions(b,getTile,boatIndex){
     let a=boatRect(b);
-    for(const other of boats){
-      if(other===b) continue;
+    // Every pair is resolved once. The old all-against-all call from every boat
+    // visited each pair twice and doubled an already quadratic hot path.
+    for(let i=Math.max(0,(boatIndex|0)+1); i<boats.length; i++){
+      const other=boats[i];
       const o=boatRect(other);
       const ov=rectOverlap(a,o);
       if(!ov.hit) continue;
@@ -355,7 +364,8 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     let accel=0;
     const pctx={dt, getTile, wind:ctx && ctx.wind, water, inWater:b.inWater, grounded:b.grounded};
     for(const p of propulsion){
-      const a=p.thrust(b,pctx);
+      let a=0;
+      try{ a=p.thrust(b,pctx); }catch(e){ a=0; }
       if(Number.isFinite(a)) accel+=a;
     }
     b.vx+=accel*dt;
@@ -389,7 +399,6 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
       }
       b.x=nx;
     }
-    resolveBoatBoatCollisions(b,getTile);
     collideExternalObjects(b,dt,getTile,ctx||{});
     // Bow wake couples into the surface springs so motion reads in the water
     if(b.inWater && Math.abs(b.vx)>0.8 && water && water.disturb){
@@ -408,7 +417,10 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     dt=Math.min(0.1,dt);
     simT+=dt;
     lastCtx=ctx||lastCtx;
-    for(const b of boats) updateBoat(b,dt,getTile,(ctx||{}));
+    for(let i=0;i<boats.length;i++) updateBoat(boats[i],dt,getTile,(ctx||{}));
+    // Resolve on the final positions for this frame. Doing this inside each
+    // boat's movement let a later boat move back into an already-resolved hull.
+    for(let i=0;i<boats.length;i++) resolveBoatBoatCollisions(boats[i],getTile,i);
   }
 
   // ---------------- Hero coupling (boss-style rigid platform) ----------------
@@ -619,6 +631,7 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
       markDirty(b);
       return {ok:true, boat:b, extended:true};
     }
+    if(boats.length>=CFG.MAX_BOATS) return {ok:false, reason:'Za duzo lodzi w swiecie'};
     const waterHere=buildWaterAt(tx,ty,getTile,opts);
     if(!waterHere) return {ok:false, reason:'Za plytko na lodke'};
     const b=makeBoat(tx,waterHere.surface + CFG.DRAFT - 1);
@@ -627,6 +640,28 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     return {ok:true, boat:b, created:true};
   }
   // Remove the plank at a world point; a split hull becomes separate rafts.
+  function connectedCellGroups(cells){
+    if(!cells.length) return [];
+    const byKey=new Map(cells.map(c=>[key(c.dx,c.dy),c]));
+    const unseen=new Set(byKey.keys());
+    const groups=[];
+    while(unseen.size){
+      const first=unseen.values().next().value;
+      unseen.delete(first);
+      const stack=[byKey.get(first)], group=[];
+      while(stack.length){
+        const c=stack.pop();
+        group.push(c);
+        for(const [ox,oy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+          const k=key(c.dx+ox,c.dy+oy);
+          if(!unseen.delete(k)) continue;
+          stack.push(byKey.get(k));
+        }
+      }
+      groups.push(group);
+    }
+    return groups;
+  }
   function removeCellAt(px,py){
     const hit=cellAt(px,py);
     if(!hit) return null;
@@ -638,28 +673,29 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
       if(heroBoatId===b.id) heroBoatId=null;
       return {drop:'wood'};
     }
-    // connectivity: flood fill from the first cell, spin off any severed parts
-    const seen=new Set();
-    const stack=[b.cells[0]];
-    seen.add(key(b.cells[0].dx,b.cells[0].dy));
-    while(stack.length){
-      const c=stack.pop();
-      for(const [ox,oy] of [[1,0],[-1,0],[0,1],[0,-1]]){
-        const k=key(c.dx+ox,c.dy+oy);
-        if(seen.has(k) || !hasCell(b,c.dx+ox,c.dy+oy)) continue;
-        seen.add(k);
-        stack.push(b.cells.find(q=>key(q.dx,q.dy)===k));
-      }
-    }
-    if(seen.size<b.cells.length){
-      const severed=b.cells.filter(c=>!seen.has(key(c.dx,c.dy)));
-      b.cells=b.cells.filter(c=>seen.has(key(c.dx,c.dy)));
+    // An articulation plank can split a hull into more than two components.
+    // Preserve every component while keeping the entity-count guard intact.
+    const groups=connectedCellGroups(b.cells);
+    if(groups.length>1){
+      b.cells=groups[0];
       markDirty(b);
-      const nb=makeBoat(b.x,b.y);
-      nb.cells=severed.map(c=>({dx:c.dx,dy:c.dy}));
-      nb.vx=b.vx;
-      markDirty(nb);
-      boats.push(nb);
+      for(let i=1;i<groups.length;i++){
+        if(boats.length>=CFG.MAX_BOATS){
+          // This is only a representation fallback: no plank is duplicated or
+          // lost, and a later removal can split it once capacity is available.
+          b.cells.push(...groups[i]);
+          markDirty(b);
+          continue;
+        }
+        const nb=makeBoat(b.x,b.y);
+        nb.cells=groups[i].map(c=>({dx:c.dx,dy:c.dy}));
+        nb.vx=b.vx;
+        nb.vy=b.vy;
+        nb.inWater=b.inWater;
+        nb.grounded=b.grounded;
+        markDirty(nb);
+        boats.push(nb);
+      }
     }
     return {drop:'wood'};
   }
@@ -713,28 +749,56 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
   function reset(){ boats=[]; heroBoatId=null; nextId=1; simT=0; }
   function snapshot(){
     if(!boats.length) return null;
-    return {v:1, boats:boats.map(b=>({
-      x:+b.x.toFixed(3), y:+b.y.toFixed(3), vx:+b.vx.toFixed(3),
-      cells:b.cells.map(c=>[c.dx,c.dy])
-    }))};
+    const saved=[];
+    let processed=0;
+    for(const b of boats){
+      if(processed++>=CFG.MAX_BOATS || saved.length>=CFG.MAX_BOATS) break;
+      if(!b || !Number.isFinite(b.x) || !Number.isFinite(b.y) || Math.abs(b.x)>CFG.MAX_ABS_X
+        || b.y < -WORLD_H || b.y > WORLD_H*2) continue;
+      const cells=[];
+      let cellRecords=0;
+      for(const c of Array.isArray(b.cells)?b.cells:[]){
+        if(cellRecords++>=CFG.MAX_CELLS || cells.length>=CFG.MAX_CELLS) break;
+        if(!c || !Number.isSafeInteger(c.dx) || !Number.isSafeInteger(c.dy)) continue;
+        if(Math.abs(c.dx)>=CFG.MAX_CELLS || Math.abs(c.dy)>=CFG.MAX_CELLS) continue;
+        cells.push([c.dx,c.dy]);
+      }
+      if(!cells.length) continue;
+      const record={
+        x:+b.x.toFixed(3), y:+b.y.toFixed(3),
+        vx:Number.isFinite(b.vx)?+clamp(b.vx,-CFG.MAX_SPEED,CFG.MAX_SPEED).toFixed(3):0,
+        cells
+      };
+      if(connectedCellGroups(cells.map(c=>({dx:c[0],dy:c[1]}))).length>1) record.disconnected=1;
+      saved.push(record);
+    }
+    return saved.length ? {v:1,boats:saved} : null;
   }
   function restore(data){
     reset();
     if(!data || typeof data!=='object' || !Array.isArray(data.boats)) return false;
-    for(const s of data.boats){
-      if(!s || !Number.isFinite(s.x) || !Number.isFinite(s.y) || !Array.isArray(s.cells) || !s.cells.length) continue;
-      const b=makeBoat(s.x,s.y);
-      b.vx=Number.isFinite(s.vx)?clamp(s.vx,-CFG.MAX_SPEED,CFG.MAX_SPEED):0;
+    for(const s of data.boats.slice(0,CFG.MAX_BOATS)){
+      if(!s || !Number.isFinite(s.x) || !Number.isFinite(s.y) || Math.abs(s.x)>CFG.MAX_ABS_X
+        || s.y < -WORLD_H || s.y > WORLD_H*2 || !Array.isArray(s.cells) || !s.cells.length) continue;
       const seen=new Set();
-      b.cells=[];
+      const cells=[];
       for(const c of s.cells.slice(0,CFG.MAX_CELLS)){
-        if(!Array.isArray(c) || !Number.isFinite(c[0]) || !Number.isFinite(c[1])) continue;
-        const k=key(c[0]|0,c[1]|0);
+        if(!Array.isArray(c) || !Number.isSafeInteger(c[0]) || !Number.isSafeInteger(c[1])) continue;
+        if(Math.abs(c[0])>=CFG.MAX_CELLS || Math.abs(c[1])>=CFG.MAX_CELLS) continue;
+        const k=key(c[0],c[1]);
         if(seen.has(k)) continue;
         seen.add(k);
-        b.cells.push({dx:c[0]|0,dy:c[1]|0});
+        cells.push({dx:c[0],dy:c[1]});
       }
-      if(b.cells.length){ markDirty(b); boats.push(b); }
+      const groups=s.disconnected===1 && cells.length ? [cells] : connectedCellGroups(cells);
+      for(const group of groups){
+        if(boats.length>=CFG.MAX_BOATS) break;
+        const b=makeBoat(s.x,s.y);
+        b.vx=Number.isFinite(s.vx)?clamp(s.vx,-CFG.MAX_SPEED,CFG.MAX_SPEED):0;
+        b.cells=group;
+        markDirty(b);
+        boats.push(b);
+      }
     }
     return true;
   }

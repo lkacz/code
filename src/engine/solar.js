@@ -4,6 +4,7 @@
 // copper cable networks.
 import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 import { isSunTransparentTile } from './material_physics.js';
+import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.js';
 
 (function(){
   window.MM = window.MM || {};
@@ -13,21 +14,41 @@ import { isSunTransparentTile } from './material_physics.js';
   const STORAGE_CAPACITY = 120;
   const PANEL_RATE = 0.18;
   const STORAGE_RATE = 0.28;
-  const FULL_LIGHT_THRESHOLD = 0.9;
-  const POWER_DECAY = 10;
+  // Panels work throughout the day, but the deliberately steep curve keeps
+  // dawn/dusk output tiny and makes solar a complement to wind/hydro. At the
+  // equinox one storage panel makes about 40 E per clear 10-minute cycle: just
+  // under one radio's continuous demand after copper losses.
+  const SUN_CURVE_EXPONENT = 2.2;
+  // A regular panel only smooths very short shadows. Persistent/overnight power
+  // still requires a storage panel or another generator in the network.
+  const PANEL_BUFFER_DECAY = 1.2;
   const PULSE_DECAY = 2.4;
-  const SCAN_INTERVAL = 0.45;
-  const SCAN_RX = 82;
-  const SCAN_RY = 46;
+  // Placement hooks and the visible scan register panels immediately. This is
+  // only a recovery sweep for old saves/out-of-band edits, so it can be modest.
+  const SCAN_INTERVAL = 2.0;
+  const SCAN_RX = 52;
+  const SCAN_RY = 32;
+  const ACTIVE_RX = 68;
+  const ACTIVE_RY = 42;
+  const REMOTE_UPDATE_INTERVAL = 1.0;
   const CLUSTER_LIMIT = 80;
   const CELL_CAP = 1600;
   const FAR_IDLE_PRUNE_DIST = 260;
   const CATCHUP_MAX_SECONDS = 1800;
+  const CATCHUP_SLICE_SECONDS = 15;
   const DAY_CYCLE_SECONDS = 600;
+  const EXPOSURE_COLUMN_CAP = 4096;
+  // Surface panels care about roofs, trees and towers in their local sky, not
+  // unrelated floating islands in another vertical world section. Underground
+  // panels still have to see the natural surface through a genuinely open shaft.
+  const LOCAL_SKY_CLEARANCE = 48;
   let scanT = 0;
+  let remoteUpdateT = 0;
   let visibleScanAt = 0;
   let visibleScanKey = '';
   let lastGetTile = null;
+  const exposureCache = new Map(); // cell key -> {revision,getTile,exposed}
+  const exposureColumnRevision = new Map(); // x -> topology revision above panels
   const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
@@ -43,10 +64,23 @@ import { isSunTransparentTile } from './material_physics.js';
   function transparentForSun(t){
     return isSunTransparentTile(t);
   }
+  function naturalSurfaceAt(x){
+    try{
+      const wg=MM.worldGen;
+      const surface=wg && typeof wg.surfaceHeight==='function' ? Number(wg.surfaceHeight(x)) : NaN;
+      return Number.isFinite(surface) ? Math.max(WORLD_TOP,Math.min(WORLD_BOTTOM-1,Math.floor(surface))) : null;
+    }catch(e){ return null; }
+  }
   function skyExposed(x,y,getTile){
     x=Math.floor(x); y=Math.floor(y);
     if(!finiteTile(x,y)) return false;
-    for(let yy=y-1; yy>=WORLD_TOP; yy--){
+    const surface=naturalSurfaceAt(x);
+    // Above-ground panels scan a generous local atmosphere. A panel below the
+    // generated terrain surface instead scans the entire shaft up to open air.
+    const scanTop=surface!=null && y>surface
+      ? Math.max(WORLD_TOP,surface-1)
+      : Math.max(WORLD_TOP,y-LOCAL_SKY_CLEARANCE);
+    for(let yy=y-1; yy>=scanTop; yy--){
       const t=getSafe(getTile,x,yy,T.STONE);
       if(!transparentForSun(t)) return false;
     }
@@ -58,22 +92,53 @@ import { isSunTransparentTile } from './material_physics.js';
     if(t>=split) return 0;
     return Math.max(0,Math.min(1,Math.sin((t/split)*Math.PI)));
   }
-  function clearSkyForSolar(){
+  function solarCurve(raw){
+    const sun=Math.max(0,Math.min(1,Number(raw)||0));
+    return Math.pow(sun,SUN_CURVE_EXPONENT);
+  }
+  function cloudTransmissionAt(x){
     try{
-      const cm=MM.clouds && MM.clouds.metrics && MM.clouds.metrics();
+      const weather=MM.clouds;
+      if(weather && typeof weather.solarTransmissionAt==='function'){
+        return Math.max(0.05,Math.min(1,Number(weather.solarTransmissionAt(x))||0));
+      }
+      // Compatibility fallback for tests/older weather providers. It is
+      // intentionally partial rather than the former global all-or-nothing cut.
+      const cm=weather && weather.metrics && weather.metrics();
       if(cm){
         const mass=Math.max(0,Number(cm.cloudMass)||0);
         const count=Math.max(0,Number(cm.clouds)||0);
-        const drops=Math.max(0,Number(cm.drops)||0);
-        const storm=!!(cm.storm && cm.storm.active);
-        if(count>0 || mass>0.001 || drops>0 || storm) return false;
+        const storm=cm.storm && cm.storm.active ? Math.max(0.35,Number(cm.storm.intensity)||0.35) : 0;
+        const cover=Math.max(0,Math.min(0.88,mass/90+count/40+storm*0.28));
+        return 1-cover;
       }
     }catch(e){}
-    return true;
+    return 1;
+  }
+  function clearSkyForSolar(x){
+    return cloudTransmissionAt(x)>=0.995;
+  }
+  function invalidateExposureColumn(x){
+    x=Math.floor(x);
+    if(!Number.isFinite(x)) return;
+    if(!exposureColumnRevision.has(x) && exposureColumnRevision.size>=EXPOSURE_COLUMN_CAP){
+      exposureColumnRevision.clear();
+      exposureCache.clear();
+    }
+    exposureColumnRevision.set(x,(exposureColumnRevision.get(x)||0)+1);
+  }
+  function cachedSkyExposed(x,y,getTile){
+    x=Math.floor(x); y=Math.floor(y);
+    const id=key(x,y);
+    const revision=exposureColumnRevision.get(x)||0;
+    const cached=exposureCache.get(id);
+    if(cached && cached.revision===revision && cached.getTile===getTile) return cached.exposed;
+    const exposed=skyExposed(x,y,getTile);
+    exposureCache.set(id,{revision,getTile,exposed});
+    return exposed;
   }
   function fullLightSunAt(cycleT,dayFrac=0.5){
-    const raw=cycleSunAt(cycleT,dayFrac);
-    return raw>=FULL_LIGHT_THRESHOLD ? raw : 0;
+    return solarCurve(cycleSunAt(cycleT,dayFrac));
   }
   function currentCycleInfo(){
     try{
@@ -106,19 +171,19 @@ import { isSunTransparentTile } from './material_physics.js';
     const c=normalizedCycleInfo(info,cycleT);
     if(!c.isDay) return 0;
     const raw=Math.max(0,Math.min(1,Math.sin(c.tDay*Math.PI)));
-    return raw>=FULL_LIGHT_THRESHOLD ? raw : 0;
+    return solarCurve(raw);
   }
   function daylight(){
-    if(!clearSkyForSolar()) return 0;
     const sun=fullLightForInfo(currentCycleInfo());
     return Math.max(0,Math.min(1,sun));
   }
-  function averageDaylight(seconds){
-    if(!clearSkyForSolar()) return 0;
+  function averageDaylight(seconds,endCycleT,cycleInfo){
     const span=Math.max(0,Number(seconds)||0);
-    if(span<=0.001) return daylight();
-    const current=currentCycleInfo();
-    const end=normalizedCycleInfo(current).cycleT;
+    const current=cycleInfo || currentCycleInfo();
+    if(span<=0.001 && !Number.isFinite(Number(endCycleT))) return fullLightForInfo(current);
+    const end=Number.isFinite(Number(endCycleT))
+      ? normalizedCycleInfo(current,Number(endCycleT)).cycleT
+      : normalizedCycleInfo(current).cycleT;
     const delta=span/DAY_CYCLE_SECONDS;
     const samples=Math.max(4,Math.min(72,Math.ceil(span/30)));
     let total=0;
@@ -131,7 +196,7 @@ import { isSunTransparentTile } from './material_physics.js';
   function normalizeState(m,t){
     const cap=capacityForTile(t);
     m.energy=Math.max(0,Math.min(cap,Number(m.energy)||0));
-    m.power=Math.max(0,Number(m.power)||0);
+    m.power=Math.max(0,Math.min(rateForTile(t),Number(m.power)||0));
     m.pulse=Math.max(0,Math.min(1,Number(m.pulse)||0));
     m.storage=isStorageTile(t);
     return m;
@@ -228,6 +293,7 @@ import { isSunTransparentTile } from './material_physics.js';
     }
     return gained;
   }
+  function receiveElectricChargeAt(x,y,amount,getTile){ return debugChargeAt(x,y,amount,getTile); }
   function debugSetEnergyAt(x,y,amount,getTile){
     const list=clusterStates(x,y,getTile);
     if(!list.length) return false;
@@ -241,9 +307,9 @@ import { isSunTransparentTile } from './material_physics.js';
   }
   function updateCell(m,dt,getTile,sun){
     const t=getSafe(getTile,m.x,m.y,T.AIR);
-    if(!isSourceTile(t)){ cells.delete(key(m.x,m.y)); return; }
+    if(!isSourceTile(t)){ cells.delete(key(m.x,m.y)); exposureCache.delete(key(m.x,m.y)); return; }
     normalizeState(m,t);
-    const exposed=skyExposed(m.x,m.y,getTile);
+    const exposed=cachedSkyExposed(m.x,m.y,getTile);
     const charge=exposed ? sun*rateForTile(t) : 0;
     const cap=capacityForTile(t);
     if(charge>0.001){
@@ -253,7 +319,7 @@ import { isSunTransparentTile } from './material_physics.js';
       if(m.energy>before+0.001) m.pulse=Math.max(m.pulse||0,Math.min(1,0.25+sun*0.75));
     } else {
       m.power=0;
-      if(!isStorageTile(t)) m.energy=Math.max(0,(m.energy||0)-POWER_DECAY*dt);
+      if(!isStorageTile(t)) m.energy=Math.max(0,(m.energy||0)-PANEL_BUFFER_DECAY*dt);
     }
     m.pulse=Math.max(0,(m.pulse||0)-PULSE_DECAY*dt);
   }
@@ -263,9 +329,9 @@ import { isSunTransparentTile } from './material_physics.js';
     const py=player && Number.isFinite(player.y) ? player.y : 0;
     const candidates=[];
     for(const [k,m] of cells){
-      if(!m || !finiteTile(m.x,m.y)){ cells.delete(k); continue; }
+      if(!m || !finiteTile(m.x,m.y)){ cells.delete(k); exposureCache.delete(k); continue; }
       const t=getSafe(getTile,m.x,m.y,T.AIR);
-      if(!isSourceTile(t)){ cells.delete(k); continue; }
+      if(!isSourceTile(t)){ cells.delete(k); exposureCache.delete(k); continue; }
       const energy=Math.max(0,Number(m.energy)||0);
       const power=Math.max(0,Number(m.power)||0);
       const dist=Math.abs(m.x-px)+Math.abs(m.y-py);
@@ -277,16 +343,23 @@ import { isSunTransparentTile } from './material_physics.js';
     if(cells.size<=CELL_CAP) return;
     candidates.sort((a,b)=>b.score-a.score);
     const target=Math.floor(CELL_CAP*0.86);
-    for(let i=0; i<candidates.length && cells.size>target; i++) cells.delete(candidates[i].k);
+    for(let i=0; i<candidates.length && cells.size>target; i++){
+      cells.delete(candidates[i].k);
+      exposureCache.delete(candidates[i].k);
+    }
   }
   function scanAround(player,getTile){
     if(!player || typeof getTile!=='function') return;
     const cx=Math.floor(player.x), cy=Math.floor(player.y);
     const x0=cx-SCAN_RX, x1=cx+SCAN_RX;
     const y0=Math.max(WORLD_TOP,cy-SCAN_RY), y1=Math.min(WORLD_BOTTOM-1,cy+SCAN_RY);
+    const world=MM.world;
+    const peek=world && typeof world.peekTile==='function'
+      ? (x,y)=>world.peekTile(x,y,T.AIR)
+      : getTile;
     for(let y=y0; y<=y1; y++){
       for(let x=x0; x<=x1; x++){
-        if(isSourceTile(getSafe(getTile,x,y,T.AIR))) ensureCell(x,y,getTile);
+        if(isSourceTile(getSafe(peek,x,y,T.AIR))) ensureCell(x,y,getTile);
       }
     }
   }
@@ -299,8 +372,26 @@ import { isSunTransparentTile } from './material_physics.js';
       scanAround(player,getTile);
     }
     pruneCells(player,getTile);
-    const sun=daylight();
-    for(const m of [...cells.values()]) updateCell(m,dt,getTile,sun);
+    remoteUpdateT+=dt;
+    const remoteDt=remoteUpdateT>=REMOTE_UPDATE_INTERVAL ? remoteUpdateT : 0;
+    if(remoteDt>0) remoteUpdateT=0;
+    const hasPlayer=!!(player && Number.isFinite(player.x) && Number.isFinite(player.y));
+    const px=hasPlayer ? player.x : 0;
+    const py=hasPlayer ? player.y : 0;
+    const baseSun=daylight();
+    const weatherByColumn=new Map();
+    for(const m of [...cells.values()]){
+      const nearby=!hasPlayer || (Math.abs(m.x-px)<=ACTIVE_RX && Math.abs(m.y-py)<=ACTIVE_RY);
+      const step=nearby ? dt : remoteDt;
+      if(!(step>0)) continue;
+      const column=Math.floor(m.x/2);
+      let transmission=weatherByColumn.get(column);
+      if(transmission===undefined){
+        transmission=baseSun>0 ? cloudTransmissionAt(column*2+1) : 1;
+        weatherByColumn.set(column,transmission);
+      }
+      updateCell(m,step,getTile,baseSun*transmission);
+    }
   }
   function catchUp(dt,player,getTile){
     if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function') return false;
@@ -309,12 +400,31 @@ import { isSunTransparentTile } from './material_physics.js';
     lastGetTile=getTile;
     scanAround(player,getTile);
     pruneCells(player,getTile);
-    const sun=averageDaylight(simDt);
     let changed=false;
-    for(const m of [...cells.values()]){
-      const before=m ? m.energy : 0;
-      updateCell(m,simDt,getTile,sun);
-      if(!m || !cells.has(key(m.x,m.y)) || Math.abs((m.energy||0)-before)>0.0001) changed=true;
+    const current=currentCycleInfo();
+    const end=normalizedCycleInfo(current).cycleT;
+    const slices=Math.max(1,Math.ceil(simDt/CATCHUP_SLICE_SECONDS));
+    const step=simDt/slices;
+    const weatherByColumn=new Map();
+    const beforeEnergy=new Map([...cells.values()].filter(Boolean).map(m=>[key(m.x,m.y),m.energy||0]));
+    for(let slice=0; slice<slices; slice++){
+      // Process oldest -> newest so regular panels correctly lose their small
+      // buffer during a night at the end of a long background-tab gap.
+      const sliceEnd=end-(simDt-step*(slice+1))/DAY_CYCLE_SECONDS;
+      const baseSun=averageDaylight(step,sliceEnd,current);
+      for(const m of [...cells.values()]){
+        const column=Math.floor(m.x/2);
+        let transmission=weatherByColumn.get(column);
+        if(transmission===undefined){
+          transmission=cloudTransmissionAt(column*2+1);
+          weatherByColumn.set(column,transmission);
+        }
+        updateCell(m,step,getTile,baseSun*transmission);
+      }
+    }
+    for(const [id,before] of beforeEnergy){
+      const m=cells.get(id);
+      if(!m || Math.abs((m.energy||0)-before)>0.0001){ changed=true; break; }
     }
     return changed;
   }
@@ -351,11 +461,16 @@ import { isSunTransparentTile } from './material_physics.js';
       }
     }
   }
+  function isGeneratingState(machine){
+    return isEnergyGenerating(machine && machine.power);
+  }
   function draw(ctx,TILE,sx,sy,viewX,viewY,canDrawTile,getTile){
     if(!ctx) return;
     ensureVisible(sx,sy,viewX,viewY,getTile);
     if(!cells.size) return;
     const visible=typeof canDrawTile==='function' ? canDrawTile : null;
+    const now=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+    const lampClock=now*0.005;
     ctx.save();
     ctx.globalCompositeOperation='lighter';
     for(const m of cells.values()){
@@ -374,18 +489,25 @@ import { isSunTransparentTile } from './material_physics.js';
       ctx.lineWidth=Math.max(1,TILE*0.045);
       ctx.strokeRect(px+TILE*0.12,py+TILE*0.12,TILE*0.76,TILE*0.76);
       if(isStorageTile(t)) drawBatteryLines(ctx,TILE,px,py,charge,m.pulse||0);
+      drawEnergyGenerationLamp(ctx,TILE,px,py,isGeneratingState(m),0.5+0.5*Math.sin(lampClock+m.x*0.73+m.y*0.41));
     }
     ctx.restore();
   }
   function onTileChanged(x,y,oldTile,newTile){
     if(oldTile===newTile) return;
     const tx=Math.floor(x), ty=Math.floor(y);
-    if(isSourceTile(oldTile) && !isSourceTile(newTile)) cells.delete(key(tx,ty));
+    invalidateExposureColumn(tx);
+    if(isSourceTile(oldTile) && !isSourceTile(newTile)){
+      cells.delete(key(tx,ty));
+      exposureCache.delete(key(tx,ty));
+    }
     if(isSourceTile(newTile)) ensureCell(tx,ty,MM.world && MM.world.getTile);
   }
   function snapshot(){
     const list=[...cells.values()]
-      .filter(m=>m && finiteTile(m.x,m.y) && (m.energy||0)>0.001 && (!lastGetTile || isSourceTile(getSafe(lastGetTile,m.x,m.y,T.AIR))))
+      // Persist empty panels too: otherwise a drained remote farm disappears
+      // from the simulation after load until the player physically revisits it.
+      .filter(m=>m && finiteTile(m.x,m.y) && (!lastGetTile || isSourceTile(getSafe(lastGetTile,m.x,m.y,T.AIR))))
       .sort((a,b)=>(a.x-b.x)||(a.y-b.y))
       .slice(0,CELL_CAP)
       .map(m=>({x:m.x,y:m.y,energy:+(m.energy||0).toFixed(3),power:+(m.power||0).toFixed(2)}));
@@ -395,8 +517,9 @@ import { isSunTransparentTile } from './material_physics.js';
     reset();
     if(typeof getTile==='function') lastGetTile=getTile;
     if(!data || !Array.isArray(data.list)) return;
-    for(const raw of data.list){
-      if(cells.size>=CELL_CAP) break;
+    const limit=Math.min(data.list.length,CELL_CAP);
+    for(let i=0;i<limit;i++){
+      const raw=data.list[i];
       if(!raw || !finiteTile(raw.x,raw.y)) continue;
       const x=Math.floor(raw.x), y=Math.floor(raw.y);
       const t=getSafe(getTile,x,y,T.AIR);
@@ -404,16 +527,19 @@ import { isSunTransparentTile } from './material_physics.js';
       const m=ensureCell(x,y,getTile);
       if(m){
         m.energy=Math.max(0,Math.min(capacityForTile(t),Number(raw.energy)||0));
-        m.power=Math.max(0,Number(raw.power)||0);
+        m.power=Math.max(0,Math.min(rateForTile(t),Number(raw.power)||0));
       }
     }
   }
   function reset(){
     cells.clear();
     scanT=0;
+    remoteUpdateT=0;
     visibleScanAt=0;
     visibleScanKey='';
     lastGetTile=null;
+    exposureCache.clear();
+    exposureColumnRevision.clear();
   }
   function metrics(){
     let storedEnergy=0, active=0, storageCells=0, currentPower=0;
@@ -432,6 +558,7 @@ import { isSunTransparentTile } from './material_physics.js';
     sourceAt,
     energyAt,
     drainAt,
+    receiveElectricChargeAt,
     skyExposed,
     update,
     draw,
@@ -441,7 +568,7 @@ import { isSunTransparentTile } from './material_physics.js';
     reset,
     metrics,
     catchUp,
-    _debug:{cells,PANEL_CAPACITY,STORAGE_CAPACITY,PANEL_RATE,STORAGE_RATE,FULL_LIGHT_THRESHOLD,CELL_CAP,CATCHUP_MAX_SECONDS,clusterCells,daylight,averageDaylight,clearSkyForSolar,fullLightSunAt,ensureVisible,debugChargeAt,debugSetEnergyAt}
+    _debug:{cells,PANEL_CAPACITY,STORAGE_CAPACITY,PANEL_RATE,STORAGE_RATE,SUN_CURVE_EXPONENT,PANEL_BUFFER_DECAY,LOCAL_SKY_CLEARANCE,SCAN_INTERVAL,SCAN_RX,SCAN_RY,ACTIVE_RX,ACTIVE_RY,REMOTE_UPDATE_INTERVAL,CELL_CAP,CATCHUP_MAX_SECONDS,CATCHUP_SLICE_SECONDS,clusterCells,daylight,averageDaylight,clearSkyForSolar,cloudTransmissionAt,solarCurve,fullLightSunAt,ensureVisible,debugChargeAt,debugSetEnergyAt,isGeneratingState}
   };
   MM.solar=api;
 })();

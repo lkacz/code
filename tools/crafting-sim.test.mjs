@@ -85,6 +85,12 @@ model.recordCraft('torch', 2);
 assert.equal(model.countOf('torch'), 5, 'per-recipe lifetime count');
 assert.equal(model.totalCrafts(), 5, 'total spans all recipes');
 assert.equal(model.recordCraft('nope', 1), 0, 'unknown ids are not counted');
+{
+  const hardenedCounts=createCraftingModel({recipes,getHave:k=>inv[k]||0,isDone:()=>false});
+  assert.equal(hardenedCounts.recordCraft('torch',5),5,'hardened counter starts with the requested finite amount');
+  assert.equal(hardenedCounts.recordCraft('torch',Number.POSITIVE_INFINITY),6,'non-finite craft increments are reduced to one safe craft');
+  assert.equal(hardenedCounts.recordCraft('torch',2_000_000),999999,'craft statistics cap before integer precision or UI counters can overflow');
+}
 
 // --- Snapshot / restore roundtrip ---
 const snap = model.snapshot();
@@ -109,6 +115,25 @@ assert.equal(model.restore(null), false, 'missing snapshot falls back to silent 
 assert.equal(model.freshCount(), 0, 'silent seeding never creates NEW badges');
 assert.equal(model.syncAvailability().length, 0, 'seeded availability matches current inventory');
 assert.equal(model.restore({seenAvailable:'junk'}), false, 'corrupt snapshot falls back to seeding');
+
+// Hostile/oversized save fields are bounded and irrelevant material names are
+// discarded instead of permanently bloating discovery state.
+{
+  const junk=Array.from({length:5000},(_,i)=>'junk_'+i);
+  const hardened=createCraftingModel({ recipes, getHave:k=>inv[k]||0, isDone:()=>false });
+  assert.equal(hardened.restore({
+    seenAvailable:['torch',...junk],
+    fresh:['torch',...junk],
+    favorites:['sword',...junk],
+    tracked:'sword',
+    knownMaterials:['wood','not_a_recipe_material',...junk],
+    seenResults:['pick',...junk],
+    counts:{torch:9,ghost_recipe:999999}
+  }),true,'bounded restore accepts valid state mixed with oversized junk');
+  assert.equal(hardened.isKnownMaterial('wood'),true,'valid ingredient knowledge survives hardened restore');
+  assert.equal(hardened.isKnownMaterial('not_a_recipe_material'),false,'irrelevant material keys are rejected on restore');
+  assert.ok(hardened.snapshot().knownMaterials.length<=4,'restored material knowledge stays bounded by recipe ingredients');
+}
 
 // --- Progressive recipe discovery (unlock gating) ---------------------------
 // A recipe stays hidden until the player has touched every ingredient type
@@ -193,6 +218,13 @@ assert.equal(model.restore({seenAvailable:'junk'}), false, 'corrupt snapshot fal
 // --- Source hints cover every ingredient the shipped recipes use ---
 const mainSrc = await import('node:fs').then(fs=>fs.readFileSync(new URL('../src/main.js', import.meta.url), 'utf8'));
 const recipesBlock = mainSrc.slice(mainSrc.indexOf('const RECIPES=['), mainSrc.indexOf('const CRAFT_GROUPS='));
+assert.match(mainSrc,/MM\.inventory\.grantItem\(def,\{equip:true,markNew:false\}\)/,'crafted gear uses the capacity-aware inventory transaction');
+assert.match(mainSrc,/if\(madeOk===false \|\| craftedOutputFailed\)\{ for\(const k in r\.cost\) inv\[k\]\+=r\.cost\[k\]; break; \}/,'failed crafted output refunds every deducted ingredient');
+for(const id of ['treasure_compass_copper','treasure_compass_silver','treasure_compass_iridium','treasure_compass_antimatter','night_goggles_basic','night_goggles_silver','thermal_goggles_iridium','thermal_goggles_antimatter']){
+  assert.match(recipesBlock,new RegExp("id:'"+id+"'"),id+' is available through ordinary crafting progression');
+}
+assert.match(recipesBlock,/treasureSenseLevel:4/, 'best crafted compass reaches the hard-capped fourth tier');
+assert.match(recipesBlock,/specialVisionLevel:4,visionMode:'thermal'/, 'advanced crafting exposes capped thermal optics');
 const usedKeys = new Set();
 for(const m of recipesBlock.matchAll(/cost:\{([^}]*)\}/g)){
   for(const part of m[1].split(',')){

@@ -1121,6 +1121,31 @@ import './inventory.js';
     statsBox.appendChild(statRow('Moc skoku', fmtMult(m.jumpPowerMult||1), jpLines));
     const mineLines=[]; sel.forEach(it=>{ if(typeof it.mineSpeedMult==='number' && it.mineSpeedMult!==1) mineLines.push(label(it)+': '+fmtMult(it.mineSpeedMult)); });
     statsBox.appendChild(statRow('Szybkość kopania', fmtMult(m.mineSpeedMult||1), mineLines));
+    const magnetLabel=level=>{
+      level=Math.max(0,Math.min(4,Math.trunc(Number(level)||0)));
+      if(level<=0) return 'wyłączone';
+      const reach=level-1;
+      return reach===0?'własny blok':'promień +'+reach+' '+(reach===1?'blok':'bloki');
+    };
+    const magnetLines=[]; sel.forEach(it=>{ if(typeof it.lootMagnetLevel==='number' && it.lootMagnetLevel>0) magnetLines.push(label(it)+': '+magnetLabel(it.lootMagnetLevel)); });
+    statsBox.appendChild(statRow('Auto-zbieranie łupów', magnetLabel(m.lootMagnetLevel), magnetLines));
+    const compassRanges=[0,12,22,36,52];
+    const compassLabel=level=>{
+      level=Math.max(0,Math.min(4,Math.trunc(Number(level)||0)));
+      return level ? 'poziom '+level+' · '+compassRanges[level]+' bloków' : 'brak';
+    };
+    const compassLines=[]; sel.forEach(it=>{ if(typeof it.treasureSenseLevel==='number' && it.treasureSenseLevel>0) compassLines.push(label(it)+': '+compassLabel(it.treasureSenseLevel)); });
+    statsBox.appendChild(statRow('Kompas skarbów', compassLabel(m.treasureSenseLevel), compassLines));
+    const specialVisionLines=[];
+    sel.forEach(it=>{
+      if(typeof it.specialVisionLevel!=='number' || it.specialVisionLevel<=0) return;
+      specialVisionLines.push(label(it)+': '+(it.visionMode==='thermal'?'termowizja':'noktowizja')+' '+Math.trunc(it.specialVisionLevel));
+    });
+    const activeEyes=INV.equippedItem('eyes');
+    const specialVisionLabel=m.specialVisionLevel>0 && activeEyes
+      ? (activeEyes.visionMode==='thermal'?'termowizja':'noktowizja')+' '+Math.trunc(m.specialVisionLevel)
+      : 'brak';
+    statsBox.appendChild(statRow('Wizja specjalna', specialVisionLabel, specialVisionLines));
     const defensePct=Math.round(Math.max(0,Math.min(0.45,Number(m.damageReductionBonus)||0))*100);
     const defenseLines=[];
     if(MM.progress && MM.progress.stats){

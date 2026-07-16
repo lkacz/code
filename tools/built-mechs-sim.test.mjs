@@ -275,6 +275,7 @@ sitAt(301,17);
 assert.equal(seat(), true, 'wired battery machine assembles');
 const wired=mechs.heroMech();
 assert.equal(mechs._debug.mechTrackCircuitConnected(wired), true, 'copper-wire overlay joins battery to tracks');
+assert.equal(mechs._debug.mechTrackCircuitEfficiency(wired),0.5,'copper-wired mech drive loses half of transmitted energy');
 assert.equal(globalThis.MM.world.hasInfrastructure(302,18,T.COPPER_WIRE), false, 'assembly lifts the wire overlay off the world layer');
 const wireCell=wired.cells.find(c=>c.wire===T.COPPER_WIRE);
 assert.ok(wireCell && wireCell.t===T.STEEL, 'the steel block carries the wire as a cell overlay');
@@ -286,8 +287,21 @@ const wparkX=Math.round(300);
 assert.equal(globalThis.MM.world.hasInfrastructure(wparkX+2,18,T.COPPER_WIRE), true, 'parking writes the wire overlay back to the world layer');
 assert.equal(getTile(wparkX+2,17),T.SOLAR_BATTERY, 'parked battery returns to the grid');
 
-// unwire it: battery without the overlay leaves the tracks on hero energy only
+// Silver is a drop-in cable substitute aboard player-built machines and keeps
+// its material identity through assembly, save state and parking.
 globalThis.MM.world.clearInfrastructure(wparkX+2,18,T.COPPER_WIRE);
+globalThis.MM.world.setInfrastructure(wparkX+2,18,T.SILVER_WIRE);
+sitAt(wparkX+1,17);
+assert.equal(seat(),true,'silver-wired battery machine assembles');
+const silverWired=mechs.heroMech();
+assert.equal(mechs._debug.mechTrackCircuitConnected(silverWired),true,'silver-wire overlay joins battery to tracks');
+assert.equal(mechs._debug.mechTrackCircuitEfficiency(silverWired),1,'silver-wired mech drive delivers the full onboard reserve');
+assert.ok(silverWired.cells.some(c=>c.wire===T.SILVER_WIRE),'assembled mech retains the silver cable material');
+mechs._debug.parkBuiltMech(silverWired,globalThis.player,getTile,setTile,{});
+assert.equal(globalThis.MM.world.hasInfrastructure(wparkX+2,18,T.SILVER_WIRE),true,'parking writes silver wire back to the world layer');
+
+// Unwire it: battery without either cable leaves the tracks on hero energy only.
+globalThis.MM.world.clearInfrastructure(wparkX+2,18,T.SILVER_WIRE);
 sitAt(wparkX+1,17);
 assert.equal(seat(), true, 'unwired battery machine still assembles');
 const unwired=mechs.heroMech();
@@ -387,7 +401,7 @@ assert.equal(mechs._debug.mechTurretCircuitConnected(gunMech2), true, 'the turre
   if(globalThis.MM.turrets) assert.ok(globalThis.MM.turrets.metrics().shots>s1, 'the wired built turrets engage a hostile');
   assert.ok(mobDmg>0, 'the wired built turrets damage the mob off the onboard battery');
   assert.ok(gunMech2.energy<250, 'built turret fire spends the onboard reserve');
-  assert.ok(gunMech2.energy>120, 'a reserve above placed-turret capacity is never truncated by firing');
+  assert.ok(gunMech2.energy<80, 'sustained turret fire pays the doubled raw-energy cost of its copper circuit');
   // Each turret block is its own gun with its own fire clock.
   assert.equal(Object.keys(gunMech2.turretStates||{}).length, 2, 'both turret blocks fire with independent per-cell states');
   mechs._debug.parkBuiltMech(gunMech2,globalThis.player,getTile,setTile,{});

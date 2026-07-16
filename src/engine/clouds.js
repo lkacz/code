@@ -216,6 +216,33 @@ window.MM = window.MM || {};
     for(const c of clouds){ if(c.snowing && Math.abs(c.x-x)<=c.r*1.15*cloudVisualScaleX()) return true; }
     return false;
   }
+  // Fraction of direct solar output reaching a world column. Cloud shading is
+  // deliberately local: a front over another outpost must not switch off every
+  // panel in the world. Even a storm leaves a little diffuse light, while
+  // overlapping heavy cells compound naturally.
+  function solarTransmissionAt(x){
+    if(typeof x!=='number'||!isFinite(x)) return 1;
+    let transmission=1;
+    const xScale=cloudVisualScaleX();
+    for(const c of clouds){
+      if(!c || !Number.isFinite(c.x)) continue;
+      const radius=Number.isFinite(c.r) ? c.r : radiusFor(Number(c.mass)||0);
+      const footprint=Math.max(4,radius*1.15*xScale);
+      const distance=Math.abs(c.x-x)/footprint;
+      if(distance>=1) continue;
+      // Smooth edges avoid output flicker as a cloud enters/leaves the column.
+      const proximity=Math.pow(1-distance*distance,2);
+      const mass=Math.max(0,Number(c.mass)||0);
+      let opacity=0.12+mass/42;
+      if(c.raining) opacity+=c.snowing?0.08:0.12;
+      if(isAtomicCloud(c)) opacity+=0.10;
+      if(storm.active) opacity+=0.08*clamp(storm.intensity,0,1);
+      opacity=clamp(opacity,0.16,0.90)*proximity;
+      transmission*=1-opacity;
+      if(transmission<=0.08) return 0.08;
+    }
+    return clamp(transmission,0.08,1);
+  }
   // Directional precipitation field for the audio mixer. A raining cloud is
   // audible across its footprint and fades for a short distance beyond it;
   // signed pan is weighted by the cloud's side relative to the listener.
@@ -1635,7 +1662,7 @@ window.MM = window.MM || {};
     return {clouds, vapor, toxicVapor, evapAcc, depFrac, farBudget, simT, bolts, storm, waterTileCost};
   }
 
-  MM.clouds={update, draw, reset, addCloud, injectVapor, injectToxicVapor, isRainingAt, isSnowingAt, precipitationAudioAt, toxicRainAt, metrics, setWindOverride, setCycleOverride,
+  MM.clouds={update, draw, reset, addCloud, injectVapor, injectToxicVapor, isRainingAt, isSnowingAt, solarTransmissionAt, precipitationAudioAt, toxicRainAt, metrics, setWindOverride, setCycleOverride,
              startStorm, stopStorm, strike, snapshot, restore, config:CFG, _debug};
 })();
 // ESM export (progressive migration)

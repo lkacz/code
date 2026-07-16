@@ -73,8 +73,14 @@ const tasks = (function(){
     const id = baseTaskId(src);
     if(!id) return null;
     const prev = active.get(id) || null;
-    const srcTarget = cleanTarget(src.target) || cleanTarget(src);
-    const target = srcTarget || (prev && prev.target ? cleanTarget(prev.target) : null);
+    const hasExplicitTarget=Object.prototype.hasOwnProperty.call(src,'target');
+    const srcTarget=hasExplicitTarget ? cleanTarget(src.target) : cleanTarget(src);
+    // Omitting `target` preserves an existing location; explicitly passing null
+    // clears it. Story phases use the latter when an objective can be completed
+    // anywhere, so a previous handoff marker cannot leak into the next step.
+    const target=hasExplicitTarget
+      ? srcTarget
+      : (srcTarget || (prev && prev.target ? cleanTarget(prev.target) : null));
     const status = src.status === 'done' || src.status === 'completed'
       ? 'done'
       : (src.status === 'discarded' ? 'discarded' : 'active');

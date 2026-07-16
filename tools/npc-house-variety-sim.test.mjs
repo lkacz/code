@@ -103,6 +103,20 @@ for(const biome of BIOMES){
       'house at x='+Math.round(cand.x)+' showcases its current distance tier '+expectedFurnishingTier);
     assert.ok(furnishings.every(c=>getByTile(c.t).tier<=expectedFurnishingTier),
       'NPC house never leaks a tier beyond its exploration distance');
+    const foreground=new Map(cells.filter(c=>c.layer!=='bg').map(c=>[c.x+','+c.y,c]));
+    const backgrounds=new Set(bg.map(c=>c.x+','+c.y));
+    for(const c of furnishings){
+      const def=getByTile(c.t);
+      const below=foreground.get(c.x+','+(c.y+1));
+      const above=foreground.get(c.x+','+(c.y-1));
+      if(def.placement==='wall') assert.ok(backgrounds.has(c.x+','+c.y),def.id+' is mounted on an NPC-house back wall');
+      else if(def.placement==='floor_or_ceiling') assert.ok(
+        (above && (above.role==='roof'||above.role==='floor')) || (below && below.role==='floor'),
+        def.id+' hangs below roof/slab support or rests on a floor'
+      );
+      else if(def.placement==='floor_or_table') assert.ok(below && (below.role==='floor'||below.t===T.PINE_TABLE),def.id+' stands on an NPC floor or table');
+      else assert.ok(below && below.role==='floor',def.id+' stands on an NPC-house floor');
+    }
     assert.ok(cells.filter(c=>c.structural).length>=20, 'substantial structural shell');
     for(const c of cells){
       assert.ok(Number.isFinite(c.x) && Number.isFinite(c.y) && c.y>2 && c.y<SURFACE+30, 'cell within sane bounds');
@@ -139,7 +153,7 @@ for(const [arch,pick] of archesSeen){
   FALLING.init(getTile,setTile);
   generatedNpcs.reset();
   globalThis.MM.worldGen=pick.worldGen;
-  const player={x:pick.candidate.x,y:SURFACE-1,hp:100};
+  const player={x:pick.candidate.x+20,y:SURFACE-1,hp:100};
   const ctx={worldGen:pick.worldGen,gameDayFloat(){return gameDay;},onInventoryChange(){},onChange(){}};
   generatedNpcs.update(1,player,getTile,setTile,ctx);
   const {layout,cells}=generatedNpcs._houseCells(pick.candidate,getTile,pick.worldGen);

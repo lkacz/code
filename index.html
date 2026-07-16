@@ -81,6 +81,10 @@
   #menuWrap #lampBtn.low{ opacity:.55; filter:grayscale(.7); }
   #lampBtn::after{ content:""; position:absolute; right:4px; bottom:4px; width:5px; height:5px; border-radius:50%; background:#66717d; box-shadow:0 0 0 transparent; }
   #lampBtn.on::after{ background:#fff1a3; box-shadow:0 0 7px #8eeeff; }
+  #visionBtn{ width:38px; min-width:38px; padding:0 !important; font-size:17px !important; filter:saturate(.72); }
+  #menuWrap #visionBtn.on{ background:linear-gradient(180deg,rgba(66,216,111,.42),rgba(12,82,57,.82)); border-color:rgba(153,255,180,.76); box-shadow:0 0 15px rgba(80,255,137,.35),inset 0 1px 0 rgba(255,255,255,.20); filter:none; }
+  #menuWrap #visionBtn.on.thermal{ background:linear-gradient(180deg,rgba(255,130,56,.48),rgba(76,31,92,.84)); border-color:rgba(255,185,103,.82); box-shadow:0 0 16px rgba(255,99,48,.38),inset 0 1px 0 rgba(255,255,255,.20); }
+  #visionBtn:disabled{ opacity:.38; filter:grayscale(.82); cursor:not-allowed; }
   /* the glass override above out-specifies .topbtn.toggled — restate the ON state
      (this also covers the open menu: ui.js stamps menuBtn with .topbtn.toggled) */
   #menuWrap .topbtn.toggled{ background:#21a366; border-color:rgba(255,255,255,.22); box-shadow:0 2px 10px rgba(33,163,102,.45); }
@@ -944,12 +948,12 @@
   #radioPanel .radioStationTracks{ margin-top:3px; color:#74869b; font-size:8px; line-height:1.3; }
   #radioPanel .radioStationBars{ align-self:end; display:flex; align-items:flex-end; justify-content:center; gap:2px; height:25px; opacity:.42; }
   #radioPanel .radioStationBars i{ display:block; width:3px; min-height:4px; border-radius:3px 3px 1px 1px; background:var(--station-accent); box-shadow:0 0 5px color-mix(in srgb,var(--station-accent) 48%,transparent); }
-  #radioPanel .radioStationCard[data-active="true"] .radioStationBars{ opacity:.9; }
-  #radioPanel .radioStationCard[data-active="true"] .radioStationBars i{ animation:radioBeat .72s ease-in-out infinite alternate; }
-  #radioPanel .radioStationCard[data-active="true"] .radioStationBars i:nth-child(2){ animation-delay:-.28s; }
-  #radioPanel .radioStationCard[data-active="true"] .radioStationBars i:nth-child(3){ animation-delay:-.51s; }
-  #radioPanel .radioStationCard[data-active="true"] .radioStationBars i:nth-child(4){ animation-delay:-.14s; }
-  #radioPanel .radioStationCard[data-active="true"] .radioStationBars i:nth-child(5){ animation-delay:-.39s; }
+  #radioPanel .radioStationCard[data-broadcasting="true"] .radioStationBars{ opacity:.9; }
+  #radioPanel .radioStationCard[data-broadcasting="true"] .radioStationBars i{ animation:radioBeat .72s ease-in-out infinite alternate; }
+  #radioPanel .radioStationCard[data-broadcasting="true"] .radioStationBars i:nth-child(2){ animation-delay:-.28s; }
+  #radioPanel .radioStationCard[data-broadcasting="true"] .radioStationBars i:nth-child(3){ animation-delay:-.51s; }
+  #radioPanel .radioStationCard[data-broadcasting="true"] .radioStationBars i:nth-child(4){ animation-delay:-.14s; }
+  #radioPanel .radioStationCard[data-broadcasting="true"] .radioStationBars i:nth-child(5){ animation-delay:-.39s; }
   @keyframes radioBeat{ from{ transform:scaleY(.45); filter:brightness(.8); } to{ transform:scaleY(1.08); filter:brightness(1.35); } }
   #radioPanel .radioFoot{ position:relative; margin-top:10px; color:#718196; font-size:9px; line-height:1.4; text-align:center; }
   @media (max-width:520px){
@@ -993,6 +997,7 @@
       <div class="panel" id="fpsPanel"><span id="fps">— FPS</span></div>
       <div id="menuWrap">
   <button id="lampBtn" class="topbtn" type="button" aria-pressed="false" aria-label="Włącz lampę w oczach" title="Włącz lampę w oczach">&#128294;</button>
+  <button id="visionBtn" class="topbtn" type="button" aria-pressed="false" aria-label="Załóż noktowizor lub termowizor" title="Załóż noktowizor lub termowizor">🌙</button>
   <button id="ghostBtn" class="topbtn" aria-haspopup="dialog" aria-expanded="false" title="Obserwatorzy — zaproś widzów do swojej warstwy" aria-label="Obserwatorzy">👁<span id="ghostBtnCount"></span></button>
   <button id="fullscreenBtn" class="topbtn" type="button" aria-pressed="false" title="Włącz pełny ekran (U)" aria-label="Włącz pełny ekran">&#x26F6;</button>
   <button id="menuBtn" class="topbtn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="pausePanel" title="Menu gry" aria-label="Otwórz menu gry">≡</button>
@@ -1007,8 +1012,15 @@
             <button id="radarMenuBtn" class="topbtn" role="menuitem" title="Radar diamentów">Radar 💎</button>
             <button id="audioBtn" class="topbtn" role="menuitem" title="Wycisz/włącz dźwięk">🔊</button>
           </div>
+          <div class="group" style="flex-direction:column; align-items:stretch; margin-top:2px;">
+            <label style="font-size:12px; display:flex; justify-content:space-between; gap:8px; align-items:center;">
+              <span>🧲 Auto-zbieranie (debug)</span>
+              <input id="debugAutoPickupCheckbox" type="checkbox" style="width:auto; margin:0;" />
+            </label>
+            <div class="hint">Nadpisuje wyposażenie i przyciąga łupy testowo. W zwykłej grze zasięg zapewniają stroje i wisiorki.</div>
+          </div>
           <div class="group seedRow"><label for="seedInput">Ziarno:</label><input id="seedInput" value="auto" /><button id="regenBtn" class="topbtn">Nowy świat</button><button id="openWorldSettingsBtn" class="topbtn">Ustawienia świata…</button></div>
-          <div class="hint">Skróty: G=Bóg, I=Immune, M=Mapa, C=Centrum, T=Rzemiosło, H=Pomoc</div>
+          <div class="hint">Debug (tylko przy otwartym panelu): F3=wydajność, G=Bóg, I=Immune, M=pełna mapa, P/J/K/L=skrzynie, V=moby, O=erupcja. C, T i H pozostają zwykłymi skrótami gry.</div>
           <div class="group" style="flex-direction:column; align-items:stretch; margin-top:4px;">
             <label style="font-size:12px; display:flex; justify-content:space-between; gap:8px; align-items:center;">Szybkość gracza <span id="playerSpeedLabel">x2</span></label>
             <select id="playerSpeedDropdown" style="width:100%; background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 6px; font-size:12px;">
@@ -1076,7 +1088,7 @@
     </div>
     <button id="fireBtn" class="touchUi" title="Użyj broni">⚔️</button>
     <button id="ultBtn" class="touchUi" title="Ult – naładowany atak broni">💥</button>
-    <button id="radarBtn" class="touchUi" title="Radar diamentów (10×10)">💎</button>
+    <button id="radarBtn" class="touchUi" title="Załóż wisiorek-kompas" aria-label="Załóż wisiorek-kompas">🧭</button>
     <div id="messages"></div>
     <div id="hoverInfo" aria-hidden="true"></div>
     <div id="cornerCards">

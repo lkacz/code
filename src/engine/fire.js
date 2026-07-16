@@ -33,6 +33,7 @@ import { getFlamePuffSprites, flamePuffFrame, flamePuffAlpha, flamePuffRadius } 
   // 8-neighbourhood; fire prefers climbing (trees burn upward)
   const NEIGHBORS=[[0,-1],[1,-1],[-1,-1],[1,0],[-1,0],[0,1],[1,1],[-1,1]];
   const HEAT_NEIGHBORS=[[0,0],[0,-1],[1,0],[-1,0],[0,1],[1,-1],[-1,-1],[1,1],[-1,1]];
+  const COMBUSTION_FACES=[[0,-1],[1,0],[0,1],[-1,0]];
   const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
@@ -47,6 +48,11 @@ import { getFlamePuffSprites, flamePuffFrame, flamePuffAlpha, flamePuffRadius } 
     // A tile touching water (or underwater) won't hold a flame
     if(getTile(x,y)===T.WATER) return true;
     return [[0,-1],[1,0],[-1,0],[0,1]].some(([dx,dy])=>getTile(x+dx,y+dy)===T.WATER);
+  }
+  function coalHasAirAccess(getTile,x,y){
+    // Fire needs an exposed face. Diagonal pockets do not ventilate a solid
+    // seam, and another coal block remains fuel/rock rather than free space.
+    return COMBUSTION_FACES.some(([dx,dy])=>isLavaVentOpenTile(getTile(x+dx,y+dy)));
   }
   function spreadInMultiplier(info){
     const v=info && Number.isFinite(info.spreadInMult) ? info.spreadInMult : 1;
@@ -110,13 +116,15 @@ import { getFlamePuffSprites, flamePuffFrame, flamePuffAlpha, flamePuffRadius } 
     x|=0; y|=0;
     const k=key(x,y);
     if(burning.has(k)) return false;
-    if(getTile(x,y)===T.MEAT && cookAt(x,y,getTile,setTile)) return true;
+    const tile=getTile(x,y);
+    if(tile===T.MEAT && cookAt(x,y,getTile,setTile)) return true;
     if(burning.size>=MAX_BURNING) return false;
-    if(!flammableAt(getTile,x,y)) return false;
+    const info=INFO[tile];
+    if(!finiteTile(x,y) || !(info && info.flammable)) return false;
     if(wetAt(getTile,x,y)) return false;
-    const info=INFO[getTile(x,y)];
+    if(tile===T.COAL && !coalHasAirAccess(getTile,x,y)) return false;
     const total=Math.max(0.4, info.burnTime||2);
-    burning.set(k,{x,y,left:total,total,fuel:getTile(x,y),spreadAcc:Math.random()*SPREAD_INTERVAL,envAcc:Math.random()*0.25,hotAcc:Math.random()*0.8,smokeAcc:Math.random()*0.18});
+    burning.set(k,{x,y,left:total,total,fuel:tile,spreadAcc:Math.random()*SPREAD_INTERVAL,envAcc:Math.random()*0.25,hotAcc:Math.random()*0.8,smokeAcc:Math.random()*0.18});
     return true;
   }
   function burnOut(b,getTile,setTile){
@@ -848,7 +856,7 @@ import { getFlamePuffSprites, flamePuffFrame, flamePuffAlpha, flamePuffRadius } 
   function isBurning(x,y){ return burning.has(key(x|0,y|0)); }
   // Put out a single tile (water hose, rain, …) — the tile keeps whatever charring it had
   function extinguish(x,y){ return burning.delete(key(x|0,y|0)); }
-  MM.fire={ignite,extinguish,update,draw,reset,snapshot,restore,isBurning,thawAt,cookAt,heatAround,noteTorch,noteLava,wakeLavaAround,wakeVolcanoLeaksNear,count:()=>burning.size,lavaCount:()=>lavaSet.size};
+  MM.fire={ignite,extinguish,update,draw,reset,snapshot,restore,isBurning,thawAt,cookAt,heatAround,noteTorch,noteLava,wakeLavaAround,wakeVolcanoLeaksNear,count:()=>burning.size,lavaCount:()=>lavaSet.size,_debug:{coalHasAirAccess}};
 })();
 // ESM export (progressive migration)
 export const fire = (typeof window!=='undefined' && window.MM) ? window.MM.fire : undefined;

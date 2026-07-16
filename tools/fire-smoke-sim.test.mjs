@@ -164,6 +164,30 @@ try{
   assert.equal(burnsAfterSingleSpreadStep(T.WOOD,0.07), true, 'normal solid fuel catches this lateral spread roll');
   assert.equal(burnsAfterSingleSpreadStep(T.COAL,0.02), true, 'coal can catch a low lateral spread roll after the 0.04 multiplier');
   assert.equal(burnsAfterSingleSpreadStep(T.COAL,0.03), false, 'coal rejects a near-threshold lateral spread roll after the 0.04 multiplier');
+
+  fire.reset();
+  const seamTiles=new Map();
+  const seamKey=(x,y)=>x+','+y;
+  const getSeamTile=(x,y)=>seamTiles.get(seamKey(x,y)) ?? T.AIR;
+  const setSeamTile=(x,y,t)=>{ if(t===T.AIR) seamTiles.delete(seamKey(x,y)); else seamTiles.set(seamKey(x,y),t); };
+  setSeamTile(0,0,T.COAL);
+  setSeamTile(1,0,T.COAL);
+  setSeamTile(2,0,T.STONE);
+  setSeamTile(1,-1,T.COAL);
+  setSeamTile(1,1,T.STONE);
+  assert.equal(fire._debug.coalHasAirAccess(getSeamTile,1,0),false,'coal surrounded on all four faces has no combustion air');
+  assert.equal(fire.ignite(1,0,getSeamTile,setSeamTile),false,'a sealed inner coal block cannot be ignited directly or by propagation');
+  let seamRoll=0;
+  Math.random=()=>{
+    if(seamRoll++<4) return 0; // source ignition state
+    return [0,0.375,0][(seamRoll-5)%3]; // spread attempt, right neighbour, successful heat roll
+  };
+  assert.ok(fire.ignite(0,0,getSeamTile,setSeamTile),'the exposed outer coal block can still burn');
+  for(let i=0;i<40;i++) fire.update(getSeamTile,setSeamTile,0.46);
+  assert.equal(fire.isBurning(1,0),false,'burning outer coal does not propagate into a sealed coal seam');
+  setSeamTile(1,-1,T.AIR);
+  assert.equal(fire._debug.coalHasAirAccess(getSeamTile,1,0),true,'opening one orthogonal face ventilates the next coal block');
+  assert.equal(fire.ignite(1,0,getSeamTile,setSeamTile),true,'ventilated coal can ignite normally');
   Math.random = ()=>0;
 
   fire.reset();

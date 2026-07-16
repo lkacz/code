@@ -37,12 +37,16 @@ const meteorites = (function(){
   const STRESSED_TERRAIN_BUDGET = 4;
   const SIREN_SCAN_RADIUS = 70;
   const SIREN_ALERT_RADIUS = 58;
+  const SIREN_ALERT_ENERGY = 4;
+  const SIREN_ENERGY_CAPACITY = 60;
   const CRATER_LAKE_STEP_CAP = 2;
   const CRATER_ECOLOGY_CHECKS_PER_SECOND = 4;
   const CRATER_ECOLOGY_MAX_BATCH = 2;
   const CRATER_ECOLOGY_INTERVAL = 6.0;
   const STRESSED_FRAME_MS = 22;
   const CRITICAL_FRAME_MS = 30;
+  const CRATER_DRAW_RECOVERY_FRAMES = 90;
+  const CRATER_DRAW_RECOVERY_MARGIN_MS = 4;
   const METEOR_WATER_WAKE_CAP = 22;
   const METEOR_FALLING_WAKE_CAP = 96;
   const METEOR_SMOKE_WAKE_CAP = 18;
@@ -63,6 +67,7 @@ const meteorites = (function(){
   const plumeSprites = new Map();
   const beaconIndex = new Map();
   const sirenIndex = new Map();
+  const sirenEnergy = new Map();
   let enabled = false;
   let nextIn = 0;
   let spawned = 0;
@@ -76,6 +81,8 @@ const meteorites = (function(){
   let ecologyCursor = 0;
   let ecologyBudgetAcc = 0;
   let ecologyTime = 0;
+  let craterDrawQualityState = 2;
+  let craterDrawRecoveryFrames = 0;
   let lastDeflection = null;
   let lastSirenAlert = null;
   let lastScan = null;
@@ -197,14 +204,34 @@ const meteorites = (function(){
     return n;
   }
   function craterEcologyDrawQuality(){
-    const tier=perfTier();
+    const ms=frameMs();
     const active=activeEcologyCraters();
-    if(tier>=2 || active>48) return 0;
-    if(tier>=1 || active>24) return 1;
-    return 2;
+    const requested=(ms>CRITICAL_FRAME_MS || active>48) ? 0 : ((ms>STRESSED_FRAME_MS || active>24) ? 1 : 2);
+    // Degrade immediately to protect frame time, but recover only after a
+    // sustained healthy interval. Without this hysteresis, ordinary jitter
+    // around 22/30 ms swaps the crater aura quality every frame.
+    if(requested<craterDrawQualityState){
+      craterDrawQualityState=requested;
+      craterDrawRecoveryFrames=0;
+    }else if(requested>craterDrawQualityState){
+      const recoveryLimit=craterDrawQualityState===0 ? CRITICAL_FRAME_MS : STRESSED_FRAME_MS;
+      const activeLimit=craterDrawQualityState===0 ? 44 : 20;
+      if(ms<=recoveryLimit-CRATER_DRAW_RECOVERY_MARGIN_MS && active<=activeLimit){
+        craterDrawRecoveryFrames++;
+        if(craterDrawRecoveryFrames>=CRATER_DRAW_RECOVERY_FRAMES){
+          craterDrawQualityState++;
+          craterDrawRecoveryFrames=0;
+        }
+      }else craterDrawRecoveryFrames=0;
+    }else craterDrawRecoveryFrames=0;
+    return craterDrawQualityState;
   }
   function craterEcologyDrawCap(quality){
     return quality<=0 ? 4 : (quality===1 ? 10 : 18);
+  }
+  function resetCraterDrawQuality(){
+    craterDrawQualityState=2;
+    craterDrawRecoveryFrames=0;
   }
   function classWeightsAt(x){
     const out={};
@@ -295,6 +322,42 @@ const meteorites = (function(){
     if(typeof getTile!=='function') return T.AIR;
     try{ return getTile(x,y); }catch(e){ return T.AIR; }
   }
+  function electricNetworkTile(x,y,getTile){
+    x=Math.floor(x); y=Math.floor(y);
+    try{ if(MM.world && typeof MM.world.hasInfrastructure==='function' && MM.world.hasInfrastructure(x,y,T.SILVER_WIRE)) return T.SILVER_WIRE; }catch(e){}
+    try{ if(MM.world && typeof MM.world.hasInfrastructure==='function' && MM.world.hasInfrastructure(x,y,T.COPPER_WIRE)) return T.COPPER_WIRE; }catch(e){}
+    return readTile(getTile,x,y);
+  }
+  function receiveElectricChargeAt(x,y,amount,getTile){
+    x=Math.floor(x); y=Math.floor(y);
+    if(readTile(getTile || (MM.world && MM.world.getTile),x,y)!==T.METEOR_SIREN) return 0;
+    const k=x+','+y;
+    const before=Math.max(0,Math.min(SIREN_ENERGY_CAPACITY,Number(sirenEnergy.get(k))||0));
+    const after=Math.min(SIREN_ENERGY_CAPACITY,before+Math.max(0,Number(amount)||0));
+    sirenEnergy.set(k,after);
+    return after-before;
+  }
+  function powerSirenAt(s,getTile){
+    if(!s) return false;
+    const k=s.tx+','+s.ty;
+    let stored=Math.max(0,Math.min(SIREN_ENERGY_CAPACITY,Number(sirenEnergy.get(k))||0));
+    if(stored+1e-9<SIREN_ALERT_ENERGY){
+      const network=MM.teleporters;
+      if(network && typeof network.drainNetworkEnergyAt==='function'){
+        try{
+          const got=Math.max(0,Number(network.drainNetworkEnergyAt(
+            s.tx,s.ty,SIREN_ALERT_ENERGY-stored,
+            (x,y)=>electricNetworkTile(x,y,getTile),MM.dynamo,{fair:true}
+          ))||0);
+          stored=Math.min(SIREN_ENERGY_CAPACITY,stored+got);
+          sirenEnergy.set(k,stored);
+        }catch(e){}
+      }
+    }
+    if(stored+1e-9<SIREN_ALERT_ENERGY) return false;
+    sirenEnergy.set(k,Math.max(0,stored-SIREN_ALERT_ENERGY));
+    return true;
+  }
   function beaconKey(b){
     if(!b) return '';
     const x=Number.isFinite(b.tx) ? b.tx : Math.floor(b.x);
@@ -319,6 +382,7 @@ const meteorites = (function(){
     }
     if(newTile===T.METEOR_SIREN){
       sirenIndex.set(k,sirenAtTile(x,y));
+      if(!sirenEnergy.has(k)) sirenEnergy.set(k,0);
       return true;
     }
     if(oldTile===T.ANTIGRAVITY_BEACON || beaconIndex.has(k)){
@@ -327,6 +391,7 @@ const meteorites = (function(){
     }
     if(oldTile===T.METEOR_SIREN || sirenIndex.has(k)){
       sirenIndex.delete(k);
+      sirenEnergy.delete(k);
       return true;
     }
     return false;
@@ -448,6 +513,7 @@ const meteorites = (function(){
     const target=m.target || {x:m.x,y:m.y};
     const s=nearestSiren(target.x,target.y,getTile,SIREN_SCAN_RADIUS);
     if(!s || s.d>SIREN_ALERT_RADIUS) return false;
+    if(!powerSirenAt(s,getTile)) return false;
     m.sirenAlerted=true;
     sirenAlerts++;
     lastSirenAlert={
@@ -1776,6 +1842,7 @@ const meteorites = (function(){
       waterEntryFx:false,
       waterHit:false,
       beaconScanT:0,
+      sirenScanT:sirenIndex.size ? 0.5 : 2.5,
       cachedBeacon
     };
     meteors.push(m);
@@ -1794,6 +1861,11 @@ const meteorites = (function(){
     return true;
   }
   function updateMeteor(m,dt,getTile,setTile,player){
+    m.sirenScanT=Math.max(-1,(Number.isFinite(m.sirenScanT)?m.sirenScanT:0)-dt);
+    if(!m.sirenAlerted && m.sirenScanT<=0){
+      alertSirenForMeteor(m,getTile);
+      m.sirenScanT=sirenIndex.size ? 0.5 : 2.5;
+    }
     const speed=Math.hypot(m.vx,m.vy);
     const steps=clamp(Math.ceil(speed*dt/0.34),1,10);
     const sdt=dt/steps;
@@ -2110,17 +2182,15 @@ const meteorites = (function(){
     ctx.globalCompositeOperation='lighter';
     if(eco.kind==='glow'){
       const a=Math.min(0.34,0.09+score*0.018);
-      if(quality>=2){
-        const g=ctx.createRadialGradient(px,py,1,px,py,r*(0.72+score*0.015));
-        g.addColorStop(0,'rgba(155,255,90,'+(a*0.95)+')');
-        g.addColorStop(0.42,'rgba(90,230,70,'+(a*0.45)+')');
-        g.addColorStop(1,'rgba(90,230,70,0)');
-        ctx.fillStyle=g;
-        ctx.beginPath(); ctx.ellipse(px,py,r*0.82,r*0.28,0,0,Math.PI*2); ctx.fill();
-      } else {
-        ctx.fillStyle='rgba(110,238,82,'+(quality ? a*0.48 : Math.min(0.14,a*0.34))+')';
-        ctx.beginPath(); ctx.ellipse(px,py,r*(quality?0.66:0.48),r*(quality?0.21:0.13),0,0,Math.PI*2); ctx.fill();
-      }
+      // Keep the persistent field's silhouette identical at every performance
+      // tier. Quality changes only particle count / crater count; changing the
+      // ellipse radii made the large green field visibly blink on frame spikes.
+      const g=ctx.createRadialGradient(px,py,1,px,py,r*(0.68+Math.min(0.12,score*0.01)));
+      g.addColorStop(0,'rgba(155,255,90,'+(a*0.78)+')');
+      g.addColorStop(0.42,'rgba(90,230,70,'+(a*0.36)+')');
+      g.addColorStop(1,'rgba(90,230,70,0)');
+      ctx.fillStyle=g;
+      ctx.beginPath(); ctx.ellipse(px,py,r*0.74,r*0.20,0,0,Math.PI*2); ctx.fill();
       const glowN=quality>=2 ? 9 : (quality===1 ? 5 : 2);
       for(let i=0;i<Math.min(glowN,2+eco.glow);i++){
         const dx=((i*37)%17-8)/9*r*0.44;
@@ -2322,6 +2392,10 @@ const meteorites = (function(){
       impacts,
       deflections,
       sirenAlerts,
+      sirenBatteries:[...sirenEnergy].filter(([,energy])=>Number(energy)>0.001).slice(0,1200).map(([k,energy])=>{
+        const comma=k.indexOf(',');
+        return {x:+k.slice(0,comma),y:+k.slice(comma+1),e:+Math.min(SIREN_ENERGY_CAPACITY,Math.max(0,Number(energy)||0)).toFixed(2)};
+      }),
       craterLakeOps,
       craterEcologyOps,
       meteorMutations,
@@ -2339,9 +2413,11 @@ const meteorites = (function(){
   }
   function restore(data){
     clearActive();
+    resetCraterDrawQuality();
     terrainJobs.length=0;
     beaconIndex.clear();
     sirenIndex.clear();
+    sirenEnergy.clear();
     craterRecords.length=0;
     impactConsequences.length=0;
     lastScan=null;
@@ -2363,6 +2439,13 @@ const meteorites = (function(){
       impacts=Math.max(0,(data.impacts|0)||0);
       deflections=Math.max(0,(data.deflections|0)||0);
       sirenAlerts=Math.max(0,(data.sirenAlerts|0)||0);
+      if(Array.isArray(data.sirenBatteries)){
+        for(const raw of data.sirenBatteries.slice(0,1200)){
+          if(!raw || !Number.isFinite(raw.x) || !Number.isFinite(raw.y)) continue;
+          const energy=Math.min(SIREN_ENERGY_CAPACITY,Math.max(0,Number(raw.e)||0));
+          if(energy>0) sirenEnergy.set(Math.floor(raw.x)+','+Math.floor(raw.y),energy);
+        }
+      }
       craterLakeOps=Math.max(0,(data.craterLakeOps|0)||0);
       craterEcologyOps=Math.max(0,(data.craterEcologyOps|0)||0);
       meteorMutations=Math.max(0,(data.meteorMutations|0)||0);
@@ -2414,9 +2497,11 @@ const meteorites = (function(){
   }
   function reset(){
     clearActive();
+    resetCraterDrawQuality();
     terrainJobs.length=0;
     beaconIndex.clear();
     sirenIndex.clear();
+    sirenEnergy.clear();
     craterRecords.length=0;
     impactConsequences.length=0;
     lastScan=null;
@@ -2458,6 +2543,7 @@ const meteorites = (function(){
       sirenPulses:sirenPulses.length,
       beacons:beaconIndex.size,
       sirens:sirenIndex.size,
+      sirenStoredEnergy:+[...sirenEnergy.values()].reduce((sum,value)=>sum+Math.max(0,Number(value)||0),0).toFixed(2),
       craters:craterRecords.length,
       lakeCraters:craterRecords.filter(c=>c && (c.water>0 || c.filled)).length,
       ecologyCraters:activeEcologyCraters(),
@@ -2511,6 +2597,7 @@ const meteorites = (function(){
     isChunkBusy,
     scanNearestCrater,
     triggerAntimatterBurst,
+    receiveElectricChargeAt,
       _debug:{impactAt,queueCrater,applyTerrainJobs,pickTarget,nearestBeacon,nearestSiren,beaconIndex,sirenIndex,meteors,terrainJobs,embers,debris,plumes,beaconWaves,gravityBursts,sirenPulses,shockwaves,scorches,craterRecords,impactConsequences,METEOR_CLASSES,classWeightsAt,scanNearestCrater,updateCraterLakes,updateCraterEcology,runCraterEcologyStep,perfTier,craterEcologyDrawQuality,selectBatchWakeCells}
   };
   MM.meteorites=api;

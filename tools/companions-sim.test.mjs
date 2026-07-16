@@ -148,6 +148,13 @@ assert.equal(leafSnap.list[0].kind, 'leaf_monster', 'snapshot persists leaf mons
 assert.equal(leafSnap.list[0].leaves, 8, 'snapshot persists leaf mass');
 companions.reset();
 ritualTiles.clear();
+for(const [x,y] of [[48,8],[50,8],[49,7],[49,9],[48,7]]) ritualSetTile(x,y,T.LEAF);
+ritualSetTile(49,8,T.VOLCANO_MASTER_STONE);
+assert.equal(companions.onTileChanged(49,8,T.AIR,T.VOLCANO_MASTER_STONE,ritualGetTile,ritualSetTile), true, 'a master stone placed among five connected leaves can summon the rewarded leaf helper');
+assert.equal(companions._debug.list()[0].kind, 'leaf_monster', 'master-stone leaf ritual creates the same leaf helper as a servant stone');
+assert.equal(ritualGetTile(49,8), T.AIR, 'master-stone leaf ritual consumes its anchor');
+companions.reset();
+ritualTiles.clear();
 ritualSetTile(-7,8,T.SERVANT_STONE);
 for(let x=-6;x<=-2;x++) ritualSetTile(x,8,T.AUTUMN_LEAF_ORANGE);
 for(let i=0;i<45;i++) companions.update(1/30,{x:-4,y:9.96,facing:1},ritualGetTile,ritualSetTile);

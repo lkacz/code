@@ -708,10 +708,14 @@ try{
   Math.random = () => 0;
   mobs.deserialize({v:5,list:[{id:'VULTURE',x:6.5,y:5.8,vx:0,vy:0,hp:24,maxHp:24,state:'perched',facing:-1,scale:1,speedMul:1,jumpMul:1,attackCd:0,nestX:6,nestY:8}],aggro:{mode:'rel',m:{}}});
   mobs.freezeSpawns(10000);
+  const vultureBeforeDive=mobs.serialize().list.find(m=>m.id==='VULTURE');
   assert.equal(mobs.nearestHostileLiving(6.5,5.8,12)?.id, undefined, 'nesting vultures are not hostile targets before a dive or provocation');
   simNow += 5200;
   mobs.update(0.08,player,vultureSlope.getTile,vultureSlope.setTile);
   Math.random = seededAgain;
+  const vultureAfterDive=mobs.serialize().list.find(m=>m.id==='VULTURE');
+  assert.equal(vultureAfterDive?.state, 'dive', 'a vulture enters its dive state when committing to an attack');
+  assert.ok(Math.hypot(vultureAfterDive.x-vultureBeforeDive.x,vultureAfterDive.y-vultureBeforeDive.y)<1.25, 'starting a vulture dive preserves spatial continuity instead of teleporting above the hero');
   const divingVulture=mobs.nearestHostileLiving(6.5,5.8,40);
   assert.equal(divingVulture?.id, 'VULTURE', 'a passive vulture can opportunistically start a hostile dive in mountain territory');
 
