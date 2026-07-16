@@ -158,6 +158,20 @@ async function main(){
 		// --- Scene 1: the hosting player ---------------------------------------
 		host = new Tab(targets.find(t => t.type === 'page').webSocketDebuggerUrl, 'host');
 		await host.init();
+		// Pinned world seed (tile-art-shot's trick): the scenes carve arenas, plant a
+		// marker in the ground and stage surface fights — an unlucky roll (ocean
+		// spawn, loose-sand start) used to flake individual scenes at random.
+		// `--seed=auto` restores the roulette when hunting seed-dependent bugs.
+		const worldSeed = opt('seed', '777');
+		if(worldSeed && worldSeed !== 'auto'){
+			await host.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+				const __origGEBI=Document.prototype.getElementById;
+				Document.prototype.getElementById=function(id){
+					const el=__origGEBI.call(this,id);
+					if(id==='seedInput' && el && el.value==='auto') el.value=${JSON.stringify(worldSeed)};
+					return el;
+				};` });
+		}
 		await host.send('Page.navigate', { url });
 		console.log('host boot:', await host.eval(BOOT_WAIT, 60000));
 		// The audience lives behind a HUD icon, not a row in the ≡ menu: the button
@@ -483,6 +497,7 @@ async function main(){
 		await host.eval(`(()=>{
 			const y0=Math.floor(player.y)-3, x0=Math.floor(player.x);
 			for(let x=x0; x<x0+200; x++) for(let y=y0-9; y<=y0+14; y++) MM.world.setTile(x,y,0);
+			MM.mobs.clearAll && MM.mobs.clearAll(); // a creature crossing the lane eats the whole volley between samples
 			const w=MM.weapons._debug;
 			w.arrows.length=0;
 			for(let i=0;i<4;i++) w.arrows.push({x:x0+0.5+i*0.2, y:y0-4, vx:14, vy:-6, dmg:1, life:5, travel:0, maxTravel:260});
@@ -524,7 +539,13 @@ async function main(){
 		const mobPos = await host.eval(`(()=>{
 			const skip=new Set(['FISH','PIRANHA','EEL','SAND_WORM']);
 			const p=window.player;
-			const l=MM.mobs.serialize().list.filter(m=>!skip.has(m.id) && m.state!=='buried');
+			let l=MM.mobs.serialize().list.filter(m=>!skip.has(m.id) && m.state!=='buried');
+			if(!l.length){
+				// the weapon-plane scene cleared every creature (a mob crossing the lane
+				// ate the volley) — spawn our own skittish test subject beside the hero
+				try{ MM.mobs.forceSpawn('RABBIT', {x:p.x+3, y:p.y-1}, MM.world.getTile); }catch(e){}
+				l=MM.mobs.serialize().list.filter(m=>!skip.has(m.id) && m.state!=='buried');
+			}
 			if(!l.length) return null;
 			const byId={}; l.forEach(m=>{ byId[m.id]=(byId[m.id]||0)+1; });
 			l.sort((a,b)=>{
@@ -1255,7 +1276,8 @@ async function main(){
 		await host.eval(`(()=>{
 			MM.mobs.clearAll && MM.mobs.clearAll();
 			const ax=Math.round(player.x)+60, ay=40;
-			for(let x=ax-6;x<=ax+6;x++){ for(let y=ay-4;y<=ay+2;y++) MM.world.setTile(x,y,MM.T.AIR); MM.world.setTile(x,ay+3,MM.T.STONE); }
+			// lid FIRST: loose sand from sky islands above cascades into an open shelf
+			for(let x=ax-6;x<=ax+6;x++){ MM.world.setTile(x,ay-5,MM.T.STONE); for(let y=ay-4;y<=ay+2;y++) MM.world.setTile(x,y,MM.T.AIR); MM.world.setTile(x,ay+3,MM.T.STONE); }
 			player.x=ax; player.y=ay+2.3; player.vx=0; player.vy=0; player.hp=player.maxHp;
 			return 1;
 		})()`);
@@ -1479,7 +1501,8 @@ async function main(){
 		await host.eval(`(()=>{
 			MM.mobs.clearAll && MM.mobs.clearAll();
 			const ax=Math.round(player.x)+60, ay=40;
-			for(let x=ax-6;x<=ax+6;x++){ for(let y=ay-4;y<=ay+2;y++) MM.world.setTile(x,y,MM.T.AIR); MM.world.setTile(x,ay+3,MM.T.STONE); }
+			// lid FIRST: loose sand from sky islands above cascades into an open shelf
+			for(let x=ax-6;x<=ax+6;x++){ MM.world.setTile(x,ay-5,MM.T.STONE); for(let y=ay-4;y<=ay+2;y++) MM.world.setTile(x,y,MM.T.AIR); MM.world.setTile(x,ay+3,MM.T.STONE); }
 			player.x=ax; player.y=ay+2.3; player.vx=0; player.vy=0; player.hp=player.maxHp;
 			MM.ghostBridge.revealAround(); // a teleported host must SEE the shelf — pickups are fog-gated
 			return 1;
