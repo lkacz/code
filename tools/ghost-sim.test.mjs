@@ -754,6 +754,11 @@ assert.ok(/if\(lvl !== entry\.level\)\{ entry\.level = lvl; updateUi\(\); \}/.te
 assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	&& /focusedTag === 'SELECT' \|\| focusedTag === 'INPUT'/.test(hostSrc),
 	'the periodic panel refresh skips a hidden panel and never yanks an open dropdown/selection from the host');
+// …which is exactly why Kopiuj must RELEASE the focus it took: select() leaves the
+// caret in the link INPUT, the guard above then freezes the panel body forever and
+// the host never sees the joining viewer's row (the field-report screenshot bug)
+assert.ok(/inp\.select\(\);[\s\S]{0,450}inp\.blur\(\);/.test(hostSrc),
+	'copying the invite link blurs the input — the panel keeps refreshing afterwards');
 
 // --- entry point: a first-class HUD icon, not a row in the ≡ menu ------------------------------------
 assert.ok(/id="ghostBtn"/.test(html) && /id="ghostBtnCount"/.test(html), 'index.html carries the 👁 viewers button with its live count');

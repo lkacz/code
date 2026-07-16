@@ -1839,6 +1839,10 @@ const ghostHost = (function(){
 			const inp = el.querySelector('#ghostPanelLink');
 			inp.select();
 			try{ navigator.clipboard.writeText(inp.value); }catch(e){ try{ document.execCommand('copy'); }catch(e2){ /* manual copy */ } }
+			// blur, or the focus stays in the link INPUT and the mid-edit guard in
+			// updateUi freezes the whole panel body — the host would never see the
+			// joining viewer's row (badge counts up, list stays "Czekam na duchy…")
+			inp.blur();
 			if(bridge) bridge.msg('Link skopiowany — wyślij go widzom!');
 		});
 		const share = el.querySelector('#ghostPanelShare');
