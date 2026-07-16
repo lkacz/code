@@ -1159,4 +1159,28 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	assert.ok(/_playCraft: \(key\) => sendPlayAct\('craft', 0, 0, key\),/.test(clientSrc), 'the QA craft seam exists');
 }
 
+// --- Wave D (part 1): the world is a hazard for guest bodies too ------------------------------------
+// Drowning and lava run HOST-side against world truth (bridge.getTile) through the
+// hero's own laws — SURVIVAL.updateDrowning with the same grace/ramp/cap, lava's
+// same 8 — and land through hurtBody, the ONE damage inlet. No client field is
+// consulted: a rigged guest can hold its breath only in its own UI. The hero takes
+// NO fall damage in this game, so neither does a guest (parity, not an omission).
+{
+	const sp = hostSrc.slice(hostSrc.indexOf('function bodySurvivalPass'), hostSrc.indexOf('function bodyTick'));
+	assert.ok(/SURV\.updateDrowning\(b\.drownSt, dt, headTile === TT\.WATER\)/.test(sp),
+		'drowning runs the REAL survival law against a host-read head tile');
+	assert.ok(/const dmg = Math\.min\(12, res\.damage\);/.test(sp) && /hurtBody\(s, entry, dmg, NaN, NaN, 'drowning'\);/.test(sp)
+		&& /SURV\.consumeDrowningDamage\(b\.drownSt, dmg\)/.test(sp),
+		'drown damage is capped like the hero’s, lands through hurtBody, and is consumed from the bank');
+	assert.ok(/hurtBody\(s, entry, 8, b\.x, b\.y \+ 1, 'lava'\);/.test(sp), 'lava sears a body with the hero’s own 8');
+	assert.ok(!/pl\.|entry\.cam|\.claim/.test(sp.replace(/entry\.peer\.send|entry, b, dt, t|entry, dmg|entry, 8/g, '')),
+		'the survival pass reads no client-claimed field — world truth only');
+	assert.ok(/if\(!b\.dead && dt > 0\) bodySurvivalPass\(s, entry, b, dt, t\);/.test(hostSrc),
+		'the pass runs on the body cadence for LIVE bodies only');
+	assert.ok(/MMR\.survival\.resetDrowning\) MMR\.survival\.resetDrowning\(b\.drownSt\);/.test(hostSrc),
+		'a respawned body starts with fresh lungs');
+	assert.ok(/pl\.t === 'pdrown'/.test(clientSrc) && /Brakuje powietrza/.test(clientSrc),
+		'the guest hears the breath warning (display only — damage arrives via pvit/pdmg)');
+}
+
 console.log('ghost-sim: all assertions passed');

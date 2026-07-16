@@ -859,10 +859,39 @@ const ghostHost = (function(){
 			entry.peer.send({ t: 'pactAck', a: 'strike', ok: true, hits, x: tx, y: ty });
 		}
 	}
+	// --- per-body survival: the world itself is a hazard -----------------------------
+	// Drowning runs the REAL survival law (SURVIVAL.updateDrowning — the hero's own
+	// grace, ramp and 12-per-tick cap) against world truth read HOST-side; lava sears
+	// with the hero's own 8. No client input is consulted — a rigged guest can hold
+	// its breath only in its own UI. (The hero takes NO fall damage in this game, so
+	// neither does a guest: parity, not an omission.)
+	function bodySurvivalPass(s, entry, b, dt, t){
+		const SURV = MMR && MMR.survival;
+		const TT = MMR && MMR.T;
+		if(!TT || typeof bridge.getTile !== 'function') return;
+		if(SURV && SURV.updateDrowning){
+			const headTile = bridge.getTile(Math.floor(b.x), Math.floor(b.y - 0.35));
+			if(!b.drownSt) b.drownSt = SURV.createDrowningState ? SURV.createDrowningState() : { airless: 0, damageAcc: 0, warned: false };
+			const res = SURV.updateDrowning(b.drownSt, dt, headTile === TT.WATER);
+			if(res.warn){ try{ entry.peer.send({ t: 'pdrown', w: 1 }); }catch(e){ /* fine */ } }
+			else if(res.recovered){ try{ entry.peer.send({ t: 'pdrown', w: 0 }); }catch(e){ /* fine */ } }
+			if(res.damage > 0 && t >= (b.invulUntil || 0)){
+				const dmg = Math.min(12, res.damage);
+				hurtBody(s, entry, dmg, NaN, NaN, 'drowning');
+				if(SURV.consumeDrowningDamage) SURV.consumeDrowningDamage(b.drownSt, dmg);
+			}
+		}
+		const midTile = bridge.getTile(Math.floor(b.x), Math.floor(b.y));
+		const feetTile = bridge.getTile(Math.floor(b.x), Math.floor(b.y + 0.41));
+		if((midTile === TT.LAVA || feetTile === TT.LAVA) && t >= (b.invulUntil || 0)){
+			hurtBody(s, entry, 8, b.x, b.y + 1, 'lava'); // the hero's own lava sear
+		}
+	}
 	// The body plane: every peer (players AND spectators) sees the embodied guests
 	// move; the publisher also feeds MM.coopBodies, the one hook hostile creatures
 	// read (empty array in solo play = zero cost, exactly like the ghost aura).
 	function bodyTick(s, t){
+		const dt = Math.min(0.5, Math.max(0, (t - (s.last.body || t)) / 1000));
 		s.last.body = t;
 		const list = [];
 		const pub = [];
@@ -875,9 +904,11 @@ const ghostHost = (function(){
 				b.x = bridge.player.x; b.y = bridge.player.y - 0.2;
 				b.vx = 0; b.vy = 0;
 				b.invulUntil = t + 1500;
+				if(b.drownSt && MMR && MMR.survival && MMR.survival.resetDrowning) MMR.survival.resetDrowning(b.drownSt);
 				try{ entry.peer.send({ t: 'prespawn', x: +b.x.toFixed(2), y: +b.y.toFixed(2) }); }catch(e){ /* fine */ }
 				sendVitals(s, entry);
 			}
+			if(!b.dead && dt > 0) bodySurvivalPass(s, entry, b, dt, t);
 			list.push([entry.gid, entry.name || 'Duch', +b.x.toFixed(2), +b.y.toFixed(2), +(b.vx || 0).toFixed(2), +(b.vy || 0).toFixed(2), b.f < 0 ? -1 : 1, +b.hp.toFixed(1), b.maxHp, b.dead ? 1 : 0]);
 			if(!b.dead){
 				if(!entry.bodyLike) entry.bodyLike = { w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, dead: false, hurt: (a, sx, sy, c) => hurtBody(s, entry, a, sx, sy, c) };
@@ -1706,7 +1737,10 @@ const ghostHost = (function(){
 		perks.textContent = 'Uprawnienia: „tylko ogląda” = sama obecność (płoszy stwory, wzmacnia). „+ czat” dopuszcza krótkie wiadomości i wskazywanie miejsc 📍 (filtr wulgaryzmów). „+ czat i wpływ” odblokowuje doping, błogosławieństwa i moce (popłoch/mróz/grom). 🛠 mianuje asystentów (może być kilku — gdy rywalizują o surowce, wygrywa szybszy), z zatwierdzaniem ich propozycje czekają na twoje Zatwierdź. Widok: „duchy/dymki/działania” chowają awatary, teksty i efekty (👁/🙈 przy widzu chowa jednego); Enter = szybka wiadomość do widzów.';
 	}
 
-	const api = { wire, start, stop, active, link, frame, metrics, drawSpirits, paintSpirit, paintChatBubble, paintBodyTag, say, setViewerMode, banViewer, setAssistant, setDefaultMode, setApprovalMode, setViewPref, setViewerHidden, approveAssist, rejectAssist, socialBoost: updateSocialBoost, openPanel: () => togglePanel(true) };
+	const api = { wire, start, stop, active, link, frame, metrics, drawSpirits, paintSpirit, paintChatBubble, paintBodyTag, say, setViewerMode, banViewer, setAssistant, setDefaultMode, setApprovalMode, setViewPref, setViewerHidden, approveAssist, rejectAssist, socialBoost: updateSocialBoost, openPanel: () => togglePanel(true),
+		// QA seam: the LIVE body object for a gid (host page only — the host owns every
+		// body anyway; this just spares QA the private-scope gymnastics)
+		_debugBody: (gid) => { if(!session) return null; for(const e of entries()) if(e.gid === gid) return e.body; return null; } };
 	if(MMR) MMR.ghostHost = api;
 	if(typeof window !== 'undefined'){
 		window.__mmGhostHostStart = (room, opts) => start(Object.assign({ room }, opts || {}));

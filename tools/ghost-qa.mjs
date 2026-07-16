@@ -400,19 +400,31 @@ async function main(){
 		const snapUnits = `(()=>{ const m={};
 			for(const t of MM.invasions._debug.teams) for(const a of t.aliens){ if(a && !a.dead) m[a.id]={x:+a.x.toFixed(2), y:+a.y.toFixed(2), k:a.kind}; }
 			return m; })()`;
-		await host.eval(`(()=>{ player.x += 26; player.vx=0; player.vy=0; return player.x; })()`);
-		await sleep(900); // let the squads pick up the chase
-		const hostA2 = await host.eval(snapUnits);
-		const ghostA2 = await ghost.eval(snapUnits);
-		await sleep(3000);
-		const hostB2 = await host.eval(snapUnits);
-		const ghostB2 = await ghost.eval(snapUnits);
+		// a single +26 teleport can drop the hero inside solid rock where no squad can
+		// path to it — walk further out and surface the hero, retrying once, before
+		// declaring the squads frozen
 		const movedIn = (a, b, kind) => Object.keys(a).filter(id => b[id] && a[id].k === kind &&
 			Math.hypot(b[id].x - a[id].x, b[id].y - a[id].y) > 0.5).length;
-		const hostMovedAliens = movedIn(hostA2, hostB2, 'aliens');
-		const hostMovedMoles = movedIn(hostA2, hostB2, 'molekin');
-		const ghostMovedAliens = movedIn(ghostA2, ghostB2, 'aliens');
-		const ghostMovedMoles = movedIn(ghostA2, ghostB2, 'molekin');
+		let hostA2, ghostA2, hostB2, ghostB2, hostMovedAliens = 0, hostMovedMoles = 0, ghostMovedAliens = 0, ghostMovedMoles = 0;
+		for(let attempt = 0; attempt < 2; attempt++){
+			await host.eval(`(()=>{
+				player.x += 26; player.vx=0; player.vy=0;
+				const sx=Math.round(player.x);
+				for(let y=2;y<200;y++){ if(MM.world.getTile(sx,y)!==MM.T.AIR){ player.y=y-1.2; break; } } // stand ON the surface, not inside it
+				return player.x;
+			})()`);
+			await sleep(900); // let the squads pick up the chase
+			hostA2 = await host.eval(snapUnits);
+			ghostA2 = await ghost.eval(snapUnits);
+			await sleep(3000);
+			hostB2 = await host.eval(snapUnits);
+			ghostB2 = await ghost.eval(snapUnits);
+			hostMovedAliens = movedIn(hostA2, hostB2, 'aliens');
+			hostMovedMoles = movedIn(hostA2, hostB2, 'molekin');
+			ghostMovedAliens = movedIn(ghostA2, ghostB2, 'aliens');
+			ghostMovedMoles = movedIn(ghostA2, ghostB2, 'molekin');
+			if(hostMovedAliens > 0 && hostMovedMoles > 0) break;
+		}
 		// how far the watcher's copy sits from the host's truth for the same unit
 		let worstDrift = 0, compared = 0;
 		for(const id in hostB2){
@@ -434,6 +446,9 @@ async function main(){
 			JSON.stringify({compared, worstDrift:+worstDrift.toFixed(2)}));
 		console.log('invasion plane: ok (watcher sees ' + ghostMovedAliens + ' aliens and ' + ghostMovedMoles +
 			' kretoludzie moving; ' + rosters + ' pose packets, worst drift from host ' + worstDrift.toFixed(2) + ' tiles)');
+		// squads left alive keep breaching tiles near the hero for the REST of the run —
+		// molekin hazard tiles on the diff-marker cell made the powers scene flaky
+		await host.eval(`MM.invasions.reset()`);
 
 		// --- Scene 10c: the watcher sees the hero ATTACK ------------------------------------------------
 		// The watcher renders but never simulates, so its weapons module was empty: the
@@ -578,13 +593,16 @@ async function main(){
 			await ghost.poll(`MM.ghostClient.metrics().charge`, v => v >= need, 'watcher earns power charge while active', 200, 500);
 			chargeBefore = await host.eval(`MM.ghostHost.metrics().viewers[0].charge`);
 		} finally { clearInterval(keepActive); }
+		// baseline the marker at CAST time: earlier scenes fight, carve and burn near the
+		// hero, so "unchanged since the diff scene" measured cross-scene noise, not powers
+		const markBefore = await host.eval(`MM.ghostBridge.getTile(${diff.tx},${diff.ty})`);
 		const casted = await ghost.eval(`MM.ghostClient.sendPower('banish')`);
 		if(!casted) throw new Error('power refused despite charge + permissions');
 		await host.poll(`MM.ghostHost.metrics().stats.powers`, v => v === 1, 'host resolved the power', 40, 250);
 		const chargeAfter = await host.eval(`MM.ghostHost.metrics().viewers[0].charge`);
 		if(!(chargeAfter <= chargeBefore - need + 2)) throw new Error('charge was not spent: ' + chargeBefore + ' → ' + chargeAfter);
 		const worldUntouched = await host.eval(`MM.ghostBridge.getTile(${diff.tx},${diff.ty})`);
-		if(worldUntouched !== diff.want) throw new Error('a ghost power edited a tile — powers must be creature-only');
+		if(worldUntouched !== markBefore) throw new Error('a ghost power edited a tile — powers must be creature-only');
 		console.log('powers: ok (banish cast, charge ' + chargeBefore.toFixed(0) + '→' + chargeAfter.toFixed(0) + ', world tiles untouched)');
 
 		// --- Scene 10d: assistant — crafts and equips for the host ---------------------------------------
@@ -728,11 +746,22 @@ async function main(){
 		await sleep(700); // let the foregrounded pump drain the deed queue into the profile
 		// flush and read mem+disk ATOMICALLY in one eval — deeds keep banking on the
 		// pump, so two separate reads would race (disk at T1 vs mem at T2>T1) and lie
-		const flushCheck = await ghost.eval(`(()=>{ MM.ghostClient._flushForTest();
+		const flushCheck = await ghost.eval(`(()=>{ const dirty=MM.ghostClient._flushForTest();
 			const mem=MM.ghostClient.metrics().prog.xp|0;
 			let disk=-1; try{ disk=(JSON.parse(localStorage.getItem(MM.ghostNet.PROG_KEY)||'{}').xp)|0; }catch(e){}
-			return {mem, disk}; })()`);
-		if(flushCheck.disk < flushCheck.mem) throw new Error('the forced flush did not reach disk: ' + JSON.stringify(flushCheck));
+			return {mem, disk, dirty}; })()`);
+		if(flushCheck.disk < flushCheck.mem){
+			const diag = await ghost.eval(`(()=>{
+				let probe='?';
+				try{ localStorage.setItem(MM.ghostNet.PROG_KEY, localStorage.getItem(MM.ghostNet.PROG_KEY)||'{}'); probe='rw-ok'; }
+				catch(e){ probe='throw:'+(e && e.message); }
+				const raw=localStorage.getItem(MM.ghostNet.PROG_KEY);
+				const dirty2=MM.ghostClient._flushForTest();
+				let disk2=-1; try{ disk2=(JSON.parse(localStorage.getItem(MM.ghostNet.PROG_KEY)||'{}').xp)|0; }catch(e){}
+				return {probe, rawLen:(raw||'').length, dirty2, disk2};
+			})()`);
+			throw new Error('the forced flush did not reach disk: ' + JSON.stringify(flushCheck) + ' diag=' + JSON.stringify(diag));
+		}
 		// Never eval an awaited promise across the navigation: the old execution context
 		// dies mid-flight and that CDP request would never answer. Poll a plain
 		// expression until the NEW context has booted instead.
@@ -922,8 +951,12 @@ async function main(){
 		await sleep(400);
 		const hunt = await host.eval(`(()=>{
 			const b=MM.ghostHost.metrics().bodies[0];
-			// park the host far from the guest so any host damage would be unambiguous
-			player.x=b.x+60; player.y=b.y; player.vx=0; player.vy=0; player.hp=player.maxHp;
+			// park the host far from the guest so any host damage would be unambiguous —
+			// ON the surface (not inside rock) and with stray wildlife cleared first, so
+			// ambient bites cannot masquerade as a routing leak
+			MM.mobs.clearAll && MM.mobs.clearAll();
+			player.x=b.x+60; player.vx=0; player.vy=0; player.hp=player.maxHp;
+			{ const sx=Math.round(player.x); for(let y=2;y<200;y++){ if(MM.world.getTile(sx,y)!==MM.T.AIR){ player.y=y-1.2; break; } } }
 			// clear a wide flat arena around the guest so a walker can reach it (keep the
 			// body's own footing tile so it doesn't drop out from under the fight)
 			const bx=Math.round(b.x), floorRow=Math.ceil(b.y+0.46);
@@ -967,7 +1000,9 @@ async function main(){
 		// shoots a creature — all with the world's owner most of a screen away.
 		const a2 = await host.eval(`(()=>{
 			const b=MM.ghostHost.metrics().bodies[0];
-			player.x=b.x+90; player.y=b.y; player.vx=0; player.vy=0; player.hp=player.maxHp;
+			MM.mobs.clearAll && MM.mobs.clearAll(); // stray wildlife must not gnaw the parked host mid-assert
+			player.x=b.x+90; player.vx=0; player.vy=0; player.hp=player.maxHp;
+			{ const sx=Math.round(player.x); for(let y=2;y<200;y++){ if(MM.world.getTile(sx,y)!==MM.T.AIR){ player.y=y-1.2; break; } } }
 			const bx=Math.round(b.x), floorRow=Math.ceil(b.y+0.46);
 			for(let x=bx-8;x<=bx+8;x++){ for(let yy=floorRow-5;yy<floorRow;yy++) MM.world.setTile(x,yy,MM.T.AIR); MM.world.setTile(x,floorRow,MM.T.STONE); }
 			const team=MM.invasions.spawnRuinCommander(b.x+2, b.y, {getTile:MM.world.getTile, setTile:MM.world.setTile, player:window.player, forceAfterWestGuardian:true});
@@ -1199,6 +1234,48 @@ async function main(){
 		await host.eval(`MM.ghostHost.setViewerMode('${gidPlay}', 'play')`);
 		await ghost.poll(`MM.ghostClient.metrics().play.weapons.includes('spear') ? 1 : 0`, v => v === 1, 'the returning gid gets its earned arsenal back', 40, 250);
 		console.log('play craft: ok (kept pouch restored, arrows +10, spear earned once, fought with it, survived the demote round-trip)');
+		// --- Scene 10m: Wave D — the world is a hazard for the guest body too --------------------------
+		// Lava sears and water drowns through the hero's own laws, resolved HOST-side
+		// against world truth. The drown grace is 20 s, so QA pre-ages the body's lungs
+		// through the live-body seam instead of stalling the driver.
+		const lav = await host.eval(`(()=>{
+			// 10l's re-promote respawned the body AT the host — park the host away again
+			// BEFORE the hazard, or the lava puddle lands at the host's own feet
+			const b=MM.ghostHost.metrics().bodies[0];
+			MM.mobs.clearAll && MM.mobs.clearAll(); // wildlife respawns near the parked host over the run — none of it may gnaw the baseline
+			player.x=b.x+40; player.vx=0; player.vy=0; player.hp=player.maxHp;
+			{ const sx=Math.round(player.x); for(let y=2;y<200;y++){ if(MM.world.getTile(sx,y)!==MM.T.AIR){ player.y=y-1.2; break; } } }
+			const cx=Math.floor(b.x), cy=Math.floor(b.y+0.41);
+			MM.world.setTile(cx, cy, MM.T.LAVA);
+			return {hp0:b.hp, cx, cy, hostHp0:player.hp};
+		})()`);
+		const lavaHp = await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies[0]; return b ? b.hp : 999; })()`,
+			v => v < lav.hp0, 'LAVA sears the guest body', 30, 250);
+		if((await host.eval(`window.player.hp`)) < lav.hostHp0) throw new Error('the distant HOST took the guest\'s lava damage');
+		await host.eval(`(()=>{ for(let dx=-2;dx<=2;dx++) for(let dy=-1;dy<=1;dy++){ if(MM.world.getTile(${lav.cx}+dx, ${lav.cy}+dy)===MM.T.LAVA) MM.world.setTile(${lav.cx}+dx, ${lav.cy}+dy, MM.T.AIR); } return 1; })()`);
+		console.log('play lava: ok (body hp ' + lav.hp0 + '→' + lavaHp.toFixed(1) + ' from world truth alone, host untouched)');
+		// drowning: seal the body in a flooded box, pre-age its lungs to the grace edge
+		const dr = await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies[0];
+			const bx=Math.floor(b.x), row=Math.floor(b.y+0.41), head=row-1;
+			for(const [x,y] of [[bx-1,row],[bx+1,row],[bx-1,head],[bx+1,head],[bx,head-1],[bx-1,head-1],[bx+1,head-1]]) MM.world.setTile(x,y,MM.T.STONE);
+			MM.world.setTile(bx,row,MM.T.WATER);
+			MM.world.setTile(bx,head,MM.T.WATER);
+			return {hp0:b.hp, bx, row, head};
+		})()`);
+		await host.poll(`(()=>{ const b=MM.ghostHost._debugBody('${gidPlay}'); return (b && b.drownSt) ? 1 : 0; })()`,
+			v => v === 1, 'the flooded body grows a drowning state', 20, 250);
+		const drHost0 = await host.eval(`(()=>{ const b=MM.ghostHost._debugBody('${gidPlay}'); b.drownSt.airless=19.5; player.hp=player.maxHp; return player.hp; })()`);
+		const drownHp = await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies[0]; return b ? b.hp : 999; })()`,
+			v => v < dr.hp0, 'the guest body DROWNS past the hero grace', 40, 250);
+		await host.eval(`(()=>{
+			const b=MM.ghostHost._debugBody('${gidPlay}');
+			if(b && b.drownSt){ b.drownSt.airless=0; b.drownSt.damageAcc=0; }
+			for(const [x,y] of [[${dr.bx},${dr.row}],[${dr.bx},${dr.head}],[${dr.bx}-1,${dr.row}],[${dr.bx}+1,${dr.row}],[${dr.bx}-1,${dr.head}],[${dr.bx}+1,${dr.head}],[${dr.bx},${dr.head}-1],[${dr.bx}-1,${dr.head}-1],[${dr.bx}+1,${dr.head}-1]]) MM.world.setTile(x,y,MM.T.AIR);
+			return 1;
+		})()`);
+		if((await host.eval(`window.player.hp`)) < drHost0) throw new Error('the distant HOST took the guest\'s drowning damage');
+		console.log('play survival: ok (drowning ' + dr.hp0 + '→' + drownHp.toFixed(1) + ' via the hero law, host untouched — and no fall damage, exactly like the hero)');
 		// --- damage & death: a host-side hurt drains the guest hp; demote returns to spectator
 		await host.eval(`(()=>{ const s=MM.ghostHost; const gid='${gidPlay}'; MM.__qaHurt=()=>{}; return 1; })()`);
 		await ghost.shot('tools/ghost-qa-play.png');

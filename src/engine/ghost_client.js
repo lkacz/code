@@ -166,8 +166,12 @@ const ghostClient = (function(){
 		const t = nowMs();
 		if(!force && t - lastProgSaveAt < 2000) return;
 		lastProgSaveAt = t;
-		progDirty = false;
-		try{ localStorage.setItem(NET.PROG_KEY, JSON.stringify(prog)); }catch(e){ /* storage full/blocked — the session still counts */ }
+		try{
+			localStorage.setItem(NET.PROG_KEY, JSON.stringify(prog));
+			progDirty = false; // only a write that actually LANDED may clear the flag —
+			// a transient storage failure must stay dirty so the next tick retries,
+			// otherwise a later force-flush no-ops on !progDirty and the disk lies low
+		}catch(e){ /* storage full/blocked — the session still counts */ }
 	}
 	function today(){
 		const d = new Date();
@@ -336,6 +340,12 @@ const ghostClient = (function(){
 			play.weapons = Array.isArray(pl.weapons) ? pl.weapons.slice(0, 8).filter(w => typeof w === 'string' && w !== '__proto__').map(w => w.slice(0, 16)) : [];
 			if(play.weapons.length && !play.weapons.includes(play.arm)) play.arm = play.weapons[0];
 			renderPouch();
+			return;
+		}
+		if(pl.t === 'pdrown'){
+			// breath warnings mirror the host-side survival law (display only — the
+			// damage itself arrives through pvit/pdmg like any other hurt)
+			if(play.on) bridge.msg(pl.w ? '🫧 Brakuje powietrza — wynurz się!' : '🫧 Łapiesz oddech');
 			return;
 		}
 		if(pl.t === 'pdmg'){
@@ -1682,7 +1692,8 @@ const ghostClient = (function(){
 		// QA: force the throttled profile write to disk NOW. Headless Page.navigate
 		// does not reliably fire beforeunload/pagehide, so a deed banked inside the
 		// 2 s throttle window would otherwise not be on disk when the reload reads it.
-		_flushForTest: () => flushProgress(true),
+		// Returns whether the profile is STILL dirty (a swallowed write leaves it so).
+		_flushForTest: () => { flushProgress(true); return progDirty; },
 		// QA: age this watcher's last input past IDLE_MS without waiting 30 real seconds.
 		// It rewinds the SAME stamp isActive() reads, so the idle path under test is the
 		// production one (next pose vouches act=0 → the host's TTL lapses → boosts drop).

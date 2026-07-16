@@ -186,12 +186,20 @@ real collision QA caught live). No storage → explicitly ephemeral. QA scene 10
 arsenal grows), gid impersonation surface accepted (a self-claimed key guards
 convenience state only; embodiment itself stays hand-granted by the host).
 
-### Wave D — Guest survival systems (host-owned, per body)
-Energy, hunger (`survival.js`), temperature, drowning, fall damage, status effects
-(`hero_status.js`) all assume the single host hero. Run them per body on the host,
-stream via `pvit`. Death → per-guest gravestone (`respawn_travel.js` precedent).
-Suggested order: fall damage + drowning first (pure physics, no UI), then hunger/
-temperature (need guest HUD chips), then status effects.
+### Wave D — Guest survival systems (host-owned, per body) — 🟡 PART 1 DONE (2026-07-16)
+Shipped (part 1): `bodySurvivalPass` on the body cadence — **drowning** runs the
+REAL hero law per body (`SURVIVAL.updateDrowning`: same 20 s grace, ramp, 12 cap,
+`consumeDrowningDamage`; per-body `drownSt`, lungs reset on respawn; breath
+warnings stream as `pdrown` toasts) and **lava** sears with the hero's own 8 —
+both against world truth read host-side (`bridge.getTile`), landing through
+`hurtBody`, zero client fields consulted. Correction to this wave's premise: the
+HERO takes **no fall damage** in this game (only bosses do) — parity means guests
+take none either; that ruling is pinned. QA scene 10m (pre-ages lungs through the
+new `MM.ghostHost._debugBody` live-body seam instead of stalling 20 s).
+**Still open (part 2):** hunger/energy (`survival.js` — needs a guest eat action
++ HUD chips), temperature exposure, status effects (`hero_status.js`), swim-chill
+and water-pressure laws, per-guest gravestone on death (`respawn_travel.js`
+precedent — today: respawn at host, pouch intact).
 
 ### Wave E — Fidelity & polish
 - **Water sub-tile partials** aren't replicated → a swimming guest diverges
