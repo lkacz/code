@@ -87,8 +87,16 @@ export const PLAY_RULES = {
 	DUEL_TTL_MS: 30000, // a duel challenge waits this long for the other side's consent
 	GIFT_MAX: 99,     // per-gift ceiling on host → guest resource transfers
 	PICKUP_MS: 200,   // per-body floor between ground-pickup intents
-	EAT_MS: 500       // per-body floor between eat intents
+	EAT_MS: 500,      // per-body floor between eat intents
+	LOOK_MS: 1000     // per-viewer floor between look changes
 };
+// The guest's chosen body color: persisted in the GUEST browser like the name,
+// validated HOST-side, relayed to every renderer. Display-only — a look changes
+// no rule anywhere. The strict hex shape matters: the value reaches fillStyle.
+export const LOOK_KEY = 'mm_ghost_look_v1';
+export function validLookColor(c){
+	return typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c);
+}
 // The guest larder: what a pouch item heals when eaten. Values mirror the host's
 // food.js where keys overlap (meat 12, bakedMeat 35); meatScrap is the guest-scale
 // snack — it is what THEIR kills drop and what pickup brings home. Rotten meat is
@@ -952,7 +960,7 @@ const api = {
 	PLAY_RULES, PLAY_ACTIONS, validPlayAction, playReachOk, clampBodyStep, pouchAdd, pouchTake,
 	PLAY_WEAPONS, PLAY_STARTER_WEAPONS, PLAY_STARTER_AMMO, validPlayWeapon, playAimDir,
 	GID_KEY, GID_LEASE_KEY, GID_LEASE_MS, PLAY_RECIPES, validPlayRecipe, pouchAfford, pouchSpend,
-	PLAY_FOODS, validPlayFood,
+	PLAY_FOODS, validPlayFood, LOOK_KEY, validLookColor,
 	SPIRIT_AVOID, spiritLift, PING,
 	DREAD, dreadAt, POWER_RULES, POWER_CHARGE, validPowerKind, chargeAfter, ASSIST_ACTIONS, validAssistAction,
 	ASSIST_LIMITS, clampCraftCount, createAssistQueue,

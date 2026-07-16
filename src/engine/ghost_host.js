@@ -154,7 +154,7 @@ const ghostHost = (function(){
 			activeGhosts: session ? entries().filter(e => e.actUntil > t).length : 0,
 			viewers: session ? entries().map(e => ({ gid: e.gid, name: e.name, mode: e.mode, avatar: e.avatar, active: e.actUntil > t, charge: +(e.charge || 0).toFixed(1), assistant: !!e.assistant, level: e.level || 1 })) : [],
 			players: session ? entries().filter(e => e.body).length : 0,
-			bodies: session ? entries().filter(e => e.body).map(e => ({ gid: e.gid, x: +e.body.x.toFixed(2), y: +e.body.y.toFixed(2), hp: +e.body.hp.toFixed(1), mhp: e.body.maxHp, dead: !!e.body.dead, pouch: Object.assign({}, e.body.pouch) })) : [],
+			bodies: session ? entries().filter(e => e.body).map(e => ({ gid: e.gid, x: +e.body.x.toFixed(2), y: +e.body.y.toFixed(2), hp: +e.body.hp.toFixed(1), mhp: e.body.maxHp, dead: !!e.body.dead, look: e.look || null, pouch: Object.assign({}, e.body.pouch) })) : [],
 			aura: (MMR && MMR.ghostAura) ? MMR.ghostAura.spirits.length : 0,
 			banned: session ? session.banned.size : 0,
 			boost: (MMR && MMR.socialBoost) ? Object.assign({}, MMR.socialBoost) : null,
@@ -220,6 +220,8 @@ const ghostHost = (function(){
 				sendSnapshot(s, entry.peer);
 				sendInvFull(s, entry.peer); // the world save carries invasions, but a fresh
 				                            // roster sig is what unlocks the live pose plane
+				// chosen body colors, so a late joiner paints every player right away
+				for(const other of entries()){ if(other !== entry && other.look){ try{ entry.peer.send({ t: 'plook', gid: other.gid, c: other.look }); }catch(e){ /* fine */ } } }
 				sendDeed(entry, 'join', 1);
 				try{ bridge.msg('👻 ' + entry.name + ' obserwuje twoją warstwę'); }catch(e){ /* fine */ }
 				updateUi();
@@ -234,6 +236,16 @@ const ghostHost = (function(){
 			}
 		} else if(pl.t === 'avatar'){
 			if(NET.validAvatar(pl.a)){ entry.avatar = pl.a; markActive(entry); }
+		} else if(pl.t === 'plook'){
+			// the guest's chosen body color: embodied viewers only, strict hex (it
+			// reaches fillStyle on every renderer), rate-floored, display-only
+			const tL = now();
+			if(entry.body && NET.validLookColor(pl.c) && tL - (entry.lastLookAt || 0) >= NET.PLAY_RULES.LOOK_MS){
+				entry.lastLookAt = tL;
+				entry.look = pl.c.toLowerCase();
+				markActive(entry);
+				broadcast({ t: 'plook', gid: entry.gid, c: entry.look });
+			}
 		} else if(pl.t === 'chat'){
 			handleChat(s, entry, pl);
 		} else if(pl.t === 'ping'){
@@ -1500,7 +1512,7 @@ const ghostHost = (function(){
 				if(!b.disp) b.disp = { x: b.x, y: b.y };
 				b.disp.x += (b.x - b.disp.x) * ease;
 				b.disp.y += (b.y - b.disp.y) * ease;
-				if(wantBody && bridge.drawHeroAt) bridge.drawHeroAt({ x: b.disp.x, y: b.disp.y, vx: b.vx, vy: b.vy, facing: b.f, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, gid: entry.gid });
+				if(wantBody && bridge.drawHeroAt) bridge.drawHeroAt({ x: b.disp.x, y: b.disp.y, vx: b.vx, vy: b.vy, facing: b.f, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, gid: entry.gid, look: entry.look || null });
 				if(wantText) paintBodyTag(ctx, TILE, b.disp.x, b.disp.y, entry.name || 'Duch', b, viewPrefs.bubbles ? entry.lastChat : null);
 				continue;
 			}

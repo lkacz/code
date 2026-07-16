@@ -244,10 +244,16 @@ bodies ever match, so the host hero stays untouchable. **Gravestones
 (2026-07-16):** death spills the pouch as physical resource drops at the death
 spot (recoverable with the pickup intent by whoever gets there first), the
 banked pouch reflects the loss (no resurrection by rejoin), and the earned
-arsenal survives — weapons are identity, resources are cargo. **Still open
-(polish):** water sub-tile partials around bodies, smooth position
-reconciliation (needs echo-timestamp lag compensation — a naive ease toward
-the lagged echo makes movement rubbery), streamed per-guest customization.
+arsenal survives — weapons are identity, resources are cargo. **Chosen look (2026-07-16):** guests pick their body color (🎨 swatches in the
+bar, persisted as `mm_ghost_look_v1` on the lockdown allowlist); the host
+validates STRICT hex (it reaches fillStyle on every renderer), rate-floors it,
+relays it to all peers and syncs late joiners; every renderer paints the same
+player the same way, gid tint stays the fallback. Note: "stream the guest's
+real customization" was retired — a ghost page never loads its own save, so
+its MM.customization is defaults; the chosen look IS the real feature.
+**Still open (polish):** water sub-tile partials around bodies, smooth
+position reconciliation (needs echo-timestamp lag compensation — a naive ease
+toward the lagged echo makes movement rubbery).
 **QA driver (2026-07-16):** the world seed is PINNED (777; `--seed=auto`
 restores the roulette) — validated with consecutive full-gauntlet greens; the
 survival shelves are lidded against sky-sand cascades and the weapon-plane

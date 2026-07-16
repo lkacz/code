@@ -16057,13 +16057,17 @@ MM.ghostBridge={
 		if(Number.isFinite(st.w)) player.w=st.w;
 		if(Number.isFinite(st.h)) player.h=st.h;
 		player.onGround=st.onGround!==false;
-		// each gid-tagged remote body wears its OWN deterministic outfit tint, so two
-		// players are distinguishable at a glance (display-only; streaming the guest's
-		// real customization can replace this derivation without touching callers)
+		// each gid-tagged remote body wears the color its player CHOSE (host-validated,
+		// display-only), or its deterministic gid tint when it never picked one —
+		// either way two players are distinguishable at a glance
 		const savedCust=MM.customization;
 		if(typeof st.gid==='string' && st.gid){
-			let h=0; for(let i=0;i<st.gid.length;i++) h=(h*31+st.gid.charCodeAt(i))>>>0;
-			MM.customization=Object.assign({}, savedCust, {outfitStyle:'default', outfitColor:'hsl('+(h%360)+',68%,55%)'});
+			let color=(typeof st.look==='string' && /^#[0-9a-f]{6}$/i.test(st.look)) ? st.look : null;
+			if(!color){
+				let h=0; for(let i=0;i<st.gid.length;i++) h=(h*31+st.gid.charCodeAt(i))>>>0;
+				color='hsl('+(h%360)+',68%,55%)';
+			}
+			MM.customization=Object.assign({}, savedCust, {outfitStyle:'default', outfitColor:color});
 		}
 		try{ drawPlayer({remoteBody:true}); }catch(e){ /* one bad frame must not leak the swap */ }
 		finally{ MM.customization=savedCust; for(const k of keys) player[k]=saved[k]; }

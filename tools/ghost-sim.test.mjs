@@ -433,9 +433,9 @@ assert.ok(/function notifyTileChanged\(x,y,old,v\)\{\s*try\{ if\(MM\.ghostHostTi
 const clientSrc = readFileSync(new URL('../src/engine/ghost_client.js', import.meta.url), 'utf8');
 assert.ok(/MMR\.ghostMode = true;/.test(clientSrc), 'client stamps MM.ghostMode at import time');
 assert.ok(/NET\.parseWatch\(location\.search\)/.test(clientSrc), 'watch param comes from the URL');
-assert.ok(!/localStorage\.setItem\((?!'mm_ghost_(name|avatar)_v1'|NET\.PROG_KEY|NET\.GID_KEY|NET\.GID_LEASE_KEY)/.test(clientSrc),
-	'client persists nothing but its display name, avatar, own career and stable gid (+lease)');
-assert.ok(/Storage\.prototype\.setItem = function/.test(clientSrc) && /allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY, NET\.GID_KEY, NET\.GID_LEASE_KEY\]\)/.test(clientSrc),
+assert.ok(!/localStorage\.setItem\((?!'mm_ghost_(name|avatar)_v1'|NET\.PROG_KEY|NET\.GID_KEY|NET\.GID_LEASE_KEY|NET\.LOOK_KEY)/.test(clientSrc),
+	'client persists nothing but its display name, avatar, own career, stable gid (+lease) and chosen look');
+assert.ok(/Storage\.prototype\.setItem = function/.test(clientSrc) && /allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY, NET\.GID_KEY, NET\.GID_LEASE_KEY, NET\.LOOK_KEY\]\)/.test(clientSrc),
 	'ghost mode locks down ALL localStorage writes (side stores like dynamic loot must not leak into the watcher’s own world)');
 // hardening pins (post-review): hostile hosts, transport races, throttling floods
 assert.ok(/function esc\(s\)/.test(clientSrc) && /esc\(hostName\)/.test(clientSrc),
@@ -721,7 +721,7 @@ for(const gate of authorityGates){
 assert.ok(/entry\.level = Math\.max\(1, Math\.min\(NET\.PROG\.MAX_LEVEL, Math\.floor\(pl\.lvl\)\)\)/.test(hostSrc),
 	'the claimed level is clamped and used for display only');
 // client: persists in the WATCHER's own browser — that is what survives a reload
-assert.ok(/allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY, NET\.GID_KEY, NET\.GID_LEASE_KEY\]\)/.test(clientSrc),
+assert.ok(/allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY, NET\.GID_KEY, NET\.GID_LEASE_KEY, NET\.LOOK_KEY\]\)/.test(clientSrc),
 	'the ghost profile is on the storage allowlist (the lockdown would otherwise silently drop it)');
 assert.ok(/localStorage\.setItem\(NET\.PROG_KEY, JSON\.stringify\(prog\)\)/.test(clientSrc) && /function loadProgress\(\)/.test(clientSrc),
 	'the career is written to and read from the watcher’s own localStorage');
@@ -1308,8 +1308,19 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 		&& /'hsl\('\+\(h%360\)\+',68%,55%\)'/.test(mainSrc)
 		&& /finally\{ MM\.customization=savedCust;/.test(mainSrc),
 		'remote bodies wear a gid-derived outfit tint, restored in finally');
-	assert.ok(/gid: entry\.gid \}\);/.test(hostSrc) && /gid: b\.id \}\);/.test(clientSrc),
-		'both body painters tag the gid so every renderer derives the same look');
+	assert.ok(/gid: entry\.gid, look: entry\.look \|\| null \}\);/.test(hostSrc) && /gid: b\.id, look: looks\[b\.id\] \|\| null \}\);/.test(clientSrc),
+		'both body painters tag the gid AND the chosen look so every renderer paints the same player the same way');
+	// the chosen look: guest-picked, HOST-validated strict hex, relayed + late-joiner
+	// synced, persisted client-side like the avatar — display-only end to end
+	assert.ok(/pl\.t === 'plook'/.test(hostSrc) && /entry\.body && NET\.validLookColor\(pl\.c\) && tL - \(entry\.lastLookAt \|\| 0\) >= NET\.PLAY_RULES\.LOOK_MS/.test(hostSrc),
+		'a look change is embodied-only, strict-hex validated and rate-floored on the host');
+	assert.ok(/if\(other !== entry && other\.look\)\{ try\{ entry\.peer\.send\(\{ t: 'plook', gid: other\.gid, c: other\.look \}\)/.test(hostSrc),
+		'a late joiner receives every known look right after the snapshot');
+	assert.ok(/if\(typeof pl\.gid === 'string' && pl\.gid && NET\.validLookColor\(pl\.c\)\)/.test(clientSrc),
+		'the client re-validates relayed looks (defense in depth) before painting with them');
+	assert.ok(/typeof st\.look==='string' && \/\^#\[0-9a-f\]\{6\}\$\/i\.test\(st\.look\)/.test(mainSrc),
+		'the painter accepts only strict hex for a chosen look (it reaches fillStyle)');
+	assert.ok(/_playLook: \(c\) => setLook\(c\),/.test(clientSrc), 'the QA look seam exists');
 	// weapon grants: whitelist-bound, deduped, free (templates are not host stock)
 	const gw = hostSrc.slice(hostSrc.indexOf('function giftWeapon'), hostSrc.indexOf('function giftResource'));
 	assert.ok(/if\(!NET\.validPlayWeapon\(key\)\)/.test(gw) && /if\(te\.body\.weapons\.includes\(key\)\)/.test(gw),

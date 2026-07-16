@@ -27,7 +27,7 @@ if(WATCH && MMR){
 		// (the ghost's OWN profile is on this list: name, avatar, career and stable
 		// gid — career + gid are what make progression AND the host-kept body pouch
 		// survive a reload and a fresh invite link)
-		const allow = new Set(['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET.PROG_KEY, NET.GID_KEY, NET.GID_LEASE_KEY]);
+		const allow = new Set(['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET.PROG_KEY, NET.GID_KEY, NET.GID_LEASE_KEY, NET.LOOK_KEY]);
 		const origSet = Storage.prototype.setItem;
 		const origRemove = Storage.prototype.removeItem;
 		Storage.prototype.setItem = function(k, v){
@@ -147,6 +147,21 @@ const ghostClient = (function(){
 		noteInput();
 		updateBar();
 	}
+	// The chosen body color: persisted like the avatar, validated on BOTH ends
+	// (the host is the authority — it relays only strict hex), display-only.
+	let myLook = null;
+	function loadLook(){
+		try{ const c = localStorage.getItem(NET.LOOK_KEY); if(NET.validLookColor(c)) myLook = c.toLowerCase(); }catch(e){ /* default tint */ }
+	}
+	function setLook(c){
+		if(!NET.validLookColor(c)) return false;
+		myLook = c.toLowerCase();
+		try{ localStorage.setItem(NET.LOOK_KEY, myLook); }catch(e){ /* session-only look */ }
+		if(conn && state === 'live' && play.on) conn.send({ t: 'plook', c: myLook });
+		noteInput();
+		return true;
+	}
+	const looks = {}; // gid → host-relayed chosen color, re-validated on receipt
 
 	// --- the watcher's own career -----------------------------------------------------
 	// Persisted HERE, in the viewer's own browser (NET.PROG_KEY), which is why the
@@ -225,6 +240,7 @@ const ghostClient = (function(){
 		if(!WATCH) return false;
 		bridge = b;
 		loadAvatar();
+		loadLook();
 		loadProgress();
 		document.body.classList.add('mmGhostMode');
 		injectCss();
@@ -372,6 +388,14 @@ const ghostClient = (function(){
 				if(pl.k === 'chill') bridge.msg('🥶 Woda wychładza — wyjdź na brzeg!');
 				else if(pl.k === 'cold') bridge.msg('🥶 Mróz przenika do kości — znajdź ciepło albo schronienie!');
 				else if(pl.k === 'heat') bridge.msg('🥵 Upał wysusza — schłodź się w wodzie albo w cieniu!');
+			}
+			return;
+		}
+		if(pl.t === 'plook'){
+			// a fellow player's chosen color — re-validated (defense in depth), bounded
+			if(typeof pl.gid === 'string' && pl.gid && NET.validLookColor(pl.c)){
+				const g = pl.gid.slice(0, 40);
+				if(g in looks || Object.keys(looks).length < 24) looks[g] = pl.c.toLowerCase();
 			}
 			return;
 		}
@@ -872,7 +896,7 @@ const ghostClient = (function(){
 		for(const b of bodies){
 			if(Number.isFinite(b.tx)){ b.x += (b.tx - b.x) * ease; b.y += (b.ty - b.y) * ease; }
 			if(b.dead) continue; // their ghost spirit shows via the presence relay instead
-			if(wantBody && bridge.drawHeroAt) bridge.drawHeroAt({ x: b.x, y: b.y, vx: b.vx, vy: b.vy, facing: b.f, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, gid: b.id });
+			if(wantBody && bridge.drawHeroAt) bridge.drawHeroAt({ x: b.x, y: b.y, vx: b.vx, vy: b.vy, facing: b.f, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, gid: b.id, look: looks[b.id] || null });
 			if(wantText && tagPainter) tagPainter(ctx, TILE, b.x, b.y, b.name || 'Gracz', b, null);
 		}
 		for(const g of others){
@@ -1022,6 +1046,7 @@ const ghostClient = (function(){
 		remoteHost.dx = p.x; remoteHost.dy = p.y;
 		remoteHost.vx = p.vx || 0; remoteHost.vy = p.vy || 0; remoteHost.f = p.facing || 1;
 		cam.mode = 'follow';
+		if(myLook && conn && state === 'live') conn.send({ t: 'plook', c: myLook }); // wear the saved color
 		bridge.msg('🎮 Wcielenie! A/D = ruch, W/spacja = skok, LPM = kop (trzymaj) lub uderz, PPM = buduj (wybierz surowiec z sakwy). F = kamera.');
 		renderPouch();
 		updateBar();
@@ -1318,6 +1343,8 @@ const ghostClient = (function(){
 			+ '<span id="gbArms" style="display:none;align-items:center;gap:3px;"></span>'
 			+ '<span id="gbCraft" style="display:none;align-items:center;gap:3px;"></span>'
 			+ '<button id="gbDuel" style="display:none;" title="Wyzwij najbliższego gracza na pojedynek (zaczyna się dopiero, gdy oboje się zgodzą)">⚔ Pojedynek</button>'
+			+ '<button id="gbLook" style="display:none;" title="Kolor twojego stroju (widzą go wszyscy)">🎨</button>'
+			+ '<span id="gbLookRow" style="display:none;gap:3px;align-items:center;"></span>'
 			+ '<span id="gbPouch" style="display:none;align-items:center;gap:3px;flex-wrap:wrap;"></span>'
 			+ '<button id="gbPing">📍 Wskaż</button>'
 			+ '<button id="gbAssist" style="display:none;">🛠 Asystent</button>'
@@ -1337,6 +1364,18 @@ const ghostClient = (function(){
 			let best = bodies[0], bd = Infinity;
 			for(const b of bodies){ const d = Math.hypot(b.x - p.x, b.y - p.y); if(d < bd){ bd = d; best = b; } }
 			sendDuel(best.id);
+		});
+		const lookRow = bar.querySelector('#gbLookRow');
+		for(const col of ['#e5533d', '#f4a83a', '#ffd76a', '#5fce5f', '#39c6c0', '#5a8cff', '#a86cf5', '#f36cc0']){
+			const sw = document.createElement('button');
+			sw.style.cssText = 'width:16px;height:16px;border-radius:50%;border:1px solid rgba(255,255,255,.45);background:' + col + ';padding:0;cursor:pointer;';
+			sw.title = col;
+			sw.addEventListener('click', () => { setLook(col); lookRow.style.display = 'none'; });
+			lookRow.appendChild(sw);
+		}
+		bar.querySelector('#gbLook').addEventListener('click', () => {
+			noteInput();
+			lookRow.style.display = lookRow.style.display === 'none' ? 'inline-flex' : 'none';
 		});
 		bar.querySelector('#gbAssist').addEventListener('click', () => { noteInput(); toggleAssistPanel(); });
 		bar.querySelector('#gbFollow').addEventListener('click', () => { noteInput(); setFollow(cam.mode !== 'follow'); });
@@ -1474,6 +1513,11 @@ const ghostClient = (function(){
 		if(duelBtn){
 			duelBtn.style.display = (play.on && bodies.length) ? 'inline-block' : 'none';
 			duelBtn.textContent = play.duelWith ? '⚔ w pojedynku' : '⚔ Pojedynek';
+		}
+		const lookBtn = bar.querySelector('#gbLook');
+		if(lookBtn){
+			lookBtn.style.display = play.on ? 'inline-block' : 'none';
+			lookBtn.style.background = myLook || '';
 		}
 		// in embodiment the bar is a PLAYER hud (pouch + hands), so the spectator
 		// influence controls (blessings, powers) step aside to reduce clutter
@@ -1777,6 +1821,7 @@ const ghostClient = (function(){
 			play: {
 				on: play.on, spawned: play.spawned, dead: play.dead, sel: play.sel,
 				arm: play.arm, weapons: play.weapons.slice(), duelWith: play.duelWith,
+				look: myLook, looksKnown: Object.keys(looks).length,
 				pouch: Object.assign({}, play.pouch),
 				x: play.on ? +(bridge && bridge.player ? bridge.player.x : 0).toFixed(2) : null,
 				y: play.on ? +(bridge && bridge.player ? bridge.player.y : 0).toFixed(2) : null,
@@ -1806,6 +1851,7 @@ const ghostClient = (function(){
 		_playArm: (key) => { play.arm = key; renderArms(); },
 		_playCraft: (key) => sendPlayAct('craft', 0, 0, key),
 		_playDuel: (targetGid) => sendDuel(targetGid),
+		_playLook: (c) => setLook(c),
 		// QA: deterministically halt the embodied hero (clears held keys + velocity).
 		// Synthetic keyup events do not reliably clear `held` under headless CDP.
 		_playStop: () => { held.clear(); if(play.on && bridge && bridge.player){ bridge.player.vx = 0; } },

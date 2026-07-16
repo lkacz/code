@@ -1511,6 +1511,18 @@ async function main(){
 			throw new Error('the duel arrow never landed: ' + JSON.stringify(diag));
 		}
 		console.log('duel arrows: ok (' + duelHp.toFixed(1) + '→' + bowDuelHp.toFixed(1) + ' by consensual bow)');
+		// the chosen look: guest-picked, host-validated strict hex, relayed to every
+		// renderer, persisted client-side; garbage never leaves the client
+		await ghost.eval(`MM.ghostClient._playLook('#ff0088')`);
+		await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(v=>v.gid==='${duelists.g1}'); return (b && b.look)||''; })()`,
+			v => v === '#ff0088', 'the host adopts and relays the chosen look', 30, 250);
+		await ghost4.poll(`MM.ghostClient.metrics().play.looksKnown`, v => v >= 1, 'the fellow player learns the look', 30, 250);
+		const badLook = await ghost.eval(`MM.ghostClient._playLook('javascript:alert(1)')`);
+		await sleep(400);
+		const lookAfter = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(v=>v.gid==='${duelists.g1}'); return (b && b.look)||''; })()`);
+		if(badLook !== false || lookAfter !== '#ff0088') throw new Error('a non-hex look slipped through: ' + JSON.stringify({ badLook, lookAfter }));
+		if((await ghost.eval(`localStorage.getItem('mm_ghost_look_v1')`)) !== '#ff0088') throw new Error('the chosen look did not persist client-side');
+		console.log('look: ok (#ff0088 chosen, validated, relayed to the fellow player, persisted; garbage refused)');
 		// host gift: the resource really leaves the host inventory before the pouch grows
 		const gift = await host.eval(`(()=>{
 			window.inv.stone=(window.inv.stone|0)+20;
