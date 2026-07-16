@@ -1725,6 +1725,46 @@ async function main(){
 		if(!(afterGrave.weapons >= 4)) throw new Error('death stripped the earned arsenal: ' + JSON.stringify(afterGrave));
 		console.log('gravestone: ok (' + spilled.n + ' drops where the hero fell, pouch banked empty, arsenal kept through respawn)');
 
+		// --- Scene 10q: HERO MODE — the full game as a guest (Phase 1) ----------------------------------
+		// The trust contract under test: the guest's inventory is GUEST-LOCAL truth
+		// (the host's riches must be wiped on embodiment — duplication guard), while
+		// every world write goes through the hact intents and returns on the stream.
+		await host.front();
+		const gidHero = (await host.eval(`MM.ghostHost.metrics().viewers`))[0].gid;
+		// plant host riches on the guest replica: the fresh-kit rule must strip them
+		await ghost.eval(`(()=>{ window.inv.stone=55; window.inv.wood=44; return 1; })()`);
+		await host.eval(`MM.ghostHost.setViewerMode('${gidHero}', 'hero')`);
+		await ghost.poll(`MM.ghostClient.metrics().mode`, v => v === 'hero', 'the watcher learns it is a full hero', 40, 250);
+		await ghost.poll(`MM.ghostClient.metrics().hero.spawned`, v => v === true, 'the hero body seeds from the pb echo', 60, 250);
+		const fresh = await ghost.eval(`(()=>({stone:window.inv.stone|0, wood:window.inv.wood|0,
+			ui:getComputedStyle(document.getElementById('hotbarWrap')).display!=='none',
+			craftUi:getComputedStyle(document.getElementById('craft')).display!=='none',
+			wrapped:MM.ghostClient.metrics().hero.dmgWrapped}))()`);
+		if(fresh.stone !== 0 || fresh.wood !== 0) throw new Error('the HOST riches leaked into guest-local truth: ' + JSON.stringify(fresh));
+		if(!fresh.ui || !fresh.craftUi) throw new Error('hero mode did not bring the real UI back: ' + JSON.stringify(fresh));
+		if(!(fresh.wrapped > 0)) throw new Error('replica damage entries are not wrapped for the combat forward');
+		// --- mining through the hact channel: host validates, tile breaks on the
+		// stream, the YIELD lands in the guest's own inv via its local awardTileDrops
+		const heroDig = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies[0];
+			const x=Math.round(b.x)+2, y=Math.round(b.y);
+			for(let dx=-1;dx<=1;dx++) for(let yy=y-8; yy<y; yy++) MM.world.setTile(x+dx, yy, MM.T.AIR);
+			MM.world.setTile(x, y+1, MM.T.STONE);
+			MM.world.setTile(x, y, MM.T.STONE);
+			return {x, y, stoneId:MM.T.STONE}; })()`);
+		await sleep(300);
+		await ghost.eval(`MM.ghostClient._heroMine(${heroDig.x}, ${heroDig.y})`);
+		await host.poll(`MM.world.getTile(${heroDig.x},${heroDig.y}) === MM.T.AIR`, v => v === true, 'the hero-mined tile breaks on the host', 40, 250);
+		await ghost.poll(`window.inv.stone|0`, v => v >= 1, 'the yield lands in the guest-local inventory', 40, 250);
+		// --- placement: host re-validates legality, the tile appears on the stream
+		await ghost.eval(`MM.ghostClient._heroPlace(${heroDig.x}, ${heroDig.y}, ${heroDig.stoneId}, 'fg')`);
+		await host.poll(`MM.world.getTile(${heroDig.x},${heroDig.y}) === MM.T.STONE`, v => v === true, 'the hero-placed tile lands on the host', 40, 250);
+		// --- persistence: the hero state survives under its own allowlisted key
+		await ghost.eval(`MM.ghostClient._heroSave()`);
+		const heroKept = await ghost.eval(`(()=>{ const s=JSON.parse(localStorage.getItem('mm_ghost_hero_v1')||'null');
+			return s && s.state && s.state.inv ? {stone:s.state.inv.stone|0} : null; })()`);
+		if(!heroKept || heroKept.stone < 1) throw new Error('the hero state never persisted: ' + JSON.stringify(heroKept));
+		console.log('hero mode: ok (fresh kit wiped the host riches, real UI back, mined via hact into own inv, placed back, state persisted)');
+
 		// --- Scene 11: permission downgrade — watch-only means watch-only ------------------------------
 		const gidOnHost = (await host.eval(`MM.ghostHost.metrics().viewers`))[0].gid;
 		await host.eval(`MM.ghostHost.setViewerMode('${gidOnHost}', 'watch')`);
