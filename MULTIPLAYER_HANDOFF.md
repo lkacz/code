@@ -196,10 +196,24 @@ both against world truth read host-side (`bridge.getTile`), landing through
 HERO takes **no fall damage** in this game (only bosses do) — parity means guests
 take none either; that ruling is pinned. QA scene 10m (pre-ages lungs through the
 new `MM.ghostHost._debugBody` live-body seam instead of stalling 20 s).
-**Still open (part 2):** hunger/energy (`survival.js` — needs a guest eat action
-+ HUD chips), temperature exposure, status effects (`hero_status.js`), swim-chill
-and water-pressure laws, per-guest gravestone on death (`respawn_travel.js`
-precedent — today: respawn at host, pouch intact).
+**Part 2 shipped (2026-07-16): the guest metabolism.** `pickup` intent — RESOURCE
+drops only (gear/chests/jewels stay the host's economy), fog-gated with the shared
+map, reach vs the host-tracked body, removed atomically before crediting the pouch
+(clicking a replicated drop routes there client-side). `eat` intent — `PLAY_FOODS`
+larder (meatScrap 6 / meat 12 / bakedMeat 35 / fish 10, values mirror food.js, no
+poison entries), pouch-spent, host-capped heal; food chips in `#gbPouch` eat on
+click. This closes the food/loot loop: a guest's own kills drop meat it can scoop
+and eat. **Swim-chill and thermal exposure** run per body through the hero's own
+laws (`updateSwimChill` deep-water rule; `ghostPlayThermalMode` bridge seam builds
+the same climate/shelter/warmth env at the body's coordinates; hero caps 8/6 and
+causes), with `pwarn` toasts — pins-only for the live QA (the drowning scene
+already proves the identical plumbing; staging a genuinely treading body through a
+background tab's clamped physics proved fragile). Plus a real fix: sibling tabs
+share the career key, and a throttled background tab's late flush used to STOMP
+the fresher write — profile flushes now MERGE monotonically (max counts, union
+done/days, max xp). **Still open:** hunger drain (the hero has none — parity says
+guests get none either unless the game grows one), status effects
+(`hero_status.js` chips), water pressure, per-guest gravestone.
 
 ### Wave E — Design rulings & polish — 🟡 RULINGS SHIPPED (2026-07-16)
 **Owner rulings received, implemented and pinned:**

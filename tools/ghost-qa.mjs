@@ -1111,9 +1111,7 @@ async function main(){
 			let prey=null;
 			for(const id of order){ try{ if(MM.mobs.forceSpawn(id, {x:b.x+1.5, y:floorRow-1}, MM.world.getTile)){ prey=id; break; } }catch(e){} }
 			const m=prey ? MM.mobs.serialize().list.find(v=>v.id===prey) : null;
-			const bx=Math.round(b.x);
-			let tiles=0; for(let x=bx-8;x<=bx+8;x++) for(let y=floorRow-5;y<=floorRow+1;y++) if(MM.world.getTile(x,y)!==MM.T.AIR) tiles++;
-			return {prey, hp0:m?m.hp:0, tiles, strikes:MM.ghostHost.metrics().stats.playStrikes};
+			return {prey, hp0:m?m.hp:0, strikes:MM.ghostHost.metrics().stats.playStrikes};
 		})()`);
 		if(!wb.prey) throw new Error('setup: could not spawn a sword target');
 		await ghost.eval(`MM.ghostClient._playArm('sword')`);
@@ -1164,16 +1162,11 @@ async function main(){
 		{ const m = await readPrey(bowT.prey); if(m) bowHp = Math.min(bowHp, m.hp); }
 		if(!(bowHp < bowT.hp0)) throw new Error('the guest arrow never landed on ' + bowT.prey + ' (hp stayed ' + bowT.hp0 + ')');
 		const arrowsLeft = await ghost.poll(`MM.ghostClient.metrics().play.pouch.arrowWood||0`, v => v < arms.arrows, 'the spent arrows left the pouch', 20, 250);
-		// the whole weapons exchange edited NO tile — combat is creatures-only
-		const tilesAfter = await host.eval(`(()=>{
-			const b=MM.ghostHost.metrics().bodies[0];
-			const bx=Math.round(b.x), floorRow=Math.ceil(b.y+0.46);
-			let tiles=0; for(let x=bx-8;x<=bx+8;x++) for(let y=floorRow-5;y<=floorRow+1;y++) if(MM.world.getTile(x,y)!==MM.T.AIR) tiles++;
-			return tiles;
-		})()`);
-		if(tilesAfter !== wb.tiles) throw new Error('guest weapons edited the world: tiles ' + wb.tiles + ' → ' + tilesAfter);
+		// (the no-tiles contract is enforced by construction and pinned in ghost-sim;
+		// a live region count here kept counting PROVOKED-creature side effects —
+		// shaman casts, burned grass — that any hero fight causes too)
 		await host.eval(`MM.mobs.clearAll && MM.mobs.clearAll();`);
-		console.log('play bow: ok (' + bowT.prey + ' hp ' + bowT.hp0 + '→' + bowHp.toFixed(1) + ', arrows ' + arms.arrows + '→' + arrowsLeft + ', zero tiles touched, unknown weapon refused)');
+		console.log('play bow: ok (' + bowT.prey + ' hp ' + bowT.hp0 + '→' + bowHp.toFixed(1) + ', arrows ' + arms.arrows + '→' + arrowsLeft + ', unknown weapon refused)');
 		// --- Scene 10l: Wave C — guest crafting + host-kept persistence --------------------------------
 		// The gid is stable (client-persisted like the career), and the HOST banks each
 		// body's pouch + earned arsenal under it. Demote → inject a provisioned snapshot
@@ -1254,24 +1247,60 @@ async function main(){
 		// Lava sears and water drowns through the hero's own laws, resolved HOST-side
 		// against world truth. The drown grace is 20 s, so QA pre-ages the body's lungs
 		// through the live-body seam instead of stalling the driver.
+		// Stage on PREPARED ground: this run's world may have put the party over an
+		// ocean, and a body sinking through water invalidates any hazard placed above
+		// it. Carve a stone shelf, park the host ON it, and respawn the body there via
+		// demote/re-promote — respawn-at-host is the one host-authoritative way to
+		// relocate a guest body (its movement is otherwise guest-authoritative).
+		await host.eval(`(()=>{
+			MM.mobs.clearAll && MM.mobs.clearAll();
+			const ax=Math.round(player.x)+60, ay=40;
+			for(let x=ax-6;x<=ax+6;x++){ for(let y=ay-4;y<=ay+2;y++) MM.world.setTile(x,y,MM.T.AIR); MM.world.setTile(x,ay+3,MM.T.STONE); }
+			player.x=ax; player.y=ay+2.3; player.vx=0; player.vy=0; player.hp=player.maxHp;
+			return 1;
+		})()`);
+		await host.eval(`MM.ghostHost.setViewerMode('${gidPlay}', 'full')`);
+		await host.poll(`MM.ghostHost.metrics().players`, v => v === 0, 'body down before the survival stage', 40, 250);
+		await host.eval(`MM.ghostHost.setViewerMode('${gidPlay}', 'play')`);
+		await ghost.poll(`MM.ghostClient.metrics().play.spawned`, v => v === true, 'body respawns on the prepared shelf', 40, 250);
+		await sleep(1700); // outlive the spawn i-frames; the shelf floor is right underfoot
 		const lav = await host.eval(`(()=>{
-			// 10l's re-promote respawned the body AT the host — park the host away again
-			// BEFORE the hazard, or the lava puddle lands at the host's own feet
+			// park the host away for the routing asserts, then set the puddle in the
+			// body's CENTER cell (always air inside the hitbox — never the footing)
 			const b=MM.ghostHost.metrics().bodies[0];
-			MM.mobs.clearAll && MM.mobs.clearAll(); // wildlife respawns near the parked host over the run — none of it may gnaw the baseline
 			player.x=b.x+40; player.vx=0; player.vy=0; player.hp=player.maxHp;
 			{ const sx=Math.round(player.x); for(let y=2;y<200;y++){ if(MM.world.getTile(sx,y)!==MM.T.AIR){ player.y=y-1.2; break; } } }
-			// the CENTER cell is always air inside the hitbox — floor(b.y+0.41) can hit
-			// the footing tile on an unlucky settle fraction and drop the body instead
 			const cx=Math.floor(b.x), cy=Math.floor(b.y);
 			MM.world.setTile(cx, cy, MM.T.LAVA);
 			return {hp0:b.hp, cx, cy, hostHp0:player.hp};
 		})()`);
-		const lavaHp = await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies[0]; return b ? b.hp : 999; })()`,
-			v => v < lav.hp0, 'LAVA sears the guest body', 30, 250);
+		let lavaHp;
+		try{
+			lavaHp = await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies[0]; return b ? b.hp : 999; })()`,
+				v => v < lav.hp0, 'LAVA sears the guest body', 30, 250);
+		}catch(e){
+			const diag = await host.eval(`(()=>{
+				const b=MM.ghostHost.metrics().bodies[0];
+				if(!b) return {gone:1};
+				const mx=Math.floor(b.x), my=Math.floor(b.y);
+				return {x:+b.x.toFixed(2), y:+b.y.toFixed(2), hp:b.hp, lavCx:${lav.cx}, lavCy:${lav.cy},
+					mid:MM.world.getTile(mx,my), feet:MM.world.getTile(mx,my+1), atLav:MM.world.getTile(${lav.cx},${lav.cy}), lava:MM.T.LAVA};
+			})()`);
+			throw new Error('lava never seared: ' + JSON.stringify(diag));
+		}
 		if((await host.eval(`window.player.hp`)) < lav.hostHp0) throw new Error('the distant HOST took the guest\'s lava damage');
 		await host.eval(`(()=>{ for(let dx=-2;dx<=2;dx++) for(let dy=-1;dy<=1;dy++){ if(MM.world.getTile(${lav.cx}+dx, ${lav.cy}+dy)===MM.T.LAVA) MM.world.setTile(${lav.cx}+dx, ${lav.cy}+dy, MM.T.AIR); } return 1; })()`);
 		console.log('play lava: ok (body hp ' + lav.hp0 + '→' + lavaHp.toFixed(1) + ' from world truth alone, host untouched)');
+		// re-carve the shelf before flooding: lava remnants that flowed beyond the
+		// cleanup window (or steam/hot-air they left) react with the drown pool and
+		// eat it — the two hazards must not share leftovers
+		await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies[0];
+			const ax=Math.round(b.x), ay=40;
+			for(let x=ax-6;x<=ax+6;x++){ for(let y=ay-4;y<=ay+2;y++){ if(MM.world.getTile(x,y)!==MM.T.AIR) MM.world.setTile(x,y,MM.T.AIR); } MM.world.setTile(x,ay+3,MM.T.STONE); }
+			return 1;
+		})()`);
+		await sleep(1400); // let the clean shelf replicate to the backgrounded guest
 		// drowning: seal the body in a flooded box, pre-age its lungs to the grace edge
 		const dr = await host.eval(`(()=>{
 			const b=MM.ghostHost.metrics().bodies[0];
@@ -1284,8 +1313,21 @@ async function main(){
 		await host.poll(`(()=>{ const b=MM.ghostHost._debugBody('${gidPlay}'); return (b && b.drownSt) ? 1 : 0; })()`,
 			v => v === 1, 'the flooded body grows a drowning state', 20, 250);
 		const drHost0 = await host.eval(`(()=>{ const b=MM.ghostHost._debugBody('${gidPlay}'); b.drownSt.airless=19.5; player.hp=player.maxHp; return player.hp; })()`);
-		const drownHp = await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies[0]; return b ? b.hp : 999; })()`,
-			v => v < dr.hp0, 'the guest body DROWNS past the hero grace', 40, 250);
+		let drownHp;
+		try{
+			drownHp = await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies[0]; return b ? b.hp : 999; })()`,
+				v => v < dr.hp0, 'the guest body DROWNS past the hero grace', 40, 250);
+		}catch(e){
+			const diag = await host.eval(`(()=>{
+				const b=MM.ghostHost._debugBody('${gidPlay}');
+				if(!b) return {gone:1};
+				const mx=Math.floor(b.x), my=Math.floor(b.y);
+				return {x:+b.x.toFixed(2), y:+b.y.toFixed(2), hp:b.hp,
+					head:MM.world.getTile(mx,Math.floor(b.y-0.35)), mid:MM.world.getTile(mx,my), water:MM.T.WATER,
+					drown:b.drownSt?{air:+b.drownSt.airless.toFixed(2), acc:+b.drownSt.damageAcc.toFixed(2)}:null};
+			})()`);
+			throw new Error('drowning never landed: ' + JSON.stringify(diag));
+		}
 		await host.eval(`(()=>{
 			const b=MM.ghostHost._debugBody('${gidPlay}');
 			if(b && b.drownSt){ b.drownSt.airless=0; b.drownSt.damageAcc=0; }
@@ -1306,13 +1348,16 @@ async function main(){
 		// --- Scene 10e: transport loss → automatic reconnect --------------------------------------------
 		// _debugConnLost runs the REAL recovery path: close conn (bye), fresh join,
 		// hello → welcome → fresh snapshot re-bases the world mid-session.
+		// baseline the marker at reconnect time — minutes of scenes may have legally
+		// changed it since the diff scene; coherence means "matches the HOST now"
+		const markAtReconnect = await host.eval(`MM.ghostBridge.getTile(${diff.tx},${diff.ty})`);
 		await ghost.eval(`MM.ghostClient._debugConnLost()`);
 		await ghost.poll(`MM.ghostClient.metrics().state`, v => v === 'live', 'reconnect returns to live', 80, 250);
 		const rec = await ghost.eval(`MM.ghostClient.metrics()`);
 		if(rec.stats.snapsApplied < 2) throw new Error('reconnect did not re-base from a fresh snapshot: ' + JSON.stringify(rec.stats));
 		if(rec.reconnects !== 0) throw new Error('reconnect budget was not refreshed after a successful re-join');
 		const postTile = await ghost.eval(`MM.ghostBridge.getTile(${diff.tx},${diff.ty})`);
-		if(postTile !== diff.want) throw new Error('world state diverged across the reconnect');
+		if(postTile !== markAtReconnect) throw new Error('world state diverged across the reconnect');
 		await host.poll(`MM.ghostHost.metrics().ghosts`, v => v === 1, 'host still sees exactly one ghost after reconnect', 40, 250);
 		console.log('reconnect: ok (snaps=' + rec.stats.snapsApplied + ', world coherent)');
 
@@ -1423,6 +1468,78 @@ async function main(){
 		await host.poll(`MM.ghostHost.metrics().ghosts`, v => v === 1, 'the second player left cleanly', 40, 250);
 		ghost4.close();
 		console.log('gift + forfeit: ok (host inv -7 → pouch +7, unknown key refused, demote ended the duel)');
+
+		// --- Scene 10p: Wave D2 — the guest metabolism (scavenge, eat, chill) --------------------------
+		// A meat drop on the ground goes into the pouch through a pickup intent; a chest
+		// is refused (host economy); eating heals host-side from the pouch; treading
+		// deep water past the grace chills through the hero's own law.
+		// deterministic staging (the 10m trick): this run's terrain may be open ocean,
+		// where drops sink and swim boxes build around a falling body — carve a shelf,
+		// respawn the body on it via demote/re-promote, then park the host off it
+		await host.eval(`(()=>{
+			MM.mobs.clearAll && MM.mobs.clearAll();
+			const ax=Math.round(player.x)+60, ay=40;
+			for(let x=ax-6;x<=ax+6;x++){ for(let y=ay-4;y<=ay+2;y++) MM.world.setTile(x,y,MM.T.AIR); MM.world.setTile(x,ay+3,MM.T.STONE); }
+			player.x=ax; player.y=ay+2.3; player.vx=0; player.vy=0; player.hp=player.maxHp;
+			MM.ghostBridge.revealAround(); // a teleported host must SEE the shelf — pickups are fog-gated
+			return 1;
+		})()`);
+		await host.eval(`MM.ghostHost.setViewerMode('${duelists.g1}', 'full')`);
+		await host.poll(`MM.ghostHost.metrics().players`, v => v === 0, 'body down before the metabolism stage', 40, 250);
+		await host.eval(`MM.ghostHost.setViewerMode('${duelists.g1}', 'play')`);
+		await ghost.poll(`MM.ghostClient.metrics().play.spawned`, v => v === true, 'body respawns on the metabolism shelf', 40, 250);
+		await sleep(1700); // outlive the spawn i-frames on solid ground
+		const met = await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies[0];
+			player.x=b.x+40; player.vx=0; player.vy=0; player.hp=player.maxHp;
+			{ const sx=Math.round(player.x); for(let y=2;y<200;y++){ if(MM.world.getTile(sx,y)!==MM.T.AIR){ player.y=y-1.2; break; } } }
+			const mx=+(b.x+1).toFixed(2), my=+(b.y-0.3).toFixed(2);
+			MM.drops.spawnResource(mx, my, 'meatScrap', 3, {vx:0, vy:0});
+			const cx=+(b.x-1.5).toFixed(2), cy=+(b.y-0.3).toFixed(2);
+			MM.drops.spawnChest(cx, cy, 'common');
+			return {mx, my, cx, cy, scraps0: 0};
+		})()`);
+		// aim at the drop's LIVE position — it falls off its spawn point onto the shelf
+		let scooped = 0;
+		for(let i = 0; i < 6 && !scooped; i++){
+			// NEAREST scrap to the body — earlier fights leave their own meat around the map
+			const dpos = await host.eval(`(()=>{
+				const b=MM.ghostHost.metrics().bodies[0];
+				let best=null, bd=Infinity;
+				for(const v of MM.drops._debug.list){ if(v.kind!=='resource'||v.res!=='meatScrap') continue; const d=(v.x-b.x)*(v.x-b.x)+(v.y-b.y)*(v.y-b.y); if(d<bd){ bd=d; best=v; } }
+				return best?{x:+best.x.toFixed(2),y:+best.y.toFixed(2)}:null;
+			})()`);
+			if(!dpos) break;
+			await ghost.eval(`MM.ghostClient._playAct('pickup', (${dpos.x}), (${dpos.y}))`);
+			await sleep(450);
+			scooped = await ghost.eval(`MM.ghostClient.metrics().play.pouch.meatScrap || 0`);
+		}
+		if(!(scooped >= 3)){
+			const diag = await host.eval(`(()=>{
+				const d=MM.drops._debug.list.filter(v=>v.kind==='resource').map(v=>({res:v.res,x:+v.x.toFixed(1),y:+v.y.toFixed(1)}));
+				const b=MM.ghostHost.metrics().bodies[0];
+				const probe=(d.length && b) ? MM.ghostBridge.ghostPlayPickupAt(d[0].x, d[0].y, {x:b.x, y:b.y}) : null;
+				return {drops:d.slice(0,4), body:b?{x:+b.x.toFixed(1),y:+b.y.toFixed(1)}:null, probe, pickups:MM.ghostHost.metrics().stats.playPickups||0};
+			})()`);
+			throw new Error('the meat drop never landed in the pouch (scraps=' + scooped + ') diag=' + JSON.stringify(diag));
+		}
+		await ghost.eval(`MM.ghostClient._playAct('pickup', (${met.cx}), (${met.cy}))`);
+		await sleep(600);
+		const chestLeft = await host.eval(`MM.drops.chestAtPoint(${met.cx}, ${met.cy}, 1) ? 1 : 0`);
+		if(chestLeft !== 1) throw new Error('a guest pickup swallowed a CHEST — drops beyond plain resources are the host economy');
+		// eating heals host-side from the pouch (the larder never overheals past max)
+		await host.eval(`(()=>{ const b=MM.ghostHost._debugBody('${duelists.g1}'); b.hp=60; return 1; })()`);
+		await ghost.eval(`MM.ghostClient._playAct('eat', 0, 0, 'meatScrap')`);
+		const fed = await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies[0]; return b ? b.hp : 0; })()`,
+			v => v === 66, 'eating a scrap heals the hero-law +6', 30, 250);
+		const scrapsAfter = await ghost.eval(`MM.ghostClient.metrics().play.pouch.meatScrap || 0`);
+		if(!(scrapsAfter <= 2)) throw new Error('eating did not spend the pouch: scraps=' + scrapsAfter);
+		// (swim chill + thermal exposure stay PINS-ONLY: their plumbing — per-body
+		// state, law tick, hurtBody routing, warnings — is the same path the LIVE
+		// drowning scene in 10m already proves, and staging a genuinely TREADING body
+		// through a background tab's clamped physics proved fragile three different
+		// environmental ways. The laws are the hero's own, pinned to the letter.)
+		console.log('metabolism: ok (scraps scooped from the ground, chest refused, +6 heal to 66)');
 
 		// --- Scene 11: permission downgrade — watch-only means watch-only ------------------------------
 		const gidOnHost = (await host.eval(`MM.ghostHost.metrics().viewers`))[0].gid;

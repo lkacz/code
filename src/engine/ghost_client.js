@@ -168,6 +168,21 @@ const ghostClient = (function(){
 		if(!force && t - lastProgSaveAt < 2000) return;
 		lastProgSaveAt = t;
 		try{
+			// SIBLING MERGE: two tabs of one browser share this key, and a backgrounded
+			// sibling's throttled trailing flush used to land LATE and stomp this tab's
+			// fresher write (last-writer-wins). Merging monotonically — max counts, union
+			// done/days, max xp — means neither tab can ever erase the other's earnings.
+			let disk = null;
+			try{ disk = JSON.parse(localStorage.getItem(NET.PROG_KEY) || 'null'); }catch(e){ disk = null; }
+			if(disk && typeof disk === 'object'){
+				const d = NET.normalizeProgress(disk);
+				const m = NET.normalizeProgress(prog);
+				for(const k of Object.keys(d.counts)) m.counts[k] = Math.max(m.counts[k] || 0, d.counts[k]);
+				for(const id of d.done) if(!m.done.includes(id)) m.done.push(id);
+				for(const dd of d.days) if(!m.days.includes(dd) && m.days.length < NET.PROG.MAX_DAYS) m.days.push(dd);
+				m.xp = Math.max(m.xp, d.xp);
+				prog = m;
+			}
 			localStorage.setItem(NET.PROG_KEY, JSON.stringify(prog));
 			progDirty = false; // only a write that actually LANDED may clear the flag —
 			// a transient storage failure must stay dirty so the next tick retries,
@@ -349,6 +364,15 @@ const ghostClient = (function(){
 			// breath warnings mirror the host-side survival law (display only — the
 			// damage itself arrives through pvit/pdmg like any other hurt)
 			if(play.on) bridge.msg(pl.w ? '🫧 Brakuje powietrza — wynurz się!' : '🫧 Łapiesz oddech');
+			return;
+		}
+		if(pl.t === 'pwarn'){
+			// survival warnings mirror the host-side laws (display only)
+			if(play.on){
+				if(pl.k === 'chill') bridge.msg('🥶 Woda wychładza — wyjdź na brzeg!');
+				else if(pl.k === 'cold') bridge.msg('🥶 Mróz przenika do kości — znajdź ciepło albo schronienie!');
+				else if(pl.k === 'heat') bridge.msg('🥵 Upał wysusza — schłodź się w wodzie albo w cieniu!');
+			}
 			return;
 		}
 		if(pl.t === 'duel'){
@@ -1083,9 +1107,9 @@ const ghostClient = (function(){
 	// pouch and world truth are all re-checked by the host before a tile changes.
 	function sendPlayAct(a, wx, wy, key){
 		if(state !== 'live' || !play.on || !play.spawned || play.dead) return false;
-		// weapons aim at world floats (an arrow needs a direction, not a cell);
-		// tile intents stay integer cells
-		const pl = a === 'attack'
+		// weapons and pickups aim at world floats (an arrow needs a direction, a drop
+		// a point — not a cell); tile intents stay integer cells
+		const pl = (a === 'attack' || a === 'pickup')
 			? { t: 'pact', a, x: +Number(wx).toFixed(1), y: +Number(wy).toFixed(1) }
 			: { t: 'pact', a, x: Math.floor(wx), y: Math.floor(wy) };
 		if(key) pl.key = key;
@@ -1110,6 +1134,13 @@ const ghostClient = (function(){
 			sendPlayAct('place', w.x, w.y, play.sel);
 			return;
 		}
+		// LMB on a ground drop scoops it into the pouch (client-side probe on the
+		// replicated drops plane is only ROUTING — the host re-validates everything)
+		try{
+			const D = MMR && MMR.drops;
+			const hov = D && D.hoverAt ? D.hoverAt(w.x, w.y, bridge.player, {}) : null;
+			if(hov && hov.kind === 'resource'){ sendPlayAct('pickup', w.x, w.y); return; }
+		}catch(e){ /* fall through to mining/attacking */ }
 		// LMB: solid target = start mining hold; open air = swing/shoot the ARMED weapon
 		if(bridge.solidAt(Math.floor(w.x), Math.floor(w.y), 'y')){
 			play.mineHold = { cx: clientX, cy: clientY };
@@ -1402,11 +1433,17 @@ const ghostClient = (function(){
 		for(const k of keys.slice(0, 12)){
 			const chip = document.createElement('button');
 			const sel = play.sel === k;
-			chip.style.cssText = 'border:1px solid ' + (sel ? '#ffd76a' : 'rgba(255,255,255,.2)') + ';border-radius:999px;'
+			// food is EATEN on click (host validates + heals); everything else arms building
+			const food = (NET.PLAY_FOODS && Object.prototype.hasOwnProperty.call(NET.PLAY_FOODS, k)) ? NET.PLAY_FOODS[k] : null;
+			chip.style.cssText = 'border:1px solid ' + (sel ? '#ffd76a' : (food ? 'rgba(155,232,155,.4)' : 'rgba(255,255,255,.2)')) + ';border-radius:999px;'
 				+ 'background:' + (sel ? 'rgba(255,215,106,.25)' : 'rgba(255,255,255,.08)') + ';color:#e6f0fb;padding:3px 8px;font-size:10px;font-weight:700;white-space:nowrap;';
-			chip.textContent = (bridge.resourceLabel ? bridge.resourceLabel(k) : k) + ' ' + play.pouch[k];
-			chip.title = sel ? 'Wybrany do budowania (PPM stawia)' : 'Kliknij, by budować tym surowcem';
-			chip.addEventListener('click', () => { noteInput(); play.sel = sel ? null : k; renderPouch(); });
+			chip.textContent = (food ? food.icon + ' ' : '') + (bridge.resourceLabel ? bridge.resourceLabel(k) : k) + ' ' + play.pouch[k];
+			chip.title = food ? 'Kliknij, by zjeść (+' + food.hp + ' HP)' : (sel ? 'Wybrany do budowania (PPM stawia)' : 'Kliknij, by budować tym surowcem');
+			chip.addEventListener('click', () => {
+				noteInput();
+				if(food){ sendPlayAct('eat', 0, 0, k); return; }
+				play.sel = sel ? null : k; renderPouch();
+			});
 			box.appendChild(chip);
 		}
 	}

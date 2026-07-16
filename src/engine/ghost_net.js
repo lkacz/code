@@ -85,8 +85,23 @@ export const PLAY_RULES = {
 	CRAFT_MS: 400,    // per-body floor between craft intents
 	DUEL_MS: 800,     // per-body floor between duel intents
 	DUEL_TTL_MS: 30000, // a duel challenge waits this long for the other side's consent
-	GIFT_MAX: 99      // per-gift ceiling on host → guest resource transfers
+	GIFT_MAX: 99,     // per-gift ceiling on host → guest resource transfers
+	PICKUP_MS: 200,   // per-body floor between ground-pickup intents
+	EAT_MS: 500       // per-body floor between eat intents
 };
+// The guest larder: what a pouch item heals when eaten. Values mirror the host's
+// food.js where keys overlap (meat 12, bakedMeat 35); meatScrap is the guest-scale
+// snack — it is what THEIR kills drop and what pickup brings home. Rotten meat is
+// deliberately absent: the pouch never poisons its owner.
+export const PLAY_FOODS = {
+	meatScrap: { label: 'Ochłap', icon: '🍖', hp: 6 },
+	meat:      { label: 'Surowe mięso', icon: '🥩', hp: 12 },
+	bakedMeat: { label: 'Pieczone mięso', icon: '🍗', hp: 35 },
+	fish:      { label: 'Ryba', icon: '🐟', hp: 10 }
+};
+export function validPlayFood(k){
+	return typeof k === 'string' && Object.prototype.hasOwnProperty.call(PLAY_FOODS, k) && k !== '__proto__';
+}
 // The guest's stable identity key (persisted in the GUEST browser, on the storage
 // lockdown allowlist). Self-claimed like the display name — never an authority,
 // only the key the host may hang HOST-side state on (kept pouch/arsenal, bans).
@@ -96,7 +111,7 @@ export const PLAY_RULES = {
 export const GID_KEY = 'mm_ghost_gid_v1';
 export const GID_LEASE_KEY = 'mm_ghost_gid_lease_v1';
 export const GID_LEASE_MS = 8000;
-export const PLAY_ACTIONS = ['mine', 'place', 'strike', 'attack', 'craft', 'duel'];
+export const PLAY_ACTIONS = ['mine', 'place', 'strike', 'attack', 'craft', 'duel', 'pickup', 'eat'];
 export function validPlayAction(a){ return PLAY_ACTIONS.includes(a); }
 // --- the guest arsenal -------------------------------------------------------------
 // Curated starter templates, resolved HOST-side through the real combat chains
@@ -937,6 +952,7 @@ const api = {
 	PLAY_RULES, PLAY_ACTIONS, validPlayAction, playReachOk, clampBodyStep, pouchAdd, pouchTake,
 	PLAY_WEAPONS, PLAY_STARTER_WEAPONS, PLAY_STARTER_AMMO, validPlayWeapon, playAimDir,
 	GID_KEY, GID_LEASE_KEY, GID_LEASE_MS, PLAY_RECIPES, validPlayRecipe, pouchAfford, pouchSpend,
+	PLAY_FOODS, validPlayFood,
 	SPIRIT_AVOID, spiritLift, PING,
 	DREAD, dreadAt, POWER_RULES, POWER_CHARGE, validPowerKind, chargeAfter, ASSIST_ACTIONS, validAssistAction,
 	ASSIST_LIMITS, clampCraftCount, createAssistQueue,

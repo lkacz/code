@@ -186,7 +186,8 @@ assert.ok(NET.modeAllows('chat', 'chat') && !NET.modeAllows('chat', 'full'), 'ch
 assert.ok(!NET.modeAllows('watch', 'chat') && !NET.modeAllows('bogus', 'watch'), 'watch is the floor, garbage denies');
 
 // --- play mode: the embodied guest (full multiplayer) ---------------------------------
-assert.deepEqual(NET.PLAY_ACTIONS, ['mine', 'place', 'strike', 'attack', 'craft', 'duel'], 'a player mines, builds, fights, crafts and duels — nothing that bypasses the host');
+assert.deepEqual(NET.PLAY_ACTIONS, ['mine', 'place', 'strike', 'attack', 'craft', 'duel', 'pickup', 'eat'],
+	'a player mines, builds, fights, crafts, duels, scavenges and eats — nothing that bypasses the host');
 assert.ok(NET.validPlayAction('mine') && !NET.validPlayAction('setTile') && !NET.validPlayAction('teleport'), 'play actions validate');
 assert.ok(NET.PLAY_RULES.REACH > 0 && NET.PLAY_RULES.MAX_HP > 0 && NET.PLAY_RULES.MINE_TICKS >= 1, 'play rules are sane');
 // --- the guest arsenal: host-owned whitelist, host-side resolution --------------------
@@ -227,6 +228,13 @@ assert.ok(NET.PLAY_RECIPES.arrows.gives.arrowWood > 0, 'the arrow recipe refills
 	assert.deepEqual(zc, { wood: 1 }, 'and charges nothing (pouchTake floors to 1 — the guard matters)');
 }
 assert.equal(NET.GID_KEY, 'mm_ghost_gid_v1', 'the stable-gid storage key is pinned');
+// --- the guest larder --------------------------------------------------------------------
+assert.ok(NET.validPlayFood('meatScrap') && NET.validPlayFood('bakedMeat'), 'the larder holds real food keys');
+assert.ok(!NET.validPlayFood('rottenMeat') && !NET.validPlayFood('__proto__') && !NET.validPlayFood(7),
+	'the pouch never poisons its owner (rotten meat and garbage rejected)');
+assert.ok(NET.PLAY_FOODS.meat.hp === 12 && NET.PLAY_FOODS.bakedMeat.hp === 35,
+	'shared food values mirror the host food.js exactly');
+for(const k of Object.keys(NET.PLAY_FOODS)) assert.ok(NET.PLAY_FOODS[k].hp > 0, k + ' heals (never harms)');
 // reach is Chebyshev around the BODY, and it is the host that measures it
 assert.ok(NET.playReachOk(10, 10, 12, 8, 5) && !NET.playReachOk(10, 10, 17, 10, 5), 'reach gate: inside vs beyond');
 assert.ok(!NET.playReachOk(NaN, 10, 12, 8, 5), 'garbage body coords deny the reach');
@@ -1100,8 +1108,8 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	assert.ok(/coopMeleeAt/.test(gpa) && /spawnCoopArrow/.test(gpa) && !/setTile\(/.test(gpa),
 		'the bridge attack seam resolves through weapons.js and touches no tile');
 	// client: the chips only NAME an owned weapon; the wire carries float aim for arrows
-	assert.ok(/a === 'attack'\s*\n?\s*\? \{ t: 'pact', a, x: \+Number\(wx\)\.toFixed\(1\), y: \+Number\(wy\)\.toFixed\(1\) \}/.test(clientSrc),
-		'attack intents aim at world floats (tile intents stay integer cells)');
+	assert.ok(/\(a === 'attack' \|\| a === 'pickup'\)\s*\n?\s*\? \{ t: 'pact', a, x: \+Number\(wx\)\.toFixed\(1\), y: \+Number\(wy\)\.toFixed\(1\) \}/.test(clientSrc),
+		'attack and pickup intents aim at world floats (tile intents stay integer cells)');
 	assert.ok(/sendPlayAct\('attack', w\.x, w\.y, play\.arm \|\| 'fists'\);/.test(clientSrc),
 		'LMB in open air swings/shoots the ARMED weapon');
 	assert.ok(/play\.weapons = Array\.isArray\(pl\.weapons\)/.test(clientSrc) && /function renderArms\(\)/.test(clientSrc),
@@ -1181,6 +1189,53 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 		'a respawned body starts with fresh lungs');
 	assert.ok(/pl\.t === 'pdrown'/.test(clientSrc) && /Brakuje powietrza/.test(clientSrc),
 		'the guest hears the breath warning (display only — damage arrives via pvit/pdmg)');
+}
+
+// --- Wave D (part 2): the guest metabolism — scavenge, eat, chill, freeze, scorch -------------------
+// Pickups close the loot/food loop (a guest's own kills drop meat it can now
+// scoop), eating heals from the host-owned pouch, and the remaining survival
+// laws (swim chill, thermal exposure) run per body through the hero's own state
+// machines — world truth only, host caps, hurtBody routing.
+{
+	// pickups: resources only, fog-gated with the shared map, removed atomically
+	const pk = mainSrc.slice(mainSrc.indexOf('ghostPlayPickupAt:'), mainSrc.indexOf('ghostPlayThermalMode:'));
+	assert.ok(/if\(info\.kind!=='resource'\) return \{ok:false, reason:'kind'\};/.test(pk),
+		'gear, chests and jewels stay the host’s economy — a guest scoops resources only');
+	assert.ok(/visible:\(x,y\)=>worldTileDiscovered\(x,y\)/.test(pk), 'pickups are fog-gated with the SAME shared-map visibility');
+	assert.ok(/if\(!info\.inReach\) return \{ok:false, reason:'far'\};/.test(pk) && /if\(!D\.remove\(info\.id\)\) return \{ok:false, reason:'gone'\};/.test(pk),
+		'reach is measured against the host-tracked body and the drop is removed before crediting');
+	assert.ok(/bridge\.ghostPlayPickupAt \? bridge\.ghostPlayPickupAt\(ax, ay, \{ x: b\.x, y: b\.y \}\) : null;/.test(hostSrc),
+		'the pickup intent hands the bridge the HOST-tracked body, never a client claim');
+	// eating: whitelist, pouch spend, host-capped heal
+	assert.ok(/const food = NET\.validPlayFood\(key\) \? NET\.PLAY_FOODS\[key\] : null;/.test(hostSrc)
+		&& /if\(!NET\.pouchTake\(b\.pouch, key, 1\)\)/.test(hostSrc)
+		&& /b\.hp = Math\.min\(b\.maxHp, b\.hp \+ Math\.max\(1, Number\(food\.hp\) \|\| 1\)\);/.test(hostSrc),
+		'eating spends the pouch and heals host-side, capped at max hp');
+	// swim chill + thermal: the hero's own laws, caps and causes
+	const sp2 = hostSrc.slice(hostSrc.indexOf('function bodySurvivalPass'), hostSrc.indexOf('function bodyTick'));
+	assert.ok(/SURV\.updateSwimChill\(b\.chillSt, dt, swimming\)/.test(sp2) && /Math\.min\(8, ch\.damage\); \/\/ the hero's own per-tick cap/.test(sp2)
+		&& /hurtBody\(s, entry, dmg, NaN, NaN, 'water_chill'\);/.test(sp2),
+		'swim chill runs the hero law per body (cap 8, water_chill, through hurtBody)');
+	assert.ok(/const swimming = midTile === TT\.WATER && bridge\.getTile\(Math\.floor\(b\.x\), Math\.floor\(b\.y \+ 1\)\) === TT\.WATER;/.test(sp2),
+		'a body standing on the bottom is not swimming (deep-water rule, world truth)');
+	assert.ok(/bridge\.ghostPlayThermalMode\(b\.x, b\.y, midTile === TT\.WATER\)/.test(sp2)
+		&& /Math\.min\(6, th\.damage\); \/\/ the hero's own per-tick cap/.test(sp2)
+		&& /th\.mode === 'cold' \? 'deep_frost' : 'heat_stroke'/.test(sp2),
+		'thermal exposure samples the env at the BODY and pays the hero causes/caps');
+	assert.ok(/SURVIVAL\.thermalExposureMode\(\{climate, temp, sheltered, inWater:!!inWater, nearWarmth: heroNearWarmth\(cx, cy\)\}\);/.test(mainSrc),
+		'the thermal seam builds the SAME env the host samples for itself');
+	assert.ok(/resetSwimChill\(b\.chillSt\);/.test(hostSrc) && /resetThermal\(b\.thermSt\);/.test(hostSrc),
+		'a respawned body starts warm and dry');
+	// client: food chips EAT, drops route to pickup, warnings are display-only
+	assert.ok(/if\(food\)\{ sendPlayAct\('eat', 0, 0, k\); return; \}/.test(clientSrc), 'a food chip eats on click');
+	assert.ok(/if\(hov && hov\.kind === 'resource'\)\{ sendPlayAct\('pickup', w\.x, w\.y\); return; \}/.test(clientSrc),
+		'a click on a replicated drop routes to a pickup intent (the host re-validates)');
+	assert.ok(/pl\.t === 'pwarn'/.test(clientSrc) && /Woda wychładza/.test(clientSrc), 'survival warnings reach the guest as toasts');
+	// sibling tabs share the career key: writes MERGE monotonically so a throttled
+	// background tab's late flush can never erase this tab's fresher earnings
+	assert.ok(/m\.counts\[k\] = Math\.max\(m\.counts\[k\] \|\| 0, d\.counts\[k\]\);/.test(clientSrc)
+		&& /m\.xp = Math\.max\(m\.xp, d\.xp\);/.test(clientSrc) && /prog = m;/.test(clientSrc),
+		'the profile flush merges with the on-disk sibling state (monotone, loss-free)');
 }
 
 // --- Wave F: reliability is a feature ----------------------------------------------------------------

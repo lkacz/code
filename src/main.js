@@ -16151,6 +16151,33 @@ MM.ghostBridge={
 		noteSaveActivity();
 		return {ok:true, label:def.label||key};
 	},
+	// Guest ground pickups: RESOURCE drops only — gear, chests and jewels stay the
+	// host's economy. Fog-gated with the SAME shared-map visibility the host uses,
+	// reach measured against the HOST-tracked body, and the drop is removed here so
+	// it can never be double-collected. The yield goes back to the caller (pouch).
+	ghostPlayPickupAt:(wx,wy,body)=>{
+		const D=MM.drops;
+		if(!D || !D.hoverAt || !D.remove) return {ok:false, reason:'error'};
+		const info=D.hoverAt(wx,wy,body,{visible:(x,y)=>worldTileDiscovered(x,y)});
+		if(!info) return {ok:false, reason:'none'};
+		if(info.kind!=='resource') return {ok:false, reason:'kind'};
+		if(!info.inReach) return {ok:false, reason:'far'};
+		if(!D.remove(info.id)) return {ok:false, reason:'gone'};
+		return {ok:true, key:String(info.res||'').slice(0,24), qty:Math.max(1,Math.min(99,Number(info.qty)||1))};
+	},
+	// Guest thermal exposure: the SAME env law the host samples for itself
+	// (climate band + ambient temperature + shelter + warmth), at the body's
+	// coordinates — world truth only, no client field.
+	ghostPlayThermalMode:(x,y,inWater)=>{
+		if(!SURVIVAL || !SURVIVAL.thermalExposureMode) return 'none';
+		const cx=Math.floor(x), cy=Math.floor(y);
+		let climate=0.5;
+		try{ climate=WORLDGEN && WORLDGEN.temperature ? WORLDGEN.temperature(cx) : 0.5; }catch(e){}
+		const sampled=sampleAmbientTemperature(cx,cy,climate);
+		const temp=Number.isFinite(sampled) ? sampled : climate;
+		const sheltered=!gasSkyExposedTile(cx, cy-1);
+		return SURVIVAL.thermalExposureMode({climate, temp, sheltered, inWater:!!inWater, nearWarmth: heroNearWarmth(cx, cy)});
+	},
 	// Tool parity for guest mining: the tick need per tile derives from the SAME
 	// hardness the local miner uses (need = INFO.hp/6 seconds at tool speed 1); a
 	// guest digs with the basic pick and each accepted intent is one MINE_MS beat.

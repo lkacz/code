@@ -873,6 +873,42 @@ const ghostHost = (function(){
 			try{ bridge.msg('🛠 ' + (entry.name || 'Duch') + ' wykuwa: ' + (r.label || key)); }catch(e){ /* fine */ }
 			return;
 		}
+		if(pl.a === 'eat'){
+			// eating heals HOST-owned hp from the HOST-owned pouch — the guest larder
+			// whitelist (PLAY_FOODS) has no poisonous entries by design
+			const tE = now();
+			if(tE - (b.lastEatAt || 0) < NET.PLAY_RULES.EAT_MS) return;
+			b.lastEatAt = tE;
+			const key = typeof pl.key === 'string' ? pl.key.slice(0, 24) : '';
+			const food = NET.validPlayFood(key) ? NET.PLAY_FOODS[key] : null;
+			if(!food){ entry.peer.send({ t: 'pactAck', a: 'eat', ok: false, reason: 'food', key }); return; }
+			if(!NET.pouchTake(b.pouch, key, 1)){ entry.peer.send({ t: 'pactAck', a: 'eat', ok: false, reason: 'cost', key }); return; }
+			b.hp = Math.min(b.maxHp, b.hp + Math.max(1, Number(food.hp) || 1));
+			keepBody(entry);
+			sendVitals(s, entry);
+			entry.peer.send({ t: 'pactAck', a: 'eat', ok: true, key, hp: +b.hp.toFixed(1) });
+			return;
+		}
+		if(pl.a === 'pickup'){
+			// ground pickups aim at world floats like attacks; the bridge re-checks the
+			// drop's real reach and refuses everything but plain resources
+			const tP = now();
+			if(tP - (b.lastPickupAt || 0) < NET.PLAY_RULES.PICKUP_MS) return;
+			b.lastPickupAt = tP;
+			const ax = Number(pl.x), ay = Number(pl.y);
+			if(!Number.isFinite(ax) || !Number.isFinite(ay)) return;
+			if(!NET.playReachOk(b.x, b.y, Math.floor(ax), Math.floor(ay))){ entry.peer.send({ t: 'pactAck', a: 'pickup', ok: false, reason: 'reach' }); return; }
+			let res = null;
+			try{ res = bridge.ghostPlayPickupAt ? bridge.ghostPlayPickupAt(ax, ay, { x: b.x, y: b.y }) : null; }catch(e){ res = { ok: false, reason: 'error' }; }
+			if(res && res.ok && res.key){
+				NET.pouchAdd(b.pouch, res.key, res.qty || 1);
+				s.stats.playPickups = (s.stats.playPickups || 0) + 1;
+				keepBody(entry);
+				sendVitals(s, entry);
+			}
+			entry.peer.send({ t: 'pactAck', a: 'pickup', ok: !!(res && res.ok), reason: (res && res.reason) || null, key: (res && res.key) || null });
+			return;
+		}
 		const tx = Math.floor(Number(pl.x)), ty = Math.floor(Number(pl.y));
 		if(!Number.isFinite(tx) || !Number.isFinite(ty)) return;
 		if(!NET.playReachOk(b.x, b.y, tx, ty)){ entry.peer.send({ t: 'pactAck', a: pl.a, ok: false, reason: 'reach', x: tx, y: ty }); return; }
@@ -957,6 +993,35 @@ const ghostHost = (function(){
 		if((midTile === TT.LAVA || feetTile === TT.LAVA) && t >= (b.invulUntil || 0)){
 			hurtBody(s, entry, 8, b.x, b.y + 1, 'lava'); // the hero's own lava sear
 		}
+		// swim chill: treading DEEP water — mid cell and the cell under the feet both
+		// wet. A body standing on the bottom is not swimming (the hero's rule too).
+		if(SURV && SURV.updateSwimChill){
+			const swimming = midTile === TT.WATER && bridge.getTile(Math.floor(b.x), Math.floor(b.y + 1)) === TT.WATER;
+			if(!b.chillSt) b.chillSt = SURV.createSwimChillState ? SURV.createSwimChillState() : { exposure: 0, damageAcc: 0, warned: false };
+			const ch = SURV.updateSwimChill(b.chillSt, dt, swimming);
+			if(ch.warn){ try{ entry.peer.send({ t: 'pwarn', k: 'chill' }); }catch(e){ /* fine */ } }
+			if(ch.damage > 0 && t >= (b.invulUntil || 0)){
+				const dmg = Math.min(8, ch.damage); // the hero's own per-tick cap
+				hurtBody(s, entry, dmg, NaN, NaN, 'water_chill');
+				if(SURV.consumeSwimChillDamage) SURV.consumeSwimChillDamage(b.chillSt, dmg);
+			}
+		}
+		// thermal exposure: the env is sampled at the BODY through the bridge seam
+		// (climate + ambient temp + shelter + warmth), cached 500 ms like the hero's
+		if(SURV && SURV.updateThermalExposure && bridge.ghostPlayThermalMode){
+			if(!b.thermSt) b.thermSt = SURV.createThermalState ? SURV.createThermalState() : { exposure: 0, damageAcc: 0, warned: false, mode: 'none' };
+			if(!b.thermAt || t - b.thermAt > 500){
+				b.thermAt = t;
+				try{ b.thermMode = bridge.ghostPlayThermalMode(b.x, b.y, midTile === TT.WATER) || 'none'; }catch(e){ b.thermMode = 'none'; }
+			}
+			const th = SURV.updateThermalExposure(b.thermSt, dt, b.thermMode || 'none');
+			if(th.warn){ try{ entry.peer.send({ t: 'pwarn', k: th.mode === 'cold' ? 'cold' : 'heat' }); }catch(e){ /* fine */ } }
+			if(th.damage > 0 && t >= (b.invulUntil || 0)){
+				const dmg = Math.min(6, th.damage); // the hero's own per-tick cap
+				hurtBody(s, entry, dmg, NaN, NaN, th.mode === 'cold' ? 'deep_frost' : 'heat_stroke');
+				if(SURV.consumeThermalDamage) SURV.consumeThermalDamage(b.thermSt, dmg);
+			}
+		}
 	}
 	// The body plane: every peer (players AND spectators) sees the embodied guests
 	// move; the publisher also feeds MM.coopBodies, the one hook hostile creatures
@@ -976,6 +1041,8 @@ const ghostHost = (function(){
 				b.vx = 0; b.vy = 0;
 				b.invulUntil = t + 1500;
 				if(b.drownSt && MMR && MMR.survival && MMR.survival.resetDrowning) MMR.survival.resetDrowning(b.drownSt);
+				if(b.chillSt && MMR && MMR.survival && MMR.survival.resetSwimChill) MMR.survival.resetSwimChill(b.chillSt);
+				if(b.thermSt && MMR && MMR.survival && MMR.survival.resetThermal) MMR.survival.resetThermal(b.thermSt);
 				try{ entry.peer.send({ t: 'prespawn', x: +b.x.toFixed(2), y: +b.y.toFixed(2) }); }catch(e){ /* fine */ }
 				sendVitals(s, entry);
 			}
