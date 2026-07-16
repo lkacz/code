@@ -121,6 +121,12 @@ const ghostClient = (function(){
 	const remoteHost = { has: false, x: 0, y: 0, vx: 0, vy: 0, f: 1, dx: 0, dy: 0 };
 	const bodies = []; // fellow embodied guests, eased like the spirits
 	let timersPlay = { pose: 0, mine: 0 };
+	// Lag-compensated reconciliation: every pose uplink carries a sequence number
+	// and the host echoes it in our own pb row. Divergence is measured against the
+	// MATCHING historical claim, never the current pose — an echo is ~RTT stale, so
+	// comparing it to a fast-moving present used to fake divergence and snap us back.
+	let poseSeq = 0;
+	const poseLog = []; // {seq, x, y}, pruned to the last echoed seq
 
 	function nowMs(){ return Date.now(); }
 	// Remote strings (host name, fellow-ghost names) render into innerHTML in the
@@ -382,6 +388,33 @@ const ghostClient = (function(){
 			if(play.on) bridge.msg(pl.w ? '🫧 Brakuje powietrza — wynurz się!' : '🫧 Łapiesz oddech');
 			return;
 		}
+		if(pl.t === 'pwat'){
+			// sub-tile water windows around the host hero and the bodies — applied
+			// DISPLAY-ONLY (water.js bounds and sanitizes; a watcher never runs the
+			// solver, so no volume invariant can fight the write)
+			const W = MMR && MMR.water;
+			if(W && W.ghostApplyPartialsWindow && Array.isArray(pl.w)){
+				for(const w of pl.w.slice(0, 6)){
+					if(Array.isArray(w) && w.length >= 5) W.ghostApplyPartialsWindow(+w[0], +w[1], +w[2], +w[3], w[4]);
+				}
+				stats.pwat = (stats.pwat || 0) + 1;
+			}
+			return;
+		}
+		if(pl.t === 'pstat'){
+			// the body's status chips, mirrored into the LOCAL hero-status singleton so
+			// the vitals HUD chips and the movement feel work natively. Display truth
+			// only: the local update() merely decays it, its burnDamage is discarded —
+			// hp stays host truth via pvit/pdmg.
+			const HSc = MMR && MMR.heroStatus;
+			if(play.on && HSc && HSc._state){
+				HSc._state.wet = Math.max(0, Math.min(60, Number(pl.w) || 0));
+				HSc._state.chill = Math.max(0, Math.min(60, Number(pl.c) || 0));
+				HSc._state.burn = Math.max(0, Math.min(60, Number(pl.b) || 0));
+				HSc._state.frozen = Math.max(0, Math.min(10, Number(pl.f) || 0));
+			}
+			return;
+		}
 		if(pl.t === 'pwarn'){
 			// survival warnings mirror the host-side laws (display only)
 			if(play.on){
@@ -389,6 +422,7 @@ const ghostClient = (function(){
 				else if(pl.k === 'cold') bridge.msg('🥶 Mróz przenika do kości — znajdź ciepło albo schronienie!');
 				else if(pl.k === 'heat') bridge.msg('🥵 Upał wysusza — schłodź się w wodzie albo w cieniu!');
 				else if(pl.k === 'pressure') bridge.msg('🌊 Ciśnienie wody rośnie — wynurz się wyżej!');
+				else if(pl.k === 'frozen') bridge.msg('🧊 Mokry i zziębnięty na mrozie — zamarzasz w bryłę lodu!');
 			}
 			return;
 		}
@@ -435,6 +469,7 @@ const ghostClient = (function(){
 				const p = bridge.player;
 				p.x = +pl.x; p.y = +pl.y; p.vx = 0; p.vy = 0;
 				play.dead = false;
+				poseLog.length = 0; // pre-respawn claims answer nothing anymore
 				bridge.snapCameraToPlayer();
 				bridge.msg('✨ Odrodzenie!');
 			}
@@ -621,8 +656,25 @@ const ghostClient = (function(){
 									p.x = +bx; p.y = +by; p.vx = 0; p.vy = 0;
 									play.spawned = true;
 									bridge.snapCameraToPlayer();
-								} else if(Math.hypot(p.x - bx, p.y - by) > 8){
-									p.x = +bx; p.y = +by; // rubber-band only on gross divergence
+								} else {
+									// reconciliation: the echo (row[10] = our pose seq) is compared
+									// with the claim it ANSWERS. Genuine divergence — the envelope
+									// clamped a claim, a resync moved us — corrects by the exact
+									// offset; gross still snaps; a stale echo of a fast fall is NOT
+									// divergence and no longer causes phantom snap-backs.
+									const seq = (Number(row[10]) >>> 0) || 0;
+									const pastIdx = seq ? poseLog.findIndex(e => e.seq === seq) : -1;
+									if(pastIdx >= 0){
+										const past = poseLog[pastIdx];
+										poseLog.splice(0, pastIdx); // everything older is answered too
+										const ex = +bx - past.x, ey = +by - past.y;
+										const err = Math.hypot(ex, ey);
+										if(err > 8){ p.x = +bx; p.y = +by; stats.poseSnaps = (stats.poseSnaps || 0) + 1; }
+										else if(err > 0.25){ p.x += ex; p.y += ey; stats.poseFixes = (stats.poseFixes || 0) + 1; }
+									} else if(Math.hypot(p.x - bx, p.y - by) > 8){
+										p.x = +bx; p.y = +by; // no matching claim (old host, rotated log): gross fallback
+										stats.poseSnaps = (stats.poseSnaps || 0) + 1;
+									}
 								}
 								play.dead = !!+bdead;
 							}
@@ -779,6 +831,8 @@ const ghostClient = (function(){
 		// in remoteHost (eased at paint time). Otherwise: the replica interpolation.
 		if(play.on && play.spawned){
 			if(!play.dead) stepOwnHero(dt);
+			// decay the mirrored status chips (display state — burnDamage is discarded)
+			try{ if(MMR && MMR.heroStatus) MMR.heroStatus.update(dt, {}); }catch(e){ /* fine */ }
 		} else if(heroTarget.has){
 			// hero replica: short prediction toward the last pose, hard snap on teleports
 			const age = Math.min(0.25, (t - heroTarget.at) / 1000);
@@ -806,7 +860,10 @@ const ghostClient = (function(){
 			if(t - timersPlay.pose > NET.PLAY_RULES.POSE_MS){
 				timersPlay.pose = t;
 				const p = bridge.player;
-				conn.send({ t: 'ppose', x: +p.x.toFixed(2), y: +p.y.toFixed(2), vx: +(p.vx || 0).toFixed(2), vy: +(p.vy || 0).toFixed(2), f: p.facing < 0 ? -1 : 1, act: isActive() ? 1 : 0 });
+				poseSeq = (poseSeq + 1) >>> 0;
+				poseLog.push({ seq: poseSeq, x: p.x, y: p.y });
+				if(poseLog.length > 48) poseLog.shift();
+				conn.send({ t: 'ppose', q: poseSeq, x: +p.x.toFixed(2), y: +p.y.toFixed(2), vx: +(p.vx || 0).toFixed(2), vy: +(p.vy || 0).toFixed(2), f: p.facing < 0 ? -1 : 1, act: isActive() ? 1 : 0 });
 			}
 			// hold-to-mine: keep re-sending the intent at the host's floor while the
 			// button is down; the host owns the per-cell progress
@@ -1103,14 +1160,20 @@ const ghostClient = (function(){
 	}
 	function stepOwnHero(dt){
 		const p = bridge.player;
+		// streamed statuses shape the FEEL locally (chill slows, frozen stops the
+		// inputs) — the host separately refuses every intent while frozen, so a
+		// rigged client that ignores this only walks, it cannot act
+		let statusMult = 1;
+		try{ statusMult = (MMR && MMR.heroStatus) ? MMR.heroStatus.moveMult() : 1; }catch(e){ statusMult = 1; }
 		let dir = 0;
 		if(held.has('a') || held.has('arrowleft')) dir -= 1;
 		if(held.has('d') || held.has('arrowright')) dir += 1;
-		const wantJump = held.has('w') || held.has('arrowup') || held.has(' ');
+		if(statusMult <= 0) dir = 0;
+		const wantJump = statusMult > 0 && (held.has('w') || held.has('arrowup') || held.has(' '));
 		if(dir) p.facing = dir < 0 ? -1 : 1;
 		const groundTile = bridge.getTile(Math.floor(p.x), Math.floor(p.y + (p.h || 0.95) / 2 + 0.1));
 		const inWater = bridge.getTile(Math.floor(p.x), Math.floor(p.y)) === T.WATER;
-		p.vx = applyHorizontalMovement(p.vx, dir, dt, inWater ? 0.6 : 1, MOVE, groundTile);
+		p.vx = applyHorizontalMovement(p.vx, dir, dt, (inWater ? 0.6 : 1) * Math.max(0.25, statusMult), MOVE, groundTile);
 		if(inWater){
 			p.vy += (wantJump ? -14 : 6) * dt;
 			p.vy = Math.max(-4, Math.min(4, p.vy));

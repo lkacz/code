@@ -53,84 +53,116 @@ window.MM = window.MM || {};
     }catch(e){}
   }
 
-  // Returns what actually happened: the applied status id, 'fizzled' (burn
-  // refused by a soaked hero), or false (unknown kind / frozen mid-CC).
-  function apply(kind,opts){
+  // --- pure core --------------------------------------------------------------------
+  // The SAME laws run for the hero singleton below and for every embodied co-op
+  // body (ghost_host keeps one state per body): transitions mutate the passed
+  // state and REPORT what happened; the hero wrapper adds fx/discovery on top.
+  function createState(){
+    return { wet:0, chill:0, burn:0, burnDps:0, burnAcc:0, frozen:0, refreezeLock:0 };
+  }
+  // Returns the applied status id, 'wet_doused' (a soak that put a burn out),
+  // 'fizzled' (burn refused by a soaked target), or false.
+  function applyTo(s,kind,opts){
     opts=opts||{};
     if(kind==='wet'){
-      if(st.burn>0){ st.burn=0; st.burnDps=0; fx('steam'); } // doused
-      st.wet=Math.max(st.wet, clampDur(opts.dur,TUNING.WET_DUR));
-      return 'wet';
+      const doused = s.burn>0;
+      if(doused){ s.burn=0; s.burnDps=0; }
+      s.wet=Math.max(s.wet, clampDur(opts.dur,TUNING.WET_DUR));
+      return doused ? 'wet_doused' : 'wet';
     }
     if(kind==='chill'){
-      st.chill=Math.max(st.chill, clampDur(opts.dur,TUNING.CHILL_DUR));
+      s.chill=Math.max(s.chill, clampDur(opts.dur,TUNING.CHILL_DUR));
       return 'chill';
     }
     if(kind==='burn'){
-      if(st.wet>0){
-        // fire fizzles on a soaked hero — the flash boils some of the soak off
-        st.wet=Math.max(0, st.wet-TUNING.FIZZLE_DRY);
-        fx('steam');
-        note('hero_fizzle','Ogień gaśnie na przemoczonym bohaterze!');
+      if(s.wet>0){
+        // fire fizzles on a soaked target — the flash boils some of the soak off
+        s.wet=Math.max(0, s.wet-TUNING.FIZZLE_DRY);
         return 'fizzled';
       }
-      st.burn=Math.max(st.burn, clampDur(opts.dur,TUNING.BURN_DUR));
-      st.burnDps=Math.max(st.burnDps, (Number.isFinite(opts.dps) && opts.dps>0) ? opts.dps : TUNING.BURN_DPS);
+      s.burn=Math.max(s.burn, clampDur(opts.dur,TUNING.BURN_DUR));
+      s.burnDps=Math.max(s.burnDps, (Number.isFinite(opts.dps) && opts.dps>0) ? opts.dps : TUNING.BURN_DPS);
       return 'burn';
     }
     return false;
   }
+  // env: {deepFrost, nearWarmth, inWater}
+  // Returns {burnDamage, frozeNow, doused} — the caller routes burnDamage through
+  // its central damage inlet (a cause that must NOT re-apply burn).
+  function updateState(s,dt,env){
+    env=env||{};
+    if(!(dt>0) || !Number.isFinite(dt)) return {burnDamage:0, frozeNow:false, doused:false};
+    dt=Math.min(0.25,dt);
+    let frozeNow=false, doused=false;
+    if(s.refreezeLock>0) s.refreezeLock=Math.max(0, s.refreezeLock-dt);
+    // deep-frost flash freeze: both combo fuels present, outdoors in true cold
+    if(s.frozen<=0 && s.wet>0 && s.chill>0 && env.deepFrost && s.refreezeLock<=0){
+      s.frozen=TUNING.FROZEN_DUR;
+      s.refreezeLock=TUNING.REFREEZE_LOCK;
+      s.wet=0; s.chill=0;
+      frozeNow=true;
+    }
+    const drySpeed=env.nearWarmth ? TUNING.DRY_MULT : 1;
+    if(s.wet>0 && !env.inWater) s.wet=Math.max(0, s.wet-dt*drySpeed);
+    if(s.chill>0) s.chill=Math.max(0, s.chill-dt*drySpeed);
+    if(s.frozen>0) s.frozen=Math.max(0, s.frozen-dt);
+    let burnDamage=0;
+    if(s.burn>0){
+      if(env.inWater){ s.burn=0; s.burnDps=0; s.burnAcc=0; doused=true; }
+      else{
+        s.burn=Math.max(0, s.burn-dt);
+        s.burnAcc+=dt;
+        while(s.burnAcc>=TUNING.BURN_TICK){
+          s.burnAcc-=TUNING.BURN_TICK;
+          burnDamage+=s.burnDps*TUNING.BURN_TICK;
+        }
+        if(s.burn<=0){ s.burnDps=0; s.burnAcc=0; }
+      }
+    } else s.burnAcc=0;
+    return {burnDamage:Math.round(burnDamage), frozeNow, doused};
+  }
+  function isFrozenState(s){ return !!(s && s.frozen>0); }
+  function moveMultOf(s){
+    if(!s) return 1;
+    if(s.frozen>0) return 0;
+    return s.chill>0 ? TUNING.CHILL_MOVE_MULT : 1;
+  }
+  // Incoming-damage multiplier for the elemental matrix: a soaked target conducts.
+  function damageInMultOf(s,element){
+    if(s && String(element||'')==='electric' && s.wet>0) return TUNING.WET_ELECTRIC_MULT;
+    return 1;
+  }
 
+  // --- the hero singleton: pure core + hero-only fx and discovery notes -------------
+  function apply(kind,opts){
+    const r=applyTo(st,kind,opts);
+    if(r==='wet_doused'){ fx('steam'); return 'wet'; }
+    if(r==='fizzled'){
+      fx('steam');
+      note('hero_fizzle','Ogień gaśnie na przemoczonym bohaterze!');
+    }
+    return r;
+  }
   // env: {deepFrost, nearWarmth, inWater, godMode}
   // Returns {burnDamage, frozeNow} — the caller routes burnDamage through the
   // central damageHero (cause 'hero_burn', which must NOT re-apply burn).
   function update(dt,env){
     env=env||{};
     if(!(dt>0) || !Number.isFinite(dt)) return {burnDamage:0, frozeNow:false};
-    dt=Math.min(0.25,dt);
     if(env.godMode){ clearAll(); return {burnDamage:0, frozeNow:false}; }
-    let frozeNow=false;
-    if(st.refreezeLock>0) st.refreezeLock=Math.max(0, st.refreezeLock-dt);
-    // deep-frost flash freeze: both combo fuels present, outdoors in true cold
-    if(st.frozen<=0 && st.wet>0 && st.chill>0 && env.deepFrost && st.refreezeLock<=0){
-      st.frozen=TUNING.FROZEN_DUR;
-      st.refreezeLock=TUNING.REFREEZE_LOCK;
-      st.wet=0; st.chill=0;
-      frozeNow=true;
+    const r=updateState(st,dt,env);
+    if(r.frozeNow){
       fx('chill_freeze');
       note('hero_frozen','Mokry i zziębnięty na mrozie — zamarzasz w bryłę lodu!');
     }
-    const drySpeed=env.nearWarmth ? TUNING.DRY_MULT : 1;
-    if(st.wet>0 && !env.inWater) st.wet=Math.max(0, st.wet-dt*drySpeed);
-    if(st.chill>0) st.chill=Math.max(0, st.chill-dt*drySpeed);
-    if(st.frozen>0) st.frozen=Math.max(0, st.frozen-dt);
-    let burnDamage=0;
-    if(st.burn>0){
-      if(env.inWater){ st.burn=0; st.burnDps=0; st.burnAcc=0; fx('steam'); }
-      else{
-        st.burn=Math.max(0, st.burn-dt);
-        st.burnAcc+=dt;
-        while(st.burnAcc>=TUNING.BURN_TICK){
-          st.burnAcc-=TUNING.BURN_TICK;
-          burnDamage+=st.burnDps*TUNING.BURN_TICK;
-        }
-        if(st.burn<=0){ st.burnDps=0; st.burnAcc=0; }
-      }
-    } else st.burnAcc=0;
-    return {burnDamage:Math.round(burnDamage), frozeNow};
+    if(r.doused) fx('steam');
+    return {burnDamage:r.burnDamage, frozeNow:r.frozeNow};
   }
 
   function has(kind){ return (st[kind]||0)>0; }
-  function isFrozen(){ return st.frozen>0; }
-  function moveMult(){
-    if(st.frozen>0) return 0;
-    return st.chill>0 ? TUNING.CHILL_MOVE_MULT : 1;
-  }
-  // Incoming-damage multiplier for the elemental matrix: a soaked hero conducts.
-  function damageInMult(element){
-    if(String(element||'')==='electric' && st.wet>0) return TUNING.WET_ELECTRIC_MULT;
-    return 1;
-  }
+  function isFrozen(){ return isFrozenState(st); }
+  function moveMult(){ return moveMultOf(st); }
+  function damageInMult(element){ return damageInMultOf(st,element); }
   // Debuff chips for the vitals HUD (same shape as progress buffs + debuff flag).
   function list(){
     const out=[];
@@ -144,7 +176,8 @@ window.MM = window.MM || {};
     st.wet=0; st.chill=0; st.burn=0; st.burnDps=0; st.burnAcc=0; st.frozen=0; st.refreezeLock=0;
   }
 
-  MM.heroStatus={apply, update, has, isFrozen, moveMult, damageInMult, list, clearAll, TUNING, _state:st};
+  MM.heroStatus={apply, update, has, isFrozen, moveMult, damageInMult, list, clearAll, TUNING, _state:st,
+    createState, applyTo, updateState, isFrozenState, moveMultOf, damageInMultOf};
 })();
 
 export const heroStatus = (typeof window!=='undefined' && window.MM) ? window.MM.heroStatus : globalThis.MM && globalThis.MM.heroStatus;

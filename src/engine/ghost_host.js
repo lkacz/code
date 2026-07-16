@@ -31,7 +31,7 @@ if(MMR && !MMR.ghostDreadAt){
 	};
 }
 
-const CAD = { hero: 66, wfx: 66, mobs: 120, mobsFull: 3000, inv: 120, invFull: 3000, guard: 150, body: 80, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 4000, prog: 1000 };
+const CAD = { hero: 66, wfx: 66, mobs: 120, mobsFull: 3000, inv: 120, invFull: 3000, guard: 150, body: 80, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 4000, prog: 1000, pwat: 500 };
 const CHAT_MIN_MS = NET.CHAT.MIN_MS; // per-peer chat floor (shared with the client's local mirror)
 const ACT_POSE_TTL_MS = 6000; // an "active" pose vouches for the watcher this long
 const TILE_RESYNC_LIMIT = 3000;
@@ -69,7 +69,7 @@ const ghostHost = (function(){
 			snapCacheAt: 0,
 			sinceCache: [],
 			lastSnapAt: 0,
-			last: { hero: 0, heroKeepalive: 0, wfx: 0, mobs: 0, mobsFull: 0, inv: 0, invFull: 0, guard: 0, body: 0, drops: 0, seasons: 0, infra: 0, presence: 0, reap: 0, prog: 0 },
+			last: { hero: 0, heroKeepalive: 0, wfx: 0, mobs: 0, mobsFull: 0, inv: 0, invFull: 0, guard: 0, body: 0, drops: 0, seasons: 0, infra: 0, presence: 0, reap: 0, prog: 0, pwat: 0 },
 			auraOwners: [],
 			lastMobSig: null,
 			lastInvSig: null,
@@ -281,6 +281,7 @@ const ghostHost = (function(){
 				b.vx = Number.isFinite(pl.vx) ? Math.max(-40, Math.min(40, +pl.vx)) : 0;
 				b.vy = Number.isFinite(pl.vy) ? Math.max(-40, Math.min(40, +pl.vy)) : 0;
 				b.f = pl.f < 0 ? -1 : 1;
+				b.poseSeq = (Number(pl.q) >>> 0) || 0; // echoed in the pb own row for reconciliation
 			}
 			if(Number.isFinite(pl.x) && Number.isFinite(pl.y)) entry.cam = { x: +pl.x, y: +pl.y };
 			if(pl.act) markActive(entry);
@@ -414,6 +415,7 @@ const ghostHost = (function(){
 		if(t - s.last.seasons >= CAD.seasons) seasonTick(s, t);
 		if(s.infraDirty && t - s.last.infra >= CAD.infra) infraTick(s, t);
 		if(t - s.last.presence >= CAD.presence) presenceTick(s, t);
+		if(t - s.last.pwat >= CAD.pwat) pwatTick(s, t);
 		if(t - s.last.prog >= CAD.prog) progTick(s, t, live);
 		chargeTick(s, t, live);
 		for(const entry of live){ if(entry.assistant) sendAssistState(s, entry, false); }
@@ -510,6 +512,36 @@ const ghostHost = (function(){
 		// viewers show a "host inactive" banner instead of staring at a frozen world
 		broadcast({ t: 'ghosts', list, idle: (t - (s.lastSimAt || t)) > 1500 ? 1 : 0 });
 		if(t - (s.lastBadgeAt || 0) > 900){ s.lastBadgeAt = t; updateUi(); } // active-count on the badge stays fresh
+	}
+	// Sub-tile water windows: the save/wire format deliberately drops partial levels,
+	// so watchers rendered every replicated water cell as a full block (a swimming
+	// guest visibly diverged). Stream small windows of the partial ledger around the
+	// host hero and each body; a clearing packet follows the last wet one (latch).
+	function pwatTick(s, t){
+		s.last.pwat = t;
+		const W = MMR && MMR.water;
+		if(!W || !W.ghostPartialsIn) return;
+		const wins = [];
+		const p = bridge.player;
+		if(p && Number.isFinite(p.x) && Number.isFinite(p.y)) wins.push([Math.floor(p.x) - 10, Math.floor(p.y) - 6, Math.floor(p.x) + 10, Math.floor(p.y) + 6]);
+		for(const entry of entries()){
+			const b = entry.body;
+			if(b && !b.dead && wins.length < 6) wins.push([Math.floor(b.x) - 8, Math.floor(b.y) - 5, Math.floor(b.x) + 8, Math.floor(b.y) + 5]);
+		}
+		const payload = [];
+		let any = false;
+		for(const w of wins){
+			let rows = [];
+			try{ rows = W.ghostPartialsIn(w[0], w[1], w[2], w[3]) || []; }catch(e){ rows = []; }
+			if(rows.length) any = true;
+			payload.push([w[0], w[1], w[2], w[3], rows]);
+		}
+		if(!any && !s.pwatWas) return;
+		const sig = JSON.stringify(payload);
+		if(any && sig === s.lastPwatSig) return;
+		s.lastPwatSig = sig;
+		s.pwatWas = any;
+		broadcast({ t: 'pwat', w: payload });
 	}
 	function reap(s, t){
 		s.last.reap = t;
@@ -767,7 +799,13 @@ const ghostHost = (function(){
 		const t = now();
 		if(t < (b.invulUntil || 0)) return;
 		b.invulUntil = t + NET.PLAY_RULES.HURT_INVUL_MS;
-		b.hp = Math.max(0, b.hp - Math.max(1, Number(amount) || 1));
+		// the elemental matrix applies to bodies too: a soaked body conducts (the
+		// hero's own WET_ELECTRIC_MULT), judged from the CAUSE the attacker declared
+		let amt = Math.max(1, Number(amount) || 1);
+		if(b.statusSt && MMR && MMR.heroStatus && MMR.heroStatus.damageInMultOf && /shock|electric|lightning|laser/.test(String(cause || ''))){
+			amt = amt * MMR.heroStatus.damageInMultOf(b.statusSt, 'electric');
+		}
+		b.hp = Math.max(0, b.hp - amt);
 		let kbx = 0;
 		if(Number.isFinite(sx)){ const dx = b.x - sx; const d = Math.abs(dx) || 1; kbx = (dx / d) * 5; }
 		try{ entry.peer.send({ t: 'pdmg', hp: +b.hp.toFixed(1), kbx: +kbx.toFixed(2), kby: -3.2, cause: String(cause || 'mob').slice(0, 16) }); }catch(e){ /* fine */ }
@@ -808,6 +846,13 @@ const ghostHost = (function(){
 		const b = entry.body;
 		if(!b || entry.mode !== 'play'){ entry.peer.send({ t: 'pactAck', a: pl.a, ok: false, reason: 'perm' }); return; }
 		if(b.dead){ entry.peer.send({ t: 'pactAck', a: pl.a, ok: false, reason: 'dead' }); return; }
+		// a flash-frozen body is a block of ice: EVERY intent bounces until it thaws
+		// (movement is guest-authoritative — the client honors the stun, a rigged one
+		// only moves; it still cannot act)
+		if(b.statusSt && MMR && MMR.heroStatus && MMR.heroStatus.isFrozenState && MMR.heroStatus.isFrozenState(b.statusSt)){
+			entry.peer.send({ t: 'pactAck', a: pl.a, ok: false, reason: 'frozen' });
+			return;
+		}
 		if(!NET.validPlayAction(pl.a)){ entry.peer.send({ t: 'pactAck', a: pl.a, ok: false, reason: 'action' }); return; }
 		if(pl.a === 'attack'){
 			// weapons aim at world floats and bypass the tile-reach gate: melee clamps to
@@ -1072,6 +1117,36 @@ const ghostHost = (function(){
 				if(SURV.consumeThermalDamage) SURV.consumeThermalDamage(b.thermSt, dmg);
 			}
 		}
+		// unified statuses (wet/burn/chill/frozen): the HERO's own state machine, one
+		// instance per body. Water soaks, open flame ignites (and fizzles on a soaked
+		// body by the same law), deep-frost air chills — and the wet+chill+frost combo
+		// flash-freezes exactly like the hero. Runs LAST: it reads b.thermMode.
+		const HS = MMR && MMR.heroStatus;
+		if(HS && HS.createState){
+			if(!b.statusSt) b.statusSt = HS.createState();
+			const headTile2 = bridge.getTile(Math.floor(b.x), Math.floor(b.y - 0.35));
+			const inWater = midTile === TT.WATER || headTile2 === TT.WATER;
+			if(inWater) HS.applyTo(b.statusSt, 'wet', { dur: 8 }); // the hero's own soak refresh
+			const F = MMR && MMR.fire;
+			try{
+				if(F && F.isBurning && (F.isBurning(Math.floor(b.x), Math.floor(b.y)) || F.isBurning(Math.floor(b.x), Math.floor(b.y + 0.41)))){
+					HS.applyTo(b.statusSt, 'burn', {});
+				}
+			}catch(e){ /* fire engine optional */ }
+			if(b.thermMode === 'cold') HS.applyTo(b.statusSt, 'chill', { dur: 2 }); // freezing air chills
+			const st = HS.updateState(b.statusSt, dt, { deepFrost: b.thermMode === 'cold', nearWarmth: false, inWater });
+			if(st.frozeNow){ try{ entry.peer.send({ t: 'pwarn', k: 'frozen' }); }catch(e){ /* fine */ } }
+			if(st.burnDamage > 0 && t >= (b.invulUntil || 0)){
+				hurtBody(s, entry, st.burnDamage, NaN, NaN, 'burn_dot'); // a dot cause must NOT re-apply burn
+			}
+			// stream the chips on TRANSITIONS (a 4-bit signature): the guest mirrors
+			// them into its local hero-status singleton for chips + movement feel
+			const sig = ((b.statusSt.wet > 0) ? 1 : 0) | ((b.statusSt.burn > 0) ? 2 : 0) | ((b.statusSt.chill > 0) ? 4 : 0) | ((b.statusSt.frozen > 0) ? 8 : 0);
+			if(sig !== b.lastStatusSig){
+				b.lastStatusSig = sig;
+				try{ entry.peer.send({ t: 'pstat', w: +b.statusSt.wet.toFixed(1), c: +b.statusSt.chill.toFixed(1), b: +b.statusSt.burn.toFixed(1), f: +b.statusSt.frozen.toFixed(1) }); }catch(e){ /* fine */ }
+			}
+		}
 	}
 	// The body plane: every peer (players AND spectators) sees the embodied guests
 	// move; the publisher also feeds MM.coopBodies, the one hook hostile creatures
@@ -1094,11 +1169,12 @@ const ghostHost = (function(){
 				if(b.chillSt && MMR && MMR.survival && MMR.survival.resetSwimChill) MMR.survival.resetSwimChill(b.chillSt);
 				if(b.thermSt && MMR && MMR.survival && MMR.survival.resetThermal) MMR.survival.resetThermal(b.thermSt);
 				if(b.pressSt && MMR && MMR.survival && MMR.survival.resetWaterPressure) MMR.survival.resetWaterPressure(b.pressSt);
+				if(b.statusSt && MMR && MMR.heroStatus && MMR.heroStatus.createState){ b.statusSt = MMR.heroStatus.createState(); b.lastStatusSig = -1; }
 				try{ entry.peer.send({ t: 'prespawn', x: +b.x.toFixed(2), y: +b.y.toFixed(2) }); }catch(e){ /* fine */ }
 				sendVitals(s, entry);
 			}
 			if(!b.dead && dt > 0) bodySurvivalPass(s, entry, b, dt, t);
-			list.push([entry.gid, entry.name || 'Duch', +b.x.toFixed(2), +b.y.toFixed(2), +(b.vx || 0).toFixed(2), +(b.vy || 0).toFixed(2), b.f < 0 ? -1 : 1, +b.hp.toFixed(1), b.maxHp, b.dead ? 1 : 0]);
+			list.push([entry.gid, entry.name || 'Duch', +b.x.toFixed(2), +b.y.toFixed(2), +(b.vx || 0).toFixed(2), +(b.vy || 0).toFixed(2), b.f < 0 ? -1 : 1, +b.hp.toFixed(1), b.maxHp, b.dead ? 1 : 0, b.poseSeq || 0]);
 			if(!b.dead){
 				if(!entry.bodyLike) entry.bodyLike = { gid: entry.gid, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, dead: false, hurt: (a, sx, sy, c) => hurtBody(s, entry, a, sx, sy, c) };
 				// vx/vy are advisory (aim-lead for party-aware attackers) — never authority.

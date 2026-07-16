@@ -259,6 +259,48 @@ async function main(){
 			v => v < 1.5, 'hero pose convergence', 40, 250);
 		console.log('hero pose: ok');
 
+		// --- Scene 4b: sub-tile water mirrors to the watcher --------------------------------------------
+		// Partials are not part of the save/wire format — the pwat plane streams
+		// windows of the ledger around the hero, so a puddle spreading thin looks
+		// the same on both screens, and vanishes from both when drained.
+		await host.front(); // the ghost tab's creation foregrounded it — the water SOLVER is rAF-driven sim
+		const tub = await host.eval(`(()=>{
+			const p=window.player;
+			const bx=Math.floor(p.x)+6, by=Math.floor(p.y);
+			for(let x=bx-4;x<=bx+4;x++){ MM.world.setTile(x,by-1,MM.T.AIR); MM.world.setTile(x,by,MM.T.STONE); }
+			MM.world.setTile(bx-5,by-1,MM.T.STONE); MM.world.setTile(bx+5,by-1,MM.T.STONE); // tub walls
+			MM.world.setTile(bx,by-1,MM.T.WATER); // one full block, free to spread thin
+			return {bx, by};
+		})()`);
+		await host.poll(`(()=>{
+			for(let x=${tub.bx}-4;x<=${tub.bx}+4;x++){
+				const u=MM.water.levelAt(x,${tub.by}-1,MM.world.getTile);
+				if(u>0 && u<MM.water.UNITS) return 1;
+			}
+			return 0;
+		})()`, v => v === 1, 'the puddle spreads into partial cells on the host', 40, 250);
+		// host and watcher must agree on the EXACT sub-tile level of some partial cell
+		let agreed = null;
+		for(let i = 0; i < 24 && !agreed; i++){
+			const hRow = await host.eval(`(()=>{
+				for(let x=${tub.bx}-4;x<=${tub.bx}+4;x++){
+					const u=MM.water.levelAt(x,${tub.by}-1,MM.world.getTile);
+					if(u>0 && u<MM.water.UNITS) return JSON.stringify({x, u});
+				}
+				return '';
+			})()`);
+			if(hRow){
+				const h = JSON.parse(hRow);
+				const g = await ghost.eval(`MM.water.levelAt(${h.x}, ${tub.by}-1, MM.ghostBridge.getTile)`);
+				if(g === h.u) agreed = h;
+			}
+			if(!agreed) await sleep(400);
+		}
+		if(!agreed) throw new Error('the watcher never mirrored an exact sub-tile level');
+		await host.eval(`(()=>{ for(let x=${tub.bx}-5;x<=${tub.bx}+5;x++) MM.world.setTile(x,${tub.by}-1,MM.T.AIR); return 1; })()`);
+		await ghost.poll(`MM.water.levelAt(${agreed.x}, ${tub.by}-1, MM.ghostBridge.getTile)`, v => v === 0, 'the drained tub empties on the watcher too', 40, 250);
+		console.log('water partials: ok (cell mirrored at exactly ' + agreed.u + '/10, drained on both ends)');
+
 		// --- Scene 5: mob plane ----------------------------------------------------------
 		const spawned = await host.eval(`(()=>{
 			let hit=null;
@@ -904,6 +946,10 @@ async function main(){
 		if(!(Math.abs(b1.x - b0.x) > 1)) throw new Error('the guest body never moved on the host: ' + JSON.stringify({ b0, b1 }));
 		if(!(Math.abs(guestX - b1.x) < 3)) throw new Error('host body drifted from the guest truth: guest=' + guestX + ' host=' + b1.x);
 		console.log('play move: ok (guest walked ' + (b1.x - b0.x).toFixed(2) + ' tiles, host tracked to within ' + Math.abs(guestX - b1.x).toFixed(2) + ')');
+		// reconciliation: honest movement must never trigger a gross snap-back — the
+		// old current-vs-stale-echo check false-positived on exactly this walk
+		const snaps = await ghost.eval(`MM.ghostClient.metrics().stats.poseSnaps || 0`);
+		if(snaps !== 0) throw new Error('honest movement triggered ' + snaps + ' phantom snap-back(s)');
 		// --- mining: an intent yields to the guest's HOST-OWNED pouch, never the host inv
 		const dig = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies[0]; return {bx:Math.round(b.x), by:Math.round(b.y), invStone0: window.inv.stone|0}; })()`);
 		// isolate one stone block beside the body with a TALL air column above it, so
@@ -1617,6 +1663,35 @@ async function main(){
 		// through a background tab's clamped physics proved fragile three different
 		// environmental ways. The laws are the hero's own, pinned to the letter.)
 		console.log('metabolism: ok (scraps scooped from the ground, chest refused, +6 heal to 66)');
+		// --- statuses: the hero's own state machine per body ---------------------------------------------
+		// A burn ticks the hero dot through hurtBody; a soak douses it by the same
+		// law; the chips mirror to the guest; a flash-frozen body cannot even eat.
+		await host.poll(`(()=>{ const b=MM.ghostHost._debugBody('${duelists.g1}'); return (b && b.statusSt) ? 1 : 0; })()`,
+			v => v === 1, 'the body grows a status state', 20, 250);
+		const burnT = await host.eval(`(()=>{
+			const b=MM.ghostHost._debugBody('${duelists.g1}');
+			b.statusSt.wet=0;
+			MM.heroStatus.applyTo(b.statusSt, 'burn', {dur:3, dps:2});
+			return {hp0: MM.ghostHost.metrics().bodies[0].hp};
+		})()`);
+		const burnt = await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies[0]; return b ? b.hp : 999; })()`,
+			v => v < burnT.hp0, 'an ignited body burns by the hero dot', 30, 250);
+		const doused = await host.eval(`(()=>{
+			const b=MM.ghostHost._debugBody('${duelists.g1}');
+			MM.heroStatus.applyTo(b.statusSt, 'burn', {dur:9, dps:2});
+			const r=MM.heroStatus.applyTo(b.statusSt, 'wet', {dur:8});
+			return {r, burn:b.statusSt.burn, wet:+b.statusSt.wet.toFixed(1)};
+		})()`);
+		if(!(doused.r === 'wet_doused' && doused.burn === 0 && doused.wet > 0)) throw new Error('the soak did not douse the burn: ' + JSON.stringify(doused));
+		await ghost.poll(`(MM.heroStatus._state.wet || 0) > 0 ? 1 : 0`, v => v === 1, 'the wet chip mirrors to the guest', 30, 250);
+		// frozen is a hard gate: every intent bounces while the body is an ice block
+		await host.eval(`(()=>{ const b=MM.ghostHost._debugBody('${duelists.g1}'); b.statusSt.frozen=3; return 1; })()`);
+		const scrapsIce = await ghost.eval(`MM.ghostClient.metrics().play.pouch.meatScrap || 0`);
+		await ghost.eval(`MM.ghostClient._playAct('eat', 0, 0, 'meatScrap')`);
+		await sleep(700);
+		if((await ghost.eval(`MM.ghostClient.metrics().play.pouch.meatScrap || 0`)) !== scrapsIce) throw new Error('a frozen body still ate');
+		await host.eval(`(()=>{ const b=MM.ghostHost._debugBody('${duelists.g1}'); b.statusSt.frozen=0; b.statusSt.wet=0; b.statusSt.chill=0; return 1; })()`);
+		console.log('statuses: ok (burn dot ' + burnT.hp0 + '→' + burnt.toFixed(1) + ', soak doused it, wet chip mirrored, frozen gated eating)');
 		// --- the guest gravestone: death spills the pouch where the hero fell -------------------------
 		// A sealed flooded box + pre-aged lungs drown the weakened body deterministically
 		// (a lava kill might burn the spilled evidence). The pouch must land as physical

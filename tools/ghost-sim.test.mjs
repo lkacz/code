@@ -1236,6 +1236,56 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	assert.ok(/ghostPlayWaterStack:\(x,headY\)=>\{/.test(mainSrc) && /return waterStackAboveY\(Math\.floor\(x\), headY\);/.test(mainSrc),
 		'the stack seam reuses the hero’s own partial-aware column computation');
 	assert.ok(/pl\.k === 'pressure'/.test(clientSrc), 'the guest hears the pressure warning');
+	// lag-compensated reconciliation: the echo answers a SPECIFIC claim
+	assert.ok(/conn\.send\(\{ t: 'ppose', q: poseSeq,/.test(clientSrc) && /poseLog\.push\(\{ seq: poseSeq, x: p\.x, y: p\.y \}\);/.test(clientSrc),
+		'every pose uplink carries a sequence and logs the claim it made');
+	assert.ok(/b\.poseSeq = \(Number\(pl\.q\) >>> 0\) \|\| 0;/.test(hostSrc) && /b\.dead \? 1 : 0, b\.poseSeq \|\| 0\]\);/.test(hostSrc),
+		'the host sanitizes the seq and echoes it in the own pb row');
+	assert.ok(/const pastIdx = seq \? poseLog\.findIndex\(e => e\.seq === seq\) : -1;/.test(clientSrc)
+		&& /if\(err > 8\)\{ p\.x = \+bx; p\.y = \+by; stats\.poseSnaps/.test(clientSrc)
+		&& /else if\(err > 0\.25\)\{ p\.x \+= ex; p\.y \+= ey; stats\.poseFixes/.test(clientSrc),
+		'divergence is measured against the MATCHING claim: exact correction, gross snap, dead zone');
+	assert.ok(/no matching claim \(old host, rotated log\): gross fallback/.test(clientSrc),
+		'a host that echoes nothing still gets the old gross-divergence fallback');
+	assert.ok(/poseLog\.length = 0; \/\/ pre-respawn claims answer nothing anymore/.test(clientSrc),
+		'a respawn clears the claim log (stale echoes must not correct a teleported hero)');
+	// sub-tile water windows: host reads the ledger, watcher applies display-only
+	const wsrc2 = readFileSync(new URL('../src/engine/water.js', import.meta.url), 'utf8');
+	assert.ok(/function ghostPartialsIn\(x0,y0,x1,y1,out\)/.test(wsrc2) && /out\.length<400/.test(wsrc2),
+		'the host-side window read is bounded');
+	assert.ok(/function ghostApplyPartialsWindow\(x0,y0,x1,y1,list\)/.test(wsrc2)
+		&& /for\(let x=ax; x<=bx; x\+\+\) for\(let y=ay; y<=by; y\+\+\) partial\.delete\(LPK\(x,y\)\);/.test(wsrc2)
+		&& /if\(!\(u>=1 && u<UNITS\)\) continue;/.test(wsrc2),
+		'the watcher-side apply clears the window first and clamps every entry (display-only)');
+	assert.ok(/ghostPartialsIn, ghostApplyPartialsWindow,/.test(wsrc2), 'both window functions are published on MM.water');
+	assert.ok(/function pwatTick\(s, t\)/.test(hostSrc) && /if\(!any && !s\.pwatWas\) return;/.test(hostSrc)
+		&& /if\(any && sig === s\.lastPwatSig\) return;/.test(hostSrc),
+		'the pwat plane latches (a clearing packet follows the last wet one) and sig-skips duplicates');
+	assert.ok(/pl\.t === 'pwat'/.test(clientSrc) && /W\.ghostApplyPartialsWindow\(\+w\[0\], \+w\[1\], \+w\[2\], \+w\[3\], w\[4\]\);/.test(clientSrc),
+		'the watcher applies streamed windows through the bounded water seam');
+	// per-body statuses: the hero's OWN state machine, one instance per body
+	const hs = readFileSync(new URL('../src/engine/hero_status.js', import.meta.url), 'utf8');
+	assert.ok(/function createState\(\)/.test(hs) && /function applyTo\(s,kind,opts\)/.test(hs) && /function updateState\(s,dt,env\)/.test(hs)
+		&& /createState, applyTo, updateState, isFrozenState, moveMultOf, damageInMultOf/.test(hs),
+		'hero_status exposes its pure core (the singleton wraps it with hero-only fx/notes)');
+	assert.ok(/const r=applyTo\(st,kind,opts\);/.test(hs) && /const r=updateState\(st,dt,env\);/.test(hs),
+		'the hero singleton delegates to the SAME core the bodies run (no law drift)');
+	assert.ok(/if\(inWater\) HS\.applyTo\(b\.statusSt, 'wet', \{ dur: 8 \}\);/.test(hostSrc)
+		&& /HS\.applyTo\(b\.statusSt, 'burn', \{\}\);/.test(hostSrc)
+		&& /if\(b\.thermMode === 'cold'\) HS\.applyTo\(b\.statusSt, 'chill', \{ dur: 2 \}\);/.test(hostSrc),
+		'water soaks, flame ignites (fizzling on a soaked body), deep-frost air chills');
+	assert.ok(/HS\.updateState\(b\.statusSt, dt, \{ deepFrost: b\.thermMode === 'cold', nearWarmth: false, inWater \}\)/.test(hostSrc),
+		'the freeze combo runs the hero law per body');
+	assert.ok(/hurtBody\(s, entry, st\.burnDamage, NaN, NaN, 'burn_dot'\);/.test(hostSrc), 'the burn dot lands through hurtBody');
+	assert.ok(/MMR\.heroStatus\.isFrozenState\(b\.statusSt\)\)\{\s*\n\s*entry\.peer\.send\(\{ t: 'pactAck', a: pl\.a, ok: false, reason: 'frozen' \}\);/.test(hostSrc),
+		'a flash-frozen body cannot act — EVERY intent bounces until the thaw');
+	assert.ok(/amt = amt \* MMR\.heroStatus\.damageInMultOf\(b\.statusSt, 'electric'\);/.test(hostSrc),
+		'a soaked body conducts electricity by the hero multiplier');
+	assert.ok(/b\.statusSt = MMR\.heroStatus\.createState\(\); b\.lastStatusSig = -1;/.test(hostSrc), 'a respawned body thaws and dries');
+	assert.ok(/pl\.t === 'pstat'/.test(clientSrc) && /HSc\._state\.frozen = Math\.max\(0, Math\.min\(10, Number\(pl\.f\) \|\| 0\)\);/.test(clientSrc),
+		'the guest mirrors the chips into its local singleton, clamped (display truth only)');
+	assert.ok(/if\(statusMult <= 0\) dir = 0;/.test(clientSrc) && /const wantJump = statusMult > 0 &&/.test(clientSrc),
+		'the guest feel honors frozen/chill locally (the host enforces the intents regardless)');
 	// client: food chips EAT, drops route to pickup, warnings are display-only
 	assert.ok(/if\(food\)\{ sendPlayAct\('eat', 0, 0, k\); return; \}/.test(clientSrc), 'a food chip eats on click');
 	assert.ok(/if\(hov && hov\.kind === 'resource'\)\{ sendPlayAct\('pickup', w\.x, w\.y\); return; \}/.test(clientSrc),

@@ -2387,7 +2387,44 @@ window.MM = window.MM || {};
     return levelUnits(getTile,Math.floor(x),Math.floor(y));
   }
 
-  MM.water = {update, addSource, drawOverlay, onTileChanged, onTilesChangedBatch, displaceAt, solidifyAt, disturb, noteChunkGenerated, reset, snapshot, restore, metrics, levelAt, polluteAt, isToxicAt, UNITS, _debug};
+  // --- ghost mirror: sub-tile levels for the co-op stream ---------------------------
+  // The wire format is the save format, and partials are deliberately NOT saved —
+  // so watchers used to render every replicated water cell as a full block. The
+  // HOST reads windows of the partial ledger with ghostPartialsIn; the WATCHER
+  // applies them with ghostApplyPartialsWindow, display-only: a watcher never runs
+  // the solver, so no volume invariant can fight the write. Bounded both ways.
+  function ghostPartialsIn(x0,y0,x1,y1,out){
+    out=out||[];
+    const ax=Math.floor(Math.min(x0,x1)), bx=Math.floor(Math.max(x0,x1));
+    const ay=Math.max(WORLD_TOP,Math.floor(Math.min(y0,y1))), by=Math.min(WORLD_BOTTOM-1,Math.floor(Math.max(y0,y1)));
+    for(let x=ax; x<=bx && out.length<400; x++){
+      for(let y=ay; y<=by; y++){
+        const v=partial.get(LPK(x,y));
+        if(v!==undefined) out.push([x,y,v]);
+      }
+    }
+    return out;
+  }
+  function ghostApplyPartialsWindow(x0,y0,x1,y1,list){
+    if(!Number.isFinite(x0) || !Number.isFinite(y0) || !Number.isFinite(x1) || !Number.isFinite(y1)) return 0;
+    const ax=Math.floor(Math.min(x0,x1)), bx=Math.min(Math.floor(Math.max(x0,x1)), ax+48);
+    const ay=Math.max(WORLD_TOP,Math.floor(Math.min(y0,y1))), by=Math.min(WORLD_BOTTOM-1,Math.floor(Math.max(y0,y1)), ay+32);
+    // the window is authoritative: cells that went full/empty on the host lose
+    // their stale partial here first, then the streamed entries land
+    for(let x=ax; x<=bx; x++) for(let y=ay; y<=by; y++) partial.delete(LPK(x,y));
+    let n=0;
+    for(const row of (Array.isArray(list)?list.slice(0,400):[])){
+      if(!Array.isArray(row) || row.length<3) continue;
+      const x=Math.floor(Number(row[0])), y=Math.floor(Number(row[1])), u=Math.floor(Number(row[2]));
+      if(!Number.isFinite(x) || !Number.isFinite(y) || x<ax || x>bx || y<ay || y>by) continue;
+      if(!(u>=1 && u<UNITS)) continue;
+      partial.set(LPK(x,y),u);
+      n++;
+    }
+    return n;
+  }
+
+  MM.water = {update, addSource, drawOverlay, onTileChanged, onTilesChangedBatch, displaceAt, solidifyAt, disturb, noteChunkGenerated, reset, snapshot, restore, metrics, levelAt, polluteAt, isToxicAt, UNITS, ghostPartialsIn, ghostApplyPartialsWindow, _debug};
 })();
 // ESM export (progressive migration)
 export const water = (typeof window!=='undefined' && window.MM) ? window.MM.water : undefined;

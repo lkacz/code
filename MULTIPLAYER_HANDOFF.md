@@ -257,9 +257,27 @@ relays it to all peers and syncs late joiners; every renderer paints the same
 player the same way, gid tint stays the fallback. Note: "stream the guest's
 real customization" was retired — a ghost page never loads its own save, so
 its MM.customization is defaults; the chosen look IS the real feature.
-**Still open (polish):** water sub-tile partials around bodies, smooth
-position reconciliation (needs echo-timestamp lag compensation — a naive ease
-toward the lagged echo makes movement rubbery).
+**Reconciliation (2026-07-16):** every pose uplink carries a sequence number,
+the host sanitizes and echoes it in the own pb row, and divergence is measured
+against the MATCHING historical claim — an exact correction for genuine
+divergence (envelope clamps, resyncs), the gross snap for >8, a dead zone
+under 0.25, and no more phantom snap-backs from comparing a stale echo to a
+fast-moving present (QA asserts zero snaps across the walk). A respawn clears
+the claim log. **Water partials (2026-07-16):** the `pwat` plane streams
+bounded windows of the partial ledger around the host hero and every body
+(`ghostPartialsIn` / `ghostApplyPartialsWindow` — the watcher-side apply
+clears the window first and clamps every entry; a watcher never runs the
+solver so nothing fights the write; latch + sig-skip). QA: a puddle's exact
+sub-tile level mirrors to the watcher and drains from both ends.
+**Per-body statuses (2026-07-16):** hero_status.js grew a PURE core
+(createState/applyTo/updateState/moveMultOf/damageInMultOf — the hero
+singleton delegates to it, behavior byte-identical, its own suite green).
+Each body runs the same machine: water soaks, open flame ignites (fizzling on
+a soaked body), deep-frost air chills, wet+chill+frost flash-freezes; the
+burn dot lands through hurtBody; a FROZEN body bounces every intent
+('frozen'); a soaked body conducts electricity ×1.5; chips stream on
+transitions (`pstat`) into the guest's local singleton for HUD chips and
+movement feel. **The polish backlog is now EMPTY.**
 **QA driver (2026-07-16):** the world seed is PINNED (777; `--seed=auto`
 restores the roulette) — validated with consecutive full-gauntlet greens; the
 survival shelves are lidded against sky-sand cascades and the weapon-plane
