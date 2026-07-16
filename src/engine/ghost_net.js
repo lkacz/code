@@ -559,11 +559,15 @@ export function parseWatch(search){
 	const q = String(search || '');
 	const m = /[?&]watch=([^&#]+)/.exec(q);
 	if(!m) return null;
-	const room = normalizeRoom(decodeURIComponent(m[1]));
+	// decodeURIComponent THROWS on a malformed escape ("?watch=AB%") and this runs
+	// at module import time on a user-pasted link — a truncated invite must degrade
+	// to the raw text, never take the whole module chain (and the game) down with it
+	const dec = (s) => { try{ return decodeURIComponent(s); }catch(e){ return s; } };
+	const room = normalizeRoom(dec(m[1]));
 	if(!room) return null;
 	const via = /[?&]via=(bc|rtc)\b/.exec(q);
 	const name = /[?&]name=([^&#]+)/.exec(q);
-	return { room, via: via ? via[1] : null, name: name ? decodeURIComponent(name[1]).slice(0, 24) : null };
+	return { room, via: via ? via[1] : null, name: name ? dec(name[1]).slice(0, 24) : null };
 }
 
 // --- payload chunking --------------------------------------------------------
@@ -674,12 +678,18 @@ export function createMqttDecoder(){
 			const packets = [];
 			for(;;){
 				if(buf.length < 2) break;
-				let len = 0, mult = 1, pos = 1, ok = false;
+				let len = 0, mult = 1, pos = 1, ok = false, bad = false;
 				for(; pos < buf.length && pos <= 4; pos++){
 					const b = buf[pos];
 					len += (b & 0x7f) * mult; mult *= 128;
 					if(!(b & 0x80)){ ok = true; pos++; break; }
+					if(pos === 4) bad = true; // MQTT caps the length field at 4 bytes — a 4th continuation bit is garbage
 				}
+				// a malformed stream must not wedge the decoder forever (it would sit
+				// buffering bytes it can never frame, silently killing signaling until
+				// the pong watchdog notices) — drop the buffer and let the next packet
+				// re-frame from a clean slate
+				if(bad){ buf = new Uint8Array(0); break; }
 				if(!ok || buf.length < pos + len) break;
 				const type = buf[0] >> 4;
 				const body = buf.subarray(pos, pos + len);

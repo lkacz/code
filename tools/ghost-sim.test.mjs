@@ -36,6 +36,10 @@ assert.equal(NET.parseWatch('?watch=ab'), null, 'invalid room -> null');
 assert.deepEqual(NET.parseWatch('?watch=qa42x7'), { room: 'QA42X7', via: null, name: null }, 'room normalized');
 assert.deepEqual(NET.parseWatch('?title=1&watch=ROOM42&via=bc&name=Zed'), { room: 'ROOM42', via: 'bc', name: 'Zed' }, 'via+name parsed');
 assert.equal(NET.parseWatch('?watch=ROOM42&via=evil').via, null, 'unknown via rejected');
+// decodeURIComponent throws on malformed escapes — a truncated invite link runs at
+// module import time and must degrade to the raw text, never crash the boot
+assert.deepEqual(NET.parseWatch('?watch=ROOM42%'), { room: 'ROOM42', via: null, name: null }, 'malformed percent-escape degrades, never throws');
+assert.equal(NET.parseWatch('?watch=ROOM42&name=%E0%A4%A').name, '%E0%A4%A', 'malformed name escape falls back to raw text');
 
 // --- snapshot chunking -----------------------------------------------------------
 const small = NET.chunkPayload('snap', 'hello');
@@ -133,6 +137,13 @@ const dec4 = NET.createMqttDecoder();
 const two = new Uint8Array([...NET.mqttEncodePublish('a', '1'), ...NET.mqttEncodePublish('b', '2')]);
 const out4 = dec4.push(two);
 assert.deepEqual(out4.map(p => p.topic), ['a', 'b'], 'coalesced frames split into packets');
+// a malformed remaining-length (4 continuation bits — illegal in MQTT) must not
+// wedge the decoder forever: the garbage is dropped and the next packet re-frames
+const dec5 = NET.createMqttDecoder();
+assert.equal(dec5.push(new Uint8Array([0x30, 0x80, 0x80, 0x80, 0x80, 0x01])).length, 0, 'malformed length yields nothing');
+const out5 = dec5.push(NET.mqttEncodePublish('c', '3'));
+assert.equal(out5.length, 1, 'decoder recovered after malformed length (no permanent wedge)');
+assert.equal(out5[0].topic, 'c', 'post-recovery packet framed cleanly');
 
 // --- social facilitation rules ------------------------------------------------------
 assert.equal(NET.SOCIAL_RULES.IDLE_MS, 30000, 'watcher counts as active for 30 s after real input');
@@ -912,6 +923,17 @@ assert.ok(/function hurtBody\(s, entry/.test(hostSrc) && /b\.invulUntil = t \+ N
 // the movement envelope: a claimed pose is followed at most MAX_SPEED fast
 assert.ok(/pl\.t === 'ppose'/.test(hostSrc) && /NET\.clampBodyStep\(b\.x, \+pl\.x, maxStep\)/.test(hostSrc),
 	'the guest pose is followed inside a per-axis speed envelope (a teleport hack rubber-bands)');
+// the movement budget is real elapsed time, never per-message: a synthetic dt floor
+// would let a claim-spamming client outrun MAX_SPEED (120 msg/s × 16 ms credited each)
+assert.ok(/const dtS = Math\.min\(0\.5, Math\.max\(0, \(t - \(b\.lastPoseAt \|\| t\)\) \/ 1000\)\);/.test(hostSrc),
+	'pose-claim movement budget accrues from real elapsed time only (no per-message floor)');
+assert.ok(!/Math\.max\(0\.016,[^)]*b\.lastPoseAt/.test(hostSrc), 'the exploitable 16 ms per-claim floor stays dead');
+// velocity is DERIVED from accepted movement — a spoofed vx/vy would mislead the
+// party-aware attackers' predictive aim (they lead targets by vx/vy)
+assert.ok(/b\.vx = Math\.max\(-40, Math\.min\(40, \(b\.x - px\) \/ dtS\)\);/.test(hostSrc)
+	&& /b\.vy = Math\.max\(-40, Math\.min\(40, \(b\.y - py\) \/ dtS\)\);/.test(hostSrc),
+	'body velocity derives from host-accepted movement, never from the client claim');
+assert.ok(!/b\.vx = Number\.isFinite\(pl\.vx\)/.test(hostSrc), 'the claimed velocity is never trusted');
 // EVERY world-touching intent funnels through one validated handler
 assert.ok(/function handlePlayAct\(s, entry, pl\)/.test(hostSrc) && /pl\.t === 'pact'/.test(hostSrc),
 	'every guest world intent lands in one host-side handler');
@@ -1345,7 +1367,13 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	// gifting: host-authoritative end to end, resources leave the host inventory first
 	assert.ok(/function giftResource\(gid, key, n\)/.test(hostSrc) && /bridge\.ghostGiftTake \? bridge\.ghostGiftTake\(key, count\) : null;/.test(hostSrc),
 		'a gift must really leave the HOST inventory before the pouch is credited');
-	assert.ok(/Math\.min\(NET\.PLAY_RULES\.GIFT_MAX, Math\.floor\(Number\(n\) \|\| 0\)\)/.test(hostSrc), 'gift size is bounded');
+	assert.ok(/Math\.min\(NET\.PLAY_RULES\.GIFT_MAX, room, Math\.floor\(Number\(n\) \|\| 0\)\)/.test(hostSrc),
+		'gift size is bounded by GIFT_MAX and by the pouch headroom');
+	// pouchAdd clamps at POUCH_CAP — a gift must be clamped to the headroom BEFORE
+	// the host inventory is charged, or the overflow is silently destroyed
+	assert.ok(/const room = NET\.PLAY_RULES\.POUCH_CAP - \(Number\(te\.body\.pouch\[key\]\) \|\| 0\);/.test(hostSrc)
+		&& /if\(room < 1\)/.test(hostSrc),
+		'a full pouch refuses the gift instead of vaporizing the host stock');
 	assert.ok(/ghostGiftTake:\(key,n\)=>\{/.test(mainSrc) && /const def=RESOURCE_DEFS\.find\(r=>r\.key===key\);/.test(mainSrc)
 		&& /if\(!\(\(inv\[key\]\|0\) >= count\)\) return \{ok:false, reason:'cost'\};/.test(mainSrc),
 		'the bridge seam whitelists the key and refuses what the host does not own');

@@ -274,13 +274,23 @@ const ghostHost = (function(){
 			// pings and powers keep working from the same tracked spot.
 			const b = entry.body;
 			if(b && !b.dead && Number.isFinite(pl.x) && Number.isFinite(pl.y)){
-				const dtS = Math.min(0.5, Math.max(0.016, (t - (b.lastPoseAt || t)) / 1000));
+				// the dt floor is ZERO, not a synthetic minimum: a per-message floor
+				// hands out movement budget per CLAIM, so spamming claims (120 msg/s
+				// under the rate cap × 16 ms credited each) would outrun MAX_SPEED 2:1 —
+				// with real elapsed time only, spam buys nothing
+				const dtS = Math.min(0.5, Math.max(0, (t - (b.lastPoseAt || t)) / 1000));
 				b.lastPoseAt = t;
 				const maxStep = NET.PLAY_RULES.MAX_SPEED * dtS;
+				const px = b.x, py = b.y;
 				b.x = NET.clampBodyStep(b.x, +pl.x, maxStep);
 				b.y = NET.clampBodyStep(b.y, +pl.y, maxStep);
-				b.vx = Number.isFinite(pl.vx) ? Math.max(-40, Math.min(40, +pl.vx)) : 0;
-				b.vy = Number.isFinite(pl.vy) ? Math.max(-40, Math.min(40, +pl.vy)) : 0;
+				// velocity is DERIVED from the accepted movement, never read off the
+				// claim: party-aware attackers lead their aim by vx/vy, so a spoofed
+				// velocity would let a stationary cheater dodge every predictive shot
+				if(dtS >= 0.001){
+					b.vx = Math.max(-40, Math.min(40, (b.x - px) / dtS));
+					b.vy = Math.max(-40, Math.min(40, (b.y - py) / dtS));
+				}
 				b.f = pl.f < 0 ? -1 : 1;
 				b.poseSeq = (Number(pl.q) >>> 0) || 0; // echoed in the pb own row for reconciliation
 			}
@@ -1950,10 +1960,15 @@ const ghostHost = (function(){
 	function giftResource(gid, key, n){
 		const s = session;
 		if(!s || !bridge) return false;
-		const count = Math.max(1, Math.min(NET.PLAY_RULES.GIFT_MAX, Math.floor(Number(n) || 0)));
 		let te = null;
 		for(const e of entries()){ if(e.gid === gid && e.body && !e.body.dead){ te = e; break; } }
 		if(!te){ try{ bridge.msg('🎁 Ten widz nie ma teraz bohatera w grze'); }catch(e){ /* fine */ } return false; }
+		// clamp to the pouch's remaining headroom BEFORE the host inventory is
+		// charged: pouchAdd clamps at POUCH_CAP, so any overflow taken out of the
+		// host stock would be silently destroyed instead of delivered
+		const room = NET.PLAY_RULES.POUCH_CAP - (Number(te.body.pouch[key]) || 0);
+		if(room < 1){ try{ bridge.msg('🎁 Sakwa pełna — ' + (te.name || 'Duch') + ' nie pomieści więcej: ' + key); }catch(e){ /* fine */ } return false; }
+		const count = Math.max(1, Math.min(NET.PLAY_RULES.GIFT_MAX, room, Math.floor(Number(n) || 0)));
 		let took = null;
 		try{ took = bridge.ghostGiftTake ? bridge.ghostGiftTake(key, count) : null; }catch(e){ took = null; }
 		if(!took || !took.ok){ try{ bridge.msg('🎁 Nie masz tylu: ' + key); }catch(e){ /* fine */ } return false; }

@@ -278,6 +278,20 @@ burn dot lands through hurtBody; a FROZEN body bounces every intent
 ('frozen'); a soaked body conducts electricity ×1.5; chips stream on
 transitions (`pstat`) into the guest's local singleton for HUD chips and
 movement feel. **The polish backlog is now EMPTY.**
+**Critical audit round 2 (2026-07-16, full read of net/host/client/weapons-coop/
+bridge seams, all fixes pinned):** a malformed invite link (`?watch=AB%`) made
+`decodeURIComponent` throw at module import time and killed the boot — parseWatch
+now degrades to raw text; the ppose handler's 16 ms per-message dt floor handed
+out movement budget per CLAIM (120 msg/s bought 2× MAX_SPEED) — the budget now
+accrues from real elapsed time only; body velocity was read off the client claim
+while guardians LEAD their aim by vx/vy (a spoofed velocity dodged every
+predictive shot for free) — vx/vy now derive from host-accepted movement; a gift
+into a near-full pouch destroyed the overflow (host stock was charged before
+pouchAdd clamped at 999) — gifts clamp to the pouch headroom first; the MQTT
+decoder wedged forever on a malformed remaining-length — it now drops the
+garbage and re-frames. Verified clean: transports/failover, assembler bounds,
+every peer-string render path (textContent/canvas only), hostile-disk
+normalization, duel-key forging, gid shape bounds.
 **Critical audit (2026-07-16, all fixes pinned):** exitPlay no longer leaks
 embodiment state into the next embodiment (mirrored statuses/pose log/duel);
 reconciliation consumes the matched claim (a stalled uplink + repeating echo
