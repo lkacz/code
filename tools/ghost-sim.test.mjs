@@ -192,8 +192,9 @@ assert.ok(NET.modeAllows('hero', 'play') && NET.modeAllows('hero', 'full') && NE
 assert.ok(!NET.modeAllows('play', 'hero'), 'play is below hero');
 // hero-mode contract: the guest player state is guest-local truth; the world is
 // protected here — actions, rates and envelopes
-assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg', 'pickup', 'use'], 'the five hero world-intents');
-assert.ok(NET.HERO_RULES.PICKUP_MS === 150 && NET.HERO_RULES.USE_MS === 400, 'pickup/use rate floors pinned');
+assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot'], 'the six hero world-intents');
+assert.ok(NET.HERO_RULES.PICKUP_MS === 150 && NET.HERO_RULES.USE_MS === 400 && NET.HERO_RULES.SHOOT_MS === 220,
+	'pickup/use/shoot rate floors pinned');
 assert.ok(NET.validHeroAction('mine') && !NET.validHeroAction('craft') && !NET.validHeroAction('__proto__'), 'hero action whitelist holds');
 assert.ok(NET.HERO_RULES.REACH === 6 && NET.HERO_RULES.DMG_MAX === 45 && NET.HERO_RULES.HP_MAX === 1000, 'hero envelopes pinned');
 assert.equal(NET.HERO_KEY, 'mm_ghost_hero_v1', 'the hero persistence key');
@@ -793,8 +794,24 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	assert.ok(/function runHeroStep\(dt,ts\)/.test(mainSrc) && !/runHeroStep[\s\S]{0,900}MOBS\.update/.test(mainSrc)
 		&& !/function runHeroStep[\s\S]{0,900}WATER\.update/.test(mainSrc),
 		'runHeroStep steps hero systems only — the world is the host’s stream');
-	assert.ok(/WEAPONS\.update\(dt, getTile, ghostHeroNoopSetTile\);/.test(mainSrc),
-		'local weapon fx cannot write the replicated world');
+	assert.ok(/if\(WEAPONS && WEAPONS\.ghostStepFx\) WEAPONS\.ghostStepFx\(dt\);/.test(mainSrc)
+		&& !/function runHeroStep[\s\S]{0,1400}WEAPONS\.update\(/.test(mainSrc),
+		'the hero frame steps arrows cosmetically only — the real impact chains never run on replica arrows');
+	// projectiles: ONE chokepoint in pushArrow forwards the shot; the host flies
+	// the real arrow with clamped velocity/damage and a whitelisted flag set
+	const wsrcH = readFileSync(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
+	assert.ok(/MM\.ghostHeroIntents && MM\.ghostHeroIntents\.shoot\)\{ MM\.ghostHeroIntents\.shoot\(a\); return; \}/.test(wsrcH),
+		'pushArrow defers to the shoot intent for hero guests');
+	assert.ok(/function spawnHeroProjectile\(body, spec\)/.test(wsrcH) && /const cap=Math\.min\(26,sp\);/.test(wsrcH)
+		&& /Math\.min\(45,Math\.round\(Number\(spec\.dmg\)\|\|1\)\)/.test(wsrcH),
+		'the host resolver caps speed and damage before the real arrow flies');
+	assert.ok(/if\(t - \(b\.lastHeroShootAt \|\| 0\) < NET\.HERO_RULES\.SHOOT_MS\) return;/.test(hostSrc),
+		'projectile intents ride a per-guest rate floor');
+	// gear pickups: the item travels as an object and is SANITIZED again on receipt
+	assert.ok(/ghostHeroPickupAt:\(wx,wy,body\)=>\{/.test(mainSrc) && /kind:'gear', item:info\.item/.test(mainSrc),
+		'gear drops travel as item objects through the hero pickup seam');
+	assert.ok(/MMR\.inventory\.grantItem && MMR\.inventory\.grantItem\(pl\.item\)/.test(clientSrc),
+		'the guest banks gear through grantItem (sanitizes hostile host input)');
 	// vitals: guest-local truth — host forwards wounds, skips survival, accepts claims
 	assert.ok(/if\(entry\.heroMode\)\{[\s\S]{0,600}return; \/\/ vitals are guest-local truth in hero mode/.test(hostSrc)
 		|| /hero mode: the wound is FORWARDED, not applied/.test(hostSrc),

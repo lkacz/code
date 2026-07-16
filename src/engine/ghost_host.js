@@ -1102,6 +1102,17 @@ const ghostHost = (function(){
 			if(hits) s.stats.heroDmg = (s.stats.heroDmg || 0) + 1;
 			return;
 		}
+		if(pl.a === 'shoot'){
+			// the projectile flies from the HOST-tracked body — the guest supplies
+			// only velocity/damage/flags, all clamped in the weapons resolver
+			if(t - (b.lastHeroShootAt || 0) < NET.HERO_RULES.SHOOT_MS) return;
+			b.lastHeroShootAt = t;
+			const spec = { vx: Number(pl.vx) || 0, vy: Number(pl.vy) || 0,
+				dmg: Math.max(1, Math.min(NET.HERO_RULES.DMG_MAX, Number(pl.n) || 1)),
+				fire: !!pl.f2, snowball: !!pl.sb, rock: !!pl.rk, thrown: !!pl.th, harpoon: !!pl.hp2 };
+			try{ if(bridge.ghostHeroShoot) bridge.ghostHeroShoot({ x: b.x, y: b.y }, spec); }catch(e){ /* fine */ }
+			return;
+		}
 		if(pl.a === 'pickup'){
 			// ground pickups aim at world floats; the play-mode bridge seam already
 			// validates fog, reach-from-body and resource-only — the YIELD goes to
@@ -1111,8 +1122,10 @@ const ghostHost = (function(){
 			const px = Number(pl.x), py = Number(pl.y);
 			if(!Number.isFinite(px) || !Number.isFinite(py)) return;
 			let res = null;
-			try{ res = bridge.ghostPlayPickupAt ? bridge.ghostPlayPickupAt(px, py, { x: b.x, y: b.y }) : null; }catch(e){ res = { ok: false, reason: 'error' }; }
-			entry.peer.send({ t: 'hact', a: 'pickup', ok: !!(res && res.ok), reason: (res && res.reason) || null, key: (res && res.key) || null, qty: (res && res.qty) || 0 });
+			try{ res = bridge.ghostHeroPickupAt ? bridge.ghostHeroPickupAt(px, py, { x: b.x, y: b.y })
+				: (bridge.ghostPlayPickupAt ? bridge.ghostPlayPickupAt(px, py, { x: b.x, y: b.y }) : null); }catch(e){ res = { ok: false, reason: 'error' }; }
+			entry.peer.send({ t: 'hact', a: 'pickup', ok: !!(res && res.ok), reason: (res && res.reason) || null,
+				key: (res && res.key) || null, qty: (res && res.qty) || 0, item: (res && res.item) || null });
 			return;
 		}
 		const tx = Math.floor(Number(pl.x)), ty = Math.floor(Number(pl.y));

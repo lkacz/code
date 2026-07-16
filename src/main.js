@@ -9571,7 +9571,7 @@ window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if
 		// hero-mode guest: E grabs the nearest replica drop through the intent channel
 		if(MM.ghostHeroIntents && DROPS && DROPS.hoverAt){
 			const hn=DROPS.hoverAt(player.x,player.y,player,{visible:worldFxVisible});
-			if(hn && hn.inReach && hn.kind!=='chest' && hn.kind!=='gear'){ MM.ghostHeroIntents.pickup(hn.x,hn.y); return; }
+			if(hn && hn.inReach && hn.kind!=='chest'){ MM.ghostHeroIntents.pickup(hn.x,hn.y); return; }
 		}
 		if(!mechWants && !MM.ghostHeroIntents && DROPS && DROPS.pickupNearest && DROPS.pickupNearest(player)){
 			noteSaveActivity();
@@ -12513,7 +12513,7 @@ canvas.addEventListener('pointerdown',e=>{
 			// intent (the replica hover only decides the click is a pickup at all)
 			if(MM.ghostHeroIntents && DROPS.hoverAt){
 				const h=DROPS.hoverAt(aim.x,aim.y,player,{visible:worldFxVisible});
-				if(h && h.inReach && h.kind!=='chest' && h.kind!=='gear'){ MM.ghostHeroIntents.pickup(aim.x,aim.y); return; }
+				if(h && h.inReach && h.kind!=='chest'){ MM.ghostHeroIntents.pickup(aim.x,aim.y); return; }
 			} else if(DROPS.pickupAt(aim.x,aim.y,player,{visible:worldFxVisible})==='picked'){ noteSaveActivity(); return; }
 		}
 		if(assignCompanionHarvestTargetAt(tx,ty)) return;
@@ -16284,6 +16284,24 @@ MM.ghostBridge={
 		try{ awardTileDrops(info); updateInventory(); updateHotbarCounts(); }catch(e){ return false; }
 		return true;
 	},
+	// HOST-side hero pickup: resources AND gear. Fog-gated with the shared map,
+	// reach measured against the HOST-tracked body, removed atomically. Gear
+	// travels as the item object — the guest banks it through grantItem, which
+	// sanitizes it all over again (its bag, its truth). Ground chests stay put.
+	ghostHeroPickupAt:(wx,wy,body)=>{
+		const D=MM.drops;
+		if(!D || !D.hoverAt || !D.remove) return {ok:false, reason:'error'};
+		const info=D.hoverAt(wx,wy,body,{visible:(x,y)=>worldTileDiscovered(x,y)});
+		if(!info) return {ok:false, reason:'none'};
+		if(!info.inReach) return {ok:false, reason:'far'};
+		if(info.kind==='gear' && info.item){
+			if(!D.remove(info.id)) return {ok:false, reason:'gone'};
+			return {ok:true, kind:'gear', item:info.item};
+		}
+		if(info.kind!=='resource') return {ok:false, reason:'kind'};
+		if(!D.remove(info.id)) return {ok:false, reason:'gone'};
+		return {ok:true, kind:'res', key:String(info.res||'').slice(0,24), qty:Math.max(1,Math.min(99,Number(info.qty)||1))};
+	},
 	// a validated ground pickup credits the guest's own inventory by resource KEY
 	ghostHeroGain:(key,qty)=>{
 		if(typeof key!=='string' || !RESOURCE_DEFS.find(r=>r.key===key)) return false;
@@ -16298,6 +16316,13 @@ MM.ghostBridge={
 		const info=INFO[getTile(tx,ty)];
 		if(!(info && info.chestTier)) return {ok:false, reason:'use'};
 		return {ok:!!tryOpenChestAt(tx,ty)};
+	},
+	// HOST-side: a hero guest's projectile intent — the REAL arrow flies from the
+	// tracked body with clamped velocity/damage and a whitelisted flag set
+	ghostHeroShoot:(body,spec)=>{
+		const W=MM.weapons;
+		if(!W || !W.spawnHeroProjectile) return false;
+		return !!W.spawnHeroProjectile(body,spec);
 	},
 	ghostHeroRefund:(tid)=>{
 		const def=RESOURCE_DEFS.find(r=>r.tile && T[r.tile]===(Number(tid)|0));
@@ -16524,9 +16549,8 @@ updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING
 // systems step here — the world (water, fire, creatures, machines, seasons) is
 // simulated by the HOST and replicated over the ghost stream. One explicit list,
 // so the split between "my hero" and "the shared world" stays auditable at a
-// glance; every world WRITE the hero systems could make is either routed through
-// the intent chokepoints (breakMinedTile/tryPlace) or given this no-op setTile.
-const ghostHeroNoopSetTile=()=>false;
+// glance; every world WRITE the hero systems could make is routed through
+// the intent chokepoints (breakMinedTile/tryPlace/pushArrow).
 function runHeroStep(dt,ts){
 	if(updateDeathTravelFx(dt)){ updateParticles(dt); updateBlink(ts); return; }
 	physics(dt); if(player.atkCd>0) player.atkCd-=dt;
@@ -16535,7 +16559,11 @@ function runHeroStep(dt,ts){
 		const aim=(weaponPointerId!=null && lastPointer.has && !fireBtnHeld)? screenToWorld(lastPointer.x,lastPointer.y) : {x:player.x+player.facing*5, y:player.y-0.4};
 		WEAPONS.fireHeld(player, aim.x, aim.y, dt);
 	}
-	if(WEAPONS && WEAPONS.update) WEAPONS.update(dt, getTile, ghostHeroNoopSetTile);
+	// projectiles are HOST-flown (the pushArrow chokepoint forwards fire intents;
+	// the wfx stream replaces the arrows array wholesale) — stepping them with
+	// the REAL update here would run impact chains on replica arrows and forward
+	// spurious damage for shots the guest never fired
+	if(WEAPONS && WEAPONS.ghostStepFx) WEAPONS.ghostStepFx(dt);
 	updateMining(dt);
 	updateHeroEnergy(dt); updateHeroLamp(dt); updateSpecialVision(dt); updateTreasureCompass(dt);
 	updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);

@@ -714,6 +714,11 @@ import { damageBlastCreatures } from './explosion_damage.js';
     return {dx:v.dx*ca - v.dy*sa, dy:v.dx*sa + v.dy*ca};
   }
   function pushArrow(a){
+    // hero-mode guest: a locally fired projectile becomes an INTENT — the HOST
+    // flies the real arrow (its physics, wind, elements) and streams it back on
+    // the wfx plane; a local copy would be wiped by the next fx packet anyway
+    // (ghostApplyFx replaces the arrows array wholesale)
+    if(typeof MM!=='undefined' && MM.ghostHeroIntents && MM.ghostHeroIntents.shoot){ MM.ghostHeroIntents.shoot(a); return; }
     let moving=0;
     for(const existing of arrows) if(existing && !existing.embeddedMob) moving++;
     let evict=-1;
@@ -3706,6 +3711,28 @@ import { damageBlastCreatures } from './explosion_damage.js';
     try{ if(MM.audio && MM.audio.play) MM.audio.play('bow',{x:body.x,y:body.y}); }catch(e){}
     return true;
   }
+  // HOST-side resolver for a hero guest's projectile intent: velocity capped,
+  // damage clamped, flag whitelist — then the REAL arrow flies, coop-attributed
+  // (no host ult, no chests, no glass — same contract as spawnCoopArrow).
+  function spawnHeroProjectile(body, spec){
+    if(!body || !Number.isFinite(body.x) || !Number.isFinite(body.y)) return false;
+    spec=spec||{};
+    let vx=Number(spec.vx)||0, vy=Number(spec.vy)||0;
+    const sp=Math.hypot(vx,vy);
+    if(!(sp>0.5)) return false;
+    const cap=Math.min(26,sp); vx=vx/sp*cap; vy=vy/sp*cap;
+    pushArrow({
+      x:body.x+(vx/cap)*0.7, y:body.y-0.15+(vy/cap)*0.7,
+      vx, vy,
+      dmg:Math.max(1,Math.min(45,Math.round(Number(spec.dmg)||1))),
+      life:ARROW_LIFE*0.85, stuck:false, stuckT:ARROW_STUCK,
+      tier:'wood', color:'#caa472', headColor:'#dfe6f1',
+      recoverable:false, coopOwner:true, windCap:cap*1.35,
+      fire:!!spec.fire, snowball:!!spec.snowball, rock:!!spec.rock, thrown:!!spec.thrown, harpoon:!!spec.harpoon
+    });
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('bow',{x:body.x,y:body.y}); }catch(e){}
+    return true;
+  }
   function ghostFxState(){
     const st={};
     if(swing.t>0) st.sw=[+swing.t.toFixed(3), swing.tx, swing.ty, swing.dir, +swing.dur.toFixed(3), swing.form, +clamp01(swing.charge).toFixed(2)];
@@ -3830,7 +3857,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     }
   }
   MM.weapons={fireHeld,releaseHeld,cancelHeld,fireUlt,update,draw,drawHeld,drawWorldLight,drawHeroReflection,lightSource:weaponLightSource,notifyMeleeSwing,reset,explodeAt,spawnGasCloud,spawnExternalStream,
-    coopMeleeAt,spawnCoopArrow,
+    coopMeleeAt,spawnCoopArrow,spawnHeroProjectile,
     ghostFxState,ghostApplyFx,ghostStepFx,
     arrowInfo,setArrowPref,fuelInfo,thrownInfo,hudStatus,addUltCharge,
     metrics:()=>({arrows:arrows.length,arrowFragments:arrowFragments.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),harpoonAmmo:resourceCount('harpoonBolt'),ultCharge,bowCharge:bowChargeStatus(),spearCharge:spearChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),

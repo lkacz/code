@@ -144,6 +144,17 @@ const ghostClient = (function(){
 			if(state !== 'live' || !conn) return false;
 			conn.send({ t: 'hact', a: 'use', x: Math.floor(tx), y: Math.floor(ty) });
 			return true;
+		},
+		// a locally fired projectile (the pushArrow chokepoint) — velocity, damage
+		// and a flag whitelist travel; the host clamps everything and flies the
+		// REAL arrow from its tracked body
+		shoot(a){
+			if(state !== 'live' || !conn || !a) return false;
+			conn.send({ t: 'hact', a: 'shoot',
+				vx: +(Number(a.vx) || 0).toFixed(2), vy: +(Number(a.vy) || 0).toFixed(2),
+				n: Math.max(1, Math.min(45, Math.round(Number(a.dmg) || 1))),
+				f2: a.fire ? 1 : 0, sb: a.snowball ? 1 : 0, rk: a.rock ? 1 : 0, th: a.thrown ? 1 : 0, hp2: a.harpoon ? 1 : 0 });
+			return true;
 		}
 	};
 	// Replica damage entries, wrapped while embodied as a hero: the local call
@@ -480,6 +491,11 @@ const ghostClient = (function(){
 					bridge.msg('🧱 Gospodarz odrzucił postawienie (' + (pl.reason || '?') + ') — surowiec wraca');
 				}
 				else if(pl.a === 'mine' && !pl.ok && pl.reason === 'chest') bridge.msg('🎁 Skrzynię otwórz kliknięciem — nie kilofem');
+				else if(pl.a === 'pickup' && pl.ok && pl.item){
+					// gear travels as the item object — grantItem SANITIZES it again
+					// (a hostile host must not smuggle a poisoned item into the bag)
+					try{ if(MMR && MMR.inventory && MMR.inventory.grantItem && MMR.inventory.grantItem(pl.item)) bridge.msg('🎒 Podniesiono przedmiot!'); }catch(e){ /* fine */ }
+				}
 				else if(pl.a === 'pickup' && pl.ok && pl.key){ try{ if(bridge.ghostHeroGain) bridge.ghostHeroGain(pl.key, pl.qty || 1); }catch(e){ /* fine */ } }
 			}
 			return;
