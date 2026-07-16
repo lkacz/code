@@ -166,15 +166,25 @@ guest ult (per-body charge + UI), spears/streams/electric/thrown for guests,
 arrow-kill deed credit (only melee hits pay today, ranged kills pay nothing),
 knockback from guest blows uses the chain defaults, weapon durability.
 
-### Wave C — Guest crafting, inventory & gear
-- Craft from the guest's own pouch, equip its own gear. Reuse the assistant
-  workbench pattern (`ghostAssistState` streams a recipe catalogue + a persistent
-  panel skeleton) but bound to the guest pouch, not the host inventory.
-- Decide **persistence** and pin the decision: per-`gid` sub-save in the host's
-  world save vs explicitly ephemeral sessions. (The viewer-progression precedent:
-  forgeable client-held state may be a reward, never an authority — if guest gear
-  persists client-side it must be display-only; authoritative persistence belongs
-  in the host's save.)
+### Wave C — Guest crafting, inventory & gear — ✅ DONE (2026-07-16)
+Shipped: `NET.PLAY_RECIPES` (arrows ×10 from wood+stone; the spear — the first
+EARNED weapon, reach 3) with pure `pouchAfford`/`pouchSpend` (all-or-nothing,
+zero-cost-safe). The `craft` intent mutates only host-owned body state (pouch →
+pouch/arsenal): recipe whitelist, owned-weapon dedup, atomic spend, `craft` deed,
+`#gbCraft` chips client-side (affordability display-only). **Persistence decision
+(pinned):** authoritative body state (pouch + earned arsenal) lives in HOST-side
+storage (`mm_ghost_bodies_v1`, 24 entries / 7-day TTL) keyed by the guest's stable
+self-claimed gid; the client holds only the key (`mm_ghost_gid_v1`, allowlisted).
+Restore treats disk as hostile input (re-clamped counts, whitelist-filtered
+weapons, kept pouch REPLACES the starter quiver so rejoining farms nothing).
+Banked on: craft, demote, connection drop, reap tick, session stop. The gid is
+tab-first (sessionStorage) with a heartbeat **lease** on the browser-stable base —
+a second tab mints its own gid instead of booting the first via newest-wins (a
+real collision QA caught live). No storage → explicitly ephemeral. QA scene 10l.
+**Consciously deferred:** the full assistant-workbench-style catalogue panel
+(curated chips shipped instead — the recipe surface is 2 entries; revisit when the
+arsenal grows), gid impersonation surface accepted (a self-claimed key guards
+convenience state only; embodiment itself stays hand-granted by the host).
 
 ### Wave D — Guest survival systems (host-owned, per body)
 Energy, hunger (`survival.js`), temperature, drowning, fall damage, status effects

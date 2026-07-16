@@ -24,9 +24,10 @@ if(WATCH && MMR){
 	// every localStorage write except the ghost's own display name, so watching
 	// a friend can never contaminate this browser's single-player state.
 	try{
-		// (the ghost's OWN profile is on this list: name, avatar and career — the
-		// career is what makes progression survive a reload and a fresh invite link)
-		const allow = new Set(['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET.PROG_KEY]);
+		// (the ghost's OWN profile is on this list: name, avatar, career and stable
+		// gid — career + gid are what make progression AND the host-kept body pouch
+		// survive a reload and a fresh invite link)
+		const allow = new Set(['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET.PROG_KEY, NET.GID_KEY, NET.GID_LEASE_KEY]);
 		const origSet = Storage.prototype.setItem;
 		const origRemove = Storage.prototype.removeItem;
 		Storage.prototype.setItem = function(k, v){
@@ -48,7 +49,38 @@ const ghostClient = (function(){
 	let conn = null;
 	let state = 'idle'; // connect -> sync -> live | ended
 	let hostName = null;
-	const gid = 'g' + Math.random().toString(36).slice(2, 10);
+	// The gid is STABLE across reloads (persisted like the career): the same spirit
+	// returns to its progression, its ban standing and — when embodied — the pouch
+	// and arsenal the host kept for it. Self-claimed like the display name: never an
+	// authority, only the key the host may hang HOST-side state on. Tab identity
+	// first (sessionStorage survives a reload but never leaks into a second tab),
+	// then the browser-stable base — adopted only when no LIVE tab holds its lease,
+	// because two tabs sharing one gid would boot each other via newest-wins.
+	const gidMint = () => 'g' + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 6);
+	const gid = (() => {
+		if(!WATCH) return gidMint(); // host pages import this module too — leave their storage alone
+		const shape = /^g[a-z0-9]{8,14}$/;
+		try{
+			const tab = sessionStorage.getItem(NET.GID_KEY);
+			if(typeof tab === 'string' && shape.test(tab)) return tab;
+			let base = localStorage.getItem(NET.GID_KEY);
+			if(typeof base !== 'string' || !shape.test(base)){ base = gidMint(); localStorage.setItem(NET.GID_KEY, base); }
+			let lease = null;
+			try{ lease = JSON.parse(localStorage.getItem(NET.GID_LEASE_KEY) || 'null'); }catch(e){ lease = null; }
+			const held = !!(lease && lease.gid === base && (Date.now() - (Number(lease.ts) || 0)) < NET.GID_LEASE_MS);
+			const mine = held ? gidMint() : base; // a sibling tab holds the base identity
+			sessionStorage.setItem(NET.GID_KEY, mine);
+			return mine;
+		}catch(e){ return gidMint(); }
+	})();
+	if(WATCH && typeof window !== 'undefined'){
+		// the base-identity owner keeps its lease warm; sibling tabs never write it
+		const heartbeatGidLease = () => {
+			try{ if(localStorage.getItem(NET.GID_KEY) === gid) localStorage.setItem(NET.GID_LEASE_KEY, JSON.stringify({ gid, ts: Date.now() })); }catch(e){ /* fine */ }
+		};
+		heartbeatGidLease();
+		setInterval(heartbeatGidLease, 3000);
+	}
 	const assembler = NET.createAssembler();
 	const queue = [];
 	const heroTarget = { has: false, x: 0, y: 0, vx: 0, vy: 0, at: 0 };
@@ -1178,6 +1210,7 @@ const ghostClient = (function(){
 			+ '<button class="gbPower" data-kind="frost">❄️ Mróz</button>'
 			+ '<button class="gbPower" data-kind="smite">⚡ Grom</button>'
 			+ '<span id="gbArms" style="display:none;align-items:center;gap:3px;"></span>'
+			+ '<span id="gbCraft" style="display:none;align-items:center;gap:3px;"></span>'
 			+ '<span id="gbPouch" style="display:none;align-items:center;gap:3px;flex-wrap:wrap;"></span>'
 			+ '<button id="gbPing">📍 Wskaż</button>'
 			+ '<button id="gbAssist" style="display:none;">🛠 Asystent</button>'
@@ -1243,6 +1276,30 @@ const ghostClient = (function(){
 			box.appendChild(chip);
 		}
 	}
+	// Craft chips: curated guest recipes (NET.PLAY_RECIPES). A chip only SENDS the
+	// intent — costs are checked and spent host-side against the host-owned pouch,
+	// so a rigged client can click all it wants and forge nothing.
+	function renderCraft(){
+		if(!bar) return;
+		const box = bar.querySelector('#gbCraft');
+		if(!box) return;
+		box.style.display = play.on ? 'inline-flex' : 'none';
+		box.textContent = '';
+		if(!play.on) return;
+		for(const key of Object.keys(NET.PLAY_RECIPES)){
+			const r = NET.PLAY_RECIPES[key];
+			if(r.weapon && play.weapons.includes(r.weapon)) continue; // already earned
+			const afford = NET.pouchAfford(play.pouch, r.cost); // display-only mirror of the host check
+			const chip = document.createElement('button');
+			chip.style.cssText = 'border:1px dashed ' + (afford ? '#9be89b' : 'rgba(255,255,255,.18)') + ';border-radius:999px;'
+				+ 'background:rgba(255,255,255,.06);color:' + (afford ? '#d9f7d9' : '#8195aa') + ';padding:3px 8px;font-size:10px;font-weight:700;white-space:nowrap;';
+			chip.textContent = '🛠 ' + r.icon + ' ' + r.label;
+			chip.title = 'Koszt: ' + Object.keys(r.cost).map(k => r.cost[k] + '× ' + (bridge.resourceLabel ? bridge.resourceLabel(k) : k)).join(', ')
+				+ (afford ? ' — kliknij, by wykuć' : ' — brakuje surowców w sakwie');
+			chip.addEventListener('click', () => { noteInput(); sendPlayAct('craft', 0, 0, key); });
+			box.appendChild(chip);
+		}
+	}
 	// Pouch chips: the guest's host-owned resources, click to arm one for building.
 	function renderPouch(){
 		if(!bar) return;
@@ -1291,6 +1348,7 @@ const ghostClient = (function(){
 		const t = nowMs();
 		renderPouch();
 		renderArms();
+		renderCraft();
 		// in embodiment the bar is a PLAYER hud (pouch + hands), so the spectator
 		// influence controls (blessings, powers) step aside to reduce clutter
 		const spectatorControls = !play.on;
@@ -1617,6 +1675,7 @@ const ghostClient = (function(){
 		_playAct: (a, x, y, key) => sendPlayAct(a, x, y, key),
 		_playSelect: (key) => { play.sel = key; renderPouch(); },
 		_playArm: (key) => { play.arm = key; renderArms(); },
+		_playCraft: (key) => sendPlayAct('craft', 0, 0, key),
 		// QA: deterministically halt the embodied hero (clears held keys + velocity).
 		// Synthetic keyup events do not reliably clear `held` under headless CDP.
 		_playStop: () => { held.clear(); if(play.on && bridge && bridge.player){ bridge.player.vx = 0; } },

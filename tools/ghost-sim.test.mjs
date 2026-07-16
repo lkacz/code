@@ -186,7 +186,7 @@ assert.ok(NET.modeAllows('chat', 'chat') && !NET.modeAllows('chat', 'full'), 'ch
 assert.ok(!NET.modeAllows('watch', 'chat') && !NET.modeAllows('bogus', 'watch'), 'watch is the floor, garbage denies');
 
 // --- play mode: the embodied guest (full multiplayer) ---------------------------------
-assert.deepEqual(NET.PLAY_ACTIONS, ['mine', 'place', 'strike', 'attack'], 'a player mines, builds and fights — nothing that bypasses the host');
+assert.deepEqual(NET.PLAY_ACTIONS, ['mine', 'place', 'strike', 'attack', 'craft'], 'a player mines, builds, fights and crafts — nothing that bypasses the host');
 assert.ok(NET.validPlayAction('mine') && !NET.validPlayAction('setTile') && !NET.validPlayAction('teleport'), 'play actions validate');
 assert.ok(NET.PLAY_RULES.REACH > 0 && NET.PLAY_RULES.MAX_HP > 0 && NET.PLAY_RULES.MINE_TICKS >= 1, 'play rules are sane');
 // --- the guest arsenal: host-owned whitelist, host-side resolution --------------------
@@ -208,6 +208,25 @@ assert.ok(NET.PLAY_STARTER_AMMO.arrowWood > 0 && NET.PLAY_WEAPONS.bow.ammo === '
 	assert.equal(NET.playAimDir(10, 10, NaN, 5), null, 'garbage aim is rejected');
 	assert.equal(NET.playAimDir(NaN, 10, 14, 7), null, 'garbage body coords are rejected');
 }
+// --- guest crafting: pouch → pouch/arsenal, checked and spent host-side ----------------
+assert.ok(NET.validPlayRecipe('arrows') && NET.validPlayRecipe('spear'), 'the two starter recipes exist');
+assert.ok(!NET.validPlayRecipe('nuke') && !NET.validPlayRecipe('__proto__') && !NET.validPlayRecipe(7), 'unknown/prototype/garbage recipes rejected');
+assert.ok(NET.PLAY_WEAPONS.spear && !NET.PLAY_STARTER_WEAPONS.includes('spear') && NET.PLAY_RECIPES.spear.weapon === 'spear',
+	'the spear exists in the arsenal but is EARNED by crafting, never granted');
+assert.ok(NET.PLAY_RECIPES.arrows.gives.arrowWood > 0, 'the arrow recipe refills the bow ammo');
+{
+	const pouch = { wood: 8, stone: 5 };
+	assert.ok(NET.pouchAfford(pouch, NET.PLAY_RECIPES.arrows.cost), 'costs are affordable when the pouch holds them');
+	assert.ok(!NET.pouchAfford({ wood: 99 }, NET.PLAY_RECIPES.arrows.cost), 'a missing ingredient denies');
+	assert.ok(NET.pouchSpend(pouch, NET.PLAY_RECIPES.spear.cost), 'an affordable spend succeeds');
+	assert.deepEqual(pouch, { wood: 2, stone: 1 }, 'exactly the cost left the pouch');
+	assert.ok(!NET.pouchSpend(pouch, NET.PLAY_RECIPES.spear.cost), 'a second spear is not affordable');
+	assert.deepEqual(pouch, { wood: 2, stone: 1 }, 'a refused spend takes NOTHING (all-or-nothing)');
+	const zc = { wood: 3 };
+	assert.ok(NET.pouchSpend(zc, { wood: 2, stone: 0 }), 'a zero-cost ingredient is legal');
+	assert.deepEqual(zc, { wood: 1 }, 'and charges nothing (pouchTake floors to 1 — the guard matters)');
+}
+assert.equal(NET.GID_KEY, 'mm_ghost_gid_v1', 'the stable-gid storage key is pinned');
 // reach is Chebyshev around the BODY, and it is the host that measures it
 assert.ok(NET.playReachOk(10, 10, 12, 8, 5) && !NET.playReachOk(10, 10, 17, 10, 5), 'reach gate: inside vs beyond');
 assert.ok(!NET.playReachOk(NaN, 10, 12, 8, 5), 'garbage body coords deny the reach');
@@ -406,9 +425,9 @@ assert.ok(/function notifyTileChanged\(x,y,old,v\)\{\s*try\{ if\(MM\.ghostHostTi
 const clientSrc = readFileSync(new URL('../src/engine/ghost_client.js', import.meta.url), 'utf8');
 assert.ok(/MMR\.ghostMode = true;/.test(clientSrc), 'client stamps MM.ghostMode at import time');
 assert.ok(/NET\.parseWatch\(location\.search\)/.test(clientSrc), 'watch param comes from the URL');
-assert.ok(!/localStorage\.setItem\((?!'mm_ghost_(name|avatar)_v1'|NET\.PROG_KEY)/.test(clientSrc),
-	'client persists nothing but its display name, avatar and own career');
-assert.ok(/Storage\.prototype\.setItem = function/.test(clientSrc) && /allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY\]\)/.test(clientSrc),
+assert.ok(!/localStorage\.setItem\((?!'mm_ghost_(name|avatar)_v1'|NET\.PROG_KEY|NET\.GID_KEY|NET\.GID_LEASE_KEY)/.test(clientSrc),
+	'client persists nothing but its display name, avatar, own career and stable gid (+lease)');
+assert.ok(/Storage\.prototype\.setItem = function/.test(clientSrc) && /allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY, NET\.GID_KEY, NET\.GID_LEASE_KEY\]\)/.test(clientSrc),
 	'ghost mode locks down ALL localStorage writes (side stores like dynamic loot must not leak into the watcher’s own world)');
 // hardening pins (post-review): hostile hosts, transport races, throttling floods
 assert.ok(/function esc\(s\)/.test(clientSrc) && /esc\(hostName\)/.test(clientSrc),
@@ -694,7 +713,7 @@ for(const gate of authorityGates){
 assert.ok(/entry\.level = Math\.max\(1, Math\.min\(NET\.PROG\.MAX_LEVEL, Math\.floor\(pl\.lvl\)\)\)/.test(hostSrc),
 	'the claimed level is clamped and used for display only');
 // client: persists in the WATCHER's own browser — that is what survives a reload
-assert.ok(/allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY\]\)/.test(clientSrc),
+assert.ok(/allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY, NET\.GID_KEY, NET\.GID_LEASE_KEY\]\)/.test(clientSrc),
 	'the ghost profile is on the storage allowlist (the lockdown would otherwise silently drop it)');
 assert.ok(/localStorage\.setItem\(NET\.PROG_KEY, JSON\.stringify\(prog\)\)/.test(clientSrc) && /function loadProgress\(\)/.test(clientSrc),
 	'the career is written to and read from the watcher’s own localStorage');
@@ -1088,6 +1107,56 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	assert.ok(/play\.weapons = Array\.isArray\(pl\.weapons\)/.test(clientSrc) && /function renderArms\(\)/.test(clientSrc),
 		'the arsenal chips render from host-streamed pvit truth');
 	assert.ok(/_playArm: \(key\) => \{ play\.arm = key; renderArms\(\); \}/.test(clientSrc), 'the QA arm seam exists');
+}
+
+// --- Wave C: guest crafting + host-kept persistence -------------------------------------------------
+// A guest crafts from ITS OWN pouch into its own pouch/arsenal — the host inventory
+// is never touched, costs are spent atomically host-side. PERSISTENCE DECISION
+// (pinned): authoritative body state (pouch + earned arsenal) lives in HOST-side
+// storage keyed by the guest's stable, self-claimed gid; the client holds only the
+// key. No storage → sessions are explicitly ephemeral. Disk is read as hostile
+// input even on the host's own machine (the normalizeProgress rule).
+{
+	// stable identity: tab-first (sessionStorage survives a reload, never leaks into
+	// a sibling tab), then the browser base gid gated by a live-tab lease — two tabs
+	// sharing one gid would boot each other through the host's newest-wins rule
+	assert.ok(/const tab = sessionStorage\.getItem\(NET\.GID_KEY\);/.test(clientSrc) && /\^g\[a-z0-9\]\{8,14\}\$/.test(clientSrc),
+		'the client gid is tab-stable across reloads and validated against its own shape');
+	assert.ok(/const held = !!\(lease && lease\.gid === base && \(Date\.now\(\) - \(Number\(lease\.ts\) \|\| 0\)\) < NET\.GID_LEASE_MS\);/.test(clientSrc)
+		&& /const mine = held \? gidMint\(\) : base;/.test(clientSrc),
+		'a sibling tab holding the base identity forces a fresh gid (no self-boot collision)');
+	assert.ok(/if\(!WATCH\) return gidMint\(\);/.test(clientSrc), 'host pages never write the ghost identity keys');
+	assert.ok(/localStorage\.getItem\(NET\.GID_KEY\) === gid\) localStorage\.setItem\(NET\.GID_LEASE_KEY/.test(clientSrc),
+		'only the base-identity owner heartbeats the lease');
+	assert.ok(/catch\(e\)\{ return gidMint\(\); \}/.test(clientSrc),
+		'no storage → a session-scoped gid (ephemeral is a feature, not a crash)');
+	// the craft intent: recipe whitelist, owned-weapon dedup, atomic pouch spend
+	assert.ok(/pl\.a === 'craft'/.test(hostSrc) && /NET\.validPlayRecipe\(key\) \? NET\.PLAY_RECIPES\[key\] : null;/.test(hostSrc),
+		'craft intents resolve only against the curated recipe whitelist');
+	assert.ok(/if\(r\.weapon && Array\.isArray\(b\.weapons\) && b\.weapons\.includes\(r\.weapon\)\)/.test(hostSrc),
+		'an already-earned weapon cannot be crafted twice');
+	assert.ok(/if\(!NET\.pouchSpend\(b\.pouch, r\.cost\)\)/.test(hostSrc) && /reason: 'cost', key \}\); return; \}/.test(hostSrc),
+		'costs are checked and spent atomically against the HOST-owned pouch');
+	assert.ok(/sendDeed\(entry, 'craft', 1\);/.test(hostSrc), 'a craft pays the guest its own career XP');
+	// persistence: host-side store, hostile-input restore, banked at every exit
+	assert.ok(/const BODY_KEEP_KEY = 'mm_ghost_bodies_v1';/.test(hostSrc), 'the host-side body store key is pinned');
+	assert.ok(/restoreBodyFor\(entry\.gid, entry\.body\);/.test(hostSrc), 'a returning gid gets its kept body back on spawn');
+	assert.ok(/body\.pouch = \{\};[\s\S]{0,300}NET\.pouchAdd\(body\.pouch, k, n\);/.test(hostSrc),
+		'the kept pouch REPLACES the starter pouch (no rejoin ammo farming) and re-clamps every count');
+	assert.ok(/if\(NET\.validPlayWeapon\(k\) && !body\.weapons\.includes\(k\)\) body\.weapons\.push\(k\);/.test(hostSrc),
+		'kept weapons pass the arsenal whitelist again on restore (disk is hostile input)');
+	assert.ok(/function despawnBody\(s, entry\)\{\s*\n\s*if\(!entry\.body\) return;\s*\n\s*keepBody\(entry\);/.test(hostSrc),
+		'demote/leave banks the body');
+	assert.ok(/if\(entry\.body\) keepBody\(entry\); \/\/ a vanished player/.test(hostSrc), 'a dropped connection banks the body');
+	assert.ok(/keepAllBodies\(s\); \/\/ slow-cadence flush/.test(hostSrc) && /keepAllBodies\(session\); \/\/ ending the stream/.test(hostSrc),
+		'the reap tick and session stop both flush every live body');
+	assert.ok(/keepBody\(entry\); \/\/ earned gear is banked the moment it exists/.test(hostSrc), 'a successful craft banks immediately');
+	// client: chips only SEND the intent; affordability is a display-only mirror
+	assert.ok(/function renderCraft\(\)/.test(clientSrc) && /sendPlayAct\('craft', 0, 0, key\);/.test(clientSrc),
+		'craft chips exist and only point at a recipe');
+	assert.ok(/const afford = NET\.pouchAfford\(play\.pouch, r\.cost\); \/\/ display-only mirror/.test(clientSrc),
+		'client-side affordability is cosmetic — the host re-checks');
+	assert.ok(/_playCraft: \(key\) => sendPlayAct\('craft', 0, 0, key\),/.test(clientSrc), 'the QA craft seam exists');
 }
 
 console.log('ghost-sim: all assertions passed');

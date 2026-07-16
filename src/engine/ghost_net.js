@@ -81,9 +81,19 @@ export const PLAY_RULES = {
 	RESPAWN_MS: 6000,
 	POUCH_CAP: 999,   // per-resource ceiling in the host-owned pouch
 	ATTACK_MS: 240,   // global per-body floor between weapon intents (per-weapon cd stacks on top)
-	MINE_TICKS_MAX: 12 // hardness-derived tick need is clamped into [1, this]
+	MINE_TICKS_MAX: 12, // hardness-derived tick need is clamped into [1, this]
+	CRAFT_MS: 400     // per-body floor between craft intents
 };
-export const PLAY_ACTIONS = ['mine', 'place', 'strike', 'attack'];
+// The guest's stable identity key (persisted in the GUEST browser, on the storage
+// lockdown allowlist). Self-claimed like the display name — never an authority,
+// only the key the host may hang HOST-side state on (kept pouch/arsenal, bans).
+// The lease marks the base identity as held by a LIVE tab: a second tab in the
+// same browser mints its own gid instead of colliding (the host's newest-wins
+// reconnect rule would otherwise boot the first tab).
+export const GID_KEY = 'mm_ghost_gid_v1';
+export const GID_LEASE_KEY = 'mm_ghost_gid_lease_v1';
+export const GID_LEASE_MS = 8000;
+export const PLAY_ACTIONS = ['mine', 'place', 'strike', 'attack', 'craft'];
 export function validPlayAction(a){ return PLAY_ACTIONS.includes(a); }
 // --- the guest arsenal -------------------------------------------------------------
 // Curated starter templates, resolved HOST-side through the real combat chains
@@ -93,14 +103,44 @@ export function validPlayAction(a){ return PLAY_ACTIONS.includes(a); }
 // from the host-owned pouch. Real acquired gear arrives with the crafting wave;
 // the combat plumbing (this table, the intent shape, body attribution) is final.
 export const PLAY_WEAPONS = {
-	fists: { melee: true,  label: 'Pięści', icon: '👊', dmg: 0, reach: 2, cdMs: 450 },
-	sword: { melee: true,  label: 'Miecz',  icon: '🗡️', dmg: 6, reach: 2, cdMs: 550 },
-	bow:   { melee: false, label: 'Łuk',    icon: '🏹', dmg: 6, cdMs: 750, ammo: 'arrowWood', speed: 15 }
+	fists: { melee: true,  label: 'Pięści',   icon: '👊', dmg: 0, reach: 2, cdMs: 450 },
+	sword: { melee: true,  label: 'Miecz',    icon: '🗡️', dmg: 6, reach: 2, cdMs: 550 },
+	bow:   { melee: false, label: 'Łuk',      icon: '🏹', dmg: 6, cdMs: 750, ammo: 'arrowWood', speed: 15 },
+	spear: { melee: true,  label: 'Włócznia', icon: '🔱', dmg: 5, reach: 3, cdMs: 650 } // crafted, not starter
 };
 export const PLAY_STARTER_WEAPONS = ['fists', 'sword', 'bow'];
 export const PLAY_STARTER_AMMO = { arrowWood: 40 };
 export function validPlayWeapon(k){
 	return typeof k === 'string' && Object.prototype.hasOwnProperty.call(PLAY_WEAPONS, k) && k !== '__proto__';
+}
+// --- guest crafting ----------------------------------------------------------------
+// A guest crafts from ITS OWN pouch into its own pouch/arsenal — the host inventory
+// is never touched. Recipes are curated like the arsenal (Wave C of the co-op plan):
+// ammo keeps the bow alive without farming rejoin-resets, the spear is the first
+// piece of gear a guest EARNS. Costs are checked and spent host-side, atomically.
+export const PLAY_RECIPES = {
+	arrows: { label: 'Strzały ×10', icon: '🏹', cost: { wood: 2, stone: 1 }, gives: { arrowWood: 10 } },
+	spear:  { label: 'Włócznia',    icon: '🔱', cost: { wood: 6, stone: 4 }, weapon: 'spear' }
+};
+export function validPlayRecipe(k){
+	return typeof k === 'string' && Object.prototype.hasOwnProperty.call(PLAY_RECIPES, k) && k !== '__proto__';
+}
+export function pouchAfford(pouch, cost){
+	if(!pouch || !cost || typeof cost !== 'object') return false;
+	for(const k of Object.keys(cost)){
+		if((Number(pouch[k]) || 0) < (Number(cost[k]) || 0)) return false;
+	}
+	return true;
+}
+// All-or-nothing: a partial spend would let a race between two intents strip the
+// pouch below zero on one leg and still deliver the goods on the other.
+export function pouchSpend(pouch, cost){
+	if(!pouchAfford(pouch, cost)) return false;
+	for(const k of Object.keys(cost)){
+		const n = Number(cost[k]) || 0;
+		if(n > 0) pouchTake(pouch, k, n); // pouchTake floors to 1 — a zero cost must not charge
+	}
+	return true;
 }
 // Normalized aim direction from the body to a claimed world point — null when the
 // claim is degenerate (non-finite, or on top of the body). The HOST derives every
@@ -893,6 +933,7 @@ const api = {
 	SOCIAL_RULES, socialBoosts, PERMISSION_MODES, validPermissionMode, modeAllows, AVATARS, validAvatar, CHAT, filterChat,
 	PLAY_RULES, PLAY_ACTIONS, validPlayAction, playReachOk, clampBodyStep, pouchAdd, pouchTake,
 	PLAY_WEAPONS, PLAY_STARTER_WEAPONS, PLAY_STARTER_AMMO, validPlayWeapon, playAimDir,
+	GID_KEY, GID_LEASE_KEY, GID_LEASE_MS, PLAY_RECIPES, validPlayRecipe, pouchAfford, pouchSpend,
 	SPIRIT_AVOID, spiritLift, PING,
 	DREAD, dreadAt, POWER_RULES, POWER_CHARGE, validPowerKind, chargeAfter, ASSIST_ACTIONS, validAssistAction,
 	ASSIST_LIMITS, clampCraftCount, createAssistQueue,

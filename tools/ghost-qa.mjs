@@ -1127,6 +1127,78 @@ async function main(){
 		if(tilesAfter !== wb.tiles) throw new Error('guest weapons edited the world: tiles ' + wb.tiles + ' → ' + tilesAfter);
 		await host.eval(`MM.mobs.clearAll && MM.mobs.clearAll();`);
 		console.log('play bow: ok (' + bowT.prey + ' hp ' + bowT.hp0 + '→' + bowHp.toFixed(1) + ', arrows ' + arms.arrows + '→' + arrowsLeft + ', zero tiles touched, unknown weapon refused)');
+		// --- Scene 10l: Wave C — guest crafting + host-kept persistence --------------------------------
+		// The gid is stable (client-persisted like the career), and the HOST banks each
+		// body's pouch + earned arsenal under it. Demote → inject a provisioned snapshot
+		// host-side → re-promote: the guest returns to the injected pouch (NOT a fresh
+		// starter quiver), crafts arrows and a spear from it, fights with the spear, and
+		// the earned arsenal survives another demote/promote round-trip.
+		const gidStable = await ghost.eval(`localStorage.getItem('mm_ghost_gid_v1')`);
+		if(gidStable !== gidPlay) throw new Error('the guest gid is not the persisted one: ' + gidStable + ' vs ' + gidPlay);
+		await host.eval(`MM.ghostHost.setViewerMode('${gidPlay}', 'full')`);
+		await host.poll(`MM.ghostHost.metrics().players`, v => v === 0, 'body despawns before the store injection', 40, 250);
+		await host.eval(`(()=>{
+			const store = JSON.parse(localStorage.getItem('mm_ghost_bodies_v1') || '{}');
+			store['${gidPlay}'] = { pouch: { wood: 20, stone: 12, arrowWood: 3 }, weapons: ['fists', 'sword', 'bow'], ts: Date.now() };
+			localStorage.setItem('mm_ghost_bodies_v1', JSON.stringify(store));
+			return 1;
+		})()`);
+		await host.eval(`MM.ghostHost.setViewerMode('${gidPlay}', 'play')`);
+		await ghost.poll(`MM.ghostClient.metrics().play.spawned`, v => v === true, 'the body respawns for the returning gid', 40, 250);
+		await ghost.poll(`MM.ghostClient.metrics().play.pouch.arrowWood || 0`, v => v === 3, 'the kept pouch REPLACED the starter quiver (3 arrows, not 40)', 30, 250);
+		const kept = await ghost.eval(`(()=>{ const p=MM.ghostClient.metrics().play; return {wood:p.pouch.wood||0, stone:p.pouch.stone||0, weapons:p.weapons}; })()`);
+		if(!(kept.wood === 20 && kept.stone === 12)) throw new Error('the kept materials did not restore: ' + JSON.stringify(kept));
+		// craft arrows: pouch → pouch, atomically, host-side
+		await ghost.eval(`MM.ghostClient._playCraft('arrows')`);
+		await ghost.poll(`MM.ghostClient.metrics().play.pouch.arrowWood || 0`, v => v === 13, 'crafting refills the quiver (3 + 10)', 30, 250);
+		const afterArrows = await ghost.eval(`(()=>{ const p=MM.ghostClient.metrics().play.pouch; return {wood:p.wood||0, stone:p.stone||0}; })()`);
+		if(!(afterArrows.wood === 18 && afterArrows.stone === 11)) throw new Error('the arrow craft charged the wrong cost: ' + JSON.stringify(afterArrows));
+		// craft the spear: the arsenal GROWS host-side; a second spear is refused
+		await sleep(450); // clear the craft floor
+		await ghost.eval(`MM.ghostClient._playCraft('spear')`);
+		await ghost.poll(`MM.ghostClient.metrics().play.weapons.includes('spear') ? 1 : 0`, v => v === 1, 'the crafted spear joins the arsenal', 30, 250);
+		await sleep(450);
+		await ghost.eval(`MM.ghostClient._playCraft('spear')`);
+		await ghost.eval(`MM.ghostClient._playCraft('nuke')`);
+		await sleep(500);
+		const craftState = await host.eval(`(()=>({crafts:MM.ghostHost.metrics().stats.playCrafts}))()`);
+		if(craftState.crafts !== 2) throw new Error('duplicate/unknown recipes were not refused: crafts=' + craftState.crafts);
+		const armory = await ghost.eval(`MM.ghostClient.metrics().play.weapons`);
+		if(armory.filter(w => w === 'spear').length !== 1) throw new Error('the spear was earned twice: ' + JSON.stringify(armory));
+		// the earned spear FIGHTS (reach 3 — one tile farther than the sword)
+		const sp = await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies[0];
+			const floorRow=Math.ceil(b.y+0.46);
+			const SP=MM.mobs._debugSpecies();
+			const calm=Object.keys(SP).filter(id=>{ const s=SP[id]; return s && s.ground && !s.aquatic && !s.flying && !s.alwaysAggro && !(s.dmg>0) && (s.hp||0)>=8 && (s.hp||0)<=1000; })
+				.sort((a,b)=>SP[b].hp-SP[a].hp);
+			let prey=null;
+			for(const id of calm){ try{ if(MM.mobs.forceSpawn(id, {x:b.x+2.5, y:floorRow-1}, MM.world.getTile)){ prey=id; break; } }catch(e){} }
+			const m=prey ? MM.mobs.serialize().list.find(v=>v.id===prey) : null;
+			return {prey, hp0:m?m.hp:0};
+		})()`);
+		if(!sp.prey) throw new Error('setup: could not spawn a spear target');
+		let spearHp = sp.hp0;
+		for(let i = 0; i < 6 && !(spearHp < sp.hp0); i++){
+			const m = await readPrey(sp.prey);
+			if(!m) break;
+			spearHp = m.hp;
+			if(spearHp < sp.hp0) break;
+			await ghost.eval(`MM.ghostClient._playAct('attack', (${m.x}), (${m.y}), 'spear')`);
+			await sleep(800);
+		}
+		{ const m = await readPrey(sp.prey); if(m) spearHp = Math.min(spearHp, m.hp); }
+		if(!(spearHp < sp.hp0)) throw new Error('the crafted spear never landed on ' + sp.prey);
+		await host.eval(`MM.mobs.clearAll && MM.mobs.clearAll();`);
+		// round-trip: demote banks the body; the store holds the spear; re-promote returns it
+		await host.eval(`MM.ghostHost.setViewerMode('${gidPlay}', 'full')`);
+		await host.poll(`MM.ghostHost.metrics().players`, v => v === 0, 'demote banks the body', 40, 250);
+		const banked = await host.eval(`(()=>{ const s=JSON.parse(localStorage.getItem('mm_ghost_bodies_v1')||'{}')['${gidPlay}']; return s ? {weapons:s.weapons, wood:s.pouch.wood||0, stone:s.pouch.stone||0} : null; })()`);
+		if(!banked || !banked.weapons.includes('spear')) throw new Error('the earned spear was not banked host-side: ' + JSON.stringify(banked));
+		if(!(banked.wood === 12 && banked.stone === 7)) throw new Error('the banked pouch drifted: ' + JSON.stringify(banked));
+		await host.eval(`MM.ghostHost.setViewerMode('${gidPlay}', 'play')`);
+		await ghost.poll(`MM.ghostClient.metrics().play.weapons.includes('spear') ? 1 : 0`, v => v === 1, 'the returning gid gets its earned arsenal back', 40, 250);
+		console.log('play craft: ok (kept pouch restored, arrows +10, spear earned once, fought with it, survived the demote round-trip)');
 		// --- damage & death: a host-side hurt drains the guest hp; demote returns to spectator
 		await host.eval(`(()=>{ const s=MM.ghostHost; const gid='${gidPlay}'; MM.__qaHurt=()=>{}; return 1; })()`);
 		await ghost.shot('tools/ghost-qa-play.png');

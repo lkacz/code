@@ -80,7 +80,7 @@ const ghostHost = (function(){
 			lastHeroSent: null,
 			infraDirty: true,
 			prevRenderHook: null,
-			stats: { tileMsgs: 0, snapshots: 0, buffs: 0, chats: 0, powers: 0, assists: 0, pings: 0, playMines: 0, playPlaces: 0, playStrikes: 0 },
+			stats: { tileMsgs: 0, snapshots: 0, buffs: 0, chats: 0, powers: 0, assists: 0, pings: 0, playMines: 0, playPlaces: 0, playStrikes: 0, playCrafts: 0 },
 			pbWas: false,
 			hiddenGids: new Set(), // per-watcher mute: THIS host's display only, never the relay
 			actionFx: [], // visible feedback for watcher deeds: labels, rings, ping markers
@@ -116,6 +116,7 @@ const ghostHost = (function(){
 
 	function stop(){
 		if(!session) return;
+		keepAllBodies(session); // ending the stream banks every player's pouch first
 		broadcast({ t: 'hostGone' });
 		closeSayBox();
 		hostChat = null;
@@ -284,6 +285,7 @@ const ghostHost = (function(){
 	}
 	function dropPeer(s, entry, silent){
 		if(!s.peers.has(entry.peer)) return;
+		if(entry.body) keepBody(entry); // a vanished player's pouch survives its connection
 		s.peers.delete(entry.peer);
 		if(entry.hello) s.watchers = Math.max(0, s.watchers - 1);
 		try{ entry.peer.close(); }catch(e){ /* fine */ }
@@ -494,6 +496,7 @@ const ghostHost = (function(){
 		for(const entry of Array.from(s.peers.values())){
 			if(t - entry.lastSeen > 15000) dropPeer(s, entry, true);
 		}
+		keepAllBodies(s); // slow-cadence flush: mined loot survives even a host crash
 	}
 
 	// --- blessings -------------------------------------------------------------------
@@ -636,24 +639,79 @@ const ghostHost = (function(){
 	// inside a speed envelope), everything else host-authoritative: vitals, pouch,
 	// and every world edit go through the validated bridge seams. The ghost tiers
 	// below stay untouched — spectating remains the default door.
+	// --- body persistence: the host's save is the ONLY authority --------------------
+	// A returning guest (stable client gid) gets its pouch and earned arsenal back
+	// from HOST-side storage. The gid is a self-claimed key — the contents were
+	// written by this host and are still treated as hostile input on read (clamped
+	// counts, whitelisted weapons), because disk is disk (normalizeProgress rule).
+	// Ephemeral fallback: no storage → sessions simply start fresh.
+	const BODY_KEEP_KEY = 'mm_ghost_bodies_v1';
+	const BODY_KEEP_MAX = 24;
+	const BODY_KEEP_TTL_MS = 7 * 24 * 3600 * 1000;
+	function readBodyKeep(){
+		try{
+			const raw = (typeof window !== 'undefined' && window.localStorage) ? window.localStorage.getItem(BODY_KEEP_KEY) : null;
+			const o = raw ? JSON.parse(raw) : null;
+			return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {};
+		}catch(e){ return {}; }
+	}
+	function keepBody(entry){
+		if(!entry || !entry.body || typeof entry.gid !== 'string') return;
+		try{
+			const store = readBodyKeep();
+			store[entry.gid] = {
+				pouch: Object.assign({}, entry.body.pouch),
+				weapons: (entry.body.weapons || []).filter(k => NET.validPlayWeapon(k)).slice(0, 8),
+				ts: Date.now()
+			};
+			const gids = Object.keys(store).sort((a, b) => (store[b].ts || 0) - (store[a].ts || 0));
+			for(const g of gids.slice(BODY_KEEP_MAX)) delete store[g];
+			for(const g of Object.keys(store)) if(Date.now() - (store[g].ts || 0) > BODY_KEEP_TTL_MS) delete store[g];
+			window.localStorage.setItem(BODY_KEEP_KEY, JSON.stringify(store));
+		}catch(e){ /* no storage → explicitly ephemeral, and that is fine */ }
+	}
+	function keepAllBodies(s){
+		for(const entry of entries()) if(entry.body) keepBody(entry);
+	}
+	function restoreBodyFor(gid, body){
+		try{
+			const snap = readBodyKeep()[gid];
+			if(!snap || typeof snap !== 'object') return false;
+			if(snap.pouch && typeof snap.pouch === 'object'){
+				// the snapshot REPLACES the starter pouch — otherwise every rejoin farms
+				// a fresh quiver of starter arrows
+				body.pouch = {};
+				for(const k of Object.keys(snap.pouch).slice(0, 40)){
+					const n = Math.floor(Number(snap.pouch[k]) || 0);
+					if(k && k !== '__proto__' && n > 0) NET.pouchAdd(body.pouch, k, n);
+				}
+			}
+			if(Array.isArray(snap.weapons)){
+				for(const k of snap.weapons.slice(0, 8)) if(NET.validPlayWeapon(k) && !body.weapons.includes(k)) body.weapons.push(k);
+			}
+			return true;
+		}catch(e){ return false; }
+	}
 	function spawnBody(s, entry){
 		const p = bridge.player;
 		entry.body = {
 			x: p.x, y: p.y - 0.2, vx: 0, vy: 0, f: 1,
 			hp: NET.PLAY_RULES.MAX_HP, maxHp: NET.PLAY_RULES.MAX_HP,
-			// the arsenal is HOST state: starter kit now, acquired gear in the crafting
-			// wave — a client-side claim to any other weapon dies in handlePlayAct
+			// the arsenal is HOST state: starter kit + whatever this gid earned before
+			// — a client-side claim to any other weapon dies in handlePlayAct
 			weapons: NET.PLAY_STARTER_WEAPONS.slice(),
 			pouch: Object.assign({}, NET.PLAY_STARTER_AMMO),
 			dead: false, respawnAt: 0, invulUntil: now() + 1500,
-			mine: null, lastMineAt: 0, lastPlaceAt: 0, lastStrikeAt: 0, lastAttackAt: 0, lastPoseAt: 0, disp: null
+			mine: null, lastMineAt: 0, lastPlaceAt: 0, lastStrikeAt: 0, lastAttackAt: 0, lastCraftAt: 0, lastPoseAt: 0, disp: null
 		};
+		restoreBodyFor(entry.gid, entry.body);
 		sendVitals(s, entry);
 		try{ bridge.msg('🎮 ' + (entry.name || 'Duch') + ' wciela się w twoją warstwę!'); }catch(e){ /* fine */ }
 		updateUi();
 	}
 	function despawnBody(s, entry){
 		if(!entry.body) return;
+		keepBody(entry); // demote/leave: the pouch and earned arsenal await this gid's return
 		entry.body = null;
 		entry.bodyLike = null;
 		updateUi();
@@ -718,6 +776,30 @@ const ghostHost = (function(){
 			}
 			if(spec.ammo) sendVitals(s, entry); // the spent arrow shows up in the pouch chips
 			entry.peer.send({ t: 'pactAck', a: 'attack', ok: !!(res && res.ok), key, hits });
+			return;
+		}
+		if(pl.a === 'craft'){
+			// crafting mutates only HOST-owned body state (pouch → pouch/arsenal); the
+			// host inventory and the world are never touched, so no bridge seam at all
+			const tC = now();
+			if(tC - (b.lastCraftAt || 0) < NET.PLAY_RULES.CRAFT_MS) return;
+			b.lastCraftAt = tC;
+			const key = typeof pl.key === 'string' ? pl.key.slice(0, 16) : '';
+			const r = NET.validPlayRecipe(key) ? NET.PLAY_RECIPES[key] : null;
+			if(!r){ entry.peer.send({ t: 'pactAck', a: 'craft', ok: false, reason: 'recipe', key }); return; }
+			if(r.weapon && Array.isArray(b.weapons) && b.weapons.includes(r.weapon)){
+				entry.peer.send({ t: 'pactAck', a: 'craft', ok: false, reason: 'owned', key });
+				return;
+			}
+			if(!NET.pouchSpend(b.pouch, r.cost)){ entry.peer.send({ t: 'pactAck', a: 'craft', ok: false, reason: 'cost', key }); return; }
+			if(r.gives) for(const k of Object.keys(r.gives)) NET.pouchAdd(b.pouch, k, r.gives[k]);
+			if(r.weapon && Array.isArray(b.weapons)) b.weapons.push(r.weapon);
+			s.stats.playCrafts++;
+			sendDeed(entry, 'craft', 1);
+			keepBody(entry); // earned gear is banked the moment it exists
+			sendVitals(s, entry);
+			entry.peer.send({ t: 'pactAck', a: 'craft', ok: true, key });
+			try{ bridge.msg('🛠 ' + (entry.name || 'Duch') + ' wykuwa: ' + (r.label || key)); }catch(e){ /* fine */ }
 			return;
 		}
 		const tx = Math.floor(Number(pl.x)), ty = Math.floor(Number(pl.y));
