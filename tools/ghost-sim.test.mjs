@@ -799,6 +799,16 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 		'the hero frame steps arrows cosmetically only — the real impact chains never run on replica arrows');
 	assert.ok(/function runHeroStep[\s\S]{0,1600}FISHING\.update\(dt, player, getTile\);/.test(mainSrc),
 		'fishing runs for hero guests — reads replica water, writes nothing, catch is guest-local');
+	// the vehicles plane: boats and mechs stream live between joins (same save
+	// codec a reload uses; sig-skip = silence while nothing moves)
+	assert.ok(/function machTick\(s, t\)/.test(hostSrc) && /if\(sig === s\.lastMachSig\) return;/.test(hostSrc)
+		&& /broadcast\(\{ t: 'mach', data \}\);/.test(hostSrc),
+		'the mach plane broadcasts vehicle snapshots on change only');
+	assert.ok(/pl\.t === 'mach'/.test(clientSrc) && /bridge\.restoreBoats\(pl\.data\.b\);/.test(clientSrc)
+		&& /bridge\.restoreMechs\(pl\.data\.m\);/.test(clientSrc),
+		'the watcher applies vehicle snapshots through the reload codec');
+	assert.ok(/restoreMechs:\(d\)=>\{ try\{ if\(MECHS&&MECHS\.restore\) MECHS\.restore\(d,getTile\); \}catch\(e\)\{\} \}/.test(mainSrc),
+		'mech restore rides the same guarded bridge seam pattern as the other planes');
 	// projectiles: ONE chokepoint in pushArrow forwards the shot; the host flies
 	// the real arrow with clamped velocity/damage and a whitelisted flag set
 	const wsrcH = readFileSync(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');

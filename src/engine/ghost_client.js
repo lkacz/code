@@ -907,6 +907,14 @@ const ghostClient = (function(){
 					// the hero's swings, arrows, streams and blasts — cosmetic only
 					const W = MMR && MMR.weapons;
 					if(W && W.ghostApplyFx && W.ghostApplyFx(pl.fx || {})) stats.wfx++;
+				} else if(pl.t === 'mach'){
+					// vehicles: the same save codec a reload uses, streamed live —
+					// boats drift and mechs walk on the watcher too
+					if(pl.data && typeof pl.data === 'object'){
+						if(bridge.restoreBoats) bridge.restoreBoats(pl.data.b);
+						if(bridge.restoreMechs) bridge.restoreMechs(pl.data.m);
+						stats.mach = (stats.mach || 0) + 1;
+					}
 				} else if(pl.t === 'drops'){
 					bridge.restoreDrops(pl.data);
 				} else if(pl.t === 'seasons'){

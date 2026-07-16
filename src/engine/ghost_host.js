@@ -31,7 +31,7 @@ if(MMR && !MMR.ghostDreadAt){
 	};
 }
 
-const CAD = { hero: 66, wfx: 66, mobs: 120, mobsFull: 3000, inv: 120, invFull: 3000, guard: 150, body: 80, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 4000, prog: 1000, pwat: 500 };
+const CAD = { hero: 66, wfx: 66, mobs: 120, mobsFull: 3000, inv: 120, invFull: 3000, guard: 150, body: 80, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 4000, prog: 1000, pwat: 500, mach: 800 };
 const CHAT_MIN_MS = NET.CHAT.MIN_MS; // per-peer chat floor (shared with the client's local mirror)
 const ACT_POSE_TTL_MS = 6000; // an "active" pose vouches for the watcher this long
 const ELECTRIC_CAUSE = /shock|electric|lightning|laser/; // wet bodies conduct these
@@ -438,6 +438,7 @@ const ghostHost = (function(){
 		if(s.infraDirty && t - s.last.infra >= CAD.infra) infraTick(s, t);
 		if(t - s.last.presence >= CAD.presence) presenceTick(s, t);
 		if(t - s.last.pwat >= CAD.pwat) pwatTick(s, t);
+		if(t - (s.last.mach || 0) >= CAD.mach) machTick(s, t);
 		if(t - s.last.prog >= CAD.prog) progTick(s, t, live);
 		chargeTick(s, t, live);
 		for(const entry of live){ if(entry.assistant) sendAssistState(s, entry, false); }
@@ -564,6 +565,25 @@ const ghostHost = (function(){
 		s.lastPwatSig = sig;
 		s.pwatWas = any;
 		broadcast({ t: 'pwat', w: payload });
+	}
+	// Vehicles ride their own low-Hz plane: boats and mechs are save-codec state
+	// (the join snapshot already carries them), but between joins they used to
+	// stand frozen wherever the save caught them. Same sig-skip contract as the
+	// drops plane — silence while nothing moves, one packet per real change.
+	function machTick(s, t){
+		s.last.mach = t;
+		try{
+			const B = MMR && MMR.boats, M = MMR && MMR.mechs;
+			const data = {
+				b: (B && B.snapshot) ? B.snapshot() : null,
+				m: (M && M.snapshot) ? M.snapshot() : null
+			};
+			if(!data.b && !data.m) return;
+			const sig = JSON.stringify(data);
+			if(sig === s.lastMachSig) return;
+			s.lastMachSig = sig;
+			broadcast({ t: 'mach', data });
+		}catch(e){ /* codec hiccup — next tick retries */ }
 	}
 	function reap(s, t){
 		s.last.reap = t;
