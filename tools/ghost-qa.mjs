@@ -959,6 +959,87 @@ async function main(){
 		if(hostHpAfter < hunt.hostHp0) throw new Error('the distant HOST took damage from a mob hunting the guest (target routing broke): ' + hunt.hostHp0 + ' → ' + hostHpAfter);
 		console.log('play aggro: ok (' + hunt.hit + ' hunted the guest — body hp ' + hunt.bodyHp0 + '→' + bodyHurt.toFixed(1) + ', distant host untouched at ' + hostHpAfter + ')');
 		await host.eval(`MM.mobs.clearAll && MM.mobs.clearAll();`);
+		// --- Scene 10j: Wave A2 — EVERY hostile system hunts the party, turrets defend it --------------
+		// Same embodiment, same carved arena. The host parks >ACTIVE_RX away so nothing
+		// here can be explained by host proximity: (a) an invader engages and damages the
+		// GUEST while the distant host stays whole, (b) a guardian minion's contact pass
+		// hurts the body, (c) a player-built turret near the guest wakes up, scans and
+		// shoots a creature — all with the world's owner most of a screen away.
+		const a2 = await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies[0];
+			player.x=b.x+90; player.y=b.y; player.vx=0; player.vy=0; player.hp=player.maxHp;
+			const bx=Math.round(b.x), floorRow=Math.ceil(b.y+0.46);
+			for(let x=bx-8;x<=bx+8;x++){ for(let yy=floorRow-5;yy<floorRow;yy++) MM.world.setTile(x,yy,MM.T.AIR); MM.world.setTile(x,floorRow,MM.T.STONE); }
+			const team=MM.invasions.spawnRuinCommander(b.x+2, b.y, {getTile:MM.world.getTile, setTile:MM.world.setTile, player:window.player, forceAfterWestGuardian:true});
+			return {ok:!!team, bodyHp0:b.hp, hostHp0:player.hp, bx, floorRow};
+		})()`);
+		if(!a2.ok) throw new Error('setup: could not spawn an invasion commander on the guest');
+		let invHurt;
+		try{
+			invHurt = await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies[0]; return b ? b.hp : 999; })()`,
+				v => v < a2.bodyHp0, 'an INVADER damages the guest body', 60, 250);
+		}catch(e){
+			const diag = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies[0];
+				const t=MM.invasions._debug.teams.map(tm=>({st:tm.state, n:tm.aliens.length, ax:tm.aliens[0]?+tm.aliens[0].x.toFixed(1):null}));
+				return {bodyHp:b?b.hp:null, bodyX:b?+b.x.toFixed(1):null, teams:t, coop:(MM.coopBodies||[]).length}; })()`);
+			throw new Error('the invader never damaged the guest body: ' + JSON.stringify(diag));
+		}
+		if((await host.eval(`window.player.hp`)) < a2.hostHp0) throw new Error('the distant HOST took invasion damage meant for the guest');
+		await host.eval(`MM.invasions.reset()`);
+		console.log('party invasion: ok (commander engaged the guest — body hp ' + a2.bodyHp0 + '→' + invHurt.toFixed(1) + ', distant host untouched)');
+		// (b) guardian minion contact: spawn a sidekick pinned onto the body — outside its
+		// lair it steers home, so each poll tick re-pins it; the contact pass must land
+		// through body.hurt() while the far-away host never notices
+		const g0 = await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies[0];
+			const role=MM.guardianLairs.specs.fire.sidekicks[0].role;
+			const e=MM.guardianLairs.spawnGuardian('fire', role, {x:b.x, y:b.y-0.2, ambient:true});
+			return {ok:!!e, bodyHp0:b.hp, hostHp0:player.hp, role};
+		})()`);
+		if(!g0.ok) throw new Error('setup: could not spawn a guardian sidekick on the guest');
+		let guardHurt;
+		try{
+			guardHurt = await host.poll(`(()=>{
+				const b=MM.ghostHost.metrics().bodies[0];
+				for(const e of MM.guardianLairs._debug().entities){ if(!e.dead){ e.x=b.x; e.y=b.y-0.1; e.vx=0; e.vy=0; } }
+				return b ? b.hp : 999;
+			})()`, v => v < g0.bodyHp0, 'a GUARDIAN minion contact-hurts the guest body', 40, 250);
+		}catch(e){
+			const diag = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies[0];
+				const es=MM.guardianLairs._debug().entities.map(v=>({role:v.role,x:+v.x.toFixed(1),dead:v.dead}));
+				return {bodyHp:b?b.hp:null, ents:es, coop:(MM.coopBodies||[]).length}; })()`);
+			throw new Error('the guardian minion never touched the guest body: ' + JSON.stringify(diag));
+		}
+		if((await host.eval(`window.player.hp`)) < g0.hostHp0) throw new Error('the distant HOST took guardian damage meant for the guest');
+		await host.eval(`(()=>{ MM.guardianLairs.clearActive(); return 1; })()`); // host is nowhere near a lair — no proximity re-awaken
+		console.log('party guardian: ok (' + g0.role + ' contact — body hp ' + g0.bodyHp0 + '→' + guardHurt.toFixed(1) + ', distant host untouched)');
+		// (c) a turret near the guest DEFENDS it with the host >ACTIVE_RX away: the body
+		// scan discovers the machine, the active-gate keeps it awake, and it shoots a
+		// creature standing next to the guest. A passive grazer keeps the body safe.
+		const t0 = await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies[0];
+			const bx=Math.round(b.x), floorRow=Math.ceil(b.y+0.46);
+			const tx=bx+3, ty=floorRow-1;
+			MM.world.setTile(tx, ty, MM.T.TURRET);
+			const SP=MM.mobs._debugSpecies();
+			// hp cap keeps exotic "passive" entities (ATOMIC_BOMB, hp 8000) out of the
+			// line of fire — a real grazer proves the same thing without ordnance
+			const calm=Object.keys(SP).filter(id=>{ const s=SP[id]; return s && s.ground && !s.aquatic && !s.flying && !s.alwaysAggro && !(s.dmg>0) && (s.hp||0)>=8 && (s.hp||0)<=1000; })
+				.sort((a,b)=>SP[b].hp-SP[a].hp);
+			let prey=null;
+			for(const id of calm){ try{ if(MM.mobs.forceSpawn(id, {x:bx-2, y:floorRow-1}, MM.world.getTile)){ prey=id; break; } }catch(e){} }
+			return {tx, ty, prey, preyHp0: prey ? (MM.mobs.serialize().list.find(m=>m.id===prey)||{}).hp : 0, hostDist:Math.abs(player.x-tx)};
+		})()`);
+		if(!t0.prey) throw new Error('setup: could not spawn a passive creature for the turret to shoot');
+		if(!(t0.hostDist > 64)) throw new Error('setup: host must be beyond ACTIVE_RX for the turret gate test (dist=' + t0.hostDist + ')');
+		// wait for the body-driven scan (<=2.5 s) to discover the machine, then fuel it
+		await host.poll(`(()=>{ let hit=0; for(const [,m] of MM.turrets._debug.machines){ if(m.x===${t0.tx} && m.y===${t0.ty}) hit=1; } return hit; })()`,
+			v => v === 1, 'the turret near the guest is discovered by the body scan', 24, 250);
+		await host.eval(`MM.turrets._debug.debugSetEnergyAt(${t0.tx}, ${t0.ty}, 999)`);
+		const preyHurt = await host.poll(`(()=>{ const m=MM.mobs.serialize().list.find(v=>v.id==='${t0.prey}'); return m ? m.hp : 0; })()`,
+			v => v < t0.preyHp0, 'the turret defends the guest (fires on the creature) with the host far away', 40, 250);
+		await host.eval(`(()=>{ MM.world.setTile(${t0.tx}, ${t0.ty}, MM.T.AIR); MM.mobs.clearAll && MM.mobs.clearAll(); return 1; })()`);
+		console.log('party turret: ok (' + t0.prey + ' hp ' + t0.preyHp0 + '→' + preyHurt.toFixed(1) + ' with the host ' + t0.hostDist.toFixed(0) + ' tiles away)');
 		// --- damage & death: a host-side hurt drains the guest hp; demote returns to spectator
 		await host.eval(`(()=>{ const s=MM.ghostHost; const gid='${gidPlay}'; MM.__qaHurt=()=>{}; return 1; })()`);
 		await ghost.shot('tools/ghost-qa-play.png');

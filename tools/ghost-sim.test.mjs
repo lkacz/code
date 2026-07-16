@@ -940,4 +940,71 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 		'mob projectiles that strike a guest body damage the body, not the host');
 }
 
+// --- Wave A2: EVERY hostile system hunts the party; every friendly one protects it ------------------
+// Guardians, invasions and turrets used to read only window.player. Now boss/sidekick
+// attacks aim at (and their hazards hit-test) guest bodies, invader melee + hitscan
+// chase the nearest party member, and player-built turrets stay awake for a guest with
+// the host far away. Solo play stays a zero-cost path everywhere (no bodies → old code).
+{
+	// bodies advertise advisory velocity so party-aware attackers can lead their aim
+	assert.ok(/entry\.bodyLike\.vx = b\.vx \|\| 0; entry\.bodyLike\.vy = b\.vy \|\| 0;/.test(hostSrc),
+		'bodyLike carries advisory vx/vy (aim-lead only — never authority)');
+
+	const g = readFileSync(new URL('../src/engine/guardian_lairs.js', import.meta.url), 'utf8');
+	assert.ok(/function coopBodies\(\)\{\s*\n\s*const list=\(typeof MM!=='undefined' && MM\.coopBodies\)\|\|null;\s*\n\s*return \(list && list\.length\) \? list : null;/.test(g),
+		'guardian_lairs reads MM.coopBodies with a null return when empty (zero cost in solo play)');
+	assert.ok(/function nearestPartyTarget\(wx,wy,p\)/.test(g) && /if\(!bodies\) return p;/.test(g),
+		'guardian aim selection falls back to the host with no bodies');
+	// boss + sidekick attacks aim at the nearest party member; lifecycle stays host-anchored
+	const gue = g.slice(g.indexOf('function updateEntity(e,p,getTile,setTile,dt)'), g.indexOf('function updateEntity(e,p,getTile,setTile,dt)') + 900);
+	assert.ok(/const aim=nearestPartyTarget\(e\.x,e\.y,p\);/.test(gue)
+		&& /updateFireBoss\(e,aim,getTile,dt,L\);/.test(gue) && /updateSidekick\(e,aim,getTile,setTile,dt,L\);/.test(gue),
+		'guardian attacks aim at the NEAREST party member (host or guest body)');
+	assert.ok(/updateContact\(e,p,dt\);\s*\n\s*updateContactBodies\(e\);/.test(gue)
+		&& /if\(e\.ambient && p && Math\.abs\(e\.x-p\.x\)>120\) e\.dead=true;/.test(gue),
+		'host contact/shove and the ambient-despawn lifecycle stay host-anchored; bodies get their own contact pass');
+	assert.ok(/function updateContactBodies\(e\)\{/.test(g) && !/function updateContactBodies\(e\)\{[\s\S]{0,600}separateHeroFromEntity/.test(g),
+		'guest bodies take contact damage but are never shoved (their movement is guest-authoritative)');
+	// every hazard type hit-tests the guest bodies and routes through body.hurt()
+	const guh = g.slice(g.indexOf('function updateHazards(dt,p,getTile,setTile)'), g.indexOf('function updateEffects'));
+	assert.ok(/const coop=coopBodies\(\);/.test(guh), 'the hazard pass hoists the body list once per frame');
+	for(const cause of ['guardian_lightning','guardian_storm_meteor','guardian_projectile','guardian_impact','guardian_beam','guardian_ring','guardian_blizzard']){
+		assert.ok(new RegExp("(hurtBodiesInCircle\\(coop,[^\\n]*'" + cause + "'|b\\.hurt\\(h\\.dmg,[^\\n]*'" + cause + "'\\))").test(guh),
+			'guardian hazard "' + cause + '" hit-tests guest bodies through body.hurt()');
+	}
+	assert.ok(!/hurtBodiesInCircle[\s\S]{0,400}setTile\(/.test(g.slice(g.indexOf('function hurtBodiesInCircle'), g.indexOf('function hurtBodiesInCircle') + 500)),
+		'the body-damage helper touches creatures’ victims only — never a tile');
+
+	const inv = readFileSync(new URL('../src/engine/invasions.js', import.meta.url), 'utf8');
+	assert.ok(/function nearestPartyMember\(wx,wy,player\)\{\s*\n\s*const bodies=\(typeof MM!=='undefined' && MM\.coopBodies\) \|\| null;\s*\n\s*if\(!bodies \|\| !bodies\.length\) return player;/.test(inv),
+		'invasions read MM.coopBodies and return the host untouched with no bodies (zero cost in solo play)');
+	assert.ok(/function hurtPartyTarget\(tgt,dmg,opts\)\{\s*\n\s*if\(tgt && typeof tgt\.hurt==='function'\)\{ tgt\.hurt\(dmg,opts\.srcX,opts\.srcY,opts\.cause\); return; \}/.test(inv),
+		'invader damage routes through body.hurt() for a guest target, damageHero for the host');
+	assert.ok(/const tgt = nearestPartyMember\(a\.x,a\.y,player\);[\s\S]{0,200}const px = tgt && Number\.isFinite\(tgt\.x\) \? tgt\.x : a\.x;/.test(inv),
+		'updateAlien tracks (melee + facing) the nearest party member');
+	assert.ok(/hurtPartyTarget\(tgt, Math\.max\(1,Math\.round\(baseDmg \* \(Number\(a\.damageMult\) \|\| 1\)\)\)/.test(inv),
+		'invader melee lands on whoever the alien is actually next to');
+	// both hitscan weapons aim at and damage the retargeted party member
+	assert.ok((inv.match(/const tgt = nearestPartyMember\(a\.x,a\.y,player\); \/\/ shots chase the nearest hero, host or guest/g) || []).length === 2,
+		'both fireAlienLaser and fireMolekinAttack retarget to the nearest party member');
+	assert.ok(/Number\.isFinite\(tgt\.vx\) \? tgt\.x \+ tgt\.vx \* 0\.08 : tgt\.x/.test(inv) && /Number\.isFinite\(tgt\.vx\) \? tgt\.x \+ tgt\.vx \* 0\.06 : tgt\.x/.test(inv),
+		'hitscan aim-lead reads the target (host or body), not always the host');
+	assert.ok(/hurtPartyTarget\(tgt, Math\.max\(1, Math\.round\(\(5 \+ Math\.min\(6, Math\.floor\(threat \/ 5\)\)\) \* dmgMult\)\)/.test(inv)
+		&& /hurtPartyTarget\(tgt, Math\.max\(1, Math\.round\(\(4 \+ Math\.min\(7, Math\.floor\(threat \/ 4\)\)\) \* dmgMult\)\)/.test(inv),
+		'a clear hitscan hit damages the aimed-at party member through the routing helper');
+	// the squad brain marches on the party member nearest the squad, not blindly on the host
+	assert.ok(/function squadPartyTarget\(steerable,player\)\{\s*\n\s*const bodies=\(typeof MM!=='undefined' && MM\.coopBodies\) \|\| null;\s*\n\s*if\(!bodies \|\| !bodies\.length \|\| !steerable\.length\) return player;/.test(inv),
+		'the squad-brain retarget is zero-cost in solo play (host returned before any centroid math)');
+	assert.ok(/brain\.update\(team, steerable, dt, squadPartyTarget\(steerable,player\), teamHooks\(team,player,getTile,setTile,ctx\), \{now\}\);/.test(inv),
+		'the squad brain hunts the party member nearest the squad center');
+
+	const tur = readFileSync(new URL('../src/engine/turrets.js', import.meta.url), 'utf8');
+	assert.ok(/function coopBodyNear\(bodies,x,y\)\{\s*\n\s*if\(!bodies\) return false;/.test(tur),
+		'turrets’ body proximity check early-returns with no bodies (zero cost in solo play)');
+	assert.ok(/if\(hasPlayer && \(Math\.abs\(m\.x-px\)>ACTIVE_RX \|\| Math\.abs\(m\.y-py\)>ACTIVE_RY\) && !coopBodyNear\(coop,m\.x,m\.y\)\)\{/.test(tur),
+		'a turret near an embodied guest stays awake even with the host far away');
+	assert.ok(/if\(coop\) for\(const b of coop\)\{ if\(!b\.dead\) scanNearby\(b,getTile\); \}/.test(tur),
+		'turret discovery also scans around guest bodies');
+}
+
 console.log('ghost-sim: all assertions passed');

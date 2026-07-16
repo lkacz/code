@@ -1,9 +1,10 @@
-# Handoff prompt — drive "Duchy Warstwy" co-op from v1 to 100% multiplayer
+# Handoff prompt — drive "Duchy Warstwy" co-op from ~60% to 100% multiplayer
 
-You are a coding agent continuing a feature in an existing browser game. A first
-working slice of **embodied multiplayer** ("play mode") already ships on top of the
-spectator system. Your mission is to take it the rest of the way to a full co-op
-experience **without ever weakening the security model that makes it safe.**
+You are a coding agent continuing a multiplayer feature in an existing browser game.
+A working embodied co-op experience already ships: two people on different machines
+share one world, both drive real heroes, and monsters fight the whole party. Your
+mission is to close the remaining gaps to a full co-op experience **without ever
+weakening the security model that makes it safe.**
 
 Read this whole document before touching code. Then read the two memory files it
 points to. Then verify the baseline is green. Only then start.
@@ -15,190 +16,203 @@ points to. Then verify the baseline is green. Only then start.
 - A 2D sandbox/mining game. **Pure ES modules, no build step.** `src/main.js` is a
   ~16k-line orchestrator; `src/engine/*.js` are ~100 self-registering modules that
   hang APIs off the global `MM` object (`window.MM`).
-- Platform: **Windows**. Shells available: **PowerShell** (primary) and a **Bash**
-  tool (Git Bash / POSIX). Use forward slashes and Unix syntax in the Bash tool.
+- Platform: **Windows**. Shells: **PowerShell** (primary) and a **Bash** tool
+  (Git Bash / POSIX). Use forward slashes and Unix syntax in the Bash tool.
 - No framework, no bundler. Files are served statically; a headless-Edge CDP driver
-  is the integration-test harness.
-- The multiplayer feature is called **"Duchy Warstwy"** (Layers/Ghosts). Host = the
-  player who owns the world. Guest/watcher = someone who joined via a `?watch=ROOM`
-  link. Transport is peer-to-peer (WebRTC DataChannel; MQTT-over-WSS only for the
-  handshake) — GitHub Pages stays a static host, there is no server of ours.
+  (`tools/ghost-qa.mjs`) is the integration-test harness.
+- The multiplayer feature is called **"Duchy Warstwy"**. Host = the player who owns
+  the world. Guest = someone who joined via a `?watch=ROOM` link. Transport is
+  peer-to-peer (WebRTC DataChannel; public MQTT-over-WSS brokers for the handshake
+  only) — GitHub Pages stays a static host, there is no server of ours.
 
 **Two memory files hold the authoritative design history — read both first:**
 - `~/.claude/projects/f---DEV-code/memory/ghost-spectator-mode.md` — the spectator
   system (10 waves): transport, world replication, spectator powers, progression,
-  guardian-fight mirror, the 2026-07-16 hardening audit.
-- `~/.claude/projects/f---DEV-code/memory/multiplayer-embodied-play.md` — the play
-  wave you are extending. **This is your primary spec.**
+  guardian-fight mirror, hardening audits.
+- `~/.claude/projects/f---DEV-code/memory/multiplayer-embodied-play.md` — the
+  embodiment wave + Wave A. **This is your primary spec.**
+
+**Shipped commits (all check-chain green, all QA green):**
+- `1051329` — guardian-fight mirror + ghost audit hardening
+- `a55cf79` — embodied multiplayer v1 (the `play` rung: move/mine/build/fight)
+- `7d0941e` — Wave A: creatures hunt the whole party
 
 ---
 
-## 1. The four files you will live in
+## 1. The files you will live in
 
 | File | Role |
 |---|---|
-| `src/engine/ghost_net.js` | **Pure protocol core** — importable/testable under Node with no DOM. Room codes, chunking, the permission ladder, and all the `PLAY_*` rules + pure helpers live here. Add pure logic HERE and unit-test it. |
-| `src/engine/ghost_host.js` | **Host authority.** The body registry (`entry.body`), intent validation (`handlePlayAct`), vitals/pouch/damage/respawn, the `pb` body plane, `MM.coopBodies` publish, body rendering. |
-| `src/engine/ghost_client.js` | **Guest.** The local `player` flips from "replica of host hero" to "the guest's own body." Local hero physics (`stepOwnHero`/`collideAxis`), input mapping, intents (`sendPlayAct`), pouch UI. |
-| `src/main.js` | **The bridge** (`MM.ghostBridge`) — the ONLY sanctioned window into game internals. Every world-touching seam (`ghostPlayMineAt`/`ghostPlayPlaceAt`/`ghostPlayStrike`, `solidAt`, `screenToWorld`, `drawHeroAt`) lives here and re-validates world truth. |
+| `src/engine/ghost_net.js` | **Pure protocol core** — importable/testable under Node with no DOM. The permission ladder, `PLAY_RULES`, and all pure helpers (`modeAllows`, `playReachOk`, `clampBodyStep`, `pouchAdd/pouchTake`). Add pure logic HERE and unit-test it. |
+| `src/engine/ghost_host.js` | **Host authority.** Body registry (`entry.body`), intent validation (`handlePlayAct`), vitals/pouch/damage/respawn (`hurtBody`/`sendVitals`), the `pb` body plane (`bodyTick`), `MM.coopBodies` publish, body rendering. |
+| `src/engine/ghost_client.js` | **Guest.** The local `player` flips from "replica of host hero" to "the guest's own body" (`enterPlay`/`exitPlay`). Local physics (`stepOwnHero`/`collideAxis`), input mapping, intents (`sendPlayAct`), pouch UI. QA seams: `_playAct`, `_playSelect`, `_playStop`, `_flushForTest`, `_idleForTest`, `_debugConnLost`. |
+| `src/main.js` | **The bridge** (`MM.ghostBridge`) — the ONLY sanctioned window into game internals. World-touching seams (`ghostPlayMineAt`/`ghostPlayPlaceAt`/`ghostPlayStrike`), plus `solidAt`, `screenToWorld`, `drawHeroAt`. Every seam re-validates world truth. |
+| `src/engine/mobs.js` | `coopContactPass`, `nearestCoopBody`, the extended `combatTargetForMob`, and the `_mobTargetBody` damage chokepoint (Wave A). |
+| `tools/ghost-sim.test.mjs` | Pure-core asserts + source-regex pins on every contract. |
+| `tools/ghost-qa.mjs` | Live CDP QA, 2–3 Edge tabs. Scene 10i covers the whole play loop incl. the Wave A hunt. |
 
-Plus `src/engine/mobs.js` (`coopContactPass`), `tools/ghost-sim.test.mjs` (pins), and
-`tools/ghost-qa.mjs` (live CDP QA, scene 10i).
-
-> **Gotcha that has bitten before:** `ghost_net.js` exports named functions AND an
-> aggregate `export const ghostNet = api`. The engine imports `{ ghostNet as NET }`,
-> **not** the namespace. A new `export function` you forget to add to `api` is
-> `undefined` at runtime while every Node test still passes. `ghost-sim` pins the two
-> lists against each other — keep them in lockstep.
+> **Trap that has wedged the page before:** `ghost_net.js` exports named functions
+> AND an aggregate `export const ghostNet = api`. The engine imports
+> `{ ghostNet as NET }`, **not** the namespace. A new `export function` you forget to
+> add to `api` is `undefined` at runtime while every Node test still passes.
+> `ghost-sim` pins the two lists against each other — keep them in lockstep.
 
 ---
 
 ## 2. The trust model — THIS IS THE PART YOU MUST NOT BREAK
 
-The entire reason co-op is safe is a strict **authority split**. Every change you
-make must preserve it. If a change would let a modified guest client cause an effect
-the host did not validate, the change is wrong.
+Co-op is safe because of a strict **authority split**. If a change would let a
+modified guest client cause an effect the host did not validate, the change is wrong.
 
-- **Guest-authoritative:** *only* the guest's own hero movement (so it feels instant).
-  The host follows the streamed pose inside a per-axis speed envelope
-  (`clampBodyStep`, `PLAY_RULES.MAX_SPEED`) — a teleport hack rubber-bands.
-- **Host-authoritative:** vitals, the resource pouch, and **every world edit.**
-- The guest never edits the world. It sends **intents** (`mine`/`place`/`strike`);
-  the host re-checks reach, rate, pouch, and world truth (`ghostPlay*` bridge seams)
-  before a single tile changes.
-- **`strike` touches creatures only — never a tile.** There is a pinned test:
-  `!/ghostPlayStrike[\s\S]{0,400}setTile\(/`. Keep it true.
-- **Mining/placing use the foreground-tile whitelist only** (`companionHarvestAssignableTile`):
-  no machines, chests, story tiles, overlays, or backgrounds.
+- **Guest-authoritative:** *only* the guest's own hero movement (instant feel). The
+  host follows the streamed pose inside a per-axis speed envelope (`clampBodyStep`,
+  `PLAY_RULES.MAX_SPEED`) — teleport hacks rubber-band.
+- **Host-authoritative:** vitals, the pouch, and **every world edit.**
+- The guest never edits the world. It sends **intents**; the host re-checks reach,
+  rate, pouch, and world truth (`ghostPlay*` bridge seams) before a tile changes.
+- **`strike` touches creatures only — never a tile.** Pinned:
+  `!/ghostPlayStrike[\s\S]{0,400}setTile\(/`. Keep it true for every future weapon.
+- **Mining/placing use the foreground-tile whitelist** (`companionHarvestAssignableTile`):
+  no machines, chests, story tiles, overlays, backgrounds.
 - **`play` is never a default door policy.** `DEFAULT_MODES` excludes it; embodiment
   is granted per-viewer by hand. Do not add an auto-promote path.
-- **The permission ladder is inclusive** (`modeAllows(mode, need)`, `play ⊇ full ⊇
-  chat ⊇ watch`). Never re-introduce `mode === 'full'` string comparisons.
-- **`MM.coopBodies` is a zero-cost hook:** it must be an empty array (not undefined)
-  in solo play and the Node sims, and every consumer must early-return on empty. This
-  is how creature/targeting code stays free when nobody is embodied.
-- **Progression is a reward, never an authority** (inherited from the spectator
-  system): no host-side gate may read a guest's level/achievements.
+- **The ladder is inclusive** (`modeAllows(mode, need)`, `play ⊇ full ⊇ chat ⊇
+  watch`). Never re-introduce `mode === 'full'` string comparisons.
+- **`MM.coopBodies` is a zero-cost hook:** empty array in solo play and the Node
+  sims; every consumer early-returns on empty. This is how all party-aware code
+  stays free when nobody is embodied. Guest damage ALWAYS lands through
+  `body.hurt()` — the host owns i-frames and the vitals stream.
+- **Progression is a reward, never an authority:** no host-side gate may read a
+  guest's level/achievements.
 
 When in doubt, add a host-side validation and a test pin. Over-validate.
 
 ---
 
-## 3. What already works (v1 — shipping, QA-green)
+## 3. What already works (verified live)
 
-- The ladder gained a `play` rung. `setViewerMode(gid,'play')` spawns a host-owned
-  body; any downgrade removes it. Spectating is unchanged and remains the default.
-- Guest moves with its own local physics (shared `applyHorizontalMovement` +
-  `bridge.solidAt` swept resolver); host tracks the pose in an envelope.
-- Guest **mines** foreground tiles → yield goes to the **guest's host-owned pouch**,
-  never the host inventory. Guest **builds** from that pouch. Guest **strikes**
-  creatures (mobs + invaders), never tiles.
-- Vitals/pouch are host state, streamed to the guest as display truth (`pvit`).
-  Damage (`pdmg`), death, and respawn (`prespawn`) are host-decided.
-- Hostile creatures that **touch** a guest body hurt it (`mobs.coopContactPass` →
-  `MM.coopBodies` → `body.hurt()`).
-- Everyone (players and spectators) sees every embodied player as a real hero body
-  (`drawHeroAt` field-swaps into the real `drawPlayer`).
-- Verified by `tools/ghost-qa.mjs` scene 10i (promote → move → mine → build → fight →
-  demote) and pinned in `tools/ghost-sim.test.mjs`. Full `npm run check` passes.
+- **Spectator system** (the ghost ladder below `play`): untouched, the default door.
+  Full renderer, buffs, powers, chat/pings, assistants, viewer progression, live
+  mirrors for mobs/invasions/weapons/guardian fights.
+- **Embodiment:** `setViewerMode(gid,'play')` spawns a host-owned body; any
+  downgrade removes it. Guest walks/jumps/swims with local physics; host tracks the
+  pose in an envelope (QA: tracked to within 0.00 tiles).
+- **Economy:** guest mines foreground tiles → yield goes to the guest's host-owned
+  pouch (host inventory untouched — QA-pinned); builds from that pouch; melee
+  `strike` hits mobs + invaders.
+- **Party combat (Wave A):** mobs aggro/pursue/attack the NEAREST hero (host, guest
+  bodies, companions — the old companion bias is preserved byte-for-byte). Damage
+  routes through the single `damagePlayer` chokepoint to whoever the mob is hunting
+  (`_mobTargetBody`), so a mob chasing a guest can never hurt the distant host.
+  Projectiles catch on guest bodies too. QA: a GIANT_SCORPION drained the guest
+  80→49 hp while the host 60 tiles away stayed at 100.
+- **Party targeting everywhere (Wave A2):** guardians aim boss/sidekick attacks at
+  the nearest party member and every hazard type (lightning, meteors, projectiles,
+  impacts, beams, rings, blizzards) plus boss contact hit-tests guest bodies through
+  `body.hurt()`; invader melee + hitscan chase the nearest party member (squad brains
+  march on the party member nearest the squad's center); player-built turrets stay
+  awake, scan and fire for a guest with the host beyond `ACTIVE_RX`. Each system has
+  a local zero-cost `MM.coopBodies` reader (the mobs.js pattern — a shared
+  `MM.partyAt` was considered and skipped: the three scans have different semantics
+  and the local guarded read is the established, pinned idiom). `bodyLike` now
+  carries advisory vx/vy for aim-lead. QA scene 10j: an invasion commander, a
+  guardian flare and a turret all engaged/defended the guest with the host ~90
+  tiles away and untouched.
+- **Death/respawn:** host-decided, 6 s timer, respawn at the host.
+- **Resync safety:** an embodied guest keeps ITS hero across a mid-session
+  world resnap (`keep` guard in `applySnapshot`).
 
 ---
 
-## 4. What "100%" means — the gap list, ordered into waves
+## 4. The remaining gap list — ordered, with implementation guidance
 
 Ship one wave at a time. Each wave = source change + `ghost-sim` pins + one new
-`ghost-qa.mjs` scene + `npm run check` green. Do not batch waves.
+`ghost-qa.mjs` scene + `npm run check` green + a commit. Do not batch waves.
 
-### Wave A — Creatures fight the whole party — ✅ DONE (mobs.js)
-Mobs now aggro/pursue/attack the nearest hero (host + guest bodies) and route their
-damage to whoever they are hunting. Implemented in `mobs.js`:
-`nearestCoopBody(wx,wy,range)` (reads `MM.coopBodies`, zero-cost when empty);
-`combatTargetForMob` extended so a guest body competes and the nearest candidate wins
-(the companion-vs-hero bias is preserved verbatim); a module-level `_mobTargetBody`
-set around `updateMob` makes `damagePlayer` — the single chokepoint all mob attacks
-funnel through — land on the hunted body instead of the distant host; and the
-projectile loop gained a coop-body AABB so ranged hits the body. Pinned in `ghost-sim`
-and proven live in `ghost-qa` (a GIANT_SCORPION drains the guest's hp while the
-60-tiles-away host stays untouched).
+### Wave A2 — Finish party-targeting — ✅ DONE (2026-07-16)
+Shipped: guardians (aim + all 7 hazard causes + contact via `body.hurt()`, fight
+lifecycle deliberately host-anchored), invasions (per-alien melee/hitscan retarget
++ squad-brain hunts the party member nearest the squad center), turrets (active-gate
++ discovery scan honor guest bodies). Pins in ghost-sim Wave A2 block; live QA
+scene 10j. **Consciously deferred (still open):** mob/invasion **spawning** centers
+on the host (`trySpawnNearPlayer`, `teamInActiveView`) and despawn is host-distance
+(>220 / offscreen-days) — a guest far from the host sees thinner spawns;
+`heroThreatProfile` / `applyProgressionFlee` weigh only the host (a strong guest
+scares nothing, a weak one attracts no mercy); companions defend only the host;
+invader barricade/vent placement guards and speech/awareness triggers read only the
+host; `applySeparation` shoulders only the host aside (bodies are guest-authoritative
+— by design, not a gap); guardian storm targeting aims at the host (hazard hit-tests
+still cover bodies).
 
-**Still to do for the rest of the party (extend the SAME pattern):**
-`guardian_lairs.js`, `invasions.js` (sidekick/alien vs-hero targeting),
-`turrets.js`, and any `companions.js` enemy that currently reads only `window.player`
-should consult `nearestCoopBody` / a shared `heroTargets()` too. Known v1 gaps left:
-mob **spawning** still centers on the host (`trySpawnNearPlayer`) and despawn is
-host-distance based, so a guest far from the host sees thinner spawns;
-`heroThreatProfile`/`applyProgressionFlee` still weigh only the host (a weak guest
-doesn't scare mobs, a strong guest doesn't repel them).
-
-### Wave B — Guest combat & tool parity
-The `strike` stub (`PLAY_RULES.STRIKE_DMG`) is a placeholder. Give the guest the real
-combat surface:
-- Guest wields actual tools/weapons (`weapons.js`): pickaxe mining speed, melee
-  blades, bow/arrows, the elemental matrix. Resolve on the host; stream the cosmetic
-  FX to everyone (the host already has `weapons.ghostFxState/ghostApplyFx/
-  ghostStepFx` — generalize it to be per-body, not just the host hero).
-- Guest tool/weapon selection (a minimal hotbar for the guest).
+### Wave B — Guest combat & tool parity (the big one — give it a full session)
+The `strike` stub (`PLAY_RULES.STRIKE_DMG`) becomes real weapons.
+- `src/engine/weapons.js` is built around ONE hero: `fireHeld/releaseHeld/fireUlt`,
+  module-level projectile/FX arrays, ult charge, and `MM.weapons.ghostFxState/
+  ghostApplyFx/ghostStepFx` (the spectator FX mirror — currently host-hero-only).
+- Recommended shape: keep resolution host-side. Guest sends a richer intent
+  (`{t:'pact', a:'attack', kind, x, y}` with `kind` validated against a whitelist of
+  weapons the guest actually owns, host-side). The host spawns the projectile/swing
+  through the real weapons systems **attributed to the body** (source tagging so ult
+  charge, XP, and knockback credit the right hero and so friendly fire policy is
+  enforceable in one place).
+- Generalize the weapon-FX mirror to carry per-body FX (swings/arrows from any hero),
+  so spectators and fellow players see guests fight.
+- Mining speed by tool tier: replace flat `MINE_TICKS` with a host-side per-tile
+  ticks table derived from the same hardness data the host miner uses.
+- A minimal guest hotbar UI in `#ghostBar` (the pouch-chip pattern already there).
 
 ### Wave C — Guest crafting, inventory & gear
-- Let the guest craft from its **own** pouch and equip its **own** gear. Reuse the
-  assistant workbench pattern (`ghostAssistState` streams the recipe catalogue) but
-  bound to the guest's pouch/inventory, not the host's.
-- Decide and implement **persistence**: does a guest's pouch/gear survive a session,
-  a reload, a re-invite? (Likely a per-`gid` sub-save in the host's world, or
-  explicitly ephemeral. Whatever you choose, document it and pin it.)
+- Craft from the guest's own pouch, equip its own gear. Reuse the assistant
+  workbench pattern (`ghostAssistState` streams a recipe catalogue + a persistent
+  panel skeleton) but bound to the guest pouch, not the host inventory.
+- Decide **persistence** and pin the decision: per-`gid` sub-save in the host's
+  world save vs explicitly ephemeral sessions. (The viewer-progression precedent:
+  forgeable client-held state may be a reward, never an authority — if guest gear
+  persists client-side it must be display-only; authoritative persistence belongs
+  in the host's save.)
 
-### Wave D — Guest survival systems (host-owned, per guest)
-Energy, hunger/survival (`survival.js`), temperature (`temperature-axis`), drowning,
-fall damage, status effects (`hero_status.js`) — all currently assume the single host
-hero. Make them run per guest body on the host, streamed via `pvit`. Death →
-gravestone + respawn (`respawn_travel.js`) per guest.
+### Wave D — Guest survival systems (host-owned, per body)
+Energy, hunger (`survival.js`), temperature, drowning, fall damage, status effects
+(`hero_status.js`) all assume the single host hero. Run them per body on the host,
+stream via `pvit`. Death → per-guest gravestone (`respawn_travel.js` precedent).
+Suggested order: fall damage + drowning first (pure physics, no UI), then hunger/
+temperature (need guest HUD chips), then status effects.
 
 ### Wave E — Fidelity & polish
-- **Water sub-tile partials** are not replicated (pinned not-a-bug for spectators),
-  so a swimming guest visibly diverges. Add windowed partial replication around each
-  guest body, or make the host arbitrate swim state.
-- **Position reconciliation:** replace the gross-drift rubber-band (>6–8 tiles) with
-  smooth server-reconciled correction, or offer a host-authoritative-movement mode
-  for high-latency links.
-- **Per-body cosmetics:** today `drawHeroAt` bleeds the host's tool/cape/customization
-  onto every remote body. Stream per-guest customization so heroes aren't clones.
-- **Fellow-player interactions:** decide PvP (can guests hurt each other?), trading,
-  and whether guests see each other's pouches. Design choices — get a ruling, then
-  implement + pin.
-- **Fog:** per-guest fog vs shared fog is a co-op design choice.
+- **Water sub-tile partials** aren't replicated → a swimming guest diverges
+  (cosmetic but visible). Windowed partial replication around each body, or host
+  arbitration of swim state.
+- **Position reconciliation:** smooth correction instead of the >6–8-tile hard snap.
+- **Per-body cosmetics:** `drawHeroAt` currently bleeds the host's tool/cape/
+  customization onto every remote body. Stream per-guest customization
+  (`mm_ghost_name_v1`-style client prefs, display-only).
+- **Design rulings needed from the owner** (ask, then implement + pin): PvP between
+  guests? trading? shared vs per-guest fog?
 
 ### Wave F — Infra reliability
-- **NAT/TURN:** STUN-only means some NAT pairs never connect. Spectators fail soft;
-  players expect more. Add a clear "couldn't connect" UX and evaluate a free/cheap
-  TURN option or a documented limitation.
-- **Host tab is the server:** backgrounding it freezes the guest's world. Surface
-  this in the UI (it's currently silent). Host-migration is likely out of scope, but
-  a keep-alive/"host went idle" notice is not.
+- **NAT:** STUN-only → some pairs never connect. Add explicit "couldn't connect" UX
+  with a retry; evaluate a TURN option or document the limitation in the invite UI.
+- **Host tab is the server:** backgrounding it freezes the guests' world — currently
+  silent. Surface a "gospodarz jest nieaktywny" notice client-side (the companion
+  pump heartbeat makes staleness detectable). Host-migration is out of scope.
 
 ---
 
 ## 5. How to work in this repo (do this, in this order)
 
-1. **Read the two memory files.** They encode gotchas that cost hours. Do not
-   rediscover them.
-2. **Establish the baseline before editing:**
-   ```bash
-   npm run lint
-   npm run test:ghost
-   npm run check:modules
-   ```
-   All three must be clean. If not, stop and fix the baseline first.
-3. **Design pure logic into `ghost_net.js`** (rules, envelopes, validators) and
-   unit-test it in `ghost-sim.test.mjs` — it runs in milliseconds with no browser.
-4. **Wire the host authority, then the client**, then the bridge seam. The host
-   validates; the client only points; the bridge re-checks world truth.
-5. **Pin every contract you rely on** in `ghost-sim.test.mjs` (both pure-core asserts
-   and source-regex pins on the wiring). When you change a gate's shape, update the
-   pin in the same commit — several pins match exact source substrings.
-6. **Add one live QA scene** to `ghost-qa.mjs` proving the wave end-to-end, then run
-   the whole driver.
-7. **Run `npm run check`** (the full ~140-suite chain) before declaring done. Your
-   changes to `mobs.js`/`main.js` can ripple into unrelated suites.
+1. **Read the two memory files.** They encode gotchas that cost hours.
+2. **Baseline before editing:** `npm run lint && npm run test:ghost && npm run
+   check:modules` — all clean, or stop and fix first.
+3. **Pure logic goes into `ghost_net.js`** and gets unit tests in `ghost-sim`.
+4. **Wire host authority → client → bridge seam.** Host validates; client points;
+   bridge re-checks world truth.
+5. **Pin every contract** in `ghost-sim.test.mjs`. Several pins match exact source
+   substrings — when you change a gate's shape, update the pin in the same commit.
+6. **Add one live QA scene** per wave to `ghost-qa.mjs`; run the whole driver.
+7. **`npm run check`** (the full ~140-suite chain) before declaring done — your
+   `mobs.js`/`main.js` changes ripple into unrelated suites.
+8. Commit per wave with a story-telling message; the repo convention is direct
+   commits to `main`.
 
 ---
 
@@ -206,51 +220,62 @@ gravestone + respawn (`respawn_travel.js`) per guest.
 
 ```bash
 npm run lint            # eslint, zero warnings
-npm run check:modules   # import/export mismatch guard (catches the NET aggregate trap)
-npm run test:ghost      # pure core + source pins (fast)
-node tools/ghost-qa.mjs # live headless-Edge CDP, 2–3 tabs, all scenes incl. 10i (play)
+npm run check:modules   # import/export guard (catches the NET aggregate trap)
+npm run test:ghost      # pure core + source pins (fast — run constantly)
+node tools/ghost-qa.mjs # live headless-Edge CDP, all scenes incl. 10i (play + hunt)
 npm run check           # the whole suite chain — must exit 0
 ```
 
 ---
 
-## 7. Repo-specific pitfalls (these are real, they have all happened)
+## 7. Repo-specific pitfalls (all real, all have happened)
 
-- **CDP QA, backgrounded tabs:** in a 2-tab CDP run, the background tab's `rAF` is
-  frozen — its whole sim/interpolation stops; only the companion pump keeps the
-  network alive at ~1 Hz. Any scene that needs the host world *running* must
-  `Page.bringToFront` the host first (`Tab.front()` in the driver). Sample from the
-  **driver** side (real time), not with in-page `sleep` (throttled to ~1 Hz).
-- **Two reads <1.5 s apart on a backgrounded tab hit the same pump tick** and look
-  "frozen" even when the mirror works. Space samples past one pump cycle.
-- **The deed-queue persistence race (also a real product bug, now fixed):** a
-  backgrounded guest drains its deed queue at ~1 Hz, so deeds can sit *unbanked in the
-  queue* (not merely unflushed) when the tab closes/reloads. The fix pattern:
-  foreground → drain → flush. Reuse `MM.ghostClient._flushForTest()` in QA.
-- **Mining QA needs air above the target cell** — a random spawn has sand/gravel
-  overhead that falls into the hole and masks the break.
-- **Negative-coordinate interpolation in evals:** `p.x-${-39.5}` → `p.x--39.5` is a
-  SyntaxError. Always wrap: `(${v})`.
-- **Dread/aim scenes must `setFollow(false)` first** — a following camera drags the
-  spirit back and shrinks the measured distance.
-- **World start is nondeterministic** across QA runs (the hero spawns at different
-  `x` each run). Do not hardcode coordinates; read them fresh from the running world.
-- **`getComputedStyle(el).display` of a child inside a `display:none` container still
-  returns the child's own display.** Use `el.getClientRects().length` for "is it
-  actually visible."
+**CDP / QA driver:**
+- A backgrounded tab's `rAF` is frozen — its sim stops; only the companion pump
+  (~1 Hz) keeps the network alive. Scenes needing the host world RUNNING must
+  `host.front()` first. Sample from the driver side, in real time.
+- Two reads <1.5 s apart on a backgrounded tab hit the same pump tick and look
+  "frozen" even when the stream works.
+- **Kill orphaned `msedge.exe` between runs** — a dozen leftovers from failed runs
+  throttle the sim to ~10 fps (`frameMs:100`) and make healthy scenes flaky:
+  `taskkill //F //IM msedge.exe`.
+- Synthetic `keyup` events do NOT reliably clear held keys under headless CDP — use
+  the `MM.ghostClient._playStop()` seam to halt the guest hero deterministically.
+- Read paired values (e.g. mem-vs-disk XP) **atomically in one eval** — deeds keep
+  banking between two evals and the comparison lies.
+- The deed-queue persistence pattern: a backgrounded guest banks deeds at ~1 Hz, so
+  before a reload you must foreground → drain (≈700 ms) → `_flushForTest()`.
+
+**World-state scenes:**
+- Terrain carves must keep the tile UNDER an actor's feet: `floorRow =
+  Math.ceil(b.y + 0.46)` — `Math.round(b.y)` clears the footing and drops the body.
+- A cell you intend to mine needs a TALL air column above it — loose sand/gravel
+  cascades into the hole during the ~2 s mine window and masks the break.
+- Spawning a hunter for combat scenes: pick `alwaysAggro` (a leveled host scares
+  normal mobs into fleeing before contact), `!sunriseBurn` (skeletons burn in
+  daylight), `hp >= 60` (fragile mobs die/despawn), ground/!aquatic/!flying.
+  `MM.mobs.setAggro(id)` latches species aggression for 5 min.
+- World start is nondeterministic per run — never hardcode coordinates; read them
+  from the running world.
+- Negative-coordinate interpolation in evals: `p.x-${-39.5}` is a SyntaxError —
+  always wrap `(${v})`.
+- `getComputedStyle(el).display` of a child inside a `display:none` container
+  returns the child's own display — use `el.getClientRects().length` for
+  "actually visible."
 
 ---
 
-## 8. Definition of done for the whole feature
+## 8. Definition of done
 
-Full multiplayer is 100% when: two people on different machines can join one world;
-each has a hero with real movement, tools, combat, crafting, inventory, and survival;
-creatures treat every hero as a target; the world stays coherent across reconnects;
-and **no validated-by-nobody effect is ever possible from a modified guest client** —
-with the spectator ("ghost") experience still available as the lower rung of the same
-ladder. Every wave above is pinned in `ghost-sim` and exercised live in `ghost-qa`,
-and `npm run check` is green.
+Full multiplayer is 100% when: two people on different machines join one world;
+each has a hero with real movement, tools, weapons, crafting, inventory, and
+survival; every hostile system treats every hero as a target and every friendly
+system protects them; the world stays coherent across reconnects; the remaining
+design rulings (PvP/trading/fog/persistence) are decided, implemented, and pinned;
+and **no unvalidated effect is ever possible from a modified guest client** — with
+the spectator experience still available as the lower rungs of the same ladder.
+Every wave is pinned in `ghost-sim`, exercised live in `ghost-qa`, and
+`npm run check` is green.
 
-Start with **Wave A**. It retires the biggest architectural risk (the singleton
-`player`) first, and it's what makes an embodied guest feel like a real participant
-rather than a tourist the monsters ignore.
+**Start with Wave A2** (finish party-targeting — small, mechanical, cements the
+pattern), then give **Wave B** (real guest weapons) a full focused session.

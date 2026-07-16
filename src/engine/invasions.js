@@ -2456,12 +2456,44 @@ const invasions = (function(){
     return !!(hit && hit.blocked && Number.isFinite(aimX) && Number.isFinite(aimY) &&
       Math.hypot((hit.tx+0.5)-aimX,(hit.ty+0.5)-aimY) <= 1.65);
   }
+  // --- co-op party: embodied guests are heroes the invaders hunt too -------------
+  // Nearest party member (host hero or a guest body from MM.coopBodies) to (wx,wy).
+  // Bodies are host-tracked and player-like (x/y plus advisory vx/vy for aim-lead);
+  // their damage must land through body.hurt() so the host keeps authority over
+  // i-frames and the vitals stream. MM.coopBodies is empty in solo play and absent
+  // in the Node sims — the early return keeps every caller at zero cost there.
+  function nearestPartyMember(wx,wy,player){
+    const bodies=(typeof MM!=='undefined' && MM.coopBodies) || null;
+    if(!bodies || !bodies.length) return player;
+    let best=player, bd=(player && Number.isFinite(player.x) && Number.isFinite(player.y)) ? (player.x-wx)*(player.x-wx)+(player.y-wy)*(player.y-wy) : Infinity;
+    for(const b of bodies){
+      if(!b || b.dead || typeof b.hurt!=='function' || !Number.isFinite(b.x) || !Number.isFinite(b.y)) continue;
+      const d=(b.x-wx)*(b.x-wx)+(b.y-wy)*(b.y-wy);
+      if(d<bd){ bd=d; best=b; }
+    }
+    return best;
+  }
+  function hurtPartyTarget(tgt,dmg,opts){
+    if(tgt && typeof tgt.hurt==='function'){ tgt.hurt(dmg,opts.srcX,opts.srcY,opts.cause); return; }
+    try{ if(root.damageHero) root.damageHero(dmg,opts); }catch(e){}
+  }
+  // The squad brain hunts the party member nearest to the squad's center — a guest
+  // standing in the landing zone gets engaged instead of marched past toward a
+  // distant host. Solo play: no bodies, the host comes back untouched.
+  function squadPartyTarget(steerable,player){
+    const bodies=(typeof MM!=='undefined' && MM.coopBodies) || null;
+    if(!bodies || !bodies.length || !steerable.length) return player;
+    let cx=0, cy=0;
+    for(const u of steerable){ cx+=u.x; cy+=u.y; }
+    return nearestPartyMember(cx/steerable.length, cy/steerable.length, player);
+  }
   function fireAlienLaser(a,team,player,getTile,setTile,ctx,opts){
     opts = opts || {};
     const profile = profileFor(team);
     const threat = teamThreatLevel(team);
     const weaponTier = Math.max(teamWeaponTier(team), Number(a && a.weaponTier) || 0);
     const range = profile.fireRange + Math.min(6, (team.day || 1) * 0.35) + Math.min(4, Math.max(0, threat - (team.day || 1)) * 0.11) + weaponTier * 0.8;
+    const tgt = nearestPartyMember(a.x,a.y,player); // shots chase the nearest hero, host or guest
     const ox = a.x + (a.facing || 1) * 0.23;
     const oy = a.y - 0.62;
     let aimX, aimY;
@@ -2471,8 +2503,8 @@ const invasions = (function(){
     } else {
       // lead the hero, degraded by the role's aim quality
       const wobble = Math.min(0.55, Math.max(0, 1 - (opts.aim || 0.9)) * 1.2);
-      aimX = (Number.isFinite(player.vx) ? player.x + player.vx * 0.08 : player.x) + randRange(-wobble,wobble);
-      aimY = (Number.isFinite(player.vy) ? player.y - 0.52 + player.vy * 0.035 : player.y - 0.52) + randRange(-wobble,wobble);
+      aimX = (Number.isFinite(tgt.vx) ? tgt.x + tgt.vx * 0.08 : tgt.x) + randRange(-wobble,wobble);
+      aimY = (Number.isFinite(tgt.vy) ? tgt.y - 0.52 + tgt.vy * 0.035 : tgt.y - 0.52) + randRange(-wobble,wobble);
     }
     const hit = traceLine(ox,oy,aimX,aimY,getTile,range);
     const weaponBoost = 1 + weaponTier * 0.08;
@@ -2480,14 +2512,12 @@ const invasions = (function(){
     pushLaser(ox,oy,hit.x,hit.y,hit.clear,hit.blocked,dmgMult >= 1.5 || weaponTier >= 2,'alien',weaponTier);
     a.lastShotAt = nowMs();
     if(hit.clear && !tileAim){
-      try{
-        if(root.damageHero) root.damageHero(Math.max(1, Math.round((5 + Math.min(6, Math.floor(threat / 5))) * dmgMult)), {srcX:a.x,srcY:a.y-0.4,kb:3.5,kbY:-2.2,invulMs:430,cause:'alien_invasion'});
-      }catch(e){}
+      hurtPartyTarget(tgt, Math.max(1, Math.round((5 + Math.min(6, Math.floor(threat / 5))) * dmgMult)), {srcX:a.x,srcY:a.y-0.4,kb:3.5,kbY:-2.2,invulMs:430,cause:'alien_invasion'});
       return hit;
     }
     const breakRange = opts.breach ? profile.breachRange : 7.5;
     if((tileAim && opts.breach && isAimedBreachHit(hit,aimX,aimY) && isAttackableStructureTile(hit.tile)) ||
-       shouldBreakBlockedTile(hit,player,breakRange)){
+       shouldBreakBlockedTile(hit,tgt,breakRange)){
       const damaged = damageStructureTile(hit.tx,hit.ty,(3.6 + Math.min(4.4, threat * 0.20)) * dmgMult,getTile,setTile,ctx);
       if(damaged){
         triggerTeamSpeech(team,'breach',{speaker:a,x:hit.tx+0.5,y:hit.ty+0.5,cooldown:1900,keyCooldown:6200,override:false});
@@ -2519,6 +2549,7 @@ const invasions = (function(){
     const weaponTier = Math.max(teamWeaponTier(team), Number(a && a.weaponTier) || 0);
     const role = a && a.role || 'rusher';
     const range = profile.fireRange + Math.min(3.8, (team.day || 1) * 0.18) + weaponTier * 0.45;
+    const tgt = nearestPartyMember(a.x,a.y,player); // shots chase the nearest hero, host or guest
     const ox = a.x + (a.facing || 1) * 0.22;
     const oy = a.y - 0.52;
     let aimX, aimY;
@@ -2527,8 +2558,8 @@ const invasions = (function(){
       aimX = opts.aimX; aimY = opts.aimY;
     } else {
       const wobble = Math.min(0.78, Math.max(0, 1 - (opts.aim || 0.74)) * 1.5);
-      aimX = (Number.isFinite(player.vx) ? player.x + player.vx * 0.06 : player.x) + randRange(-wobble,wobble);
-      aimY = (Number.isFinite(player.vy) ? player.y - 0.44 + player.vy * 0.03 : player.y - 0.44) + randRange(-wobble,wobble);
+      aimX = (Number.isFinite(tgt.vx) ? tgt.x + tgt.vx * 0.06 : tgt.x) + randRange(-wobble,wobble);
+      aimY = (Number.isFinite(tgt.vy) ? tgt.y - 0.44 + tgt.vy * 0.03 : tgt.y - 0.44) + randRange(-wobble,wobble);
     }
     const hit = traceLine(ox,oy,aimX,aimY,getTile,range);
     const weaponBoost = 1 + weaponTier * 0.07;
@@ -2537,15 +2568,13 @@ const invasions = (function(){
     pushLaser(ox,oy,hit.x,hit.y,hit.clear,hit.blocked,heavy,heavy ? 'mole_lava' : 'mole_fire',weaponTier);
     a.lastShotAt = nowMs();
     if(hit.clear && !tileAim){
-      try{
-        if(root.damageHero) root.damageHero(Math.max(1, Math.round((4 + Math.min(7, Math.floor(threat / 4))) * dmgMult)), {srcX:a.x,srcY:a.y-0.35,kb:2.7,kbY:-1.9,invulMs:430,cause:'molekin_invasion'});
-      }catch(e){}
-      if(Math.random() < (heavy ? 0.38 : 0.16)) tryPlaceMoleHazard(team,floor(hit.x),floor(hit.y+0.55),player,getTile,setTile,ctx,heavy);
+      hurtPartyTarget(tgt, Math.max(1, Math.round((4 + Math.min(7, Math.floor(threat / 4))) * dmgMult)), {srcX:a.x,srcY:a.y-0.35,kb:2.7,kbY:-1.9,invulMs:430,cause:'molekin_invasion'});
+      if(Math.random() < (heavy ? 0.38 : 0.16)) tryPlaceMoleHazard(team,floor(hit.x),floor(hit.y+0.55),tgt,getTile,setTile,ctx,heavy);
       return hit;
     }
     const breakRange = opts.breach ? profile.breachRange : 6.5;
     if((tileAim && opts.breach && isAimedBreachHit(hit,aimX,aimY) && isBreachableByTeam(team,hit.tile)) ||
-       shouldBreakBlockedTileForTeam(team,hit,player,breakRange)){
+       shouldBreakBlockedTileForTeam(team,hit,tgt,breakRange)){
       const damaged = damageTeamTile(team,hit.tx,hit.ty,(5.6 + Math.min(6.4, threat * 0.28)) * dmgMult,getTile,setTile,ctx);
       if(damaged){
         if(Math.random() < 0.33) tryPlaceMoleHazard(team,hit.tx,hit.ty-1,player,getTile,setTile,ctx,heavy);
@@ -2773,8 +2802,10 @@ const invasions = (function(){
     const intent = a._ai && a._ai.intent ? a._ai.intent : null;
     const threat = teamThreatLevel(team);
     const grade = teamGrade(team);
-    const px = player && Number.isFinite(player.x) ? player.x : a.x;
-    const py = player && Number.isFinite(player.y) ? player.y : a.y;
+    // melee and facing track the NEAREST party member — host hero or a guest body
+    const tgt = nearestPartyMember(a.x,a.y,player);
+    const px = tgt && Number.isFinite(tgt.x) ? tgt.x : a.x;
+    const py = tgt && Number.isFinite(tgt.y) ? tgt.y : a.y;
     const dx = px - a.x;
     const dy = (py - 0.4) - (a.y - 0.45);
     const dist = Math.hypot(dx,dy) || 1;
@@ -2835,7 +2866,7 @@ const invasions = (function(){
     if(!dread && dist < profile.meleeRange && Math.abs(dy) < 1.0 && a.attackCd <= 0.15){
       const cause = isMolekinTeam(team) ? 'molekin_invasion' : 'alien_invasion';
       const baseDmg = isMolekinTeam(team) ? 4 : 3;
-      try{ if(root.damageHero) root.damageHero(Math.max(1,Math.round(baseDmg * (Number(a.damageMult) || 1))),{srcX:a.x,srcY:a.y,kb:isMolekinTeam(team)?2.1:2.4,invulMs:500,cause}); }catch(e){}
+      hurtPartyTarget(tgt, Math.max(1,Math.round(baseDmg * (Number(a.damageMult) || 1))), {srcX:a.x,srcY:a.y,kb:isMolekinTeam(team)?2.1:2.4,invulMs:500,cause});
       a.attackCd = 0.55;
     }
     const steps = Math.max(1, Math.min(4, Math.ceil(Math.max(Math.abs(a.vx || 0), Math.abs(a.vy || 0)) * dt / 0.25)));
@@ -2939,7 +2970,7 @@ const invasions = (function(){
       const steerable = team.aliens.filter(a => a && !a.dead && a.hp > 0 && !a.extract);
       if(steerable.length && player){
         const brain = ensureBrain(team);
-        brain.update(team, steerable, dt, player, teamHooks(team,player,getTile,setTile,ctx), {now});
+        brain.update(team, steerable, dt, squadPartyTarget(steerable,player), teamHooks(team,player,getTile,setTile,ctx), {now});
       }
       let alive = 0;
       for(const a of team.aliens){

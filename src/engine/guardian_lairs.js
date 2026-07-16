@@ -534,6 +534,39 @@ const guardianLairs = (function(){
     }catch(e){}
     return false;
   }
+  // --- co-op party: embodied guests are heroes the guardians fight too -----------
+  // The bodies live in MM.coopBodies (published by ghost_host, empty in solo play
+  // and absent in the Node sims — coopBodies() returns null there and every pass
+  // below stays zero-cost). Damage always lands through body.hurt(), so the host
+  // keeps authority over i-frames and the vitals stream. Fight lifecycle (awaken,
+  // leash, ambient despawn) intentionally stays host-anchored: the host owns the
+  // world and the story; the party shares the danger, not the trigger.
+  function coopBodies(){
+    const list=(typeof MM!=='undefined' && MM.coopBodies)||null;
+    return (list && list.length) ? list : null;
+  }
+  function bodyTargetable(b){
+    return !!(b && !b.dead && typeof b.hurt==='function' && Number.isFinite(b.x) && Number.isFinite(b.y));
+  }
+  function nearestPartyTarget(wx,wy,p){
+    const bodies=coopBodies();
+    if(!bodies) return p;
+    let best=p, bd=(p && Number.isFinite(p.x) && Number.isFinite(p.y)) ? dist2(wx,wy,p.x,p.y) : Infinity;
+    for(const b of bodies){
+      if(!bodyTargetable(b)) continue;
+      const d=dist2(wx,wy,b.x,b.y);
+      if(d<bd){ bd=d; best=b; }
+    }
+    return best;
+  }
+  function hurtBodiesInCircle(bodies,x,y,r,dmg,cause){
+    let hit=false;
+    for(const b of bodies){
+      if(!bodyTargetable(b)) continue;
+      if(dist2(x,y,b.x,b.y)<r*r){ b.hurt(dmg,x,y,cause); hit=true; }
+    }
+    return hit;
+  }
 
   function makeEntity(kind,role,x,y,opts){
     const spec=SPEC[kind];
@@ -956,17 +989,31 @@ const guardianLairs = (function(){
       }
     }else e.lastContact=0;
   }
+  // Contact damage for guest bodies: no separation shove (their movement is
+  // guest-authoritative), no shared cooldown — the body's host-side i-frames
+  // (hurtBody) rate-limit the hits, exactly like mobs' coopContactPass.
+  function updateContactBodies(e){
+    const bodies=coopBodies();
+    if(!bodies) return;
+    for(const b of bodies){
+      if(!bodyTargetable(b)) continue;
+      if(entityHitContains(e,b.x,b.y,e.boss?0.75:0.95)) b.hurt(e.boss?18:9,e.x,e.y,'guardian_contact');
+    }
+  }
   function updateEntity(e,p,getTile,setTile,dt){
     e.t+=dt;
     if(e.hitFlash>0) e.hitFlash-=dt;
     if(e.weakHint>0) e.weakHint-=dt;
     if(e.stormResetMsgCd>0) e.stormResetMsgCd-=dt;
     const L=layoutFor(e.kind);
+    // attacks aim at the NEAREST party member (host or embodied guest body)
+    const aim=nearestPartyTarget(e.x,e.y,p);
     if(e.boss){
-      if(e.kind==='fire') updateFireBoss(e,p,getTile,dt,L);
-      else updateIceBoss(e,p,getTile,setTile,dt,L);
-    }else updateSidekick(e,p,getTile,setTile,dt,L);
+      if(e.kind==='fire') updateFireBoss(e,aim,getTile,dt,L);
+      else updateIceBoss(e,aim,getTile,setTile,dt,L);
+    }else updateSidekick(e,aim,getTile,setTile,dt,L);
     updateContact(e,p,dt);
+    updateContactBodies(e);
     if(e.ambient && p && Math.abs(e.x-p.x)>120) e.dead=true;
     if(e.boss && Math.abs(e.x-L.ax)>CFG.COMBAT_RADIUS) e.dead=true;
   }
@@ -1234,6 +1281,7 @@ const guardianLairs = (function(){
     return null;
   }
   function updateHazards(dt,p,getTile,setTile){
+    const coop=coopBodies(); // null in solo play — every body pass below is skipped for free
     for(let i=hazards.length-1;i>=0;i--){
       const h=hazards[i];
       h.t+=dt;
@@ -1242,6 +1290,7 @@ const guardianLairs = (function(){
         if(h.t>=h.delay && !h.hit){
           h.hit=true;
           if(p && pointLineDist(p.x,p.y,h.x1,h.y1,h.x2,h.y2)<h.r) damageHero(h.dmg,h.x2,h.y2,'guardian_lightning');
+          if(coop) for(const b of coop){ if(bodyTargetable(b) && pointLineDist(b.x,b.y,h.x1,h.y1,h.x2,h.y2)<h.r) b.hurt(h.dmg,h.x2,h.y2,'guardian_lightning'); }
           damageCompanionAt(h.x2,h.y2,h.dmg,'guardian_lightning');
           impactLightningTerrain(h,getTile,setTile);
         }
@@ -1272,6 +1321,11 @@ const guardianLairs = (function(){
             remove=true;
             break;
           }
+          if(coop && hurtBodiesInCircle(coop,h.x,h.y,h.r+0.78,h.dmg,'guardian_storm_meteor')){
+            impactTerrain(h,getTile,setTile);
+            remove=true;
+            break;
+          }
           let struckBlock=false;
           if(typeof getTile==='function'){
             try{ struckBlock=isSolid(getTile(Math.floor(h.x),Math.floor(h.y))); }catch(e){ struckBlock=true; }
@@ -1281,6 +1335,7 @@ const guardianLairs = (function(){
             const landed=stormMeteorEntityHit(h);
             if(landed) resetEntityHealthFromStorm(landed,h);
             if(p && dist2(h.x,h.y,p.x,p.y)<(h.r+1.25)*(h.r+1.25)) damageHero(h.dmg,h.x,h.y,'guardian_storm_meteor');
+            if(coop) hurtBodiesInCircle(coop,h.x,h.y,h.r+1.25,h.dmg,'guardian_storm_meteor');
             damageCompanionAt(h.x,h.y,h.dmg,'guardian_storm_meteor');
             impactTerrain(h,getTile,setTile);
             remove=true;
@@ -1290,6 +1345,7 @@ const guardianLairs = (function(){
       }else if(h.type==='projectile'){
         h.x+=h.vx*dt; h.y+=h.vy*dt; h.vy+=(h.kind==='fire'?4.5:2.2)*dt;
         if(p && dist2(h.x,h.y,p.x,p.y)<(h.r+0.75)*(h.r+0.75)){ damageHero(h.dmg,h.x,h.y,'guardian_projectile'); remove=true; }
+        else if(coop && hurtBodiesInCircle(coop,h.x,h.y,h.r+0.75,h.dmg,'guardian_projectile')) remove=true;
         else if(damageCompanionAt(h.x,h.y,h.dmg,'guardian_projectile')) remove=true;
         else if(h.t>h.life || h.y>WORLD_H+5) remove=true;
         else if(typeof getTile==='function' && !isReplaceableNaturalOpenTile(getTile(Math.floor(h.x),Math.floor(h.y)),true)) remove=true;
@@ -1298,6 +1354,7 @@ const guardianLairs = (function(){
         if(h.t>=h.delay && !h.hit){
           h.hit=true;
           if(p && dist2(h.x,h.y,p.x,p.y)<(h.r+0.85)*(h.r+0.85)) damageHero(h.dmg,h.x,h.y,'guardian_impact');
+          if(coop) hurtBodiesInCircle(coop,h.x,h.y,h.r+0.85,h.dmg,'guardian_impact');
           damageCompanionAt(h.x,h.y,h.dmg,'guardian_impact');
           impactTerrain(h,getTile,setTile);
         }
@@ -1311,6 +1368,7 @@ const guardianLairs = (function(){
           }
           const f=(h.t-h.delay)/Math.max(0.01,h.life);
           if(p && pointLineDist(p.x,p.y,h.x1,h.y1,h.x2,h.y2)<h.r+0.45) damageHero(h.dmg,h.x1,h.y1,'guardian_beam');
+          if(coop) for(const b of coop){ if(bodyTargetable(b) && pointLineDist(b.x,b.y,h.x1,h.y1,h.x2,h.y2)<h.r+0.45) b.hurt(h.dmg,h.x1,h.y1,'guardian_beam'); }
           if(f>0.25 && !h.scored){
             h.scored=true;
             const steps=10;
@@ -1329,6 +1387,7 @@ const guardianLairs = (function(){
             const d=Math.hypot(p.x-h.x,p.y-h.y);
             if(Math.abs(d-r)<1.5) damageHero(h.dmg,h.x,h.y,'guardian_ring');
           }
+          if(coop) for(const b of coop){ if(bodyTargetable(b) && Math.abs(Math.hypot(b.x-h.x,b.y-h.y)-r)<1.5) b.hurt(h.dmg,h.x,h.y,'guardian_ring'); }
           if(!h.scored && f>0.55){
             h.scored=true;
             for(let k=0;k<16;k++){
@@ -1344,6 +1403,8 @@ const guardianLairs = (function(){
           if(h.pulse<=0){ damageHero(h.dmg,h.x,h.y,'guardian_blizzard'); h.pulse=0.55; }
           if(typeof p.vx==='number') p.vx*=0.88;
         }
+        // guest bodies: no slow (movement is guest-authoritative), damage paced by their i-frames
+        if(coop) hurtBodiesInCircle(coop,h.x,h.y,h.r,h.dmg,'guardian_blizzard');
         if(h.t>h.life) remove=true;
       }
       if(remove) hazards.splice(i,1);

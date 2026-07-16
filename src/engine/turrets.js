@@ -123,6 +123,22 @@ const turrets = (function(){
     return m;
   }
 
+  // --- co-op party: turrets defend embodied guests too ---------------------------
+  // MM.coopBodies (published by ghost_host) is empty in solo play and absent in the
+  // Node sims, so both helpers below cost nothing there. A turret near a guest stays
+  // awake and scanning even when the host hero is on the other side of the world.
+  function coopBodies(){
+    const list=(typeof MM!=='undefined' && MM.coopBodies) || null;
+    return (list && list.length) ? list : null;
+  }
+  function coopBodyNear(bodies,x,y){
+    if(!bodies) return false;
+    for(const b of bodies){
+      if(!b || b.dead || !Number.isFinite(b.x) || !Number.isFinite(b.y)) continue;
+      if(Math.abs(x-b.x)<=ACTIVE_RX && Math.abs(y-b.y)<=ACTIVE_RY) return true;
+    }
+    return false;
+  }
   function scanNearby(player,getTile){
     if(!player || typeof getTile!=='function') return;
     const cx=Math.floor(Number(player.x)||0);
@@ -656,10 +672,13 @@ const turrets = (function(){
     if(!(dt>0) || !Number.isFinite(dt)) return;
     updateFx(Math.min(0.08,dt));
     if(typeof getTile!=='function') return;
+    const coop=coopBodies();
     scanT-=dt;
     if(scanT<=0){
       scanT=PLAYER_SCAN_INTERVAL;
       scanNearby(player,getTile);
+      // bodies are player-like (x/y) — discover turrets standing near a guest too
+      if(coop) for(const b of coop){ if(!b.dead) scanNearby(b,getTile); }
     }
     const dynamo=opts && opts.dynamo;
     const hasPlayer=!!(player && Number.isFinite(player.x) && Number.isFinite(player.y));
@@ -675,7 +694,7 @@ const turrets = (function(){
       m.scanT=Math.max(0,(m.scanT||0)-dt);
       m.pulse=Math.max(0,(m.pulse||0)-dt*2.8);
       m.activeT=Math.max(0,(m.activeT||0)-dt);
-      if(hasPlayer && (Math.abs(m.x-px)>ACTIVE_RX || Math.abs(m.y-py)>ACTIVE_RY)){
+      if(hasPlayer && (Math.abs(m.x-px)>ACTIVE_RX || Math.abs(m.y-py)>ACTIVE_RY) && !coopBodyNear(coop,m.x,m.y)){
         m.target=null;
         m.scanT=0;
         m.remoteChargeT=Math.min(REMOTE_CHARGE_INTERVAL*2,(m.remoteChargeT||0)+dt);

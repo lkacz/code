@@ -758,7 +758,8 @@ const ghostHost = (function(){
 			list.push([entry.gid, entry.name || 'Duch', +b.x.toFixed(2), +b.y.toFixed(2), +(b.vx || 0).toFixed(2), +(b.vy || 0).toFixed(2), b.f < 0 ? -1 : 1, +b.hp.toFixed(1), b.maxHp, b.dead ? 1 : 0]);
 			if(!b.dead){
 				if(!entry.bodyLike) entry.bodyLike = { w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, dead: false, hurt: (a, sx, sy, c) => hurtBody(s, entry, a, sx, sy, c) };
-				entry.bodyLike.x = b.x; entry.bodyLike.y = b.y; entry.bodyLike.dead = false;
+				// vx/vy are advisory (aim-lead for party-aware attackers) — never authority
+				entry.bodyLike.x = b.x; entry.bodyLike.y = b.y; entry.bodyLike.vx = b.vx || 0; entry.bodyLike.vy = b.vy || 0; entry.bodyLike.dead = false;
 				pub.push(entry.bodyLike);
 			}
 		}
