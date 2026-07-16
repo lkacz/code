@@ -1224,8 +1224,18 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 		'thermal exposure samples the env at the BODY and pays the hero causes/caps');
 	assert.ok(/SURVIVAL\.thermalExposureMode\(\{climate, temp, sheltered, inWater:!!inWater, nearWarmth: heroNearWarmth\(cx, cy\)\}\);/.test(mainSrc),
 		'the thermal seam builds the SAME env the host samples for itself');
-	assert.ok(/resetSwimChill\(b\.chillSt\);/.test(hostSrc) && /resetThermal\(b\.thermSt\);/.test(hostSrc),
-		'a respawned body starts warm and dry');
+	assert.ok(/resetSwimChill\(b\.chillSt\);/.test(hostSrc) && /resetThermal\(b\.thermSt\);/.test(hostSrc)
+		&& /resetWaterPressure\(b\.pressSt\);/.test(hostSrc),
+		'a respawned body starts warm, dry and decompressed');
+	// deep-water pressure: the hero's own stack law, caps and implosion rule
+	assert.ok(/SURV\.updateWaterPressure\(b\.pressSt, dt, stack, 0, headCovered\)/.test(hostSrc),
+		'water pressure runs the hero law with the BASE crush capacity (guests carry no Twardość)');
+	assert.ok(/pr\.implode \? Math\.max\(b\.maxHp \+ 20, pr\.damage\) : Math\.min\(24, pr\.damage\); \/\/ the hero's own caps/.test(hostSrc)
+		&& /if\(pr\.implode\) b\.invulUntil = 0;/.test(hostSrc) && /hurtBody\(s, entry, dmg, NaN, NaN, 'water_pressure'\);/.test(hostSrc),
+		'pressure damage pays the hero caps, implosion ignores i-frames, all through hurtBody');
+	assert.ok(/ghostPlayWaterStack:\(x,headY\)=>\{/.test(mainSrc) && /return waterStackAboveY\(Math\.floor\(x\), headY\);/.test(mainSrc),
+		'the stack seam reuses the hero’s own partial-aware column computation');
+	assert.ok(/pl\.k === 'pressure'/.test(clientSrc), 'the guest hears the pressure warning');
 	// client: food chips EAT, drops route to pickup, warnings are display-only
 	assert.ok(/if\(food\)\{ sendPlayAct\('eat', 0, 0, k\); return; \}/.test(clientSrc), 'a food chip eats on click');
 	assert.ok(/if\(hov && hov\.kind === 'resource'\)\{ sendPlayAct\('pickup', w\.x, w\.y\); return; \}/.test(clientSrc),

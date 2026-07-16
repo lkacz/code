@@ -1039,6 +1039,23 @@ const ghostHost = (function(){
 				if(SURV.consumeSwimChillDamage) SURV.consumeSwimChillDamage(b.chillSt, dmg);
 			}
 		}
+		// deep-water pressure: the continuous water stack over the head, the hero's
+		// own law and caps with the BASE crush capacity (a guest carries no Twardość)
+		if(SURV && SURV.updateWaterPressure && bridge.ghostPlayWaterStack){
+			const headY = b.y - 0.35;
+			const headCovered = bridge.getTile(Math.floor(b.x), Math.floor(headY)) === TT.WATER;
+			if(!b.pressSt) b.pressSt = SURV.createWaterPressureState ? SURV.createWaterPressureState() : { damageAcc: 0, warned: false };
+			let stack = 0;
+			try{ stack = headCovered ? (Number(bridge.ghostPlayWaterStack(b.x, headY)) || 0) : 0; }catch(e){ stack = 0; }
+			const pr = SURV.updateWaterPressure(b.pressSt, dt, stack, 0, headCovered);
+			if(pr.warn){ try{ entry.peer.send({ t: 'pwarn', k: 'pressure' }); }catch(e){ /* fine */ } }
+			if(pr.damage > 0 && (t >= (b.invulUntil || 0) || pr.implode)){
+				const dmg = pr.implode ? Math.max(b.maxHp + 20, pr.damage) : Math.min(24, pr.damage); // the hero's own caps
+				if(pr.implode) b.invulUntil = 0; // an implosion ignores i-frames, exactly like the hero's
+				hurtBody(s, entry, dmg, NaN, NaN, 'water_pressure');
+				if(SURV.consumeWaterPressureDamage) SURV.consumeWaterPressureDamage(b.pressSt, dmg);
+			}
+		}
 		// thermal exposure: the env is sampled at the BODY through the bridge seam
 		// (climate + ambient temp + shelter + warmth), cached 500 ms like the hero's
 		if(SURV && SURV.updateThermalExposure && bridge.ghostPlayThermalMode){
@@ -1076,6 +1093,7 @@ const ghostHost = (function(){
 				if(b.drownSt && MMR && MMR.survival && MMR.survival.resetDrowning) MMR.survival.resetDrowning(b.drownSt);
 				if(b.chillSt && MMR && MMR.survival && MMR.survival.resetSwimChill) MMR.survival.resetSwimChill(b.chillSt);
 				if(b.thermSt && MMR && MMR.survival && MMR.survival.resetThermal) MMR.survival.resetThermal(b.thermSt);
+				if(b.pressSt && MMR && MMR.survival && MMR.survival.resetWaterPressure) MMR.survival.resetWaterPressure(b.pressSt);
 				try{ entry.peer.send({ t: 'prespawn', x: +b.x.toFixed(2), y: +b.y.toFixed(2) }); }catch(e){ /* fine */ }
 				sendVitals(s, entry);
 			}

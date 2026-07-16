@@ -16179,6 +16179,12 @@ MM.ghostBridge={
 		if(!D.remove(info.id)) return {ok:false, reason:'gone'};
 		return {ok:true, key:String(info.res||'').slice(0,24), qty:Math.max(1,Math.min(99,Number(info.qty)||1))};
 	},
+	// Guest water pressure: the SAME continuous-stack computation the hero uses
+	// (partial-aware via waterStackAboveY), at the body's coordinates.
+	ghostPlayWaterStack:(x,headY)=>{
+		if(!Number.isFinite(x)||!Number.isFinite(headY)) return 0;
+		return waterStackAboveY(Math.floor(x), headY);
+	},
 	// Guest thermal exposure: the SAME env law the host samples for itself
 	// (climate band + ambient temperature + shelter + warmth), at the body's
 	// coordinates — world truth only, no client field.

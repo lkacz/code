@@ -388,6 +388,7 @@ const ghostClient = (function(){
 				if(pl.k === 'chill') bridge.msg('🥶 Woda wychładza — wyjdź na brzeg!');
 				else if(pl.k === 'cold') bridge.msg('🥶 Mróz przenika do kości — znajdź ciepło albo schronienie!');
 				else if(pl.k === 'heat') bridge.msg('🥵 Upał wysusza — schłodź się w wodzie albo w cieniu!');
+				else if(pl.k === 'pressure') bridge.msg('🌊 Ciśnienie wody rośnie — wynurz się wyżej!');
 			}
 			return;
 		}

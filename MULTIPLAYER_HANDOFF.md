@@ -211,9 +211,15 @@ already proves the identical plumbing; staging a genuinely treading body through
 background tab's clamped physics proved fragile). Plus a real fix: sibling tabs
 share the career key, and a throttled background tab's late flush used to STOMP
 the fresher write — profile flushes now MERGE monotonically (max counts, union
-done/days, max xp). **Still open:** hunger drain (the hero has none — parity says
-guests get none either unless the game grows one), status effects
-(`hero_status.js` chips), water pressure, per-guest gravestone.
+done/days, max xp). **Water pressure (2026-07-16):** the fourth survival law — the continuous
+water stack over the body's head (the hero's own partial-aware
+`waterStackAboveY` via the `ghostPlayWaterStack` seam) runs
+`updateWaterPressure` per body with the BASE crush capacity (guests carry no
+Twardość gear), the hero's caps (24 / implosion ignores i-frames), a `pwarn`
+toast, decompression on respawn. Pins-only QA like swim-chill/thermal — the
+drowning scene proves the identical plumbing live. **Still open:** hunger
+drain (the hero has none — parity says guests get none either), status
+effects (`hero_status.js` chips — the last survival item).
 
 ### Wave E — Design rulings & polish — 🟡 RULINGS SHIPPED (2026-07-16)
 **Owner rulings received, implemented and pinned:**
