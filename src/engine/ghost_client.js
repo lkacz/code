@@ -2133,6 +2133,9 @@ const ghostClient = (function(){
 		// (the wire path, host validation and the ack accounting stay production)
 		_heroMine: (tx, ty) => heroIntents.mineBreak(tx, ty),
 		_heroPlace: (tx, ty, tid, layer) => heroIntents.place(tx, ty, tid, layer || 'fg'),
+		_heroUse: (tx, ty) => heroIntents.use(tx, ty),
+		_heroPickup: (wx, wy) => heroIntents.pickup(wx, wy),
+		_heroShoot: (vx, vy, dmg) => heroIntents.shoot({ vx, vy, dmg }),
 		_heroSave: () => { saveHeroState(true); },
 		// QA: deterministically halt the embodied hero (clears held keys + velocity).
 		// Synthetic keyup events do not reliably clear `held` under headless CDP.

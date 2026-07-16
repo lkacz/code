@@ -1765,6 +1765,61 @@ async function main(){
 		if(!heroKept || heroKept.stone < 1) throw new Error('the hero state never persisted: ' + JSON.stringify(heroKept));
 		console.log('hero mode: ok (fresh kit wiped the host riches, real UI back, mined via hact into own inv, placed back, state persisted)');
 
+		// --- Scene 10r: HERO loot & combat loop — chests, pickups, host arrows, safe death ---------------
+		// The full reward cycle under the trust contract: the HOST opens the chest
+		// (its economy), the loot bursts as world drops, the guest scoops a resource
+		// into its OWN inventory; a shot flies as a REAL host arrow; death keeps
+		// the guest's inventory whole (the grave is a world mechanic).
+		await host.front();
+		const chestSpot = await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies[0];
+			const x=Math.round(b.x)-2, y=Math.round(b.y);
+			const chestId=MM.T[Object.keys(MM.T).find(k=>/CHEST/.test(k) && (MM.INFO||window.INFO||{})[MM.T[k]] )] ?? null;
+			// find any tile id with a chestTier in INFO (registry-driven, no name guessing)
+			let cid=null; const INF=window.INFO||MM.INFO;
+			if(INF){ for(const id of Object.keys(INF)){ if(INF[id] && INF[id].chestTier==='common'){ cid=+id; break; } }
+				if(cid==null) for(const id of Object.keys(INF)){ if(INF[id] && INF[id].chestTier){ cid=+id; break; } } }
+			if(cid==null) return {err:'no-chest-id'};
+			for(let dx=-1;dx<=1;dx++) for(let yy=y-6; yy<y; yy++) MM.world.setTile(x+dx, yy, MM.T.AIR);
+			MM.world.setTile(x, y+1, MM.T.STONE);
+			MM.world.setTile(x, y, cid);
+			const d0=MM.drops._debug.list.length;
+			return {x, y, cid, d0};
+		})()`);
+		if(chestSpot.err) throw new Error('no chest tile id found in INFO: ' + JSON.stringify(chestSpot));
+		await ghost.eval(`MM.ghostClient._heroUse(${chestSpot.x}, ${chestSpot.y})`);
+		await host.poll(`MM.world.getTile(${chestSpot.x},${chestSpot.y}) !== ${chestSpot.cid} ? 1 : 0`,
+			v => v === 1, 'the chest tile opens on the host', 40, 250);
+		// count NEAR the chest — a global count races the drops reaper eating old spills
+		const burst = await host.poll(`MM.drops._debug.list.filter(d=>Math.abs(d.x-${chestSpot.x})<7 && Math.abs(d.y-${chestSpot.y})<7).length`,
+			v => v > 0, 'the chest loot bursts as world drops', 40, 250);
+		// scoop the nearest RESOURCE drop through the pickup intent
+		const dropPick = await host.eval(`(()=>{
+			const d=MM.drops._debug.list.find(d=>d.kind==='resource' && Math.abs(d.x-${chestSpot.x})<8 && Math.abs(d.y-${chestSpot.y})<8);
+			return d ? {x:+d.x.toFixed(1), y:+d.y.toFixed(1), res:d.res} : null;
+		})()`);
+		if(dropPick){
+			const invBefore = await ghost.eval(`window.inv['${dropPick.res}']|0`);
+			await sleep(1200); // let the drops plane replicate to the guest (1 Hz)
+			await ghost.eval(`MM.ghostClient._heroPickup(${dropPick.x}, ${dropPick.y})`);
+			await ghost.poll(`window.inv['${dropPick.res}']|0`, v => v > invBefore, 'the scooped drop credits the guest inventory', 40, 250);
+		}
+		// a shot becomes a REAL host arrow, coop-attributed
+		await ghost.eval(`MM.ghostClient._heroShoot(14, -2, 6)`);
+		await host.poll(`(MM.weapons._debug.arrows||[]).filter(a=>a.coopOwner).length`, v => v >= 1,
+			'the guest projectile flies as a real host arrow', 40, 250);
+		// death keeps the guest inventory whole (no grave halving, no replica spill)
+		const deathCheck = await ghost.eval(`(()=>{
+			const s0=window.inv.stone|0, d0=MM.drops._debug.list.length;
+			window.heroDied('qa');
+			return {s0, d0, s1:window.inv.stone|0, d1:MM.drops._debug.list.length};
+		})()`);
+		if(deathCheck.s1 !== deathCheck.s0) throw new Error('death halved the hero-guest inventory: ' + JSON.stringify(deathCheck));
+		if(deathCheck.d1 !== deathCheck.d0) throw new Error('death spilled replica-local grave drops: ' + JSON.stringify(deathCheck));
+		console.log('hero loot loop: ok (chest opened by the host, ' + burst + ' drops burst, '
+			+ (dropPick ? 'resource scooped into guest inv, ' : 'no resource in this chest roll, ')
+			+ 'host arrow flew, death kept the inventory)');
+
 		// --- Scene 11: permission downgrade — watch-only means watch-only ------------------------------
 		const gidOnHost = (await host.eval(`MM.ghostHost.metrics().viewers`))[0].gid;
 		await host.eval(`MM.ghostHost.setViewerMode('${gidOnHost}', 'watch')`);
