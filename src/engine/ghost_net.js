@@ -48,11 +48,16 @@ export function socialBoosts(activeViewers){
 
 // Watcher permission ladder (host-controlled, per viewer):
 //   watch — presence only; chat — may also send short texts; full — may also buff;
-//   play  — EMBODIED: an own hero in the host's world (move, mine, build, fight).
-// The ladder is strictly inclusive: play ⊇ full ⊇ chat ⊇ watch, so promoting a
-// ghost to a player never takes away a spectator ability — the ghost system
+//   play  — EMBODIED: an own hero in the host's world (move, mine, build, fight);
+//   hero  — FULL GAME: the guest runs the real hero systems locally (hotbar,
+//           crafting, inventory, XP — its own local truth by the owner's trust
+//           ruling) while the host still validates every WORLD effect (tile
+//           writes, entity damage) with solo-grade rules. play remains the
+//           zero-trust option; hero is the friends-coop parity option.
+// The ladder is strictly inclusive: hero ⊇ play ⊇ full ⊇ chat ⊇ watch, so
+// promoting a ghost never takes away a lower ability — the ghost system
 // remains the default and the safe floor.
-export const PERMISSION_MODES = ['watch', 'chat', 'full', 'play'];
+export const PERMISSION_MODES = ['watch', 'chat', 'full', 'play', 'hero'];
 export function validPermissionMode(m){ return PERMISSION_MODES.includes(m); }
 export function modeAllows(mode, need){
 	const have = PERMISSION_MODES.indexOf(mode);
@@ -119,6 +124,26 @@ export function validPlayFood(k){
 export const GID_KEY = 'mm_ghost_gid_v1';
 export const GID_LEASE_KEY = 'mm_ghost_gid_lease_v1';
 export const GID_LEASE_MS = 8000;
+// --- hero mode: the full-game guest --------------------------------------------------
+// Authority split (the owner's trust ruling for friends co-op): the guest's PLAYER
+// state — inventory, gear, XP, vitals — is its own LOCAL truth, persisted in the
+// guest browser under HERO_KEY. The host protects only the shared WORLD: every
+// tile write and every entity-damage application is validated here with the same
+// rules the solo player obeys (reach, rate, mineability, placement legality,
+// damage envelope). A modified hero client can gild its own trophy case; it still
+// cannot write a single illegal tile or one-shot a boss.
+export const HERO_KEY = 'mm_ghost_hero_v1';
+export const HERO_ACTIONS = ['mine', 'place', 'dmg'];
+export function validHeroAction(a){ return HERO_ACTIONS.includes(a); }
+export const HERO_RULES = {
+	REACH: 6,        // solo MINE/PLACE reach is 5; +1 tolerance for pose-stream lag
+	MINE_MS: 100,    // per-guest floor between accepted tile breaks
+	PLACE_MS: 90,    // per-guest floor between accepted placements
+	DMG_MS: 120,     // per-guest floor between damage applications
+	DMG_MAX: 45,     // one application may carry at most this much damage
+	DMG_RADIUS: 7,   // claimed impact point must be within this of the tracked body
+	HP_MAX: 1000     // claimed vitals (display/targeting truth) are clamped into [0, this]
+};
 export const PLAY_ACTIONS = ['mine', 'place', 'strike', 'attack', 'craft', 'duel', 'pickup', 'eat'];
 export function validPlayAction(a){ return PLAY_ACTIONS.includes(a); }
 // --- the guest arsenal -------------------------------------------------------------
@@ -970,6 +995,7 @@ const api = {
 	PLAY_RULES, PLAY_ACTIONS, validPlayAction, playReachOk, clampBodyStep, pouchAdd, pouchTake,
 	PLAY_WEAPONS, PLAY_STARTER_WEAPONS, PLAY_STARTER_AMMO, validPlayWeapon, playAimDir,
 	GID_KEY, GID_LEASE_KEY, GID_LEASE_MS, PLAY_RECIPES, validPlayRecipe, pouchAfford, pouchSpend,
+	HERO_KEY, HERO_ACTIONS, validHeroAction, HERO_RULES,
 	PLAY_FOODS, validPlayFood, LOOK_KEY, validLookColor,
 	SPIRIT_AVOID, spiritLift, PING,
 	DREAD, dreadAt, POWER_RULES, POWER_CHARGE, validPowerKind, chargeAfter, ASSIST_ACTIONS, validAssistAction,

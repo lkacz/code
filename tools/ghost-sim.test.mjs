@@ -187,7 +187,15 @@ assert.deepEqual(NET.ASSIST_ACTIONS, ['craft', 'equip', 'unequip'], 'the assista
 assert.ok(!NET.validAssistAction('setTile') && !NET.validAssistAction('teleport'), 'world-editing actions are not assistant actions');
 
 // --- permission ladder & avatars ------------------------------------------------------
-assert.deepEqual(NET.PERMISSION_MODES, ['watch', 'chat', 'full', 'play'], 'the four-mode ladder (play = embodied)');
+assert.deepEqual(NET.PERMISSION_MODES, ['watch', 'chat', 'full', 'play', 'hero'], 'the five-mode ladder (play = pouch embodiment, hero = full game)');
+assert.ok(NET.modeAllows('hero', 'play') && NET.modeAllows('hero', 'full') && NET.modeAllows('hero', 'watch'), 'hero ⊇ every lower rung');
+assert.ok(!NET.modeAllows('play', 'hero'), 'play is below hero');
+// hero-mode contract: the guest player state is guest-local truth; the world is
+// protected here — actions, rates and envelopes
+assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg'], 'the three hero world-intents');
+assert.ok(NET.validHeroAction('mine') && !NET.validHeroAction('craft') && !NET.validHeroAction('__proto__'), 'hero action whitelist holds');
+assert.ok(NET.HERO_RULES.REACH === 6 && NET.HERO_RULES.DMG_MAX === 45 && NET.HERO_RULES.HP_MAX === 1000, 'hero envelopes pinned');
+assert.equal(NET.HERO_KEY, 'mm_ghost_hero_v1', 'the hero persistence key');
 assert.ok(NET.validPermissionMode('watch') && NET.validPermissionMode('play') && !NET.validPermissionMode('admin'), 'mode validation');
 assert.ok(NET.AVATARS.length >= 6 && NET.validAvatar('duszek') && !NET.validAvatar('<img>'), 'avatar registry validates');
 // the ladder is strictly inclusive: a higher rung keeps every lower ability
@@ -444,9 +452,9 @@ assert.ok(/function notifyTileChanged\(x,y,old,v\)\{\s*try\{ if\(MM\.ghostHostTi
 const clientSrc = readFileSync(new URL('../src/engine/ghost_client.js', import.meta.url), 'utf8');
 assert.ok(/MMR\.ghostMode = true;/.test(clientSrc), 'client stamps MM.ghostMode at import time');
 assert.ok(/NET\.parseWatch\(location\.search\)/.test(clientSrc), 'watch param comes from the URL');
-assert.ok(!/localStorage\.setItem\((?!'mm_ghost_(name|avatar)_v1'|NET\.PROG_KEY|NET\.GID_KEY|NET\.GID_LEASE_KEY|NET\.LOOK_KEY)/.test(clientSrc),
-	'client persists nothing but its display name, avatar, own career, stable gid (+lease) and chosen look');
-assert.ok(/Storage\.prototype\.setItem = function/.test(clientSrc) && /allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY, NET\.GID_KEY, NET\.GID_LEASE_KEY, NET\.LOOK_KEY\]\)/.test(clientSrc),
+assert.ok(!/localStorage\.setItem\((?!'mm_ghost_(name|avatar)_v1'|NET\.PROG_KEY|NET\.GID_KEY|NET\.GID_LEASE_KEY|NET\.LOOK_KEY|NET\.HERO_KEY)/.test(clientSrc),
+	'client persists nothing but its display name, avatar, own career, stable gid (+lease), chosen look and hero state');
+assert.ok(/Storage\.prototype\.setItem = function/.test(clientSrc) && /allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY, NET\.GID_KEY, NET\.GID_LEASE_KEY, NET\.LOOK_KEY, NET\.HERO_KEY\]\)/.test(clientSrc),
 	'ghost mode locks down ALL localStorage writes (side stores like dynamic loot must not leak into the watcher’s own world)');
 // hardening pins (post-review): hostile hosts, transport races, throttling floods
 assert.ok(/function esc\(s\)/.test(clientSrc) && /esc\(hostName\)/.test(clientSrc),
@@ -732,7 +740,7 @@ for(const gate of authorityGates){
 assert.ok(/entry\.level = Math\.max\(1, Math\.min\(NET\.PROG\.MAX_LEVEL, Math\.floor\(pl\.lvl\)\)\)/.test(hostSrc),
 	'the claimed level is clamped and used for display only');
 // client: persists in the WATCHER's own browser — that is what survives a reload
-assert.ok(/allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY, NET\.GID_KEY, NET\.GID_LEASE_KEY, NET\.LOOK_KEY\]\)/.test(clientSrc),
+assert.ok(/allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY, NET\.GID_KEY, NET\.GID_LEASE_KEY, NET\.LOOK_KEY, NET\.HERO_KEY\]\)/.test(clientSrc),
 	'the ghost profile is on the storage allowlist (the lockdown would otherwise silently drop it)');
 assert.ok(/localStorage\.setItem\(NET\.PROG_KEY, JSON\.stringify\(prog\)\)/.test(clientSrc) && /function loadProgress\(\)/.test(clientSrc),
 	'the career is written to and read from the watcher’s own localStorage');
@@ -744,8 +752,8 @@ assert.ok(/if\(pl\.k === 'join' && prog\.days\.includes\(today\(\)\)\) return;/.
 	'join XP pays once per day — reload-farming must not out-earn honest watching');
 assert.ok(/function flushProgress\(force\)/.test(clientSrc) && /t - lastProgSaveAt < 2000/.test(clientSrc),
 	'profile writes are throttled (a deed-spamming host cannot buy a localStorage write per message)');
-assert.ok(/window\.addEventListener\('pagehide', \(\) => flushProgress\(true\)\)/.test(clientSrc) && /flushProgress\(true\); \/\/ nothing earned/.test(clientSrc),
-	'dirty progress is force-flushed on leave and unload — the throttle may never lose an earned deed');
+assert.ok(/window\.addEventListener\('pagehide', \(\) => \{ flushProgress\(true\); saveHeroState\(true\); \}\)/.test(clientSrc) && /flushProgress\(true\); \/\/ nothing earned/.test(clientSrc),
+	'dirty progress AND the hero state are force-flushed on leave and unload — the throttle may never lose an earned deed');
 assert.ok(/JSON\.stringify\(res\.state\.counts\) !== JSON\.stringify\(before\.counts\)/.test(clientSrc)
 	&& /res\.state\.days\.length !== before\.days\.length/.test(clientSrc),
 	'count-only and day-only changes persist too (the 0-XP crowd deed and day stamps must reach disk)');
@@ -754,6 +762,49 @@ assert.ok(/if\(lvl !== entry\.level\)\{ entry\.level = lvl; updateUi\(\); \}/.te
 assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	&& /focusedTag === 'SELECT' \|\| focusedTag === 'INPUT'/.test(hostSrc),
 	'the periodic panel refresh skips a hidden panel and never yanks an open dropdown/selection from the host');
+// --- hero mode: the full-game guest (Phase 1) -------------------------------------------
+// Contract: guest player state = guest-local truth; the WORLD is host-protected.
+{
+	// the ONE inlet for hero world intents, with reach/rate/envelope checks
+	assert.ok(/function handleHeroAct\(s, entry, pl\)/.test(hostSrc) && /pl\.t === 'hact'/.test(hostSrc),
+		'every hero world intent lands in one host-side handler');
+	assert.ok(/if\(!b \|\| entry\.mode !== 'hero'\)/.test(hostSrc), 'hact demands the hero rung exactly');
+	assert.ok(/NET\.playReachOk\(b\.x, b\.y, tx, ty, NET\.HERO_RULES\.REACH\)/.test(hostSrc), 'hero reach is enforced against the HOST-tracked body');
+	assert.ok(/Math\.min\(NET\.HERO_RULES\.DMG_MAX, Number\(pl\.n\) \|\| 1\)/.test(hostSrc)
+		&& /Math\.abs\(x - b\.x\) > NET\.HERO_RULES\.DMG_RADIUS/.test(hostSrc),
+		'forwarded damage is clamped by amount AND anchored near the body');
+	// the bridge seams re-validate world truth with solo-grade rules
+	assert.ok(/ghostHeroMineAt:\(tx,ty\)=>\{/.test(mainSrc) && /info\.chestTier \|\| info\.cache\) return \{ok:false, reason:'chest'\}/.test(mainSrc),
+		'hero mining spans the three solo layers but chests stay host economy');
+	assert.ok(/ghostHeroPlaceAt:\(tx,ty,tid,layer,body\)=>\{/.test(mainSrc) && /canPlaceInfrastructureAt\(tx,ty,id\)/.test(mainSrc)
+		&& /canPlaceConstructionBackgroundAt\(tx,ty,id\)/.test(mainSrc),
+		'hero placement re-validates per layer with the solo legality cores');
+	// the write chokepoints: the guest's real mining/building routes through intents
+	assert.ok(/if\(MM\.ghostHeroIntents\) return MM\.ghostHeroIntents\.mineBreak\(mineTx,mineTy\);/.test(mainSrc),
+		'breakMinedTile defers to the intent chokepoint for hero guests');
+	assert.ok(/if\(!MM\.ghostHeroIntents\.place\(tx,ty,v\.id,layer\)\) return false;/.test(mainSrc),
+		'tryPlace defers to the intent chokepoint for hero guests');
+	// the hero frame: world systems stay OFF on the guest (streamed), hero systems run
+	assert.ok(/function runHeroStep\(dt,ts\)/.test(mainSrc) && !/runHeroStep[\s\S]{0,900}MOBS\.update/.test(mainSrc)
+		&& !/function runHeroStep[\s\S]{0,900}WATER\.update/.test(mainSrc),
+		'runHeroStep steps hero systems only — the world is the host’s stream');
+	assert.ok(/WEAPONS\.update\(dt, getTile, ghostHeroNoopSetTile\);/.test(mainSrc),
+		'local weapon fx cannot write the replicated world');
+	// vitals: guest-local truth — host forwards wounds, skips survival, accepts claims
+	assert.ok(/if\(entry\.heroMode\)\{[\s\S]{0,600}return; \/\/ vitals are guest-local truth in hero mode/.test(hostSrc)
+		|| /hero mode: the wound is FORWARDED, not applied/.test(hostSrc),
+		'hurtBody forwards for hero bodies instead of applying');
+	assert.ok(/if\(Number\.isFinite\(pl\.hp\)\) b\.hp = Math\.max\(0, Math\.min\(NET\.HERO_RULES\.HP_MAX, \+pl\.hp\)\);/.test(hostSrc),
+		'claimed hero vitals are clamped display/targeting state');
+	assert.ok(/if\(!entry\.heroMode && b\.dead && t >= b\.respawnAt\)/.test(hostSrc), 'the host never respawns a hero body — the guest does');
+	// client: the fresh-kit rule (the HOST’s riches must not become guest-local truth)
+	assert.ok(/if\(!returning && bridge\.ghostHeroFresh\) bridge\.ghostHeroFresh\(\);/.test(clientSrc),
+		'a first-time hero starts FRESH — applyGameData’s host inventory never leaks into guest truth');
+	assert.ok(/window\.damageHero\(amt, \{ cause:/.test(clientSrc), 'forwarded wounds run the real hero damage pipeline (armor parity)');
+	assert.ok(/if\(hero\.on\) return; \/\/ hero mode: the REAL game handlers own every key/.test(clientSrc),
+		'hero mode hands the input back to the real game');
+}
+
 // …which is exactly why Kopiuj must RELEASE the focus it took: select() leaves the
 // caret in the link INPUT, the guard above then freezes the panel body forever and
 // the host never sees the joining viewer's row (the field-report screenshot bug)
@@ -914,13 +965,15 @@ assert.ok(/NET\.modeAllows\(entry\.mode, 'full'\)/.test(hostSrc) && !/entry\.mod
 	'host influence gates use the inclusive ladder (a player keeps every spectator ability)');
 assert.ok(/NET\.modeAllows\(entry\.mode, 'chat'\)/.test(hostSrc), 'chat/ping gates use the inclusive ladder too');
 // the play rung is NEVER a default door policy — embodiment is granted by hand
-assert.ok(/DEFAULT_MODES = NET\.PERMISSION_MODES\.filter\(m => m !== 'play'\)/.test(hostSrc),
-	'play is excluded from the newcomer default (an embodied stranger by default is a griefing invite)');
-assert.ok(/if\(!DEFAULT_MODES\.includes\(mode\)\) return false;/.test(hostSrc), 'setDefaultMode refuses the play rung');
+assert.ok(/DEFAULT_MODES = NET\.PERMISSION_MODES\.filter\(m => m !== 'play' && m !== 'hero'\)/.test(hostSrc),
+	'both embodied rungs are excluded from the newcomer default (an embodied stranger by default is a griefing invite)');
+assert.ok(/if\(!DEFAULT_MODES\.includes\(mode\)\) return false;/.test(hostSrc), 'setDefaultMode refuses the embodied rungs');
 // granting play spawns a HOST-owned body; revoking removes it — spectating persists
-assert.ok(/if\(mode === 'play' && !entry\.body\) spawnBody\(session, entry\);/.test(hostSrc)
-	&& /else if\(mode !== 'play' && entry\.body\) despawnBody\(session, entry\);/.test(hostSrc),
-	'promotion to play embodies the guest; any downgrade removes the body');
+assert.ok(/const embodied = \(mode === 'play' \|\| mode === 'hero'\);/.test(hostSrc)
+	&& /if\(embodied && !entry\.body\) spawnBody\(session, entry\);/.test(hostSrc)
+	&& /else if\(!embodied && entry\.body\) despawnBody\(session, entry\);/.test(hostSrc)
+	&& /entry\.heroMode = mode === 'hero';/.test(hostSrc),
+	'both embodied rungs spawn the host-tracked body; any downgrade removes it; heroMode flags guest-local vitals');
 // vitals & pouch are HOST state, streamed to the guest as display truth
 assert.ok(/function sendVitals\(s, entry\)/.test(hostSrc) && /t: 'pvit'/.test(hostSrc), 'the host owns and streams the guest vitals + pouch');
 assert.ok(/function hurtBody\(s, entry/.test(hostSrc) && /b\.invulUntil = t \+ NET\.PLAY_RULES\.HURT_INVUL_MS/.test(hostSrc),
@@ -982,8 +1035,12 @@ assert.ok(/pl\.t === 'pvit'/.test(clientSrc) && /pl\.t === 'pdmg'/.test(clientSr
 	'the client honors host-owned vitals, damage and respawn');
 assert.ok(/const keep = \(play\.on && play\.spawned\)/.test(clientSrc) && /if\(keep\) Object\.assign\(bridge\.player, keep\);/.test(clientSrc),
 	'an embodied guest keeps ITS hero across a mid-session resync (applyGameData would otherwise rewrite it with the host hero)');
-assert.ok(/if\(play\.on\)\{[\s\S]{0,200}remoteHost\.has = true;/.test(clientSrc),
-	'in embodiment the host hero becomes a remote body — its vitals never clobber the guest');
+assert.ok(/if\(play\.on \|\| hero\.on\)\{[\s\S]{0,200}remoteHost\.has = true;/.test(clientSrc),
+	'in both embodiments the host hero becomes a remote body — its vitals never clobber the guest');
+// hero mode: the guest owns its WHOLE player state across a resync too
+assert.ok(/const keepHero = \(hero\.on && bridge\.ghostHeroCapture\) \? bridge\.ghostHeroCapture\(\) : null;/.test(clientSrc)
+	&& /if\(keepHero && bridge\.ghostHeroRestore\) bridge\.ghostHeroRestore\(keepHero\);/.test(clientSrc),
+	'a hero guest keeps ITS inventory/gear/XP across a mid-session resync');
 assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow embodied players render as hero bodies for everyone');
 
 // --- Wave A: creatures target the WHOLE party (host + guest bodies) --------------------------------
@@ -1210,8 +1267,8 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	assert.ok(/hurtBody\(s, entry, 8, b\.x, b\.y \+ 1, 'lava'\);/.test(sp), 'lava sears a body with the hero’s own 8');
 	assert.ok(!/pl\.|entry\.cam|\.claim/.test(sp.replace(/entry\.peer\.send|entry, b, dt, t|entry, dmg|entry, 8/g, '')),
 		'the survival pass reads no client-claimed field — world truth only');
-	assert.ok(/if\(!b\.dead && dt > 0\) bodySurvivalPass\(s, entry, b, dt, t\);/.test(hostSrc),
-		'the pass runs on the body cadence for LIVE bodies only');
+	assert.ok(/if\(!entry\.heroMode && !b\.dead && dt > 0\) bodySurvivalPass\(s, entry, b, dt, t\);/.test(hostSrc),
+		'the pass runs on the body cadence for LIVE play-mode bodies only — hero vitals are guest-local (double-damage guard)');
 	assert.ok(/MMR\.survival\.resetDrowning\) MMR\.survival\.resetDrowning\(b\.drownSt\);/.test(hostSrc),
 		'a respawned body starts with fresh lungs');
 	assert.ok(/pl\.t === 'pdrown'/.test(clientSrc) && /Brakuje powietrza/.test(clientSrc),

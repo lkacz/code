@@ -11376,6 +11376,11 @@ function breakTileByCompanion(tx,ty,expectedTile){
 	return true;
 }
 function breakMinedTile(){
+	// hero-mode guest (ghost_client sets MM.ghostHeroIntents): the break is an
+	// INTENT — the host validates it with solo-grade rules and the world change
+	// returns on the tile stream; the yield is awarded LOCALLY on the ack
+	// (guest-local player truth, host-validated world truth)
+	if(MM.ghostHeroIntents) return MM.ghostHeroIntents.mineBreak(mineTx,mineTy);
 	if(mineBossTarget) return breakBossPart();
 	if(!canPhysicallyTargetTile(mineTx,mineTy)) return false;
 	const overId=getInfrastructureTile(mineTx,mineTy);
@@ -12069,6 +12074,18 @@ function canPlaceAt(tx,ty){
 function tryPlace(tx,ty){
 	const v=canPlaceAt(tx,ty);
 	if(!v.ok){ if(v.reason) msg(v.reason); return false; }
+	// hero-mode guest: local canPlaceAt above already gave instant feedback with
+	// the guest's OWN inventory; the world write itself becomes an INTENT the host
+	// re-validates (its own legality core) — the tile arrives on the stream. The
+	// cost is spent locally (guest truth); a host refusal refunds via the ack.
+	if(MM.ghostHeroIntents){
+		if(v.chest || v.boat || v.structure==='dynamo'){ msg('Ta konstrukcja nie jest jeszcze dostępna w trybie gościa'); return false; }
+		const layer=v.overlay?'overlay':(v.background?'background':'fg');
+		if(!MM.ghostHeroIntents.place(tx,ty,v.id,layer)) return false;
+		consumeFor(v.id); updateInventory(); updateHotbarCounts();
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
+		return true;
+	}
 	const id=v.id; const prevRaw=getTile(tx,ty);
 	const prev=isGasTileId(prevRaw)?T.AIR:prevRaw;
 	const undoPrev=(isGasTileId(prevRaw)||prevRaw===T.WATER)?T.AIR:prevRaw;
@@ -16212,6 +16229,145 @@ MM.ghostBridge={
 		const hp=Math.max(0.6,Number(info && info.hp)||1);
 		const seconds=hp/6/tools.basic;
 		return Math.max(1,Math.min(12,Math.round(seconds/0.15)));
+	},
+	// --- hero mode (full-game guest) -------------------------------------------------
+	// GUEST-side state seams: the guest's player state is ITS local truth (owner
+	// trust ruling). Capture/restore shields it across a world resync (applyGameData
+	// rewrites inv/gear/XP with the HOST's save — the replica's job, not the guest
+	// hero's); fresh() strips the host's riches off a newly embodied guest — keeping
+	// them would be item duplication into guest-local truth.
+	ghostHeroCapture:()=>({ v:1, inv:snapshotInventory(), hotbar:snapshotHotbar(), eq:snapshotEquipment(),
+		pl:snapshotPlayerState(), hp:saveNumber(player.hp,2), maxHp:saveNumber(player.maxHp,2) }),
+	ghostHeroRestore:(s)=>{
+		if(!s || typeof s!=='object') return false;
+		restoreInventory(s.inv); restoreHotbar(s.hotbar||{}); if(s.eq) restoreEquipment(s.eq);
+		restorePlayerState(s.pl||{});
+		if(Number.isFinite(Number(s.maxHp))) player.maxHp=Math.max(1,Number(s.maxHp));
+		if(Number.isFinite(Number(s.hp))) player.hp=Math.max(0,Math.min(player.maxHp,Number(s.hp)));
+		try{ updateInventory(); updateHotbarCounts(); }catch(e){}
+		return true;
+	},
+	ghostHeroFresh:()=>{
+		restoreInventory(null);
+		try{ if(MM.inventory && MM.inventory.restore) MM.inventory.restore({v:3,bag:[],equipped:{}},{persist:false,silent:true}); }catch(e){}
+		player.xp=0; player.maxHp=100; player.hp=100; player.tool='basic';
+		player.energy=Math.max(0,Number(player.maxEnergy)||100);
+		try{ updateInventory(); updateHotbarCounts(); }catch(e){}
+	},
+	// awarding a validated break happens on the GUEST with its own drop logic —
+	// the same INFO-driven awardTileDrops the solo miner runs (bonus rolls local)
+	ghostHeroAward:(tid)=>{
+		const info=INFO[Number(tid)|0];
+		if(!info) return false;
+		try{ awardTileDrops(info); updateInventory(); updateHotbarCounts(); }catch(e){ return false; }
+		return true;
+	},
+	ghostHeroRefund:(tid)=>{
+		const def=RESOURCE_DEFS.find(r=>r.tile && T[r.tile]===(Number(tid)|0));
+		if(!def) return false;
+		inv[def.key]=(inv[def.key]|0)+1;
+		try{ updateInventory(); updateHotbarCounts(); }catch(e){}
+		return true;
+	},
+	// HOST-side world seams: SOLO-grade validation. Mining honors the same three
+	// layers the local miner does (infrastructure overlay → construction background
+	// → foreground) with the same lifecycle hooks; the YIELD is the caller's —
+	// nothing here touches the host inventory. Chests, bedrock and machine cores
+	// stay host-only economy in this wave.
+	ghostHeroMineAt:(tx,ty)=>{
+		if(!worldCellInBounds(tx,ty)) return {ok:false, reason:'bounds'};
+		const overId=getInfrastructureTile(tx,ty);
+		if(overId!==T.AIR){
+			if(!INFO[overId]) return {ok:false, reason:'tile'};
+			if(!clearInfrastructureConfirmed(tx,ty,overId)) return {ok:false, reason:'write'};
+			notifyInvasionMining(overId,tx,ty);
+			noteSaveActivity();
+			return {ok:true, tid:overId, layer:'overlay'};
+		}
+		if(miningTargetsConstructionBackground(tx,ty)){
+			const bgId=getConstructionBackgroundTile(tx,ty);
+			if(!INFO[bgId]) return {ok:false, reason:'tile'};
+			if(!clearConstructionBackgroundConfirmed(tx,ty)) return {ok:false, reason:'write'};
+			wakeConstructionBackgroundChanged(tx,ty);
+			notifyInvasionMining(bgId,tx,ty);
+			noteSaveActivity();
+			return {ok:true, tid:bgId, layer:'background'};
+		}
+		const tId=getTile(tx,ty);
+		const info=INFO[tId];
+		if(!info || tId===T.AIR || isGasTileId(tId)) return {ok:false, reason:'tile'};
+		if(info.unmineable) return {ok:false, reason:'hard'};
+		if(info.chestTier || info.cache) return {ok:false, reason:'chest'};
+		if(tId===T.DYNAMO || tId===T.DYNAMO_SLOT) return {ok:false, reason:'machine'};
+		const templeKind=templeDisturbanceKindForTile(tId);
+		if(!setForegroundConfirmed(tx,ty,T.AIR)) return {ok:false, reason:'write'};
+		if(tId===T.VENDING_MACHINE && VENDING && VENDING.onTileRemoved) VENDING.onTileRemoved(tx,ty);
+		if(tId===T.SPRING_PLATFORM && SPRING_PLATFORMS && SPRING_PLATFORMS.onTileChanged) SPRING_PLATFORMS.onTileChanged(tx,ty,tId,T.AIR,getTile);
+		applyMaterialBreakPersonality(tId,tx,ty);
+		if(FIRE && FIRE.wakeLavaAround) FIRE.wakeLavaAround(tx,ty,getTile,{radius:22});
+		if(tId===T.WOOD && getTile(tx,ty-1)===T.WOOD) startTreeFall(tx,ty-1);
+		if(FALLING && FALLING.onTileRemoved) FALLING.onTileRemoved(tx,ty);
+		if(WATER && WATER.onTileChanged) WATER.onTileChanged(tx,ty,getTile);
+		notifyTempleDisturbance(templeKind,tx,ty,tId,T.AIR);
+		notifyInvasionMining(tId,tx,ty);
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('dig',{x:tx+0.5,y:ty+0.5}); }catch(e){}
+		noteSaveActivity();
+		return {ok:true, tid:tId, layer:'fg'};
+	},
+	// hero-mode placement: the guest's inventory is ITS truth — the host validates
+	// only WORLD legality, on the layer the guest's own canPlaceAt routed to.
+	ghostHeroPlaceAt:(tx,ty,tid,layer,body)=>{
+		if(!worldCellInBounds(tx,ty)) return {ok:false, reason:'bounds'};
+		const id=Number(tid)|0;
+		const def=RESOURCE_DEFS.find(r=>r.tile && T[r.tile]===id);
+		if(!def) return {ok:false, reason:'key'};
+		if(id===T.VENDING_MACHINE || id===T.SPRING_PLATFORM || id===T.DYNAMO) return {ok:false, reason:'machine'};
+		if(layer==='overlay'){
+			const v=canPlaceInfrastructureAt(tx,ty,id);
+			if(!v || !v.ok) return {ok:false, reason:'occupied'};
+			if(!setInfrastructureConfirmed(tx,ty,id)) return {ok:false, reason:'write'};
+			noteSaveActivity();
+			return {ok:true, tid:id};
+		}
+		if(layer==='background'){
+			const v=canPlaceConstructionBackgroundAt(tx,ty,id);
+			if(!v || !v.ok) return {ok:false, reason:'occupied'};
+			if(!setConstructionBackgroundConfirmed(tx,ty,id)) return {ok:false, reason:'write'};
+			wakeConstructionBackgroundChanged(tx,ty);
+			noteSaveActivity();
+			return {ok:true, tid:id};
+		}
+		const cur=getTile(tx,ty);
+		if(!isReplaceableNaturalOpenTile(cur,false)) return {ok:false, reason:'occupied'};
+		if(cur===T.WATER && id===T.WATER) return {ok:false, reason:'occupied'};
+		if(cellOverlapsPlayer(tx,ty)) return {ok:false, reason:'hero'};
+		if(body && Number.isFinite(body.x) && tx+1>body.x-(body.w||0.6)/2 && tx<body.x+(body.w||0.6)/2
+			&& ty+1>body.y-(body.h||0.9)/2 && ty<body.y+(body.h||0.9)/2) return {ok:false, reason:'self'};
+		if(id!==T.SAND && id!==T.WATER && FALLING && FALLING.canSupportPlacement){
+			const structural=FALLING.canSupportPlacement(tx,ty,id);
+			if(structural && structural.applies && !structural.ok) return {ok:false, reason:'support'};
+		}
+		if(cur===T.WATER && id!==T.WATER){
+			let displaced=false;
+			try{ displaced=!!(WATER && WATER.displaceAt && WATER.displaceAt(tx,ty,getTile,setTile)); }catch(e){ displaced=false; }
+			if(!displaced) return {ok:false, reason:'water'};
+		}
+		if(!setForegroundConfirmed(tx,ty,id)) return {ok:false, reason:'write'};
+		if(FALLING && FALLING.afterPlacement) FALLING.afterPlacement(tx,ty);
+		if(WATER && id===T.WATER) WATER.addSource(tx,ty,getTile,setTile);
+		if(COMPANIONS && COMPANIONS.onTileChanged) COMPANIONS.onTileChanged(tx,ty,cur,id,getTile,setTile);
+		if(VOLCANO && VOLCANO.onTileChanged) VOLCANO.onTileChanged(tx,ty,id,getTile,setTile);
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
+		noteSaveActivity();
+		return {ok:true, tid:id};
+	},
+	// hero-mode combat (coarse H1 channel): a damage application forwarded by the
+	// guest resolves through the REAL chains at the claimed point, attributed
+	// 'coop' — amount and radius were already clamped by the host handler.
+	ghostHeroDamage:(x,y,amt)=>{
+		const W=MM.weapons;
+		if(!W || !W.coopMeleeAt || !Number.isFinite(x) || !Number.isFinite(y)) return 0;
+		return W.coopMeleeAt({x, y, facing:1}, x, y, {bonus:Math.max(0,Math.min(43,amt-2)), reach:1.2}) ? 1 : 0;
 	}
 };
 if(MM.ghostMode){ try{ GHOST_CLIENT.boot(MM.ghostBridge); }catch(e){ console.warn('ghost client boot failed',e); } }
@@ -16322,6 +16478,26 @@ function runGameStep(dt,ts){
 	if(PROGRESS && PROGRESS.update) PROGRESS.update(dt);
 updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(STEAM_MACHINES && STEAM_MACHINES.update) STEAM_MACHINES.update(dt, player, getTile, setTile); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); updateHeroLamp(dt); updateSpecialVision(dt); updateTreasureCompass(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(ATOMIC_WINTER && ATOMIC_WINTER.update) ATOMIC_WINTER.update(dt, player, getTile, setTile); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(SKY_GUARDIAN && SKY_GUARDIAN.update) SKY_GUARDIAN.update(dt, player, getTile, setTile); if(CENTER_GUARDIAN && CENTER_GUARDIAN.update) CENTER_GUARDIAN.update(dt, player, getTile, setTile); if(STORY_PROGRESSION && STORY_PROGRESSION.update) STORY_PROGRESSION.update(dt, player, getTile, setTile); if(FINALE && FINALE.update) FINALE.update(dt); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, viewport:currentViewportState(), resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(ALIEN_RUINS && ALIEN_RUINS.update) ALIEN_RUINS.update(dt, player, getTile, setTile, {saveState, msg}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(TERRAIN_TRAPS && TERRAIN_TRAPS.update) TERRAIN_TRAPS.update(dt); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
 }
+// Hero-mode guest frame (driven from the loop's ghost branch): ONLY the hero-side
+// systems step here — the world (water, fire, creatures, machines, seasons) is
+// simulated by the HOST and replicated over the ghost stream. One explicit list,
+// so the split between "my hero" and "the shared world" stays auditable at a
+// glance; every world WRITE the hero systems could make is either routed through
+// the intent chokepoints (breakMinedTile/tryPlace) or given this no-op setTile.
+const ghostHeroNoopSetTile=()=>false;
+function runHeroStep(dt,ts){
+	if(updateDeathTravelFx(dt)){ updateParticles(dt); updateBlink(ts); return; }
+	physics(dt); if(player.atkCd>0) player.atkCd-=dt;
+	const heldWeapon=activeWeaponItem();
+	if(heldWeapon && ((weaponPointerId!=null && lastPointer.has)||fireBtnHeld) && WEAPONS && WEAPONS.fireHeld){
+		const aim=(weaponPointerId!=null && lastPointer.has && !fireBtnHeld)? screenToWorld(lastPointer.x,lastPointer.y) : {x:player.x+player.facing*5, y:player.y-0.4};
+		WEAPONS.fireHeld(player, aim.x, aim.y, dt);
+	}
+	if(WEAPONS && WEAPONS.update) WEAPONS.update(dt, getTile, ghostHeroNoopSetTile);
+	updateMining(dt);
+	updateHeroEnergy(dt); updateHeroLamp(dt); updateSpecialVision(dt); updateTreasureCompass(dt);
+	updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
+}
 let lastLoopErrAt=0; function loop(ts){
 	if(shouldSkipFrameForCap(ts)){ requestAnimationFrame(loop); return; }
 	if(frameClock.resetFrames>0){ frameClock.last=ts; frameClock.resetFrames--; }
@@ -16352,6 +16528,14 @@ let lastLoopErrAt=0; function loop(ts){
 		} else if(ghostHold && GHOST_CLIENT && GHOST_CLIENT.frame){
 			const simT=framePerfNow();
 			GHOST_CLIENT.frame(frameDt,ts);
+			// hero-mode guest: the REAL hero systems run locally on the replicated
+			// world — camera, fog and craft-scan follow exactly like solo play
+			if(MM.ghostHeroIntents && !paused && !overlayHold){
+				runHeroStep(frameDt,ts);
+				updateCameraFollow(frameDt);
+				revealAround();
+				scanCraftablesInView(frameDt);
+			}
 			simMs=framePerfNow()-simT;
 		}
 		if(AUDIO && AUDIO.update) AUDIO.update(frameDt);

@@ -27,7 +27,7 @@ if(WATCH && MMR){
 		// (the ghost's OWN profile is on this list: name, avatar, career and stable
 		// gid — career + gid are what make progression AND the host-kept body pouch
 		// survive a reload and a fresh invite link)
-		const allow = new Set(['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET.PROG_KEY, NET.GID_KEY, NET.GID_LEASE_KEY, NET.LOOK_KEY]);
+		const allow = new Set(['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET.PROG_KEY, NET.GID_KEY, NET.GID_LEASE_KEY, NET.LOOK_KEY, NET.HERO_KEY]);
 		const origSet = Storage.prototype.setItem;
 		const origRemove = Storage.prototype.removeItem;
 		Storage.prototype.setItem = function(k, v){
@@ -118,6 +118,92 @@ const ghostClient = (function(){
 	// vitals, the pouch and every world edit. The host hero moves into remoteHost
 	// and is painted like any other remote body.
 	const play = { on: false, spawned: false, dead: false, sel: null, pouch: {}, weapons: [], arm: 'fists', duelWith: null, mineHold: null, prog: 0, progAt: null, jumpBufT: 0, coyoteT: 0 };
+	// --- hero mode (full-game guest): the REAL game runs locally ----------------------
+	// The guest's player state (inventory, gear, XP, vitals) is ITS local truth
+	// (owner ruling), persisted under NET.HERO_KEY per room. main.js runs the real
+	// hero frame (runHeroStep) and routes every world WRITE through these intents;
+	// the host validates them with solo-grade rules and the world returns on the
+	// tile stream. Combat forwards through the wrapped damage entries below.
+	const hero = { on: false, spawned: false };
+	const heroIntents = {
+		mineBreak(tx, ty){
+			if(state === 'live' && conn) conn.send({ t: 'hact', a: 'mine', x: tx, y: ty });
+			return true; // the break "lands" when the host's tile diff arrives
+		},
+		place(tx, ty, tid, layer){
+			if(state !== 'live' || !conn) return false;
+			conn.send({ t: 'hact', a: 'place', x: tx, y: ty, tid: Number(tid) | 0, l: layer });
+			return true;
+		}
+	};
+	// Replica damage entries, wrapped while embodied as a hero: the local call
+	// stands as PREDICTION (the creature stream reconciles), the application is
+	// forwarded to the host, which resolves it through the real chains, clamped.
+	const heroDmgWrapped = [];
+	function wrapHeroDamage(){
+		if(heroDmgWrapped.length) return;
+		for(const nm of ['mobs', 'invasions', 'bosses', 'guardianLairs', 'skyGuardian', 'undergroundBoss', 'ufo', 'mechs']){
+			const sys = MMR && MMR[nm];
+			if(!sys) continue;
+			for(const fn of ['damageAt', 'attackAt']){
+				if(typeof sys[fn] !== 'function') continue;
+				const orig = sys[fn];
+				heroDmgWrapped.push([sys, fn, orig]);
+				sys[fn] = function(tx, ty, amt){
+					try{ if(state === 'live' && conn) conn.send({ t: 'hact', a: 'dmg', x: +tx, y: +ty, n: Math.max(1, Math.min(45, Number(amt) || 1)) }); }catch(e){ /* fine */ }
+					return orig.apply(this, arguments);
+				};
+			}
+		}
+	}
+	function unwrapHeroDamage(){
+		for(const [sys, fn, orig] of heroDmgWrapped.splice(0)) sys[fn] = orig;
+	}
+	let heroSaveAt = 0;
+	function saveHeroState(force){
+		if(!hero.on || !bridge || !bridge.ghostHeroCapture) return;
+		const t = nowMs();
+		if(!force && t - heroSaveAt < 3000) return;
+		heroSaveAt = t;
+		try{ localStorage.setItem(NET.HERO_KEY, JSON.stringify({ v: 1, room: WATCH.room, gid, at: Date.now(), state: bridge.ghostHeroCapture() })); }catch(e){ /* session-only hero */ }
+	}
+	function enterHero(){
+		if(hero.on) return;
+		if(play.on) exitPlay();
+		hero.on = true; hero.spawned = false;
+		// the host hero leaves the local `player` (it becomes OUR full hero) and
+		// moves into remoteHost, exactly like play mode
+		const p = bridge.player;
+		remoteHost.has = true; remoteHost.x = p.x; remoteHost.y = p.y;
+		remoteHost.dx = p.x; remoteHost.dy = p.y;
+		remoteHost.vx = p.vx || 0; remoteHost.vy = p.vy || 0; remoteHost.f = p.facing || 1;
+		// the HOST's riches came in with applyGameData — keeping them would be item
+		// duplication into guest-local truth: restore OUR persisted hero or start fresh
+		let saved = null;
+		try{ saved = JSON.parse(localStorage.getItem(NET.HERO_KEY) || 'null'); }catch(e){ saved = null; }
+		const returning = !!(saved && typeof saved === 'object' && saved.room === WATCH.room && saved.state
+			&& bridge.ghostHeroRestore && bridge.ghostHeroRestore(saved.state));
+		if(!returning && bridge.ghostHeroFresh) bridge.ghostHeroFresh();
+		document.body.classList.add('mmGhostHero');
+		if(MMR) MMR.ghostHeroIntents = heroIntents; // main.js chokepoints activate on this hook
+		wrapHeroDamage();
+		if(myLook && conn && state === 'live') conn.send({ t: 'plook', c: myLook });
+		cam.mode = 'follow';
+		bridge.msg(returning ? '🕹 PEŁNE WCIELENIE — twój bohater wrócił z ekwipunkiem!'
+			: '🕹 PEŁNE WCIELENIE: grasz jak u siebie — kop, buduj, wytwarzaj. Świat należy do gospodarza, twój ekwipunek do ciebie.');
+		updateBar();
+	}
+	function exitHero(){
+		if(!hero.on) return;
+		saveHeroState(true); // nothing earned may be lost on demotion
+		hero.on = false; hero.spawned = false;
+		if(MMR) MMR.ghostHeroIntents = null;
+		unwrapHeroDamage();
+		document.body.classList.remove('mmGhostHero');
+		remoteHost.has = false;
+		poseLog.length = 0;
+		updateBar();
+	}
 	const remoteHost = { has: false, x: 0, y: 0, vx: 0, vy: 0, f: 1, dx: 0, dy: 0 };
 	const bodies = []; // fellow embodied guests, eased like the spirits
 	let timersPlay = { pose: 0, mine: 0 };
@@ -258,8 +344,8 @@ const ghostClient = (function(){
 		sendHello();
 		// prompt goodbye on tab close — otherwise the host only reaps after 15 s;
 		// and flush the career so a deed banked seconds before the close survives
-		window.addEventListener('beforeunload', () => { flushProgress(true); try{ if(conn) conn.close(); }catch(e){ /* fine */ } });
-		window.addEventListener('pagehide', () => flushProgress(true));
+		window.addEventListener('beforeunload', () => { flushProgress(true); saveHeroState(true); try{ if(conn) conn.close(); }catch(e){ /* fine */ } });
+		window.addEventListener('pagehide', () => { flushProgress(true); saveHeroState(true); });
 		// Backgrounding the tab is the one moment a watcher is most likely to never
 		// come back to it — bank the career to disk right there, before the browser
 		// starts throttling everything this page does.
@@ -311,6 +397,7 @@ const ghostClient = (function(){
 	function leave(){
 		state = 'ended';
 		flushProgress(true); // nothing earned may be lost on the way out
+		saveHeroState(true); // the hero's inventory survives the exit too
 		if(pump){ clearInterval(pump); pump = null; }
 		if(barTick){ clearInterval(barTick); barTick = null; }
 		if(bar) bar.style.display = 'none';
@@ -350,13 +437,28 @@ const ghostClient = (function(){
 		if(pl.t === 'perm'){
 			if(NET.validPermissionMode(pl.mode)){
 				mode = pl.mode;
-				if(mode === 'play') enterPlay();
-				else if(play.on) exitPlay();
+				if(mode === 'hero'){ enterHero(); }
+				else if(mode === 'play'){ if(hero.on) exitHero(); enterPlay(); }
+				else { if(play.on) exitPlay(); if(hero.on) exitHero(); }
 				bridge.msg(mode === 'watch' ? '👁 Gospodarz: możesz teraz tylko oglądać'
 					: mode === 'chat' ? '💬 Gospodarz: możesz pisać, bez wpływu na grę'
 					: mode === 'play' ? '🎮 Gospodarz wciela cię do gry!'
+					: mode === 'hero' ? '🕹 Gospodarz daje ci PEŁNĄ grę!'
 					: '⚡ Gospodarz: pełne uprawnienia ducha');
 				updateBar();
+			}
+			return;
+		}
+		if(pl.t === 'hact'){
+			// hero-mode ack: a validated break awards THIS side's own drop logic,
+			// a refused placement refunds the locally spent block
+			if(hero.on){
+				if(pl.a === 'mine' && pl.ok && pl.tid){ try{ if(bridge.ghostHeroAward) bridge.ghostHeroAward(pl.tid); }catch(e){ /* fine */ } }
+				else if(pl.a === 'place' && !pl.ok && pl.tid){
+					try{ if(bridge.ghostHeroRefund) bridge.ghostHeroRefund(pl.tid); }catch(e){ /* fine */ }
+					bridge.msg('🧱 Gospodarz odrzucił postawienie (' + (pl.reason || '?') + ') — surowiec wraca');
+				}
+				else if(pl.a === 'mine' && !pl.ok && pl.reason === 'chest') bridge.msg('🎁 Skrzynie otwiera tylko gospodarz');
 			}
 			return;
 		}
@@ -460,6 +562,16 @@ const ghostClient = (function(){
 		if(pl.t === 'pdmg'){
 			// advisory knockback: the host decided the hit, the impulse lands on the
 			// locally simulated body so it FEELS like a hit
+			if(hero.on && hero.spawned){
+				// hero mode: the host forwards the AMOUNT — it runs through the real
+				// damage pipeline here (armor, toughness, i-frames), full parity
+				const p = bridge.player;
+				if(Number.isFinite(pl.kbx)) p.vx += Math.max(-8, Math.min(8, pl.kbx));
+				if(Number.isFinite(pl.kby)) p.vy += Math.max(-8, Math.min(8, pl.kby));
+				const amt = Math.max(0, Math.min(200, Number(pl.amt) || 0));
+				if(amt > 0){ try{ if(typeof window !== 'undefined' && window.damageHero) window.damageHero(amt, { cause: String(pl.cause || 'mob').slice(0, 16) }); }catch(e){ /* fine */ } }
+				return;
+			}
 			if(play.on && play.spawned){
 				const p = bridge.player;
 				if(Number.isFinite(pl.kbx)) p.vx += Math.max(-8, Math.min(8, pl.kbx));
@@ -589,11 +701,16 @@ const ghostClient = (function(){
 			x: bridge.player.x, y: bridge.player.y, vx: bridge.player.vx, vy: bridge.player.vy,
 			facing: bridge.player.facing, hp: bridge.player.hp, maxHp: bridge.player.maxHp
 		} : null;
+		// a hero-mode guest owns its WHOLE player state — applyGameData is about to
+		// overwrite inv/gear/XP with the HOST's save (the replica codec's job), so
+		// capture ours and put it back right after
+		const keepHero = (hero.on && bridge.ghostHeroCapture) ? bridge.ghostHeroCapture() : null;
 		try{
 			const ok = bridge.applyGameData(data, { ignoreCritical: true });
 			if(!ok){ showVeil('Świat gospodarza nie dał się wczytać.'); return; }
 		}catch(e){ console.warn('ghost snapshot apply failed', e); return; }
 		if(keep) Object.assign(bridge.player, keep);
+		if(keepHero && bridge.ghostHeroRestore) bridge.ghostHeroRestore(keepHero);
 		stats.snapsApplied++;
 		heroTarget.has = false;
 		reconnects = 0; // a completed join proves the path — future blips get a fresh budget
@@ -627,7 +744,7 @@ const ghostClient = (function(){
 					stats.tileMsgs++; stats.tilesApplied += pl.d.length / 3;
 				} else if(pl.t === 'hero'){
 					if(!Number.isFinite(pl.x) || !Number.isFinite(pl.y)) continue; // NaN would poison the replica
-					if(play.on){
+					if(play.on || hero.on){
 						// embodied: the host hero is a REMOTE body — its vitals must not
 						// clobber our own (the local player carries OUR host-owned hp now)
 						remoteHost.has = true;
@@ -654,6 +771,18 @@ const ghostClient = (function(){
 						const [bgid, bname, bx, by, bvx, bvy, bf, bhp, bmhp, bdead] = row;
 						if(!Number.isFinite(+bx) || !Number.isFinite(+by)) continue;
 						if(bgid === gid){
+							if(hero.on){
+								// hero mode: the pb echo only SEEDS the spawn — the hero then
+								// lives on the real local physics (no reconciliation: the host
+								// clamp shapes only the creature-targeting shadow, not us)
+								if(!hero.spawned){
+									const p = bridge.player;
+									p.x = +bx; p.y = +by; p.vx = 0; p.vy = 0;
+									hero.spawned = true;
+									bridge.snapCameraToPlayer();
+								}
+								continue;
+							}
 							if(play.on){
 								const p = bridge.player;
 								if(!play.spawned){
@@ -842,7 +971,11 @@ const ghostClient = (function(){
 		const p = bridge.player;
 		// EMBODIED: the local player is OUR hero — simulate it; the host hero glides
 		// in remoteHost (eased at paint time). Otherwise: the replica interpolation.
-		if(play.on && play.spawned){
+		if(hero.on){
+			// hero mode: main.js runs the REAL hero frame (runHeroStep) right after
+			// this function — nothing to simulate here, and the replica interpolation
+			// below must not fight the local physics for the player object
+		} else if(play.on && play.spawned){
 			if(!play.dead) stepOwnHero(dt);
 			// decay the mirrored status chips (display state — burnDamage is discarded)
 			try{ if(MMR && MMR.heroStatus) MMR.heroStatus.update(dt, {}); }catch(e){ /* fine */ }
@@ -863,11 +996,20 @@ const ghostClient = (function(){
 		// the hero's arrows keep flying and his swing keeps decaying between packets
 		try{ if(MMR && MMR.weapons && MMR.weapons.ghostStepFx) MMR.weapons.ghostStepFx(dt); }catch(e){ /* fine */ }
 		// fog mirrors the host: the replica player position feeds the normal reveal
-		try{ bridge.revealAround(); }catch(e){ /* fine */ }
-		try{ bridge.stepCosmetics(dt); }catch(e){ /* fine */ }
-		updateCamera(dt);
+		try{ if(!hero.on) bridge.revealAround(); }catch(e){ /* fine */ }
+		try{ if(!hero.on) bridge.stepCosmetics(dt); }catch(e){ /* fine */ }
+		if(!hero.on) updateCamera(dt); // hero mode: solo camera-follow runs in the loop
 		}
-		if(play.on && play.spawned){
+		if(hero.on && hero.spawned){
+			// hero uplink: pose + CLAIMED vitals (guest-local truth, display/targeting
+			// on the host side); a playing human is active by definition
+			if(t - timersPlay.pose > NET.PLAY_RULES.POSE_MS){
+				timersPlay.pose = t;
+				const p = bridge.player;
+				conn.send({ t: 'ppose', x: +p.x.toFixed(2), y: +p.y.toFixed(2), vx: +(p.vx || 0).toFixed(2), vy: +(p.vy || 0).toFixed(2), f: p.facing < 0 ? -1 : 1, act: 1, hp: +(p.hp || 0).toFixed(1), mhp: Math.max(1, Math.round(p.maxHp || 100)) });
+			}
+			saveHeroState(false); // trailing persistence rides the frame, throttled
+		} else if(play.on && play.spawned){
 			// embodied uplink: the body pose replaces the camera pose (the host uses
 			// it for the body AND as this guest's tracked spot for pings/powers)
 			if(t - timersPlay.pose > NET.PLAY_RULES.POSE_MS){
@@ -954,9 +1096,9 @@ const ghostClient = (function(){
 		const p = bridge.player;
 		const hx = p ? p.x : NaN, hy = p ? p.y : NaN;
 		const tagPainter = MMR && MMR.ghostHost && MMR.ghostHost.paintBodyTag;
-		// the host hero as a REMOTE body (embodied mode only — otherwise the local
+		// the host hero as a REMOTE body (embodied modes only — otherwise the local
 		// player object is the replica and main.js draws it already)
-		if(play.on && remoteHost.has){
+		if((play.on || hero.on) && remoteHost.has){
 			remoteHost.dx += (remoteHost.x - remoteHost.dx) * ease;
 			remoteHost.dy += (remoteHost.y - remoteHost.dy) * ease;
 			if(Math.abs(remoteHost.x - remoteHost.dx) > 6){ remoteHost.dx = remoteHost.x; remoteHost.dy = remoteHost.y; }
@@ -978,7 +1120,7 @@ const ghostClient = (function(){
 		}
 		const c = bridge.getCamCenter();
 		if(selfChat && selfChat.until < nowMs()) selfChat = null;
-		if(play.on && play.spawned){
+		if((play.on && play.spawned) || (hero.on && hero.spawned)){
 			// embodied: no own spirit (main.js draws our hero), no dread ring (a body
 			// is a physical presence, not a phantom) — just the mining progress ring
 			if(wantText && play.progAt && play.prog > 0){
@@ -1019,7 +1161,7 @@ const ghostClient = (function(){
 		// remote body when this guest is embodied
 		const bubble = MMR && MMR.ghostHost && MMR.ghostHost.paintChatBubble;
 		if(hostChat && hostChat.until > nowMs() && bubble){
-			if(play.on && remoteHost.has) bubble(ctx, TILE, remoteHost.dx, remoteHost.dy - 1.0, hostChat.text);
+			if((play.on || hero.on) && remoteHost.has) bubble(ctx, TILE, remoteHost.dx, remoteHost.dy - 1.0, hostChat.text);
 			else if(p) bubble(ctx, TILE, p.x, p.y - (p.h || 1) / 2 - 0.5, hostChat.text);
 		}
 		const now = nowMs();
@@ -1266,6 +1408,7 @@ const ghostClient = (function(){
 		window.addEventListener('keydown', (e) => {
 			if(!MMR || !MMR.ghostMode) return;
 			noteInput(); // any real keystroke keeps this watcher "active" for the boosts
+			if(hero.on) return; // hero mode: the REAL game handlers own every key
 			if(e.ctrlKey || e.metaKey || e.altKey) return; // browser shortcuts stay browser shortcuts
 			if(isOurs(e)) return;
 			const k = (e.key || '').toLowerCase();
@@ -1284,11 +1427,13 @@ const ghostClient = (function(){
 		window.addEventListener('keyup', (e) => {
 			if(!MMR || !MMR.ghostMode) return;
 			held.delete((e.key || '').toLowerCase());
+			if(hero.on) return; // hero mode: keys belong to the game
 			if(!isOurs(e)) e.stopImmediatePropagation();
 		}, true);
 		const swallowPointer = (e) => {
 			if(!MMR || !MMR.ghostMode) return;
 			if(e.type === 'pointerdown' || e.type === 'mousedown') noteInput();
+			if(hero.on) return; // hero mode: the pointer works the world through the real handlers
 			if(isOurs(e)) return;
 			const onCanvas = e.target && e.target.id === 'game';
 			// embodied: the pointer WORKS the world (mine/strike/place) instead of
@@ -1327,11 +1472,14 @@ const ghostClient = (function(){
 	// --- UI -------------------------------------------------------------------------------
 	function injectCss(){
 		const st = document.createElement('style');
-		st.textContent = 'body.mmGhostMode #hotbarWrap, body.mmGhostMode #weaponBar, body.mmGhostMode #craft,'
-			+ 'body.mmGhostMode #craftTracker, body.mmGhostMode #cornerCards, body.mmGhostMode #radarBtn,'
-			+ 'body.mmGhostMode #fireBtn, body.mmGhostMode #ultBtn, body.mmGhostMode #controls,'
-			+ 'body.mmGhostMode #dirRing, body.mmGhostMode #menuWrap, body.mmGhostMode #help,'
-			+ 'body.mmGhostMode #hoverInfo, body.mmGhostMode #hudTip { display:none !important; }'
+		// hero mode (full-game guest) gets the REAL UI back: the hide rule excludes
+		// .mmGhostHero, so hotbar/craft/weapons/controls behave exactly like solo —
+		// only #menuWrap (host-side moderation/pause chrome) stays hidden for guests
+		st.textContent = 'body.mmGhostMode:not(.mmGhostHero) #hotbarWrap, body.mmGhostMode:not(.mmGhostHero) #weaponBar, body.mmGhostMode:not(.mmGhostHero) #craft,'
+			+ 'body.mmGhostMode:not(.mmGhostHero) #craftTracker, body.mmGhostMode:not(.mmGhostHero) #cornerCards, body.mmGhostMode:not(.mmGhostHero) #radarBtn,'
+			+ 'body.mmGhostMode:not(.mmGhostHero) #fireBtn, body.mmGhostMode:not(.mmGhostHero) #ultBtn, body.mmGhostMode:not(.mmGhostHero) #controls,'
+			+ 'body.mmGhostMode:not(.mmGhostHero) #dirRing, body.mmGhostMode #menuWrap, body.mmGhostMode:not(.mmGhostHero) #help,'
+			+ 'body.mmGhostMode:not(.mmGhostHero) #hoverInfo, body.mmGhostMode:not(.mmGhostHero) #hudTip { display:none !important; }'
 			+ '#ghostBar{ position:fixed; left:50%; bottom:12px; transform:translateX(-50%); z-index:140; display:flex; align-items:center; gap:8px;'
 			+ ' padding:8px 12px; border-radius:14px; border:1px solid rgba(140,190,255,.4); background:rgba(10,15,24,.92); color:#dcebff;'
 			+ ' font:12px system-ui; box-shadow:0 8px 26px rgba(0,0,0,.55); pointer-events:auto; flex-wrap:wrap; justify-content:center; max-width:calc(100vw - 20px); }'
@@ -1603,8 +1751,9 @@ const ghostClient = (function(){
 			lookBtn.style.background = myLook || '';
 		}
 		// in embodiment the bar is a PLAYER hud (pouch + hands), so the spectator
-		// influence controls (blessings, powers) step aside to reduce clutter
-		const spectatorControls = !play.on;
+		// influence controls (blessings, powers) step aside to reduce clutter —
+		// hero mode keeps only the session strip (chat, follow, leave)
+		const spectatorControls = !play.on && !hero.on;
 		bar.querySelectorAll('.gbBuff').forEach(btn => {
 			const wait = (buffWait[btn.dataset.kind] || 0) - t;
 			btn.style.display = spectatorControls ? 'inline-block' : 'none';
@@ -1901,6 +2050,13 @@ const ghostClient = (function(){
 				days: prog.days.length
 			},
 			assistRecipes: assistState && Array.isArray(assistState.recipes) ? assistState.recipes.length : 0,
+			hero: {
+				on: hero.on, spawned: hero.spawned,
+				dmgWrapped: heroDmgWrapped.length,
+				x: hero.on && bridge && bridge.player ? +bridge.player.x.toFixed(2) : null,
+				y: hero.on && bridge && bridge.player ? +bridge.player.y.toFixed(2) : null,
+				hp: hero.on && bridge && bridge.player ? +(bridge.player.hp || 0).toFixed(1) : null
+			},
 			play: {
 				on: play.on, spawned: play.spawned, dead: play.dead, sel: play.sel,
 				arm: play.arm, weapons: play.weapons.slice(), duelWith: play.duelWith,
@@ -1935,6 +2091,11 @@ const ghostClient = (function(){
 		_playCraft: (key) => sendPlayAct('craft', 0, 0, key),
 		_playDuel: (targetGid) => sendDuel(targetGid),
 		_playLook: (c) => setLook(c),
+		// QA seams for hero mode: fire the intents the real chokepoints would send
+		// (the wire path, host validation and the ack accounting stay production)
+		_heroMine: (tx, ty) => heroIntents.mineBreak(tx, ty),
+		_heroPlace: (tx, ty, tid, layer) => heroIntents.place(tx, ty, tid, layer || 'fg'),
+		_heroSave: () => { saveHeroState(true); },
 		// QA: deterministically halt the embodied hero (clears held keys + velocity).
 		// Synthetic keyup events do not reliably clear `held` under headless CDP.
 		_playStop: () => { held.clear(); if(play.on && bridge && bridge.player){ bridge.player.vx = 0; } },

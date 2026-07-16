@@ -273,7 +273,9 @@ const ghostHost = (function(){
 			// teleport hack rubber-bands. The pose doubles as the guest's camera so
 			// pings and powers keep working from the same tracked spot.
 			const b = entry.body;
-			if(b && !b.dead && Number.isFinite(pl.x) && Number.isFinite(pl.y)){
+			// hero-mode bodies accept poses while "dead" too: the guest respawns
+			// ITSELF (vitals are its local truth) and announces the comeback here
+			if(b && (!b.dead || entry.heroMode) && Number.isFinite(pl.x) && Number.isFinite(pl.y)){
 				// the dt floor is ZERO, not a synthetic minimum: a per-message floor
 				// hands out movement budget per CLAIM, so spamming claims (120 msg/s
 				// under the rate cap × 16 ms credited each) would outrun MAX_SPEED 2:1 —
@@ -293,11 +295,20 @@ const ghostHost = (function(){
 				}
 				b.f = pl.f < 0 ? -1 : 1;
 				b.poseSeq = (Number(pl.q) >>> 0) || 0; // echoed in the pb own row for reconciliation
+				// hero mode: vitals are guest-local truth (owner ruling) — the claim
+				// is display/targeting state for creatures and health bars, clamped
+				if(entry.heroMode){
+					if(Number.isFinite(pl.hp)) b.hp = Math.max(0, Math.min(NET.HERO_RULES.HP_MAX, +pl.hp));
+					if(Number.isFinite(pl.mhp)) b.maxHp = Math.max(1, Math.min(NET.HERO_RULES.HP_MAX, +pl.mhp));
+					b.dead = b.hp <= 0;
+				}
 			}
 			if(Number.isFinite(pl.x) && Number.isFinite(pl.y)) entry.cam = { x: +pl.x, y: +pl.y };
 			if(pl.act) markActive(entry);
 		} else if(pl.t === 'pact'){
 			handlePlayAct(s, entry, pl);
+		} else if(pl.t === 'hact'){
+			handleHeroAct(s, entry, pl);
 		} else if(pl.t === 'buff'){
 			handleBuff(s, entry, pl);
 		} else if(pl.t === 'needMobs'){
@@ -810,6 +821,15 @@ const ghostHost = (function(){
 		const t = now();
 		if(t < (b.invulUntil || 0)) return;
 		b.invulUntil = t + NET.PLAY_RULES.HURT_INVUL_MS;
+		// hero mode: the wound is FORWARDED, not applied — the guest runs it through
+		// its real damage pipeline (armor, toughness, i-frames) and the resulting hp
+		// comes back as a ppose claim. The i-frame stamp above still rate-limits.
+		if(entry.heroMode){
+			let kbxH = 0;
+			if(Number.isFinite(sx)){ const dx = b.x - sx; const d = Math.abs(dx) || 1; kbxH = (dx / d) * 5; }
+			try{ entry.peer.send({ t: 'pdmg', amt: +Math.max(1, Number(amount) || 1).toFixed(1), kbx: +kbxH.toFixed(2), kby: -3.2, cause: String(cause || 'mob').slice(0, 16) }); }catch(e){ /* fine */ }
+			return;
+		}
 		// the elemental matrix applies to bodies too: a soaked body conducts (the
 		// hero's own WET_ELECTRIC_MULT), judged from the CAUSE the attacker declared
 		let amt = Math.max(1, Number(amount) || 1);
@@ -1056,6 +1076,52 @@ const ghostHost = (function(){
 			entry.peer.send({ t: 'pactAck', a: 'strike', ok: true, hits, x: tx, y: ty });
 		}
 	}
+	// Hero-mode world intents: the ONLY world-touching inlet for a full-game guest.
+	// The guest's inventory/gear/XP are ITS local truth (owner ruling) — what is
+	// protected here is the WORLD: reach and rate against HOST-tracked state, then
+	// solo-grade legality in the bridge seams (three mining layers, placement rules,
+	// damage envelope). A modified hero client can gild its own trophy case; it
+	// still cannot write one illegal tile or exceed the damage cap.
+	function handleHeroAct(s, entry, pl){
+		markActive(entry);
+		const b = entry.body;
+		if(!b || entry.mode !== 'hero'){ entry.peer.send({ t: 'hact', a: pl.a, ok: false, reason: 'perm' }); return; }
+		if(!NET.validHeroAction(pl.a)){ entry.peer.send({ t: 'hact', a: pl.a, ok: false, reason: 'action' }); return; }
+		const t = now();
+		if(pl.a === 'dmg'){
+			// fire-and-forget: the wound shows up on the creature stream either way
+			if(t - (b.lastHeroDmgAt || 0) < NET.HERO_RULES.DMG_MS) return;
+			b.lastHeroDmgAt = t;
+			const x = Number(pl.x), y = Number(pl.y);
+			if(!Number.isFinite(x) || !Number.isFinite(y)) return;
+			if(Math.abs(x - b.x) > NET.HERO_RULES.DMG_RADIUS || Math.abs(y - b.y) > NET.HERO_RULES.DMG_RADIUS) return;
+			const amt = Math.max(1, Math.min(NET.HERO_RULES.DMG_MAX, Number(pl.n) || 1));
+			let hits = 0;
+			try{ hits = bridge.ghostHeroDamage ? (bridge.ghostHeroDamage(x, y, amt) | 0) : 0; }catch(e){ hits = 0; }
+			if(hits) s.stats.heroDmg = (s.stats.heroDmg || 0) + 1;
+			return;
+		}
+		const tx = Math.floor(Number(pl.x)), ty = Math.floor(Number(pl.y));
+		if(!Number.isFinite(tx) || !Number.isFinite(ty)) return;
+		if(!NET.playReachOk(b.x, b.y, tx, ty, NET.HERO_RULES.REACH)){ entry.peer.send({ t: 'hact', a: pl.a, ok: false, reason: 'reach', x: tx, y: ty }); return; }
+		if(pl.a === 'mine'){
+			if(t - (b.lastHeroMineAt || 0) < NET.HERO_RULES.MINE_MS) return; // silent — re-mining retries
+			b.lastHeroMineAt = t;
+			let res = null;
+			try{ res = bridge.ghostHeroMineAt ? bridge.ghostHeroMineAt(tx, ty) : null; }catch(e){ res = { ok: false, reason: 'error' }; }
+			if(res && res.ok) s.stats.heroMines = (s.stats.heroMines || 0) + 1;
+			entry.peer.send({ t: 'hact', a: 'mine', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty, tid: (res && res.tid) || 0 });
+		} else if(pl.a === 'place'){
+			if(t - (b.lastHeroPlaceAt || 0) < NET.HERO_RULES.PLACE_MS) return;
+			b.lastHeroPlaceAt = t;
+			const tid = Number(pl.tid) | 0;
+			const layer = (pl.l === 'overlay' || pl.l === 'background') ? pl.l : 'fg';
+			let res = null;
+			try{ res = bridge.ghostHeroPlaceAt ? bridge.ghostHeroPlaceAt(tx, ty, tid, layer, { x: b.x, y: b.y, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H }) : null; }catch(e){ res = { ok: false, reason: 'error' }; }
+			if(res && res.ok) s.stats.heroPlaces = (s.stats.heroPlaces || 0) + 1;
+			entry.peer.send({ t: 'hact', a: 'place', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty, tid });
+		}
+	}
 	// --- per-body survival: the world itself is a hazard -----------------------------
 	// Drowning runs the REAL survival law (SURVIVAL.updateDrowning — the hero's own
 	// grace, ramp and 12-per-tick cap) against world truth read HOST-side; lava sears
@@ -1173,7 +1239,7 @@ const ghostHost = (function(){
 		for(const entry of entries()){
 			const b = entry.body;
 			if(!b) continue;
-			if(b.dead && t >= b.respawnAt){
+			if(!entry.heroMode && b.dead && t >= b.respawnAt){
 				b.dead = false;
 				b.hp = b.maxHp;
 				b.x = bridge.player.x; b.y = bridge.player.y - 0.2;
@@ -1187,7 +1253,9 @@ const ghostHost = (function(){
 				try{ entry.peer.send({ t: 'prespawn', x: +b.x.toFixed(2), y: +b.y.toFixed(2) }); }catch(e){ /* fine */ }
 				sendVitals(s, entry);
 			}
-			if(!b.dead && dt > 0) bodySurvivalPass(s, entry, b, dt, t);
+			// hero mode: survival laws run on the GUEST through the real hero systems
+			// (vitals are its local truth) — running them here too would double-damage
+			if(!entry.heroMode && !b.dead && dt > 0) bodySurvivalPass(s, entry, b, dt, t);
 			list.push([entry.gid, entry.name || 'Duch', +b.x.toFixed(2), +b.y.toFixed(2), +(b.vx || 0).toFixed(2), +(b.vy || 0).toFixed(2), b.f < 0 ? -1 : 1, +b.hp.toFixed(1), b.maxHp, b.dead ? 1 : 0, b.poseSeq || 0]);
 			if(!b.dead){
 				if(!entry.bodyLike) entry.bodyLike = { gid: entry.gid, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, dead: false, hurt: (a, sx, sy, c) => hurtBody(s, entry, a, sx, sy, c) };
@@ -1383,10 +1451,13 @@ const ghostHost = (function(){
 		for(const entry of entries()){
 			if(entry.gid !== gid) continue;
 			entry.mode = mode;
-			// the play rung is embodied: granting it spawns the guest's hero at the
-			// host, revoking it (any downgrade) removes the body — spectating remains
-			if(mode === 'play' && !entry.body) spawnBody(session, entry);
-			else if(mode !== 'play' && entry.body) despawnBody(session, entry);
+			// both embodied rungs spawn a host-tracked body (creatures need a target
+			// either way); hero mode additionally flips the body to guest-local
+			// vitals — the flag every body pass below branches on
+			const embodied = (mode === 'play' || mode === 'hero');
+			entry.heroMode = mode === 'hero';
+			if(embodied && !entry.body) spawnBody(session, entry);
+			else if(!embodied && entry.body) despawnBody(session, entry);
 			entry.peer.send({ t: 'perm', mode });
 			hit = true;
 		}
@@ -1648,11 +1719,11 @@ const ghostHost = (function(){
 	const PERM_KEY = 'mm_ghost_perm_v1';
 	const APPROVE_KEY = 'mm_ghost_approve_v1';
 	const VIEW_KEY = 'mm_ghost_view_v1';
-	const MODE_LABEL = { watch: 'tylko ogląda', chat: '+ czat', full: '+ czat i wpływ', play: '🎮 gra (wcielenie)' };
+	const MODE_LABEL = { watch: 'tylko ogląda', chat: '+ czat', full: '+ czat i wpływ', play: '🎮 gra (sakwa)', hero: '🕹 gra (pełny bohater)' };
 	let defaultMode = 'full'; // what a viewer gets on join, until the host says otherwise
-	// the embodied rung is NEVER a door policy: play is granted per viewer, by hand —
-	// an embodied stranger by default would be a griefing invitation
-	const DEFAULT_MODES = NET.PERMISSION_MODES.filter(m => m !== 'play');
+	// the embodied rungs are NEVER a door policy: play and hero are granted per
+	// viewer, by hand — an embodied stranger by default would be a griefing invitation
+	const DEFAULT_MODES = NET.PERMISSION_MODES.filter(m => m !== 'play' && m !== 'hero');
 	let approvalMode = false; // ON: assistant requests wait for the host's Zatwierdź
 	// what of the audience the host wants ON SCREEN — display only, mechanics never care
 	const viewPrefs = { spirits: true, bubbles: true, fx: true };

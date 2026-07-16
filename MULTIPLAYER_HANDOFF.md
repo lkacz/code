@@ -1,5 +1,19 @@
 # Handoff prompt — drive "Duchy Warstwy" co-op from ~60% to 100% multiplayer
 
+> **PHASE 1 "HERO MODE" (2026-07-16, in progress):** the owner approved a NEW trust
+> contract for full-parity co-op: the guest's PLAYER state (inventory, gear, XP,
+> vitals) is guest-local truth (persisted under `mm_ghost_hero_v1`), while the host
+> keeps protecting the WORLD with solo-grade rules. Implemented in wave H1: the
+> `hero` permission rung (5-rung ladder, granted per viewer like play), the
+> `runHeroStep` hero-only frame in main.js (world systems stay streamed), the
+> `breakMinedTile`/`tryPlace` intent chokepoints, the `hact` host handler
+> (mine/place/dmg with reach/rate/envelope checks + solo-grade bridge seams
+> `ghostHeroMineAt`/`ghostHeroPlaceAt`/`ghostHeroDamage`), guest-local vitals
+> (hurtBody forwards, `window.damageHero` applies with armor parity), hero-state
+> capture/restore across resyncs, and full UI/input handback. Still open: a hero
+> QA scene, chests/machines/boats/mechs for guests, full weapon parity (P2
+> replaces the coarse damage forward), guest death polish.
+
 You are a coding agent continuing a multiplayer feature in an existing browser game.
 A working embodied co-op experience already ships: two people on different machines
 share one world, both drive real heroes, and monsters fight the whole party. Your
