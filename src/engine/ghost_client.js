@@ -154,6 +154,17 @@ const ghostClient = (function(){
 					return orig.apply(this, arguments);
 				};
 			}
+			// elemental parity: the real weapons apply status through these — forward
+			// the ELEMENT (host uses its own safe params), keep the local call as prediction
+			for(const [fn, kind] of [['igniteAt', 'ignite'], ['chillAt', 'chill']]){
+				if(typeof sys[fn] !== 'function') continue;
+				const orig = sys[fn];
+				heroDmgWrapped.push([sys, fn, orig]);
+				sys[fn] = function(tx, ty){
+					try{ if(state === 'live' && conn) conn.send({ t: 'hact', a: 'dmg', x: +tx, y: +ty, n: 1, k: kind }); }catch(e){ /* fine */ }
+					return orig.apply(this, arguments);
+				};
+			}
 		}
 	}
 	function unwrapHeroDamage(){

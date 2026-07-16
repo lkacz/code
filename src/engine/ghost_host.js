@@ -1096,8 +1096,9 @@ const ghostHost = (function(){
 			if(!Number.isFinite(x) || !Number.isFinite(y)) return;
 			if(Math.abs(x - b.x) > NET.HERO_RULES.DMG_RADIUS || Math.abs(y - b.y) > NET.HERO_RULES.DMG_RADIUS) return;
 			const amt = Math.max(1, Math.min(NET.HERO_RULES.DMG_MAX, Number(pl.n) || 1));
+			const kind = (pl.k === 'ignite' || pl.k === 'chill') ? pl.k : 'hit'; // element whitelist — host picks its own safe params
 			let hits = 0;
-			try{ hits = bridge.ghostHeroDamage ? (bridge.ghostHeroDamage(x, y, amt) | 0) : 0; }catch(e){ hits = 0; }
+			try{ hits = bridge.ghostHeroDamage ? (bridge.ghostHeroDamage(x, y, amt, kind) | 0) : 0; }catch(e){ hits = 0; }
 			if(hits) s.stats.heroDmg = (s.stats.heroDmg || 0) + 1;
 			return;
 		}

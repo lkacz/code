@@ -16364,9 +16364,14 @@ MM.ghostBridge={
 	// hero-mode combat (coarse H1 channel): a damage application forwarded by the
 	// guest resolves through the REAL chains at the claimed point, attributed
 	// 'coop' — amount and radius were already clamped by the host handler.
-	ghostHeroDamage:(x,y,amt)=>{
+	ghostHeroDamage:(x,y,amt,kind)=>{
+		if(!Number.isFinite(x) || !Number.isFinite(y)) return 0;
+		// elemental forwards use the HOST's own safe parameters — the guest names
+		// only the element, never the duration or strength
+		if(kind==='ignite'){ try{ if(MOBS && MOBS.igniteAt) return MOBS.igniteAt(Math.floor(x),Math.floor(y),{dur:2.5,dps:2,source:'coop'}) ? 1 : 0; }catch(e){} return 0; }
+		if(kind==='chill'){ try{ if(MOBS && MOBS.chillAt) return MOBS.chillAt(Math.floor(x),Math.floor(y),{dur:3,source:'coop'}) ? 1 : 0; }catch(e){} return 0; }
 		const W=MM.weapons;
-		if(!W || !W.coopMeleeAt || !Number.isFinite(x) || !Number.isFinite(y)) return 0;
+		if(!W || !W.coopMeleeAt) return 0;
 		return W.coopMeleeAt({x, y, facing:1}, x, y, {bonus:Math.max(0,Math.min(43,amt-2)), reach:1.2}) ? 1 : 0;
 	}
 };

@@ -773,6 +773,10 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	assert.ok(/Math\.min\(NET\.HERO_RULES\.DMG_MAX, Number\(pl\.n\) \|\| 1\)/.test(hostSrc)
 		&& /Math\.abs\(x - b\.x\) > NET\.HERO_RULES\.DMG_RADIUS/.test(hostSrc),
 		'forwarded damage is clamped by amount AND anchored near the body');
+	assert.ok(/\(pl\.k === 'ignite' \|\| pl\.k === 'chill'\) \? pl\.k : 'hit'/.test(hostSrc),
+		'the element whitelist: a guest names the element, the host owns the parameters');
+	assert.ok(/kind==='ignite'.*MOBS\.igniteAt.*dur:2\.5/.test(mainSrc) && /kind==='chill'.*MOBS\.chillAt.*dur:3/.test(mainSrc),
+		'elemental forwards use host-fixed durations, never client-claimed ones');
 	// the bridge seams re-validate world truth with solo-grade rules
 	assert.ok(/ghostHeroMineAt:\(tx,ty\)=>\{/.test(mainSrc) && /info\.chestTier \|\| info\.cache\) return \{ok:false, reason:'chest'\}/.test(mainSrc),
 		'hero mining spans the three solo layers but chests stay host economy');
