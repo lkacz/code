@@ -342,10 +342,13 @@ export function progressAfter(state, deeds, opts){
 	return { state: s, unlocked, level: after.level, leveled: after.level > before, from: before };
 }
 
-// --- chat profanity filter (pure) ---------------------------------------------
+// --- chat rules + profanity filter (pure) ---------------------------------------
+// One source of truth for BOTH ends: the host enforces MIN_MS per peer, and the
+// client mirrors it locally so a message sent into the floor is refused with an
+// explanation instead of being silently dropped server-side ("chat is broken").
+export const CHAT = { MIN_MS: 4000, MAX_LEN: 90 };
 // Token-wise masking: fold diacritics + leetspeak, then match against vulgarity
 // stems (PL + EN). Over-masking an innocent compound beats letting slurs through.
-const CHAT_MAX_LEN = 90;
 const PROFANITY_STEMS = [
 	'kurw', 'kurew', 'chuj', 'huj', 'pierd', 'jeb', 'pizd', 'cip', 'fiut', 'kutas', 'dziwk', 'szmat', 'debil', 'cwel',
 	'fuck', 'shit', 'bitch', 'cunt', 'dick', 'asshole', 'bastard', 'nigg', 'fag', 'whore', 'slut', 'retard'
@@ -361,7 +364,7 @@ function foldChatToken(tok){
 	return out;
 }
 export function filterChat(raw){
-	const text = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim().slice(0, CHAT_MAX_LEN);
+	const text = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim().slice(0, CHAT.MAX_LEN);
 	if(!text) return { text: '', filtered: false, empty: true };
 	let filtered = false;
 	const out = text.replace(/[^\s]+/g, (tok) => {
@@ -791,7 +794,7 @@ export function joinRoom(room, opts){
 // every Node test still passes. ghost-sim pins the two lists against each other.
 const api = {
 	GHOST_PROTO, BUFF_RULES, MQTT_BROKERS,
-	SOCIAL_RULES, socialBoosts, PERMISSION_MODES, validPermissionMode, AVATARS, validAvatar, filterChat,
+	SOCIAL_RULES, socialBoosts, PERMISSION_MODES, validPermissionMode, AVATARS, validAvatar, CHAT, filterChat,
 	SPIRIT_AVOID, spiritLift, PING,
 	DREAD, dreadAt, POWER_RULES, POWER_CHARGE, validPowerKind, chargeAfter, ASSIST_ACTIONS, validAssistAction,
 	ASSIST_LIMITS, clampCraftCount, createAssistQueue,

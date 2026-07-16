@@ -762,6 +762,45 @@ async function main(){
 		await host.eval(`MM.ghostHost.setViewPref('spirits', true)`);
 		console.log('voices: ok (host bubble on both ends, ping echoed, mute keeps relay but silences the log, view prefs roundtrip)');
 
+		// --- Scene 10h: the watcher sees the GUARDIAN FIGHT ----------------------------------------------
+		// The save snapshot deliberately drops live guardian entities (restore() clears
+		// the arena), so before the mirror plane a watcher stared at an EMPTY lair while
+		// the hero visibly fought a boss. Awaken one with the hero parked in the arena
+		// (the guardian sleeps if its player leaves the leash) and the host tab in front
+		// (guardian AI is rAF-driven), then prove the watcher materializes the fight,
+		// sees it MOVE, sees the hp drain, and sees the arena empty when it ends.
+		await host.front();
+		const arena = await host.eval(`(()=>{
+			const L=MM.guardianLairs.layoutFor('fire');
+			player.x=L.ax+6; player.y=L.floorY-4; player.vx=0; player.vy=0; player.hp=player.maxHp;
+			const ok=MM.guardianLairs.forceAwaken('fire');
+			const m=MM.guardianLairs.metrics();
+			return {ok, ax:L.ax, alive:m.alive, bosses:m.bosses};
+		})()`);
+		if(!arena.ok || !(arena.alive >= 2) || arena.bosses !== 1) throw new Error('setup: guardian did not awaken: ' + JSON.stringify(arena));
+		await ghost.poll(`MM.ghostClient.metrics().stats.guard`, v => v >= 1, 'watcher receives the guardian mirror', 60, 250);
+		await ghost.poll(`MM.guardianLairs.metrics().alive`, v => v >= 2, 'watcher materializes the boss and sidekicks', 60, 250);
+		const readBoss = `(()=>{ const e=MM.guardianLairs._debug().entities.find(v=>v.boss);
+			return e ? {x:+e.x.toFixed(2), y:+e.y.toFixed(2), hp:+e.hp.toFixed(1), mhp:e.maxHp} : null; })()`;
+		const bossA = await ghost.eval(readBoss);
+		await sleep(2000); // must clear one throttled background pump cycle on the watcher
+		const bossB = await ghost.eval(readBoss);
+		if(!bossA || !bossB) throw new Error('watcher lost the boss puppet: ' + JSON.stringify({ bossA, bossB }));
+		const bossMoved = Math.hypot(bossB.x - bossA.x, bossB.y - bossA.y);
+		if(!(bossMoved > 0.3)) throw new Error('the boss is frozen on the watcher screen: ' + JSON.stringify({ bossA, bossB }));
+		// hp drains through the mirror: hurt the boss on the HOST, watch the watcher's copy
+		await host.eval(`(()=>{ const e=MM.guardianLairs._debug().entities.find(v=>v.boss); if(e) e.hp=Math.max(1, e.hp-137); return 1; })()`);
+		await ghost.poll(readBoss, v => v && v.hp <= v.mhp - 100, 'the boss hp drain reaches the watcher', 40, 250);
+		// the fight ends → the busy-latch sends one trailing clear packet. Walk the
+		// hero OUT of the leash first: a player standing in the arena re-triggers the
+		// guardian's natural proximity awaken on the very next sim tick, and the
+		// mirror would faithfully stream the brand-new fight forever.
+		await host.eval(`(()=>{ player.x=(${marker.px}); player.y=(${marker.py}); player.vx=0; player.vy=0; MM.guardianLairs.clearActive(); return 1; })()`);
+		await ghost.poll(`MM.guardianLairs.metrics().alive`, v => v === 0, 'the cleared arena empties on the watcher too', 60, 250);
+		const guardPkts = await ghost.eval(`MM.ghostClient.metrics().stats.guard`);
+		console.log('guardian plane: ok (boss moved ' + bossMoved.toFixed(2) + ' tiles on the watcher, hp drain visible, arena cleared; '
+			+ guardPkts + ' mirror packets)');
+
 		// --- Scene 10e: transport loss → automatic reconnect --------------------------------------------
 		// _debugConnLost runs the REAL recovery path: close conn (bye), fresh join,
 		// hello → welcome → fresh snapshot re-bases the world mid-session.

@@ -548,8 +548,8 @@ assert.ok(/if\(entry\.mode !== 'full'\)\{ entry\.peer\.send\(\{ t: 'powerAck', k
 assert.ok(/if\(entry\.charge < rule\.cost\)/.test(hostSrc) && /entry\.charge -= rule\.cost;/.test(hostSrc), 'powers cost earned charge');
 assert.ok(/const hits = bridge\.ghostPower\(kind, entry\.cam\.x, entry\.cam\.y, rule\);/.test(hostSrc),
 	'a power strikes at the SPIRIT position the host tracked — never at client-chosen coordinates');
-assert.ok(/function chargeTick\(s, t\)/.test(hostSrc) && /NET\.chargeAfter\(entry\.charge, dt, wasActive\)/.test(hostSrc),
-	'charge accrues only while the watcher is active');
+assert.ok(/function chargeTick\(s, t, live\)/.test(hostSrc) && /NET\.chargeAfter\(entry\.charge, dt, wasActive\)/.test(hostSrc),
+	'charge accrues only while the watcher is active (and reuses the per-frame entries snapshot)');
 assert.ok(/ghostPower:\(kind,x,y,rule\)=>\{/.test(mainSrc), 'the bridge exposes ghostPower');
 assert.ok(!/ghostPower[\s\S]{0,900}setTile\(/.test(mainSrc), 'NO ghost power may edit a tile — creatures only, so a watcher can never grief the world');
 assert.ok(/MOBS\.chillRadius/.test(mainSrc) && /MOBS\.blastRadius/.test(mainSrc) && /MOBS\.statusRadius\(x,y,r,'panic'/.test(mainSrc),
@@ -773,5 +773,44 @@ assert.ok(!/ghostPower[\s\S]{0,900}spawnBurst/.test(mainSrc),
 assert.ok(/paintSpirit\(ctx, TILE, x, y, name, t, self, avatar, active, chat, pass\)/.test(hostSrc)
 	&& /function paintChatBubble\(ctx, TILE, x, y, text\)/.test(hostSrc),
 	'the painter splits body/text passes and shares one bubble painter with the client');
+
+// --- source pins: the guardian arena mirror ------------------------------------------------------
+// guardian_lairs.restore() deliberately clears live entities, so the join snapshot
+// carries NO fight — without this plane a watcher stared at an EMPTY lair while the
+// hero visibly battled a boss (the last of the frozen-actor gaps after mobs,
+// invasions and weapon FX got their planes).
+assert.ok(/function ghostMirrorState\(\)/.test(lairSrc) && /function ghostApplyMirror\(data\)/.test(lairSrc)
+	&& /function ghostLerp\(dt\)/.test(lairSrc), 'guardian_lairs ships the spectator mirror trio');
+assert.ok(/ghostMirrorState, ghostApplyMirror, ghostLerp,/.test(lairSrc), 'the mirror trio is exposed on the guardians api');
+{
+	// THE contract: puppets are cosmetic — the watcher-side apply/lerp may not write
+	// tiles, deal damage, or spawn/awaken anything through the real AI paths.
+	const applySlice = lairSrc.slice(lairSrc.indexOf('function ghostApplyMirror'), lairSrc.indexOf('function resetUnderground'));
+	assert.ok(applySlice.length > 100 && applySlice.includes('function ghostLerp'), 'mirror apply+lerp slice found');
+	assert.ok(!/setTile|damageAt|attackAt|addHazard\(|spawnGuardian|awaken\(|addEffect\(/.test(applySlice),
+		'the watcher-side guardian mirror is cosmetic only — no tile writes, no damage, no AI spawns');
+	assert.ok(/dmg:0, source:0/.test(applySlice), 'puppet hazards carry zero damage');
+	assert.ok(/slice\(0,10\)/.test(applySlice) && /slice\(0,48\)/.test(applySlice) && /slice\(0,16\)/.test(applySlice),
+		'hostile mirror payloads are bounded on every axis (entities, hazards, effects)');
+	assert.ok(/GHOST_HAZ_TYPES\.includes\(w\.t\)/.test(applySlice), 'unknown hazard types are refused, not drawn');
+}
+assert.ok(/function guardTick\(s, t\)/.test(hostSrc) && /if\(t - s\.last\.guard >= CAD\.guard\) guardTick\(s, t\);/.test(hostSrc),
+	'the host streams the guardian mirror on its own cadence');
+assert.ok(/if\(!st && !s\.guardBusy\) return;/.test(hostSrc),
+	'an empty arena streams nothing (but one trailing packet clears the watcher copy)');
+assert.ok(/pl\.t === 'guard'/.test(clientSrc) && /MMR\.guardianLairs\.ghostLerp\(dt\)/.test(clientSrc),
+	'the watcher applies the guardian mirror and animates it between packets');
+
+// --- audit pins (2026-07-16): cache coherence, camera respect, seat identity, chat floor -----------
+assert.ok(/s\.snapCache = null; s\.sinceCache\.length = 0;\s*\n\s*reap\(s, t\);/.test(hostSrc),
+	'an emptied audience invalidates the snapshot cache — tile capture is off with zero watchers, so a re-join inside the cache window must reserialize');
+assert.ok(/if\(other !== entry && other\.hello && other\.gid === entry\.gid\) dropPeer\(s, other, true\);/.test(hostSrc),
+	'one gid = one seat: the newest connection wins, so a dirty-drop reconnect is never blocked or twinned by its own corpse');
+assert.ok(/const wasLive = state === 'live';/.test(clientSrc) && /if\(!wasLive\)\{/.test(clientSrc),
+	'a mid-session resync re-bases the world WITHOUT yanking a free-flying camera back to follow mode');
+assert.equal(NET.CHAT.MIN_MS, 4000, 'the chat floor is a shared constant');
+assert.ok(/const CHAT_MIN_MS = NET\.CHAT\.MIN_MS;/.test(hostSrc), 'the host chat floor derives from the shared constant');
+assert.ok(/lastChatSentAt \+ NET\.CHAT\.MIN_MS - nowMs\(\)/.test(clientSrc),
+	'the client mirrors the chat floor locally — a too-fast message is refused with a reason instead of vanishing server-side');
 
 console.log('ghost-sim: all assertions passed');

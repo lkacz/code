@@ -31,8 +31,8 @@ if(MMR && !MMR.ghostDreadAt){
 	};
 }
 
-const CAD = { hero: 66, wfx: 66, mobs: 120, mobsFull: 3000, inv: 120, invFull: 3000, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 10000, prog: 1000 };
-const CHAT_MIN_MS = 4000; // per-peer chat floor
+const CAD = { hero: 66, wfx: 66, mobs: 120, mobsFull: 3000, inv: 120, invFull: 3000, guard: 150, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 4000, prog: 1000 };
+const CHAT_MIN_MS = NET.CHAT.MIN_MS; // per-peer chat floor (shared with the client's local mirror)
 const ACT_POSE_TTL_MS = 6000; // an "active" pose vouches for the watcher this long
 const TILE_RESYNC_LIMIT = 3000;
 const MAX_GHOSTS = 12; // every join serializes a full snapshot — cap the flood surface
@@ -69,12 +69,13 @@ const ghostHost = (function(){
 			snapCacheAt: 0,
 			sinceCache: [],
 			lastSnapAt: 0,
-			last: { hero: 0, heroKeepalive: 0, wfx: 0, mobs: 0, mobsFull: 0, inv: 0, invFull: 0, drops: 0, seasons: 0, infra: 0, presence: 0, reap: 0, prog: 0 },
+			last: { hero: 0, heroKeepalive: 0, wfx: 0, mobs: 0, mobsFull: 0, inv: 0, invFull: 0, guard: 0, drops: 0, seasons: 0, infra: 0, presence: 0, reap: 0, prog: 0 },
 			auraOwners: [],
 			lastMobSig: null,
 			lastInvSig: null,
 			invIdle: false,
 			wfxBusy: false,
+			guardBusy: false,
 			lastDropsJson: null,
 			lastHeroSent: null,
 			infraDirty: true,
@@ -183,11 +184,19 @@ const ghostHost = (function(){
 		if(++entry.rateN > PEER_MSG_MAX){ dropPeer(s, entry, true); return; }
 		if(pl.t === 'hello'){
 			if(!entry.hello){
-				if(typeof pl.gid === 'string') entry.gid = pl.gid.slice(0, 40);
+				if(typeof pl.gid === 'string' && pl.gid) entry.gid = pl.gid.slice(0, 40);
 				if(s.banned.has(entry.gid)){
 					entry.peer.send({ t: 'banned' });
 					dropPeer(s, entry, true);
 					return;
+				}
+				// one gid = one seat: a watcher reconnecting after a dirty drop must not
+				// be twinned with (or squeezed out by) its own corpse the reaper hasn't
+				// swept yet — the newest connection wins the seat. An impostor who
+				// captured a gid gains nothing: the fresh entry starts at defaults (no
+				// assistant seat, default mode) and the ousted watcher can just rejoin.
+				for(const other of Array.from(s.peers.values())){
+					if(other !== entry && other.hello && other.gid === entry.gid) dropPeer(s, other, true);
 				}
 				if(entries().length >= MAX_GHOSTS){
 					entry.peer.send({ t: 'full' });
@@ -322,12 +331,21 @@ const ghostHost = (function(){
 		const s = session;
 		if(!s || !bridge) return;
 		const t = Number.isFinite(ts) ? ts : now();
-		if(!entries().length){ s.pendingTiles.clear(); s.needResync = false; reap(s, t); return; }
+		const live = entries(); // one snapshot serves the whole frame (charge/assist/prog reuse it)
+		if(!live.length){
+			s.pendingTiles.clear(); s.needResync = false;
+			// tile capture is OFF with zero watchers, so the cached snapshot and its
+			// replay buffer go stale the moment the audience empties — a re-join
+			// inside the cache window must get a fresh serialization, not old cells
+			s.snapCache = null; s.sinceCache.length = 0;
+			reap(s, t);
+			return;
+		}
 		if(s.needResync){
 			if(t - s.lastSnapAt > CAD.resnap){
 				s.needResync = false;
 				let fresh = true; // one rebuild covers the whole burst — later peers reuse it
-				for(const entry of entries()){ sendSnapshot(s, entry.peer, fresh); fresh = false; }
+				for(const entry of live){ sendSnapshot(s, entry.peer, fresh); fresh = false; }
 			}
 		} else if(s.pendingTiles.size){
 			const d = [];
@@ -346,13 +364,14 @@ const ghostHost = (function(){
 		if(t - s.last.wfx >= CAD.wfx) weaponTick(s, t);
 		if(t - s.last.mobs >= CAD.mobs) mobTick(s, t);
 		if(t - s.last.inv >= CAD.inv) invTick(s, t);
+		if(t - s.last.guard >= CAD.guard) guardTick(s, t);
 		if(t - s.last.drops >= CAD.drops) dropTick(s, t);
 		if(t - s.last.seasons >= CAD.seasons) seasonTick(s, t);
 		if(s.infraDirty && t - s.last.infra >= CAD.infra) infraTick(s, t);
 		if(t - s.last.presence >= CAD.presence) presenceTick(s, t);
-		if(t - s.last.prog >= CAD.prog) progTick(s, t);
-		chargeTick(s, t);
-		for(const entry of entries()){ if(entry.assistant) sendAssistState(s, entry, false); }
+		if(t - s.last.prog >= CAD.prog) progTick(s, t, live);
+		chargeTick(s, t, live);
+		for(const entry of live){ if(entry.assistant) sendAssistState(s, entry, false); }
 		if(t - s.last.reap >= CAD.reap) reap(s, t);
 	}
 	function heroTick(s, t){
@@ -381,6 +400,22 @@ const ghostHost = (function(){
 		s.invIdle = !roster.sig;
 		if(roster.sig !== s.lastInvSig || t - s.last.invFull > CAD.invFull){ sendInvFull(s, null); }
 		else broadcast({ t: 'inv', sig: roster.sig, poses: roster.poses, props: roster.props });
+	}
+	// The guardian arena: the save snapshot deliberately drops live entities
+	// (guardian_lairs.restore clears the fight), so a watcher used to face an
+	// EMPTY lair while the hero visibly battled something. While anything is
+	// alive in an arena, the host streams a compact cosmetic mirror (bosses,
+	// sidekicks, hazards, effects); one trailing null clears the watcher's copy
+	// when the fight ends — same busy-latch as the weapon-FX plane.
+	function guardTick(s, t){
+		s.last.guard = t;
+		const G = MMR && MMR.guardianLairs;
+		if(!G || !G.ghostMirrorState) return;
+		let st = null;
+		try{ st = G.ghostMirrorState(); }catch(e){ return; }
+		if(!st && !s.guardBusy) return; // empty arena → silence
+		s.guardBusy = !!st;
+		broadcast({ t: 'guard', data: st });
 	}
 	// The hero's weapons: cosmetic FX only (swing arc, arrows, stream puffs, beams,
 	// blasts). Without this the watcher saw the hero walk around and never land a
@@ -554,10 +589,10 @@ const ghostHost = (function(){
 		sendDeed(entry, kind, 1);
 		if(hits > 0) sendDeed(entry, 'hit', hits); // marksmanship pays extra (capped client-side)
 	}
-	function chargeTick(s, t){
+	function chargeTick(s, t, live){
 		const dt = Math.min(2, (t - (s.lastChargeAt || t)) / 1000);
 		s.lastChargeAt = t;
-		for(const entry of entries()){
+		for(const entry of (live || entries())){
 			const wasActive = entry.actUntil > t;
 			const next = NET.chargeAfter(entry.charge, dt, wasActive);
 			if(next !== entry.charge){
@@ -724,13 +759,13 @@ const ghostHost = (function(){
 		if(!entry) return;
 		entry.spookN = (entry.spookN || 0) + 1;
 	}
-	function progTick(s, t){
+	function progTick(s, t, live){
 		s.last.prog = t;
 		// stale approval requests quietly expire — tell the assistant, refresh the desk
 		const dead = s.assistQueue.expire(t);
 		for(const q of dead) notifyAssistDone(q.gid, { t: 'assistDone', qid: q.qid, ok: false, reason: 'expired', label: q.label });
 		if(dead.length) updateUi();
-		for(const entry of entries()){
+		for(const entry of (live || entries())){
 			// active watching is the only time that pays — an idle tab earns nothing,
 			// exactly like the social boosts it mirrors
 			if(entry.actUntil > t && t - (entry.watchT || 0) >= NET.PROG.WATCH_TICK_MS){

@@ -2186,6 +2186,112 @@ const guardianLairs = (function(){
     ctx.restore();
   }
 
+  // --- ghost mirror: the boss fight, seen from the cheap seats -----------------
+  // The save snapshot deliberately drops live entities (restore() clears the
+  // arena), so a spectator joining mid-fight saw the hero battling an EMPTY
+  // lair. Same contract as the invasion/weapon planes: the HOST streams a
+  // compact cosmetic mirror, the watcher rebuilds inert puppets — no AI, no
+  // damage, no tile writes — and only glides/ages them between packets.
+  const GHOST_HAZ_TYPES=['projectile','skyLightning','stormMeteor','impact','beam','ring','blizzard'];
+  function ghostMirrorState(){
+    if(!entities.length && !hazards.length && !effects.length) return null;
+    const round2=v=>+(Number(v)||0).toFixed(2);
+    return {
+      ents: entities.filter(e=>e && !e.dead).slice(0,10).map(e=>({
+        id:Number(e.id)||0, k:e.kind, r:e.role, x:round2(e.x), y:round2(e.y),
+        hp:round2(e.hp), mhp:Math.max(1,Number(e.maxHp)||1),
+        hf:e.hitFlash>0?round2(e.hitFlash):0, ph:Number.isFinite(e.phase)?round2(e.phase):0
+      })),
+      haz: hazards.slice(0,48).map(h=>({
+        t:h.type, k:h.kind, x:round2(h.x), y:round2(h.y),
+        x1:round2(h.x1), y1:round2(h.y1), x2:round2(h.x2), y2:round2(h.y2),
+        vx:round2(h.vx), vy:round2(h.vy),
+        r:round2(h.r), r0:round2(h.r0), r1:round2(h.r1),
+        tt:round2(h.t), d:round2(h.delay), l:round2(h.life),
+        br:Array.isArray(h.branches)?h.branches.slice(0,6).map(b=>[round2(b.x1),round2(b.y1),round2(b.x2),round2(b.y2)]):0,
+        tr:Array.isArray(h.trail)?h.trail.slice(-6).map(p=>[round2(p.x),round2(p.y)]):0
+      })),
+      fx: effects.slice(0,16).map(f=>({t:String(f.type||'burst'), k:f.kind, x:round2(f.x), y:round2(f.y), tt:round2(f.t), m:round2(f.max), r:round2(f.r)}))
+    };
+  }
+  // Watcher-side rebuild. The payload comes from the network, so every number is
+  // sanitized and every list bounded — a hostile host may not stall the tab or
+  // smuggle absurd geometry. Entities keep identity across packets (glide, not
+  // teleport); hazards and effects are replaced wholesale and animated locally.
+  function ghostApplyMirror(data){
+    if(!data || typeof data!=='object'){
+      entities=[]; hazards.length=0; effects.length=0;
+      return true;
+    }
+    const fin=(v,d)=>{ const n=Number(v); return Number.isFinite(n)?n:d; };
+    const nextEnts=[];
+    for(const w of (Array.isArray(data.ents)?data.ents.slice(0,10):[])){
+      if(!w || !SPEC[w.k]) continue;
+      const x=fin(w.x,NaN), y=fin(w.y,NaN);
+      if(!Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x)>1e6 || Math.abs(y)>1e6) continue;
+      const wid=fin(w.id,0);
+      let e=entities.find(v=>v && v.id===wid && v.kind===w.k);
+      if(!e){
+        e=makeEntity(w.k, w.r==='boss'?'boss':String(w.r||'').slice(0,24), x, y, {seed:1});
+        e.id=wid;
+      }
+      e._gTX=x; e._gTY=y;
+      if(!Number.isFinite(e.x) || Math.abs(e.x-x)>8 || Math.abs(e.y-y)>8){ e.x=x; e.y=y; }
+      e.maxHp=Math.max(1, fin(w.mhp, e.maxHp));
+      e.hp=Math.max(0, Math.min(e.maxHp, fin(w.hp, e.hp)));
+      e.hitFlash=Math.max(0, Math.min(1, fin(w.hf,0)));
+      e.phase=fin(w.ph,0);
+      e.dead=false;
+      nextEnts.push(e);
+    }
+    entities=nextEnts;
+    hazards.length=0;
+    for(const w of (Array.isArray(data.haz)?data.haz.slice(0,48):[])){
+      if(!w || !GHOST_HAZ_TYPES.includes(w.t) || !SPEC[w.k]) continue;
+      const x=fin(w.x,0), y=fin(w.y,0);
+      hazards.push({
+        type:w.t, kind:w.k, x, y,
+        x1:fin(w.x1,x), y1:fin(w.y1,y), x2:fin(w.x2,x), y2:fin(w.y2,y),
+        vx:Math.max(-60,Math.min(60,fin(w.vx,0))), vy:Math.max(-60,Math.min(60,fin(w.vy,0))),
+        r:Math.max(0.05,Math.min(40,fin(w.r,0.5))), r0:Math.max(0,Math.min(40,fin(w.r0,0))), r1:Math.max(0,Math.min(60,fin(w.r1,0))),
+        t:Math.max(0,Math.min(60,fin(w.tt,0))), delay:Math.max(0,Math.min(30,fin(w.d,0))), life:Math.max(0.01,Math.min(30,fin(w.l,1))),
+        branches:Array.isArray(w.br)?w.br.slice(0,6).map(b=>({x1:fin(b&&b[0],x),y1:fin(b&&b[1],y),x2:fin(b&&b[2],x),y2:fin(b&&b[3],y)})):null,
+        trail:Array.isArray(w.tr)?w.tr.slice(0,6).map(p=>({x:fin(p&&p[0],x),y:fin(p&&p[1],y)})):null,
+        dmg:0, source:0 // a puppet hazard hurts nobody — the watcher never runs update()
+      });
+    }
+    effects.length=0;
+    for(const w of (Array.isArray(data.fx)?data.fx.slice(0,16):[])){
+      if(!w || !SPEC[w.k]) continue;
+      effects.push({type:String(w.t||'burst').slice(0,16), kind:w.k, x:fin(w.x,0), y:fin(w.y,0),
+        t:Math.max(0,Math.min(30,fin(w.tt,0))), max:Math.max(0.05,Math.min(10,fin(w.m,1))), r:Math.max(0.2,Math.min(30,fin(w.r,3)))});
+    }
+    return true;
+  }
+  // Cosmetic glide + local clocks between packets — never physics, never AI,
+  // never a tile write. Positions are re-based by every mirror tick, so the
+  // local coasting of projectiles/meteors cannot accumulate drift.
+  function ghostLerp(dt){
+    const d=Math.min(0.25, Math.max(0, Number(dt)||0));
+    if(!d) return;
+    const k=Math.min(1, d*9);
+    for(const e of entities){
+      if(!e) continue;
+      e.t+=d; // the wobble/orbit animations run off the entity clock
+      if(e.hitFlash>0) e.hitFlash=Math.max(0, e.hitFlash-d*2);
+      if(Number.isFinite(e._gTX)){ e.x+=(e._gTX-e.x)*k; e.y+=(e._gTY-e.y)*k; }
+    }
+    for(const h of hazards){
+      h.t+=d;
+      if(h.type==='projectile' || h.type==='stormMeteor'){ h.x+=h.vx*d; h.y+=h.vy*d; }
+    }
+    for(let i=effects.length-1;i>=0;i--){
+      const f=effects[i];
+      f.t+=d;
+      if(f.t>=f.max) effects.splice(i,1);
+    }
+  }
+
   function resetUnderground(){
     state.underground.enabled=false;
     state.underground.x=null;
@@ -2359,6 +2465,7 @@ const guardianLairs = (function(){
   const api={config:CFG, specs:SPEC, anchorFor, layoutFor, undergroundGateLayout, anchorsInRange, nearest, applyToChunk,
     update, draw, drawHUD, attackAt, damageAt, collideHero, spawnGuardian, forceAwaken, markDefeated,
     enableUndergroundGate,
+    ghostMirrorState, ghostApplyMirror, ghostLerp,
     targetsForTurret, nearestForTurret, reset, clearActive, snapshot, restore, status, metrics,
     clearCache:()=>cache.clear(), _debug};
   MM.guardianLairs=api;

@@ -54,7 +54,7 @@ const ghostClient = (function(){
 	const others = []; // fellow spirits from presence relay (eased toward tx/ty by the painter)
 	let selfChat = null; // own last message, rendered over the own avatar
 	const held = new Set();
-	const stats = { tilesApplied: 0, tileMsgs: 0, mobRosters: 0, mobFulls: 0, invRosters: 0, invFulls: 0, wfx: 0, snapsApplied: 0, fx: 0 };
+	const stats = { tilesApplied: 0, tileMsgs: 0, mobRosters: 0, mobFulls: 0, invRosters: 0, invFulls: 0, guard: 0, wfx: 0, snapsApplied: 0, fx: 0 };
 	const buffWait = {}; // kind -> readyAtMs (UI countdown)
 	let timers = { hello: 0, pose: 0, needMobs: 0 };
 	let veil = null, bar = null, barTick = null;
@@ -364,11 +364,17 @@ const ghostClient = (function(){
 		stats.snapsApplied++;
 		heroTarget.has = false;
 		reconnects = 0; // a completed join proves the path — future blips get a fresh budget
+		const wasLive = state === 'live';
 		state = 'live';
-		cam.mode = 'follow';
-		bridge.snapCameraToPlayer();
+		if(!wasLive){
+			// the first join (and a post-reconnect re-base) parks the camera on the
+			// hero — but a mid-session resync (needSnap recovery) must NOT yank a
+			// free-flying spectator back; the world re-bases quietly under them
+			cam.mode = 'follow';
+			bridge.snapCameraToPlayer();
+			bridge.msg('👁 Obserwujesz warstwę gracza ' + (hostName || '…') + ' — ' + (isTouchUi() ? 'przeciągnij palcem, aby latać duchem' : 'WASD/przeciąganie = lot ducha, F = podążaj, P = 📍 wskaż miejsce') + '. Twoja aktywność wzmacnia gracza!');
+		}
 		hideVeil();
-		bridge.msg('👁 Obserwujesz warstwę gracza ' + (hostName || '…') + ' — ' + (isTouchUi() ? 'przeciągnij palcem, aby latać duchem' : 'WASD/przeciąganie = lot ducha, F = podążaj, P = 📍 wskaż miejsce') + '. Twoja aktywność wzmacnia gracza!');
 		updateBar();
 	}
 	function drainQueue(){
@@ -423,6 +429,11 @@ const ghostClient = (function(){
 						I.restore(pl.data);
 						stats.invFulls++;
 					}
+				} else if(pl.t === 'guard'){
+					// the guardian arena mirror: bosses, sidekicks, hazards — inert
+					// puppets only (ghostApplyMirror bounds and sanitizes the payload)
+					const G = MMR && MMR.guardianLairs;
+					if(G && G.ghostApplyMirror && G.ghostApplyMirror(pl.data || null)) stats.guard++;
 				} else if(pl.t === 'wfx'){
 					// the hero's swings, arrows, streams and blasts — cosmetic only
 					const W = MMR && MMR.weapons;
@@ -525,6 +536,8 @@ const ghostClient = (function(){
 		try{ if(MMR && MMR.mobs && MMR.mobs.ghostLerp) MMR.mobs.ghostLerp(dt); }catch(e){ /* fine */ }
 		// invaders glide between streamed poses, exactly like the mobs
 		try{ if(MMR && MMR.invasions && MMR.invasions.ghostLerp) MMR.invasions.ghostLerp(dt); }catch(e){ /* fine */ }
+		// guardian puppets glide and their animation clocks keep ticking
+		try{ if(MMR && MMR.guardianLairs && MMR.guardianLairs.ghostLerp) MMR.guardianLairs.ghostLerp(dt); }catch(e){ /* fine */ }
 		// the hero's arrows keep flying and his swing keeps decaying between packets
 		try{ if(MMR && MMR.weapons && MMR.weapons.ghostStepFx) MMR.weapons.ghostStepFx(dt); }catch(e){ /* fine */ }
 		// fog mirrors the host: the replica player position feeds the normal reveal
@@ -667,10 +680,17 @@ const ghostClient = (function(){
 			ctx.restore();
 		}
 	}
+	let lastChatSentAt = 0;
 	function sendChat(raw){
 		if(state !== 'live' || mode === 'watch') return false;
 		const res = NET.filterChat(raw);
 		if(res.empty) return false;
+		// mirror the host's per-peer floor: a message sent into it would be
+		// silently dropped server-side, which read as "chat is broken" — refuse
+		// locally and say why, keeping the typed text in the box
+		const wait = lastChatSentAt + NET.CHAT.MIN_MS - nowMs();
+		if(wait > 0){ bridge.msg('💬 Za szybko — odczekaj ' + Math.ceil(wait / 1000) + ' s'); return false; }
+		lastChatSentAt = nowMs();
 		conn.send({ t: 'chat', text: res.text });
 		noteInput();
 		return true;
