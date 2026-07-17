@@ -171,8 +171,22 @@ assert.ok(/if\(!activeChallenge \|\| runFailed \|\| !ironmanFor\(activeChallenge
 assert.ok(/chal: chalMods\.length \? chalMods : undefined/.test(hostSrc), 'the welcome packet advertises active mods');
 assert.ok(/Array\.isArray\(pl\.chal\) && MMR && MMR\.challenge && MMR\.challenge\.setRemoteMods/.test(clientSrc),
 	'the guest adopts host mods through the re-whitelisting seam');
-assert.ok(/remoteMods = activeChallenge \? null : sanitizeMods\(list\);/.test(chalSrc),
-	'remote mods are sanitized and never outrank an own active challenge');
+assert.ok(/const capped = Array\.isArray\(list\) \? list\.slice\(0, 24\) : \[\];/.test(chalSrc)
+	&& /remoteMods = activeChallenge \? null : sanitizeMods\(capped\);/.test(chalSrc),
+	'remote mods are capped then sanitized, and never outrank an own active challenge');
+// the derived tunings are memoized (hot paths: per-recipe bans, per-wound combat,
+// per-kill loot) and the ONLY invalidation point is a remote-mods adoption
+assert.ok(/function derivedNow\(\)/.test(chalSrc) && /derived = null;/.test(chalSrc),
+	'derived tunings are memoized with remote adoption as the invalidation point');
+// world-shaping remote mods reach the GUEST's generator: ungenerated terrain
+// past the stream must match the host's drought/maze world, not the base one
+assert.ok(/function applyRemoteWorldMods\(\)/.test(chalSrc)
+	&& /MMR\.worldGen\.settings = patched; \/\/ in-memory only/.test(chalSrc)
+	&& /applyRemoteWorldMods\(\);/.test(chalSrc),
+	'a guest patches its generator settings in memory when the host world is modded');
+// ironman: the center-mirror deaths are story beats, not real deaths
+assert.ok(/if\(!\/\^inner_\/\.test\(String\(cause\|\|''\)\) && MM\.challenge/.test(mainSrc),
+	'an inner_* (story mirror) death never voids the ironman run');
 // share + restart UX
 assert.ok(/copyChallenge\.textContent='Skopiuj wyzwanie';/.test(mainSrc), 'the pause panel offers the challenge link');
 assert.ok(/if\(MM\.challenge && MM\.challenge\.pending\) seedInput\.value=String\(MM\.challenge\.pending\.seed\);/.test(mainSrc),

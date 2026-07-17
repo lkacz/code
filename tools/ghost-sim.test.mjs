@@ -1062,6 +1062,10 @@ function CADHasStory(src){ return /story: \d+/.test(src.slice(src.indexOf('const
 		'a cursed world forks WITH its curse (the run marker rides along)');
 	assert.ok(/location\.href = location\.pathname;/.test(clientSrc),
 		'the accepted fork reboots into the bare path — solo play on the committed save');
+	assert.ok(/if\(state !== 'live'\)\{ dismissForkOffer\(\); return; \}/.test(clientSrc),
+		'accepting requires a LIVE stream — a ban or dead session after the grant cannot cash it in');
+	assert.ok(/if\(!MM\.ghostForkArmed\) return false; \/\/ no grant, no work/.test(mainSrc),
+		'the commit seam checks the armed hatch BEFORE building the save');
 }
 
 // …which is exactly why Kopiuj must RELEASE the focus it took: select() leaves the

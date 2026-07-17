@@ -3013,8 +3013,10 @@ window.heroDied=function(cause){
 		return;
 	}
 	// challenge 'ironman': one life — a real death voids the run's honor (the
-	// world survives; only the run marker records the verdict, first death only)
-	try{ if(MM.challenge && MM.challenge.markFailed && MM.challenge.markFailed()) msg('☠ Wyzwanie „Jedno życie” przepadło — świat trwa, honor nie.'); }catch(e){}
+	// world survives; only the run marker records the verdict, first death only).
+	// The center-mirror deaths are STORY beats that cost nothing material — an
+	// inner_* cause must not void the run either.
+	try{ if(!/^inner_/.test(String(cause||'')) && MM.challenge && MM.challenge.markFailed && MM.challenge.markFailed()) msg('☠ Wyzwanie „Jedno życie” przepadło — świat trwa, honor nie.'); }catch(e){}
 	if(cause==='alien_invasion' && INVASIONS && INVASIONS.onHeroKilled){
 		const stolen=INVASIONS.onHeroKilled({player, inv, resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, getTile, setTile, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst});
 		if(stolen && stolen.handled){
@@ -8797,6 +8799,13 @@ function setPaused(v){
 		});
 		try{
 			const seedValue=panel.querySelector('.pauseSeedValue'); if(seedValue) seedValue.textContent=String(WORLDGEN.worldSeed);
+			// challenge row refreshes each open: an ironman death mid-session must show ☠
+			const chalEl=panel.querySelector('.pauseChallengeMods');
+			if(chalEl && MM.challenge && MM.challenge.list){
+				const mods=MM.challenge.list();
+				chalEl.textContent=(mods.length ? mods.map(m=>((MM.challenge.MODS[m]&&MM.challenge.MODS[m].label)||m)).join(', ') : 'bez modyfikatorów')
+					+((MM.challenge.failed&&MM.challenge.failed()) ? ' · ☠ przegrane' : '');
+			}
 			const fsBtn=panel.querySelector('.pauseFullscreenBtn'); if(fsBtn) fsBtn.textContent=fullscreenBtnLabel();
 			const resumeBtn=panel.querySelector('.pauseResume');
 			if(resumeBtn && KEYBINDS) resumeBtn.textContent='▶ Wznów ('+KEYBINDS.displayKey(KEYBINDS.keyFor('pause'))+')';
@@ -16072,6 +16081,7 @@ MM.ghostBridge={
 	// free (no merge step to forget). One-way: nothing ever syncs back.
 	commitForkSave:()=>{
 		if(!MM.ghostMode || !MM.ghostForkWrite) return false;
+		if(!MM.ghostForkArmed) return false; // no grant, no work: skip the whole save build
 		try{
 			// the guest's OWN previous world survives the fork as a named save: the
 			// backup rides the hatch's fork-scoped mm_slot_fork_ prefix and the slot

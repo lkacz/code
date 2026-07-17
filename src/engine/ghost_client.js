@@ -344,6 +344,9 @@ const ghostClient = (function(){
 		if(forkCard){ try{ forkCard.remove(); }catch(e){ /* fine */ } forkCard = null; }
 	}
 	function acceptFork(){
+		// the stream must be ALIVE: a dead/banned session would fork a stale moment
+		// (and a ban after the grant must not still cash it in)
+		if(state !== 'live'){ dismissForkOffer(); return; }
 		// the commit itself is main.js's AUDITED seam (the only ghost-mode main-save
 		// writer); this side only relays the player's choice and reboots into solo
 		let ok = false;
@@ -370,11 +373,14 @@ const ghostClient = (function(){
 	// Remote strings (host name, fellow-ghost names) render into innerHTML in the
 	// veil — escape them; a hostile host must not script the watcher's page.
 	function esc(s){ return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+	let ghostNameCache = null; // read per FRAME (party feed, spirit painter) — one storage IO, not sixty
 	function ghostName(){
 		if(WATCH && WATCH.name) return WATCH.name;
+		if(ghostNameCache) return ghostNameCache;
 		try{
 			let n = localStorage.getItem('mm_ghost_name_v1');
 			if(!n){ n = 'Duch-' + Math.random().toString(36).slice(2, 5).toUpperCase(); localStorage.setItem('mm_ghost_name_v1', n); }
+			ghostNameCache = n;
 			return n;
 		}catch(e){ return 'Duch'; }
 	}

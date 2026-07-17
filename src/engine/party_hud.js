@@ -205,7 +205,7 @@ export function draw(ctx, opts){
 	drawArrows(ctx, data);
 	drawFocus(ctx, data);
 }
-export function hide(){ if(bar) bar.style.display = 'none'; lastSig = ''; }
+export function hide(){ if(bar) bar.style.display = 'none'; lastSig = ''; focus = null; }
 
 const api = { draw, hide, partyPointers, partyRoster, hpColor, focusPulse, FOCUS_MS };
 if(MMR) MMR.partyHud = api;

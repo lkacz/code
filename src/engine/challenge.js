@@ -192,17 +192,51 @@ export function queueNextChallenge(c){
 // parity for the shared world. Re-whitelisted here — the host is remote input.
 let remoteMods = null;
 function modsNow(){ return activeChallenge ? activeChallenge.mods : (remoteMods || []); }
+// The derived tunings are consulted from hot paths (craft bans per recipe per
+// panel render, combat per wound, loot per kill) — memoize them against the
+// current mod set; the only invalidation point is a remote-mods adoption.
+let derived = null;
+function derivedNow(){
+	if(!derived){
+		const mods = modsNow();
+		derived = {
+			spawn: spawnTuningFor(mods), combat: combatTuningFor(mods),
+			craftBans: craftBansFor(mods), loot: lootTuningFor(mods),
+			night: nightOverrideFor(mods), ironman: ironmanFor(mods)
+		};
+	}
+	return derived;
+}
 function applyNightLock(){
-	const nightT = nightOverrideFor(modsNow());
+	const nightT = derivedNow().night;
 	if(nightT == null || typeof window === 'undefined') return;
 	// the existing time-override seam: timeInfo() and the sky renderer both
 	// honor it, so invasions/mobs/HUD all live under the same endless night
 	window.__timeOverrideActive = true;
 	window.__timeOverrideValue = nightT;
 }
+// World-shaping remote mods must reach the GUEST's generator too: the replica
+// streams the host's modified chunks, but ungenerated terrain regenerates
+// locally from the seed — with unmodded settings it would diverge from the
+// host's drought/maze world the moment a guest wanders past the stream.
+function applyRemoteWorldMods(){
+	if(typeof window === 'undefined' || !MMR || !MMR.worldGen || !MMR.worldGen.settings) return;
+	const mods = modsNow();
+	if(!mods.length) return;
+	const patched = applyWorldMods(MMR.worldGen.settings, mods);
+	if(JSON.stringify(patched) === JSON.stringify(MMR.worldGen.settings)) return;
+	MMR.worldGen.settings = patched; // in-memory only (the lockdown blocks persistence anyway)
+	try{ if(MMR.worldGen.clearCaches) MMR.worldGen.clearCaches(); }catch(e){ /* lazy rebuild */ }
+	try{ if(MMR.world && MMR.world.clearHeights) MMR.world.clearHeights(); }catch(e){ /* lazy rebuild */ }
+}
 function setRemoteMods(list){
-	remoteMods = activeChallenge ? null : sanitizeMods(list); // own challenge outranks the wire
+	// cap before sanitizing: a hostile host's million-entry array must cost
+	// nothing (sanitize scans the table against the list per key)
+	const capped = Array.isArray(list) ? list.slice(0, 24) : [];
+	remoteMods = activeChallenge ? null : sanitizeMods(capped); // own challenge outranks the wire
+	derived = null;
 	applyNightLock();
+	applyRemoteWorldMods();
 	return remoteMods ? remoteMods.slice() : [];
 }
 applyNightLock();
@@ -228,12 +262,12 @@ const api = {
 	link: (base) => challengeLink(base, (MMR && MMR.worldGen) ? MMR.worldGen.worldSeed : 0, modsNow()),
 	setRemoteMods,
 	queueNext: queueNextChallenge,
-	nightLock: () => nightOverrideFor(modsNow()), // ui.js's debug slider must not clobber the curse
-	spawnTuning: () => spawnTuningFor(modsNow()),
-	combatTuning: () => combatTuningFor(modsNow()),
-	craftBans: () => craftBansFor(modsNow()),
-	lootTuning: () => lootTuningFor(modsNow()),
-	isIronman: () => ironmanFor(modsNow()),
+	nightLock: () => derivedNow().night, // ui.js's debug slider must not clobber the curse
+	spawnTuning: () => derivedNow().spawn,
+	combatTuning: () => derivedNow().combat,
+	craftBans: () => derivedNow().craftBans,
+	lootTuning: () => derivedNow().loot,
+	isIronman: () => derivedNow().ironman,
 	markFailed,
 	failed: () => runFailed,
 	parseChallenge, challengeLink, applyWorldMods, sanitizeMods
