@@ -275,6 +275,21 @@ const ghostHost = (function(){
 			const b = entry.body;
 			// hero-mode bodies accept poses while "dead" too: the guest respawns
 			// ITSELF (vitals are its local truth) and announces the comeback here
+			// a driving hero guest: position claims are IGNORED (the cab is the
+			// authority) — the pose packet carries only the steering bits and vitals
+			if(b && entry.heroMode && MMR && MMR.mechs && MMR.mechs.guestDriveInfo){
+				const di = MMR.mechs.guestDriveInfo(entry.gid);
+				if(di){
+					if(MMR.mechs.guestSetControls) MMR.mechs.guestSetControls(entry.gid, { l: (pl.c & 1) !== 0, r: (pl.c & 2) !== 0, u: (pl.c & 4) !== 0 });
+					b.x = di.x + 0.5; b.y = di.y - 0.2; b.vx = di.vx; b.vy = di.vy;
+					b.lastPoseAt = t;
+					b.poseSeq = (Number(pl.q) >>> 0) || 0;
+					if(Number.isFinite(pl.hp)) b.hp = Math.max(0, Math.min(NET.HERO_RULES.HP_MAX, +pl.hp));
+					if(pl.act) markActive(entry);
+					entry.cam = { x: b.x, y: b.y };
+					return;
+				}
+			}
 			if(b && (!b.dead || entry.heroMode) && Number.isFinite(pl.x) && Number.isFinite(pl.y)){
 				// the dt floor is ZERO, not a synthetic minimum: a per-message floor
 				// hands out movement budget per CLAIM, so spamming claims (120 msg/s
@@ -438,7 +453,7 @@ const ghostHost = (function(){
 		if(s.infraDirty && t - s.last.infra >= CAD.infra) infraTick(s, t);
 		if(t - s.last.presence >= CAD.presence) presenceTick(s, t);
 		if(t - s.last.pwat >= CAD.pwat) pwatTick(s, t);
-		if(t - (s.last.mach || 0) >= CAD.mach) machTick(s, t);
+		if(t - (s.last.mach || 0) >= (s.machFast ? 150 : CAD.mach)) machTick(s, t); // driven cab = smooth ride
 		if(t - s.last.prog >= CAD.prog) progTick(s, t, live);
 		chargeTick(s, t, live);
 		for(const entry of live){ if(entry.assistant) sendAssistState(s, entry, false); }
@@ -574,6 +589,7 @@ const ghostHost = (function(){
 		s.last.mach = t;
 		try{
 			const B = MMR && MMR.boats, M = MMR && MMR.mechs;
+			s.machFast = !!(M && M.anyGuestDriven && M.anyGuestDriven());
 			const data = {
 				b: (B && B.snapshot) ? B.snapshot() : null,
 				m: (M && M.snapshot) ? M.snapshot() : null
@@ -822,6 +838,7 @@ const ghostHost = (function(){
 	function despawnBody(s, entry){
 		if(!entry.body) return;
 		endDuel(s, entry, true); // a demoted/leaving duelist forfeits quietly
+		try{ if(MMR && MMR.mechs && MMR.mechs.guestUnboard) MMR.mechs.guestUnboard(entry.gid); }catch(e){ /* fine */ }
 		keepBody(entry); // demote/leave: the pouch and earned arsenal await this gid's return
 		entry.body = null;
 		entry.bodyLike = null;
@@ -1120,6 +1137,23 @@ const ghostHost = (function(){
 			let hits = 0;
 			try{ hits = bridge.ghostHeroDamage ? (bridge.ghostHeroDamage(x, y, amt, kind) | 0) : 0; }catch(e){ hits = 0; }
 			if(hits) s.stats.heroDmg = (s.stats.heroDmg || 0) + 1;
+			return;
+		}
+		if(pl.a === 'board' || pl.a === 'unboard'){
+			// mech cab handoff: boarding inverts movement authority — the host
+			// simulates the hull on the guest's streamed keys and the body rides it
+			if(t - (b.lastHeroBoardAt || 0) < NET.HERO_RULES.BOARD_MS) return;
+			b.lastHeroBoardAt = t;
+			let res = null;
+			try{
+				res = pl.a === 'board'
+					? (bridge.ghostHeroBoard ? bridge.ghostHeroBoard(entry.gid, { x: b.x, y: b.y, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H }) : null)
+					: (bridge.ghostHeroUnboard ? bridge.ghostHeroUnboard(entry.gid) : null);
+			}catch(e){ res = null; }
+			const ok = !!(res && (pl.a === 'board' ? res.ok : true));
+			entry.peer.send({ t: 'hact', a: pl.a, ok, reason: (res && res.reason) || (ok ? null : 'no-mech'),
+				id: (res && res.id) || 0, x: (res && res.x) || 0, y: (res && res.y) || 0 });
+			if(ok && pl.a === 'board'){ try{ bridge.msg('🤖 ' + (entry.name || 'Duch') + ' zasiada w mechu!'); }catch(e){ /* fine */ } }
 			return;
 		}
 		if(pl.a === 'row'){

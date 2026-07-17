@@ -148,6 +148,16 @@ const ghostClient = (function(){
 		// a locally fired projectile (the pushArrow chokepoint) — velocity, damage
 		// and a flag whitelist travel; the host clamps everything and flies the
 		// REAL arrow from its tracked body
+		board(){
+			if(state !== 'live' || !conn) return false;
+			conn.send({ t: 'hact', a: 'board' });
+			return true;
+		},
+		unboard(){
+			if(state !== 'live' || !conn) return false;
+			conn.send({ t: 'hact', a: 'unboard' });
+			return true;
+		},
 		row(dir, strong){
 			if(state !== 'live' || !conn) return false;
 			conn.send({ t: 'hact', a: 'row', d: dir < 0 ? -1 : 1, st: strong ? 1 : 0 });
@@ -234,7 +244,8 @@ const ghostClient = (function(){
 		if(!hero.on) return;
 		saveHeroState(true); // nothing earned may be lost on demotion
 		hero.on = false; hero.spawned = false;
-		if(MMR) MMR.ghostHeroIntents = null;
+		hero.driveId = null;
+		if(MMR){ MMR.ghostHeroIntents = null; MMR.ghostHeroDriving = null; }
 		unwrapHeroDamage();
 		document.body.classList.remove('mmGhostHero');
 		remoteHost.has = false;
@@ -502,6 +513,19 @@ const ghostClient = (function(){
 					try{ if(MMR && MMR.inventory && MMR.inventory.grantItem && MMR.inventory.grantItem(pl.item)) bridge.msg('🎒 Podniesiono przedmiot!'); }catch(e){ /* fine */ }
 				}
 				else if(pl.a === 'pickup' && pl.ok && pl.key){ try{ if(bridge.ghostHeroGain) bridge.ghostHeroGain(pl.key, pl.qty || 1); }catch(e){ /* fine */ } }
+				else if(pl.a === 'board'){
+					if(pl.ok){
+						hero.driveId = pl.id;
+						if(MMR) MMR.ghostHeroDriving = { id: pl.id };
+						bridge.msg('🤖 Prowadzisz mecha! A/D = jazda, W = para, E = wysiądź');
+					} else if(pl.reason === 'no-mech') bridge.msg('🤖 Brak wolnego mecha w zasięgu (bez pilota, nie zajęty)');
+				}
+				else if(pl.a === 'unboard'){
+					hero.driveId = null;
+					if(MMR) MMR.ghostHeroDriving = null;
+					if(Number.isFinite(pl.x) && Number.isFinite(pl.y)){ const p = bridge.player; p.x = +pl.x + 0.5; p.y = +pl.y - 1.2; p.vx = 0; p.vy = 0; }
+					bridge.msg('🤖 Wysiadasz z mecha');
+				}
 			}
 			return;
 		}
@@ -1057,7 +1081,15 @@ const ghostClient = (function(){
 			if(t - timersPlay.pose > NET.PLAY_RULES.POSE_MS){
 				timersPlay.pose = t;
 				const p = bridge.player;
-				conn.send({ t: 'ppose', x: +p.x.toFixed(2), y: +p.y.toFixed(2), vx: +(p.vx || 0).toFixed(2), vy: +(p.vy || 0).toFixed(2), f: p.facing < 0 ? -1 : 1, act: 1, hp: +(p.hp || 0).toFixed(1), mhp: Math.max(1, Math.round(p.maxHp || 100)) });
+				// while driving a mech the pose carries STEERING BITS (1=left 2=right
+				// 4=up); the host ignores position claims — the cab is the authority
+				let cbits = 0;
+				if(hero.driveId){
+					if(held.has('a') || held.has('arrowleft')) cbits |= 1;
+					if(held.has('d') || held.has('arrowright')) cbits |= 2;
+					if(held.has('w') || held.has('arrowup') || held.has(' ')) cbits |= 4;
+				}
+				conn.send({ t: 'ppose', x: +p.x.toFixed(2), y: +p.y.toFixed(2), vx: +(p.vx || 0).toFixed(2), vy: +(p.vy || 0).toFixed(2), f: p.facing < 0 ? -1 : 1, act: 1, hp: +(p.hp || 0).toFixed(1), mhp: Math.max(1, Math.round(p.maxHp || 100)), c: cbits });
 			}
 			saveHeroState(false); // trailing persistence rides the frame, throttled
 		} else if(play.on && play.spawned){
@@ -1459,7 +1491,7 @@ const ghostClient = (function(){
 		window.addEventListener('keydown', (e) => {
 			if(!MMR || !MMR.ghostMode) return;
 			noteInput(); // any real keystroke keeps this watcher "active" for the boosts
-			if(hero.on) return; // hero mode: the REAL game handlers own every key
+			if(hero.on){ held.add((e.key || '').toLowerCase()); return; } // hero mode: real handlers own the key — but we mirror it for the mech steering bits
 			if(e.ctrlKey || e.metaKey || e.altKey) return; // browser shortcuts stay browser shortcuts
 			if(isOurs(e)) return;
 			const k = (e.key || '').toLowerCase();
@@ -1477,7 +1509,7 @@ const ghostClient = (function(){
 		}, true);
 		window.addEventListener('keyup', (e) => {
 			if(!MMR || !MMR.ghostMode) return;
-			held.delete((e.key || '').toLowerCase());
+			held.delete((e.key || '').toLowerCase()); // (mirrored in hero mode too — steering bits)
 			if(hero.on) return; // hero mode: keys belong to the game
 			if(!isOurs(e)) e.stopImmediatePropagation();
 		}, true);
@@ -2149,6 +2181,8 @@ const ghostClient = (function(){
 		_heroUse: (tx, ty) => heroIntents.use(tx, ty),
 		_heroPickup: (wx, wy) => heroIntents.pickup(wx, wy),
 		_heroShoot: (vx, vy, dmg) => heroIntents.shoot({ vx, vy, dmg }),
+		_heroBoard: () => heroIntents.board(),
+		_heroUnboard: () => heroIntents.unboard(),
 		_heroSave: () => { saveHeroState(true); },
 		// QA: deterministically halt the embodied hero (clears held keys + velocity).
 		// Synthetic keyup events do not reliably clear `held` under headless CDP.

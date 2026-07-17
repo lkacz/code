@@ -9568,10 +9568,16 @@ window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if
 		// Machine context keeps the interact key (board/unboard). Otherwise E
 		// collects the nearest ground drop, then opens a radio within arm's reach.
 		const mechWants=!!(MECHS && MECHS.wantsInteractKey && MECHS.wantsInteractKey(player));
-		// hero-mode guest: E grabs the nearest replica drop through the intent channel
-		if(MM.ghostHeroIntents && DROPS && DROPS.hoverAt){
-			const hn=DROPS.hoverAt(player.x,player.y,player,{visible:worldFxVisible});
-			if(hn && hn.inReach && hn.kind!=='chest'){ MM.ghostHeroIntents.pickup(hn.x,hn.y); return; }
+		// hero-mode guest: E grabs the nearest replica drop through the intent channel,
+		// or boards/unboards a mech (the replica lookup is only ROUTING — the host
+		// re-validates against its own hulls and its tracked body)
+		if(MM.ghostHeroIntents){
+			if(MM.ghostHeroDriving){ MM.ghostHeroIntents.unboard(); return; }
+			if(DROPS && DROPS.hoverAt){
+				const hn=DROPS.hoverAt(player.x,player.y,player,{visible:worldFxVisible});
+				if(hn && hn.inReach && hn.kind!=='chest'){ MM.ghostHeroIntents.pickup(hn.x,hn.y); return; }
+			}
+			if(MECHS && MECHS.nearestBoardable && MECHS.nearestBoardable(player)){ MM.ghostHeroIntents.board(); return; }
 		}
 		if(!mechWants && !MM.ghostHeroIntents && DROPS && DROPS.pickupNearest && DROPS.pickupNearest(player)){
 			noteSaveActivity();
@@ -16328,6 +16334,11 @@ MM.ghostBridge={
 		if(!(info && info.chestTier)) return {ok:false, reason:'use'};
 		return {ok:!!tryOpenChestAt(tx,ty)};
 	},
+	// HOST-side: mech boarding for hero guests — the guest may take any pilotless,
+	// unridden hull within the module's own board radius of its tracked body;
+	// the cab then drives with rider-grade handling on the guest's streamed keys
+	ghostHeroBoard:(gid,body)=>((MECHS&&MECHS.guestBoardNearest)?MECHS.guestBoardNearest(gid,body):{ok:false, reason:'no-mechs'}),
+	ghostHeroUnboard:(gid)=>((MECHS&&MECHS.guestUnboard)?MECHS.guestUnboard(gid):null),
 	// HOST-side: a hero guest's oar stroke — resolved against the boat under ITS
 	// tracked body; the impulse and speed cap live in the boats module, the
 	// strong/weak claim only picks between the module's own two stroke powers
@@ -16571,6 +16582,16 @@ updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING
 // the intent chokepoints (breakMinedTile/tryPlace/pushArrow).
 function runHeroStep(dt,ts){
 	if(updateDeathTravelFx(dt)){ updateParticles(dt); updateBlink(ts); return; }
+	// driving a mech: movement authority inverts — the HOST simulates the cab
+	// and the guest hero rides its replica (mach plane, fast cadence while
+	// driven); own physics, mining and weapons rest until the guest unboards
+	if(MM.ghostHeroDriving && MECHS && MECHS.mechById){
+		const mi=MECHS.mechById(MM.ghostHeroDriving.id);
+		if(mi){ player.x=mi.x+0.5; player.y=mi.y-0.2; player.vx=mi.vx; player.vy=mi.vy; player.onGround=true; }
+		updateHeroEnergy(dt); updateHeroLamp(dt); updateSpecialVision(dt);
+		updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
+		return;
+	}
 	physics(dt); if(player.atkCd>0) player.atkCd-=dt;
 	const heldWeapon=activeWeaponItem();
 	if(heldWeapon && ((weaponPointerId!=null && lastPointer.has)||fireBtnHeld) && WEAPONS && WEAPONS.fireHeld){

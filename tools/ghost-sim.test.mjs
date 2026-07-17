@@ -192,9 +192,10 @@ assert.ok(NET.modeAllows('hero', 'play') && NET.modeAllows('hero', 'full') && NE
 assert.ok(!NET.modeAllows('play', 'hero'), 'play is below hero');
 // hero-mode contract: the guest player state is guest-local truth; the world is
 // protected here — actions, rates and envelopes
-assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot', 'row'], 'the seven hero world-intents');
+assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot', 'row', 'board', 'unboard'],
+	'the nine hero world-intents');
 assert.ok(NET.HERO_RULES.PICKUP_MS === 150 && NET.HERO_RULES.USE_MS === 400 && NET.HERO_RULES.SHOOT_MS === 220
-	&& NET.HERO_RULES.ROW_MS === 250, 'pickup/use/shoot/row rate floors pinned');
+	&& NET.HERO_RULES.ROW_MS === 250 && NET.HERO_RULES.BOARD_MS === 400, 'pickup/use/shoot/row/board rate floors pinned');
 assert.ok(NET.validHeroAction('mine') && !NET.validHeroAction('craft') && !NET.validHeroAction('__proto__'), 'hero action whitelist holds');
 assert.ok(NET.HERO_RULES.REACH === 6 && NET.HERO_RULES.DMG_MAX === 45 && NET.HERO_RULES.HP_MAX === 1000, 'hero envelopes pinned');
 assert.equal(NET.HERO_KEY, 'mm_ghost_hero_v1', 'the hero persistence key');
@@ -797,7 +798,7 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	assert.ok(/if\(WEAPONS && WEAPONS\.ghostStepFx\) WEAPONS\.ghostStepFx\(dt\);/.test(mainSrc)
 		&& !/function runHeroStep[\s\S]{0,1400}WEAPONS\.update\(/.test(mainSrc),
 		'the hero frame steps arrows cosmetically only — the real impact chains never run on replica arrows');
-	assert.ok(/function runHeroStep[\s\S]{0,1600}FISHING\.update\(dt, player, getTile\);/.test(mainSrc),
+	assert.ok(/function runHeroStep[\s\S]{0,2800}FISHING\.update\(dt, player, getTile\);/.test(mainSrc),
 		'fishing runs for hero guests — reads replica water, writes nothing, catch is guest-local');
 	// the vehicles plane: boats and mechs stream live between joins (same save
 	// codec a reload uses; sig-skip = silence while nothing moves)
@@ -817,6 +818,23 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 		'the host resolves the stroke against the boat under the tracked body');
 	assert.ok(/if\(t - \(b\.lastHeroRowAt \|\| 0\) < NET\.HERO_RULES\.ROW_MS\) return;/.test(hostSrc),
 		'oar strokes ride a per-guest rate floor');
+	// mech driving: the movement-authority inversion — while a guest drives, its
+	// position claims are IGNORED (the cab is the authority) and the pose packet
+	// carries only steering bits; guestGid is transient and never serialized
+	const mechSrc = readFileSync(new URL('../src/engine/mechs.js', import.meta.url), 'utf8');
+	assert.ok(/function guestBoardNearest\(gid, body\)/.test(mechSrc) && /function guestUnboard\(gid\)/.test(mechSrc)
+		&& /if\(m\.guestGid\)\{ updateGuestDrivenMech\(m,dt,getTile,setTile\); \}/.test(mechSrc),
+		'guest-driven mechs run their own rider-grade step, never the host-controls path');
+	assert.ok(!/guestGid/.test(mechSrc.slice(mechSrc.indexOf('function snapshot()'), mechSrc.indexOf('function snapshot()') + 2600)),
+		'guestGid never serializes — no phantom rider can survive a save or a vanished guest');
+	assert.ok(/m\.pilotAlive \|\| m\.hp<=0 \|\| m\.rider \|\| m\.guestGid\) continue;/.test(mechSrc),
+		'one human per cab — boarding skips hulls a guest already drives');
+	assert.ok(/const di = MMR\.mechs\.guestDriveInfo\(entry\.gid\);/.test(hostSrc) && /b\.x = di\.x \+ 0\.5; b\.y = di\.y - 0\.2;/.test(hostSrc),
+		'while driving, the body is glued to the cab and pose claims are ignored');
+	assert.ok(/if\(MM\.ghostHeroDriving && MECHS && MECHS\.mechById\)\{/.test(mainSrc),
+		'the guest hero rides its replica cab instead of running its own physics');
+	assert.ok(/guestUnboard\(entry\.gid\); \}catch\(e\)\{ \/\* fine \*\/ \}/.test(hostSrc),
+		'demotion/leave always vacates the cab');
 	// projectiles: ONE chokepoint in pushArrow forwards the shot; the host flies
 	// the real arrow with clamped velocity/damage and a whitelisted flag set
 	const wsrcH = readFileSync(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
@@ -843,8 +861,8 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	assert.ok(/if\(!returning && bridge\.ghostHeroFresh\) bridge\.ghostHeroFresh\(\);/.test(clientSrc),
 		'a first-time hero starts FRESH — applyGameData’s host inventory never leaks into guest truth');
 	assert.ok(/window\.damageHero\(amt, \{ cause:/.test(clientSrc), 'forwarded wounds run the real hero damage pipeline (armor parity)');
-	assert.ok(/if\(hero\.on\) return; \/\/ hero mode: the REAL game handlers own every key/.test(clientSrc),
-		'hero mode hands the input back to the real game');
+	assert.ok(/if\(hero\.on\)\{ held\.add\(\(e\.key \|\| ''\)\.toLowerCase\(\)\); return; \}/.test(clientSrc),
+		'hero mode hands the input back to the real game (mirroring only the steering bits)');
 	// the loot loop: pickups ride the fog/reach-validated play seam and credit the
 	// guest's OWN inventory; chest TILES open through the host's real pipeline
 	assert.ok(/bridge\.ghostPlayPickupAt\(px, py, \{ x: b\.x, y: b\.y \}\)/.test(hostSrc),
@@ -1292,8 +1310,8 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 		'the kept pouch REPLACES the starter pouch (no rejoin ammo farming) and re-clamps every count');
 	assert.ok(/if\(NET\.validPlayWeapon\(k\) && !body\.weapons\.includes\(k\)\) body\.weapons\.push\(k\);/.test(hostSrc),
 		'kept weapons pass the arsenal whitelist again on restore (disk is hostile input)');
-	assert.ok(/function despawnBody\(s, entry\)\{\s*\n\s*if\(!entry\.body\) return;\s*\n\s*endDuel\(s, entry, true\);[^\n]*\n\s*keepBody\(entry\);/.test(hostSrc),
-		'demote/leave forfeits any duel and banks the body');
+	assert.ok(/function despawnBody\(s, entry\)\{\s*\n\s*if\(!entry\.body\) return;\s*\n\s*endDuel\(s, entry, true\);[^\n]*\n[\s\S]{0,140}keepBody\(entry\);/.test(hostSrc),
+		'demote/leave forfeits any duel, vacates any cab and banks the body');
 	assert.ok(/if\(entry\.body\) keepBody\(entry\); \/\/ a vanished player/.test(hostSrc), 'a dropped connection banks the body');
 	assert.ok(/keepAllBodies\(s\); \/\/ slow-cadence flush/.test(hostSrc) && /keepAllBodies\(session\); \/\/ ending the stream/.test(hostSrc),
 		'the reap tick and session stop both flush every live body');

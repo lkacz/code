@@ -663,9 +663,10 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(desiredDir) m.facing=desiredDir;
     const springDrive=hasSpringDrive(m);
     const trackDrive=hasTrackDrive(m);
+    const humanDriven=!!(m.rider || m.guestGid); // a guest at the stick gets rider-grade handling
     const maxSpeed=trackDrive
-      ? (m.rider ? CFG.TRACK_SPEED_RIDER : CFG.TRACK_SPEED_AI)
-      : (m.rider ? CFG.WALK_SPEED_RIDER : CFG.WALK_SPEED_AI);
+      ? (humanDriven ? CFG.TRACK_SPEED_RIDER : CFG.TRACK_SPEED_AI)
+      : (humanDriven ? CFG.WALK_SPEED_RIDER : CFG.WALK_SPEED_AI);
     m.hopCd=Math.max(0,(m.hopCd||0)-dt);
     if(m.springT>0) m.springT=Math.max(0,m.springT-dt*2.4);
     if(m.trackT>0) m.trackT=Math.max(0,m.trackT-dt*2.8);
@@ -674,10 +675,10 @@ import { damageBlastCreatures } from './explosion_damage.js';
         m.vx += desiredDir*CFG.WALK_ACCEL*CFG.SPRING_CREEP*dt;
         m.vx=clamp(m.vx,-maxSpeed*0.75,maxSpeed*0.75);
         if(m.onGround && m.hopCd<=0){
-          const kick=m.rider ? CFG.SPRING_KICK_RIDER : CFG.SPRING_KICK_AI;
+          const kick=humanDriven ? CFG.SPRING_KICK_RIDER : CFG.SPRING_KICK_AI;
           m.vx=clamp((m.vx||0)+desiredDir*kick,-maxSpeed,maxSpeed);
           m.vy=Math.min(m.vy||0,CFG.SPRING_JUMP);
-          m.hopCd=m.rider ? CFG.HOP_INTERVAL_RIDER : CFG.HOP_INTERVAL_AI;
+          m.hopCd=humanDriven ? CFG.HOP_INTERVAL_RIDER : CFG.HOP_INTERVAL_AI;
           m.springT=1;
         }
       }else if(trackDrive){
@@ -698,7 +699,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
       m.vy=springDrive ? CFG.SPRING_JUMP : CFG.JUMP;
       m.onGround=false;
       if(springDrive){
-        m.hopCd=m.rider ? CFG.HOP_INTERVAL_RIDER : CFG.HOP_INTERVAL_AI;
+        m.hopCd=humanDriven ? CFG.HOP_INTERVAL_RIDER : CFG.HOP_INTERVAL_AI;
         m.springT=1;
       }
     }
@@ -1195,7 +1196,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     return false;
   }
   function consumeRiderEnergy(m,dt,dir,jump,ctx,getTile){
-    if(!m.rider) return {dir,jump};
+    if(!m.rider && !m.guestGid) return {dir,jump}; // a guest at the stick pays the mech's energy too
     if(hasTrackDrive(m) && !mechTrackCircuitConnected(m)){
       m.vx=0;
       m.noPowerT=0.8;
@@ -1907,6 +1908,52 @@ import { damageBlastCreatures } from './explosion_damage.js';
     snapStandingTrackHero(m,player,dx);
     return true;
   }
+  // ===== guest drivers (multiplayer hero guests) ==============================
+  // A guest-driven mech runs rider-grade physics with the guest's STREAMED
+  // controls; window.player is never touched (the ghost host glues the guest
+  // BODY to the cab instead). guestGid is transient — never serialized, so a
+  // save/reload or a vanished guest can never leave a phantom rider behind.
+  // One mech per gid, one human per cab (nearestBoardable skips taken hulls).
+  function guestBoardNearest(gid, body){
+    if(typeof gid!=='string' || !gid || !body) return {ok:false, reason:'bad'};
+    if(mechs.some(m=>m.guestGid===gid)) return {ok:false, reason:'driving'};
+    const m=nearestBoardable(body);
+    if(!m) return {ok:false, reason:'no-mech'};
+    m.guestGid=gid;
+    m.guestControls={left:false,right:false,up:false};
+    m.vx=0;
+    return {ok:true, id:m.id, x:+m.x.toFixed(2), y:+m.y.toFixed(2)};
+  }
+  function guestUnboard(gid){
+    const m=mechs.find(x=>x.guestGid===gid);
+    if(!m) return null;
+    m.guestGid=null; m.guestControls=null; m.vx=0;
+    return {id:m.id, x:+m.x.toFixed(2), y:+m.y.toFixed(2)};
+  }
+  function guestSetControls(gid, c){
+    const m=mechs.find(x=>x.guestGid===gid);
+    if(!m) return false;
+    m.guestControls={left:!!(c&&c.l), right:!!(c&&c.r), up:!!(c&&c.u)};
+    return true;
+  }
+  function guestDriveInfo(gid){
+    const m=mechs.find(x=>x.guestGid===gid);
+    return m ? {id:m.id, x:m.x, y:m.y, vx:m.vx||0, vy:m.vy||0} : null;
+  }
+  function anyGuestDriven(){ return mechs.some(m=>m.guestGid); }
+  function mechById(id){
+    const m=mechs.find(x=>x.id===id);
+    return m ? {id:m.id, x:m.x, y:m.y, vx:m.vx||0, vy:m.vy||0} : null;
+  }
+  function updateGuestDrivenMech(m,dt,getTile,setTile){
+    const c=m.guestControls||{};
+    let dir=0;
+    if(c.left) dir--;
+    if(c.right) dir++;
+    const gated=consumeRiderEnergy(m,dt,dir,false,{},getTile);
+    updatePhysics(m,dt,getTile,setTile,gated.dir,false);
+    if(gated.dir && m.blockedDir===gated.dir) attackObstacles(m,dt,getTile,setTile,gated.dir);
+  }
   function updateMech(m,dt,player,getTile,setTile,ctx){
     if(m.hp<=0) return;
     m.trackCircuitOk=trackDriveReady(m);
@@ -1917,7 +1964,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(m.crushFx>0) m.crushFx=Math.max(0,m.crushFx-dt*1.9);
     if(m.recoilT>0) m.recoilT=Math.max(0,m.recoilT-dt);
     if(m.noPowerT>0) m.noPowerT=Math.max(0,m.noPowerT-dt);
-    if(m.rider && m.kind==='built'){
+    if(m.guestGid){ updateGuestDrivenMech(m,dt,getTile,setTile); }
+    else if(m.rider && m.kind==='built'){
       updateSeatedBuiltMech(m,dt,player,getTile,setTile,ctx);
       if(m._parked) return;
     }
@@ -2271,7 +2319,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(!player) return null;
     let best=null, bestD=CFG.BOARD_RADIUS*CFG.BOARD_RADIUS;
     for(const m of mechs){
-      if(m.pilotAlive || m.hp<=0 || m.rider) continue;
+      if(m.pilotAlive || m.hp<=0 || m.rider || m.guestGid) continue; // one human per cab — guests included
       const d2=(centerX(m)-player.x)*(centerX(m)-player.x)+(centerY(m)-player.y)*(centerY(m)-player.y);
       if(d2<bestD || playerOverlapsMech(m,player,0.85)){ best=m; bestD=d2; }
     }
@@ -2999,6 +3047,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
   const api={
     update,draw,attackAt,damageAt,damageRadius,blastRadius,igniteRadius,douseRadius,isLiving,
     toggleBoard,heroMech,syncRider,absorbHeroDamage,cellAt,findAt,
+    guestBoardNearest,guestUnboard,guestSetControls,guestDriveInfo,anyGuestDriven,mechById,
     snapshot,restore,reset,forceSpawn,metrics,heroOnTracks,
     trySeatFromWorld,wantsInteractKey,tileOverlayAt,absorbDynamoFlow,
     steamTotal:mechSteamTotal,hasSteamDrive,
