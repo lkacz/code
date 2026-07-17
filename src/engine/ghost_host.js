@@ -2214,7 +2214,10 @@ const ghostHost = (function(){
 		for(const e of entries()){ if(e.gid === gid){ te = e; break; } }
 		if(!te) return false;
 		const t = now();
-		if(t - (te.lastForkGrantAt || 0) < 10000) return false; // dedupe the double-click
+		// dedupe the double-click — but only against a REAL earlier grant: now() is
+		// page-relative, so `t - 0 < 10000` silently refused every grant made in the
+		// host page's first ten seconds (caught live by the fork-only QA path)
+		if(te.lastForkGrantAt && t - te.lastForkGrantAt < 10000) return false;
 		te.lastForkGrantAt = t;
 		try{ te.peer.send({ t: 'forkGrant' }); }catch(e){ return false; }
 		try{ bridge.msg('🌱 Zgoda na rozwidlenie świata → ' + (te.name || 'Duch')); }catch(e){ /* fine */ }
