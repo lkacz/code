@@ -878,6 +878,39 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 		'a hero guest dies without the grave — no resource halving into a replica tile');
 }
 
+// --- ARCHITECTURE INVARIANTS (table-driven guardrails) ------------------------------------
+// These fail when someone adds a hero intent without wiring every layer — the
+// enforcement half of the checklist in CLAUDE.md. Adding an action to
+// HERO_ACTIONS without a host branch, a rate floor and a client sender is a
+// silent guest-only breakage in production; here it is a loud test failure.
+{
+	const FLOOR_OF = { mine: 'MINE_MS', place: 'PLACE_MS', dmg: 'DMG_MS', pickup: 'PICKUP_MS',
+		use: 'USE_MS', shoot: 'SHOOT_MS', row: 'ROW_MS', board: 'BOARD_MS', unboard: 'BOARD_MS' };
+	for(const a of NET.HERO_ACTIONS){
+		assert.ok(new RegExp("pl\\.a === '" + a + "'").test(hostSrc),
+			"hero action '" + a + "' has a handleHeroAct branch on the host");
+		const floor = FLOOR_OF[a];
+		assert.ok(floor && Number.isFinite(NET.HERO_RULES[floor]) && NET.HERO_RULES[floor] > 0,
+			"hero action '" + a + "' has a positive rate floor in HERO_RULES (" + floor + ")");
+		assert.ok(new RegExp("NET\\.HERO_RULES\\." + floor).test(hostSrc),
+			"the host branch for '" + a + "' actually reads its rate floor");
+	}
+	// every intent the client can SEND is a valid action (no orphan senders)
+	const sent = [...clientSrc.matchAll(/t: 'hact', a: '([a-z]+)'/g)].map(m => m[1]);
+	assert.ok(sent.length >= 7, 'the client sender surface is discoverable (' + sent.length + ' senders)');
+	for(const a of sent) assert.ok(NET.validHeroAction(a), "client sends only whitelisted hero actions ('" + a + "')");
+	// the hero frame must never grow a world system: the stream is the world
+	const heroStep = mainSrc.slice(mainSrc.indexOf('function runHeroStep'), mainSrc.indexOf('function runHeroStep') + 3200);
+	for(const banned of ['MOBS.update', 'WATER.update', 'FIRE.update', 'INVASIONS.update', 'SEASONS.update',
+		'FALLING.update', 'BOSSES.update', 'GUARDIANS.update', 'MECHS.update(', 'BOATS.update', 'CLOUDS.update']){
+		assert.ok(!heroStep.includes(banned), 'runHeroStep must not simulate the world (' + banned + ' found)');
+	}
+	// the repo-level contract document travels with the code
+	const claudeMd = readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf8');
+	assert.ok(/three questions/i.test(claudeMd) && /hact intent \(checklist\)/i.test(claudeMd),
+		'CLAUDE.md carries the multiplayer contract (three questions + intent checklist)');
+}
+
 // …which is exactly why Kopiuj must RELEASE the focus it took: select() leaves the
 // caret in the link INPUT, the guard above then freezes the panel body forever and
 // the host never sees the joining viewer's row (the field-report screenshot bug)

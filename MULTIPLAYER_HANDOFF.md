@@ -1,27 +1,26 @@
-# Handoff prompt — drive "Duchy Warstwy" co-op from ~60% to 100% multiplayer
+# "Duchy Warstwy" multiplayer — architecture handoff & history
 
-> **PHASE 1 "HERO MODE" (2026-07-16, in progress):** the owner approved a NEW trust
-> contract for full-parity co-op: the guest's PLAYER state (inventory, gear, XP,
-> vitals) is guest-local truth (persisted under `mm_ghost_hero_v1`), while the host
-> keeps protecting the WORLD with solo-grade rules. Implemented in wave H1: the
-> `hero` permission rung (5-rung ladder, granted per viewer like play), the
-> `runHeroStep` hero-only frame in main.js (world systems stay streamed), the
-> `breakMinedTile`/`tryPlace` intent chokepoints, the `hact` host handler
-> (mine/place/dmg with reach/rate/envelope checks + solo-grade bridge seams
-> `ghostHeroMineAt`/`ghostHeroPlaceAt`/`ghostHeroDamage`), guest-local vitals
-> (hurtBody forwards, `window.damageHero` applies with armor parity), hero-state
-> capture/restore across resyncs, and full UI/input handback. Still open: a hero
-> QA scene, chests/machines/boats/mechs for guests, full weapon parity (P2
-> replaces the coarse damage forward), guest death polish.
+> **STATUS 2026-07-17: the co-op architecture is COMPLETE and live**
+> (<https://lkacz.github.io/code/>). Guests in `hero` mode run the full game:
+> real UI/mining/building/crafting/XP, full combat (melee + elements +
+> host-flown ballistics), the whole loot loop (resources, gear, chests),
+> fishing, safe death, per-room persistence, sailing (deck standing + rowing)
+> and mech driving (movement-authority inversion). The remaining backlog is
+> POLISH, not architecture: stationary machines (teleporters/trader/vending)
+> via the `use` channel, QA scenes for sailing/mech/elements, special
+> projectiles.
+>
+> **THE BINDING RULES LIVE IN `CLAUDE.md`** (repo root, auto-loaded): the
+> three questions for every new feature, the hact-intent checklist, the trust
+> model, the gotchas. `tools/ghost-sim.test.mjs` ENFORCES the contract with
+> table-driven architecture invariants — every hero action must have a host
+> branch, a rate floor and a whitelisted client sender, `runHeroStep` may
+> never grow a world system, and CLAUDE.md itself is pinned. This document is
+> the deep-dive history and rationale; CLAUDE.md is the law.
 
-You are a coding agent continuing a multiplayer feature in an existing browser game.
-A working embodied co-op experience already ships: two people on different machines
-share one world, both drive real heroes, and monsters fight the whole party. Your
-mission is to close the remaining gaps to a full co-op experience **without ever
-weakening the security model that makes it safe.**
-
-Read this whole document before touching code. Then read the two memory files it
-points to. Then verify the baseline is green. Only then start.
+Read CLAUDE.md first. Then this document. Then the two memory files below.
+Then verify the baseline is green (`npm run check`, `node tools/ghost-qa.mjs`).
+Only then start.
 
 ---
 
