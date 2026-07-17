@@ -385,7 +385,14 @@ const ghostHost = (function(){
 	}
 	function broadcast(pl){
 		if(!session) return;
-		for(const entry of session.peers.values()){ if(entry.hello) entry.peer.send(pl); }
+		// per-peer isolation: one dead channel throwing mid-loop used to abort the
+		// broadcast for every REMAINING peer — and the sig-skipped slow planes
+		// (story/npcs) would then never re-send that state until it next changed.
+		// The reaper collects the dead peer within seconds either way.
+		for(const entry of session.peers.values()){
+			if(!entry.hello) continue;
+			try{ entry.peer.send(pl); }catch(e){ /* dead channel — reaped shortly */ }
+		}
 	}
 
 	// --- join snapshot -----------------------------------------------------------

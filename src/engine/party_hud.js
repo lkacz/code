@@ -110,6 +110,10 @@ function syncRoster(roster){
 		for(const [, el] of rows){ if(el.parentNode) el.parentNode.removeChild(el); }
 		rows.clear();
 		for(const r of roster){
+			// defensive dedupe: a hostile feed could reuse an id ('host'/'self'
+			// collisions) — the map would keep the last row and orphan the first
+			// in the DOM on every rebuild
+			if(rows.has(r.id)) continue;
 			const row = document.createElement('div');
 			row.style.cssText = 'display:flex;align-items:center;gap:6px;' + (r.self ? '' : 'cursor:pointer;');
 			const nm = document.createElement('span');
