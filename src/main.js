@@ -10062,6 +10062,28 @@ function heroInSolarChargeSpot(){
 	if(!desert && !treeTop) return null;
 	return {kind:desert?'desert':'tree',x:player.x,y:player.y-player.h*0.42};
 }
+// Radiacja ładuje bohatera: stojąc NA rudzie radioaktywnej albo tuż przy niej
+// (kontakt ciała + bezpośredni sąsiedzi) energia rośnie 1 pkt / 10 s. System
+// BOHATERA w rozumieniu kontraktu z CLAUDE.md: czyta prawdę świata, pisze tylko
+// stan gracza — dlatego woła się z runGameStep I runHeroStep, a gość-hero
+// ładuje się od rudy na swojej replice (energia = jego lokalna prawda).
+function updateUraniumCharge(dt){
+	if(!player || player.hp<=0 || !(dt>0)) return;
+	const max=Number(player.maxEnergy)||100;
+	if((player.energy||0)>=max) return;
+	const hw=(player.w||0.7)/2, hh=(player.h||0.95)/2;
+	const x0=Math.floor(player.x-hw)-1, x1=Math.floor(player.x+hw)+1;
+	const y0=Math.floor(player.y-hh)-1, y1=Math.floor(player.y+hh)+1;
+	let near=false;
+	for(let ty=y0; ty<=y1 && !near; ty++){
+		for(let tx=x0; tx<=x1; tx++){
+			const info=INFO[getTile(tx,ty)];
+			if(info && info.radioactive){ near=true; break; } // flaga z rejestru, nie sztywny id
+		}
+	}
+	if(!near) return;
+	player.energy=Math.min(max,(player.energy||0)+dt*0.1); // 1 energia / 10 s
+}
 function updateHeroEnergy(dt){
 	if(!(dt>0) || !isFinite(dt)) return;
 	if(!player.maxEnergy) applyHeroEnergyCapacity();
@@ -16572,7 +16594,7 @@ function runGameStep(dt,ts){
 	if(SMOKE && SMOKE.updateSoot) SMOKE.updateSoot(player,dt,{height:player.h});
 	if(PLANTS && PLANTS.update) PLANTS.update(getTile, setTile, dt);
 	if(PROGRESS && PROGRESS.update) PROGRESS.update(dt);
-updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(STEAM_MACHINES && STEAM_MACHINES.update) STEAM_MACHINES.update(dt, player, getTile, setTile); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); updateHeroLamp(dt); updateSpecialVision(dt); updateTreasureCompass(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(ATOMIC_WINTER && ATOMIC_WINTER.update) ATOMIC_WINTER.update(dt, player, getTile, setTile); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(SKY_GUARDIAN && SKY_GUARDIAN.update) SKY_GUARDIAN.update(dt, player, getTile, setTile); if(CENTER_GUARDIAN && CENTER_GUARDIAN.update) CENTER_GUARDIAN.update(dt, player, getTile, setTile); if(STORY_PROGRESSION && STORY_PROGRESSION.update) STORY_PROGRESSION.update(dt, player, getTile, setTile); if(FINALE && FINALE.update) FINALE.update(dt); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, viewport:currentViewportState(), resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(ALIEN_RUINS && ALIEN_RUINS.update) ALIEN_RUINS.update(dt, player, getTile, setTile, {saveState, msg}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(TERRAIN_TRAPS && TERRAIN_TRAPS.update) TERRAIN_TRAPS.update(dt); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
+updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(STEAM_MACHINES && STEAM_MACHINES.update) STEAM_MACHINES.update(dt, player, getTile, setTile); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); updateUraniumCharge(dt); updateHeroLamp(dt); updateSpecialVision(dt); updateTreasureCompass(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(ATOMIC_WINTER && ATOMIC_WINTER.update) ATOMIC_WINTER.update(dt, player, getTile, setTile); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(SKY_GUARDIAN && SKY_GUARDIAN.update) SKY_GUARDIAN.update(dt, player, getTile, setTile); if(CENTER_GUARDIAN && CENTER_GUARDIAN.update) CENTER_GUARDIAN.update(dt, player, getTile, setTile); if(STORY_PROGRESSION && STORY_PROGRESSION.update) STORY_PROGRESSION.update(dt, player, getTile, setTile); if(FINALE && FINALE.update) FINALE.update(dt); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, viewport:currentViewportState(), resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(ALIEN_RUINS && ALIEN_RUINS.update) ALIEN_RUINS.update(dt, player, getTile, setTile, {saveState, msg}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(TERRAIN_TRAPS && TERRAIN_TRAPS.update) TERRAIN_TRAPS.update(dt); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
 }
 // Hero-mode guest frame (driven from the loop's ghost branch): ONLY the hero-side
 // systems step here — the world (water, fire, creatures, machines, seasons) is
@@ -16581,6 +16603,7 @@ updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING
 // glance; every world WRITE the hero systems could make is routed through
 // the intent chokepoints (breakMinedTile/tryPlace/pushArrow).
 function runHeroStep(dt,ts){
+	window.__mmHeroSteps=(window.__mmHeroSteps|0)+1; // debug seam: proves the hero frame runs (QA + field triage)
 	if(updateDeathTravelFx(dt)){ updateParticles(dt); updateBlink(ts); return; }
 	// driving a mech: movement authority inverts — the HOST simulates the cab
 	// and the guest hero rides its replica (mach plane, fast cadence while
@@ -16607,7 +16630,7 @@ function runHeroStep(dt,ts){
 	// catch lands in the guest's own inventory (its local truth) — full parity free
 	if(FISHING && FISHING.update) FISHING.update(dt, player, getTile);
 	updateMining(dt);
-	updateHeroEnergy(dt); updateHeroLamp(dt); updateSpecialVision(dt); updateTreasureCompass(dt);
+	updateHeroEnergy(dt); updateUraniumCharge(dt); updateHeroLamp(dt); updateSpecialVision(dt); updateTreasureCompass(dt);
 	updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
 }
 let lastLoopErrAt=0; function loop(ts){

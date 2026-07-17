@@ -1808,6 +1808,32 @@ async function main(){
 		await ghost.eval(`MM.ghostClient._heroShoot(14, -2, 6)`);
 		await host.poll(`(MM.weapons._debug.arrows||[]).filter(a=>a.coopOwner).length`, v => v >= 1,
 			'the guest projectile flies as a real host arrow', 40, 250);
+		// --- uranium charge: the contract's "feature parity for free" template — a
+		// hero-side system added to both frames charges the GUEST from its replica
+		// ore with zero multiplayer plumbing (energy is guest-local truth)
+		const uran = await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies[0];
+			const x=Math.round(b.x), y=Math.round(b.y);
+			MM.world.setTile(x+1, y, 50); // RADIOACTIVE_ORE right beside the body
+			return {x:x+1, y};
+		})()`);
+		await sleep(600); // the ore reaches the guest replica on the tile stream
+		const en0 = await ghost.eval(`(()=>{ window.player.energy=5; return window.player.energy; })()`);
+		await ghost.front(); // runHeroStep is rAF-driven — a backgrounded guest tab would never charge
+		try{
+			await ghost.poll(`+window.player.energy.toFixed(3)`, v => v > en0 + 0.05,
+				'the guest charges from replica uranium (hero-side system, no MP plumbing)', 40, 250);
+		}catch(e){
+			const d = await ghost.eval(`(()=>({en:+window.player.energy.toFixed(2), hp:+window.player.hp.toFixed(1),
+				px:+window.player.x.toFixed(1), py:+window.player.y.toFixed(1),
+				ore:MM.world.getTile(${uran.x},${uran.y}), steps:window.__mmHeroSteps|0,
+				intents:!!MM.ghostHeroIntents, driving:!!MM.ghostHeroDriving}))()`);
+			throw new Error('uranium charge never landed: ' + JSON.stringify(d));
+		}
+		await host.front(); // the host sim resumes for the scenes that follow
+		await host.eval(`MM.world.setTile(${uran.x}, ${uran.y}, MM.T.AIR)`); // clean the scene
+		console.log('uranium charge: ok (guest energy rose beside replica ore — parity came free)');
+
 		// death keeps the guest inventory whole (no grave halving, no replica spill)
 		const deathCheck = await ghost.eval(`(()=>{
 			const s0=window.inv.stone|0, d0=MM.drops._debug.list.length;

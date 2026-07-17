@@ -800,6 +800,13 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 		'the hero frame steps arrows cosmetically only — the real impact chains never run on replica arrows');
 	assert.ok(/function runHeroStep[\s\S]{0,2800}FISHING\.update\(dt, player, getTile\);/.test(mainSrc),
 		'fishing runs for hero guests — reads replica water, writes nothing, catch is guest-local');
+	// uranium charge: the contract's "hero-side system" template — one function,
+	// BOTH frames, registry flag instead of a hard-coded tile id
+	assert.ok(/function updateUraniumCharge\(dt\)/.test(mainSrc) && /info && info\.radioactive/.test(mainSrc),
+		'uranium charging keys on the INFO radioactive flag (registry-driven)');
+	assert.ok(/updateHeroEnergy\(dt\); updateUraniumCharge\(dt\); updateHeroLamp\(dt\);[\s\S]{0,120}updateTreasureCompass/.test(mainSrc)
+		&& /VENDING\.update\(dt,getTile\); updateHeroEnergy\(dt\); updateUraniumCharge\(dt\);/.test(mainSrc),
+		'uranium charge runs in BOTH frames — solo host and hero guest charge alike');
 	// the vehicles plane: boats and mechs stream live between joins (same save
 	// codec a reload uses; sig-skip = silence while nothing moves)
 	assert.ok(/function machTick\(s, t\)/.test(hostSrc) && /if\(sig === s\.lastMachSig\) return;/.test(hostSrc)
