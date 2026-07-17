@@ -5915,6 +5915,21 @@ const mobs = (function(){
     spawnGoldGuardianGroup(vein,getTile);
   }
 
+  // Party-aware world anchoring: the eco pass and the far-despawn used to see
+  // only the HOST hero, so a guest exploring far away lived in an emptier,
+  // safer world. Anchors = the host + every embodied guest body (MM.coopBodies
+  // — empty in solo/Node, so the solo path costs one guarded length check).
+  // Spawn pressure ROTATES between anchors; despawn keeps a mob while ANY
+  // party member is near. Set-piece events (piranha ambush, gold guardians,
+  // sky encounters, golden visits) stay host-anchored by design.
+  let ecoAnchorTick = 0;
+  function partyAnchors(player){
+    const coop = (window.MM && MM.coopBodies && MM.coopBodies.length) ? MM.coopBodies : null;
+    if(!coop) return null; // solo: callers keep the host-player fast path
+    const list = [player];
+    for(const b of coop){ if(b && finiteCoord(b.x) && finiteCoord(b.y)) list.push(b); }
+    return list.length > 1 ? list : null;
+  }
   let nextSpawnCheck = 0;
   function trySpawnNearPlayer(player, getTile, now){
   if(!player || !finiteCoord(player.x) || !finiteCoord(player.y) || typeof getTile!=='function') return;
@@ -5924,6 +5939,10 @@ const mobs = (function(){
     // no challenge — solo/Node cost is a guarded property read, like coopBodies)
     const chalSpawn=(window.MM && MM.challenge && MM.challenge.spawnTuning) ? MM.challenge.spawnTuning() : null;
     nextSpawnCheck = now + (ECO_SPAWN_MIN_MS + Math.random()*ECO_SPAWN_JITTER_MS)/(chalSpawn ? chalSpawn.intervalDiv : 1);
+    // rotate the whole pass between party members — density caps, biome and
+    // spawn spots all evaluate around whoever's turn it is
+    const party=partyAnchors(player);
+    if(party) player=party[(ecoAnchorTick++) % party.length];
     const host=mobHostilityAt(player.x);
     const totalLocalCap=Math.round(Math.max(ECO_TOTAL_LOCAL_CAP, Math.round(ECO_TOTAL_LOCAL_CAP * (host.mobLocalCapMult || 1))) * (chalSpawn ? chalSpawn.capMult : 1));
     const local=localMobCounts(player,ECO_LOCAL_RADIUS);
@@ -7488,11 +7507,15 @@ const mobs = (function(){
     updateSunriseBurnState(now);
     laserTraceCalls=0; laserTileChecks=0;
     sentinelShotsThisFrame=0; sentinelDeferredThisFrame=0;
-    // Despawn far / off-screen old passive mobs (not aggro)
+    // Despawn far / off-screen old passive mobs (not aggro). Distance is to the
+    // NEAREST party member — a mob keeping a far-roaming guest company must not
+    // vanish just because the host is 300 tiles away.
+    const despawnParty = partyAnchors(player);
     for(let i=mobs.length-1;i>=0;i--){
       const m=mobs[i];
       if(!validMobState(m) || m.hp<=0){ removeFromGrid(m); mobs.splice(i,1); continue; }
-      const dist = Math.abs(m.x-player.x);
+      let dist = Math.abs(m.x-player.x);
+      if(despawnParty) for(const a of despawnParty){ const d=Math.abs(m.x-a.x); if(d<dist) dist=d; }
       const keepWeatherShaman = isWeatherShamanId(m.id) && !!m._shamanWeatherActive;
       if(dist>220 && !keepWeatherShaman && !isAggro(m.id)) { removeFromGrid(m); mobs.splice(i,1); continue; }
     }

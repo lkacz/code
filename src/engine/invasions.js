@@ -918,17 +918,29 @@ const invasions = (function(){
     const count = requestedTeamCountForNight(opts,day,playerLevel,threatLevel);
     const forceVisible = wantsVisibleForcedSpawn(opts);
     const immediate = wantsImmediateForcedSpawn(opts);
+    // party-aware landings: with embodied guests each team anchors on a
+    // rotating party member (host first) — a guest far from the host gets its
+    // own share of the night instead of an empty horizon. Threat scaling stays
+    // host-derived (playerLevel rides opts); solo cost is one guarded read.
+    const partyPool = (() => {
+      const coop = (window.MM && MM.coopBodies && MM.coopBodies.length) ? MM.coopBodies : null;
+      if(!coop) return null;
+      const list = [player];
+      for(const b of coop){ if(b && Number.isFinite(b.x) && Number.isFinite(b.y)) list.push(b); }
+      return list.length > 1 ? list : null;
+    })();
     const spawned = [];
     for(let i=0; i<count; i++){
       const kind = chooseNightTeamKind(i,count,Object.assign({},opts,{day}));
       if(!kind) continue;
+      const anchor = partyPool ? partyPool[i % partyPool.length] : player;
       const side = i%2===0 ? (kind === 'molekin' ? 1 : -1) : (kind === 'molekin' ? -1 : 1);
       const makeTeam = kind === 'molekin' ? makeMolekinTeam : makeAlienTeam;
-      const team = makeTeam(player, getTile, {
+      const team = makeTeam(anchor, getTile, {
         day,
         index:i,
         side,
-        spot:opts.spot || (forceVisible ? forcedVisibleSpot(player, side, i, kind, getTile) : undefined),
+        spot:opts.spot || (forceVisible ? forcedVisibleSpot(anchor, side, i, kind, getTile) : undefined),
         alienCount:opts.alienCount,
         playerLevel,
         threatLevel,

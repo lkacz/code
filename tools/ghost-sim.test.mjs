@@ -991,6 +991,23 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 }
 function CADHasStory(src){ return /story: \d+ \}/.test(src.slice(src.indexOf('const CAD = {'), src.indexOf('const CAD = {') + 400)); }
 
+// --- party-aware world pressure: the world happens around EVERYONE embodied ----------------
+// Spawn/despawn used to anchor on the HOST hero alone — a guest exploring far
+// away lived in an emptier, safer world. The anchors are host + coopBodies
+// behind the same zero-cost solo guard every party reader uses.
+{
+	assert.ok(/function partyAnchors\(player\)/.test(mobsSrc)
+		&& /MM\.coopBodies && MM\.coopBodies\.length\) \? MM\.coopBodies : null;/.test(mobsSrc),
+		'the mobs anchor helper reads coopBodies behind the zero-cost solo guard');
+	assert.ok(/if\(party\) player=party\[\(ecoAnchorTick\+\+\) % party\.length\];/.test(mobsSrc),
+		'the eco spawn pass rotates between party members');
+	assert.ok(/if\(despawnParty\) for\(const a of despawnParty\)\{ const d=Math\.abs\(m\.x-a\.x\); if\(d<dist\) dist=d; \}/.test(mobsSrc),
+		'far-despawn keeps a mob while ANY party member is near it');
+	assert.ok(/const anchor = partyPool \? partyPool\[i % partyPool\.length\] : player;/.test(invasionsSrc)
+		&& /makeTeam\(anchor, getTile, \{/.test(invasionsSrc),
+		'invasion landings rotate across the party (threat scaling stays host-derived via opts)');
+}
+
 // --- world fork: consent-only grant, ONE narrow storage exit, nothing syncs back ----------
 // The guest already holds the entire world (the join snapshot IS the host's
 // save object) — a fork is host consent + a local commit + a solo reboot. The
