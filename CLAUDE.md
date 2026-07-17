@@ -76,6 +76,22 @@ element or pick between the module's own power levels).
   is the authority and pose claims are ignored. `guestGid` is transient —
   **never serialize it** (a phantom rider after reload would steal the host's
   keys).
+- `src/engine/challenge.js` — challenge seeds (`?seed=<n>&mods=<csv>`): pure
+  parser + whitelisted mod table. World mods patch `WG.settings` IN MEMORY
+  only (never persisted); the curse sticks to the run (`mm_challenge_v1`) with
+  a one-shot sessionStorage handoff across new-game reloads. Guests adopt the
+  host's mods from the welcome packet, re-whitelisted on receipt. Worldgen
+  boot seed priority: queued new-game choice > challenge link > `#seedInput`.
+- `src/engine/party_hud.js` — co-op roster + edge arrows; consumes role-aware
+  read-only `partyMembers()` feeds (ghost_host / ghost_client). The `story`
+  plane is broadcast-only display truth (save shapes on the wire); the finale
+  relay is OPEN-only — `unlock()` (layer credit) is never a guest's to mint.
+- World fork: the storage lockdown has EXACTLY ONE escape hatch —
+  `MM.ghostForkWrite` (the ORIGINAL `setItem`; keys `mm_save_v7` +
+  `mm_challenge_v1` only), armed solely by the `forkGrant` dispatcher branch
+  and consumed by main.js's audited `commitForkSave`. Extending the fork
+  means extending the hatch's key whitelist + pins — NEVER the lockdown
+  allowlist.
 
 ### Adding a new hact intent (checklist)
 

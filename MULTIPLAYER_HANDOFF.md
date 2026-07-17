@@ -10,6 +10,14 @@
 > via the `use` channel, QA scenes for sailing/mech/elements, special
 > projectiles.
 >
+> **2026-07-17 addendum — the "beyond" package (C) shipped on top:** party
+> HUD (roster + off-screen teammate arrows, role-aware `partyMembers()`
+> feeds), challenge seeds (`?seed&mods` cursed links, `engine/challenge.js`),
+> shared story (`story` plane + OPEN-only finale relay) and the world fork
+> (host-granted `forkGrant` → the lockdown's single `ghostForkWrite` hatch →
+> audited `commitForkSave` → solo reboot). Details and gotchas: memory file
+> `coop-beyond-package` + the git log (cc92a4c…f78dd94).
+>
 > **THE BINDING RULES LIVE IN `CLAUDE.md`** (repo root, auto-loaded): the
 > three questions for every new feature, the hact-intent checklist, the trust
 > model, the gotchas. `tools/ghost-sim.test.mjs` ENFORCES the contract with
