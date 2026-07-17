@@ -188,7 +188,7 @@ assert.equal(model.restore({seenAvailable:'junk'}), false, 'corrupt snapshot fal
 // --- Recipe visibility gating is wired into the panel (source pins) ---------
 {
   const mainSrcPin = await import('node:fs').then(fs=>fs.readFileSync(new URL('../src/main.js', import.meta.url), 'utf8'));
-  assert.match(mainSrcPin, /function craftRecipeVisible\(r\)\{ return godMode \|\| CRAFT_MODEL\.isUnlocked\(r\); \}/, 'craft panel gates recipes on discovery (god mode sees all)');
+  assert.match(mainSrcPin, /function craftRecipeVisible\(r\)\{ return \(godMode \|\| CRAFT_MODEL\.isUnlocked\(r\)\) && !challengeCraftBanned\(r\.id\); \}/, 'craft panel gates recipes on discovery (god mode sees all) and on challenge bans');
   assert.match(mainSrcPin, /let list=visibleCraftRecipes\(\)/, 'filteredCraftRecipes lists only discovered recipes');
   assert.match(mainSrcPin, /msg\('🔓 Odblokowany przepis: '\+shownU\+extraU\)/, 'newly unlocked recipes announce themselves');
   assert.match(mainSrcPin, /function scanCraftablesInView\(dt\)/, 'viewport sweep teaches recipes from world sightings');

@@ -30,7 +30,13 @@ export const CHALLENGE_MODS = Object.freeze({
 	swarm:      { label: 'Rój',             desc: 'Stworzenia mnożą się trzykrotnie szybciej i gęściej.',
 		spawn: { intervalDiv: 3, capMult: 2 } },
 	glass:      { label: 'Szklane kości',   desc: 'Każde obrażenie boli podwójnie.',
-		combat: { heroDamageInMult: 2 } }
+		combat: { heroDamageInMult: 2 } },
+	nobows:     { label: 'Bez łuków',       desc: 'Warsztat nie wytwarza łuków, kusz ani strzał.',
+		craftBan: ['bow', 'crossbow', 'arrow'] },
+	ironman:    { label: 'Jedno życie',     desc: 'Śmierć unieważnia wyzwanie — świat zostaje, honor nie.',
+		ironman: true },
+	scarce:     { label: 'Chudy świat',     desc: 'Wyposażenie i klejnoty wypadają o połowę rzadziej.',
+		loot: { dropChanceMult: 0.5 } }
 });
 
 function safeDecode(s){ try{ return decodeURIComponent(s); }catch(e){ return s; } }
@@ -99,6 +105,25 @@ export function nightOverrideFor(mods){
 	}
 	return null;
 }
+export function craftBansFor(mods){
+	const out = [];
+	for(const m of sanitizeMods(mods)){
+		const b = CHALLENGE_MODS[m].craftBan;
+		if(Array.isArray(b)) for(const s of b) if(!out.includes(s)) out.push(s);
+	}
+	return out;
+}
+export function lootTuningFor(mods){
+	let dropChanceMult = 1;
+	for(const m of sanitizeMods(mods)){
+		const l = CHALLENGE_MODS[m].loot;
+		if(l) dropChanceMult *= l.dropChanceMult || 1;
+	}
+	return dropChanceMult !== 1 ? { dropChanceMult } : null;
+}
+export function ironmanFor(mods){
+	return sanitizeMods(mods).some(m => CHALLENGE_MODS[m].ironman === true);
+}
 
 // ============================ RUNTIME (browser) ============================
 
@@ -113,7 +138,10 @@ export const CHALLENGE_RUN_KEY = 'mm_challenge_v1';
 function sanitizeChallenge(c){
 	if(!c || typeof c !== 'object') return null;
 	const seed = normalizeWorldSeed(c.seed);
-	return seed ? { seed, mods: sanitizeMods(c.mods) } : null;
+	if(!seed) return null;
+	const out = { seed, mods: sanitizeMods(c.mods) };
+	if(c.failed) out.failed = 1; // ironman verdict survives reloads with the run
+	return out;
 }
 
 // The pause panel hands a PENDING challenge across the new-game reload through
@@ -179,6 +207,18 @@ function setRemoteMods(list){
 }
 applyNightLock();
 
+// The ironman verdict: a real death voids the run's honor. Non-destructive by
+// design — the world survives, only the challenge marker records the failure.
+// Own-run only (activeChallenge): a guest mirroring host mods never marks, and
+// a spectator page could not persist it through the lockdown anyway.
+let runFailed = !!(active && active.failed);
+function markFailed(){
+	if(!activeChallenge || runFailed || !ironmanFor(activeChallenge.mods)) return false;
+	runFailed = true;
+	try{ localStorage.setItem(CHALLENGE_RUN_KEY, JSON.stringify(Object.assign({}, activeChallenge, { failed: 1 }))); }catch(e){ /* session-only verdict */ }
+	return true;
+}
+
 const api = {
 	MODS: CHALLENGE_MODS,
 	active: activeChallenge,
@@ -189,9 +229,13 @@ const api = {
 	setRemoteMods,
 	queueNext: queueNextChallenge,
 	nightLock: () => nightOverrideFor(modsNow()), // ui.js's debug slider must not clobber the curse
-
 	spawnTuning: () => spawnTuningFor(modsNow()),
 	combatTuning: () => combatTuningFor(modsNow()),
+	craftBans: () => craftBansFor(modsNow()),
+	lootTuning: () => lootTuningFor(modsNow()),
+	isIronman: () => ironmanFor(modsNow()),
+	markFailed,
+	failed: () => runFailed,
 	parseChallenge, challengeLink, applyWorldMods, sanitizeMods
 };
 if(MMR) MMR.challenge = api;

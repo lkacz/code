@@ -198,10 +198,28 @@ const finale = (function(){
     return {key: 'observer', title: 'Obserwator Uważny',
       note: 'warstwa domknięta zgodnie z protokołem. Bez pośpiechu, bez litości'};
   }
+  // The active challenge (seed link + curated curses) stamps the closing
+  // artifacts: honest bragging needs the conditions on the record.
+  function challengeLine(){
+    try{
+      const c = MM.challenge;
+      if(!c || !c.list) return null;
+      const mods = c.list();
+      if(!mods.length) return null;
+      const labels = mods.map(m => (c.MODS[m] && c.MODS[m].label) || m).join(', ');
+      return labels + (c.failed && c.failed() ? ' · ☠ przegrane' : '');
+    }catch(e){ return null; }
+  }
   // Credits stay diegetic: the simulation thanks its own subsystems.
   function credits(rep){
     const r = rep || report();
     const closed = completions();
+    const chal = challengeLine();
+    const rows = creditsBase(r, closed);
+    if(chal) rows.splice(rows.length - 1, 0, ['Wyzwanie', chal]); // before the thank-you
+    return rows;
+  }
+  function creditsBase(r, closed){
     return [
       ['Zamknięte warstwy', closed > 1 ? closed + ' (licząc tę — wprawa widoczna)' : (closed === 1 ? '1 (ta pierwsza boli najbardziej)' : 'wciąż otwarta')],
       ['Hero-Prostokąt', 'w roli Obserwatora — Ty'],
@@ -479,6 +497,11 @@ const finale = (function(){
         ctx.fillText(stats[i][0], cx, 488);
         ctx.fillStyle = '#8ea1b8'; ctx.font = '600 15px system-ui,"Segoe UI",sans-serif';
         ctx.fillText(stats[i][1], cx, 516);
+      }
+      const chal = challengeLine();
+      if(chal){
+        ctx.fillStyle = '#e8b34a'; ctx.font = '700 18px system-ui,"Segoe UI",sans-serif';
+        ctx.fillText('🎯 Wyzwanie: ' + chal, W / 2, 556);
       }
       ctx.fillStyle = '#5f7189'; ctx.font = '600 16px system-ui,"Segoe UI",sans-serif';
       ctx.fillText('Mini Miner · seed #' + r.seed + ' · ' + new Date().toISOString().slice(0, 10), W / 2, 585);

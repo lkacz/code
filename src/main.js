@@ -3012,6 +3012,9 @@ window.heroDied=function(cause){
 		startDeathTravelFx(cause);
 		return;
 	}
+	// challenge 'ironman': one life — a real death voids the run's honor (the
+	// world survives; only the run marker records the verdict, first death only)
+	try{ if(MM.challenge && MM.challenge.markFailed && MM.challenge.markFailed()) msg('☠ Wyzwanie „Jedno życie” przepadło — świat trwa, honor nie.'); }catch(e){}
 	if(cause==='alien_invasion' && INVASIONS && INVASIONS.onHeroKilled){
 		const stolen=INVASIONS.onHeroKilled({player, inv, resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, getTile, setTile, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst});
 		if(stolen && stolen.handled){
@@ -4453,6 +4456,7 @@ function recipeMissing(r){
 }
 function canCraft(r){ return recipeMaxCrafts(r)>0; }
 function doCraft(r,count){
+	if(challengeCraftBanned(r.id)){ msg('🎯 Wyzwanie: ta receptura jest objęta zakazem'); return; }
 	const target=Math.max(1, Math.min(99, count|0 || 1));
 	let made=0;
 	for(let i=0;i<target;i++){
@@ -4586,7 +4590,16 @@ function recipeSearchText(r){
 // Recipe visibility: hidden until discovered (see crafting.js isUnlocked) —
 // the panel only ever lists what the player has earned the knowledge of.
 // God mode lifts the veil for debugging.
-function craftRecipeVisible(r){ return godMode || CRAFT_MODEL.isUnlocked(r); }
+// Challenge 'nobows' (and future craft bans): a banned recipe neither shows in
+// the panel nor crafts — the ban list is the whitelisted table's, by substring.
+function challengeCraftBanned(id){
+	if(!MM.challenge || !MM.challenge.craftBans) return false;
+	const bans=MM.challenge.craftBans();
+	if(!bans.length) return false;
+	const s=String(id||'').toLowerCase();
+	return bans.some(b=>s.includes(b));
+}
+function craftRecipeVisible(r){ return (godMode || CRAFT_MODEL.isUnlocked(r)) && !challengeCraftBanned(r.id); }
 function visibleCraftRecipes(){ return RECIPES.filter(craftRecipeVisible); }
 function filteredCraftRecipes(){
 	const q=craftQuery.trim().toLowerCase();
@@ -8701,7 +8714,9 @@ function ensurePausePanel(){
 	const chalControl=document.createElement('div'); chalControl.className='pauseSeedControl';
 	const chalInfo=document.createElement('code'); chalInfo.className='pauseChallengeMods';
 	const chalList=(MM.challenge && MM.challenge.list)? MM.challenge.list() : [];
-	chalInfo.textContent=chalList.length ? chalList.map(m=>((MM.challenge.MODS[m]&&MM.challenge.MODS[m].label)||m)).join(', ') : 'bez modyfikatorów';
+	const chalFailed=!!(MM.challenge && MM.challenge.failed && MM.challenge.failed());
+	chalInfo.textContent=(chalList.length ? chalList.map(m=>((MM.challenge.MODS[m]&&MM.challenge.MODS[m].label)||m)).join(', ') : 'bez modyfikatorów')
+		+(chalFailed ? ' · ☠ przegrane' : '');
 	const copyChallenge=document.createElement('button'); copyChallenge.type='button'; copyChallenge.textContent='Skopiuj wyzwanie';
 	copyChallenge.addEventListener('click',()=>{
 		const link=(MM.challenge && MM.challenge.link)? MM.challenge.link(location.origin+location.pathname) : null;

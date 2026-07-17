@@ -421,10 +421,18 @@ const drops = (function(){
     const table=m&&GEAR_LOOT[m.id];
     return !!((m&&/^JACKPOT_|SKY_SERAPH|AURORA_WYRM|STORM_HERALD|EMBER_PHOENIX|GOLD_DRAGON/.test(m.id||'')) || (table&&table.chance>=0.45));
   }
+  // Challenge 'scarce': gear/jewel roll chances scale down through one derived
+  // knob (1 when no challenge — the guard mirrors the coopBodies idiom)
+  function scarcityMult(){
+    const c=MM.challenge;
+    if(!c || !c.lootTuning) return 1;
+    const t=c.lootTuning();
+    return t ? t.dropChanceMult : 1;
+  }
   function jewelChanceFor(m,spec){
     const p=jewelPowerFor(m,spec), danger=dangerFor(m);
     const boss=jewelBossLike(m,spec);
-    return Math.min(0.18,0.00035+0.042*Math.pow(p,2.15)+0.004*danger*p+(boss?0.075:0));
+    return Math.min(0.18,0.00035+0.042*Math.pow(p,2.15)+0.004*danger*p+(boss?0.075:0))*scarcityMult();
   }
   function rollJewelDrop(m,spec){
     if(!m || !finiteNum(Number(m.x)) || !finiteNum(Number(m.y))) return null;
@@ -457,7 +465,7 @@ const drops = (function(){
     const table=GEAR_LOOT[m.id];
     if(!table) return null;
     const danger=dangerFor(m);
-    const chance=Math.min(0.9, table.chance*(1+0.8*danger));
+    const chance=Math.min(0.9, table.chance*(1+0.8*danger))*scarcityMult();
     const pity=dry>=PITY_KILLS;
     if(!pity && !(rand()<=chance)){ dry++; return null; }
     const options=Array.isArray(table.options)&&table.options.length ? table.options : [{kind:'charm'}];

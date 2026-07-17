@@ -14,7 +14,8 @@ globalThis.MM = {};
 
 const C = await import('../src/engine/challenge.js');
 const { parseChallenge, challengeLink, applyWorldMods, sanitizeMods,
-	spawnTuningFor, combatTuningFor, nightOverrideFor, CHALLENGE_MODS } = C;
+	spawnTuningFor, combatTuningFor, nightOverrideFor, craftBansFor,
+	lootTuningFor, ironmanFor, CHALLENGE_MODS } = C;
 
 // --- parser ---------------------------------------------------------------------------
 assert.equal(parseChallenge(''), null, 'no params -> no challenge');
@@ -49,7 +50,7 @@ assert.equal(challengeLink('http://x/', 777, ['hackmod', 'glass']), 'http://x/?s
 assert.ok(Object.keys(CHALLENGE_MODS).length >= 4, 'a curated set of modifiers exists');
 for(const [k, def] of Object.entries(CHALLENGE_MODS)){
 	assert.ok(def.label && def.desc, "modifier '" + k + "' is presentable (label + desc)");
-	assert.ok(def.world || def.spawn || def.combat || typeof def.nightT === 'number',
+	assert.ok(def.world || def.spawn || def.combat || def.craftBan || def.loot || def.ironman || typeof def.nightT === 'number',
 		"modifier '" + k + "' declares at least one real effect");
 }
 assert.deepEqual(sanitizeMods(['glass', 'nope', 'glass', 'swarm']), ['swarm', 'glass'], 'sanitize dedupes + orders');
@@ -68,6 +69,12 @@ assert.equal(combatTuningFor(['swarm']), null, 'a non-combat mod leaves combat u
 assert.deepEqual(combatTuningFor(['glass']), { heroDamageInMult: 2 }, 'glass doubles incoming hero damage');
 assert.equal(nightOverrideFor(['glass']), null, 'no night mod -> no override');
 assert.ok(nightOverrideFor(['permanight']) > 0.6, 'permanight pins the cycle deep into the night section');
+assert.deepEqual(craftBansFor(['nobows']), ['bow', 'crossbow', 'arrow'], 'nobows bans the archery workshop');
+assert.deepEqual(craftBansFor(['swarm']), [], 'a non-craft mod bans nothing');
+assert.deepEqual(lootTuningFor(['scarce']), { dropChanceMult: 0.5 }, 'scarce halves the gear/jewel roll chances');
+assert.equal(lootTuningFor(['glass']), null, 'no loot mod -> null tuning (zero-cost consumer guard)');
+assert.equal(ironmanFor(['ironman']), true, 'ironman declares the one-life law');
+assert.equal(ironmanFor(['scarce']), false, 'other mods do not');
 
 // --- determinism: the whole point ------------------------------------------------------
 // Same seed + same mods = the same world. Sampled as surface/biome slices, the
@@ -136,6 +143,29 @@ assert.ok(/window\.__timeOverrideActive = true;/.test(chalSrc) && /window\.__tim
 	assert.ok(/window\.__timeOverrideActive=chk\.checked \|\| chalNight!=null;/.test(uiSrc)
 		&& /MM\.challenge\.nightLock/.test(uiSrc),
 		'the debug slider respects the challenge night lock (checked box = manual control, unchecked = the curse)');
+}
+// v2 mods: each wired to its ONE seam
+assert.ok(/function challengeCraftBanned\(id\)/.test(mainSrc)
+	&& /&& !challengeCraftBanned\(r\.id\); \}/.test(mainSrc)
+	&& /if\(challengeCraftBanned\(r\.id\)\)\{ msg\('🎯 Wyzwanie: ta receptura jest objęta zakazem'\); return; \}/.test(mainSrc),
+	'nobows gates BOTH the craft panel and doCraft through one predicate');
+assert.ok(/MM\.challenge\.markFailed\(\)\) msg\('☠ Wyzwanie „Jedno życie” przepadło/.test(mainSrc),
+	'ironman marks the run failed at the single death entry (first death only)');
+assert.ok(/if\(!activeChallenge \|\| runFailed \|\| !ironmanFor\(activeChallenge\.mods\)\) return false;/.test(chalSrc),
+	'markFailed is own-run + ironman + first-death gated (a guest mirroring host mods never marks)');
+{
+	const dropsSrc = readFileSync(new URL('../src/engine/drops.js', import.meta.url), 'utf8');
+	assert.ok(/function scarcityMult\(\)/.test(dropsSrc)
+		&& /\*scarcityMult\(\);/.test(dropsSrc)
+		&& [...dropsSrc.matchAll(/\*scarcityMult\(\)/g)].length === 2,
+		'scarce scales exactly the gear and jewel roll chances');
+}
+{
+	const finSrc = readFileSync(new URL('../src/engine/finale.js', import.meta.url), 'utf8');
+	assert.ok(/function challengeLine\(\)/.test(finSrc)
+		&& /rows\.splice\(rows\.length - 1, 0, \['Wyzwanie', chal\]\);/.test(finSrc)
+		&& /ctx\.fillText\('🎯 Wyzwanie: ' \+ chal, W \/ 2, 556\);/.test(finSrc),
+		'the challenge stamps both closing artifacts: the credits roll and the souvenir PNG');
 }
 // spectator parity: mods ride the welcome and are re-whitelisted on receipt
 assert.ok(/chal: chalMods\.length \? chalMods : undefined/.test(hostSrc), 'the welcome packet advertises active mods');
