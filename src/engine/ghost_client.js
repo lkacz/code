@@ -2135,6 +2135,7 @@ const ghostClient = (function(){
 			assistRecipes: assistState && Array.isArray(assistState.recipes) ? assistState.recipes.length : 0,
 			hero: {
 				on: hero.on, spawned: hero.spawned,
+				driveId: hero.driveId || null,
 				dmgWrapped: heroDmgWrapped.length,
 				x: hero.on && bridge && bridge.player ? +bridge.player.x.toFixed(2) : null,
 				y: hero.on && bridge && bridge.player ? +bridge.player.y.toFixed(2) : null,

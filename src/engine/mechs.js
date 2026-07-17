@@ -3053,7 +3053,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     steamTotal:mechSteamTotal,hasSteamDrive,
     refillMountedWaterAt,
     _debug:{
-      mechs:()=>mechs,mountedTurretCell,makeBlueprint,trySpawnZone,zoneShouldSpawn,zoneSpawnX,CFG,
+      mechs:()=>mechs,mountedTurretCell,makeBlueprint,makeMech,trySpawnZone,zoneShouldSpawn,zoneSpawnX,CFG,
       isMechComponentTile,scanBuiltStructure,analyzeBuiltCells,assembleBuiltMechAt,parkBuiltMech,
       mechTrackCircuitConnected,mechTrackCircuitEfficiency,mechCircuitEfficiencyAt,mechTurretCircuitConnected,energisedCells,chairEnergyMult,
       seatState:()=>({block:seatBlock,lastTry:lastSeatTry})

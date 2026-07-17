@@ -1730,7 +1730,9 @@ async function main(){
 		// (the host's riches must be wiped on embodiment — duplication guard), while
 		// every world write goes through the hact intents and returns on the stream.
 		await host.front();
-		const gidHero = (await host.eval(`MM.ghostHost.metrics().viewers`))[0].gid;
+		// resolve the PRIMARY tab's gid from the tab itself — viewers[]/bodies[] order
+		// is nondeterministic after reconnects and idle-tab reaps (field-debugged flake)
+		const gidHero = await ghost.eval(`MM.ghostClient.metrics().gid`);
 		// plant host riches on the guest replica: the fresh-kit rule must strip them
 		await ghost.eval(`(()=>{ window.inv.stone=55; window.inv.wood=44; return 1; })()`);
 		await host.eval(`MM.ghostHost.setViewerMode('${gidHero}', 'hero')`);
@@ -1745,7 +1747,7 @@ async function main(){
 		if(!(fresh.wrapped > 0)) throw new Error('replica damage entries are not wrapped for the combat forward');
 		// --- mining through the hact channel: host validates, tile breaks on the
 		// stream, the YIELD lands in the guest's own inv via its local awardTileDrops
-		const heroDig = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies[0];
+		const heroDig = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}');
 			const x=Math.round(b.x)+2, y=Math.round(b.y);
 			for(let dx=-1;dx<=1;dx++) for(let yy=y-8; yy<y; yy++) MM.world.setTile(x+dx, yy, MM.T.AIR);
 			MM.world.setTile(x, y+1, MM.T.STONE);
@@ -1772,7 +1774,7 @@ async function main(){
 		// the guest's inventory whole (the grave is a world mechanic).
 		await host.front();
 		const chestSpot = await host.eval(`(()=>{
-			const b=MM.ghostHost.metrics().bodies[0];
+			const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}');
 			const x=Math.round(b.x)-2, y=Math.round(b.y);
 			const chestId=MM.T[Object.keys(MM.T).find(k=>/CHEST/.test(k) && (MM.INFO||window.INFO||{})[MM.T[k]] )] ?? null;
 			// find any tile id with a chestTier in INFO (registry-driven, no name guessing)
@@ -1812,14 +1814,24 @@ async function main(){
 		// hero-side system added to both frames charges the GUEST from its replica
 		// ore with zero multiplayer plumbing (energy is guest-local truth)
 		const uran = await host.eval(`(()=>{
-			const b=MM.ghostHost.metrics().bodies[0];
+			const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}');
 			const x=Math.round(b.x), y=Math.round(b.y);
 			MM.world.setTile(x+1, y, 50); // RADIOACTIVE_ORE right beside the body
 			return {x:x+1, y};
 		})()`);
 		await sleep(600); // the ore reaches the guest replica on the tile stream
 		const en0 = await ghost.eval(`(()=>{ window.player.energy=5; return window.player.energy; })()`);
-		await ghost.front(); // runHeroStep is rAF-driven — a backgrounded guest tab would never charge
+		// runHeroStep is rAF-driven — and a headless tab sometimes resumes rAF LATE
+		// after bringToFront under CPU load. Prove the hero frame actually TICKS
+		// (steps advancing) before measuring, re-fronting if needed.
+		let ticking=false;
+		for(let i=0;i<4 && !ticking;i++){
+			await ghost.front();
+			const st0=await ghost.eval(`window.__mmHeroSteps|0`);
+			await sleep(900);
+			ticking=(await ghost.eval(`window.__mmHeroSteps|0`))>st0+10;
+		}
+		if(!ticking) throw new Error('the guest hero frame never resumed after front()');
 		try{
 			await ghost.poll(`+window.player.energy.toFixed(3)`, v => v > en0 + 0.05,
 				'the guest charges from replica uranium (hero-side system, no MP plumbing)', 40, 250);
@@ -1845,6 +1857,65 @@ async function main(){
 		console.log('hero loot loop: ok (chest opened by the host, ' + burst + ' drops burst, '
 			+ (dropPick ? 'resource scooped into guest inv, ' : 'no resource in this chest roll, ')
 			+ 'host arrow flew, death kept the inventory)');
+
+		// --- Scene 10s: MECH DRIVING — the movement-authority inversion, live -------------------------
+		// A guest boards a pilotless hull: the host simulates the cab on the guest's
+		// streamed steering bits, the body is GLUED to it (pose claims ignored), and
+		// stepping out hands the movement authority back.
+		await host.front();
+		// the guest just finished its death travel (10r) — wait for its streamed
+		// pose to SETTLE before staging, or the cab lands where the body no longer is
+		let settled=null;
+		for(let i=0;i<24;i++){
+			const a=(await host.eval(`MM.ghostHost.metrics().bodies`)).find(x=>x.gid===gidHero);
+			await sleep(700);
+			const b=(await host.eval(`MM.ghostHost.metrics().bodies`)).find(x=>x.gid===gidHero);
+			if(a && b && Math.abs(a.x-b.x)<0.2 && Math.abs(a.y-b.y)<0.2){ settled=b; break; }
+		}
+		if(!settled) throw new Error('the guest body never settled after the death travel');
+		const cab = await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}');
+			const bx=Math.round(b.x), by=Math.round(b.y);
+			const mx=bx+3, floor=by+1;
+			// the runway must cover the TELEPORTED hull (bx-1) and its drive path
+			for(let x=bx-6;x<=bx+18;x++){ for(let yy=floor-7;yy<floor;yy++) MM.world.setTile(x,yy,MM.T.AIR); MM.world.setTile(x,floor,MM.T.STONE); }
+			// force a WALKER: a tracked hull refuses to drive without a wired copper
+			// circuit (consumeRiderEnergy zeroes dir) — stripping the TRACK cells
+			// leaves plain legs (bounds/physics recompute from cells each call)
+			const m=MM.mechs._debug.makeMech('forge', mx, MM.world.getTile, 'qa-cab');
+			if(!m) return {err:'makeMech-null'};
+			m.cells=(m.cells||[]).filter(c=>c.t!==MM.T.TRACK);
+			if(!m.cells.length) return {err:'no-cells'};
+			m.pilotAlive=false; m.pilotHp=0; m.energy=m.maxEnergy;
+			// staging: park the hull right at the body — BOARD_RADIUS is 2.2 tiles
+			m.x=b.x-1; m.y=b.y-1.5; m.vx=0; m.vy=0;
+			MM.mechs._debug.mechs().push(m);
+			return {id:m.id, x:+m.x.toFixed(2)};
+		})()`);
+		if(cab.err) throw new Error('mech staging failed: ' + JSON.stringify(cab));
+		await sleep(400);
+		await ghost.eval(`MM.ghostClient._heroBoard()`);
+		await ghost.poll(`MM.ghostClient.metrics().hero.driveId || 0`, v => !!v, 'the guest learns it drives', 40, 250);
+		const gidDrv = gidHero;
+		await host.poll(`MM.mechs.guestDriveInfo('${gidDrv}') ? 1 : 0`, v => v === 1, 'the host binds the cab to the guest', 40, 250);
+		const drv0 = await host.eval(`MM.mechs.guestDriveInfo('${gidDrv}').x`);
+		// steer RIGHT with a real keydown — the held-mirror feeds the ppose c-bits
+		await ghost.eval(`(()=>{ window.dispatchEvent(new KeyboardEvent('keydown',{key:'d'})); return 1; })()`);
+		await sleep(4500); // pose cadence + walk accel need a moment before the hull rolls
+		const drv1 = await host.eval(`MM.mechs.guestDriveInfo('${gidDrv}').x`);
+		await ghost.eval(`(()=>{ window.dispatchEvent(new KeyboardEvent('keyup',{key:'d'})); return 1; })()`);
+		if(!(drv1 - drv0 > 0.5)){
+			const d = await host.eval(`(()=>{ const m=MM.mechs._debug.mechs().find(x=>x.guestGid==='${gidDrv}');
+				return m?{ctl:m.guestControls, en:+(m.energy||0).toFixed(1), vx:+(m.vx||0).toFixed(2), noPow:+(m.noPowerT||0).toFixed(2),
+					blocked:m.blockedDir||0, tracks:(m.cells||[]).some(c=>c.t===MM.T.TRACK)}:null; })()`);
+			throw new Error('the cab never moved on streamed controls: ' + JSON.stringify({ drv0, drv1, d }));
+		}
+		const glued = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}'); const d=MM.mechs.guestDriveInfo('${gidDrv}'); return Math.abs(b.x-(d.x+0.5)); })()`);
+		if(!(glued < 1.5)) throw new Error('the body is not glued to the cab: off by ' + glued.toFixed(2));
+		await ghost.eval(`MM.ghostClient._heroUnboard()`);
+		await host.poll(`MM.mechs.guestDriveInfo('${gidDrv}') ? 1 : 0`, v => v === 0, 'stepping out vacates the cab', 40, 250);
+		await ghost.poll(`MM.ghostClient.metrics().hero.driveId || 0`, v => !v, 'the guest resumes its own legs', 40, 250);
+		console.log('mech driving: ok (boarded, drove ' + (drv1 - drv0).toFixed(2) + ' tiles on streamed keys, body glued, unboarded clean)');
 
 		// --- Scene 11: permission downgrade — watch-only means watch-only ------------------------------
 		const gidOnHost = (await host.eval(`MM.ghostHost.metrics().viewers`))[0].gid;
