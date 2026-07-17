@@ -1076,6 +1076,11 @@ const ghostClient = (function(){
 					bridge.restoreDrops(pl.data);
 				} else if(pl.t === 'seasons'){
 					bridge.restoreSeasons(pl.data);
+				} else if(pl.t === 'npcs'){
+					// registry NPCs (trader visits/stock) — display truth via the
+					// validating save restore; a hero guest's trades stay guest-local
+					if(bridge.restoreNpcs) bridge.restoreNpcs(pl.data);
+					stats.npcs = (stats.npcs || 0) + 1;
 				} else if(pl.t === 'story'){
 					// shared story: quests + arc stage are DISPLAY truth (the validating
 					// save restores apply them); the finale flag relays the ceremony ONCE

@@ -16120,6 +16120,10 @@ MM.ghostBridge={
 	restoreDrops:(d)=>{ try{ if(DROPS&&DROPS.restore) DROPS.restore(d); }catch(e){} },
 	snapshotSeasons:()=>((SEASONS&&SEASONS.snapshot)?SEASONS.snapshot():null),
 	restoreSeasons:(d)=>{ try{ if(SEASONS&&SEASONS.restore) SEASONS.restore(d); }catch(e){} },
+	// npc plane: the registry's save shapes on the wire (trader visits/stock,
+	// tutorial mentor) — the validating NPCS.restore applies them on the guest
+	snapshotNpcs:()=>((NPCS&&NPCS.snapshot)?NPCS.snapshot():null),
+	restoreNpcs:(d)=>{ try{ if(NPCS&&NPCS.restore) NPCS.restore(d); }catch(e){} },
 	// shared story plane: the SAME snapshot shapes the save uses (save codec = wire
 	// codec), plus the finale-open flag; restores are the validating save restores
 	snapshotStory:()=>({

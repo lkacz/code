@@ -989,7 +989,7 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	assert.ok(/if\(pl\.data\.fin && !finRelayed\)\{ finRelayed = true;/.test(clientSrc) && /if\(!pl\.data\.fin\) finRelayed = false;/.test(clientSrc),
 		'the finale relay fires once per host ceremony opening and re-arms after it closes');
 }
-function CADHasStory(src){ return /story: \d+ \}/.test(src.slice(src.indexOf('const CAD = {'), src.indexOf('const CAD = {') + 400)); }
+function CADHasStory(src){ return /story: \d+/.test(src.slice(src.indexOf('const CAD = {'), src.indexOf('const CAD = {') + 400)); }
 
 // --- party-aware world pressure: the world happens around EVERYONE embodied ----------------
 // Spawn/despawn used to anchor on the HOST hero alone — a guest exploring far
@@ -1006,6 +1006,23 @@ function CADHasStory(src){ return /story: \d+ \}/.test(src.slice(src.indexOf('co
 	assert.ok(/const anchor = partyPool \? partyPool\[i % partyPool\.length\] : player;/.test(invasionsSrc)
 		&& /makeTeam\(anchor, getTile, \{/.test(invasionsSrc),
 		'invasion landings rotate across the party (threat scaling stays host-derived via opts)');
+}
+
+// --- npc plane: the trader reaches the guests, trades stay guest-local ---------------------
+// The registry's save shapes ride a low-Hz sig-skipped plane (save codec =
+// wire codec). No trade arbitration exists to abuse: buy/sell exchange within
+// ONE inventory, and a hero guest's inventory is already its own truth. The
+// single world-touching offer — the epic chest spawn — refuses hero guests.
+{
+	assert.ok(/if\(t - s\.last\.npc >= CAD\.npc\) npcTick\(s, t\);/.test(hostSrc), 'the npc plane ticks on its own cadence');
+	assert.ok(/if\(json === s\.lastNpcJson\) return; \/\/ sig-skip/.test(hostSrc), 'npc silence costs nothing');
+	assert.ok(!/pl\.t === 'npcs'/.test(hostSrc), 'no client packet reaches host NPCs — broadcast-only');
+	assert.ok(/snapshotNpcs:\(\)=>\(\(NPCS&&NPCS\.snapshot\)\?NPCS\.snapshot\(\):null\)/.test(mainSrc)
+		&& /restoreNpcs:\(d\)=>\{ try\{ if\(NPCS&&NPCS\.restore\) NPCS\.restore\(d\); \}catch\(e\)\{\} \}/.test(mainSrc),
+		'the npc plane rides the validating save codec');
+	const traderSrc = readFileSync(new URL('../src/engine/trader.js', import.meta.url), 'utf8');
+	assert.ok(/if\(root\.MM && root\.MM\.ghostHeroIntents\) return \{ok:false, reason:'Skrzynię przy kramie stawia tylko gospodarz'\};/.test(traderSrc),
+		'the epic chest (the one world-touching trade) refuses hero guests');
 }
 
 // --- world fork: consent-only grant, ONE narrow storage exit, nothing syncs back ----------

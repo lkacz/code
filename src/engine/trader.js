@@ -295,6 +295,10 @@ import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as g
     if(!inv) return {ok:false, reason:'Brak ekwipunku'};
     if(!canAffordCost(inv,offer.cost)) return {ok:false, reason:missingCostReason(inv,offer.cost)};
     if(offer.effect==='epicChest'){
+      // the chest is WORLD economy (a physical spawn): a hero GUEST trades
+      // everything else guest-locally, but a replica-local chest would be
+      // stream-wiped — this one purchase stays the host's
+      if(root.MM && root.MM.ghostHeroIntents) return {ok:false, reason:'Skrzynię przy kramie stawia tylko gospodarz'};
       const placed = placeChestNearStall(ctx);
       if(!placed) return {ok:false, reason:'Brak miejsca na skrzynię'};
     }

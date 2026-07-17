@@ -1846,6 +1846,18 @@ async function main(){
 		await ghost.poll(`(MM.tasks&&MM.tasks.activeList&&MM.tasks.activeList().some(t=>t.id==='qa_story_probe'))?1:0`,
 			v => v === 0, 'a completed host task leaves the guest list on the next tick', 40, 300);
 		console.log('shared story: ok (live task relay both ways of its lifecycle, ceremony played on the guest)');
+		// --- npc plane: the wandering trader arrives on the guest replica and a
+		// hero guest trades GUEST-locally (its inventory is its own truth; the
+		// host arbitrates nothing and its stall state is untouched by the trade)
+		await host.eval(`(()=>{ MM.trader.forceArrive(window.player, MM.world.getTile, {}); return MM.trader.isActive(); })()`);
+		await ghost.poll(`(MM.trader && MM.trader.isActive()) ? 1 : 0`, v => v === 1, 'the trader replica arrives on the npc plane', 40, 400);
+		const trade = await ghost.eval(`(()=>{ const st=MM.trader.stock(); if(!st||!st.rates||!st.rates.length) return {err:'no-stock'};
+			const r=st.rates[0]; for(const k of Object.keys(r.take)) window.inv[k]=(window.inv[k]|0)+r.take[k];
+			const d0=window.inv.diamond|0; const res=MM.trader.tradeSell(r.id,{inv:window.inv});
+			return {ok:!!(res&&res.ok), gained:(window.inv.diamond|0)-d0, pay:r.pay}; })()`);
+		if(trade.err || !trade.ok || trade.gained !== trade.pay) throw new Error('guest-local trade failed: ' + JSON.stringify(trade));
+		await host.eval(`MM.trader.forceDepart({})`);
+		console.log('guest trader: ok (replica stall arrived, sell paid ' + trade.gained + ' diamonds into the GUEST inventory)');
 		// --- mining through the hact channel: host validates, tile breaks on the
 		// stream, the YIELD lands in the guest's own inv via its local awardTileDrops
 		const heroDig = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}');
