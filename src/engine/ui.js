@@ -245,8 +245,11 @@ MM.ui = (function(){
     function upd(){ span.textContent=(readTimeValue()*100).toFixed(2)+'%'; }
     function applyTimeOverride(){
       const val=readTimeValue();
-      window.__timeOverrideActive=chk.checked;
-      window.__timeOverrideValue=val;
+      // a challenge night lock (permanight) owns the override while the manual
+      // box is unchecked — building this panel at boot used to clobber it off
+      const chalNight=(window.MM && MM.challenge && MM.challenge.nightLock) ? MM.challenge.nightLock() : null;
+      window.__timeOverrideActive=chk.checked || chalNight!=null;
+      window.__timeOverrideValue=chk.checked ? val : (chalNight!=null ? chalNight : val);
       window.__timeSliderLocked=chk.checked;
     }
     range.addEventListener('input',()=>{

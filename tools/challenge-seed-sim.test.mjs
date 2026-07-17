@@ -129,6 +129,14 @@ assert.ok(/if\(MM\.challenge && MM\.challenge\.combatTuning\)\{ const ct=MM\.cha
 	'glass doubles wounds at the single damageHero inlet');
 assert.ok(/window\.__timeOverrideActive = true;/.test(chalSrc) && /window\.__timeOverrideValue = nightT;/.test(chalSrc),
 	'permanight rides the existing time-override seam (timeInfo + sky renderer both honor it)');
+// the debug time slider's boot-time init used to CLOBBER the night lock off —
+// while the manual box is unchecked, an active challenge lock owns the override
+{
+	const uiSrc = readFileSync(new URL('../src/engine/ui.js', import.meta.url), 'utf8');
+	assert.ok(/window\.__timeOverrideActive=chk\.checked \|\| chalNight!=null;/.test(uiSrc)
+		&& /MM\.challenge\.nightLock/.test(uiSrc),
+		'the debug slider respects the challenge night lock (checked box = manual control, unchecked = the curse)');
+}
 // spectator parity: mods ride the welcome and are re-whitelisted on receipt
 assert.ok(/chal: chalMods\.length \? chalMods : undefined/.test(hostSrc), 'the welcome packet advertises active mods');
 assert.ok(/Array\.isArray\(pl\.chal\) && MMR && MMR\.challenge && MMR\.challenge\.setRemoteMods/.test(clientSrc),

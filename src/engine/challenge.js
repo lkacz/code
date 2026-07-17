@@ -188,6 +188,8 @@ const api = {
 	link: (base) => challengeLink(base, (MMR && MMR.worldGen) ? MMR.worldGen.worldSeed : 0, modsNow()),
 	setRemoteMods,
 	queueNext: queueNextChallenge,
+	nightLock: () => nightOverrideFor(modsNow()), // ui.js's debug slider must not clobber the curse
+
 	spawnTuning: () => spawnTuningFor(modsNow()),
 	combatTuning: () => combatTuningFor(modsNow()),
 	parseChallenge, challengeLink, applyWorldMods, sanitizeMods
