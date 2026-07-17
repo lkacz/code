@@ -429,7 +429,7 @@ assert.equal(INV.isShortcut('w_dirty'), true, 'opt-out entry cleaned up with the
 // --- chest generation: function-pure stats on the clean ladder, tiers superior ---
 const RNG = seed => { let st = seed >>> 0; return () => { st = (st * 1664525 + 1013904223) >>> 0; return (st >>> 8) / 0xFFFFFF; }; };
 const onLadder = m => { const p = (m - 1) * 100; return Math.abs(p - Math.round(p)) < 1e-6 && Math.round(p) % 5 === 0; };
-const NUM_FIELDS = ['airJumps','visionRadius','specialVisionLevel','treasureSenseLevel','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','lootMagnetLevel','crushResistBonus'];
+const NUM_FIELDS = ['airJumps','visionRadius','specialVisionLevel','treasureSenseLevel','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','lootMagnetLevel','crushResistBonus','damageReductionBonus'];
 const KIND_ONE_STAT = new Set(['cape','eyes','outfit','charm']);
 const sums = { common: 0, uncommon: 0, rare: 0, epic: 0, legendary: 0 }, counts = { common: 0, uncommon: 0, rare: 0, epic: 0, legendary: 0 };
 for (let i = 0; i < 3500; i++) {
@@ -440,6 +440,15 @@ for (let i = 0; i < 3500; i++) {
   const present = NUM_FIELDS.filter(f => typeof item[f] === 'number');
   for (const f of present) assert.ok(allowed.includes(f), tier + ' ' + item.kind + ' rolled off-function stat ' + f);
   if (KIND_ONE_STAT.has(item.kind)) assert.equal(present.length, 1, tier + ' ' + item.kind + ' must carry exactly one stat, got ' + present.join(','));
+  // antennas: a passive aerial carries exactly one stat; an ACTIVE one carries
+  // only its whitelisted power identity (numbers live in antennas.js ACTIVES)
+  if (item.kind === 'antenna') {
+    if (item.antennaActive) {
+      assert.ok(INV.ANTENNA_ACTIVE_LABELS[item.antennaActive], tier + ' antenna active is whitelisted');
+      assert.equal(present.length, 0, tier + ' active antenna carries no numeric stat, got ' + present.join(','));
+    } else assert.equal(present.length, 1, tier + ' passive antenna carries exactly one stat, got ' + present.join(','));
+    if (typeof item.damageReductionBonus === 'number') assert.ok(item.damageReductionBonus > 0 && item.damageReductionBonus <= 0.25, tier + ' antenna guard fraction bounded');
+  }
   if (item.weaponType === 'melee') assert.deepEqual(present, ['attackDamage'], 'melee loot is damage-only');
   if (item.weaponType === 'bow') assert.deepEqual(present, ['attackDamage', 'fireCooldown'], 'bow loot is damage + rate');
   if (item.weaponType === 'electric') assert.deepEqual(present, ['fireDps', 'fireRange', 'energyCost'], 'electric loot is beam + range + cost');

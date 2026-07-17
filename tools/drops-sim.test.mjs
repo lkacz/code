@@ -289,7 +289,7 @@ assert.equal(drops.rollGearDrop({ id: 'ATOMIC_BOMB', x: 60, y: SURF - 2 }), null
     assert.ok(entry.chance > 0 && entry.chance <= 0.9, id + ' chance is a sane probability');
     assert.ok(Array.isArray(entry.options) && entry.options.length >= 1, id + ' has themed options');
     for(const opt of entry.options){
-      assert.ok(['cape', 'eyes', 'outfit', 'weapon', 'charm'].includes(opt.kind), id + ' option kind is valid');
+      assert.ok(['cape', 'eyes', 'outfit', 'weapon', 'charm', 'antenna'].includes(opt.kind), id + ' option kind is valid');
       if(opt.kind === 'weapon') assert.ok(['melee', 'bow', 'flame', 'hose', 'gas', 'electric'].includes(opt.weaponType), id + ' weapon option names its class');
       assert.ok(typeof opt.name === 'string' && opt.name.length >= 3, id + ' option carries a themed name');
       assert.ok(typeof opt.desc === 'string' && opt.desc.length >= 3 && opt.desc.length <= 80, id + ' option carries a flavor one-liner');

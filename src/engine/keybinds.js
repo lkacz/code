@@ -38,7 +38,10 @@ window.MM = window.MM || {};
     {id:'rotate',     group:'akcja', def:'r', label:'Obrót / tryb tła'},
     {id:'undo',       group:'akcja', def:'z', label:'Cofnij budowlę'},
     {id:'scanner',    group:'akcja', def:'x', label:'Skaner kraterów'},
-    {id:'vision',     group:'widok', def:'q', label:'Noktowizja / termowizja'},
+    // 'q' moved from vision to the antenna active power (2026-07 antenna wave);
+    // vision landed on the previously free 'y' — read sites track the defaults.
+    {id:'antenna',    group:'akcja', def:'q', label:'Moc antenki'},
+    {id:'vision',     group:'widok', def:'y', label:'Noktowizja / termowizja'},
     {id:'pause',      group:'widok', def:'b', label:'Pauza i ustawienia'},
     {id:'fullscreen', group:'widok', def:'u', label:'Pełny ekran'},
     {id:'map',        group:'debug', def:'m', label:'Odsłoń całą mapę'},

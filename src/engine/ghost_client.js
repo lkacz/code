@@ -193,6 +193,12 @@ const ghostClient = (function(){
 				f2: a.fire ? 1 : 0, sb: a.snowball ? 1 : 0, rk: a.rock ? 1 : 0, th: a.thrown ? 1 : 0, hp2: a.harpoon ? 1 : 0, sk: a.stickyFuse ? 1 : 0,
 				sp: (a.splat === 'wet' || a.splat === 'gascloud') ? a.splat : 0 });
 			return true;
+		},
+		antenna(k, tier, unique){
+			// names the active + tier only — the HOST owns every duration/cooldown
+			if(state !== 'live' || !conn) return false;
+			conn.send({ t: 'hact', a: 'antenna', k: String(k || '').slice(0, 16), tr: String(tier || 'common').slice(0, 12), u: unique ? 1 : 0 });
+			return true;
 		}
 	};
 	// Replica damage entries, wrapped while embodied as a hero: the local call
@@ -655,6 +661,12 @@ const ghostClient = (function(){
 					if(Number.isFinite(pl.x) && Number.isFinite(pl.y)){ const p = bridge.player; p.x = +pl.x + 0.5; p.y = +pl.y - 1.2; p.vx = 0; p.vy = 0; }
 					bridge.msg('🤖 Wysiadasz z mecha');
 				}
+				else if(pl.a === 'antenna'){
+					// the HOST's duration is what its mob AI honors — sync the local
+					// shimmer window to it (a refusal clears the optimistic state)
+					try{ if(MMR && MMR.antennas && MMR.antennas.hostAck) MMR.antennas.hostAck(!!pl.ok, pl.k, Number(pl.ms)); }catch(e){ /* fine */ }
+					if(!pl.ok && pl.reason === 'cd') bridge.msg('📡 Antenka jeszcze się ładuje (werdykt gospodarza)');
+				}
 			}
 			return;
 		}
@@ -949,6 +961,7 @@ const ghostClient = (function(){
 						remoteHost.x = pl.x; remoteHost.y = pl.y;
 						remoteHost.vx = Number.isFinite(pl.vx) ? pl.vx : 0; remoteHost.vy = Number.isFinite(pl.vy) ? pl.vy : 0;
 						remoteHost.f = pl.f < 0 ? -1 : 1;
+						remoteHost.cloaked = !!pl.ck; // antenna cloak shimmer on the host hero
 						// display truth for the party roster — never applied to OUR player
 						if(Number.isFinite(pl.hp)) remoteHost.hp = pl.hp;
 						if(Number.isFinite(pl.mhp) && pl.mhp > 0) remoteHost.mhp = pl.mhp;
@@ -1032,6 +1045,7 @@ const ghostClient = (function(){
 						o.f = +bf < 0 ? -1 : 1;
 						o.hp = Number.isFinite(+bhp) ? +bhp : 1; o.maxHp = Number.isFinite(+bmhp) && +bmhp > 0 ? +bmhp : 1;
 						o.dead = !!+bdead;
+						o.cloaked = !!+row[11]; // antenna cloak: fellow players shimmer too
 					}
 					for(let i = bodies.length - 1; i >= 0; i--){ if(!seen.has(bodies[i].id)) bodies.splice(i, 1); }
 				} else if(pl.t === 'mobs'){
@@ -1343,14 +1357,14 @@ const ghostClient = (function(){
 			remoteHost.dx += (remoteHost.x - remoteHost.dx) * ease;
 			remoteHost.dy += (remoteHost.y - remoteHost.dy) * ease;
 			if(Math.abs(remoteHost.x - remoteHost.dx) > 6){ remoteHost.dx = remoteHost.x; remoteHost.dy = remoteHost.y; }
-			if(wantBody && bridge.drawHeroAt) bridge.drawHeroAt({ x: remoteHost.dx, y: remoteHost.dy, vx: remoteHost.vx, vy: remoteHost.vy, facing: remoteHost.f });
+			if(wantBody && bridge.drawHeroAt) bridge.drawHeroAt({ x: remoteHost.dx, y: remoteHost.dy, vx: remoteHost.vx, vy: remoteHost.vy, facing: remoteHost.f, cloaked: !!remoteHost.cloaked });
 			if(wantText && tagPainter) tagPainter(ctx, TILE, remoteHost.dx, remoteHost.dy, hostName || 'Gospodarz', null, null);
 		}
 		// fellow embodied players (visible to players AND plain spectators)
 		for(const b of bodies){
 			if(Number.isFinite(b.tx)){ b.x += (b.tx - b.x) * ease; b.y += (b.ty - b.y) * ease; }
 			if(b.dead) continue; // their ghost spirit shows via the presence relay instead
-			if(wantBody && bridge.drawHeroAt) bridge.drawHeroAt({ x: b.x, y: b.y, vx: b.vx, vy: b.vy, facing: b.f, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, gid: b.id, look: looks[b.id] || null });
+			if(wantBody && bridge.drawHeroAt) bridge.drawHeroAt({ x: b.x, y: b.y, vx: b.vx, vy: b.vy, facing: b.f, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, gid: b.id, look: looks[b.id] || null, cloaked: !!b.cloaked });
 			if(wantText && tagPainter) tagPainter(ctx, TILE, b.x, b.y, b.name || 'Gracz', b, null);
 		}
 		for(const g of others){
@@ -2347,6 +2361,7 @@ const ghostClient = (function(){
 		_heroUnboard: () => heroIntents.unboard(),
 		_heroRow: (dir, strong) => heroIntents.row(dir, strong !== false),
 		_heroTp: (dir) => heroIntents.tp(dir),
+		_heroAntenna: (k, tier, unique) => heroIntents.antenna(k, tier, unique),
 		_heroDmg: (x, y, n) => { if(state === 'live' && conn){ conn.send({ t: 'hact', a: 'dmg', x: +x, y: +y, n: Math.max(1, Math.min(45, n | 0)) }); return true; } return false; },
 		_heroSave: () => { saveHeroState(true); },
 		// QA: deterministically halt the embodied hero (clears held keys + velocity).

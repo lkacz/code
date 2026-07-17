@@ -927,6 +927,30 @@ import './inventory.js';
     ctx.fillStyle=g; ctx.beginPath(); ctx.arc(40,46,9,0,Math.PI*2); ctx.fill();
     ctx.restore();
   }
+  function drawAntennaMini(ctx,item){
+    const tierCol=TIER_COLORS[item.tier]||'#c9d2de';
+    const orb=item.antennaActive==='cloak'?'#c98cff'
+      :item.antennaActive==='surge'?'#ffd45f'
+      :item.antennaActive==='echo'?'#63f0d4'
+      :typeof item.attackDamage==='number'?'#ffb24d'
+      :typeof item.damageReductionBonus==='number'?'#a8c4ff':'#75dcff';
+    ctx.save();
+    // mount pad
+    ctx.fillStyle='#3a4150';
+    ctx.beginPath(); ctx.arc(40,64,7,0,Math.PI*2); ctx.fill();
+    // springy rod with a gentle bend
+    ctx.strokeStyle='#3a4150'; ctx.lineWidth=5; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(40,64); ctx.quadraticCurveTo(44,38,36,18); ctx.stroke();
+    ctx.strokeStyle=tierCol; ctx.lineWidth=2.4;
+    ctx.beginPath(); ctx.moveTo(40,64); ctx.quadraticCurveTo(44,38,36,18); ctx.stroke();
+    // tip orb + glow
+    const g=ctx.createRadialGradient(36,16,1,36,16,14);
+    g.addColorStop(0,'#ffffff'); g.addColorStop(0.35,orb); g.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(36,16,14,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle=orb; ctx.beginPath(); ctx.arc(36,16,6,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='#141822'; ctx.lineWidth=1.6; ctx.stroke();
+    ctx.restore();
+  }
   function drawItemThumb(ctx,item){
     ctx.clearRect(0,0,80,80);
     const c=MM.customization||{};
@@ -944,6 +968,7 @@ import './inventory.js';
       ctx.restore();
     } else if(item.kind==='weapon'){ drawWeaponMini(ctx,item); }
     else if(item.kind==='charm'){ drawCharmMini(ctx,item); }
+    else if(item.kind==='antenna'){ drawAntennaMini(ctx,item); }
   }
 
   // --- Animated character preview (cape sim + outfit + eyes + weapon) ---

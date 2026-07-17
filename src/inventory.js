@@ -23,9 +23,10 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     {id:'eyes',   label:'Oczy',     accepts:'eyes',   required:true,  def:'bright'},
     {id:'outfit', label:'Strój',    accepts:'outfit', required:true,  def:'default'},
     {id:'weapon', label:'Broń',     accepts:'weapon', required:false, def:null, emptyLabel:'Pięści'},
-    {id:'charm',  label:'Talizman', accepts:'charm',  required:false, def:null, emptyLabel:'—'}
+    {id:'charm',  label:'Talizman', accepts:'charm',  required:false, def:null, emptyLabel:'—'},
+    {id:'antenna',label:'Antenka',  accepts:'antenna',required:false, def:null, emptyLabel:'—'}
   ];
-  const KIND_LABELS={cape:'Peleryny', eyes:'Oczy', outfit:'Stroje', weapon:'Bronie', charm:'Talizmany'};
+  const KIND_LABELS={cape:'Peleryny', eyes:'Oczy', outfit:'Stroje', weapon:'Bronie', charm:'Talizmany', antenna:'Antenki'};
   // Loot-tier accent colors (single source — UI badges, held-weapon tinting, …)
   const TIER_COLORS={common:'#b07f2c', uncommon:'#3fa650', rare:'#a74cc9', epic:'#e0b341', legendary:'#58e0d8'};
   // Permanent item-enhancement stones. Every deliberate attempt consumes one.
@@ -88,6 +89,10 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
       chips.push({icon:'↔️', label:'Zasięg', text:String(item.fireRange), good:true});
     if(item.meleeEffect && MELEE_EFFECT_LABELS[item.meleeEffect])
       chips.push({icon:item.meleeEffect==='bleed'?'🩸':item.meleeEffect==='stun'?'💫':'😱', label:'Efekt', text:MELEE_EFFECT_LABELS[item.meleeEffect]+' (szansa)', good:true});
+    if(item.antennaActive && ANTENNA_ACTIVE_LABELS[item.antennaActive])
+      chips.push({icon:item.antennaActive==='cloak'?'🫥':item.antennaActive==='surge'?'⚡':'📡', label:'Moc aktywna', text:ANTENNA_ACTIVE_LABELS[item.antennaActive]+' (Q)', good:true});
+    if(typeof item.damageReductionBonus==='number' && item.damageReductionBonus)
+      chips.push({icon:'🛡️', label:'Redukcja obrażeń', text:'+'+Math.round(item.damageReductionBonus*100)+'%', good:item.damageReductionBonus>0});
     if(typeof item.energyCost==='number' && item.energyCost>0)
       chips.push({icon:'⚡', label:'Zużycie energii', text:item.energyCost+'/s', good:false});
     if(typeof item.energyCapacityBonus==='number' && item.energyCapacityBonus)
@@ -145,6 +150,8 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     if(typeof item.crushResistBonus==='number') s+=item.crushResistBonus*10;
     if(typeof item.visionRadius==='number') s+=(item.visionRadius-VISION_BASE)*3;
     if(item.meleeEffect && MELEE_EFFECT_LABELS[item.meleeEffect]) s+=4; // a material identity beats a plain blade of equal damage
+    if(item.antennaActive && ANTENNA_ACTIVE_LABELS[item.antennaActive]) s+=16; // an active power is the antenna's whole job
+    if(typeof item.damageReductionBonus==='number') s+=item.damageReductionBonus*300; // fraction stat: 0.05 ≈ 15 pts
     ['moveSpeedMult','jumpPowerMult','mineSpeedMult'].forEach(k=>{
       if(typeof item[k]==='number') s+=pctOf(item[k])*0.6;
     });
@@ -347,7 +354,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
 
   // --- State ---
   const state={
-    equipped:{cape:'classic', eyes:'bright', outfit:'default', weapon:null, charm:null},
+    equipped:{cape:'classic', eyes:'bright', outfit:'default', weapon:null, charm:null, antenna:null},
     colors:{cape:'#b91818', outfit:'#f4c05a'},
     bag:[],            // dynamic loot items collected from chests
     discarded:new Set(), // ids the player threw away (never re-added by loot sync)
@@ -372,9 +379,12 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     cape:['airJumps'],
     eyes:['specialVisionLevel','visionRadius'],
     outfit:['lootMagnetLevel','mineSpeedMult','moveSpeedMult','jumpPowerMult','crushResistBonus'],
-    charm:['treasureSenseLevel','lootMagnetLevel','energyCapacityBonus','waterMoveSpeedMult','mineSpeedMult','moveSpeedMult','jumpPowerMult','crushResistBonus']
+    charm:['treasureSenseLevel','lootMagnetLevel','energyCapacityBonus','waterMoveSpeedMult','mineSpeedMult','moveSpeedMult','jumpPowerMult','crushResistBonus'],
+    // antennas: one signal per aerial — perception, focus or deflection. An
+    // ACTIVE antenna carries no number at all, only its antennaActive identity.
+    antenna:['visionRadius','attackDamage','damageReductionBonus']
   };
-  const KIND_STAT_MAX={cape:1, eyes:1, outfit:1, charm:1};
+  const KIND_STAT_MAX={cape:1, eyes:1, outfit:1, charm:1, antenna:1};
   const WEAPON_TYPE_STATS={
     // melee may carry fireRange as its REACH in whole tiles (spears strike along
     // a three-tile horizontal lane); plus an optional material identity string
@@ -405,7 +415,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     }
     return allowedStatsFor(item.kind,item.weaponType).find(k=>typeof item[k]==='number')||null;
   }
-  function enhancementStep(stat){ return stat==='energyCapacityBonus'?10:(ENHANCE_MULT_STATS.has(stat)?0.05:1); }
+  function enhancementStep(stat){ return stat==='energyCapacityBonus'?10:stat==='damageReductionBonus'?0.02:(ENHANCE_MULT_STATS.has(stat)?0.05:1); }
   function clampEnhancedStat(stat,value){
     if(stat==='lootMagnetLevel' || stat==='treasureSenseLevel' || stat==='specialVisionLevel') return Math.max(1,Math.min(4,Math.trunc(value)));
     if(ENHANCE_MULT_STATS.has(stat)){
@@ -414,6 +424,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
       return Math.max(min,Math.min(max,+value.toFixed(2)));
     }
     if(stat==='visionRadius') return Math.max(1,value);
+    if(stat==='damageReductionBonus') return Math.max(0,Math.min(0.25,+value.toFixed(2)));
     return Math.max(0,value);
   }
   function rawItems(){ return BUILTIN_ITEMS.concat(extraItems,state.bag); }
@@ -452,13 +463,16 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
   // Loot items come from localStorage (bag + dynamic-loot keys) — whitelist their
   // fields on ingest so tampered/corrupt entries can't smuggle objects or markup
   // into stat math and innerHTML-based displays downstream.
-  const ITEM_NUM_FIELDS=['airJumps','visionRadius','specialVisionLevel','treasureSenseLevel','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','lootMagnetLevel','crushResistBonus'];
-  const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType','meleeEffect','aquaticStyle','visionMode'];
+  const ITEM_NUM_FIELDS=['airJumps','visionRadius','specialVisionLevel','treasureSenseLevel','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','lootMagnetLevel','crushResistBonus','damageReductionBonus'];
+  const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType','meleeEffect','aquaticStyle','visionMode','antennaActive'];
   // Material identity of a crafted hand weapon (weapons.js MELEE_EFFECTS holds
   // the numbers) — anything else smuggled into meleeEffect is dropped on ingest.
   const MELEE_EFFECT_LABELS={bleed:'Krwawienie', stun:'Ogłuszenie', panic:'Panika'};
+  // Active-power identity of an antenna (antennas.js ACTIVES holds the numbers —
+  // durations/cooldowns/ranges never ride the item, exactly like meleeEffect).
+  const ANTENNA_ACTIVE_LABELS={cloak:'Kamuflaż', surge:'Przepięcie', echo:'Echolokacja'};
   const AQUATIC_STYLES={trident:'melee',crossbow:'bow',harpoon:'harpoon'};
-  const ITEM_KINDS=new Set(['cape','eyes','outfit','weapon','charm']);
+  const ITEM_KINDS=new Set(['cape','eyes','outfit','weapon','charm','antenna']);
   function sanitizeLootItem(raw,fallbackKind){
     if(!raw || typeof raw!=='object') return null;
     if(typeof raw.id!=='string' || !raw.id || raw.id.length>64) return null;
@@ -469,6 +483,11 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     ITEM_STR_FIELDS.forEach(f=>{ const v=raw[f]; const max=f==='desc'?180:80; if(typeof v==='string' && v.length<=max) it[f]=v; });
     if(Number.isFinite(raw.enhancement)) it.enhancement=Math.max(-99,Math.min(99,Math.trunc(raw.enhancement)));
     if(it.meleeEffect && (kind!=='weapon' || (it.weaponType||'melee')!=='melee' || !MELEE_EFFECT_LABELS[it.meleeEffect])) delete it.meleeEffect;
+    if(it.antennaActive && (kind!=='antenna' || !ANTENNA_ACTIVE_LABELS[it.antennaActive])) delete it.antennaActive;
+    if(typeof it.damageReductionBonus==='number'){
+      const f=Math.max(0,Math.min(0.25,+it.damageReductionBonus.toFixed(2)));
+      if(f<=0) delete it.damageReductionBonus; else it.damageReductionBonus=f;
+    }
     if(it.aquaticStyle && (kind!=='weapon' || AQUATIC_STYLES[it.aquaticStyle]!==(it.weaponType||'melee'))) delete it.aquaticStyle;
     // Normalize multipliers onto the clean percent ladder: pre-rework loot carries
     // raw rolls like 1.0437 — snapped here once, so every stored item reads clean.
@@ -632,6 +651,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     if(typeof item.treasureSenseLevel==='number') fn('treasureSenseLevel', item.treasureSenseLevel);
     if(typeof item.specialVisionLevel==='number') fn('specialVisionLevel', item.specialVisionLevel);
     if(typeof item.crushResistBonus==='number') fn('crushResistBonus', item.crushResistBonus);
+    if(typeof item.damageReductionBonus==='number') fn('damageReductionBonus', item.damageReductionBonus);
   }
   function computeModifiers(){
     adoptCustomizationWrites();
@@ -698,7 +718,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
   function restoreSnapshot(src, opts){
     opts=opts||{};
     if(!src || typeof src!=='object') return false;
-    const defaults={cape:'classic', eyes:'bright', outfit:'default', weapon:null, charm:null};
+    const defaults={cape:'classic', eyes:'bright', outfit:'default', weapon:null, charm:null, antenna:null};
     Object.assign(state.equipped, defaults);
     if(src.equipped && typeof src.equipped==='object'){
       SLOTS.forEach(s=>{
@@ -861,12 +881,12 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     return true;
   }
   function dynamicLootKeyForKind(kind){
-    return kind==='cape'?'capes':kind==='eyes'?'eyes':kind==='outfit'?'outfits':kind==='weapon'?'weapons':kind==='charm'?'charms':null;
+    return kind==='cape'?'capes':kind==='eyes'?'eyes':kind==='outfit'?'outfits':kind==='weapon'?'weapons':kind==='charm'?'charms':kind==='antenna'?'antennas':null;
   }
   function restoreDynamicLootItem(item){
     const key=dynamicLootKeyForKind(item && item.kind);
     if(!key) return;
-    if(!MM.dynamicLoot) MM.dynamicLoot={capes:[],eyes:[],outfits:[],weapons:[],charms:[]};
+    if(!MM.dynamicLoot) MM.dynamicLoot={capes:[],eyes:[],outfits:[],weapons:[],charms:[],antennas:[]};
     if(!Array.isArray(MM.dynamicLoot[key])) MM.dynamicLoot[key]=[];
     if(!MM.dynamicLoot[key].some(i=>i && i.id===item.id)) MM.dynamicLoot[key].push(Object.assign({}, item));
     if(MM.chests && MM.chests.saveDynamicLoot) MM.chests.saveDynamicLoot();
@@ -1027,7 +1047,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
   }
 
   // --- Dynamic loot sync: chests.js fills MM.dynamicLoot; merge new items into the bag ---
-  const DYN_KIND_MAP={capes:'cape', eyes:'eyes', outfits:'outfit', weapons:'weapon', charms:'charm'};
+  const DYN_KIND_MAP={capes:'cape', eyes:'eyes', outfits:'outfit', weapons:'weapon', charms:'charm', antennas:'antenna'};
   function syncDynamicLoot(){
     const dl=MM.dynamicLoot; if(!dl) return {added:0, blocked:0};
     let added=0;
@@ -1111,7 +1131,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
 
   MM.inventory={
     SLOTS, KIND_LABELS, TIER_COLORS, STAT_LABELS, STAT_RULES, RESOURCES, BASE_ATTACK,
-    MELEE_EFFECT_LABELS, JEWELS,
+    MELEE_EFFECT_LABELS, ANTENNA_ACTIVE_LABELS, JEWELS,
     WEAPON_CATEGORIES, KIND_STAT_PRIORITY, WEAPON_TYPE_STATS, allowedStatsFor,
     weaponCategory, categoryWeapons, selectedWeaponForCategory, isShortcut, setShortcut, cycleWeaponCategory,
     statChips, itemScore, snapPct, fmtPct, VISION_BASE,

@@ -91,6 +91,10 @@ const discovery = (function(){
     // Steam circuit (engine/steam_machines.js + mech flight in engine/mechs.js)
     steam_lift:   'Kolumna pary unosi wszystko nad dyszą',
     steam_flight: 'Parowy mech wzbija się w powietrze',
+    // Antenna actives (engine/antennas.js — first firing of each Q-power)
+    antenna_cloak: 'Kamuflaż antenki: stwory tracą cię z oczu',
+    antenna_surge: 'Przepięcie antenki: zryw prędkości',
+    antenna_echo:  'Echolokacja antenki: pingi przez ściany',
   };
   const CATALOG_IDS=Object.freeze(Object.keys(CATALOG));
   const CATALOG_SET=new Set(CATALOG_IDS);
@@ -167,6 +171,9 @@ const discovery = (function(){
     sky_biome_ember:   {cat:'🌌 Podniebne krainy', hint:'Łuki żaru i lawy płoną wysoko nad wschodnimi pustkowiami…'},
     steam_lift:   {cat:'⚙️ Maszyny parowe', hint:'Woda, żar i dysza skierowana w niebo — stań nad nią…'},
     steam_flight: {cat:'⚙️ Maszyny parowe', hint:'Kadłub z fotelem, kocioł z wodą i rząd dysz od spodu…'},
+    antenna_cloak: {cat:'📡 Antenki', hint:'Pewna antenka potrafi zgiąć światło wokół ciebie — naciśnij Q…'},
+    antenna_surge: {cat:'📡 Antenki', hint:'Burzowa antenka magazynuje iskrę do nóg — naciśnij Q…'},
+    antenna_echo:  {cat:'📡 Antenki', hint:'Czułek-echosonda słyszy przez skałę — naciśnij Q…'},
   };
   const BIOME_DISCOVERY_IDS = Object.freeze([
     'biome_forest',

@@ -136,8 +136,8 @@ assert.equal(pal.chain, '#ffe08a', 'epic charm uses a brighter necklace chain');
 
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 assert.match(mainSrc, /import \{ necklace as NECKLACE \} from '\.\/engine\/necklace\.js';/, 'main imports the necklace engine');
-assert.match(mainSrc, /function initScarf\(\)\{ CAPE\.init\(player\); if\(NECKLACE && NECKLACE\.init\) NECKLACE\.init\(player\); \}/, 'hero accessory reset initializes necklace with cape');
-assert.match(mainSrc, /function updateCape\(dt\)\{ CAPE\.update\(player,dt,getTile,isSolid\); if\(NECKLACE && NECKLACE\.update\) NECKLACE\.update\(player,dt,getTile\); \}/, 'hero accessory tick updates necklace with cape and wind sampling context');
+assert.match(mainSrc, /function initScarf\(\)\{ CAPE\.init\(player\); if\(NECKLACE && NECKLACE\.init\) NECKLACE\.init\(player\); if\(ANTENNAS && ANTENNAS\.init\) ANTENNAS\.init\(player\); \}/, 'hero accessory reset initializes necklace (and the antenna rod) with cape');
+assert.match(mainSrc, /function updateCape\(dt\)\{ CAPE\.update\(player,dt,getTile,isSolid\); if\(NECKLACE && NECKLACE\.update\) NECKLACE\.update\(player,dt,getTile\); if\(ANTENNAS && ANTENNAS\.update\) ANTENNAS\.update\(player,dt,getTile\); \}/, 'hero accessory tick updates necklace (and the antenna rod) with cape and wind sampling context');
 // (the !remoteBody gate keeps the HOST's chain off remote co-op bodies — the
 // draw ORDER contract for the host's own render is unchanged)
 const backDrawIdx = mainSrc.indexOf('if(!remoteBody && NECKLACE && NECKLACE.drawBack)');

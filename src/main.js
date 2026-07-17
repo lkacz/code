@@ -25,6 +25,7 @@ import { keybinds as KEYBINDS } from './engine/keybinds.js';
 import { CRUSH_TUNING, crushTickDamage, heroCrushCapacity, heroEmbeddedTiles, resolveHeroBurial } from './engine/hero_crush.js';
 import { cape as CAPE } from './engine/cape.js';
 import { necklace as NECKLACE } from './engine/necklace.js';
+import { antennas as ANTENNAS } from './engine/antennas.js';
 import { chests as CHESTS } from './engine/chests.js';
 import { createCraftingModel, SOURCE_HINTS as CRAFT_SOURCE_HINTS } from './engine/crafting.js';
 import { furnishings as FURNISHINGS } from './engine/furnishings.js';
@@ -1819,9 +1820,21 @@ function specialVisionAvailability(){
 }
 function visionShortcutLabel(){
 	try{
-		const key=KEYBINDS && KEYBINDS.keyFor ? KEYBINDS.keyFor('vision') : 'q';
-		return KEYBINDS && KEYBINDS.displayKey ? KEYBINDS.displayKey(key) : String(key||'q').toUpperCase();
-	}catch(e){ return 'Q'; }
+		const key=KEYBINDS && KEYBINDS.keyFor ? KEYBINDS.keyFor('vision') : 'y';
+		return KEYBINDS && KEYBINDS.displayKey ? KEYBINDS.displayKey(key) : String(key||'y').toUpperCase();
+	}catch(e){ return 'Y'; }
+}
+// Q fires the equipped antenna's active power (antennas.js owns state/cooldowns;
+// on a hero guest the module also mirrors world-relevant actives to the host).
+function activateAntennaPower(){
+	if(!ANTENNAS || !ANTENNAS.tryActivate) return false;
+	const res=ANTENNAS.tryActivate();
+	if(!res || res.ok) return !!(res && res.ok);
+	if(res.reason==='none') msg('Załóż antenkę w slocie antenki');
+	else if(res.reason==='passive') msg('Ta antenka działa pasywnie — nie ma mocy pod Q');
+	else if(res.reason==='cd') msg('Antenka się ładuje — jeszcze '+Math.ceil(res.left||0)+' s');
+	else if(res.reason==='energy') msg('Za mało energii, aby pobudzić antenkę');
+	return false;
 }
 function refreshVisionButton(){
 	const b=document.getElementById('visionBtn');
@@ -5023,8 +5036,8 @@ function updateCraftTracker(){
 // Blink moved to engine/eyes.js
 function updateBlink(now){ if(EYES && EYES.update) EYES.update(now); }
  // Cape physics: chain with gravity that droops when idle and streams when moving
-function initScarf(){ CAPE.init(player); if(NECKLACE && NECKLACE.init) NECKLACE.init(player); }
-function updateCape(dt){ CAPE.update(player,dt,getTile,isSolid); if(NECKLACE && NECKLACE.update) NECKLACE.update(player,dt,getTile); }
+function initScarf(){ CAPE.init(player); if(NECKLACE && NECKLACE.init) NECKLACE.init(player); if(ANTENNAS && ANTENNAS.init) ANTENNAS.init(player); }
+function updateCape(dt){ CAPE.update(player,dt,getTile,isSolid); if(NECKLACE && NECKLACE.update) NECKLACE.update(player,dt,getTile); if(ANTENNAS && ANTENNAS.update) ANTENNAS.update(player,dt,getTile); }
 function drawDeathTravelFx(){
 	const fx=deathTravelFx;
 	if(!fx) return false;
@@ -5097,6 +5110,10 @@ function drawDeathTravelFx(){
 }
 function drawCape(){ if(deathTravelFx) return; CAPE.draw(ctx,TILE); }
 function drawPlayer(opts){ if(drawDeathTravelFx()) return; const rearView=!!(opts&&opts.rearView); const remoteBody=!!(opts&&opts.remoteBody); const c=MM.customization||{}; let bodyX=(player.x-player.w/2)*TILE; let bodyY=(player.y-player.h/2)*TILE; let bw=player.w*TILE, bh=player.h*TILE;
+	// Antenna cloak: the whole hero (body, face, jewellery, shadow) fades to a
+	// shimmer. Remote bodies carry their cloak state via opts (pb stream flag).
+	const heroA=(opts&&opts.cloaked)?0.32:((!remoteBody&&ANTENNAS&&ANTENNAS.heroAlpha)?ANTENNAS.heroAlpha():1);
+	if(heroA<1) ctx.globalAlpha=heroA;
 	const recoil=heroBodyRecoilVisual();
 	if(recoil){
 		const cx=bodyX+bw*0.5;
@@ -5246,6 +5263,7 @@ function drawPlayer(opts){ if(drawDeathTravelFx()) return; const rearView=!!(opt
 	}
 	if(!rearView){
 	if(!remoteBody && NECKLACE && NECKLACE.drawFront) NECKLACE.drawFront(ctx,TILE,player);
+	if(!remoteBody && ANTENNAS && ANTENNAS.draw) ANTENNAS.draw(ctx,TILE,player);
 	const defendFaceT=(()=>{
 		const now=performance.now();
 		if(heroDefending(now)) return 1;
@@ -5333,7 +5351,7 @@ function drawPlayer(opts){ if(drawDeathTravelFx()) return; const rearView=!!(opt
 		const cx=bodyX+bw/2;
 		const wob=Math.sin(faceNow*0.045)*TILE*0.015*k;
 		ctx.save();
-		ctx.globalAlpha=0.72+0.28*k;
+		ctx.globalAlpha=(0.72+0.28*k)*heroA;
 		ctx.strokeStyle=style==='ironperson'?'#ffd36d':'rgba(43,25,18,0.95)';
 		ctx.fillStyle='rgba(255,244,220,'+(0.78*k).toFixed(3)+')';
 		ctx.lineWidth=Math.max(1,TILE*0.035);
@@ -5360,7 +5378,7 @@ function drawPlayer(opts){ if(drawDeathTravelFx()) return; const rearView=!!(opt
 		const mouthY=bodyY+bh*0.58;
 		const cx=bodyX+bw/2;
 		ctx.save();
-		ctx.globalAlpha=0.68+0.32*k;
+		ctx.globalAlpha=(0.68+0.32*k)*heroA;
 		ctx.strokeStyle=style==='ironperson'?'#ffe27a':'rgba(55,33,19,0.92)';
 		ctx.lineWidth=Math.max(1.4,TILE*0.045);
 		ctx.lineCap='round';
@@ -5400,7 +5418,8 @@ function drawPlayer(opts){ if(drawDeathTravelFx()) return; const rearView=!!(opt
 				ctx.beginPath(); ctx.ellipse(player.x*TILE, gy*TILE+2, shw/2, 4*(0.55+0.45*k), 0, 0, Math.PI*2); ctx.fill();
 			}
 		}
-	} }
+	}
+	if(heroA<1) ctx.globalAlpha=1; }
 
 const HOME_MIRROR_RANGE=8.5;
 function homeMirrorHasLineOfSight(mx,my){
@@ -8481,6 +8500,20 @@ function drawSpecialVisionOverlay(camRenderX,camRenderY,shake){
 	finally{ ctx.restore(); }
 }
 
+// Antenna echo (sonar active): creature pings through walls — a screen-space
+// overlay exactly like special vision, so it obeys the same camera math.
+function drawAntennaEchoOverlay(camRenderX,camRenderY,shake){
+	if(!ANTENNAS || !ANTENNAS.drawEcho || ANTENNAS.activeNow()!=='echo') return false;
+	ctx.save();
+	try{
+		ctx.setTransform(DPR,0,0,DPR,0,0);
+		const shakeX=shake&&Number.isFinite(Number(shake.x))?Number(shake.x):0;
+		const shakeY=shake&&Number.isFinite(Number(shake.y))?Number(shake.y):0;
+		return !!ANTENNAS.drawEcho(ctx,{x:shakeX,y:shakeY,width:W,height:H,tileSize:TILE*zoom,worldX:camRenderX,worldY:camRenderY},player);
+	}catch(e){ return false; }
+	finally{ ctx.restore(); }
+}
+
 function fogRevealAll(){ return !!(FOG && FOG.getRevealAll && FOG.getRevealAll()); }
 function fogHasVisible(x,y){
 	if(!FOG || fogRevealAll()) return true;
@@ -9645,7 +9678,8 @@ window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if
 		}
 	}
 	if(k==='h'&&!keysOnce.has('h')){ toggleHelp(); keysOnce.add('h'); }
-	if(k==='q'&&!keysOnce.has('q')){ toggleSpecialVision(); keysOnce.add('q'); }
+	if(k==='q'&&!keysOnce.has('q')){ activateAntennaPower(); keysOnce.add('q'); }
+	if(k==='y'&&!keysOnce.has('y')){ toggleSpecialVision(); keysOnce.add('y'); }
 	if(debugKeysEnabled && k==='v'&&!keysOnce.has('v')){ window.__mobDebug = !window.__mobDebug; msg('Mob debug '+(window.__mobDebug?'ON':'OFF')); keysOnce.add('v'); }
 	if(k==='x'&&!keysOnce.has('x')){ useCraterScanner(); keysOnce.add('x'); }
 	if(k==='f'&&!keysOnce.has('f')){ if(FISHING && FISHING.onKey) FISHING.onKey(player,getTile); keysOnce.add('f'); }
@@ -10331,7 +10365,7 @@ function physics(dt){
 	// Combine all movement multipliers, including dropdown, turbo and water drag.
 	// Ground material affects traction: mud slows, snow slides, ice slides hard.
 	const waterMoveMult = (inWater && !ridingFloatingBoat) ? heroWaterMoveSpeedMult() : 1;
-	const moveMult = ((MM.activeModifiers && MM.activeModifiers.moveSpeedMult)||1) * (window.playerSpeedMultiplier || 2) * turboSpeedMult * waterMoveMult * heroChillMoveMult() * heroSandMoveMult() * socialBoostMult('move');
+	const moveMult = ((MM.activeModifiers && MM.activeModifiers.moveSpeedMult)||1) * (window.playerSpeedMultiplier || 2) * turboSpeedMult * waterMoveMult * heroChillMoveMult() * heroSandMoveMult() * socialBoostMult('move') * ((ANTENNAS&&ANTENNAS.moveMult)?ANTENNAS.moveMult():1);
 	if(TERRAIN_TRAPS && TERRAIN_TRAPS.stepEntity) TERRAIN_TRAPS.stepEntity(player,getTile,setTile,{kind:'hero'});
 	const groundTile = groundTileUnderPlayer();
 	const groundTraction = surfaceTraction(groundTile);
@@ -12711,9 +12745,12 @@ function draw(){ // Background first
  // mirror pass below renders the live face. Outside that overlap rendering is
  // unchanged.
  const mirrorFacing=!!(FURNISHINGS && FURNISHINGS.findMirrorAtPlayer && FURNISHINGS.findMirrorAtPlayer(player,getTile));
+ // Antenna cloak: cape fades with the body; the held blade simply vanishes
+ // (weapons.js sets globalAlpha absolutely all over — hiding beats half-ghosts).
+ const heroCloakA=(ANTENNAS&&ANTENNAS.heroAlpha)?ANTENNAS.heroAlpha():1;
  // In the ordinary pose the cape is behind the body. From the rear it belongs
  // on top of the back and is therefore drawn immediately after the body.
- if(!mirrorFacing) drawCape();
+ if(!mirrorFacing){ if(heroCloakA<1) ctx.globalAlpha=heroCloakA; drawCape(); if(heroCloakA<1) ctx.globalAlpha=1; }
  if(GENERATED_NPCS && GENERATED_NPCS.draw) GENERATED_NPCS.draw(ctx,TILE,worldFxVisible,getTile,WORLDGEN,sx,sy,viewX,viewY);
  // spectator spirit BODIES glide behind the player (hovering above when parked on it) —
  // their names, bubbles and action feedback come later in the 'text' pass
@@ -12721,11 +12758,11 @@ function draw(){ // Background first
  else if(GHOST_HOST && GHOST_HOST.active()) GHOST_HOST.drawSpirits(ctx,TILE,'body');
  // player body + overlays (back pass for vegetation done earlier)
  drawPlayer({rearView:mirrorFacing});
- if(mirrorFacing) drawCape();
+ if(mirrorFacing){ if(heroCloakA<1) ctx.globalAlpha=heroCloakA; drawCape(); if(heroCloakA<1) ctx.globalAlpha=1; }
  // Exceptional weapons tint the hand-facing side of the finished hero sprite.
- if(!deathTravelFx && WEAPONS && WEAPONS.drawHeroReflection) WEAPONS.drawHeroReflection(ctx,TILE,player);
+ if(!deathTravelFx && heroCloakA>=0.98 && WEAPONS && WEAPONS.drawHeroReflection) WEAPONS.drawHeroReflection(ctx,TILE,player);
  // equipped weapon in hand (melee blades sweep during a swing)
- if(!deathTravelFx && WEAPONS && WEAPONS.drawHeld) WEAPONS.drawHeld(ctx,TILE,player);
+ if(!deathTravelFx && heroCloakA>=0.98 && WEAPONS && WEAPONS.drawHeld) WEAPONS.drawHeld(ctx,TILE,player);
  if(NPCS && NPCS.draw) NPCS.draw(ctx,TILE,worldFxVisible);
  // living plants (rooted vegetation over terrain, under fire/creatures)
  if(PLANTS && PLANTS.draw) PLANTS.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible);
@@ -12806,6 +12843,7 @@ function draw(){ // Background first
  // Equipment-powered optics alter only the already-rendered world. The opaque
  // fog pass stays later, while thermal silhouettes require current visibility.
  drawSpecialVisionOverlay(camRenderX,camRenderY,screenShake);
+ drawAntennaEchoOverlay(camRenderX,camRenderY,screenShake);
  // Ghost block preview — recomputed each frame so camera motion can't leave it stale.
  // Green = placement allowed right now; red = blocked (reach/support/no blocks).
  if(isToolMode() && lastPointer.has && !pinch && !mining){
@@ -16293,7 +16331,7 @@ MM.ghostBridge={
 			Object.assign(scratch, savedCust, {outfitStyle:'default', outfitColor:color});
 			MM.customization=scratch;
 		}
-		try{ drawPlayer({remoteBody:true}); }catch(e){ /* one bad frame must not leak the swap */ }
+		try{ drawPlayer({remoteBody:true, cloaked:!!st.cloaked}); }catch(e){ /* one bad frame must not leak the swap */ }
 		finally{ MM.customization=savedCust; for(const k of keys) player[k]=saved[k]; }
 	},
 	resourceLabel:(k)=>RES_LABEL[k]||k,

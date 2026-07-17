@@ -6299,6 +6299,7 @@ const mobs = (function(){
     let best=null, bestD2=R2;
     for(const b of bodies){
       if(!b || b.dead || !finiteNum(b.x) || !finiteNum(b.y)) continue;
+      if(b.cloaked) continue; // antenna cloak: an invisible guest is no target (contact still hurts)
       const dx=b.x-wx, dy=b.y-wy, d2=dx*dx+dy*dy;
       if(d2<bestD2){ bestD2=d2; best=b; }
     }
@@ -7561,17 +7562,24 @@ const mobs = (function(){
       m._wantJump=false;
       // Run species AI / behavior first
   // Distance gating for aggression and pursuit
-  const dxP0 = player.x - m.x; const dyP0 = player.y - m.y; const distToHero = Math.hypot(dxP0, dyP0);
+  // Antenna cloak: SIGHTED hunters perceive a cloaked hero impossibly far away —
+  // the blind decoy treatment, applied per-target instead of per-mob. Species
+  // whose eyes are sensors may declare `senseCloak:true` in their spec and see
+  // through it; physical contact keeps hurting either way, and companions or
+  // uncloaked co-op bodies still win the mob's attention on their own merits.
+  const heroCloaked = !spec.senseCloak && typeof MM!=='undefined' && MM.antennas && MM.antennas.cloaked && MM.antennas.cloaked(null);
+  const heroForMob = heroCloaked ? {x:m.x-10000, y:m.y} : player;
+  const dxP0 = heroForMob.x - m.x; const dyP0 = heroForMob.y - m.y; const distToHero = Math.hypot(dxP0, dyP0);
   const sight = (typeof spec.sightRange==='number'? spec.sightRange : 16);
   const pursue = (typeof spec.pursueRange==='number'? spec.pursueRange : (sight+6));
-  const combatTarget = combatTargetForMob(m,player,aggressive,Math.max(sight,pursue));
+  const combatTarget = combatTargetForMob(m,heroForMob,aggressive,Math.max(sight,pursue));
   const aimTarget = combatTarget && combatTarget.kind==='companion' ? companionTargetPoint(combatTarget) : combatTarget;
   const distToPlayer = aimTarget ? Math.hypot(aimTarget.x-m.x, aimTarget.y-m.y) : distToHero;
   const canSee = distToPlayer <= sight;
   const shouldPursue = distToPlayer <= pursue;
   const aggroNow = aggressive && (canSee || shouldPursue);
   const fleeTarget=m._progressionOutmatched ? {x:m.x+(m.x>=player.x?10000:-10000),y:m.y} : null;
-  m._combatTarget=fleeTarget || (aggroNow ? (combatTarget && combatTarget.kind==='companion' ? Object.assign({},combatTarget,{y:combatTarget.aimY==null ? combatTarget.y : combatTarget.aimY}) : combatTarget) : player);
+  m._combatTarget=fleeTarget || (aggroNow ? (combatTarget && combatTarget.kind==='companion' ? Object.assign({},combatTarget,{y:combatTarget.aimY==null ? combatTarget.y : combatTarget.aimY}) : combatTarget) : heroForMob);
   // Blinded (sand in the eyes): the AI perceives its target impossibly far away,
   // so even species with proximity-hunt fallbacks (wolf adx<8 …) stop closing in.
   // Physical contact still hurts — a blind wolf that stumbles into you bites.

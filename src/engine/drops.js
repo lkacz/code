@@ -154,7 +154,7 @@ const drops = (function(){
     STORM_HERALD:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'weapon',weaponType:'electric',name:'Młot Herolda Burzy',desc:'Kuty piorunami, oddaje z nawiązką.'},{kind:'charm',name:'Kowadło chmur',desc:'Cięższe, niż wygląda. A wygląda jak chmura.'}]},
     AURORA_WYRM:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'weapon',weaponType:'hose',name:'Oddech zorzowego żmija',desc:'Zamieć na życzenie.'},{kind:'eyes',name:'Oczy zorzy',desc:'Noc polarna przestaje być ciemna.'},{kind:'cape',name:'Łuska zorzy',desc:'Mieni się wszystkimi kolorami mrozu.'}]},
     MIRAGE_DJINN:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'charm',name:'Lampa dżina',desc:'Życzeń brak. Dżin też już nie życzy.'},{kind:'weapon',weaponType:'gas',name:'Tchnienie fatamorgany',desc:'Wróg widzi wszystko. Poza prawdą.'}]},
-    CORSAIR_AUTOMATON:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'outfit',name:'Kadłub korsarza wraków',desc:'Nitowany na wieczność. Prawie.'},{kind:'weapon',weaponType:'bow',name:'Harpunnik flotylli',desc:'Trafia i przyciąga. Kolejność dowolna.'}]},
+    CORSAIR_AUTOMATON:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'outfit',name:'Kadłub korsarza wraków',desc:'Nitowany na wieczność. Prawie.'},{kind:'weapon',weaponType:'bow',name:'Harpunnik flotylli',desc:'Trafia i przyciąga. Kolejność dowolna.'},{kind:'antenna',profile:'echo',name:'Czułek wrakowego korsarza',desc:'Nasłuchiwał wraków. Teraz nasłuchuje dla ciebie.'}]},
     SPORE_MOTHER:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'weapon',weaponType:'gas',name:'Płuca Matki Zarodników',desc:'Oddychają za ciebie. W obie strony.'},{kind:'outfit',name:'Kapelusz rafy',desc:'Grzybobranie od środka.'}]},
     GRAVITY_COLOSSUS:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'charm',name:'Rdzeń grawitacji',desc:'Kieszeń ciągnie w dół. Cała reszta też.'},{kind:'outfit',name:'Płyty kolosa',desc:'Nic cię nie ruszy. Dosłownie.'}]},
     HARPY_QUEEN:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'cape',name:'Skrzydła Królowej Harpii',desc:'Korona spadła razem z resztą.'},{kind:'weapon',weaponType:'melee',name:'Królewskie szpony',desc:'Dworski ceremoniał: cięcie, ukłon.'}]},
@@ -451,7 +451,7 @@ const drops = (function(){
     const chests=MM.chests;
     if(!def || !chests || typeof chests.genItem!=='function') return null;
     let item=null;
-    try{ item=chests.genItem(()=>rand(), tier, Object.assign({kind:def.kind, weaponType:def.weaponType},extra)); }catch(e){ return null; }
+    try{ item=chests.genItem(()=>rand(), tier, Object.assign({kind:def.kind, weaponType:def.weaponType, profile:def.profile},extra)); }catch(e){ return null; }
     if(!item) return null;
     if(typeof def.name==='string') item.name=def.name;
     if(typeof def.desc==='string') item.desc=def.desc; // the flavor one-liner IS half the drop

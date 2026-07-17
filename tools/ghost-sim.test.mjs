@@ -192,8 +192,9 @@ assert.ok(NET.modeAllows('hero', 'play') && NET.modeAllows('hero', 'full') && NE
 assert.ok(!NET.modeAllows('play', 'hero'), 'play is below hero');
 // hero-mode contract: the guest player state is guest-local truth; the world is
 // protected here — actions, rates and envelopes
-assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot', 'row', 'board', 'unboard', 'tp'],
-	'the ten hero world-intents');
+assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot', 'row', 'board', 'unboard', 'tp', 'antenna'],
+	'the eleven hero world-intents');
+assert.equal(NET.HERO_RULES.ANTENNA_MS, 1500, 'antenna intent rate floor pinned (per-active cooldown lives host-side)');
 assert.ok(NET.HERO_RULES.PICKUP_MS === 150 && NET.HERO_RULES.USE_MS === 400 && NET.HERO_RULES.SHOOT_MS === 220
 	&& NET.HERO_RULES.ROW_MS === 250 && NET.HERO_RULES.BOARD_MS === 400, 'pickup/use/shoot/row/board rate floors pinned');
 assert.ok(NET.validHeroAction('mine') && !NET.validHeroAction('craft') && !NET.validHeroAction('__proto__'), 'hero action whitelist holds');
@@ -915,7 +916,8 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 // silent guest-only breakage in production; here it is a loud test failure.
 {
 	const FLOOR_OF = { mine: 'MINE_MS', place: 'PLACE_MS', dmg: 'DMG_MS', pickup: 'PICKUP_MS',
-		use: 'USE_MS', shoot: 'SHOOT_MS', row: 'ROW_MS', board: 'BOARD_MS', unboard: 'BOARD_MS', tp: 'TP_MS' };
+		use: 'USE_MS', shoot: 'SHOOT_MS', row: 'ROW_MS', board: 'BOARD_MS', unboard: 'BOARD_MS', tp: 'TP_MS',
+		antenna: 'ANTENNA_MS' };
 	for(const a of NET.HERO_ACTIONS){
 		assert.ok(new RegExp("pl\\.a === '" + a + "'").test(hostSrc),
 			"hero action '" + a + "' has a handleHeroAct branch on the host");
@@ -1276,8 +1278,8 @@ assert.ok(/ghostPlayPlaceAt:\(tx,ty,key,body\)=>\{/.test(mainSrc) && /cellOverla
 	'guest building respects the same open-cell / hero-overlap rules as the local placer');
 assert.ok(/ghostPlayStrike:\(x,y,r,dmg\)=>\{/.test(mainSrc) && !/ghostPlayStrike[\s\S]{0,400}setTile\(/.test(mainSrc),
 	'guest melee is creatures-only — no tile is ever touched by fighting');
-assert.ok(/drawHeroAt:\(st\)=>\{/.test(mainSrc) && /drawPlayer\(\{remoteBody:true\}\)/.test(mainSrc),
-	'remote heroes render through the REAL hero painter via a field swap (a player looks like a player)');
+assert.ok(/drawHeroAt:\(st\)=>\{/.test(mainSrc) && /drawPlayer\(\{remoteBody:true, cloaked:!!st\.cloaked\}\)/.test(mainSrc),
+	'remote heroes render through the REAL hero painter via a field swap (a player looks like a player; antenna cloak rides along)');
 // mobs.js contact pass — cost-free in solo play, hurts a touched guest body
 const mobsSrc2 = readFileSync(new URL('../src/engine/mobs.js', import.meta.url), 'utf8');
 assert.ok(/function coopContactPass\(now, nowEpoch\)/.test(mobsSrc2) && /coopContactPass\(now, nowEpoch\);/.test(mobsSrc2),
@@ -1586,8 +1588,8 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	// lag-compensated reconciliation: the echo answers a SPECIFIC claim
 	assert.ok(/conn\.send\(\{ t: 'ppose', q: poseSeq,/.test(clientSrc) && /poseLog\.push\(\{ seq: poseSeq, x: p\.x, y: p\.y \}\);/.test(clientSrc),
 		'every pose uplink carries a sequence and logs the claim it made');
-	assert.ok(/b\.poseSeq = \(Number\(pl\.q\) >>> 0\) \|\| 0;/.test(hostSrc) && /b\.dead \? 1 : 0, b\.poseSeq \|\| 0\]\);/.test(hostSrc),
-		'the host sanitizes the seq and echoes it in the own pb row');
+	assert.ok(/b\.poseSeq = \(Number\(pl\.q\) >>> 0\) \|\| 0;/.test(hostSrc) && /b\.dead \? 1 : 0, b\.poseSeq \|\| 0, \(\(b\.cloakUntil \|\| 0\) > t\) \? 1 : 0\]\);/.test(hostSrc),
+		'the host sanitizes the seq and echoes it in the own pb row (cloak flag rides at the tail)');
 	assert.ok(/const pastIdx = seq \? poseLog\.findIndex\(e => e\.seq === seq\) : -1;/.test(clientSrc)
 		&& /if\(err > 8\)\{ p\.x = \+bx; p\.y = \+by; stats\.poseSnaps/.test(clientSrc)
 		&& /if\(bridge\.solidAt\(Math\.floor\(nx\), Math\.floor\(ny\), 'y'\)\)\{ p\.x = \+bx; p\.y = \+by;/.test(clientSrc)
@@ -1724,8 +1726,8 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 		&& /'hsl\('\+\(h%360\)\+',68%,55%\)'/.test(mainSrc)
 		&& /finally\{ MM\.customization=savedCust;/.test(mainSrc),
 		'remote bodies wear a gid-derived outfit tint, restored in finally');
-	assert.ok(/gid: entry\.gid, look: entry\.look \|\| null \}\);/.test(hostSrc) && /gid: b\.id, look: looks\[b\.id\] \|\| null \}\);/.test(clientSrc),
-		'both body painters tag the gid AND the chosen look so every renderer paints the same player the same way');
+	assert.ok(/gid: entry\.gid, look: entry\.look \|\| null, cloaked: \(b\.cloakUntil \|\| 0\) > now\(\) \}\);/.test(hostSrc) && /gid: b\.id, look: looks\[b\.id\] \|\| null, cloaked: !!b\.cloaked \}\);/.test(clientSrc),
+		'both body painters tag the gid AND the chosen look (plus the antenna cloak flag) so every renderer paints the same player the same way');
 	// the chosen look: guest-picked, HOST-validated strict hex, relayed + late-joiner
 	// synced, persisted client-side like the avatar — display-only end to end
 	assert.ok(/pl\.t === 'plook'/.test(hostSrc) && /entry\.body && NET\.validLookColor\(pl\.c\) && tL - \(entry\.lastLookAt \|\| 0\) >= NET\.PLAY_RULES\.LOOK_MS/.test(hostSrc),

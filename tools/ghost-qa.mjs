@@ -1980,6 +1980,15 @@ async function main(){
 		await ghost.eval(`MM.ghostClient._heroShoot(14, -2, 6)`);
 		await host.poll(`(MM.weapons._debug.arrows||[]).filter(a=>a.coopOwner).length`, v => v >= 1,
 			'the guest projectile flies as a real host arrow', 40, 250);
+		// --- antenna cloak intent: the guest NAMES the active, the HOST owns the
+		// duration and stamps bodyLike.cloaked — the exact flag mobs.js skips in
+		// nearestCoopBody. A rare cloak runs 3 s, so the flag must also EXPIRE.
+		await ghost.eval(`MM.ghostClient._heroAntenna('cloak', 'rare', false)`);
+		await host.poll(`(MM.coopBodies||[]).some(b=>b.gid==='${gidHero}' && b.cloaked) ? 1 : 0`,
+			v => v === 1, 'the cloak intent marks the host bodyLike (mob-gate flag)', 24, 250);
+		await host.poll(`(MM.coopBodies||[]).some(b=>b.gid==='${gidHero}' && b.cloaked) ? 1 : 0`,
+			v => v === 0, 'the host-owned cloak duration expires on its own', 30, 400);
+		console.log('antenna cloak: ok (guest named it, host owned it, flag expired)');
 		// --- uranium charge: the contract's "feature parity for free" template — a
 		// hero-side system added to both frames charges the GUEST from its replica
 		// ore with zero multiplayer plumbing (energy is guest-local truth)

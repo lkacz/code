@@ -41,7 +41,7 @@ assert.ok(KB && MM.keybinds === KB, 'module installs itself on MM');
   }
   // every letter branch of the main keydown handler must be represented so a
   // rebind can never half-apply (one handler remapped, another raw)
-  for (const key of ['a','d','w','s','e','t','f','r','z','x','q','b','u','m','n','c','h','g','i','v','p','j','k','l','o']) {
+  for (const key of ['a','d','w','s','e','t','f','r','z','x','q','y','b','u','m','n','c','h','g','i','v','p','j','k','l','o']) {
     assert.ok(KB.ACTIONS.some(a => a.def === key), "an action owns default key '" + key + "'");
   }
 }
@@ -57,22 +57,22 @@ assert.ok(KB && MM.keybinds === KB, 'module installs itself on MM');
 
 // ---------------- rebinding + dead keys --------------------------------------
 {
-  const r = KB.setBinding('interact', 'y');
+  const r = KB.setBinding('interact', ';');
   assert.ok(r.ok && !r.swapped, 'binding to a free key needs no swap');
-  assert.equal(KB.keyFor('interact'), 'y');
-  assert.equal(KB.translate('y'), 'e', 'the new physical key produces the logical default');
+  assert.equal(KB.keyFor('interact'), ';');
+  assert.equal(KB.translate(';'), 'e', 'the new physical key produces the logical default');
   assert.equal(KB.translate('e'), '§e', 'the orphaned default goes dead (matches no read site)');
   assert.equal(KB.isCustomized(), true);
-  assert.equal(JSON.parse(store['mm_keybinds_v1']).interact, 'y', 'only the non-default binding persists');
+  assert.equal(JSON.parse(store['mm_keybinds_v1']).interact, ';', 'only the non-default binding persists');
 }
 
 // ---------------- conflict swap ----------------------------------------------
 {
-  const r = KB.setBinding('craft', 'y'); // y is interact's key now
+  const r = KB.setBinding('craft', ';'); // ';' is interact's key now
   assert.ok(r.ok && r.swapped && r.swapped.id === 'interact', 'conflicts swap with the holder');
-  assert.equal(KB.keyFor('craft'), 'y');
+  assert.equal(KB.keyFor('craft'), ';');
   assert.equal(KB.keyFor('interact'), 't', 'the holder receives the requester’s previous key');
-  assert.equal(KB.translate('y'), 't', 'pressing y now crafts');
+  assert.equal(KB.translate(';'), 't', 'pressing ; now crafts');
   assert.equal(KB.translate('t'), 'e', 'pressing t now interacts');
   assert.equal(KB.translate('e'), '§e', 'e stays dead — no key was lost, none aliased');
   const seen = new Set();
@@ -102,11 +102,11 @@ assert.ok(KB && MM.keybinds === KB, 'module installs itself on MM');
 
 // ---------------- persistence round-trip -------------------------------------
 {
-  store['mm_keybinds_v1'] = JSON.stringify({ interact: 'y', pause: ';' });
+  store['mm_keybinds_v1'] = JSON.stringify({ interact: ',', pause: ';' });
   const { keybinds: KB2 } = await import('../src/engine/keybinds.js?phase=reload');
-  assert.equal(KB2.keyFor('interact'), 'y', 'bindings survive a reload');
+  assert.equal(KB2.keyFor('interact'), ',', 'bindings survive a reload');
   assert.equal(KB2.keyFor('pause'), ';');
-  assert.equal(KB2.translate('y'), 'e');
+  assert.equal(KB2.translate(','), 'e');
   assert.equal(KB2.translate(';'), 'b');
 }
 {
@@ -137,7 +137,8 @@ const mainSrc = fs.readFileSync(path.join(SRC, 'main.js'), 'utf8');
   assert.match(mainSrc, /KEYBINDS\.translate\(ev\.key\.toLowerCase\(\)\)==='z'/, 'the undo listener honors rebinds');
   // fullscreen: rebindable key branch + pause-panel button + change sync
   assert.match(mainSrc, /k==='u'&&!keysOnce\.has\('u'\)\)\{ toggleFullscreen\(\)/, 'fullscreen key branch (default U)');
-  assert.match(mainSrc, /k==='q'&&!keysOnce\.has\('q'\)\)\{ toggleSpecialVision\(\)/, 'Q toggles equipment-powered night or thermal vision');
+  assert.match(mainSrc, /k==='q'&&!keysOnce\.has\('q'\)\)\{ activateAntennaPower\(\)/, 'Q fires the antenna active power (2026-07 antenna wave)');
+  assert.match(mainSrc, /k==='y'&&!keysOnce\.has\('y'\)\)\{ toggleSpecialVision\(\)/, 'Y toggles equipment-powered night or thermal vision');
   assert.match(mainSrc, /\['fullscreenchange','webkitfullscreenchange'\]/, 'standard and WebKit fullscreen changes synchronize the UI');
   assert.match(mainSrc, /document\.fullscreenElement \|\| document\.webkitFullscreenElement/, 'fullscreen state supports standard and WebKit browsers');
   assert.match(mainSrc, /root\.requestFullscreen \|\| root\.webkitRequestFullscreen/, 'fullscreen entry supports standard and WebKit browsers');

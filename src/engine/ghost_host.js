@@ -516,10 +516,12 @@ const ghostHost = (function(){
 	function heroTick(s, t){
 		s.last.hero = t;
 		const p = bridge.player;
-		const key = (p.x.toFixed(2) + '|' + p.y.toFixed(2) + '|' + p.facing + '|' + Math.round(p.hp));
+		// ck: the HOST hero's antenna cloak — guests render the shimmer from it
+		const ck = (MMR && MMR.antennas && MMR.antennas.cloaked && MMR.antennas.cloaked(null)) ? 1 : 0;
+		const key = (p.x.toFixed(2) + '|' + p.y.toFixed(2) + '|' + p.facing + '|' + Math.round(p.hp) + '|' + ck);
 		if(key === s.lastHeroSent && t - s.last.heroKeepalive < 500) return;
 		s.lastHeroSent = key; s.last.heroKeepalive = t;
-		broadcast({ t: 'hero', x: +p.x.toFixed(3), y: +p.y.toFixed(3), vx: +(p.vx || 0).toFixed(2), vy: +(p.vy || 0).toFixed(2), f: p.facing < 0 ? -1 : 1, hp: +p.hp.toFixed(1), mhp: p.maxHp, en: +(p.energy || 0).toFixed(1) });
+		broadcast({ t: 'hero', x: +p.x.toFixed(3), y: +p.y.toFixed(3), vx: +(p.vx || 0).toFixed(2), vy: +(p.vy || 0).toFixed(2), f: p.facing < 0 ? -1 : 1, hp: +p.hp.toFixed(1), mhp: p.maxHp, en: +(p.energy || 0).toFixed(1), ck });
 	}
 	function mobTick(s, t){
 		s.last.mobs = t;
@@ -1252,6 +1254,24 @@ const ghostHost = (function(){
 			}
 			return;
 		}
+		if(pl.a === 'antenna'){
+			// antenna active power: the guest only NAMES the active (+ its tier) —
+			// duration and cooldown come from the HOST's own antennas.js table, so a
+			// modified client cannot stretch its invisibility by a millisecond. Only
+			// cloak has world meaning (mob AI runs here); surge/echo stay guest-local.
+			if(t - (b.lastHeroAntennaAt || 0) < NET.HERO_RULES.ANTENNA_MS) return;
+			b.lastHeroAntennaAt = t;
+			const A = MMR && MMR.antennas;
+			if(!A || !A.ACTIVES || !A.ACTIVES[pl.k]){ entry.peer.send({ t: 'hact', a: 'antenna', ok: false, reason: 'kind' }); return; }
+			if(t < (b.antennaCdUntil || 0)){ entry.peer.send({ t: 'hact', a: 'antenna', ok: false, reason: 'cd' }); return; }
+			const tier = A.tierKey(pl.tr); // whitelist — an unknown claim falls to 'common'
+			const durMs = Math.round(A.durationFor(pl.k, tier) * 1000);
+			b.antennaCdUntil = t + Math.round(A.cooldownFor(pl.k, !!pl.u) * 1000);
+			if(pl.k === 'cloak') b.cloakUntil = t + durMs;
+			entry.peer.send({ t: 'hact', a: 'antenna', ok: true, k: pl.k, ms: durMs });
+			s.stats.antenna = (s.stats.antenna || 0) + 1;
+			return;
+		}
 		if(pl.a === 'board' || pl.a === 'unboard'){
 			// mech cab handoff: boarding inverts movement authority — the host
 			// simulates the hull on the guest's streamed keys and the body rides it
@@ -1471,12 +1491,14 @@ const ghostHost = (function(){
 			// hero mode: survival laws run on the GUEST through the real hero systems
 			// (vitals are its local truth) — running them here too would double-damage
 			if(!entry.heroMode && !b.dead && dt > 0) bodySurvivalPass(s, entry, b, dt, t);
-			list.push([entry.gid, entry.name || 'Duch', +b.x.toFixed(2), +b.y.toFixed(2), +(b.vx || 0).toFixed(2), +(b.vy || 0).toFixed(2), b.f < 0 ? -1 : 1, +b.hp.toFixed(1), b.maxHp, b.dead ? 1 : 0, b.poseSeq || 0]);
+			list.push([entry.gid, entry.name || 'Duch', +b.x.toFixed(2), +b.y.toFixed(2), +(b.vx || 0).toFixed(2), +(b.vy || 0).toFixed(2), b.f < 0 ? -1 : 1, +b.hp.toFixed(1), b.maxHp, b.dead ? 1 : 0, b.poseSeq || 0, ((b.cloakUntil || 0) > t) ? 1 : 0]);
 			if(!b.dead){
 				if(!entry.bodyLike) entry.bodyLike = { gid: entry.gid, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, dead: false, hurt: (a, sx, sy, c) => hurtBody(s, entry, a, sx, sy, c) };
 				// vx/vy are advisory (aim-lead for party-aware attackers) — never authority.
 				// duelWith lets in-flight duel arrows re-check consent at IMPACT time.
+				// cloaked is the antenna gate flag mobs.js nearestCoopBody skips on.
 				entry.bodyLike.x = b.x; entry.bodyLike.y = b.y; entry.bodyLike.vx = b.vx || 0; entry.bodyLike.vy = b.vy || 0; entry.bodyLike.dead = false; entry.bodyLike.duelWith = b.duelWith || null;
+				entry.bodyLike.cloaked = (b.cloakUntil || 0) > t;
 				pub.push(entry.bodyLike);
 			}
 		}
@@ -1906,7 +1928,7 @@ const ghostHost = (function(){
 				if(!b.disp) b.disp = { x: b.x, y: b.y };
 				b.disp.x += (b.x - b.disp.x) * ease;
 				b.disp.y += (b.y - b.disp.y) * ease;
-				if(wantBody && bridge.drawHeroAt) bridge.drawHeroAt({ x: b.disp.x, y: b.disp.y, vx: b.vx, vy: b.vy, facing: b.f, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, gid: entry.gid, look: entry.look || null });
+				if(wantBody && bridge.drawHeroAt) bridge.drawHeroAt({ x: b.disp.x, y: b.disp.y, vx: b.vx, vy: b.vy, facing: b.f, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, gid: entry.gid, look: entry.look || null, cloaked: (b.cloakUntil || 0) > now() });
 				if(wantText) paintBodyTag(ctx, TILE, b.disp.x, b.disp.y, entry.name || 'Duch', b, viewPrefs.bubbles ? entry.lastChat : null);
 				continue;
 			}
