@@ -39,14 +39,19 @@ if(WATCH && MMR){
 			return origRemove.call(this, k);
 		};
 		// The world fork's ONE narrow exit: a host-granted fork commits the main
-		// save (+ the challenge run marker) through the ORIGINAL setItem. The
-		// allowlist above stays closed — this hatch only opens while armed, and
-		// the only site that arms it is the forkGrant branch of the dispatcher
-		// (a packet that can only arrive on the locked host connection).
+		// save (+ the challenge run marker + the pre-fork BACKUP: one named slot
+		// under the fork-scoped mm_slot_fork_ prefix and the slot index) through
+		// the ORIGINAL setItem. The allowlist above stays closed — this hatch only
+		// opens while armed, and the only site that arms it is the forkGrant branch
+		// of the dispatcher (a packet that can only arrive on the locked host
+		// connection). The prefix matters: a fork can create ITS backup slot but
+		// can never touch the player's existing named saves.
 		MMR.ghostForkWrite = (k, v) => {
 			if(!MMR.ghostForkArmed) return false;
-			if(k !== 'mm_save_v7' && k !== 'mm_challenge_v1') return false;
-			try{ origSet.call(window.localStorage, k, String(v)); return true; }catch(e){ return false; }
+			const key = String(k);
+			if(key !== 'mm_save_v7' && key !== 'mm_challenge_v1'
+				&& key !== 'mm_save_slots_meta_v1' && !key.startsWith('mm_slot_fork_')) return false;
+			try{ origSet.call(window.localStorage, key, String(v)); return true; }catch(e){ return false; }
 		};
 	}catch(e){ /* storage may be unavailable altogether — fine */ }
 }
@@ -314,7 +319,7 @@ const ghostClient = (function(){
 			if(localStorage.getItem('mm_save_v7')){
 				warn = document.createElement('div');
 				warn.style.cssText = 'color:#ffd27a;font-weight:700;';
-				warn.textContent = '⚠ Masz już własny zapis solo — rozwidlenie go NADPISZE. (Ręczne zapisy nazwane zostają.)';
+				warn.textContent = '⚠ Masz już własny zapis solo — zajmie jego miejsce, ale stary świat zostanie zachowany jako zapis nazwany „Świat sprzed rozwidlenia”.';
 			}
 		}catch(e){ warn = null; }
 		const rowB = document.createElement('div');

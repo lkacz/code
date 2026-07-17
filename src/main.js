@@ -16073,6 +16073,23 @@ MM.ghostBridge={
 	commitForkSave:()=>{
 		if(!MM.ghostMode || !MM.ghostForkWrite) return false;
 		try{
+			// the guest's OWN previous world survives the fork as a named save: the
+			// backup rides the hatch's fork-scoped mm_slot_fork_ prefix and the slot
+			// index gains one entry. referencedAutosaveKeys scans every mm_slot_*,
+			// so external chunk blobs the old autosave references stay preserved.
+			// Best-effort: a failed backup must not block the fork itself.
+			try{
+				const prev=localStorage.getItem(SAVE_KEY);
+				if(prev){
+					const slotId='fork_'+Date.now().toString(36);
+					let prevSeed=null; try{ const p=JSON.parse(prev); prevSeed=Number.isFinite(p&&p.seed)?p.seed:null; }catch(e){ prevSeed=null; }
+					if(MM.ghostForkWrite('mm_slot_'+slotId, prev)){
+						let meta=[]; try{ const m=JSON.parse(localStorage.getItem('mm_save_slots_meta_v1')||'[]'); if(Array.isArray(m)) meta=m; }catch(e){ meta=[]; }
+						meta.push({id:slotId, name:'Świat sprzed rozwidlenia', time:Date.now(), seed:prevSeed});
+						MM.ghostForkWrite('mm_save_slots_meta_v1', JSON.stringify(meta));
+					}
+				}
+			}catch(e){ /* backup is best-effort */ }
 			const data=buildSaveObject({perf:{parts:[]}});
 			const withHash=attachHash(data).object;
 			if(!MM.ghostForkWrite(SAVE_KEY, JSON.stringify(withHash))) return false;

@@ -1022,9 +1022,16 @@ function CADHasStory(src){ return /story: \d+ \}/.test(src.slice(src.indexOf('co
 	assert.equal([...clientSrc.matchAll(/MMR\.ghostForkArmed = true/g)].length, 1, 'exactly one site arms the fork hatch');
 	assert.ok(/pl\.t === 'forkGrant'/.test(clientSrc), 'and it is the forkGrant dispatcher branch (locked host connection only)');
 	assert.ok(/if\(!MMR\.ghostForkArmed\) return false;/.test(clientSrc)
-		&& /if\(k !== 'mm_save_v7' && k !== 'mm_challenge_v1'\) return false;/.test(clientSrc),
-		'the hatch admits exactly the main save + the challenge run marker, only while armed');
-	assert.ok(/origSet\.call\(window\.localStorage, k, String\(v\)\)/.test(clientSrc),
+		&& /key !== 'mm_save_v7' && key !== 'mm_challenge_v1'/.test(clientSrc)
+		&& /key !== 'mm_save_slots_meta_v1' && !key\.startsWith\('mm_slot_fork_'\)\) return false;/.test(clientSrc),
+		'the hatch admits exactly: main save, challenge marker, slot index, fork-scoped backup slots — only while armed');
+	// the backup can never clobber a player's existing named saves: the slot key
+	// is minted under the fork-scoped prefix and the index is append-only
+	assert.ok(/const slotId='fork_'\+Date\.now\(\)\.toString\(36\);/.test(mainSrc)
+		&& /MM\.ghostForkWrite\('mm_slot_'\+slotId, prev\)/.test(mainSrc)
+		&& /meta\.push\(\{id:slotId, name:'Świat sprzed rozwidlenia', time:Date\.now\(\), seed:prevSeed\}\);/.test(mainSrc),
+		'an existing solo save is backed up into a fork-scoped named slot before the overwrite');
+	assert.ok(/origSet\.call\(window\.localStorage, key, String\(v\)\)/.test(clientSrc),
 		'the hatch uses the ORIGINAL setItem — the lockdown allowlist stays closed');
 	assert.ok(/MMR\.ghostForkArmed = false; \/\/ one-shot: used or failed, the hatch closes/.test(clientSrc)
 		&& /MMR\.ghostForkArmed = false; \/\/ a declined offer leaves the hatch closed/.test(clientSrc),
