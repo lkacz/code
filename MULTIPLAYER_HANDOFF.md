@@ -18,6 +18,17 @@
 > audited `commitForkSave` → solo reboot). Details and gotchas: memory file
 > `coop-beyond-package` + the git log (cc92a4c…f78dd94).
 >
+> **2026-07-17 addendum 2 — the follow-up wave:** QA driver fails fast
+> instead of hanging (short poll budgets + starved-tab diagnosis) and a
+> 2-tab `--fork-only` mode proved the fork LIVE (catching a real
+> first-10-seconds grant-refusal bug); party-aware world pressure (mob
+> eco-pass/despawn + invasion landings rotate across `MM.coopBodies`);
+> challenge v2 (nobows/ironman/scarce + credits & souvenir stamps); party
+> HUD skulls/click-to-find/touch nudge; fork auto-backup (old solo world →
+> named slot via the fork-scoped `mm_slot_fork_` hatch prefix); guest
+> trader over the new `npcs` plane — trades are guest-local by
+> construction, only the epic chest stays the host's.
+>
 > **THE BINDING RULES LIVE IN `CLAUDE.md`** (repo root, auto-loaded): the
 > three questions for every new feature, the hact-intent checklist, the trust
 > model, the gotchas. `tools/ghost-sim.test.mjs` ENFORCES the contract with

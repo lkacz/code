@@ -87,11 +87,19 @@ element or pick between the module's own power levels).
   plane is broadcast-only display truth (save shapes on the wire); the finale
   relay is OPEN-only — `unlock()` (layer credit) is never a guest's to mint.
 - World fork: the storage lockdown has EXACTLY ONE escape hatch —
-  `MM.ghostForkWrite` (the ORIGINAL `setItem`; keys `mm_save_v7` +
-  `mm_challenge_v1` only), armed solely by the `forkGrant` dispatcher branch
+  `MM.ghostForkWrite` (the ORIGINAL `setItem`; keys `mm_save_v7`,
+  `mm_challenge_v1`, the slot index + the fork-scoped `mm_slot_fork_` prefix
+  for the pre-fork backup), armed solely by the `forkGrant` dispatcher branch
   and consumed by main.js's audited `commitForkSave`. Extending the fork
   means extending the hatch's key whitelist + pins — NEVER the lockdown
-  allowlist.
+  allowlist. An existing solo save is auto-backed-up as a named slot before
+  the overwrite; a fork can never touch the player's own named saves.
+- Guest trader: NO trade arbitration exists by design — buy/sell exchange
+  within ONE inventory and a hero guest's inventory is its own truth; the
+  `npcs` plane (registry save shapes, sig-skipped) keeps stall state fresh
+  and the epic-chest offer (the one world-touching trade) refuses guests.
+  Party pressure: mob eco-pass/despawn + invasion landings rotate across
+  host + `MM.coopBodies` (set-piece events stay host-anchored by design).
 
 ### Adding a new hact intent (checklist)
 
